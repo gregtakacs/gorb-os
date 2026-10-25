@@ -42,7 +42,8 @@
 #include "orb_app.h"
 #include "orb_app_install.h"   /* APPS: the enable/uninstall doors (P5.3) */
 #include "idle_dim.h"          /* DISPLAY submenu: the two runtime settings */
-#include "input_router.h"     /* exit -> input_router_home() */
+#include "input_router.h"     /* exit -> input_router_menu_exit() */
+#include "nvs.h"               /* the top-page cursor memory, the router's page_write idiom */
 #if CONFIG_ORB_USB_MSC
 #include "orb_usb_msc.h"      /* PG_SHARE: the share window's one fact (D38) */
 #endif
@@ -1176,13 +1177,26 @@ static const char *hint_about(void)  { return "rotate: read   push: nothing here
  * there is nothing to choose and one thing to press.
  *
  * The router calls menu_view_share_gate() on every poll while the window is
- * open (input_router.c): the card paints once, before the handover, and every
- * press or hold anywhere on the dial becomes the stop. PG_SHARE is reachable
- * from no row — only the window itself puts it on the glass — and it survives
- * disarm and re-entry, because during a window it is the only page that is
- * true. */
-static bool s_share_shown;     /* the card is the painted truth (LVGL task)  */
-static bool s_share_homed;     /* the window dragged the dial to the menu    */
+ * open (orb_app_share_gate, input_router.c): the card paints on the way in, the
+ * closing words once on the way out, and any repaint that lands a normal menu
+ * page in between gets the card back on the next poll. Every press or hold
+ * anywhere on the dial becomes the stop. PG_SHARE is reachable from no row —
+ * only the window itself puts it on the glass — and it survives disarm and
+ * re-entry, because during a window it is the only page that is true. */
+/* What the LAST repaint put on the glass: -1 means a normal menu page, 0 the
+ * open card, 1 the closing card. The gate repaints on the edge rather than
+ * trusting that a card which froze the ring is still the frame the panel holds,
+ * because the home switch's own show hook and a worker result landing in
+ * menu_view_service() both repaint this screen during a window — and frozen menu
+ * rows are the dead door this card exists to replace. */
+static int s_share_painted = -1;
+/* What the glass holds while the reclaim reboot is in flight. Saying "saved" and
+ * "wait for the clock" here is the whole point of the state existing: the owner's
+ * last write to the card happened on the host, and the next thing they see is a
+ * dial that is about to go dark on its own. */
+static const char *const s_share_closing =
+    "Stopping the share. Anything the computer wrote is on the card now. "
+    "Wait for the clock.";
 
 static int rows_share(void) { return 0; }
 static void label_share(int row, char *out, size_t outsz, bool *sel_hi)
@@ -1194,39 +1208,44 @@ static void label_share(int row, char *out, size_t outsz, bool *sel_hi)
 static const char *title_share(void) { return "USB SHARED"; }
 static const char *hint_share(void)
 {
-    /* The reboot is stated with the stop because the stop is the reboot: the
-     * only exit the mode has. Saying it here, before the press, is what keeps
-     * the press from reading as the second half of a lock-up. */
-    return "the card lives in the host until the orb restarts. "
-           "press the knob: it restarts and takes the card back";
+    /* One block, because the card paints this as its only body of words: the
+     * fact (what the host has, write access named while it is true), what waits
+     * inside it (so a frozen dial does not read as lost files), then the door and
+     * the reboot stated with it — the stop IS the reboot, the only exit the mode
+     * has, and saying so before the press is what keeps the press from reading as
+     * the second half of a lock-up. Pure ASCII, so the fold pass cannot grow it in
+     * the card's own 160-byte scratch. */
+    return "The orb's card is the computer's disk now. Your files, themes and apps "
+           "are inside it, and the computer can change them. Press the knob to stop "
+           "sharing. The orb restarts and takes the card back.";
 }
 
+/** The share card's claim on the glass, one poll at a time. True means the
+ *  window spent this poll's knob, so the router stops there. */
 bool menu_view_share_gate(bool press)
 {
 #if CONFIG_ORB_USB_MSC
     if (!orb_usb_msc_window_open()) return false;
-    /* A boot-claim window can open under the clock, and a frozen clock with no
-     * words is exactly the panic this card exists to prevent. The router owns
-     * the screen, so the card asks for the menu through him, once per window —
-     * the same door a hold-to-home takes. */
-    if (!s_share_homed && input_router_current() != orb_app_home()) {
-        s_share_homed = true;
-        input_router_home();
-    }
-    if (!s_share_shown) {
-        s_share_shown = true;
-        s_pg = P(PG_SHARE);
-        s_cur = 0;
+    const bool closing = orb_usb_msc_stopping();
+    const int  want    = closing ? 1 : 0;
+    /* Claim the page before anything can repaint this screen: the home switch
+     * below runs the menu's show hook, and a menu that paints its rows or its
+     * landing card over a frozen ring is the dead door this page replaced. */
+    s_pg  = P(PG_SHARE);
+    s_cur = 0;
+    /* A boot-claim window can open under the clock, and a store that resumes
+     * onto its own page can move the dial again afterwards. So the ask repeats
+     * on every poll that finds it off home, not once per window. set_screen()
+     * re-activates a target it already holds, so the != guard must stay. */
+    if (input_router_current() != orb_app_home()) input_router_home();
+    /* Paint on the edge only: the card goes up once per window, the closing
+     * words once, and any repaint that landed a normal page in between — a
+     * worker result, an activate's show hook — puts the card back. */
+    if (s_share_painted != want) {
         repaint();
-        ESP_LOGI(TAG, "share card up — the knob is the door");
+        if (!closing) ESP_LOGI(TAG, "share card up — the knob is the door");
     }
     if (press) (void)orb_usb_msc_request_stop();
-    /* Closing words go on the glass only once the worker has laid the USB
-     * side down and the flush path is funded again (orb_usb_msc_stop), and the
-     * dropped attempts in between leave no dirty area behind: while the door
-     * is falling, ask once per poll. It costs a repaint of one card, and the
-     * window it is trying to land in is 750 ms long. */
-    if (orb_usb_msc_stopping()) repaint();
     return true;                      /* the window spent this poll's knob */
 #else
     (void)press;
@@ -1401,11 +1420,17 @@ static void repaint(void)
         const bool closing = orb_usb_msc_stopping();
         lv_obj_set_style_text_font(s_title, &lv_font_montserrat_48, 0);
         lv_label_set_text(s_title, "USB SHARED");
-        lv_label_set_text(s_status, closing
-            ? "Stopping the share. The orb is restarting now."
-            : "The whole card is the computer's disk. Your files, themes and apps wait inside it.");
-        dial_text(gl, sizeof gl, closing ? "" : hint_share());
-        lv_label_set_text(s_hint, gl);
+        /* One block of words, in the colour of the state it reports, and the
+         * grey hint blank. Both bottom labels are BOTTOM_ALIGNED and wrap
+         * UPWARD from their own anchor, 32 px apart, so the two sentences this
+         * card used to split between them grew into each other and drew on top
+         * of one another (bench, orb-B, 2026-10-25: amber over grey, neither
+         * readable). The card has one body now, kept to three lines at the
+         * status label's 300 px, and the door is its last sentence. */
+        dial_text(gl, sizeof gl, closing ? s_share_closing : hint_share());
+        lv_label_set_text(s_status, gl);
+        lv_label_set_text(s_hint, "");
+        s_share_painted = closing ? 1 : 0;
         lv_obj_invalidate(s_scr);
         return;
     }
@@ -1413,6 +1438,7 @@ static void repaint(void)
 
     const int rows = page_rows();
     s_painted_rows = rows;
+    s_share_painted = -1;            /* a normal page is on the glass now        */
     cursor_fit(rows);
 
     /* Window the list around the cursor so a 62-row zone table scrolls inside
@@ -1586,6 +1612,84 @@ bool menu_view_armed(void) { return s_armed; }
 
 void menu_view_show(void) { repaint(); }
 
+/* ---- the menu's own "where was I", across entry and exit -------------------
+ *
+ * The dial used to open every visit on the top page at row 0. An owner three
+ * pages down in the 62-row zone list, who dimmed the screen and came back, paid
+ * for that scroll again every time. The router already keeps this exact record
+ * for the SCREEN the glass sits on (input_router.c's page_write/page_remember,
+ * one NVS string plus a RAM cache); this is the same idea one level in, for the
+ * PAGE inside the menu. Same discipline: a RAM mirror so walking over the same
+ * page ten times a day costs zero commits, an idempotent-by-comparison write,
+ * and a read that carries no authority until it resolves.
+ *
+ * Only pages that re-enter from their own id are remembered: TOP, TZ, DISPLAY,
+ * TO, PERMS, ABOUT. The rest cannot be, and the reason each is left out is a
+ * correctness rule, not an oversight — PG_APP/PG_APPACT name an app that may
+ * have uninstalled since (their open() resolves the pointer), PG_CAPS carries a
+ * selected slot that a stored page id cannot re-derive, PG_SHARE is the window's
+ * and not the owner's to return to, and PG_LANDING is unarmed. A remembered page
+ * whose enter() hook re-derives the cursor (the zone list on the zone in force,
+ * the timeout picker on the preset in force) takes the hook's answer, not the
+ * stored row: the cursor there is a fact about the current setting, not a place
+ * the owner parked it. */
+#define MENU_POS_NS  "orb_menu"
+#define MENU_POS_KEY_PG  "pg"
+#define MENU_POS_KEY_CUR "cur"
+
+static int  s_pos_pg = PG_TOP;    /* the page the last exit left, RAM mirror */
+static int  s_pos_cur;            /* the cursor there */
+static bool s_pos_loaded;         /* the record has been read once this boot */
+
+/* Which pages a stored id may be restored into. A symbolic bitmask, not a table
+ * designator or a switch arm — the suite pins the page inventory as the only
+ * line-start [PG_*] set and the switch model dead, and whether a page re-enters
+ * from its id alone is a fact about this file's navigation rather than the
+ * table's. A page absent here is left out on purpose: APP/APPACT name an app that
+ * may have uninstalled since, CAPS needs a selected slot, SHARE is the window's,
+ * and LANDING is unarmed. */
+static bool pos_restorable(int pg)
+{
+    const unsigned ok = (1u << PG_TOP) | (1u << PG_TZ) | (1u << PG_DISPLAY)
+                      | (1u << PG_TO)  | (1u << PG_PERMS) | (1u << PG_ABOUT);
+    return pg >= 0 && pg < PG_N && ((ok >> pg) & 1u) != 0;
+}
+
+/* Read the record once. A first boot, an erased partition, or a stored page the
+ * menu no longer ships all leave s_pos_pg at TOP, so a restore that cannot
+ * resolve is exactly the open-at-the-top behaviour this replaced. */
+static void pos_load(void)
+{
+    if (s_pos_loaded) return;
+    s_pos_loaded = true;
+    nvs_handle_t h;
+    if (nvs_open(MENU_POS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    int32_t pg = PG_TOP, cur = 0;
+    if (nvs_get_i32(h, MENU_POS_KEY_PG, &pg) != ESP_OK) pg = PG_TOP;
+    (void)nvs_get_i32(h, MENU_POS_KEY_CUR, &cur);
+    nvs_close(h);
+    if (!pos_restorable((int)pg) || pg < 0 || pg >= PG_N) return;   /* keep TOP */
+    s_pos_pg  = (int)pg;
+    s_pos_cur = (cur < 0) ? 0 : (int)cur;
+}
+
+/* Store the edge the owner left on. Idempotent-by-comparison against the RAM
+ * mirror, so the steady state costs zero NVS commits — the same reason the
+ * router's page_write refuses a write it already holds. */
+static void pos_save(int pg, int cur)
+{
+    if (cur < 0) cur = 0;
+    if (pg == s_pos_pg && cur == s_pos_cur) return;
+    s_pos_pg  = pg;
+    s_pos_cur = cur;
+    nvs_handle_t h;
+    if (nvs_open(MENU_POS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    (void)nvs_set_i32(h, MENU_POS_KEY_PG,  (int32_t)pg);
+    (void)nvs_set_i32(h, MENU_POS_KEY_CUR, (int32_t)cur);
+    (void)nvs_commit(h);
+    nvs_close(h);
+}
+
 void menu_view_set_armed(bool armed)
 {
 #if CONFIG_ORB_USB_MSC
@@ -1595,9 +1699,36 @@ void menu_view_set_armed(bool armed)
      * any page state. */
     if (orb_usb_msc_window_open()) { repaint(); return; }
 #endif
+    /* The save is the disarm edge, mirroring the picker's D35 commit: leaving is
+     * the last moment this task knows where the owner stopped, and a detent is a
+     * gesture that would otherwise commit a write a second. Only a restorable
+     * page is recorded, so leaving from an app page cannot store an id that would
+     * later restore onto a vanished app. */
+    if (!armed && s_armed && pos_restorable((int)(s_pg - s_pages)))
+        pos_save((int)(s_pg - s_pages), s_cur);
+
     s_armed = armed;
-    s_pg    = armed ? P(PG_TOP) : P(PG_LANDING);
-    s_cur   = 0;
+    if (armed) {
+        /* Re-enter on the remembered page, letting the page's own enter() hook
+         * place the cursor where it knows the value in force lives. A page with
+         * no hook keeps the stored row; repaint's cursor_fit clamps it into a row
+         * count that may have shrunk since (an app uninstalled, a card walk not
+         * yet landed), so a stale row can never strand the highlight off-glass. */
+        pos_load();
+        s_pg  = P(s_pos_pg);
+        s_cur = 0;
+        if (s_pg->enter) s_pg->enter();
+        else s_cur = s_pos_cur;
+        /* Clamp here, not only in the painter: a row the owner left can point past
+         * a list that has since shrunk (an app uninstalled, a card walk not yet
+         * landed), and the whole rule of the memory is that the dial opens on a
+         * row the owner can actually see. cursor_fit is the same one repaint runs,
+         * so the two cannot disagree about where the last legal row is. */
+        cursor_fit(page_rows());
+    } else {
+        s_pg  = P(PG_LANDING);
+        s_cur = 0;
+    }
     /* Drop last attempt's line, so re-entering shows the menu and not a stale
      * complaint about a card that may since have been swapped. */
     s_ui.status[0] = '\0';
@@ -1694,7 +1825,11 @@ static void act_top(int row)
  * the owner leaves — and hands the knob to the router. */
 static void go_to(int to, int cur)
 {
-    if (to == MENU_GO_EXIT) { menu_view_set_armed(false); input_router_home(); return; }
+    /* The exit answer has no page to enter. Out of the shell goes back to the
+     * entry the owner stood on before the menu, not to the landing card (owner
+     * ruling, 2026-10-25); input_router_menu_exit disarms on the way, and that
+     * disarm is the item-3 edge that stores where in the list they stopped. */
+    if (to == MENU_GO_EXIT) { input_router_menu_exit(); return; }
     if (s_pg->leave) s_pg->leave();
     s_pg  = P(to);
     s_cur = cur;
@@ -1874,27 +2009,42 @@ void menu_view_apply_input(int32_t delta, bool pressed)
 
 bool menu_view_opt_long(void)
 {
-    /* Only an app's option page spends the press. Everything else — the
-     * landing, the menu's own pages, a page with nothing open — answers false
-     * and lets the hold home as C8 rules it.
-     *
-     * A page's own long hook has first refusal (D12), before the group rule:
+    if (!s_armed) return false;                    /* the router owns the knob */
+
+    /* A page's own long hook has first refusal (D12), before the group rule:
      * a row that declares a door means any hold on its page, not only a hold
      * that happened to land over a group.
      *
      * The cursor goes back to the header the items just vanished under: leaving
      * it on an un-drawn row is the knob appearing not to work, because the next
      * detent would move from a row the glass is not showing. */
-    if (!s_armed || s_pg != P(PG_APP) || !s_app) return false;
-    if (orb_app_opt_long(s_app)) return true;
-    if (s_group_open < 0) return false;
-    const int rows = orb_app_opt_count(s_app);
-    const int at = row_to_vis(rows, s_group_open);
-    ESP_LOGI(TAG, "hold closes group row %d: %s", s_group_open,
-             orb_app_opt_label(s_app, s_group_open));
-    s_group_open = -1;
-    s_cur = (at < 0) ? 0 : at;
-    repaint();
+    if (s_pg == P(PG_APP) && s_app) {
+        if (orb_app_opt_long(s_app)) return true;
+        if (s_group_open >= 0) {
+            const int rows = orb_app_opt_count(s_app);
+            const int at = row_to_vis(rows, s_group_open);
+            ESP_LOGI(TAG, "hold closes group row %d: %s", s_group_open,
+                     orb_app_opt_label(s_app, s_group_open));
+            s_group_open = -1;
+            s_cur = (at < 0) ? 0 : at;
+            repaint();
+            return true;
+        }
+    }
+
+    /* Nothing was open to collapse. Owner ruling, 2026-10-25: the hold is the
+     * way out of the menu, and out of the menu means back to the entry the
+     * glass showed before the shell took it — the same door the exit row
+     * takes, so a hold from the top list and a hold from the depths of the
+     * tree both land where the owner stood on their way in. The landing card
+     * is not the answer to leaving; it stays what always was, the face of an
+     * unarmed shell (a bench request, or a share window parked over the dial).
+     *
+     * The share page says no on its own row: while the window is open the
+     * gate above this function swallows the hold and answers with the release,
+     * and this hook must not grow a second, quieter door out of the window. */
+    if (s_pg == P(PG_SHARE)) return false;
+    input_router_menu_exit();
     return true;
 }
 
@@ -1907,8 +2057,7 @@ void menu_view_service(void)
      * press. The reboot exit never reaches this line — the glass is parked
      * and the boot that follows rebuilds everything. */
     if (s_pg == P(PG_SHARE) && !orb_usb_msc_window_open()) {
-        s_share_shown = false;
-        s_share_homed = false;
+        s_share_painted = -1;
         s_pg = s_app ? P(PG_APP) : P(PG_TOP);
         s_cur  = 0;
         ESP_LOGI(TAG, "share refused — the menu is live again");

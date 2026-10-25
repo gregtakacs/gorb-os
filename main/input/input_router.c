@@ -154,6 +154,19 @@ static void page_remember(const orb_app_t *app)
 
 void input_router_remember_slug(const char *slug) { page_write(slug); }
 
+/* Where the shell was entered FROM, so leaving the menu can put the owner back
+ * on the entry they were standing on rather than on the menu's landing page
+ * (owner ruling, 2026-10-25). RAM-only, and deliberately so: this is a position
+ * within one viewing of the menu, not a place to reboot to — that job is
+ * s_last_slug's. A slug, not a pointer: a card row can be uninstalled while the
+ * owner is inside the menu, and a stale pointer into a recycled slot is the bug
+ * that sharding the registry by pointer was written to avoid. The empty string
+ * means the shell has not been entered from anywhere this boot (the boot landed
+ * on it), so a menu exit from that state has nowhere to go but the landing. */
+static char s_before_shell[32];   /* "" = the shell was not entered from a row */
+
+static void shell_return_forget(void) { s_before_shell[0] = '\0'; }
+
 static esp_err_t set_screen(const orb_app_t *app, bool load)
 {
     if (!app) return ESP_ERR_INVALID_ARG;
@@ -199,6 +212,19 @@ static esp_err_t set_screen(const orb_app_t *app, bool load)
              (long long)((esp_timer_get_time() - sw_t0) / 1000));
     ESP_LOGI(TAG, "screen -> %s", screen_name(app));
     page_remember(app);   /* this view is the glass's now — a reboot returns here */
+
+    /* Remember what the glass was showing the moment the shell took over, so a
+     * menu exit can walk the owner back there (owner ruling, 2026-10-25). Keyed
+     * on the registry's own SHELL kind rather than a name, exactly as the rest of
+     * this router keys on the table. Only a real move onto the shell from another
+     * entry records; a re-show of the shell, or a switch to any non-shell entry,
+     * clears the memory so it never points past the visit that set it. */
+    if (app->kind == ORB_APP_KIND_SHELL) {
+        if (previous && previous != app && previous->slug)
+            snprintf(s_before_shell, sizeof s_before_shell, "%s", previous->slug);
+    } else {
+        shell_return_forget();
+    }
     return ESP_OK;
 }
 
@@ -366,11 +392,17 @@ static void poll_timer_cb(lv_timer_t *timer)
             return;
         }
         /* Quiet, with a name still up: it has held still long enough to be worth
-         * the commit, and this is the poll that pays for it. */
+         * the commit, and this is the poll that pays for it. Committing onto the
+         * shell arms it (owner ruling, 2026-10-25): waiting on the menu screen is
+         * arriving in the menus, not a stop at a landing card that would make the
+         * owner click a second time to reach the list. Keyed on the SHELL kind so
+         * the picker and every app keep D12's two-level gate — this arm is the
+         * menu's, not a general change to what a settle means. */
         const orb_app_t *named = orb_carousel_pending();
         if (named && orb_carousel_due(now)) {
             orb_carousel_commit();
             set_screen(named, true);
+            if (named->kind == ORB_APP_KIND_SHELL) arm_current();
         }
         return;
     }
@@ -456,6 +488,21 @@ void input_router_home(void)
     orb_carousel_cancel();
     disarm_all();
     set_screen(orb_app_home(), true);
+}
+
+void input_router_menu_exit(void)
+{
+    /* Leave the shell back where it was entered from (owner ruling,
+     * 2026-10-25): the exit row and the top-level long press both land the
+     * owner on the entry the glass showed before the menu, never on the
+     * landing page. disarm_all runs the menu's set_armed(false), which is the
+     * item-3 edge that stores where in the list the owner stopped. With nothing
+     * remembered — the boot landed straight on the menu, or the row the owner
+     * came from has since uninstalled — the exit is the plain C8 home. */
+    orb_carousel_cancel();
+    disarm_all();
+    const orb_app_t *back = s_before_shell[0] ? orb_app_find_slug(s_before_shell) : NULL;
+    set_screen(back ? back : orb_app_home(), true);
 }
 
 const orb_app_t *input_router_current(void)

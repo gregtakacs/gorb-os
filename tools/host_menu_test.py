@@ -145,6 +145,11 @@ def lifts(src):
         # the shipped versions of both decisions.
         lift(src, r"static int page_rows\(void\)[\s\S]*?"
                    r"static const char \*page_hint\(void\)\n\{[\s\S]*?\n\}", MENU_C),
+        # The menu's "where was I" block (item 3): the RAM mirror, the restorable
+        # switch, and the two NVS helpers set_armed now calls. Lifted as one unit
+        # ahead of set_armed, which names them; a fake nvs_* below makes the
+        # round-trip run through the SHIPPED pos_save/pos_load, not a restated copy.
+        lift(src, r"#define MENU_POS_NS[\s\S]*?nvs_close\(h\);\n\}", MENU_C),
         lift(src, r"void menu_view_set_armed\(bool armed\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"void menu_view_apply_input\(int32_t delta, bool pressed\)\n\{[\s\S]*?\n\}", MENU_C),
         lift(src, r"void menu_view_service\(void\)\n\{[\s\S]*?\n    repaint\(\);\n\}", MENU_C),
@@ -220,6 +225,32 @@ def lifts(src):
         'static const char *orb_net_tz_current(void);',
         'static bool orb_sd_mounted(void);',
         'static const char *orb_sd_card_id(void);',
+        # Item 3: a fake NVS with a real round-trip, so the lifted pos_save/
+        # pos_load store and reload through this harness rather than a restated
+        # copy. A two-key table (pg, cur) in the orb_menu namespace is all the
+        # menu's memory uses; the read reports "not found" until a write lands,
+        # which is the first-boot case the restore is checked to survive.
+        'typedef int nvs_handle_t;',
+        '#define NVS_READONLY  0',
+        '#define NVS_READWRITE 1',
+        '#define ESP_ERR_NVS_NOT_FOUND (-2)',
+        'static int32_t g_nvs_pg, g_nvs_cur; static bool g_nvs_written;',
+        'static int g_nvs_opens;',
+        'static esp_err_t nvs_open(const char *ns, int mode, nvs_handle_t *h)',
+        '{ (void)ns; (void)mode; g_nvs_opens++; *h = 1; return ESP_OK; }',
+        'static esp_err_t nvs_get_i32(nvs_handle_t h, const char *k, int32_t *out)',
+        '{ (void)h; if (!g_nvs_written) return ESP_ERR_NVS_NOT_FOUND;',
+        '  if (!strcmp(k, "pg")) { *out = g_nvs_pg; return ESP_OK; }',
+        '  if (!strcmp(k, "cur")) { *out = g_nvs_cur; return ESP_OK; }',
+        '  return ESP_ERR_NVS_NOT_FOUND; }',
+        'static esp_err_t nvs_set_i32(nvs_handle_t h, const char *k, int32_t v)',
+        '{ (void)h; if (!strcmp(k, "pg")) g_nvs_pg = v;',
+        '  else if (!strcmp(k, "cur")) g_nvs_cur = v;',
+        '  g_nvs_written = true; return ESP_OK; }',
+        'static esp_err_t nvs_commit(nvs_handle_t h) { (void)h; return ESP_OK; }',
+        'static esp_err_t nvs_close(nvs_handle_t h) { (void)h; return ESP_OK; }',
+        'static void nvs_reset(void) { g_nvs_pg = 0; g_nvs_cur = 0;',
+        '  g_nvs_written = false; }',
     ]
     return consts, funcs
     return consts, funcs
@@ -345,8 +376,16 @@ static int  s_painted_rows;      /* stamped by the stub below, read by the lifte
 static int  page_rows(void);     /* the lifted definition follows */
 static int  g_repaints;
 static void repaint(void) { g_repaints++; s_painted_rows = page_rows(); }
-static int  g_homes;               /* the press on the exit row lands here */
+static int  g_homes;               /* the share card's park lands here */
 static void input_router_home(void) { g_homes++; }
+/* Item 3's exit door: the lifted go_to/opt_long reach the save only through
+ * this, exactly as the shipped router does (menu_exit -> disarm_all -> the
+ * menu's own set_armed(false)). Calling it is what keeps the store-on-exit
+ * checks honest: a menu_exit stub that skipped the disarm would let the save
+ * rot while every check stayed green. */
+void menu_view_set_armed(bool armed);   /* shipped definition spliced in later */
+static int  g_menu_exits;
+static void input_router_menu_exit(void) { menu_view_set_armed(false); g_menu_exits++; }
 
 /* The two DISPLAY rows ask the idle-dim layer what is in force. Stubbed here with
  * settable globals, the way the zone list stubs orb_net: the menu must show the
@@ -747,7 +786,8 @@ int main(void)
      * it opens with, what the back row and the exit row do. Each answer used
      * to be a switch arm only the bench could reach. */
     s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0; s_busy = false;
-    g_homes = 0; g_posts = 0; g_arms = 0; g_activations = 0;
+    g_homes = 0; g_menu_exits = 0; g_posts = 0; g_arms = 0; g_activations = 0;
+    nvs_reset(); g_nvs_opens = 0;               /* the store-on-exit check below reads a clean slot */
     g_opt_n = 2; g_opt_app_count = 1; g_kind_hook = false;
     s_cur = 1;
     menu_view_apply_input(0, true);
@@ -789,8 +829,18 @@ int main(void)
        s_pg == &s_pages[PG_TOP] && s_cur == top_os_rows() && g_arms == 0);
     s_cur = page_rows() - 1;
     menu_view_apply_input(0, true);
-    ck("the last row of the top page closes the menu and goes home",
-       !s_armed && s_pg == &s_pages[PG_LANDING] && g_homes == 1);
+    ck("the last row of the top page now exits through the new door",
+       !s_armed && s_pg == &s_pages[PG_LANDING] && g_menu_exits == 1 && g_homes == 0);
+    /* The ruling rides on the sub-pages too: a hold from anywhere in the menu,
+     * with nothing open to collapse, is the door out — and the disarm inside
+     * it is where item 3 stores the place the owner was working. */
+    nvs_reset();
+    s_armed = true; s_pg = &s_pages[PG_DISPLAY]; s_cur = 1;
+    menu_view_opt_long();
+    ck("the hold on DISPLAY takes the press and exits the menu",
+       g_menu_exits == 2 && !s_armed && s_pg == &s_pages[PG_LANDING]);
+    ck("the exit from DISPLAY stores the page and the row",
+       g_nvs_written && g_nvs_pg == PG_DISPLAY && g_nvs_cur == 1);
     s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0;
 
     /* ---- D19: the permissions ladder ----
@@ -1017,8 +1067,14 @@ int main(void)
     ck("hold closes the group, stays on the page, and parks on the header",
        menu_view_opt_long() && s_group_open == -1 && s_pg == &s_pages[PG_APP] && s_cur == 1);
     s_group_open = -1; s_cur = 0;
-    ck("with nothing open the hold is the router's to spend on going home",
-       !menu_view_opt_long());
+    /* Owner ruling, 2026-10-25: on the app's page with nothing open to collapse
+     * the hold no longer retreats to the shell's home — it exits the menu,
+     * exactly as it does from the top list and the DISPLAY sub-menu. The app's
+     * own hook and the group collapse still take the press first (checked just
+     * above), so this is the last answer standing. */
+    ck("with nothing open the hold exits the menu, not home",
+       menu_view_opt_long() && !s_armed);
+    s_armed = true; s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0;
     ck("closing the group gives the page its three rows back", page_rows() == 3);
     /* The two malformed shapes, and the one answer that keeps them reachable. */
     g_kind[0] = OPT_ITEM;                       /* a leading ITEM, with nothing above it */
@@ -1414,6 +1470,59 @@ int main(void)
         ck("the empty line stays the empty line", gb[0] == '\0');
     }
 
+    /* ---- item 3: the menu's own "where was I", across a disarm and a reboot --
+     * The dial used to open every visit on the top page at row 0. These run the
+     * SHIPPED pos_save/pos_load (lifted, not restated) through the fake NVS, so
+     * the round-trip is the code that ships and the refusal paths are real. */
+    {
+        /* A first exit, on a restorable page, writes the record once. */
+        nvs_reset(); s_pos_loaded = false; s_pos_pg = PG_TOP; s_pos_cur = 0;
+        s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 3; s_busy = false;
+        menu_view_set_armed(false);
+        ck("disarming stores the page and row the owner left",
+           g_nvs_written && g_nvs_pg == PG_TOP && g_nvs_cur == 3);
+        /* Re-arming reads it back through pos_load: DISPLAY has no enter() hook,
+         * so the stored row is the cursor the dial opens on. */
+        s_pos_loaded = false;
+        s_pg = &s_pages[PG_DISPLAY]; s_cur = 0;
+        menu_view_set_armed(false);
+        s_pos_loaded = false;
+        menu_view_set_armed(true);
+        ck("re-arming opens on the page and row the last visit left",
+           s_pg == &s_pages[PG_TOP] && s_cur == 3);
+
+        /* The enter() hook wins: a remembered zone page re-derives its cursor from
+         * the zone in force, not from the row the owner had scrolled to. */
+        nvs_reset(); s_pos_loaded = false; s_pos_pg = PG_TOP; s_pos_cur = 0;
+        g_tz_current = 4; g_tz_count = 62;
+        s_armed = true; s_pg = &s_pages[PG_TZ]; s_cur = 4;
+        menu_view_set_armed(false);          /* stores TZ @ 4 */
+        ck("leaving the zone list stores the zone page",
+           g_nvs_written && g_nvs_pg == PG_TZ && g_nvs_cur == 4);
+        g_nvs_cur = 30;                      /* a stale row the hook must override */
+        s_pos_loaded = false;
+        menu_view_set_armed(true);
+        ck("a remembered page with an enter() hook places the cursor from the value in force",
+           s_pg == &s_pages[PG_TZ] && s_cur == g_tz_current);
+
+        /* The stale-row clamp: a stored row past a page that shrank (an app
+         * uninstalled since) is pulled back onto the glass, never left off it. */
+        g_nvs_written = true; g_nvs_pg = PG_PERMS; g_nvs_cur = 40;
+        s_pos_loaded = false; s_armed = false;
+        menu_view_set_armed(true);           /* PERMS has no enter(); s_cur=40 */
+        ck("a restored row past the count is clamped into the list by repaint",
+           s_pg == &s_pages[PG_PERMS] && s_cur < page_rows());
+
+        /* A non-restorable page is never stored, so leaving from an app page
+         * cannot leave a pointer the next boot has no way to resolve. */
+        nvs_reset(); s_pos_loaded = false; s_pos_pg = PG_TOP; s_pos_cur = 0;
+        s_armed = true; s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 2;
+        menu_view_set_armed(false);
+        ck("leaving from an app page stores nothing (the app may be gone)",
+           !g_nvs_written && s_pos_pg == PG_TOP);
+        s_app = NULL;
+    }
+
     printf(fails ? "HARNESS FAILURES %d\n" : "HARNESS OK\n", fails);
     return fails ? 1 : 0;
 }
@@ -1777,11 +1886,9 @@ MUTATIONS = [
      "            if (lo >= 0 && hi >= lo) {\n                if (next < lo) next = lo;\n"
      "                if (next > hi) next = hi;\n            }",
      "            if (0) { }"),
-    ("the long press goes home instead of closing the group",
-     "    if (!s_armed || s_pg != P(PG_APP) || !s_app) return false;\n"
-     "    if (orb_app_opt_long(s_app)) return true;\n"
-     "    if (s_group_open < 0) return false;",
-     "    return false;"),
+    ("the long press skips an open group and takes the exit door instead",
+     "        if (s_group_open >= 0) {",
+     "        if (0) {"),
     ("an open header loses the fact that it is open",
      'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"',
      'const char *v = (k == OPT_GROUP && s_group_open == ar) ? ""'),
@@ -1811,6 +1918,23 @@ MUTATIONS = [
     ("the app page is left with its app armed",
      ".leave = leave_app, .back_to = PG_TOP, .back_cur = 0 },",
      ".back_to = PG_TOP, .back_cur = 0 },"),
+    # Item 3: the menu's "where was I". Each is one way the restore can rot into a
+    # lie while every pre-restore check stays green.
+    ("item 3: disarming stops storing where the owner was",
+     "    if (!armed && s_armed && pos_restorable((int)(s_pg - s_pages)))\n"
+     "        pos_save((int)(s_pg - s_pages), s_cur);",
+     "    if (0 && s_armed && pos_restorable((int)(s_pg - s_pages)))\n"
+     "        pos_save((int)(s_pg - s_pages), s_cur);"),
+    ("item 3: a stored row is restored with no clamp onto the live list",
+     "        cursor_fit(page_rows());",
+     "        ;"),
+    ("item 3: the app page becomes restorable onto a pointer that may be gone",
+     "                      | (1u << PG_TO)  | (1u << PG_PERMS) | (1u << PG_ABOUT);",
+     "                      | (1u << PG_TO)  | (1u << PG_PERMS) | (1u << PG_ABOUT)\n"
+     "                      | (1u << PG_APP);"),
+    ("item 3: re-arming ignores the stored page and always opens at the top",
+     "        s_pg  = P(s_pos_pg);",
+     "        s_pg  = P(PG_TOP);"),
     ("the top page's last row stops being exit",
      ".act = act_top, .back_to = MENU_GO_EXIT },",
      ".act = act_top, .back_to = MENU_GO_NONE },"),
@@ -2000,6 +2124,27 @@ def main():
     check("long-press goes home to the clock (router)",
           re.search(r"if \(lpress\) \{\s*orb_carousel_cancel\(\);\s*disarm_all\(\);"
                     r"\s*set_screen\(orb_app_home\(\), true\);", router_src) is not None)
+    # Item 3 (owner ruling, 2026-10-25): a settled flick onto the shell ARMS it,
+    # so waiting on the menu reaches the list rather than the landing card. It is
+    # keyed on the SHELL kind, not a name, and on the settle-commit only — the
+    # press-commit and the bench's ?to= request keep their existing meanings, and
+    # the picker's two-level gate (D25) stays. Both halves are pinned: the arm
+    # fires on the settle, and it is gated on the kind so it cannot silently
+    # widen to every screen the day a second shell is registered.
+    check("settling onto the shell arms the menu (router, direct entry)",
+          re.search(r"orb_carousel_commit\(\);\s*\n\s*set_screen\(named, true\);\s*\n"
+                    r"\s*if \(named->kind == ORB_APP_KIND_SHELL\) arm_current\(\);",
+                    router_src) is not None)
+    # And the exit door walks back to the entry the shell was entered from, so a
+    # menu exit is not a trip to the landing card. A slug is resolved (a card row
+    # can uninstall from inside the menu, and a stale pointer lands on a recycled
+    # slot), and an empty memory falls back to the home entry (a boot that landed
+    # on the menu has nowhere to walk back to).
+    check("the menu exit resolves the remembered slug, falling back to home (router)",
+          re.search(r"void input_router_menu_exit\(void\)[\s\S]*?"
+                    r"back = s_before_shell\[0\] \? orb_app_find_slug\(s_before_shell\) : NULL;"
+                    r"\s*set_screen\(back \? back : orb_app_home\(\), true\);",
+                    router_src) is not None)
     # D12's one exception, in both halves: the entry gets first refusal, and the
     # home path survives underneath it. An entry with nothing open answers false and
     # the hold homes exactly as C8 rules, so a nesting feature that quietly swallowed

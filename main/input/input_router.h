@@ -57,6 +57,16 @@ esp_err_t input_router_show(const orb_app_t *app);
 void input_router_home(void);
 
 /**
+ * Leave the shell, going back to the entry the glass was showing the moment
+ * the shell took it over (owner ruling, 2026-10-25: exiting the menu returns
+ * the owner to where they stood, not to the menu's landing page). Disarms
+ * everything on the way — the menu's own save edge rides inside that — and
+ * falls back to the home entry when nothing was remembered (the boot landed on
+ * the menu) or the remembered card row is gone. Call on the LVGL task.
+ */
+void input_router_menu_exit(void);
+
+/**
  * Feed the router one synthetic knob event. It enters at the same point a real
  * detent or tap would, so the whole two-level model — screen step, arming,
  * scrolling, selecting — is reachable without a hand on the encoder.

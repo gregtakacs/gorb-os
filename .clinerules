@@ -800,6 +800,37 @@ MENU → HUE → CLOCK and a press arms the screen you are on. Armed, the screen
 turn and a long-press returns to the clock. Long-press no longer cycles screens —
 one button cannot mean "next screen" two ways depending on how long it is held.
 
+**Menu entry and exit (owner ruling, 2026-10-25).** Reaching the menu screen by any
+route — a settled flick, a press on the chip, or a press while it shows — goes straight
+into the menu list; the landing card never interposes. On a settled flick the router
+arms the committed entry when its registry `kind` is `ORB_APP_KIND_SHELL` (a one-line
+arm on the settle-commit, so the picker's two-level gate D25 is untouched). Exiting the
+menu — the top row's exit and a long press at the top of the real menu, and a long press
+from any menu sub-page with nothing open to collapse — returns to the entry that was on
+the glass before the menu was entered, not to the landing card. The router records that
+entry's **slug** on the switch into the shell (a card row can uninstall from inside the
+menu, so a pointer would name a recycled slot), and `input_router_menu_exit()` resolves
+it; an empty memory (boot landed on the menu) or a vanished row falls back to home.
+`input_router_home()` still means "the landing" and is what the D38 share card parks
+under — it is not the menu's exit door. The landing card survives only as the face of an
+unarmed shell (a bench `?to=menu`, a share window parked over the dial). The long-press
+collapse of an open option group (D12) and the app page's own first-refusal hook are
+unchanged and take precedence.
+
+**Menu page/cursor memory (item 3, same ruling).** The page and row the owner left
+are persisted across an unarmed gap (exit, screen switch, reboot) and restored on the
+next arm — one `orb_menu` NVS namespace, two i32 keys, written only on the disarm edge
+idempotent against a RAM mirror (the `page_write`/`page_remember` idiom), so the steady
+state costs zero commits. Only `MENU_POS_`-recorded pages restore: TOP, TZ, DISPLAY, TO
+(the cursor is recomputed by `enter_to`), PERMS, ABOUT. LANDING never restores, and
+PG_APP never does — its identity is a pointer to a card row that may be gone. On restore
+a page's `enter()` hook wins over the stored row (the zone page marks the zone in force,
+not where the cursor last was), and a stored row past a now-shorter live count is clamped
+into it by `repaint()`'s pre-paint fit, so the first paint never shows an out-of-range
+highlight. `host_menu_test.py` fakes `nvs_*` to run the shipped `pos_save`/`pos_load`
+round-trip, and the four item-3 entries in its mutation list are the named ways this can
+rot into a lie.
+
 **The card calls must not run where the widgets are touched.** `orb_theme_scan()`
 takes the card mutex for its whole walk and `orb_theme_stage_load()` measured 2952 ms;
 either can additionally queue behind a browser upload holding that mutex for 38–48 s.
@@ -817,10 +848,10 @@ picker had never been entered on hardware. `GET /api/v1/screen` is the bench doo
 
 | Query | Effect |
 |---|---|
-| `?to=<slug>` | switch to a registered app (posted, applied on the LVGL task). Slugs come from the table in `main/app/orb_app.c`: `clock`, `color_picker` (alias `hue`), `menu`. An unknown slug is a 400 whose body lists the known ones — the value itself never reaches the response. |
+| `?to=<slug>` | switch to a registered app (posted, applied on the LVGL task, **unarmed** — the two-level menu stays driveable from the bench; a real settled flick onto the shell arms it, a request does not). Slugs come from the table in `main/app/orb_app.c`: `clock`, `color_picker` (alias `hue`), `menu`. An unknown slug is a 400 whose body lists the known ones — the value itself never reaches the response. |
 | `?turn=N` | N synthetic detents, **electrical** sense: +1 = CW = up/right on screen |
 | `?push=1` | one synthetic tap |
-| `?hold=1` | the long-press escape gesture, which goes to the entry flagged `is_home` — the dial (C8) |
+| `?hold=1` | the long-press escape gesture. From a non-menu screen it homes to the entry flagged `is_home` (C8). From an armed menu page with nothing to collapse it **exits the menu** to the entry shown before it (owner ruling 2026-10-25) — over HTTP there is no prior entry, so from `?to=menu` it falls back to home. |
 
 **Read the cursor before you trust a turn.** Until 2026-10-11 the menu said nothing about
 where its highlight was — `repaint()` moved the highlight and that was the only answer — so

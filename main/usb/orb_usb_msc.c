@@ -383,9 +383,15 @@ no reason to learn two addresses. The hooks honour the ABI's hard rule:
 opt_label/opt_value run on the LVGL task and may not touch the card, the network
 or NVS, so every string is a literal chosen from RAM state and every press is a
 post. */
+/* One row, the door. There used to be a second row under this one carrying the
+ * one fact a press makes true ("Whole card, one disk, writable"), and it was the
+ * item the owner reported as unclickable: opt_sel answered nothing for it, so the
+ * cursor stopped there, a press did nothing, and the page read as a dead menu
+ * entry. The shell has no inert-row kind (D12), so the fact lives in the action
+ * row's own value instead — one line, where it reads as part of the door rather
+ * than as a door that does not open. */
 #define USB_ROW_ACTION  0        /* press: hand the card over, or take it back    */
-#define USB_ROW_NOTE    1        /* the one fact an owner cannot otherwise see    */
-#define USB_ROW_N       2
+#define USB_ROW_N       1
 
 /* A press shares the card NOW; the mode has never restarted anything to get
  * there. The armed path is the boot promise, not this press. */
@@ -397,28 +403,27 @@ static const char *const s_act_armed = "Cancel the next boot";
  * row carry it too — a share window paints no more frames (the tile ring is on
  * loan to the card), so this row's own press is the door, found blind or not. */
 static const char *const s_act_on    = "Press to restart, stop sharing";
-/* The note's whole job is saying what the press makes true, before it is true.
- * During a window the note row carries the door instead (usb_opt_label): the
- * glass paints no frames then, and a fact nobody can press is worth less than a
- * press that gets the dial back. The card is blank to the dial until the reboot
- * that follows a share — the orb puts the volume down completely before handing
- * it over, which is why this mode cannot corrupt a volume it also mounts. */
-static const char *const s_note_off  = "Whole card, one disk, writable";
+/* The note's whole job was saying what the press makes true, before it is true.
+ * It now says it from the action row's value slot (see USB_ROW_ACTION): during a
+ * window the label carries the door instead, because the glass paints no frames
+ * then and a fact nobody can press is worth less than a press that gets the dial
+ * back. The card is blank to the dial until the reboot that follows a share — the
+ * orb puts the volume down completely before handing it over, which is why this
+ * mode cannot corrupt a volume it also mounts. */
+static const char *const s_note_off = "whole card, writable";
 static char s_val[40];
 
 static int usb_opt_count(orb_app_t *app) { (void)app; return USB_ROW_N; }
 
 static const char *usb_opt_label(orb_app_t *app, int idx)
 {
-    (void)app;
-    /* While the mode holds — or is committed to holding — the card, every row
-     * on this page carries the door. The glass cannot repaint during the
-     * window, so the row the owner sees selected when the freeze lands is the
-     * row they will press blind, whatever it was before: it must read as the
-     * exit on the note row too. */
+    (void)app; (void)idx;
+    /* While the mode holds — or is committed to holding — the card, the row
+     * carries the door. The glass cannot repaint during the window, so the row
+     * the owner sees selected when the freeze lands is the row they will press
+     * blind, and it must read as the exit. */
     if (s_state == MSC_ACTIVE || s_state == MSC_PENDING) return s_act_on;
-    if (idx == USB_ROW_NOTE) return s_note_off;
-    if (orb_usb_msc_armed())              return s_act_armed;
+    if (orb_usb_msc_armed())                             return s_act_armed;
     return s_act_off;
 }
 
@@ -429,6 +434,9 @@ static const char *usb_opt_value(orb_app_t *app, int idx)
     (void)app;
     if (idx != USB_ROW_ACTION) return "";
     const char *st = orb_usb_msc_state();
+    /* "off" says nothing the label does not already say, and the row's one job
+     * is a press: what a press buys is the answer worth the space. */
+    if (!strcmp(st, "off")) return s_note_off;
     if (st[0] == 'f' && orb_usb_msc_reason()[0]) {
         snprintf(s_val, sizeof s_val, "%.14s: %.20s", st, orb_usb_msc_reason());
         return s_val;
@@ -447,7 +455,7 @@ static void usb_opt_sel(orb_app_t *app, int idx)
         (void)orb_usb_msc_request_stop();
         return;
     }
-    if (idx != USB_ROW_ACTION) return;
+    if (idx != USB_ROW_ACTION) return;         /* the shell bounds it; belt and bracer */
     if (orb_usb_msc_armed())             (void)orb_usb_msc_request_disarm();
     else                                 (void)orb_usb_msc_request_start();
 }

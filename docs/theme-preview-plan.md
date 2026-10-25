@@ -65,9 +65,14 @@ landed. Verified against the tree as of 2026-10-25:
 
 So building previews means building, in order: the baker writes a `preview` PLATE
 plane into the section bank; `orb_theme.c` gains `orb_theme_preview_read(handle, buf)`
-resolved through the asset registry by plane name; the picker (ideally promoted to OS
-code per item 5) queues the worker read and draws it; the HTTP route and the ~30 JS
-lines. None of it needs a container format change.
+resolved through the asset registry by plane name; the picker queues the worker read
+and draws it; the HTTP route and the ~30 JS lines. None of it needs a container format
+change. It also does NOT need the `orb_theme_pool` extent pool: a preview plane is read
+transiently out of the theme's own card file (`.orbtheme` on the SD card), the same way
+`orb_bundle.c` already reads the live theme's geometry and banks — residency of a second
+bank in the `assets` partition is not involved. (An earlier draft of this file claimed
+the pool was a prerequisite; that was wrong. Corrected against `orb_theme.h` and the
+`Open tourbillon ... plate bank: 8 keyframes` boot line on 2026-10-25.)
 
 ## 5. The one sentence to remember
 

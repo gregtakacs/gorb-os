@@ -1135,6 +1135,7 @@ def naming_lint():
             body("theme_stem_split")):
         print("FAIL main/art/orb_theme.c: theme_stem_split() admits non-hex into the tail"); rc = 1
     CONSUMERS = ("scan_entry", "resolve3_entry", "card_open_verified_id3",
+                 "card_open_verified_slug3",
                  "orb_theme_upload_end", "orb_theme_delete")
     for n in CONSUMERS:
         if n not in spans:
@@ -1145,7 +1146,8 @@ def naming_lint():
         # card_open_verified_id3 / card_check3 / theme_file all go by the one hash.
         if not any(k in seg for k in ("theme_id(", "theme_id_ok(", "theme_stem(",
                                       "theme_stem_split(",
-                                      "card_open_verified_id3(", "card_check3(", "theme_file(")):
+                                      "card_open_verified_id3(", "card_open_verified_slug3(",
+                                      "card_check3(", "theme_file(")):
             print("FAIL main/art/orb_theme.c:%d: %s() touches a card theme without asking "
                   "theme_id()/theme_id_ok() what its name is" % (spans[n][0] + 1, n))
             rc = 1
@@ -1153,15 +1155,15 @@ def naming_lint():
         print("FAIL resolve3_entry() is gone — nothing checks the card header against its id"); rc = 1
     elif "theme_id(" not in calls("resolve3_entry"):
         print("FAIL resolve3_entry() matches an entry without hashing its header name"); rc = 1
-    if "card_open_verified_id3" in spans:
-        seg = calls("card_open_verified_id3")
+    if "card_open_verified_slug3" in spans:
+        seg = calls("card_open_verified_slug3")
         opened = seg.find("card_open")
         if "theme_id_ok(" not in seg:
-            print("FAIL card_open_verified_id3() stops validating the id before it walks"); rc = 1
+            print("FAIL card_open_verified_slug3() stops validating the id before it walks"); rc = 1
         if opened < 0 or seg.find("theme_id(", opened) < 0:
-            print("FAIL card_open_verified_id3() no longer re-hashes the header AFTER opening"); rc = 1
+            print("FAIL card_open_verified_slug3() no longer re-hashes the header AFTER opening"); rc = 1
         if not re.search(r"strcmp\s*\(\s*id2\s*,\s*id\s*\)\s*!=\s*0", seg):
-            print("FAIL card_open_verified_id3() re-hashes without comparing to the id asked for"); rc = 1
+            print("FAIL card_open_verified_slug3() re-hashes without comparing to the id asked for"); rc = 1
     if "scan_entry" in spans:
         if not re.search(r"strcmp\s*\(\s*bid\s*,\s*id\s*\)", calls("scan_entry")):
             print("FAIL scan_entry() lists a theme without checking the filename against the "

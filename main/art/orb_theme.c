@@ -36,6 +36,7 @@
 
 #include "orb_theme.h"
 #include "orb_bundle.h"
+#include "orb_elems.h"      /* orb_elems_at(), and the answers read_one_plane maps onto the registry's */
 #include "orb_clock3.h"          /* the FORMAT 3 clock section's projection (P6.5) */
 #include "orb_sd.h"
 #include "orb_jobs.h"      /* the two post_* calls: an install is a worker job, never a poll */
@@ -940,8 +941,17 @@ static bool resolve3_entry(void *arg, const orb_file_rec_t *rec, int fd)
     return r->verified;
 }
 
-static int card_open_verified_id3(const char *stem, orb_bundle3_hdr_t *o, uint32_t *file_size,
-                                  const char **why)
+/* The slug-aware twin. `card_open_verified_id3` below is this body with "clock"
+ * bound, and every picker-side read (the preview first, and any per-app service
+ * that follows it) calls this with whatever slug the handle names — so a weather
+ * theme resolves against `orb_files_src("weather", "themes")` under `weather/`
+ * without the clock having to register first. The stem's slug and the caller's
+ * must agree: an app asking about another app's theme is refused here, before the
+ * card is touched, and the refusal words match the ones the id3 door uses for the
+ * same defect on the clock's path. */
+static int card_open_verified_slug3(const char *app_slug, const char *stem,
+                                    orb_bundle3_hdr_t *o, uint32_t *file_size,
+                                    const char **why)
 {
     *why = NULL;
     char slug[ORB_BUNDLE_SLUG_MAX + 1], id[THEME_ID_HEX + 1];
@@ -950,7 +960,11 @@ static int card_open_verified_id3(const char *stem, orb_bundle3_hdr_t *o, uint32
         *why = "that theme id is not one this device issued";
         return -1;
     }
-    const orb_file_src_t *src = orb_files_src("clock", "themes");
+    if (strcmp(slug, app_slug) != 0) {
+        *why = "that theme belongs to a different app";
+        return -1;
+    }
+    const orb_file_src_t *src = orb_files_src(app_slug, "themes");
     if (!src) { *why = "no \"themes\" file source declared"; return -1; }
     if (orb_sd_ensure_mounted() != ESP_OK) { *why = "no card in the socket"; return -1; }
 
@@ -970,6 +984,153 @@ static int card_open_verified_id3(const char *stem, orb_bundle3_hdr_t *o, uint32
         return -1;
     }
     return fd;
+}
+
+static int card_open_verified_id3(const char *stem, orb_bundle3_hdr_t *o, uint32_t *file_size,
+                                  const char **why)
+{
+    return card_open_verified_slug3("clock", stem, o, file_size, why);
+}
+
+/* Transient read of one bundle's geometry region from an OPEN card file. The store
+ * path keeps its region resident because a redraw reads it again; a preview read is
+ * not on the redraw path, and a resident copy per theme would be 60 KB times the
+ * card's contents. This helper allocates a PSRAM scratch at the header's own
+ * claim (bounded at ORB_BUNDLE_GEOM_CAP by card_check3 before it reaches here),
+ * reads the region from the still-open fd, parses through the shipped reader, and
+ * hands back both the parsed index and the scratch that owns the blobs the index
+ * points into. The caller frees the scratch when done. */
+static const char *region_from_card3(int fd, const orb_bundle3_hdr_t *h,
+                                     uint32_t file_size, orb_bundle_t *b,
+                                     uint8_t **region_out)
+{
+    uint8_t *region = heap_caps_malloc(h->geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!region) return "out of memory for the bundle's tables";
+    size_t pos = h->geom_off;
+    if (rd_at(fd, &pos, region, h->geom_size) != (ssize_t)h->geom_size) {
+        heap_caps_free(region);
+        return "geometry region runs past the end of the file";
+    }
+    const char *r = orb_bundle_parse_region(h, region, h->geom_size, file_size, b);
+    if (r) { heap_caps_free(region); return r; }
+    *region_out = region;
+    return NULL;
+}
+
+/* Transient read of one plane from one section of one open card file. Resolves
+ * (cls, slot) at frame `frame` through orb_elems_at — the same resolver the resident
+ * layer's apps use, so a plane the theme's own dial could draw is a plane this one
+ * can too, and the two answers to a torn row cannot drift. `*w`/`*h` come back on
+ * OK and on a room refusal (a caller needs the extent to size a real buffer after
+ * a shape probe); they stay zero on every other refusal. A NULL `buf` is the shape
+ * probe: verify, report the extent, copy nothing, return OK. Answers map to the
+ * registry's vocabulary so a caller branches on the enum, not a sentence: NO_SLOT
+ * and EMPTY both mean the theme chose not to carry the row, and NO_CONTENT is
+ * exactly what the preview's absence rule (docs/theme-preview-plan.md §1) names. */
+static orb_asset_ans_t read_one_plane(int fd, const orb_bundle_sec_t *sec,
+                                       uint16_t cls, uint16_t slot, uint32_t frame,
+                                       uint8_t *buf, size_t cap,
+                                       uint16_t *w, uint16_t *h,
+                                       char *why, size_t whysz)
+{
+    orb_elem_t e;
+    char seat_why[192];
+    seat_why[0] = '\0';
+    const orb_elems_ans_t ea = orb_elems_at(sec, cls, slot, frame, &e,
+                                            seat_why, sizeof seat_why);
+    orb_asset_ans_t ans;
+    if (ea == ORB_ELEMS_NO_SLOT || ea == ORB_ELEMS_EMPTY) ans = ORB_ASSET_NO_CONTENT;
+    else if (ea == ORB_ELEMS_TORN || ea == ORB_ELEMS_NO_FRAME || ea == ORB_ELEMS_ARG)
+        ans = ORB_ASSET_NO_SLOT;
+    else ans = ORB_ASSET_OK;
+
+    if (w) *w = (ans == ORB_ASSET_OK || ans == ORB_ASSET_ROOM) ? e.plane_w : 0;
+    if (h) *h = (ans == ORB_ASSET_OK || ans == ORB_ASSET_ROOM) ? e.plane_h : 0;
+    if (ans != ORB_ASSET_OK) {
+        if (why && whysz) strlcpy(why, seat_why[0] ? seat_why : orb_elems_why(ea), whysz);
+        return ans;
+    }
+    /* A masked row's third stride is not preview bytes. The write door refuses one
+     * (theme_schema's slot_bytes check on the class); a reader meets one only off a
+     * hand-edited bundle, and refusing beats painting alpha as colour. The row's
+     * own extent stays zero on this answer: it is not a preview shape. */
+    if (e.masked) {
+        if (w) *w = 0;
+        if (h) *h = 0;
+        if (why && whysz) strlcpy(why,
+            "that row carries an alpha stride, which the class never bakes", whysz);
+        return ORB_ASSET_CLASS;
+    }
+    if (e.size > cap) {
+        if (why && whysz) snprintf(why, whysz,
+            "the plane is %lux%lu (%lu B of RGB565) and the buffer holds %lu B",
+            (unsigned long)e.plane_w, (unsigned long)e.plane_h,
+            (unsigned long)e.size, (unsigned long)cap);
+        return ORB_ASSET_ROOM;
+    }
+    if (!buf) return ORB_ASSET_OK;            /* shape probe: verify, do not copy */
+
+    size_t pos = sec->art_off + e.off;
+    const ssize_t got = rd_at(fd, &pos, buf, e.size);
+    if (got != (ssize_t)e.size) {
+        if (w) *w = 0;
+        if (h) *h = 0;
+        if (why && whysz) strlcpy(why,
+            "the plane runs past the end of the file", whysz);
+        return ORB_ASSET_NO_SLOT;
+    }
+    return ORB_ASSET_OK;
+}
+
+orb_asset_ans_t orb_theme_preview_read(const char *handle,
+                                       uint8_t *buf, size_t cap,
+                                       uint16_t *w, uint16_t *h,
+                                       char *why, size_t whysz)
+{
+    if (why && whysz) why[0] = '\0';
+    if (w) *w = 0;
+    if (h) *h = 0;
+
+    char slug[ORB_BUNDLE_SLUG_MAX + 1], hex[THEME_ID_HEX + 1];
+    if (!theme_stem_split(handle, slug, sizeof slug, hex, sizeof hex)) {
+        if (why && whysz) strlcpy(why,
+            "that theme id is not one this device issued", whysz);
+        return ORB_ASSET_NO_SLOT;
+    }
+
+    orb_bundle3_hdr_t h3;
+    uint32_t fsz = 0;
+    const char *card_why = NULL;
+    const int fd = card_open_verified_slug3(slug, handle, &h3, &fsz, &card_why);
+    if (fd < 0) {
+        if (why && whysz && card_why) strlcpy(why, card_why, whysz);
+        return ORB_ASSET_NO_SLOT;
+    }
+
+    orb_bundle_t b;
+    uint8_t *region = NULL;
+    const char *rv = region_from_card3(fd, &h3, fsz, &b, &region);
+    if (rv) {
+        card_close(fd);
+        if (why && whysz) strlcpy(why, rv, whysz);
+        return ORB_ASSET_NO_SLOT;
+    }
+
+    const orb_bundle_sec_t *sec = orb_bundle_find(&b, slug);
+    if (!sec) {
+        heap_caps_free(region);
+        card_close(fd);
+        if (why && whysz) strlcpy(why,
+            "the theme's bundle carries no section for its own stem's app", whysz);
+        return ORB_ASSET_NO_SLOT;
+    }
+
+    const orb_asset_ans_t ans = read_one_plane(fd, sec,
+                                                (uint16_t)ORB_ASSET_PREVIEW, 0, 0,
+                                                buf, cap, w, h, why, whysz);
+    heap_caps_free(region);
+    card_close(fd);
+    return ans;
 }
 
 /* ---- the store's ordering, C3 (§5.3 + §6.3) ---------------------------------

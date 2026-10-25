@@ -43,6 +43,7 @@
 #include "esp_err.h"
 #include "clk_types.h"   /* clk_theme_t, clk_bg_rect_t + the baked-in fallback */
 #include "orb_bundle.h"  /* orb_bundle_sec_t — orb_theme_live_sec() hands one back */
+#include "orb_assets.h"  /* orb_asset_ans_t, ORB_ASSET_PREVIEW — orb_theme_preview_read answers */
 
 #define ORB_THEME_EXT      ".orbtheme"
 #define ORB_THEME_NAME_MAX 56      /* the one name field in a FORMAT-2 header */
@@ -138,6 +139,44 @@ bool orb_theme_resident(void);
  *  reads until Migration 2 deletes it. */
 bool orb_theme_live_sec(const char *slug, const orb_bundle_sec_t **sec,
                         uint32_t *bank_off);
+
+
+/** The theme's own preview plane, read transiently out of its `.orbtheme` card
+ *  file. The OS's per-app picker calls it on the worker when the cursor lands on
+ *  a row (never the LVGL task: a card read while another task holds the mutex
+ *  freezes the dial for the hold's length). The plane is class `ORB_ASSET_PREVIEW`
+ *  (9) at slot 0, one frame, RGB565 (2 B/px), and lives in the theme's own section
+ *  bank. Any app's picker may resolve its themes through this call: the handle's
+ *  leading token names the section the reader finds, and the class is fixed at 9
+ *  so a bundle that files the same handle under another class refuses with
+ *  ORB_ASSET_CLASS rather than painting the wrong layer at the right address.
+ *
+ *  The caller supplies `buf` sized for the preview it will draw. `cap` is that
+ *  size in bytes. `*w` and `*h` come back as the plane's own extent on OK; the
+ *  reader refuses with ORB_ASSET_ROOM if `cap` is smaller than `w * h * 2` so the
+ *  caller can log the actual figure rather than draw a torn preview. When the
+ *  theme carries no preview row (the common case: `preview` is optional by design),
+ *  the answer is ORB_ASSET_NO_CONTENT and the row stays text-only — an absent
+ *  preview is never an error. When the handle's file is missing, corrupt, or filed
+ *  under a different stem than it names, the answer is ORB_ASSET_NO_SLOT and
+ *  `why` carries the sentence (bounded by `whysz`; a NULL `why` asks for the answer
+ *  alone). Any other answer means the file is on the card and the row is not
+ *  drawable as a preview: a caller that shows status lines prints `why`, and a
+ *  caller that does not still falls back to the text row it would have shown
+ *  before the plane existed.
+ *
+ *  If `buf`/`*w`/`*h` are NULL the reader still verifies the row's presence and
+ *  the caller's cap fits it, and returns ORB_ASSET_OK with nothing copied: the
+ *  picker can use the shape (the plane's own extent in `*w`/`*h`) to size a PSRAM
+ *  buffer before the real read, in one call and one card open.
+ *
+ *  A transient read: opens the card, mmaps the region into a PSRAM scratch,
+ *  parses, copies the plane into `buf`, and returns. Nothing here stays resident
+ *  between cursor moves, and no lock outlives the call. */
+orb_asset_ans_t orb_theme_preview_read(const char *handle,
+                                       uint8_t *buf, size_t cap,
+                                       uint16_t *w, uint16_t *h,
+                                       char *why, size_t whysz);
 
 
 /** "slot" when the dial draws the slot's bundle, "none" for the base face. */

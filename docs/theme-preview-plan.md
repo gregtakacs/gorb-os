@@ -17,10 +17,20 @@ dial does not draw it; the OS picker reads it via `orb_elems.c`). The baker at
 `tools/watch-composer/orbtheme-baker.js` emits the plane on `bakeClock3({preview:
 {plane, x, y}})`: class 9 slot 0, one square frame at half the panel's edge,
 appended at the running end of the art bank so no other row's `frame0` shifts.
-Still unbuilt: `orb_theme_preview_read()` (a transient picker-side reader
-generalising the class-based find to any section), and the shell's paint at
-cursor-land. The owner's report "I still don't see any previews" is correct —
-nothing draws them yet on the glass.
+The firmware reader `orb_theme_preview_read()` (main/art/orb_theme.c) now resolves
+the plane transiently out of a theme's card file: it generalizes the card-open
+door to any app slug (the picker's caller passes `handle`, and the file source
+under that slug's `orb_files_src(slug, "themes")` is walked; `card_open_verified_id3`
+is now the clock-bound wrapper of the generalized `card_open_verified_slug3`), reads
+the geometry region into a PSRAM scratch, and resolves (9, 0, 0) through
+`orb_elems_at` — so a weather theme's preview resolves against `weather/` without
+the clock being resident, and the absent-preview answer matches the design's rule
+(NO_CONTENT, never an error). Still unbuilt: the shell's paint at cursor-land (the
+worker read that copies the plane into a PSRAM buffer and the compositor that draws
+it), and the JS/HTTP surface (browser `GET /api/v1/sd/preview?id=<handle>` and its
+~30-line canvas unpack). The owner's report "I still don't see any previews" stays
+correct until those land — the reader is in the tree but nothing calls it yet on
+the glass.
 
 ## 1. The decision, revised (2026-10-25 session)
 

@@ -200,8 +200,13 @@ static uint16_t        s_car_row_1;
 static uint16_t *s_tourb_cx0[CLK_TOURB_MAX];
 static uint16_t *s_tourb_cx1[CLK_TOURB_MAX];
 
-/* One stamp pass's device-row span accumulation (x1 < x0 = untouched row). */
-static int16_t  s_wp_x0[CLK_SCR_H], s_wp_x1[CLK_SCR_H];
+/* One stamp pass's device-row span accumulation (x1 < x0 = untouched row).
+ * 2026-10-24: PSRAM, lazy in tourbillon_ink_mark — 2×932 B of .bss here sat
+ * on the heap boundary inside the one contiguous block httpd_start needs.
+ * The stamp pass already reads the chord tables from PSRAM (s_tourb_cx0/1),
+ * so this rides the same bus at the same rate; a failed alloc returns false,
+ * the same answer the chord model gives when it cannot build. */
+static int16_t *s_wp_x0, *s_wp_x1;
 static int32_t  s_wp_lo, s_wp_hi;
 
 
@@ -675,6 +680,16 @@ static bool tourbillon_ink_mark(int f, int32_t prev_ang_10, int32_t new_ang_10)
     if (f < 0 || f >= (int)clk_theme.tourbillon_n || f >= CLK_TOURB_MAX)
         return false;                          /* no composite on the glass yet */
     if (!tourb_chords(f)) return false;        /* fall back to the box union */
+    if (!s_wp_x0) {
+        s_wp_x0 = heap_caps_malloc(sizeof *s_wp_x0 * CLK_SCR_H, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_wp_x1 = heap_caps_malloc(sizeof *s_wp_x1 * CLK_SCR_H, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_wp_x0 || !s_wp_x1) {
+            heap_caps_free(s_wp_x0); s_wp_x0 = NULL;   /* the chord fallback's own
+                                                        * shape: box union paints */
+            s_wp_x1 = NULL;
+            return false;
+        }
+    }
 
     for (int32_t y = 0; y < CLK_SCR_H; y++) {          /* empty spans */
         s_wp_x0[y] = 0x7fff;
@@ -1725,8 +1740,16 @@ typedef struct {
                                  * table cannot exceed it — orb_clock3.c refuses a row
                                  * outside those cells and a duplicate inside — so the
                                  * bound here is a belt, not a budget. */
-static clk_layer_key_t s_lay_key[CLK_LAYER_KEYS_MAX];
-static int s_lay_handle[CLK_LAYER_KEYS_MAX];
+/* 2026-10-24: PSRAM heap, lazy in clock_layers_build. As .bss these 2,960
+ * bytes were the whole internal-RAM regression that starved httpd_start of
+ * its 8 kB task stack (ESP_ERR_HTTPD_TASK, boot 2026-10-24: largest internal
+ * block 10,240 with the ladder already logged). The pose pass reads the rows
+ * once per tick and the broker's per-app row table has lived on PSRAM since
+ * P5.5 (svc_layers_alloc, orb_svc.c) — same rate, same memory, now the same
+ * heap. NULL until the first claim; every reader sits behind s_lay_n > 0 or
+ * the build's own refusal path. */
+static clk_layer_key_t *s_lay_key;
+static int *s_lay_handle;
 static int s_lay_n;
 static orb_app_t *s_lay_app;                /* the row the table is claimed under */
 /* The section and bank base the rows' frame offsets resolve against. The
@@ -1818,6 +1841,20 @@ static void clock_layers_build(orb_app_t *self)
     uint32_t bank_off = 0;
     if (!orb_theme_live_sec(ORB_CLOCK3_SLUG, &sec, &bank_off))
         return;             /* no adopted bundle: no rows. The base face claims none. */
+    /* Claim needs the two side tables before its first row: one PSRAM block
+     * each, allocated once and kept for every later rebuild. An allocation
+     * failure here lands in the same shape as the geo pass finding nothing:
+     * zero rows claimed, the base face, and the refusal printed. */
+    if (!s_lay_key) {
+        s_lay_key = heap_caps_malloc(sizeof *s_lay_key * CLK_LAYER_KEYS_MAX,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_lay_handle = heap_caps_malloc(sizeof *s_lay_handle * CLK_LAYER_KEYS_MAX,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (!s_lay_key || !s_lay_handle) {
+        ESP_LOGE(TAG, "layer keys: PSRAM alloc failed — no rows claimed this build");
+        return;
+    }
     s_lay_sec = sec; s_lay_bank_off = bank_off;
     const orb_theme_geo_t *g_geo = orb_theme_geo();
     const int n_comps_geo = (int)g_geo->n_comps  < CLK_COMP_MAX

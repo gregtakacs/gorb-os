@@ -3067,7 +3067,10 @@ static void prov_reader_task(void *arg)
  * overflow risk. Handlers run serially on the single httpd task, so one
  * instance is safe. .bss does come out of the scarce internal pool (~1.5 KB for
  * the table plus the reply buffer), which is what it costs to dedupe properly. */
-static char     s_scan_json[1408];
+static char     *s_scan_json;   /* was [1408] in .bss; PSRAM, lazy-allocated in the
+                                 * render pass — 2026-10-24 boot audit reclaimed every
+                                 * non-DMA static ≥1 KB from internal RAM */
+#define SCAN_JSON_CAP 1408
 static scan_e_t s_scan_tbl[SCAN_MAX_NETWORKS];
 static int      s_scan_n;
 
@@ -3173,8 +3176,12 @@ static void scan_collect(void)
         s_scan_tbl[j + 1] = k;
     }
 
-    const int n0 = snprintf(s_scan_json, sizeof(s_scan_json), "{\"networks\":[");
-    if (n0 < 0 || (size_t)n0 >= sizeof(s_scan_json)) goto fail;
+    if (!s_scan_json) {
+        s_scan_json = heap_caps_malloc(SCAN_JSON_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_scan_json) goto fail;
+    }
+    const int n0 = snprintf(s_scan_json, SCAN_JSON_CAP, "{\"networks\":[");
+    if (n0 < 0 || (size_t)n0 >= SCAN_JSON_CAP) goto fail;
     size_t off = (size_t)n0;
 
     for (int i = 0; i < s_scan_n; i++) {
@@ -3191,13 +3198,13 @@ static void scan_collect(void)
                                (unsigned)s_scan_tbl[i].ch,
                                s_scan_tbl[i].open ? "true" : "false");
         if (w < 0 || (size_t)w >= sizeof(ent)) continue;      /* malformed entry: skip */
-        if ((size_t)w >= sizeof(s_scan_json) - off) break;    /* out of room: stop clean */
+        if ((size_t)w >= SCAN_JSON_CAP - off) break;    /* out of room: stop clean */
         memcpy(s_scan_json + off, ent, (size_t)w + 1);
         off += (size_t)w;
     }
 
-    if ((size_t)snprintf(s_scan_json + off, sizeof(s_scan_json) - off, "]}")
-            >= sizeof(s_scan_json) - off) goto fail;
+    if ((size_t)snprintf(s_scan_json + off, SCAN_JSON_CAP - off, "]}")
+            >= SCAN_JSON_CAP - off) goto fail;
     s_scan_state = SCAN_READY;
     ESP_LOGI(TAG, "scan done: %d distinct network%s", s_scan_n,
              s_scan_n == 1 ? "" : "s");
@@ -3673,7 +3680,18 @@ static esp_err_t h_ota(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
-    static char ota_buf[OTA_CHUNK];
+    /* Was `static char ota_buf[OTA_CHUNK]` — 4 KB out of internal .bss. The
+     * 2026-10-24 boot audit put the ESP_ERR_HTTPD_TASK failure on the last few KB
+     * of link-time internal RAM; this buffer is one of the reclaimed blocks.
+     * PSRAM is correct here: the OTA stream handler is pure CPU between recv and
+     * esp_ota_write (the flash driver bounce-handles the PSRAM source itself),
+     * and the block is allocated once, on the first upload, then kept. */
+    static char *s_ota_buf;
+    if (!s_ota_buf) {
+        s_ota_buf = heap_caps_malloc(OTA_CHUNK, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_ota_buf) return ota_reject(req, NULL, "503 Service Unavailable",
+                                          "ota buffer alloc failed (psram)", ESP_ERR_NO_MEM);
+    }
 
     const int clen = (int)req->content_len;
 
@@ -3726,7 +3744,7 @@ static esp_err_t h_ota(httpd_req_t *req)
     int got = 0;
     while (got < clen) {
         const int want = clen - got;
-        const int r = httpd_req_recv(req, ota_buf,
+        const int r = httpd_req_recv(req, s_ota_buf,
                                     (size_t)(want < OTA_CHUNK ? want : OTA_CHUNK));
         if (r <= 0) {
             /* Client vanished mid-upload. The slot is left uncommitted and the
@@ -3734,7 +3752,7 @@ static esp_err_t h_ota(httpd_req_t *req)
              * mode is the whole reason staging and rebooting are two requests. */
             return ota_reject(req, &h, "400 Bad Request", "upload aborted by client", ESP_OK);
         }
-        e = esp_ota_write(h, ota_buf, (size_t)r);
+        e = esp_ota_write(h, s_ota_buf, (size_t)r);
         if (e != ESP_OK) return ota_reject(req, &h, "500 Internal Server Error", "flash write failed", e);
         got += r;
     }
@@ -5907,7 +5925,35 @@ static esp_err_t net_start_httpd(void)
      * the slot the moment a new connection needs one. */
     cfg.recv_wait_timeout  = 30;
 
-    const esp_err_t e = httpd_start(&s_server, &cfg);
+    /* 2026-10-24 ESP_ERR_HTTPD_TASK ladder: the boot heap log says the block
+     * is big enough and the call still says no, so this ladder makes the
+     * disagreement visible instead of fatal — it tries the shipped 8192, then
+     * 6144, then the IDF default 4096, logging the heap state with each miss.
+     * A server on a reduced stack still answers /api/v1/status, /config and
+     * the theme POST, but h_theme_upload's FatFs chain is sized for 8192 (see
+     * the block above), so a tier below 8192 is a boot-time warning the log
+     * carries loudly, not a steady state to design against. If 4096 still
+     * fails, the failing allocation is not this stack and the print names
+     * that too. */
+    static const size_t stack_ladder[] = { 8192, 6144, 4096 };
+    esp_err_t e = ESP_ERR_HTTPD_TASK;
+    for (unsigned try_i = 0; try_i < sizeof stack_ladder / sizeof stack_ladder[0]; try_i++) {
+        cfg.stack_size = stack_ladder[try_i];
+        e = httpd_start(&s_server, &cfg);
+        if (e == ESP_OK) {
+            if (try_i > 0)
+                ESP_LOGE(TAG, "httpd up on degraded stack %u — theme-upload path at risk; internal free=%u largest=%u",
+                         (unsigned)cfg.stack_size,
+                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+            break;
+        }
+        ESP_LOGE(TAG, "httpd_start stack=%u: %s | internal free=%u largest=%u dma_free=%u",
+                 (unsigned)cfg.stack_size, esp_err_to_name(e),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA));
+    }
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "httpd_start: %s (check LWIP_MAX_SOCKETS >= max_open_sockets+3)",
                  esp_err_to_name(e));

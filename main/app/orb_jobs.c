@@ -2,12 +2,28 @@
  * orb_jobs.c — the shell's one worker task (see orb_jobs.h).
  *
  * The sizing and the watermark log are lifted from the menu's worker, which is
- * where they were measured. 4096 is not a round number: it is the stack size
- * that held against a real 3.87 MB container running orb_theme_scan() and the
- * orb_theme_install_bundle() copy through FatFs, whose own frames sit on top of these.
- * The high-water line after every job is what turns "it worked" into a number
- * the next change can check, and a reading near zero here means the next theme
- * that needs more stack is a crash rather than a log line.
+ * where they were measured. The original 4096 held against a real 3.87 MB
+ * container through the copy chain as it stood then; the C4 dialect re-stamp,
+ * the §31 verdict gate and the §5.3 page-billing loop each added frames to
+ * orb_theme_install_bundle() on top of FatFs and the esp_partition write path.
+ * 2026-10-24, orb-B: two stores of the same 4.94 MB bundle overflowed this
+ * stack identically at PC 0x4037c87b during copy_bundle3 — "***ERROR*** A
+ * stack overflow in task orb_jobs" — each wiping the slot and rebooting to
+ * the base face. The worker now carries the store chain's demand at 8192, and
+ * that number is boot-coupled, not just a depth: this stack's allocation is
+ * part of the block history httpd's own contiguous 8 KB task stack (orb_net.c
+ * cfg.stack_size) reads from at its boot instant. The day's alternatives all
+ * failed that reading — 4096 alone died at largest=8192, 4096 with the OTA
+ * chunk's 4 KB reclaimed to PSRAM died at 12288, and deferred httpd starts
+ * died in every later phase (a failed httpd_start leaks its listen socket
+ * inside esp_http_server and poisons the boot's retries with ENOMEM 112).
+ * No HEAD build served a page on this board the day its slot was torn —
+ * the torn-slot boot carries a ~13 KB internal pool penalty (see the
+ * .clinerules note of 2026-10-24) that the 8192 worker does not cause but
+ * must live with. Do not shrink this stack without re-running the
+ * boot-ladder audit (P5.5, the heap_init / post-wifi_start / httpd_start:
+ * grep) on both orbs, slot whole; the high-water line below is where the
+ * store's real depth finally shows.
  */
 
 #include "orb_jobs.h"
@@ -69,7 +85,7 @@ esp_err_t orb_jobs_start(void)
     if (s_started) return ESP_OK;
     s_q = xQueueCreate(ORB_JOB_Q_LEN, sizeof(job_t));
     if (!s_q) return ESP_ERR_NO_MEM;
-    if (xTaskCreate(job_worker, "orb_jobs", 4096, NULL, 3, &s_task) != pdPASS) {
+    if (xTaskCreate(job_worker, "orb_jobs", 8192, NULL, 3, &s_task) != pdPASS) {
         vQueueDelete(s_q);
         s_q = NULL;
         return ESP_ERR_NO_MEM;

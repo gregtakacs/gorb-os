@@ -764,28 +764,39 @@ static const char *card_check3(int fd, orb_bundle3_hdr_t *o, uint32_t *file_size
  * a scan on the httpd worker and a store on the theme worker may ask at once, and
  * neither may see the other's half-written rows. */
 static SemaphoreHandle_t s_verdict_mx;
-static clk_theme_t   s_chk_theme;
-static clk_bg_rect_t s_chk_rects[ORB_CLOCK3_N_RECTS];
-static uint16_t      s_chk_first[GIFS_MAX + 1], s_chk_delays[GIFS_MAX];
-static uint32_t      s_chk_bgf[ORB_CLOCK3_N_BGF];
-static clk_aux_t     s_chk_aux[CLK_AUX_MAX];
-static clk_comp_t    s_chk_comps[CLK_COMP_MAX];
+/* 2026-10-24: one PSRAM block behind all six scratch tables, allocated at
+ * orb_theme_boot beside the lock that guards them. As .bss these ~3.5 kB sat
+ * on the heap boundary inside the single contiguous block httpd_start needs
+ * (ESP_ERR_HTTPD_TASK boot line: hole 14848, task-time 7680, need 8192). The
+ * verdict pass is a parse — no DMA, no crash path (it answers a door, not a
+ * boot) — so PSRAM costs this file's own precedent, clock3_verdict3's region
+ * buffer, the same bus. NULL (alloc refused at boot) reads like the missing
+ * lock one line below: named refusal, dial unaffected. */
+typedef struct {
+    clk_theme_t   theme;
+    clk_bg_rect_t rects[ORB_CLOCK3_N_RECTS];
+    uint16_t      first[GIFS_MAX + 1], delays[GIFS_MAX];
+    uint32_t      bgf[ORB_CLOCK3_N_BGF];
+    clk_aux_t     aux[CLK_AUX_MAX];
+    clk_comp_t    comps[CLK_COMP_MAX];
+} chk_scratch_t;
+static chk_scratch_t *s_chk;
 
 static const char *clock3_verdict(const orb_bundle_t *b)
 {
     const orb_bundle_sec_t *sec = orb_bundle_find(b, ORB_CLOCK3_SLUG);
     if (!sec)
         return "the bundle carries no clock section to draw";
-    if (!s_verdict_mx) return "out of memory for the verdict lock";
+    if (!s_verdict_mx || !s_chk) return "out of memory for the verdict lock";
     xSemaphoreTake(s_verdict_mx, portMAX_DELAY);
     orb_clock3_io_t pio;
     memset(&pio, 0, sizeof pio);
-    pio.theme = &s_chk_theme;
-    pio.rects = s_chk_rects; pio.rect_first = s_chk_first;
-    pio.gif_delays = s_chk_delays; pio.bg_frames = s_chk_bgf;
+    pio.theme = &s_chk->theme;
+    pio.rects = s_chk->rects; pio.rect_first = s_chk->first;
+    pio.gif_delays = s_chk->delays; pio.bg_frames = s_chk->bgf;
     pio.first_cap = GIFS_MAX + 1; pio.delays_cap = GIFS_MAX;
-    pio.comps = s_chk_comps; pio.comp_cap = CLK_COMP_MAX;
-    pio.aux   = s_chk_aux;   pio.aux_cap   = CLK_AUX_MAX;
+    pio.comps = s_chk->comps; pio.comp_cap = CLK_COMP_MAX;
+    pio.aux   = s_chk->aux;   pio.aux_cap   = CLK_AUX_MAX;
     const char *r = orb_clock3_parse(sec, &pio);
     xSemaphoreGive(s_verdict_mx);
     return r;
@@ -1174,18 +1185,13 @@ static void build_slot_hdr3(uint32_t hdr[W_WORDS], const orb_bundle3_hdr_t *h,
  * the page reports the install as stored-and-waiting, because "it installed and
  * nothing happened" is a sentence an owner reads as a broken button. */
 
-/* The store door's verdict-only projection: the same tables at the same caps, in a
- * separate set, because a store runs while a live theme is being painted and the
- * s_b3_* rows are that theme's (declared below adopt_bundle3). Nothing here
- * survives the call: the store asks the projection one question (will this draw)
- * and keeps no answers. Sized to the caps orb_clock3_parse refuses past, so its
- * verdict is the boot's. */
-static clk_theme_t   s_chk_theme;
-static clk_bg_rect_t s_chk_rects[ORB_CLOCK3_N_RECTS];
-static uint16_t      s_chk_first[GIFS_MAX + 1], s_chk_delays[GIFS_MAX];
-static uint32_t      s_chk_bgf[ORB_CLOCK3_N_BGF];
-static clk_aux_t     s_chk_aux[CLK_AUX_MAX];
-static clk_comp_t    s_chk_comps[CLK_COMP_MAX];
+/* The store door's verdict-only projection lives in chk_scratch_t above: one
+ * PSRAM block per boot, allocated at orb_theme_boot, guarded by s_verdict_mx.
+ * A store runs while a live theme is being painted from s_b3_*, and the
+ * verdict's rows must never collide with the live theme's — the separate
+ * scratch and the mutex carry that rule now (2026-10-24: this comment's
+ * six .bss arrays moved with the first set above; the pair that sat here was
+ * a duplicate of the 766 block, unreferenced, and the compile settled it). */
 
 
 esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
@@ -1619,6 +1625,11 @@ esp_err_t orb_theme_boot(void)
     if (!s_verdict_mx)
         ESP_LOGE(TAG, "the projection verdict lock refused — stores and listings "
                       "will name that and refuse");
+    if (!s_chk)
+        s_chk = heap_caps_malloc(sizeof *s_chk, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_chk)
+        ESP_LOGE(TAG, "the projection verdict scratch refused — stores and "
+                      "listings will name that and refuse");
 
     orb_bundle3_hdr_t b3;
     uint32_t raw3[W_WORDS];

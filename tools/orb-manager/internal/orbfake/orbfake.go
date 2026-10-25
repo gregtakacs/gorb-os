@@ -46,6 +46,11 @@ type Theme struct {
 	// acknowledge — the double has no worker for the copy to lag behind — and an
 	// active row is stored by definition, since active means the slot is drawn.
 	Stored bool
+	// Preview is the whole answer GET /api/v1/sd/preview sends at 200: the 4-byte
+	// LE extent header plus the RGB565 plane, exactly as h_sd_preview streams it.
+	// Empty means the theme carries no preview row, and servePreview answers the
+	// design's quiet 404 for it.
+	Preview []byte
 }
 
 // Orb is the fake. The zero value is not useful; build one with New.
@@ -175,6 +180,20 @@ func (o *Orb) SetStaged(id, why string) {
 	o.mu.Unlock()
 }
 
+// SetPreview files a preview plane on a seeded row by id — the whole body
+// servePreview streams, extent header included — which is how a test gives one
+// theme an ID photo and leaves its neighbour carrying none.
+func (o *Orb) SetPreview(id string, plane []byte) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, t := range o.themes {
+		if t.ID == id {
+			t.Preview = plane
+			return
+		}
+	}
+}
+
 // Themes snapshots the card.
 func (o *Orb) Themes() []Theme {
 	o.mu.Lock()
@@ -248,6 +267,8 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveSD(w)
 	case r.URL.Path == "/api/v1/sd/delete" && r.Method == http.MethodPost:
 		o.serveDelete(w, r)
+	case r.URL.Path == "/api/v1/sd/preview" && r.Method == http.MethodGet:
+		o.servePreview(w, r)
 	case r.URL.Path == "/api/v1/sd/theme" && r.Method == http.MethodPost:
 		o.serveUpload(w, r)
 	case r.URL.Path == "/api/v1/sd/bundle" && r.Method == http.MethodPost:
@@ -391,6 +412,38 @@ func (o *Orb) serveDelete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 404, `{"error":"no such theme on the card"}`)
+}
+
+// servePreview mirrors h_sd_preview's doors in order: the id grammar, then the
+// design's quiet 404 for a theme that carries no plane, then the plane itself as
+// [u16 w][u16 h][RGB565 LE] bytes. A made-up id answers 400 like the firmware's,
+// never the double's generic 404 — the route-exists pin in device_contract_test
+// reads that difference.
+func (o *Orb) servePreview(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if !idOK(id) {
+		writeJSON(w, 400, `{"error":"id is missing or not a theme id"}`)
+		return
+	}
+	o.mu.Lock()
+	var plane []byte
+	found := false
+	for _, t := range o.themes {
+		if t.ID == id {
+			found = true
+			plane = t.Preview
+			break
+		}
+	}
+	o.mu.Unlock()
+	if !found || len(plane) == 0 {
+		writeJSON(w, 404, `{"error":"this theme carries no preview"}`)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(200)
+	_, _ = w.Write(plane)
 }
 
 // serveUpload is h_theme_upload: the body is the container, the destination comes from

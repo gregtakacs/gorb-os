@@ -465,7 +465,8 @@ func TestThemeRoutesAreTokenGuarded(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	for _, p := range []string{"/api/theme/list", "/api/theme/install",
-		"/api/theme/delete", "/api/theme/rescan", "/api/theme/upload", "/api/theme/stem"} {
+		"/api/theme/delete", "/api/theme/rescan", "/api/theme/upload", "/api/theme/stem",
+		"/api/theme/preview"} {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+p, strings.NewReader(themeBody(ip, auroraID)))
 		req.Header.Set("Origin", "http://attack.example")
 		resp, err := http.DefaultClient.Do(req)
@@ -584,5 +585,74 @@ func TestThemeStemNamesLikeTheDeviceFiles(t *testing.T) {
 	}
 	if c := called(); c.path != "" {
 		t.Errorf("a stem question reached the orb: %+v", c)
+	}
+}
+
+// getTheme is postTheme's GET twin, and it goes through the same real mux so the
+// preview route is exercised behind its token guard rather than beside it.
+func getTheme(t *testing.T, s *Server, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	s.routes(mux)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set(tokenHeader, s.token)
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+// The preview plane is relayed as the bytes it is: no envelope, no re-cut status,
+// the device's own header and texels intact on the other side. An envelope here
+// would be the hub re-deciding what a picture is, and the card unpacks the plane
+// by hand — byte drift would read as a torn image, not a transport error.
+func TestThemePreviewPassesThePlaneThrough(t *testing.T) {
+	s, ip, called, f := fakeOrbHub(t)
+	plane := make([]byte, 4+2*2*2)
+	plane[0] = 2 // u16 w LE
+	plane[2] = 2 // u16 h LE
+	plane[4] = 0x1F
+	f.SetPreview(auroraID, plane)
+	rec := getTheme(t, s, "/api/theme/preview?ip="+ip+"&id="+auroraID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s, want the device's 200 relayed", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want the plane's own type", ct)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), plane) {
+		t.Errorf("the hub re-cut the plane: %d B, want %d B verbatim", rec.Body.Len(), len(plane))
+	}
+	if c := called(); c.path != "/api/v1/sd/preview" || c.method != http.MethodGet {
+		t.Errorf("orb saw %s %s, want GET /api/v1/sd/preview", c.method, c.path)
+	}
+}
+
+// A theme carrying no plane answers the design's quiet 404, and the card must be
+// able to tell that answer from a hub error: the hub's own failures come back as
+// the JSON envelope, and a relayed 404 comes back as the device said it.
+func TestThemePreviewQuietFortyFourRelaysQuietly(t *testing.T) {
+	s, ip, _, _ := fakeOrbHub(t)
+	rec := getTheme(t, s, "/api/theme/preview?ip="+ip+"&id="+auroraID)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d body %s, want the device's quiet 404", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "no preview") {
+		t.Errorf("body = %s, want the device's own sentence kept", rec.Body.String())
+	}
+}
+
+// The same gates as every other theme call, ahead of any dial: an id the device
+// could not have issued is refused with the hub envelope, and the orb never hears
+// the question at all.
+func TestThemePreviewGatesBeforeDialing(t *testing.T) {
+	s, ip, called, _ := fakeOrbHub(t)
+	for _, bad := range []string{"", "aurora", "../etc", "clock-bad-ZZZZZZZZZZZZ"} {
+		rec := getTheme(t, s, "/api/theme/preview?ip="+ip+"&id="+bad)
+		if rec.Code == http.StatusOK {
+			t.Errorf("id %q reached a 200", bad)
+		}
+	}
+	if c := called(); c.path != "" {
+		t.Errorf("a gated call reached the orb: %+v", c)
 	}
 }

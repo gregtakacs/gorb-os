@@ -80,6 +80,10 @@ button.danger:disabled{opacity:.45;cursor:not-allowed}
 .themelist li b{font-weight:600}
 .themelist .tag{font-size:11px;padding:2px 7px;border-radius:5px;border:1px solid #6fbf73;color:#9adc9e}
 .themelist .tag.err{border-color:#c9525a;color:#f2a0a6}
+/* The baked preview plane on each row: the ID photo the bake shipped, matted on
+   black like the glass draws it. Hidden until the bytes actually unpack, so a
+   theme with no preview reads as a text row and not as a broken picture. */
+.themelist canvas.pv{width:44px;height:44px;flex:0 0 44px;border-radius:8px;background:#000}
 /* The firmware card's two shape flags, in the palette the theme rows already
    established: a hub carrying another project's image, or one whole-flash blob,
    is a state worth spotting at a glance. Scoped to the card, not the list. */

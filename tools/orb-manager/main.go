@@ -679,6 +679,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/theme/install", s.requireControl(http.HandlerFunc(s.handleThemeInstall)))
 	mux.Handle("/api/theme/delete", s.requireControl(http.HandlerFunc(s.handleThemeDelete)))
 	mux.Handle("/api/theme/rescan", s.requireControl(http.HandlerFunc(s.handleThemeRescan)))
+	// The preview plane, byte-for-byte from the card. A read like /api/v1/fb: one
+	// GET, nothing written, and the same learned-address and theme-id gates as the
+	// calls beside it.
+	mux.Handle("/api/theme/preview", s.requireControl(http.HandlerFunc(s.handleThemePreview)))
 	mux.Handle("/api/theme/upload", s.requireControl(http.HandlerFunc(s.handleThemeUpload)))
 	// The confirmed answer to a duplicate: spend the device's one-shot commit token
 	// so the replace costs an empty POST instead of a second full upload.

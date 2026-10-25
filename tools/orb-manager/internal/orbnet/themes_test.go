@@ -278,3 +278,63 @@ func TestThemeNamesFollowTheFORMAT2Rule(t *testing.T) {
 		t.Errorf("a free-text name was refused as if it were a path: %v", err)
 	}
 }
+
+// A 4x2 plane on the wire: the LE extent, then 8 texels, one carrying a pure-565
+// red so the suite can prove the body crossed unexamined rather than re-encoded.
+func previewPlane4x2() []byte {
+	b := make([]byte, 4+4*2*2)
+	b[0] = 4
+	b[2] = 2
+	b[4] = 0xF8
+	return b
+}
+
+// The route spelled the way h_sd_preview registers it, and the plane arriving byte
+// for byte: the client exists to say what the orb said, and here what the orb said
+// is not JSON at all.
+func TestThemePreviewDialsTheDeviceRoute(t *testing.T) {
+	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/sd/preview" || r.Method != http.MethodGet {
+			t.Errorf("device saw %s %s, want GET /api/v1/sd/preview", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("id"); got != "clock-aurora-9b89025ce7a6" {
+			t.Errorf("query id = %q, want the stem the caller named", got)
+		}
+		_, _ = w.Write(previewPlane4x2())
+	})
+	body, code, err := NewClient(2 * time.Second).ThemePreview(fakeIP(srv), "clock-aurora-9b89025ce7a6")
+	if err != nil || code != http.StatusOK || len(body) != 20 || body[4] != 0xF8 {
+		t.Fatalf("ThemePreview = %d B at %d, err %v", len(body), code, err)
+	}
+}
+
+// The design's quiet answer (docs/theme-preview-plan.md §1): a theme with no
+// preview row is not a failed dial, and a caller that branches on the code must
+// be able to. Turning the 404 into an error is how an optional plane becomes a
+// red line on a card.
+func TestThemePreviewQuietFortyFourIsNotAnError(t *testing.T) {
+	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"this theme carries no preview"}`))
+	})
+	_, code, err := NewClient(2 * time.Second).ThemePreview(fakeIP(srv), "clock-aurora-9b89025ce7a6")
+	if err != nil {
+		t.Fatalf("an absent preview read as a failed dial: %v", err)
+	}
+	if code != http.StatusNotFound {
+		t.Errorf("status = %d, want the device's 404 relayed", code)
+	}
+}
+
+// The id gate runs before the socket opens, the same rule as the calls beside it:
+// a stem this device could not have issued is refused here and never reaches a card.
+func TestThemePreviewRefusesAForeignIdBeforeDialing(t *testing.T) {
+	dialed := false
+	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) { dialed = true })
+	if _, _, err := NewClient(2 * time.Second).ThemePreview(fakeIP(srv), "../../passwd"); err == nil {
+		t.Fatal("want the id gate to refuse a stem no device issued")
+	}
+	if dialed {
+		t.Fatal("the call dialed with an id the gate refuses")
+	}
+}

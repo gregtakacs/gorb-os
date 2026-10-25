@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -296,6 +298,36 @@ func (c *Client) ThemeDelete(ip, id string) (json.RawMessage, error) {
 		return nil, err
 	}
 	return c.devicePost(ip, "/api/v1/sd/delete?id="+url.QueryEscape(id), nil, "")
+}
+
+// ThemePreview fetches one theme's preview plane from the card. The device answers
+// GET /api/v1/sd/preview?id=<stem> with [u16 w LE][u16 h LE][w*h*2 B RGB565 LE] at
+// 200, or with a small JSON refusal. The bytes pass through unexamined — the rule of
+// this whole module — and the status rides back with them, because an absent preview
+// is the design's quiet 404 (docs/theme-preview-plan.md §1): not an error to dress
+// up, and a caller that draws pictures simply draws nothing. A non-nil error means
+// the dial itself failed, which the caller does report.
+func (c *Client) ThemePreview(ip, id string) ([]byte, int, error) {
+	if err := CheckThemeID(id); err != nil {
+		return nil, 0, err
+	}
+	req, err := http.NewRequest(http.MethodGet, c.url(ip, "/api/v1/sd/preview?id="+url.QueryEscape(id)), nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	resp, err := c.h.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("orbnet: %s unreachable: %w", ip, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDeviceReply+1))
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("orbnet: reading the preview from %s: %w", ip, err)
+	}
+	if len(body) > maxDeviceReply {
+		return nil, resp.StatusCode, fmt.Errorf("orbnet: %s sent a preview over the %d B a device reply may be", ip, maxDeviceReply)
+	}
+	return body, resp.StatusCode, nil
 }
 
 // ThemeRescan asks the device to re-read the card, which is how a theme that arrived

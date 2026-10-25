@@ -8,7 +8,7 @@ reported "no thumbnail field in the FORMAT 3 header, so previews need a format
 decision," which read the wrong layer: the design never wanted a header field. This
 file puts the decision and the honest current state where a session picks them up.
 
-**Status: DESIGN RATIFIED; BUILT ON GLASS, PARTLY BUILT ELSEWHERE.** The class
+**Status: DESIGN RATIFIED; BUILT END TO END (2026-10-25).** The class
 `ORB_ASSET_PREVIEW` is
 appended at index 9 in `main/assets/orb_assets.h` (D34's AUX append is the
 pattern: end-of-enum, no ABI move, old firmware refuses by class). The reader's
@@ -32,12 +32,24 @@ start a job, may not paint) and `opt_preview` (the reaped plane, its extent, and
 a stamp; may not touch the card) — the clock's picker posts one settled worker
 read of the plane into a PSRAM buffer through them, and `menu_view.c` blits the
 answer full-frame over the list on an `lv_image` that paints over the rows. The
-JS/HTTP surface is still unbuilt (browser `GET /api/v1/sd/preview?id=<handle>`
-and its ~30-line canvas unpack), as is content generation: existing themes in
-`art/` carry no preview row yet, so every shipped theme answers NO_CONTENT and
-draws its text-only row. The owner's report "I still don't see any previews"
-stays correct until a theme is baked with one; on such a theme the dial shows
-the plane now.
+JS/HTTP surface is now BUILT too (step 5, same day): `GET
+/api/v1/sd/preview?id=<stem>` in `main/net/orb_net.c` streams the probe's extent
+then the plane (`[u16 w][u16 h][RGB565 LE]`, refusal sentences as JSON), the
+themes page renders each row's plane onto a `canvas.pv` with a ~20-line
+DataView unpack, and the hub's Theme card draws the same plane through
+`/api/theme/preview` (byte-relay handler, `orbnet.Client.ThemePreview`, and a
+`themePreviewPlane` canvas unpack in `web/app.js`). The composer bakes the plane
+on every export (`previewPlane3()` in `Watch Composer.dc.html`, folded into
+`serialContent3` so preview pixels move the duplicate witness), and a latent
+probe bug surfaced and closed on the way: `orb_theme_preview_read` ran its cap
+check before its shape-probe branch, so the documented NULL-buf probe answered
+ROOM with the extent instead of OK, and `clock_themes.c`'s worker (written to
+trust the ROOM branch) could never arm a real plane. The reader now probes
+before it refuses, and the worker reads the probe's OK. Content generation is
+still open: existing themes in `art/` carry no preview row yet, so a card of
+shipped themes answers NO_CONTENT and draws text-only rows; the owner
+regenerates them once the tools are deployed, and the first such re-bake lights
+up every surface named above at once.
 
 ## 1. The decision, revised (2026-10-25 session)
 

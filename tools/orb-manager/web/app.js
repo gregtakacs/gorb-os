@@ -2038,6 +2038,39 @@ async function themePost(path, payload) {
   return j.data;
 }
 
+// The Theme card's preview unpack, mirroring the themes page on the orb itself:
+// one GET per row, and the row answers itself by drawing or staying out of the
+// way. The body is the device's own wire shape — [u16 w LE][u16 h LE][RGB565 LE]
+// — which the hub relays without touching (docs/theme-preview-plan.md §4). A
+// refused fetch, a non-200, or a short body leaves the canvas hidden: an absent
+// preview is the design's quiet answer, not an error the card should dress up.
+async function themePreviewPlane(el, t) {
+  let r;
+  try {
+    r = await hubFetch("/api/theme/preview?ip=" + encodeURIComponent(themeIP) + "&id=" + encodeURIComponent(t.id));
+  } catch (e) { return; }
+  if (!r.ok) return;
+  const b = await r.arrayBuffer().catch(() => null);
+  if (!b || b.byteLength < 4) return;
+  const dv = new DataView(b);
+  const w = dv.getUint16(0, true), h = dv.getUint16(2, true);
+  if (w < 1 || h < 1 || dv.byteLength < 4 + w * h * 2) return;
+  el.width = w;
+  el.height = h;
+  const cx = el.getContext("2d");
+  const im = cx.createImageData(w, h), p = im.data;
+  for (let i = 0, n = w * h; i < n; i++) {
+    const v = dv.getUint16(4 + i * 2, true);
+    p[i * 4] = (v >> 11) << 3;
+    p[i * 4 + 1] = ((v >> 5) & 63) << 2;
+    p[i * 4 + 2] = (v & 31) << 3;
+    p[i * 4 + 3] = 255;
+  }
+  cx.putImageData(im, 0, 0);
+  el.title = "how this bake poses its dial";
+  el.hidden = false;
+}
+
 async function loadThemes(ip) {
   const state = $("#mn-themestate"), list = $("#mn-themes"), card = $("#mn-themecard");
   if (!ip) { card.hidden = true; return; }
@@ -2081,6 +2114,17 @@ async function loadThemes(ip) {
 // string the orb and the operator can both point at.
 function themeRow(t, state, list) {
   const li = document.createElement("li");
+  // The ID photo the bake carried: the device unpacks nothing — it streams the
+  // plane and this canvas does the work (themePreviewPlane). An absent preview is
+  // the design's quiet answer (docs/theme-preview-plan.md §1): the canvas unhooks
+  // itself and the row reads exactly as it did before planes existed.
+  const pv = document.createElement("canvas");
+  pv.className = "pv";
+  pv.width = 44;
+  pv.height = 44;
+  pv.hidden = true;
+  li.appendChild(pv);
+  themePreviewPlane(pv, t);
   const label = document.createElement("b");
   label.textContent = t.name;
   li.appendChild(label);

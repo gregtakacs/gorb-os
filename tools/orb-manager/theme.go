@@ -125,6 +125,34 @@ func (s *Server) handleThemeRescan(w http.ResponseWriter, r *http.Request) {
 	s.themeReply(w, raw, err)
 }
 
+// handleThemePreview passes one theme's preview plane through as the bytes it is:
+// [u16 w][u16 h][RGB565 LE]. No JSON envelope — a plane is not a reply, and wrapping
+// it would base64-megabytes the answer the card unpacks by hand — and no re-cutting
+// of the status: the device's quiet 404 for a theme that carries no preview arrives
+// at the card as a quiet 404, because every caller's honest answer to that is to
+// draw the text row it drew before planes existed. The gates are the theme gates,
+// the same id grammar and the same learned address.
+func (s *Server) handleThemePreview(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	t, ok := s.checkedTarget(w, strings.TrimSpace(q.Get("ip")), strings.TrimSpace(q.Get("id")), true)
+	if !ok {
+		return
+	}
+	body, code, err := s.device.ThemePreview(t.IP, t.ID)
+	if err != nil {
+		s.jsonErr(w, err.Error())
+		return
+	}
+	if code == http.StatusOK {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	_, _ = w.Write(body)
+}
+
 // handleThemeStem answers the one question a non-secure browser context cannot
 // answer for itself: the 12-hex identity of a theme name. The composer names its
 // .orbtheme downloads with window.crypto.subtle, which browsers define only on

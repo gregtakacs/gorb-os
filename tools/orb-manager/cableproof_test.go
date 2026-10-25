@@ -125,7 +125,10 @@ func TestASilentBoardIsAskedOnceAndThenLeftAlone(t *testing.T) {
 	}
 
 	// Out of the window it is worth asking again: the board may have been flashed since.
+	// The courtesy window that covers a boot the hub may have caused is launchprobe's
+	// contract to test; this one is the ladder, so both clocks get driven.
 	s.prover.at["/dev/ttyACM0"] = time.Now().Add(-cableProofRetry - time.Second)
+	s.clearSelfReboot(orbOnACable().mac)
 	s.proveCables(context.Background())
 	if *calls != 2 {
 		t.Errorf("%d attempts after the retry window, want the board asked again", *calls)
@@ -346,6 +349,8 @@ func TestABoardNewToALeadIsNotHeldBehindTheLastBoardsSilence(t *testing.T) {
 	}
 	for i := 0; i <= cableProofNudges; i++ {
 		s.prover.at["/dev/ttyACM0"] = time.Now().Add(-cableProofRetry - time.Second)
+		// The courtesy window is launchprobe's subject; this one is the ladder.
+		s.clearSelfReboot(orbOnACable().mac)
 		s.proveCables(context.Background())
 	}
 	if calls != cableProofNudges+1 {
@@ -355,15 +360,27 @@ func TestABoardNewToALeadIsNotHeldBehindTheLastBoardsSilence(t *testing.T) {
 		t.Fatalf("gap = %v after %d refusals, want the long quiet", got, calls)
 	}
 
-	// The lead empties, then carries an orb that answers. Not one second of the last
-	// board's clock survives, so the very next sweep asks it and the row lands proven.
+	// The lead empties: the first missed sweep is indistinguishable from the blink a
+	// reset causes, and a chip the hub just pinged keeps its clock through it.
 	bench = nil
 	s.proveCables(context.Background())
+	if len(s.prover.at) == 0 {
+		t.Fatalf("a blinking lead lost its clock: %v", s.prover.at)
+	}
+	// A departure past the grace really is gone: the chip may have been reflashed off
+	// the bench, and its old silence must not follow it back onto the lead.
+	for port := range s.prover.gone {
+		s.prover.gone[port] = time.Now().Add(-cableProofGoneGrace - time.Second)
+	}
+	s.proveCables(context.Background())
 	if len(s.prover.at) != 0 {
-		t.Fatalf("the vanished lead kept its clock: %v", s.prover.at)
+		t.Fatalf("a lead gone past the grace kept its clock: %v", s.prover.at)
 	}
 	bench = []cableSighting{orbOnACable()}
 	answer = func() (cableVerdict, error) { return cableVerdict{ack: true, state: "b"}, nil }
+	// The chip physically left and came back: the boot excuse the last ask stamped dies
+	// with the departure it covered.
+	s.clearSelfReboot(orbOnACable().mac)
 	s.proveCables(context.Background())
 	if calls != cableProofNudges+2 {
 		t.Fatalf("%d asks after the replug, want the new board asked at once", calls)
@@ -419,10 +436,31 @@ func TestTheGapAnAnswerArms(t *testing.T) {
 		t.Error("a board that answered was re-asked inside the hour")
 	}
 
-	// A question that never left the hub learned nothing, and the lead it meant is gone.
+	// A lead that left the list is a chip mid-boot from the hub's own last question, not
+	// a chip the bench forgot: the clock rides out the blink, and the ten-minute gap the
+	// ack bought still holds the wire. (Deleting the history at the first missed sweep is
+	// what turned one sanctioned reboot into a reset per five-second sweep on the
+	// 2026-10-24 bench — the ping's boot re-enumerated the chip, the departure erased
+	// the gap settled had just charged, and the next tick pinged the "new" board again.)
 	p.retain([]cableSighting{{port: "/dev/ttyACM1", isOrb: true, mac: "aabbccddeeff"}})
-	if len(p.at) != 0 || len(p.gap) != 0 {
-		t.Errorf("the abandoned lead kept history: at=%v gap=%v", p.at, p.gap)
+	if len(p.at) == 0 || len(p.gap) == 0 {
+		t.Errorf("the blinking lead's history was deleted: at=%v gap=%v", p.at, p.gap)
+	}
+	if p.due(port, now.Add(time.Minute)) {
+		t.Error("a board that answered was re-asked inside the gap its answer bought")
+	}
+	// The same lead back under its own MAC: the blink was the same chip, and its clock
+	// is still its own.
+	p.retain([]cableSighting{{port: port, isOrb: true, mac: "112233445566"}})
+	if len(p.at) == 0 || p.due(port, now.Add(time.Minute)) {
+		t.Error("the returning chip lost the clock its answer bought")
+	}
+	// Same lead, different MAC: the board was swapped, and the silence one chip earned
+	// does not follow to the next — that is the promise the blink-grace narrows, not
+	// drops.
+	p.retain([]cableSighting{{port: port, isOrb: true, mac: "fcaabbccddee"}})
+	if len(p.at) != 0 || len(p.gap) != 0 || len(p.macOf) != 0 {
+		t.Errorf("the swapped lead kept the last chip's history: at=%v gap=%v", p.at, p.gap)
 	}
 	if !p.due(port, now.Add(time.Minute)) {
 		t.Error("a port with no history was refused")
@@ -442,6 +480,13 @@ func TestTheGapAnAnswerArms(t *testing.T) {
 	p.retain([]cableSighting{{port: "/dev/ttyACM1", isOrb: true, mac: "aabbccddeeff"}})
 	if p.at["/dev/ttyACM1"].IsZero() {
 		t.Error("a lead still on the bench lost its clock")
+	}
+	// A lead absent past the grace really has left the bench. Whatever clock it carried
+	// is now the next chip's problem to earn, and the lead becomes askable again.
+	p.gone[port] = time.Now().Add(-cableProofGoneGrace - time.Minute)
+	p.retain(nil)
+	if _, ok := p.at[port]; ok {
+		t.Error("a lead gone past the grace kept its clock")
 	}
 }
 

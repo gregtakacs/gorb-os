@@ -211,7 +211,7 @@ func unescapeC(s string) string { return strings.ReplaceAll(s, `\`, "") }
 // not a detail: ssid/rssi/ch/open in that order, open a bare bool.
 func TestScanRowShapeMatchesScanCollect(t *testing.T) {
 	src := firmwareFile(t, orbNet)
-	render := sectionContaining(t, src, "s_scan_json, sizeof(s_scan_json), \"{\\\"networks\\\":[")
+	render := sectionContaining(t, src, "s_scan_json, SCAN_JSON_CAP, \"{\\\"networks\\\":[")
 	for _, frag := range []string{`\"ssid\"`, `\"rssi\"`, `\"ch\"`, `\"open\"`} {
 		if !strings.Contains(render, frag) {
 			t.Errorf("scan_collect renders no %s, so the fake's row shape is invented", frag)

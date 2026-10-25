@@ -294,6 +294,14 @@ func (s *Server) probeCableNow(ctx context.Context, c cableSighting, why string)
 		s.identities.doneFailed(c.port, "port busy: "+lerr.Error())
 		return false
 	}
+	// The courtesy window before the pulse, not after. This probe's own reboot
+	// re-enumerates the chip, and a departure voids the cached answer (roster.go's
+	// forgetCablePorts): without this stamp the gate's next look reads the deletion as
+	// "never asked" and pays a second reboot the first never got to answer for. The
+	// window the paid door consults (selfRebootExcused, the !present branch of the gate
+	// above) only protects a reboot somebody announced, and until here nobody announced
+	// this one — which is how one sanctioned identify cost several resets on the bench.
+	s.expectSelfReboot(c.mac)
 	info, err := s.probeOrb(pctx, c.port)
 	lock.Release()
 	if err != nil {
@@ -311,6 +319,15 @@ func (s *Server) probeCableNow(ctx context.Context, c cableSighting, why string)
 	}
 	s.identities.done(c.port, info)
 	s.foldProbeIdentity(info)
+	// Re-arm the courtesy window when the pulse is DONE, not only before it. The probe
+	// spends up to ten seconds talking the ROM handshake off the front of the window,
+	// and a board pulled into download and released into its app needs a full cold boot
+	// — through DHCP — before its dial answers again. A window measured from the start
+	// of the handshake is short by the handshake, and the liveness sweeper hits that
+	// deficit inside its first ten-second tick: the silence the hub caused flags the
+	// board, and the flag buys a fresh reset. One reboot per hub start only means one,
+	// so the clock starts when the wire lets go.
+	s.expectSelfReboot(c.mac)
 	return true
 }
 

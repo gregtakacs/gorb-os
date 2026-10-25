@@ -15,8 +15,16 @@ package main
 // chip, a chip in the ROM bootloader, and this hub's own lonely image all sit silent.
 // The answer carries the firmware's state token, and the boot banner the same console
 // flush prints carries GorbOS-NAME, so one round trip yields the orb verdict and the
-// board's own word for itself. It opens no download mode and forces no reboot — the
-// same reason a flash session can stream a boot console it held across its own reset.
+// board's own word for itself. On a UART-bridge lead that round trip is free: opening the
+// port never touches the chip. On a USB-Serial-JTAG lead it is not free — the host's open
+// asserts DTR/RTS and the ROM's auto-reset reads that edge, so one ping can cost one boot.
+// Two rules make that acceptable instead of a storm, both enforced below and in
+// proveCable: every ping ends with a HardReset (the board is handed back running its app,
+// never stranded at the download stub the close's line edges can otherwise leave), and
+// the ping claims the reboot it may cause through expectSelfReboot and honors the same
+// excuse before asking, so no door — this one included — pulses a board that is on its
+// way back up. One sanctioned boot per cable per window, and the cadence is the
+// throttle's.
 //
 // What the proof does NOT do. It does not confirm the MAC: that still rides on the
 // USB descriptor, and the badge says so. It reads no firmware stamp, so the port
@@ -111,12 +119,19 @@ type cableProof struct {
 	gap      map[string]time.Duration
 	tries    map[string]int
 	inFlight map[string]bool
-	ping     func(ctx context.Context, port string) (cableVerdict, error)
+	// gone is when a tracked port was first seen absent; retain ages the clock out
+	// cableProofGoneGrace after that stamp, not at the first missed sweep.
+	gone map[string]time.Time
+	// macOf is the MAC last sighted on a tracked port, so a return under a different
+	// MAC is read as a chip swap and the old board's silence does not follow it.
+	macOf map[string]string
+	ping  func(ctx context.Context, port string) (cableVerdict, error)
 }
 
 func newCableProof() *cableProof {
 	return &cableProof{at: map[string]time.Time{}, gap: map[string]time.Duration{},
-		tries: map[string]int{}, inFlight: map[string]bool{}}
+		tries: map[string]int{}, inFlight: map[string]bool{},
+		gone: map[string]time.Time{}, macOf: map[string]string{}}
 }
 
 // enableCableProof wires the real console round trip. main calls it beside
@@ -178,29 +193,72 @@ func (p *cableProof) settled(port string, r askResult, now time.Time) {
 	p.gap[port] = cableProofRetry
 }
 
-// retain drops the throttle history of every cable that left the bench. The clock is
-// keyed by port name, and a port name outlives the board behind it: without this, the
-// five minutes one chip earned is a five minute silence the next chip inherits the
-// moment it takes the same lead. A port mid-round-trip keeps its history — the attempt
-// still holds the wire, and settled writes its verdict the moment it lets go.
+// cableProofGoneGrace is how long a departed lead keeps its throttle clock before
+// retain treats the board as gone. The old rule — delete the clock the moment the port
+// leaves the list — defeated the whole throttle on this bench: a reset takes a
+// USB-Serial-JTAG chip off the bus for a few seconds, the departure erased the gap
+// settled() had just charged, and the next five-second sweep found a "brand new" board
+// with no history and pinged it again. One sanctioned reboot per hub start became a
+// reset per sweep — which is what a boot loop looked like from the sofa. Same MAC and
+// same port within the grace is the same chip coming back from the reset the hub itself
+// asked for; a different MAC (a chip swap) or a departure past the grace still drops the
+// clock, which is what this function was written for.
+const cableProofGoneGrace = 45 * time.Second
+
+// retain drops the throttle history of every cable that has truly left the bench, and
+// keeps it across a blink: the seconds a chip spends off the bus while it reboots.
+// The clock is keyed by port name, and a port name outlives the board behind it, so a
+// returning sighting whose MAC differs from the one on file drops the history before
+// anything else — the next chip to take the lead is asked, not held behind the last
+// one's silence. A port mid-round-trip keeps its history — the attempt still holds the
+// wire, and settled writes its verdict the moment it lets go.
 func (p *cableProof) retain(present []cableSighting) {
 	if p == nil {
 		return
 	}
-	keep := make(map[string]bool, len(present))
+	keep := make(map[string]string, len(present)) // port -> its MAC on this sweep
 	for _, c := range present {
-		keep[c.port] = true
+		keep[c.port] = c.mac
 	}
+	now := time.Now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for port := range p.at {
-		if keep[port] || p.inFlight[port] {
+		if p.inFlight[port] {
 			continue
 		}
-		delete(p.at, port)
-		delete(p.gap, port)
-		delete(p.tries, port)
+		mac, here := keep[port]
+		switch {
+		case here && mac != "" && p.macOf[port] != "" && mac != p.macOf[port]:
+			p.dropLocked(port) // a different chip took the lead
+		case here:
+			delete(p.gone, port)
+			if mac != "" {
+				p.macOf[port] = mac
+			}
+		default:
+			// Absent this sweep: the clock waits out the grace, then goes.
+			if since, seen := p.gone[port]; !seen {
+				p.gone[port] = now
+			} else if now.Sub(since) >= cableProofGoneGrace {
+				p.dropLocked(port)
+				delete(p.gone, port)
+			}
+		}
 	}
+	for port := range p.gone {
+		if _, tracked := p.at[port]; !tracked {
+			delete(p.gone, port)
+		}
+	}
+}
+
+// dropLocked forgets one port's throttle state. Callers hold p.mu.
+func (p *cableProof) dropLocked(port string) {
+	delete(p.at, port)
+	delete(p.gap, port)
+	delete(p.tries, port)
+	delete(p.macOf, port)
 }
 
 // proveCables walks the bench once and asks every cable that needs asking. Serial on
@@ -264,9 +322,22 @@ func (s *Server) proveCable(ctx context.Context, c cableSighting) (bool, bool) {
 	if _, busy := s.ops.busy(c.port); busy {
 		return false, false
 	}
+	// The excuse the paid door honors (launchprobe.go's gate), mirrored: a board the hub
+	// just rebooted — by a probe, a theme store, or this door's own last ping — is a
+	// board coming back up, not a board with no answer on file. Without this clause the
+	// boot a ping caused reads on a later sweep as a fresh silence, and the ladder that
+	// exists to space the asking is spent re-asking a chip that is already booting.
+	if s.selfRebootExcused(c.mac) {
+		return false, false
+	}
 	if !s.prover.due(c.port, time.Now()) {
 		return false, false
 	}
+	// Claim the courtesy window before the question, not after: on this bench the open
+	// can cost the boot, and the window has to cover it. The excuse retires the moment
+	// the board is heard from (clearSelfReboot off the dial), so on a lead where the
+	// ping is truly free this buys nothing and costs nothing.
+	s.expectSelfReboot(c.mac)
 	r, changed := s.cableProofRoundTrip(ctx, c)
 	s.prover.settled(c.port, r, time.Now())
 	return r == askAck, changed
@@ -379,6 +450,15 @@ func cableConsolePing(ctx context.Context, port string) (cableVerdict, error) {
 		return out, oerr
 	}
 	defer pt.Close()
+	// The same guarantee the paid probe makes (esprom/identity.go): from the moment the
+	// hub touches this wire, the chip is owed a boot back. On a USB-Serial-JTAG lead the
+	// open's line edges can land the chip anywhere, and the kernel's close is not the
+	// place to find out — measured on this bench, a door that opened and closed without
+	// the pulse left the chip at "waiting for download": black dial, dead console, a
+	// board that reads as bricked from across the room. Defer order is load-bearing:
+	// registered after pt.Close() so it fires first, while the fd is still open to drive
+	// the lines.
+	defer func() { _ = esprom.HardReset(pt) }()
 	res, err := esprom.RunCommand(ctx, pt, esprom.SerialLine("PING", ""), []string{"ORB-PING"},
 		func(line string) {
 			if out.name != "" {

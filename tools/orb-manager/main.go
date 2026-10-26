@@ -55,6 +55,12 @@ const (
 	// a ~2 MB image over LAN is minutes of patient streaming, not a call. The
 	// 8 s management budget would kill every honest update at the first flush.
 	otaTimeout = 180 * time.Second
+	// lanProofRetryPause is the beat between the gate's two attempts at a board's own
+	// status door. The first attempt fails at the connect leg only when the board's three
+	// httpd sockets are momentarily all held (the preview streams are the usual cause), so
+	// a short wait is exactly what lets the backlog drain and a slot free; waiting long
+	// would stack the gate's cost toward the reset it is trying to avoid.
+	lanProofRetryPause = 700 * time.Millisecond
 )
 
 // version is stamped at build time via -ldflags "-X main.version=..." (see the
@@ -109,6 +115,13 @@ type Server struct {
 	// is testable without a chip on the wire. main leaves it at esprom.ProbeOrb; a test
 	// scripts the answers the bench would give.
 	probeOrb func(ctx context.Context, port string) (esprom.OrbInfo, error)
+	// lanDial is the question asked instead of the reboot: one GET of a board's own
+	// /api/v1/status. It is a field for the reason probeOrb is, and it is wired in main
+	// rather than newHub for the reason s.live.probe is — a hub assembled by a test must
+	// not reach a network the test never handed it, and the launch suite seeds rows at
+	// documentation addresses. A nil seam means "the hub cannot ask", which every caller
+	// reads as "pay the probe", the pre-existing behaviour rather than a new one.
+	lanDial func(ip string) (*orbnet.Status, error)
 
 	// token is this launch's control secret: minted once in main, handed to the
 	// page it serves, and required on every request that changes something. See
@@ -355,9 +368,40 @@ func main() {
 	// to Server cannot be wired in one and forgotten in the other — which is how the
 	// boot-verdict map nearly shipped nil in the real binary.
 	s := newHub()
-	s.orb = orbnet.NewClient(scanTimeout)
-	s.device = orbnet.NewClient(deviceTimeout)
-	s.ota = orbnet.NewClient(otaTimeout)
+	// One dial scheduler for the whole hub. The four clients below share it, so an
+	// orb is dialed by at most one of them at a time however many want it — which
+	// is what the device's single httpd task and short socket table can actually
+	// serve. A per-transport cap cannot do this: four clients are four transports
+	// pointed at the same orbs, so each would cap only itself. The status sweep,
+	// the proxy relay and this hub's scan are control dials; a preview plane and a
+	// firmware/theme upload are bulk and may be passed in the queue by a control
+	// dial, so one slow stream never reads as a dead board to the ten-second tick.
+	dial := orbnet.NewDialGate()
+	s.orb = orbnet.NewGatedClient(scanTimeout, dial, false)
+	s.device = orbnet.NewGatedClient(deviceTimeout, dial, false)
+	s.ota = orbnet.NewGatedClient(otaTimeout, dial, true)
+	s.preview = orbnet.NewGatedClient(previewTimeout, dial, true)
+	// The free identity question (launchprobe.go's lanProof), on the same client and the
+	// same orb-shaped answer the liveness sweeper already pays for every remembered
+	// address. Written as a closure over s rather than bound to the client directly
+	// because main owns s.orb and may replace it; a bound method value would keep
+	// dialling the client this line retired.
+	//
+	// The one retry is cheap insurance against a transient, not the protection it used
+	// to be. The dial scheduler above (dial) is what now stops a status probe being
+	// starved of a socket by a board busy streaming previews: it queues behind the
+	// stream instead of losing its SYN to a full accept backlog. That removes the
+	// systematic false-silence; a second dial still catches a one-off the queue cannot
+	// (a rebind, a board mid-boot). A miss on both is a real silence and falls through
+	// to the paid probe, which is the point — silence is grounds to ask, never to claim.
+	s.lanDial = func(ip string) (*orbnet.Status, error) {
+		st, err := s.orb.Status(ip)
+		if err == nil {
+			return st, nil
+		}
+		time.Sleep(lanProofRetryPause)
+		return s.orb.Status(ip)
+	}
 	s.repoDir = repoDir
 
 	// The dial port is validated here rather than at first use, so a typo surfaces as

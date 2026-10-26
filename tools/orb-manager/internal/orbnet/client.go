@@ -89,11 +89,44 @@ func (c *Client) Port() string {
 // fails its read in seconds instead of holding the card open until the OS gives up.
 // Every dial here is one address the hub was handed or overheard, so the timeout
 // bounds a single host, never a range.
+//
+// It is UNGATED: no dial is shared with any other client through it. That is the
+// right shape for a bench test against one fake orb (a test must not inherit
+// concurrency policy it did not ask for). The running hub builds its clients with
+// NewGatedClient so they share one Lane; see there.
 func NewClient(respTimeout time.Duration) *Client {
+	return newClient(respTimeout, nil, false)
+}
+
+// NewGatedClient is NewClient on a shared scheduling Lane. Every client built
+// over the same Lane takes its connection grant from it, so one orb is dialed by
+// at most one of the hub's four clients at a time no matter which client asks.
+// The serialization must be per-orb-across-clients rather than per-transport
+// because the hub has four transports pointed at the same handful of orbs, and
+// the device's single httpd task wants one connection, not one per client. bulk
+// marks a long-stream client (preview, upload) whose queued waits a control
+// client (status, scan, proxy) is allowed to pass. See Lane and DialGate.
+func NewGatedClient(respTimeout time.Duration, lane Lane, bulk bool) *Client {
+	return newClient(respTimeout, lane, bulk)
+}
+
+func newClient(respTimeout time.Duration, lane Lane, bulk bool) *Client {
 	return &Client{h: &http.Client{
 		Timeout: respTimeout,
 		Transport: &http.Transport{
-			DialContext:         (&net.Dialer{Timeout: 800 * time.Millisecond}).DialContext,
+			DialContext: gatedDialer(lane, bulk),
+			// Deliberately NO MaxConnsPerHost. One connection to an orb at a time
+			// is exactly what the orb's single-task httpd can serve, and it is
+			// achieved here by the DialGate (lane): every hub client shares one
+			// gate, so the grant is per-orb across all four, not per-transport.
+			// Capping the transport as well would be redundant for a gated client
+			// and actively wrong for the resend path: when the orb RSTs a POST
+			// mid-write (a store that reboots it, an h_ota that answers nothing),
+			// orbnet resends on a fresh connection, and a one-slot transport cap
+			// can make that immediate re-dial wait for the just-killed socket's
+			// slot to be reclaimed — the fast retry TestDevicePostResendsOnceOnDead
+			// Socket exists to guarantee. DisableKeepAlives already means one live
+			// connection per request, which is what an ungated bench client needs.
 			MaxIdleConnsPerHost: 2,
 			DisableKeepAlives:   true,
 		},

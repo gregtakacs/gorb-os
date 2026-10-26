@@ -207,30 +207,148 @@ func (s *Server) handleOrbUpdate(w http.ResponseWriter, r *http.Request) {
 	// h_ota takes Content-Length and erases exactly that much, so the client must
 	// be the patient one: the 8-second management budget would cancel every
 	// honest update while the flash is still writing. s.ota is that budget.
+	//
+	// The tracker is this push's shadow: every phase transition and every byte
+	// the transport consumes lands here, and the page reads it back over
+	// /api/orb/update/progress while this POST is still open. The orb itself
+	// cannot carry that report — h_ota holds the one httpd task for the whole
+	// upload, so the board answers no status request while its flash is written
+	// — which leaves the writer's byte count as the only live figure on the wire.
 	ctx, cancel := context.WithTimeout(r.Context(), otaTimeout)
 	defer cancel()
-	res, err := s.ota.PostImage(ctx, ip, "/api/v1/ota", "application/octet-stream", app)
+	s.updSet(ip, "uploading", st.FW, b.Version, 0, int64(len(app)))
+	res, err := s.ota.PostImageProgress(ctx, ip, "/api/v1/ota", "application/octet-stream", app,
+		func(sent, total int64) { s.updSent(ip, sent, total) })
 	if err != nil {
 		// A stalled or refused upload never touched the running image: staging is
 		// all-or-nothing (esp_ota_end validates, set_boot_partition commits), so
 		// the honest report is "nothing moved" plus the device's own reason.
+		s.updSet(ip, "failed", st.FW, b.Version, 0, int64(len(app)))
 		s.jsonErr(w, "the orb refused the update: "+plainDialError(err)+deviceReason(res))
 		return
 	}
+	s.updSet(ip, "staged", st.FW, b.Version, int64(len(app)), int64(len(app)))
 	// Staged and committed as next-to-boot. The reboot fires here because the
 	// operator clicked Update on this very orb, and an acknowledgment that never
 	// arrives (a dead radio, a board gone mid-upload) says what is already true:
 	// the slot will boot at the next restart whenever the board comes back.
 	if _, err := s.device.Reboot(ip); err != nil {
+		s.updSet(ip, "staged, no reboot ack", st.FW, b.Version, int64(len(app)), int64(len(app)))
 		s.jsonErr(w, "staged, but the orb did not acknowledge the reboot: "+plainDialError(err)+
 			" — the new image is already the one it will boot; reboot it when you are ready")
 		return
 	}
+	s.updSet(ip, "rebooting", st.FW, b.Version, int64(len(app)), int64(len(app)))
+	// Fold the stamp this hub just wrote into the slot and committed as
+	// next-to-boot. The row's amber badge is a comparison of the cached stamp
+	// against the bundle, and a board mid-reboot cannot answer for itself yet:
+	// without the fold the card keeps promising the update it just took until
+	// the next announce or the ten-second sweep re-dials it. The board's next
+	// real answer overwrites this one through NoteAnswer either way, so a
+	// rollback that reverts the boot rewrites the row back within a sweep.
+	if s.fleet != nil && st.MAC != "" {
+		if _, ch, ferr := s.fleet.NoteAnswer(st.MAC, b.Version, ""); ferr == nil && ch {
+			s.saveState()
+			s.wakeOrbs()
+		}
+	}
+	// The update just made every serial answer about this chip wrong, and the
+	// sweep that first read it will never read it again on its own — that is
+	// the rule this call exists to lift: an orb updated under this hub is
+	// asked over its lead once more, and the running stamp comes back off the
+	// wire while the radio is still rejoining. Async and silent by design;
+	// a board with no cable, or one still booting past the budget, loses
+	// nothing the Wi-Fi probe will not fold moments later.
+	go s.rereadCableAfterUpdate(st.MAC)
 	s.jsonOK(w, map[string]any{
 		"ip": ip, "mac": st.MAC, "from": st.FW, "to": b.Version,
 		"verdict": string(verdict), "rebooting": true,
 		"note": "the orb leaves the wire for one boot and returns with the new stamp",
 	})
+}
+
+// ---- the upload tracker -------------------------------------------------------
+//
+// upd is the live state of the hub's Wi-Fi pushes, keyed by address. One update
+// per board at a time is already the law (h_ota answers 409 to a second upload,
+// and the route dials one address per request), so one entry per ip is all the
+// map ever holds for a board. Entries are kept until an hour after the push
+// ended — a page opened on the progress route an hour later is asking about a
+// done push, and "done" is the answer, not a 404 about a bookkeeping detail.
+
+type uploadState struct {
+	phase       string
+	sent, total int64
+	from, to    string
+	at          time.Time
+}
+
+func (s *Server) updSet(ip, phase, from, to string, sent, total int64) {
+	s.updMu.Lock()
+	defer s.updMu.Unlock()
+	if s.uploads == nil {
+		s.uploads = map[string]*uploadState{}
+	}
+	u := s.uploads[ip]
+	if u == nil {
+		u = &uploadState{}
+		s.uploads[ip] = u
+	}
+	u.phase, u.from, u.to, u.at = phase, from, to, time.Now()
+	if total > 0 {
+		u.total = total
+	}
+	if phase == "uploading" {
+		u.sent = sent
+	} else if sent > 0 {
+		u.sent = sent
+	}
+}
+
+func (s *Server) updSent(ip string, sent, total int64) {
+	s.updMu.Lock()
+	defer s.updMu.Unlock()
+	if u := s.uploads[ip]; u != nil {
+		u.sent, u.total, u.at = sent, total, time.Now()
+	}
+}
+
+// handleOrbUpdateProgress answers the one question the flash modal cannot ask
+// the orb while the hub is mid-upload: how far in is it. Read of hub state
+// alone — no dial, no token past the control gate, no address permission
+// beyond naming a well-formed ip — because during an upload the board answers
+// nothing at all, which is the whole reason this route exists.
+func (s *Server) handleOrbUpdateProgress(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.jsonErr(w, "GET only")
+		return
+	}
+	ip := strings.TrimSpace(r.URL.Query().Get("ip"))
+	if !isIPv4(ip) {
+		s.jsonErr(w, "not an IPv4 address: "+ip)
+		return
+	}
+	s.updMu.Lock()
+	u := s.uploads[ip]
+	var out any
+	if u != nil {
+		pct := 0
+		if u.total > 0 {
+			pct = int(u.sent * 100 / u.total)
+			if pct > 100 {
+				pct = 100
+			}
+		}
+		out = map[string]any{
+			"phase": u.phase, "sent": u.sent, "total": u.total, "pct": pct,
+			"from": u.from, "to": u.to, "ago": int(time.Since(u.at).Seconds()),
+		}
+	}
+	s.updMu.Unlock()
+	if u == nil {
+		out = map[string]any{"phase": "idle", "sent": 0, "total": 0, "pct": 0}
+	}
+	s.jsonOK(w, out)
 }
 
 // deviceReason appends the orb's own refusal text when it sent one, because

@@ -7,10 +7,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfake"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 )
 
 // adopt.go's two doors, tested against the real double rather than a hand-rolled
@@ -243,4 +245,87 @@ func stampedBundle(t *testing.T, version string) *firmware.Bundle {
 		t.Fatalf("Load: %v", err)
 	}
 	return b
+}
+
+// The update's two promises past the flash itself: the row learns the new stamp
+// the moment the push commits — the amber badge is a comparison of the cached
+// stamp, so a card that still promises the update it just took is a card that
+// lies while the board reboots — and the progress route reports how far a push
+// got, because the orb answers no HTTP at all mid-upload (h_ota holds the one
+// httpd task), which leaves the hub as the only witness with a number.
+func TestOrbUpdateFoldsRowAndTracksProgress(t *testing.T) {
+	s := newHub()
+	s.adoptFirmware(stampedBundle(t, "v1.0.13+aaaaaaa"))
+	o := orbfake.New()
+	o.SetAddress("44bd8d782618", "127.0.0.1")
+	o.SetFirmware("v1.0.0+aaaaaaa")
+	o.SetOTANextFW("v1.0.13+aaaaaaa")
+	ip, _ := fakeOrbServer(t, s, o)
+	s.grants.learnAs(ip, "44:bd:8d:78:26:18")
+	if _, err := s.fleet.Observe(orbfleet.Observation{
+		MAC: "44bd8d782618", Instance: "orb-782618", IP: ip, FW: "v1.0.0+aaaaaaa",
+		State: "normal", At: time.Now(),
+	}); err != nil {
+		t.Fatalf("seeding the row: %v", err)
+	}
+
+	// Before any push the tracker is idle and the row reads as an upgrade.
+	_, env := getJSONHandler(t, s.handleOrbUpdateProgress, ip)
+	if d := env["data"].(map[string]any); d["phase"] != "idle" {
+		t.Errorf("progress before any push: %v, want idle", d["phase"])
+	}
+	rows := []orbRow{{FW: "v1.0.0+aaaaaaa"}}
+	s.annotateUpdate(rows)
+	if !rows[0].Update {
+		t.Fatal("the seeded row did not read as an upgrade before the push")
+	}
+
+	code, env := postJSONHandler(t, s.handleOrbUpdate, fmt.Sprintf(`{"ip":%q}`, ip))
+	if code != http.StatusOK || env["ok"] != true {
+		t.Fatalf("the upgrade was refused: %d %v", code, env["error"])
+	}
+
+	// The fold: the row wears the pushed stamp without waiting for a
+	// re-announce, and the amber verdict computed from it is no longer upgrade.
+	row, ok := s.fleet.Look("44bd8d782618")
+	if !ok || row.FW != "v1.0.13+aaaaaaa" {
+		t.Fatalf("the row did not fold the pushed stamp: %+v", row)
+	}
+	rows = []orbRow{{FW: row.FW}}
+	s.annotateUpdate(rows)
+	if rows[0].Update {
+		t.Error("the amber badge still reads upgrade after the push it just took")
+	}
+
+	// The tracker: a committed push stands reported as rebooting, whole.
+	_, env = getJSONHandler(t, s.handleOrbUpdateProgress, ip)
+	d := env["data"].(map[string]any)
+	if d["phase"] != "rebooting" || d["pct"].(float64) != 100 || d["to"] != "v1.0.13+aaaaaaa" {
+		t.Errorf("progress after the push: %v", d)
+	}
+
+	// A malformed address is refused, and a well-formed address with no push
+	// history answers idle rather than 404.
+	if code, env := getJSONHandlerRaw(t, s.handleOrbUpdateProgress, "?ip=example.com"); code == http.StatusOK && env["ok"] == true {
+		t.Error("a non-IPv4 progress query was accepted")
+	}
+	_, env = getJSONHandler(t, s.handleOrbUpdateProgress, "198.18.0.7")
+	if d := env["data"].(map[string]any); d["phase"] != "idle" {
+		t.Errorf("unknown address progress: %v, want idle", d["phase"])
+	}
+}
+
+func getJSONHandler(t *testing.T, h http.HandlerFunc, ip string) (int, map[string]any) {
+	t.Helper()
+	return getJSONHandlerRaw(t, h, "?ip="+ip)
+}
+
+func getJSONHandlerRaw(t *testing.T, h http.HandlerFunc, query string) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/"+query, nil)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec.Code, out
 }

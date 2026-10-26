@@ -53,6 +53,14 @@ const (
 	// line on a 2 s cadence, so this buys three attempts and a reply, and it stays
 	// inside one sweep tick: a wedged port cannot hold a cable for a minute.
 	cableProofBudget = 8 * time.Second
+	// The post-update serial re-read: the board has just taken a reboot from
+	// h_reboot, its CDC endpoint is off the bus for the boot, and the app's
+	// console door is live a few seconds after it returns. The first pause
+	// covers that boot; the window bounds the whole re-read, after which the
+	// ten-second Wi-Fi probe is the reader of record.
+	cableAfterUpdatePause  = 6 * time.Second
+	cableAfterUpdateTries  = 4
+	cableAfterUpdateWindow = 45 * time.Second
 
 	// cableProofEvery is how long a good answer stands before the hub re-asks a board
 	// that keeps sitting on the lead. Two an hour, for a chip that is answering.
@@ -296,6 +304,61 @@ func (s *Server) proveCables(ctx context.Context) {
 	// The row moved from "no card" to "card", and nothing else wakes the stream: no
 	// packet arrived, and the plug digest did not move either.
 	s.wakeOrbs()
+}
+
+// rereadCableAfterUpdate is the serial re-read that a Wi-Fi update earns. A push
+// over the air changes what the chip runs, and every cached answer about the lead
+// it sits on — the port identity's version, the row's stamp — now quotes the old
+// image. The sweep will not fix that by itself: proveCable refuses to re-ask a
+// cable that once proved an orb, which is the read-once rule stated honestly. An
+// update is the one event that makes the cached answer wrong by construction, so
+// the hub asks the free question again, once, over the same round trip the sweep
+// uses — claims, lock, recordCableProof and all. ORB-PING prints the running
+// stamp, so the card learns the new version off the wire while the radio is still
+// rejoining. A board with no cable, or one that stays silent past the boot window
+// (gone from the bench, boot-looping, answered by the Wi-Fi probe first), costs
+// this a few log-free returns; the ten-second probe folds the same stamp anyway.
+func (s *Server) rereadCableAfterUpdate(mac string) {
+	if mac == "" || s.cables == nil || s.prover == nil || s.prover.ping == nil {
+		return
+	}
+	if s.lonely != nil && s.lonely.has(mac) {
+		return
+	}
+	// The board rebooted a heartbeat ago. Its CDC endpoint blinks for the boot,
+	// so wait out one window before opening, and keep the whole re-read inside
+	// one boot-to-banner budget times a few tries — a board pulled during the
+	// update leaves no sighting and dies quietly here.
+	pause := s.rereadPause
+	if pause == 0 {
+		pause = cableAfterUpdatePause
+	}
+	deadline := time.Now().Add(cableAfterUpdateWindow)
+	for attempt := 0; attempt < cableAfterUpdateTries; attempt++ {
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(pause)
+		port := s.cables.cablePortFor(mac, time.Now())
+		if port == "" {
+			continue // re-enumerating, or gone: the Wi-Fi probe owns this board now
+		}
+		// The same courtesy the sweep pays before touching the wire: the ping can
+		// cost the chip a boot, and the excuse keeps a later silence from reading
+		// as a reflash nobody ordered.
+		s.expectSelfReboot(mac)
+		ctx, cancel := context.WithTimeout(context.Background(), cableProofBudget)
+		r, changed := s.cableProofRoundTrip(ctx, cableSighting{port: port, isOrb: true, mac: mac})
+		cancel()
+		s.prover.settled(port, r, time.Now())
+		if r == askAck {
+			if changed {
+				s.saveState()
+			}
+			s.wakeOrbs()
+			return
+		}
+	}
 }
 
 // proveCable asks one sighting and reports whether it proved an orb and whether the

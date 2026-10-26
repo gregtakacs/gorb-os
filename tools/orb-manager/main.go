@@ -76,6 +76,15 @@ type Server struct {
 	fmu sync.RWMutex
 	fw  *firmware.Bundle
 
+	// uploads is the live state of the Wi-Fi firmware pushes, keyed by address:
+	// phase, bytes sent, and the stamps at both ends. /api/orb/update writes it
+	// through the PostImageProgress callback and /api/orb/update/progress reads
+	// it, because an orb mid-upload answers no HTTP at all (h_ota holds the one
+	// httpd task for the whole body), so the hub is the only witness with a
+	// number to give. updMu guards it; see adopt.go.
+	updMu   sync.Mutex
+	uploads map[string]*uploadState
+
 	// identities caches what each port turned out to be, because a probe reboots
 	// the orb and the answer must not be paid for twice.
 	identities *identityCache
@@ -173,6 +182,11 @@ type Server struct {
 	// round trip is wired by main beside enableCables, for the cables reason: the
 	// suite must never open a serial device it did not ask to open.
 	prover *cableProof
+
+	// rereadPause spaces the post-update serial re-read from the reboot that
+	// update just caused. Zero means cableAfterUpdatePause; a suite sets a
+	// millisecond and stays honest about the round trip without waiting on a boot.
+	rereadPause time.Duration
 
 	// live is the answer to "does the address this row remembers still answer as an
 	// orb", cached so the discovery card never dials on the path that draws it. It is
@@ -644,6 +658,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// other hand on the grant set.
 	mux.Handle("/api/orb/add", s.requireControl(http.HandlerFunc(s.handleOrbAdd)))
 	mux.Handle("/api/orb/update", s.requireControl(http.HandlerFunc(s.handleOrbUpdate)))
+	// The push's shadow: a read of the hub's own tracker, answered while the
+	// update POST is still open, because the orb cannot answer anything mid-flash.
+	mux.Handle("/api/orb/update/progress", s.requireControl(http.HandlerFunc(s.handleOrbUpdateProgress)))
 	mux.HandleFunc("/api/orb/known", s.handleRememberedIP)
 
 	// Discovery. The list is a read of what the hub overheard, so it is unguarded

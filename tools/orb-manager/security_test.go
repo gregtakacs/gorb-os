@@ -141,7 +141,7 @@ func TestEveryMutatingRouteRefusesAnUncredentialedPOST(t *testing.T) {
 		// address — one learns a grant, the other pushes an image. Refused
 		// before the handler, they dial nothing; the assertion below that no
 		// port got claimed is what proves the guard runs first.
-		"/api/orb/add", "/api/orb/update",
+		"/api/orb/add", "/api/orb/update", "/api/orb/update/progress",
 	}
 	for _, r := range routes {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+r, strings.NewReader(`{"port":"/dev/ttyACM0","ip":"192.0.2.9"}`))

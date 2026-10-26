@@ -711,6 +711,15 @@ func (s *Server) sendSnapshot(ip string) themeSend {
 func (s *Server) themeDuplicate(ip string, c *orbnet.ThemeContainer) (string, string) {
 	list, err := s.device.ThemeList(ip)
 	if err != nil {
+		// One retry at a short delay. The hour a Send is most often pressed is the
+		// minute after an update, and a board back on its address before its card
+		// scan settles answers the list door with nothing — which is a boot, not a
+		// card state, and must not talk the hub out of reading the card. A second
+		// failure is the real unknown, and answers as one.
+		time.Sleep(1500 * time.Millisecond)
+		list, err = s.device.ThemeList(ip)
+	}
+	if err != nil {
 		return "clear", "the hub could not ask the orb, so it will not promise there is no collision: " + err.Error()
 	}
 	for _, row := range list.Themes {

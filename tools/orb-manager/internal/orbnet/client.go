@@ -212,6 +212,32 @@ func (c *Client) postJSON(ip, path string, payload any) (json.RawMessage, error)
 	return body, nil
 }
 
+// progressReader counts bytes as the transport consumes them. It exists because
+// the h_ota handler holds the one httpd task for the whole upload: no orb answers
+// a status GET while its flash is being written, so the live byte count of a push
+// can only be read where the push originates — the writer's side of the socket.
+// http.Transport pulls the body through Read, so the count is the bytes actually
+// crossing the wire, not the Content-Length the call declared. The callback runs
+// on the goroutine blocked in Do, which is the goroutine that owns the request;
+// callers must not assume any other ordering. A read error mid-body still reports
+// what was consumed before it, which is the honest figure at the moment the wire
+// died.
+type progressReader struct {
+	r     *bytes.Reader
+	fn    func(sent, total int64)
+	sent  int64
+	total int64
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	p.sent += int64(n)
+	if p.fn != nil && (n > 0 || err != nil) {
+		p.fn(p.sent, p.total)
+	}
+	return n, err
+}
+
 // PostImage POSTs raw bytes — an app image — to one device route and returns the
 // reply. It exists for /api/v1/ota, one of the two orb endpoints whose body is
 // not JSON (h_theme_upload takes a raw container the same way): the firmware
@@ -219,7 +245,20 @@ func (c *Client) postJSON(ip, path string, payload any) (json.RawMessage, error)
 // sends a real length rather than streaming through a hub the size of the image.
 // The caller owns the bytes; nothing here reads a disk.
 func (c *Client) PostImage(ctx context.Context, ip, path string, contentType string, blob []byte) (json.RawMessage, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(ip, path), bytes.NewReader(blob))
+	return c.PostImageProgress(ctx, ip, path, contentType, blob, nil)
+}
+
+// PostImageProgress is PostImage with the live byte count: onProgress, when not
+// nil, is called with (bytes sent, total) as the transport consumes the body.
+// The upload is the longest silence an update can carry — minutes of WiFi and
+// flash on a slow link, with the orb itself unable to answer while h_ota holds
+// the httpd task — so a caller that owes a progress bar takes this form.
+func (c *Client) PostImageProgress(ctx context.Context, ip, path string, contentType string, blob []byte, onProgress func(sent, total int64)) (json.RawMessage, error) {
+	var body io.Reader = bytes.NewReader(blob)
+	if onProgress != nil {
+		body = &progressReader{r: bytes.NewReader(blob), fn: onProgress, total: int64(len(blob))}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(ip, path), body)
 	if err != nil {
 		return nil, err
 	}
@@ -230,9 +269,9 @@ func (c *Client) PostImage(ctx context.Context, ip, path string, contentType str
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode >= 400 {
-		return body, fmt.Errorf("orbnet: POST %s%s -> %s", ip, path, resp.Status)
+		return out, fmt.Errorf("orbnet: POST %s%s -> %s", ip, path, resp.Status)
 	}
-	return body, nil
+	return out, nil
 }

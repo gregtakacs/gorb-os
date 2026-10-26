@@ -514,3 +514,41 @@ func TestACablePingStampLandsOnTheRowAndNowhereElse(t *testing.T) {
 		t.Error("a stamp the row already wore was reported as a change")
 	}
 }
+
+// A Wi-Fi update invalidates the cached serial answer by construction, and the
+// sweep will never re-ask a cable that once proved an orb — the read-once rule.
+// The hub therefore asks the free question itself, once, after its own push: the
+// stamp comes back off the wire while the radio is still rejoining. A board with
+// no lead on this bench buys no ping at all.
+func TestAHubUpdatedOrbGetsOneSerialReread(t *testing.T) {
+	s, calls := proofHub(t, func() (cableVerdict, error) {
+		return cableVerdict{ack: true, state: "c-sta", fw: "v1.4.0+cafe123"}, nil
+	}, orbOnACable())
+	if _, err := s.fleet.Observe(orbfleet.Observation{
+		MAC: macHall, Instance: "orb-782618", IP: "192.168.2.34",
+		FW: "v1.3.0+deadbee", State: "normal", At: time.Now(),
+	}); err != nil {
+		t.Fatalf("seeding the row: %v", err)
+	}
+	s.rereadPause = time.Millisecond
+	s.rereadCableAfterUpdate(macHall)
+	if *calls != 1 {
+		t.Fatalf("%d pings for one update: the re-read is one question, not a ladder", *calls)
+	}
+	row, _ := s.fleet.Look(macHall)
+	if row.FW != "v1.4.0+cafe123" {
+		t.Errorf("the re-read did not fold the running stamp into the row: %+v", row)
+	}
+	if info, _, _, ok := s.identities.cachedVerdict("/dev/ttyACM0"); !ok || info.Version != "v1.4.0+cafe123" {
+		t.Errorf("the port identity still quotes the pre-update image: %+v", info)
+	}
+	// A board this hub never saw on a lead asks nothing of any cable.
+	s2, calls2 := proofHub(t, func() (cableVerdict, error) {
+		return cableVerdict{ack: true}, nil
+	})
+	s2.rereadPause = time.Millisecond
+	s2.rereadCableAfterUpdate("44bd8d000000")
+	if *calls2 != 0 {
+		t.Error("a board with no cable was pinged anyway")
+	}
+}

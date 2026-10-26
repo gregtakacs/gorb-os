@@ -1167,8 +1167,9 @@ static volatile bool s_slot_torn;        /* set once the unmap is behind us */
  * An unpark puts the dial back whole: the slot may stand armed invalid, but the
  * mapped theme is still there, and the owner is owed the face they had. */
 static const orb_app_t *s_upload_was;
+static char s_upload_stage[12];   /* the stage word park() drew; progress() repeats it */
 
-bool orb_theme_upload_park(uint32_t total)
+bool orb_theme_upload_park(uint32_t total, const char *stage)
 {
     s_upload_was = input_router_current();
     orb_sched_set_running(false);
@@ -1179,14 +1180,15 @@ bool orb_theme_upload_park(uint32_t total)
         if (s_upload_was) input_router_request(s_upload_was);
         return false;
     }
+    strlcpy(s_upload_stage, stage && stage[0] ? stage : "copying", sizeof s_upload_stage);
     orb_boot_overlay_backdrop();
-    orb_boot_overlay("copying", 0, total, 0);
+    orb_boot_overlay(s_upload_stage, 0, total, 0);
     return true;
 }
 
 void orb_theme_upload_progress(uint32_t done, uint32_t total)
 {
-    orb_boot_overlay("copying", done, total, 0);   /* the overlay's 10 Hz rule applies */
+    orb_boot_overlay(s_upload_stage, done, total, 0);   /* the overlay's 10 Hz rule applies */
 }
 
 void orb_theme_upload_unpark(void)

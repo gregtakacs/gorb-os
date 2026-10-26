@@ -3729,6 +3729,16 @@ static esp_err_t h_ota(httpd_req_t *req)
     ESP_LOGW(TAG, "ota: staging %d B into %s (0x%x)",
              clen, target->label, (unsigned)target->address);
 
+    /* The same courtesy the card upload pays: the handler owns the one httpd
+     * task for the whole body, so the board answers no HTTP at all while this
+     * runs, and erase runs the cache disabled even if it did. Without a park
+     * the update is a frozen clock for as long as the Wi-Fi takes. Park before
+     * esp_ota_begin — that call erases with the cache off and stalls the LVGL
+     * task on its own, so the glass must already name the wait when it lands.
+     * A park that loses to a raced resume says so once and the staging
+     * proceeds anyway: the frames are courtesy, the image is the job. */
+    bool parked = orb_theme_upload_park((uint32_t)clen, "updating");
+
     esp_ota_handle_t h = 0;
     esp_err_t e = esp_ota_begin(target, (size_t)clen, &h);
     if (e != ESP_OK) {
@@ -3738,6 +3748,7 @@ static esp_err_t h_ota(httpd_req_t *req)
          * the second upgrade is the point of that check — it stops a still-unproven
          * image from overwriting its own fallback before anyone knows whether it
          * works. */
+        if (parked) orb_theme_upload_unpark();
         return ota_reject(req, &h, "500 Internal Server Error", "ota_begin failed", e);
     }
 
@@ -3750,11 +3761,19 @@ static esp_err_t h_ota(httpd_req_t *req)
             /* Client vanished mid-upload. The slot is left uncommitted and the
              * boot partition still points at the working image — this failure
              * mode is the whole reason staging and rebooting are two requests. */
+            if (parked) orb_theme_upload_unpark();
             return ota_reject(req, &h, "400 Bad Request", "upload aborted by client", ESP_OK);
         }
         e = esp_ota_write(h, s_ota_buf, (size_t)r);
-        if (e != ESP_OK) return ota_reject(req, &h, "500 Internal Server Error", "flash write failed", e);
+        if (e != ESP_OK) {
+            if (parked) orb_theme_upload_unpark();
+            return ota_reject(req, &h, "500 Internal Server Error", "flash write failed", e);
+        }
         got += r;
+        /* The overlay's own 10 Hz throttle keeps this per-chunk call cheap;
+         * every 4 KB the glass says how far the flash has actually come, which
+         * is the figure the erase-stalled dial could not otherwise show. */
+        if (parked) orb_theme_upload_progress((uint32_t)got, (uint32_t)clen);
     }
 
     /* esp_ota_end() CONSUMES the handle — it LIST_REMOVEs + free()s the ops entry
@@ -3764,17 +3783,30 @@ static esp_err_t h_ota(httpd_req_t *req)
     e = esp_ota_end(h);
     h = 0;
     if (e == ESP_ERR_OTA_VALIDATE_FAILED) {
+        if (parked) orb_theme_upload_unpark();
         return ota_reject(req, NULL, "400 Bad Request",
                           "image failed validation (valid app image for this chip?)", e);
     }
-    if (e != ESP_OK) return ota_reject(req, NULL, "500 Internal Server Error", "ota_end failed", e);
+    if (e != ESP_OK) {
+        if (parked) orb_theme_upload_unpark();
+        return ota_reject(req, NULL, "500 Internal Server Error", "ota_end failed", e);
+    }
 
     /* Commits the slot as next-to-boot (and re-validates independently). */
     e = esp_ota_set_boot_partition(target);
-    if (e != ESP_OK) return ota_reject(req, NULL, "500 Internal Server Error", "set_boot_partition failed", e);
+    if (e != ESP_OK) {
+        if (parked) orb_theme_upload_unpark();
+        return ota_reject(req, NULL, "500 Internal Server Error", "set_boot_partition failed", e);
+    }
 
     s_ota_busy = false;
     ESP_LOGW(TAG, "ota: staged %d B; boot slot -> %s, reboot to activate", clen, target->label);
+
+    /* The staging verb's debt is paid: the glass comes back to its owner. The
+     * reboot is a separate request and may not come for minutes — a dial
+     * parked on "updating" while a board runs a staged-but-unbooted slot would
+     * be a lie and a freeze in one. h_reboot parks again on its way out. */
+    if (parked) orb_theme_upload_unpark();
 
     static char resp[160];
     snprintf(resp, sizeof(resp),
@@ -3817,7 +3849,15 @@ static esp_err_t h_reboot(httpd_req_t *req)
         return httpd_resp_sendstr(req, "{\"error\":\"reboot schedule\"}");
     }
     ESP_LOGW(TAG, "ota: rebooting in 750 ms");
-    return httpd_resp_sendstr(req, "{\"state\":\"rebooting\"}");
+    /* Park the glass on the way out, after the response leaves: an owner who
+     * just pressed Update deserves to see WHY the dial went dark for the boot,
+     * not a black screen next to a spinner on the hub. The 120 ms park delay
+     * still leaves the response flushed a comfortable half-second before the
+     * timer fires, and a park that loses to a raced resume just means the
+     * dial shows its face until the panel goes dark — the honest fallback. */
+    const esp_err_t rv = httpd_resp_sendstr(req, "{\"state\":\"rebooting\"}");
+    orb_theme_upload_park(0, "rebooting");
+    return rv;
 }
 /* POST /api/v1/reprov — reboot into the provisioning branch, credentials intact.
  *
@@ -5225,7 +5265,7 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
      * is promised to the overlay, so the copy names itself on the glass. A park
      * that loses to a raced resume says so once and the upload proceeds anyway —
      * the frames are courtesy, the bytes are the job. */
-    const bool parked = orb_theme_upload_park((uint32_t)clen);
+    const bool parked = orb_theme_upload_park((uint32_t)clen, "copying");
 
     /* Static, never a local: HTTPD_DEFAULT_CONFIG() sizes this task's stack at 4096
      * (esp_http_server.h:57), which is also why the OTA chunk buffer is static. */

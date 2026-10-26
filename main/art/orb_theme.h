@@ -358,14 +358,19 @@ bool orb_theme_upload_busy(void);
 /* Put the copy-to-card progress on the glass. The upload is the longest wait an
  * owner sees with the dial frozen, and it used to name nothing: these park the
  * compositor the way the store's park does, black the panel, and draw the
- * overlay's "copying" frames until the body has landed. park() returns false if
+ * overlay's stage frames until the body has landed. park() returns false if
  * the park could not take the glass (a resume raced it), in which case the
  * upload must proceed without the frames rather than fight the compositor; it
  * has already then returned the dial. Call park() after upload_begin succeeds
  * (the slot arms the moment the file opens, so the base-face promise is already
  * made), and unpark() on every refusal after it. A completed upload does NOT
- * unpark: the store the door queues takes the glass from here and reboots. */
-bool orb_theme_upload_park(uint32_t total);
+ * unpark: the store the door queues takes the glass from here and reboots.
+ *
+ * `stage` names the wait in the one word the band shows: "copying" for the
+ * card uploads this was built for, "updating" for the OTA push that borrowed
+ * the same discipline, "rebooting" for the gap a POST /api/v1/reboot opens.
+ * The overlay draws it as-is from its compiled font, so lowercase and short. */
+bool orb_theme_upload_park(uint32_t total, const char *stage);
 void orb_theme_upload_progress(uint32_t done, uint32_t total);
 void orb_theme_upload_unpark(void);
 

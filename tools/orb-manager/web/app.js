@@ -2367,7 +2367,13 @@ function watchSendState(ip, st, f) {
   };
   sendWatchTimer = setInterval(async () => {
     try {
-      const d = await getJSON("/api/theme/upload-status?ip=" + encodeURIComponent(ip));
+      // hubFetch, not getJSON: /api/theme/upload-status is behind the control
+      // gate, and a poll that carries no token dies in the catch below exactly
+      // like the update bar once did.
+      const r = await hubFetch("/api/theme/upload-status?ip=" + encodeURIComponent(ip));
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j || j.ok !== true) return;
+      const d = j.data;
       if (d && words[d.phase]) st.textContent = words[d.phase](d);
     } catch (e) { /* a lost poll is noise; the POST's own answer settles it */ }
   }, 700);

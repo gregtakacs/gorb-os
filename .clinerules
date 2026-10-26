@@ -1580,3 +1580,35 @@ serves the bytes it was built with, never the ones on disk.
 
   it does NOT reset (cableproof decline path).
 
+
+## Headless boot, third witness — measured 2026-10-26, orb-Gold (v1.1.9)
+
+- A theme apply rebooted Gold into a live dial and a closed door. Triage took
+  five minutes it did not need: **`ip neigh` said REACHABLE at the right MAC
+  while every TCP port timed out — ping-alive + connect-timeout + fresh mDNS
+  announce = headless httpd, wifi fine.** Check ARP before believing "wifi
+  seems down"; the hub card's offline verdict is a status-poll verdict, not a
+  radio verdict.
+- The failure was the 2026-10-24 squeeze recurring, and the day's captures
+  complete its record. At t=2077 ms the ladder died `ESP_ERR_HTTPD_TASK` one
+  millisecond after a self-initiated `auth-leave`, with `largest=7424` — the
+  shield's freed 8192 block had already gone to the wifi re-init task on the
+  other core. At t=32082 the +30 s retry died in `listen(112)` with 26 KB
+  free: the leak from the single failed attempt, exactly as the 10-24 note
+  predicts, and at ten table entries one leak plus mDNS's UDP sockets is the
+  whole margin. The retry design only works on a bigger table.
+- Fixed in v1.1.11 (e51dd86): `net_start_httpd()` moved above `esp_wifi_init`
+  — bind() needs no association, pre-radio there is no churn to race and no
+  handler of a later stage depends on the old ordering; and
+  `CONFIG_LWIP_MAX_SOCKETS` 10 → 16 so the fd-leak budget survives one failed
+  attempt and the timer's recovery can land. The heap shield stays as insurance
+  against the fragmentation flavor (a board has been seen at 3,456 B largest
+  with the door shut), the ladder fails fast on task-refusal, and
+  `orb_net_start` no longer aborts on httpd failure — the 10-26 boot showed
+  that abort also skipped the serial reader, which is the file's own
+  never-fatal rule turned against a rescue.
+- Confirming capture protocol after any boot-ordering change: serial is the
+  only witness that cannot lie — DTR-open reset, 60 s minimum so a retry
+  (t≈+30 s) is on tape, grep `shield released`, `httpd_start`, `head back`.
+  A `largest=` figure on a ladder line measures the instant after the failed
+  attempt's own cleanup, not the attempt; trust the DMA-largest print.

@@ -4555,8 +4555,16 @@ static esp_err_t h_theme_del(httpd_req_t *req)
  *
  * The read is transient and synchronous on the httpd task, the same call the
  * glass picker posts to its worker: h_sd already walks the card on this task,
- * and one preview is one probe plus one ≤108 KB read of one theme's own file
- * (~82 ms measured on the store chain, less than this page's list call takes).
+ * and one preview is one probe plus one ≤108 KB read of one theme's own file.
+ * The bench measurement of 2026-10-25 retires the ~82 ms claim that used to sit
+ * beside that sentence: a cold card costs ~10 s here, and a ONE-SHOT 107 KB
+ * httpd_resp_send stalled at exactly one TCP send buffer (5,733 B of
+ * CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5760) into a dead socket that then deafened
+ * the whole single-task httpd for minutes — the blank-thumbnail report, root
+ * cause. The body therefore ships in 4 KB httpd_resp_send_chunk pieces with a
+ * tick's airtime between them: the radio drains between card bursts, a dead
+ * peer fails the very next chunk instead of a minute of black-holed
+ * retransmit, and the handler frees its buffer and returns either way.
  * It never touches the slot, the installer, or the LVGL task. An upload in
  * flight is refused 503 rather than queued: the card is mid-copy and the file
  * this call would read may be half its bytes — the h_fb one-at-a-time rule.
@@ -4620,7 +4628,26 @@ static esp_err_t h_sd_preview(httpd_req_t *req)
     }
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    const esp_err_t r = httpd_resp_send(req, (const char *)px, (size_t)4 + bytes);
+    /* Chunked by hand: see the stall measurement in this handler's header. The
+     * 4-byte extent rides as the first chunk's opening bytes, so the wire shape
+     * the page unpacks ([u16 w][u16 h][RGB565]) is unchanged. A failed chunk is
+     * the client leaving — the response cannot be re-cut at that point, so the
+     * honest end is early free and a refused close. */
+    const size_t total = (size_t)4 + bytes;
+    const uint8_t *p = px;
+    size_t left = total;
+    esp_err_t r = ESP_OK;
+    while (left > 0) {
+        const size_t n = left > 4096 ? 4096 : left;
+        if (httpd_resp_send_chunk(req, (const char *)p, n) != ESP_OK) {
+            r = ESP_FAIL;
+            break;
+        }
+        p += n;
+        left -= n;
+        vTaskDelay(1);                /* one tick of radio airtime between writes */
+    }
+    if (r == ESP_OK && httpd_resp_send_chunk(req, NULL, 0) != ESP_OK) r = ESP_FAIL;
     heap_caps_free(px);
     return r;
 }

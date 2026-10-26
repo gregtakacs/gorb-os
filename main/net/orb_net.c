@@ -5739,6 +5739,9 @@ static esp_err_t h_timezone(httpd_req_t *req)
  *   - The upload is the only long operation (3.7 MB at the ~1.5 MB/s this card can
  *     do), so it runs in an XHR with a real percentage: a fetch gives no upload
  *     progress, and a bar parked at 0% for four seconds reads as a hung device.
+  *   - A preview plane is a black square until its bytes arrive, so every drawn
+ *     row starts with a spinner over the hidden canvas: the spinner clears to
+ *     the picture, or to a retry chip when the orb had no plane for it.
  */
 static const char HTML_THEMES[] =
 "<!doctype html><html><head><meta charset=utf-8>"
@@ -5755,7 +5758,12 @@ static const char HTML_THEMES[] =
 ".row{border-bottom:1px solid #262626;padding:.5rem 0}"
 ".nm{font-weight:600}.sub{color:#889;font-size:.85rem}"
 "a{color:#7ad}"
-".pv{float:right;width:84px;height:84px;background:#000;border-radius:10px;margin:0 0 .3rem .5rem}"
+".pvw{float:right;position:relative;width:84px;height:84px;margin:0 0 .3rem .5rem}"
+".pv{position:absolute;top:0;left:0;background:#000;border-radius:10px;visibility:hidden}"
+".psp{position:absolute;top:0;left:0;width:84px;height:84px;display:flex;align-items:center;justify-content:center;border-radius:10px;background:#1b1b1b}"
+".psp[hidden]{display:none}.psp i{width:26px;height:26px;border-radius:50%;border:3px solid #333;border-top-color:#7ad;animation:spin 1s linear infinite;display:block}"
+".pq{position:absolute;top:0;left:0;width:84px;height:84px;background:#1b1b1b;color:#7ad;border:0;border-radius:10px;font-size:1.4rem;display:flex;align-items:center;justify-content:center}"
+".pq[hidden]{display:none}@keyframes spin{to{transform:rotate(360deg)}}"
 "</style></head><body>"
 "<h1>orb themes</h1>"
 "<div id=msg>loading&hellip;</div>"
@@ -5773,10 +5781,32 @@ static const char HTML_THEMES[] =
 "var data=null;"
 /* Only the id travels into onclick markup: a name may legally hold a quote, and the id is [0-9a-f]{12} by construction. */
 "var ROWS={};"
+/* Landed planes, keyed by id, as the raw [u16 w][u16 h][RGB565] bytes. The page
+ * re-draws whenever a poll refreshes the rows (and a board that was unreachable
+ * and came back re-draws the whole list); a plane already paid for once should
+ * not dial the card again. pvRetry clears one row's entry so a retry really
+ * re-fetches. */
+"var PVC={};"
+/* The re-poll on a dead answer: the hub's launch cable probe reboots every
+ * attributable board it can name, and a page opened during that boot would
+ * otherwise sit on its one-shot first fetch and say \"orb not reachable\"
+ * forever. A miss retries on a fixed beat for a few minutes, stops when an
+ * answer lands, and says so loudly when the budget runs out. */
+"var RF=0,RN=0;var LASTSG='';var KP=0;"
+/* The keep-alive poll. A page left open across a store (or across the hub's boot
+ * probe) would otherwise freeze on the last frame it read and never learn the
+ * board came back without a manual reload. It idles while the upload form holds
+ * the card and while watch() is following a store job, and every answer that is
+ * byte-identical to the last skips the re-draw, so the painted planes never
+ * blink on a poll that changed nothing. */
+"function keepalive(){if(KP)return;KP=setInterval(function(){if(data&&data.uploading){return;}if(document.querySelector('#msg.bad')&&!RF){return;}refresh();},8000);}"
 "function say(t,c){var m=document.getElementById('msg');m.textContent=t;m.className=c||'';}"
 "function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}"
 "function bytes(n){return n>1048576?(n/1048576).toFixed(2)+' MB':(n/1024).toFixed(0)+' KB';}"
-"function j(u,o){return fetch(u,o).then(function(r){return r.json().then(function(d){return{ok:r.ok,st:r.status,d:d};});});}"
+/* Every read carries a deadline: a fetch aimed at a socket a rebooting board
+ * stopped serving can hang with no error at all, and an open hang is worse
+ * than the timeout it hides. ms is the caller's own budget, default 15 s. */
+"function j(u,o,ms){o=o||{};var ac=new AbortController();o.signal=ac.signal;var tm=setTimeout(function(){ac.abort();},ms||15000);return fetch(u,o).then(function(r){clearTimeout(tm);return r.json().then(function(d){return{ok:r.ok,st:r.status,d:d};});},function(e){clearTimeout(tm);throw e;});}"
 "function qa(s){return document.querySelectorAll(s);}"
 "function draw(){"
 "var L=document.getElementById('list'),C=document.getElementById('card');"
@@ -5791,7 +5821,7 @@ static const char HTML_THEMES[] =
 "if(data.bundle_ms){h=h+'<div class=row><span class=sub>last bundle store: '+bytes(data.bundle_bytes)+' in '+data.bundle_ms+' ms</span></div>';}"
 "if(data.job_busy){h=h+'<div class=row><b>a theme job is running</b> <span class=sub>the copy is on the worker; the rows update when it lands</span></div>';}"
 "for(var i=0;i<data.themes.length;i++){var t=data.themes[i];var nm=t.name||t.id;ROWS[t.id]=nm;"
-"h=h+'<div class=row>'+(t.ok?'<canvas class=pv data-id='+esc(t.id)+\" width=84 height=84></canvas>\":'')+'<div class=nm>'+esc(nm)"
+"h=h+'<div class=row>'+(t.ok?'<span class=pvw data-id='+esc(t.id)+'><span class=psp><i></i></span><canvas class=pv data-id='+esc(t.id)+\" width=84 height=84></canvas><button class=pq hidden onclick=pvRetry(this)>?</button></span>\":'')+'<div class=nm>'+esc(nm)"
 "+' <span class=sub>app bundle of '+(t.sects||'?')+' apps</span>'+(t.active?' <span class=sub>on the dial</span>':(t.changed?' <span class=sub>card copy changed since store</span>':''))+'</div>';"
 "h=h+'<div class=sub>'+esc(t.app||'?')+' \\u00b7 '+esc((t.id||'').split('-').slice(1,-1).join('-'))+' \\u00b7 '+esc((t.id||'').slice(-12))+(t.bytes?' \\u00b7 '+bytes(t.bytes):'')+(t.serial?' \\u00b7 #'+t.serial:'')+'</div>';"
 "if(data.try_id==t.id&&data.try_why){h=h+'<div class=sub>LAST TRY FAILED: '+esc(data.try_why)+'</div>';}"
@@ -5800,11 +5830,26 @@ static const char HTML_THEMES[] =
 "if(t.ok&&t.stored&&!t.active){h=h+' <span class=sub>stored, re-store to draw it</span>';}"
 "if(!t.ok){h=h+'<div class=sub>CANNOT LOAD: '+esc(t.why||'the card copy did not verify')+'</div>';}"
 "h=h+'<button class=warn onclick=\"del(\\''+t.id+'\\')\">Delete file</button></div>';}"
-"L.innerHTML=h;var pvx=L.querySelectorAll('.pv');for(var k=0;k<pvx.length;k++){pv(pvx[k],pvx[k].getAttribute('data-id'));}}"
+"L.innerHTML=h;var pvx=L.querySelectorAll('.pv');PQ=[];for(var k=0;k<pvx.length;k++){var e2=pvx[k],iid=e2.getAttribute('data-id');if(PVC[iid])pvShow(e2,PVC[iid]);else PQ.push(e2);}PG++;pumpPV();}"
 
 
-"function pv(el,id){fetch('/api/v1/sd/preview?id='+encodeURIComponent(id)).then(function(r){if(!r.ok){return null;}return r.arrayBuffer();}).then(function(b){if(!b){el.style.visibility='hidden';return;}var dv=new DataView(b);if(dv.byteLength()<4){el.style.visibility='hidden';return;}var w=dv.getUint16(0,true),ht=dv.getUint16(2,true);if(w<1||ht<1||dv.byteLength()<4+w*ht*2){el.style.visibility='hidden';return;}el.width=w;el.height=ht;var cx=el.getContext('2d'),im=cx.createImageData(w,ht),p=im.data;for(var i=0,n=w*ht;i<n;i++){var v=dv.getUint16(4+i*2,true);p[i*4]=(v>>11)<<3;p[i*4+1]=((v>>5)&63)<<2;p[i*4+2]=(v&31)<<3;p[i*4+3]=255;}cx.putImageData(im,0,0);}).catch(function(){el.style.visibility='hidden';});}"
-"function refresh(){j('/api/v1/sd').then(function(r){data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
+"var PQ=[],PG=0,PR=0;"
+"function pumpPV(){if(PR||!PQ.length)return;PR=1;var e=PQ.shift();var g=PG;pv(e,e.getAttribute('data-id'),function(){PR=0;if(g===PG)pumpPV();});}"
+/* One plane, painted: little-endian [u16 w][u16 h][RGB565], the /preview wire
+ * shape. Shared by the fetch path and the cache path so a re-draw cannot
+ * invent a second decoding rule. */
+"function pvPaint(el,dv){var w=dv.getUint16(0,true),ht=dv.getUint16(2,true);el.width=w;el.height=ht;var cx=el.getContext('2d'),im=cx.createImageData(w,ht),p=im.data;for(var i=0,n=w*ht;i<n;i++){var v=dv.getUint16(4+i*2,true);p[i*4]=(v>>11)<<3;p[i*4+1]=((v>>5)&63)<<2;p[i*4+2]=(v&31)<<3;p[i*4+3]=255;}cx.putImageData(im,0,0);el.style.visibility='visible';var wr=el.parentNode,sp=wr?wr.querySelector('.psp'):null;if(sp)sp.hidden=true;}"
+"function pvShow(el,b){try{pvPaint(el,new DataView(b.buffer,b.byteOffset,b.byteLength));}catch(e){}}"
+"function pv(el,id,done){var wr=el.parentNode,ch=wr?wr.querySelector('.pq'):null;function fin(){var sp=wr?wr.querySelector('.psp'):null;if(sp)sp.hidden=true;if(done)done.call(null);}var ac=new AbortController(),tm=setTimeout(function(){ac.abort();},35000);fetch('/api/v1/sd/preview?id='+encodeURIComponent(id),{signal:ac.signal}).then(function(r){clearTimeout(tm);if(!r.ok){return null;}return r.arrayBuffer();}).then(function(b){clearTimeout(tm);if(!b||b.byteLength<4){if(ch)ch.hidden=false;return;}var dv=new DataView(b);var w=dv.getUint16(0,true),ht=dv.getUint16(2,true);if(w<1||ht<1||dv.byteLength<4+w*ht*2){if(ch)ch.hidden=false;return;}PVC[id]=new Uint8Array(b);pvPaint(el,dv);}).catch(function(){clearTimeout(tm);if(ch)ch.hidden=false;}).then(fin,fin)}"
+"function pvRetry(b){var wr=b.parentNode,cv=wr.querySelector('.pv'),sp=wr.querySelector('.psp');delete PVC[cv.getAttribute('data-id')];b.hidden=true;if(sp)sp.hidden=false;PQ.push(cv);pumpPV();}"
+/* The boot-window answer: a page that watched the board die and come back knows
+ * every chip it carries was refused while the card was cold. Press each one once,
+ * on the queue's own rules, one breath after the rows re-landed. A second refusal
+ * leaves the chip up for the owner - the page does not hammer a card that means
+ * it. */
+"function autoRetries(){[...qa('.pq')].filter(function(b){return !b.hidden;}).forEach(function(b){pvRetry(b);});}"
+"function refresh(){j('/api/v1/sd').then(function(r){if(!r.ok){rfail();return;}var wasDown=RN>0;RF=0;RN=0;keepalive();var m=document.getElementById('msg');if(m&&/not reachable|not answered/.test(m.textContent)){m.textContent='';m.className='';}data=r.d;var sg=JSON.stringify(data);if(sg!==LASTSG){LASTSG=sg;draw();}if(wasDown)setTimeout(autoRetries,6000);},rfail);}"
+"function rfail(){if(RF)return;clearInterval(KP);KP=0;RN++;if(RN>40){say('the orb has not answered for a few minutes - reload this page when it is back','bad');return;}say('orb not reachable - retrying in 4 s'+(RN>1?' (try '+RN+')':''),'bad');RF=setTimeout(function(){RF=0;refresh();},4000);}"
 "function store(id){var nm=ROWS[id]||id;"
 "if(!confirm('Store '+nm+' on the dial? It overwrites the current theme and the orb reboots onto it. A power cut during the copy leaves the base face, and storing again recovers it.')){return;}"
 "say('storing '+nm+' - the orb copies it into the slot and reboots onto it in a few seconds','');"
@@ -5822,7 +5867,7 @@ static const char HTML_THEMES[] =
 "if(d&&d.job_busy){if(n>120){say('still storing '+nm+' after two minutes - reload this page for the outcome','bad');return;}"
 "say('storing '+nm+' - copying, '+n+' s so far','');"
 "setTimeout(function(){watch(kind,id,nm,n+1,down);},1000);return;}"
-"data=d;draw();"
+"data=d;LASTSG=JSON.stringify(d);draw();keepalive();"
 "if(d&&d.try_id==id&&d.try_why){say('could not store '+nm+': '+d.try_why,'bad');return;}"
 "if(d&&d.staged_id==id&&d.staged_why){say('store of '+nm+' never committed: '+d.staged_why,'bad');return;}"
 "if(d&&d.active==nm){say('the orb is back - dial on '+nm,'ok');return;}"
@@ -5832,8 +5877,8 @@ static const char HTML_THEMES[] =
 "setTimeout(function(){watch(kind,id,nm,n+1,1);},1500);});}"
 "function del(id){var nm=ROWS[id]||id;if(!confirm('Delete '+nm+' from the card? The dial keeps drawing it until another theme is loaded.')){return;}"
 "j('/api/v1/sd/delete?id='+encodeURIComponent(id),{method:'POST'}).then(function(r){"
-"if(!r.ok){say('delete failed: '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}refresh();});}"
-"function scan(){say('rescanning card\\u2026','');j('/api/v1/sd/rescan',{method:'POST'}).then(function(){refresh();});}"
+"if(!r.ok){say('delete failed: '+((r.d&&r.d.error)?r.d.error:r.st),'bad');return;}refresh();},function(){rfail();});}"
+"function scan(){say('rescanning card\\u2026','');j('/api/v1/sd/rescan',{method:'POST'},30000).then(function(){refresh();},function(){say('the rescan request did not reach the orb or ran long - the page will re-read on its own','bad');});}"
 "function doUp(ow){var f=document.getElementById('file').files[0];"
 "if(!f){say('choose a .orbtheme file first','bad');return;}"
 

@@ -718,7 +718,8 @@ def themes_page_js():
     called  = set(re.findall(r"(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(", js))
     builtin = {"function", "if", "for", "while", "switch", "catch", "return", "typeof",
                "fetch", "String", "Number", "JSON", "Math", "Date", "Array", "parseInt",
-               "encodeURIComponent", "XMLHttpRequest", "confirm", "alert", "setTimeout"}
+               "encodeURIComponent", "XMLHttpRequest", "confirm", "alert",
+               "setTimeout", "clearTimeout", "setInterval", "clearInterval"}
     undef = sorted(c for c in called - defined - builtin if not c[0].isupper())
     if undef:
         print("FAIL /themes JS calls functions that do not exist: %s" % undef); rc = 1

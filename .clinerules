@@ -1224,6 +1224,19 @@ there is a test artifact, not an orb.
   zip second leaves a running hub serving the previous image — and a flash driven by that
   hub "verifies" a fix that is not in it. Check `grep 'orb-manager v' <log>` against the
   binary's mtime when a firmware change appears not to take effect.
+- **The hub listens on `127.0.0.1:3779`, and there is no `/api/ports/release`.** The port
+  is printed at boot as `orb-manager vX on http://127.0.0.1:3779`; read the log rather
+  than assuming 3000, and drive port claims through the operations registry, not a route
+  invented from memory.
+- **A hub that claims a USB serial port resets the board.** `serialprov.go` enters
+  download mode on claim, so the device log shows `rst:0x15, boot:0x23` and any in-flight
+  HTTP dies mid-body. That reset reads exactly like a firmware crash. Detach the cable
+  from WSL before bench-testing a board over HTTP, and stop blaming firmware until
+  `rst_source` on a clean boot says otherwise.
+- **A fleet liveness sweep cuts a theme plane stream short.** Both want the device's one
+  httpd task, and the sweep wins. The hub therefore holds the sweep off while a plane
+  relay runs and retries once on `orbnet.ErrTornPreview`; do not remove either when
+  touching `fanoutLiveness` or `handleThemePreview`.
 
 ## Flashing lives behind one button, and the gate that took an explicit yes was the wrong shape (2026-10-19)
 

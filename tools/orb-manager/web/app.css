@@ -84,8 +84,30 @@ button.danger:disabled{opacity:.45;cursor:not-allowed}
    black like the glass draws it. Hidden until the bytes actually unpack, so a
    theme with no preview reads as a text row and not as a broken picture. */
 .themelist canvas.pv{width:44px;height:44px;flex:0 0 44px;border-radius:8px;background:#000}
-.themelist span.pvq{width:44px;height:44px;flex:0 0 44px;border-radius:8px;background:#2a2f38;color:#9aa3b2;display:flex;align-items:center;justify-content:center;font-weight:700;cursor:help}
+.themelist span.pvq{width:44px;height:44px;flex:0 0 44px;border-radius:8px;background:#2a2f38;color:#9aa3b2;display:flex;align-items:center;justify-content:center;font-weight:700;cursor:pointer}
 .themelist span.pvq[hidden]{display:none}
+.themelist span.pvq.spin{cursor:progress}
+.themelist span.pvq.spin::after{content:"";width:18px;height:18px;border-radius:50%;border:2px solid #586069;border-top-color:#e8e8e8;animation:pvspin .8s linear infinite}
+@keyframes pvspin{to{transform:rotate(360deg)}}
+/* The hover overlay (owner, 2026-10-26): a thumbnail is too small to judge a
+   bake by, so hovering one lifts the plane to dial size and names the two
+   gestures that use it — wheel pages the list, click stores the theme shown. */
+.themelist canvas.pv{cursor:zoom-in}
+#pvov{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:60;width:266px;background:#000;border:1px solid #3a4150;border-radius:12px;display:none;box-shadow:0 8px 40px #000}
+#pvov.on{display:block}
+#pvov canvas{display:block;width:264px;height:264px;border-radius:12px 12px 0 0;cursor:pointer}
+#pvov .spin{position:absolute;left:0;top:0;width:264px;height:264px;display:none;align-items:center;justify-content:center}
+#pvov.waiting .spin{display:flex}
+#pvov.waiting canvas{visibility:hidden}
+#pvov .spin::after{content:"";width:34px;height:34px;border-radius:50%;border:3px solid #586069;border-top-color:#e8e8e8;animation:pvspin .8s linear infinite}
+#pvov .cap{padding:8px 12px;color:#cfd6e4;font-size:.85rem;line-height:1.35;background:#151a24;border-radius:0 0 12px 12px}
+#pvov .cap b{display:block;color:#fff}
+#pvov .cap span{display:block;margin-top:2px}
+/* The list fetch spins the status line too: no rows exist yet to carry a chip,
+ * and plain "reading…" text on a cold card reads as a stalled page (owner,
+ * 2026-10-27). The ring rides inside the padding, so no layout jumps. */
+#mn-themestate.spin-wait{position:relative;padding-left:26px}
+#mn-themestate.spin-wait::before{content:"";position:absolute;left:2px;top:.1em;width:15px;height:15px;border-radius:50%;border:2px solid #586069;border-top-color:#e8e8e8;animation:pvspin .8s linear infinite}
 /* The firmware card's two shape flags, in the palette the theme rows already
    established: a hub carrying another project's image, or one whole-flash blob,
    is a state worth spotting at a glance. Scoped to the card, not the list. */

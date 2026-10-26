@@ -692,11 +692,36 @@ function openOrbByIP(ip, mac, row) {
 // the input to the version gate; a board that answers nothing is said so on the
 // firmware card, and the cable doors stay lit, because a cable answers to
 // nothing on a DHCP lease.
+//
+// A board that does not answer on the first try is often a board mid-reboot, and
+// the hub itself is the likeliest author of that reboot: the launch cable probe
+// resets every attributable lead, and the reset that costs a dial its lease for a
+// beat is the same event that made this card open saying "no orb answering" while
+// the card behind it was simply booting. So a miss is not the end of the read:
+// it re-dials on the boot's clock — a bounded run of slow retries, retired the
+// moment the card opens another orb, this one answers, or the retries run out.
+// The mDNS stream is the fast path (paintFound re-dials on the frame that says
+// the board is back); this is the path for every board the stream does not know.
+let orbWakeTmr = 0;
+let orbWakeTok = "";
+let orbWakeN = 0;
+let orbWaking = false;                // the next loadOrb is a wake retry, not a fresh read
+const ORB_WAKE_MAX = 30;
+
+function stopOrbWake() {
+  if (orbWakeTmr) { clearTimeout(orbWakeTmr); orbWakeTmr = 0; }
+}
+
 async function loadOrb() {
+  stopOrbWake();                      // one wake-wait at a time, whatever started it
   if (!current.ip) {
     $("#mn-curfw").textContent = "not on the LAN: the doors that work over the cable stay lit";
     return;
   }
+  const tok = current.mac || current.ip;
+  if (!orbWaking) { orbWakeTok = tok; orbWakeN = 0; }   // a fresh read starts a new wait
+  orbWaking = false;
+  if (tok !== orbWakeTok) { orbWakeTok = tok; orbWakeN = 0; }
   try {
     await hubFetch("/api/orb/allow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ip: current.ip }) });
   } catch (e) { /* the status read below reports the real failure */ }
@@ -712,8 +737,20 @@ async function loadOrb() {
     loadThemes(current.ip);
     startPolling(current.ip);
   } catch (e) {
-    $("#mn-curfw").textContent = "no orb answering at " + current.ip + " \u2014 " + e.message;
+    $("#mn-curfw").textContent = "no orb answering at " + current.ip + " \u2014 " + e.message +
+      "; it may be mid-reboot, re-reading as it comes back";
     gateFwButtons();
+    orbWakeTmr = setTimeout(() => {
+      orbWakeTmr = 0;
+      if ((current.mac || current.ip) !== orbWakeTok) return;   // a different card is open now
+      if (++orbWakeN > ORB_WAKE_MAX) {
+        $("#mn-curfw").textContent = "no orb answering at " + current.ip +
+          " \u2014 press Re-read when it is back";
+        return;
+      }
+      orbWaking = true;               // keep the count this wait has already spent
+      loadOrb();
+    }, 5000);
   }
 }
 
@@ -1976,9 +2013,14 @@ function paintFound(li, o) {
   // the card still promises the update it just took. When this frame is the
   // open board's, the card adopts it.
   if (current.mac && o.mac && o.mac === current.mac) {
+    const wasWaiting = orbWakeTmr !== 0 && current.ip === o.ip;
     current.row = o;
     current.ip = o.ip || current.ip;
     gateFwButtons();
+    // The stream says this board is answering again. If the open card is sitting
+    // in its wake-wait for the same address, do not let the operator watch a
+    // five-second timer for a fact the packet just proved: re-dial now.
+    if (wasWaiting && o.connected === true) { stopOrbWake(); loadOrb(); }
   }
   const softAP = !!o.provisioning && String(o.ip).indexOf("192.168.4.") === 0;
   const shown = o.name || o.instance || o.mac || o.key || "?";
@@ -2091,9 +2133,18 @@ function paintFound(li, o) {
 let themeIP = "";
 
 async function themePost(path, payload) {
-  const r = await hubFetch(path, {
+  // AbortSignal.timeout so a hub that accepts the request and then stops
+  // answering (a process mid-exit, a proxy stalled on a device) always ends
+  // this wait with a visible error instead of leaving the panel frozen on
+  // its loading line — the failure shape the owner saw at 10:22. The device
+  // path itself is already capped at 8s by the hub (main.go deviceTimeout);
+  // this line covers the hub's own half. Older engines without the static
+  // method get today's behavior, not a broken call.
+  const opts = {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
-  });
+  };
+  if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) opts.signal = AbortSignal.timeout(20000);
+  const r = await hubFetch(path, opts);
   const j = await r.json().catch(() => ({}));
   if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
   return j.data;
@@ -2112,14 +2163,25 @@ async function themePost(path, payload) {
 async function themePreviewPlane(el, t, mark) {
   const fail = (why) => {
     if (!mark) return;
+    mark.className = "pvq";            /* stop the spinner: this read ended */
     mark.textContent = "?";
-    mark.title = why;
+    mark.title = why + " \u2014 click to try again";
     mark.hidden = false;
+    // The chip is the retry: a dial that timed out once usually lands on the
+    // second try, and the hub's ten-minute cache makes a retried GOOD plane
+    // free. Requeue rather than call directly so a retry never runs beside the
+    // queue's own in-flight read — the device takes one preview at a time.
+    mark.onclick = () => { mark.onclick = null; queuePreview(el, t, mark); };
   };
   let r, b;
   try {
     r = await hubFetch("/api/theme/preview?ip=" + encodeURIComponent(themeIP) + "&id=" + encodeURIComponent(t.id));
-    if (r.status === 404) return;
+    if (r.status === 404) {
+      // The design's quiet answer: this theme carries no plane. The queue had
+      // already surfaced the chip as a waiter, so take it back out of the row.
+      if (mark) { mark.hidden = true; mark.onclick = null; }
+      return;
+    }
     if (!r.ok) {
       let why = "HTTP " + r.status;
       try { const j = await r.json(); if (j && j.error) why = j.error; } catch (e) {}
@@ -2146,7 +2208,51 @@ async function themePreviewPlane(el, t, mark) {
   cx.putImageData(im, 0, 0);
   el.title = "how this bake poses its dial";
   el.hidden = false;
-  if (mark) mark.hidden = true;
+  if (mark) { mark.hidden = true; mark.onclick = null; }
+}
+
+// The preview queue: one dial in flight, always. The device answers a preview on
+// its single-task httpd and holds that task for the whole stream — up to 20 s on
+// a cold card — so N rows fetched at once do not draw N thumbnails faster; they
+// queue behind each other on three sockets and starve every other route on the
+// board while the hub's liveness sweeper calls the stall dead and reboots it.
+// The card of 2026-10-26 measured exactly that: the page stuck on loading and an
+// orb mid-reboot with nothing but thumbnails asked of it. One at a time is the
+// only honest concurrency against a one-task server. The generation counter
+// retires every queued or in-flight job when loadThemes redraws the list, so a
+// stale plane can never paint onto a row that no longer exists; the retry chip in
+// themePreviewPlane re-enters through queuePreview and obeys the same rule.
+let previewGen = 0;
+let previewRunning = false;
+const previewQueue = [];
+
+function queuePreview(el, t, mark) {
+  const gen = previewGen;
+  if (mark) { mark.className = "pvq spin"; mark.textContent = ""; mark.title = "waiting its turn for the card"; mark.hidden = false; }
+  previewQueue.push({ el, t, mark, gen });
+  if (!previewRunning) runPreviewQueue();
+}
+
+function clearPreviewQueue() {
+  previewGen++;
+  previewQueue.length = 0;
+}
+
+function runPreviewQueue() {
+  previewRunning = true;
+  const next = () => {
+    let job;
+    while (previewQueue.length) {
+      job = previewQueue.shift();
+      if (job.gen === previewGen) break;
+      job = null;
+    }
+    if (!job) { previewRunning = false; return; }
+    if (job.mark) { job.mark.className = "pvq spin"; job.mark.textContent = ""; job.mark.title = "reading this plane"; }
+    const done = () => next();
+    Promise.resolve(themePreviewPlane(job.el, job.t, job.mark)).then(done, done);
+  };
+  next();
 }
 
 async function loadThemes(ip) {
@@ -2155,14 +2261,20 @@ async function loadThemes(ip) {
   themeIP = ip;
   card.hidden = false;
   state.textContent = "reading the orb's theme list\u2026";
+  state.classList.add("spin-wait");
   list.innerHTML = "";
+  clearPreviewQueue();
+  hideOverlay();
+  ovRows.length = 0;
   let d;
   try {
     d = await themePost("/api/theme/list", { ip });
   } catch (e) {
+    state.classList.remove("spin-wait");
     state.textContent = "no theme list from " + ip + ": " + e.message;
     return;
   }
+  state.classList.remove("spin-wait");
   if (!d.mounted) {
     state.textContent = "no SD card mounted on this orb — themes live on the card";
     return;
@@ -2209,7 +2321,7 @@ function themeRow(t, state, list) {
   pvq.className = "pvq";
   pvq.hidden = true;
   li.appendChild(pvq);
-  themePreviewPlane(pv, t, pvq);
+  queuePreview(pv, t, pvq);
   const label = document.createElement("b");
   label.textContent = t.name;
   li.appendChild(label);
@@ -2276,6 +2388,11 @@ function themeRow(t, state, list) {
     use.disabled = false;
   };
   li.appendChild(use);
+  // The hover overlay (owner, 2026-10-26): this row is one page of the wheel,
+  // and the store button is exactly what a click on the overlay presses.
+  const ovEntry = { t, canvas: pv, chip: pvq, save: use };
+  ovRows.push(ovEntry);
+  pv.addEventListener("mouseenter", () => hoverOverlay(ovEntry));
   // Delete is the one theme action that cannot be undone from here, so it asks
   // first: the firmware's own delete is a plain unlink on the card. The confirm names
   // the theme the way the operator knows it and quotes the id being removed, because
@@ -2337,6 +2454,91 @@ async function watchThemeJob(state, t) {
     return;
   }
   state.textContent = "storing " + t.name + " still going after two minutes \u2014 re-read the card";
+}
+
+// The preview overlay: a thumbnail is 44 px and a bake is judged on a dial.
+// Hovering a row's plane lifts it to 264 px in a fixed card over the panel,
+// captioned with its own gestures: the wheel pages theme by theme through the
+// list, a click stores the one on screen by pressing that row's own Store
+// button — the same disabled states, the same watchThemeJob follow-up, one
+// implementation and never a second copy of the press. It draws the row's own
+// decoded canvas, so hovering asks the device for nothing; a plane still in
+// the queue shows the overlay's spinner until the row lands its pixels.
+const ovRows = [];        // { t, canvas, chip, save } in list order, rebuilt per load
+let ovEl = null;
+let ovCanvas = null;
+let ovCap = null;
+let ovIdx = -1;
+let ovPoll = 0;
+
+function ensureOverlay() {
+  if (ovEl) return;
+  ovEl = document.createElement("div");
+  ovEl.id = "pvov";
+  ovCanvas = document.createElement("canvas");
+  const sp = document.createElement("div");
+  sp.className = "spin";
+  ovCap = document.createElement("div");
+  ovCap.className = "cap";
+  ovEl.appendChild(ovCanvas);
+  ovEl.appendChild(sp);
+  ovEl.appendChild(ovCap);
+  document.body.appendChild(ovEl);
+  ovEl.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const d = e.deltaY > 0 ? 1 : e.deltaY < 0 ? -1 : (e.deltaX > 0 ? 1 : e.deltaX < 0 ? -1 : 0);
+    if (d) showOverlay(ovIdx + d);
+  }, { passive: false });
+  ovEl.addEventListener("click", () => {
+    const r = ovRows[ovIdx];
+    if (r && r.save && !r.save.disabled) r.save.click();
+  });
+  ovEl.addEventListener("mouseleave", hideOverlay);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideOverlay(); });
+}
+
+function showOverlay(i) {
+  if (!ovRows.length) return;
+  ensureOverlay();
+  ovIdx = ((i % ovRows.length) + ovRows.length) % ovRows.length;
+  const r = ovRows[ovIdx];
+  const ready = r.canvas && !r.canvas.hidden && r.canvas.width > 0;
+  const failed = r.chip && !r.chip.hidden && r.chip.textContent.trim() === "?";
+  ovEl.classList.add("on");
+  ovEl.classList.toggle("waiting", !ready && !failed);
+  if (ready) {
+    ovCanvas.width = r.canvas.width;
+    ovCanvas.height = r.canvas.height;
+    ovCanvas.getContext("2d").drawImage(r.canvas, 0, 0);
+  }
+  const why = r.t.active ? "the dial is already drawing it"
+            : !r.t.ok ? "not loadable \u2014 nothing to store"
+            : failed ? "this read failed \u2014 retry it on the row"
+            : "scroll = previous / next theme \u00b7 click = store it on the dial";
+  ovCap.textContent = "";
+  const b = document.createElement("b");
+  b.textContent = r.t.name;
+  const hint = document.createElement("span");
+  hint.textContent = (ovIdx + 1) + " of " + ovRows.length + " \u2014 " + why;
+  ovCap.appendChild(b);
+  ovCap.appendChild(hint);
+}
+
+function hideOverlay() {
+  ovIdx = -1;
+  if (ovPoll) { clearInterval(ovPoll); ovPoll = 0; }
+  if (ovEl) { ovEl.classList.remove("on"); ovEl.classList.remove("waiting"); }
+}
+
+function hoverOverlay(row) {
+  const i = ovRows.indexOf(row);
+  if (i < 0) return;
+  showOverlay(i);
+  if (!ovPoll) ovPoll = setInterval(() => {
+    if (ovIdx < 0 || !ovEl || !ovEl.classList.contains("on")) { hideOverlay(); return; }
+    const r = ovRows[ovIdx];
+    if (r && r.canvas && !r.canvas.hidden) showOverlay(ovIdx);   // the plane landed: stop waiting
+  }, 350);
 }
 
 $("#mn-rescan").onclick = async () => {

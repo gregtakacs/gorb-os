@@ -679,6 +679,15 @@ int main(void)
     ck("an enabled card app builds through its module iface on the boot ladder",
        strstr(g_trace, "picker_init") != NULL);
     ck("the qualified card row joins the walkable count", orb_app_count() == 2);
+    /* The pairing menu_view.c's app_rows()/app_row() performs and this file never
+     * asked until it hid a real row: the count PUBLISHES the card row, and the menu
+     * reaches it only through the dense accessor. A positional orb_app_at() answered
+     * NULL at that rank the day D35 moved the clock and the picker into the card
+     * table, so the top page counted zero app rows on a dial whose Clock was
+     * installed, enabled and showing on the glass. Bench, orb-B 2026-10-25. */
+    ck("the dense rank the count publishes is the rank the accessor answers",
+       orb_app_at(0) == A("menu") && orb_app_at(1) == crow
+       && orb_app_at(2) == NULL && orb_app_at(orb_app_count()) == NULL);
     /* D35: the compiled tier is the shell alone, and it leads; the card follows
      * and the two wrap. (The shipped dial additionally holds the factory pair,
      * seeded and pinned in the blocks above.) */

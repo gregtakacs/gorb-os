@@ -596,10 +596,21 @@ const orb_app_t *orb_app_at(size_t idx)
 {
     /* The carousel's accessor, so idx walks the WALKABLE list, not the array:
      * asking for slot 2 of a table whose second entry is disabled must not
-     * hand back a screen nobody can leave. */
-    if (idx >= ORB_APP_N) return NULL;
-    if (!s_apps[idx].enabled || s_apps[idx].failed) return NULL;
-    return &s_apps[idx];
+     * hand back a screen nobody can leave.
+     *
+     * DENSE, and gathered through the one walkable predicate the neighbour and
+     * count paths use. The positional shortcut this replaces (`s_apps[idx]`,
+     * bounded by ORB_APP_N) was honest while the compiled tier was the whole
+     * carousel, and became a silent gap the day D35 moved the clock and the
+     * picker into the card table: orb_app_count() counts card rows, so every
+     * caller that loops `i < orb_app_count()` — menu_view's app_rows/app_row,
+     * which is the menu's whole dynamic run — asked for the card rows at ranks
+     * the compiled array could not answer, got NULL, and drew a menu with no app
+     * rows on a dial whose apps are installed, enabled, and on the glass. Bench,
+     * orb-B 2026-10-25. The ledger's positional accessor stays orb_app_row(). */
+    orb_app_t *list[ORB_APP_N + ORB_APP_CAP];
+    const size_t n = orb_app_walk_gather(list, sizeof list / sizeof list[0]);
+    return idx < n ? list[idx] : NULL;
 }
 
 size_t orb_app_rows(void)

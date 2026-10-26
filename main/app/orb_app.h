@@ -356,6 +356,9 @@ esp_err_t orb_app_init_all(void);
 
 /** Table access. Index order IS the knob's carousel order. */
 size_t            orb_app_count(void);
+/** The idx-th WALKABLE row, DENSE: enabled, not failed, iface registered — the
+ *  same set orb_app_count() counted, card rows included. A rank past the set is
+ *  NULL. Never pair this with a positional key: that lookup is orb_app_row(). */
 const orb_app_t  *orb_app_at(size_t idx);
 /** Raw table access for the owner's ledger: rows includes disabled and failed
  *  entries — the ones orb_app_at() hides from the carousel and the ones the

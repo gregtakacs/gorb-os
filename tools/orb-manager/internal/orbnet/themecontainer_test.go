@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -321,5 +322,65 @@ func TestContainerRefusesTheRejectionVector(t *testing.T) {
 	stems := side["card_stems"].(map[string]any)
 	if p.ID != stems["clock"].(string) {
 		t.Errorf("first-slug id is %q, want the pair fixture's clock stem %v (same name, same slug, same hash)", p.ID, stems["clock"])
+	}
+}
+
+// The precheck's head answer, pinned after the live bug. §32.7 promised the composer
+// could ask the duplicate question for the price of a header slice; per-app theming had
+// by then moved half the answer — the owning app's slug, which the card stem hashes —
+// into the index inside the geometry region. The strict reader refused every real bake
+// for the art tail a slice can never carry, and every first Send press answered
+// "could not get a clean read". ContainerHead answers from the header plus the region
+// the header names, and refuses a body that stops short by naming the byte count the
+// question costs, not by accusing the file of running past its own end.
+func TestContainerHeadAnswersTheSameIdentityAsTheFullParse(t *testing.T) {
+	full := orbfake.Container("Modern")
+	want, err := ContainerName(full)
+	if err != nil {
+		t.Fatalf("the strict gate refused the fixture: %v", err)
+	}
+	gs := int(binary.LittleEndian.Uint32(full[20:24]))
+	hc, err := ContainerHead(full[:128+gs])
+	if err != nil {
+		t.Fatalf("the head reader refused the bytes identity lives in: %v", err)
+	}
+	if hc.Name != want.Name || hc.Serial != want.Serial || hc.ID != want.ID {
+		t.Errorf("head answers name/serial/id = %q/%d/%q, want %q/%d/%q",
+			hc.Name, hc.Serial, hc.ID, want.Name, want.Serial, want.ID)
+	}
+	fc, err := ContainerHead(full)
+	if err != nil || fc.ID != want.ID {
+		t.Errorf("ContainerHead on the whole file = %v, %v; must agree with the head slice", fc, err)
+	}
+}
+
+// The refusals the head reader owes: a slice that stops before the region names the
+// cost of the question; a slice cut inside the region says the same true thing; a
+// lying index inside a complete head is still refused with the walk's own sentence —
+// head mode lowers the bar on no present byte — and the door's one-section rule still
+// applies, so the pair fixture is refused here exactly as ContainerName refuses it.
+func TestContainerHeadRefusalsSayTheCostNotDamage(t *testing.T) {
+	full := orbfake.Container("Modern")
+	gs := int(binary.LittleEndian.Uint32(full[20:24]))
+	cost := "send the first " + strconv.Itoa(128+gs) + " B"
+	if _, err := ContainerHead(full[:128]); err == nil ||
+		!strings.Contains(err.Error(), cost) {
+		t.Errorf("header-only err = %v, want it to name the %d B cost of the question", err, 128+gs)
+	}
+	if _, err := ContainerHead(full[:128+gs/2]); err == nil ||
+		!strings.Contains(err.Error(), cost) {
+		t.Errorf("mid-region slice err = %v, want the same cost sentence", err)
+	}
+	lied := append([]byte(nil), full[:128+gs]...)
+	binary.LittleEndian.PutUint32(lied[128:], 4) // index head says four, the header says one
+	if _, err := ContainerHead(lied); err == nil ||
+		!strings.Contains(err.Error(), "header names 1 sections, the index holds 4") {
+		t.Errorf("lied index err = %v, want the walk's contradiction sentence", err)
+	}
+	// The door's one-section rule still applies to a head: the two-app rejection
+	// fixture is refused here exactly as ContainerName refuses it.
+	if _, err := ContainerHead(fixture(t, "format3-two-app.orbtheme")); err == nil ||
+		!strings.Contains(err.Error(), "exactly one section") {
+		t.Errorf("two-section head err = %v, want the door's one-section sentence", err)
 	}
 }

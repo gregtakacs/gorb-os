@@ -93,11 +93,13 @@ func newHub() *Server {
 		probeOrb: esprom.ProbeOrb,
 		token:    newLaunchToken(), grants: newIPGrants(ipGrantTTL),
 		cables: newCableCache(), prover: newCableProof(), live: newLiveCache(),
-		lonely: newLonelyMark(),
-		orb:    orbnet.NewClient(scanTimeout),
-		device: orbnet.NewClient(deviceTimeout),
-		ota:    orbnet.NewClient(otaTimeout),
-		fleet:  orbfleet.New(orbfleet.Config{}), boots: map[string]*bootVerdict{}}
+		lonely:   newLonelyMark(),
+		orb:      orbnet.NewClient(scanTimeout),
+		device:   orbnet.NewClient(deviceTimeout),
+		ota:      orbnet.NewClient(otaTimeout),
+		preview:  orbnet.NewClient(previewTimeout),
+		previews: map[string]previewHit{},
+		fleet:    orbfleet.New(orbfleet.Config{}), boots: map[string]*bootVerdict{}}
 }
 
 func newIdentityCache() *identityCache {

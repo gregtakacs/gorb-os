@@ -100,6 +100,20 @@ func NewClient(respTimeout time.Duration) *Client {
 	}}
 }
 
+// WithTimeout is the same orb-tuned transport on a different per-request budget:
+// a shallow client whose only difference is Client.Timeout. It exists for the
+// preview leg, which is a management call whose reply happens to be ~100 KB
+// read off the card and streamed over the link — seconds of patience the 8 s
+// management budget was never priced for, and a fresh 8 s dial of the same
+// stalling route on every page reload is how a missing thumbnail becomes a wedge.
+func (c *Client) WithTimeout(d time.Duration) *Client {
+	cp := *c
+	hc := *c.h
+	hc.Timeout = d
+	cp.h = &hc
+	return &cp
+}
+
 // HTTP exposes the underlying http.Client so the same-origin proxy reuses the
 // orb-tuned transport (short dial, no keepalive) instead of the default one.
 func (c *Client) HTTP() *http.Client { return c.h }

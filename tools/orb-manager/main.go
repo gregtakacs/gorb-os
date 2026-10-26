@@ -44,6 +44,12 @@ const (
 	// loop, so first byte can exceed the scan's aggressive 400 ms; the proxy
 	// must not fail a deliberate user click the way a sweep tolerates a miss.
 	deviceTimeout = 8 * time.Second
+	// previewTimeout is the budget for one /api/v1/sd/preview relay: the device
+	// walks the card, reads the region, reads the plane, and streams ~100 KB over
+	// a single-task httpd behind an SPI card — measured on the bench at 10 s+ on
+	// a cold card. The 8 s management budget cut every honest preview at the
+	// post-read send, which is the hub-side half of the blank-thumbnail report.
+	previewTimeout = 45 * time.Second
 	// otaTimeout is the budget for one whole app-image upload. The device
 	// erases and writes flash with the cache disabled (orb_net.c h_ota), and
 	// a ~2 MB image over LAN is minutes of patient streaming, not a call. The
@@ -64,8 +70,16 @@ type Server struct {
 	// containers to /api/v1/sd/theme are minutes of flash and card writes, and
 	// reusing the 8 s management client would cancel every honest transfer
 	// mid-body.
-	ota     *orbnet.Client
-	repoDir string // the gorb-os clone root, for the Theme Editor only
+	ota *orbnet.Client
+	// preview is the theme-preview client: the same transport as device with the
+	// patience the card read costs. previewMu guards previews, the small cache of
+	// planes already fetched, so one flaky route is not re-dialed on every page
+	// paint of the Manage card. dropPreviews clears an orb's rows when a theme
+	// ships or goes, because the plane the cache holds is about to be a lie.
+	preview   *orbnet.Client
+	previewMu sync.Mutex
+	previews  map[string]previewHit
+	repoDir   string // the gorb-os clone root, for the Theme Editor only
 	// ops is the per-port operation registry: who holds which cable, doing what,
 	// and how to ask that work to stop. It replaces the process-wide flashing
 	// flag, which could not tell two cables apart or cancel anything.
@@ -354,6 +368,7 @@ func main() {
 	s.orb.DevicePort = orbPort
 	s.device.DevicePort = orbPort
 	s.ota.DevicePort = orbPort
+	s.preview.DevicePort = orbPort
 	if orbPort != "80" {
 		log.Printf("orb-manager: dialing orbs on port %s (the device's own httpd uses 80; this is a bench setting)", orbPort)
 	}

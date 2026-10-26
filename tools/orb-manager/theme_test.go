@@ -73,6 +73,8 @@ func fakeOrbHub(t *testing.T) (*Server, string, func() orbCall, *orbfake.Orb) {
 	// the shipped binary would crash. Mirror the port here.
 	s.ota = orbnet.NewClient(2 * time.Second)
 	s.ota.DevicePort = port
+	s.preview = orbnet.NewClient(2 * time.Second)
+	s.preview.DevicePort = port
 	s.grants.learn(host)
 	return s, host, func() orbCall {
 		if lastWrite.method != "" {

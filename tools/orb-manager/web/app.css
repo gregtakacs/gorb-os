@@ -84,6 +84,8 @@ button.danger:disabled{opacity:.45;cursor:not-allowed}
    black like the glass draws it. Hidden until the bytes actually unpack, so a
    theme with no preview reads as a text row and not as a broken picture. */
 .themelist canvas.pv{width:44px;height:44px;flex:0 0 44px;border-radius:8px;background:#000}
+.themelist span.pvq{width:44px;height:44px;flex:0 0 44px;border-radius:8px;background:#2a2f38;color:#9aa3b2;display:flex;align-items:center;justify-content:center;font-weight:700;cursor:help}
+.themelist span.pvq[hidden]{display:none}
 /* The firmware card's two shape flags, in the palette the theme rows already
    established: a hub carrying another project's image, or one whole-flash blob,
    is a state worth spotting at a glance. Scoped to the card, not the list. */

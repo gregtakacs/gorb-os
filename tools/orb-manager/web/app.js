@@ -2103,19 +2103,35 @@ async function themePost(path, payload) {
 // one GET per row, and the row answers itself by drawing or staying out of the
 // way. The body is the device's own wire shape — [u16 w LE][u16 h LE][RGB565 LE]
 // — which the hub relays without touching (docs/theme-preview-plan.md §4). A
-// refused fetch, a non-200, or a short body leaves the canvas hidden: an absent
-// preview is the design's quiet answer, not an error the card should dress up.
-async function themePreviewPlane(el, t) {
-  let r;
+// theme that carries NO plane (the device's own 404) keeps the design's quiet
+// answer. Everything else — timeout, mid-body stall, refusal, unreachable orb —
+// is a FAILED READ, and the row now says so with a "?" chip whose title names
+// the reason. The silent hide is what made a stalled route indistinguishable
+// from an empty card: "every thumbnail is a black square" was the page keeping
+// a secret it could have told.
+async function themePreviewPlane(el, t, mark) {
+  const fail = (why) => {
+    if (!mark) return;
+    mark.textContent = "?";
+    mark.title = why;
+    mark.hidden = false;
+  };
+  let r, b;
   try {
     r = await hubFetch("/api/theme/preview?ip=" + encodeURIComponent(themeIP) + "&id=" + encodeURIComponent(t.id));
-  } catch (e) { return; }
-  if (!r.ok) return;
-  const b = await r.arrayBuffer().catch(() => null);
-  if (!b || b.byteLength < 4) return;
+    if (r.status === 404) return;
+    if (!r.ok) {
+      let why = "HTTP " + r.status;
+      try { const j = await r.json(); if (j && j.error) why = j.error; } catch (e) {}
+      return fail("preview read failed: " + why);
+    }
+    b = await r.arrayBuffer().catch(() => null);
+  } catch (e) { return fail("preview read failed: " + (e && e.message ? e.message : String(e))); }
+  if (!b || b.byteLength < 4) return fail("preview came back empty");
   const dv = new DataView(b);
   const w = dv.getUint16(0, true), h = dv.getUint16(2, true);
-  if (w < 1 || h < 1 || dv.byteLength < 4 + w * h * 2) return;
+  if (w < 1 || h < 1) return fail("preview named no plane");
+  if (dv.byteLength < 4 + w * h * 2) return fail("preview came short: " + dv.byteLength + " of " + (4 + w * h * 2) + " B");
   el.width = w;
   el.height = h;
   const cx = el.getContext("2d");
@@ -2130,6 +2146,7 @@ async function themePreviewPlane(el, t) {
   cx.putImageData(im, 0, 0);
   el.title = "how this bake poses its dial";
   el.hidden = false;
+  if (mark) mark.hidden = true;
 }
 
 async function loadThemes(ip) {
@@ -2185,7 +2202,14 @@ function themeRow(t, state, list) {
   pv.height = 44;
   pv.hidden = true;
   li.appendChild(pv);
-  themePreviewPlane(pv, t);
+  // The failure chip: same footprint as the plane, a "?" instead of pixels, and
+  // the reason in its title. A theme with no plane shows neither chip nor canvas;
+  // a theme whose read FAILED shows this and says why on hover.
+  const pvq = document.createElement("span");
+  pvq.className = "pvq";
+  pvq.hidden = true;
+  li.appendChild(pvq);
+  themePreviewPlane(pv, t, pvq);
   const label = document.createElement("b");
   label.textContent = t.name;
   li.appendChild(label);

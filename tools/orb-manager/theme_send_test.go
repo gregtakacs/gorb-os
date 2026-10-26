@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -175,5 +177,123 @@ func TestAStoreStuckBusyEndsAtTheCeilingNotTheIdleBudget(t *testing.T) {
 	}
 	if d := time.Since(t0); d < themeStoreBusyCeiling {
 		t.Errorf("released after %v, before the %v busy ceiling: the idle budget ended a busy wait again", d, themeStoreBusyCeiling)
+	}
+}
+
+// The systematic bounce, pinned. The composer's ?precheck=1 leg ships the header plus
+// the geometry region — the bytes the card stem's slug lives in — and nothing else. The
+// hub's strict reader refused that slice for its own missing tail, every first Send
+// press answered "could not get a clean read", and the full-body precheck tests above
+// never showed it because they sent the whole file. This is the wire shape the page
+// actually uses.
+func TestAPrecheckOffTheHeadSliceAnswersTheDuplicate(t *testing.T) {
+	s, ip, _, f := fakeOrbHub(t)
+	file := orbfake.Container("aurora")
+	if _, err := s.device.ThemeUpload(ip, file, true); err != nil {
+		t.Fatalf("seed overwrite: %v", err)
+	}
+	doorCalls := func() int {
+		n := 0
+		for _, l := range f.Calls() {
+			if strings.HasPrefix(l, "POST /api/v1/sd/theme") {
+				n++
+			}
+		}
+		return n
+	}
+	before := doorCalls()
+	gs := int(binary.LittleEndian.Uint32(file[20:24]))
+	mux := http.NewServeMux()
+	s.routes(mux)
+	rec := postThemeRaw(t, s, mux, "/api/theme/upload?ip="+ip+"&precheck=1", file[:128+gs])
+	env := decodeEnv(t, rec)
+	data, _ := env["data"].(map[string]any)
+	if env["ok"] != true || data["duplicate"] != true {
+		t.Fatalf("head-slice precheck = %v, want duplicate true off %d B", env["data"], 128+gs)
+	}
+	id, _ := orbnet.ThemeIDOf("clock", "aurora")
+	if data["id"] != id {
+		t.Errorf("precheck answered id %v, want the card stem %s", data["id"], id)
+	}
+	if got := doorCalls(); got != before {
+		t.Errorf("the upload door was dialed %d times past the seed; a head-slice precheck must cross zero device bytes", got-before)
+	}
+}
+
+// And the honest refusal of the slice that IS too short: header-only (the shape the
+// composer shipped until this fix) answers ok:false with the byte count the question
+// costs — never a verdict, and never the damaged-file sentence the strict reader used
+// to throw at a perfectly good bake.
+func TestAPrecheckThatStopsBeforeTheRegionNamesItsCost(t *testing.T) {
+	s, ip, _, f := fakeOrbHub(t)
+	file := orbfake.Container("aurora")
+	mux := http.NewServeMux()
+	s.routes(mux)
+	before := len(f.Calls())
+	rec := postThemeRaw(t, s, mux, "/api/theme/upload?ip="+ip+"&precheck=1", file[:128])
+	env := decodeEnv(t, rec)
+	if env["ok"] != false {
+		t.Fatalf("header-only precheck = %v, want an honest refusal instead of a verdict", env)
+	}
+	msg, _ := env["error"].(string)
+	if !strings.Contains(msg, "send the first") || strings.Contains(msg, "runs past the end") {
+		t.Errorf("err = %q, want the cost of the question, not the damaged-file sentence", msg)
+	}
+	if len(f.Calls()) != before {
+		t.Errorf("a refused precheck still dialed the device; the door stays shut until the file itself ships")
+	}
+}
+
+// The preview relay, end to end: the device's quiet 404 for a plane-less row passes
+// through and is NOT remembered; the plane passes through as the exact bytes; and the
+// second paint answers off the hub's cache without dialing the card again. The relay's
+// whole reason is that the device route measurably stalls a single-task httpd for
+// seconds, so the stall gets paid once per TTL, and a theme whose read FAILED comes
+// back as the hub's sentence (tested in TestAPrecheckThatStopsBeforeTheRegionNamesItsCost's
+// sibling contract: failures are never cached, so the next paint tries again).
+func TestThePreviewRelayPassesQuietlyThenCaches(t *testing.T) {
+	s, ip, _, f := fakeOrbHub(t)
+	mux := http.NewServeMux()
+	s.routes(mux)
+	id, _ := orbnet.ThemeIDOf("clock", "aurora")
+	dial := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/theme/preview?ip="+ip+"&id="+id, nil)
+		req.Header.Set(tokenHeader, s.token)
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+	calls := func() int { return len(f.Calls()) }
+	if rec := dial(); rec.Code != http.StatusNotFound {
+		t.Fatalf("a row with no plane relayed %d, want the device's quiet 404", rec.Code)
+	}
+	plane := append([]byte{2, 0, 1, 0}, []byte{0x12, 0x34, 0x12, 0x34}...)
+	f.SetPreview(id, plane)
+	before := calls()
+	rec := dial()
+	if rec.Code != 200 || !bytes.Equal(rec.Body.Bytes(), plane) {
+		t.Fatalf("relay = %d %d B, want 200 with the plane verbatim", rec.Code, rec.Body.Len())
+	}
+	if got := calls() - before; got != 1 {
+		t.Errorf("the first plane read dialed the orb %d times, want exactly 1", got)
+	}
+	before = calls()
+	rec = dial()
+	if rec.Code != 200 || !bytes.Equal(rec.Body.Bytes(), plane) {
+		t.Fatalf("cached relay = %d, want the plane again", rec.Code)
+	}
+	if got := calls() - before; got != 0 {
+		t.Errorf("the cached relay dialed the orb %d more times; the stall is paid once per TTL", got)
+	}
+	// A theme shipping retires the address's cached plane before its bytes move,
+	// so the next paint reads the card, not the lie the cache would hold.
+	f.SetPreview(id, nil)
+	s.dropPreviews(ip)
+	before = calls()
+	if rec := dial(); rec.Code != http.StatusNotFound {
+		t.Errorf("relay after dropPreviews = %d, want the fresh quiet 404", rec.Code)
+	}
+	if calls()-before != 1 {
+		t.Errorf("the dropped relay did not re-dial the orb")
 	}
 }

@@ -95,7 +95,30 @@ type ThemeContainer struct {
 // index of 1..8 sections (orb_bundle.c's parse_core keeps that width, and a two-section
 // file stays a valid REJECTION vector worth parsing far enough to name). A caller that
 // wants the door's verdict wants ContainerName.
-func ParseContainer(body []byte) (*ThemeContainer, error) {
+func ParseContainer(body []byte) (*ThemeContainer, error) { return parseContainer(body, false) }
+
+// ContainerHead answers the precheck's identity question off the front of the file: the
+// 128-byte header plus the geometry region it names, and none of the art tail. Per-app
+// theming put the owning app's slug — half of the card stem's identity — in the index
+// inside that region, so a precheck that stops at the header is not answerable, and the
+// refusal names the byte count the question costs instead of pretending the file lied.
+// Art completeness is deliberately NOT this reader's check: the device's door re-reads
+// the whole file on the upload that follows, byte for byte, and refuses there. Before
+// this function existed the ?precheck=1 leg ran the strict parse over the page's header
+// slice, the index walk refused every real bake for its own tail, and every first Send
+// press answered "could not get a clean read" — systematic, not a race.
+func ContainerHead(body []byte) (*ThemeContainer, error) {
+	c, err := parseContainer(body, true)
+	if err != nil {
+		return nil, err
+	}
+	if c.NSections != 1 {
+		return nil, fmt.Errorf("orbnet: a theme file carries exactly one section — this one carries %d", c.NSections)
+	}
+	return c, nil
+}
+
+func parseContainer(body []byte, head bool) (*ThemeContainer, error) {
 	if len(body) < themeHdrBytes {
 		return nil, fmt.Errorf("orbnet: that file is %d B, shorter than the %d B header a .orbtheme starts with", len(body), themeHdrBytes)
 	}
@@ -151,7 +174,18 @@ func ParseContainer(body []byte) (*ThemeContainer, error) {
 	// identity here (the index is slug-sorted); ContainerName applies the door's one-
 	// section rule over the top, so a half-read multi-section file is nameable in an
 	// error report without ever passing for a theme.
-	slugs, err := indexSlugs(body, c.NSections, geomSize)
+	// The head answer needs the whole index, and the index lives in the geometry
+	// region: refuse a body that stops short of it with the exact cost of the question,
+	// not the strict reader's sentence about a file running past its own end (which, for
+	// a slice, it always does). The device's door re-checks the tail on the upload.
+	if head {
+		geomOff := binary.LittleEndian.Uint32(body[wGeomOff*4:])
+		if need := int(geomOff) + int(geomSize); geomOff != themeHdrBytes || need > len(body) {
+			return nil, fmt.Errorf("orbnet: the precheck carried %d B; this bake's index lives at %d..%d — send the first %d B of the file",
+				len(body), geomOff, need, need)
+		}
+	}
+	slugs, err := indexSlugs(body, c.NSections, geomSize, head)
 	if err != nil {
 		return nil, err
 	}
@@ -194,8 +228,10 @@ func headerForCRC(body []byte) []byte {
 // order. It checks the four things a header can lie about — the count, the region's
 // length, the stored offset against the sequential walk, and the slug's own shape — and
 // returns the firmware's sentence when one of them does. Blob contents, per-section CRCs
-// and the art itself are the device's door, not this reader's.
-func indexSlugs(body []byte, n, geomSize uint32) ([]string, error) {
+// and the art itself are the device's door, not this reader's. With head set the body is
+// a front slice, so the one check the slice cannot pass — the art tail fitting inside
+// the file — is skipped; every other check reads only bytes that are present.
+func indexSlugs(body []byte, n, geomSize uint32, head bool) ([]string, error) {
 	if n < 1 || n > bundleSectMax {
 		return nil, fmt.Errorf("orbnet: index claims %d sections; a bundle holds 1..%d", n, bundleSectMax)
 	}
@@ -210,7 +246,7 @@ func indexSlugs(body []byte, n, geomSize uint32) ([]string, error) {
 	// follows. A file that breaks it cannot be written to the slot at all, so the hub hears
 	// it here rather than after the payload crossed the room.
 	artOff := binary.LittleEndian.Uint32(body[wArtOff*4:])
-	if artOff%themeSectorBytes != 0 || artOff < geomOff+geomSize || int64(artOff)+int64(binary.LittleEndian.Uint32(body[wArtSize*4:])) > int64(len(body)) {
+	if artOff%themeSectorBytes != 0 || artOff < geomOff+geomSize || (!head && int64(artOff)+int64(binary.LittleEndian.Uint32(body[wArtSize*4:])) > int64(len(body))) {
 		return nil, fmt.Errorf("orbnet: container parts are not where this format puts them (art at %d, region ends at %d, file is %d B)", artOff, geomOff+geomSize, len(body))
 	}
 	region := body[geomOff : geomOff+geomSize]

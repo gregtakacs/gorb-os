@@ -110,6 +110,7 @@ func (s *Server) handleThemeDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	s.dropPreviews(t.IP)
 	raw, err := s.device.ThemeDelete(t.IP, t.ID)
 	s.themeReply(w, raw, err)
 }
@@ -125,6 +126,33 @@ func (s *Server) handleThemeRescan(w http.ResponseWriter, r *http.Request) {
 	s.themeReply(w, raw, err)
 }
 
+// previewHit is one cached plane: the device's own bytes, the status it answered
+// them with, and the moment the hub learned them.
+type previewHit struct {
+	body []byte
+	code int
+	at   time.Time
+}
+
+// previewCacheTTL bounds how long a cached plane may stand in for the card's.
+// Ten minutes is "not this page paint, not this work session" — the route being
+// cached is the one that measurably stalls a whole httpd task for ~10 s, so the
+// cheap answer is to ask it once per card-and-theme, not once per repaint.
+const previewCacheTTL = 10 * time.Minute
+
+// dropPreviews forgets every cached plane for one address. A theme shipping,
+// replacing, or leaving changes what the card would answer for an id this hub
+// already drew, and a stale thumbnail is a lie the Manage card cannot see.
+func (s *Server) dropPreviews(ip string) {
+	s.previewMu.Lock()
+	defer s.previewMu.Unlock()
+	for k := range s.previews {
+		if strings.HasPrefix(k, ip+"|") {
+			delete(s.previews, k)
+		}
+	}
+}
+
 // handleThemePreview passes one theme's preview plane through as the bytes it is:
 // [u16 w][u16 h][RGB565 LE]. No JSON envelope — a plane is not a reply, and wrapping
 // it would base64-megabytes the answer the card unpacks by hand — and no re-cutting
@@ -132,25 +160,51 @@ func (s *Server) handleThemeRescan(w http.ResponseWriter, r *http.Request) {
 // at the card as a quiet 404, because every caller's honest answer to that is to
 // draw the text row it drew before planes existed. The gates are the theme gates,
 // the same id grammar and the same learned address.
+//
+// The relay dials on the preview client, not the 8 s management one: the device
+// answers this route after a card walk, a region read and a ~100 KB stream, which
+// measured over the 8 s budget on the bench — every cut looked to the page like a
+// missing plane and painted the quiet-black square this card used to argue about.
+// 200s are cached per address+id (previewCacheTTL), and dropPreviews clears an
+// address's rows whenever a theme is shipped or deleted, so the cache never outlives
+// the event that makes it wrong for longer than it takes to notice.
 func (s *Server) handleThemePreview(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	t, ok := s.checkedTarget(w, strings.TrimSpace(q.Get("ip")), strings.TrimSpace(q.Get("id")), true)
 	if !ok {
 		return
 	}
-	body, code, err := s.device.ThemePreview(t.IP, t.ID)
-	if err != nil {
-		s.jsonErr(w, err.Error())
-		return
+	key := t.IP + "|" + t.ID
+	s.previewMu.Lock()
+	hit, fresh := s.previews[key], false
+	if time.Since(hit.at) < previewCacheTTL {
+		fresh = true
 	}
-	if code == http.StatusOK {
+	s.previewMu.Unlock()
+	if !fresh || hit.code != http.StatusOK {
+		body, code, err := s.preview.ThemePreview(t.IP, t.ID)
+		if err != nil {
+			// The route's failure is an event with a reason, not a missing plane:
+			// the hub's own sentence says timeout, refusal, or gone, and the page
+			// shows it instead of silently hiding the square.
+			s.jsonErr(w, err.Error())
+			return
+		}
+		hit = previewHit{body: body, code: code, at: time.Now()}
+		if code == http.StatusOK {
+			s.previewMu.Lock()
+			s.previews[key] = hit
+			s.previewMu.Unlock()
+		}
+	}
+	if hit.code == http.StatusOK {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(code)
-	_, _ = w.Write(body)
+	w.WriteHeader(hit.code)
+	_, _ = w.Write(hit.body)
 }
 
 // handleThemeStem answers the one question a non-secure browser context cannot
@@ -221,7 +275,16 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, "that file is over the "+strconv.Itoa(orbnet.MaxThemeUpload)+" B an orb will accept")
 		return
 	}
-	c, err := orbnet.ContainerName(body)
+	// The precheck body is a head slice, not the file: the strict parse would refuse it
+	// for the art tail it never claimed to carry, and every first Send press would read
+	// "could not get a clean read" off a perfectly good bake. The upload leg keeps the
+	// strict door — it has the whole file in hand.
+	var c *orbnet.ThemeContainer
+	if r.URL.Query().Get("precheck") == "1" {
+		c, err = orbnet.ContainerHead(body)
+	} else {
+		c, err = orbnet.ContainerName(body)
+	}
 	if err != nil {
 		s.jsonErr(w, err.Error())
 		return
@@ -254,6 +317,10 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 	s.setSend(ip, func(st *themeSend) {
 		st.Phase, st.ID, st.Total, st.Sent, st.Note = "uploading", c.ID, int64(len(body)), 0, ""
 	})
+	// A theme shipping changes what the card would answer for its id's preview —
+	// same id, new pixels — so this address's cached planes retire before the bytes
+	// move, and the card re-reads the plane the device is about to hold.
+	s.dropPreviews(t.IP)
 	raw, err := s.ota.ThemeUploadProgress(ip, body, overwrite, func(n int64) {
 		s.setSend(ip, func(st *themeSend) { st.Sent = n })
 	})

@@ -2684,14 +2684,25 @@ class Component extends DCLogic {
       let pre = null;
       try {
         // §32.7: the precheck is a question about the container's IDENTITY, so only the
-        // 128-byte header has to cross the room, not the megabytes. The hub's
-        // ContainerName reads the magic, the header CRC, the serial (word 11) and the
-        // name (bytes 56..112) all inside the first 128 B, and answers the duplicate
-        // off those; the section index it reads past 128 B is best-effort and never
-        // fails a container. Before this the precheck POSTed the WHOLE bake, so the
-        // question itself cost the full file. The double-send the operator named was a
-        // separate cut — see the exact branch below, which is what actually stops it.
-        const head = bytes.slice(0, 128);
+        // bytes that carry identity cross the room, not the megabytes. The header's own
+        // words (magic, header CRC, serial at word 11, name at bytes 56..112) are NOT
+        // the whole identity: per-app theming derives the card stem from the OWNING
+        // APP'S SLUG, and the slug lives in the index inside the geometry region that
+        // sits right behind the header, its size in the header's word 5 (byte 20). So
+        // the precheck sends the header plus that region and nothing else — a few
+        // hundred bytes for a clock bake, 61,440 B at the format's absolute cap. The
+        // hub's ContainerHead answers the duplicate off those bytes, and refuses a
+        // slice that stops short of the region with the exact count it needs. The
+        // device's door re-checks the whole file on the upload that follows. Before
+        // this the precheck POSTed the WHOLE bake, so the question itself cost the full
+        // file; the first §32.7 shipped only the 128-byte header, and the index walk
+        // refused every real bake for the tail a header slice can never carry — so
+        // EVERY first Send press answered "could not get a clean read", systematically.
+        // The double-send the operator named was a separate cut — see the exact branch
+        // below, which is what actually stops it.
+        let gsz = 0;
+        try { gsz = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(20, true); } catch (e) { gsz = 0; }
+        const head = bytes.slice(0, Math.min(bytes.byteLength, 128 + Math.min(gsz, 0xF000)));
         const pr = await fetch(door + '&precheck=1', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: head });
         pre = await pr.json().catch(() => null);
       } catch (e) { pre = null; }

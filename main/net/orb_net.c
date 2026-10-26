@@ -4561,10 +4561,15 @@ static esp_err_t h_theme_del(httpd_req_t *req)
  * httpd_resp_send stalled at exactly one TCP send buffer (5,733 B of
  * CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5760) into a dead socket that then deafened
  * the whole single-task httpd for minutes — the blank-thumbnail report, root
- * cause. The body therefore ships in 4 KB httpd_resp_send_chunk pieces with a
- * tick's airtime between them: the radio drains between card bursts, a dead
- * peer fails the very next chunk instead of a minute of black-holed
- * retransmit, and the handler frees its buffer and returns either way.
+ * cause. The body therefore ships one TCP segment at a time — PREVIEW_CHUNK —
+ * with airtime between writes and a wall-clock budget on the loop. Re-measured
+ * the same day on orb-B with the hub's polling live, a 4 KB chunk stalled on its
+ * SECOND write and the board then refused everything for 45 s: 4 KB is four
+ * segments, so one write needs four chained pbufs, and a heap whose largest
+ * internal block sits near 10 KB cannot always find that chain. One segment needs
+ * one buffer. A stalled chunk now fails inside its own budget, the handler frees
+ * its buffer and returns either way, and a torn plane reaches the caller as a
+ * refusal rather than as half a picture.
  * It never touches the slot, the installer, or the LVGL task. An upload in
  * flight is refused 503 rather than queued: the card is mid-copy and the file
  * this call would read may be half its bytes — the h_fb one-at-a-time rule.
@@ -4573,6 +4578,21 @@ static esp_err_t h_theme_del(httpd_req_t *req)
  * 404 with no plane, not an error worth a retry. A row that exists but will
  * not draw answers 422 with the reader's own sentence, the h_sd rule that a
  * refusal the owner can act on stays honest rather than reading as empty. */
+/* One framed chunk inside one MSS (CONFIG_LWIP_TCP_MSS = 1440). The payload plus
+ * httpd's "%lx\r\n" prefix and "\r\n" trailer must not spill into a second
+ * segment: a write spanning segments needs a pbuf CHAIN, and the fragmented
+ * internal heap on a running board (largest block ~10 KB, ~15 KB free) refuses
+ * that chain under load. One segment asks for one buffer. 7 B is the widest
+ * framing a chunk this size carries. */
+#define PREVIEW_CHUNK 1432
+/* Airtime between writes, in ms. vTaskDelay(1) was 1 ms at this build's
+ * CONFIG_FREERTOS_HZ=1000 — measured too short to let the radio drain. */
+#define PREVIEW_AIR_MS 5
+/* Wall-clock ceiling on the body, so the window during which this handler holds
+ * the single-task httpd is bounded whatever the peer does. Measured clean run is
+ * 107,652 B in 4.05 s; 20 s is that five times over, for a cold card. */
+#define PREVIEW_BUDGET_MS 20000
+
 static esp_err_t h_sd_preview(httpd_req_t *req)
 {
     char id[ORB_THEME_HANDLE_MAX + 1] = "";
@@ -4628,31 +4648,42 @@ static esp_err_t h_sd_preview(httpd_req_t *req)
     }
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    /* Chunked by hand: see the stall measurement in this handler's header. The
-     * 4-byte extent rides as the first chunk's opening bytes, so the wire shape
-     * the page unpacks ([u16 w][u16 h][RGB565]) is unchanged. A failed chunk is
-     * the client leaving — the response cannot be re-cut at that point, so the
-     * honest end is early free and a refused close. */
+    /* Chunked by hand, one MSS per write: see the stall measurement in this
+     * handler's header. The 4-byte extent rides as the first chunk's opening
+     * bytes, so the wire shape the page unpacks ([u16 w][u16 h][RGB565]) is
+     * unchanged. A failed chunk means the peer is gone or the window will not
+     * take more — the response cannot be re-cut or retried at that point, since
+     * httpd has already framed this chunk, so the honest end is early free and a
+     * refused close. The budget below is what keeps a stalled peer from holding
+     * this task past a bounded window. */
     const size_t total = (size_t)4 + bytes;
     const uint8_t *p = px;
     size_t left = total;
     esp_err_t r = ESP_OK;
+    bool budgeted = false;                 /* the loop ran out its clock, not its peer */
+    const int64_t deadline = esp_timer_get_time() + (int64_t)PREVIEW_BUDGET_MS * 1000;
     while (left > 0) {
-        const size_t n = left > 4096 ? 4096 : left;
+        const size_t n = left > PREVIEW_CHUNK ? PREVIEW_CHUNK : left;
         if (httpd_resp_send_chunk(req, (const char *)p, n) != ESP_OK) {
             r = ESP_FAIL;
             break;
         }
         p += n;
         left -= n;
-        vTaskDelay(1);                /* one tick of radio airtime between writes */
+        vTaskDelay(pdMS_TO_TICKS(PREVIEW_AIR_MS));   /* let the radio drain */
+        if (esp_timer_get_time() > deadline) {
+            r = ESP_FAIL;
+            budgeted = true;
+            break;
+        }
     }
     if (r == ESP_OK && httpd_resp_send_chunk(req, NULL, 0) != ESP_OK) r = ESP_FAIL;
     if (left) {
         /* The 200 is already on the wire and cannot be walked back, so the one
          * honest thing left is to name the shortfall where the bench will read it
          * rather than let a torn plane pass as a whole one. */
-        ESP_LOGE(TAG, "preview: socket refused more after %u of %u B",
+        ESP_LOGE(TAG, "preview: %s after %u of %u B",
+                 budgeted ? "out of budget" : "socket refused more",
                  (unsigned)(total - left), (unsigned)total);
     }
     heap_caps_free(px);
@@ -6079,18 +6110,17 @@ static esp_err_t net_start_httpd(void)
      * two big-body routes block in recv at all, and lru_purge_enable reclaims
      * the slot the moment a new connection needs one. */
     cfg.recv_wait_timeout  = 30;
-    /* The send half of that same measurement, and the reason the 4 KB chunking
-     * only moved the preview failure rather than fixing it: HTTPD_DEFAULT_CONFIG()
-     * ships send_wait_timeout = 5 (esp_http_server.h:66), so one 4 KB chunk on a
-     * live-but-slow link waits longer for its ack than the socket is allowed and
-     * httpd reports EAGAIN — the bench log reads `httpd_sock_err: error in send :
-     * 11` then `uri handler execution failed`. h_sd_preview breaks its loop on
-     * that answer and, because the 200 status line was already on the wire, ships
-     * a short body that reads as a complete plane: 24,008 B of the 107,652 a
-     * 232x232 preview declares. A torn plane then caches as a good thumbnail.
-     * The device cannot retract a sent status line, so it must stop cutting the
-     * body short instead. Bench, orb-B 2026-10-25. */
-    cfg.send_wait_timeout  = 30;
+    /* 5 s — HTTPD_DEFAULT_CONFIG()'s own value (esp_http_server.h:66), stated here
+     * because a first attempt at this bug raised it to 30 and that made things
+     * worse, so the number now needs a reason attached. This timeout is a
+     * SO_SNDTIMEO on every write, and httpd is ONE task: a chunk that cannot go
+     * out blocks /api/v1/status, /config and every other route for the whole of
+     * the wait. Measured on the bench with the hub polling live, a 30 s wait
+     * turned one stalled preview chunk into a 45 s blackout that read as an
+     * unreachable orb — the peer's own deadline expired over a socket that was
+     * simply parked. The durable fix is the write size in h_sd_preview (one MSS,
+     * so one segment asks for one buffer), not a longer permission to stall. */
+    cfg.send_wait_timeout  = 5;
 
     /* 2026-10-24 ESP_ERR_HTTPD_TASK ladder: the boot heap log says the block
      * is big enough and the call still says no, so this ladder makes the

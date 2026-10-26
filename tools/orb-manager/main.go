@@ -79,7 +79,10 @@ type Server struct {
 	preview   *orbnet.Client
 	previewMu sync.Mutex
 	previews  map[string]previewHit
-	repoDir   string // the gorb-os clone root, for the Theme Editor only
+	// previewBusy counts the plane relays in flight. The liveness sweeper reads it
+	// and skips its tick while one runs.
+	previewBusy int
+	repoDir     string // the gorb-os clone root, for the Theme Editor only
 	// ops is the per-port operation registry: who holds which cable, doing what,
 	// and how to ask that work to stop. It replaces the process-wide flashing
 	// flag, which could not tell two cables apart or cancel anything.

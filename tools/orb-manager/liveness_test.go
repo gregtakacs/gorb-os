@@ -791,3 +791,61 @@ func TestAStatusAnswerFoldsItsFactsAndNothingElse(t *testing.T) {
 		t.Error("a fold landed on a row whose address is not the one the hub dialed")
 	}
 }
+
+// A fleet sweep stands down while a theme plane is in flight. Both dials land on the
+// same single-task httpd on the device, and the sweep wins that collision by cutting
+// the stream short — measured on the bench 2026-10-25, where four of six relays came
+// back torn with the ten-second tick live and all of them arrived whole with it held
+// off. Skipping one tick costs a beat of verdict freshness; the alternative is a
+// thumbnail the page has to ask for again.
+func TestAFleetSweepStandsDownWhileAPlaneIsInFlight(t *testing.T) {
+	s := newHub()
+	dialed := 0
+	s.live = &liveCache{
+		byIP:  map[string]liveMark{},
+		stale: liveVerdictStale,
+		probe: func(string) bool { dialed++; return true },
+	}
+	s.imu.Lock()
+	s.orbIP = "192.0.2.10"
+	s.imu.Unlock()
+
+	if !s.fanoutLiveness(context.Background()) {
+		t.Fatal("a sweep with nothing in flight dialed nothing")
+	}
+	if dialed != 1 {
+		t.Fatalf("dialed %d times, want the ungated sweep to dial once", dialed)
+	}
+
+	s.previewHold()
+	if s.fanoutLiveness(context.Background()) {
+		t.Error("a sweep ran while a plane relay held the device")
+	}
+	if dialed != 1 {
+		t.Errorf("dialed %d times while a relay was in flight, want the tick skipped", dialed)
+	}
+
+	s.previewRelease()
+	// The bool reports whether a verdict MOVED, and this one cannot: the probe says
+	// alive both times. What gates here is that the dial happened again at all.
+	_ = s.fanoutLiveness(context.Background())
+	if dialed != 2 {
+		t.Errorf("dialed %d times after the release, want the sweep resumed", dialed)
+	}
+}
+
+// Two relays in flight — two tabs, two boards — must both be held: releasing one
+// cannot extinguish the other's claim, which is why the counter is a count.
+func TestOneReleaseDoesNotExtinguishAnotherRelaysClaim(t *testing.T) {
+	s := newHub()
+	s.previewHold()
+	s.previewHold()
+	s.previewRelease()
+	if !s.previewInFlight() {
+		t.Error("one release ended a relay that was still in flight")
+	}
+	s.previewRelease()
+	if s.previewInFlight() {
+		t.Error("the count never came back to idle")
+	}
+}

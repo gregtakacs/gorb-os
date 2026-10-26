@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -136,8 +137,9 @@ type previewHit struct {
 
 // previewCacheTTL bounds how long a cached plane may stand in for the card's.
 // Ten minutes is "not this page paint, not this work session" — the route being
-// cached is the one that measurably stalls a whole httpd task for ~10 s, so the
-// cheap answer is to ask it once per card-and-theme, not once per repaint.
+// cached still holds the device's whole httpd task for the length of the plane,
+// two seconds warm and ten on a cold card, so the cheap answer is to ask it once
+// per card-and-theme, not once per repaint.
 const previewCacheTTL = 10 * time.Minute
 
 // dropPreviews forgets every cached plane for one address. A theme shipping,
@@ -151,6 +153,30 @@ func (s *Server) dropPreviews(ip string) {
 			delete(s.previews, k)
 		}
 	}
+}
+
+// previewHold and previewRelease bracket one plane relay, and previewInFlight is
+// what the liveness sweeper asks before it spends a tick. A relay and a fleet sweep
+// both land on the same single-task httpd on the device, and the sweep wins that
+// collision by cutting the stream — see handleThemePreview. The count, not a bool,
+// because two tabs can dial two orbs at once and the last one out must not
+// extinguish the other's hold.
+func (s *Server) previewHold() {
+	s.previewMu.Lock()
+	s.previewBusy++
+	s.previewMu.Unlock()
+}
+
+func (s *Server) previewRelease() {
+	s.previewMu.Lock()
+	s.previewBusy--
+	s.previewMu.Unlock()
+}
+
+func (s *Server) previewInFlight() bool {
+	s.previewMu.Lock()
+	defer s.previewMu.Unlock()
+	return s.previewBusy > 0
 }
 
 // handleThemePreview passes one theme's preview plane through as the bytes it is:
@@ -182,7 +208,18 @@ func (s *Server) handleThemePreview(w http.ResponseWriter, r *http.Request) {
 	}
 	s.previewMu.Unlock()
 	if !fresh || hit.code != http.StatusOK {
+		// The sweep stands down for the length of the dial. Measured on the bench
+		// with v1.1.8's one-segment writes: four of six fetches came back short
+		// while the ten-second liveness tick was landing on the same one-task httpd
+		// as the stream, and every fetch came back whole and in about two seconds
+		// with the tick held off. One retry covers the collision this gate cannot
+		// prevent — another tab's dial — because a plane read is idempotent.
+		s.previewHold()
 		body, code, err := s.preview.ThemePreview(t.IP, t.ID)
+		if errors.Is(err, orbnet.ErrTornPreview) {
+			body, code, err = s.preview.ThemePreview(t.IP, t.ID)
+		}
+		s.previewRelease()
 		if err != nil {
 			// The route's failure is an event with a reason, not a missing plane:
 			// the hub's own sentence says timeout, refusal, or gone, and the page

@@ -658,3 +658,76 @@ func TestThemePreviewGatesBeforeDialing(t *testing.T) {
 		t.Errorf("a gated call reached the orb: %+v", c)
 	}
 }
+
+// A relay that comes back torn is dialed once more before the hub gives up on it.
+// The shortfall is contention on the device's one httpd task rather than a verdict
+// about the theme, and a plane read is idempotent, so one retry is the difference
+// between a thumbnail and a square of quiet black. Bench, 2026-10-25: with the
+// liveness sweep landing on the same board, four of six first dials came back short
+// and every retry of one arrived whole.
+func TestATornRelayIsDialedAgainAndServesTheWholePlane(t *testing.T) {
+	plane := []byte{2, 0, 2, 0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			_, _ = w.Write(plane[:6]) // the header whole, the pixels cut short
+			return
+		}
+		_, _ = w.Write(plane)
+	}))
+	t.Cleanup(srv.Close)
+	s, host := previewHub(t, srv)
+	rec := getTheme(t, s, "/api/theme/preview?ip="+host+"&id="+auroraID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code %d body %s, want the retried dial to serve 200", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.Bytes(); len(got) != len(plane) {
+		t.Errorf("served %d B, want the whole %d B plane", len(got), len(plane))
+	}
+	if calls != 2 {
+		t.Errorf("dialed %d times, want the torn reply to cost exactly one retry", calls)
+	}
+}
+
+// A plane that stays torn is refused rather than served, and stays out of the cache:
+// half a clock face filed as a good preview is the failure this whole path exists to
+// keep off the glass, and it would stand for the whole ten-minute TTL.
+func TestAPlaneThatStaysTornIsRefusedAndNeverCached(t *testing.T) {
+	plane := []byte{2, 0, 2, 0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write(plane[:6]) // torn every time
+	}))
+	t.Cleanup(srv.Close)
+	s, host := previewHub(t, srv)
+	rec := getTheme(t, s, "/api/theme/preview?ip="+host+"&id="+auroraID)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("a plane short of its own header was served as a good preview")
+	}
+	if calls != 2 {
+		t.Errorf("dialed %d times, want the one retry and no more", calls)
+	}
+	if n := len(s.previews); n != 0 {
+		t.Errorf("%d cached planes, want a torn body kept out of the cache", n)
+	}
+}
+
+// previewHub wires one hub to one fake orb server for the preview relay, mirroring
+// the real client so a test that left it unset would pass a handler the shipped
+// binary would crash on. It returns the host to dial.
+func previewHub(t *testing.T, srv *httptest.Server) (*Server, string) {
+	t.Helper()
+	s := newHub()
+	s.preview = orbnet.NewClient(2 * time.Second)
+	hp := strings.TrimPrefix(srv.URL, "http://")
+	i := strings.LastIndex(hp, ":")
+	if i < 0 {
+		t.Fatalf("test orb URL %q has no port", srv.URL)
+	}
+	host, port := hp[:i], hp[i+1:]
+	s.preview.DevicePort = port
+	s.grants.learn(host)
+	return s, host
+}

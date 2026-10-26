@@ -469,6 +469,13 @@ func (s *Server) probeLiveness(ctx context.Context) {
 // moved. probeNow and the sweeper share it so the launch burst and the tick cannot drift
 // apart about what "ask the book" means.
 func (s *Server) fanoutLiveness(ctx context.Context) bool {
+	// A plane relay in flight owns the device's one httpd task, and a probe landing
+	// on that same task is what cuts the relay short. The ticker drops this tick
+	// rather than queueing it, so standing down costs one 10 s beat of verdict
+	// freshness and buys back a whole thumbnail.
+	if s.previewInFlight() {
+		return false
+	}
 	ips := s.livenessTargets()
 	if len(ips) == 0 {
 		return false

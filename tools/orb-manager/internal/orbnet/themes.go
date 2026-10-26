@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,13 @@ import (
 	"regexp"
 	"strings"
 )
+
+// ErrTornPreview marks a 200 whose body ran short of the plane it declares. It is a
+// sentinel rather than a sentence because the condition is recoverable by asking
+// again — the shortfall comes from contention on the device's one-task httpd, not
+// from the theme — and because the caller must be able to tell it apart from a
+// timeout or an unreachable orb without matching on message text.
+var ErrTornPreview = errors.New("torn preview plane")
 
 // The device-side THEME API, in one place: what main/net/orb_net.c registers, and
 // nothing invented. FORMAT 2 (docs/theme-identity-plan.md) settled what identifies a
@@ -342,7 +350,7 @@ func (c *Client) ThemePreview(ip, id string) ([]byte, int, error) {
 		w := int(binary.LittleEndian.Uint16(body[0:2]))
 		h := int(binary.LittleEndian.Uint16(body[2:4]))
 		if want := 4 + 2*w*h; len(body) != want {
-			return nil, resp.StatusCode, fmt.Errorf("orbnet: %s sent a torn preview: %d B for the %dx%d plane, which is %d B", ip, len(body), w, h, want)
+			return nil, resp.StatusCode, fmt.Errorf("orbnet: %s sent a torn preview: %d B for the %dx%d plane, which is %d B (%w)", ip, len(body), w, h, want, ErrTornPreview)
 		}
 	}
 	return body, resp.StatusCode, nil

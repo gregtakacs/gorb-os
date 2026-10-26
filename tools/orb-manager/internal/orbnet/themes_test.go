@@ -2,6 +2,7 @@ package orbnet
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -324,6 +325,11 @@ func TestThemePreviewCallsATornBodyAnError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "torn") || !strings.Contains(err.Error(), "20 B") {
 		t.Errorf("err = %v, want it to name the tear and the plane's real size", err)
+	}
+	// The sentinel, not the sentence: the hub retries on this and must not decide
+	// by matching words.
+	if !errors.Is(err, ErrTornPreview) {
+		t.Errorf("err = %v, want it to wrap ErrTornPreview", err)
 	}
 }
 

@@ -2215,17 +2215,21 @@ def _bundle_planes(b, art, refuse, plate):
     """The sprite catalogue against the byte walk, before any number is trusted.
 
     Returns the rows by index. The plate and every keyframe of its §31 bank are
-    colour-only (no alpha plane); every other sprite carries colour + alpha, so a
-    row's size is checkable from its own extent. A bank this catalogue cannot
-    account for byte-for-byte is a bank this tool does not understand --
-    §25.3's rule, read from the other end."""
+    colour-only (no alpha plane); the §37 class 9 preview is too — its class
+    price is RGB565 alone (theme_schema.CLASS_PREVIEW, orb_asset_slot_bytes,
+    and the projection's walk all say so in one voice); every other sprite
+    carries colour + alpha, so a row's size is checkable from its own extent.
+    A bank this catalogue cannot account for byte-for-byte is a bank this tool
+    does not understand -- §25.3's rule, read from the other end."""
+    prevs = [e for e in b["elements"] if e["class"] == ts.CLASS_PREVIEW]
     at, planes = 0, {}
     for i, s in enumerate(b["sprites"]):
         if s["off"] != at:
             refuse("the sprite catalogue is not contiguous at row %d: it starts at %d, "
                    "the previous plane ends at %d" % (i, s["off"], at))
         on_plate = plate["frame0"] <= i < plate["frame0"] + plate["n_frames"]
-        want = s["w"] * s["h"] * (2 if on_plate else 3)
+        on_prev = any(e["frame0"] <= i < e["frame0"] + e["n_frames"] for e in prevs)
+        want = s["w"] * s["h"] * (2 if (on_plate or on_prev) else 3)
         if s["size"] != want:
             refuse("catalogue row %d claims %d B of a %dx%d plane; that extent is %d B"
                    % (i, s["size"], s["w"], s["h"], want))
@@ -2282,6 +2286,17 @@ def _bundle_clock_state(section, hdr, src_path):
             refuse("element %d is class %r: the device projects a pointer into its "
                    "aux table and the compiled pair has none — --from-bundle rebuilds "
                    "a FORMAT 2 .h, which carries no pointer rows"
+                   % (e["n"], ts.CLASS_NAMES[cls]))
+        if cls == ts.CLASS_PREVIEW:
+            # §37's asymmetry, the same shape D34 drew for AUX. The DEVICE accepts
+            # the preview row and skips it — the picker reads it through
+            # orb_elems.c, and the walk below prices it colour-only — but the
+            # compiled pair has no field to receive a whole-dial thumbnail, so
+            # this tool refuses it by name rather than borrow the complication
+            # sentence and imply an unknown class.
+            refuse("element %d is class %r: the device projects a preview row into "
+                   "the picker's read and the compiled pair has no field for a "
+                   "thumbnail — --from-bundle rebuilds a clock's .h, not a gallery"
                    % (e["n"], ts.CLASS_NAMES[cls]))
         if cls not in (ts.CLASS_PLATE, ts.CLASS_HAND, ts.CLASS_SPRITE):
             # A BANK row is the one acceptance the device gives this sentence's

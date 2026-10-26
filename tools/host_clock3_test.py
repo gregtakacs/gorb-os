@@ -1604,6 +1604,43 @@ def c4_mk_rect_outside(els, sc, art, spr):
 
 
 
+def c4_mk_preview(els, sc, art, spr):
+    """§37's preview row as the shipped bakes write it: one class 9 plane, square,
+    one frame, at the bank's running end — colour-only like the plate, because its
+    class price is RGB565 alone and the third byte would be a plane of 255s no
+    picker consults (orb_asset_slot_bytes names the exception; the projection's
+    walk must price it the same way or the bake is refused at the install door)."""
+    c4_defaults(els, sc, art, spr)
+    at = len(art)
+    art.extend(b"\x44" * (C4_PREVIEW * C4_PREVIEW * 2))          # colour only
+    spr.append({"off": at, "size": C4_PREVIEW * C4_PREVIEW * 2,
+                "w": C4_PREVIEW, "h": C4_PREVIEW, "diffx": 0, "diffy": 0})
+    els.append(dict(els[0], n=max(e["n"] for e in els) + 1, slot=0,
+                    flags=0, delay=0, parent=ts.PARENT_NONE,
+                    **{"class": ts.CLASS_PREVIEW},
+                    x=8, y=8, w=C4_PREVIEW, h=C4_PREVIEW,
+                    frame0=len(spr) - 1, n_frames=1))
+
+
+def c4_mk_preview_lie(els, sc, art, spr):
+    """The same row claiming the RGB888 width: a masked preview is either a torn
+    bank or a baker that forgot the exception, and the walk owes it the extent
+    sentence rather than a drawn plane of invented alphas."""
+    c4_defaults(els, sc, art, spr)
+    at = len(art)
+    art.extend(b"\x44" * (C4_PREVIEW * C4_PREVIEW * 3))          # colour + alpha
+    spr.append({"off": at, "size": C4_PREVIEW * C4_PREVIEW * 3,
+                "w": C4_PREVIEW, "h": C4_PREVIEW, "diffx": 0, "diffy": 0})
+    els.append(dict(els[0], n=max(e["n"] for e in els) + 1, slot=0,
+                    flags=0, delay=0, parent=ts.PARENT_NONE,
+                    **{"class": ts.CLASS_PREVIEW},
+                    x=8, y=8, w=C4_PREVIEW, h=C4_PREVIEW,
+                    frame0=len(spr) - 1, n_frames=1))
+
+
+C4_PREVIEW = 64     # a square at a quarter the panel: legal under the baker's cap
+
+
 def c4_battery(exe, base):
     # ---- honest flat v4 table: stride 25/6, appended columns at zero, no rects ----
     g = parsed(run(exe, "--dump3f", c4_forge(base, 4, c4_defaults))[1])
@@ -1654,6 +1691,21 @@ def c4_battery(exe, base):
        "the still row is not a zero-extent rect followed by the real one: %s"
        % (g["rectrows"],))
     print("  C5 still row: zero extent accepted, the frame after it still lands")
+
+    # ---- §37's preview plane: the device accepts it colour-only; the compiled
+    # pair has no field for a thumbnail and says so by name (D34's AUX precedent) ----
+    pv = c4_forge(base, 4, c4_mk_preview)
+    rc, out, err = run(exe, "--dump3f", pv)
+    ck(rc == 0,
+       "a shipped-shape preview row was refused by the projection: %r" % (out + err)[:280])
+    refused, bsent = bake_says(pv)
+    ck(refused and "no field for a thumbnail" in bsent,
+       "the pair end did not name the preview as its own refusal: %r" % bsent[:280])
+    rc, out, err = run(exe, "--refuse", c4_forge(base, 4, c4_mk_preview_lie))
+    ck(rc == 0 and "that extent is" in out,
+       "a preview claiming the RGB888 width was not refused in the walk's own words: %r"
+       % out[:280])
+    print("  §37 preview plane: colour-only accepted by the dial, named at the pair, a masked claim refused")
 
     # ---- instance flag: a month window over the fixed domain, frame_bytes 0 ----
     g = parsed(run(exe, "--dump3f", c4_forge(base, 4, c4_mk_inst))[1])

@@ -261,6 +261,11 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     uint16_t row_tag[CLOCK_ROWS_MAX];
     uint16_t row_par[CLOCK_ROWS_MAX];        /* tag on entry, row index + 1 out */
     uint32_t nrows = 0;
+    /* The preview row's own window, held for the catalogue walk below: a class 9
+     * plane is opaque RGB565 by its class price (orb_asset_slot_bytes), so the walk
+     * must not bill it the alpha stride. The sentinel is unreachable as a row index:
+     * a bank's rows number under n_spr, which fits a u16 with 0xFFFF to spare. */
+    uint16_t prev0 = 0xFFFF, prevn = 0;
     for (uint32_t i = 0; i < ne; i++) {
         orb_bundle_elem_t e;
         orb_bundle_elem_at(sec, i, &e);
@@ -333,6 +338,8 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                  * a class that is not AUX or BANK fires at the row's own dialect,
                  * not at a nameplate it cannot verify. A second preview row is a
                  * refusal by checkTable's class:slot uniqueness, not the clock's. */
+                prev0 = e.frame0;
+                prevn = e.n_frames;
                 break;
             default:
                 return reject("element %u is class %s: the compiled clock has no field "
@@ -643,8 +650,15 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         const int on_plate = i >= plate.frame0 &&
                              (i < plate.frame0 + plate.n_frames ||
                               (plate_wrap && i == plate.frame0 + plate.n_frames));
+        /* A preview plane rides the same bank and pays the same two bytes: its
+         * class price (orb_asset_slot_bytes, and tools/theme_schema.py's copy)
+         * is RGB565 alone — the third byte would be a plane of 255s no picker
+         * consults. The row still has to sit where the walk says and be the
+         * width IT claims, or the lie is a torn bank wearing a nameplate. */
+        const int on_preview = prev0 != 0xFFFF &&
+                               (uint32_t)i - (uint32_t)prev0 < (uint32_t)prevn;
         const uint64_t want = PLATE_BYTES_T(sp.w, sp.h)
-                            + (on_plate ? 0 : (uint64_t)sp.w * sp.h);
+                            + ((on_plate || on_preview) ? 0 : (uint64_t)sp.w * sp.h);
         if (sp.off != at)
             return reject("the sprite catalogue is not contiguous at row %u: it starts "
                           "at %lu, the previous plane ends at %lu",

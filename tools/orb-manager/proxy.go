@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
 // proxyOrb forwards /orb/<ipv4>/api/v1/... to http://<ipv4>/api/v1/... on the same
@@ -88,6 +91,14 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := s.device.HTTP().Do(req)
 	if err != nil {
+		// The bus declined, the orb did not. A 503 in under two seconds with
+		// the real reason beats an 8-second wait ending in the same lie — and
+		// it must not be dressed as "unreachable": a board streaming a plane
+		// to this hub is reachable by definition.
+		if errors.Is(err, orbnet.ErrLaneBusy) {
+			proxyError(w, http.StatusServiceUnavailable, "orb busy: another transfer is on its lane; retry shortly")
+			return
+		}
 		// A wired-only hub cannot reach an orb sitting on its own provisioning
 		// AP (192.168.4.1), or the orb is simply down. Report that as JSON, not
 		// the plaintext http.Error body — the client parses every /orb reply as

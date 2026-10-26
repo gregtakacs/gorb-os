@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
 // The regression these pin: a board reflashed out of gorb-os is dropped off its cable by
@@ -795,4 +797,32 @@ func TestABoardInDownloadModeIsIdentifiedUnprompted(t *testing.T) {
 	if _, ok := s.contradicts("/dev/ttyACM3"); !ok {
 		t.Error("the probe filed no usable verdict")
 	}
+}
+
+// The reset-stays-holstered rule. The 45 s preview stall of 2026-10-26 showed
+// the hub could be mid-transfer with a board while its own sweep filed that
+// stall as silence — and an owed probe is a reboot pulse. A lane-busy decline
+// must defer the debt, not pay it in resets, and must leave the lead claim
+// intact for the next sweep.
+func TestProbeNotPulsedWhenTheBusIsMidTransfer(t *testing.T) {
+	p := &probeScript{answer: map[string]func() (esprom.OrbInfo, error){reflashPort: foreignAnswer}}
+	s := launchHub(t, goldBenchPorts(), p)
+	s.identities.record(reflashPort, esprom.OrbInfo{Port: reflashPort,
+		MAC: "44:bd:8d:78:26:18", IsOrb: false, Project: "esp-idf"}, provenProbe)
+	backdateIdentity(s, reflashPort, time.Hour)
+	s.lanDial = func(string) (*orbnet.Status, error) {
+		return nil, fmt.Errorf("orbnet: 192.0.2.31: %w", orbnet.ErrLaneBusy)
+	}
+
+	s.identifyCables(context.Background())
+
+	if p.count() != 0 {
+		t.Fatalf("a queue decline pulsed the console probe %d times; mid-transfer is not silence", p.count())
+	}
+	// Declined questions release their claim: the debt must re-ask next cycle,
+	// not rot into a lock that blocks the question forever.
+	if !s.identities.begin(reflashPort) {
+		t.Error("the declined question left the lead claimed; a defer became a lock")
+	}
+	s.identities.release(reflashPort)
 }

@@ -7,10 +7,30 @@ package orbnet
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
 	"time"
 )
+
+// ErrLaneBusy is what a control dial gets when the orb's lane is held by a hub
+// transfer and does not free within the control queue budget. It is the
+// opposite of a verdict: the hub itself has an in-flight request to that orb,
+// so the orb answered the door minutes ago at worst. Every consumer must treat
+// it as neutral — never a silence verdict, never grounds for a reset pulse,
+// and for the UI a fast 503 that names the cause instead of an 8-second
+// timeout that names nothing. This error is what makes the bus honest: waiting
+// is reported as waiting, not as death.
+var ErrLaneBusy = errors.New("orbnet: orb busy: another transfer is in flight")
+
+// controlQueueWait is how long a control dial waits for a busy lane before it
+// reports ErrLaneBusy instead. 1.5 s sits under a healthy preview's ~2.3 s
+// hold on purpose: a status poll queued behind a WORKING stream usually waits
+// out a slice of it and still gets served (the lane passes to it when the
+// stream closes), and a poll queued behind a STALLED stream finds out in 1.5 s
+// that it is stuck behind something, not in 8 s when its whole budget has
+// burned — at which point the failure was indistinguishable from a dead orb.
+const controlQueueWait = 1500 * time.Millisecond
 
 // Lane hands out the right to open one connection to one host at a time. The
 // hub builds a single Lane and gives it to all four of its clients, so the
@@ -31,8 +51,20 @@ type Lane interface {
 // DialGate is the Lane the hub uses: a per-host ticket counter with a priority
 // queue. Its zero value is not usable; build one with NewDialGate.
 type DialGate struct {
-	mu    sync.Mutex
-	lanes map[string]*laneState
+	mu sync.Mutex
+	// controlWait is the control queue budget; see controlQueueWait. It is a
+	// field only so tests can compress time; SetControlWait is the writer and
+	// zero means the default.
+	controlWait time.Duration
+	lanes       map[string]*laneState
+}
+
+// SetControlWait overrides the control queue budget. Call it before the gate
+// serves traffic; it exists for tests, which cannot sleep 1.5 s per case.
+func (g *DialGate) SetControlWait(d time.Duration) {
+	g.mu.Lock()
+	g.controlWait = d
+	g.mu.Unlock()
 }
 
 type laneState struct {
@@ -92,11 +124,40 @@ func (g *DialGate) Acquire(ctx context.Context, host string, bulk bool) (func(),
 	st.waiters = append(st.waiters, nil)
 	copy(st.waiters[pos+1:], st.waiters[pos:])
 	st.waiters[pos] = w
+	queueBudget := g.controlWait
+	if queueBudget == 0 {
+		queueBudget = controlQueueWait
+	}
 	g.mu.Unlock()
+
+	// A control dial waits for the lane only as long as its queue budget; past
+	// that it reports ErrLaneBusy rather than burn its caller's whole timeout
+	// sitting in a queue — a queue stall that dies at the caller's deadline is
+	// indistinguishable from an orb that never answered. A bulk dial waits its
+	// full ctx: a preview or a push that eventually gets the lane still works,
+	// and its own client timeout already bounds the wait.
+	var overBudget <-chan time.Time
+	if !bulk {
+		timer := time.NewTimer(queueBudget)
+		defer timer.Stop()
+		overBudget = timer.C
+	}
 
 	select {
 	case <-w.ready:
 		return g.releaser(host), nil
+	case <-overBudget:
+		g.mu.Lock()
+		if w.granted {
+			// Granted the same instant the budget ran out: the lane is ours.
+			// Take it — we are through the queue, so the busy report is moot.
+			g.mu.Unlock()
+			return g.releaser(host), nil
+		}
+		w.canceled = true
+		g.dropWaiter(st, w)
+		g.mu.Unlock()
+		return nil, ErrLaneBusy
 	case <-ctx.Done():
 		g.mu.Lock()
 		if w.granted {

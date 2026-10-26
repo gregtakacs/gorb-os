@@ -397,7 +397,7 @@ func TestAHostThatCannotReadASerialStillCorroborates(t *testing.T) {
 // is a call site, and a call site can only be pinned by reading the file that holds it.
 func TestTheLivenessDialFeedsTheIdentityCache(t *testing.T) {
 	src := readFile(t, "main.go")
-	i := strings.Index(src, "s.live.probe = func(ip string) bool {")
+	i := strings.Index(src, "s.live.probe = func(ip string) (bool, bool) {")
 	if i < 0 {
 		t.Fatal("the liveness probe lost the wiring the Forget gate depends on")
 	}

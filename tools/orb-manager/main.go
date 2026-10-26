@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"embed"
+	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -377,10 +378,20 @@ func main() {
 	// firmware/theme upload are bulk and may be passed in the queue by a control
 	// dial, so one slow stream never reads as a dead board to the ten-second tick.
 	dial := orbnet.NewDialGate()
-	s.orb = orbnet.NewGatedClient(scanTimeout, dial, false)
+	// The sweep client's budget must sit above the gate's control queue budget
+	// (1.5 s) or the client timeout fires first and a queue decline arrives as
+	// a deadline — the silence lie ErrLaneBusy exists to prevent. 2 s is the
+	// per-attempt grace orbnet's status retry already prices, and the sweep's
+	// old 400 ms could never have heard a busy report at all.
+	s.orb = orbnet.NewGatedClient(2*time.Second, dial, false)
 	s.device = orbnet.NewGatedClient(deviceTimeout, dial, false)
 	s.ota = orbnet.NewGatedClient(otaTimeout, dial, true)
-	s.preview = orbnet.NewGatedClient(previewTimeout, dial, true)
+	// The preview client streams ~100 KB planes from a single-task httpd that
+	// can open the connection and then wedge mid-send-loop (45 s of zero
+	// bytes, bench 2026-10-26, and every other dial to that orb starved behind
+	// it). firstByte cuts a stall-before-first-byte in 8 s; a healthy plane
+	// still gets the full 45 s transfer budget.
+	s.preview = orbnet.NewGatedStreamClient(previewTimeout, 8*time.Second, dial, true)
 	// The free identity question (launchprobe.go's lanProof), on the same client and the
 	// same orb-shaped answer the liveness sweeper already pays for every remembered
 	// address. Written as a closure over s rather than bound to the client directly
@@ -398,6 +409,11 @@ func main() {
 		st, err := s.orb.Status(ip)
 		if err == nil {
 			return st, nil
+		}
+		// A queue decline will still be a decline a pause later — the holder
+		// is mid-transfer, not mid-boot. Return it now and let lanProof defer.
+		if errors.Is(err, orbnet.ErrLaneBusy) {
+			return nil, err
 		}
 		time.Sleep(lanProofRetryPause)
 		return s.orb.Status(ip)
@@ -473,9 +489,17 @@ func main() {
 	// interval for facts it was already holding. Throwing them away was the bug;
 	// foldProbeStatus is the ten lines that stopped it. A dial renews facts, never the
 	// presence clock — the Forget gate still reads announces only.
-	s.live.probe = func(ip string) bool {
+	s.live.probe = func(ip string) (bool, bool) {
 		st, err := s.orb.Status(ip)
 		if err != nil {
+			// The hub's own bus is mid-transfer with this orb. The dial never
+			// reached the wire, so this tick files nothing and keeps the last
+			// verdict: silence is the absence of an answer, and a queue
+			// decline is the presence of the hub's own traffic on that lane.
+			if errors.Is(err, orbnet.ErrLaneBusy) {
+				alive, _ := s.live.verdict(ip, time.Now())
+				return alive, false
+			}
 			// A board on a lead that stops answering the door it used to answer is the
 			// only free sign that something was written to it without the hub's
 			// knowledge. Silence is not a verdict — a boot-loop and a loose cable look
@@ -483,7 +507,7 @@ func main() {
 			// question, and that question is what makes the button unnecessary for a
 			// plugged-in board reflashed by ESP-IDF. See noteWiredSilence.
 			s.noteWiredSilence(ip)
-			return false
+			return false, true
 		}
 		// An orb that answers this door has just told the hub, in its own eFuse MAC, that
 		// it is an orb running gorb-os. That is the same fact a probe buys with a reboot,
@@ -502,7 +526,7 @@ func main() {
 		// would otherwise cause on every install.
 		s.clearSelfReboot(st.MAC)
 		s.foldProbeStatus(ip, st)
-		return true
+		return true, true
 	}
 	go s.probeLiveness(cableCtx)
 	// Once at startup, before the first card is worth looking at: the file already says

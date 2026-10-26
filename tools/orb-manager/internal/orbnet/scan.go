@@ -3,6 +3,8 @@ package orbnet
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -13,59 +15,67 @@ import (
 // idle well past a UI-tuned timeout.
 const orbStatusGrace = 2 * time.Second
 
-// scanClient is the orbStatus client with a deadline that fits a momentarily
-// busy single-socket orb (observed 180–530 ms per status on the bench), unlike
-// the UI client's tight 400 ms timeout.
-var scanClient = &http.Client{Timeout: orbStatusGrace}
-
-// orbStatus fetches and classifies one host's status. The orb's httpd has a
-// 10-socket backlog and its own config page polls status at a few Hz, so a
-// single GET intermittently gets refused or stalls (bench: 3 of 48 burst
-// requests answered). Only callers that already know the orb's address reach
-// here, so retries are affordable. But a clean 200 whose body is not orb-shaped
-// is a definitive "not an orb" — retrying it would only waste wall time on a
-// printer or router serving JSON on :80 — so we retry transport/HTTP errors
-// only, and give up immediately on a valid-but-foreign response.
-func (c *Client) orbStatus(ip string) (Status, bool) {
+// orbStatus fetches and classifies one host's status, retrying transport
+// failures up to three attempts. It dials over c.h — the client's own gated,
+// orb-tuned transport — and not a package-global client: an ungateable status
+// dial was the bus's bypass, and the ten-second sweep using it could SYN-pile
+// a wedge the gate existed to serialize. The per-attempt context caps the wait
+// to orbStatusGrace, so c.h's larger client timeout never stretches a sweep
+// dial.
+//
+// ErrLaneBusy is returned as SOON as it appears, without retrying: re-queuing
+// a dial the bus just declined spends the whole retry budget to likely hear
+// the same thing, and the next sweep tick asks honestly anyway.
+func (c *Client) orbStatus(ip string) (Status, bool, error) {
+	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		s, ok, retry := c.orbStatusOnce(ip)
+		s, ok, retry, err := c.orbStatusOnce(ip)
 		if ok {
-			return s, true
+			return s, true, nil
+		}
+		lastErr = err
+		if err != nil && errors.Is(err, ErrLaneBusy) {
+			return s, false, err
 		}
 		if !retry {
-			return Status{}, false
+			return s, false, err // definitive non-orb, or a refusal worth reporting
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
-	return Status{}, false
+	return Status{}, false, lastErr
 }
 
-// orbStatusOnce returns (status, classified, shouldRetry). shouldRetry is false
-// for a definitive non-orb (a clean 200 that failed the shape check).
-func (c *Client) orbStatusOnce(ip string) (Status, bool, bool) {
+// orbStatusOnce returns (status, classified, shouldRetry, err). shouldRetry is
+// false for a definitive non-orb (a clean 200 that failed the shape check) and
+// for ErrLaneBusy; err names why for the two failure kinds the caller must tell
+// apart: a stall the bus reported, and everything else.
+func (c *Client) orbStatusOnce(ip string) (Status, bool, bool, error) {
 	var s Status
 	ctx, cancel := context.WithTimeout(context.Background(), orbStatusGrace)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url(ip, "/api/v1/status"), nil)
 	if err != nil {
-		return s, false, false
+		return s, false, false, err
 	}
-	resp, err := scanClient.Do(req)
+	resp, err := c.h.Do(req)
 	if err != nil {
-		return s, false, true // transport error: the orb may just be busy
+		if errors.Is(err, ErrLaneBusy) {
+			return s, false, false, fmt.Errorf("orbnet: %s: %w", ip, ErrLaneBusy)
+		}
+		return s, false, true, err // transport error: the orb may just be busy
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return s, false, true // 5xx/conn-reset under load: retryable
+		return s, false, true, fmt.Errorf("orbnet: %s answered /api/v1/status with %s", ip, resp.Status)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
 	if err != nil {
-		return s, false, true
+		return s, false, true, err
 	}
 	if !classifyOrbJSON(body, &s) {
-		return s, false, false // valid JSON, just not an orb
+		return s, false, false, nil // valid JSON, just not an orb
 	}
-	return s, true, false
+	return s, true, false, nil
 }
 
 // classifyOrbJSON decodes a status body and requires the orb-shaped fields.

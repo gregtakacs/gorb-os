@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbbind"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbmdns"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
 // This file exists because a USB descriptor cannot tell an orb from a board that used
@@ -300,9 +302,17 @@ func sameChip(a, b string) bool {
 //
 // On a refusal this function writes nothing at all. An unanswered LAN question is an
 // absence of evidence, and filing it would let the absence speak as a verdict.
-func (s *Server) lanProof(c cableSighting) bool {
+//
+// It returns (proved, deferred). deferred is the fourth refusal with a different
+// consequence: the hub's own bus declined the dial because a transfer to this orb is
+// mid-flight (ErrLaneBusy). That orb answered this hub minutes ago at worst — the
+// in-flight request IS this hub's request — so the probe stays owed and NO reset is
+// pulsed this cycle; the debt re-asks on the next one. Confusing queue with silence
+// was how a hub could reboot its own board for holding a thumbnail the operator asked
+// for, which the 45 s preview stall of 2026-10-26 made reachable.
+func (s *Server) lanProof(c cableSighting) (bool, bool) {
 	if s.lanDial == nil || s.identities == nil || c.mac == "" {
-		return false
+		return false, false
 	}
 	// fleetKnown, not a raw row read: it refuses a board this hub left lonely, whose
 	// firmware has no Wi-Fi to answer on, and it is the same question the card asks.
@@ -311,7 +321,7 @@ func (s *Server) lanProof(c cableSighting) bool {
 	// entry in the file is not what gets dialled.
 	row, known := s.fleetKnown(c.mac)
 	if !known || row.IP == "" || softAPAddr(row.IP) {
-		return false
+		return false, false
 	}
 	// Claim the lead for the length of the question. The dial opens no port, but the
 	// answer it files does: record releases the claim a probe holds, so a door answer
@@ -319,18 +329,27 @@ func (s *Server) lanProof(c cableSighting) bool {
 	// first was still reading the console. A question that costs nothing can wait for
 	// one that costs a reboot.
 	if !s.identities.begin(c.port) {
-		return false
+		return false, false
 	}
 	st, err := s.lanDial(row.IP)
+	if errors.Is(err, orbnet.ErrLaneBusy) {
+		// Declined by the bus, not by the board: keep the debt, do not pulse,
+		// and say so — a queue stall that produces a silent `continue` reads
+		// later like a probe that was never attempted.
+		log.Printf("orb-manager: %s holds our bus mid-transfer, so the %s probe stays owed rather than being paid in reset",
+			row.IP, c.port)
+		s.identities.release(c.port)
+		return false, true
+	}
 	if err != nil || st == nil {
 		s.identities.release(c.port)
-		return false
+		return false, false
 	}
 	if !sameChip(st.MAC, c.mac) {
 		log.Printf("orb-manager: %s answers %s as chip %q, not the board on this lead; the probe stays owed",
 			row.IP, c.port, st.MAC)
 		s.identities.release(c.port)
-		return false
+		return false, false
 	}
 	// doneLan records the answer, and record is what gives the claim back.
 	s.identities.doneLan(c.port, esprom.OrbInfo{
@@ -350,7 +369,7 @@ func (s *Server) lanProof(c cableSighting) bool {
 	s.foldProbeStatus(row.IP, st)
 	log.Printf("orb-manager: %s is an orb running %s over the LAN, so %s keeps its cable without a reset",
 		c.mac, st.FW, c.port)
-	return true
+	return true, false
 }
 
 // probeCableNow pays one reboot and files the answer. It claims the cable exactly as the
@@ -500,8 +519,14 @@ func (s *Server) identifyCables(ctx context.Context) int {
 		// going to hear, and a hub that pulsed anyway would be paying eight seconds of
 		// blank display for a fact it was holding. Silence here is not a refusal to
 		// answer — it is the answer to the harder question, so the probe goes ahead.
-		if s.lanProof(c) {
+		proved, deferred := s.lanProof(c)
+		if proved {
 			asked++
+			continue
+		}
+		if deferred {
+			// The bus is mid-transfer with this orb. The debt survives to the
+			// next sweep; the reset stays holstered.
 			continue
 		}
 		if s.probeCableNow(ctx, c, why) {

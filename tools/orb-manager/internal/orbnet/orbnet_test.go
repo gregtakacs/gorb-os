@@ -47,9 +47,9 @@ func TestStatusCarriesTheBaseMAC(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s, classified, retryable := NewClient(500 * time.Millisecond).orbStatusOnce(strings.TrimPrefix(srv.URL, "http://"))
-	if !classified || retryable {
-		t.Fatalf("orbStatusOnce: classified=%v retryable=%v", classified, retryable)
+	s, classified, retryable, err := NewClient(500 * time.Millisecond).orbStatusOnce(strings.TrimPrefix(srv.URL, "http://"))
+	if !classified || retryable || err != nil {
+		t.Fatalf("orbStatusOnce: classified=%v retryable=%v err=%v", classified, retryable, err)
 	}
 	if s.MAC != "44bd8d608088" {
 		t.Errorf("MAC = %q, want the base MAC exactly as the device sent it", s.MAC)

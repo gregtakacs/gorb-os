@@ -66,7 +66,7 @@ func TestARefusedLiveRowCarriesTheDialogVerdict(t *testing.T) {
 	// is what makes the gate honest on the render path (no dial, no guessing).
 	s2, _ := gateClock(now)
 	quietRow(s2, macHall, "192.0.2.31", now)
-	s2.live.probe = func(string) bool { return false }
+	s2.live.probe = func(string) (bool, bool) { return false, true }
 	s2.live.check("192.0.2.31")
 	rows2 := []orbRow{{MAC: macHall}}
 	s2.annotateForget(rows2, now)
@@ -92,7 +92,7 @@ func TestTheRowOfABoardThatJustLeftTheBenchNamesNoLead(t *testing.T) {
 	s, clock := gateClock(now)
 	// Heard from 20 seconds ago, and the unplug kick already dialled it dead.
 	s.fleet.Observe(obsAt(macHall, "192.168.2.31", now.Add(-20*time.Second)))
-	s.live.probe = func(string) bool { return false }
+	s.live.probe = func(string) (bool, bool) { return false, true }
 	s.live.check("192.168.2.31")
 	stubCables(s) // the bench is empty: the sweep sees nothing, as after a real unplug
 	rows := []orbRow{{MAC: macHall}}
@@ -170,9 +170,9 @@ func TestAnAnsweringAddressIsNotForgettable(t *testing.T) {
 	s, clock := gateClock(now)
 	quietRow(s, macHall, "192.168.2.31", now)
 	dials := 0
-	s.live.probe = func(ip string) bool {
+	s.live.probe = func(ip string) (bool, bool) {
 		dials++
-		return ip == "192.168.2.31"
+		return ip == "192.168.2.31", true
 	}
 
 	// The door asks, because confirm is set.
@@ -208,7 +208,7 @@ func TestADeadAddressIsForgettable(t *testing.T) {
 	s, clock := gateClock(now)
 	quietRow(s, macHall, "192.168.2.31", now)
 	dials := 0
-	s.live.probe = func(string) bool { dials++; return false }
+	s.live.probe = func(string) (bool, bool) { dials++; return false, true }
 	for i := 0; i < 5; i++ {
 		if ok, why := s.forgetGate(macHall, clock(), true); !ok {
 			t.Fatalf("a board that does not answer was refused Forget: %s", why)
@@ -232,7 +232,7 @@ func TestACardNeverDialsAndNeverGuesses(t *testing.T) {
 	s, clock := gateClock(now)
 	quietRow(s, macHall, "192.168.2.31", now)
 	dials := 0
-	s.live.probe = func(string) bool { dials++; return false }
+	s.live.probe = func(string) (bool, bool) { dials++; return false, true }
 	if ok, why := s.forgetGate(macHall, clock(), false); ok || !strings.Contains(why, "asking") {
 		t.Errorf("the render path returned %v with %q: an unpriced address must fail closed "+
 			"saying the hub is asking", ok, why)
@@ -256,7 +256,7 @@ func TestASoftAPAddressIsNeverDialed(t *testing.T) {
 	s, clock := gateClock(now)
 	s.fleet.Observe(obsAt(macHall, "192.168.4.1", now.Add(-3*time.Minute)))
 	dials := 0
-	s.live.probe = func(string) bool { dials++; return true }
+	s.live.probe = func(string) (bool, bool) { dials++; return true, true }
 	if ok, _ := s.forgetGate(macHall, clock(), true); !ok {
 		t.Error("an unreachable AP address was held against the row")
 	}
@@ -290,11 +290,11 @@ func TestTheSweeperDialsEveryRememberedAddressOnce(t *testing.T) {
 	s := newHub()
 	var mu sync.Mutex
 	asked := map[string]int{}
-	s.live.probe = func(ip string) bool {
+	s.live.probe = func(ip string) (bool, bool) {
 		mu.Lock()
 		asked[ip]++
 		mu.Unlock()
-		return false
+		return false, true
 	}
 	for i := 0; i < 20; i++ {
 		s.fleet.Observe(obsAt(macFor(i), fmt.Sprintf("192.168.9.%d", i+1), time.Now().Add(-time.Hour)))
@@ -327,7 +327,7 @@ func TestTheSweeperDialsEveryRememberedAddressOnce(t *testing.T) {
 		}
 	}
 	mu.Unlock()
-	s.live.probe = func(ip string) bool { return ip == "192.168.9.1" }
+	s.live.probe = func(ip string) (bool, bool) { return ip == "192.168.9.1", true }
 	if !s.live.probeAll(context.Background(), targets, 0) {
 		t.Error("a board that came back to life did not count as a change")
 	}
@@ -338,7 +338,7 @@ func TestTheSweeperDialsEveryRememberedAddressOnce(t *testing.T) {
 func TestTheSweeperWakesOnlyOnAChange(t *testing.T) {
 	s := newHub()
 	live := true
-	s.live.probe = func(string) bool { return live }
+	s.live.probe = func(string) (bool, bool) { return live, true }
 	s.fleet.Observe(obsAt(macHall, "192.168.2.31", time.Now().Add(-time.Hour)))
 	targets := s.livenessTargets()
 	if !s.live.probeAll(context.Background(), targets, 0) {
@@ -357,7 +357,7 @@ func TestTheSweeperWakesOnlyOnAChange(t *testing.T) {
 // provisioning network is not a dial target, and dialing it files a false verdict.
 func TestTheSweeperSkipsUnreachableAddresses(t *testing.T) {
 	s := newHub()
-	s.live.probe = func(string) bool { return true }
+	s.live.probe = func(string) (bool, bool) { return true, true }
 	s.fleet.Observe(obsAt(macHall, "192.168.4.1", time.Now().Add(-time.Hour)))
 	s.fleet.Observe(obsAt(macBed, "192.168.2.40", time.Now().Add(-time.Hour)))
 	s.orbIP = "192.168.4.1"
@@ -375,7 +375,7 @@ func TestTheDoorRefusesWhatTheCardWouldHaveRefused(t *testing.T) {
 	now := time.Now()
 	s, _ := gateClock(now)
 	s.fleet.Observe(obsAt(macHall, "192.168.2.31", now.Add(-10*time.Second)))
-	s.live.probe = func(string) bool { return true }
+	s.live.probe = func(string) (bool, bool) { return true, true }
 	rec := postFleet(t, s, "/api/fleet/forget", map[string]string{"mac": macHall},
 		map[string]string{"X-Orb-Token": s.token})
 	if rec.Code != http.StatusBadRequest {
@@ -393,7 +393,7 @@ func TestTheDoorRefusesWhatTheCardWouldHaveRefused(t *testing.T) {
 	s2, _ := gateClock(now)
 	quietRow(s2, macHall, "192.168.2.31", now)
 	s2.grants.learnAs("192.168.2.31", macHall)
-	s2.live.probe = func(string) bool { return false }
+	s2.live.probe = func(string) (bool, bool) { return false, true }
 	rec = postFleet(t, s2, "/api/fleet/forget", map[string]string{"mac": macHall},
 		map[string]string{"X-Orb-Token": s2.token})
 	if rec.Code != http.StatusOK {
@@ -496,7 +496,7 @@ func TestAFreshVerdictHoldsTheGateAndAnOldOneDoesNot(t *testing.T) {
 		t.Errorf("a fresh alive verdict let the card draw Forget (%v, %q)", ok, why)
 	}
 	s.live.record("192.168.2.31", true, now.Add(-liveVerdictStale-time.Minute))
-	s.live.probe = func(string) bool { return false }
+	s.live.probe = func(string) (bool, bool) { return false, true }
 	if ok, why := s.forgetGate(macHall, clock(), true); !ok {
 		t.Errorf("a stale alive verdict held the door shut un-re-priced: %q", why)
 	}
@@ -511,11 +511,11 @@ func TestAnUnplugRedialsTheRememberedAddress(t *testing.T) {
 	s := newHub()
 	var mu sync.Mutex
 	var dialed []string
-	s.live.probe = func(ip string) bool {
+	s.live.probe = func(ip string) (bool, bool) {
 		mu.Lock()
 		dialed = append(dialed, ip)
 		mu.Unlock()
-		return true
+		return true, true
 	}
 	s.fleet.Observe(obsAt(macHall, "192.168.2.31", time.Now()))
 	f := plugCables(s, nil)
@@ -804,7 +804,7 @@ func TestAFleetSweepStandsDownWhileAPlaneIsInFlight(t *testing.T) {
 	s.live = &liveCache{
 		byIP:  map[string]liveMark{},
 		stale: liveVerdictStale,
-		probe: func(string) bool { dialed++; return true },
+		probe: func(string) (bool, bool) { dialed++; return true, true },
 	}
 	s.imu.Lock()
 	s.orbIP = "192.0.2.10"
@@ -847,5 +847,44 @@ func TestOneReleaseDoesNotExtinguishAnotherRelaysClaim(t *testing.T) {
 	s.previewRelease()
 	if s.previewInFlight() {
 		t.Error("the count never came back to idle")
+	}
+}
+
+// A declined dial is not a verdict. The gate reports ErrLaneBusy when the hub's
+// own bus is mid-transfer with an orb, and the probe closure answers with the
+// old verdict and fresh=false. This test pins what the cache must do with that:
+// file nothing, and do not age a stale answer into a fresh one either — the
+// silence clock has to keep running toward the next real chance to ask.
+func TestADeclinedProbeTickFilesNoVerdict(t *testing.T) {
+	s := newHub()
+	// The closure's contract for an address with no verdict yet: decline to
+	// claim, decline to record — (false, false).
+	s.live.probe = func(string) (bool, bool) { return false, false }
+	if s.live.check("192.0.2.9") {
+		t.Error("a declined probe claimed the address alive")
+	}
+	s.imu.Lock()
+	n := len(s.live.byIP)
+	s.imu.Unlock()
+	if n != 0 {
+		t.Fatalf("a declined tick recorded %d verdicts; a queue decline must file nothing", n)
+	}
+
+	s.live.probe = func(string) (bool, bool) { return true, true }
+	if !s.live.check("192.0.2.9") {
+		t.Fatal("setup: a fresh alive answer was not recorded")
+	}
+	s.imu.Lock()
+	at := s.live.byIP["192.0.2.9"].at
+	s.imu.Unlock()
+	s.live.probe = func(string) (bool, bool) { return true, false }
+	if !s.live.check("192.0.2.9") {
+		t.Error("the echo of the last verdict was not kept while the bus was busy")
+	}
+	s.imu.Lock()
+	at2 := s.live.byIP["192.0.2.9"].at
+	s.imu.Unlock()
+	if !at2.Equal(at) {
+		t.Error("a declined tick renewed the verdict clock; an echo is not an answer")
 	}
 }

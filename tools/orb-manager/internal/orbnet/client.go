@@ -95,7 +95,7 @@ func (c *Client) Port() string {
 // concurrency policy it did not ask for). The running hub builds its clients with
 // NewGatedClient so they share one Lane; see there.
 func NewClient(respTimeout time.Duration) *Client {
-	return newClient(respTimeout, nil, false)
+	return newClient(respTimeout, 0, nil, false)
 }
 
 // NewGatedClient is NewClient on a shared scheduling Lane. Every client built
@@ -107,14 +107,31 @@ func NewClient(respTimeout time.Duration) *Client {
 // marks a long-stream client (preview, upload) whose queued waits a control
 // client (status, scan, proxy) is allowed to pass. See Lane and DialGate.
 func NewGatedClient(respTimeout time.Duration, lane Lane, bulk bool) *Client {
-	return newClient(respTimeout, lane, bulk)
+	return newClient(respTimeout, 0, lane, bulk)
 }
 
-func newClient(respTimeout time.Duration, lane Lane, bulk bool) *Client {
+// NewGatedStreamClient is NewGatedClient for a client whose requests stream
+// large replies (preview, upload) and can therefore stall between the dial and
+// the first response byte. firstByte bounds THAT gap: ResponseHeaderTimeout on
+// the transport, so a connection that opens and then says nothing dies in
+// firstByte instead of holding its lane for the whole respTimeout. A wedge in
+// the orb's send loop held a hub preview for 45 s on 2026-10-26 and starved
+// every other dial to that orb for the length of it; the budget turns that
+// class of stall into a retryable error at 8 s. The orb answers the status
+// line before it chunks a plane (orb_net.c h_sd_preview), so a healthy reply
+// never spends the budget, and an 8 MB upload that legitimately flash-writes
+// for tens of seconds before answering is why this knob exists per-client
+// rather than on every client.
+func NewGatedStreamClient(respTimeout, firstByte time.Duration, lane Lane, bulk bool) *Client {
+	return newClient(respTimeout, firstByte, lane, bulk)
+}
+
+func newClient(respTimeout, firstByte time.Duration, lane Lane, bulk bool) *Client {
 	return &Client{h: &http.Client{
 		Timeout: respTimeout,
 		Transport: &http.Transport{
-			DialContext: gatedDialer(lane, bulk),
+			DialContext:           gatedDialer(lane, bulk),
+			ResponseHeaderTimeout: firstByte,
 			// Deliberately NO MaxConnsPerHost. One connection to an orb at a time
 			// is exactly what the orb's single-task httpd can serve, and it is
 			// achieved here by the DialGate (lane): every hub client shares one
@@ -158,9 +175,15 @@ func (c *Client) url(ip, path string) string {
 	return "http://" + ip + path
 }
 
-// Status fetches one orb's status by ip.
+// Status fetches one orb's status by ip. ErrLaneBusy comes back unwrapped from
+// the queue, not folded into "did not answer": a dial the hub's own bus declined
+// to schedule is information about the bus, and a caller that filed it as
+// silence would reboot a board mid-transfer (liveness.probe, launchprobe.lanProof).
 func (c *Client) Status(ip string) (*Status, error) {
-	s, ok := c.orbStatus(ip)
+	s, ok, err := c.orbStatus(ip)
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, fmt.Errorf("orbnet: %s did not answer as an orb on /api/v1/status", ip)
 	}

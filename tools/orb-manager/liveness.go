@@ -78,9 +78,12 @@ type liveMark struct {
 // like the cable sweep, so a test hub dials nothing it did not ask for and a hand-built
 // Server reports every address as unknown rather than pretending to have asked.
 type liveCache struct {
-	mu    sync.Mutex
-	byIP  map[string]liveMark
-	probe func(ip string) bool
+	mu   sync.Mutex
+	byIP map[string]liveMark
+	// probe answers "is this address alive" — and whether it got to ask.
+	// fresh=false means the question was never put to the network (the hub's
+	// own bus declined it), which is not a verdict and must not be recorded.
+	probe func(ip string) (alive, fresh bool)
 	stale time.Duration
 }
 
@@ -122,8 +125,15 @@ func (c *liveCache) check(ip string) bool {
 	if c == nil || c.probe == nil || ip == "" {
 		return false
 	}
-	alive := c.probe(ip)
-	c.record(ip, alive, time.Now())
+	alive, fresh := c.probe(ip)
+	// fresh=false is the probe saying "I could not ask" — the hub's own bus is
+	// mid-transfer with this orb (ErrLaneBusy). Nothing gets recorded: filing
+	// the echo of an old verdict as a new answer would age a dead board into a
+	// live claim, and filing it as dead is the silence lie the busy report
+	// exists to prevent.
+	if fresh {
+		c.record(ip, alive, time.Now())
+	}
 	return alive
 }
 

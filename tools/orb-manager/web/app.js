@@ -747,10 +747,50 @@ async function cableFlash(wipe) {
 // time the modal opens, so a press that forces an upgrade can never leak into the
 // next board opened in the same page.
 let ffForced = false;
+
+// ffPoll drives the Wi-Fi update's progress bar. The hub's POST is one blocking
+// upload the browser cannot watch — the bytes cross hub-to-orb, not page-to-hub
+// — so the page polls /api/orb/update/progress while the POST is open, and the
+// hub answers from the byte counter its HTTP writer keeps. The board itself is
+// silent through the whole upload (h_ota holds the one httpd task), which is
+// exactly why the hub has to be the one that knows.
+let ffTimer = 0;
+function ffWatchStop() { if (ffTimer) { clearInterval(ffTimer); ffTimer = 0; } }
+function ffWatchStart(ip) {
+  ffWatchStop();
+  const bar = $("#ff-bar > div"), barBox = $("#ff-bar");
+  if (barBox) barBox.hidden = false;
+  if (bar) bar.style.width = "0%";
+  ffTimer = setInterval(async () => {
+    if (document.hidden) return;                    // a background tab owes nobody a dial
+    try {
+      // hubFetch, not getJSON: the route is behind the control gate, and getJSON
+      // sends no token — a page whose polls died in a silent catch is exactly how
+      // this bar shipped blank once. The envelope is {ok,data:{...}} in one layer.
+      const r = await hubFetch("/api/orb/update/progress?ip=" + encodeURIComponent(ip));
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j || j.ok !== true) return;      // a hub mid-restart or a gate that refused
+      const p = j.data || {};
+      if (p.phase === "idle") return;               // the POST has not opened its tracker yet
+      const fill = $("#ff-bar > div");
+      if (fill && typeof p.pct === "number") fill.style.width = p.pct + "%";
+      const kb = (n) => Math.round((n || 0) / 1024);
+      const line = p.phase === "uploading"
+        ? "sending " + kb(p.sent) + " of " + kb(p.total) + " KB \\u2014 " + p.pct + "%"
+        : p.phase === "staged" ? "staged in the spare slot; asking the orb to reboot\\u2026"
+        : p.phase === "rebooting" ? "rebooting into the new image; it leaves the wire for one boot"
+        : p.phase === "failed" ? "the orb refused the upload"
+        : p.phase || "";
+      if (line) $("#ff-state").textContent = line;
+    } catch (e) { /* a hub mid-restart: the POST's own outcome will land */ }
+  }, 700);
+}
+
 async function wifiUpdate() {
   if (!current.ip) return;
   const state = $("#ff-state"), go = $("#ff-go");
   state.textContent = "uploading to " + current.ip + "\u2026";
+  ffWatchStart(current.ip);
   try {
     const r = await hubFetch("/api/orb/update", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -766,6 +806,7 @@ async function wifiUpdate() {
         ffForced = true;
         go.textContent = "Flash anyway";
         go.disabled = false;
+        $("#ff-bar").hidden = true;
         state.textContent = j.error + " The bootloader rolls back if the new image never boots.";
         return;
       }
@@ -776,9 +817,15 @@ async function wifiUpdate() {
     $("#mn-verdict").textContent = "";
     $("#ff-mask").hidden = true;   // the card carries the rest; it is not a dead end
     pullFound();
+    // The board is mid-reboot; its stamp (and this card's whole headline) only
+    // becomes true again once it answers. Re-read on the boot's own clock.
+    setTimeout(() => { loadOrb(); pullFound(); }, 8000);
   } catch (e) {
     state.textContent = e.message;
     go.disabled = false;
+  } finally {
+    ffWatchStop();
+    $("#ff-bar").hidden = true;
   }
 }
 
@@ -1919,6 +1966,18 @@ function statusBadge(o) {
 // cannot be allowed to leave the old one behind in the confirm text.
 function paintFound(li, o) {
   const label = li._label;
+  // The open manage card reads its amber Update badge off current.row, and
+  // that object is a snapshot of the frame the card was opened from. Without
+  // this resync a pushed fold — a re-announce, a sweep answer, or the note the
+  // update handler writes itself — repaints the tile and leaves the card below
+  // it holding the stale frame: the board came back on the new firmware and
+  // the card still promises the update it just took. When this frame is the
+  // open board's, the card adopts it.
+  if (current.mac && o.mac && o.mac === current.mac) {
+    current.row = o;
+    current.ip = o.ip || current.ip;
+    gateFwButtons();
+  }
   const softAP = !!o.provisioning && String(o.ip).indexOf("192.168.4.") === 0;
   const shown = o.name || o.instance || o.mac || o.key || "?";
   const addr = o.ip ? o.ip + ":" + o.port : "no address";

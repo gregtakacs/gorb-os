@@ -79,6 +79,66 @@ is what an end user flashes with no choices made. `-force` overrides it for a be
 build; `firmware.Load` stays permissive so a person can still load an old `.zip` and
 deliberately downgrade.
 
+## Ship chain: from an edit to a pushable hub
+
+The whole route one changed source file travels before an orb can be updated from
+the hub's card. Every step is required; skipping the reconfigure or the bake is what
+makes a hub offer — or refuse — the wrong update.
+
+    edit version.txt (if the triple changed)
+    idf.py reconfigure && idf.py build                     # repo root, ESP-IDF shell
+    cd tools/orb-manager
+    make firmware                                          # orbpack build/ -> embedded .zip, + guard test
+    make manager                                           # bin/orb-manager, bundle compiled in
+    # restart the running hub (or relaunch the desktop app) — a running hub serves
+    # the bundle it embedded at build time, never the file on disk
+
+`make firmware` runs the `BuiltInBundle` guard, but the guard only compares the
+committed `.zip` against `$(BUILD_DIR)` when `ORB_BUILD_DIR` is set — the `make
+check` chain. A bare `make firmware` sets it for its own test run, so the baked
+bundle is verified at bake time; what nothing verifies is a hub built **without**
+`make firmware` after a firmware build: it silently ships yesterday's code under
+today's stamp, and `firmware.Compare` judges stamps, not contents. If the hub's
+"update available" flag disagrees with the source tree, check the bake before the
+comparator.
+
+The hub's answer on `/api/orb/update` is the same triple comparison the flash gate
+uses, so a rebuilt image under an unchanged `version.txt` refuses as `same-version`
+with "already runs this firmware". That refusal carries no `overridable` — the only
+overridable verdict on the route is `downgrade`, where the bootloader's rollback
+makes the second press recoverable. The fix for a same-version refusal is the ship
+chain above, not a force: bump the triple, reconfigure, rebuild, re-bake, and the
+fleet sees a real upgrade. A scripted caller can still push through any refusal with
+`{"ip": "...", "force": true}`; the gate guards the button, not the API.
+
+## Watching an update go in
+
+A Wi-Fi push has three surfaces, and all three now say what is happening:
+
+| Surface | What it shows | Source |
+|---|---|---|
+| hub card / flash modal | `sending N of M KB — P%`, then `staged`, then `rebooting` | `GET /api/orb/update/progress?ip=`, fed by the byte count the hub's own HTTP writer takes (`orbnet.PostImageProgress`); polled every 700 ms while the POST is open |
+| orb dial | the boot overlay parks the glass and draws `updating` with a KB count and ring, then the clock returns when the image is staged; a reboot request re-parks on `rebooting` | `h_ota` / `h_reboot` in `main/net/orb_net.c`, same park the card upload uses |
+| anything HTTP after the fact | `slot` and `img:"pending"` on `/api/v1/status` while a staged slot awaits its reboot | the A/B state the boot itself carries |
+
+The hub is the only witness with live bytes: `h_ota` holds the one httpd task for
+the whole body, so the orb answers no request — not even a status one — while a
+push is landing. That is also why the page polls the hub instead of the orb. When
+the push commits, the hub folds the new stamp into the fleet row itself
+(`NoteAnswer`), so the amber badge clears on the next frame instead of waiting for
+the rebooted board to re-announce; a rollback rewrites the row back within one
+sweep, because the board's own answer always outranks the hub's note.
+
+## Same-triple rebuilds: what the gate does and why
+
+`Compare` weighs the declared triple first, so
+`v1.1.0+aac2a23-dirty` against `v1.1.0+91c69fe-dirty` is
+`same-version` — two different builds of one release. The gate refuses it without
+an override, on purpose: a badge and a button that fire on every rebuild would
+re-push the fleet whenever the hub's tree moved, and a version that means nothing
+stops gating anything. The refusal names the verdict so the page and a scripted
+caller can see why it stopped; the ship chain above is the way through.
+
 ## The four surfaces that print it
 
 | Surface | Where it is read |

@@ -1104,9 +1104,11 @@ int main(void)
        (s_pg = &s_pages[PG_APP], !strcmp(page_hint(), "rotate: choose   push: change   hold: close")));
     s_cur = 2;
     for (int t = 0; t < 6; t++) turn_down(1);      /* one row per event, by design */
-    ck("inside an open group the cursor clamps at its last item", s_cur == 4);
+    ck("inside an open group the walk steps down onto the page's back row",
+       s_cur == 5);
     for (int t = 0; t < 6; t++) turn_up(1);
-    ck("and at its first, so the header cannot be escaped by turning", s_cur == 2);
+    ck("and up it clamps at the group's header, then walks free above it",
+       s_cur == 0);
     ck("the group's own position maps back to the app's row number",
        row_to_vis(5, 2) == 2 && row_to_vis(5, 4) == 4 && row_to_vis(5, 1) == 1);
     s_cur = 3;

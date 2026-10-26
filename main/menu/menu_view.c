@@ -490,23 +490,6 @@ static int row_to_vis(int rows, int r)
     return v;
 }
 
-/** The first (or last) ITEM the open group owns, as an app row, or -1 if none. The
- *  cursor's clamp needs these two, and scanning from the group out is the only way
- *  to find them that cannot disagree with owner_group(). */
-static int group_edge(int rows, bool last)
-{
-    if (s_group_open < 0) return -1;
-    int found = -1;
-    for (int i = s_group_open + 1; i < rows; i++) {
-        if (orb_app_opt_kind(s_app, i) == OPT_GROUP) break;    /* the next header ends it */
-        if (drawn_kind(rows, i) == OPT_ITEM) {
-            found = i;
-            if (!last) break;
-        }
-    }
-    return found;
-}
-
 /** Keep the cursor inside the list. The rows can shrink under it — the card
  *  pulled, the app's walk landed, a group closed — and a highlight on a row that
  *  is not on the glass is the knob appearing not to work: the next detent moves
@@ -2072,18 +2055,22 @@ void menu_view_apply_input(int32_t delta, bool pressed)
      * see the whole list at once that reads as the knob being ignored. */
     if (next >= rows) next = rows - 1;
 
-    /* Inside an open group the clamp is the group's, not the page's (D12): a detent
-     * that could carry the cursor out past the header would leave the owner who
-     * just opened a sub-menu somewhere down the page with no way back to the row
-     * that shuts it, which is how a nesting feature becomes a lost knob. The way
-     * out is the long press, and it is stated in the hint. */
+    /* Inside an open group the clamp is the group's, not the page's (D12): while
+     * items are on the glass the walk cannot fly above their header, because a
+     * detent that carried the cursor past the row that shuts the group would
+     * strand the owner who opened it somewhere down the page looking for it.
+     * The floor of the walk is the header itself and the ceiling is the page's
+     * last row (owner, 2026-10-26): the first item and the back row are both on
+     * the glass, and a cursor that could not rotate onto either made an open
+     * group a locked room whose only key was a hold nobody had been told about.
+     * Pressing the header closes it; pressing the back row leaves unchanged. */
     if (s_pg == P(PG_APP) && s_app && s_group_open >= 0) {
         const int arows = orb_app_opt_count(s_app);
         const int cur = vis_to_row(arows, s_cur);
         if (cur >= 0 && drawn_kind(arows, cur) == OPT_ITEM) {
-            const int lo = row_to_vis(arows, group_edge(arows, false));
-            const int hi = row_to_vis(arows, group_edge(arows, true));
-            if (lo >= 0 && hi >= lo) {
+            const int lo = row_to_vis(arows, s_group_open);
+            const int hi = rows - 1;               /* the back row, always last */
+            if (lo >= 0) {
                 if (next < lo) next = lo;
                 if (next > hi) next = hi;
             }

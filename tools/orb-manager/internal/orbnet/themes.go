@@ -2,6 +2,7 @@ package orbnet
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -326,6 +327,23 @@ func (c *Client) ThemePreview(ip, id string) ([]byte, int, error) {
 	}
 	if len(body) > maxDeviceReply {
 		return nil, resp.StatusCode, fmt.Errorf("orbnet: %s sent a preview over the %d B a device reply may be", ip, maxDeviceReply)
+	}
+	// A 200 carries its own size promise in the plane's first four bytes, so a
+	// short body is checkable here rather than something the page discovers as a
+	// half-drawn thumbnail. h_sd_preview breaks its chunk loop when the socket
+	// refuses another write (send_wait_timeout, bench 2026-10-25: 24,008 B of the
+	// 107,652 a 232x232 plane declares) and cannot retract the status line it
+	// already sent, so the relay is the layer that can still call it a failure.
+	// Without this the torn bytes cache as a good preview for the whole TTL.
+	if resp.StatusCode == http.StatusOK {
+		if len(body) < 4 {
+			return nil, resp.StatusCode, fmt.Errorf("orbnet: %s sent a %d B preview body, too short to declare a plane", ip, len(body))
+		}
+		w := int(binary.LittleEndian.Uint16(body[0:2]))
+		h := int(binary.LittleEndian.Uint16(body[2:4]))
+		if want := 4 + 2*w*h; len(body) != want {
+			return nil, resp.StatusCode, fmt.Errorf("orbnet: %s sent a torn preview: %d B for the %dx%d plane, which is %d B", ip, len(body), w, h, want)
+		}
 	}
 	return body, resp.StatusCode, nil
 }

@@ -4648,6 +4648,13 @@ static esp_err_t h_sd_preview(httpd_req_t *req)
         vTaskDelay(1);                /* one tick of radio airtime between writes */
     }
     if (r == ESP_OK && httpd_resp_send_chunk(req, NULL, 0) != ESP_OK) r = ESP_FAIL;
+    if (left) {
+        /* The 200 is already on the wire and cannot be walked back, so the one
+         * honest thing left is to name the shortfall where the bench will read it
+         * rather than let a torn plane pass as a whole one. */
+        ESP_LOGE(TAG, "preview: socket refused more after %u of %u B",
+                 (unsigned)(total - left), (unsigned)total);
+    }
     heap_caps_free(px);
     return r;
 }
@@ -6072,6 +6079,18 @@ static esp_err_t net_start_httpd(void)
      * two big-body routes block in recv at all, and lru_purge_enable reclaims
      * the slot the moment a new connection needs one. */
     cfg.recv_wait_timeout  = 30;
+    /* The send half of that same measurement, and the reason the 4 KB chunking
+     * only moved the preview failure rather than fixing it: HTTPD_DEFAULT_CONFIG()
+     * ships send_wait_timeout = 5 (esp_http_server.h:66), so one 4 KB chunk on a
+     * live-but-slow link waits longer for its ack than the socket is allowed and
+     * httpd reports EAGAIN — the bench log reads `httpd_sock_err: error in send :
+     * 11` then `uri handler execution failed`. h_sd_preview breaks its loop on
+     * that answer and, because the 200 status line was already on the wire, ships
+     * a short body that reads as a complete plane: 24,008 B of the 107,652 a
+     * 232x232 preview declares. A torn plane then caches as a good thumbnail.
+     * The device cannot retract a sent status line, so it must stop cutting the
+     * body short instead. Bench, orb-B 2026-10-25. */
+    cfg.send_wait_timeout  = 30;
 
     /* 2026-10-24 ESP_ERR_HTTPD_TASK ladder: the boot heap log says the block
      * is big enough and the call still says no, so this ladder makes the

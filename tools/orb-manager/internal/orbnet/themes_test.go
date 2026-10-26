@@ -308,6 +308,38 @@ func TestThemePreviewDialsTheDeviceRoute(t *testing.T) {
 	}
 }
 
+// A 200 with fewer bytes than the plane's own header declares is a failure the
+// caller must hear about: h_sd_preview cannot retract a status line already sent,
+// so a socket that stops the chunk loop mid-body arrives here complete-looking.
+// The bench measured exactly this on 2026-10-25 — 24,008 B of the 107,652 a
+// 232x232 preview claims, cached by the hub as a good thumbnail.
+func TestThemePreviewCallsATornBodyAnError(t *testing.T) {
+	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) {
+		plane := previewPlane4x2()
+		_, _ = w.Write(plane[:12])   // header intact, pixels cut short
+	})
+	_, _, err := NewClient(2 * time.Second).ThemePreview(fakeIP(srv), "clock-aurora-9b89025ce7a6")
+	if err == nil {
+		t.Fatal("a preview body short of its own declared plane read as a success")
+	}
+	if !strings.Contains(err.Error(), "torn") || !strings.Contains(err.Error(), "20 B") {
+		t.Errorf("err = %v, want it to name the tear and the plane's real size", err)
+	}
+}
+
+// The quiet 404 stays quiet: a theme with no preview row answers a small JSON
+// body, and length rules written for planes must not turn it into an error.
+func TestThemePreviewQuietFourOhFourIsStillNotATornPlane(t *testing.T) {
+	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"this theme carries no preview"}`))
+	})
+	_, code, err := NewClient(2 * time.Second).ThemePreview(fakeIP(srv), "clock-aurora-9b89025ce7a6")
+	if err != nil || code != http.StatusNotFound {
+		t.Fatalf("code %d err %v, want the device's 404 relayed with no error", code, err)
+	}
+}
+
 // The design's quiet answer (docs/theme-preview-plan.md §1): a theme with no
 // preview row is not a failed dial, and a caller that branches on the code must
 // be able to. Turning the 404 into an error is how an optional plane becomes a

@@ -148,6 +148,11 @@ type device struct {
 	StagedBytes    int
 	OTANextFW      string
 	RebootedViaOTA bool
+	// RebootDies arms the reboot race: the next N accepted /api/v1/reboot
+	// calls apply the staged boot and then drop the connection without an
+	// answer — the board restarting under the POST, exactly the wire shape of
+	// a lost ack. The hub that confirms via its next status read is the point.
+	RebootDies int
 	// Reprov counts accepted /api/v1/reprov calls — the D2 intent request. Kept apart
 	// from Rebooted because the two mean different things to a caller: one says "come
 	// back as you were", the other says "come back in your AP", and a hub test that
@@ -870,6 +875,10 @@ func (o *Orb) OTAState() (stagedBytes int, bootedStaged bool, fw string) {
 // app image it just validated.
 func (o *Orb) SetOTANextFW(fw string) { o.mu.Lock(); o.deviceLocked().OTANextFW = fw; o.mu.Unlock() }
 
+// SetRebootDies arms the next N accepted /api/v1/reboot calls to boot the
+// staged slot and then die before answering — the lost-ack race, doubled.
+func (o *Orb) SetRebootDies(n int) { o.mu.Lock(); o.deviceLocked().RebootDies = n; o.mu.Unlock() }
+
 // --- reboot (h_reboot, orb_net.c:2552) ------------------------------------------
 //
 // The device arms a one-shot esp_timer for 750 ms and answers before it fires, so
@@ -890,7 +899,24 @@ func (o *Orb) serveReboot(w http.ResponseWriter) {
 		}
 		d.Staged, d.StagedBytes = nil, 0
 	}
+	dies := d.RebootDies
+	if dies > 0 {
+		d.RebootDies--
+	}
 	o.mu.Unlock()
+	if dies > 0 {
+		// The board took the commit and fell into the boot before the ack
+		// could leave: the boot above is applied, the reply never is. Closing
+		// the connection mid-response is what the hub's client sees on the
+		// wire when an ESP32 restarts under a POST.
+		if hj, ok := w.(http.Hijacker); ok {
+			if c, _, err := hj.Hijack(); err == nil {
+				_ = c.Close()
+				return
+			}
+		}
+		panic(http.ErrAbortHandler)
+	}
 	writeJSON(w, 200, `{"state":"rebooting"}`)
 }
 

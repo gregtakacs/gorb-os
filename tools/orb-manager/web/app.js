@@ -776,8 +776,10 @@ function ffWatchStart(ip) {
       if (fill && typeof p.pct === "number") fill.style.width = p.pct + "%";
       const kb = (n) => Math.round((n || 0) / 1024);
       const line = p.phase === "uploading"
-        ? "sending " + kb(p.sent) + " of " + kb(p.total) + " KB \\u2014 " + p.pct + "%"
-        : p.phase === "staged" ? "staged in the spare slot; asking the orb to reboot\\u2026"
+        ? "sending " + kb(p.sent) + " of " + kb(p.total) + " KB \u2014 " + p.pct + "%"
+        : p.phase === "staged" ? "staged in the spare slot; asking the orb to reboot\u2026"
+        : p.phase === "confirming" ? "the reboot answer died on the wire; waiting for the orb to come back on the new stamp"
+        : p.phase === "staged, no reboot ack" ? "staged, but the orb never answered the reboot; it boots the new image at its next restart"
         : p.phase === "rebooting" ? "rebooting into the new image; it leaves the wire for one boot"
         : p.phase === "failed" ? "the orb refused the upload"
         : p.phase || "";

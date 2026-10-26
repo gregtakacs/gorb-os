@@ -315,6 +315,78 @@ func TestOrbUpdateFoldsRowAndTracksProgress(t *testing.T) {
 	}
 }
 
+// The race the hub lost once on real hardware: the board takes the staged slot,
+// falls into the boot, and the reboot POST dies mid-flight — a dial timeout on
+// a radio that is already restarting. The POST's silence proves nothing about
+// the boot; the hub now reads the board's stamp back and calls the update what
+// it was. Without that read, a push that landed is reported as the failure it
+// was not, and the modal sits open over an orb that already wears the new face.
+func TestALostRebootAckIsConfirmedByTheBoardItself(t *testing.T) {
+	oldEvery, oldBudget := rebootConfirmEvery, rebootConfirmBudget
+	rebootConfirmEvery, rebootConfirmBudget = 20*time.Millisecond, 5*time.Second
+	defer func() { rebootConfirmEvery, rebootConfirmBudget = oldEvery, oldBudget }()
+
+	s := newHub()
+	s.adoptFirmware(stampedBundle(t, "v1.0.13+aaaaaaa"))
+	o := orbfake.New()
+	o.SetAddress("44bd8d782618", "127.0.0.1")
+	o.SetFirmware("v1.0.0+aaaaaaa")
+	o.SetOTANextFW("v1.0.13+aaaaaaa")
+	o.SetRebootDies(1)
+	ip, _ := fakeOrbServer(t, s, o)
+	s.grants.learnAs(ip, "44:bd:8d:78:26:18")
+
+	code, env := postJSONHandler(t, s.handleOrbUpdate, fmt.Sprintf(`{"ip":%q}`, ip))
+	if code != http.StatusOK || env["ok"] != true {
+		t.Fatalf("a push the board booted was reported as a failure: %d %v", code, env["error"])
+	}
+	data := env["data"].(map[string]any)
+	if data["rebooting"] != true || data["to"] != "v1.0.13+aaaaaaa" {
+		t.Errorf("the lost-ack success does not read as a committed push: %v", data)
+	}
+	if staged, booted, fw := o.OTAState(); staged != 0 || !booted || fw != "v1.0.13+aaaaaaa" {
+		t.Errorf("the board did not boot the slot: %+v", env["data"])
+	}
+	// The row folded the pushed stamp through the same path the acked push
+	// uses, so the amber badge retires on the lost ack too.
+	row, ok := s.fleet.Look("44bd8d782618")
+	if ok && row.FW != "v1.0.13+aaaaaaa" {
+		t.Errorf("the lost-ack fold left the row on %q", row.FW)
+	}
+}
+
+// The same lost ack, and the board answers later still wearing the old stamp:
+// that combination is the real refusal, and it must still end in the failure
+// sentence — an update reported honest is an update the operator can retry.
+func TestABoardAnsweringOldAfterALostRebootAckFailsHonestly(t *testing.T) {
+	oldEvery, oldBudget := rebootConfirmEvery, rebootConfirmBudget
+	rebootConfirmEvery, rebootConfirmBudget = 20*time.Millisecond, 200*time.Millisecond
+	defer func() { rebootConfirmEvery, rebootConfirmBudget = oldEvery, oldBudget }()
+
+	s := newHub()
+	s.adoptFirmware(stampedBundle(t, "v1.0.13+aaaaaaa"))
+	o := orbfake.New()
+	o.SetAddress("44bd8d782618", "127.0.0.1")
+	o.SetFirmware("v1.0.0+aaaaaaa")
+	ip, _ := fakeOrbServer(t, s, o)
+	s.grants.learnAs(ip, "44:bd:8d:78:26:18")
+
+	// The reboot POST reaches nothing at all (no slot staged, nothing booted):
+	// drop the connection every time it is asked, and leave the fake on its
+	// old stamp answering status.
+	o.SetRebootDies(99)
+	code, env := postJSONHandler(t, s.handleOrbUpdate, fmt.Sprintf(`{"ip":%q}`, ip))
+	if env["ok"] == true {
+		t.Fatal("a board that stayed old after the lost ack was reported as updated")
+	}
+	if !strings.Contains(fmt.Sprint(env["error"]), "did not acknowledge") {
+		t.Errorf("the refusal does not name the lost ack: %v", env["error"])
+	}
+	if code == http.StatusOK {
+		t.Error("a confirmed no-boot answered as a success")
+	}
+}
+
 func getJSONHandler(t *testing.T, h http.HandlerFunc, ip string) (int, map[string]any) {
 	t.Helper()
 	return getJSONHandlerRaw(t, h, "?ip="+ip)

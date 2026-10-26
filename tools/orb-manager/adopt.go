@@ -229,14 +229,22 @@ func (s *Server) handleOrbUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.updSet(ip, "staged", st.FW, b.Version, int64(len(app)), int64(len(app)))
 	// Staged and committed as next-to-boot. The reboot fires here because the
-	// operator clicked Update on this very orb, and an acknowledgment that never
-	// arrives (a dead radio, a board gone mid-upload) says what is already true:
-	// the slot will boot at the next restart whenever the board comes back.
+	// operator clicked Update on this very orb. A reboot POST that never
+	// lands is not a reboot that never happened: a board that took the commit
+	// and fell into the boot cannot pay the ack — the race this hub once
+	// reported as a failure was the board already running the new image. The
+	// slot is committed either way, so the honest follow-up to a lost ack is
+	// the board's own next answer, not a verdict the dead POST wrote.
+	acked := true
 	if _, err := s.device.Reboot(ip); err != nil {
-		s.updSet(ip, "staged, no reboot ack", st.FW, b.Version, int64(len(app)), int64(len(app)))
-		s.jsonErr(w, "staged, but the orb did not acknowledge the reboot: "+plainDialError(err)+
-			" — the new image is already the one it will boot; reboot it when you are ready")
-		return
+		acked = false
+		s.updSet(ip, "confirming", st.FW, b.Version, int64(len(app)), int64(len(app)))
+		if !s.confirmBootAfterLostAck(ip, b.Version) {
+			s.updSet(ip, "staged, no reboot ack", st.FW, b.Version, int64(len(app)), int64(len(app)))
+			s.jsonErr(w, "staged, but the orb did not acknowledge the reboot: "+plainDialError(err)+
+				" — the new image is already the one it will boot; reboot it when you are ready")
+			return
+		}
 	}
 	s.updSet(ip, "rebooting", st.FW, b.Version, int64(len(app)), int64(len(app)))
 	// Fold the stamp this hub just wrote into the slot and committed as
@@ -260,11 +268,53 @@ func (s *Server) handleOrbUpdate(w http.ResponseWriter, r *http.Request) {
 	// a board with no cable, or one still booting past the budget, loses
 	// nothing the Wi-Fi probe will not fold moments later.
 	go s.rereadCableAfterUpdate(st.MAC)
+	note := "the orb leaves the wire for one boot and returns with the new stamp"
+	if !acked {
+		note = "the reboot's ack died on the wire; the orb answered the follow-up probe already running the new stamp"
+	}
 	s.jsonOK(w, map[string]any{
 		"ip": ip, "mac": st.MAC, "from": st.FW, "to": b.Version,
 		"verdict": string(verdict), "rebooting": true,
-		"note": "the orb leaves the wire for one boot and returns with the new stamp",
+		"note": note,
 	})
+}
+
+// confirmBootAfterLostAck is the second half of the reboot's contract. A POST
+// /api/v1/reboot that dies on the wire is ambiguous by construction: the same
+// silence falls out of a board that refused the request and a board that took
+// it and fell into the boot before the bytes could leave. So the hub waits on
+// the board's own next answer. The dial itself says which of the two happened:
+// silence means the board left the wire — the reboot is what does that — and
+// an answer stamped with the pushed version means the boot it was waiting for
+// already landed. Only an answer on the old stamp after the budget is a real
+// refusal, and only that path gets the failure sentence.
+var (
+	rebootConfirmBudget = 60 * time.Second
+	rebootConfirmEvery  = 3 * time.Second
+)
+
+func (s *Server) confirmBootAfterLostAck(ip, want string) bool {
+	deadline := time.Now().Add(rebootConfirmBudget)
+	askedAgain := false
+	for time.Now().Before(deadline) {
+		time.Sleep(rebootConfirmEvery)
+		if st2, err := s.device.Status(ip); err == nil {
+			if st2.FW == want {
+				return true
+			}
+			// Answering, unchanged: it never left, so the POST really was
+			// lost before it landed. Ask once more — arming is idempotent —
+			// and only once, so a board that swallows reboots gets one
+			// press's worth of insistence, not a hammer.
+			if !askedAgain {
+				askedAgain = true
+				if _, err := s.device.Reboot(ip); err == nil {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // ---- the upload tracker -------------------------------------------------------

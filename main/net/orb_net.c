@@ -6059,6 +6059,8 @@ esp_err_t orb_net_reserve_httpd_stack(void)
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         return ESP_ERR_NO_MEM;
     }
+    ESP_LOGI(TAG, "httpd stack shielded: %u B internal held until the ladder",
+             (unsigned)HTTPD_STACK_TOP);
     return ESP_OK;
 }
 
@@ -6207,6 +6209,9 @@ static esp_err_t net_start_httpd(void)
     if (s_httpd_stack_reserve) {
         heap_caps_free(s_httpd_stack_reserve);
         s_httpd_stack_reserve = NULL;
+        ESP_LOGI(TAG, "shield released: internal free=%u largest=%u at the ladder",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     }
     esp_err_t e = ESP_ERR_HTTPD_TASK;
     for (unsigned try_i = 0; try_i < sizeof stack_ladder / sizeof stack_ladder[0]; try_i++) {
@@ -6388,6 +6393,27 @@ esp_err_t orb_net_start(void)
         ESP_LOGE(TAG, "sntp_init: %s (clock will free-run)", esp_err_to_name(sne));
     }
     stage_probe("post-sntp_init");
+
+    /* The web door opens BEFORE the radio wakes. Three records converge on
+     * this ordering: the file's own ladder comment (2026-10-24) measured task
+     * create failing at the wifi-connect instant with heap numbers that looked
+     * sufficient; the same note measured every retry after one failure dying in
+     * listen(112), because IDF's httpd_start frees the server struct but closes
+     * its fds only on the clean stop path — one leak per failed attempt, and at
+     * the old ten-socket table the leak budget was spent before the +30 s timer
+     * could even try. Today's 00:2x capture is the third witness: auth-leave
+     * one millisecond before the ladder, and the freed shield block gone to the
+     * wifi re-init task on the other core before httpd reached it (largest read
+     * 7424 where an 8192 free had just been handed back). Here, pre-wifi_init,
+     * there is no radio churn to race, nothing to leak into, and bind() needs
+     * no association — lwIP accepts it with every netif down. */
+    const esp_err_t he = net_start_httpd();
+    if (he != ESP_OK)
+        ESP_LOGE(TAG, "httpd down (%s) — the orb is a clock with no web door; serial door open, retry armed",
+                 esp_err_to_name(he));
+    else
+        ESP_LOGI(TAG, "config server listening on port %d", CONFIG_ORB_NET_HTTPD_PORT);
+    stage_probe("post-httpd_start");
 
     wifi_init_config_t wic = WIFI_INIT_CONFIG_DEFAULT();
     const esp_err_t e = esp_wifi_init(&wic);
@@ -6575,19 +6601,12 @@ esp_err_t orb_net_start(void)
     }
 
     /* Warn, do not abort — the standing rule above the whole file: the display
-     * is the product and a broken stage must not take its neighbours down. On
-     * 2026-10-26 an httpd failure here killed the serial reader too, so a
-     * headless orb could not even be rescued by someone holding a USB lead, and
-     * the retry timer below the ladder never got to prove itself useful: it
-     * armed inside the dying function, and everything after the return it never
-     * ran. The serial door and the probes continue with or without a web door. */
-    const esp_err_t he = net_start_httpd();
-    if (he != ESP_OK)
-        ESP_LOGE(TAG, "httpd down (%s) — the orb is a clock with no web door; serial door open, retry armed",
-                 esp_err_to_name(he));
-    stage_probe("post-httpd_start");
-
-    ESP_LOGI(TAG, "config server listening on port %d", CONFIG_ORB_NET_HTTPD_PORT);
+     * is the product and a broken stage must not take its neighbours down.
+     * The httpd start moved ABOVE esp_wifi_init (see the block there): the
+     * radio's re-init churn steals the freed shield block and, per the
+     * 2026-10-24 note, one failed attempt poisons the socket table for every
+     * later one. Handlers read state at request time, so nothing downstream
+     * depends on the old ordering. */
 
     /* The serial command door is open for the whole life of the app, on every boot and
      * in every state — not only a first-boot provisioning. A configured orb is exactly

@@ -65,11 +65,16 @@ CONFIG_HTTPD_MAX_URI_LEN=1024
 # sends an unneeded body on PATCH is drained without stalling the handler.
 CONFIG_HTTPD_PURGE_BUF_LEN=256
 
-# LWIP_MAX_SOCKETS is left at the 10 this project already builds with. It must
-# be >= httpd's max_open_sockets + 3 (checked in esp_http_server's httpd_main.c)
-# and orb_net uses max_open_sockets = 3, so 10 satisfies that assertion with four
-# sockets to spare; it may be lowered toward 6 if the heap numbers justify it, but
-# not below it or httpd_start() refuses to start.
+# LWIP_MAX_SOCKETS: raised 10 -> 16 on 2026-10-26 after a serial capture showed a
+# headless boot whose retries died in httpd's listen() (ENOMEM, errno 112) at
+# t=32 s with 26 KB of heap free — a full socket table, not a heap shortage.
+# The floor is httpd's max_open_sockets + 3 (checked in esp_http_server's
+# httpd_main.c; orb_net uses 3, so 6 is the hard floor). The old value of 10
+# left four entries for everything else at once: orb_mdns opens UDP table
+# entries for its announce/probe sockets, and a failed httpd_start retry cycle
+# holds its 3 control sockets until the tcpip thread releases them. 16 costs
+# ~6 x (fd + lwIP pcb) of internal, static.
+CONFIG_LWIP_MAX_SOCKETS=16
 
 # SNTP: TWO servers, not one. CONFIG_LWIP_SNTP_MAX_SERVERS sizes both lwIP's
 # server table and esp_sntp_config_t.servers[], so the value must be at least

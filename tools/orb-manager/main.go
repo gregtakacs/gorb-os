@@ -654,6 +654,17 @@ func (s *Server) log(h http.Handler) http.Handler {
 	})
 }
 
+// noStoreCache marks every embedded asset with Cache-Control: no-cache: always
+// revalidate, serve from cache only on the browser's 304. FileServer answers a
+// conditional GET on an embedded file, so the revalidation itself is a header
+// round-trip, not a body.
+func noStoreCache(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		h.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) routes(mux *http.ServeMux) {
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {
@@ -661,7 +672,16 @@ func (s *Server) routes(mux *http.ServeMux) {
 	}
 	// Static assets only. The document itself comes from handleIndex, which is the
 	// one place that knows this launch's token.
-	mux.Handle("/web/", http.StripPrefix("/web/", http.FileServer(http.FS(sub))))
+	//
+	// no-cache on every asset, not just the document: FileServer sends an embedded
+	// file with no validator a browser can cheaply re-ask about, so the default is
+	// a heuristic fresh copy that survives a hub rebuild — a stale app.js then
+	// paints an older card and silently never calls the routes the new one added
+	// (observed 2026-10-26: a Theme card with shipped planes requested no preview
+	// at all, because the page running it predated the plane code). The assets are
+	// a localhost fetch of ~130 KB; revalidating per load costs nothing measurable.
+	mux.Handle("/web/", http.StripPrefix("/web/",
+		noStoreCache(http.FileServer(http.FS(sub)))))
 	mux.HandleFunc("/", s.handleIndex)
 
 	mux.HandleFunc("/api/status", s.json(s.hello))

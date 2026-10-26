@@ -6220,11 +6220,20 @@ static esp_err_t net_start_httpd(void)
                          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
             break;
         }
-        ESP_LOGE(TAG, "httpd_start stack=%u: %s | internal free=%u largest=%u dma_free=%u",
+        ESP_LOGE(TAG, "httpd_start stack=%u: %s | internal free=%u largest=%u dma largest=%u",
                  (unsigned)cfg.stack_size, esp_err_to_name(e),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA));
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
+        /* A refused task create is a verdict on this instant, not on the stack
+         * size: httpd_delete inside the failed httpd_start releases sockets and
+         * the tcpip thread frees their PCBs asynchronously, so every further try
+         * in the same millisecond measures the teardown, not the world — the
+         * 2026-10-26 capture shows try-1 refused for task while tries 2-3 died
+         * in listen(112) for sockets try-1 had just closed. One attempt per
+         * instant; the retry timer below owns the next instant. */
+        if (e == ESP_ERR_HTTPD_TASK)
+            break;
     }
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "httpd_start: %s (check LWIP_MAX_SOCKETS >= max_open_sockets+3)",

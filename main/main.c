@@ -85,6 +85,14 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_init());
     }
 
+    /* Shield the web server's stack before the theme can fragment it. Every
+     * allocation after this line — panel DMA, the slot's art map, wifi driver
+     * bring-up — is a chance to break the 8 KB block httpd_start needs, and the
+     * headless boot of 2026-10-26 is the live example of losing that race. The
+     * reserve costs 8 KB of internal for a few seconds of boot and net_start_httpd
+     * hands it back the instant the ladder can consume it. */
+    orb_net_reserve_httpd_stack();
+
     /* C2 (§6.4): the panel comes up before the theme resolves, so every slow
      * moment below is spent in front of the overlay, not a dark dial. The
      * install-before-display rule this replaced was about erasing while LVGL

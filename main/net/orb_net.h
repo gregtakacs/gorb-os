@@ -59,6 +59,19 @@
  */
 esp_err_t orb_net_start(void);
 
+/**
+ * Pin the httpd task's worst-case stack block out of the heap BEFORE the theme
+ * maps, and net_start_httpd() releases it the moment the ladder runs, so a large
+ * theme's boot allocations cannot fragment the pool out from under the server.
+ * A 2026-10-26 theme apply boot-tested this: theme boot runs before
+ * orb_net_start() (main.c), and on that boot the ladder's smallest tier (4 KB)
+ * found no block and the orb came back as a clock with no door — dial live,
+ * ping live, every TCP port silent. Call once, before orb_theme_boot().
+ * Returns the allocation's error; never fatal — a board that cannot reserve
+ * still tries the ladder without the shield.
+ */
+esp_err_t orb_net_reserve_httpd_stack(void);
+
 /** True once STA has an IP (or the SoftAP is up and reachable). */
 bool orb_net_is_up(void);
 

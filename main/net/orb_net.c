@@ -6038,6 +6038,75 @@ static esp_err_t net_open_storage(void)
                                    NVS_READWRITE, &s_nvs);
 }
 
+/* The shield against the headless boot of 2026-10-26: orb_theme_boot() runs
+ * before orb_net_start() (main.c lines 95-106 vs 276), and a large theme's
+ * boot-time allocations fragment the internal pool between the two. The ladder
+ * below then fails every tier — a live dial behind a closed door. Reserving the
+ * top rung's stack here, before anything big maps, holds the largest block
+ * intact through the theme bring-up; net_start_httpd() frees it seconds before
+ * xTaskCreate asks for exactly that size. Free-into-exact-reuse is not luck:
+ * the block has one candidate taker in this window and it is the ladder. */
+#define HTTPD_STACK_TOP 8192                    /* stack_ladder[0] — keep in step */
+static void *s_httpd_stack_reserve;
+
+esp_err_t orb_net_reserve_httpd_stack(void)
+{
+    if (s_httpd_stack_reserve) return ESP_OK;   /* already shielded */
+    s_httpd_stack_reserve = heap_caps_malloc(HTTPD_STACK_TOP, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s_httpd_stack_reserve) {
+        ESP_LOGE(TAG, "httpd stack reserve failed — internal free=%u largest=%u, headless boot at risk",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+/* The ladder's last-resort healer. A boot that still finds no block after the
+ * reserve (a theme big enough to hurt even a clean pool) leaves the orb headless
+ * until someone reaches the wall — so the net task re-arms this on failure: at
+ * +30 s the wifi reinit, the AP fallback and the retry's own first free have all
+ * churned the heap, and a second try at a server task on a settled pool lands
+ * more often than a first try on a churning one. Five attempts, then the orb
+ * gives up logging about it and runs as the clock it is — the file's standing
+ * never-fatal rule. */
+#define HTTPD_RETRY_MAX 5
+#define HTTPD_RETRY_US  (30 * 1000 * 1000)
+static uint8_t s_httpd_retries;
+static esp_timer_handle_t s_httpd_retry_timer;
+
+static esp_err_t net_start_httpd(void);
+static void httpd_retry_cb(void *arg);
+static void httpd_retry_task(void *arg);
+
+/* The callback runs on the esp_timer task — 3584 B per sdkconfig, far too thin a
+ * stack for httpd_start plus 36 registrations, and a recovery path that overflows
+ * the timer task is a worse failure than the one it answers. It only spawns the
+ * work; httpd_retry_task carries the real stack. */
+static void httpd_retry_cb(void *arg)
+{
+    (void)arg;
+    if (s_httpd_retries >= HTTPD_RETRY_MAX) return;
+    s_httpd_retries++;
+    if (xTaskCreate(httpd_retry_task, "httpd_rt", 6144, NULL, 3, NULL) != pdPASS)
+        ESP_LOGE(TAG, "httpd: retry task out of memory — no further retries this boot");
+}
+
+static void httpd_retry_task(void *arg)
+{
+    (void)arg;
+    if (net_start_httpd() == ESP_OK) {
+        ESP_LOGW(TAG, "httpd up on retry %u — the orb has its head back",
+                 (unsigned)s_httpd_retries);
+    } else if (s_httpd_retries >= HTTPD_RETRY_MAX) {
+        /* net_start_httpd's failure path re-armed the timer while budget
+         * remained; reaching here at the cap means this boot is over. */
+        ESP_LOGE(TAG, "httpd: %u retries spent — running as a clock without a door",
+                 (unsigned)HTTPD_RETRY_MAX);
+    }
+    vTaskDelete(NULL);
+}
+
 static esp_err_t net_start_httpd(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
@@ -6133,6 +6202,12 @@ static esp_err_t net_start_httpd(void)
      * fails, the failing allocation is not this stack and the print names
      * that too. */
     static const size_t stack_ladder[] = { 8192, 6144, 4096 };
+    /* Hand back the reserved block before the first rung (see
+     * orb_net_reserve_httpd_stack): this is the moment it was held for. */
+    if (s_httpd_stack_reserve) {
+        heap_caps_free(s_httpd_stack_reserve);
+        s_httpd_stack_reserve = NULL;
+    }
     esp_err_t e = ESP_ERR_HTTPD_TASK;
     for (unsigned try_i = 0; try_i < sizeof stack_ladder / sizeof stack_ladder[0]; try_i++) {
         cfg.stack_size = stack_ladder[try_i];
@@ -6154,6 +6229,25 @@ static esp_err_t net_start_httpd(void)
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "httpd_start: %s (check LWIP_MAX_SOCKETS >= max_open_sockets+3)",
                  esp_err_to_name(e));
+        /* Headless is a state to escape from, not to accept in one try: a heap
+         * this crowded clears on retry more often than it clears on reboot, and
+         * nobody is at the wall to press the reboot. See httpd_retry_cb. */
+        if (s_httpd_retries < HTTPD_RETRY_MAX) {
+            if (!s_httpd_retry_timer) {
+                const esp_timer_create_args_t ta = {
+                    .callback = httpd_retry_cb, .name = "httpd_retry"
+                };
+                if (esp_timer_create(&ta, &s_httpd_retry_timer) != ESP_OK)
+                    s_httpd_retry_timer = NULL;
+            }
+            if (s_httpd_retry_timer &&
+                esp_timer_start_once(s_httpd_retry_timer, HTTPD_RETRY_US) == ESP_OK)
+                ESP_LOGW(TAG, "httpd: retry %u of %u armed for +%us",
+                         (unsigned)(s_httpd_retries + 1), (unsigned)HTTPD_RETRY_MAX,
+                         (unsigned)(HTTPD_RETRY_US / 1000000));
+            else
+                ESP_LOGE(TAG, "httpd: retry could not be armed — orb stays headless this boot");
+        }
         return e;
     }
 
@@ -6471,7 +6565,17 @@ esp_err_t orb_net_start(void)
                                    esp_err_to_name(je));
     }
 
-    ESP_RETURN_ON_ERROR(net_start_httpd(), TAG, "httpd");
+    /* Warn, do not abort — the standing rule above the whole file: the display
+     * is the product and a broken stage must not take its neighbours down. On
+     * 2026-10-26 an httpd failure here killed the serial reader too, so a
+     * headless orb could not even be rescued by someone holding a USB lead, and
+     * the retry timer below the ladder never got to prove itself useful: it
+     * armed inside the dying function, and everything after the return it never
+     * ran. The serial door and the probes continue with or without a web door. */
+    const esp_err_t he = net_start_httpd();
+    if (he != ESP_OK)
+        ESP_LOGE(TAG, "httpd down (%s) — the orb is a clock with no web door; serial door open, retry armed",
+                 esp_err_to_name(he));
     stage_probe("post-httpd_start");
 
     ESP_LOGI(TAG, "config server listening on port %d", CONFIG_ORB_NET_HTTPD_PORT);

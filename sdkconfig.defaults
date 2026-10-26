@@ -69,7 +69,7 @@ CONFIG_HTTPD_PURGE_BUF_LEN=256
 # headless boot whose retries died in httpd's listen() (ENOMEM, errno 112) at
 # t=32 s with 26 KB of heap free — a full socket table, not a heap shortage.
 # The floor is httpd's max_open_sockets + 3 (checked in esp_http_server's
-# httpd_main.c; orb_net uses 3, so 6 is the hard floor). The old value of 10
+# httpd_main.c; orb_net uses 5, so 8 is the hard floor). The old value of 10
 # left four entries for everything else at once: orb_mdns opens UDP table
 # entries for its announce/probe sockets, and a failed httpd_start retry cycle
 # holds its 3 control sockets until the tcpip thread releases them. 16 costs

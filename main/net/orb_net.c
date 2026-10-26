@@ -6158,16 +6158,20 @@ static esp_err_t net_start_httpd(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = CONFIG_ORB_NET_HTTPD_PORT;
-    /* 3, not the default 7: every open socket costs a lwIP pcb plus receive
-     * buffers out of internal RAM, and a config page is driven by one browser
-     * tab. lru_purge_enable reclaims a slot when a tab closes without FIN.
-     * One slot is for the page, one for its fetches; the third exists because a
-     * phone fires captive-portal probes on its own schedule, and at 2 those
-     * probes could hold both slots and starve the page the user is waiting on.
-     * CONFIG_LWIP_MAX_SOCKETS must stay >= max_open_sockets + 3 — httpd_main.c
-     * asserts that and refuses to start otherwise. It is 10 here, so 3 is the
-     * ceiling without touching lwIP. */
-    cfg.max_open_sockets = 3;
+    /* 5, up from the 3 this line shipped with. The old 3 sized the table for one
+     * browser tab on the config page; the hub is not a tab. It polls /api/v1/status
+     * on a ten-second sweep, streams a ~100 KB preview one MSS per write (seconds
+     * per socket), and takes an operator's scan — three concurrent dials that
+     * together held all three slots and starved the next SYN against a full accept
+     * backlog. Measured 2026-10-26: wifi/scan took connect=0.000 total=9.00s under
+     * two preview fetches, and 30ms the same board idle. lru_purge_enable reclaims
+     * a slot a peer FINs or an idle LRU, never one a live stream still owns, so
+     * more slots is the only lever that helps a stall like this. Two more let the
+     * sweep, a scan and a preview coexist without any one paying for the others.
+     * CONFIG_LWIP_MAX_SOCKETS must stay >= max_open_sockets + 3 (httpd_main.c
+     * asserts it); lwIP is 16 here since the 2026-10-26 headless-boot fix, so 5
+     * clears that floor (8) with room left for the SoftAP and mDNS sockets. */
+    cfg.max_open_sockets = 5;
     cfg.lru_purge_enable = true;
     /* HTTPD_DEFAULT_CONFIG() ships max_uri_handlers at 8 (httpd_config.h:61), and
      * httpd_register_uri_handler() fails SILENTLY past that — this table now has

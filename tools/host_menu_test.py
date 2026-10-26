@@ -115,9 +115,9 @@ def lifts(src):
         # would keep passing while the shipped shell hid the wrong rows.
         lift(src, r"static int owner_group\(int rows, int idx\)\n\{[\s\S]*?"
                    r"static void shape_check\(int rows\)\n\{[\s\S]*?\n\}", MENU_C),
-        # D12's press half: what a header does when it is pressed. The
-        # dispatcher reaches it through the app page's act(), so it stays in.
-        lift(src, r"static bool group_press\(int rows, int ar\)\n\{[\s\S]*?\n\}", MENU_C),
+        # D12's press half retired 2026-10-26: the header is inert, the shell
+        # keeps no press of its own in act_app, and the lifted dispatcher block
+        # carries the whole answer.
         # D19's pack and worker, pinned on their own: cap_pack exists because
         # the contract between a press and the NVS word it writes is the whole
         # shift arithmetic, and it stays checked even now that the press
@@ -864,7 +864,7 @@ int main(void)
        !strcmp(s_ui.status, "AP needs a passphrase: use the web page"));
     s_cur = top_os_rows();
     menu_view_apply_input(0, true);
-    ck("an app row opens the app on its first option, group closed, knob armed",
+    ck("an app row opens the app flat on its first row, knob armed",
        s_pg == &s_pages[PG_APP] && s_cur == 0 && s_group_open == -1 && g_arms == 1);
     menu_view_apply_input(0, true);
     ck("a press on an option row reaches the app at its own row number",
@@ -1083,25 +1083,37 @@ int main(void)
     snprintf(g_opt_label1, sizeof g_opt_label1, "meadow");
     snprintf(g_opt_val1, sizeof g_opt_val1, "1 of 3: meadow");
     s_group_open = -1;
-    ck("a closed group leaves the plain row, its header and the back row",
-       page_rows() == 3 && vis_to_row(5, 0) == 0 && vis_to_row(5, 1) == 1
-       && vis_to_row(5, 2) == -1);
-    ck("an item of a shut group is hidden, the header is not",
-       row_hidden(5, 2) && row_hidden(5, 4) && !row_hidden(5, 1));
-    ck("the shut header answers with the app's own summary",
+    ck("a shut group hides its items and leaves the plain row, header and back",
+       page_rows() == 3 && vis_to_row(5, 2) == -1 && row_hidden(5, 2)
+       && row_hidden(5, 4) && !row_hidden(5, 1));
+    ck("a shut header answers with the app's own summary",
        !strcmp(rowline(1), "meadow  (1 of 3: meadow)"));
-    ck("pressing the header opens it", group_press(5, 1) && s_group_open == 1);
-    ck("open, its items are on the glass and counted",
+    /* Entering the app through the real door opens its one group with the page
+     * (owner, 2026-10-26): the list is on the glass at once, the cursor rests
+     * on the header, and nothing about the shape was reached by hand. */
+    s_pg = &s_pages[PG_TOP]; s_cur = top_os_rows(); g_arms = 0;
+    menu_view_apply_input(0, true);
+    ck("entering the app opens its group, cursor on the header, knob armed",
+       s_pg == &s_pages[PG_APP] && s_cur == 0 && s_group_open == 1 && g_arms == 1);
+    ck("open, the page counts every row and the back",
        page_rows() == 6 && vis_to_row(5, 4) == 4 && !row_hidden(5, 4));
-    ck("an open header says so instead of the summary",
-       (s_cur = 1, !strcmp(rowline(1), "meadow  (open)")));
+    ck("the open header still answers with the app's own summary, not the shell's state",
+       !strcmp(rowline(1), "meadow  (1 of 3: meadow)"));
+    /* The inert header: the press reaches the app at the header's own number —
+     * vis_to_row(5,1)==1 — and the shell owns no answer that hides the list
+     * behind a row that cannot bring it back. */
+    s_cur = 1; g_activations = 0;
+    menu_view_apply_input(0, true);
+    ck("a press on the header reaches the app and toggles nothing",
+       g_activations == 1 && g_last_opt_sel == 1
+       && s_group_open == 1 && s_pg == &s_pages[PG_APP]);
     ck("an item is indented, so nesting is on the glass and not only in the ABI",
        !strncmp(rowline(2), "  ", 2));
     g_opt_val1[0] = '\0';                     /* an item with no value: the other branch */
     ck("a valueless item is indented too", !strncmp(rowline(2), "  ", 2));
     snprintf(g_opt_val1, sizeof g_opt_val1, "1 of 3: meadow");
-    ck("the hint names the gesture that leaves an open group",
-       (s_pg = &s_pages[PG_APP], !strcmp(page_hint(), "rotate: choose   push: change   hold: close")));
+    ck("the hint names the plain gestures and no escape hatch",
+       (s_pg = &s_pages[PG_APP], !strcmp(page_hint(), "rotate: choose   push: change")));
     s_cur = 2;
     for (int t = 0; t < 6; t++) turn_down(1);      /* one row per event, by design */
     ck("inside an open group the walk steps down onto the page's back row",
@@ -1111,19 +1123,22 @@ int main(void)
        s_cur == 0);
     ck("the group's own position maps back to the app's row number",
        row_to_vis(5, 2) == 2 && row_to_vis(5, 4) == 4 && row_to_vis(5, 1) == 1);
-    s_cur = 3;
-    ck("hold closes the group, stays on the page, and parks on the header",
-       menu_view_opt_long() && s_group_open == -1 && s_pg == &s_pages[PG_APP] && s_cur == 1);
-    s_group_open = -1; s_cur = 0;
-    /* Owner ruling, 2026-10-25: on the app's page with nothing open to collapse
-     * the hold no longer retreats to the shell's home — it exits the menu,
-     * exactly as it does from the top list and the DISPLAY sub-menu. The app's
-     * own hook and the group collapse still take the press first (checked just
-     * above), so this is the last answer standing. */
-    ck("with nothing open the hold exits the menu, not home",
-       menu_view_opt_long() && !s_armed);
+    /* The back row answers one level up, no intermediate: activate() routes the
+     * last row to go_back(), and PG_APP's ordinal is the app's own top-page row. */
+    s_cur = 5;
+    menu_view_apply_input(0, true);
+    ck("the back row leaves the app for its own top-page row",
+       s_pg == &s_pages[PG_TOP] && s_cur == top_os_rows());
+    s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 3; s_armed = true; g_menu_exits = 0;
+    /* Owner ruling, 2026-10-26: with the header inert, the hold on the app's
+     * page exits the menu — collapsing a list under a row that cannot reopen
+     * it would be a trap. The app's own long hook still takes it first. The
+     * list rides out whole: the next open_app() raises it from the shape. */
+    ck("the hold on the open group's page exits the menu, list and all",
+       menu_view_opt_long() && g_menu_exits == 1 && !s_armed);
     s_armed = true; s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0;
-    ck("closing the group gives the page its three rows back", page_rows() == 3);
+    ck("a shut group gives the page its three rows back",
+       (s_group_open = -1, page_rows() == 3));
     /* The two malformed shapes, and the one answer that keeps them reachable. */
     g_kind[0] = OPT_ITEM;                       /* a leading ITEM, with nothing above it */
     s_group_open = -1;
@@ -1905,9 +1920,11 @@ MUTATIONS = [
     # watched them now watch the shell's rendering of ANY app's answer: drop the
     # back row and the owner is trapped; drop the value and the page stops saying
     # which theme is on the dial. host_clock_opts_test.py pins the answers.
+    # Same red seen through the shipped rows_app(), not a restatement of it:
+    # the mutation drops the page's one back row out of the count.
     ("the back row is dropped from the app options page",
-     "static int rows_app(void) { return s_app ? visible_rows(orb_app_opt_count(s_app)) + 1 : 0; }",
-     "static int rows_app(void) { return s_app ? visible_rows(orb_app_opt_count(s_app)) : 0; }"),
+     "    return visible_rows(orb_app_opt_count(s_app)) + 1;",
+     "    return visible_rows(orb_app_opt_count(s_app));"),
     # P5.3's own pins. Each is one way the catalog or its doors can go wrong
     # while every older page still passes, which is what a new page needs red
     # before it reaches a dial.
@@ -1968,8 +1985,8 @@ MUTATIONS = [
      '    { "APPS",        PG_APPS,        NULL },\n    { "ABOUT",       PG_ABOUT,       NULL },',
      '    { "ABOUT",       PG_ABOUT,       NULL },\n    { "APPS",        PG_APPS,       NULL },'),
     ("an app's value stops being rendered",
-     'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"\n              : orb_app_opt_value(s_app, ar);',
-     'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"\n              : NULL;'),
+     'const char *v = orb_app_opt_value(s_app, ar);',
+     'const char *v = NULL;'),
     # D12's own pins. Each is one way the shell can get its one level of nesting
     # wrong, and each must turn one of the shape checks above red.
     ("a closed group stops hiding its items",
@@ -1986,9 +2003,9 @@ MUTATIONS = [
     ("the long press skips an open group and takes the exit door instead",
      "        if (s_group_open >= 0) {",
      "        if (0) {"),
-    ("an open header loses the fact that it is open",
-     'const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"',
-     'const char *v = (k == OPT_GROUP && s_group_open == ar) ? ""'),
+    ("the shell steals the header press back from the app",
+     'const int ar = vis_to_row(rows, row);\n    if (ar < 0) { go_back(); repaint(); return; }   /* unreachable: rows_app sized it */\n    orb_app_opt_sel(s_app, ar);',
+     'const int ar = vis_to_row(rows, row);\n    if (ar < 0) { go_back(); repaint(); return; }   /* unreachable: rows_app sized it */\n    if (drawn_kind(rows, ar) == OPT_GROUP) { s_group_open = ar; repaint(); return; }\n    orb_app_opt_sel(s_app, ar);'),
     ("items lose the indent that says they are inside a header",
      'snprintf(out, outsz, "%s%s", k == OPT_ITEM ? "  " : "",',
      'snprintf(out, outsz, "%s%s", "",'),

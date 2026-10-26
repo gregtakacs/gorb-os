@@ -52,7 +52,7 @@ static const char *TAG = "clock_theme";
  * group leaves a page whose row 0 the owner can still press. Migration 1 retired
  * the plain "Factory default" row: with one slot the base face is what an empty or
  * torn slot already draws, and there is no second copy to store a default into. */
-#define ROW_GROUP   0   /* OPT_GROUP: "From the card" */
+#define ROW_GROUP   0   /* OPT_GROUP: "Themes" */
 #define ROW_ITEMS   1   /* the scanned themes, one OPT_ITEM each */
 
 typedef struct {
@@ -65,6 +65,7 @@ static cui_t   s_ui;        /* LVGL task only */
 static cui_t   s_shared;    /* worker writes this under s_mx */
 static SemaphoreHandle_t s_mx;
 static volatile bool s_dirty;
+static volatile bool s_walk;      /* a list walk is posted and unreaped     */
 static bool    s_armed;
 
 /* ---- the preview plane (docs/theme-preview-plan.md §2) --------------------
@@ -208,10 +209,24 @@ void clock_themes_request_scan(void)
 {
     if (!s_mx) return;          /* clock_themes_init() did not run */
     const esp_err_t e = orb_jobs_post(job_run, NULL, 0);
-    if (e == ESP_ERR_INVALID_STATE)
+    if (e == ESP_OK) s_walk = true;   /* in flight from here to the publish */
+    else if (e == ESP_ERR_INVALID_STATE)
         strlcpy(s_ui.status, "the card is already being read", sizeof s_ui.status);
     else if (e != ESP_OK)
         ESP_LOGW(TAG, "theme scan refused (%s)", esp_err_to_name(e));
+}
+
+/* The page's own busy answer, asked by the shell before it lets the knob move.
+ * True from an accepted post until the list publish lands — including the
+ * whole window before the worker starts, which the old s_dirty handshake
+ * left unguarded and let the shell paint stale rows under a live walk (the
+ * card's contents ARE the rows; an answer replaces them whole, so a cursor
+ * that could move or press through the walk would stand on a row the publish
+ * may delete). The rejected posts are not outstanding — the page shows the
+ * refusal instead of a lock the queue never armed. */
+bool clock_themes_walk_outstanding(void)
+{
+    return s_walk || s_dirty;
 }
 
 bool clock_themes_busy(void)
@@ -250,6 +265,7 @@ void clock_themes_service(void)
 {
     if (s_dirty) {
         s_dirty = false;
+        s_walk = false;               /* the walk's answer is in hand: no longer in flight */
         xSemaphoreTake(s_mx, portMAX_DELAY);
         s_ui = s_shared;
         xSemaphoreGive(s_mx);
@@ -389,7 +405,7 @@ const char *clock_opt_label(orb_app_t *app, int idx)
      * returns the dial to a second copy, so the group is the whole page and the
      * base face needs no row to name it — it is what a slot with nothing valid in
      * it already draws. */
-    if (idx == ROW_GROUP)   return "From the card";
+    if (idx == ROW_GROUP)   return "Themes";
     const int i = idx - ROW_ITEMS;
     if (i < 0 || i >= s_ui.n) return "";
     const orb_theme_entry_t *e = &s_ui.e[i];
@@ -407,21 +423,17 @@ const char *clock_opt_value(orb_app_t *app, int idx)
      * the network, which is the rule these answers live under — the same callback
      * is the dial's animation. */
     if (idx == ROW_GROUP) {
-        /* What is on the wall, named, so a closed group still answers the question
-         * a knock on the door asks. The shell overwrites this with "open" while the
-         * group is showing its items, which is why it is a summary and not a row. */
-        if (s_ui.n <= 0) return "the card holds none";
-        for (int i = 0; i < s_ui.n; i++) {
-            if (!s_ui.e[i].active) continue;
-            snprintf(v, sizeof v, "%d of %d: %.20s", i + 1, s_ui.n,
-                     s_ui.e[i].name[0] ? s_ui.e[i].name : s_ui.e[i].id);
-            return v;
-        }
-        /* Nothing active with themes on the card: the slot holds no valid bundle, so
-         * the dial is on the base face. The staged witness on h_sd says when that is a
-         * torn store rather than a board that has never stored a theme. */
-        return strcmp(orb_theme_source(), "slot") == 0
-                   ? "the stored copy did not load" : "on the base face";
+        /* The header answers with a number, or says nothing. The list opens
+         * with the page, so the glass already shows what lives here and the
+         * value the owner asked for is how many. Before the first walk lands
+         * s_ui.n is honestly 0 and the row says nothing; the walk's publish
+         * grows the row count, and a grown page is what makes the shell
+         * repaint the glass without a knob turn. Load state and refusal
+         * reasons live on their own theme rows, never on this line (owner
+         * ruling, 2026-10-26: the header does not editorialize). */
+        if (s_ui.n <= 0) return "";
+        snprintf(v, sizeof v, "%d theme%s", s_ui.n, s_ui.n == 1 ? "" : "s");
+        return v;
     }
     const int i = idx - ROW_ITEMS;
     if (i < 0 || i >= s_ui.n) return "";

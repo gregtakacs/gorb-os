@@ -91,6 +91,12 @@ extern "C" {
  *  clock's init, which is where the boot ladder puts it. */
 esp_err_t clock_themes_init(void);
 
+/** True while a theme-list card walk is posted and unreaped. The clock no
+ *  longer paints this state anywhere (owner ruling, 2026-10-26: the Themes
+ *  header answers with the count and nothing else); it remains the dedupe
+ *  the entry re-scan asks before posting another walk. */
+bool clock_themes_walk_outstanding(void);
+
 int          clock_opt_count(orb_app_t *app);
 const char  *clock_opt_label(orb_app_t *app, int idx);
 const char  *clock_opt_value(orb_app_t *app, int idx);

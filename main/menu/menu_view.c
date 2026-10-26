@@ -108,7 +108,7 @@ struct menu_page_s {
     const char *(*hint)(void);          /* NULL = the generic open hint       */
     void (*act)(int row);               /* the press, once back and exit are ruled out */
     /** The dynamic kinds' entry: PG_APP's open resolves which app, arms it,
-     *  validates its shape and closes its group — a generic dispatcher cannot
+     *  validates its shape and opens its one group — a generic dispatcher cannot
      *  know an app page needs that, which is why entry is a hook and not a
      *  flag. enter() only places the cursor. */
     void (*open)(const orb_app_t *a);
@@ -561,7 +561,11 @@ static int rows_caps(void)    { return 4 + 1; }
  * is not the app's number handed straight back. The +1 is the back row, and it
  * is outside the group: leaving a page must never depend on whether a header
  * happens to be open. */
-static int rows_app(void) { return s_app ? visible_rows(orb_app_opt_count(s_app)) + 1 : 0; }
+static int rows_app(void)
+{
+    if (!s_app) return 0;
+    return visible_rows(orb_app_opt_count(s_app)) + 1;
+}
 
 static void label_top(int row, char *out, size_t outsz, bool *sel_hi)
 {
@@ -655,12 +659,12 @@ static void label_app(int row, char *out, size_t outsz, bool *sel_hi)
     /* Label then value, in the shell's own words, off the app's answers: this is
      * the one line every options page shares, which is why the dial's theme page
      * and the browser's copy cannot drift. A group's value is the summary the
-     * app gives for what is inside it, and the shell overwrites that with the
-     * one fact the app is not allowed to know: that it is open (D12). Items are
-     * indented, because a list that nests has to say so on the glass and not
-     * only in the ABI. */
-    const char *v = (k == OPT_GROUP && s_group_open == ar) ? "open"
-              : orb_app_opt_value(s_app, ar);
+     * app gives for what is inside it, and nothing else: the shell does not
+     * overwrite it with the open/closed state, because an always-open list
+     * makes that fact echo the glass, and the owner asked the count instead
+     * (2026-10-26). Items are indented, because a list that nests has to say
+     * so on the glass and not only in the ABI. */
+    const char *v = orb_app_opt_value(s_app, ar);
     if (v && v[0])
         snprintf(out, outsz, "%s%s  (%s)", k == OPT_ITEM ? "  " : "",
                  orb_app_opt_label(s_app, ar), v);
@@ -777,15 +781,17 @@ static const char *title_caps(void)
  * not name the gesture that leaves it is a page the owner is stuck on until
  * they hold the knob by accident (C8's lesson, from the other side). NULL
  * means the plain "push: open" — the top page, the app list, the landing
- * card nobody presses. */
+ * card nobody presses. The app page's own hint lost its second string on
+ * 2026-10-26: back is a row and the group header is inert, so the plain
+ * sentence is true again. */
 static const char *hint_tz(void) { return "rotate: choose   push: set"; }
 static const char *hint_to(void) { return "rotate: choose   push: set"; }
 static const char *hint_caps(void) { return "rotate: choose   push: toggle"; }
 static const char *hint_app(void)
 {
-    return s_group_open >= 0
-         ? "rotate: choose   push: change   hold: close"
-         : "rotate: choose   push: change";
+    /* The plain answer. Back is a row, so the exit needs no clause; the group
+     * header is inert, so the hint must not promise it answers a press. */
+    return "rotate: choose   push: change";
 }
 static const char *hint_display(void) { return "rotate: choose   push: change"; }
 
@@ -1825,35 +1831,26 @@ void menu_view_set_armed(bool armed)
     ESP_LOGI(TAG, "%s", armed ? "menu open" : "menu idle");
 }
 
-/** The press a group header answers for: open it, or close the one already
- *  open. True means the press belonged to the header and the app must not hear
- *  about it (D12: the app answers what a row IS, and what a press on a header
- *  does belongs to the shell). The cursor does not move — an owner who just
- *  opened a list is looking at its header with its rows under it, and sliding
- *  the highlight out from under them would be the shell deciding what they
- *  meant. */
-static bool group_press(int rows, int ar)
-{
-    if (drawn_kind(rows, ar) != OPT_GROUP) return false;
-    s_group_open = (s_group_open == ar) ? -1 : ar;
-    ESP_LOGI(TAG, "group row %d %s: %s", ar,
-             s_group_open == ar ? "open" : "closed", orb_app_opt_label(s_app, ar));
-    return true;
-}
-
 /* The app page's entry, and its two dynamic answers. One visit, one shape:
  * validated on entry rather than per repaint, because the log line is the
  * point and a page that logged it fifty times a second would bury the cursor
- * moves it is kept beside. The group starts closed so the page always opens
- * on the two rows that answer "what is on the card" at a glance, and the app
- * is armed so its rows can take the knob — both undone by leave_app() on the
- * way out, because an app left armed off-glass would take the next detent
- * from the view actually showing. */
+ * moves it is kept beside. The one group an app carries opens with the page
+ * (owner, 2026-10-26, correcting the closed entry of the day before): an
+ * operator who opened Clock to pick a theme found two rows and a word to
+ * press, and a header that answers presses only to hide the list again is
+ * the folder tree D12 exists not to be. The cursor still lands on row 0 —
+ * the header — so a fresh entry rests on a label and not on a theme, whose
+ * cursor move would already load its preview onto the plane. The app is
+ * armed so its rows can take the knob — undone by leave_app() on the way
+ * out, because an app left armed off-glass would take the next detent from
+ * the view actually showing. */
 static void open_app(const orb_app_t *a)
 {
-    s_app      = a;
-    s_cur      = 0;
+    s_app        = a;
+    s_cur        = 0;
     s_group_open = -1;
+    for (int i = 0; i < orb_app_opt_count(a); i++)
+        if (orb_app_opt_kind(a, i) == OPT_GROUP) { s_group_open = i; break; }
     shape_check(orb_app_opt_count(a));
     orb_app_opt_arm(a, true);
     s_pg = P(PG_APP);
@@ -1869,18 +1866,21 @@ static void leave_app(void)
     s_group_open = -1;
 }
 
-/* The press of an app row — the half of this the generic dispatcher cannot
- * spell, because a group header answers for the rows under it. The press
- * belongs to the app, at the app's OWN row number, not the glass position the
- * cursor holds: handing an app a visible index would make a closed group
- * every app's problem to renumber. opt_sel() may start a job, and it may not
- * paint: repaint() below is what puts the app's new answer on the glass. */
+/* The press of an app row. The press belongs to the app, at the app's OWN
+ * row number, not the glass position the cursor holds: handing an app a
+ * visible index would make a closed group every app's problem to renumber.
+ * A group header is NOT intercepted here — the shell stopped owning that
+ * press on 2026-10-26, because the list opens with the page and the only
+ * other answer the shell had was to hide it again: a trap behind an inert
+ * header. The press goes to the app at the header's number, and the app
+ * that owns a group (the clock, for now) answers it by doing nothing.
+ * opt_sel() may start a job, and it may not paint: repaint() below is what
+ * puts the app's new answer on the glass. */
 static void act_app(int row)
 {
     const int rows = orb_app_opt_count(s_app);
     const int ar = vis_to_row(rows, row);
     if (ar < 0) { go_back(); repaint(); return; }   /* unreachable: rows_app sized it */
-    if (group_press(rows, ar)) { repaint(); return; }
     orb_app_opt_sel(s_app, ar);
     repaint();
 }
@@ -2062,8 +2062,8 @@ void menu_view_apply_input(int32_t delta, bool pressed)
      * The floor of the walk is the header itself and the ceiling is the page's
      * last row (owner, 2026-10-26): the first item and the back row are both on
      * the glass, and a cursor that could not rotate onto either made an open
-     * group a locked room whose only key was a hold nobody had been told about.
-     * Pressing the header closes it; pressing the back row leaves unchanged. */
+     * group a locked room. Pressing the header does nothing; pressing the back
+     * row leaves. */
     if (s_pg == P(PG_APP) && s_app && s_group_open >= 0) {
         const int arows = orb_app_opt_count(s_app);
         const int cur = vis_to_row(arows, s_cur);
@@ -2104,25 +2104,15 @@ bool menu_view_opt_long(void)
 {
     if (!s_armed) return false;                    /* the router owns the knob */
 
-    /* A page's own long hook has first refusal (D12), before the group rule:
-     * a row that declares a door means any hold on its page, not only a hold
-     * that happened to land over a group.
-     *
-     * The cursor goes back to the header the items just vanished under: leaving
-     * it on an un-drawn row is the knob appearing not to work, because the next
-     * detent would move from a row the glass is not showing. */
+    /* A page's own long hook has first refusal (D12). Below it the app page
+     * answers exactly like every other page: the hold exits the menu. It used
+     * to collapse the open group first; the header is inert now and collapsing
+     * under it would hide the list behind a row that cannot bring it back —
+     * only an exit and a re-entry could, so the collapse was a trap with an
+     * extra step (owner, 2026-10-26). The clock's own hook still parks on
+     * Home and takes the hold before this rule. */
     if (s_pg == P(PG_APP) && s_app) {
         if (orb_app_opt_long(s_app)) return true;
-        if (s_group_open >= 0) {
-            const int rows = orb_app_opt_count(s_app);
-            const int at = row_to_vis(rows, s_group_open);
-            ESP_LOGI(TAG, "hold closes group row %d: %s", s_group_open,
-                     orb_app_opt_label(s_app, s_group_open));
-            s_group_open = -1;
-            s_cur = (at < 0) ? 0 : at;
-            repaint();
-            return true;
-        }
     }
 
     /* Nothing was open to collapse. Owner ruling, 2026-10-25: the hold is the

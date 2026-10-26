@@ -336,7 +336,7 @@ Three switches cover the exceptions:
 | `--repo=<clone root>` | serve the Theme Editor from the live clone instead of the copy built in |
 | `--addr=host:port` | bind somewhere other than `127.0.0.1:3779`; needs `--allow-remote` |
 | `--allow-remote` | permit `--addr` to name a non-loopback host, which the hub otherwise refuses at startup |
-| `--probe-cables=false` | never identify wired boards by itself. On by default: the hub resets every board on an attributable USB lead and reads its bootloader, at start, on every re-plug, when a cached answer expires, and when a wired board stops answering its HTTP door. This is the only identification trigger there is — no card offers a button to force one — so turning it off means a board on a lead you cannot name. Replaces the button that was removed on 2026-10-19; `orbprobe -port=...` is the explicit path left. Costs each wired board one reboot per hub start |
+| `--probe-cables=false` | never identify wired boards by itself. On by default: the hub resets every board on an attributable USB lead and reads its bootloader, at start, on every re-plug, when a cached answer expires, and when a wired board stops answering its HTTP door. This is the only identification trigger there is — no card offers a button to force one — so turning it off means a board on a lead you cannot name. Replaces the button that was removed on 2026-10-19; `orbprobe -port=...` is the explicit path left. Asks the board's own `/api/v1/status` door first, so a wired board that answers on the LAN costs nothing; one reboot goes to each that does not |
 
 
 Chromium only, deliberately: the Theme Editor is a Blink canvas app whose file
@@ -498,8 +498,12 @@ A paid answer used to live only in memory, which made the fix feel broken: an ex
 probe correctly dropped the board off its cable, and restarting the hub brought the cable
 badge back, because the only fact still on file was a MAC. The hub now refuses to
 reason from that at all. At launch, before any door is allowed to trust a descriptor, it
-pays one probe for every board on an attributable lead and files the answer
-(`launchprobe.go`). A not-an-orb verdict is re-paid inside its own expiry window rather
+asks every board on an attributable lead what it is running and files the answer
+(`launchprobe.go`). The question is the reboot only when the cheaper one fails: a board
+whose own `/api/v1/status` door answers as the MAC the host read off that lead is filed
+from the payload, unrebooted, and the reset goes only to the boards that cannot answer
+that way — see "A reboot is the last question" below.
+A not-an-orb verdict is re-paid inside its own expiry window rather
 than left to age out of `identityTTL` and silently hand the lead back to the guess, so
 the same board cannot reappear on a cable half an hour after it stopped being one. It
 never touches a lead it cannot attribute, a lead a flash holds, or a board it left alone
@@ -508,7 +512,10 @@ board any more except the CLI.
 
 **Re-plugging always asks again.** Pulling a cable and putting it back voids whatever the
 hub believed about that lead, including the TTL-exempt not-an-orb verdict, and the board is
-re-identified within one sweep tick of going back in (five seconds). The serial gate cannot
+re-identified within one sweep tick of going back in (five seconds). What the re-ask now
+costs depends on the board: a wired orb that answers its `/api/v1/status` door as that MAC
+is re-identified by the door, and only a board that answers nothing is re-identified by a
+reset. The serial gate cannot
 do this instead: it compares the chip on the lead against the chip a verdict was filed
 about, so it fires when a *different* board arrives and quietly restores the old answer when
 the *same* board returns. A departure is the operator saying "look again", and the board may
@@ -617,6 +624,18 @@ assumed:
   silence. A chip that answers is asked again about every ten minutes.
   The identity is invalidated by a flash of that port, so a
   re-probe reports the new firmware rather than repeating the old.
+- **A reboot is the last question, not the first.** Before the sweep pulses a lead it asks
+  the same question over the network: one `GET /api/v1/status` at the address the fleet
+  already holds for the MAC the host read off that lead (`lanProof`). Only gorb-os serves
+  that door, and the payload quotes the chip's own eFuse MAC, so a reply naming this
+  board's MAC is the fact the reboot was going to buy, filed as `provenLan` at the price
+  of one GET and with the display never blanking. It is filed unpaid, so the port entry
+  keeps `probed` false and sets `lanProof`; the version, the address and the state token
+  come from the payload, and `project`, `compileTime` and `elfSha256` stay absent because
+  a door cannot quote them. Four cases still pay: a chip no row names, an address on the
+  firmware's own unroutable `192.168.4.x`, a door that answers nothing, and a door that
+  answers as somebody else's chip. The hub restarted against two wired, Wi-Fi-visible
+  orbs on 2026-10-26 and reset neither.
   The cache is keyed on the **cable**, not the tty name: an answer records the USB
   serial the host could see behind the port when the probe ran, and it is only
   handed back while that serial is still what is in the socket. Unplug orb A from

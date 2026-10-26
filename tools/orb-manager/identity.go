@@ -68,6 +68,19 @@ const (
 	// evidence the hub holds: a probe reads what the bootloader volunteered after a
 	// reset the hub paid for, and a flash record states what the hub itself installed.
 	provenFlash = "flash"
+	// provenLan is the same question asked over the network instead of over a lead:
+	// the chip's own /api/v1/status door answered, and named this chip's MAC. Only
+	// gorb-os serves that door, so one GET is present-tense proof the board runs
+	// gorb-os — the fact a reboot is otherwise priced to buy.
+	//
+	// It is proof in one direction only. Silence on the LAN comes from a lost lease, a
+	// boot-loop and a reflash alike, so this provenance never claims a board is NOT an
+	// orb (contradicts refuses it), and it is not a paid verdict, so it is not exempt
+	// from the TTL. What makes it worth filing is that the TTL it ages on is renewed
+	// for free by every liveness dial that keeps answering (identityCache.corroborate):
+	// an orb the network can see talks itself out of its next reset, forever, and a
+	// board that stops talking is asked about on the paid schedule again by itself.
+	provenLan = "lan"
 )
 
 type identityCache struct {
@@ -243,12 +256,18 @@ func (c *identityCache) doneFailed(port string, reason string) {
 	// because the door would not open a moment later is the same error the provenFailed
 	// tag exists to prevent, one level down: the hub would trade a fact for nothing, and
 	// the trade is always a board losing its cable.
-	if ok && (e.paidNegative() || (e.proven == provenProbe && e.info.IsOrb)) {
+	if ok && (e.paidNegative() || ((e.proven == provenProbe || e.proven == provenLan) && e.info.IsOrb)) {
 		// The verdict stands; the attempt clock does not. A port holding a believed
 		// negative is due again every contradictedReprobe forever, so this path is taken
 		// repeatedly on a lead that will not answer. It needs its own timer because the
 		// belief clock never moves here — and the belief clock alone cannot answer "this
 		// lead is deaf; when is another reset worth it?"
+		//
+		// A LAN answer counts here for the reason the tag exists at all: the paid probe
+		// that just failed reached no chip, which says something about the lead and
+		// nothing about the board. Overwriting a live orb's answer with this record
+		// would take the board off its cable because a console wedged, and then buy a
+		// second reset for the same board on the next pass.
 		e.lastTry = time.Now()
 		e.fails = fails
 		c.byPort[port] = e
@@ -293,6 +312,14 @@ func (c *identityCache) doneCable(port string, info esprom.OrbInfo) {
 	c.record(port, info, provenCable)
 }
 
+// doneLan records the answer to the same question asked without touching the lead: the
+// board's own /api/v1/status answered, and named this port's chip. It excuses the
+// reboot and nothing else — see provenLan for the direction the proof runs, and
+// handlePorts for the fields a door answer is allowed to publish.
+func (c *identityCache) doneLan(port string, info esprom.OrbInfo) {
+	c.record(port, info, provenLan)
+}
+
 // doneFlash records what this hub just wrote into the chip at this port. It is the
 // only entry that can carry a NEGATIVE verdict, and that is the whole reason it
 // exists: a board reflashed with firmware that is not gorb-os keeps the same eFuse
@@ -319,7 +346,10 @@ func (c *identityCache) doneFlash(port string, info esprom.OrbInfo) {
 // that returns nothing is filed as no entry at all rather than as a miss — so an
 // absence there means "we did not hear it", which is also true of an orb that is
 // asleep, boot-looping, or sitting in its downloader. Treating that silence as
-// "not an orb" would strip a cable from a healthy board.
+// "not an orb" would strip a cable from a healthy board. A door answer (provenLan)
+// never qualifies for the same reason seen from the other side: it is only ever filed
+// on an answer, so it can state that a board IS an orb and has no way to state the
+// opposite about one that was reflashed.
 //
 // The cache already enforces the freshness and the cable-swap rules (identityTTL, and
 // the USB serial an entry must still match), so a verdict about a board that has since
@@ -333,7 +363,7 @@ func (s *Server) contradicts(port string) (esprom.OrbInfo, bool) {
 		return esprom.OrbInfo{}, false
 	}
 	proven := s.identities.provenOf(port)
-	if proven == provenCable || proven == provenFailed {
+	if proven == provenCable || proven == provenFailed || proven == provenLan {
 		return esprom.OrbInfo{}, false
 	}
 	if info.MAC == "" {
@@ -593,11 +623,16 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 			// stamp read off the bootloader in the window that follows. The free
 			// cable answer is a different fact and gets its own field, because a
 			// picker that called a PING a probe would report a reboot nobody asked
-			// for and would hide the Identify button that settles the version.
-			rebootPaid := ent.proven != provenCable
+			// for and would hide the Identify button that settles the version. A door
+			// answer is the third case and takes the same treatment for the same
+			// reason: it cost one GET, so it must not be reported as a reset.
+			rebootPaid := ent.proven != provenCable && ent.proven != provenLan
 			e["probed"] = rebootPaid
-			if !rebootPaid {
+			if ent.proven == provenCable {
 				e["cableProof"] = info.IsOrb
+			}
+			if ent.proven == provenLan {
+				e["lanProof"] = info.IsOrb
 			}
 			e["isOrb"] = info.IsOrb
 			// A chip that has answered for itself as an orb is the strongest
@@ -642,6 +677,19 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 				e["idf"] = info.IDF
 				e["ip"] = info.IP
 				e["probedAt"] = info.ProbedAt
+				e["verdict"] = string(s.verdictFor(info))
+			}
+			// What a door answer publishes, and what it may not. The version, the
+			// address and the state token came back in the payload, so the card may
+			// print them and the comparator may judge them. The project name, the
+			// build stamp and the ELF digest are bootloader facts the door does not
+			// carry, and an empty field is the honest report rather than a gap the
+			// page fills in by guessing — which is why this block is not the one above
+			// with two lines deleted.
+			if ent.proven == provenLan {
+				e["version"] = info.Version
+				e["semver"] = semverPayload(info.Version)
+				e["ip"] = info.IP
 				e["verdict"] = string(s.verdictFor(info))
 			}
 		}

@@ -27,11 +27,22 @@ import (
 // The fix is to stop guessing at all where a question can be asked: at launch, and
 // periodically after, the hub pays a probe for every cable it can attribute, and the
 // answer — orb or not — is filed before any door is allowed to reason from the
-// descriptor. This costs each board on a lead one reboot per hub launch, which is the
-// trade the operator asked for out of the two states the hub can be wrong about. A
-// board on a lead the hub cannot attribute is never touched: EnterDownloadMode pulses
-// DTR/RTS, and doing that to an Arduino on the same bench resets a device nobody asked
-// about.
+// descriptor. A board on a lead the hub cannot attribute is never touched:
+// EnterDownloadMode pulses DTR/RTS, and doing that to an Arduino on the same bench
+// resets a device nobody asked about.
+//
+// What the sweep does NOT do is pay for an answer the board gives for free. Before a
+// reset is pulsed the hub asks the one question the reboot exists to answer, of the
+// chip's own /api/v1/status door, at the address the fleet already holds for that MAC
+// (lanProof). Only gorb-os serves that door, so an answer naming this board's eFuse MAC
+// is the same fact a reboot buys, priced at one GET and with no blank glass. The reboot
+// stays the only way to learn the opposite, so it stays owed to three cases: a chip the
+// fleet does not know, a known chip whose door is silent, and a door answering as some
+// other board.
+//
+// That is what the launch pulse stopped costing a healthy orb. The paid answer lived
+// only in memory, so every hub restart re-pulsed every board on a lead: eight seconds
+// of black display each, before the operator had touched anything.
 
 const (
 	// contradictedReprobe bounds how long a paid NOT-an-orb verdict is trusted before
@@ -140,6 +151,14 @@ func (s *Server) launchSights(ctx context.Context) ([]cableSighting, bool) {
 //     permanent claim the hub never tests again;
 //   - a probe that never reached a chip: an absence of evidence, retried on a backoff
 //     that doubles (identityCache.nextAsk) rather than treated as a verdict or dropped.
+//
+// A yes here is not yet a reset. The caller (identifyCables) puts one question in front
+// of this one — lanProof, the board's own status door — and pulsed the lead only if that
+// comes back silent, foreign, or naming a different chip. So the answer a LAN dial filed
+// (provenLan) reads here as a positive on file that ages on the ordinary TTL: it is not
+// the reboot-paid answer this gate refuses to re-ask on a clock, and it is not the free
+// PING it refuses to trust at all, because unlike a PING it cannot survive a reflash out
+// of gorb-os.
 func (s *Server) cableNeedsProbe(c cableSighting) (bool, string) {
 	// Only a chip the host can attribute to a device, and only one whose serial it read:
 	// an answer filed against no MAC describes nobody. The gate takes any Espressif chip
@@ -259,6 +278,81 @@ func sameChip(a, b string) bool {
 	return ca == cb
 }
 
+// lanProof asks the free question, files the answer, and reports whether the hub may
+// leave this lead alone. It runs between the gate deciding a reset is owed and the
+// reset being pulsed, so it costs a dial only on a lead the hub had already decided to
+// reboot — never on a board whose answer is fresh, and never twice inside one TTL.
+//
+// The question it asks is the one the reboot was going to buy: does this chip run
+// gorb-os. /api/v1/status answers only on gorb-os, so a reply is that answer. What it
+// is not is a description of the *cable*: two boards can sit at one address, and a
+// board with no lease can be dialled at somebody else's. So the reply must name the
+// MAC the host read off the descriptor, the one fact that ties the network answer to
+// this lead. A stranger's orb answering here proves nothing about this board, and the
+// reset stays owed.
+//
+// Three refusals fall through to the paid probe rather than filing anything:
+//   - no row, or a row with no address: an AP-isolated board has no lease to dial, and
+//     a chip the hub has never met has no claim to be believed about;
+//   - a door that will not answer: silence is a boot-loop as often as it is a reflash,
+//     and only the bootloader console tells those apart;
+//   - a door that names a different chip.
+//
+// On a refusal this function writes nothing at all. An unanswered LAN question is an
+// absence of evidence, and filing it would let the absence speak as a verdict.
+func (s *Server) lanProof(c cableSighting) bool {
+	if s.lanDial == nil || s.identities == nil || c.mac == "" {
+		return false
+	}
+	// fleetKnown, not a raw row read: it refuses a board this hub left lonely, whose
+	// firmware has no Wi-Fi to answer on, and it is the same question the card asks.
+	// The address is the fleet's current one, which mDNS keeps honest — a board whose
+	// lease moved announces the new address and the row follows the MAC — so a stale
+	// entry in the file is not what gets dialled.
+	row, known := s.fleetKnown(c.mac)
+	if !known || row.IP == "" || softAPAddr(row.IP) {
+		return false
+	}
+	// Claim the lead for the length of the question. The dial opens no port, but the
+	// answer it files does: record releases the claim a probe holds, so a door answer
+	// landing during a manual Identify would free the lead for a second reset while the
+	// first was still reading the console. A question that costs nothing can wait for
+	// one that costs a reboot.
+	if !s.identities.begin(c.port) {
+		return false
+	}
+	st, err := s.lanDial(row.IP)
+	if err != nil || st == nil {
+		s.identities.release(c.port)
+		return false
+	}
+	if !sameChip(st.MAC, c.mac) {
+		log.Printf("orb-manager: %s answers %s as chip %q, not the board on this lead; the probe stays owed",
+			row.IP, c.port, st.MAC)
+		s.identities.release(c.port)
+		return false
+	}
+	// doneLan records the answer, and record is what gives the claim back.
+	s.identities.doneLan(c.port, esprom.OrbInfo{
+		Port:    c.port,
+		IsOrb:   true,
+		MAC:     c.mac,
+		Version: st.FW,
+		State:   st.State,
+		Name:    st.Name,
+		IDF:     st.IDF,
+		IP:      row.IP,
+		Reason:  "answered /api/v1/status at " + row.IP + ": no reset needed",
+	})
+	// The facts the door carried belong on the row as much as on the port: fw, state
+	// and the board's own name, folded and persisted by the same routine the ten-second
+	// sweeper uses, so the card and the state file cannot disagree about who said what.
+	s.foldProbeStatus(row.IP, st)
+	log.Printf("orb-manager: %s is an orb running %s over the LAN, so %s keeps its cable without a reset",
+		c.mac, st.FW, c.port)
+	return true
+}
+
 // probeCableNow pays one reboot and files the answer. It claims the cable exactly as the
 // Identify door does — registered as opProbe, holding orbbind's cross-process lock — so
 // a flash started mid-sweep waits rather than collides, and /api/ops can say what is on
@@ -353,9 +447,14 @@ func versionWord(v string) string {
 // outranks every caching rule in the hub, because the chip the verdict was about was
 // physically off the bench in the interval and may have been reflashed while it was.
 //
-// The pass costs a re-plugged board one reboot within one sweep tick of going back in, and
-// a board that was reflashed away from the hub the same, which is the delay accepted for
-// that case. It asks nothing twice: a filed answer takes the lead out of the owed set.
+// The pass still outranks every caching rule in the hub — the gate is consulted before
+// any exemption, and no filed answer hides a board from the question. What changed is
+// what the question costs. A re-plugged board answers it over the LAN if it can: back on
+// the bench, on its lease, quoting its own MAC through /api/v1/status, it is filed as an
+// orb within one sweep tick and pulsed never. The board that cannot answer — off the
+// network, in its downloader, or written over with something that serves no such door —
+// is the one the reboot is for, and it pays within the same tick. It asks nothing twice:
+// a filed answer of either kind takes the lead out of the owed set.
 func (s *Server) identifyCables(ctx context.Context) int {
 	if s.probeOrb == nil || s.cables == nil || s.identities == nil {
 		return 0
@@ -394,6 +493,15 @@ func (s *Server) identifyCables(ctx context.Context) int {
 		}
 		ask, why := s.cableNeedsProbe(c)
 		if !ask {
+			continue
+		}
+		// The gate owes this lead a question. Ask it over the network first: a board
+		// that answers its own door as this MAC has already said what the reset was
+		// going to hear, and a hub that pulsed anyway would be paying eight seconds of
+		// blank display for a fact it was holding. Silence here is not a refusal to
+		// answer — it is the answer to the harder question, so the probe goes ahead.
+		if s.lanProof(c) {
+			asked++
 			continue
 		}
 		if s.probeCableNow(ctx, c, why) {

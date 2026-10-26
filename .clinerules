@@ -1426,6 +1426,22 @@ serves the bytes it was built with, never the ones on disk.
   the sweep doors run under every flag and are the ones that were pulsing.
   `selfRebootExcused` keys on `macBare` — colon-vs-bare MAC forms have
   already fooled this guard once.
+- **The sweep asks the LAN before it pulses (2026-10-26).** The identity cache is
+  memory, so a hub restart left every orb on a lead with no answer on file and costed
+  each one a reboot at launch. `launchprobe.go`'s `lanProof` now runs between the gate
+  owing a question and `probeCableNow` pulsing it: one `GET /api/v1/status` at the
+  address the fleet row holds for the descriptor's MAC, filed as `provenLan` when the
+  reply names that same MAC. Four cases fall through and still pay the probe: no row,
+  an address on `192.168.4.x`, a silent door, a door naming another chip. `provenLan`
+  is never a contradiction (`contradicts` refuses it), survives a `doneFailed` probe,
+  ages on the ordinary TTL, and is renewed free by the ten-second liveness dial — so an
+  orb the network can see is not reset again while it keeps answering. The version it
+  publishes is the declared triple only: no project name, no `compileTime`, no
+  `elfSha256`, so its update badge is decided the same way a Wi-Fi OTA's already is and
+  a rebuild under an unchanged `version.txt` reads `same-version`. The seam `s.lanDial`
+  is wired in `main.go` and deliberately nil in `newHub()` so the suite dials no
+  network — which is why `TestTheRealHubWiresTheQuestionItIsNowOwedToAsk` pins the
+  wiring by reading the source: a forgotten line there is invisible to every other test.
   Its built-in firmware is embedded at `make manager` time: after any
   `idf.py build`, refresh with `make firmware && make manager` or the hub's
   Update button silently downgrades the board. Started headless on this box

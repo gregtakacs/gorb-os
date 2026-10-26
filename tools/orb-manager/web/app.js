@@ -242,6 +242,16 @@ function portLabel(p, entry) {
       ? p + "  —  " + (entry.mac || entry.usbMac || "orb") + "  ·  " + (entry.version || "version unknown")
       : p + "  —  " + (entry.reason || "not an orb");
   }
+  // A board that answers its own network door has said the thing a reboot is bought to
+  // hear, for one GET and no blank glass. It is not a probe and not a PING: the version
+  // is the board's own quote, and the build stamp and ELF digest are facts this door
+  // does not carry, so they are not printed as blanks. It sits above the cable branch
+  // because a door answer outranks a console echo and must not be labelled "not
+  // identified" — and it stays below the probe branch, which knows more.
+  if (entry.lanProof && entry.isOrb) {
+    return p + "  \u2014  " + (entry.usbMac || entry.mac || "orb") + "  \u00b7  " +
+      (entry.version || "an orb") + ", answering on the LAN";
+  }
   // The free cable answer, filed and never paid for with a reboot. It says the chip is
   // an orb and nothing else, so the label stops there: no version, no verdict, and not
   // the "not identified" a bare descriptor still earns.

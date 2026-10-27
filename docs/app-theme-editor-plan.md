@@ -469,11 +469,7 @@ tested without a board. The web half is a pane in the Themes card plus
 same-origin before it spends a token, and posts the container to the existing
 `/api/theme/upload` door.
 
-**S4 — The clock editor moves into its container.** *Status: NOT DONE — held, owner's call 2026-10-27. Sized in §10 item 3 and it fits with ~1.9 MB to spare, so it is work, not risk.* This is where 652 KB of
-app-owned files meet the cap and where the shared-runtime split stops being a
-proposal. Split `Watch Composer.dc.html` into the hub-served runtime and baker and
-the app-owned UI, then re-bake `clock.orbapp` with the region. The standalone
-`file://` composer keeps working as it does today.
+**S4 — The clock editor moves into its container.** *Status: DONE 2026-10-27.* 652 KB of app-owned files moved behind the cap with 1.4 MiB to spare. `tools/make_clock_region.py` is the one region author: it derives the entry document from the tracked composer (never edits it — the tracked file and the `file://` page stay byte-identical), rewrites the two runtime srcs to `/composer/` absolute per §5.3, and injects the pane-bridge shim that speaks the vocabulary `themeBridge` actually implements (`theme.ready` / `theme.save` / `theme.status`; §7.1's table names messages the shipped pane never sent, and the shim follows the code). `make_factory_apps.py` calls the builder, so the clock's seed container now carries a CRC-covered region and `--check` freshness covers it. `tools/host_clock_region_test.py` is the content gate: member set, STORE-only, the two rewrites, shim placement and gates, determinism. The Go reader parses the real bake and `IdentityDiff` reports an editor-only change against a regionless row, so the disclosure chain closes on the artifact, not on a fixture. Nothing hub-side needed to move: the S3 stopgap stays as the pre-tuple-dial fallback, and `editorFromRow` already gives the container precedence the moment the region discloses. The old stopgap comment that said "until S4" was corrected when S5 landed the starter-artifact move.
 
 **S5 — Delete the seed.** *Status: NOT DONE — deliberately sequenced after S4. Deleting it before the clock's own editor ships in its container leaves a factory-fresh board with no clock app and no face until someone copies files to a card.* Once the drop-zone path is proven, remove the hub's
 embedded pair and invert the two test assertions.

@@ -30,6 +30,16 @@ _spec = importlib.util.spec_from_file_location("orbapp", os.path.join(HERE, "orb
 orbapp = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(orbapp)
 
+# S4: the clock's editor travels inside its own container. The region builder is
+# its own tool (make_clock_region) because the composer sources are tracked and
+# the region is derived bytes; importing it here keeps this file the one author
+# of every factory container, so --check covers the region for free.
+_cr = importlib.util.spec_from_file_location("make_clock_region",
+                                             os.path.join(HERE, "make_clock_region.py"))
+clock_region = importlib.util.module_from_spec(_cr)
+_cr.loader.exec_module(clock_region)
+
+
 OUT_DIR = os.path.join(HERE, "..", "tools", "orb-manager", "seed")
 
 # Behaviour kind ids must match main/app/orb_app.h's enum (C6 append-only).
@@ -57,10 +67,17 @@ PICKER_SETTINGS = (
 )
 
 APPS = (
-    # slug, title, kind, caps, settings
-    ("clock",        "Clock", KIND_CLOCK,        CLOCK_CAPS,  ()),
-    ("color_picker", "HSB",   KIND_COLOR_PICKER, PICKER_CAPS, PICKER_SETTINGS),
+    # slug, title, kind, caps, settings, editor-region bytes (b"()" when none)
+    ("clock",        "Clock", KIND_CLOCK,        CLOCK_CAPS,  (), "_clock_editor"),
+    ("color_picker", "HSB",   KIND_COLOR_PICKER, PICKER_CAPS, PICKER_SETTINGS, None),
 )
+
+
+def editor_region(key):
+    """The one place a factory container's editor region is built."""
+    if key == "_clock_editor":
+        return clock_region.make_region()
+    return b""
 
 
 def containers():
@@ -73,15 +90,16 @@ def containers():
     import tempfile
     out = []
     with tempfile.TemporaryDirectory() as td:
-        for slug, title, kind, caps, settings in APPS:
+        for slug, title, kind, caps, settings, editor in APPS:
             orbapp.write_container(
                 os.path.join(td, slug + ".orbapp"), slug, title, caps=caps,
                 settings=settings, behaviour_kind=kind, serial=SERIAL,
-                baked_ms=BAKED_MS)
+                baked_ms=BAKED_MS, editor=editor_region(editor))
             with open(os.path.join(td, slug + ".orbapp"), "rb") as f:
                 blob = f.read()
             out.append((slug, title, kind, caps, blob))
     return out
+
 
 
 def emit_files(apps):

@@ -131,10 +131,11 @@ func (c *Client) ThemeAppsFor(ip string) (*ThemeApps, error) {
 			// than the app.
 			//
 			// A zero one does NOT take the pane away. "No region in this container" and
-			// "no editor anywhere for this app" are different answers, and the hub-hosted
-			// composer is the second half of the disjunction until S4 moves the clock's
-			// editor into its container — clearing it here would blank the one working
-			// editor on the dial for the crime of shipping a container honestly empty.
+			// "no editor anywhere for this app" are different answers, and the fallback
+			// carries a dial whose firmware predates the identity fields — its row cannot
+			// answer, and the hub still knows the one editor that predates the whole
+			// system. A board at the tuple firmware with a genuinely regionless container
+			// answers zero, and editorFromRow's `answered` split keeps that case honest.
 			if ed, answered := editorFromRow(a); answered && ed {
 				ta.HasEditor, ta.EditorURL = true, "/editor/"+a.Slug+"/"
 			}

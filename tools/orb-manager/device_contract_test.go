@@ -818,12 +818,13 @@ func TestFakeInstalledRowsCarryTheIdentityTuple(t *testing.T) {
 	}
 
 	f := orbfake.New().WithCardApps(
-		// caps 0x8 is the themes bit of orb_app_manifest.h's orb_cap_t, and 0x2 is net —
-		// the same numbers apps_test.go and the firmware use, not a name this file invents.
-		orbfake.CardApp{Stem: "sentinel", Slug: "sentinel", Title: "Sentinel", Caps: 0x8,
+		// Cap bits are orb_cap_t's real positions (CAP_POWER=4 .. CAP_THEMES=7), the same
+		// numbers themeapps_test.go uses. Bits 0..3 are free caps the firmware never
+		// prints, so 0x8 for "themes" would be testing a table the device does not have.
+		orbfake.CardApp{Stem: "sentinel", Slug: "sentinel", Title: "Sentinel", Caps: 1 << 7,
 			Installed: true, Enabled: true, GeomCRC: 0x11223344, CodeCRC: 0xdeadbeef,
 			CodeSize: 4096, Serial: 20261027, Editor: []byte("region")},
-		orbfake.CardApp{Stem: "plain", Slug: "plain", Title: "Plain", Caps: 0x2,
+		orbfake.CardApp{Stem: "plain", Slug: "plain", Title: "Plain", Caps: 1 << 5,
 			Installed: true, Enabled: true, Serial: 1})
 	srv := httptest.NewServer(f)
 	defer srv.Close()

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfake"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
 // D37's enumeration tests. The old Themes face derived its app chooser from the
@@ -27,13 +28,15 @@ const (
 )
 
 type themeAppsRow struct {
-	Slug      string `json:"slug"`
-	Title     string `json:"title"`
-	Caps      string `json:"caps"`
-	Count     int    `json:"count"`
-	Active    bool   `json:"active"`
-	HasEditor bool   `json:"has_editor"`
-	EditorURL string `json:"editor_url"`
+	Slug       string   `json:"slug"`
+	Title      string   `json:"title"`
+	Caps       string   `json:"caps"`
+	Count      int      `json:"count"`
+	Active     bool     `json:"active"`
+	HasEditor  bool     `json:"has_editor"`
+	EditorURL  string   `json:"editor_url"`
+	Drift      []string `json:"drift"`
+	Comparable bool     `json:"comparable"`
 }
 
 type themeAppsOut struct {
@@ -228,4 +231,147 @@ func TestThemeAppsRefusesAnUnlearnedAddress(t *testing.T) {
 			t.Errorf("%q dialled the orb anyway: %+v", ip, c)
 		}
 	}
+}
+
+// D37's disclosure: an app whose CONTAINER carries a region gets the pane pointed at the
+// app's own bytes, not at anything the hub happens to host. hue has no hub-hosted editor,
+// so before the region existed this app had no pane at all even with an editor on board.
+func TestThemeAppsOpensTheContainersEditorWhenTheDeviceReportsOne(t *testing.T) {
+	orb := orbfake.New(orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 1, OK: true}).
+		WithCardApps(orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: capThemes,
+			Installed: true, Enabled: true, Serial: 7, GeomCRC: 0xabcd, Editor: []byte("zip")})
+	s, ip, _, _ := fakeOrbHubWith(t, orb)
+	_, got := getThemeApps(t, s, ip)
+	row := appRow(got.Apps, "hue")
+	if row == nil {
+		t.Fatal("theme-capable app missing from the enumeration")
+	}
+	if !row.HasEditor || row.EditorURL != "/editor/hue/" {
+		t.Errorf("an app reporting a region got has_editor=%v url=%q, want the container route",
+			row.HasEditor, row.EditorURL)
+	}
+}
+
+// The other direction, and the one that could regress the shipped clock: a container that
+// reports NO region does not take away an editor the hub hosts. The clock's editor moves
+// into its container in S4; until then its container is empty of one and /composer/ is the
+// truth, so a dial saying editor_crc=0 must leave the pane open rather than blank it.
+func TestThemeAppsKeepsTheHostedEditorWhenTheContainerCarriesNone(t *testing.T) {
+	orb := orbfake.New().WithCardApps(
+		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes,
+			Installed: true, Enabled: true, Serial: 3, GeomCRC: 0x1234})
+	s, ip, _, _ := fakeOrbHubWith(t, orb)
+	_, got := getThemeApps(t, s, ip)
+	row := appRow(got.Apps, "clock")
+	if row == nil {
+		t.Fatal("clock missing")
+	}
+	if !row.HasEditor || row.EditorURL != "/composer/" {
+		t.Errorf("a clock whose container holds no region got has_editor=%v url=%q; the hub still serves its editor",
+			row.HasEditor, row.EditorURL)
+	}
+}
+
+// Drift is the reason the tuple reaches the hub at all. Against the seed's own container
+// the seeded clock compares; against an orb a half-version behind, the face has to be able
+// to say which words disagree rather than "installed".
+func TestThemeAppsReportsDriftAgainstTheHubsOwnContainer(t *testing.T) {
+	// Slug must match: the comparison refuses across names rather than reporting a
+	// difference nobody could resolve by re-pushing a file.
+	orb := orbfake.New().WithCardApps(
+		orbfake.CardApp{Stem: "sentinel", Slug: "sentinel", Title: "Sentinel", Caps: capThemes,
+			Installed: true, Enabled: true, Serial: 1, GeomCRC: 0x1111,
+			Editor: []byte("an editor the hub's copy does not have")})
+	s, ip, _, _ := fakeOrbHubWith(t, orb)
+	s.device.Containers = func(slug string) ([]byte, error) {
+		if slug != "sentinel" {
+			return nil, nil
+		}
+		return appFixtureBytes(t, "sentinel.orbapp"), nil
+	}
+	_, got := getThemeApps(t, s, ip)
+	row := appRow(got.Apps, "sentinel")
+	if row == nil {
+		t.Fatal("sentinel missing")
+	}
+	if !row.Comparable {
+		t.Fatal("a row carrying a tuple and a hub container reported itself uncomparable")
+	}
+	joined := strings.Join(row.Drift, " ")
+	// The face cannot say "installed, and that is enough": an orb one serial behind shows
+	// the same row as one that is current unless the words that disagree come through.
+	for _, want := range []string{"serial", "editor"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("drift lines %q never name %s — an operator cannot act on \"it differs\"", joined, want)
+		}
+	}
+	if strings.Contains(joined, "slug") {
+		t.Errorf("drift reported a slug problem between two rows that match by slug: %q", joined)
+	}
+}
+
+// A matched pair reports no drift, so the absence of a line means agreement and not
+// "nobody looked". The hub's own seed container against a row stamped from it is the real
+// shipping case, and seedContainerFor is the production resolver rather than a test stub.
+func TestThemeAppsReportsNoDriftForAMatchingSeed(t *testing.T) {
+	body, err := seedContainerFor("clock")
+	if err != nil || len(body) == 0 {
+		t.Skipf("no seeded clock to compare against: %v", err)
+	}
+	c, err := orbnet.ParseApp(body)
+	if err != nil {
+		t.Fatalf("the hub's own seed container does not parse: %v", err)
+	}
+	// The double derives editor_crc from the region bytes it holds, so the row carries the
+	// seed's region rather than the seed's number. S4 has not landed, so the seeded clock
+	// ships none and the honest fixture is a nil Editor.
+	if c.EditorCRC != 0 {
+		t.Skipf("the seeded clock now ships an editor region; this fixture carries none")
+	}
+	orb := orbfake.New().WithCardApps(
+		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes,
+			Installed: true, Enabled: true, GeomCRC: c.GeomCRC, CodeCRC: c.CodeCRC,
+			CodeSize: c.CodeSize, Serial: c.Serial})
+	s, ip, _, _ := fakeOrbHubWith(t, orb)
+	s.device.Containers = seedContainerFor
+	_, got := getThemeApps(t, s, ip)
+	row := appRow(got.Apps, "clock")
+	if row == nil {
+		t.Fatal("clock missing")
+	}
+	if !row.Comparable {
+		t.Fatal("the seeded pair reported uncomparable")
+	}
+	if len(row.Drift) != 0 {
+		t.Errorf("a row built from the hub's own container drifted: %q", row.Drift)
+	}
+}
+
+// No resolver, no opinion. A hub holding no original must not report a match: the field it
+// would compare is a zero the decoder invented.
+func TestThemeAppsSaysNothingWithoutAHubsCopy(t *testing.T) {
+	orb := orbfake.New().WithCardApps(
+		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes,
+			Installed: true, Enabled: true, Serial: 3, GeomCRC: 0x1234})
+	s, ip, _, _ := fakeOrbHubWith(t, orb)
+	_, got := getThemeApps(t, s, ip)
+	row := appRow(got.Apps, "clock")
+	if row == nil {
+		t.Fatal("clock missing")
+	}
+	if row.Comparable || len(row.Drift) != 0 {
+		t.Errorf("a hub with no copy of the container reported comparable=%v drift=%q", row.Comparable, row.Drift)
+	}
+}
+
+// appFixtureBytes reads one of the repo's .orbapp fixtures. The hub's own reader parses
+// these, and the pair is pinned byte-for-byte by tools/host_app_fixture_test.py — reaching
+// them from a package-main test is two directories up instead of four.
+func appFixtureBytes(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "tests", "fixtures", name))
+	if err != nil {
+		t.Fatalf("no fixture %s: %v", name, err)
+	}
+	return b
 }

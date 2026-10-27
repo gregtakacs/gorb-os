@@ -389,6 +389,12 @@ func main() {
 	// old 400 ms could never have heard a busy report at all.
 	s.orb = orbnet.NewGatedClient(2*time.Second, dial, false)
 	s.device = orbnet.NewGatedClient(deviceTimeout, dial, false)
+	// The Themes face asks one question a device cannot answer alone: is the app on this
+	// orb the same build as the container the hub is serving? Containers is how the answer
+	// gets its second half, and it is the seed because the seed is the only first-party
+	// container the hub holds an original of. A nil resolver leaves the face saying
+	// "cannot compare" rather than "up to date".
+	s.device.Containers = seedContainerFor
 	s.ota = orbnet.NewGatedClient(otaTimeout, dial, true)
 	// The preview client streams ~100 KB planes from a single-task httpd that
 	// can open the connection and then wedge mid-send-loop (45 s of zero

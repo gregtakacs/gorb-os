@@ -65,6 +65,16 @@ type Client struct {
 	// else is how the two drifted apart in tests. A bench test against a local fake
 	// orb is the only thing that sets it.
 	DevicePort string
+
+	// Containers is an optional resolver that hands this client the bytes of the
+	// container a first-party app SHIPPED as, keyed by slug. The Themes face uses it for
+	// one question the device cannot answer: is the build on this orb the build the hub
+	// is serving? See AppContainer.IdentityDiff.
+	//
+	// It is a function rather than a directory because this package does not know where
+	// the hub keeps its files or whether they live on a disk at all, and a nil resolver is
+	// the honest "the hub holds no copies" rather than a scan that finds nothing.
+	Containers func(slug string) ([]byte, error)
 }
 
 // DefaultPort is the port an orb's own httpd listens on: CONFIG_ORB_NET_HTTPD_PORT,

@@ -397,3 +397,23 @@ func init() {
 		log.Fatalf("orb-manager: built-in seed unreadable: %v", err)
 	}
 }
+
+// seedContainerFor is the resolver behind orbnet.Client.Containers: the hub's own copy of a
+// first-party app's container, straight out of the embedded image rather than a directory
+// someone must remember to ship alongside the binary.
+//
+// It answers for the seeded pair only, and that is the honest scope. A container the owner
+// uploaded from a browser is the hub's copy of nothing — the hub forwarded bytes and holds
+// no authoritative original — so asking it whether such an app is current has no answer, and
+// an empty result is what stops the Themes face from claiming one.
+//
+// S5 deletes the seed and this with it, at which point first-party freshness has to be
+// answered by whatever replaced the seed rather than silently reverting to no opinion.
+func seedContainerFor(slug string) ([]byte, error) {
+	for _, a := range seedApps {
+		if a.Slug == slug {
+			return seedFS.ReadFile(a.File)
+		}
+	}
+	return nil, nil
+}

@@ -61,13 +61,17 @@ type AppInstalledRow struct {
 	EditorCRC uint32 `json:"editor_crc,omitempty"`
 }
 
-// CarriesIdentity reports whether a row sent the identity tuple at all. Only the
-// installed tier's card rows do, and the distinction is not cosmetic: an absent tuple and
-// a tuple of zeros are different answers, and conflating them would let the hub call a
-// compiled-in app "stale" on the strength of a field that was never there. The firmware
-// omits the keys for the compiled tier (orb_net.c's apps_send_installed), so Go's zero
-// values arrive; a card row whose real geom_crc is zero is the one container shape that
-// could not exist, because the writer refuses a header whose manifest checksums to zero.
+// CarriesIdentity reports whether a row plausibly sent the identity tuple. Only the
+// installed tier's card rows do, and the distinction is not cosmetic: the firmware OMITS
+// the keys for a compiled row, Go decodes the absent numbers as zeros, and a comparison
+// against invented zeros would call a built-in clock stale.
+//
+// Five zeros means "no tuple", which is a judgement and not a proof. A card row CAN hold
+// individual zero words — a native app's code_size is 0, an app with an empty geometry
+// table has geom_crc 0, and an app shipping no editor has editor_crc 0 — so a container
+// with every one of those at once decodes as though it sent nothing. That row reports
+// uncomparable, which costs the hub an opinion and never costs it a wrong one: the failure
+// mode is "could not check", never "up to date".
 func (a AppInstalledRow) CarriesIdentity() bool {
 	return a.GeomCRC != 0 || a.CodeCRC != 0 || a.CodeSize != 0 || a.Serial != 0 || a.EditorCRC != 0
 }

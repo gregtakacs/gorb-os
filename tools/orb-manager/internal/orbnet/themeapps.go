@@ -26,13 +26,20 @@ type ThemeApp struct {
 	Count  int    `json:"count"`
 	Active bool   `json:"active"`
 	Failed bool   `json:"failed"`
-	// HasEditor reports whether an editor ships for this app. D37's whole premise
-	// is that the editor travels inside the app's container, so the truthful answer
-	// comes from a container region that firmware does not ship until GEOM_ABI 3
-	// (§5). Until an orb reports one, the hub serves the editor it already has for
-	// the app whose editor predates the system — see editorAvailability below.
+	// HasEditor reports whether an editor opens for this app. A device that reports an
+	// editor region decides it — D37's premise is that the payload travels inside the
+	// container. Where none is reported the hub falls back to any editor it hosts for the
+	// slug (editorAvailability), because an app with no region can still have a working
+	// editor, and this field answers "can I author themes for this app here".
 	HasEditor bool   `json:"has_editor"`
 	EditorURL string `json:"editor_url,omitempty"`
+	// Drift names the identity words on which the orb's installed container and the
+	// container the hub is serving disagree, empty when they match. It needs a copy on
+	// the hub's side to compare against, so it stays empty wherever Client.Containers is
+	// nil — a hub holding no first-party container has no opinion about freshness, and
+	// saying "up to date" would be the same lie in the other direction.
+	Drift      []string `json:"drift,omitempty"`
+	Comparable bool     `json:"comparable"`
 }
 
 // ThemeApps is the payload GET /api/theme/apps returns.
@@ -118,6 +125,26 @@ func (c *Client) ThemeAppsFor(ip string) (*ThemeApps, error) {
 				delete(groups, a.Slug)
 			}
 			ta.HasEditor, ta.EditorURL = editorAvailability(a.Slug)
+			// A nonzero editor_crc is the device reporting a region it verified on the
+			// card, and that beats any hub-side table: the app carries its own editor, so
+			// the pane opens on the app's bytes and not on a hub copy that may be older
+			// than the app.
+			//
+			// A zero one does NOT take the pane away. "No region in this container" and
+			// "no editor anywhere for this app" are different answers, and the hub-hosted
+			// composer is the second half of the disjunction until S4 moves the clock's
+			// editor into its container — clearing it here would blank the one working
+			// editor on the dial for the crime of shipping a container honestly empty.
+			if ed, answered := editorFromRow(a); answered && ed {
+				ta.HasEditor, ta.EditorURL = true, "/editor/"+a.Slug+"/"
+			}
+			if c.Containers != nil {
+				if body, err := c.Containers(a.Slug); err == nil {
+					if mine, perr := ParseApp(body); perr == nil {
+						ta.Drift, ta.Comparable = mine.IdentityDiff(a)
+					}
+				}
+			}
 			out.Apps = append(out.Apps, ta)
 		}
 	}
@@ -135,7 +162,29 @@ func (c *Client) ThemeAppsFor(ip string) (*ThemeApps, error) {
 // editor region from its container (§4), the answer comes from the device and this
 // function is deleted. It exists so D37's inversion ships without waiting on the
 // firmware slice, and it stays honest by returning a URL the hub can actually serve.
-func editorAvailability(slug string) (bool, string) {
+// editorFromRow reads an app's editor presence off the row's identity tuple, and reports
+// whether the row could answer at all. editor_crc is the region's checksum, and the writer
+// refuses a container that declares a region whose checksum is zero, so a nonzero word here
+// is a device saying "this app ships an authoring payload". A row with no tuple (a compiled
+// app, or a dial predating the fields) answers neither way, and the caller must not read its
+// zero as "no editor".
+func editorFromRow(a AppInstalledRow) (has bool, answered bool) {
+	if !a.CarriesIdentity() {
+		return false, false
+	}
+	return a.EditorCRC != 0, true
+}
+
+// editorAvailability answers, hub-side, whether an editor can open for one app and at what
+// URL.
+//
+// D37 made the truthful answer a device answer — the row's editor_crc says whether a
+// container carries a region — and that path goes through editorFromRow above. This is the
+// fallback for a row that could not answer: a dial predating the identity fields, where the
+// hub still knows the one editor that predates the whole system. It is a stopgap with an
+// explicit end: when every dial in the fleet reports a tuple, delete this and take the
+// device's answer unconditionally.
+func editorAvailability(slug string) (has bool, url string) {
 	if slug == "clock" {
 		return true, "/composer/"
 	}

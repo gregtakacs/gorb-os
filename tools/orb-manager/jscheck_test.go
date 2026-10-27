@@ -907,3 +907,77 @@ func TestOrbHeadlinePaintsFromOneDoor(t *testing.T) {
 		t.Error("tabs.js touches the headline directly; route it through paintOrbHead")
 	}
 }
+
+// A flash is modal work: the hub holds the port, the board cannot answer its own
+// HTTP while it is being written, and nothing else on the page can honestly
+// proceed. The progress panel used to sit in a bottom corner, which reads as a
+// background task the operator may ignore, and the Wi-Fi dialog's ghost button
+// said Cancel while the hub had no door to cancel through. Both are pinned here,
+// with the ending a reflash reports: a board that kept its settings and came back
+// on its network is done, and saying so beats opening the join form at it.
+func TestFlashIsModalHonestAndEndsOnSuccess(t *testing.T) {
+	app, tabs := readAppJS(t), readWebFile(t, "tabs.js")
+	html, css := readWebFile(t, "index.html"), readWebFile(t, "app.css")
+
+	// The panel rides the page mask: a scrim, centered, the hub's own .mask
+	// contract rather than a floating box with its own z-index.
+	mask := strings.Index(html, `class="mask" id="ob-flashmask"`)
+	panel := strings.Index(html, `id="ob-flashpanel"`)
+	if mask < 0 || panel < 0 || mask > panel {
+		t.Error("the flash panel is no longer wrapped in the page mask; it must be modal")
+	}
+	if !strings.Contains(html, `id="ob-flashpanel" role="dialog" aria-modal="true"`) {
+		t.Error("the flash panel lost its dialog role; a modal a reader cannot see is not modal")
+	}
+	at := strings.Index(css, ".flashpanel{")
+	if at < 0 {
+		t.Error("no .flashpanel rule")
+	} else if strings.Contains(css[at:at+220], "position:fixed") {
+		t.Error(".flashpanel is positioned again; the mask centers it")
+	}
+	fpOpen := jsFuncBody(t, app, "function fpOpen()")
+	fpClose := jsFuncBody(t, app, "function fpClose()")
+	if !strings.Contains(fpOpen, "#ob-flashmask") || !strings.Contains(fpClose, "#ob-flashmask") {
+		t.Error("fpOpen/fpClose must drive the mask, not the panel inside it")
+	}
+
+	// The Wi-Fi dialog's ghost button changes name with the flight because it stops
+	// nothing. The refusal has a cause: the hub ships no cancel route for an OTA,
+	// so the label is the one honest place left to say so.
+	wifi := jsFuncBody(t, app, "async function wifiUpdate()")
+	if !strings.Contains(wifi, "ffUploadOpen = true; ffCancelLabel();") {
+		t.Error("wifiUpdate opens the upload without retitling the dismiss button")
+	}
+	if !strings.Contains(wifi, "ffUploadOpen = false; ffCancelLabel();") {
+		t.Error("wifiUpdate leaves the upload without restoring the idle label")
+	}
+	if body := jsFuncBody(t, app, "function ffCancelLabel()"); !strings.Contains(body, `"Close" : "Cancel"`) {
+		t.Error("ffCancelLabel no longer says Close in flight and Cancel when idle")
+	}
+	if body := jsFuncBody(t, app, "function openFlashModal()"); !strings.Contains(body, "ffUploadOpen = false;") {
+		t.Error("openFlashModal does not reset the label, so a stale Close outlives its upload")
+	}
+	if n := strings.Count(html, `id="ff-cancel"`); n != 1 {
+		t.Errorf("the Wi-Fi dialog carries %d ff-cancel buttons; it has one dismiss door", n)
+	}
+
+	// The settings-preserving reflash reports its own success, and only that one.
+	// A wipe took the credentials, so its next door is the form by definition, and
+	// a board from New Orb never had any.
+	cable := jsFuncBody(t, app, "async function cableFlash(wipe)")
+	if !strings.Contains(cable, "if (!wipe && await flashJoinedAgain(port, mac)) return;") {
+		t.Error("cableFlash no longer asks a settings-preserving reflash whether the orb came back")
+	}
+	if !strings.Contains(cable, "openJoinDialog(port, mac || current.mac, ") {
+		t.Error("cableFlash dropped the join form fallback; a board that is not back needs it")
+	}
+	back := jsFuncBody(t, app, "async function flashJoinedAgain(port, mac)")
+	for _, sig := range []string{"skip_ap: true", `"lan"`, `"connected"`} {
+		if !strings.Contains(back, sig) {
+			t.Errorf("flashJoinedAgain no longer tests %s off the hub's own watch answer", sig)
+		}
+	}
+	if strings.Contains(tabs, "flashJoinedAgain") {
+		t.Error("tabs.js invented a second success ending; cableFlash owns it")
+	}
+}

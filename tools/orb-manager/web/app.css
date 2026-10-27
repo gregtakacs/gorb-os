@@ -166,9 +166,11 @@ header nav{display:flex;gap:10px;align-items:baseline}
 .orbgrid .tag.update[hidden]{display:none}
 .orbgrid .fwhy{flex-basis:100%}
 
-/* The flash panel: one surface both flash doors use, anchored bottom so the bar
-   is visible wherever on the page the click happened. The log lives under a
-   details element: it is the evidence, not the experience.
+/* The flash panel: one surface both flash doors use, centered on the page mask.
+   A write in flight is modal work: it sits over a scrim like every other decision
+   the hub makes, so the rest of the page cannot read as free to browse while bytes
+   move. The log lives under a details element: it is the evidence, not the
+   experience.
 
    The status row reserves its geometry instead of growing into it. The percentage
    sits in a slot with a fixed minimum width and tabular figures, so "9%" and "100%"
@@ -176,8 +178,8 @@ header nav{display:flex;gap:10px;align-items:baseline}
    its own reserved slot, so the two writers cannot shove each other. Both lines are
    nowrap with an ellipsis: a long sentence about a cancel truncates in place rather
    than wrapping the row to a second line and lifting the bar. */
-.flashpanel{position:fixed;right:18px;bottom:18px;width:min(460px,calc(100vw - 36px));background:var(--card);
-  border:1px solid var(--line);border-radius:12px;padding:12px 14px;box-shadow:0 8px 30px #0009;z-index:40}
+.flashpanel{width:min(560px,calc(100vw - 40px));max-height:calc(100vh - 40px);overflow:auto;background:var(--card);
+  border:1px solid var(--line);border-radius:12px;padding:12px 14px;box-shadow:0 8px 30px #0009}
 .flashpanel[hidden]{display:none}
 .flashpanel .row{min-height:32px}
 .flashpanel .log{height:170px;min-height:170px;max-height:170px;font-size:11px}

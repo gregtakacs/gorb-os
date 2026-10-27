@@ -351,7 +351,7 @@
     <div class="bar" id="ff-bar" hidden><div></div></div>
     <div class="row">
       <button id="ff-go" class="primary" disabled>Flash</button>
-      <button id="ff-cancel" class="ghost">Cancel</button>
+      <button id="ff-cancel" class="ghost" title="Dismiss this dialog. It stops nothing: a Wi-Fi update already in flight runs to its end.">Cancel</button>
     </div>
   </div>
 </div>
@@ -387,9 +387,13 @@
 
 <!-- The flash progress for the doors that live on an orb's own card: a cable
      reflash and a full erase. It opens the moment either starts, so the wire's
-     progress is on screen while the wire is working, and closes when told. The
-     New Orb dialog owns its own progress bar; naming and picking happen there. -->
-<div class="flashpanel" id="ob-flashpanel" hidden>
+     progress is on screen while the wire is working, and closes when told. It
+     rides the page mask on purpose: a write in flight is not a background task
+     to leave in a corner, and the hub takes no second door on the same board
+     until this one ends. The New Orb dialog owns its own progress bar; naming
+     and picking happen there. -->
+<div class="mask" id="ob-flashmask" hidden>
+  <div class="flashpanel" id="ob-flashpanel" role="dialog" aria-modal="true" aria-labelledby="ob-doing">
   <div class="row">
     <b id="ob-doing">working&#8230;</b>
     <span id="ob-liveop" class="fp-liveop hint"></span>
@@ -402,6 +406,7 @@
     <summary class="hint">the bytes behind the bar</summary>
     <pre id="ob-log" class="log" aria-live="polite"></pre>
   </details>
+  </div>
 </div>
 
 <!-- The join dialog: the one form a freshly flashed board meets when its flash

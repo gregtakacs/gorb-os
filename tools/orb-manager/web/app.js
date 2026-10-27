@@ -370,6 +370,9 @@ function openFlashModal() {
   $("#ff-wipe").checked = false;
   ffPicked = null;
   ffForced = false;
+  // Idle wording on every open, whatever the last upload left behind.
+  ffUploadOpen = false;
+  ffCancelLabel();
   document.querySelectorAll('input[name="ff-src"]').forEach((r) => { r.checked = r.value === "hub"; });
   $("#ff-hub-label").textContent = "This hub \u2014 " + (hubFirmware && hubFirmware.version
     ? hubFirmware.project + " " + hubFirmware.version : (hubFirmware && hubFirmware.source) || "loading\u2026");
@@ -453,8 +456,15 @@ function gateFwButtons() {
 }
 
 $("#mn-flashbtn").onclick = openFlashModal;
-$("#ff-cancel").onclick = () => { $("#ff-mask").hidden = true; };
-$("#ff-mask").addEventListener("click", (e) => { if (e.target === $("#ff-mask")) $("#ff-mask").hidden = true; });
+// ffDismiss leaves the flash dialog. It stops nothing. The hub has no abort door
+// for a Wi-Fi push (only the cable's /api/flash/cancel exists), so while bytes are
+// in flight this button says Close: a label spelling Cancel would promise a stop
+// nobody can perform, and the upload runs to its end either way.
+let ffUploadOpen = false;
+function ffDismiss() { $("#ff-mask").hidden = true; }
+function ffCancelLabel() { $("#ff-cancel").textContent = ffUploadOpen ? "Close" : "Cancel"; }
+$("#ff-cancel").onclick = ffDismiss;
+$("#ff-mask").addEventListener("click", (e) => { if (e.target === $("#ff-mask")) ffDismiss(); });
 $("#ff-pick").onclick = () => $("#ob-fwfile").click();
 document.querySelectorAll('input[name="ff-src"]').forEach((r) => {
   r.onchange = () => {
@@ -642,14 +652,17 @@ async function streamFlash(url, payload, ui) {
   return { mac, ok };
 }
 
-// The manage view's own flash frame — the fixed bottom panel. fpOpen shows it
-// the instant a door there is pressed; fpClose hides it once the work is over.
+// The manage view's own flash frame: a dialog centered on the page mask for as
+// long as a board is being written. fpOpen shows it the instant a door there is
+// pressed; fpClose hides it once the work is over. Close hides the panel alone:
+// the hub owns the wire, and a flash keeps going whether anyone is watching.
 function fpUI() {
   return { log: $("#ob-log"), bar: $("#ob-bar > div"), doing: $("#ob-doing"),
            op: $("#ob-op"), live: $("#ob-liveop"), cancel: $("#ob-cancel") };
 }
-function fpOpen() { $("#ob-flashpanel").hidden = false; }
-$("#fp-close").onclick = () => { $("#ob-flashpanel").hidden = true; };
+function fpOpen() { $("#ob-flashmask").hidden = false; }
+function fpClose() { $("#ob-flashmask").hidden = true; }
+$("#fp-close").onclick = fpClose;
 
 // showLiveOp reports what the hub says is running on this port, so the panel
 // states the truth about the cable rather than the client's guess about its own
@@ -835,8 +848,40 @@ async function cableFlash(wipe) {
     $("#mn-curfw").textContent = "flashed over the cable on " + port;
     await refreshPorts();
     if (!current.mac && mac) current.mac = mac;
+    // A reflash that kept its settings usually lands back on the network it was
+    // already on, and that is the ending worth reporting. The join form exists to
+    // give a board a network; asking for one again after an update that lost
+    // nothing made a finished update read as one that had not finished.
+    if (!wipe && await flashJoinedAgain(port, mac)) return;
     openJoinDialog(port, mac || current.mac, "");
   }
+}
+
+// flashJoinedAgain asks the one question an updated board answers: is it back on
+// the LAN. It runs /api/watch with skip_ap, so the hub dials the address it
+// learned over the USB console during the flash instead of waiting on a
+// provisioning AP, and it takes the firmware's own word: a status call answering
+// state "connected". On that answer the update is over, the panel says so in its
+// headline, and no form opens. Every other outcome (no address yet, the AP open
+// instead, a refused passphrase, a budget that ran out) returns false, and the
+// caller opens the join form, which re-runs this same watch and shows the
+// operator what it found. A settings-wipe flash never asks: it took the
+// credentials, so the form is its next step by definition.
+async function flashJoinedAgain(port, mac) {
+  const doing = $("#ob-doing");
+  doing.textContent = "flash done; waiting for the orb to boot back onto Wi-Fi";
+  let joined = null;
+  await streamPost("/api/watch", { port, mac: mac || "", skip_ap: true, ip: "" }, (ev) => {
+    if (ev.log) doing.textContent = ev.log;
+    const r = ev.result;
+    if (r && r.mode === "lan" && r.status && r.status.state === "connected") joined = r;
+  });
+  if (!joined) return false;
+  doing.textContent = "orb updated, back on Wi-Fi at " + joined.ip;
+  $("#mn-curfw").textContent = "flashed over the cable, back on Wi-Fi at " + joined.ip;
+  pullFound();
+  fpClose();
+  return true;
 }
 
 // wifiUpdate is the OTA door, and the one place a version verdict is acted on.
@@ -893,6 +938,7 @@ async function wifiUpdate() {
   if (!current.ip) return;
   const state = $("#ff-state"), go = $("#ff-go");
   state.textContent = "uploading to " + current.ip + "\u2026";
+  ffUploadOpen = true; ffCancelLabel();
   ffWatchStart(current.ip);
   try {
     const r = await hubFetch("/api/orb/update", {
@@ -930,6 +976,9 @@ async function wifiUpdate() {
   } finally {
     ffWatchStop();
     $("#ff-bar").hidden = true;
+    // Out of flight and back to idle wording: the dialog is a form again, and
+    // its ghost button means leave, which is what Cancel says.
+    ffUploadOpen = false; ffCancelLabel();
   }
 }
 

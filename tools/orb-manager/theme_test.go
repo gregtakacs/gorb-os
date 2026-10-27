@@ -33,12 +33,19 @@ type orbCall struct{ method, path, query, body string }
 // request the orb saw, and the orb itself so a test can read its card afterwards.
 // Nothing here reaches a real network.
 func fakeOrbHub(t *testing.T) (*Server, string, func() orbCall, *orbfake.Orb) {
+	return fakeOrbHubWith(t, orbfake.New(
+		orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 1, OK: true, Active: true},
+	))
+}
+
+// fakeOrbHubWith is fakeOrbHub for a test that needs to arrange the orb's own card
+// and ledger before the hub dials it — D37's enumeration tests, which are entirely
+// about WHICH apps the orb names, are the reason that matters. Same recording
+// proxy, same already-learned address, same client wiring.
+func fakeOrbHubWith(t *testing.T, f *orbfake.Orb) (*Server, string, func() orbCall, *orbfake.Orb) {
 	t.Helper()
 	last := new(orbCall)
 	var lastWrite orbCall
-	f := orbfake.New(
-		orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 1, OK: true, Active: true},
-	)
 	recording := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		*last = orbCall{method: r.Method, path: r.URL.Path, query: r.URL.RawQuery, body: string(b)}

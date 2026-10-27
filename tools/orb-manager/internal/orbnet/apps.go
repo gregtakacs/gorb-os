@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // AppCardRow is one .orbapp sitting on the card — h_apps_list's "apps" array.
@@ -28,12 +29,33 @@ type AppCardRow struct {
 // AppInstalledRow is one live slot — h_apps_list's "installed" array. Since D36
 // no row carries a shipping label: the ledger lists rows, and where the bytes
 // came from is nobody of the dial's business.
+//
+// Caps is the device's own disclosure string, comma-space separated in
+// orb_cap_t order — e.g. "power, net, themes". The firmware already sends it
+// (h_apps_list prints orb_app_manifest_caps into the row); the hub simply
+// stopped reading it while the only theme-aware app on earth shipped inside the
+// firmware and asking the question had one obvious answer. D37 asks it per app,
+// so the field is now load-bearing: it is what makes "which apps on this orb
+// can hold themes" a device answer instead of a hub constant.
 type AppInstalledRow struct {
 	Slug    string `json:"slug"`
 	Title   string `json:"title"`
 	Slot    int    `json:"slot"`
+	Caps    string `json:"caps"`
 	Enabled bool   `json:"enabled"`
 	Failed  bool   `json:"failed"`
+}
+
+// HasCap reports whether one installed row declares a named capability, e.g.
+// "themes". It splits on the device's own ", " separator and compares whole
+// words, so a cap name that is a substring of another cannot match it.
+func (a AppInstalledRow) HasCap(name string) bool {
+	for _, c := range strings.Split(a.Caps, ",") {
+		if strings.TrimSpace(c) == name {
+			return true
+		}
+	}
+	return false
 }
 
 // AppList is the part of GET /api/v1/apps the seed reads.

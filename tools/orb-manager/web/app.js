@@ -2306,33 +2306,70 @@ function paintFound(li, o) {
 // server, which is what keeps the FORMAT-2 contract — address a theme by the id the orb
 // issued for it — in one file instead of in six buttons.
 let themeIP = "";
-// The Themes face draws one app's rows at a time: a theme row names its owning
-// app, so the chooser is the listing's own shape, not a hard-coded list. themeSub
-// "" draws every row; tabs.js resets the face through themeFaceReset so a tab
-// opened for the next board never paints the last board's choice of app.
+// The Themes face draws one app's rows at a time. Under D37 the chooser is the
+// LEDGER's answer, not the listing's: an app that can take themes gets a pane the
+// moment it is installed and enabled, whether or not the card holds one yet.
+// themeAppsRows carries that enumeration; themeRowsAll carries the rows currently
+// on the card. themeSub "" draws every row; tabs.js resets the face through
+// themeFaceReset so a tab opened for the next board never paints the last board's
+// choice of app.
 let themeSub = "";
 let themeRowsAll = [];
-function themeFaceReset() { themeSub = ""; themeRowsAll = []; }
-
-function themeAppTitle(a) {
-  return ({ clock: "Clock", color_picker: "HSB", menu: "Menu" })[a] || a;
+let themeAppsRows = [];
+let themeAppsErr = "";
+function themeFaceReset() {
+  themeSub = ""; themeRowsAll = []; themeAppsRows = []; themeAppsErr = "";
 }
 
-// renderThemeTabs is the app chooser. One app on the card needs no chooser —
-// the face IS that app's — so the row appears only when a second app shows up
-// with themes of its own. The refresh per press re-reads the listing: the same
-// door the state line reports through, one implementation, no stale client sort.
+// themeAppTitle labels a pane with the app's own ledger title when the hub sent
+// one. The old version mapped three hard-coded slugs and fell through to the raw
+// slug, which is how a fourth app would have arrived labelled "thermo"; the
+// capability table lives on the device, so its labels come from there too.
+function themeAppTitle(a) {
+  const row = themeAppsRows.find((x) => x.slug === a);
+  if (row && row.title) return row.title;
+  return a;
+}
+
+// loadThemeApps is D37's inversion: ask the orb which of its apps can hold themes,
+// rather than inferring it from the themes already filed there. The two reads it
+// composes server-side are the app ledger and the card listing, so an installed,
+// enabled, theme-capable app with an empty card still gets a pane.
+async function loadThemeApps(ip) {
+  themeAppsRows = [];
+  themeAppsErr = "";
+  try {
+    const d = await themeGet("/api/theme/apps?ip=" + encodeURIComponent(ip));
+    themeAppsRows = Array.isArray(d.apps) ? d.apps : [];
+    themeAppsErr = d.app_error || d.theme_error || "";
+  } catch (e) {
+    themeAppsErr = e.message;
+  }
+  if (themeSub && !themeAppsRows.some((a) => a.slug === themeSub)) themeSub = "";
+}
+
+// themeGet is the GET twin of themePost: same envelope, same error discipline,
+// same 20s cap on a hub that accepts a request and then stops answering.
+async function themeGet(path) {
+  const opts = { method: "GET" };
+  if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) opts.signal = AbortSignal.timeout(20000);
+  const r = await hubFetch(path, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
+  return j.data;
+}
+
+// renderThemeTabs is the app chooser. It draws whenever the orb names more than one
+// theme-capable app, and it names them from the ledger: a theme-aware app with zero
+// themes on the card gets a pane showing that empty state and its Edit button,
+// because that is the exact moment an author needs the door.
 function renderThemeTabs() {
   const nav = $("#mn-themes-tabs");
   if (!nav) return;
   nav.innerHTML = "";
-  const apps = [];
-  for (const t of themeRowsAll) {
-    const a = t.app || "clock";
-    if (!apps.includes(a)) apps.push(a);
-  }
+  const apps = themeAppsRows.slice();
   if (apps.length < 2) return;
-  apps.sort();
+  apps.sort((x, y) => (x.slug < y.slug ? -1 : 1));
   const mk = (slug, label) => {
     const b = document.createElement("button");
     b.type = "button";
@@ -2342,8 +2379,12 @@ function renderThemeTabs() {
     nav.appendChild(b);
   };
   mk("", "All");
-  for (const a of apps) mk(a, themeAppTitle(a));
+  for (const a of apps) {
+    const n = a.count | 0;
+    mk(a.slug, themeAppTitle(a.slug) + (n ? " (" + n + ")" : " (none)"));
+  }
 }
+
 
 async function themePost(path, payload) {
   // AbortSignal.timeout so a hub that accepts the request and then stops
@@ -2473,42 +2514,83 @@ async function loadThemes(ip) {
   if (!ip) { orbThemeListHidden(); return; }
   themeIP = ip;
   orbThemeListShown();          // the sub-tab owns the reveal, not this fetch
-  state.textContent = "reading the orb's theme list\u2026";
+  state.textContent = "reading which apps on this orb can take themes\u2026";
   state.classList.add("spin-wait");
   list.innerHTML = "";
   clearPreviewQueue();
   hideOverlay();
   ovRows.length = 0;
+  // Enumeration first, rows second, and never the other way round: the chooser's
+  // membership is the ledger's answer (D37), so the rows cannot reset it. If the
+  // enumeration is the half that failed, the face still lists the themes it can
+  // reach and says which read it lost.
+  await loadThemeApps(ip);
   let d;
   try {
     d = await themePost("/api/theme/list", { ip });
   } catch (e) {
     state.classList.remove("spin-wait");
-    state.textContent = "no theme list from " + ip + ": " + e.message;
+    state.textContent = "no theme list from " + ip + ": " + e.message
+      + (themeAppsErr ? " (and no app enumeration: " + themeAppsErr + ")" : "");
     return;
   }
   state.classList.remove("spin-wait");
-  if (!d.mounted) {
-    state.textContent = "no SD card mounted on this orb — themes live on the card";
-    return;
-  }
   const rows = Array.isArray(d.themes) ? d.themes : [];
   themeRowsAll = rows;
-  if (themeSub && !rows.some((t) => (t.app || "clock") === themeSub)) themeSub = "";
   renderThemeTabs();
+  if (!d.mounted) {
+    state.textContent = "no SD card mounted on this orb — themes live on the card"
+      + (themeAppsErr ? "; " + themeAppsErr : "");
+    themeEmptyPane(list, null);
+    return;
+  }
   const shown = themeSub ? rows.filter((t) => (t.app || "clock") === themeSub) : rows;
   state.textContent = shown.length + " theme" + (shown.length === 1 ? "" : "s")
     + (themeSub ? " for " + themeAppTitle(themeSub) : "")
     + " on " + (d.card || "the card") +
-    ", drawing \"" + (d.active || "?") + "\"" + (d.free_mb ? ", " + d.free_mb + " MB free" : "");
+    ", drawing \"" + (d.active || "?") + "\"" + (d.free_mb ? ", " + d.free_mb + " MB free" : "")
+    + (themeAppsErr ? " (" + themeAppsErr + ")" : "");
   for (const t of shown) list.appendChild(themeRow(t, state, d));
-  if (!shown.length) {
-    const empty = document.createElement("li");
-    empty.className = "hint";
-    empty.textContent = "the card holds no themes" + (themeSub ? " for this app" : "") + " yet";
-    list.appendChild(empty);
-  }
+  if (!shown.length) themeEmptyPane(list, themeSub);
 }
+
+// themeEmptyPane is the empty state D37 exists for. Under the old face an app with
+// no themes had no pane to hold a message; now the pane is there and this is what
+// fills it. The Edit button appears only when the hub reports an editor for the
+// app, so a theme-capable app whose author ships nothing else reads as "no themes
+// yet", not as a dead button.
+function themeEmptyPane(list, sub) {
+  // A one-app orb draws no chooser, so the pane's app has to be inferred rather
+  // than read off a pressed tab.
+  const slug = sub || (themeAppsRows.length === 1 ? themeAppsRows[0].slug : "");
+  const row = slug ? themeAppsRows.find((a) => a.slug === slug) : null;
+  const li = document.createElement("li");
+  li.className = "hint";
+  li.textContent = row
+    ? "This app takes themes and this orb has none for it yet."
+      + (row.has_editor ? "" : " Its container ships no editor, so themes for it arrive as .orbtheme files.")
+    : (slug ? "the card holds no themes for this app yet" : "the card holds no themes yet");
+  list.appendChild(li);
+  if (!row || !row.has_editor || !row.editor_url) return;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ghost";
+  btn.textContent = "Edit " + themeAppTitle(slug) + " themes\u2026";
+  btn.onclick = () => openThemeEditor(row);
+  list.appendChild(btn);
+}
+
+// openThemeEditor is the one place the Themes face turns an enumeration row into a
+// visible editor. S1 keeps this a plain window open on a hub-served URL; the iframe
+// bridge (D37 §6) replaces this function body alone, because the row already
+// carries the address and the slug it needs to talk back with.
+function openThemeEditor(row) {
+  const url = row.editor_url + (row.editor_url.indexOf("?") < 0 ? "?" : "&")
+    + "orb=" + encodeURIComponent(themeIP)
+    + "&app=" + encodeURIComponent(row.slug);
+  window.open(url, "orbtheme-editor-" + row.slug, "popup=yes,width=1240,height=900");
+}
+
 
 // themeRow builds one row with DOM APIs rather than a template string: theme names
 // are bytes off the orb's card and must never be parsed as markup.

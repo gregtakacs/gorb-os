@@ -59,6 +59,23 @@ func (s *Server) handleThemeList(w http.ResponseWriter, r *http.Request) {
 	s.jsonOK(w, list)
 }
 
+// handleThemeApps answers D37's question — which apps on this orb can hold themes —
+// by intersecting the device's app ledger with its theme rows. GET with ?ip=, like
+// the send-status read beside it, because it dials a read and writes nothing.
+func (s *Server) handleThemeApps(w http.ResponseWriter, r *http.Request) {
+	ip := strings.TrimSpace(r.URL.Query().Get("ip"))
+	t, ok := s.checkedTarget(w, ip, "", false)
+	if !ok {
+		return
+	}
+	apps, err := s.device.ThemeAppsFor(t.IP)
+	if err != nil {
+		s.jsonErr(w, err.Error())
+		return
+	}
+	s.jsonOK(w, apps)
+}
+
 // handleThemeInstall queues a Migration 1 store on the orb (POST /api/v1/sd/bundle).
 // The store door answers as soon as the job is queued and acks reboot:automatic —
 // under the single slot the store IS the theme change, so the reply is a promise of a

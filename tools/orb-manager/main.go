@@ -833,6 +833,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// and so the orb `id` that docs/theme-identity-plan.md adds later has exactly one
 	// module to land in (internal/orbnet/themes.go).
 	mux.Handle("/api/theme/list", s.requireControl(http.HandlerFunc(s.handleThemeList)))
+	// D37: the Themes face's app chooser. A read, so it takes ?ip= like its
+	// send-status neighbour and passes the same learned-address gate, and it is what
+	// lets a theme-aware app with zero themes on the card still get a pane.
+	mux.Handle("/api/theme/apps", s.requireControl(http.HandlerFunc(s.handleThemeApps)))
 	mux.Handle("/api/theme/install", s.requireControl(http.HandlerFunc(s.handleThemeInstall)))
 	mux.Handle("/api/theme/delete", s.requireControl(http.HandlerFunc(s.handleThemeDelete)))
 	mux.Handle("/api/theme/rescan", s.requireControl(http.HandlerFunc(s.handleThemeRescan)))

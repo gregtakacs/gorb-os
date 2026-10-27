@@ -205,6 +205,24 @@ func TestAppsFaceReadsTheLedgerAndThemesIsItsOwnFace(t *testing.T) {
 	if !strings.Contains(readAppJS(t), "function themeFaceReset") {
 		t.Error("app.js lost themeFaceReset, so switching boards would keep the last board's theme app selection")
 	}
+	// D37: the chooser's membership is the LEDGER's answer. Deriving it from the
+	// theme rows is the bug this slice removes — it made a theme-aware app with no
+	// themes written yet look theme-blind, to the person trying to author the first.
+	if !strings.Contains(app, "function loadThemeApps(") || !strings.Contains(app, `"/api/theme/apps`) {
+		t.Error("the Themes face never dials /api/theme/apps, so its app chooser is back to guessing from installed themes")
+	}
+	if strings.Contains(app, "for (const t of themeRowsAll)") {
+		t.Error("renderThemeTabs derives its apps from themeRowsAll again; the enumeration is the source now")
+	}
+	if !strings.Contains(app, "function themeEmptyPane(") {
+		t.Error("the Themes face lost its per-app empty state, so an app with no themes has nothing to draw in its pane")
+	}
+	if !strings.Contains(app, "has_editor") {
+		t.Error("the Themes face shows an editor button without asking the hub whether one exists")
+	}
+	if strings.Contains(app, `"color_picker": "HSB"`) {
+		t.Error("app.js hard-codes app labels again; titles come off the device's ledger row")
+	}
 }
 
 // A board rebooting mid-afternoon is the hub's own doing most of the time, and

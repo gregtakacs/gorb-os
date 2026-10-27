@@ -578,6 +578,23 @@ func (s *Server) noteWiredSilence(ip string) {
 			log.Printf("orb-manager: %s is quiet because it is installing what the hub sent; no probe owed", ip)
 			return
 		}
+		// The hub holds positive disproof that this chip is an orb, so its silence at
+		// the address is the expected answer and not a question. The flag below exists
+		// to buy the one read that separates a reflash from a boot-loop, and the paid
+		// probe already delivered that read: the bootloader named the chip and said NOT
+		// an orb. Re-arming here therefore purchases a repeat of a fact on hand, and it
+		// repeats forever, because the row keeps the dead address the sweep dials and
+		// every failed tick re-lights the flag. Measured on the bench, 2026-10-26: a
+		// lonely board on /dev/ttyACM1 took eight hard resets in eleven minutes, each
+		// one logged with the gate's honest reason, "the orb stopped answering the
+		// address it was seen at". The board never announced from that address — it runs
+		// a stub that serves no door. A contradiction retires the escalation; the row
+		// keeps its dead address on the card as the refusal the operator can read, and
+		// one Forget press ends it now that a disproven chip clears the Forget gate.
+		if (s.lonely != nil && s.lonely.has(r.MAC)) || s.provenNotOrb(r.MAC) {
+			log.Printf("orb-manager: %s is quiet because %s is proven not to run gorb-os; no probe owed", ip, r.MAC)
+			return
+		}
 		s.suspMu.Lock()
 		if s.suspicious == nil {
 			s.suspicious = map[string]bool{}

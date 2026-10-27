@@ -271,11 +271,28 @@ func (s *Server) forgetGate(mac string, now time.Time, confirm bool) (bool, stri
 		// row the hub never kept has no address for it to revoke.
 		return true, ""
 	}
+	// Present-tense evidence that this chip runs no gorb-os outranks the presence
+	// clock below it, which is the rule handlePorts already applies to the port card
+	// (identity.go's notOrb stamp) and that this gate had never read. Two kinds count,
+	// both already stated above: this hub marked the chip lonely, or a paid reading of
+	// the chip itself says a different firmware runs. Either way the refusal this gate
+	// would otherwise give — "an orb that is broadcasting rebuilds this row" — is a
+	// sentence about a broadcast that cannot happen, and the clock it cites belongs to
+	// a row the hub has evidence is stale. The board is then unmanageable (its address
+	// answers nothing) and unforgettable at once, which is the floor the notOrb stamp
+	// exists to keep boards from falling between.
+	if s.lonely.has(mac) || s.provenNotOrb(mac) {
+		return true, ""
+	}
 	if !row.LastSeen.IsZero() {
 		if quiet := now.Sub(row.LastSeen); quiet <= liveAnnounceGrace {
+			// No lead is named here on purpose, and the old tail that named one was
+			// unreachable advice: a board on a lead this hub believes is an orb is
+			// refused two checks above, so reaching this line means the dialog has no
+			// cable body to open. The action is the network, not the lead.
 			return false, row.DisplayName() + " announced itself " + agoWords(quiet) +
-				" ago: an orb that is broadcasting rebuilds this row on its next check-in" +
-				" — open Forget for the reset choices"
+				" ago: an orb that is broadcasting rebuilds this row on its next " +
+				"check-in, so take it off the network and Remove arms once the minute is up"
 		}
 	}
 	if row.IP != "" && !softAPAddr(row.IP) {

@@ -142,21 +142,35 @@ func (s *Server) handleLonely(w http.ResponseWriter, r *http.Request) {
 	}
 
 	send("log", fmt.Sprintf("erasing the flash of %s completely — it will stop being an orb, keep no settings, and boot a base image that holds its port", req.Port))
-	if err := esprom.Session(pt, opts); err != nil {
-		if esprom.IsCancelled(err) {
-			send("error", "erase cancelled - the board is still in its bootloader with a partial image. Flash it, base image or orb, and one of them finishes cleanly.")
+	lerr := esprom.Session(pt, opts)
+	// The ending runs on the chip read, not on the session's return. The eFuse MAC is
+	// read before anything is erased, so a hub that reaches this line knows exactly
+	// which board it destroyed even when the write then died, and the stream already
+	// tells the operator that board is in its bootloader with a partial image. Filing
+	// nothing in that case cost the bench a stuck card (2026-10-26): the stub booted,
+	// the fleet row kept its name, address and remembered mark, the grant stayed
+	// issued to an address that no longer runs an orb, and the lonely mark — the only
+	// thing that keeps a blanked chip's own descriptor from re-filing the row — was
+	// never written. An operator who typed the confirm word owns the forgetting
+	// whatever the ROM did next.
+	if lonelyMAC != "" {
+		s.endAsLonely(req.Port, lonelyMAC)
+	}
+	if lerr != nil {
+		if esprom.IsCancelled(lerr) {
+			send("error", "erase cancelled - the board is still in its bootloader with a partial image, and this hub has forgotten it as an orb. Flash it, base image or orb, and one of them finishes cleanly.")
 			return
 		}
-		send("error", err.Error())
+		send("error", lerr.Error()+" - the board was already written, and this hub has forgotten it as an orb")
 		return
 	}
 
-	s.endAsLonely(req.Port, lonelyMAC)
 	send("done", "the flash is erased: its settings, name and credentials went with it, and it boots a base image that holds its port until you flash it into something else")
 }
 
-// endAsLonely is the pair the lonely door performs on success: mark the chip, then
-// un-make the orb. The order is the point. forgetWipedOrb ends in saveState, and
+// endAsLonely is the pair the lonely door performs on the chip it just blanked: mark
+// the chip, then un-make the orb. The order is the point. forgetWipedOrb ends in
+// saveState, and
 // saveState is what writes the lonely set into the file; marking afterwards recorded
 // the forgetting without the memory of why. Proven on the bench 2026-10-15: a real
 // lonely write left a state file with the row gone and no lonely field at all, so the

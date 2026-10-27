@@ -9,6 +9,7 @@ import (
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbmdns"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
@@ -372,6 +373,32 @@ func (s *Server) contradicts(port string) (esprom.OrbInfo, bool) {
 	return info, true
 }
 
+// provenNotOrb is contradicts asked the way the fleet keys: by MAC rather than by lead.
+// The cache itself is per-lead, so this is the one join the Forget gate needs from it —
+// does ANY lead this hub has paid for hold a fresh verdict that this chip runs no
+// gorb-os. It reuses paidNegative rather than restating the qualification, because the
+// two questions have the same answer for the same reasons: only a probe this hub reset
+// for, or a flash this hub wrote, can say a chip is not an orb, and the verdict must
+// name the chip it is about or it is about nobody.
+func (s *Server) provenNotOrb(mac string) bool {
+	if s.identities == nil || mac == "" {
+		return false
+	}
+	want, why := orbmdns.CanonicalMAC(mac)
+	if why != "" {
+		return false
+	}
+	for _, e := range s.identities.all() {
+		if !e.paidNegative() {
+			continue
+		}
+		if got, bad := orbmdns.CanonicalMAC(e.info.MAC); bad == "" && got == want {
+			return true
+		}
+	}
+	return false
+}
+
 // provenOf reports how the still-valid answer for port was obtained, and "" when
 // there is none. The listing path gets provenance free from all(); callers that ask
 // about one port (roster, liveness) need this rather than the whole map.
@@ -724,12 +751,22 @@ func usbLabel(u esprom.USBClass) string {
 //
 // A bootloader descriptor read down the USB lead is the strongest thing the hub can
 // say about a board: it is the chip answering for itself, not a name claimed on the
-// LAN, so the fleet holds that sighting above every announcement.
+// LAN, so the fleet holds that sighting above every announcement. The sighting it
+// holds is the one the chip gave: a chip that answers as NOT an orb is not evidence of
+// an orb on the lead, so nothing is filed and nothing is refreshed.
+//
+// Confirming here used to happen before the verdict was read, and it cost the operator
+// the only door they had left (bench, 2026-10-26). A board ended with the lonely write
+// enumerates the same eFuse MAC, so the next paid probe re-Confirmed its deleted row
+// and stamped the presence clock — which is the fact the Forget gate refuses on, worded
+// as the board "announcing itself". The row therefore came back every two minutes, and
+// the card refused Forget for a board that had announced nothing since it stopped being
+// an orb: a clock the hub winds for the refusal is a gate that never opens. The flash
+// path already refused this stamp for a foreign image, for the same reason.
 func (s *Server) foldProbeIdentity(info esprom.OrbInfo) {
 	if info.MAC == "" {
 		return
 	}
-	s.markCable(info.MAC)
 	// A console that answered the orb door ends any lonely mark on the chip, whoever
 	// re-flashed it. Without this the mark only ever cleared on this hub's own acts,
 	// so a board revived on another bench — or by the CLI — stayed suppressed here
@@ -737,6 +774,7 @@ func (s *Server) foldProbeIdentity(info esprom.OrbInfo) {
 	if !info.IsOrb {
 		return
 	}
+	s.markCable(info.MAC)
 	s.lonely.clear(info.MAC)
 	// The descriptor answered for itself, so the running version it printed belongs
 	// on the row: this is the firmware stamp for a board with no lease, read at the

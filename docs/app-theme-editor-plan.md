@@ -185,20 +185,44 @@ ORBAPP_GEOM_ABI`, so the abi bump lands there in the same commit. `orbapp.py`'s
 `write_container` gains an `editor=b""` argument beside `code=b""`, with the same
 docstring posture: opaque bytes, length-priced, no interpretation.
 
+**The hub is the fourth member, and it moved in with them.** D37's hub-side reader
+(`tools/orb-manager/internal/orbnet/appcontainer.go`) restates the same derived word map,
+the C4 ladder, the header checksum rule, the slug charset and the `app_id` cross-check,
+because S4's Themes enumeration asks the container a question the dial cannot answer
+before an install. Two gates hold the pair together:
+
+* `appcontainer_test.go` parses `tests/fixtures/sentinel.orbapp` and `plain.orbapp` and
+  agrees with `tests/fixtures/app-pair.json`, the sidecar `tools/make_app_fixture.py`
+  wrote from `orbapp.read_container`'s own read-back — so the accept side is pinned
+  against the authority's numbers, not against a hand-typed Go expectation, exactly as
+  `themecontainer_test.go` does for `.orbtheme`.
+* `tools/host_app_fixture_test.py` closes the triangle in the Python-only lane: it
+  evaluates the C enum's derivations and the Go const block's derivations against the
+  same sidecar, checks the editor triple sits inside `hdr_crc` on both sides, checks the
+  two caps (`ORBAPP_GEOM_BYTES_MAX`, `ORBAPP_EDITOR_MAX`) equal the hub's, and re-bakes
+  the fixtures to demand byte equality. `host_orbapp_reader_test.py` proves the dial's
+  reader BEHAVES; nothing but this file proves its word map AGREES, and a renumber that
+  moved each word together with its accessor would have shipped past that one.
+
+`make_app_fixture.py --verify` re-bakes into a scratch directory and refuses to rewrite,
+so a stale fixture cannot be made current by the check meant to catch it.
+
 ## 5. What the region contains, and how it reaches a browser
 
 ### 5.1 The region is a ZIP
 
-Inside the region sits one **uncompressed (STORE) ZIP** with a `manifest.json` and
+Inside the region sits one **uncompressed (STORE) ZIP** with an `editor.json` and
 the app's files. The STORE-only ZIP writer already exists in the composer
 (`Watch Composer.dc.html:553-575`), and Python's `zipfile` reads it
-(`docs/watch-composer-plan.md:53`). `manifest.json` names:
+(`docs/watch-composer-plan.md:53`). `editor.json` names:
 
 ```json
 { "editor": 1, "entry": "index.html", "runtime": ["react", "babel"], "baker": 3 }
 ```
 
 `editor` is the region's own dialect, versioned independently of the container so a
+(`editor.go:46` is the shipped name, and §8's landed text matches it; the earlier
+`manifest.json` spelling in this section never reached the code.)
 bridge change does not cost an `orbapp` ABI bump. `runtime` names which hub
 resources the app needs, and the hub refuses to load an editor that asks for a
 resource it does not serve. STORE, not DEFLATE: the firmware never reads the

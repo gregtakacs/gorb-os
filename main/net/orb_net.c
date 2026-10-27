@@ -5201,15 +5201,27 @@ static esp_err_t h_sd_ls(httpd_req_t *req)
     }
 
     /* One array, dirs and files together — the manager sorts, the device
-     * streams. Rows are sent as they are escaped (h_apps_list's legs), so no
-     * scratch holds the whole listing. */
-    esp_err_t out = httpd_resp_send_chunk(req, "{\"path\":\"", 9);
-    if (out == ESP_OK) {
-        char esc[ORB_SD_FM_PATH_MAX * 2 + 8];
+     * streams. Every leg is httpd_resp_send_chunk and the stream closes on its
+     * own terminator: httpd_resp_sendstr is the FINAL send, and using it for a
+     * middle leg ends the response there. v1.1.18 shipped exactly that and
+     * every listing died at 9 bytes under an already-flown 200 header — the
+     * live drill caught what orbfake cannot (the fake writes whole bodies, so
+     * no proxy test can see the legs). */
+    httpd_resp_set_status(req, "200 OK");        /* headers fly with the first chunk */
+    /* ONE head leg, and it must be one: an empty rel (the root, the usual
+     * first open) escaped to "", and a zero-length send_chunk IS the stream
+     * terminator — splitting the header into three legs made the root listing
+     * end after {"path":" even with the quoting fixed. The bound is arithmetic:
+     * 21 fixed + 2*127 escaped, the same worst case json_put writes. */
+    esp_err_t out;
+    {
+        char esc[ORB_SD_FM_PATH_MAX * 2 + 8], head[ORB_SD_FM_PATH_MAX * 2 + 32];
         json_put(esc, sizeof esc, rel);
-        out = httpd_resp_sendstr(req, esc);
+        const int hn = snprintf(head, sizeof head, "{\"path\":\"%s\",\"entries\":[", esc);
+        out = httpd_resp_send_chunk(req, head, (size_t)(hn > 0 ? hn : 0));
+        if (out == ESP_OK && hn <= 0)
+            out = ESP_FAIL;                      /* an unspellable head is a 500 */
     }
-    if (out == ESP_OK) out = httpd_resp_sendstr(req, "\",\"entries\":[");
     for (int i = 0; i < n && out == ESP_OK; i++) {
         char esc[160], row[224];
         json_put(esc, sizeof esc, ents[i].name);
@@ -5220,8 +5232,9 @@ static esp_err_t h_sd_ls(httpd_req_t *req)
             out = httpd_resp_send_chunk(req, row, (size_t)rn);
     }
     if (out == ESP_OK)
-        out = httpd_resp_sendstr(req, trunc ? "],\"truncated\":true}" : "],\"truncated\":false}");
-    httpd_resp_set_status(req, out == ESP_OK ? "200 OK" : "500 Internal Server Error");
+        out = httpd_resp_send_chunk(req, trunc ? "],\"truncated\":true}" : "],\"truncated\":false}",
+                                    HTTPD_RESP_USE_STRLEN);
+    if (out == ESP_OK) out = httpd_resp_send_chunk(req, NULL, 0);   /* the terminator */
     return out;
 }
 

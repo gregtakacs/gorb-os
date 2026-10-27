@@ -92,7 +92,20 @@
   <h2 id="mn-orbname">Orb</h2>
   <div class="row"><span class="hint" id="mn-orbident"></span></div>
 
-  <article class="card" id="mn-fwcard">
+  <!-- The tabs are the orb's four faces, and they are DORMANT until opened: a
+       tab makes its first request the first time it is shown, never before.
+       The fleet stream and the status read keep the header honest; nothing
+       else on this view speaks to the board until a tab asks. Each card below
+       carries the data-tab of the face it belongs to, and the router in
+       app.js shows exactly one face's panes. -->
+  <nav class="tabs" id="orb-tabs" role="tablist">
+    <button class="tab on" data-tab="orb" role="tab">Orb</button>
+    <button class="tab" data-tab="fw" role="tab">Firmware</button>
+    <button class="tab" data-tab="apps" role="tab">Apps</button>
+    <button class="tab" data-tab="files" role="tab">Files</button>
+  </nav>
+
+  <article class="card tabpane" data-tab="fw" id="mn-fwcard">
     <h3>Firmware</h3>
     <div class="row">
       <span class="hint" id="mn-curfw">no orb loaded</span>
@@ -120,15 +133,16 @@
     <span id="ob-fwstate" class="hint" hidden></span>
   </article>
 
-  <article class="card">
+  <article class="card tabpane" data-tab="orb">
     <h3>Name</h3>
     <div class="row">
-      <label class="inline">Name <input id="mn-name" size="18" maxlength="32" readonly></label>
-      <span class="hint" id="mn-name-note">the name lives on the board — the hub page shows it; it is changed on the orb's own network page</span>
+      <label class="inline">Name <input id="mn-name" size="18" maxlength="32" autocomplete="off"></label>
+      <button id="mn-name-go" class="ghost" title="Write the new name to the board itself">Save name</button>
+      <span class="hint" id="mn-name-note">the name lives on the board — saving writes it there, and every reader sees it</span>
     </div>
   </article>
 
-  <article class="card" id="mn-wificard">
+  <article class="card tabpane" data-tab="orb" id="mn-wificard">
     <h3>Wi-Fi</h3>
     <div class="grid">
       <label>Network (SSID)
@@ -149,17 +163,35 @@
     provisioned from the New Orb flow instead, over the USB link.</p>
   </article>
 
-  <article class="card">
+  <article class="card tabpane" data-tab="orb">
     <h3>Time zone</h3>
+    <!-- The same picker the orb's own /timezone page runs: the board's zone
+         table fetched from the board, GMT offsets measured by THIS browser's
+         IANA data (the orb's newlib has no zoneinfo — the page is the oracle),
+         a city filter, and the phone row for a zone the table does not carry,
+         whose DST rules get synthesized from the browser and posted as a
+         POSIX rule. Selecting a row sets it; the echo of the device's measured
+         offset is the verdict, never the word the page sent. -->
     <div class="row">
-      <label class="inline">Time zone <input id="mn-tz" size="18" placeholder="America/New_York"></label>
-      <button id="mn-tz-go" class="ghost">Set time zone</button>
-      <span class="hint" id="mn-tz-note"></span>
+      <span class="hint" id="tz-cur">the zone table loads when this tab is first opened</span>
+      <button id="tz-loc" class="ghost" type="button" title="Ask the browser where it is, and use that zone — synthesized if the orb does not know its name">Use my location</button>
     </div>
+    <div class="row">
+      <input id="tz-q" size="24" placeholder="search a city" autocomplete="off" aria-label="Search time zones">
+    </div>
+    <div id="tz-list" class="tzlist" role="listbox"></div>
+    <div class="row"><span class="hint" id="tz-msg"></span></div>
   </article>
 
 
-  <article class="card" id="mn-themecard" hidden>
+  <article class="card tabpane" data-tab="apps" id="mn-appscard">
+    <h3>Apps on this orb</h3>
+    <p class="hint" id="mn-appstate">The app list loads when this tab first opens.</p>
+    <nav class="subtabs" id="mn-apps-tabs"></nav>
+    <div id="mn-apps-body"></div>
+  </article>
+
+  <article class="card tabpane" data-tab="apps" id="mn-themecard" hidden>
     <h3>Themes on this orb</h3>
     <p class="hint" id="mn-themestate">Load an orb to see its themes.</p>
     <ul id="mn-themes" class="themelist"></ul>
@@ -174,7 +206,34 @@
     <p class="hint">A theme's name lives inside its file, and the orb files it under that name. The card filename is the hash of it, which is what these buttons send.</p>
   </article>
 
-  <article class="card" id="mn-consolecard">
+  <article class="card tabpane" data-tab="files" id="mn-filescard">
+    <h3>SD card files</h3>
+    <p class="hint">The card as the volume it is. The <code>apps</code> and <code>themes</code>
+      directories belong to the device and its stores; everything else is yours: browse,
+      upload, make folders, delete folders with their contents. Uploads go up to the orb's
+      own 128 MB gate; names must be plain (letters, digits, dot, dash, underscore).</p>
+    <div class="row">
+      <button id="fm-up-dir" class="ghost" title="Go to the directory above">&uarr; Up</button>
+      <span class="hint" id="fm-path">/</span>
+      <button id="fm-refresh" class="ghost">Refresh</button>
+    </div>
+    <ul id="fm-list" class="filelist"></ul>
+    <p class="hint" id="fm-state" hidden></p>
+    <div class="row">
+      <button id="fm-mkdir-btn" class="ghost">New folder</button>
+      <input id="fm-mkdir" size="20" maxlength="55" placeholder="folder name" autocomplete="off" hidden>
+      <button id="fm-mkdir-go" class="primary" hidden>Create</button>
+    </div>
+    <div class="row">
+      <input type="file" id="fm-file" multiple hidden>
+      <button id="fm-upload-btn" class="ghost" title="Upload the chosen file(s) into this directory. An existing name is refused unless you check replace.">Upload files&#8230;</button>
+      <label class="check inline"><input type="checkbox" id="fm-overwrite"> replace existing</label>
+      <span class="hint" id="fm-up-state"></span>
+    </div>
+    <p class="hint" id="fm-space"></p>
+  </article>
+
+  <article class="card tabpane" data-tab="fw" id="mn-consolecard">
     <h3>USB console (read-only)</h3>
     <p class="hint">Nothing is sent to the orb and it is not restarted: the port is opened, read for a few seconds, and closed.
       IDF only emits console output while a host holds the port, so this is also how you see a running orb talk.</p>
@@ -295,6 +354,13 @@
       <label class="check"><input type="checkbox" id="rt-firmware">
         <span>Firmware — erase the software as well. The orb stops being an orb and waits to be set up again.</span></label>
     </div>
+    <!-- The settings scope reached v1.1.18 boards over the LAN too: the orb's
+         own /api/v1/factory door, the twin of serial RESET ALL. Typing ALL is
+         what the serial verb demands and what this box repeats — the board
+         will come back unnamed, unnetworked, asking to be set up. -->
+    <div class="row" id="rt-wordrow" hidden>
+      <label class="inline">Type <b>ALL</b> to confirm <input id="rt-word" size="6" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>
+    </div>
     <p class="hint" id="rt-state"></p>
     <div class="row">
       <button id="rt-go" class="danger" disabled>Reset</button>
@@ -412,5 +478,6 @@
 
 <script>window.__ORB_TOKEN__ = "__ORB_TOKEN__";</script>
 <script src="/web/app.js"></script>
+<script src="/web/tabs.js"></script>
 </body>
 </html>

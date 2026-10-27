@@ -688,14 +688,16 @@ function openOrbByIP(ip, mac, row) {
   $("#mn-name").value = current.name;
   $('#ob-identify').hidden = !current.port;
   gateFwButtons();
-  $("#mn-wificard").hidden = !current.ip;
   $("#mn-curfw").textContent = "loading\u2026";
   $("#mn-verdict").textContent = "";
   $("#ob-idcard").hidden = true;
   renderIdentity(allPorts);
   show("orb");
+  // Dormancy: opening a board resets the faces (nothing carries over from the
+  // last orb) and loads none of them beyond the status read loadOrb makes.
+  // The wifi picker starts empty; Rescan is what fills it, on this board, now.
+  orbTabsReset();
   loadOrb();
-  if (current.ip) loadNetworks(false);
 }
 
 // loadOrb asks the board who it is. The reply is the manage view's headline and
@@ -739,16 +741,22 @@ async function loadOrb() {
     const st = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/status"));
     current.name = st.name || current.name;
     $("#mn-curfw").textContent = "running " + (st.fw || "version unknown") +
-      " \u00b7 state " + (st.state || "?") + (st.rssi ? " \u00b7 rssi " + st.rssi : "") + (st.tz ? " \u00b7 " + st.tz : "");
-    $("#mn-tz").value = st.tz || "";
+      " \u00b7 state " + (st.state || "?") + (st.rssi ? " \u00b7 rssi " + st.rssi : "");
     $("#j-tz").value = st.tz || "";
     if (st.name) $("#mn-name").value = st.name;
     gateFwButtons();
-    loadThemes(current.ip);
+    // The themes are the Apps face's clock sub-tab now: no face prefetches them.
+    // What a fresh status does instead is hand the stamp to the tab gate and let
+    // the router re-assert the shape (a board that lost its address loses wifi).
+    orbTabsStatus(st);
     startPolling(current.ip);
   } catch (e) {
     $("#mn-curfw").textContent = "no orb answering at " + current.ip + " \u2014 " + e.message +
       "; it may be mid-reboot, re-reading as it comes back";
+    // The Firmware face owns the detailed line, but it is a tab now: the ident
+    // row, always visible under the name, carries the failure too, so an open
+    // but silent board says so on the face the operator is looking at.
+    $("#mn-orbident").textContent = "no orb answering at " + current.ip + " \u2014 " + e.message;
     gateFwButtons();
     orbWakeTmr = setTimeout(() => {
       orbWakeTmr = 0;
@@ -2267,9 +2275,9 @@ function runPreviewQueue() {
 
 async function loadThemes(ip) {
   const state = $("#mn-themestate"), list = $("#mn-themes"), card = $("#mn-themecard");
-  if (!ip) { card.hidden = true; return; }
+  if (!ip) { orbThemeListHidden(); return; }
   themeIP = ip;
-  card.hidden = false;
+  orbThemeListShown();          // the sub-tab owns the reveal, not this fetch
   state.textContent = "reading the orb's theme list\u2026";
   state.classList.add("spin-wait");
   list.innerHTML = "";
@@ -2814,10 +2822,12 @@ async function fillConsolePorts() {
 }
 
 
-$("#mn-tz-go").onclick = () => {
-  if (!current.ip) { $("#mn-tz-note").textContent = "no address to write to"; return; }
-  postOrb(current.ip, "/api/v1/config", { tz: $("#mn-tz").value.trim() }, $("#mn-tz-note"));
-};
+// (The time zone is set from the ported /timezone picker in tabs.js now; the old
+// type-a-string door left with the card it lived on.)
+
+// orbAdoptName is how tabs.js's rename lets the page's own state follow the
+// board: `current` is app.js's declaration, and writes to it stay in this file.
+function orbAdoptName(n) { current.name = n; }
 
 // ---- the Add-by-IP dialog -------------------------------------------------------
 // For the orb the hub cannot hear: a network that blocks its broadcasts, a board

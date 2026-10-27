@@ -222,3 +222,27 @@ header nav{display:flex;gap:10px;align-items:baseline}
    a window rather than navigating. */
 .linkish{background:none;border:none;padding:0;color:var(--acc);font:inherit;cursor:pointer;text-decoration:underline}
 
+
+/* ---- the orb view's tabs -------------------------------------------------------
+   The faces are flat strips, not browser chrome: the active one takes the
+   card's own background and loses its bottom seam. Sub-tabs (apps) sit one
+   step down. */
+.tabs{display:flex;gap:2px;margin:10px 0 0;border-bottom:1px solid var(--line)}
+.tabs .tab{background:none;border:1px solid transparent;border-bottom:none;color:var(--fg);
+  padding:7px 14px;cursor:pointer;font:inherit;border-radius:6px 6px 0 0;opacity:.7}
+.tabs .tab.on{background:var(--card);border-color:var(--line);opacity:1;font-weight:600}
+.tabs .tab:hover{opacity:1}
+.subtabs{display:flex;gap:2px;margin:6px 0}
+.tab.sub{font-size:.95em;padding:4px 10px}
+.tzlist{display:flex;flex-direction:column;gap:2px;max-height:16em;overflow:auto;margin:6px 0}
+.tzrow{display:block;text-align:left;background:none;border:1px solid var(--line);color:var(--fg);
+  padding:6px 10px;border-radius:6px;cursor:pointer;font:inherit}
+.tzrow:hover{border-color:var(--acc)}
+.tzrow.cur{border-color:var(--acc);font-weight:600}
+.tzrow.phone{border-style:dashed}
+.filelist{list-style:none;padding:0;margin:6px 0;display:flex;flex-direction:column;gap:2px}
+.filerow{display:flex;gap:10px;align-items:baseline;border:1px solid var(--line);border-radius:6px;padding:5px 10px}
+.filerow.dir{background:rgba(125,125,125,.07)}
+.filerow .hint{flex:1}
+button.small{padding:2px 8px;font-size:.85em}
+label.check.inline{display:inline-flex;gap:6px;align-items:center}

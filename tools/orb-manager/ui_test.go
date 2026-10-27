@@ -96,23 +96,35 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 
 // The chip erase is gone from this page and stays gone: a blank S3 boot-loops,
 // flaps its port, and reads as a broken cable to everyone but a bench script.
-// The lonely write is the only end of orb life the manager page offers, and the
-// name box is a display, not an input. Both halves are load-bearing: a restore
-// of the wipe button from an old tab would put the worst dead-end state back on
-// the bench, and a writable name box is a control that cannot save.
-func TestPageNeverOffersChipEraseAndTheNameIsDisplayOnly(t *testing.T) {
+// The lonely write is the only end of orb life the manager page offers. The
+// name half of this pin changed 2026-10-26 by owner request: the manager can
+// rename, and the save goes to the board's own /api/v1/name (which still holds
+// the veto) — never to /api/fleet/set, which would make the hub's cache row the
+// authority. What stays forbidden is a control that cannot save: a readonly box
+// beside a live button is the bug this pins shut from both directions.
+func TestPageNeverOffersChipEraseAndTheNameIsEditable(t *testing.T) {
 	page := readWebFile(t, "index.html")
 	src := readAppJS(t)
-	for _, gone := range []string{"ob-chipwipe", "/api/wipe", "mn-name-go", "wipeArm"} {
-		if strings.Contains(page, gone) || strings.Contains(src, gone) {
+	tabs := readWebFile(t, "tabs.js")
+	for _, gone := range []string{"ob-chipwipe", "/api/wipe", "wipeArm"} {
+		if strings.Contains(page, gone) || strings.Contains(src, gone) || strings.Contains(tabs, gone) {
 			t.Errorf("%s is back on the manager page — the hub offers lonely, never a chip erase", gone)
 		}
 	}
-	if !strings.Contains(page, `id="mn-name"`) || !strings.Contains(page, `readonly`) {
-		t.Error("the manage page's name field lost its readonly — naming is display-only")
+	if !strings.Contains(page, `id="mn-name" size="18" maxlength="32"`) {
+		t.Error("the manage page's name field is not the editable one (no readonly, maxlength 32)")
 	}
-	if strings.Contains(src, `"/api/fleet/set"`) {
-		t.Error("app.js posts /api/fleet/set again; the hub page does not rename orbs")
+	if strings.Contains(page, `id="mn-name" size="18" maxlength="32" readonly`) {
+		t.Error("the name field went readonly again — naming is editable from the manager now")
+	}
+	if !strings.Contains(page, `id="mn-name-go"`) {
+		t.Error("index.html lost the save-name button")
+	}
+	if !strings.Contains(tabs, "/api/v1/name") {
+		t.Error("tabs.js never posts /api/v1/name — the save button has no door")
+	}
+	if strings.Contains(src, `"/api/fleet/set"`) || strings.Contains(tabs, `"/api/fleet/set"`) {
+		t.Error("the page posts /api/fleet/set again; renames go to the board, not the hub's cache")
 	}
 }
 

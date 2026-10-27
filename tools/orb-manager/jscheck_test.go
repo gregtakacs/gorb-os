@@ -125,18 +125,21 @@ func skipRegex(src string, i int) (int, bool) {
 }
 
 func TestAppJSGroupsBalance(t *testing.T) {
-	code := stripJSLiterals(readAppJS(t))
-	for _, pair := range [][2]byte{{'{', '}'}, {'(', ')'}, {'[', ']'}} {
-		open, close := strings.Count(code, string(pair[0])), strings.Count(code, string(pair[1]))
-		if open != close {
-			t.Errorf("app.js is unbalanced in %q: %d open, %d close (after comments and literals are removed)",
-				string(pair[0]), open, close)
+	clients := map[string]string{"app.js": readAppJS(t), "tabs.js": readWebFile(t, "tabs.js")}
+	for _, name := range []string{"app.js", "tabs.js"} {
+		code := stripJSLiterals(clients[name])
+		for _, pair := range [][2]byte{{'{', '}'}, {'(', ')'}, {'[', ']'}} {
+			open, close := strings.Count(code, string(pair[0])), strings.Count(code, string(pair[1]))
+			if open != close {
+				t.Errorf("%s is unbalanced in %q: %d open, %d close (after comments and literals are removed)",
+					name, string(pair[0]), open, close)
+			}
 		}
-	}
-	// The file must still be recognisable as this client, or the balance check above
-	// is passing on an empty string.
-	if !strings.Contains(code, "function") {
-		t.Error("stripping literals left nothing recognisable; the checker is not testing what it thinks")
+		// The file must still be recognisable as this client, or the balance check above
+		// is passing on an empty string.
+		if !strings.Contains(code, "function") {
+			t.Errorf("%s: stripping literals left nothing recognisable; the checker is not testing what it thinks", name)
+		}
 	}
 }
 
@@ -308,6 +311,9 @@ func undeclaredAssignments(t *testing.T, full string) []string {
 func TestAppJSAssignsOnlyDeclaredNames(t *testing.T) {
 	for _, leak := range undeclaredAssignments(t, readAppJS(t)) {
 		t.Errorf("app.js assigns %q with no let/var/const anywhere: it becomes an implicit global", leak)
+	}
+	for _, leak := range undeclaredAssignments(t, readWebFile(t, "tabs.js")) {
+		t.Errorf("tabs.js assigns %q with no let/var/const anywhere: it becomes an implicit global", leak)
 	}
 }
 
@@ -827,9 +833,15 @@ let items = [];
 	}
 }
 
-// And on the real client: no write anywhere resolves to nothing.
+// And on the real client: no write anywhere resolves to nothing. The orb view's
+// tab file is part of the client since the tabbed page, and held to the same rule.
 func TestAppJSWritesResolveInScope(t *testing.T) {
-	for _, leak := range undeclaredScopeWrites(maskJSForScope(readAppJS(t))) {
-		t.Errorf("app.js: %s", leak)
+	for _, f := range []struct{ name, src string }{
+		{"app.js", readAppJS(t)},
+		{"tabs.js", readWebFile(t, "tabs.js")},
+	} {
+		for _, leak := range undeclaredScopeWrites(maskJSForScope(f.src)) {
+			t.Errorf("%s: %s", f.name, leak)
+		}
 	}
 }

@@ -324,7 +324,7 @@ var deviceRoutes = map[string][]string{
 	// The retained log tail, plain text. Read-only and guarded on the device by the
 	// same token as /screen; the hub's diagnose flow reads it after any failed call,
 	// so a hub that cannot dial it makes the firmware's own witness unreachable.
-	"/api/v1/log":      {http.MethodGet},
+	"/api/v1/log":    {http.MethodGet},
 	"/themes":        {http.MethodGet},
 	"/timezone":      {http.MethodGet},
 	"/api/v1/config": {http.MethodGet, http.MethodPost},
@@ -356,13 +356,13 @@ var deviceRoutes = map[string][]string{
 	// It reads pixels and changes nothing. P6 removed the FORMAT 2 install door, and
 	// Migration 1 removed the flip and default doors with the A/B pair: /api/v1/sd/bundle
 	// is now the only theme write verb, and delete stays the one unqueued outcome.
-	"/api/v1/fb":        {http.MethodGet},
+	"/api/v1/fb": {http.MethodGet},
 	// h_sd_preview: one theme's preview plane, read-only, one card file, no verb
 	// beside it that writes. The Theme card's thumbnails dial it through
 	// /api/theme/preview, which is the only place the hub learns of it.
 	"/api/v1/sd/preview": {http.MethodGet},
-	"/api/v1/sd/delete": {http.MethodPost},
-	"/api/v1/sd/theme":  {http.MethodPost},
+	"/api/v1/sd/delete":  {http.MethodPost},
+	"/api/v1/sd/theme":   {http.MethodPost},
 	// Migration 1's store door: the one press that puts a card theme on the glass.
 	// It queues, acks reboot:automatic, and reboots onto the new face when the copy
 	// verifies — the single store verb after the flip/default pair was retired with
@@ -389,6 +389,19 @@ var deviceRoutes = map[string][]string{
 	"/api/v1/apps/clear":   {http.MethodPost},
 	"/api/v1/apps/factory": {http.MethodPost},
 	"/api/v1/sd/app":       {http.MethodPost},
+	// v1.1.18's file-manager doors and the LAN twin of serial RESET ALL. The
+	// proxy forwards these verbatim (token, caps, lane) and owns none of the
+	// policy: the device already refuses traversal, the device-owned
+	// directories, and non-empty trees with its own sentences, and a hub that
+	// filtered paths a second way would be a second authority that can
+	// disagree. /factory is allowed because the Firmware tab's Reset button
+	// must reach a board on a wall — that is its whole point — and it is
+	// POST-only, confirm=ALL, with the typed confirmation living in the page.
+	"/api/v1/factory":  {http.MethodPost},
+	"/api/v1/sd/ls":    {http.MethodGet},
+	"/api/v1/sd/mkdir": {http.MethodPost},
+	"/api/v1/sd/rm":    {http.MethodPost},
+	"/api/v1/sd/write": {http.MethodPost},
 }
 
 // Byte caps for one proxied exchange. The orb's httpd is real and sometimes slow, so
@@ -396,7 +409,12 @@ var deviceRoutes = map[string][]string{
 // route that streams from turning the hub into an unbounded proxy for another host.
 const (
 	proxyResponseCap = 8 << 20 // device body copied back to the browser
-	proxyRequestCap  = 8 << 20 // browser body forwarded to the device: the largest legal
+	// fmUploadCap is the ONE proxied request body that streams (see proxyOrb):
+	// the file manager's upload, capped at the device's own write gate
+	// (ORB_SD_FM_WRITE_MAX in orb_sd.h) so the hub never accepts bytes the
+	// device will refuse.
+	fmUploadCap     = 128 << 20
+	proxyRequestCap = 8 << 20 // browser body forwarded to the device: the largest legal
 	// bundle is art 0x7F0000 (ORB_THEME_SLOT_CAP) behind a sector-aligned art start of
 	// 0x10000 — exactly 8 MB. The theme upload door on the device takes 0x800000+0x20000
 	// (ORB_THEME_UPLOAD_MAX); a hub that forwards less than the format can legally

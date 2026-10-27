@@ -66,8 +66,27 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 	// silently truncate an upload, so a too-large one is refused outright. The
 	// device's multipart theme upload is the only big body the UI sends, and the
 	// hub's own upload cap (firmware.MaxAssetBytes) is smaller than this.
+	//
+	// v1.1.18's /api/v1/sd/write is the exception, and the old sentence is the
+	// reason it needs one: the file manager uploads ARBITRARY files, up to the
+	// device's own 128 MB gate, and holding that in hub RAM to re-serve it is
+	// the bad shape. The browser declares a length (fetch with a File body
+	// always does), the device refuses a chunked body, so the declared number
+	// is forwarded, not recomputed — and an undeclared one dies here with a
+	// sentence rather than at the device with one.
+	streaming := route == "/api/v1/sd/write" && r.Method == http.MethodPost
+	if streaming {
+		if r.ContentLength <= 0 {
+			proxyError(w, http.StatusBadRequest, "the orb's file write needs a declared Content-Length")
+			return
+		}
+		if r.ContentLength > fmUploadCap {
+			proxyError(w, http.StatusRequestEntityTooLarge, "file over the orb's 128 MB write gate")
+			return
+		}
+	}
 	var body io.Reader
-	if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodDelete {
+	if !streaming && r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodDelete {
 		raw, rerr := io.ReadAll(io.LimitReader(r.Body, proxyRequestCap+1))
 		if rerr != nil {
 			proxyError(w, http.StatusBadGateway, "reading the request body: "+rerr.Error())
@@ -84,7 +103,11 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 		proxyError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	if ct := r.Header.Get("Content-Type"); ct != "" && body != nil {
+	if streaming {
+		req.Body = r.Body
+		req.ContentLength = r.ContentLength // exact, declared, never chunked
+	}
+	if ct := r.Header.Get("Content-Type"); ct != "" && (body != nil || streaming) {
 		req.Header.Set("Content-Type", ct)
 	} else if body != nil {
 		req.Header.Set("Content-Type", "application/json")

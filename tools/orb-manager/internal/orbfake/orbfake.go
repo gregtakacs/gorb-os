@@ -124,13 +124,17 @@ type Orb struct {
 	// erased but the registry kept the row.
 	ReviveFails     bool
 	UninstallSticks bool
+
+	// fm is v1.1.18's file-manager volume (see fm.go), seeded empty so a test
+	// counts exactly what it created.
+	fm *fakeFS
 }
 
 // New returns a fake orb seeded with the given themes, ids recomputed from each name
 // so a caller cannot seed a row whose id disagrees with its name.
 func New(themes ...Theme) *Orb {
 	o := &Orb{Card: "SDSC-8G", Mounted: true,
-		apps: map[string]*CardApp{}}
+		apps: map[string]*CardApp{}, fm: newFakeFS()}
 	// Seed the inside-the-firmware rows first, in device order. h_status walks the registry
 	// from row zero, so a double that omits them answers a status request with "apps":[]
 	// where every real orb names clock, color_picker and menu — and the hub's Manage card
@@ -255,6 +259,16 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveOTA(w, r)
 	case r.URL.Path == "/api/v1/reprov" && r.Method == http.MethodPost:
 		o.serveReprov(w)
+	case r.URL.Path == "/api/v1/factory" && r.Method == http.MethodPost:
+		o.serveFactory(w, r)
+	case r.URL.Path == "/api/v1/sd/ls" && r.Method == http.MethodGet:
+		o.serveFmList(w, r)
+	case r.URL.Path == "/api/v1/sd/mkdir" && r.Method == http.MethodPost:
+		o.serveFmMkdir(w, r)
+	case r.URL.Path == "/api/v1/sd/write" && r.Method == http.MethodPost:
+		o.serveFmWrite(w, r)
+	case r.URL.Path == "/api/v1/sd/rm" && r.Method == http.MethodPost:
+		o.serveFmRm(w, r)
 	case r.URL.Path == "/api/v1/screen" && r.Method == http.MethodGet:
 		o.serveScreen(w, r)
 	case r.URL.Path == "/api/v1/fb" && r.Method == http.MethodGet:

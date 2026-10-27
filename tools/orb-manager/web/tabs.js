@@ -130,7 +130,7 @@ $("#mn-name-go").onclick = async () => {
     const d = await readDeviceJSON(r);
     if (!r.ok || d.error) throw new Error(d.error || ("HTTP " + r.status));
     orbAdoptName(d.name || name);
-    $("#mn-orbname").textContent = current.name;
+    paintOrbHead();   // the headline follows the write, not just the field below it
     note.textContent = "saved \u2014 the board answers to " + current.name;
     pullFound();
   } catch (e) {

@@ -674,6 +674,20 @@ async function showLiveOp(port, el) {
 // that trusted one would rename whoever holds it tomorrow.
 let current = { mac: "", ip: "", port: "", name: "", row: null };
 
+// paintOrbHead draws the card's headline: the name the board answers to, and only
+// while nothing has said it, the most specific address on hand. It exists as a
+// function because the name arrives late — a board opened straight from a flash
+// has no row to read a name off, so the first paint is an address and the truth
+// walks in with the status reply. Every door that learns the name paints through
+// here (openOrbByIP, loadOrb, the Orb face's Save), which is what keeps the
+// headline from going stale on a mac while the name field below it already
+// reads "Kitchen" (bench 2026-10-27, the flash-to-manage path's one rough edge).
+function paintOrbHead() {
+  const el = $("#mn-orbname");
+  const inst = (current.row && current.row.instance) || "";
+  if (el) el.textContent = current.name || inst || current.mac || current.ip || "orb";
+}
+
 // isBlankRow is the fleet's doorkeeper, and it is the exact complement of the
 // New Orb gate: the hub's own `orb` verdict decides, so a board the hub cannot
 // yet call an orb is never a card here and is always a flash candidate over on
@@ -695,7 +709,7 @@ function openOrbByIP(ip, mac, row) {
     port: (row && Array.isArray(row.ports) && row.ports[0]) || "",
   };
   orbIP = current.ip;                       // the scan/join doors dial this, one source
-  $("#mn-orbname").textContent = current.name || (row && row.instance) || current.mac || current.ip || "orb";
+  paintOrbHead();                           // an address until the board says its name
   $("#mn-orbident").textContent = [current.mac && ("mac " + current.mac), current.ip && ("at " + current.ip),
     current.port && ("on cable " + current.port)].filter(Boolean).join("  \u00b7  ");
   $("#mn-name").value = current.name;
@@ -761,6 +775,7 @@ async function loadOrb(returned) {
   try {
     const st = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/status"));
     current.name = st.name || current.name;
+    paintOrbHead();   // the name the board just gave is the headline's, too
     $("#mn-curfw").textContent = "running " + (st.fw || "version unknown") +
       " \u00b7 state " + (st.state || "?") + (st.rssi ? " \u00b7 rssi " + st.rssi : "");
     // No tz paint here: the zone display is the Orb face's picker's own read
@@ -1477,7 +1492,14 @@ $("#ob-rejoin").onclick = () => {
   $("#ob-join").hidden = false;
   $("#ob-watch").textContent = "pick a network and connect again — the form writes over the cable.";
 };
-$("#ob-manage").onclick = () => { closeJoinDialog(); $("#ob-flashpanel").hidden = true; openOrbByIP(orbIP, provMac, null); };
+$("#ob-manage").onclick = () => {
+  closeJoinDialog();
+  $("#ob-flashpanel").hidden = true;
+  // Pass the name this join was just given as the row, so the headline reads
+  // "Kitchen" on the first frame rather than a mac until the status reply
+  // arrives a beat later. loadOrb confirms it against the board regardless.
+  openOrbByIP(orbIP, provMac, { name: ($("ob-name").value || "").trim() });
+};
 // The third answer on a finished flash: stay here. A cable flash that worked and
 // joined is a completed job, and the two buttons beside this one both move the
 // operator somewhere — onto the orb's page, or back into the network form. The
@@ -2115,6 +2137,11 @@ function paintFound(li, o) {
     const wasWaiting = orbWakeTmr !== 0 && current.ip === o.ip;
     current.row = o;
     current.ip = o.ip || current.ip;
+    // Adopt a name this frame carries — it came from the board, so it outranks
+    // an address, and it is the cheapest word that the board is answering again.
+    // The name input below is left alone: unsaved typing is the operator's.
+    if (o.name) current.name = o.name;
+    paintOrbHead();
     gateFwButtons();
     // The stream says this board is answering again. If the open card is sitting
     // in its wake-wait for the same address, do not let the operator watch a

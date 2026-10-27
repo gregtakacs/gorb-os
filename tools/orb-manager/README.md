@@ -741,6 +741,12 @@ so a deliberate downgrade stays possible.
     board sits could disagree with the board, so the book stores the address it was last
     reachable at and the name the board last reported, plus the last fw stamp and
     state token any answer carried — the remembered row wears them at first paint.
+    The manage card's headline follows the same rule and arrives late: a board opened
+    straight from a flash has no remembered row to read a name off, so the headline
+    wears its MAC until the first `/api/v1/status` answers, and that reply repaints
+    it (`paintOrbHead` in `web/app.js`, the only writer of the line). Opening one
+    after a flash-and-join passes the name the join was given, so the wait is one
+    paint rather than one round trip.
     A restored address reads `asking` on the tile until the startup dial answers,
     and becomes clickable once that dial or a real announce says it
     answers. A board the hub knows only from a cable is not remembered at all: an entry

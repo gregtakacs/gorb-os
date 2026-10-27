@@ -845,3 +845,65 @@ func TestAppJSWritesResolveInScope(t *testing.T) {
 		}
 	}
 }
+
+// ---- the manage card's headline ------------------------------------------------
+
+// jsFuncBody returns one top-level function's source, signature through closing
+// brace, and fails the test when the signature is missing. A naive slice to
+// end-of-file is not a stand-in: it let a later function's call satisfy an earlier
+// function's requirement and called a broken client good.
+func jsFuncBody(t *testing.T, src, sig string) string {
+	t.Helper()
+	at := strings.Index(src, sig)
+	if at < 0 {
+		t.Fatalf("client has no %s", sig)
+	}
+	open := strings.Index(src[at:], "{")
+	if open < 0 {
+		t.Fatalf("%s: no opening brace", sig)
+	}
+	depth, i := 0, at+open
+	for ; i < len(src); i++ {
+		switch src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return src[at : i+1]
+			}
+		}
+	}
+	t.Fatalf("%s: braces never close", sig)
+	return ""
+}
+
+// The manage card's headline is the name the board answers to, and that name is not
+// always knowable at open time: the flash-to-manage door ("Open this orb") has no
+// fleet row to read one off, so the card painted the mac and never revised the line,
+// while the Name field under it correctly showed the board's name off the status
+// reply (bench 2026-10-27). One painter owns the headline, and every door that learns
+// the name goes through it. Pin them all, or the next refactor puts a raw assignment
+// back in one door and the card ships stale again.
+func TestOrbHeadlinePaintsFromOneDoor(t *testing.T) {
+	app, tabs := readAppJS(t), readWebFile(t, "tabs.js")
+	painter := jsFuncBody(t, app, "function paintOrbHead()")
+	if !strings.Contains(painter, "current.name || inst || current.mac || current.ip") {
+		t.Error("paintOrbHead no longer ranks the name over instance, mac, and ip")
+	}
+	const sel = `#mn-orbname`
+	if n := strings.Count(app, sel); n != 1 || strings.Count(painter, sel) != 1 {
+		t.Errorf("app.js mentions the headline %d times; only paintOrbHead may hold it", n)
+	}
+	for _, sig := range []string{"function openOrbByIP", "async function loadOrb", "function paintFound"} {
+		if body := jsFuncBody(t, app, sig); !strings.Contains(body, "paintOrbHead()") {
+			t.Errorf("%s changes what the headline shows without repainting it", sig)
+		}
+	}
+	if !strings.Contains(tabs, "paintOrbHead()") {
+		t.Error("tabs.js renames the board without repainting the headline")
+	}
+	if strings.Contains(tabs, sel) {
+		t.Error("tabs.js touches the headline directly; route it through paintOrbHead")
+	}
+}

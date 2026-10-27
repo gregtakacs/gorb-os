@@ -92,14 +92,17 @@
   <h2 id="mn-orbname">Orb</h2>
   <div class="row"><span class="hint" id="mn-orbident"></span></div>
 
-  <!-- The tabs are the orb's four faces, and they are DORMANT until opened: a
+  <!-- The tabs are the orb's five faces, and they are DORMANT until opened: a
        tab makes its first request the first time it is shown, never before.
        The fleet stream and the status read keep the header honest; nothing
        else on this view speaks to the board until a tab asks. Each card below
        carries the data-tab of the face it belongs to, and the router in
-       app.js shows exactly one face's panes. -->
+       tabs.js shows exactly one face's panes. The Wi-Fi face is offered only
+       to a board with an address: a cable-only board is provisioned from the
+       New Orb flow over the lead, and a dead picker is not a face. -->
   <nav class="tabs" id="orb-tabs" role="tablist">
     <button class="tab on" data-tab="orb" role="tab">Orb</button>
+    <button class="tab" data-tab="wifi" role="tab">Wi-Fi</button>
     <button class="tab" data-tab="fw" role="tab">Firmware</button>
     <button class="tab" data-tab="apps" role="tab">Apps</button>
     <button class="tab" data-tab="files" role="tab">Files</button>
@@ -142,8 +145,12 @@
     </div>
   </article>
 
-  <article class="card tabpane" data-tab="orb" id="mn-wificard">
+  <article class="card tabpane" data-tab="wifi" id="mn-wificard">
     <h3>Wi-Fi</h3>
+    <!-- Its first read lands when this face is first opened, and it is the
+         board's cached scan rather than a fresh one: the radio already swept
+         the air at boot and holds the table until someone re-arms it. The
+         Rescan button is the only thing here that pays for a new sweep. -->
     <div class="grid">
       <label>Network (SSID)
         <select id="j-ssid"></select>

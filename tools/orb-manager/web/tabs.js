@@ -1,11 +1,11 @@
-// tabs.js — the orb view's four faces, dormant until opened.
+// tabs.js — the orb view's five faces, dormant until opened.
 //
 // app.js owns the page's bones; this file owns the tab SHAPE: the router, the
 // one-request-per-tab-per-board discipline, the /timezone picker ported to the
 // manager, the apps ledger with its sub-tabs, the card file manager, and the
 // LAN arm of the reset dialog. It loads after app.js and rebinds the few
 // handlers whose old single-tab behavior it replaces (the reset button, the
-// wifi card's visibility). Every request this file makes answers to a tab the
+// Wi-Fi face's availability). Every request this file makes answers to a tab the
 // operator opened for THIS board — no face prefetches another's data.
 "use strict";
 
@@ -13,24 +13,50 @@ let tabNow = "orb";
 const tabLoaded = new Set();
 let fwStamp = "";              // status's fw line, for the doors that gate on it
 
-function tabPaneVisible(p, name) {
-  if (p.dataset.tab !== name) return false;
-  if (p.id === "mn-wificard" && !current.ip) return false;  // no address, no card
-  if (p.id === "mn-themecard")
-    return name === "apps" && appsSub === "clock" && themesVisible;
+// tabOffered is the smaller question tabPaneVisible never answers: does this
+// board have the means to serve this face at all? Wi-Fi is the only face with
+// an outward requirement — with no address there is nothing to point a scan or
+// a join at, and the button is withdrawn rather than opened onto a dead picker.
+// A cable-only board is provisioned from the New Orb flow over the lead, which
+// is a different door on a different face, and it stays reachable there.
+function tabOffered(name) {
+  if (name === "wifi") return !!current.ip;
   return true;
 }
 
+// showTab is the whole router: it withdraws unofferable buttons, keeps the
+// operator's choice when it can be honored, and falls back to the Orb face when
+// it cannot (the common arrival is a board losing its lease under an open Wi-Fi
+// face, which orbTabsStatus reports here on the next status read).
 function showTab(name) {
+  if (!tabOffered(name)) name = "orb";
   tabNow = name;
   document.querySelectorAll("#orb .tabpane").forEach((p) => {
     p.hidden = !tabPaneVisible(p, name);
   });
-  document.querySelectorAll("#orb-tabs .tab").forEach((b) =>
-    b.classList.toggle("on", b.dataset.tab === name));
+  document.querySelectorAll("#orb-tabs .tab").forEach((b) => {
+    b.hidden = !tabOffered(b.dataset.tab);
+    b.classList.toggle("on", b.dataset.tab === name);
+  });
   if (name === "apps") lazyTab("apps", loadApps);
   else if (name === "files") lazyTab("files", fmOpen);
+  else if (name === "wifi") lazyTab("wifi", wifiOpen);
   else if (name === "orb") lazyTab("tz", loadZonesTable);
+}
+
+// wifiOpen is the Wi-Fi face's first request, and it asks for the cached table
+// rather than fresh: the board runs a scan at boot and holds the result until
+// someone re-arms it, so opening the face costs one cheap read, and the Rescan
+// button is what pays for a new sweep of the air.
+function wifiOpen() {
+  return loadNetworks(false);
+}
+
+function tabPaneVisible(p, name) {
+  if (p.dataset.tab !== name) return false;
+  if (p.id === "mn-themecard")
+    return name === "apps" && appsSub === "clock" && themesVisible;
+  return true;
 }
 
 function lazyTab(key, fn) {
@@ -50,13 +76,16 @@ function orbTabsReset() {
   fwStamp = "";
   tabNow = "orb";
   document.querySelectorAll("#orb .tabpane").forEach((p) => { p.hidden = true; });
-  document.querySelectorAll("#orb-tabs .tab").forEach((b) =>
-    b.classList.toggle("on", b.dataset.tab === "orb"));
+  document.querySelectorAll("#orb-tabs .tab").forEach((b) => {
+    b.hidden = !tabOffered(b.dataset.tab);
+    b.classList.toggle("on", b.dataset.tab === "orb");
+  });
 }
 
 // orbTabsStatus is loadOrb's hook: the stamp gates the LAN reset door, the
 // open faces refresh themselves against the truth this read carries, and the
-// shape (a board that lost its address loses the wifi card) re-asserts.
+// shape re-asserts — a board that lost its address loses the Wi-Fi face out
+// from under whoever was standing on it, and lands back on Orb.
 function orbTabsStatus(st) {
   fwStamp = (st && st.fw) || "";
   showTab(tabNow);   // re-assert the shape; the faces themselves refresh on press

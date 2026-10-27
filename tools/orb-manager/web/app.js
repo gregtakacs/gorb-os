@@ -696,6 +696,9 @@ function openOrbByIP(ip, mac, row) {
   // Dormancy: opening a board resets the faces (nothing carries over from the
   // last orb) and loads none of them beyond the status read loadOrb makes.
   // The wifi picker starts empty; Rescan is what fills it, on this board, now.
+  // The pending scan retry goes with it: a timer armed for the last board would
+  // paint THIS board's picker without the operator having opened the face.
+  clearTimeout(scanTimer);
   orbTabsReset();
   loadOrb();
 }

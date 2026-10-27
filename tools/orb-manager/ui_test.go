@@ -94,6 +94,75 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 	}
 }
 
+// The Wi-Fi join card is a face of its own, not a guest on the Orb face. It was
+// originally placed there because the card looked small; the reason it moves is
+// the request underneath it. The scan/join pair is the only part of the page
+// that drives a radio, and dormancy means the operator's press, not the page's
+// load, is what asks for it — so the card needs a boundary the page can be read
+// against. Pinned in both directions: the card carries the wifi tab, and nothing
+// on the orb tab still looks like a join form.
+func TestWifiIsItsOwnFace(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	tabs := readWebFile(t, "tabs.js")
+	// The join controls belong to THIS card, and to exactly one card: a second
+	// copy of the button somewhere else is the bug this face split could leave
+	// behind, and two doors writing one join is a real hazard.
+	card := cardMarkup(page, "mn-wificard")
+	if section(card, "data-tab") != "wifi" {
+		t.Errorf(`the Wi-Fi card is on face %q, not its own: it drives the radio and must open on a press`, section(card, "data-tab"))
+	}
+	for _, id := range []string{"j-go", "j-ssid", "j-rescan"} {
+		if !strings.Contains(card, `id="`+id+`"`) {
+			t.Errorf("the join control #%s is no longer on the Wi-Fi card", id)
+		}
+		if n := strings.Count(page, `id="`+id+`"`); n != 1 {
+			t.Errorf("join control #%s appears %d times on the page; the join form must exist once", id, n)
+		}
+	}
+	if !strings.Contains(page, `data-tab="wifi" role="tab"`) {
+		t.Error("index.html lost the Wi-Fi tab button")
+	}
+	// The face is withdrawn, not left standing, for a board with no address.
+	if !strings.Contains(tabs, `name === "wifi"`) || !strings.Contains(tabs, "current.ip") {
+		t.Error("tabs.js no longer gates the Wi-Fi face on the board having an address")
+	}
+	// And opening it asks for the cached table, not a fresh sweep of the air.
+	if !strings.Contains(tabs, "loadNetworks(false)") {
+		t.Error("tabs.js opens the Wi-Fi face with a forced rescan; the first read must take the board's cache")
+	}
+}
+
+// cardMarkup returns the article element whose id is wanted, or "" — enough of
+// the page to read one card's own attributes and controls without the whole
+// document's contents answering a question about one card.
+func cardMarkup(page, want string) string {
+	const open = `<article`
+	at := strings.Index(page, `id="`+want+`"`)
+	if at < 0 {
+		return ""
+	}
+	start := strings.LastIndex(page[:at], open)
+	end := strings.Index(page[at:], "</article>")
+	if start < 0 || end < 0 {
+		return ""
+	}
+	return page[start : at+end+len("</article>")]
+}
+
+// section reads one attribute's quoted value out of a fragment of markup.
+func section(fragment, attr string) string {
+	at := strings.Index(fragment, attr+`="`)
+	if at < 0 {
+		return ""
+	}
+	rest := fragment[at+len(attr)+2:]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
+}
+
 // The chip erase is gone from this page and stays gone: a blank S3 boot-loops,
 // flaps its port, and reads as a broken cable to everyone but a bench script.
 // The lonely write is the only end of orb life the manager page offers. The

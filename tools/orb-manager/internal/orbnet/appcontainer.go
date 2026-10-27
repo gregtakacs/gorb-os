@@ -167,7 +167,7 @@ type AppContainer struct {
 	// word, exposed so a host caller can slice the region out of a container it
 	// has already parsed. ParseApp refuses a range that runs past the file.
 	EditorOff uint32 `json:"editor_off"`
-	Bytes      int    `json:"bytes"`
+	Bytes     int    `json:"bytes"`
 }
 
 // HasThemes reports whether this app can hold a theme at all. That is the cap question,

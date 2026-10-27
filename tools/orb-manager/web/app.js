@@ -79,9 +79,10 @@ function show(view) {
 document.addEventListener("click", (e) => {
   const card = e.target.closest("[data-view]");
   if (card) {
-    // Intercept only a control naming a real in-page view. The Theme Editor link
-    // is a separate page: cancelling its navigation is the bug this guard exists
-    // for, so an unknown view name lets the click through untouched.
+    // Intercept only a control naming a real in-page view: cancelling the
+    // navigation of anything else is how a real link gets broken. The header once
+    // carried a global Theme Editor link here; D37 retired it, because the editor
+    // belongs to an app and opens inside the Themes pane, not beside the fleet.
     if (show(card.dataset.view)) e.preventDefault();
     return;
   }
@@ -2496,6 +2497,7 @@ async function loadThemes(ip) {
   state.textContent = "reading which apps on this orb can take themes\u2026";
   state.classList.add("spin-wait");
   list.innerHTML = "";
+  renderThemeEditRow("", false);   // a stale door from the last read edits the last card
   clearPreviewQueue();
   hideOverlay();
   ovRows.length = 0;
@@ -2531,6 +2533,7 @@ async function loadThemes(ip) {
     + (themeAppsErr ? " (" + themeAppsErr + ")" : "");
   for (const t of shown) list.appendChild(themeRow(t, state, d));
   if (!shown.length) themeEmptyPane(list, themeSub);
+  renderThemeEditRow(themeSub, shown.length > 0);
 }
 
 // themeEmptyPane is the empty state D37 exists for. Under the old face an app with
@@ -2550,13 +2553,36 @@ function themeEmptyPane(list, sub) {
       + (row.has_editor ? "" : " Its container ships no editor, so themes for it arrive as .orbtheme files.")
     : (slug ? "the card holds no themes for this app yet" : "the card holds no themes yet");
   list.appendChild(li);
-  if (!row || !row.has_editor || !row.editor_url) return;
+  const btn = themeEditButton(slug);
+  if (btn) list.appendChild(btn);
+}
+
+// themeEditButton builds the pane's per-app Edit door, or returns nothing when
+// this app cannot author. The button has always belonged to ONE app — D37's whole
+// point is that the editor rides inside the container and the hub is a loader —
+// so there is no global "Theme Editor" affordance to build here, and the header
+// that once carried one no longer does.
+function themeEditButton(sub) {
+  const slug = sub || (themeAppsRows.length === 1 ? themeAppsRows[0].slug : "");
+  const row = slug ? themeAppsRows.find((a) => a.slug === slug) : null;
+  if (!row || !row.has_editor || !row.editor_url) return null;
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "ghost";
   btn.textContent = "Edit " + themeAppTitle(slug) + " themes\u2026";
   btn.onclick = () => openThemeEditor(row);
-  list.appendChild(btn);
+  return btn;
+}
+
+// renderThemeEditRow keeps the toolbar door honest about what "no editor here"
+// means: no slot content at all, not a dead button. An app WITH themes still
+// edits — the empty pane is where a first theme gets authored, not the only
+// place editing happens.
+function renderThemeEditRow(sub, shownThemes) {
+  const slot = $("#mn-theme-editrow");
+  if (!slot) return;
+  slot.innerHTML = "";
+  if (shownThemes) slot.appendChild(themeEditButton(sub) || document.createTextNode(""));
 }
 
 // openThemeEditor shows one app's editor inside the Themes face (D37 §6.2). The

@@ -229,6 +229,29 @@ func TestAppsFaceReadsTheLedgerAndThemesIsItsOwnFace(t *testing.T) {
 	}
 }
 
+// The editor is app-owned (D37): it rides in the container, opens INSIDE the
+// Themes pane, and belongs to whichever app its region names. The header's old
+// global "Theme Editor" link is the shape this retires — it advertised a global
+// editor the system no longer has, and the first bench pass found the real per-app
+// door doubly broken: it only painted on an empty pane, and its URL named no board
+// so the loader route 400'd. Three pins, one per broken thing.
+func TestThemeEditorIsAppOwnedNotAGlobalLink(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	app := readAppJS(t)
+	if strings.Contains(page, `id="composer-link"`) {
+		t.Error("the header carries a global Theme Editor link again; the editor belongs to an app and opens in the Themes pane")
+	}
+	if !strings.Contains(page, `id="mn-theme-editrow"`) {
+		t.Error("the Themes pane lost its toolbar Edit slot, so an app that already has themes has no door to its editor")
+	}
+	if !strings.Contains(app, "function themeEditButton(") || !strings.Contains(app, "function renderThemeEditRow(") {
+		t.Error("the Themes pane's Edit door is back to living only inside the empty-pane branch")
+	}
+	if !strings.Contains(app, "renderThemeEditRow(themeSub, shown.length > 0)") {
+		t.Error("loadThemes never fills the toolbar Edit slot, so the door is only real on an empty card")
+	}
+}
+
 // A board rebooting mid-afternoon is the hub's own doing most of the time, and
 // the page has to survive it in the open. Live on 2026-10-26: the operator ran
 // a firmware update, the Orb face's zone fetch died against a dial that was

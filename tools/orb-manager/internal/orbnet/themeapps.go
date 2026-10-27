@@ -128,7 +128,10 @@ func (c *Client) ThemeAppsFor(ip string) (*ThemeApps, error) {
 			// A nonzero editor_crc is the device reporting a region it verified on the
 			// card, and that beats any hub-side table: the app carries its own editor, so
 			// the pane opens on the app's bytes and not on a hub copy that may be older
-			// than the app.
+			// than the app. The URL carries the dial's address because the hub's loader
+			// route is /editor/<ip>/<slug>/ — a path built from the slug alone names no
+			// board, and the first real click of the slice found exactly that: the pane
+			// asked, the route read "clock" as an address, and the editor never opened.
 			//
 			// A zero one does NOT take the pane away. "No region in this container" and
 			// "no editor anywhere for this app" are different answers, and the fallback
@@ -137,7 +140,7 @@ func (c *Client) ThemeAppsFor(ip string) (*ThemeApps, error) {
 			// system. A board at the tuple firmware with a genuinely regionless container
 			// answers zero, and editorFromRow's `answered` split keeps that case honest.
 			if ed, answered := editorFromRow(a); answered && ed {
-				ta.HasEditor, ta.EditorURL = true, "/editor/"+a.Slug+"/"
+				ta.HasEditor, ta.EditorURL = true, "/editor/"+ip+"/"+a.Slug+"/"
 			}
 			if c.Containers != nil {
 				if body, err := c.Containers(a.Slug); err == nil {

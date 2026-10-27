@@ -27,14 +27,19 @@ func hubIndexHTML(t *testing.T) string {
 	return string(raw)
 }
 
-func TestThemeEditorCardIsARealLink(t *testing.T) {
+// TestNoGlobalComposerLink is the inverted pin: D37 retired the header link, so a
+// resurrected one is the regression. The /composer route itself stays — it serves
+// the runtime files a container editor loads — but no hub page navigates to it.
+func TestNoGlobalComposerLink(t *testing.T) {
 	html := hubIndexHTML(t)
 	m := regexp.MustCompile(`(?s)<a\s[^>]*href="(/composer[^"]*)"[^>]*>`).FindString(html)
-	if m == "" {
-		t.Fatal("no card links to /composer: the Theme Editor is unreachable from the hub")
+	if m != "" {
+		t.Errorf("the hub page links to /composer again: the editor is app-owned and opens inside the Themes pane, not as a global page:\n%s", m)
 	}
-	if strings.Contains(m, "data-view") {
-		t.Errorf("composer card carries data-view; the click handler would cancel its navigation:\n%s", m)
+	for _, view := range regexp.MustCompile(`data-view="([^"]+)"`).FindAllStringSubmatch(html, -1) {
+		if view[1] == "composer" {
+			t.Error("a card carries data-view=composer; there is no composer view")
+		}
 	}
 }
 

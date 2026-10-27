@@ -11,7 +11,6 @@
   <h1>Orb Manager</h1>
   <div id="meta" class="meta">loading…</div>
   <nav>
-    <a id="composer-link" href="/composer/">Theme Editor</a>
     <button id="ad-open" class="ghost" title="Add an orb the hub cannot hear: type its address, and the hub adopts it only if an orb answers there.">Add by IP…</button>
     <button id="mn-add" class="primary" hidden title="A blank ESP32-S3 is on a cable: flash it and it becomes an orb.">+ New Orb</button>
   </nav>
@@ -226,6 +225,10 @@
     <ul id="mn-themes" class="themelist"></ul>
     <div class="row">
       <button id="mn-rescan" class="ghost" title="Re-read the SD card without rebooting">Re-read card</button>
+      <!-- D37 §6.2: the editor is app-specific, so its door lives in the Themes
+           pane beside the app it edits, never as a global control. loadThemes fills
+           this row with an Edit button when the app in context ships an editor. -->
+      <span id="mn-theme-editrow"></span>
     </div>
     <div class="row">
       <input type="file" id="mn-fw-file" accept=".orbtheme,application/octet-stream" hidden>

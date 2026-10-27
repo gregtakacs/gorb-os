@@ -246,9 +246,11 @@ func TestThemeAppsOpensTheContainersEditorWhenTheDeviceReportsOne(t *testing.T) 
 	if row == nil {
 		t.Fatal("theme-capable app missing from the enumeration")
 	}
-	if !row.HasEditor || row.EditorURL != "/editor/hue/" {
-		t.Errorf("an app reporting a region got has_editor=%v url=%q, want the container route",
-			row.HasEditor, row.EditorURL)
+	// The route names its board first — the loader is /editor/<ip>/<slug>/, and a
+	// URL without the address is how the first bench click got a 400.
+	if want := "/editor/" + ip + "/hue/"; !row.HasEditor || row.EditorURL != want {
+		t.Errorf("an app reporting a region got has_editor=%v url=%q, want the container route %q",
+			row.HasEditor, row.EditorURL, want)
 	}
 }
 
@@ -349,8 +351,11 @@ func TestThemeAppsReportsNoDriftForAMatchingStarter(t *testing.T) {
 	if !row.HasEditor {
 		t.Error("the Themes face hid an editor the starter container plainly carries")
 	}
-	if row.EditorURL == "" || row.EditorURL == "/composer/" {
-		t.Errorf("clock opened on %q; a device-reported region must win the hub-hosted alias", row.EditorURL)
+	// The pane must open on the DEVICE's bytes, and the loader route names its
+	// board first: /editor/<ip>/<slug>/. The first real click found a URL missing
+	// the address — the route read "clock" as an IP and refused — so pin the shape.
+	if want := "/editor/" + ip + "/clock/"; row.EditorURL != want {
+		t.Errorf("editor_url = %q, want the region route %q", row.EditorURL, want)
 	}
 }
 

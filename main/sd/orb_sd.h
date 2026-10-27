@@ -145,3 +145,74 @@ bool orb_sd_name_ok(const char *name);
  * bug this layer exists to prevent, and the pin costs one strcmp-free loop.
  */
 bool orb_sd_theme_path(char *out, size_t outsz, const char *name);
+
+/* ---- the file manager surface (v1.1.18) --------------------------------------
+ *
+ * The card has always been writable through doors that understand one artifact
+ * each — a theme container, an app blob. The file manager is the owner's own
+ * view of the volume: browse, upload, mkdir, delete, over ANY file, mirroring
+ * what the MTP share already gives a USB host. The safety model is unchanged,
+ * only widened to whole paths: every mutation is validated before it resolves,
+ * the device-owned directories stay device-owned, and the one card lock covers
+ * an operation the way orb_sd.h has always demanded.
+ *
+ * A "rel" path is card-root-relative, '/'-separated, with no leading or trailing
+ * '/'. The empty rel is the root itself — listable, never mutable.
+ */
+
+#define ORB_SD_FM_PATH_MAX   127   /* the rel string, NUL excluded */
+#define ORB_SD_FM_SEGS_MAX   8     /* nesting the manager may walk */
+#define ORB_SD_FM_LIST_MAX   128   /* entries one list call returns */
+#define ORB_SD_FM_RM_MAX     1000  /* entries one recursive rm may take */
+#define ORB_SD_FM_WRITE_MAX  (128u * 1024u * 1024u) /* declared-size gate */
+/* "The socket is mounted on nothing." esp_err.h has no no-media code, and
+ * inventing one in the app range is honest: it never crosses this boundary
+ * as anything but a value the door handler maps to its own sentence. */
+#define ORB_SD_FM_NO_CARD    ((esp_err_t)0x4101)
+
+typedef struct {
+    char name[65];   /* FATFS_MAX_LFN is 64 here; longer MTP-made names are
+                        truncated in the LISTING only — they still exist on the
+                        card, and deleting them from the dial was never offered
+                        anyway: a mutation name must pass orb_sd_name_ok */
+    uint32_t size;   /* bytes; 0 for directories, which FATFS does not size */
+    bool dir;
+} orb_sd_fm_ent_t;
+
+/** Validate `rel` and build the absolute "/sd/..." path into out.
+ *  For MUTATIONS (read_only=false) every segment must pass orb_sd_name_ok and
+ *  the first segment may not be a device-owned directory ("apps", "themes").
+ *  For READS (read_only=true) segments only need to be printable, dot-safe and
+ *  length-safe — the listing shows whatever a USB host put on the card,
+ *  including names this device itself would refuse to write.
+ *  Returns false and writes nothing when the path is refused. */
+bool orb_sd_fm_path(char *out, size_t outsz, const char *rel, bool read_only);
+
+/** List one directory. Fills ents up to max, sets *n and *truncated.
+ *  ORB_SD_FM_NO_CARD unmounted; ESP_ERR_NOT_FOUND no such directory;
+ *  ESP_ERR_INVALID_STATE the USB host owns the card right now. */
+esp_err_t orb_sd_fm_list(const char *rel, orb_sd_fm_ent_t *ents, int max,
+                        int *n, bool *truncated);
+
+/** Create the directory (and any missing parents). Already existing as a
+ *  directory is ESP_OK — mkdir is an intention, not a diff. A file standing on
+ *  the way is ESP_ERR_INVALID_STATE. */
+esp_err_t orb_sd_fm_mkdir(const char *rel);
+
+/** Delete one file, or one directory tree when recursive. Directories that are
+ *  not empty refuse without `recursive` (ESP_ERR_DIR_NOT_EMPTY is not an IDF
+ *  code; the answer is ESP_ERR_INVALID_STATE). Caps at ORB_SD_FM_RM_MAX entries
+ *  taken, refusing the whole operation, not part of it, when the tree is bigger. */
+esp_err_t orb_sd_fm_rm(const char *rel, bool recursive, int *removed_out);
+
+/** Write `rel` from a stream of chunks (the httpd task feeds bytes as they
+ *  arrive). open checks the mount, the path, the free space and the overwrite
+ *  word; data is a pure append under the lock open took; close(COMMIT=false)
+ *  unlinks a partial file — but only if commit was never attempted, because
+ *  after close(true) unlinks the target, there is nothing to cancel.
+ *  A truncated upload leaves a short file the owner can see and delete; the
+ *  card has no journal, and a manager that pretended otherwise would be the
+ *  second thing on this device to lie about FATFS. */
+esp_err_t orb_sd_fm_write_open(const char *rel, bool overwrite, size_t declared, void **h);
+esp_err_t orb_sd_fm_write_data(void *h, const char *buf, size_t len);
+esp_err_t orb_sd_fm_write_close(void *h, bool commit);

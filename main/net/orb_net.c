@@ -3922,6 +3922,70 @@ static esp_err_t h_reprov(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"state\":\"rebooting\",\"into\":\"provisioning\"}");
 }
 
+static bool q_param(httpd_req_t *req, const char *key, char *out, size_t outsz);
+
+/* POST /api/v1/factory?confirm=ALL — the network twin of the serial `RESET ALL`
+ * verb, for the one shape the serial door cannot reach: a board on a wall with
+ * no cable at it. It runs the same net_factory_reset() and the same
+ * orb_app_install_factory_rearm(), so "reset the settings, not the flash" means
+ * here exactly what it means on the console: credentials, tz, name, mode, grants
+ * and enable words go; the apps partition, the theme slot, and everything on the
+ * card stay. The board comes back unconfigured — a factory-boot SoftAP named
+ * "The Orb" — so this is the one LAN verb that can make the caller's own orb
+ * unreachable, which is why it demands the same literal ALL the serial door
+ * refuses anything else for, and why a hub must show a typed confirmation
+ * before it ever sends it.
+ *
+ * Like the serial branch, a partial wipe still reboots: one namespace erased and
+ * one intact is neither configured nor clean, and only the next boot re-derives
+ * every RAM mirror from what survived. The body says which case happened. */
+static void factory_timer_cb(void *arg)
+{
+    (void)arg;
+    esp_restart();
+}
+
+static esp_err_t h_factory(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    char confirm[8] = "";
+    if (!q_param(req, "confirm", confirm, sizeof confirm) ||
+        strcmp(confirm, "ALL") != 0) {
+        ESP_LOGW(TAG, "factory: refused (say confirm=ALL to erase)");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"confirm must be ALL\"}");
+    }
+
+    const esp_err_t reset_e = net_factory_reset();
+    if (reset_e != ESP_OK)
+        ESP_LOGE(TAG, "factory: incomplete (%s) — rebooting anyway", esp_err_to_name(reset_e));
+    orb_app_install_factory_rearm();
+    ESP_LOGI(TAG, "%s", reset_e == ESP_OK ? "RESET-ACK rebooting unconfigured"
+                                          : "RESET-PART rebooting unconfigured");
+    orb_svc_note_clean_reboot();
+
+    static esp_timer_handle_t s_factory_timer;
+    if (!s_factory_timer) {
+        const esp_timer_create_args_t ta = { .callback = factory_timer_cb };
+        if (esp_timer_create(&ta, &s_factory_timer) != ESP_OK) {
+            ESP_LOGE(TAG, "factory: could not create reboot timer");
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            return httpd_resp_sendstr(req, "{\"error\":\"reboot timer\"}");
+        }
+    }
+    if (esp_timer_start_once(s_factory_timer, 750 * 1000) != ESP_OK) {
+        ESP_LOGE(TAG, "factory: could not arm reboot timer");
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"reboot schedule\"}");
+    }
+    ESP_LOGW(TAG, "factory: settings wiped, rebooting unconfigured in 750 ms");
+    return httpd_resp_sendstr(req,
+        reset_e == ESP_OK ? "{\"state\":\"reset\",\"wipe\":\"ok\",\"reboot_in_ms\":750}"
+                          : "{\"state\":\"reset\",\"wipe\":\"partial\",\"reboot_in_ms\":750}");
+}
+
 
 /* Landing page for the first-boot SoftAP, when there is no PWA loaded yet (the
  * `www` partition is Phase 4). This is the whole provisioning UX, so it has to
@@ -4973,6 +5037,7 @@ static const char *door_http_status(esp_err_t e)
         case ESP_ERR_INVALID_ARG:     return "400 Bad Request";
         case ESP_ERR_NOT_SUPPORTED:   return "400 Bad Request";
         case ESP_ERR_INVALID_STATE:   return "409 Conflict";
+        case ESP_ERR_INVALID_SIZE:    return "400 Bad Request"; /* v1.1.18's rm: a tree over ORB_SD_FM_RM_MAX is a too-big request, not a server fault */
         default:                      return "500 Internal Server Error";
     }
 }
@@ -5088,8 +5153,228 @@ static esp_err_t h_app_uninstall(httpd_req_t *req)
     return httpd_resp_sendstr(req, b);
 }
 
-/* POST /api/v1/sd/app[?overwrite=1], body = the .orbapp bytes.
+/* ---- v1.1.18's file manager doors: /api/v1/sd/ls, /mkdir, /rm, /write ---------
+ * The owner's own view of the card, path-based, over everything the theme and
+ * app doors understood one artifact at a time. orb_sd.c holds every rule (path
+ * shape, dot entries, the device-owned directories, the card lock); these four
+ * handlers translate query to call and esp_err to HTTP, adding nothing of their
+ * own. They are deliberately NOT folded into the theme doors: /themes and /apps
+ * answer "what may the dial run or wear"; /sd/ls answers "what is on my card",
+ * and a merge would put browser paths where the stores take validated ids.
+ */
+static esp_err_t h_sd_ls(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
+    char rel[ORB_SD_FM_PATH_MAX + 8] = "";
+    q_param(req, "path", rel, sizeof rel);          /* absent = the root */
+    char abs[ORB_SD_FM_PATH_MAX + 32];
+    if (!orb_sd_fm_path(abs, sizeof abs, rel, true)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"bad path\"}");
+    }
+
+    /* The entry block is PSRAM static, on h_apps_list's argument: the httpd
+     * task's 8 kB stack is spoken for, and 128 entries weigh 9 kB. */
+    static orb_sd_fm_ent_t *ents;
+    if (!ents)
+        ents = heap_caps_malloc(ORB_SD_FM_LIST_MAX * sizeof *ents,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!ents) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"out of memory\"}");
+    }
+    int n = 0;
+    bool trunc = false;
+    const esp_err_t e = orb_sd_fm_list(rel, ents, ORB_SD_FM_LIST_MAX, &n, &trunc);
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, e == ORB_SD_FM_NO_CARD ? "503 Service Unavailable"
+                                      : e == ESP_ERR_NOT_FOUND ? "404 Not Found"
+                                      : e == ESP_ERR_INVALID_STATE ? "409 Conflict"
+                                      : "500 Internal Server Error");
+        return httpd_resp_sendstr(req, e == ORB_SD_FM_NO_CARD
+            ? "{\"error\":\"no card\"}"
+            : e == ESP_ERR_INVALID_STATE ? "{\"error\":\"the card is with the host\"}"
+            : e == ESP_ERR_NOT_FOUND ? "{\"error\":\"no such directory\"}"
+            : "{\"error\":\"the card refused the read\"}");
+    }
+
+    /* One array, dirs and files together — the manager sorts, the device
+     * streams. Rows are sent as they are escaped (h_apps_list's legs), so no
+     * scratch holds the whole listing. */
+    esp_err_t out = httpd_resp_send_chunk(req, "{\"path\":\"", 9);
+    if (out == ESP_OK) {
+        char esc[ORB_SD_FM_PATH_MAX * 2 + 8];
+        json_put(esc, sizeof esc, rel);
+        out = httpd_resp_sendstr(req, esc);
+    }
+    if (out == ESP_OK) out = httpd_resp_sendstr(req, "\",\"entries\":[");
+    for (int i = 0; i < n && out == ESP_OK; i++) {
+        char esc[160], row[224];
+        json_put(esc, sizeof esc, ents[i].name);
+        const int rn = snprintf(row, sizeof row,
+            "%s{\"name\":\"%s\",\"size\":%" PRIu32 ",\"dir\":%s}",
+            i ? "," : "", esc, ents[i].size, ents[i].dir ? "true" : "false");
+        if (rn > 0 && rn < (int)sizeof row)
+            out = httpd_resp_send_chunk(req, row, (size_t)rn);
+    }
+    if (out == ESP_OK)
+        out = httpd_resp_sendstr(req, trunc ? "],\"truncated\":true}" : "],\"truncated\":false}");
+    httpd_resp_set_status(req, out == ESP_OK ? "200 OK" : "500 Internal Server Error");
+    return out;
+}
+
+/* Shared by the mkdir and rm doors: the ?path= every mutation takes, or a 400
+ * already sent. Returns NULL when the caller must stop. */
+static const char *fm_query_path(httpd_req_t *req, char *buf, size_t bufsz)
+{
+    buf[0] = '\0';
+    if (!q_param(req, "path", buf, bufsz) || buf[0] == '\0') {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"error\":\"path is missing\"}");
+        return NULL;
+    }
+    return buf;
+}
+
+/* POST /api/v1/sd/mkdir?path=REL — creates the directory and any missing
+ * parents: the manager's "new folder" is a whole intention, and a half-built
+ * tree is not an option it should have. */
+static esp_err_t h_sd_mkdir(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char rel[ORB_SD_FM_PATH_MAX + 8];
+    if (!fm_query_path(req, rel, sizeof rel)) return ESP_OK;
+    const esp_err_t e = orb_sd_fm_mkdir(rel);
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, e == ORB_SD_FM_NO_CARD ? "503 Service Unavailable"
+                                                          : door_http_status(e));
+        return httpd_resp_sendstr(req,
+            e == ORB_SD_FM_NO_CARD ? "{\"error\":\"no card\"}"
+          : e == ESP_ERR_INVALID_ARG ? "{\"error\":\"bad path\"}"
+          : e == ESP_ERR_INVALID_STATE ? "{\"error\":\"a file is in the way\"}"
+          : "{\"error\":\"the card refused the mkdir\"}");
+    }
+    char esc[ORB_SD_FM_PATH_MAX * 2 + 8];
+    json_put(esc, sizeof esc, rel);
+    char b[sizeof esc + 40];
+    const int bn = snprintf(b, sizeof b, "{\"state\":\"created\",\"path\":\"%s\"}", esc);
+    return httpd_resp_sendstr(req, bn > 0 ? b : "{\"error\":\"bad path\"}");
+}
+
+/* POST /api/v1/sd/rm?path=REL[&recursive=1] — one file, or one tree with the
+ * word. A non-empty directory refuses without it, and the 409 sentence says so:
+ * that asymmetry is the reason the UI asks twice before it sends this. */
+static esp_err_t h_sd_rm(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char rel[ORB_SD_FM_PATH_MAX + 8], r[4] = "";
+    if (!fm_query_path(req, rel, sizeof rel)) return ESP_OK;
+    const bool rec = q_param(req, "recursive", r, sizeof r) && strcmp(r, "1") == 0;
+    int removed = 0;
+    const esp_err_t e = orb_sd_fm_rm(rel, rec, &removed);
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, e == ORB_SD_FM_NO_CARD ? "503 Service Unavailable"
+                                                          : door_http_status(e));
+        return httpd_resp_sendstr(req,
+            e == ORB_SD_FM_NO_CARD ? "{\"error\":\"no card\"}"
+          : e == ESP_ERR_INVALID_ARG ? "{\"error\":\"bad path\"}"
+          : e == ESP_ERR_INVALID_SIZE ? "{\"error\":\"that tree is bigger than one rm may take\"}"
+          : e == ESP_ERR_INVALID_STATE ? "{\"error\":\"not empty — pass recursive to take the contents too\"}"
+          : "{\"error\":\"the card refused the delete\"}");
+    }
+    char esc[ORB_SD_FM_PATH_MAX * 2 + 8];
+    json_put(esc, sizeof esc, rel);
+    char b[sizeof esc + 64];
+    const int bn = snprintf(b, sizeof b,
+                            "{\"state\":\"deleted\",\"path\":\"%s\",\"removed\":%d}", esc, removed);
+    return httpd_resp_sendstr(req, bn > 0 ? b : "{\"error\":\"bad path\"}");
+}
+
+/* POST /api/v1/sd/write?path=REL[&overwrite=1], body = the file's bytes.
+ * The upload twin of h_app_upload, for a file the device has no idea what to
+ * do with: no container is parsed, nothing is queued to flash, the bytes just
+ * land on the card. Same shape for the same reasons — refuse a declared size
+ * over the cap before reading a byte, map a failed recv to a deleted partial,
+ * keep the receive buffer static. Anything above 128 MB belongs on the card
+ * over USB, where the host owns the volume anyway. */
+static esp_err_t h_sd_write(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char rel[ORB_SD_FM_PATH_MAX + 8], ow[4] = "";
+    if (!fm_query_path(req, rel, sizeof rel)) return ESP_OK;
+    const bool over = q_param(req, "overwrite", ow, sizeof ow) && strcmp(ow, "1") == 0;
+
+    const int clen = (int)req->content_len;
+    if (clen <= 0 || clen > (int)ORB_SD_FM_WRITE_MAX) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        char b[80];
+        snprintf(b, sizeof b, "{\"error\":\"too large\",\"max\":%u}",
+                 (unsigned)ORB_SD_FM_WRITE_MAX);
+        return httpd_resp_sendstr(req, b);
+    }
+
+    void *w = NULL;
+    esp_err_t e = orb_sd_fm_write_open(rel, over, (size_t)clen, &w);
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req,
+            e == ESP_ERR_NO_MEM ? "507 Insufficient Storage"
+          : e == ESP_ERR_INVALID_STATE ? "409 Conflict"
+          : e == ESP_ERR_NOT_FOUND ? "404 Not Found"
+          : e == ESP_ERR_INVALID_SIZE ? "413 Payload Too Large"
+          : "400 Bad Request");
+        return httpd_resp_sendstr(req,
+            e == ESP_ERR_NO_MEM ? "{\"error\":\"the card has no room for that\"}"
+          : e == ESP_ERR_INVALID_STATE ? "{\"error\":\"it exists — pass overwrite to replace it\"}"
+          : e == ESP_ERR_NOT_FOUND ? "{\"error\":\"a parent directory is missing\"}"
+          : e == ESP_ERR_INVALID_SIZE ? "{\"error\":\"too large\"}"
+          : "{\"error\":\"bad path\"}");
+    }
+
+    static char fm_rx[4096];                     /* h_app_upload's rx, one per door */
+    int got = 0;
+    while (got < clen) {
+        const int room = clen - got;
+        const int r = httpd_req_recv(req, fm_rx,
+                                    (size_t)(room < (int)sizeof fm_rx ? room : (int)sizeof fm_rx));
+        if (r <= 0) {
+            orb_sd_fm_write_close(w, false);      /* no corpse behind, same rule */
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"upload aborted by client\"}");
+        }
+        const esp_err_t de = orb_sd_fm_write_data(w, fm_rx, (size_t)r);
+        if (de != ESP_OK) {
+            orb_sd_fm_write_close(w, false);
+            httpd_resp_set_status(req, de == ESP_ERR_INVALID_SIZE ? "413 Payload Too Large"
+                                          : de == ESP_ERR_NO_MEM ? "507 Insufficient Storage"
+                                          : "500 Internal Server Error");
+            return httpd_resp_sendstr(req, de == ESP_ERR_INVALID_SIZE
+                ? "{\"error\":\"body outgrew the declared size\"}"
+                : de == ESP_ERR_NO_MEM ? "{\"error\":\"the card filled up\"}"
+                : "{\"error\":\"the card refused the write\"}");
+        }
+        got += r;
+    }
+    e = orb_sd_fm_write_close(w, true);
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"the card refused the closing flush\"}");
+    }
+    char esc[ORB_SD_FM_PATH_MAX * 2 + 8];
+    json_put(esc, sizeof esc, rel);
+    char b[sizeof esc + 64];
+    const int bn = snprintf(b, sizeof b,
+                            "{\"state\":\"written\",\"path\":\"%s\",\"bytes\":%d}", esc, got);
+    return httpd_resp_sendstr(req, bn > 0 ? b : "{\"error\":\"bad path\"}");
+}
+
+
+
+/* POST /api/v1/sd/app[?overwrite=1], body = the .orbapp bytes.
  * The apps twin of h_theme_upload, and the missing first step of the card ladder:
  * the owner's card socket is unreachable from the laptop that baked the file, and
  * the /apps install button can only act on a container already in /sd/apps. This
@@ -6205,8 +6490,12 @@ static esp_err_t net_start_httpd(void)
      * the same reason: its only purpose is looking at the device. Textual count 36,
      * gated-off count 33 — and note the textual count now equals the cap exactly, so
      * the next door has to raise cfg.max_uri_handlers in the same change that adds
-     * the table entry, or it registers nothing and logs the line below doing it. */
-    cfg.max_uri_handlers  = 40;
+     * the table entry, or it registers nothing and logs the line below doing it.
+     * v1.1.18 took up that offer: /api/v1/factory and the file manager's four doors
+     * (ls, mkdir, rm, write) bring the textual count to 41 and the gated-off count
+     * to 38, so the ceiling moves to 48 — the same one-quiet-404-away reasoning,
+     * re-checked by host_tz_test.py's textual table count rather than by this. */
+    cfg.max_uri_handlers  = 48;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
      * FAT with their own buffers, and the OTA chunk and upload receive buffers are
@@ -6335,6 +6624,18 @@ static esp_err_t net_start_httpd(void)
          * that reboots a wall clock already needs the arm/disarm care plan 5.1 decision
          * 1 pins for /api/v1/menu. */
         { .uri = "/api/v1/reprov",  .method = HTTP_POST, .handler = h_reprov },
+        /* The LAN twin of serial RESET ALL: settings to factory, flash and card
+         * untouched. Separated from net_factory_reset's serial caller on purpose —
+         * a caller has to be able to say "forget my Wi-Fi" (reprov) without
+         * saying "forget everything" (factory). */
+        { .uri = "/api/v1/factory", .method = HTTP_POST, .handler = h_factory },
+        /* v1.1.18's file manager: one read door, three mutations. /ls answers
+         * "what is on my card" for the whole volume; the mutations keep the
+         * device-owned directories behind their own doors (orb_sd_fm_path). */
+        { .uri = "/api/v1/sd/ls",     .method = HTTP_GET,  .handler = h_sd_ls },
+        { .uri = "/api/v1/sd/mkdir",  .method = HTTP_POST, .handler = h_sd_mkdir },
+        { .uri = "/api/v1/sd/rm",     .method = HTTP_POST, .handler = h_sd_rm },
+        { .uri = "/api/v1/sd/write",  .method = HTTP_POST, .handler = h_sd_write },
 #if CONFIG_ORB_DEBUG_HTTP
         { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },
         { .uri = "/api/v1/fb",         .method = HTTP_GET,  .handler = h_fb },

@@ -587,6 +587,323 @@ bool orb_sd_theme_path(char *out, size_t outsz, const char *name)
     return true;
 }
 
+/* ---- the file manager surface (v1.1.18) --------------------------------------
+ *
+ * VFS stdio, not ff.h directly: the volume is already esp_vfs_fat-registered at
+ * /sd, and orb_sd.h's one-lock-per-operation rule applies here per chunk the
+ * way the app-upload door does it — a lock held across a 100 MB radio transfer
+ * would starve the theme store and the dial's own card reads, while a lock
+ * around each fwrite serializes exactly what FatFs is not reentrant about.
+ */
+#include <dirent.h>
+#include <unistd.h>
+
+/* Read-side segment rule: an MTP host may have written spaces and odd but
+ * legal FAT names, and the listing must show them. Printable ASCII, no leading
+ * dot (the same hidden-entry rule the mutations and orb_files.c already keep —
+ * a file the device will not name cannot be half-reachable by browsing it), and
+ * none of the characters FAT itself forbids, which readdir can still hand back
+ * from a corrupted directory. Length capped at the read name, 64. */
+static bool fm_seg_ok_read(const char *seg, size_t sl)
+{
+    if (sl == 0 || sl > 64 || seg[0] == '.') return false;
+    for (size_t i = 0; i < sl; i++) {
+        const char c = seg[i];
+        if (c < 0x20 || c > 0x7E) return false;
+        if (c == '\\' || c == ':' || c == '*' || c == '?' ||
+            c == '"' || c == '<' || c == '>' || c == '|') return false;
+    }
+    return true;
+}
+
+bool orb_sd_fm_path(char *out, size_t outsz, const char *rel, bool read_only)
+{
+    if (out == NULL || outsz == 0 || rel == NULL) return false;
+    const size_t len = strlen(rel);
+    if (len > ORB_SD_FM_PATH_MAX) return false;
+    if (len && (rel[0] == '/' || rel[len - 1] == '/' || strstr(rel, "//")))
+        return false;                       /* traversal escapes live here */
+
+    char tmp[ORB_SD_FM_PATH_MAX + 1];
+    memcpy(tmp, rel, len + 1);
+    int segs = 0;
+    for (char *s = tmp; s && *s; ) {
+        char *e = strchr(s, '/');
+        const size_t sl = e ? (size_t)(e - s) : strlen(s);
+        const char save = s[sl];
+        s[sl] = '\0';
+        if (!(read_only ? fm_seg_ok_read(s, sl) : orb_sd_name_ok(s)))
+            return false;                   /* tmp is dead either way */
+        if (++segs > ORB_SD_FM_SEGS_MAX) return false;
+        if (segs == 1 && !read_only &&
+            ((sl == 4 && memcmp(s, "apps", 4) == 0) ||
+             (sl == 6 && memcmp(s, "themes", 6) == 0)))
+            return false;                   /* the stores keep their own doors */
+        if (!e) break;
+        s[sl] = save;
+        s = e + 1;
+    }
+    const int n = rel[0] ? snprintf(out, outsz, ORB_SD_BASE "/%s", rel)
+                         : snprintf(out, outsz, ORB_SD_BASE);
+    if (n < 0 || (size_t)n >= outsz) { out[0] = '\0'; return false; }
+    return true;
+}
+
+/* stat one child of an absolute dir, for list and rm-walk alike. */
+static bool fm_child_stat(const char *abs_parent, const char *name, struct stat *st)
+{
+    char child[ORB_SD_FM_PATH_MAX + 96];
+    if (snprintf(child, sizeof child, "%s/%s", abs_parent, name) >= (int)sizeof child)
+        return false;
+    return stat(child, st) == 0;
+}
+
+esp_err_t orb_sd_fm_list(const char *rel, orb_sd_fm_ent_t *ents, int max,
+                        int *n, bool *truncated)
+{
+    if (n) *n = 0;
+    if (truncated) *truncated = false;
+    if (ents == NULL || max <= 0) return ESP_ERR_INVALID_ARG;
+    char abs[ORB_SD_FM_PATH_MAX + 32];
+    if (!orb_sd_fm_path(abs, sizeof abs, rel ? rel : "", true))
+        return ESP_ERR_INVALID_ARG;
+    const esp_err_t me = orb_sd_ensure_mounted();
+    if (me != ESP_OK) return me;            /* ORB_SD_FM_NO_CARD until a card answers */
+    if (orb_sd_usb_owned()) return ESP_ERR_INVALID_STATE;
+
+    orb_sd_lock();
+    DIR *d = opendir(abs);
+    if (!d) {
+        orb_sd_unlock();
+        return errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    }
+    int cnt = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        if (cnt == max) { if (truncated) *truncated = true; break; }
+        struct stat st;
+        if (!fm_child_stat(abs, de->d_name, &st)) continue;   /* vanished mid-list */
+        orb_sd_fm_ent_t *en = &ents[cnt++];
+        size_t nl = strlen(de->d_name);
+        if (nl >= sizeof en->name) nl = sizeof en->name - 1;  /* header says so */
+        memcpy(en->name, de->d_name, nl);
+        en->name[nl] = '\0';
+        en->dir  = S_ISDIR(st.st_mode);
+        en->size = en->dir ? 0 : (uint32_t)st.st_size;
+    }
+    closedir(d);
+    orb_sd_unlock();
+    if (n) *n = cnt;
+    return ESP_OK;
+}
+
+esp_err_t orb_sd_fm_mkdir(const char *rel)
+{
+    if (rel == NULL || rel[0] == '\0') return ESP_ERR_INVALID_ARG;  /* root exists */
+    char abs[ORB_SD_FM_PATH_MAX + 32];
+    if (!orb_sd_fm_path(abs, sizeof abs, rel, false)) return ESP_ERR_INVALID_ARG;
+    const esp_err_t me = orb_sd_ensure_mounted();
+    if (me != ESP_OK) return me;
+    if (orb_sd_usb_owned()) return ESP_ERR_INVALID_STATE;
+
+    orb_sd_lock();
+    esp_err_t e = ESP_OK;
+    char walk[ORB_SD_FM_PATH_MAX + 32];
+    int wlen = snprintf(walk, sizeof walk, ORB_SD_BASE);
+    char tmp[ORB_SD_FM_PATH_MAX + 1];
+    memcpy(tmp, rel, strlen(rel) + 1);
+    for (char *s = tmp, *nx; s && *s; ) {   /* the body owns the advance */
+        nx = strchr(s, '/');
+        const size_t sl = nx ? (size_t)(nx - s) : strlen(s);
+        const char save = s[sl]; s[sl] = '\0';
+        wlen += snprintf(walk + wlen, sizeof walk - (size_t)wlen, "/%s", s);
+        s[sl] = save;
+        if (wlen >= (int)sizeof walk) { e = ESP_ERR_INVALID_SIZE; break; }
+        if (mkdir(walk, 0755) == 0) { if (nx) { s = nx + 1; continue; } break; }
+        if (errno == EEXIST) {
+            struct stat st;
+            if (stat(walk, &st) == 0 && S_ISDIR(st.st_mode)) {
+                if (nx) { s = nx + 1; continue; }
+                break;                      /* the intention already holds */
+            }
+            e = ESP_ERR_INVALID_STATE;      /* a file stands on the way */
+            break;
+        }
+        e = errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+        break;
+    }
+    orb_sd_unlock();
+    return e;
+}
+
+/* One pass over a tree. The dry run counts and proves every directory opens:
+ * a tree that cannot be fully WALKED cannot be fully DELETED, and the dry run
+ * is what makes the refusal come before the first unlink instead of mid-way.
+ * The real run unlinks bottom-up and the caller rmdirs the top node last.
+ * *count accumulates every entry taken, files and directories alike. */
+static esp_err_t fm_rm_tree(const char *abs, int *count, bool dry)
+{
+    DIR *d = opendir(abs);
+    if (!d) return errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    struct dirent *de;
+    char child[ORB_SD_FM_PATH_MAX + 96];
+    esp_err_t e = ESP_OK;
+    while ((de = readdir(d)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        if (snprintf(child, sizeof child, "%s/%s", abs, de->d_name) >= (int)sizeof child) {
+            e = ESP_ERR_INVALID_SIZE; break;
+        }
+        struct stat st;
+        if (stat(child, &st) != 0) continue;            /* vanished: nothing to do */
+        if (S_ISDIR(st.st_mode)) {
+            e = fm_rm_tree(child, count, dry);
+            if (e == ESP_OK && !dry)
+                e = (rmdir(child) == 0) ? ESP_OK
+                  : (errno == ENOTEMPTY ? ESP_ERR_INVALID_STATE : ESP_FAIL);
+            if (e == ESP_OK && ++*count > ORB_SD_FM_RM_MAX)   /* the emptied dir too */
+                e = ESP_ERR_INVALID_SIZE;
+        } else {
+            if (++*count > ORB_SD_FM_RM_MAX) e = ESP_ERR_INVALID_SIZE;
+            else if (!dry && remove(child) != 0)
+                e = (errno == EACCES || errno == EPERM) ? ESP_ERR_INVALID_STATE : ESP_FAIL;
+        }
+        if (e != ESP_OK) break;
+    }
+    closedir(d);
+    return e;
+}
+
+esp_err_t orb_sd_fm_rm(const char *rel, bool recursive, int *removed_out)
+{
+    if (removed_out) *removed_out = 0;
+    if (rel == NULL || rel[0] == '\0') return ESP_ERR_INVALID_ARG;  /* never the root */
+    char abs[ORB_SD_FM_PATH_MAX + 32];
+    if (!orb_sd_fm_path(abs, sizeof abs, rel, false)) return ESP_ERR_INVALID_ARG;
+    const esp_err_t me = orb_sd_ensure_mounted();
+    if (me != ESP_OK) return me;
+    if (orb_sd_usb_owned()) return ESP_ERR_INVALID_STATE;
+
+    orb_sd_lock();
+    struct stat st;
+    esp_err_t e = ESP_OK;
+    if (stat(abs, &st) != 0) {
+        e = errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    } else if (S_ISDIR(st.st_mode) && !recursive) {
+        /* Empty is deletable, and "pass recursive to be safe" is a lie the first
+         * time an MTP guest leaves a dotfile behind: probe instead. */
+        DIR *d = opendir(abs);
+        int seen = 0;
+        if (d) {
+            struct dirent *de;
+            while ((de = readdir(d)) != NULL)
+                if (de->d_name[0] != '.') { seen++; break; }
+            closedir(d);
+        }
+        e = seen ? ESP_ERR_INVALID_STATE : (rmdir(abs) == 0 ? ESP_OK : ESP_FAIL);
+        if (e == ESP_OK && removed_out) *removed_out = 1;
+    } else if (S_ISDIR(st.st_mode)) {
+        int count = 1;                                  /* the top node counts */
+        e = fm_rm_tree(abs, &count, true);              /* dry: whole tree first */
+        if (e == ESP_OK) {
+            int real = 1;
+            e = fm_rm_tree(abs, &real, false);
+            if (e == ESP_OK && rmdir(abs) == 0) {
+                if (removed_out) *removed_out = real;
+            } else if (e == ESP_OK) {
+                e = errno == ENOTEMPTY ? ESP_ERR_INVALID_STATE : ESP_FAIL;
+            }
+        }
+    } else {
+        e = (remove(abs) == 0) ? ESP_OK
+          : (errno == EACCES || errno == EPERM) ? ESP_ERR_INVALID_STATE : ESP_FAIL;
+        if (e == ESP_OK && removed_out) *removed_out = 1;
+    }
+    orb_sd_unlock();
+    return e;
+}
+
+/* --- streaming write ----------------------------------------------------------
+ * The session holds no lock between chunks (the section comment above says why);
+ * overwrite=false is a polite-not-airtight rule on a volume an MTP host can
+ * write too, exactly as it is on every other door this device has.
+ */
+typedef struct {
+    FILE *f;
+    char path[ORB_SD_FM_PATH_MAX + 32];
+    size_t written, cap;
+} fm_write_t;
+
+esp_err_t orb_sd_fm_write_open(const char *rel, bool overwrite, size_t declared, void **h)
+{
+    if (h) *h = NULL;
+    if (rel == NULL || rel[0] == '\0' || declared == 0) return ESP_ERR_INVALID_ARG;
+    if (declared > (size_t)ORB_SD_FM_WRITE_MAX) return ESP_ERR_INVALID_SIZE;
+    char abs[ORB_SD_FM_PATH_MAX + 32];
+    if (!orb_sd_fm_path(abs, sizeof abs, rel, false)) return ESP_ERR_INVALID_ARG;
+    const esp_err_t me = orb_sd_ensure_mounted();
+    if (me != ESP_OK) return me;
+    if (orb_sd_usb_owned()) return ESP_ERR_INVALID_STATE;
+
+    orb_sd_lock();
+    struct stat st;
+    esp_err_t e = ESP_OK;
+    if (!overwrite && stat(abs, &st) == 0) e = ESP_ERR_INVALID_STATE;
+    uint64_t total = 0, freeb = 0;
+    orb_sd_space(&total, &freeb);
+    if (e == ESP_OK && declared + (1u << 20) > freeb) e = ESP_ERR_NO_MEM;
+    fm_write_t *w = NULL;
+    FILE *f = NULL;
+    if (e == ESP_OK) {
+        w = malloc(sizeof *w);
+        f = w ? fopen(abs, "wb") : NULL;
+        if (!f) {
+            e = (errno == EACCES || errno == EPERM) ? ESP_ERR_INVALID_STATE
+              : errno == ENOENT ? ESP_ERR_NOT_FOUND     /* a parent is missing */
+              : errno == ENOSPC ? ESP_ERR_NO_MEM : ESP_FAIL;
+            free(w); w = NULL;
+        }
+    }
+    orb_sd_unlock();
+    if (e != ESP_OK) return e;
+    snprintf(w->path, sizeof w->path, "%s", abs);
+    w->f = f; w->written = 0; w->cap = declared;
+    *h = w;
+    return ESP_OK;
+}
+
+esp_err_t orb_sd_fm_write_data(void *h, const char *buf, size_t len)
+{
+    fm_write_t *w = h;
+    if (!w || !w->f || !buf) return ESP_ERR_INVALID_ARG;
+    if (w->written + len > w->cap) return ESP_ERR_INVALID_SIZE;
+    orb_sd_lock();
+    const size_t put = fwrite(buf, 1, len, w->f);
+    orb_sd_unlock();
+    w->written += put;                      /* honest partial for the report */
+    if (put != len) return ferror(w->f) ? ESP_FAIL : ESP_ERR_NO_MEM;
+    return ESP_OK;
+}
+
+esp_err_t orb_sd_fm_write_close(void *h, bool commit)
+{
+    fm_write_t *w = h;
+    if (!w) return ESP_ERR_INVALID_ARG;
+    esp_err_t e = ESP_OK;
+    if (w->f) {
+        orb_sd_lock();
+        const int r = fclose(w->f);
+        if (!commit) remove(w->path);       /* cancel deletes what it was writing */
+        orb_sd_unlock();
+        if (r != 0 && commit) e = ESP_FAIL;
+    }
+    free(w);
+    return e;
+}
+
+
+
+
 #else  /* !CONFIG_ORB_SD_ENABLE */
 
 /* Stubs, so main.c and orb_net.c carry no #ifs of their own and so that
@@ -616,6 +933,41 @@ void      orb_sd_space(uint64_t *t, uint64_t *f) { if (t) *t = 0; if (f) *f = 0;
 void      orb_sd_lock(void)   { }
 void      orb_sd_unlock(void) { }
 
+bool orb_sd_fm_path(char *out, size_t outsz, const char *rel, bool read_only)
+{
+    (void)rel; (void)read_only;
+    if (out && outsz) out[0] = '\0';
+    return false;
+}
+esp_err_t orb_sd_fm_list(const char *rel, orb_sd_fm_ent_t *ents, int max,
+                        int *n, bool *truncated)
+{
+    (void)rel; (void)ents; (void)max; (void)n; (void)truncated;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t orb_sd_fm_mkdir(const char *rel) { (void)rel; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t orb_sd_fm_rm(const char *rel, bool recursive, int *removed_out)
+{
+    (void)rel; (void)recursive;
+    if (removed_out) *removed_out = 0;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t orb_sd_fm_write_open(const char *rel, bool overwrite, size_t declared, void **h)
+{
+    (void)rel; (void)overwrite; (void)declared;
+    if (h) *h = NULL;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t orb_sd_fm_write_data(void *h, const char *buf, size_t len)
+{
+    (void)h; (void)buf; (void)len; return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t orb_sd_fm_write_close(void *h, bool commit)
+{
+    (void)h; (void)commit; return ESP_ERR_NOT_SUPPORTED;
+}
+
+bool orb_sd_name_ok(const char *name)
 bool orb_sd_name_ok(const char *name)
 {
     /* Alive even with the card off, and deliberately not `return true`: the

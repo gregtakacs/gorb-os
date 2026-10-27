@@ -150,11 +150,19 @@
     <!-- Its first read lands when this face is first opened, and it is the
          board's cached scan rather than a fresh one: the radio already swept
          the air at boot and holds the table until someone re-arms it. The
-         Rescan button is the only thing here that pays for a new sweep. -->
+         Rescan button is the only thing here that pays for a new sweep.
+         The picker carries the same standing answer the New Orb flow's does —
+         "Other — type the network name" — because the device's own scan asks
+         the radio NOT to return hidden SSIDs: a write-in is the only door a
+         hidden network has. The time zone lives on the Orb face's picker;
+         this form sends ssid and pass only, and the board keeps its zone. -->
     <div class="grid">
       <label>Network (SSID)
-        <select id="j-ssid"></select>
-        <button id="j-rescan" class="ghost">Rescan</button>
+        <span class="ssidline">
+          <select id="j-ssid"></select>
+          <input id="j-manual" hidden placeholder="network name" autocomplete="off">
+          <button id="j-rescan" class="ghost">Rescan</button>
+        </span>
       </label>
       <label class="passrow">Password
         <span class="passfield">
@@ -162,7 +170,6 @@
           <button id="j-pass-show" class="ghost pw-toggle" type="button" aria-label="Show the password">show</button>
         </span>
       </label>
-      <label>Time zone <input id="j-tz" placeholder="America/New_York"></label>
     </div>
     <div class="row"><button id="j-go" class="primary">Join network</button></div>
     <pre id="j-log" class="log" aria-live="polite"></pre>

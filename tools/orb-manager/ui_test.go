@@ -122,6 +122,21 @@ func TestWifiIsItsOwnFace(t *testing.T) {
 	if !strings.Contains(page, `data-tab="wifi" role="tab"`) {
 		t.Error("index.html lost the Wi-Fi tab button")
 	}
+	// The write-in is the face's standing answer, same sentinel the New Orb
+	// flow uses, and the join reads it: an empty scan must never dead-end.
+	if (!strings.Contains(card, `id="j-manual"`)) {
+		t.Error("the Wi-Fi card lost its write-in input; a hidden network has no other door")
+	}
+	if !strings.Contains(readAppJS(t), `"__manual__"`) {
+		t.Error(`app.js no longer handles the "__manual__" sentinel on this card's picker`)
+	}
+	// The zone field is gone and stays gone: the Orb face's picker is the only
+	// door that sets it, and a second one is how drift starts.
+	for _, gone := range []string{"j-tz"} {
+		if strings.Contains(page, gone) || strings.Contains(readAppJS(t), gone) {
+			t.Errorf("%s is back — the time zone has one door (the Orb face's picker)", gone)
+		}
+	}
 	// The face is withdrawn, not left standing, for a board with no address.
 	if !strings.Contains(tabs, `name === "wifi"`) || !strings.Contains(tabs, "current.ip") {
 		t.Error("tabs.js no longer gates the Wi-Fi face on the board having an address")

@@ -75,6 +75,8 @@ function orbTabsReset() {
   fmPath = "";
   fwStamp = "";
   tabNow = "orb";
+  // A typed SSID from the last board is that board's intent, not this one's.
+  $("#j-manual").value = "";
   document.querySelectorAll("#orb .tabpane").forEach((p) => { p.hidden = true; });
   document.querySelectorAll("#orb-tabs .tab").forEach((b) => {
     b.hidden = !tabOffered(b.dataset.tab);

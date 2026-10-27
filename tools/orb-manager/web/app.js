@@ -745,7 +745,9 @@ async function loadOrb() {
     current.name = st.name || current.name;
     $("#mn-curfw").textContent = "running " + (st.fw || "version unknown") +
       " \u00b7 state " + (st.state || "?") + (st.rssi ? " \u00b7 rssi " + st.rssi : "");
-    $("#j-tz").value = st.tz || "";
+    // No tz paint here: the zone display is the Orb face's picker's own read
+    // (its /api/v1/config fetch carries the truth), and the join form sends
+    // no zone, so a status tick has nothing on this page it needs to draw.
     if (st.name) $("#mn-name").value = st.name;
     gateFwButtons();
     // The themes are the Apps face's clock sub-tab now: no face prefetches them.
@@ -1630,6 +1632,15 @@ for (const pair of [["#sp-pass", "#sp-pass-show"], ["#j-pass", "#j-pass-show"]])
 
 $("#j-rescan").onclick = () => loadNetworks(true);
 
+// The picker's standing answer, identical to the New Orb flow's: the scan shows
+// what the radio could hear, and "Other — type the network name" is the way to a
+// network that hides its SSID — the device's scan asks the driver not to return
+// hidden ones, so no sweep will ever list it.
+function applyWifiChoice() {
+  $("#j-manual").hidden = $("#j-ssid").value !== "__manual__";
+}
+$("#j-ssid").onchange = applyWifiChoice;
+
 let scanTimer = null;
 async function loadNetworks(fresh) {
   const jlog = $("#j-log");
@@ -1645,7 +1656,6 @@ async function loadNetworks(fresh) {
       return;
     }
     const list = d.networks || [];
-    if (!list.length) { jlog.textContent = "no networks found — try Rescan"; return; }
     const prev = sel.value;
     sel.innerHTML = "";
     for (const n of list) {
@@ -1654,8 +1664,19 @@ async function loadNetworks(fresh) {
       o.textContent = `${n.ssid}  (${n.rssi} dBm${n.open ? ", open" : ""})`;
       sel.appendChild(o);
     }
+    const manual = document.createElement("option");
+    manual.value = "__manual__";
+    manual.textContent = "Other — type the network name";
+    sel.appendChild(manual);
+    // A scan that saw nothing still leaves the typed name as a way out, so the
+    // picker is never the dead end it once was (same doctrine as the dialog's).
     if (list.some((n) => n.ssid === prev)) sel.value = prev;
-    jlog.textContent = list.length + " network(s). Pick one, enter the password.";
+    else if (list.length) sel.selectedIndex = 0;
+    else sel.value = "__manual__";
+    applyWifiChoice();
+    jlog.textContent = list.length
+      ? list.length + " network(s). Pick one, enter the password."
+      : "no networks found — a hidden network can still be typed; or try Rescan";
   } catch (e) {
     let msg = "\u2717 scan failed: " + e.message + " — check the IP; Rescan to retry.";
     // 192.168.4.1 is the orb's own AP; a hub wired to the LAN has no route to
@@ -1672,15 +1693,16 @@ async function loadNetworks(fresh) {
 $("#j-go").onclick = async () => {
   const log = $("#j-log");
   const ip = orbIP;   // the Wi-Fi card belongs to the orb under management; there is no other target
-  const ssid = $("#j-ssid").value;
+  const picked = $("#j-ssid").value;
+  // The sentinel is never the answer sent: under "Other" the name is what the
+  // operator typed, exactly as the New Orb flow reads its own write-in.
+  const ssid = (picked === "__manual__" ? $("#j-manual").value.trim() : picked).trim();
   if (!ip) { log.textContent = "enter the orb's LAN IP"; return; }
-  if (!ssid) { log.textContent = "pick a network first (Rescan if the list is empty)"; return; }
+  if (!ssid) { log.textContent = "pick or type a network first (Rescan if the list is empty)"; return; }
   orbIP = ip;
+  // No tz key at all: the zone is the Orb face's picker's door, and the
+  // firmware reads an absent key as "keep the stored one".
   const body = { ssid, pass: $("#j-pass").value };
-  // Empty tz must be omitted, not sent as "": the firmware reads {"tz":""} as
-  // "clear the zone" and an absent key as "keep the stored one".
-  const tz = $("#j-tz").value.trim();
-  if (tz) body.tz = tz;
   log.textContent = "→ joining " + ssid + "…";
   try {
     const r = await hubFetch(`/orb/${ip}/api/v1/wifi/join`, {

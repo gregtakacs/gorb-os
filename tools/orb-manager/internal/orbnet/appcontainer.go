@@ -351,3 +351,46 @@ func appField(body []byte, base, nbytes int, what string) (string, error) {
 	}
 	return string(out), nil
 }
+
+// IdentityDiff compares this container against one installed row's identity tuple and
+// names every word that disagrees. It returns comparable=false when the row sent no tuple
+// at all — a compiled row, or a dial older than the fields — because "I could not check"
+// and "it matches" are different sentences to show an operator, and the second one ends
+// the argument.
+//
+// The words are the dial's own tuple plus D37's region checksum: geom_crc, the code pair,
+// serial, editor_crc. Comparing all five rather than trusting serial is the point. Serial
+// is a knob the author turns and can forget to turn, and geom_crc is what actually changed
+// when a manifest moved; an operator who is told "serial 3 is not serial 4" learns less
+// than one who is told the geometry table differs.
+//
+// Direction is only ever claimed for serial, the one word with an ordering. The rest are
+// identities, and calling one "older" would be a guess about which of two files the author
+// touched last.
+func (a *AppContainer) IdentityDiff(r AppInstalledRow) (drift []string, comparable bool) {
+	if !r.CarriesIdentity() {
+		return nil, false
+	}
+	if a.Slug != r.Slug {
+		// Not a drift case: a row for a different app. Refusing to compare is the honest
+		// answer, and the caller found the row by slug, so it should not be reachable.
+		return []string{"slug " + r.Slug + " is not " + a.Slug}, true
+	}
+	for _, f := range []struct {
+		word   string
+		mine   uint32
+		theirs uint32
+	}{
+		{"geometry", a.GeomCRC, r.GeomCRC},
+		{"code", a.CodeCRC, r.CodeCRC},
+		{"code size", a.CodeSize, r.CodeSize},
+		{"serial", a.Serial, r.Serial},
+		{"editor", a.EditorCRC, r.EditorCRC},
+	} {
+		if f.mine != f.theirs {
+			drift = append(drift, fmt.Sprintf("%s is %d on the orb and %d here",
+				f.word, f.theirs, f.mine))
+		}
+	}
+	return drift, true
+}

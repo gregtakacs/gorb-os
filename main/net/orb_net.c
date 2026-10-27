@@ -4996,7 +4996,12 @@ static esp_err_t h_sd_rescan(httpd_req_t *req)
  * recomputes row_worst() from the shipped headers and goes red when the
  * row outgrows its scratch. A format that cannot overflow needs no
  * all-or-nothing error body, because there is no partial to protect. */
-#define APPS_ROW_MAX 1024
+/* One streamed row. The widest form is a card row's and every field in it is bounded:
+ * slug and title are capped by ORB_APP_*_MAX with JSON escapes doubled (64 B each), cap
+ * names top out under 40, and D37's five identity words cost 5 * (10 digits + 14 B of key,
+ * quotes and comma) = 120 B. 1024 carried the row before those words with room to spare;
+ * 1152 carries this one, and the handler's PSRAM block sizing follows the macro. */
+#define APPS_ROW_MAX 1152
 
 /* P4a's installed tier — streamed by h_apps_list on every response, card or
  * no card: what is ON the dial does not depend on what is in the socket. One
@@ -5051,15 +5056,24 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
         /* D36: no row carries a shipping label. The hub seeds the clock and the
          * picker as ordinary .orbapp files through this page’s own doors, so a
          * row’s history is not a fact about the row — the ledger is the ledger. */
+        /* D37: the identity tuple rides the card tier and only the card tier. A
+         * compiled row was never a container, so its five words are zero, and printing
+         * that zero would tell an operator reading the field on the hub that their clock
+         * ships no editor — an answer about a file that does not exist. Omitting the
+         * keys says the true thing: there is nothing here to compare. */
         const int w = snprintf(row, rowsz,
             "%s{\"slug\":\"%s\",\"title\":\"%s\",\"slot\":%d,\"caps\":\"%s\","
             "\"period_ms\":%" PRIu32 ",\"n_settings\":%d,"
-            "\"enabled\":%s,\"failed\":%s,\"walkable\":%s,\"on_glass\":%s}",
+            "\"enabled\":%s,\"failed\":%s,\"walkable\":%s,\"on_glass\":%s,"
+            "\"geom_crc\":%" PRIu32 ",\"code_crc\":%" PRIu32 ","
+            "\"code_size\":%" PRIu32 ",\"serial\":%" PRIu32 ","
+            "\"editor_crc\":%" PRIu32 "}",
             seen++ ? "," : "", e_slug, e_title, (int)(i - ORB_APP_BASE), caps,
             a->period_ms, a->n_settings,
             a->enabled ? "true" : "false", a->failed ? "true" : "false",
             a->iface ? "true" : "false",
-            (a == orb_app_current() || a->active) ? "true" : "false");
+            (a == orb_app_current() || a->active) ? "true" : "false",
+            a->geom_crc, a->code_crc, a->code_size, a->serial, a->editor_crc);
         if (w < 0 || (size_t)w >= rowsz) {        /* cannot: bounds are arithmetic;
                                                   * a placeholder keeps the body valid */
             ESP_LOGE(TAG, "installed app row exceeded %d B", (int)rowsz);

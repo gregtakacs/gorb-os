@@ -437,6 +437,21 @@ and its cap-bit table was corrected to `orb_cap_t`'s real 4..7 range on the way.
 The `_Static_assert` in `orb_assets.c` forced `ORB_ASSET_CLASS_ABI` to move with
 `ORBAPP_GEOM_ABI`, and the two factory containers were re-baked for the new dialect.
 
+**S2b — The identity tuple counts the region.** *Status: DONE.* S2 shipped a correctness bug
+worth fixing before anything re-bakes an editor: `orb_app_upload`'s duplicate policy
+compared geom_crc, the code pair, serial and slug, and nothing else. D37's region is the
+one part of a container a rebuild changes that that list omits, so pushing an app whose
+only edit was its editor compared equal to the file already on the card. The upload was
+accepted quietly, the card kept the region the author had just replaced, and no message
+said a thing — `?overwrite=1` was the only way out of a refusal that never happened.
+
+Fixed at the comparison (`orb_app_install.c`), and the same six words now reach the hub:
+`orb_app.h` carries them per row, both populate sites copy them off the slot header the
+firmware already checksummed, and `h_apps` formats them on the card tier only — a compiled
+row was never a container, and printing its zeros would report that the clock ships no
+editor. `AppContainer.IdentityDiff` is the hub-side comparison, and
+`TestFakeInstalledRowsCarryTheIdentityTuple` holds the double to the firmware's key list.
+
 **S3 — The hub serves editors from the card.** *Status: DONE.* `/editor/<ip>/<slug>/…`, the ZIP
 unpack, the shared runtime and baker as hub resources, and the iframe bridge.
 `TestComposerEntryCarriesLaunchToken` extends to pin the token onto every editor

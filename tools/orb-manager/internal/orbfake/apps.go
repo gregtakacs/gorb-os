@@ -11,6 +11,7 @@ package orbfake
 import (
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"net/http"
 	"strings"
 )
@@ -86,6 +87,14 @@ type CardApp struct {
 	// derives editor_off from the regions ahead of it, so a fixture that set only an
 	// offset would model a container no writer can emit.
 	Editor []byte
+	// GeomCRC, CodeCRC and CodeSize are three of the six words the firmware compares
+	// uploads on, carried per row so h_apps's installed tier can report the tuple a real
+	// dial reports. EditorCRC is not a stored field: it is the checksum of the Editor
+	// bytes above, which is how the device derives it, and a double that let a fixture set
+	// it by hand could be made to claim an editor it does not hold.
+	GeomCRC  uint32
+	CodeCRC  uint32
+	CodeSize uint32
 	// Builtin marks a row that ships inside the firmware. door_open refuses to
 	// enable/disable/uninstall those with NOT_SUPPORTED, and they sit below
 	// ORB_APP_BASE, so they appear in h_status's ledger but NOT in h_apps's installed
@@ -316,11 +325,24 @@ func (o *Orb) installedJSONLocked() string {
 	for i, a := range o.cardInstalledLocked() {
 		rows = append(rows, fmt.Sprintf(
 			`{"slug":%q,"title":%q,"slot":%d,"caps":%q,"period_ms":%d,"n_settings":%d,`+
-				`"enabled":%s,"failed":%s,"walkable":%s,"on_glass":%s}`,
+				`"enabled":%s,"failed":%s,"walkable":%s,"on_glass":%s,`+
+				`"geom_crc":%d,"code_crc":%d,"code_size":%d,"serial":%d,"editor_crc":%d}`,
 			jsonSafe(a.Slug), jsonSafe(a.Title), i, jsonSafe(capsNames(a.Caps)),
-			a.Period, a.NSet, tf(a.Enabled), tf(a.Failed), tf(!a.Failed), tf(a.OnGlass)))
+			a.Period, a.NSet, tf(a.Enabled), tf(a.Failed), tf(!a.Failed), tf(a.OnGlass),
+			a.GeomCRC, a.CodeCRC, a.CodeSize, a.Serial, editorCRC(a.Editor)))
 	}
 	return strings.Join(rows, ",")
+}
+
+// editorCRC is the region's own checksum, computed the way the writer computes it: the
+// CRC32 of the region bytes and nothing else. An app that ships no editor reports 0, which
+// is the same answer the container gives and the one the hub's reader expects to see, since
+// D37 says three zeros means "ships nothing" rather than "refuse".
+func editorCRC(b []byte) uint32 {
+	if len(b) == 0 {
+		return 0
+	}
+	return crc32.ChecksumIEEE(b)
 }
 
 // ledgerJSONLocked formats h_status's "apps" array. It is the broker's pass line, so it

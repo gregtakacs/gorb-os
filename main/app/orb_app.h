@@ -205,6 +205,30 @@ struct orb_app {
     const orb_setting_desc_t *settings;
     int                       n_settings;
 
+    /** D37: the container's identity tuple — the five words that say WHICH BUILD this
+     *  row's bytes are, as opposed to which app it is. The install ladder and the boot
+     *  resolve both copy them straight out of the slot header, so a row carries what its
+     *  own flash says and nothing a caller asserted.
+     *
+     *  They exist because a hub holding a first-party container needs one answer it
+     *  cannot get from a slug: is the app on this dial the same build as the file on my
+     *  disk? geom_crc/code pair/serial is the tuple orb_app_upload dedupes uploads on
+     *  (orb_app_install.c's duplicate policy), and editor_crc is now the sixth member of
+     *  that tuple rather than a seventh field here. D37 put an authoring payload in the
+     *  container that the dial never installs, so an app whose ONLY change is its editor
+     *  was a byte-identical app to the old tuple: the upload was accepted quietly, the
+     *  card kept the old region, and the owner was told nothing. Both ends count it now.
+     *
+     *  A compiled row's five words are zero: it was never a container. The listing omits
+     *  the field there rather than printing a zero an operator would read as "no editor".
+     *  Twenty bytes a row, in PSRAM for card rows, and it buys the one comparison that
+     *  turns "installed" into "up to date". */
+    uint32_t            geom_crc;
+    uint32_t            code_crc;
+    uint32_t            code_size;
+    uint32_t            serial;
+    uint32_t            editor_crc;
+
     const orb_app_iface_t *iface;
 
     /* Runtime state, written on the LVGL task only. P4 moves enabled/failed

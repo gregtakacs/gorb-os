@@ -40,6 +40,12 @@ type AppCardRow struct {
 // firmware and asking the question had one obvious answer. D37 asks it per app,
 // so the field is now load-bearing: it is what makes "which apps on this orb
 // can hold themes" a device answer instead of a hub constant.
+//
+// The five identity words are D37's addition and they answer a question the rest of
+// the row cannot: not "is this app installed" but "is it the build I have". The dial
+// reports them for card rows only — a compiled row was never a container and sends no
+// such keys, which is why GeomCRC reads 0 there rather than reading as a match. See
+// AppContainer.Diff for what a comparison against a hub-side file is actually worth.
 type AppInstalledRow struct {
 	Slug    string `json:"slug"`
 	Title   string `json:"title"`
@@ -47,6 +53,23 @@ type AppInstalledRow struct {
 	Caps    string `json:"caps"`
 	Enabled bool   `json:"enabled"`
 	Failed  bool   `json:"failed"`
+
+	GeomCRC   uint32 `json:"geom_crc,omitempty"`
+	CodeCRC   uint32 `json:"code_crc,omitempty"`
+	CodeSize  uint32 `json:"code_size,omitempty"`
+	Serial    uint32 `json:"serial,omitempty"`
+	EditorCRC uint32 `json:"editor_crc,omitempty"`
+}
+
+// CarriesIdentity reports whether a row sent the identity tuple at all. Only the
+// installed tier's card rows do, and the distinction is not cosmetic: an absent tuple and
+// a tuple of zeros are different answers, and conflating them would let the hub call a
+// compiled-in app "stale" on the strength of a field that was never there. The firmware
+// omits the keys for the compiled tier (orb_net.c's apps_send_installed), so Go's zero
+// values arrive; a card row whose real geom_crc is zero is the one container shape that
+// could not exist, because the writer refuses a header whose manifest checksums to zero.
+func (a AppInstalledRow) CarriesIdentity() bool {
+	return a.GeomCRC != 0 || a.CodeCRC != 0 || a.CodeSize != 0 || a.Serial != 0 || a.EditorCRC != 0
 }
 
 // HasCap reports whether one installed row declares a named capability, e.g.

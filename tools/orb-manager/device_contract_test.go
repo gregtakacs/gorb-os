@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"hash/crc32"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -764,4 +765,98 @@ func rawJSONString(s string) string {
 	b.WriteString(s)
 	b.WriteByte('"')
 	return b.String()
+}
+
+// The installed tier's keys, scraped the same way h_status's are. The tuple this test
+// pins is the one D37 grew an editor word into: geom_crc, code_crc, code_size, serial and
+// editor_crc reach the hub on every card row, and the hub's Themes face compares them
+// against the container on its own disk. A double that stopped sending one would make
+// every comparison "pass" against a zero the client invented, which is how a stale app
+// starts looking current.
+func TestFakeInstalledRowsCarryTheIdentityTuple(t *testing.T) {
+	src := firmwareFile(t, orbNet)
+	// Brace-matched locally rather than through cFunction, which is pinned to handlers
+	// returning esp_err_t and this streamer returns void.
+	head := strings.Index(src, "static void apps_send_installed(")
+	if head < 0 {
+		t.Fatal("orb_net.c has no apps_send_installed — the installed tier's row moved and this pin is now meaningless")
+	}
+	body, depth := src[head:], 0
+	for j := strings.Index(body, "{"); j < len(body); j++ {
+		switch body[j] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				body = body[:j+1]
+				j = len(body)
+			}
+		}
+	}
+	// Only the CARD tier's format string. The function holds two snprintfs and the
+	// compiled tier's comes first, so the second one is the card row; scraping the whole
+	// body would ask the fake to invent the fields the firmware deliberately withholds from
+	// a built-in row.
+	pieces := strings.Split(body, "const int w = snprintf(row, rowsz,")
+	if len(pieces) != 3 {
+		t.Fatalf("apps_send_installed holds %d row format strings, want the compiled tier's and the card tier's",
+			len(pieces)-1)
+	}
+	cards := map[string]bool{}
+	for _, k := range regexp.MustCompile(`\\"([a-z_0-9]+)\\":`).FindAllStringSubmatch(pieces[2], -1) {
+		cards[k[1]] = true
+	}
+	if len(cards) < 6 {
+		t.Fatalf("only %d keys parsed off the card row — its format string changed shape and this pin is reading nothing", len(cards))
+	}
+	for _, k := range []string{"geom_crc", "code_crc", "code_size", "serial", "editor_crc"} {
+		if !cards[k] {
+			t.Errorf("h_apps's card row no longer formats %q, so the hub cannot tell a stale "+
+				"app from a current one", k)
+		}
+	}
+
+	f := orbfake.New().WithCardApps(
+		// caps 0x8 is the themes bit of orb_app_manifest.h's orb_cap_t, and 0x2 is net —
+		// the same numbers apps_test.go and the firmware use, not a name this file invents.
+		orbfake.CardApp{Stem: "sentinel", Slug: "sentinel", Title: "Sentinel", Caps: 0x8,
+			Installed: true, Enabled: true, GeomCRC: 0x11223344, CodeCRC: 0xdeadbeef,
+			CodeSize: 4096, Serial: 20261027, Editor: []byte("region")},
+		orbfake.CardApp{Stem: "plain", Slug: "plain", Title: "Plain", Caps: 0x2,
+			Installed: true, Enabled: true, Serial: 1})
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	b, err := clientGet(t, srv, "/api/v1/apps")
+	if err != nil {
+		t.Fatalf("GET apps: %v", err)
+	}
+	var got struct {
+		Installed []orbnet.AppInstalledRow `json:"installed"`
+	}
+	if json.Unmarshal(b, &got) != nil {
+		t.Fatalf("the fake's apps list is not JSON: %s", b)
+	}
+	if len(got.Installed) != 2 {
+		t.Fatalf("the fake listed %d installed rows, want 2", len(got.Installed))
+	}
+	r := got.Installed[0]
+	if !r.CarriesIdentity() {
+		t.Fatalf("the fake sent a row with no tuple and CarriesIdentity read it as a compiled row: %+v", r)
+	}
+	if r.GeomCRC != 0x11223344 || r.CodeCRC != 0xdeadbeef || r.CodeSize != 4096 ||
+		r.Serial != 20261027 {
+		t.Errorf("tuple arrived as %+v, want the values set", r)
+	}
+	// The double derives editor_crc from the bytes it holds rather than storing a third
+	// number a fixture could lie about.
+	if want := crc32.ChecksumIEEE([]byte("region")); r.EditorCRC != want {
+		t.Errorf("editor_crc is %d and the region bytes say %d — the fake must derive it",
+			r.EditorCRC, want)
+	}
+	// An app that ships no editor reports zero, which is the answer D37 defines as "ships
+	// nothing" and not a refusal.
+	if got.Installed[1].EditorCRC != 0 {
+		t.Errorf("an app with no editor reported editor_crc %d, want 0", got.Installed[1].EditorCRC)
+	}
 }

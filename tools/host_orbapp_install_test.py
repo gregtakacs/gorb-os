@@ -512,6 +512,27 @@ def lint(src):
         # a rejected or colliding upload deletes the scratch, never leaving it to be listed.
         if "unlink(up->tmp)" not in ubody:
             bad.append("upload: a rejected upload must unlink(up->tmp), not survive as a loadable file")
+        # D37: the duplicate policy's identity tuple. Six words, and the list is a set
+        # rather than a sample because the bug this check exists over was an omission of
+        # exactly one of them: the region checksum. A container whose only difference is
+        # its editor compared equal on the other five, so the upload was accepted quietly,
+        # the card kept the region the author had just replaced, and no message said a
+        # thing — ?overwrite=1 was the only way out of a refusal that never happened. Any
+        # word dropped from this line recreates that, so every one is named.
+        DUP = "if (!or_ && "
+        dlo = ubody.find(DUP)
+        if dlo < 0:
+            bad.append("upload: the duplicate policy's comparison is gone — nothing now decides "
+                       "whether a second container is the same app")
+        else:
+            dtail = ubody[dlo:ubody.find("{", dlo)]
+            for word in ("oh.geom_crc == h.geom_crc", "oh.code_crc == h.code_crc",
+                         "oh.code_size == h.code_size", "oh.editor_crc == h.editor_crc",
+                         "oh.serial == h.serial", "strcmp(oh.slug, h.slug) == 0"):
+                if word not in dtail:
+                    bad.append("upload: the identity tuple dropped %s — an app differing only in "
+                               "that word is filed as unchanged and its new bytes are discarded"
+                               % word)
     # the scratch must NOT carry the walk's extension, or a half upload is listed and
     # the install's resolve-by-stem can select a file that is two thirds of an app.
     if '#define APPS_SCRATCH "upload.part"' not in src:

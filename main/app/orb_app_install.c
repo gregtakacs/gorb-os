@@ -740,6 +740,14 @@ static esp_err_t install_ladder(const esp_partition_t *p, const appsrc_t *src,
     row.art_offset = 0;
     row.art_bytes  = 0;               /* D21: the container carries no art */
     row.art_slot   = -1;
+    /* D37: the same six words the duplicate policy above compares, off the same header
+     * it was parsed from — so a row's identity is what its flash says, and an install
+     * cannot be made to look current by a caller that believed it was. */
+    row.geom_crc   = h->geom_crc;
+    row.code_crc   = h->code_crc;
+    row.code_size  = h->code_size;
+    row.serial     = h->serial;
+    row.editor_crc = h->editor_crc;
     if (orb_app_card_upsert(&row) < 0) {
         ret = install_failed(ESP_ERR_NO_MEM,
                              "it reached flash but the app registry is full — uninstall one",
@@ -934,6 +942,15 @@ int orb_app_install_resolve_boot(void)
         row.art_offset = 0;
         row.art_bytes  = 0;        /* D21: the container carries no art */
         row.art_slot   = -1;
+        /* D37: read back off the slot header this rung already checksummed, so the
+         * identity the listing reports is the one the flash carries even after a
+         * half-completed install or a card swapped between boots — the case where a
+         * hub's own idea of what it shipped is worth least. */
+        row.geom_crc   = h.geom_crc;
+        row.code_crc   = h.code_crc;
+        row.code_size  = h.code_size;
+        row.serial     = h.serial;
+        row.editor_crc = h.editor_crc;
         if (orb_app_card_upsert(&row) < 0) {
             ESP_LOGW(TAG, "app slot %d: registry refused it", slot);
             continue;
@@ -1446,13 +1463,21 @@ esp_err_t orb_app_upload_end(orb_app_up_t **u, bool overwrite, const char **why)
             const char *or_ = app_hdr_validate(efd, &oh);
             close(efd);
             if (!or_ && oh.geom_crc == h.geom_crc && oh.code_crc == h.code_crc &&
-                oh.code_size == h.code_size &&
+                oh.code_size == h.code_size && oh.editor_crc == h.editor_crc &&
                 oh.serial == h.serial && strcmp(oh.slug, h.slug) == 0) {
-                /* geom_crc + the code pair + serial + slug is the whole identity
-                 * tuple: D20 made the code region the app's payload, so two files
-                 * whose modules differ are two apps whatever else they share. The
-                 * art words on both sides are zero because app_hdr_validate just
-                 * refused any file that carried art (D21). */
+                /* geom_crc + the code pair + the editor triple's checksum + serial +
+                 * slug is the whole identity tuple: D20 made the code region the app's
+                 * payload, so two files whose modules differ are two apps whatever else
+                 * they share. D37's region joins it for the mirror-image reason — the
+                 * editor is the one part of the container a RE-BUILD changes and the
+                 * dial never installs, so a tuple without it called an edited editor an
+                 * unchanged upload, kept the old bytes, and said nothing. Before this
+                 * line learned the word, an author pushing a container whose only
+                 * difference was its editor region got "app upload ... is unchanged" and
+                 * a card still holding the region they had just replaced, and the only
+                 * escape was ?overwrite=1 — which no error mentioned, because there was
+                 * no error. The art words on both sides are zero because
+                 * app_hdr_validate just refused any file that carried art (D21). */
                 unlink(up->tmp); orb_sd_unlock(); free(up);
                 ESP_LOGI(TAG, "app upload of \"%s\" is unchanged — kept as is", h.slug);
                 return ESP_OK;

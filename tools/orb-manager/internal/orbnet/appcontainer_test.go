@@ -359,3 +359,80 @@ func joinAny(in []any) string {
 	}
 	return strings.Join(out, ",")
 }
+
+// The comparison the shipped dedupe rule could not make. A row assembled from the
+// fixture's own words matches, and a row whose ONLY difference is the editor region must
+// not — which is the exact case orb_app_install.c used to call "unchanged" and then
+// silently keep the old bytes (the tuple there now carries editor_crc for the same reason
+// this one does).
+func TestIdentityDiffSeesAnEditorOnlyChange(t *testing.T) {
+	side := appSidecar(t)
+	body := appFixture(t, "sentinel.orbapp")
+	c, err := ParseApp(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := AppInstalledRow{Slug: c.Slug, GeomCRC: c.GeomCRC, CodeCRC: c.CodeCRC,
+		CodeSize: c.CodeSize, Serial: c.Serial, EditorCRC: c.EditorCRC}
+
+	if d, ok := c.IdentityDiff(row); !ok || len(d) != 0 {
+		t.Fatalf("a row built from the same container drifted: %v (comparable=%v)", d, ok)
+	}
+	if num(sideApp(t, side, "sentinel"), "editor_size") == 0 {
+		t.Fatal("fixture ships no region, so an editor-only drift cannot be demonstrated")
+	}
+
+	edited := row
+	edited.EditorCRC ^= 0x80000000
+	d, ok := c.IdentityDiff(edited)
+	if !ok {
+		t.Fatal("a row carrying a tuple reported itself uncomparable")
+	}
+	if len(d) != 1 || !strings.Contains(d[0], "editor") {
+		t.Errorf("an editor-only change drifted as %v; want one line naming the editor", d)
+	}
+	if strings.Contains(strings.Join(d, " "), "geometry") {
+		t.Errorf("reported a geometry change the row never made: %v", d)
+	}
+
+	// Every other word, one at a time: a comparison that only noticed the editor would
+	// have been as useful as the tuple it replaces.
+	for _, f := range []struct {
+		name string
+		pick func(*AppInstalledRow, uint32)
+		want string
+	}{
+		{"geom", func(r *AppInstalledRow, v uint32) { r.GeomCRC = v }, "geometry"},
+		{"code", func(r *AppInstalledRow, v uint32) { r.CodeCRC = v }, "code is"},
+		{"size", func(r *AppInstalledRow, v uint32) { r.CodeSize = v }, "code size"},
+		{"serial", func(r *AppInstalledRow, v uint32) { r.Serial = v }, "serial"},
+	} {
+		r := row
+		f.pick(&r, c.Serial^0x5A5A5A5A)
+		d, ok := c.IdentityDiff(r)
+		if !ok || len(d) != 1 || !strings.Contains(d[0], f.want) {
+			t.Errorf("%s change drifted as %v (comparable=%v); want one line saying %q",
+				f.name, d, ok, f.want)
+		}
+	}
+}
+
+// A compiled row sends no tuple, and the hub must say it could not check rather than
+// report a match against twenty zero bytes it invented itself.
+func TestIdentityDiffRefusesACompiledRow(t *testing.T) {
+	c, err := ParseApp(appFixture(t, "sentinel.orbapp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, ok := c.IdentityDiff(AppInstalledRow{Slug: "sentinel"})
+	if ok {
+		t.Errorf("an all-zero row was called comparable, and drifted as %v", d)
+	}
+	if len(d) != 0 {
+		t.Errorf("an uncomparable row also produced drift text: %v", d)
+	}
+	var empty AppInstalledRow
+	if empty.CarriesIdentity() {
+		t.Error("an empty row claims to carry an identity")
+	}
+}

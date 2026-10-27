@@ -430,13 +430,13 @@ tested without a board. The web half is a pane in the Themes card plus
 same-origin before it spends a token, and posts the container to the existing
 `/api/theme/upload` door.
 
-**S4 — The clock editor moves into its container.** This is where 652 KB of
+**S4 — The clock editor moves into its container.** *Status: NOT DONE — held, owner's call 2026-10-27. Sized in §10 item 3 and it fits with ~1.9 MB to spare, so it is work, not risk.* This is where 652 KB of
 app-owned files meet the cap and where the shared-runtime split stops being a
 proposal. Split `Watch Composer.dc.html` into the hub-served runtime and baker and
 the app-owned UI, then re-bake `clock.orbapp` with the region. The standalone
 `file://` composer keeps working as it does today.
 
-**S5 — Delete the seed.** Once the drop-zone path is proven, remove the hub's
+**S5 — Delete the seed.** *Status: NOT DONE — deliberately sequenced after S4. Deleting it before the clock's own editor ships in its container leaves a factory-fresh board with no clock app and no face until someone copies files to a card.* Once the drop-zone path is proven, remove the hub's
 embedded pair and invert the two test assertions.
 
 **S6 — A second app.** Any theme-aware app adds a region plus a `theme.*` bridge
@@ -461,8 +461,16 @@ Themes face stays its own lazy per-app face. Theme rows stay built with DOM APIs
 2. **Signed containers.** Nothing authenticates an `.orbapp` today, and a region
    changes nothing about that. A hub that serves arbitrary HTML out of a card file
    raises the stakes on where those files came from.
-3. **The 2 MiB cap against a real clock build.** S4 measures it. If the split lands
-   over the cap, the answer is more hub-side sharing, not a bigger cap.
+3. **The 2 MiB cap against a real clock build. RESOLVED — it is not close.**
+   Measured on the working tree 2026-10-27, deflating each file into one archive the
+   way the region stores them: the whole composer is 926,919 B raw and 283,255 B
+   zipped; the app-owned half after the split (`Watch Composer.dc.html`,
+   `watch-engine.js`, `dial-renderer.js`) is 652,355 B raw and **198,560 B zipped**,
+   which is 9.5% of the cap; what goes hub-side (`orbtheme-baker.js`, `support.js`)
+   is 274,564 B raw and 84,717 B zipped and stops being the app's bytes at all. The
+   cap has ~1.9 MB of headroom over the clock's own UI, so S4 carries no sizing risk
+   and the split is worth doing for the byte count it saves rather than because the
+   cap forces it. Re-measure only if the app-owned files grow tenfold.
 4. **Editing for a disabled app.** The Themes face lists enabled apps, so an app with
    an editor that is not enabled has no pane. Whether it should get one for
    authoring is open.

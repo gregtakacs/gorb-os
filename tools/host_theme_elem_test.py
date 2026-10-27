@@ -27,6 +27,13 @@ import theme_schema as ts  # noqa: E402
 failures = []
 
 
+def orbapp_abi():
+    """The dialect tools/orbapp.py stamps, read from the writer rather than repeated
+    here. The third member of the three-way mirror this file already checks twice."""
+    import orbapp
+    return orbapp.GEOM_ABI
+
+
 def check(cond, msg):
     if not cond:
         failures.append(msg)
@@ -48,9 +55,27 @@ if block:
              if n != "CLASS"]                       # ORB_ASSET_CLASS_N is a bound, not a class
     check(tuple(names) == ts.CLASS_NAMES,
           "class vocabulary drifted: header %s vs theme_schema %s" % (names, ts.CLASS_NAMES))
+# The element table stamps the container's dialect, so the one number that matters
+# is whether the two headers still name the same one — the equality
+# main/assets/orb_assets.c pins with a _Static_assert at build time and this check
+# repeats on a machine with no toolchain. It is an equality and NOT a frozen
+# literal: D37 moved the dialect 2 -> 3 for the editor region, and a check welded to
+# "2" would have reported a coherent tree as broken. Comparing the two headers is
+# the check that goes red for a real drift and stays green for a deliberate bump.
 abi = re.search(r"#define\s+ORB_ASSET_CLASS_ABI\s+(\d+)", src)
-check(abi is not None and int(abi.group(1)) == 2,
-      "ORB_ASSET_CLASS_ABI moved off 2; the element table stamps that same dialect")
+mh = open(os.path.join(ROOT, "main", "app", "orb_app_manifest.h")).read()
+mabi = re.search(r"#define\s+ORBAPP_GEOM_ABI\s+(\d+)", mh)
+check(abi is not None and mabi is not None,
+      "a dialect word went missing from its own header; the mirror is unverified")
+if abi and mabi:
+    check(abi.group(1) == mabi.group(1),
+          "ORB_ASSET_CLASS_ABI (%s) and ORBAPP_GEOM_ABI (%s) disagree; the element "
+          "table stamps that same dialect, and orb_assets.c's _Static_assert will "
+          "not build" % (abi.group(1), mabi.group(1)))
+    check(int(abi.group(1)) == orbapp_abi(),
+          "ORB_ASSET_CLASS_ABI (%s) disagrees with tools/orbapp.py's writer GEOM_ABI "
+          "(%s): the writer would stamp a dialect the reader names differently"
+          % (abi.group(1), orbapp_abi()))
 
 check(ts.class_id("hand") == ts.CLASS_HAND, "class_id disagrees with the enum order")
 check(ts.class_id("Hand") is None, "class_id is case-sensitive on the wire; it took 'Hand'")

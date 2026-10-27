@@ -103,7 +103,7 @@ const identityTTL = 30 * time.Minute
 // newHub builds a Server in the state main() leaves it in, so a test cannot
 // accidentally exercise a half-wired hub with a nil cache or a nil registry.
 func newHub() *Server {
-	return &Server{identities: newIdentityCache(), ops: newOpRegistry(),
+	s := &Server{identities: newIdentityCache(), ops: newOpRegistry(),
 		probeOrb: esprom.ProbeOrb,
 		token:    newLaunchToken(), grants: newIPGrants(ipGrantTTL),
 		cables: newCableCache(), prover: newCableProof(), live: newLiveCache(),
@@ -114,6 +114,14 @@ func newHub() *Server {
 		preview:  orbnet.NewClient(previewTimeout),
 		previews: map[string]previewHit{},
 		fleet:    orbfleet.New(orbfleet.Config{}), boots: map[string]*bootVerdict{}}
+	// The editor region dial, wired at the hub's own construction. S3 shipped
+	// this field set only by its tests, and every live /editor/ request since
+	// panicked on the nil; S4 is what first sent a real browser here, because it
+	// is the first release a device can report a region from. Tests still stand
+	// a fake in over this line — the point is that the real hub has a working
+	// default, not that a test must use it.
+	s.fetchEditor = func(ip, slug string) ([]byte, error) { return s.device.EditorRegion(ip, slug) }
+	return s
 }
 
 func newIdentityCache() *identityCache {

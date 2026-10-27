@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfake"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
@@ -202,5 +203,39 @@ func TestEditorRequiresToken(t *testing.T) {
 	s, _ := editorHub(t, "203.0.113.7", zipWith(t, map[string]string{"index.html": "x"}), nil)
 	if rec := editorGet(t, s, "/editor/203.0.113.7/thermo/", false); rec.Code == http.StatusOK {
 		t.Fatal("the editor route served a document to a request with no token")
+	}
+}
+
+// The wiring itself. S3 shipped fetchEditor set only by editor_test's own stub,
+// so every live /editor/ request nil-panicked until S4 put a region on a real
+// card and the browser came knocking. This test takes the hub exactly as newHub
+// builds it — no stub over the field — and demands the real route reach the real
+// door: a fake dial answering GET /api/v1/apps/editor with the region it holds.
+func TestProductionHubDialsTheEditorDoorWithoutAStub(t *testing.T) {
+	editorInvalidate()
+	t.Cleanup(editorInvalidate)
+	region := zipWith(t, map[string]string{
+		"editor.json": `{"editor":1,"entry":"index.html","baker":3,"runtime":["support"]}`,
+		"index.html":  `<body><h1>dialed for real</h1></body>`,
+	})
+	orb := orbfake.New().WithCardApps(orbfake.CardApp{
+		Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes,
+		Installed: true, Enabled: true, Editor: region})
+	s, ip, _, f := fakeOrbHubWith(t, orb)
+	rec := editorGet(t, s, "/editor/"+ip+"/clock/", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "dialed for real") {
+		t.Errorf("body = %s, want the region the fake board holds", rec.Body)
+	}
+	var dialed bool
+	for _, c := range f.Calls() {
+		if c == "GET /api/v1/apps/editor?id=clock" {
+			dialed = true
+		}
+	}
+	if !dialed {
+		t.Error("the hub never dialed the device's editor door")
 	}
 }

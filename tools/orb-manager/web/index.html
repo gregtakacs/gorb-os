@@ -210,6 +210,19 @@
     <h3>Themes on this orb</h3>
     <p class="hint" id="mn-themestate">Themes load when this tab first opens.</p>
     <nav class="subtabs" id="mn-themes-tabs"></nav>
+    <!-- D37 §6.2: one app's editor opens INSIDE this card rather than in a new tab
+         the operator has to find again. The frame is same-origin by construction —
+         the hub built the URL from an ip the hub learned — which is what lets the
+         bridge below postMessage to it without a channel id. -->
+    <section id="mn-theme-editor" class="themee" hidden>
+      <div class="row ehead">
+        <b id="mn-theme-editor-title">Theme editor</b>
+        <button id="mn-theme-editor-close" class="ghost" type="button"
+                title="Put the editor away. The orb keeps what it has.">Close</button>
+      </div>
+      <iframe id="mn-theme-editor-frame" title="Theme editor" sandbox="allow-scripts allow-same-origin"></iframe>
+      <p class="hint" id="mn-theme-editor-state"></p>
+    </section>
     <ul id="mn-themes" class="themelist"></ul>
     <div class="row">
       <button id="mn-rescan" class="ghost" title="Re-read the SD card without rebooting">Re-read card</button>

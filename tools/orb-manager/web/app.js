@@ -2319,6 +2319,10 @@ let themeAppsRows = [];
 let themeAppsErr = "";
 function themeFaceReset() {
   themeSub = ""; themeRowsAll = []; themeAppsRows = []; themeAppsErr = "";
+  // A different board means a different card and a different set of containers, so
+  // an editor frame left open on the last one would be offering to write themes
+  // that this board has never heard of.
+  closeThemeEditor();
 }
 
 // themeAppTitle labels a pane with the app's own ledger title when the hub sent
@@ -2580,16 +2584,84 @@ function themeEmptyPane(list, sub) {
   list.appendChild(btn);
 }
 
-// openThemeEditor is the one place the Themes face turns an enumeration row into a
-// visible editor. S1 keeps this a plain window open on a hub-served URL; the iframe
-// bridge (D37 §6) replaces this function body alone, because the row already
-// carries the address and the slug it needs to talk back with.
+// openThemeEditor shows one app's editor inside the Themes face (D37 §6.2). The
+// frame is same-origin by construction — the hub built the URL from an address the
+// hub learned — so the bridge needs no MessageChannel and no transferable port:
+// both documents are this hub's, and same-origin is already the strongest claim
+// the bridge could ask an unknown child to make.
 function openThemeEditor(row) {
-  const url = row.editor_url + (row.editor_url.indexOf("?") < 0 ? "?" : "&")
-    + "orb=" + encodeURIComponent(themeIP)
-    + "&app=" + encodeURIComponent(row.slug);
-  window.open(url, "orbtheme-editor-" + row.slug, "popup=yes,width=1240,height=900");
+  const pane = $("#mn-theme-editor"), frame = $("#mn-theme-editor-frame");
+  const title = $("#mn-theme-editor-title"), state = $("#mn-theme-editor-state");
+  if (!pane || !frame || !row.editor_url) return;
+  const base = row.editor_url.replace(/\/$/, "") + "/";
+  frame.src = base + "?orb=" + encodeURIComponent(themeIP) + "&app=" + encodeURIComponent(row.slug);
+  title.textContent = themeAppTitle(row.slug) + " theme editor";
+  state.textContent = "editing " + row.slug + " themes on " + themeIP;
+  themeEditorApp = row.slug;
+  pane.hidden = false;
 }
+
+// themeEditorApp is which app the open frame belongs to, so a message from a frame
+// that has since been replaced cannot file a theme under the previous app.
+let themeEditorApp = "";
+
+function closeThemeEditor() {
+  const pane = $("#mn-theme-editor"), frame = $("#mn-theme-editor-frame");
+  if (!pane) return;
+  pane.hidden = true;
+  if (frame) frame.src = "about:blank";
+  themeEditorApp = "";
+}
+
+// themeBridge is the hub page's half of the editor contract (§7.1). It is eight
+// lines and it is the whole mechanism: a child asks to save, the hub dials the
+// upload door it already owns, the child is told the answer.
+//
+// The origin check is not decoration. A page on another origin can postMessage here
+// exactly as easily as an editor can, and this handler spends the hub's launch token
+// on whatever it is handed — so it answers only a frame this page opened, at the
+// origin this page is on, carrying the slug this page asked for.
+async function themeBridge(ev) {
+  const m = ev.data;
+  if (!m || typeof m !== "object" || typeof m.type !== "string" || m.type.indexOf("theme.") !== 0) return;
+  const frame = $("#mn-theme-editor-frame");
+  if (!frame || ev.source !== frame.contentWindow) return;      // not our editor
+  if (ev.origin !== window.location.origin) return;             // not this hub
+  const state = $("#mn-theme-editor-state");
+  const say = (t) => { if (state) state.textContent = t; };
+  const back = (payload) => {
+    try { ev.source.postMessage(Object.assign({ type: "theme.status" }, payload), ev.origin); } catch (e) {}
+  };
+  if (m.type === "theme.ready") { say("editor ready"); back({ state: "ok" }); return; }
+  if (m.type === "theme.close") { closeThemeEditor(); return; }
+  if (m.type !== "theme.save") return;
+  if (!m.container || typeof m.container !== "string") {
+    back({ state: "error", message: "the editor sent no container" }); return;
+  }
+  const name = typeof m.name === "string" ? m.name : "";
+  say("storing " + name + "\u2026");
+  try {
+    // The bytes go to the SAME door the "Add a theme" button uses — the whole point
+    // of the bridge: an app's editor buys nothing at the firmware boundary, and
+    // D26/D28 verification stays where it already is.
+    const bin = Uint8Array.from(atob(m.container), (c) => c.charCodeAt(0));
+    const body = new Blob([bin], { type: "application/octet-stream" });
+    const r = await hubFetch("/api/theme/upload?ip=" + encodeURIComponent(themeIP) + "&overwrite=1",
+      { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
+    const d = j.data || {};
+    say("stored \u201c" + (d.name || name || "?") + "\u201d (" + (d.id || "?") + ")");
+    back({ state: "stored", themeId: d.id || "" });
+    await loadThemes(themeIP);
+  } catch (e) {
+    say("refused: " + e.message);
+    back({ state: "error", message: e.message });
+  }
+}
+
+if (window.addEventListener) window.addEventListener("message", themeBridge);
+
 
 
 // themeRow builds one row with DOM APIs rather than a template string: theme names
@@ -3171,3 +3243,15 @@ refreshPorts();
 refreshBuild();
 watchOrbs();
 setInterval(() => { refreshPorts(); }, 5000);
+
+// The Close button is the frame's only chrome. An editor that wants to be dismissed
+// asks through the bridge (theme.close); this is for the operator, who should never
+// have to hunt for a tab to close.
+// Wired by direct lookup rather than a DOMContentLoaded hook: this file is a
+// classic script at the end of the document, so the node already exists, and
+// closeThemeEditor runs from themeFaceReset during boot before any event would
+// have fired. A missing button is a hidden pane, not an error.
+{
+  const b = document.getElementById("mn-theme-editor-close");
+  if (b) b.onclick = closeThemeEditor;
+}

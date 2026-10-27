@@ -11,7 +11,10 @@ package orbnet
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 )
@@ -85,6 +88,68 @@ func (c *Client) AppsList(ip string) (*AppList, error) {
 	return &l, nil
 }
 
+// MaxEditorRegion mirrors ORBAPP_EDITOR_MAX: the format caps one app's authoring
+// payload at 2 MiB, and the client refuses past it rather than trusting a device's
+// Content-Length before it allocates.
+const MaxEditorRegion = 0x200000
+
+// ErrNoEditor is a device's 404 on the editor door. That is the ordinary answer
+// for every app written before D37 and for every app whose author ships no editor,
+// so it is a named value rather than a formatted error: the caller gets to say
+// "this app ships no editor" instead of "the orb refused", which are different
+// sentences to whoever is reading the card.
+var ErrNoEditor = errors.New("this app ships no editor")
+
+// EditorRegion fetches one app's editor region (GET /api/v1/apps/editor?id=) as
+// raw bytes. D37 §5.2's read-only door: the firmware streams a container region it
+// verified at the store and installs nothing from, and the hub unpacks the ZIP
+// these bytes are on the way in.
+func (c *Client) EditorRegion(ip, stem string) ([]byte, error) {
+	if !AppStemOK(stem) {
+		return nil, fmt.Errorf("orbnet: %q is not an app name the device would accept", stem)
+	}
+	res, err := c.h.Get(c.url(ip, "/api/v1/apps/editor?id="+url.QueryEscape(stem)))
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		return nil, ErrNoEditor
+	}
+	if res.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		return nil, fmt.Errorf("orbnet: %s refused the editor read (%d): %s",
+			ip, res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	body, err := io.ReadAll(io.LimitReader(res.Body, int64(MaxEditorRegion)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > MaxEditorRegion {
+		return nil, fmt.Errorf("orbnet: %s sent an editor region past the %d B the format caps it at",
+			ip, MaxEditorRegion)
+	}
+	return body, nil
+}
+
+// AppStemOK is the character check the device runs on the id before it touches the
+// card: a plain name, no separator, nothing that could read as a path. Strict here
+// so the hub never dials a route the firmware would refuse anyway.
+func AppStemOK(s string) bool {
+	if s == "" || len(s) > 55 { // ORB_SD_NAME_MAX
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // AppInstallCard queues the card-to-slot copy for one stem (POST
 // /api/v1/apps/install?id=). A nil error means the job was queued; the ledger
 // shows the row when the worker lands it.
@@ -107,10 +172,13 @@ func (c *Client) AppEnable(ip, slug string, on bool) (json.RawMessage, error) {
 	return c.devicePost(ip, "/api/v1/apps/enable?id="+url.QueryEscape(slug)+"&on="+onv, nil, "")
 }
 
-// MaxAppUpload mirrors ORB_APP_UPLOAD_MAX (0x40000+0x20000): the door refuses on
-// the declared length before a byte reaches the card, so the client states the
-// same ceiling rather than learning it from a 413.
-const MaxAppUpload = 0x40000 + 0x20000
+// MaxAppUpload mirrors ORB_APP_UPLOAD_MAX: the door refuses on the declared length
+// before a byte reaches the card, so the client states the same ceiling rather than
+// learning it from a 413. D37 grew the device bound by one term — a single editor
+// region at ORBAPP_EDITOR_MAX, plus the one sector of padding that can precede it.
+// The region never installs, so this raises the largest legal FILE and leaves the
+// largest legal slot exactly where P4b priced it.
+const MaxAppUpload = 0x40000 + 0x20000 + 0x200000 + 0x1000
 
 // AppUpload pushes .orbapp bytes to POST /api/v1/sd/app[?overwrite=1]. There is
 // no name argument for the same reason ThemeUpload has none: the destination is

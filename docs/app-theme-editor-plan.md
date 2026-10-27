@@ -413,10 +413,22 @@ and its cap-bit table was corrected to `orb_cap_t`'s real 4..7 range on the way.
 The `_Static_assert` in `orb_assets.c` forced `ORB_ASSET_CLASS_ABI` to move with
 `ORBAPP_GEOM_ABI`, and the two factory containers were re-baked for the new dialect.
 
-**S3 — The hub serves editors from the card.** `/editor/<ip>/<slug>/…`, the ZIP
+**S3 — The hub serves editors from the card.** *Status: DONE.* `/editor/<ip>/<slug>/…`, the ZIP
 unpack, the shared runtime and baker as hub resources, and the iframe bridge.
 `TestComposerEntryCarriesLaunchToken` extends to pin the token onto every editor
 entry document and off its sibling assets.
+
+Landed as `editor.go`/`editor_test.go`: `serveEditor` gates on the same
+learned-address check every theme dial passes, unpacks the region in memory
+(nothing is written to disk), resolves the entry document through the app's own
+`editor.json` with an `index.html` fallback, and refuses a member past
+`editorMaxEntry` before allocating on a declared size. The token goes on the entry
+document and on nothing else — `TestEditorKeepsTokenOffSiblingAssets` is the pin.
+`orbnet.EditorRegion` is the dial; `Server.fetchEditor` is the seam that lets it be
+tested without a board. The web half is a pane in the Themes card plus
+`themeBridge` in `app.js`, which checks `event.source === frame.contentWindow` and
+same-origin before it spends a token, and posts the container to the existing
+`/api/theme/upload` door.
 
 **S4 — The clock editor moves into its container.** This is where 652 KB of
 app-owned files meet the cap and where the shared-runtime split stops being a

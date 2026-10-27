@@ -90,6 +90,10 @@ type Server struct {
 	// and skips its tick while one runs.
 	previewBusy int
 	repoDir     string // the gorb-os clone root, for the Theme Editor only
+	// fetchEditor is D37's seam onto one app's editor region. nil means "dial the
+	// device", which is what every hub built by main does; a test sets it to stand a
+	// board in for the network. See fetchEditor and editorFetchFn in editor.go.
+	fetchEditor editorFetchFn
 	// ops is the per-port operation registry: who holds which cable, doing what,
 	// and how to ask that work to stop. It replaces the process-wide flashing
 	// flag, which could not tell two cables apart or cancel anything.
@@ -893,6 +897,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	// Theme Editor: the watch-composer, served from the repo.
 	s.routesComposer(mux)
+	// D37: an installed app's own editor, served out of its container region.
+	s.routesEditor(mux)
 }
 
 // indexMarker is the QUOTED placeholder in web/index.html that receives the launch

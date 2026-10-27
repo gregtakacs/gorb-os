@@ -87,27 +87,51 @@ func TestARefusedLiveRowCarriesTheDialogVerdict(t *testing.T) {
 // carries no lead, and the refusal is the minute the operator can wait out. This is the
 // frame that once opened a dialog offering two serial endings for a board with no serial
 // — the reason forgetMode keys the cable body on livePort alone.
-func TestTheRowOfABoardThatJustLeftTheBenchNamesNoLead(t *testing.T) {
+func TestTheRowOfABoardJustDialledDeadLeavingTheBenchIsForgettable(t *testing.T) {
 	now := time.Now()
 	s, clock := gateClock(now)
-	// Heard from 20 seconds ago, and the unplug kick already dialled it dead.
+	// Heard from 20 seconds ago, and the unplug kick already dialled it dead. The
+	// minute no longer holds a board the hub has dialled dead at its own remembered
+	// address — that dial is the present-tense answer the clock was only ever a proxy
+	// for, and the operator unplugged the board on purpose. The badge already reads
+	// "disconnected"; the button agrees on the same frame rather than a minute later.
 	s.fleet.Observe(obsAt(macHall, "192.168.2.31", now.Add(-20*time.Second)))
 	s.live.probe = func(string) (bool, bool) { return false, true }
 	s.live.check("192.168.2.31")
 	stubCables(s) // the bench is empty: the sweep sees nothing, as after a real unplug
 	rows := []orbRow{{MAC: macHall}}
 	s.annotateForget(rows, clock())
-	if rows[0].Forgettable {
-		t.Error("a board quiet 20s was plain-forgettable: the minute is the promise")
+	if !rows[0].Forgettable {
+		t.Errorf("a board dialled dead leaving the bench was refused plain Forget: %q", rows[0].ForgetWhy)
 	}
-	if !rows[0].LiveForget {
-		t.Error("the refused row carries no dialog verdict")
+	// Its no-lead shape still holds: a plain drop, not a dialog that names a cable the
+	// hub does not hold. That was this test's other point, and the fix keeps it.
+	if rows[0].LiveForget {
+		t.Error("a forgettable just-unplugged row grew a live dialog it does not need")
 	}
 	if rows[0].LivePort != "" {
 		t.Errorf("LivePort = %q for a board off every lead: the dialog would name a cable the hub does not hold", rows[0].LivePort)
 	}
+}
+
+// The same board, one dial short of an answer: it announced 20 seconds ago but nothing
+// has priced its address yet. An unpriced address is the hub not having asked, not an
+// answer that it is gone, so the announce clock still refuses plain Forget and the fix
+// does not over-reach into merely-stale rows. This is the refused-by-the-clock half.
+func TestAnUnpricedAddressStillWaitsOutTheAnnounceMinute(t *testing.T) {
+	now := time.Now()
+	s, clock := gateClock(now)
+	s.fleet.Observe(obsAt(macHall, "192.168.2.31", now.Add(-20*time.Second)))
+	// probe wired, but never called: the card must not pay for a dial it was not shown.
+	s.live.probe = func(string) (bool, bool) { return false, true }
+	stubCables(s)
+	rows := []orbRow{{MAC: macHall}}
+	s.annotateForget(rows, clock())
+	if rows[0].Forgettable {
+		t.Error("a board with no address verdict on file was forgettable: an unasked question is not a dead answer")
+	}
 	if !strings.Contains(rows[0].ForgetWhy, "announced") {
-		t.Errorf("the refusal is not the wait the operator can read: %q", rows[0].ForgetWhy)
+		t.Errorf("a board unpriced but announcing inside the minute must be refused by the clock, not armed: %q", rows[0].ForgetWhy)
 	}
 }
 
@@ -469,8 +493,25 @@ func TestForgetArmsTheMinuteABoardGoesQuiet(t *testing.T) {
 		s, clock := gateClock(now)
 		s.fleet.Observe(obsAt(macHall, "192.168.2.31", now.Add(-quiet)))
 		s.live.record("192.168.2.31", false, now)
+		// A dead verdict on file is the present-tense answer, so the button arms whatever
+		// the announce clock says: the dial is the fact the minute was only a proxy for,
+		// and a board the operator unplugged on purpose must be removable the frame the
+		// badge already reads "disconnected" (bench, 2026-10-26: refused at 22s, 84s).
+		if ok, why := s.forgetGate(macHall, clock(), false); !ok {
+			t.Errorf("a board quiet %v but dialled dead was refused Forget: %q", quiet, why)
+		}
+	}
+	// No verdict on file inside the grace: an unasked question is not a dead answer, so
+	// the announce clock still refuses it and the dead-verdict arm cannot leak into a
+	// merely-stale row. This is the refused-by-the-clock half of the rule.
+	for _, quiet := range []time.Duration{0, 30 * time.Second, 59 * time.Second} {
+		now := time.Now()
+		s, clock := gateClock(now)
+		s.fleet.Observe(obsAt(macHall, "192.168.2.31", now.Add(-quiet)))
+		s.live.probe = func(string) (bool, bool) { return false, true }
 		if ok, why := s.forgetGate(macHall, clock(), false); ok || !strings.Contains(why, "announced") {
-			t.Errorf("a board quiet %v was %v (%q): the minute is the promise", quiet, ok, why)
+			t.Errorf("a board quiet %v with no verdict on file was %v (%q): an unpriced address "+
+				"inside the minute is refused by the clock, not armed", quiet, ok, why)
 		}
 	}
 	for _, quiet := range []time.Duration{liveAnnounceGrace + time.Second, 3 * time.Hour} {

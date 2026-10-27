@@ -3,11 +3,14 @@ package main
 // Forget, armed the minute a board is gone.
 //
 // Forget drops the hub's row for one MAC. It does nothing to the board. So the button
-// is only honest when the board cannot hand the hub a new reason to list it, and there
-// are exactly three ways that happens: the current USB sweep attributes a port to that
-// MAC, the board announced itself inside the last minute, or its remembered address
-// still answers an HTTP dial. While any is true, Forget hides a row for one check-in
-// and teaches the operator that the button does nothing.
+// is only honest when the board cannot hand the hub a new reason to list it, and the hub
+// will not hold it shut once it has dialled the board dead at its remembered address —
+// that present-tense answer is the disconnect the operator caused, and it outranks the
+// clocks below. Otherwise the board re-lists itself whenever the current USB sweep
+// attributes a port to that MAC, it announced itself inside the last minute, or its
+// remembered address still answers an HTTP dial. While any of those is true and no dead
+// verdict has landed, Forget hides a row for one check-in and teaches the operator that
+// the button does nothing.
 //
 // The clock behind the announce rule is the time the browser LAST HEARD a packet, never
 // the time a card rebuild re-folded a cached record — fleet.go's orbmdnsToObservation
@@ -284,6 +287,19 @@ func (s *Server) forgetGate(mac string, now time.Time, confirm bool) (bool, stri
 	if s.lonely.has(mac) || s.provenNotOrb(mac) {
 		return true, ""
 	}
+	// A board the sweep has dialled dead at its remembered address is, by the hub's own
+	// fresh evidence, disconnected. The card says so — annotateReachability drops the
+	// present-tense claim on exactly this verdict — and the operator unplugged it on
+	// purpose. Holding plain Forget shut for the rest of the announce minute in that
+	// state made the gate deny a fact the same hub had already paid to learn, and left
+	// the operator pressing a button that refused while the badge read "disconnected"
+	// (bench, 2026-10-26: 22s and 84s refusals, Forget only at 174s). A dead dial is a
+	// present-tense answer that outranks the clock, so it is read first. An address with
+	// no fresh verdict is not this: that is the hub not having asked, not an answer, and
+	// the clock below still decides it — so an unpriced row cannot be mistaken for gone.
+	if s.dialledDead(row.IP, now) {
+		return true, ""
+	}
 	if !row.LastSeen.IsZero() {
 		if quiet := now.Sub(row.LastSeen); quiet <= liveAnnounceGrace {
 			// No lead is named here on purpose, and the old tail that named one was
@@ -541,6 +557,22 @@ func (s *Server) probeNow(ctx context.Context) {
 // discover.go already refuses to dial one; the sweeper must not knock on it either, and
 // must not file its failure as a verdict about the board.
 func softAPAddr(ip string) bool { return strings.HasPrefix(ip, "192.168.4.") }
+
+// dialledDead reports whether the hub already holds a fresh verdict that a row's
+// remembered address does not answer. It is a cache read only and never dials, so the
+// render path stays dial-free. It is deliberately narrow: an address the hub has not
+// priced (unknown) or cannot route (the soft-AP subnet) is NOT evidence of absence, so
+// only a priced-dead verdict returns true. That verdict is the fact the card draws as
+// "disconnected", and forgetGate lets it outrank the announce clock — a board the
+// operator unplugged on purpose, dialled dead by the sweep, must be forgettable the
+// frame it reads disconnected rather than after a minute the clock has already spent.
+func (s *Server) dialledDead(ip string, now time.Time) bool {
+	if ip == "" || softAPAddr(ip) || s.live == nil {
+		return false
+	}
+	alive, known := s.live.verdict(ip, now)
+	return known && !alive
+}
 
 // annotateForget stamps the Forget verdict onto every row the card is about to show.
 // confirm is false here: a render path must not dial, so a row whose address has no

@@ -392,8 +392,9 @@ var deviceRoutes = map[string][]string{
 	// installed false, so both door_open gates refuse the enable revive and this is
 	// the only way back short of wiping the owner's WiFi. The reboot is the
 	// firmware's, not the proxy's arm. D36 deleted the factory door with the
-	// in-image tier: the hub's /api/orb/seed is the restore path now, and it
-	// reaches the device through the ordinary sd/app and apps/install doors below.
+	// in-image tier; S5 deleted the hub's /api/orb/seed restore path with the
+	// embed, leaving the sd/app and apps/install doors below as the one way an
+	// app reaches a card — the operator's copy, filed by the drop zone.
 	"/api/v1/apps/clear": {http.MethodPost},
 	"/api/v1/sd/app":     {http.MethodPost},
 	// v1.1.18's file-manager doors and the LAN twin of serial RESET ALL. The

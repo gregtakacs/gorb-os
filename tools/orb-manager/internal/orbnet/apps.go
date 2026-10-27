@@ -5,9 +5,10 @@ package orbnet
 // ThemeUpload, named by the container's own header), POST /api/v1/apps/install?id=<stem>
 // (h_apps_install — queues the card-to-slot job and answers 202), and
 // POST /api/v1/apps/enable?id=<slug>&on=0|1 (h_app_enable — the owner's toggle).
-// D36's hub seed is their only hub-side caller: the hub writes the starter pair
-// onto the card and installs it exactly the way the device's own /apps page does,
-// so there is one install path and the seed cannot drift from it.
+// D36's hub seed was their only hub-side caller; S5 deleted the seed route and
+// left these as the library surface for the same doors the Apps face's drop
+// zone already dials. One install path, unchanged — only the hub-side presser
+// of it is gone.
 
 import (
 	"encoding/json"
@@ -88,7 +89,7 @@ func (a AppInstalledRow) HasCap(name string) bool {
 	return false
 }
 
-// AppList is the part of GET /api/v1/apps the seed reads.
+// AppList is the part of GET /api/v1/apps a card-tier reader needs.
 type AppList struct {
 	Mounted   bool              `json:"mounted"`
 	Count     int               `json:"count"`
@@ -210,9 +211,9 @@ const MaxAppUpload = 0x40000 + 0x20000 + 0x200000 + 0x1000
 // AppUpload pushes .orbapp bytes to POST /api/v1/sd/app[?overwrite=1]. There is
 // no name argument for the same reason ThemeUpload has none: the destination is
 // the slug inside the container, and the firmware files it there. overwrite is
-// the one client decision, and the seed sends it — a starter file already on a
-// re-seeded card is the hub's own earlier write, and replacing it with the very
-// bytes the door refused is the idempotent answer.
+// the one client decision. A starter file already on a card is an earlier copy
+// of the same artifact, and replacing it with the very bytes the door refused
+// is the idempotent answer the Apps face's Install press sends.
 func (c *Client) AppUpload(ip string, body []byte, overwrite bool) (json.RawMessage, error) {
 	if len(body) == 0 {
 		return nil, fmt.Errorf("orbnet: refusing to upload an empty app file")

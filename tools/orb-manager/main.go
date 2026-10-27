@@ -391,10 +391,11 @@ func main() {
 	s.device = orbnet.NewGatedClient(deviceTimeout, dial, false)
 	// The Themes face asks one question a device cannot answer alone: is the app on this
 	// orb the same build as the container the hub is serving? Containers is how the answer
-	// gets its second half, and it is the seed because the seed is the only first-party
-	// container the hub holds an original of. A nil resolver leaves the face saying
-	// "cannot compare" rather than "up to date".
-	s.device.Containers = seedContainerFor
+	// gets its second half, and after S5 it is the starter artifacts on disk: the
+	// committed first-party bytes this hub would put on a card. A hub running with no
+	// readable starter dir leaves the face saying "cannot compare" rather than "up to
+	// date" — the absence is the answer, not a bug to mask.
+	s.device.Containers = func(slug string) ([]byte, error) { return starterContainerFor(repoDir, slug) }
 	s.ota = orbnet.NewGatedClient(otaTimeout, dial, true)
 	// The preview client streams ~100 KB planes from a single-task httpd that
 	// can open the connection and then wedge mid-send-loop (45 s of zero
@@ -828,10 +829,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// unguarded like the candidate list; the writes change what a later credential is
 	// keyed to, so they carry the token and the origin check.
 	mux.HandleFunc("/api/fleet", s.handleFleet)
-	// The seed (D36): push the starter pair and the built-in theme onto one orb
-	// through its own doors. A write that reaches a device, so the control token
-	// and the learned-address gate apply exactly as they do on a theme send.
-	mux.Handle("/api/orb/seed", s.requireControl(http.HandlerFunc(s.handleSeed)))
+	// S5 deleted POST /api/orb/seed and the join-time auto-seed with it: the
+	// starter files reach a card the way every third-party file does — the
+	// operator copies them onto it, and the drop-zone Install button on the
+	// Apps face files them. What the hub keeps is the answer to "is the card
+	// current", which starter.go reads from the artifacts on disk.
 
 	mux.Handle("/api/fleet/set", s.requireControl(http.HandlerFunc(s.handleFleetSet)))
 	mux.Handle("/api/fleet/forget", s.requireControl(http.HandlerFunc(s.handleFleetForget)))

@@ -411,8 +411,9 @@ function renderAppsTab() {
   }
   const a = appList.find((x) => x.slug === appsSub);
   if (a) appFaceBody(a, body);
+  // S5: no seed row. The starter files reach this card the way every other
+  // file does — copied onto it and filed by the drop zone below.
   appFaceCardZone(body);
-  appFaceSeed(body);
 }
 
 function appFaceBody(a, body) {
@@ -527,74 +528,6 @@ function appFaceCardZone(body) {
     }
     body.appendChild(row);
   }
-}
-
-// The seed row (D36). The starter Clock and HSB and the built-in theme ship in
-// the hub, not in the firmware, and this one press moves them onto the dial
-// through the device’s own doors: POST /api/orb/seed streams its steps back as
-// NDJSON, every step asks the ledger before it writes, so a re-press after any
-// partial costs a read and not a second copy. The row stands whether the board
-// is fresh or fully seeded — the honest answer is the same sentence either way.
-function appFaceSeed(body) {
-  const row = document.createElement("div");
-  row.className = "row";
-  const sb = document.createElement("button");
-  sb.type = "button";
-  sb.className = "ghost";
-  sb.textContent = "Load the starter apps";
-  const note = document.createElement("span");
-  note.className = "hint";
-  note.textContent = "Clock and HSB, plus the built-in theme when the dial has no face — idempotent";
-  sb.onclick = async () => {
-    if (!current.ip) { note.textContent = "no address to seed"; return; }
-    sb.disabled = true;
-    try {
-      const r = await hubFetch("/api/orb/seed", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ip: current.ip }),
-      });
-      const seen = await readSeedStream(r, (last) => { note.textContent = last; });
-      const last = seen[seen.length - 1] || { action: "silent", note: "the hub answered nothing" };
-      note.textContent = last.action === "done"
-        ? "seeded — " + seen.filter((x) => !/skipped/.test(x.action)).length + " writes, "
-          + seen.filter((x) => /skipped/.test(x.action)).length + " already in place"
-        : (last.note || last.action || "the seed stopped");
-      await loadApps();
-    }
-    catch (e) { note.textContent = "the hub refused it: " + e.message; sb.disabled = false; }
-  };
-  row.appendChild(sb);
-  row.appendChild(note);
-  body.appendChild(row);
-}
-
-// readSeedStream consumes the /api/orb/seed NDJSON stream into parsed steps,
-// calling onLine with a human line for every step as it lands — the Apps face
-// paints each one, so a seed that takes minutes is never a silent spinner.
-// A torn stream returns what it saw; the caller decides what the silence means.
-async function readSeedStream(r, onLine) {
-  if (!r.ok) {
-    const d = await readDeviceJSON(r);
-    throw new Error((d && (d.error || d.message)) || ("HTTP " + r.status));
-  }
-  const rd = r.body.getReader(), dec = new TextDecoder();
-  let buf = ""; const out = [];
-  for (;;) {
-    const n = await rd.read();
-    if (n.done) break;
-    buf += dec.decode(n.value, { stream: true });
-    let k;
-    while ((k = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, k).trim(); buf = buf.slice(k + 1);
-      if (!line) continue;
-      let st = null;
-      try { st = JSON.parse(line); } catch (e) { continue }
-      out.push(st);
-      if (onLine) onLine(st.step + ": " + st.action + (st.note ? " — " + st.note : ""));
-    }
-  }
-  if (buf.trim()) { try { out.push(JSON.parse(buf)); } catch (e) {} }
-  return out;
 }
 
 // ---- face: Files — the card as the owner's volume ------------------------------

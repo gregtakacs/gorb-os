@@ -22,7 +22,7 @@ the slot image carries: the region CRC over the UN-rebased bytes must equal
 header word 10 (the card file's own region CRC, kept by mk_slot_image for
 exactly this match), and the rebuilt span CRC must equal word 8.
 
-  python3 tools/make_seed_theme.py                       # default img -> seed/orb-default.orbtheme
+  python3 tools/make_seed_theme.py                       # default img -> starter/orb-default.orbtheme
   python3 tools/make_seed_theme.py --check               # byte-compare the committed seed
   python3 tools/make_seed_theme.py IN.img OUT.orbtheme   # explicit paths
 """
@@ -39,7 +39,7 @@ import mk_slot_image as msi       # noqa: E402
 
 ROOT = os.path.join(HERE, os.pardir)
 SRC_IMG = os.path.join(ROOT, "assets", "orb_default.img")
-OUT = os.path.join(ROOT, "tools", "orb-manager", "seed", "orb-default.orbtheme")
+OUT = os.path.join(ROOT, "tools", "orb-manager", "starter", "orb-default.orbtheme")
 
 REC_BYTES = ob.IDX_WORDS * 4       # 40 B per record
 REGION_HEAD = 8                    # n_sections + reserved

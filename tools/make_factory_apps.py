@@ -4,9 +4,10 @@
 The clock and the HSB editor ship on the hub, not in the firmware (plan §0.11):
 this tool is the one author of those two containers, and it lays each one down
 through the SAME writer a card file uses (``orbapp.write_container``) into
-``tools/orb-manager/seed/``, where the hub embeds the bytes and its seed route
-pushes them to the dial through the ordinary doors. Run it and commit the
-result whenever a seed container changes:
+``tools/orb-manager/starter/``, where they wait as committed artifacts an
+operator copies to a card (S5 deleted the hub's embedded copy and its seed
+route; the files outlived the route). Run it and commit the result whenever a
+starter container changes:
 
     python3 tools/make_factory_apps.py
 
@@ -40,7 +41,7 @@ clock_region = importlib.util.module_from_spec(_cr)
 _cr.loader.exec_module(clock_region)
 
 
-OUT_DIR = os.path.join(HERE, "..", "tools", "orb-manager", "seed")
+OUT_DIR = os.path.join(HERE, "..", "tools", "orb-manager", "starter")
 
 # Behaviour kind ids must match main/app/orb_app.h's enum (C6 append-only).
 KIND_COLOR_PICKER = 1

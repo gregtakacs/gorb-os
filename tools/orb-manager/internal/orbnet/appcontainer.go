@@ -12,7 +12,8 @@ import (
 // shipped.
 //
 // Until now the hub treated a container as an opaque blob. That was affordable while the
-// only apps it ever shipped were the two named in a Go literal (seed.go's table); it is
+// only apps it ever shipped sat in a hub seed it pushed itself; S5 made them disk
+// artifacts (starter.go), and it is
 // not affordable for D37, because the Themes face must list every theme surface this hub
 // can open an editor for BEFORE anything is installed on a board. That is a question
 // about the hub's own files, so the hub has to read them: slug, title, caps, serial and
@@ -162,6 +163,10 @@ type AppContainer struct {
 	// and the dial never installs it, so a container can legitimately carry an editor
 	// this dial would not know what to do with.
 	EditorSize uint32 `json:"editor_size"`
+	// EditorOff is the region's byte offset inside the file — the header's own
+	// word, exposed so a host caller can slice the region out of a container it
+	// has already parsed. ParseApp refuses a range that runs past the file.
+	EditorOff uint32 `json:"editor_off"`
 	Bytes      int    `json:"bytes"`
 }
 
@@ -284,7 +289,11 @@ func ParseApp(body []byte) (*AppContainer, error) {
 		Serial: w(appWSerial), Baked: w(appWBakedMs),
 		ABI: abi, ABIMin: lo, ABIMax: hi, Format: w(appWFormat), AppID: w(appWAppID),
 		GeomCRC: w(appWGeomCRC), CodeCRC: w(appWCodeCRC), CodeSize: w(appWCodeSize),
-		EditorCRC: w(appWEditCRC), EditorSize: edSize, Bytes: len(body),
+		EditorCRC: w(appWEditCRC), EditorSize: edSize,
+		// EditorOff mirrors the firmware's header word so a host caller (the
+		// starter-freshness test) can slice the region out of a file without
+		// re-deriving the ladder; ParseApp validated it in range already.
+		EditorOff: w(appWEditOff), Bytes: len(body),
 	}, nil
 }
 

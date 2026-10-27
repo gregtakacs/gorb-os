@@ -311,39 +311,46 @@ func TestThemeAppsReportsDriftAgainstTheHubsOwnContainer(t *testing.T) {
 }
 
 // A matched pair reports no drift, so the absence of a line means agreement and not
-// "nobody looked". The hub's own seed container against a row stamped from it is the real
-// shipping case, and seedContainerFor is the production resolver rather than a test stub.
-func TestThemeAppsReportsNoDriftForAMatchingSeed(t *testing.T) {
-	body, err := seedContainerFor("clock")
+// "nobody looked". The hub's own starter container against a row stamped from it is
+// the real shipping case, and starterContainerFor is the production resolver rather
+// than a test stub. S4 landed the clock's editor into that container, so the fixture
+// carries the region's bytes and the fake derives editor_crc from them the way a real
+// dial derives it from the card — the full six-word tuple is under comparison here.
+func TestThemeAppsReportsNoDriftForAMatchingStarter(t *testing.T) {
+	body, err := starterContainerFor("../..", "clock")
 	if err != nil || len(body) == 0 {
-		t.Skipf("no seeded clock to compare against: %v", err)
+		t.Skipf("no starter clock to compare against: %v", err)
 	}
 	c, err := orbnet.ParseApp(body)
 	if err != nil {
-		t.Fatalf("the hub's own seed container does not parse: %v", err)
+		t.Fatalf("the hub's own starter container does not parse: %v", err)
 	}
-	// The double derives editor_crc from the region bytes it holds, so the row carries the
-	// seed's region rather than the seed's number. S4 has not landed, so the seeded clock
-	// ships none and the honest fixture is a nil Editor.
-	if c.EditorCRC != 0 {
-		t.Skipf("the seeded clock now ships an editor region; this fixture carries none")
+	if !c.HasEditor() {
+		t.Fatal("the starter clock ships no editor region; S4 regressed — run make_factory_apps.py")
 	}
+	region := body[c.EditorOff : c.EditorOff+c.EditorSize]
 	orb := orbfake.New().WithCardApps(
 		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes,
 			Installed: true, Enabled: true, GeomCRC: c.GeomCRC, CodeCRC: c.CodeCRC,
-			CodeSize: c.CodeSize, Serial: c.Serial})
+			CodeSize: c.CodeSize, Serial: c.Serial, Editor: region})
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
-	s.device.Containers = seedContainerFor
+	s.device.Containers = func(slug string) ([]byte, error) { return starterContainerFor("../..", slug) }
 	_, got := getThemeApps(t, s, ip)
 	row := appRow(got.Apps, "clock")
 	if row == nil {
 		t.Fatal("clock missing")
 	}
 	if !row.Comparable {
-		t.Fatal("the seeded pair reported uncomparable")
+		t.Fatal("the starter pair reported uncomparable")
 	}
 	if len(row.Drift) != 0 {
 		t.Errorf("a row built from the hub's own container drifted: %q", row.Drift)
+	}
+	if !row.HasEditor {
+		t.Error("the Themes face hid an editor the starter container plainly carries")
+	}
+	if row.EditorURL == "" || row.EditorURL == "/composer/" {
+		t.Errorf("clock opened on %q; a device-reported region must win the hub-hosted alias", row.EditorURL)
 	}
 }
 

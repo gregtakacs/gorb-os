@@ -859,15 +859,16 @@ def run_mutations():
 
 
 def seed_check():
-    """D36 (§0.11): the shipped seed is what the ruling says it is.
+    """D36 (§0.11) at S5 posture: the starter artifacts are what the ruling says.
 
     Re-runs both generators in --check mode (the freshness rule bake_clock.py
-    serves), then reads the two seed containers back through the Python reader
+    serves), then reads the two starter containers back through the Python reader
     — the mirror of the device reader both reader suites pin to — and asserts
-    each header’s declared identity. A seed file that no longer matches this
+    each header’s declared identity. A starter file that no longer matches this
     list is a ruling change, and a ruling change edits this list and the D-row,
-    in that order, not a silent re-bake. The theme leg proves the hub’s
-    orb-default.orbtheme still round-trips byte-identical to the slot image."""
+    in that order, not a silent re-bake. The theme leg proves the shipped
+    orb-default.orbtheme still round-trips byte-identical to the slot image.
+    S4 adds one leg: the clock's header must carry a CRC-covered editor region."""
     import subprocess
     fails = 0
     def check(name, ok, detail=""):
@@ -877,19 +878,19 @@ def seed_check():
             fails += 1
     r = subprocess.run([sys.executable, os.path.join(HERE, "make_factory_apps.py"),
                         "--check"], capture_output=True, text=True)
-    check("seed containers fresh", r.returncode == 0, (r.stdout + r.stderr).strip())
+    check("starter containers fresh", r.returncode == 0, (r.stdout + r.stderr).strip())
     if r.returncode != 0:
         return 1
     r = subprocess.run([sys.executable, os.path.join(HERE, "make_seed_theme.py"),
                         "--check"], capture_output=True, text=True)
-    check("seed theme fresh and round-tripping", r.returncode == 0, (r.stdout + r.stderr).strip())
+    check("starter theme fresh and round-tripping", r.returncode == 0, (r.stdout + r.stderr).strip())
     if r.returncode != 0:
         return fails + 1
     import importlib.util
     _spec = importlib.util.spec_from_file_location("orbapp", os.path.join(HERE, "orbapp.py"))
     orbapp = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(orbapp)
-    seed_dir = os.path.join(HERE, os.pardir, "tools", "orb-manager", "seed")
+    seed_dir = os.path.join(HERE, os.pardir, "tools", "orb-manager", "starter")
     want = [("clock", "Clock", 3, "sd_read|themes"),
             ("color_picker", "HSB", 1, "")]
     for slug, title, kind, capnames in want:
@@ -898,7 +899,7 @@ def seed_check():
             blob = open(path, "rb").read()
             h = orbapp.parse_header(blob)
         except (OSError, ValueError) as e:
-            check("seed container %s reads" % slug, False, str(e))
+            check("starter container %s reads" % slug, False, str(e))
             fails += 1
             continue
         names = list(orbapp.CAP_FREE) + list(orbapp.CAP_OWNER)
@@ -907,10 +908,17 @@ def seed_check():
         ok = (h["slug"] == slug and h["title"] == title
               and h["behaviour_kind"] == kind and got_caps == want_caps
               and h["serial"] == 1 and h["code_size"] == 0 and h["art_size"] == 0)
-        check("seed %s.orbapp is the %s row the ruling names" % (slug, title), ok,
+        check("starter %s.orbapp is the %s row the ruling names" % (slug, title), ok,
               "slug=%r kind=%d caps=%s serial=%d" % (h["slug"], h["behaviour_kind"],
                                                      sorted(got_caps), h["serial"]))
         fails += 0 if ok else 1
+        # S4: the clock's editor travels inside its own container. A region of
+        # zero here is the bake silently reverting to the hub-hosted alias.
+        if slug == "clock":
+            has_reg = h.get("editor_size", 0) > 0 and h.get("editor_crc", 0) != 0
+            check("starter clock carries its editor region", has_reg,
+                  "editor_size=%d crc=%08x" % (h.get("editor_size", 0), h.get("editor_crc", 0)))
+            fails += 0 if has_reg else 1
         if slug == "color_picker":
             rows = orbapp.unpack_settings(blob[h["setting_off"]:
                                           h["setting_off"] + h["n_settings"] *

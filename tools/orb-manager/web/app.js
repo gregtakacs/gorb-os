@@ -1505,35 +1505,10 @@ function joinDone(ip, st) {
     (st.tz ? ", " + st.tz : "") + ".";
   $("#ob-join").hidden = true;
   $("#ob-done").hidden = false;
-  joinSeedApps(ip);
+  // S5: the join seeds nothing. A fresh orb boots to the shell menu and
+  // waits for its owner to copy the starter files (or any app) onto a card; the
+  // Apps face's drop zone is the one path, for first-party and third-party alike.
   pullFound();
-}
-
-// joinSeedApps is D36’s shipping moment: a flash that joined is a new orb, and
-// the hub that just wrote its firmware is the one holding the starter apps. The
-// same POST /api/orb/seed the Apps face presses streams its steps onto the done
-// panel — idempotent, so a board that already carries the pair costs one
-// "already on the dial" line and no writes. A refused seed is reported on the
-// same line and never steals the join: the orb is connected and managed either
-// way, and the Apps face keeps the button for every later press.
-async function joinSeedApps(ip) {
-  const line = $("#ob-seed");
-  line.hidden = false;
-  line.textContent = "seeding the starter apps — clock, HSB, and the built-in theme on a dial with no face…";
-  try {
-    const r = await hubFetch("/api/orb/seed", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ip: ip }),
-    });
-    const seen = await readSeedStream(r, (last) => { line.textContent = last; });
-    const last = seen[seen.length - 1] || { action: "silent", note: "the hub answered nothing" };
-    line.textContent = last.action === "done"
-      ? "starter apps in place — the Apps face re-reads the ledger beside them"
-      : "seed stopped: " + (last.note || last.action || "the stream ended early");
-  }
-  catch (e) {
-    line.textContent = "the hub refused the seed: " + e.message;
-  }
 }
 
 $("#ob-rejoin").onclick = () => {

@@ -175,17 +175,21 @@ func TestAppsFaceReadsTheLedgerAndThemesIsItsOwnFace(t *testing.T) {
 			t.Errorf("the apps face lost its %s door", door)
 		}
 	}
-	if !strings.Contains(tabs, "function appFaceSeed(body) {") {
-		t.Error("the apps face lost its seed row: D36 moved the starter pair onto the hub, and Load the starter apps is the one press")
+	// S5 deleted the seed row: no appFaceSeed, no readSeedStream, no
+	// /api/orb/seed anywhere. The assertions below pin the deletion itself —
+	// the drop-zone tier above is now the one path, and a resurrected press
+	// would be the hub shipping bytes it no longer holds.
+	if strings.Contains(tabs, "appFaceSeed") || strings.Contains(app, "joinSeedApps") {
+		t.Error("the seed press is back; S5 made the starter files disk artifacts the operator copies")
+	}
+	if strings.Contains(tabs, "/api/orb/seed") || strings.Contains(app, "/api/orb/seed") {
+		t.Error("the hub has no /api/orb/seed route; dialing it is a dead button")
+	}
+	if !strings.Contains(tabs, "function appFaceCardZone(") {
+		t.Error("the apps face lost its drop-zone tier; that is now the one install path")
 	}
 	if strings.Contains(tabs, "/api/v1/apps/factory") || strings.Contains(tabs, "factory_missing") {
-		t.Error("the apps face still speaks the factory tier D36 deleted; the hub route is /api/orb/seed")
-	}
-	if !strings.Contains(tabs, "function readSeedStream(") {
-		t.Error("the apps face lost its NDJSON reader; a seed that streams must land every step")
-	}
-	if !strings.Contains(app, "/api/orb/seed") {
-		t.Error("the join flow never dials /api/orb/seed; D36 made the hub the shipper and the join the moment")
+		t.Error("the apps face speaks a factory tier that exists neither in firmware nor in the hub")
 	}
 	if card := cardMarkup(page, "mn-themecard"); section(card, "data-tab") != "themes" {
 		t.Errorf("the theme card is on face %q, not its own: theming is a press of its own", section(card, "data-tab"))

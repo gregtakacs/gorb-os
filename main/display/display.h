@@ -178,6 +178,10 @@ const uint16_t *display_capture_data(void);/* valid until the next arm/direct */
 size_t    display_capture_bytes(void);
 /** Copy now, from this task. Reports torn=true. Refuses while a commit is mid-copy. */
 esp_err_t display_capture_direct(uint32_t *seq);
+/** Take back an arm no commit honoured: ARMED -> IDLE, READY untouched. The
+ *  /api/v1/fb door calls it on every exit after arming, so a starved poll can
+ *  never leave the slot held for the captures that follow. */
+void      display_capture_disarm(void);
 
 /**
  * Lend the display's tile ring (2 x 18,640 B of internal DMA RAM) to another
@@ -204,6 +208,9 @@ esp_err_t display_capture_direct(uint32_t *seq);
  */
 size_t  display_dma_borrow(void);
 esp_err_t display_dma_return(void);
+/** True while the ring is lent and the flush path drops frames on purpose —
+ *  the explanation a stall probe must take before it believes the silence. */
+bool    display_dma_lent(void);
 
 void display_bench_reset(void);
 

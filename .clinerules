@@ -1628,3 +1628,29 @@ serves the bytes it was built with, never the ones on disk.
   (t≈+30 s) is on tape, grep `shield released`, `httpd_start`, `head back`.
   A `largest=` figure on a ladder line measures the instant after the failed
   attempt's own cleanup, not the attempt; trust the DMA-largest print.
+
+## The fb door's held arm, and the switch probe that now heals a stalled glass — measured 2026-10-27, orb-B
+
+- **The `/api/v1/fb` door used to wedge itself, and the wedge was one line's
+  absence.** A capture is ARMED and filled by the next LVGL commit; a poll that
+  timed out returned 504 and left the arm held, forever. On a screen that
+  stopped repainting that made every later capture inherit the wedge —
+  `display_capture_direct()` refuses against a held arm by design, so the door
+  denied its own documented fallback for two hours. Fixed by
+  `display_capture_disarm()` (ARMED→IDLE only; a landed READY frame belongs to
+  whoever armed it) called at every post-arm exit of `h_fb`. A request against
+  a static screen is the live regression: 504, then `?direct=1` must serve
+  torn, where the old build answered 503.
+- **A switch probe miss is a verdict only after it has been asked for an
+  excuse.** While the tile ring is lent to the card the flush path drops
+  frames ON PURPOSE, so bench counters frozen mid-SD-write is a healthy board,
+  not a stall — and a heal that rebooted there would reboot every install.
+  `display_dma_lent()` is the excuse query; `SW_LEND_MAX_MS 10000` bounds it.
+- **The stall heal reboots, and the fuse is "any frame ever."** The probe runs
+  on the LVGL task, so a firing probe proves the task alive and the flush path
+  the dead thing — there is no in-place re-init to reach; `esp_restart()` after
+  `orb_svc_note_clean_reboot()` is the recovery the holder can get without a
+  cable, and the NVS resume page puts them back on the face that froze. A board
+  that has committed ZERO frames since boot has a dead panel instead, and
+  rebooting into it forever is a loop — that case logs and waits for a human.
+

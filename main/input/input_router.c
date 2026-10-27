@@ -20,6 +20,8 @@
 #include <stdint.h>
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_system.h"      /* esp_restart(): the unexplained-silence heal below */
+#include "orb_svc.h"         /* orb_svc_note_clean_reboot(): that restart is not a crash */
 #include "display.h"        /* display_bench_snapshot(): the M1 switch probe's frame counters */
 #include "lvgl.h"
 
@@ -83,11 +85,22 @@ static int64_t     s_sw_open_us;
 static uint32_t    s_sw_frames;
 static uint64_t    s_sw_us;
 static const char *s_sw_name;
+static int64_t     s_sw_since_us;      /* window-origin, never re-armed: total silence */
+static bool        s_sw_lent_logged;   /* the with-explanation line prints once */
 
 /* If the new view has not painted inside this, that is itself the finding, and it
  * is reported as one instead of waiting indefinitely for a commit that never
  * comes. Comfortably longer than the 40 ms beat the fastest theme bakes. */
 #define SW_WINDOW_MS 1500
+
+/* How long a lent tile ring excuses the same silence for. While the card holds
+ * the ring the flush path DROPS frames on purpose (display.h), so counters
+ * frozen here are a healthy board mid-write, not a stall — but a loan that
+ * outlasts the longest honest card sequence is a wedged one, and a glass that
+ * cannot repaint is a brick to whoever is holding it. Measured card ceilings:
+ * an install copy streams for seconds; nothing legitimately parks the ring for
+ * ten. Past this bound the excuse expires and the stall verdict below stands. */
+#define SW_LEND_MAX_MS 10000
 
 /* Close the window set_screen() opened, once a real commit has landed since. */
 static void switch_window_close(int64_t now)
@@ -98,9 +111,48 @@ static void switch_window_close(int64_t now)
     display_bench_snapshot(&f, &u, &mx);
     if (f == s_sw_frames) {
         if (now - s_sw_open_us > (int64_t)SW_WINDOW_MS * 1000) {
+            /* Silence is only a verdict once it has been asked for an
+             * explanation. A lent tile ring IS one: the flush path drops
+             * frames by contract while the card holds the ring, so the
+             * honest move is to re-arm this window and keep waiting — a
+             * 20 s card sequence must not read as a wedged pipeline. The
+             * excuse has a bound (SW_LEND_MAX_MS): a loan that outstays it
+             * is itself the wedge, wearing the card's coat. */
+            if (display_dma_lent() &&
+                now - s_sw_since_us < (int64_t)SW_LEND_MAX_MS * 1000) {
+                if (!s_sw_lent_logged) {
+                    ESP_LOGI(TAG, "switch %s: silent with the ring lent — waiting on the card",
+                             s_sw_name);
+                    s_sw_lent_logged = true;
+                }
+                s_sw_open_us = now;   /* re-arm; s_sw_since_us keeps the total */
+                return;
+            }
+            /* Unexplained — or explained only past the bound. The self-heal,
+             * measured on orb-B 2026-10-27 and worth its reboot: one stalled
+             * switch froze the glass for two hours, every screen switch died
+             * the same way, and only a reboot cleared it. The probe runs on
+             * the LVGL task itself, so the task is alive and cannot fix the
+             * flush path from here; esp_restart is the one recovery left that
+             * the person holding the orb can get without a cable in sight.
+             * The fuse is f > 0: a board that never committed ANY frame since
+             * boot has a dead panel, not a stall, and rebooting into the same
+             * dead panel forever is a loop, not a heal. That case logs its
+             * finding and waits for a human. The resume-page memory (page
+             * below, same file) puts the owner back on the face that froze. */
+            if (f > 0) {
+                ESP_LOGE(TAG, "display stalled: switch to %s unpainted %lld ms on a pipeline that "
+                              "already drew %u frame(s) — rebooting to recover the glass",
+                         s_sw_name, (long long)((now - s_sw_since_us) / 1000), (unsigned)f);
+                orb_svc_note_clean_reboot();   /* this restart is a heal, not a crash */
+                s_sw_open_us = 0;
+                s_sw_since_us = 0;
+                esp_restart();
+            }
             ESP_LOGW(TAG, "switch %s: no display commit within %d ms — the new view never painted",
                      s_sw_name, SW_WINDOW_MS);
             s_sw_open_us = 0;
+            s_sw_since_us = 0;
         }
         return;
     }
@@ -113,6 +165,7 @@ static void switch_window_close(int64_t now)
              (unsigned long long)((u - s_sw_us) / (f - s_sw_frames)),
              (unsigned long long)mx);
     s_sw_open_us = 0;
+    s_sw_since_us = 0;
 }
 
 /* Put a registered entry on the glass, and open the M1 measurement window
@@ -188,6 +241,8 @@ static esp_err_t set_screen(const orb_app_t *app, bool load)
     const int64_t sw_t0 = esp_timer_get_time();
     display_bench_snapshot(&s_sw_frames, &s_sw_us, NULL);
     s_sw_open_us = sw_t0;
+    s_sw_since_us = sw_t0;         /* total-silence origin for the lend-excuse bound */
+    s_sw_lent_logged = false;
     s_sw_name    = screen_name(app);
 
     /* Everything the old switch statement did by hand — park the outgoing

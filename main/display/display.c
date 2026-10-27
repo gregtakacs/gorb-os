@@ -1272,6 +1272,22 @@ esp_err_t display_capture_arm(void)
     return ESP_OK;
 }
 
+/** Take back an arm that no commit honoured. The one exit for CAP_ARMED
+ *  besides a landing commit: orb_net.c's /api/v1/fb door polls for a bounded
+ *  wait, and an arm that outlived the poll is a slot held by nobody — a
+ *  commit-time copy can still fill it later, and display_capture_direct()
+ *  refuses against it by design, so every later capture on a screen that
+ *  stopped repainting inherited the wedge. Measured on orb-B 2026-10-27: one
+ *  starved poll left the door refusing its own ?direct=1 fallback for two
+ *  hours. Takes back ARMED and nothing else — a READY frame is the artifact
+ *  whoever armed it came for, and the next arm overwrites it in place.
+ *  Racing display_capture_direct() is impossible by position: only the
+ *  single-slot httpd worker arms, and it refuses while armed (s_busy). */
+void display_capture_disarm(void)
+{
+    if (s_cap_state == CAP_ARMED) s_cap_state = CAP_IDLE;
+}
+
 esp_err_t display_capture_direct(uint32_t *seq)
 {
     if (!s_fb) return ESP_ERR_INVALID_STATE;
@@ -1352,6 +1368,18 @@ size_t display_dma_borrow(void)
              (unsigned)freed,
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
     return freed;
+}
+
+/** True while the tile ring is lent out — the one state in which the flush
+ *  path DROPS frames on purpose (display.h's loan contract), so the bench
+ *  counters stand still without anything being wrong. Read unlocked, the way
+ *  the flush path already reads the same int: a 32-bit load is the atomic
+ *  word, and the answer names an instant, not an interval. input_router's
+ *  switch probe asks this before treating a silent window as a stall; without
+ *  it, a 20 s SD write would read exactly like a wedged pipeline. */
+bool display_dma_lent(void)
+{
+    return s_ring_loan > 0;
 }
 
 /* Take the ring back after a borrow. Returns ESP_ERR_NO_MEM when the memory did

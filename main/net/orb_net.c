@@ -4457,6 +4457,7 @@ static esp_err_t h_fb(httpd_req_t *req)
     if (!go_direct) {
         if (display_capture_arm() != ESP_OK) {
             httpd_resp_set_status(req, "503 Service Unavailable");
+            display_capture_disarm();   /* uniform exit: clears an arm this build's older door leaked */
             httpd_resp_sendstr(req, "{\"error\":\"cannot stage capture (psram)\"}");
             s_busy = false;
             return ESP_OK;
@@ -4479,15 +4480,20 @@ static esp_err_t h_fb(httpd_req_t *req)
              * into the same buffer, so another caller armed first. */
             ESP_LOGW(TAG, "fb: direct copy refused, a commit holds the buffer");
             httpd_resp_set_status(req, "503 Service Unavailable");
+            display_capture_disarm();   /* if that holder is a stale arm, this request just took it back */
             s_busy = false;
             return httpd_resp_sendstr(req,
                    "{\"error\":\"capture buffer held by a commit\",\"retry\":\"later\"}");
         }
         ESP_LOGW(TAG, "fb: no commit within %d ms; retry with ?direct=1", wait_ms);
         httpd_resp_set_status(req, "504 Gateway Timeout");
-        httpd_resp_sendstr(req, "{\"error\":\"no frame committed\",\"retry\":\"direct=1\"}");
+        /* The arm this request made and no commit honoured: taken back here,
+         * so the slot dies with the request that waited it out instead of
+         * wedging every capture that follows — the two-hour door hold of
+         * orb-B 2026-10-27 was this line's absence, not the timeout's. */
+        display_capture_disarm();
         s_busy = false;
-        return ESP_OK;
+        return httpd_resp_sendstr(req, "{\"error\":\"no frame committed\",\"retry\":\"direct=1\"}");
     }
     r = ESP_OK;
 
@@ -4566,6 +4572,10 @@ static esp_err_t h_fb(httpd_req_t *req)
     }
     if (r == ESP_OK && httpd_resp_send_chunk(req, NULL, 0) != ESP_OK) r = ESP_FAIL;
 
+    /* Uniform exit, not a fix for this path (a served frame is READY, which
+     * disarm never touches): an arm this request waited into READY cannot
+     * strand, and neither can one that never landed. */
+    display_capture_disarm();
     ESP_LOGI(TAG, "fb: served %u B %s seq=%u %s%s", (unsigned)img_bytes,
              want_raw ? "raw565" : "bmp", (unsigned)seq, torn ? "torn" : "commit",
              r == ESP_OK ? "" : " (client aborted)");

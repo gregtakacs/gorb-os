@@ -2174,6 +2174,44 @@ function paintFound(li, o) {
 // server, which is what keeps the FORMAT-2 contract — address a theme by the id the orb
 // issued for it — in one file instead of in six buttons.
 let themeIP = "";
+// The Themes face draws one app's rows at a time: a theme row names its owning
+// app, so the chooser is the listing's own shape, not a hard-coded list. themeSub
+// "" draws every row; tabs.js resets the face through themeFaceReset so a tab
+// opened for the next board never paints the last board's choice of app.
+let themeSub = "";
+let themeRowsAll = [];
+function themeFaceReset() { themeSub = ""; themeRowsAll = []; }
+
+function themeAppTitle(a) {
+  return ({ clock: "Clock", color_picker: "HSB", menu: "Menu" })[a] || a;
+}
+
+// renderThemeTabs is the app chooser. One app on the card needs no chooser —
+// the face IS that app's — so the row appears only when a second app shows up
+// with themes of its own. The refresh per press re-reads the listing: the same
+// door the state line reports through, one implementation, no stale client sort.
+function renderThemeTabs() {
+  const nav = $("#mn-themes-tabs");
+  if (!nav) return;
+  nav.innerHTML = "";
+  const apps = [];
+  for (const t of themeRowsAll) {
+    const a = t.app || "clock";
+    if (!apps.includes(a)) apps.push(a);
+  }
+  if (apps.length < 2) return;
+  apps.sort();
+  const mk = (slug, label) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "tab sub" + (themeSub === slug ? " on" : "");
+    b.textContent = label;
+    b.onclick = () => { themeSub = slug; loadThemes(themeIP); };
+    nav.appendChild(b);
+  };
+  mk("", "All");
+  for (const a of apps) mk(a, themeAppTitle(a));
+}
 
 async function themePost(path, payload) {
   // AbortSignal.timeout so a hub that accepts the request and then stops
@@ -2323,13 +2361,19 @@ async function loadThemes(ip) {
     return;
   }
   const rows = Array.isArray(d.themes) ? d.themes : [];
-  state.textContent = rows.length + " theme(s) on " + (d.card || "the card") +
+  themeRowsAll = rows;
+  if (themeSub && !rows.some((t) => (t.app || "clock") === themeSub)) themeSub = "";
+  renderThemeTabs();
+  const shown = themeSub ? rows.filter((t) => (t.app || "clock") === themeSub) : rows;
+  state.textContent = shown.length + " theme" + (shown.length === 1 ? "" : "s")
+    + (themeSub ? " for " + themeAppTitle(themeSub) : "")
+    + " on " + (d.card || "the card") +
     ", drawing \"" + (d.active || "?") + "\"" + (d.free_mb ? ", " + d.free_mb + " MB free" : "");
-  for (const t of rows) list.appendChild(themeRow(t, state, d));
-  if (!rows.length) {
+  for (const t of shown) list.appendChild(themeRow(t, state, d));
+  if (!shown.length) {
     const empty = document.createElement("li");
     empty.className = "hint";
-    empty.textContent = "the card holds no themes yet";
+    empty.textContent = "the card holds no themes" + (themeSub ? " for this app" : "") + " yet";
     list.appendChild(empty);
   }
 }

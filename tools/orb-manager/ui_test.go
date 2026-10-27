@@ -147,6 +147,53 @@ func TestWifiIsItsOwnFace(t *testing.T) {
 	}
 }
 
+// Two owner-visible bugs this test keeps out of the code, both found on the
+// live board 2026-10-26.
+//
+// First: GET /api/v1/apps answers with two arrays. `installed` is the ledger —
+// what stands on the dial, built-in shell rows included. `apps` is only the
+// /sd/apps drop zone, empty precisely when the dial is full. The first cut of
+// the Apps face rendered `apps` as the ledger, so a board running clock, HSB
+// and menu told its owner "0 installed apps". The face must read d.installed.
+//
+// Second: theming is a face of its own. It was written as the clock sub-tab's
+// guest, and the split that gave Wi-Fi its tab left it there; the owner's word
+// is a Themes tab that sets and deletes themes, one sub-tab per themable app.
+// The card, the tab button and the lazy load must all say "themes".
+func TestAppsFaceReadsTheLedgerAndThemesIsItsOwnFace(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	tabs := readWebFile(t, "tabs.js")
+	if !strings.Contains(tabs, "d.installed") {
+		t.Error("the apps face no longer reads d.installed as the ledger; reading d.apps shows the drop zone and reports a full dial as empty")
+	}
+	if !strings.Contains(tabs, "Array.isArray(d.apps)") {
+		t.Error("the apps face lost its drop-zone tier; card candidates with their refusal sentences must still be listed")
+	}
+	for _, door := range []string{"/api/v1/apps/enable", "/api/v1/apps/install", "/api/v1/apps/uninstall", "/api/v1/apps/clear", "/api/v1/apps/factory"} {
+		if !strings.Contains(tabs, door) {
+			t.Errorf("the apps face lost its %s door", door)
+		}
+	}
+	if card := cardMarkup(page, "mn-themecard"); section(card, "data-tab") != "themes" {
+		t.Errorf("the theme card is on face %q, not its own: theming is a press of its own", section(card, "data-tab"))
+	}
+	if !strings.Contains(page, `data-tab="themes" role="tab"`) {
+		t.Error("index.html has no Themes tab button")
+	}
+	if !strings.Contains(page, `id="mn-themes-tabs"`) {
+		t.Error("the Themes face lost its per-app chooser; a themable app other than the clock has no way to be shown")
+	}
+	if !strings.Contains(tabs, `lazyTab("themes", themeOpen)`) {
+		t.Error(`the Themes face never lazy-loads: opening it must fetch the listing on a press, like every other face`)
+	}
+	if strings.Contains(tabs, "themesVisible") {
+		t.Error("the clock sub-tab's theme reveal is back; the Themes face owns that card now")
+	}
+	if !strings.Contains(readAppJS(t), "function themeFaceReset") {
+		t.Error("app.js lost themeFaceReset, so switching boards would keep the last board's theme app selection")
+	}
+}
+
 // cardMarkup returns the article element whose id is wanted, or "" — enough of
 // the page to read one card's own attributes and controls without the whole
 // document's contents answering a question about one card.

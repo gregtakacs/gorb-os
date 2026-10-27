@@ -1,4 +1,4 @@
-// tabs.js — the orb view's five faces, dormant until opened.
+// tabs.js — the orb view's six faces, dormant until opened.
 //
 // app.js owns the page's bones; this file owns the tab SHAPE: the router, the
 // one-request-per-tab-per-board discipline, the /timezone picker ported to the
@@ -39,6 +39,7 @@ function showTab(name) {
     b.classList.toggle("on", b.dataset.tab === name);
   });
   if (name === "apps") lazyTab("apps", loadApps);
+  else if (name === "themes") lazyTab("themes", themeOpen);
   else if (name === "files") lazyTab("files", fmOpen);
   else if (name === "wifi") lazyTab("wifi", wifiOpen);
   else if (name === "orb") lazyTab("tz", loadZonesTable);
@@ -52,11 +53,16 @@ function wifiOpen() {
   return loadNetworks(false);
 }
 
+// themeOpen is the Themes face's first request. The listing is the device's own
+// (the hub's /api/theme/list wraps GET /api/v1/sd), and app.js owns the card:
+// previews, the store press, the refusal witnesses. This face only decides WHEN
+// the read happens — on a press, never on the Apps face's coattails.
+function themeOpen() {
+  return loadThemes(current.ip);
+}
+
 function tabPaneVisible(p, name) {
-  if (p.dataset.tab !== name) return false;
-  if (p.id === "mn-themecard")
-    return name === "apps" && appsSub === "clock" && themesVisible;
-  return true;
+  return p.dataset.tab === name;
 }
 
 function lazyTab(key, fn) {
@@ -70,8 +76,8 @@ function lazyTab(key, fn) {
 // wrong paint. app.js calls it from openOrbByIP before the first loadOrb.
 function orbTabsReset() {
   tabLoaded.clear();
-  themesVisible = false;
-  appList = null; appsSub = "clock";
+  themeFaceReset();
+  appList = null; appsSub = "clock"; cardApps = []; appData = null;
   fmPath = "";
   fwStamp = "";
   tabNow = "orb";
@@ -322,14 +328,21 @@ $("#tz-loc").onclick = () => {
     : "this browser will not say where it is";
 };
 
-// ---- face: Apps — one sub-tab per app the board lists --------------------------
-// The ledger is the device's (GET /api/v1/apps), sub-tabs included: whatever the
-// board reports gets a tab, so a hub page never invents an app the firmware
-// dropped or hides one it gained. The toggle is the device's own owner door
-// (POST /api/v1/apps/enable?id&on) and it answers with the truth of the attempt.
-let appList = null;
+// ---- face: Apps — one sub-tab per app the LEDGER carries --------------------
+// GET /api/v1/apps answers with two arrays, and the first cut of this face read
+// the wrong one. `installed` is what stands on the dial — every used slot, the
+// built-in shell rows included; `apps` is only the /sd/apps drop zone, and it is
+// empty precisely when the dial is full. Reading `apps` as the ledger is why a
+// board running clock, HSB and menu reported "0 installed apps" to its owner.
+// The button matrix mirrors the device's own /apps page: a compiled row is never
+// togglable or uninstallable, a failed row gets Clear fault, a missing factory
+// app gets Restore, and the drop zone is the only place an Install button lives.
+// Every verb is the device's own door; the face renders and asks, and the door's
+// answer is the last word.
+let appList = null;   // the installed tier, in ledger order
+let cardApps = [];    // the drop-zone candidates sitting on the card
+let appData = null;   // the whole answer — factory_missing rides at the top level
 let appsSub = "clock";
-let themesVisible = false;
 const APP_TITLES = { clock: "Clock", color_picker: "HSB", menu: "Menu" };
 
 async function loadApps() {
@@ -338,11 +351,26 @@ async function loadApps() {
   state.textContent = "reading the app ledger\u2026";
   const d = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/apps"));
   if (!d || d.error) throw new Error((d && d.error) || "the app list did not answer");
-  appList = Array.isArray(d) ? d : (d.apps || d.rows || []);
-  state.textContent = appList.length + " installed app" + (appList.length === 1 ? "" : "s");
+  appData = d;
+  appList = Array.isArray(d.installed) ? d.installed : [];
+  cardApps = Array.isArray(d.apps) ? d.apps : [];
+  state.textContent = appList.length + " app" + (appList.length === 1 ? "" : "s")
+    + " on the dial" + (cardApps.length ? ", " + cardApps.length + " waiting on the card" : "");
   if (!appList.some((a) => a.slug === appsSub))
     appsSub = appList.some((a) => a.slug === "clock") ? "clock" : ((appList[0] && appList[0].slug) || "");
   renderAppsTab();
+}
+
+// appPost is the one leg every apps mutation walks: the proxy's orb path, an
+// empty JSON body (the device reads only the query), and the device's own
+// sentence as the thrown error — the face never re-cuts a refusal.
+async function appPost(path) {
+  const r = await hubFetch("/orb/" + encodeURIComponent(current.ip) + path, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  });
+  const d = await readDeviceJSON(r);
+  if (!d || d.error) throw new Error((d && d.error) || ("HTTP " + r.status));
+  return d;
 }
 
 function renderAppsTab() {
@@ -359,47 +387,147 @@ function renderAppsTab() {
     tabs.appendChild(b);
   }
   const a = appList.find((x) => x.slug === appsSub);
-  if (!a) return;
+  if (a) appFaceBody(a, body);
+  appFaceCardZone(body);
+  if (appData && appData.factory_missing) appFaceRestore(body);
+}
+
+function appFaceBody(a, body) {
+  const tier = a.compiled ? "built into the firmware"
+    : a.factory ? "factory app, slot " + a.slot : "slot " + a.slot;
+  const sub = document.createElement("p");
+  sub.className = "hint";
+  sub.textContent = a.slug + " \u00b7 " + tier
+    + (a.caps ? " \u00b7 may use: " + a.caps : " \u00b7 may use nothing")
+    + (a.period_ms ? " \u00b7 every " + (a.period_ms / 1000) + " s" : "")
+    + (a.n_settings ? " \u00b7 " + a.n_settings + " settings" : "")
+    + (a.on_glass ? " \u00b7 on the glass now" : "");
+  body.appendChild(sub);
   const row = document.createElement("div");
   row.className = "row";
-  const sw = document.createElement("button");
-  sw.type = "button";
-  sw.className = "ghost";
-  sw.textContent = a.enabled ? "Enabled \u2014 turn off" : "Disabled \u2014 turn on";
   const note = document.createElement("span");
   note.className = "hint";
-  note.textContent = (a.failed ? "last boot failed \u00b7 " : "") + (a.installed === false ? "not installed" : "");
-  sw.onclick = async () => {
-    sw.disabled = true;
-    note.textContent = "writing\u2026";
-    try {
-      const d = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip)
-        + "/api/v1/apps/enable?id=" + encodeURIComponent(a.slug) + "&on=" + (a.enabled ? "0" : "1"),
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }));
-      if (!d || d.error) throw new Error((d && d.error) || "refused");
-      a.enabled = d.state === "enabled";
-      note.textContent = d.state;
-      await loadApps();
-    } catch (e) {
-      note.textContent = "the orb refused it: " + e.message;
-    }
-    sw.disabled = false;
-  };
-  row.appendChild(sw);
+  if (!a.compiled) {
+    const sw = document.createElement("button");
+    sw.type = "button";
+    sw.className = "ghost";
+    sw.textContent = a.enabled ? "On the carousel \u2014 turn off" : "Turned off \u2014 turn on";
+    sw.onclick = async () => {
+      sw.disabled = true;
+      note.textContent = "writing\u2026";
+      try {
+        const d = await appPost("/api/v1/apps/enable?id=" + encodeURIComponent(a.slug)
+          + "&on=" + (a.enabled ? "0" : "1"));
+        note.textContent = d.state || "answered";
+        await loadApps();
+      } catch (e) {
+        note.textContent = "the orb refused it: " + e.message;
+        sw.disabled = false;
+      }
+    };
+    row.appendChild(sw);
+    const un = document.createElement("button");
+    un.type = "button";
+    un.className = "ghost";
+    un.textContent = "Uninstall";
+    un.onclick = async () => {
+      const named = APP_TITLES[a.slug] || a.title || a.slug;
+      const warn = a.factory
+        ? " This one ships inside the firmware: it stays gone until you press Restore the factory apps."
+        : " The file stays on your card.";
+      if (!confirm("Uninstall " + named + "? The dial erases its slot and forgets its permissions." + warn)) return;
+      un.disabled = true;
+      note.textContent = "uninstalling\u2026";
+      try { await appPost("/api/v1/apps/uninstall?id=" + encodeURIComponent(a.slug)); note.textContent = "uninstalled \u2014 the slot is free again"; await loadApps(); }
+      catch (e) { note.textContent = "the orb refused it: " + e.message; un.disabled = false; }
+    };
+    row.appendChild(un);
+  } else {
+    note.textContent = a.failed ? "quarantined at boot" : "built into the firmware \u2014 always on";
+  }
+  if (a.failed) {
+    const cf = document.createElement("button");
+    cf.type = "button";
+    cf.className = "ghost";
+    cf.textContent = "Clear fault";
+    cf.onclick = async () => {
+      if (!confirm("Clear the fault record for " + (a.title || a.slug) + "? A reboot brings it back; Wi-Fi and the card are untouched.")) return;
+      cf.disabled = true;
+      note.textContent = "clearing\u2026";
+      try { await appPost("/api/v1/apps/clear?id=" + encodeURIComponent(a.slug)); note.textContent = "fault cleared \u2014 reboot the dial to rebuild it"; await loadApps(); }
+      catch (e) { note.textContent = "the orb refused it: " + e.message; cf.disabled = false; }
+    };
+    row.appendChild(cf);
+  }
   row.appendChild(note);
   body.appendChild(row);
   const p = document.createElement("p");
   p.className = "hint";
   if (a.slug === "clock")
-    p.textContent = "The clock's face is its theme \u2014 choose or add one below.";
+    p.textContent = "The clock's face is its theme \u2014 the Themes tab stores, adds and deletes them.";
   else if (a.slug === "color_picker")
     p.textContent = "HSB takes no settings from here: it runs when the dial opens it. Turning it off hides it from the carousel.";
   else
     p.textContent = "This app exposes no settings the hub can edit.";
   body.appendChild(p);
-  themesVisible = a.slug === "clock" && !!current.ip;
-  if (themesVisible) loadThemes(current.ip);   // the reveal below happens on its answer
-  paintThemeCardVisibility();
+}
+
+// appFaceCardZone is the drop zone: everything sitting in /sd/apps on the card,
+// refused rows shown with the reader's own sentence rather than hidden, because
+// "copied nothing" and "copied four, all refused" are different owner problems.
+function appFaceCardZone(body) {
+  const h = document.createElement("p");
+  h.className = "hint";
+  h.textContent = cardApps.length
+    ? "On the card, not yet on the dial:"
+    : "The card's apps folder holds nothing to install.";
+  body.appendChild(h);
+  for (const c of cardApps) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const lbl = document.createElement("span");
+    lbl.className = "hint";
+    const named = c.title || c.stem;
+    lbl.textContent = named + " \u00b7 " + Math.round((c.file_size || 0) / 1024) + " KB"
+      + (c.ok ? "" : " \u2014 refused: " + (c.why || "the card would not say why"));
+    row.appendChild(lbl);
+    if (c.ok) {
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "ghost";
+      go.textContent = "Install";
+      go.onclick = async () => {
+        if (!confirm("Install " + named + " from the card onto the dial? The copy takes a few seconds and the app stays off until you turn it on.")) return;
+        go.disabled = true;
+        lbl.textContent = "installing\u2026";
+        try { await appPost("/api/v1/apps/install?id=" + encodeURIComponent(c.stem)); await loadApps(); }
+        catch (e) { lbl.textContent = "the orb refused it: " + e.message; go.disabled = false; }
+      };
+      row.appendChild(go);
+    }
+    body.appendChild(row);
+  }
+}
+
+function appFaceRestore(body) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const rb = document.createElement("button");
+  rb.type = "button";
+  rb.className = "ghost";
+  rb.textContent = "Restore the factory apps";
+  rb.onclick = async () => {
+    if (!confirm("Restore the clock and HSB? Anything already installed keeps its state; anything missing comes back enabled.")) return;
+    rb.disabled = true;
+    try { await appPost("/api/v1/apps/factory"); $("#mn-appstate").textContent = "restore queued \u2014 re-reading"; await loadApps(); }
+    catch (e) { $("#mn-appstate").textContent = "the orb refused it: " + e.message; rb.disabled = false; }
+  };
+  row.appendChild(rb);
+  const hint = document.createElement("span");
+  hint.className = "hint";
+  hint.textContent = "a factory app is missing from its slot";
+  row.appendChild(hint);
+  body.appendChild(row);
 }
 
 // ---- face: Files — the card as the owner's volume ------------------------------
@@ -666,14 +794,12 @@ $("#rt-go").onclick = async () => {
   }
 };
 
-// The tab shape needs a starting face as soon as the markup exists: Orb, always.
-// (Opening a board additionally goes through orbTabsReset in app.js.)
-function paintThemeCardVisibility() { showTab(tabNow); }
-// app.js's loadThemes reports through these two instead of writing the flag
-// across the file boundary: each classic script owns its own declarations, and
-// the jscheck suite enforces exactly that.
-function orbThemeListShown() { themesVisible = true; paintThemeCardVisibility(); }
-function orbThemeListHidden() { themesVisible = false; $("#mn-themecard").hidden = true; }
+// app.js's loadThemes reports through these two instead of writing a flag across
+// the file boundary: each classic script owns its own declarations, and the
+// jscheck suite enforces exactly that. The Themes face owns its card outright —
+// the reveal is the fetch's answer, the hide is the no-board answer's.
+function orbThemeListShown() { $("#mn-themecard").hidden = false; }
+function orbThemeListHidden() { $("#mn-themecard").hidden = true; }
 showTab("orb");
 
 

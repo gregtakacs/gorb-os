@@ -727,8 +727,13 @@ function stopOrbWake() {
   if (orbWakeTmr) { clearTimeout(orbWakeTmr); orbWakeTmr = 0; }
 }
 
-async function loadOrb() {
+async function loadOrb(returned) {
   stopOrbWake();                      // one wake-wait at a time, whatever started it
+  // wasBack is the page's one true word for "this answer is the board coming
+  // back": the read is a wake retry, or the caller says it is re-reading a
+  // board it had just written off (an update's boot wait, an mDNS return).
+  // It decides below whether the dormant faces re-arm.
+  const wasBack = orbWaking || returned === true;
   if (!current.ip) {
     $("#mn-curfw").textContent = "not on the LAN: the doors that work over the cable stay lit";
     return;
@@ -754,6 +759,11 @@ async function loadOrb() {
     // What a fresh status does instead is hand the stamp to the tab gate and let
     // the router re-assert the shape (a board that lost its address loses wifi).
     orbTabsStatus(st);
+    // Across a reboot, every face already loaded is a report about a board
+    // that no longer exists, and every face that failed its fetch while the
+    // dial was dark is owed a retry. tabRearm (tabs.js) clears the ledger and
+    // re-fires the face on screen; the rest load fresh on the next press.
+    if (wasBack) tabRearm();
     startPolling(current.ip);
   } catch (e) {
     $("#mn-curfw").textContent = "no orb answering at " + current.ip + " \u2014 " + e.message +
@@ -880,8 +890,9 @@ async function wifiUpdate() {
     $("#ff-mask").hidden = true;   // the card carries the rest; it is not a dead end
     pullFound();
     // The board is mid-reboot; its stamp (and this card's whole headline) only
-    // becomes true again once it answers. Re-read on the boot's own clock.
-    setTimeout(() => { loadOrb(); pullFound(); }, 8000);
+    // becomes true again once it answers. Re-read on the boot's own clock, and
+    // say so — the read is a return, so the faces re-arm with it.
+    setTimeout(() => { loadOrb(true); pullFound(); }, 8000);
   } catch (e) {
     state.textContent = e.message;
     go.disabled = false;
@@ -2063,7 +2074,7 @@ function paintFound(li, o) {
     // The stream says this board is answering again. If the open card is sitting
     // in its wake-wait for the same address, do not let the operator watch a
     // five-second timer for a fact the packet just proved: re-dial now.
-    if (wasWaiting && o.connected === true) { stopOrbWake(); loadOrb(); }
+    if (wasWaiting && o.connected === true) { stopOrbWake(); loadOrb(true); }
   }
   const softAP = !!o.provisioning && String(o.ip).indexOf("192.168.4.") === 0;
   const shown = o.name || o.instance || o.mac || o.key || "?";

@@ -71,6 +71,17 @@ function lazyTab(key, fn) {
   Promise.resolve().then(fn).catch(() => tabLoaded.delete(key));
 }
 
+// tabRearm is the answer to "the orb just came back". A board that went silent
+// and now answered was rebooted by somebody — an update the hub staged, a
+// factory reset, a radio that dropped. Every face loaded across that silence
+// holds facts about a boot that has ended, so app.js's return-from-wake clears
+// the ledger here and re-fires the face under the operator's hand. The other
+// faces are simply un-loaded: they fetch fresh the moment they are pressed.
+function tabRearm() {
+  tabLoaded.clear();
+  showTab(tabNow);
+}
+
 // orbTabsReset re-arms dormancy whenever a DIFFERENT board opens: last orb's
 // apps, zones, files and themes are this orb's facts, and a stale paint is a
 // wrong paint. app.js calls it from openOrbByIP before the first loadOrb.
@@ -253,13 +264,24 @@ async function loadZonesTable() {
   if (!current.ip) return;
   const cur = $("#tz-cur");
   cur.textContent = "reading the board's zone table\u2026";
-  const d = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/config"));
-  if (!d || !d.zones || !d.zones.length) throw new Error("empty zone table");
-  tzRows = d.zones;
-  tzCur = d.tz || "UTC";
-  tzPhone = tzPhoneZone();
-  cur.textContent = "the orb now shows " + tzCur + " \u00b7 " + d.zones.length + " zones it knows by name";
-  renderTzList();
+  try {
+    const d = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/config"));
+    if (!d || !d.zones || !d.zones.length) throw new Error("the board answered no zones");
+    tzRows = d.zones;
+    tzCur = d.tz || "UTC";
+    tzPhone = tzPhoneZone();
+    cur.textContent = "the orb now shows " + tzCur + " \u00b7 " + d.zones.length + " zones it knows by name";
+    renderTzList();
+  } catch (e) {
+    // A card parked on "reading\u2026" forever is what the owner saw during an
+    // update: the dial was mid-reboot, the fetch died, and the silence wore
+    // the costume of a page still working. Name the failure and the way out;
+    // re-throw so lazyTab drops its mark and the next press (or the wake
+    // retry's tabRearm, app.js) loads the table again by itself.
+    cur.textContent = "the zone table did not load: " + (e && e.message ? e.message : String(e)) +
+      " \u2014 the orb may be mid-reboot; it reloads when the board answers again";
+    throw e;
+  }
 }
 
 function renderTzList() {

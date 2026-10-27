@@ -194,6 +194,39 @@ func TestAppsFaceReadsTheLedgerAndThemesIsItsOwnFace(t *testing.T) {
 	}
 }
 
+// A board rebooting mid-afternoon is the hub's own doing most of the time, and
+// the page has to survive it in the open. Live on 2026-10-26: the operator ran
+// a firmware update, the Orb face's zone fetch died against a dial that was
+// busy booting, and the card sat reading "reading the board's zone table..."
+// forever — the exact frozen-page costume the update overlay used to wear. Two
+// sentences keep that class out of the code:
+//
+//   - loadZonesTable names its failure in the card's own line instead of
+//     leaving the fetch's silence painted as progress, and re-throws so the
+//     lazy ledger drops the key and a later press (or the wake retry) reloads.
+//   - The page's return-from-silence path — a wake retry that answers, an
+//     update's boot wait, an mDNS frame saying the board is back — calls
+//     tabRearm, so the faces the board was showing reload on their own.
+func TestZoneFaceTellsTheTruthAndFacesRearmOnReturn(t *testing.T) {
+	tabs := readWebFile(t, "tabs.js")
+	app := readAppJS(t)
+	if !strings.Contains(tabs, "the zone table did not load: ") {
+		t.Error("loadZonesTable is back to leaving the card parked on \"reading...\" when the fetch dies")
+	}
+	if !strings.Contains(tabs, "throw e;") {
+		t.Error("loadZonesTable swallows its failure; lazyTab can no longer re-arm the key for a retry")
+	}
+	if !strings.Contains(tabs, "function tabRearm()") {
+		t.Error("tabs.js lost tabRearm, so a board that rebooted could not have its faces re-armed")
+	}
+	if !strings.Contains(app, "if (wasBack) tabRearm();") {
+		t.Error("app.js no longer re-arms the faces when a silent board answers again")
+	}
+	if !strings.Contains(app, "loadOrb(true); pullFound()") {
+		t.Error("the update's boot wait stopped declaring itself a return; faces would reload stale")
+	}
+}
+
 // cardMarkup returns the article element whose id is wanted, or "" — enough of
 // the page to read one card's own attributes and controls without the whole
 // document's contents answering a question about one card.

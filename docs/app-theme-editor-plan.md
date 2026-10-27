@@ -473,6 +473,23 @@ same-origin before it spends a token, and posts the container to the existing
 
 **S5 — Delete the seed.** *Status: DONE 2026-10-27.* The hub's embedded pair, `seed.go` whole, the `POST /api/orb/seed` door, the join-time auto-seed, and the Apps face's seed row are gone. The generators survived and re-pointed: their output is now committed starter artifacts under `tools/orb-manager/starter/`, and `host_orbapp_install_test.py`'s freshness legs re-ran onto them with a new leg demanding the clock's region be present (an S4 regression now fails the suite, not a skip). `ui_test.go` flipped from mandating the seed row to forbidding it. What the deletion did *not* take is the freshness answer: `starter.go`'s disk resolver keeps `Client.Containers` honest, a hub with no readable starter dir saying "cannot compare" rather than "up to date", and `TestThemeAppsReportsNoDriftForAMatchingStarter` runs the full six-word tuple — region bytes and all — against the real artifact through the fake dial. A fresh orb now boots to the shell menu and waits for files copied to a card, which is exactly the state §40 says D30 built for.
 
+**Bench pass two, same day: the door the operator actually clicks.** The
+operator saw no editor on the Clock row and still the old global "Theme Editor"
+in the header. Three causes, all fixed. The device-reported `editor_url`
+omitted the dial address (`/editor/clock/` where the route is
+`/editor/<ip>/<slug>/`), so the pane's first real click got a 400 — the
+region-backed tests built their own route paths and never read the payload,
+which is why the suite missed it. The Edit button existed only inside the
+empty-pane branch, so an app WITH themes had no door. And the header's global
+`composer-link` outlived its D37 replacement. The Themes pane now carries a
+per-app `Edit <App> themes…` in its toolbar for any app whose row reports an
+editor (the empty pane keeps its own inline button), the payload's URL names its
+board, and the header link is deleted — pinned by the inverted composer gate
+and a new ui gate. Live on orb-B after the fix: the enumeration answers
+`/editor/192.168.2.34/clock/`, that exact URL serves the 327 KB entry document
+with the bridge shim, and both runtime files load. The running hub process
+holds the old embed: restart it to see the new page.
+
 **S6 — A second app.** Any theme-aware app adds a region plus a `theme.*` bridge
 handler and triggers no firmware, format, or route change. That is the test that the
 extension point is real rather than clock-shaped.

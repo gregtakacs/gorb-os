@@ -42,6 +42,13 @@ type OrbInfo struct {
 	// against the firmware that would flash next, which the flasher has no
 	// business knowing.
 	Verdict string `json:"verdict,omitempty"`
+	// ChipAnswered says the ROM handshake reached THIS chip: it synced, verified
+	// as an ESP32-S3, and read its eFuse MAC. An IsOrb=false answer with this set
+	// is a present-tense verdict about the silicon — the chip is running, or not
+	// running, firmware — and doors may end an orb life on it. Without it the
+	// answer is about the wire (port busy, no SYNC, a stranger's device), which
+	// must never read as a verdict about the chip.
+	ChipAnswered bool `json:"chipAnswered,omitempty"`
 }
 
 // The app_init lines IDF's bootloader prints. Labels match on their prefix, so
@@ -217,6 +224,10 @@ func ProbeOrb(ctx context.Context, port string) (OrbInfo, error) {
 		return info, nil
 	}
 	info.MAC = formatMAC(mac) // eFuse beats the host's serial-number guess
+	// From this line the answer is about the silicon, not the wire: the chip
+	// synced, named itself as an S3, and read its own eFuse MAC. A later
+	// IsOrb=false is a present-tense verdict the hub may act on.
+	info.ChipAnswered = true
 
 	// Boot it back into its app and catch the descriptor. A chip that answers the
 	// ROM and then prints no app_init block is an ESP32-S3 not running gorb-os: a

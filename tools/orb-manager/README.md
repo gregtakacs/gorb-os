@@ -905,10 +905,16 @@ block: the ROM takes a whole 1 KB block or rejects it, so stopping at a boundary
 leaves a flash the next full flash overwrites cleanly, while stopping mid-block
 would leave the ROM waiting for data that never arrives. A cancelled session does
 not reset the chip — it stays in the bootloader, and the stream says so instead of
-reporting a timeout. Quitting is the same story: closing the app window or pressing
-Ctrl-C waits (up to `opQuitBudget`) for live operations to land before releasing
-the listener, because `http.Server.Shutdown` waits only 3 s and main returning then
-ends the process mid-write, which is exactly how an orb is left half-flashed. A
+reporting a timeout. Quitting is the same story, split by what the wire carries:
+closing the app window or pressing Ctrl-C cancels live reads and round-trips
+(identify, cmd, console, theme) at once — none can half-write a board — and gives a
+wedged one only `quietQuitBudget` (10 s) to walk out before the hub quits over it.
+Only kinds that write flash (flash, lonely, wipe, provision) are sheltered, and for
+up to `opQuitBudget`, because `http.Server.Shutdown` waits only 3 s and main
+returning then ends the process mid-write, which is exactly how an orb is left
+half-flashed. (The first hub sheltered every kind for the full five minutes, and a
+stalled PING that ignores its context — the serial driver stuck below it — made the
+hub look unquittable; bench, 2026-10-26.) A
 second Ctrl-C cancels the live operations and quits. Two cables may be busy at
 once: the operation registry is keyed by canonical port path, replacing the
 process-wide `flashing` flag that used to make an idle orb wait for an unrelated
@@ -983,13 +989,26 @@ accepts six verbs, each replying with an `-ACK`/`-NAK` line the hub can key on:
 | `NAME <hex-name>` | set the orb's own name, through the same validating door `POST /api/v1/name` uses |
 | `SCAN` | arm a scan and mirror the results to the console as `PROVSCAN` lines — the network list, without joining the orb's AP. It posts the firmware's **armed** scan (`NET_CMD_SCAN_BOOT`), not the bare one: `scan_collect()` frees the driver's AP list and prints nothing unless the state is `SCAN_SCANNING`, and `scan_begin()` does not set that state — it expects its caller to have armed it. A `SCAN` that posted the bare command therefore ran a real radio scan, discarded every result at the done event, and never printed the `PROVSCAN-END` the hub waits for; the hub re-pushed for its whole budget and reported no ack. `scancmd_test.go` pins the post, because the wrong call reads as the tidier one |
 | `MODE <hex-ap\|hex-sta>` | switch the persistent reachability mode and reboot: `ap` = isolated (own AP + page only, never associates), `sta` = rejoin Wi-Fi. `POST /api/v1/wifi/mode {"mode":"ap\|"sta"}` is the same door over HTTP, and the page's only exit from an isolation the page can also enter — an isolated orb is reachable at exactly one address, its own `192.168.4.1`, so a one-way mode would be a trap |
-| `RESET ALL` | factory-reset, the whole device: erase **both** NVS partitions and reboot as if freshly flashed. The literal `ALL` guard is required and it is the scope — credentials, tz, name and mode go, and so do the theme choice, the app grants and enables, every per-app setting, the fault ledger and the idle-dim timeout, plus esp_wifi's own copy of the passphrase in `nvs.net80211` (a reset that left the driver's copy behind would leave a passphrase on a board that is changing hands). Same two partitions the flash-time `wipe` target (`nvs` + `storage`) — the runtime door and the wired-flash door now mean the same thing. Answers `RESET-ACK`, or `RESET-PART` when one partition refused to erase; either way it reboots, because a half-wiped orb is neither configured nor clean. On a **clean** wipe the reset then writes the default name **The Orb** into the fresh `storage` NVS (`net_factory_reset`), so the board comes back introduced rather than silent — status, the page, the serial read and the hub's next poll all carry that one word until the next owner's `NAME` replaces it or clears it; the hub's ack write-back puts the same word on the card immediately, before the board can answer a poll. `RESET-PART` seeds nothing back into a half-erased store. Not erased: installed app *blobs* (they resolve from the `apps` partition headers, so they come back present but unarmed and defaulted) and the firmware itself. No HTTP door matches it — `POST /api/v1/reset` only reboots into provisioning and keeps the config |
+| `RESET ALL` | factory-reset, the whole device: erase **both** NVS partitions and reboot as if freshly flashed. The literal `ALL` guard is required and it is the scope — credentials, tz, name and mode go, and so do the theme choice, the app grants and enables, every per-app setting, the fault ledger and the idle-dim timeout, plus esp_wifi's own copy of the passphrase in `nvs.net80211` (a reset that left the driver's copy behind would leave a passphrase on a board that is changing hands). Same two partitions the flash-time `wipe` target (`nvs` + `storage`) — the runtime door and the wired-flash door now mean the same thing. Answers `RESET-ACK`. Since 2026-10-27 the serial door does not run the erase itself: the verb lands on the radio task, whose 3 KB stack cannot hold a double `nvs_flash_erase`, so it sets an RTC-held intent, acks, and reboots, and `orb_net_apply_pending_factory_reset()` runs the wipe at the top of that boot, where an 8 KB stack is cheap. The ack is therefore a promise the next boot is equipped to keep; an incomplete wipe is reported there, on the console, rather than as `RESET-PART` on this door. On a **clean** wipe the reset writes the default name **The Orb** into the fresh `storage` NVS (`net_factory_reset`), so the board comes back introduced rather than silent — status, the page, the serial read and the hub's next poll all carry that one word until the next owner's `NAME` replaces it or clears it; the hub's ack write-back puts the same word on the card immediately, before the board can answer a poll. Not erased: installed app *blobs* (they resolve from the `apps` partition headers, so they come back present but unarmed and defaulted) and the firmware itself. The HTTP twin is `POST /api/v1/factory?confirm=ALL`, which runs the same `net_factory_reset()` inline on the httpd task; `POST /api/v1/reset` is a different thing — it reboots into provisioning and keeps the config |
 | `PING` | report the orb's own state and running version: `ORB-PING b fw=v1.2.3+abc` — state `b` (unconfigured), `c-ap` or `c-sta`, and the same `esp_app_desc_t` version `/api/v1/status` carries. A board on firmware older than the stamp answers with the bare state token and the hub folds that as no news about the version rather than as no version |
 
 A board boots with one `GorbOS-STATE <b|c-ap|c-sta>` line so the hub can classify it
 without a reboot-probe. State (a) — a bare ESP32-S3 with no gorb-os — is the absence of
 that line on a chip that answers the ROM, which is what `ProbeOrb` already reports as
 "an ESP32-S3 at …, but no gorb-os firmware booted".
+
+Silence between a pushed verb and its ack used to be the whole verdict — and silence is
+a lie when the board answered by crashing. Since the 2026-10-27 bench (every `PROV` with
+a timezone rebooted the board on an NVS write from a PSRAM-stack task, and both the hub
+and `serprov` could only say "no ack" while the console streamed the abort), the serial
+drivers watch the stream for IDF's own panic voices — `assert failed:`, `Guru Meditation`,
+`abort() was called`, `Kernel panic`, and the ROM's `rst:0x` boot banner after the push —
+and report the first such line as `crash` on the result (and in the error text of a
+failed command). A crash ends the re-push cycle early: a board that died on the command
+is not waiting for it to be repeated, and one fewer push is one fewer blip on the bench.
+`provision.go` turns a crashed provisioning into a sentence that names the firmware as
+the suspect instead of the passphrase. Markers seen after an ack are the commanded
+reboot doing its job (`MODE`, `RESET`) and never read as a crash.
 
 A *named* board follows it with one `GorbOS-NAME <name>` line, and that line is the
 door's read half. `NAME` writes a name and no verb reads one back, so a station board

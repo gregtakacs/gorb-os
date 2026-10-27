@@ -21,8 +21,10 @@ import (
 
 // lonelyAnswer is what a reboot-paid probe reports for a board running the hub's own
 // blanking stub: a MAC read from the eFuse, a project that is not gorb-os, and no orb.
+// ChipAnswered is the fact that makes the negative a verdict rather than a wire noise:
+// the ROM synced, verified the S3, and read the eFuse before this answer existed.
 func lonelyAnswer(port, mac string) esprom.OrbInfo {
-	return esprom.OrbInfo{Port: port, MAC: mac, IsOrb: false, Project: "lonely",
+	return esprom.OrbInfo{Port: port, MAC: mac, IsOrb: false, ChipAnswered: true, Project: "lonely",
 		Version: "premerge-A-20261015-36-gf7086df", Reason: "runs different firmware: lonely"}
 }
 
@@ -74,7 +76,6 @@ func TestNotOrbChipReadFilesNoRow(t *testing.T) {
 		t.Error("a NOT-an-orb chip read cleared the lonely mark that ended the board")
 	}
 }
-
 
 // TestContradictedRowIsForgettable is the gate fix, and the one the operator needed
 // within the minute: the row exists, its presence clock is fresh, and nothing on the
@@ -245,5 +246,81 @@ func TestAPaidForeignVerdictStillAgesBackIntoAQuestion(t *testing.T) {
 
 	if ask, why := s.cableNeedsProbe(cableSighting{port: port, espressif: true, mac: mac}); !ask {
 		t.Errorf("a disproven lead aged out and still was not re-asked: %s", why)
+	}
+}
+
+// TestPaidNegativeVerdictEndsTheRow is the operator's rule of 2026-10-26 stated as code:
+// a flash erase wipes the data that the board ever was an orb — chip AND hub, no
+// excuses. The board was written over out of the hub's sight (bench CLI, another hub, a
+// lonely session whose MAC never streamed back); the first paid probe that reaches the
+// silicon ends the row itself, without the operator pressing Forget and without waiting
+// on the announce clock, the cable claim, or a liveness verdict to age out first.
+func TestPaidNegativeVerdictEndsTheRow(t *testing.T) {
+	s := newHub()
+	const mac, port, ip = macHall, "/dev/ttyACM9", "192.0.2.31"
+
+	onboardRow(t, s, mac, ip, time.Now())
+	s.grants.learnAs(ip, mac)
+	s.live.record(ip, true, time.Now())
+
+	s.foldProbeIdentity(lonelyAnswer(port, mac))
+
+	if _, known := s.fleet.Look(mac); known {
+		t.Error("a chip-confirmed NOT-an-orb verdict left the fleet row standing")
+	}
+	if s.grants.allowed(ip) {
+		t.Error("the ending left a grant standing at an address that runs no orb")
+	}
+	if _, known := s.live.verdict(ip, time.Now()); known {
+		t.Error("the ending left a cached liveness verdict — the HTTP half of the board outlived the row")
+	}
+	if s.lonely.has(mac) {
+		t.Error("an erase done outside this hub must not claim the hub's own lonely mark")
+	}
+}
+
+// TestUncertifiedNegativeEndsNoRow guards the edge the ending must never cross. A probe
+// that never got past the wire — port held, no SYNC, a stranger's serial stick behind an
+// orb-shaped descriptor — answers about the cable, not the silicon, and a healthy orb
+// mid-handshake pays for its own row with its life if silence reads as erasure. The
+// same fold that ends a ChipAnswered negative files nothing against this one.
+func TestUncertifiedNegativeEndsNoRow(t *testing.T) {
+	s := newHub()
+	const mac, port, ip = macHall, "/dev/ttyACM9", "192.0.2.31"
+
+	onboardRow(t, s, mac, ip, time.Now())
+	s.grants.learnAs(ip, mac)
+
+	s.foldProbeIdentity(esprom.OrbInfo{Port: port, MAC: mac, IsOrb: false,
+		Reason: "port unavailable: resource temporarily unavailable"})
+
+	if _, known := s.fleet.Look(mac); !known {
+		t.Error("a probe that never reached the chip ended an orb's row")
+	}
+	if !s.grants.allowed(ip) {
+		t.Error("a probe that never reached the chip revoked the board's grant")
+	}
+}
+
+// TestMacKnownForPortNamesTheBoardTheHubBelieves is the lonely door's failure half:
+// when the session dies before the eFuse read, the stream must name the board the hub
+// still believes sits on the port, so the operator is told the row that survived rather
+// than the one they think they ended. It reads the same two records every refusal
+// consults: the identity cache and this sweep's sighting, and nothing else.
+func TestMacKnownForPortNamesTheBoardTheHubBelieves(t *testing.T) {
+	s := newHub()
+	const mac, port = macHall, "/dev/ttyACM9"
+
+	if m := s.macKnownForPort(port); m != "" {
+		t.Errorf("a port nobody sighted gave back %q; it knows nothing", m)
+	}
+	s.cables.list = func() ([]cableSighting, error) {
+		return []cableSighting{{port: port, isOrb: true, espressif: true, mac: "44:BD:8D:78:26:18"}}, nil
+	}
+	if m := s.macKnownForPort(port); m != mac {
+		t.Errorf("the sweep's claim was not handed back: %q want %q", m, mac)
+	}
+	if m := s.macKnownForPort("/dev/ttyACM7"); m != "" {
+		t.Errorf("another port borrowed this board: %q", m)
 	}
 }

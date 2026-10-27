@@ -582,30 +582,59 @@ func main() {
 	}
 }
 
-// opQuitBudget bounds how long a quit waits for a live port operation to land on
-// its feet. A full-manifest flash writes the 1.85 MB art partition too, so minutes
+// opQuitBudget bounds how long a quit waits for a live FLASH WRITE to land on its
+// feet. A full-manifest flash writes the 1.85 MB art partition too, so minutes
 // is the right order; past it a wedged operation must not make the hub unquittable.
 const opQuitBudget = 5 * time.Minute
 
-// quit releases the listener, giving any live port operation the chance to stop at
-// a block boundary first. Window-close and Ctrl-C both land here. The order is the
-// point: srv.Shutdown waits a bounded 3 s and then returns, and main returning ends
-// the process — which mid-write is exactly how an orb is left half-flashed.
+// quietQuitBudget bounds how long a quit shelters a cancelled read or round-trip
+// (identify, cmd, console, theme) while it walks out. Well-behaved ones land in a
+// read-timeout tick; a wedged one — a serial driver stuck on a board that vanished
+// mid-command — gets this and no more, because ending it mid-byte cannot hurt the
+// board. A reader's own budget (40 s for a cmd) is no help here: the stall lives
+// below the context, in an open or close that ignores it, and bench logs from
+// 2026-10-26 show a cmd holding quit for the full opQuitBudget this way.
+var quietQuitBudget = 10 * time.Second
+
+// quit releases the listener. Window-close and Ctrl-C both land here. The order is
+// the point: srv.Shutdown waits a bounded 3 s and then returns, and main returning
+// ends the process — which mid-write is exactly how an orb is left half-flashed.
+// So only kinds that write flash are sheltered, and for the full budget. Everything
+// else is cancelled first and given quietQuitBudget to leave on its own: a hub that
+// a harmless PING can hold hostage for five minutes is a hub that trains the
+// operator to kill it with the task manager, mid-flash, which is worse than any
+// half-command the cancel could cost.
 func (s *Server) quit(srv *http.Server) {
-	if live := s.ops.running(); len(live) > 0 {
-		log.Printf("orb-manager: %d port operation(s) live (%s); waiting up to %s for them to finish - interrupt again to cancel and quit",
+	quiet := func(o *op) bool { return !o.Kind.writesFlash() }
+	if live := s.ops.cancelWhere(quiet); len(live) > 0 {
+		log.Printf("orb-manager: quit cancelled %d read/round-trip operation(s): %s", len(live), opSummary(live))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), quietQuitBudget)
+	defer cancel()
+	if err := s.ops.waitWhere(ctx, quiet); err != nil {
+		if wedged := s.ops.runningWhere(quiet); len(wedged) > 0 {
+			log.Printf("orb-manager: quitting over %d wedged read(s) after %s (%s) - none of them writes flash",
+				len(wedged), quietQuitBudget, opSummary(wedged))
+		}
+	}
+	if live := s.ops.runningWhere((*op).writesFlashByKind); len(live) > 0 {
+		log.Printf("orb-manager: %d flash write(s) live (%s); waiting up to %s for them to finish - interrupt again to cancel and quit",
 			len(live), opSummary(live), opQuitBudget)
 		ctx, cancel := context.WithTimeout(context.Background(), opQuitBudget)
 		defer cancel()
-		if err := s.ops.waitIdle(ctx); err != nil {
+		if err := s.ops.waitWhere(ctx, (*op).writesFlashByKind); err != nil {
 			log.Printf("orb-manager: %d operation(s) still live after %s; quitting anyway",
 				len(s.ops.running()), opQuitBudget)
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_ = srv.Shutdown(ctx)
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel3()
+	_ = srv.Shutdown(ctx3)
 }
+
+// writesFlashByKind is op.writesFlash in method-value shape, so it can be passed
+// as a runningWhere/cancelWhere predicate without an allocating closure at call.
+func (o *op) writesFlashByKind() bool { return o.Kind.writesFlash() }
 
 // watchSignals makes Ctrl-C mean "quit when nothing is writing", and a second
 // interrupt mean "cancel what is writing and quit now". The first interrupt does

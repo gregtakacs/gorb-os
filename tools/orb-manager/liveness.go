@@ -121,6 +121,21 @@ func (c *liveCache) record(ip string, alive bool, at time.Time) bool {
 	return had && prev.alive != alive
 }
 
+// forget drops a verdict the hub no longer has a reason to hold. A board the hub
+// just ended — lonely write, paid not-an-orb probe — must leave no cached answer
+// behind at its old address: a stale "alive" would keep the card claiming a board
+// that runs nothing, and a stale "dead" would let one more row dial for a chip
+// that is no longer anybody's orb. The answer comes back as "unknown", which is
+// the truth: this hub stopped asking about an address it no longer claims.
+func (c *liveCache) forget(ip string) {
+	if c == nil || ip == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.byIP, ip)
+}
+
 // check asks about one address now and files the answer. It is the synchronous half: the
 // forget door calls it when the cached verdict is unknown, because that door is one dial
 // and happens once per button press.

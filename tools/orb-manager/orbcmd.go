@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -151,6 +152,11 @@ func (s *Server) handleOrbCmd(w http.ResponseWriter, r *http.Request) {
 	// A cancelled or timed-out operation reports through the op registry, so say so.
 	// A read error AFTER the ack is the orb vanishing on reboot — that is a success.
 	if err != nil && (res == nil || !res.Ack) {
+		if res != nil && res.Crash != "" {
+			// The budget died on a panic voice from the console: say crashed,
+			// not merely unanswered — the difference is retype vs report.
+			err = fmt.Errorf("%w — the board crashed on the command: %s", err, res.Crash)
+		}
 		send(map[string]any{"error": err.Error()})
 		return
 	}
@@ -218,5 +224,9 @@ func (s *Server) handleOrbCmd(w http.ResponseWriter, r *http.Request) {
 		"ip":       res.IP,
 		"state":    res.State,
 		"networks": res.Networks,
+		// The no-ack verdict's receipts: when a panic line crossed the console
+		// between the push and the budget, "didn't accept" is a lie — it accepted
+		// and died. The UI quotes it.
+		"crash": res.Crash,
 	}})
 }

@@ -1205,7 +1205,8 @@ $("#fj-reset").onclick = async () => {
       else if (ev.result) {
         acked = ev.result.ack === true;
         log.textContent += (acked ? "\n\u2713 Done — the orb is ready to set up again\n"
-                                  : "\n\u2717 The orb didn't accept the reset\n");
+                                  : "\n\u2717 The orb didn't accept the reset" +
+                                    (ev.result.crash ? " — it crashed taking it: " + ev.result.crash : "") + "\n");
       }
       log.scrollTop = log.scrollHeight;
     });

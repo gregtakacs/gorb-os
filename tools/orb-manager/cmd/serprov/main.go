@@ -79,8 +79,16 @@ func main() {
 		fmt.Printf("    ch%-2d rssi%-4d %s %q\n", n.Ch, n.RSSI, map[bool]string{true: "open", false: "   "}[n.Open], n.SSID)
 	}
 	if !res.Ack {
+		if res.Crash != "" {
+			fmt.Println("\nserprov: NOT PROVEN - the board crashed on the command instead of answering:")
+			fmt.Println("    " + res.Crash)
+			os.Exit(1)
+		}
 		fmt.Println("\nserprov: NOT PROVEN - no PROV-ACK after writing the PROV line.")
 		os.Exit(1)
+	}
+	if res.Crash != "" {
+		fmt.Println("serprov: note - the board acked, then this crossed the console: " + res.Crash)
 	}
 	if res.IP != "" {
 		fmt.Printf("\nserprov: PROVEN - orb joined and took DHCP lease %s (read off the USB console).\n", res.IP)

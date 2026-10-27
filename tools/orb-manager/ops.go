@@ -188,18 +188,60 @@ func (r *opRegistry) running() []*op {
 	return all
 }
 
-// waitIdle blocks until no operation is live, or until ctx is done. The shutdown
-// path uses it to avoid pulling the wire out from under a live write.
-func (r *opRegistry) waitIdle(ctx context.Context) error {
+// writesFlash reports whether killing the process mid-operation can leave the
+// board holding a partial image. Only these kinds earn the quit guard's long
+// wait. A probe, a console read, a serial round-trip and a theme push are safe
+// to end at any byte: the chip's flash is untouched, and the hub or the board
+// simply re-asks. Reading one while it dies loses a console transcript, not a
+// board; a dropped theme transfer leaves a .part file the firmware ignores.
+func (k opKind) writesFlash() bool {
+	switch k {
+	case opFlash, opLonely, opWipe, opProvision:
+		return true
+	}
+	return false
+}
+
+// runningWhere snapshots the live operations matching pred, sorted by port.
+func (r *opRegistry) runningWhere(pred func(*op) bool) []*op {
+	r.mu.Lock()
+	all := make([]*op, 0, len(r.byPort))
+	for _, o := range r.byPort {
+		if pred(o) {
+			all = append(all, o)
+		}
+	}
+	r.mu.Unlock()
+	sort.Slice(all, func(i, j int) bool { return all[i].Port < all[j].Port })
+	return all
+}
+
+// cancelWhere cancels every live operation matching pred and returns them.
+// Cancelling an already-cancelled operation is harmless, so quit paths can fire
+// it twice (window close racing an interrupt) without a second thought.
+func (r *opRegistry) cancelWhere(pred func(*op) bool) []*op {
+	live := r.runningWhere(pred)
+	for _, o := range live {
+		o.cancel()
+	}
+	return live
+}
+
+// waitWhere blocks until no live operation matches pred, or until ctx is done.
+// The quit path uses it to shelter writers while stepping over a wedged reader.
+func (r *opRegistry) waitWhere(ctx context.Context, pred func(*op) bool) error {
 	for {
-		if len(r.running()) == 0 {
+		matches := r.runningWhere(pred)
+		if len(matches) == 0 {
 			return nil
 		}
 		r.mu.Lock()
 		var first chan struct{}
 		for _, o := range r.byPort {
-			first = o.done
-			break
+			if pred(o) {
+				first = o.done
+				break
+			}
 		}
 		r.mu.Unlock()
 		select {

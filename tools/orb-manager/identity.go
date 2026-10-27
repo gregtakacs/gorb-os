@@ -772,6 +772,14 @@ func (s *Server) foldProbeIdentity(info esprom.OrbInfo) {
 	// so a board revived on another bench — or by the CLI — stayed suppressed here
 	// forever while probing back as an orb.
 	if !info.IsOrb {
+		// The chip answered for itself and said it runs no gorb-os. That ends
+		// the board's orb life at this hub too, wherever the erase happened:
+		// the fleet row, the name, the grant and the liveness verdict all go
+		// now (wipe.go's endProvenNotOrb), which is the lonely door's promise
+		// kept for boards written over by hands this hub did not hold. The
+		// port keeps its contradictory stamp: it is the evidence that holds
+		// the descriptor down and keeps the next sweep from re-filing the row.
+		s.endProvenNotOrb(info)
 		return
 	}
 	s.markCable(info.MAC)

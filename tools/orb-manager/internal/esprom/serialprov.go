@@ -93,6 +93,11 @@ type ProvResult struct {
 	Sent     bool      `json:"sent"`
 	Ack      bool      `json:"ack"`
 	IP       string    `json:"ip,omitempty"` // DHCP lease read off the console after the join
+	// Crash is the first panic/boot-marker console line seen after the PROV line
+	// went down — the board dying on the command rather than ignoring it. Unlike
+	// a serial verb, PROV never reboots on command, so any marker after the write
+	// is news, ack included. See CmdResult.Crash.
+	Crash string `json:"crash,omitempty"`
 }
 
 // orbIPRe matches the firmware's post-lease console banner (orb_net.c on_ip):
@@ -221,6 +226,11 @@ func ProvisionOn(ctx context.Context, pt *Port, ssid, pass, tz string, scanBudge
 				if onLine != nil {
 					onLine(line)
 				}
+				// After the PROV line is down, the console's panic and boot
+				// voices are the failure report the ack silence was hiding.
+				if res.Sent && res.Crash == "" {
+					res.Crash = crashMarker(line)
+				}
 				if strings.Contains(line, "SoftAP up") {
 					res.APSeen = true
 				}
@@ -255,9 +265,12 @@ func ProvisionOn(ctx context.Context, pt *Port, ssid, pass, tz string, scanBudge
 	// Data Buffering: "more data will get it unstuck"). Re-sending the same
 	// CRLF line is idempotent — the firmware parser keys on the PROV token — and
 	// we stop at the first PROV-ACK, so extra pushes are harmless.
+	// A crash ends the push cycle early: the board answered the line by dying, and
+	// a third push at a rebooting chip only buys the operator another blip and two
+	// more minutes of wondering. The caller reports the crash line instead.
 	ackDeadline := time.Now().Add(ackBudget)
 	nextPush := time.Now().Add(2 * time.Second)
-	for !res.Ack && time.Now().Before(ackDeadline) {
+	for !res.Ack && res.Crash == "" && time.Now().Before(ackDeadline) {
 		if err := ctxErr(ctx); err != nil {
 			return res, err
 		}
@@ -280,7 +293,7 @@ func ProvisionOn(ctx context.Context, pt *Port, ssid, pass, tz string, scanBudge
 		if res.Ack {
 			break
 		}
-		if !time.Now().Before(nextPush) {
+		if res.Crash == "" && !time.Now().Before(nextPush) {
 			if _, err := p.Write([]byte(prov)); err != nil {
 				return res, fmt.Errorf("esprom: prov write: %w", err)
 			}
@@ -298,7 +311,7 @@ func ProvisionOn(ctx context.Context, pt *Port, ssid, pass, tz string, scanBudge
 	// caller can still find the orb on the LAN the usual way.
 	if res.Ack && ipBudget > 0 {
 		ipDeadline := time.Now().Add(ipBudget)
-		for res.IP == "" && time.Now().Before(ipDeadline) {
+		for res.IP == "" && res.Crash == "" && time.Now().Before(ipDeadline) {
 			if err := ctxErr(ctx); err != nil {
 				return res, err
 			}

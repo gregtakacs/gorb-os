@@ -107,6 +107,18 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
 		send(map[string]any{"error": err.Error()})
 		return
 	}
+	if res.Crash != "" {
+		// The console said the quiet part the ack silence hid: the board died on
+		// the command (or on its way to the lease). Say which, quote the line, and
+		// send the operator to report firmware rather than to retype a passphrase.
+		when := "while answering the provisioning command"
+		if res.Ack {
+			when = "after acknowledging, before any lease — the join did not land"
+		}
+		send(map[string]any{"error": "the board crashed " + when + ": " + res.Crash +
+			" — that is a firmware bug, not a bad passphrase; report the line with the fw= stamp. Credentials never persist without a lease, so the board is unchanged."})
+		return
+	}
 	if res.IP != "" {
 		// The lease the orb announced on its own console is a USB-learned address,
 		// so the proxy may dial it without anyone typing it. An address the hub

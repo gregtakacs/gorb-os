@@ -157,6 +157,25 @@ func (s *Server) handleLonely(w http.ResponseWriter, r *http.Request) {
 		s.endAsLonely(req.Port, lonelyMAC)
 	}
 	if lerr != nil {
+		// The eFuse read sits ahead of every destructive step in the session,
+		// so an ending MAC means the erase phase was reached and a missing one
+		// means the chip was never written: not cancelled mid-erase, never. The
+		// old message claimed "already written, and forgotten" in both cases,
+		// and the second case was the lie that sent an operator looking for a
+		// row that had never gone. The untouched board's row says so, by MAC
+		// where the hub's own records name the port.
+		if lonelyMAC == "" {
+			hint := ""
+			if m := s.macKnownForPort(req.Port); m != "" {
+				hint = " — the hub still lists " + m + " on this port"
+			}
+			say := "the chip never answered the ROM read that precedes the erase, so nothing was written and it is still an orb with its row"
+			if esprom.IsCancelled(lerr) {
+				say = "the erase was cancelled before the chip was written, and it is still an orb with its row"
+			}
+			send("error", lerr.Error()+" - "+say+hint)
+			return
+		}
 		if esprom.IsCancelled(lerr) {
 			send("error", "erase cancelled - the board is still in its bootloader with a partial image, and this hub has forgotten it as an orb. Flash it, base image or orb, and one of them finishes cleanly.")
 			return

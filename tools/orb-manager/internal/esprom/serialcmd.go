@@ -100,6 +100,32 @@ type CmdResult struct {
 	State    string    `json:"state,omitempty"`    // state token from a PING or state banner
 	FW       string    `json:"fw,omitempty"`       // running version from a PING answer, when it carried one
 	Networks []ScanNet `json:"networks,omitempty"` // captured PROVSCAN rows, when a SCAN
+	// Crash carries the first panic-marker console line seen AFTER the command went
+	// down and BEFORE its ack — the board dying on the verb rather than ignoring it.
+	// A silent "no ack" reads as wrong-passphrase or a dead reader; a board that
+	// aborts mid-command is a firmware bug, and the operator deserves that sentence
+	// instead of a shrug (bench 2026-10-27: every PROV with a timezone rebooted the
+	// board on a PSRAM-stack NVS write, and the hub could only say "no ack").
+	Crash string `json:"crash,omitempty"`
+}
+
+// crashMarker returns the line if it is IDF's own voice saying this boot just died
+// or rebooted under us, and "" otherwise. The rst:0x line is the ROM's boot
+// banner — it follows every reset, clean or fatal — so it counts only when the
+// board had work in flight, which is exactly when callers check. The reset a
+// MODE/RESET verb commands is honest and arrives AFTER the ack: callers capture
+// markers only until an ack lands, so a commanded reboot never reads as a crash.
+func crashMarker(line string) string {
+	for _, m := range [...]string{"assert failed:", "Guru Meditation", "abort() was called",
+		"Kernel panic", "rst:0x"} {
+		if strings.Contains(line, m) {
+			if len(line) > 140 {
+				return line[:140]
+			}
+			return line
+		}
+	}
+	return ""
 }
 
 // cmdWriteBudget bounds how long the driver re-pushes a command before giving up. The
@@ -156,6 +182,13 @@ func RunCommand(ctx context.Context, pt *Port, line string, ackPrefixes []string
 		if onLine != nil {
 			onLine(trimmed)
 		}
+		// Between the first push and the ack, a panic marker is the answer the
+		// caller needs: the board took the line and died on it, so the silence
+		// that follows is a crash report, not a wrong passphrase. After an ack,
+		// the same lines are the commanded reboot doing its job (MODE, RESET).
+		if res.Sent && !res.Ack && res.Crash == "" {
+			res.Crash = crashMarker(trimmed)
+		}
 		if st, ok := ParsePing(trimmed); ok {
 			res.State = st
 		}
@@ -187,7 +220,10 @@ func RunCommand(ctx context.Context, pt *Port, line string, ackPrefixes []string
 		return false
 	}
 
-	for !res.Ack && res.Nak == "" && time.Now().Before(deadline) {
+	// Same rule the PROV ack loop learned on the bench 2026-10-27: a board that
+	// answered a push by rebooting is not waiting for the push to be repeated.
+	// Report the crash instead of buying another blip every 2 s.
+	for !res.Ack && res.Nak == "" && res.Crash == "" && time.Now().Before(deadline) {
 		if err := ctxErr(ctx); err != nil {
 			return res, err
 		}

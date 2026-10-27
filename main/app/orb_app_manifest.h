@@ -39,14 +39,23 @@ extern "C" {
 #define ORBAPP_MAGIC      0x00415247u    /* 'G','R','A' — unlike the theme magic on purpose */
 #define ORBAPP_THEME_MAGIC 0x474F5254u   /* so a theme handed here gets named, not miscalled */
 #define ORBAPP_FORMAT     2u
-#define ORBAPP_GEOM_ABI   2u    /* The dialect this build speaks. 1 -> 2 is P5b's
+#define ORBAPP_GEOM_ABI   3u    /* The dialect this build speaks. 1 -> 2 is P5b's
                                  * asset table (D23): the geometry records did not
                                  * move, the vocabulary did. D23 names THIS word as
                                  * the class enum's version, so a second number that
                                  * could contradict it is not added — and an app
                                  * that needs a class this dial cannot name dies on
                                  * the same abi_min/abi_max ladder as everything
-                                 * else, with the same sentence. */
+                                 * else, with the same sentence.
+                                 * 2 -> 3 is D37's editor region: three new header
+                                 * words inside the hdr_crc span. A container that
+                                 * carries one is meaningless to an ABI-2 reader,
+                                 * which would install the app and never see the
+                                 * bytes it shipped for — so it is refused at the
+                                 * door, naming this number, rather than half-run.
+                                 * The bump costs the two factory containers their
+                                 * install until re-baked; that is the ruling, and
+                                 * Migration says it out loud (§4.1). */
 
 #define ORBAPP_SLUG_MAX    24u   /* header bytes, NUL included */
 #define ORBAPP_TITLE_MAX   32u
@@ -54,6 +63,15 @@ extern "C" {
 #define ORBAPP_DEFSTR_MAX  32u
 
 #define ORBAPP_SETTINGS_MAX   16u
+#define ORBAPP_EDITOR_MAX     0x200000u  /* D37: 2 MiB of editor, and no more. The
+                                          * cap is the owner's ruling, and it is a
+                                          * real one: the region NEVER installs, so
+                                          * it prices nothing in flash — its job is
+                                          * to stop one container filling the card.
+                                          * The slot's 256 KB budget (GEOM_BYTES_MAX)
+                                          * is the bill for everything that DOES
+                                          * install, and this region is not on that
+                                          * bill: that is the whole design (§4.2). */
 #define ORBAPP_ASSETS_MAX     16u   /* P5b (D23): the asset table's cap, twin of
                                      * ORB_ASSET_MAX. 16 rows of 6 words = 384 B, and
                                      * the worst-case blob (settings + strings +
@@ -122,7 +140,19 @@ enum {
     ORBAPP_W_CODE_SIZE  = ORBAPP_W_CODE_OFF  + 1,
     ORBAPP_W_CODE_CRC   = ORBAPP_W_CODE_SIZE + 1,
     ORBAPP_W_WASM_MEM   = ORBAPP_W_CODE_CRC  + 1,
-    ORBAPP_W_HDR_CRC    = ORBAPP_W_WASM_MEM  + 1,
+    /* D37 (§4.1): the editor region's three words, inserted INSIDE the header
+     * CRC's span for the same reason P7 put the code triple there — a placement
+     * or checksum word that lived outside hdr_crc could be rewritten on the card
+     * without disturbing any checksum, and the editor is the one region in this
+     * container a stranger is invited to author. They sit contiguously after the
+     * code quadruple, so the asset table and the one free word keep deriving from
+     * the (moved) HDR_CRC. All three read zero on a container that ships no
+     * editor, which is "ships nothing" and not a refusal — every app that ever
+     * shipped before D37 answers that way. */
+    ORBAPP_W_EDITOR_OFF  = ORBAPP_W_WASM_MEM  + 1,
+    ORBAPP_W_EDITOR_SIZE = ORBAPP_W_EDITOR_OFF  + 1,
+    ORBAPP_W_EDITOR_CRC  = ORBAPP_W_EDITOR_SIZE + 1,
+    ORBAPP_W_HDR_CRC    = ORBAPP_W_EDITOR_CRC  + 1,
     /* P5b's two fields take words the header left reserved for exactly this, so the
      * tail keeps its shape and the header CRC still covers up to W_HDR_CRC. One word
      * at the end stays free, and the reader checks it zero: a word that reads as
@@ -173,6 +203,9 @@ typedef struct {
     uint32_t art_off, art_size, art_crc;
     uint32_t code_off, code_size, code_crc, wasm_mem_max;  /* P7 (D20/D27): the code
                                                             * region + its D27 bound */
+    uint32_t editor_off, editor_size, editor_crc;  /* D37: the author-facing payload,
+                                                   * card-resident and never installed
+                                                   * (§4.2). Three zeros: ships none. */
     uint32_t asset_off, n_assets;   /* P5b (D23): the table, in the blob region    */
 } orbapp_hdr_t;
 

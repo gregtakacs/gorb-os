@@ -151,6 +151,9 @@ const char *orbapp_parse_header(const uint32_t *w, orbapp_hdr_t *h,
     h->code_size      = w[ORBAPP_W_CODE_SIZE];
     h->code_crc       = w[ORBAPP_W_CODE_CRC];
     h->wasm_mem_max   = w[ORBAPP_W_WASM_MEM];
+    h->editor_off     = w[ORBAPP_W_EDITOR_OFF];
+    h->editor_size    = w[ORBAPP_W_EDITOR_SIZE];
+    h->editor_crc     = w[ORBAPP_W_EDITOR_CRC];
     h->asset_off      = w[ORBAPP_W_ASSET_OFF];
     h->n_assets       = w[ORBAPP_W_N_ASSETS];
     /* The two header words P5b did not take stay reserved, and a writer that put
@@ -386,6 +389,20 @@ const char *orbapp_check_header(const orbapp_hdr_t *h, uint32_t expect_app_id,
                       "build gates at (D27): the module could not be allocated on "
                       "the dial, so it must not install", h->wasm_mem_max,
                       (unsigned)ORBAPP_WASM_MEM_MAX);
+    /* D37: the editor region's cap, and the ONLY reason it exists. This region
+     * never installs — no slot holds it, no flash is priced for it, the firmware
+     * copies nothing and executes nothing (§4.2) — so the cap is not a
+     * fit-the-boundary rule like the two above. It stops one container filling
+     * the card every theme, log and photo shares, which is a real harm and the
+     * one the owner put a number on: 2 MiB. Note what is NOT here: no companion
+     * check that a non-empty region's crc is non-zero. crc32(b"") is zero, so a
+     * region whose stored CRC reads zero is consistent with bytes that hash to
+     * zero, and the verify below catches any actual mismatch. */
+    if (h->editor_size > ORBAPP_EDITOR_MAX)
+        return refuse(reason, cap, "editor region is %u B, past the %u B this build "
+                      "allows an app to ship: it stays on the card and installs "
+                      "nothing, so the cap guards the card, not a slot",
+                      h->editor_size, (unsigned)ORBAPP_EDITOR_MAX);
 
     /* D16's floor, and only the floor: the writer refuses a too-low beat at
      * pack time and its own reader re-checks it on cards; the too-high end
@@ -434,6 +451,37 @@ const char *orbapp_check_file_layout(const orbapp_hdr_t *h, char *reason,
     if ((uint64_t)h->code_off != art)
         return refuse(reason, cap,
                       "the code region is not sector-aligned off the geometry blob");
+    /* D37: the editor region takes the sector-aligned slot the code region's end
+     * vacates, so its offset is derived from the code triple exactly as the code
+     * triple is derived from the geometry — an equality and not a range, for the
+     * same reason every other placement here is one. A region that could sit
+     * anywhere is a region that could sit on top of the code it follows, and the
+     * two CRCs would pass on the overlap while pointing at different bytes.
+     * Checked for every container, empty region included: a writer that left the
+     * triple at three zeros describes an editor at the boundary this file would
+     * have put it at, which is the truth, and a non-zero offset with a zero size
+     * is a pointer to nothing — refused rather than ignored. */
+    const uint64_t ed = ((uint64_t)h->code_off + h->code_size + 4095) &
+                        ~(uint64_t)4095;             /* SECTOR, orbapp.py:105 */
+    /* Three zero words is "ships no editor", and it is the answer every container
+     * written before D37 gives. It is checked as a triple rather than waved
+     * through: an offset with no size behind it is a pointer at nothing, and a
+     * checksum over zero bytes is the empty-payload case this format already
+     * refuses for the geometry. So the empty region sits at zero offset — NOT at
+     * the derived boundary — because a container that ships no bytes should not
+     * claim a placement for them, and the ABI-2 readers this file must still
+     * refuse are refused by abi_min/abi_max and not by a placement rule. */
+    if (h->editor_size == 0) {
+        if (h->editor_off != 0)
+            return refuse(reason, cap, "an empty editor region names a placement —"
+                          " re-package it");
+        if (h->editor_crc != 0)
+            return refuse(reason, cap, "an empty editor region carries a checksum —"
+                          " re-package it");
+    } else if ((uint64_t)h->editor_off != ed) {
+        return refuse(reason, cap,
+                      "the editor region is not sector-aligned off the code region");
+    }
     return NULL;
 }
 

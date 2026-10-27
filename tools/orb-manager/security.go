@@ -377,7 +377,13 @@ var deviceRoutes = map[string][]string{
 	// sd/app is the upload half (browser -> /sd staging) and apps/install is the
 	// commit half, the same two-step the theme upload uses, so the hub never streams a
 	// container straight into the apps partition.
-	"/api/v1/apps":           {http.MethodGet},
+	"/api/v1/apps": {http.MethodGet},
+	// D37: an installed app's EDITOR region, streamed off the card. Read-only, and
+	// the only device door that reaches bytes the firmware never installs or runs
+	// (§5.2), which is why it takes GET alone. It addresses a container by card
+	// stem, the same handle apps/install takes, because the region lives in the
+	// card file and not in the installed prefix.
+	"/api/v1/apps/editor":    {http.MethodGet},
 	"/api/v1/apps/install":   {http.MethodPost},
 	"/api/v1/apps/enable":    {http.MethodPost},
 	"/api/v1/apps/uninstall": {http.MethodPost},

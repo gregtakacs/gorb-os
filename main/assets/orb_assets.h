@@ -106,15 +106,25 @@ typedef enum {
  * orb_assets.c pins it with a compile-time assert against the real word. A test
  * that checks two constants agree is a check that runs when someone remembers to
  * run it; an assert is a check that runs when someone builds. */
-#define ORB_ASSET_CLASS_ABI   2u
-/* D34 appended the AUX class WITHOUT moving this word, exactly as D32 appended the
+#define ORB_ASSET_CLASS_ABI   3u
+/* D37 moved this word 2 -> 3 WITHOUT moving the vocabulary beside it, which is the
+ * opposite of D34's append and is deliberate: the class enum gained nothing, so the
+ * bump carries no new classes. It moves because this word is defined to BE the
+ * container's dialect (orb_assets.c's _Static_assert pins the two equal), and the
+ * dialect moved for the editor region. An ABI-2 board refuses an ABI-3 container
+ * for the reason the manifest's own sentence names, and this number is what makes
+ * that sentence true here as well as in the header.
+ * D34 appended the AUX class WITHOUT moving this word, exactly as D32 appended the
  * row's two complication columns without moving the format: an appended class is one
  * a reader that predates it refuses at its own bound (ORB_ASSET_CLASS_N was 8, so class
  * 8 is "not a class this build knows"), and D26 makes that a refusal at the door rather
  * than a silent skip. Bumping the ABI instead would have made every manifest already on
  * every card uninstallable to draw a hand — the ratio D24's no-backward-path rule is
- * for. The word moves when a class is RENUMBERED or a column REAPPEARS with a new
- * meaning, and not before. */
+ * for. The word moved, before D37, only when a class was RENUMBERED or a column
+ * REAPPEARED with a new meaning. D37 is the first bump that carries no vocabulary
+ * change at all: the container gained a region an ABI-2 reader cannot see, and a
+ * reader that cannot see an authoring payload must say so instead of installing
+ * the app and serving nothing. */
 
 /* The names the classes answer to, indexed by orb_asset_class_t. Wire text: the
  * strings a manifest's asset table carries. Lowercase, fixed. */

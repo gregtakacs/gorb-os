@@ -198,12 +198,47 @@ void orb_app_install_apply_code(void);
  * multi-second card write (the reason orb_theme_scan has the same gate). */
 typedef struct orb_app_up orb_app_up_t;
 
+/* D37 (§5.2): read one app's EDITOR region back off the card. The firmware never
+ * installs these bytes and never executes them, so this is the only door that
+ * reaches them, and it is read-only by construction: it opens the container the
+ * same verified way an install does, checks the region's CRC over the bytes it
+ * streams, and hands the caller the ZIP's opening sector.
+ *
+ * `chunk(NULL, 0, ctx)` is called first so the caller can frame the response
+ * before any byte moves, exactly as orb_app_up_progress's first call lets the
+ * upload page set its bar. `chunk(bytes, n, ctx)` then repeats over the region,
+ * each n at most ORB_APP_EDITOR_CHUNK, and the caller returns ESP_FAIL to stop —
+ * a browser that closed the tab mid-region is ordinary here, not damage. The
+ * checksum is verified as it streams, so a refusal can name the offset it died
+ * at; the region's CRC covers the whole thing, so a torn copy cannot be served
+ * one sector at a time and read as sound.
+ *
+ * Returns ESP_ERR_NOT_FOUND with `*why` naming the reason a card row has no
+ * editor to serve (no card, no such app, an app that ships none), ESP_ERR_INVALID
+ * STATE when a store holds the lock, and ESP_FAIL when the region's own bytes
+ * refused to arrive or to match. `*total` is the region's length whenever the
+ * header was readable, zero otherwise. */
+#define ORB_APP_EDITOR_CHUNK 1460u
+typedef esp_err_t (*orb_app_editor_chunk_t)(const uint8_t *bytes, size_t n, void *ctx);
+esp_err_t orb_app_editor_read(const char *stem, orb_app_editor_chunk_t chunk, void *ctx,
+                              uint32_t *total, const char **why);
+
 /* The writer's real ceilings, not an invented cap: geometry + header block and
  * the alignment gap. D21 (§0.9) retired the art term — a container that carries
  * art bytes is refused by the reader, so the largest file that can legally exist
  * is header + settings + geometry, padded to the payload sector. A bigger body
- * is refused on Content-Length, before a byte of it reaches the card. */
-#define ORB_APP_UPLOAD_MAX  (ORBAPP_GEOM_BYTES_MAX + 0x20000u)
+ * is refused on Content-Length, before a byte of it reaches the card.
+ *
+ * D37 adds ONE term and it is the editor region, at its own cap rather than at the
+ * slot's: the region never installs, so it never prices a slot, and the installed
+ * bill above is unchanged at 393,216 B. This number is the largest FILE that can
+ * legally exist, which is now the installed prefix plus 2 MiB of authoring bytes
+ * plus the sector gap ahead of them — 393,216 + 2,097,152 + 4,096 rounded to the
+ * writer's own worst-case layout. Measured rather than guessed: the writer emits
+ * the region at editor_offset(code_off, code_size), so at most one sector of
+ * padding separates the two, and the region's cap is ORBAPP_EDITOR_MAX. */
+#define ORB_APP_UPLOAD_MAX  (ORBAPP_GEOM_BYTES_MAX + 0x20000u + \
+                             ORBAPP_EDITOR_MAX + 0x1000u)
 
 esp_err_t orb_app_upload_begin(orb_app_up_t **out);
 esp_err_t orb_app_upload_data(orb_app_up_t *u, const void *buf, size_t n);

@@ -623,9 +623,25 @@ def lint(src):
                    "carry the refusal in static storage — the door prints it "
                    "after the validators' frames are gone")
     ih = read(INSTALL_H)
-    if "#define ORB_APP_UPLOAD_MAX  (ORBAPP_GEOM_BYTES_MAX + 0x20000u)" not in ih:
-        bad.append("P4b: the upload bound still carries an art term — the "
-                   "largest legal container is header + settings + geometry")
+    # D37 grew this bound by ONE term — the editor region — and the P4b rule it is
+    # checked under survives untouched: no art term may appear. The installed bill
+    # is still a slot's geometry budget plus the header block and its gap; the
+    # editor adds to the largest legal FILE and not to the largest slot, which is
+    # the distinction §4.2 is built on, so it is checked for by name.
+    upmax = re.search(r"#define\s+ORB_APP_UPLOAD_MAX\s+\(([^)]*)\)", ih, re.S)
+    if not upmax:
+        bad.append("P4b: ORB_APP_UPLOAD_MAX is no longer a parseable expression — "
+                   "read the value off main/app/orb_app_install.h and compare it to "
+                   "orbapp.UPLOAD_MAX BY HAND; do not let this check go quiet")
+    else:
+        terms = upmax.group(1)
+        for want in ("ORBAPP_GEOM_BYTES_MAX", "0x20000u", "ORBAPP_EDITOR_MAX", "0x1000u"):
+            if want not in terms:
+                bad.append("D37: ORB_APP_UPLOAD_MAX lost its %s term: %s" % (want, terms))
+        if "ART" in terms.upper().replace("PART", ""):
+            bad.append("P4b: the upload bound grew an art term again — the largest "
+                       "installable container is header + settings + geometry, and "
+                       "D37's one addition is the editor region")
     # ---- P7: the device half's code accounting, pinned as text ----------------
     # install_decide is host-lifted and mutation-pinned, but copy_prefix and
     # verify_payload run only on the worker task. Their code-region handling is the

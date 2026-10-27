@@ -93,7 +93,7 @@ Two flash facts that force the design:
 - `ORB_APP_UPLOAD_MAX` is `ORBAPP_GEOM_BYTES_MAX + 0x20000` = **393,216 B**
   (`orb_app_install.h:206`). A 2 MiB region exceeds it, so a container carrying
   one is refused at the door as "too large." The ceiling must grow:
-  `393,216 + 2,097,152 = 2,490,368 B`.
+  `393,216 + 2,097,152 + a 4,096 B sector gap = 2,494,464 B`.
 - The `apps` partition is `0x280000` = **2,621,440 B for 8 slots**, so
   **327,680 B per slot** (`partitions.csv`). A 2 MiB region cannot install. **The
   editor region never enters the slot.** It lives on the card, past the
@@ -398,11 +398,20 @@ beside `/api/theme/list`, consumed by `loadThemeApps`/`themeEmptyPane` in
 Pinned by `themeapps_test.go` and by new `ui_test.go` assertions that fail if
 `renderThemeTabs` goes back to deriving apps from `themeRowsAll`.
 
-**S2 — The editor region.** Header growth, `GEOM_ABI` 3, the derived placement, the
+**S2 — The editor region.** *Status: DONE.* Header growth, `GEOM_ABI` 3, the derived placement, the
 2 MiB cap, the verify-but-never-install posture, `ORB_APP_UPLOAD_MAX` at
-2,490,368 B, and `GET /api/v1/apps/editor` in the firmware table and `security.go`
+2,494,464 B, and `GET /api/v1/apps/editor` in the firmware table and `security.go`
 in the same commit. `write_container` gains `editor=`. The mirror and the contract
 test both move.
+
+Landed: `orb_app_manifest.{h,c}` carry the triple and refuse a region past the
+cap; `orb_app_install.{h,c}` verify the region's CRC over the card and never copy
+it; `orb_net.c` registers `h_app_editor` ahead of `h_apps_list`; `security.go`
+allows the GET in the same commit as the firmware table row; `orbfake` answers it,
+and its cap-bit table was corrected to `orb_cap_t`'s real 4..7 range on the way.
+`orbapp.py` stamps ABI 3 and refuses an over-cap region before a byte is written.
+The `_Static_assert` in `orb_assets.c` forced `ORB_ASSET_CLASS_ABI` to move with
+`ORBAPP_GEOM_ABI`, and the two factory containers were re-baked for the new dialect.
 
 **S3 — The hub serves editors from the card.** `/editor/<ip>/<slug>/…`, the ZIP
 unpack, the shared runtime and baker as hub resources, and the iframe bridge.

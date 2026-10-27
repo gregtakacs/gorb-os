@@ -392,6 +392,32 @@ static const char *verify_payload(const appsrc_t *s, const orbapp_hdr_t *h)
         if (crc != h->code_crc)
             return "the code does not match its checksum — re-copy the file onto the card";
     }
+    /* D37: the editor region is checksummed here, over the card, and then NOT
+     * copied — the one place in the install path that reaches past the installed
+     * prefix, and deliberately so (§4.2). This is a store-time verify: the card
+     * keeps the bytes, no slot ever holds them, and the sentence below therefore
+     * refuses the whole upload rather than degrading one app's face. The reason a
+     * corrupt editor must stop the install instead of riding along unnoticed is
+     * that the container's own claim is that it ships an editor; a door that
+     * accepted a file whose editor could not be read would be reporting a
+     * capability the hub would then fail to serve, hours later, with no
+     * explanation left to give. A native app with no region skips the whole
+     * block, exactly as the code check above does, so no pre-D37 container's
+     * install path changes by one byte. */
+    if (h->editor_size) {
+        crc = 0;
+        pos = h->editor_off;
+        left = h->editor_size;
+        while (left) {
+            const size_t want = left > s_chunk_bytes ? s_chunk_bytes : left;
+            if (src_read(s, pos, s_chunk, want) != (ssize_t)want)
+                return "the file is shorter than its editor claims — re-copy it";
+            crc = esp_rom_crc32_le(crc, s_chunk, (uint32_t)want);
+            pos += want; left -= want;
+        }
+        if (crc != h->editor_crc)
+            return "the editor does not match its checksum — re-copy the file onto the card";
+    }
     return NULL;
 }
 
@@ -1493,3 +1519,101 @@ void orb_app_upload_cancel(orb_app_up_t **u)
 }
 
 
+/* ---- D37: the editor region, read off the card and never installed ---------- *
+ * open_verified_stem already does the hard half of this job for the install path:
+ * it mounts, validates the name, walks to prove the container passes every header
+ * rung, then re-opens it under the one card lock and re-checks. This door reuses
+ * it rather than growing a second path to a card file, because a second path is a
+ * second set of rules about what a valid container is — the exact shape of bug
+ * D26's pre-erase verification exists to prevent.
+ *
+ * What it does NOT do is install anything. It reads the region's bytes, checks
+ * them against the header's own crc32 as they go, and hands them to the caller.
+ * No partition, no slot, no registry row: §4.2's card-resident posture, enforced
+ * by this function never mentioning esp_partition_t. */
+esp_err_t orb_app_editor_read(const char *stem, orb_app_editor_chunk_t chunk, void *ctx,
+                              uint32_t *total, const char **why_out)
+{
+    const char *why = NULL;
+    if (total) *total = 0;
+    if (why_out) *why_out = NULL;
+    if (!stem || !*stem || !chunk) {
+        if (why_out) *why_out = "no app named";
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* A store in flight holds the card lock for its whole duration and this door
+     * would block the httpd task behind it, so it refuses now instead. Same
+     * posture as h_sd_preview's upload_busy gate, and the same `retry:later`. */
+    if (orb_app_upload_busy()) {
+        if (why_out) *why_out = "an upload holds the card";
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    orbapp_hdr_t h;
+    uint32_t raw[ORBAPP_HDR_WORDS];
+    const orbapp_hdr_t *hp = NULL;
+    const int fd = open_verified_stem(&hp, &h, raw, stem, &why);
+    if (fd < 0) {
+        if (why_out) *why_out = why ? why : "no such app on the card";
+        return ESP_ERR_NOT_FOUND;
+    }
+    /* The region's own triple, read off the header that just passed every rung.
+     * A container that ships no editor is NOT damage and NOT an error worth a
+     * 500: it is the ordinary state of every app written before D37, and the page
+     * that asked gets a plain 404 naming it. */
+    if (hp->editor_size == 0 || hp->editor_crc == 0) {
+        install_close(fd);
+        if (why_out) *why_out = "this app ships no editor";
+        return ESP_ERR_NOT_FOUND;
+    }
+    /* The file must actually hold the region. open_verified_stem proved the header
+     * and nothing past it, and a container copied to the card by an interrupted
+     * transfer is exactly the file that reads a full header and stops early. */
+    size_t pos = hp->editor_off;
+    uint8_t *buf = heap_caps_malloc(ORB_APP_EDITOR_CHUNK, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) {
+        install_close(fd);
+        if (why_out) *why_out = "no memory for an editor read";
+        return ESP_ERR_NO_MEM;
+    }
+    if (why_out) *why_out = NULL;
+    if (total) *total = hp->editor_size;
+    const esp_err_t framed = chunk(NULL, 0, ctx);
+    if (framed != ESP_OK) {                     /* caller hung up before byte one */
+        heap_caps_free(buf);
+        install_close(fd);
+        return framed;
+    }
+
+    uint32_t crc = 0;
+    uint32_t done = 0;
+    esp_err_t r = ESP_OK;
+    while (done < hp->editor_size) {
+        const size_t want = ((size_t)hp->editor_size - done) > ORB_APP_EDITOR_CHUNK
+                          ? ORB_APP_EDITOR_CHUNK : (size_t)hp->editor_size - done;
+        const ssize_t got = rd_at(fd, &pos, buf, want);
+        if (got != (ssize_t)want) {
+            why = "the file is shorter than its editor claims — re-copy it";
+            r = ESP_FAIL;
+            break;
+        }
+        crc = esp_rom_crc32_le(crc, buf, (uint32_t)want);
+        if (chunk(buf, want, ctx) != ESP_OK) {  /* peer gone; a torn read is not damage */
+            r = ESP_FAIL;
+            why = "the reader stopped mid-region";
+            break;
+        }
+        done += (uint32_t)want;
+    }
+    /* The checksum is checked only on a COMPLETE read. Half a region streamed to
+     * a browser that closed its tab has no checksum to match, and reporting a CRC
+     * failure there would blame the card for the client's behavior. */
+    if (r == ESP_OK && crc != hp->editor_crc) {
+        why = "the editor does not match its checksum — re-copy the file onto the card";
+        r = ESP_FAIL;
+    }
+    heap_caps_free(buf);
+    install_close(fd);
+    if (why_out) *why_out = why;
+    return r;
+}

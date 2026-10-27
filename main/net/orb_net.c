@@ -5070,6 +5070,100 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
     }
 }
 
+/* ---- D37: GET /api/v1/apps/editor?id=<stem> — an app's editor, off the card ---
+ *
+ * The one read-only door onto a container region the firmware installs nothing
+ * from (§5.2). The hub opens an installed app's editor by asking for these bytes,
+ * unpacks the ZIP they carry, and serves it as the app's authoring surface; the
+ * dial never runs them, and this handler is why the posture holds: it streams a
+ * region out of a header the install ladder already passed, and it has no path to
+ * a partition, a slot, or the registry.
+ *
+ * It addresses a container by CARD STEM and not by installed slot, which is the
+ * same handle h_apps_install takes. That is deliberate rather than an oversight:
+ * the editor lives in the card file, because the installed prefix does not carry
+ * it — the one place the two views of an app genuinely differ, and the hub's
+ * Themes face knows the stem from the row it is already listing. A slug with no
+ * card file behind it answers 404 with the install ladder's own sentence.
+ *
+ * The body is the raw region: a ZIP archive, self-identifying, and NOT wrapped in
+ * JSON. Content-Length comes from the header the door already verified, so a hub
+ * can size its unpack before it asks for a byte. Errors stay JSON, matching
+ * h_sd_preview's split between a plane and a refusal. */
+#define EDITOR_BUDGET_MS 30000        /* a 2 MiB region at a real radio's pace */
+
+typedef struct {
+    httpd_req_t *req;
+    uint32_t total;               /* the region's length, for Content-Length */
+    bool sent;                    /* a chunk is on the wire; the status line is spent */
+    esp_err_t err;
+} editor_sink_t;
+
+static esp_err_t editor_chunk(const uint8_t *bytes, size_t n, void *vctx)
+{
+    editor_sink_t *k = (editor_sink_t *)vctx;
+    if (n == 0) {
+        /* The framing call. Headers are set here and not earlier: until the door
+         * has read a verified header it does not know the region's length, and a
+         * Content-Length guessed from anything else is a response that lies. If
+         * the door then refuses, nothing has been sent and the handler still owns
+         * the status line — so this sets pending headers, overridable, which is
+         * exactly what httpd_resp_set_* is. */
+        httpd_resp_set_type(k->req, "application/octet-stream");
+        httpd_resp_set_hdr(k->req, "Cache-Control", "no-store");
+        char len[16];
+        snprintf(len, sizeof len, "%u", (unsigned)k->total);
+        httpd_resp_set_hdr(k->req, "Content-Length", len);
+        return ESP_OK;
+    }
+    if (k->err != ESP_OK) return k->err;   /* already stopped; send nothing more */
+    if (httpd_resp_send_chunk(k->req, (const char *)bytes, n) != ESP_OK) {
+        k->err = ESP_FAIL;            /* peer gone; the rest of the card is moot */
+        k->sent = true;
+        return ESP_FAIL;
+    }
+    k->sent = true;
+    return ESP_OK;
+}
+
+static esp_err_t h_app_editor(httpd_req_t *req)
+{
+    char stem[ORB_SD_NAME_MAX + 1] = "";
+    if (!q_param(req, "id", stem, sizeof stem)) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id is missing\"}");
+    }
+    uint32_t total = 0;
+    const char *why = NULL;
+    editor_sink_t sink = { .req = req, .err = ESP_OK };
+    const esp_err_t e = orb_app_editor_read(stem, editor_chunk, &sink, &total, &why);
+    if (e == ESP_OK && sink.sent)
+        (void)httpd_resp_send_chunk(req, NULL, 0);   /* close the chunked body */
+    if (e != ESP_OK) {
+        /* Once a byte is on the wire the 200 is spent and cannot be walked back,
+         * so the honest end is to name the shortfall where the bench reads it and
+         * stop — h_sd_preview's rule for a plane torn mid-flight, for the same
+         * reason: a silently short body is damage nobody can see. */
+        if (!sink.sent) {
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+            httpd_resp_set_status(req, e == ESP_ERR_NOT_FOUND ? "404 Not Found"
+                                 : e == ESP_ERR_INVALID_STATE ? "503 Service Unavailable"
+                                 : "422 Unprocessable Entity");
+            char b[224];
+            snprintf(b, sizeof b, "{\"error\":\"%s\"}",
+                     why && *why ? why : "the editor region did not read");
+            return httpd_resp_sendstr(req, b);
+        }
+        ESP_LOGE(TAG, "editor %s: torn after %u B (%s)", stem,
+                 (unsigned)sink.total, why && *why ? why : "reader gone");
+        return e;
+    }
+    return e;
+}
+
 static esp_err_t h_apps_list(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -6844,6 +6938,7 @@ static esp_err_t net_start_httpd(void)
          * call. Neither can touch anything but a read of the card. */
         { .uri = "/apps",              .method = HTTP_GET,  .handler = h_apps },
         { .uri = "/api/v1/apps",       .method = HTTP_GET,  .handler = h_apps_list },
+        { .uri = "/api/v1/apps/editor", .method = HTTP_GET, .handler = h_app_editor },
         { .uri = "/api/v1/apps/install",.method = HTTP_POST, .handler = h_apps_install },
         { .uri = "/api/v1/apps/enable", .method = HTTP_POST, .handler = h_app_enable },
         { .uri = "/api/v1/apps/uninstall", .method = HTTP_POST, .handler = h_app_uninstall },

@@ -295,6 +295,11 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// contract test rather than quietly answering 404 like a made-up path.
 	case r.URL.Path == "/api/v1/apps" && r.Method == http.MethodGet:
 		o.serveApps(w)
+	// D37: the editor region, streamed off the card. Registered in the same order
+	// orb_net.c's uri table lists it, so a route the firmware grows and this switch
+	// does not fails the contract test rather than quietly answering 404.
+	case r.URL.Path == "/api/v1/apps/editor" && r.Method == http.MethodGet:
+		o.serveAppEditor(w, r)
 	case r.URL.Path == "/api/v1/apps/install" && r.Method == http.MethodPost:
 		o.serveAppInstall(w, r)
 	case r.URL.Path == "/api/v1/apps/enable" && r.Method == http.MethodPost:

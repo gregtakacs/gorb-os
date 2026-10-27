@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,6 +16,15 @@ import (
 // theme rows already on the card, so an installed, enabled, theme-capable app with
 // no theme written yet had no pane and looked theme-blind. Everything here drives
 // the route against the double with exactly that app present.
+
+// Owner caps at their REAL bit positions (orb_cap_t: CAP_POWER=4 .. CAP_THEMES=7).
+// Bits 0..3 are the free caps and the firmware never prints them, so a fixture that
+// wrote 0x8 for "themes" would be testing a table the device does not use.
+const (
+	capPower  = 1 << 4
+	capSdRead = 1 << 6
+	capThemes = 1 << 7
+)
 
 type themeAppsRow struct {
 	Slug      string `json:"slug"`
@@ -76,7 +87,7 @@ func TestThemeAppsListsThemeCapableAppWithZeroThemes(t *testing.T) {
 	orb := orbfake.New(
 		orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 1, OK: true, Active: true},
 	).WithCardApps(
-		orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: 0x8, Installed: true, Enabled: true},
+		orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: capThemes, Installed: true, Enabled: true},
 	)
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
 	code, got := getThemeApps(t, s, ip)
@@ -105,9 +116,9 @@ func TestThemeAppsFiltersByCapAndKeepsDisabled(t *testing.T) {
 	orb := orbfake.New(
 		orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 1, OK: true, Active: true},
 	).WithCardApps(
-		orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: 0x8, Installed: true, Enabled: true},
-		orbfake.CardApp{Stem: "lamp", Slug: "lamp", Title: "Lamp", Caps: 0x1, Installed: true, Enabled: true},
-		orbfake.CardApp{Stem: "thermo", Slug: "thermo", Title: "Thermo", Caps: 0xc, Installed: true, Enabled: false},
+		orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: capThemes, Installed: true, Enabled: true},
+		orbfake.CardApp{Stem: "lamp", Slug: "lamp", Title: "Lamp", Caps: capPower, Installed: true, Enabled: true},
+		orbfake.CardApp{Stem: "thermo", Slug: "thermo", Title: "Thermo", Caps: capSdRead | capThemes, Installed: true, Enabled: false},
 	)
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
 	_, got := getThemeApps(t, s, ip)
@@ -129,7 +140,7 @@ func TestThemeAppsShowsOrphanCardGroup(t *testing.T) {
 	orb := orbfake.New(
 		orbfake.Theme{Name: "stray", App: "ghost", Bytes: 44, Serial: 1, OK: true},
 	).WithCardApps(
-		orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: 0x8, Installed: true, Enabled: true},
+		orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: capThemes, Installed: true, Enabled: true},
 	)
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
 	_, got := getThemeApps(t, s, ip)
@@ -145,11 +156,46 @@ func TestThemeAppsShowsOrphanCardGroup(t *testing.T) {
 	}
 }
 
+// The double's cap table must be the FIRMWARE's, not a plausible-looking one.
+// D37's enumeration keys off the literal word "themes", so a double that printed
+// owner caps from bits 0..3 would let the hub pass a suite while every real board
+// said something else — the exact generated-from-the-client trap these suites exist
+// to close. Pinned against orb_svc.h and orb_app_manifest.c, read from the source.
+func TestFakeCapTableMatchesFirmware(t *testing.T) {
+	svc := firmwareFile(t, filepath.Join("main", "app", "orb_svc.h"))
+	man := firmwareFile(t, filepath.Join("main", "app", "orb_app_manifest.c"))
+	for _, want := range []string{"CAP_POWER = 4", "CAP_THEMES = 7"} {
+		if !strings.Contains(svc, want) {
+			t.Errorf("orb_svc.h no longer says %q; the fake's cap bits need re-deriving by hand", want)
+		}
+	}
+	if !strings.Contains(man, "1u << (CAP_POWER + i)") {
+		t.Error("orbapp_caps_names no longer indexes owner caps off CAP_POWER; the fake's loop is wrong")
+	}
+	// The fake must iterate the same base the firmware does.
+	fake := hubSourceFile(t, filepath.Join("internal", "orbfake", "apps.go"))
+	if !strings.Contains(fake, "1<<uint(4+i)") {
+		t.Error("orbfake's capsNames is back to bits 0..3: it would render \"time\" as \"power\"")
+	}
+}
+
+// hubSourceFile reads a file from this module's own tree, so a pin can name the
+// hub's source the way firmwareFile names the firmware's. Tests run in the package
+// directory, so the path is relative to it; a missing file skips rather than fails.
+func hubSourceFile(t *testing.T, rel string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(".", rel))
+	if err != nil {
+		t.Skipf("no hub source at %s: %v", rel, err)
+	}
+	return string(b)
+}
+
 // The clock is the one app the hub can serve an editor for before GEOM_ABI 3 lands,
 // and it is the HUB saying so: the web layer must not carry that slug itself.
 func TestThemeAppsClockEditorComesFromTheHub(t *testing.T) {
 	orb := orbfake.New().WithCardApps(
-		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: 0x8, Installed: true, Enabled: true},
+		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes, Installed: true, Enabled: true},
 	)
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
 	_, got := getThemeApps(t, s, ip)

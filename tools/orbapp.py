@@ -94,7 +94,7 @@ FORMAT     = 2                 # this container layout; a reader refuses others.
                                # app ever shipped under FORMAT 1, so an old file that
                                # reaches a new reader dies on the format word and the
                                # "re-package it" sentence, never mis-parsed.
-GEOM_ABI   = 2                 # The dialect this writer stamps. 1 -> 2 is P5b's
+GEOM_ABI   = 3                 # The dialect this writer stamps. 1 -> 2 is P5b's
                                # asset table (D23): the geometry records did not
                                # move, the vocabulary did, and D23 names THIS word
                                # as the class enum's version so there is exactly one
@@ -102,6 +102,10 @@ GEOM_ABI   = 2                 # The dialect this writer stamps. 1 -> 2 is P5b's
                                # C4's ladder refuses anything outside abi_min..abi_max,
                                # so an app that needs a class this build cannot spell
                                # dies with that sentence and not as a blank dial.
+                               # 2 -> 3 is D37's editor region: three header words
+                               # inside the hdr_crc span. An ABI-2 reader would
+                               # install such an app and never see the bytes it
+                               # shipped for, so it refuses the container by name.
 SECTOR     = 4096              # payload alignment, as the theme path's is
 PAGE       = 65536             # the MMU page an art bank is cut on
 
@@ -125,6 +129,14 @@ GEOM_BYTES_MAX = 0x00040000    # 256 KB of the app's own records
 # linear-memory reservation, gated at install in the same shape as caps and period_ms.
 CODE_BYTES_MAX = 0x00040000    # 256 KB of wasm — one slot's whole payload budget
 WASM_MEM_MAX   = 0x00020000    # 128 KB — the D27 linear-memory ceiling per app
+
+# D37 (§4.2): the editor region. It is the ONE region in this container that never
+# installs — no slot holds it, no flash is priced for it, the firmware copies and
+# executes nothing — so this cap is not a fit-the-boundary number like the two
+# above. Its whole job is to stop one container filling the card that themes, logs
+# and photos share. The C reader mirrors this number and this rule:
+# ORBAPP_EDITOR_MAX in main/app/orb_app_manifest.h.
+EDITOR_MAX     = 0x00200000    # 2 MiB of editor, and no more — the owner's number
 
 # D16 (§0.6): the manifest's period_ms is the FASTEST beat the app may ever run,
 # which is the number the owner prices the app at on the install confirm. 0 is a
@@ -204,7 +216,16 @@ W_CODE_OFF   = W_ART_CRC     + 1
 W_CODE_SIZE  = W_CODE_OFF    + 1
 W_CODE_CRC   = W_CODE_SIZE   + 1
 W_WASM_MEM   = W_CODE_CRC    + 1
-W_HDR_CRC    = W_WASM_MEM    + 1
+# D37 (§4.1): the editor region's three words, inside the header CRC's span for the
+# same reason P7 put the code triple there — a placement or checksum word outside
+# hdr_crc could be rewritten on the card without disturbing any checksum, and the
+# editor is the one region a stranger is invited to author. Contiguous after the
+# code quadruple, so the asset table and the one free word keep deriving from the
+# (moved) W_HDR_CRC.
+W_EDITOR_OFF  = W_WASM_MEM    + 1
+W_EDITOR_SIZE = W_EDITOR_OFF  + 1
+W_EDITOR_CRC  = W_EDITOR_SIZE + 1
+W_HDR_CRC    = W_EDITOR_CRC    + 1
 # P5b (D23): the asset table's two fields take words this header left reserved for
 # exactly this, so the tail keeps its shape and the header CRC still covers up to
 # W_HDR_CRC. One word at the end stays free and the reader checks it zero.
@@ -830,6 +851,27 @@ def _wasm_mem(wasm_mem_max, code_size):
     return wasm_mem_max
 
 
+def editor_offset(code_off, code_size):
+    """D37: the editor region starts on the sector boundary the code region's end
+    vacates, so a region placed here cannot overlap the module ahead of it. Same
+    alignment rule as art_offset and code_offset, for the same reason: an unaligned
+    start spends an MMU entry on rounding, and the hub reads the region in chunks."""
+    return (code_off + code_size + SECTOR - 1) & ~(SECTOR - 1)
+
+
+def _editor_size(n):
+    """D37's cap on the editor region. The region never installs, so this is not a
+    slot-fit gate like _code_size — it is the card-filling guard, priced in bytes
+    and nothing else. A zero length is the ordinary case: every app that shipped
+    before D37 ships no editor, and the triple reads 0/0/0."""
+    n = _u(n, "editor_size")
+    if n > EDITOR_MAX:
+        raise ValueError("editor region of %d B is past the %d B an app may ship: "
+                         "it stays on the card and installs nothing, so the cap "
+                         "guards the card and not a slot" % (n, EDITOR_MAX))
+    return n
+
+
 def code_offset(geom_off, geom_size):
     """Code region start: the sector-aligned end of the geometry blob, so a copy
     into a 64 KB-aligned slot stays aligned. The one payload slot D21 withdrew
@@ -852,7 +894,7 @@ def _code_size(code_size):
 def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
                 settings_blob, serial=0, baked_ms=0, abi=None,
                 sig=0, behaviour_kind=0, asset_blob=b"",
-                code_size=0, wasm_mem_max=0):
+                code_size=0, wasm_mem_max=0, editor_size=0):
     """Lay out the header+manifest block. Every field is checked here, because a
     header this function refuses is a header the device never has to meet.
 
@@ -909,6 +951,10 @@ def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
     # block stamps nothing.
     hdr[W_CODE_SIZE]  = _code_size(code_size)
     hdr[W_WASM_MEM]   = _wasm_mem(wasm_mem_max, code_size)
+    # D37: the editor region's size is the caller's declaration and is gated here;
+    # its offset and CRC are left for write_container, exactly as geom_* and
+    # code_* are. Zero is the ordinary case and stamps a zero triple.
+    hdr[W_EDITOR_SIZE] = _editor_size(editor_size)
     if len(asset_blob) % (ASSET_WORDS * 4):
         raise ValueError("asset table is %d B, not a whole number of %d B rows"
                          % (len(asset_blob), ASSET_WORDS * 4))
@@ -931,6 +977,11 @@ def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
     # offset art's withdrawn payload occupied — and write_container recomputes it once
     # the geometry's real size is known, as it does art_off.
     hdr[W_CODE_OFF] = code_offset(hdr[W_GEOM_OFF], 0)
+    # D37: the editor's placement derives off the code region's end, and a container
+    # that ships no editor claims no placement at all — three zero words, the shape
+    # every pre-D37 container already carries and the shape the C reader accepts
+    # without a refusal. write_container recomputes this off the real code size.
+    hdr[W_EDITOR_OFF] = editor_offset(hdr[W_CODE_OFF], code_size) if code_size or editor_size else 0
     hdr[W_GEOM_CRC], hdr[W_ART_CRC] = 0, 0           # filled by write_container
     _putstr(hdr, W_SLUG,  slug,  SLUG_MAX,  "slug")
     _putstr(hdr, W_TITLE, title, TITLE_MAX, "title")
@@ -988,6 +1039,8 @@ def parse_header(raw, app_id=None):
         ("art_size", W_ART_SIZE), ("art_crc", W_ART_CRC),
         ("code_off", W_CODE_OFF), ("code_size", W_CODE_SIZE),
         ("code_crc", W_CODE_CRC), ("wasm_mem_max", W_WASM_MEM),
+        ("editor_off", W_EDITOR_OFF), ("editor_size", W_EDITOR_SIZE),
+        ("editor_crc", W_EDITOR_CRC),
         ("asset_off", W_ASSET_OFF), ("n_assets", W_N_ASSETS))}
     h["slug"]  = _getstr(hdr, W_SLUG, SLUG_MAX)
     h["title"] = _getstr(hdr, W_TITLE, TITLE_MAX)
@@ -1122,13 +1175,32 @@ def check_file_layout(h):
     # region that could sit on top of the geometry and read the CRC on the overlap.
     if h["code_off"] != code_offset(h["geom_off"], h["geom_size"]):
         raise ValueError("the code region is not sector-aligned off the geometry blob")
+    # D37: the editor region follows the code on a sector boundary, derived and not
+    # supplied, for the reason every other placement here is derived — a region that
+    # could sit anywhere could sit on top of the module it follows and pass both
+    # CRCs on the overlap. An EMPTY region sits at zero offset, not at the derived
+    # boundary: bytes nobody ships claim no placement. Mirrors
+    # orbapp_check_file_layout (main/app/orb_app_manifest.c) word for word.
+    ed = editor_offset(h["code_off"], h["code_size"])
+    if h["editor_size"] == 0:
+        if h["editor_off"] != 0:
+            raise ValueError("an empty editor region names a placement — re-package it")
+        if h["editor_crc"] != 0:
+            raise ValueError("an empty editor region carries a checksum — re-package it")
+    elif h["editor_off"] != ed:
+        raise ValueError("the editor region is not sector-aligned off the code region")
+    if h["editor_size"] > EDITOR_MAX:
+        raise ValueError("editor region is %d B, past the %d B this build allows an "
+                         "app to ship: it stays on the card and installs nothing, so "
+                         "the cap guards the card, not a slot"
+                         % (h["editor_size"], EDITOR_MAX))
     return h
 
 
 def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
                    period_ms=0, art_req=0, counts=(0, 0, 0, 0),
                    behaviour_kind=0, serial=0, baked_ms=0, abi=None, assets=(),
-                   code=b"", wasm_mem_max=0):
+                   code=b"", wasm_mem_max=0, editor=b""):
     """Emit one `.orbapp`, its name derived from the header that is its identity.
 
     Nothing is written unless every check passes, and the CRC is computed over
@@ -1155,6 +1227,9 @@ def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
         raise ValueError("geometry must be bytes")
     if not isinstance(code, (bytes, bytearray)):
         raise ValueError("code must be bytes")
+    if not isinstance(editor, (bytes, bytearray)):
+        raise ValueError("editor must be bytes")
+    editor_bytes = bytes(editor)
     check_slug(slug)
     rows = check_settings(settings)
     s_blob = pack_settings(rows)
@@ -1165,7 +1240,8 @@ def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
                       counts, s_blob, serial=serial,
                       baked_ms=baked_ms, abi=abi, behaviour_kind=behaviour_kind,
                       asset_blob=a_blob, code_size=len(code_bytes),
-                      wasm_mem_max=wasm_mem_max)
+                      wasm_mem_max=wasm_mem_max,
+                      editor_size=len(editor_bytes))
     # The packer left geom_size/geom_crc/art_crc at zero because only it knows
     # the blob it is about to lay down; fill and re-checksum in one place. The
     # art crc stays zero — zlib.crc32 of the empty payload the format forbids.
@@ -1195,10 +1271,20 @@ def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
         raise ValueError("its manifest, geometry and code are %d B: a slot holds "
                          "%d B — re-bake the app smaller"
                          % (code_end, GEOM_BYTES_MAX))
+    # D37: the editor region rides past the code, on the sector boundary its end
+    # vacates, and it is NOT part of the slot bill — the line above prices the
+    # installed prefix and stops there on purpose. An empty region keeps a zero
+    # offset rather than the derived one, so the triple reads as "ships nothing".
+    hdr[W_EDITOR_OFF]  = (editor_offset(hdr[W_CODE_OFF], hdr[W_CODE_SIZE])
+                          if editor_bytes else 0)
+    hdr[W_EDITOR_CRC]  = (zlib.crc32(editor_bytes) & 0xFFFFFFFF) if editor_bytes else 0
     hdr[W_HDR_CRC]   = _hdr_crc(hdr)
     raw = b"".join(struct.pack("<I", v) for v in hdr) + s_blob + a_blob + geom_bytes
     raw += b"\0" * (hdr[W_CODE_OFF] - len(raw))
     raw += code_bytes
+    if editor_bytes:
+        raw += b"\0" * (hdr[W_EDITOR_OFF] - len(raw))
+        raw += editor_bytes
     # The NAME is derived from the slug, exactly as the theme upload renames a
     # .part into theme_id(header.name): a writer that honoured the caller's
     # filename could be talked into filing slug "bar" as "foo.orbapp", and the
@@ -1250,6 +1336,13 @@ def read_container(path, verify=True):
     code_end = h["code_off"] + h["code_size"]
     if code_end > len(raw):
         raise ValueError("code region runs past the end of the file")
+    # D37: the region runs past the end of the file is the same damage here as it is
+    # for the code, and it is checked for both halves at once — a short file is what
+    # a copy interrupted by a pull looks like, and the hub would otherwise stream
+    # past the end and report a checksum failure for what is really a torn copy.
+    editor_end = h["editor_off"] + h["editor_size"]
+    if h["editor_size"] and editor_end > len(raw):
+        raise ValueError("editor region runs past the end of the file")
     s_blob = raw[SET_OFF:SET_OFF + h["n_settings"] * SETTINGS_WORDS * 4]
     a_blob = raw[h["asset_off"]:a_end]
     geom = raw[h["geom_off"]:end]
@@ -1271,6 +1364,16 @@ def read_container(path, verify=True):
         want = (zlib.crc32(code) & 0xFFFFFFFF) if code else 0
         if want != h["code_crc"]:
             raise ValueError("code checksum mismatch — the copy on the card is damaged")
+        # D37: the editor region rides past the slot CRC's reach exactly as the code
+        # does, so it carries its own checksum and this is where the host checks it.
+        # The device checks it over the card and NEVER installs the bytes (§4.2),
+        # so a damaged editor is a refused door and not a dead app.
+        if h["editor_size"]:
+            eblob = raw[h["editor_off"]:editor_end]
+            if (zlib.crc32(eblob) & 0xFFFFFFFF) != h["editor_crc"]:
+                raise ValueError("editor checksum mismatch — the copy on the card "
+                                 "is damaged")
+            h["editor"] = eblob
     h["code"] = code
     h["assets"] = unpack_assets(a_blob, h["n_assets"])
     for r in h["assets"]:

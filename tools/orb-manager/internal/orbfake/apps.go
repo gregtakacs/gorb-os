@@ -31,9 +31,21 @@ const (
 	wArtSize    = 38 // W_SET_OFF 33, GEOM_OFF 34, GEOM_SIZE 35, GEOM_CRC 36, ART_OFF 37
 	slugBytes   = 24
 	titleBytes  = 32
-	appNameMax  = 55                // ORB_SD_NAME_MAX
-	appHdrWords = 39                // through W_ART_SIZE, the last word the double reads
-	appUploadMa = 0x40000 + 0x20000 // ORB_APP_UPLOAD_MAX
+	appNameMax  = 55 // ORB_SD_NAME_MAX
+	appHdrWords = 39 // through W_ART_SIZE, the last word the double reads
+	// ORB_APP_UPLOAD_MAX, recomputed by D37: the installed bill (a slot's geometry
+	// budget plus the header block and its alignment gap) PLUS one editor region at
+	// ORBAPP_EDITOR_MAX plus the one sector of padding that can sit in front of it.
+	// The region never installs, so it adds to the largest FILE and not to the
+	// largest slot — the distinction §4.2 is built on.
+	appUploadMa = 0x40000 + 0x20000 + 0x200000 + 0x1000
+	// D37's editor triple: W_EDITOR_OFF/SIZE/CRC, the three words after
+	// W_WASM_MEM and before W_HDR_CRC in orb_app_manifest.h. The double reads the
+	// offset so an editor-bearing container can model one on the card.
+	wEditorOff = 47
+	wEditorSz  = 48
+	wEditorCrc = 49
+	appAbi     = 3 // ORBAPP_GEOM_ABI / orbapp.GEOM_ABI
 )
 
 // capNames is orbapp_caps_names's table (orb_app_manifest.c:400) in bit order. The double
@@ -69,6 +81,11 @@ type CardApp struct {
 	// refuses to turn one on at all, so a Manage card that offered a toggle for it would
 	// be offering a button that can only ever fail.
 	NoIface bool
+	// Editor holds the D37 editor region's bytes. GET /api/v1/apps/editor streams
+	// exactly these, and the double stores bytes rather than a placement: the device
+	// derives editor_off from the regions ahead of it, so a fixture that set only an
+	// offset would model a container no writer can emit.
+	Editor []byte
 	// Builtin marks a row that ships inside the firmware. door_open refuses to
 	// enable/disable/uninstall those with NOT_SUPPORTED, and they sit below
 	// ORB_APP_BASE, so they appear in h_status's ledger but NOT in h_apps's installed
@@ -104,10 +121,19 @@ func sdNameOK(s string) bool {
 
 // capsNames formats a bitset as orbapp_caps_names does: comma-space joined in bit order,
 // and the empty string rather than a truncated list.
+//
+// The four owner caps sit at bits 4..7, NOT 0..3 (orb_cap_t: CAP_POWER = 4 ..
+// CAP_THEMES = 7; orb_app_manifest.c indexes `1u << (CAP_POWER + i)`). Bits 0..3 are the
+// free caps — time, config, ui, art — which §4.2 grants unconditionally, so the firmware
+// never prints them. This loop iterated 0..3 against the owner names while still being
+// documented as the manifest's twin: a test that set caps 0x1 read back "power" here and
+// "time" on a board, and 0x8 — CAP_ART, free and unprintable — read back "themes". D37's
+// enumeration keys off that exact word, so the double is corrected to the device instead
+// of the hub learning a second, wrong, table from a passing suite.
 func capsNames(caps uint32) string {
 	var parts []string
 	for i := 0; i < 4; i++ {
-		if caps&(1<<uint(i)) != 0 {
+		if caps&(1<<uint(4+i)) != 0 {
 			parts = append(parts, capNames[i])
 		}
 	}
@@ -573,4 +599,41 @@ func BuildAppContainer(slug, title string, caps, periodMs, serial uint32) []byte
 	copy(body[wSlug*4:], slug)
 	copy(body[wTitle*4:], title)
 	return body
+}
+
+// serveAppEditor answers GET /api/v1/apps/editor?id=<stem> the way h_app_editor
+// does (orb_net.c): the raw region as application/octet-stream, no JSON envelope,
+// and the device's own sentence as the 404 body when a row ships no editor. The
+// double checks no CRC — the hub verifies the archive once it lands, and the
+// device's checksum test is host_orbapp's, over the writer's own bytes.
+func (o *Orb) serveAppEditor(w http.ResponseWriter, r *http.Request) {
+	stem := strings.TrimSpace(r.URL.Query().Get("id"))
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.calls = append(o.calls, "GET /api/v1/apps/editor?id="+stem)
+	if stem == "" {
+		writeJSON(w, 400, `{"error":"id is missing"}`)
+		return
+	}
+	if !o.Mounted {
+		writeJSON(w, 404, `{"error":"no card in the socket"}`)
+		return
+	}
+	row := o.apps[stem]
+	// The card tier and the flash row are the same registry here, as they are on a
+	// device: the region lives in the card file, so a row with no Editor answers
+	// the way a board would for an app that ships none.
+	if row == nil || row.Stem == "" {
+		writeJSON(w, 404, `{"error":"no such app on the card"}`)
+		return
+	}
+	if len(row.Editor) == 0 {
+		writeJSON(w, 404, `{"error":"this app ships no editor"}`)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(row.Editor)))
+	w.WriteHeader(200)
+	_, _ = w.Write(row.Editor)
 }

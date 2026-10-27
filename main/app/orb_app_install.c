@@ -1603,7 +1603,7 @@ esp_err_t orb_app_editor_read(const char *stem, orb_app_editor_chunk_t chunk, vo
     }
     if (why_out) *why_out = NULL;
     if (total) *total = hp->editor_size;
-    const esp_err_t framed = chunk(NULL, 0, ctx);
+    const esp_err_t framed = chunk(NULL, hp->editor_size, ctx);
     if (framed != ESP_OK) {                     /* caller hung up before byte one */
         heap_caps_free(buf);
         install_close(fd);

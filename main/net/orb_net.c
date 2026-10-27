@@ -5109,6 +5109,13 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
 typedef struct {
     httpd_req_t *req;
     uint32_t total;               /* the region's length, for Content-Length */
+    char len[16];                 /* the Content-Length value, alive till send.
+                                   * httpd_resp_set_hdr stores the POINTER, not a
+                                   * copy; a stack local here serialized as garbage
+                                   * MIME bytes the first real chunk went out (the
+                                   * 2026-10-27 bench saw "Content-Length: \x98]…").
+                                   * The header's value must outlive every call
+                                   * between the framing and the last send. */
     bool sent;                    /* a chunk is on the wire; the status line is spent */
     esp_err_t err;
 } editor_sink_t;
@@ -5116,18 +5123,21 @@ typedef struct {
 static esp_err_t editor_chunk(const uint8_t *bytes, size_t n, void *vctx)
 {
     editor_sink_t *k = (editor_sink_t *)vctx;
-    if (n == 0) {
-        /* The framing call. Headers are set here and not earlier: until the door
-         * has read a verified header it does not know the region's length, and a
-         * Content-Length guessed from anything else is a response that lies. If
-         * the door then refuses, nothing has been sent and the handler still owns
-         * the status line — so this sets pending headers, overridable, which is
-         * exactly what httpd_resp_set_* is. */
+    if (bytes == NULL) {
+        /* The framing call, and the only one that arrives with NULL bytes. It
+         * carries the region's length in n — set here, before any header is
+         * touched, because Content-Length is the one number the reader had and
+         * the sink would otherwise invent. Headers are set here and not
+         * earlier: until the door has read a verified header it does not know
+         * the region's length, and a Content-Length guessed from anything else
+         * is a response that lies. If the door then refuses, nothing has been
+         * sent and the handler still owns the status line — so this sets pending
+         * headers, overridable, which is exactly what httpd_resp_set_* is. */
+        k->total = (uint32_t)n;
         httpd_resp_set_type(k->req, "application/octet-stream");
         httpd_resp_set_hdr(k->req, "Cache-Control", "no-store");
-        char len[16];
-        snprintf(len, sizeof len, "%u", (unsigned)k->total);
-        httpd_resp_set_hdr(k->req, "Content-Length", len);
+        snprintf(k->len, sizeof k->len, "%u", (unsigned)k->total);
+        httpd_resp_set_hdr(k->req, "Content-Length", k->len);
         return ESP_OK;
     }
     if (k->err != ESP_OK) return k->err;   /* already stopped; send nothing more */

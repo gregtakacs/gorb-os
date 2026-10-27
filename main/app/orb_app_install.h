@@ -204,9 +204,14 @@ typedef struct orb_app_up orb_app_up_t;
  * same verified way an install does, checks the region's CRC over the bytes it
  * streams, and hands the caller the ZIP's opening sector.
  *
- * `chunk(NULL, 0, ctx)` is called first so the caller can frame the response
+ * `chunk(NULL, total, ctx)` is called first so the caller can frame the response
  * before any byte moves, exactly as orb_app_up_progress's first call lets the
- * upload page set its bar. `chunk(bytes, n, ctx)` then repeats over the region,
+ * upload page set its bar — and with the region's length in `n`, because a
+ * response that lies about Content-Length is no framing at all (the bench found
+ * exactly that on 2026-10-27: a sink that filled its length after the framing
+ * call shipped `Content-Length: 0` and curl truncated the body to nothing). The
+ * framing call is the only one with NULL bytes; every data call then repeats as
+ * `chunk(bytes, n, ctx)` over the region,
  * each n at most ORB_APP_EDITOR_CHUNK, and the caller returns ESP_FAIL to stop —
  * a browser that closed the tab mid-region is ordinary here, not damage. The
  * checksum is verified as it streams, so a refusal can name the offset it died

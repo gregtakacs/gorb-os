@@ -1209,13 +1209,12 @@ static void ap_open(uint32_t hold_s, const char *why)
      * type=4 EB is the beacon itself (the driver logs `Init max length of beacon:
      * 752/752`), so static-rx=6 rather than 10 is what leaves it a slot.
      *
-     * What this is NOT any more: a fix for a phone that would not get an address.
-     * That fault was CONFIG_LV_MEM_SIZE starving the config server and the AP's
-     * DHCP path (see sdkconfig.defaults); restarting the driver here only cost the
-     * LAN ~8 s and changed nothing, so it is out. Whether the trim is still needed
-     * now that ~40 KB of internal DRAM is back is OPEN -- to find out, delete the
-     * four buffer lines from BOTH sdkconfig.defaults and sdkconfig and repeat the
-     * POST /api/v1/wifi/ap that first panicked. Until that is run, keep the trim. */
+     * What this is NOT: a fix for the clean-flash boot loop. Bench 2026-10-26
+     * showed the boot-provisioning AP dies with the same `alloc eb len=752
+     * type=4 fail` -> Guru even with this trim in place and dma_free=4207 — that
+     * path is a cold-start pool race inside esp_wifi_start(), fixed separately in
+     * orb_net_start (provisioning now boots WIFI_MODE_AP; see prov_promote_apsta).
+     * The trim here only protects THIS runtime late promotion. */
     if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) {
         ESP_LOGE(TAG, "ap open (%s): set_mode(APSTA) failed", why);
         return;
@@ -1264,6 +1263,40 @@ static void ap_open(uint32_t hold_s, const char *why)
     arm_oneshot(s_ap_timer, hold_s, "ap expiry");
     ESP_LOGW(TAG, "SoftAP \"%s\" OPEN (%s) — join it, then open http://192.168.4.1/"
                   " (%u s hold)", (const char *)ap.ap.ssid, why, (unsigned)hold_s);
+}
+
+/* Provisioning boots the SoftAP alone — see orb_net_start(). A clean flash takes
+ * that branch with NO stored network, and the cold esp_wifi_start() there was
+ * brought up in WIFI_MODE_APSTA, which carved the STA interface into the SAME
+ * fixed driver event-buffer pool the softAP beacon needs while a first-boot RF
+ * calibration was transiently eating internal DRAM; the beacon's dedicated
+ * management-TX EB lost that race, IDF dereferenced the null it returns, and the
+ * board bootlooped (alloc eb len=752 type=4 fail -> LoadProhibited -> rst:0xc) on
+ * EVERY boot — the panic aborts before calibration is ever saved, so it never
+ * self-heals. Proven on the bench 2026-10-26 (orb 44:bd:8d:78:26:18): the
+ * buffer-count trim did NOT stop it (it failed at dma_free=4207, largest=7168,
+ * both far above 752 — the EB is from a fixed pool, not the general heap).
+ *
+ * The station is needed only to scan and to join, both of which are radio-task
+ * points. So the interface is added the proven late way — bafcd4e showed APSTA
+ * opens cleanly when the promotion happens on an already-started, settled driver
+ * (after calibration is cached, the ladder idle) — here, once, at those two
+ * points. Before them the orb is a pure AP: it still broadcasts, the page still
+ * loads, and the beacon keeps the whole EB pool to itself. */
+static bool s_prov_apsta;        /* AP->APSTA promotion done this provisioning session */
+static void prov_promote_apsta(void)   /* RADIO TASK ONLY */
+{
+    if (!s_provisioning || s_prov_apsta) return;
+    const esp_err_t me = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (me != ESP_OK) {
+        /* Stay AP-only: the orb is still joinable and the page still works. A
+         * failed promotion costs the scan list and the join, and both retry at
+         * the next radio-task point, so do not latch success on a failure. */
+        ESP_LOGE(TAG, "provisioning: AP->APSTA promotion failed: %s", esp_err_to_name(me));
+        return;
+    }
+    s_prov_apsta = true;
+    ESP_LOGI(TAG, "provisioning: station interface added (AP -> APSTA)");
 }
 
 /* RADIO TASK ONLY. */
@@ -1553,6 +1586,10 @@ static void net_task_loop(void *arg)
              * before the radio sees it, so a lease that arrives while this handler
              * is still running cannot consume a pair that was never recorded. */
             pend_set(m.ssid, m.pass);
+            /* connect() only acts in STA or APSTA mode; a provisioning boot is
+             * AP-only until this point (see prov_promote_apsta). Add the station
+             * here, on the radio task, so the join is not silently a no-op. */
+            prov_promote_apsta();
             {
                 const esp_err_t je = net_apply_sta_config(m.ssid, m.pass);
                 if (je != ESP_OK)
@@ -3108,6 +3145,11 @@ static void scan_fold(const wifi_ap_record_t *r)
  * state early. */
 static void scan_begin(void)
 {
+    /* Scanning needs the station interface. On a provisioning boot the orb came
+     * up AP-only (see the note on prov_promote_apsta); add the station now, on
+     * the radio task and once the AP + its beacon are already up, so the beacon's
+     * EB is secured and this promotion cannot re-enter the cold-start failure. */
+    prov_promote_apsta();
     s_scan_n = 0;
     const wifi_scan_config_t sc = { .show_hidden = false };
     const esp_err_t se = esp_wifi_scan_start(&sc, /*block=*/false);
@@ -6841,15 +6883,20 @@ esp_err_t orb_net_start(void)
         ap_fill_config(&ap);   /* same builder the runtime rescue/manual paths use,
                                 * so the SSID scheme cannot drift between them */
 
-        /* APSTA, not AP: a single radio cannot scan or associate while the STA
-         * interface is disabled, and esp_wifi_connect() "only impact
-         * WIFI_MODE_STA or WIFI_MODE_APSTA mode" (esp_wifi.h). Under AP-only the
-         * provisioning page would have listed nothing AND silently accepted the
-         * user's credentials without ever attempting to join them: set_config()
-         * succeeds, then connect() is a no-op, so the orb looks configured and
-         * never comes back. The AP still runs so the browser that just submitted
-         * the credentials stays attached while the association proceeds. */
-        ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "mode");
+        /* AP, not APSTA, at this cold instant. The station is genuinely needed
+         * later — the page must scan and the submitted pair must join — but NOT
+         * here. Bringing the STA interface up inside this esp_wifi_start() puts
+         * its buffers into the same fixed driver EB pool the softAP beacon draws
+         * from, and on a clean flash that start also runs the first-boot RF
+         * calibration; the beacon's management-TX EB loses that race, IDF returns
+         * null and then dereferences it, and the board bootloops before
+         * calibration is ever saved. Proven on the bench 2026-10-26; see the full
+         * note on prov_promote_apsta(). The promotion to APSTA now happens on the
+         * radio task, once, at the first scan or join — the already-started,
+         * settled-driver regime bafcd4e proved opens the SoftAP without a Guru.
+         * Until then this is a pure AP: it broadcasts, the page loads, and the
+         * scan/join simply defer one radio-task hop. */
+        ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_AP), TAG, "mode");
         ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "ap config");
         if (ap_isolated)
             /* The owner asked for isolation: this AP has no deadline and no stored
@@ -6950,7 +6997,35 @@ esp_err_t orb_net_start(void)
      * air around it, switch it AP<->station, or factory-reset it, none of which reach it
      * over a LAN it may not be on. The reader blocks in select() until a line arrives, so
      * an orb whose console nobody touches pays nothing. Low priority, modest stack. */
-    if (xTaskCreate(prov_reader_task, "orbserial", 4096, NULL, 3, NULL) != pdPASS)
+    /* The serial command door is open for the whole life of the app, on every boot and
+     * in every state — not only a first-boot provisioning. A configured orb is exactly
+     * the case that needs it: a hub with only a USB lead can still NAME it, SCAN the
+     * air around it, switch it AP<->station, or factory-reset it, none of which reach it
+     * over a LAN it may not be on. The reader blocks in select() until a line arrives, so
+     * an orb whose console nobody touches pays nothing. Low priority, modest stack.
+     *
+     * Stack comes from PSRAM, NOT the internal heap. This spawn runs right after
+     * esp_wifi_start(), the single tightest point of the boot: the measured largest
+     * internal block there is 3840 B (the post-wifi_start heap line), so a 4096 B
+     * internal-stack xTaskCreate fails and the whole wired door dies —
+     * "serial reader: out of memory" — silently taking PROV/NAME/SCAN/MODE/RESET with
+     * it, which is how a board that only ever gets a USB lead (a clean flash that
+     * booted into provisioning, a device off its LAN) becomes unrecoverable without a
+     * reflash. This task only does select()/fgets on the console fd and posts to a
+     * queue — no flash writes and nothing that runs with the cache disabled — so a
+     * PSRAM stack is safe, and CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y is what lets
+     * xTaskCreateWithCaps route it there. (vTaskDelete(NULL) at the reader's exit does
+     * not free a static-alloc stack, so provisioning's end leaks this one 4 KB PSRAM
+     * buffer; the task is never respawned and PSRAM is 8 MB — cheaper than the door.) */
+#if CONFIG_SPIRAM && CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
+    const bool reader_up =
+        xTaskCreateWithCaps(prov_reader_task, "orbserial", 4096, NULL, 3, NULL,
+                            MALLOC_CAP_SPIRAM) == pdPASS;
+#else
+    const bool reader_up =
+        xTaskCreate(prov_reader_task, "orbserial", 4096, NULL, 3, NULL) == pdPASS;
+#endif
+    if (!reader_up)
         ESP_LOGE(TAG, "serial reader: out of memory — the serial command door is disabled");
     else
         ESP_LOGI(TAG, "serial door armed: PROV|NAME|SCAN|MODE|RESET|PING on the console");

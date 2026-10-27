@@ -118,9 +118,9 @@ func TestAppVerbRefusals(t *testing.T) {
 		// Inside-the-firmware rows are refused on both doors with the same sentence, at 400
 		// because NOT_SUPPORTED maps there. A Manage card that rendered a toggle for these
 		// would ship a control that can only ever fail.
-		{"/api/v1/apps/enable?id=clock&on=0", builtinBody, 400},
 		{"/api/v1/apps/enable?id=menu&on=0", builtinBody, 400},
-		{"/api/v1/apps/uninstall?id=color_picker", builtinBody, 400},
+		{"/api/v1/apps/enable?id=menu&on=0", builtinBody, 400},
+		{"/api/v1/apps/uninstall?id=menu", builtinBody, 400},
 		{"/api/v1/apps/uninstall?id=glass", onDialBody, 409},
 	}
 	for _, c := range cases {
@@ -212,11 +212,11 @@ func TestAppUploadTakesItsNameFromTheHeader(t *testing.T) {
 		t.Error("a caller-controlled query string influenced the destination")
 	}
 	// Uploading over an inside-the-firmware name is refused, not silently accepted: the
-	// overwrite gate keys on the registry, and clock/color_picker/menu are already in it.
+	// overwrite gate keys on the registry, and the D36 ledger already carries menu.
 	// Only the status is pinned here — the exact wording for a built-in collision has not
 	// been measured on hardware, and this file does not invent device strings again.
 	if code, body := appDo(t, srv, http.MethodPost, "/api/v1/sd/app",
-		BuildAppContainer("clock", "Wall Clock", 0x1, 60000, 7)); code == 200 {
+		BuildAppContainer("menu", "The Menu", 0x1, 60000, 7)); code == 200 {
 		t.Errorf("upload over a built-in slug -> %d %s, want a refusal", code, body)
 	}
 	// h_status's apps array is the broker ledger and lists only what is registered in
@@ -226,7 +226,7 @@ func TestAppUploadTakesItsNameFromTheHeader(t *testing.T) {
 	if strings.Contains(sb, `"slug":"dialtest"`) {
 		t.Errorf("a staged-only app appeared in the ledger: %s", sb)
 	}
-	if !strings.Contains(sb, `"apps":[{"slug":"clock"`) {
+	if !strings.Contains(sb, `"apps":[{"slug":"menu"`) {
 		t.Errorf("ledger lost the built-in rows a real orb always reports: %s", sb)
 	}
 	if code, body := appDo(t, srv, http.MethodPost, "/api/v1/apps/install?id=dialtest", []byte("{}")); code != 200 {

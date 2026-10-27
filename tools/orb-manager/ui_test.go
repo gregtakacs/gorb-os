@@ -124,7 +124,7 @@ func TestWifiIsItsOwnFace(t *testing.T) {
 	}
 	// The write-in is the face's standing answer, same sentinel the New Orb
 	// flow uses, and the join reads it: an empty scan must never dead-end.
-	if (!strings.Contains(card, `id="j-manual"`)) {
+	if !strings.Contains(card, `id="j-manual"`) {
 		t.Error("the Wi-Fi card lost its write-in input; a hidden network has no other door")
 	}
 	if !strings.Contains(readAppJS(t), `"__manual__"`) {
@@ -163,16 +163,29 @@ func TestWifiIsItsOwnFace(t *testing.T) {
 func TestAppsFaceReadsTheLedgerAndThemesIsItsOwnFace(t *testing.T) {
 	page := readWebFile(t, "index.html")
 	tabs := readWebFile(t, "tabs.js")
+	app := readWebFile(t, "app.js")
 	if !strings.Contains(tabs, "d.installed") {
 		t.Error("the apps face no longer reads d.installed as the ledger; reading d.apps shows the drop zone and reports a full dial as empty")
 	}
 	if !strings.Contains(tabs, "Array.isArray(d.apps)") {
 		t.Error("the apps face lost its drop-zone tier; card candidates with their refusal sentences must still be listed")
 	}
-	for _, door := range []string{"/api/v1/apps/enable", "/api/v1/apps/install", "/api/v1/apps/uninstall", "/api/v1/apps/clear", "/api/v1/apps/factory"} {
+	for _, door := range []string{"/api/v1/apps/enable", "/api/v1/apps/install", "/api/v1/apps/uninstall", "/api/v1/apps/clear"} {
 		if !strings.Contains(tabs, door) {
 			t.Errorf("the apps face lost its %s door", door)
 		}
+	}
+	if !strings.Contains(tabs, "function appFaceSeed(body) {") {
+		t.Error("the apps face lost its seed row: D36 moved the starter pair onto the hub, and Load the starter apps is the one press")
+	}
+	if strings.Contains(tabs, "/api/v1/apps/factory") || strings.Contains(tabs, "factory_missing") {
+		t.Error("the apps face still speaks the factory tier D36 deleted; the hub route is /api/orb/seed")
+	}
+	if !strings.Contains(tabs, "function readSeedStream(") {
+		t.Error("the apps face lost its NDJSON reader; a seed that streams must land every step")
+	}
+	if !strings.Contains(app, "/api/orb/seed") {
+		t.Error("the join flow never dials /api/orb/seed; D36 made the hub the shipper and the join the moment")
 	}
 	if card := cardMarkup(page, "mn-themecard"); section(card, "data-tab") != "themes" {
 		t.Errorf("the theme card is on face %q, not its own: theming is a press of its own", section(card, "data-tab"))

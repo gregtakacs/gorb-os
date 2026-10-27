@@ -138,7 +138,8 @@ func New(themes ...Theme) *Orb {
 	// Seed the inside-the-firmware rows first, in device order. h_status walks the registry
 	// from row zero, so a double that omits them answers a status request with "apps":[]
 	// where every real orb names clock, color_picker and menu — and the hub's Manage card
-	// cannot tell "no apps installed" from "the device reported nothing".
+	// cannot tell "no apps installed" from "the device reported nothing". Under D36 the
+	// set is the shell menu alone; the seed supplies the two card apps.
 	for _, slug := range builtInSlugs {
 		o.apps[slug] = &CardApp{Stem: slug, Slug: slug, Title: slug,
 			Installed: true, Enabled: true, Builtin: true}
@@ -303,8 +304,6 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 7c9ff63's recovery doors, mirrored gate-for-gate.
 	case r.URL.Path == "/api/v1/apps/clear" && r.Method == http.MethodPost:
 		o.serveAppClear(w, r)
-	case r.URL.Path == "/api/v1/apps/factory" && r.Method == http.MethodPost:
-		o.serveAppFactory(w)
 	case r.URL.Path == "/api/v1/sd/app" && r.Method == http.MethodPost:
 		o.serveAppUpload(w, r)
 	default:
@@ -556,6 +555,11 @@ func (o *Orb) serveUpload(w http.ResponseWriter, r *http.Request) {
 	o.themes = append(o.themes, &Theme{Name: name, App: containerSlug(body, "clock"), ID: id, Bytes: len(body), Serial: 1, OK: true, Stored: !o.TearStore, Active: !o.TearStore})
 	if o.TearStore {
 		land(o.themes[len(o.themes)-1])
+	} else {
+		// A fresh filing stores in the same request (upload queues the store and
+		// the double lands it here), so the slot’s name witness moves with it,
+		// exactly as h_sd would read active off the slot header after the reboot.
+		o.active = name
 	}
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","id":%q,"bytes":%d,"reboot":"automatic"}`, id, len(body)))
 }

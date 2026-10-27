@@ -321,8 +321,8 @@ func TestBuiltInBundleIsUsable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuiltIn: %v — internal/firmware/bundle/%s must be committed", err, DefaultName)
 	}
-	if len(b.Images) < 5 {
-		t.Errorf("built-in bundle has %d images, want the full five-image device set", len(b.Images))
+	if len(b.Images) != 4 {
+		t.Errorf("built-in bundle has %d images, want the four D36 leaves in the set (D36 took the art bank out)", len(b.Images))
 	}
 	if b.Version == "" {
 		t.Error("built-in bundle reports no version: the UI would flash an orb of unknown provenance")

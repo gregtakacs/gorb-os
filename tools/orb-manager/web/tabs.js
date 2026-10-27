@@ -357,13 +357,14 @@ $("#tz-loc").onclick = () => {
 // empty precisely when the dial is full. Reading `apps` as the ledger is why a
 // board running clock, HSB and menu reported "0 installed apps" to its owner.
 // The button matrix mirrors the device's own /apps page: a compiled row is never
-// togglable or uninstallable, a failed row gets Clear fault, a missing factory
-// app gets Restore, and the drop zone is the only place an Install button lives.
+// togglable or uninstallable, a failed row gets Clear fault, the face grows a hub
+// Seed row for the starter pair (D36), and the drop zone is the only place an
+// Install button lives.
 // Every verb is the device's own door; the face renders and asks, and the door's
 // answer is the last word.
 let appList = null;   // the installed tier, in ledger order
 let cardApps = [];    // the drop-zone candidates sitting on the card
-let appData = null;   // the whole answer — factory_missing rides at the top level
+let appData = null;   // the whole answer, re-read after every press
 let appsSub = "clock";
 const APP_TITLES = { clock: "Clock", color_picker: "HSB", menu: "Menu" };
 
@@ -411,12 +412,11 @@ function renderAppsTab() {
   const a = appList.find((x) => x.slug === appsSub);
   if (a) appFaceBody(a, body);
   appFaceCardZone(body);
-  if (appData && appData.factory_missing) appFaceRestore(body);
+  appFaceSeed(body);
 }
 
 function appFaceBody(a, body) {
-  const tier = a.compiled ? "built into the firmware"
-    : a.factory ? "factory app, slot " + a.slot : "slot " + a.slot;
+  const tier = a.compiled ? "built into the firmware" : "slot " + a.slot;
   const sub = document.createElement("p");
   sub.className = "hint";
   sub.textContent = a.slug + " \u00b7 " + tier
@@ -454,9 +454,7 @@ function appFaceBody(a, body) {
     un.textContent = "Uninstall";
     un.onclick = async () => {
       const named = APP_TITLES[a.slug] || a.title || a.slug;
-      const warn = a.factory
-        ? " This one ships inside the firmware: it stays gone until you press Restore the factory apps."
-        : " The file stays on your card.";
+      const warn = " The file stays on your card.";
       if (!confirm("Uninstall " + named + "? The dial erases its slot and forgets its permissions." + warn)) return;
       un.disabled = true;
       note.textContent = "uninstalling\u2026";
@@ -531,25 +529,72 @@ function appFaceCardZone(body) {
   }
 }
 
-function appFaceRestore(body) {
+// The seed row (D36). The starter Clock and HSB and the built-in theme ship in
+// the hub, not in the firmware, and this one press moves them onto the dial
+// through the device’s own doors: POST /api/orb/seed streams its steps back as
+// NDJSON, every step asks the ledger before it writes, so a re-press after any
+// partial costs a read and not a second copy. The row stands whether the board
+// is fresh or fully seeded — the honest answer is the same sentence either way.
+function appFaceSeed(body) {
   const row = document.createElement("div");
   row.className = "row";
-  const rb = document.createElement("button");
-  rb.type = "button";
-  rb.className = "ghost";
-  rb.textContent = "Restore the factory apps";
-  rb.onclick = async () => {
-    if (!confirm("Restore the clock and HSB? Anything already installed keeps its state; anything missing comes back enabled.")) return;
-    rb.disabled = true;
-    try { await appPost("/api/v1/apps/factory"); $("#mn-appstate").textContent = "restore queued \u2014 re-reading"; await loadApps(); }
-    catch (e) { $("#mn-appstate").textContent = "the orb refused it: " + e.message; rb.disabled = false; }
+  const sb = document.createElement("button");
+  sb.type = "button";
+  sb.className = "ghost";
+  sb.textContent = "Load the starter apps";
+  const note = document.createElement("span");
+  note.className = "hint";
+  note.textContent = "Clock and HSB, plus the built-in theme when the dial has no face — idempotent";
+  sb.onclick = async () => {
+    if (!current.ip) { note.textContent = "no address to seed"; return; }
+    sb.disabled = true;
+    try {
+      const r = await hubFetch("/api/orb/seed", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ip: current.ip }),
+      });
+      const seen = await readSeedStream(r, (last) => { note.textContent = last; });
+      const last = seen[seen.length - 1] || { action: "silent", note: "the hub answered nothing" };
+      note.textContent = last.action === "done"
+        ? "seeded — " + seen.filter((x) => !/skipped/.test(x.action)).length + " writes, "
+          + seen.filter((x) => /skipped/.test(x.action)).length + " already in place"
+        : (last.note || last.action || "the seed stopped");
+      await loadApps();
+    }
+    catch (e) { note.textContent = "the hub refused it: " + e.message; sb.disabled = false; }
   };
-  row.appendChild(rb);
-  const hint = document.createElement("span");
-  hint.className = "hint";
-  hint.textContent = "a factory app is missing from its slot";
-  row.appendChild(hint);
+  row.appendChild(sb);
+  row.appendChild(note);
   body.appendChild(row);
+}
+
+// readSeedStream consumes the /api/orb/seed NDJSON stream into parsed steps,
+// calling onLine with a human line for every step as it lands — the Apps face
+// paints each one, so a seed that takes minutes is never a silent spinner.
+// A torn stream returns what it saw; the caller decides what the silence means.
+async function readSeedStream(r, onLine) {
+  if (!r.ok) {
+    const d = await readDeviceJSON(r);
+    throw new Error((d && (d.error || d.message)) || ("HTTP " + r.status));
+  }
+  const rd = r.body.getReader(), dec = new TextDecoder();
+  let buf = ""; const out = [];
+  for (;;) {
+    const n = await rd.read();
+    if (n.done) break;
+    buf += dec.decode(n.value, { stream: true });
+    let k;
+    while ((k = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, k).trim(); buf = buf.slice(k + 1);
+      if (!line) continue;
+      let st = null;
+      try { st = JSON.parse(line); } catch (e) { continue }
+      out.push(st);
+      if (onLine) onLine(st.step + ": " + st.action + (st.note ? " — " + st.note : ""));
+    }
+  }
+  if (buf.trim()) { try { out.push(JSON.parse(buf)); } catch (e) {} }
+  return out;
 }
 
 // ---- face: Files — the card as the owner's volume ------------------------------

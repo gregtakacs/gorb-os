@@ -4,13 +4,16 @@
  * One entry lives here since D35 (§35): the shell's own options page — which
  * walks in the carousel but is OS chrome, not an app, tagged
  * ORB_APP_KIND_SHELL, and owns is_home: the long press lands on the menu. The
- * clock and the color picker used to be compiled rows; they are factory card
- * rows now, installed into slots 0 and 1 from containers in the image, with
- * the same toggles, the same uninstall door and the same C2 quarantine as any
- * app a card brings. A row that can be removed is a row the owner owns.
+ * clock and the color picker used to be compiled rows; D35 made them card
+ * rows, and D36 (§0.11) moved their containers out of the image and onto the
+ * hub's seed: the hub writes the two .orbapp files to the card, and the
+ * ordinary install doors do the rest — the same toggles, the same uninstall
+ * door and the same C2 quarantine as any app a card brings. A row that can be
+ * removed is a row the owner owns.
  *
  * Build order: the shell first (the one compiled row), then the card tier in
- * slot order, so the factory dial leads every installed app. The shared
+ * slot order. The hub seeds the dial first, so the clock leads every installed
+ * app. The shared
  * blocking-work task is the shell's orb_jobs, started from main.c before this
  * ladder rather than by any app, so no entry can quietly grow a second stack
  * out of the internal heap the framebuffer also spends and nothing can post to
@@ -240,7 +243,7 @@ typedef struct {
 static const orb_behaviour_module_t s_behaviour[] = {
     { ORB_BEHAVIOUR_COLOR_PICKER, &s_picker_iface },
     /* D35 (§35): the dial face registers exactly like the picker — one compiled
-     * iface behind one kind id. The factory container for "clock" names kind 3,
+     * iface behind one kind id. The seed container for "clock" names kind 3,
      * and the row it fills walks, draws and faults like any other card app. */
     { ORB_BEHAVIOUR_CLOCK,        &s_clock_iface  },
     /* P7.2 (D20): the wasm3 code tier. One compiled iface serves every code-bearing
@@ -275,15 +278,16 @@ bool orb_app_behaviour_known(uint32_t behaviour_kind)
  * orb_theme_boot() picked the slot and art_bank_init() mapped it before
  * display_init(), and clock_view.c reads it through the base that mapping hands
  * out. Only a SECONDARY bank goes through the fields below. */
-/* D35 (§35) took the clock and the HSB editor out of this table. They are
- * factory card rows now: the same compiled ifaces the entries above registered,
- * reached through behaviour kinds 3 and 1, and installed into flash slots by
- * orb_app_install_factory() the way any other card app installs. What is left
+/* D35 (§35) took the clock and the HSB editor out of this table; D36 (§0.11)
+ * took their containers out of the image. They are card rows now — the same
+ * compiled ifaces the entries above registered, reached through behaviour kinds
+ * 3 and 1, installed into flash slots by the ordinary card installer the way
+ * any other card app installs (the hub seeds the files). What is left
  * here is the shell row — the one entry that is chrome, cannot be uninstalled,
  * and cannot be turned off. It owns is_home, so the long press lands on the
  * menu (the amended C8) and no app can ever take the dial's homing away.
  *
- * The caps note that led this table before moved into the two factory
+ * The caps note that led this table before moved into the two seed
  * containers: the clock now *declares* themes and sd_read, and the picker
  * declares nothing — the honest picture of what each one imports, in the one
  * place D19 says declarations live. */
@@ -659,7 +663,7 @@ const orb_app_t *orb_app_find_slug(const char *slug)
             return &s_apps[i];
     /* Card apps resolve too — ?to=<card-slug> and GET /api/v1/screen name them —
      * but only after the compiled tier, so an installed app can never shadow the
-     * shell. Since D1/C6 (and for the factory pair since D35) a card row's iface
+     * shell. Since D1/C6 (and for the seeded pair since D35) a card row's iface
      * comes from the behaviour module its header names, so a row found here can
      * be a live screen, not only a ledger line; an unregistered kind stays
      * ledger-only exactly as before. */
@@ -699,7 +703,7 @@ int orb_app_index_of(const orb_app_t *app)
 esp_err_t orb_app_init_all(void)
 {
     /* D35 left one compiled row: the menu. The card tier builds after it, in
-     * slot order, so the factory dial (slot 0) still leads every installed app
+     * slot order. The hub seeds the dial first, so the clock still leads every installed app
      * and the shared orb_jobs worker — started before this whole ladder by
      * main.c — already exists before any row posts to it. */
     for (size_t i = 0; i < ORB_APP_N; i++) {
@@ -788,7 +792,7 @@ esp_err_t orb_app_init_all(void)
          * here, because no card row is home (D35 moved homing to the chrome). The
          * compiled loop above reaches the same verdict through orb_svc_faulted;
          * a wasm row reaches it through apply_code's load skip and this loop's
-         * failed init. The factory clock and picker quarantine exactly like every
+         * failed init. The seeded clock and picker quarantine exactly like every
          * other app now that they are rows in this loop. */
         if (orb_svc_faulted(app)) {
             app->failed = true;
@@ -805,7 +809,7 @@ esp_err_t orb_app_init_all(void)
         }
         /* C6 singleton rule: a behaviour module builds its widgets once. A row
          * whose module is already built — two installed containers naming one
-         * kind, or the factory clock beside a later install of kind 3 — rides
+         * kind, or the seeded clock beside a later install of kind 3 — rides
          * the first row's screen instead of re-running init() and stranding the
          * first widget tree (color_picker_init builds a fresh s_scr and leaks
          * the old one). Two
@@ -930,7 +934,7 @@ esp_err_t orb_app_activate(const orb_app_t *app_cp)
 
     /* D35's open follow-up (bench orb-B 2026-10-21): a card row whose enable
      * word landed AFTER the boot gather — the picker re-enabled from /apps, a
-     * factory Restore pressed before any reboot — was never init()ed, and its
+     * seeder enable pressed before any reboot — was never init()ed, and its
      * screen() answer is NULL until it is. Gather only builds rows enabled at
      * the moment it runs. Build once here: both callers of this function, the
      * router's poll and the menu's press, run on the LVGL task, which is the

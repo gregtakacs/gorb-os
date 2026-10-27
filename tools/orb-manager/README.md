@@ -161,7 +161,7 @@ anything reaches a port:
   out of: capping each entry at the archive limit was not equivalent, because the
   entries are summed into a map, so an archive of many high-ratio members expanded
   to entries x limit and the hub held all of it.
-- **Member count**, capped at 32. A release is the manifest plus five images.
+- **Member count**, capped at 32. A release is the manifest plus four images.
 - **Project identity.** The `esp_app_desc_t` inside the app image announces its
   project, and a bundle announcing anything but `gorb-os` is refused — the usual
   cause being a stray ESP-IDF build picked out of a Downloads folder. An image with
@@ -1378,7 +1378,7 @@ curl -s -X POST http://127.0.0.1:3779/api/flash/cancel \
   -d '{"port":"/dev/ttyACM0"}'
 ```
 
-`/api/build` enumerates the five images from the embedded bundle and reports the
+`/api/build` enumerates the four images from the embedded bundle and reports the
 firmware's own version and sha256 — from the binary, not from a directory.
 `/api/ports` answers `{"ports":[]}` on a machine with no COM ports at all; an
 empty list is a real answer, not a failure. `/api/status` reporting something

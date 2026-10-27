@@ -77,10 +77,11 @@ type CardApp struct {
 	Builtin bool
 }
 
-// builtInSlugs is the device's own inside-the-firmware set, read off orb-B's
-// /api/v1/status ledger rather than from the hub's knownApps list (which additionally
-// carries "hue", an alias that never appears in the ledger).
-var builtInSlugs = []string{"clock", "color_picker", "menu"}
+// builtInSlugs is the device's own inside-the-firmware set. Since D36 (v1.1.20)
+// that is the shell menu alone: the clock and the color picker are hub-seeded card
+// rows now, and a fresh dial's ledger carries one built-in row. Read off the
+// v1.1.20 /api/v1/status ledger, not the hub's knownApps list.
+var builtInSlugs = []string{"menu"}
 
 // sdNameOK is orb_sd_name_ok (orb_sd.c): 1..55 bytes of [A-Za-z0-9._-], no leading '.'.
 // Duplicated on purpose. The card stem is the one app identifier a caller controls, and a
@@ -449,27 +450,6 @@ func (o *Orb) serveAppClear(w http.ResponseWriter, r *http.Request) {
 	a.Installed = true
 	a.Enabled = true
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"cleared","slug":%q,"reboot":true}`, jsonSafe(slug)))
-}
-
-// serveAppFactory mirrors h_app_factory: no arguments, the firmware's short busy
-// sentence at 409 while a card job holds the door, and an ack that names the queued
-// restore rather than claiming it finished. The double lands the restore on the ack,
-// built-ins revived and card rows off the install, as its other state doors do.
-func (o *Orb) serveAppFactory(w http.ResponseWriter) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.JobBusy {
-		writeJSON(w, 409, `{"error":"a card job is running"}`)
-		return
-	}
-	for _, a := range o.apps {
-		if a.Builtin {
-			a.Failed, a.Installed, a.Enabled = false, true, true
-			continue
-		}
-		a.Installed, a.Enabled = false, false
-	}
-	writeJSON(w, 200, `{"state":"restoring"}`)
 }
 
 // serveAppUninstall mirrors h_app_uninstall. Uninstalling the row on the glass is the

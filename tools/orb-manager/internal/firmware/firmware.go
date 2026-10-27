@@ -50,7 +50,8 @@ const ImageDir = "images"
 const maxBundle = 32 << 20
 
 // maxZipEntries bounds how many members a bundle may carry. A real release is the
-// manifest plus five images; the ceiling leaves room for a future partition and
+// manifest plus four images (D36 took the art bank out of the flash set); the
+// ceiling leaves room for a future partition and
 // still refuses an archive whose bulk is thousands of files rather than firmware.
 const maxZipEntries = 32
 
@@ -484,7 +485,7 @@ type appDescFields struct{ Project, Version, IDF, Built string }
 // scanDescriptors weighs every esp_app_desc_t in a blob, not just the first, and
 // counts only the ones that name a project. A bundle names its app image in its
 // manifest, so the first magic inside that one file is the descriptor; a merged
-// blob is five images concatenated, and any headerless part of it can hold the four
+// blob is four images concatenated, and any headerless part of it can hold the four
 // magic bytes by chance or carry a descriptor whose project_name was never
 // stamped. The candidate that announces gorb-os is the app. best names one
 // project-naming candidate for a refusal to quote when none matches, and seen

@@ -789,6 +789,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// unguarded like the candidate list; the writes change what a later credential is
 	// keyed to, so they carry the token and the origin check.
 	mux.HandleFunc("/api/fleet", s.handleFleet)
+	// The seed (D36): push the starter pair and the built-in theme onto one orb
+	// through its own doors. A write that reaches a device, so the control token
+	// and the learned-address gate apply exactly as they do on a theme send.
+	mux.Handle("/api/orb/seed", s.requireControl(http.HandlerFunc(s.handleSeed)))
+
 	mux.Handle("/api/fleet/set", s.requireControl(http.HandlerFunc(s.handleFleetSet)))
 	mux.Handle("/api/fleet/forget", s.requireControl(http.HandlerFunc(s.handleFleetForget)))
 

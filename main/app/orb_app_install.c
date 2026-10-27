@@ -252,16 +252,16 @@ static ssize_t rd_at(int fd, size_t *io_pos, uint8_t *dst, size_t n)
     return (ssize_t)done;
 }
 
-/* ---- the read source: a card fd, or a container already in the image (D35) --
+/* ---- the read source: a card fd, or a container already in memory ----------
  *
  * The ladder's gates are the ladder — resolve by walk, full-payload CRC off the
  * sink, erase, copy, read-back CRC, header last (D9). Only the WHERE differs: a
- * card app arrives at <stem>.orbapp and reads through one locked fd; a factory
- * app (clock, HSB) ships in this image as the same bytes and reads straight from
+ * card app arrives at <stem>.orbapp and reads through one locked fd; a memory
+ * source hands the ladder bytes the caller already holds, read straight from
  * flash-mapped .rodata. One source struct, one ladder, and the two cannot drift
- * apart, which is the whole point of making the factory apps ordinary installs.
- * A mem-source install takes no card lock and owns no fd; install_close() only
- * closes what the source opened. */
+ * apart — which is why the D36 seed ships no in-image apps: the card path is
+ * the only shipped caller. A mem-source install takes no card lock and owns no
+ * fd; install_close() only closes what the source opened. */
 typedef struct {
     int              fd;        /* card path: the open fd; -1 for a memory source */
     const uint8_t   *mem;       /* memory path: the container's byte 0; NULL for the card */
@@ -281,12 +281,12 @@ static ssize_t src_read(const appsrc_t *s, size_t pos, uint8_t *dst, size_t n)
     return (ssize_t)n;
 }
 
-/* D35's memory sources: the generated factory containers, clock first so the
- * install order gives the dial the leading slot. Sizes live beside the data (the
- * generated arrays are exact); the blobs' own headers are the identity — the
- * ladder parses them like any card file's. */
-extern const uint8_t orb_app_factory_blob_0[]; extern const uint32_t orb_app_factory_blob_len_0;
-extern const uint8_t orb_app_factory_blob_1[]; extern const uint32_t orb_app_factory_blob_len_1;
+/* D36 (§0.11): the in-image factory containers are gone. The firmware ships no
+ * apps; the hub seeds the clock and the HSB editor onto the card as ordinary
+ * .orbapp files, and they arrive through orb_app_install below exactly like
+ * every other app. orb_app_install_image stays as the memory-source front the
+ * sentinel pins and any future in-image source would use — with no shipped
+ * caller, on purpose. */
 
 /* One place to fail: the page shows why, the log shows the same sentence, and
  * the caller gets the esp_err_t that decides whether a reboot is needed
@@ -325,9 +325,9 @@ static const char *read_and_check_header(const appsrc_t *s, orbapp_hdr_t *h, con
     if (r) return r;
 
     /* A card install cross-checks the filename stem against the header (the C11
-     * triple); a factory source HAS no filename, and its identity is the slug it
+     * triple); a memory source HAS no filename, and its identity is the slug it
      * declares — which the writer already insisted the stem match at bake time,
-     * and the freshness sentinel re-asserts every run (D35). So a NULL stem means
+     * and the freshness sentinel re-asserts every run. So a NULL stem means
      * "the header's own slug is the stem", the same equality, checked not skipped. */
     char fname[ORBAPP_SLUG_MAX + 16];
     snprintf(fname, sizeof fname, "%s%s", stem ? stem : h->slug, ORB_APP_EXT);
@@ -602,11 +602,11 @@ static esp_err_t write_slot_header(const esp_partition_t *p, int slot,
  * payload has checksummed off the card, which is why a damaged file costs a
  * sentence and not a slot (card_open_verified_id3's rule, orb_theme.c). */
 /* The two sources' shared ladder. Everything from the settings scratch down is
- * identical for a card fd and a factory image - unpack the declared settings,
+ * identical for a card fd and a memory image - unpack the declared settings,
  * price the pure decision, wipe a dirty slot's stale owner words, erase, copy,
  * read back, write the header LAST (D9), commit the row. `src` is already
  * header-verified by the caller's front half; `stem` labels the log only (a
- * factory install passes NULL and the header's slug carries its identity).
+ * memory install passes NULL and the header's slug carries its identity).
  *
  * The PSRAM scratch note below belongs to orb_jobs's 4096 B worker and the main
  * task's 3584 B boot stack alike: it is why the two tables never sit in a frame
@@ -758,12 +758,12 @@ esp_err_t orb_app_install(const char *stem, char *why, size_t whysz)
     return ret;
 }
 
-/* D35 (plan section 35): the factory apps install from this image through the
- * SAME header ladder, decision, and copy-verify-header-last pipeline a card file
- * pays - one install path, two sources. The source is .rodata: no card lock, no
- * mount, no stem (the header's slug is its own filename). A torn factory install
- * reads as an ABSENT app exactly as a torn card copy would (D9), and the
- * provision rung re-runs it next boot for the same reason. */
+/* The memory-source front (kept generic since D36 retired its only shipped
+ * caller): install a container the caller already holds through the SAME header
+ * ladder, decision, and copy-verify-header-last pipeline a card file pays - one
+ * install path, two sources. The source needs no card lock, no mount, and no
+ * stem (the header's slug is its own filename). A torn install reads as an
+ * ABSENT app exactly as a torn card copy would (D9). */
 esp_err_t orb_app_install_image(const uint8_t *img, size_t len, char *why, size_t whysz)
 {
     if (why && whysz) why[0] = '\0';
@@ -806,184 +806,6 @@ esp_err_t orb_app_install_post(const char *stem)
     memset(&r, 0, sizeof r);
     snprintf(r.stem, sizeof r.stem, "%s", stem);
     return orb_jobs_post(install_job, &r, sizeof r);
-}
-
-/* ---- factory provisioning (D35, plan §35) ------------------------------
- *
- * The clock and the HSB editor ship inside the image as real containers (the
- * generated orb_app_factory_blobs.c) and reach the dial through the one pair of
- * functions below — the same orb_app_install_image ladder a card install runs,
- * with the image as the source. There is no factory branch inside the ladder, no
- * synthetic row and no system-app tier: what makes them factory apps is only
- * WHERE the bytes come from and WHO presses the enable button at the factory —
- * which is this function, running exactly twice in a device's life: on the
- * first boot of a clean slate, and on the /apps page's Restore button.
- *
- * The boot rule is the ledger, not a marker key: an apps partition with ZERO
- * live slots is a fresh or wiped board, and gets the pair; a board whose owner
- * uninstalled the clock has a non-empty ledger and keeps the owner's decision
- * until they press Restore themselves. An empty ledger is indistinguishable
- * from "uninstalled the last app", and the honest answer to both is the same:
- * the next boot looks like the box did out of the factory. */
-static const struct { const uint8_t *img; const uint32_t *len; } s_factory_src[] = {
-    { orb_app_factory_blob_0, &orb_app_factory_blob_len_0 },   /* clock        */
-    { orb_app_factory_blob_1, &orb_app_factory_blob_len_1 },   /* color_picker */
-};
-#define ORB_FACTORY_N (sizeof s_factory_src / sizeof s_factory_src[0])
-
-/* One container, installed iff the ledger does not already carry its slug.
- * On a fresh install the row is also enabled — the factory enable, the one
- * place an install lands ON, and the reason a first boot shows a dial and not a
- * bare menu. Returns 1 installed, 0 already present, -1 refused (why filled). */
-static int factory_ensure_one(const esp_partition_t *p, unsigned i,
-                              char *why, size_t whysz)
-{
-    const appsrc_t src = { .fd = -1, .mem = s_factory_src[i].img,
-                           .mem_len = *s_factory_src[i].len, .locked = false };
-    orbapp_hdr_t h;
-    uint32_t raw[ORBAPP_HDR_WORDS];
-    const char *bad = read_and_check_header(&src, &h, NULL, raw);
-    if (bad) { snprintf(why, whysz, "%s", bad); return -1; }
-
-    orbapp_install_slots_t sl;
-    read_slots(p, h.slug, &sl);
-    if (sl.existing_slot >= 0) return 0;                    /* owner's state stands */
-
-    if (install_ladder(p, &src, &h, raw, NULL, why, whysz) != ESP_OK) return -1;
-
-    /* The factory enable, through the same word apply_enable reads: word first
-     * (the ledger is the truth next boot), RAM second on the resident row. */
-    read_slots(p, h.slug, &sl);
-    if (sl.existing_slot >= 0) {
-        if (orb_svc_set_enabled(ORB_APP_BASE + sl.existing_slot, true) != ESP_OK)
-            ESP_LOGW(TAG, "factory row \"%s\" installed but its enable word refused", h.slug);
-        orb_app_t *row = (orb_app_t *)orb_app_find_slug(h.slug);
-        if (row) orb_app_set_enabled(row, true);
-    }
-    return 1;
-}
-
-/* The boot rung: seed the pair into a clean slate. Runs on the boot task right
- * after orb_app_install_resolve_boot() and before orb_svc_init(), so the broker
- * preloads grant words for rows that are already there and apply_enable finds
- * the enable words this wrote. Every failure logs and continues: a dial that
- * cannot get its clock this boot still boots, and Restore is one button away.
- * Returns the number of rows installed. */
-int orb_app_install_provision_clean(void)
-{
-    const esp_partition_t *p = apps_partition();
-    if (!p) return 0;
-    orbapp_install_slots_t sl;
-    read_slots(p, NULL, &sl);
-    if (sl.installed_count > 0) return 0;          /* someone owns this dial already */
-
-    int installed = 0;
-    for (unsigned i = 0; i < ORB_FACTORY_N; i++) {
-        char why[128] = "";
-        const int r = factory_ensure_one(p, i, why, sizeof why);
-        if (r > 0) installed++;
-        else if (r < 0) ESP_LOGW(TAG, "factory provision refused: %s", why);
-    }
-    if (installed) ESP_LOGI(TAG, "factory provision: %d app(s) seeded", installed);
-    return installed;
-}
-
-/* The Restore door: re-seed the factory pair whatever the ledger holds.
- * Present rows keep their state and their serial — an owner's newer card
- * install of the same slug is never walked back — and absent rows come back on.
- * Runs on the worker (posted), never on httpd or LVGL: it erases flash. */
-esp_err_t orb_app_install_restore_factory(char *why, size_t whysz)
-{
-    const esp_partition_t *p = apps_partition();
-    if (!p)
-        return install_failed(ESP_ERR_NOT_FOUND, "this board has no app storage",
-                              why, whysz);
-    int seeded = 0;
-    for (unsigned i = 0; i < ORB_FACTORY_N; i++) {
-        char w[128] = "";
-        const int r = factory_ensure_one(p, i, w, sizeof w);
-        if (r > 0) seeded++;
-        else if (r < 0 && why && whysz && !why[0]) snprintf(why, whysz, "%s", w);
-    }
-    ESP_LOGI(TAG, "factory restore: %d app(s) re-seeded", seeded);
-    return ESP_OK;
-}
-
-static void restore_factory_job(void *arg)
-{
-    (void)arg;
-    char why[128] = "";
-    const esp_err_t e = orb_app_install_restore_factory(why, sizeof why);
-    try_note("factory", (e == ESP_OK && !why[0]) ? NULL
-                                                : (why[0] ? why : "the restore failed"));
-}
-
-esp_err_t orb_app_install_restore_factory_post(void)
-{
-    return orb_jobs_post(restore_factory_job, NULL, 0);
-}
-
-/* The factory-reset hook, called between the NVS wipe and the reboot. The wipe
- * took every enable word with it, so a factory row that still has its slot
- * header would come back unarmed — a reset that quietly removes the clock is
- * not a return to shipping state. Present rows get their word rewritten here
- * (pure NVS, safe on this task); absent rows need flash, so the ordinary
- * worker job is posted and a reboot racing it leaves the honest D9 answer: a
- * slot with no header is no app, and the Restore button is one press away. */
-void orb_app_install_factory_rearm(void)
-{
-    const esp_partition_t *p = apps_partition();
-    if (!p) return;
-    bool missing = false;
-    for (unsigned i = 0; i < ORB_FACTORY_N; i++) {
-        const appsrc_t src = { .fd = -1, .mem = s_factory_src[i].img,
-                               .mem_len = *s_factory_src[i].len, .locked = false };
-        orbapp_hdr_t h;
-        if (read_and_check_header(&src, &h, NULL, NULL)) continue;
-        orbapp_install_slots_t sl;
-        read_slots(p, h.slug, &sl);
-        if (sl.existing_slot >= 0)
-            (void)orb_svc_set_enabled(ORB_APP_BASE + sl.existing_slot, true);
-        else
-            missing = true;
-    }
-    if (missing) (void)orb_app_install_restore_factory_post();
-}
-
-/* The /apps page's question: is either factory app missing from the ledger —
- * the only condition that makes the Restore button worth showing. It answers by
- * parsing the shipped headers, the same read the door will do, so page and door
- * cannot disagree about what "missing" means. */
-bool orb_app_install_factory_missing(void)
-{
-    const esp_partition_t *p = apps_partition();
-    if (!p) return false;
-    for (unsigned i = 0; i < ORB_FACTORY_N; i++) {
-        const appsrc_t src = { .fd = -1, .mem = s_factory_src[i].img,
-                               .mem_len = *s_factory_src[i].len, .locked = false };
-        orbapp_hdr_t h;
-        if (read_and_check_header(&src, &h, NULL, NULL)) continue; /* nothing to seed */
-        orbapp_install_slots_t sl;
-        read_slots(p, h.slug, &sl);
-        if (sl.existing_slot < 0) return true;
-    }
-    return false;
-}
-
-/* The page's row label. Same two headers the door installs, read the same way:
- * a slug is "factory" iff the image ships a container with it — nothing about
- * the answer grants the row a different behaviour anywhere. */
-bool orb_app_install_is_factory(const char *slug)
-{
-    if (!slug || !*slug) return false;
-    for (unsigned i = 0; i < ORB_FACTORY_N; i++) {
-        const appsrc_t src = { .fd = -1, .mem = s_factory_src[i].img,
-                               .mem_len = *s_factory_src[i].len, .locked = false };
-        orbapp_hdr_t h;
-        if (read_and_check_header(&src, &h, NULL, NULL)) continue;
-        if (strcmp(h.slug, slug) == 0) return true;
-    }
-    return false;
 }
 
 /* Rebuild the card table from the apps partition at boot — the read-half of D9.

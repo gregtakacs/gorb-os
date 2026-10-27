@@ -198,11 +198,11 @@ void app_main(void)
      * own load runs once, here, over the finished table). It reads only flash, so
      * it stands with or without a card in the socket. */
     orb_app_install_resolve_boot();
-    /* D35 (§35): a board with an empty apps partition is a clean slate, and the
-     * factory pair — the clock and the HSB editor, shipped in the image as real
-     * containers — installs through the ordinary ladder before the broker reads
-     * any ledger, so its grant and enable words exist for this same boot. */
-    orb_app_install_provision_clean();
+    /* D36 (§0.11): the image ships no apps. A board whose ledger comes back empty
+     * stays empty — the dial boots to the shell menu and waits for its owner.
+     * The clock and the HSB editor are ordinary card apps the hub seeds onto the
+     * card and installs through the ordinary doors, the same way every other
+     * app arrives, so there is nothing left to provision here. */
     /* The broker's grant words load before the first app builds, so the first
      * gated call of the boot never pays an NVS read on the frame path — and
      * so /api/v1/status answers with real grant/call numbers from second one

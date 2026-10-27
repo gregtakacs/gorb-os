@@ -381,14 +381,15 @@ var deviceRoutes = map[string][]string{
 	"/api/v1/apps/install":   {http.MethodPost},
 	"/api/v1/apps/enable":    {http.MethodPost},
 	"/api/v1/apps/uninstall": {http.MethodPost},
-	// 7c9ff63's two recovery doors. clear faults a QUARANTINED built-in without the
+	// 7c9ff63's recovery door. clear faults a QUARANTINED built-in without the
 	// RESET ALL collateral: a compiled tier's menu that panicked at boot reads
 	// installed false, so both door_open gates refuse the enable revive and this is
-	// the only way back short of wiping the owner's WiFi. factory restores every
-	// built-in at once. Both reboots are the firmware's, not the proxy's arm.
-	"/api/v1/apps/clear":   {http.MethodPost},
-	"/api/v1/apps/factory": {http.MethodPost},
-	"/api/v1/sd/app":       {http.MethodPost},
+	// the only way back short of wiping the owner's WiFi. The reboot is the
+	// firmware's, not the proxy's arm. D36 deleted the factory door with the
+	// in-image tier: the hub's /api/orb/seed is the restore path now, and it
+	// reaches the device through the ordinary sd/app and apps/install doors below.
+	"/api/v1/apps/clear": {http.MethodPost},
+	"/api/v1/sd/app":     {http.MethodPost},
 	// v1.1.18's file-manager doors and the LAN twin of serial RESET ALL. The
 	// proxy forwards these verbatim (token, caps, lane) and owns none of the
 	// policy: the device already refuses traversal, the device-owned

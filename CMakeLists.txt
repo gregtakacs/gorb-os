@@ -59,45 +59,15 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(gorb-os)
 
 # ---------------------------------------------------------------------------
-# Clock art bank: flash assets/orb_default.img into the `assets` partition.
+# D36 (§0.11): the firmware flashes bare. No art bank in the manifest.
 #
-# §26 P6.5: the flashed default is now a FORMAT 3 slot-layout image (header at +0,
-# geometry at +0x1000, clock bank at +0x10000) rather than a bare FORMAT 2 pixel blob.
-# boot's default leg reads it through the bundle door (adopt_default_bundle) and maps
-# slot-A's bank exactly as it mapped the FORMAT 2 blob before. tools/mk_slot_image.py
-# emits this image from a FORMAT 3 bundle; the bank is not embedded in the app image,
-# so it needs its own flash rule — the same pattern IDF uses for a custom-named
-# partition. `idf.py flash` writes bootloader + partition table + ota_0 + this bank;
-# OTA never touches it. Mapped at boot by main/art/art_bank.c.
+# The `assets` partition stays in the table — it is where the store door installs
+# a theme (D9/D30) — but nothing is written there at flash time. A fresh or wiped
+# board boots the shell menu with slot A erased: art_bank/adopt_default_bundle
+# refuse the blank slot exactly the way they refuse a damaged one, and the clock
+# falls to the §26 base render. The dial's first face arrives when the hub seeds
+# the clock app and the built-in theme through the ordinary theme doors
+# (tools/orb-manager/seed/, POST /api/v1/sd/theme + /api/v1/sd/bundle). The
+# default's baked bytes live on as the hub's seed source, `assets/orb_default.img`
+# (regenerate the seed with tools/make_seed_theme.py).
 # ---------------------------------------------------------------------------
-set(_art_partition assets)
-set(_art_image "${CMAKE_CURRENT_LIST_DIR}/assets/orb_default.img")
-
-if(EXISTS "${_art_image}")
-    # Fail at configure time rather than at boot: the partition size lives in
-    # partitions.csv, and an oversized default image would otherwise only surface
-    # as an art_bank_map refusal on the serial log.
-    # (partition_table's own check_sizes.py can't be used here: it measures
-    # against the SMALLEST partition of a type, and `assets` shares the `data`
-    # type with the 32 KB `nvs`.)
-    partition_table_get_partition_info(_art_offset "--partition-name ${_art_partition}" "offset")
-    partition_table_get_partition_info(_art_size   "--partition-name ${_art_partition}" "size")
-    file(SIZE "${_art_image}" _art_bytes)
-    if(_art_bytes GREATER _art_size)
-        message(FATAL_ERROR
-            "assets/orb_default.img is ${_art_bytes} bytes but the `${_art_partition}` "
-            "partition in partitions.csv is only ${_art_size} bytes. Re-bake a smaller "
-            "theme (fewer frames) or enlarge the partition.")
-    endif()
-
-    # esptool_py_flash_target_image() wants an ABSOLUTE path: it runs its own
-    # file(RELATIVE_PATH ... ${BUILD_DIR}) on the argument
-    # (esptool_py/project_include.cmake:343) so the path stored in
-    # flash_args is build-dir-relative for `idf.py flash`.
-    esptool_py_flash_target_image(flash "${_art_partition}" "${_art_offset}" "${_art_image}")
-    message(STATUS "art bank: ${_art_bytes} B -> `${_art_partition}` @ ${_art_offset} "
-                   "(${_art_size} B partition)")
-else()
-    message(STATUS "assets/orb_default.img absent — re-bake the default with "
-                   "tools/rebake_bundle.py + tools/mk_slot_image.py before flashing")
-endif()

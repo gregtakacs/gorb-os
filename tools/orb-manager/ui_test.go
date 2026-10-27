@@ -227,6 +227,35 @@ func TestZoneFaceTellsTheTruthAndFacesRearmOnReturn(t *testing.T) {
 	}
 }
 
+// Found live on 2026-10-26: the operator pressed Flash while the bench board sat
+// on a lead, watched it succeed, and reported two bugs — the dial never showed
+// the updating overlay, and nobody could say whether the write went over the
+// cable or the air. Neither is the firmware's fault. A board on a cable is
+// always flashed by the cable (app.js's press handler checks current.port
+// first), and a cable write runs esptool INSTEAD of the app: the firmware that
+// draws the overlay is the thing being overwritten, so the glass is dark by
+// physics, not by bug. The dialog's own note said "over the cable" in small
+// type and the button said only "Flash" — the channel must be named where the
+// hand goes, on the button, on the card's headline, and in the note about the
+// dark dial.
+func TestFlashNamesItsChannelBeforeThePress(t *testing.T) {
+	app := readAppJS(t)
+	for _, want := range []string{
+		`current.port ? "Flash over cable" : "Update over Wi-Fi"`, // the button, before the press
+		`"Flash anyway over Wi-Fi"`,                               // the forced second press keeps the channel
+		`flashed over the cable on `,                              // the card's headline after a cable write
+		`staged and rebooting over Wi-Fi: `,                       // and after a wireless one
+		`The dial shows nothing through a cable write`,            // why the glass stays dark on the lead
+	} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js no longer says %q; the operator cannot tell cable from Wi-Fi before pressing", want)
+		}
+	}
+	if strings.Contains(app, `go.textContent = ffForced ? "Flash anyway" : "Flash";`) {
+		t.Error("ffGate is back to the channel-blind label")
+	}
+}
+
 // cardMarkup returns the article element whose id is wanted, or "" — enough of
 // the page to read one card's own attributes and controls without the whole
 // document's contents answering a question about one card.

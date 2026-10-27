@@ -395,7 +395,15 @@ function ffNote() {
       : "Pick a .zip release bundle or a whole-flash .bin.";
     return;
   }
-  if (current.port) { el.textContent = "Written over the cable: bootloader, partition table and app slots."; return; }
+  if (current.port) {
+    // The channel beats the radio choice: a board on a lead is written by the
+    // cable no matter which source is picked, and a cable write runs esptool
+    // INSTEAD of the app — the glass cannot report a transfer the firmware is
+    // not executing. Say so here, where the operator can still unplug.
+    el.textContent = "Written over the cable: bootloader, partition table and app slots. " +
+      "The dial shows nothing through a cable write: the chip is in its bootloader, and the updating overlay lives in the firmware the cable overwrites.";
+    return;
+  }
   el.textContent = "Pushed to the spare slot over Wi-Fi. The bootloader rolls back if the new image never marks itself valid.";
 }
 
@@ -421,7 +429,12 @@ async function ffProbe(file) {
 function ffGate() {
   const go = $("#ff-go");
   go.disabled = $("#ff-choices").hidden || (ffSource() === "disk" && !ffPicked);
-  go.textContent = ffForced ? "Flash anyway" : "Flash";
+  // The button names the channel before the press, not after. A board on a
+  // lead takes the cable whatever else the dialog says; the label says so.
+  // ffForced keeps its own wording ("Flash anyway over Wi-Fi"), set by the
+  // downgrade branch of wifiUpdate and untouched by the ffGate that the
+  // press's finally block runs afterwards.
+  if (!ffForced) go.textContent = current.port ? "Flash over cable" : "Update over Wi-Fi";
 }
 
 // gateFwButtons lights the card's single Flash button. It is reachable whenever the
@@ -802,6 +815,9 @@ async function cableFlash(wipe) {
   const { mac, ok } = await streamFlash("/api/flash",
     { port, mode: "full", wipe: !!wipe }, fpUI());
   if (ok) {
+    // The card's headline names the channel this stamp arrived on, until the
+    // board's own next answer overwrites it with the truth of the boot.
+    $("#mn-curfw").textContent = "flashed over the cable on " + port;
     await refreshPorts();
     if (!current.mac && mac) current.mac = mac;
     openJoinDialog(port, mac || current.mac, "");
@@ -876,7 +892,7 @@ async function wifiUpdate() {
       // what makes the press recoverable rather than hopeful.
       if (j.overridable && j.verdict === "downgrade" && !ffForced) {
         ffForced = true;
-        go.textContent = "Flash anyway";
+        go.textContent = "Flash anyway over Wi-Fi";
         go.disabled = false;
         $("#ff-bar").hidden = true;
         state.textContent = j.error + " The bootloader rolls back if the new image never boots.";
@@ -885,7 +901,7 @@ async function wifiUpdate() {
       throw new Error(j.error || ("HTTP " + r.status));
     }
     const d = j.data || {};
-    $("#mn-curfw").textContent = "staged and rebooting: " + d.from + " \u2192 " + d.to;
+    $("#mn-curfw").textContent = "staged and rebooting over Wi-Fi: " + d.from + " \u2192 " + d.to;
     $("#mn-verdict").textContent = "";
     $("#ff-mask").hidden = true;   // the card carries the rest; it is not a dead end
     pullFound();

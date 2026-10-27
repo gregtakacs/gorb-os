@@ -85,6 +85,11 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_init());
     }
 
+    /* A serial RESET ALL acked last boot lands its erase HERE, at the top of the
+     * heap's rich moment — before the theme, Wi-Fi, or the display have anything
+     * to say about the internal pool. A no-op unless the RTC intent is set. */
+    orb_net_apply_pending_factory_reset();
+
     /* Shield the web server's stack before the theme can fragment it. One board
      * has been seen headless with largest-free-internal at 3,456 B (status line,
      * 2026-10-26), under the ladder's smallest tier; that tier of failure is

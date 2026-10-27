@@ -480,7 +480,20 @@ void orb_sd_space(uint64_t *out_total, uint64_t *out_free)
 
 void orb_sd_lock(void)
 {
-    if (!s_lock) s_lock = xSemaphoreCreateMutex();
+    /* Creation retried, not trusted: the IPC block this mutex wants is ~100 B of
+     * internal DMA memory, and an unprovisioned boot has passed that pool through
+     * zero on the way here (bench 2026-10-27: dma_free=19 after esp_wifi_start,
+     * creation returned NULL, and the take below asserted on the NULL — a reboot
+     * in the card module for a card that was never in the socket). The heap
+     * churns; the loop below already waits a second at a time on a held lock, so
+     * the same patience applies to the lock's own creation. */
+    while (!s_lock) {
+        s_lock = xSemaphoreCreateMutex();
+        if (!s_lock) {
+            ESP_LOGE(TAG, "card lock: out of memory for the mutex — retrying in 1 s");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
     /* A take that blocks is the one card failure the owner can do nothing about: the
      * theme page simply stops answering, the dial keeps drawing, and ping keeps replying,
      * so nothing points at the card. Name the task that holds it and for how long, then

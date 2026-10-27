@@ -70,6 +70,19 @@ esp_err_t orb_net_start(void);
  */
 esp_err_t orb_net_reserve_httpd_stack(void);
 
+/**
+ * Apply a factory reset a serial `RESET ALL` acked on the PREVIOUS boot. The
+ * verb cannot erase where it lands (the radio task's 3 KB stack, measured too
+ * small for a double nvs_flash_erase; see the 2026-10-27 bench), so it sets an
+ * RTC-held intent, acks, and reboots; this call finds the intent, runs the same
+ * net_factory_reset() on a temporary 8 KB task, and clears it. Call once from
+ * app_main, after nvs_flash_init and before anything has fragmented the internal
+ * pool — that is the one moment the erase is cheap. Returns ESP_OK when nothing
+ * was pending; the erase's own error when the wipe came back partial (logged
+ * loudly, boot continues, same honesty as the inline door ever had).
+ */
+esp_err_t orb_net_apply_pending_factory_reset(void);
+
 /** True once STA has an IP (or the SoftAP is up and reachable). */
 bool orb_net_is_up(void);
 

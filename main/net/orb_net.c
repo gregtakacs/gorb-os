@@ -25,6 +25,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"   /* the deferred factory reset's completion token */
 /* Item 10 visibility: lwIP's dhcpserver.c contains no logging at all, so the
  * DHCP server's own lease table is the only trustworthy witness of whether a
  * joined client was ever handed an address. IP_EVENT_AP_STAIPASSIGNED is NOT:
@@ -152,7 +153,10 @@ enum { NET_CMD_CONNECT = 1,   /* retry esp_wifi_connect()                   */
        NET_CMD_SCAN_BOOT,     /* the ARMED console scan: first-boot, or a serial SCAN */
        NET_CMD_LEASE_WATCH,   /* associated but no lease: rearm the watch or drop it */
        NET_CMD_STORE_CREDS,   /* a lease verified the pending pair: write it to NVS now  */
-       NET_CMD_AP_LEASE_POLL }; /* DIAGNOSTIC: watch the SoftAP's lease table after a join */
+       NET_CMD_AP_LEASE_POLL,   /* DIAGNOSTIC: watch the SoftAP's lease table after a join */
+       NET_CMD_SERIAL };        /* the console line parked in s_serial_line; verbs run
+                                   here, on this internal stack — the reader's PSRAM
+                                   stack cannot host their NVS writes (bench 2026-10-27) */
 static QueueHandle_t      s_net_q;
 static TaskHandle_t       s_net_task;
 static esp_timer_handle_t s_retry_timer;   /* one-shot, re-armed per failure */
@@ -1133,6 +1137,101 @@ static esp_err_t net_factory_reset(void)
     return wiped;
 }
 
+/* ---------------- deferred factory reset, serial door (bench 2026-10-27) -----
+ * The serial RESET ALL lands on the radio task, and this task's 3 KB stack can
+ * carry an nvs_set_str+commit but not the pair of nvs_flash_erase calls the wipe
+ * is — that wants the ~8 KB the httpd ladder shields, measured. Growing nettask
+ * instead is not free either: +1 KB there starved the SoftAP driver allocations
+ * on an unprovisioned boot (alloc eb fail → ieee80211_hostap_attach crash), so
+ * every byte of this stack is already promised. The wipe therefore rides the
+ * next boot, like it or not: the verb sets this RTC-held intent, acks, and
+ * reboots (both cheap); app_main applies it at boot-top, before Wi-Fi, the theme,
+ * or the display have taken a byte of the internal pool, where an 8 KB task is
+ * the easiest allocation of the day.
+ *
+ * RTC_NOINIT survives esp_restart (the software restart keeps the RTC domain) but
+ * is uninitialized on power-on, hence the magic rather than a bool. Losing the
+ * intent to a power cut between the ack and the boot leaves a configured board —
+ * the same recoverable lie RESET-PART already tells, and the hub's next poll sees
+ * the configured truth the moment the board answers again. One clear-on-entry
+ * shot: an erase that fails mid-way does not boot-loop, and the boot after a
+ * failed wipe continues half-wiped and logging, exactly as the inline door did. */
+#define RESET_ALL_INTENT_MAGIC 0x52455331u   /* "RES1" on purpose: a garbage RTC word must not wipe a board */
+RTC_NOINIT_ATTR static uint32_t s_reset_all_intent;
+
+static esp_err_t s_reset_apply_rc;
+static SemaphoreHandle_t s_reset_apply_done;
+
+static void reset_apply_task(void *arg)
+{
+    (void)arg;
+    s_reset_apply_rc = net_factory_reset();
+    /* The reseed inside net_factory_reset opens a handle on the partition it just
+     * erased, and the later net_open_storage sees NO_FREE_PAGES on that unformatted
+     * handle and RE-erases the whole partition — taking the default name with it.
+     * So the deferred path does the reseed AFTER the erase here, once the
+     * partition is freshly (re)initialised, and lets net_open_storage's own
+     * idempotent init read it. (Bench 2026-10-27: the first deferred boot erased
+     * cleanly but came back unnamed — flash dump showed the default-name key was
+     * present then gone; this re-order is what the runtime LAN door never hits
+     * because its partition is already open before it erases.) */
+    if (s_reset_apply_rc == ESP_OK) {
+        nvs_flash_erase_partition(NET_NVS_PARTITION);          /* ensure clean */
+        nvs_flash_init_partition(NET_NVS_PARTITION);           /* format it */
+        nvs_handle_t h;
+        if (nvs_open_from_partition(NET_NVS_PARTITION, NET_NVS_NAMESPACE,
+                                    NVS_READWRITE, &h) == ESP_OK) {
+            if (nvs_set_str(h, NET_NAME_KEY, NET_NAME_DEFAULT) == ESP_OK &&
+                nvs_commit(h) == ESP_OK)
+                ESP_LOGI(TAG, "deferred factory reset: default name seeded");
+            else
+                ESP_LOGW(TAG, "reset: default name not stored (board boots unnamed)");
+            nvs_close(h);
+        }
+    }
+    xSemaphoreGive(s_reset_apply_done);
+    vTaskDelete(NULL);
+}
+
+esp_err_t orb_net_apply_pending_factory_reset(void)
+{
+    if (s_reset_all_intent != RESET_ALL_INTENT_MAGIC)
+        return ESP_OK;                       /* the overwhelming common case */
+    s_reset_all_intent = 0;                  /* one shot, taken before the work starts */
+    ESP_LOGW(TAG, "deferred factory reset: serial RESET ALL was acked last boot; erasing now");
+    s_reset_apply_done = xSemaphoreCreateBinary();
+    if (!s_reset_apply_done) {
+        ESP_LOGE(TAG, "deferred factory reset: no semaphore — board boots unchanged");
+        return ESP_ERR_NO_MEM;
+    }
+    /* 8 KB internal, right now the cheapest 8 KB in the boot. Priority above
+     * app_main's so it runs first; deleted by itself when done. The 8192 is
+     * HTTPD_STACK_TOP's value (defined lower in this file): one measured erase
+     * budget, two owners, keep them in step by hand. */
+    BaseType_t created = xTaskCreate(reset_apply_task, "orb_reset",
+                                     8192, NULL, 6, NULL);
+    if (created != pdPASS) {
+        vSemaphoreDelete(s_reset_apply_done);
+        s_reset_apply_done = NULL;
+        ESP_LOGE(TAG, "deferred factory reset: could not spawn the eraser — board boots unchanged");
+        return ESP_ERR_NO_MEM;
+    }
+    if (xSemaphoreTake(s_reset_apply_done, pdMS_TO_TICKS(30000)) != pdTRUE) {
+        ESP_LOGE(TAG, "deferred factory reset: the erase did not finish in 30 s; booting anyway");
+        vSemaphoreDelete(s_reset_apply_done);
+        s_reset_apply_done = NULL;
+        return ESP_ERR_TIMEOUT;
+    }
+    vSemaphoreDelete(s_reset_apply_done);
+    s_reset_apply_done = NULL;
+    if (s_reset_apply_rc != ESP_OK)
+        ESP_LOGE(TAG, "deferred factory reset: incomplete (%s) — booting whatever survived",
+                 esp_err_to_name(s_reset_apply_rc));
+    else
+        ESP_LOGW(TAG, "deferred factory reset: wiped; booting unconfigured");
+    return s_reset_apply_rc;
+}
+
 /* Timer callbacks may only post: the esp_timer task is shared and must not
  * block, and the esp_wifi_* calls do block on the driver's own task. */
 static void retry_timer_cb(void *arg) { (void)arg; net_post(NET_CMD_CONNECT, 0); }
@@ -1527,6 +1626,58 @@ static bool sojourn_reboots(bool sta_up, bool recovery_session)
 static bool connect_attempt_is_moot(bool associated, bool sta_up, bool ap_idle);
 static bool lease_watch_should_drop(bool associated, bool sta_up, bool ap_idle);
 
+/* Serial-door mailbox (bench 2026-10-27). The reader task's stack lives in PSRAM
+ * — it must, or the spawn dies in the post-wifi_start internal heap and the whole
+ * wired door is gone — and the reader was also RUNNING the verbs. Four of them
+ * (NAME, MODE, RESET, PROV-with-tz) reach nvs_commit, flash operations disable the
+ * cache, and IDF asserts exactly there: esp_task_stack_is_sane_cache_disabled.
+ * Every PROV with a timezone therefore aborted the board between its
+ * "prov: received" line and its PROV-ACK — the hub saw "no ack", and each 2 s
+ * re-push bought one more reboot. The door now reads only: the line lands in this
+ * one-slot mailbox and the radio task runs it. That task already commits NVS for
+ * the join (NET_CMD_STORE_CREDS), which is the same small-write class NAME, MODE
+ * and PROV's timezone are; RESET ALL's heavy erase defers to the next boot-top
+ * (see orb_net_apply_pending_factory_reset). A line arriving while one is in
+ * flight is refused with a warning, never swallowed: the hub re-pushes on its
+ * 2 s cadence. */
+/* PSRAM, lazy-allocated at the door's arm — the s_scan_json precedent (2026-10-24
+ * boot audit): this board's internal pool ends an unprovisioned boot at
+ * dma_free≈0, and a 533 B .bss line here was measured (2026-10-27) to tip the
+ * *SD card's* lazy IPC mutex into creation-failure — the next small internal
+ * allocation anywhere pays for this one. PSRAM has 7.9 MB idle and neither task
+ * touches this buffer with the cache disabled: the reader snprintfs it before
+ * posting, and every verb decodes it to stack locals before any flash op.
+ * (EXT_RAM_ATTR is not an option: SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY is off in
+ * this sdkconfig, and the attribute would be a silent no-op.) */
+#define SERIAL_LINE_MAX (4 * (2 * NET_PASS_MAX + 4))   /* the reader's own line width */
+static char          *s_serial_line;
+static volatile bool  s_serial_busy;
+static bool            dispatch_serial_cmd(char *line, size_t vlen);
+
+static bool net_post_serial(const char *line)
+{
+    if (!s_serial_line || s_serial_busy || !s_net_q) return false;
+    snprintf(s_serial_line, SERIAL_LINE_MAX + 1, "%s", line);
+    s_serial_busy = true;
+    if (xQueueSend(s_net_q, &(net_msg_t){ .cmd = NET_CMD_SERIAL },
+                   pdMS_TO_TICKS(200)) != pdTRUE) {
+        s_serial_busy = false;   /* nobody will drain it: free the slot for the re-push */
+        return false;
+    }
+    return true;
+}
+
+/* Arm the mailbox before the reader spawns: a door that cannot buffer a line
+ * does not open, and says so, rather than swallowing commands forever. */
+static bool serial_mailbox_alloc(void)
+{
+    s_serial_line = heap_caps_malloc(SERIAL_LINE_MAX + 1, MALLOC_CAP_SPIRAM);
+    if (!s_serial_line)
+        ESP_LOGE(TAG, "serial door: no %d B of PSRAM for the line buffer — door stays shut",
+                 SERIAL_LINE_MAX + 1);
+    return s_serial_line != NULL;
+}
+
 static void net_task_loop(void *arg)
 {
     (void)arg;
@@ -1714,6 +1865,15 @@ static void net_task_loop(void *arg)
                      (unsigned)NET_LEASE_WATCHDOG_S);
             if (esp_wifi_disconnect() != ESP_OK)
                 arm_oneshot(s_watch_timer, NET_LEASE_WATCHDOG_S, "lease watchdog");
+            break;
+
+        case NET_CMD_SERIAL:
+            /* The console verb runs HERE, on this internal stack: see
+             * s_serial_line. The reader copied the line in before posting; the
+             * verb may strcspn and strtok it freely. MODE and RESET reboot from
+             * inside, and this flag dies with the reboot — no stuck slot. */
+            dispatch_serial_cmd(s_serial_line, strcspn(s_serial_line, " "));
+            s_serial_busy = false;
             break;
 
         default:
@@ -2932,28 +3092,25 @@ static bool dispatch_serial_cmd(char *line, size_t vlen)
      * ledger and the idle-dim timeout. The ack is therefore final — no door reopens
      * this state, because the orb comes back as the unconfigured provisioning AP it
      * was the day it was flashed — named only by the default word the reset itself
-     * writes back, "The Orb", until a new owner says otherwise. */
+     * writes back, "The Orb", until a new owner says otherwise.
+     *
+     * Since 2026-10-27 the serial door does not run the erase itself: the verb
+     * lands on the radio task, whose 3 KB stack is measured too small for a
+     * double nvs_flash_erase, and the ack promise survives the deferral intact —
+     * the intent rides RTC memory and the wipe happens at the top of the very
+     * next boot, before any allocation can make it tight. RESET-PART can now only
+     * be reported by the boot that applied it (the console says so plainly); the
+     * ack from this door is a promise the next boot is equipped to keep.
+     * D36 (§0.11) is untouched: every installed row still comes back present, off,
+     * one toggle press away — that is the erase's own behaviour, wherever it runs. */
     if (vlen == 5 && !memcmp(line, "RESET", 5)) {
         if (strcmp(operand, "ALL") != 0) {
             ESP_LOGW(TAG, "reset: refused (say 'RESET ALL' to erase)");
             ESP_LOGI(TAG, "RESET-NAK need-ALL");
             return true;
         }
-        const esp_err_t reset_e = net_factory_reset();
-        /* Reboot on a partial failure as well: one partition erased and one intact is
-         * neither configured nor clean, and the next boot is the only state that means
-         * anything — it re-derives every mirror from whatever survived. The token says
-         * which case the operator is in, so a hub that waits for RESET-ACK fails loudly
-         * on an incomplete wipe instead of reporting a clean reset. */
-        if (reset_e != ESP_OK)
-            ESP_LOGE(TAG, "reset: incomplete (%s) — rebooting anyway", esp_err_to_name(reset_e));
-        /* D36 (§0.11): the wipe took every enable word with it, and nothing
-         * re-arms. Every installed row — the hub-seeded clock and picker
-         * included — comes back exactly as installed: present, off, one toggle
-         * press away on the /apps page. That is the honest card-row answer, the
-         * same one every third-party app already got. */
-        ESP_LOGI(TAG, "%s", reset_e == ESP_OK ? "RESET-ACK rebooting unconfigured"
-                                              : "RESET-PART rebooting unconfigured");
+        s_reset_all_intent = RESET_ALL_INTENT_MAGIC;
+        ESP_LOGI(TAG, "RESET-ACK rebooting unconfigured");
         orb_svc_note_clean_reboot();
         vTaskDelay(pdMS_TO_TICKS(300));
         esp_restart();
@@ -2970,7 +3127,65 @@ static bool dispatch_serial_cmd(char *line, size_t vlen)
         return true;
     }
 
-    if (vlen == 4 && !memcmp(line, "PROV", 4)) return false;   /* handled in the reader */
+    if (vlen == 4 && !memcmp(line, "PROV", 4)) {
+        /* The verb lives here now, not in the reader loop: PROV applies the
+         * timezone, which writes NVS, and the reader must never touch flash
+         * (see s_serial_line). Everything below is the block the reader ran
+         * inline since the door opened — moved, not rewritten. */
+        size_t n = strlen(line);
+        if (n < 5 || memcmp(line, "PROV ", 5) != 0) return true;   /* not our token */
+        if (orb_net_ap_isolated()) {                              /* refuse a silent no-op */
+            ESP_LOGW(TAG, "prov: refused while AP-isolated (send MODE sta first)");
+            ESP_LOGI(TAG, "PROV-NAK ap-isolated");
+            return true;
+        }
+        char *save = NULL;
+        char *f_ssid = strtok_r(line + 5, " ", &save);
+        char *f_pass = strtok_r(NULL, " ", &save);
+        char *f_tz   = strtok_r(NULL, " ", &save);
+        if (!f_ssid) return true;
+
+        char ssid[NET_SSID_MAX + 1];
+        char pass[NET_PASS_MAX + 1];
+        char tz[NET_TZ_MAX + 1];
+        if (prov_hex(f_ssid, strlen(f_ssid), ssid, sizeof(ssid)) <= 0) {
+            ESP_LOGW(TAG, "prov: rejected (bad/empty ssid)"); return true;
+        }
+        const char *p_raw = f_pass ? f_pass : "-";
+        const char *z_raw = f_tz   ? f_tz   : "-";
+        if (prov_hex(p_raw, strlen(p_raw), pass, sizeof(pass)) < 0 ||
+            prov_hex(z_raw, strlen(z_raw), tz,   sizeof(tz))   < 0) {
+            ESP_LOGW(TAG, "prov: rejected (bad pass/tz)"); return true;
+        }
+
+        ESP_LOGI(TAG, "prov: received ssid=\"%s\" pass=%s%s", ssid,
+                 pass[0] ? "(set)" : "(none)", tz[0] ? " +tz" : "");
+
+        /* NOT persisted here. The pair waits in the radio task's pending buffer
+         * (see s_pend_ssid) until a lease proves it, and only then reaches NVS —
+         * h_wifi_join() does the same. The previous behaviour, writing here, is how
+         * one mistyped passphrase on a working device took the device off its own
+         * network. The zone is a different case and still applies immediately: it
+         * is fully validated above, cannot lock anyone out, and a wrong one is
+         * fixable from the LAN. */
+        if (tz[0]) {
+            const char *why = net_tz_set(tz);
+            if (why) ESP_LOGW(TAG, "prov: tz \"%s\" not applied (%s)", tz, why);
+        }
+        s_assoc_fails = 0;   /* a human just chose this network: reset the ladder */
+
+        ESP_LOGI(TAG, "PROV-ACK");   /* the hub's round-trip confirmation token */
+        if (!net_post_join(ssid, pass)) {
+            /* No queue means no radio task, so nothing can hold the pair or commit
+             * it on a lease. This degenerate path (bring-up OOM) keeps the old
+             * write-first behaviour: a lost credential beats a lost join. */
+            ESP_LOGW(TAG, "prov: no radio queue — applying from this task");
+            creds_commit(ssid, pass);
+            const esp_err_t e = net_apply_sta_config(ssid, pass);
+            if (e != ESP_OK) ESP_LOGE(TAG, "prov: join(%s) failed: %s", ssid, esp_err_to_name(e));
+        }
+        return true;
+    }
 
     ESP_LOGI(TAG, "serial cmd: unknown verb \"%.*s\"", (int)vlen, line);
     return true;
@@ -3035,65 +3250,16 @@ static void prov_reader_task(void *arg)
          * NAME, SCAN, MODE and RESET on a configured orb, so a wire-only hub can rename,
          * rescan, flip AP<->station, or factory-reset a board it cannot reach over the
          * LAN. The task parks in select() until a line arrives, so an untouched console
-         * costs nothing. dispatch_serial_cmd returns true for every verb it owns; PROV
-         * returns false and is handled inline below, where it can reach the join helpers.
-         * A mistyped verb is logged there and the loop stays alive — the console is
-         * shared with the human debug log. */
-        size_t vlen = strcspn(line, " ");
-        if (dispatch_serial_cmd(line, vlen)) continue;
-        if (n < 5 || memcmp(line, "PROV ", 5) != 0) continue;   /* not our token */
-        if (orb_net_ap_isolated()) {                              /* refuse a silent no-op */
-            ESP_LOGW(TAG, "prov: refused while AP-isolated (send MODE sta first)");
-            ESP_LOGI(TAG, "PROV-NAK ap-isolated");
-            continue;
-        }
-        char *save = NULL;
-        char *f_ssid = strtok_r(line + 5, " ", &save);
-        char *f_pass = strtok_r(NULL, " ", &save);
-        char *f_tz   = strtok_r(NULL, " ", &save);
-        if (!f_ssid) continue;
-
-        char ssid[NET_SSID_MAX + 1];
-        char pass[NET_PASS_MAX + 1];
-        char tz[NET_TZ_MAX + 1];
-        if (prov_hex(f_ssid, strlen(f_ssid), ssid, sizeof(ssid)) <= 0) {
-            ESP_LOGW(TAG, "prov: rejected (bad/empty ssid)"); continue;
-        }
-        const char *p_raw = f_pass ? f_pass : "-";
-        const char *z_raw = f_tz   ? f_tz   : "-";
-        if (prov_hex(p_raw, strlen(p_raw), pass, sizeof(pass)) < 0 ||
-            prov_hex(z_raw, strlen(z_raw), tz,   sizeof(tz))   < 0) {
-            ESP_LOGW(TAG, "prov: rejected (bad pass/tz)"); continue;
-        }
-
-        ESP_LOGI(TAG, "prov: received ssid=\"%s\" pass=%s%s", ssid,
-                 pass[0] ? "(set)" : "(none)", tz[0] ? " +tz" : "");
-
-        /* NOT persisted here. The pair waits in the radio task's pending buffer
-         * (see s_pend_ssid) until a lease proves it, and only then reaches NVS —
-         * h_wifi_join() does the same. The previous behaviour, writing here, is how
-         * one mistyped passphrase on a working device took the device off its own
-         * network. The zone is a different case and still applies immediately: it
-         * is fully validated above, cannot lock anyone out, and a wrong one is
-         * fixable from the LAN. */
-        if (tz[0]) {
-            const char *why = net_tz_set(tz);
-            if (why) ESP_LOGW(TAG, "prov: tz \"%s\" not applied (%s)", tz, why);
-        }
-        s_assoc_fails = 0;   /* a human just chose this network: reset the ladder */
-
-        ESP_LOGI(TAG, "PROV-ACK");   /* the hub's round-trip confirmation token */
-        if (!net_post_join(ssid, pass)) {
-            /* No queue means no radio task, so nothing can hold the pair or commit
-             * it on a lease. This degenerate path (bring-up OOM) keeps the old
-             * write-first behaviour: a lost credential beats a lost join. */
-            ESP_LOGW(TAG, "prov: no radio queue — applying from this task");
-            creds_commit(ssid, pass);
-            const esp_err_t e = net_apply_sta_config(ssid, pass);
-            if (e != ESP_OK) ESP_LOGE(TAG, "prov: join(%s) failed: %s", ssid, esp_err_to_name(e));
-        }
-        /* Stay for a second PROV (a passphrase typo); leave at the next tick once
-         * provisioning has ended. */
+         * costs nothing. The reader runs NO verb itself: this task's stack lives in
+         * PSRAM, and NAME, MODE, RESET and PROV's timezone all reach nvs_commit —
+         * any flash op on a PSRAM stack asserts and reboots the board mid-command
+         * (bench 2026-10-27: every PROV that carried a timezone, and every NAME).
+         * The line rides to the radio task through s_serial_line instead; a
+         * refused post is warned, never swallowed — the hub's 2 s re-push brings
+         * it back. A mistyped verb is logged there and the door stays alive — the
+         * console is shared with the human debug log. */
+        if (!net_post_serial(line))
+            ESP_LOGW(TAG, "serial door: line refused (one already in flight)");
     }
     ESP_LOGI(TAG, "prov reader: exiting (provisioning over)");
     vTaskDelete(NULL);
@@ -6938,6 +7104,15 @@ esp_err_t orb_net_start(void)
     if (esp_timer_create(&watch_ta, &s_watch_timer) != ESP_OK)
         ESP_LOGE(TAG, "lease watchdog timer: creation failed — a stalled association will not recover");
     s_net_q = xQueueCreate(8, sizeof(net_msg_t));
+    /* 3 KB, unchanged since the file opened — and the serial door's verbs now run
+     * here at that size ON PURPOSE. tz/name/mode are small nvs_set_str+commits,
+     * the same call class NET_CMD_STORE_CREDS already proves at this depth.
+     * RESET ALL's erase is the outlier needing the 8 KB the httpd ladder shields,
+     * so the serial door defers the wipe to boot-top via
+     * orb_net_apply_pending_factory_reset() rather than growing this stack: the
+     * 2026-10-27 bench showed +1 KB here starves the SoftAP's driver allocations
+     * (alloc eb fail → ieee80211_hostap_attach NULL-derefs) on an unprovisioned
+     * boot, so every byte this task owns is spoken for. */
     if (!s_net_q || xTaskCreate(net_task_loop, "orb_net", 3072, NULL, 4,
                                 &s_net_task) != pdPASS) {
         /* Not fatal: without the queue the association retry simply stops
@@ -7011,18 +7186,22 @@ esp_err_t orb_net_start(void)
      * "serial reader: out of memory" — silently taking PROV/NAME/SCAN/MODE/RESET with
      * it, which is how a board that only ever gets a USB lead (a clean flash that
      * booted into provisioning, a device off its LAN) becomes unrecoverable without a
-     * reflash. This task only does select()/fgets on the console fd and posts to a
-     * queue — no flash writes and nothing that runs with the cache disabled — so a
-     * PSRAM stack is safe, and CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y is what lets
+     * reflash. The task only does select()/fgets on the console fd and hands the
+     * line to the radio task (see s_serial_line): since 2026-10-27 it runs no
+     * verb itself, because NAME, MODE, RESET and PROV's timezone all write NVS,
+     * and a flash op on a PSRAM stack is the esp_task_stack_is_sane_cache_disabled
+     * abort, not a slow command. With the handoff the original claim holds again:
+     * nothing here runs with the cache disabled, so a PSRAM stack is safe, and
+     * CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y is what lets
      * xTaskCreateWithCaps route it there. (vTaskDelete(NULL) at the reader's exit does
      * not free a static-alloc stack, so provisioning's end leaks this one 4 KB PSRAM
      * buffer; the task is never respawned and PSRAM is 8 MB — cheaper than the door.) */
 #if CONFIG_SPIRAM && CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
-    const bool reader_up =
+    const bool reader_up = serial_mailbox_alloc() &&
         xTaskCreateWithCaps(prov_reader_task, "orbserial", 4096, NULL, 3, NULL,
                             MALLOC_CAP_SPIRAM) == pdPASS;
 #else
-    const bool reader_up =
+    const bool reader_up = serial_mailbox_alloc() &&
         xTaskCreate(prov_reader_task, "orbserial", 4096, NULL, 3, NULL) == pdPASS;
 #endif
     if (!reader_up)

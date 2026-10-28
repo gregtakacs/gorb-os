@@ -2407,9 +2407,16 @@ async function themePreviewPlane(el, t, mark) {
     // queue's own in-flight read — the device takes one preview at a time.
     mark.onclick = () => { mark.onclick = null; queuePreview(el, t, mark); };
   };
+  // The in-flight read carries its own controller so clearPreviewQueue can
+  // actually END it, not just ignore it: the hub holds the orb's lane for the
+  // whole relay, so a zombie fetch from a retired render parks every control
+  // call — including the redrawn page's own list read — behind a stream that
+  // exists only because the page stopped caring about it.
+  const ctrl = new AbortController();
+  previewCtrl = ctrl;
   let r, b;
   try {
-    r = await hubFetch("/api/theme/preview?ip=" + encodeURIComponent(themeIP) + "&id=" + encodeURIComponent(t.id));
+    r = await hubFetch("/api/theme/preview?ip=" + encodeURIComponent(themeIP) + "&id=" + encodeURIComponent(t.id), { signal: ctrl.signal });
     if (r.status === 404) {
       // The design's quiet answer: this theme carries no plane. The queue had
       // already surfaced the chip as a waiter, so take it back out of the row.
@@ -2422,7 +2429,12 @@ async function themePreviewPlane(el, t, mark) {
       return fail("preview read failed: " + why);
     }
     b = await r.arrayBuffer().catch(() => null);
-  } catch (e) { return fail("preview read failed: " + (e && e.message ? e.message : String(e))); }
+  } catch (e) {
+    if (e && e.name === "AbortError") return;   // the page moved on; this read no longer belongs to anyone
+    return fail("preview read failed: " + (e && e.message ? e.message : String(e)));
+  } finally {
+    if (previewCtrl === ctrl) previewCtrl = null;
+  }
   if (!b || b.byteLength < 4) return fail("preview came back empty");
   const dv = new DataView(b);
   const w = dv.getUint16(0, true), h = dv.getUint16(2, true);
@@ -2458,6 +2470,7 @@ async function themePreviewPlane(el, t, mark) {
 // themePreviewPlane re-enters through queuePreview and obeys the same rule.
 let previewGen = 0;
 let previewRunning = false;
+let previewCtrl = null;            // the one in-flight preview's controller; see themePreviewPlane
 const previewQueue = [];
 
 function queuePreview(el, t, mark) {
@@ -2470,6 +2483,11 @@ function queuePreview(el, t, mark) {
 function clearPreviewQueue() {
   previewGen++;
   previewQueue.length = 0;
+  // Retire the stream too, not just the queue: the hub's lane for this orb
+  // stays held by the relay until the socket closes, and a redraw that leaves
+  // it open starves the fresh page's own list read behind a dead render's
+  // thumbnail. The AbortError lands in themePreviewPlane's catch and is silent.
+  if (previewCtrl) previewCtrl.abort();
 }
 
 function runPreviewQueue() {
@@ -2487,6 +2505,26 @@ function runPreviewQueue() {
     Promise.resolve(themePreviewPlane(job.el, job.t, job.mark)).then(done, done);
   };
   next();
+}
+
+// themeListWithRetry rides out the lane, because "orb busy" is a wait with a
+// name, not a failure. The hub's control budget (1.5 s) deliberately expires
+// before one honest preview stream does (up to ~4 s cold), so a list read that
+// lands mid-stream is told "retry shortly" in 503 — and the right answer is to
+// take the hint quietly instead of painting it on the card as if the orb had
+// died. Three waits of 2.3 s covers the worst stream plus a boot; anything
+// still busy after that is worth telling the person about.
+async function themeListWithRetry(ip) {
+  let last = null;
+  for (let i = 0; i < 3; i++) {
+    try { return await themePost("/api/theme/list", { ip }); }
+    catch (e) {
+      last = e;
+      if (!e || String(e.message).indexOf("orb busy") < 0) throw e;
+      await new Promise((r) => setTimeout(r, 2300));
+    }
+  }
+  throw last;
 }
 
 async function loadThemes(ip) {
@@ -2508,7 +2546,7 @@ async function loadThemes(ip) {
   await loadThemeApps(ip);
   let d;
   try {
-    d = await themePost("/api/theme/list", { ip });
+    d = await themeListWithRetry(ip);
   } catch (e) {
     state.classList.remove("spin-wait");
     state.textContent = "no theme list from " + ip + ": " + e.message

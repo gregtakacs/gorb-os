@@ -238,12 +238,17 @@ func TestUICanCancelAndQuitSafely(t *testing.T) {
 	// Dropping a fetch mid-flash leaves the ROM mid-write with nobody watching, which is the bug
 	// this pin exists to catch. A read-only stream is the opposite case: the hub is holding
 	// nothing the page could corrupt by going away, so the discovery watchdog is allowed — and
-	// required — to drop its own connection in order to reopen one. Hence: exactly one abort in
-	// the file, it belongs to the orb stream, and none belongs to a flash.
+	// required — to drop its own connection in order to reopen one. The theme page's preview
+	// stream joined that allowed class on 2026-10-27 for the same reason inverted: the hub's
+	// orb lane stays held for the whole relay, so a retired render that leaves its preview
+	// fetching starves the fresh render's own list read — the "orb busy" banner users saw.
+	// Hence: exactly two aborts in the file, the discovery watchdog's and the preview queue's,
+	// and none belongs to a flash.
 	if flash := blockOf(t, src, "async function streamFlash"); strings.Contains(flash, ".abort(") {
 		t.Error("cancelling a flash must go through /api/flash/cancel, not by dropping the fetch")
 	}
-	if n := strings.Count(src, ".abort("); n != 1 || !strings.Contains(src, "orbAbort.abort()") {
-		t.Errorf("app.js contains %d client-side aborts: only the discovery stream's own watchdog may drop a fetch", n)
+	if n := strings.Count(src, ".abort("); n != 2 || !strings.Contains(src, "orbAbort.abort()") ||
+		!strings.Contains(src, "previewCtrl.abort()") {
+		t.Errorf("app.js contains %d client-side aborts: only the discovery watchdog and the preview queue may drop a fetch", n)
 	}
 }

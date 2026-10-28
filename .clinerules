@@ -1684,3 +1684,23 @@ serves the bytes it was built with, never the ones on disk.
   first attempt when a status poll or a rebooted board kills the socket
   mid-write. That layer was healthy; what made it look broken was the arm,
   because a retry that ALSO hiccuped left no face to show for it.
+
+## The Themes page killed its own lane — the preview stream must die with its render, 2026-10-27 (hub, Windows)
+
+- **"orb busy" on a page open is the page fighting its own zombie.** The hub's
+  lane releases only when the relay's socket closes. `clearPreviewQueue` bumped
+  the generation and dropped the QUEUE but left the in-flight preview fetch
+  streaming, so the redrawn page's own `/api/theme/list` — a control dial with
+  a 1.5 s budget deliberately under one cold preview's ~4 s — collided with the
+  dead render's thumbnail and painted the 503 as if the orb had died.
+- **The fix is two halves in app.js**: the in-flight preview carries an
+  AbortController and `clearPreviewQueue` fires it, so re-render frees the hub
+  lane at once; and `themeListWithRetry` rides out a genuine lane-busy (3 x
+  2.3 s, the error string is the test) before surfacing it. The ops_test abort
+  pin moved 1 -> 2 with this reason written into it; a flash fetch is STILL
+  banned from aborting.
+- **The board reboots during that session's browsing were the bench, not the
+  build**: capf.py RESETS the orb when it opens the port (its own docstring
+  says so; status shows rst=11 "usb" for it). Every per-trial capture kicked
+  the board mid-page. Capture ONCE per bench session and segment the log; open
+  the port while the person is browsing is never acceptable.

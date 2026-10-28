@@ -1654,3 +1654,33 @@ serves the bytes it was built with, never the ones on disk.
   that has committed ZERO frames since boot has a dead panel instead, and
   rebooting into it forever is a loop — that case logs and waits for a human.
 
+
+## The upload door erased the face it was protecting — D9's arm moved into the store, measured 2026-10-27, orb-B (v1.1.24)
+
+- **One aborted POST cost the theme.** D9 armed the slot by erasing its header
+  at `orb_theme_upload_begin()` — before a payload byte crossed — so every
+  stalled, killed or refused upload left the slot headerless: `art_ready`
+  false, base face, no fallback row on the card. A killed 1.2 MB curl proved it
+  twice that day, and it is the whole of the owner's "send fails at 95% and I
+  end up with a dead face".
+- **The invariant is what moved, not what died.** A torn store must still boot
+  the base face, never a half-mapped image: the header erase now lives in
+  `copy_bundle3()`, FIRST, ahead of the payload erase it already performed.
+  That point is past every check, past the park, and local flash — no radio on
+  the critical path. A refused upload now leaves the live theme byte-intact.
+  `host_sd_test.py`'s erase-ordering lints pass unchanged; they read
+  `orb_theme_install_bundle()`'s body, and the ordered erases sit inside the
+  copy it pins before.
+- **Bench proof, in order**: store round-trip (POST /sd/bundle -> reboot ->
+  source slot, Modern active) with v1.1.24; then the same timeout-killed curl
+  that flipped art_ready false on v1.1.23 leaves it TRUE, and the capture shows
+  the dial resumed (`switch clock -> glass +420 ms`) instead of a base face.
+  The same capture shows the v1.1.23 lend-excuse line during the card hold —
+  the stall-heal took the card's explanation and did NOT reboot, which is
+  exactly the behavior that excuse exists for.
+- **Hub-side fragility the same session proved, for context on "first attempt
+  errors out"**: the device admits 3 sockets and lru-purges; the hub's
+  dead-conn redial in devicePostCounted exists for exactly the RST that eats a
+  first attempt when a status poll or a rebooted board kills the socket
+  mid-write. That layer was healthy; what made it look broken was the arm,
+  because a retry that ALSO hiccuped left no face to show for it.

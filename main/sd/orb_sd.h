@@ -91,6 +91,14 @@ void orb_sd_space(uint64_t *out_total, uint64_t *out_free);
 void orb_sd_lock(void);
 void orb_sd_unlock(void);
 
+/** ms the card lock has been held right now, or 0 when nobody holds it. */
+int64_t orb_sd_lock_held_ms(void);
+
+/** ms since any task last held the card lock (0 while held; huge if never).
+ *  A decider that must not blink at a chunked writer's between-chunk gap
+ *  reads this, not lock_held_ms. */
+int64_t orb_sd_lock_idle_ms(void);
+
 /* ---- the card's second reader: USB file sharing (D37) ---------------------
  *
  * MTP answers the host with paths inside the mounted volume, so the card has ONE

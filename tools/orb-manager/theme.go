@@ -830,29 +830,47 @@ func (s *Server) sendSnapshot(ip string) themeSend {
 // unreachable orb is not a collision, and the real send will fail honestly a second later
 // if the orb is really gone.
 func (s *Server) themeDuplicate(ip string, c *orbnet.ThemeContainer) (string, string) {
-	list, err := s.device.ThemeList(ip)
-	if err != nil {
-		// One retry at a short delay. The hour a Send is most often pressed is the
-		// minute after an update, and a board back on its address before its card
-		// scan settles answers the list door with nothing — which is a boot, not a
-		// card state, and must not talk the hub out of reading the card. A second
-		// failure is the real unknown, and answers as one.
-		time.Sleep(1500 * time.Millisecond)
+	list, err := s.themeListRidingOutLane(ip)
+	if err == nil {
+		for _, row := range list.Themes {
+			if row.ID != c.ID {
+				continue
+			}
+			if row.Serial == c.Serial {
+				return "exact", "the card already holds this exact theme; a re-send would only reboot onto it"
+			}
+			return "duplicate", "the card holds a different build of this name (serial " + strconv.FormatUint(uint64(row.Serial), 10) + ")"
+		}
+		return "clear", ""
+	}
+	return "clear", "the hub could not ask the orb, so it will not promise there is no collision: " + err.Error()
+}
+
+// themeListRidingOutLane is the precheck's read with the hub's own traffic
+// waited out, and the second-press puzzle's answer. ErrLaneBusy is not the orb
+// refusing: it is THIS hub holding the orb's lane for a transfer of its own —
+// most often the Theme page's own preview relays, which stream for seconds each
+// and starve a control dial with a 1.5 s budget. The old one-retry-1.5 s shape
+// stamped that as "could not get a clean read" on the first press every time
+// previews were mid-flight, and the operator watched the page block its own
+// send. A busy lane is a wait, not a verdict, so this waits: six tries at 1.5 s
+// covers a whole preview pass and a board's reboot, and any other error (a real
+// timeout, a refused connection) returns at once — waiting on those is the
+// caller's problem, and pretending otherwise would just hide them.
+func (s *Server) themeListRidingOutLane(ip string) (*orbnet.ThemeList, error) {
+	var list *orbnet.ThemeList
+	var err error
+	for tries := 0; tries < 6; tries++ {
 		list, err = s.device.ThemeList(ip)
-	}
-	if err != nil {
-		return "clear", "the hub could not ask the orb, so it will not promise there is no collision: " + err.Error()
-	}
-	for _, row := range list.Themes {
-		if row.ID != c.ID {
-			continue
+		if err == nil {
+			return list, nil
 		}
-		if row.Serial == c.Serial {
-			return "exact", "the card already holds this exact theme; a re-send would only reboot onto it"
+		if !errors.Is(err, orbnet.ErrLaneBusy) {
+			return list, err
 		}
-		return "duplicate", "the card holds a different build of this name (serial " + strconv.FormatUint(uint64(row.Serial), 10) + ")"
+		time.Sleep(1500 * time.Millisecond)
 	}
-	return "clear", ""
+	return list, err
 }
 
 // armSelfRebootFor is expectSelfReboot resolved from an address the way

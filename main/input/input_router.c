@@ -22,6 +22,7 @@
 #include "esp_timer.h"
 #include "esp_system.h"      /* esp_restart(): the unexplained-silence heal below */
 #include "orb_svc.h"         /* orb_svc_note_clean_reboot(): that restart is not a crash */
+#include "orb_sd.h"          /* orb_sd_lock_idle_ms(): the stall probe's card excuse */
 #include "display.h"        /* display_bench_snapshot(): the M1 switch probe's frame counters */
 #include "lvgl.h"
 
@@ -93,14 +94,18 @@ static bool        s_sw_lent_logged;   /* the with-explanation line prints once 
  * comes. Comfortably longer than the 40 ms beat the fastest theme bakes. */
 #define SW_WINDOW_MS 1500
 
-/* How long a lent tile ring excuses the same silence for. While the card holds
- * the ring the flush path DROPS frames on purpose (display.h), so counters
- * frozen here are a healthy board mid-write, not a stall — but a loan that
- * outlasts the longest honest card sequence is a wedged one, and a glass that
- * cannot repaint is a brick to whoever is holding it. Measured card ceilings:
- * an install copy streams for seconds; nothing legitimately parks the ring for
- * ten. Past this bound the excuse expires and the stall verdict below stands. */
-#define SW_LEND_MAX_MS 10000
+/* How recently the card must have touched its lock to excuse a silent glass.
+ * A healthy-but-slow sequence — a multi-MB store copying at flash speed, a
+ * chunked upload whose writer blinks the lock between 4 KB chunks — keeps
+ * orb_sd_lock_idle_ms() under a few hundred ms by construction; nothing on a
+ * working card gaps for seconds. 5 s is therefore generous cover for every
+ * real sequence and still short enough that a genuinely dead card path stops
+ * excusing itself in half a swipe. This replaced a fixed 10 s loan bound,
+ * which a real 2 MB store on the bench (owner report, orb-B, v1.1.24) outstayed
+ * while perfectly healthy: the heal rebooted a working store mid-copy and the
+ * theme never landed. A guessed wall clock was the wrong instrument; the
+ * card's own lock is the right one. */
+#define SW_CARD_QUIET_MS 5000
 
 /* Close the window set_screen() opened, once a real commit has landed since. */
 static void switch_window_close(int64_t now)
@@ -112,45 +117,56 @@ static void switch_window_close(int64_t now)
     if (f == s_sw_frames) {
         if (now - s_sw_open_us > (int64_t)SW_WINDOW_MS * 1000) {
             /* Silence is only a verdict once it has been asked for an
-             * explanation. A lent tile ring IS one: the flush path drops
-             * frames by contract while the card holds the ring, so the
-             * honest move is to re-arm this window and keep waiting — a
-             * 20 s card sequence must not read as a wedged pipeline. The
-             * excuse has a bound (SW_LEND_MAX_MS): a loan that outstays it
-             * is itself the wedge, wearing the card's coat. */
-            if (display_dma_lent() &&
-                now - s_sw_since_us < (int64_t)SW_LEND_MAX_MS * 1000) {
+             * explanation. The card IS one: while anything holds the card
+             * lock, or held it within SW_CARD_QUIET_MS, the flush path is
+             * dropping frames on purpose (the tile ring travels with that
+             * lock — see orb_sd_lock), so frozen counters here are a healthy
+             * board mid-write. Re-arm this window and keep waiting: no
+             * guessed ceiling on how long a real card sequence takes — the
+             * card's own lock says whether the card is still working. */
+            const int64_t idle = orb_sd_lock_idle_ms();
+            if (display_dma_lent() || idle < SW_CARD_QUIET_MS) {
                 if (!s_sw_lent_logged) {
-                    ESP_LOGI(TAG, "switch %s: silent with the ring lent — waiting on the card",
-                             s_sw_name);
+                    ESP_LOGI(TAG, "switch %s: silent with the card at work (lock held %lld ms) — waiting",
+                             s_sw_name, (long long)orb_sd_lock_held_ms());
                     s_sw_lent_logged = true;
                 }
                 s_sw_open_us = now;   /* re-arm; s_sw_since_us keeps the total */
                 return;
             }
-            /* Unexplained — or explained only past the bound. The self-heal,
-             * measured on orb-B 2026-10-27 and worth its reboot: one stalled
-             * switch froze the glass for two hours, every screen switch died
-             * the same way, and only a reboot cleared it. The probe runs on
-             * the LVGL task itself, so the task is alive and cannot fix the
-             * flush path from here; esp_restart is the one recovery left that
-             * the person holding the orb can get without a cable in sight.
-             * The fuse is f > 0: a board that never committed ANY frame since
-             * boot has a dead panel, not a stall, and rebooting into the same
-             * dead panel forever is a loop, not a heal. That case logs its
-             * finding and waits for a human. The resume-page memory (page
-             * below, same file) puts the owner back on the face that froze. */
-            if (f > 0) {
+            /* Unexplained. The self-heal, measured on orb-B 2026-10-27 and
+             * worth its reboot: one stalled switch froze the glass for two
+             * hours, every screen switch died the same way, and only a reboot
+             * cleared it. The probe runs on the LVGL task itself, so the task
+             * is alive and cannot fix the flush path from here; esp_restart is
+             * the one recovery left that the person holding the orb can get
+             * without a cable in sight. The fuse is f > 0: a board that never
+             * committed ANY frame since boot has a dead panel, not a stall,
+             * and rebooting into the same dead panel forever is a loop, not a
+             * heal. That case logs its finding and waits for a human. The
+             * resume-page memory (page below, same file) puts the owner back
+             * on the face that froze.
+             *
+             * The second fuse is the card lock, and the bench learned why the
+             * hard way: rebooting WHILE the lock is held ends a fatfs write
+             * mid-sector, and the v1.1.24 heal burned a healthy 2 MB store
+             * that way on the owner's own send. A hold that outlasts the
+             * quiet bound is a wedged card path — and a wedged card deserves a
+             * loud log and a cable, not a reboot through its mutex. The heal
+             * fires only when the bus is idle: same recovery for every real
+             * stall, zero chance of a torn FAT. */
+            if (f > 0 && orb_sd_lock_held_ms() == 0) {
                 ESP_LOGE(TAG, "display stalled: switch to %s unpainted %lld ms on a pipeline that "
-                              "already drew %u frame(s) — rebooting to recover the glass",
+                              "already drew %u frame(s), card idle — rebooting to recover the glass",
                          s_sw_name, (long long)((now - s_sw_since_us) / 1000), (unsigned)f);
                 orb_svc_note_clean_reboot();   /* this restart is a heal, not a crash */
                 s_sw_open_us = 0;
                 s_sw_since_us = 0;
                 esp_restart();
             }
-            ESP_LOGW(TAG, "switch %s: no display commit within %d ms — the new view never painted",
-                     s_sw_name, SW_WINDOW_MS);
+            ESP_LOGW(TAG, "switch %s: no display commit within %lld ms — card %s, the new view never painted",
+                     s_sw_name, (long long)((now - s_sw_since_us) / 1000),
+                     orb_sd_lock_held_ms() ? "lock HELD: refusing to reboot through it" : "idle");
             s_sw_open_us = 0;
             s_sw_since_us = 0;
         }

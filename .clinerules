@@ -1704,3 +1704,35 @@ serves the bytes it was built with, never the ones on disk.
   says so; status shows rst=11 "usb" for it). Every per-trial capture kicked
   the board mid-page. Capture ONCE per bench session and segment the log; open
   the port while the person is browsing is never acceptable.
+
+## The stall heal burned a healthy store — the card's own lock replaced the guessed bound, 2026-10-27, orb-B (v1.1.25)
+
+- **v1.1.24's heal was the sender's executioner.** The owner's report: send
+  lands, "copying" shows, board resets, theme never arrives, the hub shows a
+  connection-reset on the upload POST. The lend-excuse carried a fixed
+  SW_LEND_MAX_MS=10000 — a guessed ceiling the comment admitted nothing had
+  measured. A real store of a 1.2 MB bake on a real radio crosses it while the
+  card works perfectly, the excuse expired, and the probe esp_restart-ed
+  through a live copy. My bench "proof" streamed a small bake at LAN speed and
+  never crossed 10 s; the owner's network made every send cross it.
+- **The excuse is now the card's own activity, not a wall clock.**
+  orb_sd_lock_idle_ms() (new) answers "how long since ANY task held the card
+  lock"; a chunked writer refreshes it every few hundred ms and a whole-store
+  hold reads 0 forever. input_router re-arms while idle < 5 s or the ring is
+  lent, with NO total-silence ceiling — the sdmmc command timeouts bound the
+  card, not a #define. And a hard second fuse: the heal never fires while the
+  lock is held. A wedged holder deserves a log and a cable; rebooting through
+  the mutex is how the FAT gets torn.
+- **Bench sequence, v1.1.25**: full store round-trip (copying -> storing ->
+  stored, rebooting, rst=0xc RTC_SW, slot maps 1175552 B); then the regression:
+  --limit-rate 40k upload, killed at T+13 s of silence, 30% past the old fuse —
+  serial shows "silent with the card at work (lock held 1555 ms)", the dial
+  resumes after the abort, art_ready TRUE, bytes unchanged. Killed-upload with
+  no face loss now holds past the fuse window that v1.1.24 died in.
+- **First-press "could not get a clean read" is the page eating its lane.**
+  The Theme page's preview relays hold the hub's lane for seconds; the precheck
+  ThemeList is a control dial with a 1.5 s budget — the first press collides
+  with the page's own in-flight thumbnail and the old one-retry shape called
+  that a dirty read. themeListRidingOutLane waits the lane out (6 x 1.5 s on
+  ErrLaneBusy only); app.js's list read got the same quiet-retry, and a
+  re-render now ABORTS the in-flight preview (ops_test pin moved 1->2).

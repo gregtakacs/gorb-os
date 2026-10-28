@@ -63,6 +63,15 @@ typedef void *orb_sd_raw_card_t;
  */
 esp_err_t orb_sd_ensure_mounted(void);
 
+/* Re-create the two directories the device owns — /sd/themes and /sd/apps.
+ * Called at mount, and again by every door about to write inside one: the file
+ * manager may delete either directory, and FATFS refuses a file whose parent is
+ * absent (FR_NO_PATH), so an upload into a directory the owner just removed would
+ * fail confusingly until the next remount. No-op when the card is not mounted, and
+ * a warning rather than an error when the card cannot hold them — the same rule the
+ * mount-time create keeps. */
+void orb_sd_ensure_store_dirs(void);
+
 /** Boot-time convenience: ensure_mounted(), logging the card identity once. */
 esp_err_t orb_sd_init(void);
 
@@ -161,7 +170,7 @@ bool orb_sd_theme_path(char *out, size_t outsz, const char *name);
  * view of the volume: browse, upload, mkdir, delete, over ANY file, mirroring
  * what the MTP share already gives a USB host. The safety model is unchanged,
  * only widened to whole paths: every mutation is validated before it resolves,
- * the device-owned directories stay device-owned, and the one card lock covers
+ * every listed row is deletable, and the one card lock covers
  * an operation the way orb_sd.h has always demanded.
  *
  * A "rel" path is card-root-relative, '/'-separated, with no leading or trailing
@@ -180,21 +189,28 @@ bool orb_sd_theme_path(char *out, size_t outsz, const char *name);
 
 typedef struct {
     char name[65];   /* FATFS_MAX_LFN is 64 here; longer MTP-made names are
-                        truncated in the LISTING only — they still exist on the
-                        card, and deleting them from the dial was never offered
-                        anyway: a mutation name must pass orb_sd_name_ok */
+                        truncated in the LISTING only, and a truncated name is a
+                        name the manager cannot hand back to delete that row —
+                        the row is shown with the ellipsis the page adds */
     uint32_t size;   /* bytes; 0 for directories, which FATFS does not size */
     bool dir;
 } orb_sd_fm_ent_t;
 
 /** Validate `rel` and build the absolute "/sd/..." path into out.
- *  For MUTATIONS (read_only=false) every segment must pass orb_sd_name_ok and
- *  the first segment may not be a device-owned directory ("apps", "themes").
- *  For READS (read_only=true) segments only need to be printable, dot-safe and
- *  length-safe — the listing shows whatever a USB host put on the card,
- *  including names this device itself would refuse to write.
+ *  One segment rule covers both directions: every segment must be 1..64 bytes of
+ *  printable ASCII with no leading '.' and none of the characters FAT forbids,
+ *  so a name the listing can show is a name the manager can delete. No directory
+ *  is off-limits — the file manager reaches /sd/apps and /sd/themes like any
+ *  other, because a USB host already reaches the whole volume through MTP and a
+ *  refusal there would protect nothing the owner does not already hold. The two
+ *  store directories are re-created by orb_sd_ensure_store_dirs() before any
+ *  door writes inside one, so deleting them costs a rebuild, not the device.
+ *  The root rel (empty string) is accepted, and orb_sd_fm_rm refuses it separately.
+ *  The stricter orb_sd_name_ok still governs the store doors — what an app may
+ *  install and what a theme may wear — which is a smaller question than what the
+ *  owner may clean off their own card.
  *  Returns false and writes nothing when the path is refused. */
-bool orb_sd_fm_path(char *out, size_t outsz, const char *rel, bool read_only);
+bool orb_sd_fm_path(char *out, size_t outsz, const char *rel);
 
 /** List one directory. Fills ents up to max, sets *n and *truncated.
  *  ORB_SD_FM_NO_CARD unmounted; ESP_ERR_NOT_FOUND no such directory;

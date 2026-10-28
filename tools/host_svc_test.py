@@ -355,18 +355,50 @@ int orb_theme_scan(orb_theme_entry_t *out, int cap)
     for (int i = 0; i < n; i++) out[i] = g_te[i];
     return n;
 }
-bool orb_theme_id_ok(const char *id)
+/* Mirror of orb_theme.c's theme_id_ok() over the compound card stem
+ * "<slug>-<token>-<hex12>" that 2d27e35 installed. The old double checked a bare
+ * 12-hex word, which the shipped gate now refuses: a stem is a filename, not a
+ * digest, and the rule that admits it is the sd-name charset plus the slug rule
+ * plus a fixed-length hex tail. Kept as a copy rather than a call because this
+ * suite links the package manager, not the card. */
+bool orb_theme_id_ok(const char *stem)
 {
-    if (!id || strlen(id) != ORB_THEME_ID_HEX) return false;
-    for (const char *p = id; *p; p++)            /* hex only, like the shipped
-                                                  * gate: a 12-char path is still
-                                                  * a path — which is the point
-                                                  * of this vector */
+    if (!stem || stem[0] == '\0' || stem[0] == '.') return false;
+    size_t n = 0;
+    for (const char *p = stem; *p; p++, n++) {   /* orb_sd_name_ok's charset and
+                                                  * cap. ORB_THEME_HANDLE_MAX is
+                                                  * ORB_SD_NAME_MAX by the assert
+                                                  * in orb_theme.c, so the ceiling
+                                                  * needs no extra include here. */
+        if (n >= ORB_THEME_HANDLE_MAX) return false;
+        const char c = *p;
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-'))
+            return false;
+    }
+    const char *first = strchr(stem, '-'), *last = strrchr(stem, '-');
+    if (first == NULL || first == stem) return false;
+    const size_t sl = (size_t)(first - stem);
+    if (sl > ORB_BUNDLE_SLUG_MAX) return false;
+    for (const char *p = stem; p < first; p++)    /* orb_bundle_slug_rule: the
+                                                   * slug is lowercase, digits,
+                                                   * underscore — never a '-' */
+        if (!(((*p >= 'a') && (*p <= 'z')) || ((*p >= '0') && (*p <= '9')) || *p == '_'))
+            return false;
+    if (n < 1 + (size_t)ORB_THEME_ID_HEX) return false;
+    if (n - (size_t)ORB_THEME_ID_HEX - 1 < sl + 1) return false;
+    if (stem[n - (size_t)ORB_THEME_ID_HEX - 1] != '-') return false;
+    for (const char *p = stem + n - ORB_THEME_ID_HEX; p < stem + n; p++)
         if (!(((*p >= '0') && (*p <= '9')) || ((*p >= 'a') && (*p <= 'f'))))
             return false;
+    const size_t tokn = (size_t)(last - first) - 1;
+    if (tokn == 0) return false;
+    for (const char *p = first + 1; p < last; p++)
+        if (*p == '.') return false;              /* a dot belongs to the tail or
+                                                   * the sd name, never the token */
     return true;
 }
-int g_pinst_calls; char g_pinst_id[16]; esp_err_t g_pinst_rc;
+int g_pinst_calls; char g_pinst_id[ORB_THEME_HANDLE_MAX + 1]; esp_err_t g_pinst_rc;
 esp_err_t orb_theme_post_bundle(const char *id)
 {
     g_pinst_calls++;
@@ -629,11 +661,13 @@ int main(int argc, char **argv)
        S->theme_install(B, "kit3") == ESP_ERR_INVALID_ARG && g_pinst_calls == 0);
 
     /* ---- the D18 family on its real bodies -------------------------------- */
-    snprintf(g_te[0].id, sizeof g_te[0].id, "%s", "0123456789ab");
+    /* The D18 family on its real bodies: ids are card stems, and the shipped
+     * gate reads them as "<slug>-<token>-<hex12>". */
+    snprintf(g_te[0].id, sizeof g_te[0].id, "%s", "kit3-main-0123456789ab");
     snprintf(g_te[0].name, sizeof g_te[0].name, "%s", "kit3");
     g_te[0].err = ESP_OK; g_te[0].active = true; g_te[0].changed = false;
     g_te[0].why[0] = '\0';
-    snprintf(g_te[1].id, sizeof g_te[1].id, "%s", "fedcba987654");
+    snprintf(g_te[1].id, sizeof g_te[1].id, "%s", "broken-main-fedcba987654");
     snprintf(g_te[1].name, sizeof g_te[1].name, "%s", "broken");
     g_te[1].err = ESP_FAIL; g_te[1].active = false;
     snprintf(g_te[1].why, sizeof g_te[1].why, "%s", "bad payload crc");
@@ -642,9 +676,12 @@ int main(int argc, char **argv)
        S->theme_count(A) == -1 && g_tscan_calls == 0 &&
        orb_svc_denials(A) == den0 + 1);
     CK("granted count walks the card", S->theme_count(B) == 2 && g_tscan_calls == 1);
-    char tid[16];
+    char tid[ORB_THEME_HANDLE_MAX + 1];
     CK("id hands back the scan's, not a path",
-       S->theme_id(B, 0, tid, sizeof tid) == ESP_OK && !strcmp(tid, "0123456789ab"));
+       S->theme_id(B, 0, tid, sizeof tid) == ESP_OK &&
+       !strcmp(tid, "kit3-main-0123456789ab"));
+    CK("a buffer under the handle ceiling is a refusal, not a truncate",
+       S->theme_id(B, 0, tid, ORB_THEME_HANDLE_MAX) == ESP_ERR_NOT_FOUND);
     CK("row out of range is a refusal, not a clamp",
        S->theme_id(B, 2, tid, sizeof tid) == ESP_ERR_NOT_FOUND);
     CK("active flag answers from the copy",
@@ -656,15 +693,19 @@ int main(int argc, char **argv)
        S->theme_note(B, 0) == NULL);
     CK("a path is refused before anything else, count or no count",
        S->theme_install(B, "../../sd/etc") == ESP_ERR_INVALID_ARG && g_pinst_calls == 0);
+    /* The bare digest is no longer a handle. 2d27e35 made the stem carry the
+     * owning app, so a 12-hex word names nothing the card can hold. */
+    CK("a bare 12-hex word is refused on shape alone",
+       S->theme_install(B, "0123456789ab") == ESP_ERR_INVALID_ARG && g_pinst_calls == 0);
     CK("a well-formed id the scan never published is refused",
-       S->theme_install(B, "aaaaaaaaaaaa") == ESP_ERR_NOT_FOUND && g_pinst_calls == 0);
+       S->theme_install(B, "kit3-plain-aaaaaaaaaaaa") == ESP_ERR_NOT_FOUND && g_pinst_calls == 0);
     CK("a damaged entry cannot be installed either",
-       S->theme_install(B, "fedcba987654") == ESP_ERR_NOT_FOUND && g_pinst_calls == 0);
+       S->theme_install(B, "broken-main-fedcba987654") == ESP_ERR_NOT_FOUND && g_pinst_calls == 0);
     CK("the good scanned id reaches the D11 package manager",
-       S->theme_install(B, "0123456789ab") == ESP_OK &&
-       g_pinst_calls == 1 && !strcmp(g_pinst_id, "0123456789ab"));
+       S->theme_install(B, "kit3-main-0123456789ab") == ESP_OK &&
+       g_pinst_calls == 1 && !strcmp(g_pinst_id, "kit3-main-0123456789ab"));
     CK("install behind a closed gate: ungranted alpha cannot even ask",
-       S->theme_install(A, "0123456789ab") == ESP_ERR_NOT_ALLOWED && g_pinst_calls == 1);
+       S->theme_install(A, "kit3-main-0123456789ab") == ESP_ERR_NOT_ALLOWED && g_pinst_calls == 1);
     /* ---- set_beat (D16): the manifest floor is the contract --------------- */
     CK("faster than the manifest refused", S->set_beat(A, 33) == ESP_ERR_INVALID_ARG);
     CK("the stored beat did not move", orb_svc_beat_ms(A) == 0);

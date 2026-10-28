@@ -265,20 +265,23 @@ for slug, blob in sorted(side["apps"].items()):
     check(blob["slug"] == slug,
           "sidecar keys %r off a header that declares slug %r — the filename belongs "
           "to the slug" % (slug, blob["slug"]))
-seed = os.path.join(ROOT, "tools", "orb-manager", "seed", "clock.orbapp")
+# D36 (§36) moved the shipped container from tools/orb-manager/seed/ into the
+# starter/ directory the hub seeds from. The pin below names the same app either
+# way; only the path moved.
+seed = os.path.join(ROOT, "tools", "orb-manager", "starter", "clock.orbapp")
 if os.path.exists(seed):
     h, _s, _g, _a = orbapp.read_container(seed)
     check(h["app_id"] == orbapp.app_id_of(h["slug"]),
-          "the shipped seed container's app_id 0x%08X does not match its slug %r's "
+          "the shipped starter container's app_id 0x%08X does not match its slug %r's "
           "hash 0x%08X" % (h["app_id"], h["slug"], orbapp.app_id_of(h["slug"])))
     # The literal the hub's Go test pins. Two languages, one number, stated twice on
     # purpose: the Go side cannot import this file, so the pair fails together or not at
     # all, which is the point of pinning a shipped artifact rather than a generated one.
     check(h["app_id"] == 0xD8198EFA,
-          "seed clock.orbapp stamps 0x%08X, and appcontainer_test.go pins 0xD8198EFA"
+          "starter clock.orbapp stamps 0x%08X, and appcontainer_test.go pins 0xD8198EFA"
           % h["app_id"])
 else:
-    failures.append("no seed container at %s — the app_id pin has no subject" % seed)
+    failures.append("no starter container at %s — the app_id pin has no subject" % seed)
 
 print("== APP HEADER MIRROR SUITE: %d failure(s)" % len(failures))
 for _f in failures:

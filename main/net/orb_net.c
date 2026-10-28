@@ -4131,6 +4131,7 @@ static esp_err_t h_reprov(httpd_req_t *req)
 }
 
 static bool q_param(httpd_req_t *req, const char *key, char *out, size_t outsz);
+static bool q_param_path(httpd_req_t *req, const char *key, char *out, size_t outsz);
 
 /* POST /api/v1/factory?confirm=ALL — the network twin of the serial `RESET ALL`
  * verb, for the one shape the serial door cannot reach: a board on a wall with
@@ -4232,7 +4233,14 @@ static esp_err_t h_factory(httpd_req_t *req)
  * generous and a check that runs afterwards on a different string than the one it
  * inspected — the id is compared against sha256() of a header name, so a value that
  * decoded differently than it was checked would defeat that comparison outright. */
-static bool q_param(httpd_req_t *req, const char *key, char *out, size_t outsz)
+/* The shared decoder. `allow_slash` separates the two vocabularies: every id on
+ * this server is ONE segment, where a '/' is the traversal attempt itself, while
+ * the file manager's ?path= is a legitimately multi-segment card-relative path
+ * whose separators the browser necessarily encodes as %2F. NUL is refused in both
+ * modes; '/' is refused only when the caller cannot use one. Nothing here ever
+ * decides policy — it decodes, and the door's own validator judges the result. */
+static bool q_param_seg(httpd_req_t *req, const char *key, char *out, size_t outsz,
+                        bool allow_slash)
 {
     char qbuf[192], raw[ORB_SD_NAME_MAX * 3 + 8];
     /* The two-call API, not req->query: the query string is only parsed on demand
@@ -4255,15 +4263,32 @@ static bool q_param(httpd_req_t *req, const char *key, char *out, size_t outsz)
             else return false;                                   /* not a hex pair */
             v = v * 16 + d;
         }
-        /* NUL and '/' can never be part of a theme id or any of the short control
-         * values read here; refusing them at decode time is what keeps the value the
-         * path builder receives identical to the value orb_sd_name_ok() looked at. */
-        if (v == 0 || v == '/') return false;
+        /* NUL can never be part of any value read here. '/' can never be part of a
+         * theme id or a short control value, and refusing it at decode time is what
+         * keeps the value the path builder receives identical to the value the
+         * validator looked at — unless the caller asked for a path. */
+        if (v == 0 || (v == '/' && !allow_slash)) return false;
         out[o++] = (char)v;
         p += 2;
     }
     out[o] = '\0';
     return o > 0;
+}
+
+static bool q_param(httpd_req_t *req, const char *key, char *out, size_t outsz)
+{
+    return q_param_seg(req, key, out, outsz, false);
+}
+
+/* The file manager's path reader. Before this existed the FM handlers called plain
+ * q_param, so every nested delete and every two-deep listing died as "path is
+ * missing": %2F decoded to a refused byte, which is indistinguishable from the
+ * parameter being absent. Separators pass here and are judged by orb_sd_fm_path,
+ * which owns traversal and segment shape; a traversal still 400s, with the sentence
+ * that names the path rather than one that denies ever receiving it. */
+static bool q_param_path(httpd_req_t *req, const char *key, char *out, size_t outsz)
+{
+    return q_param_seg(req, key, out, outsz, true);
 }
 
 
@@ -5465,7 +5490,7 @@ static esp_err_t h_app_uninstall(httpd_req_t *req)
 /* ---- v1.1.18's file manager doors: /api/v1/sd/ls, /mkdir, /rm, /write ---------
  * The owner's own view of the card, path-based, over everything the theme and
  * app doors understood one artifact at a time. orb_sd.c holds every rule (path
- * shape, dot entries, the device-owned directories, the card lock); these four
+ * shape, dot entries, the card lock); these four
  * handlers translate query to call and esp_err to HTTP, adding nothing of their
  * own. They are deliberately NOT folded into the theme doors: /themes and /apps
  * answer "what may the dial run or wear"; /sd/ls answers "what is on my card",
@@ -5477,9 +5502,9 @@ static esp_err_t h_sd_ls(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
     char rel[ORB_SD_FM_PATH_MAX + 8] = "";
-    q_param(req, "path", rel, sizeof rel);          /* absent = the root */
+    q_param_path(req, "path", rel, sizeof rel);      /* absent = the root */
     char abs[ORB_SD_FM_PATH_MAX + 32];
-    if (!orb_sd_fm_path(abs, sizeof abs, rel, true)) {
+    if (!orb_sd_fm_path(abs, sizeof abs, rel)) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"bad path\"}");
     }
@@ -5552,7 +5577,7 @@ static esp_err_t h_sd_ls(httpd_req_t *req)
 static const char *fm_query_path(httpd_req_t *req, char *buf, size_t bufsz)
 {
     buf[0] = '\0';
-    if (!q_param(req, "path", buf, bufsz) || buf[0] == '\0') {
+    if (!q_param_path(req, "path", buf, bufsz) || buf[0] == '\0') {
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_sendstr(req, "{\"error\":\"path is missing\"}");
         return NULL;
@@ -6610,7 +6635,7 @@ static const char HTML_APPS[] =
 "I.innerHTML=h;"
 "}"
 "function setOn(s,on){say((on?'turning on ':'turning off ')+s+'...','');j('/api/v1/apps/enable?id='+encodeURIComponent(s)+'&on='+on,{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say(on?'turned on - it walks the dial now':'turned off - the slot keeps its place','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
-"function unin(s){if(!confirm('Uninstall '+s+'? The dial erases its slot and forgets its permissions.'+' The file stays on your card.'{return;}say('uninstalling '+s+'...','');j('/api/v1/apps/uninstall?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('uninstalled '+s+' - the slot is free again','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
+"function unin(s){if(!confirm('Uninstall '+s+'? The dial erases its slot and forgets its permissions.'+' The file stays on your card.')){return;}say('uninstalling '+s+'...','');j('/api/v1/apps/uninstall?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('uninstalled '+s+' - the slot is free again','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
 "function clearFault(s){if(!confirm('Clear the fault record for '+s+'? A reboot brings it back; WiFi and the card are untouched.')){return;}say('clearing the fault for '+s+'...','');j('/api/v1/apps/clear?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('fault cleared - reboot the dial to rebuild it','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
 "function refresh(){j('/api/v1/apps').then(function(r){if(!r.ok){say('orb refused the listing: '+(r.d&&r.d.error?r.d.error:r.st),'bad');return;}data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
 "refresh();"
@@ -6955,8 +6980,10 @@ static esp_err_t net_start_httpd(void)
          * saying "forget everything" (factory). */
         { .uri = "/api/v1/factory", .method = HTTP_POST, .handler = h_factory },
         /* v1.1.18's file manager: one read door, three mutations. /ls answers
-         * "what is on my card" for the whole volume; the mutations keep the
-         * device-owned directories behind their own doors (orb_sd_fm_path). */
+         * "what is on my card" for the whole volume, and the mutations reach the
+         * whole volume too (orb_sd_fm_path): a row the page lists is a row it can
+         * delete, /sd/apps and /sd/themes included. Both are re-created before the
+         * next write lands, so clearing them costs a re-push, not the dial. */
         { .uri = "/api/v1/sd/ls",     .method = HTTP_GET,  .handler = h_sd_ls },
         { .uri = "/api/v1/sd/mkdir",  .method = HTTP_POST, .handler = h_sd_mkdir },
         { .uri = "/api/v1/sd/rm",     .method = HTTP_POST, .handler = h_sd_rm },

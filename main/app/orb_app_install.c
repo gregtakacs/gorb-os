@@ -1357,6 +1357,9 @@ esp_err_t orb_app_upload_begin(orb_app_up_t **out)
     const orb_file_src_t *src = orb_files_src(ORB_APP_SCAN_SLUG, ORB_APP_SCAN_ID);
     if (!src) return ESP_ERR_NOT_FOUND;
     if (orb_sd_ensure_mounted() != ESP_OK) return ESP_ERR_NOT_FOUND;
+    /* /sd/apps may have been deleted from the file manager; the scratch path
+     * below cannot be opened without its parent (FR_NO_PATH). */
+    orb_sd_ensure_store_dirs();
     /* No card read buffer reserved HERE, and none needed: the upload verifies only
      * the header block (a stack copy), not the payload. The payload CRCs are the
      * INSTALL's job — orb_app_install() runs verify_payload() off the card before

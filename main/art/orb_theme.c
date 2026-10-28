@@ -2247,6 +2247,11 @@ esp_err_t orb_theme_upload_begin(orb_theme_up_t **out)
     const orb_file_src_t *src = orb_files_src("clock", "themes");
     if (!src) return ESP_ERR_NOT_FOUND;
     if (orb_sd_ensure_mounted() != ESP_OK) return ESP_ERR_NOT_FOUND;
+    /* The file manager may delete /sd/themes, and FATFS refuses a file whose
+     * parent is absent, so the scratch the upload is about to open needs its
+     * directory to exist. Re-created here rather than only at mount: the owner
+     * should be able to clear the directory and upload again without a reboot. */
+    orb_sd_ensure_store_dirs();
     /* Reserve the card read buffer NOW, before the radio carries 3.87 MB for a
      * transfer this device cannot finish. verify_bundle3() reserves it again
      * defensively; this is the early, cheap no. */

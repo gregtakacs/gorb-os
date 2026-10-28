@@ -292,8 +292,9 @@ func TestAppIDOfMatchesKnownAnswers(t *testing.T) {
 			t.Errorf("AppIDOf(%q) = 0x%08X, authority says 0x%08X", slug, got, want)
 		}
 	}
-	// tools/orb-manager/seed/clock.orbapp stamps this value today, and seed.go names the
-	// same app by literal — the pairing D37 removes and the reason it is worth pinning now.
+	// tools/orb-manager/starter/clock.orbapp stamps this value today, and starter.go
+	// names the same app by literal — the pairing D37 removes and the reason it is
+	// worth pinning now.
 	if got := AppIDOf("clock"); got != 0xD8198EFA {
 		t.Errorf("AppIDOf(\"clock\") = 0x%08X, not the 0xD8198EFA the seed container stamps", got)
 	}

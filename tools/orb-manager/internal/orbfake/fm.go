@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -24,16 +23,53 @@ type fakeFS struct {
 }
 
 func newFakeFS() *fakeFS {
-	return &fakeFS{files: map[string]int64{}, dirs: map[string]bool{}}
+	fs := &fakeFS{files: map[string]int64{}, dirs: map[string]bool{}}
+	// orb_sd_init creates the two store directories at mount, so a fresh volume
+	// holds them before anything is written. Mirror that, or the fake lists a card
+	// no real orb would boot with.
+	fs.ensureStoreDirs()
+	return fs
 }
 
-var fmSeg = regexp.MustCompile(`^[A-Za-z0-9._-]{1,55}$`)
+// fmSegOk mirrors orb_sd.c's fm_seg_ok_read: the ONE file-manager segment rule,
+// now applied to reads and mutations alike. D39 removed the split that made a
+// directory the listing happily showed — "System Volume Information", written by a
+// Windows host — undeletable through the page that displayed it. Still refused: a
+// leading dot, the characters FAT itself forbids, control and high bytes (the
+// volume mounts CP437, so a UTF-8 name cannot round-trip a write), and the 64-byte
+// LFN cap. The store doors keep the stricter orb_sd_name_ok, which this fake
+// mirrors elsewhere for ?id= traffic.
+func fmSegOk(s string) bool {
+	if s == "" || len(s) > 64 || s[0] == '.' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c > 0x7E {
+			return false
+		}
+		switch c {
+		case '\\', ':', '*', '?', '"', '<', '>', '|':
+			return false
+		}
+	}
+	return true
+}
 
-// fmRelOk mirrors orb_sd_fm_path's MUTATION rules. The read side's looser
-// character class exists for names an MTP host wrote, and this volume has none
-// the tests cannot name — one validator here is the honest simplification.
+// ensureStoreDirs mirrors orb_sd_ensure_store_dirs(): the device re-creates
+// /sd/themes and /sd/apps before any door writes inside one. The file manager can
+// delete either directory now that one segment rule governs every row, and FATFS
+// refuses a file whose parent is absent (FR_NO_PATH), so a hub push that follows a
+// cleanup has to land instead of dying on a missing directory the owner can see.
+// Called under the orb's lock, the same as the write door that invokes it.
+func (fs *fakeFS) ensureStoreDirs() {
+	fs.dirs["apps"] = true
+	fs.dirs["themes"] = true
+}
+
+// fmRelOk mirrors orb_sd_fm_path's rules for a whole rel path, read or mutation.
 func fmRelOk(rel string) bool {
-	if len(rel) > 127 || rel == "" {
+	if len(rel) > 127 {
 		return false
 	}
 	if strings.HasPrefix(rel, "/") || strings.HasSuffix(rel, "/") || strings.Contains(rel, "//") {
@@ -44,13 +80,14 @@ func fmRelOk(rel string) bool {
 		return false
 	}
 	for _, s := range segs {
-		if !fmSeg.MatchString(s) || s[0] == '.' {
+		if !fmSegOk(s) {
 			return false
 		}
 	}
-	if segs[0] == "apps" || segs[0] == "themes" {
-		return false // the stores keep their own doors
-	}
+	// No directory is off-limits. The device's file manager reaches apps/ and
+	// themes/ like any other: a USB host already holds the whole volume through
+	// MTP, so refusing the owner's own page protected nothing. The device
+	// re-creates both directories before anything writes inside one.
 	return true
 }
 
@@ -192,6 +229,7 @@ func (o *Orb) serveFmWrite(w http.ResponseWriter, r *http.Request) {
 	overwrite := r.URL.Query().Get("overwrite") == "1"
 	o.mu.Lock()
 	fs := o.fm
+	fs.ensureStoreDirs() // the device rebuilds the store dirs before writing
 	_, exists := fs.files[rel]
 	parent := ""
 	if i := strings.LastIndex(rel, "/"); i >= 0 {

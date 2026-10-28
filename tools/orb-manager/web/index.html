@@ -515,6 +515,24 @@
   </div>
 </div>
 
+<!-- One themed confirmation for every decision the hub used to hand the browser.
+     A native confirm() cannot be styled, cannot name what it is about to cost, and
+     arrives with focus on OK; a destructive answer should not be the one a stray
+     Enter earns. Cancel is focused here, Escape and the scrim both mean no, and the
+     body is worded per call so the row you are about to erase is named in the window
+     that erases it. Markup only: app.js owns the promise and the wiring. -->
+<div id="cf-mask" class="mask" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="cf-title">
+    <h3 id="cf-title">Are you sure?</h3>
+    <p id="cf-body"></p>
+    <p class="hint" id="cf-detail" hidden></p>
+    <div class="row">
+      <button id="cf-ok" class="danger">Confirm</button>
+      <button id="cf-no" class="ghost">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <input id="mn-ip" size="18" hidden>
 
 <script>window.__ORB_TOKEN__ = "__ORB_TOKEN__";</script>

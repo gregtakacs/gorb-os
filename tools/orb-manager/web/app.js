@@ -3463,6 +3463,56 @@ $("#ad-check").onclick = async () => {
 };
 $("#ad-ip").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#ad-check").click(); });
 
+// ---- one themed confirmation, shared by every face ------------------------------
+// Replaces the browser's confirm(), which could not be styled, could not name what
+// it was about to cost, and landed focus on OK so a stray Enter approved a deletion.
+// Here Cancel takes focus, Escape and a scrim click both mean no, and the caller
+// supplies the sentence so the thing about to be destroyed is named in the window
+// that destroys it. One dialog in the document, resolved through a promise, so a
+// face can `if (!(await askConfirm(...))) return;` exactly as it did with confirm().
+// Only one ask is ever live: a second call while one is open is refused as a
+// cancel rather than stacking a second question the operator cannot see.
+let askOpen = null;
+
+function askConfirm(spec) {
+  if (askOpen) return Promise.resolve(false);
+  const mask = $("#cf-mask"), ok = $("#cf-ok"), no = $("#cf-no");
+  if (!mask || !ok || !no) return Promise.resolve(window.confirm(spec.body));
+  return new Promise((done) => {
+    const back = document.activeElement;
+    $("#cf-title").textContent = spec.title || "Are you sure?";
+    $("#cf-body").textContent = spec.body;
+    const detail = $("#cf-detail");
+    detail.textContent = spec.detail || "";
+    detail.hidden = !spec.detail;
+    ok.textContent = spec.yes || "Confirm";
+    ok.className = spec.safe ? "primary" : "danger";
+    no.textContent = spec.no || "Cancel";
+    const settle = (v) => {
+      mask.hidden = true;
+      document.removeEventListener("keydown", onKey, true);
+      mask.removeEventListener("click", onScrim);
+      askOpen = null;
+      if (back && back.focus) back.focus();   // home the caret came from
+      done(v);
+    };
+    function onKey(ev) {
+      if (ev.key === "Escape") { ev.preventDefault(); settle(false); }
+      else if (ev.key === "Enter" && document.activeElement === no) {
+        ev.preventDefault(); settle(false);
+      }
+    }
+    function onScrim(ev) { if (ev.target === mask) settle(false); }
+    askOpen = settle;
+    ok.onclick = () => settle(true);
+    no.onclick = () => settle(false);
+    document.addEventListener("keydown", onKey, true);
+    mask.addEventListener("click", onScrim);
+    mask.hidden = false;
+    no.focus();
+  });
+}
+
 // ---- boot -----------------------------------------------------------------------
 // The stream is the card; the ports poll follows the physical bench, and the
 // watchdog below reopens the stream, never the card. A blank board appearing on

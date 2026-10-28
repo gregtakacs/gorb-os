@@ -651,12 +651,14 @@ def lint():
     # the terminator belongs to THIS handler, not just to the file: three
     # handlers close on the same line, and a mutant that keeps the others'
     # while dropping this one's would pass a file-wide `in`.
-    # D35 (plan §35): the apps stream's closer became a computed buffer — the
-    # object now carries factory_missing beside the installed array — so the pin
-    # moved from the literal chunk text to the send of the buffer that holds it:
-    # the buffer is built ending in the JSON object close, and it is still this
-    # handler's own terminating chunk.
-    assert 'snprintf(closer, sizeof closer, "],' in body, \
+    # D35 (plan §35) made the apps stream's closer a computed buffer so the
+    # object could carry factory_missing beside the installed array. D36 (plan
+    # §36) moved the factory rows to a hub seed and dropped that field, so the
+    # buffer now closes the array and the object with nothing between. The pin
+    # stays on the buffer's build rather than a bare send: three handlers close
+    # on the same text, and one that lost this buffer's shape would pass a
+    # file-wide `in`.
+    assert 'snprintf(closer, sizeof closer, "]}");' in body, \
         "the apps list closer lost its shape (it must still close the object)"
     assert 'httpd_resp_send_chunk(req, closer, HTTPD_RESP_USE_STRLEN);\n' \
            "    return httpd_resp_send_chunk(req, NULL, 0);" in body, \

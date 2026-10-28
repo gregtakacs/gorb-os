@@ -188,9 +188,6 @@ static esp_err_t mount_now(void)
     s_last_err = ESP_OK;
     log_card(s_card, "mounted at /sd");
 
-    /* The one directory the device owns, created at mount rather than at first
-     * upload: a card in a locked adapter, or one whose controller has worn out,
-     * says so here at boot instead of under a progress bar. */
     /* The two directories the device owns, created at mount rather than at first
      * upload: a card in a locked adapter, or one whose controller has worn out,
      * says so here at boot instead of under a progress bar. The apps drop zone
@@ -198,7 +195,18 @@ static esp_err_t mount_now(void)
      * /sd/apps/upload.part and FATFS refuses to create a file whose PARENT dir is
      * absent (FR_NO_PATH). It is ORB_APP_DIR, the same path orb_app_scan registers,
      * so the walk, the install's resolve-by-stem, and the upload all agree on one
-     * directory. */
+     * directory. The file manager can delete either one; every door that is about
+     * to write inside one calls the same helper first (orb_sd_ensure_store_dirs). */
+    orb_sd_ensure_store_dirs();
+    return ESP_OK;
+}
+
+void orb_sd_ensure_store_dirs(void)
+{
+    if (!s_mounted) return;
+    /* mkdir, never stat-then-mkdir: EEXIST is the common answer and costs one
+     * call, and a card that genuinely cannot hold the directory says so in the
+     * log the way the mount-time create already did. */
     if (mkdir(ORB_SD_THEME_DIR, 0777) != 0 && errno != EEXIST) {
         ESP_LOGW(TAG, "mkdir %s: %s — theme uploads will fail",
                  ORB_SD_THEME_DIR, strerror(errno));
@@ -207,7 +215,6 @@ static esp_err_t mount_now(void)
         ESP_LOGW(TAG, "mkdir %s: %s — app uploads will fail",
                  ORB_SD_APPS_DIR, strerror(errno));
     }
-    return ESP_OK;
 }
 
 esp_err_t orb_sd_ensure_mounted(void)
@@ -645,12 +652,23 @@ bool orb_sd_theme_path(char *out, size_t outsz, const char *name)
 #include <dirent.h>
 #include <unistd.h>
 
-/* Read-side segment rule: an MTP host may have written spaces and odd but
- * legal FAT names, and the listing must show them. Printable ASCII, no leading
- * dot (the same hidden-entry rule the mutations and orb_files.c already keep —
- * a file the device will not name cannot be half-reachable by browsing it), and
- * none of the characters FAT itself forbids, which readdir can still hand back
- * from a corrupted directory. Length capped at the read name, 64. */
+/* The file manager's segment rule, applied to READS and MUTATIONS alike.
+ *
+ * An MTP host or a camera writes spaces and odd but legal FAT names, and the
+ * listing must show them; v1.1.18 accepted that on the read side and then judged
+ * the same name against orb_sd_name_ok when the owner pressed Delete, so a row the
+ * page displayed could never be taken away — "System Volume Information" answered
+ * "bad path". D39 makes the two sides one rule.
+ *
+ * Accepted: 1..64 bytes (the LFN cap the listing name already holds) of printable
+ * ASCII, no leading dot (the hidden-entry rule, and the '.'/'..' escapes that
+ * matter), none of the characters FAT itself forbids, and no high bytes — the
+ * volume mounts CP437, so a UTF-8 name cannot round-trip through a write and is
+ * refused rather than stored as mojibake.
+ *
+ * This is wider than the store rule on purpose: what an app may install and what a
+ * theme may wear stay governed by orb_sd_name_ok, which is a smaller question than
+ * what the owner may clean off their own card. */
 static bool fm_seg_ok_read(const char *seg, size_t sl)
 {
     if (sl == 0 || sl > 64 || seg[0] == '.') return false;
@@ -663,7 +681,7 @@ static bool fm_seg_ok_read(const char *seg, size_t sl)
     return true;
 }
 
-bool orb_sd_fm_path(char *out, size_t outsz, const char *rel, bool read_only)
+bool orb_sd_fm_path(char *out, size_t outsz, const char *rel)
 {
     if (out == NULL || outsz == 0 || rel == NULL) return false;
     const size_t len = strlen(rel);
@@ -679,13 +697,10 @@ bool orb_sd_fm_path(char *out, size_t outsz, const char *rel, bool read_only)
         const size_t sl = e ? (size_t)(e - s) : strlen(s);
         const char save = s[sl];
         s[sl] = '\0';
-        if (!(read_only ? fm_seg_ok_read(s, sl) : orb_sd_name_ok(s)))
-            return false;                   /* tmp is dead either way */
+        if (!fm_seg_ok_read(s, sl))
+            return false;                   /* one rule both ways: a row the page
+                                             * can list is a row it may delete */
         if (++segs > ORB_SD_FM_SEGS_MAX) return false;
-        if (segs == 1 && !read_only &&
-            ((sl == 4 && memcmp(s, "apps", 4) == 0) ||
-             (sl == 6 && memcmp(s, "themes", 6) == 0)))
-            return false;                   /* the stores keep their own doors */
         if (!e) break;
         s[sl] = save;
         s = e + 1;
@@ -712,7 +727,7 @@ esp_err_t orb_sd_fm_list(const char *rel, orb_sd_fm_ent_t *ents, int max,
     if (truncated) *truncated = false;
     if (ents == NULL || max <= 0) return ESP_ERR_INVALID_ARG;
     char abs[ORB_SD_FM_PATH_MAX + 32];
-    if (!orb_sd_fm_path(abs, sizeof abs, rel ? rel : "", true))
+    if (!orb_sd_fm_path(abs, sizeof abs, rel ? rel : ""))
         return ESP_ERR_INVALID_ARG;
     const esp_err_t me = orb_sd_ensure_mounted();
     if (me != ESP_OK) return me;            /* ORB_SD_FM_NO_CARD until a card answers */
@@ -749,7 +764,7 @@ esp_err_t orb_sd_fm_mkdir(const char *rel)
 {
     if (rel == NULL || rel[0] == '\0') return ESP_ERR_INVALID_ARG;  /* root exists */
     char abs[ORB_SD_FM_PATH_MAX + 32];
-    if (!orb_sd_fm_path(abs, sizeof abs, rel, false)) return ESP_ERR_INVALID_ARG;
+    if (!orb_sd_fm_path(abs, sizeof abs, rel)) return ESP_ERR_INVALID_ARG;
     const esp_err_t me = orb_sd_ensure_mounted();
     if (me != ESP_OK) return me;
     if (orb_sd_usb_owned()) return ESP_ERR_INVALID_STATE;
@@ -826,7 +841,7 @@ esp_err_t orb_sd_fm_rm(const char *rel, bool recursive, int *removed_out)
     if (removed_out) *removed_out = 0;
     if (rel == NULL || rel[0] == '\0') return ESP_ERR_INVALID_ARG;  /* never the root */
     char abs[ORB_SD_FM_PATH_MAX + 32];
-    if (!orb_sd_fm_path(abs, sizeof abs, rel, false)) return ESP_ERR_INVALID_ARG;
+    if (!orb_sd_fm_path(abs, sizeof abs, rel)) return ESP_ERR_INVALID_ARG;
     const esp_err_t me = orb_sd_ensure_mounted();
     if (me != ESP_OK) return me;
     if (orb_sd_usb_owned()) return ESP_ERR_INVALID_STATE;
@@ -887,10 +902,15 @@ esp_err_t orb_sd_fm_write_open(const char *rel, bool overwrite, size_t declared,
     if (rel == NULL || rel[0] == '\0' || declared == 0) return ESP_ERR_INVALID_ARG;
     if (declared > (size_t)ORB_SD_FM_WRITE_MAX) return ESP_ERR_INVALID_SIZE;
     char abs[ORB_SD_FM_PATH_MAX + 32];
-    if (!orb_sd_fm_path(abs, sizeof abs, rel, false)) return ESP_ERR_INVALID_ARG;
+    if (!orb_sd_fm_path(abs, sizeof abs, rel)) return ESP_ERR_INVALID_ARG;
     const esp_err_t me = orb_sd_ensure_mounted();
     if (me != ESP_OK) return me;
     if (orb_sd_usb_owned()) return ESP_ERR_INVALID_STATE;
+    /* The hub pushes an app as a write to apps/<slug>.orbapp, and the store
+     * directories are deletable from the file manager: create the parent back so a
+     * push that follows a cleanup lands instead of dying as FR_NO_PATH. Cheap and
+     * idempotent — two mkdirs the helper already makes at mount. */
+    orb_sd_ensure_store_dirs();
 
     orb_sd_lock();
     struct stat st;
@@ -984,9 +1004,9 @@ void      orb_sd_unlock(void) { }
 int64_t   orb_sd_lock_held_ms(void) { return 0; }
 int64_t   orb_sd_lock_idle_ms(void) { return INT64_MAX / 2; }
 
-bool orb_sd_fm_path(char *out, size_t outsz, const char *rel, bool read_only)
+bool orb_sd_fm_path(char *out, size_t outsz, const char *rel)
 {
-    (void)rel; (void)read_only;
+    (void)rel;
     if (out && outsz) out[0] = '\0';
     return false;
 }
@@ -997,6 +1017,7 @@ esp_err_t orb_sd_fm_list(const char *rel, orb_sd_fm_ent_t *ents, int max,
     return ESP_ERR_NOT_SUPPORTED;
 }
 esp_err_t orb_sd_fm_mkdir(const char *rel) { (void)rel; return ESP_ERR_NOT_SUPPORTED; }
+void orb_sd_ensure_store_dirs(void) { }
 esp_err_t orb_sd_fm_rm(const char *rel, bool recursive, int *removed_out)
 {
     (void)rel; (void)recursive;

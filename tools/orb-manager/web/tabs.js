@@ -499,8 +499,12 @@ function appFaceBody(a, body) {
     un.textContent = "Uninstall";
     un.onclick = async () => {
       const named = APP_TITLES[a.slug] || a.title || a.slug;
-      const warn = " The file stays on your card.";
-      if (!confirm("Uninstall " + named + "? The dial erases its slot and forgets its permissions." + warn)) return;
+      if (!await askConfirm({
+        title: "Uninstall this app?",
+        body: "The dial erases " + named + "'s slot and forgets the permissions it was granted.",
+        detail: "The .orbapp stays on your card, so Install can bring it back.",
+        yes: "Uninstall",
+      })) return;
       un.disabled = true;
       note.textContent = "uninstalling\u2026";
       try { await appPost("/api/v1/apps/uninstall?id=" + encodeURIComponent(a.slug)); note.textContent = "uninstalled \u2014 the slot is free again"; await loadApps(); }
@@ -516,7 +520,14 @@ function appFaceBody(a, body) {
     cf.className = "ghost";
     cf.textContent = "Clear fault";
     cf.onclick = async () => {
-      if (!confirm("Clear the fault record for " + (a.title || a.slug) + "? A reboot brings it back; Wi-Fi and the card are untouched.")) return;
+      if (!await askConfirm({
+        title: "Clear the fault record?",
+        body: "The hub forgets why " + (a.title || a.slug) + " was quarantined.",
+        detail: "A reboot tries the same load and brings the record straight back. "
+              + "Wi-Fi, the card and the app's files are untouched.",
+        yes: "Clear the record",
+        safe: true,
+      })) return;
       cf.disabled = true;
       note.textContent = "clearing\u2026";
       try { await appPost("/api/v1/apps/clear?id=" + encodeURIComponent(a.slug)); note.textContent = "fault cleared \u2014 reboot the dial to rebuild it"; await loadApps(); }
@@ -562,7 +573,14 @@ function appFaceCardZone(body) {
       go.className = "ghost";
       go.textContent = "Install";
       go.onclick = async () => {
-        if (!confirm("Install " + named + " from the card onto the dial? The copy takes a few seconds and the app stays off until you turn it on.")) return;
+        if (!await askConfirm({
+          title: "Install this app?",
+          body: "The dial copies " + named + " from the card into its app slot.",
+          detail: "The copy takes a few seconds, and the app stays off until you "
+                + "turn it on in the menu. Nothing on the card changes.",
+          yes: "Install",
+          safe: true,
+        })) return;
         go.disabled = true;
         lbl.textContent = "installing\u2026";
         try { await appPost("/api/v1/apps/install?id=" + encodeURIComponent(c.stem)); await loadApps(); }
@@ -656,16 +674,39 @@ async function fmRm(rel, recursive) {
 }
 
 async function fmDelete(e, btn) {
-  const child = e.dir ? "directory (with everything inside it)" : "file";
-  if (!confirm("Delete this " + child + " from the card:\n/" + (fmPath ? fmPath + "/" : "") + e.name)) return;
   const rel = fmPath ? fmPath + "/" + e.name : e.name;
+  const where = "/" + rel;
+  if (e.dir) {
+    if (!await askConfirm({
+      title: "Delete this directory?",
+      body: "The orb erases " + where + " from the card.",
+      detail: "Everything inside it goes with it. The dial keeps drawing a "
+            + "installed theme until another is loaded; nothing else on the "
+            + "board changes, and the card stays mounted.",
+      yes: "Delete the directory",
+    })) return;
+  } else if (!await askConfirm({
+      title: "Delete this file?",
+      body: "The orb erases " + where + " from the card.",
+      detail: "This cannot be undone from the page. A USB host can still copy "
+            + "what is left, and the dial is untouched.",
+      yes: "Delete the file",
+    })) return;
   btn.disabled = true;
   const st = $("#fm-state");
   st.hidden = false;
   try {
     let r = await fmRm(rel, false);
     if (r.status === 409 && r.body && /not empty/.test(r.body.error || "")) {
-      if (!confirm("That directory is not empty. Delete it WITH its contents?")) { btn.disabled = false; return; }
+      // A second, separately-worded ask rather than a silent recursive retry:
+      // taking a directory's contents is its own decision and costs its own press.
+      if (!await askConfirm({
+        title: "That directory is not empty",
+        body: where + " still holds files. Delete it WITH everything inside it?",
+        detail: "Every file and subdirectory under it is erased. This is the "
+              + "point of no return for the whole tree.",
+        yes: "Delete with contents",
+      })) { btn.disabled = false; return; }
       r = await fmRm(rel, true);
     }
     if (r.status !== 200 || !r.body || r.body.error)

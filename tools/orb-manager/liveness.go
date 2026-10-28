@@ -410,11 +410,20 @@ func (s *Server) kickLostCables(seen []cableSighting) {
 // on the MAC the host read off the USB descriptor, which is the same key the roster folds
 // OnCable on. A host that cannot read the serial cannot key a refusal, and the sweep says
 // so as an unattributed row rather than borrowing an old socket path to refuse with.
+//
+// A paid not-an-orb verdict clears the lead here, beside the lonely mark, and not only
+// inside forgetGate below. cableSights already drops the orb claim off the sighting whose
+// OWN port carries that verdict; this covers the MAC, so a board disproven on any lead
+// this hub paid for stops holding every door the claim feeds. Leaving it only in the gate
+// made that exemption unreachable for the one board that needs it: an erased chip is on a
+// lead by definition, so the cable refusal returned first and the gate's own exemption
+// never ran (bench 2026-10-28: an orb erased outside the hub, unforgettable while plugged
+// in). The roster and the New Orb picker read this function, so all three now agree.
 func (s *Server) cableOf(mac string, now time.Time) string {
 	if mac == "" {
 		return ""
 	}
-	if s.lonely.has(mac) {
+	if s.lonely.has(mac) || s.provenNotOrb(mac) {
 		return ""
 	}
 	for _, c := range s.cableSights(now) {

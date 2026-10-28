@@ -260,8 +260,11 @@ func TestThemeEditorIsAppOwnedNotAGlobalLink(t *testing.T) {
 // sentences keep that class out of the code:
 //
 //   - loadZonesTable names its failure in the card's own line instead of
-//     leaving the fetch's silence painted as progress, and re-throws so the
-//     lazy ledger drops the key and a later press (or the wake retry) reloads.
+//     leaving the fetch's silence painted as progress, re-throws so the
+//     lazy ledger drops the key and a later press reloads, and re-dials the
+//     read itself on a bounded boot-clock ladder: a board that answers
+//     status and starves config has no other mechanism that owns the
+//     reload (owner, 2026-10-28, onto an orb mid-boot after a theme store).
 //   - The page's return-from-silence path — a wake retry that answers, an
 //     update's boot wait, an mDNS frame saying the board is back — calls
 //     tabRearm, so the faces the board was showing reload on their own.
@@ -273,6 +276,18 @@ func TestZoneFaceTellsTheTruthAndFacesRearmOnReturn(t *testing.T) {
 	}
 	if !strings.Contains(tabs, "throw e;") {
 		t.Error("loadZonesTable swallows its failure; lazyTab can no longer re-arm the key for a retry")
+	}
+	// The old line promised "it reloads when the board answers again" while no
+	// mechanism owned that reload; the sentence may only return with a ladder
+	// behind it, and this pair is the ladder.
+	if !strings.Contains(tabs, "zoneWakeTmr = setTimeout(") || !strings.Contains(tabs, "ZONE_WAKE_MAX") {
+		t.Error("loadZonesTable's failure line is back to promising a reload it never schedules")
+	}
+	if !strings.Contains(tabs, "stopZoneWake()") {
+		t.Error("the zone wake ladder is no longer retired when a different board opens")
+	}
+	if strings.Contains(tabs, "it reloads when the board answers again") {
+		t.Error("the false reload promise is back in the zone card's failure line")
 	}
 	if !strings.Contains(tabs, "function tabRearm()") {
 		t.Error("tabs.js lost tabRearm, so a board that rebooted could not have its faces re-armed")

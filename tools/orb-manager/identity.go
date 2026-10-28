@@ -107,13 +107,17 @@ func newHub() *Server {
 		probeOrb: esprom.ProbeOrb,
 		token:    newLaunchToken(), grants: newIPGrants(ipGrantTTL),
 		cables: newCableCache(), prover: newCableProof(), live: newLiveCache(),
-		lonely:   newLonelyMark(),
-		orb:      orbnet.NewClient(scanTimeout),
-		device:   orbnet.NewClient(deviceTimeout),
-		ota:      orbnet.NewClient(otaTimeout),
-		preview:  orbnet.NewClient(previewTimeout),
-		previews: map[string]previewHit{},
-		fleet:    orbfleet.New(orbfleet.Config{}), boots: map[string]*bootVerdict{}}
+		lonely:    newLonelyMark(),
+		orb:       orbnet.NewClient(scanTimeout),
+		device:    orbnet.NewClient(deviceTimeout),
+		ota:       orbnet.NewClient(otaTimeout),
+		preview:   orbnet.NewClient(previewTimeout),
+		previews:  map[string]previewHit{},
+		pvFly:     map[string]chan struct{}{},
+		cardReads: map[string]cardRead{},
+		warmPass:  map[string]*warmRun{},
+		warmSeq:   map[string]uint64{},
+		fleet:     orbfleet.New(orbfleet.Config{}), boots: map[string]*bootVerdict{}}
 	// The editor region dial, wired at the hub's own construction. S3 shipped
 	// this field set only by its tests, and every live /editor/ request since
 	// panicked on the nil; S4 is what first sent a real browser here, because it

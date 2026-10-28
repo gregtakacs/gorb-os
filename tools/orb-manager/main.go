@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
@@ -45,12 +46,17 @@ const (
 	// loop, so first byte can exceed the scan's aggressive 400 ms; the proxy
 	// must not fail a deliberate user click the way a sweep tolerates a miss.
 	deviceTimeout = 8 * time.Second
-	// previewTimeout is the budget for one /api/v1/sd/preview relay: the device
-	// walks the card, reads the region, reads the plane, and streams ~100 KB over
-	// a single-task httpd behind an SPI card — measured on the bench at 10 s+ on
-	// a cold card. The 8 s management budget cut every honest preview at the
-	// post-read send, which is the hub-side half of the blank-thumbnail report.
-	previewTimeout = 45 * time.Second
+	// previewTimeout is the budget for one /api/v1/sd/preview relay. The worst
+	// honest case is the sum of two device-side phases that do not overlap:
+	// h_sd_preview walks the card and reads the whole plane into PSRAM BEFORE it
+	// frames its first chunk (the 30 s first-byte bound below), and then streams
+	// ~100 KB under its own PREVIEW_BUDGET_MS of 20 s paced by PREVIEW_AIR_MS. So
+	// 30 + 20 = 50 s is what an honest cold preview on a big slow card costs, and
+	// the relay budget has to clear that sum or the hub cuts a preview that was
+	// working — the same class of mistake that produced the blank-thumbnail
+	// report. 60 s is that sum plus a margin, and the page sets no shorter timer
+	// on a preview fetch, so the hub stays the first to give up and can say why.
+	previewTimeout = 60 * time.Second
 	// otaTimeout is the budget for one whole app-image upload. The device
 	// erases and writes flash with the cache disabled (orb_net.c h_ota), and
 	// a ~2 MB image over LAN is minutes of patient streaming, not a call. The
@@ -86,6 +92,44 @@ type Server struct {
 	preview   *orbnet.Client
 	previewMu sync.Mutex
 	previews  map[string]previewHit
+	// pvFly tracks the preview relays in flight, per address+id. A fetch that
+	// arrives while the read-ahead pass already dials that same plane rides the
+	// in-flight relay instead of opening a second one on a card that serves one
+	// request at a time. Guarded by previewMu.
+	pvFly map[string]chan struct{}
+	// cardMu guards the session's memory of the card: cardReads, the per-orb
+	// sd list and app enumeration the Theme page re-reads on every open, and
+	// warmPass, the read-ahead pass each address is running or just finished.
+	// Every card mutation drops the reads; see the cache block in theme.go.
+	cardMu    sync.Mutex
+	cardReads map[string]cardRead
+	warmPass  map[string]*warmRun
+	warmSeq   map[string]uint64
+	// warmBoost is the face the operator pressed on each address — the hint the
+	// read-ahead pass reorders its remaining work around. gate is the hub's
+	// dial scheduler, kept for Interrupt: a deliberate page read closes the
+	// pass's in-flight background socket instead of queueing behind it, and the
+	// pass skips the strike for the abort it just bought. warm is the pass's
+	// own background-class client. warmQueued counts the
+	// speculative passes between "decided" and "running", so a page that pressed
+	// Warm sees a listing phase instead of an idle lie. specRuns caps the fleet
+	// boot's card walks; see warmSpeculative. All three live under cardMu, which
+	// already guards the memory they serve.
+	warmBoost  map[string]warmHint
+	warmQueued map[string]int
+	gate       *orbnet.DialGate
+	warm       *orbnet.Client
+	// warmCutAt files the last time a page-facing route closed a background
+	// dial at an address, under cardMu. warmAborted reads it so the pass can
+	// tell an interruption the hub itself paid for from a card that would not
+	// answer: striking for the first would retire the read-ahead for a failure
+	// the page chose.
+	warmCutAt map[string]time.Time
+	specRuns  int
+	// pagePvAt stamps the last preview the PAGE asked for (never one the pass
+	// asked for), under previewMu. It is how the pass learns a live queue is
+	// fetching the same planes and stands down from them.
+	pagePvAt map[string]warmStamp
 	// previewBusy counts the plane relays in flight. The liveness sweeper reads it
 	// and skips its tick while one runs.
 	previewBusy int
@@ -186,8 +230,15 @@ type Server struct {
 	// sighting and the board would read as an orb again seconds after its
 	// lonely flash. Evidence of orb life — an orb flash, an announcement, a
 	// serial ack — clears the mark. See lonelyset.go.
-	lonely *lonelyMark
-	orbIP  string
+	// pageAskedAt is the last inbound request from a browser, in unix nanos, and
+	// 0 until one arrives. pageQuiet reads it and window.go's belt acts on it: a
+	// hub blind to its window has only the page's own traffic to tell a closed
+	// window from a browser DevTools cannot see. Atomic rather than mutexed
+	// because it is written on the request path, where the 10 s heartbeat and a
+	// page paint must not contend with anything for a lock.
+	pageAskedAt atomic.Int64
+	lonely      *lonelyMark
+	orbIP       string
 	// statePath is where learned orb addresses are remembered across launches
 	// (state.go). stateErr holds the last failure writing or reading it, so a hub
 	// that cannot persist says so once in the log instead of silently forgetting.
@@ -387,8 +438,8 @@ func main() {
 	// a deadline — the silence lie ErrLaneBusy exists to prevent. 2 s is the
 	// per-attempt grace orbnet's status retry already prices, and the sweep's
 	// old 400 ms could never have heard a busy report at all.
-	s.orb = orbnet.NewGatedClient(2*time.Second, dial, false)
-	s.device = orbnet.NewGatedClient(deviceTimeout, dial, false)
+	s.orb = orbnet.NewGatedClient(2*time.Second, dial, orbnet.ClassControl)
+	s.device = orbnet.NewGatedClient(deviceTimeout, dial, orbnet.ClassControl)
 	// The Themes face asks one question a device cannot answer alone: is the app on this
 	// orb the same build as the container the hub is serving? Containers is how the answer
 	// gets its second half, and after S5 it is the starter artifacts on disk: the
@@ -396,13 +447,29 @@ func main() {
 	// readable starter dir leaves the face saying "cannot compare" rather than "up to
 	// date" — the absence is the answer, not a bug to mask.
 	s.device.Containers = func(slug string) ([]byte, error) { return starterContainerFor(repoDir, slug) }
-	s.ota = orbnet.NewGatedClient(otaTimeout, dial, true)
+	s.ota = orbnet.NewGatedClient(otaTimeout, dial, orbnet.ClassBulk)
 	// The preview client streams ~100 KB planes from a single-task httpd that
 	// can open the connection and then wedge mid-send-loop (45 s of zero
 	// bytes, bench 2026-10-26, and every other dial to that orb starved behind
-	// it). firstByte cuts a stall-before-first-byte in 8 s; a healthy plane
-	// still gets the full 45 s transfer budget.
-	s.preview = orbnet.NewGatedStreamClient(previewTimeout, 8*time.Second, dial, true)
+	// it). firstByte cuts a stall-before-first-byte, but it is priced against
+	// what the device actually does BEFORE that first byte: h_sd_preview reads
+	// the plane's extent, then the whole plane into PSRAM, and only then frames
+	// its first chunk — so the header carries a complete card walk plus a
+	// complete plane read. On a 32 GB card mounted at 20 MHz SPI with a dozen
+	// themes on it, that walk alone runs past the 8 s this used to be pinned at,
+	// and the hub cut every honest cold preview on every theme on the card. That
+	// is the 2026-10-28 "nothing but question marks" report: not missing planes,
+	// not a dead orb — a bound set below the device's own cold arithmetic. 30 s
+	// keeps the wedge guard's teeth (a stalled send still dies inside previewTimeout
+	// above) and stops charging a slow card with its own slowness.
+	s.preview = orbnet.NewGatedStreamClient(previewTimeout, 30*time.Second, dial, orbnet.ClassBulk)
+	// The warm client is the read-ahead pass's own transport: the stream shape
+	// and first-byte patience s.preview has, under ClassBackground — the one
+	// class the gate may interrupt when a deliberate page read wants the lane.
+	// Every dial the pass dials rides this client, so every dial the pass dials
+	// is, by construction, interruptible. theme.go's warmClients is the seam.
+	s.warm = orbnet.NewGatedStreamClient(specListBudget, 30*time.Second, dial, orbnet.ClassBackground)
+	s.gate = dial
 	// The free identity question (launchprobe.go's lanProof), on the same client and the
 	// same orb-shaped answer the liveness sweeper already pays for every remembered
 	// address. Written as a closure over s rather than bound to the client directly
@@ -540,6 +607,13 @@ func main() {
 		return true, true
 	}
 	go s.probeLiveness(cableCtx)
+	// The sweeper's verdict doubles as the read-ahead's starting gun: a board the
+	// hub just watched answer for the first time (boot, wake, join) gets its card
+	// learned before any page presses it, so the Themes face opens warm. It is a
+	// goroutine because the kick's card walk is exactly the seconds-long read the
+	// sweep worker must not spend its next tick waiting on, and it is capped
+	// hub-wide inside warmSpeculative so a fleet boot is a queue, not a stampede.
+	s.live.onLive = func(ip string) { go s.warmSpeculative(ip, false) }
 	// Once at startup, before the first card is worth looking at: the file already says
 	// which boards the hub knows, and this turns those addresses into answers.
 	go s.probeNow(cableCtx)
@@ -569,6 +643,11 @@ func main() {
 		// default browser, kept for the devtools and profile it brings along.
 		go openBrowser(url)
 	default:
+		// App-window mode is the one mode that promises to exit with its window,
+		// so it is the one mode that arms the belt: when no watcher can see that
+		// window, the page's own traffic decides, and this is the clock it reads.
+		// --no-window and --browser=browser make no such promise and go unwired.
+		pageGoneProbe = s.pageQuiet
 		done, err := launchAppWindow(url, browser)
 		if err != nil {
 			// No Chromium, an unreadable profile dir, or an exec failure: the
@@ -754,12 +833,29 @@ func orElse(s, alt string) string {
 
 func (s *Server) log(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The page-traffic witness, stamped before the handler so a long stream
+		// counts as the live page it is. Only inbound HTTP arrives here: the orb
+		// never calls back, so nothing but a browser with this hub open can move
+		// this clock. See watchPageGone in window.go.
+		s.pageAskedAt.Store(time.Now().UnixNano())
 		start := time.Now()
 		h.ServeHTTP(w, r)
 		if !strings.HasPrefix(r.URL.Path, "/web/") {
 			log.Printf("%s %s -> %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
 		}
 	})
+}
+
+// pageQuiet reports how long the hub has heard nothing from a browser, or zero
+// when nothing has ever arrived. Zero is deliberately not "forever": silence
+// whose start was never witnessed is not evidence a window closed, and the belt
+// stays out until it can watch the silence begin.
+func (s *Server) pageQuiet() time.Duration {
+	n := s.pageAskedAt.Load()
+	if n == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, n))
 }
 
 // noStoreCache marks every embedded asset with Cache-Control: no-cache: always
@@ -863,6 +959,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// The live witness of a send in flight — read-only, cheap, and the reason the
 	// upload button no longer has to sit there saying nothing while megabytes move.
 	mux.Handle("/api/theme/upload-status", s.requireControl(http.HandlerFunc(s.handleThemeSendStatus)))
+	// The read-ahead pass: the page's word for "fill the card's answers before
+	// the next press". It dials through the same lane in the same serial order
+	// the page's own queue obeys, and POSTing it again while one runs is free.
+	mux.Handle("/api/theme/warm", s.requireControl(http.HandlerFunc(s.handleThemeWarm)))
+	// The pass's progress, for the page's quiet line. A read, so it takes ?ip=
+	// and dials nothing itself, ever.
+	mux.Handle("/api/theme/warm-status", s.requireControl(http.HandlerFunc(s.handleThemeWarmStatus)))
 	// The stem a download should carry: the pair-hash answered server-side for a
 	// composer window whose browser withheld crypto.subtle (any http:// non-localhost
 	// origin). Read-only, dials nothing — see handleThemeStem in theme.go.

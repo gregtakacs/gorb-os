@@ -105,7 +105,7 @@ func (c *Client) Port() string {
 // concurrency policy it did not ask for). The running hub builds its clients with
 // NewGatedClient so they share one Lane; see there.
 func NewClient(respTimeout time.Duration) *Client {
-	return newClient(respTimeout, 0, nil, false)
+	return newClient(respTimeout, 0, nil, ClassControl)
 }
 
 // NewGatedClient is NewClient on a shared scheduling Lane. Every client built
@@ -113,11 +113,13 @@ func NewClient(respTimeout time.Duration) *Client {
 // at most one of the hub's four clients at a time no matter which client asks.
 // The serialization must be per-orb-across-clients rather than per-transport
 // because the hub has four transports pointed at the same handful of orbs, and
-// the device's single httpd task wants one connection, not one per client. bulk
-// marks a long-stream client (preview, upload) whose queued waits a control
-// client (status, scan, proxy) is allowed to pass. See Lane and DialGate.
-func NewGatedClient(respTimeout time.Duration, lane Lane, bulk bool) *Client {
-	return newClient(respTimeout, 0, lane, bulk)
+// the device's single httpd task wants one connection, not one per client. The
+// class marks what kind of work the client does — a short control call, a long
+// stream, or the hub's own speculative background work — and the gate treats
+// each differently: a control dial passes queued streams, and a page dial may
+// interrupt a background one. See Lane, Class and DialGate.
+func NewGatedClient(respTimeout time.Duration, lane Lane, class Class) *Client {
+	return newClient(respTimeout, 0, lane, class)
 }
 
 // NewGatedStreamClient is NewGatedClient for a client whose requests stream
@@ -132,15 +134,15 @@ func NewGatedClient(respTimeout time.Duration, lane Lane, bulk bool) *Client {
 // never spends the budget, and an 8 MB upload that legitimately flash-writes
 // for tens of seconds before answering is why this knob exists per-client
 // rather than on every client.
-func NewGatedStreamClient(respTimeout, firstByte time.Duration, lane Lane, bulk bool) *Client {
-	return newClient(respTimeout, firstByte, lane, bulk)
+func NewGatedStreamClient(respTimeout, firstByte time.Duration, lane Lane, class Class) *Client {
+	return newClient(respTimeout, firstByte, lane, class)
 }
 
-func newClient(respTimeout, firstByte time.Duration, lane Lane, bulk bool) *Client {
+func newClient(respTimeout, firstByte time.Duration, lane Lane, class Class) *Client {
 	return &Client{h: &http.Client{
 		Timeout: respTimeout,
 		Transport: &http.Transport{
-			DialContext:           gatedDialer(lane, bulk),
+			DialContext:           gatedDialer(lane, class),
 			ResponseHeaderTimeout: firstByte,
 			// Deliberately NO MaxConnsPerHost. One connection to an orb at a time
 			// is exactly what the orb's single-task httpd can serve, and it is

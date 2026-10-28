@@ -247,6 +247,12 @@ func (s *Server) handleOrbUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.updSet(ip, "rebooting", st.FW, b.Version, int64(len(app)), int64(len(app)))
+	// A new image can carry new app containers, which is the one event besides a
+	// rescan that moves editor region bytes — and the reboot rewrites the answer
+	// of every other door on the board. Everything the hub remembered about this
+	// address is now about a board that no longer exists until it comes back.
+	s.dropThemeCache(ip)
+	dropEditorRegions(ip)
 	// Fold the stamp this hub just wrote into the slot and committed as
 	// next-to-boot. The row's amber badge is a comparison of the cached stamp
 	// against the bundle, and a board mid-reboot cannot answer for itself yet:

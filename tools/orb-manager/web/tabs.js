@@ -38,6 +38,14 @@ function showTab(name) {
     b.hidden = !tabOffered(b.dataset.tab);
     b.classList.toggle("on", b.dataset.tab === name);
   });
+  // The press itself is news to the hub's read-ahead pass, even when the face
+  // needs no fetch here to draw it (the tab was already loaded for this board).
+  // The POST carries which face the hand just chose; the pass reorders its
+  // remaining card reads around it at its next dial. Fire and forget at face
+  // value: a lost beat means one pass keeps its old order, never a broken face.
+  if (current.ip) {
+    themePost("/api/theme/warm", { ip: current.ip, face: name }, 8000).catch(() => {});
+  }
   if (name === "apps") lazyTab("apps", loadApps);
   else if (name === "themes") lazyTab("themes", themeOpen);
   else if (name === "files") lazyTab("files", fmOpen);
@@ -87,6 +95,7 @@ function tabRearm() {
 // wrong paint. app.js calls it from openOrbByIP before the first loadOrb.
 function orbTabsReset() {
   tabLoaded.clear();
+  stopZoneWake();                 // last orb's zone wait is not this orb's promise
   themeFaceReset();
   appList = null; appsSub = "clock"; cardApps = []; appData = null;
   fmPath = "";
@@ -260,8 +269,28 @@ function tzSynth(zn) {
   const r = parts[0] + "," + parts[1] + "," + parts[2];
   return r.length > 64 ? null : r;
 }
-async function loadZonesTable() {
+// The zone table comes from the board itself, so it can die exactly the way the
+// board's other slow reads die: dialing while the dial is mid-boot or mid-theme-
+// draw, its single-task httpd accepting the connection and answering nothing
+// until the 8 s device budget gives up (owner, 2026-10-28: connected onto an orb
+// that had just rebooted onto a stored theme; status answered, this dial timed
+// out). app.js's orbWake only re-dials when the STATUS read fails, so a board
+// that answers status and starves config left this card parked on the old
+// sentence's false promise of a reload that no mechanism owned. This ladder is
+// that missing mechanism — same shape, same 5 s beat, retired the moment the
+// card opens another orb or the table lands.
+let zoneWakeTmr = 0;
+let zoneWakeTok = "";
+let zoneWakeN = 0;
+const ZONE_WAKE_MAX = 24;   // ≈ a boot, SNTP and a big theme draw, at 5 s a beat
+
+function stopZoneWake() {
+  if (zoneWakeTmr) { clearTimeout(zoneWakeTmr); zoneWakeTmr = 0; }
+}
+
+async function loadZonesTable(retry) {
   if (!current.ip) return;
+  if (!retry) { stopZoneWake(); zoneWakeN = 0; }   // a fresh read starts a new wait
   const cur = $("#tz-cur");
   cur.textContent = "reading the board's zone table\u2026";
   try {
@@ -272,14 +301,29 @@ async function loadZonesTable() {
     tzPhone = tzPhoneZone();
     cur.textContent = "the orb now shows " + tzCur + " \u00b7 " + d.zones.length + " zones it knows by name";
     renderTzList();
+    tabLoaded.add("tz");   // a wake re-dial that lands restores the mark lazyTab dropped
+    stopZoneWake();
   } catch (e) {
-    // A card parked on "reading\u2026" forever is what the owner saw during an
+    // A card parked on "reading…" forever is what the owner saw during an
     // update: the dial was mid-reboot, the fetch died, and the silence wore
-    // the costume of a page still working. Name the failure and the way out;
-    // re-throw so lazyTab drops its mark and the next press (or the wake
-    // retry's tabRearm, app.js) loads the table again by itself.
+    // the costume of a page still working. Name the failure, re-dial on the
+    // boot's clock, and re-throw so lazyTab drops its mark and a press works
+    // even mid-ladder.
     cur.textContent = "the zone table did not load: " + (e && e.message ? e.message : String(e)) +
-      " \u2014 the orb may be mid-reboot; it reloads when the board answers again";
+      " \u2014 the orb may be mid-boot; re-reading it every 5 s";
+    const tok = current.mac || current.ip;
+    if (tok !== zoneWakeTok) { zoneWakeTok = tok; zoneWakeN = 0; }   // a different card resets the wait
+    if (zoneWakeN < ZONE_WAKE_MAX && !zoneWakeTmr) {
+      zoneWakeTmr = setTimeout(() => {
+        zoneWakeTmr = 0;
+        if ((current.mac || current.ip) !== zoneWakeTok) return;     // a different card is open now
+        if (++zoneWakeN > ZONE_WAKE_MAX) {
+          cur.textContent = "the zone table stopped re-reading \u2014 press the Orb face when the board answers";
+          return;
+        }
+        loadZonesTable(true).catch(() => {});
+      }, 5000);
+    }
     throw e;
   }
 }

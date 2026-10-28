@@ -87,7 +87,14 @@ type liveCache struct {
 	// fresh=false means the question was never put to the network (the hub's
 	// own bus declined it), which is not a verdict and must not be recorded.
 	probe func(ip string) (alive, fresh bool)
-	stale time.Duration
+	// onLive, when wired, hears the edge: an alive verdict replacing an answer
+	// that was dead, unknown, or aged out. It is the sweeper telling the hub
+	// "this board is worth warming now", and check calls it inline, so the
+	// wiring is responsible for not spending the worker's tick on it. Every edge
+	// is cheap to a callee that checks the card memory first, which is why an
+	// aged verdict re-learning alive is allowed to knock too.
+	onLive func(ip string)
+	stale  time.Duration
 }
 
 func newLiveCache() *liveCache { return &liveCache{stale: liveVerdictStale} }
@@ -143,6 +150,7 @@ func (c *liveCache) check(ip string) bool {
 	if c == nil || c.probe == nil || ip == "" {
 		return false
 	}
+	was, wasKnown := c.verdict(ip, time.Now())
 	alive, fresh := c.probe(ip)
 	// fresh=false is the probe saying "I could not ask" — the hub's own bus is
 	// mid-transfer with this orb (ErrLaneBusy). Nothing gets recorded: filing
@@ -151,6 +159,9 @@ func (c *liveCache) check(ip string) bool {
 	// exists to prevent.
 	if fresh {
 		c.record(ip, alive, time.Now())
+		if alive && c.onLive != nil && (!wasKnown || !was) {
+			c.onLive(ip)
+		}
 	}
 	return alive
 }

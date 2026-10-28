@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -272,11 +273,117 @@ func chromeLog() (io.Writer, string) {
 	return f, path
 }
 
+// The belt on a hub whose window it cannot see.
+//
+// The watcher keeps looking when it cannot see the window, on purpose: closing
+// the hub on a guess would kill a working hub, and the 2026-10-15 bench run
+// that taught that lesson is written into the code above. What was never
+// written down is the terminus. A hand-off launch (the browser process we
+// spawned dies at once and the window lives in a process this hub never
+// started) whose DevTools endpoint never publishes is blind for the life of the
+// process, and closing that window never tells main — the hub serves forever
+// with its window gone, which an operator can only stop by killing it.
+//
+// The page itself is the witness the blind watcher cannot be. While the window
+// is open the page asks the hub for something every 5 s (refreshPorts(),
+// app.js:3446) and streams events alongside it, and every one of those timers
+// dies with the page; the orb is never the one asking, so only a browser with a
+// live page moves this clock. A hub blind to its window that has seen no
+// inbound request for blindQuitAfter, confirmed by consecutive polls whose
+// silence keeps growing, has no page left to protect — and it quits through the
+// same guarded path a window close uses, so a live flash is still sheltered and
+// a wedged reader still costs only quietQuitBudget.
+//
+// The trade, stated plainly: a hidden app window whose tab Chrome freezes goes
+// quiet the same way a closed one does, and a hub blind to its window cannot
+// tell those apart — it trusts the page or it trusts nothing. Arm on blindness
+// only: a hub that CAN see its window never hands this decision to the belt.
+//
+// pageGoneProbe is the seam: main wires it to the server's own clock and the
+// lifetime tests drive it by hand. nil (headless, --browser=browser, and every
+// test that never sets one) leaves the belt inactive — those paths make no
+// promise about a window, so they have nothing to enforce.
+var (
+	pageGoneProbe  func() time.Duration
+	blindQuitAfter = 5 * time.Minute
+	blindQuitPoll  = 5 * time.Second
+	// blindQuitStreak is how many consecutive polls must agree the silence is
+	// still the SAME silence — a reading that shrank is a beat that arrived —
+	// so one transient gap cannot read as a closed window, and the poll right
+	// after a wake-from-sleep (which still reports the stale long gap) restarts
+	// counting at the first fresh beat instead of ending the hub. With
+	// blindQuitPoll this is 20 s of confirmed silence past the budget.
+	blindQuitStreak = 4
+)
+
+// watchPageGone calls shut when the probe says the page is gone for good. It is
+// a no-op when no probe is wired. shut is the caller's guarded close, so the
+// belt can never double-close against a watcher that decided at the same moment.
+// The probe arrives as an argument, not a package-var read inside this
+// goroutine: a `go` statement creates no happens-before edge from the
+// goroutine's start to the caller's deferred cleanup, so a belt goroutine that
+// starts late can read a var a sibling test has already reset. Snapshotting at
+// the call site fixes the ordering — and -race caught it the first night.
+func watchPageGone(done <-chan struct{}, blind <-chan struct{}, probe func() time.Duration, shut func()) {
+	if probe == nil {
+		return
+	}
+	// Arm on the first report that the window cannot be watched. Until then a
+	// watcher owns the decision, and a belt with nothing to overrule has no
+	// business making it: a hidden tab throttles its own timers, and a page on
+	// a sleeping laptop goes quiet while its window is alive.
+	select {
+	case <-done:
+		return
+	case <-blind:
+	}
+	// Snapshot the tunables at arm time, for the reason window_test's detach
+	// tests have always had: a lingering watcher must never read package vars a
+	// sibling test is rewriting. (It bit this belt under -race the first night
+	// it shipped: one test's cleanup wrote blindQuitAfter while this loop read
+	// it, nine times, in a suite that was otherwise green.)
+	budget, every, need := blindQuitAfter, blindQuitPoll, blindQuitStreak
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	streak, last := 0, time.Duration(0)
+	for {
+		select {
+		case <-done:
+			return
+		case <-tick.C:
+		}
+		q := probe()
+		// Growing (or unmoved) means no beat arrived since the last poll; a
+		// smaller reading is a page that just asked for something, and the
+		// streak restarts. Requiring growth is what keeps a wake-from-sleep
+		// from reading as the silence that was already there.
+		if q < budget || q < last {
+			if q >= budget {
+				streak = 1 // past budget but fresh: start counting from here
+			} else {
+				streak = 0
+			}
+			last = q
+			continue
+		}
+		streak++
+		last = q
+		if streak < need {
+			continue
+		}
+		log.Printf("orb-manager: no page has asked for anything in %s and no window is watchable; shutting down",
+			q.Round(time.Second))
+		shut()
+		return
+	}
+}
+
 // launchAppWindow starts the hub in a chromeless browser window and returns a
 // channel closed when that window goes away, so main can shut the server down
 // rather than orphan a listener that still holds the serial port lock. A browser
 // that detaches instead of owning the window leaves the channel open and the hub
-// keeps serving, exactly as it did before app mode existed.
+// keeps serving, exactly as it did before app mode existed — with one exception:
+// watchPageGone ends that service once the page stops asking for anything.
 func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 	if browser == "" {
 		browser = findBrowser()
@@ -308,6 +415,15 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 	// browser and dies at once — the normal case for chrome.exe under WSL, where
 	// the window then lives in a process this hub never started.
 	done := make(chan struct{})
+	// Three paths can decide the window is gone — the page watcher, the child
+	// watcher, and the page-traffic belt — and only one of them may close it.
+	var closeOnce sync.Once
+	closeDone := func() { close(done) }
+	// blind is closed the first time a watcher reports it cannot see the window.
+	// It arms the page-traffic belt; see watchPageGone.
+	blind := make(chan struct{})
+	var blindOnce sync.Once
+	seeBlind := func() { blindOnce.Do(func() { close(blind) }) }
 	type event int
 	const (
 		pageClosed   event = iota // the browser says the window is gone
@@ -341,6 +457,7 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 			}
 			t := awaitOpen(profile, url, firstWindow, poll)
 			if t == nil {
+				seeBlind()
 				select {
 				case events <- unwatchable:
 				case <-done:
@@ -349,6 +466,7 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 				continue
 			}
 			if err := waitForClose(t, poll); err != nil {
+				seeBlind()
 				select {
 				case events <- endpointDead:
 				case <-done:
@@ -364,6 +482,14 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 		}
 	}()
 
+	// The belt on the two watchers below: whichever of them cannot see the
+	// window is overruled by the page's own traffic, which stops the moment the
+	// window closes. The probe is read here, synchronously, so a later test
+	// reset cannot reach into a live belt, and watchPageGone does nothing when
+	// main never wired one (headless and plain-tab runs make no window promise).
+	pageProbe := pageGoneProbe
+	go watchPageGone(done, blind, pageProbe, func() { closeOnce.Do(closeDone) })
+
 	go func() {
 		childGone, detachSaid := false, false
 		for {
@@ -374,7 +500,7 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 				switch ev {
 				case pageClosed:
 					log.Println("orb-manager: window closed; shutting down")
-					close(done)
+					closeOnce.Do(closeDone)
 					return
 				case childExit:
 					childGone = true
@@ -382,7 +508,7 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 						// The child outlived the hand-off window: it was the
 						// browser itself, and it just exited with our window.
 						log.Println("orb-manager: browser exited; shutting down")
-						close(done)
+						closeOnce.Do(closeDone)
 						return
 					}
 					// Fast child exit = URL handed to a running browser. Keep
@@ -394,7 +520,7 @@ func launchAppWindow(url, browser string) (<-chan struct{}, error) {
 						// Both the process we spawned and the browser that
 						// owned the endpoint are gone: nothing holds the window.
 						log.Println("orb-manager: browser exited; shutting down")
-						close(done)
+						closeOnce.Do(closeDone)
 						return
 					}
 					// The child is still up: its window may well be too, and a

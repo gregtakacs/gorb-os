@@ -600,3 +600,150 @@ func TestLaunchAppWindowFollowsAWindowThatAppearsLate(t *testing.T) {
 		t.Fatal("a late window was never watched: the hub outlived it and orphaned the terminal")
 	}
 }
+
+// --- the belt: a blind watcher must not keep the hub alive forever ---------
+//
+// The unwatchable branch is deliberate: a hub that cannot see its window must
+// not guess it closed. But "cannot see it" has a terminus nobody wrote down
+// until a hub ran for a week after its window was closed — the hand-off case,
+// where the browser process we spawned died at once and the real window lives
+// somewhere DevTools never published. The page is the last witness: while it is
+// open it asks the hub for something every 10 s, and it stops the moment the
+// window goes away. These tests drive that witness by hand.
+
+func TestBlindWatchShutsDownOnceThePageGoesQuiet(t *testing.T) {
+	isolateBrowserEnv(t)
+	oldProbe, oldAfter, oldPoll := pageGoneProbe, blindQuitAfter, blindQuitPoll
+	oldFirst, oldEvery := devtoolsFirstWindow, devtoolsPollEvery
+	t.Cleanup(func() {
+		pageGoneProbe, blindQuitAfter, blindQuitPoll = oldProbe, oldAfter, oldPoll
+		devtoolsFirstWindow, devtoolsPollEvery = oldFirst, oldEvery
+	})
+	devtoolsFirstWindow, devtoolsPollEvery = 60*time.Millisecond, 10*time.Millisecond
+	blindQuitAfter, blindQuitPoll = 40*time.Millisecond, 20*time.Millisecond
+
+	// The window was never watchable and the page has stopped asking.
+	var n int64
+	pageGoneProbe = func() time.Duration {
+		return time.Duration(atomic.AddInt64(&n, 1)) * time.Second
+	}
+	done, err := launchAppWindow("http://127.0.0.1:3779", writeStubBrowserNoIsolate(t, "true"))
+	if err != nil {
+		t.Fatalf("launchAppWindow: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a hub blind to its window over a silent page must shut down")
+	}
+}
+
+// A lively page — any browser at all, on any machine — keeps the hub serving.
+// This is the test that keeps the belt from becoming a timeout on a healthy
+// hub, and it is why the belt reads the page rather than the clock alone.
+func TestBlindWatchKeepsServingWhileThePageStillAsks(t *testing.T) {
+	isolateBrowserEnv(t)
+	oldProbe, oldAfter, oldPoll := pageGoneProbe, blindQuitAfter, blindQuitPoll
+	oldFirst, oldEvery := devtoolsFirstWindow, devtoolsPollEvery
+	t.Cleanup(func() {
+		pageGoneProbe, blindQuitAfter, blindQuitPoll = oldProbe, oldAfter, oldPoll
+		devtoolsFirstWindow, devtoolsPollEvery = oldFirst, oldEvery
+	})
+	devtoolsFirstWindow, devtoolsPollEvery = 60*time.Millisecond, 10*time.Millisecond
+	blindQuitAfter, blindQuitPoll = 40*time.Millisecond, 20*time.Millisecond
+	pageGoneProbe = func() time.Duration { return 0 }
+
+	done, err := launchAppWindow("http://127.0.0.1:3779", writeStubBrowserNoIsolate(t, "true"))
+	if err != nil {
+		t.Fatalf("launchAppWindow: %v", err)
+	}
+	select {
+	case <-done:
+		t.Fatal("a page that is still asking must keep the hub up")
+	case <-time.After(600 * time.Millisecond):
+	}
+}
+
+// A sleep/resume reads as one long silence followed by fresh beats. The belt
+// counts a streak of confirmed-silent polls and restarts it at the first fresh
+// reading, so the wake's heartbeat lands well inside the streak and the hub
+// survives its own laptop. The stale phase must be SHORTER than the streak the
+// belt needs — that is the whole defence, and the test says it in numbers.
+func TestBlindWatchWakesWithThePageInsteadOfKillingIt(t *testing.T) {
+	isolateBrowserEnv(t)
+	oldProbe, oldAfter, oldPoll, oldStreak := pageGoneProbe, blindQuitAfter, blindQuitPoll, blindQuitStreak
+	oldFirst, oldEvery := devtoolsFirstWindow, devtoolsPollEvery
+	t.Cleanup(func() {
+		pageGoneProbe, blindQuitAfter, blindQuitPoll, blindQuitStreak = oldProbe, oldAfter, oldPoll, oldStreak
+		devtoolsFirstWindow, devtoolsPollEvery = oldFirst, oldEvery
+	})
+	devtoolsFirstWindow, devtoolsPollEvery = 60*time.Millisecond, 10*time.Millisecond
+	blindQuitAfter, blindQuitPoll = 40*time.Millisecond, 20*time.Millisecond
+	blindQuitStreak = 8
+
+	var beats int64
+	pageGoneProbe = func() time.Duration {
+		if atomic.AddInt64(&beats, 1) <= 3 {
+			return time.Hour // the long sleep, seen three times
+		}
+		return 0 // woke up: the heartbeat is back, and stays back
+	}
+	done, err := launchAppWindow("http://127.0.0.1:3779", writeStubBrowserNoIsolate(t, "true"))
+	if err != nil {
+		t.Fatalf("launchAppWindow: %v", err)
+	}
+	select {
+	case <-done:
+		t.Fatal("the hub died while its page was asking again")
+	case <-time.After(time.Second):
+	}
+}
+
+// No probe wired (the headless and plain-tab paths, and every test that never
+// sets one): the belt must stay out of the way entirely.
+func TestBlindWatchInactiveWithoutProbe(t *testing.T) {
+	isolateBrowserEnv(t)
+	oldProbe, oldAfter, oldPoll := pageGoneProbe, blindQuitAfter, blindQuitPoll
+	oldFirst, oldEvery := devtoolsFirstWindow, devtoolsPollEvery
+	t.Cleanup(func() {
+		pageGoneProbe, blindQuitAfter, blindQuitPoll = oldProbe, oldAfter, oldPoll
+		devtoolsFirstWindow, devtoolsPollEvery = oldFirst, oldEvery
+	})
+	pageGoneProbe = nil
+	devtoolsFirstWindow, devtoolsPollEvery = 60*time.Millisecond, 10*time.Millisecond
+	blindQuitAfter, blindQuitPoll = 20*time.Millisecond, 10*time.Millisecond
+	done, err := launchAppWindow("http://127.0.0.1:3779", writeStubBrowserNoIsolate(t, "true"))
+	if err != nil {
+		t.Fatalf("launchAppWindow: %v", err)
+	}
+	select {
+	case <-done:
+		t.Fatal("an unwired belt must never fire")
+	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+// The page-traffic belt reads the server's own clock: how long since anything
+// arrived from a browser. Two rules the tests pin, because both directions have
+// a failure behind them.
+func TestAnInboundRequestIsTheWitnessTheBlindWatcherLacks(t *testing.T) {
+	s := newHub()
+	// Nothing has arrived yet: that is not silence, it is no evidence, and the
+	// belt must not fire on an absence it never saw begin. A hub whose browser
+	// never loaded (offline Wi-Fi, a laptop mid-sleep) has no closed window to
+	// honour, and the old behaviour — serve forever — is the safe one.
+	if s.pageQuiet() != 0 {
+		t.Fatalf("a hub with no inbound traffic reports quiet %v, want unwitnessed", s.pageQuiet())
+	}
+	hit := false
+	inner := http.HandlerFunc(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
+	rec := httptest.NewRecorder()
+	s.log(inner).ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/status", nil))
+	if !hit {
+		t.Fatal("the middleware stopped passing requests through")
+	}
+	q := s.pageQuiet()
+	if q <= 0 || q > time.Second {
+		t.Fatalf("an inbound request did not register as the page asking: %v", q)
+	}
+}

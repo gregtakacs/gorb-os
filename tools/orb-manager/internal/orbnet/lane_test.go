@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,7 +26,7 @@ func TestDialGateSerializesPerHost(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			release, err := g.Acquire(context.Background(), "10.0.0.1:80", false)
+			release, err := g.Acquire(context.Background(), "10.0.0.1:80", ClassControl)
 			if err != nil {
 				t.Errorf("Acquire: %v", err)
 				return
@@ -50,7 +52,7 @@ func TestDialGateSerializesPerHost(t *testing.T) {
 func TestDialGateControlPassesQueuedBulk(t *testing.T) {
 	g := NewDialGate()
 	const host = "10.0.0.2:80"
-	hold, err := g.Acquire(context.Background(), host, false)
+	hold, err := g.Acquire(context.Background(), host, ClassControl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,14 +60,14 @@ func TestDialGateControlPassesQueuedBulk(t *testing.T) {
 
 	// Queue one bulk holder's-wait first, then a control, while host is held.
 	go func() {
-		r, _ := g.Acquire(context.Background(), host, true)
+		r, _ := g.Acquire(context.Background(), host, ClassBulk)
 		order <- "bulk"
 		time.Sleep(2 * time.Millisecond)
 		r()
 	}()
 	time.Sleep(20 * time.Millisecond) // let the bulk ticket enqueue
 	go func() {
-		r, _ := g.Acquire(context.Background(), host, false)
+		r, _ := g.Acquire(context.Background(), host, ClassControl)
 		order <- "control"
 		time.Sleep(2 * time.Millisecond)
 		r()
@@ -82,7 +84,7 @@ func TestDialGateControlPassesQueuedBulk(t *testing.T) {
 func TestDialGateCancelFreesQueue(t *testing.T) {
 	g := NewDialGate()
 	const host = "10.0.0.3:80"
-	hold, err := g.Acquire(context.Background(), host, false)
+	hold, err := g.Acquire(context.Background(), host, ClassControl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,13 +95,13 @@ func TestDialGateCancelFreesQueue(t *testing.T) {
 		time.Sleep(15 * time.Millisecond)
 		cancel()
 	}()
-	if _, err := g.Acquire(ctx, host, false); !errors.Is(err, context.Canceled) {
+	if _, err := g.Acquire(ctx, host, ClassControl); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled queue wait returned %v, want context.Canceled", err)
 	}
 	hold() // release the original holder
 	done := make(chan error, 1)
 	go func() {
-		r, err := g.Acquire(context.Background(), host, false)
+		r, err := g.Acquire(context.Background(), host, ClassControl)
 		if err == nil {
 			r()
 		}
@@ -117,13 +119,13 @@ func TestDialGateCancelFreesQueue(t *testing.T) {
 
 func TestDialGateHostsAreIndependent(t *testing.T) {
 	g := NewDialGate()
-	a, err := g.Acquire(context.Background(), "10.0.0.4:80", false)
+	a, err := g.Acquire(context.Background(), "10.0.0.4:80", ClassControl)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a()
 	// A different orb must not wait on the first one's lane.
-	b, err := g.Acquire(context.Background(), "10.0.0.5:80", false)
+	b, err := g.Acquire(context.Background(), "10.0.0.5:80", ClassControl)
 	if err != nil {
 		t.Fatalf("a second host was blocked by the first: %v", err)
 	}
@@ -133,13 +135,13 @@ func TestDialGateHostsAreIndependent(t *testing.T) {
 func TestDialGateReleaseIsIdempotent(t *testing.T) {
 	g := NewDialGate()
 	const host = "10.0.0.6:80"
-	r, err := g.Acquire(context.Background(), host, false)
+	r, err := g.Acquire(context.Background(), host, ClassControl)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r()
 	r() // a double release must not over-promote into a two-holder lane
-	n, err := g.Acquire(context.Background(), host, false)
+	n, err := g.Acquire(context.Background(), host, ClassControl)
 	if err != nil {
 		t.Fatalf("lane unusable after a double release: %v", err)
 	}
@@ -168,8 +170,8 @@ func TestGatedClientsShareOneLane(t *testing.T) {
 	host := fakeIP(srv)
 
 	gate := NewDialGate()
-	control := NewGatedClient(2*time.Second, gate, false)
-	bulk := NewGatedClient(2*time.Second, gate, true)
+	control := NewGatedClient(2*time.Second, gate, ClassControl)
+	bulk := NewGatedClient(2*time.Second, gate, ClassBulk)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 6; i++ {
@@ -193,13 +195,13 @@ func TestDialGateControlBudgetReportsBusy(t *testing.T) {
 	g := NewDialGate()
 	g.SetControlWait(60 * time.Millisecond)
 	const host = "10.0.0.40:80"
-	rel, err := g.Acquire(context.Background(), host, true)
+	rel, err := g.Acquire(context.Background(), host, ClassBulk)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rel()
 	start := time.Now()
-	_, err = g.Acquire(context.Background(), host, false)
+	_, err = g.Acquire(context.Background(), host, ClassControl)
 	if !errors.Is(err, ErrLaneBusy) {
 		t.Fatalf("queued control got %v, want ErrLaneBusy", err)
 	}
@@ -207,7 +209,7 @@ func TestDialGateControlBudgetReportsBusy(t *testing.T) {
 		t.Errorf("busy report took %s; the point of the budget is the fast, honest no", d)
 	}
 	rel()
-	r2, err := g.Acquire(context.Background(), host, false)
+	r2, err := g.Acquire(context.Background(), host, ClassControl)
 	if err != nil {
 		t.Fatalf("lane poisoned by a busy report: %v", err)
 	}
@@ -221,12 +223,12 @@ func TestDialGateServedInsideBudget(t *testing.T) {
 	g := NewDialGate()
 	g.SetControlWait(time.Second)
 	const host = "10.0.0.41:80"
-	rel, err := g.Acquire(context.Background(), host, true)
+	rel, err := g.Acquire(context.Background(), host, ClassBulk)
 	if err != nil {
 		t.Fatal(err)
 	}
 	go func() { time.Sleep(20 * time.Millisecond); rel() }()
-	r, err := g.Acquire(context.Background(), host, false)
+	r, err := g.Acquire(context.Background(), host, ClassControl)
 	if err != nil {
 		t.Fatalf("a control dial queued behind a closing stream was declined: %v", err)
 	}
@@ -240,13 +242,13 @@ func TestDialGateBulkIgnoresControlBudget(t *testing.T) {
 	g := NewDialGate()
 	g.SetControlWait(30 * time.Millisecond)
 	const host = "10.0.0.42:80"
-	rel, err := g.Acquire(context.Background(), host, true)
+	rel, err := g.Acquire(context.Background(), host, ClassBulk)
 	if err != nil {
 		t.Fatal(err)
 	}
 	go func() { time.Sleep(250 * time.Millisecond); rel() }()
 	start := time.Now()
-	r, err := g.Acquire(context.Background(), host, true)
+	r, err := g.Acquire(context.Background(), host, ClassBulk)
 	if err != nil {
 		t.Fatalf("bulk waiter got %v at %s; the control budget is not its deadline", err, time.Since(start))
 	}
@@ -259,9 +261,9 @@ func TestDialGateBulkIgnoresControlBudget(t *testing.T) {
 func TestStatusSurfacesLaneBusy(t *testing.T) {
 	g := NewDialGate()
 	g.SetControlWait(60 * time.Millisecond)
-	c := NewGatedClient(5*time.Second, g, false)
+	c := NewGatedClient(5*time.Second, g, ClassControl)
 	const host = "127.0.0.1:1" // nothing listens: reaching the wire would mean no decline
-	rel, err := g.Acquire(context.Background(), host, true)
+	rel, err := g.Acquire(context.Background(), host, ClassBulk)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +288,7 @@ func TestStreamClientCutsStalledResponse(t *testing.T) {
 		time.Sleep(400 * time.Millisecond) // answers nothing until the test is over
 		_, _ = w.Write([]byte("late"))
 	})
-	stalled := NewGatedStreamClient(5*time.Second, 100*time.Millisecond, g, true)
+	stalled := NewGatedStreamClient(5*time.Second, 100*time.Millisecond, g, ClassBulk)
 	start := time.Now()
 	_, err := stalled.HTTP().Get("http://" + fakeIP(hang) + "/api/v1/sd/preview?id=1")
 	if err == nil {
@@ -307,5 +309,73 @@ func TestStreamClientCutsStalledResponse(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "plane" {
 		t.Errorf("healthy reply body = %q, want plane", body)
+	}
+}
+
+// TestInterruptCutsABackgroundHolderAndNoOther is the gate's own half of the
+// priority contract: a page-facing dial takes the lane back from the hub's
+// speculative work by closing ITS socket — and only that socket, never a page
+// relay's or an upload's. The slow server stands in for the wedge: a dial the
+// holder would otherwise sit on for seconds.
+func TestInterruptCutsABackgroundHolderAndNoOther(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second) // the cold walk, the big plane: a held lane
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://") // host:port, as Acquire keys it
+	ip, port := host[:strings.LastIndex(host, ":")], host[strings.LastIndex(host, ":")+1:]
+
+	g := NewDialGate()
+	c := NewGatedStreamClient(10*time.Second, 8*time.Second, g, ClassBackground)
+	c.DevicePort = port
+
+	errCh := make(chan error, 1)
+	go func() {
+		// GetConfig, not Status: Status retries, and a retrying wrapper can
+		// hide a cut behind a second attempt. The cut must show on the first
+		// dial's own error, because that dial is the one Interrupt closed.
+		_, err := c.GetConfig(ip)
+		errCh <- err
+	}()
+	// The socket is filed the instant it opens; a short settle beats polling
+	// the unexported state, and Interrupt's own false answer is loud below.
+	time.Sleep(150 * time.Millisecond)
+
+	began := time.Now()
+	if !g.Interrupt(host) {
+		t.Fatal("Interrupt found no background holder to cut while one was mid-request")
+	}
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("the cut dial returned a success it never earned")
+		}
+		if !LaneCut(err) {
+			t.Fatalf("the cut left an error the classifier does not know: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Interrupt returned true but the holder is still streaming")
+	}
+	if !g.CutSince(host, began) {
+		t.Fatal("Interrupt cut the socket and never stamped the cut")
+	}
+
+	// A page-class holder may NOT be cut: its stream is somebody's answer.
+	// Same slow server, second round; Interrupt must report nothing to cut.
+	ctrl := NewGatedClient(10*time.Second, g, ClassControl)
+	ctrl.DevicePort = port
+	done := make(chan error, 1)
+	go func() {
+		_, err := ctrl.GetConfig(ip)
+		done <- err
+	}()
+	time.Sleep(150 * time.Millisecond)
+	if g.Interrupt(host) {
+		t.Fatal("Interrupt cut a CONTROL holder — the page's own dial is not the hub's to close")
+	}
+	select {
+	case <-done:
+	case <-time.After(6 * time.Second):
+		t.Fatal("the control holder never returned — it died for a cut that refused to fire")
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 	"sync"
 )
 
@@ -58,6 +59,14 @@ type Orb struct {
 	mu     sync.Mutex
 	themes []*Theme
 	active string
+
+	// SDWait and PreviewWait hold the card walk and one plane open in the
+	// handler — the device's own cold arithmetic on a big card — so a hub test
+	// can catch a dial genuinely IN FLIGHT and prove a socket close ends it
+	// early. The waits return on the request context's death, which is what
+	// makes the interrupt observable rather than merely fast.
+	SDWait      time.Duration
+	PreviewWait time.Duration
 
 	// The staged-commit contract, mirrored field-for-field from main/art/orb_theme.c's
 	// s_up/s_stage_tok: a duplicate refusal KEEPS the verified body (the firmware keeps
@@ -279,7 +288,7 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		writeJSON(w, 200, "I (42110) theme: listing /sd/themes\nI (42115) sd: card SDSC-8G mounted\n")
 	case r.URL.Path == "/api/v1/sd" && r.Method == http.MethodGet:
-		o.serveSD(w)
+		o.serveSD(w, r)
 	case r.URL.Path == "/api/v1/sd/delete" && r.Method == http.MethodPost:
 		o.serveDelete(w, r)
 	case r.URL.Path == "/api/v1/sd/preview" && r.Method == http.MethodGet:
@@ -319,7 +328,14 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // serveSD formats h_sd's reply: the row shape is name, id, why, bytes, serial, ok,
 // active, changed, stored — there is no title field, and the try and staged witnesses
 // key on _id. Migration 1 retired the live word and the damage pair with the A/B slot.
-func (o *Orb) serveSD(w http.ResponseWriter) {
+func (o *Orb) serveSD(w http.ResponseWriter, r *http.Request) {
+	if d := o.SDWait; d > 0 {
+		select {
+		case <-time.After(d):
+		case <-r.Context().Done():
+			return // the client hung up: the walk it was waiting on is nobody's answer now
+		}
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	busy := o.JobBusy || o.BusyForever || o.BusyPolls > 0
@@ -438,6 +454,13 @@ func (o *Orb) serveDelete(w http.ResponseWriter, r *http.Request) {
 // never the double's generic 404 — the route-exists pin in device_contract_test
 // reads that difference.
 func (o *Orb) servePreview(w http.ResponseWriter, r *http.Request) {
+	if d := o.PreviewWait; d > 0 {
+		select {
+		case <-time.After(d):
+		case <-r.Context().Done():
+			return // see serveSD: an interrupted cold walk is abandoned, not answered
+		}
+	}
 	id := r.URL.Query().Get("id")
 	if !idOK(id) {
 		writeJSON(w, 400, `{"error":"id is missing or not a theme id"}`)

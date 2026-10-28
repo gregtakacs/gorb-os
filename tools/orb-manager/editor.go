@@ -15,8 +15,10 @@ package main
 // keeps an editor under the 2 MiB region cap for a runtime the app does not own.
 //
 // The region is re-read from the device and nothing is written to disk. The card is
-// the store; the hub is a window onto it. A long cache would be a copy of the card
-// that the card does not know about.
+// the store; the hub is a window onto it. The window keeps what it has seen for a
+// session (editorFetchTTL) because the read is a megabyte off a single-task board,
+// and it forgets on cue: dropEditorRegions retires an address's memo at every rescan
+// and every reflash, which are the only events that can move those bytes.
 
 import (
 	"archive/zip"
@@ -46,10 +48,15 @@ const editorMaxEntry = 4 << 20
 // files differently still opens.
 const editorManifestName = "editor.json"
 
-// editorFetchTTL is how long one region read is reused. An editor page pulls
-// several members, and each would otherwise cost a dial to a board over a radio; a
-// short window turns that into one fetch without becoming a copy nobody invalidates.
-const editorFetchTTL = 15 * time.Second
+// editorFetchTTL is how long one region read is reused. It was fifteen seconds
+// while nothing could invalidate it and a wrong region had no honest expiry.
+// The Theme page's read-ahead pass now fills this memo before the Edit door is
+// pressed, and dropEditorRegions retires an address's entries at every event
+// that can actually move those bytes — a rescan, or an image that carries a new
+// container — so the window is the session, matching the plane cache beside it.
+// A region that only the glass replaced without a rescan ages out at the TTL
+// like any other remembered read.
+const editorFetchTTL = 10 * time.Minute
 
 // editorErrRetryTTL is how long a FAILED read stays memoised. A good region and a
 // named "this app ships no editor" are stable answers worth caching whole; a
@@ -91,6 +98,75 @@ type editorRegions struct {
 
 var regions = &editorRegions{slots: map[editorKey]*editorSlot{}}
 
+// dropEditorRegions retires every remembered region for one address. The events
+// that earn it are the ones that move an app container's bytes: a rescan, which
+// is the operator's own word for "the card changed in ways I have not told
+// you", and the update flows that write new containers to the board.
+func dropEditorRegions(ip string) {
+	regions.mu.Lock()
+	defer regions.mu.Unlock()
+	for k := range regions.slots {
+		if k.ip == ip {
+			delete(regions.slots, k)
+		}
+	}
+}
+
+// editorMemoFresh answers whether the memo already holds this app's region,
+// fresh enough that a read-ahead pass walks past it without dialling. A slot
+// holding ErrNoEditor counts as fresh — the device gave a stable answer, and
+// the next read would hear the same one.
+func editorMemoFresh(ip, slug string) bool {
+	k := editorKey{ip, slug}
+	regions.mu.Lock()
+	defer regions.mu.Unlock()
+	sl, ok := regions.slots[k]
+	if !ok {
+		return false
+	}
+	ttl := editorFetchTTL
+	if sl.err != nil && !errors.Is(sl.err, orbnet.ErrNoEditor) {
+		ttl = editorErrRetryTTL
+	}
+	return time.Since(sl.fetched) < ttl
+}
+
+// prefetchEditorRegion is the read-ahead pass's bite of the region walk: it
+// stands down the liveness sweep for the length of the dial, exactly as a plane
+// relay does, because a megabyte stream is the same hazard to that one-task
+// httpd and to the tick that cuts it. The answer lands in the memo, so the Edit
+// door that follows pays a memcpy instead of a card walk.
+func (s *Server) prefetchEditorRegion(ip, slug string) {
+	if editorMemoFresh(ip, slug) {
+		return
+	}
+	s.previewHold()
+	defer s.previewRelease()
+	_, _ = s.editorRegion(ip, slug)
+}
+
+// prefetchEditorRegionWarm is the pass's region walk: the same memo, the same
+// retry rule, and the background transport under the dial. The budget is the
+// page's own region budget rather than a shorter one on purpose — the memo the
+// page later reads must not come back thin from a dial the pass cut short by
+// design. The interrupt is what bounds the lane, not the timer. The dial is
+// brought down as an argument to the memo, because swapping the hub's shared
+// seam field would move a CONCURRENT page read onto the pass's transport
+// without asking it.
+func (s *Server) prefetchEditorRegionWarm(ip, slug string) {
+	if editorMemoFresh(ip, slug) {
+		return
+	}
+	s.previewHold()
+	defer s.previewRelease()
+	dial := s.fetchEditor
+	if s.warm != nil {
+		warm := s.warm.WithTimeout(warmRegionBudget)
+		dial = func(ip, slug string) ([]byte, error) { return warm.EditorRegion(ip, slug) }
+	}
+	_, _ = s.editorRegionDialed(ip, slug, dial)
+}
+
 // editorRegion returns one app's editor archive, fetching it when the memo has
 // nothing fresh. s.editorFetch does the dial so a test can stand in for a board.
 // A fresh transport failure is retried once before it is recorded: the dial is an
@@ -98,6 +174,16 @@ var regions = &editorRegions{slots: map[editorKey]*editorSlot{}}
 // purge under load) is exactly the kind a second dial clears. ErrNoEditor is never
 // retried — it is a stable answer, and dialling twice just pays for it twice.
 func (s *Server) editorRegion(ip, slug string) (*zip.Reader, error) {
+	return s.editorRegionDialed(ip, slug, s.fetchEditor)
+}
+
+// editorRegionDialed is the memo and its retry rule; the dial arrives as an
+// argument. The read-ahead pass brings a background-class dial with the page's
+// budget — the memo the page reads must not come back thin from a warm pass,
+// and the interrupt, not a shorter timer, is what bounds the lane. A swap of
+// the shared seam field would put a concurrent page read on the pass's
+// transport without asking, so the dial comes down the call instead.
+func (s *Server) editorRegionDialed(ip, slug string, dial editorFetchFn) (*zip.Reader, error) {
 	k := editorKey{ip, slug}
 	regions.mu.Lock()
 	defer regions.mu.Unlock()
@@ -110,10 +196,10 @@ func (s *Server) editorRegion(ip, slug string) (*zip.Reader, error) {
 			return sl.zr, sl.err
 		}
 	}
-	raw, err := s.fetchEditor(ip, slug)
+	raw, err := dial(ip, slug)
 	if err != nil && !errors.Is(err, orbnet.ErrNoEditor) {
 		time.Sleep(editorDialRetryPause)
-		raw, err = s.fetchEditor(ip, slug)
+		raw, err = dial(ip, slug)
 	}
 	var zr *zip.Reader
 	if err == nil {

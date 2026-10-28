@@ -2319,20 +2319,50 @@ async function loadThemeApps(ip) {
   themeAppsRows = [];
   themeAppsErr = "";
   try {
-    const d = await themeGet("/api/theme/apps?ip=" + encodeURIComponent(ip));
+    // 45 s, the same daylight the list read gets: this route rides the same lane
+    // behind the same cold card walk, and a hub that waits out its 30 s ride must
+    // be allowed to report it rather than be aborted mid-wait. See
+    // themeListWithRetry for the ordering this preserves.
+    const d = await themeGet("/api/theme/apps?ip=" + encodeURIComponent(ip), 45000);
     themeAppsRows = Array.isArray(d.apps) ? d.apps : [];
     themeAppsErr = d.app_error || d.theme_error || "";
   } catch (e) {
-    themeAppsErr = e.message;
+    themeAppsErr = orbWaitWords(e);
   }
   if (themeSub && !themeAppsRows.some((a) => a.slug === themeSub)) themeSub = "";
 }
 
+// waitRanOut names the one error kind that says nothing about the orb: Chrome's
+// AbortSignal.timeout arrives as a TimeoutError whose message reads "signal timed
+// out", and it means only that this page stopped listening before the hub
+// answered. The call behind it may be succeeding, failing, or still riding the
+// lane — which is why a caller that has a witness to follow must follow it after
+// one, instead of reporting a refusal it never received.
+function waitRanOut(e) {
+  return !!(e && (e.name === "TimeoutError" ||
+    String((e && e.message) || e).indexOf("signal timed out") >= 0));
+}
+
+// orbWaitWords turns a failed hub call into words that name the real failure.
+// waitRanOut's error is rewritten into the budget disagreement it actually is;
+// every other error already carries the hub's or the device's own sentence, and
+// that sentence is what the operator should read.
+function orbWaitWords(e) {
+  if (waitRanOut(e)) {
+    return "the hub was still waiting on the orb when this page's own wait ran out; the card walk is slow, not lost";
+  }
+  return String((e && e.message) || e);
+}
+
 // themeGet is the GET twin of themePost: same envelope, same error discipline,
 // same 20s cap on a hub that accepts a request and then stops answering.
-async function themeGet(path) {
+// themeGet is the GET twin of themePost: same envelope, same error discipline,
+// same cap on a hub that accepts a request and then stops answering. The cap is
+// the caller's to raise, exactly as themePost's is: a route that rides the orb's
+// one-lane transport needs the same daylight its hub-side budget promises.
+async function themeGet(path, timeoutMs) {
   const opts = { method: "GET" };
-  if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) opts.signal = AbortSignal.timeout(20000);
+  if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) opts.signal = AbortSignal.timeout(timeoutMs || 20000);
   const r = await hubFetch(path, opts);
   const j = await r.json().catch(() => ({}));
   if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
@@ -2366,18 +2396,19 @@ function renderThemeTabs() {
 }
 
 
-async function themePost(path, payload) {
+async function themePost(path, payload, timeoutMs) {
   // AbortSignal.timeout so a hub that accepts the request and then stops
   // answering (a process mid-exit, a proxy stalled on a device) always ends
   // this wait with a visible error instead of leaving the panel frozen on
   // its loading line — the failure shape the owner saw at 10:22. The device
-  // path itself is already capped at 8s by the hub (main.go deviceTimeout);
-  // this line covers the hub's own half. Older engines without the static
-  // method get today's behavior, not a broken call.
+  // path itself is already capped by the hub (main.go deviceTimeout); this
+  // line covers the hub's own half, and a caller that knows its route waits
+  // longer than the default hands in the number. Older engines without the
+  // static method get today's behavior, not a broken call.
   const opts = {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
   };
-  if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) opts.signal = AbortSignal.timeout(20000);
+  if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) opts.signal = AbortSignal.timeout(timeoutMs || 20000);
   const r = await hubFetch(path, opts);
   const j = await r.json().catch(() => ({}));
   if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
@@ -2418,8 +2449,20 @@ async function themePreviewPlane(el, t, mark) {
   try {
     r = await hubFetch("/api/theme/preview?ip=" + encodeURIComponent(themeIP) + "&id=" + encodeURIComponent(t.id), { signal: ctrl.signal });
     if (r.status === 404) {
-      // The design's quiet answer: this theme carries no plane. The queue had
-      // already surfaced the chip as a waiter, so take it back out of the row.
+      // Two different 404s wear this one status, and the device tells them apart
+      // in the body: "this theme carries no preview" is the design's quiet answer,
+      // while "no theme on the card answers that id" is h_sd_preview reporting
+      // ORB_SD_MOUNTED FALSE — true for the whole window a remount takes, and after
+      // a card swap. Reading the second as the first removes the row's preview
+      // rectangle entirely, which is the 2026-10-28 report of themes vanishing
+      // rather than showing a "?": the page mistook "I cannot look" for "there is
+      // nothing to see". A 404 with no readable reason stays the quiet answer, so a
+      // hub that speaks the old shape keeps the old behavior.
+      const why = await r.json().catch(() => ({}));
+      const msg = (why && why.error) ? String(why.error) : "";
+      if (msg && !/carries no preview/i.test(msg)) {
+        return fail("preview read failed: " + msg);
+      }
       if (mark) { mark.hidden = true; mark.onclick = null; }
       return;
     }
@@ -2514,17 +2557,48 @@ function runPreviewQueue() {
 // take the hint quietly instead of painting it on the card as if the orb had
 // died. Three waits of 2.3 s covers the worst stream plus a boot; anything
 // still busy after that is worth telling the person about.
+// themeListWithRetry is the page's own patience on the card read: three tries,
+// 2.3 s apart, at a 45 s per-request budget.
+//
+// The 45 s is the load-bearing number and it is not a guess. The hub rides a busy
+// lane for up to pageRideBudget (30 s) before it reports the wait — that bound is
+// priced over a cold FatFs walk of a big card, which is where the 30 s goes — and
+// a read that takes the full ride must still arrive inside this fetch's window.
+// Otherwise Chrome aborts first and the card prints the browser's "signal timed
+// out" where the orb's real reason belongs: the failure this ordering kills.
+// Fifteen seconds of daylight covers the hub's marshaling and a slow link.
+//
+// The rule, not the number: every hub-side wait must be smaller than the fetch
+// budget of the route that carries it. TestTheHubAnswersBeforeThePageGivesUp
+// checks the two files against each other so neither drifts alone.
 async function themeListWithRetry(ip) {
   let last = null;
   for (let i = 0; i < 3; i++) {
-    try { return await themePost("/api/theme/list", { ip }); }
+    try { return await themePost("/api/theme/list", { ip }, 45000); }
     catch (e) {
       last = e;
-      if (!e || String(e.message).indexOf("orb busy") < 0) throw e;
+      if (!e || !laneWaitMessage(e)) throw e;
       await new Promise((r) => setTimeout(r, 2300));
     }
   }
   throw last;
+}
+
+// laneWaitMessage says whether a failed call's words name a condition a second
+// dial can clear. Three shapes qualify: the hub's busy refusal (the lane was
+// held), a wait that ran out the hub's own budget, and a card walk that timed
+// out part-way — the board was cold, the card was mid-mount, or the one httpd
+// task was serving a plane, and the next dial usually lands. A card that is not
+// mounted, an orb that refused the write, and a hub that is gone do not qualify,
+// and the page must not retry those into a third failure.
+function laneWaitMessage(e) {
+  const m = String((e && e.message) || e);
+  return m.indexOf("orb busy") >= 0
+    || m.indexOf("budget for the lane") >= 0
+    || m.indexOf("timed out") >= 0
+    || m.indexOf("deadline") >= 0
+    || m.indexOf("connection refused") >= 0
+    || m.indexOf("no route to host") >= 0;
 }
 
 async function loadThemes(ip) {
@@ -2549,7 +2623,7 @@ async function loadThemes(ip) {
     d = await themeListWithRetry(ip);
   } catch (e) {
     state.classList.remove("spin-wait");
-    state.textContent = "no theme list from " + ip + ": " + e.message
+    state.textContent = "no theme list from " + ip + ": " + orbWaitWords(e)
       + (themeAppsErr ? " (and no app enumeration: " + themeAppsErr + ")" : "");
     return;
   }
@@ -2572,6 +2646,51 @@ async function loadThemes(ip) {
   for (const t of shown) list.appendChild(themeRow(t, state, d));
   if (!shown.length) themeEmptyPane(list, themeSub);
   renderThemeEditRow(themeSub, shown.length > 0);
+  if (d.mounted) warmOrbCard(ip);   // the face is painted; the hub can read the rest ahead
+}
+
+// warmOrbCard asks the hub to read ahead on this orb: every row's plane, then
+// every editable app's editor region, serially, through the same lane the page
+// queue obeys. The kick is safe at any time — the hub dials nothing it already
+// remembers, and a second press while a pass runs joins it for free. The poll
+// exists only to word the state line while the pass lives; the answers reach
+// the rows through the ordinary queue fetches, which find the hub's cache.
+let warmPollGen = 0;
+function warmOrbCard(ip) {
+  const gen = ++warmPollGen;
+  const state = $("#mn-themestate");
+  if (state) { delete state.dataset.base; state.removeAttribute("data-base"); }
+  // face "themes": the pass that answers this kick puts every plane's row, and
+  // the active theme's plane before them, ahead of the region reads. The face
+  // press is also what ends the pass's own plane phase — see the yield note —
+  // because this page's queue is about to fetch those same planes through the
+  // same caching door, one at a time, in the order the operator sees them.
+  themePost("/api/theme/warm", { ip, face: "themes" }).catch(() => {});
+  const tick = async () => {
+    if (gen !== warmPollGen || themeIP !== ip) return;
+    let st = null;
+    try {
+      const r = await hubFetch("/api/theme/warm-status?ip=" + encodeURIComponent(ip));
+      const j = await r.json().catch(() => ({}));
+      if (j && j.ok) st = j.data;
+      else return;
+    } catch (e) { return; }
+    if (gen !== warmPollGen || themeIP !== ip) return;
+    if (!state) return;
+    if (st.phase === "planes" || st.phase === "regions" || st.phase === "listing") {
+      if (!state.dataset.base) state.dataset.base = state.textContent;
+      state.textContent = state.dataset.base + " \u00b7 reading ahead " + st.done + " of " + st.total + "\u2026";
+      setTimeout(tick, 1500);
+    } else if (state.dataset.base) {
+      // The pass's closing words are the honest end of the line it started: a
+      // stand-down in front of this queue, a card that stopped answering, or a
+      // quiet done. The next ordinary state write replaces the sentence.
+      const tail = (st.note && (st.phase === "done" || st.phase === "failed")) ? " \u00b7 " + st.note : "";
+      state.textContent = state.dataset.base + tail;
+      delete state.dataset.base;
+    }
+  };
+  setTimeout(tick, 700);
 }
 
 // themeEmptyPane is the empty state D37 exists for. Under the old face an app with
@@ -2632,13 +2751,46 @@ function openThemeEditor(row) {
   const pane = $("#mn-theme-editor"), frame = $("#mn-theme-editor-frame");
   const title = $("#mn-theme-editor-title"), state = $("#mn-theme-editor-state");
   if (!pane || !frame || !row.editor_url) return;
+  // Tell the read-ahead pass which app's region the next dial is about to
+  // stream: this pane pays for its own region either way, and the hint is what
+  // makes the SECOND editor press cheap — the pass has already queued that
+  // app's region to the front of whatever it was warming.
+  if (row.app) {
+    themePost("/api/theme/warm", { ip: themeIP, face: "edit", slug: row.slug }, 8000).catch(() => {});
+  }
+  // The veil stands while the archive streams: the editor's source is read off the
+  // card over Wi-Fi (measured 6 s cold, 8.7 s warm on a full clock bake), and a white
+  // blank frame through all of it reads as a broken editor rather than a slow card.
+  // The frame's own load event lifts it — same-origin by construction, and both the
+  // archive and the hub's retry page are documents that load, so one listener covers
+  // every answer, including the refusal.
+  pane.classList.add("loading");
   const base = row.editor_url.replace(/\/$/, "") + "/";
   frame.src = base + "?orb=" + encodeURIComponent(themeIP) + "&app=" + encodeURIComponent(row.slug);
   title.textContent = themeAppTitle(row.slug) + " theme editor";
-  state.textContent = "editing " + row.slug + " themes on " + themeIP;
+  state.textContent = "reading the " + row.slug + " editor source from " + themeIP + "\u2026";
   themeEditorApp = row.slug;
   pane.hidden = false;
 }
+// The veil's one release. A load event means a document arrived — but which one:
+// closing sets src to about:blank, and that old document can fire its load AFTER a
+// fresh open already set a new src, so frame.src at load time names the NEW editor,
+// not the document that loaded. The loaded document answers for itself: the editor
+// and the hub's retry page are both same-origin documents with body content (the
+// frame is sandboxed to allow-same-origin by construction), while the stray is an
+// empty about:blank. An unanswered open leaves the veil standing, which is the truth.
+(function edVeil() {
+  const frame = $("#mn-theme-editor-frame");
+  if (!frame) return;
+  frame.addEventListener("load", () => {
+    const pane = $("#mn-theme-editor"), state = $("#mn-theme-editor-state");
+    let doc = null;
+    try { doc = frame.contentDocument; } catch (e) { return; }   // cross-origin: not ours
+    if (!doc || !doc.body || !doc.body.hasChildNodes()) return;  // about:blank stray
+    if (pane) pane.classList.remove("loading");
+    if (state && pane && !pane.hidden) state.textContent = "editing through the hub";
+  });
+})();
 
 // themeEditorApp is which app the open frame belongs to, so a message from a frame
 // that has since been replaced cannot file a theme under the previous app.
@@ -2648,6 +2800,7 @@ function closeThemeEditor() {
   const pane = $("#mn-theme-editor"), frame = $("#mn-theme-editor-frame");
   if (!pane) return;
   pane.hidden = true;
+  pane.classList.remove("loading");
   if (frame) frame.src = "about:blank";
   themeEditorApp = "";
 }
@@ -2793,10 +2946,31 @@ function themeRow(t, state, list) {
   use.onclick = async () => {
     use.disabled = true;
     state.textContent = "storing " + t.name + " \u2014 queued; the copy takes a few seconds";
+    // The POST carries the hub's whole wait: the queue ahead of the dial, the copy
+    // of up to 8 MB, and the reboot witness — theme.go gives that 150 s, so the
+    // page gives it 165. The order is the invariant (see the same rule on
+    // pageRideBudget): when the page gives up first, the row prints Chrome's
+    // "signal timed out" over an orb that is storing the theme just fine — owner,
+    // 2026-10-28, on exactly this press while the page's own plane relays still
+    // filled the dial's single-task httpd. The theme stored and drew; only the
+    // sentence lied.
+    let postRanOut = false;
     try {
-      await themePost("/api/theme/install", { ip: themeIP, id: t.id });
-      await watchThemeJob(state, t);
-    } catch (e) { state.textContent = "store refused: " + e.message; }
+      await themePost("/api/theme/install", { ip: themeIP, id: t.id }, 165000);
+    } catch (e) {
+      if (!waitRanOut(e)) {
+        // The hub answered with its own refusal sentence — no lead held, the dial
+        // unreachable at the dial. That sentence is the verdict; show it.
+        state.textContent = "store refused: " + orbWaitWords(e);
+        use.disabled = false;
+        return;
+      }
+      postRanOut = true;
+    }
+    // Out of a wait that ran out there is no verdict yet, and the job is the orb's
+    // own: follow it to its witness like every other path of this press does.
+    if (postRanOut) state.textContent = "storing " + t.name + " \u2014 still following the job";
+    await watchThemeJob(state, t);
     use.disabled = false;
   };
   li.appendChild(use);
@@ -2835,7 +3009,10 @@ async function watchThemeJob(state, t) {
   for (let n = 0; n < 100; n++) {
     await new Promise((res) => setTimeout(res, n < 60 ? 1200 : 3000));
     let d;
-    try { d = await themePost("/api/theme/list", { ip: themeIP }); }
+    // 45 s, the same page budget loadThemes carries: this poll rides the same card
+    // walk (hub budget 30 s on a cold FatFs cache), and at the old 20 s default a
+    // slow walk on a live board read as the mid-reboot miss one line below.
+    try { d = await themePost("/api/theme/list", { ip: themeIP }, 45000); }
     catch (e) { state.textContent = "storing " + t.name + " \u2014 the orb is mid-reboot; waiting"; continue; }
     if (d.job_busy) { state.textContent = "storing " + t.name + " \u2014 the copy is running, " + n + " s"; continue; }
     if (d.try_id === t.id && d.try_why) {
@@ -2957,8 +3134,24 @@ $("#mn-rescan").onclick = async () => {
   if (!themeIP) return;
   const state = $("#mn-themestate");
   state.textContent = "asking the orb to re-read its card\u2026";
-  try { await themePost("/api/theme/rescan", { ip: themeIP }); await loadThemes(themeIP); }
-  catch (e) { state.textContent = "refused: " + e.message; }
+  // The hub's rescan now rides a lane held by its own streams, and the 45 s
+  // window below prices that ride. The outer retry is the belt for the shape
+  // the hub cannot wait out: a board that refused the press outright.
+  for (let tries = 0; ; tries++) {
+    try {
+      await themePost("/api/theme/rescan", { ip: themeIP }, 45000);
+      break;
+    } catch (e) {
+      const why = e && e.message ? e.message : String(e);
+      if (tries >= 2 || why.indexOf("orb busy") < 0) {
+        state.textContent = "refused: " + why;
+        return;
+      }
+      state.textContent = "the card is mid-transfer \u2014 waiting to ask again\u2026";
+      await new Promise((r) => setTimeout(r, 2300));
+    }
+  }
+  await loadThemes(themeIP);
 };
 
 // A .orbtheme exported from the Theme Editor goes straight to the orb. The hub never

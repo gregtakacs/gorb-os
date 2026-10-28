@@ -60,23 +60,43 @@ type ThemeApps struct {
 // ThemeAppsFor reads both halves and intersects them. A device with no SD card is
 // not an error here: it answers with the apps and zero counts, which is exactly
 // the state an author standing on a bare board needs to see.
+//
+// The hub's own Theme page read wants these same two facts and the rows half is
+// the expensive one: /api/v1/sd walks the card on the device's one httpd task.
+// So the walk is a parameter here, not a dial this function owes — see
+// ThemeAppsFrom, which lets a caller that already holds the rows intersect them
+// without opening a second walk for the same answer.
 func (c *Client) ThemeAppsFor(ip string) (*ThemeApps, error) {
-	out := &ThemeApps{IP: ip, Apps: []ThemeApp{}}
 	apps, appErr := c.AppsList(ip)
+	list, themeErr := c.ThemeList(ip)
+	return c.ThemeAppsFrom(ip, apps, appErr, list, themeErr)
+}
+
+// ThemeAppsFrom intersects a ledger read and a row read that the caller already
+// holds. It is ThemeAppsFor with the two dials taken out: a hub that read the
+// card a moment ago, or that read it for the other half of the same page paint,
+// answers the enumeration from what it has. Both reads may arrive failed — the
+// shape is the same concession ThemeAppsFor makes, one half's failure reported in
+// the body rather than the whole answer lost — but a caller that hands a nil list
+// and no error is asking for a lie, so that pair is refused.
+func (c *Client) ThemeAppsFrom(ip string, apps *AppList, appErr error, list *ThemeList, themeErr error) (*ThemeApps, error) {
+	if list == nil && themeErr == nil {
+		return nil, fmt.Errorf("orbnet: no theme rows and no failure to explain them for %s", ip)
+	}
+	out := &ThemeApps{IP: ip, Apps: []ThemeApp{}}
 	if appErr != nil {
 		out.AppErr = appErr.Error()
-	} else {
+	} else if apps != nil {
 		out.Mount = apps.Mounted
 	}
-	list, themeErr := c.ThemeList(ip)
 	if themeErr != nil {
 		out.ThemeErr = themeErr.Error()
-	} else {
+	} else if list != nil {
 		out.Active = list.Active
 		out.FreeMB = list.FreeMB
 	}
 	if appErr != nil && themeErr != nil {
-		return nil, fmt.Errorf("theme enumeration: %s; and themes: %s", out.AppErr, out.ThemeErr)
+		return nil, fmt.Errorf("theme enumeration: %s; and themes: %s", appErr, themeErr)
 	}
 
 	// Count rows per owning app, including rows filed under an app the ledger does

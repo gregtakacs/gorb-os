@@ -257,6 +257,17 @@ func (s *Server) jsonOK(w http.ResponseWriter, payload any) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": payload})
 }
 
+// jsonOKRaw answers with device bytes already shaped as the payload, so a
+// remembered read replays without a re-encode. The envelope is jsonOK's:
+// encoding/json writes map keys sorted, so data comes first and ok second,
+// and the replayed bytes carry the same order the live answer had.
+func (s *Server) jsonOKRaw(w http.ResponseWriter, raw json.RawMessage) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"data":`))
+	_, _ = w.Write(raw)
+	_, _ = w.Write([]byte(`,"ok":true}`))
+}
+
 func (s *Server) jsonErr(w http.ResponseWriter, msg string) {
 	s.jsonErrFields(w, msg, nil)
 }

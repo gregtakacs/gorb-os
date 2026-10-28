@@ -219,7 +219,11 @@
         <button id="mn-theme-editor-close" class="ghost" type="button"
                 title="Put the editor away. The orb keeps what it has.">Close</button>
       </div>
-      <iframe id="mn-theme-editor-frame" title="Theme editor" sandbox="allow-scripts allow-same-origin"></iframe>
+      <div class="edwrap">
+        <iframe id="mn-theme-editor-frame" title="Theme editor" sandbox="allow-scripts allow-same-origin"></iframe>
+        <div class="edveil" aria-live="polite">Reading the theme's source off the orb's card. A dial's worth of
+          geometry streams over Wi-Fi and takes a few seconds — the editor appears when it lands.</div>
+      </div>
       <p class="hint" id="mn-theme-editor-state"></p>
     </section>
     <ul id="mn-themes" class="themelist"></ul>

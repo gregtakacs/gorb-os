@@ -58,6 +58,21 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 			"Device firmware, not an arbitrary path, is flashed from the Onboard card.")
 		return
 	}
+	// A proxied device read IS the page dialing the orb — the zone table on the
+	// Orb face, the file manager's card walk, a wifi scan — so the lane belongs
+	// to it before anything else does. demandLane closes the socket of any hub
+	// background dial holding the lane and tells the read-ahead pass to stand
+	// down; the page must never queue behind insurance. GET and POST alike: a
+	// name write the operator just pressed outranks a speculative plane exactly
+	// as a config read does. /api/v1/status is exempt, and only status: the
+	// stream route polls it every ten seconds for every board, and a pass
+	// parked by the heartbeat that discovers a page is open would never run for
+	// the page at all. The poll still gets the interrupt's QUEUE benefit through
+	// the gate's own priority when it contends; it just does not claim the lane
+	// for the next ninety seconds.
+	if route != "/api/v1/status" {
+		s.demandLane(host)
+	}
 	target := "http://" + host + ":" + s.device.Port() + route
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -46,8 +47,10 @@ func fakeOrbHubWith(t *testing.T, f *orbfake.Orb) (*Server, string, func() orbCa
 	t.Helper()
 	last := new(orbCall)
 	var lastWrite orbCall
+	var lmu sync.Mutex // the hub's read-ahead pass dials concurrently with the page's own fetches
 	recording := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		lmu.Lock()
 		*last = orbCall{method: r.Method, path: r.URL.Path, query: r.URL.RawQuery, body: string(b)}
 		// A GET answers a question; a POST made one. The install and upload handlers
 		// now watch the store through GET /api/v1/sd after the door answers — so the
@@ -57,6 +60,7 @@ func fakeOrbHubWith(t *testing.T, f *orbfake.Orb) (*Server, string, func() orbCa
 		if r.Method != http.MethodGet {
 			lastWrite = *last
 		}
+		lmu.Unlock()
 		// Hand the bytes back: reading the body here to record it would otherwise leave
 		// the double looking at an empty upload and refusing a valid file.
 		r.Body = io.NopCloser(bytes.NewReader(b))
@@ -82,8 +86,16 @@ func fakeOrbHubWith(t *testing.T, f *orbfake.Orb) (*Server, string, func() orbCa
 	s.ota.DevicePort = port
 	s.preview = orbnet.NewClient(2 * time.Second)
 	s.preview.DevicePort = port
+	// The test hub builds the same gate and background client the shipped hub
+	// does, pointed at the recording fake, so the interrupt path is the real
+	// one here and not a seam a test forgot to wire.
+	s.gate = orbnet.NewDialGate()
+	s.warm = orbnet.NewGatedStreamClient(specListBudget, 2*time.Second, s.gate, orbnet.ClassBackground)
+	s.warm.DevicePort = port
 	s.grants.learn(host)
 	return s, host, func() orbCall {
+		lmu.Lock()
+		defer lmu.Unlock()
 		if lastWrite.method != "" {
 			return lastWrite
 		}

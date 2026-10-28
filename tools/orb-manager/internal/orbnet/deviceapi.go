@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"syscall"
@@ -89,10 +90,24 @@ func (c *Client) postOnce(ip, path string, cr *countingReader, contentType strin
 // deadConnErr reports an error the transport raised at the socket, before any
 // response byte: the exact family of "connection reset by peer" the browser
 // showed as a red banner when a rebooted orb invalidated a pooled connection.
+//
+// It carries two more members because the poison's surfacing depends on where
+// in the write-and-read sequence the RST lands, and the scheduler chooses that,
+// not the test. A response-head read that dies mid-first-line surfaces as
+// io.ErrUnexpectedEOF with no response byte stored; a socket this side closed
+// while the body was still streaming — the write racing its own FIN — surfaces
+// as net.ErrClosed ("use of closed network connection"). Both keep the rule
+// that makes the re-send safe: we saw no response byte, so the device either
+// stored nothing or stored a body whose answer died with the socket, and
+// h_theme_upload truncates its scratch at begin. Without them the retry ran
+// only when the RST lost the write race, and the upload test failed on the
+// scheduler's coin flip under -race.
 func deadConnErr(err error) bool {
 	return errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EPIPE) ||
-		errors.Is(err, syscall.ECONNABORTED)
+		errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 // countingReader reports cumulative bytes read, which is bytes the transport has

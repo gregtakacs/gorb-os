@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"mime"
 	"net/http"
@@ -49,6 +50,20 @@ const editorManifestName = "editor.json"
 // several members, and each would otherwise cost a dial to a board over a radio; a
 // short window turns that into one fetch without becoming a copy nobody invalidates.
 const editorFetchTTL = 15 * time.Second
+
+// editorErrRetryTTL is how long a FAILED read stays memoised. A good region and a
+// named "this app ships no editor" are stable answers worth caching whole; a
+// transport failure is neither. The 15 s window turned one deadline into fifteen
+// seconds in which the Retry button re-served the same error and the pane looked
+// bricked — the report of 2026-10-27. Two seconds still debounces a double-click
+// and a pageful of sibling members hammering a dead board, and after that the
+// next dial is real.
+const editorErrRetryTTL = 2 * time.Second
+
+// editorDialRetryPause is the beat before the region dial's one retry. Radio
+// hiccups the orb's own socket purge causes drain in hundreds of ms; anything
+// longer belongs to the memo, not to a handler holding the door open.
+const editorDialRetryPause = 400 * time.Millisecond
 
 func (s *Server) routesEditor(mux *http.ServeMux) {
 	// requireControl and not a read-guard: this hub has no read tier, and every
@@ -78,14 +93,28 @@ var regions = &editorRegions{slots: map[editorKey]*editorSlot{}}
 
 // editorRegion returns one app's editor archive, fetching it when the memo has
 // nothing fresh. s.editorFetch does the dial so a test can stand in for a board.
+// A fresh transport failure is retried once before it is recorded: the dial is an
+// idempotent GET, and the failure the owner met (a read torn by the orb's socket
+// purge under load) is exactly the kind a second dial clears. ErrNoEditor is never
+// retried — it is a stable answer, and dialling twice just pays for it twice.
 func (s *Server) editorRegion(ip, slug string) (*zip.Reader, error) {
 	k := editorKey{ip, slug}
 	regions.mu.Lock()
 	defer regions.mu.Unlock()
-	if sl, ok := regions.slots[k]; ok && time.Since(sl.fetched) < editorFetchTTL {
-		return sl.zr, sl.err
+	if sl, ok := regions.slots[k]; ok {
+		ttl := editorFetchTTL
+		if sl.err != nil && !errors.Is(sl.err, orbnet.ErrNoEditor) {
+			ttl = editorErrRetryTTL
+		}
+		if time.Since(sl.fetched) < ttl {
+			return sl.zr, sl.err
+		}
 	}
 	raw, err := s.fetchEditor(ip, slug)
+	if err != nil && !errors.Is(err, orbnet.ErrNoEditor) {
+		time.Sleep(editorDialRetryPause)
+		raw, err = s.fetchEditor(ip, slug)
+	}
 	var zr *zip.Reader
 	if err == nil {
 		zr, err = zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
@@ -145,7 +174,7 @@ func (s *Server) serveEditor(w http.ResponseWriter, r *http.Request) {
 
 	zr, err := s.editorRegion(t.IP, slug)
 	if err != nil {
-		editorRefused(w, err)
+		editorRefused(w, r, err)
 		return
 	}
 	if file == "" || file == "." {
@@ -173,7 +202,7 @@ func (s *Server) serveEditor(w http.ResponseWriter, r *http.Request) {
 	}
 	data, found, err := editorBytes(zr, file)
 	if err != nil {
-		editorRefused(w, err)
+		editorRefused(w, r, err)
 		return
 	}
 	if !found {
@@ -198,14 +227,39 @@ func (s *Server) serveEditor(w http.ResponseWriter, r *http.Request) {
 // ordinary state for every app predating D37, so it is a quiet 404 in the device's
 // own words; everything else is a board that would not answer, which is a 502 and
 // worth seeing.
-func editorRefused(w http.ResponseWriter, err error) {
-	w.Header().Set("Content-Type", "application/json")
+//
+// WHO is asking changes the SHAPE. A member fetch (a .js, a .css) wants the JSON
+// the bridge can parse. A document navigation — the frame opening the editor —
+// renders whatever bytes come back, and an iframe full of raw Go text is the
+// unrecoverable screen the owner reported on 2026-10-27: no button, no name for
+// what happened, close-the-pane-and-hope as the only exit. For Accept: text/html
+// this answers a real page instead: the plain sentence, the reason it may be
+// worth trying again, and a Retry anchor that re-navigates the frame. The page
+// carries no token — a failure screen has no business holding a credential — and
+// no-store, so a Retry cannot re-read a cached refusal.
+func editorRefused(w http.ResponseWriter, r *http.Request, err error) {
+	code := http.StatusBadGateway
 	if errors.Is(err, orbnet.ErrNoEditor) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = fmt.Fprintf(w, `{"ok":false,"error":%q}`, err.Error())
+		code = http.StatusNotFound
+	}
+	if strings.Contains(r.Header.Get("Accept"), "text/html") {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(code)
+		escaped := template.HTMLEscapeString(err.Error())
+		_, _ = fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>Editor did not load</title>`+
+			`<style>body{font:15px/1.5 system-ui,sans-serif;margin:2rem;color:#222}code{background:#f2f2f2;padding:.1em .3em;border-radius:3px}`+
+			`a.button{display:inline-block;margin-top:1rem;padding:.5em 1.2em;background:#3b5bdb;color:#fff;border-radius:6px;text-decoration:none}</style>`+
+			`<h1>The editor did not load</h1><p>The hub asked this orb for its editor and got nothing usable back:</p>`+
+			`<p><code>%s</code></p>`+
+			`<p>A board mid-reboot, a radio that dropped the stream, or a card still waking all answer like this. `+
+			`The read retried once on its own; this page did not corrupt anything.</p>`+
+			`<a class="button" href="">Retry</a>`, escaped)
 		return
 	}
-	w.WriteHeader(http.StatusBadGateway)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
 	_, _ = fmt.Fprintf(w, `{"ok":false,"error":%q}`, err.Error())
 }
 

@@ -120,7 +120,16 @@ func newHub() *Server {
 	// is the first release a device can report a region from. Tests still stand
 	// a fake in over this line — the point is that the real hub has a working
 	// default, not that a test must use it.
-	s.fetchEditor = func(ip, slug string) ([]byte, error) { return s.device.EditorRegion(ip, slug) }
+	//
+	// It rides the PREVIEW client, not the management one. An editor region is
+	// the same shape of work as a plane: one task on a single-httpd board walks
+	// its art and streams up to 2 MiB after the answer starts. The 8 s
+	// management budget cut exactly this class of read mid-body — the owner saw
+	// "context deadline exceeded ... while reading body" open the clock editor
+	// on 2026-10-27 — which is the same mistake previewTimeout (45 s) and
+	// otaTimeout document above. firstByte 8 s still kills a board that opens
+	// the socket and says nothing, so a wedge costs a dial, not a pane.
+	s.fetchEditor = func(ip, slug string) ([]byte, error) { return s.preview.EditorRegion(ip, slug) }
 	return s
 }
 

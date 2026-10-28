@@ -1736,3 +1736,25 @@ serves the bytes it was built with, never the ones on disk.
   that a dirty read. themeListRidingOutLane waits the lane out (6 x 1.5 s on
   ErrLaneBusy only); app.js's list read got the same quiet-retry, and a
   re-render now ABORTS the in-flight preview (ops_test pin moved 1->2).
+
+## The clock editor timed itself out at the last inch of its own budget — 2026-10-27, orb-B
+
+- **Measured, then fixed**: GET /api/v1/apps/editor?id=clock answers 640 KB in
+  6.03 s cold and 8.70 s warm on the bench LAN. The hub dialled it on the
+  management client — deviceTimeout 8 s — so an honest read died at the last
+  inch and the browser showed the Go text "context deadline exceeded ... while
+  reading body". Same mistake class previewTimeout (45 s) and otaTimeout (180 s)
+  each document: a single-task httpd streaming a big verified region is not a
+  management call. fetchEditor now rides s.preview: the 45 s budget, bulk lane
+  flag, and firstByte 8 s that still kills a socket-open-then-silent board.
+- **The recovery gaps were worse than the timeout.** A failed region memoised
+  for its full 15 s TTL, so Retry re-served the same dead error; and the 502
+  arrived as raw JSON inside the iframe — no name, no button, close-the-pane as
+  the only exit. Now: transport failures memoise 2 s (ErrNoEditor stays 15 s —
+  a stable answer costs nothing to re-read); editorRegion retries a fresh
+  transport failure once at 400 ms; and editorRefused answers a document
+  navigation (Accept: text/html) with an HTML page that names the failure and
+  carries a Retry anchor, no-store, no token. Member fetches keep the JSON.
+- Pinned by four tests in editor_test.go: retry-then-serve counts dials exactly
+  (2), ErrNoEditor never retried (1), the HTML page carries Retry+reason and no
+  token, and the aged short memo re-dials a recovered board.

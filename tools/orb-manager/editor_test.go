@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfake"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
@@ -237,5 +238,119 @@ func TestProductionHubDialsTheEditorDoorWithoutAStub(t *testing.T) {
 	}
 	if !dialed {
 		t.Error("the hub never dialed the device's editor door")
+	}
+}
+
+// A torn read (the orb's socket purge under load, a radio hiccup) is the failure
+// the owner met on 2026-10-27, and a second dial clears it. The dial is an
+// idempotent GET, so the handler retries once before it records a failure — and
+// never retries the stable ErrNoEditor answer.
+func TestEditorRetriesATransportFailureOnceThenServes(t *testing.T) {
+	const ip = "203.0.113.7"
+	raw := zipWith(t, map[string]string{"index.html": "<body>second dial won</body>"})
+	editorInvalidate()
+	t.Cleanup(editorInvalidate)
+	s := newHub()
+	var dials int
+	s.fetchEditor = func(string, string) ([]byte, error) {
+		dials++
+		if dials == 1 {
+			return nil, errors.New("connection reset by peer")
+		}
+		return raw, nil
+	}
+	s.grants.learn(ip)
+	rec := editorGet(t, s, "/editor/"+ip+"/clock/", true)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "second dial won") {
+		t.Fatalf("status=%d body=%s, want the retry's archive served", rec.Code, rec.Body)
+	}
+	if dials != 2 {
+		t.Errorf("dials = %d, want exactly 2 (one retry, no loop)", dials)
+	}
+}
+
+func TestEditorNoEditorIsNeverRetried(t *testing.T) {
+	const ip = "203.0.113.7"
+	s, dialed := editorHub(t, ip, nil, orbnet.ErrNoEditor)
+	if rec := editorGet(t, s, "/editor/"+ip+"/clock/", true); rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if len(*dialed) != 1 {
+		t.Errorf("dials = %d, want 1: a stable refusal retried is a second wasted board visit", len(*dialed))
+	}
+}
+
+// The failure page exists because the JSON error the owner saw had no way out:
+// no name for the failure, no button, a pane that could only be closed. A
+// document navigation gets a real page with a Retry; the Retry must actually be
+// fresh (no-store), and the page must carry none of the hub's credentials.
+func TestEditorFailurePageIsRetryableHTMLForNavigations(t *testing.T) {
+	const ip = "203.0.113.9"
+	s, _ := editorHub(t, ip, nil, errors.New("context deadline exceeded"))
+	mux := http.NewServeMux()
+	s.routes(mux)
+	req := httptest.NewRequest(http.MethodGet, "/editor/"+ip+"/clock/", nil)
+	req.Header.Set(tokenHeader, s.token)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+	body := rec.Body.String()
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want the failure rendered for a frame", ct)
+	}
+	if !strings.Contains(body, "Retry") || !strings.Contains(body, "did not load") {
+		t.Errorf("body = %s, want a named failure and a Retry anchor", body)
+	}
+	if !strings.Contains(body, "deadline") {
+		t.Errorf("body = %s, want the underlying reason surfaced", body)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store so Retry cannot re-read a cached refusal", cc)
+	}
+	if strings.Contains(body, s.token) {
+		t.Error("the failure page carries the launch token")
+	}
+}
+
+// A transport failure memoises for two seconds, not fifteen: the old shape made
+// every Retry inside the window re-serve the same dead error and the pane looked
+// bricked even though the board had recovered. Age the memo past the short TTL
+// and the next request dials for real.
+func TestEditorTransportFailureMemoExpiresFast(t *testing.T) {
+	const ip = "203.0.113.7"
+	editorInvalidate()
+	t.Cleanup(editorInvalidate)
+	s := newHub()
+	var dials int
+	var good bool
+	goodRaw := zipWith(t, map[string]string{"index.html": "<body>recovered</body>"})
+	s.fetchEditor = func(string, string) ([]byte, error) {
+		dials++
+		if good {
+			return goodRaw, nil
+		}
+		return nil, errors.New("connection reset by peer")
+	}
+	s.grants.learn(ip)
+	if rec := editorGet(t, s, "/editor/"+ip+"/clock/", true); rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want the failure answered first", rec.Code)
+	}
+	dialsAfterFirst := dials
+	if rec := editorGet(t, s, "/editor/"+ip+"/clock/", true); rec.Code != http.StatusBadGateway || dials != dialsAfterFirst {
+		t.Fatalf("within the short TTL the memo must answer without dialling (dials %d)", dials)
+	}
+	// Age the failed slot out of its short window and let the board recover.
+	regions.mu.Lock()
+	for _, sl := range regions.slots {
+		sl.fetched = sl.fetched.Add(-3 * time.Second)
+	}
+	regions.mu.Unlock()
+	good = true
+	rec := editorGet(t, s, "/editor/"+ip+"/clock/", true)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "recovered") {
+		t.Fatalf("status=%d body=%s, want the aged memo to re-dial a recovered board", rec.Code, rec.Body)
 	}
 }

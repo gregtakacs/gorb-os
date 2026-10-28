@@ -5933,10 +5933,12 @@ static esp_err_t h_theme_upload(httpd_req_t *req)
                 : "{\"error\":\"could not open the theme file on the card\"}");
     }
 
-    /* The file is open and the slot is armed: from here to a queued store the dial
+    /* The file is open: from here to a queued store the dial
      * is promised to the overlay, so the copy names itself on the glass. A park
      * that loses to a raced resume says so once and the upload proceeds anyway —
-     * the frames are courtesy, the bytes are the job. */
+     * the frames are courtesy, the bytes are the job. The slot itself is NOT
+     * touched on this path any more (orb_theme.c, 2026-10-27): an aborted upload
+     * now leaves the live face exactly where it was. */
     const bool parked = orb_theme_upload_park((uint32_t)clen, "copying");
 
     /* Static, never a local: HTTPD_DEFAULT_CONFIG() sizes this task's stack at 4096

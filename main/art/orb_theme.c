@@ -1267,8 +1267,17 @@ static esp_err_t copy_bundle3(int fd, const orb_bundle_t *b, const uint8_t *regi
 
     /* §6.3: the erases lead the progress frames because they lead the point of
      * no resume — until the first byte goes down the old theme still exists on
-     * the card and in nothing else. */
-    esp_err_t e = esp_partition_erase_range(p, hdr_base + SLOT_GEOM_OFF, geom_len);
+     * the card and in nothing else.
+     *
+     * D9's arm lives on the FIRST of those erases (moved out of
+     * orb_theme_upload_begin() on 2026-10-27, where every killed upload cost
+     * the owner the live face). The slot's own header goes down ahead of the
+     * payload region, so a store torn at any later point — power, panic, a
+     * flash that will not write — boots the base face rather than mapping half
+     * an image under a header that described the theme before it. The header is
+     * rewritten last, by the adopt stamp at the end of this store. */
+    esp_err_t e = esp_partition_erase_range(p, hdr_base, THEME_SECTOR);
+    if (e == ESP_OK) e = esp_partition_erase_range(p, hdr_base + SLOT_GEOM_OFF, geom_len);
     if (e == ESP_OK) e = esp_partition_erase_range(p, hdr_base + SLOT_ART_OFF, art_len);
     if (e != ESP_OK) { *why = "flash erase failed"; return e; }
     if (progress) progress(parg, 0, art_len);
@@ -2243,20 +2252,16 @@ esp_err_t orb_theme_upload_begin(orb_theme_up_t **out)
      * defensively; this is the early, cheap no. */
     if (ensure_chunk() != ESP_OK) return ESP_ERR_NO_MEM;
 
-    /* Migration 1 / D9: an upload to this door is the start of a STORE, and under a
-     * single slot a store arms its invalid state BEFORE any payload crosses. Erase the
-     * slot's header sector now. A complete upload re-stores and reboots; a killed,
-     * cancelled, or refused one leaves the slot headerless, so the next boot draws the
-     * base face and one re-press recovers. Erasing just the 4 KB header is enough to
-     * make the slot unreadable — copy_bundle3 erases the payload region and rewrites the
-     * header last when the store runs. */
-    const esp_partition_t *ap = art_bank_partition();
-    if (!ap) return ESP_ERR_NOT_FOUND;
-    if (esp_partition_erase_range(ap, SLOT_HDR, THEME_SECTOR) != ESP_OK) {
-        ESP_LOGE(TAG, "upload: could not arm the slot — refusing before any bytes cross");
-        return ESP_FAIL;
-    }
-    ESP_LOGW(TAG, "upload started: the theme slot is armed invalid until a re-store lands");
+    /* D9's arm was moved OFF this path (2026-10-27). It used to erase the slot
+     * header here, before a payload byte crossed, so EVERY killed, stalled or
+     * refused upload cost the owner their face — bench-proven the same day: one
+     * aborted 1.2 MB curl left art_ready false, and the hub's card rows then had
+     * nothing to fall back to. The erase's own invariant — a torn store boots the
+     * base face because the header goes before the payload — is now held inside
+     * copy_bundle3(), ahead of the payload erase it already performs: local
+     * flash with no radio in it, past every check the store has to pass.
+     * A refused upload now leaves the working slot and the live face exactly as
+     * they were. */
     /* A fresh upload owns the scratch's fixed name from here: whatever token named
      * the previous one refers to bytes this begin() is about to truncate. */
     stage_forget();

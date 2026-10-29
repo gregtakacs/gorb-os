@@ -2049,7 +2049,7 @@ $("#sp-go").onclick = async () => {
           jlog.textContent += `accepted "${ssid}" — joined, lease ${n.ip} read over USB.\n`;
         } else {
           jlog.textContent += (n.ack
-            ? `accepted "${ssid}" — the orb is joining; watch for it on the LAN.`
+            ? `accepted "${ssid}" — the hub read no lease on the console; waiting for the board to announce itself.`
             : `no PROV-ACK for "${ssid}" — check the passphrase, or the orb may already be configured (use its AP page).`) + "\n";
         }
         if (n.ack) streamWatch(watchGen, provPort, provMac, true, n.ip || ""); // confirm the USB lease, else re-probe the LAN

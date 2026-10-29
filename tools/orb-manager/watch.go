@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbmdns"
 )
 
 // watchRequest drives the post-flash onboarding probe. Port is the serial
@@ -22,18 +23,24 @@ type watchRequest struct {
 	IP     string `json:"ip"`      // lease the serial door read off the USB console: confirm it directly
 }
 
-const (
+var (
+	// The post-flash watch's patience, and its beat. Variables, not constants:
+	// the tests that prove a timeout reports honestly cannot spend 45 live
+	// seconds per run.
 	watchLanBudget    = 45 * time.Second
 	watchPollInterval = 2 * time.Second
 )
 
 // handleWatch resolves the post-flash question the UI cannot ask the orb
 // directly: did the just-flashed orb join its stored network, or did it come up
-// unprovisioned with the provisioning AP open? The single evidence source is
-// the USB console the flasher owned across its own reset — the one-shot boot
-// verdict it recorded, or the lease the serial door read after PROV-ACK. The
-// hub never hunts the LAN. Credentials themselves always travel over HTTP (the
-// orb's /api/v1/wifi/scan + /wifi/join through the proxy); serial is a log and
+// unprovisioned with the provisioning AP open? The evidence arrives in order of
+// trust: first the USB console the flasher owned across its own reset — the
+// one-shot boot verdict it recorded, or the lease the serial door read after
+// PROV-ACK — and then the orb's own mDNS announcement, admitted only when its
+// TXT mac is the very chip MAC the cable read (see Phase B). The hub still
+// never hunts the LAN: no sweep, no neighbour table, no row naming no chip or a
+// different one. Credentials themselves always travel over HTTP (the orb's
+// /api/v1/wifi/scan + /wifi/join through the proxy); serial is a log and
 // identity pipe, not a config channel: during a flash the port is the ROM
 // bootloader's, and after reset it carries IDF console output only.
 func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
@@ -87,17 +94,25 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Phase B: the orb joined its stored network. Its address is known only from
-	// what the hub already read over USB — the lease the serial door captured
-	// (req.ip), or the "associated: config page at http://<ip>/" banner the flash
-	// logged during its own boot read (the boot verdict's ip). This path stays
-	// cable-only deliberately: no neighbour-table lookup, no /24 sweep, and the
-	// mDNS browse does not feed it either. A flash's verdict is worth what the
-	// chip said down the lead, not what a name on the LAN claimed about itself
-	// while the window was open. With no USB-learned address (e.g. a full flash
-	// whose boot banner was missed inside the window), it reports "no_ip" and the
-	// operator enters the address to manage the orb — rather than the tool
-	// guessing.
+	// Phase B: the orb joined its stored network. The hub's first memory of the
+	// address is what the chip itself said down the lead — the lease the serial
+	// door captured (req.ip), or the "associated: config page at http://<ip>/"
+	// banner the flash logged during its own boot read. A console can miss that
+	// banner: the join is retried on an escalating ladder (orb_net.c
+	// retry_delay_s) while the hub's lease window is fixed, and the bench
+	// router's WPA3/SAE limiter has been stretching joins by a minute or two. A
+	// board that joined one breath after the window closed is joined, and the
+	// tool must not dead-end the operator with a text box while the chip still
+	// has a second voice. So the watch then listens for the orb's own mDNS
+	// announcement — the firmware bursts it within seconds of the lease — and
+	// admits it on one condition: the TXT mac is the twelve hex digits the eFuse
+	// handed the cable a minute ago, and the browser already refused any row
+	// whose instance name and MAC disagree (browse.go promote). An announcement
+	// naming THAT chip is the board telling the hub where it lives. Naming no
+	// chip, or a different one, proves nothing, and the old refusals all stand:
+	// no sweep, no neighbour table, no self-declared stranger dialled by the
+	// join window (owner ruling, 2026-10-29, on the flow this message used to
+	// end: "why can't we just connect using what the orb told us?").
 	ip := strings.TrimSpace(req.IP)
 	source := "read off the USB console"
 	if ip == "" {
@@ -106,10 +121,46 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 			source = "read off the boot console during the flash"
 		}
 	}
+	want, _ := orbmdns.CanonicalMAC(req.MAC)
+	if ip == "" && want != "" {
+		if a, ok := s.announcedFor(want); ok {
+			if a.Provisioning {
+				sendNoJoin(send)
+				return
+			}
+			if a.IP != "" {
+				ip = a.IP
+				source = "announced by the orb, and answered as the chip the cable named"
+				send(map[string]any{"log": "the orb announced itself at " + ip + " — dialing it"})
+			}
+		}
+		if ip == "" {
+			// The banner missed and the air has said nothing yet. The announcement
+			// rides the join, so the remaining budget is the join's own clock: wait
+			// for the chip to speak rather than guess at it.
+			if a, ok := s.waitAnnounced(r, send, want); ok {
+				if a.Provisioning {
+					sendNoJoin(send)
+					return
+				}
+				ip = a.IP
+				source = "announced by the orb, and answered as the chip the cable named"
+				send(map[string]any{"log": "the orb announced itself at " + ip + " — dialing it"})
+			}
+		}
+	}
 	if ip == "" {
+		// Nothing on the wire, nothing on the air. The honest exit: with a cable
+		// bound it re-arms the serial door, and the sentence says which failure
+		// this is — a board that announces nothing never joined.
+		reason := "the orb joined its network but announced no lease on the console - enter its IP to manage it"
+		if want != "" {
+			reason = "no lease on the console, and no announcement naming " + req.MAC +
+				" within the budget — the join did not land or the board is not on this LAN"
+		}
 		send(map[string]any{"result": map[string]any{
 			"mode":   "no_ip",
-			"reason": "the orb joined its network but announced no lease on the console - enter its IP to manage it",
+			"reason": reason,
 		}})
 		return
 	}
@@ -132,6 +183,20 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 	attempt := 0
 	for {
 		if st, err := s.orb.Status(ip); err == nil {
+			if want != "" {
+				if got, why := orbmdns.CanonicalMAC(st.MAC); why == "" && got != want {
+					// The address answered — as a different chip than the one the
+					// cable held a minute ago. What came off the eFuse and what
+					// answers on the LAN cannot both be this board; adopting it
+					// would put the wrong face on the wrong watch, so the watch
+					// refuses and says which two names disagree.
+					send(map[string]any{"result": map[string]any{
+						"mode":   "unknown",
+						"reason": ip + " (" + source + ") answers as " + st.MAC + ", not the " + req.MAC + " the cable named",
+					}})
+					return
+				}
+			}
 			// Bind the grant to the MAC the device itself reported at that address.
 			// Still a claim, and still HTTP: what it buys is not trust, it is the
 			// cross-lock's reference point, so a later announcement naming a
@@ -142,6 +207,20 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 			send(map[string]any{"log": "the orb is back at " + ip})
 			send(map[string]any{"result": map[string]any{"mode": "lan", "ip": ip, "status": st}})
 			return
+		}
+		// The miss may mean the number aged out: a banner is a snapshot, and a
+		// board that answers on a fresh lease under a new one is found at the new
+		// number rather than died on at the old (the same rule waitOrbBack proved
+		// for the install ladder). The chip's own announcement is the only thing
+		// allowed to move the dial, and the check runs BEFORE the deadline
+		// decision: a move learned on the last miss is still the truest address
+		// the watch holds, and must be the address the exit names.
+		if want != "" {
+			if a, ok := s.announcedFor(want); ok && !a.Provisioning && a.IP != "" && a.IP != ip {
+				send(map[string]any{"log": "its lease moved: " + ip + " to " + a.IP})
+				ip = a.IP
+				source = "announced by the orb, and answered as the chip the cable named"
+			}
 		}
 		if !time.Now().Before(deadline) {
 			break
@@ -169,6 +248,90 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 		"mode":   "unknown",
 		"reason": ip + " (" + source + ") did not answer as an orb - re-check the IP, or the network it joined",
 		"ip":     ip,
+	}})
+}
+
+// --- the orb's second voice: its own announcement, keyed to the cable's fact ---
+
+// announcement is the chip's live mDNS word, as the browse cache holds it: the
+// address in the announcement whose TXT mac is this MAC, and whether the board
+// says its setup mode is open. The cache only ever holds a row after
+// browse.go's promote cross-checked the instance name against that MAC, so an
+// answer here is the device's own claim from this minute — never a neighbour's,
+// never a stale one.
+type announcement struct {
+	IP           string
+	Provisioning bool
+}
+
+// announcedFor reads the browse cache for the one chip want names, live rows
+// only: Candidates() ages out anything past the record's own TTL plus grace.
+// The empty want answers false — an announcement naming no chip says nothing
+// about the chip on the cable, and that is the refusal the cable-only rule got
+// right.
+func (s *Server) announcedFor(want string) (announcement, bool) {
+	if want == "" {
+		return announcement{}, false
+	}
+	s.dmu.Lock()
+	b := s.browse
+	s.dmu.Unlock()
+	if b == nil {
+		return announcement{}, false
+	}
+	for _, c := range b.Candidates() {
+		if c.MAC == want {
+			return announcement{IP: c.IP, Provisioning: c.Provisioning()}, true
+		}
+	}
+	return announcement{}, false
+}
+
+// waitAnnounced waits out the join on the air instead of the console: the
+// firmware bursts its announcement the moment DHCP hands the lease, so the
+// first packet after a PROV-ACK is the join landing, not a discovery the hub
+// provoked — it sends nothing, it only listens to what the board already
+// shouts. It speaks every second tick, because a silent budget reads to an
+// operator as a hung tool (bench, 2026-10-15). A provisioning-state row ends
+// the wait as loudly as a lease does: the board is announcing setup mode again,
+// which after an ack has only one meaning. False means the budget ran out with
+// the chip silent on every channel the hub is allowed to hear.
+func (s *Server) waitAnnounced(r *http.Request, send func(map[string]any), want string) (announcement, bool) {
+	start := time.Now()
+	deadline := start.Add(watchLanBudget)
+	attempt := 0
+	for {
+		a, ok := s.announcedFor(want)
+		if ok && (a.Provisioning || a.IP != "") {
+			return a, true
+		}
+		if !time.Now().Before(deadline) {
+			return announcement{}, false
+		}
+		attempt++
+		if attempt == 1 || attempt%2 == 0 {
+			send(map[string]any{"log": "waiting for the orb to announce itself - " +
+				strconv.Itoa(int(time.Since(start).Seconds())) + "s of " +
+				strconv.Itoa(int(watchLanBudget.Seconds())) + "s"})
+		}
+		select {
+		case <-r.Context().Done():
+			return announcement{}, false
+		case <-time.After(watchPollInterval):
+		}
+	}
+}
+
+// sendNoJoin answers the one outcome a PROV-ACK cannot tell from success: the
+// board took the credentials, retried the join on its ladder, and came back
+// announcing setup mode. The passphrase is the suspect then — not the hub's
+// patience, not the router — and the form under the dialog is the cure, so the
+// dialog stays open rather than dead-ending at a text box.
+func sendNoJoin(send func(map[string]any)) {
+	send(map[string]any{"log": "it announced setup mode, not a lease — the join did not land"})
+	send(map[string]any{"result": map[string]any{
+		"mode":   "no_ip",
+		"reason": "the board says it is still provisioning — the join did not land, and the passphrase is the suspect; the form re-writes it over the cable",
 	}})
 }
 

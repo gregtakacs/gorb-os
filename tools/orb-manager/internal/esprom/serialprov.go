@@ -306,9 +306,13 @@ func ProvisionOn(ctx context.Context, pt *Port, ssid, pass, tz string, scanBudge
 	// at which point the firmware prints its "associated: config page at
 	// http://<IP>/" banner (orb_net.c on_ip). Keep the console open for that
 	// banner so the hub learns the orb's LAN address over the same USB lead — no
-	// ARP sweep needed. A missing IP within the budget is NOT a failure: the ack
-	// already proved the credentials were accepted and the join posted; the
-	// caller can still find the orb on the LAN the usual way.
+	// ARP sweep needed. The window is 40 s, not the old 25: the firmware retries
+	// a refused association on an escalating ladder (retry_delay_s), so a first
+	// attempt that died of a transient routes the banner to roughly t+30 s. A
+	// missing IP within the budget is still NOT a failure: the ack already
+	// proved the credentials were received and the join posted. What the caller
+	// does next is listen for the board's own announcement — the join-window
+	// dead end this window used to hand the operator is retired (watch.go).
 	if res.Ack && ipBudget > 0 {
 		ipDeadline := time.Now().Add(ipBudget)
 		for res.IP == "" && res.Crash == "" && time.Now().Before(ipDeadline) {

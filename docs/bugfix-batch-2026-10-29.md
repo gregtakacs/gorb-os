@@ -787,3 +787,74 @@ ruling and missed the test) and is updated to the new contract. The rest of
 the host suite passes; `host_carousel_test.py`,
 `host_orbapp_install_test.py` and `host_svc_test.py` fail identically on the
 clean pre-fix tree — pre-existing, unrelated, and left on the books.
+
+## 19. Provisioning ended at "enter its IP" while the board's own announcement sat in the hub's cache
+
+**Symptom (owner, 2026-10-29, bench).** A full provisioning join printed `no
+address yet: the orb joined its network but announced no lease on the console -
+enter its IP to manage it`. The owner's question: *the orb already told us its
+address on the console — why wait on mDNS at all?* And: *at this stage the orb
+sometimes seriously does not connect, or we do not connect to it.*
+
+**Cause.** Two facts, one rule between them.
+
+1. The hub DOES use what the console said: `ProvisionOn` keeps the console open
+   after PROV-ACK for the firmware's `associated: config page at http://<ip>/`
+   banner (`orb_net.c` `on_ip`) and hands that lease straight to the watch. But
+   the window was 25 s, and the firmware retries a refused association on an
+   escalating ladder (`retry_delay_s`: eager ~30 s, then doubling). The bench
+   router's WPA3/SAE limiter is already on the books for extending joins "by a
+   minute or two". A board that joined one breath after the window closed is
+   joined — the banner exists, the console just stopped listening.
+2. PROV-ACK means *received*, not *joined*. A wrong passphrase looks identical
+   until the board reopens its setup AP, and the hub could not tell "joined,
+   hub blind" from "never joined".
+
+The rule between them: `handleWatch` Phase B refused to consult the orb's mDNS
+announcement — "the mDNS browse does not feed it" — to keep a self-declared
+LAN address from steering the join window. The refusal overreached. The
+announcement's TXT `mac` IS the eFuse MAC the hub read over USB minutes
+earlier, and `browse.go` `promote()` already refuses any row whose instance
+name and MAC disagree. A MAC-matched announcement is provably the chip on the
+cable speaking, not a neighbour.
+
+**Fix.**
+
+- `watch.go` Phase B now listens for that announcement when the console read
+  no lease, keyed by the request's chip MAC: the watch waits the budget for the
+  chip to speak, adopts its address, and dials it. A MAC-mismatched answer is
+  refused by name — the fear the old rule encoded is now a check, not a
+  silence. A provisioning-state announcement is reported as what it is: the
+  join did not land, the passphrase is the suspect, and the form re-writes it
+  over the cable. The confirm loop also follows the chip across a lease move
+  (same rule `waitOrbBack` proved for the install ladder), speaking the move.
+- `provision.go` widens the console's lease window 25 s to 40 s — covering one
+  ladder retry — and the job ceiling to 120 s so a slow join is never cut by
+  the outer budget.
+- `web/app.js` replaces the ack-without-lease line's "watch for it on the LAN"
+  with what the hub is actually doing: waiting for the board to announce
+  itself.
+- The `no_ip` exit survives only for what it now honestly means: no lease on
+  the console AND no announcement naming the chip. Its wording says so.
+
+**Files.** `tools/orb-manager/watch.go`, `tools/orb-manager/provision.go`,
+`tools/orb-manager/internal/esprom/serialprov.go` (comment),
+`tools/orb-manager/web/app.js`, `tools/orb-manager/watch_test.go`.
+
+**Tests.** New `TestWatchDialsWhatTheChipAnnouncedWhenTheConsoleMissedTheLease`,
+`TestWatchFollowsTheChipWhenTheLeaseMoves`,
+`TestWatchCallsAProvisioningAnnouncementAJoinThatDidNotLand`,
+`TestWatchRefusesAnAddressAnsweringAsAnotherChip`,
+`TestWatchStillRefusesToGuessForAnUnknownChip`,
+`TestTheAnnounceWaitSpeaksWhileItWaits` — the watch's patience is variables so
+the budget tests run in ~1 s, not 45. The first two dial an unroutable
+benchmark-range address on purpose: the browser refuses loopback announcements
+by design, so the fake cannot stand at an announced address; the adoption's
+grant and status legs are already pinned from the console side by `adopt_test`
+and `TestWatchStillRefusesToGuessForAnUnknownChip` keeps the cable-exit rule for
+a chip the hub cannot name.
+
+**Version.** `version.txt` goes v1.1.33 → v1.1.34 (this session changed no
+firmware source; the bump rides the hub release). `idf.py build` exits clean at
+the stamp `v1.1.34+4b6d19d-dirty` — the dirty flag is honest until these hub
+commits land, and `serflash.sh` audits the same stamp before it touches a board.

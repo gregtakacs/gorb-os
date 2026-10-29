@@ -11,9 +11,9 @@ import (
 )
 
 // provisionBudget bounds one wired-provisioning round-trip. The three console
-// windows inside ProvisionOn (scan 22 s, ack 20 s, lease 25 s) are the work; this is
+// windows inside ProvisionOn (scan 22 s, ack 20 s, lease 40 s) are the work; this is
 // the outer ceiling that stops a wedged console from holding a cable forever.
-const provisionBudget = 90 * time.Second
+const provisionBudget = 120 * time.Second
 
 // provisionRequest is the wired-provisioning job: the orb's serial port
 // plus the network to join. It carries a plaintext passphrase (hex-encoded on
@@ -96,7 +96,7 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
 	defer pt.Close()
 
 	send(map[string]any{"log": "opening the console (this reboots the orb into its app)..."})
-	res, err := esprom.ProvisionOn(ctx, pt, req.SSID, req.Pass, req.TZ, 22*time.Second, 20*time.Second, 25*time.Second, func(l string) {
+	res, err := esprom.ProvisionOn(ctx, pt, req.SSID, req.Pass, req.TZ, 22*time.Second, 20*time.Second, 40*time.Second, func(l string) {
 		send(map[string]any{"log": "console: " + l})
 	})
 	if err != nil {

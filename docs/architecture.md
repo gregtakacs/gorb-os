@@ -82,6 +82,18 @@ Order is load-bearing; the comments in `main.c` carry the why for each rung.
   copies + geometry, survives a card pull. Enable/failed/grant words in NVS.
   Slot index = registry position, pinned in the catalog, and the key for
   every per-app NVS namespace.
+- **Three states, not four** (hub-side ruling). The device answers
+  `/api/v1/apps/enable` and the hub proxies it, but the Apps face never asks:
+  an orb either RUNS an app (in flash, in a slot, on the carousel — one fact)
+  or does not have it installed. A toggle that could hide an installed row off
+  the carousel re-created a state the product ruled out, and it made "which
+  apps do I have" unanswerable from the page. What the face offers per row:
+  Install and shelf-delete when the dial does not carry the app; Uninstall and
+  **Remove from card** when it does. Remove from card walks the uninstall door
+  and then `POST /api/v1/sd/rm`, in that order, because uninstall alone leaves
+  the container on the card and the operator believes it erased. The library
+  row yields to the dial: same version means no install button, since
+  reinstalling bytes the board already runs still costs a reboot.
 - **Broker** (`orb_svc.c/h`): the entire surface an app may call (ruling D15).
   One frozen function table: `now`/`tz_label`/`tz_offset`, `power_request`,
   `cfg_get/set(+_str)`, `http_get`, `bank`, `layer_add/set/touch/del`,
@@ -124,7 +136,7 @@ provisioning AP is LAN-isolated by design, and STA mode assumes a trusted LAN.
 | Device config | `GET POST /api/v1/config` (zone table + set), `POST /api/v1/name` (32 printable-ASCII bytes; the DEVICE owns this string, the hub keeps a copy) |
 | WiFi | `GET /api/v1/wifi/scan`, `POST wifi/join` (SSID+pass+tz+name in one body), `wifi/ap`, `wifi/mode` (persistent reachability mode; reboots) |
 | Firmware | `POST /api/v1/ota` (A/B with rollback), `POST /api/v1/reboot`, `POST /api/v1/reprov` (one-shot return to the provisioning AP, creds intact) |
-| Apps | `GET /api/v1/apps`; `POST /api/v1/apps/install` `enable` `uninstall` `clear` `factory` |
+| Apps | `GET /api/v1/apps`; `POST /api/v1/apps/install` `enable` `uninstall` `clear`. No `factory`: D36 deleted the factory tier, so a seeded row arrives as an ordinary card file and has no restore door |
 | SD / themes | `GET /api/v1/sd`; `POST sd/app` `sd/theme` `sd/bundle` `sd/delete` `sd/rescan` |
 | Debug only (`CONFIG_ORB_DEBUG_HTTP`) | `GET /api/v1/screen` `/api/v1/fb` — framebuffer grabs for the bench |
 | Captive-portal probes | `GET /generate_204` `/gen_204` `/hotspot-detect.html` `/connect/test.php` `/favicon.ico` |
@@ -183,9 +195,24 @@ Art is baked on the bench; the device never decodes PNG or JSON.
   rebases at run time (`orb_bundle_rebase()`); `tools/mk_slot_image.py` does
   the same move offline to produce a flashable default.
   `tools/rebake_bundle.py` is the FORMAT 2→3 reverse path.
-- The flashed default is `assets/orb_default.img`, written into `assets` by an
-  `esptool_py_flash_target_image` rule in the top-level `CMakeLists.txt`.
-  `idf.py flash` writes it too; `tools/serflash.sh` does not.
+- **Nothing is flashed into `assets`.** D36 made the firmware flash bare: the partition
+  stays in the table because that is where the store door installs a theme, but no image
+  is written at flash time. A wiped board boots the shell menu with slot A erased and the
+  clock at the base render. `assets/orb_default.img` survives as the hub's SEED SOURCE
+  only: `tools/make_seed_theme.py` lifts its geometry and banks into
+  `tools/orb-manager/themes/aviator.orbtheme`, and the hub sends that through the ordinary
+  theme doors. Its header name field is the theme's name, and the generator's contract is
+  that the emitted bundle round-trips back to the image byte for byte — name included — so
+  renaming the theme means editing the image, not just the file.
+- **A theme's identity is its name, never its filename.** The device files a card
+  bundle under `theme_stem(slug, name)` = `<slug>-<token>-<12 hex>` (`orb_theme.c:277`),
+  where the hex is `sha256(slug + "/" + name)[:12]` and the token is the lowercased,
+  non-alphanumeric-stripped name. The incoming filename is discarded. Two consequences:
+  a hub library file's name and the card stem it produces are different strings for
+  every theme, and **renaming a theme's name changes its id** — an orb already holding
+  the old name keeps it as a separate row. `library_test.go` pins that a shipped theme's
+  filename stem matches its own embedded title, so the two views line up without the face
+  having to re-derive anything.
 - **Three-way rule**: for every format, the Python writer, the shipped C
   reader, and the host parity suite move in ONE commit or the test fails.
   `tools/host_orb_bundle_c_test.py` feeds the shipped C reader the writer's
@@ -195,7 +222,7 @@ Art is baked on the bench; the device never decodes PNG or JSON.
   must be solid black. Any lit pixel is the panel's canvas holding another
   frame's art.
 
-## Host test discipline (`tools/host_*.py`, 26 suites)
+## Host test discipline (`tools/host_*.py`, one suite per pure function)
 
 Pure functions — parsers, install decisions, geometry math, timezone offset,
 the grant gate, the carousel ladder — are lifted **verbatim** out of shipped

@@ -137,6 +137,18 @@ func (s *Server) h_orbWhere(w http.ResponseWriter, r *http.Request) {
 	}
 	want, why := orbmdns.CanonicalMAC(r.URL.Query().Get("mac"))
 	if want == "" {
+		// A join over the wired door can finish holding an address and no MAC, and
+		// the page's only handle is then the fleet itself: asked by ip, the route
+		// answers the chip that lives at that address — the same reverse lookup
+		// cleanSlate consults before it wipes. ClaimedBy answers live rows only, so
+		// a stale address refuses rather than pointing at the wrong board.
+		if at := r.URL.Query().Get("ip"); at != "" && s.fleet != nil {
+			if rows := s.fleet.ClaimedBy(at); len(rows) == 1 && rows[0].MAC != "" {
+				want = rows[0].MAC
+			}
+		}
+	}
+	if want == "" {
 		s.jsonErr(w, "no usable mac: "+why)
 		return
 	}
@@ -175,4 +187,3 @@ func (s *Server) liveIPforMAC(mac string) string {
 	}
 	return ""
 }
-

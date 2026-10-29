@@ -611,8 +611,18 @@ function installButton(e, txt, name, force) {
     // row that still shows the pre-press truth is a row whose buttons lie.
     try { await loadApps(); }
     catch (err) {
+      // The run's own reboots routinely outlive this re-read: the board is usually
+      // mid-boot, not broken. Say so, wait the tail of the boot out, and try the
+      // read once more before printing a failure over an installed app (bench,
+      // 2026-10-29 PM: "would not re-read" over a board that answered a minute later).
       const st = $("#mn-appstate");
-      if (st) st.textContent = libVerdict.text + " \u2014 but the ledger would not re-read: " + err.message;
+      if (st) st.textContent = libVerdict.text + " \u2014 the board is not answering the ledger re-read; trying once more as it comes back";
+      setTimeout(async () => {
+        try { await loadApps(); }
+        catch (e2) {
+          if (st) st.textContent = libVerdict.text + " \u2014 but the ledger would not re-read: " + e2.message;
+        }
+      }, 20000);
     }
   };
   return btn;
@@ -1058,7 +1068,23 @@ async function fmDelete(e, btn) {
     st.textContent = "deleted /" + rel + (r.body.removed > 1 ? " (" + r.body.removed + " items)" : "");
     await fmList(fmPath);
   } catch (e2) {
-    st.textContent = e2.message;
+    // A dial that died mid-request during the run's own reboots is not a refusal:
+    // the erase may well have landed while the answer was in flight. Wait out the
+    // tail of the boot, re-read the listing, and let it report the verdict (bench,
+    // 2026-10-29 PM: "i/o timeout" printed over an apps/ directory that was gone).
+    if (/unreachable|timeout|network/i.test(e2.message)) {
+      st.textContent = "the orb went silent mid-erase — re-reading the card as it comes back";
+      setTimeout(async () => {
+        try {
+          await fmList(fmPath);
+          st.textContent = "the orb is answering again — the listing above is the verdict on /" + rel;
+        } catch (e3) {
+          st.textContent = "the orb is still not answering: " + e3.message;
+        }
+      }, 15000);
+    } else {
+      st.textContent = e2.message;
+    }
   }
   btn.disabled = false;
 }

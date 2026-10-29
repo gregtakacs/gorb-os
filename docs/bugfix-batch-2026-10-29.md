@@ -529,6 +529,70 @@ afterwards: `sd.card_count=1`, `sd.active=Skeleton`, card tier
 replies `{ok:true, ip:"192.168.2.32", mac:"44bd8d608088"}`. Covered by `TestShelfGateRefusesToCountTheHollowRow`,
 `TestShelfGateHonoursARealShelf` and `TestThemeDoorRetryStaysArmedAndConditional` in `seedverify_test.go`.
 
+## 17. Every post-reboot wait died on the address, not the chip
+
+The owner's bench run after fix 16's binary landed told the rest of the truth: the
+ladder copied the files, the store armed, and then the page filled with
+`orb unreachable: ... i/o timeout` — at the ledger re-read, at the erase, and at the
+join seed's first status probe, after which "the clock and the theme never gets
+sent." "Open this orb" returned to the fleet list instead of the board.
+
+**The cause is one shape repeated five times.** The store's own reboot (and 16's
+theme-door reboot) cuts this firmware's WiFi for longer than any single 8 s dial,
+and the lease can move while the board is gone — the DHCP server owes the MAC a
+number, not the hub a memory. Every hub-side wait dialled only the address it
+started with: `installWaitBack` polled the old lease for 75 s and gave up;
+`waitForStore` re-armed its excuse at a dead address; the ladder's first status
+probe answered once and refused; `cleanSlate` read the ledger and erased each tree
+with one 8 s dial. The hub already had the answer in `liveIPforMAC` — the fleet
+tracks the chip and its check-ins update the row's address — and none of the waits
+consulted it. The UI inherited the same brittleness twice over: the page's wake
+retry re-dialled one frozen address 30 times, and `route()` refused `#orb` without
+a MAC, so a serial join that never carried one bounced the operator off the board
+page into the fleet list.
+
+**The fix is one patient helper used everywhere, and patience at every site.**
+`waitOrbBack(ctx, ip, budget)` latches the chip's MAC, re-asks the fleet where it
+lives on every miss, arms the self-reboot excuse per probe, and returns the address
+it actually got an answer at — every caller dials THAT for the rest of the run.
+`waitOrbCycle` wraps it for the waits that sit directly behind a reboot the ladder
+caused: the firmware answers the reboot door while it is dying, so the cycle demands
+the SILENCE first and only believes the answer that follows it — the bench caught the
+first fix retrying the theme door against a mid-shutdown board and eating a second
+"no card" exactly this way. `installRebootWait` grew 75 s → 3 min. The ladder's first
+status probe now streams "waiting through its boot" instead of refusing, and the
+ledger read behind it gets the same cycle-shaped wait — a status line can be the
+corpse answer while the ledger dial dies. `cleanSlate` waits once and re-hands each
+uninstall and each tree erase after a transport failure. `waitForStore` follows the
+lease mid-wait. The join-time verify gate waits through the ladder's last reboot and
+re-locates before it dials. On the page: `loadOrb` adopts the MAC off
+the board's own status reply and
+its wake retry re-locates through `/api/orb/where` (which now answers `?ip=` via
+the fleet's reverse lookup — live rows only, so a stale address refuses); `route()`
+opens the board face on MAC **or** address; `joinDone` takes the MAC off the watch
+reply so the Open-orb press always carries the movable handle; the Apps face gives
+the ledger re-read one more try at the tail of the boot; the card-file delete answers
+a mid-erase timeout with a re-listing instead of a flat failure.
+
+**Bench proof (Bronze @ .32, 2026-10-29 PM).** The failing flow — wipe the card,
+reboot the board, fire the join seed into the silence — ran end to end:
+`install: waiting` through the boot, `clock: installed/enabled`, `theme: uploaded →
+storing → stored`, `verify: verified — clock on the glass, theme on the card`,
+`install: done`. The device then answered `count 1`, app row `clock ok:true`, row
+`clock enabled`. And `/api/orb/where?ip=192.168.2.32` answered
+`{ok:true, ip:"192.168.2.32", mac:"44bd8d608088"}` live, the door the bounced
+button needed.
+
+**Honesty is preserved at both edges:** a board that never answers still refuses at
+the budget with the caller's address and the transport error, the wait ends at once
+on a departed browser, and `where?ip=` refuses an address no live row claims rather
+than pointing at the wrong board.
+
+Covered by `TestWaitOrbBackFollowsTheMovedLease`, `TestWaitOrbBackRefusesOnBudgetAnd
+HonorsCtx`, `TestWaitOrbCycleDemandsTheSilenceFirst`, `TestWhereAnswersByAddress` and
+the text gates in `TestTheLadderIsPatientAcrossItsOwnReboots`.
+
+
 ## Out of scope here
 
 The re-stamp loop (a firmware-bundle commit invalidates `serflash.sh --check`

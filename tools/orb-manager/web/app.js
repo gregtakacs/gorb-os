@@ -94,7 +94,12 @@ function route() {
   // #onboard is a dialog over the fleet, not a view: an old bookmark lands on
   // the list with the dialog open, which is where it belongs.
   if (v === "onboard") { show("manage"); openNewOrbDialog(); return; }
-  if (v === "orb" && current.mac) { show("orb"); return; }
+  if (v === "orb" && (current.mac || current.ip)) { show("orb"); return; }
+  // A board opened by address is still the board this session picked: the serial
+  // join door can finish knowing an IP and no MAC, and bouncing that operator
+  // back to the fleet list loses the board they just provisioned (owner report,
+  // 2026-10-29 PM). The MAC arrives with the first status reply and loadOrb
+  // adopts it; an address that goes stale is re-located by the wake retry.
   show("manage");
 }
 
@@ -789,6 +794,14 @@ async function loadOrb(returned) {
   try {
     const st = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/status"));
     current.name = st.name || current.name;
+    // A join door that carried no MAC learns it here, off the board's own answer:
+    // the mac is what the re-location calls consult after the next reboot moves
+    // the lease, and a page that never adopted it is a page that cannot follow
+    // its own board.
+    if (!current.mac && st.mac) {
+      current.mac = String(st.mac).replace(/[^0-9a-fA-F]/g, "").toLowerCase();
+      orbWakeTok = current.mac || current.ip;
+    }
     paintOrbHead();   // the name the board just gave is the headline's, too
     $("#mn-curfw").textContent = "running " + (st.fw || "version unknown") +
       " \u00b7 state " + (st.state || "?") + (st.rssi ? " \u00b7 rssi " + st.rssi : "");
@@ -815,9 +828,28 @@ async function loadOrb(returned) {
     // but silent board says so on the face the operator is looking at.
     $("#mn-orbident").textContent = "no orb answering at " + current.ip + " \u2014 " + e.message;
     gateFwButtons();
-    orbWakeTmr = setTimeout(() => {
+    orbWakeTmr = setTimeout(async () => {
       orbWakeTmr = 0;
       if ((current.mac || current.ip) !== orbWakeTok) return;   // a different card is open now
+      // The silence that armed this retry is the same silence that can carry a new
+      // lease: the fleet answers where the chip lives NOW, so the re-read follows
+      // the board instead of timing out thirty times against the address the boot
+      // left behind (owner report, 2026-10-29 PM).
+      try {
+        const q = current.mac ? "mac=" + encodeURIComponent(current.mac)
+                              : "ip=" + encodeURIComponent(current.ip);
+        const f = await (await hubFetch("/api/orb/where?" + q)).json();
+        if (f && f.ok && f.data) {
+          if (f.data.mac && !current.mac) current.mac = f.data.mac;
+          if (f.data.ip && f.data.ip !== current.ip) {
+            current.ip = f.data.ip;
+            orbIP = f.data.ip;
+            paintOrbHead();
+            $("#mn-orbident").textContent = "mac " + current.mac + "  \u00b7  at " + current.ip;
+            orbWakeTok = current.mac || current.ip;   // the handle moved; the wait is still this board's
+          }
+        }
+      } catch (e) { /* the re-read below reports the real failure */ }
       if (++orbWakeN > ORB_WAKE_MAX) {
         $("#mn-curfw").textContent = "no orb answering at " + current.ip +
           " \u2014 press Re-read when it is back";
@@ -1527,6 +1559,11 @@ $("#sp-rescan").onclick = () => serialRescan(false);
 
 function joinDone(ip, st) {
   orbIP = ip;
+  // A watch that answers knows the chip: a door that carried only an address takes
+  // the MAC from this reply, and every re-locating press from here on — Open orb,
+  // wake retry, ledger re-read — asks for the board by the handle that survives
+  // its next reboot (owner report, 2026-10-29 PM: the bounce off the orb page).
+  if (!provMac && st && st.mac) provMac = String(st.mac).replace(/[^0-9a-fA-F]/g, "").toLowerCase();
   $("#ob-done-msg").textContent =
     "connected at " + ip + " — " + (st.rssi || "?") + " dBm, fw " + (st.fw || "?") +
     (st.tz ? ", " + st.tz : "") + ".";

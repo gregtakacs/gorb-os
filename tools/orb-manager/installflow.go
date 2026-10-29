@@ -60,10 +60,19 @@ const installMinFW = "v1.1.28"
 // re-issue a job the worker already holds. Vars, so a test can run the ladder on a clock
 // a copy cannot hide behind.
 var (
-	installWait       = 45 * time.Second
-	installPoll       = 1000 * time.Millisecond
-	installHard       = 4 * time.Minute
-	installRebootWait = 75 * time.Second
+	installWait = 45 * time.Second
+	installPoll = 1000 * time.Millisecond
+	installHard = 4 * time.Minute
+	// installRebootWait is the patience every post-reboot wait spends. 75 s was
+	// the first cut and it bailed on live boards: the store's own reboot cuts
+	// this firmware's WiFi for longer than that, and the wait dialled only the
+	// address it started with, so a board that took a fresh lease during the
+	// silence was waited for at a dead address until the budget died (owner
+	// report, 2026-10-29 PM: every join-time seed after the first store died
+	// on "i/o timeout" against the old lease). 3 minutes covers the boot, the
+	// rejoin and the DHCP round trip, and waitOrbBack re-asks WHERE the chip
+	// lives on every miss, so the window follows the board instead of the lease.
+	installRebootWait = 3 * time.Minute
 )
 
 // installStep is one streamed line of an install run, NDJSON the way /api/flash and
@@ -192,6 +201,12 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 	// slate mark: a board this hub adopts from a row it cannot map (a lease moved, a grants
 	// row lost) is exactly a board whose green must be earned, and verify reads only.
 	if automatic && only == "clock" {
+		// The ladder's last steps reboot the board, and the chip may answer at a
+		// different address when it comes back. Verify the CHIP, not the address
+		// the run happened to start on.
+		if live, ok := s.waitOrbBack(ctx, ip, installRebootWait); ok {
+			ip = live
+		}
 		if verr := s.verifySeedRun(ctx, ip, send); verr != nil {
 			log.Printf("orb-manager: the join seed on %s did not verify: %s", ip, verr.Error())
 			send(installStep{Step: "install", Action: "refused", Note: verr.Error()})
@@ -225,7 +240,21 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 func (s *Server) installRun(ctx context.Context, ip, only string, force, card bool, send func(installStep)) error {
 	st, err := s.device.Status(ip)
 	if err != nil {
-		return fmt.Errorf("the orb did not answer its status: %w", err)
+		// A board that does not answer the ladder's first dial is usually mid-boot
+		// from the commit its own join just made — the seed fires seconds after the
+		// join dialog sees one status line, and the config apply reboots right
+		// behind it (owner report, 2026-10-29 PM: every join seed died here, and
+		// the clock and theme never went out). Wait the boot out on the CHIP —
+		// following its lease — and only then call the run refused.
+		send(installStep{Step: "install", Action: "waiting",
+			Note: "the orb is not answering yet — waiting through its boot before the run"})
+		var back bool
+		if ip, back = s.waitOrbBack(ctx, ip, installRebootWait); !back {
+			return fmt.Errorf("the orb did not answer its status: %w", err)
+		}
+		if st, err = s.device.Status(ip); err != nil {
+			return fmt.Errorf("the orb did not answer its status: %w", err)
+		}
 	}
 	if v, ok := firmware.ParseVersion(st.FW); !ok {
 		return fmt.Errorf("the dial reports %q, which is not a versioned firmware: flash it to %s first", st.FW, installMinFW)
@@ -235,7 +264,21 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 	}
 	listing, err := s.device.AppsList(ip)
 	if err != nil {
-		return fmt.Errorf("the orb did not answer its app ledger: %w", err)
+		// A status line can come from a board that is already dying — the reboot
+		// door answers its last request while it shuts its WiFi down — and a
+		// freshly booted board takes longer to re-scan its card than the 8 s a
+		// control dial allows. The read that opens the run gets one silence-first
+		// wait and one re-hand (bench, 2026-10-29 PM: a seed died on exactly this
+		// ledger dial thirty seconds into a boot it was otherwise surviving).
+		send(installStep{Step: "install", Action: "waiting",
+			Note: "the orb did not answer its ledger — waiting through its boot before the run"})
+		var back bool
+		if ip, back = s.waitOrbCycle(ctx, ip, installRebootWait); back {
+			listing, err = s.device.AppsList(ip)
+		}
+		if err != nil {
+			return fmt.Errorf("the orb did not answer its app ledger: %w", err)
+		}
 	}
 	if !listing.Mounted {
 		return fmt.Errorf("no card in the socket — the install lands files on the card, so insert or mount one first")
@@ -510,13 +553,29 @@ func (s *Server) cleanSlate(ctx context.Context, ip string, send func(installSte
 		default:
 		}
 		if _, e := s.device.AppUninstall(ip, row.Slug); e != nil {
-			return fmt.Errorf("clearing %s: %w", row.Slug, plainDeviceErr(e, 0))
+			// A silent board behind an uninstall is the boot the previous row's
+			// dial-rebuild took, not a refusal: wait it out once, at wherever the
+			// chip answers now, and hand the call back before calling the slate a
+			// failure (owner report, 2026-10-29 PM: i/o timeout killed slates
+			// mid-erase on boards that were simply rebooting).
+			var back bool
+			if ip, back = s.waitOrbBack(ctx, ip, installRebootWait); back {
+				_, e = s.device.AppUninstall(ip, row.Slug)
+			}
+			if e != nil {
+				return fmt.Errorf("clearing %s: %w", row.Slug, plainDeviceErr(e, 0))
+			}
 		}
+		s.grants.learnAs(ip, s.macFor(ip))
 		send(installStep{Step: row.Slug, Action: "uninstalled", Note: "clean slate"})
 	}
 	// Both library trees, by the names the device files them under. A card that holds
 	// neither answers an error, which the caller reads as nothing to erase: a brand-new
-	// board lands here with an empty card and must not be refused for it.
+	// board lands here with an empty card and must not be refused for it. A dial that
+	// times out is a board mid-boot more often than a card refusing, and the ladder
+	// died on exactly that reading (owner report, 2026-10-29 PM): the failure waits
+	// the boot out once, at wherever the chip answers now, and hands the call back
+	// before the tree is called unerasable.
 	for _, tree := range []string{"apps", "themes"} {
 		select {
 		case <-ctx.Done():
@@ -524,10 +583,17 @@ func (s *Server) cleanSlate(ctx context.Context, ip string, send func(installSte
 		default:
 		}
 		if _, e := s.device.SDRemove(ip, tree, true); e != nil {
-			log.Printf("orb-manager: clean slate on %s left %s alone: %s", ip, tree, plainDeviceErr(e, 0))
-			send(installStep{Step: tree, Action: "skipped", Note: "nothing to erase"})
-			continue
+			var back bool
+			if ip, back = s.waitOrbBack(ctx, ip, installRebootWait); back {
+				_, e = s.device.SDRemove(ip, tree, true)
+			}
+			if e != nil {
+				log.Printf("orb-manager: clean slate on %s left %s alone: %s", ip, tree, plainDeviceErr(e, 0))
+				send(installStep{Step: tree, Action: "skipped", Note: "nothing to erase"})
+				continue
+			}
 		}
+		s.grants.learnAs(ip, s.macFor(ip))
 		send(installStep{Step: tree, Action: "erased", Note: "clean slate"})
 	}
 	// The rows the hub remembered are now false on every count, and the card list with
@@ -660,9 +726,13 @@ func (s *Server) installTheme(ctx context.Context, ip string, send func(installS
 			log.Printf("orb-manager: the theme door on %s cried no-card over a mounted card -- rebooting to arm it", ip)
 			send(installStep{Step: "theme", Action: "rebooting",
 				Note: "the upload door waits on a boot the fresh enable never got — rebooting for it"})
-			if _, rerr := s.device.Reboot(ip); rerr == nil && s.installWaitBack(ip) {
-				s.dropThemeCache(ip)
-				terr = doUp()
+			if _, rerr := s.device.Reboot(ip); rerr == nil {
+				live, ok := s.installWaitBack(ip)
+				ip = live
+				if ok {
+					s.dropThemeCache(ip)
+					terr = doUp()
+				}
 			}
 		}
 	}
@@ -688,9 +758,11 @@ func (s *Server) installTheme(ctx context.Context, ip string, send func(installS
 	}
 	send(installStep{Step: "theme", Action: "stored"})
 	send(installStep{Step: "theme", Action: "rebooting"})
-	if !s.installWaitBack(ip) {
+	live, back := s.installWaitBack(ip)
+	if !back {
 		return fmt.Errorf("the dial stored the theme but has not answered again within %s", installRebootWait)
 	}
+	ip = live
 	// Back on the network and wearing the new face — and the reads the reboot's own
 	// gap took could have refilled the memory with the card as it was BEFORE the
 	// store. Retire it once more so the first read this run is followed by a dial
@@ -821,19 +893,94 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 	send(installStep{Step: c.ID, Action: "done", Note: "stored; the board reboots onto it"})
 }
 
-// installWaitBack polls the short status client until the orb answers again — the store's own
-// reboot, waited out inside the port hold so no sweep races it.
-func (s *Server) installWaitBack(ip string) bool {
-	deadline := time.Now().Add(installRebootWait)
-	for time.Now().Before(deadline) {
+// installWaitBack is the post-reboot wait the theme step uses at both of its
+// reboots: the cycle-shaped one, because a board answers its last request for a
+// beat while it is dying.
+func (s *Server) installWaitBack(ip string) (string, bool) {
+	return s.waitOrbCycle(context.Background(), ip, installRebootWait)
+}
+
+// waitOrbCycle is waitOrbBack for the waits that sit directly behind a reboot the
+// ladder itself caused. The firmware answers the reboot door — and the beat of
+// traffic that follows it — while it is dying, so a wait that probes first reads
+// that corpse as the return and hands the next dial to a board mid-reboot (bench,
+// 2026-10-29 PM: the theme door's retry ate a second "no card" from a shutting-down
+// board this way). The cycle is proved by SILENCE first: up to the quiet grace of
+// it, and only the answer that follows a silence counts as the return. A board that
+// never goes quiet inside the grace is a board whose reboot did not take, and the
+// wait hands it back answering so the caller reports what it actually finds.
+func (s *Server) waitOrbCycle(ctx context.Context, ip string, budget time.Duration) (string, bool) {
+	quiet := time.NewTimer(20 * time.Second)
+	defer quiet.Stop()
+	for alive := true; alive; {
 		select {
+		case <-ctx.Done():
+			return ip, false
+		case <-quiet.C:
+			alive = false // the reboot never took; the board is stable and answering
+		default:
+		}
+		if _, err := s.orb.Status(ip); err != nil {
+			alive = false // gone: now the honest wait begins
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ip, false
 		case <-time.After(time.Second):
 		}
+	}
+	return s.waitOrbBack(ctx, ip, budget)
+}
+
+// dialLive answers where the chip that lives at this address lives NOW: the MAC the
+// grant or the fleet row carries for it, then the fleet's live answer for that chip.
+// "" means no fresher answer than the address the caller already holds.
+func (s *Server) dialLive(ip string) string {
+	mac := s.macFor(ip)
+	if mac == "" {
+		return ""
+	}
+	return s.liveIPforMAC(mac)
+}
+
+// waitOrbBack waits a self-inflicted reboot out on the CHIP rather than the address.
+// Every miss re-asks the fleet where the chip lives, so a board that takes a fresh
+// lease through its own boot is found at the new number instead of died on at the
+// old one (owner report, 2026-10-29 PM: the join-time seed bailed on "i/o timeout"
+// against the pre-reboot address while the board lived happily under a new lease).
+// The self-reboot excuse rides every probe so the cable sweep reads the silence as
+// ours and stays off the port. The short status client carries the probes; the
+// returned address is where the board answered, and every caller that dials again
+// must dial THAT one. A ctx end answers false so a departed browser never strands a
+// claim; budget exhaustion answers false too, and the caller refuses with it.
+func (s *Server) waitOrbBack(ctx context.Context, ip string, budget time.Duration) (string, bool) {
+	deadline := time.Now().Add(budget)
+	mac := s.macFor(ip)
+	for {
+		if mac == "" {
+			mac = s.macFor(ip)
+		}
+		if mac != "" {
+			if live := s.liveIPforMAC(mac); live != "" && live != ip {
+				ip = live
+			}
+			s.expectSelfReboot(mac)
+		} else {
+			s.armSelfRebootFor(ip)
+		}
 		if _, err := s.orb.Status(ip); err == nil {
-			return true
+			return ip, true
+		}
+		if !time.Now().Before(deadline) {
+			return ip, false
+		}
+		select {
+		case <-ctx.Done():
+			return ip, false
+		case <-time.After(2 * time.Second):
 		}
 	}
-	return false
 }
 
 // deviceSentence unwraps an orbnet.DeviceError to the firmware's own words, so a refusal

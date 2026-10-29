@@ -966,6 +966,13 @@ func (s *Server) waitForStore(ctx context.Context, ip, id string) (string, strin
 				// fresh patch of silence so the sweep keeps declining this port.
 				s.armSelfRebootFor(ip)
 			}
+			// A patch of silence is also exactly when a self-inflicted reboot has
+			// moved the lease. The fleet answers where the chip lives now, so the
+			// wait follows the board instead of dying at the address it started
+			// with (owner report, 2026-10-29 PM).
+			if live := s.dialLive(ip); live != "" && live != ip {
+				ip = live
+			}
 		default:
 			misses = 0
 			if list.JobBusy {

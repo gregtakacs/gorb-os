@@ -81,6 +81,11 @@ func TestManageViewHasThemeAndConsoleControls(t *testing.T) {
 		"/api/theme/list", "/api/theme/install", "/api/theme/delete",
 		"/api/theme/rescan", "/api/theme/upload", "/api/theme/upload-status", "/api/console", "/api/orb/known",
 		"/api/orbs", "function applyFound", "function watchOrbs", "function paintFound",
+		// Bug 6's shelf preview, pinned the same way as the card paths: the shelf
+		// row's own endpoint and the drawer that reads it. If either goes away the
+		// Themes face is back to showing a library theme with no face (docs
+		// bugfix-batch-2026-10-29.md #6), and nothing else in the suite notices.
+		"/api/theme/shelf-preview", "function shelfPreviewPlane",
 		// The fleet controls, pinned by the same rule as the rest. /api/fleet/set
 		// is deliberately NOT one of them: naming on this page is display-only,
 		// so a card that posts a rename is the bug now, not the feature. The live

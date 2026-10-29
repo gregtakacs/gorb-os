@@ -1061,6 +1061,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// GET, nothing written, and the same learned-address and theme-id gates as the
 	// calls beside it.
 	mux.Handle("/api/theme/preview", s.requireControl(http.HandlerFunc(s.handleThemePreview)))
+	// A shelf theme's own preview, read off the hub's disk rather than relayed from a
+	// card: same bytes, same shape, no orb involved. GET, read-only, nothing written.
+	mux.Handle("/api/theme/shelf-preview", s.requireControl(http.HandlerFunc(s.handleThemeShelfPreview)))
 	mux.Handle("/api/theme/upload", s.requireControl(http.HandlerFunc(s.handleThemeUpload)))
 	// The confirmed answer to a duplicate: spend the device's one-shot commit token
 	// so the replace costs an empty POST instead of a second full upload.

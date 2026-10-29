@@ -2667,10 +2667,24 @@ async function themePreviewPlane(el, t, mark) {
     if (previewCtrl === ctrl) previewCtrl = null;
   }
   if (!b || b.byteLength < 4) return fail("preview came back empty");
+  const bad = drawPlane(el, b);
+  if (bad) return fail(bad);
+  el.title = "how this bake poses its dial";
+  el.hidden = false;
+  if (mark) { mark.hidden = true; mark.onclick = null; }
+}
+
+// drawPlane unpacks a preview body — the device's own [u16 w][u16 h][RGB565 LE]
+// wire shape, whether it arrived from /api/theme/preview off a card or
+// /api/theme/shelf-preview off the hub's disk — into the canvas el. It returns a
+// failure sentence naming what the body refused to be, or null once the pixels
+// are down. Both callers share this one unpack so the two doors cannot drift on
+// the byte order that makes a plane read as a face rather than noise.
+function drawPlane(el, b) {
   const dv = new DataView(b);
   const w = dv.getUint16(0, true), h = dv.getUint16(2, true);
-  if (w < 1 || h < 1) return fail("preview named no plane");
-  if (dv.byteLength < 4 + w * h * 2) return fail("preview came short: " + dv.byteLength + " of " + (4 + w * h * 2) + " B");
+  if (w < 1 || h < 1) return "preview named no plane";
+  if (dv.byteLength < 4 + w * h * 2) return "preview came short: " + dv.byteLength + " of " + (4 + w * h * 2) + " B";
   el.width = w;
   el.height = h;
   const cx = el.getContext("2d");
@@ -2683,6 +2697,49 @@ async function themePreviewPlane(el, t, mark) {
     p[i * 4 + 3] = 255;
   }
   cx.putImageData(im, 0, 0);
+  return null;
+}
+
+// shelfPreviewPlane draws one hub-library theme's own baked plane beside its row, so a
+// theme the card does not hold still pictures itself. The bytes come from
+// /api/theme/shelf-preview — a disk read on the hub, so no card lane is held, no
+// single-task queue is needed, and the retry just re-runs the fetch. The decode and the
+// quiet-404-for-no-plane both match the device row's themePreviewPlane exactly: the
+// Aviator's factory image and a planeless bake get the same hidden square and the same
+// hover-reasoned "?" a card read would show. name is the shelf file's stem, the handle
+// namedTheme reads the container under.
+async function shelfPreviewPlane(el, mark, name) {
+  const fail = (why) => {
+    if (!mark) return;
+    mark.className = "pvq";
+    mark.textContent = "?";
+    mark.title = why + " \u2014 click to try again";
+    mark.hidden = false;
+    mark.onclick = () => { mark.onclick = null; shelfPreviewPlane(el, mark, name); };
+  };
+  if (mark) { mark.className = "pvq spin"; mark.textContent = ""; mark.title = "reading this plane"; mark.hidden = false; }
+  let r, b;
+  try {
+    r = await hubFetch("/api/theme/shelf-preview?name=" + encodeURIComponent(name));
+    if (r.status === 404) {
+      const why = await r.json().catch(() => ({}));
+      const msg = (why && why.error) ? String(why.error) : "";
+      if (msg && !/carries no preview/i.test(msg)) return fail("preview read failed: " + msg);
+      if (mark) { mark.hidden = true; mark.onclick = null; }
+      return;
+    }
+    if (!r.ok) {
+      let why = "HTTP " + r.status;
+      try { const j = await r.json(); if (j && j.error) why = j.error; } catch (e) {}
+      return fail("preview read failed: " + why);
+    }
+    b = await r.arrayBuffer().catch(() => null);
+  } catch (e) {
+    return fail("preview read failed: " + (e && e.message ? e.message : String(e)));
+  }
+  if (!b || b.byteLength < 4) return fail("preview came back empty");
+  const bad = drawPlane(el, b);
+  if (bad) return fail(bad);
   el.title = "how this bake poses its dial";
   el.hidden = false;
   if (mark) { mark.hidden = true; mark.onclick = null; }
@@ -3278,6 +3335,22 @@ function themeShelfRows(scope, deviceRows, state, shelf) {
     if (onCard[String(f.title || "").toLowerCase()]) continue;
     n++;
     const li = document.createElement("li");
+    // The same ID photo a card row gets, drawn from the hub's own copy. A shelf theme
+    // carries its preview inside its container, so the hub reads that plane off disk
+    // (shelfPreviewPlane -> /api/theme/shelf-preview) and no orb is dialed for it. A
+    // bake with no plane, like the factory Aviator's FORMAT 3 image, answers the quiet
+    // 404 and the row reads exactly as it did before planes existed.
+    const pv = document.createElement("canvas");
+    pv.className = "pv";
+    pv.width = 44;
+    pv.height = 44;
+    pv.hidden = true;
+    li.appendChild(pv);
+    const pvq = document.createElement("span");
+    pvq.className = "pvq";
+    pvq.hidden = true;
+    li.appendChild(pvq);
+    shelfPreviewPlane(pv, pvq, String(f.file).replace(/\.orbtheme$/i, ""));
     const label = document.createElement("b");
     label.textContent = f.title || f.file;
     li.appendChild(label);

@@ -116,25 +116,90 @@ theme draws a thumbnail.
   and throws it away.
 
 **Fix.** The hub renders what it holds, and stops claiming a preview it does
-not have. The full fix has two halves and is feature-sized, not a patch:
+not have. The fix has two halves and both are now done.
 
-- **Bake**: the composer's exporter already writes a class-9 `PREVIEW` row
-  (`orbtheme-baker.js:3201`, appended at class 9). The shipped `skeleton.orbtheme`
-  carries no plane because the bake that produced it did not ask for one. Re-bake
-  the shelf default with `preview: { plane }` from a rendered 232x232 frame, and
-  wire that bake into the hub's build the way `make hub` wires the version
-  package — the same "no manual step" rule `fw_embed_test.go` enforces.
-- **Serve**: shelf rows need a preview route the way device rows have
-  `/api/v1/sd/preview`. The bytes live in the container's own art bank, at
-  class 9 slot 0, found through the elems table — `orb_theme_preview_read()`
-  (orb_theme.c:1094) is the reference, and the hub's own
-  `themecontainer.go` walker is half the distance. The endpoint answers the
-  same `[u16 w][u16 h][RGB565]` shape so `putPlane` is unchanged.
-- **Aviator**: the factory slot is a FORMAT 3 image with no class-9 row and no
-  elems table, and no route can change that. The Themes face's row for a theme
-  whose plane 404s already draws the design's quiet answer; keep it.
+- **Bake: already shipped, verified by parsing the artifact.** This section earlier
+  claimed the shelf default carried no plane. That read the container wrong: it looked
+  for a `preview` slug string, and class 9 lives as a numeric element row, not a name.
+  `skeleton.orbtheme` is a FORMAT 3 / abi-4 bake whose elem8 is `cls=9 slot=0` at
+  catalogue frame0, one 232x232 opaque plane at the bank's running end — the default
+  was re-exported through the real composer path on purpose (commit 7fab0bb). No
+  re-export is needed.
+- **Serve: the half that was missing, now built.** A shelf theme's plane already lives
+  in the bytes the hub parsed to list the row, so no orb is dialed to show it.
+  - `orbnet.ThemePreviewPlane` (new `internal/orbnet/shelfpreview.go`) is the Go twin of
+    `orb_theme_preview_read` (orb_theme.c:1094): the `indexSlugs` walk finds the one
+    section's blob, the element-table stride comes from the blob's own length
+    (`blob_check`'s rule, not a constant), the class-9 slot-0 row's `frame0` indexes the
+    sprite catalogue (`orb_bundle_spr_at`) — never `frame0 * stride`, per `orb_elems.h` —
+    and the record's `art_off` is absolute inside the file (`orb_bundle.c:365` reads
+    `file + art_off`), so the plane copies straight out of the art bank. It answers
+    `(nil, nil)` for a container with no class-9 row and a real error only for one that
+    will not walk. `TestShelfPreviewReadsTheShippedDefault` drives it against the seed
+    file and pins the 232x232 extent in the device's `[u16 w][u16 h][RGB565]` shape.
+  - The route `GET /api/theme/shelf-preview?name=<stem>` (theme.go
+    `handleThemeShelfPreview`, wired in main.go beside the card preview) answers that
+    same shape, or 404 `{"error":"this theme carries no preview"}` for a planeless bake.
+    It reads through `Library.namedTheme`, so the gate is the library's one-segment rule.
+    A disk read on the hub: no `ip`, no card lane, so it needs none of the relay's
+    budgets, and it sits behind the same `requireControl` as its card twin.
+  - The shelf row (`web/app.js` `themeShelfRows`) now builds the same `<canvas class=pv>`
+    + `.pvq` chip a card row builds and calls the new `shelfPreviewPlane`, which unpacks
+    the bytes through a shared `drawPlane` helper both paths use, so the RGB565 order has
+    one home. Its failure chip and quiet-404 match the device row, so a bake with no
+    plane keeps the design's hidden square rather than a false "?".
+- **Aviator**: unchanged, and correctly so. The factory slot is a FORMAT 3 image with
+  no class-9 row and no elems table, and no route can change that, so the hub keeps the
+  device's honest 404 and the row's quiet answer.
 
-This half stays open. The other five are fixed.
+All six of these are fixed. `TestTheAviatorStillStandsForNoPreview` stays red on purpose: the
+hub cannot invent a plane for factory art it does not hold. What changed is that the
+shelf's own theme — the file a wiped board seeds from — now pictures itself without
+install.
+
+## 7. Forget deleted the row and the card kept the orb
+
+**Symptom.** After the first six fixes, an operator removed an orb with the plain
+Forget on the card. The hub answered `ok`. The board came back on the next frame
+named `orb-<mac>`, and pressing Forget again did nothing.
+
+**Root cause.** `handleFleetForget` deletes the fleet row and revokes the address
+grants, and stops there. The mDNS browser is a separate cache, and `Candidates()`
+serves a board's last announcement until TTL plus grace ages out (120 s by
+`MDNS_TTL`). The next `foldCandidates` read that ghost and called `fleet.Observe`,
+which files a row out of nothing. So the deletion held for one tick and the fold
+undid it. The resurrected row carried no name — the announcement's instance is
+MAC-derived, and the name lived in the deleted row — which is why the card printed
+`orb-<mac>` instead of the orb's word. The same fold refreshed the row's presence
+clock, so `forgetGate` refused the second press as "announced itself Ns ago".
+
+The lonely erase already survives this, and the commit that fixed it
+(`013434a`) named the mechanism exactly. What it did not cover is the plain door:
+an erase leaves a `lonelyMark` and `outranked` refuses a packet older than the
+mark, but a plain forget has no mark to leave. Reusing the mark would have been a
+wrong fact — it suppresses a cable descriptor's claim and paints the port picker
+blank, which describes a written-over chip, not an un-listed one.
+
+**Fix.** Delete the evidence, do not refuse to read it.
+
+- `Browser.ForgetMAC(mac)` (internal/orbmdns/browse.go) drops one chip from all
+  three places the browser can hold it: the promoted `byMAC` row, the half-parsed
+  `pending` record, and the A record cached under the instance's host name. It
+  takes the MAC in either spelling through `CanonicalMAC`, refuses an unparseable
+  one rather than guessing, and reports whether anything went. It marks the
+  revision and wakes the card, so the page drops the row at once.
+- `discovery` gains the method (discover.go), and `Server.forgetGhost` (fleet.go)
+  calls it from `handleFleetForget` after the row delete, and from `unMakeOrb`
+  (wipe.go) beside the existing revoke loop, so every forget door sweeps its own
+  cache on the way out.
+- Over-reach guard: the purge removes a stale claim, not the board's standing. A
+  chip that announces again after the forget is making a present-tense claim and
+  re-files its own row, which is what `forgetGate`'s refusal sentence promises.
+
+`forgetghost_test.go` pins the door, the purge, the re-announce limit and the
+stranger-is-left-alone rule; `TestForgetMACTakesTheWholeChipAndWakes` pins the
+browser half. Both the resurrection test and the door test were confirmed red with
+the purge call removed, then green with it back.
 
 ## Out of scope here
 

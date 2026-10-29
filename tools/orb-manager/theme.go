@@ -642,6 +642,50 @@ func (s *Server) handleThemePreview(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(hit.body)
 }
 
+// handleThemeShelfPreview answers GET /api/theme/shelf-preview?name=<stem> with one
+// shelf theme's baked preview plane, in the device's wire shape — [u16 w][u16 h][RGB565
+// LE] — exactly as /api/theme/preview relays a plane off the card. The difference is
+// where the bytes come from: a card row is the device's to unpack, but a shelf theme the
+// card does not hold has no row to name, so the hub reads the same class-9 plane straight
+// out of the container it already parsed to list the row (orbnet.ThemePreviewPlane).
+//
+// It needs no orb in hand and touches no lane: the answer is a file read on the hub's own
+// disk, so it costs none of the card-walk patience the device relay is priced against, and
+// the queue that drives it never blocks the dial's one-task httpd. A theme whose container
+// carries no plane answers 404 "this theme carries no preview" — the same quiet sentence
+// the device sends for the Aviator's factory image — so the face draws the text row it
+// drew before planes existed. The name gate is the library's own: one plain stem, checked
+// before it reaches a path builder, exactly as the push and delete doors hold it.
+func (s *Server) handleThemeShelfPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	stem := strings.TrimSpace(r.URL.Query().Get("name"))
+	body, err := s.library().namedTheme(stem)
+	if err != nil {
+		// A library with no such file is a plain refusal with the hub's reason; the
+		// face's failure chip shows it on hover, the same way a timed-out card read does.
+		s.jsonErr(w, err.Error())
+		return
+	}
+	plane, err := orbnet.ThemePreviewPlane(body.blob)
+	if err != nil {
+		s.jsonErr(w, err.Error())
+		return
+	}
+	if plane == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"ok":false,"error":"this theme carries no preview"}`))
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(plane)
+}
+
 // handleThemeStem answers the one question a non-secure browser context cannot
 // answer for itself: the 12-hex identity of a theme name. The composer names its
 // .orbtheme downloads with window.crypto.subtle, which browsers define only on

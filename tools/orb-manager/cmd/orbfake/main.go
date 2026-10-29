@@ -40,7 +40,7 @@ func main() {
 		"announce _orb._tcp over mDNS too, so a real browser (the hub, or tools/bench/browse_mdns.py) can find this fake without an orb on a cable")
 	mac := flag.String("mac", "44bd8d782618", "the 12 hex digits to announce and to serve from /api/v1/status; the instance name is derived from them as the firmware derives it")
 	staIP := flag.String("ip", "192.168.2.34", "the IPv4 to answer the A record with")
-	fw := flag.String("fw", "094fa22", "the fw= string; the status route reports the same value, one field two readers, as on the device")
+	fw := flag.String("fw", "074afed", "the fw= string; the status route reports the same value, one field two readers, as on the device")
 	port := flag.Int("mdns-port", 0, "UDP port to answer mDNS on; 0 takes the standard 5353, and an ephemeral one is what lets a second advertiser run beside avahi")
 	provisioning := flag.Bool("provisioning", false, "announce state=provisioning, the factory-reset shape item 10 depends on")
 	flag.Parse()

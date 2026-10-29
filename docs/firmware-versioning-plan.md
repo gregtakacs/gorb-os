@@ -585,7 +585,7 @@ is the whole point of the exercise.
   `v1.3.0-rc.1+aabbccd`, `v0.0.0+0000000`, and a padded `  v1.2.3+aaaaaaa  ` to pin
   the trim.
 - `TestParseVersionRefusesEverythingElse`: the legacy forms `8eb4bf0`,
-  `8eb4bf0-dirty`, `094fa22`, plus `1`, `""`, `v1.2`, `v1.2.0.4`, `v1.2.0+abc`,
+  `8eb4bf0-dirty`, `074afed`, plus `1`, `""`, `v1.2`, `v1.2.0.4`, `v1.2.0+abc`,
   `v1.2.0-`, `v1.2.0-rc..1`, `V1.2.0+aaaaaaa`, and a 33-byte oversize string. The
   legacy rows are the regression guard: a SHA that half-parsed would silently order
   below every real release.

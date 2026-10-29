@@ -43,7 +43,7 @@ func TestParseVersionAcceptsRealStamps(t *testing.T) {
 // 0.0.0 would order below every real release and quietly mark a working orb ancient.
 func TestParseVersionRefusesEverythingElse(t *testing.T) {
 	for _, raw := range []string{
-		"8eb4bf0", "8eb4bf0-dirty", "094fa22", // the legacy git describe forms
+		"8eb4bf0", "8eb4bf0-dirty", "074afed", // the legacy git describe forms
 		"1", "", "v1.2", "v1.2.0.4", "v1.2.0+abc", "v1.2.0-", "v1.2.0-rc..1",
 		"V1.2.0+aaaaaaa",
 		"v1.2.3-rc.1+e1a2b3c-dirty-and-then-some-more-bytes-here", // past the field width

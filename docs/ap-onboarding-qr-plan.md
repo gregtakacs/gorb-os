@@ -1,6 +1,14 @@
 # On-device QR onboarding screen — implementation plan
 
-**Status: PLAN ONLY. Not implemented.** Nothing here is written to `main/` yet.
+**Status: SUPERSEDED by `docs/provisioning-first-plan.md` (2026-10-29).** Its
+URL-only QR payload is wrong for the pairing job — a URL on a phone that has not
+joined the AP opens a browser onto an unreachable address — and it treats AP
+isolated mode as a supported steady state, which that plan deletes. Kept for the
+LVGL threading invariant, the two-stage screen pattern and the widget-verification
+notes, which the new plan reuses.
+
+**Was: PLAN ONLY. Not implemented.** Nothing here is written to `main/` yet.
+
 
 ## Problem
 

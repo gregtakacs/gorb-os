@@ -1868,7 +1868,11 @@ $("#ob-manage").onclick = async () => {
   // Pass the name this join was just given as the row, so the headline reads
   // "Kitchen" on the first frame rather than a mac until the status reply
   // arrives a beat later. loadOrb confirms it against the board regardless.
-  openOrbByIP(ip, provMac, { name: ($("ob-name").value || "").trim() });
+  // The # matters: querySelector("ob-name") looks for a TAG, finds none, and the
+  // throw killed this press AFTER the dialog had closed — the operator landed on
+  // the fleet list with the button they pressed never having navigated anywhere
+  // (owner report, 2026-10-29 PM, symptom three).
+  openOrbByIP(ip, provMac, { name: ($("#ob-name").value || "").trim() });
 };
 // The third answer on a finished flash: stay here. A cable flash that worked and
 // joined is a completed job, and the two buttons beside this one both move the

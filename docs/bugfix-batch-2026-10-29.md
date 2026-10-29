@@ -701,3 +701,45 @@ the skeleton face, while an upgrade keeps the registry it finds.
 
 Bugs 1, 2, 4, 5 and 6 are firmware or hub changes that still need a bench pass on a
 rebuilt image. Bug 7 is hub-only and covered by `forgetghost_test.go`.
+
+## Update (PM, second report: two reboots and a bounce that survived its own fix)
+
+The owner ran the full join on the new hub and filed three symptoms. One is a
+one-character bug. Two are honest behavior the page never said out loud until
+the relay above shipped — the operator was right to be suspicious; the machine
+was busy and mute.
+
+**Three: "Open this orb" still lands on the fleet list.** The route fix (open
+by MAC *or* IP) was correct and incomplete: the press never reached the route.
+The handler read the name field as `$("ob-name")` — no hash. `querySelector`
+treats a bare word as a *tag* name, finds no `<ob-name>` element, returns
+`null`, and `.value` throws. The handler had already closed the dialog by that
+line, so the throw killed the press after the mask hid and before
+`openOrbByIP` ran: dialog gone, view still the fleet. Same symptom, different
+organ. Fixed to `$("#ob-name")`. The regression gate
+(`TestNoElementLookupsLoseTheirHash`) does not watch that one call site — it
+scans every `$("…")`/`$$("…")` string literal in app.js and tabs.js and fails
+on any selector starting with a bare letter, because the suite never presses a
+button and an editor shows none of these.
+
+**One: the orb reboots when Connect is pressed.** It must. The firmware arms
+its provisioning reader and its boot scan exactly once, at app startup, and
+only on an unprovisioned boot — so `ProvisionOn` takes the ROM's own reset
+(`EnterDownloadMode` then `HardReset`) to force that fresh boot before it can
+read `PROVSCAN` or accept a `PROV` line. The hub says so on the stream —
+"opening the console (this reboots the orb into its app)" — and with the relay
+above that line rides the dialog's visible watch row. The board rebooting the
+instant Connect is pressed is the door opening, not a fault.
+
+**Two: the orb reboots again before the theme lands.** This is the known
+firmware debt, mitigated on purpose: the upload door builds its registry at
+boot, so a clock freshly enabled mid-run is invisible to it, and the door
+cries "no card in the socket" at a card sitting right there. The hub takes one
+reboot for it and says exactly that on the step: "the upload door waits on a
+boot the fresh enable never got — rebooting for it." No card is lost; one boot
+is spent, and the patience above covers the silence it creates. The real fix
+is firmware (`orb_net.c` distinguishing missing-card from
+uninitialized-registry) and stays on the books as debt.
+
+**Tests:** new gate + the full suite green; `go vet`, `go build`, `make build`
+clean.

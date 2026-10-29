@@ -392,6 +392,66 @@ func TestTheLadderIsPatientAcrossItsOwnReboots(t *testing.T) {
 	}
 }
 
+// TestNoElementLookupsLoseTheirHash is the sweep for the one-character class of bug that
+// re-created the Open-orb bounce after it had been fixed (owner report, 2026-10-29 PM):
+// $("ob-name") asks querySelector for a TAG named ob-name, finds none, and the null deref
+// kills the press — mid-handler, after the dialog closed — dumping the operator on the
+// fleet list. The page's two lookup helpers take CSS selectors, so every string they are
+// handed must start with an id (#), a class (.), or be an attribute/element selector the
+// call site can defend. This gate scans the whole shipped script, because an editor shows
+// none of these and the suite otherwise never presses a button.
+func TestNoElementLookupsLoseTheirHash(t *testing.T) {
+	for _, file := range []string{"web/app.js", "web/tabs.js"} {
+		src := readFile(t, file)
+		for _, m := range idlessLookups(src) {
+			t.Errorf("%s: %s lacks a leading # or . — querySelector reads it as a tag name", file, m)
+		}
+	}
+	// And the press itself must still navigate: the handler opens the board by
+	// address after reading the name field the right way.
+	app := readFile(t, "web/app.js")
+	press := blockOf(t, app, `$("#ob-manage").onclick`)
+	for _, want := range []string{`$("#ob-name")`, "openOrbByIP(ip, provMac"} {
+		if !strings.Contains(press, want) {
+			t.Errorf("the Open-orb press lost %q: it is back to dying before it navigates", want)
+		}
+	}
+}
+
+// idlessLookups returns every $("...")/$$("...") argument in src whose selector begins
+// with a bare letter — the tag-name reads that throw on the id lookups this page makes.
+// Element selectors written on purpose (querySelectorAll("div")) would match too, and the
+// page has none; a deliberate one joins an allowlist here, not a gate exemption there.
+func idlessLookups(src string) []string {
+	var out []string
+	for _, call := range []string{`$(`, `$$(`} {
+		rest := src
+		for {
+			i := strings.Index(rest, call)
+			if i < 0 {
+				break
+			}
+			rest = rest[i+len(call):]
+			if !strings.HasPrefix(rest, `"`) {
+				continue
+			}
+			end := strings.IndexByte(rest[1:], '"')
+			if end < 0 {
+				continue
+			}
+			sel := rest[1 : 1+end]
+			if sel == "" {
+				continue
+			}
+			c := sel[0]
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+				out = append(out, call+`"`+sel+`"`)
+			}
+		}
+	}
+	return out
+}
+
 // TestWaitOrbCycleDemandsTheSilenceFirst pins the corpse probe: the firmware
 // answers the reboot door — and the beat of traffic behind it — while it is dying,
 // so the post-reboot wait must see the silence before it believes any answer

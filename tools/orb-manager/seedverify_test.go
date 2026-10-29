@@ -134,12 +134,14 @@ func TestShelfGateHonoursARealShelf(t *testing.T) {
 	}
 }
 
-// installTheme must keep its reboot-retry against the door's conflated refusal, and it
-// must keep it CONDITIONED on the mounted re-read — a card that is truly gone has to keep
-// the honest error, not spin the board. Text gate, the convention this file's siblings use:
-// the bench death (2026-10-29, Bronze: join-time themes died at 503 over a mounted card,
-// and three months of empty themes folders traced back to one NULL registry entry).
-func TestThemeDoorRetryStaysArmedAndConditional(t *testing.T) {
+// installTheme must NOT reboot the board to arm the upload door. The retry shipped as a
+// mitigation for a door that conflated a missing card with an uninitialized clock
+// registry (bench, 2026-10-29, Bronze: join-time themes died at 503 over a mounted card),
+// and firmware v1.1.33 pays that debt on the theme boot rung. The owner retired the
+// mitigation the same day: every board runs 1.1.33 or newer, so a 503 here is a card
+// genuinely absent, and a retry would buy one honest failure a second boot and a second
+// 3.7 MB upload. Text gate, the convention this file's siblings use.
+func TestThemeDoorCarriesNoRebootRetry(t *testing.T) {
 	src, err := os.ReadFile("installflow.go")
 	if err != nil {
 		t.Fatalf("installflow.go: %v", err)
@@ -153,10 +155,11 @@ func TestThemeDoorRetryStaysArmedAndConditional(t *testing.T) {
 	if n := strings.Index(fn, "\n}\n"); n > 0 {
 		fn = fn[:n]
 	}
-	for _, want := range []string{"no card in the socket", "Reboot(", "installWaitBack(", "Mounted"} {
-		if !strings.Contains(fn, want) {
-			t.Errorf("installTheme lost %q: the join-time theme step is back to eating the door's lie", want)
-		}
+	if strings.Contains(fn, "s.device.Reboot(") {
+		t.Error("installTheme reboots the board again: v1.1.33 fixed the door, and the fleet has no pre-1.1.33 board to mitigate for")
+	}
+	if n := strings.Count(fn, "doUp()"); n != 1 {
+		t.Errorf("the theme upload runs %d times where the ladder promises one: a retry is back, %s", n, "and every join pays it twice")
 	}
 }
 

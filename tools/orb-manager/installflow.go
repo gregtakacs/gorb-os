@@ -718,30 +718,16 @@ func (s *Server) installTheme(ctx context.Context, ip string, send func(installS
 	}
 	doUp := func() error { _, e := s.ota.ThemeUploadProgress(ip, blob, false, progress); return e }
 	terr := doUp()
-	// The shipped door speaks one sentence for two failures. upload_begin resolves the
-	// themes dir through the CLOCK app's file-source registry, which is only built at
-	// boot — so a clock this run installed and enabled without a reboot answers
-	// NOT_FOUND, and the door calls it "no card in the socket" with a 503 while
-	// /api/v1/sd says mounted true (bench, Bronze, 2026-10-29: every join-time theme
-	// died here; the empty themes folder the owner found on the card IS this bug).
-	// When the card swears it is mounted, that refusal is the door, not the socket:
-	// reboot, wait for the dial back, and hand it the upload one more time. A card
-	// that is truly gone keeps the honest error untouched.
-	if terr != nil && strings.Contains(terr.Error(), "no card in the socket") {
-		if list, lerr := s.device.AppsList(ip); lerr == nil && list.Mounted {
-			log.Printf("orb-manager: the theme door on %s cried no-card over a mounted card -- rebooting to arm it", ip)
-			send(installStep{Step: "theme", Action: "rebooting",
-				Note: "the upload door waits on a boot the fresh enable never got — rebooting for it"})
-			if _, rerr := s.device.Reboot(ip); rerr == nil {
-				live, ok := s.installWaitBack(ip, beatFor(send, "theme", "arming the upload door"))
-				ip = live
-				if ok {
-					s.dropThemeCache(ip)
-					terr = doUp()
-				}
-			}
-		}
-	}
+	// No reboot-retry here, and none is coming back. The door used to speak one
+	// sentence for two failures — upload_begin resolved the themes dir through the
+	// CLOCK app's boot-only file-source registry, so a clock this run installed and
+	// enabled answered NOT_FOUND as "no card in the socket" over a mounted card
+	// (bench, Bronze, 2026-10-29) — and this step paid a full reboot to disarm the
+	// lie. Firmware v1.1.33 registers that source on the theme boot rung and gives
+	// the refusal its own sentence, so a 503 here is a card genuinely absent, and
+	// the owner's ruling retires the mitigation with it: no pre-1.1.33 board stays
+	// in the fleet, so nothing left on this path needs a boot the enable never got.
+	// A real no-card failure is the honest error below, untouched.
 	if terr != nil {
 		return fmt.Errorf("writing %s to the card: %w", name, plainDeviceErr(terr, 0))
 	}

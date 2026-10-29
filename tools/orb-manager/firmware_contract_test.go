@@ -319,8 +319,9 @@ func TestFirmwarePingAnswerCarriesTheStampTheHubParses(t *testing.T) {
 // the table clock_view_init fills — NULL on that boot — and answered the whole situation
 // with "no card in the socket" over a mounted card, costing the run a full reboot and a
 // second 3.7 MB upload. The doors now carry their own declaration and register it on the
-// theme boot rung. If this test goes red, the debt is back: the hub's reboot-retry still
-// fires on every join, and the operator waits twice for the wifi to come back.
+// theme boot rung. If this test goes red, the debt is back: the hub mitigated it with a
+// reboot-retry until the owner retired that too, so a fresh join dies at the door with no
+// safety net anywhere.
 func TestThemeDoorsAnswerWithoutTheClocksBoot(t *testing.T) {
 	src := firmwareFile(t, filepath.Join("main", "art", "orb_theme.c"))
 

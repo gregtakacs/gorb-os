@@ -527,7 +527,7 @@ erased, `card_count=0`), then one auto-arm run through the rebuilt hub (`v1.1.16
 afterwards: `sd.card_count=1`, `sd.active=Skeleton`, card tier
 `clock.orbapp file_size=663673 ok=true`, rows `clock enabled=true on_glass=true`. `/api/orb/where`
 replies `{ok:true, ip:"192.168.2.32", mac:"44bd8d608088"}`. Covered by `TestShelfGateRefusesToCountTheHollowRow`,
-`TestShelfGateHonoursARealShelf` and `TestThemeDoorRetryStaysArmedAndConditional` in `seedverify_test.go`.
+`TestShelfGateHonoursARealShelf` and `TestThemeDoorRetryStaysArmedAndConditional` in `seedverify_test.go`. The last of those is now `TestThemeDoorCarriesNoRebootRetry` — see the v1.1.33 update below.
 
 ## 17. Every post-reboot wait died on the address, not the chip
 
@@ -768,10 +768,14 @@ cannot race the registry law. The recommit door's missing-source branch also
 stops saying "no card in the socket": the mount check keeps that sentence,
 because that one is true, and the source branch now names the source.
 
-**The hub's reboot-retry stays.** It is the safety net for an orb still
-running firmware older than 1.1.33; on a board at 1.1.33 the door answers the
-first offer and the retry never fires. A join on a patched board reboots once,
-for provisioning, and the theme lands on the first upload.
+**The hub's reboot-retry is gone.** It shipped as the mitigation for the lie, and
+the owner retired it the same afternoon as the firmware fix: no pre-1.1.33 board
+stays in the fleet, so no orb on this path can still conflate a missing card with
+an unarmed registry. `installTheme` now takes one upload and returns the door's
+honest error on a real no-card failure — a join on a patched board reboots once,
+for provisioning, and the theme lands on the first upload. The gate
+`TestThemeDoorCarriesNoRebootRetry` (`seedverify_test.go`) fails the day a
+`s.device.Reboot(` walks back into that step.
 
 **Tests.** New gate `TestThemeDoorsAnswerWithoutTheClocksBoot`
 (`firmware_contract_test.go`) pins the declaration's values, all three doors

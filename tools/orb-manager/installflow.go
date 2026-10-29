@@ -380,8 +380,15 @@ func (s *Server) installTheme(ctx context.Context, ip string, send func(installS
 	if err != nil {
 		return fmt.Errorf("the orb did not answer its theme list: %w", err)
 	}
-	if tl.Active != "" || len(tl.Themes) > 0 {
-		send(installStep{Step: "theme", Action: "skipped", Note: "the dial already carries themes"})
+	// The seed's question is "does the CARD carry themes", and card_count is the
+	// firmware's own answer. It is NOT `active`: a fresh board boots the factory
+	// bundle baked into its assets slot, so active reads "Aviator" before the card
+	// holds a single file, and a gate on active skipped the seed on exactly the
+	// board the seed exists for (bench, owner, 2026-10-29: first flash drew the
+	// Aviator, not the skeleton). An owner's card copy is the fact that stands;
+	// the factory slot is not a choice anybody made.
+	if tl.CardCount > 0 {
+		send(installStep{Step: "theme", Action: "skipped", Note: "the card already carries themes"})
 		return nil
 	}
 	lib := s.library()

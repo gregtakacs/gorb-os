@@ -3,6 +3,14 @@
 Independent ESP-IDF firmware project (see `README.md`). This file only records
 the gotchas that cost real time on the bench; it does not restate the README.
 
+## Commit messages carry no attribution trailer
+
+**Rule: a commit message ends at its body. No `Co-Authored-By`, no `Signed-off-by`,
+no model or tool credit of any kind.** `git log --format=%B -5` shows the trailer on
+older commits, so copying the house style from history reproduces this mistake on
+purpose — history is the wrong reference for the trailer, and right for everything
+else (the `fix(hub):` scope prefix and the why-first body are both worth matching).
+
 ## Long-running bench commands must run detached — the 30 s tool cap is real
 
 **Rule: anything that takes over 30 s MUST be launched in the background and

@@ -59,8 +59,19 @@ func TestAppsListingTiersAndCount(t *testing.T) {
 	if !got.Mounted || got.Count != 2 {
 		t.Errorf("mounted=%v count=%d, want true/2 for two staged containers", got.Mounted, got.Count)
 	}
-	if len(got.Installed) != 0 {
-		t.Errorf("a staged app must not appear installed before a POST: %v", got.Installed)
+	// The intent here stands and it is the reason the built-in row is now emitted rather
+	// than hidden: no CARD row may appear installed before a POST. The shell does appear,
+	// flagged, because the firmware emits it — so the assertion filters compiled rows out
+	// instead of demanding an empty array, which is what it always meant to check.
+	var staged []string
+	for _, a := range got.Installed {
+		if c, _ := a["compiled"].(bool); c {
+			continue
+		}
+		staged = append(staged, a["slug"].(string))
+	}
+	if len(staged) != 0 {
+		t.Errorf("a staged app must not appear installed before a POST: %v", staged)
 	}
 	for _, a := range got.Apps {
 		if a["stem"] == "broken" && a["ok"] == true {

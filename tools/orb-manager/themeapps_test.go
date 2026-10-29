@@ -314,12 +314,12 @@ func TestThemeAppsReportsDriftAgainstTheHubsOwnContainer(t *testing.T) {
 
 // A matched pair reports no drift, so the absence of a line means agreement and not
 // "nobody looked". The hub's own starter container against a row stamped from it is
-// the real shipping case, and starterContainerFor is the production resolver rather
+// the real shipping case, and the library lookup is the production resolver rather
 // than a test stub. S4 landed the clock's editor into that container, so the fixture
 // carries the region's bytes and the fake derives editor_crc from them the way a real
 // dial derives it from the card — the full six-word tuple is under comparison here.
 func TestThemeAppsReportsNoDriftForAMatchingStarter(t *testing.T) {
-	body, err := starterContainerFor("../..", "clock")
+	body, err := cloneLibrary().Container("clock")
 	if err != nil || len(body) == 0 {
 		t.Skipf("no starter clock to compare against: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestThemeAppsReportsNoDriftForAMatchingStarter(t *testing.T) {
 			Installed: true, Enabled: true, GeomCRC: c.GeomCRC, CodeCRC: c.CodeCRC,
 			CodeSize: c.CodeSize, Serial: c.Serial, Editor: region})
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
-	s.device.Containers = func(slug string) ([]byte, error) { return starterContainerFor("../..", slug) }
+	s.device.Containers = func(slug string) ([]byte, error) { return cloneLibrary().Container(slug) }
 	_, got := getThemeApps(t, s, ip)
 	row := appRow(got.Apps, "clock")
 	if row == nil {
@@ -386,4 +386,12 @@ func appFixtureBytes(t *testing.T, name string) []byte {
 		t.Fatalf("no fixture %s: %v", name, err)
 	}
 	return b
+}
+
+// cloneLibrary points a Library at this checkout's own apps/ directory, which is the
+// artifact set the release ships. It exists so the drift test above compares the hub
+// against the bytes a hub would actually send rather than against a fixture the test
+// invented, and so the lookup it exercises is the lookup production uses.
+func cloneLibrary() *Library {
+	return &Library{AppsDir: filepath.Join("..", "..", "tools", "orb-manager", libAppsSubdir)}
 }

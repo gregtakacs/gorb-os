@@ -2270,19 +2270,85 @@ class Component extends DCLogic {
     if (!overwrite) {
       this.setState({ status: 'Asking ' + ip + ' whether "' + nm + '" is already on the card…' });
       let pre = null;
+      let preErr = '';
       try {
         // §32.7: the precheck is a question about the container's IDENTITY, so only the
-        // 128-byte header has to cross the room, not the megabytes. The hub's
-        // ContainerName reads the magic, the header CRC, the serial (word 11) and the
-        // name (bytes 56..112) all inside the first 128 B, and answers the duplicate
-        // off those; the section index it reads past 128 B is best-effort and never
-        // fails a container. Before this the precheck POSTed the WHOLE bake, so the
-        // question itself cost the full file. The double-send the operator named was a
-        // separate cut — see the exact branch below, which is what actually stops it.
-        const head = bytes.slice(0, 128);
-        const pr = await fetch(door + '&precheck=1', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: head });
-        pre = await pr.json().catch(() => null);
-      } catch (e) { pre = null; }
+        // bytes that carry identity cross the room, not the megabytes. The header's own
+        // words (magic, header CRC, serial at word 11, name at bytes 56..112) are NOT
+        // the whole identity: per-app theming derives the card stem from the OWNING
+        // APP'S SLUG, and the slug lives in the index inside the geometry region that
+        // sits right behind the header, its size in the header's word 5 (byte 20). So
+        // the precheck sends the header plus that region and nothing else — a few
+        // hundred bytes for a clock bake, 61,440 B at the format's absolute cap. The
+        // hub's ContainerHead answers the duplicate off those bytes, and refuses a
+        // slice that stops short of the region with the exact count it needs. The
+        // device's door re-checks the whole file on the upload that follows. Before
+        // this the precheck POSTed the WHOLE bake, so the question itself cost the full
+        // file; the first §32.7 shipped only the 128-byte header, and the index walk
+        // refused every real bake for the tail a header slice can never carry — so
+        // EVERY first Send press answered "could not get a clean read", systematically.
+        // The double-send the operator named was a separate cut — see the exact branch
+        // below, which is what actually stops it.
+        let gsz = 0;
+        try { gsz = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(20, true); } catch (e) { gsz = 0; }
+        const head = bytes.slice(0, Math.min(bytes.byteLength, 128 + Math.min(gsz, 0xF000)));
+        const ask = async (body) => {
+          const pr = await fetch(door + '&precheck=1', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: body });
+          const txt = await pr.text();
+          let j = null;
+          try { j = JSON.parse(txt); } catch (e) { j = null; }
+          if (!j) {
+            // A body that is not the hub's JSON is still an ANSWER, and it used to be
+            // reported as "the hub never answered" — the same words a dead connection
+            // gets. That conflation is why a refusal this page could have named in one
+            // clause took a day to find: an HTML error page, a plain-text 405, an empty
+            // 200 and a dropped socket all printed one sentence. Say which it was.
+            const snip = (txt || "").replace(/\s+/g, " ").trim().slice(0, 160);
+            return { ok: false, status: pr.status,
+              error: "the hub answered HTTP " + pr.status + " with something that was not its JSON"
+                + (snip ? ": " + snip : " (an empty body)") };
+          }
+          j.status = pr.status;
+          return j;
+        };
+        // The head slice is the ONLY precheck body. On 2026-10-28 a fallback
+        // re-asked a failed question with the WHOLE bake — but a failed precheck
+        // is a lane/transport problem, and replaying it with a megabyte body
+        // held the orb's one lane LONGER per press and starved the theme list,
+        // the scan, and the wifi check behind it. A refusal costs the reason
+        // (printed below) and a press to ship anyway; it never costs a re-upload.
+        //
+        // ONE exception, and it is the hub's own instruction. When the refusal names
+        // the byte count the index needs ("the precheck carried 128 B; this bake's
+        // index lives at 128..976 — send the first 976 B of the file"), the slice was
+        // simply cut short, and the answer is to send the number it asked for. That is
+        // the geometry region and nothing else: bounded by the format's own cap, not by
+        // the file, so it is not the megabyte replay the rule above forbids. It is one
+        // retry, only on that exact refusal, and the second answer is the one reported.
+        const needOf = (m) => {
+          const g = /send the first (\d+) B of the file/.exec(m || "");
+          return g ? (+g[1]) : 0;
+        };
+        let pre1 = null, pre1Err = "";
+        try { pre1 = await ask(head); } catch (e) { pre1Err = (e && e.message) ? String(e.message) : String(e); }
+        if (pre1 && !pre1.ok) {
+          const need = needOf(pre1.error);
+          if (need > head.byteLength && need <= bytes.byteLength) {
+            try { pre = await ask(bytes.slice(0, need)); }
+            catch (e) { preErr = (e && e.message) ? String(e.message) : String(e); }
+          }
+        }
+        // The short-slice answer stands; anything else is answered by the first reply.
+        // `pre` is set only by the retry, so this never clobbers a good second answer.
+        if (!pre && pre1) pre = pre1;
+        // A fetch that threw is a transport fact, and it used to be DISCARDED here: the
+        // inner catch set pre = null and kept no message, so every real cause — the hub
+        // closed the connection, the page navigated, DNS failed — printed the same
+        // "the hub never answered" as an empty body. The one sentence the operator could
+        // act on was the one this branch threw away. Keep it; the reason below prints it.
+        if (!pre && !preErr && pre1) preErr = pre1.error || ("the hub answered HTTP " + pre1.status);
+        else if (!pre && !preErr && pre1Err) preErr = pre1Err;
+      } catch (e) { pre = null; preErr = (e && e.message) ? String(e.message) : String(e); }
       if (pre && pre.ok && pre.data && pre.data.exact) {
         // §32.9: the card already holds this EXACT bake — same name, same content serial.
         // Until now the hub answered this "clear", so a plain re-send of an installed theme
@@ -2318,8 +2384,20 @@ class Component extends DCLogic {
       // operator's call to make, not this page's silent default.
       if (!pre || !pre.ok || !pre.data || pre.data.note) {
         this._replaceArmed = { bytes, nm, stem, pol, meter };
+        // The hub's own refusal sentence rides the status line whenever it has one.
+        // On 2026-10-27 the operator met this branch on EVERY first Send press with no
+        // reason attached — the generic sentence hid whether the hub refused the head
+        // slice (pre.error), answered an unasked card (data.note), or the fetch itself
+        // died (the caught message). Guessing at a failure that names itself is how a
+        // deterministic bug gets debugged as a race for a day; print what was said.
+        // The hub's OWN sentence rides the line whenever it has one. The generic
+        // "could not get a clean read" hid four different situations behind one
+        // sentence, and a deterministic bug got debugged as a race because of it.
+        const why = (pre && pre.error) || (pre && pre.data && pre.data.note)
+          || (pre && pre.status && pre.status !== 200 ? 'the hub answered HTTP ' + pre.status : '')
+          || preErr || (pre ? '' : 'the hub never answered');
         this.setState({ status: 'Nothing sent: the hub could not get a clean read of "' + nm + '" on ' + ip +
-          (pre && pre.data && pre.data.note ? ' — ' + pre.data.note : '') +
+          (why ? ' — ' + why : '') +
           ' — so it will not ship over a card it cannot check. Press Send again to replace it anyway.' });
         return;
       }

@@ -77,7 +77,7 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 			if nets == nil {
 				nets = []esprom.ScanNet{}
 			}
-			send(map[string]any{"log": "console: provisioning AP " + v.apSSID + " observed at boot"})
+			send(map[string]any{"log": "it opened its setup network instead: " + v.apSSID})
 			send(map[string]any{"result": map[string]any{
 				"mode":     "ap",
 				"ap_ssid":  v.apSSID,
@@ -128,7 +128,7 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 	// produces no news for 45 s is indistinguishable from a hung tool, which is
 	// what the operator reported (bench, 2026-10-15). Elapsed-and-still-looking
 	// is the cheapest proof there is that the hub is alive and still trying.
-	send(map[string]any{"log": "dialling " + ip + " for the orb's status (" + source + ")"})
+	send(map[string]any{"log": "looking for the orb at " + ip})
 	attempt := 0
 	for {
 		if st, err := s.orb.Status(ip); err == nil {
@@ -139,7 +139,7 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 			s.grants.learnAs(ip, st.MAC)
 			s.setOrbIP(ip)
 			s.saveState()
-			send(map[string]any{"log": "orb joined its network as a station at " + ip + " (" + source + ")"})
+			send(map[string]any{"log": "the orb is back at " + ip})
 			send(map[string]any{"result": map[string]any{"mode": "lan", "ip": ip, "status": st}})
 			return
 		}
@@ -151,9 +151,9 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 		// turns the console into noise, and the point is proof of life, not a
 		// stopwatch.
 		if attempt == 1 || attempt%2 == 0 {
-			send(map[string]any{"log": "no answer from " + ip + " yet - waiting, " +
-				strconv.Itoa(int(time.Since(watchStart).Seconds())) + "s of the " +
-				strconv.Itoa(int(watchLanBudget.Seconds())) + "s allowed"})
+			send(map[string]any{"log": "still waiting - " +
+				strconv.Itoa(int(time.Since(watchStart).Seconds())) + "s of " +
+				strconv.Itoa(int(watchLanBudget.Seconds())) + "s"})
 		}
 		// Abandon the poll the moment the panel goes away. This loop holds no port
 		// lock — it dials one known IP over the LAN — so it is not dangerous, just

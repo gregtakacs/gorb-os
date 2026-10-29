@@ -85,18 +85,47 @@ func TestDoorRefusalBodiesMatchTheFirmware(t *testing.T) {
 }
 
 // TestLedgerSplitMatchesTheDevice pins the two views the firmware gives of one registry.
-// h_apps walks from ORB_APP_BASE so built-ins never appear in its installed tier, while
-// h_status walks from zero and always names them. orb-B (fw 9442432) reports
-// "installed":[] beside a three-row ledger, and a double that used one walker for both told
-// the hub there were no apps on an orb that has three.
+//
+// Both tiers now come from one walk. apps_send_installed (orb_net.c:5054) emits the
+// compiled indices 0..ORB_APP_BASE-1 FIRST, each stamped "compiled":true, then the card
+// rows from ORB_APP_BASE. The comment this test used to carry claimed /api/v1/apps reported
+// "installed":[] beside a three-row ledger, and it cited orb-B on fw 9442432. That was the
+// device then. P4a's note inside the emitter says the same plainly — "a built-in that C2
+// quarantined at boot is exactly the row an owner must see and clear" — so a double that
+// hid the shell could not model the one built-in state with a verb on it.
+//
+// What the test now pins is the part of the split that survives and matters to the hub: the
+// built-in row is PRESENT and FLAGGED, and a caller that counts the owner's inventory must
+// filter on the flag rather than assume the tier came pre-filtered.
 func TestLedgerSplitMatchesTheDevice(t *testing.T) {
 	o := New()
 	srv := httptest.NewServer(o)
 	defer srv.Close()
 
 	_, body := appDo(t, srv, http.MethodGet, "/api/v1/apps", nil)
-	if !strings.Contains(body, `"count":0`) || !strings.Contains(body, `"installed":[]`) {
-		t.Errorf("empty-card listing = %s, want count 0 and an empty installed tier", body)
+	if !strings.Contains(body, `"count":0`) {
+		t.Errorf("empty-card listing = %s, want count 0 for a card holding no containers", body)
+	}
+	if !strings.Contains(body, `"compiled":true`) {
+		t.Errorf("the installed tier omitted the built-in shell; the firmware emits it first: %s", body)
+	}
+	// The flag is the whole contract with the hub's face. A shell row that arrives
+	// unflagged is indistinguishable from one the operator installed, and it comes out in
+	// the Apps face as an app with an Uninstall button the device will refuse.
+	for _, slug := range builtInSlugs {
+		row := installedRowOf(body, slug)
+		if row == "" {
+			t.Errorf("installed tier omitted the built-in %q: %s", slug, body)
+			continue
+		}
+		if !strings.Contains(row, `"compiled":true`) {
+			t.Errorf("built-in %q arrived without its flag: %s", slug, row)
+		}
+		// And no version: a compiled row was never a container, so an empty stamp here
+		// would read to the hub as "unstamped card app", which is a different refusal.
+		if strings.Contains(row, `"version"`) {
+			t.Errorf("built-in %q carries a version key the device omits: %s", slug, row)
+		}
 	}
 	_, sb := appDo(t, srv, http.MethodGet, "/api/v1/status", nil)
 	for _, slug := range builtInSlugs {
@@ -115,4 +144,41 @@ func TestLedgerSplitMatchesTheDevice(t *testing.T) {
 			t.Errorf("POST %s -> %d %s, want 400 %s", path, code, body, builtinBody)
 		}
 	}
+}
+
+// installedRowOf cuts one object out of the installed array by slug. It scans for the
+// slug at array depth, so a "slug" key on a card row cannot be mistaken for the one asked
+// for, and it returns "" when no such row is present rather than a near miss.
+func installedRowOf(body, slug string) string {
+	const key = `"installed":[`
+	i := strings.Index(body, key)
+	if i < 0 {
+		return ""
+	}
+	want := `"slug":"` + slug + `"`
+	depth := 0
+	start := -1
+	for j := i + len(key); j < len(body); j++ {
+		switch body[j] {
+		case '{':
+			if depth == 0 {
+				start = j
+			}
+			depth++
+		case '}':
+			depth--
+			if depth == 0 && start >= 0 {
+				row := body[start : j+1]
+				if strings.Contains(row, want) {
+					return row
+				}
+				start = -1
+			}
+		case ']':
+			if depth == 0 {
+				return ""
+			}
+		}
+	}
+	return ""
 }

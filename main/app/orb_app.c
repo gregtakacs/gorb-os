@@ -400,6 +400,11 @@ typedef struct {
     bool               used;                /* this card slot holds an install  */
     char               slug_store[ORB_APP_SLUG_MAX];
     char               title_store[ORB_APP_TITLE_MAX];
+    /* S6: the container's release stamp, held here for the same reason the two
+     * above are — the record on the card must outlive the caller's temporary, and
+     * the ledger's rows all point at this table's own bytes. "" is a real answer
+     * and not a missing one: it means the package names no release (§4.1). */
+    char               version_store[ORB_APP_VERSION_MAX];
     orb_setting_desc_t settings_store[ORB_APP_SETTINGS_MAX];
 } card_entry_t;
 
@@ -438,6 +443,15 @@ static void card_fill(card_entry_t *s, const orb_app_t *row)
     s->title_store[0] = '\0';
     if (row->title) snprintf(s->title_store, sizeof s->title_store, "%s", row->title);
     s->app.title = s->title_store;
+
+    /* S6: the third re-pointed string, same rule as the two above — and the same
+     * empty-is-honest answer. A scan row that never stamped one reads "" here, and
+     * the hub prints that row's version as the library's, because the card has no
+     * opinion of its own to contradict it. */
+    s->version_store[0] = '\0';
+    if (row->version)
+        snprintf(s->version_store, sizeof s->version_store, "%s", row->version);
+    s->app.version = s->version_store;
 
     if (n > ORB_APP_SETTINGS_MAX) n = ORB_APP_SETTINGS_MAX;
     if (settings && n > 0)

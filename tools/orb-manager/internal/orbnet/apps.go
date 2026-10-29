@@ -54,12 +54,24 @@ type AppInstalledRow struct {
 	Caps    string `json:"caps"`
 	Enabled bool   `json:"enabled"`
 	Failed  bool   `json:"failed"`
+	// Compiled marks the built-in tier — the one shell row D35 left in the image, which
+	// the firmware emits FIRST with this key set (apps_send_installed) and which an owner
+	// can neither toggle nor uninstall. The face has filtered on it since §7; the field is
+	// here so a Go caller answers "how many apps does this dial carry" the same way the
+	// Apps face does, instead of counting the shell as inventory the owner installed. A
+	// quarantoned built-in still carries it, and Failed is what makes that row worth shown.
+	Compiled bool `json:"compiled,omitempty"`
 
 	GeomCRC   uint32 `json:"geom_crc,omitempty"`
 	CodeCRC   uint32 `json:"code_crc,omitempty"`
 	CodeSize  uint32 `json:"code_size,omitempty"`
 	Serial    uint32 `json:"serial,omitempty"`
 	EditorCRC uint32 `json:"editor_crc,omitempty"`
+	// Version is S6's seventh tuple word, and the only member that is words. The device
+	// omits the key for a compiled row exactly as it omits the six above, so "" here
+	// means both "not on the card" and "card row, no stamp" — CarriesIdentity already
+	// refuses to read a blank as an opinion, and the pair stays honest because of it.
+	Version string `json:"version,omitempty"`
 }
 
 // CarriesIdentity reports whether a row plausibly sent the identity tuple. Only the
@@ -215,6 +227,21 @@ const MaxAppUpload = 0x40000 + 0x20000 + 0x200000 + 0x1000
 // of the same artifact, and replacing it with the very bytes the door refused
 // is the idempotent answer the Apps face's Install press sends.
 func (c *Client) AppUpload(ip string, body []byte, overwrite bool) (json.RawMessage, error) {
+	_, err := c.AppUploadProgress(ip, body, overwrite, nil)
+	return nil, err
+}
+
+// AppUploadProgress is AppUpload with a byte-progress callback, and it exists for the same
+// reason ThemeUploadProgress does: a FORMAT 3 container is hundreds of kilobytes crossing
+// WiFi into a synchronous card write, and every screen in the chain was silent until the
+// device finally answered. progress fires with the running total of bytes the transport has
+// written, may be nil, and is called from the transfer goroutine only.
+//
+// The device's own page allows 900 seconds for this POST. A caller holding the 8-second
+// management client was timing out on a healthy board at roughly the 50 KB mark and
+// reporting the board as broken, so the hub's callers take the bulk client (see
+// otaTimeout in main.go) — the same correction h_ota already documents for firmware pushes.
+func (c *Client) AppUploadProgress(ip string, body []byte, overwrite bool, progress func(int64)) (json.RawMessage, error) {
 	if len(body) == 0 {
 		return nil, fmt.Errorf("orbnet: refusing to upload an empty app file")
 	}
@@ -225,5 +252,5 @@ func (c *Client) AppUpload(ip string, body []byte, overwrite bool) (json.RawMess
 	if overwrite {
 		route += "?overwrite=1"
 	}
-	return c.devicePost(ip, route, body, "application/octet-stream")
+	return c.devicePostCounted(ip, route, body, "application/octet-stream", progress)
 }

@@ -167,6 +167,28 @@ func (s *Server) prefetchEditorRegionWarm(ip, slug string) {
 	_, _ = s.editorRegionDialed(ip, slug, dial)
 }
 
+// installedRow reads the one row of a dial's ledger that this editor request concerns.
+// It is a control-class GET answering a few hundred bytes, and it is what makes §4's
+// source choice a hub decision rather than a claim a page could edit: the hub serves its
+// own copy of an app only after it has asked the board which release that board runs.
+// Every failure answers nil, because "could not ask" means "use the device read", which
+// is always correct and merely slower.
+func (s *Server) installedRow(ip, slug string) *orbnet.AppInstalledRow {
+	if s.device == nil {
+		return nil
+	}
+	list, err := s.device.AppsList(ip)
+	if err != nil || list == nil {
+		return nil
+	}
+	for i := range list.Installed {
+		if list.Installed[i].Slug == slug {
+			return &list.Installed[i]
+		}
+	}
+	return nil
+}
+
 // editorRegion returns one app's editor archive, fetching it when the memo has
 // nothing fresh. s.editorFetch does the dial so a test can stand in for a board.
 // A fresh transport failure is retried once before it is recorded: the dial is an
@@ -195,6 +217,16 @@ func (s *Server) editorRegionDialed(ip, slug string, dial editorFetchFn) (*zip.R
 		if time.Since(sl.fetched) < ttl {
 			return sl.zr, sl.err
 		}
+	}
+	// §4: same release on the dial and on the shelf means the shelf's copy IS the
+	// region, and reading it off the local disk costs the board nothing. The answer
+	// lands in the same memo slot a dial would, so every later asset this editor
+	// references is served from the reader already in hand rather than opening a
+	// second dial. A nil row, an unstamped pair or a library with no such file all
+	// fall through to the dial below, which is always correct.
+	if zr, err := s.libraryEditorRegion(s.installedRow(ip, slug), slug); err == nil {
+		regions.slots[k] = &editorSlot{zr: zr, fetched: time.Now()}
+		return zr, nil
 	}
 	raw, err := dial(ip, slug)
 	if err != nil && !errors.Is(err, orbnet.ErrNoEditor) {
@@ -226,6 +258,50 @@ func editorInvalidate() {
 	regions.mu.Lock()
 	defer regions.mu.Unlock()
 	regions.slots = map[editorKey]*editorSlot{}
+}
+
+// libraryEditorRegion answers §2 of the Apps face: when the dial and the hub hold the
+// SAME release of an app, the hub's own file is a better source for its editor than the
+// board is. The region is what the dial would stream, byte for byte, and the orb's one
+// HTTP lane is the scarcest thing on the network — every asset the composer pulls after
+// this one is a dial the board does not have to answer.
+//
+// The gate is the version and nothing looser. Equality of the two stamps is the only
+// evidence available that the bytes match, and it is real evidence: the stamp is written
+// into the container's header by the same release process that writes the editor region
+// beside it, so two files agreeing on `v1.2.3` agree on what they are. A dial reporting no
+// stamp, a library file reporting no stamp, and a pair that will not parse are all
+// refused — an unstamped file states nothing, and serving hub bytes on the strength of a
+// silence is how an operator edits an editor that is not the one their dial runs. The face
+// falls back to the device read, which is always correct and merely slower.
+func (s *Server) libraryEditorRegion(installed *orbnet.AppInstalledRow, slug string) (*zip.Reader, error) {
+	if installed == nil || installed.Compiled {
+		return nil, orbnet.ErrNoEditor
+	}
+	lib := s.library()
+	if lib == nil || lib.AppsDir == "" {
+		return nil, orbnet.ErrNoEditor
+	}
+	body, err := lib.Container(slug)
+	if err != nil {
+		return nil, err
+	}
+	c, err := orbnet.ParseApp(body)
+	if err != nil {
+		return nil, err
+	}
+	if cmp, ok := orbnet.AppVersionCompare(c.Version, installed.Version); !ok || cmp != 0 {
+		return nil, orbnet.ErrNoEditor
+	}
+	region, err := orbnet.AppEditorRegion(body)
+	if err != nil {
+		return nil, err
+	}
+	zr, err := zip.NewReader(bytes.NewReader(region), int64(len(region)))
+	if err != nil {
+		return nil, fmt.Errorf("the library editor region for %s is not a ZIP archive: %w", slug, err)
+	}
+	return zr, nil
 }
 
 // serveEditor answers GET /editor/<ip>/<slug>/<file>. A request naming no file

@@ -80,6 +80,56 @@ static const char *get_field(const uint32_t *w, unsigned base, unsigned nbytes,
     return damaged;   /* ran the whole field with no NUL */
 }
 
+/* S6: the version stamp's grammar — tools/orbapp.py's VERSION_RE in the device's own
+ * words, and the same rule orb_version.sh holds an image to. v<MAJOR>.<MINOR>.<PATCH>,
+ * each number 1 or 2 digits with no leading zero, then an optional -prerelease and an
+ * optional +build tail. The two-digit cap is what makes the worst legal stamp land on
+ * exactly the field's 31 usable characters, so the width check and this one can never
+ * disagree about what fits.
+ *
+ * Empty is not a refusal and never reaches here: an unstamped container is the
+ * ordinary case, exactly as an empty editor region is. */
+static bool version_grammar_ok(const char *v)
+{
+    if (*v++ != 'v') return false;
+    for (int part = 0; part < 3; part++) {
+        if (part) { if (*v++ != '.') return false; }
+        if (*v < '0' || *v > '9') return false;
+        if (*v == '0') { v++; if (*v >= '0' && *v <= '9') return false; }
+        else {
+            v++;
+            if (*v >= '0' && *v <= '9') v++;
+        }
+    }
+    if (*v == '\0') return true;
+    /* The tail, held to orbapp.VERSION_RE's shape exactly: an optional '-' tail then an
+     * optional '+' tail, each a non-empty run of [0-9A-Za-z.-]. No reader is stricter
+     * than the writer — three readers with three grammars is the drift this mirror
+     * exists to prevent — and no reader is looser, since '+' appearing twice is a stamp
+     * the writer would not emit. */
+    if (*v == '-') {
+        v++;
+        const char *start = v;
+        while (*v && (*v == '-' || *v == '.' ||
+                      (*v >= '0' && *v <= '9') ||
+                      (*v >= 'a' && *v <= 'z') ||
+                      (*v >= 'A' && *v <= 'Z')))
+            v++;
+        if (v == start) return false;      /* an empty tail: "v1.2.3-" */
+    }
+    if (*v == '+') {
+        v++;
+        const char *start = v;
+        while (*v && (*v == '-' || *v == '.' ||
+                      (*v >= '0' && *v <= '9') ||
+                      (*v >= 'a' && *v <= 'z') ||
+                      (*v >= 'A' && *v <= 'Z')))
+            v++;
+        if (v == start) return false;
+    }
+    return *v == '\0';
+}
+
 /* ---- the fixed-layout refusals (the writer's parse_header) ----------------- */
 
 const char *orbapp_parse_header(const uint32_t *w, orbapp_hdr_t *h,
@@ -175,8 +225,18 @@ const char *orbapp_parse_header(const uint32_t *w, orbapp_hdr_t *h,
     if (!e)
         e = get_field(w, ORBAPP_W_TITLE, ORBAPP_TITLE_MAX,
                       h->title, sizeof h->title, DAMAGED);
+    if (!e)
+        e = get_field(w, ORBAPP_W_VERSION, ORBAPP_VERSION_MAX,
+                      h->version, sizeof h->version, DAMAGED);
     if (e)
         return refuse(reason, cap, "%s", e);
+    /* S6: an unstamped container answers "" and passes, the way a zero editor_size
+     * does. A stamp that is there has to parse — the hub prints this field as the
+     * app's version, so a value it cannot read as one is refused and not shown. */
+    if (h->version[0] && !version_grammar_ok(h->version))
+        return refuse(reason, cap, "version '%s' is not a release stamp: the form is "
+                      "v<MAJOR>.<MINOR>.<PATCH> with each part 1 or 2 digits and no "
+                      "leading zero — re-package it", h->version);
     return NULL;
 }
 

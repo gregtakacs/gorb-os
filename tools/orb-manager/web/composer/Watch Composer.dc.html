@@ -2706,8 +2706,21 @@ class Component extends DCLogic {
         const head = bytes.slice(0, Math.min(bytes.byteLength, 128 + Math.min(gsz, 0xF000)));
         const ask = async (body) => {
           const pr = await fetch(door + '&precheck=1', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: body });
-          const j = await pr.json().catch(() => null);
-          if (j) j.status = pr.status;
+          const txt = await pr.text();
+          let j = null;
+          try { j = JSON.parse(txt); } catch (e) { j = null; }
+          if (!j) {
+            // A body that is not the hub's JSON is still an ANSWER, and it used to be
+            // reported as "the hub never answered" — the same words a dead connection
+            // gets. That conflation is why a refusal this page could have named in one
+            // clause took a day to find: an HTML error page, a plain-text 405, an empty
+            // 200 and a dropped socket all printed one sentence. Say which it was.
+            const snip = (txt || "").replace(/\s+/g, " ").trim().slice(0, 160);
+            return { ok: false, status: pr.status,
+              error: "the hub answered HTTP " + pr.status + " with something that was not its JSON"
+                + (snip ? ": " + snip : " (an empty body)") };
+          }
+          j.status = pr.status;
           return j;
         };
         // The head slice is the ONLY precheck body. On 2026-10-28 a fallback
@@ -2716,7 +2729,37 @@ class Component extends DCLogic {
         // held the orb's one lane LONGER per press and starved the theme list,
         // the scan, and the wifi check behind it. A refusal costs the reason
         // (printed below) and a press to ship anyway; it never costs a re-upload.
-        try { pre = await ask(head); } catch (e) { pre = null; }
+        //
+        // ONE exception, and it is the hub's own instruction. When the refusal names
+        // the byte count the index needs ("the precheck carried 128 B; this bake's
+        // index lives at 128..976 — send the first 976 B of the file"), the slice was
+        // simply cut short, and the answer is to send the number it asked for. That is
+        // the geometry region and nothing else: bounded by the format's own cap, not by
+        // the file, so it is not the megabyte replay the rule above forbids. It is one
+        // retry, only on that exact refusal, and the second answer is the one reported.
+        const needOf = (m) => {
+          const g = /send the first (\d+) B of the file/.exec(m || "");
+          return g ? (+g[1]) : 0;
+        };
+        let pre1 = null, pre1Err = "";
+        try { pre1 = await ask(head); } catch (e) { pre1Err = (e && e.message) ? String(e.message) : String(e); }
+        if (pre1 && !pre1.ok) {
+          const need = needOf(pre1.error);
+          if (need > head.byteLength && need <= bytes.byteLength) {
+            try { pre = await ask(bytes.slice(0, need)); }
+            catch (e) { preErr = (e && e.message) ? String(e.message) : String(e); }
+          }
+        }
+        // The short-slice answer stands; anything else is answered by the first reply.
+        // `pre` is set only by the retry, so this never clobbers a good second answer.
+        if (!pre && pre1) pre = pre1;
+        // A fetch that threw is a transport fact, and it used to be DISCARDED here: the
+        // inner catch set pre = null and kept no message, so every real cause — the hub
+        // closed the connection, the page navigated, DNS failed — printed the same
+        // "the hub never answered" as an empty body. The one sentence the operator could
+        // act on was the one this branch threw away. Keep it; the reason below prints it.
+        if (!pre && !preErr && pre1) preErr = pre1.error || ("the hub answered HTTP " + pre1.status);
+        else if (!pre && !preErr && pre1Err) preErr = pre1Err;
       } catch (e) { pre = null; preErr = (e && e.message) ? String(e.message) : String(e); }
       if (pre && pre.ok && pre.data && pre.data.exact) {
         // §32.9: the card already holds this EXACT bake — same name, same content serial.

@@ -268,7 +268,7 @@ for slug, blob in sorted(side["apps"].items()):
 # D36 (§36) moved the shipped container from tools/orb-manager/seed/ into the
 # starter/ directory the hub seeds from. The pin below names the same app either
 # way; only the path moved.
-seed = os.path.join(ROOT, "tools", "orb-manager", "starter", "clock.orbapp")
+seed = os.path.join(ROOT, "tools", "orb-manager", "apps", "clock.orbapp")
 if os.path.exists(seed):
     h, _s, _g, _a = orbapp.read_container(seed)
     check(h["app_id"] == orbapp.app_id_of(h["slug"]),

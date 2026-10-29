@@ -5035,7 +5035,13 @@ static esp_err_t h_sd_rescan(httpd_req_t *req)
  * slug and title are capped by ORB_APP_*_MAX with JSON escapes doubled (64 B each), cap
  * names top out under 40, and D37's five identity words cost 5 * (10 digits + 14 B of key,
  * quotes and comma) = 120 B. 1024 carried the row before those words with room to spare;
- * 1152 carries this one, and the handler's PSRAM block sizing follows the macro. */
+ * 1152 carries this one, and the handler's PSRAM block sizing follows the macro.
+ *
+ * S6 added a sixth word to the installed tier — "version", a 32-byte field whose grammar
+ * admits no character needing an escape beyond '-' and '.', so its worst cell is
+ * 2 * 31 + 13 = 75 B and the row's total is 496 B. The scratch did not move: the CARD
+ * tier's row (stem, slug, title and a 128-byte why) is the wider of the two, and the
+ * sentinel recomputes that one from the shipped headers. */
 #define APPS_ROW_MAX 1152
 
 /* P4a's installed tier — streamed by h_apps_list on every response, card or
@@ -5048,6 +5054,11 @@ static esp_err_t h_sd_rescan(httpd_req_t *req)
 static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
 {
     char e_slug[2 * ORB_APP_SLUG_MAX], e_title[2 * ORB_APP_TITLE_MAX], caps[40];
+    /* S6: the version's escape bound is the slug's rule at the version's width. The
+     * grammar refuses every character JSON would need to escape except '-' and '.',
+     * both escape-free, so the doubled width is arithmetic headroom and not a
+     * expectation — the same reason the row bound below is a bound. */
+    char e_version[2 * ORB_APP_VERSION_MAX];
     int seen = 0;
     /* The compiled tier first (indices 0..ORB_APP_BASE-1). P4a streamed only
      * cards; a built-in that C2 quarantined at boot is exactly the row an owner
@@ -5086,6 +5097,7 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
         if (!a || !a->installed) continue;
         json_put(e_slug, sizeof e_slug, a->slug);
         json_put(e_title, sizeof e_title, a->title ? a->title : "");
+        json_put(e_version, sizeof e_version, a->version ? a->version : "");
         if (orbapp_caps_names(a->caps, caps, sizeof caps) < 0)
             caps[0] = '\0';                       /* same rule as the card tier */
         /* D36: no row carries a shipping label. The hub seeds the clock and the
@@ -5102,13 +5114,14 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
             "\"enabled\":%s,\"failed\":%s,\"walkable\":%s,\"on_glass\":%s,"
             "\"geom_crc\":%" PRIu32 ",\"code_crc\":%" PRIu32 ","
             "\"code_size\":%" PRIu32 ",\"serial\":%" PRIu32 ","
-            "\"editor_crc\":%" PRIu32 "}",
+            "\"editor_crc\":%" PRIu32 ",\"version\":\"%s\"}",
             seen++ ? "," : "", e_slug, e_title, (int)(i - ORB_APP_BASE), caps,
             a->period_ms, a->n_settings,
             a->enabled ? "true" : "false", a->failed ? "true" : "false",
             a->iface ? "true" : "false",
             (a == orb_app_current() || a->active) ? "true" : "false",
-            a->geom_crc, a->code_crc, a->code_size, a->serial, a->editor_crc);
+            a->geom_crc, a->code_crc, a->code_size, a->serial, a->editor_crc,
+            e_version);
         if (w < 0 || (size_t)w >= rowsz) {        /* cannot: bounds are arithmetic;
                                                   * a placeholder keeps the body valid */
             ESP_LOGE(TAG, "installed app row exceeded %d B", (int)rowsz);

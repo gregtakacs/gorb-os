@@ -29,8 +29,19 @@ func (s *Server) hello(*http.Request) (any, error) {
 	if b != nil {
 		fwVersion, fwSource = b.Version, b.Source
 	}
+	// The library the hub resolved to, and which rung won (S6, plan §1). It is here rather
+	// than only on /api/library because the two answers belong together when something is
+	// wrong: "the hub is seeding the clone's copy" is the sentence that explains a hub on
+	// a second machine behaving like the development one.
+	appsDir, themesDir, appsFrom, themesFrom := "", "", "none", "none"
+	if s.lib != nil {
+		appsDir, themesDir, appsFrom, themesFrom =
+			s.lib.AppsDir, s.lib.ThemesDir, s.lib.AppsSource, s.lib.ThemesSource
+	}
 	return map[string]any{"platform": runtime.GOOS, "version": version, "repoDir": s.repoDir,
-		"firmware": fwVersion, "firmwareSource": fwSource}, nil
+		"firmware": fwVersion, "firmwareSource": fwSource,
+		"appsDir": appsDir, "appsSource": appsFrom,
+		"themesDir": themesDir, "themesSource": themesFrom}, nil
 }
 
 // portsPayload is the Onboard port list's envelope. It stays an object with a

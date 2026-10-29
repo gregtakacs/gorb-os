@@ -55,8 +55,8 @@ WORD_KEYS = ("magic", "format", "geom_abi", "hdr_size", "serial", "baked_ms",
              "art_req", "n_layer", "n_comp", "n_aux", "n_bank", "period_ms", "caps",
              "n_settings", "set_off", "geom_off", "geom_size", "geom_crc", "art_off",
              "art_size", "art_crc", "code_off", "code_size", "code_crc", "wasm_mem",
-             "editor_off", "editor_size", "editor_crc", "hdr_crc", "asset_off",
-             "n_assets")
+             "editor_off", "editor_size", "editor_crc", "version", "hdr_crc",
+             "asset_off", "n_assets")
 
 SERIAL = 20261027        # distinct from BAKED_MS: see the docstring
 # A duration, not an epoch: the app header keeps baked_ms in one u32 word and the
@@ -93,9 +93,15 @@ def editor_region():
 
 # The two containers, stated once and used by both the bake and the --verify leg, so
 # the reproduction check cannot quietly differ from what was committed.
+# S6 (§4.1): one fixture per version path, the same reason one carries an editor region
+# and the other does not. `sentinel` stamps v1.4.2-rc.1+build.7 — a prerelease AND build
+# metadata at once, the widest legal stamp the grammar admits, so a reader that stops at
+# the third number or that mishandles the '+' is caught here rather than on a dial.
+# `plain` stamps nothing and must read back as "" and not as a refusal.
 THEMED = dict(slug="sentinel", title="Sentinel",
               caps=orbapp.cap_bit("net") | orbapp.cap_bit("themes"),
               period_ms=5000, serial=SERIAL, baked_ms=BAKED_MS,
+              version="v1.4.2-rc.1+build.7",
               settings=[{"id": "ring", "type": "int", "min": 0, "max": 12,
                          "default": 3}],
               assets=[{"cls": "hand", "name": "minute", "x": 8, "y": 8,
@@ -114,7 +120,8 @@ def bake(path, spec, region=b""):
     orbapp.write_container(path, spec["slug"], spec["title"], caps=spec["caps"],
                            period_ms=spec.get("period_ms", 0), serial=spec["serial"],
                            baked_ms=spec["baked_ms"], settings=spec.get("settings", ()),
-                           assets=spec.get("assets", ()), editor=region)
+                           assets=spec.get("assets", ()), editor=region,
+                           version=spec.get("version", ""))
     return os.path.join(os.path.dirname(str(path)) or ".", spec["slug"] + ".orbapp")
 
 
@@ -152,6 +159,10 @@ def read_back(path):
         "code_crc": h["code_crc"], "wasm_mem_max": h["wasm_mem_max"],
         "editor_off": h["editor_off"], "editor_size": h["editor_size"],
         "editor_crc": h["editor_crc"], "editor_names": names,
+        # S6: the release stamp as the writer's own reader spelled it — "" for the
+        # fixture that names no release, so the sidecar carries both answers and a
+        # reader that reports None, 0, or "v0.0.0" for the empty case fails here.
+        "version": h["version"],
         "n_settings": len(settings), "n_assets": h["n_assets"],
         "asset_off": h["asset_off"], "geom_bytes": len(geom),
         "bytes": os.path.getsize(path),

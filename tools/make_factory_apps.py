@@ -18,9 +18,10 @@ a silently-stale app.
 
 Deterministic by construction: the two containers carry no art, no code, and no
 timestamps beyond ``baked_ms`` — which is pinned to a constant so a rebuild of
-an unchanged spec re-emits identical bytes. The header serial rides at 1: the
-containers land on a board whose ledger is empty or whose owner removed the
-row, and a re-seed of an equal serial is the installer’s quiet no-op.
+an unchanged spec re-emits identical bytes. The header serial is DERIVED from
+version.txt (§4.1), so the string an operator reads and the number the install
+ladder orders on are one fact; the same read makes a version bump dirty the
+committed pair, which the freshness gate below then refuses to leave stale.
 """
 import importlib.util
 import os
@@ -41,7 +42,7 @@ clock_region = importlib.util.module_from_spec(_cr)
 _cr.loader.exec_module(clock_region)
 
 
-OUT_DIR = os.path.join(HERE, "..", "tools", "orb-manager", "starter")
+OUT_DIR = os.path.join(HERE, "..", "tools", "orb-manager", "apps")
 
 # Behaviour kind ids must match main/app/orb_app.h's enum (C6 append-only).
 KIND_COLOR_PICKER = 1
@@ -54,7 +55,43 @@ KIND_CLOCK = 3
 CLOCK_CAPS = orbapp.cap_bit("sd_read") | orbapp.cap_bit("themes")
 PICKER_CAPS = 0
 
-SERIAL = 1          # bump to re-install the pair in place on next boot
+# S6 (§4.1): the release stamp both starter containers carry, and the serial derived
+# from it. The number is not typed here. It is read out of version.txt — the same file
+# root CMakeLists.txt stamps into the image through tools/orb_version.sh — because these
+# two containers are compiled from sources this repo tracks (the clock's behaviour
+# module is main/clock/, and the picker's editor is built by make_clock_region.py from
+# composer sources under version control), so the release they belong to IS the release
+# of the tree. A VERSIONS table typed beside the script would be a second source, and the
+# two would drift the first time a release bumped one and not the other.
+#
+# The consequence is deliberate and loud: bumping version.txt makes the committed
+# containers stale, and host_orbapp_install_test.py's --check re-run says so until
+# `make_factory_apps.py` is re-run and the new bytes committed. That is the same rule
+# D37's editor region already runs under, and orbpack's refusal already spells out
+# ("Write version.txt, reconfigure, rebuild").
+#
+# The serial rides at major*10000 + minor*100 + patch so the numeric word the install
+# ladder orders on and the string an operator reads are one fact stated once. It is not
+# 1 any more, and the sentinel that pinned 1 now recomputes it from version.txt rather
+# than trading one literal for another.
+def app_version():
+    """version.txt's stamp, verified against the one grammar the family uses."""
+    path = os.path.join(HERE, os.pardir, "version.txt")
+    try:
+        v = open(path).read().strip()
+    except OSError:
+        raise SystemExit("make_factory_apps: no version.txt at %s — every container needs "
+                         "a release stamp, and this tool reads the tree's rather than "
+                         "typing a second one" % path)
+    if not orbapp.check_version(v):
+        raise SystemExit("make_factory_apps: version.txt holds %r, which is not a release "
+                         "stamp the format accepts (v<MAJOR>.<MINOR>.<PATCH>, each part 1 "
+                         "or 2 digits, no leading zero)" % v)
+    return v
+
+
+VERSION = app_version()
+SERIAL = orbapp.serial_of_version(VERSION)
 BAKED_MS = 0        # pinned constant: the file is content, not a build event
 
 # The picker's three state numbers, declared so they persist inside the row's
@@ -95,7 +132,7 @@ def containers():
             orbapp.write_container(
                 os.path.join(td, slug + ".orbapp"), slug, title, caps=caps,
                 settings=settings, behaviour_kind=kind, serial=SERIAL,
-                baked_ms=BAKED_MS, editor=editor_region(editor))
+                baked_ms=BAKED_MS, editor=editor_region(editor), version=VERSION)
             with open(os.path.join(td, slug + ".orbapp"), "rb") as f:
                 blob = f.read()
             out.append((slug, title, kind, caps, blob))
@@ -129,9 +166,9 @@ def main():
     for slug, blob in files.items():
         with open(os.path.join(OUT_DIR, slug + ".orbapp"), "wb") as f:
             f.write(blob)
-    print("wrote %s: clock %d B, color_picker %d B, serial %u"
-          % (os.path.relpath(OUT_DIR, os.path.join(HERE, "..")),
-             len(files["clock"]), len(files["color_picker"]), SERIAL))
+    print("wrote %s: clock %d B, color_picker %d B, version %s (serial %u)"
+          % (os.path.relpath(OUT_DIR, os.path.join(HERE, os.pardir)),
+             len(files["clock"]), len(files["color_picker"]), VERSION, SERIAL))
     return 0
 
 

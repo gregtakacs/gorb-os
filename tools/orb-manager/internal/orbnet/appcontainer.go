@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"strings"
 )
 
 // D37: reading an .orbapp container's identity, in the hub, off the bytes the author
@@ -13,7 +14,7 @@ import (
 //
 // Until now the hub treated a container as an opaque blob. That was affordable while the
 // only apps it ever shipped sat in a hub seed it pushed itself; S5 made them disk
-// artifacts (starter.go), and it is
+// artifacts (library.go), and it is
 // not affordable for D37, because the Themes face must list every theme surface this hub
 // can open an editor for BEFORE anything is installed on a board. That is a question
 // about the hub's own files, so the hub has to read them: slug, title, caps, serial and
@@ -42,11 +43,21 @@ const (
 	// appHdrBytes is orbapp.HDR_BYTES == ORBAPP_HDR_WORDS * 4. A .orbapp is a header
 	// and then payloads at offsets the header names, so nothing can be read at all
 	// from fewer bytes than this.
-	appHdrBytes   = 204
+	//
+	// S6 (§4.1) took it 204 -> 236 with the FORMAT 3 version field. Every reader of a
+	// FORMAT 2 file refuses by number rather than reading its version out of what used to
+	// be the header CRC's own word, which is the whole reason a format change was the
+	// honest price and a new tail word was not.
+	appHdrBytes   = 236
 	appMagic      = 0x00415247 // 'G','R','A' — deliberately unlike the theme's magic
-	appFormat     = 2          // ORBAPP_FORMAT; a reader refuses others, in its own words
+	appFormat     = 3          // ORBAPP_FORMAT; a reader refuses others, in its own words
 	appSlugBytes  = 24         // ORBAPP_SLUG_MAX, NUL included
 	appTitleBytes = 32         // ORBAPP_TITLE_MAX, NUL included
+	// appVersionBytes is ORBAPP_VERSION_MAX: the release stamp's own width, and the
+	// same 32 bytes esp_app_desc_t.version gives an image. 31 usable characters is
+	// exactly the worst legal stamp, so this width and the grammar below can never
+	// disagree about what fits.
+	appVersionBytes = 32
 
 	// appGeomCap is ORBAPP_GEOM_BYTES_MAX; appEditorCap is ORBAPP_EDITOR_MAX. Both are
 	// quoted here because this reader refuses past them the way the writer refuses to
@@ -102,10 +113,17 @@ const (
 	appWEditOff  = appWWasmMem + 1
 	appWEditSize = appWEditOff + 1
 	appWEditCRC  = appWEditSize + 1
-	appWHdrCRC   = appWEditCRC + 1
-	appWAssetOff = appWHdrCRC + 1
-	appWNAssets  = appWAssetOff + 1
-	appWHdrWords = appWHdrCRC + 4 // asset_off, n_assets, and one word held free
+	// S6's version field: eight words, before the checksum for the same reason the two
+	// triples above are. A word after hdr_crc is rewritable on the card without
+	// disturbing any checksum, and a version an operator can silently edit is not an
+	// identity. All eight words zero is a legal answer and reads as "unstamped"; a
+	// non-zero field must parse, and the refusal below is the writer's own sentence.
+	appWVersion    = appWEditCRC + 1
+	appWHdrCRC     = appWVersion + 8
+	appWAssetOff   = appWHdrCRC + 1
+	appWNAssets    = appWAssetOff + 1
+	appWHdrWords   = appWHdrCRC + 4 // asset_off, n_assets, and one word held free
+	appVersionWord = (appVersionBytes + 3) / 4
 )
 
 // Owner-grantable capability bits, numbered by orb_svc.h's orb_cap_t. The four free caps
@@ -157,6 +175,12 @@ type AppContainer struct {
 	CodeCRC   uint32 `json:"code_crc"`
 	CodeSize  uint32 `json:"code_size"`
 	EditorCRC uint32 `json:"editor_crc"`
+
+	// Version is the container's own release stamp (§4.1), and "" is the honest answer
+	// for a package that names no release. It is the tuple's only member with an order,
+	// and the only one that is words rather than a number — the one an operator reads on
+	// the Apps face as "clock on the orb v1.2.0, hub copy v1.3.0".
+	Version string `json:"version,omitempty"`
 
 	// EditorSize is the region's byte count, and 0 is the honest answer for an app that
 	// ships no editor. Presence is what the Themes face asks. The hub serves the region
@@ -222,6 +246,9 @@ func ParseApp(body []byte) (*AppContainer, error) {
 		return nil, fmt.Errorf("orbnet: app needs geometry ABI %d..%d; this build speaks %d — re-package it (C4)",
 			lo, hi, AppGeomABI)
 	}
+	if h := w(appWHdrSize); h != appHdrBytes {
+		return nil, fmt.Errorf("orbnet: header claims %d B; this format is %d B", h, appHdrBytes)
+	}
 	// The header's own checksum, over the header with the checksum word zeroed — the rule
 	// the theme container shares, and the reason a torn copy is caught by the first 204
 	// bytes instead of after a megabyte of payload has streamed. The sentence names which
@@ -254,6 +281,20 @@ func ParseApp(body []byte) (*AppContainer, error) {
 	}
 	if title == "" {
 		return nil, errors.New("orbnet: app declares no title: the install confirm and the carousel row both read this field")
+	}
+	// S6: read the stamp through the same field reader as the two above, so an
+	// unterminated version is the same class of damage and not a long name. Empty is the
+	// legal "unstamped" answer and is not a refusal; a stamp that is present must parse,
+	// because the hub prints it as the app's version and a value it cannot read as one is
+	// worse than no value. It is not length-checked separately: the grammar caps a stamp
+	// at 31 characters, which is exactly this field's usable width.
+	version, err := appField(body, appWVersion, appVersionBytes, "version")
+	if err != nil {
+		return nil, err
+	}
+	if version != "" && !AppVersionOK(version) {
+		return nil, fmt.Errorf("orbnet: version %q is not a release stamp: the form is v<MAJOR>.<MINOR>.<PATCH> "+
+			"with each part 1 or 2 digits and no leading zero — re-package it", version)
 	}
 	caps := w(appWCaps)
 	if caps&^appCapOwnerAll != 0 {
@@ -290,8 +331,9 @@ func ParseApp(body []byte) (*AppContainer, error) {
 		ABI: abi, ABIMin: lo, ABIMax: hi, Format: w(appWFormat), AppID: w(appWAppID),
 		GeomCRC: w(appWGeomCRC), CodeCRC: w(appWCodeCRC), CodeSize: w(appWCodeSize),
 		EditorCRC: w(appWEditCRC), EditorSize: edSize,
+		Version: version,
 		// EditorOff mirrors the firmware's header word so a host caller (the
-		// starter-freshness test) can slice the region out of a file without
+		// library-freshness test) can slice the region out of a file without
 		// re-deriving the ladder; ParseApp validated it in range already.
 		EditorOff: w(appWEditOff), Bytes: len(body),
 	}, nil
@@ -328,6 +370,140 @@ func AppEditorRegion(body []byte) ([]byte, error) {
 func AppIDOf(slug string) uint32 {
 	d := sha256.Sum256([]byte(slug))
 	return binary.BigEndian.Uint32(d[:4])
+}
+
+// AppVersionOK reports whether s is a release stamp in the one grammar the family uses:
+// tools/orb_version.sh's rule for an image, orbapp.VERSION_RE's for a container, and
+// orb_app_manifest.c's version_grammar_ok for the dial. v<MAJOR>.<MINOR>.<PATCH>, each
+// part 1 or 2 digits with no leading zero, then an optional -prerelease and +build tail.
+//
+// The empty string is not this function's question. An unstamped container is legal, and
+// its caller says so before calling (§4.1).
+//
+// The two-digit cap is what makes 31 characters enough, so this and appVersionBytes can
+// never disagree about what fits; the tail's character class is what refuses a second '+'.
+func AppVersionOK(s string) bool {
+	if len(s) == 0 || s[0] != 'v' {
+		return false
+	}
+	i := 1
+	for part := 0; part < 3; part++ {
+		if part > 0 {
+			if i >= len(s) || s[i] != '.' {
+				return false
+			}
+			i++
+		}
+		start := i
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		n := i - start
+		// No leading zero, and at most two digits — the writer's rule and the shell's,
+		// so one string means one release wherever a reader finds it.
+		if n < 1 || n > 2 || (n == 2 && s[start] == '0') {
+			return false
+		}
+	}
+	// The tail, held to EXACTLY orbapp.VERSION_RE's class — [0-9A-Za-z.-]+ after a '-'
+	// and/or a '+', each tail non-empty, '+' at most once and only after the prerelease.
+	// Inventing a stricter rule here would hand the three readers three grammars, which
+	// is the drift this whole file exists to prevent.
+	if i == len(s) {
+		return true
+	}
+	scan := func() bool {
+		start := i + 1
+		i++
+		for i < len(s) && ((s[i] >= '0' && s[i] <= '9') ||
+			(s[i] >= 'a' && s[i] <= 'z') ||
+			(s[i] >= 'A' && s[i] <= 'Z') ||
+			s[i] == '-' || s[i] == '.') {
+			i++
+		}
+		return i > start
+	}
+	if i < len(s) && s[i] == '-' && !scan() {
+		return false
+	}
+	if i < len(s) && s[i] == '+' && !scan() {
+		return false
+	}
+	return i == len(s)
+}
+
+// AppVersionOrdinal turns a stamp into the number orb_app_install.c's header carries in
+// its serial word — major*10000 + minor*100 + patch — so one u32 orders two releases the
+// way version.txt's rule orders two images.
+//
+// A prerelease does not change the ordinal: v1.2.0-rc.1 and v1.2.0 are the same release
+// pointed at twice, and the hub compares the strings when it needs to tell those apart.
+// It returns 0, false for anything AppVersionOK refuses, so a caller never mistakes
+// "unstamped" for "the oldest thing on the shelf".
+func AppVersionOrdinal(s string) (uint32, bool) {
+	if !AppVersionOK(s) {
+		return 0, false
+	}
+	var part [3]uint32
+	i, p := 1, 0
+	for p < 3 && i < len(s) {
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			part[p] = part[p]*10 + uint32(s[i]-'0')
+			i++
+		}
+		p++
+		if p < 3 && i < len(s) && s[i] == '.' {
+			i++
+		}
+	}
+	return part[0]*10000 + part[1]*100 + part[2], true
+}
+
+// AppVersionCompare orders two release stamps: -1 when a is older, 0 when the two name
+// the same release, +1 when a is newer, and false when either side is unstamped or outside
+// the grammar. A false answer is NOT "equal" — an unstamped file is a file with no
+// opinion, and a caller that reads the refusal as agreement would ship an upgrade onto a
+// dial it cannot prove is behind.
+//
+// The ordinal alone cannot answer equality: it discards the prerelease tail on purpose
+// (AppVersionOrdinal's own comment), so v1.2.0-rc.1 and v1.2.0 share a number while
+// naming two different builds. Equality therefore takes the strings, and only the
+// strings, after the ordinals agree.
+func AppVersionCompare(a, b string) (int, bool) {
+	oa, oka := AppVersionOrdinal(a)
+	ob, okb := AppVersionOrdinal(b)
+	if !oka || !okb {
+		return 0, false
+	}
+	if oa != ob {
+		if oa < ob {
+			return -1, true
+		}
+		return 1, true
+	}
+	// Same number, so the tail decides. Semver's rule, and the one a string compare gets
+	// backwards: a prerelease is OLDER than the release it leads to, because '-' sorts
+	// above end-of-string. Comparing the raw strings would call v1.2.0-rc.1 newer than
+	// v1.2.0 and offer an Upgrade that is a downgrade.
+	tail := func(s string) string {
+		if i := strings.IndexAny(s, "-+"); i >= 0 {
+			return s[i+1:]
+		}
+		return ""
+	}
+	ta, tb := tail(a), tail(b)
+	switch {
+	case ta == tb:
+		return 0, true
+	case ta == "":
+		return 1, true // a is the release; b is a prerelease of it
+	case tb == "":
+		return -1, true
+	case ta < tb:
+		return -1, true
+	default:
+		return 1, true
+	}
 }
 
 // appHdrCRC is orbapp._hdr_crc: crc32/IEEE over the header words with the checksum word
@@ -399,6 +575,34 @@ func (a *AppContainer) IdentityDiff(r AppInstalledRow) (drift []string, comparab
 		if f.mine != f.theirs {
 			drift = append(drift, fmt.Sprintf("%s is %d on the orb and %d here",
 				f.word, f.theirs, f.mine))
+		}
+	}
+	// S6's seventh word, compared last and named differently. The five above are
+	// identities: two numbers disagreeing says nothing about which is newer, and the
+	// sentence above deliberately refuses to guess. A release stamp is not like that —
+	// v1.3.0 is after v1.2.0 by the grammar's own rule — and an operator deciding
+	// whether to push or to pull needs that direction, so this says it.
+	//
+	// Two empties agree and say nothing. One empty does NOT count as drift: a card built
+	// before FORMAT 3 carries no stamp at all, and "unstamped" is not "older than"
+	// anything — inventing an order there would tell an operator to push over a board
+	// whose version nobody ever recorded.
+	if a.Version != r.Version && a.Version != "" && r.Version != "" {
+		mine, okMine := AppVersionOrdinal(a.Version)
+		theirs, okTheirs := AppVersionOrdinal(r.Version)
+		switch {
+		case !okMine || !okTheirs:
+			drift = append(drift, fmt.Sprintf("version is %s on the orb and %s here",
+				r.Version, a.Version))
+		case mine == theirs:
+			// One release, stamped twice — v1.3.0 and v1.3.0-rc.1. The strings differ
+			// and the release does not, so no line is written.
+		case mine > theirs:
+			drift = append(drift, fmt.Sprintf("version is %s on the orb and %s here — this copy is newer",
+				r.Version, a.Version))
+		default:
+			drift = append(drift, fmt.Sprintf("version is %s on the orb and %s here — the orb is newer",
+				r.Version, a.Version))
 		}
 	}
 	return drift, true

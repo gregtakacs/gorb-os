@@ -295,6 +295,7 @@ func (o *Orb) serveFmRm(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, k := range kids {
 			delete(fs.files, k)
+			o.dropCardRowForFileLocked(k)
 			delete(fs.dirs, k)
 		}
 		delete(fs.dirs, rel)
@@ -304,6 +305,11 @@ func (o *Orb) serveFmRm(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, isFile := fs.files[rel]; isFile {
 		delete(fs.files, rel)
+		// The app listing is a walk of the volume, so the row goes with the file: on a
+		// real dial /api/v1/apps answers with whatever .orbapp files /sd/apps holds.
+		// Without this the double would keep listing a card row for a container the
+		// page had just erased, and an Install press on it would resurrect a ghost.
+		o.dropCardRowForFileLocked(rel)
 		o.mu.Unlock()
 		writeJSON(w, 200, fmt.Sprintf(`{"state":"deleted","path":%q,"removed":1}`, rel))
 		return

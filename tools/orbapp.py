@@ -32,6 +32,8 @@ Layout (§4.1's words, in §4.1's order; every name below is the paper's):
     n_settings  setting_off
     geom_off geom_size geom_crc   art_off art_size art_crc
     code_off code_size code_crc  wasm_mem_max   <- P7 (D20/D27): one wasm3 module
+    version[32]                 <- S6 (§4.1): the app's own semver, NUL-padded,
+                                   unstamped when all eight words read zero
     hdr_crc
   settings   n_settings x SETTINGS_WORDS words: id[16] type min max def
     def_str[32]               <- C9's four types, frozen
@@ -84,7 +86,7 @@ MAGIC      = 0x00415247        # 'G','R','A'. Deliberately unlike the theme's
                                # 0x474F5254, so a .orbtheme handed to the app
                                # loader dies on the magic word rather than
                                # parsing as an app with a surprising name.
-FORMAT     = 2                 # this container layout; a reader refuses others.
+FORMAT     = 3                 # this container layout; a reader refuses others.
                                # 1 -> 2 is P7's code region (D20/D27): the header
                                # grows four gate/region words INSIDE hdr_crc's span
                                # (code_off/code_size/code_crc and wasm_mem_max). A
@@ -94,6 +96,16 @@ FORMAT     = 2                 # this container layout; a reader refuses others.
                                # app ever shipped under FORMAT 1, so an old file that
                                # reaches a new reader dies on the format word and the
                                # "re-package it" sentence, never mis-parsed.
+                               # 2 -> 3 is S6's version field: eight words after the
+                               # editor triple, again inside hdr_crc's span. The free
+                               # word at the tail could have held a number and it is
+                               # the wrong place — a word outside the CRC is
+                               # rewritable on the card without disturbing any
+                               # checksum, which is the exact failure D19's consent
+                               # rule exists to forbid, and a 31-byte semver is not
+                               # one word. S6 names the bump, the same way D37 named
+                               # the editor region's: a reader that cannot see the
+                               # field must not install the app the field describes.
 GEOM_ABI   = 3                 # The dialect this writer stamps. 1 -> 2 is P5b's
                                # asset table (D23): the geometry records did not
                                # move, the vocabulary did, and D23 names THIS word
@@ -137,6 +149,24 @@ WASM_MEM_MAX   = 0x00020000    # 128 KB — the D27 linear-memory ceiling per ap
 # and photos share. The C reader mirrors this number and this rule:
 # ORBAPP_EDITOR_MAX in main/app/orb_app_manifest.h.
 EDITOR_MAX     = 0x00200000    # 2 MiB of editor, and no more — the owner's number
+
+# S6 (§4.1): the app's own version stamp. VERSION_BYTES is the whole field, NUL
+# included, and matches the eight words W_VERSION reserves: the same 32-byte width
+# esp_app_desc_t.version gives an image, so an app and a firmware name their versions
+# in one shape and one width.
+#
+# The grammar is tools/orb_version.sh's, copied as a rule and not re-derived:
+# v<MAJOR>.<MINOR>.<PATCH>[-<pre>][+<7-SHA>][-dirty], each number one or two digits
+# with no leading zero. The two-digit cap is not taste. It is what makes the worst
+# legal stamp (v99.99.99-rc.99+e1a2b3c-dirty) exactly 31 bytes, so the width check and
+# the grammar check can never disagree about what fits.
+VERSION_BYTES = 32             # bytes, NUL included; 31 usable characters
+VERSION_RE = re.compile(
+    r"^v(0|[1-9]\d?)(?:\.(?:0|[1-9]\d?)){2}"
+    r"(?:-(?:0|[1-9]\d*|[0-9]*[a-zA-Z-][0-9A-Za-z-]*"
+    r"(?:\.(?:0|[1-9]\d*|[0-9]*[a-zA-Z-][0-9A-Za-z-]*))*))?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
+
 
 # D16 (§0.6): the manifest's period_ms is the FASTEST beat the app may ever run,
 # which is the number the owner prices the app at on the install confirm. 0 is a
@@ -225,7 +255,14 @@ W_WASM_MEM   = W_CODE_CRC    + 1
 W_EDITOR_OFF  = W_WASM_MEM    + 1
 W_EDITOR_SIZE = W_EDITOR_OFF  + 1
 W_EDITOR_CRC  = W_EDITOR_SIZE + 1
-W_HDR_CRC    = W_EDITOR_CRC    + 1
+# S6 (§4.1): the app's own version stamp, eight words wide — the same 32-byte field
+# esp_app_desc_t.version gives a firmware image, for the same reason. It sits BEFORE
+# W_HDR_CRC for the reason the code triple and the editor triple do: a word after the
+# checksum can be rewritten on the card without disturbing any checksum, and a version
+# an operator can silently edit is not an identity. The tail's one free word is NOT the
+# place: it is outside the span, and a 31-byte stamp is not one word anyway.
+W_VERSION    = W_EDITOR_CRC    + 1
+W_HDR_CRC    = W_VERSION       + 8
 # P5b (D23): the asset table's two fields take words this header left reserved for
 # exactly this, so the tail keeps its shape and the header CRC still covers up to
 # W_HDR_CRC. One word at the end stays free and the reader checks it zero.
@@ -323,7 +360,7 @@ def caps_names(caps):
     return [n for n in CAP_OWNER if caps & cap_bit(n)]
 
 
-def disclosure(slug, title, caps, period_ms, n_settings):
+def disclosure(slug, title, caps, period_ms, n_settings, version=""):
     """The install-time disclosure text (D19, §4.2's last sentence).
 
     The words the owner consents to, built from the same bytes the gate will
@@ -332,12 +369,19 @@ def disclosure(slug, title, caps, period_ms, n_settings):
     a disclosure the reader can disagree with is the ceremony D19 deleted.
     Art is not in the text: D21 (§0.9) withdrew the container's payload, so an
     app ships no pixels to consent to — pixels arrive only in theme bundles.
+
+    S6 adds the version LINE and keeps it optional: an unstamped container has no
+    release to name, and the honest disclosure says so rather than printing
+    `v0.0.0` for a build nobody released.
     """
     beat = ("no animation (period_ms 0 = never ticks)" if period_ms == 0
             else "%d ms fastest beat (set_beat may only slow from here)" % period_ms)
     caps_txt = ", ".join(caps_names(caps)) or "(nothing declared)"
+    ver = "  version:    %s\n" % version if version else \
+          "  version:    unstamped\n"
     return ('Install "%s" (%s)\n'
             '  may use:    %s\n'
+            + ver +
             '  will run:   %s\n'
             '  will store: %d setting(s) inside a %d B quota\n'
             'Revoke any of it on the dial: MENU -> PERMISSIONS -> %s.'
@@ -872,6 +916,60 @@ def _editor_size(n):
     return n
 
 
+def check_version(v):
+    """S6: validate an app's own version stamp and return it, or raise with the
+    reason in the words a page can show.
+
+    An EMPTY stamp is legal and means "unstamped", the way an empty editor region
+    means "ships nothing". A zero field claims no identity and revokes no
+    permission, so it needs no refusal — and refusing it would make every
+    hand-written vector and every app authored before S6 unbuildable for no gain.
+    What a non-empty stamp must do is parse: a field the reader cannot order is
+    worse than an empty one, because the hub would print it as a version.
+
+    The width is checked before the grammar, exactly as orb_version.sh does, so an
+    over-long stamp is refused with the number that binds rather than a message
+    about a character class.
+    """
+    if not isinstance(v, str):
+        raise ValueError("version must be a string, got %r" % (v,))
+    if v == "":
+        return ""
+    if len(v.encode("utf-8")) > VERSION_BYTES - 1:
+        raise ValueError("version %r is %d bytes; the header holds at most %d"
+                         % (v, len(v.encode("utf-8")), VERSION_BYTES - 1))
+    if not VERSION_RE.match(v):
+        raise ValueError(
+            "version %r is not a release stamp: the form is "
+            "v<MAJOR>.<MINOR>.<PATCH> with each part 1 or 2 digits and no leading "
+            "zero, the same grammar version.txt gives an image "
+            "(tools/orb_version.sh)" % (v,))
+    return v
+
+
+def serial_of_version(v):
+    """The numeric twin of a stamp: MAJOR*10000 + MINOR*100 + PATCH.
+
+    W_SERIAL stays a u32 and the installer keeps its own serial, so nothing here
+    changes what the dial compares. What dies is the chance of the string and the
+    word disagreeing in a first-party container: make_factory_apps.py derives one
+    from the other and cannot state a v1.2.0 stamped app at serial 7.
+
+    Returns None for an empty stamp and for a prerelease, which have no ordering to
+    encode. A caller that passes one should keep the serial it already had.
+    """
+    if not v or "+" in v or "-" in v:
+        return None
+    core = v[1:].split(".")
+    if len(core) != 3:
+        return None
+    try:
+        major, minor, patch = (int(p) for p in core)
+    except ValueError:
+        return None
+    return major * 10000 + minor * 100 + patch
+
+
 def code_offset(geom_off, geom_size):
     """Code region start: the sector-aligned end of the geometry blob, so a copy
     into a 64 KB-aligned slot stays aligned. The one payload slot D21 withdrew
@@ -894,7 +992,7 @@ def _code_size(code_size):
 def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
                 settings_blob, serial=0, baked_ms=0, abi=None,
                 sig=0, behaviour_kind=0, asset_blob=b"",
-                code_size=0, wasm_mem_max=0, editor_size=0):
+                code_size=0, wasm_mem_max=0, editor_size=0, version=""):
     """Lay out the header+manifest block. Every field is checked here, because a
     header this function refuses is a header the device never has to meet.
 
@@ -955,6 +1053,10 @@ def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
     # its offset and CRC are left for write_container, exactly as geom_* and
     # code_* are. Zero is the ordinary case and stamps a zero triple.
     hdr[W_EDITOR_SIZE] = _editor_size(editor_size)
+    # S6: the app's own stamp, gated and laid before the checksum is taken. The
+    # empty string is the ordinary answer for an app that names no release, and it
+    # stamps eight zero words — the shape a field nobody wrote already carries.
+    _putstr(hdr, W_VERSION, check_version(version), VERSION_BYTES, "version")
     if len(asset_blob) % (ASSET_WORDS * 4):
         raise ValueError("asset table is %d B, not a whole number of %d B rows"
                          % (len(asset_blob), ASSET_WORDS * 4))
@@ -1044,6 +1146,11 @@ def parse_header(raw, app_id=None):
         ("asset_off", W_ASSET_OFF), ("n_assets", W_N_ASSETS))}
     h["slug"]  = _getstr(hdr, W_SLUG, SLUG_MAX)
     h["title"] = _getstr(hdr, W_TITLE, TITLE_MAX)
+    # S6: the app's own stamp, read the same way the two name fields are. An empty
+    # answer is "unstamped" and is not a refusal — the same reading editor_size 0
+    # gets. check_header is where a NON-empty one has to parse, because that is the
+    # function a partition-slot reader runs too.
+    h["version"] = _getstr(hdr, W_VERSION, VERSION_BYTES)
     return h
 
 
@@ -1068,6 +1175,13 @@ def check_header(h, app_id=None, stem=None):
         raise ValueError("app declares no title: the install confirm and the "
                          "carousel row both read this field, and an empty one is "
                          "an unlabeled permission request")
+    # S6: the stamp must parse if it is there at all, and it may be absent. This is
+    # check_header and not parse_header because a partition-slot reader runs this
+    # function and not the file one — the field is inside the CRC either way, so the
+    # only thing a hand-edited card can achieve is a stamp that names no ordering,
+    # and the hub would print that as a version.
+    if h.get("version"):
+        check_version(h["version"])
     if h["caps"] >> CAP_BITS or h["caps"] & ~CAP_OWNER_MASK:
         raise ValueError("header caps 0x%X are not a legal declaration — owner "
                          "caps only (%s), and nothing at or above CAP_N"
@@ -1200,7 +1314,7 @@ def check_file_layout(h):
 def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
                    period_ms=0, art_req=0, counts=(0, 0, 0, 0),
                    behaviour_kind=0, serial=0, baked_ms=0, abi=None, assets=(),
-                   code=b"", wasm_mem_max=0, editor=b""):
+                   code=b"", wasm_mem_max=0, editor=b"", version=""):
     """Emit one `.orbapp`, its name derived from the header that is its identity.
 
     Nothing is written unless every check passes, and the CRC is computed over
@@ -1241,7 +1355,7 @@ def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
                       baked_ms=baked_ms, abi=abi, behaviour_kind=behaviour_kind,
                       asset_blob=a_blob, code_size=len(code_bytes),
                       wasm_mem_max=wasm_mem_max,
-                      editor_size=len(editor_bytes))
+                      editor_size=len(editor_bytes), version=version)
     # The packer left geom_size/geom_crc/art_crc at zero because only it knows
     # the blob it is about to lay down; fill and re-checksum in one place. The
     # art crc stays zero — zlib.crc32 of the empty payload the format forbids.
@@ -1400,10 +1514,10 @@ if __name__ == "__main__":
         print("%-10s 0x%08x  '%s'  caps=%s" % (h["slug"], h["app_id"], h["title"],
                                                ",".join(caps_names(h["caps"])) or "-"))
         print("  fmt %d abi %d (%d..%d)  period %d ms  settings %d  assets %d  "
-              "geom %d B  art %d B (req %d)  serial %d"
+              "geom %d B  art %d B (req %d)  serial %d  version %s"
               % (h["fmt"], h["abi"], h["abi_min"], h["abi_max"], h["period_ms"],
                  h["n_settings"], h["n_assets"], h["geom_size"], h["art_size"],
-                 h["art_req"], h["serial"]))
+                 h["art_req"], h["serial"], h["version"] or "(unstamped)"))
         for s in st:
             print("  setting %-15s %-6s min=%d max=%d def=%d %s"
                   % (s["id"], s["type"], s["min"], s["max"], s["default"],

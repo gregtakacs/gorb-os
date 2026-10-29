@@ -890,7 +890,13 @@ def seed_check():
     _spec = importlib.util.spec_from_file_location("orbapp", os.path.join(HERE, "orbapp.py"))
     orbapp = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(orbapp)
-    seed_dir = os.path.join(HERE, os.pardir, "tools", "orb-manager", "starter")
+    seed_dir = os.path.join(HERE, os.pardir, "tools", "orb-manager", "apps")
+    # S6 (§4.1): the starter pair's version and serial come from version.txt, the one
+    # source tools/make_factory_apps.py reads. Recomputed rather than typed, so this pin
+    # goes red when the header's string and the tree's release disagree — and not on a
+    # release that moved both together, which is the case a literal would confuse.
+    want_version = open(os.path.join(HERE, os.pardir, "version.txt")).read().strip()
+    want_serial = orbapp.serial_of_version(want_version)
     want = [("clock", "Clock", 3, "sd_read|themes"),
             ("color_picker", "HSB", 1, "")]
     for slug, title, kind, capnames in want:
@@ -905,12 +911,20 @@ def seed_check():
         names = list(orbapp.CAP_FREE) + list(orbapp.CAP_OWNER)
         got_caps = set(names[b] for b in range(len(names)) if h["caps"] >> b & 1)
         want_caps = set(capnames.split("|")) if capnames else set()
+        # S6 (§4.1): the serial is version.txt's number, recomputed here rather than
+        # matched against a literal. The starter pair's stamp rides at 1 no more, and a
+        # pin that traded 1 for 10127 would go red on the next release for the right
+        # reason and the wrong cause; this one goes red only when the two sources of the
+        # same fact — the string in the header and the number in version.txt — disagree.
         ok = (h["slug"] == slug and h["title"] == title
               and h["behaviour_kind"] == kind and got_caps == want_caps
-              and h["serial"] == 1 and h["code_size"] == 0 and h["art_size"] == 0)
+              and h["serial"] == want_serial and h["code_size"] == 0
+              and h["art_size"] == 0
+              and h["version"] == want_version)
         check("starter %s.orbapp is the %s row the ruling names" % (slug, title), ok,
-              "slug=%r kind=%d caps=%s serial=%d" % (h["slug"], h["behaviour_kind"],
-                                                     sorted(got_caps), h["serial"]))
+              "slug=%r kind=%d caps=%s serial=%d version=%r" % (
+                  h["slug"], h["behaviour_kind"], sorted(got_caps), h["serial"],
+                  h["version"]))
         fails += 0 if ok else 1
         # S4: the clock's editor travels inside its own container. A region of
         # zero here is the bake silently reverting to the hub-hosted alias.

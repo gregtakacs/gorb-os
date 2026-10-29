@@ -38,7 +38,16 @@ extern "C" {
  * disagreement — the lint rule of tools/host_art_residency_test.py. */
 #define ORBAPP_MAGIC      0x00415247u    /* 'G','R','A' — unlike the theme magic on purpose */
 #define ORBAPP_THEME_MAGIC 0x474F5254u   /* so a theme handed here gets named, not miscalled */
-#define ORBAPP_FORMAT     2u
+#define ORBAPP_FORMAT     3u    /* 2 -> 3 is S6 (§4.1): a 32-byte version field
+                                 * after the editor triple, inside the hdr_crc span.
+                                 * The tail's free word could not take it — a word
+                                 * outside the CRC is rewritable on the card without
+                                 * disturbing any checksum, which is the failure
+                                 * D19's consent rule exists to forbid, and a 31-byte
+                                 * stamp is not one word anyway. GEOM_ABI stays 3:
+                                 * the class vocabulary did not move, only the
+                                 * header's shape did, and the two numbers answer
+                                 * two different questions. */
 #define ORBAPP_GEOM_ABI   3u    /* The dialect this build speaks. 1 -> 2 is P5b's
                                  * asset table (D23): the geometry records did not
                                  * move, the vocabulary did. D23 names THIS word as
@@ -59,6 +68,7 @@ extern "C" {
 
 #define ORBAPP_SLUG_MAX    24u   /* header bytes, NUL included */
 #define ORBAPP_TITLE_MAX   32u
+#define ORBAPP_VERSION_MAX 32u   /* S6: header bytes, NUL included — 31 usable chars */
 #define ORBAPP_ID_MAX      16u   /* settings id bytes; NVS key limit is 15+NUL */
 #define ORBAPP_DEFSTR_MAX  32u
 
@@ -152,7 +162,17 @@ enum {
     ORBAPP_W_EDITOR_OFF  = ORBAPP_W_WASM_MEM  + 1,
     ORBAPP_W_EDITOR_SIZE = ORBAPP_W_EDITOR_OFF  + 1,
     ORBAPP_W_EDITOR_CRC  = ORBAPP_W_EDITOR_SIZE + 1,
-    ORBAPP_W_HDR_CRC    = ORBAPP_W_EDITOR_CRC  + 1,
+    /* S6 (§4.1): the app's own release stamp — eight words, NUL-padded text, the
+     * same 32-byte field esp_app_desc_t.version gives a firmware image. It sits
+     * BEFORE ORBAPP_W_HDR_CRC for the reason the code triple and the editor triple
+     * sit there: a word after the checksum can be rewritten on the card without
+     * disturbing any checksum, and a version an operator can silently edit is not
+     * an identity. An ALL-ZERO field is legal and reads as "unstamped", the way a
+     * zero editor_size reads as "ships nothing" — a zero claims no ordering and
+     * revokes no permission, so it needs no refusal. A NON-zero field must parse,
+     * and orbapp_parse_header refuses one that does not. */
+    ORBAPP_W_VERSION     = ORBAPP_W_EDITOR_CRC + 1,
+    ORBAPP_W_HDR_CRC     = ORBAPP_W_VERSION    + 8,
     /* P5b's two fields take words the header left reserved for exactly this, so the
      * tail keeps its shape and the header CRC still covers up to W_HDR_CRC. One word
      * at the end stays free, and the reader checks it zero: a word that reads as
@@ -207,6 +227,12 @@ typedef struct {
                                                    * card-resident and never installed
                                                    * (§4.2). Three zeros: ships none. */
     uint32_t asset_off, n_assets;   /* P5b (D23): the table, in the blob region    */
+    /* S6 (§4.1): the app's own release stamp, NUL-terminated and empty when the
+     * container names no release. The one field in this header that is prose and
+     * not a gate word, and the reason it still sits inside hdr_crc: the hub prints
+     * it as the app's version, so a value an operator could edit on the card
+     * unnoticed is a lie on a page. */
+    char     version[ORBAPP_VERSION_MAX];
 } orbapp_hdr_t;
 
 /* The class vocabulary the table's rows index into is main/assets/orb_assets.h's

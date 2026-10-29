@@ -228,6 +228,19 @@ struct orb_app {
     uint32_t            code_size;
     uint32_t            serial;
     uint32_t            editor_crc;
+    /** S6 (§4.1): the container's own release stamp, read from the same slot header
+     *  as the six words above, and "" for a container that names no release.
+     *
+     *  It is the tuple's seventh word, and the only one with an order. The six above
+     *  answer "is this the same bytes?"; this answers "which release is it?" in the
+     *  words an operator reads, and it joins the upload comparison so a re-release
+     *  cannot be called unchanged. The hub's Apps face prints both numbers: "clock on
+     *  the orb v1.2.0, hub copy v1.3.0".
+     *
+     *  A compiled row's is "" — it was never a container. The listing omits the key
+     *  there, exactly as it omits the tuple, so an operator never reads an empty
+     *  version as "v0". */
+    const char         *version;
 
     const orb_app_iface_t *iface;
 
@@ -257,6 +270,10 @@ struct orb_app {
  * moves one and not the other fails there, not on the dial. */
 #define ORB_APP_SLUG_MAX     24   /* == ORBAPP_SLUG_MAX   */
 #define ORB_APP_TITLE_MAX    32   /* == ORBAPP_TITLE_MAX  */
+/* S6's twin. The word lives in the header's CRC span on the card and in this
+ * table's own storage at runtime; 32 matches the theme's version field width
+ * for the reason the header gives (§4.1) rather than the slug's 24. */
+#define ORB_APP_VERSION_MAX  32   /* == ORBAPP_VERSION_MAX */
 #define ORB_APP_SETTINGS_MAX 16   /* == ORBAPP_SETTINGS_MAX */
 
 /** The first card-app registry index — the base every card row sits on.

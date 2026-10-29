@@ -97,10 +97,22 @@ type CardApp struct {
 	CodeSize uint32
 	// Builtin marks a row that ships inside the firmware. door_open refuses to
 	// enable/disable/uninstall those with NOT_SUPPORTED, and they sit below
-	// ORB_APP_BASE, so they appear in h_status's ledger but NOT in h_apps's installed
-	// tier. Measured on orb-B (fw 9442432): the ledger carries clock, color_picker and
-	// menu while /api/v1/apps reports "installed":[].
+	// ORB_APP_BASE.
+	//
+	// The comment this field used to carry said such rows appear in h_status's ledger but
+	// NOT in /api/v1/apps's installed tier, citing orb-B on fw 9442432. That was true of
+	// the firmware then and is false of the firmware now: apps_send_installed (orb_app_net.c
+	// :776) walks the WHOLE ledger including ORB_APP_MENU, emits the built-in FIRST, and
+	// stamps it with "compiled":true. A double that dropped the row outright modelled a
+	// device no current build is, and it made every hub test written against it blind to
+	// the one state the Apps face must never list — the shell counted as the owner's
+	// inventory. Built-ins are emitted with the flag, which is the fact the face filters on.
 	Builtin bool
+	// Version is the release stamp the container's header carries, reported by the device
+	// for card rows and omitted for a built-in, which was never a container. It is what
+	// lets the hub answer "is the copy on this dial the copy on my shelf" without shipping
+	// either file anywhere, and the whole of the Apps face's update wording.
+	Version string
 }
 
 // builtInSlugs is the device's own inside-the-firmware set. Since D36 (v1.1.20)
@@ -189,6 +201,33 @@ func (o *Orb) cardRowsLocked() []*CardApp {
 		}
 	}
 	return out
+}
+
+// dropCardRowForFileLocked is the volume's effect on the app listing: h_apps_list answers
+// by walking /sd/apps, so a filemanager delete of a container removes the row it produced.
+// Only an apps/*.orbapp path does anything — every other file on the card (photos, logs, a
+// theme) has no row to lose, and the staged rows WithCardApps planted without a file are
+// left alone, because a test set those up deliberately and nothing about this delete
+// touched them.
+func (o *Orb) dropCardRowForFileLocked(rel string) {
+	if !strings.HasPrefix(rel, "apps/") || !strings.HasSuffix(rel, ".orbapp") {
+		return
+	}
+	stem := strings.TrimSuffix(strings.TrimPrefix(rel, "apps/"), ".orbapp")
+	if stem == "" || strings.Contains(stem, "/") || o.apps == nil {
+		return
+	}
+	a, ok := o.apps[stem]
+	if !ok || a.Stem == "" || a.Builtin {
+		return
+	}
+	delete(o.apps, stem)
+	for i, s := range o.appsOrder {
+		if s == stem {
+			o.appsOrder = append(o.appsOrder[:i], o.appsOrder[i+1:]...)
+			break
+		}
+	}
 }
 
 // cardInstalledLocked is h_apps's installed tier. It is NOT the same set as the ledger:
@@ -318,18 +357,37 @@ func (o *Orb) serveApps(w http.ResponseWriter) {
 
 // installedJSONLocked formats the flash tier as h_apps's installed rows do. walkable is
 // the iface bit — whether the carousel can land on it at all — and on_glass marks the row
-// the panel is showing, which is the one uninstall refuses. Built-ins never appear here:
-// the device's walk starts at ORB_APP_BASE.
+// the panel is showing, which is the one uninstall refuses.
+//
+// Built-ins ARE emitted, first, carrying "compiled":true. That mirrors apps_send_installed
+// in orb_app_net.c:776, which walks the whole ledger from ORB_APP_MENU rather than from
+// ORB_APP_BASE and stamps each built-in row. The identity tuple and the version are sent
+// only for the card rows: a built-in was never a container and the firmware omits those
+// keys, so a double that invented zeros here would let a hub test call the shell stale.
 func (o *Orb) installedJSONLocked() string {
 	var rows []string
-	for i, a := range o.cardInstalledLocked() {
+	slot := 0
+	for _, a := range o.allRowsLocked() {
+		if !a.Builtin && (!a.Installed || a.Slug == "") {
+			continue
+		}
+		// Mirrors apps_send_installed: the built-in row carries "compiled":true and a
+		// "reason", and NO identity tuple or version, because a compiled row was never a
+		// container and printing a zero version claims an answer about no file.
+		tail := "}"
+		if a.Builtin {
+			tail = fmt.Sprintf(`,"compiled":true,"reason":"%s"}`, jsonSafe(a.Why))
+		} else {
+			tail = fmt.Sprintf(`,"geom_crc":%d,"code_crc":%d,"code_size":%d,"serial":%d,`+
+				`"editor_crc":%d,"version":"%s"}`,
+				a.GeomCRC, a.CodeCRC, a.CodeSize, a.Serial, editorCRC(a.Editor), jsonSafe(a.Version))
+		}
 		rows = append(rows, fmt.Sprintf(
 			`{"slug":%q,"title":%q,"slot":%d,"caps":%q,"period_ms":%d,"n_settings":%d,`+
-				`"enabled":%s,"failed":%s,"walkable":%s,"on_glass":%s,`+
-				`"geom_crc":%d,"code_crc":%d,"code_size":%d,"serial":%d,"editor_crc":%d}`,
-			jsonSafe(a.Slug), jsonSafe(a.Title), i, jsonSafe(capsNames(a.Caps)),
-			a.Period, a.NSet, tf(a.Enabled), tf(a.Failed), tf(!a.Failed), tf(a.OnGlass),
-			a.GeomCRC, a.CodeCRC, a.CodeSize, a.Serial, editorCRC(a.Editor)))
+				`"enabled":%s,"failed":%s,"walkable":%s,"on_glass":%s`,
+			jsonSafe(a.Slug), jsonSafe(a.Title), slot, jsonSafe(capsNames(a.Caps)),
+			a.Period, a.NSet, tf(a.Enabled), tf(a.Failed), tf(!a.Failed), tf(a.OnGlass))+tail)
+		slot++
 	}
 	return strings.Join(rows, ",")
 }
@@ -593,6 +651,13 @@ func (o *Orb) serveAppUpload(w http.ResponseWriter, r *http.Request) {
 		o.apps[slug] = &up
 		o.appsOrder = append(o.appsOrder, slug)
 	}
+	// h_app_upload writes the container INTO the volume — /sd/apps/<slug>.orbapp, the
+	// ("orb","apps") source's own directory — so a device that took an upload answers
+	// /api/v1/sd/ls with the file and /api/v1/sd/rm can erase it. A double that kept the
+	// row only in its app map made the file manager's view of a hub-pushed app a lie, and
+	// the Apps face's Remove-from-card door untestable.
+	o.fm.ensureStoreDirs()
+	o.fm.files["apps/"+slug+".orbapp"] = int64(len(body))
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","bytes":%d}`, len(body)))
 }
 

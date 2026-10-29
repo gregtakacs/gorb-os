@@ -13,6 +13,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -353,4 +354,62 @@ func TestEditorTransportFailureMemoExpiresFast(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "recovered") {
 		t.Fatalf("status=%d body=%s, want the aged memo to re-dial a recovered board", rec.Code, rec.Body)
 	}
+}
+
+// §4: an app the dial and the shelf agree on is edited out of the hub's own file. The
+// region is the same bytes the device would stream, and the orb's one HTTP lane is the
+// scarcest resource on the network: every asset a composer session pulls afterwards is a
+// dial the board does not answer. The gate is the version stamp alone, so the test's whole
+// value is in the pair of cases — agree, and the dial never rings; disagree, and it rings.
+func TestEditorIsServedFromTheLibraryOnlyWhenTheVersionsAgree(t *testing.T) {
+	const stamp = "v1.4.2-rc.1+build.7" // the sentinel fixture's own header stamp
+	editorInvalidate()
+	t.Cleanup(editorInvalidate)
+
+	run := func(t *testing.T, dialStamp string, wantDialed bool) {
+		t.Helper()
+		dir := t.TempDir()
+		cloneFixture(t, dir, "sentinel")
+		body, err := os.ReadFile(dir + "/sentinel.orbapp")
+		if err != nil {
+			t.Skipf("no sentinel fixture: %v", err)
+		}
+		// The fixture's editor region is what both sides would serve, so the byte-for-byte
+		// comparison below proves the hub answered from its own disk and not a stub.
+		region, err := orbnet.AppEditorRegion(body)
+		if err != nil || len(region) == 0 {
+			t.Skipf("the sentinel fixture carries no editor region: %v", err)
+		}
+		orb := orbfake.New().WithCardApps(orbfake.CardApp{
+			Stem: "sentinel", Slug: "sentinel", Title: "Sentinel",
+			Installed: true, Enabled: true, Version: dialStamp, Editor: region,
+		})
+		s, ip, _, f := fakeOrbHubWith(t, orb)
+		s.lib = &Library{AppsDir: dir}
+
+		rec := editorGet(t, s, "/editor/"+ip+"/sentinel/", true)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body %s", rec.Code, rec.Body)
+		}
+		var dialed bool
+		for _, c := range f.Calls() {
+			if strings.Contains(c, "/api/v1/apps/editor") {
+				dialed = true
+			}
+		}
+		if dialed != wantDialed {
+			t.Errorf("editor door dialed = %v, want %v (dial stamp %q against shelf %q)",
+				dialed, wantDialed, dialStamp, stamp)
+		}
+	}
+
+	// Same stamp, both sides. The hub answers from disk.
+	run(t, stamp, false)
+	// The dial is behind, so the hub's copy is a different program and the board answers.
+	editorInvalidate()
+	run(t, "v1.0.0", true)
+	// The dial reports nothing. An unstamped row is a row that stated no version, and
+	// serving hub bytes against a silence is how an operator edits the wrong editor.
+	editorInvalidate()
+	run(t, "", true)
 }

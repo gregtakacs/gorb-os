@@ -303,7 +303,7 @@ func TestThemePreviewDialsTheDeviceRoute(t *testing.T) {
 		}
 		_, _ = w.Write(previewPlane4x2())
 	})
-	body, code, err := NewClient(2 * time.Second).ThemePreview(fakeIP(srv), "clock-aurora-9b89025ce7a6")
+	body, code, err := NewClient(2*time.Second).ThemePreview(fakeIP(srv), "clock-aurora-9b89025ce7a6")
 	if err != nil || code != http.StatusOK || len(body) != 20 || body[4] != 0xF8 {
 		t.Fatalf("ThemePreview = %d B at %d, err %v", len(body), code, err)
 	}
@@ -317,9 +317,9 @@ func TestThemePreviewDialsTheDeviceRoute(t *testing.T) {
 func TestThemePreviewCallsATornBodyAnError(t *testing.T) {
 	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) {
 		plane := previewPlane4x2()
-		_, _ = w.Write(plane[:12])   // header intact, pixels cut short
+		_, _ = w.Write(plane[:12]) // header intact, pixels cut short
 	})
-	_, _, err := NewClient(2 * time.Second).ThemePreview(fakeIP(srv), "clock-aurora-9b89025ce7a6")
+	_, _, err := NewClient(2*time.Second).ThemePreview(fakeIP(srv), "clock-aurora-9b89025ce7a6")
 	if err == nil {
 		t.Fatal("a preview body short of its own declared plane read as a success")
 	}
@@ -340,7 +340,7 @@ func TestThemePreviewQuietFourOhFourIsStillNotATornPlane(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error":"this theme carries no preview"}`))
 	})
-	_, code, err := NewClient(2 * time.Second).ThemePreview(fakeIP(srv), "clock-aurora-9b89025ce7a6")
+	_, code, err := NewClient(2*time.Second).ThemePreview(fakeIP(srv), "clock-aurora-9b89025ce7a6")
 	if err != nil || code != http.StatusNotFound {
 		t.Fatalf("code %d err %v, want the device's 404 relayed with no error", code, err)
 	}
@@ -355,7 +355,7 @@ func TestThemePreviewQuietFortyFourIsNotAnError(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error":"this theme carries no preview"}`))
 	})
-	_, code, err := NewClient(2 * time.Second).ThemePreview(fakeIP(srv), "clock-aurora-9b89025ce7a6")
+	_, code, err := NewClient(2*time.Second).ThemePreview(fakeIP(srv), "clock-aurora-9b89025ce7a6")
 	if err != nil {
 		t.Fatalf("an absent preview read as a failed dial: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestThemePreviewQuietFortyFourIsNotAnError(t *testing.T) {
 func TestThemePreviewRefusesAForeignIdBeforeDialing(t *testing.T) {
 	dialed := false
 	srv := fakeOrbServer(t, func(w http.ResponseWriter, r *http.Request) { dialed = true })
-	if _, _, err := NewClient(2 * time.Second).ThemePreview(fakeIP(srv), "../../passwd"); err == nil {
+	if _, _, err := NewClient(2*time.Second).ThemePreview(fakeIP(srv), "../../passwd"); err == nil {
 		t.Fatal("want the id gate to refuse a stem no device issued")
 	}
 	if dialed {

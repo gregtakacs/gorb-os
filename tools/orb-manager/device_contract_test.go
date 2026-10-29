@@ -838,10 +838,30 @@ func TestFakeInstalledRowsCarryTheIdentityTuple(t *testing.T) {
 	if json.Unmarshal(b, &got) != nil {
 		t.Fatalf("the fake's apps list is not JSON: %s", b)
 	}
-	if len(got.Installed) != 2 {
-		t.Fatalf("the fake listed %d installed rows, want 2", len(got.Installed))
+	// The shell is row 0 and carries no tuple, because the firmware omits the keys for a
+	// compiled row rather than sending zeros. This test used to expect exactly two rows on
+	// the strength of a fake that hid the built-in; the emitter at orb_net.c:5054 walks the
+	// whole ledger, so the row is present, flagged, and must be filtered rather than
+	// assumed absent. Card rows follow, so the tuple checks below read by slug.
+	if len(got.Installed) != 3 {
+		t.Fatalf("the fake listed %d installed rows, want 3 (the shell plus two card apps)", len(got.Installed))
 	}
-	r := got.Installed[0]
+	shell := got.Installed[0]
+	if !shell.Compiled {
+		t.Errorf("row 0 is not flagged compiled: %+v", shell)
+	}
+	if shell.CarriesIdentity() {
+		t.Errorf("the built-in arrived with an identity tuple; a compiled row was never a container: %+v", shell)
+	}
+	bySlug := map[string]orbnet.AppInstalledRow{}
+	for _, r := range got.Installed {
+		bySlug[r.Slug] = r
+	}
+	sentinel, okSent := bySlug["sentinel"]
+	if !okSent {
+		t.Fatalf("the sentinel row is missing: %+v", got.Installed)
+	}
+	r := sentinel
 	if !r.CarriesIdentity() {
 		t.Fatalf("the fake sent a row with no tuple and CarriesIdentity read it as a compiled row: %+v", r)
 	}
@@ -857,7 +877,7 @@ func TestFakeInstalledRowsCarryTheIdentityTuple(t *testing.T) {
 	}
 	// An app that ships no editor reports zero, which is the answer D37 defines as "ships
 	// nothing" and not a refusal.
-	if got.Installed[1].EditorCRC != 0 {
-		t.Errorf("an app with no editor reported editor_crc %d, want 0", got.Installed[1].EditorCRC)
+	if plain := bySlug["plain"]; plain.EditorCRC != 0 {
+		t.Errorf("an app with no editor reported editor_crc %d, want 0", plain.EditorCRC)
 	}
 }

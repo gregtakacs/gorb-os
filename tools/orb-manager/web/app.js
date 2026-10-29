@@ -870,7 +870,7 @@ async function cableFlash(wipe) {
 // credentials, so the form is its next step by definition.
 async function flashJoinedAgain(port, mac) {
   const doing = $("#ob-doing");
-  doing.textContent = "flash done; waiting for the orb to boot back onto Wi-Fi";
+  doing.textContent = "waiting for the orb to restart";
   let joined = null;
   await streamPost("/api/watch", { port, mac: mac || "", skip_ap: true, ip: "" }, (ev) => {
     if (ev.log) doing.textContent = ev.log;
@@ -878,7 +878,7 @@ async function flashJoinedAgain(port, mac) {
     if (r && r.mode === "lan" && r.status && r.status.state === "connected") joined = r;
   });
   if (!joined) return false;
-  doing.textContent = "orb updated, back on Wi-Fi at " + joined.ip;
+  doing.textContent = "back on Wi-Fi at " + joined.ip;
   $("#mn-curfw").textContent = "flashed over the cable, back on Wi-Fi at " + joined.ip;
   pullFound();
   fpClose();
@@ -1506,11 +1506,154 @@ function joinDone(ip, st) {
     (st.tz ? ", " + st.tz : "") + ".";
   $("#ob-join").hidden = true;
   $("#ob-done").hidden = false;
-  // S5: the join seeds nothing. A fresh orb boots to the shell menu and
-  // waits for its owner to copy the starter files (or any app) onto a card; the
-  // Apps face's drop zone is the one path, for first-party and third-party alike.
+  // S6 restores the join-time install S5 deleted, narrowed to the clock and gated on the
+  // ledger answering zero card rows: a board an owner emptied gets emptied again only if
+  // they press Install. Everything else in apps/ waits for a press, so a hub directory full
+  // of experiments cannot refill a shelf somebody cleared. The hub holds the real gate
+  // (firmware floor, mounted card, port claim); this call is the moment, not the decision.
+  autoInstall(ip);
   pullFound();
 }
+
+// One install attempt per joined address per page load. A board that drops off WiFi and
+// answers again is the same board, and re-installing a card the owner has been working on
+// because the DHCP lease moved is the failure this map exists to prevent.
+const installTried = new Set();
+
+async function autoInstall(ip) {
+  if (installTried.has(ip)) return;
+  installTried.add(ip);
+  const watch = $("#ob-watch");
+  // The gate is the LEDGER, read from the dial that owns it. It used to read
+  // /api/fleet's per-row `apps` count, and commit 9f56b7e turned the fleet store into an
+  // address book that no longer carries that field — so the line became `if (undefined)
+  // return`, never fired, and a board whose owner had deliberately emptied the shelf got
+  // refilled on the next join. A guard that reads a field nobody sends is a guard that is
+  // off, silently, which is the worse of the two ways to be wrong here.
+  //
+  // Either tier counts as the owner's doing: a container on the card, or a row in a slot.
+  // An unreadable ledger falls through and lets the hub decide, the same way it always did.
+  try {
+    const d = await readDeviceJSON(await hubFetch(
+      "/orb/" + encodeURIComponent(ip) + "/api/v1/apps"));
+    if (d && !d.error) {
+      // A compiled row is not the owner's doing — the firmware put it there and they cannot
+      // take it off — and h_apps_list's installed tier CARRIES it (apps_send_installed
+      // emits the shell at slot 0 with "compiled":true). Counting it would mean no dial
+      // ever read as empty, the join-time seed would never run again, and a board out of
+      // the box would sit uninstalled forever. Same predicate the Apps face filters on.
+      const rows = (Array.isArray(d.installed) ? d.installed : [])
+        .filter((a) => !a.compiled);
+      const onCard = Array.isArray(d.apps) ? d.apps.length : 0;
+      if (rows.length || onCard) return; // the owner put something here: leave the shelf alone
+    }
+  } catch (e) { /* unreadable ledger: fall through and let the hub decide */ }
+  if (watch) watch.textContent = "installing the clock from the hub library\u2026";
+  const done = await streamInstall(ip, "clock", true);
+  if (watch && done) watch.textContent = "clock installed from the hub library.";
+  else if (watch) watch.textContent = "the clock did not install on join \u2014 see the Library card.";
+}
+
+// streamInstall POSTs one install run and reads the hub's NDJSON steps, returning whether
+// the run said done. It is the same shape watchOrbs uses for the same reason: an install
+// crosses WiFi and takes minutes, and a spinner with no lines cannot be told apart from a
+// hang.
+//
+// The optional frame is the shared flash panel's elements (fpUI()). A press from the Library
+// card hands one in, and every step then lands there as it happens rather than in a `<pre>`
+// under the fold that filled in only after the whole run: a 660 KB container takes long
+// enough that the operator needs the panel's headline to change and the bar to move to know
+// the hub is writing bytes and not stuck. Without a frame the card's own log is still
+// written, which is what the automatic join-time run does — it has the join dialog as its
+// frame already and must not steal it mid-provision.
+async function streamInstall(ip, only, auto, frame) {
+  const out = $("#lib-install-log");
+  const line = function (t) {
+    if (frame) {
+      frame.log.textContent += (frame.log.textContent ? "\n" : "") + t;
+      frame.log.scrollTop = frame.log.scrollHeight;
+      return;
+    }
+    if (!out) return;
+    out.textContent += (out.textContent ? "\n" : "") + t;
+    out.scrollTop = out.scrollHeight;
+  };
+  // The bar is driven by the hub's `uploading` steps, whose note is "N of M KB" — the only
+  // true statement available mid-transfer, since the device answers once at the end.
+  const setBar = function (note) {
+    if (!frame) return;
+    const m = /(\d+) of (\d+) KB/.exec(note || "");
+    if (!m) return;
+    const pct = Math.min(100, Math.round(Number(m[1]) * 100 / Number(m[2])));
+    frame.bar.style.width = pct + "%";
+    frame.bar.title = note;
+    frame.op.textContent = pct + "%";
+  };
+  const headline = function (j) {
+    if (!frame) return;
+    frame.doing.textContent = "installing on " + ip + " — " + describeStep(j);
+  };
+  let q = "/api/library/install?ip=" + encodeURIComponent(ip);
+  if (only) q += "&only=" + encodeURIComponent(only);
+  if (auto) q += "&auto=1";
+  try {
+    const r = await hubFetch(q, { method: "POST", headers: { Accept: "application/x-ndjson" } });
+    if (!r.ok || !r.body) { line("refused: HTTP " + r.status + " — " + (await r.text().catch(() => ""))); return false; }
+    const rd = r.body.getReader(), dec = new TextDecoder();
+    let buf = "", ok = false, refusal = "";
+    for (;;) {
+      const got = await rd.read();
+      if (got.done) break;
+      buf += dec.decode(got.value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const raw = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!raw) continue;
+        let j;
+        try { j = JSON.parse(raw); } catch (e) { continue; }
+        const t = j.step + ": " + j.action + (j.note ? " \u2014 " + j.note : "");
+        line(t);
+        headline(j);
+        if (j.action === "uploading") setBar(j.note);
+        if (j.step === "install" && j.action === "done") ok = true;
+        if (j.action === "refused") refusal = j.note || "the hub refused the run";
+      }
+    }
+    if (frame) {
+      frame.doing.textContent = ok ? "installed on " + ip : "install refused";
+      if (ok) frame.bar.style.width = "100%";
+      // A refusal leaves its own line as the panel's last word, and the panel open: the
+      // rules for this panel say an operation never closes its own completion row.
+      if (!ok && refusal) line("\u2717 " + refusal);
+    }
+    return ok;
+  } catch (e) {
+    line("the hub did not answer: " + (e && e.message ? e.message : e));
+    return false;
+  }
+}
+
+// describeStep words one NDJSON step for a panel headline. It names what is happening, not
+// the protocol's own field names, because the headline is the one line an operator reads
+// while they wait.
+function describeStep(j) {
+  switch (j.action) {
+    case "uploading": return "sending " + j.step + " (" + (j.note || "") + ")";
+    case "uploaded": return j.step + " sent; asking the orb to install it";
+    case "installing": return "the orb is writing " + j.step + " to its app slot";
+    case "installed": return j.step + " installed";
+    case "enabled": return j.step + " enabled";
+    case "storing": return "the orb is storing the theme";
+    case "stored": return "theme stored";
+    case "rebooting": return "the orb is rebooting after the store";
+    case "skipped": return j.step + " was already there" + (j.note ? " (" + j.note + ")" : "");
+    case "refused": return "refused: " + (j.note || "no reason given");
+    case "done": return "done";
+    default: return j.step + " \u2014 " + j.action;
+  }
+}
+
 
 $("#ob-rejoin").onclick = () => {
   $("#ob-done").hidden = true;
@@ -2369,30 +2512,55 @@ async function themeGet(path, timeoutMs) {
   return j.data;
 }
 
-// renderThemeTabs is the app chooser. It draws whenever the orb names more than one
-// theme-capable app, and it names them from the ledger: a theme-aware app with zero
-// themes on the card gets a pane showing that empty state and its Edit button,
-// because that is the exact moment an author needs the door.
+// renderThemeTabs is the app chooser. It draws whenever the orb names at least one
+// theme-capable app. Below two it once drew NOTHING — which is how a one-app dial showed
+// an unlabelled pile of themes and left its owner unable to say whose themes those were.
+// The chooser's job is naming the pane, not offering a choice, so a single app gets a
+// single tab that says so; the choice only appears when there is one. A theme-aware app
+// with zero themes on the card still gets its pane, showing that empty state and its Edit
+// button, because that is the exact moment an author needs the door.
 function renderThemeTabs() {
   const nav = $("#mn-themes-tabs");
   if (!nav) return;
   nav.innerHTML = "";
   const apps = themeAppsRows.slice();
-  if (apps.length < 2) return;
+  if (!apps.length) return;
   apps.sort((x, y) => (x.slug < y.slug ? -1 : 1));
-  const mk = (slug, label) => {
+  const mk = (slug, label, on) => {
     const b = document.createElement("button");
     b.type = "button";
-    b.className = "tab sub" + (themeSub === slug ? " on" : "");
+    b.className = "tab sub" + (on ? " on" : "");
     b.textContent = label;
     b.onclick = () => { themeSub = slug; loadThemes(themeIP); };
     nav.appendChild(b);
   };
-  mk("", "All");
+  // One themeable app: name the pane, and mark it current — with one app in scope the
+  // unfiltered view IS that app's view (see themeFaceScope), so an "on" tab is a true
+  // statement rather than a pressed button.
+  if (apps.length === 1) {
+    const n = apps[0].count | 0;
+    mk(apps[0].slug, themeAppTitle(apps[0].slug) + " themes"
+      + (n ? " (" + n + ")" : " (none)"), !themeSub || themeSub === apps[0].slug);
+    return;
+  }
+  const mk2 = (slug, label) => mk(slug, label, themeSub === slug);
+  mk2("", "All");
   for (const a of apps) {
     const n = a.count | 0;
-    mk(a.slug, themeAppTitle(a.slug) + (n ? " (" + n + ")" : " (none)"));
+    mk2(a.slug, themeAppTitle(a.slug) + (n ? " (" + n + ")" : " (none)"));
   }
+}
+
+// themeFaceScope answers the question every part of this face keeps having to ask: which
+// app's themes is the operator looking at? It is the pressed tab when there is one, the
+// orb's only theme-capable app when there is exactly one of those, and "" only when the
+// pane really spans several apps. Returning "" for a one-app orb is what made the state
+// line read "3 themes on the card" with no owner named, and made two different readers
+// re-derive the same answer separately.
+function themeFaceScope() {
+  if (themeSub) return themeSub;
+  if (themeAppsRows.length === 1) return themeAppsRows[0].slug;
+  return "";
 }
 
 
@@ -2637,15 +2805,19 @@ async function loadThemes(ip) {
     themeEmptyPane(list, null);
     return;
   }
-  const shown = themeSub ? rows.filter((t) => (t.app || "clock") === themeSub) : rows;
+  // The scope, not themeSub: a one-app dial has no pressed tab and still has exactly one
+  // right answer for "whose themes are these", and every line below has to agree on it.
+  const scope = themeFaceScope();
+  const shown = scope ? rows.filter((t) => (t.app || "clock") === scope) : rows;
   state.textContent = shown.length + " theme" + (shown.length === 1 ? "" : "s")
-    + (themeSub ? " for " + themeAppTitle(themeSub) : "")
+    + (scope ? " for " + themeAppTitle(scope) + " \u2014 the only theme-capable app on this orb"
+             : (themeAppsRows.length > 1 ? " for any app on this orb" : ""))
     + " on " + (d.card || "the card") +
     ", drawing \"" + (d.active || "?") + "\"" + (d.free_mb ? ", " + d.free_mb + " MB free" : "")
     + (themeAppsErr ? " (" + themeAppsErr + ")" : "");
   for (const t of shown) list.appendChild(themeRow(t, state, d));
-  if (!shown.length) themeEmptyPane(list, themeSub);
-  renderThemeEditRow(themeSub, shown.length > 0);
+  if (!shown.length) themeEmptyPane(list, scope);
+  renderThemeEditRow(scope, shown.length > 0);
   if (d.mounted) warmOrbCard(ip);   // the face is painted; the hub can read the rest ahead
 }
 
@@ -2699,16 +2871,21 @@ function warmOrbCard(ip) {
 // app, so a theme-capable app whose author ships nothing else reads as "no themes
 // yet", not as a dead button.
 function themeEmptyPane(list, sub) {
-  // A one-app orb draws no chooser, so the pane's app has to be inferred rather
-  // than read off a pressed tab.
-  const slug = sub || (themeAppsRows.length === 1 ? themeAppsRows[0].slug : "");
+  // themeFaceScope, not a private guess: the chooser, the state line and this pane all
+  // have to name the SAME app, and three copies of "how did we conclude it was clock" is
+  // how one of them ends up saying something the other two contradict.
+  const slug = sub || themeFaceScope();
   const row = slug ? themeAppsRows.find((a) => a.slug === slug) : null;
   const li = document.createElement("li");
   li.className = "hint";
+  // The app is named in the sentence even when there is only one of them and no tab was
+  // pressed: an operator reading a bare "this app" cannot tell whether the face knows
+  // which app it is standing on.
   li.textContent = row
-    ? "This app takes themes and this orb has none for it yet."
-      + (row.has_editor ? "" : " Its container ships no editor, so themes for it arrive as .orbtheme files.")
-    : (slug ? "the card holds no themes for this app yet" : "the card holds no themes yet");
+    ? themeAppTitle(slug) + " takes themes and this orb has none for it yet."
+      + (row.has_editor ? " Use Edit below to draw the first one."
+                        : " Its container ships no editor, so themes for it arrive as .orbtheme files.")
+    : (slug ? "the card holds no themes for " + slug + " yet" : "the card holds no themes yet");
   list.appendChild(li);
   const btn = themeEditButton(slug);
   if (btn) list.appendChild(btn);
@@ -2720,7 +2897,7 @@ function themeEmptyPane(list, sub) {
 // so there is no global "Theme Editor" affordance to build here, and the header
 // that once carried one no longer does.
 function themeEditButton(sub) {
-  const slug = sub || (themeAppsRows.length === 1 ? themeAppsRows[0].slug : "");
+  const slug = sub || themeFaceScope();
   const row = slug ? themeAppsRows.find((a) => a.slug === slug) : null;
   if (!row || !row.has_editor || !row.editor_url) return null;
   const btn = document.createElement("button");

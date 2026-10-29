@@ -187,6 +187,7 @@ release:
 	  if CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "$$ld" -o $$d/$(RELEASE_NAME)$$sfx . \
 	     && CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $$d/orbflash$$sfx ./cmd/orbflash; then \
 	    echo ' ok'; \
+	    cp -R $(CURDIR)/apps $(CURDIR)/themes $$d/; \
 	  else \
 	    echo ' FAIL'; rm -rf $(RELEASE_DIR); exit 1; \
 	  fi; \

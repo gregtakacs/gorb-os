@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,8 +133,12 @@ func TestParseAppRefusesWhatTheDialRefuses(t *testing.T) {
 	// accept is the sentinel want string meaning "this mutation must still parse".
 	const accept = "\x00accept"
 	good := appFixture(t, "sentinel.orbapp")
+	// The width is the reader's own constant and not a literal: FORMAT 3 took the header
+	// from 204 B to 236 B, and a test that hard-typed the old number would fail on a
+	// change that was correct rather than on one that was wrong.
 	if _, err := ParseApp(good[:100]); err == nil ||
-		!strings.Contains(err.Error(), "shorter than the 204 B header") {
+		!strings.Contains(err.Error(),
+			fmt.Sprintf("shorter than the %d B header", appHdrBytes)) {
 		t.Errorf("a 100 B file got: %v", err)
 	}
 	// stamp sets one header word and re-derives the header checksum over the result.
@@ -292,7 +297,7 @@ func TestAppIDOfMatchesKnownAnswers(t *testing.T) {
 			t.Errorf("AppIDOf(%q) = 0x%08X, authority says 0x%08X", slug, got, want)
 		}
 	}
-	// tools/orb-manager/starter/clock.orbapp stamps this value today, and starter.go
+	// tools/orb-manager/apps/clock.orbapp stamps this value today, and library.go
 	// names the same app by literal — the pairing D37 removes and the reason it is
 	// worth pinning now.
 	if got := AppIDOf("clock"); got != 0xD8198EFA {
@@ -435,5 +440,139 @@ func TestIdentityDiffRefusesACompiledRow(t *testing.T) {
 	var empty AppInstalledRow
 	if empty.CarriesIdentity() {
 		t.Error("an empty row claims to carry an identity")
+	}
+}
+
+// S6's grammar, as one table shared by the refusal in ParseApp and the order in
+// IdentityDiff. The accepts are the shapes the writer emits; the refuses are the shapes a
+// hand-edit produces, each named so a reader that stops short of the tail or accepts a
+// second '+' says which rule it broke.
+func TestAppVersionGrammar(t *testing.T) {
+	accept := []string{
+		"v0.0.0", "v1.2.3", "v99.99.99", "v10.0.1",
+		"v1.2.3-rc.1", "v1.2.3-0", "v1.2.3-alpha-beta",
+		"v1.2.3+e1a2b3c", "v1.2.3-dirty", "v1.2.3-rc.1+e1a2b3c",
+		"v99.99.99-rc.99+e1a2b3c-dirty", // the worst case: exactly 31 characters
+	}
+	for _, s := range accept {
+		if !AppVersionOK(s) {
+			t.Errorf("the writer emits %q and this reader refused it", s)
+		}
+		if len(s) > appVersionBytes-1 {
+			t.Errorf("%q is %d characters, past the field's %d usable",
+				s, len(s), appVersionBytes-1)
+		}
+	}
+	refuse := []string{
+		"", "1.2.3", "V1.2.3", "v1.2", "v1.2.3.4", "v01.2.3", "v1.02.3",
+		"v1.2.3-", "v1.2.3+b+c", "v1.2.3 ", "v1.2.3_4", "v1.2.3+",
+		"v1.2.3-rc 1", "v100.0.0", "vv1.2.3",
+	}
+	for _, s := range refuse {
+		if AppVersionOK(s) {
+			t.Errorf("accepted the stamp %q, which the writer would not emit", s)
+		}
+	}
+}
+
+// The ordinal is the one number the header's serial word carries, and the reason a
+// prerelease must not move it: v1.2.0-rc.1 and v1.2.0 are one release pointed at twice,
+// and a board running the stamp the author re-used is not running an older app.
+func TestAppVersionOrdinal(t *testing.T) {
+	cases := []struct {
+		stamp string
+		want  uint32
+	}{
+		{"v0.0.0", 0}, {"v1.2.3", 10203}, {"v1.9.9", 10909},
+		{"v1.10.0", 11000}, {"v99.99.99", 999999},
+		{"v1.2.3-rc.1", 10203}, {"v1.2.3+e1a2b3c-dirty", 10203},
+	}
+	for _, c := range cases {
+		got, ok := AppVersionOrdinal(c.stamp)
+		if !ok || got != c.want {
+			t.Errorf("%q ordered as %d/%v, want %d", c.stamp, got, ok, c.want)
+		}
+	}
+	for _, bad := range []string{"", "1.2.3", "v1.2.3.4", "v010.0.0"} {
+		if _, ok := AppVersionOrdinal(bad); ok {
+			t.Errorf("ordered %q, which is not a stamp", bad)
+		}
+	}
+}
+
+// IdentityDiff's seventh word is the one member with a direction, and the one case where
+// a missing stamp must NOT be read as the oldest release on the shelf.
+func TestIdentityDiffVersionsHaveADirection(t *testing.T) {
+	row := func(v string) AppInstalledRow {
+		return AppInstalledRow{Slug: "sentinel", GeomCRC: 1, Version: v}
+	}
+	mine := &AppContainer{Slug: "sentinel", GeomCRC: 1, Version: "v1.3.0"}
+
+	d, ok := mine.IdentityDiff(row("v1.2.0"))
+	if !ok || len(d) != 1 || !strings.Contains(d[0], "this copy is newer") {
+		t.Errorf("v1.3.0 against the orb's v1.2.0 read %v (comparable=%v)", d, ok)
+	}
+	d, _ = mine.IdentityDiff(row("v2.0.0"))
+	if len(d) != 1 || !strings.Contains(d[0], "the orb is newer") {
+		t.Errorf("v1.3.0 against the orb's v2.0.0 read %v; want the orb named as newer", d)
+	}
+	// Two stamps that are one release seen twice: an rc of the same version, so the
+	// ordinal agrees and no line is written. A prerelease is not an older app.
+	d, _ = (&AppContainer{Slug: "sentinel", GeomCRC: 1, Version: "v1.3.0-rc.1"}).
+		IdentityDiff(row("v1.3.0"))
+	if len(d) != 0 {
+		t.Errorf("two stamps of one release drifted as %v", d)
+	}
+	// One side unstamped says nothing. Inventing an order there would tell an operator to
+	// push over a board whose version nobody ever recorded.
+	d, _ = mine.IdentityDiff(row(""))
+	if len(d) != 0 {
+		t.Errorf("an unstamped card against a stamped hub copy drifted as %v", d)
+	}
+	d, _ = (&AppContainer{Slug: "sentinel", GeomCRC: 1}).IdentityDiff(row("v1.2.0"))
+	if len(d) != 0 {
+		t.Errorf("a stamped card against an unstamped hub copy drifted as %v", d)
+	}
+}
+
+// AppVersionCompare is what decides three separate visible things: whether a library row
+// says "update available", whether its button reads Upgrade, and whether the hub may serve
+// an app's editor out of its own file rather than dialing the board for 650 KB. The
+// refusal half matters more than the ordering half: an unstamped file states nothing about
+// its age, and a caller that read the blank as "equal" would tell an operator a dial was
+// current, or worse, would serve hub bytes for a build it never confirmed.
+func TestAppVersionCompareRefusesSilenceBeforeItOrders(t *testing.T) {
+	yes := []struct {
+		a, b string
+		want int
+	}{
+		{"v1.0.0", "v1.0.1", -1},
+		{"v1.0.1", "v1.0.0", 1},
+		{"v1.0.1", "v1.0.1", 0},
+		{"v1.2.3", "v1.10.0", -1}, // decimal, not lexicographic
+		{"v2.0.0", "v1.99.99", 1},
+	}
+	for _, c := range yes {
+		got, ok := AppVersionCompare(c.a, c.b)
+		if !ok {
+			t.Errorf("Compare(%q,%q) refused a valid pair", c.a, c.b)
+			continue
+		}
+		if (got < 0) != (c.want < 0) || (got > 0) != (c.want > 0) {
+			t.Errorf("Compare(%q,%q) = %d, want sign %d", c.a, c.b, got, c.want)
+		}
+	}
+	// Prerelease tails share an ordinal with their release, so equality has to fall to the
+	// strings or the hub calls rc.1 current against the shipping build.
+	if got, ok := AppVersionCompare("v1.2.0-rc.1", "v1.2.0"); !ok || got >= 0 {
+		t.Errorf("Compare(v1.2.0-rc.1, v1.2.0) = %d/%v, want negative", got, ok)
+	}
+	for _, pair := range [][2]string{
+		{"", "v1.0.0"}, {"v1.0.0", ""}, {"", ""},
+		{"unstamped", "v1.0.0"}, {"v1.0", "v1.0.0"}, {"v1.0.0.1", "v1.0.0"},
+	} {
+		if _, ok := AppVersionCompare(pair[0], pair[1]); ok {
+			t.Errorf("Compare(%q,%q) = ok; a stamp outside the grammar must refuse, not order", pair[0], pair[1])
+		}
 	}
 }

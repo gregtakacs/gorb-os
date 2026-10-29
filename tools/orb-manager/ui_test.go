@@ -170,23 +170,71 @@ func TestAppsFaceReadsTheLedgerAndThemesIsItsOwnFace(t *testing.T) {
 	if !strings.Contains(tabs, "Array.isArray(d.apps)") {
 		t.Error("the apps face lost its drop-zone tier; card candidates with their refusal sentences must still be listed")
 	}
-	for _, door := range []string{"/api/v1/apps/enable", "/api/v1/apps/install", "/api/v1/apps/uninstall", "/api/v1/apps/clear"} {
+	for _, door := range []string{"/api/v1/apps/install", "/api/v1/apps/uninstall", "/api/v1/apps/clear"} {
 		if !strings.Contains(tabs, door) {
 			t.Errorf("the apps face lost its %s door", door)
 		}
 	}
-	// S5 deleted the seed row: no appFaceSeed, no readSeedStream, no
-	// /api/orb/seed anywhere. The assertions below pin the deletion itself —
-	// the drop-zone tier above is now the one path, and a resurrected press
-	// would be the hub shipping bytes it no longer holds.
-	if strings.Contains(tabs, "appFaceSeed") || strings.Contains(app, "joinSeedApps") {
-		t.Error("the seed press is back; S5 made the starter files disk artifacts the operator copies")
+	// Three states, by ruling. The device still answers /apps/enable and the hub still
+	// proxies whatever a board offers, but this face must never ASK: an app is installed
+	// (in flash, in a slot, on the carousel) or it is not, and a toggle that hid an
+	// installed row off the carousel re-introduced the fourth state the operator rejected.
+	// Pinning the absence is the point — a future "convenience" switch restored the bug
+	// once already by looking like the device's own page.
+	if strings.Contains(tabs, "/api/v1/apps/enable") {
+		t.Error("the apps face offers an enable toggle again; a row is installed or it is not")
 	}
+	// The wording is checked where it would actually appear: as a button label. The face's
+	// own comment names the removed control in prose, and a gate that could not tell those
+	// apart would fail on the very fix it exists to protect.
+	if strings.Contains(tabs, "On the carousel") || strings.Contains(tabs, "Turned off") {
+		t.Error("the apps face grew a carousel-toggle button again; a row is installed or it is not")
+	}
+	// The erase that finishes a removal walks BOTH device doors, in this order: free the
+	// slot, then delete the container. An uninstall-only button was half the verb and
+	// silently left a card file the operator believed gone.
+	for _, leg := range []string{"/api/v1/apps/uninstall", "/api/v1/sd/rm"} {
+		if !strings.Contains(tabs, leg) {
+			t.Errorf("Remove from card no longer walks %s, so it erases less than its label says", leg)
+		}
+	}
+	// S5 deleted the embedded seed and pinned its own deletion; S6 restores the seed from
+	// the library under new names, so the assertions below pin the SHAPE the ruling left
+	// behind rather than the absence. The old route stays gone (the hub has no /api/orb/seed
+	// any more and never re-adds one), and what replaced it must be the library's own route
+	// backed by a real pane — a seed that silently reverted to shipped bytes would be the
+	// failure this block exists to catch, and it would look exactly like a working feature.
 	if strings.Contains(tabs, "/api/orb/seed") || strings.Contains(app, "/api/orb/seed") {
-		t.Error("the hub has no /api/orb/seed route; dialing it is a dead button")
+		t.Error("the hub has no /api/orb/seed route; the install is /api/library/install (S6)")
+	}
+	if strings.Contains(app, "joinSeedApps") || strings.Contains(app, "seedFS") {
+		t.Error("app.js references an embedded seed; S6 seeds from the resolved library")
+	}
+	if !strings.Contains(app, "/api/library/install") {
+		t.Error("app.js never dials /api/library/install, so no Library press and no join-time run")
+	}
+	if !strings.Contains(app, "function autoInstall(") || !strings.Contains(app, "autoInstall(ip)") {
+		t.Error("the join no longer arms the seed; a fresh orb boots to an empty shell (S6 §2)")
+	}
+	if !strings.Contains(app, "installTried") {
+		t.Error("the join seed has no once-per-board guard, so a renewing DHCP lease re-seeds a used card")
+	}
+	if !strings.Contains(tabs, "function renderLibrary(") {
+		t.Error("the apps face has no library pane; the seed press has nothing to be pressed from")
+	}
+	// The invariant //go:embed broke, pinned on the client side: the refusal tier is drawn
+	// as its own list, so a file that will not load can never simply be absent.
+	if !strings.Contains(tabs, "libCache.refused") {
+		t.Error("the library pane hides refusals; an unparseable file must be named on the card")
+	}
+	if !strings.Contains(tabs, "libCache.appsDir") {
+		t.Error("the library pane does not print the resolved directory (S6 §1's provenance rule)")
+	}
+	if !strings.Contains(tabs, "\"version\"") && !strings.Contains(tabs, "a.version") {
+		t.Error("the library rows dropped the version stamp, which is the whole point of FORMAT 3")
 	}
 	if !strings.Contains(tabs, "function appFaceCardZone(") {
-		t.Error("the apps face lost its drop-zone tier; that is now the one install path")
+		t.Error("the apps face lost its drop-zone tier; that is still the third-party install path")
 	}
 	if strings.Contains(tabs, "/api/v1/apps/factory") || strings.Contains(tabs, "factory_missing") {
 		t.Error("the apps face speaks a factory tier that exists neither in firmware nor in the hub")
@@ -247,7 +295,9 @@ func TestThemeEditorIsAppOwnedNotAGlobalLink(t *testing.T) {
 	if !strings.Contains(app, "function themeEditButton(") || !strings.Contains(app, "function renderThemeEditRow(") {
 		t.Error("the Themes pane's Edit door is back to living only inside the empty-pane branch")
 	}
-	if !strings.Contains(app, "renderThemeEditRow(themeSub, shown.length > 0)") {
+	// The argument is the resolved scope, not the raw pressed tab: a one-app dial has no
+	// pressed tab and still has one right app to open the editor for.
+	if !strings.Contains(app, "renderThemeEditRow(scope, shown.length > 0)") {
 		t.Error("loadThemes never fills the toolbar Edit slot, so the door is only real on an empty card")
 	}
 }
@@ -935,5 +985,403 @@ func TestFlashModalClassesAreStyled(t *testing.T) {
 		if !strings.Contains(css, sel) {
 			t.Errorf("app.css has no %s rule, so that control renders unstyled", sel)
 		}
+	}
+}
+
+// The library card's two Install presses are the only mutating controls on the face, and a
+// press that reaches no route is indistinguishable from a card that did nothing. This is the
+// same class of bug the selector check above exists for: it fails silently in a browser.
+func TestLibraryPressesReachRoutesTheHubServes(t *testing.T) {
+	// The routes are posted by app.js's helper and tabs.js's picker; both sides are named so a
+	// rename on either one fails here rather than silently in a browser.
+	app := readWebFile(t, "app.js")
+	tabs := readWebFile(t, "tabs.js")
+	if !strings.Contains(app, "/api/library/install?ip=") {
+		t.Error("app.js never posts to /api/library/install, so the Install presses answer nothing")
+	}
+	// Import files the shelf and stops: it always keeps, and it never installs. The install
+	// flag leaving this call site is the point — the row that results carries the Install
+	// button, so an imported app travels the same deliberate path as one already on the hub.
+	if !strings.Contains(tabs, "/api/apps/import?keep=1") {
+		t.Error("the import press no longer asks the hub to keep the file")
+	}
+	if strings.Contains(tabs, "install=1&ip=") {
+		t.Error("the import still installs onto the orb in hand; that is the row's job now")
+	}
+	// The delete button reaches the hub's one library-removal door.
+	if !strings.Contains(tabs, "/api/library/rm?") {
+		t.Error("the library row offers Remove from hub library and posts to no route")
+	}
+	for _, want := range []string{"streamInstall(orbIP, a.slug", "streamInstall(orbIP, \"\""} {
+		if !strings.Contains(tabs, want) {
+			t.Errorf("tabs.js never calls %s, so a card button is wired to nothing", want)
+		}
+	}
+	for _, want := range []string{"streamInstall(orbIP, a.slug", "streamInstall(orbIP, \"\""} {
+		if !strings.Contains(tabs, want) {
+			t.Errorf("tabs.js never calls %s, so a card button is wired to nothing", want)
+		}
+	}
+	if strings.Contains(tabs, "/api/library/seed") || strings.Contains(app, "/api/library/seed") {
+		t.Error("the client still posts to the renamed /api/library/seed route")
+	}
+	if !strings.Contains(app, "async function streamInstall(") {
+		t.Error("no streamInstall reader in app.js")
+	}
+}
+
+// The complaint this mandate pins: a press wrote one line into a <pre> beneath the row and
+// then said nothing until the whole run finished, which for a FORMAT 3 container over WiFi
+// reads as a hang. The press now opens the shared flash panel before the first byte leaves
+// and streams the hub's steps into it.
+func TestLibraryInstallOpensTheSharedProgressPanel(t *testing.T) {
+	tabs := readWebFile(t, "tabs.js")
+	app := readWebFile(t, "app.js")
+	// Each press handler is checked inside its own body: counting fpOpen calls file-wide would
+	// pass on the manage face's unrelated flash panel and miss a Library press that stayed
+	// silent, which is the exact bug this mandate exists for.
+	for _, probe := range []struct {
+		label string
+		mark  string
+	}{
+		// The app press moved into installLibButton, which serves Install and Upgrade from
+		// one body: the label arrives as the `name` parameter, so the probe is the parameter
+		// assignment rather than a literal that no longer appears.
+		{"the app card's Install press", "btn.textContent = name;"},
+		{"the theme row's Install press", `btn.textContent = "Install theme";`},
+	} {
+		at := strings.Index(tabs, probe.mark)
+		if at < 0 {
+			t.Errorf("%s is not in tabs.js at all", probe.label)
+			continue
+		}
+		// The body is the handler alone: from its own `btn.onclick` to the two-space-indented
+		// brace that closes it. A looser cut ran past the app press into the theme press and
+		// let a silent app button pass on the theme's fpOpen.
+		onclick := strings.Index(tabs[at:], "btn.onclick = async function")
+		if onclick < 0 {
+			t.Errorf("%s has no click handler", probe.label)
+			continue
+		}
+		body := tabs[at+onclick:]
+		if n := strings.Index(body, "\n  };"); n > 0 {
+			body = body[:n]
+		}
+		for _, want := range []string{"fpOpen();", "fpUI()", "streamInstall(orbIP"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s does no %s, so the press has no window while the container crosses the room",
+					probe.label, want)
+			}
+		}
+		// Success may close the panel; a refusal may not, because the refusal IS the panel's
+		// last word and Close is the operator's decision.
+		if !strings.Contains(body, "if (ok) fpClose();") {
+			t.Errorf("%s closes the panel on every outcome, so a refusal's reason disappears with it",
+				probe.label)
+		}
+	}
+	// The bar is fed by the hub's byte-progress steps, and the headline by every step.
+	for _, want := range []string{`action === "uploading"`, "frame.doing.textContent", "frame.bar.style.width"} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js has no %s, so a mid-upload step cannot move the panel", want)
+		}
+	}
+	if !strings.Contains(app, "frame.log.textContent") {
+		t.Error("the install steps no longer reach a visible frame")
+	}
+}
+
+// The post-flash wait is one line per tick, and two sentences was the reported verbosity.
+func TestPostFlashWaitLinesAreOneSentence(t *testing.T) {
+	app := readWebFile(t, "app.js")
+	if !strings.Contains(app, "of ") || !strings.Contains(app, "waiting for the orb to restart") {
+		t.Error("the post-flash wait lost its elapsed-of-total or its next-action half")
+	}
+	for _, gone := range []string{"and will announce itself when it is back", "if it goes quiet for too long"} {
+		if strings.Contains(app, gone) {
+			t.Errorf("the post-flash wait carries the removed tail %q", gone)
+		}
+	}
+}
+
+// D36 §7: the shell is not an app the face offers. Two separate things kept naming it —
+// APP_TITLES carried a label for it, and loadApps drew every row the ledger returned,
+// compiled ones included, so the operator got a fourth sub-tab whose whole body was the
+// sentence "built into the firmware — always on". A row with no verb on it is not an app.
+func TestAppsFaceNeverListsTheBuiltInShell(t *testing.T) {
+	tabs := readWebFile(t, "tabs.js")
+	at := strings.Index(tabs, "const APP_TITLES")
+	if at < 0 {
+		t.Fatal("APP_TITLES is gone from tabs.js")
+	}
+	line := tabs[at:]
+	if n := strings.Index(line, "\n"); n > 0 {
+		line = line[:n]
+	}
+	if strings.Contains(line, "menu") {
+		t.Errorf("the shell is back in the face's label table: %s", strings.TrimSpace(line))
+	}
+	// The filter lives in the load itself, not in one caller: a later face that reads
+	// appList inherits the decision rather than re-deriving it.
+	load := tabs[strings.Index(tabs, "async function loadApps("):]
+	if n := strings.Index(load, "\n}\n"); n > 0 {
+		load = load[:n]
+	}
+	if !strings.Contains(load, ".compiled") {
+		t.Error("loadApps no longer filters on compiled, so the shell is listed again")
+	}
+	// A quarantined built-in is the one compiled state with a verb on it — Clear fault —
+	// and dropping it would hide the only row explaining a half-drawing dial.
+	if !strings.Contains(load, "a.failed") {
+		t.Error("loadApps drops failed built-ins, so a quarantined shell has no Clear fault door")
+	}
+	// And the count says what it hid rather than going quiet about a missing row.
+	if !strings.Contains(load, "built-in") {
+		t.Error("the Apps state line does not say how many built-ins it left out")
+	}
+}
+
+// The report this mandate exists for: Install said "installed on the orb in hand" and the
+// list beside it still had no such app — no sub-tab, no On/Off toggle, no Uninstall door
+// for the thing the operator had just spent sixty seconds putting on the dial. The press
+// owns the re-read; nothing else on this face refreshes the ledger by itself.
+func TestLibraryInstallRefetchesTheLedgerItJustChanged(t *testing.T) {
+	tabs := readWebFile(t, "tabs.js")
+	for _, probe := range []struct {
+		label string
+		mark  string
+		want  string
+	}{
+		{"the app row's Install press", "btn.textContent = name;", "loadApps()"},
+		{"the theme row's Install press", `btn.textContent = "Install theme";`, "loadThemes("},
+	} {
+		at := strings.Index(tabs, probe.mark)
+		if at < 0 {
+			t.Errorf("%s is not in tabs.js at all", probe.label)
+			continue
+		}
+		body := tabs[at:]
+		if n := strings.Index(body, "\n  };"); n > 0 {
+			body = body[:n]
+		}
+		if !strings.Contains(body, probe.want) {
+			t.Errorf("%s never re-reads %s, so the dial's new row waits for a tab press to appear",
+				probe.label, probe.want)
+		}
+		// The verdict the press earned has to survive that re-render, or the re-read
+		// deletes the only sentence answering the press.
+		if !strings.Contains(body, "libVerdict") && !strings.Contains(body, "stored on the orb") {
+			t.Errorf("%s re-renders straight over its own answer", probe.label)
+		}
+	}
+	// A row the ledger lists says so wherever it is drawn, not only after a press.
+	if !strings.Contains(tabs, "on the dial\"") {
+		t.Error("library rows no longer mark the containers the ledger says are installed")
+	}
+}
+
+// Uninstall leaves the container on the card by the device's own design, so the drop zone
+// is the only place an operator can finish the job, reclaim the space, or clear a file the
+// dial refuses. The verb is the device's file-manager door, the same one Files drives.
+func TestCardDropZoneCanEraseAContainer(t *testing.T) {
+	tabs := readWebFile(t, "tabs.js")
+	at := strings.Index(tabs, "function appFaceCardZone(")
+	if at < 0 {
+		t.Fatal("appFaceCardZone is gone from tabs.js")
+	}
+	zone := tabs[at:]
+	if n := strings.Index(zone, "\n}\n"); n > 0 {
+		zone = zone[:n]
+	}
+	for _, want := range []string{"Remove from card", "/api/v1/sd/rm?path=", "askConfirm("} {
+		if !strings.Contains(zone, want) {
+			t.Errorf("the drop zone has no %s, so a card container cannot be erased from this face", want)
+		}
+	}
+	// The path is the device's own filed name: the drop zone is apps/, the extension is
+	// .orbapp, and the stem is the only handle the listing handed the face.
+	if !strings.Contains(zone, `"apps/" + c.stem + ".orbapp"`) {
+		t.Error("the delete does not name the card path the listing filed the file at")
+	}
+	// The door sits outside the ok-only branch: a refused row is the likeliest one to want.
+	okAt := strings.Index(zone, "if (c.ok) {")
+	rmAt := strings.Index(zone, `"Remove from card"`)
+	if okAt < 0 || rmAt < 0 || rmAt < okAt {
+		t.Error("the remove door is inside the ok-only branch, so a refused container cannot be cleared")
+	}
+}
+
+// The Themes face drew its chooser only above one app, so a dial with a single
+// theme-capable app — every dial in the fleet today — showed a list of themes belonging to
+// nobody. The chooser names the pane; one app still has exactly one right name.
+func TestThemesFaceNamesItsAppEvenWithOnlyOne(t *testing.T) {
+	app := readWebFile(t, "app.js")
+	at := strings.Index(app, "function renderThemeTabs(")
+	if at < 0 {
+		t.Fatal("renderThemeTabs is gone from app.js")
+	}
+	tabs := app[at:]
+	if n := strings.Index(tabs, "\n}\n"); n > 0 {
+		tabs = tabs[:n]
+	}
+	if strings.Contains(tabs, "apps.length < 2") {
+		t.Error("renderThemeTabs still bails below two apps, so a one-app orb names nothing")
+	}
+	if !strings.Contains(tabs, "apps.length === 1") {
+		t.Error("renderThemeTabs has no single-app branch")
+	}
+	if !strings.Contains(tabs, `" themes"`) {
+		t.Error("the single-app tab does not say themes, so the pane wears no label")
+	}
+	// One answer, shared by the chooser, the state line, the empty pane and the Edit row.
+	// Four private guesses is the shape the bug had.
+	if !strings.Contains(app, "function themeFaceScope(") {
+		t.Error("no themeFaceScope: the face is back to inferring its app in four places")
+	}
+	if n := strings.Count(app, "themeAppsRows.length === 1 ? themeAppsRows[0].slug"); n > 1 {
+		t.Errorf("%d sites still re-derive the one-app answer beside themeFaceScope", n)
+	}
+	if !strings.Contains(app, "themeAppTitle(scope)") {
+		t.Error("the Themes state line does not name the app whose themes it counted")
+	}
+}
+
+// The join-time seed is supposed to leave a shelf the owner emptied alone. It read the
+// count off /api/fleet, and the store became an address book that carries no such field,
+// so the guard became `if (undefined) return` and every rejoin refilled the board. The
+// mandate is the read itself and the built-in exclusion: h_apps_list's installed tier
+// carries the shell, so a count that includes it never reads empty and the seed dies.
+func TestAutoInstallGatesOnTheLedgerNotOnAVanishedField(t *testing.T) {
+	app := readWebFile(t, "app.js")
+	at := strings.Index(app, "async function autoInstall(")
+	if at < 0 {
+		t.Fatal("autoInstall is gone from app.js")
+	}
+	body := app[at:]
+	if n := strings.Index(body, "\n}\n"); n > 0 {
+		body = body[:n]
+	}
+	if strings.Contains(body, `getJSON("/api/fleet")`) {
+		t.Error("the join gate still reads /api/fleet, whose rows carry no app count")
+	}
+	if !strings.Contains(body, "/api/v1/apps") {
+		t.Error("the join gate reads no ledger, so it cannot know whether the shelf is empty")
+	}
+	if !strings.Contains(body, ".compiled") {
+		t.Error("the join gate counts built-ins, so no dial ever answers as empty")
+	}
+	if !strings.Contains(body, "installTried.has(ip)") {
+		t.Error("the join gate lost its one-attempt-per-address memory")
+	}
+}
+
+// §1–§3 of the library-install ruling: three app states, a version-aware library row, and
+// an import that imports. Every one of these is a text gate on the shipped face, because
+// the failure mode the operator named was the face offering a verb the product decided not
+// to have, and no amount of Go-side correctness shows up in a browser.
+func TestAppsFaceOffersThreeStatesAndNoToggle(t *testing.T) {
+	tabs := readWebFile(t, "tabs.js")
+
+	// The erase that finishes a removal walks the device's two doors in order: free the
+	// slot, then delete the container. Reversed, the sd rm erases the only copy the
+	// uninstall still points at and the row cannot be reinstalled from the card.
+	free := strings.Index(tabs, `/api/v1/apps/uninstall?id=`)
+	rm := strings.Index(tabs, `/api/v1/sd/rm?path=`+`"+enc`)
+	if free < 0 {
+		free = strings.Index(tabs, "/api/v1/apps/uninstall?id=")
+	}
+	if rm < 0 {
+		rm = strings.Index(tabs, "/api/v1/sd/rm?path=")
+	}
+	if free < 0 || rm < 0 {
+		t.Fatalf("the erase button lost a leg (uninstall=%d sd/rm=%d)", free, rm)
+	}
+	// The order test runs inside eraseCardButton only, so the whole file matching is not
+	// enough — scope the window to that function.
+	start := strings.Index(tabs, "function eraseCardButton")
+	if start < 0 {
+		t.Fatal("eraseCardButton is gone; the one button that finishes a removal is the point of §1")
+	}
+	end := strings.Index(tabs[start:], "\nfunction ")
+	body := tabs[start:]
+	if end > 0 {
+		body = tabs[start : start+end]
+	}
+	u := strings.Index(body, "/api/v1/apps/uninstall?id=")
+	r := strings.Index(body, "/api/v1/sd/rm?path=")
+	if u < 0 || r < 0 || u > r {
+		t.Errorf("eraseCardButton must uninstall before it erases the container (uninstall at %d, sd/rm at %d)", u, r)
+	}
+	// The state the button exists for: installed AND still on the card, which is what an
+	// ordinary Uninstall leaves behind. The button has to be offered on an installed row.
+	face := tabs[strings.Index(tabs, "function appFaceBody"):]
+	if next := strings.Index(face, "\nfunction "); next > 0 {
+		face = face[:next]
+	}
+	if !strings.Contains(face, "eraseCardButton(") {
+		t.Error("the installed row offers no Remove from card, so no button finishes a removal")
+	}
+	if strings.Contains(face, "/api/v1/apps/enable") {
+		t.Error("the installed row grew an enable toggle again")
+	}
+}
+
+func TestLibraryRowYieldsToWhatTheDialAlreadyRuns(t *testing.T) {
+	tabs := readWebFile(t, "tabs.js")
+	start := strings.Index(tabs, "function libRow(a)")
+	if start < 0 {
+		t.Fatal("libRow is gone")
+	}
+	end := strings.Index(tabs[start:], "\nfunction ")
+	if end < 0 {
+		t.Fatal("libRow does not close before the next function")
+	}
+	body := tabs[start : start+end]
+
+	// A row the dial already runs at the same release must NOT carry an install door.
+	// That is the ruling, and the gate is that the write door is conditional at all:
+	// an unconditional append is the shape that predates this change.
+	if !strings.Contains(body, "if (!onDial)") {
+		t.Error("libRow appends its Install door unconditionally, so a current app still offers to reinstall")
+	}
+	// Upgrade is the same door with a newer file behind it, and only when the ordinals say
+	// the dial is behind. A null comparison (either side unstamped) must not reach it.
+	if !strings.Contains(body, "behind !== null && behind < 0") {
+		t.Error("libRow lost the version gate on Upgrade; an unstamped pair would read as an upgrade")
+	}
+	if !strings.Contains(body, "removeFromLibraryButton") {
+		t.Error("libRow no longer offers to delete the hub's own copy")
+	}
+	if !strings.Contains(tabs, "/api/library/rm?kind=app") {
+		t.Error("the library delete never dials /api/library/rm, so the button is decoration")
+	}
+}
+
+func TestImportImportsAndNeverInstalls(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	tabs := readWebFile(t, "tabs.js")
+
+	if strings.Contains(page, `id="lib-keep"`) || strings.Contains(page, `id="lib-install"`) {
+		t.Error("the import row grew its checkboxes back; import files the library and the row's Install moves it onto a board")
+	}
+	if !strings.Contains(page, "Import an app") {
+		t.Error("the button still says \"Add an app\"; the verb that matters is that nothing installs")
+	}
+	// The press must send keep and must NOT send install, in either direction: a face that
+	// quietly installed would do the thing the operator just asked it to stop doing.
+	start := strings.Index(tabs, "function wireLibraryImport")
+	if start < 0 {
+		t.Fatal("wireLibraryImport is gone")
+	}
+	end := strings.Index(tabs[start:], "\nfunction ")
+	body := tabs[start:]
+	if end > 0 {
+		body = tabs[start : start+end]
+	}
+	if !strings.Contains(body, "/api/apps/import?keep=1") {
+		t.Error("the import no longer asks the hub to keep the file")
+	}
+	if strings.Contains(body, "install=1") {
+		t.Error("the import sends install=1; it files into the library and stops there")
 	}
 }

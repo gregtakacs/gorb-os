@@ -134,6 +134,14 @@ type Server struct {
 	// and skips its tick while one runs.
 	previewBusy int
 	repoDir     string // the gorb-os clone root, for the Theme Editor only
+	// lib is the resolved app/theme library (S6, plan §1). Set once at startup, read by
+	// GET /api/library, the import, the auto-seed and the Themes face's container lookup.
+	// nil means no library was resolved, which the pane reports as an empty library
+	// rather than as an error — the hub still serves everything else it can.
+	lib *Library
+	// noAutoInstall turns the join-time install off and leaves every press intact (-no-autoseed),
+	// for a bench run that must not touch a board it is about to instrument.
+	noAutoInstall bool
 	// fetchEditor is D37's seam onto one app's editor region. nil means "dial the
 	// device", which is what every hub built by main does; a test sets it to stand a
 	// board in for the network. See fetchEditor and editorFetchFn in editor.go.
@@ -377,16 +385,26 @@ func (s *Server) bootFor(mac string) *bootVerdict {
 
 func main() {
 	var addr, browser, repo, fwPath, orbPort string
+	var libPath, libApps, libThemes string
+	var noAutoInstall bool
 	var noWindow, allowRemote, allowForeignFirmware, probeCablesOnLaunch bool
 
 	flag.StringVar(&addr, "addr", fmt.Sprintf("127.0.0.1:%d", listenPort), "host:port to bind")
 	flag.StringVar(&repo, "repo", "", "path to the gorb-os clone root, for the Theme Editor; empty detects it")
+	flag.StringVar(&libPath, "library", "", "the app/theme library root (apps/ and themes/ inside it); empty resolves it: beside the executable, then the user config dir, then the clone")
+	flag.StringVar(&libApps, "library-apps", "", "the app library directory, overriding -library and the resolution order")
+	flag.StringVar(&libThemes, "library-themes", "", "the theme library directory, overriding -library and the resolution order")
 	flag.StringVar(&fwPath, "firmware", "", "a firmware bundle (.zip) or whole-flash image (.bin) to flash instead of the one built into this binary")
 	flag.BoolVar(&allowForeignFirmware, "allow-foreign", false, "accept a firmware whose image descriptor names a project other than gorb-os; with -firmware it applies to that file, and picked files still need the confirm on the card")
 	flag.StringVar(&browser, "browser", "", "path to a Chromium/Edge binary; empty autodetects, \"browser\" opens a normal tab")
 	flag.BoolVar(&noWindow, "no-window", false, "serve only and print the URL (bench, SSH, CI)")
 	flag.BoolVar(&allowRemote, "allow-remote", false, "permit -addr to bind somewhere other than loopback; every control route still needs this launch's token")
 	flag.StringVar(&orbPort, "orb-port", "80", "TCP port the hub dials on an orb; the device's httpd listens on 80, and only a bench run against cmd/orbfake has a reason to change it")
+	flag.BoolVar(&noAutoInstall, "no-autoinstall", false, "do not install the library clock onto a freshly joined orb; the Library card Install press still works")
+	// The flag shipped its first cut named -no-autoseed; the verb the operator reads is
+	// Install now, and a shortcut built against the old spelling keeps working.
+	var noAutoSeedAlias bool
+	flag.BoolVar(&noAutoSeedAlias, "no-autoseed", false, "deprecated spelling of -no-autoinstall")
 	flag.BoolVar(&probeCablesOnLaunch, "probe-cables", true, "at launch, identify every board on an attributable USB lead by resetting it and reading its bootloader, so the hub never decides from a MAC which firmware a cable carries; costs each wired board one reboot per hub start, and a board with no orb on it is otherwise drawn as one forever")
 	flag.Parse()
 
@@ -441,12 +459,13 @@ func main() {
 	s.orb = orbnet.NewGatedClient(2*time.Second, dial, orbnet.ClassControl)
 	s.device = orbnet.NewGatedClient(deviceTimeout, dial, orbnet.ClassControl)
 	// The Themes face asks one question a device cannot answer alone: is the app on this
-	// orb the same build as the container the hub is serving? Containers is how the answer
-	// gets its second half, and after S5 it is the starter artifacts on disk: the
-	// committed first-party bytes this hub would put on a card. A hub running with no
-	// readable starter dir leaves the face saying "cannot compare" rather than "up to
-	// date" — the absence is the answer, not a bug to mask.
-	s.device.Containers = func(slug string) ([]byte, error) { return starterContainerFor(repoDir, slug) }
+	// orb the same build as the container the hub would put on it? Containers is how the
+	// answer gets its second half, and after S6 that copy is the library's, not a table of
+	// two hard-coded names: whatever the resolved apps/ directory holds is what this hub
+	// would send, so a first-party app an operator added is as comparable as the shipped
+	// pair. A hub with no readable library leaves the face saying "cannot compare" rather
+	// than "up to date" — the absence is the answer, not a bug to mask.
+	s.device.Containers = func(slug string) ([]byte, error) { return s.lib.Container(slug) }
 	s.ota = orbnet.NewGatedClient(otaTimeout, dial, orbnet.ClassBulk)
 	// The preview client streams ~100 KB planes from a single-task httpd that
 	// can open the connection and then wedge mid-send-loop (45 s of zero
@@ -497,6 +516,26 @@ func main() {
 		return s.orb.Status(ip)
 	}
 	s.repoDir = repoDir
+
+	// The library resolves once, here, after repoDir is known — the clone's tools/orb-manager
+	// is the last rung and needs it. exeDir is where the shipped layout puts apps/ beside
+	// orb-manager.exe, which is the case a double-click run has and no flag should need.
+	exeDir := ""
+	if exe, err := os.Executable(); err == nil {
+		exeDir = filepath.Dir(exe)
+	}
+	userCfg, uerr := os.UserConfigDir()
+	if uerr != nil {
+		// Same fallback statePath() uses: a stripped HOME still gets a hub that starts,
+		// and the rung it cannot offer is simply missing from the ladder.
+		userCfg = ""
+	}
+	s.lib = resolveLibrary(strings.TrimSpace(libPath), strings.TrimSpace(libApps),
+		strings.TrimSpace(libThemes), exeDir, userCfg, repoDir)
+	s.noAutoInstall = noAutoInstall || noAutoSeedAlias
+	for _, l := range s.lib.LibStatusLines() {
+		log.Printf("orb-manager: %s", l)
+	}
 
 	// The dial port is validated here rather than at first use, so a typo surfaces as
 	// a startup message instead of as every orb timing out.
@@ -889,6 +928,18 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.handleIndex)
 
 	mux.HandleFunc("/api/status", s.json(s.hello))
+	// The library listing (S6, plan §1). Read-only, so it sits with the other token-free
+	// reads: the Library pane cannot open at all on a page whose fetches lack a token, and
+	// a listing of what the hub could seed leaks nothing worth gating — the bytes
+	// themselves stay behind the upload doors.
+	mux.HandleFunc("/api/library", s.json(s.h_library))
+	// The seed press writes to a board, so it stands behind the launch token like every
+	// other hand on a device. It streams NDJSON and so registers raw, not through s.json.
+	mux.Handle("/api/library/install", s.requireControl(http.HandlerFunc(s.h_libraryInstall)))
+	mux.Handle("/api/library/rm", s.requireControl(http.HandlerFunc(s.h_libraryRm)))
+	// The browser file door, hub side (S6 §4): parse locally, keep optionally, install
+	// through the device's own upload. It mutates a board, so it takes the token.
+	mux.Handle("/api/apps/import", s.requireControl(http.HandlerFunc(s.h_appsImport)))
 	mux.HandleFunc("/api/ports", s.handlePorts) // cached identity rides along, never a probe
 	mux.HandleFunc("/api/tz", s.handleZones)    // the device's zone table, for the join dialog's picker
 	mux.HandleFunc("/api/build", s.json(s.describeFirmware))
@@ -925,11 +976,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// unguarded like the candidate list; the writes change what a later credential is
 	// keyed to, so they carry the token and the origin check.
 	mux.HandleFunc("/api/fleet", s.handleFleet)
-	// S5 deleted POST /api/orb/seed and the join-time auto-seed with it: the
-	// starter files reach a card the way every third-party file does — the
-	// operator copies them onto it, and the drop-zone Install button on the
-	// Apps face files them. What the hub keeps is the answer to "is the card
-	// current", which starter.go reads from the artifacts on disk.
+	// S5 deleted POST /api/orb/seed and the join-time auto-seed with it: library files
+	// reached a card the way every third-party file does — the operator copied them onto
+	// it, and the drop-zone Install button on the Apps face filed them. S6 (§2) puts the
+	// join-time seed back, and the answer it sends is the resolved library's listing
+	// rather than a build-time table of two names. What the hub never stops keeping is
+	// the answer to "is the card current", which the same library now answers.
 
 	mux.Handle("/api/fleet/set", s.requireControl(http.HandlerFunc(s.handleFleetSet)))
 	mux.Handle("/api/fleet/forget", s.requireControl(http.HandlerFunc(s.handleFleetForget)))

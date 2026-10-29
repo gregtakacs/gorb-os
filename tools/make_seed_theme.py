@@ -39,7 +39,7 @@ import mk_slot_image as msi       # noqa: E402
 
 ROOT = os.path.join(HERE, os.pardir)
 SRC_IMG = os.path.join(ROOT, "assets", "orb_default.img")
-OUT = os.path.join(ROOT, "tools", "orb-manager", "starter", "orb-default.orbtheme")
+OUT = os.path.join(ROOT, "tools", "orb-manager", "themes", "orb-default.orbtheme")
 
 REC_BYTES = ob.IDX_WORDS * 4       # 40 B per record
 REGION_HEAD = 8                    # n_sections + reserved

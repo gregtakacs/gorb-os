@@ -203,6 +203,27 @@
     <p class="hint" id="mn-appstate">The app list loads when this tab first opens.</p>
     <nav class="subtabs" id="mn-apps-tabs"></nav>
     <div id="mn-apps-body"></div>
+    <!-- S6 (§7): the hub's own library, listed on this card rather than on a card of its
+         own, because the two halves are one decision — the files here are the files that
+         go onto the board above. Every row names the directory it came from, and every
+         file the hub could not parse is listed with the reader's own refusal. -->
+    <h4>Hub library</h4>
+    <p class="hint" id="lib-state">Reading the hub's app and theme library&#8230;</p>
+    <div id="lib-list"></div>
+    <!-- The browser file door, and it does one thing: import. A picked .orbapp is parsed
+         by the hub, filed in its library, and listed as a row like any other. It never
+         auto-installs, and the face carries no checkbox to make it. Moving bytes onto a
+         board is always a separate, deliberate press on that row's Install, so the path an
+         app imported from a laptop takes is the path every app already on the shelf takes.
+         One less fork in the flow means one less state where an operator has to remember
+         which box they ticked. -->
+    <div class="row">
+      <input type="file" id="lib-file" accept=".orbapp,application/octet-stream" hidden>
+      <button id="lib-pick" class="ghost" type="button"
+              title="Import an .orbapp from this computer into the hub's library. It lands on the shelf, not on the orb: use the row's Install to move it onto a board.">Import an app</button>
+      <span class="hint" id="lib-import-state"></span>
+    </div>
+    <pre id="lib-install-log" class="hint" hidden></pre>
   </article>
 
   <article class="card tabpane" data-tab="themes" id="mn-themecard" hidden>

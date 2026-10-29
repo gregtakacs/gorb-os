@@ -748,6 +748,10 @@ static esp_err_t install_ladder(const esp_partition_t *p, const appsrc_t *src,
     row.code_size  = h->code_size;
     row.serial     = h->serial;
     row.editor_crc = h->editor_crc;
+    /* S6 (§4.1): the release stamp rides in as the tuple's seventh word, read from the
+     * same header. It is the only member with an order, and the only one an operator
+     * reads as words: the hub prints it on the Apps face. */
+    row.version    = h->version;
     if (orb_app_card_upsert(&row) < 0) {
         ret = install_failed(ESP_ERR_NO_MEM,
                              "it reached flash but the app registry is full — uninstall one",
@@ -951,6 +955,10 @@ int orb_app_install_resolve_boot(void)
         row.code_size  = h.code_size;
         row.serial     = h.serial;
         row.editor_crc = h.editor_crc;
+        /* S6 (§4.1): the stamp the card itself carries, read off the header this rung
+         * just checksummed — so a swapped card reports its own versions and not the
+         * ones the hub remembers shipping. */
+        row.version    = h.version;
         if (orb_app_card_upsert(&row) < 0) {
             ESP_LOGW(TAG, "app slot %d: registry refused it", slot);
             continue;
@@ -1467,19 +1475,21 @@ esp_err_t orb_app_upload_end(orb_app_up_t **u, bool overwrite, const char **why)
             close(efd);
             if (!or_ && oh.geom_crc == h.geom_crc && oh.code_crc == h.code_crc &&
                 oh.code_size == h.code_size && oh.editor_crc == h.editor_crc &&
-                oh.serial == h.serial && strcmp(oh.slug, h.slug) == 0) {
+                oh.serial == h.serial && strcmp(oh.version, h.version) == 0 &&
+                strcmp(oh.slug, h.slug) == 0) {
                 /* geom_crc + the code pair + the editor triple's checksum + serial +
-                 * slug is the whole identity tuple: D20 made the code region the app's
-                 * payload, so two files whose modules differ are two apps whatever else
-                 * they share. D37's region joins it for the mirror-image reason — the
-                 * editor is the one part of the container a RE-BUILD changes and the
-                 * dial never installs, so a tuple without it called an edited editor an
-                 * unchanged upload, kept the old bytes, and said nothing. Before this
-                 * line learned the word, an author pushing a container whose only
-                 * difference was its editor region got "app upload ... is unchanged" and
-                 * a card still holding the region they had just replaced, and the only
-                 * escape was ?overwrite=1 — which no error mentioned, because there was
-                 * no error. The art words on both sides are zero because
+                 * version + slug is the whole identity tuple. D20 made the code region
+                 * the app's payload, so two files whose modules differ are two apps
+                 * whatever else they share. D37 added the editor region for the
+                 * mirror-image reason: a re-build changes it and the dial never
+                 * installs it, so a tuple without it called an edited editor an
+                 * unchanged upload, kept the old bytes, and named no escape. S6's stamp
+                 * joins for the same shape of bug. A release that bumped the version
+                 * and nothing else is a mislabelled build, so this word never carries a
+                 * decision alone — but a tuple without it would answer such a rebuild
+                 * "unchanged" while the hub's library and the card's header disagreed
+                 * about which release sat in the slot. The art words on both sides are
+                 * zero because
                  * app_hdr_validate just refused any file that carried art (D21). */
                 unlink(up->tmp); orb_sd_unlock(); free(up);
                 ESP_LOGI(TAG, "app upload of \"%s\" is unchanged — kept as is", h.slug);

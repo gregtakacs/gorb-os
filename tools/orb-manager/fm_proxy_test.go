@@ -156,6 +156,65 @@ func TestProxyDeleteOfANameTheDeviceItselfWouldNotWrite(t *testing.T) {
 	}
 }
 
+// The Apps face's Remove-from-card door, end to end: an app the hub pushed lands where
+// the device files it (/sd/apps/<slug>.orbapp — the header's own slug, h_app_upload), the
+// file manager lists it, and one rm through the SAME proxied door the Files face already
+// uses takes it away — with the card listing going blank beside it, because h_apps_list
+// walks that directory rather than keeping a second opinion. This is the sequence a
+// real dial performs; the double now performs it too.
+func TestProxyAppUploadIsDeletableByTheCardDoor(t *testing.T) {
+	backend := httptest.NewServer(orbfake.New())
+	defer backend.Close()
+	s := proxyWith(t, backend)
+	body := orbfake.BuildAppContainer("clock", "Clock", 0, 0, 1)
+
+	send := func(method, path string, b []byte, cl int64) (int, map[string]any) {
+		t.Helper()
+		req := httptest.NewRequest(method, "/orb/"+testOrbIP+path, strings.NewReader(string(b)))
+		if cl >= 0 {
+			req.ContentLength = cl
+		}
+		req.Header.Set("Content-Type", "application/octet-stream")
+		rr := httptest.NewRecorder()
+		s.proxyOrb(rr, req)
+		var j map[string]any
+		_ = json.Unmarshal(rr.Body.Bytes(), &j)
+		return rr.Code, j
+	}
+
+	if code, j := send(http.MethodPost, "/api/v1/sd/app", body, int64(len(body))); code != 200 {
+		t.Fatalf("upload: code=%d body=%v, want 200 stored", code, j)
+	}
+	// The upload is a card FILE, so the listing shows it — the fact the delete depends on.
+	if code, j := send(http.MethodGet, "/api/v1/sd/ls?path=apps", nil, -1); code != 200 {
+		t.Fatalf("ls apps: code=%d body=%v", code, j)
+	} else if ents, _ := j["entries"].([]any); len(ents) != 1 {
+		t.Fatalf("apps/ holds %v after one upload, want the one container", ents)
+	}
+	// And the drop zone names it by stem, which is the handle the face rebuilds the path from.
+	if code, j := send(http.MethodGet, "/api/v1/apps", nil, -1); code != 200 {
+		t.Fatalf("apps list: code=%d", code)
+	} else if rows, _ := j["apps"].([]any); len(rows) != 1 {
+		t.Fatalf("card tier after one upload: %v, want one row", rows)
+	} else if row, _ := rows[0].(map[string]any); row["stem"] != "clock" {
+		t.Fatalf("card row stem=%v, want clock", row["stem"])
+	}
+
+	if code, j := send(http.MethodPost, "/api/v1/sd/rm?path="+url.QueryEscape("apps/clock.orbapp"), []byte("{}"), 2); code != 200 {
+		t.Fatalf("rm: code=%d body=%v, want 200 — the door the Files face uses already", code, j)
+	}
+	if code, j := send(http.MethodGet, "/api/v1/apps", nil, -1); code != 200 {
+		t.Fatalf("apps list after the delete: code=%d", code)
+	} else if rows, _ := j["apps"].([]any); len(rows) != 0 {
+		t.Errorf("the card tier still lists %v after its file was erased", rows)
+	}
+	// The directory survives its own contents, so the next push lands: the device
+	// re-creates /sd/apps before a write for exactly this reason.
+	if code, _ := send(http.MethodPost, "/api/v1/sd/app", body, int64(len(body))); code != 200 {
+		t.Errorf("re-upload after the erase: code=%d, want 200", code)
+	}
+}
+
 func TestProxyFactoryDoorCarriesItsWord(t *testing.T) {
 	backend := httptest.NewServer(orbfake.New())
 	defer backend.Close()

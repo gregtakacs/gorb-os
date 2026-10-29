@@ -560,8 +560,8 @@ bool orb_app_card_remove(const char *slug)
     card_entry_t *s = card_find(slug);
     if (!s) return false;
     /* The knob may not be holding a row that vanishes under it: the caller has
-     * to carousel away (or home) first, and uninstall refuses with that exact
-     * reason before it ever reaches here. */
+     * to carousel away (or home) first. The uninstall door sends the dial home
+     * itself and waits for the switch before it ever reaches here (D38). */
     if (s_current == &s->app || s->app.active) return false;
     memset(s, 0, sizeof *s);            /* used=false: entry free, ledger forgets */
     return true;

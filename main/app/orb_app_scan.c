@@ -41,6 +41,7 @@ static void row_decide(const orb_file_rec_t *rec, const uint32_t *hdr,
     e->why[0] = '\0';
     e->slug[0] = '\0';
     e->title[0] = '\0';
+    e->version[0] = '\0';
     e->app_id = e->caps = e->period_ms = e->serial = 0;
     e->n_settings = e->art_size = 0;
     /* The stem is echoed from the walk, which already passed it through
@@ -72,6 +73,7 @@ static void row_decide(const orb_file_rec_t *rec, const uint32_t *hdr,
      * to be, exactly as a refused theme row keeps its header name. */
     strlcpy(e->slug, h.slug, sizeof e->slug);
     strlcpy(e->title, h.title, sizeof e->title);
+    strlcpy(e->version, h.version, sizeof e->version);   /* D38: stamped or empty */
     e->app_id     = h.app_id;
     e->caps       = h.caps;
     e->period_ms  = h.period_ms;

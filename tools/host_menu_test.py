@@ -690,6 +690,46 @@ static const char *orb_net_tz_current(void) { return "Europe/Bucharest"; }
 static bool orb_sd_mounted(void) { return g_sd_mounted != 0; }
 static const char *orb_sd_card_id(void) { return g_sd_id; }
 
+/* ---- D38: the card-walk tier the catalog now lists, and its doors ---------
+ * orb_app_find_slug answers the registry's installed view so slug_on_dial can
+ * filter the snapshot; the scan hands back a settable table; install and rm
+ * record their call and answer from a settable code, exactly as the enable and
+ * uninstall fakes above do. The checks set g_scan_n to decide how many card
+ * rows exist and g_scan_slot_* to name them. */
+static orbapp_scan_entry_t g_scan[ORB_APP_SCAN_MAX];
+static int g_scan_n;
+const orb_app_t *orb_app_find_slug(const char *slug)
+{
+    if (!slug || !slug[0]) return NULL;
+    if (!strcmp(slug, g_fake_app.slug))  return g_fake_app.installed  ? FAKE_APP  : NULL;
+    if (!strcmp(slug, g_fake_app2.slug)) return g_fake_app2.installed ? FAKE_APP2 : NULL;
+    return NULL;
+}
+int orb_app_scan(orbapp_scan_entry_t *out, int cap)
+{
+    int n = g_scan_n < cap ? g_scan_n : cap;
+    for (int i = 0; i < n; i++) out[i] = g_scan[i];
+    return n;
+}
+static int g_install_calls, g_install_rc, g_rm_calls, g_rm_rc;
+static char g_install_stem[64], g_rm_rel[96];
+esp_err_t orb_app_install(const char *stem, char *why, size_t whysz)
+{
+    g_install_calls++;
+    if (stem) snprintf(g_install_stem, sizeof g_install_stem, "%s", stem);
+    if (g_install_rc != ESP_OK && why && whysz) snprintf(why, whysz, "install refused");
+    return (esp_err_t)g_install_rc;
+}
+esp_err_t orb_sd_fm_rm(const char *rel, bool recursive, int *removed_out)
+{
+    (void)recursive;
+    g_rm_calls++;
+    if (rel) snprintf(g_rm_rel, sizeof g_rm_rel, "%s", rel);
+    if (g_rm_rc != ESP_OK) return (esp_err_t)g_rm_rc;
+    if (removed_out) *removed_out = 1;
+    return ESP_OK;
+}
+
 int main(void)
 {
     /* The fake app carries a title so the header check means something. */
@@ -1356,22 +1396,28 @@ int main(void)
     ck("the catalog's back row lands on its own top row",
        s_pg == &s_pages[PG_TOP] && s_cur == 4);
 
-    /* the doors page */
+    /* the doors page — D38: show, uninstall, remove from card. No enable
+     * switch: the row a dial offers for an app that is off or faulted is
+     * install, and the press posts the enable door with ON (the hub's answer
+     * for that state, one press, fault clear included). */
     s_pg = &s_pages[PG_APPS]; s_cur = 0; s_door_slot = -1; s_uninst_arm = -1;
+    s_doormode = 0; s_card_sub = -1; s_cardrm_arm = -1;
+    g_fake_app.enabled = true;
     menu_view_apply_input(0, true);
-    ck("an app row opens that app's doors, not a toggle",
+    ck("an app row opens that app\u0027s doors, not a toggle",
        s_pg == &s_pages[PG_APPACT] && s_cur == 0 && s_door_slot == 0);
-    ck("the doors page carries the app's name, not the shell's",
+    ck("the doors page carries the app\u0027s name, not the shell\u0027s",
        !strcmp(page_title(), "Clock APP"));
-    ck("three doors and a back row, activate first and uninstall last",
+    ck("three doors and a back row: show, uninstall, remove from card",
        page_rows() == 4 && !strcmp(rowline(0), "show on the dial") &&
-       !strcmp(rowline(1), "switch: off") && !strcmp(rowline(2), "uninstall") &&
+       !strcmp(rowline(1), "uninstall") &&
+       !strcmp(rowline(2), "remove from card") &&
        !strcmp(rowline(3), "<- back"));
     ck("the doors page names the second press in its hint",
        strstr(page_hint(), "two presses") != NULL);
     g_act_rc = 0; g_posts = 0;
     s_cur = 0; menu_view_apply_input(0, true);
-    ck("activate runs the registry's own door, not a local copy",
+    ck("activate runs the registry\u0027s own door, not a local copy",
        g_act_calls == 1 && g_act_slot == 0 && g_posts == 0);
     ck("a successful activate says so on the line and stays on the page",
        !strcmp(s_ui.status, "\"Clock\": on the dial") &&
@@ -1380,58 +1426,52 @@ int main(void)
     menu_view_apply_input(0, true);
     ck("a refused activate says which app failed to move",
        g_act_calls == 1 && !strcmp(s_ui.status, "\"Clock\": clock will not go on the dial"));
-    /* Bench, orb-B 2026-10-21: a wasm row's press met the registry's
-     * screen()==NULL refusal — ESP_ERR_NOT_FOUND — and the generic sentence
-     * blamed the app for a platform gap (the code-app compositor commit is
-     * P8). The row must say which. */
     g_act_rc = ESP_ERR_NOT_FOUND_; g_act_calls = 0;
     menu_view_apply_input(0, true);
     ck("a no-face activate names the platform gap, not the app",
        g_act_calls == 1 && !strcmp(s_ui.status,
-           "\"Clock\": code apps draw layers the dial cannot paint yet"));
+            "\"Clock\": code apps draw layers the dial cannot paint yet"));
     g_act_rc = 0;
-    g_posts = 0; s_cur = 1; menu_view_apply_input(0, true);
-    ck("the switch posts the worker with the slot and the wanted state",
+
+    /* D38: the off app leads with install, not a switch; the press is the
+     * enable door\u0027s ON — the same write the old switch made. */
+    g_fake_app.enabled = false;
+    ck("the off app\u0027s doors lead with install, not a switch",
+       !strcmp(rowline(0), "install") && !strcmp(rowline(1), "uninstall") &&
+       strstr(rowline(0), "switch") == NULL && strstr(rowline(1), "switch") == NULL);
+    g_posts = 0; s_cur = 0; menu_view_apply_input(0, true);
+    ck("the install press posts the worker with the slot and ON",
        g_posts == 1 && g_posted_fn == job_enable && g_posted_pack == ((0 << 2) | 1));
-    ck("the switch is a wanted state, not the one on the row",
+    ck("the pack is still the slot-high wanted-state-low contract",
        door_pack(FAKE_APP, 1) == ((0 << 2) | 1) &&
        door_pack(FAKE_APP2, 0) == ((1 << 2) | 0));
     g_en_rc = 0; g_publish_calls = 0; g_posted_fn(&g_posted_pack);
-    ck("the enabled answer names the app and the new state",
-       g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": on") &&
+    ck("the install answer names the app and says installed",
+       g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": installed") &&
        g_en_calls == 1 && g_en_slot == 0 && g_en_on == 1);
     g_en_rc = ESP_ERR_INVALID_STATE_; g_en_why = "it is on the dial";
-    g_posts = 0; g_publish_calls = 0; s_cur = 1; menu_view_apply_input(0, true);
+    g_posts = 0; g_publish_calls = 0; s_cur = 0; menu_view_apply_input(0, true);
     g_posted_fn(&g_posted_pack);
-    ck("a refused switch prints the door's sentence, not the menu's",
+    ck("a refused install prints the door\u0027s sentence, not the menu\u0027s",
        g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": it is on the dial"));
     g_en_rc = 0; g_en_why = "";
 
-    /* the two-press uninstall, and the detent that cancels it */
-    g_posts = 0; s_cur = 2; menu_view_apply_input(0, true);
+    /* the two-press uninstall (row 1 of the off app\u0027s doors), and the
+     * detent that cancels it — arm, prompt, cancel, and the worker\u0027s
+     * refusal that must survive a cancel (bench, orb-B 2026-10-24). */
+    g_posts = 0; s_cur = 1; menu_view_apply_input(0, true);
     ck("the first uninstall press arms and posts nothing",
        g_posts == 0 && s_uninst_arm == 0 &&
        strstr(s_ui.status, "press uninstall again") != NULL);
     ck("the armed row says so on the glass",
-       !strcmp(rowline(2), "uninstall - press again"));
+       !strcmp(rowline(1), "uninstall - press again"));
     turn_up(1);
     ck("a detent ends the arm", s_uninst_arm == -1);
-    /* And the line it printed goes with it. Bench, orb-B 2026-10-24: the owner
-     * rotated away without confirming, the row went back to plain `uninstall`,
-     * and the yellow line underneath still read "press uninstall again to
-     * confirm" — offering a press the arm no longer honored. The check above is
-     * the one that shipped with the bug: it watched the arm and never the glass.
-     */
-    ck("and takes the confirmation's line off the status row",
+    ck("and takes the confirmation\u0027s line off the status row",
        s_ui.status[0] == '\0');
-    g_posts = 0; s_cur = 2; menu_view_apply_input(0, true);
+    g_posts = 0; s_cur = 1; menu_view_apply_input(0, true);
     ck("the next press arms again rather than erasing",
        g_posts == 0 && g_un_calls == 0 && s_uninst_arm == 0);
-    /* The clear is scoped to the arm's own sentence. An answer the worker
-     * published while the row stood armed belongs to the owner, and cancelling
-     * a confirmation is no reason to lose a refusal nobody has read yet. Landed
-     * the way this suite lands every result: through the shared slot, since the
-     * recorder only witnesses the publish. */
     memset(&s_shared, 0, sizeof s_shared);
     snprintf(s_shared.status, sizeof s_shared.status, "\"Clock\": it is on the dial");
     s_dirty = true;
@@ -1441,8 +1481,8 @@ int main(void)
     turn_up(-1);
     ck("cancelling the arm leaves that answer where it is",
        s_uninst_arm == -1 && !strcmp(s_ui.status, "\"Clock\": it is on the dial"));
-    g_posts = 0; s_cur = 2; menu_view_apply_input(0, true);
-    s_cur = 2; menu_view_apply_input(0, true);
+    g_posts = 0; s_cur = 1; menu_view_apply_input(0, true);
+    s_cur = 1; menu_view_apply_input(0, true);
     ck("the second press on the same row posts the removal",
        g_posts == 1 && g_posted_fn == job_uninstall && g_posted_pack == (0 << 2) &&
        s_uninst_arm == -1);
@@ -1450,19 +1490,111 @@ int main(void)
     ck("a removal says the card copy survives",
        g_un_calls == 1 && g_un_slot == 0 &&
        !strcmp(g_pub_line, "\"Clock\": uninstalled, the card copy stays"));
-    g_un_rc = ESP_ERR_INVALID_STATE_; g_un_why = "that app is on the dial";
-    g_posts = 0; g_publish_calls = 0; s_cur = 2; menu_view_apply_input(0, true);
+    g_un_rc = ESP_ERR_INVALID_STATE_; g_un_why = "the dial would not leave the app";
+    g_posts = 0; g_publish_calls = 0; s_cur = 1; menu_view_apply_input(0, true);
+    s_cur = 1; menu_view_apply_input(0, true);
+    g_posted_fn(&g_posted_pack);
+    ck("a refused removal prints the door\u0027s reason",
+       g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": the dial would not leave the app"));
+    g_un_rc = 0; g_un_why = "";
+
+    /* D38: remove from card — the row\u0027s own two arms, uninstall first,
+     * and the file\u0027s own path to the file-manager door. */
+    g_posts = 0; g_rm_calls = 0; g_un_calls = 0;
+    s_cur = 2; menu_view_apply_input(0, true);
+    ck("the first card-removal press arms its own row, not the uninstall",
+       g_posts == 0 && s_cardrm_arm == 0 && s_uninst_arm == -1 &&
+       strstr(s_ui.status, "press again to erase the card copy") != NULL);
+    ck("the armed card row says so on the glass",
+       !strcmp(rowline(2), "remove from card - press again"));
+    turn_up(1);
+    ck("a detent ends the card arm too", s_cardrm_arm == -1);
+    ck("and its line off the glass", s_ui.status[0] == '\0');
+    g_scan_n = 1;
+    strcpy(g_scan[0].stem, "clock"); strcpy(g_scan[0].slug, "clock");
+    strcpy(g_scan[0].title, "Clock"); g_scan[0].err = ESP_OK;
+    g_rm_rc = 0; g_publish_calls = 0;
+    g_posts = 0; s_cur = 2; menu_view_apply_input(0, true);
+    s_cur = 2; menu_view_apply_input(0, true);
+    ck("the second press posts the card removal",
+       g_posts == 1 && g_posted_fn == job_cardrm && s_cardrm_arm == -1);
+    g_posted_fn(&g_posted_pack);
+    ck("the removal uninstalls first, then erases the card\u0027s own path",
+       g_un_calls == 1 && g_rm_calls == 1 && !strcmp(g_rm_rel, "apps/clock.orbapp") &&
+       !strcmp(g_pub_line, "\"Clock\": gone from the dial and the card"));
+    g_scan_n = 0; g_un_calls = 0; g_rm_calls = 0; g_publish_calls = 0;
+    g_posts = 0; s_cur = 2; menu_view_apply_input(0, true);
     s_cur = 2; menu_view_apply_input(0, true);
     g_posted_fn(&g_posted_pack);
-    ck("a refused removal prints the door's reason",
-       g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": that app is on the dial"));
-    g_un_rc = 0; g_un_why = "";
+    ck("a card with no file says so once rather than lying twice",
+       g_un_calls == 1 && g_rm_calls == 0 &&
+       !strcmp(g_pub_line, "\"Clock\": uninstalled; the card held no copy"));
+    g_scan_n = 1;
+    strcpy(g_scan[0].stem, "clock"); strcpy(g_scan[0].slug, "clock");
+    strcpy(g_scan[0].title, "Clock"); g_scan[0].err = ESP_OK;
+    g_rm_rc = ESP_FAIL; g_un_calls = 0; g_rm_calls = 0; g_publish_calls = 0;
+    g_posts = 0; s_cur = 2; menu_view_apply_input(0, true);
+    s_cur = 2; menu_view_apply_input(0, true);
+    g_posted_fn(&g_posted_pack);
+    ck("a card that refuses the delete says so",
+       g_rm_calls == 1 && !strcmp(g_pub_line, "\"Clock\": the card refused the delete"));
+    g_rm_rc = 0; g_scan_n = 0;
+
+    /* D38: the catalog\u0027s card tier and the card file\u0027s doors. The
+     * snapshot lands through the shipped path: entering APPS posts the walk,
+     * and the worker runs it — here, by hand, on the fake card. */
+    g_scan_n = 1;
+    strcpy(g_scan[0].stem, "thermo"); strcpy(g_scan[0].slug, "thermo");
+    strcpy(g_scan[0].title, "Thermo"); g_scan[0].err = ESP_OK;
+    s_pg = &s_pages[PG_APPS];
+    enter_apps();
+    { int zero = 0; job_scan(&zero); }
+    ck("the uninstalled card file rides under the registry rows",
+       !strcmp(rowline(2), "Thermo  on the card") &&
+       !strcmp(rowline(3), "2 of 8 slots used"));
+    s_cur = 2; g_posts = 0;
+    menu_view_apply_input(0, true);
+    ck("a card file\u0027s doors: install, remove from card, back",
+       s_pg == &s_pages[PG_APPACT] && s_doormode == 1 && page_rows() == 3 &&
+       !strcmp(rowline(0), "install") &&
+       !strcmp(rowline(1), "remove from card") &&
+       !strcmp(rowline(2), "<- back"));
+    ck("a card file\u0027s title heads its doors page",
+       !strcmp(page_title(), "Thermo APP"));
+    g_install_rc = 0; g_install_calls = 0; g_en_calls = 0; g_posts = 0; g_publish_calls = 0;
+    s_cur = 0; menu_view_apply_input(0, true);
+    ck("the card install posts its own job, not the enable job",
+       g_posts == 1 && g_posted_fn == job_install_card);
+    g_posted_fn(&g_posted_pack);
+    ck("the install runs the sync door on the file\u0027s own stem",
+       g_install_calls == 1 && !strcmp(g_install_stem, "thermo") &&
+       !strcmp(g_pub_line, "\"Thermo\": installed"));
+    g_install_rc = ESP_FAIL; g_install_calls = 0; g_posts = 0; g_publish_calls = 0;
+    s_cur = 0; menu_view_apply_input(0, true);
+    g_posted_fn(&g_posted_pack);
+    ck("a refused install prints the install door\u0027s sentence",
+       g_install_calls == 1 && !strcmp(g_pub_line, "\"Thermo\": install refused"));
+    g_install_rc = 0;
+    g_scan[0].err = (esp_err_t)-2; strcpy(g_scan[0].why, "bad header");
+    g_scan[0].slug[0] = '\0'; g_scan[0].title[0] = '\0';   /* pre-CRC blanking */
+    { int zz = 0; job_scan(&zz); }
+    s_doormode = 1;
+    ck("a file the walk refuses offers no install, only its erasure",
+       page_rows() == 2 && !strcmp(rowline(0), "remove from card") &&
+       !strcmp(rowline(1), "<- back"));
+    s_pg = &s_pages[PG_APPS];
+    ck("the catalog says the refused file cannot install",
+       !strcmp(rowline(2), "thermo  cannot install"));
+    g_scan_n = 0;
+    { int zz = 0; job_scan(&zz); }
+    s_pg = &s_pages[PG_APPACT]; s_doormode = 0; s_door_slot = 0;
     s_cur = page_rows() - 1; menu_view_apply_input(0, true);
     ck("the doors page back lands on its own catalog row",
        s_pg == &s_pages[PG_APPS] && s_cur == 0);
     s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 4; menu_view_apply_input(0, true);
-    ck("back into the catalog clears the app and the arm with it",
-       s_pg == &s_pages[PG_APPS] && s_door_slot == -1 && s_uninst_arm == -1);
+    ck("back into the catalog clears the subject and both arms with it",
+       s_pg == &s_pages[PG_APPS] && s_door_slot == -1 && s_doormode == 0 &&
+       s_card_sub == -1 && s_uninst_arm == -1 && s_cardrm_arm == -1);
 
     /* ABOUT: five facts, and no press that does anything */
     s_pg = &s_pages[PG_TOP]; s_cur = 5; g_posts = 0;
@@ -1639,6 +1771,40 @@ ENTRY_DEFS = "\n".join(lift(th_hdr, r"#define " + k + r"\s+\d+[^\n]*", TH_H)
                       for k in ("ORB_THEME_NAME_MAX", "ORB_THEME_ID_HEX",
                                 "ORB_THEME_HANDLE_MAX", "ORB_THEME_APP_MAX"))
 
+# D38: the lifted APPS/APPACT block reaches for the card walk, the sync install,
+# the file-manager rm, and strlcpy — none of which the pre-D38 harness knew.
+# The scan row's shape is restated here at the shipped caps (asserted against
+# the shipped orb_app.h's words), and the doors are fakes the checks set and
+# read like the enable/uninstall fakes beside main().
+SLUGDEF = r"""
+static size_t host_strlcpy(char *d, const char *s, size_t n)
+{
+    const size_t l = strlen(s);
+    if (n) { snprintf(d, n, "%s", s); d[n - 1] = '\0'; }
+    return l;
+}
+#define strlcpy host_strlcpy
+#define ORB_FILES_MAX_NAME   55   /* == orb_files.h's cap */
+#define ORBAPP_SLUG_MAX      24u  /* == orb_app_manifest.h */
+#define ORBAPP_TITLE_MAX     32u
+#define ORBAPP_VERSION_MAX   32u
+#define ORB_APP_SCAN_MAX     16
+_Static_assert(ORBAPP_SLUG_MAX == ORB_APP_SLUG_MAX, "stub slug cap left the shipped one");
+_Static_assert(ORBAPP_TITLE_MAX == ORB_APP_TITLE_MAX, "stub title cap left the shipped one");
+typedef struct {
+    char      stem[ORB_FILES_MAX_NAME + 1];
+    char      slug[ORBAPP_SLUG_MAX];
+    char      title[ORBAPP_TITLE_MAX];
+    char      version[ORBAPP_VERSION_MAX];
+    uint32_t  app_id, caps, period_ms, serial, n_settings, art_size, file_size;
+    esp_err_t err;
+    char      why[256];
+} orbapp_scan_entry_t;
+int orb_app_scan(orbapp_scan_entry_t *out, int cap);
+esp_err_t orb_app_install(const char *stem, char *why, size_t whysz);
+esp_err_t orb_sd_fm_rm(const char *rel, bool recursive, int *removed_out);
+"""
+
 def assembled(src):
     """The harness source: the shipped types and functions, spliced verbatim."""
     consts, funcs = lifts(src)
@@ -1646,7 +1812,7 @@ def assembled(src):
     return (HARNESS
             .replace("__CONSTS__", body + "\n" + KNOB_HELPERS)
             .replace("__FUNCS__", "\n".join(funcs))
-            .replace("__SLUGDEF__", "")
+            .replace("__SLUGDEF__", SLUGDEF)
             .replace("__UNUSED_OK__", ""))
 
 
@@ -1928,8 +2094,8 @@ MUTATIONS = [
     # P5.3's own pins. Each is one way the catalog or its doors can go wrong
     # while every older page still passes, which is what a new page needs red
     # before it reaches a dial.
-    ("the catalog stops counting the back row", "static int rows_apps(void)   { return perm_rows() + 2; }",
-     "static int rows_apps(void)   { return perm_rows() + 1; }"),
+    ("the catalog stops counting the back row", "static int rows_apps(void)   { return perm_rows() + card_rows_n() + 2; }",
+     "static int rows_apps(void)   { return perm_rows() + card_rows_n() + 1; }"),
     ("a failed app loses its reason",
      'snprintf(out, outsz, "%s  failed: %s", a->title ? a->title : a->slug,\n                 orb_svc_fault_reason(a));',
      'snprintf(out, outsz, "%s  failed", a->title ? a->title : a->slug);'),
@@ -1963,11 +2129,11 @@ MUTATIONS = [
     ("a detent leaves the uninstall armed",
      "    unarm_uninstall();\n    s_cur = next;",
      "    s_cur = next;"),
-    ("leaving the catalog keeps the previous app and its arm",
-     "static void enter_apps(void)\n{\n    s_door_slot  = -1;\n    unarm_uninstall();\n}",
+    ("leaving the catalog keeps the previous subject and its arms",
+     "static void enter_apps(void)\n{\n    s_door_slot  = -1;\n    s_doormode   = 0;\n    s_card_sub   = -1;\n    unarm_arms();\n    job_post(job_scan, 0);\n}",
      "static void enter_apps(void)\n{\n}"),
-    ("the refused switch gets the menu's words instead of the door's",
-     'e == ESP_OK ? (on ? "on" : "off") : why);',
+    ("the refused install gets the menu's words instead of the door's",
+     'e == ESP_OK ? (on ? "installed" : "off") : why);',
      'e == ESP_OK ? (on ? "on" : "off") : "not changed");'),
     ("a removal stops saying the card copy survives",
      'e == ESP_OK ? "uninstalled, the card copy stays" : why);',
@@ -2352,16 +2518,24 @@ def main():
     # cancel left its own confirmation on the glass (bench, orb-B 2026-10-24).
     # One helper now clears the arm and its line together, so a cancel that
     # forgets the second half cannot be written by accident.
-    check("uninstall arms, and one helper owns every cancel",
-          # the declaration's initializer and the helper's own clear: two, or a
-          # site went back to disarming by hand and left its line behind.
+    check("both removal arms are owned by the one helper (D38)",
+          # the declaration's initializer and the helper's own clear: two each,
+          # or a site went back to disarming by hand and left its line behind.
+          # D38 grew the uninstall's single arm into a pair — uninstall and
+          # remove-from-card — and the helper takes both and both prompts.
           tcode.count("s_uninst_arm = -1") == 2
-          # three cancels call it: leaving the catalog, the firing press, and the
-          # cursor move. Miss the one in apply_input and a detent leaves the arm
-          # live; miss its line and the glass still says press again.
-          and tcode.count("unarm_uninstall();") == 3
-          and tcode.count("s_uninst_arm != s_door_slot") == 1
-          and tcode.count("s_uninst_arm == s_door_slot") == 1)
+          and tcode.count("s_cardrm_arm = -1") == 2
+          # three cancels call the helper: leaving the catalog, the firing press,
+          # and the cursor move. Miss the one in apply_input and a detent leaves
+          # an arm live; miss its line and the glass still says press again.
+          # four: leaving the catalog, the two firing presses (D38's pair), and
+          # the cursor move. Miss the one in apply_input and a detent leaves an
+          # arm live; miss its line and the glass still says press again.
+          and tcode.count("unarm_arms();") == 4
+          and tcode.count("s_uninst_arm != door_subject()") == 1
+          and tcode.count("s_uninst_arm == door_subject()") == 1
+          and tcode.count("s_cardrm_arm != door_subject()") == 1
+          and tcode.count("s_cardrm_arm == door_subject()") == 1)
     check("the switch model stays dead",
           "top_item_t" not in menu_src and re.search(r"\bs_page\b", menu_src) is None
           and not re.search(r"\bcase PG_", tcode))

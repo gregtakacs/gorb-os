@@ -65,6 +65,11 @@ typedef struct {
     char      stem[ORB_FILES_MAX_NAME + 1];
     char      slug[ORBAPP_SLUG_MAX];
     char      title[ORBAPP_TITLE_MAX];
+    /* D38: the container's own release stamp, echoed for the listing exactly as
+     * the installed tier carries it. The hub's Apps face cannot read a card file's
+     * header without the device's help, and "is the copy on the card older than
+     * the copy on the shelf" is a question the Update button has to answer. */
+    char      version[ORBAPP_VERSION_MAX];
     uint32_t  app_id;
     uint32_t  caps;                   /* declared owner caps; disclosure source */
     uint32_t  period_ms;

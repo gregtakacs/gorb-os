@@ -32,6 +32,14 @@
 
 #include "orb_svc.h"   /* ORB_CFG_QUOTA_BYTES, ORB_SET_STRING, orb_setting_desc_t */
 #include "orb_app_wasm.h"  /* P7.4: orb_wasm_loaded/_load/_bind_app for the load rung */
+#include "input_router.h"  /* D38: input_router_request — the task-safe home switch */
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+/* How long the uninstall door waits for its own home request to land on the
+ * glass. The router poll runs every 10 ms; 1500 ms is two orders of margin for
+ * a dial mid-frame, and it bounds the one httpd worker rather than hanging it. */
+#define UNHOME_WAIT_MS 1500
 
 #define APPS_STR_WORST ((uint32_t)sizeof(((orb_setting_desc_t *)0)->def_str))
 #define APPS_NUM_WORST 4u   /* one nvs_set_u32 value: int/enum/toggle */
@@ -1247,10 +1255,29 @@ esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz)
     esp_err_t err = ESP_OK;
     const orb_app_t *row = door_open(slug, why, whysz, &err);
     if (!row) return err;
-    if (orb_app_current() == row || row->active)
-        return door_refuse(ESP_ERR_INVALID_STATE,
-                           "that app is on the dial — carousel away from it first",
-                           why, whysz);
+    if (orb_app_current() == row || row->active) {
+        /* D38: an app on the glass is uninstallable — the door homes the dial
+         * itself instead of teaching the operator to carousel away. The rule
+         * the refusal protected stands: the registry may not lose the row the
+         * knob is holding (orb_app.c:563). What changed is who moves the knob.
+         * input_router_request is task-safe — it records a pointer the LVGL
+         * poll applies within one 10 ms tick, and leaving the glass clears the
+         * row's active bit (orb_app_activate's old->active=false). So this
+         * task asks for home and waits for the switch to land, bounded: a dial
+         * whose poll cannot run is a dial that will not take the erase either,
+         * and the honest answer stays a refusal. */
+        input_router_request(orb_app_home());
+        int waited_ms = 0;
+        while ((orb_app_current() == row || row->active) &&
+               waited_ms < UNHOME_WAIT_MS) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            waited_ms += 20;
+        }
+        if (orb_app_current() == row || row->active)
+            return door_refuse(ESP_ERR_INVALID_STATE,
+                               "the dial would not leave the app — try again",
+                               why, whysz);
+    }
 
     const int slot = orb_app_index_of(row);
     const esp_partition_t *p = apps_partition();

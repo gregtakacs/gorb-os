@@ -732,8 +732,16 @@ def lint():
     why_n = int(re.search(r"why\[(\d+)\]", sh).group(1))
     slug_n = int(re.search(r"ORBAPP_SLUG_MAX\s+(\d+)u", man_hdr).group(1))
     title_n = int(re.search(r"ORBAPP_TITLE_MAX\s+(\d+)u", man_hdr).group(1))
+    # D38: the CARD tier grew S6's "version" word; the cell costs the key, the
+    # quotes, the comma, and the doubled worst of a 32-byte field. The lint
+    # reads the width from the struct itself, so a resized cell moves this too.
+    ver_cell = bool(re.search(r"version\[ORBAPP_VERSION_MAX\]", sh))
+    ver_w = int(re.search(r"ORBAPP_VERSION_MAX\s+(\d+)u", man_hdr).group(1))
+    assert ver_cell and ver_w, ("the card row's version cell is gone (D38): the Update "
+                                "button cannot age a card file the listing does not stamp")
     worst = (2 * (stem_n + slug_n + title_n + why_n)      # all four escaped ×2
-             + 40 + 8 + 5 * 10 + 12 + 160 + 2)            # caps, hex, digits, ok, skeleton
+             + 40 + 8 + 5 * 10 + 12 + 160 + 2             # caps, hex, digits, ok, skeleton
+             + (2 * (ver_w - 1) + 13))                    # version cell, escaped worst
     assert worst < cap_scratch, \
         ("the worst-case apps row is %d B against an APPS_ROW_MAX of %d — "
          "enlarge the scratch or trim a field" % (worst, cap_scratch))

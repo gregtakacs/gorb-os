@@ -4840,7 +4840,13 @@ static esp_err_t h_theme_del(httpd_req_t *req)
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"id is missing or not a theme id\"}");
     }
-    const esp_err_t e = orb_theme_delete(id);
+    /* D38: a delete that lands on the worn theme also empties the slot, and the
+     * reboot that draws the base face rides the erase's tail. The answer says
+     * which of the three outcomes happened, so a page can wait for silence (the
+     * reboot) instead of polling a listing that truthfully still shows the
+     * theme until the board comes back. */
+    bool deactivating = false;
+    const esp_err_t e = orb_theme_delete(id, &deactivating);
     if (e == ESP_ERR_NOT_FOUND) {
         httpd_resp_set_status(req, "404 Not Found");
         return httpd_resp_sendstr(req, "{\"error\":\"no such theme on the card\"}");
@@ -4849,8 +4855,13 @@ static esp_err_t h_theme_del(httpd_req_t *req)
         httpd_resp_set_status(req, "500 Internal Server Error");
         return httpd_resp_sendstr(req, "{\"error\":\"delete failed\"}");
     }
-    char b[160];
-    const int n = snprintf(b, sizeof b, "{\"state\":\"deleted\",\"id\":\"%s\"}", id);
+    char b[224];
+    const int n = snprintf(b, sizeof b,
+        deactivating
+            ? "{\"state\":\"deleted\",\"id\":\"%s\",\"deactivated\":true,"
+              "\"reboot\":\"automatic\"}"
+            : "{\"state\":\"deleted\",\"id\":\"%s\",\"deactivated\":false}",
+        id);
     if (n < 0 || (size_t)n >= sizeof b) return httpd_resp_sendstr(req, "{\"error\":\"id too long\"}");
     return httpd_resp_sendstr(req, b);
 }
@@ -5041,7 +5052,10 @@ static esp_err_t h_sd_rescan(httpd_req_t *req)
  * admits no character needing an escape beyond '-' and '.', so its worst cell is
  * 2 * 31 + 13 = 75 B and the row's total is 496 B. The scratch did not move: the CARD
  * tier's row (stem, slug, title and a 128-byte why) is the wider of the two, and the
- * sentinel recomputes that one from the shipped headers. */
+ * sentinel recomputes that one from the shipped headers. D38 gave the CARD tier that
+ * same word — the Update button answers "is the card copy older than the shelf", and
+ * only the device can read a container header on the card — and the sentinel term
+ * moved with it: the card row's total is 1083 B and the scratch still carries it. */
 #define APPS_ROW_MAX 1152
 
 /* P4a's installed tier — streamed by h_apps_list on every response, card or
@@ -5301,7 +5315,8 @@ static esp_err_t h_apps_list(httpd_req_t *req)
     httpd_resp_send_chunk(req, head, HTTPD_RESP_USE_STRLEN);
 
     char e_stem[2 * sizeof ent[0].stem], e_slug[2 * sizeof ent[0].slug],
-         e_title[2 * sizeof ent[0].title], e_why[2 * sizeof ent[0].why];
+         e_title[2 * sizeof ent[0].title], e_why[2 * sizeof ent[0].why],
+         e_version[2 * sizeof ent[0].version];
     char caps[40];
     for (int i = 0; i < n; i++) {
         /* stem is the handle every later call comes back with — the same
@@ -5314,6 +5329,7 @@ static esp_err_t h_apps_list(httpd_req_t *req)
         json_put(e_slug,  sizeof e_slug,  e->slug);
         json_put(e_title, sizeof e_title, e->title);
         json_put(e_why,   sizeof e_why,   e->why);
+        json_put(e_version, sizeof e_version, e->version);   /* D38 */
         if (orbapp_caps_names(e->caps, caps, sizeof caps) < 0)
             caps[0] = '\0';        /* unreachable post-check_header: it bounds
                                     * caps to the four owner bits, and their
@@ -5323,9 +5339,11 @@ static esp_err_t h_apps_list(httpd_req_t *req)
             "%s{\"stem\":\"%s\",\"slug\":\"%s\",\"title\":\"%s\",\"app_id\":\"0x%08" PRIx32 "\","
             "\"caps\":\"%s\",\"period_ms\":%" PRIu32 ",\"serial\":%" PRIu32 ","
             "\"n_settings\":%" PRIu32 ",\"art_size\":%" PRIu32 ",\"file_size\":%" PRIu32 ","
+            "\"version\":\"%s\","
             "\"ok\":%s,\"why\":\"%s\"}",
             i ? "," : "", e_stem, e_slug, e_title, e->app_id, caps,
             e->period_ms, e->serial, e->n_settings, e->art_size, e->file_size,
+            e_version,
             e->err == ESP_OK ? "true" : "false", e_why);
         if (w < 0 || (size_t)w >= APPS_ROW_MAX) {
             /* The bound check says it cannot; a placeholder keeps the body
@@ -5476,8 +5494,9 @@ static esp_err_t h_app_clear(httpd_req_t *req)
 /* POST /api/v1/apps/uninstall?id=<slug> — the B4 door (P4a). Erases the slot
  * header (D9: no header, no app — no reboot, the card file untouched), forgets
  * every owner word the row owned, and frees the table entry that keeps the
- * slot's place in the quota. The page confirms first; the device does not
- * trust the confirm — it just refuses anything on the glass. */
+ * slot's place in the quota. The page confirms first. Since D38 the door no
+ * longer refuses an app that is on the glass: it homes the dial first and
+ * carries on once the switch has landed (orb_app_uninstall owns the wait). */
 static esp_err_t h_app_uninstall(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");

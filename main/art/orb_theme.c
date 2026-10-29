@@ -410,8 +410,10 @@ static const char   *s_source = "none";
 static char          s_staged_id[ORB_THEME_HANDLE_MAX + 1];
 /* Migration 1's measured fact for that witness: an interrupted store on this
  * single-slot firmware leaves the one slot headerless, so the dial falls to the
- * base digital face and one re-store recovers it. */
-#define STAGED_WHY "pixels staged, never committed — the dial shows the base face"
+ * base digital face and one re-store recovers it. Worded for the owner who
+ * reads it on the dial's own page and on the hub's row — what happened, what
+ * the dial shows, and the one press that fixes it. No internals. */
+#define STAGED_WHY "last store did not finish - press again to complete it"
 
 /* D30's boot refill, as the ledger reports it: the milliseconds of the fused
  * read-and-CRC pass and the bytes it moved. Both stay 0 on a boot that mapped the
@@ -1205,7 +1207,7 @@ void orb_theme_upload_unpark(void)
  * switch is what a naive resume record would read as "the owner was on the
  * menu". The boot after a store is therefore steered at the clock explicitly
  * (bundle_job); this is where the wrong answer would have been written. */
-static bool store_park_dial(const orb_app_t *was, uint32_t total)
+static bool store_park_dial(const orb_app_t *was, uint32_t total, const char *stage)
 {
     orb_sched_set_running(false);
     const orb_app_t *home = orb_app_home();
@@ -1223,7 +1225,7 @@ static bool store_park_dial(const orb_app_t *was, uint32_t total)
         return false;
     }
     orb_boot_overlay_backdrop();
-    orb_boot_overlay("storing", 0, total, 0);
+    orb_boot_overlay(stage, 0, total, 0);
     return true;
 }
 
@@ -1478,7 +1480,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
      * itself will not land, refuse while the bank is still resident. */
     s_slot_torn = false;
     const orb_app_t *was = input_router_current();
-    if (!store_park_dial(was, h.art_size)) {
+    if (!store_park_dial(was, h.art_size, "storing")) {
         orb_sched_set_running(true);       /* the tick stands; the dial never stopped */
         heap_caps_free(region); card_close(fd);
         return install_failed(ESP_ERR_INVALID_STATE, "the dial would not park", why, whysz);
@@ -1942,16 +1944,76 @@ esp_err_t orb_theme_post_bundle(const char *id)
     return orb_jobs_post(bundle_job, &r, sizeof r);
 }
 
-esp_err_t orb_theme_delete(const char *id)
+/* ---- D38: removing the active theme takes it off the wall too ----------------
+ *
+ * The one slot is the theme: erasing its header sector is the whole of
+ * deactivation, and the next boot draws the base face exactly as a torn store
+ * does (adopt_default_bundle refuses a headerless slot and logs the base-face
+ * reason). The ladder is the store's, stripped to its safety-critical spine:
+ * park the dial (menu, overlay, tick parked), bring the art map down, erase the
+ * header, ask for the reboot that comes back without a theme. Nothing about
+ * the word order here can leave the dial half-dressed: pre-erase the theme is
+ * on the wall whole; post-erase it is gone, and the reboot is the erase's own
+ * tail, armed the same way a failed store arms itself. */
+static void clear_job(void *arg)
 {
+    (void)arg;
+    const orb_app_t *was = input_router_current();
+    if (!store_park_dial(was, 0, "removing")) {
+        orb_sched_set_running(true);       /* the tick stands; the dial never stopped */
+        ESP_LOGW(TAG, "deactivate refused: the dial would not park");
+        return;
+    }
+    art_bank_unmap();
+    s_slot_torn = true;                    /* from here the reboot is the only way back */
+    const esp_partition_t *p = art_bank_partition();
+    const esp_err_t e = p ? esp_partition_erase_range(p, SLOT_HDR, THEME_SECTOR)
+                          : ESP_ERR_NOT_FOUND;
+    if (e != ESP_OK) {
+        orb_boot_overlay("could not clear the theme slot", 0, 0, 0);
+        ESP_LOGE(TAG, "deactivate: the slot header would not erase (%s) — "
+                      "the dial stands on the parked glass", esp_err_to_name(e));
+        return;                                /* s_slot_torn stands: reboot recovers */
+    }
+    s_active_valid = false;                  /* nothing is on the wall now */
+    orb_boot_overlay("theme removed, rebooting", 0, 0, 0);
+    ESP_LOGI(TAG, "deactivated: the theme's card file was deleted and the slot "
+                  "header erased — the base face draws on the next boot");
+    if (orb_jobs_reboot_soon("theme: the active theme was deleted") != ESP_OK)
+        ESP_LOGE(TAG, "deactivated but the reboot could not be armed — "
+                      "a manual reboot lands the base face");
+}
+
+esp_err_t orb_theme_post_clear(void)
+{
+    return orb_jobs_post(clear_job, NULL, 0);
+}
+
+esp_err_t orb_theme_deactivate(void)
+{
+    /* Nothing worn: say so rather than queue an erase of an empty slot and a
+     * reboot for no visible change. The one caller today is the store door's
+     * delete tail (orb_theme_delete), which already proved the slot worn. */
+    if (!s_active_valid) return ESP_ERR_INVALID_STATE;
+    /* Queue-only, exactly like post_bundle: the caller's door must return before
+     * the job parks the dial and reboots the board, so the ack survives. The
+     * board answers again on the base face when it clears the slot. */
+    return orb_jobs_post(clear_job, NULL, 0);
+}
+
+esp_err_t orb_theme_delete(const char *id, bool *deactivating)
+{
+    if (deactivating) *deactivating = false;
     /* Resolve-by-walk first — the same card_open_verified_id install uses — so the
      * id is proven to name a real, self-consistent file before anything is unlinked.
      * A card file whose header name does not hash to its id is refused here exactly as
      * at install; unlinking never trusts a client string to reach a path builder.
-     * Deleting the theme that is on the wall is allowed and must be: the installed
-     * copy is already in flash and does not need the card. But it is the case where
-     * "delete" looks like it changed nothing, because the dial keeps drawing that
-     * theme until another is loaded — so it is logged, and the page says so too. */
+     * D38 changed what deleting the ACTIVE theme means. It is no longer "the dial
+     * keeps drawing it": deleting the file the wall wears also empties the slot,
+     * and the reboot that draws the base face rides clear_job's own store ladder
+     * (park, unmap, erase, arm). The card file is unlinked first either way, so the
+     * owner's delete always lands; when the slot clear cannot be queued the face
+     * stands until the next store, and the answer says so. */
     const char *w = NULL;
     /* Ask for the card before the lock below, not after: this runs on a worker that
      * a boot can start before orb_sd_init() ever called, and FatFs calls against an
@@ -1975,9 +2037,11 @@ esp_err_t orb_theme_delete(const char *id)
         ESP_LOGW(TAG, "delete \"%s\": %s", id, strerror(err));
         return err == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
     }
+    const bool was_active = s_active_valid && strcmp(b3.name, s_active_name) == 0;
     ESP_LOGI(TAG, "deleted \"%s\" (%s) from the card%s", b3.name, id,
-             s_active_valid && strcmp(b3.name, s_active_name) == 0
-                 ? " (still installed on the dial)" : "");
+             was_active ? " — it was the face on the wall, so the slot goes too" : "");
+    if (was_active && deactivating)
+        *deactivating = (orb_theme_post_clear() == ESP_OK);
     return ESP_OK;
 }
 

@@ -376,8 +376,22 @@ void orb_theme_upload_unpark(void);
 
 /** Delete one theme file from the card by its device-issued id (12 hex chars),
  *  resolved by walking the themes directory and re-verified against the file's
- *  header name. Never builds a path from the caller's string. */
-esp_err_t orb_theme_delete(const char *id);
+ *  header name. Never builds a path from the caller's string.
+ *
+ *  D38: deleting the theme the dial is WEARING is also a deactivation — the
+ *  slot's header sector is erased (clear_job) and the next boot draws the base
+ *  face, exactly as a torn store does. `deactivating` (nullable) reads back
+ *  true when the active theme was removed and the clear was queued; it reads
+ *  false for an inactive theme, and false when the delete removed the wall's
+ *  card file but the slot clear could not be queued (the face stands until the
+ *  next store). The card file is unlinked before either, so the delete always
+ *  lands. */
+esp_err_t orb_theme_delete(const char *id, bool *deactivating);
+
+/** Deactivate the worn theme without touching any card file: erase the active
+ *  slot's header and reboot onto the base face. The dial menu's "wear nothing"
+ *  press. Refuses with ESP_ERR_INVALID_STATE if no theme is currently worn. */
+esp_err_t orb_theme_deactivate(void);
 
 /* ORB_THEME_SLOT_CAP is defined exactly once, in orb_bundle.h — the header the
  * format's readers and tools share — and reaches this file through the include

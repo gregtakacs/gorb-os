@@ -562,8 +562,15 @@ def lint(src):
             bad.append("P4a: uninstall must erase exactly the header sector")
         if "APPS_SLOT_STRIDE" in ub:
             bad.append("P4a: uninstall must not erase the whole slot stride")
-        if "that app is on the dial" not in ub or "orb_app_current()" not in ub:
-            bad.append("P4a: uninstall must refuse a row the knob is holding")
+        # D38: an app on the glass is uninstallable — the door homes the dial
+        # (task-safe request) and waits for the switch, instead of refusing the
+        # press and teaching the operator to carousel away.
+        if "input_router_request(orb_app_home())" not in ub or "orb_app_current()" not in ub:
+            bad.append("D38: uninstall must home a shown app and wait for the switch")
+        if "carousel away from it first" in ub:
+            bad.append("D38: uninstall must no longer refuse a row the knob is holding")
+        if "UNHOME_WAIT_MS" not in ub:
+            bad.append("D38: the home wait must be bounded by UNHOME_WAIT_MS")
     elo = src.find("esp_err_t orb_app_enable(")
     ehi = src.find("esp_err_t orb_app_uninstall(", elo if elo >= 0 else 0)
     if elo < 0 or ehi < 0:

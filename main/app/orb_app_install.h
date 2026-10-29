@@ -131,7 +131,10 @@ const char *orb_app_install_try_why(void);
  * it is the entry on the glass is refused: the walkable set may not lose the
  * row the knob is holding; carousel away first.
  *
- * Uninstall: erase the slot's HEADER sector first — from that byte the D9
+ * Uninstall: a row on the glass is UNINSTALLABLE — the door first asks the
+ * router for home (task-safe, applied on the LVGL poll) and waits, bounded,
+ * for the switch to land, so the knob never holds a row that vanishes under it
+ * (D38). Then: erase the slot's HEADER sector first — from that byte the D9
  * rule makes it no app at all — then forget the row's owner words, then free
  * the registry entry. A power cut after the erase costs an app the owner had
  * already ordered gone and grants nothing: the next fresh install wipes the

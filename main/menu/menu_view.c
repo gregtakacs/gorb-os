@@ -41,6 +41,7 @@
 #include "orb_sd.h"
 #include "orb_app.h"
 #include "orb_app_install.h"   /* APPS: the enable/uninstall doors (P5.3) */
+#include "orb_app_scan.h"      /* D38: the APPS catalog walks the card too */
 #include "idle_dim.h"          /* DISPLAY submenu: the two runtime settings */
 #include "input_router.h"     /* exit -> input_router_menu_exit() */
 #include "nvs.h"               /* the top-page cursor memory, the router's page_write idiom */
@@ -175,6 +176,8 @@ static int  cap_pack(const orb_app_t *, int row);
 static int  door_pack(const orb_app_t *, int act);
 static void job_grant(void *arg);
 static void job_enable(void *arg);   static void job_uninstall(void *arg);
+static void job_scan(void *arg);     static void job_install_card(void *arg);
+static void job_cardrm(void *arg);
 static int  page_rows(void);
 static void row_text(int, char *, size_t, bool *);
 static const char *page_title(void);
@@ -898,47 +901,169 @@ static void enter_to(void)
  * door one row below uses and the same one the /apps page prints as
  * "turned off", so one state has one name across both surfaces.
  *
- * One press cannot carry three doors, so an app row opens PG_APPACT rather than
+ * One press cannot carry the doors, so an app row opens PG_APPACT rather than
  * cycling anything. B5's cap shows here as a row of its own: an owner at 8 of 8
- * needs the page to say so before they look for something to uninstall. */
-static int rows_apps(void)   { return perm_rows() + 2; }   /* +1 cap row, +1 back */
-static int rows_appact(void) { return 3 + 1; }             /* 3 doors + back      */
+ * needs the page to say so before they look for something to uninstall.
+ *
+ * D38 grew the catalog past the registry. The dial's verbs are the hub's —
+ * install, uninstall, remove from card — and install needs the card files that
+ * are NOT on the dial, so the page now walks the card on the worker and lists
+ * the snapshot's uninstalled rows under the installed ones. The snapshot is
+ * the only card fact any page function reads: a two-second walk landing after
+ * the owner rotated away can only ever enlarge a row set the paint already
+ * owns, never repaint a page under the cursor. */
+/* Forward: the page table and rows_apps() name these before this point's
+ * definitions, exactly as the top of the file forwards the other page hooks.
+ * The ACT_* enum and the helpers are defined below, beside their siblings. */
+static int  card_rows_n(void);
+static int  appact_id(int row);
+static int  appact_n(void);
+static const orbapp_scan_entry_t *card_subject(void);
+static bool slug_on_dial(const char *slug);
+
+static int rows_apps(void)   { return perm_rows() + card_rows_n() + 2; } /* +1 cap, +1 back */
+static int rows_appact(void) { return appact_n() + 1; }                  /* this subject's doors + back */
 static int rows_about(void)  { return 5 + 1; }             /* 5 facts + back      */
 
-/* The app PG_APPACT is showing, by registry index — the same convention
- * s_perm_slot uses for PG_CAPS, so the two "which app" states are one kind of
- * state rather than two ways to lose track of an app. s_uninst_arm is the
- * uninstall row's first-press arm, held as the same index: a row that can no
- * longer be pointed at cannot fire. */
+/* The subject PG_APPACT is showing, by registry index when it is on the dial
+ * (the same convention s_perm_slot uses for PG_CAPS, so the two "which app"
+ * states are one kind of state), and by snapshot index when it is a card file
+ * the dial does not run. The two two-press arms are held as the subject's
+ * token: a subject that can no longer be pointed at cannot fire. */
 static int s_door_slot  = -1;
+static int s_doormode   = 0;                      /* 0 registry row, 1 card file */
+static int s_card_sub   = -1;
 static int s_uninst_arm = -1;
+static int s_cardrm_arm = -1;
 
-/* Cancel the armed uninstall, and take its line off the status row with it.
- * The arm and the yellow prompt it printed are one fact — this row awaits its
+/* The card walk's snapshot — the menu's private copy of h_apps_list's card
+ * tier, sized at the listing's own cap. s_card_n reads -1 until the first walk
+ * lands, and until then the catalog is the registry alone. */
+static orbapp_scan_entry_t s_card_ent[ORB_APP_SCAN_MAX];
+static int s_card_n = -1;
+
+/* The pending press's subject, stashed at press time for the worker: jobs
+ * carry an int and names do not fit in one. The queue runs one job at a time
+ * and job_post drops a press while one is outstanding, so at most one set is
+ * ever pending. */
+static char s_pend_stem[ORB_FILES_MAX_NAME + 1];
+static char s_pend_slug[ORBAPP_SLUG_MAX];
+static char s_pend_title[ORBAPP_TITLE_MAX];
+
+/* A card row is a catalog row when the slug it claims holds no dial row, and
+ * a refused file — header unreadable — is listed too, so the owner can see and
+ * erase the file the page will not install. */
+static bool slug_on_dial(const char *slug)
+{
+    const orb_app_t *a = (slug && slug[0]) ? orb_app_find_slug(slug) : NULL;
+    return a && a->installed;
+}
+static int card_rows_n(void)
+{
+    if (s_card_n < 0) return 0;
+    int n = 0;
+    for (int i = 0; i < s_card_n; i++)
+        if (!slug_on_dial(s_card_ent[i].slug)) n++;
+    return n;
+}
+static const orbapp_scan_entry_t *card_row_at(int i)
+{
+    if (s_card_n < 0) return NULL;
+    for (int k = 0; k < s_card_n; k++) {
+        if (slug_on_dial(s_card_ent[k].slug)) continue;
+        if (i-- == 0) return &s_card_ent[k];
+    }
+    return NULL;
+}
+static int card_row_pos(const orbapp_scan_entry_t *e)
+{
+    if (!e || s_card_n < 0) return 0;
+    int i = 0;
+    for (int k = 0; k < s_card_n; k++) {
+        if (slug_on_dial(s_card_ent[k].slug)) continue;
+        if (&s_card_ent[k] == e) return i;
+        i++;
+    }
+    return 0;
+}
+
+/* The APPACT subject, re-resolved on every read: a file the hub installed or
+ * erased between two repaints retires its door page the same way an
+ * uninstalled app's registry row retired it before D38. */
+static const orbapp_scan_entry_t *card_subject(void)
+{
+    if (!s_doormode || s_card_n < 0 || s_card_sub < 0 || s_card_sub >= s_card_n)
+        return NULL;
+    const orbapp_scan_entry_t *e = &s_card_ent[s_card_sub];
+    return slug_on_dial(e->slug) ? NULL : e;
+}
+static int door_subject(void) { return s_doormode ? 1000 + s_card_sub : s_door_slot; }
+
+/* The doors this subject answers, in the order an owner wants them. A dial row
+ * that runs gets show; one that is off or faulted gets install (the hub's own
+ * answer for that state — an install press carries the enable word and the
+ * fault clear); both get uninstall, and both get remove from card, which the
+ * worker answers honestly when the card holds nothing. */
+enum { ACT_SHOW = 0, ACT_INSTALL, ACT_UNINSTALL, ACT_CARDRM };
+
+static int appact_id(int row)
+{
+    int ids[4], n = 0;
+    if (s_doormode) {
+        const orbapp_scan_entry_t *e = card_subject();
+        if (!e) return -1;
+        if (e->err == ESP_OK) ids[n++] = ACT_INSTALL;
+        ids[n++] = ACT_CARDRM;
+    } else {
+        const orb_app_t *a = s_door_slot >= 0 ? orb_app_row((size_t)s_door_slot) : NULL;
+        if (!a) return -1;
+        if (a->enabled && !a->failed) ids[n++] = ACT_SHOW;
+        else                          ids[n++] = ACT_INSTALL;
+        ids[n++] = ACT_UNINSTALL;
+        ids[n++] = ACT_CARDRM;
+    }
+    return (row >= 0 && row < n) ? ids[row] : -1;
+}
+static int appact_n(void)
+{
+    int n = 0;
+    while (appact_id(n) >= 0) n++;
+    return n;
+}
+
+/* Cancel the armed removals, and take their prompts off the status row with
+ * them. The arm and the yellow prompt are one fact — this row awaits its
  * second press — so every cancel clears both, or the glass keeps offering a
  * press the arm no longer honors. Bench, orb-B 2026-10-24: the owner pressed
  * uninstall, rotated away without confirming, and the row went back to plain
  * `uninstall` under a line still reading "press uninstall again to confirm".
  *
- * The line goes ONLY while it is still the arm's own words. Anything the
+ * The line goes ONLY while it is still a removal arm's own words. Anything the
  * worker published since the first press overwrote it, and that answer belongs
  * to the owner: rotating the knob is not a reason to lose a refusal they have
  * not read yet. So the test is on the text, not on a flag that would have to
  * be kept honest at every other write. */
-static void unarm_uninstall(void)
+static void unarm_arms(void)
 {
     s_uninst_arm = -1;
-    if (strstr(s_ui.status, "press uninstall again to confirm")) s_ui.status[0] = '\0';
+    s_cardrm_arm = -1;
+    if (strstr(s_ui.status, "press uninstall again to confirm") ||
+        strstr(s_ui.status, "press again to erase the card copy"))
+        s_ui.status[0] = '\0';
 }
 
 static void open_appact(const orb_app_t *a)
 {
     s_door_slot = orb_app_index_of(a);
+    s_doormode  = 0;                    /* a registry row owns the page */
+    s_card_sub  = -1;
 }
 static int ord_appact(void)
 {
-    /* Which APPS row this app is on, so back lands where the owner came from
-     * even if the row moved underneath them. */
+    /* Which APPS row this subject is on, so back lands where the owner came
+     * from even if the row moved underneath them. A card file's ordinal sits
+     * after the registry run, in the catalog's own card tier. */
+    if (s_doormode) return perm_rows() + card_row_pos(card_subject());
     const orb_app_t *a = orb_app_row((size_t)s_door_slot);
     return a ? perm_row_of(a) : 0;
 }
@@ -955,13 +1080,20 @@ static bool app_on_glass(const orb_app_t *a)
 static void label_apps(int row, char *out, size_t outsz, bool *sel_hi)
 {
     if (sel_hi) *sel_hi = false;
-    const int n = perm_rows();
-    if (row >= n) {
-        if (row == n) {   /* B5's cap, on the glass rather than in a manual */
+    const int n = perm_rows(), cn = card_rows_n();
+    if (row >= n + cn) {
+        if (row == n + cn) {   /* B5's cap, on the glass rather than in a manual */
             snprintf(out, outsz, "%d of %d slots used", n, ORB_APP_CAP);
             return;
         }
         snprintf(out, outsz, "<- back");
+        return;
+    }
+    if (row >= n) {                              /* D38: the card tier */
+        const orbapp_scan_entry_t *c = card_row_at(row - n);
+        if (!c) { snprintf(out, outsz, "?"); return; }
+        snprintf(out, outsz, c->err == ESP_OK ? "%.42s  on the card" : "%.42s  cannot install",
+                 c->title[0] ? c->title : c->stem);
         return;
     }
     const orb_app_t *a = perm_row(row);
@@ -980,8 +1112,23 @@ static void label_apps(int row, char *out, size_t outsz, bool *sel_hi)
 
 static void act_apps(int row)
 {
+    const int n = perm_rows(), cn = card_rows_n();
+    if (row >= n + cn) { go_back(); repaint(); return; }       /* the cap/back rows */
+    if (row >= n) {
+        /* A card file's door page, armed the same way the registry rows arm
+         * theirs — the subject is this page's business, set here and read by
+         * every appact function through card_subject(). */
+        const orbapp_scan_entry_t *c = card_row_at(row - n);
+        if (!c) { go_back(); repaint(); return; }
+        s_doormode = 1;
+        s_card_sub = (int)(c - s_card_ent);
+        s_door_slot = -1;
+        go_to(PG_APPACT, 0);
+        repaint();
+        return;
+    }
     const orb_app_t *a = perm_row(row);
-    if (!a) { go_back(); repaint(); return; }          /* the cap/back rows */
+    if (!a) { go_back(); repaint(); return; }
     /* The door page is armed through its own open hook, exactly as the top
      * page arms PG_APP: which app a page is about is the page's business, and
      * a second place that assigns it is a second place to get it wrong. */
@@ -993,37 +1140,51 @@ static void act_apps(int row)
 static const char *title_apps(void) { return "APPS"; }
 static const char *hint_apps(void)  { return "rotate: choose   push: open"; }
 
-/* Leaving the list ends the door page's claim on an app and the arm with it:
- * an arm that outlived its page would uninstall on the next press anywhere. */
+/* Leaving the list ends the door page's claim on a subject and both arms with
+ * it: an arm that outlived its page would remove on the next press anywhere.
+ * The entry asks the worker for a card walk, so the install tier is as fresh
+ * as the last time the owner stood on this page; the walk lands by repaint,
+ * never under the cursor (see the snapshot rule above). */
 static void enter_apps(void)
 {
     s_door_slot  = -1;
-    unarm_uninstall();
+    s_doormode   = 0;
+    s_card_sub   = -1;
+    unarm_arms();
+    job_post(job_scan, 0);
 }
 
-/* The three doors, in the order an owner wants them: put it on the glass,
- * switch it on or off, and only then take it off the machine. */
+/* The doors this subject answers, in the order appact_id() lays them out. D38
+ * cut the enable switch: the hub has no toggle and the dial now matches it —
+ * an app that is off or faulted gets an install row (the press that carries
+ * the enable word and the fault clear), and every subject gets uninstall and
+ * remove-from-card. The row count and label are one function, so a page cannot
+ * draw a door its press would refuse. */
 static void label_appact(int row, char *out, size_t outsz, bool *sel_hi)
 {
     if (sel_hi) *sel_hi = false;
-    const orb_app_t *a = orb_app_row((size_t)s_door_slot);
-    if (!a) { snprintf(out, outsz, "?"); return; }
-    const bool on_glass = app_on_glass(a);
-    switch (row) {
-    case 0:
+    const int id = appact_id(row);
+    const bool armed_u = (s_uninst_arm == door_subject());
+    const bool armed_c = (s_cardrm_arm == door_subject());
+    switch (id) {
+    case ACT_SHOW: {
+        const orb_app_t *a = orb_app_row((size_t)s_door_slot);
+        const bool on_glass = a && app_on_glass(a);
         if (sel_hi) *sel_hi = on_glass;
         snprintf(out, outsz, "%s", on_glass ? "showing on the dial"
                                             : "show on the dial");
         return;
-    case 1:
-        if (sel_hi) *sel_hi = a->enabled;
-        snprintf(out, outsz, "switch: %s", a->enabled ? "on" : "off");
+    }
+    case ACT_INSTALL:
+        snprintf(out, outsz, "install");
         return;
-    case 2:
+    case ACT_UNINSTALL:
         /* The arm is stated on the row, not only in the status line: the owner
          * who walks back to this row after a detent sees the press is armed. */
-        snprintf(out, outsz, "uninstall%s",
-                 s_uninst_arm == s_door_slot ? " - press again" : "");
+        snprintf(out, outsz, "uninstall%s", armed_u ? " - press again" : "");
+        return;
+    case ACT_CARDRM:
+        snprintf(out, outsz, "remove from card%s", armed_c ? " - press again" : "");
         return;
     default: snprintf(out, outsz, "<- back"); return;
     }
@@ -1032,14 +1193,21 @@ static void label_appact(int row, char *out, size_t outsz, bool *sel_hi)
 static const char *title_appact(void)
 {
     static char act_title[48];
+    if (s_doormode) {
+        const orbapp_scan_entry_t *e = card_subject();
+        snprintf(act_title, sizeof act_title, "%.42s APP",
+                 e ? (e->title[0] ? e->title : e->stem) : "?");
+        return act_title;
+    }
     const orb_app_t *a = orb_app_row((size_t)s_door_slot);
     snprintf(act_title, sizeof act_title, "%s APP",
              a && a->title ? a->title : a ? a->slug : "?");
     return act_title;
 }
-/* Uninstall is the only irreversible row on the dial, so the hint names the
- * second press rather than letting a single push stand for consent. */
-static const char *hint_appact(void) { return "rotate: choose   push: run   uninstall needs two presses"; }
+/* Two rows remove something for good — uninstall and remove-from-card — so the
+ * hint names the second press rather than letting a single push stand for
+ * consent on either. */
+static const char *hint_appact(void) { return "rotate: choose   push: run   removals need two presses"; }
 
 /* slot in the high bits, the wanted enable state low. Same shape as cap_pack
  * for the same reason: this is the whole contract between a press and a write,
@@ -1049,11 +1217,44 @@ static int door_pack(const orb_app_t *a, int on)
     return (orb_app_index_of(a) << 2) | (on ? 1 : 0);
 }
 
+/* Stash the subject's identity for the worker: the arm prompt, the outcome
+ * line, and the removal itself all need the name, and jobs cross the task
+ * boundary carrying an int. Call on the LVGL task, at press time, before the
+ * door's own gate can move the cursor. */
+static void appact_stash(void)
+{
+    s_pend_stem[0] = s_pend_slug[0] = s_pend_title[0] = '\0';
+    if (s_doormode) {
+        const orbapp_scan_entry_t *e = card_subject();
+        if (!e) return;
+        strlcpy(s_pend_stem,  e->stem,  sizeof s_pend_stem);
+        strlcpy(s_pend_slug,  e->slug,  sizeof s_pend_slug);
+        strlcpy(s_pend_title, e->title, sizeof s_pend_title);
+        return;
+    }
+    const orb_app_t *a = orb_app_row((size_t)s_door_slot);
+    if (!a) return;
+    strlcpy(s_pend_slug, a->slug, sizeof s_pend_slug);
+    /* The card file an installed app came from is filed under its slug — that
+     * is h_app_upload's own naming rule — so stem and slug agree here, and the
+     * remove-from-card job re-walks to catch a file filed some other way. */
+    strlcpy(s_pend_stem, a->slug, sizeof s_pend_stem);
+    if (a->title) strlcpy(s_pend_title, a->title, sizeof s_pend_title);
+}
+static const char *appact_name(void)
+{
+    return s_pend_title[0] ? s_pend_title
+         : s_pend_slug[0]  ? s_pend_slug
+         : s_pend_stem[0]  ? s_pend_stem : "?";
+}
+
 static void act_appact(int row)
 {
-    const orb_app_t *a = orb_app_row((size_t)s_door_slot);
-    if (!a) { go_to(PG_APPS, 0); repaint(); return; }   /* uninstalled since */
-    if (row == 0) {
+    const int id = appact_id(row);
+    if (id < 0) { go_to(PG_APPS, 0); repaint(); return; }   /* the back row, or subject gone */
+    appact_stash();
+    switch (id) {
+    case ACT_SHOW: {
         /* The carousel's own door, on the LVGL task where lv_screen_load()
          * must run. It refuses an app that cannot walk, and the line says so
          * rather than leaving the owner staring at a screen that did not move.
@@ -1062,6 +1263,8 @@ static void act_appact(int row)
          * compositor commit until P8 lands, and the owner reading "will not
          * go on the dial" after a clean install would look in the app, not
          * the phase list. */
+        const orb_app_t *a = orb_app_row((size_t)s_door_slot);
+        if (!a) { go_to(PG_APPS, 0); repaint(); return; }
         const esp_err_t e = orb_app_activate(a);
         snprintf(s_ui.status, sizeof(s_ui.status),
                  e == ESP_OK ? "\"%s\": on the dial"
@@ -1073,22 +1276,49 @@ static void act_appact(int row)
         repaint();
         return;
     }
-    if (row == 1) { job_post(job_enable, door_pack(a, a->enabled ? 0 : 1)); repaint(); return; }
-    if (row == 2) {
+    case ACT_INSTALL:
+        /* Off-or-faulted registry row: the press is the enable door's ON, which
+         * is C2's fault clear too. Uninstalled card file: the press installs
+         * from the card and turns the row on, the hub's one-press shape. */
+        if (s_doormode) job_post(job_install_card, 0);
+        else {
+            const orb_app_t *a = orb_app_row((size_t)s_door_slot);
+            if (!a) { go_to(PG_APPS, 0); repaint(); return; }
+            job_post(job_enable, door_pack(a, 1));
+        }
+        repaint();
+        return;
+    case ACT_UNINSTALL:
         /* Two presses, same row. Moving the cursor clears the arm (see
-         * menu_view_apply_input), so a row the owner rotated away from can
+         * menu_view_apply_input), so a subject the owner rotated away from can
          * never fire on the next press. */
-        if (s_uninst_arm != s_door_slot) {
-            s_uninst_arm = s_door_slot;
+        if (s_uninst_arm != door_subject()) {
+            s_uninst_arm = door_subject();
             snprintf(s_ui.status, sizeof(s_ui.status),
-                     "\"%s\": press uninstall again to confirm",
-                     a->title ? a->title : a->slug);
+                     "\"%.33s\": press uninstall again to confirm", appact_name());
             repaint();
             return;
         }
-        unarm_uninstall();
-        job_post(job_uninstall, door_pack(a, 0));
+        unarm_arms();
+        /* Card-mode subjects carry no uninstall row (appact_id), so the row
+         * that armed here always names a registry row. */
+        job_post(job_uninstall, door_pack(orb_app_row((size_t)s_door_slot), 0));
         repaint();
+        return;
+    case ACT_CARDRM: {
+        if (s_cardrm_arm != door_subject()) {
+            s_cardrm_arm = door_subject();
+            snprintf(s_ui.status, sizeof(s_ui.status),
+                     "\"%.27s\": press again to erase the card copy", appact_name());
+            repaint();
+            return;
+        }
+        unarm_arms();
+        job_post(job_cardrm, door_subject());
+        repaint();
+        return;
+    }
+    default:
         return;
     }
 }
@@ -1111,13 +1341,56 @@ static void job_enable(void *arg)
      * every refusal it returns is complete well inside that. */
     char why[48] = "";
     const esp_err_t e = orb_app_enable(a->slug, on != 0, why, sizeof why);
-    /* The refusal sentence is the door's own, verbatim — including the one that
-     * exists only on this surface: "carousel away from it first" is something
-     * the dial can cause and the browser page cannot. Turning ON doubles as
-     * C2's fault clear, which is why a failed row's press says "on" and the
-     * next repaint drops its reason. */
+    /* The refusal sentence is the door's own, verbatim. D38: this job now answers
+     * only the install row's press — turning an off-or-faulted row back on, which
+     * doubles as C2's fault clear — so the OK word says the hub's word, and the
+     * dial has no press that turns a row off any more. */
     snprintf(out.status, sizeof out.status, "\"%s\": %s",
-             a->title ? a->title : a->slug, e == ESP_OK ? (on ? "on" : "off") : why);
+             a->title ? a->title : a->slug,
+             e == ESP_OK ? (on ? "installed" : "off") : why);
+    worker_publish(&out);
+}
+
+/* D38: the card walk, on the worker. The snapshot is the menu's whole knowledge
+ * of files the dial does not run; the walk's own refusals ride with it, so the
+ * catalog can list a damaged file rather than silently omit it (the scan's own
+ * rule, mirrored). A refused walk leaves the count at zero rather than stale:
+ * a page that lists files the card would not name is worse than a bare tier. */
+static void job_scan(void *arg)
+{
+    (void)arg;
+    ui_t out; memset(&out, 0, sizeof out);
+    const int n = orb_app_scan(s_card_ent, ORB_APP_SCAN_MAX);
+    s_card_n = n < 0 ? 0 : n;
+    worker_publish(&out);
+}
+
+/* Install a card file the dial does not run, then put the row on the carousel —
+ * one press, the hub's shape: h_apps_install's own queue would split the copy
+ * and the enable word across two witnesses the dial never reads, so the worker
+ * runs the ladder synchronously, as every other dial door does. */
+static void job_install_card(void *arg)
+{
+    (void)arg;
+    ui_t out; memset(&out, 0, sizeof out);
+    char why[48] = "";
+    const esp_err_t e = s_pend_stem[0]
+        ? orb_app_install(s_pend_stem, why, sizeof why) : ESP_ERR_NOT_FOUND;
+    if (e != ESP_OK) {
+        snprintf(out.status, sizeof out.status, "\"%.30s\": %.33s",
+                 appact_name(), why[0] ? why : "the install was refused");
+        worker_publish(&out);
+        return;
+    }
+    char why2[48] = "";
+    if (s_pend_slug[0] &&
+        orb_app_enable(s_pend_slug, true, why2, sizeof why2) != ESP_OK)
+        snprintf(out.status, sizeof out.status, "\"%.30s\": installed, but %.21s",
+                 appact_name(), why2);
+    else
+        snprintf(out.status, sizeof out.status, "\"%s\": installed", appact_name());
+    const int n = orb_app_scan(s_card_ent, ORB_APP_SCAN_MAX);   /* the tier moved */
+    s_card_n = n < 0 ? 0 : n;
     worker_publish(&out);
 }
 
@@ -1135,6 +1408,59 @@ static void job_uninstall(void *arg)
     snprintf(out.status, sizeof out.status, "\"%s\": %s",
              a->title ? a->title : a->slug,
              e == ESP_OK ? "uninstalled, the card copy stays" : why);
+    worker_publish(&out);
+}
+
+/* D38: remove from card. The verb's one promise is the hub's: the app leaves
+ * the dial AND the card, in that order — uninstall first, so a power cut
+ * between the two leaves a file the owner can reinstall from, never a slot
+ * wearing a name the card no longer holds. The worker re-walks to find the
+ * file rather than trusting the press-time snapshot: a hub upload may have
+ * filed it under a different stem, and the card is the truth. */
+static void job_cardrm(void *arg)
+{
+    (void)arg;
+    ui_t out; memset(&out, 0, sizeof out);
+    char why[48] = "";
+    bool uninstalled = false;
+    if (s_pend_slug[0] && slug_on_dial(s_pend_slug)) {
+        const esp_err_t e = orb_app_uninstall(s_pend_slug, why, sizeof why);
+        if (e != ESP_OK) {
+            snprintf(out.status, sizeof out.status, "\"%.30s\": %.33s",
+                     appact_name(), why[0] ? why : "the uninstall was refused");
+            worker_publish(&out);
+            return;
+        }
+        uninstalled = true;
+    }
+    const int n = orb_app_scan(s_card_ent, ORB_APP_SCAN_MAX);
+    s_card_n = n < 0 ? 0 : n;
+    int hit = -1;
+    for (int i = 0; n > 0 && i < n; i++)
+        if ((s_pend_slug[0] && s_card_ent[i].slug[0] &&
+             strcmp(s_card_ent[i].slug, s_pend_slug) == 0) ||
+            (s_pend_stem[0] && strcmp(s_card_ent[i].stem, s_pend_stem) == 0)) {
+            hit = i;
+            break;
+        }
+    if (hit < 0) {
+        snprintf(out.status, sizeof out.status,
+                 uninstalled ? "\"%.30s\": uninstalled; the card held no copy"
+                             : "\"%.30s\": the card held no copy", appact_name());
+        worker_publish(&out);
+        return;
+    }
+    char rel[24 + ORB_FILES_MAX_NAME];
+    snprintf(rel, sizeof rel, "apps/%s.orbapp", s_card_ent[hit].stem);
+    int rem = 0;
+    const esp_err_t e = orb_sd_fm_rm(rel, false, &rem);
+    if (e != ESP_OK)
+        snprintf(out.status, sizeof out.status, "\"%.30s\": the card refused the delete",
+                 appact_name());
+    else
+        snprintf(out.status, sizeof out.status,
+                 uninstalled ? "\"%.30s\": gone from the dial and the card"
+                             : "\"%.30s\": erased from the card", appact_name());
     worker_publish(&out);
 }
 
@@ -2083,7 +2409,7 @@ void menu_view_apply_input(int32_t delta, bool pressed)
      * walked away from. The helper takes the confirmation's own line with it —
      * the arm and the prompt are one fact, and the bench caught a detent that
      * cleared the first and left the second on the glass. */
-    unarm_uninstall();
+    unarm_arms();
     s_cur = next;
     /* Where the cursor landed, in the log. The menu never said: it repaints the
      * highlight and that was the only answer, so driving it blind over

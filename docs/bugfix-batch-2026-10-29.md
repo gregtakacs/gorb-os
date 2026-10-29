@@ -30,15 +30,29 @@ The hub's `ThemeList` binding gains `CardCount`; the firmware already reports it
 to open the orb's menu to enable it. Owner ruling: installed means enabled;
 there is no separate enable state.
 
-**Root cause.** `orb_app.c` `card_fill` sets `.enabled = false` (the P4a
-"install lands off" default), so a slot copy walks nothing until the word flips.
-The hub's ladder already POSTs enable after install, but the device's own
-install door and the boot ladder's fresh copy never did.
+**Root cause.** Both places that build a registry row memset it and never set the enable bit:
+`orb_app_install.c:755` inside `install_ladder` (the install door) and `orb_app_install.c:969`
+inside `orb_app_install_resolve_boot` (the card-sourced boot row, the file's own comment calls
+it `card_fill`). The row's default was therefore `false`. `apply_enable` is the rung that could
+have carried the bit and it does honour an absent word as ON, but it starts with
+`if (!orb_app_card_count()) return;` — a slot whose card copy is gone, or a card the scan
+refuses, leaves the whole rung skipped and the row standing disabled. The hub's ladder POSTs
+enable after an install, which is the only reason the bench ever saw a clock come on.
 
-**Fix.** `card_fill` lands the row enabled. The `st` word the broker holds
-stays readable and writable for recovery, but no surface treats it as a
-toggle: the dial's door page loses its enable switch (bug 3's change carries
-this). The uninstall door stays, because an installed app is still removable.
+**Fix.** Both fill sites now set `row.enabled = true`, so an installed row is an enabled row
+wherever it came from and whatever the card is doing this boot. The `st` word the broker holds
+stays readable and writable for recovery, but no surface treats it as a toggle: the dial's door
+page loses its enable switch (bug 3's change carries this). The uninstall door stays, because an
+installed app is still removable.
+
+**Second correction, same day, on this section's own claim.** The first version of this section
+named `orb_app.c/card_fill` and said the fix was one line there. It was not: `fae7c23` changed
+`apply_enable`'s arms and the compiled shell row's `.enabled`, and wrote a comment claiming
+`card_fill` set the bit. Nothing set it. The bench re-report of 2026-10-29 (fresh board, clock
+reported installed, dial showing no face, door offering uninstall) is the direct consequence, and
+it is the second fix in this document that was described and never written. The pin is
+`TestBootRowLandsEnabled` in `library_test.go`, which reads both function bodies out of the
+firmware file and goes red on the mutation — verified red, not assumed.
 
 **Correction on the hub step, same day.** This section claimed `installflow.go`
 stopped printing the `enabled` step. It does not, and it should not: the ladder
@@ -378,6 +392,56 @@ accident of timing is the worse failure, so the failure chosen is the recoverabl
 **Tests.** `TestCleanSlateUninstallsBeforeItErasesCard` pins read-then-uninstall-then-erase
 and the shell exemption; it fails when the two phases swap. `TestCleanSlateMarkIsOneShot`
 pins that `pending` does not consume, `clear` does, and a nil set owes nothing.
+
+## 13. A lonely-erased board kept the last orb life's whole shelf
+
+**Symptom.** The owner lonely-erased a board, flashed it again, and it came back with clock
+*and* color_picker on the card. The expected first-boot shelf is the clock alone, with the
+picker staying on the hub shelf.
+
+**Root cause.** Two facts meet. A lonely erase is a ROM chip erase, and a chip erase erases the
+module's SPI flash — `nvs`, `storage`, `apps`, the works. It says nothing to the SD card, which
+is a separate medium the ROM never sees, so `/apps/*.orbapp` and `/themes/*.orbtheme` from the
+previous orb life stand exactly where they were. Second: the join-time seed gate lived in
+`web/app.js`, ahead of the hub's install route, and it treated *any* card file as the owner's
+own doing. On an adopted board those files are leftovers, not a shelf. The gate returned, the
+route never ran, and bug 12's clean slate — which would have wiped both card trees — never got
+its turn. Bug 12's mark was also never armed on this path: `handleLonely` wipes NVS regions only
+and files no slate, so the following orb flash asked `storeProvesOrb`, was told the chip had
+been an orb, and chose upgrade semantics.
+
+**Fix.** Three parts.
+
+- `endAsLonely` (`lonely.go:212`) now marks the clean slate on the chip it just blanked. A
+  lonely erase means "this board's history is over," so the next install wipes the card and
+  reseeds, whether or not the chip's row was already re-filed in between.
+- The shelf gate moved out of the page and into the route (`installflow.go`,
+  `shelfHoldsOwnersContent`), where it sits *behind* the slate check instead of in front of the
+  whole run. An owner's curated shelf still stops a refill — the route streams `skipped` and the
+  panel says so — and an adoption outranks it.
+- `web/app.js` `autoInstall` no longer reads the ledger itself. One rule, one place.
+
+**Test.** `TestAdoptionOutranksTheOwnersShelfGate` (`library_test.go`) fails if the page grows a
+ledger gate back, or if the hub's shelf check moves ahead of the slate check.
+
+## 14. "Open this orb" after provisioning landed nowhere
+
+**Symptom.** At the end of provisioning the operator pressed *Open this orb* and did not land on
+the orb's management page.
+
+**Root cause.** `#ob-manage` dialed `orbIP`, the address the join dialog happened to be holding.
+That address is a DHCP lease, and the join-time ladder reboots the board at least once on the way
+through (the theme step ends with `action: "device"`, and D32 documents the reboot). A renew
+during that window moves the lease, the button dials a host that stopped answering, and the
+management view opens onto a card that never fills — indistinguishable from the button doing
+nothing. The MAC does not move.
+
+**Fix.** The press now asks the hub where that chip is *now* (`/api/fleet`, matched on MAC) and
+prefers that answer, falling back to the held address when the hub has not re-announced the board
+yet. `orbIP` is updated to the resolved address so every later dial in the view agrees.
+
+**Not verified on hardware.** The board was off the LAN while this was written. The mechanism is
+read out of the code; the fix needs the owner's next provisioning pass to confirm.
 
 ## Out of scope here
 

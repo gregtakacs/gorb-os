@@ -1070,6 +1070,101 @@ func TestHollowRowSendsBytesInsteadOfSkipping(t *testing.T) {
 	})
 }
 
+// TestBootRowLandsEnabled is the third pin on the same bench report's second symptom. A fresh
+// board restored the clock from its card and the dial said `off`: card_fill memsets its row and
+// never set the enable bit, so the row's default was false. main/app/orb_app_install.c:969
+// (card_fill) and :755 (the install confirm) now set it, and docs/bugfix-batch-2026-10-29.md #2
+// had claimed exactly that since fae7c23 while the line was never written — the same shape of
+// overclaim as #3, caught the same way: grep the literal, do not trust the commit message.
+func TestBootRowLandsEnabled(t *testing.T) {
+	src := firmwareFile(t, "main/app/orb_app_install.c")
+
+	// Both fill sites, each brace-matched so the claim is about the function and not
+	// about a comment that describes it. The install path fills its row inside
+	// install_ladder; the boot path fills it inside resolve_boot (card_fill).
+	for _, fn := range []string{"install_ladder", "orb_app_install_resolve_boot"} {
+		body := cBody(t, src, fn)
+		if !strings.Contains(body, "row.enabled") {
+			t.Errorf("%s never sets the enable bit, so a board that boots from its card "+
+				"restores every app disabled and the dial shows no face", fn)
+		}
+	}
+
+	// The word must be true, not merely mentioned.
+	if n := strings.Count(src, "row.enabled    = true;") + strings.Count(src, "row.enabled = true;"); n < 2 {
+		t.Errorf("only %d fill site(s) land enabled, want 2: an install and a card boot are the same ruling", n)
+	}
+}
+
+// cBody is cFunction with the return type left open, so it lifts `int` and `static esp_err_t`
+// functions alike. firmware_contract_test.go's cFunction is pinned to the theme handlers' one
+// spelling; the install file's fill sites are not written in it.
+func cBody(t *testing.T, src, name string) string {
+	t.Helper()
+	i := strings.Index(src, name+"(")
+	if i < 0 {
+		t.Fatalf("%s is gone from the install file: this pin guards a live rule, not a spelling", name)
+	}
+	open := strings.Index(src[i:], "{")
+	if open < 0 {
+		t.Fatalf("%s has no body", name)
+	}
+	depth, j := 0, i+open
+	for ; j < len(src); j++ {
+		switch src[j] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return src[i : j+1]
+			}
+		}
+	}
+	t.Fatalf("unbalanced braces in %s", name)
+	return ""
+}
+
+// TestAdoptionOutranksTheOwnersShelfGate is the pin for symptom 1 of the 2026-10-29 re-report.
+// A board was lonely-erased and re-flashed, and it came back wearing the previous orb life's
+// whole shelf. The lonely erase is a ROM chip erase, and a chip erase does not touch the SD
+// card, so the card still held clock and picker; the page's join-time gate read those leftovers
+// as the owner's own doing and never POSTed, so the hub's clean slate never ran. The rule now
+// lives beside the adoption mark, and an adoption outranks it.
+func TestAdoptionOutranksTheOwnersShelfGate(t *testing.T) {
+	src, err := os.ReadFile("installflow.go")
+	if err != nil {
+		t.Fatalf("installflow.go: %v", err)
+	}
+	page, err := os.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatalf("web/app.js: %v", err)
+	}
+
+	route := string(src)
+	i := strings.Index(route, "func (s *Server) h_libraryInstall")
+	body := route[i:]
+	if end := strings.Index(body[i:], "\n}"); end > 0 {
+		body = body[:i+end]
+	}
+
+	// The gate is gone from the page. A page-side copy is what made the wipe unreachable.
+	if strings.Contains(string(page), "if (rows.length || onCard) return") {
+		t.Error("autoInstall still gates on the ledger, so a card of leftovers outranks a first flash")
+	}
+
+	// And on the hub the shelf check sits behind the slate check, not in front of it.
+	shelf := strings.Index(body, "shelfHoldsOwnersContent")
+	slate := strings.Index(body, "s.slate.pending(slateMAC)")
+	if shelf < 0 || slate < 0 {
+		t.Fatalf("the join-time gate is incomplete: shelf=%d slate=%d", shelf, slate)
+	}
+	if shelf < slate {
+		t.Error("the shelf gate runs before the slate is consulted, so an adopted board keeps the " +
+			"last orb life's card and is never seeded")
+	}
+}
+
 // TestJoinRunSeedsTheThemeIsTheRegression for the second half of the 2026-10-29 report: the
 // clock installed, the row enabled, and the dial still wore no clock. The clock is a themed
 // face, so a board with zero themes on the card has a clock row that cannot draw. The theme

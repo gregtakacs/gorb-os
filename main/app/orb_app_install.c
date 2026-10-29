@@ -748,6 +748,11 @@ static esp_err_t install_ladder(const esp_partition_t *p, const appsrc_t *src,
     row.art_offset = 0;
     row.art_bytes  = 0;               /* D21: the container carries no art */
     row.art_slot   = -1;
+    /* Owner ruling, bench 2026-10-29: installed IS enabled. The row lands switched on
+     * here rather than waiting for apply_enable, which early-returns as soon as the card
+     * holds no readable file (a slot whose card copy was removed has nobody to ask), and
+     * only an explicit stored 0 from the recovery door walks it back off. */
+    row.enabled    = true;
     /* D37: the same six words the duplicate policy above compares, off the same header
      * it was parsed from — so a row's identity is what its flash says, and an install
      * cannot be made to look current by a caller that believed it was. */
@@ -954,6 +959,14 @@ int orb_app_install_resolve_boot(void)
         row.art_offset = 0;
         row.art_bytes  = 0;        /* D21: the container carries no art */
         row.art_slot   = -1;
+        /* Owner ruling, bench 2026-10-29: installed IS enabled, and a board that boots
+         * straight off its card is the case that has to honour it. apply_enable runs one
+         * rung later and is the only thing that could have carried this bit, but it
+         * early-returns when the card reports nothing — and a card-restored row on a
+         * board whose enable words were just wiped lands there with no word to read.
+         * Before this line the row's own default came from memset(0), so a fresh flash
+         * restored the clock INSTALLED AND OFF and the dial showed no face. */
+        row.enabled    = true;
         /* D37: read back off the slot header this rung already checksummed, so the
          * identity the listing reports is the one the flash carries even after a
          * half-completed install or a card swapped between boots — the case where a

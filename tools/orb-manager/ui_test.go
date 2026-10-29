@@ -1432,6 +1432,12 @@ func TestThemesFaceNamesItsAppEvenWithOnlyOne(t *testing.T) {
 // so the guard became `if (undefined) return` and every rejoin refilled the board. The
 // mandate is the read itself and the built-in exclusion: h_apps_list's installed tier
 // carries the shell, so a count that includes it never reads empty and the seed dies.
+//
+// The gate moved hubs on 2026-10-29. Held by the page, it sat ahead of the install route and
+// could not see the adoption mark, so a lonely-erased board — whose SD card keeps every
+// container the last orb life wrote, because a ROM chip erase does not touch the card — read
+// as an owner's shelf and was never seeded. The rule is the same one, in shelfHoldsOwnersContent,
+// now behind the slate check instead of in front of the run.
 func TestAutoInstallGatesOnTheLedgerNotOnAVanishedField(t *testing.T) {
 	app := readWebFile(t, "app.js")
 	at := strings.Index(app, "async function autoInstall(")
@@ -1445,14 +1451,30 @@ func TestAutoInstallGatesOnTheLedgerNotOnAVanishedField(t *testing.T) {
 	if strings.Contains(body, `getJSON("/api/fleet")`) {
 		t.Error("the join gate still reads /api/fleet, whose rows carry no app count")
 	}
-	if !strings.Contains(body, "/api/v1/apps") {
-		t.Error("the join gate reads no ledger, so it cannot know whether the shelf is empty")
-	}
-	if !strings.Contains(body, ".compiled") {
-		t.Error("the join gate counts built-ins, so no dial ever answers as empty")
-	}
 	if !strings.Contains(body, "installTried.has(ip)") {
 		t.Error("the join gate lost its one-attempt-per-address memory")
+	}
+
+	// The gate is a hub rule now, and it still reads a real ledger with the built-in
+	// excluded. A hub-side gate that counted the shell would never see an empty board.
+	src, err := os.ReadFile("installflow.go")
+	if err != nil {
+		t.Fatalf("installflow.go: %v", err)
+	}
+	fn := string(src)
+	at = strings.Index(fn, "func (s *Server) shelfHoldsOwnersContent")
+	if at < 0 {
+		t.Fatal("the join-time shelf gate is gone from the hub, so nothing protects an owner's shelf")
+	}
+	fn = fn[at:]
+	if n := strings.Index(fn, "\n}\n"); n > 0 {
+		fn = fn[:n]
+	}
+	if !strings.Contains(fn, "AppsList") {
+		t.Error("the hub's shelf gate reads no ledger, so it cannot know whether the shelf is empty")
+	}
+	if !strings.Contains(fn, "Compiled") {
+		t.Error("the hub's shelf gate counts built-ins, so no dial ever answers as empty")
 	}
 }
 

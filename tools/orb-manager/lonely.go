@@ -201,6 +201,15 @@ func (s *Server) handleLonely(w http.ResponseWriter, r *http.Request) {
 func (s *Server) endAsLonely(port, mac string) {
 	s.lonely.mark(mac)
 	s.forgetWipedOrb(port, mac)
+	// The clean slate rides the same write. The lonely erase is a ROM chip erase, and a
+	// ROM chip erase does not touch the SD card: the card keeps every container and face the
+	// last orb life left on it. Filing no slate here produced the 2026-10-29 report's first
+	// symptom — a board flashed from blank came back wearing clock AND picker from the old
+	// card, and the join-time gate read those leftovers as the owner's own shelf and seeded
+	// nothing. The next orb flash on this chip re-asks the adoption question and would mark
+	// it anyway; marking here is what makes the promise hold even for a board that sits in a
+	// drawer between the two writes. See cleanslate.go.
+	s.slate.mark(macNorm(mac))
 }
 
 // flashProgressSender is the progress-event encoder both writers share: the UI parses

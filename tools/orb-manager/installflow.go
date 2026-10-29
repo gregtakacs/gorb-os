@@ -132,6 +132,22 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 	slateMAC := ""
 	if automatic {
 		slateMAC = s.slateForIP(ip)
+		// D38's leave-the-owner's-shelf-alone rule used to live in the page, ahead of this
+		// route, and it gated out the one case it must not: a board whose SD card still
+		// carries the last orb life's containers — which is every lonely-erased board, since
+		// a ROM chip erase does not touch the card. The leftovers read as the owner's doing,
+		// the seed never ran, and the first flash of a new orb kept a shelf of stale apps and
+		// got no face (bench, 2026-10-29). The gate now reads the same ledger from the same
+		// place the wipe does, so an adoption outranks it and an owner's curated shelf still
+		// stands. An unreadable ledger falls through and lets the ladder decide, as before.
+		if !s.slate.pending(slateMAC) {
+			if held, err := s.shelfHoldsOwnersContent(ip); err == nil && held {
+				send(installStep{Step: "install", Action: "skipped",
+					Note: "the card or the registry already holds what the owner put there"})
+				send(installStep{Step: "install", Action: "done"})
+				return
+			}
+		}
 	}
 	if slateMAC != "" && s.slate.pending(slateMAC) {
 		send(installStep{Step: "slate", Action: "wiping", Note: "first flash of a new orb"})
@@ -505,6 +521,27 @@ func (s *Server) slateForIP(ip string) string {
 		return ""
 	}
 	return rows[0].MAC
+}
+
+// shelfHoldsOwnersContent is the hub's copy of the D38 gate: did the owner put anything on
+// this board. Either tier counts — a container readable on the card, or a row in a slot — and
+// the built-in shell row never counts, because the firmware wrote it and the owner cannot take
+// it off. Counting it would mean no dial ever read as empty and a board out of the box sat
+// uninstalled forever.
+//
+// It lives here rather than in the page for the reason installflow's own header gives: the
+// page could not see the adoption mark, so a card of leftovers outranked a first flash.
+func (s *Server) shelfHoldsOwnersContent(ip string) (bool, error) {
+	list, err := s.device.AppsList(ip)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range list.Installed {
+		if !r.Compiled {
+			return true, nil
+		}
+	}
+	return len(list.Apps) > 0, nil
 }
 
 // installClockLive asks the ledger the one question the theme gate needs, at the moment it

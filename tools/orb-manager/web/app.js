@@ -1524,30 +1524,13 @@ async function autoInstall(ip) {
   if (installTried.has(ip)) return;
   installTried.add(ip);
   const watch = $("#ob-watch");
-  // The gate is the LEDGER, read from the dial that owns it. It used to read
-  // /api/fleet's per-row `apps` count, and commit 9f56b7e turned the fleet store into an
-  // address book that no longer carries that field — so the line became `if (undefined)
-  // return`, never fired, and a board whose owner had deliberately emptied the shelf got
-  // refilled on the next join. A guard that reads a field nobody sends is a guard that is
-  // off, silently, which is the worse of the two ways to be wrong here.
-  //
-  // Either tier counts as the owner's doing: a container on the card, or a row in a slot.
-  // An unreadable ledger falls through and lets the hub decide, the same way it always did.
-  try {
-    const d = await readDeviceJSON(await hubFetch(
-      "/orb/" + encodeURIComponent(ip) + "/api/v1/apps"));
-    if (d && !d.error) {
-      // A compiled row is not the owner's doing — the firmware put it there and they cannot
-      // take it off — and h_apps_list's installed tier CARRIES it (apps_send_installed
-      // emits the shell at slot 0 with "compiled":true). Counting it would mean no dial
-      // ever read as empty, the join-time seed would never run again, and a board out of
-      // the box would sit uninstalled forever. Same predicate the Apps face filters on.
-      const rows = (Array.isArray(d.installed) ? d.installed : [])
-        .filter((a) => !a.compiled);
-      const onCard = Array.isArray(d.apps) ? d.apps.length : 0;
-      if (rows.length || onCard) return; // the owner put something here: leave the shelf alone
-    }
-  } catch (e) { /* unreadable ledger: fall through and let the hub decide */ }
+  // The page no longer gates this on the ledger. It used to read /api/v1/apps here and bail
+  // when either tier looked non-empty, and that gate silently outranked the one case it must
+  // not: a lonely-erased board keeps whatever the last orb life left on its SD card, because
+  // a ROM chip erase does not touch the card, so the leftovers read as the owner's doing and
+  // a first flash seeded nothing (bench, 2026-10-29). The hub holds that rule now, in
+  // shelfHoldsOwnersContent, next to the adoption mark the page cannot see — and it streams
+  // back a `skipped` step when the owner's shelf stands, which this line then shows.
   if (watch) watch.textContent = "installing the clock from the hub library\u2026";
   const done = await streamInstall(ip, "clock", true);
   if (watch && done) watch.textContent = "clock installed from the hub library.";
@@ -1680,13 +1663,29 @@ $("#ob-rejoin").onclick = () => {
   $("#ob-join").hidden = false;
   $("#ob-watch").textContent = "pick a network and connect again — the form writes over the cable.";
 };
-$("#ob-manage").onclick = () => {
+$("#ob-manage").onclick = async () => {
   closeJoinDialog();
   $("#ob-flashpanel").hidden = true;
+  // The address this join was told about is a lease, not an identity, and the ladder this
+  // panel just watched reboots the board twice on the way through (the theme lands with a
+  // device reboot, D32). A DHCP renew during that window moves the address and leaves the
+  // button dialing a host that no longer answers, which reads as "Open orb did nothing"
+  // (bench, 2026-10-29). The MAC does not move, so the press asks the hub where that chip is
+  // now and prefers the answer. orbIP is the fallback: a board the hub has not re-announced
+  // yet is still the board this dialog just provisioned.
+  let ip = orbIP;
+  try {
+    const f = await (await hubFetch("/api/fleet")).json();
+    const rows = (f && f.data && Array.isArray(f.data.orbs)) ? f.data.orbs : [];
+    const mine = rows.find((o) => o && o.mac && provMac &&
+      String(o.mac).replace(/:/g, "").toLowerCase() === provMac.replace(/:/g, "").toLowerCase());
+    if (mine && mine.ip) ip = mine.ip;
+  } catch (e) { /* no fresher answer than the one this dialog holds */ }
+  orbIP = ip;
   // Pass the name this join was just given as the row, so the headline reads
   // "Kitchen" on the first frame rather than a mac until the status reply
   // arrives a beat later. loadOrb confirms it against the board regardless.
-  openOrbByIP(orbIP, provMac, { name: ($("ob-name").value || "").trim() });
+  openOrbByIP(ip, provMac, { name: ($("ob-name").value || "").trim() });
 };
 // The third answer on a finished flash: stay here. A cable flash that worked and
 // joined is a completed job, and the two buttons beside this one both move the

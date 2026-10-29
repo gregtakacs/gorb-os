@@ -39,7 +39,7 @@ func newCleanSlate() *cleanSlateSet { return &cleanSlateSet{pend: map[string]boo
 
 // mark says this flash was an adoption: the chip carried no prior proof on this hub.
 func (c *cleanSlateSet) mark(mac string) {
-	if mac == "" {
+	if c == nil || mac == "" {
 		return
 	}
 	c.mu.Lock()

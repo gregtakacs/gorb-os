@@ -744,6 +744,82 @@ func TestAppUploadRidesTheBulkClient(t *testing.T) {
 	}
 }
 
+// TestInstallOneAppReEnablesADisabledRow pins the leg the library row's Install door is
+// relied on for a board whose app sits in a slot with the enable word off -- P4a's default
+// for a fresh install, and the state a card-scan re-adoption lands in. The row must answer
+// with one enable POST and nothing else: no card write (the bulk client stays silent), no
+// install queue, no reboot. The UI offers Install for exactly this state -- the toggle is
+// gone by ruling, so if this leg ever stopped writing the enable word, the switched-off row
+// would become the dead-end the bench hit today with a v1.1.28 clock and no door back on.
+func TestInstallOneAppReEnablesADisabledRow(t *testing.T) {
+	blob := cloneFixture(t, t.TempDir(), "sentinel")
+	body, err := os.ReadFile(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawEnable, sawInstall, sawUploadOnBulk bool
+	handler := func(isEnable, isInstall *bool) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/v1/apps":
+				// The ledger's answer under test: the row IS on the dial, switched off.
+				w.Write([]byte(`{"apps":[],"installed":[{"slug":"sentinel","enabled":false}]}`))
+			case "/api/v1/apps/enable":
+				*isEnable = true
+				io.Copy(io.Discard, r.Body)
+				w.Write([]byte(`{"ok":true}`))
+			case "/api/v1/apps/install":
+				*isInstall = true
+				io.Copy(io.Discard, r.Body)
+				w.Write([]byte(`{"ok":true,"queued":true}`))
+			case "/api/v1/sd/app":
+				// An upload reaching this fake means the card was rewritten.
+				sawUploadOnBulk = true
+				io.Copy(io.Discard, r.Body)
+				w.Write([]byte(`{"ok":true}`))
+			default:
+				w.Write([]byte(`{}`))
+			}
+		})
+	}
+	ledger := httptest.NewServer(handler(&sawEnable, &sawInstall))
+	defer ledger.Close()
+	s := newHub()
+	s.lib = &Library{AppsDir: filepath.Dir(blob)}
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.ota = orbnet.NewClient(otaTimeout)
+	s.ota.DevicePort = portOf(ledger.URL)
+	s.device.DevicePort = portOf(ledger.URL)
+
+	var steps []installStep
+	send := func(st installStep) { steps = append(steps, st) }
+	if err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", body, send); err != nil {
+		t.Fatalf("the enable run refused: %v", err)
+	}
+	if !sawEnable {
+		t.Error("installOneApp left a switched-off row off, so the Install press rewrote nothing and enabled nothing")
+	}
+	if sawInstall {
+		t.Error("installOneApp queued a card install for a row already in a slot")
+	}
+	if sawUploadOnBulk {
+		t.Error("installOneApp rewrote the container for a row already in a slot")
+	}
+	sawEnabledStep := false
+	sawSkipStep := false
+	for _, st := range steps {
+		if st.Action == "enabled" {
+			sawEnabledStep = true
+		}
+		if st.Action == "skipped" {
+			sawSkipStep = true
+		}
+	}
+	if !sawSkipStep || !sawEnabledStep {
+		t.Errorf("the run streamed %v; the panel must say skipped then enabled", steps)
+	}
+}
+
 // TestPlainDeviceErrRefusesToShowGoPlumbing is the second half of the same complaint. The
 // sentence the operator reads must not carry a transport name, a URL, or Go's own error
 // value — the reported text was "Post \"http://192.168.2.32:80/api/v1/sd/app?overwrite=1\":

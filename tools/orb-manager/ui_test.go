@@ -1338,11 +1338,20 @@ func TestLibraryRowYieldsToWhatTheDialAlreadyRuns(t *testing.T) {
 	}
 	body := tabs[start : start+end]
 
-	// A row the dial already runs at the same release must NOT carry an install door.
-	// That is the ruling, and the gate is that the write door is conditional at all:
-	// an unconditional append is the shape that predates this change.
-	if !strings.Contains(body, "if (!onDial)") {
+	// A row the dial already runs at the same release, switched ON, must NOT carry an
+	// install door. That is the ruling, and the gate is that the write door is conditional
+	// at all: an unconditional append is the shape that predates this change.
+	if !strings.Contains(body, "if (!onDial ||") {
 		t.Error("libRow appends its Install door unconditionally, so a current app still offers to reinstall")
+	}
+	// The one state the yield must NOT swallow: installed at the same version and switched
+	// off. The toggle is gone by ruling and P4a lands installs disabled, so a yield on an
+	// off row strands the board -- the Install press is the only UI door that writes the
+	// enable word (installOneApp reads the ledger first and answers an off row with one
+	// enable POST, no rewrite). A bench board hit exactly this today: v1.1.28 clock off,
+	// card-scan re-adopted it, and no button on any face could turn it back on.
+	if !strings.Contains(body, "onDial.enabled === false") {
+		t.Error("libRow yields a switched-off row into shelf-only, so an installed-but-off app has no door back on")
 	}
 	// Upgrade is the same door with a newer file behind it, and only when the ordinals say
 	// the dial is behind. A null comparison (either side unstamped) must not reach it.

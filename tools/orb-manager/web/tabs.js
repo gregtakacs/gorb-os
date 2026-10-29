@@ -558,22 +558,29 @@ function libRow(a) {
   if (libVerdict && libVerdict.slug === a.slug) txt.textContent = libVerdict.text;
   else if (onDial)
     txt.textContent += " \u00b7 on the dial at " + (onDial.version || "unstamped")
+      + (onDial.enabled === false ? ", switched off" : "")
       + (onCard ? ", and on the card" : "");
   row.appendChild(txt);
-  // The button set IS the state, and there are three of them:
+  // The button set IS the state, and there are four of them:
   //
   //   not on the dial            Install | Remove from hub library
+  //   on the dial, switched off  Install | Remove from hub library
   //   on the dial, same release  Remove from hub library
   //   on the dial, library ahead Upgrade | Remove from hub library
   //
-  // The middle line is the change. Once the hub's copy and the dial's copy name the same
-  // release, an Install button only offers to move bytes the board already runs — and it
-  // is not a no-op, because the device writes the container to the card, re-installs it
-  // and reboots onto it. So for an app that is already current the library stops being an
-  // install door and becomes what it actually is: a file on a shelf, which the operator
-  // may delete. Upgrade covers the third case through the same door with newer bytes.
+  // The third line is the yield. Once the hub's copy and the dial's copy name the same
+  // release AND the row stands on the dial, an Install button only offers to move bytes
+  // the board already runs — and it is not a no-op, because the device writes the
+  // container to the card, re-installs it and reboots onto it. So for an app that is
+  // already current the library stops being an install door and becomes what it actually
+  // is: a file on a shelf, which the operator may delete. Upgrade covers the fourth case
+  // through the same door with newer bytes. A switched-off row keeps its door: P4a lands
+  // an install disabled, a card-scan re-adopts a file into a slot with the enable word
+  // off, and a yield on THAT row would strand the board with no UI door back on — the
+  // toggle is gone by ruling, so this button is the only way the hub writes enable, and
+  // installOneApp asks the ledger first: an off row costs one enable POST, no rewrite.
   const behind = onDial ? verCompare(onDial.version, a.version) : null;
-  if (!onDial) row.appendChild(installLibButton(a, txt, "Install"));
+  if (!onDial || onDial.enabled === false) row.appendChild(installLibButton(a, txt, "Install"));
   else if (behind !== null && behind < 0) row.appendChild(installLibButton(a, txt, "Upgrade"));
   row.appendChild(removeFromLibraryButton(a, txt));
   return row;

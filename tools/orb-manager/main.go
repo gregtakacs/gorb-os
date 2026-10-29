@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
@@ -150,6 +151,13 @@ type Server struct {
 	// and how to ask that work to stop. It replaces the process-wide flashing
 	// flag, which could not tell two cables apart or cancel anything.
 	ops *opRegistry
+	// stopCables cancels the context every background sweep runs on. quit calls
+	// it BEFORE waiting for in-flight work: without it the launch probe and the
+	// cable-proof loop keep re-arming fresh serial operations for the whole
+	// shelter (measured on the bench: eight hard resets of one lonely board in
+	// eleven minutes), and quit's wait has no chance to drain. Set in main; nil
+	// means no sweeps were ever started, which is what every test hub looks like.
+	stopCables func()
 	// fw is the firmware to flash: the bundle compiled in, replaced only by a
 	// file the user picks on the Onboard card. There is no build-dir fallback —
 	// an end user has no ESP-IDF and never will.
@@ -581,6 +589,10 @@ func main() {
 	s.enableCableProof()
 	cableCtx, stopCables := context.WithCancel(context.Background())
 	defer stopCables()
+	// quit stands these loops down BEFORE it waits on anything, so it must be able
+	// to reach the cancel: the deferred one above only runs when main returns, and
+	// main returns only after quit has already waited out the shelter.
+	s.stopCables = stopCables
 	go s.watchCables(cableCtx)
 	// Once before the first tick, so a hub started with a cable already in it is not
 	// three minutes late to its own bench.
@@ -734,6 +746,18 @@ var quietQuitBudget = 10 * time.Second
 // operator to kill it with the task manager, mid-flash, which is worse than any
 // half-command the cancel could cost.
 func (s *Server) quit(srv *http.Server) {
+	// Stand the sweeps down first. The launch probe and the cable-proof loop both
+	// re-arm fresh serial operations every pass, so a quit that waits on them
+	// without closing their context is waiting on a queue that refills: the bench
+	// saw one lonely board take eight hard resets in eleven minutes while a Ctrl-C
+	// sat in the shelter, and a wedged eeprom.OpenPort on a flapping board then
+	// holds waitWhere past its visible budget with the op's own cancel unable to
+	// reach a syscall that ignores it. Closing cableCtx ends the loops and cancels
+	// the in-flight op through its parent, so the drains below see a finite queue.
+	// It is idempotent, and quit runs from two paths (browser window and signal).
+	if s.stopCables != nil {
+		s.stopCables()
+	}
 	quiet := func(o *op) bool { return !o.Kind.writesFlash() }
 	if live := s.ops.cancelWhere(quiet); len(live) > 0 {
 		log.Printf("orb-manager: quit cancelled %d read/round-trip operation(s): %s", len(live), opSummary(live))
@@ -759,6 +783,12 @@ func (s *Server) quit(srv *http.Server) {
 	ctx3, cancel3 := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel3()
 	_ = srv.Shutdown(ctx3)
+	// One final save on the guarded path. Every mutation saves as it lands, but a
+	// quit is the last write that matters: the lonely mark set a second ago by an
+	// erase whose stream this very shutdown interrupted must be in the file before
+	// the process is gone, or the board the operator just ended is an orb again on
+	// the next launch (see handleLonely's order note). Cheap when nothing moved.
+	s.saveState()
 }
 
 // writesFlashByKind is op.writesFlash in method-value shape, so it can be passed
@@ -769,17 +799,41 @@ func (o *op) writesFlashByKind() bool { return o.Kind.writesFlash() }
 // interrupt mean "cancel what is writing and quit now". The first interrupt does
 // not kill a flash; the second one cancels it between blocks and lets the process
 // end with the flasher's own cleanup run, not with the process yanked mid-write.
+//
+// Two rules shape the goroutine. SIGTERM is caught beside SIGINT: it is what a
+// WSL shutdown, a systemd stop and a plain `kill` send, and left to the default
+// disposition it ended the process mid-write with no quit and no state save — an
+// erased board came back as an orb on the next launch because the lonely mark
+// never reached the file (bench, 2026-10-28). And the second signal is raced
+// against quit rather than read after it: the old shape parked the goroutine
+// inside s.quit, so the interrupt that was supposed to cut a wedged five-minute
+// shelter short only landed in the channel's buffer and went unread. The process
+// that "sometimes does not terminate" was this handler, not the registry.
 func (s *Server) watchSignals(srv *http.Server) {
 	ch := make(chan os.Signal, 2)
-	signal.Notify(ch, os.Interrupt)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-ch
-		s.quit(srv)
-		<-ch
-		if live := s.ops.cancelAll(); len(live) > 0 {
-			log.Printf("orb-manager: forced quit - cancelled %d operation(s): %s", len(live), opSummary(live))
+		done := make(chan struct{})
+		go func() {
+			s.quit(srv)
+			close(done)
+		}()
+		select {
+		case <-done:
+			// The guarded walk-out finished; main returns through the closed
+			// listener and the deferred stopCables is already a formality.
+			return
+		case <-ch:
+			if live := s.ops.cancelAll(); len(live) > 0 {
+				log.Printf("orb-manager: forced quit - cancelled %d operation(s): %s", len(live), opSummary(live))
+			}
+			// The forced path saves before the hard exit: same reason SIGTERM is
+			// caught above — a state file behind the process is a fleet rebuilt
+			// wrong on the next launch.
+			s.saveState()
+			os.Exit(1)
 		}
-		os.Exit(1)
 	}()
 }
 

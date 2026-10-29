@@ -606,13 +606,41 @@ func (l *Library) firstTheme() (string, []byte, error) {
 	if l == nil || l.ThemesDir == "" {
 		return "", nil, fmt.Errorf("no theme library is resolved, so there is nothing to seed")
 	}
+	body, err := l.namedTheme("")
+	if err != nil {
+		return "", nil, err
+	}
+	return body.name, body.blob, nil
+}
+
+// themeBlob is one shelf theme's bytes, addressed by the shelf's file stem (""
+// asks the first by name order, which is what firstTheme seeds). D38: the
+// Themes face's Install press names one file, so the read is by name, not by
+// the directory's accident of sort order. The name is checked to be a plain
+// file stem before it reaches a path builder — the same rule h_libraryRm's
+// delete gate holds.
+type themeBlob struct {
+	name string
+	blob []byte
+}
+
+func (l *Library) namedTheme(stem string) (themeBlob, error) {
+	if l == nil || l.ThemesDir == "" {
+		return themeBlob{}, fmt.Errorf("no theme library is resolved, so there is nothing to send")
+	}
+	if stem != "" && !themeFileOK(stem) {
+		return themeBlob{}, fmt.Errorf("%q is not a theme filename the library files under", stem)
+	}
 	entries, err := os.ReadDir(l.ThemesDir)
 	if err != nil {
-		return "", nil, fmt.Errorf("the theme library at %s cannot be read: %w", l.ThemesDir, err)
+		return themeBlob{}, fmt.Errorf("the theme library at %s cannot be read: %w", l.ThemesDir, err)
 	}
 	names := []string{}
 	for _, e := range entries {
 		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".orbtheme") {
+			if stem != "" && !strings.EqualFold(strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())), stem) {
+				continue
+			}
 			names = append(names, e.Name())
 		}
 	}
@@ -620,19 +648,22 @@ func (l *Library) firstTheme() (string, []byte, error) {
 	for _, name := range names {
 		body, err := os.ReadFile(filepath.Join(l.ThemesDir, name))
 		if err != nil {
-			log.Printf("orb-manager: seed skips %s: %v", name, err)
+			log.Printf("orb-manager: theme read skips %s: %v", name, err)
 			continue
 		}
 		if _, err := orbnet.ContainerName(body); err != nil {
-			log.Printf("orb-manager: seed skips %s: %v", name, err)
+			log.Printf("orb-manager: theme read skips %s: %v", name, err)
 			continue
 		}
-		return name, body, nil
+		return themeBlob{name: name, blob: body}, nil
 	}
 	if len(names) == 0 {
-		return "", nil, fmt.Errorf("the theme library at %s holds no .orbtheme", l.ThemesDir)
+		if stem != "" {
+			return themeBlob{}, fmt.Errorf("the theme library at %s holds no %s.orbtheme", l.ThemesDir, stem)
+		}
+		return themeBlob{}, fmt.Errorf("the theme library at %s holds no .orbtheme", l.ThemesDir)
 	}
-	return "", nil, fmt.Errorf("every .orbtheme in %s was refused; the Library card names why", l.ThemesDir)
+	return themeBlob{}, fmt.Errorf("every .orbtheme in %s was refused; the Library card names why", l.ThemesDir)
 }
 
 // LibStatusLines is what startup prints about the resolution — two lines, one per kind,

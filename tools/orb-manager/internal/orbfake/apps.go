@@ -345,9 +345,10 @@ func (o *Orb) serveApps(w http.ResponseWriter) {
 		rows = append(rows, fmt.Sprintf(
 			`{"stem":%q,"slug":%q,"title":%q,"app_id":"0x%08x","caps":%q,`+
 				`"period_ms":%d,"serial":%d,"n_settings":%d,"art_size":%d,"file_size":%d,`+
-				`"ok":%s,"why":%q}`,
+				`"version":%q,"ok":%s,"why":%q}`,
 			jsonSafe(a.Stem), jsonSafe(a.Slug), jsonSafe(a.Title), a.AppID,
 			jsonSafe(capsNames(a.Caps)), a.Period, a.Serial, a.NSet, a.ArtSz, a.Bytes,
+			jsonSafe(a.Version),
 			map[bool]string{true: "true", false: "false"}[a.Why == ""], jsonSafe(a.Why)))
 	}
 	writeJSON(w, 200, fmt.Sprintf(

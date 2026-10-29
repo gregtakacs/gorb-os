@@ -203,12 +203,15 @@
     <p class="hint" id="mn-appstate">The app list loads when this tab first opens.</p>
     <nav class="subtabs" id="mn-apps-tabs"></nav>
     <div id="mn-apps-body"></div>
-    <!-- S6 (§7): the hub's own library, listed on this card rather than on a card of its
-         own, because the two halves are one decision — the files here are the files that
-         go onto the board above. Every row names the directory it came from, and every
-         file the hub could not parse is listed with the reader's own refusal. -->
-    <h4>Hub library</h4>
-    <p class="hint" id="lib-state">Reading the hub's app and theme library&#8230;</p>
+    <!-- D38: there is no "Hub library" section on this face. The shelf's files are rows
+         in the list above, wearing their "in the hub library" chip and their row's own
+         verbs — a separate section said "these files, too", which was the same fact
+         spelled twice. The resolved directory paths and the inventory count stayed on
+         this face for exactly one read and then told the owner nothing they could act
+         on, so they are gone: these two elements carry ONLY what needs action — the
+         files the shelf could not parse, each with the reader's own refusal, and a
+         read failure. An empty shelf face is a healthy shelf face. -->
+    <p class="hint" id="lib-state" hidden></p>
     <div id="lib-list"></div>
     <!-- The browser file door, and it does one thing: import. A picked .orbapp is parsed
          by the hub, filed in its library, and listed as a row like any other. It never

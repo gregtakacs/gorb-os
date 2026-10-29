@@ -90,6 +90,16 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 	ip := strings.TrimSpace(r.URL.Query().Get("ip"))
 	only := strings.TrimSpace(r.URL.Query().Get("only"))
 	automatic := r.URL.Query().Get("auto") == "1"
+	// D38: the row's Update press. The shelf's copy rides to the card even when
+	// the card already holds a readable file and the dial already runs the slug:
+	// the press was earned by the shelf being NEWER, and a run that skipped its
+	// way to nothing would let the button lie.
+	force := r.URL.Query().Get("force") == "1"
+	// D38: the row's Install press when the CARD already holds a readable copy. The
+	// shelf's bytes need not cross the room a second time to install a file the card
+	// already holds, but the press still runs the streamed ladder so the owner sees
+	// installing / installed / enabled instead of a silent POST and a spinner.
+	card := r.URL.Query().Get("card") == "1"
 	if _, ok := s.checkedTarget(w, ip, "", false); !ok {
 		return
 	}
@@ -115,7 +125,7 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Minute)
 	defer cancel()
-	if err := s.installRun(ctx, ip, only, send); err != nil {
+	if err := s.installRun(ctx, ip, only, force, card, send); err != nil {
 		send(installStep{Step: "install", Action: "refused", Note: err.Error()})
 		return
 	}
@@ -127,8 +137,14 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 // the automatic arm's shape, and also what a per-row press asks for. With only empty it
 // walks the library's app listing in slug order and then offers the theme, but only onto a
 // dial the clock is actually on (D36's rule: the skeleton theme rides with the clock, so a
-// board whose owner keeps only the picker never takes a theme nobody asked for).
-func (s *Server) installRun(ctx context.Context, ip, only string, send func(installStep)) error {
+// board whose owner keeps only the picker never takes a theme nobody asked for). force
+// belongs to a single-slug press only; the full run stays ask-first, because the run is a
+// refill and the refill does not overwrite a shelf the owner curated (D38). card (D38's
+// Install press on a card-resident row) pairs with exactly one only: the ladder runs with
+// NO shelf blob at all, so nothing re-uploads and the card's own readable copy installs —
+// but every step still streams, because a press without visible steps is a press the
+// owner cannot trust.
+func (s *Server) installRun(ctx context.Context, ip, only string, force, card bool, send func(installStep)) error {
 	st, err := s.device.Status(ip)
 	if err != nil {
 		return fmt.Errorf("the orb did not answer its status: %w", err)
@@ -161,15 +177,22 @@ func (s *Server) installRun(ctx context.Context, ip, only string, send func(inst
 			return fmt.Errorf("the library at %s holds no loadable app to install", lib.AppsDir)
 		}
 	}
+	if card && only == "" {
+		return fmt.Errorf("a card-only install names exactly one slug")
+	}
 	for _, slug := range slugs {
-		blob, err := lib.Container(slug)
-		if err != nil {
-			return fmt.Errorf("reading %s from the library: %w", slug, err)
+		var blob []byte
+		if !card {
+			b, err := lib.Container(slug)
+			if err != nil {
+				return fmt.Errorf("reading %s from the library: %w", slug, err)
+			}
+			if len(b) == 0 {
+				return fmt.Errorf("%s is not in the library at %s", slug, lib.AppsDir)
+			}
+			blob = b
 		}
-		if len(blob) == 0 {
-			return fmt.Errorf("%s is not in the library at %s", slug, lib.AppsDir)
-		}
-		if err := s.installOneApp(ctx, ip, slug, blob, send); err != nil {
+		if err := s.installOneApp(ctx, ip, slug, blob, force && only != "", send); err != nil {
 			return err
 		}
 	}
@@ -207,36 +230,52 @@ func installMinVersion() firmware.Version {
 // installOneApp brings one library slug onto the dial: on the card, in a slot, turned on.
 // Each half asks the device first, so a re-press after any partial costs a read and not a
 // second copy, and an owner's hand-installed clock is honoured untouched — only its
-// enable word may get written, and only from off.
-func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte, send func(installStep)) error {
+// enable word may get written, and only from off. force (D38's Update press) inverts
+// both asks: the shelf's bytes cross again even where a readable card file and a live
+// slot already stand, because the press was made precisely because those copies are
+// older than the shelf.
+func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte, force bool, send func(installStep)) error {
 	listing, err := s.device.AppsList(ip)
 	if err != nil {
 		return fmt.Errorf("the orb did not answer its app ledger: %w", err)
 	}
-	for _, row := range listing.Installed {
-		if row.Slug == slug {
-			send(installStep{Step: slug, Action: "skipped", Note: "already on the dial"})
-			if !row.Enabled && !row.Failed {
-				if _, e := s.device.AppEnable(ip, slug, true); e != nil {
-					return fmt.Errorf("enabling %s: %w", slug, plainDeviceErr(e, 0))
+	if !force {
+		for _, row := range listing.Installed {
+			if row.Slug == slug {
+				send(installStep{Step: slug, Action: "skipped", Note: "already on the dial"})
+				if !row.Enabled && !row.Failed {
+					if _, e := s.device.AppEnable(ip, slug, true); e != nil {
+						return fmt.Errorf("enabling %s: %w", slug, plainDeviceErr(e, 0))
+					}
+					send(installStep{Step: slug, Action: "enabled"})
 				}
-				send(installStep{Step: slug, Action: "enabled"})
+				return nil
 			}
-			return nil
 		}
 	}
 
 	// The card write, unless the file already sits there clean. A row the dial refuses
-	// (bad CRC, foreign slug) is the operator's fact to read, not the install's to overwrite.
+	// (bad CRC, foreign slug) is the operator's fact to read, not the install's to
+	// overwrite — unless the press itself said overwrite: the Update press exists
+	// because the shelf is newer than both copies, and it pushes the shelf's bytes
+	// over a readable card file and a refused one alike (D38).
 	onCard := false
-	for _, row := range listing.Apps {
-		if row.Stem == slug {
-			if !row.OK {
-				return fmt.Errorf("%s.orbapp sits on the card but the dial refuses it: %s", slug, row.Why)
+	if !force {
+		for _, row := range listing.Apps {
+			if row.Stem == slug {
+				if !row.OK {
+					return fmt.Errorf("%s.orbapp sits on the card but the dial refuses it: %s", slug, row.Why)
+				}
+				onCard = true
+				break
 			}
-			onCard = true
-			break
 		}
+	}
+	// A card-only press (empty blob) with no readable card copy under it is a race
+	// between the ledger read the face painted from and this one — the file moved
+	// out from under the button. Name that, do not "upload" zero bytes.
+	if len(blob) == 0 && !onCard {
+		return fmt.Errorf("%s.orbapp is no longer readable on the card — re-read the list and press again", slug)
 	}
 	if !onCard {
 		// The bulk client, not the control client. h_app_upload writes the whole container
@@ -385,6 +424,116 @@ func (s *Server) installTheme(ctx context.Context, ip string, send func(installS
 		return fmt.Errorf("the dial stored the theme but has not answered again within %s", installRebootWait)
 	}
 	return nil
+}
+
+// h_libraryPush answers POST /api/library/push?kind=app|theme&name=<stem>&ip=. D38's
+// card-side door: it moves ONE shelf file onto the orb's card and stops there for apps —
+// no slot write, no reboot, no enable word — because "add to card" is a filing press, and
+// filing is not installing. A theme has no such half-step: the device's own theme upload
+// door queues the store the moment the file verifies (h_theme_upload's post_bundle tail),
+// so pushing a shelf theme IS installing it, and the Themes face words the button that way.
+//
+// The response is the SAME NDJSON step-stream the install ladder sends (step/action/note),
+// not one JSON line at the end: a push crosses the room and takes seconds, and the owner
+// who pressed it is owed a moving bar and a plain verdict exactly as much as an installer
+// is. It streams `uploading` with the running byte count, then `done`, or `refused` with
+// the hub's own reason. The face's streamSteps reader drives the progress panel from these.
+func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	q := r.URL.Query()
+	ip := strings.TrimSpace(q.Get("ip"))
+	kind := strings.TrimSpace(q.Get("kind"))
+	name := strings.TrimSpace(q.Get("name"))
+	if _, ok := s.checkedTarget(w, ip, "", false); !ok {
+		return
+	}
+	if kind != "app" && kind != "theme" {
+		s.jsonErr(w, "kind must be app or theme, not \""+kind+"\"")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	flusher, _ := w.(http.Flusher)
+	send := func(st installStep) {
+		b, _ := json.Marshal(st)
+		w.Write(append(b, "\n"...))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	lib := s.library()
+	release, rerr := s.holdDevicePort(r.Context(), ip, deviceTimeout)
+	if rerr != nil {
+		send(installStep{Step: kind, Action: "refused", Note: rerr.Error()})
+		return
+	}
+	defer release()
+	if kind == "app" {
+		blob, err := lib.Container(name)
+		if err != nil {
+			send(installStep{Step: name, Action: "refused", Note: err.Error()})
+			return
+		}
+		if len(blob) == 0 {
+			send(installStep{Step: name, Action: "refused",
+				Note: fmt.Sprintf("%s.orbapp is not in the library at %s", name, lib.AppsDir)})
+			return
+		}
+		total := len(blob)
+		last, sentLast := 0, int64(0)
+		_, uerr := s.ota.AppUploadProgress(ip, blob, true, func(sent int64) {
+			sentLast = sent
+			pct := int(sent * 100 / int64(total))
+			if pct-last < 10 && int(sent) != total {
+				return
+			}
+			last = pct
+			send(installStep{Step: name, Action: "uploading",
+				Note: fmt.Sprintf("%d of %d KB", sent/1024, int64(total)/1024)})
+		})
+		if uerr != nil {
+			send(installStep{Step: name, Action: "refused",
+				Note: fmt.Sprintf("writing %s to the card: %s", name, plainDeviceErr(uerr, int(sentLast)))})
+			return
+		}
+		send(installStep{Step: name, Action: "done", Note: "file on the card; nothing installed"})
+		return
+	}
+	body, err := lib.namedTheme(name)
+	if err != nil {
+		send(installStep{Step: name, Action: "refused", Note: err.Error()})
+		return
+	}
+	c, err := orbnet.ContainerName(body.blob)
+	if err != nil {
+		send(installStep{Step: name, Action: "refused",
+			Note: fmt.Sprintf("%s does not parse: %v", body.name, err)})
+		return
+	}
+	total := len(body.blob)
+	last, sentLast := 0, int64(0)
+	_, uerr := s.ota.ThemeUploadProgress(ip, body.blob, false, func(sent int64) {
+		sentLast = sent
+		pct := int(sent * 100 / int64(total))
+		if pct-last < 10 && int(sent) != total {
+			return
+		}
+		last = pct
+		send(installStep{Step: c.ID, Action: "uploading",
+			Note: fmt.Sprintf("%d of %d KB", sent/1024, int64(total)/1024)})
+	})
+	if uerr != nil {
+		send(installStep{Step: c.ID, Action: "refused",
+			Note: fmt.Sprintf("writing %s to the card: %s", body.name, plainDeviceErr(uerr, int(sentLast)))})
+		return
+	}
+	// The upload door queued the store itself and the board reboots to draw it, so the
+	// door that took the file is gone by the time it lands. Report the promise here and
+	// let the face follow the outcome the way the install run's theme step does.
+	s.dropPreviews(ip)
+	send(installStep{Step: c.ID, Action: "done", Note: "stored; the board reboots onto it"})
 }
 
 // installWaitBack polls the short status client until the orb answers again — the store's own

@@ -1566,7 +1566,24 @@ async function autoInstall(ip) {
 // the hub is writing bytes and not stuck. Without a frame the card's own log is still
 // written, which is what the automatic join-time run does — it has the join dialog as its
 // frame already and must not steal it mid-provision.
-async function streamInstall(ip, only, auto, frame) {
+// The optional force (D38) rides the query the hub's Update press sends: it
+// tells installRun the shelf's copy must cross again even where the card and
+// the dial already hold readable copies of their own — the press was made
+// because those copies are older.
+async function streamInstall(ip, only, auto, frame, force, card) {
+  let q = "/api/library/install?ip=" + encodeURIComponent(ip);
+  if (only) q += "&only=" + encodeURIComponent(only);
+  if (auto) q += "&auto=1";
+  if (force) q += "&force=1";
+  if (card) q += "&card=1";
+  return streamSteps(q, frame, ip);
+}
+
+// streamSteps is streamInstall's body, split out because D38's Add-to-card press runs the
+// SAME kind of run — one streamed upload that answers with per-chunk facts and a final
+// verdict — so it drives the same progress panel rather than a second, thinner dialect.
+// q is the whole hub route with its query already assembled.
+async function streamSteps(q, frame, ip) {
   const out = $("#lib-install-log");
   const line = function (t) {
     if (frame) {
@@ -1591,11 +1608,8 @@ async function streamInstall(ip, only, auto, frame) {
   };
   const headline = function (j) {
     if (!frame) return;
-    frame.doing.textContent = "installing on " + ip + " — " + describeStep(j);
+    frame.doing.textContent = "working on " + ip + " \u2014 " + describeStep(j);
   };
-  let q = "/api/library/install?ip=" + encodeURIComponent(ip);
-  if (only) q += "&only=" + encodeURIComponent(only);
-  if (auto) q += "&auto=1";
   try {
     const r = await hubFetch(q, { method: "POST", headers: { Accept: "application/x-ndjson" } });
     if (!r.ok || !r.body) { line("refused: HTTP " + r.status + " — " + (await r.text().catch(() => ""))); return false; }
@@ -1616,12 +1630,12 @@ async function streamInstall(ip, only, auto, frame) {
         line(t);
         headline(j);
         if (j.action === "uploading") setBar(j.note);
-        if (j.step === "install" && j.action === "done") ok = true;
+        if (j.action === "done") ok = true;
         if (j.action === "refused") refusal = j.note || "the hub refused the run";
       }
     }
     if (frame) {
-      frame.doing.textContent = ok ? "installed on " + ip : "install refused";
+      frame.doing.textContent = ok ? "done on " + ip : "the hub refused it";
       if (ok) frame.bar.style.width = "100%";
       // A refusal leaves its own line as the panel's last word, and the panel open: the
       // rules for this panel say an operation never closes its own completion row.
@@ -2815,8 +2829,21 @@ async function loadThemes(ip) {
     + " on " + (d.card || "the card") +
     ", drawing \"" + (d.active || "?") + "\"" + (d.free_mb ? ", " + d.free_mb + " MB free" : "")
     + (themeAppsErr ? " (" + themeAppsErr + ")" : "");
+  state.textContent += (libThemeCount ? " \u00b7 " + libThemeCount + " theme"
+    + (libThemeCount === 1 ? "" : "s") + " on the hub shelf" : "");
   for (const t of shown) list.appendChild(themeRow(t, state, d));
-  if (!shown.length) themeEmptyPane(list, scope);
+  // D38: the hub's own shelf rides the same list. A theme in the folder and not
+  // on the card is a row like any other, and its button says Install — which,
+  // for a theme, means the whole way onto the dial: the device's upload door
+  // queues the store the moment the file verifies, so the board reboots onto
+  // it. There is no theme half-step onto a card, and the face does not pretend
+  // there is one.
+  let shelf = [];
+  try { const p = await getJSON("/api/library"); shelf = Array.isArray(p.themes) ? p.themes : []; }
+  catch (e) { /* the shelf rows just do not appear; the orb's own rows stand */ }
+  libThemeCount = shelf.length;
+  const shelfN = themeShelfRows(scope, rows, state, shelf);
+  if (!shown.length && !shelfN) themeEmptyPane(list, scope);
   renderThemeEditRow(scope, shown.length > 0);
   if (d.mounted) warmOrbCard(ip);   // the face is painted; the hub can read the rest ahead
 }
@@ -3103,18 +3130,27 @@ function themeRow(t, state, list) {
     why.textContent = "last try failed: " + list.try_why;
     li.appendChild(why);
   }
-  // Migration 1's torn-store witness, keyed by id: a store whose pixels reached the
-  // slot and whose header never did. Boot draws the base face beside it and one
-  // re-store clears it, so the row names the repair rather than only the damage.
+  // Migration 1's torn-store witness, keyed by id. In owner words this is ONE
+  // fact and nothing else: the last time this theme was put on the wall, the
+  // store did not finish, so the wall is not wearing it. The dial draws its
+  // base face, and the row's own Activate press completes the store — the
+  // firmware re-files the staged copy rather than demanding a re-upload. The
+  // face says that, and keeps the firmware's raw internal sentence on hover for
+  // the one person who will ever need it.
   if (list && list.staged_id === t.id && list.staged_why) {
     const why = document.createElement("span");
     why.className = "tag warn";
-    why.textContent = "half-stored: " + list.staged_why + " \u2014 press Store again";
+    why.textContent = "last store did not finish \u2014 press Activate again";
+    why.title = list.staged_why;
     li.appendChild(why);
   }
   const use = document.createElement("button");
   use.className = "ghost";
-  use.textContent = "Store on the dial";
+  // D38: the verb is activate. The door behind it is still Migration 1's one
+  // press — the store of a card file into the slot, and the reboot that draws
+  // it — but the row is answering "put this on the wall", which is what
+  // activate says and Store, beside an Install button, did not.
+  use.textContent = "Activate";
   use.disabled = !t.ok || t.active;
   // Migration 1 made this the ONE press: the door answers once the copy is queued and
   // the orb reboots onto the new face when it verifies, so the press is not over when
@@ -3162,16 +3198,149 @@ function themeRow(t, state, list) {
   // two rows can share a name across a re-bake and never share an id.
   const del = document.createElement("button");
   del.className = "ghost";
-  del.textContent = "Delete";
+  del.textContent = "Remove from card";
+  // D38 gives the active row's press a second consequence: removing the theme
+  // the wall wears also empties the slot (orb_theme_delete's clear tail), and
+  // the dial reboots onto its base face. The confirm says so BEFORE the press,
+  // the answer's deactivated word drives the wait after it, and the row the
+  // re-read paints shows the truth either way.
   del.onclick = async () => {
-    if (!confirm('Delete theme "' + t.name + '" (' + t.id + ") from the orb SD card? This cannot be undone from here.")) return;
+    const activeNow = !!t.active;
+    if (!confirm('Remove "' + t.name + '" (' + t.id + ") from the orb's card?"
+      + (activeNow
+        ? " It is the theme on the wall \u2014 the dial will clear it and reboot to its no-theme face."
+        : " This cannot be undone from here."))) return;
     del.disabled = true;
-    state.textContent = "deleting " + t.name + "\u2026";
-    try { await themePost("/api/theme/delete", { ip: themeIP, id: t.id }); await loadThemes(themeIP); }
-    catch (e) { state.textContent = "delete refused: " + e.message; del.disabled = false; }
+    state.textContent = "removing " + t.name + "\u2026";
+    try {
+      const d = await themePost("/api/theme/delete", { ip: themeIP, id: t.id });
+      if (d && d.deactivated) {
+        state.textContent = "removed " + t.name + " \u2014 the dial is rebooting onto its base face";
+        await themeWaitBack(state, t.name);
+      }
+      await loadThemes(themeIP);
+    } catch (e) { state.textContent = "remove refused: " + e.message; del.disabled = false; }
   };
   li.appendChild(del);
   return li;
+}
+
+// themeShelfRows draws the hub's themes that the card does not carry, in the
+// current app's scope, beside the orb's own rows — one list, every theme the
+// hub can see (D38). A shelf theme is matched to a card row by the NAME inside
+// its own container (the hub read it when it listed the shelf; the device reads
+// it when it lists the card), not by the file's stem on either side: a theme
+// that travelled by the drop zone keeps its baked name wherever its file lands.
+// Returns the number of rows drawn.
+let libThemeCount = 0;   // the state line's count, set by loadThemes with each read
+
+function themeShelfRows(scope, deviceRows, state, shelf) {
+  shelf = Array.isArray(shelf) ? shelf : [];
+  const list = $("#mn-themes");
+  if (!shelf.length || !list) return 0;
+  const onCard = {};
+  for (const t of deviceRows) onCard[String(t.name || "").toLowerCase()] = true;
+  let n = 0;
+  for (const f of shelf) {
+    const app = f.app || "clock";
+    if (scope && app !== scope) continue;
+    if (onCard[String(f.title || "").toLowerCase()]) continue;
+    n++;
+    const li = document.createElement("li");
+    const label = document.createElement("b");
+    label.textContent = f.title || f.file;
+    li.appendChild(label);
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = "in the hub library";
+    li.appendChild(tag);
+    const size = document.createElement("span");
+    size.className = "tag";
+    size.textContent = Math.round((f.bytes || 0) / 1024) + " KB";
+    li.appendChild(size);
+    const inst = document.createElement("button");
+    inst.className = "ghost";
+    inst.textContent = "Install";
+    inst.title = "Send this theme to the orb in hand. The device's theme door stores the file the moment it verifies, and the board reboots onto it.";
+    inst.onclick = async () => {
+      if (!themeIP) { state.textContent = "no orb in hand \u2014 connect one first."; return; }
+      if (typeof askConfirm === "function" && !await askConfirm({
+        title: "Install this theme?",
+        body: (f.title || f.file) + " goes to " + themeIP + ": the device files the card copy and stores it in the same door, so the board reboots onto the new face.",
+        detail: "The hub's copy stays on the shelf. Remove from card later clears the orb's copy, and taking the wall's theme off clears the face too.",
+        yes: "Install",
+      })) return;
+      inst.disabled = true;
+      fpOpen();
+      const ui = fpUI();
+      ui.doing.textContent = "installing " + (f.title || f.file) + " on " + themeIP;
+      ui.log.textContent = ""; ui.bar.style.width = "0%"; ui.bar.title = "";
+      ui.op.textContent = "pushing"; ui.live.textContent = "";
+      state.textContent = "installing " + (f.title || f.file) + " \u2014 the file is crossing";
+      // The push streams its steps exactly like an app install: the bar moves
+      // with the bytes, and the panel is the single place a refusal is read.
+      const okPush = await streamSteps("/api/library/push?kind=theme&name="
+        + encodeURIComponent(String(f.file).replace(/\.orbtheme$/i, ""))
+        + "&ip=" + encodeURIComponent(themeIP), ui, themeIP);
+      if (!okPush) {
+        state.textContent = "install refused \u2014 read the progress panel";
+        inst.disabled = false;
+        return;
+      }
+      try {
+        state.textContent = "installing " + (f.title || f.file) + " \u2014 stored; the board is rebooting onto it";
+        await themeWaitBack(state, f.title || f.file);
+        fpClose();
+        await loadThemes(themeIP);
+      } catch (e) {
+        ui.doing.textContent = "theme install refused";
+        ui.log.textContent = "\u2717 " + e.message;   // the panel stays open with its reason
+        state.textContent = "install refused: " + e.message;
+        inst.disabled = false;
+      }
+    };
+    li.appendChild(inst);
+    const rm = document.createElement("button");
+    rm.className = "ghost";
+    rm.textContent = "Remove from hub library";
+    rm.title = "Delete " + f.file + " from this hub's library. No orb and no SD card is touched.";
+    rm.onclick = async () => {
+      if (typeof askConfirm === "function" && !await askConfirm({
+        title: "Delete it from the hub library?",
+        body: (f.title || f.file) + " is removed from the hub\u0027s theme folder.",
+        detail: "An orb already drawing it keeps drawing it. This removes only the hub's copy.",
+        yes: "Delete from library",
+      })) return;
+      rm.disabled = true;
+      state.textContent = "removing " + (f.title || f.file) + " from the hub library\u2026";
+      try {
+        const r = await hubFetch("/api/library/rm?kind=theme&name="
+          + encodeURIComponent(String(f.file).replace(/\.orbtheme$/i, "")), { method: "POST" });
+        const d = await r.json().catch(() => null);
+        if (!d || !d.ok) throw new Error((d && d.error) || ("HTTP " + r.status));
+        state.textContent = (f.title || f.file) + " \u00b7 removed from the hub library";
+        loadThemes(themeIP);   // the re-read brings the shelf too; the row is simply not there
+      } catch (e) {
+        state.textContent = "the hub refused it: " + e.message;
+        rm.disabled = false;
+      }
+    };
+    li.appendChild(rm);
+    list.appendChild(li);
+  }
+  return n;
+}
+
+// themeWaitBack waits out a press that reboots the board: the silence IS the
+// answer's second half, so the poll just asks for the list until the orb
+// answers again. Two and a half minutes, then the caller re-reads anyway and
+// the rows say whatever is true.
+async function themeWaitBack(state, name) {
+  for (let n = 0; n < 100; n++) {
+    await new Promise((res) => setTimeout(res, 1500));
+    try { await themePost("/api/theme/list", { ip: themeIP }, 45000); return; }
+    catch (e) { state.textContent = name + " is away \u2014 the orb is rebooting (" + (n * 1.5 | 0) + " s)"; }
+  }
 }
 
 // watchThemeJob follows one row after a store, from the queue ack to the witness the
@@ -3202,7 +3371,7 @@ async function watchThemeJob(state, t) {
       return;
     }
     if (d.staged_id === t.id) {
-      state.textContent = "the store tore before its header: " + (d.staged_why || "the slot has no drawable bundle") + " \u2014 press Store again";
+      state.textContent = "the last store of " + t.name + " did not finish \u2014 press Activate again to complete it";
       return;
     }
     if (d.active === t.name) {

@@ -22,12 +22,17 @@ import (
 
 // AppCardRow is one .orbapp sitting on the card — h_apps_list's "apps" array.
 // Why carries the walk's refusal when OK is false; Stem is the only handle the
-// install door takes.
+// install door takes. Version is the container's own release stamp (D38, the
+// card tier's seventh word) — the number the Apps face ages against the shelf
+// to decide whether the Update button is owed. "" is the device's silence on a
+// pre-D38 board and an unstamped container alike; the face reads that as "no
+// update can be proven", never as "current".
 type AppCardRow struct {
-	Stem string `json:"stem"`
-	Slug string `json:"slug"`
-	OK   bool   `json:"ok"`
-	Why  string `json:"why"`
+	Stem    string `json:"stem"`
+	Slug    string `json:"slug"`
+	OK      bool   `json:"ok"`
+	Why     string `json:"why"`
+	Version string `json:"version,omitempty"`
 }
 
 // AppInstalledRow is one live slot — h_apps_list's "installed" array. Since D36

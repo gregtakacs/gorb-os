@@ -425,17 +425,16 @@ async function loadApps() {
   // §7: the shell leaves the button matrix. D35 left ONE compiled row and it is always on,
   // never togglable and never uninstallable, so a sub-tab for it could only ever hold the
   // words "built into the firmware" — a row that answers no question. It stays visible when
-  // it FAILED, because a quarantined row is the one built-in state an owner can act on:
+  // it FAILED, because a quarantined row is the one firmware state an owner can act on:
   // Clear fault. The reader still reports the ledger whole; only this face filters.
   const rows = Array.isArray(d.installed) ? d.installed : [];
   appList = rows.filter((a) => !a.compiled || a.failed);
   cardApps = Array.isArray(d.apps) ? d.apps : [];
-  const hidden = rows.length - appList.length;
+  // The one honest sentence the header gets: what the dial runs and what the
+  // card holds. Built-ins are not counted, directories are not named, and the
+  // hub's shelf inventory has no business being half of a status line.
   state.textContent = appList.length + " app" + (appList.length === 1 ? "" : "s")
-    + " on the dial" + (cardApps.length ? ", " + cardApps.length + " waiting on the card" : "")
-    + (hidden ? ", and " + hidden + " built-in" + (hidden === 1 ? "" : "s") + " not listed" : "");
-  if (!appList.some((a) => a.slug === appsSub))
-    appsSub = appList.some((a) => a.slug === "clock") ? "clock" : ((appList[0] && appList[0].slug) || "");
+    + " on the dial" + (cardApps.length ? ", " + cardApps.length + " on the card" : "");
   renderAppsTab();
   // The library rows judge themselves against `appList` — that is what decides Install
   // versus Upgrade versus shelf-delete — so a ledger read that leaves the shelf face
@@ -459,172 +458,250 @@ async function appPost(path) {
 }
 
 function renderAppsTab() {
-  const tabs = $("#mn-apps-tabs"), body = $("#mn-apps-body");
-  tabs.innerHTML = "";
+  const body = $("#mn-apps-body");
+  $("#mn-apps-tabs").innerHTML = "";
   body.innerHTML = "";
   if (!appList) return;
-  for (const a of appList) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "tab sub" + (a.slug === appsSub ? " on" : "");
-    b.textContent = APP_TITLES[a.slug] || a.title || a.slug;
-    b.onclick = () => { appsSub = a.slug; renderAppsTab(); };
-    tabs.appendChild(b);
+  // D38: one list, every app the hub can see in any of its three homes — the
+  // dial's ledger, the card's folder, the hub's shelf. The section labels are
+  // gone because they were the same fact three times: an app is one thing, and
+  // the row says where it stands and what the press would do.
+  const seen = new Map();
+  for (const a of appList)
+    seen.set(a.slug, { slug: a.slug, title: a.title || APP_TITLES[a.slug] || a.slug, installed: a });
+  for (const c of cardApps) {
+    const k = c.slug || c.stem;
+    const e = seen.get(k) || { slug: k, title: c.title || c.stem };
+    e.card = c;
+    seen.set(k, e);
   }
-  const a = appList.find((x) => x.slug === appsSub);
-  if (a) appFaceBody(a, body);
-  // S6: the library rows and the drop zone share the card's foot, in that order — the
-  // files the hub holds come first because they are the answer to "what goes on a bare
-  // board", and the zone is where a file from anywhere else joins them.
+  for (const f of (libCache && libCache.apps) || []) {
+    const e = seen.get(f.slug) || { slug: f.slug, title: f.title || f.slug };
+    e.lib = f;
+    seen.set(f.slug, e);
+  }
+  const rows = Array.from(seen.values()).sort((x, y) =>
+    String(x.title).localeCompare(String(y.title)));
+  if (!rows.length) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = "nothing to install \u2014 the dial has no apps, its card holds none, "
+      + "and the hub's shelf is empty. Import one below.";
+    body.appendChild(p);
+  }
+  for (const e of rows) body.appendChild(appRow(e));
+  // Refused shelf files and the resolved directory lines print under the list:
+  // they are the hub's own inventory report, not an app the operator can act on.
   renderLibrary();
-  appFaceCardZone(body);
 }
 
-// The hub library (S6 §1, §7). One fetch of /api/library, one section per kind, one
-// refusal list — and the resolved directory printed above all of it, because a hub on a
-// second machine that installed the clone's copy instead of the NAS volume is a debugging
-// session nobody wants to have.
-let libCache = null;
-
-async function renderLibrary() {
-  const state = $("#lib-state"), list = $("#lib-list");
-  if (!list) return;
-  try {
-    libCache = await getJSON("/api/library");
-  } catch (e) {
-    state.textContent = "the hub would not answer for its library: "
-      + (e && e.message ? e.message : e);
-    list.innerHTML = "";
-    return;
-  }
-  list.innerHTML = "";
-  const apps = libCache.apps || [], themes = libCache.themes || [];
-  const refused = libCache.refused || [];
-  const dirLine = document.createElement("p");
-  dirLine.className = "hint";
-  dirLine.textContent = "apps " + (libCache.appsDir || "(none)")
-    + " \u00b7 themes " + (libCache.themesDir || "(none)")
-    + " \u2014 resolved from " + (libCache.appsSource || "?");
-  list.appendChild(dirLine);
-  for (const a of apps) list.appendChild(libRow(a));
-  for (const t of themes) list.appendChild(libThemeRow(t));
-  if (!apps.length && !themes.length && !refused.length) {
-    state.textContent = "the library is empty \u2014 drop files into "
-      + (libCache.appsDir || "an apps directory") + " to install them onto an orb.";
-    return;
-  }
-  // Refusals are listed and not hidden, on the device's rule: a card that silently omitted
-  // an app it could not parse would leave an operator staring at a directory that plainly
-  // contains the file.
-  for (const r of refused) {
-    const row = document.createElement("p");
-    row.className = "hint";
-    row.textContent = "\u2717 " + r.file + " \u2014 " + r.why;
-    list.appendChild(row);
-  }
-  state.textContent = apps.length + " app" + (apps.length === 1 ? "" : "s") + ", "
-    + themes.length + " theme" + (themes.length === 1 ? "" : "s")
-    + (refused.length ? ", " + refused.length + " refused" : "") + ".";
+// updateGate is D38's Update test, and it is strict by rule: the press is owed
+// only when the shelf names a release and every copy already present (a card
+// file's stamp, the dial slot's stamp) is older than it. A copy that states no
+// stamp is silence, not agreement: it does not block the press, because the
+// press overwrites it. No copy at all is NOT an update \u2014 that row's button is
+// Install, and the face never shows two verbs for one fact.
+function updateGate(e) {
+  if (!e.lib || !e.lib.version) return false;
+  if (!e.card && !e.installed) return false;
+  if (e.card && e.card.version && verCompare(e.card.version, e.lib.version) >= 0) return false;
+  if (e.installed && e.installed.version && verCompare(e.installed.version, e.lib.version) >= 0) return false;
+  return true;
 }
 
-// libVerdict remembers the sentence the last install press earned, keyed by slug, so the
-// ledger refetch that follows can re-draw the row WITHOUT losing it. The first cut of this
-// handler skipped the refetch precisely to protect the label, and that is what left an
-// operator staring at "installed on the orb in hand" above a dial whose button matrix had
-// never heard of the app — no row, no sub-tab, no Uninstall door. The verdict survives; the
-// face tells the truth.
-let libVerdict = null;
+function appStateSentence(e) {
+  const a = e.installed, c = e.card, f = e.lib;
+  let t = (e.title || e.slug) + " \u00b7 " + e.slug;
+  if (a) {
+    if (a.compiled) t += a.failed ? " \u00b7 built in, quarantined at boot" : " \u00b7 built into the firmware";
+    else if (a.failed) t += " \u00b7 failed: " + (a.status || "the dial did not say why");
+    // A slot the dial holds is an INSTALLED app — on the rolodex, pressable.
+    // The ledger's enabled word is the dial's own switch and not a hub state:
+    // this face stopped offering a switch in D38, so nothing here turns a row
+    // off, and a row that reads off on a board is a row this press will fix.
+    else t += " \u00b7 installed" + (a.version ? " at " + a.version + libUpdateSuffix(a) : " at an unstamped release");
+    if (!a.compiled && a.caps) t += " \u00b7 may use: " + a.caps;
+  }
+  if (c) t += c.ok
+    ? " \u00b7 on the card" + (c.version ? " at " + c.version : "")
+    : " \u00b7 the card refuses it: " + (c.why || "no reason given");
+  if (f) t += " \u00b7 in the hub library at " + (f.version || "no stamp");
+  if (updateGate(e)) t += " \u00b7 update available (" + f.version + ")";
+  return t;
+}
 
-function libRow(a) {
+function appRow(e) {
+  const a = e.installed, c = e.card, f = e.lib;
   const row = document.createElement("div");
   row.className = "row";
   const txt = document.createElement("span");
   txt.className = "hint";
-  // Which orb this row is judged against, and what that orb runs of it. Every button
-  // below keys off the same two lookups, so a row cannot say "on the dial" in its
-  // sentence while still offering a plain Install.
-  const onDial = (Array.isArray(appList) && appList.find((x) => x.slug === a.slug)) || null;
-  const onCard = Array.isArray(cardApps) && cardApps.some((c) => c.stem === a.slug);
-  // The version leads the detail line: it is the fact the whole Format 3 change exists to
-  // carry, and an unstamped file says so rather than showing a blank where a number goes.
-  txt.textContent = (a.title || a.slug) + " \u00b7 " + (a.version || "unstamped")
-    + " \u00b7 " + Math.round(a.bytes / 1024) + " KB"
-    + (a.caps && a.caps.length ? " \u00b7 may use: " + a.caps.join(", ") : " \u00b7 may use nothing")
-    + (a.has_editor ? " \u00b7 carries an editor" : "");
-  // The ledger is the authority on whether this container stands on the dial, so a row the
-  // refetch found in `installed` says so on its own — the verdict is a memory of a press,
-  // and this is the fact under it. The dial's own version rides the sentence, because the
-  // pair of numbers is the thing an operator is deciding about.
-  if (libVerdict && libVerdict.slug === a.slug) txt.textContent = libVerdict.text;
-  else if (onDial)
-    txt.textContent += " \u00b7 on the dial at " + (onDial.version || "unstamped")
-      + (onDial.enabled === false ? ", switched off" : "")
-      + (onCard ? ", and on the card" : "");
+  txt.textContent = appStateSentence(e);
   row.appendChild(txt);
-  // The button set IS the state, and there are four of them:
-  //
-  //   not on the dial            Install | Remove from hub library
-  //   on the dial, switched off  Install | Remove from hub library
-  //   on the dial, same release  Remove from hub library
-  //   on the dial, library ahead Upgrade | Remove from hub library
-  //
-  // The third line is the yield. Once the hub's copy and the dial's copy name the same
-  // release AND the row stands on the dial, an Install button only offers to move bytes
-  // the board already runs — and it is not a no-op, because the device writes the
-  // container to the card, re-installs it and reboots onto it. So for an app that is
-  // already current the library stops being an install door and becomes what it actually
-  // is: a file on a shelf, which the operator may delete. Upgrade covers the fourth case
-  // through the same door with newer bytes. A switched-off row keeps its door: P4a lands
-  // an install disabled, a card-scan re-adopts a file into a slot with the enable word
-  // off, and a yield on THAT row would strand the board with no UI door back on — the
-  // toggle is gone by ruling, so this button is the only way the hub writes enable, and
-  // installOneApp asks the ledger first: an off row costs one enable POST, no rewrite.
-  const behind = onDial ? verCompare(onDial.version, a.version) : null;
-  if (!onDial || onDial.enabled === false) row.appendChild(installLibButton(a, txt, "Install"));
-  else if (behind !== null && behind < 0) row.appendChild(installLibButton(a, txt, "Upgrade"));
-  row.appendChild(removeFromLibraryButton(a, txt));
+  const named = e.title || e.slug;
+  // The button set IS the state, and Install and Uninstall are mutually
+  // exclusive BY CONSTRUCTION: the dial holds a slot or it does not.
+  //   Install          no slot, and the shelf or a readable card file can make one
+  //   Update           a copy exists and the shelf provably holds a newer release
+  //   Uninstall        a slot the dial holds (installed means on the rolodex —
+  //                    the hub never keeps an installed-but-off state, D38)
+  //   Clear fault      a quarantined row, built-in tier included
+  //   Add to card      the shelf holds it and the card does not
+  //   Remove from card the card holds it (and uninstalls first if the dial runs it)
+  //   Remove from hub library the shelf holds it; no dial or card is touched
+  // When the Update gate is true the row already offers to bring this app onto
+  // the dial with the shelf's newer bytes, so Install stands down: one verb
+  // per fact, never two buttons for one question.
+  if (!a && (f || (c && c.ok)) && !updateGate(e))
+    row.appendChild(installButton(e, txt, "Install", false));
+  if (updateGate(e))
+    row.appendChild(installButton(e, txt, "Update", true));
+  if (a && !a.compiled)
+    row.appendChild(uninstallButton(e, txt));
+  if (a && a.failed)
+    row.appendChild(clearFaultButton(e, txt));
+  if (f && !c)
+    row.appendChild(addToCardButton(e, txt));
+  if (c)
+    row.appendChild(eraseCardButton(e, txt));
+  if (f)
+    row.appendChild(removeFromLibraryButton(f, txt));
   return row;
 }
 
-// installLibButton is the library's write door, labelled by the state libRow worked out.
-// Install and Upgrade are one run — stream the hub's container to the orb in hand through
-// the device's own doors — and only one label is ever true at a time, so the row's
-// sentence carries the distinction and the button carries the verb.
-function installLibButton(a, txt, name) {
+// installButton is the run that puts bytes on the dial: the shared progress
+// panel opens BEFORE the first byte leaves, the hub streams NDJSON into it, and
+// the press walks installRun's own doors. Update is the same run with force —
+// the shelf's bytes cross again over older copies because the press was earned
+// by the shelf being newer. A card-resident Install press is the same run with
+// card=1: the hub skips the upload because the bytes already sit on the card,
+// and the run still streams installing / installed / enabled so the owner sees
+// the dial write and the roll-up rather than a spinner over a silent POST.
+// EVERY press opens the progress panel BEFORE the first byte leaves: an
+// install runs minutes, and "it looks stuck" is not an acceptable answer to
+// a press that is working.
+function installButton(e, txt, name, force) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "ghost";
   btn.textContent = name;
-  btn.title = "Put this release on the orb in hand, through the device's own doors.";
+  btn.title = force
+    ? "Push the hub's newer release onto the orb in hand, over the copies the card and the dial hold."
+    : "Put this app on the orb in hand, through the device's own doors.";
   btn.onclick = async function () {
     if (!orbIP) { txt.textContent = "no orb in hand \u2014 connect one first."; return; }
     btn.disabled = true;
-    // The press opens the shared progress panel BEFORE the first byte leaves, and the run
-    // streams into it. The panel is the one surface every long-running operation here
-    // reports on, and an upload of this size is exactly the wait that must not be silent.
+    const was = btn.textContent;
     fpOpen();
     const ui = fpUI();
-    ui.doing.textContent = name.toLowerCase() + "ing " + (a.title || a.slug) + " on " + orbIP;
+    ui.doing.textContent = name.toLowerCase() + "ing " + (e.title || e.slug) + " on " + orbIP;
     ui.log.textContent = ""; ui.bar.style.width = "0%"; ui.bar.title = ""; ui.op.textContent = "";
     ui.live.textContent = "";
-    const ok = await streamInstall(orbIP, a.slug, false, ui);
+    const fromCard = !force && !!(e.card && e.card.ok);
+    const ok = await streamInstall(orbIP, e.slug, false, ui, force, fromCard);
     btn.disabled = false;
-    btn.textContent = ok ? name + "ed" : name;
-    // Success closes the panel after the row says it; a refusal leaves it open with the
-    // reason on screen, because Close hides the panel and the operator still needs to read
-    // what the orb said.
+    btn.textContent = ok ? name + "ed" : was;
     if (ok) fpClose();
-    libVerdict = { slug: a.slug, text: ok
-      ? (a.title || a.slug) + " \u00b7 " + (name === "Upgrade" ? "upgraded" : "installed")
-        + " on the orb in hand"
-      : (a.title || a.slug) + " \u00b7 " + name.toLowerCase() + " refused \u2014 read the progress panel" };
-    // Re-read the ledger NOW. The install moved the dial's own state, and a face that shows
-    // the state as it was before the press is a face an operator cannot use: the installed
-    // app's row, its Uninstall door and its card entry all come out of this read.
+    libVerdict = { slug: e.slug, text: ok
+      ? (e.title || e.slug) + " \u00b7 " + (force ? "updated" : "installed") + " on the orb in hand"
+      : (e.title || e.slug) + " \u00b7 " + name.toLowerCase() + " refused \u2014 read the progress panel" };
+    // Re-read the ledger NOW: the run moved the state this face prints, and a
+    // row that still shows the pre-press truth is a row whose buttons lie.
     try { await loadApps(); }
-    catch (e) {
+    catch (err) {
       const st = $("#mn-appstate");
-      if (st) st.textContent = libVerdict.text + " \u2014 but the ledger would not re-read: " + e.message;
+      if (st) st.textContent = libVerdict.text + " \u2014 but the ledger would not re-read: " + err.message;
+    }
+  };
+  return btn;
+}
+
+// uninstallButton is D38's honest verb: the door homes a shown app and erases
+// the slot, and the confirm says so when the ledger says the row is on the
+// glass. The card copy stays — Remove from card is the row's other half, and
+// the row offers it beside this one whenever both are true.
+function uninstallButton(e, txt) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ghost";
+  btn.textContent = "Uninstall";
+  btn.title = "Erase the app's slot on the orb in hand. Its card file stays.";
+  btn.onclick = async () => {
+    if (!await askConfirm({
+      title: "Uninstall this app?",
+      body: (e.installed && e.installed.on_glass)
+        ? (e.title || e.slug) + " is on the glass \u2014 the dial will return to its menu and erase the slot."
+        : "The dial erases " + (e.title || e.slug) + "'s slot and forgets the permissions it was granted.",
+      detail: "The .orbapp stays on your card, so Install can bring it back. Remove from card "
+            + "erases that too.",
+      yes: "Uninstall",
+    })) return;
+    btn.disabled = true;
+    txt.textContent = (e.title || e.slug) + " \u00b7 uninstalling\u2026";
+    try {
+      await appPost("/api/v1/apps/uninstall?id=" + encodeURIComponent(e.slug));
+      libVerdict = null;   // this row is about to change homes: do not remember it
+      await loadApps();
+    } catch (err) {
+      txt.textContent = (e.title || e.slug) + " \u00b7 the orb refused it: " + err.message;
+      btn.disabled = false;
+    }
+  };
+  return btn;
+}
+
+function clearFaultButton(e, txt) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ghost";
+  btn.textContent = "Clear fault";
+  btn.onclick = async () => {
+    if (!await askConfirm({
+      title: "Clear the fault record?",
+      body: "The hub forgets why " + (e.title || e.slug) + " was quarantined.",
+      detail: "A reboot tries the same load and brings the record straight back. "
+            + "Wi-Fi, the card and the app's files are untouched.",
+      yes: "Clear the record",
+      safe: true,
+    })) return;
+    btn.disabled = true;
+    txt.textContent = (e.title || e.slug) + " \u00b7 clearing\u2026";
+    try { await appPost("/api/v1/apps/clear?id=" + encodeURIComponent(e.slug)); txt.textContent = (e.title || e.slug) + " \u00b7 fault cleared \u2014 reboot the dial to rebuild it"; await loadApps(); }
+    catch (err) { txt.textContent = "the orb refused it: " + err.message; btn.disabled = false; }
+  };
+  return btn;
+}
+
+// addToCardButton is the filing press: /api/library/push streams the shelf's
+// own file to the device's upload door and stops. No slot, no reboot, no
+// enable word \u2014 Install remains the only verb that moves bytes onto the dial.
+function addToCardButton(e, txt) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ghost";
+  btn.textContent = "Add to card";
+  btn.title = "Write the hub library's " + e.slug + ".orbapp to the orb in hand's card. Nothing is installed.";
+  btn.onclick = async () => {
+    if (!orbIP) { txt.textContent = "no orb in hand \u2014 connect one first."; return; }
+    btn.disabled = true;
+    // The push is a real transfer over the room Wi-Fi — a 660 KB container runs
+    // seconds — so it gets the same progress panel an install gets, driven by
+    // the hub's own streaming steps. No more one-line "adding\u2026" with nothing
+    // behind it.
+    fpOpen();
+    const ui = fpUI();
+    ui.doing.textContent = "adding " + (e.title || e.slug) + " to the card on " + orbIP;
+    ui.log.textContent = ""; ui.bar.style.width = "0%"; ui.bar.title = ""; ui.op.textContent = "";
+    ui.live.textContent = "";
+    const ok = await streamSteps("/api/library/push?kind=app&name="
+      + encodeURIComponent(e.slug) + "&ip=" + encodeURIComponent(orbIP), ui, orbIP);
+    btn.disabled = false;
+    if (ok) {
+      fpClose();
+      txt.textContent = (e.title || e.slug) + " \u00b7 added to the card";
+      await loadApps();
+    } else {
+      txt.textContent = (e.title || e.slug) + " \u00b7 the hub refused it \u2014 read the progress panel";
     }
   };
   return btn;
@@ -659,87 +736,105 @@ function removeFromLibraryButton(a, txt) {
       return;
     }
     txt.textContent = (a.title || a.slug) + " \u00b7 removed from the hub library";
+    // Re-render both halves: the shelf row is gone, and the row above has lost
+    // its Update/Install verdict. renderAppsTab re-reads libCache, which just
+    // changed, and the ledger, which did not.
     await renderLibrary();
+    renderAppsTab();
   };
   return btn;
 }
 
-function libThemeRow(t) {
-  const row = document.createElement("div");
-  row.className = "row";
-  const txt = document.createElement("span");
-  txt.className = "hint";
-  // The app leads the kind: a theme is a theme OF something, and a row that names only
-  // the owner's title makes the operator guess — or go read the file — to find out which.
-  txt.textContent = (t.title || t.slug)
-    + (t.app ? " \u00b7 theme for " + t.app : " \u00b7 theme")
-    + " \u00b7 " + Math.round(t.bytes / 1024) + " KB";
-  row.appendChild(txt);
+// eraseCardButton is the verb that finishes a removal. The device splits the two
+// halves and this face honours the split: Uninstall frees the slot and leaves the
+// container on the card; erasing the file is the second door (POST /api/v1/sd/rm).
+// One button walks both, uninstall first, because "gone from the dial AND the
+// card" is one decision. The path is the card file's own stem, which can differ
+// from the slug when a file arrived under another name — the row erases what the
+// listing named.
+function eraseCardButton(e, note) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "ghost";
-  btn.textContent = "Install theme";
-  btn.title = "Store this theme on the orb in hand. The store reboots the board.";
-  btn.onclick = async function () {
-    if (!orbIP) { txt.textContent = "no orb in hand \u2014 connect one first."; return; }
-    btn.disabled = true;
-    fpOpen();
-    const ui = fpUI();
-    ui.doing.textContent = "installing " + (t.title || t.slug) + " on " + orbIP;
-    ui.log.textContent = ""; ui.bar.style.width = "0%"; ui.bar.title = ""; ui.op.textContent = "";
-    ui.live.textContent = "";
-    // The theme rides the full run so the clock-rides-with-it rule applies here too.
-    const ok = await streamInstall(orbIP, "", false, ui);
-    btn.disabled = false;
-    btn.textContent = ok ? "Installed" : "Install theme";
-    if (ok) fpClose();
-    txt.textContent = ok ? (t.title || t.slug) + " \u00b7 stored on the orb in hand"
-      : (t.title || t.slug) + " \u00b7 install refused \u2014 read the progress panel";
-    // The Themes face holds this theme's rows, and a store reboots the board it lives on.
-    // Refetch through the one loader that reads the enumeration and the card together, so
-    // the theme appears under its own app rather than waiting for a tab press.
-    if (typeof loadThemes === "function" && orbIP) {
-      try { await loadThemes(orbIP); } catch (e) { /* the Themes face reports its own failure */ }
-    }
-  };
-  row.appendChild(btn);
-  // The shelf's own delete, on the theme side too. The rule is the app rule: this removes
-  // the hub's file and leaves every dial alone, so a theme an orb is currently drawing
-  // keeps drawing it. Drop keys themes by FILENAME rather than slug, because a .orbtheme
-  // carries its name inside and the device files it by that name, not by the stem on disk.
-  const rm = document.createElement("button");
-  rm.type = "button";
-  rm.className = "ghost";
-  rm.textContent = "Remove from hub library";
-  rm.title = "Delete " + t.file + " from this hub's library. No orb and no SD card is touched.";
-  rm.onclick = async () => {
+  const stem = (e.card && e.card.stem) || e.slug;
+  btn.textContent = "Remove from card";
+  btn.title = "Delete apps/" + stem + ".orbapp from the card. If the app is installed, this uninstalls it first.";
+  btn.onclick = async () => {
+    const installed = !!e.installed && !e.installed.compiled;
+    const named = e.title || e.slug;
     if (!await askConfirm({
-      title: "Delete it from the hub library?",
-      body: (t.title || t.slug) + " is removed from " + ((libCache && libCache.themesDir) || "the library") + ".",
-      detail: "An orb already drawing it keeps drawing it. This removes only the hub's copy.",
-      yes: "Delete from library",
+      title: installed ? "Uninstall and erase from the card?" : "Erase it from the card?",
+      body: installed
+        ? named + " is uninstalled from the dial and its file is deleted from the card."
+        : "The .orbapp for " + named + " is deleted from the card.",
+      detail: "Nothing in the hub library is touched, so the app stays installable from there.",
+      yes: "Remove from card",
     })) return;
-    rm.disabled = true;
-    const r = await hubFetch("/api/library/rm?kind=theme&name="
-      + encodeURIComponent((t.file || "").replace(/\.orbtheme$/i, "")), { method: "POST" });
-    const d = await r.json().catch(() => null);
-    if (!d || !d.ok) {
-      rm.disabled = false;
-      txt.textContent = (t.title || t.slug) + " \u00b7 the hub refused: "
-        + ((d && d.error) || ("HTTP " + r.status));
-      return;
+    btn.disabled = true;
+    note.textContent = named + " \u00b7 " + (installed ? "uninstalling\u2026" : "erasing\u2026");
+    try {
+      if (installed) {
+        await appPost("/api/v1/apps/uninstall?id=" + encodeURIComponent(e.slug));
+      }
+      await appPost("/api/v1/sd/rm?path=" + encodeURIComponent("apps/" + stem + ".orbapp"));
+      libVerdict = null;   // this row is about to disappear: do not remember it as installed
+      await loadApps();
+    } catch (err) {
+      note.textContent = named + " \u00b7 the orb refused it: " + err.message;
+      btn.disabled = false;
     }
-    txt.textContent = (t.title || t.slug) + " \u00b7 removed from the hub library";
-    await renderLibrary();
   };
-  row.appendChild(rm);
-  return row;
+  return btn;
 }
 
+// The hub's own inventory report (D38): the resolved directories and the files
+// the shelf could not parse. The app rows themselves are in the face's list
+// above; this is the half of /api/library that is NOT an actionable app.
+let libCache = null;
 
-// libEntry finds the library's row for a slug, or null. The Apps face reads the ledger
-// and the shelf in two fetches and joins them here, because the pair — what the dial runs
-// and what the hub holds — is the whole of "is there an update".
+async function renderLibrary() {
+  const state = $("#lib-state"), list = $("#lib-list");
+  if (!list) return;
+  try {
+    libCache = await getJSON("/api/library");
+  } catch (e) {
+    state.hidden = false;
+    state.textContent = "the hub would not answer for its library: "
+      + (e && e.message ? e.message : e);
+    list.innerHTML = "";
+    return;
+  }
+  list.innerHTML = "";
+  const refused = libCache.refused || [];
+  // The directories and the count are gone from this face (owner, 2026-10-28):
+  // a path the operator cannot press and a number that restates the list above
+  // are noise. What stays is only what asks for action — files the shelf could
+  // not parse, each with the reader's own refusal.
+  for (const r of refused) {
+    const row = document.createElement("p");
+    row.className = "hint";
+    row.textContent = "\u2717 " + r.file + " \u2014 " + r.why;
+    list.appendChild(row);
+  }
+  if (refused.length) {
+    state.hidden = false;
+    state.textContent = refused.length + " file" + (refused.length === 1 ? "" : "s")
+      + " the shelf would not read.";
+  } else {
+    state.hidden = true;
+    state.textContent = "";
+  }
+}
+
+// libVerdict remembers the sentence the last install press earned, keyed by slug, so the
+// ledger refetch that follows can re-draw the row WITHOUT losing it. The first cut of this
+// handler skipped the refetch precisely to protect the label, and that is what left an
+// operator staring at "installed on the orb in hand" above a dial whose button matrix had
+// never heard of the app — no row, no sub-tab, no Uninstall door. The verdict survives; the
+// face tells the truth.
+let libVerdict = null;
+
+// libEntry finds the library's row for a slug, or null.
 function libEntry(slug) {
   const apps = (libCache && libCache.apps) || [];
   for (const f of apps) if (f.slug === slug) return f;
@@ -749,16 +844,16 @@ function libEntry(slug) {
 // verCompare mirrors the hub's orbnet.AppVersionCompare on the face side, clause for
 // clause, and the two must stay in step: the row's sentence and its button come from this
 // copy while the editor's source comes from the Go one, and a divergence would show an
-// "update available" row whose Upgrade button the hub then refused as a downgrade.
+// "update available" row whose Update button the hub then refused as a downgrade.
 //
 // Negative when a is behind, 0 for the same release, positive when a is ahead, and null
 // when either side is unstamped or outside the grammar. Null is not zero: an unstamped
 // file states nothing about its own age, and a face that read that silence as agreement
-// would tell an operator their dial was current when the truth is that nobody knows.
-// The leading v is mandatory because the device's grammar says so — a bare "1.2.3" is
-// refused here and by AppVersionOK, rather than being quietly accepted on one side.
-// A prerelease tail is OLDER than the release it leads to, which is the clause a raw
-// string compare gets backwards.
+// would tell an operator their dial was current when the truth is that nobody knows. The
+// leading v is mandatory because the device's grammar says so — a bare "1.2.3" is refused
+// here and by AppVersionOK, rather than being quietly accepted on one side. A prerelease
+// tail is OLDER than the release it leads to, which is the clause a raw string compare
+// gets backwards.
 function verCompare(a, b) {
   const parse = (s) => {
     const m = /^v(\d+)\.(\d+)\.(\d+)(?:[-+](.*))?$/.exec(s || "");
@@ -774,11 +869,11 @@ function verCompare(a, b) {
   return pa.tail < pb.tail ? -1 : 1;
 }
 
-// libUpdateSuffix is the shelf's verdict on the row in the header line, and it is the
-// only place the face says "update available". Note the ordering: it is the LIBRARY that
-// is ahead. A dial running newer than the shelf is not out of date, and the face does not
-// say it is — it names the dial as ahead of the library, because that is the operator's
-// own problem to notice and the sentence that lets them act on it.
+// libUpdateSuffix is the shelf's verdict on a dial row's version line. Note the
+// ordering: it is the LIBRARY that is ahead. A dial running newer than the shelf is
+// not out of date, and the face does not say it is — it names the dial as ahead of the
+// shelf, because that is the operator's own problem to notice and the sentence that
+// lets them act on it.
 function libUpdateSuffix(a) {
   const f = libEntry(a.slug);
   if (!f) return "";
@@ -789,139 +884,6 @@ function libUpdateSuffix(a) {
   return "";
 }
 
-// eraseCardButton is the one verb that finishes a removal. The device splits the two
-// halves and this face has to honour the split: Uninstall frees the slot and leaves the
-// container on the card, so Install can put it straight back. Erasing the file is a
-// second, separate door (/api/v1/sd/rm) in the device's own file manager. Operators asked
-// for the state after Uninstall — gone from the dial AND gone from the card — and one
-// button that walks both doors in order, uninstall first, is the honest way to offer it.
-// It is shown on an installed row too, not just on a card row, because "installed and
-// still on the card" is the ordinary result of an ordinary Uninstall.
-function eraseCardButton(slug, note) {
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "ghost";
-  btn.textContent = "Remove from card";
-  btn.title = "Delete apps/" + slug + ".orbapp from the card. If the app is installed, this uninstalls it first.";
-  btn.onclick = async () => {
-    const named = APP_TITLES[slug] || slug;
-    const installed = Array.isArray(appList) && appList.some((x) => x.slug === slug);
-    if (!await askConfirm({
-      title: installed ? "Uninstall and erase from the card?" : "Erase it from the card?",
-      body: installed
-        ? named + " is uninstalled from the dial and its file is deleted from the card."
-        : "The .orbapp for " + named + " is deleted from the card.",
-      detail: "Nothing in the hub library is touched, so the app stays installable from there.",
-      yes: "Remove from card",
-    })) return;
-    btn.disabled = true;
-    note.textContent = installed ? "uninstalling\u2026" : "erasing\u2026";
-    try {
-      if (installed) {
-        await appPost("/api/v1/apps/uninstall?id=" + encodeURIComponent(slug));
-      }
-      await appPost("/api/v1/sd/rm?path=" + encodeURIComponent("apps/" + slug + ".orbapp"));
-      note.textContent = installed
-        ? "uninstalled and erased \u2014 the card holds no copy"
-        : "erased \u2014 the card holds no copy";
-      await loadApps();
-    } catch (e) {
-      note.textContent = "the orb refused it: " + e.message;
-      btn.disabled = false;
-    }
-  };
-  return btn;
-}
-
-function appFaceBody(a, body) {
-  const tier = a.compiled ? "built into the firmware" : "slot " + a.slot;
-  const sub = document.createElement("p");
-  sub.className = "hint";
-  sub.textContent = a.slug + " \u00b7 " + tier
-    + (a.version ? " \u00b7 " + a.version + libUpdateSuffix(a) : " \u00b7 unstamped")
-    + (a.caps ? " \u00b7 may use: " + a.caps : " \u00b7 may use nothing")
-    + (a.period_ms ? " \u00b7 every " + (a.period_ms / 1000) + " s" : "")
-    + (a.n_settings ? " \u00b7 " + a.n_settings + " settings" : "")
-    + (a.on_glass ? " \u00b7 on the glass now" : "");
-  body.appendChild(sub);
-  const row = document.createElement("div");
-  row.className = "row";
-  const note = document.createElement("span");
-  note.className = "hint";
-  // Three states, and no enable toggle among them. The hub used to mirror the device's
-  // fourth: a row could sit in a slot and be held off the carousel, and the face offered
-  // "turn off"/"turn on" to move it. That state is gone by ruling, not by omission — an
-  // orb either RUNS an app (in flash, in a slot, on the carousel: one fact, one word) or
-  // does not have it installed at all. A switch that hid a row the operator could not
-  // otherwise tell was installed made the face claim a state the product decided not to
-  // have, and every "why is my clock gone" started there. The device door still answers
-  // /apps/enable for anything that wants it; this face does not ask.
-  if (!a.compiled) {
-    const un = document.createElement("button");
-    un.type = "button";
-    un.className = "ghost";
-    un.textContent = "Uninstall";
-    un.onclick = async () => {
-      const named = APP_TITLES[a.slug] || a.title || a.slug;
-      if (!await askConfirm({
-        title: "Uninstall this app?",
-        body: "The dial erases " + named + "'s slot and forgets the permissions it was granted.",
-        detail: "The .orbapp stays on your card, so Install can bring it back. Remove from card "
-              + "erases that too.",
-        yes: "Uninstall",
-      })) return;
-      un.disabled = true;
-      note.textContent = "uninstalling\u2026";
-      try { await appPost("/api/v1/apps/uninstall?id=" + encodeURIComponent(a.slug)); note.textContent = "uninstalled \u2014 the slot is free again"; await loadApps(); }
-      catch (e) { note.textContent = "the orb refused it: " + e.message; un.disabled = false; }
-    };
-    row.appendChild(un);
-    row.appendChild(eraseCardButton(a.slug, note));
-  } else {
-    note.textContent = a.failed ? "quarantined at boot" : "built into the firmware \u2014 always on";
-  }
-  if (a.failed) {
-    const cf = document.createElement("button");
-    cf.type = "button";
-    cf.className = "ghost";
-    cf.textContent = "Clear fault";
-    cf.onclick = async () => {
-      if (!await askConfirm({
-        title: "Clear the fault record?",
-        body: "The hub forgets why " + (a.title || a.slug) + " was quarantined.",
-        detail: "A reboot tries the same load and brings the record straight back. "
-              + "Wi-Fi, the card and the app's files are untouched.",
-        yes: "Clear the record",
-        safe: true,
-      })) return;
-      cf.disabled = true;
-      note.textContent = "clearing\u2026";
-      try { await appPost("/api/v1/apps/clear?id=" + encodeURIComponent(a.slug)); note.textContent = "fault cleared \u2014 reboot the dial to rebuild it"; await loadApps(); }
-      catch (e) { note.textContent = "the orb refused it: " + e.message; cf.disabled = false; }
-    };
-    row.appendChild(cf);
-  }
-  row.appendChild(note);
-  body.appendChild(row);
-  const p = document.createElement("p");
-  p.className = "hint";
-  if (a.slug === "clock")
-    p.textContent = "The clock's face is its theme \u2014 the Themes tab stores, adds and deletes them.";
-  else if (a.slug === "color_picker")
-    p.textContent = "HSB takes no settings from here: it runs when the dial opens it. Turning it off hides it from the carousel.";
-  else
-    p.textContent = "This app exposes no settings the hub can edit.";
-  body.appendChild(p);
-}
-
-// appFaceCardZone is the drop zone: everything sitting in /sd/apps on the card,
-// refused rows shown with the reader's own sentence rather than hidden, because
-// "copied nothing" and "copied four, all refused" are different owner problems.
-// The browser file door (S6 §4). One picked .orbapp, hub-parsed before anything moves,
-// then keep and/or install per the two boxes. The state line is the whole reporting surface
-// on purpose: a press that kept one file and failed to install it says exactly that,
-// because "installed" over a half-done press would leave an operator trusting a library
-// that never received the bytes.
 // The browser file door (S6 §4). One picked .orbapp, hub-parsed before anything moves,
 // filed in the library, listed. It is import and nothing more: the press never installs,
 // because moving bytes onto a board is always its own deliberate press on the row that
@@ -968,80 +930,8 @@ function wireLibraryImport() {
     // resolved the directory, named the file after its header, and is the one that knows
     // whether the row now exists.
     await renderLibrary();
+    if (appList) await loadApps();
   };
-}
-
-function appFaceCardZone(body) {
-  const h = document.createElement("p");
-  h.className = "hint";
-  h.textContent = cardApps.length
-    ? "On the card, not yet on the dial:"
-    : "The card's apps folder holds nothing to install.";
-  body.appendChild(h);
-  for (const c of cardApps) {
-    const row = document.createElement("div");
-    row.className = "row";
-    const lbl = document.createElement("span");
-    lbl.className = "hint";
-    const named = c.title || c.stem;
-    lbl.textContent = named + " \u00b7 " + Math.round((c.file_size || 0) / 1024) + " KB"
-      + (c.ok ? "" : " \u2014 refused: " + (c.why || "the card would not say why"));
-    row.appendChild(lbl);
-    if (c.ok) {
-      const go = document.createElement("button");
-      go.type = "button";
-      go.className = "ghost";
-      go.textContent = "Install";
-      go.onclick = async () => {
-        if (!await askConfirm({
-          title: "Install this app?",
-          body: "The dial copies " + named + " from the card into its app slot.",
-          detail: "The copy takes a few seconds and the board reboots onto it. Nothing on the "
-                + "card changes, so Uninstall leaves this copy behind to install again.",
-          yes: "Install",
-          safe: true,
-        })) return;
-        go.disabled = true;
-        lbl.textContent = "installing\u2026";
-        try { await appPost("/api/v1/apps/install?id=" + encodeURIComponent(c.stem)); await loadApps(); }
-        catch (e) { lbl.textContent = "the orb refused it: " + e.message; go.disabled = false; }
-      };
-      row.appendChild(go);
-    }
-    // The card's own copy is the operator's file, and the drop zone is the only place this
-    // face shows it — so the only place to clear a stale container, make room on the card,
-    // or finish an uninstall all the way is here. The verb is the device's own file-manager
-    // door (POST /api/v1/sd/rm), the same one the Files face already drives, and the device
-    // keeps its policy: it refuses traversal, the roots themselves and non-empty trees in
-    // its own words. Erasing this file does not touch a slot that already holds the app.
-    const rm = document.createElement("button");
-    rm.type = "button";
-    rm.className = "ghost";
-    rm.textContent = "Remove from card";
-    rm.title = "Erase " + c.stem + ".orbapp from the microSD card. A slot already holding the app keeps it.";
-    rm.onclick = async () => {
-      if (!await askConfirm({
-        title: "Erase this app from the card?",
-        body: "The orb deletes /sd/apps/" + c.stem + ".orbapp.",
-        detail: "An app already installed on the dial keeps drawing until you uninstall it; "
-              + "it just cannot be reinstalled from this card. A container the hub library "
-              + "holds can be pushed again at any time.",
-        yes: "Erase it",
-      })) return;
-      rm.disabled = true;
-      lbl.textContent = "removing\u2026";
-      try {
-        await appPost("/api/v1/sd/rm?path=" + encodeURIComponent("apps/" + c.stem + ".orbapp"));
-        libVerdict = null;   // this row is about to disappear: do not remember it as installed
-        await loadApps();
-      } catch (e) {
-        lbl.textContent = named + " \u00b7 the orb refused the delete: " + e.message;
-        rm.disabled = false;
-      }
-    };
-    row.appendChild(rm);
-    body.appendChild(row);
-  }
 }
 
 // ---- face: Files — the card as the owner's volume ------------------------------

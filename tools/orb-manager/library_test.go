@@ -637,7 +637,7 @@ func TestOldFirmwareIsRefusedBeforeTheUpload(t *testing.T) {
 	s.ota = orbnet.NewClient(otaTimeout)
 	s.ota.DevicePort = portOf(srv.URL)
 
-	err := s.installRun(context.Background(), "127.0.0.1", "clock", func(installStep) {})
+	err := s.installRun(context.Background(), "127.0.0.1", "clock", false, false, func(installStep) {})
 	if err == nil {
 		t.Fatal("a FORMAT 2 board passed the firmware floor")
 	}
@@ -719,7 +719,7 @@ func TestAppUploadRidesTheBulkClient(t *testing.T) {
 
 	var steps []installStep
 	send := func(st installStep) { steps = append(steps, st) }
-	if err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", body, send); err != nil {
+	if err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", body, false, send); err != nil {
 		t.Fatalf("the install run refused: %v", err)
 	}
 	if sawUploadOnLedger {
@@ -793,7 +793,7 @@ func TestInstallOneAppReEnablesADisabledRow(t *testing.T) {
 
 	var steps []installStep
 	send := func(st installStep) { steps = append(steps, st) }
-	if err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", body, send); err != nil {
+	if err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", body, false, send); err != nil {
 		t.Fatalf("the enable run refused: %v", err)
 	}
 	if !sawEnable {

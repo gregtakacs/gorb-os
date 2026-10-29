@@ -38,9 +38,15 @@ install door and the boot ladder's fresh copy never did.
 **Fix.** `card_fill` lands the row enabled. The `st` word the broker holds
 stays readable and writable for recovery, but no surface treats it as a
 toggle: the dial's door page loses its enable switch (bug 3's change carries
-this), and `installflow.go` stops printing the `enabled` step for an install
-that cannot land off. The uninstall door stays, because an installed app is
-still removable.
+this). The uninstall door stays, because an installed app is still removable.
+
+**Correction on the hub step, same day.** This section claimed `installflow.go`
+stopped printing the `enabled` step. It does not, and it should not: the ladder
+POSTs enable after a fresh upload (`installflow.go:388`) and after a skip whose row
+the ledger holds off (`installflow.go:309`). The second is the only way a board
+running pre-fix firmware gets its stale off word cleared, and the first still buys
+C2's fault clear. The step is honest for exactly as long as one board on the bench
+can still land a row disabled.
 
 ## 3. App menu offers install and uninstall together
 
@@ -164,10 +170,13 @@ not have. The fix has two halves and both are now done.
   no class-9 row and no elems table, and no route can change that, so the hub keeps the
   device's honest 404 and the row's quiet answer.
 
-All six of these are fixed. `TestTheAviatorStillStandsForNoPreview` stays red on purpose: the
-hub cannot invent a plane for factory art it does not hold. What changed is that the
-shelf's own theme — the file a wiped board seeds from — now pictures itself without
-install.
+All six of these are fixed. No test "stays red on purpose" — an earlier draft of this
+section named `TestTheAviatorStillStandsForNoPreview`, and no such test exists anywhere in
+the tree; a suite the Makefile gates on cannot carry one. The two real pins are
+`TestShelfPreviewQuietOnNoPlane` (a planeless bake answers no plane rather than a false
+square) and `TestThemePreviewQuietFortyFourRelaysQuietly` (the relay passes the device's 404
+through quietly). What changed is that the shelf's own theme — the file a wiped board
+seeds from — now pictures itself without install.
 
 ## 7. Forget deleted the row and the card kept the orb
 

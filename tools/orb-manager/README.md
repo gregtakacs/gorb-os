@@ -1123,6 +1123,38 @@ lonely/              the standalone ESP-IDF "I used to be an Orb" app, its build
                      against a fake CO5300 and holds it to the four panel rules
 ```
 
+## The shelf: apps/, themes/, and the shipped default
+
+The hub keeps the files it installs in two directories, `apps/` and `themes/`, and resolves
+them once at startup through a ladder (`library.go:libLadder`) whose first hit wins: an
+explicit `-library-apps`/`-library-themes`, then the root `-library` names, then **beside the
+executable**, then the OS config dir where an import files what the operator chose to keep,
+then the `tools/orb-manager/` tree of a reachable clone. `GET /api/library` answers both
+resolved paths and says which rung won, in `appsSource`/`themesSource`.
+
+The exe-dir rung is the one a downloaded hub stands on, so every build target mirrors both
+directories beside the binary it produces — `make manager`, `windows`, `windows-gui`,
+`release`, and `make library` on its own. The copy merges (`cp -R src/. dst/`) rather than
+wipes, so a rebuild refreshes every shipped file and an app you imported beside the binary
+survives it. What lands there is build output: `clean` removes it, and the tracked `apps/`
+and `themes/` in this package are the source of truth. Before this, only `release` copied
+them, which is why a `bin/orb-manager` run inside the clone looked fine (the clone rung
+rescued it) and the same binary run with no clone in its ancestry answered an empty shelf.
+
+The shelf ships two apps and one theme. `installTheme` sends the first `.orbtheme` the
+resolved directory holds onto a board that has no face, so that single file **is** the
+default theme, and it is `themes/skeleton.orbtheme` — the Composer's `Skeleton` preset,
+baked through the real export path at FORMAT 3. It carries a class 9 preview plane, which
+is the ID photo the Themes card and the dial's own picker paint. The Aviator seed it replaced
+was repacked out of `assets/orb_default.img`, a slot image with no preview plane to lift, so
+the one theme every fresh board was guaranteed to own answered `/api/v1/sd/preview` with a
+404 and drew an empty frame beside its own name. Bake a new default with
+`_selftest/bank3-drive.html?dial=skeleton` on real Chrome (the plane is composed pixels;
+`bake_clock.py` refuses class 9), then install it with
+`python3 tools/make_default_theme.py <bake>` — that tool is the gate, and `--check` re-verifies
+the committed copy without a browser.
+
+
 ## Development
 
 ```

@@ -28,7 +28,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash test vet fmt check run desktop cdp reload flash windows win-test crosscheck clean firmware composer vendor-composer vendor-check release usb-doc-test
+.PHONY: all build manager orbflash library test vet fmt check run desktop cdp reload flash windows win-test crosscheck clean firmware composer vendor-composer vendor-check release usb-doc-test
 
 all: test build
 
@@ -49,10 +49,33 @@ firmware:
 	ORB_BUILD_DIR=$(BUILD_DIR) $(GO) test ./internal/firmware/ -run BuiltInBundle
 	@echo "embedded firmware refreshed from $(BUILD_DIR) into $(BUNDLE)"
 
+## library: mirror the two shelf kinds beside one built executable. The hub's own
+## resolution ladder names this rung "beside the executable" (library.go:libLadder), and
+## it is the rung a downloaded hub lands on: run the binary where no gorb-os clone is
+## reachable and every other rung answers nothing, so /api/library reports
+## appsSource "none found" and the Apps and Themes faces draw an empty shelf. `release`
+## has always copied both dirs for exactly this reason; the dev builds did not, which is
+## why a `make manager` binary saw an empty library while the same tree's clone did not.
+##
+## Merged with `cp -R src/. dst/` rather than wiped, so a rebuild refreshes every shipped
+## file and an app the operator imported beside the binary survives it. The source of truth
+## stays the tracked apps/ and themes/ in this package: what lands beside the binary is a
+## build output, and `clean` removes it.
+define LIB_COPY
+	@mkdir -p $(1)/apps $(1)/themes
+	@cp -R $(CURDIR)/apps/. $(1)/apps/
+	@cp -R $(CURDIR)/themes/. $(1)/themes/
+	@echo "library: apps/ and themes/ mirrored beside $(1)"
+endef
+
+library:
+	$(call LIB_COPY,$(BIN_DIR))
+
 manager:
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/orb-manager .
 	@echo "built $(BIN_DIR)/orb-manager $(VERSION)"
+	$(call LIB_COPY,$(BIN_DIR))
 
 ## composer: re-copy the Theme Editor into web/composer/ so the shipped binary can
 ## serve it. The hub prefers the live files under $(REPO)/tools/watch-composer when
@@ -208,6 +231,7 @@ windows:
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(WIN_DIR)/orb-manager.exe .
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(WIN_DIR)/orbflash.exe ./cmd/orbflash
 	@echo "built $(WIN_DIR)/orb-manager.exe and orbflash.exe $(VERSION)"
+	$(call LIB_COPY,$(WIN_DIR))
 
 ## windows-gui: the one-window hub, exactly what `release` ships for Windows.
 ## -H windowsgui makes the exe PE subsystem 2, so a double-click shows only the
@@ -221,6 +245,7 @@ windows-gui:
 	@mkdir -p $(WIN_GUI_DIR)
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags '$(LDFLAGS_GUI)' -o $(WIN_GUI_DIR)/orb-manager.exe .
 	@echo "built $(WIN_GUI_DIR)/orb-manager.exe $(VERSION) (GUI subsystem: window only, no console)"
+	$(call LIB_COPY,$(WIN_GUI_DIR))
 
 ## crosscheck: prove every supported platform still compiles, sources AND tests.
 ## This exists because the port lock reached syscall.Flock, which has no Windows

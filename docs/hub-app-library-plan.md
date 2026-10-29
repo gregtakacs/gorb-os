@@ -122,6 +122,17 @@ hidden — the device's own shown-with-reason rule, applied to the hub's directo
 `find . -type f` sha256 sweep covers them and a tampered library file breaks the
 checksum set rather than shipping quietly.
 
+Every other build target copies them too, since 2026-10-29. The exe-dir rung is the one a
+downloaded hub stands on, and a `make manager` binary left inside the clone was rescued by
+the clone rung below it — so the shipped layout went untested on the exact box that built
+it, and a hub run from a directory with no clone in its ancestry answered `/api/library`
+with `appsDir: ""`, both sources `none found`, and two empty lists. `make manager`,
+`windows`, `windows-gui` and a standalone `make library` now mirror both kinds beside the
+executable through one `LIB_COPY` define, merged rather than wiped so an app the operator
+imported beside the binary survives a rebuild. `clean` removes the copies with `bin/`: the
+tracked apps/ and themes/ in the package are the source of truth, and what sits beside a
+binary is build output.
+
 ## 2. The install flow, and the narrowing
 
 **The word is Install.** The flow went by "seed" through the design phase. The owner read

@@ -1415,6 +1415,7 @@ function openJoinDialog(port, mac, skipAp) {
   const gen = ++watchGen;
   $("#ob-watch").textContent = "waiting for the orb to boot…";
   $("#ob-console").textContent = "";
+  $("#wj-title").textContent = "Bring it onto Wi-Fi";
   $("#wj-consoledetails").hidden = false;
   provApSsid = "";
   // A new provisioning run starts with an unsealed window regardless of how the last one ended.
@@ -1569,6 +1570,12 @@ function joinDone(ip, st) {
     (st.tz ? ", " + st.tz : "") + ".";
   $("#ob-join").hidden = true;
   $("#ob-done").hidden = false;
+  // The panel's headline says "Bring it onto Wi-Fi" right up until the moment the orb is
+  // on Wi-Fi; after that it is a stale sign over a different job, and an operator reading
+  // "Bring it onto Wi-Fi" above a multi-minute seed reasonably concludes the WiFi step is
+  // stuck (owner report, 2026-10-29 PM). The title now names the phase actually running,
+  // and openJoinDialog restores the original for the next board.
+  $("#wj-title").textContent = "Seeding its baseline";
   // The three finishes stay dark until the seed answers. A board that has joined but not been
   // seeded is not finished, and a button that opens the orb now would open one whose clock the
   // hub is still writing (owner ruling, bench 2026-10-29: the provisioning window must hold
@@ -1628,7 +1635,43 @@ async function autoInstall(ip) {
   // shelfHoldsOwnersContent, next to the adoption mark the page cannot see — and it streams
   // back a `skipped` step when the owner's shelf stands, which this line then shows.
   if (watch) watch.textContent = "installing the clock from the hub library\u2026";
-  const done = await streamInstall(ip, "clock", true);
+  // The window holds its buttons for exactly as long as the hub is saying something.
+  // The seal exists so nobody walks away from a half-written card, and the hub now
+  // speaks every ~20 s through its patient waits; a stream that has said nothing for
+  // four minutes is a stream that died, and the old code let that dead stream own
+  // the dialog forever (owner report, 2026-10-29 PM: "stuck right there with every
+  // button blocked out"). The watchdog releases the seal with the truth — the hub
+  // stopped answering, the card may be half-written — but it does NOT drop the fetch:
+  // the file's own law allows exactly two client-side aborts, and a write in flight
+  // is never one of them. The run keeps streaming on its own terms, and any step that
+  // arrives after the release lands as a late verdict on the watch line.
+  let lastBeatAt = Date.now();
+  let stalled = false;
+  let released = false;
+  const watchdog = setInterval(() => {
+    if (Date.now() - lastBeatAt < 4 * 60 * 1000) return;
+    stalled = true;
+    released = true;
+    clearInterval(watchdog);
+    installTried.set(ip, "the hub stopped answering mid-seed");
+    seedVerdict = "the hub stopped answering mid-seed \u2014 the card may be half-written";
+    releaseSeed(watch, "the hub stopped answering this seed \u2014 the card may be half-written. " +
+      "Open the orb and press Seed on its Library card to finish it.");
+  }, 5000);
+  const done = await streamInstall(ip, "clock", true, null, false, false, (j, t) => {
+    lastBeatAt = Date.now();
+    if (released) {
+      if (watch) watch.textContent = t + " \u2014 the hub spoke again after the window released; check the orb's Apps face";
+      return;
+    }
+    if (watch) watch.textContent = t;
+    watchLog(t);
+  });
+  clearInterval(watchdog);
+  if (stalled) {
+    if (done) installTried.set(ip, true); // the late verdict was a real finish
+    return;
+  }
   installTried.set(ip, done ? true : (gLastRefusal || "the clock did not install on join"));
   // `done` is the hub's own verdict and, on the automatic arm, it only arrives after verifySeed
   // re-read the ledger and the theme count post-reboot — including a run that skipped, which
@@ -1652,6 +1695,13 @@ async function autoInstall(ip) {
 function releaseSeed(watch, msg) {
   seedBusy = false;
   seedGateButtons(false);
+  // The headline carries the verdict's shape, so a released window never still reads
+  // as the job that sealed it. The watch line below it holds the sentence.
+  const title = $("#wj-title");
+  if (title) {
+    title.textContent = (seedVerdict === "verified" || seedVerdict === "skipped")
+      ? "Provisioned" : "Seeding did not finish";
+  }
   if (watch) watch.textContent = msg;
 }
 
@@ -1671,20 +1721,26 @@ function releaseSeed(watch, msg) {
 // tells installRun the shelf's copy must cross again even where the card and
 // the dial already hold readable copies of their own — the press was made
 // because those copies are older.
-async function streamInstall(ip, only, auto, frame, force, card) {
+async function streamInstall(ip, only, auto, frame, force, card, onStep) {
   let q = "/api/library/install?ip=" + encodeURIComponent(ip);
   if (only) q += "&only=" + encodeURIComponent(only);
   if (auto) q += "&auto=1";
   if (force) q += "&force=1";
   if (card) q += "&card=1";
-  return streamSteps(q, frame, ip);
+  return streamSteps(q, frame, ip, onStep);
 }
 
 // streamSteps is streamInstall's body, split out because D38's Add-to-card press runs the
 // SAME kind of run — one streamed upload that answers with per-chunk facts and a final
 // verdict — so it drives the same progress panel rather than a second, thinner dialect.
 // q is the whole hub route with its query already assembled.
-async function streamSteps(q, frame, ip) {
+//
+// onStep is the join dialog's door: the automatic join-time run has no flash panel to
+// borrow, and its steps used to land in the Library view's hidden <pre> where nobody
+// could see them (owner report, 2026-10-29 PM: "zero visible feedback for a really long
+// time" while the dialog held every button). A caller that owns a visible frame passes a
+// relay and every step reaches it the moment it arrives.
+async function streamSteps(q, frame, ip, onStep) {
   gLastRefusal = ""; // this run's verdict starts clean; the seed reads it the moment we return
   gLastVerifyNote = "";
   const out = $("#lib-install-log");
@@ -1732,6 +1788,10 @@ async function streamSteps(q, frame, ip) {
         const t = j.step + ": " + j.action + (j.note ? " \u2014 " + j.note : "");
         line(t);
         headline(j);
+        // The relay is the join dialog's eyes. It gets every step the hub speaks, in
+        // order, and decides what is worth a headline; the hidden Library log below it
+        // stays exactly as it was for the press that owns that view.
+        if (onStep) { try { onStep(j, t); } catch (e) { /* a dead panel never stops a run */ } }
         if (j.action === "uploading") setBar(j.note);
         if (j.action === "done") ok = true;
         if (j.action === "refused") { refusal = j.note || "the hub refused the run"; gLastRefusal = refusal; }

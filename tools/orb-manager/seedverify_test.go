@@ -243,6 +243,61 @@ func TestWaitOrbBackRefusesOnBudgetAndHonorsCtx(t *testing.T) {
 	}
 }
 
+// TestThePatientWaitSpeaksWhileItWaits proves the beat fires: a board that stays down
+// earns a spoken round every ~20 s (the fix for a frozen provisioning window), the beat
+// carries the elapsed, the whole budget and the error the last probe took, and a board
+// that answers at once earns NO beat — a wait that never waited must not print one.
+func TestThePatientWaitSpeaksWhileItWaits(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadPort := portOf(dead.URL)
+	dead.Close() // closed now: every dial to it is refused, the truth of a board still down
+	s := newHub()
+	s.orb = orbnet.NewClient(300 * time.Millisecond)
+	s.orb.DevicePort = deadPort
+	s.grants.learnAs("192.0.2.32", "44bd8d782618")
+
+	type beatRec struct {
+		elapsed, budget time.Duration
+		err             error
+	}
+	var beats []beatRec
+	budget := 45 * time.Second // enough for the 20 s and 40 s beats, not the third
+	s.waitOrbBack(context.Background(), "192.0.2.32", budget, func(el, b time.Duration, err error) {
+		beats = append(beats, beatRec{el, b, err})
+	})
+
+	// A 45 s silence at one beat per 20 s is at least two. Zero beats is the frozen
+	// screen the operator reported; this is the assertion that stops it coming back.
+	if len(beats) < 2 {
+		t.Fatalf("a %v wait spoke %d times; the window froze on one sentence again", budget, len(beats))
+	}
+	for i, b := range beats {
+		if want := time.Duration(i+1) * waitBeatEvery; b.elapsed < want {
+			t.Errorf("beat %d reported elapsed %v, under its %v mark", i, b.elapsed, want)
+		}
+		if b.budget != budget {
+			t.Errorf("beat %d reported budget %v, want the whole %v", i, b.budget, budget)
+		}
+		if b.err == nil {
+			t.Errorf("beat %d carried no error; the wait must say why it is still waiting", i)
+		}
+	}
+
+	// An answering board earns no beat at all.
+	srv, _ := waitFake(t)
+	s.orb = orbnet.NewClient(deviceTimeout)
+	s.orb.DevicePort = portOf(srv.URL)
+	n := len(beats)
+	if _, ok := s.waitOrbBack(context.Background(), "127.0.0.1", budget, func(time.Duration, time.Duration, error) {
+		beats = append(beats, beatRec{})
+	}); !ok {
+		t.Fatal("an answering board was refused")
+	}
+	if len(beats) != n {
+		t.Errorf("an instant answer beat %d times; only a real wait may speak", len(beats)-n)
+	}
+}
+
 // TestWhereAnswersByAddress is the door the bounced page needed: a join over the
 // wired line can end holding an address and no MAC, and the page's only handle is
 // then the fleet itself. Asked by ip, /api/orb/where answers the chip that lives at
@@ -288,7 +343,7 @@ func TestTheLadderIsPatientAcrossItsOwnReboots(t *testing.T) {
 		{"the store wait's follow", themeSrc, `if live := s.dialLive(ip); live != "" && live != ip {`},
 		{"the wait that follows the chip", src, "func (s *Server) waitOrbBack("},
 		{"the cycle behind every caused reboot", src, "func (s *Server) waitOrbCycle("},
-		{"the theme step waits on the cycle", src, "s.waitOrbCycle(context.Background(), ip, installRebootWait)"},
+		{"the theme step waits on the cycle", src, "s.waitOrbCycle(context.Background(), ip, installRebootWait, beats...)"},
 	}
 	for _, c := range checks {
 		if !strings.Contains(c.src, c.want) {
@@ -309,6 +364,31 @@ func TestTheLadderIsPatientAcrossItsOwnReboots(t *testing.T) {
 	}
 	if !strings.Contains(tabs, "trying once more as it comes back") {
 		t.Error("the ledger re-read lost its second try: a mid-boot silence is printing failures over installed apps again")
+	}
+	// The same report's second half: the join-time seed froze one sentence on a dialog
+	// whose every button was disabled, because its steps went to the Library view's
+	// hidden <pre> and nothing bounded the wait on the stream. Each string below is one
+	// half of the fix; losing any re-freezes the window the operator just reported.
+	for _, want := range []string{
+		"onStep(j, t)",           // every hub step reaches the join dialog's relay
+		"watchLog(t)",            // and lands on the visible console trail
+		"released = true",        // a dead stream releases the window, fetch intact
+		"4 * 60 * 1000",          // the stall budget that ends it
+		`"Seeding its baseline"`, // the headline names the phase, not the old one
+	} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js lost %q: the provisioning window is back to freezing on one sentence", want)
+		}
+	}
+	// The hub now speaks through every patient wait, so the freeze cannot be pushed back
+	// onto the server: the beat type, its interval, and the beat helper must all stand.
+	for _, want := range []string{
+		"const waitBeatEvery = 20 * time.Second",
+		"func beatFor(",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("installflow.go lost %q: the waits are silent again", want)
+		}
 	}
 }
 

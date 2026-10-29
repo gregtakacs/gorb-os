@@ -593,6 +593,59 @@ HonorsCtx`, `TestWaitOrbCycleDemandsTheSilenceFirst`, `TestWhereAnswersByAddress
 the text gates in `TestTheLadderIsPatientAcrossItsOwnReboots`.
 
 
+## 18. The provisioning window froze on one sentence with every button dead
+
+**The report (owner, 2026-10-29 PM, right after 17 shipped).** After Wi-Fi
+credentials land, the dialog reads "installing the clock from the hub library…"
+under a headline still saying *Bring it onto Wi-Fi*, and nothing changes for
+minutes. When the seed finally finishes, the window is still stuck: every button
+blocked.
+
+**The cause is three defects wearing one coat.** (1) The join-time run streams its
+steps to `#lib-install-log` — a `hidden` `<pre>` on the Library view. The dialog
+that owns the screen during provisioning never saw a single step. (2) The hub,
+newly patient per 17, now spends minutes inside `waitOrbBack`/`waitForStore`
+emitting NOTHING; patience without narration reads exactly like a hang. (3) The
+done panel's seal — `seedGateButtons(true)`, correct by 15's ruling — releases only
+when the awaited stream returns. A stream that stalls leaves the buttons dead
+forever: the page had no bound on the wait, so "the hub stopped talking" and "the
+hub is working" were the same screen.
+
+**The fix makes every silent wait speak, and every spoken step visible.**
+Hub side: `waitOrbBack`, `waitOrbCycle` and `waitForStore` take an optional
+`waitBeat`, fired every ~20 s of missing (`waitBeatEvery`) with the elapsed, the
+budget, and the last probe's error; `beatFor` words it as an ordinary `waiting`
+step, so a long wait rides the stream as "still waiting for the orb: 40s of 180s
+(last try: …)" instead of silence — the head probe, the ledger re-hand, the clean
+slate's every uninstall and erase, both theme-door waits and the store wait all
+beat. Page side: `streamSteps` gained an `onStep` relay; the join flow passes one
+that writes each step onto the watch line and the visible console trail the
+dialog already opens, so the operator sees `clock: uploading — 224 of 648 KB`,
+`theme: storing`, `verify: verified — clock on the glass` as they happen. The
+headline stops lying about the phase: joining a network is over at that point, so
+the title becomes "Seeding its baseline" and `releaseSeed` re-titles the panel to
+"Provisioned" or "Seeding did not finish". The seal is now bounded: the watchdog
+releases the buttons with an honest sentence after **4 minutes of total silence**
+(a live hub beats every ~20 s, so four blank minutes is a dead stream) — and it
+releases without dropping the fetch, because the file's own law allows exactly two
+client-side aborts and a write in flight is never one of them; a step that
+arrives after a release lands on the watch line as the late verdict it is, and
+the done verdict the run eventually reports still rewrites the record.
+
+**Bench proof (Bronze @ .32, 2026-10-29 15:36).** Board rebooted, seed fired into
+the silence within seconds: the stream opened with `install: waiting — the orb is
+not answering yet — waiting through its boot before the run` at 12 s, the board
+rejoined at its lease, and the run closed `clock: skipped — already on the dial`
+(the card was seeded by the 17-bench pass), `verify: verified — clock enabled and
+on the card`, `install: done` at 15:36:07 — 13 s, every beat visible, seal
+released. The beat cadence itself is pinned by `TestThePatientWaitSpeaksWhileItWaits`:
+a board that stays down 45 s earns ≥2 spoken beats carrying elapsed, budget and
+error; a board that answers at once earns none.
+
+Covered by `TestThePatientWaitSpeaksWhileItWaits` and the widened text gates in
+`TestTheLadderIsPatientAcrossItsOwnReboots`; the abort-count law
+(`TestUICanCancelAndQuitSafely`) still counts exactly two.
+
 ## Out of scope here
 
 The re-stamp loop (a firmware-bundle commit invalidates `serflash.sh --check`

@@ -941,11 +941,13 @@ func (s *Server) handleThemeCommit(w http.ResponseWriter, r *http.Request) {
 // never a claim of failure. The context is detached from the request on purpose:
 // a browser tab closing must not release the claim while the board is mid-erase —
 // the exact window this function exists to hold.
-func (s *Server) waitForStore(ctx context.Context, ip, id string) (string, string) {
+func (s *Server) waitForStore(ctx context.Context, ip, id string, beats ...waitBeat) (string, string) {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	s.armSelfRebootFor(ip)
 	sawBusy, misses := false, 0
+	start := time.Now()
+	nextBeat := waitBeatEvery
 	deadline := time.Now().Add(themeStoreBudget)
 	hardStop := time.Now().Add(themeStoreBusyCeiling)
 	for {
@@ -1016,6 +1018,19 @@ func (s *Server) waitForStore(ctx context.Context, ip, id string) (string, strin
 				return "lost", "the orb stopped answering after a live store job — the commit's own reboot may have taken it"
 			}
 			return "lost", "no store witness within " + strconv.Itoa(int(themeStoreBudget/time.Second)) + " s — the copy may still be running"
+		}
+		// The store wait is the ladder's longest silence — the board copies a
+		// container and reboots to wear it — so it speaks on the same beat as
+		// every other patient wait. The operator of 2026-10-29 PM watched one
+		// frozen sentence for minutes; a line every 20 s is the difference
+		// between "working" and "hung".
+		if elapsed := time.Since(start); len(beats) > 0 && elapsed >= nextBeat {
+			for _, beat := range beats {
+				beat(elapsed, themeStoreBusyCeiling, err)
+			}
+			for nextBeat <= elapsed {
+				nextBeat += waitBeatEvery
+			}
 		}
 		// Sleep one poll beat, clipped at the deadline so the last wait lands
 		// exactly on it; the top of the next turn reads the deadline again and

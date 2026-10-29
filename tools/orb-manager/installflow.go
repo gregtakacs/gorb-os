@@ -249,7 +249,9 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 		send(installStep{Step: "install", Action: "waiting",
 			Note: "the orb is not answering yet — waiting through its boot before the run"})
 		var back bool
-		if ip, back = s.waitOrbBack(ctx, ip, installRebootWait); !back {
+		ip, back = s.waitOrbBack(ctx, ip, installRebootWait,
+			beatFor(send, "install", "waiting through its boot"))
+		if !back {
 			return fmt.Errorf("the orb did not answer its status: %w", err)
 		}
 		if st, err = s.device.Status(ip); err != nil {
@@ -273,7 +275,9 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 		send(installStep{Step: "install", Action: "waiting",
 			Note: "the orb did not answer its ledger — waiting through its boot before the run"})
 		var back bool
-		if ip, back = s.waitOrbCycle(ctx, ip, installRebootWait); back {
+		ip, back = s.waitOrbCycle(ctx, ip, installRebootWait,
+			beatFor(send, "install", "waiting through its boot for the ledger"))
+		if back {
 			listing, err = s.device.AppsList(ip)
 		}
 		if err != nil {
@@ -559,7 +563,8 @@ func (s *Server) cleanSlate(ctx context.Context, ip string, send func(installSte
 			// failure (owner report, 2026-10-29 PM: i/o timeout killed slates
 			// mid-erase on boards that were simply rebooting).
 			var back bool
-			if ip, back = s.waitOrbBack(ctx, ip, installRebootWait); back {
+			if ip, back = s.waitOrbBack(ctx, ip, installRebootWait,
+				beatFor(send, "install", "waiting through a reboot before re-handing the uninstall of "+row.Slug)); back {
 				_, e = s.device.AppUninstall(ip, row.Slug)
 			}
 			if e != nil {
@@ -584,7 +589,8 @@ func (s *Server) cleanSlate(ctx context.Context, ip string, send func(installSte
 		}
 		if _, e := s.device.SDRemove(ip, tree, true); e != nil {
 			var back bool
-			if ip, back = s.waitOrbBack(ctx, ip, installRebootWait); back {
+			if ip, back = s.waitOrbBack(ctx, ip, installRebootWait,
+				beatFor(send, "install", "waiting through a reboot before re-handing the erase of "+tree)); back {
 				_, e = s.device.SDRemove(ip, tree, true)
 			}
 			if e != nil {
@@ -727,7 +733,7 @@ func (s *Server) installTheme(ctx context.Context, ip string, send func(installS
 			send(installStep{Step: "theme", Action: "rebooting",
 				Note: "the upload door waits on a boot the fresh enable never got — rebooting for it"})
 			if _, rerr := s.device.Reboot(ip); rerr == nil {
-				live, ok := s.installWaitBack(ip)
+				live, ok := s.installWaitBack(ip, beatFor(send, "theme", "arming the upload door"))
 				ip = live
 				if ok {
 					s.dropThemeCache(ip)
@@ -752,13 +758,14 @@ func (s *Server) installTheme(ctx context.Context, ip string, send func(installS
 	// post_bundle tail) — a second ThemeStore press here would be a second copy for the
 	// same promise, so the wait starts at the door's ack where handleThemeUpload's does.
 	send(installStep{Step: "theme", Action: "storing"})
-	outcome, note := s.waitForStore(ctx, ip, c.ID)
+	outcome, note := s.waitForStore(ctx, ip, c.ID,
+		beatFor(send, "theme", "waiting for the orb to store the theme"))
 	if outcome != "stored" {
 		return fmt.Errorf("the store did not land: %s", note)
 	}
 	send(installStep{Step: "theme", Action: "stored"})
 	send(installStep{Step: "theme", Action: "rebooting"})
-	live, back := s.installWaitBack(ip)
+	live, back := s.installWaitBack(ip, beatFor(send, "theme", "waiting for it to come back wearing the new face"))
 	if !back {
 		return fmt.Errorf("the dial stored the theme but has not answered again within %s", installRebootWait)
 	}
@@ -893,11 +900,27 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 	send(installStep{Step: c.ID, Action: "done", Note: "stored; the board reboots onto it"})
 }
 
+// beatFor turns one silent round of a patient wait into a step the screen can show. The
+// operator report of 2026-10-29 PM was a provisioning window that showed one frozen sentence
+// "for a really long time" while the hub sat inside a legitimate multi-minute wait; the fix is
+// to say the wait is alive and how far it has gone, on the step the run is already on. It
+// claims the WAIT, never the board: only a real answer earns a coming-back step.
+func beatFor(send func(installStep), step, doing string) waitBeat {
+	return func(elapsed, budget time.Duration, lastErr error) {
+		note := fmt.Sprintf("%s — still waiting for the orb: %ds of %ds",
+			doing, int(elapsed/time.Second), int(budget/time.Second))
+		if lastErr != nil {
+			note += " (last try: " + plainDeviceErr(lastErr, 0).Error() + ")"
+		}
+		send(installStep{Step: step, Action: "waiting", Note: note})
+	}
+}
+
 // installWaitBack is the post-reboot wait the theme step uses at both of its
 // reboots: the cycle-shaped one, because a board answers its last request for a
 // beat while it is dying.
-func (s *Server) installWaitBack(ip string) (string, bool) {
-	return s.waitOrbCycle(context.Background(), ip, installRebootWait)
+func (s *Server) installWaitBack(ip string, beats ...waitBeat) (string, bool) {
+	return s.waitOrbCycle(context.Background(), ip, installRebootWait, beats...)
 }
 
 // waitOrbCycle is waitOrbBack for the waits that sit directly behind a reboot the
@@ -909,9 +932,21 @@ func (s *Server) installWaitBack(ip string) (string, bool) {
 // it, and only the answer that follows a silence counts as the return. A board that
 // never goes quiet inside the grace is a board whose reboot did not take, and the
 // wait hands it back answering so the caller reports what it actually finds.
-func (s *Server) waitOrbCycle(ctx context.Context, ip string, budget time.Duration) (string, bool) {
+// waitBeat is one spoken round of a patient wait: how long it has been missing the board, the
+// whole budget it has, and the error its last probe took. A caller that streams steps hands one
+// in so a multi-minute wait never shows an operator a frozen screen.
+type waitBeat func(elapsed, budget time.Duration, lastErr error)
+
+// waitBeatEvery is how often a missing board gets reported. It is long enough that a beat is
+// never the only thing on a screen and short enough that no operator ever watches ten blank
+// seconds go by (owner report, 2026-10-29 PM: the provisioning window "shows nothing for a
+// really long time").
+const waitBeatEvery = 20 * time.Second
+
+func (s *Server) waitOrbCycle(ctx context.Context, ip string, budget time.Duration, beats ...waitBeat) (string, bool) {
 	quiet := time.NewTimer(20 * time.Second)
 	defer quiet.Stop()
+	start := time.Now()
 	for alive := true; alive; {
 		select {
 		case <-ctx.Done():
@@ -924,13 +959,20 @@ func (s *Server) waitOrbCycle(ctx context.Context, ip string, budget time.Durati
 			alive = false // gone: now the honest wait begins
 			break
 		}
+		// The silence demand is itself up to 20 s of staring at a board that answers while
+		// it dies, so it speaks on the same beat as the wait behind it.
+		if elapsed := time.Since(start); len(beats) > 0 && elapsed >= waitBeatEvery {
+			for _, beat := range beats {
+				beat(elapsed, budget, nil)
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return ip, false
 		case <-time.After(time.Second):
 		}
 	}
-	return s.waitOrbBack(ctx, ip, budget)
+	return s.waitOrbBack(ctx, ip, budget, beats...)
 }
 
 // dialLive answers where the chip that lives at this address lives NOW: the MAC the
@@ -954,8 +996,10 @@ func (s *Server) dialLive(ip string) string {
 // returned address is where the board answered, and every caller that dials again
 // must dial THAT one. A ctx end answers false so a departed browser never strands a
 // claim; budget exhaustion answers false too, and the caller refuses with it.
-func (s *Server) waitOrbBack(ctx context.Context, ip string, budget time.Duration) (string, bool) {
-	deadline := time.Now().Add(budget)
+func (s *Server) waitOrbBack(ctx context.Context, ip string, budget time.Duration, beats ...waitBeat) (string, bool) {
+	start := time.Now()
+	deadline := start.Add(budget)
+	nextBeat := waitBeatEvery
 	mac := s.macFor(ip)
 	for {
 		if mac == "" {
@@ -969,8 +1013,22 @@ func (s *Server) waitOrbBack(ctx context.Context, ip string, budget time.Duratio
 		} else {
 			s.armSelfRebootFor(ip)
 		}
-		if _, err := s.orb.Status(ip); err == nil {
+		_, err := s.orb.Status(ip)
+		if err == nil {
 			return ip, true
+		}
+		// The wait speaks. Three minutes of nothing reads to an operator as a hang — the
+		// owner report of 2026-10-29 PM was exactly this window, "zero visible feedback for
+		// a really long time" — so every ~20 s of miss reports the elapsed, the budget and
+		// the error the last probe took. It claims only that the wait is alive; it never
+		// claims the board is back.
+		if elapsed := time.Since(start); len(beats) > 0 && elapsed >= nextBeat {
+			for _, beat := range beats {
+				beat(elapsed, budget, err)
+			}
+			for nextBeat <= elapsed {
+				nextBeat += waitBeatEvery
+			}
 		}
 		if !time.Now().Before(deadline) {
 			return ip, false

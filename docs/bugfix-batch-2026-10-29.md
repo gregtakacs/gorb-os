@@ -731,7 +731,7 @@ read `PROVSCAN` or accept a `PROV` line. The hub says so on the stream —
 above that line rides the dialog's visible watch row. The board rebooting the
 instant Connect is pressed is the door opening, not a fault.
 
-**Two: the orb reboots again before the theme lands.** This is the known
+**Two: the orb reboots again before the theme lands.** This was the known
 firmware debt, mitigated on purpose: the upload door builds its registry at
 boot, so a clock freshly enabled mid-run is invisible to it, and the door
 cries "no card in the socket" at a card sitting right there. The hub takes one
@@ -739,7 +739,47 @@ reboot for it and says exactly that on the step: "the upload door waits on a
 boot the fresh enable never got — rebooting for it." No card is lost; one boot
 is spent, and the patience above covers the silence it creates. The real fix
 is firmware (`orb_net.c` distinguishing missing-card from
-uninitialized-registry) and stays on the books as debt.
+uninitialized-registry) and stays on the books as debt. — PAID the same
+afternoon; see the debt-cleared section below.
 
 **Tests:** new gate + the full suite green; `go vet`, `go build`, `make build`
 clean.
+
+## Update (firmware, same day): the join-time theme debt is paid — v1.1.33
+
+Debt item "Two" above cost every fresh join a second reboot and a second
+3.7 MB upload. The door's lie had one sentence to it: `orb_theme_upload_begin`
+resolved its directory through `orb_files_src("clock","themes")`, a table only
+`clock_view_init` fills, and answered NULL — "no card in the socket" — at a
+mounted card, because the hub had installed and enabled the clock over the
+wire on a boot that never ran the app's init.
+
+**The fix.** The clock's themes declaration moves from `clock_view.c` into
+`orb_theme.c` as a static const — the theme module owns the directory, so it
+owns the values — and is published two ways. `orb_theme_boot()`, on the boot
+ladder before any door task exists, calls the new `orb_theme_src_register()`,
+so the ordinary path answers from the registry; `clock_view_init()` re-declares
+through the same call, and `orb_files_register` takes the second call as an
+app's init running twice and overwrites in place. Every theme door
+(`upload_begin`, `upload_recommit`, `orb_theme_scan`) now reads through
+`theme_src()`, which falls back to the shipped constant when the table holds
+nothing — a read of a static const, never a table write, so the httpd task
+cannot race the registry law. The recommit door's missing-source branch also
+stops saying "no card in the socket": the mount check keeps that sentence,
+because that one is true, and the source branch now names the source.
+
+**The hub's reboot-retry stays.** It is the safety net for an orb still
+running firmware older than 1.1.33; on a board at 1.1.33 the door answers the
+first offer and the retry never fires. A join on a patched board reboots once,
+for provisioning, and the theme lands on the first upload.
+
+**Tests.** New gate `TestThemeDoorsAnswerWithoutTheClocksBoot`
+(`firmware_contract_test.go`) pins the declaration's values, all three doors
+going through `theme_src()`, the boot registration, the recommit branch's
+vocabulary, and the single copy of the declaration in the tree — verified red
+when the old door line is pasted back. `host_app_registry_test.py` carried a
+stale D40 assertion (card rows now land *enabled*; commit 8748a72 shipped that
+ruling and missed the test) and is updated to the new contract. The rest of
+the host suite passes; `host_carousel_test.py`,
+`host_orbapp_install_test.py` and `host_svc_test.py` fail identically on the
+clean pre-fix tree — pre-existing, unrelated, and left on the books.

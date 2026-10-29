@@ -1788,6 +1788,19 @@ static bool slot_probe3(const esp_partition_t *p, uint32_t base, orb_bundle3_hdr
  * draws the default; those are the only two outcomes. */
 esp_err_t orb_theme_boot(void)
 {
+    /* The clock's themes source enters the OS's file table HERE, on the boot
+     * rung and before any door task exists — not on the clock app's init. The
+     * join-time theme death this replaces (bench, 2026-10-29) had the upload door
+     * asking for a declaration only clock_view_init() writes, on the boot where
+     * the hub had just installed and enabled the clock and no reboot had rebuilt
+     * the table; the door's ESP_ERR_NOT_FOUND came back as "no card in the
+     * socket" over a mounted card. A no-I/O table write belongs with the module
+     * that owns the directory. See the declaration above orb_theme_scan(). */
+    const esp_err_t src_err = orb_theme_src_register();
+    if (src_err != ESP_OK)
+        ESP_LOGE(TAG, "themes file source refused (%s) — the theme doors fall back "
+                      "to the shipped declaration", esp_err_to_name(src_err));
+
     const esp_partition_t *p = art_bank_partition();
     if (!p) {
         ESP_LOGE(TAG, "no \"%s\" partition — theme storage is off", ART_BANK_PARTITION_NAME);
@@ -2217,6 +2230,63 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
     return true;
 }
 
+/* =========================================================================== *
+ * The clock's themes source, owned here.
+ *
+ * orb_files is the OS's walk and apps declare their directories into it, so the
+ * declaration below is the one clock_view_init() hands up at boot — lifted here
+ * so the theme doors can answer from it themselves. The reason is the join-time
+ * theme death (bench, Bronze, 2026-10-29): the hub installs the clock over the
+ * wire on a board that booted without one, enables it in the same run, and asks
+ * the upload door for the theme seconds later. clock_view_init() has never run
+ * on that boot, orb_files_src() answers NULL, upload_begin() returns
+ * ESP_ERR_NOT_FOUND, and the door calls the whole thing "no card in the socket"
+ * over a card that /api/v1/sd swears is mounted. The hub's mitigation spent a
+ * full reboot and a second 3.7 MB upload to work around a door that did not
+ * know where its own themes live.
+ *
+ * The values are clock_view.c's declaration field for field, and this file is
+ * now the one copy of them: orb_theme_src_register() puts them in the OS table
+ * on the boot ladder (from orb_theme_boot, before any task that can ask exists),
+ * and clock_view_init() re-declares the same source through the same call when
+ * the clock builds — orb_files_register() takes a re-declaration as an app's
+ * init running twice and overwrites in place.
+ *
+ * The doors below read through theme_src(), which falls back to the constant
+ * when the table holds nothing. The fallback is a READ of a static const and
+ * never a table write, so the httpd task can take it without racing a worker's
+ * walk — the law orb_files.h writes the whole registration API under.
+ * =========================================================================== */
+static const orb_file_src_t s_clock_themes_src = {
+    .id          = "themes",
+    .dir         = ORB_SD_THEME_DIR,
+    .ext         = ORB_THEME_EXT,
+    .max_entries = 16,
+    /* Every app's themes share this directory; the compound stem names its
+     * owner, and the prefix keeps this source's cap and rows the clock's. */
+    .name_prefix = "clock-",
+};
+
+esp_err_t orb_theme_src_register(void)
+{
+    return orb_files_register("clock", &s_clock_themes_src);
+}
+
+/* The clock's themes source: the registered row when the table has one, the
+ * shipped declaration when it does not. Never NULL — the doors' own no-directory
+ * branches stay as plain null guards, the shape every orb_files caller carries. */
+static const orb_file_src_t *theme_src(void)
+{
+    const orb_file_src_t *src = orb_files_src("clock", "themes");
+    if (src) return src;
+    /* Loud once per refusal: the boot rung registered this source and should not
+     * have needed this line. A full table is the only realistic cause — twelve
+     * sources, and a build that reaches it has apps the shelf cannot hold. */
+    ESP_LOGW(TAG, "\"themes\" unregistered at a theme door — using the shipped "
+                  "declaration (orb_theme_src_register() did not land on this boot)");
+    return &s_clock_themes_src;
+}
+
 int orb_theme_scan(orb_theme_entry_t *out, int cap)
 {
     if (!out || cap <= 0) return -1;
@@ -2227,16 +2297,11 @@ int orb_theme_scan(orb_theme_entry_t *out, int cap)
      * stopped answering. The caller reports "uploading" instead. */
     if (orb_theme_upload_busy()) return -1;
 
-    /* The directory and the extension are the clock app's declaration, not a
+    /* The directory and the extension stay the clock's declaration, not a
      * constant here: the OS owns the walk, so this layer asks where its themes
-     * live rather than assuming. A missing declaration is a build order bug —
-     * nothing on the card has been read, so -1 is the honest answer and the line
-     * says which invariant broke. */
-    const orb_file_src_t *src = orb_files_src("clock", "themes");
-    if (!src) {
-        ESP_LOGE(TAG, "no \"themes\" file source declared — the clock app did not register");
-        return -1;
-    }
+     * live rather than assuming — through theme_src(), which can ask that
+     * question on a boot whose clock app never built. */
+    const orb_file_src_t *src = theme_src();
 
     scan_ctx_t c = { .out = out, .cap = cap, .n = 0, .app = "clock" };
     /* Probe the one slot for this walk's answer. The partition outliving the card is
@@ -2311,8 +2376,8 @@ esp_err_t orb_theme_upload_begin(orb_theme_up_t **out)
 {
     *out = NULL;
     if (s_up) return ESP_ERR_INVALID_STATE;                /* one at a time */
-    const orb_file_src_t *src = orb_files_src("clock", "themes");
-    if (!src) return ESP_ERR_NOT_FOUND;
+    const orb_file_src_t *src = theme_src();
+    if (!src) return ESP_ERR_NOT_FOUND;                    /* unreachable by build */
     if (orb_sd_ensure_mounted() != ESP_OK) return ESP_ERR_NOT_FOUND;
     /* The file manager may delete /sd/themes, and FATFS refuses a file whose
      * parent is absent, so the scratch the upload is about to open needs its
@@ -2548,8 +2613,8 @@ esp_err_t orb_theme_upload_recommit(const char *token, const char **why,
         *why = "an upload is in progress";
         return ESP_ERR_INVALID_STATE;
     }
-    const orb_file_src_t *src = orb_files_src("clock", "themes");
-    if (!src) { *why = "no card in the socket"; return ESP_ERR_NOT_FOUND; }
+    const orb_file_src_t *src = theme_src();
+    if (!src) { *why = "no \"themes\" file source declared"; return ESP_ERR_NOT_FOUND; }
     if (orb_sd_ensure_mounted() != ESP_OK) { *why = "no card in the socket"; return ESP_ERR_NOT_FOUND; }
     if (ensure_chunk() != ESP_OK) { *why = "out of memory for the card read buffer"; return ESP_ERR_NO_MEM; }
 

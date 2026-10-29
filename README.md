@@ -2,7 +2,7 @@
 
 **Greg's Orb OS** — ESP-IDF firmware for the Waveshare
 ESP32-S3-Touch-AMOLED-1.75 board (ESP32-S3R8, 466x466 CO5300 AMOLED via QSPI,
-8 MB OPI PSRAM, 16 MB flash). Current: `v1.1.22` (`version.txt`).
+8 MB OPI PSRAM, 16 MB flash). Current: `v1.1.33` (`version.txt`).
 
 A rewrite of the Arduino **Orb OS** project (https://github.com/gregtakacs/orb-os,
 locally `~/docker/Projects/orb-os`) onto ESP-IDF + LVGL 9. Comments that cite

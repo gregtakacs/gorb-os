@@ -670,11 +670,15 @@ int main(void)
     ck("a card app's behaviour_kind resolves to the registered module's iface",
        cidx == ORB_APP_BASE && crow && crow->iface == orb_app_behaviour_iface(ORB_BEHAVIOUR_COLOR_PICKER)
        && crow->iface != NULL);
-    ck("a registered card app starts ledger-only: enabled is false from card_fill",
-       crow && crow->enabled == false && orb_app_count() == 1
+    /* D40 (bench, 2026-10-29): installed IS enabled. The row lands enabled from
+     * card_fill, so it joins the walkable count the moment it is upserted — the
+     * hub's install ladder stopped sending a separate AppEnable on a fresh
+     * install, and a test that still demanded a disabled row here was pinning the
+     * contract the owner overruled. The index and iface assertions are unchanged. */
+    ck("a registered card app lands enabled from card_fill (D40)",
+       crow && crow->enabled == true && orb_app_count() == 2
        && orb_app_index_of(crow) == ORB_APP_BASE);
-    /* Enable the one card row and rebuild: init_all must run its iface hooks. */
-    ((orb_app_t *)crow)->enabled = true;
+    /* The one card row is already enabled; rebuild so init_all runs its iface hooks. */
     TR(); orb_app_init_all();
     ck("an enabled card app builds through its module iface on the boot ladder",
        strstr(g_trace, "picker_init") != NULL);

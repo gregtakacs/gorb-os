@@ -311,3 +311,112 @@ func TestFirmwarePingAnswerCarriesTheStampTheHubParses(t *testing.T) {
 		t.Error("the PING stamp no longer comes from the app descriptor, the same read /api/v1/status answers from")
 	}
 }
+
+// TestThemeDoorsAnswerWithoutTheClocksBoot is the firmware-side pin for the join-time
+// theme death (bench, Bronze, 2026-10-29; docs/bugfix-batch-2026-10-29.md #19). The hub
+// installs and enables the clock over the wire on a board that booted without one, then
+// pushes the theme seconds later. The upload door used to resolve its directory through
+// the table clock_view_init fills — NULL on that boot — and answered the whole situation
+// with "no card in the socket" over a mounted card, costing the run a full reboot and a
+// second 3.7 MB upload. The doors now carry their own declaration and register it on the
+// theme boot rung. If this test goes red, the debt is back: the hub's reboot-retry still
+// fires on every join, and the operator waits twice for the wifi to come back.
+func TestThemeDoorsAnswerWithoutTheClocksBoot(t *testing.T) {
+	src := firmwareFile(t, filepath.Join("main", "art", "orb_theme.c"))
+
+	// The declaration, in this file, with the values the walk needs.
+	decl := cUntil(t, src, "s_clock_themes_src = {", "\n};")
+	for _, want := range []string{
+		`.id          = "themes"`,
+		".dir         = ORB_SD_THEME_DIR",
+		".ext         = ORB_THEME_EXT",
+		`.name_prefix = "clock-"`,
+	} {
+		if !strings.Contains(decl, want) {
+			t.Errorf("the themes declaration lost %q: the theme door is back to asking an app that never booted where its themes live", want)
+		}
+	}
+
+	// Every door reads through the fallback helper, not the raw table.
+	for _, fn := range []string{"esp_err_t orb_theme_upload_begin(orb_theme_up_t **out)",
+		"esp_err_t orb_theme_upload_recommit(const char *token,", "int orb_theme_scan(orb_theme_entry_t *out, int cap)"} {
+		body := cBodyAt(t, src, fn)
+		if !strings.Contains(body, "theme_src()") {
+			t.Errorf("%s resolves its source without theme_src(): the join-time 503 is back", fn)
+		}
+	}
+
+	// Boot registers it, so the ordinary path is the table and not the fallback.
+	boot := cBodyAt(t, src, "esp_err_t orb_theme_boot(void)")
+	if !strings.Contains(boot, "orb_theme_src_register()") {
+		t.Error("orb_theme_boot no longer registers the themes source: every door leans on the fallback log line")
+	}
+
+	// "no card in the socket" belongs to the mount and only to the mount. The
+	// conflation IS the bug; a re-added second source of it re-arms the hub's reboot.
+	if n := strings.Count(src, "no card in the socket"); n < 1 {
+		t.Error("orb_theme.c has stopped naming the mount failure at all — the door's refusals went mute")
+	}
+	// The mount branch keeps its sentence — that one is true. The source branch
+	// must name the source: re-deploying the socket phrase there is the exact lie
+	// that made a registry miss look like hardware, and reboot the run to chase it.
+	recommit := cBodyAt(t, src, "esp_err_t orb_theme_upload_recommit(const char *token,")
+	srcBranch := cUntil(t, recommit, "if (!src) {", "}")
+	if strings.Contains(srcBranch, "no card in the socket") {
+		t.Error("recommit's missing-source branch blames the socket: an unregistered source is not a missing card")
+	}
+
+	// And the clock's own init re-declares through the same call, so the values
+	// exist in one place in the tree.
+	cv := firmwareFile(t, filepath.Join("main", "clock", "clock_view.c"))
+	if !strings.Contains(cv, "orb_theme_src_register()") {
+		t.Error("clock_view_init no longer registers through orb_theme_src_register: the declaration has a second copy again")
+	}
+	if strings.Contains(cv, `.name_prefix = "clock-"`) {
+		t.Error("clock_view.c restates the themes declaration: two copies of one rule drift")
+	}
+}
+
+// cBodyAt lifts one C definition's text given the exact spelling of its signature
+// line, brace-matched to the closing line. The plain cBody finds the first mention
+// of a name, which in a file this documented is usually a sentence about it.
+func cBodyAt(t *testing.T, src, signature string) string {
+	t.Helper()
+	i := strings.Index(src, signature)
+	if i < 0 {
+		t.Fatalf("%s is gone: this pin guards a live rule, not a spelling", signature)
+	}
+	open := strings.Index(src[i:], "{")
+	if open < 0 {
+		t.Fatalf("%s has no body", signature)
+	}
+	depth, j := 0, i+open
+	for ; j < len(src); j++ {
+		switch src[j] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return src[i : j+1]
+			}
+		}
+	}
+	t.Fatalf("unbalanced braces in %s", signature)
+	return ""
+}
+
+// cUntil slices from a marker to the next occurrence of an end marker — the shape
+// of a brace-initialised static const, which cBody's function assumption cannot lift.
+func cUntil(t *testing.T, src, marker, end string) string {
+	t.Helper()
+	i := strings.Index(src, marker)
+	if i < 0 {
+		t.Fatalf("%s is gone: this pin guards a live rule, not a spelling", marker)
+	}
+	j := strings.Index(src[i:], end)
+	if j < 0 {
+		t.Fatalf("%s never closes", marker)
+	}
+	return src[i : i+j+len(end)]
+}

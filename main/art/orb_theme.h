@@ -118,6 +118,14 @@ typedef struct {
  */
 esp_err_t orb_theme_boot(void);
 
+/** Register the clock app's "themes" file source with the OS walk (orb_files).
+ *  The declaration lives in orb_theme.c because the theme doors read it on boots
+ *  where the clock app never built — a hub that installs and enables the clock
+ *  over the wire reaches the upload door before any reboot can run the app's own
+ *  init (bench, 2026-10-29). orb_theme_boot() calls this, and clock_view_init()
+ *  calls it again as an ordinary re-declaration. */
+esp_err_t orb_theme_src_register(void);
+
 /** The resolved geometry; valid from orb_theme_boot() onwards, never NULL. */
 const orb_theme_geo_t *orb_theme_geo(void);
 

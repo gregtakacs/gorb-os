@@ -95,9 +95,9 @@
  * an SD card instead of in the build. */
 #include "orb_theme_geo.h"
 #include "art_bank.h"       /* the bank the above offsets index into */
-#include "orb_files.h"      /* the clock's declared file source — see clock_view_init() */
+#include "orb_files.h"      /* the source this init re-declares through orb_theme_src_register() */
 #include "orb_sd.h"         /* ORB_SD_THEME_DIR, the directory that source names */
-#include "orb_theme.h"      /* ORB_THEME_EXT, the extension that source carries */
+#include "orb_theme.h"      /* orb_theme_src_register(), and the geo the dial draws */
 
 static const char *TAG = "clock";
 
@@ -2075,19 +2075,13 @@ esp_err_t clock_view_init(orb_app_t *self)
      * browser's copy of it can list this app's files without either one knowing
      * what an .orbtheme is — see main/sd/orb_files.h.
      *
-     * Registered here, on the boot ladder, because orb_theme_scan() can run from
-     * the menu's worker or the httpd worker as soon as either exists, and a
-     * question about a source that was never declared has no good answer. */
-    static const orb_file_src_t themes = {
-        .id          = "themes",
-        .dir         = ORB_SD_THEME_DIR,
-        .ext         = ORB_THEME_EXT,
-        .max_entries = 16,
-        /* Every app's themes share this directory; the compound stem names its
-         * owner, and the prefix keeps this source's cap and rows the clock's. */
-        .name_prefix = "clock-",
-    };
-    const esp_err_t fe = orb_files_register("clock", &themes);
+     * The declaration itself lives in orb_theme.c, and this call re-declares it:
+     * orb_theme_boot() put it in the table on the boot ladder, before any door
+     * task could ask, so a hub that installed and enabled the clock over the wire
+     * meets a theme door that already knows where the themes live. The values are
+     * one copy in the tree, and a second registration is what orb_files_register
+     * takes an app's init running twice to be. */
+    const esp_err_t fe = orb_theme_src_register();
     if (fe != ESP_OK)
         ESP_LOGE(TAG, "themes file source refused (%s) — the theme list will be empty",
                  esp_err_to_name(fe));

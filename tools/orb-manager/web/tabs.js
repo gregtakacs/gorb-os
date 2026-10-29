@@ -435,14 +435,16 @@ async function loadApps() {
   // hub's shelf inventory has no business being half of a status line.
   state.textContent = appList.length + " app" + (appList.length === 1 ? "" : "s")
     + " on the dial" + (cardApps.length ? ", " + cardApps.length + " on the card" : "");
-  renderAppsTab();
-  // The library rows judge themselves against `appList` — that is what decides Install
-  // versus Upgrade versus shelf-delete — so a ledger read that leaves the shelf face
-  // holding the previous answer shows a button for a state the dial no longer has. The
-  // first load of the two is order-free, and every later one re-synchronises here.
-  if (libCache && typeof renderLibrary === "function") {
+  // The shelf is read BEFORE the rows are built, not after. renderAppsTab merges
+  // libCache into the row set, and a cache that is still null on the first paint
+  // drops every "in the hub library" row -- the face showed a shelf it had not
+  // read yet, and an operator who knew color_picker.orbapp was on the disk saw a
+  // tab that quietly denied it (bench, owner, 2026-10-29). The same ordering rule
+  // the Themes face already obeys: enumeration first, rows second.
+  if (typeof renderLibrary === "function") {
     try { await renderLibrary(); } catch (e) { /* renderLibrary reports its own failure */ }
   }
+  renderAppsTab();
 }
 
 // appPost is the one leg every apps mutation walks: the proxy's orb path, an

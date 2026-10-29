@@ -452,6 +452,41 @@ of this batch, not per-commit.
 
 ## Status
 
+### Second bench pass, same day (the owner's re-report)
+
+The owner lonely-erased a board, flashed it again, and reported three symptoms. Two were real
+defects and one was a measurement artifact of the bench setup.
+
+**The measurement artifact came first and matters most.** The hub window the operator was driving
+had been started at 13:32:33 from a binary that `make build` later replaced — `/proc/<pid>/exe`
+read `(deleted)`. A running hub loads its firmware bundle at startup and never re-reads it, so
+that window went on offering the v1.1.30 image it had embedded, and flashed the board with it.
+The board correctly reported `v1.1.30+b190c32` afterward. Every fix committed at 13:19 (`aafd7ff`,
+the door list) and 13:29 (`2678e84`, the clean slate) was therefore absent from the image the
+board was running, and the re-report described code that was on the bench's disk and not on its
+glass. A second hub process was also up, holding a cable sweep lease. Two hubs and one stale
+binary produce exactly this class of confusing result. **Restart the hub before flashing, and
+read the `firmware built-in (...)` line the launch prints.** `9ffdbfb` re-stamped the bundle to
+v1.1.31, `cd5c190` to v1.1.32; a hub launched before those commits will keep offering an older
+image no matter what the tree says.
+
+**Two real defects did fall out of that pass, and both were mine.**
+
+1. Bug 2's fix was never written. `orb_app_install.c` memsets its row at both fill sites and
+   neither set the enable bit — the same failure shape as bug 3, caught the same way, by reading
+   the file instead of trusting the commit message. A board booting from its card therefore
+   restored the clock installed-and-off, and the dial showed no face. Fixed at both sites, pinned
+   by `TestBootRowLandsEnabled`, and verified red by mutation before it was trusted.
+2. Bug 12's clean slate could not run on the lonely path. The page's join-time gate read the SD
+   card, saw the previous orb life's leftovers, and never POSTed. A chip erase does not touch the
+   card, so every lonely-erased board had leftovers. The gate moved into the hub behind the slate
+   check, and `endAsLonely` now arms the mark itself. See #13.
+
+Symptom 3 — *Open this orb* landing nowhere — has a mechanism in the code and a fix (#14), and it
+is explicitly **not verified**: the board was off the LAN the whole time the fix was written.
+
+### Carried forward from the first pass
+
 Bug 3's fix is in the file now and green in `host_menu_test.py`; it was absent from
 the commit this document first described, so the board the owner flashed ran the old
 menu. Bugs 9, 10 and 11 came out of that same bench pass. Bugs 9 and 10 are hub-only:

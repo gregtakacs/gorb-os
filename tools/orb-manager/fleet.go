@@ -587,6 +587,31 @@ func (s *Server) fleetKnown(mac string) (orbfleet.Orb, bool) {
 	return orbfleet.Orb{}, false
 }
 
+// forgetGhost drops the hub's own cached announcement for a board it has just deleted.
+//
+// Both forget doors need it, and for the same reason: Candidates() serves a record until
+// TTL plus grace ages out (120 s by the device's MDNS_TTL), so the fold right after a
+// deletion still meets a packet the chip sent while it was an orb. foldCandidates folds
+// that ghost through fleet.Observe, which files a row out of nothing, and the board the
+// operator just removed is back on the card named by its MAC-derived instance —
+// orb-<mac> — with a presence clock the hub wound for it, so Forget refuses it again for
+// the rest of the minute (bench, 2026-10-29).
+//
+// The lonely erase already survives this because the mark it leaves tells
+// lonelyMark.outranked to refuse a packet older than the act. A plain forget leaves no
+// mark — the board runs fine, it is simply not this hub's orb — and a mark would be the
+// wrong fact anyway: it suppresses a cable descriptor's claim and paints the port picker
+// blank, which describes a board that was written over, not one that was un-listed. So
+// the door removes the evidence instead of refusing to read it. A board that really is
+// still on the network announces again and earns its row back honestly, which is the
+// behaviour forgetGate's own refusal sentence already promises.
+func (s *Server) forgetGhost(mac string) {
+	if s.browse == nil || mac == "" {
+		return
+	}
+	s.browse.ForgetMAC(mac)
+}
+
 // handleFleetForget takes a board out of the fleet and revokes the addresses it held.
 // Forgetting the identity while the hub still dials the address would leave the exact
 // thing the operator was trying to get rid of.
@@ -616,6 +641,10 @@ func (s *Server) handleFleetForget(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, err.Error())
 		return
 	}
+	// The row is gone, and so is the packet that could bring it back. Without this the
+	// next fold re-files it from the cache and the card shows orb-<mac> beside a button
+	// that will not arm — the forget that un-forgets itself. See forgetGhost.
+	s.forgetGhost(req.MAC)
 	// An address another live board still claims is not this one's to revoke.
 	for _, ip := range held {
 		if len(s.fleet.ClaimedBy(ip)) == 0 {

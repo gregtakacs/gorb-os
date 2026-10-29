@@ -231,6 +231,7 @@ func (d *tickDiscovery) Candidates() []orbmdns.Candidate {
 	return nil
 }
 func (*tickDiscovery) Refusals() []orbmdns.Refusal { return nil }
+func (*tickDiscovery) ForgetMAC(string) bool       { return false }
 func (*tickDiscovery) Close() error                { return nil }
 
 // The card's promise is a number: "check-ins arrive every 60 s". That number lives

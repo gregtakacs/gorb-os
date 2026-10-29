@@ -548,6 +548,33 @@ func TestEveryMutationWakes(t *testing.T) {
 	}
 }
 
+// A hub's own forget is the fourth mutation, and the one no packet causes. The board deleted
+// its row by decree rather than by going quiet, and the cached announcement that would
+// otherwise rebuild it inside the TTL grace has to go with the row — taking the card's wake
+// with it, so the page stops showing a chip this hub just stopped claiming.
+func TestForgetMACTakesTheWholeChipAndWakes(t *testing.T) {
+	b, woke := wakeRecorder()
+	b.Ingest(answerBytes(1, goodInst, goodMAC, goodFW, "normal", goodIP, 120, 80), from(goodIP))
+	<-woke
+	if !b.ForgetMAC("44:bd:8d:78:26:18") {
+		t.Fatal("ForgetMAC found nothing to purge beside a candidate the browser is holding")
+	}
+	if got := b.Candidates(); len(got) != 0 {
+		t.Errorf("the row survived the purge: %+v", got)
+	}
+	if !wokeRecently(woke) {
+		t.Error("a purge that emptied the list woke nobody, so the card kept a board it had forgotten")
+	}
+	// The second call is the no-op a forget of an unknown board is, and a no-op costs the
+	// page nothing: no record went, so no frame goes.
+	if b.ForgetMAC(goodMAC) {
+		t.Error("the second purge claimed a change after the first one took everything")
+	}
+	if wokeRecently(woke) {
+		t.Error("a purge of nothing woke the card anyway")
+	}
+}
+
 // Nothing the card cannot see wakes it. A neighbour's query and an announcement about somebody
 // else's service are traffic, and a hub that woke its page for either would push a frame for
 // every packet on the LAN and call that live.

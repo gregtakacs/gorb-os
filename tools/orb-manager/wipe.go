@@ -62,6 +62,12 @@ func (s *Server) unMakeOrb(mac string) {
 		log.Printf("orb-manager: ending %s left its fleet row in place: %v", mac, err)
 		return
 	}
+	// The record the deletion must not read back. The lonely mark already refuses a
+	// packet older than the act on the fold path, and an orb flash that clears the mark
+	// is the honest way for the row to come back; dropping the cache here keeps the
+	// board off the card for the two minutes it would otherwise take the ghost to age
+	// out, which is the window an operator experiences as "Forget did nothing".
+	s.forgetGhost(mac)
 	// The lonely mark belongs to the caller that ends a board as lonely; this
 	// helper only un-makes the orb, and a caller that re-purposes it (a headless
 	// erase, a future door) must not inherit the mark by accident.

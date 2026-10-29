@@ -269,6 +269,19 @@ launch rule in `.clinerules`.
   and `foldCandidates` skips the record entirely. This is the same doctrine
   `liveness.go` applies to the presence clock — the hub may not wind its own
   facts out of its own cache. `lonelyghost_test.go` pins both directions.
+- **A plain forget must survive the same cache.** `POST /api/fleet/forget`
+  deletes a row for a board that is off the network, and leaves no mark: the
+  chip still runs gorb-os, it simply is not this hub's orb. A mark would be the
+  wrong fact anyway, because it suppresses a cable descriptor and paints the
+  port picker blank. So the door deletes the evidence instead — `forgetGhost`
+  calls `Browser.ForgetMAC`, which drops the promoted row, the half-parsed
+  pending record and the cached A record together. Without it the next fold read
+  the ghost, re-filed the row through `fleet.Observe`, and the card showed the
+  board as `orb-<mac>` with a presence clock the hub had wound for it, so Forget
+  refused it for another minute (bench, 2026-10-29). A board still on the
+  network announces again after the purge and earns its row back, which is the
+  behaviour `forgetGate`'s refusal sentence already promises.
+  `forgetghost_test.go` pins the door, the purge and that limit.
 - **`tools/serflash.sh`** — bench serial flash. Never positional: the port
   comes from `.orb-target` (`tools/orb_bind.sh`), the MAC is confirmed before
   writing, a flock refuses a second writer, the version stamp in the built

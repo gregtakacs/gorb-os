@@ -530,6 +530,53 @@ func (b *Browser) drop(instance string) {
 	}
 }
 
+// ForgetMAC drops every record the browser holds about one chip, by MAC rather than by
+// the goodbye packet a live board sends. It exists for the hub's own acts: an operator
+// who forgets a board ended that row by decree, and a cached announcement the chip sent
+// BEFORE the act is not a fresh claim about the present — Candidates serves a record for
+// TTL plus grace, so for two minutes a deleted board's last packet is still on the
+// shelf, and a fold that reads it files the row the deletion just removed. drop() cannot
+// answer this: it takes the instance a TTL-0 record named, and a board that went quiet
+// or was reset sends no goodbye at all.
+//
+// The three places a chip can be held all go: the promoted row, the half-parsed pending
+// record, and the A record cached under the host name that instance derives from. It
+// takes the canonical MAC, so a caller holding colon-separated or bare digits asks about
+// the same chip, and an unparseable MAC forgets nothing rather than guessing.
+//
+// It reports whether any record went. A false is the honest no-op — a board this hub
+// never heard of has no ghost to sweep — and callers that must wake the card on a change
+// read it rather than firing a repaint on every forget that changed nothing.
+func (b *Browser) ForgetMAC(mac string) bool {
+	c, why := CanonicalMAC(mac)
+	if why != "" {
+		return false
+	}
+	instance := "orb-" + c[len(c)-6:]
+	hname := strings.ToLower(HostnameFor(instance))
+	b.mu.Lock()
+	before := b.rev
+	if _, ok := b.byMAC[c]; ok {
+		delete(b.byMAC, c)
+		b.mark()
+	}
+	if _, ok := b.pending[instance]; ok {
+		delete(b.pending, instance)
+		b.mark()
+	}
+	if _, ok := b.hosts[hname]; ok {
+		delete(b.hosts, hname)
+		b.mark()
+	}
+	moved := b.rev != before
+	b.mu.Unlock()
+	if moved {
+		b.logf("orbmdns: forgot %s at the hub's own request", instance)
+		b.wokeUp(before)
+	}
+	return moved
+}
+
 // Candidates returns the live rows, first-seen first, pruning what the clock has
 // already outlived. It dials nothing: answering "what orbs are on this network"
 // without opening a socket to any of them is the item.

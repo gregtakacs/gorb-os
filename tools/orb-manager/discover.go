@@ -57,6 +57,11 @@ import (
 type discovery interface {
 	Candidates() []orbmdns.Candidate
 	Refusals() []orbmdns.Refusal
+	// ForgetMAC drops the cached record of one chip. A forget is an act, not a
+	// suggestion: the deletion has to survive the announcement the chip sent while it
+	// was still an orb, which the cache keeps serving until TTL plus grace ages out.
+	// It reports whether any record went, so a caller can tell a purge from a no-op.
+	ForgetMAC(mac string) bool
 	Close() error
 }
 

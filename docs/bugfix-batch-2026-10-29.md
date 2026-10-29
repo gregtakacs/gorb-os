@@ -1,8 +1,9 @@
-# Bug-fix batch 2026-10-29: bench-reported six
+# Bug-fix batch 2026-10-29: bench-reported six, plus the forget they exposed
 
 Six bugs the owner found on the bench after the first-flash provisioning run.
 Each entry names the symptom, the root cause read off the code, and the fix.
-The fixes land in the order below; one commit per bug.
+The fixes land in the order below; one commit per bug. Bug 7 is a regression the
+first six left behind, reported on the same bench session.
 
 ## 1. Fresh board boots the Aviator, not the skeleton
 
@@ -208,5 +209,8 @@ until the next re-stamp) stays as documented in
 `tools/orb-manager/BUNDLE-STAMPING.md`. The bundle is re-stamped once at the end
 of this batch, not per-commit.
 
-then merge on the first paint, and the D38 mutually-exclusive verbs apply to
-them as designed.
+## Status
+
+Bugs 1-6 are firmware or hub changes the owner has not re-flashed yet; each needs
+a bench pass on a rebuilt image. Bug 7 is hub-only, needs no reflash, and is
+covered by `forgetghost_test.go` in the `orb-manager` suite.

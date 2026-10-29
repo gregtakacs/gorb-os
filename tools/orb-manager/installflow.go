@@ -408,7 +408,14 @@ func (s *Server) installTheme(ctx context.Context, ip string, send func(installS
 	if terr != nil {
 		return fmt.Errorf("writing %s to the card: %w", name, plainDeviceErr(terr, 0))
 	}
-	s.dropPreviews(ip)
+	// The card gained a file, so everything the hub remembers about it is retired —
+	// not just the ID photos. A push ends at the device's own upload door, which never
+	// comes back as the board you asked about, and a remembered card list answers
+	// /api/theme/list for two minutes without dialing. That is the stale answer this
+	// face would otherwise read as "the install did nothing", and it is the one hole
+	// the delete door never had because it drops the whole memory (theme.go's
+	// h_theme_delete). Same law, same verb; dropPreviews alone left the list standing.
+	s.dropThemeCache(ip)
 	send(installStep{Step: "theme", Action: "uploaded-theme"})
 	// The upload door files the bytes and queues the store itself (h_theme_upload's
 	// post_bundle tail) — a second ThemeStore press here would be a second copy for the
@@ -423,6 +430,11 @@ func (s *Server) installTheme(ctx context.Context, ip string, send func(installS
 	if !s.installWaitBack(ip) {
 		return fmt.Errorf("the dial stored the theme but has not answered again within %s", installRebootWait)
 	}
+	// Back on the network and wearing the new face — and the reads the reboot's own
+	// gap took could have refilled the memory with the card as it was BEFORE the
+	// store. Retire it once more so the first read this run is followed by a dial
+	// rather than an echo.
+	s.dropThemeCache(ip)
 	return nil
 }
 
@@ -498,6 +510,10 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 				Note: fmt.Sprintf("writing %s to the card: %s", name, plainDeviceErr(uerr, int(sentLast)))})
 			return
 		}
+		// A file on the card is a changed card, whatever kind it was: the Themes
+		// face's chooser counts themes per app from the card enumeration, and the
+		// Apps face lists what the card holds. Both would ride this two-minute echo.
+		s.dropThemeCache(ip)
 		send(installStep{Step: name, Action: "done", Note: "file on the card; nothing installed"})
 		return
 	}
@@ -532,7 +548,15 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 	// The upload door queued the store itself and the board reboots to draw it, so the
 	// door that took the file is gone by the time it lands. Report the promise here and
 	// let the face follow the outcome the way the install run's theme step does.
-	s.dropPreviews(ip)
+	//
+	// Following it honestly needs the whole card memory retired, not just the ID photos.
+	// This door writes the card and leaves the store to the device, so the list the hub
+	// remembered from before the push still answers /api/theme/list for two minutes and
+	// the page's re-read after its reboot watch paints the shelf row it already showed:
+	// the theme looks like it never installed, and with no card row it carries no ID
+	// photo either. h_theme_delete retires the same memory for the same reason; a card
+	// that gained a file is no different from one that lost it.
+	s.dropThemeCache(ip)
 	send(installStep{Step: c.ID, Action: "done", Note: "stored; the board reboots onto it"})
 }
 

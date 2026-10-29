@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -722,6 +724,7 @@ func TestAPlaneThatStaysTornIsRefusedAndNeverCached(t *testing.T) {
 	t.Cleanup(srv.Close)
 	s, host := previewHub(t, srv)
 	rec := getTheme(t, s, "/api/theme/preview?ip="+host+"&id="+auroraID)
+
 	if rec.Code == http.StatusOK {
 		t.Fatalf("a plane short of its own header was served as a good preview")
 	}
@@ -749,4 +752,56 @@ func previewHub(t *testing.T, srv *httptest.Server) (*Server, string) {
 	s.preview.DevicePort = port
 	s.grants.learn(host)
 	return s, host
+}
+
+// A shelf theme installed through the hub's push door changes the card the hub
+// remembers, and the door has to say so on the way out. It retired the ID photos and
+// left the list, so the face's next read was answered from an echo taken before the
+// bytes crossed the room — the theme came back as a shelf row with no preview beside it,
+// which is what an operator reads as an install that did nothing. The delete door has
+// always retired the whole memory for the same reason; a card that GAINED a file is the
+// same event seen from the other end.
+func TestAPushRetiresTheCardTheHubRemembers(t *testing.T) {
+	s, ip, _, _ := fakeOrbHub(t) // the card holds "aurora" and nothing else
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "zephyr.orbtheme"), orbfake.Container("zephyr"), 0o644); err != nil {
+		t.Fatalf("shelf: %v", err)
+	}
+	s.lib = &Library{ThemesDir: dir}
+
+	if names := themeNames(t, s, ip); !strings.Contains(names, "aurora") || strings.Contains(names, "zephyr") {
+		t.Fatalf("the card before the push reads %s, want aurora alone", names)
+	}
+	rec := postTheme(t, s, "/api/library/push?kind=theme&name=zephyr&ip="+ip, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("push status = %d body %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"action":"done"`) {
+		t.Fatalf("the push never reported a done step: %s", rec.Body)
+	}
+
+	// The read after the push is the one the page makes when its reboot watch lands.
+	// It has to name the new file, which an answer from the remembered card cannot.
+	if names := themeNames(t, s, ip); !strings.Contains(names, "zephyr") {
+		t.Errorf("the list after the push reads %s: the hub answered from the card it remembered "+
+			"before the file crossed, so the install looks like it did nothing", names)
+	}
+}
+
+// themeNames reads the card through the hub's own door and returns the theme names it
+// reported, joined, so a test can ask one question about a whole listing.
+func themeNames(t *testing.T, s *Server, ip string) string {
+	t.Helper()
+	rec := postTheme(t, s, "/api/theme/list", themeBody(ip, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body %s", rec.Code, rec.Body)
+	}
+	data, _ := decodeEnv(t, rec)["data"].(map[string]any)
+	rows, _ := data["themes"].([]any)
+	names := make([]string, 0, len(rows))
+	for _, r := range rows {
+		m, _ := r.(map[string]any)
+		names = append(names, asString(m["name"]))
+	}
+	return strings.Join(names, ",")
 }

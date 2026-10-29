@@ -1039,8 +1039,8 @@ func TestTheSweepProbeTakesThePortLock(t *testing.T) {
 	// the port without the lock would still pass a test like the one above, because nobody
 	// else would be holding it.
 	src := readFile(t, "launchprobe.go")
-	if !strings.Contains(src, "orbbind.LockPort(c.port)") {
-		t.Error("the sweep must lock the port: without it a concurrent flash and probe share the wire")
+	if !strings.Contains(src, "orbbind.SweepPort(pctx, c.port)") {
+		t.Error("the sweep must take the cross-process port claim: without it a probe here resets a wire another hub is writing, and two hubs probe one board at once")
 	}
 	if !strings.Contains(src, "s.ops.start(ctx, c.port, opProbe, probeBudget)") {
 		t.Error("the sweep must claim its port in the per-port operation registry, so a flash on that wire refuses it and a stuck probe still dies on its budget")

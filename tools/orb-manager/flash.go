@@ -114,7 +114,11 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 	// user's business, not the tool's. LockPort canonicalizes the by-id vs tty
 	// spelling internally so both paths lock onto the same device.
 	var opts esprom.Options
-	portLock, perr := orbbind.LockPort(req.Port)
+	// PressPort, not LockPort: a second hub's background sweep holds this flock for
+	// the length of a round, and a refusal told the operator their own press was the
+	// problem. The press flag stops every hub's sweep from starting a round; the wait
+	// covers the one already in flight.
+	portLock, perr := orbbind.PressPort(ctx, req.Port, pressWindow)
 	if perr != nil {
 		send("error", perr.Error())
 		return

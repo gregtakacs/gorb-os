@@ -43,7 +43,7 @@ func main() {
 
 	// One operation per port at a time, so a serprov run can't collide with the
 	// manager's flash/provision on the same cable.
-	portLock, lockErr := orbbind.LockPort(port)
+	portLock, lockErr := orbbind.PressPort(context.Background(), port, orbbind.PressWindowDefault)
 	if lockErr != nil {
 		fmt.Fprintln(os.Stderr, "serprov:", lockErr)
 		os.Exit(1)

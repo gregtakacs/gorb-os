@@ -22,7 +22,15 @@ import (
 // nothing is portable about advisory locking. Both implementations release when
 // the process dies, so a hub killed mid-flash never leaves a cable locked.
 type PortLock struct {
-	f    *os.File
+	f *os.File
+
+	// press and lease carry the two protocol flags of press.go when this claim
+	// took them, so Release drops the whole claim in one call and every existing
+	// `defer portLock.Release()` keeps working unchanged. Both are nil on a plain
+	// LockPort, which claims the flock and nothing else.
+	press *os.File
+	lease *os.File
+
 	name string
 }
 
@@ -33,14 +41,28 @@ type PortLock struct {
 // already holds that exact port.
 func LockPort(path string) (*PortLock, error) {
 	canon := canonicalPortPath(path)
-	f, held, err := lockPort(portLockPath(canon))
+	lock, held, err := tryLockPort(canon)
 	if err != nil {
 		return nil, fmt.Errorf("orbbind: lock port %s: %w", canon, err)
 	}
 	if !held {
 		return nil, fmt.Errorf("port %s is busy - another flash or provision holds its lock", canon)
 	}
-	return &PortLock{f: f, name: canon}, nil
+	return lock, nil
+}
+
+// tryLockPort is LockPort without the error text. A caller that waits needs to tell
+// a busy port — worth waiting for, since every holder is bounded — from a filesystem
+// that will not make a lock file at all, which no amount of waiting fixes.
+func tryLockPort(canon string) (*PortLock, bool, error) {
+	f, held, err := lockPort(portLockPath(canon))
+	if err != nil {
+		return nil, false, err
+	}
+	if !held {
+		return nil, false, nil
+	}
+	return &PortLock{f: f, name: canon}, true, nil
 }
 
 // CanonicalPortPath exposes the port-spelling collapse to callers that must key
@@ -86,13 +108,21 @@ func portLockPath(path string) string {
 	return filepath.Join(os.TempDir(), "orb-port-"+b.String()+".lock")
 }
 
-// Release drops the port lock. Safe to call on a nil receiver.
+// Release drops the port lock and any protocol flag taken with it. Safe to call on a
+// nil receiver.
+//
+// The flock goes first and the flags last: a hub waiting on the flock must not get
+// the port while this process's own press flag still tells it a write is running.
 func (l *PortLock) Release() {
-	if l == nil || l.f == nil {
+	if l == nil {
 		return
 	}
-	unlockPort(l.f)
-	l.f.Close()
+	if l.f != nil {
+		unlockPort(l.f)
+		_ = l.f.Close()
+	}
+	releaseFlag(l.lease)
+	releaseFlag(l.press)
 }
 
 // Name returns the canonical port path the lock is held on.

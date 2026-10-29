@@ -80,7 +80,7 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.ops.finish(job)
 
-	lock, lerr := orbbind.LockPort(req.Port)
+	lock, lerr := orbbind.PressPort(ctx, req.Port, pressWindow)
 	if lerr != nil {
 		s.jsonErr(w, lerr.Error())
 		return

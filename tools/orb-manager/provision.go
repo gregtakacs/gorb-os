@@ -81,7 +81,7 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
 	// must never be told their own device isn't the "bound" one. The only
 	// automatic guard is the per-port lock, so a flash and a provision can't
 	// drive the same cable at once and corrupt each other.
-	if portLock, perr := orbbind.LockPort(req.Port); perr != nil {
+	if portLock, perr := orbbind.PressPort(ctx, req.Port, pressWindow); perr != nil {
 		send(map[string]any{"error": perr.Error()})
 		return
 	} else {

@@ -109,7 +109,7 @@ func (s *Server) handleLonely(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	portLock, perr := orbbind.LockPort(req.Port)
+	portLock, perr := orbbind.PressPort(ctx, req.Port, pressWindow)
 	if perr != nil {
 		send("error", perr.Error())
 		return

@@ -1,9 +1,11 @@
-# Bug-fix batch 2026-10-29: bench-reported six, plus the forget they exposed
+# Bug-fix batch 2026-10-29: bench-reported six, plus the forget and the flash lock
 
 Six bugs the owner found on the bench after the first-flash provisioning run.
 Each entry names the symptom, the root cause read off the code, and the fix.
 The fixes land in the order below; one commit per bug. Bug 7 is a regression the
-first six left behind, reported on the same bench session.
+first six left behind, reported on the same bench session. Bug 8 surfaced during
+the v1.1.30 bench pass this batch set up, and it is a hub change, not a firmware
+one.
 
 ## 1. Fresh board boots the Aviator, not the skeleton
 
@@ -201,6 +203,52 @@ blank, which describes a written-over chip, not an un-listed one.
 stranger-is-left-alone rule; `TestForgetMACTakesTheWholeChipAndWakes` pins the
 browser half. Both the resurrection test and the door test were confirmed red with
 the purge call removed, then green with it back.
+
+## 8. A flash refused with "another flash or provision holds its lock"
+
+**Symptom.** During the bench pass on the new device, the first-flash write and the
+Wi-Fi send both refused on `/dev/ttyACM2` with *"port is busy - another flash or
+provision holds its lock"*. Nothing was on the wire. The write landed on the retry:
+the board answers `v1.1.30+b190c32` at 12:41:04.
+
+**Root cause.** Two hub processes were live on the bench. `:3779` ran the rebuild at
+`b6dadba`, and a dev hub on `:3791` still ran `e7c525a`. Each runs its own background
+sweep, and each sweep takes the port's `flock` for the whole round. The registry
+eviction that `3e33f0a` added yesterday works inside one process only. A press in one
+hub cannot cancel a sweep in the other, so it took the plain refusal and blamed the
+operator for a round it never started. The board was a blank chip, so neither hub ever
+earned the `IsOrb` identity that makes `proveCable` stand down (`cableproof.go:382`),
+and both kept asking. The refusal appears five times in the `:3791` log, at 11:08:20,
+12:03:31, 12:06:11, 12:37:44 and 12:38:49, and never once in the `:3779` log. The
+losing hub was always the one carrying the operator's press. The first refusal lands
+32 s after `:3791` launches, which is before any rebuild, so the pair caused it.
+
+**Fix.** `internal/orbbind/press.go` adds two advisory flags per canonical port and
+one lock order: press, then sweep, then the flock.
+
+- `<port>.press` is held for one whole operator write. A sweep checks it before it
+  touches the wire and declines, in any process, so no background round starts on a
+  cable a human is using.
+- `<port>.sweep` is the sweep lease. One hub at a time runs background work on a
+  cable, and the loser skips the round. Its ladder re-arms later.
+- `PressPort` covers flash, lonely write, provision, command and console read, plus
+  `serprov`. It takes the flag, then waits up to `pressWindow` (12 s) for the one
+  round already in flight.
+- `SweepPort` covers the cable proof, the launch and cadence probes, and `orbprobe`.
+  It declines without touching the wire, which is how every sweep already behaved.
+- Presses still refuse presses at once. `LockPort` is unchanged, so the theme store
+  pass and any older hub keep the semantics they shipped with.
+
+Residual, and on purpose: a round already past its flag check keeps the flock until
+its own budget ends. That is 8 s for a proof and up to 40 s for a probe, so a press
+can still wait the window and then read the busy line. One hub per box stays the bench
+rule. This only makes two of them lose politely.
+
+**Evidence.** `internal/orbbind/press_test.go` pins the lease to one hub, pins the
+press flag stopping every sweep, pins a press waiting out a live round and then
+winning it, pins press-vs-press refusing inside a second, and pins an abandoned press
+dropping its flag so the cable is not muted forever. `go test ./internal/orbbind/` is
+green with the four pre-existing `LockPort` tests untouched.
 
 ## Out of scope here
 

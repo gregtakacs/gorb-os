@@ -421,7 +421,10 @@ func (s *Server) cableProofRoundTrip(ctx context.Context, c cableSighting) (askR
 		return askNoWire, false
 	}
 	defer s.ops.finish(job)
-	lock, lerr := orbbind.LockPort(c.port)
+	// SweepPort, not LockPort: this round is background work, so it must decline a
+	// cable another hub's operator is writing to, and decline a cable another hub is
+	// already sweeping, rather than fight for the flock and lose.
+	lock, lerr := orbbind.SweepPort(octx, c.port)
 	if lerr != nil {
 		return askNoWire, false
 	}

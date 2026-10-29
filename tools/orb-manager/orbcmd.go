@@ -126,7 +126,7 @@ func (s *Server) handleOrbCmd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.ops.finish(job)
-	if portLock, perr := orbbind.LockPort(req.Port); perr != nil {
+	if portLock, perr := orbbind.PressPort(ctx, req.Port, pressWindow); perr != nil {
 		send(map[string]any{"error": perr.Error()})
 		return
 	} else {

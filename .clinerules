@@ -1789,3 +1789,39 @@ serves the bytes it was built with, never the ones on disk.
 - Pinned by four tests in editor_test.go: retry-then-serve counts dials exactly
   (2), ErrNoEditor never retried (1), the HTML page carries Retry+reason and no
   token, and the aged short memo re-dials a recovered board.
+
+## Two hubs on one box refused the operator's own press — the flock has no process boundary, 2026-10-29 (hub, :3779 + :3791)
+
+**Symptom on the bench.** A first-flash write and a Wi-Fi send both refused on
+`/dev/ttyACM2` with *"port is busy - another flash or provision holds its lock"*.
+Nothing was on the wire, and the board was blank, so the retry answered
+`not an orb` while the refusal kept insisting a writer existed.
+
+**Cause.** Two `orb-manager` processes were live: the rebuilt hub on `:3779` and a
+dev hub on `:3791`. Each runs its own background sweep, and a sweep round holds the
+port's `flock` for the whole round. `3e33f0a` taught a press to evict a sweep
+yesterday, but the operation registry is per-process. A press in one hub cannot
+cancel a sweep in the other, so it took the plain refusal. A blank chip never earns
+the `IsOrb` identity that makes `proveCable` stand down (`cableproof.go:382`), so
+both hubs kept asking forever. Decisive line: the refusal appears five times in the
+`:3791` log (first at 11:08:20, 32 s after it launched, before any rebuild) and zero
+times in the `:3779` log. The hub losing the race was always the one the operator
+pressed.
+
+**What shipped.** `internal/orbbind/press.go` adds two advisory flags per canonical
+port, ordered press → sweep → flock. `<port>.press` is held for a whole write, and
+every sweep checks it first, so a human ends background work on that cable in every
+process. `<port>.sweep` is the lease: one hub sweeps a cable at a time, the loser
+skips the round. `PressPort` (flash, lonely, provision, cmd, console, `serprov`)
+waits up to `pressWindow` 12 s for the one round already in flight. `SweepPort`
+(cable proof, probes, `orbprobe`) declines instead of racing. `LockPort` is unchanged,
+so the theme store pass and older hubs keep shipped semantics. Press-vs-press still
+refuses at once: two writers on one wire corrupts the write.
+
+**Still true, so check it first.** One hub per box. Run `pgrep -af orb-manager` before
+a bench pass. A round already past its flag check holds the flock until its own budget
+ends — 8 s for a proof, up to 40 s for a probe — so a press can still wait the window
+and read the busy line. The guard makes two hubs lose politely; it does not make them
+correct.
+
+

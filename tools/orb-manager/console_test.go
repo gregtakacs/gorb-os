@@ -62,7 +62,7 @@ func TestFlashRefusesAPortTheConsoleIsOn(t *testing.T) {
 // one, and the assertions below keep it that way rather than trusting the reader.
 func TestConsoleIsACancellableOperation(t *testing.T) {
 	src := readFile(t, "console.go")
-	for _, want := range []string{"s.ops.start(r.Context()", "opConsole", "orbbind.LockPort", "esprom.ReadConsole"} {
+	for _, want := range []string{"s.ops.start(r.Context()", "opConsole", "orbbind.PressPort", "esprom.ReadConsole"} {
 		if !strings.Contains(src, want) {
 			t.Errorf("console.go does not use %s: the read is not cancellable, not gated, or not a port operation", want)
 		}

@@ -92,6 +92,14 @@ func (o *op) yields() bool { return o.Kind == opProbe || o.background }
 // Tests shrink it.
 var preemptWait = 4 * time.Second
 
+// pressWindow bounds how long an operator press waits for a background round that
+// ANOTHER hub process holds, after it has already posted the press flag that stops
+// every hub from starting a new one. The in-process preemptWait cannot serve here:
+// two registries never see each other. One round is a PING or an identify, so the
+// wait is normally the tail of a reset; this is the ceiling before the press is told
+// the truth — something on this cable will not let go. Tests shrink it.
+var pressWindow = 12 * time.Second
+
 // opRegistry maps canonical port path to the operation holding it.
 type opRegistry struct {
 	mu     sync.Mutex

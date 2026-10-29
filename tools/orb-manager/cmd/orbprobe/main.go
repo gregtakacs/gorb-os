@@ -23,7 +23,7 @@ func main() {
 		os.Exit(2)
 	}
 	// The same lock the hub takes: two resets on one wire is how a flash dies.
-	lock, err := orbbind.LockPort(*port)
+	lock, err := orbbind.SweepPort(context.Background(), *port)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "orbprobe:", err)
 		os.Exit(1)

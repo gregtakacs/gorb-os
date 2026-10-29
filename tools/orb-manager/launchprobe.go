@@ -401,7 +401,7 @@ func (s *Server) probeCableNow(ctx context.Context, c cableSighting, why string)
 	}
 	defer s.ops.finish(job)
 
-	lock, lerr := orbbind.LockPort(c.port)
+	lock, lerr := orbbind.SweepPort(pctx, c.port)
 	if lerr != nil {
 		log.Printf("orb-manager: probe of %s abandoned before the reset: the port is held (%s)",
 			c.port, lerr)

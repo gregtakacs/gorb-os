@@ -379,12 +379,12 @@ def disclosure(slug, title, caps, period_ms, n_settings, version=""):
     caps_txt = ", ".join(caps_names(caps)) or "(nothing declared)"
     ver = "  version:    %s\n" % version if version else \
           "  version:    unstamped\n"
-    return ('Install "%s" (%s)\n'
+    return (('Install "%s" (%s)\n'
             '  may use:    %s\n'
             + ver +
             '  will run:   %s\n'
             '  will store: %d setting(s) inside a %d B quota\n'
-            'Revoke any of it on the dial: MENU -> PERMISSIONS -> %s.'
+            'Revoke any of it on the dial: MENU -> PERMISSIONS -> %s.')
             % (title, slug, caps_txt, beat, n_settings,
                CFG_QUOTA_BYTES, slug))
 

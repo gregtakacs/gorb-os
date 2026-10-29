@@ -252,6 +252,18 @@ launch rule in `.clinerules`.
   `tools/orb-manager/lonely/` is a separate tiny ESP-IDF project: the image a
   wiped orb gets instead of a boot loop ("Flash me" bounce; no WiFi, no NVS,
   no command door) so the chip always enumerates as an ordinary CDC device.
+- **A lonely erase must survive the hub's own cache.** The lonely image keeps
+  enumerating the same USB descriptor, so the cable sweep sees an orb-shaped
+  port and re-remembers it unless the hub holds its lonely mark; and the mDNS
+  browser serves the board's LAST announcement for TTL+grace (120 s by
+  `MDNS_TTL`), so the fold right after an erase meets a ghost packet that
+  re-creates the deleted fleet row and clears the mark protecting it. The board
+  returns named by its MAC-derived instance and Forget refuses it on the cable
+  forever. The rule that prevents it: a record older than the mark is not
+  evidence, so `lonelyMark.outranked` compares packet time against mark time
+  and `foldCandidates` skips the record entirely. This is the same doctrine
+  `liveness.go` applies to the presence clock — the hub may not wind its own
+  facts out of its own cache. `lonelyghost_test.go` pins both directions.
 - **`tools/serflash.sh`** — bench serial flash. Never positional: the port
   comes from `.orb-target` (`tools/orb_bind.sh`), the MAC is confirmed before
   writing, a flock refuses a second writer, the version stamp in the built

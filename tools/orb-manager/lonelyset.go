@@ -99,6 +99,35 @@ func (l *lonelyMark) has(mac string) bool {
 	return ok
 }
 
+// outranked answers the only question that decides whether an announcement may end a
+// lonely mark: was this packet HEARD AFTER the hub blanked the board? A mark is the
+// hub's memory of an act it performed at a known instant, and evidence older than that
+// act cannot contradict it.
+//
+// The check exists because the browse cache outlives the board. A record is held for
+// TTL plus grace — 120 s by the device's own MDNS_TTL (main/net/orb_mdns.c) — so for
+// two minutes after an erase the cache still returns an announcement the board sent
+// while it WAS an orb. Folding that ghost re-created the fleet row the erase had just
+// deleted and cleared the mark that was supposed to keep it deleted, so an operator who
+// blanked a board on the cable watched it come back named orb-<mac> and could never
+// forget it again (bench, 2026-10-28). liveness.go states this rule for the presence
+// clock — "a presence clock the hub winds from its own cache is a gate that never
+// opens" — and orbmdnsToObservation carries the packet time for exactly that reason;
+// the lonely mark was the one consumer that read the cache as if every record were new.
+//
+// heard is the packet time, never the fold time. A zero heard is no evidence at all and
+// cannot end a mark.
+func (l *lonelyMark) outranked(mac string, heard time.Time) bool {
+	mac = lonelyKey(mac)
+	if mac == "" || heard.IsZero() {
+		return false
+	}
+	l.mu.Lock()
+	at, marked := l.at[mac]
+	l.mu.Unlock()
+	return marked && !heard.After(at)
+}
+
 // list returns the marked MACs sorted, for the state file.
 func (l *lonelyMark) list() []string {
 	l.mu.Lock()

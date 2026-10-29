@@ -138,6 +138,14 @@ func (s *Server) foldCandidates(renew bool) {
 		return
 	}
 	for _, c := range b.Candidates() {
+		// A record the browser is still holding from BEFORE this hub blanked the
+		// board is not evidence about the present. It must neither re-file the fleet
+		// row the erase deleted nor clear the mark that keeps it deleted — and because
+		// Candidates() serves a record until TTL plus grace expires, that ghost is what
+		// every fold met in the two minutes after an erase. See lonelyMark.outranked.
+		if s.lonely.outranked(c.MAC, c.LastSeen) {
+			continue
+		}
 		if _, err := s.fleet.Observe(orbmdnsToObservation(c)); err != nil {
 			// A candidate the browser promoted and the fleet will not fold is a
 			// disagreement between two of our own checks. It stays on the refused

@@ -336,6 +336,40 @@ press instead of trusting it, and the hub now says so in its log. A board that m
 arrive genuinely empty is provisioned through the dial's own `RESET ALL`, which
 erases `storage` and `nvs` on purpose, or `idf.py erase-flash`.
 
+## 12. A first flash adopts a board; an upgrade keeps its history
+
+**Ruling (owner, bench, 2026-10-29).** "A new flash of a firmware should absolutely
+retain the old registry and use it when it's a flash upgrade. When it's a new add of a
+new orb and a first flash essentially, that is when we need to wipe it all and install
+the initial clock only app and the skeleton theme to both flash and the sd card."
+
+**Why the hub has to remember this rather than read it.** Bug 11 is the reason no
+device answer exists: a reflash writes four regions and leaves `apps` (the installed
+rows) and `storage` NVS (the enable words) standing on purpose, so a leftover row and a
+row the owner chose look identical from the far side. The only moment the two cases
+separate is the flash itself, and the question must be asked before the flash files the
+chip as proven: had this MAC already been an orb on this hub's books.
+
+**Implementation.** `flash.go` asks that question through `fleetKnown` and
+`storeProvesOrb` before `MarkRemembered`, and marks an adoption in `cleanslate.go`'s
+set. The automatic join-time install spends the mark: `cleanSlate` uninstalls every
+non-`compiled` row, then erases the card's `apps` and `themes` trees, and the ordinary
+ladder follows and lands the clock plus the skeleton face. Uninstall precedes the card
+erase for the reason bug 9 gives: a header over an empty card is the broken state, and a
+wipe that took the files first would manufacture it. The shell row is never touched
+because the dial cannot run without it. Only the automatic arm wipes, so a hand press
+never erases a shelf. `dropThemeCache` runs after, so the next read is a dial.
+
+**Limitation, stated.** The mark is in memory. A hub restarted between the flash and the
+provisioning loses it and the board keeps whatever it carried; `installOneApp`'s
+hollow-row check then repairs a leftover row that cannot run, and a row that runs is a
+row the owner can uninstall by hand. A wipe gated on state that survived a restart by an
+accident of timing is the worse failure, so the failure chosen is the recoverable one.
+
+**Tests.** `TestCleanSlateUninstallsBeforeItErasesCard` pins read-then-uninstall-then-erase
+and the shell exemption; it fails when the two phases swap. `TestCleanSlateMarkIsOneShot`
+pins that `pending` does not consume, `clear` does, and a nil set owes nothing.
+
 ## Out of scope here
 
 The re-stamp loop (a firmware-bundle commit invalidates `serflash.sh --check`
@@ -350,7 +384,9 @@ the commit this document first described, so the board the owner flashed ran the
 menu. Bugs 9, 10 and 11 came out of that same bench pass. Bugs 9 and 10 are hub-only:
 no reflash is needed, and both are covered by tests in the `orb-manager` suite
 (`TestHollowRowSendsBytesInsteadOfSkipping`, `TestJoinRunSeedsTheTheme`). Bug 11 needs
-no code.
+no code. Bug 12 is the owner's ruling that came out of the same pass, and it is
+implemented: a first flash of an unknown chip wipes the board and seeds the clock plus
+the skeleton face, while an upgrade keeps the registry it finds.
 
 Bugs 1, 2, 4, 5 and 6 are firmware or hub changes that still need a bench pass on a
 rebuilt image. Bug 7 is hub-only and covered by `forgetghost_test.go`.

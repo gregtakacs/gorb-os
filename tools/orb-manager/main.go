@@ -240,6 +240,13 @@ type Server struct {
 	// cached answer looks. Set and cleared inside one identifyCables pass, so it needs no
 	// lock and lives only as long as that pass.
 	owed map[string]bool
+	// slate holds the chips this hub has just written its FIRST gorb-os into. The
+	// automatic join-time install reads it once and wipes what it found, because the
+	// owner's rule is that an adopted board arrives with the shipped baseline and
+	// nothing else, while an upgrade keeps the registry it finds. Nothing on the board
+	// answers which of the two it is — a reflash leaves `apps` and `storage` standing by
+	// design — so the mark is taken at the flash and lives here. See cleanslate.go.
+	slate *cleanSlateSet
 	// lonely remembers the boards this hub personally left lonely. The cable
 	// sweep re-attributes a lonely board's descriptor MAC like any orb's, so
 	// without this mark the forgotten fleet row would rebuild itself from the

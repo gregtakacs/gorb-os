@@ -125,6 +125,23 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Minute)
 	defer cancel()
+	// A board this hub just adopted arrives wearing the shipped baseline and nothing
+	// else, so what it carries is erased before the baseline goes on. Only the automatic
+	// arm wipes: a hand press means an operator is holding the shelf, and an operator who
+	// pressed Install on their own orb never asked for a wipe (see cleanslate.go).
+	slateMAC := ""
+	if automatic {
+		slateMAC = s.slateForIP(ip)
+	}
+	if slateMAC != "" && s.slate.pending(slateMAC) {
+		send(installStep{Step: "slate", Action: "wiping", Note: "first flash of a new orb"})
+		if err := s.cleanSlate(ctx, ip, send); err != nil {
+			log.Printf("orb-manager: the clean slate on %s was refused: %s", ip, err.Error())
+			send(installStep{Step: "slate", Action: "refused", Note: err.Error()})
+			s.jsonErr(w, err.Error())
+			return
+		}
+	}
 	if err := s.installRun(ctx, ip, only, force, card, send); err != nil {
 		// The step goes to the browser AND the log. A run that fails after a reboot
 		// can leave the page before the line does — the whole ladder then disappears
@@ -137,6 +154,12 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	send(installStep{Step: "install", Action: "done"})
+	// The adoption is only over when the baseline landed on top of the wipe. Consuming
+	// the mark here means a run that died midway is retried on the next announce rather
+	// than leaving a board half-seeded and marked done.
+	if slateMAC != "" {
+		s.slate.clear(slateMAC)
+	}
 	log.Printf("orb-manager: installed the library on %s (only=%q auto=%v)", ip, only, automatic)
 }
 
@@ -409,6 +432,79 @@ func cardHolds(listing *orbnet.AppList, slug string) bool {
 		}
 	}
 	return false
+}
+
+// cleanSlate empties a board this hub is adopting: every app row off the dial, and the
+// library's own card trees erased so the seed that follows lands on a card nobody has
+// curated. It runs before installRun and only for the automatic arm, and it is the only
+// hub path that erases a card tree the operator did not name.
+//
+// Uninstall first, then the card. The order is the firmware's: a row whose card file is
+// gone still resolves from its header and still holds its NVS words, while an uninstalled
+// app leaves the card copy where the owner can see it. Erasing the card under a live row
+// is precisely the hollow state bug 9 documents, so a wipe that took the files first
+// would manufacture the very thing it is meant to prevent.
+//
+// The shell row is not touched. `compiled:true` is the firmware's own word for the built
+// into the image, the dial cannot run without it, and no verb the hub can dial removes it.
+func (s *Server) cleanSlate(ctx context.Context, ip string, send func(installStep)) error {
+	list, err := s.device.AppsList(ip)
+	if err != nil {
+		return fmt.Errorf("the orb did not answer its app ledger: %w", err)
+	}
+	if !list.Mounted {
+		return fmt.Errorf("no card in the socket — a clean slate needs one to write into")
+	}
+	for _, row := range list.Installed {
+		if row.Compiled {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if _, e := s.device.AppUninstall(ip, row.Slug); e != nil {
+			return fmt.Errorf("clearing %s: %w", row.Slug, plainDeviceErr(e, 0))
+		}
+		send(installStep{Step: row.Slug, Action: "uninstalled", Note: "clean slate"})
+	}
+	// Both library trees, by the names the device files them under. A card that holds
+	// neither answers an error, which the caller reads as nothing to erase: a brand-new
+	// board lands here with an empty card and must not be refused for it.
+	for _, tree := range []string{"apps", "themes"} {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if _, e := s.device.SDRemove(ip, tree, true); e != nil {
+			log.Printf("orb-manager: clean slate on %s left %s alone: %s", ip, tree, plainDeviceErr(e, 0))
+			send(installStep{Step: tree, Action: "skipped", Note: "nothing to erase"})
+			continue
+		}
+		send(installStep{Step: tree, Action: "erased", Note: "clean slate"})
+	}
+	// The rows the hub remembered are now false on every count, and the card list with
+	// them. Same law the theme store obeys after a write: the next read must be a dial.
+	s.dropThemeCache(ip)
+	return nil
+}
+
+// slateForIP answers the one question the automatic arm cannot ask a board: was THIS
+// address the chip that left a first flash. It is a MAC lookup and not a device read,
+// because no device answer separates an adoption from an upgrade (see cleanslate.go).
+func (s *Server) slateForIP(ip string) string {
+	if s.fleet == nil {
+		return ""
+	}
+	rows := s.fleet.ClaimedBy(ip)
+	if len(rows) != 1 {
+		// Two boards on one address is a contention the fleet already reports, and the
+		// hub will not wipe on behalf of an address it cannot attribute.
+		return ""
+	}
+	return rows[0].MAC
 }
 
 // installClockLive asks the ledger the one question the theme gate needs, at the moment it

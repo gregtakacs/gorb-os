@@ -108,6 +108,7 @@ func newHub() *Server {
 		token:    newLaunchToken(), grants: newIPGrants(ipGrantTTL),
 		cables: newCableCache(), prover: newCableProof(), live: newLiveCache(),
 		lonely:    newLonelyMark(),
+		slate:     newCleanSlate(),
 		orb:       orbnet.NewClient(scanTimeout),
 		device:    orbnet.NewClient(deviceTimeout),
 		ota:       orbnet.NewClient(otaTimeout),

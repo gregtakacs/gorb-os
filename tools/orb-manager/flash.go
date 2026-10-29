@@ -250,6 +250,22 @@ func (s *Server) handleFlash(w http.ResponseWriter, r *http.Request) {
 			// The mark buys no line in state.json: only an address does (the rule,
 			// bench 2026-10-15), so a board left on provisioning with nothing to
 			// dial is off the card until it speaks again.
+			// Was this chip already an orb on this hub's books? If not, this flash is an
+			// ADOPTION and the board is owed the shipped baseline and nothing else; if it
+			// was, the flash is an upgrade and the registry, the enable words and the
+			// owner's card files all stand exactly as they were. Nothing the board can
+			// answer tells the two apart — a reflash leaves `apps` and `storage` standing
+			// by design (the bundle writes 0x0, 0x8000, 0x11000, 0x20000 and nothing else),
+			// and the read that would tell them apart has to happen BEFORE the mark below
+			// files the chip as proven. Asked here, answered into the slate set, spent by
+			// the join-time install. See cleanslate.go.
+			if s.fleet != nil {
+				if prior, known := s.fleetKnown(macNorm(flashedMAC)); !known || !storeProvesOrb(prior) {
+					s.slate.mark(macNorm(flashedMAC))
+					send("log", "first gorb-os flash on this chip: the hub will wipe what it "+
+						"finds on the board and seed the clock and the skeleton face")
+				}
+			}
 			if s.fleet != nil {
 				if werr := s.fleet.MarkRemembered(macNorm(flashedMAC)); werr != nil {
 					log.Printf("orb-manager: %s was flashed but not remembered: %v", flashedMAC, werr)

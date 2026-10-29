@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1129,5 +1130,111 @@ func TestJoinRunSeedsTheTheme(t *testing.T) {
 	}
 	if !sawTheme {
 		t.Errorf("no theme step streamed for a clock install: %v", steps)
+	}
+}
+
+// TestCleanSlateUninstallsBeforeItErasesCard pins the order and the scope of the wipe an
+// adopted board gets. Rows come off before the card does: erase the card under a live row
+// and you have built bug 9's hollow state on purpose, which is the opposite of what a clean
+// slate is for. The built-in shell row is left alone because the dial cannot run without it
+// and no door the hub can dial removes it.
+func TestCleanSlateUninstallsBeforeItErasesCard(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/apps" && r.Method == http.MethodGet:
+			order = append(order, "read")
+			w.Write([]byte(`{"mounted":true,"apps":[],"installed":[` +
+				`{"slug":"menu","compiled":true,"enabled":true},` +
+				`{"slug":"clock","enabled":true},{"slug":"thermo","enabled":false}]}`))
+		case r.URL.Path == "/api/v1/apps/uninstall":
+			order = append(order, "uninstall:"+r.URL.Query().Get("id"))
+			w.Write([]byte(`{"state":"uninstalled"}`))
+		case r.URL.Path == "/api/v1/sd/rm":
+			order = append(order, "rm:"+r.URL.Query().Get("path")+
+				":rec="+r.URL.Query().Get("recursive"))
+			w.Write([]byte(`{"state":"deleted"}`))
+		default:
+			w.Write([]byte(`{}`))
+		}
+	})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	s := newHub()
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+	var steps []installStep
+	if err := s.cleanSlate(context.Background(), "127.0.0.1",
+		func(st installStep) { steps = append(steps, st) }); err != nil {
+		t.Fatalf("the clean slate refused: %v", err)
+	}
+
+	got := strings.Join(order, " ")
+	for _, want := range []string{"uninstall:clock", "uninstall:thermo", "rm:apps:rec=1", "rm:themes:rec=1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the clean slate never did %s; the device saw: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "uninstall:menu") {
+		t.Error("the clean slate tried to uninstall the built-in shell the dial needs to boot")
+	}
+	idx := func(sub string) int {
+		for k, v := range order {
+			if strings.HasPrefix(v, sub) {
+				return k
+			}
+		}
+		return -1
+	}
+	if idx("read") > idx("uninstall:clock") {
+		t.Error("the clean slate wiped without asking the dial what it held")
+	}
+	if idx("uninstall:thermo") > idx("rm:apps") {
+		t.Errorf("the clean slate erased the card before the last row came off: %s", got)
+	}
+	erased := 0
+	for _, st := range steps {
+		if st.Action == "erased" {
+			erased++
+		}
+	}
+	if erased != 2 {
+		t.Errorf("the panel got %d erase steps and must get both trees: %v", erased, steps)
+	}
+}
+
+// TestCleanSlateMarkIsOneShot pins the gate on the only witness that separates an adoption
+// from an upgrade. A reflash leaves `apps` and `storage` standing by design, so the board
+// cannot answer the question; the mark is the answer, and consuming it is what keeps a
+// second press from wiping a shelf the owner has since filled.
+func TestCleanSlateMarkIsOneShot(t *testing.T) {
+	c := newCleanSlate()
+	if c.pending("aa:bb:cc:dd:ee:01") {
+		t.Error("a fresh set owes a wipe to a chip it has never seen")
+	}
+	c.mark("aa:bb:cc:dd:ee:01")
+	if !c.pending("aa:bb:cc:dd:ee:01") {
+		t.Fatal("a marked chip is not pending a wipe")
+	}
+	c.pending("aa:bb:cc:dd:ee:01")
+	if !c.pending("aa:bb:cc:dd:ee:01") {
+		t.Error("pending consumed the mark; a refused install would never be retried")
+	}
+	c.clear("aa:bb:cc:dd:ee:01")
+	if c.pending("aa:bb:cc:dd:ee:01") {
+		t.Error("clear did not consume the mark, so the next press would wipe the owner's shelf")
+	}
+	c.mark("")
+	if c.pending("") {
+		t.Error("an empty MAC got a mark; it would match an unattributed install")
+	}
+	var nilSet *cleanSlateSet
+	if nilSet.pending("aa:bb:cc:dd:ee:01") {
+		t.Error("a hub with no slate set reported a wipe owed")
 	}
 }

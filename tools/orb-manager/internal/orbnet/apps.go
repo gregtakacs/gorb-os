@@ -225,6 +225,36 @@ func (c *Client) AppEnable(ip, slug string, on bool) (json.RawMessage, error) {
 	return c.devicePost(ip, "/api/v1/apps/enable?id="+url.QueryEscape(slug)+"&on="+onv, nil, "")
 }
 
+// AppUninstall takes one row off the dial (POST /api/v1/apps/uninstall?id=). It is
+// the owner's door, and it is the only way to clear an `apps` partition header from
+// the far side: the firmware's own RESET ALL erases every NVS namespace and still
+// leaves installed rows resolving from their headers (orb_net.c's factory comment
+// says so outright), so a hub that wants a board with NO apps on it uninstalls them
+// one row at a time. The card copy stays — that is the verb's published promise —
+// so a caller that wants the card empty too calls SDRemove beside it.
+func (c *Client) AppUninstall(ip, slug string) (json.RawMessage, error) {
+	if slug == "" {
+		return nil, fmt.Errorf("orbnet: refusing an uninstall with no slug")
+	}
+	return c.devicePost(ip, "/api/v1/apps/uninstall?id="+url.QueryEscape(slug), nil, "")
+}
+
+// SDRemove erases one card path (POST /api/v1/sd/rm?path=&recursive=1). The device
+// validates the path the same way its file-manager page does, so a caller that names
+// a tree it did not mean to erase gets a refusal, not a partial delete. recursive is
+// the door's own word: the firmware refuses a non-empty directory without it and
+// says so.
+func (c *Client) SDRemove(ip, path string, recursive bool) (json.RawMessage, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("orbnet: refusing an sd rm with no path")
+	}
+	q := "/api/v1/sd/rm?path=" + url.QueryEscape(path)
+	if recursive {
+		q += "&recursive=1"
+	}
+	return c.devicePost(ip, q, nil, "")
+}
+
 // MaxAppUpload mirrors ORB_APP_UPLOAD_MAX: the door refuses on the declared length
 // before a byte reaches the card, so the client states the same ceiling rather than
 // learning it from a 413. D37 grew the device bound by one term — a single editor

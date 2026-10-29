@@ -1000,6 +1000,43 @@ func TestBuiltInBundleCarriesASemver(t *testing.T) {
 	}
 }
 
+// The floor and the install gate both speak in RELEASES (v1.1.35), while a stamp carries the
+// commit that produced the build (v1.1.35+6bb3b11). Stripping the suffix is what makes the two
+// comparable: a bundle built from the release's own tree, whatever its hash, satisfies a floor
+// that names the release. A stamp with no suffix at all is a hand-made build and still counts by
+// its version half, because the floor's promise is about the reader, not the git state.
+func releaseOf(stamp string) string {
+	if i := strings.IndexByte(stamp, '+'); i >= 0 {
+		return stamp[:i]
+	}
+	return stamp
+}
+
+// The bundle commit is the second half of every release, and 6bb3b11 shipped without it: the
+// hub bumped version.txt and both firmware floors to v1.1.35 and kept embedding a v1.1.33 image,
+// so the hub's built-in firmware was one release behind the floor its own seed flow enforced. No
+// existing gate saw it — TestBuiltInBundleCarriesASemver asks only whether the stamp parses, and
+// the two floor tests read version.txt rather than the artifact — which is why this one exists.
+// It compares the release half of each: the hash suffix names the build, and a bundle rebuilt
+// from the same release tree is still that release.
+func TestBuiltInBundleCarriesTheTreesRelease(t *testing.T) {
+	b, err := firmware.BuiltIn()
+	if err != nil {
+		t.Fatalf("BuiltIn: %v", err)
+	}
+	raw, err := os.ReadFile("../../version.txt")
+	if err != nil {
+		t.Skipf("no version.txt two levels up: %v", err)
+	}
+	want := strings.TrimSpace(string(raw))
+	if got := releaseOf(b.Version); got != want {
+		t.Errorf("the hub embeds %s and ships floors at %s: a release bump whose bundle commit "+
+			"never landed leaves the hub refusing to seed a board its own built-in firmware "+
+			"would put behind that floor. Repack with orbpack -build ../../build (see "+
+			"docs/BUNDLE-STAMPING.md).", b.Version, want)
+	}
+}
+
 // A probe takes the same per-port lock a flash does, so two hubs (or a hub and
 // orbprobe) cannot reset and write the same wire at once. Now that the sweep is the only
 // caller, every one of those guards has to live in the sweep itself: a background loop

@@ -442,6 +442,10 @@ Two were the hub's fault; the third was a radio.
   sentence now says the board joined and never answered, and the budget went to 90 s, which covers
   one pass of the firmware's escalating retry ladder. The console's network list no longer
   overwrites that verdict: an auto-rescan refills the picker and keeps its mouth shut.
+- **The release shipped half of itself.** The v1.1.35 bump landed with its floors and no bundle
+  commit, so the hub embedded a v1.1.33 image behind a v1.1.35 gate. Nothing in the suite could
+  see it: the floor tests read version.txt, not the artifact. `f8fc6db` ships the bundle;
+  `TestBuiltInBundleCarriesTheTreesRelease` refuses the pairing, red against the old zip.
 - **A seed that reported its upload in KB.** The join dialog streams the same step stream the
   Library panel uses and painted none of it as progress, because the panel's frame belongs to the
   Library tab. It drives its own bar now, fed by the same `uploading` steps, and the bar retires

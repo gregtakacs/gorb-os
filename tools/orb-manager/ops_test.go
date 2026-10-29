@@ -252,3 +252,141 @@ func TestUICanCancelAndQuitSafely(t *testing.T) {
 		t.Errorf("app.js contains %d client-side aborts: only the discovery watchdog and the preview queue may drop a fetch", n)
 	}
 }
+
+// The press must beat the sweep. The launch and cadence probes and the cable-proof
+// rounds re-arm for as long as a cable is present, so the day an identify holds the
+// port is the day the flash press is refused -- twice a day on the bench, which is the
+// complaint these four tests exist for. A user write press evicts sweep work; it never
+// evicts another user press; a wedged sweep still gets the old refusal.
+
+func TestWritePressEvictsALiveProbe(t *testing.T) {
+	r := newOpRegistry()
+	probe, pctx, err := r.start(context.Background(), "/dev/ttyACM1", opProbe, time.Minute)
+	if err != nil {
+		t.Fatalf("probe claim: %v", err)
+	}
+	released := make(chan struct{})
+	go func() {
+		<-pctx.Done() // what probeOrb and every serial step already observe
+		r.finish(probe)
+		close(released)
+	}()
+
+	flash, _, err := r.start(context.Background(), "/dev/ttyACM1", opFlash, 0)
+	if err != nil {
+		t.Fatalf("the flash press was refused by a background probe: %v", err)
+	}
+	defer r.finish(flash)
+	select {
+	case <-released:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the evicted probe never saw its cancellation")
+	}
+	if pctx.Err() == nil {
+		t.Error("the probe claimed and released but its context was never cancelled")
+	}
+	if k, ok := r.busy("/dev/ttyACM1"); !ok || k != opFlash {
+		t.Errorf("port held by %q after the eviction, want flash", k)
+	}
+}
+
+func TestReArmedSweepRoundIsEvictedToo(t *testing.T) {
+	// The re-arm is the whole point of the design: a sweep evicted mid-round is back
+	// on the port within a tick. A flag written after the claim would leave that
+	// re-armed round looking like an operator's press, and the flash would refuse on
+	// it -- the bug startSweep exists to close. This drives the race for real.
+	r := newOpRegistry()
+	stop := make(chan struct{})
+	defer close(stop)
+	evictions := make(chan int, 8)
+	go func() {
+		rounds := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			job, jctx, err := r.startSweep(context.Background(), "/dev/ttyACM1", opCmd, time.Minute)
+			if err != nil {
+				select {
+				case <-stop:
+					return
+				case <-time.After(time.Millisecond):
+				}
+				continue // the flash holds it now: the sweep re-arms later, like the real loop
+			}
+			<-jctx.Done()
+			r.finish(job)
+			rounds++
+			select {
+			case evictions <- rounds:
+			default:
+			}
+		}
+	}()
+	time.Sleep(30 * time.Millisecond) // let the sweep take the cable
+
+	flash, _, err := r.start(context.Background(), "/dev/ttyACM1", opFlash, 0)
+	if err != nil {
+		t.Fatalf("the flash press was refused by a re-arming sweep: %v", err)
+	}
+	defer r.finish(flash)
+	if n := len(evictions); n == 0 {
+		t.Error("the flash won without evicting a round, so it slipped past an open claim")
+	}
+}
+
+func TestWritePressDoesNotEvictUserWork(t *testing.T) {
+	r := newOpRegistry()
+	con, cctx, err := r.start(context.Background(), "/dev/ttyACM0", opConsole, time.Minute)
+	if err != nil {
+		t.Fatalf("console claim: %v", err)
+	}
+	if _, _, err := r.start(context.Background(), "/dev/ttyACM0", opFlash, 0); err == nil ||
+		!strings.Contains(err.Error(), "busy") {
+		t.Errorf("a flash on a console read returned %v; the refusal is what the operator should see", err)
+	}
+	if cctx.Err() != nil {
+		t.Error("a refused flash cancelled the operator's console read")
+	}
+	r.finish(con)
+
+	first, fctx, err := r.start(context.Background(), "/dev/ttyACM0", opFlash, 0)
+	if err != nil {
+		t.Fatalf("flash claim: %v", err)
+	}
+	if _, _, err := r.start(context.Background(), "/dev/ttyACM0", opProvision, 0); err == nil {
+		t.Error("a second writer took a cable from under a running flash")
+	}
+	if fctx.Err() != nil {
+		t.Error("a refused provision cancelled the running flash -- the half-write this gate exists to prevent")
+	}
+	r.finish(first)
+}
+
+func TestWedgedSweepStillRefusesThePress(t *testing.T) {
+	// An evictable holder that NEVER releases is the one case the press must still
+	// refuse: cancelling the context of a read wedged in the kernel changes nothing,
+	// and claiming anyway would put two writers on one wire. The refusal is the old
+	// message, timed out by the grace, not by forever.
+	defer func(d time.Duration) { preemptWait = d }(preemptWait)
+	preemptWait = 200 * time.Millisecond
+
+	r := newOpRegistry()
+	if _, _, err := r.start(context.Background(), "/dev/ttyACM1", opProbe, time.Hour); err != nil {
+		t.Fatalf("probe claim: %v", err)
+	}
+	// No finish goroutine: this probe is wedged the way a bad eeprom.Open wedges.
+	t0 := time.Now()
+	_, _, err := r.start(context.Background(), "/dev/ttyACM1", opFlash, 0)
+	if err == nil {
+		t.Fatal("a wedged probe handed the port to a flash without releasing it")
+	}
+	if !strings.Contains(err.Error(), "busy") {
+		t.Errorf("wedged-probe refusal = %q, want the busy message", err)
+	}
+	if d := time.Since(t0); d < 150*time.Millisecond || d > 2*time.Second {
+		t.Errorf("the grace ran %v; want it waited out (~200ms), not hung", d)
+	}
+}

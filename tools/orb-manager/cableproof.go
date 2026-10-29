@@ -408,14 +408,15 @@ func (s *Server) proveCable(ctx context.Context, c cableSighting) (bool, bool) {
 
 // cableProofRoundTrip claims the cable the way a command does and asks the question.
 // The registry entry names it opCmd, so /api/ops says what is on the wire rather than
-// merely that something is, and a flash started one tick later waits instead of
-// colliding.
+// merely that something is, and the sweep claim means a flash or join started one tick
+// later evicts this round instead of refusing the operator -- the sweep re-arms, and a
+// press that queues behind it is a press that never runs.
 //
 // The result separates the three ways an attempt ends, because the clock must not charge
 // a board for a question it never got: a refused registration, a refused lock and a port
 // the OS would not open all mean no PING went down the wire.
 func (s *Server) cableProofRoundTrip(ctx context.Context, c cableSighting) (askResult, bool) {
-	job, octx, oerr := s.ops.start(ctx, c.port, opCmd, cableProofBudget)
+	job, octx, oerr := s.ops.startSweep(ctx, c.port, opCmd, cableProofBudget)
 	if oerr != nil {
 		return askNoWire, false
 	}

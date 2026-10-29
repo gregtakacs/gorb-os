@@ -374,8 +374,9 @@ func (s *Server) lanProof(c cableSighting) (bool, bool) {
 
 // probeCableNow pays one reboot and files the answer. It claims the cable exactly as the
 // Identify door does — registered as opProbe, holding orbbind's cross-process lock — so
-// a flash started mid-sweep waits rather than collides, and /api/ops can say what is on
-// the wire.
+// a flash started mid-sweep cancels this probe at its next block boundary and takes the
+// cable (see opRegistry.start: a write press evicts an identify rather than queueing
+// behind a sweep that never stops re-arming), and /api/ops says what was on the wire.
 //
 // It reports whether the hub learned anything. An error is filed as a reason on the port
 // rather than dropped: a board that will not answer to a probe is information the card

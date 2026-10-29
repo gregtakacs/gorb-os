@@ -69,10 +69,28 @@ type op struct {
 	Started  time.Time `json:"started"`
 	Deadline time.Time `json:"deadline,omitempty"`
 
+	// background marks a sweep's own claim -- a launch/cadence probe, a cable-proof
+	// round-trip -- as never worth waiting a flash for. A user press evicts it (see
+	// start); a user press never evicts another user press. Guarded by opRegistry.mu.
+	background bool
+
 	cancel context.CancelFunc
 	done   chan struct{} // closed when the operation returns
 	closed bool          // guards done against a double finish; set under opRegistry.mu
 }
+
+// yields reports whether a user write press may evict this holder. Every identify is
+// sweep work by construction -- probeCableNow is its only caller -- and cable-proof
+// rounds claim as background. The read of background happens under the registry lock,
+// which is the only lock claim writes it under.
+func (o *op) yields() bool { return o.Kind == opProbe || o.background }
+
+// preemptWait bounds how long a user write press waits for an evicted background
+// operation to unwind and release the port before it refuses the press the old way.
+// No background op's work runs longer than its own budget, and every serial step in
+// them observes ctx, so the wait is milliseconds in practice; this is the ceiling.
+// Tests shrink it.
+var preemptWait = 4 * time.Second
 
 // opRegistry maps canonical port path to the operation holding it.
 type opRegistry struct {
@@ -86,33 +104,73 @@ func newOpRegistry() *opRegistry { return &opRegistry{byPort: map[string]*op{}} 
 // run under, and refuses when the port already carries an operation — including
 // under the other spelling of the same cable. parent is the request context, so a
 // browser that goes away cancels the operation on its own.
+//
+// One holder does NOT refuse a writer: a background sweep. The launch and cadence
+// probes and the cable-proof rounds keep re-arming for as long as a cable is
+// present, so a press that waited for one was a press that waited forever on a
+// lonely board -- the bench complaint "port busy: identify running since ..." twice
+// a day. A user write press (flash, wipe, lonely write, provision) therefore
+// cancels an evictable holder and takes the port the moment it releases, up to
+// preemptWait; a wedged holder still gets the old refusal, because a press that
+// steals a port nobody released is how two writers share a wire.
 func (r *opRegistry) start(parent context.Context, port string, kind opKind, budget time.Duration) (*op, context.Context, error) {
+	return r.claim(parent, port, kind, budget, false)
+}
+
+// startSweep claims for a sweep's own round. The claim carries the background flag
+// AT registration, not after: a sweep evicted mid-round re-arms within milliseconds,
+// and a flag written after the claim would leave a window in which the re-armed
+// round looked like an operator's press to an evicting flash. Cable-proof rounds use
+// it; probes do not need to -- opProbe evicts by kind.
+func (r *opRegistry) startSweep(parent context.Context, port string, kind opKind, budget time.Duration) (*op, context.Context, error) {
+	return r.claim(parent, port, kind, budget, true)
+}
+
+func (r *opRegistry) claim(parent context.Context, port string, kind opKind, budget time.Duration, background bool) (*op, context.Context, error) {
 	if port == "" {
 		return nil, nil, fmt.Errorf("no serial port named")
 	}
 	key := orbbind.CanonicalPortPath(port)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if live, ok := r.byPort[key]; ok {
-		return nil, nil, fmt.Errorf("port %s is busy: %s running since %s - cancel it or wait it out",
-			key, live.Kind, live.Started.Format("15:04:05"))
+	preemptBy := time.Now().Add(preemptWait)
+	for {
+		r.mu.Lock()
+		live, ok := r.byPort[key]
+		if !ok {
+			ctx := parent
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			var cancel context.CancelFunc
+			if budget > 0 {
+				ctx, cancel = context.WithTimeout(ctx, budget)
+			} else {
+				ctx, cancel = context.WithCancel(ctx)
+			}
+			o := &op{Port: key, Asked: port, Kind: kind, Started: time.Now(),
+				cancel: cancel, done: make(chan struct{}), background: background}
+			if budget > 0 {
+				o.Deadline = time.Now().Add(budget)
+			}
+			r.byPort[key] = o
+			r.mu.Unlock()
+			return o, ctx, nil
+		}
+		evict := kind.writesFlash() && live.yields() && time.Now().Before(preemptBy)
+		if !evict {
+			err := fmt.Errorf("port %s is busy: %s running since %s - cancel it or wait it out",
+				key, live.Kind, live.Started.Format("15:04:05"))
+			r.mu.Unlock()
+			return nil, nil, err
+		}
+		log.Printf("orb-manager: %s evicted by a %s press", key, kind)
+		live.cancel()
+		done := live.done
+		r.mu.Unlock()
+		select {
+		case <-done:
+		case <-time.After(time.Until(preemptBy)):
+		}
 	}
-	ctx := parent
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var cancel context.CancelFunc
-	if budget > 0 {
-		ctx, cancel = context.WithTimeout(ctx, budget)
-	} else {
-		ctx, cancel = context.WithCancel(ctx)
-	}
-	o := &op{Port: key, Asked: port, Kind: kind, Started: time.Now(), cancel: cancel, done: make(chan struct{})}
-	if budget > 0 {
-		o.Deadline = time.Now().Add(budget)
-	}
-	r.byPort[key] = o
-	return o, ctx, nil
 }
 
 // finish releases the claim. Safe to call twice and on a nil operation, so a

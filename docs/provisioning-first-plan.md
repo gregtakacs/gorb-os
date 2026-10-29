@@ -68,7 +68,7 @@ a dial nobody asked for while its owner is trying to pair it.
   this is so "the dial is already ticking while the radio comes up". Rule 3
   inverts that priority on purpose, for unprovisioned boards only.
 - **The QR widget is compiled out.** `sdkconfig`: `# CONFIG_LV_USE_QRCODE is not
-  set`. `lv_qrcode` is present in the managed LVGL 9.2 (`ap-onboarding-qr-plan.md`
+  set`. `lv_qrcode` is present in the managed LVGL **9.6.0** (`ap-onboarding-qr-plan.md`
   §Grounded facts). Turn it on in **both** `sdkconfig.defaults` and the tracked-
   out local `sdkconfig`: `sdkconfig.defaults` only applies to a fresh `sdkconfig`,
   which is exactly how `0c50881`'s buffer trims were silently lost in the sibling
@@ -140,12 +140,20 @@ URL-only payload of `ap-onboarding-qr-plan.md`: a URL QR on a phone that has not
 joined opens a browser onto an unreachable address.
 
 - Primary: `WIFI:T:nopass;S:orb-8089;H:false;;`. No secret is disclosed — the AP is
-  open by design. Long-press swaps to the URL payload `http://192.168.4.1/` for
+  open by design. This is the scheme behind the Wi-Fi QR stickers people scan in
+  cafés: the format is the ZXing "Android Wi-Fi QR code" proposal, and iOS's Camera
+  app has parsed it since iOS 11, which is why scanning one offers a Join button
+  before the phone joins anything. Neither platform *silently* connects — Android
+  joins on confirm, iOS shows a Join card — so the flow is "scan, tap once, done",
+  and no payload removes that tap. Long-press swaps to the URL payload
+  `http://192.168.4.1/` for
   phones that ignore `WIFI:` payloads, and the label names which one is up. Both the
   swap and the join-then-capture sequence are **bench-verify items**; do not trust
   either until a real phone joins from the glass.
-- Captive DNS stays on, so a phone that joins is pushed to the page by the OS with
-  no scanning at all.
+- Captive DNS does **not** run today: `esp_dns_server_enable()` is absent from
+  `orb_net.c`, so joining `orb-8089` lands a phone on a blank page until a human
+  types `192.168.4.1`. Enabling it is part of this phase — one call on the AP netif,
+  and it is what turns "join, then guess" into "join, then the page opens".
 
 ### 4. On-device entry, with one knob and one button
 
@@ -162,12 +170,43 @@ SETUP_QR → (press) → NET_LIST → (press) → KEY_ARM → (hold) → JOINING
   (`scan_collect()`, `orb_net.c:3350`) into SSID rows with signal bars, deduplicated
   by SSID, strongest first, 5 GHz rows marked unjoinable rather than hidden. Rotate
   scrolls, press selects.
-- `KEY_ARM`: two rows on screen — group row and character row. Rotate moves through
-  `[a-z] [A-Z] [0-9] - _ . @ space`; press commits and advances the cursor. Hold
-  600 ms backspaces one slot; hold 2 s submits. Uses the existing
-  `knob_take_long_press()` / `knob_held_ms()` API, no new hardware state.
-- Entry is masked by default; a hold on the filled field toggles reveal, so a
-  mis-keyed character is visible before submit.
+- `KEY_ARM`: **one horizontal rolodex strip**, ported from `orb-os`'s password entry
+  (`orb-os/src/settings_view.cpp:288-295`, drawn at 1124-1180, driven at 1357-1364
+  and 1509-1538). Not my earlier two-row group scheme — the reference build already
+  ships this and answers the questions that design leaves open.
+  - Charset, in this order, as one string:
+    `abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !@#$%^&*()-_=+.,:;?/`
+    (88 keys), followed by three virtual keys appended by index, never in the string:
+    `DEL`, `OK`, `Back`. Count the keys with `sizeof(WKEYS) - 1`, not a literal —
+    the reference file carries a note about exactly that going wrong (244-245).
+  - Draw 7 cells, the selected one in the middle (`idx = cursor - 3 + k`), so the
+    rolodex reads as a scroll and not a grid. The centre cell renders at
+    `montserrat_44`, its neighbours at `montserrat_22`, which is what makes the
+    current character unmistakable without a cursor box. Space shows as `SP`.
+  - Position the cells from **measured** widths walking outward from the centre
+    (`lv_txt_get_size`, reference 1155-1179). A fixed pitch puts a large `OK`
+    through `DEL`, because the word keys are wider than any single glyph at either
+    size. `GAP` 18 px, one line at `Y` 20.
+  - Rotate **wraps**: `cursor = (cursor + step + N) % N` (reference 1363). Clamping
+    is the wrong choice here, and the reference says why: on an 88-key strip you
+    scroll the whole way back to reach `OK`, whereas wrapping puts `Back` one
+    detent left of the first character from anywhere on the strip.
+  - Press on a character appends; press on `DEL` backspaces, and backspace on an
+    empty field goes **back to the network list** (reference 1514-1533); press on
+    `Back` abandons and keeps the list; press on `OK` submits. The `DEL`-does-double-
+    duty rule is load-bearing: the reference shipped a version with no visible exit,
+    and the reported failure was that an owner who reached the password screen with
+    the wrong passphrase had nothing left but a power cycle (296-303). So the exit
+    is also a named key, not only a gesture.
+  - Show the entered passphrase in plaintext at `montserrat_26` (reference 1125-1126:
+    "reading back what you typed matters"). Drop my plan's earlier mask-by-default
+    idea — masking a passphrase you are dialing in one character at a time with a
+    knob optimises the wrong threat while guaranteeing mis-keys.
+  - Hint line: `turn to choose, push to select`, the reference's own wording
+    (1121), so the grammar matches every other knob screen on the panel.
+  - Reuse `knob_take_long_press()` / `knob_held_ms()` for long-press-always-exits.
+    No new hardware state, and no `KEY_GROUP` second axis — the strip makes it
+    unnecessary.
 - Submitting writes `ssid`/`pass` through the existing `PROV` store path
   (`orb_net.c:1040-1042`) on the radio task — never on the LVGL task, because an NVS
   write off an internal stack is the `esp_task_stack_is_sane_cache_disabled` abort
@@ -203,8 +242,28 @@ closes by never being in that state with a network configured.
 
 - `UNPROVISIONED`: the AP stays up indefinitely; there is no network to fall back
   to. §7's guard applies for as long as it holds.
-- `RESCUE`: the existing sojourn applies, `CONFIG_ORB_NET_PROV_SOJOURN_S=600`. Expiry
-  tears the AP down and rejoins the retry ladder; it does not reboot.
+- `RESCUE`: keep the existing sojourn, `CONFIG_ORB_NET_PROV_SOJOURN_S=600`
+  (`main/Kconfig:121`). Decided 2026-10-29: on expiry the orb **shuts down and
+  power cycles** — and it already does. `NET_CMD_AP_EXPIRED` calls `sojourn_reboots()`
+  then `orb_svc_note_clean_reboot()` + `esp_restart()` (`orb_net.c:1802-1827`),
+  disarming the fault record first so a planned exit never bills an app for a crash
+  that did not happen. **No code change here.** Correct the earlier line in this plan,
+  which said expiry "tears the AP down and rejoins the retry ladder; it does not
+  reboot" — that was wrong, and it was lifted from the `orb-os` reference tree rather
+  than read out of this one.
+  - Two properties of that path are load-bearing and must survive the refactor: it
+    deliberately does **not** set D2's intent flag, because a reboot that requested
+    provisioning again loops two unusable states forever (`orb_net.c:1817-1825`); and
+    the timer arms only for a recovery session (`sojourn_arms()`, `orb_net.c:1608`),
+    since a factory device with no credentials rebooting lands back on the same
+    provisioning branch.
+  - There is no PMIC or deep-sleep driver anywhere in `main/` — no `esp_sleep_*` call,
+    no AXP driver — so a "power cycle" on this board can only be `esp_restart()`. A
+    true rail-down needs hardware support that does not exist today; note it and move
+    on rather than plan a shutdown state the board cannot honour.
+  - `UNPROVISIONED` still has no deadline and must keep none. The 120 s glass duty
+    cycle in §7 is what protects a shelf board; the ladder in `ORB_NET_AP_RESCUE_FAILS`
+    is what protects a configured one.
 - Exit in both cases is a lease, and only a lease: `boot_gate_link()` records it,
   `orb_net` posts a one-shot, and `app_main`'s deferred branch runs the theme, the
   app walk, the carousel and `idle_dim` exactly as today. `display_init()` funds the
@@ -213,18 +272,42 @@ closes by never being in that state with a network configured.
 - Every existing door stays: serial `PROV`/`NAME`/`SCAN`/`MODE`/`RESET`, the hub over
   USB, and the page at `192.168.4.1`.
 
-### 7. A static QR on AMOLED is a burn-in risk
+### 7. The QR is on for two minutes, then the panel blanks
 
 `ap-onboarding-qr-plan.md` dismissed burn-in because its screen was AP-scoped at
 ~900 s. It is now unbounded: an unprovisioned Orb on a shelf holds one image for
-days. This is a requirement, not a caveat:
+days. Decided on the bench 2026-10-29 — **duty cycle, not pixel-shift**. Drop the
+earlier 1 px shift / 5 min invert / 6 h ladder idea entirely: a blank panel ages
+nothing at all, needs no legibility argument, and is one timer instead of three
+mechanisms.
 
-- Shift the whole QR block 1 px on both axes every 30 s, and invert black/white
-  every 5 min. The shift is small against a 240 px code on a 466 px panel, so
-  legibility is unaffected.
-- Run reduced panel brightness through the phase and restore it at `boot_gate_link`.
-- Past 6 h, blank the panel for 60 s every 10 min. Joining still works — the SSID is
-  in the phone's network list whether the panel is lit.
+- The QR shows for **120 s** from the phase opening. Then the panel goes fully
+  blank — not dimmed, not black-on-black art, blank.
+- **Any knob event brings it back**: one detent or one press. Re-arm the 120 s
+  timer on wake, so a second blank follows the second showing.
+- Blanking rides the existing dim path, not a new one: the panel's only brightness
+  control is the QSPI `0x51` write behind `esp_lcd_panel_co5300_set_brightness()`
+  (`managed_components/espressif__esp_lcd_co5300/include/esp_lcd_co5300.h:88`), and
+  `idle_dim.c` already marshals that write onto the LVGL task because issuing it
+  from elsewhere is the corruption documented at `idle_dim.c:304-313`. Reuse that
+  handoff. A `0` level is a legal `uint8_t`, and `idle_dim_set_user_level()` clamps
+  only above 100 (`idle_dim.c:640`), so nothing stands in the way — but confirm on
+  the bench that `0` blanks rather than holding the last frame.
+- **The AP is entirely independent of this timer.** The panel can be dark for twenty
+  minutes while `orb-8089` broadcasts; the phone's Wi-Fi list is the interface. The
+  blank costs nothing but a trip to the knob.
+- Say so on the glass before it goes dark: `turn the knob to show it again`, so a
+  blank panel reads as asleep and not as dead. Log the wake reason with
+  `idle_dim_activity(why)` (`idle_dim.h:77`), which already exists for exactly this
+  question.
+- Keep the SSID text on the panel through the blank? **No** — decided: the whole
+  panel blanks, and the knob restores the full screen. Half-lit is the worst of both
+  for burn-in and saves nothing a person can use.
+- The 120 s figure is close enough to `CONFIG_ORB_NET_AP_HOLD_S`'s existing default
+  that it should reuse that Kconfig value rather than gain a new constant, if the
+  two stay semantically honest — the hold governs the AP, this governs the glass,
+  and a shared number is a lie waiting to happen. **Ship a separate
+  `ORB_NET_PROV_QR_SHOW_S` defaulting to 120.**
 
 ### 8. What the hub shows
 
@@ -240,8 +323,8 @@ and still happens after first contact.
 |---|---|---|
 | P0 (done) | `0c50881` tile-ring loan | orb-A boots to a joinable AP |
 | P1 | `boot_gate`, setup screen, no ring, QR, Kconfig deletion, hub token | clean flash shows QR under 2 s, no theme or app lines in the log |
-| P2 | `NET_LIST` + `KEY_ARM` on-device entry | join a real WPA2 network with the knob alone |
-| P3 | burn-in guard, `RESCUE` sojourn rework, status fields | 24 h soak on an unconfigured board |
+| P2 | `NET_LIST` + `KEY_ARM` rolodex, ported from `orb-os` | join a real WPA2 network with the knob alone |
+| P3 | 120 s QR duty cycle, captive DNS, status fields | 24 h soak on an unconfigured board |
 
 P1 and P2 do not overlap: P2's screens ride P1's router slot.
 
@@ -287,18 +370,39 @@ P1 and P2 do not overlap: P2's screens ride P1's router slot.
 
 ## Open questions to settle before P1
 
-1. Exact `lv_qrcode` API names in this LVGL 9.2 revision — read the installed header.
-2. Does the captive portal still capture a phone on `orb-8089` with no STA interface
-   up? Settle this before the payload choice is final.
-3. `KEY_ARM` charset ordering and the commit/backspace/finish gesture set. The
-   reduced set above keeps entry near 30 detents per character; full ASCII needs a
-   third row. Decide on the bench, by typing a real passphrase.
-4. In `RESCUE`, does the QR replace the clock outright or dim over it? Rule 3 says
-   replace. A board whose owner is away going dark is a worse story than one showing
-   a dim clock, so this one is worth arguing before it is coded.
-5. Whether `UNPROVISIONED` should ever hide the QR. The guard in §7 blanks the panel
-   on a timer; the SSID text should probably survive that blank so the board still
-   reads as pairing rather than dead.
+Resolved 2026-10-29, recorded here so nobody re-opens them:
+
+1. **`lv_qrcode` API — settled, header read.** LVGL is **9.6.0**, not 9.2
+   (`managed_components/lvgl__lvgl/include/lvgl/lv_version.h:9-11`). The widget header
+   is `include/lvgl/widgets/lv_qrcode.h`; the API is `lv_qrcode_create(parent)`,
+   `lv_qrcode_set_size(obj, int32_t)`, `lv_qrcode_set_dark_color()`,
+   `lv_qrcode_set_light_color()`, `lv_qrcode_set_quiet_zone(obj, bool)`, and
+   `lv_qrcode_update(obj, data, len)` which **returns `lv_result_t`** — check it,
+   since a failed encode otherwise leaves a blank white square that reads as a broken
+   QR. `LV_USE_QRCODE` (`managed_components/lvgl__lvgl/Kconfig:2259`) has no default
+   and `select`s `LV_USE_CANVAS`, already `=y` in this build (`sdkconfig:2663`), so
+   enabling the widget costs the QR library alone.
+3. **`KEY_ARM` charset and gestures — settled.** Port `orb-os`'s single rolodex strip
+   verbatim; see §4. The earlier "third row for full ASCII" worry is moot: the
+   reference's 88-key single strip already carries the printable ASCII set its
+   password field accepts, and wrapping makes `Back` one detent away from anywhere.
+4. **`RESCUE` sojourn — settled.** Keep `esp_restart()` on expiry; already implemented
+   (§6).
+5. **Blank duty cycle — settled.** 120 s on, full blank, any knob event wakes it, whole
+   panel including the SSID text (§7).
+
+Still open, both bench items:
+
+1. Does the captive portal still capture a phone on `orb-8089` with no STA interface
+   up? `esp_dns_server_enable()` appears **nowhere** in `orb_net.c` — the AP's netif
+   is created plain (`esp_netif_create_default_wifi_ap()`, `orb_net.c:7233`). So there
+   is no captive capture today, and §3's "captive DNS stays on" line is a statement
+   about work to be done, not a present property. Settle before the payload choice is
+   final, since a `WIFI:` payload that relies on the OS join prompt changes that
+   requirement.
+2. In `RESCUE`, does the gate replace the clock outright or dim over it? Rule 3 says
+   replace. A board whose owner is away going dark is a worse story than one showing a
+   dim clock, so argue it before it is coded.
 
 ## Risks and refusals
 

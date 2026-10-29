@@ -997,6 +997,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// The seed press writes to a board, so it stands behind the launch token like every
 	// other hand on a device. It streams NDJSON and so registers raw, not through s.json.
 	mux.Handle("/api/library/install", s.requireControl(http.HandlerFunc(s.h_libraryInstall)))
+	// Where a chip is answering right now, by MAC. Provisioning reboots the board twice and
+	// the DHCP lease can move between the handshake and the moment the operator presses "Open
+	// this orb"; the address that dialog has been holding is then a stale pointer. The MAC is
+	// the stable handle, so the page asks the fleet this question instead of trusting the lease.
+	mux.Handle("/api/orb/where", s.requireControl(http.HandlerFunc(s.h_orbWhere)))
 	mux.Handle("/api/library/rm", s.requireControl(http.HandlerFunc(s.h_libraryRm)))
 	// D38's filing door: one shelf file onto one card (apps stop at the card; a theme
 	// push is the store the device's own door queues). It writes a board, so the token.

@@ -443,6 +443,48 @@ yet. `orbIP` is updated to the resolved address so every later dial in the view 
 **Not verified on hardware.** The board was off the LAN while this was written. The mechanism is
 read out of the code; the fix needs the owner's next provisioning pass to confirm.
 
+## 15. Provisioning reported a clean seed while the card held nothing
+
+The owner's third report, same board, after a fresh adoption: the Apps face said the clock was
+installed (Uninstall on the button), the SD card held no app file and no `skeleton` theme, the
+carousel drew nothing, and *Open this orb* from the provisioning window still landed nowhere. The
+owner also ruled that the provisioning window must stay modal until the whole baseline is on.
+
+The prior session's summary claimed symptom 2 was fixed by `shelfHoldsOwnersContent` and the
+clean-slate mark. That part is in the code and is correct. It did not explain this board, because
+a wipe-and-seed that **ran and then lied** produces exactly this: gate passes, card wiped, ladder
+installs, `done` printed — and a card that came back empty because the install never actually
+landed, or landed and the row is off the glass.
+
+The root cause is that `h_libraryInstall` reports `done` off `installRun` returning nil, and
+`installRun` reports each app `installed` the moment the ledger shows a row, and a row is a promise
+rather than the bytes behind it (`installOneApp`'s own skip gate says this in prose, and #9 is the
+same failure one rung earlier). The theme step is gated on `installClockLive`, which reads the row,
+not the glass. So a board whose row exists but whose card copy vanished, or whose clock row never
+got the enable word, sailed through to `done` with a faceless dial. This is #9 and #2 recombined at
+the far end of the ladder instead of the near end.
+
+The fix adds a post-write verify the hub had never done. `seedverify.go:verifySeed` re-reads the
+device's two authoritative answers after the whole run, post-reboot — the ledger's enable/failed
+bits and card-copy presence, and the card's own theme count — and `h_libraryInstall` refuses `done`
+on the automatic arm unless that verify is clean. A refusal leaves the slate mark armed, so the
+next announce retries the seed instead of leaving the board half-written and marked finished. Four
+tests (`seedverify_test.go`) pin the faceless-row, disabled-row, empty-theme refusals and the green
+board. `TestBootRowLandsEnabled` still pins the firmware enable bit from #2.
+
+*Open this orb* moved off the raw fleet scan and onto a new `GET /api/orb/where?mac=` that resolves
+a chip to its live address by MAC through the fleet store — the same answer, reached by the one
+field that does not move when the theme reboot changes the lease. The provisioning window is now
+modal while the seed is in flight: `seedBusy` blocks every exit (Cancel, backdrop, Escape, and the
+done-panel buttons), and the verdict words the headline honestly — "installed, enabled, and on the
+glass" only after verify, otherwise the refusal sentence.
+
+**Still not verified on hardware.** Bronze was unreachable (`.32` did not answer, hub state empty)
+while this was written, the same limitation as #14. The verify gate is the mechanism that turns a
+silent false-green into a named refusal, so the owner's next pass will either go green or print the
+exact fact the dial reported. The board must be flashed and provisioned **through the hub** for the
+verify arm to run.
+
 ## Out of scope here
 
 The re-stamp loop (a firmware-bundle commit invalidates `serflash.sh --check`

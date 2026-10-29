@@ -169,6 +169,20 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 		send(installStep{Step: "install", Action: "refused", Note: err.Error()})
 		return
 	}
+	// On the automatic arm the run's `done` is not the end of the story. installRun reports
+	// installed off the ledger row and the theme step, and a row is a promise rather than the
+	// bytes behind it — the bench caught a hub printing installed with nothing on the card
+	// twice on 2026-10-29. verifySeed re-reads the device's own answers and only a clean
+	// verdict lets the adoption finish. A failure here leaves the slate armed, so the next
+	// announce retries the whole seed rather than leaving a board half-installed and marked
+	// done (see cleanslate.go and the retry note below).
+	if automatic && slateMAC != "" && only == "clock" {
+		if verr := s.verifySeedRun(ctx, ip, send); verr != nil {
+			log.Printf("orb-manager: the join seed on %s did not verify: %s", ip, verr.Error())
+			send(installStep{Step: "install", Action: "refused", Note: verr.Error()})
+			return
+		}
+	}
 	send(installStep{Step: "install", Action: "done"})
 	// The adoption is only over when the baseline landed on top of the wipe. Consuming
 	// the mark here means a run that died midway is retried on the next announce rather

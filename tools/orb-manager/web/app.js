@@ -1332,6 +1332,18 @@ let orbIP = "";
 let provPort = ""; // the serial port the wired-provision door writes to
 let provMac = "";  // the flashed orb's MAC, the key back to its boot verdict
 let provApSsid = ""; // the provisioning AP the boot verdict named, for the AP line
+// seedBusy is the provisioning window's guard: true from the moment the join-time install is
+// POSTed until that run streams its final verdict. While it stands the dialog refuses to close —
+// by button, backdrop, or Escape — because leaving mid-seed is how an operator ends up with a
+// board they believe is provisioned and a card the hub never finished writing (owner ruling,
+// bench 2026-10-29). seedVerdict carries the truth the run reported so the done panel words its
+// headline from it rather than assuming success the moment the join lands.
+let seedBusy = false;
+let seedVerdict = ""; // "", "verified", or a refusal sentence
+// gLastRefusal is the sentence streamSteps last saw on a `refused` step. It is read by the
+// join-time seed the moment its run returns, to word the done-panel verdict honestly. One run
+// is in flight at a time behind the seedBusy guard, so this never races a second stream.
+let gLastRefusal = "";
 let zoneList = null;
 // Watch is a read stream, so a closed dialog may drop its events but never the
 // hub's view of the port: a generation counter, not an aborted fetch (the one
@@ -1369,6 +1381,12 @@ function openJoinDialog(port, mac, skipAp) {
   $("#ob-console").textContent = "";
   $("#wj-consoledetails").hidden = false;
   provApSsid = "";
+  // A new provisioning run starts with an unsealed window regardless of how the last one ended.
+  // The guard is released by releaseSeed on the normal path, but openJoinDialog is the one place
+  // that knows a fresh cycle has begun, so it clears the flag here rather than trusting it.
+  seedBusy = false;
+  seedVerdict = "";
+  seedGateButtons(false);
   $("#sp-manual").value = "";
   $("#wj-apmsg").hidden = true;
   $("#ob-done").hidden = true;
@@ -1395,6 +1413,10 @@ function joinLock(on, msg) {
 }
 
 function closeJoinDialog() {
+  // A seed still crossing the room outranks every exit. The three ways out (Cancel, backdrop,
+  // Escape) all come through this one door, so one guard here covers all of them; the #ob-manage
+  // and #ob-close presses test the flag themselves and never arrive while it stands.
+  if (seedGuard()) return;
   // Invalidate first: an answer arriving after the close belongs to a frame
   // nobody is looking at, and the orb keeps booting without an audience.
   watchGen++;
@@ -1506,13 +1528,23 @@ function joinDone(ip, st) {
     (st.tz ? ", " + st.tz : "") + ".";
   $("#ob-join").hidden = true;
   $("#ob-done").hidden = false;
-  // S6 restores the join-time install S5 deleted, narrowed to the clock and gated on the
-  // ledger answering zero card rows: a board an owner emptied gets emptied again only if
-  // they press Install. Everything else in apps/ waits for a press, so a hub directory full
-  // of experiments cannot refill a shelf somebody cleared. The hub holds the real gate
-  // (firmware floor, mounted card, port claim); this call is the moment, not the decision.
+  // The three finishes stay dark until the seed answers. A board that has joined but not been
+  // seeded is not finished, and a button that opens the orb now would open one whose clock the
+  // hub is still writing (owner ruling, bench 2026-10-29: the provisioning window must hold
+  // until the baseline is on the glass). autoInstall lifts this once it has a verdict.
+  seedGateButtons(true);
+  $("#ob-watch").textContent = "connected — seeding the clock and its face, keep this window open\u2026";
+  // S6 restores the join-time install S5 deleted, narrowed to the clock. The hub holds the real
+  // gate (firmware floor, mounted card, port claim, and now the post-write verify); this call is
+  // the moment, not the decision.
   autoInstall(ip);
   pullFound();
+}
+
+// seedGateButtons opens or shuts the three done-panel exits together. On (true) the window is
+// sealed mid-seed; off (false) the run has answered and the operator may leave by any of them.
+function seedGateButtons(gated) {
+  ["#ob-manage", "#ob-close", "#ob-rejoin"].forEach((s) => { const b = $(s); if (b) b.disabled = gated; });
 }
 
 // One install attempt per joined address per page load. A board that drops off WiFi and
@@ -1521,9 +1553,21 @@ function joinDone(ip, st) {
 const installTried = new Set();
 
 async function autoInstall(ip) {
-  if (installTried.has(ip)) return;
-  installTried.add(ip);
   const watch = $("#ob-watch");
+  // One attempt per joined address per page load, so a board that drops off WiFi and answers
+  // again mid-session is not re-seeded under an owner who may have edited its card since. If this
+  // run's install is the already-attempted one, we still release the window below — a join that
+  // has nothing left to write must not strand the done panel sealed.
+  if (installTried.has(ip)) {
+    seedVerdict = "skipped";
+    releaseSeed(watch, "already seeded this session — the baseline is on the board.");
+    return;
+  }
+  installTried.add(ip);
+  // The guard stands from here to the verdict. Every exit tests it, so the operator cannot
+  // dismiss the window, hit Escape, or click the scrim until this line's twin below clears it.
+  seedBusy = true;
+  seedVerdict = "";
   // The page no longer gates this on the ledger. It used to read /api/v1/apps here and bail
   // when either tier looked non-empty, and that gate silently outranked the one case it must
   // not: a lonely-erased board keeps whatever the last orb life left on its SD card, because
@@ -1533,8 +1577,25 @@ async function autoInstall(ip) {
   // back a `skipped` step when the owner's shelf stands, which this line then shows.
   if (watch) watch.textContent = "installing the clock from the hub library\u2026";
   const done = await streamInstall(ip, "clock", true);
-  if (watch && done) watch.textContent = "clock installed from the hub library.";
-  else if (watch) watch.textContent = "the clock did not install on join \u2014 see the Library card.";
+  // `done` is the hub's own verdict and, on the automatic arm, it only arrives after verifySeed
+  // re-read the ledger and the theme count post-reboot. A refusal names the reason in
+  // gLastRefusal, and the window opens anyway — the operator has to be able to reach the board
+  // to see what went wrong — but the headline says what actually happened, not "installed".
+  if (done) {
+    seedVerdict = "verified";
+    releaseSeed(watch, "clock installed, enabled, and on the glass.");
+  } else {
+    seedVerdict = gLastRefusal || "the clock did not install on join";
+    releaseSeed(watch, "the seed did not finish: " + seedVerdict + " \u2014 open the orb to retry.");
+  }
+}
+
+// releaseSeed records the verdict, opens the exits, and words the watch line. It is the single
+// place the guard is dropped, so no path can finish a seed and leave the window sealed.
+function releaseSeed(watch, msg) {
+  seedBusy = false;
+  seedGateButtons(false);
+  if (watch) watch.textContent = msg;
 }
 
 // streamInstall POSTs one install run and reads the hub's NDJSON steps, returning whether
@@ -1567,6 +1628,7 @@ async function streamInstall(ip, only, auto, frame, force, card) {
 // verdict — so it drives the same progress panel rather than a second, thinner dialect.
 // q is the whole hub route with its query already assembled.
 async function streamSteps(q, frame, ip) {
+  gLastRefusal = ""; // this run's verdict starts clean; the seed reads it the moment we return
   const out = $("#lib-install-log");
   const line = function (t) {
     if (frame) {
@@ -1614,7 +1676,7 @@ async function streamSteps(q, frame, ip) {
         headline(j);
         if (j.action === "uploading") setBar(j.note);
         if (j.action === "done") ok = true;
-        if (j.action === "refused") refusal = j.note || "the hub refused the run";
+        if (j.action === "refused") { refusal = j.note || "the hub refused the run"; gLastRefusal = refusal; }
       }
     }
     if (frame) {
@@ -1664,23 +1726,23 @@ $("#ob-rejoin").onclick = () => {
   $("#ob-watch").textContent = "pick a network and connect again — the form writes over the cable.";
 };
 $("#ob-manage").onclick = async () => {
+  if (seedGuard()) return;
   closeJoinDialog();
   $("#ob-flashpanel").hidden = true;
   // The address this join was told about is a lease, not an identity, and the ladder this
   // panel just watched reboots the board twice on the way through (the theme lands with a
   // device reboot, D32). A DHCP renew during that window moves the address and leaves the
   // button dialing a host that no longer answers, which reads as "Open orb did nothing"
-  // (bench, 2026-10-29). The MAC does not move, so the press asks the hub where that chip is
-  // now and prefers the answer. orbIP is the fallback: a board the hub has not re-announced
-  // yet is still the board this dialog just provisioned.
+  // (bench, 2026-10-29). The MAC does not move, so the press asks the hub's fleet where that
+  // chip is answering now, by MAC, and prefers that answer. orbIP is the fallback: a board the
+  // hub has not re-announced yet is still the board this dialog just provisioned.
   let ip = orbIP;
-  try {
-    const f = await (await hubFetch("/api/fleet")).json();
-    const rows = (f && f.data && Array.isArray(f.data.orbs)) ? f.data.orbs : [];
-    const mine = rows.find((o) => o && o.mac && provMac &&
-      String(o.mac).replace(/:/g, "").toLowerCase() === provMac.replace(/:/g, "").toLowerCase());
-    if (mine && mine.ip) ip = mine.ip;
-  } catch (e) { /* no fresher answer than the one this dialog holds */ }
+  if (provMac) {
+    try {
+      const f = await (await hubFetch("/api/orb/where?mac=" + encodeURIComponent(provMac))).json();
+      if (f && f.ok && f.data && f.data.ip) ip = f.data.ip;
+    } catch (e) { /* no fresher answer than the one this dialog holds */ }
+  }
   orbIP = ip;
   // Pass the name this join was just given as the row, so the headline reads
   // "Kitchen" on the first frame rather than a mac until the status reply
@@ -1822,6 +1884,18 @@ $("#wj-mask").addEventListener("click", (e) => { if (e.target === $("#wj-mask"))
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("#wj-mask").hidden) closeJoinDialog();
 });
+
+// seedGuard answers the one question every exit from the provisioning window now asks: is a
+// join-time seed still crossing the room. closeJoinDialog is the single door all three exits
+// (Cancel, backdrop, Escape) go through, so one check there covers every way out. While the
+// guard stands it flashes the watch line instead of closing, so the operator sees why the
+// dialog will not dismiss rather than thinking the button is dead.
+function seedGuard() {
+  if (!seedBusy) return false;
+  const w = $("#ob-watch");
+  if (w) w.textContent = "finishing the seed first — the hub is still writing to the orb\u2026";
+  return true;
+}
 
 // showTzRow is one lever, pulled by joinLock. The zone row is a join field
 // like the other two: a row that hid itself whenever the scan came back empty

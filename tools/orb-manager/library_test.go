@@ -252,7 +252,7 @@ func TestLibraryListingMatchesTheShippedArtifacts(t *testing.T) {
 		t.Errorf("the shipped library listed %d apps; the pair is the floor", len(p.Apps))
 	}
 	if len(p.Themes) < 1 {
-		t.Errorf("the shipped library listed %d themes; orb-default is the floor", len(p.Themes))
+		t.Errorf("the shipped library listed %d themes; the seed is the floor", len(p.Themes))
 	}
 	if len(p.Refused) != 0 {
 		t.Errorf("the shipped library refused a file: %+v", p.Refused)
@@ -266,15 +266,27 @@ func TestLibraryListingMatchesTheShippedArtifacts(t *testing.T) {
 	}
 	// A theme themes ONE app, and the row has to say which: the Themes face's pane is
 	// addressed by app, and a library row that names only the owner's title leaves the
-	// operator to remember that "av-kit" is the clock's. The value comes from the
-	// container's own section index, so it is the file's statement and not a table.
+	// operator guessing. The value comes from the container's own section index, so it is
+	// the file's statement and not a table.
 	for _, th := range p.Themes {
 		if th.App == "" {
 			t.Errorf("%s listed no app; every FORMAT 3 theme names the one it themes", th.File)
 			continue
 		}
-		if th.App == "clock" && th.Title != "av-kit" {
-			t.Errorf("%s binds clock but is titled %q; the shipped clock theme is av-kit", th.File, th.Title)
+		// The invariant the Aviator rename bought, pinned as a rule rather than as a
+		// literal: a shipped theme's filename stem matches its own embedded title,
+		// case-folded. The device files a theme under a stem derived from the NAME and
+		// ignores the filename entirely, so a seed whose two disagree was a library row
+		// no Themes face could match to an installed row. Asserting the relationship
+		// instead of the string means the next theme added to the shelf is held to it too.
+		stem := strings.TrimSuffix(th.File, ".orbtheme")
+		if !strings.EqualFold(stem, th.Title) {
+			t.Errorf("%s is titled %q; a shipped theme's filename must match its own name, "+
+				"or the Themes face can never line the row up with the card stem the device derives",
+				th.File, th.Title)
+		}
+		if th.App == "clock" && !strings.EqualFold(th.Title, "Aviator") {
+			t.Errorf("the clock's shipped theme is titled %q; the seed renamed to Aviator in S6", th.Title)
 		}
 	}
 	// App rows carry no App: the slug already is the app, and a duplicate field there is
@@ -793,9 +805,9 @@ func TestLibraryDropTakesOnePlainNameAndNothingElse(t *testing.T) {
 		}
 	}
 	// The theme side takes the device's filename grammar, which admits upper case and an
-	// interior dot. "orb-default" is the shipped seed's own stem, so a gate narrower than
+	// interior dot. The shipped seed's stem ("aviator") is plain, and a gate narrower than
 	// orb_sd_name_ok would have the hub refuse a file it lists.
-	for _, good := range []string{"orb-default", "Night", "a.b", "a-b_c"} {
+	for _, good := range []string{"aviator", "Night", "a.b", "a-b_c"} {
 		if _, err := lib.Drop("theme", good); err == nil ||
 			!strings.Contains(err.Error(), "not in the library") {
 			t.Errorf("Drop(theme, %q) = %v, want the absent-file refusal rather than a name refusal", good, err)

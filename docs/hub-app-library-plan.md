@@ -301,6 +301,35 @@ The merge itself (`source: "orb" | "hub"`, `/editor/hub/<slug>/`) is still unbui
 editor loader, so a hub-only library theme is installed by press and only then appears on
 the Themes face. Recorded as a deviation, not as done.
 
+## 6. The seed theme is Aviator
+
+The shipped seed was `themes/orb-default.orbtheme` carrying the embedded name `av-kit` —
+a filename and a theme name with no substring in common. That cost more than tidiness. The
+device files a theme under `theme_stem(slug, name)` (`main/art/orb_theme.c:277`), derived
+from the **name** and ignoring the incoming filename entirely, so the card held
+`clock-av-kit-5d6e52ace6b6` while the hub shelf listed `orb-default`. No Themes row could
+line a library file up with the installed row it was, and the first diagnosis of that gap
+was wrong because of it: the seed was reported as failing the firmware's compound-stem rule,
+when in fact it passes the rule cleanly and the mismatch was one layer up.
+
+Renamed to **Aviator** at the source. `assets/orb_default.img`'s name field now reads
+`Aviator`, `make_seed_theme.py` emits `themes/aviator.orbtheme`, and the device files it as
+`clock-aviator-8767574dd3cb`. Filename, embedded name and card token agree, so the seed
+behaves like any theme the Composer sends. Only ten header bytes changed — the name words
+and the CRC over them; every art byte is identical, so the pixels are the same face.
+
+Two consequences worth knowing:
+
+- **The derived id changed with the name.** A dial that already holds the old `av-kit`
+  seed keeps it as its own row; the renamed seed arrives as a second theme rather than
+  replacing it. On a fresh or wiped board, which is where seeding runs, this is invisible.
+- **The invariant is now gated, not just satisfied.** `library_test.go` asserts a shipped
+  theme's filename stem matches its own embedded title, so the next theme added to the
+  shelf is held to the agreement instead of rediscovering the gap.
+
+The `THEME_ID_HEX` comment that produced the bad diagnosis said the tail was 13 hex chars.
+It is 12; the 13th byte from the end is the separator. Corrected in place.
+
 ## 7. Menu stops being an app
 
 Delivered on the bench, with one refinement over this paragraph's first draft.

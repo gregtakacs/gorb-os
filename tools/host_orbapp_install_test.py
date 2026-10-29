@@ -866,8 +866,9 @@ def seed_check():
     — the mirror of the device reader both reader suites pin to — and asserts
     each header’s declared identity. A starter file that no longer matches this
     list is a ruling change, and a ruling change edits this list and the D-row,
-    in that order, not a silent re-bake. The theme leg proves the shipped
-    orb-default.orbtheme still round-trips byte-identical to the slot image.
+    in that order, not a silent re-bake. The theme leg proves the shipped seed
+    (themes/aviator.orbtheme) still round-trips byte-identical to the slot image
+    it is lifted from, name field included.
     S4 adds one leg: the clock's header must carry a CRC-covered editor region."""
     import subprocess
     fails = 0

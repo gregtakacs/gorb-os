@@ -10,9 +10,14 @@ slot-layout image emitted by tools/mk_slot_image.py (header at +0, geometry at
 the geometry region and the bank span out of the slot image, un-rebases the
 index record's art_off back to card coordinates, and lays the bundle out on
 the card writer's byte map (header, region, sector-align pad, art). The card
-name rides in the slot header's own name field (for the shipped default that
-is \"av-kit\"), so the id the device files the theme under does not change with
-the route.
+name rides in the slot header's own name field, and for the shipped default
+that field reads "Aviator". It is spelled that way on purpose and not left as
+the art kit's own "av-kit": the device files a theme under a stem built from
+its name (``theme_stem(slug, name)``, never the incoming filename), and a seed
+whose name disagreed with its filename was a library row the Themes face could
+never match. Named "Aviator", the seed lands as ``clock-aviator-8767574dd3cb``
+and behaves like every theme the Composer sends. The art is untouched by the
+rename — only the name words and the header CRC over them differ.
 
 No re-pack through unpack_blob: the av-kit rows are the C4 delta dialect, and
 the one promise this tool needs is byte fidelity, not interpretation. The proof
@@ -22,7 +27,7 @@ the slot image carries: the region CRC over the UN-rebased bytes must equal
 header word 10 (the card file's own region CRC, kept by mk_slot_image for
 exactly this match), and the rebuilt span CRC must equal word 8.
 
-  python3 tools/make_seed_theme.py                       # default img -> starter/orb-default.orbtheme
+  python3 tools/make_seed_theme.py                       # default img -> themes/aviator.orbtheme
   python3 tools/make_seed_theme.py --check               # byte-compare the committed seed
   python3 tools/make_seed_theme.py IN.img OUT.orbtheme   # explicit paths
 """
@@ -39,7 +44,7 @@ import mk_slot_image as msi       # noqa: E402
 
 ROOT = os.path.join(HERE, os.pardir)
 SRC_IMG = os.path.join(ROOT, "assets", "orb_default.img")
-OUT = os.path.join(ROOT, "tools", "orb-manager", "themes", "orb-default.orbtheme")
+OUT = os.path.join(ROOT, "tools", "orb-manager", "themes", "aviator.orbtheme")
 
 REC_BYTES = ob.IDX_WORDS * 4       # 40 B per record
 REGION_HEAD = 8                    # n_sections + reserved

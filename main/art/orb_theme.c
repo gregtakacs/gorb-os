@@ -304,8 +304,11 @@ static bool theme_stem_split(const char *stem, char *slug, size_t slugsz,
     slug[sl] = '\0';
     const size_t n = strlen(stem);
     if (n < 1 + THEME_ID_HEX || n - THEME_ID_HEX - 1 < sl + 1) return false;
-    /* The separator ahead of the tail fixes its length: a 13-hex tail has no
-     * '-' thirteen bytes from the end, and a shorter tail fails the hex loop. */
+    /* The separator ahead of the tail fixes the tail's length. The tail is
+     * THEME_ID_HEX hex chars — 12, not 13; the 13th byte from the end is the
+     * separator itself. A stem with no '-' at that offset, or a shorter run of
+     * hex than that, fails here: the '-' would be read as part of the token and
+     * the hex loop below would refuse a non-hex char inside the id. */
     if (stem[n - THEME_ID_HEX - 1] != '-') return false;
     if (idsz < THEME_ID_HEX + 1) return false;
     memcpy(id, stem + n - THEME_ID_HEX, THEME_ID_HEX);

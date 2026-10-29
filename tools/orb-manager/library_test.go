@@ -767,8 +767,12 @@ func TestInstallOneAppReEnablesADisabledRow(t *testing.T) {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/api/v1/apps":
-				// The ledger's answer under test: the row IS on the dial, switched off.
-				w.Write([]byte(`{"apps":[],"installed":[{"slug":"sentinel","enabled":false}]}`))
+				// The ledger's answer under test: the row IS on the dial, switched off,
+				// and the card still backs it. The card copy is not decoration — an
+				// installed row is a partition header, and a header over an empty
+				// card/apps is a hollow row the hub must refill rather than skip
+				// (TestHollowRowSendsBytesInsteadOfSkipping pins that half).
+				w.Write([]byte(`{"apps":[{"stem":"sentinel","ok":true}],"installed":[{"slug":"sentinel","enabled":false}]}`))
 			case "/api/v1/apps/enable":
 				*isEnable = true
 				io.Copy(io.Discard, r.Body)
@@ -973,5 +977,157 @@ func TestLibraryKeepOverOnlyReplacesWhenAsked(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(dir, "clock.orbapp"))
 	if string(b) != "second" {
 		t.Errorf("the shelf holds %q after an overwrite", b)
+	}
+}
+
+// TestHollowRowSendsBytesInsteadOfSkipping is the regression for the false "installed"
+// handed to the owner of a freshly flashed board on 2026-10-29: the dial carried a clock
+// row with no clock.orbapp on the card, so the row enabled, never reached the glass, and
+// the hub printed "already on the dial" without crossing a byte. An installed row is a
+// partition header, not the code. A remove-from-card, a swapped card, or a store that died
+// mid-write each leaves the row standing over an empty card/apps.
+//
+// Both halves are pinned together, because the bug is the boundary between them. A row the
+// card still backs must keep skipping: re-pushing 663 KB over the room on every join is its
+// own regression. A row the card does not back must fall through to the upload.
+func TestHollowRowSendsBytesInsteadOfSkipping(t *testing.T) {
+	blob, err := os.ReadFile(cloneFixture(t, t.TempDir(), "sentinel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(t *testing.T, cardTier string) (uploaded bool, steps []installStep, err error) {
+		t.Helper()
+		ledgerBody := "{\"apps\":" + cardTier +
+			",\"installed\":[{\"slug\":\"sentinel\",\"enabled\":false}]}"
+		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/v1/sd/app" {
+				uploaded = true
+				io.Copy(io.Discard, r.Body)
+				w.Write([]byte("{\"ok\":true}"))
+				return
+			}
+			switch r.URL.Path {
+			case "/api/v1/apps":
+				// The row stands from the first read: this test asks what the hub does
+				// with a row it found, not how it waits for one to appear.
+				w.Write([]byte(ledgerBody))
+			case "/api/v1/apps/install":
+				io.Copy(io.Discard, r.Body)
+				w.Write([]byte("{\"ok\":true,\"queued\":true}"))
+			case "/api/v1/apps/enable":
+				w.Write([]byte("{\"ok\":true}"))
+			default:
+				w.Write([]byte("{}"))
+			}
+		})
+		srv := httptest.NewServer(h)
+		defer srv.Close()
+		s := newHub()
+		s.lib = &Library{}
+		s.device = orbnet.NewClient(deviceTimeout)
+		s.ota = orbnet.NewClient(otaTimeout)
+		s.device.DevicePort = portOf(srv.URL)
+		s.ota.DevicePort = portOf(srv.URL)
+		send := func(st installStep) { steps = append(steps, st) }
+		err = s.installOneApp(context.Background(), "127.0.0.1", "sentinel", blob, false, send)
+		return
+	}
+
+	t.Run("row with no card copy installs", func(t *testing.T) {
+		uploaded, steps, err := run(t, "[]")
+		if err != nil {
+			t.Fatalf("a hollow row must self-heal, not refuse: %v", err)
+		}
+		if !uploaded {
+			t.Error("the hub skipped past a row with nothing behind it: no byte crossed, so the clock cannot run")
+		}
+		for _, st := range steps {
+			if st.Action == "skipped" {
+				t.Errorf("a hollow row was reported as satisfied: %+v", st)
+			}
+		}
+	})
+
+	t.Run("row the card backs still skips", func(t *testing.T) {
+		uploaded, steps, err := run(t, "[{\"stem\":\"sentinel\",\"ok\":true}]")
+		if err != nil {
+			t.Fatalf("a sound row must not re-upload: %v", err)
+		}
+		if uploaded {
+			t.Error("a readable card copy was pushed over again on a plain Install press")
+		}
+		sawSkip := false
+		for _, st := range steps {
+			if st.Action == "skipped" {
+				sawSkip = true
+			}
+		}
+		if !sawSkip {
+			t.Error("a sound row no longer skips, so every join re-sends the container")
+		}
+	})
+}
+
+// TestJoinRunSeedsTheThemeIsTheRegression for the second half of the 2026-10-29 report: the
+// clock installed, the row enabled, and the dial still wore no clock. The clock is a themed
+// face, so a board with zero themes on the card has a clock row that cannot draw. The theme
+// step sat behind `only == ""`, and the join-time install asks for exactly one slug — so the
+// path that runs on a freshly flashed board was the one path that could not seed a face.
+//
+// The fake answers card_count 1 rather than 0 so the run stops at installTheme's own skip:
+// this test pins the GATE, not the store. A theme upload and a reboot belong to other tests.
+func TestJoinRunSeedsTheTheme(t *testing.T) {
+	var paths []string
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/status":
+			w.Write([]byte(`{"state":"connected","fw":"` + installMinFW + `"}`))
+		case "/api/v1/apps":
+			// Card-backed and enabled, so installOneApp skips without touching the bulk
+			// client and the run arrives at the theme step with its gate the only question.
+			w.Write([]byte(`{"mounted":true,"apps":[{"stem":"clock","ok":true}],` +
+				`"installed":[{"slug":"clock","enabled":true}]}`))
+		case "/api/v1/sd":
+			w.Write([]byte(`{"mounted":true,"card_count":1,"active":"Aviator"}`))
+		default:
+			w.Write([]byte(`{}`))
+		}
+	})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	s := newHub()
+	s.lib = &Library{}
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.ota = orbnet.NewClient(otaTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+	s.ota.DevicePort = portOf(srv.URL)
+
+	var steps []installStep
+	send := func(st installStep) { steps = append(steps, st) }
+	err := s.installRun(context.Background(), "127.0.0.1", "clock", false, true, send)
+	if err != nil {
+		t.Fatalf("the join run refused: %v", err)
+	}
+	sawSdRead := false
+	for _, p := range paths {
+		if p == "/api/v1/sd" {
+			sawSdRead = true
+		}
+	}
+	if !sawSdRead {
+		t.Error("a join-time install never asked the dial for its themes, so a fresh board boots with no clock face")
+	}
+	sawTheme := false
+	for _, st := range steps {
+		if st.Step == "theme" {
+			sawTheme = true
+		}
+	}
+	if !sawTheme {
+		t.Errorf("no theme step streamed for a clock install: %v", steps)
 	}
 }

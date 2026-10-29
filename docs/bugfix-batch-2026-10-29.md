@@ -52,18 +52,27 @@ uninstall. They are mutually exclusive states.
 unconditionally. A row that is off or faulted therefore reads "install" and
 "uninstall" at once.
 
-**Fix.** The door list follows the state with no overlap:
+**Correction, same day.** The section above described a fix that was never
+written, and the "off: `enable` only" bullet below it is wrong: it contradicts
+both `install means enabled` and `host_menu_test.py`, which already specified
+`install`, `uninstall`, `remove from card` for an off row. The page kept drawing
+`enable` with no uninstall. The owner's bench pass caught it on a freshly flashed
+board, and `tools/host_menu_test.py` reported 13 failures against the file as
+committed.
 
-- on the dial, enabled, not failed: `show on the dial` (or the showing line),
-  `uninstall`, `remove from card`
-- off: `enable` only — a turned-off app is one switch, not two removal doors
-- failed: `install (retry)` plus the fault's verbatim reason
+**Fix, now actually in the file.** `appact_id` emits the row list the test
+specifies, and `label_appact` names the off door `install`:
+
+- on the dial, enabled, not failed: `show on the dial`, `uninstall`, `remove from card`
+- off: `install`, `uninstall`, `remove from card`
+- failed: `retry`, `uninstall`, `remove from card`
 - card-only file: `install`, `remove from card`
 
-This also retires the enable switch's old label wording per bug 2's ruling:
-install implies enabled, so an installed-and-off row no longer exists as a
-design state, and the row prints the enable word only for a row the ledger
-holds off.
+Row 0 is the only row that moves with the state, so install and uninstall cannot
+appear as two answers to one question, which was the reported symptom. The card
+door stays unconditional on purpose: the walk may not have landed when the page
+paints, and the worker answers "the card held no copy" instead of the page
+guessing. `host_menu_test.py` passes 235 checks on this change.
 
 ## 4. Carousel chip disappears under the second hand
 
@@ -250,6 +259,83 @@ winning it, pins press-vs-press refusing inside a second, and pins an abandoned 
 dropping its flag so the cable is not muted forever. `go test ./internal/orbbind/` is
 green with the four pre-existing `LockPort` tests untouched.
 
+## 9. The hub reported the clock installed with nothing on the card
+
+**Symptom.** After a clean flash and the Wi-Fi setup, the hub's Library card says
+the clock is installed. The dial's APPS page says `clock off`, its door page offers
+`remove from card`, and `/apps` on the card is empty.
+
+**Root cause.** `installflow.go` `installOneApp` asked one question and treated the
+answer as the whole promise: it reads the dial's app ledger, finds a row for the
+slug, prints `skipped / already on the dial`, posts the enable word, and returns
+success. The installed tier is a list of `apps` partition headers, written by
+`orb_app_install_resolve_boot`. For the native apps that exist today that header
+carries no `code_size` to point at — the bench's known-good orb-B reports
+`geom_crc:0, code_crc:0, code_size:0` for its healthy clock — so a header says a row
+exists and says nothing about the bytes. The card tier is where a card app's code
+lives, and the ledger reports it separately in `apps`. A row over an empty `/apps`
+is a row that enables, never reaches the glass, and answers `installed` to a hub
+that never looked at the second tier.
+
+**Fix.** `installOneApp` believes an installed row only when the card tier backs it
+(`needsCardBytes` and `cardHolds` in `installflow.go`). A hollow row falls through to
+the upload and streams `installing` with the reason in the note, so a board in this
+state repairs on the next press instead of being reported as satisfied. A row the
+card does back still skips: no join re-sends 663 KB over the room.
+`TestHollowRowSendsBytesInsteadOfSkipping` pins both halves and fails against the
+code as it was.
+
+The same run left no trace in the hub's log. The ladder's refusal went to the browser
+as one streamed step and nowhere else, and a page that closed with the board rebooting
+took the reason with it, so the log showed only the probe exemption saying
+"installing". `h_libraryInstall` now logs a refused ladder with its reason.
+
+## 10. A join-time install never seeded a theme, so the clock had no face
+
+**Symptom.** The clock installs, enables, and still does not appear on the dial. Bug 1's
+fix did not prevent it on the freshly flashed board.
+
+**Root cause.** The clock is a themed face: with no theme stored, the shell keeps the
+glass and the clock row never goes on it. `installRun` gated the theme step on
+`only == ""` — the full-library run — and `web/app.js:1552` drives the join-time install
+with `only=clock`. The one path that runs on a fresh board was the one path that could
+not reach the step. Bug 1's `CardCount` gate is correct and was shipped; it sits inside a
+step the join path never enters.
+
+**Fix.** The theme step runs when the clock is live on the dial and the run is the full
+library or the clock specifically, which keeps D36's rule that a lone `color_picker`
+press seeds no face. `installTheme` still skips whenever the card already carries themes,
+so the change cannot tread on an owner's shelf. `TestJoinRunSeedsTheTheme` fails against
+the old gate and passes on this one.
+
+**Bench witness.** On the board that reported this, seeding the skeleton face moved the
+clock row from `on_glass:false` to `on_glass:true` with the same row, the same card, and
+no other change. `on_glass` is the dial's own answer to "is this the face it is showing",
+and the hub's `AppInstalledRow` had no field for it, so no caller could ask the question
+the owner was asking. It does now.
+
+## 11. A "clean flash" leaves the app registry and the enable words standing
+
+**Symptom.** The board behaves as though it were wiped and yet arrives holding an
+installed clock row, an off enable word, and an empty card.
+
+**Root cause.** The bundle's own `flasher_args.json` writes four regions: `0x0`
+bootloader, `0x8000` partition table, `0x11000` otadata, `0x20000` app. The
+installed ledger lives in `apps` at `0xD80000` and the enable words in `storage`
+NVS at `0xD60000` (`partitions.csv`), and a flash touches neither. The retention
+invariant at the head of that file is deliberate — it is what lets credentials
+survive an upgrade — and it applies to a reflash exactly as it applies to an OTA.
+So `apps` keeps the row and `storage` keeps the stored off word the pre-bug-2
+firmware wrote, while the card the owner formatted holds nothing.
+
+**Fix.** None in the flash path: erasing `storage` on every reflash would take the
+owner's Wi-Fi credentials with it, which the invariant exists to prevent, and it
+would turn a reflash into a factory reset. The honest change is the one bugs 9 and
+10 make, because those two together repair the surviving row on the next install
+press instead of trusting it, and the hub now says so in its log. A board that must
+arrive genuinely empty is provisioned through the dial's own `RESET ALL`, which
+erases `storage` and `nvs` on purpose, or `idf.py erase-flash`.
+
 ## Out of scope here
 
 The re-stamp loop (a firmware-bundle commit invalidates `serflash.sh --check`
@@ -259,6 +345,12 @@ of this batch, not per-commit.
 
 ## Status
 
-Bugs 1-6 are firmware or hub changes the owner has not re-flashed yet; each needs
-a bench pass on a rebuilt image. Bug 7 is hub-only, needs no reflash, and is
-covered by `forgetghost_test.go` in the `orb-manager` suite.
+Bug 3's fix is in the file now and green in `host_menu_test.py`; it was absent from
+the commit this document first described, so the board the owner flashed ran the old
+menu. Bugs 9, 10 and 11 came out of that same bench pass. Bugs 9 and 10 are hub-only:
+no reflash is needed, and both are covered by tests in the `orb-manager` suite
+(`TestHollowRowSendsBytesInsteadOfSkipping`, `TestJoinRunSeedsTheTheme`). Bug 11 needs
+no code.
+
+Bugs 1, 2, 4, 5 and 6 are firmware or hub changes that still need a bench pass on a
+rebuilt image. Bug 7 is hub-only and covered by `forgetghost_test.go`.

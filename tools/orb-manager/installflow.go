@@ -126,6 +126,13 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Minute)
 	defer cancel()
 	if err := s.installRun(ctx, ip, only, force, card, send); err != nil {
+		// The step goes to the browser AND the log. A run that fails after a reboot
+		// can leave the page before the line does — the whole ladder then disappears
+		// with the tab, and the hub's log shows only the probe exemption that said
+		// "installing" (bench, new board, 2026-10-29). The operator needs the reason
+		// after the tab is gone.
+		log.Printf("orb-manager: the library install on %s was refused (only=%q force=%v card=%v): %s",
+			ip, only, force, card, err.Error())
 		send(installStep{Step: "install", Action: "refused", Note: err.Error()})
 		return
 	}
@@ -135,9 +142,12 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 
 // installRun is the route's body. With only set it sends that one slug and nothing else —
 // the automatic arm's shape, and also what a per-row press asks for. With only empty it
-// walks the library's app listing in slug order and then offers the theme, but only onto a
-// dial the clock is actually on (D36's rule: the skeleton theme rides with the clock, so a
-// board whose owner keeps only the picker never takes a theme nobody asked for). force
+// walks the library's app listing in slug order. Either way the theme step follows a clock
+// that is live on the dial, and only then (D36's rule: the skeleton theme rides with the
+// clock, so a board whose owner keeps only the picker never takes a theme nobody asked
+// for). The clock arm of that gate is load-bearing: the join-time run asks for exactly
+// `only=clock`, so a theme step reachable only from a full run never fires on the one
+// board that has no face yet. force
 // belongs to a single-slug press only; the full run stays ask-first, because the run is a
 // refill and the refill does not overwrite a shelf the owner curated (D38). card (D38's
 // Install press on a card-resident row) pairs with exactly one only: the ladder runs with
@@ -196,7 +206,17 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 			return err
 		}
 	}
-	if only == "" && s.installClockLive(ip) {
+	// The theme rides the CLOCK, not the full-library run. The join-time install
+	// asks for exactly one slug (`only=clock`), and a clock with no theme on the
+	// card has no face to wear: the shell keeps the glass, the row reports installed
+	// and enabled, and the owner sees no clock on the dial (bench, new board,
+	// 2026-10-29: clean flash plus Wi-Fi setup drew no clock, and the card held zero
+	// themes because this step sat behind a gate the join path never opens). D36's
+	// rule stands underneath this one: the theme goes only onto a dial the clock is
+	// actually on, so a lone color_picker press still seeds nothing. installTheme
+	// skips on its own whenever the card already carries themes, so riding every
+	// clock run cannot tread on an owner's shelf.
+	if (only == "" || only == "clock") && s.installClockLive(ip) {
 		if err := s.installTheme(ctx, ip, send); err != nil {
 			return err
 		}
@@ -241,16 +261,31 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 	}
 	if !force {
 		for _, row := range listing.Installed {
-			if row.Slug == slug {
-				send(installStep{Step: slug, Action: "skipped", Note: "already on the dial"})
-				if !row.Enabled && !row.Failed {
-					if _, e := s.device.AppEnable(ip, slug, true); e != nil {
-						return fmt.Errorf("enabling %s: %w", slug, plainDeviceErr(e, 0))
-					}
-					send(installStep{Step: slug, Action: "enabled"})
-				}
-				return nil
+			if row.Slug != slug {
+				continue
 			}
+			// A row is not the bytes. The dial resolves an installed row from its
+			// `apps` partition header, and a card-tier app keeps its code on the card
+			// (the firmware reports code_size 0 for such a row), so the row can stand
+			// with nothing behind it: a remove-from-card, a card swapped out, or a
+			// store that died mid-write each leaves a row that enables, never reaches
+			// the glass, and answers "installed" to a hub that skipped on the row
+			// alone (bench, new board, 2026-10-29: clean flash then Wi-Fi setup, and
+			// the hub printed installed while no byte had ever crossed). A built-in
+			// row carries its code in the image and has no card copy to miss.
+			if needsCardBytes(row) && !cardHolds(listing, slug) {
+				send(installStep{Step: slug, Action: "installing",
+					Note: "the row stands but the card copy is gone — sending the bytes"})
+				break
+			}
+			send(installStep{Step: slug, Action: "skipped", Note: "already on the dial"})
+			if !row.Enabled && !row.Failed {
+				if _, e := s.device.AppEnable(ip, slug, true); e != nil {
+					return fmt.Errorf("enabling %s: %w", slug, plainDeviceErr(e, 0))
+				}
+				send(installStep{Step: slug, Action: "enabled"})
+			}
+			return nil
 		}
 	}
 
@@ -348,6 +383,32 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 			deadline = time.Now().Add(installWait) // one full extension, then the hard stop
 		}
 	}
+}
+
+// needsCardBytes reports whether an installed row can only run from a card copy.
+// The firmware emits exactly one built-in row (the shell, `compiled:true`) and it
+// carries its code inside the image, so an empty card costs it nothing. Every
+// other row the dial reports is card-tier: orb_app_install_resolve_boot rebuilt it
+// from an `apps` partition HEADER, and for the native apps that exist today the
+// header carries no code_size to point at, so the bytes live only in card/apps.
+// The row is the promise; the card file is the substance.
+func needsCardBytes(row orbnet.AppInstalledRow) bool {
+	return !row.Compiled
+}
+
+// cardHolds reports whether the card tier of a fresh ledger listing carries a
+// readable copy of one slug. The installed tier and the card tier answer
+// different questions — "the dial has a row" and "the card has the bytes" — and
+// an install may satisfy only the first. installOneApp asks this before it
+// believes an installed row, and the dial's own remove-from-card is what empties
+// the answer while the row stays.
+func cardHolds(listing *orbnet.AppList, slug string) bool {
+	for _, row := range listing.Apps {
+		if row.Stem == slug {
+			return row.OK
+		}
+	}
+	return false
 }
 
 // installClockLive asks the ledger the one question the theme gate needs, at the moment it

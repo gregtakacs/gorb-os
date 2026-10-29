@@ -59,6 +59,14 @@ type AppInstalledRow struct {
 	Caps    string `json:"caps"`
 	Enabled bool   `json:"enabled"`
 	Failed  bool   `json:"failed"`
+	// OnGlass is the dial's own answer to "is this the face it is showing right now":
+	// orb_net.c prints `app_on_glass`, which is true when the row is `orb_app_current()`
+	// or its active bit stands. It is NOT "installed" and not "in the carousel". A
+	// card-tier app can be installed, enabled, and off the glass in the same moment,
+	// which is exactly where a fresh board lands while the theme slot still holds the
+	// factory face. The hub had no field for it, so a caller could ask "is there a row"
+	// and read that as "the owner can see it".
+	OnGlass bool `json:"on_glass,omitempty"`
 	// Compiled marks the built-in tier — the one shell row D35 left in the image, which
 	// the firmware emits FIRST with this key set (apps_send_installed) and which an owner
 	// can neither toggle nor uninstall. The face has filtered on it since §7; the field is

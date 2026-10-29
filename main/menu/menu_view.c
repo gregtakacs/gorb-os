@@ -999,16 +999,15 @@ static const orbapp_scan_entry_t *card_subject(void)
 }
 static int door_subject(void) { return s_doormode ? 1000 + s_card_sub : s_door_slot; }
 
-/* The doors this subject answers, in the order an owner wants them. A dial row
- * that runs gets show plus uninstall plus remove-from-card. The two removal
- * verbs stand down when the row cannot run, because an app that is off or
- * faulted is not the app the owner came to take away — the one press that
- * answers that row is the retry, which carries the enable word and the fault
- * clear (bench, owner, 2026-10-29: a row showing install and uninstall at once
- * is a page that does not know its own state). A card file gets install plus
- * remove-from-card, which the worker answers honestly when the card holds
- * nothing. Install and uninstall are mutually exclusive by construction: the
- * dial holds a runnable slot or it does not. */
+/* The doors this subject answers, in the order an owner wants them. A registry
+ * row always carries both removals, and its first row is the state's own word:
+ * show for a row the dial runs, install for one it holds off or has faulted. One
+ * press cannot both show an app and put it back on the dial, so the two states
+ * share a row and never appear at once; the removals do not depend on the state,
+ * because an app the owner cannot use is still an app they may want gone. A card
+ * file gets install plus remove-from-card, which the worker answers honestly when
+ * the card holds nothing. Install and uninstall are mutually exclusive by
+ * construction: the dial holds a runnable slot or it does not. */
 enum { ACT_SHOW = 0, ACT_INSTALL, ACT_UNINSTALL, ACT_CARDRM };
 
 static int appact_id(int row)
@@ -1022,12 +1021,17 @@ static int appact_id(int row)
     } else {
         const orb_app_t *a = s_door_slot >= 0 ? orb_app_row((size_t)s_door_slot) : NULL;
         if (!a) return -1;
-        if (a->enabled && !a->failed) {
-            ids[n++] = ACT_SHOW;
-            ids[n++] = ACT_UNINSTALL;
-        } else {
-            ids[n++] = ACT_INSTALL;      /* off or faulted: the retry is the door */
-        }
+        /* Row 0 is the state's answer, rows 1 and 2 are the two removals every
+         * registry row owns. Only the FIRST row moves with the state: an app that
+         * is off or faulted cannot be "shown", and the one press that answers that
+         * row is the install, which carries the enable word and the fault clear.
+         * The removals stand whether or not the row runs — an owner who cannot use
+         * an app is an owner who may want it gone. The card door rides the worker's
+         * honesty, not a pre-check here: `g_scan_n == 0` at press time means the
+         * walk had not landed on this page yet, and the door answers "the card held
+         * no copy" rather than the page guessing (bench, orb-B 2026-10-24). */
+        ids[n++] = (a->enabled && !a->failed) ? ACT_SHOW : ACT_INSTALL;
+        ids[n++] = ACT_UNINSTALL;
         ids[n++] = ACT_CARDRM;
     }
     return (row >= 0 && row < n) ? ids[row] : -1;
@@ -1184,12 +1188,14 @@ static void label_appact(int row, char *out, size_t outsz, bool *sel_hi)
         return;
     }
     case ACT_INSTALL: {
-        /* The label follows the press, not the enum: on a card file the press
-         * installs; on a registry row held off the press enables; on a faulted
-         * row the press retries (C2's fault clear rides the enable door). */
+        /* The label follows the press. A card file installs; a faulted row retries
+         * (C2's fault clear rides this door); a row held off installs back onto the
+         * glass. The off case never says "enable": installed means enabled, so the
+         * dial offers no enable state and the word for the press that puts an app
+         * on the dial is the one the catalog already uses (bench, owner,
+         * 2026-10-29). */
         const orb_app_t *a = s_doormode ? NULL : orb_app_row((size_t)s_door_slot);
-        snprintf(out, outsz, s_doormode ? "install"
-                                        : (a && a->failed) ? "retry" : "enable");
+        snprintf(out, outsz, (a && a->failed) ? "retry" : "install");
         return;
     }
     case ACT_UNINSTALL:

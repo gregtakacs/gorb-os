@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,5 +97,65 @@ func TestWhereResolvesTheChipToItsLiveAddress(t *testing.T) {
 	}
 	if got := s.liveIPforMAC("aabbccddee00"); got != "" {
 		t.Errorf("an unknown chip resolved to %q; no row must answer empty", got)
+	}
+}
+
+// hollowApps is the live Bronze's own /api/v1/apps body from 2026-10-29, verbatim in shape: a
+// compiled menu, a clock row switched off with zero card files behind it. The old shelf gate
+// counted that hollow row as "what the owner put there", the automatic arm skipped to done,
+// and the page headline claimed the glass wore a clock. A hollow, disabled row is leftover,
+// not curatorship: the gate must answer false so the ladder refills the promise.
+const hollowApps = `{"mounted":true,"apps":[],"installed":[` +
+	`{"slug":"menu","title":"Menu","enabled":true,"failed":false,"walkable":true,"on_glass":true,"compiled":true},` +
+	`{"slug":"clock","title":"Clock","enabled":false,"failed":false,"walkable":true,"on_glass":false,"code_size":0,"serial":10129,"version":"v1.1.29"}]}`
+
+func TestShelfGateRefusesToCountTheHollowRow(t *testing.T) {
+	s, _ := deviceHub(t, hollowApps, `{"mounted":true,"card_count":0,"active":"Skeleton","themes":[]}`)
+	held, err := s.shelfHoldsOwnersContent("127.0.0.1")
+	if err != nil {
+		t.Fatalf("asking the shelf: %v", err)
+	}
+	if held {
+		t.Fatal("a disabled row over an empty card counted as the owner's shelf; that is the exact body the skip-lie was fed")
+	}
+}
+
+// The rule the hollow-row test must not break: a clock row that is enabled and has its card
+// copy present IS the owner's doing (or a finished seed's), and the automatic arm still
+// stands down before it — earning its done by verify rather than by the row's bare existence.
+func TestShelfGateHonoursARealShelf(t *testing.T) {
+	s, _ := deviceHub(t, goodApps, goodSD)
+	held, err := s.shelfHoldsOwnersContent("127.0.0.1")
+	if err != nil {
+		t.Fatalf("asking the shelf: %v", err)
+	}
+	if !held {
+		t.Fatal("an enabled clock row with a readable card copy did not count as owner content; D38's shelf rule is dead")
+	}
+}
+
+// installTheme must keep its reboot-retry against the door's conflated refusal, and it
+// must keep it CONDITIONED on the mounted re-read — a card that is truly gone has to keep
+// the honest error, not spin the board. Text gate, the convention this file's siblings use:
+// the bench death (2026-10-29, Bronze: join-time themes died at 503 over a mounted card,
+// and three months of empty themes folders traced back to one NULL registry entry).
+func TestThemeDoorRetryStaysArmedAndConditional(t *testing.T) {
+	src, err := os.ReadFile("installflow.go")
+	if err != nil {
+		t.Fatalf("installflow.go: %v", err)
+	}
+	fn := string(src)
+	at := strings.Index(fn, "func (s *Server) installTheme")
+	if at < 0 {
+		t.Fatal("installTheme is gone")
+	}
+	fn = fn[at:]
+	if n := strings.Index(fn, "\n}\n"); n > 0 {
+		fn = fn[:n]
+	}
+	for _, want := range []string{"no card in the socket", "Reboot(", "installWaitBack(", "Mounted"} {
+		if !strings.Contains(fn, want) {
+			t.Errorf("installTheme lost %q: the join-time theme step is back to eating the door's lie", want)
+		}
 	}
 }

@@ -1344,6 +1344,10 @@ let seedVerdict = ""; // "", "verified", or a refusal sentence
 // join-time seed the moment its run returns, to word the done-panel verdict honestly. One run
 // is in flight at a time behind the seedBusy guard, so this never races a second stream.
 let gLastRefusal = "";
+// gLastVerifyNote is the hub's own words from its `verified` step — "clock on the glass" or
+// the honest lag note. The join headline quotes it rather than asserting the glass itself:
+// the page cannot see the dial, the verify read can (bench, 2026-10-29, Bronze).
+let gLastVerifyNote = "";
 let zoneList = null;
 // Watch is a read stream, so a closed dialog may drop its events but never the
 // hub's view of the port: a generation counter, not an aborted fetch (the one
@@ -1549,8 +1553,11 @@ function seedGateButtons(gated) {
 
 // One install attempt per joined address per page load. A board that drops off WiFi and
 // answers again is the same board, and re-installing a card the owner has been working on
-// because the DHCP lease moved is the failure this map exists to prevent.
-const installTried = new Set();
+// because the DHCP lease moved is the failure this map exists to prevent. The value is the
+// verdict, not a bare flag: a refusal replayed must replay AS a refusal, because the old
+// Set shape told a second join "already seeded — the baseline is on the board" over a run
+// that had refused, which is the same lie the hub's skip gate just died of (2026-10-29).
+const installTried = new Map(); // ip -> true, or the refusal sentence
 
 async function autoInstall(ip) {
   const watch = $("#ob-watch");
@@ -1559,11 +1566,19 @@ async function autoInstall(ip) {
   // run's install is the already-attempted one, we still release the window below — a join that
   // has nothing left to write must not strand the done panel sealed.
   if (installTried.has(ip)) {
-    seedVerdict = "skipped";
-    releaseSeed(watch, "already seeded this session — the baseline is on the board.");
+    const prior = installTried.get(ip);
+    if (prior === true) {
+      seedVerdict = "skipped";
+      releaseSeed(watch, "already seeded this session — the hub verified it once this page load.");
+    } else {
+      seedVerdict = prior || "the clock did not install on join";
+      releaseSeed(watch, "the seed did not finish: " + seedVerdict + " — press Seed on the orb's Library card to retry.");
+    }
     return;
   }
-  installTried.add(ip);
+  // Pessimistic placeholder: a run killed by a page reload left standing no verdict, and the
+  // next join must replay "died midway", not claim a seed. The real verdict overwrites it below.
+  installTried.set(ip, "the install died before it answered; nothing was verified");
   // The guard stands from here to the verdict. Every exit tests it, so the operator cannot
   // dismiss the window, hit Escape, or click the scrim until this line's twin below clears it.
   seedBusy = true;
@@ -1577,13 +1592,18 @@ async function autoInstall(ip) {
   // back a `skipped` step when the owner's shelf stands, which this line then shows.
   if (watch) watch.textContent = "installing the clock from the hub library\u2026";
   const done = await streamInstall(ip, "clock", true);
+  installTried.set(ip, done ? true : (gLastRefusal || "the clock did not install on join"));
   // `done` is the hub's own verdict and, on the automatic arm, it only arrives after verifySeed
-  // re-read the ledger and the theme count post-reboot. A refusal names the reason in
-  // gLastRefusal, and the window opens anyway — the operator has to be able to reach the board
-  // to see what went wrong — but the headline says what actually happened, not "installed".
+  // re-read the ledger and the theme count post-reboot — including a run that skipped, which
+  // must now earn its skip by the same verify. The headline quotes the hub's verified note
+  // rather than asserting the glass from the page, which cannot see it (bench, 2026-10-29: the
+  // page said "on the glass" over an empty card; that sentence is never written here again
+  // unless the dial itself was read enabled, backed by card bytes, and wearing a theme).
   if (done) {
     seedVerdict = "verified";
-    releaseSeed(watch, "clock installed, enabled, and on the glass.");
+    releaseSeed(watch, gLastVerifyNote
+      ? "clock seeded \u2014 " + gLastVerifyNote + "."
+      : "clock seeded and verified by the hub.");
   } else {
     seedVerdict = gLastRefusal || "the clock did not install on join";
     releaseSeed(watch, "the seed did not finish: " + seedVerdict + " \u2014 open the orb to retry.");
@@ -1629,6 +1649,7 @@ async function streamInstall(ip, only, auto, frame, force, card) {
 // q is the whole hub route with its query already assembled.
 async function streamSteps(q, frame, ip) {
   gLastRefusal = ""; // this run's verdict starts clean; the seed reads it the moment we return
+  gLastVerifyNote = "";
   const out = $("#lib-install-log");
   const line = function (t) {
     if (frame) {
@@ -1677,6 +1698,7 @@ async function streamSteps(q, frame, ip) {
         if (j.action === "uploading") setBar(j.note);
         if (j.action === "done") ok = true;
         if (j.action === "refused") { refusal = j.note || "the hub refused the run"; gLastRefusal = refusal; }
+        if (j.step === "verify" && j.action === "verified") gLastVerifyNote = j.note || "";
       }
     }
     if (frame) {
@@ -1713,6 +1735,8 @@ function describeStep(j) {
     case "stored": return "theme stored";
     case "rebooting": return "the orb is rebooting after the store";
     case "skipped": return j.step + " was already there" + (j.note ? " (" + j.note + ")" : "");
+    case "reseeding": return "the shelf did not verify; refilling the baseline (" + (j.note || "") + ")";
+    case "verified": return "verified: " + (j.note || "the board answers clean");
     case "refused": return "refused: " + (j.note || "no reason given");
     case "done": return "done";
     default: return j.step + " \u2014 " + j.action;

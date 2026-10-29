@@ -485,6 +485,50 @@ silent false-green into a named refusal, so the owner's next pass will either go
 exact fact the dial reported. The board must be flashed and provisioned **through the hub** for the
 verify arm to run.
 
+**Update, same day:** verified on Bronze over hardware — and the pass exposed that the gate above had
+a hole of its own: the automatic arm's owner-shelf skip reached `done` without ever calling
+`verifySeedRun`. That is #16.
+
+## 16. The owner-shelf skip lied, and the theme door was the corpse under it
+
+**Symptom (owner, bench, 2026-10-29 PM, Bronze).** After a join the done panel read
+"clock installed, enabled, and on the glass", the glass showed only MENU and would not walk to a
+clock, and the card's `apps/` and `themes/` folders were empty. "Open this orb" still did not land.
+
+**Root cause, first layer — the skip that never verified.** `h_libraryInstall`'s automatic arm asks
+`shelfHoldsOwnersContent` before the ladder and skips to `skipped`+`done` when it answers true. Two
+defects compounded. The gate counted ANY non-compiled ledger row as the owner's shelf — Bronze's
+`clock` row was hollow (disabled, zero card bytes, a leftover of an earlier broken life), so it
+counted — and the skip path returned BEFORE the verify arm, so the run reported `done` with no read
+behind it and the page called it verified. The fix: a hollow, disabled row no longer counts as
+curatorship (`shelfHoldsOwnersContent` now requires the enable bit or a card copy), and a skip that
+does stand must still pass `verifySeedRun` to earn its `done` — a shelf that cannot verify is
+reseeded through the ladder, not skipped. The verify arm also dropped its slate-mark precondition:
+on the automatic arm, `done` now always follows `verified`.
+
+**Root cause, second layer — why the card stayed empty.** The join-time theme upload died at
+`POST /api/v1/sd/theme` with 503 `"no card in the socket"` while `/api/v1/sd` reported
+`mounted:true` — deterministically, on every join run since the seed returned. `orb_theme_upload_begin`
+resolves its destination through `orb_files_src("clock","themes")`, the CLOCK app's registry entry,
+and that registry is only built when the dial is built at boot. A clock installed-and-enabled inside
+a live boot has no entry, `upload_begin` returns `ESP_ERR_NOT_FOUND`, and the door maps BOTH failures
+to the same "no card" sentence. Bench proof: the same 2.7 MB upload the door had refused twice
+landed and stored within seconds of a reboot of the same board, with no other change. The hub fix
+is version-agnostic: on that exact 503, `installTheme` re-reads the mount; if the card swears it is
+mounted it reboots the dial, waits for it back, and hands it the upload once more — the store reboots
+the board anyway, so the extra boot is invisible to the owner. A genuinely missing card keeps the
+honest error untouched. The firmware-side message split is owed by the next image: the door must
+name a NULL registry as what it is, not as a missing card.
+
+**Verified over hardware.** Full broken state restored first (clock uninstalled, both card trees
+erased, `card_count=0`), then one auto-arm run through the rebuilt hub (`v1.1.16-91`, commit below):
+`clock: uploading… installed: enabled` → theme crosses 2668 KB → `theme: stored` → store reboot →
+`verify: verified — "clock on the glass, theme on the card"` → `install: done`. The device answers
+afterwards: `sd.card_count=1`, `sd.active=Skeleton`, card tier
+`clock.orbapp file_size=663673 ok=true`, rows `clock enabled=true on_glass=true`. `/api/orb/where`
+replies `{ok:true, ip:"192.168.2.32", mac:"44bd8d608088"}`. Covered by `TestShelfGateRefusesToCountTheHollowRow`,
+`TestShelfGateHonoursARealShelf` and `TestThemeDoorRetryStaysArmedAndConditional` in `seedverify_test.go`.
+
 ## Out of scope here
 
 The re-stamp loop (a firmware-bundle commit invalidates `serflash.sh --check`

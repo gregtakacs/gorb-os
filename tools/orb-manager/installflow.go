@@ -142,10 +142,23 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 		// stands. An unreadable ledger falls through and lets the ladder decide, as before.
 		if !s.slate.pending(slateMAC) {
 			if held, err := s.shelfHoldsOwnersContent(ip); err == nil && held {
-				send(installStep{Step: "install", Action: "skipped",
-					Note: "the card or the registry already holds what the owner put there"})
-				send(installStep{Step: "install", Action: "done"})
-				return
+				// A standing shelf only outranks the seed when the shelf WORKS. The bench
+				// (2026-10-29, Bronze): a leftover hollow row read as owner content, this
+				// run skipped to done, and the page headline claimed the clock was on the
+				// glass while the card held zero files. A skip must earn its `done` on the
+				// same post-read the ladder earns on; a shelf that cannot answer it is
+				// reseeded, not skipped — the ladder's own hollow-row gate refills a dead
+				// promise and installTheme stands down the moment the card carries themes.
+				if verr := s.verifySeedRun(ctx, ip, send); verr == nil {
+					send(installStep{Step: "install", Action: "skipped",
+						Note: "the card or the registry already holds what the owner put there"})
+					send(installStep{Step: "install", Action: "done"})
+					return
+				} else {
+					log.Printf("orb-manager: the standing shelf on %s did not verify (%s); reseeding the baseline", ip, verr.Error())
+					send(installStep{Step: "install", Action: "reseeding",
+						Note: verr.Error() + " — refilling it from the library"})
+				}
 			}
 		}
 	}
@@ -175,8 +188,10 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 	// twice on 2026-10-29. verifySeed re-reads the device's own answers and only a clean
 	// verdict lets the adoption finish. A failure here leaves the slate armed, so the next
 	// announce retries the whole seed rather than leaving a board half-installed and marked
-	// done (see cleanslate.go and the retry note below).
-	if automatic && slateMAC != "" && only == "clock" {
+	// done (see cleanslate.go and the retry note below). The gate is NOT conditioned on the
+	// slate mark: a board this hub adopts from a row it cannot map (a lease moved, a grants
+	// row lost) is exactly a board whose green must be earned, and verify reads only.
+	if automatic && only == "clock" {
 		if verr := s.verifySeedRun(ctx, ip, send); verr != nil {
 			log.Printf("orb-manager: the join seed on %s did not verify: %s", ip, verr.Error())
 			send(installStep{Step: "install", Action: "refused", Note: verr.Error()})
@@ -551,9 +566,18 @@ func (s *Server) shelfHoldsOwnersContent(ip string) (bool, error) {
 		return false, err
 	}
 	for _, r := range list.Installed {
-		if !r.Compiled {
-			return true, nil
+		if r.Compiled || r.Failed {
+			continue
 		}
+		// A row is a promise; the card copy and the enable bit are the substance. A row
+		// that stands switched off with no card behind it is leftover from a broken orb
+		// life, not a shelf anybody curated — counting it as the owner's is how an
+		// adoption skipped over a zero-file card while the page said installed (bench,
+		// 2026-10-29, Bronze). The ladder's hollow-row gate refills exactly this row.
+		if !r.Enabled && !cardHolds(list, r.Slug) {
+			continue
+		}
+		return true, nil
 	}
 	return len(list.Apps) > 0, nil
 }
@@ -611,7 +635,7 @@ func (s *Server) installTheme(ctx context.Context, ip string, send func(installS
 	// The theme is the largest single file in the library, so it gets the same live byte
 	// count the app does rather than the older silent stretch.
 	tTotal, tLast := len(blob), 0
-	_, terr := s.ota.ThemeUploadProgress(ip, blob, false, func(sent int64) {
+	progress := func(sent int64) {
 		pct := int(sent * 100 / int64(tTotal))
 		if pct-tLast < 10 && int(sent) != tTotal {
 			return
@@ -619,7 +643,29 @@ func (s *Server) installTheme(ctx context.Context, ip string, send func(installS
 		tLast = pct
 		send(installStep{Step: "theme", Action: "uploading",
 			Note: fmt.Sprintf("%d of %d KB", sent/1024, int64(tTotal)/1024)})
-	})
+	}
+	doUp := func() error { _, e := s.ota.ThemeUploadProgress(ip, blob, false, progress); return e }
+	terr := doUp()
+	// The shipped door speaks one sentence for two failures. upload_begin resolves the
+	// themes dir through the CLOCK app's file-source registry, which is only built at
+	// boot — so a clock this run installed and enabled without a reboot answers
+	// NOT_FOUND, and the door calls it "no card in the socket" with a 503 while
+	// /api/v1/sd says mounted true (bench, Bronze, 2026-10-29: every join-time theme
+	// died here; the empty themes folder the owner found on the card IS this bug).
+	// When the card swears it is mounted, that refusal is the door, not the socket:
+	// reboot, wait for the dial back, and hand it the upload one more time. A card
+	// that is truly gone keeps the honest error untouched.
+	if terr != nil && strings.Contains(terr.Error(), "no card in the socket") {
+		if list, lerr := s.device.AppsList(ip); lerr == nil && list.Mounted {
+			log.Printf("orb-manager: the theme door on %s cried no-card over a mounted card -- rebooting to arm it", ip)
+			send(installStep{Step: "theme", Action: "rebooting",
+				Note: "the upload door waits on a boot the fresh enable never got — rebooting for it"})
+			if _, rerr := s.device.Reboot(ip); rerr == nil && s.installWaitBack(ip) {
+				s.dropThemeCache(ip)
+				terr = doUp()
+			}
+		}
+	}
 	if terr != nil {
 		return fmt.Errorf("writing %s to the card: %w", name, plainDeviceErr(terr, 0))
 	}

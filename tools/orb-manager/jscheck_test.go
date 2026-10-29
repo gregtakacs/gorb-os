@@ -981,3 +981,68 @@ func TestFlashIsModalHonestAndEndsOnSuccess(t *testing.T) {
 		t.Error("tabs.js invented a second success ending; cableFlash owns it")
 	}
 }
+
+// ---- no native dialogs ---------------------------------------------------------
+//
+// A native dialog is the browser's own window: it cannot be styled, cannot carry the
+// sentence that names what a press costs, lands focus on OK so a stray Enter approves a
+// deletion, and on an embedded page can be refused outright — leaving the button that
+// pressed it looking dead. The hub asks through askConfirm, its own modal in the page's
+// own voice. This rule is what keeps the browser's voice out of the product.
+//
+// One call is exempt, and it is a deliberate degrade rather than an oversight:
+// askConfirm's own fallback for a page served without its modal markup, where refusing
+// the press in silence would be worse than asking plainly. The exemption is the inside
+// of that one function and nowhere else, so the same call written anywhere else fails.
+func TestWebClientAsksThroughItsOwnModal(t *testing.T) {
+	for _, f := range []string{"app.js", "tabs.js"} {
+		full := readWebFile(t, f)
+		masked := maskJSForScope(full)
+		for _, m := range nativeDialogRe.FindAllStringSubmatchIndex(masked, -1) {
+			if jsTopLevelName(masked, m[0]) == "askConfirm" {
+				continue
+			}
+			t.Errorf("web/%s line %d calls a native dialog: the ask belongs in the hub's own "+
+				"modal, which can say what the press costs", f, 1+strings.Count(masked[:m[0]], "\n"))
+		}
+	}
+}
+
+// The negative control the rule needs to mean anything: a native call written where it
+// is forbidden has to be reported. A check that only ever sees what it was told to see
+// passes on a file it never read.
+func TestNativeDialogRuleReportsACallItShould(t *testing.T) {
+	probe := "\nfunction nativeDialogProbe() { return confirm(\"negative control\"); }\n"
+	masked := maskJSForScope(probe)
+	hits := nativeDialogRe.FindAllStringSubmatchIndex(masked, -1)
+	if len(hits) != 1 {
+		t.Fatalf("the probe call was reported %d times; the rule must report it once", len(hits))
+	}
+	if got := jsTopLevelName(masked, hits[0][0]); got != "nativeDialogProbe" {
+		t.Errorf("the probe is reported inside %q, so askConfirm's exemption is not scoped to it", got)
+	}
+	// The exempt name must not read as a hit: the hub's own ask is spelled askConfirm,
+	// and a rule that flags it gets disabled inside a week.
+	if n := len(nativeDialogRe.FindAllString(masked+"\nfunction askConfirm(s){}\n", -1)); n != 1 {
+		t.Errorf("a declaration of askConfirm changed the count to %d; the name is not a call", n)
+	}
+}
+
+// nativeDialogRe finds a call to one of the three methods the browser owns. A word
+// boundary in front is what keeps the hub's askConfirm from reading as one.
+var nativeDialogRe = regexp.MustCompile(`\b(?:alert|confirm|prompt)\s*\(`)
+
+// jsTopLevelName returns the name of the function whose declaration is the last one at
+// column zero before offset at, or "" when at sits in the file's top-level statements.
+// Declarations only count when they begin a line, which is how a nested function or a
+// call inside a template stays out of the answer.
+func jsTopLevelName(src string, at int) string {
+	name := ""
+	for _, m := range regexp.MustCompile(`(?m)^(?:async\s+)?function\s+([A-Za-z_$][\w$]*)`).FindAllStringSubmatchIndex(src, -1) {
+		if m[0] >= at {
+			break
+		}
+		name = src[m[2]:m[3]]
+	}
+	return name
+}

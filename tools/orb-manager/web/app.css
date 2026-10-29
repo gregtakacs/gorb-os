@@ -259,6 +259,10 @@ header nav{display:flex;gap:10px;align-items:baseline}
 .tabs .tab:hover{opacity:1}
 .subtabs{display:flex;gap:2px;margin:6px 0}
 .tab.sub{font-size:.95em;padding:4px 10px}
+/* The Themes pane's single-app heading is a label and not a tab. One theme-capable
+   app leaves nothing to choose, so the only honest control beside it is the one that
+   authors: a button that re-reads the list already on screen reads as a door. */
+.subtabs .tablabel{align-self:center;padding:4px 10px;font-size:.95em;font-weight:600;opacity:.65}
 .tzlist{display:flex;flex-direction:column;gap:2px;max-height:16em;overflow:auto;margin:6px 0}
 .tzrow{display:block;text-align:left;background:none;border:1px solid var(--line);color:var(--fg);
   padding:6px 10px;border-radius:6px;cursor:pointer;font:inherit}

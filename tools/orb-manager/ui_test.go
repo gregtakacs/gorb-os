@@ -627,12 +627,18 @@ func TestThemeCardSurfacesTheOrbsOwnRefusals(t *testing.T) {
 }
 
 // Deleting a theme is the one card action with no undo available from the hub, so the
-// card asks first. A confirm() that goes missing turns an accidental click into a
-// deleted theme.
+// card asks first. An ask that goes missing turns an accidental click into a deleted
+// theme, and an ask the browser owns is an ask that cannot name what it costs.
 func TestThemeDeleteAsksBeforeRemoving(t *testing.T) {
 	body := blockOf(t, readAppJS(t), "function themeRow")
-	if !strings.Contains(body, "confirm(") {
-		t.Error("the delete button must confirm before calling /api/theme/delete")
+	if !strings.Contains(body, "askConfirm(") {
+		t.Error("the delete button must ask through the hub's modal before calling /api/theme/delete")
+	}
+	// The modal exists to retire the browser dialog: it cannot be styled, cannot say
+	// what the press costs, and lands focus on OK so a stray Enter approves a deletion.
+	if n := strings.Count(body, " confirm(") + strings.Count(body, "(!confirm("); n != 0 {
+		t.Errorf("the theme row reaches for a native confirm() %d times; the hub's own modal "+
+			"is the one ask this face may make", n)
 	}
 	if !strings.Contains(body, "/api/theme/delete") {
 		t.Error("themeRow is expected to be the only caller of /api/theme/delete")
@@ -646,6 +652,53 @@ func TestThemeDeleteAsksBeforeRemoving(t *testing.T) {
 	}
 	if !strings.Contains(body, "d.deactivated") {
 		t.Error("the row ignores the device's deactivated answer, so the reboot wait never runs")
+	}
+}
+
+// Three of this face's captions described the wrong thing, and a button's label is the
+// whole of its documentation. "Edit Clock themes…" sat over a window that composes a
+// theme, and on an orb with none it had nothing to edit. "Add a theme…" put a file on
+// the hub's shelf — an import — while the install that follows it is a different press
+// on a different row. "Re-read card" described a reread of something the hub was
+// already holding, when the press dials the orb and asks it to re-scan its own card.
+func TestThemeCardCaptionsSayWhatTheyDo(t *testing.T) {
+	app := readAppJS(t)
+	html := readWebFile(t, "index.html")
+	edit := blockOf(t, app, "function themeEditButton(")
+	if !strings.Contains(edit, `btn.textContent = "Compose new theme"`) {
+		t.Error(`the authoring door is not labelled "Compose new theme"`)
+	}
+	if !strings.Contains(edit, "themeAppTitle(") {
+		t.Error("the authoring door no longer says which app's editor it opens")
+	}
+	if !strings.Contains(app, "Use Compose new theme below") {
+		t.Error("the empty pane tells the operator to use a door with a different name")
+	}
+	for _, c := range []struct{ id, want, why string }{
+		{"mn-rescan", "Refresh from Orb",
+			"the press dials the orb and asks it to re-scan its card"},
+		{"mn-up-btn", "Import a theme",
+			"the press puts a file the hub did not have onto the hub's shelf"},
+	} {
+		at := strings.Index(html, `id="`+c.id+`"`)
+		if at < 0 {
+			t.Fatalf("index.html lost #%s", c.id)
+		}
+		end := strings.Index(html[at:], "</button>")
+		if end < 0 || end > 600 {
+			t.Fatalf("#%s is no longer a captioned button", c.id)
+		}
+		if !strings.Contains(html[at:at+end], c.want) {
+			t.Errorf("#%s does not read %q: %s", c.id, c.want, c.why)
+		}
+	}
+	for _, gone := range []string{"Add a theme", "Re-read card", "Upload theme"} {
+		if strings.Contains(html, gone) || strings.Contains(app, "press "+gone) {
+			t.Errorf("%q is back: a prompt and the caption it names must be the same words", gone)
+		}
+	}
+	if n := strings.Count(app, "press Import a theme again"); n != 2 {
+		t.Errorf("%d second-press prompts name the import door; both refusal paths must", n)
 	}
 }
 
@@ -1345,6 +1398,16 @@ func TestThemesFaceNamesItsAppEvenWithOnlyOne(t *testing.T) {
 	}
 	if !strings.Contains(tabs, `" themes"`) {
 		t.Error("the single-app tab does not say themes, so the pane wears no label")
+	}
+	// The single-app branch drew a BUTTON whose click re-read the list already on
+	// screen, which is a second door into the room the operator is standing in and a
+	// card read priced as a no-op. One theme-capable app has nothing to choose, so the
+	// pane wears a heading.
+	if strings.Contains(tabs, "mk(apps[0].slug") {
+		t.Error("the one-app pane is back to a button whose only act is to re-read what it shows")
+	}
+	if !strings.Contains(tabs, `"tablabel"`) {
+		t.Error("the one-app pane has no static label to name itself with")
 	}
 	// One answer, shared by the chooser, the state line, the empty pane and the Edit row.
 	// Four private guesses is the shape the bug had.

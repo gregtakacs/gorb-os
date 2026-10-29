@@ -252,15 +252,15 @@
     </section>
     <ul id="mn-themes" class="themelist"></ul>
     <div class="row">
-      <button id="mn-rescan" class="ghost" title="Re-read the SD card without rebooting">Re-read card</button>
+      <button id="mn-rescan" class="ghost" title="Ask the orb to re-read its SD card and repaint this pane. Nothing reboots and nothing is written.">Refresh from Orb</button>
       <!-- D37 §6.2: the editor is app-specific, so its door lives in the Themes
            pane beside the app it edits, never as a global control. loadThemes fills
-           this row with an Edit button when the app in context ships an editor. -->
+           this row with the authoring door when the app in context ships an editor. -->
       <span id="mn-theme-editrow"></span>
     </div>
     <div class="row">
       <input type="file" id="mn-fw-file" accept=".orbtheme,application/octet-stream" hidden>
-      <button id="mn-up-btn" class="ghost" title="Send a .orbtheme to the orb. Its name is baked inside the file by the Theme Editor; the orb files it under that name and no other.">Add a theme&#8230;</button>
+      <button id="mn-up-btn" class="ghost" title="Choose a .orbtheme and put it on this orb's card, with the hub keeping a copy on its shelf. The theme's name is baked inside the file by the Theme Editor; the orb files it under that name and no other.">Import a theme</button>
       <span id="mn-up-state" class="hint"></span>
     </div>
     <p class="hint">A theme's name lives inside its file, and the orb files it under that name. The card filename is the hash of it, which is what these buttons send.</p>

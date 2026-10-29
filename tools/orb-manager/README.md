@@ -709,11 +709,13 @@ so a deliberate downgrade stays possible.
   dials what it has learned, and the **Add by IP…** dialog is the one door for an
   address the hub has not heard announced.
   - **Theme card.** List the orb's SD themes, `Use` one, restore the built-in
-    face, `Re-read card`, delete one (it asks first — the firmware's delete is a
-    plain unlink and there is no undo from here), and push a `.orbtheme` exported
-    from the Theme Editor straight to the orb. The hub never writes that file to
-    its own disk. Every one of these is a call to
-    `internal/orbnet/themes.go`, the single module that dials the device theme
+    face, `Refresh from Orb`, remove one from the card (it asks first, in the
+    hub's own modal — the firmware's delete is a plain unlink and there is no
+    undo from here), `Compose new theme` in the app's own editor, and `Import a
+    theme` to send a `.orbtheme` to the orb with a copy kept on the hub's shelf.
+    A shelf theme that is not on this card reaches it through that row's
+    `Install`, the same device door the import uses. Every one of these is a call
+    to `internal/orbnet/themes.go`, the single module that dials the device theme
     API. A theme's identity is the `name` baked inside its container; the orb
     files it under `theme_id(name)` = `sha256(name)[:12]`, and that 12-hex `id`
     is the only handle `install` and `delete` accept, because the device has no

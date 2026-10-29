@@ -2548,13 +2548,19 @@ function renderThemeTabs() {
     b.onclick = () => { themeSub = slug; loadThemes(themeIP); };
     nav.appendChild(b);
   };
-  // One themeable app: name the pane, and mark it current — with one app in scope the
-  // unfiltered view IS that app's view (see themeFaceScope), so an "on" tab is a true
-  // statement rather than a pressed button.
+  // One themeable app: the pane needs its name and not a press. This branch drew a
+  // BUTTON whose only job was to re-read the list already on screen — the second door
+  // to one room, and the one thing an operator can never tell from the outside is that
+  // pressing it costs a card read and changes nothing. A label says the same true
+  // sentence and asks for nothing. The authoring door lives in the toolbar.
   if (apps.length === 1) {
     const n = apps[0].count | 0;
-    mk(apps[0].slug, themeAppTitle(apps[0].slug) + " themes"
-      + (n ? " (" + n + ")" : " (none)"), !themeSub || themeSub === apps[0].slug);
+    const lab = document.createElement("span");
+    lab.className = "tablabel";
+    lab.textContent = themeAppTitle(apps[0].slug) + " themes"
+      + (n ? " (" + n + ")" : " (none)");
+    lab.title = "This orb's only theme-capable app. Compose new theme in the toolbar draws one.";
+    nav.appendChild(lab);
     return;
   }
   const mk2 = (slug, label) => mk(slug, label, themeSub === slug);
@@ -2910,7 +2916,7 @@ function themeEmptyPane(list, sub) {
   // which app it is standing on.
   li.textContent = row
     ? themeAppTitle(slug) + " takes themes and this orb has none for it yet."
-      + (row.has_editor ? " Use Edit below to draw the first one."
+      + (row.has_editor ? " Use Compose new theme below to draw the first one."
                         : " Its container ships no editor, so themes for it arrive as .orbtheme files.")
     : (slug ? "the card holds no themes for " + slug + " yet" : "the card holds no themes yet");
   list.appendChild(li);
@@ -2918,11 +2924,18 @@ function themeEmptyPane(list, sub) {
   if (btn) list.appendChild(btn);
 }
 
-// themeEditButton builds the pane's per-app Edit door, or returns nothing when
+// themeEditButton builds the pane's per-app authoring door, or returns nothing when
 // this app cannot author. The button has always belonged to ONE app — D37's whole
 // point is that the editor rides inside the container and the hub is a loader —
 // so there is no global "Theme Editor" affordance to build here, and the header
 // that once carried one no longer does.
+//
+// The label says what the press starts. "Edit ... themes" fitted neither of the two
+// states this button is the door to: an orb with no themes has nothing to edit, and
+// the themes the orb already holds are not what the window you land in invites you
+// to do. It composes a new one, so that is what the button says. Which app's editor
+// it opens is the tooltip's job, and the pane's own label and state line already
+// say it out loud.
 function themeEditButton(sub) {
   const slug = sub || themeFaceScope();
   const row = slug ? themeAppsRows.find((a) => a.slug === slug) : null;
@@ -2930,7 +2943,8 @@ function themeEditButton(sub) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "ghost";
-  btn.textContent = "Edit " + themeAppTitle(slug) + " themes\u2026";
+  btn.textContent = "Compose new theme";
+  btn.title = "Draw a new theme in the " + themeAppTitle(slug) + " editor. It lands on the hub's shelf; Install puts it on this orb.";
   btn.onclick = () => openThemeEditor(row);
   return btn;
 }
@@ -3037,7 +3051,7 @@ async function themeBridge(ev) {
   const name = typeof m.name === "string" ? m.name : "";
   say("storing " + name + "\u2026");
   try {
-    // The bytes go to the SAME door the "Add a theme" button uses — the whole point
+    // The bytes go to the SAME door the "Import a theme" button uses — the whole point
     // of the bridge: an app's editor buys nothing at the firmware boundary, and
     // D26/D28 verification stays where it already is.
     const bin = Uint8Array.from(atob(m.container), (c) => c.charCodeAt(0));
@@ -3193,7 +3207,7 @@ function themeRow(t, state, list) {
   ovRows.push(ovEntry);
   pv.addEventListener("mouseenter", () => hoverOverlay(ovEntry));
   // Delete is the one theme action that cannot be undone from here, so it asks
-  // first: the firmware's own delete is a plain unlink on the card. The confirm names
+  // first: the firmware's own delete is a plain unlink on the card. The ask names
   // the theme the way the operator knows it and quotes the id being removed, because
   // two rows can share a name across a re-bake and never share an id.
   const del = document.createElement("button");
@@ -3201,15 +3215,25 @@ function themeRow(t, state, list) {
   del.textContent = "Remove from card";
   // D38 gives the active row's press a second consequence: removing the theme
   // the wall wears also empties the slot (orb_theme_delete's clear tail), and
-  // the dial reboots onto its base face. The confirm says so BEFORE the press,
+  // the dial reboots onto its base face. The ask says so BEFORE the press,
   // the answer's deactivated word drives the wait after it, and the row the
   // re-read paints shows the truth either way.
+  //
+  // The ask is the hub's own modal and not the browser's. A press this costly is
+  // asked in the voice that knows what it costs — the browser dialog could not carry
+  // the sentence below, and landed focus on OK so a stray Enter approved the deletion.
   del.onclick = async () => {
     const activeNow = !!t.active;
-    if (!confirm('Remove "' + t.name + '" (' + t.id + ") from the orb's card?"
-      + (activeNow
-        ? " It is the theme on the wall \u2014 the dial will clear it and reboot to its no-theme face."
-        : " This cannot be undone from here."))) return;
+    if (!await askConfirm({
+      title: "Remove from card?",
+      body: "\u201c" + t.name + "\u201d (" + t.id + ") comes off " + (t.ip || themeIP || "this orb") + "'s card.",
+      detail: "The firmware's delete is a plain unlink, so there is no undo from here."
+        + (activeNow
+          ? " It is the theme on the wall: the dial clears the slot and reboots to its "
+            + "no-theme face, and stays there until a theme is stored again."
+          : ""),
+      yes: "Remove from card",
+    })) return;
     del.disabled = true;
     state.textContent = "removing " + t.name + "\u2026";
     try {
@@ -3232,6 +3256,13 @@ function themeRow(t, state, list) {
 // it when it lists the card), not by the file's stem on either side: a theme
 // that travelled by the drop zone keeps its baked name wherever its file lands.
 // Returns the number of rows drawn.
+//
+// A shelf row carries no ID photo, and that is the design rather than an omission. The
+// plane is a region inside the container, and the device is the only thing that unpacks
+// it: GET /api/v1/sd/preview answers from the row the card holds, and a theme the card
+// does not hold has no row to name. So the hub can show a shelf theme's name, its size
+// and where it came from, and cannot show its face until Install puts it on a card. An
+// install that landed therefore replaces this row with a card row that has the canvas.
 let libThemeCount = 0;   // the state line's count, set by loadThemes with each read
 
 function themeShelfRows(scope, deviceRows, state, shelf) {
@@ -3580,7 +3611,7 @@ $("#mn-fw-file").onchange = async (e) => {
     if (pre.ok && pj.ok && pj.data && pj.data.duplicate) {
       pendingReplace = { f };
       st.textContent = "\u201c" + (pj.data.name || f.name) + "\u201d is already on the card as a different dial" +
-        (pj.data.note ? " (" + pj.data.note + ")" : "") + " \u2014 press Upload theme again to replace it";
+        (pj.data.note ? " (" + pj.data.note + ")" : "") + " \u2014 press Import a theme again to replace it";
       return;
     }
   } catch (err) { /* a hub that cannot answer the question does not veto the send; the device still decides */ }
@@ -3602,7 +3633,7 @@ $("#mn-fw-file").onchange = async (e) => {
       const why = j.error || ("HTTP " + r.status);
       if (why.indexOf("already on the card") >= 0) {
         pendingReplace = { f, commit: j.commit || "" };
-        st.textContent = "the orb refused: " + why + " \u2014 press Upload theme again to " +
+        st.textContent = "the orb refused: " + why + " \u2014 press Import a theme again to " +
           (j.commit ? "file the copy already on its card" : "replace it");
         return;
       }
@@ -3818,6 +3849,11 @@ $("#ad-ip").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#ad-c
 // face can `if (!(await askConfirm(...))) return;` exactly as it did with confirm().
 // Only one ask is ever live: a second call while one is open is refused as a
 // cancel rather than stacking a second question the operator cannot see.
+//
+// The degrade path below is the hub's last native dialog and the rule that keeps it so
+// lives in jscheck_test.go. A page served without its modal markup asks plainly rather
+// than refusing in silence, because the other fail-closed answer is a destructive
+// button that does nothing at all and says nothing about why.
 let askOpen = null;
 
 function askConfirm(spec) {

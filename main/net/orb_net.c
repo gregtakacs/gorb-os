@@ -7327,7 +7327,20 @@ esp_err_t orb_net_start(void)
                  CONFIG_ORB_NET_PROV_SOJOURN_S);
     }
 
-    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi_start");
+    /* A clean-flash orb boots the provisioning AP, and the beacon's 752 B
+     * management EB has nowhere to land: the measured internal DMA pool at this
+     * point is dma_free=239, because the tile ring holds 2 x 18,640 B of it. The
+     * driver returns null for the EB and ieee80211_hostap_attach dereferences it,
+     * so the board panics before first-boot RF calibration is ever saved and
+     * loops on every boot. Lend the ring across the start — the same loan
+     * orb_sd_lock() makes for the card — and take it back the moment the driver
+     * is up. The CO5300 keeps its own GRAM, so the glass holds the last frame
+     * meanwhile and the page is re-sent on the return. Return the ring before the
+     * error check: a stranded loan would freeze the dial for the whole boot. */
+    const size_t ring_lease = s_provisioning ? display_dma_borrow() : 0;
+    const esp_err_t ws_err = esp_wifi_start();
+    if (ring_lease) display_dma_return();
+    ESP_RETURN_ON_ERROR(ws_err, TAG, "wifi_start");
     stage_probe("post-wifi_start");
 
     /* Radio stays awake: no modem sleep. The default WIFI_PS_MIN_MODEM parks the

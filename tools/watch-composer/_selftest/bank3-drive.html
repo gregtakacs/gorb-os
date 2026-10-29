@@ -82,25 +82,44 @@
     stopPump();
     say('status: ' + st.slice(0, 200));
     ok('the bake downloaded a file', !!blob && !!fname, fname || st.slice(0, 120));
-    ok('the status names a FORMAT 3 bake', /^Downloaded .*FORMAT 3 (bank|sprite|still)/.test(st), st.slice(0, 90));
+    // The status sentence is the carrier's own words (splitPolicy3's `sentence`), and it
+    // never contained the literal 'FORMAT 3' the first version of this line demanded — it
+    // reads 'plate keyframe bank: 8 of 8 frames at 4 fps, ...'. Assert the download it is:
+    // a completed .orbtheme named by its card stem. The carrier itself is priced off the
+    // bytes below, where it is a number rather than a phrase.
+    ok('the status names a completed .orbtheme bake', /^Downloaded \S+\.orbtheme — /.test(st), st.slice(0, 90));
     if (!blob) { say('RESULT: FAIL — ' + fails + ' check(s)'); document.title = 'FAIL'; return; }
     const bytes = new Uint8Array(await blob.arrayBuffer());
     let w = null, wErr = null;
     try { w = G.verifyBundle3(bytes); } catch (e) { wErr = e; }
     ok('verifyBundle3 walks the bake it just wrote', !wErr, wErr ? String(wErr.message).slice(0, 140) : '');
-    let plate = null, hands = [];
+    let plate = null, hands = [], prevRows = [];
     if (w && w.sections.length) {
       const els = w.sections[0].blob.elements;
       for (let i = 0; i < els.length; i++) {
         const e = els[i], k = e.cls !== undefined ? e.cls : e.class;
-        if (k === 0 && !(e.slot & 0xffff)) plate = e;
+        // CLASS_PLATE is 3, not 0: class 0 is TEXT, so the line this replaces looked for a
+        // row no clock bake writes and reported the plate's frame count as 0 on every green
+        // bake. The dial's own plate is slot 0; a glass overlay rides the same class at a
+        // higher slot, and it is the one the author can raise.
+        if (k === 3 && !(e.slot & 0xffff)) plate = e;
         if (k === 2) hands.push('' + (e.slot | 0));
+        if (k === 9) prevRows.push(e);
       }
     }
     const nf = plate ? (plate.n_frames | 0) : 0;
     say('reader: plate row n_frames=' + nf + '  hand slots [' + hands.join(',') + ']  bytes ' + bytes.length);
-    ok('the plate row carries the frames the carrier promised', nf >= 2 || /still|sprite/.test(st), 'n_frames ' + nf);
+    ok('the plate row carries the frames the carrier promised', nf >= 2 || /still|shimmer band|rides the still/.test(st), 'n_frames ' + nf);
     ok('every centre hand rode the bake as its own row', hands.length >= 2, hands.join(','));
+    // One preview row, opaque, square, at half the panel — the plane the OS picker and the
+    // hub's Themes card paint. A theme that cannot picture itself is an unfinished export,
+    // and this is the trip that says so at the bake rather than three doors down.
+    ok('the bake carries one preview row', prevRows.length === 1, prevRows.length + ' class 9 rows');
+    if (prevRows.length === 1) {
+      const pv = prevRows[0];
+      ok('the preview row is one opaque square at the panel half', pv.n_frames === 1 && pv.w === pv.h && pv.w === 232,
+         pv.w + 'x' + pv.h + ' x' + pv.n_frames);
+    }
     let bin = '', CH = 8192;
     for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
     say('B64LEN ' + bytes.length);

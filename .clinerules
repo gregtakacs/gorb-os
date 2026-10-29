@@ -498,6 +498,29 @@ System python has no PIL; use a venv with `pillow numpy` for both tools.
         --tourbillon /tmp/out/tourbillon --tourbillon-fps 15 \
         --force-sweep --tick-rate 15 --dump-dir /tmp/preview
 
+
+The hub's SHIPPED DEFAULT THEME is **Skeleton**
+(`tools/orb-manager/themes/skeleton.orbtheme`), and it is a different artifact from the
+compiled-in bank above, reaching the dial through a different door. `installTheme` seeds the
+first `.orbtheme` the resolved `themes/` directory holds, so that one file IS the theme a
+wiped board gets. It is a Composer bake (FORMAT 3, abi 4) carrying a class 9 preview plane,
+and that plane is exactly why it replaced the Aviator seed: `tools/make_seed_theme.py`
+(deleted) lifted the seed out of `assets/orb_default.img`, a slot image carries no preview
+plane, and so the shipped default answered `/api/v1/sd/preview` with 404 while the Themes
+card drew an empty frame beside its own name. `bake_clock.py` cannot close that gap — it
+refuses class 9 by design — so the ONLY way to bake a default is the Composer. Re-bake with
+`_selftest/bank3-drive.html?dial=skeleton&name=Skeleton` on Windows Chrome (deploy first with
+`deploy_test_folder.py`; Chrome cannot read the `\\wsl.localhost` UNC path), lift the `B64:`
+line out of the dumped `<pre id="out">`, then `python3 tools/make_default_theme.py <bake>` —
+it refuses a bake with no preview row, a name that disagrees with its own filename, or an abi
+the firmware will not read. Never hand-edit the container. The sentinel leg in
+`tools/host_orbapp_install_test.py` runs `make_default_theme.py --check`, which needs no
+browser. A re-bake is NOT byte-identical to the committed file and must not be expected to
+be: 7 bytes move — the `baked_ms` wall-clock stamp at header word 12 and the header CRC over
+it at word 28 — while art CRC, geometry CRC, serial and name all match. That is why the gate
+walks the element table instead of hashing the file. The compiled-in pair is still av-kit,
+and this changes nothing about it.
+
 The SHIPPED compiled-in bank is **av-kit** (composer preset `Aviator`, 15 base
 frames at 15 fps, no tourbillon), not kit3. Its source kit is committed at
 `assets/sources/av-kit/` with its `DESIGN_ID`; read that folder's README before

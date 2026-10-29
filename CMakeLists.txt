@@ -66,8 +66,11 @@ project(gorb-os)
 # board boots the shell menu with slot A erased: art_bank/adopt_default_bundle
 # refuse the blank slot exactly the way they refuse a damaged one, and the clock
 # falls to the §26 base render. The dial's first face arrives when the hub seeds
-# the clock app and the built-in theme through the ordinary theme doors
-# (tools/orb-manager/seed/, POST /api/v1/sd/theme + /api/v1/sd/bundle). The
-# default's baked bytes live on as the hub's seed source, `assets/orb_default.img`
-# (regenerate the seed with tools/make_seed_theme.py).
+# the clock app and its default theme through the ordinary theme doors
+# (tools/orb-manager/apps/ + themes/, POST /api/v1/sd/theme + /api/v1/sd/bundle). The
+# default's first face ships as a Composer bake instead: the hub's own default theme,
+# `tools/orb-manager/themes/skeleton.orbtheme`, verified by tools/make_default_theme.py.
+# `assets/orb_default.img` stays as the provenance of the compiled-in bank, no longer as a
+# seed source — the seed it produced (themes/aviator.orbtheme) carried no preview plane and
+# retired with it.
 # ---------------------------------------------------------------------------

@@ -198,12 +198,17 @@ Art is baked on the bench; the device never decodes PNG or JSON.
 - **Nothing is flashed into `assets`.** D36 made the firmware flash bare: the partition
   stays in the table because that is where the store door installs a theme, but no image
   is written at flash time. A wiped board boots the shell menu with slot A erased and the
-  clock at the base render. `assets/orb_default.img` survives as the hub's SEED SOURCE
-  only: `tools/make_seed_theme.py` lifts its geometry and banks into
-  `tools/orb-manager/themes/aviator.orbtheme`, and the hub sends that through the ordinary
-  theme doors. Its header name field is the theme's name, and the generator's contract is
-  that the emitted bundle round-trips back to the image byte for byte — name included — so
-  renaming the theme means editing the image, not just the file.
+  clock at the base render. The board's first face arrives from the hub's library, not from
+  a flash manifest: `installTheme` sends the first `.orbtheme` the resolved `themes/`
+  directory holds, and that directory ships one file — `skeleton.orbtheme`, the Composer
+  bake of the `Skeleton` preset that D37 made the default. The bake carries a class 9
+  preview plane, which is the property the previous default lacked: the seed derived from
+  `assets/orb_default.img` by the retired `tools/make_seed_theme.py` had no preview row, so
+  `/api/v1/sd/preview` answered 404 for the one theme a fresh board is guaranteed to hold
+  and the Themes card drew an empty frame beside its name. `tools/make_default_theme.py`
+  now owns that file: it verifies a bake before it installs it, and `--check` re-verifies
+  the committed copy without a browser. `assets/orb_default.img` stays in the tree as the
+  provenance of the compiled-in bank only.
 - **A theme's identity is its name, never its filename.** The device files a card
   bundle under `theme_stem(slug, name)` = `<slug>-<token>-<12 hex>` (`orb_theme.c:277`),
   where the hex is `sha256(slug + "/" + name)[:12]` and the token is the lowercased,

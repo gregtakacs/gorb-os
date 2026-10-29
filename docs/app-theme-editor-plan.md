@@ -388,10 +388,12 @@ Also inverted: `ui_test.go:163` currently **demands** the seed row
 flip to assertions on the empty state.
 `tools/host_orbapp_install_test.py` likewise currently asserts the seed contract's
 presence. It asserts the drop-zone path instead.
-`tools/make_factory_apps.py` and `tools/make_seed_theme.py` stay, because they are
+`tools/make_factory_apps.py` stays, because it is
 how the clock's and HSB's own `.orbapp` files get built and committed as **artifacts
 the operator copies to a card**. The generators stay. The hub's private copy of
-their output goes.
+their output goes. (`tools/make_seed_theme.py` was one of those generators and no
+longer is: D37 replaced the theme it produced with a Composer bake carrying a preview
+plane, and `tools/make_default_theme.py` is the gate on that artifact now.)
 
 What replaces it is the honest path the Apps face already implements: card in, files
 copied to `/sd/apps`, and the drop-zone Install button that `appFaceCardZone`

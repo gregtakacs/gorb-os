@@ -529,9 +529,9 @@ func (l *Library) Drop(kind, name string) (string, error) {
 // in the extension Drop itself appends.
 //
 // The character set is the device's own orb_sd_name_ok — 1..55 bytes of [A-Za-z0-9._-]
-// with no leading dot — rather than a stricter hub invention. "aviator", the shipped
-// seed's own stem, is a mixed-case-free plain name and a lowercase-only gate would have
-// refused it while the firmware listed it happily.
+// with no leading dot — rather than a stricter hub invention. "skeleton", the shipped
+// default's own stem, is a mixed-case-free plain name and a lowercase-only gate would
+// have refused it while the firmware listed it happily.
 func themeFileOK(s string) bool {
 	if s == "" || len(s) > 55 || strings.ContainsAny(s, `/\`+"\x00") {
 		return false

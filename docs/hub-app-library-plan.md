@@ -318,6 +318,17 @@ Renamed to **Aviator** at the source. `assets/orb_default.img`'s name field now 
 behaves like any theme the Composer sends. Only ten header bytes changed — the name words
 and the CRC over them; every art byte is identical, so the pixels are the same face.
 
+<!-- RETIRED 2026-10-29 by D37 (§0.12 of docs/app-platform-plan.md). The rename above was
+correct and it did not finish the job, because the Aviator seed carried no class 9 preview
+row and a slot image has no plane to lift: the theme a wiped board is GUARANTEED to own was
+the one theme that could not picture itself, and /api/v1/sd/preview answered 404 for it.
+themes/aviator.orbtheme and tools/make_seed_theme.py are deleted. The shelf ships one theme
+now — themes/skeleton.orbtheme, the Composer's Skeleton preset baked through exportTheme3,
+which attaches previewPlane3() to every bake — and tools/make_default_theme.py is the
+browser-free gate that refuses a default with no preview row. This section stands as the
+record of the rename and of the stem rule it was chasing, which is unchanged and still
+enforced. -->
+
 Two consequences worth knowing:
 
 - **The derived id changed with the name.** A dial that already holds the old `av-kit`

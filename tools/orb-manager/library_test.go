@@ -273,7 +273,7 @@ func TestLibraryListingMatchesTheShippedArtifacts(t *testing.T) {
 			t.Errorf("%s listed no app; every FORMAT 3 theme names the one it themes", th.File)
 			continue
 		}
-		// The invariant the Aviator rename bought, pinned as a rule rather than as a
+		// The invariant the rename rule buys, pinned as a relationship rather than as a
 		// literal: a shipped theme's filename stem matches its own embedded title,
 		// case-folded. The device files a theme under a stem derived from the NAME and
 		// ignores the filename entirely, so a seed whose two disagree was a library row
@@ -285,9 +285,14 @@ func TestLibraryListingMatchesTheShippedArtifacts(t *testing.T) {
 				"or the Themes face can never line the row up with the card stem the device derives",
 				th.File, th.Title)
 		}
-		if th.App == "clock" && !strings.EqualFold(th.Title, "Aviator") {
-			t.Errorf("the clock's shipped theme is titled %q; the seed renamed to Aviator in S6", th.Title)
+		if th.App == "clock" && !strings.EqualFold(th.Title, "Skeleton") {
+			t.Errorf("the clock's shipped theme is titled %q; the shelf default is the Composer bake Skeleton", th.Title)
 		}
+		// Whether that shipped default CARRIES a preview row is a ship-gate question, and
+		// tools/make_default_theme.py --check answers it by walking the container's own
+		// element table. It is not restated here as a hub field: the listing carries the
+		// facts a row needs to draw and to decide whether a press is worth a round trip,
+		// and a shelf theme cannot show a photo before its bytes are on a card anyway.
 	}
 	// App rows carry no App: the slug already is the app, and a duplicate field there is
 	// a second answer to the same question waiting to disagree.
@@ -881,9 +886,9 @@ func TestLibraryDropTakesOnePlainNameAndNothingElse(t *testing.T) {
 		}
 	}
 	// The theme side takes the device's filename grammar, which admits upper case and an
-	// interior dot. The shipped seed's stem ("aviator") is plain, and a gate narrower than
-	// orb_sd_name_ok would have the hub refuse a file it lists.
-	for _, good := range []string{"aviator", "Night", "a.b", "a-b_c"} {
+	// interior dot. The shipped default's stem ("skeleton") is plain, and a gate narrower
+	// than orb_sd_name_ok would have the hub refuse a file it lists.
+	for _, good := range []string{"skeleton", "Night", "a.b", "a-b_c"} {
 		if _, err := lib.Drop("theme", good); err == nil ||
 			!strings.Contains(err.Error(), "not in the library") {
 			t.Errorf("Drop(theme, %q) = %v, want the absent-file refusal rather than a name refusal", good, err)

@@ -430,6 +430,34 @@ uint16_t *gfx_band(int r)          { return s_band[r]; }
  * layer's blend traffic, cmp = the flush gate. The caller keeps its own
  * baselines; these are monotonic totals. */
 static uint64_t s_hk_rest_us, s_hk_paint_us, s_hk_cmp_us;
+
+/* ---- the chrome keep-out (see orb_gfx.h) -----------------------------------
+ * The topmost chrome — today the carousel chip — is LVGL's to draw, and the
+ * direct-push compositor knows nothing about its layer. A commit that restored
+ * or painted through the chip's box would re-composite bare dial pixels over
+ * the chip's, and the flush gate would DMA them, so the chrome vanished under
+ * any hand that swept its band (bench, orb-A, 2026-10-29). The gate below is
+ * the whole mechanism: rows outside the rect's y-range behave exactly as
+ * before; a row inside it has its x-span cut around the rect, and the chip's
+ * own pixels stay in the mirror untouched. */
+static int32_t s_ko[4];                      /* x0, y0, x1, y1 */
+static bool    s_ko_on;
+
+void gfx_keepout_set(int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+{
+    s_ko[0] = x0; s_ko[1] = y0; s_ko[2] = x1; s_ko[3] = y1;
+    s_ko_on = true;
+}
+
+void gfx_keepout_clear(void)
+{
+    if (!s_ko_on) return;
+    s_ko_on = false;
+    /* Whatever the commit skipped while the chrome stood has to come back: a
+     * hand that moved across the rect during the peek still owns those pixels,
+     * so re-mark the rect whole and the next commit repaints it. */
+    gfx_mark_rows(s_ko[1], s_ko[3], s_ko[0], s_ko[2], false);
+}
 void gfx_hook_phases(uint64_t *rest_us, uint64_t *paint_us, uint64_t *cmp_us)
 {
     *rest_us = s_hk_rest_us; *paint_us = s_hk_paint_us; *cmp_us = s_hk_cmp_us;
@@ -568,12 +596,32 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
             t0 = esp_timer_get_time();
             for (int r = 0; r < nr; r++) {
                 const int32_t y = y0 + r;
-                const int32_t xa = rowstate.x0[y], xb = rowstate.x1[y];
+                int32_t xa = rowstate.x0[y], xb = rowstate.x1[y];
                 uint16_t *fbrow = fb + (size_t)y * CLK_SCR_W;
                 bool send = rowstate.force[y] != 0;
-                for (int32_t x = xa; x <= xb; x++) {
-                    const uint16_t v = s_band[r][x];
-                    if (fbrow[x] != v) { fbrow[x] = v; send = true; }
+                /* The keep-out cut, in the one place it has to live: the staged
+                 * row still holds the dial's pixels for the rect's span, but
+                 * they never reach the mirror while the chrome stands, so the
+                 * chip's own bytes stay intact and the row that DMAes carries
+                 * them. */
+                const bool ko = s_ko_on && y >= s_ko[1] && y <= s_ko[3];
+                const int32_t ka = s_ko[0], kb = s_ko[2];
+                if (!ko || xb < ka || xa > kb) {              /* rect misses the row */
+                    for (int32_t x = xa; x <= xb; x++) {
+                        const uint16_t v = s_band[r][x];
+                        if (fbrow[x] != v) { fbrow[x] = v; send = true; }
+                    }
+                } else {
+                    const int32_t lo = xa < ka ? xa : ka;     /* left run   */
+                    const int32_t hi = xb > kb ? xb : kb;     /* right run  */
+                    for (int32_t x = xa; x < lo; x++) {
+                        const uint16_t v = s_band[r][x];
+                        if (fbrow[x] != v) { fbrow[x] = v; send = true; }
+                    }
+                    for (int32_t x = hi + 1; x <= xb; x++) {
+                        const uint16_t v = s_band[r][x];
+                        if (fbrow[x] != v) { fbrow[x] = v; send = true; }
+                    }
                 }
                 display_commit_row(y, send);
             }

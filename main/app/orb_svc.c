@@ -776,10 +776,11 @@ static esp_err_t store_grants(int slot, uint32_t mask)
 
 /* ---- the enable ledger and the uninstall wipe (P4a) --------------------------
  * One u32 per row, key e<slot> beside the grant words it lives with: the same
- * owner's-door provenance, the same slot keying, the opposite default — a
- * stored 1 is the ONLY way an app walks (an absent grant word means "as
- * declared"; an absent enable word means "off", because the install confirm
- * promises the app stays off until the owner turns it on). */
+ * owner's-door provenance, the same slot keying. The default flipped on
+ * 2026-10-29 (owner ruling: installed IS enabled): an absent word now means ON,
+ * and only an explicit stored 0 — the recovery door's off-record — walks an app
+ * off. A ledger that cannot be read still answers false, because a dial with no
+ * NVS should not grow screens it cannot govern. */
 bool orb_svc_enabled(int slot)
 {
     nvs_handle_t h;
@@ -787,9 +788,10 @@ bool orb_svc_enabled(int slot)
         return false;                        /* no ledger readable: the dial stands */
     char key[12];
     snprintf(key, sizeof key, "e%d", slot);
-    uint32_t v = 0;
+    uint32_t v = 1;                          /* absent = on: installed is enabled */
     const esp_err_t r = nvs_get_u32(h, key, &v);
     nvs_close(h);
+    if (r == ESP_ERR_NVS_NOT_FOUND) return true;
     return r == ESP_OK && (v & 1u) != 0;
 }
 

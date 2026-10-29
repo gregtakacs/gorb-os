@@ -992,18 +992,21 @@ int orb_app_install_resolve_boot(void)
 /* The boot ladder's second step (after orb_svc_init, before orb_app_init_all):
  * an installed app walks only what its stored word says it may. resolve_boot
  * could not read these words — it runs before the NVS partition is initialised
- * and its contract is partition-reads-only — so the enable pass is its own rung,
- * and the default for "no word" is the same answer card_fill gave: off, exactly
- * what the install confirm promises. */
+ * and its contract is partition-reads-only — so the enable pass is its own rung.
+ * Under the installed-IS-enabled ruling the rung carries BOTH arms: an absent
+ * word leaves card_fill's enabled standing, and only an explicit stored 0 walks
+ * the row off — the recovery door's durable off-record, nothing else. */
 void orb_app_install_apply_enable(void)
 {
     if (!orb_app_card_count()) return;                /* nothing installed: nothing to ask */
     for (size_t i = ORB_APP_BASE; i < orb_app_rows(); i++) {
         const orb_app_t *row = orb_app_row(i);
         if (!row || !row->installed) continue;        /* positional span: holes are free slots */
-        if (!orb_svc_enabled(ORB_APP_BASE + row->flash_slot)) continue;
-        if (orb_app_set_enabled(row, true) == ESP_OK)
-            ESP_LOGI(TAG, "enabled \"%s\" from its stored word", row->slug);
+        const bool on = orb_svc_enabled(ORB_APP_BASE + row->flash_slot);
+        if (row->enabled == on) continue;             /* the default already agrees with the word */
+        if (orb_app_set_enabled(row, on) == ESP_OK)
+            ESP_LOGI(TAG, "%s \"%s\" from its stored word",
+                     on ? "enabled" : "held off", row->slug);
     }
 }
 

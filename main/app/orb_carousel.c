@@ -22,6 +22,7 @@
 #include "orb_carousel.h"
 #include "orb_app.h"
 #include "orb_sched.h"
+#include "orb_gfx.h"   /* the chip's keep-out box: gfx_keepout_set/clear */
 
 #include "esp_log.h"
 #include "lvgl.h"
@@ -81,6 +82,10 @@ static lv_obj_t *s_lbl;
 static void chip_hide(void)
 {
     if (s_chip) lv_obj_add_flag(s_chip, LV_OBJ_FLAG_HIDDEN);
+    /* The dial owns the pixels the chip was standing on from here on: the
+     * compositor's keep-out lifts, re-marks the rect, and the next commit
+     * repaints the band whole. */
+    gfx_keepout_clear();
 }
 
 /* Name `app` on the chip and raise it. Re-texts one pre-built label rather than
@@ -93,6 +98,14 @@ static void chip_show(const orb_app_t *app)
     /* The top layer is drawn after every screen, so no z-order negotiation with
      * the app underneath is possible, or needed. */
     lv_obj_move_foreground(s_chip);
+    /* The direct-push compositor paints under LVGL's top layer without knowing
+     * it exists, so the chip's box goes into the keep-out the same press that
+     * raises the chip. Coords come from the object, not the macros: the chip is
+     * centred by LVGL, and a second place that recomputes the geometry is a
+     * second place to be wrong about it. */
+    lv_area_t a;
+    lv_obj_get_coords(s_chip, &a);
+    gfx_keepout_set(a.x1, a.y1, a.x2, a.y2);
 }
 
 esp_err_t orb_carousel_init(void)

@@ -1000,10 +1000,15 @@ static const orbapp_scan_entry_t *card_subject(void)
 static int door_subject(void) { return s_doormode ? 1000 + s_card_sub : s_door_slot; }
 
 /* The doors this subject answers, in the order an owner wants them. A dial row
- * that runs gets show; one that is off or faulted gets install (the hub's own
- * answer for that state — an install press carries the enable word and the
- * fault clear); both get uninstall, and both get remove from card, which the
- * worker answers honestly when the card holds nothing. */
+ * that runs gets show plus uninstall plus remove-from-card. The two removal
+ * verbs stand down when the row cannot run, because an app that is off or
+ * faulted is not the app the owner came to take away — the one press that
+ * answers that row is the retry, which carries the enable word and the fault
+ * clear (bench, owner, 2026-10-29: a row showing install and uninstall at once
+ * is a page that does not know its own state). A card file gets install plus
+ * remove-from-card, which the worker answers honestly when the card holds
+ * nothing. Install and uninstall are mutually exclusive by construction: the
+ * dial holds a runnable slot or it does not. */
 enum { ACT_SHOW = 0, ACT_INSTALL, ACT_UNINSTALL, ACT_CARDRM };
 
 static int appact_id(int row)
@@ -1017,9 +1022,12 @@ static int appact_id(int row)
     } else {
         const orb_app_t *a = s_door_slot >= 0 ? orb_app_row((size_t)s_door_slot) : NULL;
         if (!a) return -1;
-        if (a->enabled && !a->failed) ids[n++] = ACT_SHOW;
-        else                          ids[n++] = ACT_INSTALL;
-        ids[n++] = ACT_UNINSTALL;
+        if (a->enabled && !a->failed) {
+            ids[n++] = ACT_SHOW;
+            ids[n++] = ACT_UNINSTALL;
+        } else {
+            ids[n++] = ACT_INSTALL;      /* off or faulted: the retry is the door */
+        }
         ids[n++] = ACT_CARDRM;
     }
     return (row >= 0 && row < n) ? ids[row] : -1;
@@ -1175,9 +1183,15 @@ static void label_appact(int row, char *out, size_t outsz, bool *sel_hi)
                                             : "show on the dial");
         return;
     }
-    case ACT_INSTALL:
-        snprintf(out, outsz, "install");
+    case ACT_INSTALL: {
+        /* The label follows the press, not the enum: on a card file the press
+         * installs; on a registry row held off the press enables; on a faulted
+         * row the press retries (C2's fault clear rides the enable door). */
+        const orb_app_t *a = s_doormode ? NULL : orb_app_row((size_t)s_door_slot);
+        snprintf(out, outsz, s_doormode ? "install"
+                                        : (a && a->failed) ? "retry" : "enable");
         return;
+    }
     case ACT_UNINSTALL:
         /* The arm is stated on the row, not only in the status line: the owner
          * who walks back to this row after a detent sees the press is armed. */

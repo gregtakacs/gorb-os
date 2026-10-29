@@ -470,9 +470,11 @@ static void card_fill(card_entry_t *s, const orb_app_t *row)
     s->app.iface        = orb_app_behaviour_iface(s->app.behaviour_kind);
     s->app.is_home      = false;           /* home is the shell's (C8 as amended)  */
     s->app.installed    = true;
-    s->app.enabled      = false;           /* P4a default: an install lands off, and the
-                                            * enable word or the owner's toggle turns it
-                                            * on — the install confirm's promise (D9) */
+    s->app.enabled      = true;            /* owner ruling, bench 2026-10-29: installed IS
+                                            * enabled. There is no separate on/off state a
+                                            * surface can toggle; the enable word survives
+                                            * only as the durable off-record the recovery
+                                            * door writes, and apply_enable lifts it. */
     s->app.active       = false;
     /* The entry index IS the identity (P4a): stamp it so a row placed by the
      * fallback path still knows its own key, and an upserted row's word keys

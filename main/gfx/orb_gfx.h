@@ -142,6 +142,17 @@ void gfx_rows_clear(void);
 bool gfx_commit_needed(void);
 void gfx_commit_consumed(void);
 
+/* The chrome keep-out. A rect this pass names is the glass's topmost chrome —
+ * the carousel chip today — and the direct-push compositor treats its rows as
+ * not its to paint: LVGL draws the chrome on its own layer, and a hand that
+ * swept through the band would otherwise re-composite over the chip's pixels
+ * the same tick (bench, orb-A, 2026-10-29: "MENU" under the second hand shows
+ * only in parts). Set it where the chrome is shown; clear it where the chrome
+ * hides, and the clear re-marks the kept-out rows so the next commit repaints
+ * them whole. One rect; a second chrome would make it a list, not a patch. */
+void gfx_keepout_set(int32_t x0, int32_t y0, int32_t x1, int32_t y1);
+void gfx_keepout_clear(void);
+
 /* Hook phase timings and per-role blend counts, for the fps line. Totals are
  * monotonic; gfx_role_snapshot() returns one second's deltas and keeps its own
  * baselines, so the reporter owns no paint state. */

@@ -5,10 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
@@ -491,5 +494,158 @@ func TestWaitOrbCycleDemandsTheSilenceFirst(t *testing.T) {
 	}
 	if d := time.Since(start); d < 2*time.Second {
 		t.Errorf("the cycle returned at %s — before the board even died", d)
+	}
+}
+
+// parkedApps is goodApps with the one bit the seeding arm now gates on: the dial says the
+// clock is the face it is showing. Every other fact is the same.
+const parkedApps = `{"mounted":true,"apps":[{"stem":"clock","ok":true}],` +
+	`"installed":[{"slug":"clock","enabled":true,"on_glass":true}]}`
+
+// The owner ruling of 2026-10-29: an orb that finishes provisioning showing the menu is half
+// set up, and "the dial has not made it the face yet" is not a note a modal may close on. The
+// seeding arm refuses it.
+func TestVerifySeededGlassRefusesTheUnparkedClock(t *testing.T) {
+	s, _ := deviceHub(t, goodApps, goodSD)
+	seen := ""
+	err := s.verifySeededGlass(context.Background(), "127.0.0.1",
+		func(st installStep) { seen = st.Action })
+	if err == nil {
+		t.Fatal("a clock the dial is not showing verified green; that is the half-set-up orb")
+	}
+	if seen != "refused" {
+		t.Errorf("the stream said %q, not a refusal the operator can act on", seen)
+	}
+	if !isSeedFailure(err) {
+		t.Error("the refusal is not a seed failure, so the slate would be cleared and the board left this way")
+	}
+}
+
+func TestVerifySeededGlassAcceptsTheParkedClock(t *testing.T) {
+	s, _ := deviceHub(t, parkedApps, goodSD)
+	note := ""
+	if err := s.verifySeededGlass(context.Background(), "127.0.0.1",
+		func(st installStep) { note = st.Note }); err != nil {
+		t.Fatalf("a parked, themed clock was refused: %v", err)
+	}
+	if note != "clock on the glass, theme on the card" {
+		t.Errorf("the verified note was %q", note)
+	}
+}
+
+// parkGate is a dial whose status answers one firmware and whose face door answers one way.
+// It records the paths it was dialed so a test can tell "parked" from "declined to ask".
+func parkGate(t *testing.T, fw string, faceStatus int, faceBody string) (*Server, *[]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var paths []string
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/status":
+			w.Write([]byte(`{"state":"connected","fw":"` + fw + `"}`))
+		case "/api/v1/apps/face":
+			w.WriteHeader(faceStatus)
+			w.Write([]byte(faceBody))
+		default:
+			w.Write([]byte(`{}`))
+		}
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	s := newHub()
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.orb = orbnet.NewClient(deviceTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+	s.orb.DevicePort = portOf(srv.URL)
+	return s, &paths
+}
+
+// A board older than the glass door cannot comply and cannot report the glass it holds. The
+// hub must not refuse it for the missing door: it reports the knob flick and lets the five
+// facts carry the run, which is the posture faceMinFW's comment exists to record.
+func TestParkGlassDeclinesADialWithNoDoor(t *testing.T) {
+	s, paths := parkGate(t, "v1.1.33", 404, `{"error":"Not Found"}`)
+	steps := []installStep{}
+	gated, err := s.parkGlass(context.Background(), "127.0.0.1", func(st installStep) {
+		steps = append(steps, st)
+	})
+	if err != nil {
+		t.Fatalf("an old dial was refused for a door its firmware never had: %v", err)
+	}
+	if gated {
+		t.Error("the glass gate stayed on for a dial that cannot be parked, so its seed would refuse")
+	}
+	for _, p := range *paths {
+		if strings.Contains(p, "/apps/face") {
+			t.Error("the hub dialed a door it had just read as absent")
+		}
+	}
+	sawKnob := false
+	for _, st := range steps {
+		if st.Action == "skipped" && strings.Contains(st.Note, "knob") {
+			sawKnob = true
+		}
+	}
+	if !sawKnob {
+		t.Errorf("the operator was never told to flick the knob: %+v", steps)
+	}
+}
+
+func TestParkGlassParksAndArmsTheGate(t *testing.T) {
+	s, paths := parkGate(t, faceMinFW, 200, `{"state":"rebooting","slug":"clock"}`)
+	gated, err := s.parkGlass(context.Background(), "127.0.0.1", func(installStep) {})
+	if err != nil {
+		t.Fatalf("the park refused on a dial that answered: %v", err)
+	}
+	if !gated {
+		t.Error("a dial the hub just parked dropped the glass gate")
+	}
+	sawFace := false
+	for _, p := range *paths {
+		if p == "POST /api/v1/apps/face" {
+			sawFace = true
+		}
+	}
+	if !sawFace {
+		t.Errorf("the hub never dialed the door: %v", *paths)
+	}
+}
+
+// The door's refusal is the seed's refusal. A dial that says the row is off does not get a
+// green because the hub wanted one; the slate stays armed and the next announce retries.
+func TestParkGlassRefusesWhatTheDialRefuses(t *testing.T) {
+	s, _ := parkGate(t, faceMinFW, 409,
+		`{"error":"the row is switched off — enable it before parking the glass on it"}`)
+	gated, err := s.parkGlass(context.Background(), "127.0.0.1", func(installStep) {})
+	if err == nil {
+		t.Fatal("a dial that refused the face left the seed free to finish green")
+	}
+	if !gated {
+		t.Error("a dial that answered the door must keep the glass gate, even on a refusal")
+	}
+	if !strings.Contains(err.Error(), "switched off") {
+		t.Errorf("the refusal lost the dial's own sentence: %v", err)
+	}
+}
+
+// faceMinFW names a release that carries the door, the same way installMinFW must name one
+// that reads the containers. The stamp in version.txt is the release being built now.
+func TestFaceFloorNamesTheReleaseThatShipsTheDoor(t *testing.T) {
+	v := readTreeVersion(t, filepath.Join("..", ".."))
+	floor, ok := firmware.ParseVersion(faceMinFW)
+	if !ok {
+		t.Fatalf("faceMinFW = %q is not a versioned stamp", faceMinFW)
+	}
+	if v.Compare(floor) < 0 {
+		t.Errorf("faceMinFW = %s names a door the tree at %s does not build: move the floor with the stamp",
+			faceMinFW, v.Raw)
+	}
+	src := firmwareFile(t, "main/net/orb_net.c")
+	if !strings.Contains(src, `{ .uri = "/api/v1/apps/face"`) {
+		t.Error("faceMinFW claims the door ships, and orb_net.c's uri table has no such row")
 	}
 }

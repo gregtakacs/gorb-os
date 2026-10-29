@@ -105,16 +105,40 @@ func (s *Server) verifySeedRun(ctx context.Context, ip string, send func(install
 	return nil
 }
 
-// seedNote words the verified step from the facts, and calls out a clock that is installed,
-// enabled and backed by a card theme but not the face the dial is currently showing. That one
-// combination is not a failure — a fresh board can boot the factory face for a beat before the
-// stored face wins — so it rides as a note, not a refusal. The refusals above are the cases that
-// cannot run.
+// verifySeededGlass is the seeding arm's gate: the five facts verifySeed checks, and on
+// top of them the one fact seedNote used to wave away. A clock the hub just seeded must be
+// the face the dial is showing, not merely eligible to be — an enabled, card-backed,
+// themed row behind a menu is a half-set-up board wearing a green light (owner ruling,
+// 2026-10-29). The caller parks the glass before it asks, so a refusal here means the dial
+// was told and did not comply, which is the only version of this sentence an operator can
+// act on. verifySeedRun stays the SKIP arm's gate: there the shelf is the owner's and so
+// is the face, and nothing this run does gets to move it.
+func (s *Server) verifySeededGlass(ctx context.Context, ip string, send func(installStep)) error {
+	f, err := s.verifySeed(ctx, ip)
+	if err != nil {
+		send(installStep{Step: "verify", Action: "refused", Note: err.Error()})
+		return err
+	}
+	if !f.OnGlass {
+		why := "the clock is enabled, card-backed and themed, and the dial is not showing it"
+		send(installStep{Step: "verify", Action: "refused", Note: why})
+		return errSeed(why)
+	}
+	send(installStep{Step: "verify", Action: "verified", Note: seedNote(f)})
+	return nil
+}
+
+// seedNote words the verified step from the facts. The off-glass branch is the tolerated
+// shape: the hub read five true facts, could not move the glass, and did not try. It reaches
+// the operator two ways — the owner-shelf skip, where the face is the owner's own, and a
+// seeding run on a dial behind faceMinFW, where parkGlass said the door is missing — so it
+// claims neither cause and names the only lever left. verifySeededGlass never reaches this
+// branch: the seeding arm on a dial with a door refuses instead.
 func seedNote(f seedFacts) string {
 	if f.OnGlass {
 		return "clock on the glass, theme on the card"
 	}
-	return "clock enabled and on the card; the dial has not made it the face yet"
+	return "clock enabled and on the card; the glass shows something else, and only the knob moves it from here"
 }
 
 // isSeedFailure names the refusal class that must leave the adoption mark standing.

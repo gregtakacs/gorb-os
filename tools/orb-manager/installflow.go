@@ -53,6 +53,71 @@ import (
 // floor, the reader and the stamp from drifting apart again.
 const installMinFW = "v1.1.28"
 
+// faceMinFW is the oldest firmware carrying the glass door (POST /api/v1/apps/face).
+// The seeding arm parks the clock on the glass through that door, because an enabled,
+// card-backed, themed row behind a menu is a half-set-up orb and the modal has no
+// business calling it verified (owner ruling, 2026-10-29). A board behind this floor
+// has no network lever for the glass at all — enable only walks a row — so the park
+// says the door is missing and names the knob flick instead of refusing a board that
+// cannot answer. v1.1.35 is the stamp that ships the door.
+const faceMinFW = "v1.1.35"
+
+func faceMinVersion() firmware.Version {
+	v, ok := firmware.ParseVersion(faceMinFW)
+	if !ok {
+		panic("installflow.go: faceMinFW is not a versioned stamp: " + faceMinFW)
+	}
+	return v
+}
+
+// parkGlass puts the seeded clock on the glass through the firmware's face door, and waits
+// the boot the door arms. It reports the second value false in the one case this hub cannot
+// fix and cannot see: a dial behind faceMinFW has no glass door and no way to report the
+// glass it was parked on, so the run gate drops to the five facts verifySeed reads and the
+// operator hears the knob flick out loud. Refusing that board would blame it for a door the
+// hub itself has not flashed. `parked` armed nothing and returns straight to the verify; the
+// reboot is only the device's answer to a park it had to perform.
+func (s *Server) parkGlass(ctx context.Context, ip string, send func(installStep)) (bool, error) {
+	st, err := s.device.Status(ip)
+	if err != nil {
+		return false, fmt.Errorf("asking the dial before parking the glass: %w", plainDeviceErr(err, 0))
+	}
+	v, ok := firmware.ParseVersion(st.FW)
+	if !ok || v.Compare(faceMinVersion()) < 0 {
+		send(installStep{Step: "face", Action: "skipped",
+			Note: fmt.Sprintf("%s has no glass door: flick the knob onto the clock to finish", st.FW)})
+		return false, nil
+	}
+	send(installStep{Step: "face", Action: "parking", Note: "putting the clock on the glass"})
+	body, err := s.device.AppFace(ip, "clock")
+	if err != nil {
+		return true, fmt.Errorf("the dial refused the face: %w", plainDeviceErr(err, 0))
+	}
+	var ans struct {
+		State string `json:"state"`
+	}
+	state := ""
+	if json.Unmarshal(body, &ans) == nil {
+		state = ans.State
+	}
+	if state == "parked" {
+		send(installStep{Step: "face", Action: "parked", Note: "the clock already wore the glass"})
+		return true, nil
+	}
+	// The door armed a boot 750 ms out. Wait it out through the same helper the
+	// install ladder uses, on the same reboot-shaped beat, and refuse the seed if the
+	// board does not come back — the slate stays armed and the next announce retries.
+	live, ok := s.waitOrbBack(ctx, ip, installRebootWait,
+		beatFor(send, "face", "waiting through the park's reboot"))
+	if !ok {
+		return true, fmt.Errorf("the dial did not come back after the face park within %d s",
+			int(installRebootWait/time.Second))
+	}
+	s.setOrbIP(live)
+	send(installStep{Step: "face", Action: "parked", Note: "the clock is the glass"})
+	return true, nil
+}
+
 // The install poll's leash, unchanged from S5's seed for its documented reason: the door
 // acks the QUEUE and never the landing, so the seed watches the ledger the way the Apps
 // face does. themeStoreBudget's posture applies — a device still saying busy outruns the
@@ -80,7 +145,7 @@ var (
 // spinner over that is indistinguishable from a hang.
 type installStep struct {
 	Step   string `json:"step"`   // a slug, "theme", or "install" for the run itself
-	Action string `json:"action"` // uploaded, installing, installed, enabled, uploaded-theme, storing, stored, rebooting, skipped, done, refused
+	Action string `json:"action"` // uploaded, installing, installed, enabled, uploaded-theme, storing, stored, rebooting, parking, parked, skipped, done, refused
 	Note   string `json:"note,omitempty"`
 }
 
@@ -207,7 +272,27 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 		if live, ok := s.waitOrbBack(ctx, ip, installRebootWait); ok {
 			ip = live
 		}
-		if verr := s.verifySeedRun(ctx, ip, send); verr != nil {
+		// Park the glass, then wait out the boot the park armed, then read the ledger
+		// again. The order is the fix: installTheme stands down on a card that already
+		// carries themes, and the theme store was the only network path that ever wrote
+		// the resume record — so a seeded clock could finish enabled, backed and themed
+		// with the menu still on the glass (owner ruling, 2026-10-29). A park that comes
+		// back `parked` armed no boot and costs nothing. A dial too old for the door
+		// drops the gate to the five facts and says the knob flick out loud, because the
+		// hub cannot move a glass it has no handle on and must not call that a green.
+		gated, prerr := s.parkGlass(ctx, ip, send)
+		if prerr != nil {
+			log.Printf("orb-manager: the join seed on %s could not park the glass: %s", ip, prerr.Error())
+			send(installStep{Step: "install", Action: "refused", Note: prerr.Error()})
+			return
+		}
+		var verr error
+		if gated {
+			verr = s.verifySeededGlass(ctx, ip, send)
+		} else {
+			verr = s.verifySeedRun(ctx, ip, send)
+		}
+		if verr != nil {
 			log.Printf("orb-manager: the join seed on %s did not verify: %s", ip, verr.Error())
 			send(installStep{Step: "install", Action: "refused", Note: verr.Error()})
 			return

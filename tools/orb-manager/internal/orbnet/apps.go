@@ -225,6 +225,21 @@ func (c *Client) AppEnable(ip, slug string, on bool) (json.RawMessage, error) {
 	return c.devicePost(ip, "/api/v1/apps/enable?id="+url.QueryEscape(slug)+"&on="+onv, nil, "")
 }
 
+// AppFace parks the glass on one row (POST /api/v1/apps/face?id=). Enable does not:
+// the enable word puts a row in the carousel, and only a switch writes the resume
+// record a boot returns to, which is why a seeded clock could stand enabled,
+// card-backed and themed while the dial still showed the menu (seedverify.go's
+// note, bench 2026-10-29). The door answers `rebooting` when the park needs a boot
+// and `parked` when the row already wore the glass, so a caller that wants the
+// clock on the glass asks once and then waits the reboot out exactly as it does
+// after a theme store — the same 750 ms arm, the same waitOrbBack.
+func (c *Client) AppFace(ip, slug string) (json.RawMessage, error) {
+	if slug == "" {
+		return nil, fmt.Errorf("orbnet: refusing a face request with no slug")
+	}
+	return c.devicePost(ip, "/api/v1/apps/face?id="+url.QueryEscape(slug), nil, "")
+}
+
 // AppUninstall takes one row off the dial (POST /api/v1/apps/uninstall?id=). It is
 // the owner's door, and it is the only way to clear an `apps` partition header from
 // the far side: the firmware's own RESET ALL erases every NVS namespace and still

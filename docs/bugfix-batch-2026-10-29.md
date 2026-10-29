@@ -858,3 +858,58 @@ a chip the hub cannot name.
 firmware source; the bump rides the hub release). `idf.py build` exits clean at
 the stamp `v1.1.34+4b6d19d-dirty` — the dirty flag is honest until these hub
 commits land, and `serflash.sh` audits the same stamp before it touches a board.
+
+
+## 20. Provisioning called a clock the glass never showed "verified"
+
+**Symptom.** A join finished green with the modal reading "clock seeded — clock
+enabled and on the card; the dial has not made it the face yet." The orb sat on
+the menu. The owner's ruling on the report: that is a half-set-up board, and the
+modal has no business closing on it.
+
+**Root cause.** Nothing in the seed moves the glass. `POST /api/v1/apps/enable`
+persists the enable word and flips RAM; it never switches the screen. The face a
+dial boots to is one NVS record, `orb_page/last`, and `input_router.c` writes it
+from a real switch (`page_remember`) or from one network path: `orb_theme.c`'s
+`bundle_job`, which stores a theme, calls `input_router_remember_slug("clock")`
+and reboots onto it. The seed's own theme step, `installTheme`, stands down the
+moment `card_count > 0` — D38's owner-shelf rule. On the skip there is no store,
+no `bundle_job`, no resume record, and no reboot at all: `waitOrbBack` returns
+against the same live address, `verifySeed` finds the shell on the glass, and
+`seedNote` shipped that as a note over a `done`.
+
+**Why the note's own defence was false.** It read "a fresh board can boot the
+factory face for a beat before the stored face wins." On the skip path no stored
+face exists, so the beat never ends. The state is permanent until a hand turns
+the knob — the same species of dead end as item 19's "enter its IP", reported the
+same way: a soft exit for a condition only the operator can resolve.
+
+**Fix.** The firmware gained the primitive the seed was missing:
+`POST /api/v1/apps/face?id=<slug>` (`h_app_face`), gated on enabled, un-faulted and
+walkable,
+which writes the resume record and arms the same 750 ms reboot `bundle_job` arms,
+and answers `parked` without a boot when the row already wears the glass. The hub
+calls it through `orbnet.AppFace` at the end of every clock seed (`parkGlass`),
+before the verify, whatever the theme step did — so an owner's shelf still goes
+untouched, because the park is a separate call from the store. `verifySeededGlass`
+then adds the sixth gate: a seeded clock that the dial is not showing refuses,
+keeps the slate armed, and the next announce retries. A dial behind the floor
+(`faceMinFW = v1.1.35`) has no door to dial, so the hub says the knob flick out
+loud, drops to the five facts, and does not refuse a board for a door its own
+flash is missing.
+
+**Tests.** `TestVerifySeededGlassRefusesTheUnparkedClock` and
+`TestVerifySeededGlassAcceptsTheParkedClock` pin the sixth gate;
+`TestParkGlassDeclinesADialWithNoDoor`, `TestParkGlassParksAndArmsTheGate` and
+`TestParkGlassRefusesWhatTheDialRefuses` pin the caller's three postures;
+`TestFaceDoorParksTheGlass` pins the double's door, its fault gate, the exclusive
+glass, and the shell's parkability — the last being the one gate the double had to
+drop from its shared lookup to answer what the firmware answers;
+`TestFaceFloorNamesTheReleaseThatShipsTheDoor` pins `faceMinFW` against
+`version.txt` and the uri table, the same crosscheck shape item 8's floor test
+uses. `door_bodies_test.go` scraped the new refusal sentence out of `orb_net.c`
+and failed the first draft of the double, which is that file's whole purpose.
+
+**Version.** The image changed, so `version.txt` moved to **v1.1.35** per
+`.clinerules`. `faceMinFW` names the same release: a floor may not name a door
+the tree does not build.

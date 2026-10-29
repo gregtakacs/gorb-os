@@ -122,6 +122,11 @@ func TestAppVerbRefusals(t *testing.T) {
 		{"/api/v1/apps/enable?id=..foo&on=1", notUsableNameBody, 400},
 		{"/api/v1/apps/uninstall?id=..foo", notUsableNameBody, 400},
 		{"/api/v1/apps/enable?id=nope&on=1", notFoundBody, 404},
+		// The glass door's own refusals, in its gate order: id, lookup, enabled.
+		{"/api/v1/apps/face", missingIDBody, 400},
+		{"/api/v1/apps/face?id=nope", notFoundBody, 404},
+		// `bad` installed and failed but never enabled: an off row is no destination.
+		{"/api/v1/apps/face?id=bad", notEnabledBody, 409},
 		{"/api/v1/apps/uninstall?id=nope", notFoundBody, 404},
 		// A 25-character id overflows the handler's 24-byte buffer and is truncated rather
 		// than refused, so it lands on the lookup and misses.
@@ -288,5 +293,58 @@ func TestReprovRefusesBeforeArming(t *testing.T) {
 	}
 	if off.Reprovisioned() != 0 {
 		t.Error("refused reprov must not count")
+	}
+}
+
+// TestFaceDoorParksTheGlass pins the two answers h_app_face's twin gives and the state
+// each leaves behind. An off-glass row takes the glass and the answer says `rebooting`,
+// because on a real dial the park is a resume record plus a boot; the row the dial was
+// already showing answers `parked` and nothing moves, which is what keeps a seed that
+// landed on its own face from arming a reboot nobody asked for. The glass is exclusive:
+// parking one row takes it off every other.
+func TestFaceDoorParksTheGlass(t *testing.T) {
+	o := New().WithCardApps(
+		CardApp{Stem: "hue", Slug: "hue", Installed: true, Enabled: true},
+		CardApp{Stem: "glass", Slug: "glass", Installed: true, Enabled: true, OnGlass: true},
+		CardApp{Stem: "brkn", Slug: "brkn", Installed: true, Enabled: true, Failed: true},
+	)
+	srv := httptest.NewServer(o)
+	defer srv.Close()
+
+	// The enabled-and-failed row is the one the enabled gate alone would wave through,
+	// and it is the row a boot's resume refuses: the door says so at the gate instead
+	// of spending a reboot to arrive back on the menu.
+	code, body := appDo(t, srv, http.MethodPost, "/api/v1/apps/face?id=brkn", nil)
+	if code != 409 || body != failedFaceBody {
+		t.Errorf("parking a faulted row = %d %s, want 409 %s", code, body, failedFaceBody)
+	}
+
+	code, body = appDo(t, srv, http.MethodPost, "/api/v1/apps/face?id=hue", nil)
+	if code != 200 || !strings.Contains(body, `"state":"rebooting"`) {
+		t.Fatalf("parking an off-glass row = %d %s, want 200 rebooting", code, body)
+	}
+	hue, _ := o.apps["hue"]
+	gl, _ := o.apps["glass"]
+	if !hue.OnGlass || gl.OnGlass {
+		t.Errorf("the park left the glass on hue=%v glass=%v; exactly one row may wear it",
+			hue.OnGlass, gl.OnGlass)
+	}
+
+	code, body = appDo(t, srv, http.MethodPost, "/api/v1/apps/face?id=hue", nil)
+	if code != 200 || !strings.Contains(body, `"state":"parked"`) {
+		t.Errorf("parking the row already on the glass = %d %s, want 200 parked", code, body)
+	}
+
+	// The shell is a face like any other: h_app_face has no built-in gate, because the
+	// dial homing on the menu is the state an owner most often wants back. A double
+	// that answered enable's builtinBody here would hide a request the real orb takes.
+	code, body = appDo(t, srv, http.MethodPost, "/api/v1/apps/face?id=menu", nil)
+	if code != 200 || !strings.Contains(body, `"state":"rebooting"`) {
+		t.Errorf("parking the shell = %d %s, want 200 rebooting, not enable's builtin refusal", code, body)
+	}
+	menu, _ := o.apps["menu"]
+	hue, _ = o.apps["hue"]
+	if !menu.OnGlass || hue.OnGlass {
+		t.Errorf("the shell park left the glass on menu=%v hue=%v", menu.OnGlass, hue.OnGlass)
 	}
 }

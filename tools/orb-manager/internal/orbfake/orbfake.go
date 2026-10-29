@@ -313,6 +313,8 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveAppInstall(w, r)
 	case r.URL.Path == "/api/v1/apps/enable" && r.Method == http.MethodPost:
 		o.serveAppEnable(w, r)
+	case r.URL.Path == "/api/v1/apps/face" && r.Method == http.MethodPost:
+		o.serveAppFace(w, r)
 	case r.URL.Path == "/api/v1/apps/uninstall" && r.Method == http.MethodPost:
 		o.serveAppUninstall(w, r)
 	// 7c9ff63's recovery doors, mirrored gate-for-gate.

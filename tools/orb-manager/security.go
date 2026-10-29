@@ -383,9 +383,12 @@ var deviceRoutes = map[string][]string{
 	// (§5.2), which is why it takes GET alone. It addresses a container by card
 	// stem, the same handle apps/install takes, because the region lives in the
 	// card file and not in the installed prefix.
-	"/api/v1/apps/editor":    {http.MethodGet},
-	"/api/v1/apps/install":   {http.MethodPost},
-	"/api/v1/apps/enable":    {http.MethodPost},
+	"/api/v1/apps/editor":  {http.MethodGet},
+	"/api/v1/apps/install": {http.MethodPost},
+	"/api/v1/apps/enable":  {http.MethodPost},
+	// The glass door: enable walks a row, this parks it. The seed dials it so a
+	// board never finishes enabled-and-not-showing (seedverify.go's note).
+	"/api/v1/apps/face":      {http.MethodPost},
 	"/api/v1/apps/uninstall": {http.MethodPost},
 	// 7c9ff63's recovery door. clear faults a QUARANTINED built-in without the
 	// RESET ALL collateral: a compiled tier's menu that panicked at boot reads

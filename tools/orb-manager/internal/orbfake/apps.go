@@ -303,6 +303,11 @@ const (
 	badOnBody         = `{"error":"on must be 0 or 1"}`
 	noStemBody        = `{"error":"id is missing or not a usable app name"}`
 	uninstallHoldBody = `{"error":"it came off the flash but the registry still holds it"}`
+	// h_app_face's refusal: an off row is not a destination. Word-for-word the
+	// firmware's sentence, pinned by door_bodies_test.go against orb_net.c.
+	notEnabledBody = `{"error":"the row is switched off — enable it before parking the glass on it"}`
+	// h_app_face's second refusal: a faulted row cannot wear the glass.
+	failedFaceBody = `{"error":"the row carries a fault — clear it before parking the glass on it"}`
 )
 
 // appID reads the id query parameter the way q_param resolves it, which is NOT the way the
@@ -532,6 +537,60 @@ func (o *Orb) serveAppEnable(w http.ResponseWriter, r *http.Request) {
 	a.Enabled = on == "1"
 	writeJSON(w, 200, fmt.Sprintf(`{"state":%q,"slug":%q}`,
 		map[bool]string{true: "enabled", false: "disabled"}[a.Enabled], jsonSafe(slug)))
+}
+
+// serveAppFace mirrors h_app_face, the glass door. The gates run in the firmware's
+// order: id, then the name/busy/installed lookup, then enabled, then fault, then
+// walkable. The lookup is doorAppLocked's own first three arms and NOT its built-in
+// refusal: h_app_face has no such gate, because the shell is a face like any other and
+// parking on it is a legal thing to ask a dial. A double that refused it there would
+// hide a state the real orb accepts, which is the drift this file's header is about.
+// The double cannot boot, so the park is applied in place — the named row takes the
+// glass and every other row loses it, which is exactly the ledger state a rebooted dial
+// reports. A row already on the glass answers `parked` and changes nothing, the same
+// no-reboot answer the firmware gives.
+func (o *Orb) serveAppFace(w http.ResponseWriter, r *http.Request) {
+	slug := appID(r)
+	if slug == "" {
+		writeJSON(w, 400, missingIDBody)
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !sdNameOK(slug) {
+		writeJSON(w, 400, notUsableNameBody)
+		return
+	}
+	if o.JobBusy {
+		writeJSON(w, 409, doorBusyBody)
+		return
+	}
+	a := o.apps[slug]
+	if a == nil || !a.Installed {
+		writeJSON(w, 404, notFoundBody)
+		return
+	}
+	if !a.Enabled {
+		writeJSON(w, 409, notEnabledBody)
+		return
+	}
+	if a.Failed {
+		writeJSON(w, 409, failedFaceBody)
+		return
+	}
+	if a.NoIface {
+		writeJSON(w, 409, noIfaceBody)
+		return
+	}
+	if a.OnGlass {
+		writeJSON(w, 200, fmt.Sprintf(`{"state":"parked","slug":%q}`, jsonSafe(slug)))
+		return
+	}
+	for _, other := range o.apps {
+		other.OnGlass = false
+	}
+	a.OnGlass = true
+	writeJSON(w, 200, fmt.Sprintf(`{"state":"rebooting","slug":%q}`, jsonSafe(slug)))
 }
 
 // serveAppClear mirrors h_app_clear (7c9ff63), the third owner door. It skips

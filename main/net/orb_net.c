@@ -5462,6 +5462,74 @@ static esp_err_t h_app_enable(httpd_req_t *req)
              strcmp(onv, "1") == 0 ? "enabled" : "disabled", id);
     return httpd_resp_sendstr(req, b);
 }
+/* POST /api/v1/apps/face?id=<slug> — the glass door. Enable puts a row in the
+ * carousel; it does not put it on the glass. Until now the resume record that
+ * names the face a boot returns to had exactly one network writer: the theme
+ * store's own job (orb_theme.c's bundle_job), and the hub's seed skips that store
+ * whenever the card already carries themes — the owner-shelf rule. A board that
+ * took the skip finished provisioning enabled, card-backed and themed while
+ * still showing the menu: verified green, and half set up (bench, owner,
+ * 2026-10-29). This door is the missing primitive — park the glass on a row the
+ * dial already runs, and reboot onto it, without touching the shelf.
+ *
+ * The gate is the two bits the Apps face gates its own buttons on: a row must be
+ * enabled and walkable. Never the enable word — a face its owner switched off
+ * would come back refused at boot and fall home anyway (resume_last), and forcing
+ * one on would tread on the rule the store stands on. An already-parked row
+ * answers without arming a boot nobody needed. */
+static esp_err_t h_app_face(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char id[ORB_APP_SLUG_MAX + 1] = "";
+    if (!q_param(req, "id", id, sizeof id)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id is missing\"}");
+    }
+    const orb_app_t *a = orb_app_find_slug(id);
+    if (!a) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req,
+            "{\"error\":\"no app by that name is installed on this dial\"}");
+    }
+    if (!a->enabled) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req,
+            "{\"error\":\"the row is switched off — enable it before parking the glass on it\"}");
+    }
+    /* A faulted row cannot wear the glass: its activate would refuse the boot's resume
+     * and the dial would fall back home, spending a reboot to prove the point. The clear
+     * door (apps/clear, or enable on a card row) is the step that belongs before this one. */
+    if (a->failed) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req,
+            "{\"error\":\"the row carries a fault — clear it before parking the glass on it\"}");
+    }
+    if (!a->iface) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req,
+            "{\"error\":\"no firmware module implements this app's behaviour — it cannot be shown\"}");
+    }
+    if (a == orb_app_current() || a->active) {
+        char ok[96];
+        snprintf(ok, sizeof ok, "{\"state\":\"parked\",\"slug\":\"%s\"}", id);
+        return httpd_resp_sendstr(req, ok);
+    }
+    input_router_remember_slug(a->slug);
+    /* Armed before the body leaves, exactly as h_reboot does it: the 750 ms is the
+     * response's own flush window, and a failure to arm is the one case the caller
+     * must hear about — the record is written, so the face lands on the NEXT boot,
+     * which is a different promise than the one this request made. */
+    const esp_err_t e = orb_jobs_reboot_soon("apps: the face");
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req,
+            "{\"error\":\"the face is stored but no reboot could be armed\"}");
+    }
+    char b[96];
+    snprintf(b, sizeof b, "{\"state\":\"rebooting\",\"slug\":\"%s\"}", id);
+    return httpd_resp_sendstr(req, b);
+}
 /* POST /api/v1/apps/clear?id=<slug> — the fault-record door, the third owner
  * door (P4a's set). A built-in app that failed twice at boot cannot use the
  * enable door above to revive (it refuses non-card rows, and a quarantine also
@@ -7036,6 +7104,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/apps/editor", .method = HTTP_GET, .handler = h_app_editor },
         { .uri = "/api/v1/apps/install",.method = HTTP_POST, .handler = h_apps_install },
         { .uri = "/api/v1/apps/enable", .method = HTTP_POST, .handler = h_app_enable },
+        { .uri = "/api/v1/apps/face", .method = HTTP_POST, .handler = h_app_face },
         { .uri = "/api/v1/apps/uninstall", .method = HTTP_POST, .handler = h_app_uninstall },
         { .uri = "/api/v1/apps/clear", .method = HTTP_POST, .handler = h_app_clear },
         { .uri = "/api/v1/sd/app",      .method = HTTP_POST, .handler = h_app_upload },

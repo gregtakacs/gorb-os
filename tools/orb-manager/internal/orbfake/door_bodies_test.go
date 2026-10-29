@@ -55,6 +55,8 @@ func TestDoorRefusalBodiesMatchTheFirmware(t *testing.T) {
 		{missingIDBody, "orb_net.c", net},
 		{badOnBody, "orb_net.c", net},
 		{noStemBody, "orb_net.c", net},
+		{notEnabledBody, "orb_net.c", net},
+		{failedFaceBody, "orb_net.c", net},
 	} {
 		sentence := strings.TrimSuffix(strings.TrimPrefix(c.body, `{"error":"`), `"}`)
 		if sentence == c.body {

@@ -104,10 +104,15 @@ func (s *Server) parkGlass(ctx context.Context, ip string, send func(installStep
 		send(installStep{Step: "face", Action: "parked", Note: "the clock already wore the glass"})
 		return true, nil
 	}
-	// The door armed a boot 750 ms out. Wait it out through the same helper the
-	// install ladder uses, on the same reboot-shaped beat, and refuse the seed if the
-	// board does not come back — the slate stays armed and the next announce retries.
-	live, ok := s.waitOrbBack(ctx, ip, installRebootWait,
+	// The door armed a boot 750 ms out. Wait it out on the CYCLE, the shape every
+	// reboot the ladder itself caused uses, on the same reboot-shaped beat, and
+	// refuse the seed if the board does not come back — the slate stays armed and
+	// the next announce retries. The cycle and not the bare wait is mandatory
+	// here (bench, Bronze, 2026-10-29): the firmware answers the face door while
+	// it is dying, and waitOrbBack's first probe reads that corpse as the return,
+	// so the verify dialed a mid-reboot ledger, found the menu still on the glass,
+	// and refused a park that had actually landed.
+	live, ok := s.waitOrbCycle(ctx, ip, installRebootWait,
 		beatFor(send, "face", "waiting through the park's reboot"))
 	if !ok {
 		return true, fmt.Errorf("the dial did not come back after the face park within %d s",
@@ -1014,8 +1019,13 @@ type waitBeat func(elapsed, budget time.Duration, lastErr error)
 // really long time").
 const waitBeatEvery = 20 * time.Second
 
+// cycleQuietGrace bounds the silence a caused reboot must show before an answer counts
+// as the return. A variable so the tests that pin the corpse race do not spend 20 s on
+// the clock a faked board cannot beat.
+var cycleQuietGrace = 20 * time.Second
+
 func (s *Server) waitOrbCycle(ctx context.Context, ip string, budget time.Duration, beats ...waitBeat) (string, bool) {
-	quiet := time.NewTimer(20 * time.Second)
+	quiet := time.NewTimer(cycleQuietGrace)
 	defer quiet.Stop()
 	start := time.Now()
 	for alive := true; alive; {

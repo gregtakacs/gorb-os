@@ -120,7 +120,7 @@ func (s *Server) verifySeededGlass(ctx context.Context, ip string, send func(ins
 		return err
 	}
 	if !f.OnGlass {
-		why := "the clock is enabled, card-backed and themed, and the dial is not showing it"
+		why := "the clock is enabled, card-backed and themed, and the dial is not showing it — flick the knob onto the clock, or press Seed to make the hub park it again"
 		send(installStep{Step: "verify", Action: "refused", Note: why})
 		return errSeed(why)
 	}
@@ -134,6 +134,13 @@ func (s *Server) verifySeededGlass(ctx context.Context, ip string, send func(ins
 // seeding run on a dial behind faceMinFW, where parkGlass said the door is missing — so it
 // claims neither cause and names the only lever left. verifySeededGlass never reaches this
 // branch: the seeding arm on a dial with a door refuses instead.
+//
+// The refusal sentence carries that same lever. An owner report of 2026-10-29 caught the
+// hub refusing a seed its own park had just landed (the corpse race below): the run said
+// "not showing it — open the orb to retry" while the fix was one knob flick, and a verdict
+// an operator cannot act on is an alarm, not a sentence. The flick is named even though the
+// retry button sits next to it, because the flick finishes the orb either way and the retry
+// only re-asks a dial that may already be compliant.
 func seedNote(f seedFacts) string {
 	if f.OnGlass {
 		return "clock on the glass, theme on the card"

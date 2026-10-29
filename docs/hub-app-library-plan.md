@@ -418,6 +418,39 @@ Two things this paragraph did not say and the bench found:
   the seed would have died in the opposite direction.
   `TestAutoInstallGatesOnTheLedgerNotOnAVanishedField` pins both halves.
 
+## 8. The parking door's first bench day (2026-10-29, afternoon)
+
+The glass park shipped, went to the bench the same day, and came back with three complaints.
+Two were the hub's fault; the third was a radio.
+
+- **A park refused its own landing.** `parkGlass` waited with the bare probe, so its first dial
+  reached the dying process rather than the rebooted one: the face door answers HTTP right up to
+  the restart, the wait accepted that corpse as proof the board was back, and the verify read the
+  stale ledger — menu still on the glass — and refused. The theme step had learned this lesson at
+  the morning's cost and waited through `waitOrbCycle`, which demands a silence before it believes
+  an answer; the park simply had not been written with it. Fixed. `installflow.go` reads its own
+  text to keep the park off the bare wait, and `TestParkGlassRefusesTheCorpseAnswerBeforeTheVerify`
+  fails red when the fake dies after answering, which is what the board did on the bench.
+- **A refusal with no lever.** The seeding arm's sentence ended "open the orb to retry" while the
+  dial needed one knob flick, and the run had already tried every lever the network carries. It
+  now says "flick the knob onto the clock, or press Seed to make the hub park it again", and the
+  page prints the hub's sentence whole instead of appending a vaguer one to it.
+- **A join that died at the radio, wearing the badge of a join that died at the password.** The
+  board read its lease off the console banner — so it associated — and the hub's LAN confirm found
+  nothing at 45 s against a −75 dBm link, with the dial's own list empty because the announcement
+  rides the reboot the join arms. The wording told the operator to re-check the IP; the honest
+  sentence now says the board joined and never answered, and the budget went to 90 s, which covers
+  one pass of the firmware's escalating retry ladder. The console's network list no longer
+  overwrites that verdict: an auto-rescan refills the picker and keeps its mouth shut.
+- **A seed that reported its upload in KB.** The join dialog streams the same step stream the
+  Library panel uses and painted none of it as progress, because the panel's frame belongs to the
+  Library tab. It drives its own bar now, fed by the same `uploading` steps, and the bar retires
+  with the seal on the verdict.
+
+`TestEnsureGatedThemeSendsWhatTheDialCannotGuess` remains the standing gate on the name a theme
+upload carries: the firmware activates a theme under the name the container declares, and the hub
+had been sending the library stem, so the dial landed on a default the operator never asked for.
+
 ## Tests and docs
 
 - `ui_test.go` loses its ban on the install press and gains a mandate for the library

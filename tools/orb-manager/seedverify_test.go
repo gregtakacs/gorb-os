@@ -533,10 +533,97 @@ func TestVerifySeededGlassAcceptsTheParkedClock(t *testing.T) {
 	}
 }
 
+// The park's own corpse race (bench, Bronze, 2026-10-29). The firmware answers the face door
+// and keeps answering status for a beat while it reboots, so the park's wait must see the
+// silence before it believes any answer — the shape waitOrbCycle exists for and the theme
+// step already proved. The first draft of parkGlass used the bare waitOrbBack, and the
+// result was the owner's exact report: the door said rebooting, the wait returned at once
+// against a dying board, verifySeededGlass read the dying board's ledger (menu still on the
+// glass) and refused a seed the dial was about to display. The fake here answers alive for
+// 1.2 s after the face POST, goes silent until 4 s, and shows the clock on the glass only
+// after it comes back — so a wait that trusted the corpse answer lands a refusal, and the
+// test goes red exactly the way the bench did.
+func TestParkGlassRefusesTheCorpseAnswerBeforeTheVerify(t *testing.T) {
+	b := cycleQuietGrace
+	cycleQuietGrace = 3 * time.Second
+	t.Cleanup(func() { cycleQuietGrace = b })
+
+	var mu sync.Mutex
+	parkedAt := time.Time{}
+	firstAppsAfterPark := time.Duration(0)
+	parked := false
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		leased := !parkedAt.IsZero()
+		since := time.Since(parkedAt)
+		switch r.URL.Path {
+		case "/api/v1/status":
+			w.Header().Set("Content-Type", "application/json")
+			if !leased || parked || since > 4*time.Second {
+				w.Write([]byte(`{"state":"connected","fw":"v1.1.35+abcdef1"}`))
+				return
+			}
+			if since < 1200*time.Millisecond {
+				w.Write([]byte(`{"state":"connected","fw":"v1.1.35+abcdef1"}`)) // the corpse
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"error":"gone"}`)) // mid-reboot: no answer worth believing
+		case "/api/v1/apps/face":
+			parkedAt = time.Now()
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"state":"rebooting","slug":"clock"}`))
+		case "/api/v1/apps":
+			if leased && !parked && since < 4*time.Second {
+				w.Write([]byte(goodApps)) // the dying board still reports the menu
+				return
+			}
+			if firstAppsAfterPark == 0 && parkedAt.IsZero() == false {
+				firstAppsAfterPark = since
+				parked = true
+			}
+			w.Write([]byte(parkedApps))
+		case "/api/v1/sd":
+			w.Write([]byte(goodSD))
+		default:
+			w.Write([]byte(`{}`))
+		}
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	s := newHub()
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.orb = orbnet.NewClient(deviceTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+	s.orb.DevicePort = portOf(srv.URL)
+
+	gated, err := s.parkGlass(context.Background(), "127.0.0.1", func(installStep) {})
+	if err != nil {
+		t.Fatalf("a dial that rebooted as the door promised was refused: %v", err)
+	}
+	if !gated {
+		t.Error("a dial the hub parked dropped the glass gate")
+	}
+	if err := s.verifySeededGlass(context.Background(), "127.0.0.1", func(installStep) {}); err != nil {
+		t.Fatalf("the verify refused a park the board completed: %v", err)
+	}
+	if firstAppsAfterPark < 3*time.Second {
+		t.Errorf("the verify dialed the ledger %s after the park, inside the reboot — the wait believed a corpse answer",
+			firstAppsAfterPark)
+	}
+}
+
 // parkGate is a dial whose status answers one firmware and whose face door answers one way.
 // It records the paths it was dialed so a test can tell "parked" from "declined to ask".
 func parkGate(t *testing.T, fw string, faceStatus int, faceBody string) (*Server, *[]string) {
 	t.Helper()
+	// The park's post-reboot wait is the CYCLE, and the gate fake never dies, so
+	// the silence demand must be tiny or the test spends the live grace staring
+	// at a fake that will never go quiet.
+	b := cycleQuietGrace
+	cycleQuietGrace = 30 * time.Millisecond
+	t.Cleanup(func() { cycleQuietGrace = b })
 	var mu sync.Mutex
 	var paths []string
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

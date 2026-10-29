@@ -27,7 +27,16 @@ var (
 	// The post-flash watch's patience, and its beat. Variables, not constants:
 	// the tests that prove a timeout reports honestly cannot spend 45 live
 	// seconds per run.
-	watchLanBudget    = 45 * time.Second
+	//
+	// The budget widened 45 s to 90 s after the bench's second failed join
+	// (2026-10-29): the console HAD read the lease — the board proved it
+	// associated — and the LAN confirm still died at 45 s against a −75 dB
+	// link, because a board that drops and re-associates on the firmware's
+	// escalating ladder spends a minute-plus off the wire, and the mDNS row
+	// that could move the dial also cannot burst through a weak link. 90 s
+	// covers one full ladder retry, the same reasoning that widened the
+	// console's own lease window to 40 s.
+	watchLanBudget    = 90 * time.Second
 	watchPollInterval = 2 * time.Second
 )
 
@@ -244,9 +253,21 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(watchPollInterval):
 		}
 	}
+	// The honest exit, worded by what actually failed. A lease the hub read off
+	// the console's own banner means the board ASSOCIATED — the address is the
+	// board's word, not a guess — so "re-check the IP" would blame the operator
+	// for the one fact the cable proved. On that source the timeout says the
+	// truth: the join landed, the answer never arrived inside the budget, and a
+	// weak link with the firmware's retry ladder is the suspect. Only a learned
+	// or typed address gets the re-check wording.
+	breakReason := ip + " (" + source + ") did not answer as an orb - re-check the IP, or the network it joined"
+	if source == "read off the USB console" {
+		breakReason = "the board read its lease on the console, so it joined — but it never answered at " +
+			ip + " within the budget: a weak link can hold the join on the firmware's retry ladder, and the cable is still a door"
+	}
 	send(map[string]any{"result": map[string]any{
 		"mode":   "unknown",
-		"reason": ip + " (" + source + ") did not answer as an orb - re-check the IP, or the network it joined",
+		"reason": breakReason,
 		"ip":     ip,
 	}})
 }

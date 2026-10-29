@@ -1546,7 +1546,13 @@ async function serialRescan(auto) {
       else if (ev.result) {
         const nets = ev.result.networks || [];
         populateSerialNetworks(nets);
-        $("#ob-watch").textContent = "the orb's own scan read " + nets.length +
+        // Only a press the operator made speaks on the watch line. The auto
+        // retry exists to refill the picker, and it used to overwrite the
+        // verdict the watch had just earned with a bare scan count — the owner
+        // read "the orb's own scan read 7 networks" as a new mystery while the
+        // real sentence, why the LAN answer died, was already gone (bench,
+        // 2026-10-29). On auto the rows appear and the sentence stands.
+        if (!auto) $("#ob-watch").textContent = "the orb's own scan read " + nets.length +
           " network" + (nets.length === 1 ? "" : "s") + " over the cable.";
       }
     });
@@ -1635,6 +1641,14 @@ async function autoInstall(ip) {
   // shelfHoldsOwnersContent, next to the adoption mark the page cannot see — and it streams
   // back a `skipped` step when the owner's shelf stands, which this line then shows.
   if (watch) watch.textContent = "installing the clock from the hub library\u2026";
+  // The join dialog drives its own bar, the same bar the flash panel uses, from
+  // the hub's `uploading` steps (owner ask, 2026-10-29: the seed showed only a
+  // wall of KB text). The Library panel's streamSteps owns a frame it does not
+  // exist here, so the relay paints the bar itself; the KB line keeps streaming
+  // into the console fold below, which is where a byte count belongs.
+  const seedBar = $("#wj-bar");
+  const seedFill = seedBar ? seedBar.firstElementChild : null;
+  if (seedBar) { seedBar.hidden = false; if (seedFill) seedFill.style.width = "0%"; }
   // The window holds its buttons for exactly as long as the hub is saying something.
   // The seal exists so nobody walks away from a half-written card, and the hub now
   // speaks every ~20 s through its patient waits; a stream that has said nothing for
@@ -1660,6 +1674,13 @@ async function autoInstall(ip) {
   }, 5000);
   const done = await streamInstall(ip, "clock", true, null, false, false, (j, t) => {
     lastBeatAt = Date.now();
+    if (j.action === "uploading" && seedFill) {
+      const m = /(\d+) of (\d+) KB/.exec(j.note || "");
+      if (m) {
+        seedBar.hidden = false;
+        seedFill.style.width = Math.min(100, Math.round(Number(m[1]) * 100 / Number(m[2]))) + "%";
+      }
+    }
     if (released) {
       if (watch) watch.textContent = t + " \u2014 the hub spoke again after the window released; check the orb's Apps face";
       return;
@@ -1686,7 +1707,14 @@ async function autoInstall(ip) {
       : "clock seeded and verified by the hub.");
   } else {
     seedVerdict = gLastRefusal || "the clock did not install on join";
-    releaseSeed(watch, "the seed did not finish: " + seedVerdict + " \u2014 open the orb to retry.");
+    // The hub's own refusal is printed whole when it already names what to do — the seeding
+    // arm's sentence says "flick the knob onto the clock" (owner ruling, 2026-10-29: a verdict
+    // an operator cannot act on reads as the hub failing). Only a refusal with no lever in it
+    // gets the page's generic one appended, because "the seed did not finish" alone is a dead
+    // end and the page cannot see which lever the dial needs.
+    const lever = /flick the knob|press Seed/.test(seedVerdict) ? ""
+      : " Open the orb and press Seed on its Library card to run it again.";
+    releaseSeed(watch, "the seed did not finish: " + seedVerdict + "." + lever);
   }
 }
 
@@ -1695,6 +1723,10 @@ async function autoInstall(ip) {
 function releaseSeed(watch, msg) {
   seedBusy = false;
   seedGateButtons(false);
+  // A bar frozen at 40% next to a finished verdict is a lie about a run that stopped, so the
+  // bar that reported the upload retires with the seal that held the buttons.
+  const seedBar = $("#wj-bar");
+  if (seedBar) seedBar.hidden = true;
   // The headline carries the verdict's shape, so a released window never still reads
   // as the job that sealed it. The watch line below it holds the sentence.
   const title = $("#wj-title");

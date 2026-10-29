@@ -116,17 +116,25 @@ theme draws a thumbnail.
   and throws it away.
 
 **Fix.** The hub renders what it holds, and stops claiming a preview it does
-not have:
+not have. The full fix has two halves and is feature-sized, not a patch:
 
-- **Shelf rows**: add `GET /api/theme/shelf-preview?name=X`, which parses the
-  `PREVIEW` section out of the resolved library file and answers the same
-  `[u16 w][u16 h][RGB565]` wire shape the device uses. `themeShelfRows` gains
-  the canvas + `queuePreview` leg its device siblings have, pointed at that
-  endpoint. A shelf container with no plane answers 404 and the row reads as a
-  no-plane device row does.
-- **Aviator**: the factory bundle carries no plane, so no surface can show one.
-  Its row gets the design's quiet answer — no chip — and the hub says so in the
-  row's title rather than leaving an empty square to be read as "broken".
+- **Bake**: the composer's exporter already writes a class-9 `PREVIEW` row
+  (`orbtheme-baker.js:3201`, appended at class 9). The shipped `skeleton.orbtheme`
+  carries no plane because the bake that produced it did not ask for one. Re-bake
+  the shelf default with `preview: { plane }` from a rendered 232x232 frame, and
+  wire that bake into the hub's build the way `make hub` wires the version
+  package — the same "no manual step" rule `fw_embed_test.go` enforces.
+- **Serve**: shelf rows need a preview route the way device rows have
+  `/api/v1/sd/preview`. The bytes live in the container's own art bank, at
+  class 9 slot 0, found through the elems table — `orb_theme_preview_read()`
+  (orb_theme.c:1094) is the reference, and the hub's own
+  `themecontainer.go` walker is half the distance. The endpoint answers the
+  same `[u16 w][u16 h][RGB565]` shape so `putPlane` is unchanged.
+- **Aviator**: the factory slot is a FORMAT 3 image with no class-9 row and no
+  elems table, and no route can change that. The Themes face's row for a theme
+  whose plane 404s already draws the design's quiet answer; keep it.
+
+This half stays open. The other five are fixed.
 
 ## Out of scope here
 

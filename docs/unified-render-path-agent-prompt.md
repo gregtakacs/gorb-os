@@ -64,7 +64,7 @@ node tools/watch-composer/_selftest/headless-regression.test.js  # all 15 preset
 
 1. **Carrier class chooses a restore pointer and nothing else.** No dial keeps a
    private render path. `orb_sched_l4_active()` stops mentioning GIF, and **also requires
-   a claimed layer table** — see design §4.2b, without which a still dial whose table
+   a claimed layer table** — see design §4.3, without which a still dial whose table
    build refused its rows loses both renderers at once.
 2. **A still plate restores from read-only XIP flash** (`blob() + clk_theme.plate_off`),
    which allocates nothing. The PSRAM canvas stays exactly one 434,312 B allocation, and
@@ -85,17 +85,18 @@ node tools/watch-composer/_selftest/headless-regression.test.js  # all 15 preset
    that may restore it is slice 5.
 6. **There is no ABI bump anywhere in this work.** `GEOM_ABI4` is already 4. Slice 4
    changes which shape the baker emits, inside a dialect the reader accepts today.
-4. **A ticking still dial becomes a scheduler ask**, so hysteresis can see it and
-   demote it honestly instead of overrunning a floor it was never scheduled for.
 
 
 ## The slices, in order
+
+**Slice 2 is not ready to hand off.** See its text: the rung it picks must be pinned on the
+host first. Start with slices 1, 3, 4 and leave 2 for a second design pass.
 
 Each is one coherent claim, benched alone, revertable alone. Do not merge two.
 
 ### Slice 1 — `feat(gfx): unify the commit path on a restore source`
 
-Implement design §4.1-§4.3: `orb_sched_restore_src()` (gif canvas → NULL for `bg_mode 1`
+Implement design §4.1-§4.5: `orb_sched_restore_src()` (gif canvas → NULL for `bg_mode 1`
 → NULL for a keyframe bank → still-plate XIP), `orb_sched_l4_active()` answers "is there
 a source **and a table to weld with**", the `:784` guard and `:787` call test/pass it,
 and the §4.3 line prints the decision at every build pass, co-located with the existing

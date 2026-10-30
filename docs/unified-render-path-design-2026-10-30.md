@@ -30,12 +30,20 @@ Two facts make this cheap rather than a rewrite:
 1. **`gfx_commit()` already takes the source as a parameter** (`orb_gfx.c:508`):
    `void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)`.
    The commit pass never asks where restore pixels come from.
-2. **Every dial mark site already branches on the gate.** Four sites, one shape:
-   `clock_view.c:509` (hands/shadows/carriage in `apply_angles`), `:769`
-   (`tourbillon_advance`), `:1631` (aux pointers), `:1203` (complications). Each
-   reads `if (orb_sched_l4_active()) gfx_mark_rows(...); else
-   lv_obj_invalidate_area(...);`. **No new marking machinery is needed. Those four
-   calls take the L4 branch the moment the predicate answers true for their dial.**
+2. **Every dial mark site already branches on the gate.** Six sites, one shape:
+   `clock_view.c:509` and `:534` (hands/shadows/carriage in `apply_angles`), `:768`
+   (`tourbillon_advance`), `:1631` (aux pointers), `:1202` (complications), plus the
+   chord gate at `:697`. Each reads `if (orb_sched_l4_active()) gfx_mark_rows(...); else
+   lv_obj_invalidate_area(...);`. **No new marking machinery is needed, and none of the
+   six needs an edit.** They take the L4 branch the moment the predicate answers true.
+
+Two further readers of the predicate exist and must be read as intended rather than
+assumed to "follow it too": `request_commit()` (`orb_sched.c:213`), which §4.2 covers,
+and the bench-overlay walk at `orb_sched.c:844` under `#if DISPLAY_BENCH`. The second
+starts running for still dials the moment the gate widens, walking blocks and marking
+their rows every tick. That is correct on a bench build, but it is new cost on precisely
+the arms this design measures, so a `DISPLAY_BENCH` figure is never comparable with a
+non-bench one and slice 1 must state which it quoted.
 
 ## 2. Population: which dial is in which bucket, measured
 
@@ -105,7 +113,8 @@ for caged dials twice, at different costs:
   change, no ABI bump, straight to the painter at the plate's own rate.
 - **Slice 4** is for caged dials whose plate genuinely moves, to stop forcing them onto
   a keyframe bank. That is where §33.3's 227 ms / 500%-page flush and §31's "every
-  advance invalidates all 466 rows" live, and where the 4→12 fps step is.
+  advance invalidates all 466 rows" live, and where the 4→12 fps step is. It is a
+  **baker-only** change (§11): the v4 delta dialect the reader loads already exists.
 
 The keyframe-bank plate encoding retires by becoming unreachable rather than by
 deletion: once a moving plate under a carriage bakes as a delta bank, nothing emits
@@ -122,16 +131,24 @@ New in `orb_sched.c`, beside `orb_bg_canvas()`:
 ```c
 /* The plane the commit pass restores marked rows from, per carrier class. A delta
  * bank restores from its own mutable canvas; a still plate restores from the baked
- * plane in place — read-only XIP, nothing to write, nothing to allocate. A keyframe
- * plate changes underneath the painter, so it has no source until slice 4 removes
- * the encoding; the classic path keeps those dials, unchanged. */
+ * plane in place — read-only XIP, nothing to write, nothing to allocate. */
 const uint16_t *orb_sched_restore_src(void)
 {
-    if (orb_bg_gif_mode())   return s_canvas;                        /* PSRAM canvas */
-    if (clk_theme.bg_frames) return NULL;                             /* keyframe bank */
-    return (const uint16_t *)(blob() + clk_theme.plate_off);          /* baked plate   */
+    if (orb_bg_gif_mode())   return s_canvas;                    /* PSRAM canvas */
+    if (clk_theme.bg_mode == 1) return NULL;                     /* canvas wanted, absent */
+    if (clk_theme.bg_frames) return NULL;                        /* keyframe bank */
+    return (const uint16_t *)(blob() + clk_theme.plate_off);     /* baked plate   */
 }
 ```
+
+The `bg_mode == 1` line is not redundant with `orb_bg_gif_mode()`. That predicate
+requires `gif_frames >= 2 && <= CLK_GIF_MAX && s_canvas != NULL` (`orb_sched.c:186-189`),
+so a `bg_mode 1` dial fails it three ways: canvas alloc failed, `gif_frames` out of
+range, or fewer than two frames. Falling through to the XIP plate in those states would
+restore a `plate_off` that a delta bake carries only as frame 0 — and §12 promises the
+out-of-memory dial stays on the classic path, which the guard makes true rather than
+aspirational. A `bg_mode 1` dial on the classic path is the documented degradation
+(`orb_sched.c:345-350`, "background held on keyframe").
 
 **Slice 1 must check `plate_off` against the art-bank bound before trusting it** —
 `orb_clock3.c:1072` already validates `plate_off % 2 == 0` and
@@ -157,6 +174,40 @@ sentence this design deletes.** `sched_flush_commit()` (`:806`) gates on
 `orb_sched_l4_active()` and needs no edit — the predicate carries it.
 `gfx_commit()` does not change shape: its restore loop indexes
 `canvas[y * CLK_SCR_W + xa]` and byte-swaps into mirror order (`orb_gfx.c:536-545`),
+### 4.2b The predicate must also require a claimed layer table
+
+Marking rows instead of invalidating LVGL is only safe while something welds those rows.
+`orb_sched_commit_layers()` returns early on `orb_layers_count(t) == 0` (`orb_sched.c:780`)
+and again on the source guard below it. A still dial whose table build failed, refused
+every row, or never ran therefore gets **no weld and no LVGL**: frozen or vanished hands,
+not a degraded dial. The GIF bucket already carries this exposure on a handful of dials;
+the predicate change would extend it to every still dial in the fleet, which is the wrong
+direction for a fallback.
+
+**Gate the predicate on both halves, and make the print name the reason:**
+
+```c
+bool orb_sched_l4_active(void)     /* both halves must hold: source AND a table to weld */
+{
+    return CLK_BG_DIRECT_PUSH && orb_sched_restore_src() != NULL
+           && orb_sched_layer_rows() > 0;
+}
+```
+
+`orb_sched_layer_rows()` is a new one-line accessor over the dial's `s_lay_n`
+(`clock_view.c:1784`), or the same value off the service table. It cannot reuse
+`clock_layers_refresh()`'s own test (`:2009`, `s_lay_n == 0 || !orb_sched_l4_active()`)
+as the source of truth — that is void and reads the predicate, so a gate that depends on
+it must not depend on it back.
+
+**The consequence to write down while doing it:** §12's promise that a failed table is
+"never a dial that fails to boot" (`clock_view.c:2305-2310`) survives this change *only
+because* of the gate. Without it, that comment becomes false on its first clause for
+every still dial, and the sentence "a dial without a canvas still draws through the
+widgets above" has to be read as a bug report. Keep the widgets live (they are the
+fallback, §8 and the bounce path both depend on it); just refuse the predicate when
+there is nothing to weld with.
+
 which is exactly what a flash-resident RGB565 plate row needs, and the plate is
 already even-offset (`orb_clock3.c:1072` refuses `plate_off % 2`). The mirror compare
 that gates DMA (`:597+`) is unchanged and source-blind.
@@ -174,29 +225,47 @@ a 1 px plate nudge whose `is_last` chunk drives the flush the hook hangs on. It 
 gated on `orb_sched_l4_active()` and therefore starts firing for the still bucket
 with the predicate change. No new code.
 
-### 4.3 The predicate must print what it decides
+### 4.3 The predicate must print what it decides, at both build points
 
 The Oct-30 trap list earned this rule: *"a probe that changes an observable must
 print the change"* — the shipped `hand AA:` line is derived from motion words and
 reported the shipped rule under the AA-off arm (`render-cost-findings §5`), and an
-arm with no boot line is an arm that was never on the glass. So the predicate change
-prints once at clock init:
+arm with no boot line is an arm that was never on the glass. So the decision prints:
 
 ```c
-ESP_LOGI(TAG, "render path: l4=%s src=%s", orb_sched_l4_active() ? "yes" : "no",
-         orb_bg_gif_mode() ? "psram" : (orb_sched_l4_active() ? "xip" : "lvgl"));
+ESP_LOGI(TAG, "render path: l4=%s src=%s rows=%d", orb_sched_l4_active() ? "yes" : "no",
+         !orb_sched_l4_active() ? "lvgl" : (orb_bg_gif_mode() ? "psram" : "xip"),
+         clock_layers_row_count());
 ```
+
+Two placement requirements, both from the reader's own findings:
+
+- **Print after the table builds, never at scheduler start.** The gate reads
+  `s_lay_n`, which `clock_layers_build()` fills at `clock_view.c:2312` — after the
+  canvas decision at `:2190-2196` and after `orb_sched_start()`. A print placed at
+  init would report `rows=0 l4=no` for a dial about to go L4. Co-locate it with the
+  existing `layer table: %d rows … %d refused` line (`:1979`), so one line names rows,
+  refusals and the verdict that consumes both.
+- **Print on re-apply, not only first boot.** The re-activation rebuild path
+  (`clock_view.c:2471-2479`: `clock_layers_build` then `clock_layers_refresh`) is where
+  a theme switch lands. A bench run that swaps dial mid-capture is otherwise
+  indistinguishable from the previous image still running — which is exactly the
+  failure `render_arms.py` exits non-zero on. Printing at the end of the build pass
+  covers both cases with one call site, because re-apply calls the same build.
 
 `render_arms.py --arm="render path: l4=yes src=xip"` then proves the arm from its own
 capture, which is how every bench row in §10 gets accepted.
 
-### 4.4 Nothing else in the dial changes
+### 4.4 Nothing in the dial's mark sites changes; AA does
 
-The four mark sites named in §1 keep their exact text. `apply_angles` already
+The six mark sites named in §1 keep their exact text. `apply_angles` already
 computes the swept union `u` for both poses and both shifted positions; the
 complication and aux passes already clip and mark; the carriage already chords.
 They flip branch because the predicate flipped, not because they were edited.
-`hand_aa_for()` is untouched (see §8 for why that matters).
+
+`hand_aa_for()` is **not** untouched, and §8 states why it cannot be: the LVGL hand
+widgets stay live under L4 as the fallback, so any repaint LVGL starts itself re-draws
+them with whatever filter the v1.1.37 grant gave them.
 
 ### 4.5 Keyframe banks are the one bucket that needs a new source, and it is deferred
 
@@ -274,21 +343,42 @@ instead of demoting. Station is the counter-example on the bench right now: it i
 *sweeping* still, so it already asks `FLUID`, and its 7 fps came from the renderer and
 not from the scheduler.
 
-**Change:** a still dial with `second_sweep == 0` and `tick_rate >= 2` contributes a
-`DISTINCT` ask of `tick_rate`. 4/8/12 are already rungs on the `{1,2,4,8,12}` ladder
-(`orb_sched.h:159-171`), so they pick cleanly; the pick's existing LCM rule and its
-fallback (LCM past the ladder → the set's own floor) need no edit. This is what the
-owner's §40 ruling already specifies, applied to the one carrier class that was
-missing from the ask set.
+**Change, and the second half is not optional:** a still dial with `second_sweep == 0`
+and `tick_rate >= 2` contributes a `DISTINCT` ask of `tick_rate` — **and**
+`sched_tick_period_ms()`'s `anim` test (`orb_sched.c:540-544`) gains
+`|| (!clk_theme.second_sweep && clk_theme.tick_rate >= 2)`. The ask alone is a **no-op**:
+`:544` returns `orb_sched_tick_base_ms()` while `anim` is false, and it does so **before**
+`sched_fill_asks()` is consulted at `:545`. A ticking still dial has `anim == false` by
+construction — none of the four terms matches it — so the new ask would sit unread and
+the dial would keep riding the unscheduled hand beat, with the commit green and nothing
+changed. Adding the ask without adding the `anim` term is precisely the false pass the
+`.clinerules` `CONFIG_FOO` note describes, so `host_sched_rung_test.py` must carry a
+vector that **fails when the `anim` term is omitted**, not merely one that passes when
+the ask is present.
+
+4/8/12 are already rungs on the `{1,2,4,8,12}` ladder (`orb_sched.h:159-171`), so they
+pick cleanly; the pick's existing LCM rule and its fallback (LCM past the ladder → the
+set's own floor) need no edit. This is what the owner's §40 ruling already specifies,
+applied to the one carrier class missing from the ask set.
 
 `ORB_SCHED_FPS_CEILING` is **15** (`orb_sched.h:189`) and `ORB_SCHED_PANEL_FLOOR` 4
 (`:190`). The `CLK_BG_MAX` comment at `orb_sched.c:49-52` is the plate-bank bound,
 not an fps bound — a doc trap corrected on 2026-10-30 (`render-cost-findings §4`).
 
-`hand_aa_for()` (`clock_view.c:264-274`) gates on `bg_mode` and friends to decide AA
-affordability. Under the unified path the right gate is a **cost** predicate (does
-the estimate leave headroom for the extra taps?) rather than a carrier-class one.
-That is slice 5; the rule keeps its current behavior until then.
+The AA work splits, and the split is forced by the fallback rather than chosen:
+
+- **Slice 1 must deny the LVGL grant whenever the painter owns the dial** —
+  `hand_aa_for()` returns false when `orb_sched_restore_src() != NULL`, and the
+  `host_hand_aa_test.py` vectors and mutants move with it. This is not cosmetic: the
+  widgets stay live (§4.4), and the painter does not touch a row the moment a bounce,
+  an overlay close, or any other LVGL-initiated repaint redraws them. A granted still
+  dial would then show bilinear hands until each one next moved — minutes for an hour
+  hand, and longer on a 4 fps ticked dial. Mixing edge quality inside one dial is the
+  one outcome both AA options agree is wrong. The placement works because the source is
+  decided at `clock_view.c:2190-2196`, before the hands are built at `:2281`.
+- **Slice 5 replaces the carrier-class test with a cost test** (does the estimate leave
+  headroom for the extra taps?), restoring a grant where the arithmetic now affords it.
+  Slice 5 is where option (b) lives, and it stays additive.
 
 ## 7. Editor surfaces: revise two, re-ground one, delete one exemption
 
@@ -330,8 +420,22 @@ unified path those same hands are re-drawn by the L4 painter, which uses **LVGL'
 nearest-neighbour rotation maths** (`orb_sched.c:229`) and takes no AA setting.
 
 **So generalizing the gate silently reverses the AA ruling the same day it ships.**
-This is not a blocker; it is the reason §6 point 4 replaces the carrier-class gate
-with a cost predicate rather than leaving it as-is. Two coherent end states:
+And it does it *partially*, which is worse than reversing it. The LVGL widgets are not
+hidden under L4 — only the marked rows stop invalidating — so any repaint LVGL starts on
+its own (the activation bounce at `clock_view.c:2470-2479`, an overlay closing, a
+carousel return) re-draws the hands bilinear from the standing grant, and they stay that
+way until each one next moves. On a ticked dial an hour hand moves once an hour. The
+dial would therefore run two edge qualities at once, switching per layer on how recently
+that layer happened to move, and the bench would compare a mixed image against a clean
+one.
+
+**This forces one thing into slice 1 regardless of which end state the owner picks: the
+LVGL grant must go false for any dial the painter owns** —
+`hand_aa_for() && orb_sched_restore_src() == NULL` — because an untouched grant is not a
+neutral choice, it is an active defect. `hand_aa_for()` is decided at hand-creation time
+(`clock_view.c:2281`), which sits after the plate-source decision (`:2190-2196`), so the
+test is available where it is needed and needs no new plumbing. Two coherent end states
+then remain for slice 5:
 
 - **(a) the painter stays nearest**, and the AA grant moves to a cost predicate that
   also tests L4 activity — a dial on the painter gets nearest hands and its saved
@@ -354,7 +458,7 @@ cannot both hold and asks for a call at the §"Owner prompts" gate.
 | **Memory** | **Funded.** The still bucket needs **no new allocation** — its source is `blob() + plate_off`, already resident and already read by LVGL. `orb_bg_gif_canvas_init()` (`:329-350`) still allocates its one 434,312 B canvas for the bank bucket and nothing adds a second. Free PSRAM at the Oct-30 boot: 7,744 kB (largest block 7,680 kB). |
 | **XIP restore stalls** | **No new class.** The commit pass already restores from PSRAM during flush; LVGL already samples the XIP plate every frame. A concurrent flash write suspends the cache and stalls both alike — already documented (`app-platform-plan.md:392`, the reason an install runs before `display_init()`), and the install-before-display rule holds. |
 | **D29 art cap** | **Not threatened by the unified path itself.** Still plates add 0 bytes. The carriage slice *replaces* keyframe planes (434,312 B each) with a delta bank plus rect rows, so it shrinks the blob. The cap is 4,128,768 B (`ORB_THEME_SLOT_CAP`, 0x3F0000, plan §0 D29); re-check per dial in that slice anyway. |
-| **Bake geometry / ABI** | **Bumps, in slice 4 only.** Carriage-over-moving-plate dials change encoding, which is exactly what `GEOM_ABI4` guards (`orbtheme-baker.js:1772`, currently 3). Slice 4 bumps 3→4 and refuses the older reader loudly on the boot line. Slice 1 touches no encoding and strands no installed theme. |
+| **Bake geometry / ABI** | **No bump.** `GEOM_ABI4` is already **4** (`orbtheme-baker.js:1772`, "C4's delta dialect, one stamp up from what shipped before"), and the delta branch already stamps `abi_min/abi_max = GEOM_ABI4` (`:3276`). A carriage dial's delta plate is therefore the existing dialect the reader accepts today via `plate_delta` (`orb_clock3.c:568`). Slice 4 changes which shape the *baker* emits, not the container. It strands no installed theme, because every theme already on a card either boots as-is or is re-baked. |
 | **Frame counts** | Two tables, still separate: a carriage row holds **16** frames (`bake_clock.py:2337` refuses past 16 — the "32" figure is `TOURB_MAX`'s sprite ceiling at `orbtheme-baker.js:3351`, not the carriage's own bank limit); the delta plate rides the bg table (`BG3_FRAMES_MAX 16`, `GIFS_MAX 32`). A 48 s orbit at 4 fps is 192 frames, so the plate bank samples and the carriage keeps its own 8-12. |
 | **Skeleton regression** | **The one arm that must not move.** Skeleton is the factory default (D37): a regression strands every freshly-provisioned orb on a worse first dial. Gate in §10. |
 | **Painter cost mis-scaled** | Handled by measuring the painter's own per-role rate in slice 1 rather than reusing LVGL's, and by labelling the estimator "estimated" until that measurement lands. |
@@ -383,8 +487,16 @@ that cannot be proven from its own capture is not an arm:
 | **Sector** | delta bank, no carriage | 12 fps seed | **unchanged** | the no-regression gate: identical boot line (`src=psram`) and fps |
 | **Skeleton** (factory default) | delta bank, comp overlay | 12 fps seed | **unchanged** | same, plus `gfx_parity_test.py` identical against its pin |
 | A **`sprite`** caged dial (carriage over a still plate) | `bg_frames 0, tourbillon_n > 0` | 4-7 fps via LVGL | 12 fps target | **slice 1** — boot line `src=xip`, no ghost on the vacated arc, no bake change |
-| A caged dial whose **plate moves** (keyframe bank) | `bg_mode 0, bg_frames > 0` | 4 fps, 227 ms/flush (§33.3) | 12 fps target | **slice 4 only**; `geom=4` boot line; blob shrinks; a `geom=3` theme refuses loudly |
+| A caged dial whose **plate moves** (keyframe bank) | `bg_mode 0, bg_frames > 0` | 4 fps, 227 ms/flush (§33.3) | 12 fps target | **slice 4** — baker-only change, blob shrinks, boot line `src=psram`, and the delta tick + `tourbillon_advance` combination runs on glass for the first time (§11) |
 | A still dial with a comp (date/moon) | still plate + role 5/7 | classic | painter, marked boxes | comp still refreshes on rollover; `clock report` comp lines move |
+
+**On the pixel-parity check.** `fbgrab --diff` against a classic-path capture is not a
+same-instant comparison: the classic arm needs its own `CLK_BG_DIRECT_PUSH=0` flash, and
+the dial has moved between the two captures. Pin the time before capturing either arm
+(push a fixed time over the existing debug route, or capture both arms within the same
+second-hand beat on a ticked dial and diff at `tick_rate 1`). If neither is available,
+**downgrade the check to the ghost/flash inspection named below and say so** — a diff
+against a moving dial proves nothing and must not be quoted as parity evidence.
 
 Two failure modes to look for specifically, because the path is new for these dials:
 **ghost** (a vacated hand box that never restores — a missing mark) and **flash**
@@ -398,23 +510,34 @@ alone. `CLK_BG_DIRECT_PUSH` stays the kill switch: each slice must leave a dial 
 answers false on it rendering exactly as it did at `1366568`.
 
 1. **`feat(gfx): unify the commit path on a restore source`** — §4.1 predicate +
-   selector, §4.2 unchanged trigger, plus the painter's own per-role cost measured
-   (§5) and the AA decision of §8 stated in the commit body. No bake change, no
-   scheduler change. Still plates go L4 — including a carriage riding one (the `sprite`
-   carrier), which needs no bake change to benefit. Keyframe-bank dials stay on the
-   classic path.
-2. **`feat(sched): a ticking still dial is an ask, not a pass`** — §6 `DISTINCT`.
-   Hysteresis can now see and demote it.
+   selector (both `bg_mode 1` and keyframe guards), §4.2b table gate + accessor, §4.3
+   print at both build points, §4.2 unchanged trigger, plus the painter's own per-role
+   cost measured (§5) and the **AA denial of §8 in force** — the grant cannot be left to
+   slice 5 without shipping mixed edge quality. No bake change, no scheduler change.
+   Still plates go L4 — including a carriage riding one (the `sprite` carrier), which
+   needs no bake change to benefit. Keyframe-bank dials stay on the classic path.
+2. **`feat(sched): a ticking still dial is an ask, not a pass`** — §6. The `DISTINCT`
+   ask **and the `anim` term**, or the commit changes nothing.
 3. **`feat(bake): price the commit at bake time`** — `est_fps` from §5, `sentence`
    carries it, Motion block shows it, `_devPace()` comment corrected and the carriage
    exemption deleted (§7 points 1-3). No firmware change.
-4. **`feat(bake): carriage dials bake a delta plate`** — §3. Deletes the
-   `o.carriage ? 0 : 1` fork and the `orb_clock3.c:513` refusal, adds the rect rows
-   to the carriage case, bumps `GEOM_ABI4` 3→4, and re-checks D29 per dial. The
-   largest fps win in the fleet, and the only slice that can strand an old theme, so
-   it goes last and alone.
-5. **`feat(clock): hand AA by cost, not by carrier class`** — §6 point 4, closing the
-   §8 tension with the answer slice 1 chose.
+4. **`feat(bake): a carriage dial's moving plate bakes as a delta bank`** — §3, and
+   **baker-only**. Drop the `o.carriage ? 0 : 1` fork at `orbtheme-baker.js:2734` in
+   **both** byte-identical copies (`tools/watch-composer/` and
+   `tools/orb-manager/web/composer/`), and bench the result. It needs no reader change:
+   the v4 delta dialect already ships at `GEOM_ABI4 = 4` (`:1772`, stamped at `:3276`),
+   the reader already admits it (`plate_delta`, `orb_clock3.c:568`), and the `:513`
+   refusal the first draft told you to delete fires on `bg_frames && bg_mode == 1` while
+   the delta branch writes `bg_frames = 0` (`:2987`) — so it is unreachable for this
+   shape, and deleting it would only re-admit a genuinely malformed value pair. Keep it.
+   **Why this is still the riskiest slice:** §2's population table shows the delta tick
+   has never run on a device together with a carriage, so the bake is cheap and the
+   bench is the deliverable. There is no ABI bump and no new refusal, so **owner gate 2
+   does not arise for this slice** — it survives only for a hypothetical reader change.
+5. **`feat(clock): hand AA by cost, not by carrier class`** — §6 and §8's option (b) if
+   the owner chose it, restoring a grant the §4.2b/slice-1 denial removed for dials whose
+   estimate affords it. Additive by construction, because slice 1 already left every
+   painter-owned dial nearest.
 
 ## 12. Declined and out of scope
 
@@ -451,6 +574,45 @@ Anchors move. Confirm each still says what §1-§7 claims, and stop if one does 
   rows, so the machinery is app-agnostic. Nothing here changes app behaviour, and moving
   an app's rendering onto it is a separate ruling with its own gate.
 
-· `orb_gfx.c:508/536-545/597` · `orb_gfx.h:36-43/100/104/139` ·
-`clock_view.c:264-274/509/769/1203/1631/2190-2196` · `orb_clock3.c:513/808-827/1072` ·
-`orbtheme-baker.js:1772/2734/2987/3324` · `Watch Composer.dc.html:471/503/505/527/1232/2541-2545`.
+## 15. Corrections applied after the first draft, and one gate withdrawn
+
+A reader checked the first draft against the tree and found six defects. All six are
+fixed above; recorded here so nobody re-introduces them from the earlier wording.
+
+1. **Slice 4 was baker-only, not an ABI event.** `GEOM_ABI4` is already 4; the delta
+   branch already stamps it; the reader's `plate_delta` (`orb_clock3.c:568`) already
+   admits the shape. The `:513` refusal is `bg_frames && bg_mode == 1` and the delta
+   branch writes `bg_frames = 0`, so it is unreachable for carriage+delta and **must be
+   kept** — deleting it re-admits a malformed pair. **Owner gate 2 is therefore
+   withdrawn:** nothing in this design strands an installed theme.
+2. **Slice 2 was a no-op without the `anim` term** (`orb_sched.c:544` returns the raw
+   hand beat before `sched_fill_asks()` is ever reached). §6 now names both halves and
+   demands a mutant that catches the omission.
+3. **Slice 1 and the AA vectors contradicted §4.4.** Resolved in favour of the change:
+   slice 1 denies the LVGL grant on painter-owned dials, because the live widgets plus a
+   self-initiated LVGL repaint otherwise produce two edge qualities in one dial.
+4. **The empty-table fallback hole widened.** `orb_sched_commit_layers()` returns early
+   on zero rows, so the predicate now needs the table gate (§4.2b), or every still dial
+   inherits a failure mode only the GIF bucket carried before.
+5. **Out-of-memory fell through to the XIP plate**, contradicting §12. Fixed by the
+   explicit `bg_mode == 1` guard in §4.1.
+6. **Six mark sites, not four** (`:534` and the `:697` chord gate were missed), and the
+   `DISPLAY_BENCH` walk at `orb_sched.c:844` is a seventh reader of the gate that starts
+   running for still dials — so bench and non-bench figures are not comparable.
+
+Tool-path and method corrections: the headless suites live under
+`tools/watch-composer/_selftest/`, not `tools/watch-composer/`; the `fbgrab --diff`
+parity check needs the clock pinned or must be downgraded to ghost/flash inspection; and
+the `render path:` line must print at every build pass, not once at init, because a
+mid-bench theme switch is otherwise indistinguishable from a refused flash.
+
+## 13. Re-verify before editing
+
+Anchors move. Confirm each still says what §1-§7 claims, and stop if one does not:
+`orb_sched.c:144/186-189/202/211-217/261/504/509/514/520/525-529/540-545/565/780/787/806/844` ·
+`orb_sched.h:42-47/63/117/159-171/189/190` · `orb_gfx.c:508/531-545/597` ·
+`orb_gfx.h:36-43/100/104/139` ·
+`clock_view.c:269/288/509/534/697/768/1202/1631/1784/1979/2007-2011/2190-2196/2281/2305-2310/2471-2479` ·
+`orb_clock3.c:513/568/808-827/848/1072` ·
+`orbtheme-baker.js:1772/2730-2734/2987/3276/3324-3336/3368/3378` ·
+`Watch Composer.dc.html:471/503/505/527/1232/2541-2545`.

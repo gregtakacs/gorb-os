@@ -3536,6 +3536,7 @@ function themeRow(t, state, list) {
         await themeWaitBack(state, t.name);
       }
       await loadThemes(themeIP);
+      cardChanged();   // the Apps face draws the same card: its file listing is now this theme's shorter
     } catch (e) { state.textContent = "remove refused: " + e.message; del.disabled = false; }
   };
   li.appendChild(del);

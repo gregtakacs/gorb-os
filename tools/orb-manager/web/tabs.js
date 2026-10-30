@@ -79,6 +79,19 @@ function lazyTab(key, fn) {
   Promise.resolve().then(fn).catch(() => tabLoaded.delete(key));
 }
 
+// cardChanged is the aftertaste of every flow that moves bytes off or onto the
+// card. The Apps and Themes faces both draw the card's own contents, so a file
+// erased under the Files face — or an .orbapp pulled off the dial — leaves their
+// ledgers describing a card that no longer exists, and the operator watches a
+// stale "Remove from card" button until a page reload says otherwise. Un-load
+// both faces here, the same ledger tabRearm clears across a reboot: the next
+// press pays one fresh read and shows the truth. The face already on screen is
+// refreshed by its own flow, which calls this beside that refresh.
+function cardChanged() {
+  tabLoaded.delete("apps");
+  tabLoaded.delete("themes");
+}
+
 // tabRearm is the answer to "the orb just came back". A board that went silent
 // and now answered was rebooted by somebody — an update the hub staged, a
 // factory reset, a radio that dropped. Every face loaded across that silence
@@ -790,6 +803,7 @@ function eraseCardButton(e, note) {
       }
       await appPost("/api/v1/sd/rm?path=" + encodeURIComponent("apps/" + stem + ".orbapp"));
       libVerdict = null;   // this row is about to disappear: do not remember it as installed
+      cardChanged();       // the Themes face drew the same card this press just changed
       await loadApps();
     } catch (err) {
       note.textContent = named + " \u00b7 the orb refused it: " + err.message;
@@ -1066,6 +1080,7 @@ async function fmDelete(e, btn) {
     if (r.status !== 200 || !r.body || r.body.error)
       throw new Error(fmSentence(r.body, "HTTP " + r.status));
     st.textContent = "deleted /" + rel + (r.body.removed > 1 ? " (" + r.body.removed + " items)" : "");
+    cardChanged();   // the listing below proves it gone; Apps and Themes owe themselves the same fresh read
     await fmList(fmPath);
   } catch (e2) {
     // A dial that died mid-request during the run's own reboots is not a refusal:
@@ -1074,6 +1089,7 @@ async function fmDelete(e, btn) {
     // 2026-10-29 PM: "i/o timeout" printed over an apps/ directory that was gone).
     if (/unreachable|timeout|network/i.test(e2.message)) {
       st.textContent = "the orb went silent mid-erase — re-reading the card as it comes back";
+      cardChanged();   // the erase may well have landed; both card faces read the truth on the next press
       setTimeout(async () => {
         try {
           await fmList(fmPath);
@@ -1139,6 +1155,7 @@ $("#fm-file").addEventListener("change", async () => {
       break;
     }
   }
+  cardChanged();   // whatever landed, the Apps and Themes faces last read a card without it
   await fmList(fmPath);
 });
 

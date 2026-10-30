@@ -1888,3 +1888,17 @@ correct.
   thing a re-placed board no longer holds. The test that pins this asserts an ORDER with
   a recorder that snapshots the cached name inside `Record` — a plain recorder buffers
   the body, cannot see sequence, and passed on the broken hub.
+
+- **The Themes pane's fetch shim intercepts a SAVE, never a PRECHECK.** The composer's
+  send is two legs on one door: `POST /api/theme/upload?precheck=1` (a 128 B head slice
+  asking what it would replace) then the bake. `themeBridge` answers only the second, so
+  routing the first there files a header as a theme. The shim must forward a `?precheck`
+  to the hub door — same origin, launch cookie on the editor document — and read a save
+  body as Blob, ArrayBuffer, ANY typed view, or `new Response(body)`. `upload.js` hands
+  `fetch` a `Uint8Array`; the first shim tested for Blob and ArrayBuffer only, refused,
+  and Bug-B held the bake, so press one always failed and press two always worked. That
+  pair is NOT a cold-start race: check the deterministic shape before blaming an arm.
+  The bake retry rides `XMLHttpRequest`, which bypasses a fetch wrapper, which is why
+  press two looked healthy. `tools/host_clock_region_test.py` pins both legs, parses
+  the shim with esprima, and mutates two of its body branches to prove that parse
+  check can fail.

@@ -94,8 +94,8 @@ node tools/watch-composer/_selftest/headless-regression.test.js  # all 15 preset
 
 ## The slices, in order
 
-**Slice 2 is not ready to hand off.** See its text: the rung it picks must be pinned on the
-host first. Start with slices 1, 3, 4 and leave 2 for a second design pass.
+**Implement slices 1, 3, 4 and 5. Slice 2 is blocked — see its text; do not reconstruct it
+from the design draft, which the rung computation in §6 disproved.**
 
 Each is one coherent claim, benched alone, revertable alone. Do not merge two.
 
@@ -136,19 +136,21 @@ Evidence, same glass, same `--window 8:20`, and state whether the build had
   vacated carriage arc that never restores, because the chord marks are the only thing
   standing between this dial and a visible rectangle.
 
-### Slice 2 — `feat(sched): a ticking still dial is an ask, not a pass`
+### Slice 2 — **BLOCKED, do not implement.** `feat(sched): a ticking still dial is an ask`
 
-Design §6. Two halves, and the second is what makes the first reachable:
-`sched_fill_asks()` (`orb_sched.c:501`) gains the ticked-still `DISTINCT` ask, **and**
-`sched_tick_period_ms()`'s `anim` test (`:540-544`) gains
-`|| (!clk_theme.second_sweep && clk_theme.tick_rate >= 2)`. Without that term `:544`
-returns `orb_sched_tick_base_ms()` before `sched_fill_asks()` is consulted at `:545`, and
-the commit is a verified no-op. `host_sched_rung_test.py` must carry a vector that
-**fails when the `anim` term is removed** — a vector that merely passes with it is the
-false pass `.clinerules` documents for `CONFIG_FOO`. Also correct
-`sched_seed_floor()`'s comment (`:558-564`), which still calls the still dial un-schedulable.
-Evidence: a ticked still dial over a busy band reports its **asked** rate or a demotion,
-never an overrun.
+Design §6 has the computed rung tables. Summary of why it is out of this handoff: a
+single `DISTINCT` ask sends a 4 Hz dial to 12 Hz (the cap seeds from the floor, not the
+ask) and jitters its beat through the wall-clock quantiser at `clock_view.c:365-367`; the
+`DISTINCT` + `FLUID` pair lands on the beat the dial already keeps, so it changes no rate
+at all; and either form pushes a sub-4 Hz ticker up to `ORB_SCHED_PANEL_FLOOR`, which is
+more ticks than that dial takes today. Its only return is governor visibility, and the
+owner has not been asked whether that is worth a commit (§14 of the design).
+
+If it is later approved, it needs all three of: the `anim` term at `orb_sched.c:540-544`
+(without it the ask is never consulted at `:545` and the commit is a verified no-op), the
+`tick_rate >= ORB_SCHED_PANEL_FLOOR` guard, and host vectors that assert on the **ask set**
+rather than the period — plus a mutant that fails when the `anim` term is removed. Fix
+`sched_seed_floor()`'s comment (`:558-564`) in the same commit either way.
 
 ### Slice 3 — `feat(bake): price the commit at bake time`
 

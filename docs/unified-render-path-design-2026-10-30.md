@@ -363,10 +363,11 @@ instead of demoting. Station is the counter-example on the bench right now: it i
 *sweeping* still, so it already asks `FLUID`, and its 7 fps came from the renderer and
 not from the scheduler.
 
-**Change, and the second half is not optional:** a still dial with `second_sweep == 0`
-and `tick_rate >= 2` contributes a `DISTINCT` ask of `tick_rate` — **and**
-`sched_tick_period_ms()`'s `anim` test (`orb_sched.c:540-544`) gains
-`|| (!clk_theme.second_sweep && clk_theme.tick_rate >= 2)`. The ask alone is a **no-op**:
+**The mechanism, if the slice survives the owner question in §14:** a still dial with
+`second_sweep == 0` and `tick_rate >= ORB_SCHED_PANEL_FLOOR` files a `DISTINCT` ask of
+`tick_rate` **and** a `FLUID` cap of `tick_rate`, and `sched_tick_period_ms()`'s `anim` test
+(`orb_sched.c:540-544`) gains `|| (!clk_theme.second_sweep && clk_theme.tick_rate >=
+ORB_SCHED_PANEL_FLOOR)`. The ask alone is a **no-op**:
 `:544` returns `orb_sched_tick_base_ms()` while `anim` is false, and it does so **before**
 `sched_fill_asks()` is consulted at `:545`. A ticking still dial has `anim == false` by
 construction — none of the four terms matches it — so the new ask would sit unread and
@@ -374,7 +375,8 @@ the dial would keep riding the unscheduled hand beat, with the commit green and 
 changed. Adding the ask without adding the `anim` term is precisely the false pass the
 `.clinerules` `CONFIG_FOO` note describes, so `host_sched_rung_test.py` must carry a
 vector that **fails when the `anim` term is omitted**, not merely one that passes when
-the ask is present.
+the ask is present. Read the two subsections below before building any of it — the rung
+claim this paragraph was written around turned out to be false.
 
 **The pick does not honour the ask, and this is where slice 2 is still open.** The claim
 that "4/8/12 are already rungs so they pick cleanly" is **false**, and running
@@ -400,8 +402,9 @@ still):
 Every rate at or below 6 goes to 12 under the single ask. `:467` skips 15 because
 `15 % 4 != 0`, and 12 is the first rung that survives.
 
-So a 4 Hz dial goes from four ticks a second to twelve, and a 2 Hz dial goes from two to
-twelve — three times the work for a dial that asked for less. The angle-change gate hides most of the redraw, but each tick still runs
+So a 4 Hz dial goes from four ticks a second to twelve, and a 2 Hz dial from two to twelve
+— three times the work for a dial that asked for less. The angle-change gate hides most of
+the redraw, but each tick still runs
 `clock_layers_mark()` and the commit. Worse, it breaks the evenness the cadence fix
 bought: `hand_angles()` cuts the wall fraction into beats (`clock_view.c:365-367`,
 `secF = sec + trunc(wall_frac * tick_rate)/tick_rate`), so a 4 Hz beat sampled on a
@@ -409,55 +412,42 @@ tick grid that is not the beat lands 250 ± 83 ms apart — visually a hand that
 stutters-then-jumps. That is the exact unevenness `hand_beat_ticks()` (`:309-316`) was
 written to remove in GIF mode, newly introduced into a dial that beats evenly today.
 
-**The demotion this was supposed to buy mostly does not exist either.** `rung_clamp()`
-(`:419-424`) floors at 4, so a 4 Hz ticker has nothing below its own rate to demote to.
-An 8 Hz ticker at a demoted floor of 4 finds no rung under 4 that 8 divides into, falls
-through to `rung_clamp(slowest)` = 8 (`:473`), and does not demote either. The honest
-statement is: **a ticking still gains hysteresis visibility and a 12 → 4 demotion path
-only at tick_rate ≥ 12; at 2 and 4 the pick makes it strictly worse.**
+**Neither form demotes, and that reframes what the slice buys.** Computed with the same
+reimplementation, governor floor pushed 15 → 4:
 
-**Likely fix, and it must be pinned before any firmware edit:** a ticking still asks
-`DISTINCT tick_rate` **and** `FLUID tick_rate`, the same pair a sweep already files
-(`:515-520`). The `FLUID` term drags the cap to `rung_clamp(tick_rate)` at `:442-445`
-before the ladder runs, so the pick lands on the highest rung ≤ the beat that the beat
-divides into — 4 Hz for the 2 Hz case, 4 Hz for the 4 Hz case, 8 Hz for 8 Hz. Two things the table
-makes concrete. Rates at or above the panel floor that miss the ladder entirely (5, 6, 7,
-9, 10, 11) land on **their own rate** via the `rung_clamp(slowest)` fallback at `:473` —
-off-ladder but exact, and the tick counter re-anchors the quantiser at `:365-367` every
-wall second, so the visible error stays one beat. Only sub-floor rates (1, 2, 3) clamp up
-to 4, which is faster than asked and is the panel's own floor rule, not this change's.
-And the pair keeps the beat grid and the tick grid identical for every rate ≥ 4, which is
-what removes the jitter.
+| tick_rate | single ask: floor 15 → 4 | pair: floor 15 → 4 |
+|---|---|---|
+| 4 | 12 → 4 (returns to its own beat) | 4 → 4 |
+| 5 | 5 → 5 | 5 → 5 |
+| 6 | 12 → 6 (returns to its own beat) | 6 → 6 |
+| 8 | 8 → 8 | 8 → 8 |
+| 12 | 12 → 12 | 12 → 12 |
 
-What slice 2 then actually buys is **hysteresis visibility**, plus 12 → 4 for the
-sub-4 Hz cases and the removal of the 12 Hz overrun for 1-4 Hz dials. It buys **no
-demotion** for a 4 or 8 Hz dial, and its commit body must say so rather than claiming the
-governor win generally.
+The single ask "demotes" at 4 and 6 only by falling back out of the wrong 12 Hz answer
+into the right one. The pair never changes rate at all, because `rung_clamp()` floors at 4
+and every rate worth demoting is already at or under its own cap. **So slice 2 buys
+governor visibility, not a better rate** — and visibility has to be worth something on its
+own, or the slice is a measurement of nothing.
 
-`host_sched_rung_test.py` should pin the picked rung for tick_rate 2, 4 and 8 with the
-pair filed, and the table must read **before** the firmware changes: if the first run
-shows 12 for a 4 Hz dial, the `FLUID` term is missing or in the wrong branch, and that
-failure is the point of the vector. **Slice 2 is not ready to hand off until this table
-exists** — see §11.
+**It also costs more than it saves below the panel floor.** Today
+`orb_sched_tick_base_ms()` gives a 1 Hz still one tick a second. Routing it through the
+animated band forces the floor of 4 Hz — four wakeups and four flushes a second for a hand
+that moves once. Same for 2 Hz and 3 Hz. The cause is `ORB_SCHED_PANEL_FLOOR` (`orb_sched.h:190`),
+not the ask, but the ask is what walks the dial into it.
+
+**Therefore, the shape worth building:** add the `anim` term only where it cannot raise a
+rate, i.e. `!second_sweep && tick_rate >= ORB_SCHED_PANEL_FLOOR`, and file the
+`DISTINCT` + `FLUID` pair so the pick lands on the beat the dial already keeps. Sub-floor
+tickers stay on the raw hand beat. The commit then changes no observable cadence on any
+dial — which is honest but also means **the only proof it did anything is the ask set
+itself**, so the host table must assert on the asks filed, not on the period. If
+visibility with no rate change is not worth a firmware slice, the correct action is to
+drop slice 2 rather than ship a no-op with a green suite; that is a judgement for the
+owner, recorded in §14.
 
 `ORB_SCHED_FPS_CEILING` is **15** (`orb_sched.h:189`) and `ORB_SCHED_PANEL_FLOOR` 4
 (`:190`). The `CLK_BG_MAX` comment at `orb_sched.c:49-52` is the plate-bank bound,
 not an fps bound — a doc trap corrected on 2026-10-30 (`render-cost-findings §4`).
-
-The AA work splits, and the split is forced by the fallback rather than chosen:
-
-- **Slice 1 must deny the LVGL grant whenever the painter owns the dial** —
-  `hand_aa_for()` returns false when `orb_sched_restore_src() != NULL`, and the
-  `host_hand_aa_test.py` vectors and mutants move with it. This is not cosmetic: the
-  widgets stay live (§4.5), and the painter does not touch a row the moment a bounce,
-  an overlay close, or any other LVGL-initiated repaint redraws them. A granted still
-  dial would then show bilinear hands until each one next moved — minutes for an hour
-  hand, and longer on a 4 fps ticked dial. Mixing edge quality inside one dial is the
-  one outcome both AA options agree is wrong. The placement works because the source is
-  decided at `clock_view.c:2190-2196`, before the hands are built at `:2281`.
-- **Slice 5 replaces the carrier-class test with a cost test** (does the estimate leave
-  headroom for the extra taps?), restoring a grant where the arithmetic now affords it.
-  Slice 5 is where option (b) lives, and it stays additive.
 
 ## 7. Editor surfaces: revise two, re-ground one, delete one exemption
 
@@ -529,6 +519,21 @@ keeps the painter's cost model at two terms; (b) is a follow-up with its own ben
 The owner's ruling of 2026-10-30 was about tempo and carrier class, not about edge
 sampling, so this design does not claim to reverse it — it reports that the two
 cannot both hold and asks for a call at the §"Owner prompts" gate.
+
+The AA work splits, and the split is forced by the fallback rather than chosen:
+
+- **Slice 1 must deny the LVGL grant whenever the painter owns the dial** —
+  `hand_aa_for()` returns false when `orb_sched_restore_src() != NULL`, and the
+  `host_hand_aa_test.py` vectors and mutants move with it. This is not cosmetic: the
+  widgets stay live (§4.5), and the painter does not touch a row the moment a bounce,
+  an overlay close, or any other LVGL-initiated repaint redraws them. A granted still
+  dial would then show bilinear hands until each one next moved — minutes for an hour
+  hand, and longer on a 4 fps ticked dial. Mixing edge quality inside one dial is the
+  one outcome both AA options agree is wrong. The placement works because the source is
+  decided at `clock_view.c:2190-2196`, before the hands are built at `:2281`.
+- **Slice 5 replaces the carrier-class test with a cost test** (does the estimate leave
+  headroom for the extra taps?), restoring a grant where the arithmetic now affords it.
+  Slice 5 is where option (b) lives, and it stays additive.
 
 ## 9. Risks, priced
 
@@ -603,11 +608,13 @@ answers false on it rendering exactly as it did at `1366568`.
    `orb_sched_restore_src()`, not `orb_sched_l4_active()`, so a dial the table gate refused
    loses AA as well. That is harmless for a painter-owned dial that paints none, and it is
    the conservative reading, but it is not "L4 dials only" and must not be reported so.
-2. **`feat(sched): a ticking still dial is an ask, not a pass`** — §6. **NOT READY TO
-   HAND OFF.** The `DISTINCT` ask, the `FLUID` cap, **and the `anim` term**, or the commit
-   changes nothing — and the single-`DISTINCT` form as first drafted sends a 4 Hz dial to
-   12 Hz and jitters its beat (§6 has the measured table). Pin the picked rung on the host
-   for tick_rate 2/4/8 before touching firmware; do not implement from the earlier draft.
+2. **`feat(sched): a ticking still dial is an ask, not a pass`** — §6. **WITHDRAWN FROM THE
+   FIRST HANDOFF.** Neither ask form changes a rate: the single `DISTINCT` ask sends a
+   4 Hz dial to 12 Hz and jitters its beat, and the `DISTINCT` + `FLUID` pair lands on the
+   beat the dial already keeps, so the slice buys only governor *visibility* — while
+   forcing sub-4 Hz tickers up to the panel floor, i.e. more ticks than today. If it is
+   built, build it with the `tick_rate >= ORB_SCHED_PANEL_FLOOR` guard and assert on the
+   ask set, not the period. §14 puts the keep-or-drop call to the owner.
 3. **`feat(bake): price the commit at bake time`** — `est_fps` from §5, `sentence`
    carries it, Motion block shows it, `_devPace()` comment corrected and the carriage
    exemption deleted (§7 points 1-3). No firmware change.
@@ -653,6 +660,11 @@ Anchors move. Confirm each still says what §1-§7 claims, and stop if one does 
 `Watch Composer.dc.html:471/503/505/527/1232/2541-2545`.
 ## 14. What this design does not decide
 
+- **Is slice 2 worth a firmware commit at all?** §6 shows it changes no cadence in the
+   form that is safe, and worsens cadence in the form that was drafted. Its only return is
+   that hysteresis can see a class it currently cannot measure. If no consumer of that
+   visibility is planned, the honest move is to delete the slice rather than ship a
+   no-op with a green suite.
 - **Whether the v1.1.37 AA grant survives on a dial the painter owns.** §8 lays out the
   two coherent end states; slice 1 picks one and the owner confirms it at the gate. The
   design does not silently reverse a ruling made the same day.
@@ -694,12 +706,13 @@ fixed above; recorded here so nobody re-introduces them from the earlier wording
 6. **Six mark sites, not four** (`:534` and the `:697` chord gate were missed), and the
    `DISPLAY_BENCH` walk at `orb_sched.c:844` is a seventh reader of the gate that starts
    running for still dials — so bench and non-bench figures are not comparable.
-7. **Slice 2's rung claim was false.** `orb_sched_pick_rung()` seeds its cap from the floor
-   rather than the ask, so one `DISTINCT` ask of 4 picks 12 — three times the ticks, plus
-   beat jitter through `clock_view.c:365-367` that `hand_beat_ticks()` exists to prevent.
-   The demotion it promised does not exist at tick_rate ≤ 8 either, because `rung_clamp()`
-   floors at 4. §6 carries the measured table and the `FLUID`-pair fix; the slice is
-   withdrawn from the first handoff pending a host-pinned rung table.
+7. **Slice 2's rung claim was false, and its benefit too.** `orb_sched_pick_rung()` seeds
+   its cap from the floor rather than the ask, so one `DISTINCT` ask of 4 picks 12 — three
+   times the ticks plus beat jitter through `clock_view.c:365-367`. The `FLUID`-pair fix
+   lands on the beat the dial already keeps, so the slice changes no rate: it buys only
+   governor visibility, while pushing sub-4 Hz tickers to the panel floor. §6 has both
+   computed tables; §14 puts keep-or-drop to the owner, and the slice is out of the
+   first handoff either way.
 
 Tool-path and method corrections: the headless suites live under
 `tools/watch-composer/_selftest/`, not `tools/watch-composer/`; the `fbgrab --diff`

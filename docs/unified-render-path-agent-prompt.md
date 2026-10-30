@@ -64,8 +64,13 @@ node tools/watch-composer/_selftest/headless-regression.test.js  # all 15 preset
 
 1. **Carrier class chooses a restore pointer and nothing else.** No dial keeps a
    private render path. `orb_sched_l4_active()` stops mentioning GIF, and **also requires
-   a claimed layer table** — see design §4.3, without which a still dial whose table
-   build refused its rows loses both renderers at once.
+   a fully claimed layer table** — design §4.3. The test is `refused == 0 && rows > 0`,
+   **not** `rows > 0` alone: a partly claimed table loses a hand inside its own box, because
+   the commit restores the plate over the rows it vacated and no layer repaints them. The
+   claim crosses the seam one way only — the dial calls
+   `orb_sched_set_layer_claim(rows, refused)` from `clock_layers_build()`. Do not read a
+   `clock_view.c` static from `orb_sched.c`, and do not source the count from the broker
+   table, which the broker wipes while the dial is foreground.
 2. **A still plate restores from read-only XIP flash** (`blob() + clk_theme.plate_off`),
    which allocates nothing. The PSRAM canvas stays exactly one 434,312 B allocation, and
    a `bg_mode 1` dial whose canvas failed stays on the classic path (guard it explicitly).

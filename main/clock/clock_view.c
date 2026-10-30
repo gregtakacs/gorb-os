@@ -2330,15 +2330,28 @@ esp_err_t clock_view_init(orb_app_t *self)
     }
 
     char sweepdesc[48] = "off";   /* 32 -> 48 for the same reason as bgdesc above */
+    const int sw_bps = clk_theme.tick_rate > 0 ? (int)clk_theme.tick_rate : 1;
     if (clk_theme.second_sweep) {
         const uint32_t tpb = orb_bg_gif_mode() ? hand_beat_ticks() : 1;
         if (orb_bg_gif_mode() && tpb > 1)
             snprintf(sweepdesc, sizeof sweepdesc, "on(%u bps, every %u ticks)",
-                     (unsigned)clk_theme.tick_rate, (unsigned)tpb);
+                     (unsigned)sw_bps, (unsigned)tpb);
         else if (orb_bg_gif_mode())
-            snprintf(sweepdesc, sizeof sweepdesc, "on(sweep, every tick)");
+            snprintf(sweepdesc, sizeof sweepdesc, "on(%u bps, sweep, every tick)",
+                     (unsigned)sw_bps);
+        /* A plate or still dial beats on the unified ladder, so the theme's beat is
+         * an ASK and the running `clock %u fps` line is the answer. Print both the
+         * ask and the base the ladder starts from: "on" alone hid the Station's
+         * tick_rate 1 behind a sweep that looked broken on the glass and healthy
+         * in the pane, and a reader who sees `1 bps, base 1000 ms` next to a dial
+         * running at 4 fps knows at once which of the two clamped. */
         else
-            snprintf(sweepdesc, sizeof sweepdesc, "on");
+            snprintf(sweepdesc, sizeof sweepdesc, "on(%u bps, base %u ms)",
+                     (unsigned)sw_bps, (unsigned)orb_sched_tick_base_ms());
+    } else if (sw_bps > 1) {
+        /* A ticking dial names its own beat now, on every art class. */
+        snprintf(sweepdesc, sizeof sweepdesc, "off(%u bps, base %u ms)",
+                 (unsigned)sw_bps, (unsigned)orb_sched_tick_base_ms());
     }
 
     ESP_LOGI(TAG, "analog clock: %d hand(s), shadow %s(%d,%d), sweep %s, bg %s",

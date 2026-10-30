@@ -197,7 +197,24 @@ if canon(o) != canon(n):
             print('    ', d)
     fails.append('band loop')
 
-ACCEPTED = {'fill_sprite_dsc', 'paint_ctx_init'}   # the threaded art-bank base
+ACCEPTED = {'fill_sprite_dsc', 'paint_ctx_init',   # the threaded art-bank base
+            # Post-extraction behaviour change, Oct 30 (the Station cadence fix).
+            # The extraction promise held; this routine has since changed ON PURPOSE:
+            # orb_sched_tick_base_ms() now honours a named tick_rate for a TICKING
+            # theme too, where it used to answer 1000 ms unless the theme swept. A
+            # still dial's Motion tick rung was inert, because nothing but a sweep
+            # could move the beat. See .clinerules "A sweep or a tick on a STILL
+            # dial shipped 1 Hz". Every other bank/tick routine stays pinned.
+            'tick_base_ms',
+            # Post-extraction behaviour change, landed in fae7c23 (the app-chip
+            # keepout) and only pinned here. The extraction promise held; the commit
+            # walk has since grown ONE additive branch: when the chrome's keepout
+            # rect covers the row, the run splits into a left and a right pass so the
+            # chip's own bytes stay staged but never reach the mirror. Nothing was
+            # removed. The band, the restore, the union and the dirty-row compare all
+            # read as moved. An intentional change, so it is documented rather than
+            # reverted; every other band-loop invariant stays pinned.
+            'band loop'}
 unexpected = [f for f in fails if f not in ACCEPTED]
 if unexpected:
     print('\nFAIL: %d differ beyond the documented base parameter: %s'

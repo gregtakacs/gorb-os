@@ -2559,15 +2559,28 @@ class Component extends DCLogic {
                    // that was FORMAT 2's show-table dialect; bake_clock.py writes raw ids too).
                    bakedMs: Date.now(), plate, hands, order: hands.map((h) => h.slot) };
     if (shadows.length) { opts.shadows = shadows; opts.scalars = Object.assign(opts.scalars || {}, { shadow_on: 1, shadow_dx: sdx, shadow_dy: sdy }); }
-    // The Motion dropdown's verdict, worn on the wire. A tick choice names both
-    // scalars — second_sweep 0 and its own beat — so the dial steps at the rate
-    // the operator picked instead of the sweep bakeClock3 would otherwise
-    // default to; the GIF subdivision keeps the plate animating at full tempo
-    // around the stepping hand (the strobe that buys is the documented cost).
-    // Sweep names nothing: bakeClock3's own default already sweeps at the tempo.
+    // The Motion dropdown's verdict, worn on the wire.
+    // A TICK names both scalars — second_sweep 0 and its own beat — so the dial
+    // steps at the rate the operator picked instead of the sweep bakeClock3 would
+    // otherwise default to; the GIF subdivision keeps the plate animating at full
+    // tempo around the stepping hand (the strobe that buys is the documented cost).
+    // A SWEEP on a dial that carries no tempo of its own — no plate bank, no
+    // carriage — now names its beat too: the tempo THIS pane sampled it at. It used
+    // to name nothing and let bakeClock3's floor answer, and a still dial has no
+    // bank fps to borrow, so the floor shipped 1 Hz: the Station report of Oct 30,
+    // a hand drawn sweeping at 15 in the pane and deadbeat on the watch. Naming the
+    // tier here (not in the baker) is the honest seat, because this is the number
+    // the preview ticked at. A dial that DOES carry a tempo keeps Oct 23's rule
+    // untouched — bakeClock3 samples the sweep at the fastest tempo on the wire,
+    // which is the carriage's own beat on an orbital dial and must not be out-named
+    // by a fluid ask. Every one of these words folds into serialContent3's scalar
+    // term, so re-picking the beat moves the witness and the send is no longer a
+    // silent no-op (the bugfix-batch §37 finding).
     const _mo = this.cfg().tick;
     if (_mo && _mo !== 'sweep')
       opts.scalars = Object.assign(opts.scalars || {}, { second_sweep: 0, tick_rate: Math.max(1, Math.min(255, +_mo | 0)) });
+    else if (pol.carrier === 'still' && !pol.carriage)
+      opts.scalars = Object.assign(opts.scalars || {}, { second_sweep: 1, tick_rate: Math.max(1, Math.min(255, this.devFps() | 0)) });
     const cpol = pol.carriage;
     if (cpol) {
       /* The planes come from carriagePlanes3 — the kit's own device-space draw, the
@@ -3537,9 +3550,19 @@ class Component extends DCLogic {
        * doubles that bill -- see _devPace. */
       const tickOpts = [{ v: '1', label: '1 tick / s' }, { v: '2', label: '2 / s' }, { v: '4', label: '4 / s' },
         ...(HB.fps >= 8 ? [{ v: '8', label: '8 / s' }] : []),
+        ...(HB.fps >= 12 ? [{ v: '12', label: '12 / s' }] : []),
         { v: 'sweep', label: 'Sweep' }];
-      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: F + ' fps · ' + B + ' frames' + (DEV < F ? ' · device ~' + DEV : '') }),
-        Nt('', HB.dev.why || 'Available frame rates depend on how much of the dial opening is visible.'),
+      /* The cadence this bake will CARRY, in the same words the boot line prints.
+       * A tick choice is the rung picked; a sweep is the rate the preview is
+       * sampling at (devFps — the tier where nothing else binds it, the device
+       * pace where _devPace sees a sweep the panel cannot hold). A still dial now
+       * ships this figure instead of bakeClock3's 1 Hz floor, which is the fix for
+       * the Station report: the Motion row read 'Sweep', the glass beat once a
+       * second, and the only way to find out was the log. */
+      const beat = c0.tick === 'sweep' ? Math.min(255, Math.max(1, Math.min(HB.fps, HB.dev.pace) | 0)) + ' bps sweep'
+                                       : (Math.max(1, +c0.tick | 0) + ' ticks / s');
+      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: F + ' fps · ' + B + ' frames' + (DEV < F ? ' · device ~' + DEV : '') + ' · ships ' + beat }),
+        Nt('', HB.dev.why || 'Available frame rates depend on how much of the dial opening is visible. The Motion choice ships on the wire as that beat, whatever the dial is: an animated plate or carriage tempo binds a sweep to its own fastest frame rate, and a tick that outruns the delivered tempo is re-quantised to it on the glass.'),
         H('Drop shadow · hand twins and plate relief'),
         Ch('Cast shadows', (+c0.shMove > 0.01 && +c0.shOp > 0.01) ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.castShadowsOn(v === 'on')),
         Ch('Plate relief', +c0.shOp > 0.01 ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.staticShadowsOn(v === 'on')),

@@ -1824,4 +1824,51 @@ ends — 8 s for a proof, up to 40 s for a probe — so a press can still wait t
 and read the busy line. The guard makes two hubs lose politely; it does not make them
 correct.
 
+## A sweep or a tick on a STILL dial shipped 1 Hz — 2026-10-30 (composer, baker, fw)
 
+- **Symptom on Bronze.** The Station's seconds hand stepped once a second while the
+  composer's Motion row read "Sweep" and the dial animated smoothly in the pane. The
+  log said `clock 4 fps` and `sweep on`. Same for any dial that bakes to a still
+  plate: Station, Aviator, White, Silver, Sector.
+- **Cause.** `bakeClock3` defaults the cadence to `Math.max(bank fps, tourbillon fps,
+  1)`. A still plate carries no bank and no carriage, so it shipped `tick_rate` 1
+  against `second_sweep` 1. The scheduler treats a sweep as a FLUID ask and clamps it
+  into `[4..15]`, so the dial ran at the panel floor: 250 ms per sample of a wall-clock
+  fraction. `clock_view.c`'s boot line printed the bare word `on`, so the log hid the
+  figure that mattered.
+- **Why the Aviator swept and the Station did not.** Not the preset. The Aviator on the
+  glass was the FACTORY bundle (`assets/orb_default.img`, header name `Aviator`), baked
+  by `tools/bake_clock.py --tick-rate 15 --force-sweep` per `assets/sources/av-kit/
+  README.md`: its scalars read `second_sweep 1, tick_rate 15, bg_mode 1, gif_frames 15`,
+  and GIF mode drives the whole dial off the bank's own 67 ms delays. A composer FORMAT 3
+  bake of the SAME Aviator preset ships `tick_rate` 1 and ticks too. Any dial whose bake
+  names a tempo (the factory kit, or anything with a plate bank or a carriage) sweeps;
+  a still composer bake named none, and the 1 Hz floor answered for it.
+- **The fix, three seats.** `orbtheme-baker.js` (and the hub's copy) floors a declared
+  sweep with no tempo on the wire at `SWEEP_TIER3` 15; bank and carriage tempos keep
+  Oct 23's "fastest on the wire" rule verbatim, and an author word still wins.
+  `Watch Composer.dc.html` names the beat for a still carrier from `devFps()` — the
+  number the preview ticked at — and prints it on the Motion row as `ships 15 bps
+  sweep`, so the pane cannot promise a look the wire does not carry. Naming a scalar is
+  what makes the send honest: `serialContent3` folds `opts.scalars`, so a cadence-only
+  edit moves the serial and the hub's precheck re-sends instead of calling a different
+  file "the exact theme" (that suite's §37).
+- **A tick on a still dial was inert too.** `orb_sched_tick_base_ms()` returned 1000 ms
+  for any non-sweep theme, so a 4/s choice on a still dial drew one of four quantised
+  steps once a second. It now honours a named `tick_rate` above 1 on every art class; a
+  theme naming nothing keeps the classic 1 Hz. `gfx_parity_test.py` carries the new
+  `ACCEPTED` entry with the reason — the extraction promise held, this routine changed
+  on purpose after it.
+- **The boot line now says the number.** `sweep on(15 bps, base 66 ms)` on a plate or
+  still dial, `off(4 bps, base 250 ms)` on a ticking one, and the GIF branches keep their
+  `every N ticks` form. `base` is the beat the ladder starts from; the running
+  `clock %u fps` line stays the answer to what the glass held.
+- **Measured.** `tools/watch-composer/_selftest/headless-bundle3.test.js`: 201 checks,
+  four of them the new cadence vectors (still + sweep → 15, author 8 → 8, author 4
+  ticking → 4, animated bank → unchanged). `tools/host_sched_rung_test.py`: 21 vectors,
+  mutants 7/7. Re-baked Station through real Chrome (`bank3-drive.html?dial=station`):
+  `second_sweep=1 tick_rate=15`, 1 446 758 B, serial moved. Python's mirrored
+  `pick_rung` answers 15 for `(15 fluid, floor 15)` where it answered 4 for the old
+  `(1 fluid, floor 15)`, and still answers 12 for a 4 fps bank under a 15 ask, so the
+  bank never aliases. A sweep across live plates costs power per §40's table; this
+  changes the Station's cadence, no bank, no new power claim measured on glass.

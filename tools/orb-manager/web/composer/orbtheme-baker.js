@@ -100,6 +100,11 @@
    * 0x3F0000. Each cap is sector-aligned, so == cap installs to the byte.
    * Refusals end in copy_into's own words, so the bench and the dial say one sentence. */
   var RECTS_MAX = 2048, GIFS_MAX = 32, BG3_FRAMES_MAX = 16, TOURB_MAX = 16;
+  /* The tempo a sweep is SAMPLED at when nothing on the wire names one: the
+   * scheduler's ceiling (ORB_SCHED_FPS_CEILING, main/gfx/orb_sched.h), which is
+   * also the rate the studio's sampler draws a sweep at. bakeClock3's cadence
+   * default below reads it, so the two figures cannot drift apart. */
+  var SWEEP_TIER3 = 15;
   var DEVICE_SLOT_CAP = 0x00800000;     // orb_theme.c SLOT_CAP: one 8 MB slot
   var SLOT_ART_OFF2   = 0x00010000;     // orb_theme.c SLOT_ART_OFF: banks start here
   var ORB_THEME_SLOT_CAP = DEVICE_SLOT_CAP - SLOT_ART_OFF2;  // 8,323,072 B of banks
@@ -3190,11 +3195,25 @@
      * defect §31 exists to stop, arriving from the cadence side instead of the
      * carrier side. Name the FORMAT 2 path's rule here — an animated dial
      * sweeps, sampled at the fastest tempo on the wire — and let the author's
-     * own words win: a bake that names second_sweep or tick_rate keeps them. */
+     * own words win: a bake that names second_sweep or tick_rate keeps them.
+     *
+     * A sweep with no tempo on the wire is the case the first version got wrong,
+     * and the Station report of Oct 30 is the witness. A still plate names no
+     * bg_fps and no tourbillon_fps, so the floor of 1 packed tick_rate 1 against
+     * second_sweep 1. The pane drew a 15 fps sweep; the board clamped the 1 Hz
+     * ask to its 4 fps panel floor and stepped the hand twice a second. A sweep
+     * naming no tempo now names the sweep tier instead. The scheduler still owns
+     * the delivered rate: orb_sched_pick_rung clamps a fluid ask into [4..15]
+     * against the measured floor, and the composer names the tier IT priced
+     * (Watch Composer.dc.html's Motion block), which wins over this backstop. A
+     * dial that does carry a bank or carriage tempo keeps Oct 23's rule verbatim,
+     * and a bake naming a deadbeat second keeps the floor of 1: a tick is a beat
+     * the author chose, and 1 Hz is a real answer for one. */
     if (sc.second_sweep === undefined) sc.second_sweep = 1;
     if (!sc.tick_rate) {
       var tempo3 = Math.max(frames !== undefined ? (sc.bg_fps || fps || 0) : 0,
                             sc.tourbillon_fps || 0, 1);
+      if (sc.second_sweep && tempo3 < 2) tempo3 = SWEEP_TIER3;
       sc.tick_rate = Math.min(255, tempo3 | 0);
     }
 

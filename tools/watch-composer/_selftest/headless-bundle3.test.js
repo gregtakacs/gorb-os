@@ -505,6 +505,35 @@ const walkAD = B.verifyBundle3(B.bakeClock3({ name: 'Deadbeat Bake', serial: 202
 ok(walkAD.blob.scalars.second_sweep === 0,
    'an author naming a deadbeat second keeps it past the sweep default',
    'second_sweep ' + walkAD.blob.scalars.second_sweep);
+// The STILL dial's cadence — the Station defect of Oct 30. A bake with no plate bank
+// and no carriage has no tempo on the wire to borrow, and the old floor of 1 packed
+// tick_rate 1 against second_sweep 1: the pane drew a 15 fps sweep, the board clamped
+// the 1 Hz ask to its 4 fps panel floor, and the glass stepped the seconds hand twice
+// a second while the log said "sweep on". A declared sweep now names the sweep tier,
+// and the author's own beat still wins over it in both directions.
+const walkAS = B.verifyBundle3(B.bakeClock3({ name: 'Still Sweep Bake', serial: 20261030,
+  bakedMs: 1730000000030, plate: { rgba: kf(1), w: 466, h: 466 }, hands: [HK], order: [0] })
+  .bytes).sections[0];
+ok(walkAS.blob.scalars.bg_frames === 0 && walkAS.blob.scalars.gif_frames === 0
+   && walkAS.blob.scalars.tourbillon_n === 0,
+   'the still bake carries no bank and no carriage, so nothing else names a tempo',
+   'bg_frames ' + walkAS.blob.scalars.bg_frames + ' gif_frames ' + walkAS.blob.scalars.gif_frames
+     + ' tourbillon_n ' + walkAS.blob.scalars.tourbillon_n);
+ok(walkAS.blob.scalars.second_sweep === 1 && walkAS.blob.scalars.tick_rate === 15,
+   'a sweep on a dial with no bank or carriage ships the sweep tier, not the 1 Hz floor',
+   'second_sweep ' + walkAS.blob.scalars.second_sweep + ' tick_rate ' + walkAS.blob.scalars.tick_rate);
+const walkAU = B.verifyBundle3(B.bakeClock3({ name: 'Named Beat Bake', serial: 20261031,
+  bakedMs: 1730000000031, plate: { rgba: kf(1), w: 466, h: 466 }, hands: [HK], order: [0],
+  scalars: { second_sweep: 0, tick_rate: 4 } }).bytes).sections[0];
+ok(walkAU.blob.scalars.second_sweep === 0 && walkAU.blob.scalars.tick_rate === 4,
+   'a deadbeat second named by the author keeps its 4 Hz beat past the sweep tier',
+   'second_sweep ' + walkAU.blob.scalars.second_sweep + ' tick_rate ' + walkAU.blob.scalars.tick_rate);
+const walkAX = B.verifyBundle3(B.bakeClock3({ name: 'Author Tier Bake', serial: 20261032,
+  bakedMs: 1730000000032, plate: { rgba: kf(1), w: 466, h: 466 }, hands: [HK], order: [0],
+  scalars: { tick_rate: 8 } }).bytes).sections[0];
+ok(walkAX.blob.scalars.second_sweep === 1 && walkAX.blob.scalars.tick_rate === 8,
+   'and an author naming a slower sweep keeps THAT figure — the floor never out-ranks a word',
+   'second_sweep ' + walkAX.blob.scalars.second_sweep + ' tick_rate ' + walkAX.blob.scalars.tick_rate);
 
 const bakedC = B.bakeClock3({ name: 'Carriage Bake', serial: 20261020, bakedMs: 1730000000001,
   plate: PL, hands: [HK], order: [0],

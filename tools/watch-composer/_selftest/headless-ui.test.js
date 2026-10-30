@@ -86,6 +86,16 @@ setTimeout(async () => {
   const mOptLabels = (r) => r.opts.map((o) => o.label);
   ok(mOptLabels(mot(8)).includes('8 / s'), 'an 8-fps dial is offered the 8 / s tick rung');
   ok(!mOptLabels(mot(4)).includes('8 / s'), 'a 4-fps dial is not offered 8 / s it cannot drive');
+  ok(mOptLabels(mot(12)).includes('12 / s'), 'a 12-fps dial is offered the 12 / s rung the ladder carries');
+  ok(!mOptLabels(mot(8)).includes('12 / s'), 'and an 8-fps dial is not offered 12 / s it cannot drive');
+  // The cadence the bake CARRIES is printed on the row, not just the look chosen.
+  // A still dial that reads "Sweep" used to ship tick_rate 1 and say nothing about
+  // it; the row now names the beat either way (the Station report of Oct 30).
+  const mVal = (b, t) => { const save = it.budget; it.budget = () => ({ fps: b, dev: { pace: b, cross: 0, cov: 0, why: '' } });
+    const s = it.cfg().tick; it.setCfg('tick', t);
+    const r = byLabel(labels('hands'), 'Motion'); it.cfg().tick = s; it.budget = save; return r; };
+  ok(/ships 15 bps sweep/.test(mVal(15, 'sweep').valText), 'a sweep row says what it ships', mVal(15, 'sweep').valText);
+  ok(/ships 4 ticks \/ s/.test(mVal(15, '4').valText), 'a tick row says what it ships', mVal(15, '4').valText);
   ok(JSON.stringify(mOptLabels(mot(4)).slice(0, 3)) === JSON.stringify(['1 tick / s', '2 / s', '4 / s']), 'the calm rungs and the free sweep are always offered', JSON.stringify(mOptLabels(mot(4))));
   ok(mOptLabels(mot(4)).includes('Sweep'), 'sweep stays selectable at the floor rate (it is a look, the dial sets the rate)');
   const rows = (it.state.tab = 'hands', it.renderVals().handRows);

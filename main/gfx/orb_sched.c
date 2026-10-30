@@ -358,13 +358,24 @@ void orb_bg_classic_init(void)
 
 /* ---- the tick cadence ---------------------------------------------------- */
 
-/* The plain hand beat: 1 s ticking, or 1000/tickRate (>= 33 ms) sweeping.
- * In GIF delta mode the whole dial runs on the fastest shared beat. */
+/* The plain hand beat: 1000/tickRate (>= 33 ms) whenever the theme NAMES a beat
+ * faster than one a second, and 1 s for the classic deadbeat. In GIF delta mode
+ * the whole dial runs on the fastest shared beat.
+ *
+ * The beat used to be read only for a sweep, and a TICKING theme fell to 1000 ms
+ * however fast it named. clock_view's hand_angles quantises the wall fraction
+ * into tick_rate steps, so a 4/s dial woken once a second showed one of those
+ * four steps a second — the Motion dropdown's tick rungs were inert on a dial
+ * with no bank to drive the beat, which is every still dial (the Station report
+ * of Oct 30, the other half of it). Honour the named beat for both looks: a
+ * theme that names nothing keeps 1 Hz exactly as FORMAT 2 classic art always ran,
+ * and a still dial is no longer the one art class whose cadence the OS ignored. */
 uint32_t orb_sched_tick_base_ms(void)
 {
     if (orb_bg_gif_mode()) return orb_bg_gif_tick_ms();
-    if (!clk_theme.second_sweep) return 1000;
-    int rate = clk_theme.tick_rate;
+    const int rate_in = clk_theme.tick_rate;
+    if (!clk_theme.second_sweep && rate_in < 2) return 1000;
+    int rate = rate_in;
     if (rate < 1) rate = 1;
     if (rate > 30) rate = 30;
     uint32_t p = 1000 / (uint32_t)rate;

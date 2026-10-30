@@ -735,6 +735,170 @@ func TestNamingWritesThroughAndAPollRefoldsWhatAnotherRenamed(t *testing.T) {
 	}
 }
 
+// foldOrderRecorder is a ResponseRecorder that snapshots the fleet's cached name at the
+// instant the proxy lets the first byte of reply out. The sequence is the whole point of
+// proxy.go's answerFoldedName — the page re-reads its list on the reply's own tick — and
+// a plain recorder buffers the body, so it proves content and not order.
+type foldOrderRecorder struct {
+	*httptest.ResponseRecorder
+	s     *Server
+	mac   string
+	at    string // the cached name as the first reply byte went out
+	wrote bool
+}
+
+func (r *foldOrderRecorder) Write(p []byte) (int, error) {
+	if !r.wrote {
+		r.wrote = true
+		if row, ok := r.s.fleet.ByMAC(r.mac); ok {
+			r.at = row.Name
+		}
+	}
+	return r.ResponseRecorder.Write(p)
+}
+
+// The card renames over the proxy, because the board owns the name and the page writes
+// to the board. What that leaves behind is an echo the hub was never told about, and
+// until it reached the store the row under the card the operator is staring at kept the
+// word the board stopped answering to — a rename that needs a refresh before it looks
+// like a rename. Pinned in the order the page performs it: the write, then the list
+// re-read that follows it on the same tick.
+func TestAProxiedRenameFoldsBeforeThePageReReadsItsList(t *testing.T) {
+	f, s := dialableFleetHub(t, macHall, "127.0.0.1")
+	s.statePath = t.TempDir() + "/state.json"
+	h := map[string]string{"X-Orb-Token": s.token}
+	if rec := postFleet(t, s, "/api/fleet/set",
+		map[string]string{"mac": macHall, "name": "Hall"}, h); rec.Code != http.StatusOK {
+		t.Fatalf("seed rename: %d %s", rec.Code, rec.Body.String())
+	}
+	wake := s.subscribeOrbs()
+	defer s.unsubscribeOrbs(wake)
+	select {
+	case <-wake: // the seed rename's own wake, not this write's
+	default:
+	}
+
+	rec := &foldOrderRecorder{ResponseRecorder: httptest.NewRecorder(), s: s, mac: macHall}
+	req := httptest.NewRequest(http.MethodPost, "/orb/127.0.0.1/api/v1/name",
+		strings.NewReader(`{"name":"Reading Room"}`))
+	req.Header.Set("Content-Type", "application/json")
+	s.proxyOrb(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rename write: %d %s", rec.Code, rec.Body.String())
+	}
+	// The board's reply reaches the page whole: a fold that rewrote the echo would put
+	// the hub's opinion between the operator and the thing the board said.
+	if got := rec.Body.String(); !strings.Contains(got, `"state":"named"`) ||
+		!strings.Contains(got, `"name":"Reading Room"`) {
+		t.Fatalf("the browser did not get the board's own reply: %s", got)
+	}
+	if rec.at != "Reading Room" {
+		t.Errorf("the reply went out with the fleet still holding %q; the fold ran late", rec.at)
+	}
+	// The board, the reply and the cache are one word, in that order.
+	if got := f.DeviceName(); got != "Reading Room" {
+		t.Errorf("the double never took the write: it says %q", got)
+	}
+	if row, _ := s.fleet.ByMAC(macHall); row.Name != "Reading Room" {
+		t.Errorf("the orb answers %q and the fleet row says %q", f.DeviceName(), row.Name)
+	}
+	// News to every open card, not only the one that pressed Save.
+	select {
+	case <-wake:
+	default:
+		t.Error("a proxied rename folded without waking the orb stream")
+	}
+	// On disk, by the same rule as every other fold: a hub that restarts mid-session
+	// must not come back holding the word this board stopped answering to.
+	fresh := newHub()
+	fresh.statePath = s.statePath
+	fresh.loadState()
+	if cold, _ := fresh.fleet.Look(macHall); cold.Name != "Reading Room" {
+		t.Errorf("the rename did not reach the state file: %q", cold.Name)
+	}
+}
+
+// The write half of the authority rule: a board that refuses a name keeps the hub's
+// cache where it was, and a clear is an answer rather than an absence.
+func TestARefusedRenameFoldsNothing(t *testing.T) {
+	f, s := dialableFleetHub(t, macHall, "127.0.0.1")
+	s.statePath = t.TempDir() + "/state.json"
+	h := map[string]string{"X-Orb-Token": s.token}
+	if rec := postFleet(t, s, "/api/fleet/set",
+		map[string]string{"mac": macHall, "name": "Hall"}, h); rec.Code != http.StatusOK {
+		t.Fatalf("seed rename: %d %s", rec.Code, rec.Body.String())
+	}
+	write := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/orb/127.0.0.1/api/v1/name", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		s.proxyOrb(rec, req)
+		return rec
+	}
+	if rec := write(`{"name":"` + strings.Repeat("a", orbfake.NameMax+8) + `"}`); rec.Code == http.StatusOK {
+		t.Fatalf("a name the board would reject came back accepted: %s", rec.Body.String())
+	}
+	if row, _ := s.fleet.ByMAC(macHall); row.Name != "Hall" {
+		t.Errorf("the hub filed a name the board refused: %q", row.Name)
+	}
+	if f.DeviceName() != "Hall" {
+		t.Errorf("the double took a name it should have refused: %q", f.DeviceName())
+	}
+	if rec := write(`{"name":""}`); rec.Code != http.StatusOK {
+		t.Fatalf("clear write: %d %s", rec.Code, rec.Body.String())
+	}
+	if row, _ := s.fleet.ByMAC(macHall); row.Name != "" {
+		t.Errorf("a cleared name on the board left %q in the cache", row.Name)
+	}
+	// Back to a name, then the two bodies that are not answers about the name at all.
+	if _, ch, err := s.fleet.NoteDeviceName(macHall, "Hall"); err != nil || !ch {
+		t.Fatalf("reseeding the name: %v changed=%v", err, ch)
+	}
+	s.foldNameWrite("127.0.0.1", []byte(`{"state":"named"}`))
+	if row, _ := s.fleet.ByMAC(macHall); row.Name != "Hall" {
+		t.Errorf("a reply with no name key cleared the cache: %q", row.Name)
+	}
+	s.foldNameWrite("127.0.0.1", []byte(`{"sta`))
+	if row, _ := s.fleet.ByMAC(macHall); row.Name != "Hall" {
+		t.Errorf("a truncated reply cleared the cache: %q", row.Name)
+	}
+}
+
+// The fold is keyed on a board, not on an address with a board somewhere behind it. An
+// unbound grant at an address two live rows claim does not answer WHICH board just
+// answered its name door — the same indeterminacy the card reports as CONTESTED — and
+// folding onto the lower MAC would name one board with the other's write.
+func TestARenameAtAContestedAddressFoldsOntoNeitherRow(t *testing.T) {
+	now := time.Now()
+	s := newHub()
+	s.statePath = t.TempDir() + "/state.json"
+	for _, mac := range []string{macHall, macBed} {
+		if _, err := s.fleet.Observe(obsAt(mac, "192.168.2.40", now)); err != nil {
+			t.Fatalf("observe %s: %v", mac, err)
+		}
+	}
+	s.grants.learn("192.168.2.40") // allowed and unbound: the browser's own click shape
+	s.foldNameWrite("192.168.2.40", []byte(`{"state":"named","name":"Ghost"}`))
+	for _, mac := range []string{macHall, macBed} {
+		if row, _ := s.fleet.ByMAC(mac); row.Name != "" {
+			t.Errorf("%s picked up a name written to a contested address: %q", mac, row.Name)
+		}
+	}
+	// One claimant and no binding is answerable, and folds.
+	if _, err := s.fleet.Forget(macBed); err != nil {
+		t.Fatalf("forget: %v", err)
+	}
+	s.foldNameWrite("192.168.2.40", []byte(`{"state":"named","name":"Hall"}`))
+	if row, _ := s.fleet.ByMAC(macHall); row.Name != "Hall" {
+		t.Errorf("a lone claimant at an unbound address folded nothing: %q", row.Name)
+	}
+	// An address the fleet holds no live row for folds nothing and invents nothing.
+	s.foldNameWrite("192.168.2.41", []byte(`{"state":"named","name":"New"}`))
+	if row, _ := s.fleet.ByMAC(macHall); row.Name != "Hall" {
+		t.Errorf("a fold for another address moved this row: %q", row.Name)
+	}
+}
+
 // The regression the Forget gate was born from. The card's rebuild re-folds the whole
 // browse cache, and a re-fold must NOT count as hearing the board: an unplugged orb
 // sits in the browser for its full TTL+grace, and a store clock wound by re-folds kept

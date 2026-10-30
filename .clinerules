@@ -1872,3 +1872,19 @@ correct.
   `(1 fluid, floor 15)`, and still answers 12 for a 4 fps bank under a 15 ask, so the
   bank never aliases. A sweep across live plates costs power per §40's table; this
   changes the Station's cadence, no bank, no new power claim measured on glass.
+
+## Two first-press refusals that were the pane's own doing — 2026-10-29 (hub, Windows)
+
+- **A name written to a device must land in the hub's row before the browser re-reads
+  the list.** The card's rename posts to the board through `/orb`, and the board echoes
+  what it stored. Only `GET /api/v1/status` answers were ever folded into the fleet row,
+  so a WRITE updated the board and not the cache, and the row title — which `paintFound`
+  rebuilds from the hub's own next frame — reverted. `fleet.go`'s `foldNameWrite` and
+  `proxy.go`'s `answerFoldedName` close it: the proxy folds the device's echo and wakes
+  `sseOrbs` BEFORE the reply reaches the page, because the page's `.then` runs
+  `pullFound()` on that reply's own tick. Fold the echo, never the word sent: a name
+  `orb_net.c` degrades (a space becomes `_`) must not strand the cache on the request.
+  Key the fold on the bound device id when the grant has one; the address is exactly the
+  thing a re-placed board no longer holds. The test that pins this asserts an ORDER with
+  a recorder that snapshots the cached name inside `Record` — a plain recorder buffers
+  the body, cannot see sequence, and passed on the broken hub.

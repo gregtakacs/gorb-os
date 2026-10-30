@@ -76,6 +76,15 @@ RUNTIME = ["react", "babel", "baker", "support"]
 # upload door is the seam the composer reaches the hub over anyway. A hub
 # refusal (duplicate name, torn store) rides back as the rejection the
 # composer already renders in its own status line.
+#
+# Two legs reach that door and only one of them is a save. ?precheck=1 asks
+# whether the card already holds this identity, and the pane's half of the
+# bridge (app.js's themeBridge) can answer exactly one thing: upload the bytes
+# with overwrite=1 and report "stored". Forwarding a question as an answer would
+# store a truncated container as a theme, so the question goes to the hub's own
+# door — the frame holds the cookie it needs — and the shim intercepts saves.
+# On 2026-10-29 this distinction did not exist, and the interception ate the
+# precheck on every first Send press: see the body cases below.
 BRIDGE_SHIM = r"""
 <script>
 (function () {
@@ -91,26 +100,45 @@ BRIDGE_SHIM = r"""
   var real = window.fetch ? window.fetch.bind(window) : null;
   window.fetch = function (input, init) {
     var url = typeof input === "string" ? input : (input && input.url) || "";
-    if (!real || !/\/api\/theme\/upload/.test(url) || !init || init.method !== "POST")
+    // Three requests go straight to the hub's own door, which this frame may dial:
+    // anything that is not the upload door, anything that is not a save (a ?precheck=1
+    // leg asks a question the pane cannot answer — see the header comment), and a POST
+    // the shim cannot read. Intercepting the question is what made every first Send
+    // press fail: the pane answered the head slice with a stored theme id and the
+    // composer's next leg never happened.
+    if (!real || !/\/api\/theme\/upload/.test(url) || !init || init.method !== "POST"
+        || /precheck=1/.test(url))
       return real ? real(input, init) : Promise.reject(new Error("no fetch"));
     var body = init.body;
     return new Promise(function (resolve, reject) {
       pending = { resolve: resolve, reject: reject };
+      var fail = function (e) { pending = null; reject(e); };
       var done = function (buf) {
         try {
           window.parent.postMessage({ type: "theme.save", app: app,
             container: toB64(buf) }, location.origin);
-        } catch (e) { pending = null; reject(e); }
+        } catch (e) { fail(e); }
       };
+      // A save body is any BodyInit, and the pane's contract wants the container's
+      // bytes whichever shape they arrived in. Blob and ArrayBuffer are the two this
+      // shim was written for; the view and the Response cases are what an editor that
+      // hands fetch a Uint8Array — the ordinary shape for raw bytes, and the one the
+      // composer's own legs use — reaches on its first save. Before 2026-10-29 fell
+      // through to the refusal below, which is why a byte array looked like a body the
+      // bridge could not read.
       if (typeof Blob !== "undefined" && body instanceof Blob) {
         var r = new FileReader();
         r.onload = function () { done(r.result); };
-        r.onerror = function () { pending = null; reject(r.error || new Error("bridge read failed")); };
+        r.onerror = function () { fail(r.error || new Error("bridge read failed")); };
         r.readAsArrayBuffer(body);
       } else if (body instanceof ArrayBuffer) {
         done(body);
+      } else if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(body)) {
+        done(body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength));
+      } else if (typeof Response !== "undefined" && body != null) {
+        new Response(body).arrayBuffer().then(done, fail);
       } else {
-        pending = null; reject(new Error("bridge: unexpected upload body"));
+        fail(new Error("bridge: unexpected upload body"));
       }
     });
   };

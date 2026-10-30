@@ -113,6 +113,92 @@ if shim:
     check("shim checks ev.source === window.parent", "ev.source !== window.parent" in s)
     check("shim leaves the composer's other fetches alone",
           'init.method !== "POST"' in s and "real(input, init)" in s)
+    # The two legs of the upload door, pinned separately because they are different
+    # asks. ?precheck=1 is a question about the card and the pane's bridge answers only
+    # one thing (upload with overwrite=1, report "stored"), so a shim that intercepted
+    # the question would file a truncated container as a theme; it goes to the hub's own
+    # door, which the frame may dial. On 2026-10-29 the shim intercepted everything and
+    # every FIRST Send press inside the Themes pane died on the head slice.
+    check("shim passes the precheck leg to the hub, not the pane",
+          "precheck=1" in s and "init.method !== \"POST\"\n        || /precheck=1/.test(url)" in s)
+    # A save body is a BodyInit. The composer's own legs hand fetch a Uint8Array, and
+    # ArrayBuffer.isView is what catches it: an ArrayBuffer has no .byteOffset, so the
+    # old two-case chain refused the byte array a real save arrives as.
+    check("shim reads a byte-array save body",
+          "ArrayBuffer.isView(body)" in s and "body.byteOffset" in s)
+    check("shim still refuses a body with no bytes in it",
+          'new Error("bridge: unexpected upload body")' in s)
+    # Injected JS that does not parse is a composer with no bridge, and the author finds
+    # out by pressing Send. esprima is this lane's parser — host_sd_test.py parses the
+    # firmware's /themes script with it — and a missing parser falls back to the hub's
+    # jscheck posture (strip comments and strings, require the grouping to balance) while
+    # saying out loud that the real parse did not run.
+    def js_code(text):
+        out, i, n = [], 0, len(text)
+        while i < n:
+            ch = text[i]
+            if ch == "/" and text[i + 1:i + 2] == "/":
+                while i < n and text[i] != "\n":
+                    i += 1
+                continue
+            if ch == '"':
+                i += 1
+                while i < n and text[i] != '"':
+                    if text[i] == "\\":
+                        i += 1
+                    i += 1
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+        return "".join(out)
+
+    def balanced(code):
+        return all(code.count(a) == code.count(b) for a, b in ("{}", "()", "[]"))
+
+    code = js_code(s)
+    check("the shim balance check can fail",
+          not balanced(js_code('function a(x) { if (x) { return 1; }'))
+          and balanced(js_code('function a(x) { return (x || "}{"); }')),
+          "a checker that cannot fail proves nothing")
+    js_body = s.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+    try:
+        import esprima
+    except ImportError:
+        esprima = None
+    if esprima is None:
+        check("shim's grouping balances (esprima absent, jscheck posture)",
+              balanced(code) and code.count("function") >= 4,
+              " ".join("%s:%d/%d" % (p, code.count(p[0]), code.count(p[1]))
+                       for p in ("{}", "()", "[]")))
+        print("SKIP esprima is not installed — the shim was balanced, not parsed. "
+              "Run: pip install esprima")
+    else:
+        try:
+            esprima.parseScript(js_body)
+            check("shim parses as one script (esprima)", True)
+        except Exception as e:
+            check("shim parses as one script (esprima)", False, str(e))
+        # The parse check has to be able to fail, or it reports a syntax the browser
+        # would refuse. Two wounds in the legs this shim reads a save body through: the
+        # ArrayBuffer branch loses its opening brace, and its call loses a paren.
+        for wound, whole, hurt in (
+                ("dropped brace", "} else if (body instanceof ArrayBuffer) {",
+                 "} else if (body instanceof ArrayBuffer)"),
+                ("stray paren", "done(body);", "done(body;")):
+            assert whole in js_body, wound
+            broken = js_body.replace(whole, hurt)
+            try:
+                esprima.parseScript(broken)
+                refused = False
+            except Exception:
+                refused = True
+            check("the esprima check can fail on a %s" % wound, refused,
+                  "%s still parsed, so the parse check proves nothing" % wound)
+        check("shim's grouping balances",
+              balanced(code) and code.count("function") >= 4,
+              " ".join("%s:%d/%d" % (p, code.count(p[0]), code.count(p[1]))
+                       for p in ("{}", "()", "[]")))
 
 # 6. The tracked composer is NOT what got baked — the region's entry is derived.
 #    If this ever matches byte-exact, the bake stopped doing its one job.

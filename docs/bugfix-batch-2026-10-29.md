@@ -913,3 +913,107 @@ and failed the first draft of the double, which is that file's whole purpose.
 **Version.** The image changed, so `version.txt` moved to **v1.1.35** per
 `.clinerules`. `faceMinFW` names the same release: a floor may not name a door
 the tree does not build.
+
+
+## 21. The card's rename moved its own headline and left the row behind
+
+**Symptom.** Renaming an orb from its card wrote the word to the board, the card
+headline took it, and the list row under the card kept the old name until the page
+was refreshed. The operator's words: a rename waits for a refresh from an orb.
+
+**Root cause.** The page writes the name to the DEVICE, at the board's own
+`POST /api/v1/name` through the hub's `/orb` proxy (`tabs.js`), and that is the
+right door. The echo the board answers with, `{"state":"named","name":"…"}`
+(`orb_net.c`'s `h_name_post`), went to the browser and nowhere else. The hub's
+fleet row, which is what every row title and every pushed `/api/orbs` frame is
+built from (`discover.go` reads `row0.Name`), was folded only by
+`foldDeviceName`, and that fold runs on a `GET /api/v1/status` reply passing
+through the proxy. A rename is a WRITE, so nothing folded it: the cache held the
+old word until the next status read happened to land, which on a resting bench is
+the next card open. An optimistic patch of the row from the page side would have
+been worse, because `paintFound` re-adopts `o.name` from the next frame the hub
+pushes, and that frame is built from the same stale cache. The row would have
+moved and moved back.
+
+**Fix.** `fleet.go` gained `foldNameWrite`, the write half of the existing status
+fold. It keys the row on the board rather than the address: the grant bound to the
+address first, and failing that the one live row claiming the address; a contested
+address with two claimants and no binding folds nothing, which is the same
+indeterminacy the card already prints as `CONTESTED`. It folds the device's echo,
+never the word that was sent, so a name the board refused, degraded, or cleared is
+exactly what the cache learns. `proxy.go` answers an accepted name write through
+`answerFoldedName`, which buffers the reply, folds, and only then writes: the page
+calls `pullFound()` on the reply's own tick, and a fold that ran after the write
+lost that race by construction. The reply is the device's own echo under 80 B, so
+buffering it costs nothing the streaming rule protects. The fold persists the
+store and calls `wakeOrbs()`, so a second open card follows the rename without
+pressing anything.
+
+**Tests.** `TestAProxiedRenameFoldsBeforeThePageReReadsItsList` runs the page's
+own order against the device double and asserts the sequence with a recorder that
+snapshots the cached name at the instant the first reply byte leaves the hub; a
+plain recorder buffers the body and cannot see order, and the first draft of this
+test passed on the unpatched hub until that recorder went in. It also asserts the
+reply reaches the browser whole, the stream woke, and the word survives a cold
+`loadState`. `TestARefusedRenameFoldsNothing` covers the device's 400 (an
+over-long name), a `{"name":""}` clear, and the two bodies that are not answers
+about the name: an echo with no key, and half an echo.
+`TestARenameAtAContestedAddressFoldsOntoNeitherRow` pins the contested address and
+the single unbound claimant.
+
+**Version.** Hub and tooling only. No firmware image changed, so `version.txt`
+stays at v1.1.35.
+
+
+## 22. Every first Send press in the clock editor refused itself
+
+**Symptom.** Sending a clock theme from the Themes pane's editor failed on the
+first press with `Nothing sent: the hub could not get a clean read of "<name>" on
+<ip> — bridge: unexpected upload body`, and the second press succeeded. Every
+theme, every time, in the pane; standalone, never.
+
+**Root cause.** The pane injects a bridge shim into the composer's baked entry
+(`make_clock_region.py`'s `BRIDGE_SHIM`), and that shim replaced `window.fetch` for
+ANY `POST /api/theme/upload`. The composer's send is two legs on that door: the
+`?precheck=1` head slice, and the bake itself. Only the second is a save. The
+pane's half of the bridge (`app.js`'s `themeBridge`) answers exactly one thing,
+"upload these bytes with `overwrite=1`, report `stored`", so the shim had to
+translate the save and leave the question alone, and instead it intercepted both
+and then could not read the body it had intercepted: the precheck hands `fetch` a
+`Uint8Array`, which is neither the `Blob` nor the `ArrayBuffer` the shim's chain
+tested for, and fell through to `bridge: unexpected upload body`. The composer's
+Bug-B branch did the honest thing with a precheck that never got an answer: ship
+nothing, hold the bake in `_replaceArmed`, and tell the operator to press again.
+The second press took the overwrite path, which travels by `XMLHttpRequest` and
+bypasses a fetch wrapper, so it worked, and the failure looked like a cold-start
+race. The bug was deterministic and lived in the injected bytes.
+
+**Fix.** The shim passes a `?precheck=1` request to the hub's own door, which the
+frame may dial: same origin, and the launch cookie is set on the editor document by
+`serveEditor`, while the bake leg already proves that door reachable from inside
+the frame. It still intercepts a save, and now reads any `BodyInit` a save can
+arrive as: `Blob`, `ArrayBuffer`, an `ArrayBufferView` (copied out of its buffer,
+which is what the composer's own legs hand it), or anything else through
+`new Response(body).arrayBuffer()`. The refusal stays, for a body with no bytes in
+it at all. Forwarding the head slice to the pane instead of the hub was never an
+option: `themeBridge` would have filed 128 B of header as a theme and reported it
+stored.
+
+**Tests.** `tools/host_clock_region_test.py` pins both legs by name: the precheck
+passes through, a byte-array save body is read, and the empty-body refusal
+survives. The shim is parsed rather than grepped, with esprima, the parser
+`host_sd_test.py` already uses for the firmware's `/themes` script, and the suite
+mutates two of its body branches (the `ArrayBuffer` branch loses its brace, its
+call loses a paren) and requires that parse to refuse them. Node is not
+installed on this host, so `tools/watch-composer/_selftest/headless-ui.test.js` did
+not run; it stubs `fetch` before the shim exists, so it could not have caught this
+bug at any point.
+
+**Version.** Hub tooling and the committed seed containers only; no firmware image
+changed. The clock container's editor region moved, and
+`tools/make_factory_apps.py` re-emitted the seed pair at the current stamp
+(`v1.1.35`, serial 10135): both committed containers were already stale at
+v1.1.29, which is what `--check` and `host_orbapp_install_test.py` refuse to
+tolerate. The pane reads the region off the board, so an orb keeps the old editor
+until the shelf's updated `clock.orbapp` reaches it. Push it from the Apps face, or
+re-flash; then the editor the pane opens is the fixed one.

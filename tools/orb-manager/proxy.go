@@ -164,6 +164,16 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 	var statusBody []byte
 	foldStatus := route == "/api/v1/status" && r.Method == http.MethodGet &&
 		resp.StatusCode == http.StatusOK
+	// A name write the board accepted is worth a copy too, and for the mirror-image
+	// reason: the status fold catches a name somebody ELSE wrote, this one catches the
+	// rename this page just performed. See fleet.go's foldNameWrite for why the reply's
+	// echo is the authority and not the word that was sent.
+	foldName := route == "/api/v1/name" && r.Method == http.MethodPost &&
+		resp.StatusCode == http.StatusOK
+	if foldName {
+		s.answerFoldedName(w, host, resp)
+		return
+	}
 	for {
 		if n >= proxyResponseCap {
 			log.Printf("orb-manager: proxy reply from %s hit the %d B cap; the browser got a truncated body", host, proxyResponseCap)
@@ -191,6 +201,35 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 			log.Printf("orb-manager: proxy read from %s aborted after %d B: %v", host, n, rerr)
 			return
 		}
+	}
+}
+
+// answerFoldedName returns the reply to an accepted name write, folded first.
+//
+// The order is the function. The page re-reads /api/orbs the instant this response
+// lands (tabs.js's rename commit calls pullFound), so a reply streamed while the fold
+// still had the body in hand lost that race on purpose and the row kept the word the
+// board used to answer to. Buffering is affordable here and nowhere else in this loop:
+// the device's own echo is {"state":"named","name":"…"} at under 80 B (orb_net.c's
+// h_name_post), not the 40 KiB theme list the streaming rule above protects.
+//
+// A reply that overruns the proxy's cap is reported and forwarded truncated rather than
+// swallowed, which is what the streaming path does with the same body — and a truncated
+// JSON name is a body with no parseable name key, which foldNameWrite refuses to read
+// as "no name".
+func (s *Server) answerFoldedName(w io.Writer, host string, resp *http.Response) {
+	body, rerr := io.ReadAll(io.LimitReader(resp.Body, proxyResponseCap+1))
+	if rerr != nil {
+		log.Printf("orb-manager: proxy name reply from %s aborted: %v", host, rerr)
+		return
+	}
+	if int64(len(body)) > proxyResponseCap {
+		log.Printf("orb-manager: proxy name reply from %s hit the %d B cap; the browser got a truncated body", host, proxyResponseCap)
+		body = body[:proxyResponseCap]
+	}
+	s.foldNameWrite(host, body)
+	if _, werr := w.Write(body); werr != nil {
+		return // the browser went away; the fold already landed, and it was the point
 	}
 }
 

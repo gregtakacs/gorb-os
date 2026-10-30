@@ -409,6 +409,68 @@ func (s *Server) foldDeviceName(ip string, body []byte, want bool) {
 	s.saveState()
 }
 
+// foldNameWrite refreshes a row's cached name from the reply to the write that just
+// changed it — the read half of a rename, triggered by the rename itself.
+//
+// The status fold above waits for a board to be read; a rename is a board being
+// WRITTEN, and POST /api/v1/name answers with the word the board settled on
+// ({"state":"named","name":"…"}, orb_net.c's h_name_post). Before this fold existed,
+// that echo went to the browser and nowhere else: the hub's copy of the name stayed
+// the old word until some later status read folded it, so the card's headline moved
+// the moment Save landed and the list row under it did not. A rename that needs a
+// page refresh is not a rename the operator believes.
+//
+// The fold is the device's answer, not the page's request, by the same authority rule
+// that makes handleFleetSet dial before it files: a hub that trusted the sent word
+// would cache a name the board refused, degraded, or truncated to its own 32 B field.
+//
+// The row is found by address rather than by the body's MAC, because a name reply
+// carries no MAC: the board this hub committed to that address (grants.bound), or, if
+// no grant bound it, the one live row claiming that address. An address claimed by two
+// live rows folds nothing — which board answered is exactly what the card is already
+// refusing over by saying CONTESTED, and guessing here would name one board with the
+// other's write.
+//
+// A body with no name key folds nothing, for the reason foldDeviceName gives: an
+// answer that does not carry the field is not an answer about the field. A body whose
+// name IS "" is an answer, and clears the cache, because clearing a name is a real
+// thing an operator does.
+func (s *Server) foldNameWrite(ip string, body []byte) {
+	if len(body) == 0 || s.fleet == nil {
+		return
+	}
+	var probe struct {
+		Name *string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil || probe.Name == nil {
+		return
+	}
+	mac := s.grants.bound(ip)
+	if mac == "" {
+		if claims := s.fleet.ClaimedBy(ip); len(claims) == 1 {
+			mac = claims[0].MAC
+		}
+	}
+	if mac == "" {
+		return
+	}
+	row, changed, err := s.fleet.NoteDeviceName(mac, *probe.Name)
+	if err != nil {
+		return
+	}
+	// Earned by the same evidence the status fold cites: a board that answers its own
+	// name door runs orb firmware, whatever this hub once concluded about the lead.
+	s.lonely.clear(mac)
+	if !changed {
+		return
+	}
+	log.Printf("orb-manager: %s renamed to %q over the proxy (%s)", row.DisplayName(), *probe.Name, ip)
+	s.saveState()
+	// The write is news to every open card, not only the one that pressed Save: a
+	// second tab, or the same operator's list, reads this row by name.
+	s.wakeOrbs()
+}
+
 // foldProbeStatus files what one liveness dial learned about a board into the
 // fleet row, keyed by the MAC the body itself named. This is the fast path for
 // fw and state on a LAN board: the sweep asks every remembered address every ten

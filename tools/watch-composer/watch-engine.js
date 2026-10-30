@@ -285,14 +285,13 @@
   const assetKnown = (id) => !!assetGet(id);
   const assetCount = () => ASSETS.size;
   function assetBytes() { let n = 0; ASSETS.forEach((a) => { n += a.dataUrl.length; }); return n; }
-  /* Refuse a bitmap that would be resampled UP into its box: the device rotates
-   * with antialiasing off (clock_view.c lv_image_set_antialias false), so that
-   * loss is plainly visible and stays the author's call, not a silent default. */
-  /* Refuse a bitmap that would be resampled UP into its box: the device rotates with
-   * antialiasing off (clock_view.c lv_image_set_antialias false), so that loss is plainly
-   * visible and stays the author's call, not a silent default. The scale that matters is
-   * the one the chosen fit will actually apply -- cover fills and so magnifies the short
-   * axis, contain fits and magnifies nothing, stretch ignores the aspect on each axis. */
+  /* Refuse a bitmap that would be resampled UP into its box: the device still samples
+   * hand rotations nearest wherever the AA capability rule says it must (every
+   * animated dial, and a sweeping seconds hand on a still one — clock_view.c
+   * hand_aa_for), so that loss is plainly visible there and stays the author's call,
+   * not a silent default. The scale that matters is the one the chosen fit will
+   * actually apply -- cover fills and so magnifies the short axis, contain fits and
+   * magnifies nothing, stretch ignores the aspect on each axis. */
   function assetFits(id, w, h, fit, zoom) {
     const a = assetGet(id);
     if (!a) return { ok: false, why: 'asset ' + id + ' is not in this browser — load its .wckit bundle' };

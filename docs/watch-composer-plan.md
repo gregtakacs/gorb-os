@@ -148,8 +148,10 @@ plate is stored into the bank once at 76 ns/px, and the dial is the one static1 
 art on the dial face is not more expensive than art behind the geartrain. An earlier note
 here claimed only the plate slot was affordable; that priced a second plane and was wrong.
 What stays mandatory is that art never becomes its own layer. `assetFits()` also refuses a
-bitmap its chosen fit would resample UP, because `clock_view.c` rotates hand sprites with
-`lv_image_set_antialias(false)`.
+bitmap its chosen fit would resample UP: the device samples hand rotations nearest on every
+animated dial and on a sweeping seconds hand, and LVGL's rotated AA is reserved for the slow
+hands of still dials (`clock_view.c` `hand_aa_for()`), so an enlarged source still shows its
+loss wherever the dial pays the hot tick.
 
 **A design references art; a bundle carries it.** `canonDesign` stores the asset id and
 the placed geometry and deletes every default, so a design with no art serializes to

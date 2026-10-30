@@ -254,10 +254,39 @@ static lv_blend_mode_t map_blend(uint8_t b)
 
 
 
+/* Hand AA by capability, read from the bake's own motion words (mirrored and
+ * truth-tabled by tools/host_hand_aa_test.py). The dial affords bilinear on a
+ * layer when that layer's 4-tap cost cannot land on a tick that is already
+ * busy: an animated carrier (plate bank, delta bank, carriage) re-composites
+ * the wedge every tick, and 4-tap sampling over that re-composite is the
+ * ~40 ms/frame the Oct-10 findings measured, so those dials keep every layer
+ * nearest exactly as before. On a still dial the tick idles between wall
+ * beats, and a layer that re-poses at most once a second costs one 4-tap
+ * wedge per second inside a flush budget built for the whole page — so its
+ * hands may take the filter. The exception is the layer whose beat IS the hot
+ * tick: a sweeping second hand stays nearest so a sweeping still dial (the
+ * Station case) never pays the filter on the tick that drives its fps. */
+static bool hand_aa_for(const clk_theme_t *t, int slot)
+{
+    if (t->bg_mode != 0 || t->bg_frames != 0 || t->gif_frames != 0 ||
+        t->tourbillon_n != 0)
+        return false;
+    if (slot == 2 && t->second_sweep)
+        return false;
+    return true;
+}
+
 /* Create one rotated-hand/shadow layer from a sprite record. The object is
  * placed so its stored pivot (in cropped coords) lands on the sprite's screen
- * centre; LVGL then rotates it about that pivot. */
-static lv_obj_t *make_layer(const clk_sprite_t *spr, lv_image_dsc_t *dsc)
+ * centre; LVGL then rotates it about that pivot. `aa` carries the sampling
+ * decision for THIS layer from hand_aa_for() above: LVGL defaults rotation to
+ * 4-tap bilinear, ~4x the per-px cost of the nearest path on the S3, and the
+ * old build forced nearest on every dial because the hands-over-animated-orb
+ * re-composite could not carry it. The bake's motion words now say which
+ * dials can, per layer. A layer that never rotates (the overlay) takes
+ * nearest for free: LVGL skips the transform outright at angle 0. */
+static lv_obj_t *make_layer(const clk_sprite_t *spr, lv_image_dsc_t *dsc,
+                            bool aa)
 {
     if (!gfx_sprite_drawable(spr)) return NULL;
 
@@ -271,12 +300,7 @@ static lv_obj_t *make_layer(const clk_sprite_t *spr, lv_image_dsc_t *dsc)
     lv_image_set_pivot(o, spr->pivotx, spr->pivoty);
     lv_obj_set_pos(o, spr->centerx - spr->pivotx, spr->centery - spr->pivoty);
     lv_image_set_blend_mode(o, map_blend(spr->blend));
-    /* LVGL defaults rotation to 4-tap bilinear (antialias=1): ~4x the
-     * per-px cost of the nearest path on the S3, and it dominates the
-     * hands-over-animated-orb re-composite (~40 ms/frame). The baked ink
-     * already carries its own AA in the A8 plane, so nearest sampling of
-     * the rotated source looks near-identical at these sprite widths. */
-    lv_image_set_antialias(o, false);
+    lv_image_set_antialias(o, aa);
     return o;
 }
 
@@ -1509,9 +1533,16 @@ static void aux_create(void)
     uint16_t n = g->n_aux; if (n > CLK_AUX_MAX) n = CLK_AUX_MAX;
     for (uint16_t i = 0; i < n; i++) {
         if (g->aux[i].flags & CLK_FLAG_AUX_SHADOW) continue;   /* with its hand */
+        /* The pointer takes the dial's AA rule through its own source: a
+         * seconds hand on a sweeping still dial rides the hot tick and stays
+         * nearest, exactly like the main seconds slot; everything else on a
+         * still dial re-beats at wall cadence and can afford the filter. A
+         * slide never rotates, so the flag is inert on it either way. */
+        const int aa_slot = (g->aux[i].src == CLK_SRC_SECOND) ? 2 : 1;
+        const bool aa = hand_aa_for(&clk_theme, aa_slot);
         if (i + 1 < n && (g->aux[i + 1].flags & CLK_FLAG_AUX_SHADOW))
-            s_aux_obj[i + 1] = make_layer(&g->aux[i + 1].spr, &s_aux_dsc[i + 1]);
-        s_aux_obj[i] = make_layer(&g->aux[i].spr, &s_aux_dsc[i]);
+            s_aux_obj[i + 1] = make_layer(&g->aux[i + 1].spr, &s_aux_dsc[i + 1], aa);
+        s_aux_obj[i] = make_layer(&g->aux[i].spr, &s_aux_dsc[i], aa);
     }
 }
 
@@ -2214,7 +2245,7 @@ esp_err_t clock_view_init(orb_app_t *self)
     if (clk_theme.tourbillon_n > 0 && clk_theme.tourbillon_n <= CLK_TOURB_MAX &&
         clk_theme.tourbillon[0].show &&
         gfx_sprite_drawable(&clk_theme.tourbillon[0]))
-        s_car = make_layer(&clk_theme.tourbillon[0], &s_car_dsc);
+        s_car = make_layer(&clk_theme.tourbillon[0], &s_car_dsc, false);
 
     /* Each shadow goes down immediately before its OWN hand, walking the
      * theme's back-to-front order, so the z-stack is
@@ -2242,9 +2273,15 @@ esp_err_t clock_view_init(orb_app_t *self)
          * is what keeps a half-swapped bin+header pair from double-blending. */
         if (clk_theme.matte_mask & (1u << k)) continue;
         complications_create_bucket(geo, k);      /* the tiles under layer k */
+        /* Statics (3, 4) never take an angle — hand_angles parks them at 0 —
+         * so the sampling flag rides whatever the dial-level answer is; no
+         * transform ever runs on them. Slots 0/1/2 get the per-slot rule, and
+         * a shadow always shares its own hand's answer, so a filtered hand
+         * never stands on an unfiltered twin. */
+        const bool aa = hand_aa_for(&clk_theme, k);
         if (k <= 2 && clk_theme.shadow_on)
-            s_shadow[k] = make_layer(&clk_theme.shadow[k], &s_shadow_dsc[k]);
-        s_hand[k] = make_layer(&clk_theme.hand[k], &s_hand_dsc[k]);
+            s_shadow[k] = make_layer(&clk_theme.shadow[k], &s_shadow_dsc[k], aa);
+        s_hand[k] = make_layer(&clk_theme.hand[k], &s_hand_dsc[k], aa);
     }
     if (!aux_built) aux_create();                 /* nothing to join under: ride the top */
     /* The carriage (s_car) is already created above, at geartrain depth — see the
@@ -2263,7 +2300,7 @@ esp_err_t clock_view_init(orb_app_t *self)
     for (int b = 1; b < 5; b++) complications_create_bucket(geo, b);
 
     /* Glass / hub cap last, on top of everything. */
-    s_overlay = make_layer(&clk_theme.overlay, &s_overlay_dsc);
+    s_overlay = make_layer(&clk_theme.overlay, &s_overlay_dsc, false);
 
     /* The layer table, from the same bundle the widgets above were projected
      * from (Migration 2, Commits 3 and 4). Rows enter hidden and the tick's
@@ -2366,6 +2403,16 @@ esp_err_t clock_view_init(orb_app_t *self)
      * every layer is composited by the layer-table commit each tick. */
     ESP_LOGI(TAG, "composite: %s",
              clk_theme.matte_mask ? "baked static matte" : "runtime layers");
+    /* The sampling decision the AA rule above delivered, in the same line the
+     * operator reads after a flip: what the hands are drawn with, and why not
+     * more where the dial cannot carry it. */
+    ESP_LOGI(TAG, "hand AA: %s",
+             (clk_theme.bg_mode || clk_theme.bg_frames || clk_theme.gif_frames ||
+              clk_theme.tourbillon_n)
+                 ? "off (animated carrier)"
+                 : clk_theme.second_sweep
+                       ? "hour/minute (seconds nearest: sweeping)"
+                       : "all hands");
     if (clk_theme.tourbillon_n)
         ESP_LOGI(TAG, "tourbillon: %u frames @ %u fps on the second-hand slot, orbit about (%d,%d)",
                  (unsigned)clk_theme.tourbillon_n, (unsigned)clk_theme.tourbillon_fps,

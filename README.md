@@ -28,7 +28,7 @@ The orb is a themed, connected device, not a clock sketch:
 - **Power**: idle dim with IMU motion wake (QMI8658).
 - **Tooling**: `tools/orb-manager` — a single Go binary hub that flashes,
   provisions, and themes orbs over USB/LAN with no esptool and no IDF — and a
-  bench suite of 30 host-compiled parity tests. See
+  bench suite of 31 host-compiled parity tests. See
   [docs/architecture.md](docs/architecture.md); live status and rulings:
   [docs/app-platform-plan.md](docs/app-platform-plan.md).
 
@@ -114,7 +114,7 @@ and checked on the bench with host gcc before anything is flashed:
 
     python3 tools/host_tz_test.py       # ~1 s, no idf.py needed
     python3 tools/host_svc_test.py
-    ls tools/host_*_test.py             # the full family (30 suites)
+    ls tools/host_*_test.py             # the full family (31 suites)
 
 Formats keep a three-way rule: the Python writer, the shipped C reader, and
 the parity suite move in one commit or the test fails. The convention, the

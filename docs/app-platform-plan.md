@@ -4785,6 +4785,40 @@ slot 5, masked contiguous planes, `tourbillon_n/fps` cross-set, four refusals mi
 the projection, C-parity proved) ships idle on this table and ready for the first
 custom dial whose motion measures local on a caged train.
 
+**The still-dial hand-AA ruling (2026-10-30).** The table's shimmer row priced AA
+jitter on a still dial's re-composite union — 47–65 px, which RGB565 swallows at
+nearest. The straight bar hands themselves read jaggy at certain angles, and the Oct
+10 findings' 40 ms/frame AA ban applies to hands re-posed OVER an animated carrier,
+not to a still plate. The dial now decides per layer, from the words this table's
+split already wrote into every bake: `clock_view.c`'s `hand_aa_for()` gives LVGL's
+4-tap rotation to the slow hands of a still dial (no delta bank, no plate frames, no
+carriage) and keeps nearest for the layer whose beat is the hot tick — a sweeping
+seconds hand, so a sweeping Station's per-tick flush is untouched and no rung can
+demote from this change. No new bit: an appended scalar would refuse every installed
+bundle (`orb_bundle.c` enforces the 26-word dialect exactly), and the carrier class
+is already carried. The wedge marking needs no pad change — `SWEPT_PAD=3` exists
+precisely for the transform's fringe. Boot reports the verdict on one line
+(`hand AA: …`); `tools/host_hand_aa_test.py` mirrors and mutates the rule; the
+composer's `assetFits` up-resample refusal stands, since banked dials and the
+sweeping seconds keep paying nearest.
+
+**Bench verdict on that ruling (2026-10-30, orb-A, Station, v1.1.37).** The rule is
+live and the grant is real, but the granted hands do not read smoother to the eye, and
+the operator's report of "no visible AA" is correct rather than a flash failure. Measured
+off the panel mirror (`tools/fbgrab.py`), angle-invariant edge statistics, so a moving
+dial is comparable frame to frame: hard-step edge pixels 2086 with the filter forced off
+everywhere, ~1980 with the shipped hour/minute grant, 1823 with the filter also on the
+sweeping seconds hand. Frame-to-frame repeat of that count is 0.25%, so the ~5% shift the
+grant produces is real and small. Two reasons, both properties of the art and the ruling
+rather than of the plumbing: Station sweeps, so the one hand whose motion puts an edge
+under scrutiny is the layer the ruling holds at nearest; and the baked A8 already carries
+its own edge ramp, so 4-tap resampling of an already-soft edge adds little — the same fact
+the retired `make_layer` comment asserted. Forcing the filter onto the sweep buys the 12.6%
+hard-edge reduction and costs 11.4% of the tick rate (7.43 -> 6.58 fps, mean flush
+119 -> 142 ms) on the hot tick, which is the regression the ruling exists to prevent, so the
+sweep stays at nearest. A dial that needs visibly smooth hands gets it from a bake whose art
+is hard-edged before rotation, not from this sampler.
+
 **The composer slice (step 4).** The Device-theme button runs `exportTheme3`: guard,
 measure, split, bake, download — the walk in the click path, the status line naming
 the carrier and the art meter, the note stating the comp-table refusal BEFORE the press

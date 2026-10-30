@@ -3082,7 +3082,16 @@ function laneWaitMessage(e) {
     || m.indexOf("no route to host") >= 0;
 }
 
+// themeLoadGen numbers each themes read so a superseded run retires instead of
+// painting. A card write refreshes this face from its own flow, and cardChanged
+// un-loads it. The status poll can then start a second read while the first has
+// the card open. A run empties the pane before its awaits and appends rows after
+// them, so overlapping reads draw every surviving theme twice. The token makes
+// the older run quit at its next await boundary, so exactly one paint lands.
+let themeLoadGen = 0;
+
 async function loadThemes(ip) {
+  const gen = ++themeLoadGen;
   const state = $("#mn-themestate"), list = $("#mn-themes"), card = $("#mn-themecard");
   if (!ip) { orbThemeListHidden(); return; }
   themeIP = ip;
@@ -3099,15 +3108,18 @@ async function loadThemes(ip) {
   // enumeration is the half that failed, the face still lists the themes it can
   // reach and says which read it lost.
   await loadThemeApps(ip);
+  if (gen !== themeLoadGen) return;   // a fresher read owns the pane now
   let d;
   try {
     d = await themeListWithRetry(ip);
   } catch (e) {
+    if (gen !== themeLoadGen) return;   // the words belong to a read already retired
     state.classList.remove("spin-wait");
     state.textContent = "no theme list from " + ip + ": " + orbWaitWords(e)
       + (themeAppsErr ? " (and no app enumeration: " + themeAppsErr + ")" : "");
     return;
   }
+  if (gen !== themeLoadGen) return;   // superseded mid-walk: the newer read paints
   state.classList.remove("spin-wait");
   const rows = Array.isArray(d.themes) ? d.themes : [];
   themeRowsAll = rows;
@@ -3140,6 +3152,7 @@ async function loadThemes(ip) {
   let shelf = [];
   try { const p = await getJSON("/api/library"); shelf = Array.isArray(p.themes) ? p.themes : []; }
   catch (e) { /* the shelf rows just do not appear; the orb's own rows stand */ }
+  if (gen !== themeLoadGen) return;   // the newer read draws its own shelf rows
   libThemeCount = shelf.length;
   const shelfN = themeShelfRows(scope, rows, state, shelf);
   if (!shown.length && !shelfN) themeEmptyPane(list, scope);
@@ -3535,8 +3548,13 @@ function themeRow(t, state, list) {
         state.textContent = "removed " + t.name + " \u2014 the dial is rebooting onto its base face";
         await themeWaitBack(state, t.name);
       }
-      await loadThemes(themeIP);
+      // Un-load the card faces BEFORE the re-read, the order the Apps face's own
+      // erase button already keeps. cardChanged drops the themes mark this flow is
+      // mid-way through re-drawing, so after the await the status poll's showTab
+      // starts a second read over the one just painted, and the pane's rows land
+      // twice. A later un-load costs nothing: the poll re-fires on the next tick.
       cardChanged();   // the Apps face draws the same card: its file listing is now this theme's shorter
+      await loadThemes(themeIP);
     } catch (e) { state.textContent = "remove refused: " + e.message; del.disabled = false; }
   };
   li.appendChild(del);

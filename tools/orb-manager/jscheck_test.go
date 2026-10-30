@@ -835,6 +835,54 @@ let items = [];
 
 // And on the real client: no write anywhere resolves to nothing. The orb view's
 // tab file is part of the client since the tabbed page, and held to the same rule.
+// A Themes row's "Remove from card" redraws the face from its own handler, and the
+// same press un-loads the face's lazy mark so the status poll owes it a fresh read.
+// Two reads then overlap. Each one empties the pane BEFORE its awaits and appends the
+// rows AFTER them, so an older read that finishes second lands a second copy of every
+// surviving theme, and only a full "refresh from Orb" cleared it (bench 2026-10-29,
+// owner report on v1.1.36). Two rules hold the pane to one paint, and both are pinned.
+func TestThemeListRetiresASupersededRead(t *testing.T) {
+	app := readAppJS(t)
+	body := jsFuncBody(t, app, "async function loadThemes(ip)")
+	if !strings.Contains(body, "++themeLoadGen") {
+		t.Fatal("loadThemes no longer numbers its reads; an older read can repaint the pane")
+	}
+	if n := strings.Count(body, "gen !== themeLoadGen"); n < 3 {
+		t.Errorf("loadThemes retires at %d await boundaries; it clears the pane early, so "+
+			"every append site after an await needs one", n)
+	}
+	// A guard only counts when it sits between the await it follows and the appends it
+	// protects, so check the last guard ahead of each append rather than any guard.
+	for _, site := range []string{"appendChild(themeRow", "themeShelfRows(scope"} {
+		at := strings.Index(body, site)
+		if at < 0 {
+			t.Fatalf("loadThemes no longer appends at %q", site)
+		}
+		if !strings.Contains(body[:at], "gen !== themeLoadGen") {
+			t.Errorf("loadThemes appends %q with no retirement guard ahead of it", site)
+		}
+	}
+}
+
+// The same press's other half: un-load the card faces BEFORE the re-read, which is the
+// order the Apps face's erase button has always kept. cardChanged drops the mark this
+// flow is mid-way through re-drawing, so the poll fires a second read the moment the
+// first returns. An un-load after the await is the bug's whole shape.
+func TestThemeDeleteUnloadsCardFacesBeforeRereading(t *testing.T) {
+	app := readAppJS(t)
+	row := jsFuncBody(t, app, "function themeRow(t, state, list)")
+	card, reread := strings.Index(row, "cardChanged()"), strings.Index(row, "await loadThemes(themeIP)")
+	if card < 0 {
+		t.Fatal("the Themes row no longer tells the Apps face its card changed")
+	}
+	if reread < 0 {
+		t.Fatal("the Themes row no longer re-reads the card after a removal")
+	}
+	if card > reread {
+		t.Error("cardChanged follows the re-read; it must precede it, or the poll paints the face twice")
+	}
+}
+
 func TestAppJSWritesResolveInScope(t *testing.T) {
 	for _, f := range []struct{ name, src string }{
 		{"app.js", readAppJS(t)},

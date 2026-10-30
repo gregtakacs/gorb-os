@@ -483,6 +483,72 @@ setTimeout(() => {
         const gOf = (f) => { const g = f.subLayers[0].canvas.getContext('2d').geom; return g.length + ':' + g.map((e) => e.op).join(''); };
         ok(gOf(shOn) === gOf(shOff) && gOf(shOn).indexOf('fill') > 0,
           'a raised subdial keeps its baked drop exactly as it was, drawn for drawn, when the twins go off');
+        /* ---- the hub cap ships, on the crystal -----------------------------
+         * Station's red seconds disc was plainly visible in the preview and absent on
+         * the glass on 30 Oct. It was drawn at the tail of drawHands, after the sprite
+         * blit, and the export ships that sprite alone (hands/NN_id.png is h.sp.c), so
+         * the cap was the one piece of a dial the preview painted and the wire never
+         * carried: the nearest red texel of the shipped seconds plate sat 10 px off the
+         * arbour. The cap now rides F.glass, the layer clock_view.c composites above
+         * every hand, so both the preview and every bake read the same pixels. The
+         * stub cannot show colour, so the check is placement: which canvas the disc's
+         * arc lands in, and that only the top pointer of an arbour is crowned. */
+        const capFace = E.face({ design: E.canonDesign({ print: 'station', numerals: 'all', color: 'white', secStyle: 'station', handShade: 'flat', comps: [], centre: { hour: 1, minute: 1, second: 1 }, hands: { 'centre-second': { finish: 'red' } } }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, hands: 'station', handFinish: 'black' });
+        const capped = capFace.hands.filter((h) => h.cap > 0);
+        ok(capped.length === 1 && capped[0].id === 'centre-second',
+          'one crown per arbour, on the top pointer — here the seconds hand',
+          capFace.hands.map((h) => h.id + ':' + h.cap).join(' '));
+        const capR = capped[0].cap, cx = capped[0].x, cy = capped[0].y;
+        const glassArcs = (f) => (f.glass.getContext('2d').geom || []).filter((e) => e.op === 'arc'
+          && Math.abs(e.a[0] - cx) < 0.5 && Math.abs(e.a[1] - cy) < 0.5 && Math.abs(e.a[2] - capR) < 0.01);
+        ok(glassArcs(capFace).length === 1,
+          'the cap is painted into the crystal layer, where every bake path reads it',
+          'arcs at the arbour with the cap radius: ' + glassArcs(capFace).length);
+        const handTape = new FakeCanvas().getContext('2d');
+        capFace.drawHands(handTape, new Date(2024, 0, 1, 10, 8, 30));
+        ok(!(handTape.geom || []).some((e) => e.op === 'arc' && Math.abs(e.a[2] - capR) < 0.01),
+          'and drawHands leaves it alone, so the preview shows one disc and not two',
+          'arcs on the hands tape: ' + (handTape.geom || []).filter((e) => e.op === 'arc').length);
+        /* A sub-dial is its own arbour, so buildHands crowns it too. The crystal carries
+         * ONE cap: the crown of the whole dial. Bake a sub-dial hub into the glass and it
+         * floats above the main hands that sweep across that sub-dial, inverting the depth
+         * the preview shows — the plane is the top of the stack by construction. So a lower
+         * arbour's hub is baked into its OWN hand plate, which is the seat the wire ships
+         * (hands/NN_id.png IS sp.c) and which the rows above it still paint over. */
+        const subFace = E.face({ design: E.canonDesign({ print: 'roman', numerals: 'all', color: 'white',
+          centre: { hour: 1, minute: 1, second: 0 }, comps: [
+            { id: 'c2', type: 'subdial', host: 'dial', angle: 135, dist: 80.6, rot: 0, size: 78.5, style: 'enamel', scale: 'seconds', open: 0 }] }),
+          finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, hands: 'breguet', handFinish: 'blued' });
+        const subCapped = subFace.hands.filter((h) => h.cap > 0);
+        const subCrown = subFace.hands[subFace.hands.length - 1];
+        const subSub = subCapped.filter((h) => h !== subCrown);
+        ok(subCapped.length === 2 && subSub.length === 1 && subSub[0].id === 'c2' && subCrown.id === 'centre-minute',
+          'a subdial dials crowned arbour: the sub-dial keeps its own, and the crown is the top row',
+          subFace.hands.map((h) => h.id + ':' + h.cap).join(' '));
+        const capArcs = (f, h) => (f.glass.getContext('2d').geom || []).filter((e) => e.op === 'arc'
+          && Math.abs(e.a[0] - h.x) < 0.5 && Math.abs(e.a[1] - h.y) < 0.5 && Math.abs(e.a[2] - h.cap) < 0.01);
+        ok(capArcs(subFace, subCrown).length === 1,
+          'only the crown rides the crystal: its arc sits on the crown arbour',
+          'crown arcs on the glass: ' + capArcs(subFace, subCrown).length);
+        ok(capArcs(subFace, subSub[0]).length === 0,
+          'a subdial hub must not float above the main hands that cross it',
+          'subdial arcs on the glass: ' + capArcs(subFace, subSub[0]).length);
+        /* The hub is in the plate the export ships, on the texel the device turns about —
+         * pivot_x/pivot_y are i16, so a disc off that texel would trace a circle as it swept. */
+        const plateArcs = (h) => (h.sp.c.getContext('2d').geom || []).filter((e) => e.op === 'arc'
+          && e.a[0] === Math.round(h.sp.px) && e.a[1] === Math.round(h.sp.py) && Math.abs(e.a[2] - h.cap) < 0.01);
+        ok(plateArcs(subSub[0]).length === 1 && subSub[0].capSprite > 0,
+          'the subdial hub is baked into its own hand plate, so the wire carries it too',
+          'arcs on the c2 plate at the integral pivot: ' + plateArcs(subSub[0]).length + ' r=' + subSub[0].capSprite);
+        ok(plateArcs(subCrown).length === 0,
+          'the crown is baked on the crystal and NOT in its plate, so one disc and not two',
+          'arcs on the crown plate: ' + plateArcs(subCrown).length);
+        const subTape = new FakeCanvas().getContext('2d');
+        subFace.drawHands(subTape, new Date(2024, 0, 1, 10, 8, 30));
+        ok(!(subTape.geom || []).some((e) => e.op === 'arc' && Math.abs(e.a[0] - subSub[0].x) < 0.5
+          && Math.abs(e.a[1] - subSub[0].y) < 0.5),
+          'and no cap is trailed at the seat any more — every hub has a plane that ships',
+          'arcs on the hands tape: ' + JSON.stringify((subTape.geom || []).filter((e) => e.op === 'arc').map((e) => [Math.round(e.a[0]), Math.round(e.a[1]), +e.a[2].toFixed(1)])));
       }
       if (checked < 72) { fails++; console.log('FAIL only ' + checked + ' checks ran'); }
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');

@@ -2391,6 +2391,12 @@
     const top = {}, key = (h) => h.x.toFixed(1) + ',' + h.y.toFixed(1);
     list.forEach((h, i) => { top[key(h)] = i; h.h = 2.2 + i * 1.1; });
     list.forEach((h, i) => (h.cap = top[key(h)] === i ? h.capR : 0));
+    // Split the caps by seat. The dial's crown rides the crystal (drawCaps) so its light
+    // stays fixed and it clears every hand. Every other capped arbour is baked into its
+    // own hand plate, which is the only seat the wire carries for a pointer that turns:
+    // a disc at the pivot is invariant under the turn, and the rows above still cover it.
+    const crown = topCap(list);
+    list.forEach((h) => { if (h.cap && h !== crown) capIntoSprite(h); });
     return list;
   }
   const HT = { c: null };
@@ -2455,15 +2461,88 @@
         ctx.drawImage(HT.c, -OFF, 0); ctx.restore();
       });
       ctx.drawImage(HT.c, 0, 0);
-      if (hd.cap) {
-        const r = hd.cap, f = hd.fin;
-        ctx.save(); if (mv > 0.01) ctx.shadowColor = 'rgba(0,0,0,' + Math.min(1, 0.55 * om) + ')'; else ctx.shadowColor = 'rgba(0,0,0,0)'; ctx.shadowBlur = 3 * bm * sk; [ctx.shadowOffsetX, ctx.shadowOffsetY] = [ax * 2.2 * dm * sk, ay * 2.2 * dm * sk];
-        let g = f.m;
-        if (!hd.flat) { g = ctx.createRadialGradient(hd.x - r * 0.35, hd.y - r * 0.35, r * 0.1, hd.x, hd.y, r); g.addColorStop(0, f.b); g.addColorStop(0.6, f.m); g.addColorStop(1, f.a); }
-        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(hd.x, hd.y, r, 0, TAU); ctx.fill(); ctx.restore();
-        if (!hd.flat) { ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.beginPath(); ctx.arc(hd.x, hd.y, r * 0.32, 0, TAU); ctx.fill(); }
-      }
+      // No cap is painted here. Every capped arbour now carries its hub where the wire can
+      // carry it: the crown on the crystal (drawCaps), each lower arbour inside its own hand
+      // plate (capIntoSprite). A trail at this seat was the preview-only artifact the device
+      // could never reproduce, and it would now double-bake a disc the sprite already holds.
     });
+  }
+  /* The cap's dome, and the screw that sits in it. Split in two because the crystal seat
+   * casts a shadow off the dome alone, while the plate seat casts none. Both seats use
+   * these, so a hub reads the same whichever plane ends up carrying it. */
+  function capDome(ctx, cx, cy, r, f, flat) {
+    let g = f.m;
+    if (!flat) { g = ctx.createRadialGradient(cx - r * 0.35, cy - r * 0.35, r * 0.1, cx, cy, r); g.addColorStop(0, f.b); g.addColorStop(0.6, f.m); g.addColorStop(1, f.a); }
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.fill();
+  }
+  function capScrew(ctx, cx, cy, r, flat) {
+    if (flat) return;
+    ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.beginPath(); ctx.arc(cx, cy, r * 0.32, 0, TAU); ctx.fill();
+  }
+  /* A lower arbour's hub belongs in its own hand's plate, so it turns with that hand and
+   * the rows above it still cover it. The one license this buys over a drawn-at-the-seat
+   * disc is that the device can ship it at all: `hands/NN_id.png` IS hd.sp.c, and the
+   * crystal carries only the crown. The disc is centred on Math.round(py) — pivot_x/pivot_y
+   * are i16 and placedPlane rounds the offset, so the device turns the plate about that
+   * texel and a disc on the same texel is invariant under the turn. Left at the fractional
+   * py (56.01, 44.85) it would sit up to half a texel off the origin and wobble as it
+   * swept. The radius is clamped to the canvas so a wide hand cannot slice its own hub in
+   * half; at the shipped widths the clamp never engages (tightest margin 4.79 px).
+   * The highlight rides the hand, so the dome's light does not track the dial's — accepted
+   * at these radii, where the whole disc is 5-10 texels. */
+  function capIntoSprite(hd) {
+    const sp = hd.sp, cx = Math.round(sp.px), cy = Math.round(sp.py);
+    const r = Math.min(hd.cap, cx, sp.c.width - cx, sp.c.height - cy);
+    if (!(r > 0)) return;
+    const x = sp.c.getContext('2d');
+    capDome(x, cx, cy, r, hd.fin, hd.flat); capScrew(x, cx, cy, r, hd.flat);
+    hd.capSprite = r;
+  }
+  /* The dial's crown — the topmost row that wears a cap, or null when none does. */
+  function topCap(hands) {
+    let t = null;
+    for (let i = 0; i < hands.length; i++) if (hands[i].cap) t = hands[i];
+    return t;
+  }
+  /* The hub cap belongs to the crystal, not to the hand.
+   *
+   * It used to ride at the end of drawHands' per-hand loop, which is a seat the wire
+   * has no equivalent of: the device gets one plate per pointer (the exported
+   * `hands/NN_id.png` is `h.sp.c`, the sprite canvas alone) and nothing else, so a cap
+   * drawn after the blit existed only in the preview. Station reported the gap on
+   * 30 Oct: the seconds disc is plainly red on screen and absent over the pivot on
+   * the glass, with the nearest red texel of the shipped seconds plate 10 px off the
+   * arbour. Painting the caps into F.glass at build time closes it for both formats at
+   * once — layers/glass.png is FORMAT 2's overlay record and the same canvas the
+   * FORMAT 3 GLASS role packs with the case — and it lands on the one layer the device
+   * already composites above every hand (clock_view.c's stack, and the preview draws
+   * glass above hands at compose's last step), which is exactly where a cap sits.
+   *
+   * The cost is the other half of the bargain, and it is negative: the cap does not
+   * turn, so it leaves the moving pointer row and joins a static plane the dial
+   * re-blends once. An uploaded hand opts out at the seat (capR 0 — the art carries
+   * its own), and only the top pointer of an arbour is crowned (buildHands).
+   *
+   * ONLY THE CROWN rides here. buildHands caps the top pointer of EVERY arbour, so a
+   * sub-dial carries one too, and the crystal is the one plane the device stacks above
+   * all hands: bake a sub-dial hub into it and that 2.6 px disc floats over the main
+   * hour and minute hands as they sweep across the sub-dial (Skeleton c2 at 290,290 and
+   * Modern c3 at 233,337 both read this way), which inverts the depth the preview shows.
+   * A lower arbour therefore goes inside its own hand plate instead — see capIntoSprite —
+   * which keeps the rows above it on top AND ships the hub on the wire, so no seat here
+   * is preview-only any more. buildHands decides the split. */
+  function drawCaps(ctx, hands, SH) {
+    const [ax, ay, dm, bm, om] = [SH.dir[0], SH.dir[1], SH.dist, SH.blur, SH.op];
+    const mv = SH.mv == null ? 1 : SH.mv;
+    const hd = topCap(hands);
+    if (!hd) return;
+    const r = hd.cap, f = hd.fin, sk = devS(ctx);
+    ctx.save();
+    ctx.shadowColor = mv > 0.01 ? 'rgba(0,0,0,' + Math.min(1, 0.55 * om) + ')' : 'rgba(0,0,0,0)';
+    ctx.shadowBlur = 3 * bm * sk; ctx.shadowOffsetX = ax * 2.2 * dm * sk; ctx.shadowOffsetY = ay * 2.2 * dm * sk;
+    capDome(ctx, hd.x, hd.y, r, f, hd.flat);
+    ctx.restore();
+    capScrew(ctx, hd.x, hd.y, r, hd.flat);
   }
   function handPreview(ctx, style, fk, n, bg) {
     const fin = handFin(fk), R = n * 0.46;
@@ -2948,6 +3027,10 @@
     const OK = LIGHT.outerK;
     _.setTemp(o.outerTemp || o.temp || 2200, o.outerHue, o.outerSat);
     F.glass = buildGlass(OK, o.glassStyle); F.outer = buildOuter(OK, o.caseStyle, caseMetal(o), caseOpenR(o));
+    // The dial's crown cap is baked into the crystal here rather than trailed after its
+    // hand at draw time — see drawCaps. One paint, on the one plane every export path and
+    // the device already stack above the hands. Lower arbours' caps stay in the hand stack.
+    drawCaps(F.glass.getContext('2d'), F.hands, SH);
     _.setTemp(o.temp || 2200, o.hue, o.hueSat);
     const hostOf = (c) => (c.host === 'dial' ? { x: C, y: C, r: DR } : lay.subs.find((s) => s.id === c.host));
     const enOf = (c) => (c.host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === c.host) || {}).en || en);

@@ -1902,3 +1902,56 @@ correct.
   press two looked healthy. `tools/host_clock_region_test.py` pins both legs, parses
   the shim with esprima, and mutates two of its body branches to prove that parse
   check can fail.
+
+
+## The hub cap rides the crystal, and only the crown does — 2026-10-30 (composer, baker)
+
+- **Symptom on Station.** The seconds hand's red centre disc showed in the composer
+  preview and was absent on the watch. The shipped seconds plate carried red ink, but
+  its nearest red texel sat 10 px off the arbour: the plate's centre was transparent, by
+  design. Nothing on the wire drew the disc at all.
+- **Cause.** `drawHands` trailed the cap after each hand's sprite blit. The composer
+  exports one plate per pointer (`hands/NN_id.png` is `h.sp.c`, the sprite canvas alone),
+  so a cap drawn after the blit never left the preview. The manifest records a `cap`
+  radius per hand and `orbtheme-baker.js` ignores it.
+- **The fix, and why the glass is the only right seat.** `watch-engine.js` gained
+  `drawCaps()`, called once in `face()` right after `buildGlass`. FORMAT 2 ships the
+  canvas as `layers/glass.png` and FORMAT 3 packs it as the GLASS role, so one paint
+  serves both with no format branch. The overlay is the one plane `clock_view.c` stacks
+  above every hand, which is where a cap physically sits, and it is static: the cap does
+  not turn, so it leaves the moving pointer row and joins a plane the dial re-blends once.
+  A sprite-baked gradient would rotate with the hand while the light stays fixed.
+- **ONE CROWN ON THE CRYSTAL, ONE HUB PER PLATE.** `buildHands` crowns the top pointer of
+  EVERY arbour, so a sub-dial carries its own cap. Baking all of them into the crystal
+  floats a sub-dial's 2.6 px hub ABOVE the main hour and minute hands as they sweep across
+  it, inverting the depth the preview shows. Skeleton (`c2` at 290,290) and Modern (`c3` at
+  233,337) both read that way. So the caps split by seat: `drawCaps` paints exactly one disc
+  on the glass, `topCap(hands)`, and `capIntoSprite` bakes every lower arbour's hub into its
+  OWN hand plate at `(round(px), round(py))`. Nothing is trailed in `drawHands` any more, so
+  no cap is preview-only: the crystal carries the crown, and `hands/NN_id.png` (= `sp.c`)
+  carries each lower hub. The split test is `h !== crown`, not "skip the sub-dial" — a
+  centre arbour with another pointer above it belongs in the stack too.
+- **Why the plate seat holds.** A disc centred on the rotation origin maps onto itself at
+  every angle, so the hub cannot drift as the hand turns, and the rows above still paint
+  over it. `pivot_x`/`pivot_y` are `i16` and `placedPlane` rounds the offset, so the disc is
+  baked on that integral texel rather than the fractional `py` (`c2` is 71.355). Accepted
+  costs: the dome's highlight rides the hand instead of the dial's fixed light, and the hub
+  now counts as moving ink (it joins `_occCover`, which only steers the fps tier). The
+  radius is clamped to the plate so a wide hand cannot slice its own hub; at every shipped
+  preset the tightest margin is 4.79 px, so the clamp never engages.
+- **Uploaded hands opt out at the seat.** `handSpriteAsset` sets `capR: 0`, because the art
+  carries its own boss. No painter needs a branch for it.
+- **Verified on baked bytes, not just pixels on screen.** `tools/watch-composer/_selftest/
+  headless-engine.test.js` pins all four facts (one crown; crown arc on the glass canvas;
+  sub-dial hub NOT on the glass; sub-dial hub present in its own plate at the integral pivot,
+  with no cap trailed at the seat). End to end: a fresh Station bake ships `(232,32,40)
+  a=255` at the arbour where it shipped `(216,200,184) a=29`; a fresh Skeleton bake keeps the
+  blued minute crown opaque at 233,233 while 290,290 reads `a=14`, the translucent glass a
+  pre-fix bake shows — and the c2 plate now carries `(28,57,123) a=255` at its own pivot.
+- **Gotcha that cost a false alarm.** `tools/watch-composer/deploy_test_folder.py` copies
+  the engine to the Windows bake folder. A stale copy there bakes a stale theme and looks
+  like an engine bug: the sub-dial hub appeared baked while the repo test said it was not.
+  Compare `cmp /mnt/c/Users/greg/Downloads/test/watch-engine.js
+  tools/watch-composer/watch-engine.js` before believing a bake. The same trap applies to
+  `tools/orb-manager/web/composer/`: run `make -C tools/orb-manager composer` first, or
+  `make_factory_apps.py` re-embeds the previous engine and the shipped app keeps the bug.

@@ -142,6 +142,21 @@ static volatile uint64_t s_bench_hook_us;
 static volatile uint64_t s_bench_dma_us;
 static volatile uint64_t s_bench_te_us;
 
+/* ---- LVGL render window ------------------------------------------------------
+ * The flush span minus mirror/te/dma is time spent OUTSIDE flush_cb, and the only
+ * thing that runs there is LVGL rendering the next chunk. Naming it needs its own
+ * clock: bill the gap between one flush_cb exit and the next entry, against the
+ * pixels LVGL actually drew (the chunk areas). The result in us/kpx separates the
+ * two candidate causes of the residual -- a plate re-blit is a straight copy and
+ * lands near the mirror's own rate, while a rotated/alpha transform re-samples
+ * every texel and costs an order more. orb_sched.c:222 already bills the plate
+ * re-blit at "~250-300 cycles each" for L4 dials; this measures the claim on a
+ * dial that uses no L4 at all. Inter-frame idle is NOT billed: the window is
+ * re-armed at each frame start. */
+static volatile uint64_t s_bench_render_us;
+static volatile uint64_t s_bench_render_px;
+static int64_t           s_render_t0;      /* 0 = window not armed */
+
 #if DISPLAY_CADENCE_PROBE
 /* Per-committed-frame record, booked at the last-band DMA completion (the
  * same site that bumps s_bench_frames). gap is the cadence itself; the rest
@@ -201,7 +216,60 @@ static volatile bool     s_last_pending;   /* last chunk submitted, awaiting DMA
  * row of DMA per band and keeps the coalescing win; forcing a full-page flush
  * cures the bob too but throws away ~460k px/s of it. */
 #define DB_EVEN_BANDS 1
+
+/* Send each tile's DIRTY COLUMNS instead of the whole row width. Rows stay the
+ * unit of dirty bookkeeping (that is what keeps the stale-hairline race out),
+ * but a band's columns were always billed 0..465 regardless of where the ink
+ * is. A rotated hand dirties a swept wedge, so a hand tick paid 466 px a row
+ * for ink confined to the wedge: measured 284.6 dirty rows = 134,312 px = 61.9%
+ * of the panel per frame (tools/bench/xclip_model.py over real mirror frames).
+ * Per-TILE (not per-band) union of the rows' extents bills 79,511 px = 41%
+ * less, and the tile loop already exists. Full width remains the floor for any
+ * row whose extent no caller told us about -- a clock mark, a forced row, the
+ * whole-page redraw -- so an L4 or GIF dial is unaffected byte for byte.
+ *
+ * MEASURED AND DECLINED FOR TEMPO: shipped off, kept as a one-character A/B.
+ * Paired bench (orb-A, live Station, arms proven from each capture's own boot
+ * line, both read over the same 8-19 s window of device time, via
+ * tools/bench/ab_xclip.py):
+ *   px/frame  95,714 -> 67,366  (-29.6%)
+ *   dma          98 -> 78 ms/s  (-20.5%)
+ *   te           72 -> 68 ms/s  ( -5.2%)
+ *   fps         7.82 -> 7.45    (flat; both arms ranged [6-11], n=33)
+ * The byte cut is real and the tempo cut is not, because the frame is ~90% LVGL
+ * render (render ms/s 899 at 414 kpx/s = 2,170 us/kpx) and only ~10% band
+ * submit. It also cannot be rescued by funding the tile ring: at steady state
+ * the boot card mount leaves ONE buffer ("re-funded short: 1 of 2 buffers,
+ * flushes serialize", t=7.2 s), which is why the narrower per-row copies sit on
+ * the critical path -- and a depth-2 ring moves DMA off the path altogether,
+ * which removes the last reason this could ever pay in fps. Its future is a
+ * no-card dial or a build billed by the byte, not a faster dial. The real lever
+ * is the render phase; see docs/app-platform-plan.md §29.
+ * Set to 1 to enable. With 0 the commit is byte-identical to the shipped path. */
+#define DB_XCLIP 0
+
 static uint8_t  s_dirty_row[SCREEN_HEIGHT];   /* row marked this frame (task ctx) */
+
+#if DB_XCLIP
+/* Per-row dirty column window, valid only where s_dirty_row[r]. Empty is
+ * x0 > x1. int16: a 466-px row index, and 932 B a table is the whole cost. */
+static int16_t  s_dirty_x0[SCREEN_HEIGHT];
+static int16_t  s_dirty_x1[SCREEN_HEIGHT];
+
+/* Union one mark into the row set. Extents only ever GROW within a frame, so a
+ * later mark can never lose coverage the way a plain overwrite would. */
+static inline void mark_dirty_row(int32_t r, int32_t x0, int32_t x1)
+{
+    if (!s_dirty_row[r]) {
+        s_dirty_row[r] = 1;
+        s_dirty_x0[r] = (int16_t)x0;
+        s_dirty_x1[r] = (int16_t)x1;
+        return;
+    }
+    if (x0 < s_dirty_x0[r]) s_dirty_x0[r] = (int16_t)x0;
+    if (x1 > s_dirty_x1[r]) s_dirty_x1[r] = (int16_t)x1;
+}
+#endif
 static volatile int s_band_inflight;          /* bands DMA'd, awaiting trans-done  */
 static bool     s_coalesce_mode = false;       /* true when the PSRAM mirror exists */
 
@@ -625,6 +693,15 @@ static int dma_dirty_bands_locked(lv_display_t *disp)
          * run, so pushing into s_push_row would make the NEXT frame full too. */
         s_ring_redraw = false;
         memset(s_dirty_row, 1, sizeof(s_dirty_row));
+#if DB_XCLIP
+        /* A redraw owes the WHOLE panel, so every row's window opens to full
+         * width. Inheriting a narrow window here would drop columns the glass
+         * never saw -- the one way this feature could ghost. */
+        for (int r = 0; r < SCREEN_HEIGHT; r++) {
+            s_dirty_x0[r] = 0;
+            s_dirty_x1[r] = SCREEN_WIDTH - 1;
+        }
+#endif
     }
 
     /* Contiguous dirty row-ranges, then merge toward DB_MAX_BANDS by bridging
@@ -705,11 +782,43 @@ static int dma_dirty_bands_locked(lv_display_t *disp)
                     }
                 }
                 uint16_t *tb = s_tile[b];
+                /* The columns this tile owes: the union of its DIRTY rows'
+                 * extents. A bridged gap row (inside a merged band, never
+                 * marked dirty) needs no coverage -- the panel already holds
+                 * its correct pixels -- so it stays out of the union. A tile
+                 * with nothing dirty at all (a fully bridged tile) keeps full
+                 * width, which preserves the shipped commit for that case.
+                 * x0 snaps down and the count snaps up to even: the CO5300
+                 * clocks 2 px per cycle and programs CASET verbatim, so an odd
+                 * window shears. Widening past the ink is invisible -- s_fb is
+                 * complete by commit time, so every extra column is correct. */
+                int tx0 = 0, tx1 = SCREEN_WIDTH - 1;
+#if DB_XCLIP
+                int ux0 = SCREEN_WIDTH, ux1 = -1;
+                for (int rr = row; rr < row + rows; rr++) {
+                    if (!s_dirty_row[rr]) continue;
+                    if (s_dirty_x0[rr] < ux0) ux0 = s_dirty_x0[rr];
+                    if (s_dirty_x1[rr] > ux1) ux1 = s_dirty_x1[rr];
+                }
+                if (ux1 >= ux0) {
+                    tx0 = ux0 & ~1;
+                    tx1 = ux1;
+                    if (((tx1 - tx0 + 1) & 1) != 0) tx1++;
+                    if (tx1 >= SCREEN_WIDTH) tx1 = SCREEN_WIDTH - 1;
+                }
+#endif
+                const int tw = tx1 - tx0 + 1;
+#if DB_XCLIP
+                for (int rr = 0; rr < rows; rr++)
+                    memcpy(tb + (size_t)rr * (size_t)tw, &FB(tx0, row + rr),
+                           (size_t)tw * sizeof(uint16_t));
+#else
                 memcpy(tb, &FB(0, row), (size_t)SCREEN_WIDTH * (size_t)rows * 2);
-                s_bench_pix    += (uint64_t)SCREEN_WIDTH * (uint32_t)rows;
+#endif
+                s_bench_pix    += (uint64_t)tw * (uint32_t)rows;
                 s_bench_chunks++;
-                const esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, 0, row,
-                                                              SCREEN_WIDTH,
+                const esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, tx0, row,
+                                                              tx0 + tw,
                                                               row + rows, tb);
                 if (e != ESP_OK) {
                     ESP_LOGE(TAG, "tile %u [r=%d..%d] draw_bitmap failed: %s",
@@ -811,13 +920,31 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
 
     const int64_t t_entry = esp_timer_get_time();
 
+    /* Close the render window this chunk's entry ends: everything between the
+     * previous flush_cb exit and here was LVGL drawing, with no help from the
+     * mirror/TE/DMA phases. Disarmed at frame start so the inter-frame idle
+     * (the LVGL task handler's own sleep) is never billed as render. */
+    if (s_render_t0) {
+        s_bench_render_us += (uint64_t)(t_entry - s_render_t0);
+        s_bench_render_px += (uint64_t)w * (uint64_t)h;
+    }
+    s_render_t0 = 0;
+
     /* First chunk of an LVGL frame: stamp the latency clock (the single TE wait
      * that gates the whole frame happens at commit time, in dma_dirty_bands).
      * Adopt any rows the clock marked between commits: they were painted in the
      * mirror outside LVGL (display_mark_rows) and must ride this frame's bands
-     * even though LVGL never rendered those areas. */
+     * even though LVGL never rendered those areas. Those marks carry no column
+     * information, so they enter at full width. */
     if (!s_flush_in_flight) {
+        s_render_t0 = 0;                      /* discard the inter-frame window */
+#if DB_XCLIP
+        memset(s_dirty_row, 0, sizeof(s_dirty_row));
+        for (int r = 0; r < SCREEN_HEIGHT; r++)
+            if (s_push_row[r]) mark_dirty_row(r, 0, SCREEN_WIDTH - 1);
+#else
         memcpy(s_dirty_row, s_push_row, sizeof(s_dirty_row));
+#endif
         memset(s_push_row, 0, sizeof(s_push_row));
         memset(s_chunk_row, 0, sizeof(s_chunk_row));
         s_frame_t0_us   = esp_timer_get_time();
@@ -844,7 +971,17 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
         const int64_t t_mir = esp_timer_get_time();
         mirror_chunk(x1, y1, w, h, (const uint16_t *)px_map, w);
         s_bench_mirror_us += (uint64_t)(esp_timer_get_time() - t_mir);
+#if DB_XCLIP
+        /* LVGL's own area IS the extent: it rendered exactly these columns of
+         * these rows, so this is a superset of the changed pixels, never a
+         * subset. No guessing involved. */
+        for (int r = y1; r <= y2; r++) {
+            mark_dirty_row(r, x1, x2);
+            s_chunk_row[r] = 1;
+        }
+#else
         for (int r = y1; r <= y2; r++) { s_dirty_row[r] = 1; s_chunk_row[r] = 1; }
+#endif
 
         if (is_last) {
             s_flush_in_flight = false;
@@ -914,6 +1051,7 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
         }
     }
     s_bench_submit_us += (uint64_t)(esp_timer_get_time() - t_entry);
+    s_render_t0 = esp_timer_get_time();       /* arm: what follows is LVGL drawing */
 }
 
 
@@ -1123,6 +1261,14 @@ esp_err_t display_panel_early(void)
              0);
 #endif
 
+    /* One line naming the commit mode, so a bench run proves from the log which
+     * arm is on the board instead of trusting which .bin was staged. The A/B
+     * arms share a version stamp (same commit, same version.txt, -dirty either
+     * way), so the stamp audit cannot tell them apart. */
+    ESP_LOGI(TAG, "commit: rows coalesced, cols %s, ring %s",
+             DB_XCLIP ? "CLIPPED to the dirty extent" : "FULL width (shipped)",
+             s_coalesce_mode ? "PSRAM mirror" : "off");
+
     return ESP_OK;
 }
 
@@ -1206,6 +1352,15 @@ void display_bench_phases_us(uint64_t *mirror, uint64_t *hook,
     if (hook)   *hook   = s_bench_hook_us;
     if (te)     *te     = s_bench_te_us;
     if (dma)    *dma    = s_bench_dma_us;
+}
+
+/* Separate getter rather than two more out-params on the one above: that
+ * signature is a published contract (display.h:73) and every caller would have
+ * to change for a probe. */
+void display_bench_render_us_px(uint64_t *us, uint64_t *px)
+{
+    if (us) *us = s_bench_render_us;
+    if (px) *px = s_bench_render_px;
 }
 
 #if DISPLAY_CADENCE_PROBE
@@ -1430,7 +1585,11 @@ void display_mark_rows(int32_t y0, int32_t y1)
     if (y1 >= SCREEN_HEIGHT) y1 = SCREEN_HEIGHT - 1;
     for (int32_t r = y0; r <= y1; r++) {
         s_push_row[r]   = 1;
+#if DB_XCLIP
+        mark_dirty_row(r, 0, SCREEN_WIDTH - 1);
+#else
         s_dirty_row[r]  = 1;
+#endif
     }
 }
 
@@ -1447,7 +1606,11 @@ void display_mark_rows_clocked(int32_t y0, int32_t y1)
     if (y1 >= SCREEN_HEIGHT) y1 = SCREEN_HEIGHT - 1;
     for (int32_t r = y0; r <= y1; r++) {
         s_push_row[r]      = 1;
+#if DB_XCLIP
+        mark_dirty_row(r, 0, SCREEN_WIDTH - 1);
+#else
         s_dirty_row[r]     = 1;
+#endif
         s_clock_marked[r]  = 1;
     }
 }
@@ -1473,6 +1636,9 @@ void display_bench_reset(void)
     s_bench_chunks         = 0;
     s_bench_submit_us      = 0;
     s_bench_mirror_us      = 0;
+    s_bench_render_us      = 0;
+    s_bench_render_px      = 0;
+    s_render_t0            = 0;
     s_bench_hook_us        = 0;
     s_bench_te_us          = 0;
     s_bench_dma_us         = 0;

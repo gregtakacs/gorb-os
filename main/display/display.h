@@ -73,6 +73,13 @@ uint64_t display_bench_submit_us(void);
 void display_bench_phases_us(uint64_t *mirror, uint64_t *hook,
                              uint64_t *te, uint64_t *dma);
 
+/** LVGL render totals (either out-param may be NULL): us billed to the window
+ *  between one flush_cb exit and the next entry, and the pixels LVGL drew in
+ *  those windows (the sum of chunk areas). Dividing the two gives us/kpx, which
+ *  is what separates a plate re-blit (a copy) from a transform (a re-sample).
+ *  Read as deltas, like display_bench_phases_us(). */
+void display_bench_render_us_px(uint64_t *us, uint64_t *px);
+
 /* ---- Cadence probe (temporary instrumentation; set to 0 after capture) ----
  * The 7-vs-8 fps question is flush-cadence variance, and second-averages
  * cannot answer it: one 200 ms frame and five 132 ms frames read identically

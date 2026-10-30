@@ -106,6 +106,9 @@ static uint32_t         s_fps_te0;        /* display_te_wait_us() last read */
 static uint64_t         s_hk_rest_us0, s_hk_paint_us0, s_hk_cmp_us0;
 /* Previous-second baselines of display's commit-phase totals (mirror/hook/te/dma). */
 static uint64_t         s_fps_ph0, s_fps_ph1, s_fps_ph2, s_fps_ph3;
+/* LVGL render window baselines: us drawn between flushes, and the px it drew.
+ * Reported as ms/s and us/kpx -- the ratio is what names the residual's cause. */
+static uint64_t         s_fps_ren_us, s_fps_ren_px;
 #if DISPLAY_BENCH
 /* The synthetic ink the app's bench paint pass blends, counted here because the
  * report that checks it against the DMA totals lives beside it. */
@@ -640,6 +643,14 @@ static void report_fps_if_due(void)
     const uint64_t dpt = pt - s_fps_ph2, dpd = pd - s_fps_ph3;
     uint64_t rest, paint, cmp;
     gfx_hook_phases(&rest, &paint, &cmp);
+    /* The residual gets a name here: render is the LVGL drawing between
+     * flush_cb calls, and render_px the pixels it drew. us/kpx ~1 is a copy;
+     * tens is a transform. blend/s reads 0 on a dial with no L4, so without
+     * this line the whole 90 ms would stay anonymous. */
+    uint64_t ren_us, ren_px;
+    display_bench_render_us_px(&ren_us, &ren_px);
+    const uint64_t dren_us = ren_us - s_fps_ren_us;
+    const uint64_t dren_px = ren_px - s_fps_ren_px;
     const uint64_t drest = rest - s_hk_rest_us0;
     const uint64_t dpant = paint - s_hk_paint_us0;
     const uint64_t dcmp  = cmp - s_hk_cmp_us0;
@@ -664,6 +675,14 @@ static void report_fps_if_due(void)
              (unsigned long long)(drest / 1000),
              (unsigned long long)(dpant / 1000), (unsigned long long)(dcmp / 1000),
              (unsigned)dblend);
+    /* The residual, named. render is LVGL drawing between flush_cb calls;
+     * us/kpx is its unit cost. A straight plate copy lands near 1 us/kpx;
+     * a re-sampled transform lands an order higher. blend/s above reads 0 on a
+     * dial with no L4, which is why this line had to exist. */
+    ESP_LOGI(TAG, "  render ms/s %llu at %llu px/s = %llu us/kpx",
+             (unsigned long long)(dren_us / 1000),
+             (unsigned long long)dren_px,
+             dren_px ? (unsigned long long)(dren_us * 1000ULL / dren_px) : 0ULL);
     /* Which layer owns the paint phase. Slots are the theme's: hr, min,
      * sec/carriage, dial, counterweight, glass — each counting its own shadow
      * too, as blends/s and the ms/s that took. Decides the next optimization by
@@ -702,6 +721,7 @@ static void report_fps_if_due(void)
     s_fps_sub0 = sub;
     s_fps_te0 = te_now;
     s_fps_ph0 = pm; s_fps_ph1 = ph; s_fps_ph2 = pt; s_fps_ph3 = pd;
+    s_fps_ren_us = ren_us; s_fps_ren_px = ren_px;
     s_hk_rest_us0 = rest;
     s_hk_paint_us0 = paint; s_hk_cmp_us0 = cmp;
     s_fps_ticks = 0;

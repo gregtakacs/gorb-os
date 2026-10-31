@@ -667,16 +667,19 @@ setTimeout(async () => {
     let confirmed = false;
     global.confirm = () => { confirmed = true; return true; };
     it.state.hubCheck = true; it.state.hubIp = '10.0.0.9';
-    // §32.7: a bake big enough to tell the precheck's 128-byte header from the full
+    // §32.7: a bake big enough to tell the precheck's head (the 128-byte header plus
+    // the geometry region word 5 sizes, where the owning slug lives) from the full
     // body. The old precheck posted the WHOLE container, so every plain send moved
     // every byte twice; this array makes the double-transfer and its fix measurable.
+    const GEOM = 40, HEAD = 128 + GEOM;
     const bytes = Uint8Array.from({ length: 300 }, (_, i) => (i * 7 + 1) & 0xff);
+    new DataView(bytes.buffer).setUint32(20, GEOM, true);
     const sent = [];
     global.fetch = async (url, opt) => {
       sent.push([url, opt && opt.body && opt.body.length]);
       const j = /precheck=1/.test(url) ? { ok: true, data: { duplicate: scen.dup, exact: scen.exact, note: scen.note, name: 'orbital-arrow' } }
         : { ok: true, data: { phase: 'uploading', sent: 3, total: 3 } };
-      return { ok: true, status: 200, json: async () => j };
+      return { ok: true, status: 200, json: async () => j, text: async () => JSON.stringify(j) };
     };
     let xhrUrl = null, xhrBody = null, xhrSends = 0;
     global.XMLHttpRequest = function () {
@@ -703,7 +706,7 @@ setTimeout(async () => {
     ok(dv.pre === true, 'the modal says the precheck caught it before any byte crossed');
     ok(!!it._replaceArmed && it._replaceArmed.bytes === bytes, 'the refused bake is held for the modal Replace');
     ok(sent.length === 1 && /precheck=1/.test(sent[0][0]), 'the refusal came from the precheck alone — no whole-bake body posted', JSON.stringify(sent));
-    ok(sent.length === 1 && sent[0][1] <= 128, '§32.7: the precheck leg carried at most the 128-byte header, not the bake', JSON.stringify(sent));
+    ok(sent.length === 1 && sent[0][1] === HEAD, '§32.7: the precheck leg carried the header and geometry region, not the bake', JSON.stringify(sent));
     scen.dup = false;
     await it.sendTheme3ToOrb();
     ok(!confirmed, 'the replace flow never opens a browser dialog');
@@ -747,8 +750,8 @@ setTimeout(async () => {
        'an exact match stops at the precheck with a plain status line', it.state.status.slice(0, 52));
     ok(!dupBtns().open && it._replaceArmed === null,
        'an exact match arms no modal and holds no bake — there is nothing to replace');
-    ok(sent.length === sentBefore + 1 && /precheck=1/.test(sent[sentBefore][0]) && sent[sentBefore][1] <= 128,
-       'the exact refusal cost only the 128-byte header, not the bake', JSON.stringify(sent.slice(sentBefore)));
+    ok(sent.length === sentBefore + 1 && /precheck=1/.test(sent[sentBefore][0]) && sent[sentBefore][1] === HEAD,
+       'the exact refusal cost only the header and geometry region, not the bake', JSON.stringify(sent.slice(sentBefore)));
     ok(xhrSends === xhrSendsBefore,
        '§32.9: and the bake never reached the transport — no second full upload', JSON.stringify([xhrSendsBefore, xhrSends]));
     // Bug B: the precheck that CANNOT get an answer must fail CLOSED, not open. The hub

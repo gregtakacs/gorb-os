@@ -102,6 +102,7 @@ STUBS = r'''
 #include "orb_sched.h"
 #include "orb_app.h"
 #include "orb_carousel.h"
+#include "orb_gfx.h"
 
 char g_trace[8192];
 int  g_tn;
@@ -142,6 +143,14 @@ void lv_label_set_text(lv_obj_t *o, const char *t) { (void)o; T("text(%s)", t ? 
 void lv_obj_add_flag(lv_obj_t *o, lv_obj_flag_t f)    { (void)o; (void)f; g_hidden++; T("hide"); }
 void lv_obj_remove_flag(lv_obj_t *o, lv_obj_flag_t f) { (void)o; if (f == LV_OBJ_FLAG_HIDDEN) { g_shown++; T("show"); } }
 void lv_obj_move_foreground(lv_obj_t *o) { (void)o; }
+/* A fixed box, so the keep-out the chip asks for is checkable to the pixel. */
+void lv_obj_get_coords(const lv_obj_t *o, lv_area_t *a)
+{ (void)o; a->x1 = 80; a->y1 = 306; a->x2 = 399; a->y2 = 369; }
+
+/* The compositor's keep-out, as the chip drives it. */
+void gfx_keepout_set(int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+{ T("keepout(%d,%d,%d,%d)", (int)x0, (int)y0, (int)x1, (int)y1); }
+void gfx_keepout_clear(void) { T("keepout_clear"); }
 void lv_obj_set_size(lv_obj_t *o, int32_t w, int32_t h) { (void)o; (void)w; (void)h; }
 void lv_obj_set_width(lv_obj_t *o, int32_t w) { (void)o; (void)w; }
 void lv_obj_align(lv_obj_t *o, int a, int32_t x, int32_t y) { (void)o; (void)a; (void)x; (void)y; }
@@ -234,6 +243,8 @@ int main(void)
     reset(); orb_carousel_init();
     CK("init hides the chip, so no boot screen ever carries a name",
        has("hide") && !has("show"));
+    CK("and a hidden chip hands its pixels back to the dial",
+       has("hide|keepout_clear"));
 
     /* At rest: the quiet direction, which is the dangerous one. */
     reset(); orb_carousel_init();
@@ -251,6 +262,8 @@ int main(void)
        g_pause == 1);
     CK("the named title reaches the label", has("text(HSB)"));
     CK("a peek shows the chip", has("show"));
+    CK("and fences its own box off from the direct-push painter",
+       has("show|keepout(80,306,399,369)"));
     CK("a lone detent is not due on the fast window — it is a stop to read",
        !orb_carousel_due(AFTER(SETTLE + 1)));
     CK("and it is due only when the read window closes",
@@ -440,6 +453,7 @@ def main():
                       "typedef struct { uint8_t r,g,b; } lv_color_t;\n"
                       "typedef struct { int dummy; } lv_font_t;\n"
                       "typedef unsigned int lv_obj_flag_t;\n"
+                      "typedef struct { int32_t x1, y1, x2, y2; } lv_area_t;\n"
                       "typedef enum { LV_LABEL_LONG_MODE_WRAP = 0,"
                       " LV_LABEL_LONG_MODE_DOTS } lv_label_long_mode_t;\n"
                       "#define LV_OBJ_FLAG_HIDDEN    (1u<<4)\n"
@@ -454,6 +468,7 @@ def main():
                       "void lv_obj_add_flag(lv_obj_t*, lv_obj_flag_t);\n"
                       "void lv_obj_remove_flag(lv_obj_t*, lv_obj_flag_t);\n"
                       "void lv_obj_move_foreground(lv_obj_t*);\n"
+                      "void lv_obj_get_coords(const lv_obj_t*, lv_area_t*);\n"
                       "void lv_obj_set_size(lv_obj_t*, int32_t, int32_t);\n"
                       "void lv_obj_set_width(lv_obj_t*, int32_t);\n"
                       "void lv_obj_align(lv_obj_t*, int, int32_t, int32_t);\n"
@@ -469,6 +484,10 @@ def main():
                       "void lv_obj_set_style_text_font(lv_obj_t*, const lv_font_t*, int);\n"
                       "void lv_label_set_long_mode(lv_obj_t*, lv_label_long_mode_t);\n"
                       "lv_color_t lv_color_black(void);\nlv_color_t lv_color_white(void);\n",
+            # Only the keep-out pair: the chip must not reach for the painter.
+            "orb_gfx.h": "#pragma once\n#include <stdint.h>\n"
+                         "void gfx_keepout_set(int32_t, int32_t, int32_t, int32_t);\n"
+                         "void gfx_keepout_clear(void);\n",
             # Only the four gates the carousel is allowed to touch. The rest of
             # orb_sched.h is dial policy it must never reach for, and a stub
             # header that declared more than that would let it.

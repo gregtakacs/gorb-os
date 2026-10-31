@@ -476,11 +476,17 @@ const bakedAC = B.bakeClock3({ name: 'Bank And Carriage', serial: 20261022, bake
   carriage: { x: 200, y: 200, w: 64, h: 64, pivot_x: 32, pivot_y: 32, degrees: 0, fps: 4,
               frames: [CARF(200), CARF(220), CARF(240)] } });
 const walkAC = B.verifyBundle3(bakedAC.bytes).sections[0];
-ok(walkAC.blob.scalars.bg_frames === 2 && walkAC.blob.scalars.tourbillon_n === 3
-   && walkAC.blob.scalars.tourbillon_fps === 4,
-   'a plate bank and a carriage row cross-set their scalars together: two extra keyframes, three carriage frames',
-   'bg_frames ' + walkAC.blob.scalars.bg_frames + ' tourbillon_n ' + walkAC.blob.scalars.tourbillon_n
-     + ' @ ' + walkAC.blob.scalars.tourbillon_fps);
+// Since the unified render path's slice 4 the moving plate under a carriage bakes as the
+// delta bank every other moving plate is (design §3): the device restores it from its
+// canvas instead of redrawing a keyframe through LVGL on every advance.
+ok(walkAC.blob.scalars.bg_mode === 1 && walkAC.blob.scalars.gif_frames === 3 && walkAC.blob.scalars.bg_frames === 0
+   && walkAC.blob.scalars.tourbillon_n === 3 && walkAC.blob.scalars.tourbillon_fps === 4,
+   'a moving plate and a carriage row cross-set their scalars together: a three-frame delta loop, three carriage frames',
+   'bg_mode ' + walkAC.blob.scalars.bg_mode + ' gif_frames ' + walkAC.blob.scalars.gif_frames + ' bg_frames '
+     + walkAC.blob.scalars.bg_frames + ' tourbillon_n ' + walkAC.blob.scalars.tourbillon_n + ' @ ' + walkAC.blob.scalars.tourbillon_fps);
+ok(walkAC.rec.abi_min === 4 && walkAC.rec.abi_max === 4,
+   'and the caged delta bank is stamped GEOM_ABI4, the dialect the reader already admits — no new stamp',
+   'abi ' + walkAC.rec.abi_min + '..' + walkAC.rec.abi_max);
 const carAC = walkAC.blob.elements[walkAC.blob.elements.length - 1];
 ok(carAC.class === 2 && carAC.slot === 5 && carAC.n_frames === 3,
    'and the carriage still rides hand slot 5 beneath the animated plate row',

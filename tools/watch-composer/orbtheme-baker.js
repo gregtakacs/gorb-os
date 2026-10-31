@@ -2728,10 +2728,14 @@
       sc.bg_frames = frames.length - 1; sc.bg_fps = fps; sc.bg_loop = loop ? 1 : 0;
       if (!sc.bg_every) sc.bg_every = pl.every || 1;
       sc.bg_mode = 0; sc.gif_frames = 0;
-      // C5's delta plate is for a loop the plate alone drives. A carriage row owns the
-      // gif table for the tourbillon (§5.2, one gif_io at a time), so a plate riding
-      // under a carriage stays the keyframe bank it always was.
-      deltaBank = o.carriage ? 0 : 1;
+      // Every moving plate bakes as C5's delta bank, a carriage over it included. The
+      // fork that kept a caged plate a keyframe bank cited §5.2's one-gif_io rule, a
+      // FORMAT 2 note: under FORMAT 3 the carriage's frames ride its own row's sprite
+      // window (orb_clock3.c's tourbillon fill) and only the plate uses the bg table,
+      // so the two never contend (docs/unified-render-path-design-2026-10-30.md §3).
+      // The delta bank is the shape the device can restore from its canvas; a
+      // keyframe bank has no restore plane and draws every advance through LVGL.
+      deltaBank = 1;
     } else if (sc.bg_frames) {
       throw new Error('bg_frames = ' + sc.bg_frames + ' with a still plate: the scalars and the table disagree, and the pair would name a bank the art does not hold');
     }

@@ -112,8 +112,17 @@ uint32_t *orb_bg_every_p(void);
 bool     orb_bg_gif_mode(void);
 uint32_t orb_bg_gif_tick_ms(void);
 bool     orb_bg_bg_live(void);
-/* L4 owns the glass: DIRECT_PUSH built, a canvas to restore from, and a GIF
- * bank to push. The one test every mark site asks before it marks. */
+/* The plane the commit pass restores a marked row from: the PSRAM canvas for a
+ * delta bank, the baked plate in XIP flash for a still plate, NULL for a keyframe
+ * bank or a delta bank whose canvas failed. Non-NULL means the painter owns the
+ * dial's pixels whenever the table gate below lets it. */
+const uint16_t *orb_sched_restore_src(void);
+/* The dial's layer-table claim, pushed by its build pass: rows claimed and rows
+ * refused. (0, 0) at the top of every build, the real counts at its end. */
+void     orb_sched_set_layer_claim(int rows, int refused);
+/* L4 owns the glass: DIRECT_PUSH built, a plane to restore from, and a layer
+ * table that claimed every row. The one test every mark site asks before it
+ * marks. */
 bool     orb_sched_l4_active(void);
 
 /* Which plate frame the bgAnim beat is on, and the act of putting one up.

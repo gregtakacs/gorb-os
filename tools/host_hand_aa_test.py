@@ -20,6 +20,17 @@ reads are the same ones splitPolicy3 wrote at bake time (bg_mode, bg_frames,
 gif_frames, tourbillon_n, second_sweep), so no new bit and no re-bake: every
 still theme on a card turns the filter on by itself, and every animated theme
 keeps yesterday's pixels.
+
+Slice 1 of the unified render path (docs/unified-render-path-design-2026-10-30.md
+§8) moved the still dials with it: a dial whose restore source is non-NULL is
+painted by the L4 painter, which samples nearest, while its LVGL widgets stay
+live as the fallback. A grant left standing there lets any LVGL-initiated repaint
+(a bounce, an overlay closing) redraw the hands bilinear while the painter keeps
+them nearest — two edge qualities in one dial — so the rule denies every layer of
+a painter-owned dial. That is the approved interim state; the painter learns
+bilinear later. `painter` below is `orb_sched_restore_src() != NULL`, which on a
+CLK_BG_DIRECT_PUSH build is true for every still plate; the still-dial grant rows
+survive only as the kill-switch (DIRECT_PUSH 0) answer, where no painter exists.
 """
 import os
 import sys
@@ -30,8 +41,10 @@ SRC = os.path.join(HERE, "..", "main", "clock", "clock_view.c")
 
 # ---- the mirror ------------------------------------------------------------
 MIRROR_SRC = '''
-def hand_aa_for(bg_mode, bg_frames, gif_frames, tourbillon_n, second_sweep, slot):
+def hand_aa_for(bg_mode, bg_frames, gif_frames, tourbillon_n, second_sweep, painter, slot):
     if bg_mode != 0 or bg_frames != 0 or gif_frames != 0 or tourbillon_n != 0:
+        return False
+    if painter:
         return False
     if slot == 2 and second_sweep:
         return False
@@ -57,6 +70,8 @@ def lint():
         ("animated guard present",
          "if (t->bg_mode != 0 || t->bg_frames != 0 || t->gif_frames != 0 ||"),
         ("carriage in the guard", "t->tourbillon_n != 0)"),
+        ("painter-owned dial denied, kill switch exempt",
+         "#if CLK_BG_DIRECT_PUSH\n    if (orb_sched_restore_src() != NULL)\n        return false;\n#endif"),
         ("hot-tick seconds guard", "if (slot == 2 && t->second_sweep)"),
         ("make_layer consumes the flag", "lv_image_set_antialias(o, aa);"),
         ("make_layer takes the flag", "bool aa)"),
@@ -74,8 +89,8 @@ def lint():
     for why, needle in checks:
         if needle not in txt:
             fails.append("%s: %r no longer in clock_view.c" % (why, needle))
-    # the body must be the two guards and one yes, and nothing grew around them
-    if body.count("return false;") != 2 or body.count("return true;") != 1:
+    # the body must be the three guards and one yes, and nothing grew around them
+    if body.count("return false;") != 3 or body.count("return true;") != 1:
         fails.append("hand_aa_for's branch shape changed: the mirror's truth "
                      "table no longer covers it — re-read and re-pin")
     return fails
@@ -86,12 +101,26 @@ def lint():
 # (watch-engine.js's motion table): aviator/station/luna/neon/phase/perpetual
 # bake as still plates; skeleton/orbital/opentour/kitetour/calendar/regulator/
 # modern/sector/diver as banks; orbital/kitetour with a carriage too.
-STILL = dict(bg_mode=0, bg_frames=0, gif_frames=0, tourbillon_n=0)
+STILL = dict(bg_mode=0, bg_frames=0, gif_frames=0, tourbillon_n=0, painter=False)
+PAINTED = dict(STILL, painter=True)              # the same still dial, painter-owned
 PLATE_BANK = dict(STILL, bg_frames=9)            # 9-frame keyframe bank
 DELTA_BANK = dict(STILL, bg_mode=1, gif_frames=8)  # GIF delta bank
 CARRIAGE = dict(STILL, tourbillon_n=8)           # carriage on the seconds slot
 
 VECTORS = [
+    # A painter-owned still dial (every still plate on a DIRECT_PUSH build): no
+    # layer takes the filter, sweep or not, because the painter cannot match it
+    # and the live widgets would mix edges on the next LVGL repaint.
+    (dict(PAINTED, second_sweep=0), 0, False),
+    (dict(PAINTED, second_sweep=0), 1, False),
+    (dict(PAINTED, second_sweep=0), 2, False),
+    (dict(PAINTED, second_sweep=1), 0, False),
+    (dict(PAINTED, second_sweep=1), 1, False),
+    (dict(PAINTED, second_sweep=1), 2, False),
+    # An animated carrier stays refused whether or not the painter owns it (a
+    # delta bank's canvas makes it painter-owned too).
+    (dict(DELTA_BANK, painter=True, second_sweep=0), 0, False),
+    # The rows below are the kill-switch answer (CLK_BG_DIRECT_PUSH 0: no painter).
     # A still dial with no sweep (aviator at 1 Hz): every hand takes the filter.
     (dict(STILL, second_sweep=0), 0, True),
     (dict(STILL, second_sweep=0), 1, True),
@@ -128,7 +157,7 @@ def check_vectors():
     fails = []
     for w, slot, exp in VECTORS:
         got = hand_aa_for(w["bg_mode"], w["bg_frames"], w["gif_frames"],
-                          w["tourbillon_n"], w["second_sweep"], slot)
+                          w["tourbillon_n"], w["second_sweep"], w["painter"], slot)
         if got != exp:
             fails.append("words %s slot %d: got %s, want %s" % (w, slot, got, exp))
     return fails
@@ -143,6 +172,8 @@ MUTANTS = [
     ("drop the bg_frames word", "bg_frames != 0 or ", ""),
     ("drop the gif_frames word", "gif_frames != 0 or ", ""),
     ("drop the carriage word", " or tourbillon_n != 0", ""),
+    ("drop the painter denial", "    if painter:\n        return False\n", ""),
+    ("painter denial inverted", "if painter:", "if not painter:"),
     ("drop the sweep guard", "if slot == 2 and second_sweep:", "if False:"),
     ("sweep guard ignores the sweep", "and second_sweep:", ":"),
     ("sweep guard binds every slot", "if slot == 2 and", "if"),
@@ -155,7 +186,7 @@ def check_mutants():
     for name, old, new in MUTANTS:
         m = _run(MIRROR_SRC.replace(old, new, 1))
         caught = any(m(w["bg_mode"], w["bg_frames"], w["gif_frames"],
-                       w["tourbillon_n"], w["second_sweep"], slot) != exp
+                       w["tourbillon_n"], w["second_sweep"], w["painter"], slot) != exp
                      for w, slot, exp in VECTORS)
         if not caught:
             fails.append("mutant survived: %s" % name)
@@ -167,7 +198,7 @@ def main():
     for f in fails:
         print("FAIL: " + f)
     print("hand AA rule: %d checks, %d failures" % (
-        len(VECTORS) + len(MUTANTS) + 12, len(fails)))
+        len(VECTORS) + len(MUTANTS) + 13, len(fails)))
     return 1 if fails else 0
 
 

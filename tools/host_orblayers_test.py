@@ -200,14 +200,16 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
  * ceiling is now ORB_LAYER_JOB_MAX deep, and the LVGL task's stack is not ours
  * to spend a kilobyte of per tick. One caller, one task — mirrored here as the
  * function-static it also is on the target. */
+/* `src` is orb_sched_restore_src()'s answer: the delta bank's canvas or the still
+ * plate's XIP plane since the unified render path's slice 1, NULL when neither. */
 static int hook_mirror(const orb_layer_tab_t *t, const uint8_t *payload,
-                       const uint16_t *canvas)
+                       const uint16_t *src)
 {
     static gfx_paint_ctx_t jc[ORB_LAYER_JOB_MAX];
     if (!t || orb_layers_count(t) == 0) return 0;
-    if (!canvas) return 0;
+    if (!src) return 0;
     int nj = orb_layers_jobs(t, payload, jc, ORB_LAYER_JOB_MAX);
-    if (nj) gfx_commit(nj, jc, canvas);
+    if (nj) gfx_commit(nj, jc, src);
     return nj;
 }
 
@@ -517,8 +519,8 @@ int main(void)
     int h3 = orb_layers_add(&H, &bar2);
     ck("hook: three rows live", hh > 0 && h2 > 0 && h3 > 0
        && orb_layers_count(&H) == 3, orb_layers_count(&H));
-    /* The canvas guard, with rows on the table so the count guard cannot be
-     * what answered: no canvas means no marked row has anything to be restored
+    /* The source guard, with rows on the table so the count guard cannot be
+     * what answered: no restore source means no marked row has anything to be restored
      * from, and the commit pass that paints into the mirror anyway is the crash
      * this guard exists to refuse. */
     ck("hook: no canvas, no commit",
@@ -747,9 +749,10 @@ def lint(tmp, out):
         hb = hm.group(1)
         for stmt in ("const orb_layer_tab_t *t = orb_svc_layer_table(active);",
                      "if (!t || orb_layers_count(t) == 0) return;",
-                     "if (!s_canvas) return;",
+                     "const uint16_t *src = orb_sched_restore_src();",
+                     "if (!src) return;",
                      "int nj = orb_layers_jobs(t, art_bank_ptr(), s_lay_jc, ORB_LAYER_JOB_MAX);",
-                     "if (nj) gfx_commit(nj, s_lay_jc, s_canvas);"):
+                     "if (nj) gfx_commit(nj, s_lay_jc, src);"):
             pin(stmt in hb,
                 "the shipped commit hook no longer reads `" + stmt + "` — the "
                 "harness's hook_mirror mirrors a body that moved")

@@ -265,12 +265,26 @@ static lv_blend_mode_t map_blend(uint8_t b)
  * wedge per second inside a flush budget built for the whole page — so its
  * hands may take the filter. The exception is the layer whose beat IS the hot
  * tick: a sweeping second hand stays nearest so a sweeping still dial (the
- * Station case) never pays the filter on the tick that drives its fps. */
+ * Station case) never pays the filter on the tick that drives its fps.
+ *
+ * A dial the painter owns takes nearest on every layer, interim until the painter
+ * samples bilinear itself. The painter reuses LVGL's nearest rotation maths and
+ * the widgets below stay live as its fallback, so a standing grant would let any
+ * LVGL-initiated repaint (the activation bounce, an overlay closing) redraw these
+ * hands bilinear while the painter keeps them nearest: two edge qualities in one
+ * dial until each hand next moves. The test is the restore source, not the L4
+ * gate, so a painter-owned dial whose table the gate refused loses the filter
+ * too — conservative, and harmless where the painter paints nothing. A
+ * CLK_BG_DIRECT_PUSH 0 build has no painter and keeps the rule above whole. */
 static bool hand_aa_for(const clk_theme_t *t, int slot)
 {
     if (t->bg_mode != 0 || t->bg_frames != 0 || t->gif_frames != 0 ||
         t->tourbillon_n != 0)
         return false;
+#if CLK_BG_DIRECT_PUSH
+    if (orb_sched_restore_src() != NULL)
+        return false;
+#endif
     if (slot == 2 && t->second_sweep)
         return false;
     return true;
@@ -1852,8 +1866,27 @@ static void clk_row_desc(const orb_elem_t *e, uint32_t bank_off,
     d->alpha       = 255;
 }
 
+/* The claim, handed to the OS, and the verdict it buys printed beside it: one
+ * line per build pass — first boot and every re-apply — so a capture names the
+ * path the dial drew through rather than leaving it to be inferred. */
+static void clock_layers_claim(int rows, int refused)
+{
+    orb_sched_set_layer_claim(rows, refused);
+#if CLK_BG_DIRECT_PUSH
+    const bool l4 = orb_sched_l4_active();
+    ESP_LOGI(TAG, "render path: l4=%s src=%s rows=%d refused=%d", l4 ? "yes" : "no",
+             !l4 ? "lvgl" : (orb_bg_gif_mode() ? "psram" : "xip"), rows, refused);
+#else
+    ESP_LOGI(TAG, "render path: l4=no src=lvgl rows=%d refused=%d (direct push off)",
+             rows, refused);
+#endif
+}
+
 static void clock_layers_build(orb_app_t *self)
 {
+    /* Reset before either early exit below: a build that claims nothing must not
+     * leave the previous dial's claim answering the gate. */
+    orb_sched_set_layer_claim(0, 0);
     const orb_svc_t *svc = orb_svc_table();
     /* The broker wipes an app's rows when it goes behind the glass
      * (orb_svc_app_suspended — P5.5's clause that an app behind the dial owns
@@ -1870,8 +1903,10 @@ static void clock_layers_build(orb_app_t *self)
 
     const orb_bundle_sec_t *sec = NULL;
     uint32_t bank_off = 0;
-    if (!orb_theme_live_sec(ORB_CLOCK3_SLUG, &sec, &bank_off))
-        return;             /* no adopted bundle: no rows. The base face claims none. */
+    if (!orb_theme_live_sec(ORB_CLOCK3_SLUG, &sec, &bank_off)) {
+        clock_layers_claim(0, 0);   /* no adopted bundle: no rows. The base face claims none. */
+        return;
+    }
     /* Claim needs the two side tables before its first row: one PSRAM block
      * each, allocated once and kept for every later rebuild. An allocation
      * failure here lands in the same shape as the geo pass finding nothing:
@@ -1884,6 +1919,7 @@ static void clock_layers_build(orb_app_t *self)
     }
     if (!s_lay_key || !s_lay_handle) {
         ESP_LOGE(TAG, "layer keys: PSRAM alloc failed — no rows claimed this build");
+        clock_layers_claim(0, 0);
         return;
     }
     s_lay_sec = sec; s_lay_bank_off = bank_off;
@@ -1979,6 +2015,7 @@ static void clock_layers_build(orb_app_t *self)
     ESP_LOGI(TAG, "layer table: %d row%s, %d hidden, %d folded, %d refused (base %lu)",
              s_lay_n, s_lay_n == 1 ? "" : "s", hidden, folded, refused,
              (unsigned long)bank_off);
+    clock_layers_claim(s_lay_n, refused);
 }
 
 /* The per-tick pose pass (Migration 2, Commit 4): what the deleted
@@ -2306,8 +2343,11 @@ esp_err_t clock_view_init(orb_app_t *self)
      * from (Migration 2, Commits 3 and 4). Rows enter hidden and the tick's
      * pose pass wakes them — see clock_layers_refresh. A failure here is a
      * smaller ledger row on the owner's app page and a log line — never a
-     * dial that fails to boot: the table only feeds L4, and a dial without a
-     * canvas still draws through the widgets above. */
+     * dial that fails to boot: the table only feeds L4, and L4 takes the glass
+     * only on a claim with no refusal (orb_sched_l4_active), so a dial whose
+     * table fell short still draws through the widgets above. That clause holds
+     * because of the gate, not by default: without it a still dial would mark
+     * rows nobody welds. */
     s_lay_app = self;
     clock_layers_build(self);
 
@@ -2405,14 +2445,22 @@ esp_err_t clock_view_init(orb_app_t *self)
              clk_theme.matte_mask ? "baked static matte" : "runtime layers");
     /* The sampling decision the AA rule above delivered, in the same line the
      * operator reads after a flip: what the hands are drawn with, and why not
-     * more where the dial cannot carry it. */
+     * more where the dial cannot carry it. A painter-owned still dial reads
+     * as the interim it is, not as a ruling on its edges. */
+#if CLK_BG_DIRECT_PUSH
+    const bool aa_painter = orb_sched_restore_src() != NULL;
+#else
+    const bool aa_painter = false;
+#endif
     ESP_LOGI(TAG, "hand AA: %s",
              (clk_theme.bg_mode || clk_theme.bg_frames || clk_theme.gif_frames ||
               clk_theme.tourbillon_n)
                  ? "off (animated carrier)"
-                 : clk_theme.second_sweep
-                       ? "hour/minute (seconds nearest: sweeping)"
-                       : "all hands");
+                 : aa_painter
+                       ? "off (painter-owned dial: nearest, interim)"
+                       : clk_theme.second_sweep
+                             ? "hour/minute (seconds nearest: sweeping)"
+                             : "all hands");
     if (clk_theme.tourbillon_n)
         ESP_LOGI(TAG, "tourbillon: %u frames @ %u fps on the second-hand slot, orbit about (%d,%d)",
                  (unsigned)clk_theme.tourbillon_n, (unsigned)clk_theme.tourbillon_fps,

@@ -195,13 +195,57 @@ bool orb_bg_bg_live(void)
     return clk_theme.bg_frames > 0 && clk_theme.bg_frames <= CLK_BG_MAX;
 }
 
+/* The plane the commit pass restores marked rows from, per carrier class. A delta
+ * bank restores from its own mutable canvas; a still plate restores from the baked
+ * plane in place — read-only XIP, nothing to write, nothing to allocate. It is
+ * the same pointer fill_plate_dsc() hands LVGL, so the painter reads the bytes
+ * LVGL already samples. No bound is re-derived here: orb_clock3.c's extent pass
+ * refuses an odd plate_off or one whose panel overruns the art at load, and the
+ * compiled-in face is a delta bank that never reaches the last line.
+ *
+ * The bg_mode == 1 line is not redundant with orb_bg_gif_mode(): a delta bake
+ * whose canvas failed, or whose gif_frames is out of range, carries its plate_off
+ * only as frame 0 of a bank, and that dial stays on the classic path ("background
+ * held on keyframe") rather than restoring a frame it is not showing. A keyframe
+ * bank mutates on advance and has no restore plane until it bakes as a delta. */
+const uint16_t *orb_sched_restore_src(void)
+{
+    if (orb_bg_gif_mode())      return s_canvas;                      /* PSRAM canvas */
+    if (clk_theme.bg_mode == 1) return NULL;                          /* canvas wanted, absent */
+    if (clk_theme.bg_frames)    return NULL;                          /* keyframe bank */
+    return (const uint16_t *)(blob() + clk_theme.plate_off);          /* baked plate */
+}
+
+/* The claim the dial last reported, pushed from its table build: the OS cannot
+ * read the dial's statics, and the broker's table is wiped while the dial is
+ * behind the glass — the very window this gate governs. */
+static int s_lay_claim_rows, s_lay_claim_refused;
+
+void orb_sched_set_layer_claim(int rows, int refused)
+{
+    s_lay_claim_rows    = rows;
+    s_lay_claim_refused = refused;
+}
+
 #if CLK_BG_DIRECT_PUSH
-/* L4 only replaces LVGL when there is a canvas to restore background from;
- * without it (non-GIF themes, or the PSRAM canvas alloc failed) the classic
+/* A partial claim is as bad as an empty one. A refused row's widget stops being
+ * invalidated the moment L4 owns the glass, so when it moves the commit restores
+ * the plate over the rows it vacated and no layer repaints them: a hand that
+ * vanishes inside its own box. Refusing the gate costs the dial its speed and
+ * keeps every hand. */
+static bool orb_sched_layer_claimed(void)
+{
+    return s_lay_claim_refused == 0 && s_lay_claim_rows > 0;
+}
+
+/* L4 replaces LVGL only when there is a plane to restore marked rows FROM and a
+ * fully claimed table to weld over them; otherwise (a keyframe bank, a delta bank
+ * whose canvas failed, a table that refused a row or claimed none) the classic
  * all-through-LVGL path stays in charge. */
 bool orb_sched_l4_active(void)
 {
-    return CLK_BG_DIRECT_PUSH && s_canvas != NULL && orb_bg_gif_mode();
+    return CLK_BG_DIRECT_PUSH && orb_sched_restore_src() != NULL
+           && orb_sched_layer_claimed();
 }
 
 /* LVGL starts a commit only when it has something of its own to render, so a
@@ -779,12 +823,10 @@ void orb_sched_commit_layers(const orb_app_t *active)
 {
     const orb_layer_tab_t *t = orb_svc_layer_table(active);
     if (!t || orb_layers_count(t) == 0) return;
-    if (!s_canvas) return;            /* no canvas, nothing to restore a marked
-                                       * row FROM: the classic LVGL path owns
-                                       * those pixels, as it owns them for a
-                                       * non-GIF dial today */
+    const uint16_t *src = orb_sched_restore_src();
+    if (!src) return;
     int nj = orb_layers_jobs(t, art_bank_ptr(), s_lay_jc, ORB_LAYER_JOB_MAX);
-    if (nj) gfx_commit(nj, s_lay_jc, s_canvas);
+    if (nj) gfx_commit(nj, s_lay_jc, src);
 }
 
 #if CLK_BG_DIRECT_PUSH

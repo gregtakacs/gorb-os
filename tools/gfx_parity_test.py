@@ -213,6 +213,15 @@ ACCEPTED = {'fill_sprite_dsc', 'paint_ctx_init',   # the threaded art-bank base
             # docs/render-cost-findings-2026-10-30.md §1 measures with. Additive
             # prints only: the counters, the snapshot and the reset are untouched.
             'report_fps_if_due',
+            # Post-extraction behaviour change, the unified render path's slice 1
+            # (docs/unified-render-path-design-2026-10-30.md §4.1, §4.3). The gate
+            # stops naming a storage format: it asks for a plane to restore from
+            # (orb_sched_restore_src — the canvas for a delta bank, the XIP plate
+            # for a still) and a layer table claimed with no refusal. The canvas
+            # term it read was a proxy for "a source exists"; every GIF dial that
+            # answered yes still does whenever its table is whole. The mark sites
+            # that consume it are untouched; request_commit stays pinned.
+            'l4_active',
             # Post-extraction behaviour change, landed in fae7c23 (the app-chip
             # keepout) and only pinned here. The extraction promise held; the commit
             # walk has since grown ONE additive branch: when the chrome's keepout

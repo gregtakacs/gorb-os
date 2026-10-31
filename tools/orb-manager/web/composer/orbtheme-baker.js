@@ -3339,9 +3339,11 @@
    * the design's first figures: box 500 us/kpx (restore 73-85 + glass 330-355 +
    * the flush gate's compare), rotated hand ink 1,675 out of XIP (the design
    * assumed 185-232), a carriage 720, and te+dma ~24 ms per flush that no pixel
-   * term carries. AA is DERIVED, not measured — the LVGL
-   * shipped/AA-off pair (1,863 vs 1,724 us/kpx of box) over a 42% ink share — so
-   * every estimate that carries it says so. A keyframe bank has no restore plane
+   * term carries. AA is the painter's own bilinear, measured on Station at v1.1.39
+   * with the bit on and off inside one window: +28 ms per flush over the 16.1 kpx of
+   * smoothed ink this model counts, 1,740 us/kpx (each smoothed texel paid 2.5-2.8 us
+   * over its nearest blend). The first figure, 330, was derived from LVGL's AA-off
+   * arm and was 5x low. A keyframe bank has no restore plane
    * and draws through LVGL; it is priced on the classic rates instead.
    *
    * The rate is capped by the rung the scheduler will pick from this bake's own
@@ -3349,7 +3351,7 @@
    * reads 4 however cheap its commit is. `smooth` is slice 5's grant rule: the
    * dial takes bilinear when the estimate WITH the AA term holds 12, and est_fps
    * is priced with the term exactly when it does. */
-  var EST3 = { RESTORE: 80, STATIC: 420, INK: 1675, CAR: 720, AA: 330, FIXED_MS: 24,
+  var EST3 = { RESTORE: 80, STATIC: 420, INK: 1675, CAR: 720, AA: 1740, FIXED_MS: 24,
                LVGL_PLATE: 555, LVGL_INK: 1300, PAD: 3, SMOOTH_FPS: 12 };
   var RUNG3 = [12, 8, 4, 2, 1];
   function rungClamp3(f) { return f < 4 ? 4 : (f > 15 ? 15 : f); }
@@ -3471,7 +3473,7 @@
              box_kpx: +box.toFixed(1), ink_kpx: +inkK.toFixed(1), aa_kpx: +aaK.toFixed(1),
              glass_cov: +glassCov.toFixed(3), car_kpx: +carInk.toFixed(1), still_kpx: +still.toFixed(1), mover_kpx: +mover.toFixed(1),
              sentence: 'est ' + est + ' fps (' + carrier + ', rung ' + R + ' from ' + r.asks + '; flush ~' +
-               (smooth ? flushAA : flushNear).toFixed(0) + ' ms, ' + (smooth ? 'smooth: AA term estimated, not measured' : 'nearest' + (aaK > 0 && !classic ? ': smoothing would land ' + aaFps + ' fps, AA term estimated' : '')) + ')' };
+               (smooth ? flushAA : flushNear).toFixed(0) + ' ms, ' + (smooth ? 'smooth, AA priced at the Station bench rate' : 'nearest' + (aaK > 0 && !classic ? ': smoothing would land ' + aaFps + ' fps' : '')) + ')' };
   }
 
   /* §31's motion split, as one pure function so the sweep page, the composer's

@@ -8,7 +8,7 @@
  *      host_sched_rung_test.py's founding cases);
  *   2. the price lands inside 15% of the glass on the repo's own shipped Skeleton —
  *      measured on orb-A at v1.1.38: flush avg 95 ms, 4 fps (rung 4);
- *   3. slice 5's grant rule: smoothing only where the estimate WITH the AA term holds 12,
+ *   3. slice 5's grant rule, priced at the AA rate Station measured with the bit on and off (1,740 us/kpx): smoothing only where the estimate WITH the AA term holds 12,
  *      and est_fps is priced with the term exactly then.
  *
  * Run: node tools/watch-composer/_selftest/headless-estimate.test.js
@@ -57,7 +57,7 @@ const VECTORS = [
   ['a 4 bps sweep is capped at 4 however cheap', (G) => still(G, 4, 1).est_fps === 4],
   ['a ticking still dial rides its own beat', (G) => still(G, 4, 0).rung === 4 && still(G, 4, 0).asks === 'hand beat'],
   ['a cheap still dial at rung 15 is granted smoothing', (G) => still(G, 15, 1).smooth === true],
-  ['a granted dial is priced WITH the AA term', (G) => { const e = still(G, 15, 1); return e.est_fps === e.aa_fps && /AA term estimated/.test(e.sentence); }],
+  ['a granted dial is priced WITH the AA term', (G) => { const e = still(G, 15, 1); return e.est_fps === e.aa_fps && /AA priced at the Station bench rate/.test(e.sentence); }],
   ['a dial the filter slows but still grants ships the slower, smoothed estimate', (G) => { const e = medium(G); return e.smooth && e.near_fps === 15 && e.aa_fps === 13 && e.est_fps === 13; }],
   ['a keyframe bank under a 15 sweep rides the panel floor rung 4', (G) => G.estimate3(fake({ bg_mode: 0, bg_frames: 7, bg_fps: 4, bg_loop: 1, gif_frames: 0, tourbillon_n: 0, second_sweep: 1, tick_rate: 15 }, 0)).rung === 4],
   ['a keyframe bank is priced on the classic path', (G) => /keyframe bank \(LVGL\)/.test(G.estimate3(fake({ bg_mode: 0, bg_frames: 7, bg_fps: 4, bg_loop: 1, gif_frames: 0, tourbillon_n: 0, second_sweep: 1, tick_rate: 15 }, 0)).carrier)],
@@ -120,7 +120,7 @@ const cached = (G, k, f) => { let m = memo.get(G); if (!m) memo.set(G, m = {}); 
 const still = (G, rate, sweep) => cached(G, 's' + rate + sweep, () => G.bakeClock3(stillOpts(rate, sweep)).est);
 /* Two wide still hands and a hairline seconds: the AA term costs two rungs of 15, and 13 still clears 12. */
 const medium = (G) => cached(G, 'm', () => G.bakeClock3({ name: 'Est', serial: 1, bakedMs: 1, plate: PL,
-  hands: [hand(0, 52, 250, 200), hand(1, 52, 250, 200), hand(2, 2, 90, 80)], order: [0, 1, 2],
+  hands: [hand(0, 30, 250, 200), hand(1, 30, 250, 200), hand(2, 2, 90, 80)], order: [0, 1, 2],
   scalars: { second_sweep: 1, tick_rate: 15 } }).est);
 const heavy = (G) => cached(G, 'h', () => G.bakeClock3(stillOpts(15, 1, true)).est);
 const skel = (G) => cached(G, 'k', () => G.estimate3(G.verifyBundle3(new Uint8Array(fs.readFileSync(SKEL))).sections[0]));

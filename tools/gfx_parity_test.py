@@ -206,6 +206,13 @@ ACCEPTED = {'fill_sprite_dsc', 'paint_ctx_init',   # the threaded art-bank base
             # could move the beat. See .clinerules "A sweep or a tick on a STILL
             # dial shipped 1 Hz". Every other bank/tick routine stays pinned.
             'tick_base_ms',
+            # Post-extraction instrumentation, landed in be0f7c1 (the flush-path
+            # pricing) without moving this pin, so the parity line has read red
+            # since. The extraction promise held; the report has since grown the
+            # LVGL render-window residual (render ms/s, px/s, us/kpx) that
+            # docs/render-cost-findings-2026-10-30.md §1 measures with. Additive
+            # prints only: the counters, the snapshot and the reset are untouched.
+            'report_fps_if_due',
             # Post-extraction behaviour change, landed in fae7c23 (the app-chip
             # keepout) and only pinned here. The extraction promise held; the commit
             # walk has since grown ONE additive branch: when the chrome's keepout

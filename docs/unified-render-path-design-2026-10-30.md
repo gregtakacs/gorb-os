@@ -317,8 +317,16 @@ plate rate on marked rows and a blend at the ink rate on ink pixels only, which 
 why it wins: LVGL pays the transform rate on every pixel in the box.
 
 ```
-flush_us ≈ box_kpx × RESTORE_US_KPX + ink_kpx × INK_US_KPX
+flush_us ≈ box_kpx × RESTORE_US_KPX + ink_kpx × (INK_US_KPX + AA_US_KPX)
 ```
+
+**`AA_US_KPX` is in the model because the owner chose §8 option (b).** It is **derived, not
+measured** — no painter has ever run bilinear. Derivation from two arms that *are* measured:
+the shipped/AA-off pair (`1,863` vs `1,724` µs/kpx of **box**) prices the 4-tap filter at
+**139 µs/kpx of box**, and the Oct-22 chord measurement puts ink at **~42% of box pixels**
+(`app-platform-plan.md:5898`), so the same cost per *ink* pixel is **~330 µs/kpx**. That is
+a different engine's rate, and the painter's tap loop is not LVGL's, so treat it as an
+upper bound until slice 5 measures it.
 
 Both inputs exist at bake time: box from sprite bbox, pivot and angle sweep plus
 `SWEPT_PAD 3` (`orb_gfx.h:100`); ink coverage from the A8 plane the matte pass already
@@ -326,7 +334,8 @@ walks (`DELTA_TOL 16`, `orbtheme-baker.js:1773`; `inkBoundsOf` / `inkCentroidOf`
 composer). So `bakeClock3` can price an estimate and `splitPolicy3` can answer against
 it, with no new measurement anywhere in the toolchain.
 
-**All three terms are already measured, and the LVGL 1,300 is the wrong one to use.**
+**The two rate terms are measured; the AA term is derived until slice 5 lands. The LVGL 1,300
+is the wrong one to use.**
 
 | term | rate | source |
 |---|---|---|
@@ -335,6 +344,13 @@ it, with no new measurement anywhere in the toolchain.
 | LVGL ink transform share | ~1,300 µs/kpx | difference of the two above |
 | **L4 painter ink (paid after)** | **185-232 µs/kpx** | `render-cost-findings §3`, internal RAM |
 | **restore copy (paid after)** | **~22 µs/kpx** | `display.c` mirror memcpy rate |
+| painter ink **bilinear** (slice 5) | ~200 + **~330** µs/kpx ink | derived: AA-off arm ÷ 42% ink share |
+
+**Projected before/after for Station, on those numbers:** box 68.9 kpx/flush (482 kpx/s ÷
+7.0 fps), ink 28.9 kpx. Nearest flush **7.3 ms**, bilinear **16.9 ms**, against a 67 ms
+deadline at the 15 Hz ceiling. Both pass, and bilinear costs 2.3× the nearest flush — which
+is why §11 slice 5 gates on measured fps rather than on the projection, and why the grant
+stays conditional.
 
 The substitution is 1,300 → ~200 on ink pixels only, and 555 → ~22 on the box. That is
 why the hidden-ink arm reads as an achievable target rather than a horizon. Two numbers
@@ -488,8 +504,8 @@ objects** (`lv_image_set_antialias` at `clock_view.c:304, 312, 322, 326`). Under
 unified path those same hands are re-drawn by the L4 painter, which uses **LVGL's own
 nearest-neighbour rotation maths** (`orb_sched.c:229`) and takes no AA setting.
 
-**So generalizing the gate silently reverses the AA ruling the same day it ships.**
-And it does it *partially*, which is worse than reversing it. The LVGL widgets are not
+**So generalizing the gate silently reverses the AA ruling the same day it ships,**
+and does it *partially*, which is worse than reversing it. The LVGL widgets are not
 hidden under L4 — only the marked rows stop invalidating — so any repaint LVGL starts on
 its own (the activation bounce at `clock_view.c:2470-2479`, an overlay closing, a
 carousel return) re-draws the hands bilinear from the standing grant, and they stay that
@@ -498,27 +514,18 @@ dial would therefore run two edge qualities at once, switching per layer on how 
 that layer happened to move, and the bench would compare a mixed image against a clean
 one.
 
-**This forces one thing into slice 1 regardless of which end state the owner picks: the
-LVGL grant must go false for any dial the painter owns** —
+**This forces one thing into slice 1 regardless of the end state: the LVGL grant must go false for any dial the painter owns** —
 `hand_aa_for() && orb_sched_restore_src() == NULL` — because an untouched grant is not a
 neutral choice, it is an active defect. `hand_aa_for()` is decided at hand-creation time
 (`clock_view.c:2281`), which sits after the plate-source decision (`:2190-2196`), so the
-test is available where it is needed and needs no new plumbing. Two coherent end states
-then remain for slice 5:
+test is available where it is needed and needs no new plumbing.
 
-- **(a) the painter stays nearest**, and the AA grant moves to a cost predicate that
-  also tests L4 activity — a dial on the painter gets nearest hands and its saved
-  AA cost buys box headroom. `host_hand_aa_test.py` inverts the still-dial vector.
-- **(b) the painter gains bilinear** for granted classes — ~4 taps/pixel at the
-  painter's rate, affordable for the ~42% of box pixels that are ink per the Oct-22
-  chord measurement (`app-platform-plan.md:5898`). Bigger change, better ink, and it
-  makes the grant keep its meaning.
-
-**Slice 1 must decide this and say which.** §10 treats (a) as the default because it
-keeps the painter's cost model at two terms; (b) is a follow-up with its own bench.
-The owner's ruling of 2026-10-30 was about tempo and carrier class, not about edge
-sampling, so this design does not claim to reverse it — it reports that the two
-cannot both hold and asks for a call at the §"Owner prompts" gate.
+**The owner chose (b) on 2026-10-30: the painter gains bilinear, in slice 5.** So slice 1
+ships painter-owned dials with nearest hands as an approved interim state — not as a ruling
+on edge quality, and not as a defect. Two consequences follow for whoever implements it: the
+commit body must name the state as interim, and the `hand AA:` boot line must not read like
+a settled grant while it is one. Slice 5 then restores the filter by cost, under the
+acceptance rule in §11.
 
 The AA work splits, and the split is forced by the fallback rather than chosen:
 
@@ -529,11 +536,12 @@ The AA work splits, and the split is forced by the fallback rather than chosen:
   an overlay close, or any other LVGL-initiated repaint redraws them. A granted still
   dial would then show bilinear hands until each one next moved — minutes for an hour
   hand, and longer on a 4 fps ticked dial. Mixing edge quality inside one dial is the
-  one outcome both AA options agree is wrong. The placement works because the source is
+  one outcome the AA ruling cannot tolerate. The placement works because the source is
   decided at `clock_view.c:2190-2196`, before the hands are built at `:2281`.
-- **Slice 5 replaces the carrier-class test with a cost test** (does the estimate leave
-  headroom for the extra taps?), restoring a grant where the arithmetic now affords it.
-  Slice 5 is where option (b) lives, and it stays additive.
+- **Slice 5 implements (b)**: the painter samples bilinear for granted classes, gated by the
+  measured rule in §11 — **a granted dial keeps bilinear only if it holds ≥12 fps on the
+  glass with the filter on; below that it stays nearest and the boot line says why.** Slice
+  5 stays additive, because slice 1 already left every painter-owned dial nearest.
 
 ## 9. Risks, priced
 
@@ -596,8 +604,9 @@ answers false on it rendering exactly as it did at `1366568`.
 1. **`feat(gfx): unify the commit path on a restore source`** — §4.1 predicate +
    selector (both `bg_mode 1` and keyframe guards), §4.3 table gate + setter, §4.4
    print at both build points, §4.2 unchanged trigger, plus the painter's own per-role
-   cost measured (§5) and the **AA denial of §8 in force** — the grant cannot be left to
-   slice 5 without shipping mixed edge quality. No bake change, no scheduler change.
+   cost measured (§5) and the **AA denial of §8 in force**. Nearest hands on painter dials
+   are the approved interim state until slice 5 lands (b); the denial itself is not
+   optional, because an untouched grant ships mixed edge quality. No bake change, no scheduler change.
    Still plates go L4 — including a carriage riding one (the `sprite` carrier), which
    needs no bake change to benefit. Keyframe-bank dials stay on the classic path.
    The gate is `refused == 0 && rows > 0`, never `rows > 0` alone — a partly claimed table
@@ -608,15 +617,15 @@ answers false on it rendering exactly as it did at `1366568`.
    `orb_sched_restore_src()`, not `orb_sched_l4_active()`, so a dial the table gate refused
    loses AA as well. That is harmless for a painter-owned dial that paints none, and it is
    the conservative reading, but it is not "L4 dials only" and must not be reported so.
-2. **`feat(sched): a ticking still dial is an ask, not a pass`** — §6. **WITHDRAWN FROM THE
-   FIRST HANDOFF.** Neither ask form changes a rate: the single `DISTINCT` ask sends a
-   4 Hz dial to 12 Hz and jitters its beat, and the `DISTINCT` + `FLUID` pair lands on the
-   beat the dial already keeps, so the slice buys only governor *visibility* — while
-   forcing sub-4 Hz tickers up to the panel floor, i.e. more ticks than today. If it is
-   built, build it with the `tick_rate >= ORB_SCHED_PANEL_FLOOR` guard and assert on the
-   ask set, not the period. §14 puts the keep-or-drop call to the owner.
-3. **`feat(bake): price the commit at bake time`** — `est_fps` from §5, `sentence`
-   carries it, Motion block shows it, `_devPace()` comment corrected and the carriage
+2. **`feat(sched): a ticking still dial is an ask`** — **DECLINED by the owner, 2026-10-30.**
+   §6 computes the reason: neither ask form changes a picked rate, and either form pushes
+   a sub-4 Hz ticker above the beat it holds today. Reopen only if a ticking still dial is
+   **caught overrunning** on the glass (§14). No other slice depends on it; slice 5 does
+   not need the ask set.
+3. **`feat(bake): price the commit at bake time`** — `est_fps` from §5's three-term model, so a
+   smoothing-granted dial is priced **with** the bilinear ink term and the Motion block shows
+   the filter's cost before slice 5 measures it. Label the AA term estimated — it is derived,
+   not measured (§5). `sentence` carries it, `_devPace()` comment corrected and the carriage
    exemption deleted (§7 points 1-3). No firmware change.
 4. **`feat(bake): a carriage dial's moving plate bakes as a delta bank`** — §3, and
    **baker-only**. Drop the `o.carriage ? 0 : 1` fork at `orbtheme-baker.js:2734` in
@@ -627,14 +636,20 @@ answers false on it rendering exactly as it did at `1366568`.
    refusal the first draft told you to delete fires on `bg_frames && bg_mode == 1` while
    the delta branch writes `bg_frames = 0` (`:2987`) — so it is unreachable for this
    shape, and deleting it would only re-admit a genuinely malformed value pair. Keep it.
-   **Why this is still the riskiest slice:** §2's population table shows the delta tick
-   (`:1772`, stamped at `:3276`), and `orb_clock3.c:513` never sees a delta theme, so it stays a
-   writer. The refusal is **not** dead code to delete: it tests `bg_frames`, which the delta
-   re-admits a shape the reader cannot validate. Owner gate 2 is **withdrawn**; if a later reader
-5. **`feat(clock): hand AA by cost, not by carrier class`** — §6 and §8's option (b) if
-   the owner chose it, restoring a grant the §4.5/slice-1 denial removed for dials whose
-   estimate affords it. Additive by construction, because slice 1 already left every
-   painter-owned dial nearest.
+   **Why this stays the riskiest slice:** §2's population table shows no dial in the fleet
+   has ever run a delta tick beneath a carriage, so the bake diff is the cheap part and
+   the bench is the deliverable. Watch for ghost on the vacated arc and for flash where
+   the plate should hold (§10).
+
+5. **`feat(clock): hand AA by cost, not by carrier class`** — §8 option (b), **approved**.
+   The painter samples bilinear for granted classes. **Acceptance: a granted dial keeps
+   bilinear only if it holds ≥12 fps on the glass with the filter on.** Below that it stays
+   nearest and the boot line says why — the reason prints, rather than being inferred from
+   an absent line, because `render-cost-findings §5` records the `hand AA:` line reporting
+   the shipped rule under an ablation arm. Bench Station bilinear **on and off inside one
+   `--window`**, so the delta is same-window and not two captures. Projected on §5's derived
+   term, Station's flush goes 7.3 → 16.9 ms against a 67 ms ceiling: plausible, unmeasured,
+   and the reason this slice is a bench rather than a diff.
 
 ## 12. Declined and out of scope
 
@@ -660,31 +675,34 @@ Anchors move. Confirm each still says what §1-§7 claims, and stop if one does 
 `Watch Composer.dc.html:471/503/505/527/1232/2541-2545`.
 ## 14. What this design does not decide
 
-- **Is slice 2 worth a firmware commit at all?** §6 shows it changes no cadence in the
-   form that is safe, and worsens cadence in the form that was drafted. Its only return is
-   that hysteresis can see a class it currently cannot measure. If no consumer of that
-   visibility is planned, the honest move is to delete the slice rather than ship a
-   no-op with a green suite.
-- **Whether the v1.1.37 AA grant survives on a dial the painter owns.** §8 lays out the
-  two coherent end states; slice 1 picks one and the owner confirms it at the gate. The
-  design does not silently reverse a ruling made the same day.
+- **Slice 2 — a ticking still dial as a scheduler ask.** **Declined by the owner,
+   2026-10-30.** §6 shows it changes no picked rate in any form, and pushes a sub-4 Hz
+   ticker above the beat it keeps today. **Reopen if a ticking still dial is caught
+   overrunning** — i.e. a dial whose `clock report` fps sits materially below its named
+   `tick_rate` while the governor leaves it alone. Until that is observed on the glass,
+   hysteresis not seeing the class costs nothing measurable, and shipping the ask would
+   be a change with no witness.
+- **The AA end state.** Decided, not open: option (b) — the painter gains bilinear in
+   slice 5, and slice 1 ships nearest as an approved interim state (§8).
 - **Whether to delete the keyframe-bank reader.** No. Installed themes carry it, and the
   reader refusing a theme it cannot restore is worse than the reader painting one badly.
   It becomes unreachable for new bakes and stays correct for old ones.
 - **Whether a moving plate can be restored without the PSRAM canvas.** No, and the
   canvas stays exactly one allocation. A mutating background needs a mutable plane;
   that is the whole reason L4 was built, and it is still true.
-- **Bilinear in the painter.** Option (b) of §8, its own bench, its own commit. Not
-  folded into slice 1.
+- **Whether the bilinear ink coefficient is right.** §5 derives ~330 µs/kpx of ink from the
+  LVGL AA-off arm; that is a different engine's tap loop. Slice 5 measures it on the glass
+  and corrects the estimator, which is why slice 3 labels the term estimated.
 - **Whether other apps (non-dial screens) move to this path.** The commit weld
   (`sched_flush_commit()`, `:806`) already composites an app's layer table over marked
   rows, so the machinery is app-agnostic. Nothing here changes app behaviour, and moving
   an app's rendering onto it is a separate ruling with its own gate.
 
-## 15. Corrections applied after the first draft, and one gate withdrawn
+## 15. Corrections after the first draft; both gates now closed
 
 A reader checked the first draft against the tree and found six defects. All six are
-fixed above; recorded here so nobody re-introduces them from the earlier wording.
+fixed above. The owner has since closed both gates: (b) for AA in slice 5, and slice 2
+declined. Recorded here; recorded here so nobody re-introduces them from the earlier wording.
 
 1. **Slice 4 was baker-only, not an ABI event.** `GEOM_ABI4` is already 4; the delta
    branch already stamps it; the reader's `plate_delta` (`orb_clock3.c:568`) already

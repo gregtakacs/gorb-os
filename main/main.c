@@ -264,10 +264,6 @@ void app_main(void)
 #endif
     ESP_ERROR_CHECK(idle_dim_init());
 
-    /* The sound engine (D39): the codec shares the bus imu_init() created, so it
-     * comes after it. Never fatal — a board without the codec runs silent. */
-    ESP_ERROR_CHECK(orb_sound_init());
-
     /* Launch LVGL handler task */
     xTaskCreate(lvgl_task, "lvgl", 8192, NULL, 5, NULL);
 
@@ -368,6 +364,13 @@ void app_main(void)
         ESP_LOGE(TAG, "the worker refused the file-share start — the card stays the "
                       "dial's until the next boot");
 #endif
+
+    /* The sound engine (D39), after everything that allocates internal RAM. Its
+     * I2S DMA ring and driver state are a few KB of the pool this board runs out of,
+     * and taken earlier they starved esp_wifi_init (ESP_ERR_NO_MEM, measured on the
+     * first flash). The codec shares the bus imu_init() created. Never fatal — a
+     * board without the codec runs silent. */
+    ESP_ERROR_CHECK(orb_sound_init());
 
     /* C2, last act of the ladder: the boot survived to here — the dial is
      * built, the router polls, the network and card tried — so the reset

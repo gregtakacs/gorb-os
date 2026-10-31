@@ -803,15 +803,10 @@ esp_err_t orb_svc_set_enabled(int slot, bool on)
     if (e != ESP_OK) return e;
     char key[12];
     snprintf(key, sizeof key, "e%d", slot);
-    esp_err_t w;
-    if (on) {
-        w = nvs_set_u32(h, key, 1);
-        if (w == ESP_OK) w = nvs_commit(h);
-    } else {
-        w = nvs_erase_key(h, key);           /* off is the erased state, not a stored 0 */
-        if (w == ESP_ERR_NVS_NOT_FOUND) w = ESP_OK;
-        if (w == ESP_OK) w = nvs_commit(h);
-    }
+    /* Off is a stored 0, never an erase: since the default flipped, an erased
+     * word reads as ON and the next boot would walk the app straight back. */
+    esp_err_t w = nvs_set_u32(h, key, on ? 1u : 0u);
+    if (w == ESP_OK) w = nvs_commit(h);
     nvs_close(h);
     return w;
 }

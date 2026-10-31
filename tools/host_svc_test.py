@@ -619,17 +619,21 @@ int main(int argc, char **argv)
        orb_svc_grants(B) == DECL_B);
 
     /* ---- P4a: the enable word and the uninstall wipe ---------------------
-     * The enable ledger is the grants namespace with its own key and the
-     * opposite default; orb_svc_forget_row is uninstall's sweep and the fresh
+     * The enable ledger is the grants namespace with its own key; absent
+     * reads on and off is a stored 0. orb_svc_forget_row is uninstall's sweep and the fresh
      * install's clean slate — it must take g, e, the C2 fault record and the
      * app's own settings namespace, and leave every NEIGHBOUR's words alone
      * (the P4a positional keying is what makes "leave alone" mean leave). */
-    CK("enable: absent is off", orb_svc_enabled(1) == false);
+    CK("enable: absent is on (installed IS enabled)", orb_svc_enabled(1) == true);
     CK("enable: store works", orb_svc_set_enabled(1, true) == ESP_OK);
     CK("enable: reads back on", orb_svc_enabled(1) == true);
     CK("enable: the key is e1 in orb.grants", find_ent("orb.grants", "e1") != NULL);
-    CK("enable: off erases the key, not stores zero",
-       orb_svc_set_enabled(1, false) == ESP_OK && find_ent("orb.grants", "e1") == NULL);
+    CK("enable: off stores zero, not an erase that would read back on",
+       orb_svc_set_enabled(1, false) == ESP_OK && find_ent("orb.grants", "e1") != NULL &&
+       find_ent("orb.grants", "e1")->u32 == 0);
+    CK("enable: the stored zero reads back off", orb_svc_enabled(1) == false);
+    orb_svc_init();
+    CK("enable: and stays off across a reboot", orb_svc_enabled(1) == false);
     orb_svc_set_grant(B, CAP_THEMES, false);         /* beta has a revoke word again */
     ent *fc1 = new_ent("orb.fault", "c1"); fc1->is_str = 0; fc1->u32 = 2;
     ent *fx1 = new_ent("orb.fault", "x1"); fx1->is_str = 0; fx1->u32 = 1;
@@ -637,8 +641,8 @@ int main(int argc, char **argv)
     strcpy(fs1->s, "midnight");
     CK("forget: the row is wiped clean", orb_svc_forget_row(1) == ESP_OK);
     CK("forget: the grant word is gone", find_ent("orb.grants", "g1") == NULL);
-    CK("forget: the enable word is gone", find_ent("orb.grants", "e1") == NULL &&
-       orb_svc_enabled(1) == false);
+    CK("forget: the enable word is gone, so a fresh install lands on",
+       find_ent("orb.grants", "e1") == NULL && orb_svc_enabled(1) == true);
     CK("forget: the fault record is gone", find_ent("orb.fault", "c1") == NULL &&
        find_ent("orb.fault", "x1") == NULL);
     CK("forget: the settings namespace is gone", find_ent("orb.app1", "theme") == NULL);

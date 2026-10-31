@@ -212,11 +212,11 @@ esp_err_t    orb_svc_set_grant(const orb_app_t *a, orb_cap_t cap, bool on);  /* 
  * The enable word lives in the SAME namespace as the grants (orb.grants, key
  * e<slot>): both are owner decisions keyed by registry slot, and the installer
  * may touch neither (D19) — the /apps page reaches both through this door.
- * Absent means OFF, which is what a fresh install's confirm promises; unlike
- * grants, an absent enable word is never "as declared", because an installed
- * app walking unasked is the failure D19's twin half forbids. */
-bool orb_svc_enabled(int slot);                            /* the stored word, absent = false */
-esp_err_t orb_svc_set_enabled(int slot, bool on);          /* on writes 1, off erases the key */
+ * Absent means ON (owner ruling 2026-10-29: installed IS enabled), so the only
+ * durable off is a stored 0 — the recovery door's off-record. An unreadable
+ * ledger still answers false. */
+bool orb_svc_enabled(int slot);                            /* the stored word, absent = true */
+esp_err_t orb_svc_set_enabled(int slot, bool on);          /* on writes 1, off writes 0 */
 /** Uninstall and fresh-install wipe: erase every per-slot word this row owns —
  *  g, e, the c/x/r fault record, the orb.app<slot> settings namespace — and
  *  zero the broker's RAM row. Owner state never outlives the app it names:

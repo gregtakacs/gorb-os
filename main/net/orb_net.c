@@ -2951,6 +2951,35 @@ enum { SCAN_IDLE = 0, SCAN_SCANNING, SCAN_READY, SCAN_FAILED, SCAN_BUSY };
 static volatile int s_scan_state = SCAN_IDLE;
 static int64_t      s_scan_t0_us;   /* when the live scan was armed */
 
+/* True while a scan this door armed is still on the air. The scan route answers
+ * "scanning" at once and the radio keeps sweeping channels after the reply, so
+ * the hub's one-request-at-a-time lane does not keep a big body off the air
+ * during it. A preview streamed into that window queued ~5.7 KB of TCP send
+ * buffer the radio could not drain, and the unsent bytes pinned the internal RAM
+ * the radio's own TX buffers needed: largest block 1.5 KB for ~110 s, every
+ * preview after it torn (bench, orb-A, 2026-10-31 11:28, heap_watch capture).
+ * The big-body doors answer 503 instead; the scan ends in a few seconds. */
+static bool scan_on_air(void)
+{
+    return s_scan_state == SCAN_SCANNING &&
+           esp_timer_get_time() - s_scan_t0_us <= SCAN_TIMEOUT_US;
+}
+
+/* Arm a big-body door's socket to abort, not close, when httpd drops it after
+ * a torn send. A plain close keeps the unsent tail queued in lwIP and retries
+ * it for minutes, and that tail is internal RAM (the 2026-10-31 capture: ~5.7 KB
+ * held ~110 s after the handler had already given up). SO_LINGER {1, 0} makes
+ * the close an RST, which frees the pcb and its queue on the spot. Only for a
+ * stream that has already failed: on a whole response it would cut the tail
+ * the peer has not acked yet. */
+static void sock_abort_on_close(httpd_req_t *req)
+{
+    const int fd = httpd_req_to_sockfd(req);
+    const struct linger lg = { .l_onoff = 1, .l_linger = 0 };
+    if (fd >= 0 && setsockopt(fd, SOL_SOCKET, SO_LINGER, &lg, sizeof lg) != 0)
+        ESP_LOGW(TAG, "abort-on-close not armed on fd %d (errno %d)", fd, errno);
+}
+
 /* A neighbor's SSID is untrusted bytes straight from the air, and an SSID
  * containing a double quote or backslash would corrupt (or be a small injection
  * into) the JSON we hand the browser. Those characters are pathological in real
@@ -4931,6 +4960,11 @@ static esp_err_t h_sd_preview(httpd_req_t *req)
         httpd_resp_set_hdr(req, "Cache-Control", "no-store");
         return httpd_resp_sendstr(req, "{\"error\":\"an upload holds the card\",\"retry\":\"later\"}");
     }
+    if (scan_on_air()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        return httpd_resp_sendstr(req, "{\"error\":\"the radio is scanning\",\"retry\":\"later\"}");
+    }
     char why[128] = "";
     uint16_t w = 0, h = 0;
     orb_asset_ans_t a = orb_theme_preview_read(id, NULL, 0, &w, &h, why, sizeof why);
@@ -5005,6 +5039,7 @@ static esp_err_t h_sd_preview(httpd_req_t *req)
         ESP_LOGE(TAG, "preview: %s after %u of %u B",
                  budgeted ? "out of budget" : "socket refused more",
                  (unsigned)(total - left), (unsigned)total);
+        sock_abort_on_close(req);
     }
     heap_caps_free(px);
     return r;
@@ -5221,6 +5256,12 @@ static esp_err_t h_app_editor(httpd_req_t *req)
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"id is missing\"}");
     }
+    if (scan_on_air()) {   /* the preview door's rule: see scan_on_air */
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"the radio is scanning\",\"retry\":\"later\"}");
+    }
     uint32_t total = 0;
     const char *why = NULL;
     editor_sink_t sink = { .req = req, .err = ESP_OK };
@@ -5245,6 +5286,7 @@ static esp_err_t h_app_editor(httpd_req_t *req)
         }
         ESP_LOGE(TAG, "editor %s: torn after %u B (%s)", stem,
                  (unsigned)sink.total, why && *why ? why : "reader gone");
+        sock_abort_on_close(req);
         return e;
     }
     return e;

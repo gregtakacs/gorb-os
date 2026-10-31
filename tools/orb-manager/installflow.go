@@ -150,7 +150,7 @@ var (
 // spinner over that is indistinguishable from a hang.
 type installStep struct {
 	Step   string `json:"step"`   // a slug, "theme", or "install" for the run itself
-	Action string `json:"action"` // uploaded, installing, installed, enabled, uploaded-theme, storing, stored, rebooting, parking, parked, skipped, done, refused
+	Action string `json:"action"` // uploaded, installing, installed, enabled, uploaded-theme, storing, stored, rebooting, parking, parked, skipped, unchecked, done, refused
 	Note   string `json:"note,omitempty"`
 }
 
@@ -770,9 +770,19 @@ func (s *Server) installClockLive(ip string) bool {
 // point — a hub whose library has no theme says so instead of quietly sending the one a
 // build embedded.
 func (s *Server) installTheme(ctx context.Context, ip string, send func(installStep)) error {
-	tl, err := s.device.ThemeList(ip)
+	// The card walk gets the page's ride, not a bare 8 s control dial: a board that
+	// has just rebuilt an app re-walks a cold card, and an orb short on internal RAM
+	// answered /api/v1/sd in 16 s idle (bench, 2026-10-31). And an unanswered list
+	// is not a failed run. This step only SEEDS a face onto a card that has none;
+	// the apps this run came for have already landed, and refusing the whole run
+	// over the seed's own gate printed "update failed" over a clock that updated.
+	// Unread, the card might be the owner's shelf, so nothing is written; the join
+	// flow's verify still catches a board left with no theme (seedverify.go).
+	tl, err := s.themeListRidingOutLane(ip)
 	if err != nil {
-		return fmt.Errorf("the orb did not answer its theme list: %w", err)
+		send(installStep{Step: "theme", Action: "unchecked",
+			Note: "the orb did not answer its theme list, so no theme was seeded: " + err.Error()})
+		return nil
 	}
 	// The seed's question is "does the CARD carry themes", and card_count is the
 	// firmware's own answer. It is NOT `active`: a fresh board boots the factory

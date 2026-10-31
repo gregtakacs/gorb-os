@@ -141,7 +141,7 @@ func NewGatedStreamClient(respTimeout, firstByte time.Duration, lane Lane, class
 func newClient(respTimeout, firstByte time.Duration, lane Lane, class Class) *Client {
 	return &Client{h: &http.Client{
 		Timeout: respTimeout,
-		Transport: &http.Transport{
+		Transport: &traceRT{class: class, base: &http.Transport{
 			DialContext:           gatedDialer(lane, class),
 			ResponseHeaderTimeout: firstByte,
 			// Deliberately NO MaxConnsPerHost. One connection to an orb at a time
@@ -158,7 +158,7 @@ func newClient(respTimeout, firstByte time.Duration, lane Lane, class Class) *Cl
 			// connection per request, which is what an ungated bench client needs.
 			MaxIdleConnsPerHost: 2,
 			DisableKeepAlives:   true,
-		},
+		}},
 	}}
 }
 
@@ -172,6 +172,25 @@ func (c *Client) WithTimeout(d time.Duration) *Client {
 	cp := *c
 	hc := *c.h
 	hc.Timeout = d
+	cp.h = &hc
+	return &cp
+}
+
+// Preempting is the same client with every dial made under WithPreempt: the
+// page's own transports, whose tickets cut a background holder rather than
+// wait out the read-ahead pass's plane. Only a page-facing client should be
+// built this way — the liveness sweep preempting every ten seconds would leave
+// the pass no dial long enough to finish.
+func (c *Client) Preempting() *Client {
+	cp := *c
+	hc := *c.h
+	rt := c.h.Transport.(*traceRT)
+	tr := rt.base.Clone()
+	dial := tr.DialContext
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dial(WithPreempt(ctx), network, addr)
+	}
+	hc.Transport = &traceRT{class: rt.class, base: tr, preempt: true}
 	cp.h = &hc
 	return &cp
 }

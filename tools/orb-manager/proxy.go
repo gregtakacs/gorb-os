@@ -70,8 +70,10 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 	// the page at all. The poll still gets the interrupt's QUEUE benefit through
 	// the gate's own priority when it contends; it just does not claim the lane
 	// for the next ninety seconds.
+	ctx := r.Context()
 	if route != "/api/v1/status" {
 		s.demandLane(host)
+		ctx = orbnet.WithPreempt(ctx)
 	}
 	target := "http://" + host + ":" + s.device.Port() + route
 	if r.URL.RawQuery != "" {
@@ -113,7 +115,7 @@ func (s *Server) proxyOrb(w http.ResponseWriter, r *http.Request) {
 		}
 		body = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, body)
+	req, err := http.NewRequestWithContext(ctx, r.Method, target, body)
 	if err != nil {
 		proxyError(w, http.StatusBadGateway, err.Error())
 		return

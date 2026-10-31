@@ -247,6 +247,23 @@ type previewHit struct {
 // per card-and-theme, not once per repaint.
 const previewCacheTTL = 10 * time.Minute
 
+// previewBusyTries and previewBusyWait bound the wait on an orb's 503 for a plane:
+// three waits of 1.5 s cover a scan's sweep. Variables so a test need not sleep.
+var (
+	previewBusyTries = 3
+	previewBusyWait  = 1500 * time.Millisecond
+)
+
+// previewOrbBusy says a plane fetch met an orb that cannot serve it this second:
+// a 503 from the device, or a dial that never connected. Neither is a verdict.
+func previewOrbBusy(code int, err error) bool {
+	if err == nil {
+		return code == http.StatusServiceUnavailable
+	}
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
+}
+
 // dropPreviews forgets every cached plane for one address. A theme shipping,
 // replacing, or leaving changes what the card would answer for an id this hub
 // already drew, and a stale thumbnail is a lie the Manage card cannot see.
@@ -585,8 +602,28 @@ func (s *Server) fetchPreviewPlaneOn(ip, id string, fetch func(string, string) (
 
 		s.previewHold()
 		body, code, err := fetch(ip, id)
-		if errors.Is(err, orbnet.ErrTornPreview) {
+		// A plane cut short — too few bytes, or the connection dropped mid-body —
+		// gets one fresh dial. Since 2026-10-31 the orb resets a stream it cannot
+		// finish (orb_net.c sock_abort_on_close), so a stall arrives here as a
+		// read error under a 200, and the next dial usually lands.
+		if errors.Is(err, orbnet.ErrTornPreview) || (err != nil && code == http.StatusOK) {
 			body, code, err = fetch(ip, id)
+		}
+		// A 503 is the orb saying "not this second": a scan on the air or an
+		// upload holding the card (orb_net.c h_sd_preview). Both end in seconds,
+		// so the plane waits them out here rather than reaching the page as a
+		// failed thumbnail. A dial that cannot connect is the same scan with the
+		// radio off-channel (bench, 2026-10-31: dials timed out both before the
+		// orb could say busy and 1.5 s after it did), so it is waited out too. A
+		// read that dies mid-body is not: that is the torn rule above.
+		if previewOrbBusy(code, err) {
+			for try := 0; try < previewBusyTries; try++ {
+				time.Sleep(previewBusyWait)
+				body, code, err = fetch(ip, id)
+				if !previewOrbBusy(code, err) {
+					break
+				}
+			}
 		}
 		s.previewRelease()
 		s.previewMu.Lock()
@@ -1832,46 +1869,35 @@ func (s *Server) pageDemandLive(ip string) bool {
 	return time.Since(t.at) < demandStampLive
 }
 
-// demandLane is the page's claim on one orb's lane, said before the page dials.
-// It does two things the gate cannot do for itself. It closes the socket of a
-// background dial holding the lane — the pass's own work, interruptible by
-// definition, its answer refetchable — and it stamps the demand, which is what
-// makes the pass stand down from starting the NEXT dial. A control dial that
-// finds the lane held by a page relay still gets its honest busy report at
-// 1.5 s: that holder is somebody's answer, and waiting it out is what the page
-// queue's own budgets are for. The order is the whole priority mechanism: the
-// page that interrupts first never queues behind insurance, and the insurance
-// resumes at the pass's next pick once the lane goes quiet.
+// demandLane is the page's claim on one orb's lane, said before the page dials:
+// it stamps the demand, which is what makes the pass stand down from starting
+// the NEXT dial. Cutting the dial the pass already has in flight is the gate's
+// job, not this one's — the page dials under orbnet.WithPreempt, and Acquire
+// closes a background holder only once the page's ticket is in line, so the
+// release grants the page and not whatever was queued before it. (Cutting here,
+// ahead of the dial, handed the lane to the page's own queued preview and left
+// a Wi-Fi scan behind it to be told "busy": bench, 2026-10-31.) A control dial
+// that finds the lane held by a page relay still gets its honest busy report at
+// 1.5 s: that holder is somebody's answer.
 func (s *Server) demandLane(ip string) {
 	s.recordPageDemand(ip)
+}
+
+// warmAborted answers the pass's narrow question: did a page dial cut MY dial,
+// as opposed to the card refusing to answer at all. It reads the gate's own cut
+// stamp, so a strike is only forgiven when the hub itself pulled the plug; a
+// dead card still trips the pass exactly as before. It is called right after
+// the fetch returns, before any other dial can raise a newer cut stamp, and a
+// false positive only defers one strike — the pass's budget is three.
+func (s *Server) warmAborted(ip string, began time.Time) bool {
 	if s.gate == nil {
-		return
+		return false
 	}
 	port := "80"
 	if s.device != nil {
 		port = s.device.Port()
 	}
-	if s.gate.Interrupt(net.JoinHostPort(ip, port)) {
-		s.cardMu.Lock()
-		if s.warmCutAt == nil {
-			s.warmCutAt = map[string]time.Time{}
-		}
-		s.warmCutAt[ip] = time.Now()
-		s.cardMu.Unlock()
-	}
-}
-
-// warmAborted answers the pass's narrow question: did a page dial cut MY dial,
-// as opposed to the card refusing to answer at all. It reads the cut stamp the
-// demand set, so a strike is only forgiven when the hub itself pulled the plug;
-// a dead card still trips the pass exactly as before. It is called right after
-// the fetch returns, before any other dial can raise a newer cut stamp, and a
-// false positive only defers one strike — the pass's budget is three.
-func (s *Server) warmAborted(ip string, began time.Time) bool {
-	s.cardMu.Lock()
-	defer s.cardMu.Unlock()
-	t, ok := s.warmCutAt[ip]
-	return ok && t.After(began)
+	return s.gate.CutSince(net.JoinHostPort(ip, port), began)
 }
 
 // recordPageDemand stamps the last deliberate page read at this address, under

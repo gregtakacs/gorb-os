@@ -1864,6 +1864,8 @@ function describeStep(j) {
     case "stored": return "theme stored";
     case "rebooting": return "the orb is rebooting after the store";
     case "skipped": return j.step + " was already there" + (j.note ? " (" + j.note + ")" : "");
+    // A step the hub could not decide, so it wrote nothing: not a failure of the run.
+    case "unchecked": return j.step + " not checked — " + (j.note || "the orb did not answer");
     case "reseeding": return "the shelf did not verify; refilling the baseline (" + (j.note || "") + ")";
     case "verified": return "verified: " + (j.note || "the board answers clean");
     case "refused": return "refused: " + (j.note || "no reason given");
@@ -2138,7 +2140,12 @@ function applyWifiChoice() {
 $("#j-ssid").onchange = applyWifiChoice;
 
 let scanTimer = null;
-async function loadNetworks(fresh) {
+// busyTries counts the "orb busy" answers this scan has already waited out. Busy
+// is the hub's bus saying a page transfer holds the lane for a second or two —
+// a wait with a name, not a failed scan — so the picker takes the hint quietly,
+// the way themeListWithRetry does, and only a lane still held after four
+// waits is worth printing.
+async function loadNetworks(fresh, busyTries) {
   const jlog = $("#j-log");
   if (!orbIP) { jlog.textContent = "no orb selected yet"; return; }
   const sel = $("#j-ssid");
@@ -2174,6 +2181,12 @@ async function loadNetworks(fresh) {
       ? list.length + " network(s). Pick one, enter the password."
       : "no networks found — a hidden network can still be typed; or try Rescan";
   } catch (e) {
+    const tries = busyTries || 0;
+    if (tries < 4 && String((e && e.message) || e).indexOf("orb busy") >= 0) {
+      jlog.textContent = "waiting for the orb \u2014 a transfer is finishing\u2026";
+      scanTimer = setTimeout(() => loadNetworks(fresh, tries + 1), 1500);
+      return;
+    }
     let msg = "\u2717 scan failed: " + e.message + " — check the IP; Rescan to retry.";
     // 192.168.4.1 is the orb's own AP; a hub wired to the LAN has no route to
     // it, so the honest instruction is to reach the orb's config page from a

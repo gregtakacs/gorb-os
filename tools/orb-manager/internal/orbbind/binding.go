@@ -51,6 +51,16 @@ func LockPort(path string) (*PortLock, error) {
 	return lock, nil
 }
 
+// TryLockFile takes the port locks' own kernel-held exclusive lock on an arbitrary
+// path, creating the file. held=false is contention: another process holds it.
+// The lock dies with the process (flock on Unix, an unshared handle on Windows),
+// so a crashed holder never strands it; the hub's one-instance rule rides on
+// exactly that. On Windows the file cannot be read while it is held, so nothing
+// a second process needs to read may live in it.
+func TryLockFile(path string) (f *os.File, held bool, err error) {
+	return lockPort(path)
+}
+
 // tryLockPort is LockPort without the error text. A caller that waits needs to tell
 // a busy port — worth waiting for, since every holder is bounded — from a filesystem
 // that will not make a lock file at all, which no amount of waiting fixes.

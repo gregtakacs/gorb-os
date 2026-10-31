@@ -5866,3 +5866,29 @@ paragraph stands as landed. -->
 **Hub.** `seed.go` adds `POST /api/orb/seed` (single-device and multi-IP, same gate as `orbApply`: no cardless row, no running app, token-gated). `seedNeeded` reads menu rows, installed apps and themes and answers the missing step list before any write; `seedRun` mounts the card, PUTs the art, installs the theme, POSTs both apps, PUTs the settings (active theme first), PUTs both enables, and streams an NDJSON line per step — `done` for a step already satisfied, `wait` for an in-flight install. `web/tabs.js` shows one "Load the starter apps" row per device, disabled with the honest reason when the device is unseedable, and `web/app.js` fires the same route right after join when a device announces zero themes, so a brand-new board needs no press at all. The UI test pins the shape; `seed_test.go` drives fresh, idempotent and gated passes against a fake grown to answer the seed doors, and the fake's `/api/v1/apps` now reads the menu exactly as `orb_net.c` reads it (chrome row first, live slots in order).
 
 **Tests retargeted.** `tools/host_orbapp_install_test.py`'s D35 sentinel asserted the removed functions; it now asserts their absence in the firmware and the presence of the seed contract — the generators write the three committed artifacts, and the hub's `seedRun` walks the device doors. The whole Go suite passes with the bundle guard armed against the rebuilt tree, and the rebuilt committed bundle carries four images at v1.1.20 — the art bank is gone from the flash set, and the staleness pin (`TestBuiltInBundleMatchesBuildDirWhenPresent`) proves it.
+
+## 41 — The preview stall: a stream's unsent tail pinned the radio, and §17's PSRAM line returns — 2026-10-31
+
+**Symptom.** After a few minutes of normal hub use, orb-A's internal heap sat at ~4 KB free with a 1.5 KB largest block; card reads took 16 s and every theme preview came back torn. It read as a leak that only a reboot cleared.
+
+**Mechanism** (`tools/bench/heap_watch.py` capture plus the hub's `-trace-orb` request log, 11:28). TX buffers were dynamic and internal (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP` off). A preview streamed while the radio was busy — here, a fresh scan that `h_wifi_scan` answers with "scanning" and then keeps sweeping, which the hub's one-request lane cannot see. The stream filled its 5,760 B TCP send buffer, and those unsent bytes held the internal RAM a 1.6 KB TX frame needed to drain them. `h_sd_preview` gave up at 44,392 B (`error in send : 11`) while the hub had received 38,664 B; the ~5.7 KB difference stayed queued in lwIP for ~110 s after the handler returned, and every preview in that window walked into the same wall. The heap came back by itself at 11:30:28 with no reboot.
+
+**Fixes.**
+
+1. `h_sd_preview` and `h_app_editor` answer `503 the radio is scanning` while a scan the door armed is on the air (`scan_on_air`). The hub waits a 503 out (three waits of 1.5 s), and treats a dial that cannot connect the same way, because that is the radio off-channel.
+2. A big-body door that tears arms `SO_LINGER {1,0}` (`sock_abort_on_close`, `CONFIG_LWIP_SO_LINGER=y`): httpd's close becomes an RST and lwIP frees the queued tail at once. The hub retries a mid-body read error once.
+3. The hub closes every orb connection with an RST (`orbnet.abortOnClose`), so a stream it abandons cannot leave a half-closed pcb holding data on the orb.
+4. `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` returns, with `CONFIG_SPIRAM_IGNORE_NOTFOUND=y`. §17.2's failure — httpd's worker stack no longer fitting — has been answered since 2026-10-26 by the stack shield, and httpd came up on every boot today. The failure that remained is a Kconfig trap: the dynamic TX choice depends on `!(SPIRAM_TRY_ALLOCATE_WIFI_LWIP && !SPIRAM_IGNORE_NOTFOUND)`, so turning the PSRAM line on alone silently selects 16 static TX buffers, and `esp_wifi_init` dies (`alloc eb fail(1)`, `ESP_ERR_NO_MEM`). That flip persisted in the local `sdkconfig` after the line was reverted, and three builds of otherwise good source failed Wi-Fi before the `sdkconfig.h` diff showed it. §17.5's ruling — that the radio knobs are the wrong lever for the boot-time budget — is not contradicted: this is a different failure, the steady-state drain, and the boot budget improved rather than moved.
+
+**Measured, orb-A, same scan/preview stress (`tools/bench/scan_preview_stress.sh`: fresh scan, preview straight behind it, card list, heap).**
+
+| | v1.1.40 `e7cfc22` | fixes 1–4 |
+|---|---|---|
+| `post-wifi_start` internal free / largest | 2,223 / 2,048 | 11,507 / 7,168 |
+| `sta-connected` internal free | 15,639 | 26,147 |
+| previews torn mid-stream | 4 of 9 | 0 of 12 (3 whole, 9 refused 503) |
+| worst largest block over the run | 992 | 8,704 |
+| slowest `/api/v1/sd` | 30 s timeout | 3.4 s |
+| stranding | caught at ~2 min | none in 9 min |
+
+Through the hub, seven previews each requested behind a fresh scan all arrived whole (2.4–10.3 s); the orb ended at 21,231 B free, 12,288 B largest.

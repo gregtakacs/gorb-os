@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -804,4 +807,98 @@ func themeNames(t *testing.T, s *Server, ip string) string {
 		names = append(names, asString(m["name"]))
 	}
 	return strings.Join(names, ",")
+}
+
+// An orb that answers a plane with 503 (a scan on the air, an upload holding the
+// card) is asked again after a short wait, and the plane that follows is served
+// and remembered like any other.
+func TestPreviewRidesOutABusyOrb(t *testing.T) {
+	oldWait := previewBusyWait
+	previewBusyWait = time.Millisecond
+	defer func() { previewBusyWait = oldWait }()
+
+	s := newHub()
+	calls := 0
+	fetch := func(ip, id string) ([]byte, int, error) {
+		calls++
+		if calls <= 2 {
+			return []byte(`{"error":"the radio is scanning"}`), http.StatusServiceUnavailable, nil
+		}
+		return []byte("plane"), http.StatusOK, nil
+	}
+	hit, err := s.fetchPreviewPlaneOn("10.0.0.5", "clock-x", fetch)
+	if err != nil || hit.code != http.StatusOK || string(hit.body) != "plane" {
+		t.Fatalf("the plane behind two busy answers came back %d %q (err %v)", hit.code, hit.body, err)
+	}
+	if calls != 3 {
+		t.Errorf("fetched %d times; wanted two busy answers and one plane", calls)
+	}
+}
+
+// After a busy answer, a retry that cannot connect is the same scan still off
+// the channel; the plane behind it is still waited for.
+func TestPreviewRidesOutAFailedDialAfterBusy(t *testing.T) {
+	oldWait := previewBusyWait
+	previewBusyWait = time.Millisecond
+	defer func() { previewBusyWait = oldWait }()
+
+	s := newHub()
+	calls := 0
+	fetch := func(ip, id string) ([]byte, int, error) {
+		calls++
+		switch calls {
+		case 1:
+			return []byte(`{"error":"the radio is scanning"}`), http.StatusServiceUnavailable, nil
+		case 2:
+			return nil, 0, fmt.Errorf("orbnet: %s unreachable: %w", ip,
+				&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("i/o timeout")})
+		}
+		return []byte("plane"), http.StatusOK, nil
+	}
+	hit, err := s.fetchPreviewPlaneOn("10.0.0.6", "clock-y", fetch)
+	if err != nil || hit.code != http.StatusOK {
+		t.Fatalf("a dial that failed during the scan ended the wait: %d (err %v)", hit.code, err)
+	}
+}
+
+// A dial that never connects, before the orb could even say busy, is waited out
+// the same way: the radio was off-channel for a scan.
+func TestPreviewRidesOutAFailedFirstDial(t *testing.T) {
+	oldWait := previewBusyWait
+	previewBusyWait = time.Millisecond
+	defer func() { previewBusyWait = oldWait }()
+
+	s := newHub()
+	calls := 0
+	fetch := func(ip, id string) ([]byte, int, error) {
+		calls++
+		if calls == 1 {
+			return nil, 0, fmt.Errorf("orbnet: %s unreachable: %w", ip,
+				&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("i/o timeout")})
+		}
+		return []byte("plane"), http.StatusOK, nil
+	}
+	hit, err := s.fetchPreviewPlaneOn("10.0.0.7", "clock-z", fetch)
+	if err != nil || hit.code != http.StatusOK {
+		t.Fatalf("a first dial that failed during a scan was not waited out: %d (err %v)", hit.code, err)
+	}
+}
+
+// A body torn mid-read is not a busy orb: it gets the torn rule's single fresh
+// dial and no busy waits on top.
+func TestPreviewDoesNotWaitOutAReadError(t *testing.T) {
+	oldWait := previewBusyWait
+	previewBusyWait = time.Millisecond
+	defer func() { previewBusyWait = oldWait }()
+
+	s := newHub()
+	calls := 0
+	fetch := func(ip, id string) ([]byte, int, error) {
+		calls++
+		return nil, 200, errors.New("orbnet: reading the preview: unexpected EOF")
+	}
+	_, _ = s.fetchPreviewPlaneOn("10.0.0.8", "clock-w", fetch)
+	if calls != 2 {
+		t.Errorf("a read error was fetched %d times; wanted the one torn retry and no busy waits", calls)
+	}
 }

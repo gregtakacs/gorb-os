@@ -120,13 +120,7 @@ type Server struct {
 	warmQueued map[string]int
 	gate       *orbnet.DialGate
 	warm       *orbnet.Client
-	// warmCutAt files the last time a page-facing route closed a background
-	// dial at an address, under cardMu. warmAborted reads it so the pass can
-	// tell an interruption the hub itself paid for from a card that would not
-	// answer: striking for the first would retire the read-ahead for a failure
-	// the page chose.
-	warmCutAt map[string]time.Time
-	specRuns  int
+	specRuns   int
 	// pagePvAt stamps the last preview the PAGE asked for (never one the pass
 	// asked for), under previewMu. It is how the pass learns a live queue is
 	// fetching the same planes and stands down from them.
@@ -402,7 +396,7 @@ func main() {
 	var addr, browser, repo, fwPath, orbPort string
 	var libPath, libApps, libThemes string
 	var noAutoInstall bool
-	var noWindow, allowRemote, allowForeignFirmware, probeCablesOnLaunch bool
+	var noWindow, allowRemote, allowForeignFirmware, probeCablesOnLaunch, traceOrb bool
 
 	flag.StringVar(&addr, "addr", fmt.Sprintf("127.0.0.1:%d", listenPort), "host:port to bind")
 	flag.StringVar(&repo, "repo", "", "path to the gorb-os clone root, for the Theme Editor; empty detects it")
@@ -413,6 +407,7 @@ func main() {
 	flag.BoolVar(&allowForeignFirmware, "allow-foreign", false, "accept a firmware whose image descriptor names a project other than gorb-os; with -firmware it applies to that file, and picked files still need the confirm on the card")
 	flag.StringVar(&browser, "browser", "", "path to a Chromium/Edge binary; empty autodetects, \"browser\" opens a normal tab")
 	flag.BoolVar(&noWindow, "no-window", false, "serve only and print the URL (bench, SSH, CI)")
+	flag.BoolVar(&traceOrb, "trace-orb", false, "log one line per request the hub sends an orb (path, lane class, status, bytes, timing); a bench diagnostic for matching the orb's serial log to the hub's traffic")
 	flag.BoolVar(&allowRemote, "allow-remote", false, "permit -addr to bind somewhere other than loopback; every control route still needs this launch's token")
 	flag.StringVar(&orbPort, "orb-port", "80", "TCP port the hub dials on an orb; the device's httpd listens on 80, and only a bench run against cmd/orbfake has a reason to change it")
 	flag.BoolVar(&noAutoInstall, "no-autoinstall", false, "do not install the library clock onto a freshly joined orb; the Library card Install press still works")
@@ -429,6 +424,9 @@ func main() {
 	// stderr even console-less: its contract is the printed URL.
 	if !noWindow {
 		redirectLogsForGUI()
+	}
+	if traceOrb {
+		orbnet.SetTrace(log.Printf)
 	}
 
 	// Loopback is the whole of the hub's exposure story, so binding off it has to
@@ -447,6 +445,29 @@ func main() {
 	if !isLoopbackHost(addr) {
 		log.Printf("orb-manager: exposed on %s at operator request - mutating routes still require the per-launch token, but anyone on that network can reach the login-free UI", addr)
 	}
+
+	// One hub, ever (instance.go). Claimed before anything below can dial an orb,
+	// reset a cable or bind a port: a second launch opens the running hub's page,
+	// or refuses headless, and does nothing else.
+	idir, ierr := instanceDir()
+	if ierr != nil {
+		log.Fatalf("orb-manager: cannot place the one-hub lock: %v", ierr)
+	}
+	claim, other, held, ierr := claimInstance(idir)
+	if ierr != nil {
+		log.Fatalf("orb-manager: cannot take the one-hub lock in %s: %v", idir, ierr)
+	}
+	if !held {
+		showRunningHub(other, noWindow, browser)
+	}
+	hubClaim = claim
+	// Bind right behind the claim, still before any probe: an older hub binary
+	// that never takes the lock can only be seen here, by the port it holds, and
+	// the refusal must come before this process has reset a single cable. The
+	// address is then announced for the next launch to find; serving starts at
+	// the bottom of main, and connections queue in the listener until then.
+	ln, url := bindHub(addr)
+	hubClaim.announce(url)
 
 	repoDir := strings.TrimSpace(repo)
 	if repoDir == "" {
@@ -496,7 +517,10 @@ func main() {
 	// not a dead orb — a bound set below the device's own cold arithmetic. 30 s
 	// keeps the wedge guard's teeth (a stalled send still dies inside previewTimeout
 	// above) and stops charging a slow card with its own slowness.
-	s.preview = orbnet.NewGatedStreamClient(previewTimeout, 30*time.Second, dial, orbnet.ClassBulk)
+	// Preempting: the page's queue asked for this plane, so its ticket cuts a
+	// read-ahead dial in its way instead of waiting out the pass's plane or
+	// editor region (seconds each, cold) behind it.
+	s.preview = orbnet.NewGatedStreamClient(previewTimeout, 30*time.Second, dial, orbnet.ClassBulk).Preempting()
 	// The warm client is the read-ahead pass's own transport: the stream shape
 	// and first-byte patience s.preview has, under ClassBackground — the one
 	// class the gate may interrupt when a deliberate page read wants the lane.
@@ -685,10 +709,6 @@ func main() {
 	mux := http.NewServeMux()
 	s.routes(mux)
 
-	// Bind before opening anything, so the window is handed the address that is
-	// really listening — the default port can be taken by a stale hub, and a
-	// window pointed at a port nobody holds is just an error page.
-	ln, url := bindHub(addr)
 	log.Printf("orb-manager %s on %s (firmware: %s)", version, url, s.firmwareName())
 
 	srv := &http.Server{Handler: s.log(mux)}
@@ -853,21 +873,20 @@ func opSummary(ops []*op) string {
 	return strings.Join(parts, ", ")
 }
 
-// bindHub listens on addr, falling back to an ephemeral port when it is taken so
-// a second hub instance opens its own window instead of dying on listen. It
-// returns the listener and the URL to hand a browser.
+// bindHub listens on addr and returns the listener and the URL to hand a browser.
+// It used to fall back to an ephemeral port when addr was taken, "so a second hub
+// instance opens its own window" — which is exactly how two hubs came to dial one
+// orb (instance.go). This process already holds the one-hub lock, so whatever
+// holds addr is not a hub this build knows about: an older hub binary that never
+// took the lock, or another program. Either way the answer is to stop, not to
+// start beside it.
 func bindHub(addr string) (net.Listener, string) {
 	ln, err := net.Listen("tcp", addr)
-	if err == nil {
-		return ln, "http://" + ln.Addr().String()
+	if err != nil {
+		log.Fatalf("orb-manager: cannot listen on %s: %v\n  If an older orb-manager is still running there, stop it; "+
+			"two hubs must never run at once. If another program owns the port, pass -addr.", addr, err)
 	}
-	host, _, _ := strings.Cut(addr, ":")
-	ln2, err2 := net.Listen("tcp", host+":0")
-	if err2 != nil {
-		log.Fatalf("listen %s: %v", addr, err)
-	}
-	log.Printf("orb-manager: %s is busy (%v); using %s instead", addr, err, ln2.Addr())
-	return ln2, "http://" + ln2.Addr().String()
+	return ln, "http://" + ln.Addr().String()
 }
 
 // detectRepoDir locates the gorb-os clone root so the manager finds build/ and

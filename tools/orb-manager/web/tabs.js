@@ -30,6 +30,16 @@ function tabOffered(name) {
 // face, which orbTabsStatus reports here on the next status read).
 function showTab(name) {
   if (!tabOffered(name)) name = "orb";
+  // Leaving the Themes face retires its preview queue. A queued plane is a page
+  // dial the hub may not cut, so a queue left streaming under the Wi-Fi face
+  // holds the lane against the scan the operator just asked for, and the scan
+  // comes back "orb busy" (bench, 2026-10-31). Un-loading the face makes the
+  // way back a fresh read; the planes already fetched answer from the hub's
+  // cache, so the return costs the list read and nothing more.
+  if (tabNow === "themes" && name !== "themes") {
+    clearPreviewQueue();
+    tabLoaded.delete("themes");
+  }
   tabNow = name;
   document.querySelectorAll("#orb .tabpane").forEach((p) => {
     p.hidden = !tabPaneVisible(p, name);

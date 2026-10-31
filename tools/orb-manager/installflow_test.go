@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
@@ -138,6 +139,70 @@ func TestThemeStepStandsDownWithoutDialingTheDoor(t *testing.T) {
 	for _, p := range paths {
 		if strings.Contains(p, "/api/v1/apps/theme") {
 			t.Errorf("a skipped theme step dialed the upload door (%s) and rebooted a board it had no reason to touch", p)
+		}
+	}
+}
+
+// The theme step's gate read is a card walk, and a card walk is slow on a board
+// that has just rebuilt an app: /api/v1/sd answered in 16 s idle on a degraded
+// orb (bench, 2026-10-31), and the bare 8 s control dial refused a clock update
+// that had already landed. A walk past 8 s must still be heard.
+func TestThemeStepRidesOutASlowCardWalk(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/sd" {
+			time.Sleep(deviceTimeout + time.Second)
+			w.Write([]byte(`{"mounted":true,"card_count":7,"active":"Skeleton","themes":[{"name":"Skeleton"}]}`))
+			return
+		}
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	s := newHub()
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+
+	step := ""
+	if err := s.installTheme(context.Background(), "127.0.0.1",
+		func(st installStep) { step = st.Action }); err != nil {
+		t.Fatalf("a slow card walk refused the run: %v", err)
+	}
+	if step != "skipped" {
+		t.Errorf("the theme step answered %q; a card with themes read slowly is still a card with themes", step)
+	}
+}
+
+// An unread theme list is not a failed run: the apps the run came for have
+// landed, and the seed's gate could not decide, so it writes nothing and says so.
+func TestThemeStepUnreadCardIsNotARefusal(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/api/v1/sd" {
+			http.Error(w, `{"error":"card walk failed"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	s := newHub()
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+	s.ota = orbnet.NewClient(otaTimeout)
+	s.ota.DevicePort = portOf(srv.URL)
+
+	step := ""
+	if err := s.installTheme(context.Background(), "127.0.0.1",
+		func(st installStep) { step = st.Action }); err != nil {
+		t.Fatalf("an unread theme list refused the run: %v", err)
+	}
+	if step != "unchecked" {
+		t.Errorf("the theme step answered %q; wanted unchecked", step)
+	}
+	for _, p := range paths {
+		if p != "/api/v1/sd" {
+			t.Errorf("an unread card still dialed %s: nothing may be written to a shelf the hub could not read", p)
 		}
 	}
 }

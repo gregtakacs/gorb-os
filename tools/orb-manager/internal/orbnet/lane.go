@@ -124,20 +124,45 @@ func (g *DialGate) CutSince(host string, since time.Time) bool {
 // answer is refetchable) and page work (not). It returns whether a holder was
 // cut, so a caller can price what it just bought. host is the host:port the
 // dial was addressed to, exactly as Acquire takes it.
+//
+// A page dial should not call this ahead of its own dial: the cut's release
+// hands the lane to whoever is ALREADY queued, so a scan that interrupts first
+// and queues second lands behind the page's own preview and is told "busy" at
+// 1.5 s (bench, 2026-10-31). Dial under WithPreempt instead — Acquire cuts the
+// holder after the ticket is in line, so the release grants it.
 func (g *DialGate) Interrupt(host string) bool {
 	g.mu.Lock()
-	st := g.lanes[host]
-	var cut bool
-	if st != nil && st.held && st.bg && st.conn != nil {
-		st.conn.Close() // the release path runs through the closed conn
-		if g.abortedAt == nil {
-			g.abortedAt = map[string]time.Time{}
-		}
-		g.abortedAt[host] = time.Now()
-		cut = true
-	}
+	cut := g.cutLocked(host)
 	g.mu.Unlock()
 	return cut
+}
+
+// cutLocked is Interrupt's body. Caller holds g.mu.
+func (g *DialGate) cutLocked(host string) bool {
+	st := g.lanes[host]
+	if st == nil || !st.held || !st.bg || st.conn == nil {
+		return false
+	}
+	st.conn.Close() // the release path runs through the closed conn
+	if g.abortedAt == nil {
+		g.abortedAt = map[string]time.Time{}
+	}
+	g.abortedAt[host] = time.Now()
+	return true
+}
+
+type preemptKey struct{}
+
+// WithPreempt marks a dial as the page's: when its ticket queues behind a
+// background holder, Acquire cuts that holder so this ticket is granted next.
+// A background ticket never preempts, whatever its context says.
+func WithPreempt(ctx context.Context) context.Context {
+	return context.WithValue(ctx, preemptKey{}, true)
+}
+
+func preempts(ctx context.Context) bool {
+	v, _ := ctx.Value(preemptKey{}).(bool)
+	return v
 }
 
 // SetControlWait overrides the control queue budget. Call it before the gate
@@ -200,16 +225,25 @@ func (g *DialGate) Acquire(ctx context.Context, host string, class Class) (func(
 		return g.releaser(host), nil
 	}
 	// (holder identity is stamped at every grant, below and in release.)
-	// Queue. Control and background insert ahead of the bulk block, FIFO
-	// within a class, control ahead of background. The class belongs to the
-	// TICKET; whether the lane may be interrupted belongs to the HOLDER and
+	// Queue. Control inserts ahead of everything else queued; bulk and
+	// background append, so background — the hub's own insurance — only ever
+	// moves ahead of nothing, and a page's preview is never queued behind the
+	// read-ahead pass's next plane. FIFO within a class. The class belongs to
+	// the TICKET; whether the lane may be interrupted belongs to the HOLDER and
 	// gets stamped at the grant, below.
 	st.seq++
 	w := &laneWaiter{class: class, seq: st.seq, ready: make(chan struct{})}
 	pos := len(st.waiters)
-	if class != ClassBulk {
+	if class == ClassControl {
 		for i, other := range st.waiters {
-			if other.class == ClassBulk || (class == ClassControl && other.class == ClassBackground) {
+			if other.class != ClassControl {
+				pos = i
+				break
+			}
+		}
+	} else if class == ClassBulk {
+		for i, other := range st.waiters {
+			if other.class == ClassBackground {
 				pos = i
 				break
 			}
@@ -218,6 +252,12 @@ func (g *DialGate) Acquire(ctx context.Context, host string, class Class) (func(
 	st.waiters = append(st.waiters, nil)
 	copy(st.waiters[pos+1:], st.waiters[pos:])
 	st.waiters[pos] = w
+	// A page ticket cuts a background holder only now, with the ticket in line:
+	// the cut's release hands the lane to the head of the queue, and a page
+	// ticket stands ahead of every background one there.
+	if class != ClassBackground && preempts(ctx) {
+		g.cutLocked(host)
+	}
 	queueBudget := g.controlWait
 	if queueBudget == 0 {
 		queueBudget = controlQueueWait
@@ -234,11 +274,10 @@ func (g *DialGate) Acquire(ctx context.Context, host string, class Class) (func(
 	// someone's answer, it will not be cut from here, and a wait that dies at
 	// the caller's deadline is the silence lie ErrLaneBusy exists to prevent.
 	// A queued ticket behind a BACKGROUND holder uses the SAME budget, and that
-	// is deliberate: the page dial that outranks the holder does not wait in
-	// this queue at all — the hub interrupts the holder first (see Interrupt),
-	// so by the time a page ticket queues, the only thing left to wait behind
-	// is other page work. A background ticket never spends a busy report: it
-	// yields to everything and waits its own ctx.
+	// is deliberate: a page dial under WithPreempt cut that holder above, with
+	// its ticket already in line, so what is left to wait behind is other page
+	// work. A background ticket never spends a busy report: it yields to
+	// everything and waits its own ctx.
 	var overBudget <-chan time.Time
 	switch class {
 	case ClassControl:
@@ -329,6 +368,20 @@ func (g *DialGate) releaser(host string) func() {
 	return func() { once.Do(func() { g.release(host) }) }
 }
 
+// abortOnClose makes the hub's close of an orb connection an RST, not a FIN.
+// The hub closes only once it is done with a response — read whole, abandoned
+// on a timeout, or cut for a page — so nothing it still wants is lost. A FIN
+// asks the orb to finish its side, and an orb whose stream had stalled keeps
+// the unsent tail queued in internal RAM and retries it for minutes; on
+// 2026-10-31 that tail pinned the radio's TX buffers and tore every preview
+// after it. An RST makes lwIP drop the pcb and its queue at once, and leaves
+// no half-closed socket in the orb's short table either.
+func abortOnClose(c net.Conn) {
+	if tc, ok := c.(*net.TCPConn); ok {
+		_ = tc.SetLinger(0)
+	}
+}
+
 // laneConn is a net.Conn that frees its lane when the transport closes it. With
 // DisableKeepAlives the transport closes the connection once the response body
 // is drained, so the lane is held for exactly one request and no longer.
@@ -402,6 +455,7 @@ func gatedDialer(lane Lane, class Class) func(context.Context, string, string) (
 			release()
 			return nil, derr
 		}
+		abortOnClose(conn)
 		if g, ok := lane.(*DialGate); ok && class == ClassBackground {
 			g.noteConn(addr, conn)
 		}

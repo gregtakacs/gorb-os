@@ -379,3 +379,121 @@ func TestInterruptCutsABackgroundHolderAndNoOther(t *testing.T) {
 		t.Fatal("the control holder never returned — it died for a cut that refused to fire")
 	}
 }
+
+// The 2026-10-31 bench order: the read-ahead pass holds the lane, the page's
+// preview queue has a plane waiting, and the operator presses Wi-Fi. The scan
+// must be the dial the cut hands the lane to. Interrupting before queueing gave
+// it to the preview instead, and the scan came back "busy" at 1.5 s.
+func TestPreemptGrantsThePreemptorNotTheQueue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second) // the pass's cold plane
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+	ip, port := host[:strings.LastIndex(host, ":")], host[strings.LastIndex(host, ":")+1:]
+
+	g := NewDialGate()
+	bg := NewGatedStreamClient(10*time.Second, 8*time.Second, g, ClassBackground)
+	bg.DevicePort = port
+	go func() { _, _ = bg.GetConfig(ip) }()
+	time.Sleep(150 * time.Millisecond) // the holder's socket is filed
+
+	order := make(chan string, 2)
+	go func() { // the page's preview, queued behind the pass without preempting
+		release, err := g.Acquire(context.Background(), host, ClassBulk)
+		if err != nil {
+			t.Errorf("bulk Acquire: %v", err)
+			return
+		}
+		order <- "preview"
+		time.Sleep(50 * time.Millisecond)
+		release()
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	began := time.Now()
+	release, err := g.Acquire(WithPreempt(context.Background()), host, ClassControl)
+	if err != nil {
+		t.Fatalf("the preempting scan was declined: %v", err)
+	}
+	order <- "scan"
+	release()
+	if d := time.Since(began); d > time.Second {
+		t.Fatalf("the preempting scan waited %v; the cut should grant it at once", d)
+	}
+	if first := <-order; first != "scan" {
+		t.Fatalf("the cut handed the lane to the %s queued before the scan", first)
+	}
+	if !g.CutSince(host, began) {
+		t.Fatal("the preempting dial cut the pass and never stamped the cut")
+	}
+}
+
+// Background is insurance: it queues behind the page's bulk work, never ahead.
+func TestBackgroundQueuesBehindBulk(t *testing.T) {
+	g := NewDialGate()
+	const host = "10.0.0.9:80"
+	hold, err := g.Acquire(context.Background(), host, ClassControl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := make(chan string, 3)
+	take := func(name string, class Class) {
+		release, err := g.Acquire(context.Background(), host, class)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			return
+		}
+		order <- name
+		release()
+	}
+	go take("background", ClassBackground)
+	time.Sleep(20 * time.Millisecond)
+	go take("bulk", ClassBulk)
+	time.Sleep(20 * time.Millisecond)
+	go take("control", ClassControl)
+	time.Sleep(20 * time.Millisecond)
+	hold()
+	want := []string{"control", "bulk", "background"}
+	for i, w := range want {
+		if got := <-order; got != w {
+			t.Fatalf("grant %d went to %s; wanted %s (order %v)", i, got, w, want)
+		}
+	}
+}
+
+// A Preempting client's dial carries the mark through the transport: the page's
+// preview transport cuts the pass's in-flight plane rather than wait it out.
+func TestPreemptingClientCutsABackgroundHolder(t *testing.T) {
+	var slow atomic.Bool
+	slow.Store(true)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if slow.CompareAndSwap(true, false) {
+			time.Sleep(5 * time.Second)
+		}
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+	ip, port := host[:strings.LastIndex(host, ":")], host[strings.LastIndex(host, ":")+1:]
+
+	g := NewDialGate()
+	bg := NewGatedStreamClient(10*time.Second, 8*time.Second, g, ClassBackground)
+	bg.DevicePort = port
+	cut := make(chan error, 1)
+	go func() { _, err := bg.GetConfig(ip); cut <- err }()
+	time.Sleep(150 * time.Millisecond)
+
+	page := NewGatedStreamClient(10*time.Second, 8*time.Second, g, ClassBulk).Preempting()
+	page.DevicePort = port
+	began := time.Now()
+	if _, err := page.GetConfig(ip); err != nil {
+		t.Fatalf("the page's dial failed: %v", err)
+	}
+	if d := time.Since(began); d > 2*time.Second {
+		t.Fatalf("the page's dial waited %v behind the pass; it should have cut it", d)
+	}
+	if err := <-cut; err == nil || !LaneCut(err) {
+		t.Fatalf("the pass's dial was not cut: %v", err)
+	}
+}

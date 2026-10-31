@@ -483,8 +483,11 @@ func TestEveryFirmwareDeviceRouteIsAllowedAndFakeable(t *testing.T) {
 	// /api/v1/ota takes a raw image and writes the inactive slot; the hub's rule is
 	// that firmware comes from a validated bundle, so the bare-app path stays closed
 	// (deviceRoutes' comment records why). The captive-portal probes are UI-unused.
+	// /api/v1/debug/panic is the bench's deliberate crash (orb_panic.c's proof): a
+	// page has no business crashing a dial, so the hub never relays it.
 	refused := map[string]bool{"/api/v1/ota": true, "/generate_204": true,
-		"/hotspot-detect.html": true, "/connect/test.php": true}
+		"/hotspot-detect.html": true, "/connect/test.php": true,
+		"/api/v1/debug/panic": true}
 	checked := 0
 	for _, m := range found {
 		uri, method := m[1], strings.ToUpper(m[2])

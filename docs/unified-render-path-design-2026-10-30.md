@@ -122,7 +122,8 @@ deletion: once a moving plate under a carriage bakes as a delta bank, nothing em
 
 ## 4. The mechanism
 
-Four edits. All of them narrow; none of them adds a render path.
+A restore-source selector, a table gate fed by one setter, a print, and an AA denial.
+All of them narrow; none of them adds a render path.
 
 ### 4.1 A restore-source selector replaces the canvas-only gate
 
@@ -157,14 +158,8 @@ guard; reuse it rather than re-deriving. A dial that failed that check never had
 plate to draw and is already refused at load.
 
 `orb_sched_l4_active()` then answers the real question — is there a source — and
-stops naming a storage format:
-
-```c
-bool orb_sched_l4_active(void)
-{
-    return CLK_BG_DIRECT_PUSH && orb_sched_restore_src() != NULL;
-}
-```
+stops naming a storage format. **This is only its first half; the form to implement
+is in §4.3,** which adds the table gate. Do not ship the source test alone.
 
 `orb_sched.c:787` passes `orb_sched_restore_src()` where it passes `s_canvas`, and
 the guard two lines above it (`orb_sched_commit_layers()`, `:784`: `if (!s_canvas)
@@ -232,9 +227,15 @@ bool orb_sched_l4_active(void)   /* a source to restore FROM, and rows to weld w
 }
 ```
 
-`clock_layers_build()` calls the setter immediately before its `layer table:` line, so
-one print carries rows, refusals, and the verdict that consumes both, and the re-apply
-path (`clock_view.c:2471-2479`) re-pushes through the same call. The gate must not read
+`clock_layers_build()` calls the setter **twice**: `orb_sched_set_layer_claim(0, 0)` at
+the top, before either early return, and the real claim immediately before its
+`layer table:` line, so one print carries rows, refusals, and the verdict that consumes
+both. The reset is not optional. The build has two early exits — `:1874` (no adopted
+bundle) and `:1887` (the side-table PSRAM alloc failed) — that never reach the print. A
+theme switch that takes either one would otherwise keep the **previous** dial's
+`rows=N refused=0`, and the gate would answer yes with no table behind it: the exact
+frozen-hands case it exists to prevent. The re-apply path (`clock_view.c:2471-2479`)
+re-pushes through the same calls. The gate must not read
 `clock_layers_refresh()`'s own test (`:2009`, `s_lay_n == 0 || !orb_sched_l4_active()`) —
 that is void and reads the predicate, so a gate depending on it must not depend on it back.
 
@@ -287,6 +288,7 @@ They flip branch because the predicate flipped, not because they were edited.
 `hand_aa_for()` is **not** untouched, and §8 states why it cannot be: the LVGL hand
 widgets stay live under L4 as the fallback, so any repaint LVGL starts itself re-draws
 them with whatever filter the v1.1.37 grant gave them.
+
 ### 4.6 Keyframe banks are the one bucket that needs a new source, and it is deferred
 
 A keyframe plate mutates on advance, so its restore source must be the *shown*
@@ -539,10 +541,38 @@ The AA work splits, and the split is forced by the fallback rather than chosen:
   hand, and longer on a 4 fps ticked dial. Mixing edge quality inside one dial is the
   one outcome the AA ruling cannot tolerate. The placement works because the source is
   decided at `clock_view.c:2190-2196`, before the hands are built at `:2281`.
-- **Slice 5 implements (b)**: the painter samples bilinear for granted classes, gated by the
-  measured rule in §11 — **a granted dial keeps bilinear only if it holds ≥12 fps on the
-  glass with the filter on; below that it stays nearest and the boot line says why.** Slice
-  5 stays additive, because slice 1 already left every painter-owned dial nearest.
+- **Slice 5 implements (b)**: the painter samples bilinear for granted layers, by the
+  mechanism below. Slice 5 stays additive, because slice 1 already left every
+  painter-owned dial nearest.
+
+### Slice 5's mechanism, ruled by the owner on 2026-10-30
+
+**The bake decides; the device reads a flag.** Slice 3's estimate exists only in the
+composer and the bake report, so the firmware has nothing to compute a grant from. The
+owner chose to bake the answer in rather than re-implement the cost model in C or keep a
+hand-maintained allow-list.
+
+- **Carrier: a per-row element flag, `EF_SMOOTH = 1 << 7`**, on hand, shadow and
+  aux-pointer rows. **Not a scalar.** `orb_bundle.c:301` refuses any blob whose scalar
+  count is not exactly `ORB_BUNDLE_SCALARS_N` (26), so a 27th word would stop every
+  installed theme from loading — the ABI event §9 says this work never causes. Element
+  flags are different: the device reader never checks for unknown flag bits (only the
+  writers do, `theme_schema.py:566` / `orbtheme-baker.js:1835`), and bit 7 is free. An old
+  theme reads the bit as 0 (nearest); old firmware ignores it on a new theme. Per-row also
+  matches `hand_aa_for()`'s per-slot shape, so the sweeping-seconds exemption becomes the
+  baker's job: it leaves the bit clear on that row.
+- **Grant rule, at bake time:** the baker sets the bit when §5's `est_fps` **with** the AA
+  term is ≥12.
+- **One decision, both renderers.** `hand_aa_for()` returns the row's bit for a
+  painter-owned dial, and that one answer feeds both `lv_image_set_antialias` in
+  `make_layer()` and the painter's sampling for the layer. Aux pointers use the same
+  function (`clock_view.c:1542`). Splitting the two would recreate §8's mixed-edge defect
+  the other way round on the next bounce.
+- **Acceptance is a bench check, not a runtime governor.** Nothing on the device measures
+  fps and switches AA live. A dial the bake granted must hold ≥12 fps on the glass with
+  the filter on, benched on and off in one `--window`. A miss means the estimator is
+  wrong: correct the AA coefficient (§5), re-bake, and record which point moved — never a
+  device-side override.
 
 ## 9. Risks, priced
 
@@ -582,7 +612,7 @@ that cannot be proven from its own capture is not an arm:
 | A **`sprite`** caged dial (carriage over a still plate) | `bg_frames 0, tourbillon_n > 0` | 4-7 fps via LVGL | 12 fps target | **slice 1** — boot line `src=xip`, no ghost on the vacated arc, no bake change |
 | A caged dial whose **plate moves** (keyframe bank) | `bg_mode 0, bg_frames > 0` | 4 fps, 227 ms/flush (§33.3) | 12 fps target | **slice 4** — baker-only change, blob shrinks, boot line `src=psram`, and the delta tick + `tourbillon_advance` combination runs on glass for the first time (§11) |
 | A still dial with a comp (date/moon) | still plate + role 5/7 | classic | painter, marked boxes | comp still refreshes on rollover; `clock report` comp lines move |
-| **Station, bilinear on vs off** (slice 5) | still plate, AA-granted | painter, nearest hands | painter, bilinear — **kept only at ≥12 fps** | **both arms inside one `--window`**; the boot line carries the verdict *and* the reason, since `render-cost-findings §5` shows the old `hand AA:` line reports the shipped rule under an ablation arm |
+| **Station, bilinear on vs off** (slice 5) | still plate, `EF_SMOOTH` baked | painter, nearest hands | painter, bilinear — **bake grants only at est ≥12; bench must hold ≥12** | **both arms inside one `--window`**; the boot line prints each layer's verdict *and* its source (`flag` / `classic-rule`), since `render-cost-findings §5` shows the old `hand AA:` line reports the shipped rule under an ablation arm. A miss corrects the estimator, not the device |
 
 **On the pixel-parity check.** `fbgrab --diff` against a classic-path capture is not a
 same-instant comparison: the classic arm needs its own `CLK_BG_DIRECT_PUSH=0` flash, and
@@ -643,15 +673,19 @@ answers false on it rendering exactly as it did at `1366568`.
    the bench is the deliverable. Watch for ghost on the vacated arc and for flash where
    the plate should hold (§10).
 
-5. **`feat(clock): hand AA by cost, not by carrier class`** — §8 option (b), **approved**.
-   The painter samples bilinear for granted classes. **Acceptance: a granted dial keeps
-   bilinear only if it holds ≥12 fps on the glass with the filter on.** Below that it stays
-   nearest and the boot line says why — the reason prints, rather than being inferred from
-   an absent line, because `render-cost-findings §5` records the `hand AA:` line reporting
-   the shipped rule under an ablation arm. Bench Station bilinear **on and off inside one
-   `--window`**, so the delta is same-window and not two captures. Projected on §5's derived
-   term, Station's flush goes 7.3 → 16.9 ms against a 67 ms ceiling: plausible, unmeasured,
-   and the reason this slice is a bench rather than a diff.
+5. **`feat(clock): hand AA by cost, not by carrier class`** — §8 option (b), **approved**,
+   by §8's "Slice 5's mechanism": the baker sets `EF_SMOOTH` (bit 7) on a hand, shadow or
+   aux row when `est_fps` with the AA term is ≥12; `hand_aa_for()` returns that bit for a
+   painter-owned dial and drives **both** the LVGL widget and the painter; the painter
+   gains a bilinear path. Both writers' `EF_ALL` learn the bit (`theme_schema.py:566`,
+   `orbtheme-baker.js:1835` in both copies), with a vector and a mutant. No scalar, no ABI
+   event, no reader refusal. **Acceptance is a bench check:** a granted dial holds ≥12 fps
+   on the glass with the filter on, Station benched on and off inside one `--window`; a
+   miss corrects the estimator, not the device. The boot line prints each layer's verdict
+   and its source rather than leaving it to be inferred, because `render-cost-findings §5`
+   records the `hand AA:` line reporting the shipped rule under an ablation arm. Projected
+   on §5's derived term, Station's flush goes 7.3 → 16.9 ms against a 67 ms ceiling:
+   plausible, unmeasured, and the reason this slice is a bench rather than a diff.
 
 ## 12. Declined and out of scope
 
@@ -671,9 +705,10 @@ Anchors move. Confirm each still says what §1-§7 claims, and stop if one does 
 `orb_sched.c:144/186-189/202/211-217/261/504/509/514/520/525-529/540-545/565/780/787/806/844` ·
 `orb_sched.h:42-47/63/117/159-171/189/190` · `orb_gfx.c:508/531-545/597` ·
 `orb_gfx.h:36-43/100/104/139` ·
-`clock_view.c:269/288/509/534/697/768/1202/1631/1784/1979/2007-2011/2190-2196/2281/2305-2310/2471-2479` ·
-`orb_clock3.c:513/568/808-827/848/1072` ·
-`orbtheme-baker.js:1772/2730-2734/2987/3276/3324-3336/3368/3378` ·
+`clock_view.c:269/288/509/534/697/768/1202/1542/1631/1784/1874/1887/1979/2007-2011/2190-2196/2281/2305-2310/2471-2479` ·
+`orb_clock3.c:513/568/808-827/848/1072` · `orb_bundle.c:301` · `orb_bundle.h:62` ·
+`theme_schema.py:566` ·
+`orbtheme-baker.js:1772/1835/2730-2734/2987/3276/3324-3336/3368/3378` ·
 `Watch Composer.dc.html:471/503/505/527/1232/2541-2545`.
 ## 14. What this design does not decide
 
@@ -685,7 +720,9 @@ Anchors move. Confirm each still says what §1-§7 claims, and stop if one does 
    hysteresis not seeing the class costs nothing measurable, and shipping the ask would
    be a change with no witness.
 - **The AA end state.** Decided, not open: option (b) — the painter gains bilinear in
-   slice 5, and slice 1 ships nearest as an approved interim state (§8).
+   slice 5, and slice 1 ships nearest as an approved interim state (§8). The mechanism is
+   decided too: a baked per-row `EF_SMOOTH` flag, granted at estimated ≥12 fps and
+   accepted on the bench, with no runtime governor.
 - **Whether to delete the keyframe-bank reader.** No. Installed themes carry it, and the
   reader refusing a theme it cannot restore is worse than the reader painting one badly.
   It becomes unreachable for new bakes and stays correct for old ones.
@@ -734,6 +771,13 @@ from the earlier wording.
    governor visibility, while pushing sub-4 Hz tickers to the panel floor. §6 has both
    computed tables; the owner declined the slice on 2026-10-30 (§14), and the reopen
    condition is a dial caught overrunning on the glass.
+8. **Second review pass.** The layer claim could go stale: `clock_layers_build()`'s early
+   returns at `:1874`/`:1887` skipped the setter, so it now resets the claim at the top
+   (§4.3) and slice 1 tests that exit. §4.1's two-part predicate was marked as superseded
+   by §4.3's, so it can't be copied on its own. Slice 5 had no on-device input for its
+   cost test and no stated meaning for "≥12 fps". The owner ruled both: a baked per-row
+   `EF_SMOOTH` flag (not a scalar, which `orb_bundle.c:301` would refuse on every
+   installed theme) and a bench acceptance check rather than a runtime governor (§8).
 
 Tool-path and method corrections: the headless suites live under
 `tools/watch-composer/_selftest/`, not `tools/watch-composer/`; the `fbgrab --diff`

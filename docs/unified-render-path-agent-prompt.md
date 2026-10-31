@@ -70,7 +70,11 @@ node tools/watch-composer/_selftest/headless-regression.test.js  # all 15 preset
    claim crosses the seam one way only — the dial calls
    `orb_sched_set_layer_claim(rows, refused)` from `clock_layers_build()`. Do not read a
    `clock_view.c` static from `orb_sched.c`, and do not source the count from the broker
-   table, which the broker wipes while the dial is foreground.
+   table, which the broker wipes while the dial is behind the glass. The claim is reset to
+   `(0, 0)` at the **top** of `clock_layers_build()`, before its two early returns
+   (`clock_view.c:1874`, no adopted bundle; `:1887`, side-table alloc failed) — otherwise
+   a theme switch that takes either exit keeps the previous dial's claim and the gate
+   answers yes with no table behind it.
 2. **A still plate restores from read-only XIP flash** (`blob() + clk_theme.plate_off`),
    which allocates nothing. The PSRAM canvas stays exactly one 434,312 B allocation, and
    a `bg_mode 1` dial whose canvas failed stays on the classic path (guard it explicitly).
@@ -80,14 +84,12 @@ node tools/watch-composer/_selftest/headless-regression.test.js  # all 15 preset
    first-class carrier — `splitPolicy3`'s `out('sprite', …)` at `:3368`/`:3378`, "plate
    rides the still". So slice 1 promotes those dials to the painter with no bake change
    at all, and only caged dials with a genuinely moving plate wait for slice 4.
-4. **A ticking still dial becomes a scheduler ask** — and the `anim` test at
-   `orb_sched.c:540-544` has to grow the matching term in the same commit, because
-   `:544` returns the raw hand beat before `sched_fill_asks()` is ever consulted. An ask
-   without that term is a commit that changes nothing.
+4. **A ticking still dial stays off the scheduler's ask set.** Slice 2 is declined (see
+   below and design §6/§14). Do not add the ask, the `anim` term, or either one alone.
 5. **The AA grant goes false on any painter-owned dial, in slice 1.** The LVGL widgets
    stay live as the fallback, so a standing grant leaks bilinear hands on the next
-   bounce. Denying it is not a style choice; leaving it is a defect. The cost-based test
-   that restores it is slice 5, under a measured ≥12 fps gate.
+   bounce. Denying it is not a style choice; leaving it is a defect. Slice 5 restores it
+   from a baked per-row `EF_SMOOTH` flag, accepted on the bench at ≥12 fps.
 6. **There is no ABI bump anywhere in this work.** `GEOM_ABI4` is already 4. Slice 4
    changes which shape the baker emits, inside a dialect the reader accepts today.
 
@@ -124,9 +126,12 @@ Evidence, same glass, same `--window 8:20`, and state whether the build had
 - Sector and Skeleton: **unchanged** fps, boot line `src=psram`, and
   `gfx_parity_test.py` identical. A regression here means the selector is not a
   superset of the old gate — stop and fix before continuing.
-- **The table gate, tested by breaking it:** flash an arm whose layer build is forced to
-  claim zero rows and confirm the dial still renders through LVGL rather than freezing.
-  A still dial that goes dark is the one failure this slice must not ship.
+- **The table gate, tested by breaking it, three ways:** (1) a layer build forced to
+  claim zero rows, (2) one forced to refuse a single row, and (3) a theme switch from an
+  L4 dial into a build that takes the `:1887` early return (force the side-table alloc to
+  fail). Each must print `l4=no` and keep rendering every hand through LVGL. Arm 3 is the
+  stale-claim case: it passes only if the claim was reset at the top of the build. A
+  still dial that goes dark or drops a hand is the one failure this slice must not ship.
 - A still dial with a complication (moon/phases) and a date window: both refresh on
   rollover, no ghost, no flash. For a `fbgrab --diff` against the classic path, pin the
   time first (design §10) or say plainly that you compared by inspection instead.
@@ -190,17 +195,38 @@ frame-by-frame capture shows no ghost along the vacated orbit arc.
 
 ### Slice 5 — `feat(clock): hand AA by cost, not by carrier class`
 
-Design §8 option (b), **approved**. `hand_aa_for()` (`clock_view.c:269`) reads the §5 
-estimate’s headroom instead of `bg_mode`, and the painter samples bilinear for granted 
-classes. **Acceptance is measured, not argued: a granted dial keeps bilinear only if it 
-holds ≥12 fps on the glass with the filter on. Below that it stays nearest, and the boot 
-line prints the reason** — not an inferred absence, because `render-cost-findings §5` 
-records the old `hand AA:` line cheerfully reporting the shipped rule under an ablation 
-arm. Bench Station with bilinear **on and off inside one `--window`** so the delta is 
-same-window. Projected on §5’s derived term, Station goes 7.3 → 16.9 ms per flush 
-against a 67 ms ceiling: plausible, unmeasured, and the reason this slice is a bench. 
-Slice 1 already left every painter-owned dial nearest, so this slice can only add 
-quality back — it can never be where a mixed-edge dial gets created.
+Design §8 option (b), **approved**, with the mechanism the owner ruled on 2026-10-30
+(design §8 "Slice 5's mechanism"). Four parts, one commit:
+
+1. **The bake decides, and carries the answer as a row flag.** A new element flag
+   `EF_SMOOTH = 1 << 7` on a hand, shadow or aux-pointer row means "this layer samples
+   bilinear". The baker sets it from slice 3's estimate: smooth is granted when
+   `est_fps` **with** the AA term is ≥12. Add the bit to `EF_ALL` in **both** writers —
+   `tools/theme_schema.py:566` and `orbtheme-baker.js:1835`, in both byte-identical baker
+   copies — with a vector and a mutant. **Not a scalar:** `orb_bundle.c:301` refuses any
+   blob whose scalar count is not exactly 26, so a 27th word would stop every installed
+   theme from loading. The device reader does not check element flag bits, so an old
+   theme reads the bit as 0 (nearest) and old firmware ignores it on a new theme.
+2. **One decision drives both renderers.** `hand_aa_for()` (`clock_view.c:269`) returns
+   the row's `EF_SMOOTH` bit for a painter-owned dial (and keeps today's rule for a
+   classic-path dial). The same answer feeds `make_layer()`'s `lv_image_set_antialias` and
+   the painter's sampling for that layer, and covers aux pointers too (`:1542` calls the
+   same function). If the painter goes bilinear while the LVGL widget stays nearest, the
+   next bounce shows mixed edges again, the other way round.
+3. **The painter gains a bilinear path** for layers whose job carries the flag.
+4. **The boot line prints the verdict per layer, with its source** (`smooth=flag` /
+   `nearest=flag` / `nearest=classic-rule`). Do not infer it from an absent line —
+   `render-cost-findings §5` records the old `hand AA:` line reporting the shipped rule
+   under an ablation arm.
+
+**Acceptance is a bench check, not a runtime governor.** Nothing on the device measures
+fps and switches AA live. Bench Station with the flag on and off **inside one
+`--window`**. A dial the bake granted must hold ≥12 fps on the glass with the filter on.
+If one does not, the estimator was wrong: correct the AA coefficient in slice 3's model
+(§5), re-bake, and report which point moved. Do not add a device-side override. Projected
+on §5's derived term, Station goes 7.3 → 16.9 ms per flush against a 67 ms ceiling:
+plausible, unmeasured, and the reason this slice is a bench. Slice 1 already left every
+painter-owned dial nearest, so this slice can only add quality back.
 
 ### After the last firmware commit
 
@@ -239,6 +265,6 @@ rather than inventing a refusal.
 ## Report format
 
 Per slice: the commit SHA, the command run, the quoted log line, the number, and one
-sentence on whether the slice's hypothesis held. Then a table of the four bench rows
-against their `1366568` baselines. Then what you would do next, in one paragraph, and
+sentence on whether the slice's hypothesis held. Then a table of every design §10 row
+these four slices touch, against its `1366568` baseline. Then what you would do next, in one paragraph, and
 what this measurement invalidated in the design doc — if nothing did, say so plainly.

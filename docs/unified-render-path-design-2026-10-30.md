@@ -301,7 +301,7 @@ caged classes separate cleanly, and the distinction matters for what slice 1 buy
 | keyframe bank — carriage over a moving plate | `bg_mode 0, bg_frames > 0` | `ORB_SCHED_PANEL_FLOOR` = 4 | no, until slice 4 |
 
 
-## 5. The two-term cost model, and why it makes the editor number honest
+## 5. The three-term cost model, and why it makes the editor number honest
 
 Measured on orb-A, Station, device-time windows (`render-cost-findings §3`):
 
@@ -394,7 +394,7 @@ vector that **fails when the `anim` term is omitted**, not merely one that passe
 the ask is present. Read the two subsections below before building any of it — the rung
 claim this paragraph was written around turned out to be false.
 
-**The pick does not honour the ask, and this is where slice 2 is still open.** The claim
+**The pick does not honour the ask — the finding that led the owner to decline slice 2.** The claim
 that "4/8/12 are already rungs so they pick cleanly" is **false**, and running
 `orb_sched_pick_rung()` (`orb_sched.c:426-473`) by hand shows why: the cap starts at the
 *seeded floor*, not at the ask (`:431`), and the ladder is searched for the highest rung
@@ -457,9 +457,9 @@ rate, i.e. `!second_sweep && tick_rate >= ORB_SCHED_PANEL_FLOOR`, and file the
 tickers stay on the raw hand beat. The commit then changes no observable cadence on any
 dial — which is honest but also means **the only proof it did anything is the ask set
 itself**, so the host table must assert on the asks filed, not on the period. If
-visibility with no rate change is not worth a firmware slice, the correct action is to
-drop slice 2 rather than ship a no-op with a green suite; that is a judgement for the
-owner, recorded in §14.
+visibility with no rate change is not worth a firmware slice, the correct action is to drop
+slice 2 rather than ship a no-op with a green suite. **The owner took that option on
+2026-10-30:** the slice is declined, and §14 records the reopen condition.
 
 `ORB_SCHED_FPS_CEILING` is **15** (`orb_sched.h:189`) and `ORB_SCHED_PANEL_FLOOR` 4
 (`:190`). The `CLK_BG_MAX` comment at `orb_sched.c:49-52` is the plate-bank bound,
@@ -581,6 +581,7 @@ that cannot be proven from its own capture is not an arm:
 | A **`sprite`** caged dial (carriage over a still plate) | `bg_frames 0, tourbillon_n > 0` | 4-7 fps via LVGL | 12 fps target | **slice 1** — boot line `src=xip`, no ghost on the vacated arc, no bake change |
 | A caged dial whose **plate moves** (keyframe bank) | `bg_mode 0, bg_frames > 0` | 4 fps, 227 ms/flush (§33.3) | 12 fps target | **slice 4** — baker-only change, blob shrinks, boot line `src=psram`, and the delta tick + `tourbillon_advance` combination runs on glass for the first time (§11) |
 | A still dial with a comp (date/moon) | still plate + role 5/7 | classic | painter, marked boxes | comp still refreshes on rollover; `clock report` comp lines move |
+| **Station, bilinear on vs off** (slice 5) | still plate, AA-granted | painter, nearest hands | painter, bilinear — **kept only at ≥12 fps** | **both arms inside one `--window`**; the boot line carries the verdict *and* the reason, since `render-cost-findings §5` shows the old `hand AA:` line reports the shipped rule under an ablation arm |
 
 **On the pixel-parity check.** `fbgrab --diff` against a classic-path capture is not a
 same-instant comparison: the classic arm needs its own `CLK_BG_DIRECT_PUSH=0` flash, and
@@ -701,8 +702,9 @@ Anchors move. Confirm each still says what §1-§7 claims, and stop if one does 
 ## 15. Corrections after the first draft; both gates now closed
 
 A reader checked the first draft against the tree and found six defects. All six are
-fixed above. The owner has since closed both gates: (b) for AA in slice 5, and slice 2
-declined. Recorded here; recorded here so nobody re-introduces them from the earlier wording.
+fixed above. The owner has since closed both gates: option (b) for AA in slice 5, and
+slice 2 declined. The list records the reader's findings so nobody re-introduces them
+from the earlier wording.
 
 1. **Slice 4 was baker-only, not an ABI event.** `GEOM_ABI4` is already 4; the delta
    branch already stamps it; the reader's `plate_delta` (`orb_clock3.c:568`) already
@@ -729,8 +731,8 @@ declined. Recorded here; recorded here so nobody re-introduces them from the ear
    times the ticks plus beat jitter through `clock_view.c:365-367`. The `FLUID`-pair fix
    lands on the beat the dial already keeps, so the slice changes no rate: it buys only
    governor visibility, while pushing sub-4 Hz tickers to the panel floor. §6 has both
-   computed tables; §14 puts keep-or-drop to the owner, and the slice is out of the
-   first handoff either way.
+   computed tables; the owner declined the slice on 2026-10-30 (§14), and the reopen
+   condition is a dial caught overrunning on the glass.
 
 Tool-path and method corrections: the headless suites live under
 `tools/watch-composer/_selftest/`, not `tools/watch-composer/`; the `fbgrab --diff`

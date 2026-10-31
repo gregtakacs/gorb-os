@@ -1,10 +1,10 @@
-# Agent prompt: the unified commit path — one renderer for every dial (5 commits, bench-verified)
+# Agent prompt: the unified commit path — one renderer for every dial (4 commits, bench-verified)
 
 You are implementing `docs/unified-render-path-design-2026-10-30.md` in
-`/home/greg/docker/Projects/gorb-os`, in the five commits its §11 names, on the bound
-orb, with no owner input except at the one gate named in "Stop and ask" below. The
-owner ruled the shape on 2026-10-30; that ruling is transcribed in the design doc and
-binds everything.
+`/home/greg/docker/Projects/gorb-os`, in the four active commits its §11 names, on the bound
+orb. **Both owner gates are closed** (see "Gates are closed"): option (b) for AA, and slice
+2 declined. The owner ruled the shape on 2026-10-30; that ruling is transcribed in the
+design doc and binds everything.
 
 Precedence order: (1) this prompt, (2) `docs/unified-render-path-design-2026-10-30.md`,
 (3) `docs/app-platform-plan.md` §31/§33/§40 and `docs/render-cost-findings-2026-10-30.md`,
@@ -87,15 +87,15 @@ node tools/watch-composer/_selftest/headless-regression.test.js  # all 15 preset
 5. **The AA grant goes false on any painter-owned dial, in slice 1.** The LVGL widgets
    stay live as the fallback, so a standing grant leaks bilinear hands on the next
    bounce. Denying it is not a style choice; leaving it is a defect. The cost-based test
-   that may restore it is slice 5.
+   that restores it is slice 5, under a measured ≥12 fps gate.
 6. **There is no ABI bump anywhere in this work.** `GEOM_ABI4` is already 4. Slice 4
    changes which shape the baker emits, inside a dialect the reader accepts today.
 
 
 ## The slices, in order
 
-**Implement slices 1, 3, 4 and 5. Slice 2 is blocked — see its text; do not reconstruct it
-from the design draft, which the rung computation in §6 disproved.**
+**Implement slices 1, 3, 4 and 5. Slice 2 is declined — do not implement it and do not
+reconstruct it from the design draft, which the rung computation in §6 disproved.**
 
 Each is one coherent claim, benched alone, revertable alone. Do not merge two.
 
@@ -114,7 +114,8 @@ and the §4.3 line prints the decision at every build pass, co-located with the 
 vectors and mutants with it, naming the reason in the test comment. Do not defer this:
 the widgets stay live, so a standing grant repaints bilinear hands on the next bounce
 and the dial shows two edge qualities until each hand happens to move. Record in the
-commit body which end state (design §8 a or b) the owner chose for slice 5.
+commit body that nearest is the **interim state** approved for slice 1, with option (b)
+landing in slice 5.
 
 Evidence, same glass, same `--window 8:20`, and state whether the build had
 `DISPLAY_BENCH` on — `orb_sched.c:844` means bench and non-bench figures differ:
@@ -136,7 +137,7 @@ Evidence, same glass, same `--window 8:20`, and state whether the build had
   vacated carriage arc that never restores, because the chord marks are the only thing
   standing between this dial and a visible rectangle.
 
-### Slice 2 — **BLOCKED, do not implement.** `feat(sched): a ticking still dial is an ask`
+### Slice 2 — **DECLINED by the owner, 2026-10-30. Do not implement.**
 
 Design §6 has the computed rung tables. Summary of why it is out of this handoff: a
 single `DISTINCT` ask sends a 4 Hz dial to 12 Hz (the cap seeds from the floor, not the
@@ -144,9 +145,10 @@ ask) and jitters its beat through the wall-clock quantiser at `clock_view.c:365-
 `DISTINCT` + `FLUID` pair lands on the beat the dial already keeps, so it changes no rate
 at all; and either form pushes a sub-4 Hz ticker up to `ORB_SCHED_PANEL_FLOOR`, which is
 more ticks than that dial takes today. Its only return is governor visibility, and the
-owner has not been asked whether that is worth a commit (§14 of the design).
+owner declined it on that reading. **Reopen only if a ticking still dial is caught
+overrunning on the glass** — design §14 states the condition.
 
-If it is later approved, it needs all three of: the `anim` term at `orb_sched.c:540-544`
+If it is ever revived, it needs all three of: the `anim` term at `orb_sched.c:540-544`
 (without it the ask is never consulted at `:545` and the commit is a verified no-op), the
 `tick_rate >= ORB_SCHED_PANEL_FLOOR` guard, and host vectors that assert on the **ask set**
 rather than the period — plus a mutant that fails when the `anim` term is removed. Fix
@@ -154,8 +156,11 @@ rather than the period — plus a mutant that fails when the `anim` term is remo
 
 ### Slice 3 — `feat(bake): price the commit at bake time`
 
-Design §5 and §7. `bakeClock3` returns `est_fps` from `box_kpx × RESTORE + ink_kpx × INK`
-using the §5 table's coefficients; `splitPolicy3`'s `sentence` carries it; the Motion
+Design §5 and §7. `bakeClock3` returns `est_fps` from `box_kpx × RESTORE + ink_kpx × (INK + AA)`
+using the §5 table's coefficients, **with `AA = 0` only for a dial that does not take
+smoothing** — so the Motion block prices the filter before slice 5 measures it, and labels
+it estimated because the AA term is derived from LVGL's tap loop, not measured on the
+painter; `splitPolicy3`'s `sentence` carries it; the Motion
 block shows carrier class + estimate + the rung the pick will land on. Fix
 `_devPace()`'s comment (`Watch Composer.dc.html:509-510`) and delete the carriage
 exemption at `:526` so it gets a number. No firmware change in this commit. Evidence:
@@ -185,10 +190,17 @@ frame-by-frame capture shows no ghost along the vacated orbit arc.
 
 ### Slice 5 — `feat(clock): hand AA by cost, not by carrier class`
 
-Design §6 and §8, and only what §8's option (b) or a restored grant requires:
-`hand_aa_for()` (`clock_view.c:269`) reads the §5 estimate's headroom instead of
-`bg_mode`. Slice 1 already left every painter-owned dial nearest, so this slice can only
-add quality back — it can never be the place a mixed-edge dial gets created.
+Design §8 option (b), **approved**. `hand_aa_for()` (`clock_view.c:269`) reads the §5 
+estimate’s headroom instead of `bg_mode`, and the painter samples bilinear for granted 
+classes. **Acceptance is measured, not argued: a granted dial keeps bilinear only if it 
+holds ≥12 fps on the glass with the filter on. Below that it stays nearest, and the boot 
+line prints the reason** — not an inferred absence, because `render-cost-findings §5` 
+records the old `hand AA:` line cheerfully reporting the shipped rule under an ablation 
+arm. Bench Station with bilinear **on and off inside one `--window`** so the delta is 
+same-window. Projected on §5’s derived term, Station goes 7.3 → 16.9 ms per flush 
+against a 67 ms ceiling: plausible, unmeasured, and the reason this slice is a bench. 
+Slice 1 already left every painter-owned dial nearest, so this slice can only add 
+quality back — it can never be where a mixed-edge dial gets created.
 
 ### After the last firmware commit
 
@@ -197,17 +209,20 @@ add quality back — it can never be the place a mixed-edge dial gets created.
 than the tree. Add the pointer lines to `docs/app-platform-plan.md`: §31 contract rule 2
 is superseded by the design doc, §33's carriage row gains the before/after number.
 
-## Stop and ask (one owner gate)
+## Gates are closed — nothing waits on the owner
 
-1. **Slice 1, before flashing:** the AA end state. The painter stays nearest and the
-   grant is decided by cost (option a), or the painter gains bilinear for granted
-   classes (option b)? The slice-1 **denial** of the LVGL grant on painter-owned dials is
-   not optional and needs no approval; what the owner is choosing is what happens next.
-   It is the same day's ruling as v1.1.37 and must not be reversed by inference.
+1. **AA end state: option (b)**, ruled 2026-10-30. The painter gains bilinear in slice 
+   5; slice 1 ships nearest hands on painter-owned dials as an approved interim state. 
+   The slice-1 denial itself is still not optional — an untouched grant ships mixed 
+   edge quality within one dial — but it needs no approval and must be described as 
+   interim in the commit body.
+2. **Slice 2: declined.** Do not implement it, and do not resurrect it from the design 
+   draft. §14 of the design records the one condition that reopens it: a ticking still 
+   dial caught overrunning on the glass.
 
-There is no second gate. The ABI bump the first draft feared does not exist (decision 6),
-so no slice in this plan strands an installed theme. If slice 4 turns out to need a
-reader change after all, stop and report rather than inventing a refusal.
+The ABI bump the first draft feared does not exist (decision 6), so no slice strands an 
+installed theme. If slice 4 turns out to need a reader change after all, stop and report 
+rather than inventing a refusal.
 
 ## Bench traps, all paid for already
 
@@ -224,6 +239,6 @@ reader change after all, stop and report rather than inventing a refusal.
 ## Report format
 
 Per slice: the commit SHA, the command run, the quoted log line, the number, and one
-sentence on whether the slice's hypothesis held. Then a table of all five bench rows
+sentence on whether the slice's hypothesis held. Then a table of the four bench rows
 against their `1366568` baselines. Then what you would do next, in one paragraph, and
 what this measurement invalidated in the design doc — if nothing did, say so plainly.

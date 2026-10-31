@@ -63,6 +63,7 @@ typedef struct gfx_paint_ctx {
     uint8_t  bmode;
     uint8_t  role;                    /* paint bucket for the fps line */
     bool     rot;                     /* false == identity (ang == 0) path */
+    bool     smooth;                  /* rotated path samples 2x2 bilinear (EF_SMOOTH) */
 } gfx_paint_ctx_t;
 
 /* The per-tick row mark set. The commit loop reads these directly through the

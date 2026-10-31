@@ -31,6 +31,12 @@ a painter-owned dial. That is the approved interim state; the painter learns
 bilinear later. `painter` below is `orb_sched_restore_src() != NULL`, which on a
 CLK_BG_DIRECT_PUSH build is true for every still plate; the still-dial grant rows
 survive only as the kill-switch (DIRECT_PUSH 0) answer, where no painter exists.
+
+Slice 5 replaced the painter-owned answer with the bake's: the row's EF_SMOOTH bit
+(`flag`), set by the baker where the commit's price with the AA term holds 12 fps
+and never on the hot-tick seconds. On a painter-owned dial the bit is the whole
+answer, an animated carrier included (the bake priced it); the motion-word rule
+now answers only where no painter exists.
 """
 import os
 import sys
@@ -41,10 +47,10 @@ SRC = os.path.join(HERE, "..", "main", "clock", "clock_view.c")
 
 # ---- the mirror ------------------------------------------------------------
 MIRROR_SRC = '''
-def hand_aa_for(bg_mode, bg_frames, gif_frames, tourbillon_n, second_sweep, painter, slot):
-    if bg_mode != 0 or bg_frames != 0 or gif_frames != 0 or tourbillon_n != 0:
-        return False
+def hand_aa_for(bg_mode, bg_frames, gif_frames, tourbillon_n, second_sweep, painter, slot, flag):
     if painter:
+        return flag
+    if bg_mode != 0 or bg_frames != 0 or gif_frames != 0 or tourbillon_n != 0:
         return False
     if slot == 2 and second_sweep:
         return False
@@ -65,32 +71,37 @@ hand_aa_for = _run(MIRROR_SRC)
 def lint():
     txt = open(SRC).read()
     start = txt.index("static bool hand_aa_for(")
+    # the body ends at make_layer's comment block
     body = txt[start:txt.index("static lv_obj_t *make_layer(", start)]
     checks = [
         ("animated guard present",
          "if (t->bg_mode != 0 || t->bg_frames != 0 || t->gif_frames != 0 ||"),
         ("carriage in the guard", "t->tourbillon_n != 0)"),
-        ("painter-owned dial denied, kill switch exempt",
-         "#if CLK_BG_DIRECT_PUSH\n    if (orb_sched_restore_src() != NULL)\n        return false;\n#endif"),
+        ("painter-owned dial answers from the bake's bit, kill switch exempt",
+         "#if CLK_BG_DIRECT_PUSH\n    if (orb_sched_restore_src() != NULL) {\n        if (src) *src = \"flag\";\n        return row_smooth(cls, row_slot);\n    }\n#endif"),
+        ("the bit is EF_SMOOTH, bit 7", "#define CLK_EF_SMOOTH 0x80u"),
+        ("the painter reads the same bit", "&& (e->flags & CLK_EF_SMOOTH) ? 1u : 0u;"),
+        ("the boot line asks the same function", "hand_aa_for(&clk_theme, k, ORB_ASSET_HAND, (uint16_t)k, &why)"),
         ("hot-tick seconds guard", "if (slot == 2 && t->second_sweep)"),
         ("make_layer consumes the flag", "lv_image_set_antialias(o, aa);"),
         ("make_layer takes the flag", "bool aa)"),
-        ("hands loop asks per slot", "hand_aa_for(&clk_theme, k)"),
+        ("hands loop asks per slot", "hand_aa_for(&clk_theme, k, ORB_ASSET_HAND, (uint16_t)k, NULL)"),
         ("shadow shares its hand's answer",
          "make_layer(&clk_theme.shadow[k], &s_shadow_dsc[k], aa)"),
         ("carriage never takes the filter",
          "make_layer(&clk_theme.tourbillon[0], &s_car_dsc, false)"),
         ("overlay never takes the filter",
          "make_layer(&clk_theme.overlay, &s_overlay_dsc, false)"),
-        ("aux routes its own source",
-         "hand_aa_for(&clk_theme, aa_slot)"),
+        ("aux routes its own source and row",
+         "hand_aa_for(&clk_theme, aa_slot, ORB_ASSET_AUX, g->aux[i].tag, NULL)"),
     ]
     fails = []
     for why, needle in checks:
         if needle not in txt:
             fails.append("%s: %r no longer in clock_view.c" % (why, needle))
     # the body must be the three guards and one yes, and nothing grew around them
-    if body.count("return false;") != 3 or body.count("return true;") != 1:
+    if (body.count("return false;") != 2 or body.count("return true;") != 1
+            or body.count("return row_smooth(cls, row_slot);") != 1):
         fails.append("hand_aa_for's branch shape changed: the mirror's truth "
                      "table no longer covers it — re-read and re-pin")
     return fails
@@ -101,25 +112,30 @@ def lint():
 # (watch-engine.js's motion table): aviator/station/luna/neon/phase/perpetual
 # bake as still plates; skeleton/orbital/opentour/kitetour/calendar/regulator/
 # modern/sector/diver as banks; orbital/kitetour with a carriage too.
-STILL = dict(bg_mode=0, bg_frames=0, gif_frames=0, tourbillon_n=0, painter=False)
+STILL = dict(bg_mode=0, bg_frames=0, gif_frames=0, tourbillon_n=0, painter=False, flag=False)
 PAINTED = dict(STILL, painter=True)              # the same still dial, painter-owned
 PLATE_BANK = dict(STILL, bg_frames=9)            # 9-frame keyframe bank
 DELTA_BANK = dict(STILL, bg_mode=1, gif_frames=8)  # GIF delta bank
 CARRIAGE = dict(STILL, tourbillon_n=8)           # carriage on the seconds slot
 
 VECTORS = [
-    # A painter-owned still dial (every still plate on a DIRECT_PUSH build): no
-    # layer takes the filter, sweep or not, because the painter cannot match it
-    # and the live widgets would mix edges on the next LVGL repaint.
+    # A painter-owned dial answers from the bake's bit and nothing else: a row
+    # without it is nearest whatever the motion words say (an older theme reads 0)...
     (dict(PAINTED, second_sweep=0), 0, False),
     (dict(PAINTED, second_sweep=0), 1, False),
-    (dict(PAINTED, second_sweep=0), 2, False),
-    (dict(PAINTED, second_sweep=1), 0, False),
     (dict(PAINTED, second_sweep=1), 1, False),
-    (dict(PAINTED, second_sweep=1), 2, False),
-    # An animated carrier stays refused whether or not the painter owns it (a
-    # delta bank's canvas makes it painter-owned too).
-    (dict(DELTA_BANK, painter=True, second_sweep=0), 0, False),
+    # ...and a row with it is smooth, the seconds slot included: the baker, not
+    # this function, leaves the hot-tick seconds clear.
+    (dict(PAINTED, flag=True, second_sweep=1), 0, True),
+    (dict(PAINTED, flag=True, second_sweep=1), 2, True),
+    (dict(PAINTED, flag=True, second_sweep=0), 1, True),
+    # An animated carrier the bake granted is smooth too: the price, not the
+    # carrier class, decides on a painter-owned dial (a delta bank owns a canvas).
+    (dict(DELTA_BANK, painter=True, flag=True, second_sweep=1), 1, True),
+    (dict(DELTA_BANK, painter=True, second_sweep=1), 1, False),
+    # The kill switch (no painter) ignores the bit: a classic animated dial with a
+    # stray flag stays nearest, exactly as at 1366568.
+    (dict(DELTA_BANK, flag=True, second_sweep=0), 1, False),
     # The rows below are the kill-switch answer (CLK_BG_DIRECT_PUSH 0: no painter).
     # A still dial with no sweep (aviator at 1 Hz): every hand takes the filter.
     (dict(STILL, second_sweep=0), 0, True),
@@ -157,7 +173,7 @@ def check_vectors():
     fails = []
     for w, slot, exp in VECTORS:
         got = hand_aa_for(w["bg_mode"], w["bg_frames"], w["gif_frames"],
-                          w["tourbillon_n"], w["second_sweep"], w["painter"], slot)
+                          w["tourbillon_n"], w["second_sweep"], w["painter"], slot, w["flag"])
         if got != exp:
             fails.append("words %s slot %d: got %s, want %s" % (w, slot, got, exp))
     return fails
@@ -172,8 +188,10 @@ MUTANTS = [
     ("drop the bg_frames word", "bg_frames != 0 or ", ""),
     ("drop the gif_frames word", "gif_frames != 0 or ", ""),
     ("drop the carriage word", " or tourbillon_n != 0", ""),
-    ("drop the painter denial", "    if painter:\n        return False\n", ""),
-    ("painter denial inverted", "if painter:", "if not painter:"),
+    ("drop the painter branch", "    if painter:\n        return flag\n", ""),
+    ("painter branch inverted", "if painter:", "if not painter:"),
+    ("painter ignores the bit (always nearest)", "        return flag\n", "        return False\n"),
+    ("painter grants everything", "        return flag\n", "        return True\n"),
     ("drop the sweep guard", "if slot == 2 and second_sweep:", "if False:"),
     ("sweep guard ignores the sweep", "and second_sweep:", ":"),
     ("sweep guard binds every slot", "if slot == 2 and", "if"),
@@ -186,7 +204,7 @@ def check_mutants():
     for name, old, new in MUTANTS:
         m = _run(MIRROR_SRC.replace(old, new, 1))
         caught = any(m(w["bg_mode"], w["bg_frames"], w["gif_frames"],
-                       w["tourbillon_n"], w["second_sweep"], w["painter"], slot) != exp
+                       w["tourbillon_n"], w["second_sweep"], w["painter"], slot, w["flag"]) != exp
                      for w, slot, exp in VECTORS)
         if not caught:
             fails.append("mutant survived: %s" % name)
@@ -198,7 +216,7 @@ def main():
     for f in fails:
         print("FAIL: " + f)
     print("hand AA rule: %d checks, %d failures" % (
-        len(VECTORS) + len(MUTANTS) + 13, len(fails)))
+        len(VECTORS) + len(MUTANTS) + 16, len(fails)))
     return 1 if fails else 0
 
 

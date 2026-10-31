@@ -112,7 +112,11 @@ const E = (o) => Object.assign(B.blankElement(), { n: 1, n_frames: 1 }, o);
 const SPRITE = B.classId('sprite'), LAYER = B.classId('layer'), BANK = B.classId('bank');
 const HAND = B.classId('hand'), TEXT = B.classId('text'), STATUS = B.classId('status');
 refuses(() => B.packElements([E({ class: 99 })]), 'not a class this build knows', 'an unknown class id is refused');
-refuses(() => B.packElements([E({ class: SPRITE, flags: 0x80 })]), 'unknown flag bits', 'an unknown flag bit is refused rather than zeroed');
+// Bit 7 is EF_SMOOTH since the unified render path's slice 5, so the u8 column's eight
+// bits are all named: the unknown bit moves past the byte, and the smooth bit is refused
+// on a class the painter never turns.
+refuses(() => B.packElements([E({ class: SPRITE, flags: 0x100 })]), 'unknown flag bits', 'an unknown flag bit is refused rather than zeroed');
+refuses(() => B.packElements([E({ class: BANK, flags: B.EF_SMOOTH, n_frames: 4 })]), 'smoothing', 'the smooth bit is refused on a class the painter never turns');
 refuses(() => B.packElements([E({ class: SPRITE, flags: B.AUX_F_SHADOW3 })]), 'rule for class aux',
         'the pointer shadow twin means nothing on another class, and the door says whose bit it is');
 refuses(() => B.packElements([E({ class: SPRITE, order: 64 })]), 'depth rungs', 'an order past the rungs is refused');

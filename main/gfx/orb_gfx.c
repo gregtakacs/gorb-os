@@ -270,6 +270,7 @@ bool gfx_paint_ctx_init(gfx_paint_ctx_t *pc, const clk_sprite_t *spr,
 {
     if (!gfx_sprite_drawable(spr)) return false;
     pc->role = role;
+    pc->smooth = false;               /* nearest unless the job builder says the row smooths */
 
     pc->col = (const uint16_t *)(base + spr->color_off);
     pc->alp = base + spr->color_off
@@ -363,6 +364,50 @@ void gfx_paint_row_ctx(const gfx_paint_ctx_t *pc, int32_t y,
     const int32_t y_abs = y - pc->posy;
     const int32_t xs_r = pc->x0_ups + (int32_t)(((int64_t)pc->sxy * y_abs) >> 8);
     const int32_t ys_r = pc->y0_ups + (int32_t)(((int64_t)pc->syy * y_abs) >> 8);
+
+    if (pc->smooth) {
+        /* Bilinear, for a row the bake granted EF_SMOOTH (the unified render path's
+         * slice 5). The inverse map already carries 8 fractional bits; the nearest
+         * path rounds them away through LVGL's +0x80 bias, so subtracting it back
+         * gives the sample's true position, and its fraction weights the 2x2
+         * neighbourhood. Coverage weights the colour (premultiplied), so a fringe
+         * texel's colour cannot bleed past its own alpha, and texels outside the
+         * plane count as transparent: the edge fades instead of clipping. Same
+         * blend_px, same role counter, so the fps line prices the filter on the
+         * layer that pays it. */
+        const int32_t w = (int32_t)pc->w, h = (int32_t)pc->h;
+        for (int32_t x = xa; x <= xb; x++) {
+            const int32_t x_abs = x - pc->posx;
+            const int32_t xf = xs_r + ((pc->sxx * x_abs) >> 8) - 0x80;
+            const int32_t yf = ys_r + ((pc->syx * x_abs) >> 8) - 0x80;
+            const int32_t ix = xf >> 8, iy = yf >> 8;
+            if (ix < -1 || ix >= w || iy < -1 || iy >= h) continue;
+            const uint32_t fx = (uint32_t)xf & 0xFFu, fy = (uint32_t)yf & 0xFFu;
+            const uint32_t wt[4] = { (256u - fx) * (256u - fy), fx * (256u - fy),
+                                     (256u - fx) * fy,          fx * fy };
+            uint32_t asum = 0, rs = 0, gs = 0, bs = 0;
+            for (int k = 0; k < 4; k++) {
+                const int32_t tx = ix + (k & 1), ty = iy + (k >> 1);
+                if (tx < 0 || tx >= w || ty < 0 || ty >= h) continue;
+                const uint32_t si = (uint32_t)ty * pc->w + (uint32_t)tx;
+                const uint32_t aw = wt[k] * alp[si];          /* <= 65536 * 255 */
+                if (!aw) continue;
+                const uint16_t c = col[si];
+                asum += aw;
+                rs += (aw >> 8) * (c >> 11);
+                gs += (aw >> 8) * ((c >> 5) & 0x3Fu);
+                bs += (aw >> 8) * (c & 0x1Fu);
+            }
+            const uint8_t a = (uint8_t)((asum + 32768u) >> 16);
+            if (!a) continue;
+            const uint32_t d = asum >> 8;
+            const uint16_t c = (uint16_t)(((rs / d) << 11) | ((gs / d) << 5) | (bs / d));
+            blend_px(&row[x], c, a, pc->bmode);
+            n++;
+        }
+        if (pc->role < CLK_PAINT_ROLES) s_hk_role_blend[pc->role] += n;
+        return;
+    }
 
     for (int32_t x = xa; x <= xb; x++) {
         const int32_t x_abs = x - pc->posx;

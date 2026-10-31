@@ -96,6 +96,13 @@ def row(**over):
     return r
 
 
+# EF_SMOOTH (bit 7) is accepted on the three turned classes and survives the round trip.
+for _cls in (ts.CLASS_HAND, ts.CLASS_SPRITE):
+    check(ts.check_element(row(flags=ts.EF_SMOOTH, **{"class": _cls})) is not None,
+          "EF_SMOOTH refused on class %s, a turned layer" % ts.CLASS_NAMES[_cls])
+check(ts.EF_SMOOTH == 0x80 and ts.EF_ALL == 0xFF, "EF_SMOOTH is not bit 7 or EF_ALL lost it")
+check(ts.unpack_elements(ts.pack_elements([row(flags=ts.EF_SMOOTH)]), 1)[0]["flags"] == 0x80,
+      "EF_SMOOTH did not survive the pack round trip")
 recs = [row(),
         row(n=1, **{"class": ts.CLASS_SPRITE, "x": -10, "y": -1, "w": 100, "h": 40,
                     "pivot_x": 0, "pivot_y": 0, "flags": ts.EF_ALPHA | ts.EF_LOOP}),
@@ -140,7 +147,11 @@ SENT = (
     ("unknown class id", lambda: ts.check_element(
         row(**{"class": len(ts.CLASS_NAMES)})), "class"),
     ("class id negative", lambda: ts.check_element(row(**{"class": -1})), "class"),
-    ("unknown flag bit", lambda: ts.check_element(row(flags=ts.EF_ALPHA | 0x80)), "flags"),
+    # Bit 7 is EF_SMOOTH since the unified render path's slice 5, so all eight bits of
+    # the u8 column are named; the unknown-bit vector moves past the byte.
+    ("unknown flag bit", lambda: ts.check_element(row(flags=ts.EF_ALPHA | 0x100)), "flags"),
+    ("smoothing on a plate", lambda: ts.check_element(row(flags=ts.EF_SMOOTH, **{"class": ts.CLASS_PLATE, "pivot_x": 0, "pivot_y": 0})), "smoothing"),
+    ("smoothing on a bank", lambda: ts.check_element(row(flags=ts.EF_SMOOTH, **{"class": ts.CLASS_BANK, "n_frames": 4, "frame0": 0, "pivot_x": 0, "pivot_y": 0})), "smoothing"),
     ("order past the rungs", lambda: ts.check_element(row(order=ts.ELEM_ORDER_N)), "order"),
     ("order far past", lambda: ts.check_element(row(order=999)), "order"),
     ("zero frames", lambda: ts.check_element(row(n_frames=0)), "n_frames"),

@@ -76,7 +76,11 @@ typedef struct orb_layer_desc {
     uint16_t    r;           /* RRECT corner, RING radius                     */
     uint16_t    thick;       /* RING stroke, BAR width                        */
     uint8_t     alpha;       /* 0..255 coverage over the whole plate          */
-    uint8_t     pad2[3];
+    uint8_t     smooth;      /* 1 = the painter samples this layer bilinear (the
+                              * bake's EF_SMOOTH verdict). Was the first pad byte,
+                              * so the layout holds and an older caller's zero reads
+                              * as nearest. */
+    uint8_t     pad2[2];
 } orb_layer_desc_t;
 
 /* Rows per app. Sixteen, since Migration 2 commit 3. Eight was "a hand, a ring,

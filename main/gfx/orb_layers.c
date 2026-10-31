@@ -322,10 +322,12 @@ int orb_layers_jobs(const orb_layer_tab_t *t, const uint8_t *theme_base,
                                                   * theme: draw nothing, and
                                                   * nothing is what it draws.  */
         if (gfx_paint_ctx_init(&jc[n], &t->spr[i], base, t->row[i].ang_10,
-                               t->row[i].role))
+                               t->row[i].role)) {
+            jc[n].smooth = t->row[i].smooth != 0;
             n++;                                  /* undrawable is skipped, never
                                                   * guessed at: the job list is
                                                   * the frame's contract.       */
+        }
     }
     return n;
 }

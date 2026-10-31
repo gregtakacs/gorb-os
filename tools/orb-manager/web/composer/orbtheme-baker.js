@@ -1832,7 +1832,11 @@
   // and orb_clock3.c's plate gate read the same byte; checkElement below is the writer's
   // mirror of that gate.
   var EF_DELTA_WRAP = 64;
-  var EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | AUX_F_SHADOW3 | EF_DELTA_WRAP;
+  // The unified render path's slice 5: this hand, shadow or pointer row samples bilinear,
+  // in the LVGL widget and the L4 painter alike. theme_schema.EF_SMOOTH; the bake sets it
+  // from estimate3 and the dial only reads it. All eight bits of the u8 column are named.
+  var EF_SMOOTH = 128;
+  var EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | AUX_F_SHADOW3 | EF_DELTA_WRAP | EF_SMOOTH;
   var CLASS_NAMES = ['text', 'sprite', 'hand', 'plate', 'ring', 'bank', 'layer', 'status', 'aux', 'preview'];
   var CLASS_TEXT = 0, CLASS_SPRITE = 1, CLASS_HAND = 2, CLASS_PLATE = 3;
   var CLASS_RING = 4, CLASS_BANK = 5, CLASS_LAYER = 6, CLASS_STATUS = 7;
@@ -1886,6 +1890,10 @@
     if ((flags & AUX_F_SHADOW3) && cls !== CLASS_AUX) {
       throw new Error(where + '.flags: the pointer shadow twin is a rule for class aux; class ' +
         q(CLASS_NAMES[cls]) + ' already owns its shadow\u2019s placement (§25.2)');
+    }
+    if ((flags & EF_SMOOTH) && cls !== CLASS_HAND && cls !== CLASS_SPRITE && cls !== CLASS_AUX) {
+      throw new Error(where + '.flags: smoothing is a rotated layer\u2019s sampling (hand, shadow, pointer); class ' +
+        q(CLASS_NAMES[cls]) + ' is not turned by the painter');
     }
     if ((flags & EF_DELTA_WRAP) && cls !== CLASS_PLATE) {
       throw new Error(where + '.flags: the loop-closing delta (§37) belongs to a delta plate and ' +
@@ -3274,19 +3282,43 @@
         ' — drop frames or shrink the art');
     }
 
-    var b = writeBundle3({ name: o.name, serial: o.serial || 0, bakedMs: o.bakedMs || 0,
-      sections: [{ slug: 'clock', scr_w: scrW, scr_h: scrH, elements: elems, scalars: sc,
-                   sprites: bank.sprites, art: bank.art,
-                   abi_min: deltaBank ? GEOM_ABI4 : GEOM_ABI3, abi_max: deltaBank ? GEOM_ABI4 : GEOM_ABI3 }] });
+    var pack = function () {
+      return writeBundle3({ name: o.name, serial: o.serial || 0, bakedMs: o.bakedMs || 0,
+        sections: [{ slug: 'clock', scr_w: scrW, scr_h: scrH, elements: elems, scalars: sc,
+                     sprites: bank.sprites, art: bank.art,
+                     abi_min: deltaBank ? GEOM_ABI4 : GEOM_ABI3, abi_max: deltaBank ? GEOM_ABI4 : GEOM_ABI3 }] });
+    };
+    var b = pack();
     if (deltaBank && !selfVerify3(frames, bank.sprites, (elems[0].frame0 | 0),
                                  !!(elems[0].flags & EF_DELTA_WRAP))) {
       throw new Error('the baked delta bank does not composite back to the frames it was handed' +
         (elems[0].flags & EF_DELTA_WRAP ? ', or close its loop back to the keyframe' : '') +
         ': the round trip drifted, and a drifting chain corrupts every later frame — refused, not shipped');
     }
+    /* Slice 5: the bake decides each turned row's sampling from its own price. A dial
+     * whose commit still holds 12 fps WITH the AA term gets EF_SMOOTH on every hand,
+     * shadow and pointer row but the hot-tick seconds (a sweeping second hand, or a
+     * pointer on the seconds source, re-poses every tick and stays nearest — the rule
+     * the firmware used to apply itself). o.smooth true/false forces the verdict for a
+     * bench arm; the composer never passes it, and the estimate it reports is still the
+     * honest one for the bytes. */
+    var est = estimate3(verifyBundle3(b.bytes).sections[0]);
+    var grant = o.smooth === true ? true : (o.smooth === false ? false : est.smooth);
+    if (grant) {
+      var smoothed = 0;
+      for (k = 0; k < elems.length; k++) {
+        var er = elems[k], ec = er['class'];
+        var turned = (ec === CLASS_HAND && er.slot < 5) || (ec === CLASS_SPRITE && er.slot < 3) || ec === CLASS_AUX;
+        var hot = sc.second_sweep && (((ec === CLASS_HAND || ec === CLASS_SPRITE) && er.slot === 2) ||
+                                      (ec === CLASS_AUX && er.src === SOURCES.indexOf('second')));
+        if (turned && !hot) { er.flags = (er.flags | 0) | EF_SMOOTH; smoothed++; }
+      }
+      if (smoothed) b = pack();
+    }
     b.meter = budget3(b.bytes);
     b.n_elem = elems.length;
-    b.est = estimate3(verifyBundle3(b.bytes).sections[0]);
+    b.est = est;
+    b.est.granted = grant;
     return b;
   }
 
@@ -3750,7 +3782,7 @@
     SCALARS_N: SCALARS_N, ELEMENT_WORDS: ELEMENT_WORDS, ELEMENT_FIELDS: ELEMENT_FIELDS,
     CLASS_NAMES: CLASS_NAMES, CLASS_APP_ADV: CLASS_APP_ADV, CLASS_NO_ANIM: CLASS_NO_ANIM,
     EF_ALPHA: EF_ALPHA, EF_LOOP: EF_LOOP, EF_OS_ADV: EF_OS_ADV, EF_HIDDEN: EF_HIDDEN,
-    EF_DELTA_WRAP: EF_DELTA_WRAP,
+    EF_DELTA_WRAP: EF_DELTA_WRAP, EF_SMOOTH: EF_SMOOTH,
     AUX_F_SHADOW3: AUX_F_SHADOW3,
     ELEM_MAX: ELEM_MAX, ELEM_FRAMES_MAX: ELEM_FRAMES_MAX,
     // D34: the pointer vocabulary, exported so the composer and the suite read the

@@ -563,8 +563,17 @@ EF_DELTA_WRAP = 1 << 6  # §37: the delta plate's LAST sprite, one past its own 
                         # under frame 1. The baker's rowDelta sets it in the same breath
                         # as shipping the row; class plate only (check_element below),
                         # and orb_clock3.c refuses the bit on any other shape.
+EF_SMOOTH = 1 << 7      # the unified render path's slice 5: this layer samples bilinear,
+                        # in the LVGL widget and in the L4 painter alike. The BAKE decides
+                        # (orbtheme-baker.js estimate3: smoothing where the commit's price
+                        # with the AA term still holds 12 fps) and the dial reads the bit;
+                        # nothing on the device re-prices it. Hand, shadow (class sprite)
+                        # and aux rows only. A flag and not a scalar: orb_bundle.c refuses a
+                        # 27th scalar on every installed theme, while the reader never
+                        # checks flag bits, so an old theme reads 0 (nearest) and old
+                        # firmware ignores the bit on a new one.
 EF_ALL = (EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | EF_AUX_SHADOW | EF_INSTANCE
-          | EF_DELTA_WRAP)
+          | EF_DELTA_WRAP | EF_SMOOTH)
 
 ELEM_ORDER_N    = 64   # depth rungs; the clock's hand order is 0..4 today
 
@@ -920,6 +929,10 @@ def check_element(rec, where="elem"):
             raise ValueError("%s.flags: an instanced window needs a fixed value domain "
                              "to stand over, and %r has none"
                              % (where, SOURCES[src]))
+    if flags & EF_SMOOTH and cls not in (CLASS_HAND, CLASS_SPRITE, CLASS_AUX):
+        raise ValueError("%s.flags: smoothing is a rotated layer's sampling (hand, shadow, "
+                         "pointer); class %r is not turned by the painter"
+                         % (where, CLASS_NAMES[cls]))
     if flags & EF_DELTA_WRAP and cls != CLASS_PLATE:
         raise ValueError("%s.flags: the closing delta (§37) belongs to a looping v4 delta "
                          "plate and nowhere else; class %r has no background loop for it "
@@ -1176,7 +1189,9 @@ if __name__ == "__main__":
         # is a class this build cannot draw, and that is what D26 refuses at the door.
         (_with(**{"class": len(CLASS_NAMES)}), "unknown class"),
         (_with(**{"class": 200}), "class far past the vocabulary"),
-        (_with(flags=EF_ALPHA | 0x80), "unknown flag bit"),
+        (_with(flags=EF_ALPHA | 0x100), "unknown flag bit"),
+        (_with(flags=EF_SMOOTH, **{"class": CLASS_RING, "slot": 1, "radius": 40,
+                                   "pivot_x": 0, "pivot_y": 0}), "smoothing off a turned row"),
         (_with(flags=EF_AUX_SHADOW), "twin bit off class aux"),
         (_with(order=64), "order past the rungs"),
         (_with(n_frames=0), "zero frames"),

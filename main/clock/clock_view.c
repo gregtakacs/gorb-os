@@ -267,24 +267,45 @@ static lv_blend_mode_t map_blend(uint8_t b)
  * tick: a sweeping second hand stays nearest so a sweeping still dial (the
  * Station case) never pays the filter on the tick that drives its fps.
  *
- * A dial the painter owns takes nearest on every layer, interim until the painter
- * samples bilinear itself. The painter reuses LVGL's nearest rotation maths and
- * the widgets below stay live as its fallback, so a standing grant would let any
- * LVGL-initiated repaint (the activation bounce, an overlay closing) redraw these
- * hands bilinear while the painter keeps them nearest: two edge qualities in one
- * dial until each hand next moves. The test is the restore source, not the L4
- * gate, so a painter-owned dial whose table the gate refused loses the filter
- * too — conservative, and harmless where the painter paints nothing. A
- * CLK_BG_DIRECT_PUSH 0 build has no painter and keeps the rule above whole. */
-static bool hand_aa_for(const clk_theme_t *t, int slot)
+ * A dial the painter owns answers from the bake instead (the unified render path's
+ * slice 5): the row's EF_SMOOTH bit, which the baker sets where the commit's price
+ * WITH the AA term still holds 12 fps and never on the hot-tick seconds. That one
+ * answer drives both renderers — make_layer's LVGL widget here and the painter's
+ * sampling through the row's layer descriptor (clk_row_desc) — because the widgets
+ * stay live as the painter's fallback: if the two disagreed, any LVGL-initiated
+ * repaint (the activation bounce, an overlay closing) would redraw a hand with the
+ * other edge until it next moved. The test is the restore source, not the L4 gate,
+ * so a painter-owned dial whose table the gate refused still reads its flag. No bit
+ * (an older theme, the base face) reads as nearest. A CLK_BG_DIRECT_PUSH 0 build
+ * has no painter and keeps the motion-word rule above whole. `src` names which rule
+ * answered, for the boot line. */
+#define CLK_EF_SMOOTH 0x80u    /* theme_schema EF_SMOOTH */
+static bool row_smooth(uint8_t cls, uint16_t slot)
 {
+    const orb_bundle_sec_t *sec = NULL;
+    uint32_t off = 0;
+    if (!orb_theme_live_sec(ORB_CLOCK3_SLUG, &sec, &off)) return false;
+    for (uint32_t i = 0; i < sec->n_elem; i++) {
+        orb_bundle_elem_t e;
+        orb_bundle_elem_at(sec, i, &e);
+        if (e.cls == cls && e.slot == slot) return (e.flags & CLK_EF_SMOOTH) != 0;
+    }
+    return false;
+}
+
+static bool hand_aa_for(const clk_theme_t *t, int slot, uint8_t cls, uint16_t row_slot,
+                        const char **src)
+{
+#if CLK_BG_DIRECT_PUSH
+    if (orb_sched_restore_src() != NULL) {
+        if (src) *src = "flag";
+        return row_smooth(cls, row_slot);
+    }
+#endif
+    if (src) *src = "classic-rule";
     if (t->bg_mode != 0 || t->bg_frames != 0 || t->gif_frames != 0 ||
         t->tourbillon_n != 0)
         return false;
-#if CLK_BG_DIRECT_PUSH
-    if (orb_sched_restore_src() != NULL)
-        return false;
-#endif
     if (slot == 2 && t->second_sweep)
         return false;
     return true;
@@ -1553,7 +1574,7 @@ static void aux_create(void)
          * still dial re-beats at wall cadence and can afford the filter. A
          * slide never rotates, so the flag is inert on it either way. */
         const int aa_slot = (g->aux[i].src == CLK_SRC_SECOND) ? 2 : 1;
-        const bool aa = hand_aa_for(&clk_theme, aa_slot);
+        const bool aa = hand_aa_for(&clk_theme, aa_slot, ORB_ASSET_AUX, g->aux[i].tag, NULL);
         if (i + 1 < n && (g->aux[i + 1].flags & CLK_FLAG_AUX_SHADOW))
             s_aux_obj[i + 1] = make_layer(&g->aux[i + 1].spr, &s_aux_dsc[i + 1], aa);
         s_aux_obj[i] = make_layer(&g->aux[i].spr, &s_aux_dsc[i], aa);
@@ -1864,6 +1885,9 @@ static void clk_row_desc(const orb_elem_t *e, uint32_t bank_off,
     d->role        = clk_row_role(e->cls, e->slot);
     d->gen_prim    = 0xFFu;                           /* the answer's own prim  */
     d->alpha       = 255;
+    /* The painter's half of hand_aa_for's answer: the bake's bit, on a turned row. */
+    d->smooth      = (e->cls == ORB_ASSET_HAND || e->cls == ORB_ASSET_SPRITE || e->cls == ORB_ASSET_AUX)
+                     && (e->flags & CLK_EF_SMOOTH) ? 1u : 0u;
 }
 
 /* The claim, handed to the OS, and the verdict it buys printed beside it: one
@@ -2315,7 +2339,7 @@ esp_err_t clock_view_init(orb_app_t *self)
          * transform ever runs on them. Slots 0/1/2 get the per-slot rule, and
          * a shadow always shares its own hand's answer, so a filtered hand
          * never stands on an unfiltered twin. */
-        const bool aa = hand_aa_for(&clk_theme, k);
+        const bool aa = hand_aa_for(&clk_theme, k, ORB_ASSET_HAND, (uint16_t)k, NULL);
         if (k <= 2 && clk_theme.shadow_on)
             s_shadow[k] = make_layer(&clk_theme.shadow[k], &s_shadow_dsc[k], aa);
         s_hand[k] = make_layer(&clk_theme.hand[k], &s_hand_dsc[k], aa);
@@ -2443,24 +2467,34 @@ esp_err_t clock_view_init(orb_app_t *self)
      * every layer is composited by the layer-table commit each tick. */
     ESP_LOGI(TAG, "composite: %s",
              clk_theme.matte_mask ? "baked static matte" : "runtime layers");
-    /* The sampling decision the AA rule above delivered, in the same line the
-     * operator reads after a flip: what the hands are drawn with, and why not
-     * more where the dial cannot carry it. A painter-owned still dial reads
-     * as the interim it is, not as a ruling on its edges. */
-#if CLK_BG_DIRECT_PUSH
-    const bool aa_painter = orb_sched_restore_src() != NULL;
-#else
-    const bool aa_painter = false;
-#endif
-    ESP_LOGI(TAG, "hand AA: %s",
-             (clk_theme.bg_mode || clk_theme.bg_frames || clk_theme.gif_frames ||
-              clk_theme.tourbillon_n)
-                 ? "off (animated carrier)"
-                 : aa_painter
-                       ? "off (painter-owned dial: nearest, interim)"
-                       : clk_theme.second_sweep
-                             ? "hour/minute (seconds nearest: sweeping)"
-                             : "all hands");
+    /* The sampling each turned layer was BUILT with, asked of the same function
+     * make_layer and the layer table took it from, with the rule that answered:
+     * `flag` is the bake's EF_SMOOTH on a painter-owned dial, `classic-rule` the
+     * motion words on a dial LVGL draws. Never derived from theme fields alone —
+     * that is how the old line reported the shipped rule under an ablation arm. */
+    {
+        static const char *const nm[3] = { "hr", "min", "sec" };
+        char aab[200];
+        int o = 0;
+        for (int k = 0; k < 3 && o < (int)sizeof aab - 40; k++) {
+            if (!gfx_sprite_drawable(&clk_theme.hand[k])) continue;
+            const char *why = "";
+            const bool sm = hand_aa_for(&clk_theme, k, ORB_ASSET_HAND, (uint16_t)k, &why);
+            o += snprintf(aab + o, sizeof aab - (size_t)o, "%s%s %s=%s", o ? ", " : "",
+                          nm[k], sm ? "smooth" : "nearest", why);
+        }
+        const orb_theme_geo_t *ag = orb_theme_geo();
+        const uint16_t na = ag->n_aux < CLK_AUX_MAX ? ag->n_aux : CLK_AUX_MAX;
+        for (uint16_t a = 0; a < na && o < (int)sizeof aab - 40; a++) {
+            if (ag->aux[a].flags & CLK_FLAG_AUX_SHADOW) continue;
+            const char *why = "";
+            const int as = (ag->aux[a].src == CLK_SRC_SECOND) ? 2 : 1;
+            const bool sm = hand_aa_for(&clk_theme, as, ORB_ASSET_AUX, ag->aux[a].tag, &why);
+            o += snprintf(aab + o, sizeof aab - (size_t)o, "%saux%u %s=%s", o ? ", " : "",
+                          (unsigned)ag->aux[a].tag, sm ? "smooth" : "nearest", why);
+        }
+        ESP_LOGI(TAG, "hand AA: %s", o ? aab : "no turned layers");
+    }
     if (clk_theme.tourbillon_n)
         ESP_LOGI(TAG, "tourbillon: %u frames @ %u fps on the second-hand slot, orbit about (%d,%d)",
                  (unsigned)clk_theme.tourbillon_n, (unsigned)clk_theme.tourbillon_fps,

@@ -222,6 +222,13 @@ ACCEPTED = {'fill_sprite_dsc', 'paint_ctx_init',   # the threaded art-bank base
             # answered yes still does whenever its table is whole. The mark sites
             # that consume it are untouched; request_commit stays pinned.
             'l4_active',
+            # Post-extraction behaviour change, the unified render path's slice 5
+            # (design §8 option b). paint_row_ctx grows ONE early branch: a rotated
+            # layer whose job carries smooth (the bake's EF_SMOOTH) samples its 2x2
+            # neighbourhood bilinear and returns. Nothing in the nearest path moved:
+            # the static path, the inverse map and the nearest loop all still read
+            # as the shipped ones, and a row without the bit never enters the branch.
+            'paint_row_ctx',
             # Post-extraction behaviour change, landed in fae7c23 (the app-chip
             # keepout) and only pinned here. The extraction promise held; the commit
             # walk has since grown ONE additive branch: when the chrome's keepout

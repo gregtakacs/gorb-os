@@ -70,7 +70,24 @@ const VECTORS = [
   ['and its sentence names the rate', (G) => / est \d+ fps \(/.test(pol(G, still(G, 15, 1)).sentence)],
   ['a refusal stays a refusal', (G) => G.splitPolicy3({ frames: 1, fps: 0, est: still(G, 15, 1) }).carrier === 'refuse'],
   ['bakeClock3 returns the estimate of what it wrote', (G) => { const b = G.bakeClock3(stillOpts(15, 1)); return b.est && b.est.rung === 15; }],
+  // ---- 5. slice 5: the grant is baked as EF_SMOOTH (bit 7) on the turned rows ----
+  ['EF_SMOOTH is bit 7', (G) => G.EF_SMOOTH === 128],
+  ['a granted dial bakes EF_SMOOTH on its hour and minute rows', (G) => { const f = flags(G, stillOpts(15, 1)); return !!(f.h0 & 128) && !!(f.h1 & 128); }],
+  ['but never on the sweeping seconds, the hot tick', (G) => !(flags(G, stillOpts(15, 1)).h2 & 128)],
+  ['a ticking dial\'s seconds may smooth (it does not re-pose every tick)', (G) => { const f = flags(G, Object.assign(stillOpts(15, 0), { smooth: true })); return !!(f.h2 & 128); }],
+  ['a refused dial bakes no bit anywhere', (G) => { const f = flags(G, stillOpts(15, 1, true)); return !(f.any & 128); }],
+  ['smooth:false forces nearest on a dial that would be granted', (G) => !(flags(G, Object.assign(stillOpts(15, 1), { smooth: false })).any & 128)],
+  ['smooth:true forces the bit on a dial the price refused (the bench arm)', (G) => !!(flags(G, Object.assign(stillOpts(15, 1, true), { smooth: true })).h0 & 128)],
+  ['and the report still names the honest verdict for those bytes', (G) => G.bakeClock3(Object.assign(stillOpts(15, 1, true), { smooth: true })).est.smooth === false],
+  ['the bit off a turned row is refused at the writer', (G) => { try { G.checkElement(Object.assign(G.blankElement(), { 'class': 3, slot: 0, flags: 128, w: 466, h: 466, n_frames: 1 }), 'e'); return false; } catch (e) { return /smoothing/.test(e.message); } }],
 ];
+/* Each turned row's flags after a bake: h<slot> for hands, any = OR of every row. */
+function flags(G, opts) {
+  const els = G.verifyBundle3(G.bakeClock3(opts).bytes).sections[0].blob.elements;
+  const f = { any: 0 };
+  for (const e of els) { f.any |= e.flags; if (e['class'] === 2) f['h' + e.slot] = e.flags; }
+  return f;
+}
 
 function rung(G, asks, floor) {
   // pickRung3 is private; reach it through a scalar set that yields exactly these asks.
@@ -121,6 +138,10 @@ const MUTANTS = [
   ['the policy drops the estimate', "r.sentence = r.sentence + '; ' + m.est.sentence;", ''],
   ['the ticking still rides the pick', "if (!anim) return { rate:", "if (false) return { rate:"],
   ['the delta bank seeds the still floor', 'var floor = gif ? 12 : (live ? 4 : 15);', 'var floor = 15;'],
+  ['the grant never reaches the rows', 'if (turned && !hot) { er.flags', 'if (false) { er.flags'],
+  ['the hot-tick seconds smooths too', 'if (turned && !hot) {', 'if (turned) {'],
+  ['the bench force ignored', "var grant = o.smooth === true ? true : (o.smooth === false ? false : est.smooth);", 'var grant = est.smooth;'],
+  ['EF_SMOOTH legal on any class', "if ((flags & EF_SMOOTH) && cls !== CLASS_HAND && cls !== CLASS_SPRITE && cls !== CLASS_AUX) {", 'if (false) {'],
 ];
 
 let checked = 0, fails = 0;

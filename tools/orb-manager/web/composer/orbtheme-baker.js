@@ -3282,7 +3282,160 @@
     }
     b.meter = budget3(b.bytes);
     b.n_elem = elems.length;
+    b.est = estimate3(verifyBundle3(b.bytes).sections[0]);
     return b;
+  }
+
+  /* The commit's price, at bake time (docs/unified-render-path-design-2026-10-30.md
+   * §5): what one flush costs the dial the device will draw, and the rate that buys.
+   *
+   *   flush_ms = box_kpx x (RESTORE + STATIC x glass) + ink_kpx x (INK + AA) + FIXED
+   *
+   * box is the rows a flush restores: each per-tick mover's swept box (SWEPT_PAD 3
+   * on each side, the firmware's own pad), a carriage's two chord-marked poses, and
+   * the delta bank's rects per frame. ink is the rotated ink the painter blends in
+   * that box: the movers' own new pose plus EVERY other rotating layer whole — the
+   * measured share was ~1.0 on all four dials fitted, because the hour and minute
+   * hands sit in every row the seconds wedge marks. The glass is an identity layer
+   * under every marked pixel, so it rides the box. The rates are the painter's own,
+   * fitted to the slice 1 phase lines on orb-A (v1.1.38, 2026-10-30, DISPLAY_BENCH
+   * off) — Station and Skeleton fit, Perpetual and the sprite Orbital check — not
+   * the design's first figures: box 500 us/kpx (restore 73-85 + glass 330-355 +
+   * the flush gate's compare), rotated hand ink 1,675 out of XIP (the design
+   * assumed 185-232), a carriage 720, and te+dma ~24 ms per flush that no pixel
+   * term carries. AA is DERIVED, not measured — the LVGL
+   * shipped/AA-off pair (1,863 vs 1,724 us/kpx of box) over a 42% ink share — so
+   * every estimate that carries it says so. A keyframe bank has no restore plane
+   * and draws through LVGL; it is priced on the classic rates instead.
+   *
+   * The rate is capped by the rung the scheduler will pick from this bake's own
+   * scalars (orb_sched_pick_rung, mirrored below), which is why a 4 bps sweep
+   * reads 4 however cheap its commit is. `smooth` is slice 5's grant rule: the
+   * dial takes bilinear when the estimate WITH the AA term holds 12, and est_fps
+   * is priced with the term exactly when it does. */
+  var EST3 = { RESTORE: 80, STATIC: 420, INK: 1675, CAR: 720, AA: 330, FIXED_MS: 24,
+               LVGL_PLATE: 555, LVGL_INK: 1300, PAD: 3, SMOOTH_FPS: 12 };
+  var RUNG3 = [12, 8, 4, 2, 1];
+  function rungClamp3(f) { return f < 4 ? 4 : (f > 15 ? 15 : f); }
+  function gcd3(a, b) { while (b) { var t = a % b; a = b; b = t; } return a; }
+  /* orb_sched_pick_rung, line for line: the cap starts at the seeded floor and is
+   * bound by every FLUID ask; DISTINCT asks must all divide the rung. */
+  function pickRung3(asks, floor) {
+    var cap = rungClamp3(floor || 1), lcm = 1, over = 0, anyD = 0, slow = 0, i;
+    for (i = 0; i < asks.length; i++) {
+      var a = asks[i];
+      if (!a.fps || a.mode === 'free') continue;
+      if (a.mode === 'fluid') { var c = rungClamp3(a.fps); if (c < cap) cap = c; continue; }
+      anyD = 1; if (!slow || a.fps < slow) slow = a.fps;
+      if (!over) { var l = lcm / gcd3(lcm, a.fps) * a.fps; if (!l || l > 1000) over = 1; else lcm = l; }
+    }
+    if (!anyD) return cap;
+    if (!over) for (i = 0; i < RUNG3.length; i++) if (RUNG3[i] <= cap && RUNG3[i] % lcm === 0) return RUNG3[i];
+    return rungClamp3(slow);
+  }
+  /* sched_fill_asks + sched_seed_floor + sched_tick_period_ms, from the scalars a
+   * reader projects (GIF mode assumes the canvas allocates, which it does on every
+   * board measured: 7.7 MB free against 434 KB). */
+  function rateOf3(sc, plateDelay) {
+    var gif = sc.bg_mode === 1 && sc.gif_frames >= 2 && sc.gif_frames <= 32;
+    var live = gif || (sc.bg_mode !== 1 && sc.bg_frames > 0);
+    var anim = gif || (live && sc.bg_loop) || sc.tourbillon_n || sc.second_sweep;
+    if (!anim) return { rate: (!sc.second_sweep && sc.tick_rate >= 2) ? sc.tick_rate : 1, asks: 'hand beat' };
+    var asks = [];
+    if (gif) { var gt = Math.max(20, plateDelay || Math.round(1000 / Math.max(1, sc.bg_fps || 1))); asks.push({ fps: Math.round(1000 / gt), mode: 'distinct' }); }
+    else if (live) asks.push({ fps: Math.max(1, sc.bg_fps), mode: 'distinct' });
+    if (sc.tourbillon_n) asks.push({ fps: Math.max(1, sc.tourbillon_fps), mode: 'distinct' });
+    if (sc.second_sweep) asks.push({ fps: sc.tick_rate || 15, mode: 'fluid' });
+    var floor = gif ? 12 : (live ? 4 : 15);
+    return { rate: pickRung3(asks, floor), asks: asks.map(function (a) { return a.mode + ' ' + a.fps; }).join(' + ') };
+  }
+  /* A plane's ink: its alpha>0 count, and the extent of that ink as corners about
+   * the pivot (rotation is about the pivot, so that is the box that swings). */
+  function inkOf3(art, spr, e) {
+    var w = spr.w, h = spr.h, a0 = spr.off + w * h * 2, n = 0, x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) if (art[a0 + y * w + x]) {
+      n++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    var px = e.pivot_x | 0, py = e.pivot_y | 0;
+    return { n: n, pts: n ? [[x0 - px, y0 - py], [x1 + 1 - px, y0 - py], [x0 - px, y1 + 1 - py], [x1 + 1 - px, y1 + 1 - py]] : [] };
+  }
+  /* The mean swept box of a layer stepping `step` degrees, over a full turn: the
+   * union of both poses' rotated ink corners, padded, as apply_angles marks it. */
+  function sweptKpx3(pts, step, dx, dy) {
+    if (!pts.length) return 0;
+    var sum = 0, N = 60;
+    for (var k = 0; k < N; k++) {
+      var bx0 = 1e9, by0 = 1e9, bx1 = -1e9, by1 = -1e9;
+      for (var p = 0; p < 2; p++) {
+        var t = (k * 6 + p * step) * Math.PI / 180, cs = Math.cos(t), sn = Math.sin(t);
+        for (var q = 0; q < pts.length; q++) {
+          var X = pts[q][0] * cs - pts[q][1] * sn, Y = pts[q][0] * sn + pts[q][1] * cs;
+          for (var s = 0; s < 2; s++) {
+            var XX = X + s * (dx | 0), YY = Y + s * (dy | 0);
+            if (XX < bx0) bx0 = XX; if (XX > bx1) bx1 = XX; if (YY < by0) by0 = YY; if (YY > by1) by1 = YY;
+          }
+        }
+      }
+      sum += (bx1 - bx0 + 2 * EST3.PAD) * (by1 - by0 + 2 * EST3.PAD);
+    }
+    return sum / N / 1000;
+  }
+  function estimate3(sec) {
+    var sc = sec.blob.scalars, els = sec.blob.elements, spr = sec.blob.sprites, art = sec.art;
+    var panel = SCREEN_W * SCREEN_H / 1000;
+    var plate = null, glassPx = 0, i;
+    for (i = 0; i < els.length; i++) {
+      var e0 = els[i], c0 = e0['class'];
+      if (c0 === CLASS_PLATE && !(e0.slot & 0xffff)) plate = e0;
+      else if (c0 === CLASS_PLATE && !(e0.flags & EF_HIDDEN)) glassPx += inkOf3(art, spr[e0.frame0], e0).n / 1000;
+    }
+    var r = rateOf3(sc, plate ? plate.delay : 0), R = r.rate;
+    var step = sc.second_sweep ? 6 / Math.max(1, R) : 6 / Math.max(1, sc.tick_rate || 1);
+    var dx = sc.shadow_on ? sc.shadow_dx : 0, dy = sc.shadow_on ? sc.shadow_dy : 0;
+    var box = 0, mover = 0, still = 0, aaMover = 0, aaStill = 0, carInk = 0;
+    for (i = 0; i < els.length; i++) {
+      var e = els[i], c = e['class'];
+      if (e.flags & EF_HIDDEN) continue;
+      var rot = (c === CLASS_HAND && e.slot < 5) || (c === CLASS_SPRITE && e.slot < 3) || c === CLASS_AUX;
+      if (c === CLASS_HAND && e.slot === 5 && e.n_frames) {         // the carriage: chord-marked
+        carInk = inkOf3(art, spr[e.frame0], e).n / 1000; box += 2 * carInk; continue;
+      }
+      if (!rot) continue;
+      var ink = inkOf3(art, spr[e.frame0], e);
+      var sweeps = (e.slot === 2 && (c === CLASS_HAND || c === CLASS_SPRITE)) || (c === CLASS_AUX && e.src === 7);
+      var paysAA = !(e.slot === 2 && sc.second_sweep && c !== CLASS_AUX);   // the hot-tick seconds stays nearest
+      if (sweeps) { box += sweptKpx3(ink.pts, step, c === CLASS_HAND ? dx : 0, c === CLASS_HAND ? dy : 0); mover += ink.n / 1000; if (paysAA) aaMover += ink.n / 1000; }
+      else { still += ink.n / 1000; if (paysAA) aaStill += ink.n / 1000; }
+    }
+    if (plate && sc.bg_mode === 1 && plate.n_frames > 1) {           // the delta bank's own rects
+      var rect = 0;
+      for (i = 1; i < plate.n_frames; i++) { var sp = spr[plate.frame0 + i]; if (sp) rect += sp.w * sp.h; }
+      box += rect / (plate.n_frames - 1) / 1000 * Math.min(1, (sc.bg_fps || R) / R);
+    }
+    if (box > panel) box = panel;
+    var glassCov = glassPx / panel;
+    var inkK = mover + still, aaK = aaMover + aaStill;
+    var classic = sc.bg_mode !== 1 && sc.bg_frames > 0;
+    var flushNear, flushAA;
+    if (classic) {
+      var redraw = panel * Math.min(1, (sc.bg_fps || R) / R);
+      flushNear = flushAA = (redraw * EST3.LVGL_PLATE + (inkK + carInk) * EST3.LVGL_INK) / 1000 + EST3.FIXED_MS;
+    } else {
+      var base = box * (EST3.RESTORE + EST3.STATIC * glassCov) + inkK * EST3.INK + carInk * EST3.CAR;
+      flushNear = base / 1000 + EST3.FIXED_MS;
+      flushAA = (base + aaK * EST3.AA) / 1000 + EST3.FIXED_MS;
+    }
+    var fpsOf = function (ms) { return Math.max(1, Math.min(R, Math.round(1000 / ms))); };
+    var nearFps = fpsOf(flushNear), aaFps = fpsOf(flushAA);
+    var smooth = !classic && aaK > 0 && 1000 / flushAA >= EST3.SMOOTH_FPS && R >= EST3.SMOOTH_FPS;
+    var carrier = classic ? 'keyframe bank (LVGL)' : sc.bg_mode === 1 ? 'delta bank' : sc.tourbillon_n ? 'sprite (carriage over a still)' : 'still';
+    var est = smooth ? aaFps : nearFps;
+    return { est_fps: est, rung: R, asks: r.asks, carrier: carrier, smooth: smooth,
+             flush_ms: +(smooth ? flushAA : flushNear).toFixed(1), near_fps: nearFps, aa_fps: aaFps,
+             box_kpx: +box.toFixed(1), ink_kpx: +inkK.toFixed(1), aa_kpx: +aaK.toFixed(1),
+             glass_cov: +glassCov.toFixed(3), car_kpx: +carInk.toFixed(1), still_kpx: +still.toFixed(1), mover_kpx: +mover.toFixed(1),
+             sentence: 'est ' + est + ' fps (' + carrier + ', rung ' + R + ' from ' + r.asks + '; flush ~' +
+               (smooth ? flushAA : flushNear).toFixed(0) + ' ms, ' + (smooth ? 'smooth: AA term estimated, not measured' : 'nearest' + (aaK > 0 && !classic ? ': smoothing would land ' + aaFps + ' fps, AA term estimated' : '')) + ')' };
   }
 
   /* §31's motion split, as one pure function so the sweep page, the composer's
@@ -3321,7 +3474,18 @@
    * 2. THE PLATE. Measured on its own motion (un-caged, so the orbit does not price
    *    it), and billed against the room the carriage left.
    */
+  /* The answer below, plus the commit's price when the caller has one (m.est, an
+   * estimate3 of the baked bytes): est_fps and the rung ride the answer, and the
+   * sentence names them, so the rate is said before the press like every refusal. */
   function splitPolicy3(m) {
+    var r = splitPolicyCore3(m);
+    if (m.est && r.carrier !== 'refuse') {
+      r.est_fps = m.est.est_fps; r.rung = m.est.rung;
+      r.sentence = r.sentence + '; ' + m.est.sentence;
+    }
+    return r;
+  }
+  function splitPolicyCore3(m) {
     var panel = SCREEN_W * SCREEN_H, kf = panel * 2, cap = SLOT_ART_CAP3;
     var oth = m.otherB | 0, comp = m.compB | 0, aux = m.auxB | 0, B = m.frames | 0, fps = m.fps | 0;
     comp += aux;   // D34: a pointer plate is art the slot carries before any bank frame fits
@@ -3607,7 +3771,7 @@
     // a clock section the compiled dial projects, and the D29 sums read back off finished
     // bytes. bakeClock3 refuses with orb_clock3.c's own sentences, so the editor names the
     // reason the dial will print instead of a reason of its own.
-    bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3,
+    bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3, estimate3: estimate3,
     carriageRect3: carriageRect3, carriageStart3: carriageStart3,
     liveComps3: liveComps3, compPlan3: compPlan3, pointerPlan3: pointerPlan3,
     pointerDefault3: pointerDefault3

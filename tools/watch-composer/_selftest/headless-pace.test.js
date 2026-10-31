@@ -37,8 +37,14 @@ eq(mp.pace, 11, 'modern (banked running-seconds subdial) rounds to 11, not the o
 ok(mp.pace % 1 === 0 && mp.pace > 8, 'a raw near 11.4 reads as 11, an off-rung whole number the rungs could not say', mp.pace);
 eq(paceAt('diver').pace, 15, 'diver (a single thin date window, cov 0.01) rounds to 15, not the snapped 12');
 
-// ---- a caged carrier and a non-sweep tempo are exempt --------------------------------
-eq(paceAt('modern', { fps: 15, measured: true, car: true }).pace, 15, 'a caged dial is exempt: _devPace quotes the tier untouched');
+// ---- a caged carrier is priced like any other dial (unified render path, slice 3) ----
+// The exemption ("its carriage marks by chord, unmeasured") is gone: under the unified
+// commit path the carriage dial's wedge re-blits the plates it crosses like every other
+// dial's, so a caged dial with modern's subdials prices to modern's own figure.
+eq(paceAt('modern', { fps: 15, measured: true, car: true }).pace, paceAt('modern').pace,
+   'a caged dial is no longer exempt: it prices to the same crossed-arc figure as its uncaged twin');
+ok(paceAt('modern', { fps: 15, measured: true, car: true }).pace < 15, 'and that figure is a number, not the untouched tier',
+   paceAt('modern', { fps: 15, measured: true, car: true }).pace);
 
 // ---- a static single plate under a MOVING twin still pays K_TWIN ---------------------
 // The refuted plan step: do NOT narrow K_TWIN to moving plates only. Neon (a static moon

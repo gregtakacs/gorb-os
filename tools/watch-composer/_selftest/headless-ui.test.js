@@ -96,6 +96,13 @@ setTimeout(async () => {
     const r = byLabel(labels('hands'), 'Motion'); it.cfg().tick = s; it.budget = save; return r; };
   ok(/ships 15 bps sweep/.test(mVal(15, 'sweep').valText), 'a sweep row says what it ships', mVal(15, 'sweep').valText);
   ok(/ships 4 ticks \/ s/.test(mVal(15, '4').valText), 'a tick row says what it ships', mVal(15, '4').valText);
+  // The unified render path's slice 3: after a bake the row also names the bake's own price —
+  // carrier class, estimate, and the rung the pick lands on — from GorbBake.estimate3. The
+  // figures are Station's real bake (est 10 at rung 15; the glass measured 10 on v1.1.38).
+  ok(!/last bake/.test(mVal(15, 'sweep').valText), 'before any bake the row prices nothing it has not seen', mVal(15, 'sweep').valText);
+  it._est3 = { carrier: 'still', est_fps: 10, rung: 15 };
+  ok(/last bake still, est 10 fps at rung 15/.test(mVal(15, 'sweep').valText), 'after a bake the row names carrier, estimate and rung', mVal(15, 'sweep').valText);
+  delete it._est3;
   ok(JSON.stringify(mOptLabels(mot(4)).slice(0, 3)) === JSON.stringify(['1 tick / s', '2 / s', '4 / s']), 'the calm rungs and the free sweep are always offered', JSON.stringify(mOptLabels(mot(4))));
   ok(mOptLabels(mot(4)).includes('Sweep'), 'sweep stays selectable at the floor rate (it is a look, the dial sets the rate)');
   const rows = (it.state.tab = 'hands', it.renderVals().handRows);

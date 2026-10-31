@@ -505,9 +505,10 @@ class Component extends DCLogic {
    * can pay. The CAPS ladder prices the delta-bank push only: rowPrice()
    * measures the PLATE's own motion with hands hidden (baseImgs), and the
    * needle cap simply books a sweep over plain plate at ~130 swept-box rows
-   * per tick. Nothing in the ladder prices a sweep ACROSS opaque plates: the
-   * commit restores dirty rows from canvas then re-blits every layer over them
-   * in z-order (orb_gfx.c), so each tick whose wedge overlaps a subdial
+   * per tick. Nothing in the ladder prices a sweep ACROSS opaque plates: on every
+   * dial the device can restore (still plate, sprite, delta bank — the unified
+   * commit path), the commit restores marked rows from the plate and re-blits every
+   * layer over them in z-order (orb_gfx.c), so each tick whose wedge overlaps a subdial
    * re-composites that plate, twice while a cast-shadow twin rides with it.
    * The tax lands whether or not a bank also pushes: the hands are never in
    * the bank, so rows>0 proves nothing about it. Price it by the ARC the wedge
@@ -523,10 +524,11 @@ class Component extends DCLogic {
    * bound a banked carrier to one step below its own bank rate (7649661). A ticked
    * hand holds between beats and pays only on the beat. The centre seconds hand is
    * required: a subdial's own small seconds ticks inside its window row, not across
-   * the dial. A caged dial is exempt: its carriage marks by chord, unmeasured. */
+   * the dial. A caged dial is priced here like any other; the bake's own estimate
+   * (GorbBake.estimate3, from the baked bytes) prices its chord-marked carriage. */
   _devPace(b) {
     const out = { pace: b.fps, cross: 0, cov: 0, why: '' };
-    if (!b.measured || b.car) return out;
+    if (!b.measured) return out;
     const c = this.cfg(), D = this.design();
     if (!(D.centre && D.centre.second === 1)) return out;
     if (c.tick && c.tick !== 'sweep') return out;
@@ -2510,8 +2512,9 @@ class Component extends DCLogic {
       for (let p = 3; p < gp.length; p += 4096) if (gp[p] > 2) { glassB = 466 * 466 * 3; break; }
       if (glassB) glassP = { x: 0, y: 0, w: 466, h: 466, rgba: gp };
     }
-    const pol = G.splitPolicy3({ frames: B, fps, unionPx: un, bboxW: bw, bboxH: bh, otherB: oth + glassB, compB: compB || 0, auxB: auxB || 0,
-                                 hasCage: !!M.cageAt, orbital, carriageW: carW, carriageH: carH });
+    const m3p = { frames: B, fps, unionPx: un, bboxW: bw, bboxH: bh, otherB: oth + glassB, compB: compB || 0, auxB: auxB || 0,
+                  hasCage: !!M.cageAt, orbital, carriageW: carW, carriageH: carH };
+    let pol = G.splitPolicy3(m3p);
     if (pol.carrier === 'refuse') { this.setState({ status: 'Not baked: ' + pol.sentence }); return; }
     /* A bank the byte budget thinned re-prices the readout to the tempo that
      * actually ships, so the chip never outlives the receipt it just printed. */
@@ -2635,6 +2638,10 @@ class Component extends DCLogic {
     this.setState({ status: 'Baking "' + nm + '" as a FORMAT 3 ' + pol.carrier + (pol.carriage ? ' with a ' + pol.carriage.keyframes + '-frame carriage bank @ ' + pol.carriage.fps + ' fps' : '') + (compRows.length ? ' with a ' + compRows.length + '-row comp table' : '') + (auxRows.length ? ' and ' + auxRows.length + ' pointer' + (auxRows.length > 1 ? 's' : '') : '') + '…' });
     try {
       const r = G.bakeClock3(opts);
+      /* The commit's price is a fact of the bytes, so it is asked of the bake, and the
+       * policy is asked again with it: the same pure answer, now carrying est_fps and
+       * the rung, so the sentence names the rate before the file leaves the room. */
+      if (r.est) { pol = G.splitPolicy3(Object.assign({}, m3p, { est: r.est })); this._est3 = r.est; }
       const stem0 = await this.cardStemFor(G, nm);
       const stem = (stem0 || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
       const bytes = r.bytes;
@@ -3561,7 +3568,9 @@ class Component extends DCLogic {
        * second, and the only way to find out was the log. */
       const beat = c0.tick === 'sweep' ? Math.min(255, Math.max(1, Math.min(HB.fps, HB.dev.pace) | 0)) + ' bps sweep'
                                        : (Math.max(1, +c0.tick | 0) + ' ticks / s');
-      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: F + ' fps · ' + B + ' frames' + (DEV < F ? ' · device ~' + DEV : '') + ' · ships ' + beat }),
+      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: F + ' fps · ' + B + ' frames' + (DEV < F ? ' · device ~' + DEV : '') + ' · ships ' + beat
+          // The last bake's own price: carrier class, estimate, and the rung the pick lands on.
+          + (this._est3 ? ' · last bake ' + this._est3.carrier + ', est ' + this._est3.est_fps + ' fps at rung ' + this._est3.rung : '') }),
         Nt('', HB.dev.why || 'Available frame rates depend on how much of the dial opening is visible. The Motion choice ships on the wire as that beat, whatever the dial is: an animated plate or carriage tempo binds a sweep to its own fastest frame rate, and a tick that outruns the delivered tempo is re-quantised to it on the glass.'),
         H('Drop shadow · hand twins and plate relief'),
         Ch('Cast shadows', (+c0.shMove > 0.01 && +c0.shOp > 0.01) ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.castShadowsOn(v === 'on')),

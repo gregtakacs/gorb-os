@@ -206,3 +206,40 @@ func TestThemeStepUnreadCardIsNotARefusal(t *testing.T) {
 		}
 	}
 }
+
+// A card busy with an upload or a store answers its list without walking it, so
+// card_count reads 0 for a card that may hold the owner's shelf. The seed must
+// read that as unread and write nothing.
+func TestThemeStepDoesNotSeedABusyCard(t *testing.T) {
+	for _, busy := range []string{`"uploading":true`, `"job_busy":true`} {
+		var paths []string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			paths = append(paths, r.URL.Path)
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Path == "/api/v1/sd" {
+				w.Write([]byte(`{"mounted":true,"card_count":0,` + busy + `,"themes":[]}`))
+				return
+			}
+			w.Write([]byte(`{}`))
+		}))
+		s := newHub()
+		s.device = orbnet.NewClient(deviceTimeout)
+		s.device.DevicePort = portOf(srv.URL)
+		s.ota = orbnet.NewClient(otaTimeout)
+		s.ota.DevicePort = portOf(srv.URL)
+		step := ""
+		if err := s.installTheme(context.Background(), "127.0.0.1",
+			func(st installStep) { step = st.Action }); err != nil {
+			t.Fatalf("%s: a busy card refused the run: %v", busy, err)
+		}
+		if step != "unchecked" {
+			t.Errorf("%s: the theme step answered %q; a busy card is unread, not empty", busy, step)
+		}
+		for _, p := range paths {
+			if p != "/api/v1/sd" {
+				t.Errorf("%s: a busy card was written to (%s)", busy, p)
+			}
+		}
+		srv.Close()
+	}
+}

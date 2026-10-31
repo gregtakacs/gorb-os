@@ -979,8 +979,17 @@ static int card_open_verified_slug3(const char *app_slug, const char *stem,
     if (!r.verified && r.why) { *why = r.why;                                     return -1; }
     if (!r.verified) { *why = "that file's name does not match its id — refused"; return -1; }
 
+    /* card_open_locked3 means what it says: the CALLER holds the card. The walk
+     * above took and released the lock itself (it is not recursive), so it is taken
+     * here, and card_close() gives it back. Without this every install and preview
+     * read ran with no lock and, worse, no tile-ring loan: a listing on another task
+     * borrowed and re-funded the ring mid-store, the SD driver's 125 B DMA bounce
+     * found nothing, sdmmc_read_blocks failed (0x101), and the store left the slot
+     * empty — "bundle ended before its declared pixels" (bench, orb-A, 2026-10-31,
+     * a store under preview traffic, the shape of a hub send and its read-ahead). */
+    orb_sd_lock();
     const int fd = card_open_locked3(stem, o, file_size, why);
-    if (fd < 0) return -1;
+    if (fd < 0) { orb_sd_unlock(); return -1; }
     char id2[THEME_ID_HEX + 1];
     theme_id(slug, o->name, id2);
     if (strcmp(id2, id) != 0) {
@@ -2296,6 +2305,10 @@ int orb_theme_scan(orb_theme_entry_t *out, int cap)
      * a page that cannot poll its own list looks exactly like a device that has
      * stopped answering. The caller reports "uploading" instead. */
     if (orb_theme_upload_busy()) return -1;
+    /* The same for a store: a theme job holds the card (and the display's DMA ring)
+     * for its whole copy, and a walk here would wait it out on the httpd worker. The
+     * job's own worker is let through, since a job that scans must not refuse itself. */
+    if (orb_jobs_busy() && !orb_jobs_on_worker()) return -1;
 
     /* The directory and the extension stay the clock's declaration, not a
      * constant here: the OS owns the walk, so this layer asks where its themes

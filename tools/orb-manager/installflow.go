@@ -784,6 +784,14 @@ func (s *Server) installTheme(ctx context.Context, ip string, send func(installS
 			Note: "the orb did not answer its theme list, so no theme was seeded: " + err.Error()})
 		return nil
 	}
+	// An upload or a store in flight owns the card, and the orb answers the list
+	// without walking it: card_count reads 0 for a card that may be full. That is
+	// "not read", never "empty" — seeding on it would push a theme over the owner's.
+	if tl.Uploading || tl.JobBusy {
+		send(installStep{Step: "theme", Action: "unchecked",
+			Note: "the orb's card is busy with a theme job, so no theme was seeded"})
+		return nil
+	}
 	// The seed's question is "does the CARD carry themes", and card_count is the
 	// firmware's own answer. It is NOT `active`: a fresh board boots the factory
 	// bundle baked into its assets slot, so active reads "Aviator" before the card

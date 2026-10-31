@@ -5000,6 +5000,13 @@ static esp_err_t h_sd_preview(httpd_req_t *req)
         httpd_resp_set_hdr(req, "Cache-Control", "no-store");
         return httpd_resp_sendstr(req, "{\"error\":\"the radio is scanning\",\"retry\":\"later\"}");
     }
+    /* A store holds the card for its whole copy; this read would wait it out on the
+     * one httpd task, so it answers busy instead and the hub waits it out. */
+    if (orb_jobs_busy()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        return httpd_resp_sendstr(req, "{\"error\":\"a theme job holds the card\",\"retry\":\"later\"}");
+    }
     char why[128] = "";
     uint16_t w = 0, h = 0;
     orb_asset_ans_t a = orb_theme_preview_read(id, NULL, 0, &w, &h, why, sizeof why);
@@ -5291,11 +5298,13 @@ static esp_err_t h_app_editor(httpd_req_t *req)
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"id is missing\"}");
     }
-    if (scan_on_air()) {   /* the preview door's rule: see scan_on_air */
+    if (scan_on_air() || orb_jobs_busy()) {   /* the preview door's two rules */
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_hdr(req, "Cache-Control", "no-store");
         httpd_resp_set_status(req, "503 Service Unavailable");
-        return httpd_resp_sendstr(req, "{\"error\":\"the radio is scanning\",\"retry\":\"later\"}");
+        return httpd_resp_sendstr(req, orb_jobs_busy()
+            ? "{\"error\":\"a theme job holds the card\",\"retry\":\"later\"}"
+            : "{\"error\":\"the radio is scanning\",\"retry\":\"later\"}");
     }
     uint32_t total = 0;
     const char *why = NULL;

@@ -224,9 +224,24 @@ func (s *Server) editorRegionDialed(ip, slug string, dial editorFetchFn) (*zip.R
 	// references is served from the reader already in hand rather than opening a
 	// second dial. A nil row, an unstamped pair or a library with no such file all
 	// fall through to the dial below, which is always correct.
-	if zr, err := s.libraryEditorRegion(s.installedRow(ip, slug), slug); err == nil {
+	row := s.installedRow(ip, slug)
+	if zr, err := s.libraryEditorRegion(row, slug); err == nil {
 		regions.slots[k] = &editorSlot{zr: zr, fetched: time.Now()}
 		return zr, nil
+	}
+	// Second, the disk: a region this hub already read off a dial running the same
+	// release. The release stamp is the same evidence the library gate trusts —
+	// written by the process that writes the region — so a name keyed on it either
+	// holds those bytes or is absent. An unstamped row gets no name and is dialed.
+	name := ""
+	if row != nil && !row.Compiled && row.Version != "" {
+		name = cacheName(slug, row.Version) + ".region"
+	}
+	if raw, ok := s.editorCache.get(name); ok {
+		if zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw))); err == nil {
+			regions.slots[k] = &editorSlot{zr: zr, fetched: time.Now()}
+			return zr, nil
+		}
 	}
 	raw, err := dial(ip, slug)
 	if err != nil && !errors.Is(err, orbnet.ErrNoEditor) {
@@ -238,6 +253,8 @@ func (s *Server) editorRegionDialed(ip, slug string, dial editorFetchFn) (*zip.R
 		zr, err = zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
 		if err != nil {
 			err = fmt.Errorf("the editor region for %s is not a ZIP archive: %w", slug, err)
+		} else {
+			s.editorCache.put(name, raw)
 		}
 	}
 	regions.slots[k] = &editorSlot{zr: zr, err: err, fetched: time.Now()}

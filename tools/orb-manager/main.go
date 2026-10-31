@@ -93,6 +93,10 @@ type Server struct {
 	preview   *orbnet.Client
 	previewMu sync.Mutex
 	previews  map[string]previewHit
+	// planeCache and editorCache keep preview planes and editor regions on disk
+	// across restarts (diskcache.go). Zero in tests: only main() gives them a dir.
+	planeCache  diskCache
+	editorCache diskCache
 	// pvFly tracks the preview relays in flight, per address+id. A fetch that
 	// arrives while the read-ahead pass already dials that same plane rides the
 	// in-flight relay instead of opening a second one on a card that serves one
@@ -478,6 +482,13 @@ func main() {
 	// to Server cannot be wired in one and forgotten in the other — which is how the
 	// boot-verdict map nearly shipped nil in the real binary.
 	s := newHub()
+	// The on-disk caches live beside state.json, so clearing the hub's state dir
+	// clears them too. Bounds: ~400 planes is ~43 MB; 16 editor regions ~11 MB.
+	if sp, err := statePath(); err == nil {
+		dir := filepath.Join(filepath.Dir(sp), "cache")
+		s.planeCache = diskCache{dir: filepath.Join(dir, "planes"), max: 400}
+		s.editorCache = diskCache{dir: filepath.Join(dir, "editors"), max: 16}
+	}
 	// One dial scheduler for the whole hub. The four clients below share it, so an
 	// orb is dialed by at most one of them at a time however many want it — which
 	// is what the device's single httpd task and short socket table can actually

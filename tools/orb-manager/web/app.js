@@ -821,6 +821,19 @@ async function loadOrb(returned) {
     if (wasBack) tabRearm();
     startPolling(current.ip);
   } catch (e) {
+    // "orb busy" is the hub's own bus saying a transfer holds this orb's lane for a
+    // second or two: the board answered minutes ago at worst, so it is a wait, not
+    // a silence. Re-read shortly without calling it gone and without spending the
+    // wake-wait budget a real reboot is owed (bench, 2026-10-31: a hub start's
+    // read-ahead made the very first status read say "no orb answering").
+    if (String((e && e.message) || e).indexOf("orb busy") >= 0) {
+      $("#mn-curfw").textContent = "the orb is finishing a transfer \u2014 reading it again";
+      orbWakeTmr = setTimeout(() => {
+        orbWakeTmr = 0;
+        if ((current.mac || current.ip) === tok) loadOrb(returned);
+      }, 1500);
+      return;
+    }
     $("#mn-curfw").textContent = "no orb answering at " + current.ip + " \u2014 " + e.message +
       "; it may be mid-reboot, re-reading as it comes back";
     // The Firmware face owns the detailed line, but it is a tab now: the ident
@@ -2140,12 +2153,15 @@ function applyWifiChoice() {
 $("#j-ssid").onchange = applyWifiChoice;
 
 let scanTimer = null;
-// busyTries counts the "orb busy" answers this scan has already waited out. Busy
-// is the hub's bus saying a page transfer holds the lane for a second or two —
-// a wait with a name, not a failed scan — so the picker takes the hint quietly,
-// the way themeListWithRetry does, and only a lane still held after four
-// waits is worth printing.
-async function loadNetworks(fresh, busyTries) {
+// busyTries counts the waits this scan has already sat out. "orb busy" is the hub's
+// bus saying a page transfer holds the lane for a second or two — a wait with a
+// name, not a failed scan — so the picker takes the hint quietly, the way
+// themeListWithRetry does. polling marks the follow-up reads after the orb said
+// "scanning": its radio is off-channel sweeping, so a dial that cannot connect or
+// a read that times out is the scan in progress, not a missing orb (bench,
+// 2026-10-31: the first poll after a fresh scan printed "check the IP" against a
+// healthy board). Those get eight waits; anything else still prints at once.
+async function loadNetworks(fresh, busyTries, polling) {
   const jlog = $("#j-log");
   if (!orbIP) { jlog.textContent = "no orb selected yet"; return; }
   const sel = $("#j-ssid");
@@ -2155,7 +2171,7 @@ async function loadNetworks(fresh, busyTries) {
     const r = await hubFetch(`/orb/${orbIP}/api/v1/wifi/scan` + (fresh ? "?fresh=1" : ""));
     const d = await readDeviceJSON(r);
     if (d.status === "scanning") {
-      scanTimer = setTimeout(() => loadNetworks(false), 1200);
+      scanTimer = setTimeout(() => loadNetworks(false, 0, true), 1200);
       return;
     }
     const list = d.networks || [];
@@ -2182,9 +2198,14 @@ async function loadNetworks(fresh, busyTries) {
       : "no networks found — a hidden network can still be typed; or try Rescan";
   } catch (e) {
     const tries = busyTries || 0;
-    if (tries < 4 && String((e && e.message) || e).indexOf("orb busy") >= 0) {
-      jlog.textContent = "waiting for the orb \u2014 a transfer is finishing\u2026";
-      scanTimer = setTimeout(() => loadNetworks(fresh, tries + 1), 1500);
+    const m = String((e && e.message) || e);
+    const busy = m.indexOf("orb busy") >= 0;
+    const sweeping = polling && (m.indexOf("unreachable") >= 0 || m.indexOf("timeout") >= 0
+      || m.indexOf("timed out") >= 0);
+    if ((busy && tries < 4) || (sweeping && tries < 8)) {
+      jlog.textContent = sweeping ? "still scanning \u2014 the orb's radio is sweeping the channels\u2026"
+                                  : "waiting for the orb \u2014 a transfer is finishing\u2026";
+      scanTimer = setTimeout(() => loadNetworks(fresh, tries + 1, polling), 1500);
       return;
     }
     let msg = "\u2717 scan failed: " + e.message + " — check the IP; Rescan to retry.";

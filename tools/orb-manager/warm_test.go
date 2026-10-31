@@ -573,15 +573,17 @@ func TestTheLiveEdgeKnocksOncePerReturn(t *testing.T) {
 	}
 }
 
-// The exact crash the live orb caught. Two rows and one editable app, kicked
-// with NO face hint: the plane queue drains, the regions queue is not empty, and
-// the loop must walk into the regions — the first scheduler revision indexed
-// planes[0] on that transition and panicked the process, which is a dead hub and
-// a browser that says "Failed to fetch" to everything after it. The fakes never
-// caught it because the seeded card app ships no editor: with an empty regions
-// queue the pass broke out one step early. A test hub that panics fails this
-// test by dying, which is the loudest honest assertion available here.
-func TestThePassWalksRegionsAfterPlanesWithNoHint(t *testing.T) {
+// The exact crash the live orb caught, and the rule that replaced its premise. Two
+// rows and one editable app. The first scheduler revision indexed planes[0] on the
+// planes-to-regions transition and panicked the process — a dead hub and a browser
+// that says "Failed to fetch" to everything after it — so both branches of the loop
+// are walked here, and a test hub that panics fails by dying.
+//
+// Since 2026-10-31 a pass reads an editor region only for the editor the operator
+// has open: unasked, a ~670 KB region was cut by every page request at a hub start
+// and never once landed. So with no hint the pass walks its planes and closes done
+// with no region dial; with the clock's editor open it reads that region.
+func TestThePassWalksRegionsOnlyForTheOpenEditor(t *testing.T) {
 	region := zipWith(t, map[string]string{
 		"editor.json": `{"editor":1,"entry":"index.html","baker":3,"runtime":["support"]}`,
 		"index.html":  `<body><h1>woken early</h1></body>`,
@@ -604,13 +606,32 @@ func TestThePassWalksRegionsAfterPlanesWithNoHint(t *testing.T) {
 	if rec := postTheme(t, s, "/api/theme/list", themeBody(ip, "")); rec.Code != http.StatusOK {
 		t.Fatalf("list = %d", rec.Code)
 	}
+	editorDials := func() int {
+		return countCalls(fake, func(l string) bool { return strings.HasPrefix(l, "GET /api/v1/apps/editor") })
+	}
 	warmPost(t, s, `{"ip":"`+ip+`"}`) // no face: the plain likelihood order
 	data := waitForWarm(t, s, mux, ip)
 	if data["phase"] != "done" {
-		t.Fatalf("the no-hint pass closed %q (%v), want it to walk its regions and close done", data["phase"], data["note"])
+		t.Fatalf("the no-hint pass closed %q (%v), want it to walk its planes and close done", data["phase"], data["note"])
 	}
-	if got := countCalls(fake, func(l string) bool { return strings.HasPrefix(l, "GET /api/v1/apps/editor") }); got == 0 {
-		t.Errorf("the no-hint pass ran no region dial — the planes-to-regions transition is where the hub used to panic: %#v", fake.Calls())
+	if got := editorDials(); got != 0 {
+		t.Errorf("the no-hint pass read %d editor regions nobody had opened: %#v", got, fake.Calls())
+	}
+
+	// The clock's editor pane opens: now its region is worth the read.
+	editorInvalidate()
+	t.Cleanup(editorInvalidate)
+	s.dropThemeCache(ip)
+	if rec := postTheme(t, s, "/api/theme/list", themeBody(ip, "")); rec.Code != http.StatusOK {
+		t.Fatalf("list = %d", rec.Code)
+	}
+	warmPost(t, s, `{"ip":"`+ip+`","face":"edit","slug":"clock"}`)
+	data = waitForWarm(t, s, mux, ip)
+	if data["phase"] != "done" {
+		t.Fatalf("the editor-hinted pass closed %q (%v), want done", data["phase"], data["note"])
+	}
+	if got := editorDials(); got == 0 {
+		t.Errorf("the pass did not read the open editor's region: %#v", fake.Calls())
 	}
 }
 

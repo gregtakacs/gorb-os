@@ -441,7 +441,13 @@ func (g *DialGate) IdleSince(host string, d time.Duration) bool {
 // its own response, because cutting a page's or an OTA's dial mid-stream is a
 // failure this side caused and no one asked for.
 func gatedDialer(lane Lane, class Class) func(context.Context, string, string) (net.Conn, error) {
-	base := (&net.Dialer{Timeout: 800 * time.Millisecond}).DialContext
+	// 3 s, not the 800 ms this was: an orb answering a fresh Wi-Fi scan takes its
+	// radio off-channel for seconds, and its one httpd task finishing a stream does
+	// not accept meanwhile, so a SYN can legitimately wait a second or two. At
+	// 800 ms the page's own scan poll reported "orb unreachable" against a healthy
+	// board (bench, 2026-10-31). Every client's own Timeout still bounds the whole
+	// request, so a dead address fails no later than its caller allows.
+	base := (&net.Dialer{Timeout: 3 * time.Second}).DialContext
 	if lane == nil {
 		return base
 	}

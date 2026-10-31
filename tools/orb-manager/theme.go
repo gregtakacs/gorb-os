@@ -528,7 +528,27 @@ func (s *Server) previewFresh(ip, id string) bool {
 	s.previewMu.Lock()
 	defer s.previewMu.Unlock()
 	h, ok := s.previews[ip+"|"+id]
-	return ok && h.code == http.StatusOK && time.Since(h.at) < previewCacheTTL
+	if ok && h.code == http.StatusOK && time.Since(h.at) < previewCacheTTL {
+		return true
+	}
+	return s.planeCache.has(s.planeCacheName(ip, id))
+}
+
+// planeCacheName names a card plane by what the card's own listing says the theme
+// is: id, bake serial and file size. The orb renders nothing into a plane — it is a
+// section of the .orbtheme the baker wrote — so the same three values are the same
+// bytes on any orb. An id the hub has no listing row for gets no name and is dialed.
+func (s *Server) planeCacheName(ip, id string) string {
+	list := s.cachedList(ip)
+	if list == nil {
+		return ""
+	}
+	for _, t := range list.Themes {
+		if t.ID == id && t.Serial != 0 && t.Bytes != 0 {
+			return cacheName(id, strconv.FormatUint(uint64(t.Serial), 16), strconv.FormatUint(uint64(t.Bytes), 10)) + ".plane"
+		}
+	}
+	return ""
 }
 
 // fetchPreviewPlane reads one card's plane through the single flight: the cache
@@ -600,6 +620,20 @@ func (s *Server) fetchPreviewPlaneOn(ip, id string, fetch func(string, string) (
 		s.pvFly[key] = ch
 		s.previewMu.Unlock()
 
+		// The disk before the dial: a plane named by the card's own id, bake serial
+		// and size is the same bytes on every orb and across every hub restart, so a
+		// theme the hub has seen once never comes off a card again (diskcache.go).
+		name := s.planeCacheName(ip, id)
+		if body, ok := s.planeCache.get(name); ok {
+			hit := previewHit{body: body, code: http.StatusOK, at: time.Now()}
+			s.previewMu.Lock()
+			s.previews[key] = hit
+			delete(s.pvFly, key)
+			s.previewMu.Unlock()
+			close(ch)
+			return hit, nil
+		}
+
 		s.previewHold()
 		body, code, err := fetch(ip, id)
 		// A plane cut short — too few bytes, or the connection dropped mid-body —
@@ -629,6 +663,7 @@ func (s *Server) fetchPreviewPlaneOn(ip, id string, fetch func(string, string) (
 		s.previewMu.Lock()
 		if err == nil && code == http.StatusOK {
 			s.previews[key] = previewHit{body: body, code: code, at: time.Now()}
+			s.planeCache.put(name, body)
 		}
 		delete(s.pvFly, key)
 		s.previewMu.Unlock()
@@ -2098,11 +2133,17 @@ func (s *Server) warmOrb(ip string, w *warmRun, list *orbnet.ThemeList) {
 			regionNote = "regions skipped: " + err.Error()
 			return
 		}
-		regions = editableSlugs(apps)
+		// Only the editor the operator has open is worth reading ahead. A region is
+		// ~670 KB of the orb's one HTTP task, and read speculatively at a hub start
+		// it was cut by every page request and re-read on every start, never once
+		// landing (bench, 2026-10-31: 512 KB then 145 KB, both cut, nothing cached).
+		// Unasked, the editor costs its first open one read; the shelf copy (same
+		// release) and the disk cache (any release read before) cover the rest.
+		regions = nil
 		if b := s.warmBoostFor(ip); b.slug != "" {
-			for i, sl := range regions {
-				if sl == b.slug && i > 0 {
-					regions = append([]string{sl}, append(regions[:i:i], regions[i+1:]...)...)
+			for _, sl := range editableSlugs(apps) {
+				if sl == b.slug {
+					regions = []string{sl}
 					break
 				}
 			}

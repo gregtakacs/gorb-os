@@ -49,6 +49,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "esp_system.h"
 #include "esp_attr.h"   /* D2: RTC_NOINIT_ATTR — the reboot-to-provisioning intent flag */
 #include "esp_timer.h"
+#include "orb_panic.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
 #include "driver/usb_serial_jtag.h"
@@ -2320,6 +2321,8 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
  * URI-match table is sized at compile time from HTTPD_URI_CONTAINS-style
  * defaults, so the only runtime cost here is the handlers themselves.
  * ------------------------------------------------------------------------ */
+#define PANIC_JSON_BYTES 320
+
 static esp_err_t h_status(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
@@ -2452,6 +2455,14 @@ static esp_err_t h_status(httpd_req_t *req)
      * the hub. Here they read task-wdt and panic. See rst_name(). */
     const int rst = (int)esp_reset_reason();
     const char *rst_nm = rst_name(rst);
+    /* The panic that reset rst_name says "panic" about, in the panic's own words:
+     * kind, PC, cause and backtrace, ~230 B when present (orb_panic.c). Without it
+     * a crash nobody captured is a name with no location. PSRAM, allocated on the
+     * first read, never .bss: 320 B of internal .bss was enough to tip the boot's
+     * post-wifi_start margin into a crash loop on 2026-10-31. */
+    static char *panic_json;
+    if (!panic_json) panic_json = heap_caps_malloc(PANIC_JSON_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (panic_json) (void)orb_panic_json(panic_json, PANIC_JSON_BYTES);
 
 #if CONFIG_ORB_IDLE_DIM_ENABLE
     /* Read once, before the format string, so the two booleans and the countdown
@@ -2650,7 +2661,7 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"idle\":{\"on\":%s,\"dimmed\":%s,\"since_s\":%u,\"timeout_s\":%u,"
         "\"lit_pct\":%u,\"dim_pct\":%u,\"wakes\":%u,\"worst_mg\":%d,"
         "\"worst_dark_mg\":%d,\"stamps\":%u,\"writes_failed\":%u},"
-        "\"rst\":%d,\"rst_name\":\"%s\","
+        "\"rst\":%d,\"rst_name\":\"%s\",%s"
         "\"apps\":%s}",
         s_sta_up      ? "connected"    :
         s_joining     ? "joining"      :
@@ -2696,7 +2707,7 @@ static esp_err_t h_status(httpd_req_t *req)
         idle_lit_pct, idle_dim_pct, idle_wakes, idle_worst_mg, idle_worst_dk,
         (unsigned)idle_dim_activity_count(),
         (unsigned)idle_dim_level_write_fail_count(),
-        rst, rst_nm,
+        rst, rst_nm, panic_json ? panic_json : "",
         apps_json ? apps_json : "[{\"error\":\"ledger unavailable\"}]");
 
     if (n < 0 || (size_t)n >= sizeof(json)) {
@@ -4637,6 +4648,30 @@ static esp_err_t h_fb(httpd_req_t *req)
     return r;
 }
 #endif /* CONFIG_ORB_DEBUG_HTTP */
+#if CONFIG_ORB_DEBUG_HTTP
+/* POST /api/v1/debug/panic?kind=abort|fault&confirm=CRASH — the bench's deliberate
+ * crash, the only way to prove orb_panic.c's record before a real crash needs it. A
+ * debug door like the two above (a shelf build compiles it out), and the confirm
+ * word keeps a stray POST from taking a dial down. */
+static esp_err_t h_debug_panic(httpd_req_t *req)
+{
+    char kind[12] = "", confirm[8] = "";
+    httpd_resp_set_type(req, "application/json");
+    if (!q_param(req, "kind", kind, sizeof kind) || !q_param(req, "confirm", confirm, sizeof confirm) ||
+        strcmp(confirm, "CRASH") != 0 ||
+        (strcmp(kind, "abort") && strcmp(kind, "fault"))) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"kind=abort|fault and confirm=CRASH\"}");
+    }
+    httpd_resp_sendstr(req, "{\"state\":\"crashing\"}");
+    vTaskDelay(pdMS_TO_TICKS(300));   /* the reply's flush window, as h_reboot leaves */
+    ESP_LOGW(TAG, "debug: deliberate panic, kind %s", kind);
+    if (!strcmp(kind, "abort")) abort();
+    *(volatile uint32_t *)0 = 0;
+    return ESP_OK;
+}
+#endif /* CONFIG_ORB_DEBUG_HTTP */
+
 #if CONFIG_ORB_DEBUG_HTTP
 /* /api/v1/log — the retained log tail, as plain text.
  *
@@ -7134,6 +7169,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/screen",     .method = HTTP_GET,  .handler = h_screen },
         { .uri = "/api/v1/fb",         .method = HTTP_GET,  .handler = h_fb },
         { .uri = "/api/v1/log",        .method = HTTP_GET,  .handler = h_log },
+        { .uri = "/api/v1/debug/panic", .method = HTTP_POST, .handler = h_debug_panic },
 #endif
         /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
          * backing calls. Migration 1 deleted the flip and default doors: under the

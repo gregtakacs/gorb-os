@@ -32,6 +32,7 @@
 #include "orb_usb_mtp.h"   /* the file-share mode's one-shot claim; stub false when off */   /* D37: the MTP mode's, on the same boot-ladder terms  */
 #include "orb_usb_msc.h"   /* D38: the disk mode's claim, same seam, opposite mount rule  */
 #include "orb_log.h"       /* the RAM log ring: /api/v1/log's only source */
+#include "orb_panic.h"     /* the last panic, kept across its reset for /api/v1/status */
 #include "orb_theme.h"
 #include "art_bank.h"
 
@@ -67,6 +68,9 @@ void app_main(void)
      * whenever the console VFS gets installed below. So the console keeps every
      * byte it printed before this file existed. */
     orb_log_init();
+    /* Before anything can panic again: count this boot so a panic record the RTC
+     * kept can say how many boots ago it happened. */
+    orb_panic_boot();
 
     ESP_LOGI(TAG, "=== gorb-os booting ===");
 

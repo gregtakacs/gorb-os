@@ -5892,3 +5892,21 @@ paragraph stands as landed. -->
 | stranding | caught at ~2 min | none in 9 min |
 
 Through the hub, seven previews each requested behind a fresh scan all arrived whole (2.4–10.3 s); the orb ended at 21,231 B free, 12,288 B largest.
+
+### 41.1 v1.1.42: fix 4 comes back out, and a panic now explains itself — 2026-10-31
+
+An owner's theme send on v1.1.41 ended `rst_name: panic` mid-slot-write, with the slot headerless (`last store did not finish`). Five captured stores on v1.1.41 did not reproduce it: quiet, under 200 ms status polling, a hub-style upload with the card copy unchanged and then with it deleted first, and with previews streaming. None panicked. What the captures did show was fix 4's cost at the radio:
+
+| | without `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` | with it |
+|---|---|---|
+| boots with "no lease 15 s after associating" | 0 of 10 | 4 of 12 |
+| association | 3.9–9.1 s | 3.7–29.8 s, one boot not in 32 s |
+| harsh hub stress (cold previews beside back-to-back fresh scans) | 9–10 of 12 previews whole, dips recover in ~10 s | 12 of 12 |
+
+Software AES (`CONFIG_MBEDTLS_HARDWARE_AES=n`) removed `esp-aes` failures but moved the same bounce failure to `esp-sha`, and did not cure the missing leases. An orb that sometimes takes half a minute to get online, plus one unexplained panic in the slot write, outweighs the stress headroom; fixes 1–3 already keep a stall from stranding. v1.1.42 ships the stock radio config. `sdkconfig.defaults` records the Kconfig trap for whoever retries it.
+
+**The panic recorder.** `main/util/orb_panic.c` wraps `esp_panic_handler` (`-Wl,--wrap`), so faults, `abort()` and both watchdogs land there before IDF prints and resets. It keeps kind, IDF's reason string, core, PC, EXCCAUSE/EXCVADDR and up to 12 backtrace PCs in RTC no-init memory behind a magic and a checksum, and `/api/v1/status` reports them as `panic` with `boots_ago`. Decode with `xtensa-esp32s3-elf-addr2line -pfiaC -e build/gorb-os.elf <bt>` against the image the orb runs. Proven with `POST /api/v1/debug/panic?kind=abort|fault&confirm=CRASH` (debug-gated): `abort` recorded as `IllegalInstruction` with `panic_abort -> abort -> h_debug_panic`, `fault` as `StoreProhibited` at `h_debug_panic`. `/status` measured 1,472 B with a record.
+
+**The near-miss, for the next hand that touches boot memory.** The first recorder build kept its JSON buffer in `.bss` (320 B) and the hook in IRAM (~200 B). That was enough to crash-loop the board: `prov_reader_task` aborted in newlib's `lock_init_generic` taking the USB-serial VFS lock right after `esp_wifi_start()`, where internal free is ~2 KB. Arming that driver earlier only moved the shortfall, and the reader's TCB then failed instead ("serial command door is disabled"). The shipped recorder costs zero internal RAM: the buffer is PSRAM, and the hook lives in flash, because both IDF panic entry points (`panicHandler`, `xt_unhandled_exception`) re-enable the cache before calling `esp_panic_handler`. DIRAM is 246,715 B, identical to v1.1.40. The single `esp-aes`/`esp-sha` allocation failure per boot with Skeleton active is pre-existing: v1.1.40 logs the same with that theme.
+
+**Store check.** `tools/bench/store_check.sh quiet|status|previews|upload` runs a captured slot write while the radio is busy, and is now part of shipping firmware. v1.1.42 candidate: quiet 9.6 s, previews streaming 16.5 s, fresh upload plus auto-store 15.5 s, no panic, no staged flag.

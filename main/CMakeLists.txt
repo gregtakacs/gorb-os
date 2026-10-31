@@ -68,6 +68,9 @@ idf_component_register(
         # The RAM log ring: /api/v1/log's source, and the only witness that survives
         # the file-share window taking the console (docs/usb-sd-msc-plan.md §13.3).
         "util/orb_log.c"
+        # The last panic, recorded in RTC memory by a wrap of esp_panic_handler (below)
+        # and reported by /api/v1/status after the reset (2026-10-31).
+        "util/orb_panic.c"
     INCLUDE_DIRS
         "."
         "app"
@@ -132,4 +135,6 @@ idf_component_register(
 # the mapped base, so sprite reads are unchanged. Geometry parsed offline from
 # the theme's clock_style.json still lives in assets/clock_assets.h.
 
-
+# orb_panic.c records every panic before ESP-IDF's handler prints and resets: the
+# wrap is the only hook that sees faults, abort() and both watchdogs alike.
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_panic_handler")

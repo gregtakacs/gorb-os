@@ -82,24 +82,22 @@ CONFIG_LWIP_MAX_SOCKETS=16
 # 2026-10-31: ~5.7 KB held ~110 s, every preview torn behind it).
 CONFIG_LWIP_SO_LINGER=y
 
-# The radio's and lwIP's buffers PSRAM-first, with DYNAMIC TX buffers. With the TX
-# buffers dynamic and internal, a stalled stream's queued data left no 1.6 KB
-# block for the frame that would drain it (bench, 2026-10-31). Measured on orb-A
-# the same day: post-wifi_start internal 2,223 -> 11,507 B, sta-connected
-# 15,639 -> 26,147 B, httpd up, and a scan/preview stress that stranded the old
-# image in ~2 min held 21 KB free for 9 min.
+# CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP stays OFF. v1.1.41 shipped it for runtime
+# internal-RAM headroom (a harsh preview/scan stress: 12/12 previews whole with it,
+# 9/12 without), and v1.1.42 took it back out, because it costs the board its
+# network: DHCP leases went missing after a good WPA3 association ("no lease 15 s
+# after associating") on 4 of 12 boots with it and 0 of 10 without; hardware AES
+# and SHA failed their internal-DMA bounce buffers in the handshake ("esp-aes" /
+# "esp-sha: Failed to allocate"); and one theme store panicked mid-slot-write on it.
+# The preview stall it relieved is answered directly by orb_net.c's scan_on_air and
+# sock_abort_on_close (app-platform-plan section 41).
 #
-# The trap that sank the 2026-10-14 attempt (app-platform-plan section 17) and
-# the first try today: esp_wifi's Kconfig only offers DYNAMIC TX buffers when
+# If it is ever retried: esp_wifi's Kconfig only offers DYNAMIC TX buffers when
 # !(SPIRAM_TRY_ALLOCATE_WIFI_LWIP && !SPIRAM_IGNORE_NOTFOUND). Without
 # IGNORE_NOTFOUND the choice silently flips to 16 STATIC TX buffers (~26 KB of
-# internal DMA up front) and esp_wifi_init dies with alloc eb fail /
-# ESP_ERR_NO_MEM — and the flip stays in a local sdkconfig after the line is
-# reverted. IGNORE_NOTFOUND only matters on a board with no PSRAM, which this
-# firmware does not run on. Check build/config/sdkconfig.h for
+# internal DMA) and esp_wifi_init dies ESP_ERR_NO_MEM, and the flip stays in a local
+# sdkconfig after the line is reverted. Check build/config/sdkconfig.h for
 # CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER 1 after touching any of these.
-CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
-CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER=y
 
 # SNTP: TWO servers, not one. CONFIG_LWIP_SNTP_MAX_SERVERS sizes both lwIP's

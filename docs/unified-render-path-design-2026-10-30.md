@@ -514,7 +514,8 @@ dial would therefore run two edge qualities at once, switching per layer on how 
 that layer happened to move, and the bench would compare a mixed image against a clean
 one.
 
-**This forces one thing into slice 1 regardless of the end state: the LVGL grant must go false for any dial the painter owns** —
+**This forces one thing into slice 1 regardless of the end state: the LVGL grant must go
+false for any dial the painter owns** —
 `hand_aa_for() && orb_sched_restore_src() == NULL` — because an untouched grant is not a
 neutral choice, it is an active defect. `hand_aa_for()` is decided at hand-creation time
 (`clock_view.c:2281`), which sits after the plate-source decision (`:2190-2196`), so the

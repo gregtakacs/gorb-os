@@ -344,6 +344,9 @@ static bool              s_ring_dropped;   /* at least one frame was dropped   *
 static bool              s_ring_redraw;    /* first funded flush re-sends all  */
 static size_t            s_ring_bytes;     /* one tile, remembered for restore */
 static size_t            s_ring_freed;     /* bytes the current loan returned  */
+/* When the last loan closed. The ring is re-funded by the flush path, not by the
+ * return: see ring_refund_due(). 0 = no deferred refund pending. */
+static int64_t           s_ring_returned_us;
 
 /* Rows the clock's commit-time painter marks between commits (display_mark_rows
  * while no LVGL frame is in flight). The commit-time frame-start snapshot in
@@ -616,6 +619,8 @@ static void mirror_chunk(int32_t x1, int32_t y1, int32_t w, int32_t h,
  * depth-1 serialization at DEPTH-1 IN PRACTICE while the IO object still says 2,
  * because only one transaction is ever outstanding -- no bounce copy, which is
  * the whole reason a loan must not fall back to PSRAM-direct. */
+static bool ring_refund_due(void);   /* the network's window; defined by display_dma_return */
+
 static esp_err_t ring_refund(void)
 {
     if (!s_ring_bytes) return ESP_ERR_NOT_FOUND;      /* init never funded it   */
@@ -684,7 +689,12 @@ static int dma_dirty_bands_locked(lv_display_t *disp)
             s_ring_dropped = true;   /* pixels missed: the return owes a full page */
             return 0;                /* loan open: drop the frame                  */
         }
+        if (!ring_refund_due()) {                /* the network's window: drop */
+            s_ring_dropped = true;
+            return 0;
+        }
         if (ring_refund() != ESP_OK) return 0;   /* card kept it: drop, retry */
+        s_ring_returned_us = 0;
     }
     if (s_ring_redraw) {
         /* The glass missed at least one frame's pixels and s_fb is the only
@@ -1555,21 +1565,37 @@ esp_err_t display_dma_return(void)
         xSemaphoreGive(s_ring_mux);
         return ESP_OK;
     }
-    const esp_err_t e = ring_refund();
-    const size_t was = s_ring_freed;
+    /* The ring is NOT taken back here. This return runs on the task that just
+     * released the card -- in practice the httpd task, about to send the reply the
+     * card read was for -- and an immediate 18,640 B re-fund left a 1,536 B largest
+     * internal block at exactly that moment: one Wi-Fi frame fits, a multi-segment
+     * reply does not, and the reply stalled after its headers until the send timed
+     * out, holding the one httpd task for every request behind it (bench, orb-A,
+     * 2026-10-31: v1.1.40 and v1.1.42 alike, "headers, then nothing" on the zone
+     * table after a cut preview). Left PARKED with the loan closed, the flush path
+     * re-funds it on the LVGL task once ring_refund_due() says the network has had
+     * its window. Never PSRAM-direct meanwhile: at this board's queue depth of 2
+     * that piles bounce copies into the very pool being protected. */
     s_ring_freed = 0;
+    s_ring_returned_us = esp_timer_get_time();
     xSemaphoreGive(s_ring_mux);
-    if (e != ESP_OK) {
-        /* Left PARKED on purpose. s_ring_loan is back to 0, so the flush path's
-         * own refund runs on its next frame and recovers the ring as soon as the
-         * card gives the memory back. Clearing the flag instead would put the
-         * flush into PSRAM-direct submit at this board's queue depth of 2 -- the
-         * bounce pile-up this whole design exists to avoid -- in exchange for a
-         * still dial while the retry waits. */
-        ESP_LOGW(TAG, "tile ring not reclaimed (%u B short); the flush path will retry",
-                 (unsigned)was);
-    }
-    return e;
+    return ESP_OK;
+}
+
+/* Whether the flush path may take the ring back now. Immediately when the pool
+ * can fund it and still leave the network a block worth having; otherwise only
+ * once RING_NET_WINDOW_US has passed since the loan closed, because the dial must
+ * come back whatever the network is doing -- a still dial is the cost, a frozen one
+ * is not acceptable. Caller holds s_ring_mux. */
+#define RING_NET_RESERVE   8192
+#define RING_NET_WINDOW_US 1500000
+static bool ring_refund_due(void)
+{
+    if (s_ring_returned_us == 0) return true;   /* parked by something else: as before */
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) >=
+        s_ring_bytes + RING_NET_RESERVE)
+        return true;
+    return esp_timer_get_time() - s_ring_returned_us >= RING_NET_WINDOW_US;
 }
 
 

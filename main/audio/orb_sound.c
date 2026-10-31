@@ -46,7 +46,13 @@ typedef struct {
 static i2s_chan_handle_t s_tx;
 static SemaphoreHandle_t s_mx;
 static TaskHandle_t      s_task;
-static voice_t           s_v[VOICES];
+/* The voice table and the mixer's two block buffers are PSRAM, allocated at init:
+ * this board's internal heap has no static headroom at all (v1.1.42's commit records
+ * 320 B of .bss crash-looping it, and the first flash of this engine with ~3 KB of
+ * statics here starved esp_wifi_init). */
+static voice_t          *s_v;
+static int32_t          *s_acc;
+static int16_t          *s_buf;
 static int               s_next_id = 1;
 static bool              s_ready;
 static orb_sound_cfg_t   s_cfg = {
@@ -136,8 +142,8 @@ static bool quiet_ahead(const voice_t *v)
  * number of voices still alive after it. */
 static int mix_block(int16_t *out, int64_t t_us)
 {
-    static int32_t acc[BLOCK];
-    memset(acc, 0, sizeof acc);
+    int32_t *acc = s_acc;
+    memset(acc, 0, BLOCK * sizeof acc[0]);
     const int64_t off_us = (int64_t)s_cfg.offset_ms * 1000;
     int alive = 0;
 
@@ -205,7 +211,8 @@ static int voices_alive(void)
 static void mixer_task(void *arg)
 {
     (void)arg;
-    static int16_t buf[BLOCK];
+    int16_t *buf = s_buf;
+    const size_t buf_bytes = BLOCK * sizeof buf[0];
     const int64_t block_us = samples_to_us(BLOCK);
     for (;;) {
         /* Idle: wait for a voice with the amp and the I2S clocks off. */
@@ -217,10 +224,10 @@ static void mixer_task(void *arg)
         /* Fill the queue with silence first, so every block after it is written into a
          * full queue and its sounding time is the measured one, then lift the amp:
          * the NS4150B wakes onto zeros rather than onto the first transient. */
-        memset(buf, 0, sizeof buf);
+        memset(buf, 0, buf_bytes);
         size_t w = 0;
         for (uint32_t i = 0; i < DESC_N + 1; i++)
-            i2s_channel_write(s_tx, buf, sizeof buf, &w, portMAX_DELAY);
+            i2s_channel_write(s_tx, buf, buf_bytes, &w, portMAX_DELAY);
         pa_set(true);
 
         int64_t t_next = 0;
@@ -230,7 +237,7 @@ static void mixer_task(void *arg)
             sent_pair(&sent_us, &sent0);
             if (!t_next) t_next = sent_us + (int64_t)DESC_N * block_us;
             const int alive = mix_block(buf, t_next);
-            i2s_channel_write(s_tx, buf, sizeof buf, &w, portMAX_DELAY);
+            i2s_channel_write(s_tx, buf, buf_bytes, &w, portMAX_DELAY);
             s_blocks++;
             /* The write returned because a buffer finished: the queue is full again and
              * the block just written sounds DESC_N-1 buffers after that instant, so the
@@ -490,7 +497,14 @@ esp_err_t orb_sound_init(void)
     if (err != ESP_OK) return ESP_OK;   /* orb_es8311 logged why */
     apply_volume();
 
-    s_mx = xSemaphoreCreateMutex();
+    s_v   = heap_caps_calloc(VOICES, sizeof *s_v, MALLOC_CAP_SPIRAM);
+    s_acc = heap_caps_malloc(BLOCK * sizeof *s_acc, MALLOC_CAP_SPIRAM);
+    s_buf = heap_caps_malloc(BLOCK * sizeof *s_buf, MALLOC_CAP_SPIRAM);
+    s_mx  = xSemaphoreCreateMutex();
+    if (!s_v || !s_acc || !s_buf) {
+        ESP_LOGE(TAG, "mixer buffers: out of PSRAM — sound is off");
+        return ESP_OK;
+    }
     /* The stack is PSRAM's, for the reason orb_net's serial reader gives: the internal
      * heap is the pool this board runs out of. Nothing on this task touches flash. */
 #if CONFIG_SPIRAM && CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM

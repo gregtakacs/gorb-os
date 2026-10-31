@@ -2885,8 +2885,14 @@ static esp_err_t sound_reply(httpd_req_t *req)
     orb_sound_stats_t st;
     orb_sound_cfg_get(&c);
     orb_sound_stats(&st);
-    static char json[512];
-    const int n = snprintf(json, sizeof json,
+    /* PSRAM, per request: this file's static buffers are internal RAM, and the
+     * board has none to spare (orb_sound.c's header comment has the measurement). */
+    char *json = heap_caps_malloc(512, MALLOC_CAP_SPIRAM);
+    if (!json) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"no memory\"}");
+    }
+    const int n = snprintf(json, 512,
         "{\"ready\":%s,\"volume\":%u,\"tick\":%s,\"chimes\":%s,\"strikes\":%s,"
         "\"jumps\":%s,\"quiet_from\":%d,\"quiet_to\":%d,\"offset_ms\":%d,\"pattern\":%d,"
         "\"stats\":{\"blocks\":%lu,\"sent\":%lu,\"voices\":%lu,\"started\":%lu,"
@@ -2898,11 +2904,15 @@ static esp_err_t sound_reply(httpd_req_t *req)
         (unsigned long)st.blocks, (unsigned long)st.sent, (unsigned long)st.voices,
         (unsigned long)st.started, (unsigned long)st.nudges, (unsigned long)st.snaps,
         (long)st.loop_err, st.pa_on ? "true" : "false", st.running ? "true" : "false");
-    if (n < 0 || (size_t)n >= sizeof json) {
+    esp_err_t r;
+    if (n < 0 || n >= 512) {
         httpd_resp_set_status(req, "500 Internal Server Error");
-        return httpd_resp_sendstr(req, "{\"error\":\"sound body too large\"}");
+        r = httpd_resp_sendstr(req, "{\"error\":\"sound body too large\"}");
+    } else {
+        r = httpd_resp_sendstr(req, json);
     }
-    return httpd_resp_sendstr(req, json);
+    heap_caps_free(json);
+    return r;
 }
 
 static esp_err_t h_sound_get(httpd_req_t *req)
@@ -2936,13 +2946,24 @@ static int sound_body(httpd_req_t *req, char *body, size_t cap)
     return got;
 }
 
+/* The refusal reply: `why` is fixed device prose, never client text. */
+static esp_err_t sound_refuse(httpd_req_t *req, const char *why)
+{
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_sendstr_chunk(req, "{\"error\":\"");
+    httpd_resp_sendstr_chunk(req, why);
+    httpd_resp_sendstr_chunk(req, "\"}");
+    return httpd_resp_sendstr_chunk(req, NULL);
+}
+
 static esp_err_t h_sound_post(httpd_req_t *req)
 {
-    static char body[NET_SOUND_BODY_MAX + 1];
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char *body = heap_caps_malloc(NET_SOUND_BODY_MAX + 1, MALLOC_CAP_SPIRAM);
+    if (!body) return sound_refuse(req, "no memory");
     const int len = sound_body(req, body, NET_SOUND_BODY_MAX);
-    if (len < 0) return ESP_OK;
+    if (len < 0) { heap_caps_free(body); return ESP_OK; }
 
     orb_sound_cfg_t c;
     orb_sound_cfg_get(&c);
@@ -2957,13 +2978,11 @@ static esp_err_t h_sound_post(httpd_req_t *req)
     if (json_int(body, (size_t)len, "quiet_to", &v))   { c.quiet_to = (int8_t)(v < -1 || v > 23 ? 99 : v); named++; }
     if (json_int(body, (size_t)len, "offset_ms", &v))  { c.offset_ms = (int16_t)(v < 0 || v > 500 ? -1 : v); named++; }
     if (json_int(body, (size_t)len, "pattern", &v))    { c.pattern = (int8_t)(v < -1 || v > 4 ? 99 : v); named++; }
+    heap_caps_free(body);
     const char *why = named ? orb_sound_cfg_set(&c) : "no sound setting in body";
     if (why) {
         ESP_LOGW(TAG, "sound: settings refused (%s)", why);
-        httpd_resp_set_status(req, "400 Bad Request");
-        static char err[128];
-        snprintf(err, sizeof err, "{\"error\":\"%s\"}", why);   /* fixed device prose */
-        return httpd_resp_sendstr(req, err);
+        return sound_refuse(req, why);
     }
     return sound_reply(req);
 }
@@ -2973,20 +2992,17 @@ static esp_err_t h_sound_post(httpd_req_t *req)
  * on a board before any theme carries a sound. */
 static esp_err_t h_sound_test(httpd_req_t *req)
 {
-    static char body[NET_SOUND_BODY_MAX + 1];
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char *body = heap_caps_malloc(NET_SOUND_BODY_MAX + 1, MALLOC_CAP_SPIRAM);
+    if (!body) return sound_refuse(req, "no memory");
     const int len = sound_body(req, body, NET_SOUND_BODY_MAX);
-    if (len < 0) return ESP_OK;
+    if (len < 0) { heap_caps_free(body); return ESP_OK; }
     char which[16];
-    const char *why = json_str(body, (size_t)len, "sound", which, sizeof which)
-                    ? orb_sound_test(which) : "no sound in body";
-    if (why) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        static char err[128];
-        snprintf(err, sizeof err, "{\"error\":\"%s\"}", why);
-        return httpd_resp_sendstr(req, err);
-    }
+    const bool named = json_str(body, (size_t)len, "sound", which, sizeof which);
+    heap_caps_free(body);
+    const char *why = named ? orb_sound_test(which) : "no sound in body";
+    if (why) return sound_refuse(req, why);
     return sound_reply(req);
 }
 

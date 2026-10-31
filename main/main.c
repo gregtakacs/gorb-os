@@ -26,6 +26,7 @@
 #include "knob.h"
 #include "input_router.h"
 #include "imu.h"
+#include "orb_sound.h"     /* D39: the sound engine, after the I2C bus */
 #include "idle_dim.h"
 #include "orb_net.h"
 #include "orb_sd.h"
@@ -262,6 +263,10 @@ void app_main(void)
     ESP_ERROR_CHECK(imu_init());
 #endif
     ESP_ERROR_CHECK(idle_dim_init());
+
+    /* The sound engine (D39): the codec shares the bus imu_init() created, so it
+     * comes after it. Never fatal — a board without the codec runs silent. */
+    ESP_ERROR_CHECK(orb_sound_init());
 
     /* Launch LVGL handler task */
     xTaskCreate(lvgl_task, "lvgl", 8192, NULL, 5, NULL);

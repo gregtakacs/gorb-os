@@ -75,6 +75,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "orb_jobs.h"     /* h_sd: the job-busy witness the themes page polls after a press */
 #include "orb_log.h"      /* /api/v1/log + the status line's SD witness (§13.3) */
 #include "idle_dim.h" /* h_status: the dim's countdown and its motion high-water */
+#include "orb_sound.h"  /* D39: /api/v1/sound, the owner's level and quiet hours */
 #include "orb_mdns.h"  /* the _orb._tcp advertisement the hub browses for */
 
 static const char *TAG = "orb_net";
@@ -2850,6 +2851,143 @@ static esp_err_t h_config_post(httpd_req_t *req)
     if (n < 0 || (size_t)n >= sizeof(resp))
         return httpd_resp_sendstr(req, "{\"state\":\"zoned\"}");
     return httpd_resp_sendstr(req, resp);
+}
+
+/* --------------------------------------------------------------------------
+ * Sound — D39's owner settings and the bench door (docs/sound-plan.md §5).
+ *
+ * GET /api/v1/sound answers the settings plus the engine's own counters, so a bench
+ * can read whether the codec came up, whether the amp is on, and how hard the loop
+ * anchor is working. POST takes any subset of the setting keys: unlike config's tz
+ * there is no one key that must be present, because every key here is optional and
+ * a body naming none of them is refused as a request for nothing.
+ * ------------------------------------------------------------------------ */
+#define NET_SOUND_BODY_MAX 256
+
+/* A JSON integer at `key` (or true/false as 1/0). False when the key is absent or
+ * its value is neither. */
+static bool json_int(const char *body, size_t len, const char *key, long *out)
+{
+    const char *v = json_find(body, len, key);
+    if (!v) return false;
+    if (!strncmp(v, "true", 4))  { *out = 1; return true; }
+    if (!strncmp(v, "false", 5)) { *out = 0; return true; }
+    char *end = NULL;
+    const long n = strtol(v, &end, 10);
+    if (end == v) return false;
+    *out = n;
+    return true;
+}
+
+static esp_err_t sound_reply(httpd_req_t *req)
+{
+    orb_sound_cfg_t c;
+    orb_sound_stats_t st;
+    orb_sound_cfg_get(&c);
+    orb_sound_stats(&st);
+    static char json[512];
+    const int n = snprintf(json, sizeof json,
+        "{\"ready\":%s,\"volume\":%u,\"tick\":%s,\"chimes\":%s,\"strikes\":%s,"
+        "\"jumps\":%s,\"quiet_from\":%d,\"quiet_to\":%d,\"offset_ms\":%d,\"pattern\":%d,"
+        "\"stats\":{\"blocks\":%lu,\"sent\":%lu,\"voices\":%lu,\"started\":%lu,"
+        "\"nudges\":%lu,\"snaps\":%lu,\"loop_err\":%ld,\"pa\":%s,\"running\":%s}}",
+        orb_sound_ready() ? "true" : "false", (unsigned)c.volume,
+        c.tick ? "true" : "false", c.chimes ? "true" : "false",
+        c.strikes ? "true" : "false", c.jumps ? "true" : "false",
+        c.quiet_from, c.quiet_to, c.offset_ms, c.pattern,
+        (unsigned long)st.blocks, (unsigned long)st.sent, (unsigned long)st.voices,
+        (unsigned long)st.started, (unsigned long)st.nudges, (unsigned long)st.snaps,
+        (long)st.loop_err, st.pa_on ? "true" : "false", st.running ? "true" : "false");
+    if (n < 0 || (size_t)n >= sizeof json) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"sound body too large\"}");
+    }
+    return httpd_resp_sendstr(req, json);
+}
+
+static esp_err_t h_sound_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return sound_reply(req);
+}
+
+/* Read-until-content_len, as h_wifi_join documents: a body in two segments must not
+ * parse as a shorter one. Returns the length, or -1 after answering the refusal. */
+static int sound_body(httpd_req_t *req, char *body, size_t cap)
+{
+    const int clen = (int)req->content_len;
+    if (clen < 0 || (size_t)clen > cap) {
+        httpd_resp_set_status(req, clen < 0 ? "400 Bad Request" : "413 Payload Too Large");
+        httpd_resp_sendstr(req, "{\"error\":\"body length\"}");
+        return -1;
+    }
+    int got = 0;
+    while (got < clen) {
+        const int r = httpd_req_recv(req, body + got, (size_t)(clen - got));
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_sendstr(req, "{\"error\":\"body read failed\"}");
+            return -1;
+        }
+        got += r;
+    }
+    body[got] = '\0';
+    return got;
+}
+
+static esp_err_t h_sound_post(httpd_req_t *req)
+{
+    static char body[NET_SOUND_BODY_MAX + 1];
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const int len = sound_body(req, body, NET_SOUND_BODY_MAX);
+    if (len < 0) return ESP_OK;
+
+    orb_sound_cfg_t c;
+    orb_sound_cfg_get(&c);
+    long v;
+    int named = 0;
+    if (json_int(body, (size_t)len, "volume", &v))     { c.volume = (uint8_t)(v < 0 ? 255 : v > 255 ? 255 : v); named++; }
+    if (json_int(body, (size_t)len, "tick", &v))       { c.tick = v != 0; named++; }
+    if (json_int(body, (size_t)len, "chimes", &v))     { c.chimes = v != 0; named++; }
+    if (json_int(body, (size_t)len, "strikes", &v))    { c.strikes = v != 0; named++; }
+    if (json_int(body, (size_t)len, "jumps", &v))      { c.jumps = v != 0; named++; }
+    if (json_int(body, (size_t)len, "quiet_from", &v)) { c.quiet_from = (int8_t)(v < -1 || v > 23 ? 99 : v); named++; }
+    if (json_int(body, (size_t)len, "quiet_to", &v))   { c.quiet_to = (int8_t)(v < -1 || v > 23 ? 99 : v); named++; }
+    if (json_int(body, (size_t)len, "offset_ms", &v))  { c.offset_ms = (int16_t)(v < 0 || v > 500 ? -1 : v); named++; }
+    if (json_int(body, (size_t)len, "pattern", &v))    { c.pattern = (int8_t)(v < -1 || v > 4 ? 99 : v); named++; }
+    const char *why = named ? orb_sound_cfg_set(&c) : "no sound setting in body";
+    if (why) {
+        ESP_LOGW(TAG, "sound: settings refused (%s)", why);
+        httpd_resp_set_status(req, "400 Bad Request");
+        static char err[128];
+        snprintf(err, sizeof err, "{\"error\":\"%s\"}", why);   /* fixed device prose */
+        return httpd_resp_sendstr(req, err);
+    }
+    return sound_reply(req);
+}
+
+/* POST /api/v1/sound/test {"sound":"ding"|"tick"|"loop"} — the bench door: built-in
+ * sounds that need no theme, so the codec, the amp and the loop anchor can be proved
+ * on a board before any theme carries a sound. */
+static esp_err_t h_sound_test(httpd_req_t *req)
+{
+    static char body[NET_SOUND_BODY_MAX + 1];
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const int len = sound_body(req, body, NET_SOUND_BODY_MAX);
+    if (len < 0) return ESP_OK;
+    char which[16];
+    const char *why = json_str(body, (size_t)len, "sound", which, sizeof which)
+                    ? orb_sound_test(which) : "no sound in body";
+    if (why) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        static char err[128];
+        snprintf(err, sizeof err, "{\"error\":\"%s\"}", why);
+        return httpd_resp_sendstr(req, err);
+    }
+    return sound_reply(req);
 }
 
 /* POST /api/v1/name {"name":"Hall Clock"} — {"name":""} clears it.
@@ -7155,6 +7293,9 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/config",   .method = HTTP_GET,  .handler = h_config_get },
         { .uri = "/api/v1/config",   .method = HTTP_POST, .handler = h_config_post },
         { .uri = "/api/v1/name",     .method = HTTP_POST, .handler = h_name_post },
+        { .uri = "/api/v1/sound",    .method = HTTP_GET,  .handler = h_sound_get },
+        { .uri = "/api/v1/sound",    .method = HTTP_POST, .handler = h_sound_post },
+        { .uri = "/api/v1/sound/test", .method = HTTP_POST, .handler = h_sound_test },
         { .uri = "/api/v1/ota",      .method = HTTP_POST, .handler = h_ota },
         { .uri = "/api/v1/reboot",   .method = HTTP_POST, .handler = h_reboot },
         /* One-shot: reboot into the provisioning branch with the stored credential

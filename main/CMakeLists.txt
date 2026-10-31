@@ -36,6 +36,10 @@ idf_component_register(
         "menu/menu_view.c"
         "input/input_router.c"
         "imu/imu.c"
+        # D39: the sound engine (I2S + ES8311 + NS4150B and the mixer) and its codec.
+        # docs/sound-plan.md §4; the clock schedules, this plays.
+        "audio/orb_es8311.c"
+        "audio/orb_sound.c"
         "power/idle_dim.c"
         "art/art_bank.c"
         "art/orb_theme.c"
@@ -82,6 +86,7 @@ idf_component_register(
         "menu"
         "input"
         "imu"
+        "audio"
         "power"
         "art"
         # P5b: main/assets is on the include path because orb_app_manifest.h includes
@@ -98,6 +103,7 @@ idf_component_register(
         esp_driver_spi
         esp_driver_gpio
         esp_driver_i2c         # imu: the QMI8658 on the shared I2C bus (GPIO 15/14)
+        esp_driver_i2s         # audio: the ES8311's I2S link (D39)
         esp_driver_usb_serial_jtag   # prov_reader_task: install the USJ interrupt driver so select() on stdin fires
         esp_lcd
         esp_timer

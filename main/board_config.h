@@ -55,6 +55,19 @@
 #define PIN_KNOB_B      17   // encoder DT  / phase B
 #define PIN_KNOB_SW     16   // encoder push (active low)
 
+// ---------- Audio: ES8311 codec + NS4150B amp (docs/sound-plan.md §2) ----------
+// From Waveshare's brookesia BSP header for this board, cross-checked against the
+// schematic. The vendor's Arduino pin_config.h carries a stale second block with
+// I2S_MCK_IO 16: GPIO 16 is PIN_KNOB_SW above, and 42 is the codec's real MCLK.
+// The codec sits on the shared I2C bus at PIN_I2C_SDA/SCL. DIN (codec -> S3) is
+// wired but unused: nothing here records.
+#define PIN_I2S_MCLK    42
+#define PIN_I2S_BCLK     9
+#define PIN_I2S_LRCK    45
+#define PIN_I2S_DOUT     8   // S3 -> ES8311 SDIN
+#define PIN_I2S_DIN     10   // ES8311 SDOUT -> S3 (unused)
+#define PIN_AUDIO_PA    46   // NS4150B enable, active high
+
 // ---------- Panel geometry ----------
 #define SCREEN_WIDTH    466
 #define SCREEN_HEIGHT   466

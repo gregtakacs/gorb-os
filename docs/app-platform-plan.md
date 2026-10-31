@@ -4604,6 +4604,10 @@ policy):
    keep `n_frames == 1`.
 2. `scalars.bg_mode == 0` (keyframes). Mode 1 (delta bank) keeps §25.3's refusal, in
    those words — a delta bank is still unruled, not merely unimplemented.
+   **Superseded 2026-10-30** by `docs/unified-render-path-design-2026-10-30.md`
+   (`fc3028e`/`4cd3107` … `6f818e0`): every moving plate, a caged one included, bakes as
+   the v4 delta bank the reader already admits, and the keyframe plate is read only for
+   installed themes.
 3. `scalars.bg_frames == N − 1` — FORMAT 2's own semantics ("distinct extra plate
    frames"), mirroring the carriage's scalar/row cross-check (`:264`): the scalars and
    the row must name one animation.
@@ -5356,6 +5360,13 @@ ms/row cost does not. A larger bank buys more distinct frames, not a faster beat
 thinner element set (fewer marked rows) or a repaint inside a damage rect lifts the floor toward
 the 12/15 fps §23.7 prices — and that is per-element damage, which is what the pick aims to
 schedule next.
+
+**The carriage row, before and after (unified render path slice 4, `c5b1a6c`, orb-A).** Kite
+tourbillon, a carriage over a moving plate: keyframe bank through LVGL at v1.1.37 flushed
+**273 ms** avg (`render path` absent, 4.0 fps); the same dial baked as a delta bank on the
+painter flushes **170.5 ms** (`render path: l4=yes src=psram rows=7 refused=0`, 4.6 fps mean)
+and its blob shrinks 6,236,326 → 3,876,352 B. The rate stays at rung 4 because the bake's own
+asks (4 fps bank, 4 fps carriage, 4 bps sweep) pick 4; the flush, not the rung, is what moved.
 
 ### 33.4 Build and refusal accounting
 

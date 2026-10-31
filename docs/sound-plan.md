@@ -17,7 +17,7 @@ are settled and not open for re-litigation:
 | Where sounds live on the device | In the theme bundle, the clock's FORMAT 3 section. Never in the `.orbapp`'s installed part (D21 holds) |
 | Who plays them | The OS: one clock-agnostic sound engine behind a `sound` capability |
 | Who decides when | The clock app: tick loop selection, quarters, hour strikes, quiet hours |
-| Where the defaults come from | A generator in the clock's editor region (D37), not WAV bytes |
+| Where the defaults come from | A generator in the clock's editor region (D37, `docs/app-theme-editor-plan.md`), not WAV bytes |
 | Where owners set it all | A new **Sound** tab in the clock's theme editor (the composer) |
 | Slot model | One slot per event (§3.1), so any slot can be an owner upload |
 
@@ -27,7 +27,7 @@ are settled and not open for re-litigation:
 |---|---|
 | Tick rate | The loop beats at the second hand's step rate: 1, 2, 4 or 8 per second. A sweeping hand takes the movement's balance beats (§4.2). Every tick voice renders at every rate (§6.1) |
 | Hour patterns | `count`, `ships_bells` and `morse` are all offered; `repeater` is in the catalog with its trigger open (§5.1) |
-| Hand jumps | A jump is an event with its own slot (`jump_minute`, `jump_hour`, `jump_date`). Hand motion itself is D41 (`docs/hand-motion-plan.md`) |
+| Steps and jumps | A step on a minute, hour or calendar row is an event with its own slot (`jump_minute`, `jump_hour`, `jump_date`). Motion itself is D41 (`docs/hand-motion-plan.md`), where `jump` is `step` 1 |
 | Defaults | Every preset gets a sensible default mapping, and every sound in the catalog is available for any slot of its kind (§7.1, §7.2) |
 
 ## 1. The split, mirrored from pixels
@@ -104,14 +104,16 @@ lands here as "the default is quiet", which needs no bytes.
 | `chime_q3` | at :45 | |
 | `chime_hour` | at :00, before the strikes | |
 | `strike_hour` | at :00 after `chime_hour`, as the hour pattern says (§5.1) | one stroke, repeated by the app; the ship's bell under `ships_bells` |
-| `jump_minute` | when the minute hand jumps (D41) | a short event; the station's clunk |
-| `jump_hour` | when the hour hand jumps (D41) | |
-| `jump_date` | when a calendar pointer or ring jumps at midnight (D41) | silent under `drag`, which has no single instant |
+| `jump_minute` | on each step of a minute-source row: a jumping minute, or a half-minute `step` 2 (D41) | a short event; the station's clunk |
+| `jump_hour` | on each step of an hour-source row, such as a jump hour hand or disc (D41) | |
+| `jump_date` | when a calendar row steps at midnight (D41) | silent under `drag`, which has no single instant |
 | `morse_dit`, `morse_dah` | the `morse` hour pattern's two symbols (§5.1) | the dah is three dits long, by Morse's own timing |
 | `strike_quarter`, `strike_minute` | the `repeater` pattern's quarter ting-tang and high minute stroke (§5.1) | filled only when that pattern is chosen |
 
-A jump slot is trivially in sync with its hand. The app plays it on the tick
-that re-poses the hand, so it needs no anchoring (D41 §3).
+A jump slot is trivially in sync with its row. The app plays it on the tick
+that re-poses the row, so it needs no anchoring (D41 §6). One sound per event,
+however many rows step on it: a jump hour disc and a jump hour hand share
+`jump_hour`.
 
 These names join the clock's name table in `tools/theme_schema.py`, beside its
 art slots. Identity stays (class, slot) per that file's rule; the names belong
@@ -195,7 +197,7 @@ would audibly fall out of step with a stepping hand. The fix stays clock-agnosti
   measured, not guessed (M-S2).
 
 **The beat must match the theme.** `tick_rate` and `second_sweep` are theme
-section words (`orbtheme-baker.js:45`, read at `orb_clock3.c:441-444`), so the
+section words (`orbtheme-baker.js:44`, read at `orb_clock3.c:441-444`), so the
 editor knows the dial's beat when it bakes. A tick loop whose beat period
 disagrees with a stepping hand's rate is refused, by the editor at bake time and
 by the reader at the door (D28: verification stays at the door).
@@ -208,7 +210,10 @@ by the reader at the door (D28: verification stays at the door).
 | `sweep` | the movement's balance beats: 1, 2 or 4 per second (the Move tab's `Balance beats`) | beat 0 on a whole wall second, so what you hear matches the balance you see |
 | `stop-to-go` | none by default: a station clock is silent between jumps, and its sound is `jump_minute` | no loop |
 
-The table follows whichever hand shows seconds, centre or sub-dial. An 8 s loop
+The table follows whichever row shows seconds: a centre hand, a sub-dial
+pointer, or a retrograde seconds fan. D41 §2.2 refuses a stepping second row
+whose *N* differs from `tick_rate`, so all stepping second rows on a dial share
+one rate, and the loop has one beat to match. An 8 s loop
 holds a whole number of beats at every rate in the grid (8, 16, 32 or 64), so
 one loop length serves all of them. Rate-free voices (§7.1: `geiger`), and those
 with only some rates (`heartbeat`, 1 per second), are offered only where no
@@ -231,7 +236,7 @@ stepping hand has to match them.
 
 - **Choosing slots and schedule.** Loop while the dial is visible; play
   `chime_q1`/`chime_half`/`chime_q3` at :15/:30/:45; play `chime_hour` then the
-  hour pattern (§5.1) at :00; play a jump slot on the tick its hand jumps. Local
+  hour pattern (§5.1) at :00; play a jump slot on the tick its row steps. Local
   time comes through `now` plus `tz_offset` (D15/D17), as the dial's own time
   does.
 
@@ -261,11 +266,11 @@ not the default.
 **The defaults ship in the clock's `.orbapp` editor region, as code.**
 
 - **The region is the right place.** It holds host-side authoring content that
-  the firmware only CRC-checks and never installs (D37 §4.4). It stays on the
-  card past the installer's copied prefix (D37 §3). Nothing in it is art the app
+  the firmware only CRC-checks and never installs (`docs/app-theme-editor-plan.md` §4.4). It stays on the
+  card past the installer's copied prefix (same file, §3). Nothing in it is art the app
   paints, so D21 is untouched. Once baked, the sounds travel as theme content.
 - **WAVs do not fit.** The region cap is 2 MiB. The composer uses 652,355 B of
-  it (D37 §3), leaving about 1.4 MiB. The prototype's full output as raw PCM is
+  it (same file, §3), leaving about 1.4 MiB. The prototype's full output as raw PCM is
   4,277,696 B: 1,764,000 B for the five tick loops and 2,513,696 B for the four
   single strikes and the four Westminster phrases. (The design session said
   "about 4.4 MB" before this was summed; the sum is the figure.)
@@ -476,7 +481,7 @@ Implement up to the question mark and leave these open until ruled.
 | **S3** | Format: `ORB_ASSET_SOUND` = 10, the payload header, the baker's emitter, the C reader, sound slots in `theme_schema.py`'s clock table. Three-way mirror plus mutants, the D34/preview pattern | host suites green with new mutants caught |
 | **S4** | Bench bring-up: I2S plus ES8311 plus amp on GPIO 46 plays one PCM buffer. Run M-S1 and M-S2 | numbers recorded here before S5 is ruled |
 | **S5** | OS engine: mixer, `sound` capability, service entries (after §8 items 1 and 6 are ruled), loop anchoring | bench: a loop holds phase against the hand for an hour |
-| **S6** | Clock policy: schedule, the §5.1 hour patterns, jump slots (with D41's M4), settings, quiet hours | bench: :00/:15/:30/:45 on a real dial, ship's bells across a watch change, a clunk on a jumping minute |
+| **S6** | Clock policy: schedule, the §5.1 hour patterns, jump slots (with D41's G5), settings, quiet hours | bench: :00/:15/:30/:45 on a real dial, ship's bells across a watch change, a clunk on a jumping minute |
 
 ## 10. The one sentence to remember
 

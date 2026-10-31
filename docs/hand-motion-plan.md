@@ -1,162 +1,242 @@
-# D41: Hand motion — every hand and pointer sweeps, steps or jumps
+# D41: Driven elements — every hand, pointer and ring names its source, path, cadence and depth
 
-**Why this file exists.** Before this ruling, only the second hand had a motion
-choice. The owner wants the same choice on the hour and minute hands and on the
-calendar pointers (date, day, month), and wants the station dial's signature move:
-a minute hand that jumps, and a second hand that waits at 12 for it. The design
-was proposed on 2026-10-29 and ruled on 2026-10-30. This file records the
-vocabulary, today's code it replaces, and the slices. Read it before touching
-`hand_angles`, `aux_value_1000`, the composer's Hands tab, or the clock section's
-motion words.
+**Why this file exists.** Before this ruling, a dial's motion was a set of special
+cases:
 
-**Status: RULED (owner, 2026-10-30). Not built.** One item is open: the wire
-encoding for the main hands' words (§4). These are settled:
+- the second hand had a sweep or tick choice;
+- the minute could jump only through the second hand's railway word;
+- the hour always crept;
+- pointers could take a path (rotate, retrograde, slide) but always interpolated
+  and all sat at one fixed depth;
+- rings only ever jumped.
+
+The owner wants all of it general: a retrograde hour or second hand, an hour disc
+turning behind a window, a jumping minute, a dragging date, the station's waiting
+second hand, all from one vocabulary.
+
+The cadence-only version of D41 was ruled on 2026-10-30. On 2026-10-31 the owner
+widened it to the four axes below, after the branch was rebased onto the merged
+`main` (`96ef302`). This file records the model, the encoding, today's code it
+replaces, and the slices. Read it before touching `hand_angles`,
+`aux_value_1000` or `aux_angle_10`, FORMAT 3's element columns, or the
+composer's Hands and Comps tabs.
+
+**Status: RULED (owner, 2026-10-30, generalized 2026-10-31). Not built.**
 
 | Parameter | Ruled value |
 |---|---|
-| Vocabulary | `sweep`, `step`, `jump`, plus `stop-to-go` (second hand only) and `drag` (calendar pointers only) |
-| Who owns the motion | The theme. The words are theme words that the composer sets and the clock app reads. No OS change |
-| Default for a word a theme does not set | Today's behaviour, unchanged. No shipped theme moves differently after this lands |
-| Jump settle | An optional overshoot on a jump. Visual only |
-| Sound | A jump is an event, so it gets a sound slot (D39 amendment, `docs/sound-plan.md` §3.1) |
+| The model | Every element that shows a value is a **driven row**: a source, a path, a cadence and a placement, independent of each other (§2) |
+| Which rows | HAND (all six slots: hour, minute, second, dial, counterweight, carriage), AUX (pointers), and BANK rings. Windows, strips and flares keep their whole-value plates |
+| Who owns it | The theme. Columns in the three-way mirror, read by the clock app. **No OS change** |
+| Old themes | A row that names nothing keeps today's behaviour exactly, so no shipped theme moves differently |
+| Encoding | Three element columns appended under a new clock stamp (v5). HAND rows gain the drive columns AUX rows already have. No section scalar moves (§4) |
+| Sound | A step on a minute, hour or calendar row is an event with a slot (D39 amendment, `docs/sound-plan.md` §3.1) |
 
-## 1. What the code does today
+## 1. What the code does on `main` today
 
-| Hand | Behaviour | Where |
+| Element | Behaviour | Where |
 |---|---|---|
-| Second | Sweeps (`second_sweep`), or steps at `tick_rate` per second | `main/clock/clock_view.c` `hand_angles`, the `secF` block |
-| Minute | Creeps (`min + secF/60`). It jumps only when `second_railway` **and** `second_sweep` are both set | same function, `minF` |
-| Hour | Always creeps (`hour%12 + minF/60`) | same function, `hrF` |
-| AUX pointer: second, minute, hour sources | Sweeps from the next finer field, or jumps when the row carries `CLK_FLAG_JUMP` | `aux_value_1000`, `main/clock/clock_view.c` |
-| AUX pointer: date, weekday, month and other calendar sources | Always jumps at the change. No finer field is added, whatever the flag says | same function, `default:` arm |
+| Second hand | Sweeps (`second_sweep`), or steps at `tick_rate` per second | `main/clock/clock_view.c` `hand_angles`, the `secF` block |
+| Minute hand | Creeps. It jumps only when `second_railway` **and** `second_sweep` are both set, and the composer always bakes `second_railway: 0` (`orbtheme-baker.js:1592`). Only the legacy `tools/bake_clock.py:2564` can set it | `hand_angles`, `minF` |
+| Hour hand | Always creeps | `hand_angles`, `hrF` |
+| Dial and counterweight slots (3, 4) | Never turn: `ang[3] = ang[4] = 0` | `hand_angles` |
+| Carriage (slot 5) | A hand-shaped layer whose frames animate the escapement while the seconds angle turns it (D32 ruling C) | `orb_clock3.c:289`, `clk_row_role` |
+| Pointer (AUX row) | Takes a path from D34's `MOTION_NAMES` (`rotate`, `retrograde`, `indexed`, `slide-x`, `slide-y`) and any source. In FORMAT 3 it **always interpolates**: no column names a jump, so the projection writes `a->flags = 0` and says the flag "rides the next ABI append" | `orb_clock3.c:1034` |
+| Pointer depth | One block for every pointer, under the first live hand and above the last live static | `aux_insert_at` |
+| Ring (BANK `ring`) | Plates on a circle, turned by whole values: it jumps | `theme_schema.py` `KINDS` |
+| Hand rows' `kind` and `src` | Refused if non-zero: how a row moves is not a hand row's to say | `theme_schema.py:816` |
 
-**Two gaps follow from that.**
+**Retrograde already works for pointers.** `aux_angle_10` clamps at the span,
+and the source's own reset at the top of its domain brings the pointer home, so a
+retrograde date or seconds pointer draws today. The composer just has no control
+for it: `retrograde` appears only in the baker's tables.
 
-- **No jumping minute ships.** A jumping minute is tied to the second hand's
-  mode, and the composer bakes `second_railway: 0` unconditionally
-  (`orbtheme-baker.js`, the `scalars` object). Only the legacy Python baker can
-  set it (`tools/bake_clock.py:2564`, from a style's `secondRailway`).
-- **No calendar pointer can move continuously.** There is no sweeping date and
-  no mechanical drag.
+**Delta-bank cadence.** On a delta-bank dial (`bg_mode` 1; the code still calls
+it `orb_bg_gif_mode()`), `hand_angles` steps the second hand on the tick
+counter (`hand_beat_ticks`), so beats stay evenly spaced on a pipe whose tick is
+not a divisor of the beat. GIF itself is gone as an authoring option; the name
+survives on the delta-bank path. §3's drive function keeps that quantisation
+for every row it drives.
 
-## 2. The vocabulary
+## 2. The model: four independent axes
 
-Every word reads the same on a main hand and on a pointer. A pointer that
-already carries `CLK_FLAG_JUMP` means exactly what `jump` means here.
-
-| Word | Meaning | Allowed on |
+| Axis | Values | Column |
 |---|---|---|
-| `sweep` | Moves continuously: the hand's own value plus the next finer field | every hand and pointer |
-| `step` | Moves in beats at `tick_rate` per second (1, 2, 4 or 8, the composer's Motion choices) | second hand |
-| `jump` | Moves once per whole unit, exactly at the boundary | minute, hour, every AUX source |
-| `stop-to-go` | Sweeps one turn in 58.5 s, rests at 12, and is released by the minute's jump | second hand, and only with a `jump` minute |
-| `drag` | Holds, then creeps across a window that ends at the change (default 22:00 to 24:00) | calendar AUX sources |
+| **Source**: what value drives it | `SOURCES`: hour12, hour24, minute, second, date, weekday, month, moon_age, battery, power_reserve, day_of_year, week, quarter and the rest | `src` (exists) |
+| **Path**: how that value becomes a pose | `rotate`, `retrograde`, `slide-x`, `slide-y`, with `span`, `zero`, `vmin` and `vmax` saying how far, from where, over what domain. `indexed` stays on the wire as an old spelling of `rotate` plus `jump` | `kind`, `span`, `zero`, `vmin`, `vmax` (exist on AUX; new on HAND) |
+| **Cadence**: when it moves | `sweep`, `step` *N*, `jump`, `stop-to-go`, `drag`, plus an ease time (§2.1) | `cadence`, `cad_arg`, `ease` (new, §4) |
+| **Placement**: where it turns, and how deep | pivot and centre (exist), `parent`, which hangs a row on another row (C4, exists), and depth: `order` as a bucket under one of the dial's live layers, as a bank row already uses it | `order` (exists; newly honoured on AUX) |
 
-**Per hand:**
+The axes are independent, so any combination is a theme, as long as the
+combination means something (§2.2). These are the owner's examples, and others:
 
-- **Second:** `sweep`, `step` (today's tick choice), or `stop-to-go`.
-- **Minute:** `sweep` (today's creep) or `jump`.
-- **Hour:** `sweep` or `jump`. A sweeping hour reads the minute hand's value, so
-  under a jumping minute it moves in 1/60-hour steps, as a station clock's does.
-  That needs no extra word.
-- **AUX second, minute and hour pointers:** `sweep` or `jump` (as today).
-- **AUX date, weekday, month and day-of-year pointers:** `jump` (as today),
-  `sweep`, or `drag`.
-  - **`sweep` adds the next finer field:** date plus the hour of the day over 24;
-    weekday the same; month plus `(date − 1)` over the month's length.
-  - **`drag` moves pointers together.** Every calendar pointer on the dial drags
-    across one window, so day and date move at the same time.
-- **Battery and power reserve:** `jump` only. That is their mapping today
-  (`theme_schema.py` `MANIFEST_HAND`).
+| Element | Source | Path | Cadence |
+|---|---|---|---|
+| Station minute | minute | rotate | `jump` |
+| Station second | second | rotate | `stop-to-go` |
+| Retrograde hour, a 180° fan | hour12 (vmax 12) | retrograde (span 1800) | `sweep`, with a flyback ease |
+| Retrograde seconds | second | retrograde | `step` 1 |
+| Wandering or jump hour disc behind a window | hour12 | rotate, on the dial slot (3) or an AUX row, at a depth under the layer that carries the aperture | `jump` (jump hour) or `sweep` (wandering) |
+| Sweeping date pointer | date | rotate | `sweep` |
+| Mechanical date ring | date | BANK `ring` | `drag` |
+| Four-minute tourbillon | minute (vmax 4) | rotate (span 3600) | `sweep`. Rotate wraps at 3600, and 60 is a multiple of 4, so it runs through the hour without a seam |
+| Half-minute slave-clock minute | minute | rotate | `step` 2 |
 
-**Refused, never guessed** (D26, at the door):
+### 2.1 Cadence, exactly
 
-- two cadence words on one row;
-- `stop-to-go` without a jumping minute;
-- `drag` on a non-calendar source;
-- `step` on anything but the second hand.
+**One rule covers every source.** A row's value is its source plus a fraction of
+the next finer field. Cadence decides how much of that fraction it shows.
 
-**Stop-to-go, exactly.** Let `e = sec + frac`, from 0 to 60. The second hand
-stands at `min(e / 58.5, 1) × 360°`. The minute hand jumps at the wall-minute
-boundary, and that instant returns `e` to 0, so the release and the jump are one
-event. The 58.5 s figure is the Swiss railway convention. It is a theme word with
-that default, so a dial can choose 59 s or 58 s.
+| Cadence | Shows | `cad_arg` | `ease` |
+|---|---|---|---|
+| `inherit` (0) | Today's behaviour for that row (§2.3) | 0 | 0 |
+| `sweep` | The whole fraction | 0 | 0 |
+| `step` | The fraction quantised to 1/*N* of a unit | *N* steps per unit of the source | settle ms on each step |
+| `jump` | No fraction: moves at the boundary | 0 | settle ms |
+| `stop-to-go` | One turn in *P*, then rests until the unit boundary | *P* in tenths of a second (default 585, Swiss railway) | 0 |
+| `drag` | Holds, then creeps across a window that ends at the boundary | window in minutes (default 120) | 0 |
 
-**Jump settle.** This is an optional ease with a small overshoot (about 1.5°,
-about 120 ms), applied to any `jump`. It costs repaints for a few frames per
-jump, which is a few frames per minute. It is one theme word for the dial, not
-one per hand.
+- **`jump` is `step` 1**, named for readability.
+- **The second hand's tick choices are `step` 1, 2, 4 and 8**, and the tick
+  loop's beat follows that *N* (D39 §4.2).
+- **`ease` on a `retrograde` path is the flyback.** The return to `zero` is
+  animated over that many ms instead of landing in one frame. On a step or jump
+  it is the settle: a small overshoot, about 1.5° over about 120 ms by default.
+  Either costs repaints only while it runs.
 
-## 3. Why this pays off
+**The next finer field, per source.**
 
-1. **Sound is free on the jump.** A jump is a single wall-time event, so the
-   clock app plays the matching slot (`jump_minute`, `jump_hour`, `jump_date`)
-   on the same tick that re-poses the hand. That needs none of the loop
-   anchoring D39 §4.2 needs. The station's minute clunk is this case.
-2. **It is cheaper to draw.** Re-posing a hand repaints its whole rotated box,
-   and the hard-gate note in `clock_view.c` measured about 38 ms per frame when
-   every hand re-posed each tick. A minute hand that moves once a minute is
-   re-posed 60 times less often than one that creeps.
-3. **It fits the split.** These are theme words in the three-way mirror
-   (`orbtheme-baker.js`, `orb_clock3.c`, `tools/theme_schema.py`) plus the
-   composer's preview. The OS does not change, and neither does any service.
+| Source | Next finer field |
+|---|---|
+| second | the wall fraction |
+| minute | seconds/60 |
+| hour | minutes/60 |
+| date and weekday | the hour of the day/24 |
+| month | (date − 1) over the month's length |
+| day_of_year | the hour/24 |
 
-## 4. Encoding: where the words ride
+Battery, power reserve and the other measured sources have no finer field. On
+those, `sweep` is the same as `jump`.
 
-**Pointers (AUX rows): ruled.** The AUX record's flags word already carries
-`FLAG_JUMP` (bit 3) and has free bits from 9 up (`theme_schema.py`'s `FLAG_*`).
+### 2.2 Refused at the door (D26), never guessed
 
-- **Two bits are appended:** `FLAG_SWEEP` and `FLAG_DRAG`. The drag window is
-  fixed at 22:00–24:00 until an owner asks for it to move.
-- **A row with none of the three** keeps today's per-source default. That is
-  sweep for second, minute and hour sources, and jump for the rest. So every
-  baked theme reads unchanged.
-- **More than one of the three is a refusal.**
+- A cadence that cannot apply to the row:
+  - `stop-to-go` on anything but a second source;
+  - `drag` on anything but a calendar source;
+  - `step` *N* with *N* = 0;
+  - any cadence but `jump` or `drag` on a BANK window, strip or flare (their
+    plates are whole values);
+  - `sweep` on a ring is allowed, and turns the ring continuously.
+- `stop-to-go` on a dial with no `jump` minute row. Its release is the minute's
+  jump.
+- A second-source row with `step` *N* when *N* differs from the section's
+  `tick_rate`. The scheduler's tempo and the hand must agree (§4).
+- `indexed` combined with any cadence but `inherit` or `jump`.
+- An `ease` on a row whose cadence has no instant to ease.
 
-**Main hands: OPEN.** The clock section's scalar count is gated exactly
-(`orb_bundle.c`: `nsc != ORB_BUNDLE_SCALARS_N`, which is 26). So any new section
-word is an ABI question, as D18's were. Two candidates:
+### 2.3 `inherit`: today's behaviour, row by row
 
-- **(a) A new clock stamp.** Under it, word 6 (`second_railway`) widens into a
-  packed `hand_motion` word: a field each for hour, minute and second, the
-  stop-to-go period, and settle. Values 0 and 1 keep their legacy meanings,
-  because `bake_clock.py` still writes 1. A reader that predates the stamp
-  refuses it at the stamp gate, which is how C4's v4 rows arrived.
-- **(b) Append scalars.** This needs a gate that accepts both 26 and the new
-  count, which would be the first two-width scalar gate.
+| Row | `inherit` means |
+|---|---|
+| HAND hour, minute and second (slots 0–2) with `src` 0 | Today's `hand_angles`: hour creeps; minute creeps, or jumps under `second_railway` + `second_sweep`; second from `second_sweep` / `tick_rate` |
+| HAND dial and counterweight (3, 4) with `src` 0 | Still, as today |
+| HAND carriage (5) with `src` 0 | Turned by the seconds angle, as today |
+| AUX | Sweep (FORMAT 3 has always interpolated pointers) |
+| BANK | Jump (whole plates) |
 
-**Recommendation: (a).** It reuses a precedent the reader already enforces, it
-moves no scalar count, and an old reader refuses at the door instead of
-silently creeping a hand the theme meant to jump.
+So a v4 theme projects to v5 rows with every new column at 0 and draws
+identically. The host suite proves that by angle, not by eye (slice G1).
+
+## 3. One drive function
+
+`hand_angles` and `aux_value_1000`/`aux_angle_10` become one function in
+`clock_view.c`: a row's source, its next finer field, its cadence, then its path,
+giving an angle or a displacement. A HAND row with `src` 0 is first given the
+row its slot has always meant (hour12, rotate, span 3600, vmax 12; and so on),
+so the legacy hands are just three pre-filled rows rather than a second code
+path. The delta-bank tick quantisation of §1 applies inside it to every swept
+row.
+
+## 4. The encoding
+
+**A v5 clock stamp appends three element columns.**
+
+| Column | Type | Meaning |
+|---|---|---|
+| `cadence` | u8 | §2.1's id: 0 inherit, 1 sweep, 2 step, 3 jump, 4 stop-to-go, 5 drag |
+| `cad_arg` | u16 | *N*, *P* or the drag window, per cadence |
+| `ease` | u16 | settle or flyback ms; 0 = none |
+
+- **The stride grows from 25 to 28 words.** That is C4's precedent exactly:
+  `ELEMENT_WORDS_CLOCK_V4 = (25,)` becomes a v5 entry of `(28,)`, the stamp gate
+  in `orb_clock3.c` and `checkClockStamp` admit it, and a reader that predates v5
+  refuses the theme at the stamp gate.
+- **HAND rows may carry `kind`, `src`, `span`, `zero`, `vmin` and `vmax` under
+  v5.** `theme_schema.py:816`'s refusal of a non-zero `kind` on a HAND row
+  becomes "non-zero only under v5". All-zero still means the slot's own mapping.
+- **AUX rows honour `order` under v5** as a depth bucket under one of the live
+  layers, the rule bank rows already follow (`orb_clock3.c:887`). A v4 AUX row
+  keeps `aux_insert_at`'s single block.
+- **No section scalar moves.** `ORB_BUNDLE_SCALARS_N` stays 26. `second_sweep`,
+  `second_railway` and `tick_rate` stay: the scheduler reads `tick_rate` as the
+  dial's tempo (`orb_clock3.c:1126`), so the baker keeps writing it and §2.2
+  refuses a second row that disagrees. Under v5, the rows are the authority for
+  motion and the scalars are the tempo hint.
+
+**This replaces the open item the cadence-only D41 carried.** It weighed
+widening `second_railway` against appending scalars. Columns answer it for every
+row class at once and leave the scalar gate alone.
+
+**A disc behind a window is a depth question, and the bench answers it.** The
+aperture has to be art in a live layer above the disc's bucket, not a hole in
+the restore plate. The commit pass restores marked rows from the plate
+(`orb_sched_restore_src`) and paints layers above it, so a disc under the plate
+itself would be painted over. Slice G4 measures what a turning disc under a
+cut-out layer costs per frame.
 
 ## 5. The composer
 
-- **The Hands tab gains a Motion row per hand.**
-  - The second hand's existing control (`1 / s`, `2 / s`, `4 / s`, `8 / s`,
-    `Sweep`, in `Watch Composer.dc.html`) gains `Stop-to-go`. That option is
-    enabled only while the minute is set to `Jump`.
-  - The minute and hour hands get `Sweep` / `Jump`.
-  - `Settle` is a toggle shown when any hand jumps.
-- **The Comps tab gains a Motion choice on each pointer**, offering what §2
-  allows for its source.
-- **The preview moves as the dial will.** `tickTurn` (`watch-engine.js`) already
-  quantises the second hand. It gains jump and stop-to-go, and the pointer driver
-  gains drag, so the preview never shows motion the device will not.
-- **Presets.** The station preset's design changes to a jumping minute plus a
-  stop-to-go second, which is its identity. Every other preset keeps today's
-  motion, so their renders do not move.
+- **The Hands tab gains, per hand:**
+  - **Source:** defaults to the slot's own.
+  - **Path:** `Rotate` or `Retrograde`, with the arc's start and span.
+  - **Cadence:** offers what §2.2 allows. The second hand's existing control
+    (`Watch Composer.dc.html:3558`: 1, 2, 4, 8 per second, or Sweep) becomes its
+    `step` *N* and `sweep`, plus `Stop-to-go` while the minute is `Jump`.
+  - **Ease:** settle on a step or jump, flyback on a retrograde.
+  - **The dial slot can turn**, which is the wandering or jump hour.
+- **The Comps tab gives every pointer and ring the same three controls** and a
+  depth choice.
+- **The preview moves as the dial will.** `tickTurn` (`watch-engine.js`) and the
+  pointer driver call a JS twin of §3's drive function. The mirror test samples
+  both at fixed times and compares angles.
+- **Presets.** The station preset becomes a jumping minute plus a stop-to-go
+  second. Every other preset keeps `inherit`, so its renders do not move.
 
-## 6. Slices
+## 6. Why this pays off
+
+1. **One vocabulary.** A retrograde hour, a jump hour, a sweeping date and a
+   station minute are the same four columns with different values. The next
+   complication needs no new special case.
+2. **Sound is free on a step.** A step is a wall-time event, so the clock app
+   plays the matching slot on the tick that re-poses the row
+   (`docs/sound-plan.md` §3.1). That needs none of the loop anchoring a tick
+   loop needs.
+3. **It is cheaper to draw.** A hand re-pose repaints its whole rotated box,
+   measured at 38 ms/frame when every hand re-posed each tick. The note is the HARD GATE comment at `clock_view.c:428`.
+   A minute hand that jumps is re-posed 60 times less often than one that
+   creeps.
+
+## 7. Slices
 
 | Slice | Content | Gate |
 |---|---|---|
-| **M1** | Pointers: `FLAG_SWEEP` / `FLAG_DRAG` in the mirror, `aux_value_1000`'s calendar arms, refusals, and the composer's per-pointer Motion choice | host suites green, with a mutant for each new refusal |
-| **M2** | Main hands: rule §4's encoding, then the mirror, `hand_angles`, and the Hands tab rows. Station preset updated | host suites green, with a mutant per refusal; preview matches the reader's angles at sampled times |
-| **M3** | Bench: stop-to-go plus a jumping minute on a real dial, and settle frame cost measured | the hand rests and releases on the wall minute; settle stays within the frame budget |
-| **M4** | Jump sounds, landed with D39's S6 (clock policy) | the clunk lands on the jump's frame on the bench |
+| **G1** | §3's drive function: `hand_angles` and the AUX path become one, with HAND slots as pre-filled rows. No format change | the host test samples a day of times and proves every v4 dial's angles identical before and after |
+| **G2** | v5: the three columns, drive columns on HAND rows, depth on AUX rows, §2.2's refusals. Mirror, reader and baker move together | host suites green, one mutant caught per new refusal |
+| **G3** | Composer: per-hand and per-pointer Source / Path / Cadence / Ease / depth, the JS drive twin, the station preset | the preview-versus-reader angle check; `_selftest` green |
+| **G4** | Bench: stop-to-go plus a jumping minute, a retrograde hour's flyback, a disc under a cut-out layer, settle cost | rests and releases on the wall minute; frame cost recorded here |
+| **G5** | Step sounds, landed with D39's S6 | the clunk lands on the jump's frame |
 
-## 7. The one sentence to remember
+## 8. The one sentence to remember
 
-Every hand and pointer names its motion (`sweep`, `step`, `jump`, and
-`stop-to-go` or `drag` where they fit) as theme words that default to today's
-behaviour, and a jump is an event the clock can hear.
+Every hand, pointer and ring is a driven row (a source, a path, a cadence and a
+depth) that defaults to exactly what it does today.

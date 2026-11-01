@@ -21,7 +21,7 @@ replaces, and the slices. Read it before touching `hand_angles`,
 `aux_value_1000` or `aux_angle_10`, FORMAT 3's element columns, or the
 composer's Hands and Comps tabs.
 
-**Status: RULED (owner, 2026-10-30, generalized 2026-10-31). G1, G2, G3 and G5 built 2026-11-01, and ease after them (G2 without AUX depth or bank cadences — see §4; G3 as §5.1 records); G4 not built.** AUX depth and G4 are held for D42 (`docs/element-model-plan.md`, proposed 2026-11-01), which makes every hand, pointer and ring one kind of row; depth is built there, once.
+**Status: RULED (owner, 2026-10-30, generalized 2026-10-31). G1, G2, G3 and G5 built 2026-11-01, and ease after them (G2 without AUX depth or bank cadences — see §4; G3 as §5.1 records); G4 not built.** AUX depth and G4 are held for D42 (`docs/element-model-plan.md`, proposed 2026-11-01), which makes every hand, pointer and ring one kind of row; depth is built there, once. D42 also rules out legacy: every theme is rebuilt as v6 and older stamps are refused, so this file's promises that an old theme keeps drawing as before end with v6.
 
 | Parameter | Ruled value |
 |---|---|
@@ -232,7 +232,7 @@ plate draw as before. G1's v4 parity was also confirmed on the glass
   whose plates are whole values. Sweep and drag wait for a ring the dial can turn.
 - **AUX `order` as depth.** Pointers still join `aux_insert_at`'s one block. A
   disc behind a window needs it. Held for D42 (`docs/element-model-plan.md` slice
-  E2), which gives every row one depth, rather than built on the HAND/AUX split.
+  E1), which gives every row one depth, rather than built on the HAND/AUX split.
 
 **A disc behind a window is a depth question, and the bench answers it.** The
 aperture has to be art in a live layer above the disc's bucket, not a hole in
@@ -324,7 +324,7 @@ Both bake at v5 from the composer and pass the shipped C projection
 | **G1** ✔ | §3's drive function: `hand_angles` and the AUX path become one, with HAND slots as pre-filled rows. No format change | the host test samples a day of times and proves every v4 dial's angles identical before and after — **DONE 2026-11-01**: `tools/host_drive_test.py`, a day at 12 fps under all 40 v4 hand-word combinations (sweep × railway × tick_rate 0/1/2/4/8 × delta-bank beat), bit-identical to the pre-G1 `hand_angles`; eight v4 pointers identical to `aux_value_1000`; the new cadences pinned by hand-worked vectors; 14 mutants caught |
 | **G2** ✔ (part) | v5: the three columns, drive columns on HAND rows, depth on AUX rows, §2.2's refusals. Mirror, reader and baker move together | host suites green, one mutant caught per new refusal — **DONE 2026-11-01** except AUX depth, ease and bank cadences (§4, "What G2 left"): `host_clock3_test.py`'s D41 battery (13 refusals at both ends, 6 mutants), `host_drive_test.py` (17 mutants), `headless-bundle3` (11 D41 checks), the hub's container reader takes v5 |
 | **G3** ✔ (part) | Composer: per-hand and per-pointer Source / Path / Cadence / Ease / depth, the JS drive twin, the station preset | the preview-versus-reader angle check; `_selftest` green — **DONE 2026-11-01** as §5.1 records: path, cadence and (since the ease commit) ease per hand, the JS twin, the Flux and Orbit presets, the station preset re-cut; depth held for D42 |
-| **G4** | Bench: stop-to-go plus a jumping minute, a retrograde hour's flyback, a disc under a cut-out layer, settle cost | rests and releases on the wall minute; frame cost recorded here — **folded into D42's E7** (`docs/element-model-plan.md`), since a disc under a cut-out layer needs D42's depth |
+| **G4** | Bench: stop-to-go plus a jumping minute, a retrograde hour's flyback, a disc under a cut-out layer, settle cost | rests and releases on the wall minute; frame cost recorded here — **folded into D42's E6** (`docs/element-model-plan.md`), since a disc under a cut-out layer needs D42's depth |
 | **G5** ✔ | Step sounds, landed with D39's S6 | the clunk lands on the jump's frame — **DONE 2026-11-01**: `clock_view.c` scans the dial once (`snd_steps_scan`) for what steps per source class (hand slots' rows and the railway minute, pointers' cadence or jump flag, calendar plates) and sounds `jump_minute` / `jump_hour` / `jump_date` on each step's own instant, sub-minute steps included; sweep, drag and stop-to-go stay silent. `host_drive_test.py` pins the scan (23 mutants). On orb-B, Station's jumping minute sounded exactly once per minute, on the boundary |
 
 ## 8. The one sentence to remember

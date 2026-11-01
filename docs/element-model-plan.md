@@ -1,11 +1,17 @@
 # D42 (proposed): one row for everything that moves
 
-**Status: PROPOSED 2026-11-01, not ruled.** Written at the owner's request. The owner
-reviews it and rules the open questions in §11; no code moves until then. It builds
-on D41 (`docs/hand-motion-plan.md`): D41's drive (source, cadence, ease) is kept
-whole, and this file replaces the parts of D41 that still treat a hand, a pointer and
-a ring as different things. **AUX pointer depth (D41 §4, "What G2 left") is held for
-this ruling** and lands as part of slice E2, not on the current split.
+**Status: PROPOSED 2026-11-01; owner's rulings recorded the same day (§11). One
+question is still open (§11.3, the Mechanical switch's default); no code moves until
+it is answered.** It builds on D41 (`docs/hand-motion-plan.md`): D41's drive (source,
+cadence, ease) is kept, and this file replaces the parts of D41 that still treat a
+hand, a pointer and a ring as different things. **AUX pointer depth (D41 §4, "What G2
+left") is held for this ruling** and lands as part of slice E1, not on the current
+split.
+
+**No legacy (owner, 2026-11-01).** Every theme is rebuilt as v6. The reader, the
+schema, the baker and the hub refuse every older stamp. Nothing in this file keeps an
+old theme drawing, and every D41 sentence that promises "a row that names nothing
+keeps today's behaviour" is void under v6 (§8.1).
 
 **The owner's brief (2026-11-01):**
 
@@ -22,6 +28,7 @@ this ruling** and lands as part of slice E2, not on the current split.
   shaft, may or may not be enforced.
 - Digital displays: show any value in a chosen font and background.
 - Ruled order: design this before the hand layering work, so depth is built once.
+- No legacy: old themes are rejected, not converted (rulings in §11).
 
 ## 1. What is split today
 
@@ -45,8 +52,8 @@ a `motion` block. A sub-dial's hand is implied by the sub-dial's `scale` and car
 seconds and hours scales.
 
 **Dead weight found while reading.** `plate_follow` and `text_over_hands` are
-projected by `orb_clock3.c` and drawn by nothing in `clock_view.c`. The model below
-gives each a real meaning (a plate row with a drive, and depth) or drops it in v6.
+projected by `orb_clock3.c` and drawn by nothing in `clock_view.c`. v6 drops both
+(§8.1): a turning plate is a ring row, and text over the hands is a depth.
 
 **Two paint paths must agree on depth.** The classic path's z order is LVGL widget
 creation order (`clock_view_init`). The L4 path's z order is the layer table's job
@@ -96,19 +103,34 @@ fraction *t* in 0…1 across the source's domain, and the row draws at P0 + *t*�
 | `indexed` | rotate with cadence `jump` | wrap |
 
 **New combinations come free:** a slide on a diagonal, a pointer that slides and tilts
-at once, a fan whose pivot drifts. A wrap with any other Δθ, or with an offset, is
-refused at the door (D26), because it would jump on screen without an ease.
+at once, a fan whose pivot drifts.
 
-**What this does not change.** Firmware angles stay in tenths of a degree and offsets
-in pixels, as D34's `MOTION_UNIT` says. The retrograde clamp encoding the composer
-uses (D41 §5.1, zero written below the span) is not needed for v6 rows, because the
-reader clamps at *t* = 1 instead of at an absolute angle. v5 themes keep their
-encoding and the clamp they were written for.
+**A wrap with an offset, or with Δθ not a multiple of 360°, is refused (owner,
+2026-11-01).** It cannot draw without jumping on screen. It is refused at design time
+(the composer does not offer it, and the schema and baker refuse it) **and again by
+the firmware reader**, so a theme made by any other means is refused at the door (D26)
+instead of drawn wrong.
+
+**Units.** Firmware angles stay in tenths of a degree and offsets in pixels, as
+D34's `MOTION_UNIT` says. The retrograde clamp encoding the composer uses today (D41
+§5.1, zero written below the span) goes away, because the reader clamps at *t* = 1
+instead of at an absolute angle.
 
 ## 4. Drive: D41's, plus digit sources
 
-Source, cadence (`inherit`, `sweep`, `step` *N*, `jump`, `stop-to-go`, `drag`) and
-ease keep D41's meanings, refusals and sound events exactly.
+Source, cadence (`sweep`, `step` *N*, `jump`, `stop-to-go`, `drag`) and ease keep
+D41's meanings, refusals and sound events.
+
+**`inherit` goes.** It meant "what this row did before D41", and with no old themes
+there is nothing to inherit. Every v6 row names its source and its cadence, and a row
+that names neither is refused. The composer always writes both, so this costs the
+author nothing.
+
+**The seconds hand's speed comes from its row (owner, 2026-11-01).** The scheduler
+reads the dial's tempo from the rows: the fastest stepping or sweeping seconds row
+sets the beat (`step` *N* is *N* beats a second, `sweep` and `stop-to-go` ask for the
+sweep tempo). The composer still offers the same choices it does now: 1, 2, 4 and 8
+ticks a second, and Sweep. It writes them as the row's cadence and nowhere else.
 
 **One addition: a digit selector.** A row may read one decimal digit of its source
 instead of the whole value: units, tens, or the whole value (default).
@@ -194,9 +216,8 @@ cost estimate uses), so it costs no new geometry.
 **The wire.**
 
 - One class for every moving row. AUX is the natural one to widen, since its rows
-  already carry source, path and drive. Its slot cap rises from 8 to the row cap
-  ruled in §11.
-- Appended columns, by C4's and D41's precedent:
+  already carry source, path and drive. Its slot cap rises from 8 to 24 (§11.1).
+- Columns added to the element row:
   - `x0`, `y0`, `dx`, `dy` (i16 px): the pose offset and its travel;
   - `end` (u8): wrap, flyback or hold;
   - `shape` (u8): arm, ring, text or plate;
@@ -204,20 +225,39 @@ cost estimate uses), so it costs no new geometry.
   - `shadow_of` (u16): the row this one shadows, or none;
   - `str` (u16): a text row's offset into the string table.
   The existing `zero` and `span` stay the angle P0 and Δθ.
-- A **v6 stamp** gates all of it, and the stride grows (28 → about 35 words).
-- The v6 writer stops emitting HAND rows. `second_sweep` and `tick_rate` become values
-  the reader **derives** from the rows (the fastest seconds row sets the tempo), with
-  §11 deciding whether v6 still writes them as a hint.
+- A **v6 stamp** gates all of it, and the stride grows (28 → about 35 words). The
+  stride is one width, gated exactly, with no narrower widths admitted.
+- No HAND rows. The carriage, the dial disc and the counterweight are rows like any
+  other.
 
-**The reader keeps every old theme.** `orb_clock3.c` projects v3–v5 into rows: each
-HAND slot becomes a row from `HAND_ROW`'s mapping, each AUX row keeps its drive, and
-depth is computed from `order[5]` plus `aux_insert_at`'s join point. Every installed
-theme draws exactly as it does now. Slice E1 proves that by pose and by z order.
+### 8.1 What v6 deletes
 
-**Firmware memory.** One `clk_row_t` array replaces `hand[5]`, `shadow[5]`,
-`hand_drive[5]`, `clk_aux_t[8]` and the tourbillon bookkeeping, with one widget or
-layer job per row. The cap is a memory figure the owner rules (§11). The rotated
-poses are still not cached in internal RAM (owner's earlier ruling).
+With no old themes to read, these go from every door (the firmware reader, the Python
+schema and packer, the composer's baker, the hub's container reader in
+`tools/orb-manager/internal/orbnet/themecontainer.go`):
+
+- **Clock stamps 3, 4 and 5**, and the narrower strides each admitted
+  (`ELEMENT_WORDS_CLOCK_V3/V4/V5`, `ELEMENT_WORDS_MIN`). A card holding an older theme
+  shows it on the theme page as refused, with the reason, as a damaged entry already is.
+- **Scalars:** `second_sweep`, `second_railway` and `tick_rate` (the tempo is read from
+  the rows, §4), `plate_follow`, `text_over_hands`, `order[5]` and `order_n`.
+- **HAND-slot machinery:** `hand[5]`, `shadow[5]`, `hand_drive[5]`, `HAND_ROW`,
+  `aux_insert_at`, `matte_mask`'s per-slot bits, `tourbillon[]` as a seconds-slot
+  special case, and the `CLOCK_SLOTS` hand and `sh_*` entries.
+- **The `inherit` cadence** and its per-class arithmetic in `drive_units`, along with the
+  v4-parity half of `tools/host_drive_test.py`, which proved a promise v6 no longer makes.
+- **The `clk_comp_t` ring, strip and reserve fields** that only the retired FORMAT 2
+  manifest filled.
+- **The retrograde clamp encoding** in the composer (§3).
+
+The bench themes (`skeleton-tick`, `skeleton-step` and the composer presets) are
+rebuilt as v6. After the first v6 flash, orb-B draws the base face until a v6 theme
+is installed.
+
+**Firmware memory.** One `clk_row_t` array of 24 rows (§11.1) replaces `hand[5]`,
+`shadow[5]`, `hand_drive[5]`, `clk_aux_t[8]` and the tourbillon bookkeeping, with one
+widget or layer job per row. A theme with more rows is refused. The rotated poses are
+still not cached in internal RAM (owner's earlier ruling).
 
 ## 9. Cost
 
@@ -230,36 +270,36 @@ row, not just the five slots. Two properties keep it honest:
 - The expensive case is a large **sweeping** ring. A disc 240 px across is about
   45 kpx of ink, roughly 9 ms a frame at the painter's measured nearest-neighbour ink
   rate. That is affordable at a few frames per second, and a jump disc pays it once a
-  minute. **Estimated, not measured**; slice E7 measures it.
+  minute. **Estimated, not measured**; slice E6 measures it.
 
 ## 10. Slices
 
 | Slice | Content | Gate |
 |---|---|---|
-| **E0** | The owner rules this file and §11 | — |
-| **E1** | Firmware internal: one row array and one depth walk. v3–v5 projected into rows. **No format change** | host proof by D41 G1's method: a day of poses for every v5 bench theme identical before and after, plus the z stack identical on both paint paths |
-| **E2** | v6: the class and columns of §8, the two-pose motion and end rule, depth on every row (the held pointer-depth work), digit selectors. Python schema, baker, C reader and Go container move together | host suites green, one mutant caught per new refusal |
-| **E3** | Composer: one list of rows (centre and sub-dial hands alike), each with shape, motion, drive, placement and depth. The JS twin and the bake follow §3 | the preview-versus-reader pose check |
-| **E4** | Calendar presets: a double-rotator date and a 1–31 ring behind a window | renders on orb-B, a clean `jump_date` |
-| **E5** | Text rows: glyph sets, background, format, string table | a `HH:MM` readout and a `ddd DD` readout on orb-B |
-| **E6** | Mechanical warnings in the composer | headless tests per warning |
-| **E7** | Bench (D41's G4 folded in): stop-to-go, a flyback, a disc under a window, a sweeping disc's frame cost, a readout's cost | figures recorded here |
+| **E0** | The owner rules this file. Done 2026-11-01 except §11.3 | — |
+| **E1** | v6 end to end, legacy deleted (§8.1): the row array and one depth walk in the firmware; the two-pose motion and end rule; depth on every row (the held pointer-depth work); digit selectors; the tempo read from the rows. Python schema, baker, C reader and Go container move together | host suites green, one mutant caught per new refusal; every older stamp refused at every door; the JS twin and the C reader agree on pose at fixed times for every preset |
+| **E2** | Composer: one list of rows (centre and sub-dial hands alike), each with shape, motion, drive, placement and depth; tick speed and Sweep offered as today. Every preset and bench theme rebuilt as v6 | the preview-versus-reader pose check; each preset installs on orb-B |
+| **E3** | Calendar presets: a double-rotator date and a 1–31 ring behind a window | renders on orb-B, a clean `jump_date` |
+| **E4** | Text rows: glyph sets, background, format, string table | a `HH:MM` readout and a `ddd DD` readout on orb-B |
+| **E5** | Mechanical warnings in the composer | headless tests per warning |
+| **E6** | Bench (D41's G4 folded in): stop-to-go, a flyback, a disc under a window, a sweeping disc's frame cost, a readout's cost | figures recorded here |
 
-## 11. Open questions for the owner
+## 11. Rulings (owner, 2026-11-01)
 
-1. **Row cap.** Today the dial has 5 + 8 moving rows. Proposal: 24, with the
-   composer's cost estimate as the practical limit.
-2. **v6 tempo scalars.** Derive the tempo from the rows and stop writing the scalars,
-   or keep writing them as a hint the reader cross-checks (D41's rule)? Proposal:
-   derive, and keep the cross-check only for v5.
-3. **Mechanical switch default.** Proposal: off.
-4. **Text fonts.** The composer's existing numeral fonts only, or any font file
-   brought in? Proposal: the existing set first.
-5. **Wrap with an offset.** Refuse it (proposal), or allow it as a deliberate jump?
-6. **Retire FORMAT 2 strips** once text rows exist, or keep them for old themes only?
-   Proposal: read them, never write them.
+1. **Row cap: 24.** A theme that needs more is refused; that is acceptable.
+2. **Tempo from the rows.** The seconds hand's speed comes from its own definition
+   (§4). The composer still offers distinct tick speeds and Sweep.
+3. **The Mechanical switch: OPEN.** It is the composer setting that turns §7's
+   physical-plausibility warnings on or off for a design. Off lets a radical dial do
+   impossible things silently. On flags what a real movement could not build. Either
+   way the bake goes through. Proposal: off by default, and on for presets that
+   imitate a real movement.
+4. **Text fonts:** the composer's existing font list. More fonts are added later as
+   needed.
+5. **Wrap with an offset: refused**, at design time and by the firmware reader (§3).
+6. **No legacy.** Every theme is rebuilt as v6, and every older theme is refused (§8.1).
 
 ## 12. The one sentence to remember
 
 Everything that moves is a row with a shape, two poses and a drive, stacked by one
-depth, and every theme from before keeps drawing exactly as it does now.
+depth, and a theme is v6 or it is refused.

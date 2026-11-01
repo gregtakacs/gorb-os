@@ -21,7 +21,7 @@ replaces, and the slices. Read it before touching `hand_angles`,
 `aux_value_1000` or `aux_angle_10`, FORMAT 3's element columns, or the
 composer's Hands and Comps tabs.
 
-**Status: RULED (owner, 2026-10-30, generalized 2026-10-31). Not built.**
+**Status: RULED (owner, 2026-10-30, generalized 2026-10-31). G1 built 2026-11-01; G2–G5 not built.**
 
 | Parameter | Ruled value |
 |---|---|
@@ -149,6 +149,13 @@ identically. The host suite proves that by angle, not by eye (slice G1).
 
 ## 3. One drive function
 
+**Built (G1, 2026-11-01).** `clock_view.c`: `clk_drive_t` (in `clk_types.h`) is
+the row; `HAND_ROW[5]` is the five slots pre-filled; `drive_hand_deg` and
+`drive_aux` are the two entries, sharing `drive_finer` (the next finer field),
+`drive_units` (the cadence) and `drive_travel` (the path). `CLK_CAD_INHERIT` is
+each class's pre-D41 arithmetic, verbatim, which is what makes the parity exact;
+the other cadences are live code that no v4 row can reach until G2's columns.
+
 `hand_angles` and `aux_value_1000`/`aux_angle_10` become one function in
 `clock_view.c`: a row's source, its next finer field, its cadence, then its path,
 giving an angle or a displacement. A HAND row with `src` 0 is first given the
@@ -230,7 +237,7 @@ cut-out layer costs per frame.
 
 | Slice | Content | Gate |
 |---|---|---|
-| **G1** | §3's drive function: `hand_angles` and the AUX path become one, with HAND slots as pre-filled rows. No format change | the host test samples a day of times and proves every v4 dial's angles identical before and after |
+| **G1** ✔ | §3's drive function: `hand_angles` and the AUX path become one, with HAND slots as pre-filled rows. No format change | the host test samples a day of times and proves every v4 dial's angles identical before and after — **DONE 2026-11-01**: `tools/host_drive_test.py`, a day at 12 fps under all 40 v4 hand-word combinations (sweep × railway × tick_rate 0/1/2/4/8 × delta-bank beat), bit-identical to the pre-G1 `hand_angles`; eight v4 pointers identical to `aux_value_1000`; the new cadences pinned by hand-worked vectors; 14 mutants caught |
 | **G2** | v5: the three columns, drive columns on HAND rows, depth on AUX rows, §2.2's refusals. Mirror, reader and baker move together | host suites green, one mutant caught per new refusal |
 | **G3** | Composer: per-hand and per-pointer Source / Path / Cadence / Ease / depth, the JS drive twin, the station preset | the preview-versus-reader angle check; `_selftest` green |
 | **G4** | Bench: stop-to-go plus a jumping minute, a retrograde hour's flyback, a disc under a cut-out layer, settle cost | rests and releases on the wall minute; frame cost recorded here |

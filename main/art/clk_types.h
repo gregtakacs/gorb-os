@@ -122,6 +122,40 @@ enum {
     CLK_MOTION__MAX
 };
 
+/* D41: when a driven row moves (docs/hand-motion-plan.md §2.1). Paths above say
+ * how a value becomes a pose; a cadence says how much of the next finer field the
+ * value shows. FORMAT 3 v4 has no column for it, so every row reads INHERIT — each
+ * row class's behaviour before D41 — until v5 (slice G2) gives a row its own. */
+enum {
+    CLK_CAD_INHERIT    = 0,   /* the row class's pre-D41 motion (§2.3)               */
+    CLK_CAD_SWEEP      = 1,   /* the whole fraction                                  */
+    CLK_CAD_STEP       = 2,   /* the fraction quantised to 1/cad_arg of a unit       */
+    CLK_CAD_JUMP       = 3,   /* no fraction: moves on the unit boundary             */
+    CLK_CAD_STOP_TO_GO = 4,   /* one turn in cad_arg tenths of a second, then rests  */
+    CLK_CAD_DRAG       = 5,   /* holds, then creeps over cad_arg minutes to the boundary */
+    CLK_CAD__MAX
+};
+
+/* D41 §3: a driven row as the one drive function reads it — source, path, cadence,
+ * and the path's span, zero and domain. A HAND slot is a pre-filled one of these
+ * (hour12 over 12, minute over 60, second over 60, the two statics still), and an AUX
+ * row is its record's own columns, so the hands are three rows rather than a second
+ * code path. `hand` picks which INHERIT a row means: the hand chain (the hour reads
+ * the minute the hand shows, the minute the second the hand shows) or the pointer's
+ * (whole units of the next finer field, CLK_FLAG_JUMP to drop them). */
+typedef struct {
+    uint8_t  src;              /* CLK_SRC_*    */
+    uint8_t  path;             /* CLK_MOTION_* */
+    uint8_t  cadence;          /* CLK_CAD_*    */
+    uint8_t  hand;             /* 1: a HAND slot's row */
+    uint16_t cad_arg;          /* N steps, P tenths of a second, or a drag window in minutes */
+    uint16_t flags;            /* CLK_FLAG_JUMP / CLK_FLAG_WRAP, as on an AUX row */
+    int16_t  span;             /* tenths of a degree, or px on a slide */
+    int16_t  zero;
+    uint16_t value_min;
+    uint16_t value_max;
+} clk_drive_t;
+
 /* What drives a comp's value. Every one derives from the wall clock and the
  * battery state the view already has, so a new theme feature needs no new input
  * path and no new firmware build. */

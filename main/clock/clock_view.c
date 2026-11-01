@@ -351,14 +351,38 @@ static uint32_t hand_beat_ticks(void)
     return n < 1 ? 1 : n;
 }
 
+/* D41 §3: one reading of the wall clock, handed to the drive function for every
+ * driven row a frame poses. hand_sec is the second the HAND chain shows (sweep,
+ * tick_rate steps, or whole), worked out once per frame because the delta-bank beat
+ * that feeds it keeps state. */
+typedef struct {
+    const struct tm *ti;
+    time_t           t;
+    double           frac;       /* the wall fraction, beat-held on a delta-bank dial */
+    float            hand_sec;
+} drive_now_t;
+
+static float drive_hand_deg(const clk_drive_t *d, const drive_now_t *n);
+
+/* The five HAND slots as driven rows (D41 §3): what each slot has always meant.
+ * Under v4 every slot reads its row from here; v5 (G2) lets a theme's own row
+ * columns replace one. */
+static const clk_drive_t HAND_ROW[5] = {
+    { .src = CLK_SRC_HOUR12, .path = CLK_MOTION_ROTATE, .hand = 1, .span = 3600, .value_max = 12 },
+    { .src = CLK_SRC_MINUTE, .path = CLK_MOTION_ROTATE, .hand = 1, .span = 3600, .value_max = 60 },
+    { .src = CLK_SRC_SECOND, .path = CLK_MOTION_ROTATE, .hand = 1, .span = 3600, .value_max = 60 },
+    { .src = CLK_SRC_NONE,   .hand = 1 },          /* dial: still */
+    { .src = CLK_SRC_NONE,   .hand = 1 },          /* counterweight: still */
+};
+
 /* Seconds 0..60 (fractional while sweeping), minutes 0..60 (fractional unless a
  * railway dial sits it on a mark), hour 0..12 fractional. Mirrors orb-os
- * compose_custom: minute_hand_mins() and the p_min/p_hr derivation. */
-static void hand_angles(double wall_frac, int hour, int min, int sec,
-                        float ang[5])
+ * compose_custom: minute_hand_mins() and the p_min/p_hr derivation. The beat is
+ * worked out here; each slot's angle is its HAND_ROW through the drive function. */
+static void hand_angles(double wall_frac, const struct tm *ti, float ang[5])
 {
+    const int sec = ti->tm_sec;
     const bool sweep   = clk_theme.second_sweep;
-    const bool railway = clk_theme.second_railway;
 
     /* GIF-mode hand cadence: the tick delivers exactly one GIF frame per tick,
      * so the second hand's beat rides the TICK COUNTER, not a wall-clock grid.
@@ -404,15 +428,9 @@ static void hand_angles(double wall_frac, int hour, int min, int sec,
                            / (float)clk_theme.tick_rate;
     else
         secF = (float)sec;
-    float minF = (railway && sweep) ? (float)min
-                                    : (float)min + secF / 60.0f;
-    float hrF  = (float)(hour % 12) + minF / 60.0f;
 
-    ang[0] = hrF  * 30.0f;   /* hour   : 30 deg/hr  */
-    ang[1] = minF *  6.0f;   /* minute :  6 deg/min */
-    ang[2] = secF *  6.0f;   /* second :  6 deg/sec */
-    ang[3] = 0.0f;
-    ang[4] = 0.0f;
+    const drive_now_t now = { .ti = ti, .t = 0, .frac = wall_frac, .hand_sec = secF };
+    for (int k = 0; k < 5; k++) ang[k] = drive_hand_deg(&HAND_ROW[k], &now);
 }
 
 
@@ -1541,6 +1559,143 @@ static int32_t aux_offset_px(const clk_aux_t *a, int64_t v1000)
     return aux_travel(a, v1000);
 }
 
+/* ---- D41 §3: the one drive function ------------------------------------------
+ * A driven row's pose is its source, plus as much of the next finer field as its
+ * cadence shows, carried along its path. INHERIT is each row class's motion from
+ * before D41, verbatim, so no v4 theme moves differently (§2.3): a HAND slot keeps
+ * hand_angles' chain, where the hour reads the minute the hand shows and the minute
+ * the second the hand shows, and a pointer keeps aux_value_1000's whole units of the
+ * next finer field. Every other cadence is new arithmetic, one copy for both
+ * classes. Under v4 nothing names one; v5 (slice G2) gives the rows the columns. */
+
+/* How far into the current unit of `src` the wall clock is, 0..1, and that unit's
+ * length in minutes (0 for a source with no finer field: battery, reserve, a moon
+ * age, a week number — on those every cadence lands whole). */
+static double drive_finer(uint8_t src, const struct tm *ti, double frac, double *unit_min)
+{
+    const double day = ((double)ti->tm_hour * 3600.0 + ti->tm_min * 60.0 + ti->tm_sec + frac)
+                       / 86400.0;
+    switch (src) {
+    case CLK_SRC_SECOND:  *unit_min = 1.0 / 60.0; return frac;
+    case CLK_SRC_MINUTE:  *unit_min = 1.0;        return (ti->tm_sec + frac) / 60.0;
+    case CLK_SRC_HOUR12:
+    case CLK_SRC_HOUR24:  *unit_min = 60.0;
+                          return (ti->tm_min * 60.0 + ti->tm_sec + frac) / 3600.0;
+    case CLK_SRC_DATE:
+    case CLK_SRC_WEEKDAY:
+    case CLK_SRC_DAY_OF_YEAR: *unit_min = 1440.0; return day;
+    case CLK_SRC_MONTH: {
+        static const uint8_t DIM[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+        int dim = DIM[ti->tm_mon % 12];
+        if (ti->tm_mon == 1 && comp_year_leap(ti->tm_year + 1900)) dim = 29;
+        *unit_min = 1440.0 * dim;
+        return (ti->tm_mday - 1 + day) / dim; }
+    default:              *unit_min = 0.0;        return 0.0;
+    }
+}
+
+/* The value a row shows under a cadence other than INHERIT, in units of its source:
+ * day 5 swept to noon is 5.5. False when this orb has no input for the source. */
+static bool drive_units(const clk_drive_t *d, const drive_now_t *n, double *out)
+{
+    int32_t v;
+    if (!comp_value(d->src, n->ti, n->t, &v)) return false;
+    double unit_min;
+    const double f = drive_finer(d->src, n->ti, n->frac, &unit_min);
+    double shown = 0.0;
+    switch (d->cadence) {
+    case CLK_CAD_SWEEP:
+        shown = f;
+        break;
+    case CLK_CAD_STEP: {
+        const unsigned steps = d->cad_arg ? d->cad_arg : 1;   /* §2.2 refuses 0 at the door */
+        shown = floor(f * steps) / steps;
+        break; }
+    case CLK_CAD_STOP_TO_GO: {
+        /* The whole dial in P tenths of a second, then a rest at the top until the
+         * minute releases it: the value runs fast and stops at value_max. */
+        const double p = d->cad_arg ? d->cad_arg : 585;
+        const double run = (v + f) * 600.0 / p;
+        *out = run < d->value_max ? run : d->value_max;
+        return true; }
+    case CLK_CAD_DRAG: {
+        /* Held, then a creep across the last cad_arg minutes of the unit. */
+        const double w = d->cad_arg ? d->cad_arg : 120;
+        if (unit_min > 0.0) {
+            const double into = f * unit_min - (unit_min - (w < unit_min ? w : unit_min));
+            shown = into > 0.0 ? into / (w < unit_min ? w : unit_min) : 0.0;
+        }
+        break; }
+    default:                                    /* JUMP: the boundary only */
+        break;
+    }
+    *out = v + shown;
+    return true;
+}
+
+/* A value in units carried along the row's path: tenths of a degree on a rotation,
+ * pixels on a slide. aux_travel's arithmetic, half-up, with the same clamp to the
+ * domain unless the row wraps, the retrograde stop at the span, and the turn's wrap. */
+static int32_t drive_travel(const clk_drive_t *d, double units)
+{
+    if (!(d->flags & CLK_FLAG_WRAP)) {
+        if (units < d->value_min) units = d->value_min;
+        if (units > d->value_max) units = d->value_max;
+    }
+    const double vmax = d->value_max ? d->value_max : 1;
+    const double x = d->zero + units * d->span / vmax;
+    int32_t t = (int32_t)(x >= 0.0 ? floor(x + 0.5) : -floor(-x + 0.5));
+    if (MOTION_IS_SLIDE(d->path)) return t;
+    if (d->path == CLK_MOTION_RETROGRADE &&
+        ((d->span >= 0 && t > d->span) || (d->span < 0 && t < d->span)))
+        t = d->span;
+    t %= 3600;
+    if (t < 0) t += 3600;
+    return t;
+}
+
+/* A HAND slot's angle in degrees. INHERIT is the hand chain in float, the exact
+ * expressions hand_angles has always evaluated (30 and 6 degrees per unit come out of
+ * span/10/value_max exactly), so a v4 dial's hands land on the same tenth. */
+static float drive_hand_deg(const clk_drive_t *d, const drive_now_t *n)
+{
+    if (d->src == CLK_SRC_NONE) return 0.0f;
+    if (d->cadence == CLK_CAD_INHERIT) {
+        const float secF = n->hand_sec;
+        const float minF = (clk_theme.second_railway && clk_theme.second_sweep)
+                               ? (float)n->ti->tm_min
+                               : (float)n->ti->tm_min + secF / 60.0f;
+        float units;
+        if (d->src == CLK_SRC_SECOND)      units = secF;
+        else if (d->src == CLK_SRC_MINUTE) units = minF;
+        else                               units = (float)(n->ti->tm_hour % 12) + minF / 60.0f;
+        return units * ((float)d->span / 10.0f / (float)d->value_max);
+    }
+    double u;
+    if (!drive_units(d, n, &u)) return 0.0f;
+    return (float)drive_travel(d, u) / 10.0f;
+}
+
+/* An AUX row's pose: tenths of a degree, or px on a slide. False when this orb has
+ * no input for its source. INHERIT is aux_value_1000 and its path, unchanged. */
+static bool drive_aux(const clk_aux_t *a, const drive_now_t *n, int32_t *out)
+{
+    const clk_drive_t d = {
+        .src = a->src, .path = a->kind, .cadence = CLK_CAD_INHERIT, .flags = a->flags,
+        .span = a->span, .zero = a->zero, .value_min = a->value_min, .value_max = a->value_max,
+    };
+    if (d.cadence == CLK_CAD_INHERIT) {
+        int64_t v1000;
+        if (!aux_value_1000(a, n->ti, n->t, n->frac, &v1000)) return false;
+        *out = MOTION_IS_SLIDE(a->kind) ? aux_offset_px(a, v1000) : aux_angle_10(a, v1000);
+        return true;
+    }
+    double u;
+    if (!drive_units(&d, n, &u)) return false;
+    *out = drive_travel(&d, u);
+    return true;
+}
+
 /* The box a pointer at its current pose covers, in whichever geometry its motion
  * uses. A slide's swept box is the displaced record at no angle, which gfx_swept_box
  * answers correctly given the displaced sprite — so one helper serves both and the
@@ -1599,8 +1754,13 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
         } else if (!a->spr.show) {
             a_new = AUX_HIDDEN;
         } else {
-            int64_t v1000;
-            if (!aux_value_1000(a, ti, t, frac, &v1000)) {
+            /* One call, one reading of the row's own motion: the angle a pointer
+             * turns through, or the pixels a bar slides. Reading a slide through
+             * the angle path would wrap its offset at 3600 tenths and park a reserve
+             * bar a third of the way across its own scale — a dial that lies about
+             * its battery while every number on the wire stays legal. */
+            const drive_now_t now = { .ti = ti, .t = t, .frac = frac };
+            if (!drive_aux(a, &now, &a_new)) {
                 a_new = INT32_MIN;
                 if (!(s_aux_logged & (1u << i))) {
                     s_aux_logged |= 1u << i;
@@ -1608,14 +1768,6 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
                                   "device — pointer not drawn", (uint32_t)i,
                              (unsigned)a->src);
                 }
-            } else {
-                /* One call, one reading of the row’s own motion: the angle a pointer
-                 * turns through, or the pixels a bar slides. Reading a slide through
-                 * the angle path would wrap its offset at 3600 tenths and park a reserve
-                 * bar a third of the way across its own scale — a dial that lies about
-                 * its battery while every number on the wire stays legal. */
-                a_new = MOTION_IS_SLIDE(a->kind) ? aux_offset_px(a, v1000)
-                                                 : aux_angle_10(a, v1000);
             }
         }
         /* C4's other half, unspent since the column landed: a needle parented to
@@ -1957,7 +2109,7 @@ static void compose_now(void)
     localtime_r(&t, &ti);
 
     float ang[5];
-    hand_angles(frac, ti.tm_hour, ti.tm_min, ti.tm_sec, ang);
+    hand_angles(frac, &ti, ang);
     apply_angles(ang);
 
     /* The complication pass: every window/strip re-reads its value from the

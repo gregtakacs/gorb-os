@@ -162,6 +162,39 @@
   const ROUND_MOON = { sphere: 1, graphic: 1, neon: 1 };
   const PLATES = { train: 'Movement default', classic: 'Warm gilt', anthracite: 'Anthracite graining', stripes: 'Geneva stripes', sandblast: 'Sandblasted', carbon: 'Carbon · woven', forged: 'Carbon · forged' };
   const tickTurn = (n) => (!n ? TURN.second : (t) => Math.floor((t.getSeconds() + t.getMilliseconds() / 1000) * n) / n / 60);
+  /* D41: a hand's motion -- the path its value travels and the cadence it keeps --
+   * read the way the dial reads it. driveUnits is clock_view.c's drive_units for the
+   * three time sources (the whole value plus as much of the next finer field as the
+   * cadence shows), and motionPose its drive_travel: rotate and the disc turn by
+   * value/domain, a retrograde fan stops at its span, a slide travels px. The bake
+   * writes the same numbers into the v5 row, so the preview and the glass agree. */
+  const MOTION_PATHS = { rotate: 'Rotate', retrograde: 'Retrograde fan', 'slide-x': 'Slide \u00b7 across', 'slide-y': 'Slide \u00b7 up/down', disc: 'Turning disc' };
+  const CADENCES = { inherit: 'Default', sweep: 'Sweep', step: 'Step', jump: 'Jump', 'stop-to-go': 'Stop-to-go' };
+  const DRIVE_DOM = { hour: ['hour12', 12], minute: ['minute', 60], second: ['second', 60] };
+  const motionOn = (m) => !!m && ((m.path && m.path !== 'rotate') || (m.cadence && m.cadence !== 'inherit'));
+  function driveUnits(kind, m, t) {
+    const h = t.getHours() % 12, mi = t.getMinutes(), s = t.getSeconds(), fr = t.getMilliseconds() / 1000;
+    const v = kind === 'hour' ? h : kind === 'minute' ? mi : s;
+    const f = kind === 'hour' ? (mi * 60 + s + fr) / 3600 : kind === 'minute' ? (s + fr) / 60 : fr;
+    switch (m.cadence) {
+      case 'step': { const n = Math.max(1, +m.steps | 0); return v + Math.floor(f * n) / n; }
+      case 'jump': return v;
+      case 'stop-to-go': return Math.min(60, ((v + f) * 600) / (+m.p || 585));
+      default: return v + f;
+    }
+  }
+  const SLIDE_TRAVEL = 280;
+  // the slide's span and start, px: from -travel/2 to +travel/2 about the arbour unless set
+  const slideGeom = (m) => { const tr = +m.travel || SLIDE_TRAVEL; return [m.from != null ? +m.from : -tr / 2, tr]; };
+  function motionPose(m, vmax, u) {
+    const q = Math.max(0, Math.min(1, u / vmax));
+    switch (m.path) {
+      case 'retrograde': return { a: rad(+m.start || 0) + rad(m.span != null ? +m.span : 180) * q };
+      case 'disc': return { a: rad(+m.start || 0) - (TAU * u) / vmax };
+      case 'slide-x': case 'slide-y': { const [f0, tr] = slideGeom(m), o = f0 + tr * q; return { a: 0, d: m.path === 'slide-x' ? [o, 0] : [0, o] }; }
+      default: return { a: (TAU * u) / vmax };
+    }
+  }
   const SHAPES = { circle: 'Circle', square: 'Square', hex: 'Hexagon', oct: 'Octagon', slot: 'Slot', arch: 'Arch' };
   const COMP_TYPES = { opening: 'Opening', subdial: 'Subdial', window: 'Window', moon: 'Moon phase', flare: 'Flare' };
   const FLARE_ICONS = { star: 'Star', spark: 'Spark', bolt: 'Bolt', crown: 'Crown', heart: 'Heart', shield: 'Shield', diamond: 'Diamond', cross: 'Cross', ring: 'Ring', chevron: 'Chevron', triangle: 'Triangle', flame: 'Flame', eye: 'Eye', chevL: 'Chevron left', chevR: 'Chevron right', plus: 'Plus (slim)', arrowL: 'Arrow left', arrowR: 'Arrow right', rect: 'Rectangle', pill: 'Pill', dot: 'Dot', datetext: 'Date (custom format)', text: 'Text logo', arctext: 'Curved text', image: 'Image (upload)' };
@@ -788,6 +821,27 @@
         { id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 103, rot: 0, size: 64, style: 'azure', scale: 'hours', open: 0 },
         { id: 'c2', type: 'subdial', host: 'dial', angle: 180, dist: 103, rot: 0, size: 64, style: 'enamel', scale: 'seconds', open: 0.64 },
         { id: 'c3', type: 'window', host: 'c1', angle: 180, dist: 32, rot: 0, size: 1, style: 'frame', shows: 'date', disc: 'auto' },
+      ] } },
+    // D41's two exercise dials: every path a hand can take, on faces built around them.
+    flux: { name: 'Flux', blurb: 'Retrograde hour & minute fans · sliding seconds bar · acid on forged carbon', hands: 'pencil', handFinish: 'steel', caseMetal: 'gunmetal', design: {
+      print: 'none', numerals: 'none', font: 'unbounded', surface: 'forged', color: 'black', aging: 0, stains: 0, dust: 0, handShade: 'flat', centre: { hour: 1, minute: 1, second: 1 },
+      hands: {
+        'centre-hour': { finish: 'lime', len: 1, wid: 1.4, motion: { path: 'retrograde', start: 210, span: 120, cadence: 'jump', accent: '#c6ff00' } },
+        'centre-minute': { finish: 'white', motion: { path: 'retrograde', start: 30, span: 120, cadence: 'sweep', accent: '#f2f2f2' } },
+        'centre-second': { finish: 'red', len: 0.12, wid: 3, motion: { path: 'slide-x', travel: 160, from: -70, cadence: 'step', steps: 1, accent: '#ff3b30' } },
+      },
+      comps: [
+        { id: 'c1', type: 'flare', host: 'dial', angle: 180, dist: 92, rot: 0, size: 7, style: 'print', icon: 'text', text: 'FLUX', font: 'unbounded', weight: 'bold', spacing: 0.4, color: '#c6ff00' },
+      ] } },
+    orbit: { name: 'Orbit', blurb: 'Three turning discs · wandering hour, jumping minute, stepping seconds · laser index', hands: 'baton', handFinish: 'magenta', caseMetal: 'gunmetal', design: {
+      print: 'none', numerals: 'none', font: 'orbitron', surface: 'guilloche', color: '#140a24', aging: 0, stains: 0, dust: 0, centre: { hour: 1, minute: 1, second: 1 },
+      hands: {
+        'centre-hour': { motion: { path: 'disc', start: 90, cadence: 'sweep', discBg: '#1c0d33', discInk: '#ffffff', accent: '#ff2bd6' } },
+        'centre-minute': { motion: { path: 'disc', start: 90, cadence: 'jump', discBg: '#120f1c', discInk: '#e9e4ff', accent: '#ff2bd6' } },
+        'centre-second': { motion: { path: 'disc', start: 90, cadence: 'step', steps: 1, discBg: '#0a0910', discInk: '#bdb6d6', accent: '#ff2bd6' } },
+      },
+      comps: [
+        { id: 'c1', type: 'flare', host: 'dial', angle: 0, dist: 0, rot: 0, size: 9, style: 'print', icon: 'text', text: 'ORBIT', font: 'orbitron', weight: 'bold', spacing: 0.5, color: '#ff2bd6' },
       ] } },
     perpetual: { name: 'Perpetual calendar', blurb: 'Day · date · month subdials · moon at 6', hands: 'baton', handFinish: 'gilt', design: {
       print: 'baton', centre: { hour: 1, minute: 1, second: 1 }, comps: [
@@ -2323,6 +2377,124 @@
     ox.setTransform(1, 0, 0, 1, 0, 0); ox.drawImage(c, 0, 0);
     return { c: out, px, py };
   }
+  /* D41's turning disc: the hand IS an annulus printed with its own scale, value 0 at
+   * 12 and counting clockwise, so turning it by start - value/domain brings the value
+   * under a fixed index at `start`. Labels stand upright at that index. */
+  const DISC_BAND = { hour: [104, 142], minute: [146, 182], second: [186, 218] };
+  function discSprite(kind, ri, ro, m, fin) {
+    const n = kind === 'hour' ? 12 : 60, pad = 2, c = cv(2 * ro + 2 * pad), x = c.getContext('2d'), o = ro + pad;
+    const bg = m.discBg || '#0d0d12', ink = m.discInk || '#f2f2f2', acc = m.accent || fin.m || '#ff2d55';
+    x.translate(o, o);
+    x.beginPath(); x.arc(0, 0, ro, 0, TAU); x.arc(0, 0, ri, TAU, 0, true); x.fillStyle = bg; x.fill();
+    x.lineWidth = 1.2; x.strokeStyle = acc; x.beginPath(); x.arc(0, 0, ro - 0.6, 0, TAU); x.stroke(); x.beginPath(); x.arc(0, 0, ri + 0.6, 0, TAU); x.stroke();
+    const band = ro - ri, idx = rad(+m.start || 0), fs = Math.max(8, Math.min(26, band * (kind === 'hour' ? 0.5 : 0.36)));
+    for (let i = 0; i < n; i++) {
+      const a = (TAU * i) / n, major = kind === 'hour' || i % 5 === 0;
+      x.save(); x.rotate(a);
+      x.fillStyle = major ? acc : ink; x.globalAlpha = major ? 1 : 0.55;
+      x.fillRect(-(major ? 1.1 : 0.6), -ro + 2, major ? 2.2 : 1.2, band * (major ? 0.22 : 0.14));
+      x.restore();
+      if (!major) continue;
+      const lbl = kind === 'hour' ? String(i || 12) : String(i).padStart(2, '0');
+      const rr = ri + band * 0.52, px = Math.sin(a) * rr, py = -Math.cos(a) * rr;
+      x.save(); x.translate(px, py); x.rotate(a - idx);
+      x.fillStyle = ink; x.font = '600 ' + fs.toFixed(1) + 'px ' + SANS; x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.fillText(lbl, 0, 0); x.restore();
+    }
+    return { c, px: o, py: o };
+  }
+  /* A hand's motion, applied: its turn (and a slide's offset) re-derived through the
+   * drive twin, its sprite swapped for a disc on the disc path. A hand with no motion
+   * keeps the turn buildHands gave it, so every older design draws as it did. */
+  function applyMotion(hd, hc, secT, design) {
+    const m = hc.motion, dom = DRIVE_DOM[hd.kind];
+    if (!motionOn(m) || !dom) return;
+    const vmax = dom[1], base = hd.turn, explicit = m.cadence && m.cadence !== 'inherit';
+    const units = explicit ? (t) => driveUnits(hd.kind, m, t)
+      : hd.kind === 'second' ? (t) => secT(t) * 60 : (t) => TURN[hd.kind](t) * vmax;
+    hd.motion = Object.assign({ path: 'rotate', cadence: 'inherit' }, m);
+    hd.turn = (t) => motionPose(hd.motion, vmax, units(t)).a / TAU;
+    if (m.path === 'slide-x' || m.path === 'slide-y') {
+      hd.slide = (t) => motionPose(hd.motion, vmax, units(t)).d;
+      hd.capR = 0; hd.rot = m.path === 'slide-y' ? Math.PI / 2 : 0;   // a vertical slide points across its track
+    }
+    if (m.path === 'disc') {
+      const b = DISC_BAND[hd.kind], k = +hc.len || 1;
+      const ri = (m.ri != null ? +m.ri : b[0]) * (hd.sub ? 0.3 : 1), ro = (m.ro != null ? +m.ro : b[1]) * (hd.sub ? 0.3 : 1) * k;
+      hd.sp = discSprite(hd.kind, ri, ro, m, hd.fin); hd.capR = 0; hd.art = null; hd.artRot = 0; hd.noShadow = true; hd.disc = { ri, ro };
+    }
+    void base; void design;
+  }
+  /* The scale a moving hand reads, printed by the hand itself so the two can never
+   * disagree: a retrograde fan gets its arc just inside its tip, a slide gets its
+   * track along the tip's line. Static ink, so it joins the dial plane the bake plates. */
+  function paintMotionPrint(x, hands, en) {
+    hands.forEach((hd) => {
+      const m = hd.motion, dom = DRIVE_DOM[hd.kind];
+      if (!m || !dom || m.scale === false || !(m.path === 'retrograde' || m.path === 'slide-x' || m.path === 'slide-y')) return;
+      const vmax = dom[1], ink = m.scaleInk || (en && en.ink) || '#e8e8e8', acc = m.accent || (hd.fin && hd.fin.m) || '#ff2d55';
+      const every = hd.kind === 'hour' ? 1 : 5, lab = hd.kind === 'hour' ? 1 : (m.path === 'retrograde' && Math.abs(+m.span || 180) < 200 ? 15 : 10);
+      const text = (v) => (hd.kind === 'hour' ? String(v % 12 || 12) : String(v));
+      const fs = hd.kind === 'hour' ? 15 : 12;
+      x.save(); x.lineCap = 'round';
+      x.font = '700 ' + fs + 'px ' + SANS; x.textAlign = 'center'; x.textBaseline = 'middle';
+      if (m.path === 'retrograde') {
+        const r = Math.max(30, (hd.len || 150) - 4), a0 = rad(+m.start || 0), sp = rad(m.span != null ? +m.span : 180);
+        const ca = (a) => a - Math.PI / 2;
+        x.strokeStyle = acc; x.lineWidth = 3; x.beginPath(); x.arc(hd.x, hd.y, r, ca(a0), ca(a0 + sp), sp < 0); x.stroke();
+        for (let v = 0; v <= vmax; v += hd.kind === 'hour' ? 1 : 1) {
+          const a = ca(a0 + (sp * v) / vmax), maj = v % every === 0, lbl = v % lab === 0;
+          if (!maj && hd.kind !== 'second' && hd.kind !== 'minute') continue;
+          const l = lbl ? 13 : maj ? 8 : 4;
+          x.strokeStyle = lbl ? acc : ink; x.lineWidth = lbl ? 2.4 : maj ? 1.6 : 0.8; x.globalAlpha = maj ? 1 : 0.5;
+          x.beginPath(); x.moveTo(hd.x + Math.cos(a) * r, hd.y + Math.sin(a) * r); x.lineTo(hd.x + Math.cos(a) * (r - l), hd.y + Math.sin(a) * (r - l)); x.stroke();
+          x.globalAlpha = 1;
+          if (lbl) { x.fillStyle = ink; x.fillText(text(v), hd.x + Math.cos(a) * (r - 24), hd.y + Math.sin(a) * (r - 24)); }
+        }
+      } else {
+        const [f0, tr] = slideGeom(m), horiz = m.path === 'slide-x', L0 = (hd.len || 60) + 8;
+        const P0 = (o, off) => (horiz ? [hd.x + o, hd.y - L0 - off] : [hd.x + L0 + off, hd.y + o]);
+        x.strokeStyle = acc; x.lineWidth = 3; x.beginPath(); x.moveTo(...P0(f0, 0)); x.lineTo(...P0(f0 + tr, 0)); x.stroke();
+        for (let v = 0; v <= vmax; v++) {
+          const o = f0 + (tr * v) / vmax, maj = v % every === 0, lbl = v % lab === 0;
+          if (!maj && hd.kind === 'hour') continue;
+          const l = lbl ? 13 : maj ? 8 : 4;
+          x.strokeStyle = lbl ? acc : ink; x.lineWidth = lbl ? 2.4 : maj ? 1.6 : 0.8; x.globalAlpha = maj ? 1 : 0.5;
+          x.beginPath(); x.moveTo(...P0(o, 0)); x.lineTo(...P0(o, l)); x.stroke(); x.globalAlpha = 1;
+          if (lbl) { x.fillStyle = ink; x.fillText(text(v), ...P0(o, 24)); }
+        }
+      }
+      x.restore();
+    });
+  }
+  /* The fixed index a disc is read against. It has to sit ABOVE the turning discs, and
+   * the crystal is the one plane the device stacks over every hand, so it rides there. */
+  function paintDiscIndex(x, hands) {
+    const ds = hands.filter((h) => h.disc);
+    if (!ds.length) return;
+    const byIdx = {};
+    ds.forEach((h) => { const k = (+h.motion.start || 0) + '@' + h.x.toFixed(1) + ',' + h.y.toFixed(1); (byIdx[k] = byIdx[k] || []).push(h); });
+    Object.values(byIdx).forEach((g) => {
+      const h0 = g[0], a = rad(+h0.motion.start || 0) - Math.PI / 2, acc = h0.motion.accent || '#ff2d55';
+      const r0 = Math.min(...g.map((h) => h.disc.ri)) - 4, r1 = Math.max(...g.map((h) => h.disc.ro)) + 4;
+      const ux = Math.cos(a), uy = Math.sin(a), nx = -uy, ny = ux, hw = Math.max(10, (r1 - r0) * 0.07);
+      x.save();
+      // a smoked lens across the bands, then the laser line and its two pips
+      x.fillStyle = 'rgba(255,255,255,0.07)'; x.strokeStyle = 'rgba(255,255,255,0.35)'; x.lineWidth = 1;
+      x.beginPath();
+      x.moveTo(h0.x + ux * r0 + nx * hw, h0.y + uy * r0 + ny * hw); x.lineTo(h0.x + ux * r1 + nx * hw, h0.y + uy * r1 + ny * hw);
+      x.lineTo(h0.x + ux * r1 - nx * hw, h0.y + uy * r1 - ny * hw); x.lineTo(h0.x + ux * r0 - nx * hw, h0.y + uy * r0 - ny * hw); x.closePath();
+      x.fill(); x.stroke();
+      x.shadowColor = acc; x.shadowBlur = 8; x.strokeStyle = acc; x.lineWidth = 2;
+      x.beginPath(); x.moveTo(h0.x + ux * r0, h0.y + uy * r0); x.lineTo(h0.x + ux * r1, h0.y + uy * r1); x.stroke();
+      x.fillStyle = acc;
+      [[r0, -1], [r1, 1]].forEach(([r, s]) => {
+        const bx = h0.x + ux * r, by = h0.y + uy * r;
+        x.beginPath(); x.moveTo(bx - ux * 9 * s + nx * 7, by - uy * 9 * s + ny * 7); x.lineTo(bx, by); x.lineTo(bx - ux * 9 * s - nx * 7, by - uy * 9 * s - ny * 7); x.closePath(); x.fill();
+      });
+      x.restore();
+    });
+  }
   // every hand the layout offers, in natural depth order (subdial hands under the centre stack).
   // The additional calendar pointer is listed only while it is the one the dial shows: a dial has
   // a single spare hand, so the hands list never carries four hidden rows to tick on and off.
@@ -2353,7 +2525,8 @@
       // the ink's own tip to land at len, the reach of the drawn hand of this role, so
       // the Length slider reads the same for an upload at any source resolution.
       const art = hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, { maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY, zoom: hc.zoom, fitTo: len, rot0: +hc.rot0 || 0, aimRad: s.rot || 0 }) : null;
-      all[s.id] = { id: s.id, kind, x: s.x, y: s.y, rot: s.rot, sp: art || handSprite(pickS(hc), sec ? 'second' : 'sub', len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn, capR: art ? 0 : Math.max(2.6, w * 1.2), fin, art: art || null, artRot: art ? rad(+hc.rot0 || 0) : 0 };
+      all[s.id] = { id: s.id, kind, x: s.x, y: s.y, rot: s.rot, sp: art || handSprite(pickS(hc), sec ? 'second' : 'sub', len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn, capR: art ? 0 : Math.max(2.6, w * 1.2), fin, art: art || null, artRot: art ? rad(+hc.rot0 || 0) : 0, len, sub: true };
+      applyMotion(all[s.id], hc, secT, design);
     });
     const dims = { hour: [0.66, 0.05], minute: [0.96, 0.038], second: [0.98, 0.012] };
     ['hour', 'minute', 'second'].forEach((k) => {
@@ -2361,7 +2534,8 @@
       const lk = +hc.len || 1, wk = +hc.wid || 1;
       const [l, wf] = dims[k], w = Math.max(k === 'second' ? 1.8 : 2.5, R * wf) * wk, fin = handFin(pickF(hc));
       const len = Math.min(216, R * l * lk), art = hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, { maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY, zoom: hc.zoom, fitTo: len, rot0: +hc.rot0 || 0 }) : null;
-      all[id] = { id, kind: k, x: C, y: C, rot: 0, sp: art || handSprite(pickS(hc), k === 'second' ? 'second' : k, len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn: k === 'second' ? secT : TURN[k], capR: art ? 0 : (k === 'second' && (hc.sec || design.secStyle) === 'flieger' ? 2.4 : R * 0.034 * Math.max(1, Math.sqrt(wk))), fin, art: art || null, artRot: art ? rad(+hc.rot0 || 0) : 0 };
+      all[id] = { id, kind: k, x: C, y: C, rot: 0, sp: art || handSprite(pickS(hc), k === 'second' ? 'second' : k, len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn: k === 'second' ? secT : TURN[k], capR: art ? 0 : (k === 'second' && (hc.sec || design.secStyle) === 'flieger' ? 2.4 : R * 0.034 * Math.max(1, Math.sqrt(wk))), fin, art: art || null, artRot: art ? rad(+hc.rot0 || 0) : 0, len };
+      applyMotion(all[id], hc, secT, design);
     });
     // The four calendar pointers share the centre arbour. Each reaches the ring that feeds
     // it: with a perimeter printed its tip lands on the ticks, without one it stops short
@@ -2404,6 +2578,8 @@
    * (an image need not have been drawn pointing at 12). ONE function, so the shadow
    * silhouette, the stage hit test, the alignment guide and the kit's
    * zeroRotationDeg can never disagree about where a hand points. */
+  // where the arbour stands this instant: its seat, plus a slide's travel (D41)
+  const handXY = (hd, date) => { if (!hd.slide || hd.freeze != null) return [hd.x, hd.y]; const d = hd.slide(date); return [hd.x + d[0], hd.y + d[1]]; };
   const handAngle = (hd, date) => (hd.freeze != null ? hd.freeze : hd.turn(date) * TAU) + (hd.rot || 0) + (hd.artRot || 0);
   // the standing offset that ships in the manifest, in degrees, so the firmware adds
   // the same facing the composer preview applies
@@ -2413,7 +2589,7 @@
   function handHit(hd, x, y, date, m) {
     if (!hd || !hd.sp) return false;
     const a = handAngle(hd, date), c = Math.cos(-a), s = Math.sin(-a);
-    const dx = x - hd.x, dy = y - hd.y, lx = dx * c - dy * s, ly = dx * s + dy * c;
+    const [hx, hy] = handXY(hd, date), dx = x - hx, dy = y - hy, lx = dx * c - dy * s, ly = dx * s + dy * c;
     const pad = m == null ? 2.5 : m;
     return lx >= -hd.sp.px - pad && lx <= hd.sp.c.width - hd.sp.px + pad
       && ly >= -hd.sp.py - pad && ly <= hd.sp.c.height - hd.sp.py + pad;
@@ -2453,9 +2629,10 @@
     const t = HT.c.getContext('2d');
     hands.forEach((hd) => {
       t.setTransform(1, 0, 0, 1, 0, 0); t.clearRect(0, 0, S, S);
-      t.translate(hd.x, hd.y); t.rotate(handAngle(hd, date)); t.drawImage(hd.sp.c, -hd.sp.px, -hd.sp.py);
+      const [hx, hy] = handXY(hd, date);
+      t.translate(hx, hy); t.rotate(handAngle(hd, date)); t.drawImage(hd.sp.c, -hd.sp.px, -hd.sp.py);
       const h = hd.h;
-      if (mv > 0.01) [[ax * 1.6 * h * dm, ay * 1.6 * h * dm, 1.4 * h * bm, Math.min(1, 0.5 * kk * om)], [ax * 0.4 * h * dm, (ay * 0.4 * h + 0.3 * h) * dm, 0.6 * h * bm, Math.min(1, 0.35 * om)]].forEach(([ox, oy, b, a]) => {
+      if (mv > 0.01 && !hd.noShadow) [[ax * 1.6 * h * dm, ay * 1.6 * h * dm, 1.4 * h * bm, Math.min(1, 0.5 * kk * om)], [ax * 0.4 * h * dm, (ay * 0.4 * h + 0.3 * h) * dm, 0.6 * h * bm, Math.min(1, 0.35 * om)]].forEach(([ox, oy, b, a]) => {
         ctx.save(); ctx.shadowColor = `rgba(0,0,0,${a})`; ctx.shadowBlur = b * sk; ctx.shadowOffsetX = (OFF + ox) * sk; ctx.shadowOffsetY = oy * sk;
         ctx.drawImage(HT.c, -OFF, 0); ctx.restore();
       });
@@ -2980,6 +3157,12 @@
     // opaque static1 cull. Built only when a dial-hosted disc exists; else fall back to
     // the holed dial (no apertures to seal).
     F.dialSealed = lay.dialHoles.some((h) => h.seal) ? buildDial(design, lay, en, pal, G, true, artClipR(o), dialK).canvas : bd.canvas;
+    // D41: the scales the moving hands read, through the dial's own lens
+    [F.dial].concat(F.dialSealed !== F.dial ? [F.dialSealed] : []).forEach((cn) => {
+      const x = cn.getContext('2d'); x.save();
+      if (dialK !== 1) { x.translate(C, C); x.scale(dialK, dialK); x.translate(-C, -C); }
+      setFace(fontKey); paintMotionPrint(x, F.hands, F.dialEn); x.restore();
+    });
     /* The plate-slot backdrop under "no case" is NOT baked into the plate: the base frames
      * are banked once per movement and the opening can move while they are cached, and the
      * one promise of the option is that the author's own image is never resampled. So the
@@ -3030,6 +3213,7 @@
     // hand at draw time — see drawCaps. One paint, on the one plane every export path and
     // the device already stack above the hands. Lower arbours' caps stay in the hand stack.
     drawCaps(F.glass.getContext('2d'), F.hands, SH);
+    paintDiscIndex(F.glass.getContext('2d'), F.hands);
     _.setTemp(o.temp || 2200, o.hue, o.hueSat);
     const hostOf = (c) => (c.host === 'dial' ? { x: C, y: C, r: DR } : lay.subs.find((s) => s.id === c.host));
     const enOf = (c) => (c.host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === c.host) || {}).en || en);
@@ -3445,5 +3629,5 @@
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,
-    drawAsset, artInDial, finishOver, finishTex, keyMask, KEY_TOL_DEF, FINISH_BLENDS, handSpriteAsset, artBox, caseOpenR, faceScale, dynScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handZeroDeg, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
+    drawAsset, artInDial, finishOver, finishTex, keyMask, KEY_TOL_DEF, FINISH_BLENDS, handSpriteAsset, artBox, caseOpenR, faceScale, dynScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handXY, handZeroDeg, MOTION_PATHS, CADENCES, DRIVE_DOM, motionOn, driveUnits, motionPose, slideGeom, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
 })();

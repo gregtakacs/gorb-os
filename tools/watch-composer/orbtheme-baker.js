@@ -2052,6 +2052,12 @@
           throw new Error(where + '.src: ' + src + ' is not a value a hand can turn by');
         if (!(kind >= 0 && kind < MOTION_NAMES.length))
           throw new Error(where + '.kind: ' + kind + ' is not a way for a hand to move');
+        if (motionIsSlide(kind))
+          throw new Error(where + '.kind: a hand layer turns, and ' + MOTION_NAMES[kind] +
+            ' is a pointer\u2019s path — bake a sliding hand as an AUX row');
+        if (!Math.trunc(rec.cadence | 0))
+          throw new Error(where + '.cadence: a hand that names its own source names when it moves ' +
+            'too — inherit is the slot\u2019s own mapping');
         var hspan = hd[0], hzero = hd[1], hvmin = hd[2], hvmax = hd[3];
         if (hvmax < 1) throw new Error(where + '.vmax: ' + hvmax + ' cannot divide a hand\u2019s ' +
           MOTION_NAMES[kind] + ' — its domain has to hold at least one unit');
@@ -3243,9 +3249,17 @@
       handOrd[h.slot] = Math.max(1, Math.min(63, dOrder3.indexOf(hid3) >= 0 ? rung3[hid3]
                                      : (h.order | 0) >= 1 ? (h.order | 0)
                                      : SUBDIAL_RUNG + ((o.aux || []).length) + k));
+      /* D41: the hand's own drive, when the composer gave it one — a cadence alone keeps
+       * the slot's mapping; a source brings its path and domain (a fan, a disc). */
+      var hd5 = h.drive || {}, hm5 = hd5.motion === undefined ? 0
+              : (typeof hd5.motion === 'string' ? MOTION_NAMES.indexOf(hd5.motion) : hd5.motion);
       row({ n: nid++, 'class': classId('hand'), slot: h.slot, x: h.x, y: h.y, w: h.w, h: h.h,
             pivot_x: h.pivot_x, pivot_y: h.pivot_y, order: handOrd[h.slot], alpha: h.alpha === undefined ? 255 : h.alpha,
-            n_frames: 1, flags: h.flags || 0, scale16: h.scale16 || 0 }, h, true);
+            n_frames: 1, flags: h.flags || 0, scale16: h.scale16 || 0,
+            src: hd5.src ? SOURCES.indexOf(String(hd5.src)) : 0, kind: hd5.src ? hm5 : 0,
+            span: hd5.src ? hd5.span | 0 : 0, zero: hd5.src ? hd5.zero | 0 : 0,
+            vmin: hd5.src ? hd5.vmin | 0 : 0, vmax: hd5.src ? hd5.vmax | 0 : 0,
+            cadence: hd5.cadence | 0, cad_arg: hd5.cad_arg | 0 }, h, true);
     }
     for (k = 0; k < shadows.length; k++) {
       var s = shadows[k];
@@ -3391,6 +3405,7 @@
             pivot_y: motionIsSlide(m5) ? ((a5.h | 0) >> 1) : (a5.pivot_y | 0),
             order: or5, alpha: 255, n_frames: 1,
             span: a5.span | 0, zero: a5.zero | 0, vmin: a5.vmin | 0, vmax: a5.vmax | 0,
+            cadence: a5.cadence | 0, cad_arg: a5.cad_arg | 0,
             flags: a5.hidden ? EF_HIDDEN : 0 }, a5.plane, true);
       /* The twin: the hand's drive words verbatim — the loader validates them like
        * any row's and the driver ignores them, taking the pose from the hand — and

@@ -1997,7 +1997,7 @@ class Component extends DCLogic {
     const plan = G.compPlan3(D.comps);
     // D34: and which subdial hands the dial TURNS instead of plating — the pointer
     // table, planned beside the comp table so one refusal list stays honest.
-    const pp = G.pointerPlan3(D.comps);
+    const pp = this.motionRows3(D, G.pointerPlan3(D.comps));
     // D34's authoring hint: a budget refusal over plates-driven hour or second rings is
     // this row wanting pointer drive — one hand plate, not a window row's tiles. The
     // hint rides the refusal sentence so the baker can see which lever moves.
@@ -2178,6 +2178,82 @@ class Component extends DCLogic {
    * shipped scalars (the Motion dropdown's second_sweep/tick_rate above all) and
    * the plate/carriage fps fold in at the tail, so re-picking a beat moves the
    * witness and the hub's precheck re-sends instead of calling it exact. */
+  /* D41: a hand's motion as the row columns the dial reads (orb_clock3.c's v5 drive).
+   * INHERIT on a path of its own is made explicit -- the seconds keep the Motion
+   * dropdown's beat, hour and minute sweep -- because a hand that names its own source
+   * must say when it moves. A retrograde fan's zero is written so the dial's clamp
+   * (absolute, at the span) can never catch it: a clockwise fan starting past 12
+   * carries its start as a negative angle. A disc turns the other way by a whole turn;
+   * a slide's zero is where its travel starts and its span how far it goes. */
+  /* The Hands tab's Motion block for one hand (D41). Only hour, minute and seconds
+   * hands move by a time value the drive twin reads; the rest show no block. */
+  setMotion(id, patch) { const hc = ((this.design().hands || {})[id]) || {}; this.setHand(id, { motion: { ...(hc.motion || {}), ...patch } }); }
+  motionProps(id, hc, kind, ready, mark) {
+    const E = WatchEngine;
+    if (!ready || !kind || !E.MOTION_PATHS) return { canMove: false };
+    const m = hc.motion || {}, path = m.path || 'rotate', cad = m.cadence || 'inherit';
+    const paths = Object.entries(E.MOTION_PATHS).map(([v, label]) => ({ v, label }));
+    const cads = Object.entries(E.CADENCES).filter(([v]) => v !== 'stop-to-go' || kind === 'second')
+      .map(([v, label]) => ({ v, label: v === 'inherit' ? (kind === 'second' ? 'Default (Motion tab)' : 'Default (sweep)') : label }));
+    const retro = path === 'retrograde', slide = path === 'slide-x' || path === 'slide-y', disc = path === 'disc';
+    const g = slide ? E.slideGeom(m) : null;
+    const note = (E.MOTION_PATHS[path] || path) + ' · ' + (E.CADENCES[cad] || cad) + (cad === 'step' ? ' ' + (+m.steps || 1) + '/unit' : '') +
+      (slide ? ' · bakes as a pointer row' : '');
+    const num = (f) => (e) => { const v = e.target.value === '' ? null : +e.target.value; this.setMotion(id, { [f]: v }); };
+    return {
+      canMove: true, motionNote: note,
+      pathOpts: mark(paths, path), cadOpts: mark(cads, cad),
+      onPath: (e) => this.setMotion(id, { path: e.target.value }),
+      onCad: (e) => this.setMotion(id, { cadence: e.target.value }),
+      showMotionNums: retro || slide || disc || cad === 'step',
+      aLabel: slide ? 'From' : 'Start', aVal: slide ? Math.round(g[0]) : (+m.start || 0),
+      aTip: slide ? 'Where the travel starts, px from the arbour along the slide' : retro ? 'Where the fan starts, degrees clockwise from 12' : disc ? 'The fixed index the disc is read against, degrees clockwise from 12' : 'Only a fan, a disc or a slide places a start',
+      onA: num(slide ? 'from' : 'start'),
+      bLabel: slide ? 'Travel' : 'Span', bVal: slide ? Math.round(g[1]) : retro ? (m.span != null ? +m.span : 180) : 0, bOff: !(retro || slide),
+      bTip: slide ? 'How far the slide travels across the whole value, px' : 'How far the fan sweeps across the whole value, degrees (negative runs anticlockwise)',
+      onB: num(slide ? 'travel' : 'span'),
+      steps: +m.steps || 1, stepsOff: cad !== 'step', onSteps: (e) => this.setMotion(id, { steps: Math.max(1, Math.min(8, +e.target.value | 0)) }),
+    };
+  }
+  driveCols3(kind, m) {
+    const E = WatchEngine, dom = E.DRIVE_DOM && E.DRIVE_DOM[kind];
+    if (!dom || !E.motionOn(m)) return null;
+    const path = m.path || 'rotate', vmax = dom[1], CAD = { inherit: 0, sweep: 1, step: 2, jump: 3, 'stop-to-go': 4 };
+    let cad = m.cadence || 'inherit', carg = 0;
+    if (cad === 'inherit' && path !== 'rotate') {
+      const t = this.cfg().tick;
+      if (kind === 'second' && t && t !== 'sweep') { cad = 'step'; carg = Math.max(1, +t | 0); } else cad = 'sweep';
+    } else if (cad === 'step') carg = Math.max(1, +m.steps | 0);
+    else if (cad === 'stop-to-go') carg = Math.round(+m.p || 585);
+    const out = { src: dom[0], vmin: 0, vmax, cadence: CAD[cad], cad_arg: carg, path };
+    const st = Math.round((((+m.start || 0) % 360) + 360) % 360 * 10);
+    if (path === 'retrograde') {
+      const sp = Math.round((m.span != null ? +m.span : 180) * 10);
+      Object.assign(out, { motion: 'retrograde', span: sp, zero: sp >= 0 ? (st > 0 ? st - 3600 : 0) : st });
+    } else if (path === 'disc') Object.assign(out, { motion: 'rotate', span: -3600, zero: st });
+    else if (path === 'slide-x' || path === 'slide-y') { const g = E.slideGeom(m); Object.assign(out, { motion: path, span: Math.round(g[1]), zero: Math.round(g[0]) }); }
+    else Object.assign(out, { motion: 'rotate', span: 3600, zero: 0 });
+    return out;
+  }
+  /* The pointer table, with D41 on it: a subdial pointer takes its hand's motion, and a
+   * CENTRE hand that slides joins the table as a pointer row -- the dial turns hand
+   * layers, and slides only pointers. Every motion row is lifted frozen at its rest
+   * pose (freeze), so its plate is the art at zero and the dial does all the moving. */
+  motionRows3(D, pp) {
+    const H = D.hands || {}, SK = { seconds: 'second', hours: 'hour' };
+    pp.rows.forEach((r) => {
+      const c = (D.comps || []).find((q) => String(q.id) === String(r.id)), kind = c ? (SK[c.scale === undefined ? 'seconds' : c.scale] || null) : null;
+      const dc = kind && this.driveCols3(kind, (H[r.id] || {}).motion);
+      if (dc) Object.assign(r, dc, { freeze: true });
+    });
+    ['hour', 'minute', 'second'].forEach((k) => {
+      const id = 'centre-' + k, m = (H[id] || {}).motion;
+      if (!m || !(m.path === 'slide-x' || m.path === 'slide-y') || !(D.centre || {})[k]) return;
+      const dc = this.driveCols3(k, m);
+      if (dc) pp.rows.push(Object.assign({ id, type: 'hand' }, dc, { freeze: true }));
+    });
+    return pp;
+  }
   serialContent3(G, nm, B, fps, pol, opts) {
     const te = new TextEncoder();
     const parts = [te.encode(nm + ':' + B + ':' + fps + ':' + pol.carrier + (pol.carriage ? '+carriage' : ''))];
@@ -2219,13 +2295,25 @@ class Component extends DCLogic {
     const ROLE = { 'centre-hour': 0, 'centre-minute': 1, 'centre-second': 2 };
     const hands = [], shadows = [];
     let oth = 0, sdx = 0, sdy = 0;
+    const Dm = this.design(), Hm = Dm.hands || {};
     for (const h of (fc.hands || [])) {
       if (ROLE[h.id] === undefined || !h.sp) continue;
+      const mo = (Hm[h.id] || {}).motion;
+      if (mo && (mo.path === 'slide-x' || mo.path === 'slide-y')) continue;   // a slide rides the pointer table
       const w = Math.round(h.sp.c.width), hh = Math.round(h.sp.c.height), px = Math.round(h.sp.px), py = Math.round(h.sp.py);
       const c = document.createElement('canvas'); c.width = w; c.height = hh;
       c.getContext('2d').drawImage(h.sp.c, 0, 0);
       oth += w * hh * 3;
-      hands.push({ slot: ROLE[h.id], rgba: pixOf(c), w, h: hh, x: Math.round(h.x) - px, y: Math.round(h.y) - py, pivot_x: px, pivot_y: py });
+      const hrow = { slot: ROLE[h.id], rgba: pixOf(c), w, h: hh, x: Math.round(h.x) - px, y: Math.round(h.y) - py, pivot_x: px, pivot_y: py };
+      /* D41: the hand's own drive. A rotation that only changes its cadence keeps the
+       * slot's mapping (no source named); a fan or a disc names its source and path. */
+      const dc = this.driveCols3(h.kind, mo);
+      if (dc) {
+        hrow.drive = dc.path === 'rotate' ? { cadence: dc.cadence, cad_arg: dc.cad_arg }
+          : { src: dc.src, motion: dc.motion, span: dc.span, zero: dc.zero, vmin: dc.vmin, vmax: dc.vmax, cadence: dc.cadence, cad_arg: dc.cad_arg };
+      }
+      hands.push(hrow);
+      if (h.noShadow) continue;   // a disc casts nothing the device could turn with it
       /* Every seated hand casts, shadowed and unshadowed bakes being two looks
        * the author should never have to leave for a FORMAT 2 kit. The mask is
        * the same padded black blur the kit export ships (pad, blur/2, alpha),
@@ -2337,7 +2425,14 @@ class Component extends DCLogic {
     // term, so re-picking the beat moves the witness and the send is no longer a
     // silent no-op (the bugfix-batch §37 finding).
     const _mo = this.cfg().tick;
-    if (_mo && _mo !== 'sweep')
+    /* D41: a seconds hand that names its own cadence names the tempo too -- the dial
+     * refuses a seconds row whose rhythm disagrees with the scheduler's. */
+    const _sd = this.driveCols3('second', (Hm['centre-second'] || {}).motion);
+    if (_sd && _sd.cadence) {
+      opts.scalars = Object.assign(opts.scalars || {}, _sd.cadence === 1 || _sd.cadence === 4
+        ? { second_sweep: 1, tick_rate: Math.max(2, Math.min(255, this.devFps() | 0)) }
+        : { second_sweep: 0, tick_rate: _sd.cadence === 2 ? _sd.cad_arg : 1 });
+    } else if (_mo && _mo !== 'sweep')
       opts.scalars = Object.assign(opts.scalars || {}, { second_sweep: 0, tick_rate: Math.max(1, Math.min(255, +_mo | 0)) });
     else if (pol.carrier === 'still' && !pol.carriage)
       opts.scalars = Object.assign(opts.scalars || {}, { second_sweep: 1, tick_rate: Math.max(1, Math.min(255, this.devFps() | 0)) });
@@ -2792,8 +2887,15 @@ class Component extends DCLogic {
         : r.src === 'minute' ? new Date(2026, 0, 1, 0, r.vmin, 0)
         : (r.src === 'hour12' || r.src === 'hour24') ? new Date(2026, 0, 1, r.vmin, 0, 0) : null;
       if (!pose) return { refuse: 'the pointer \u201c' + r.id + '\u201d reads source \u201c' + r.src + '\u201d: the bake can pose a hand at zero for second, minute and the two hour rings and for nothing else' };
-      const hand = pixOf(this.frameCanvas(0, { glass: 1, outer: 1 }, pose, [String(r.id)], null, 1));   // no cast shadow: the twin carries it
-      const bare = pixOf(this.frameCanvas(0, { hands: 1, glass: 1, outer: 1 }, pose, [String(r.id)]));
+      // D41: a motion row is lifted at its rest pose -- no turn, no slide -- so the
+      // plate is the art at zero and the dial alone applies the drive
+      const fz = r.freeze ? (this.face().hands || []).find((h) => String(h.id) === String(r.id)) : null;
+      if (fz) fz.freeze = 0;
+      let hand, bare;
+      try {
+        hand = pixOf(this.frameCanvas(0, { glass: 1, outer: 1 }, pose, [String(r.id)], null, 1));   // no cast shadow: the twin carries it
+        bare = pixOf(this.frameCanvas(0, { hands: 1, glass: 1, outer: 1 }, pose, [String(r.id)]));
+      } finally { if (fz) delete fz.freeze; }
       let bx = W, by = W, bx2 = -1, by2 = -1;
       for (let p = 0, i = 0; p < PANEL; p++, i += 4) {
         if (hand[i] !== bare[i] || hand[i + 1] !== bare[i + 1] || hand[i + 2] !== bare[i + 2]) {
@@ -2803,7 +2905,7 @@ class Component extends DCLogic {
         }
       }
       if (bx2 < 0) return { refuse: 'the pointer \u201c' + r.id + '\u201d draws no hand: that subdial prints no hand for the bake to lift off the plate and turn' };
-      const g = this.face().outline(r.id);                     // the layout centre that hand turns about
+      const g = this.face().outline(r.id) || (String(r.id).indexOf('centre-') === 0 ? { x: 233, y: 233 } : null);   // the layout centre that hand turns about
       if (!g) return { refuse: 'the pointer \u201c' + r.id + '\u201d has no layout centre on this dial' };
       /* Layout space is not device space. frameCanvas composes through the face's
        * own lenses -- the case inset and the no-case ease (dynK) -- so the ink this
@@ -2816,8 +2918,11 @@ class Component extends DCLogic {
        * so the studio's dashed ring and the shipped pivot row cannot disagree. */
       const kP = (this.face().inset || 1) * (this.face().dynK || 1);
       const gx = Math.round(233 + (g.x - 233) * kP), gy = Math.round(233 + (g.y - 233) * kP);
-      if (gx < bx) bx = gx; if (gx > bx2) bx2 = gx;
-      if (gy < by) by = gy; if (gy > by2) by2 = gy;
+      const slides = r.motion === 'slide-x' || r.motion === 'slide-y';   // a slide has no pivot to keep in its box
+      if (!slides) {
+        if (gx < bx) bx = gx; if (gx > bx2) bx2 = gx;
+        if (gy < by) by = gy; if (gy > by2) by2 = gy;
+      }
       const w = bx2 - bx + 1, h = by2 - by + 1;
       // Diff-alpha, the comp pass's own rule: a texel the hand does not change enters
       // transparent, so the pointer paints over the dial it rides and not as a card of it.
@@ -2840,6 +2945,7 @@ class Component extends DCLogic {
       }
       auxB += w * h * 3;
       const row = { slot: ri, id: String(r.id), src: r.src, motion: r.motion, span: r.span, zero: r.zero, vmin: r.vmin, vmax: r.vmax,
+                    cadence: r.cadence | 0, cad_arg: r.cad_arg | 0,
                     x: bx, y: by, w, h, pivot_x: gx - bx, pivot_y: gy - by, plane: { rgba: rgba, w: w, h: h } };
       /* The pointer's own cast shadow, down the §25.2 twin the centred hands take:
        * the plate carries ink only, and the shadow is a second row — a padded black
@@ -3553,6 +3659,7 @@ class Component extends DCLogic {
           notSec: !secHand,
           secOpts: mark([{ v: 'auto', label: 'Seconds · default (' + ((E && E.SEC_STYLES[D.secStyle || 'classic']) || '') + ')' }, ...(ready ? opt(E.SEC_STYLES) : [])], hc.sec || 'auto'),
           onSec: (e) => this.setHand(id, { sec: e.target.value }),
+          ...this.motionProps(id, hc, isC ? k : ({ seconds: 'second', hours: 'hour' })[(D.comps.find((c) => c.id === id) || {}).scale || ''] || null, ready, mark),
           lumeOpts: mark([{ v: 'auto', label: 'Lume · default (' + (D.handLume && D.handLume !== 'none' ? 'on' : 'none') + ')' }, { v: 'none', label: 'No lume' }, { v: '#cfe8b0', label: 'Lume · green' }, { v: '#e8d6a0', label: 'Lume · old radium' }, { v: '#9fd8ff', label: 'Lume · blue' }, { v: '#f4f1e6', label: 'Lume · white' }, { v: '#ff9a3c', label: 'Lume · orange' }, { v: '#ff7bd5', label: 'Lume · pink' }], hc.lume || 'auto'),
           onLume: (e) => this.setHand(id, { lume: e.target.value }),
           shadeOpts: mark([{ v: 'auto', label: 'Shading · default (' + (D.handShade === 'flat' ? 'flat' : '3D') + ')' }, { v: '3d', label: 'Shading · 3D' }, { v: 'flat', label: 'Shading · flat' }], hc.shade || 'auto'),

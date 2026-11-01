@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>probe-motion</title>
+<style>
+  body { background: #0b0a09; margin: 0; padding: 14px; font: 500 12px 'IBM Plex Mono', ui-monospace, monospace; color: #b5ab97; }
+  #rows { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; margin-top: 12px; }
+  figure { margin: 0; }
+  figcaption { padding: 5px 2px 0; font-size: 11px; color: #8d8472; }
+  canvas { border-radius: 50%; display: block; }
+</style>
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<div id="note">booting…</div>
+<div id="rows"></div>
+<script>
+// D41's two exercise presets, posed at several instants so every path and cadence shows:
+// Flux (retrograde hour and minute fans, a sliding seconds bar) and Orbit (three turning
+// discs read against a fixed index). Judging them is a visual call; this is to be looked at.
+(function () {
+  const E = window.WatchEngine;
+  const OPTS = (P) => ({ train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'steel', glassStyle: 'domed',
+    hands: P.hands, handFinish: P.handFinish, design: E.canonDesign(JSON.parse(JSON.stringify(P.design))), tick: 'sweep', temp: 4600, glow: 1 });
+  const shot = (key, pose, label) => {
+    const P = E.PRESETS[key], o = OPTS(P), mv = E.movement(o), gt = mv.render(0).gt, f = E.face(o);
+    const c = document.createElement('canvas'); c.width = c.height = 466;
+    E.compose(c.getContext('2d'), mv, gt, f, pose, {});
+    const fg = document.createElement('figure'), g = document.createElement('figcaption');
+    g.textContent = P.name + ' · ' + label; fg.appendChild(c); fg.appendChild(g);
+    document.getElementById('rows').appendChild(fg);
+  };
+  try {
+    [[10, 9, 36], [1, 0, 0], [6, 30, 15], [11, 59, 55]].forEach(([h, m, s]) => {
+      const t = new Date(2026, 0, 15, h, m, s, 400), lab = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+      shot('flux', t, lab); shot('orbit', t, lab);
+    });
+    document.getElementById('note').textContent = 'done';
+  } catch (e) { document.getElementById('note').textContent = 'ERROR ' + e.message + ' ' + e.stack; }
+})();
+</script>

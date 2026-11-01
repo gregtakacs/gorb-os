@@ -1,0 +1,112 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>bake3-selftest</title>
+<body><pre id="out">booting…</pre>
+<!-- Does the browser bake a FORMAT 3 clock section out of REAL canvas pixels, and which
+     designs may it bake at all? headless-bundle3.test.js answers the byte question with
+     synthetic planes; this answers the two pixel questions D33 actually owes:
+
+       1. orb_clock3.c gives a FORMAT 3 clock ONE static plate keyframe (bg_frames is
+          forced to 0 and the gif block is derived from one frame). A composer dial whose
+          movement animates therefore CANNOT be baked without lying about it, so the
+          button's refusal surface has to be measured preset by preset, not assumed.
+       2. a plate folded from a real Chrome canvas has to survive toBlob -> inflate ->
+          rgb565 -> the C projection, which no node stub can show.
+
+     The last line is `RESULT: PASS` or `RESULT: FAIL — <why>`. A line beginning `B64:`
+     carries a whole baked bundle so tools/verify_js_bake.py can be pointed at what the
+     browser actually produced. Run it as the other _selftest pages are run:
+
+       chrome --headless=new --disable-gpu --no-sandbox --virtual-time-budget=180000 \
+         --dump-dom 'file://<win-path>/_selftest/bake3-test.html'
+-->
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<script>window.React = { createRef: () => ({ current: null }) };</script>
+<script src="../orbtheme-baker.js"></script>
+<script src="component.js"></script>
+<script>
+(function () {
+  const out = document.getElementById('out'), L = [];
+  const say = (s) => { L.push(s); out.textContent = L.join('\n'); };
+  const E = window.WatchEngine, G = window.GorbBake;
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  let fails = 0;
+  const ok = (n, c, x) => { say((c ? 'PASS ' : 'FAIL ') + n + (x !== undefined ? '  [' + x + ']' : '')); if (!c) fails++; };
+  const cv = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h || w; return c; };
+  const pix = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer);
+
+  // The plate the compiled dial reads: the whole panel, hands and crystal left off, every
+  // texel opaque because compose() grounds it in black. Read off a live canvas, so the
+  // bytes are the ones a bake would spend rather than a stand-in for them.
+  const platePlane = (c) => { const p = pix(c); return { rgba: p, w: c.width, h: c.height, x: 0, y: 0 }; };
+  const ROLE = { 'centre-hour': 0, 'centre-minute': 1, 'centre-second': 2 };
+  // A hand sprite at rest. clk_sprite_t carries no rotation-offset field and clock_view
+  // pushes ang[0..2] from hand_angles() measured at 12 o'clock, so a sprite whose art does
+  // not ALREADY point up cannot enter a FORMAT 3 clock section at all: the .h's
+  // zeroRotationDeg has no column to ride. Such a design is refused, not baked flat.
+  const handPlane = (h, slot) => {
+    const sp = h.sp, c = cv(sp.c.width, sp.c.height);
+    c.getContext('2d').drawImage(sp.c, 0, 0);
+    const px = Math.round(sp.px), py = Math.round(sp.py), p = platePlane(c);
+    p.x = Math.round(h.x) - px; p.y = Math.round(h.y) - py;
+    p.pivot_x = px; p.pivot_y = py; p.slot = slot;
+    return p;
+  };
+  const still = (M, gt, F, only) => { const c = cv(466); E.compose(c.getContext('2d'), M, gt, F, E.previewDate(), { hands: 1, glass: 1, outer: 1 }, only); return c; };
+  // The export's own filter: static comps ride the plate, planned rows do not.
+  const onlyBaseOf = (d) => {
+    const live = G.compPlan3(d.comps).rows.map((r) => r.id);
+    return (d.comps || []).filter((c) => live.indexOf(String(c.id)) < 0 && c.type !== 'opening'
+      && !(c.type === 'flare' && c.icon === 'datetext')).map((c) => String(c.id));
+  };
+  /* The dials are built by the component itself, mounted and settled the way the app builds
+   * them, not by calling face()/movement() on a hand-assembled option object. Two reasons,
+   * both of which bit the first draft of this page: opts() leaves `frames` out on request and
+   * movement() then divides by it inside the balance jewel's gradient, and the train angle the
+   * plate is lit at only exists once the render loop has settled. Anything less than a mount
+   * bakes a dial the composer never shows. */
+  const IT = new (window.COMP_CLASS(DCLogic))({});
+  IT.forceUpdate = () => { };
+  IT.state.playing = false; IT.state.hidden = {}; IT.state.tab = 'export';
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const settle = async () => {
+    for (let i = 0; i < 400; i++) {
+      IT.componentDidUpdate();
+      if (!IT.rendering && IT._mk === IT.mvKey() && IT.gt.length === IT.B && IT.gt[0]) return true;
+      await wait(40);
+    }
+    return false;
+  };
+  const mount = async (id) => {
+    const P = E.PRESETS[id];
+    IT.state.dial = id; IT.faces = {}; IT.base = null; IT.gt = []; IT.buildId = (IT.buildId || 0) + 1;
+    IT.state.designs = {}; IT.state.designs[id] = E.canonDesign(JSON.parse(JSON.stringify(P.design)));
+    IT.state.hands = 'auto'; IT.state.handFinish = 'auto';
+    IT.buildMovement();
+    if (!await settle()) throw new Error(id + ' never settled (rendering=' + IT.rendering + ' gt=' + IT.gt.length + ' B=' + IT.B + ')');
+    return { F: IT.face(id), M: IT.base, gt: IT.gt, B: IT.B, fps: IT.F, d: IT.state.designs[id] };
+  };
+
+  async function main() {
+    const ids = ['flux', 'orbit'];
+    IT.state.dial = ids[0]; IT.state.designs = {};
+    await IT.componentDidMount();
+    for (const id of ids) {
+      await mount(id);
+      let got = null;
+      IT.download = (blob, name) => { got = { blob, name }; };
+      await IT.exportTheme3({});
+      say('STATUS ' + id + ' ' + IT.state.status);
+      if (!got) { say('NOFILE ' + id); continue; }
+      const b = new Uint8Array(await got.blob.arrayBuffer());
+      let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+      say('FILE ' + id + ' ' + got.name + ' ' + b.length);
+      const pre = document.createElement('pre'); pre.id = 'b64-' + id; pre.textContent = btoa(s); document.body.appendChild(pre);
+    }
+    say('DONE');
+  }
+  main().catch((e) => say('ERROR ' + e.message + '\n' + e.stack));
+})();
+</script>

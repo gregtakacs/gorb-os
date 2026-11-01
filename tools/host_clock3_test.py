@@ -2121,6 +2121,8 @@ def d41_battery(exe, base):
         ("a path with no source", hand[2], {W_KIND: ts.MOTION_RETROGRADE}, "names a path and no source"),
         ("a driven hand with no domain", hand[0], {W_VMAX: 0}, "a domain to divide"),
         ("a hand driven by text", hand[0], {W_SRC: ts.SOURCES.index("text")}, "not a value a hand"),
+        ("a hand that slides", hand[0], {W_KIND: ts.MOTION_SLIDE_X, W_SPAN: 200}, "a pointer's path"),
+        ("a driven hand with no cadence", hand[0], {W_CAD: 0}, "and no cadence"),
         ("stop-to-go with a creeping minute", None, None, "does not jump"),
         # a sweeping dial with a seconds hand that steps at the dial's own rate (or a
         # stepping dial with a sweep): only the sweep/step mismatch is wrong
@@ -2203,6 +2205,8 @@ D41_MUTANTS = (
      "a seconds hand off the tempo"),
     ("the v4 hand drive", "if (!motion && e.cls == CLS_HAND && (e.kind || e.src))", "if (0)",
      "v4 hand"),
+    ("the hand slide", "            if (MOTION_IS_SLIDE(e.kind))\n                return reject(\"a hand at slot %u slides", "            if (0)\n                return reject(\"a hand at slot %u slides", "a hand that slides"),
+    ("the driven hand's cadence", "            if (!e.cadence)\n", "            if (0)\n", "a driven hand with no cadence"),
 )
 
 

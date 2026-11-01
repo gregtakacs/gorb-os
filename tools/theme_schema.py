@@ -965,6 +965,12 @@ def check_element(rec, where="elem"):
             if not 0 <= kind < len(MOTION_NAMES):
                 raise ValueError("%s.kind: %d is not a way for a hand to move (%s, 0..%d)"
                                  % (where, kind, "/".join(MOTION_NAMES), len(MOTION_NAMES) - 1))
+            if kind in MOTION_SLIDES:
+                raise ValueError("%s.kind: a hand layer turns, and %s is a pointer's path — "
+                                 "bake a sliding hand as an AUX row" % (where, MOTION_NAMES[kind]))
+            if not int(rec.get("cadence", 0)):
+                raise ValueError("%s.cadence: a hand that names its own source names when it "
+                                 "moves too — inherit is the slot's own mapping" % where)
             vmax, vmin, span, zero = (int(rec["vmax"]), int(rec["vmin"]),
                                       int(rec["span"]), int(rec["zero"]))
             if vmax < 1:

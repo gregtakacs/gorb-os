@@ -894,6 +894,12 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
             if (e.kind > MOTION_LAST)
                 return reject("a hand at slot %u moves as motion %u: the dial knows %u",
                               (unsigned)i, (unsigned)e.kind, (unsigned)(MOTION_LAST + 1));
+            if (MOTION_IS_SLIDE(e.kind))
+                return reject("a hand at slot %u slides: a hand layer turns, and a slide is a "
+                              "pointer's path", (unsigned)i);
+            if (!e.cadence)
+                return reject("a hand at slot %u names its own source and no cadence: inherit "
+                              "is the slot's own mapping", (unsigned)i);
             if (!e.vmax || e.vmin > e.vmax || !e.span)
                 return reject("a hand at slot %u with domain %u..%u and span %d: a driven "
                               "hand needs a domain to divide and somewhere to go",

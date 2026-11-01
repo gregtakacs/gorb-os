@@ -21,7 +21,7 @@ replaces, and the slices. Read it before touching `hand_angles`,
 `aux_value_1000` or `aux_angle_10`, FORMAT 3's element columns, or the
 composer's Hands and Comps tabs.
 
-**Status: RULED (owner, 2026-10-30, generalized 2026-10-31). G1 and G2 built 2026-11-01 (G2 without AUX depth, ease or bank cadences — see §4); G3–G5 not built.**
+**Status: RULED (owner, 2026-10-30, generalized 2026-10-31). G1, G2 and G3 built 2026-11-01 (G2 without AUX depth, ease or bank cadences — see §4; G3 as §5.1 records); G4–G5 not built.**
 
 | Parameter | Ruled value |
 |---|---|
@@ -251,6 +251,46 @@ cut-out layer costs per frame.
 - **Presets.** The station preset becomes a jumping minute plus a stop-to-go
   second. Every other preset keeps `inherit`, so its renders do not move.
 
+### 5.1 What G3 built (2026-11-01)
+
+**The model in the design.** `design.hands[id].motion = { path, cadence, steps,
+start, span, from, travel, accent, discBg, discInk }`. Paths: `rotate`,
+`retrograde` (a fan from `start` over `span` degrees), `slide-x` / `slide-y` (from
+`from` over `travel` px along the axis) and `disc` (D41's "dial mode": the hand is an
+annulus printed with its own scale, turned so the value sits under a fixed index at
+`start`). Cadences: `inherit`, `sweep`, `step` *N*, `jump`, `stop-to-go` (seconds
+only).
+
+**The twin.** `watch-engine.js` `driveUnits` / `motionPose` are clock_view.c's
+`drive_units` / `drive_travel` for the three time sources. `headless-motion.test.js`
+holds them to `host_drive_test.py`'s hand-worked vectors, and holds the bake's
+encoding to the firmware's arithmetic along a whole fan and a whole disc.
+
+**What the hands print.** A fan prints its arc and labels just inside its tip; a
+slide prints its track along the tip's line (both into the dial plane). A disc's
+fixed index (a smoked lens with a laser line) rides the crystal, the one plane above
+every hand.
+
+**The bake.**
+- A rotation that only changes cadence keeps the slot's mapping (no source).
+- A fan or a disc names its source and path on the HAND row.
+- A fan's `zero` is written as a negative angle when it starts past 12, so the
+  dial's absolute retrograde clamp (pinned by `host_comp_math_test.py`) never fires.
+- A disc is a rotation of span −3600 from its index.
+- **A sliding centre hand bakes as a pointer (AUX) row.** The dial turns hand
+  layers and slides only pointers, so all three doors now refuse a HAND row with a
+  slide path, and a HAND row that names its own source without a cadence.
+- Motion rows are lifted at their rest pose (the hand's `freeze`), so the plate is
+  the art at zero and the dial applies the whole drive.
+- A seconds hand with its own cadence sets `second_sweep` / `tick_rate`, which
+  §2.2 requires to agree.
+
+**The presets.** *Flux*: retrograde hour (jump) and minute (sweep) fans and a
+sliding seconds bar on forged carbon. *Orbit*: three concentric discs (wandering
+hour, jumping minute, stepping seconds) read against a laser index at 3 o'clock.
+Both bake at v5 from the composer and pass the shipped C projection
+(`probe-bake-motion.html`); `probe-motion.html` poses them for the eye.
+
 ## 6. Why this pays off
 
 1. **One vocabulary.** A retrograde hour, a jump hour, a sweeping date and a
@@ -271,7 +311,7 @@ cut-out layer costs per frame.
 |---|---|---|
 | **G1** ✔ | §3's drive function: `hand_angles` and the AUX path become one, with HAND slots as pre-filled rows. No format change | the host test samples a day of times and proves every v4 dial's angles identical before and after — **DONE 2026-11-01**: `tools/host_drive_test.py`, a day at 12 fps under all 40 v4 hand-word combinations (sweep × railway × tick_rate 0/1/2/4/8 × delta-bank beat), bit-identical to the pre-G1 `hand_angles`; eight v4 pointers identical to `aux_value_1000`; the new cadences pinned by hand-worked vectors; 14 mutants caught |
 | **G2** ✔ (part) | v5: the three columns, drive columns on HAND rows, depth on AUX rows, §2.2's refusals. Mirror, reader and baker move together | host suites green, one mutant caught per new refusal — **DONE 2026-11-01** except AUX depth, ease and bank cadences (§4, "What G2 left"): `host_clock3_test.py`'s D41 battery (13 refusals at both ends, 6 mutants), `host_drive_test.py` (17 mutants), `headless-bundle3` (11 D41 checks), the hub's container reader takes v5 |
-| **G3** | Composer: per-hand and per-pointer Source / Path / Cadence / Ease / depth, the JS drive twin, the station preset | the preview-versus-reader angle check; `_selftest` green |
+| **G3** ✔ (part) | Composer: per-hand and per-pointer Source / Path / Cadence / Ease / depth, the JS drive twin, the station preset | the preview-versus-reader angle check; `_selftest` green — **DONE 2026-11-01** as §5.1 records: path and cadence per hand (ease and depth wait on G2's refusals), the JS twin, the Flux and Orbit presets; the station preset is not re-cut yet |
 | **G4** | Bench: stop-to-go plus a jumping minute, a retrograde hour's flyback, a disc under a cut-out layer, settle cost | rests and releases on the wall minute; frame cost recorded here |
 | **G5** | Step sounds, landed with D39's S6 | the clunk lands on the jump's frame |
 

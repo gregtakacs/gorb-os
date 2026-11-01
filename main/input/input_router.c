@@ -24,6 +24,7 @@
 #include "orb_svc.h"         /* orb_svc_note_clean_reboot(): that restart is not a crash */
 #include "orb_sd.h"          /* orb_sd_lock_idle_ms(): the stall probe's card excuse */
 #include "display.h"        /* display_bench_snapshot(): the M1 switch probe's frame counters */
+#include "orb_theme.h"      /* orb_theme_glass_held(): a store owns the glass until its reboot */
 #include "lvgl.h"
 
 static const char *TAG = "input";
@@ -239,6 +240,14 @@ static void shell_return_forget(void) { s_before_shell[0] = '\0'; }
 static esp_err_t set_screen(const orb_app_t *app, bool load)
 {
     if (!app) return ESP_ERR_INVALID_ARG;
+    /* A theme store holds the glass from its park to its reboot. Past the park the
+     * bank every theme-drawn screen reads is unmapped, so loading one renders from
+     * memory that is gone ("Cache disabled but cached memory region accessed"). Only
+     * home, the screen the store parked on, may stand. */
+    if (app != orb_app_home() && orb_theme_glass_held()) {
+        ESP_LOGW(TAG, "switch to %s refused: a theme store holds the glass", screen_name(app));
+        return ESP_ERR_INVALID_STATE;
+    }
     const orb_app_t *previous = s_current;
     s_current = app;
 

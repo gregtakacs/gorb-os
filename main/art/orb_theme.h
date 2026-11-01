@@ -226,6 +226,10 @@ uint32_t orb_theme_refill_bytes(void);
  *  clock_view's bounce refuses to wake on it. False until a store parks, and
  *  false again only on the next boot. */
 bool orb_theme_store_torn(void);
+/* True from the moment a store parks the dial until the reboot that ends it: the
+ * router refuses every switch but the one to home, since any other screen may draw
+ * from the bank the store is unmapping. */
+bool orb_theme_glass_held(void);
 
 /** The last streaming bundle store (P6.4): milliseconds of the fused card-to-slot
  *  pass and the bytes of art it moved. Both 0 until a bundle installs. The page

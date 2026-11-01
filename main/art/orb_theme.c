@@ -1190,6 +1190,12 @@ orb_asset_ans_t orb_theme_preview_read(const char *handle,
  * dial — and a hidden screen is a screen LVGL never re-renders. The wait
  * outlives any tick already in flight. */
 static volatile bool s_slot_torn;        /* set once the unmap is behind us */
+/* Set when the store's park lands, and never cleared: the unmap follows at once and
+ * every path past it ends in the reboot. From here the router may hand the glass to
+ * nothing but home (orb_theme_glass_held), because loading any other screen renders
+ * from a bank that is about to be, or already is, unmapped. A /api/v1/screen request
+ * or a knob turn during a store did exactly that on 2026-11-01 (bench, orb-B). */
+static volatile bool s_glass_held;
 
 /* ---- the upload's own park (the copy-to-card frames on the glass) ---------
  *
@@ -1282,10 +1288,13 @@ static bool store_park_dial(const orb_app_t *was, uint32_t total, const char *st
         if (was) input_router_request(was);
         return false;
     }
+    s_glass_held = true;
     orb_boot_overlay_backdrop();
     orb_boot_overlay(stage, 0, total, 0);
     return true;
 }
+
+bool orb_theme_glass_held(void) { return s_glass_held || s_slot_torn; }
 
 /* One chunk boundary of the copy (§6.3): the glass says what the row and the
  * ledger say, and the overlay's own 10 Hz throttle keeps the panel from

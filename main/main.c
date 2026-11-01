@@ -50,6 +50,7 @@ static void lvgl_task(void *arg)
          * nothing; its decision latency does not depend on this running. */
         idle_dim_render_drain();
         uint32_t sleep_ms = lv_timer_handler();
+        display_lvgl_pass_mark();      /* a store waits on this before it unmaps */
         if (sleep_ms > 50) sleep_ms = 50;
         if (sleep_ms < 5) sleep_ms = 5;
         vTaskDelay(pdMS_TO_TICKS(sleep_ms));
@@ -182,6 +183,12 @@ void app_main(void)
      * first real commit paints over it. */
     orb_boot_overlay("ready", 0, 0, 0);
     ESP_ERROR_CHECK(display_init());
+    /* The dial owns the glass from here, so the overlay gives back its band of
+     * internal DMA RAM, held until now only for frames nobody sees again this
+     * boot. Held for the life of the boot (at 22 KB, before it was halved) it
+     * starved esp_wifi_init on orb-B: 8 of 10 static rx buffers with a 3.5 MB
+     * theme resident. A store that needs the overlay later takes it back. */
+    orb_boot_overlay_release();
 
     /* Build the apps and their screens. Each registers its own LVGL screen
      * object; the input router decides which one is loaded. The GIF background

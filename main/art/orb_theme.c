@@ -46,6 +46,7 @@
 #include "orb_app.h"            /* orb_app_home(): the row the store hands the glass to */
 #include "input_router.h"       /* input_router_request/current: the task-safe screen switch */
 #include "orb_boot_overlay.h"   /* the store's progress frames (§6.3) */
+#include "display.h"            /* display_lvgl_passes: the store waits out a render before it unmaps */
 #include "freertos/task.h"      /* vTaskDelay: the park wait rides ticks, not a spin */
 #include "mbedtls/sha256.h"  /* theme_id(): sha256 over "slug/name" -> the card filename */
 
@@ -1183,6 +1184,32 @@ static volatile bool s_slot_torn;        /* set once the unmap is behind us */
 static const orb_app_t *s_upload_was;
 static char s_upload_stage[12];   /* the stage word park() drew; progress() repeats it */
 
+/* The old dial must be off the glass AND out of the renderer before the bank it
+ * draws from is unmapped. A fixed wait is not that: on "Kite tourbillon" one LVGL
+ * pass runs ~270 ms, the 120 ms below covers less than half of one, and on
+ * 2026-10-31 a store unmapped the bank under a render still turning the carriage
+ * (transform_rgb565a8, "Cache disabled but cached memory region accessed"). Wait
+ * for the switch to the home screen to have landed, then for two whole passes:
+ * the first may have begun before this looked, the second began after, on the
+ * home screen. Bounded: a renderer that never answers refuses the park. Only the
+ * store waits on it: an upload, an OTA or a reboot parks for its overlay and never
+ * unmaps, and waiting there would let the park's own switch to the menu land and
+ * rewrite the resume record the reboot comes back to. */
+static bool glass_settled(const orb_app_t *home)
+{
+    const int64_t t0 = esp_timer_get_time(), limit = 3000000;
+    while (home && input_router_current() != home) {
+        if (esp_timer_get_time() - t0 > limit) return false;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    const uint32_t p0 = display_lvgl_passes();
+    while (display_lvgl_passes() - p0 < 2u) {
+        if (esp_timer_get_time() - t0 > limit) return false;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    return true;
+}
+
 bool orb_theme_upload_park(uint32_t total, const char *stage)
 {
     s_upload_was = input_router_current();
@@ -1207,6 +1234,7 @@ void orb_theme_upload_progress(uint32_t done, uint32_t total)
 
 void orb_theme_upload_unpark(void)
 {
+    orb_boot_overlay_release();           /* the dial is back: the band's RAM is too */
     orb_sched_set_running(true);
     if (s_upload_was) input_router_request(s_upload_was);
     s_upload_was = NULL;
@@ -1225,11 +1253,11 @@ static bool store_park_dial(const orb_app_t *was, uint32_t total, const char *st
      * landed and no tick was mid-frame when the gate dropped. The overlay paints
      * AFTER the dial is hidden, or the switch would paint the menu over it. */
     vTaskDelay(pdMS_TO_TICKS(120));
-    if (orb_sched_running()) {
-        /* A resume raced the request (the bounce stands on its own gate). The
-         * erase cannot be trusted against a compositor that reads the map, so
-         * refuse while everything is still whole — and put the owner's screen
-         * back exactly as they left it. */
+    if (orb_sched_running() || !glass_settled(home)) {
+        /* A resume raced the request (the bounce stands on its own gate), or the
+         * renderer never let go of the old dial. The erase cannot be trusted
+         * against a compositor that reads the map, so refuse while everything is
+         * still whole — and put the owner's screen back exactly as they left it. */
         if (was) input_router_request(was);
         return false;
     }
@@ -1490,6 +1518,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     s_slot_torn = false;
     const orb_app_t *was = input_router_current();
     if (!store_park_dial(was, h.art_size, "storing")) {
+        orb_boot_overlay_release();        /* the overlay's band goes back with the glass */
         orb_sched_set_running(true);       /* the tick stands; the dial never stopped */
         heap_caps_free(region); card_close(fd);
         return install_failed(ESP_ERR_INVALID_STATE, "the dial would not park", why, whysz);
@@ -1982,6 +2011,7 @@ static void clear_job(void *arg)
     (void)arg;
     const orb_app_t *was = input_router_current();
     if (!store_park_dial(was, 0, "removing")) {
+        orb_boot_overlay_release();        /* the overlay's band goes back with the glass */
         orb_sched_set_running(true);       /* the tick stands; the dial never stopped */
         ESP_LOGW(TAG, "deactivate refused: the dial would not park");
         return;

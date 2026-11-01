@@ -221,6 +221,13 @@ bool    display_dma_lent(void);
 
 void display_bench_reset(void);
 
+/** LVGL passes completed: lvgl_task marks one after every lv_timer_handler()
+ *  returns. A task that must not race a render in progress (the theme store,
+ *  about to unmap the bank the old dial draws from) waits for this to advance
+ *  twice: one pass may have started before it looked, the second began after. */
+void     display_lvgl_pass_mark(void);
+uint32_t display_lvgl_passes(void);
+
 #ifdef __cplusplus
 }
 #endif

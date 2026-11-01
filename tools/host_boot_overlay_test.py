@@ -42,7 +42,11 @@ PROLOG = r"""
 #include "esp_err.h"
 #include "esp_lcd_panel_ops.h"
 int g_calls; int g_y[16]; uint16_t *g_b[16]; int64_t g_now_us;
-int g_wipe; int g_wipe_y[24];
+int g_wipe; int g_wipe_y[48];
+int g_pend_y = -1; uint16_t g_pend[466 * 12];   /* a band's first 12-row piece */
+int g_borrow, g_return;  /* display_dma_borrow/return calls (the band's fallback) */
+int g_heap_fail;         /* when > 0, heap_caps_malloc refuses that many asks       */
+int g_freed;             /* heap_caps_free calls: the band released                 */
 int g_fail_left;   /* §32.5: when > 0, the next non-black commit returns a timeout and
                     * is NOT counted, so the capture list never carries a refused band. */
 int g_inflight;    /* §32.5 residual (a): a refused band is still on the wire     */
@@ -65,9 +69,11 @@ esp_err_t display_band_quiet(void)
 }
 esp_err_t display_band_commit(int y1, int rows, const uint16_t *data)
 {
-    /* §32's boot wipe arrives as black 24-row strips at y = 0, 24, 48, ...; the
-     * content bands ride y=184/252/300, which are not multiples of 24, so an
-     * all-black strip is never a stage frame. Wipes are counted on their own so
+    /* §32's boot wipe arrives as black 12-row strips at y = 0, 12, 24, ...; the
+     * content bands ride y=184/208/232 as two 12-row pieces each at rows that are
+     * not multiples of 12, so an all-black strip there is never a stage frame. The
+     * two pieces of a band are reassembled below into the 24-row capture the
+     * decoders read, exactly as the glass shows them. Wipes are counted on their own so
      * the capture indexes the scenario decodes below do not shift. §32.5: the
      * overlay paints only through this seam, and the seam is exactly where the
      * shipped display.c drains; the capture below is the band as it goes out.
@@ -75,12 +81,26 @@ esp_err_t display_band_commit(int y1, int rows, const uint16_t *data)
      * stamped while the refused transaction owned the wire — the double-green-
      * bar race — and the violation counter below fails the suite on it. */
     if (g_inflight) g_violation++;
-    if (all_black(data, (size_t)rows * 466)) {
-        if (g_wipe < 24) g_wipe_y[g_wipe] = y1;
+    if (y1 % 12 == 0 && all_black(data, (size_t)rows * 466)) {
+        if (g_wipe < 48) g_wipe_y[g_wipe] = y1;
         g_wipe++;
         return ESP_OK;
     }
-    if (g_fail_left > 0) { g_fail_left--; g_inflight = 1; return 258; }  /* ESP_ERR_TIMEOUT: refused band,
+    if (g_fail_left > 0) { g_fail_left--; g_inflight = 1; g_pend_y = -1; return 258; }
+    if (rows == 12 && g_pend_y < 0) {          /* first piece: hold it for its twin */
+        memcpy(g_pend, data, sizeof g_pend);
+        g_pend_y = y1;
+        return ESP_OK;
+    }
+    if (rows == 12 && y1 == g_pend_y + 12) {   /* second piece: one 24-row band */
+        if (g_calls < 16) { g_y[g_calls] = g_pend_y;
+            g_b[g_calls] = malloc((size_t)24 * 466 * 2);
+            memcpy(g_b[g_calls], g_pend, sizeof g_pend);
+            memcpy(g_b[g_calls] + 12 * 466, data, (size_t)12 * 466 * 2); }
+        g_calls++;
+        g_pend_y = -1;
+        return ESP_OK;
+    }  /* ESP_ERR_TIMEOUT: refused band,
         * not counted and not captured — the seam never hands it to the panel,
         * and its DMA stays on the wire until the overlay drains it. */
     if (g_calls < 16) { g_y[g_calls] = y1;
@@ -91,7 +111,15 @@ esp_err_t display_band_commit(int y1, int rows, const uint16_t *data)
 }
 int64_t esp_timer_get_time(void) { return g_now_us; }
 void *display_get_panel(void) { return (void *)1; }
-void *heap_caps_malloc(size_t n, int flags) { (void)flags; return malloc(n); }
+void *heap_caps_malloc(size_t n, int flags)
+{
+    (void)flags;
+    if (g_heap_fail > 0) { g_heap_fail--; return NULL; }
+    return malloc(n);
+}
+void heap_caps_free(void *p) { g_freed++; free(p); }
+size_t display_dma_borrow(void) { g_borrow++; return 37280; }
+esp_err_t display_dma_return(void) { g_return++; return 0; }
 """
 
 HDRS = {
@@ -99,20 +127,22 @@ HDRS = {
     "esp_timer.h": "#include <stdint.h>\nint64_t esp_timer_get_time(void);\n",
     "esp_log.h": "#define ESP_LOGI(t, ...)\n#define ESP_LOGW(t, ...)\n",
     "esp_heap_caps.h": "#include <stddef.h>\nvoid *heap_caps_malloc(size_t, int);\n"
+                      "void heap_caps_free(void *);\n"
                       "#define MALLOC_CAP_INTERNAL 0\n#define MALLOC_CAP_DMA 0\n",
     "esp_lcd_panel_ops.h": "#include \"esp_err.h\"\ntypedef void *esp_lcd_panel_handle_t;\n"
       "esp_err_t esp_lcd_panel_draw_bitmap(esp_lcd_panel_handle_t, int, int, int, int, const void *);\n",
     "display.h": "#include \"esp_lcd_panel_ops.h\"\n#include <stdint.h>\n"
       "esp_lcd_panel_handle_t display_get_panel(void);\n"
       "esp_err_t display_band_commit(int, int, const uint16_t *);\n"
-      "esp_err_t display_band_quiet(void);\n",
+      "esp_err_t display_band_quiet(void);\n"
+      "size_t display_dma_borrow(void);\nesp_err_t display_dma_return(void);\n",
     "board_config.h": "#define SCREEN_WIDTH 466\n#define SCREEN_HEIGHT 466\n",
 }
 
 
 DRIVER = r"""
 extern int g_calls; extern int g_y[16]; extern uint16_t *g_b[16]; extern int64_t g_now_us;
-extern int g_wipe; extern int g_wipe_y[24];
+extern int g_wipe; extern int g_wipe_y[48];
 extern int g_fail_left;
 extern int g_inflight, g_quiet, g_quiet_left, g_violation;
 void orb_boot_overlay(const char *, unsigned, unsigned, unsigned);
@@ -183,7 +213,7 @@ int main(void)
         fwrite(g_b[i], 1, 466 * 24 * 2, f); fclose(f);
     }
     printf("wipe %d", g_wipe);
-    for (int i = 0; i < g_wipe && i < 24; i++) printf(" %d", g_wipe_y[i]);
+    for (int i = 0; i < g_wipe && i < 48; i++) printf(" %d", g_wipe_y[i]);
     printf("\n");
 
     /* §32.8 store backdrop: the store door calls orb_boot_overlay_backdrop() to
@@ -194,12 +224,33 @@ int main(void)
     int bb = g_calls;
     orb_boot_overlay_backdrop();
     printf("backdrop wipes %d calls %d", g_wipe, g_calls - bb);
-    for (int i = 0; i < g_wipe && i < 24; i++) printf(" %d", g_wipe_y[i]);
+    for (int i = 0; i < g_wipe && i < 48; i++) printf(" %d", g_wipe_y[i]);
     printf("\n");
     g_now_us = 8150000;                                     /* 50 ms after the retry */
     int br = g_calls;
     orb_boot_overlay("verifying", 512u*1024u, 1024u*1024u, 0);
     printf("backdrop retry calls %d\n", g_calls - br);       /* expect 3: throttle cleared */
+
+    /* The band is held only while the overlay owns the glass (orb-B's Wi-Fi, 2026-10-31):
+     * release frees it; the next frame takes it back with no second boot wipe; a heap
+     * that cannot give it falls back to the tile ring, which release then returns. */
+    orb_boot_overlay_release();
+    int rf = g_freed;
+    orb_boot_overlay_release();                             /* nothing held: a no-op */
+    g_wipe = 0;
+    int rr = g_calls;
+    g_now_us = 9000000;
+    orb_boot_overlay("stored, rebooting", 0, 0, 0);
+    printf("release freed %d twice %d rewipe %d redraw %d\n", rf, g_freed, g_wipe, g_calls - rr);
+    orb_boot_overlay_release();
+    g_heap_fail = 1;
+    int bw = g_calls;
+    g_now_us = 9500000;
+    orb_boot_overlay("storing", 1u, 2u, 0);
+    int b0 = g_borrow, r0 = g_return;
+    orb_boot_overlay_release();
+    printf("fallback borrow %d return_before %d return_after %d drawn %d\n",
+           b0, r0, g_return, g_calls - bw);
     return 0;
 }
 """
@@ -279,8 +330,8 @@ def main():
         wm = re.search(r"wipe (\d+)([^\n]*)", out)
         wn = int(wm.group(1)) if wm else -1
         wy = [int(x) for x in wm.group(2).split()] if wm else []
-        ok(wn == (466 + 23) // 24, f"the first draw blacks the panel: {wn} wipe strips", str(wn))
-        ok(wy == list(range(0, 466, 24)), "the wipe strips tile the panel from row 0 past row 456", str(wy))
+        ok(wn == (466 + 11) // 12, f"the first draw blacks the panel: {wn} wipe strips", str(wn))
+        ok(wy == list(range(0, 466, 12)), "the wipe strips tile the panel from row 0 past row 456", str(wy))
 
         # §32.8 store backdrop: the store door wipes the whole live glass before
         # the first "storing" frame, so the card cannot land on the parked menu.
@@ -288,14 +339,29 @@ def main():
         bm = re.search(r"backdrop wipes (\d+) calls (\d+)([^\n]*)", out)
         bn, bc = (int(bm.group(1)), int(bm.group(2))) if bm else (-1, -1)
         by = [int(x) for x in bm.group(3).split()] if bm else []
-        ok(bn == (466 + 23) // 24, f"the store backdrop blacks the whole panel: {bn} strips", str(bn))
-        ok(by == list(range(0, 466, 24)), "the backdrop strips tile the panel from row 0 past row 456", str(by))
-        ok(bn == (466 + 23) // 24 and bc == 0,
+        ok(bn == (466 + 11) // 12, f"the store backdrop blacks the whole panel: {bn} strips", str(bn))
+        ok(by == list(range(0, 466, 12)), "the backdrop strips tile the panel from row 0 past row 456", str(by))
+        ok(bn == (466 + 11) // 12 and bc == 0,
            "the backdrop commits only black strips — no content band counted", str(bc))
         brm = re.search(r"backdrop retry calls (\d+)", out)
         ok(brm and int(brm.group(1)) == 3,
            "the frame after the backdrop repaints, not throttled by the wipe it cleared",
            brm.group(1) if brm else "no line")
+
+        # the band's lifetime: released when the dial takes the glass, taken back on
+        # demand without re-wiping a live panel, and borrowed from the tile ring when
+        # the heap cannot give it — then the ring goes back with it.
+        rm = re.search(r"release freed (\d+) twice (\d+) rewipe (\d+) redraw (\d+)", out)
+        ok(rm and rm.group(1) == "1" and rm.group(2) == "1",
+           "release frees the band once, and a second release holds nothing to free",
+           rm.group(0) if rm else "no line")
+        ok(rm and rm.group(3) == "0" and rm.group(4) == "1",
+           "the next frame takes the band back and draws, without a second boot wipe",
+           rm.group(0) if rm else "no line")
+        fm = re.search(r"fallback borrow (\d+) return_before (\d+) return_after (\d+) drawn (\d+)", out)
+        ok(fm and fm.group(1) == "1" and fm.group(2) == "0" and fm.group(3) == "1" and fm.group(4) == "3",
+           "a heap that refuses the band borrows the tile ring, draws the frame, and returns the ring on release",
+           fm.group(0) if fm else "no line")
 
         # the scenario's draw counts, step by step
         ok(steps.get(0) == 1, "step 0: the first stage draws one band", str(steps))

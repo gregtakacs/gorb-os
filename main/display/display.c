@@ -1484,6 +1484,10 @@ esp_err_t display_capture_direct(uint32_t *seq)
  * the in-flight tiles drained first: s_band_inflight is retired by the SPI
  * driver's trans-done ISR, which does not take this mutex, so the drain cannot
  * deadlock against the task blocked behind it. */
+static volatile uint32_t s_lv_passes;
+void     display_lvgl_pass_mark(void) { s_lv_passes++; }
+uint32_t display_lvgl_passes(void)    { return s_lv_passes; }
+
 size_t display_dma_borrow(void)
 {
     if (!s_ring_mux) return 0;

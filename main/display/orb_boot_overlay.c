@@ -8,9 +8,10 @@
  *     transparent gaps for a retained frame to show through (§32.7);
  *   - a 4 s-old frame appends `NNs` to the stage line (§6.4).
  *
- * One band buffer of 466x24 RGB565 (22,368 B) in internal DMA RAM is allocated
- * on first use and never freed: §6.2's cost ceiling is "one small buffer, no
- * PSRAM, nothing on the paint path". Because it is ONE reused buffer and the
+ * One band buffer of 466x12 RGB565 (11,184 B) in internal DMA RAM is taken on
+ * first use, released when the dial takes the glass, and taken back by a store:
+ * §6.2's cost ceiling is "one small buffer, no PSRAM, nothing on the paint path",
+ * and a 24-row band paints as two pieces through it. Because it is ONE reused buffer and the
  * QSPI io submits asynchronously, every band goes through display_band_commit,
  * which returns only after that band's DMA retired — §32.5. The 2026-10-23
  * store watched the three lines of a progress frame arrive on each other's
@@ -138,6 +139,12 @@ static const uint8_t FONT5x7[95][5] = {
 /* ---- frame state ---------------------------------------------------------- */
 
 #define BAND_ROWS   24
+/* A 24-row band is painted as two 12-row pieces through one 466 x 12 buffer
+ * (11,184 B). The whole-band buffer was 22,368 B, a block a long-running board's
+ * internal DMA pool cannot always find: on 2026-10-31 a store on orb-B, with the
+ * card holding the tile ring, had 19,456 B largest and refused both frames. The
+ * band's geometry and the glass are unchanged; only the buffer is halved. */
+#define PIECE_ROWS  12
 #define GLYPH_W     5
 #define GLYPH_H     7
 #define SCALE       3                          /* glyphs land at 15x21 px      */
@@ -165,7 +172,15 @@ static const uint8_t FONT5x7[95][5] = {
 #define COL_TRACK   0x0421u                    /* RGB565(32,32,32), swapped    */
 #define COL_ARC     0xF507u                    /* RGB565(0,255,165), swapped   */
 
-static uint16_t *s_band;                       /* 466 x 24 internal DMA RAM    */
+static uint16_t *s_band;                       /* 466 x 12 internal DMA RAM    */
+/* The band was 22,368 B of internal DMA RAM, and holding it for the life of the boot
+ * starved esp_wifi_init on orb-B (8 of its 10 static rx buffers, 2026-10-31): it is
+ * the largest allocation that exists only for frames nobody sees once the dial is
+ * up. It is released when the dial takes over and re-acquired for a store's frames,
+ * from the display's tile ring when the heap cannot give it (the dial is parked
+ * then, so the ring is idle). */
+static bool      s_band_borrowed;              /* the band came out of the tile ring */
+static bool      s_wiped;                      /* the cold-boot black fill ran       */
 /* §32.5: set when a display_band_commit refused/timed out, so the caller knows the
  * s_band it is about to restamp may still be in flight and the overlay must abandon the
  * frame. The throttle reads it back to force the next tick to redraw what a starved band
@@ -187,9 +202,10 @@ static bool      s_warned_no_panel;
  * bytes (including the em dash the store sentences use) render as '?': the
  * overlay's contract is that it always paints something legible from the word
  * it was handed, and a font with no lowercase-and-dash cover is no cover. */
-static uint32_t band_text(const char *s, uint16_t *out)
+/* Rows [r0, r0+n) of the band, into `out` (n rows). */
+static uint32_t band_text(const char *s, uint16_t *out, int r0, int n)
 {
-    for (size_t i = 0; i < (size_t)SCREEN_WIDTH * BAND_ROWS; i++) out[i] = COL_BG;
+    for (size_t i = 0; i < (size_t)SCREEN_WIDTH * n; i++) out[i] = COL_BG;
 
     const size_t len = strlen(s);
     const uint32_t w = (uint32_t)len * PITCH;
@@ -213,10 +229,12 @@ static uint32_t band_text(const char *s, uint16_t *out)
                 const int32_t px = x + col * SCALE, py = row * SCALE;
                 if (px >= SCREEN_WIDTH) break;
                 for (int sy = 0; sy < SCALE; sy++) {
+                    const int32_t ry = py + sy - r0;
+                    if (ry < 0 || ry >= n) continue;
                     for (int sx = 0; sx < SCALE; sx++) {
                         const int32_t gx = px + sx;
                         if (gx < 0 || gx >= SCREEN_WIDTH) continue;
-                        out[(py + sy) * SCREEN_WIDTH + gx] = COL_TEXT;
+                        out[ry * SCREEN_WIDTH + gx] = COL_TEXT;
                         ink++;
                     }
                 }
@@ -229,15 +247,70 @@ static uint32_t band_text(const char *s, uint16_t *out)
 /* The progress band: a track line and the filled fraction, done/total as a bar
  * of BAR_W px. Percent rides on the LINE2 band as text, so this band is pure
  * geometry and survives a caller whose words are long. */
-static void band_bar(uint16_t *out, uint32_t done, uint32_t total)
+static void band_bar(uint16_t *out, uint32_t done, uint32_t total, int r0, int n)
 {
-    for (size_t i = 0; i < (size_t)SCREEN_WIDTH * BAND_ROWS; i++) out[i] = COL_BG;
+    for (size_t i = 0; i < (size_t)SCREEN_WIDTH * n; i++) out[i] = COL_BG;
     const uint32_t frac = total ? (done * BAR_W) / (total ? total : 1u) : 0u;
     const int32_t x0 = (SCREEN_WIDTH - BAR_W) / 2;
     for (uint32_t x = 0; x < BAR_W; x++) {
         const uint16_t c = (x < frac) ? COL_ARC : COL_TRACK;
-        for (uint32_t y = (BAND_ROWS - BAR_H) / 2; y < (BAND_ROWS + BAR_H) / 2; y++)
-            out[y * SCREEN_WIDTH + x0 + (int32_t)x] = c;
+        for (int32_t y = (BAND_ROWS - BAR_H) / 2; y < (BAND_ROWS + BAR_H) / 2; y++)
+            if (y >= r0 && y < r0 + n) out[(y - r0) * SCREEN_WIDTH + x0 + (int32_t)x] = c;
+    }
+}
+
+/* One band at row `y`, piece by piece: the text `s`, or the bar when s is NULL.
+ * display_band_commit waits for its own transaction to retire, so the next piece
+ * may stamp the buffer the moment it returns; any refusal abandons the rest. */
+static esp_err_t band_paint(int y, const char *s, uint32_t done, uint32_t total, uint32_t *ink)
+{
+    for (int r0 = 0; r0 < BAND_ROWS; r0 += PIECE_ROWS) {
+        const int n = BAND_ROWS - r0 < PIECE_ROWS ? BAND_ROWS - r0 : PIECE_ROWS;
+        if (s) *ink += band_text(s, s_band, r0, n);
+        else   band_bar(s_band, done, total, r0, n);
+        const esp_err_t e = display_band_commit(y + r0, n, s_band);
+        if (e != ESP_OK) return e;
+    }
+    return ESP_OK;
+}
+
+#define BAND_BYTES ((size_t)SCREEN_WIDTH * PIECE_ROWS * sizeof(uint16_t))
+
+/* The band, from the heap or, failing that, from the display's tile ring. */
+static bool band_get(void)
+{
+    if (s_band) return true;
+    s_band = heap_caps_malloc(BAND_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (!s_band && display_dma_borrow()) {
+        s_band_borrowed = true;
+        s_band = heap_caps_malloc(BAND_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+        if (!s_band) {
+            display_dma_return();
+            s_band_borrowed = false;
+        }
+    }
+    if (s_band && !s_first_us) s_first_us = esp_timer_get_time();
+    return s_band != NULL;
+}
+
+void orb_boot_overlay_release(void)
+{
+    if (!s_band) return;
+    /* A band still on the wire owns the buffer; freeing it under the DMA would hand
+     * the heap a block the SPI master is still reading. */
+    if (display_band_quiet() != ESP_OK) {
+        ESP_LOGW(TAG, "band release deferred: a band is still in flight");
+        return;
+    }
+    heap_caps_free(s_band);
+    s_band = NULL;
+    s_band_starved = false;
+    s_last_stage[0] = '\0';
+    s_last_done = 0xFFFFFFFFu;
+    s_last_secs = 0xFFFFFFFFu;
+    if (s_band_borrowed) {
+        s_band_borrowed = false;
+        display_dma_return();          /* NO_MEM re-funds on the next flush: ignorable */
     }
 }
 
@@ -254,9 +327,9 @@ static void overlay_fill_black(void)
      * bleed-through on a few rows would be harmless on a backdrop, but the
      * same refuse-then-drain rule covers every stamp site in one place. */
     if (s_band_starved) display_band_quiet();
-    memset(s_band, 0, (size_t)SCREEN_WIDTH * BAND_ROWS * sizeof(uint16_t));
-    for (int y = 0; y < SCREEN_HEIGHT; y += BAND_ROWS) {
-        const int rows = (y + BAND_ROWS > SCREEN_HEIGHT) ? SCREEN_HEIGHT - y : BAND_ROWS;
+    memset(s_band, 0, BAND_BYTES);
+    for (int y = 0; y < SCREEN_HEIGHT; y += PIECE_ROWS) {
+        const int rows = (y + PIECE_ROWS > SCREEN_HEIGHT) ? SCREEN_HEIGHT - y : PIECE_ROWS;
         display_band_commit(y, rows, s_band);
     }
 }
@@ -281,17 +354,12 @@ void orb_boot_overlay_backdrop(void)
         }
         return;
     }
-    if (!s_band) {
-        s_band = heap_caps_malloc((size_t)SCREEN_WIDTH * BAND_ROWS * sizeof(uint16_t),
-                                  MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-        if (!s_band) {
-            ESP_LOGW(TAG, "backdrop refused: no %u B of internal DMA RAM",
-                     (unsigned)(SCREEN_WIDTH * BAND_ROWS * sizeof(uint16_t)));
-            return;
-        }
-        s_first_us = esp_timer_get_time();
+    if (!band_get()) {
+        ESP_LOGW(TAG, "backdrop refused: no %u B of internal DMA RAM", (unsigned)BAND_BYTES);
+        return;
     }
     overlay_fill_black();
+    s_wiped = true;
     /* The whole glass just changed; a following stage word must repaint, so
      * forget the last frame and any starved state the backdrop cleared. */
     s_band_starved = false;
@@ -311,15 +379,12 @@ void orb_boot_overlay(const char *stage, uint32_t done, uint32_t total, uint32_t
         }
         return;
     }
-    if (!s_band) {
-        s_band = heap_caps_malloc((size_t)SCREEN_WIDTH * BAND_ROWS * sizeof(uint16_t),
-                                  MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-        if (!s_band) {
-            ESP_LOGW(TAG, "overlay refused: no %u B of internal DMA RAM",
-                     (unsigned)(SCREEN_WIDTH * BAND_ROWS * sizeof(uint16_t)));
-            return;
-        }
-        s_first_us = esp_timer_get_time();
+    if (!band_get()) {
+        ESP_LOGW(TAG, "overlay refused: no %u B of internal DMA RAM", (unsigned)BAND_BYTES);
+        return;
+    }
+    if (!s_wiped) {
+        s_wiped = true;
 
         /* §6.2, first: every boot wipes the panel black before the first stage
          * line. The CO530 holds its framebuffer across a warm reset — the panel
@@ -368,8 +433,7 @@ void orb_boot_overlay(const char *stage, uint32_t done, uint32_t total, uint32_t
      * untouched; s_band_starved stays set so the next tick retries. */
     if (s_band_starved && display_band_quiet() != ESP_OK) return;
 
-    uint16_t *b = s_band;
-    uint32_t ink = band_text(line1, b);
+    uint32_t ink = 0;
     /* §32.5: display_band_commit now surfaces ESP_ERR_TIMEOUT when a band's DMA
      * never retired within the ceiling, so a starved commit is distinguishable from
      * a landed one. The whole overlay paints into the ONE reused s_band, so once a
@@ -381,19 +445,15 @@ void orb_boot_overlay(const char *stage, uint32_t done, uint32_t total, uint32_t
      * recorded below, and starved rides into s_band_starved so the next beat is not
      * throttled into leaving the frame half-drawn. */
     bool starved = false;
-    if (display_band_commit(LINE1_Y, BAND_ROWS, b) != ESP_OK) {
+    if (band_paint(LINE1_Y, line1, 0, 0, &ink) != ESP_OK) {
         starved = true;
     } else if (total) {
         char line2[48];
         snprintf(line2, sizeof line2, "%u%% %u/%u KB",
                  (unsigned)((done * 100u) / (total ? total : 1u)),
                  (unsigned)(done / 1024u), (unsigned)(total / 1024u));
-        ink += band_text(line2, b);
-        if (display_band_commit(LINE2_Y, BAND_ROWS, b) != ESP_OK) starved = true;
-        else {
-            band_bar(b, done, total);
-            if (display_band_commit(BAR_Y, BAND_ROWS, b) != ESP_OK) starved = true;
-        }
+        if (band_paint(LINE2_Y, line2, 0, 0, &ink) != ESP_OK) starved = true;
+        else if (band_paint(BAR_Y, NULL, done, total, &ink) != ESP_OK) starved = true;
     }
     s_band_starved = starved;
 

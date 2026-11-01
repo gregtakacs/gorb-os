@@ -449,6 +449,43 @@ The design commits to:
    ends, so nothing needs to stay lowered. `host_sched_rung_test.py` lints the
    gate's order. Bench: §9.3.
 
+### 9.3 Hub soak with the feed running (orb-A, 2026-11-01, `53efde5`)
+
+The feed was pinned at a 10 s background poll through the debug door, six
+times the shipped rate, while the hub-side tools ran against it.
+
+| test | result |
+|---|---|
+| `store_check quiet` | store 8,093 ms, no panic, nothing staged |
+| `store_check status` | 8,236 ms, clean |
+| `store_check previews` | 8,477 ms and 8,480 ms (two runs), clean |
+| `scan_preview_stress`, 25 rounds, five conditions | no stalls, every `/status` answered |
+
+v1.1.43 shipped at 8.1 s for the same store. During each 8 s slot write the
+feed's gate turned polls into skips ("a job is running", "the card is
+busy"): no TLS crossed the radio while the slot was written, and polls
+resumed after the reboot. In `previews` mode a full handshake poll ran while
+the preview stream was going.
+
+The five clean stress conditions: fresh boot with the feed off; feed at
+10 s; feed at 10 s plus a second client polling every 5 s; straight after a
+store; the menu on the glass. Each gave quick 503s while scanning (the
+v1.1.42 refusal) and whole 107,652 B previews in 0.8-3.7 s. `main` at
+404c480 (no tracker, no TLS) gave the same picture on the same orb.
+
+**Open: one degraded run, not reproduced.** The first stress of the day ran
+after three store reboots, with the feed pinned and the tracker visited
+just before. Six of its 25 previews hung for the full 40 s, `/status` went
+unanswered in four rounds, and internal free swung between 38 and 78 KB.
+The state persisted into the next run (the feed switched off, no reboot) and
+cleared on reboot. It did not come back in the five runs above, each built
+to recreate one ingredient. The 78 KB rounds are the display's tile ring on
+loan, which the menu run reproduces without stalls, so the ring explains the
+memory pattern but not the hang. The trigger is unknown, and it is not shown
+to be the tracker's: `main` was sampled once, the branch five times. Next
+step: an overnight soak under serial capture, hub-like traffic, the feed at
+its shipped rate, and reboots in between, to catch it with a log.
+
 ## 10. Owner rulings, 2026-11-01
 
 1. **Handshakes:** ignore the drop during them; built (§9.2 item 3).

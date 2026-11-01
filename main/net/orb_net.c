@@ -2531,11 +2531,13 @@ static esp_err_t h_status(httpd_req_t *req)
             char declared[64];
             int doff = 0;
             declared[0] = '\0';
-            static const orb_cap_t OC[4] = { CAP_POWER, CAP_NET,
-                                             CAP_SD_READ, CAP_THEMES };
+            static const orb_cap_t OC[] = { CAP_POWER, CAP_NET, CAP_SD_READ,
+                                            CAP_THEMES, CAP_SOUND };
+            _Static_assert(sizeof OC / sizeof OC[0] == CAP_N - CAP_POWER,
+                           "the ledger names every owner cap");
             const uint32_t gm = orb_svc_grants(a);
             const uint32_t dm = orb_svc_declared(a);
-            for (unsigned c = 0; c < 4; c++) {
+            for (unsigned c = 0; c < sizeof OC / sizeof OC[0]; c++) {
                 if (!(gm & (1u << OC[c]))) continue;
                 const int gw = snprintf(grants + goff, sizeof grants - (size_t)goff,
                                         "%s\"%s\"", goff ? "," : "",
@@ -2547,7 +2549,7 @@ static esp_err_t h_status(httpd_req_t *req)
              * cannot tell "the app never asked" from "the owner revoked it",
              * and the difference is the whole answer to "what can this thing
              * do on my network". declared is the install-time consent. */
-            for (unsigned c = 0; c < 4; c++) {
+            for (unsigned c = 0; c < sizeof OC / sizeof OC[0]; c++) {
                 if (!(dm & (1u << OC[c]))) continue;
                 const int dw = snprintf(declared + doff, sizeof declared - (size_t)doff,
                                         "%s\"%s\"", doff ? "," : "",

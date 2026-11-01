@@ -627,9 +627,9 @@ uint32_t orb_svc_denied_mask(const orb_app_t *a)
 }
 const char *orb_svc_cap_name(orb_cap_t c)
 {
-    static const char *const N[8] = { "time", "config", "ui", "art",
-                                      "power", "net", "sd_read", "themes" };
-    return (unsigned)c < 8u ? N[c] : "?";
+    static const char *const N[9] = { "time", "config", "ui", "art", "power",
+                                      "net", "sd_read", "themes", "sound" };
+    return (unsigned)c < 9u ? N[c] : "?";
 }
 esp_err_t orb_svc_set_grant(const orb_app_t *a, orb_cap_t c, bool on)
 {
@@ -966,12 +966,13 @@ int main(void)
        (s_pg = &s_pages[PG_PERMS], !strcmp(rowline(1), "* HSB  (1 of 1)")));
     g_dmask[1] = 0;
     s_pg = &s_pages[PG_CAPS]; s_perm_slot = 1; s_cur = 0;
-    ck("the cap page is the four owner caps plus back, never the free four",
-       page_rows() == 5 && !strcmp(rowline(0), "power: not declared") &&
+    ck("the cap page is the five owner caps plus back, never the free four",
+       page_rows() == 6 && !strcmp(rowline(0), "power: not declared") &&
        !strcmp(rowline(1), "net: not declared") &&
        !strcmp(rowline(2), "sd_read: not declared") &&
        !strcmp(rowline(3), "themes: allowed") &&
-       !strcmp(rowline(4), "<- back"));
+       !strcmp(rowline(4), "sound: not declared") &&
+       !strcmp(rowline(5), "<- back"));
     ck("a declared cap the owner has taken back reads revoked, not denied",
        (s_pg = &s_pages[PG_CAPS], s_perm_slot = 0, g_grnt[0] = (1u << CAP_NET),
         !strcmp(rowline(0), "power: revoked") &&
@@ -1012,10 +1013,10 @@ int main(void)
         ck("and the second app's pack carries its own slot, not the page's",
            (g_grnt[1] = 0, cap_pack(FAKE_APP2, 0) ==
             ((1 << 9) | ((int)CAP_POWER << 1) | 1)));
-        ck("the four rows pack exactly the owner's four caps, in that order",
-           ({ int bad = 0; const int w[4] = { CAP_POWER, CAP_NET, CAP_SD_READ,
-                                              CAP_THEMES };
-              for (int r = 0; r < 4; r++)
+        ck("the five rows pack exactly the owner's five caps, in that order",
+           ({ int bad = 0; const int w[5] = { CAP_POWER, CAP_NET, CAP_SD_READ,
+                                              CAP_THEMES, CAP_SOUND };
+              for (int r = 0; r < 5; r++)
                   if (((cap_pack(FAKE_APP, r) >> 1) & 0xFF) != w[r]) bad++;
               bad == 0; }));
         g_grnt[1] = g_decl[1]; g_grnt[0] = g_decl[0];
@@ -1642,8 +1643,8 @@ int main(void)
     s_pg = &s_pages[PG_DISPLAY]; title_line(hb, sizeof hb);
     ck("a page that draws every row says no digits", !strcmp(hb, "DISPLAY"));
     s_pg = &s_pages[PG_CAPS]; s_perm_slot = 0; title_line(hb, sizeof hb);
-    ck("five rows fill the window exactly and stop there",
-       page_rows() == 5 && !strcmp(hb, "Clock PERMISSIONS"));
+    ck("six rows overflow the five-row window, so the cap page counts",
+       page_rows() == 6 && !strcmp(hb, "Clock PERMISSIONS  1/6"));
     s_pg = &s_pages[PG_TO]; s_cur = 0; title_line(hb, sizeof hb);
     ck("the preset picker scrolls, so it counts",
        page_rows() == 8 && !strcmp(hb, "DIM TIMEOUT  1/8"));

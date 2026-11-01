@@ -79,7 +79,7 @@ typedef enum {
     PG_DISPLAY,       /* the two idle-dim settings                    */
     PG_TO,            /* the timeout presets                          */
     PG_PERMS,         /* one row per installed app: what it may do    */
-    PG_CAPS,          /* the selected app's four owner caps, togglable */
+    PG_CAPS,          /* the selected app's owner caps, togglable */
     PG_APPS,          /* the catalog: every installed app, its state, its doors (B3/B4) */
     PG_APPACT,        /* one app's own doors: activate / enable / uninstall */
     PG_ABOUT,         /* inert identity list — no press does anything  */
@@ -269,14 +269,17 @@ static int    s_painted_rows;     /* page_rows() the last repaint drew, for the 
  * difference between what it declared and what still runs. The rows, the
  * state, and the one rule the pages exist for: the broker is the only authority
  * on what a toggle may do, so a row never decides locally whether its cap is
- * grantable, it posts the job and renders the answer. The four caps listed are
- * the owner-granted four: the free ones would put rows on this page that can
+ * grantable, it posts the job and renders the answer. The caps listed are the
+ * owner-granted ones (D39 added sound as the fifth): the free ones would put rows on this page that can
  * only ever say yes, and a page of forced yeses teaches the owner to stop
  * reading it.
  */
 static int      s_perm_slot = -1;              /* the app under inspection  */
-static const orb_cap_t OWNER_CAPS[4] = { CAP_POWER, CAP_NET,
-                                         CAP_SD_READ, CAP_THEMES };
+static const orb_cap_t OWNER_CAPS[] = { CAP_POWER, CAP_NET,
+                                        CAP_SD_READ, CAP_THEMES, CAP_SOUND };
+#define N_OWNER_CAPS ((int)(sizeof OWNER_CAPS / sizeof OWNER_CAPS[0]))
+_Static_assert(N_OWNER_CAPS == CAP_N - CAP_POWER,
+               "the permissions page lists every owner cap");
 
 /* The installed, non-chrome entries — which is NOT the same list as the top
  * page's app rows: those are the apps that declare options, while
@@ -557,7 +560,7 @@ static int rows_tz(void)      { return orb_net_tz_count() + 1; }      /* last ro
 static int rows_display(void) { return 3; }                     /* dim, timeout, back */
 static int rows_to(void)      { return TO_PRESET_N + 1; }       /* last row is back */
 static int rows_perms(void)   { return perm_rows() + 1; }
-static int rows_caps(void)    { return 4 + 1; }
+static int rows_caps(void)    { return N_OWNER_CAPS + 1; }
 
 /* The app counts every row it has; the shell decides how many of them are on
  * the glass, which is the whole of ruling D12 and the reason the count below
@@ -688,7 +691,7 @@ static void label_perms(int row, char *out, size_t outsz, bool *sel_hi)
      * actually asks — what did I agree to, and what is live now. */
     int nd = 0, ng = 0;
     const uint32_t dm = orb_svc_declared(a), gm = orb_svc_grants(a);
-    for (unsigned c = 0; c < 4; c++) {
+    for (int c = 0; c < N_OWNER_CAPS; c++) {
         if (dm & (1u << OWNER_CAPS[c])) nd++;
         if (gm & (1u << OWNER_CAPS[c])) ng++;
     }
@@ -708,7 +711,7 @@ static void label_perms(int row, char *out, size_t outsz, bool *sel_hi)
 
 static void label_caps(int row, char *out, size_t outsz, bool *sel_hi)
 {
-    if (row >= 4) { snprintf(out, outsz, "<- back"); return; }
+    if (row >= N_OWNER_CAPS) { snprintf(out, outsz, "<- back"); return; }
     const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
     if (!a) { snprintf(out, outsz, "?"); return; }
     const uint32_t bit = 1u << OWNER_CAPS[row];

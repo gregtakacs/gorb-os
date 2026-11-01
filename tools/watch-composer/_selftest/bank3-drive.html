@@ -49,13 +49,21 @@
     IT.state.dial = id; IT.faces = {}; IT.base = null; IT.gt = []; IT.buildId = (IT.buildId || 0) + 1;
     IT.state.designs = {}; IT.state.designs[id] = E.canonDesign(JSON.parse(JSON.stringify(P.design)));
     IT.state.hands = 'auto'; IT.state.handFinish = 'auto';
+    // What the composer's "Reset everything" on this preset sets, so the bake is the preset
+    // as the app shows it. Without the train a caged preset (kitetour, orbital, opentour)
+    // baked on the classic train: no cage, no carriage row, no seconds indication at all.
+    IT.state.cfg = { ...(P.cfg || {}) }; IT.state.train = P.train || 'classic';
+    IT.state.caseStyle = P.caseStyle || 'polished'; IT.state.caseMetal = P.caseMetal || 'auto';
+    IT.state.glassStyle = 'domed';
     pump();
     IT.buildMovement();
     if (!await settle()) throw new Error(id + ' never settled (rendering=' + IT.rendering + ' gt=' + IT.gt.length + ' B=' + IT.B + ')');
   };
 
   const DIAL = (location.search.match(/dial=([\w-]+)/) || [])[1] || 'skeleton';
-  const NAME = (location.search.match(/name=([\w -]+)/) || [])[1] || (E.PRESETS[DIAL] || {}).name || DIAL;
+  // URLSearchParams decodes %20: the old /name=([\w -]+)/ stopped at the first encoded
+  // space, so "Kite tourbillon" baked as "Kite" and filed under another card stem.
+  const NAME = new URLSearchParams(location.search).get('name') || (E.PRESETS[DIAL] || {}).name || DIAL;
 
   async function main() {
     if (!E || !E.PRESETS || !E.PRESETS[DIAL]) throw new Error('no preset ' + DIAL);
@@ -103,14 +111,15 @@
         // bake. The dial's own plate is slot 0; a glass overlay rides the same class at a
         // higher slot, and it is the one the author can raise.
         if (k === 3 && !(e.slot & 0xffff)) plate = e;
-        if (k === 2) hands.push('' + (e.slot | 0));
+        // D42: every hand, shadow and carriage is a moving row (class 8, AUX); class 2 is refused.
+        if (k === 8) hands.push('' + (e.slot | 0));
         if (k === 9) prevRows.push(e);
       }
     }
     const nf = plate ? (plate.n_frames | 0) : 0;
-    say('reader: plate row n_frames=' + nf + '  hand slots [' + hands.join(',') + ']  bytes ' + bytes.length);
+    say('reader: plate row n_frames=' + nf + '  row slots [' + hands.join(',') + ']  bytes ' + bytes.length);
     ok('the plate row carries the frames the carrier promised', nf >= 2 || /still|shimmer band|rides the still/.test(st), 'n_frames ' + nf);
-    ok('every centre hand rode the bake as its own row', hands.length >= 2, hands.join(','));
+    ok('every centre hand rode the bake as its own v6 row', hands.length >= 2, hands.join(','));
     // One preview row, opaque, square, at half the panel — the plane the OS picker and the
     // hub's Themes card paint. A theme that cannot picture itself is an unfinished export,
     // and this is the trip that says so at the bake rather than three doors down.

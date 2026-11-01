@@ -21,7 +21,7 @@ replaces, and the slices. Read it before touching `hand_angles`,
 `aux_value_1000` or `aux_angle_10`, FORMAT 3's element columns, or the
 composer's Hands and Comps tabs.
 
-**Status: RULED (owner, 2026-10-30, generalized 2026-10-31). G1, G2, G3 and G5 built 2026-11-01 (G2 without AUX depth, ease or bank cadences — see §4; G3 as §5.1 records); G4 not built.**
+**Status: RULED (owner, 2026-10-30, generalized 2026-10-31). G1, G2, G3 and G5 built 2026-11-01 (G2 without AUX depth or bank cadences — see §4; G3 as §5.1 records); G4 not built.**
 
 | Parameter | Ruled value |
 |---|---|
@@ -219,8 +219,15 @@ plate draw as before. G1's v4 parity was also confirmed on the glass
 
 **What G2 left, refused rather than silently ignored:**
 
-- **`ease`.** The column rides the wire, but every reader refuses a non-zero
-  ease until settle and flyback are drawn (G4).
+- ~~**`ease`.**~~ **Built 2026-11-01.** A settle (1.5° or 3 px overshoot,
+  sin(πτ)) after a jump or a step slower than the second; a flyback (smoothstep,
+  back along the fan or the slide, never the short way round) when a retrograde or
+  sliding row returns. `clock_view.c` `ease_pose` draws both; the dial asks
+  `orb_sched_burst` for 33 ms frames only while one runs. Refused: an ease on
+  anything else, on a bank, or over 1000 ms. On orb-B, Flux's seconds bar flying
+  back over 400 ms took the dial from 1 fps to 10 flushed frames in that second
+  and straight back to 1 fps. The owner rules the defaults (2026-11-01): ease on
+  minute and hour jumps and on flybacks, never on a once-a-second step.
 - **Bank cadences other than inherit and jump.** FORMAT 3 projects only windows,
   whose plates are whole values. Sweep and drag wait for a ring the dial can turn.
 - **AUX `order` as depth.** Pointers still join `aux_insert_at`'s one block. A

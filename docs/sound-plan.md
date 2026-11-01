@@ -599,6 +599,15 @@ seconds) with `jump_minute` and `chime_hour` added by `orbsound.py`: across the
 12:16 boundary `started` rose by exactly one, at :00–:01 on the bench PC (the orb
 runs ~1.7 s behind it), and by none in the 10 s either side.
 
+The owner, beside the orb, heard nothing at first though the counter said it played:
+Station has no tick loop, so the amp slept between clunks, and starting the voice at
+the boundary woke the amp under the clip's first 10 ms, where nearly all of its
+energy sits. Jump slots are now queued 1.5 s ahead of their step, for its exact
+instant, so the engine and amp are up first; a step is named by wall time so it is
+queued once. Heard and confirmed by the owner: "sound is perfect now".
+**Rule for any app:** an event sound on an otherwise silent dial must be queued
+ahead of its instant, never started at it.
+
 **Not shown:**
 
 - ~~**M-S2.**~~ **Ruled by ear, 2026-11-01: 90 ms stands** (the owner, tuning

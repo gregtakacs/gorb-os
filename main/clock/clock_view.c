@@ -1907,7 +1907,7 @@ typedef struct {
     int64_t loop_anchor;
     int     min, hour, mday; /* the last boundary seen; -1 = none yet */
     time_t  last_t;
-    int     mstep;           /* the last sub-minute step index seen; -1 = none */
+    int64_t queued[3];       /* SND_STEP_*: the step instant already queued, 0 = none */
     uint8_t steps[3];        /* SND_STEP_*: steps per unit of a row that steps, 0 = none */
     bool    steps_known;
 } snd_state_t;
@@ -2078,7 +2078,7 @@ static void sound_policy(const struct tm *ti, time_t t, double frac)
         s_snd = heap_caps_calloc(1, sizeof *s_snd, MALLOC_CAP_SPIRAM);
         if (!s_snd) return;
         s_snd->min = s_snd->hour = s_snd->mday = -1;
-        s_snd->mstep = -1;
+
     }
     orb_sound_lease_renew();
     if (!snd_granted()) {
@@ -2124,20 +2124,38 @@ static void sound_policy(const struct tm *ti, time_t t, double frac)
         }
     }
 
-    /* D41 G5: the minute row's steps inside the minute (a half-minute hand, step 2):
-     * each sounds on its own instant. Step 0 is the minute itself, sounded below. */
+    /* D41 G5: a jump slot is queued AHEAD of its step, for the step's own instant.
+     * Queueing wakes the engine, so the amp is up and settled long before the sound:
+     * started at the boundary instead, a dial with no tick loop woke the amp under
+     * the clunk's first 10 ms -- all of its energy -- and the owner heard nothing
+     * (orb-B, Station, 2026-11-01). The lead is 1.5 s; the instant is exact. */
     if (!s_snd->steps_known) { snd_steps_scan(s_snd->steps); s_snd->steps_known = true; }
-    const uint8_t mn = s_snd->steps[SND_STEP_MIN];
-    if (mn >= 2) {
+    if (!quiet && n && c.jumps) {
+        const int64_t minute_us = sec_us - (int64_t)ti->tm_sec * 1000000;
         const double into = ti->tm_sec + frac;
-        const int idx = (int)(into * mn / 60.0);
-        if (idx != s_snd->mstep) {
-            const bool next_step = s_snd->mstep >= 0 && idx == s_snd->mstep + 1;
-            s_snd->mstep = idx;
+        const int64_t next_min_us = minute_us + 60000000;
+        const int nmin = (ti->tm_min + 1) % 60;
+        const uint8_t mn = s_snd->steps[SND_STEP_MIN], hn = s_snd->steps[SND_STEP_HOUR];
+        if (mn) {
+            const int idx = (int)(into * mn / 60.0) + 1;          /* the next step, 1..mn */
             const double at_s = idx * 60.0 / mn;
-            if (next_step && idx > 0 && into - at_s < 2.0 && !quiet && n && c.jumps)
-                snd_at(snd_find(tab, n, CLK_SND_JUMP_MINUTE),
-                       sec_us - (int64_t)ti->tm_sec * 1000000 + (int64_t)(at_s * 1e6));
+            const int64_t at_us = minute_us + (int64_t)(at_s * 1e6);
+            if (at_s - into <= 1.5 && s_snd->queued[SND_STEP_MIN] != at_us) {
+                s_snd->queued[SND_STEP_MIN] = at_us;
+                snd_at(snd_find(tab, n, CLK_SND_JUMP_MINUTE), at_us);
+            }
+        }
+        if (into >= 58.5) {
+            if (hn && (nmin == 0 || (nmin * hn) / 60 != (ti->tm_min * hn) / 60) &&
+                s_snd->queued[SND_STEP_HOUR] != next_min_us) {
+                s_snd->queued[SND_STEP_HOUR] = next_min_us;
+                snd_at(snd_find(tab, n, CLK_SND_JUMP_HOUR), next_min_us);
+            }
+            if (s_snd->steps[SND_STEP_CAL] && ti->tm_hour == 23 && ti->tm_min == 59 &&
+                s_snd->queued[SND_STEP_CAL] != next_min_us) {
+                s_snd->queued[SND_STEP_CAL] = next_min_us;
+                snd_at(snd_find(tab, n, CLK_SND_JUMP_DATE), next_min_us);
+            }
         }
     }
 
@@ -2154,18 +2172,8 @@ static void sound_policy(const struct tm *ti, time_t t, double frac)
     if (!next || ti->tm_sec > 2 || quiet || !n) return;
 
     const int64_t at = sec_us - (int64_t)ti->tm_sec * 1000000;   /* the minute's instant */
-    if (c.jumps) {
-        /* D41 G5: only a dial with a stepping row of that source sounds its slot, and
-         * an hour row stepping N times an hour sounds at each of them. */
-        const uint8_t hn = s_snd->steps[SND_STEP_HOUR];
-        const int prev_min = (ti->tm_min + 59) % 60;
-        if (s_snd->steps[SND_STEP_MIN])
-            snd_at(snd_find(tab, n, CLK_SND_JUMP_MINUTE), at);
-        if (hn && (ti->tm_hour != prev_hour || (ti->tm_min * hn) / 60 != (prev_min * hn) / 60))
-            snd_at(snd_find(tab, n, CLK_SND_JUMP_HOUR), at);
-        if (s_snd->steps[SND_STEP_CAL] && ti->tm_mday != prev_mday)
-            snd_at(snd_find(tab, n, CLK_SND_JUMP_DATE), at);
-    }
+    /* The jump slots were queued ahead of this boundary (above). */
+    (void)prev_hour; (void)prev_mday;
     const int pat = snd_pattern(tab, n, theme_pat);
     const int h12 = ti->tm_hour % 12 ? ti->tm_hour % 12 : 12;
     if (pat == CLK_PAT_SHIPS_BELLS) {

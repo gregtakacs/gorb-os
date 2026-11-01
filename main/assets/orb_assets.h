@@ -97,7 +97,16 @@ typedef enum {
      * appended AUX at 8: an OS that predates this build refuses a row naming class 9
      * at its own bound, and D26 makes that a refusal at the door. */
     ORB_ASSET_PREVIEW,      /* one static plate: the theme's own preview            */
-    ORB_ASSET_CLASS_N       /* 10: the vocabulary's width, and the refusal bound     */
+    /* D39's append. A sound: 16-bit mono PCM at 22,050 Hz behind a 20-byte header
+     * (docs/sound-plan.md §3.2), one per event slot an app names. It is theme
+     * content for the reason art is — the app supplies the policy, the theme the
+     * bytes — and its own class because no pixel class can be priced or checked as
+     * a waveform. Its catalogue row carries the payload as w 16-bit words and h 1,
+     * so orb_asset_slot_bytes() prices it w*h*2 exactly as it prices a preview.
+     * Appended at 10 without moving the ABI word, the AUX and PREVIEW precedent: an
+     * OS that predates this build refuses a row naming 10 at its own bound. */
+    ORB_ASSET_SOUND,        /* one waveform: a header and 16-bit PCM                */
+    ORB_ASSET_CLASS_N       /* 11: the vocabulary's width, and the refusal bound     */
 } orb_asset_class_t;
 
 /* The dialect this vocabulary speaks — the container's geometry ABI, and not a

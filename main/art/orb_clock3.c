@@ -25,10 +25,10 @@
  * esp_err.h, and this one compiles on a host. The suite pins the mirror, so a
  * class renamed on one side and not the other fails there — the discipline every
  * other counted vocabulary in this firmware uses. */
-#define CLASS_N 10
+#define CLASS_N 11
 static const char *const CLASS_NAMES[CLASS_N] = {
     "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux",
-    "preview"
+    "preview", "sound"
 };
 
 #define CLS_SPRITE    1
@@ -37,7 +37,9 @@ static const char *const CLASS_NAMES[CLASS_N] = {
 #define CLS_BANK      5
 #define CLS_AUX       8   /* D34: theme_schema.CLASS_AUX, appended at 8 */
 #define CLS_PREVIEW   9   /* the picker's plane, appended at 9: this dial does not draw it */
+#define CLS_SOUND    10   /* D39: a waveform, appended at 10: the clock plays it, never draws it */
 #define EF_HIDDEN  8            /* theme_schema.EF_HIDDEN */
+#define EF_LOOP    2            /* theme_schema.EF_LOOP: on a SOUND row, the tick loop */
 #define EF_DELTA_WRAP 64        /* §37: the row's LAST sprite, one past its own frame
                                  * window, is the rect that returns the finished canvas
                                  * to the keyframe — the delta the device applies when a
@@ -60,7 +62,7 @@ static const char *const CLASS_NAMES[CLASS_N] = {
  * dial has no field for. The parent pass reserves one slot per row it accepted,
  * so this bound is the walk's, not a new cap: a row count past it cannot arrive
  * here at all, and the assert below is the check that says so. */
-#define CLOCK_ROWS_MAX (2 + 6 + 5 + 8 + 16 + 1)
+#define CLOCK_ROWS_MAX (2 + 6 + 5 + 8 + 16 + 1 + CLK_SND_SLOTS)
 
 /* §31 rule 5: the plate row's frames, and every row's parent claim, are the two
  * vocabularies a v3 stamp has never carried a meaning for. The gate: */
@@ -206,6 +208,8 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     const uint32_t scr_w = sec->scr_w, scr_h = sec->scr_h;
 
     memset(t, 0, sizeof *t);
+    io->out_n_sounds = 0;
+    io->out_pattern  = CLK_PAT_NONE;
     io->out_art_off  = sec->art_off;
     io->out_art_size = art;
     if (!ne || !ns) return "a clock section with no elements or no planes draws nothing";
@@ -256,6 +260,8 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     for (int i = 0; i < CLK_AUX_MAX; i++) at_aux[i] = -1;   /* the stack zeroes no -1 */
     int16_t at_bank[CLK_COMP_MAX] = { -1,-1,-1,-1,-1,-1,-1,-1,
                                       -1,-1,-1,-1,-1,-1,-1,-1 };
+    int16_t at_sound[CLK_SND_SLOTS];
+    for (int i = 0; i < CLK_SND_SLOTS; i++) at_sound[i] = -1;
     /* C4's parent bookkeeping: one slot per row the walk accepts, so the bound
      * is the walk's own (the gate refused any table that could outgrow it). */
     uint16_t row_tag[CLOCK_ROWS_MAX];
@@ -340,6 +346,18 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                  * refusal by checkTable's class:slot uniqueness, not the clock's. */
                 prev0 = e.frame0;
                 prevn = e.n_frames;
+                break;
+            case CLS_SOUND:
+                /* D39: one row per event slot, one plane of PCM per row. Its facts
+                 * are checked with the scalars below, where a loop's beat can be
+                 * held against the hand it ticks for. */
+                if (e.slot >= CLK_SND_SLOTS)
+                    return reject("a sound at slot %u: the clock declares %u sound slots",
+                                  (unsigned)e.slot, (unsigned)CLK_SND_SLOTS);
+                if (e.n_frames != 1u)
+                    return reject("a sound at slot %u names %u planes: a sound is one "
+                                  "waveform", (unsigned)e.slot, (unsigned)e.n_frames);
+                cell = &at_sound[e.slot];
                 break;
             default:
                 return reject("element %u is class %s: the compiled clock has no field "
@@ -657,8 +675,17 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
          * width IT claims, or the lie is a torn bank wearing a nameplate. */
         const int on_preview = prev0 != 0xFFFF &&
                                (uint32_t)i - (uint32_t)prev0 < (uint32_t)prevn;
+        /* A sound's plane is its PCM, two bytes a sample with no alpha stride: the
+         * class price orb_asset_slot_bytes gives SOUND, w samples by h 1. */
+        int on_sound = 0;
+        for (int k = 0; k < CLK_SND_SLOTS && !on_sound; k++) {
+            if (at_sound[k] < 0) continue;
+            orb_bundle_elem_t se;
+            orb_bundle_elem_at(sec, (uint32_t)at_sound[k], &se);
+            on_sound = se.frame0 == i;
+        }
         const uint64_t want = PLATE_BYTES_T(sp.w, sp.h)
-                            + ((on_plate || on_preview) ? 0 : (uint64_t)sp.w * sp.h);
+                            + ((on_plate || on_preview || on_sound) ? 0 : (uint64_t)sp.w * sp.h);
         if (sp.off != at)
             return reject("the sprite catalogue is not contiguous at row %u: it starts "
                           "at %lu, the previous plane ends at %lu",
@@ -711,7 +738,14 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         for (uint32_t f = 0; f < win; f++) {
             orb_bundle_spr_t sp;
             orb_bundle_spr_at(sec, e.frame0 + f, &sp);
-            if (f == 0u || !delta_stream) {
+            if (e.cls == CLS_SOUND) {
+                /* D39: a sound places nothing on the glass, and its length is its
+                 * plane's (w samples, which a u16 row column could not hold). */
+                if (e.w || e.h)
+                    return reject("element %u is a sound sized %ux%u: a sound places "
+                                  "nothing, and its length is its plane's",
+                                  (unsigned)e.n, (unsigned)e.w, (unsigned)e.h);
+            } else if (f == 0u || !delta_stream) {
                 if (sp.w != e.w || sp.h != e.h)
                     return reject("element %u is %ux%u while its plane is %lux%lu: the "
                                   "table and the catalogue describe different layers",
@@ -1174,6 +1208,97 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         }
     } else {
         io->bg_frames[0] = 0;
+    }
+
+    /* ---- D39: the sound table. Every fact a sound row carries rides its own
+     * columns (orb_clock3.h), so each refusal below is made from the table alone,
+     * before a byte of the bank is resident: a loop whose beat disagrees with the
+     * hand it ticks for, a stroke the hour pattern needs and the theme does not
+     * carry, a plane a 16-bit load would fault on. ---- */
+    int n_snd = 0;
+    for (int k = 0; k < CLK_SND_SLOTS; k++) n_snd += at_sound[k] >= 0;
+    if (n_snd && (!io->sounds || io->sound_cap < (uint32_t)n_snd))
+        return reject("the bundle carries %d sounds and this dial was built without "
+                      "room for them", n_snd);
+    int pattern = -1;
+    for (int slot = 0; slot < CLK_SND_SLOTS; slot++) {
+        if (at_sound[slot] < 0) continue;
+        orb_bundle_elem_t e;
+        orb_bundle_elem_at(sec, (uint32_t)at_sound[slot], &e);
+        orb_bundle_spr_t sp;
+        orb_bundle_spr_at(sec, e.frame0, &sp);
+        if (e.src != CLK_SND_ENC_PCM16)
+            return reject("sound slot %u is encoding %u: this dial plays 16-bit PCM at "
+                          "%u Hz (encoding 0) and nothing else", (unsigned)slot,
+                          (unsigned)e.src, (unsigned)CLK_SND_RATE);
+        if (sp.h != 1u || sp.w < 2u || sp.size != sp.w * 2u)
+            return reject("sound slot %u's plane is %lux%lu in %lu B: a sound is w "
+                          "samples by 1, two bytes each", (unsigned)slot,
+                          (unsigned long)sp.w, (unsigned long)sp.h, (unsigned long)sp.size);
+        if (sp.off & 1u)
+            return reject("sound slot %u starts at odd offset %lu: its samples would "
+                          "load unaligned", (unsigned)slot, (unsigned long)sp.off);
+        if (e.kind >= CLK_PAT_N)
+            return reject("sound slot %u names hour pattern %u: the clock knows %u",
+                          (unsigned)slot, (unsigned)e.kind, (unsigned)CLK_PAT_N);
+        if (pattern >= 0 && (int)e.kind != pattern)
+            return reject("sound slot %u names hour pattern %u and an earlier sound "
+                          "names %d: a theme has one pattern", (unsigned)slot,
+                          (unsigned)e.kind, pattern);
+        pattern = e.kind;
+        const bool loop = (e.flags & EF_LOOP) != 0;
+        if (slot == CLK_SND_TICK_LOOP && !loop)
+            return reject("the tick loop is not flagged to loop: it would tick once "
+                          "through and stop");
+        if (slot != CLK_SND_TICK_LOOP && loop)
+            return reject("sound slot %u is flagged to loop: only the tick loop runs "
+                          "until it is stopped", (unsigned)slot);
+        if (slot == CLK_SND_TICK_LOOP) {
+            const uint32_t bchz = e.vmax;
+            if (!bchz)
+                return reject("the tick loop names no beat: the dial cannot hold it "
+                              "against the seconds hand");
+            /* a whole number of beats, so the loop's seam is a beat boundary */
+            if (((uint64_t)sp.w * bchz) % ((uint64_t)CLK_SND_RATE * 100u))
+                return reject("the tick loop's %lu samples are not a whole number of "
+                              "beats at %lu beats per 100 s", (unsigned long)sp.w,
+                              (unsigned long)bchz);
+            const uint32_t step = t->tick_rate ? t->tick_rate : 1u;
+            if (!t->second_sweep && bchz != step * 100u)
+                return reject("the tick loop beats %lu.%02lu times a second and the "
+                              "seconds hand steps %lu: the sound would walk off the hand",
+                              (unsigned long)(bchz / 100u), (unsigned long)(bchz % 100u),
+                              (unsigned long)step);
+            if ((uint64_t)e.vmin * bchz >= (uint64_t)CLK_SND_RATE * 100u)
+                return reject("the tick loop's first beat at sample %u sits past one "
+                              "beat", (unsigned)e.vmin);
+        } else if (e.vmax || e.vmin) {
+            return reject("sound slot %u carries a beat: only the tick loop has one",
+                          (unsigned)slot);
+        }
+        clk_sound_t *o = &io->sounds[io->out_n_sounds++];
+        o->pcm_off    = sp.off;
+        o->n          = sp.w;
+        o->first_beat = e.vmin;
+        o->beat_chz   = e.vmax;
+        o->slot       = (uint8_t)slot;
+        o->flags      = loop ? CLK_SND_F_LOOP : 0u;
+    }
+    if (pattern >= 0) {
+        /* The strokes a pattern sounds must be in the theme, or the hour would be
+         * a silence the owner was promised a chime for. */
+        const bool strike = at_sound[CLK_SND_STRIKE_HOUR] >= 0;
+        if ((pattern == CLK_PAT_COUNT || pattern == CLK_PAT_SHIPS_BELLS) && !strike)
+            return reject("the hour pattern strikes and the theme carries no hour stroke");
+        if (pattern == CLK_PAT_MORSE &&
+            (at_sound[CLK_SND_MORSE_DIT] < 0 || at_sound[CLK_SND_MORSE_DAH] < 0))
+            return reject("the hour pattern is morse and the theme lacks a dit or a dah");
+        if (pattern == CLK_PAT_REPEATER &&
+            (!strike || at_sound[CLK_SND_STRIKE_QUARTER] < 0 ||
+             at_sound[CLK_SND_STRIKE_MINUTE] < 0))
+            return reject("the hour pattern is a repeater and the theme lacks one of its "
+                          "three strokes");
+        io->out_pattern = (uint8_t)pattern;
     }
     return NULL;
 }

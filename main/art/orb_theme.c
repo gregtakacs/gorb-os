@@ -38,6 +38,7 @@
 #include "orb_bundle.h"
 #include "orb_elems.h"      /* orb_elems_at(), and the answers read_one_plane maps onto the registry's */
 #include "orb_clock3.h"          /* the FORMAT 3 clock section's projection (P6.5) */
+#include "orb_sound.h"           /* D39: silence the old bank's voices before a remap */
 #include "orb_sd.h"
 #include "orb_jobs.h"      /* the two post_* calls: an install is a worker job, never a poll */
 #include "orb_files.h"      /* the OS owns the card walk; this layer interprets what it finds */
@@ -386,6 +387,16 @@ static uint8_t                 *s_live_region = NULL;  /* the blobs' home      *
 
 static clk_theme_t   s_theme;                    /* parsed container geometry */
 static orb_theme_geo_t s_geo;
+
+/* D39: the adopted dial's sounds. PSRAM behind one pointer rather than a static
+ * table beside the projection's other tables: thirteen rows of it would be 208 B of the internal
+ * RAM this board has none of (orb_sound.c's header has the measurement). */
+typedef struct {
+    clk_sound_t s[CLK_SND_SLOTS];
+    uint32_t    n;
+    uint8_t     pattern;
+} theme_sounds_t;
+static theme_sounds_t *s_snd;
 /* The installed slot's identity, captured at boot where the slot is adopted. The
  * list marks a row active by matching its header name against s_active_name AND
  * its geom_crc/art_crc against these two — not by name alone. Overwrite leaves the
@@ -461,12 +472,20 @@ static void use_no_art(void)
     s_geo.blob_off   = 0;
     s_geo.from_container = false;
     s_geo.name[0] = '\0';
+    if (s_snd) s_snd->n = 0;
     s_active_name[0] = '\0';
     s_active_valid = false;
     s_source = "none";
 }
 
 const orb_theme_geo_t *orb_theme_geo(void) { return &s_geo; }
+
+const clk_sound_t *orb_theme_sounds(uint32_t *n, uint8_t *pattern)
+{
+    *n = s_snd ? s_snd->n : 0;
+    *pattern = s_snd ? s_snd->pattern : CLK_PAT_NONE;
+    return *n ? s_snd->s : NULL;
+}
 
 /* The adopted bundle's app section, or NULL. This is the door Migration 2's
  * commit 3 opens: an app that draws from a theme asks the bundle directly which
@@ -786,6 +805,7 @@ typedef struct {
     uint32_t      bgf[ORB_CLOCK3_N_BGF];
     clk_aux_t     aux[CLK_AUX_MAX];
     clk_comp_t    comps[CLK_COMP_MAX];
+    clk_sound_t   sounds[CLK_SND_SLOTS];   /* D39 */
 } chk_scratch_t;
 static chk_scratch_t *s_chk;
 
@@ -804,6 +824,7 @@ static const char *clock3_verdict(const orb_bundle_t *b)
     pio.first_cap = GIFS_MAX + 1; pio.delays_cap = GIFS_MAX;
     pio.comps = s_chk->comps; pio.comp_cap = CLK_COMP_MAX;
     pio.aux   = s_chk->aux;   pio.aux_cap   = CLK_AUX_MAX;
+    pio.sounds = s_chk->sounds; pio.sound_cap = CLK_SND_SLOTS;   /* D39 */
     const char *r = orb_clock3_parse(sec, &pio);
     xSemaphoreGive(s_verdict_mx);
     return r;
@@ -1684,6 +1705,13 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     io.first_cap = GIFS_MAX + 1; io.delays_cap = GIFS_MAX;
     io.comps = s_b3_comps; io.comp_cap = CLK_COMP_MAX;
     io.aux   = s_b3_aux;   io.aux_cap   = CLK_AUX_MAX;   /* D34 */
+    if (!s_snd) s_snd = heap_caps_calloc(1, sizeof *s_snd, MALLOC_CAP_SPIRAM);
+    /* The parse fills a scratch table, not the live one: a refused bundle must
+     * leave the playing dial's sounds as they were, and the live rows are copied
+     * over only after the voices are stopped and the new bank is mapped. */
+    static clk_sound_t *snd_tmp;
+    if (!snd_tmp) snd_tmp = heap_caps_calloc(CLK_SND_SLOTS, sizeof *snd_tmp, MALLOC_CAP_SPIRAM);
+    io.sounds = snd_tmp; io.sound_cap = (s_snd && snd_tmp) ? CLK_SND_SLOTS : 0;
     why = orb_clock3_parse(sec, &io);
     if (why) {
         heap_caps_free(region);
@@ -1708,6 +1736,10 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
      * names on this same boot. The refill figures stay 0 beside a slot source:
      * that pair is the page's proof a boot mapped rather than copied (§20.5(2)
      * reads through them, and they now read 0 by design, not by failure). */
+    /* D39: every voice reads PCM out of the bank this map is about to replace. The
+     * engine's stop returns only once the mixer is between blocks, so after this
+     * line no voice can touch the old mapping. */
+    orb_sound_stop_all();
     const esp_err_t fe = art_bank_map(slot_hdr_base + SLOT_ART_OFF, span);
     if (fe != ESP_OK) {
         heap_caps_free(region);              /* the parse's copy dies with the map */
@@ -1742,6 +1774,11 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     s_geo.n_comps = (uint16_t)io.out_n_comps;
     s_geo.n_aux   = (uint16_t)io.out_n_aux;
     s_geo.n_bank = 0;
+    if (s_snd) {
+        memcpy(s_snd->s, snd_tmp, io.out_n_sounds * sizeof *snd_tmp);
+        s_snd->n = io.out_n_sounds;
+        s_snd->pattern = io.out_pattern;
+    }
     s_geo.art_size = io.out_art_size;
     s_geo.blob_off = io.out_art_off - SLOT_ART_OFF;
     s_geo.from_container = true;

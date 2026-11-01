@@ -44,6 +44,58 @@ extern "C" {
 #define ORB_CLOCK3_N_RECTS CLK_BG_MAX
 #define ORB_CLOCK3_N_BGF   CLK_BG_MAX
 
+/* D39: the clock's sound slots (theme_schema.CLOCK_SOUND_SLOTS, mirrored and pinned
+ * by the suite). One slot per event, so any of them can be an owner's upload; an
+ * empty slot is silence for its event. docs/sound-plan.md §3.1. */
+enum {
+    CLK_SND_TICK_LOOP = 0,   /* the tick loop, anchored to the wall second   */
+    CLK_SND_CHIME_Q1,        /* :15                                          */
+    CLK_SND_CHIME_HALF,      /* :30                                          */
+    CLK_SND_CHIME_Q3,        /* :45                                          */
+    CLK_SND_CHIME_HOUR,      /* :00, before the hour pattern                 */
+    CLK_SND_STRIKE_HOUR,     /* the hour stroke the pattern repeats          */
+    CLK_SND_JUMP_MINUTE,     /* a minute row's step (D41)                    */
+    CLK_SND_JUMP_HOUR,       /* an hour row's step                           */
+    CLK_SND_JUMP_DATE,       /* a calendar row's step at midnight            */
+    CLK_SND_MORSE_DIT,       /* the morse pattern's two symbols              */
+    CLK_SND_MORSE_DAH,
+    CLK_SND_STRIKE_QUARTER,  /* the repeater's ting-tang                     */
+    CLK_SND_STRIKE_MINUTE,   /* the repeater's high stroke                   */
+    CLK_SND_SLOTS            /* 13 */
+};
+
+/* The hour pattern (§5.1), carried in every sound row's `kind` column and required
+ * to agree across them. */
+enum {
+    CLK_PAT_COUNT = 0, CLK_PAT_SHIPS_BELLS, CLK_PAT_MORSE, CLK_PAT_REPEATER,
+    CLK_PAT_NONE, CLK_PAT_N
+};
+
+/* A SOUND row's facts ride columns it already has, never a header in the bank: this
+ * projection is pure and runs before a byte of the bank is resident (orb_theme.c's
+ * load order), so only what the table says can be refused at the door.
+ *   src     the encoding: 0 = 16-bit LE mono PCM at 22,050 Hz, the only one wired
+ *   kind    the theme's hour pattern, CLK_PAT_*, the same on every sound row
+ *   flags   EF_LOOP on the tick loop and on nothing else
+ *   vmax    the loop's beat in beats per 100 s (100 = 1/s); 0 on every one-shot
+ *   vmin    the sample the loop's beat 0 starts on, under one beat
+ * The catalogue row is the bare PCM: w samples, h 1, size 2w, at an even offset so
+ * a 16-bit load from the mapped bank is aligned. */
+#define CLK_SND_RATE      22050u
+#define CLK_SND_ENC_PCM16 0u
+#define CLK_SND_F_LOOP    0x01u
+
+/* One projected sound: where its PCM starts inside the section's bank (always
+ * even, so a 16-bit load is aligned) and the row's facts. */
+typedef struct {
+    uint32_t pcm_off;        /* bank-relative */
+    uint32_t n;              /* samples */
+    uint32_t first_beat;
+    uint16_t beat_chz;
+    uint8_t  slot;           /* CLK_SND_* */
+    uint8_t  flags;          /* CLK_SND_F_* */
+} clk_sound_t;
+
 /** The caller's room, its own clock_assets.h, and where the result goes. Every
  *  out pointer is required; nothing here allocates, and nothing here writes a
  *  byte outside the capacities the caller declared. */
@@ -77,6 +129,15 @@ typedef struct {
     clk_aux_t       *aux;
     uint32_t         aux_cap;
     uint32_t         out_n_aux;
+
+    /* D39: the sound table, one clk_sound_t per SOUND row in slot order, and the
+     *  hour pattern they agree on (CLK_PAT_NONE when no row carries one). Same
+     *  contract as the two tables above: NULL/0 refuses a bundle that names a
+     *  sound, so a dial never comes up quietly missing its chimes. */
+    clk_sound_t     *sounds;
+    uint32_t         sound_cap;
+    uint32_t         out_n_sounds;
+    uint8_t          out_pattern;
 
     /* Out: where the section's bank sits inside a mapped art region, so a
      *  multi-section bundle's clock pixels are found by adding this to the

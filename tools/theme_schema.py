@@ -642,7 +642,31 @@ CLOCK_SLOTS = (
     ("ptr5",          "aux",    5,    "pointer 5: one plate, moved by the row's own drive"),
     ("ptr6",          "aux",    6,    "pointer 6: one plate, moved by the row's own drive"),
     ("ptr7",          "aux",    7,    "pointer 7: one plate, moved by the row's own drive"),
+    # D39: the sound slots, one per event (docs/sound-plan.md §3.1). The order IS the
+    # slot number main/art/orb_clock3.h's CLK_SND_* enum reads, and the suite pins it.
+    # Played by the clock's sound policy, never drawn, so none is in CLOCK_SLOTS_DRAWN.
+    ("tick_loop",     "sound",  0,    "the tick loop, anchored to the wall second"),
+    ("chime_q1",      "sound",  1,    "the :15 chime"),
+    ("chime_half",    "sound",  2,    "the :30 chime"),
+    ("chime_q3",      "sound",  3,    "the :45 chime"),
+    ("chime_hour",    "sound",  4,    "the :00 chime, before the hour pattern"),
+    ("strike_hour",   "sound",  5,    "the hour stroke the pattern repeats"),
+    ("jump_minute",   "sound",  6,    "a minute row's step (D41)"),
+    ("jump_hour",     "sound",  7,    "an hour row's step"),
+    ("jump_date",     "sound",  8,    "a calendar row's step at midnight"),
+    ("morse_dit",     "sound",  9,    "the morse pattern's short symbol"),
+    ("morse_dah",     "sound",  10,   "the morse pattern's long symbol"),
+    ("strike_qtr",    "sound",  11,   "the repeater's quarter ting-tang"),
+    ("strike_min",    "sound",  12,   "the repeater's minute stroke"),
 )
+
+# D39: the clock's sound vocabulary, read back out of CLOCK_SLOTS so the two cannot
+# drift: the slot names in slot order, the hour patterns (orb_clock3.h CLK_PAT_*),
+# and the one encoding a sound row may name.
+CLOCK_SOUND_SLOTS = tuple(n for n, c, _s, _w in CLOCK_SLOTS if c == "sound")
+HOUR_PATTERNS = ("count", "ships_bells", "morse", "repeater", "none")
+SOUND_RATE = 22050           # the one rate the engine runs (orb_sound.h ORB_SOUND_RATE)
+SOUND_ENC_PCM16 = 0          # a sound row's `src`: 16-bit LE mono PCM at SOUND_RATE
 
 # The clock's own frame-to-value domain for a WINDOW complication (D32 ruling B):
 # source name -> (value_min, plate count). Only fixed calendar domains appear; a
@@ -704,7 +728,7 @@ ELEM_FRAMES_MAX = 360  # bound on frame0+n_frames (av-kit's busiest bank uses 20
 # a reader that has never heard of class 8 refuses it whole (D26) rather than let a
 # pointer that should be turning sit still.
 CLASS_NAMES = ("text", "sprite", "hand", "plate", "ring", "bank", "layer", "status",
-               "aux", "preview")
+               "aux", "preview", "sound")
 CLASS_TEXT, CLASS_SPRITE, CLASS_HAND, CLASS_PLATE = 0, 1, 2, 3
 CLASS_RING, CLASS_BANK, CLASS_LAYER, CLASS_STATUS = 4, 5, 6, 7
 CLASS_AUX = 8
@@ -716,6 +740,14 @@ CLASS_AUX = 8
 # AUX at 8: a theme that predates this build never names the slot, and a theme
 # that does names it against a class this writer stamps and this schema reads.
 CLASS_PREVIEW = 9
+# D39's append: a sound. One waveform per event slot an app declares — 16-bit mono PCM
+# at SOUND_RATE, carried as the catalogue row's plane with w samples and h 1, so a
+# theme's bank pays w*h*2 for it, the shape orb_asset_slot_bytes() gives the class.
+# Its facts ride the row's own columns (check_clock_sounds), never a header in the
+# bank: the device's projection is pure and runs before the bank is resident, so only
+# what the table says can be refused at the door. Appended at 10 without moving
+# CLASS_ABI, the AUX and PREVIEW precedent.
+CLASS_SOUND = 10
 
 # How an AUX row moves, in the order clk_aux_t.kind reads it. The first three are the
 # vocabulary clk_types.h has always carried; the two slide kinds are D34's append and
@@ -736,7 +768,7 @@ CLASS_APP_ADV = (CLASS_BANK, CLASS_TEXT, CLASS_STATUS)
 # of a composited slot is a mistake about what the class is. A PREVIEW is one plane
 # (theme_schema.CLASS_PREVIEW's slot_bytes is RGB565, and the picker reads it
 # transiently as one picture): a second frame is a mistake about that too.
-CLASS_NO_ANIM = (CLASS_LAYER, CLASS_STATUS, CLASS_PREVIEW)
+CLASS_NO_ANIM = (CLASS_LAYER, CLASS_STATUS, CLASS_PREVIEW, CLASS_SOUND)
 
 
 def class_id(name):
@@ -813,11 +845,21 @@ def check_element(rec, where="elem"):
     # decides which of the two vocabularies the byte is read in, exactly as the class
     # already decides whether `degrees` is a face or a carriage's start.
     kind, src = int(rec["kind"]), int(rec["src"])
-    if kind and cls not in (CLASS_BANK, CLASS_AUX):
+    # D39 widens the pair once more, the same way D34 did: on a SOUND row `kind` is the
+    # app's hour pattern and `src` the encoding. check_clock_sounds reads them.
+    if cls == CLASS_SOUND:
+        if src != SOUND_ENC_PCM16:
+            raise ValueError("%s.src: a sound in encoding %d — this build plays 16-bit "
+                             "PCM at %d Hz (encoding %d) and nothing else"
+                             % (where, src, SOUND_RATE, SOUND_ENC_PCM16))
+        if not 0 <= kind < len(HOUR_PATTERNS):
+            raise ValueError("%s.kind: %d is not an hour pattern (%s, 0..%d)"
+                             % (where, kind, "/".join(HOUR_PATTERNS), len(HOUR_PATTERNS) - 1))
+    elif kind and cls not in (CLASS_BANK, CLASS_AUX):
         raise ValueError("%s.kind: %d on a %s row — how a row draws or moves is a "
                          "driven element's question, and this class answers it with "
                          "its slot" % (where, kind, CLASS_NAMES[cls]))
-    if src and cls not in (CLASS_BANK, CLASS_AUX):
+    if src and cls not in (CLASS_BANK, CLASS_AUX, CLASS_SOUND):
         raise ValueError("%s.src: %d on a %s row — what drives a row is a driven "
                          "element's question, and this class answers it with "
                          "its slot" % (where, src, CLASS_NAMES[cls]))
@@ -939,6 +981,103 @@ def check_element(rec, where="elem"):
                          "to close" % (where, CLASS_NAMES[cls]))
     return rec
 
+
+
+def check_clock_sounds(recs, sprites, second_sweep, tick_rate):
+    """D39: the clock's sound rows, refused for the reasons main/art/orb_clock3.c
+    refuses them, sentence for sentence where a sentence can be shared. `sprites` is
+    the section's catalogue as (off, size, w, h) tuples; `second_sweep`/`tick_rate`
+    are the section scalars the tick loop's beat is held against. Returns the hour
+    pattern the rows agree on, or None when there are none."""
+    at = {}
+    for i, r in enumerate(recs):
+        if int(r["class"]) != CLASS_SOUND:
+            continue
+        slot = int(r["slot"])
+        if slot >= len(CLOCK_SOUND_SLOTS):
+            raise ValueError("a sound at slot %d: the clock declares %d sound slots"
+                             % (slot, len(CLOCK_SOUND_SLOTS)))
+        if int(r["n_frames"]) != 1:
+            raise ValueError("a sound at slot %d names %d planes: a sound is one waveform"
+                             % (slot, int(r["n_frames"])))
+        if int(r["w"]) or int(r["h"]):
+            raise ValueError("element %d is a sound sized %dx%d: a sound places nothing, "
+                             "and its length is its plane's"
+                             % (int(r["n"]), int(r["w"]), int(r["h"])))
+        at[slot] = r
+    pattern = None
+    for slot in sorted(at):
+        r = at[slot]
+        off, size, w, h = sprites[int(r["frame0"])][:4]
+        if h != 1 or w < 2 or size != w * 2:
+            raise ValueError("sound slot %d's plane is %dx%d in %d B: a sound is w samples "
+                             "by 1, two bytes each" % (slot, w, h, size))
+        if off & 1:
+            raise ValueError("sound slot %d starts at odd offset %d: its samples would "
+                             "load unaligned" % (slot, off))
+        kind = int(r["kind"])
+        if pattern is not None and kind != pattern:
+            raise ValueError("sound slot %d names hour pattern %d and an earlier sound "
+                             "names %d: a theme has one pattern" % (slot, kind, pattern))
+        pattern = kind
+        loop = bool(int(r["flags"]) & EF_LOOP)
+        tick = slot == CLOCK_SOUND_SLOTS.index("tick_loop")
+        if tick and not loop:
+            raise ValueError("the tick loop is not flagged to loop: it would tick once "
+                             "through and stop")
+        if loop and not tick:
+            raise ValueError("sound slot %d is flagged to loop: only the tick loop runs "
+                             "until it is stopped" % slot)
+        vmax, vmin = int(r["vmax"]), int(r["vmin"])
+        if tick:
+            if not vmax:
+                raise ValueError("the tick loop names no beat: the dial cannot hold it "
+                                 "against the seconds hand")
+            if (w * vmax) % (SOUND_RATE * 100):
+                raise ValueError("the tick loop's %d samples are not a whole number of "
+                                 "beats at %d beats per 100 s" % (w, vmax))
+            step = tick_rate or 1
+            if not second_sweep and vmax != step * 100:
+                raise ValueError("the tick loop beats %d.%02d times a second and the "
+                                 "seconds hand steps %d: the sound would walk off the hand"
+                                 % (vmax // 100, vmax % 100, step))
+            if vmin * vmax >= SOUND_RATE * 100:
+                raise ValueError("the tick loop's first beat at sample %d sits past one "
+                                 "beat" % vmin)
+        elif vmax or vmin:
+            raise ValueError("sound slot %d carries a beat: only the tick loop has one"
+                             % slot)
+    if pattern is not None:
+        name = HOUR_PATTERNS[pattern]
+        has = lambda n: CLOCK_SOUND_SLOTS.index(n) in at
+        if name in ("count", "ships_bells") and not has("strike_hour"):
+            raise ValueError("the hour pattern strikes and the theme carries no hour stroke")
+        if name == "morse" and not (has("morse_dit") and has("morse_dah")):
+            raise ValueError("the hour pattern is morse and the theme lacks a dit or a dah")
+        if name == "repeater" and not (has("strike_hour") and has("strike_qtr")
+                                       and has("strike_min")):
+            raise ValueError("the hour pattern is a repeater and the theme lacks one of "
+                             "its three strokes")
+    return pattern
+
+
+def sound_row(slot, frame0, pattern="none", beat_chz=0, first_beat=0, n=None):
+    """A blank element row filled as a clock sound row (CLOCK_SOUND_SLOTS name or
+    index). The writer places the plane; this only states the row's facts."""
+    rec = blank_element()
+    rec["class"] = CLASS_SOUND
+    rec["slot"] = slot if isinstance(slot, int) else CLOCK_SOUND_SLOTS.index(slot)
+    rec["frame0"] = frame0
+    rec["n_frames"] = 1
+    rec["kind"] = pattern if isinstance(pattern, int) else HOUR_PATTERNS.index(pattern)
+    rec["src"] = SOUND_ENC_PCM16
+    tick = rec["slot"] == CLOCK_SOUND_SLOTS.index("tick_loop")
+    rec["flags"] = EF_LOOP if tick else 0
+    rec["vmax"] = beat_chz if tick else 0
+    rec["vmin"] = first_beat if tick else 0
+    if n is not None:
+        rec["n"] = n
+    return rec
 
 
 def check_table(recs):
@@ -1143,7 +1282,7 @@ if __name__ == "__main__":
     assert ELEMENT_WORDS == 25 == len(ELEMENT_FIELDS), "element row width moved"
     assert ELEMENT_WORDS_V3 == 23 and ELEMENT_FIELDS[-2][0] == "parent" \
         and ELEMENT_FIELDS[-1][0] == "delay", "C4's append moved"
-    assert len(CLASS_NAMES) == 10, "class vocabulary moved; orb_assets.h's bound must agree"
+    assert len(CLASS_NAMES) == 11, "class vocabulary moved; orb_assets.h's bound must agree"
     assert len(MOTION_NAMES) == 5, "the pointer's motion vocabulary moved"
     assert class_id("hand") == CLASS_HAND and class_id("nope") is None
     assert class_id("aux") == CLASS_AUX == 8, "D34's class must append at 8, never move"

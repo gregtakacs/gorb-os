@@ -44,7 +44,7 @@ _Static_assert(ORB_ASSET_NAME_MAX == ORBAPP_ASSET_NAME_MAX,
  * while the ledger started naming the wrong failure. */
 const char *const orb_asset_class_name[ORB_ASSET_CLASS_N] = {
     "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux",
-    "preview"
+    "preview", "sound"
 };
 
 static const char *const WHY[10] = {
@@ -164,13 +164,17 @@ bool orb_asset_ref_ok(const char *ref)
  * no reader consults. This function is the one place that answers the size, and
  * orb_theme.c's extent check reads it, so a preview's extents validate against
  * the same rule the baker wrote them with — a `w*h*3` here against the baker's
- * `w*h*2` miscounts by exactly the alpha plane's worth of bytes. */
+ * `w*h*2` miscounts by exactly the alpha plane's worth of bytes.
+ *
+ * SOUND is not pixels at all, and borrows the same two-byte shape: its catalogue
+ * row names the payload (header plus PCM) as w 16-bit words with h 1. */
 uint32_t orb_asset_slot_bytes(orb_asset_class_t cls, uint32_t w, uint32_t h,
                               uint32_t count)
 {
     if (cls == ORB_ASSET_LAYER || cls == ORB_ASSET_STATUS) return 0;
     if (!count) return 0;
     if (cls == ORB_ASSET_PREVIEW) return w * h * 2u * count;   /* RGB565, opaque */
+    if (cls == ORB_ASSET_SOUND)   return w * h * 2u * count;   /* w 16-bit words, h 1 */
     return w * h * 3u * count;                 /* colour w*h*2 + alpha w*h      */
 }
 

@@ -189,6 +189,7 @@ static clk_comp_t         comps[16];
 static clk_aux_t          auxs[CLK_AUX_MAX];   /* D34: the pointer table, sized as the
                                                 * device sizes it — CLK_AUX_MAX is the
                                                 * cap the projection refuses past. */
+static clk_sound_t        snds[CLK_SND_SLOTS];   /* D39: one row per sound slot */
 static orb_bundle_t       b;
 
 static uint8_t *slurp(const char *p, long *n)
@@ -242,6 +243,7 @@ int main(int argc, char **argv)
     io.first_cap = GIF_CAP; io.delays_cap = GIF_CAP;
     io.comps = comps; io.comp_cap = 16;
     io.aux   = auxs;  io.aux_cap   = CLK_AUX_MAX;   /* D34 */
+    io.sounds = snds; io.sound_cap = CLK_SND_SLOTS; /* D39 */
     r = orb_clock3_parse(s, &io);
     if (strcmp(argv[1], "--refuse") == 0) {
         printf("%s %s\n", r ? "refused" : "ACCEPTED", r ? r : "");
@@ -304,6 +306,12 @@ int main(int argc, char **argv)
                (int)a->spr.centerx, (int)a->spr.centery,
                a->parent_row, (unsigned)a->delay_ms);
     }
+    /* D39: slot n pcm_off beat_chz first_beat flags, then the pattern they share. */
+    printf("pattern %u\n", (unsigned)io.out_pattern);
+    for (uint32_t i = 0; i < io.out_n_sounds; i++)
+        printf("sound %u %u %u %u %u %u\n", (unsigned)snds[i].slot, (unsigned)snds[i].n,
+               (unsigned)snds[i].pcm_off, (unsigned)snds[i].beat_chz,
+               (unsigned)snds[i].first_beat, (unsigned)snds[i].flags);
     printf("rects %u\n", (unsigned)(th.bg_mode == 1 ? 1u : 0u));
     printf("rect %u %u %u %u %u\n", rects[0].x, rects[0].y, rects[0].w, rects[0].h,
            rects[0].off);
@@ -383,6 +391,7 @@ def parsed(out):
     rects, bgf, art, scr, cnt, nrect = None, None, None, None, None, None
     comps, bgl, aux = [], {}, []
     rectrows, geom, nmat = [], None, None
+    sounds, pattern = [], None
     for line in out.splitlines():
         w = line.split()
         if w[0] == "scalar":
@@ -397,6 +406,11 @@ def parsed(out):
                                      (int(v) for v in w[1:]))))
         elif w[0] == "nmat":
             nmat = int(w[1])
+        elif w[0] == "sound":
+            sounds.append(dict(zip(("slot", "n", "off", "beat", "first", "flags"),
+                                   (int(v) for v in w[1:]))))
+        elif w[0] == "pattern":
+            pattern = int(w[1])
         elif w[0] == "aux":
             # idx tag kind src x y w h span zero vmin vmax color_off show flags
             # pivotx pivoty centerx centery parent_row delay_ms — the harness's own
@@ -434,7 +448,8 @@ def parsed(out):
             cnt = (int(w[1]), int(w[2]))
     return dict(sc=sc, spr=spr, first=first, delay=delay, rects=rects, bgf=bgf,
                 art=art, scr=scr, counts=cnt, nrect=nrect, comps=comps, bgl=bgl,
-                aux=aux, rectrows=rectrows, geom=geom, nmat=nmat)
+                aux=aux, rectrows=rectrows, geom=geom, nmat=nmat,
+                sounds=sounds, pattern=pattern)
 
 
 SCALARS = ("bg", "plate_follow", "shadow_on", "shadow_dx", "shadow_dy",
@@ -1765,6 +1780,275 @@ def c4_battery(exe, base):
           "stride/stamp, one-frame tempo")
 
 
+# ---------------------------------------------------------------------------
+# D39 — sounds. A clock theme's sounds are SOUND rows whose facts ride their own
+# columns and whose planes are bare PCM at the head of the catalogue
+# (tools/orbsound.py). Every vector below goes through the shipped C projection and
+# through theme_schema.check_clock_sounds, and the two must agree: an accept is an
+# accept at both ends, and a refusal is refused at both in the same words.
+# ---------------------------------------------------------------------------
+import orbsound as osnd            # noqa: E402
+
+D39_LOOP_N = ts.SOUND_RATE * 8      # an 8 s loop: a whole number of beats at 1/2/4/8
+
+
+def d39_pcm(n, v=0x0102):
+    return _st.pack("<%dh" % n, *([v] * n))
+
+
+def d39_forge(base, sounds, pattern="none", abi=4, tamper=None, check=False):
+    """The pair-forged section with `sounds` put in by the writer, then `tamper`
+    (els, sc, art, spr) applied to the table it produced. Returns (path, py_verdict):
+    py_verdict is None when check_clock_sounds accepts the final table, else its
+    sentence."""
+    box = {}
+
+    def mutate(els, sc, art, spr):
+        c4_defaults(els, sc, art, spr)
+        sec = {"elements": els, "scalars": sc, "sprites": spr, "art": art}
+        osnd.add_sounds(sec, sounds, pattern, check=check)
+        if tamper:
+            tamper(els, sc, art, spr)
+        try:
+            ts.check_clock_sounds(els, [(int(p["off"]), int(p["size"]), int(p["w"]),
+                                         int(p["h"])) for p in spr],
+                                  int(sc.get("second_sweep", 0)), int(sc.get("tick_rate", 0)))
+            box["py"] = None
+        except ValueError as e:
+            box["py"] = str(e)
+    return c4_forge(base, abi, mutate), box["py"]
+
+
+def d39_step(base):
+    """The base dial's seconds cadence, in the loop's beat unit."""
+    _h, secs = ob.read_bundle(base)
+    sc = [s for s in secs if s["blob"]["slug"] == "clock"][0]["blob"]["scalars"]
+    return int(sc["second_sweep"]), int(sc["tick_rate"]) or 1
+
+
+def d39_battery(exe, base):
+    sweep, step = d39_step(base)
+    beat = 100 if sweep else step * 100     # a sweeping dial ticks at the balance's beat
+    full = [{"slot": "tick_loop", "pcm": d39_pcm(D39_LOOP_N), "beat_chz": beat,
+             "first_beat": 7},
+            {"slot": "chime_hour", "pcm": d39_pcm(30001)},
+            {"slot": "strike_hour", "pcm": d39_pcm(22050)},
+            {"slot": "jump_minute", "pcm": d39_pcm(2205)}]
+
+    # ---- accept: four sounds, pattern count, at the head, every pixel shifted ----
+    plain = parsed(run(exe, "--dump3f", c4_forge(base, 4, c4_defaults))[1])
+    path, py = d39_forge(base, full, "count")
+    rc, out, err = run(exe, "--dump3f", path)
+    ck(rc == 0 and py is None,
+       "an honest four-sound table was refused (C %r, py %r)" % (out[:240], py))
+    g = parsed(out)
+    got = [(x["slot"], x["n"], x["off"], x["beat"], x["first"], x["flags"]) for x in g["sounds"]]
+    head = 2 * (D39_LOOP_N + 30001 + 22050 + 2205)
+    want = [(0, D39_LOOP_N, 0, beat, 7, 1),
+            (4, 30001, 2 * D39_LOOP_N, 0, 0, 0),
+            (5, 22050, 2 * (D39_LOOP_N + 30001), 0, 0, 0),
+            (6, 2205, 2 * (D39_LOOP_N + 30001 + 22050), 0, 0, 0)]
+    ck(got == want, "the projected sounds are %s, not %s" % (got, want))
+    ck(g["pattern"] == ts.HOUR_PATTERNS.index("count"),
+       "the shared pattern projected as %s, not count" % g["pattern"])
+    ck(all(x["off"] % 2 == 0 for x in g["sounds"]), "a sound projected at an odd offset")
+    # the pixels moved by exactly the sounds' bytes and nothing else changed
+    ck(g["spr"]["hand"][0][10] == plain["spr"]["hand"][0][10] + head and
+       g["sc"]["plate_off"][0] == plain["sc"]["plate_off"][0] + head,
+       "the hour hand / plate did not move by the %d sound bytes put before them" % head)
+    ck(g["counts"][1] == plain["counts"][1] + 4,
+       "the catalogue grew by %d rows for four sounds" % (g["counts"][1] - plain["counts"][1]))
+    # strip is the exact inverse
+    hdr, secs = ob.read_bundle(path)
+    s0 = secs[0]
+    sec = {"elements": [dict(e) for e in s0["blob"]["elements"]],
+           "scalars": dict(s0["blob"]["scalars"]),
+           "sprites": [dict(p) for p in s0["blob"]["sprites"]], "art": bytearray(s0["art"])}
+    osnd.strip_sounds(sec)
+    _h0, base_secs = ob.read_bundle(c4_forge(base, 4, c4_defaults))
+    b0 = base_secs[0]
+    ck(bytes(sec["art"]) == bytes(b0["art"]) and
+       [p["off"] for p in sec["sprites"]] == [p["off"] for p in b0["blob"]["sprites"]] and
+       sec["scalars"]["plate_off"] == b0["blob"]["scalars"]["plate_off"],
+       "strip_sounds did not return the table and bank it started from")
+    print("  D39 accept: four sounds at the head, pixels shifted by %d B, strip inverts" % head)
+
+    # ---- accept: morse needs only its two symbols; a v3 stamp carries sounds too ----
+    path, py = d39_forge(base, [{"slot": "morse_dit", "pcm": d39_pcm(1323)},
+                                {"slot": "morse_dah", "pcm": d39_pcm(3969)}], "morse")
+    rc, out, err = run(exe, "--dump3f", path)
+    ck(rc == 0 and py is None and parsed(out)["pattern"] == ts.HOUR_PATTERNS.index("morse"),
+       "a morse pair was refused or lost its pattern: %r %r" % (out[:200], py))
+    path, py = d39_forge(base, full, "count", abi=3)
+    rc, out, err = run(exe, "--dump3f", path)
+    ck(rc == 0 and py is None and len(parsed(out)["sounds"]) == 4,
+       "four sounds under a v3 stamp were refused: %r %r" % (out[:200], py))
+    print("  D39 accept: morse with dit and dah alone; a v3 stamp carries sounds")
+
+    # ---- refusals: one fact bent per vector, both ends, the same words ----
+    def row_of(els, slot):
+        return [e for e in els if int(e["class"]) == ts.CLASS_SOUND and
+                int(e["slot"]) == ts.CLOCK_SOUND_SLOTS.index(slot)][0]
+
+    odd_tail = d39_odd_tail
+
+    def set_row(which, **kw):
+        def t(els, sc, art, spr):
+            row_of(els, which).update(kw)
+        return t
+
+    def plane_h2(els, sc, art, spr):
+        sp = spr[int(row_of(els, "strike_hour")["frame0"])]
+        sp["w"], sp["h"] = sp["w"] // 2, 2
+
+    def hand_steps(els, sc, art, spr):
+        sc["second_sweep"], sc["tick_rate"] = 0, 4 if step != 4 else 2
+
+    no_strike = [x for x in full if x["slot"] != "strike_hour"]
+    odd_loop = [dict(full[0], pcm=d39_pcm(D39_LOOP_N + 1))] + full[1:]
+    vectors = (
+        ("odd offset", [], "count", odd_tail, "starts at odd offset"),
+        ("patterns disagree", full, "count",
+         set_row("jump_minute", kind=ts.HOUR_PATTERNS.index("morse")), "a theme has one pattern"),
+        ("loop not looped", full, "count", set_row("tick_loop", flags=0), "not flagged to loop"),
+        ("chime looped", full, "count", set_row("chime_hour", flags=ts.EF_LOOP),
+         "only the tick loop runs"),
+        ("no beat", full, "count", set_row("tick_loop", vmax=0), "names no beat"),
+        ("part beats", odd_loop, "count", None, "not a whole number of beats"),
+        ("beat off the hand", full, "count", hand_steps, "the sound would walk off the hand"),
+        ("a sound sized like a sprite", full, "count", set_row("chime_hour", w=4, h=4),
+         "a sound places nothing"),
+        ("first beat past a beat", full, "count",
+         set_row("tick_loop", vmin=ts.SOUND_RATE * 100 // beat), "sits past one beat"),
+        ("beat on a chime", full, "count", set_row("chime_hour", vmax=100),
+         "only the tick loop has one"),
+        ("a plane two rows high", full, "count", plane_h2, "a sound is w samples by 1"),
+        ("count with no stroke", no_strike, "count", None, "carries no hour stroke"),
+        ("morse with no dah", [{"slot": "morse_dit", "pcm": d39_pcm(1323)}], "morse", None,
+         "lacks a dit or a dah"),
+        ("repeater short a stroke", full, "repeater", None, "lacks one of its"),
+        ("slot past the vocabulary", full, "count", set_row("jump_minute", slot=13),
+         "declares 13 sound slots"),
+    )
+    if sweep:
+        vectors = tuple(v for v in vectors if v[0] != "beat off the hand") + (
+            ("beat off the hand", full, "count", hand_steps,
+             "the sound would walk off the hand"),)
+    refused = 0
+    for what, sounds, pat, tamper, needle in vectors:
+        try:
+            path, py = d39_forge(base, sounds, pat, tamper=tamper)
+        except ValueError as e:              # the writer itself refused the forge
+            ck(False, "%s: the forge did not build (%s)" % (what, e))
+            continue
+        rc, out, err = run(exe, "--refuse", path)
+        ck(rc == 0 and needle in out,
+           "%s: the device did not refuse in its own words (%r): %r" % (what, needle, out[:240]))
+        # the schema refuses the same table; a refusal check_element owns (encoding,
+        # pattern range, plane count) is the writer's, raised when the row is packed
+        py_ok = py is not None and needle in py
+        if not py_ok:
+            try:
+                ts.check_table(c4_forge_rows(path))
+            except ValueError as e:
+                py_ok = needle in str(e) or what in ("encoding 1", "pattern 9", "two planes")
+        ck(py_ok, "%s: theme_schema did not refuse it (%r): %r" % (what, needle, py))
+        refused += 1
+    # The writer refuses these three when it packs the row (check_element), so they
+    # reach the device only as a damaged card: an honest file, one row word forged.
+    honest, _py = d39_forge(base, full, "count")
+    chime = [i for i, e in enumerate(c4_forge_rows(honest))
+             if int(e["class"]) == ts.CLASS_SOUND and
+             int(e["slot"]) == ts.CLOCK_SOUND_SLOTS.index("chime_hour")][0]
+    for what, word, val, needle in (("encoding 1", 18, 1, "encoding 1"),
+                                    ("pattern 9", 17, 9, "hour pattern 9"),
+                                    ("two planes", 7, 2, "is one waveform")):
+        rc, out, err = run(exe, "--refuse", elem_tamper(honest, chime, word, val))
+        ck(rc == 0 and needle in out,
+           "%s: the device did not refuse a forged word in its own words (%r): %r"
+           % (what, needle, out[:240]))
+        rows = c4_forge_rows(honest)
+        rows[chime][("src", "kind", "n_frames")[(18, 17, 7).index(word)]] = val
+        try:
+            ts.check_table(rows)
+            ck(False, "%s: check_element let the writer pack it" % what)
+        except ValueError:
+            pass
+        refused += 1
+    print("  D39 refusals: %d vectors, refused by the device and the schema alike" % refused)
+
+    if "--mutations" in sys.argv:
+        d39_mutants(exe, base, full)
+
+
+def d39_odd_tail(els, sc, art, spr):
+    """A chime on an odd offset: a 1x1 pixel plane (three bytes) at the bank's tail
+    when it is even, then the sound after it, with its row — the placement a writer
+    that appended instead of putting sounds at the head would produce."""
+    if len(art) % 2 == 0:
+        spr.append({"off": len(art), "size": 3, "w": 1, "h": 1, "diffx": 0, "diffy": 0})
+        art.extend(b"\x00\x00\x00")
+    n = 2205
+    spr.append({"off": len(art), "size": 2 * n, "w": n, "h": 1, "diffx": 0, "diffy": 0})
+    art.extend(b"\x01\x02" * n)
+    els.append(ts.sound_row("chime_hour", len(spr) - 1, "none",
+                            n=max(int(e["n"]) for e in els) + 1))
+
+
+def c4_forge_rows(path):
+    _h, secs = ob.read_bundle(path)
+    return [dict(e) for e in secs[0]["blob"]["elements"]]
+
+
+D39_MUTANTS = (
+    # (what, old, new, sounds-builder tag) — each guard broken alone and asked about
+    # the vector only it refuses.
+    ("the odd-offset guard", "if (sp.off & 1u)", "if (0 && (sp.off & 1u))", "odd offset"),
+    ("the pattern agreement", "if (pattern >= 0 && (int)e.kind != pattern)", "if (0)",
+     "patterns disagree"),
+    ("the loop flag on the tick", "if (slot == CLK_SND_TICK_LOOP && !loop)", "if (0)",
+     "loop not looped"),
+    ("the whole-beats guard",
+     "if (((uint64_t)sp.w * bchz) % ((uint64_t)CLK_SND_RATE * 100u))", "if (0)", "part beats"),
+    ("the beat-against-the-hand guard", "if (!t->second_sweep && bchz != step * 100u)",
+     "if (0)", "beat off the hand"),
+    ("the stroke the pattern needs",
+     "if ((pattern == CLK_PAT_COUNT || pattern == CLK_PAT_SHIPS_BELLS) && !strike)", "if (0)",
+     "count with no stroke"),
+)
+
+
+def d39_mutants(exe, base, full):
+    sweep, step = d39_step(base)
+
+    def row(els, slot):
+        return [e for e in els if int(e["class"]) == ts.CLASS_SOUND and
+                int(e["slot"]) == ts.CLOCK_SOUND_SLOTS.index(slot)][0]
+
+    def hand_steps(els, sc, art, spr):
+        sc["second_sweep"], sc["tick_rate"] = 0, 4 if step != 4 else 2
+
+    inputs = {
+        "odd offset": ([], "none", d39_odd_tail),
+        "patterns disagree": (full, "count", lambda e, s, a, p: row(e, "jump_minute").update(
+            kind=ts.HOUR_PATTERNS.index("morse"))),
+        "loop not looped": (full, "count", lambda e, s, a, p: row(e, "tick_loop").update(flags=0)),
+        "part beats": ([dict(full[0], pcm=d39_pcm(D39_LOOP_N + 1))] + full[1:], "count", None),
+        "beat off the hand": (full, "count", hand_steps),
+        "count with no stroke": ([x for x in full if x["slot"] != "strike_hour"], "count", None),
+    }
+    for what, old, new, tag in D39_MUTANTS:
+        sounds, pat, tamper = inputs[tag]
+        path, _py = d39_forge(base, sounds, pat, tamper=tamper)
+        hrc, hout, _ = run(exe, "--refuse", path)
+        ck("refused" in hout, "%s: the honest reader accepted %s" % (what, tag))
+        m = build(mut=(old, new))
+        rc, out, err = run(m, "--refuse", path)
+        ck(rc != hrc or out != hout, "uncaught D39 mutant: %s — broken, it answered %r"
+           % (what, out[:160]))
+    print("  D39 mutants: %d guards, each asked about its own lie" % len(D39_MUTANTS))
+
+
 if __name__ == "__main__":
     EXE, PAIR = main()
     refusals(EXE, PAIR)
@@ -1772,6 +2056,7 @@ if __name__ == "__main__":
     s31_battery(EXE, PAIR)
     d34_battery(EXE, PAIR)
     c4_battery(EXE, PAIR)
+    d39_battery(EXE, PAIR)
     if "--mutations" in sys.argv:
         mutants(EXE, PAIR)
     print("%d checks, %d failures" % (checks[0], len(failures)))

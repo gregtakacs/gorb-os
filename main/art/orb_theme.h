@@ -42,6 +42,7 @@
 
 #include "esp_err.h"
 #include "clk_types.h"   /* clk_theme_t, clk_bg_rect_t + the baked-in fallback */
+#include "orb_clock3.h"  /* clk_sound_t, CLK_SND_*: orb_theme_sounds() answers in them */
 #include "orb_bundle.h"  /* orb_bundle_sec_t — orb_theme_live_sec() hands one back */
 #include "orb_assets.h"  /* orb_asset_ans_t, ORB_ASSET_PREVIEW — orb_theme_preview_read answers */
 
@@ -128,6 +129,11 @@ esp_err_t orb_theme_src_register(void);
 
 /** The resolved geometry; valid from orb_theme_boot() onwards, never NULL. */
 const orb_theme_geo_t *orb_theme_geo(void);
+
+/** D39: the adopted dial's sounds, in slot order, and the hour pattern they share.
+ *  *n is 0 (and the return NULL) when the theme carries none. A row's pcm_off is
+ *  relative to the same bank base orb_theme_geo()->blob_off indexes. */
+const clk_sound_t *orb_theme_sounds(uint32_t *n, uint8_t *pattern);
 
 /** The residency verdict: true only when boot adopted a valid, drawable theme and
  *  published its geometry. Distinct from art_bank_ready(), which answers only

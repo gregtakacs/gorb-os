@@ -622,8 +622,10 @@ def unpack_settings(blob, n):
 # a plane of 255s nobody reads. orb_asset_slot_bytes() gives the two-byte shape for
 # this class and this writer writes the extent the same width, so a preview's extents
 # validate against the rule the reader will apply to them.
+# `sound` (D39) appends the same way: a waveform per event slot, its plane priced at
+# the same two bytes a sample, w samples by h 1.
 ASSET_CLASSES = ("text", "sprite", "hand", "plate", "ring", "bank", "layer", "status",
-                 "aux", "preview")
+                 "aux", "preview", "sound")
 ASSET_MAX      = 16            # rows in one manifest's table; == ORBAPP_ASSETS_MAX
 ASSET_NAME_MAX = 12            # bytes incl NUL, and the name carries NO prefix
 ASSET_OWNER_MAX = SLUG_MAX - 1 # the `<slug>` half of an owner-scoped reference

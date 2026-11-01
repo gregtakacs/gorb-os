@@ -312,8 +312,8 @@ not the default.
   the same theme bakes to the same bytes. It is also the code behind the tab's
   controls (§7), so the defaults come with it.
 
-**The prototype.** `tools/sound_synth_proto.py` (numpy only) is the 2026-10-28
-generator the owner auditioned. Run `python3 tools/sound_synth_proto.py <outdir>`
+**The prototype (retired 2026-11-01; git history keeps it).** `tools/sound_synth_proto.py` (numpy only) was the 2026-10-28
+generator the owner auditioned. It ran as `python3 tools/sound_synth_proto.py <outdir>`
 to write each sound as `.pcm` (16-bit LE mono, 22,050 Hz, headerless) and `.wav`.
 
 - **Ticks.** A short noise impulse rings three tuned two-pole resonators, with
@@ -348,19 +348,19 @@ the loop's deliberate term. The JS port must keep that normalization.
 
 ### 6.1 The rate grid and the audition pack (2026-10-29/30)
 
-Two more prototypes ride beside the first, and they retire with it.
+Two more prototypes rode beside the first and retired with it on 2026-11-01; the
+JS generator carries both their recipes, and `fit()` below lives on in it.
 
-- **`tools/sound_pack_proto.py`** renders the audition pack the owner heard on
+- **`tools/sound_pack_proto.py`** rendered the audition pack the owner heard on
   2026-10-29: 67 sounds in 17 groups, which are §7.1's catalog.
-- **`tools/sound_ticks_proto.py`** renders the rate grid: 16 tick voices × 1, 2,
+- **`tools/sound_ticks_proto.py`** rendered the rate grid: 16 tick voices × 1, 2,
   4 and 8 per second, 64 loops of 352,800 B each.
   - **A voice is a function of the beat, not the rate.** `fit()` cuts any beat
     tail past 85% of the period, with a cosine fade, so a grandfather voice at
     8 per second never smears into its next beat.
   - **Beat error scales with the period**, as it does on a real escapement.
 
-Both import `sound_synth_proto.py` and are seeded. Run from `tools/` with an
-output directory. Rerun on 2026-10-30, they reproduced every one of the 131
+Both imported `sound_synth_proto.py` and were seeded. Rerun on 2026-10-30, they reproduced every one of the 131
 auditioned files byte for byte, and all 64 grid seams passed the check below.
 
 **The seam check, corrected.** The "last sample to first" step in the table
@@ -372,10 +372,10 @@ percentile of the loop's own second differences: a seam is only a defect if it
 is sharper than anything inside the loop. All 5 original loops, all 13 pack
 loops and all 64 grid loops pass it.
 
-**The JS port becomes the authority** and the Python prototype retires once the
-port lands (slice S2). They will not match bit for bit, because numpy's random
-stream is not JS's, but they will match by ear. Keeping both would be a mirror
-with no test to hold it.
+**The JS port is the authority.** The Python prototypes retired on 2026-11-01,
+once the owner had heard the JS output on the orb. The two never matched bit for
+bit (numpy's random stream is not JS's), only by ear, and keeping both would have
+been a mirror with no test to hold it.
 
 **If a recorded default is ever wanted** (a real grandfather clock), it cannot be
 generated. It ships in the region as Opus or OGG, about 50 KB for 8 s, decoded by
@@ -493,28 +493,46 @@ file type or card directory. No WAV ever reaches the device.
 
 Implement up to the question mark and leave these open until ruled.
 
-1. **`orb_svc_t` signatures** for play, stop, gain and anchored loop (§4.1).
+1. ~~**`orb_svc_t` signatures**~~ **Ruled and built, 2026-11-01** (owner: the plane
+   tracker is about to want sound, so sound is an OS service now, not the clock's
+   private call). `CAP_SOUND` is owner cap 8, declared in a manifest as `sound` and
+   revocable on the dial like the other four. Three entries are appended to
+   `orb_svc_t` (26 now): `sound_play(app, slot, flags, delay_ms)`, `sound_stop`,
+   `sound_active`. An app plays **its own theme's sounds by slot** — the
+   `(ORB_ASSET_SOUND, slot)` row of its section, resolved by `orb_sound_app.c` — and
+   never hands the engine a pointer. Flags: loop, and loop anchored to the wall
+   second. Voices are owned by the app's row, and `orb_svc_app_suspended` silences
+   them (C7). The clock declares `sound` and reads its grant every tick, so a
+   revoke silences it; it still calls the engine's C surface for what an app does
+   not get (exact strike times, re-anchoring, the lease).
 2. ~~**Payload header layout**~~ **Ruled by the build, 2026-10-31:** there is
    none; the facts ride the row's columns (§3.2).
-3. **Encodings beyond PCM16**: 16 kHz and IMA-ADPCM, per slot or per bundle
-   (§3.2).
+3. **Encodings beyond PCM16: shelved, 2026-11-01.** The owner's note for when it
+   comes back: the orb's speaker is not a hi-fi device, so IMA-ADPCM (4:1) is
+   probably the right default from the start, its loss inaudible through it.
 4. ~~**Sweeping hands**: what a tick loop anchors to when `second_sweep` is set~~
    **Ruled 2026-10-30:** the balance's beat, anchored to the wall second (§4.2).
-7. **The repeater's trigger** (§5.1): which gesture asks the clock to sound the
-   time.
-5. ~~**Volume**~~ **Built 2026-10-31 as global device config**, beside the tz:
-   `GET/POST /api/v1/sound` (NVS namespace `sound`) carries the level 0..100
-   (the ES8311's 0.5 dB steps, 60 = -20 dB), the tick/chime/strike/jump
-   switches, quiet hours (default 22–7), the glass offset (default 90 ms, M-S2's
-   to correct) and an hour-pattern override. No dial menu row yet.
-6. **The DMA ring size**: the mute policy is built (§4.3); M-S1's number may
-   still ask for a bigger ring.
+5. ~~**Volume**~~ **Built as OS settings, 2026-10-31 / 2026-11-01.** Level and quiet
+   hours are the OS's and apply to every app's sound: the engine itself refuses a
+   voice in quiet hours and drops one that is sounding when they begin (a voice
+   flagged `ORB_SOUND_ASKED` — a bench test, a repeater press — is exempt). The
+   owner sets them on the dial's **Sound** page (menu → Sound: Volume steps
+   off/20/40/60/80/100, Quiet hours steps off/22–7/23–7/21–7/22–6, and a test
+   sound), or over `GET/POST /api/v1/sound`. The clock's own switches (tick,
+   chimes, strikes, jumps), the glass offset and the pattern override stay on
+   `/api/v1/sound`. 60 is the default the owner settled on by ear.
+6. ~~**The DMA ring size**~~ **Settled, 2026-11-01:** the mute policy stands. The
+   owner accepts silence during a theme install or a hub session: both are rare.
+7. ~~**The repeater's trigger**~~ **Ruled and built, 2026-11-01:** a press of the
+   knob while the dial is on the glass. The dial still never arms (the turn keeps
+   walking the carousel), and the press that picks the dial off the carousel is
+   ignored. The theme must carry `strike_hour`, `strike_qtr` and `strike_min`.
 
 ## 9. Slices, in the order that de-risks them
 
 | Slice | Content | Gate |
 |---|---|---|
-| **S1** | Prototype generator committed as `tools/sound_synth_proto.py` | **DONE 2026-10-28** |
+| **S1** | Prototype generator committed as `tools/sound_synth_proto.py` | **DONE 2026-10-28**; retired with the other two prototypes on 2026-11-01 |
 | **S2** ✔ | JS generator plus the Sound tab: generate, upload, preview, budget, the §7.1 catalog at every grid rate and the §7.2 preset mapping. Host-side only, no format change. `make_clock_region.py`'s `members()` gains the generator file, and `host_clock_region_test.py`'s member set learns it in the same commit. The prototype retires | the tab renders all defaults; the seam and RMS checks of §6 rerun on the JS output — **DONE 2026-10-31** (`headless-sound.test.js`, `headless-ui.test.js`). The prototypes are kept until the JS output has been heard on the bench |
 | **S3** ✔ | Format: `ORB_ASSET_SOUND` = 10, the row columns (no header, §3.2), the baker's emitter, the C reader, sound slots in `theme_schema.py`'s clock table. Three-way mirror plus mutants, the D34/preview pattern | host suites green with new mutants caught — **DONE 2026-10-31** (D39 battery: 18 refusals both ends, 6 mutants) |
 | **S4** | Bench bring-up: I2S plus ES8311 plus amp on GPIO 46 plays one PCM buffer. Run M-S1 and M-S2 | numbers recorded here before S5 is ruled — **PARTIAL**: codec up on orb-B (chip 8311 at 0x18); nothing heard, M-S1/M-S2 unmeasured (§11.2) |

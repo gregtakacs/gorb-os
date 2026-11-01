@@ -1,11 +1,10 @@
 /* sound-engine.js — D39's default clock sounds, generated rather than shipped.
  *
  * docs/sound-plan.md §6: the clock's editor region carries this file instead of WAVs.
- * It is the JS port of the three prototypes the owner auditioned
- * (tools/sound_synth_proto.py, sound_pack_proto.py, sound_ticks_proto.py) and it is now
- * the authority: they match by ear, not bit for bit (numpy's random stream is not this
- * one), and the seam/RMS/floor checks of §6 run on THIS output in
- * _selftest/headless-sound.test.js.
+ * It is the JS port of the three Python prototypes the owner auditioned, and the only
+ * generator since they retired on 2026-11-01 (git history keeps them, as
+ * tools/sound_{synth,pack,ticks}_proto.py). The seam/RMS/floor checks of §6 run on THIS
+ * output in _selftest/headless-sound.test.js.
  *
  * Everything is 16-bit mono at 22,050 Hz, the one rate the orb's engine runs. Every
  * render is seeded, so a theme bakes to the same bytes twice. Two kinds of output:
@@ -84,7 +83,7 @@
     return 440 * Math.pow(2, (semi + 12 * (parseInt(name[name.length - 1], 10) - 4)) / 12);
   }
 
-  /* ---- primitives (sound_synth_proto.py) --------------------------------------------- */
+  /* ---- primitives (the synth prototype's) --------------------------------------------- */
   function resonator(x, f, q) {
     var w = TAU * f / SR, al = Math.sin(w) / (2 * q), a0 = 1 + al;
     var b0 = al / a0, b2 = -al / a0, a1 = -2 * Math.cos(w) / a0, a2 = (1 - al) / a0;
@@ -160,7 +159,7 @@
     return out;
   }
 
-  /* ---- instruments (sound_pack_proto.py) --------------------------------------------- */
+  /* ---- instruments (the pack prototype's) --------------------------------------------- */
   /* parts: [ratio, amp, decay_s]; detune > 0 doubles each partial into a beating pair */
   function partials(f0, parts, dur, attack, detune) {
     attack = attack === undefined ? 0.002 : attack;
@@ -376,7 +375,7 @@
   }
   function finishLoop(x) { return toPcm(highpassLoop(mean0(x))); }
 
-  /* ---- tick loops (sound_ticks_proto.py): every voice at every rate ----------------- */
+  /* ---- tick loops (the rate-grid prototype's): every voice at every rate ------------ */
   function fit(sig, period) {
     var keep = Math.floor(0.85 * period * SR);
     if (sig.length <= keep) return sig;
@@ -504,7 +503,7 @@
     return finishLoop(circ(evs, LOOP_S * SR));
   }
 
-  /* ---- the one-shot catalog (sound_pack_proto.py + sound_synth_proto.py) ------------ */
+  /* ---- the one-shot catalog (the pack and synth prototypes') ------------------------ */
   function westminster(ids) {
     var ch = {};
     ['G#5', 'F#5', 'E5', 'B4'].forEach(function (nm) { ch[nm] = bell(note(nm), 3.5, 0.9); });

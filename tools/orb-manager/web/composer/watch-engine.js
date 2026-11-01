@@ -798,8 +798,11 @@
       print: 'minimal', numerals: 'all', font: 'grotesk', surface: 'metal', color: 'slate', aging: 0, stains: 0, dust: 0.1, centre: { hour: 1, minute: 1, second: 0 }, comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 0, dist: 0, rot: 0, size: 200, shape: 'circle', style: 'bevel', show: 'free', hour: 12 },
       ] } },
-    station: { name: 'Station', blurb: 'Railway-clock style · bold bars · red disc seconds', hands: 'station', handFinish: 'black', caseStyle: 'polished', caseMetal: 'steel', design: {
-      print: 'station', numerals: 'all', numColor: '#111111', handShade: 'flat', color: 'white', aging: 0, stains: 0, dust: 0, secStyle: 'station', centre: { hour: 1, minute: 1, second: 1 }, hands: { 'centre-second': { finish: 'red' } }, comps: [
+    station: { name: 'Station', blurb: 'Railway-clock style · jumping minute · stop-to-go red disc seconds', hands: 'station', handFinish: 'black', caseStyle: 'polished', caseMetal: 'steel', design: {
+      print: 'station', numerals: 'all', numColor: '#111111', handShade: 'flat', color: 'white', aging: 0, stains: 0, dust: 0, secStyle: 'station', centre: { hour: 1, minute: 1, second: 1 },
+      // D41: the station clock's own rhythm -- the minute jumps on the boundary and the
+      // red seconds disc runs round in 58.5 s, then waits at 12 for the minute to release it
+      hands: { 'centre-second': { finish: 'red', motion: { cadence: 'stop-to-go' } }, 'centre-minute': { motion: { cadence: 'jump' } } }, comps: [
         { id: 'c1', type: 'flare', host: 'dial', angle: 0, dist: 108, rot: 0, size: 9, style: 'print', icon: 'plus', color: '#ffffff', bg: '#e3000f', bgShape: 'rect', bgW: 2.4, bgH: 1.05 },
       ] } },
     luna: { name: 'Luna', blurb: 'Midnight sunburst · big realistic moon at 6', hands: 'dauphine', handFinish: 'gilt', design: {

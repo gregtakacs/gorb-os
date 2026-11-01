@@ -90,7 +90,7 @@
   };
 
   async function main() {
-    const ids = ['flux', 'orbit'];
+    const ids = (new URLSearchParams(location.search).get('ids') || 'flux,orbit').split(',');
     IT.state.dial = ids[0]; IT.state.designs = {};
     await IT.componentDidMount();
     for (const id of ids) {

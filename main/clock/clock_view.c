@@ -1907,8 +1907,68 @@ typedef struct {
     int64_t loop_anchor;
     int     min, hour, mday; /* the last boundary seen; -1 = none yet */
     time_t  last_t;
+    int     mstep;           /* the last sub-minute step index seen; -1 = none */
+    uint8_t steps[3];        /* SND_STEP_*: steps per unit of a row that steps, 0 = none */
+    bool    steps_known;
 } snd_state_t;
 static snd_state_t *s_snd;
+
+/* D41 G5: a jump slot is the sound of a row stepping (docs/sound-plan.md §3.1), so it
+ * plays only on a dial where some row reading that source steps, and on the instant
+ * it does. Three classes, one per slot: minute, hour, calendar. */
+enum { SND_STEP_MIN, SND_STEP_HOUR, SND_STEP_CAL };
+
+static int snd_step_class(uint8_t src)
+{
+    switch (src) {
+    case CLK_SRC_MINUTE: return SND_STEP_MIN;
+    case CLK_SRC_HOUR12: case CLK_SRC_HOUR24: return SND_STEP_HOUR;
+    case CLK_SRC_DATE: case CLK_SRC_WEEKDAY: case CLK_SRC_MONTH: case CLK_SRC_DAY_OF_YEAR:
+        return SND_STEP_CAL;
+    default: return -1;
+    }
+}
+
+/* Steps per unit a cadence makes: jump is one, step N is N, everything else (sweep,
+ * stop-to-go, drag, inherit) has no single instant to sound. */
+static uint8_t snd_cad_steps(uint8_t cad, uint16_t arg)
+{
+    if (cad == CLK_CAD_JUMP) return 1;
+    if (cad == CLK_CAD_STEP) return (uint8_t)(arg ? (arg > 60 ? 60 : arg) : 1);
+    return 0;
+}
+
+static void snd_note_step(uint8_t out[3], int cls, uint8_t n)
+{
+    if (cls >= 0 && n > out[cls]) out[cls] = n;
+}
+
+/* What steps on this dial: every hand slot's driven row (and the railway minute that
+ * jumps without one), every pointer's cadence or its old jump flag, and every
+ * calendar plate, which turns whole values at midnight by construction. */
+static void snd_steps_scan(uint8_t out[3])
+{
+    memset(out, 0, 3);
+    for (int k = 0; k < 5; k++) {
+        if (!clk_theme.hand[k].w || !clk_theme.hand[k].show) continue;
+        const clk_drive_t d = hand_row(k);
+        uint8_t n = snd_cad_steps(d.cadence, d.cad_arg);
+        if (k == 1 && d.cadence == CLK_CAD_INHERIT && !clk_theme.hand_drive[1].src &&
+            clk_theme.second_railway && clk_theme.second_sweep)
+            n = 1;                                       /* the railway minute */
+        snd_note_step(out, snd_step_class(d.src), n);
+    }
+    const orb_theme_geo_t *g = orb_theme_geo();
+    for (uint16_t i = 0; i < g->n_aux && i < CLK_AUX_MAX; i++) {
+        const clk_aux_t *a = &g->aux[i];
+        if ((a->flags & CLK_FLAG_AUX_SHADOW) || !a->spr.show) continue;
+        uint8_t n = snd_cad_steps(a->cadence, a->cad_arg);
+        if (a->cadence == CLK_CAD_INHERIT && (a->flags & CLK_FLAG_JUMP)) n = 1;
+        snd_note_step(out, snd_step_class(a->src), n);
+    }
+    for (uint16_t i = 0; i < g->n_comps && i < CLK_COMP_MAX; i++)
+        if (snd_step_class(g->comps[i].src) == SND_STEP_CAL) out[SND_STEP_CAL] = 1;
+}
 static orb_app_t   *s_lay_app;   /* the clock's row (defined with the layer table below) */
 
 static const clk_sound_t *snd_find(const clk_sound_t *t, uint32_t n, int slot)
@@ -2018,6 +2078,7 @@ static void sound_policy(const struct tm *ti, time_t t, double frac)
         s_snd = heap_caps_calloc(1, sizeof *s_snd, MALLOC_CAP_SPIRAM);
         if (!s_snd) return;
         s_snd->min = s_snd->hour = s_snd->mday = -1;
+        s_snd->mstep = -1;
     }
     orb_sound_lease_renew();
     if (!snd_granted()) {
@@ -2063,6 +2124,23 @@ static void sound_policy(const struct tm *ti, time_t t, double frac)
         }
     }
 
+    /* D41 G5: the minute row's steps inside the minute (a half-minute hand, step 2):
+     * each sounds on its own instant. Step 0 is the minute itself, sounded below. */
+    if (!s_snd->steps_known) { snd_steps_scan(s_snd->steps); s_snd->steps_known = true; }
+    const uint8_t mn = s_snd->steps[SND_STEP_MIN];
+    if (mn >= 2) {
+        const double into = ti->tm_sec + frac;
+        const int idx = (int)(into * mn / 60.0);
+        if (idx != s_snd->mstep) {
+            const bool next_step = s_snd->mstep >= 0 && idx == s_snd->mstep + 1;
+            s_snd->mstep = idx;
+            const double at_s = idx * 60.0 / mn;
+            if (next_step && idx > 0 && into - at_s < 2.0 && !quiet && n && c.jumps)
+                snd_at(snd_find(tab, n, CLK_SND_JUMP_MINUTE),
+                       sec_us - (int64_t)ti->tm_sec * 1000000 + (int64_t)(at_s * 1e6));
+        }
+    }
+
     /* Boundaries. The first reading after boot, and any reading that is not the
      * very next minute, only records where the clock is. */
     const bool first = s_snd->min < 0;
@@ -2077,9 +2155,16 @@ static void sound_policy(const struct tm *ti, time_t t, double frac)
 
     const int64_t at = sec_us - (int64_t)ti->tm_sec * 1000000;   /* the minute's instant */
     if (c.jumps) {
-        snd_at(snd_find(tab, n, CLK_SND_JUMP_MINUTE), at);
-        if (ti->tm_hour != prev_hour) snd_at(snd_find(tab, n, CLK_SND_JUMP_HOUR), at);
-        if (ti->tm_mday != prev_mday) snd_at(snd_find(tab, n, CLK_SND_JUMP_DATE), at);
+        /* D41 G5: only a dial with a stepping row of that source sounds its slot, and
+         * an hour row stepping N times an hour sounds at each of them. */
+        const uint8_t hn = s_snd->steps[SND_STEP_HOUR];
+        const int prev_min = (ti->tm_min + 59) % 60;
+        if (s_snd->steps[SND_STEP_MIN])
+            snd_at(snd_find(tab, n, CLK_SND_JUMP_MINUTE), at);
+        if (hn && (ti->tm_hour != prev_hour || (ti->tm_min * hn) / 60 != (prev_min * hn) / 60))
+            snd_at(snd_find(tab, n, CLK_SND_JUMP_HOUR), at);
+        if (s_snd->steps[SND_STEP_CAL] && ti->tm_mday != prev_mday)
+            snd_at(snd_find(tab, n, CLK_SND_JUMP_DATE), at);
     }
     const int pat = snd_pattern(tab, n, theme_pat);
     const int h12 = ti->tm_hour % 12 ? ti->tm_hour % 12 : 12;

@@ -91,6 +91,10 @@ static clk_theme_t clk_theme;
 static bool     s_gif;
 static uint32_t s_gif_tick = 83;
 static bool     orb_bg_gif_mode(void)    { return s_gif; }
+/* the geometry the step scan walks: only the fields it reads */
+typedef struct { uint16_t n_comps, n_aux; clk_comp_t comps[CLK_COMP_MAX]; clk_aux_t aux[CLK_AUX_MAX]; } orb_theme_geo_t;
+static orb_theme_geo_t s_geo;
+static const orb_theme_geo_t *orb_theme_geo(void) { return &s_geo; }
 static uint32_t orb_bg_gif_tick_ms(void) { return s_gif_tick; }
 """
 
@@ -312,6 +316,43 @@ C_BODY = r"""
         }
     }
 
+    /* G5: what steps on a dial decides which jump slots sound. */
+    {
+        uint8_t st[3];
+        memset(&clk_theme, 0, sizeof clk_theme); memset(&s_geo, 0, sizeof s_geo);
+        for (int k = 0; k < 3; k++) { clk_theme.hand[k].w = 10; clk_theme.hand[k].show = 1; }
+#define STEPS(m, h, c, what) do { snd_steps_scan(st); checks++; \
+        if (st[0] != (m) || st[1] != (h) || st[2] != (c)) { fails++; \
+            printf("FAIL G5 %s: want %d/%d/%d got %d/%d/%d\n", what, m, h, c, st[0], st[1], st[2]); } } while (0)
+        STEPS(0, 0, 0, "a creeping dial sounds no jump");
+        clk_theme.second_railway = clk_theme.second_sweep = 1;
+        STEPS(1, 0, 0, "the railway minute jumps");
+        clk_theme.second_railway = clk_theme.second_sweep = 0;
+        clk_theme.hand_drive[1].cadence = CLK_CAD_JUMP;
+        STEPS(1, 0, 0, "a jumping minute hand");
+        clk_theme.hand[1].show = 0;
+        STEPS(0, 0, 0, "a hidden minute hand sounds nothing");
+        clk_theme.hand[1].show = 1; clk_theme.hand_drive[1].cadence = CLK_CAD_STEP; clk_theme.hand_drive[1].cad_arg = 2;
+        STEPS(2, 0, 0, "a half-minute hand steps twice a minute");
+        memset(clk_theme.hand_drive, 0, sizeof clk_theme.hand_drive);
+        clk_theme.hand_drive[0] = (clk_drive_t){ .src = CLK_SRC_HOUR12, .cadence = CLK_CAD_SWEEP, .span = -3600, .value_max = 12 };
+        STEPS(0, 0, 0, "a wandering hour disc has no instant");
+        clk_theme.hand_drive[0].cadence = CLK_CAD_JUMP;
+        STEPS(0, 1, 0, "a jump hour disc");
+        memset(clk_theme.hand_drive, 0, sizeof clk_theme.hand_drive);
+        s_geo.n_aux = 2;
+        s_geo.aux[0] = (clk_aux_t){ .src = CLK_SRC_HOUR24, .flags = CLK_FLAG_JUMP, .spr = { .show = 1 } };
+        s_geo.aux[1] = (clk_aux_t){ .src = CLK_SRC_MINUTE, .cadence = CLK_CAD_JUMP, .flags = CLK_FLAG_AUX_SHADOW, .spr = { .show = 1 } };
+        STEPS(0, 1, 0, "a jumping pointer counts, its shadow twin does not");
+        s_geo.aux[0].cadence = CLK_CAD_SWEEP;
+        STEPS(0, 0, 0, "a pointer's own sweep overrides the old jump flag");
+        s_geo.n_aux = 0; s_geo.n_comps = 2;
+        s_geo.comps[0].src = CLK_SRC_MOON_AGE; s_geo.comps[1].src = CLK_SRC_DATE;
+        STEPS(0, 0, 1, "a date window turns at midnight");
+#undef STEPS
+        memset(&clk_theme, 0, sizeof clk_theme); memset(&s_geo, 0, sizeof s_geo);
+    }
+
     d = (clk_drive_t){ .src = CLK_SRC_WEEKDAY, .path = CLK_MOTION_ROTATE, .span = 3600,
                        .value_max = 7, .cadence = CLK_CAD_SWEEP };
     units("sweep weekday: Sunday noon", d, mk(2026, 11, 1, 12, 0, 0), 0.0, 6.5);
@@ -346,6 +387,12 @@ MUTATIONS = [
     ("        .src = a->src, .path = a->kind, .cadence = a->cadence, .cad_arg = a->cad_arg,",
      "        .src = a->src, .path = a->kind, .cadence = 0, .cad_arg = a->cad_arg,"),
     ("    if (t->src) return *t;", ""),
+    ("        if (!clk_theme.hand[k].w || !clk_theme.hand[k].show) continue;", ""),
+    ("            n = 1;                                       /* the railway minute */", ""),
+    ("        if ((a->flags & CLK_FLAG_AUX_SHADOW) || !a->spr.show) continue;", "        if (!a->spr.show) continue;"),
+    ("        if (a->cadence == CLK_CAD_INHERIT && (a->flags & CLK_FLAG_JUMP)) n = 1;", "        if (a->flags & CLK_FLAG_JUMP) n = 1;"),
+    ("    if (cad == CLK_CAD_STEP) return (uint8_t)(arg ? (arg > 60 ? 60 : arg) : 1);", "    if (cad == CLK_CAD_STEP) return 1;"),
+    ("        if (snd_step_class(g->comps[i].src) == SND_STEP_CAL) out[SND_STEP_CAL] = 1;", ""),
     ("    d.cadence = t->cadence;", ""),
     ("    if (MOTION_IS_SLIDE(d->path)) return t;", ""),
     ("    if (d->path == CLK_MOTION_RETROGRADE &&", "    if (0 &&"),
@@ -381,6 +428,11 @@ def lifted_c(mutations=()):
         lift(cview, "static int32_t drive_travel("),
         lift(cview, "static float drive_hand_deg(const clk_drive_t *d, const drive_now_t *n)\n{"),
         lift(cview, "static bool drive_aux("),
+        lift_block(cview, "enum { SND_STEP_MIN,", "};"),
+        lift(cview, "static int snd_step_class("),
+        lift(cview, "static uint8_t snd_cad_steps("),
+        lift(cview, "static void snd_note_step("),
+        lift(cview, "static void snd_steps_scan("),
     ])
     return (C_PRE + slide.group(0) + "\n" + moon.group(0) + "\n" + beat + "\n" + funcs + "\n"
             + LEGACY_HAND_ANGLES + C_HARNESS

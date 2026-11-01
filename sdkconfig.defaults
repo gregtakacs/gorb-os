@@ -285,3 +285,9 @@ CONFIG_TINYUSB_MTP_MAX_OBJECTS=64
 # silent through a share that enumerates and publishes nothing. Read absence from
 # it accordingly; §14 is what that silence cost.
 CONFIG_TINYUSB_MTP_TRACE_WRITES=y
+
+# Lets a static buffer opt into PSRAM with EXT_RAM_BSS_ATTR. Nothing moves unless
+# it is marked; the two httpd response buffers in orb_net.c (17 KB, CPU-only,
+# copied into lwIP by the send) are, which pays for the TLS layer's statics many
+# times over at the boot ladder's low point (docs/flight-tracker-design.md §4).
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y

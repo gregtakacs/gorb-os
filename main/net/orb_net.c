@@ -2737,8 +2737,9 @@ static esp_err_t h_config_get(httpd_req_t *req)
      * recomputed from the table by tools/host_tz_test.py on every run and
      * asserted against this cap. On httpd's CONFIG_HTTPD_TASK_STACK_SIZE
      * stack that is a real overflow risk; handlers run serially, so one
-     * instance is safe. */
-    static char json[6144];
+     * instance is safe. PSRAM for the same reason as h_theme_list's: CPU-only,
+     * and internal RAM is the scarce thing (flight-tracker-design §4). */
+    EXT_RAM_BSS_ATTR static char json[6144];
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -4765,8 +4766,10 @@ static esp_err_t h_sd(httpd_req_t *req)
      * the fmt/sects and slot-letter pairs = ~628 B a row, ~10 kB for 16 of
      * them, plus ~955 B of base fields. Measured against the live device the
      * same route answers ~650 B with four short-named themes; a truncated
-     * body would read as "no card", which is why an overflow is an error. */
-    static char json[11264];
+     * body would read as "no card", which is why an overflow is an error.
+     * PSRAM (EXT_RAM_BSS_ATTR): CPU-only, copied into lwIP by the send, and
+     * 11 KB is the internal pool's whole idle margin (flight-tracker-design §4). */
+    EXT_RAM_BSS_ATTR static char json[11264];
     /* The last install refused, if any, travels with the list: the dial's row and
      * this page read the same two strings out of orb_theme, so a pick the firmware
      * said no to cannot come back as a silent no-op on the glass that pressed it

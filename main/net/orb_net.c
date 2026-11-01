@@ -4830,7 +4830,8 @@ static esp_err_t h_debug_panic(httpd_req_t *req)
  * (docs/flight-tracker-design.md §6). GET answers config, poll stats, the
  * dial's tick-gap histogram and the nearest aircraft; POST sets any of
  * on, lat, lon, nm, period (ms), src (0 adsb.lol, 1 adsb.fi), ka (keep-alive),
- * bg (background ms, 0 = none), vis (tracker on the glass), boost, hg (hide ground)
+ * bg (background ms, 0 = none), vis (tracker on the glass), boost, hg (hide ground),
+ * refuse0 (provider 0 answers 403: the failover bench)
  * from the query string and kicks a poll. Debug-gated: the shipped tracker
  * configures itself through its app settings, not through this. */
 static esp_err_t h_debug_flights(httpd_req_t *req)
@@ -4851,6 +4852,7 @@ static esp_err_t h_debug_flights(httpd_req_t *req)
         if (q_param(req, "vis", v, sizeof v))    c.visible = atoi(v) != 0;
         if (q_param(req, "boost", v, sizeof v))  c.boost = atoi(v) != 0;
         if (q_param(req, "hg", v, sizeof v))     c.hide_ground = atoi(v) != 0;
+        if (q_param(req, "refuse0", v, sizeof v)) orb_flights_bench_refuse0(atoi(v) != 0);
         if (orb_flights_set_cfg(&c) != ESP_OK) {
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req, "{\"error\":\"nm 1-250, period>=2000, src 0|1\"}");

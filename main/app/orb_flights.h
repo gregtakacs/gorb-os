@@ -67,5 +67,7 @@ void      orb_flights_stats(orb_flights_stats_t *out);
 /* Copies the latest snapshot; returns the count, its age in ms via *age_ms and
  * its sequence number via *seq (either may be NULL). */
 int       orb_flights_snapshot(orb_flight_t *out, int max, uint32_t *age_ms, uint32_t *seq);
+/* Bench only (the debug door): provider 0 refuses, to drive the failover. */
+void      orb_flights_bench_refuse0(bool on);
 /* The bench's JSON: config, stats, jank deltas and the snapshot. */
 int       orb_flights_json(char *buf, size_t cap);

@@ -1,5 +1,6 @@
 /* Flight feed service — contract in orb_flights.h. */
 #include "orb_flights.h"
+#include "flights_model.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -7,7 +8,6 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "lwip/sockets.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -56,10 +56,12 @@ static void rest(int src)
     ESP_LOGW(TAG, "FLT provider %d refused; resting it %u s", src, (unsigned)(s_rest_ms[src] / 1000));
 }
 
-static const char *const s_origin[] = {
+static const char *const s_origin_real[] = {
     [ORB_FLIGHTS_ADSB_LOL] = "https://api.adsb.lol",
     [ORB_FLIGHTS_ADSB_FI]  = "https://opendata.adsb.fi",
 };
+static const char *s_origin[] = { "https://api.adsb.lol", "https://opendata.adsb.fi" };
+
 
 static orb_flights_cfg_t   s_cfg = {
     .enabled = false, .lat = 33.45, .lon = -112.07, .radius_nm = 40,
@@ -72,6 +74,17 @@ static TaskHandle_t        s_task;
 static orb_https_t        *s_https;
 static uint8_t             s_https_src = 0xFF;
 static bool                s_https_ka;
+
+/* Bench: route provider 0 to an origin that refuses (airplanes.live answers 403
+ * on adsb.lol's exact path shape), so the rest/failover ladder runs against a
+ * real server. Reached only from the debug door; off restores the real one. */
+void orb_flights_bench_refuse0(bool on)
+{
+    s_origin[0] = on ? "https://api.airplanes.live" : s_origin_real[0];
+    s_https_src = 0xFF;                          /* drop the kept connection */
+    s_rest_ms[0] = 0;
+    s_rest_until_us[0] = 0;
+}
 
 /* Both tables in PSRAM: the working set the sink fills, and the published one. */
 static orb_flight_t *s_work;
@@ -113,22 +126,11 @@ static void emit(const orb_ac_t *a, void *ctx)
     s_work[slot].bearing_deg = b < 0 ? b + 360.0f : b;
 }
 
-/* Worth a faster background poll (§5): close, low and closing, or squawking. */
+/* Worth a faster background poll (§5): flights_model.c decides per contact. */
 static bool interesting(const orb_flight_t *t, int n)
 {
-    for (int i = 0; i < n; i++) {
-        const orb_ac_t *a = &t[i].ac;
-        if (a->squawk == 7500 || a->squawk == 7600 || a->squawk == 7700) return true;
-        if (a->on_ground) continue;
-        if (t[i].dist_km < 9.26f) return true;                       /* 5 nm */
-        if (a->has_alt && a->alt_ft < 3000 && t[i].dist_km < 18.52f && !isnan(a->track)) {
-            /* Closing: its track points within 60 deg of the bearing back home. */
-            float home = t[i].bearing_deg + 180.0f;
-            float d = fmodf(fabsf(a->track - home), 360.0f);
-            if (d > 180.0f) d = 360.0f - d;
-            if (d < 60.0f) return true;
-        }
-    }
+    for (int i = 0; i < n; i++)
+        if (fm_interesting(&t[i].ac, t[i].dist_km, t[i].bearing_deg)) return true;
     return false;
 }
 
@@ -139,80 +141,6 @@ static bool sink(const char *buf, size_t len, void *ctx)
 }
 
 /* ---- one poll ------------------------------------------------------------ */
-
-/* Bench: the internal pool at each stage of a poll, and what mbedTLS holds of it. */
-static void stage(const char *what)
-{
-    multi_heap_info_t hi;
-    heap_caps_get_info(&hi, MALLOC_CAP_INTERNAL);
-    char pend[96] = "";
-    size_t at = 0;
-    for (int fd = LWIP_SOCKET_OFFSET; fd < LWIP_SOCKET_OFFSET + CONFIG_LWIP_MAX_SOCKETS; fd++) {
-        int n = 0;
-        if (lwip_ioctl(fd, FIONREAD, &n) == 0 && n > 0 && at < sizeof pend - 16)
-            at += (size_t)snprintf(pend + at, sizeof pend - at, " fd%d=%d", fd, n);
-    }
-    ESP_LOGI(TAG, "FLT heap %-8s int_free=%u largest=%u blocks=%u tls_int=%d pending:%s", what,
-             (unsigned)hi.total_free_bytes, (unsigned)hi.largest_free_block,
-             (unsigned)hi.allocated_blocks, (int)orb_tls_mem_internal_live(), at ? pend : " none");
-}
-
-/* Bench: which internal blocks a fresh connection leaves live. Walk the pool
- * before and after, and print the new blocks by size: sizes name their owners. */
-/* Off by default: the walk holds the heap lock while it runs. Found the 15.5 KB
- * of mbedTLS state the allocator was not seeing (orb_tls_mem.c); set to 1 to
- * re-price a new connection. */
-#define FLIGHTS_BLOCK_DIFF 0
-typedef struct { uintptr_t p; size_t n; } blk_t;
-#define BLK_MAX 1024
-static blk_t *s_blk0;
-static int    s_blk0_n;
-typedef struct { blk_t *b; int n; } walk_t;
-
-static bool walk_cb(walker_heap_into_t h, walker_block_info_t b, void *u)
-{
-    (void)h;
-    walk_t *w = u;
-    if (b.used && w->n < BLK_MAX) w->b[w->n++] = (blk_t){ (uintptr_t)b.ptr, b.size };
-    return true;
-}
-
-static int blk_walk(blk_t *into)
-{
-    walk_t w = { into, 0 };
-    heap_caps_walk(MALLOC_CAP_INTERNAL, walk_cb, &w);
-    return w.n;
-}
-
-static void blk_diff(void)
-{
-    if (!s_blk0) return;
-    blk_t *now = heap_caps_malloc(BLK_MAX * sizeof *now, MALLOC_CAP_SPIRAM);
-    if (!now) return;
-    const int n = blk_walk(now);
-    struct { size_t sz; int cnt; } hist[48];
-    int nh = 0, newn = 0;
-    size_t newb = 0;
-    for (int i = 0; i < n; i++) {
-        bool seen = false;
-        for (int j = 0; j < s_blk0_n && !seen; j++)
-            seen = s_blk0[j].p == now[i].p && s_blk0[j].n == now[i].n;
-        if (seen) continue;
-        newn++; newb += now[i].n;
-        int k = 0;
-        while (k < nh && hist[k].sz != now[i].n) k++;
-        if (k == nh && nh < 48) { hist[nh].sz = now[i].n; hist[nh].cnt = 0; nh++; }
-        if (k < nh) hist[k].cnt++;
-    }
-    char line[400];
-    size_t at = 0;
-    for (int k = 0; k < nh && at < sizeof line - 16; k++)
-        at += (size_t)snprintf(line + at, sizeof line - at, " %ux%d", (unsigned)hist[k].sz, hist[k].cnt);
-    ESP_LOGI(TAG, "FLT newblocks %d (%u B):%s", newn, (unsigned)newb, line);
-    heap_caps_free(now);
-    heap_caps_free(s_blk0);
-    s_blk0 = NULL;
-}
 
 static const char *gate(void)
 {
@@ -245,9 +173,7 @@ static void poll_once(const orb_flights_cfg_t *cfg)
         s_st.failovers++;
     }
     if (!s_https || s_https_src != src || s_https_ka != cfg->keep_alive) {
-        stage("pre-free");
         orb_https_free(s_https);
-        stage("pre-new");
         char ua[64];
         snprintf(ua, sizeof ua, "gorb-os/%s (flight tracker)", esp_app_get_description()->version);
         s_https = orb_https_new(s_origin[src], ua,
@@ -255,11 +181,6 @@ static void poll_once(const orb_flights_cfg_t *cfg)
         s_https_src = (uint8_t)src;
         s_https_ka = cfg->keep_alive;
         if (!s_https) { s_st.fail++; ESP_LOGW(TAG, "FLT client alloc failed"); return; }
-        stage("post-new");
-#if FLIGHTS_BLOCK_DIFF
-        s_blk0 = heap_caps_malloc(BLK_MAX * sizeof *s_blk0, MALLOC_CAP_SPIRAM);
-        if (s_blk0) s_blk0_n = blk_walk(s_blk0);
-#endif
     }
     char path[96];
     if (src == ORB_FLIGHTS_ADSB_FI)
@@ -283,8 +204,6 @@ static void poll_once(const orb_flights_cfg_t *cfg)
     orb_https_result_t r;
     const esp_err_t err = orb_https_get(s_https, path, sink, c, &r);
     orb_sched_jank_snapshot(&j1);
-    stage("post-get");
-    blk_diff();
     const bool good = err == ESP_OK && r.status == 200 && orb_readsb_done(&c->p);
 
     s_st.opens = orb_https_opens(s_https);
@@ -357,11 +276,7 @@ static void flights_task(void *arg)
         orb_flights_get_cfg(&cfg);
         const bool polling = cfg.enabled && (cfg.visible || cfg.bg_period_ms);
         if (!polling) {
-            if (s_https) {
-                stage("pre-free");
-                orb_https_free(s_https); s_https = NULL; s_https_src = 0xFF;
-                stage("off");
-            }
+            if (s_https) { orb_https_free(s_https); s_https = NULL; s_https_src = 0xFF; }
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             continue;
         }

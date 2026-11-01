@@ -19,6 +19,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "flights_model.h"
 #include "orb_flights.h"
 #include "orb_svc.h"
 
@@ -29,8 +30,6 @@ static const char *TAG = "flights";
 #define CX       (W / 2)
 #define CY       (H / 2)
 #define RING_R   184                 /* full range, px: header and footer sit outside it */
-#define MAX_TRK  32                  /* contacts kept between polls */
-#define STALE_US (60LL * 1000000)    /* a missed contact dims, then drops */
 #define LABELS   6                   /* callsigns drawn, nearest first */
 #define VIS_MS   15000               /* poll period while on the glass */
 
@@ -107,53 +106,19 @@ static void apply_feed(void)
     if (e != ESP_OK) ESP_LOGW(TAG, "feed config refused: %s", esp_err_to_name(e));
 }
 
-/* ---- the contact table: polls merged, missed contacts aged out ------------ */
+/* ---- the contact table (flights_model.c: merge, aging, projection) -------- */
 
-typedef struct {
-    orb_ac_t ac;
-    float    e_km, n_km;     /* east/north of home at t_fix */
-    int64_t  t_fix_us;       /* when that position was true */
-    int64_t  t_seen_us;      /* last poll that carried it   */
-    bool     live;           /* in the last picture         */
-    float    x, y, d_km;     /* this frame's projection     */
-    bool     drawn;
-} trk_t;
-
-static trk_t        *s_trk;          /* PSRAM, MAX_TRK */
-static int           s_ntrk;
+static fm_t         *s_m;            /* PSRAM */
 static orb_flight_t *s_snap;         /* PSRAM, ORB_FLIGHTS_MAX */
 static uint32_t      s_seq;
-static char         s_sel[8];       /* the selected contact's hex, "" = none */
-static int           s_order[MAX_TRK];
-static int           s_norder;
+static char          s_sel[8];       /* the selected contact's hex, "" = none */
 
 static void merge(const orb_flight_t *f, int n)
 {
     const int64_t now = esp_timer_get_time();
-    for (int i = 0; i < s_ntrk; i++) s_trk[i].live = false;
-    for (int i = 0; i < n; i++) {
-        int k = -1;
-        for (int j = 0; j < s_ntrk && k < 0; j++)
-            if (!strcmp(s_trk[j].ac.hex, f[i].ac.hex)) k = j;
-        if (k < 0 && s_ntrk < MAX_TRK) k = s_ntrk++;
-        if (k < 0) {                     /* full: replace the stalest */
-            k = 0;
-            for (int j = 1; j < s_ntrk; j++)
-                if (s_trk[j].t_seen_us < s_trk[k].t_seen_us) k = j;
-        }
-        trk_t *t = &s_trk[k];
-        t->ac = f[i].ac;
-        const float b = f[i].bearing_deg * (float)M_PI / 180.0f;
-        t->e_km = f[i].dist_km * sinf(b);
-        t->n_km = f[i].dist_km * cosf(b);
-        t->t_fix_us = now - (int64_t)(f[i].ac.seen_pos * 1e6f);
-        t->t_seen_us = now;
-        t->live = true;
-    }
-    for (int j = 0; j < s_ntrk;) {       /* drop what has been missing too long */
-        if (now - s_trk[j].t_seen_us > STALE_US) s_trk[j] = s_trk[--s_ntrk];
-        else j++;
-    }
+    fm_merge_begin(s_m);
+    for (int i = 0; i < n; i++) fm_upsert(s_m, &f[i].ac, f[i].dist_km, f[i].bearing_deg, now);
+    fm_merge_end(s_m, now);
 }
 
 /* ---- pixels --------------------------------------------------------------- */
@@ -241,47 +206,6 @@ static bool emergency(const orb_ac_t *a)
 static char s_lbl[LABELS][32];
 static char s_rng_txt[12];
 
-static void project(float range_km)
-{
-    const int64_t now = esp_timer_get_time();
-    s_norder = 0;
-    for (int i = 0; i < s_ntrk; i++) {
-        trk_t *t = &s_trk[i];
-        float e = t->e_km, n = t->n_km;
-        if (!isnan(t->ac.track) && !isnan(t->ac.gs) && !t->ac.on_ground) {
-            /* Dead reckoning: a 15 s poll is visibly stale without it. Capped,
-             * so a contact the feed lost does not sail off across the screen. */
-            float dt = (float)(now - t->t_fix_us) / 1e6f;
-            if (dt > 90.0f) dt = 90.0f;
-            const float km = t->ac.gs * 1.852f / 3600.0f * dt;
-            const float tr = t->ac.track * (float)M_PI / 180.0f;
-            e += km * sinf(tr);
-            n += km * cosf(tr);
-        }
-        t->d_km = sqrtf(e * e + n * n);
-        t->drawn = t->d_km <= range_km;
-        if (!t->drawn) continue;
-        t->x = CX + e / range_km * RING_R;
-        t->y = CY - n / range_km * RING_R;
-        s_order[s_norder++] = i;
-    }
-    /* Nearest first: the selection cycles in this order, labels take the head. */
-    for (int i = 1; i < s_norder; i++)
-        for (int j = i; j > 0 && s_trk[s_order[j]].d_km < s_trk[s_order[j - 1]].d_km; j--) {
-            const int t = s_order[j]; s_order[j] = s_order[j - 1]; s_order[j - 1] = t;
-        }
-}
-
-/* The selected contact's place in this frame's order, or -1. By hex, because
- * the order re-sorts every second as aircraft move. */
-static int sel_index(void)
-{
-    if (!s_sel[0]) return -1;
-    for (int o = 0; o < s_norder; o++)
-        if (!strcmp(s_trk[s_order[o]].ac.hex, s_sel)) return o;
-    return -1;
-}
-
 static void fmt_alt(const orb_ac_t *a, char *b, size_t n)
 {
     if (a->on_ground)     snprintf(b, n, "GND");
@@ -292,7 +216,7 @@ static void fmt_alt(const orb_ac_t *a, char *b, size_t n)
 static void draw_frame(void)
 {
     const float range_km = RANGES_NM[s_set.range] * 1.852f;
-    project(range_km);
+    fm_project(s_m, range_km, esp_timer_get_time(), CX, CY, RING_R);
 
     memset(s_px, 0, (size_t)s_stride * H * sizeof *s_px);
     const uint16_t ringc = c16(0x2A4A3A);
@@ -301,8 +225,8 @@ static void draw_frame(void)
     line(CX, CY - RING_R - 6, CX, CY - RING_R + 6, ringc);          /* north tick */
     disc(CX, CY, 3, c16(0xFFFFFF));                                  /* home */
 
-    for (int o = s_norder - 1; o >= 0; o--) {                       /* far first */
-        const trk_t *t = &s_trk[s_order[o]];
+    for (int o = s_m->norder - 1; o >= 0; o--) {                       /* far first */
+        const fm_trk_t *t = &s_m->t[s_m->order[o]];
         const uint32_t rgb = t->live ? alt_rgb(&t->ac) : dim(alt_rgb(&t->ac));
         const uint16_t c = c16(rgb);
         const int x = (int)lroundf(t->x), y = (int)lroundf(t->y);
@@ -327,12 +251,12 @@ static void draw_frame(void)
     lv_draw_label_dsc_t d;
     lv_draw_label_dsc_init(&d);
     d.font = &lv_font_montserrat_14;
-    lv_area_t placed[LABELS + 1];
+    fm_rect_t placed[LABELS + 1];
     int np = 0;
-    placed[np++] = (lv_area_t){ CX - 6, CY - 6, CX + 6, CY + 6 };   /* home */
+    placed[np++] = (fm_rect_t){ CX - 6, CY - 6, CX + 6, CY + 6 };   /* home */
     int nl = 0;
-    for (int o = 0; o < s_norder && nl < LABELS; o++) {
-        const trk_t *t = &s_trk[s_order[o]];
+    for (int o = 0; o < s_m->norder && nl < LABELS; o++) {
+        const fm_trk_t *t = &s_m->t[s_m->order[o]];
         if (t->ac.on_ground) continue;
         char alt[16];
         fmt_alt(&t->ac, alt, sizeof alt);
@@ -340,30 +264,12 @@ static void draw_frame(void)
                  t->ac.flight[0] ? t->ac.flight : t->ac.hex, alt);
         lv_point_t sz;
         lv_text_get_size(&sz, s_lbl[nl], d.font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-        const int x = (int)lroundf(t->x), y = (int)lroundf(t->y);
-        const bool right = x >= CX;
-        const int cand[4][2] = {
-            { right ? x + 8 : x - 8 - sz.x, y - sz.y / 2 },
-            { right ? x - 8 - sz.x : x + 8, y - sz.y / 2 },
-            { x - sz.x / 2, y - 10 - sz.y },
-            { x - sz.x / 2, y + 10 },
-        };
-        bool ok = false;
-        lv_area_t a;
-        for (int k = 0; k < 4 && !ok; k++) {
-            a = (lv_area_t){ cand[k][0], cand[k][1], cand[k][0] + sz.x, cand[k][1] + sz.y };
-            ok = true;
-            /* every corner on the glass, with a margin */
-            for (int c = 0; c < 4 && ok; c++) {
-                const int px = (c & 1) ? a.x2 : a.x1, py = (c & 2) ? a.y2 : a.y1;
-                ok = (px - CX) * (px - CX) + (py - CY) * (py - CY) < 222 * 222;
-            }
-            for (int q = 0; q < np && ok; q++)
-                ok = a.x2 < placed[q].x1 - 2 || a.x1 > placed[q].x2 + 2 ||
-                     a.y2 < placed[q].y1 - 1 || a.y1 > placed[q].y2 + 1;
-        }
+        fm_rect_t r;
+        const bool ok = fm_place_label(placed, np, (int)lroundf(t->x), (int)lroundf(t->y),
+                                       sz.x, sz.y, CX, CY, 222, &r);
         if (!ok) continue;
-        placed[np++] = a;
+        placed[np++] = r;
+        lv_area_t a = { r.x1, r.y1, r.x2, r.y2 };
         d.color = t->live ? lv_color_hex(0xD0D0D0) : lv_color_hex(0x707070);
         d.text = s_lbl[nl];
         lv_draw_label(&layer, &d, &a);
@@ -382,8 +288,8 @@ static void draw_text(void)
 {
     char b[64];
     int live = 0;
-    for (int i = 0; i < s_norder; i++) live += s_trk[s_order[i]].live;
-    snprintf(b, sizeof b, "%d aircraft", s_norder);
+    for (int i = 0; i < s_m->norder; i++) live += s_m->t[s_m->order[i]].live;
+    snprintf(b, sizeof b, "%d aircraft", s_m->norder);
     lv_label_set_text(s_head, b);
 
     orb_flights_stats_t st;
@@ -401,9 +307,9 @@ static void draw_text(void)
     lv_obj_set_style_text_color(s_foot, lv_color_hex(col), 0);
     (void)live;
 
-    const int si = sel_index();
+    const int si = fm_find(s_m, s_sel);
     if (si < 0) { s_sel[0] = 0; lv_obj_set_hidden(s_card, true); return; }
-    const trk_t *t = &s_trk[s_order[si]];
+    const fm_trk_t *t = &s_m->t[s_m->order[si]];
     char alt[16], vs[24], spd[24];
     if (t->ac.on_ground) snprintf(alt, sizeof alt, "on ground");
     else if (t->ac.has_alt) snprintf(alt, sizeof alt, "%d ft", (int)t->ac.alt_ft);
@@ -453,12 +359,12 @@ static lv_obj_t *text(lv_obj_t *p, const lv_font_t *f, uint32_t rgb, lv_align_t 
 esp_err_t flights_view_init(orb_app_t *app)
 {
     s_app = app;
-    s_trk  = heap_caps_calloc(MAX_TRK, sizeof *s_trk, MALLOC_CAP_SPIRAM);
+    s_m    = heap_caps_calloc(1, sizeof *s_m, MALLOC_CAP_SPIRAM);
     s_snap = heap_caps_calloc(ORB_FLIGHTS_MAX, sizeof *s_snap, MALLOC_CAP_SPIRAM);
     s_stride = lv_draw_buf_width_to_stride(W, LV_COLOR_FORMAT_RGB565) / 2;
     const size_t bytes = (size_t)s_stride * 2 * H;
     s_px = heap_caps_aligned_alloc(LV_DRAW_BUF_ALIGN, bytes, MALLOC_CAP_SPIRAM);
-    if (!s_trk || !s_snap || !s_px) return ESP_ERR_NO_MEM;
+    if (!s_m || !s_snap || !s_px) return ESP_ERR_NO_MEM;
     memset(s_px, 0, bytes);
     lv_draw_buf_init(&s_dbuf, W, H, LV_COLOR_FORMAT_RGB565, s_stride * 2, s_px, bytes);
 
@@ -542,9 +448,7 @@ void flights_view_input(int32_t delta, bool pressed)
     if (pressed) {
         /* Cycle the detail card through the drawn aircraft, nearest first,
          * then back to none. */
-        const int next = sel_index() + 1;
-        if (next < s_norder) memcpy(s_sel, s_trk[s_order[next]].ac.hex, sizeof s_sel);
-        else s_sel[0] = 0;
+        fm_sel_next(s_m, s_sel, s_sel);
     } else if (delta) {
         const int r = s_set.range + (delta > 0 ? 1 : -1);
         if (r < 0 || r >= N_RANGES) return;

@@ -38,6 +38,8 @@ idf_component_register(
         "color/color_picker.c"
         # The flight tracker's view (docs/flight-tracker-design.md §6), kind 4.
         "flights/flights_view.c"
+        # Its model, LVGL-free so tools/host_flights_model_test.py compiles it.
+        "flights/flights_model.c"
         "menu/menu_view.c"
         "input/input_router.c"
         "imu/imu.c"

@@ -8,9 +8,12 @@ the slices, so the next session builds it rather than re-deriving it. Read it
 before touching the composer's Sound tab, the asset class enum, the FORMAT 3
 element table for sound, or anything that opens I2S.
 
-**Status: RULED (owner, 2026-10-28). Not built.** The prototype generator is
-committed (`tools/sound_synth_proto.py`, §6). Nothing else exists yet. These
-are settled and not open for re-litigation:
+**Status: RULED (owner, 2026-10-28). BUILT 2026-10-31 on `feat/clock-sound`,
+bench-proved only as far as §11 says.** The engine, the format, the clock policy,
+the Sound tab and its generator exist and pass their host suites; the codec comes
+up on orb-B. Nobody has yet heard it play: main's v1.1.42 cannot bring Wi-Fi up on
+that board (§11.2), so no door reached the engine. These are settled and not open
+for re-litigation:
 
 | Parameter | Ruled value |
 |---|---|
@@ -108,7 +111,7 @@ lands here as "the default is quiet", which needs no bytes.
 | `jump_hour` | on each step of an hour-source row, such as a jump hour hand or disc (D41) | |
 | `jump_date` | when a calendar row steps at midnight (D41) | silent under `drag`, which has no single instant |
 | `morse_dit`, `morse_dah` | the `morse` hour pattern's two symbols (§5.1) | the dah is three dits long, by Morse's own timing |
-| `strike_quarter`, `strike_minute` | the `repeater` pattern's quarter ting-tang and high minute stroke (§5.1) | filled only when that pattern is chosen |
+| `strike_qtr`, `strike_min` | the `repeater` pattern's quarter ting-tang and high minute stroke (§5.1) | filled only when that pattern is chosen; named to fit the wire's 11-character slot name |
 
 A jump slot is trivially in sync with its row. The app plays it on the tick
 that re-poses the row, so it needs no anchoring (D41 §6). One sound per event,
@@ -132,19 +135,33 @@ voices rather than four to six.
   and AUX precedent: end of enum, `ORB_ASSET_CLASS_N` becomes 11, and
   `ORB_ASSET_CLASS_ABI` does not move. An OS that predates it refuses class 10
   at its own bound, and D26 makes that a refusal at the door.
-- **Per-sound facts go in a small header at the front of the sound's payload,
-  not in new element-table columns.** The facts are encoding, sample rate, loop
-  flag, beat period, and the first beat's sample offset. Keeping them out of the
-  table means `ELEMENT_WORDS` (25), `ELEMENT_WORDS_MIN` and
-  `ORB_BUNDLE_ELEM_WORDS_MIN` do not move, and only the baker, the C reader and
-  their suites move together. The header layout is open (§8).
+- **Per-sound facts ride the element row's own columns, and the payload is bare
+  PCM** (corrected 2026-10-31; the ruling had them in a payload header). The
+  projection `orb_clock3_parse` is pure and runs before a byte of the bank is
+  resident (`orb_theme.c`'s load order), so a header could never be refused at
+  the door; columns can. No column count moves either way, which was the
+  ruling's reason. AUX's precedent widened `kind`/`src` the same way:
+
+  | Column | On a SOUND row |
+  |---|---|
+  | `src` | the encoding: 0 = 16-bit LE mono PCM at 22,050 Hz, the only one wired |
+  | `kind` | the theme's hour pattern (§5.1), the same on every sound row |
+  | `flags` | `EF_LOOP` on the tick loop and on nothing else |
+  | `vmax` / `vmin` | the loop's beat per 100 s, and the sample its first beat starts on; 0 on one-shots |
+  | `w` / `h` | 0: a sound places nothing, and its length (up to 176,400 samples) would not fit a u16 |
+
+  The catalogue row is the plane: w samples, h 1, size 2w, priced w*h*2 as a
+  preview is. **It must sit at an even offset**: a 16-bit load from the mapped
+  bank faults unaligned. Writers therefore put sounds at the **head** of the
+  catalogue and move `plate_off` and `bg_key_off` past them (a delta plate's
+  canvas seeds from `blob() + bg_key_off`, so a zero left there paints PCM).
 - **Encoding.** PCM16 LE mono is ruled. Lower-rate PCM (16 kHz) and IMA-ADPCM
   (4:1) are open (§8), and both exist to answer the budget below.
 
 ### 3.3 The budget
 
-Sound shares D29's `ORB_THEME_SLOT_CAP` (0x3F0000, 4,128,768 B per bundle) with
-the art, and the mapped-flash page budget with it too. Measured on the prototype
+Sound shares `ORB_THEME_SLOT_CAP` with the art — 0x7F0000, 8,323,072 B since
+Migration 1 made the slot whole (this section first quoted D29's retired 4 MB), and the mapped-flash page budget with it too. Measured on the prototype
 at 22,050 Hz PCM16:
 
 | Content | Bytes |
@@ -160,7 +177,7 @@ The jump and Morse slots barely register. The Westminster set is the heaviest
 default; most presets' defaults (§7.2) use shorter phrases and come in well
 under it.
 
-So a full default set is about 62% of a bundle before any art. The Sound tab
+So a full default set is about 31% of a bundle before any art. The Sound tab
 prints bytes per slot against the remaining budget, and the baker refuses an
 over-cap bundle exactly as it does for art (D29: editor at build time, installer
 at verify time).
@@ -174,7 +191,17 @@ at verify time).
 - **New `orb_svc_t` entries**, appended. The shape is play a slot (one-shot or
   looped, with gain), stop a handle, set gain, and start a loop anchored to a wall
   time. The exact signatures need an owner ruling, as `tz_offset` (D17) and the
-  six `theme_*` entries (D18) did. **Open (§8).**
+  six `theme_*` entries (D18) did. **Still open (§8)** — and not on the critical
+  path: the clock is compiled (D35's one compiled row is the shell; the clock's
+  policy runs in `clock_view.c`), so it calls the engine's C surface directly
+  (`main/audio/orb_sound.h`). The capability and the entries wait for the first
+  card app that wants to make a sound.
+- **The C surface, as built**: `orb_sound_play(pcm, n, gain, flags, at_us,
+  anchor_us)` with `LOOP`, `ANCHORED` and `LEASED` flags, `stop`, `stop_all`,
+  `reanchor`, and `lease_renew`. A one-shot takes an esp_timer instant, so a
+  strike pattern is laid down once and lands on time; a LEASED voice dies 1.5 s
+  after its owner's last tick, which is how a parked dial falls silent without
+  being asked (C7 for audio).
 - **Suspend silences.** An app's sounds stop at `suspend` and do not restart on
   `resume` unless the app asks again. That is C7 read for audio.
 - **The mixer is compiled C**, with at least two voices so a ringing chime can
@@ -227,7 +254,12 @@ stepping hand has to match them.
   internal-RAM DMA ring long enough to cover NVS writes and theme flips, or go
   quiet during them. Internal RAM is tight (`app-platform-plan.md` §16.1: "the
   wall is one 4 KB allocation"). Measure the longest cache-off window under real
-  writes, and choose ring size or a mute policy from the number.
+  writes, and choose ring size or a mute policy from the number. **Built as the
+  mute policy (2026-10-31):** the mixer's stack is PSRAM, so it simply stops for
+  an erase, and the DMA is set to clear what it has sent (`auto_clear_after_cb`),
+  so the speaker plays silence rather than a repeated buffer; a loop re-enters
+  its phase on the next block. The ring is 4 x 256 frames (46 ms, 2 KB internal)
+  and the number that would justify more is still M-S1's to give.
 - **M-S2: audio-to-glass offset.** Measure from tick issue to audible click
   against tick issue to the hand's pixels landing, on the shipped dial, and
   record the offset §4.2 applies.
@@ -250,7 +282,7 @@ for the theme's default, and the owner can change it on the device.
 | `count` | `strike_hour` once per 12-hour number, about 2 s apart | `strike_hour` |
 | `ships_bells` | Every half hour, 1 to 8 strokes in pairs (*ding-ding*, pause), counting up through each four-hour watch: 00:30 is one bell, 04:00 is eight, 04:30 is one again. It replaces the quarters, so `chime_*` are not played under it | `strike_hour` (the bell stroke) |
 | `morse` | The 12-hour number as Morse digits at 20 wpm: 3 is `...--`, and 12 is `.---- ..---`, with a letter gap between digits | `morse_dit`, `morse_dah` |
-| `repeater` | Hours on a low stroke, quarters as ting-tang pairs, minutes on a high stroke, as a minute repeater does | `strike_hour`, `strike_quarter` (one ting-tang), `strike_minute` (the high stroke). **Trigger open (§8)**: a repeater sounds on demand, and the clock has no gesture for that yet |
+| `repeater` | Hours on a low stroke, quarters as ting-tang pairs, minutes on a high stroke, as a minute repeater does | `strike_hour`, `strike_qtr` (one ting-tang), `strike_min` (the high stroke). **Trigger open (§8)**: a repeater sounds on demand, and the clock has no gesture for that yet |
 | `none` | Only `chime_hour`, if it is filled | |
 
 **Ship's bells keeps the plain watch count.** The Royal Navy's dog-watch
@@ -396,7 +428,7 @@ files' names and become the JS generator's ids.
 | **Tick voices**, all at 1/2/4/8 per second | `tick_loop` | `mantel`, `grandfather`, `soft`, `pocket`, `wrist`, `classic`, `tourbillon`, `station_relay`, `regulator`, `woodblock`, `neon_buzz`, `waterdrop`, `sine_blip`, `glitch`, `double_pip`, `data_patter` |
 | **Tick voices with limits** (§4.2) | `tick_loop` under a sweep only | `geiger` (rate-free), `heartbeat` (1 per second, also under a 1 per second step) |
 | **Chime phrases** | `chime_q1`, `chime_half`, `chime_q3`, `chime_hour` | Westminster q1–q4; `regulator_tingtang` 1–4 pairs; `station_dingdong`, `station_dingdong_3tone`; `steam_whistle`, `steam_whistle_long_long`, `diesel_horn`, `departure_handbell`; `marimba_q2`, `marimba_hour`; `glass_dingdong`, `vibraphone_chord`; `cabin_ding`, `cabin_hilo`, `cabin_3tone`; `pit_radio_blip`, `race_start`; `orbit_arp`; `windchimes_flurry`, `windchimes_flourish`; `teacup_clink`, `glass_harmonica`, `glass_bell`; `singing_bowl`, `small_bowl`, `celesta_lullaby`; `synthwave_arp`, `synth_pad_bell`, `synth_bell`; `sonar_ping`; `music_box`, `kalimba`, `toy_piano_twinkle`, `glockenspiel`, `owl_hoot`, `dawn_chirp`, `tingsha`; `fm_glass_bell`, `time_pips`, `boot_arpeggio`, `shepard_swell`, `hologram_shimmer`, `door_whoosh_chime`, `chiptune_fanfare` |
-| **Strokes** | `strike_hour`, `strike_quarter`, `strike_minute` | `bell_hour`, `bell_small`, `rod_hour`, `regulator_gong`, `ships_bell_single`, `cuckoo_once`, `temple_bell`, `glass_bell`, `fm_glass_bell` |
+| **Strokes** | `strike_hour`, `strike_qtr`, `strike_min` | `bell_hour`, `bell_small`, `rod_hour`, `regulator_gong`, `ships_bell_single`, `cuckoo_once`, `temple_bell`, `glass_bell`, `fm_glass_bell` |
 | **Events** | `jump_minute`, `jump_hour`, `jump_date` | `station_minute_clunk`, `cabin_ding`, `teacup_clink`, `sine_blip` (one beat), `pit_radio_blip` |
 | **Morse symbols** | `morse_dit`, `morse_dah` | `morse_tone` (750 Hz, rendered at both lengths) |
 
@@ -461,27 +493,69 @@ file type or card directory. No WAV ever reaches the device.
 Implement up to the question mark and leave these open until ruled.
 
 1. **`orb_svc_t` signatures** for play, stop, gain and anchored loop (§4.1).
-2. **Payload header layout** (§3.2): word order, version word, and what a reader
-   refuses.
+2. ~~**Payload header layout**~~ **Ruled by the build, 2026-10-31:** there is
+   none; the facts ride the row's columns (§3.2).
 3. **Encodings beyond PCM16**: 16 kHz and IMA-ADPCM, per slot or per bundle
    (§3.2).
 4. ~~**Sweeping hands**: what a tick loop anchors to when `second_sweep` is set~~
    **Ruled 2026-10-30:** the balance's beat, anchored to the wall second (§4.2).
 7. **The repeater's trigger** (§5.1): which gesture asks the clock to sound the
    time.
-5. **Volume**: per app or global, and where the owner sets it (§5).
-6. **The DMA ring size or mute policy**, decided from M-S1's number (§4.3).
+5. ~~**Volume**~~ **Built 2026-10-31 as global device config**, beside the tz:
+   `GET/POST /api/v1/sound` (NVS namespace `sound`) carries the level 0..100
+   (the ES8311's 0.5 dB steps, 60 = -20 dB), the tick/chime/strike/jump
+   switches, quiet hours (default 22–7), the glass offset (default 90 ms, M-S2's
+   to correct) and an hour-pattern override. No dial menu row yet.
+6. **The DMA ring size**: the mute policy is built (§4.3); M-S1's number may
+   still ask for a bigger ring.
 
 ## 9. Slices, in the order that de-risks them
 
 | Slice | Content | Gate |
 |---|---|---|
 | **S1** | Prototype generator committed as `tools/sound_synth_proto.py` | **DONE 2026-10-28** |
-| **S2** | JS generator plus the Sound tab: generate, upload, preview, budget, the §7.1 catalog at every grid rate and the §7.2 preset mapping. Host-side only, no format change. `make_clock_region.py`'s `members()` gains the generator file, and `host_clock_region_test.py`'s member set learns it in the same commit. The prototype retires | the tab renders all defaults; the seam and RMS checks of §6 rerun on the JS output |
-| **S3** | Format: `ORB_ASSET_SOUND` = 10, the payload header, the baker's emitter, the C reader, sound slots in `theme_schema.py`'s clock table. Three-way mirror plus mutants, the D34/preview pattern | host suites green with new mutants caught |
-| **S4** | Bench bring-up: I2S plus ES8311 plus amp on GPIO 46 plays one PCM buffer. Run M-S1 and M-S2 | numbers recorded here before S5 is ruled |
-| **S5** | OS engine: mixer, `sound` capability, service entries (after §8 items 1 and 6 are ruled), loop anchoring | bench: a loop holds phase against the hand for an hour |
-| **S6** | Clock policy: schedule, the §5.1 hour patterns, jump slots (with D41's G5), settings, quiet hours | bench: :00/:15/:30/:45 on a real dial, ship's bells across a watch change, a clunk on a jumping minute |
+| **S2** ✔ | JS generator plus the Sound tab: generate, upload, preview, budget, the §7.1 catalog at every grid rate and the §7.2 preset mapping. Host-side only, no format change. `make_clock_region.py`'s `members()` gains the generator file, and `host_clock_region_test.py`'s member set learns it in the same commit. The prototype retires | the tab renders all defaults; the seam and RMS checks of §6 rerun on the JS output — **DONE 2026-10-31** (`headless-sound.test.js`, `headless-ui.test.js`). The prototypes are kept until the JS output has been heard on the bench |
+| **S3** ✔ | Format: `ORB_ASSET_SOUND` = 10, the row columns (no header, §3.2), the baker's emitter, the C reader, sound slots in `theme_schema.py`'s clock table. Three-way mirror plus mutants, the D34/preview pattern | host suites green with new mutants caught — **DONE 2026-10-31** (D39 battery: 18 refusals both ends, 6 mutants) |
+| **S4** | Bench bring-up: I2S plus ES8311 plus amp on GPIO 46 plays one PCM buffer. Run M-S1 and M-S2 | numbers recorded here before S5 is ruled — **PARTIAL**: codec up on orb-B (chip 8311 at 0x18); nothing heard, M-S1/M-S2 unmeasured (§11.2) |
+| **S5** | OS engine: mixer, `sound` capability, service entries (after §8 items 1 and 6 are ruled), loop anchoring | bench: a loop holds phase against the hand for an hour — **BUILT, unproved on the bench**; the svc entries and capability stay open (§4.1) |
+| **S6** | Clock policy: schedule, the §5.1 hour patterns, jump slots (with D41's G5), settings, quiet hours | bench: :00/:15/:30/:45 on a real dial, ship's bells across a watch change, a clunk on a jumping minute — **BUILT, unproved on the bench** |
+
+## 11. What was built, 2026-10-31
+
+### 11.1 The pieces
+
+| Piece | Where |
+|---|---|
+| ES8311 bring-up on the shared I2C master bus (Espressif's sequence, playback only) | `main/audio/orb_es8311.c` |
+| Engine: I2S at 22,050 Hz, PA on GPIO 46 gated with idleness, a 16-voice mixer above LVGL timed by the DMA's own `on_sent`, anchored loops nudged one sample per quiet block, leases, settings | `main/audio/orb_sound.c` |
+| Doors: `GET/POST /api/v1/sound`, `POST /api/v1/sound/test` (`ding`, `tick`, `loop` — no theme needed) | `main/net/orb_net.c`; the hub allowlists and fakes them |
+| Format: class 10, 13 slots, the reader's refusals, the theme's sound table | `orb_assets.*`, `orb_clock3.*`, `orb_theme.*`, `theme_schema.py` |
+| Clock policy | `clock_view.c` `sound_policy()` |
+| Generator, Sound tab, bake | `tools/watch-composer/sound-engine.js`, the composer, `orbtheme-baker.js` |
+| Sounds into any existing theme | `tools/orbsound.py add/list/strip` |
+
+**Internal RAM.** This board has none to spare: the first flash, with ~3 KB of
+engine statics, starved `esp_wifi_init`. Every buffer, the voice table and the
+theme's sound table are PSRAM; the build is DIRAM 247,475 B against main's
+246,355 B, and almost all of the 1,120 B is the I2S driver itself. The engine
+comes up last in `app_main`, after everything that allocates internal RAM.
+
+### 11.2 What the bench has and has not shown
+
+- **Shown on orb-B** (`44:bd:8d:78:26:18`): the codec answers at 0x18 with chip
+  id 8311 and takes the playback sequence; the engine comes up; the dial runs the
+  sound policy with no panic and at main's own frame rate (4–5 fps on "Triple
+  calendar", identical to `96ef302` flashed and measured the same way).
+- **Not shown: anything audible.** On orb-B, main's v1.1.42 fails
+  `esp_wifi_init` with `ESP_ERR_NO_MEM` (8 of 10 static rx buffers at
+  `96ef302` alone, with no sound code in the image), so there is no web door and
+  no serial door to ask the engine for a ding. orb-A runs v1.1.43 with a 1.4 MB
+  theme and has Wi-Fi; the difference looks like the installed theme's internal
+  RAM, which is main's budget and not this feature's.
+- **Next on a board with a network:** `curl -X POST -d '{"sound":"ding"}'
+  /api/v1/sound/test`, then `"loop"` beside a stepping second hand for M-S2's
+  offset, a theme with `tools/orbsound.py add` for the quarters, and M-S1 under
+  an install.
 
 ## 10. The one sentence to remember
 

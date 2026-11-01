@@ -9,11 +9,12 @@ before touching the composer's Sound tab, the asset class enum, the FORMAT 3
 element table for sound, or anything that opens I2S.
 
 **Status: RULED (owner, 2026-10-28). BUILT 2026-10-31 on `feat/clock-sound`,
-bench-proved only as far as §11 says.** The engine, the format, the clock policy,
-the Sound tab and its generator exist and pass their host suites; the codec comes
-up on orb-B. Nobody has yet heard it play: main's v1.1.42 cannot bring Wi-Fi up on
-that board (§11.2), so no door reached the engine. These are settled and not open
-for re-litigation:
+bench-proved on orb-B as far as §11.2 says.** The engine, the format, the clock
+policy, the Sound tab and its generator exist and pass their host suites, and a
+theme carrying sounds runs its tick loop, minute jump, quarter, hour chime and
+counted strikes on the board. What the counters cannot say — how it sounds through
+the speaker, and the glass offset — is still the owner's ear's. These are settled
+and not open for re-litigation:
 
 | Parameter | Ruled value |
 |---|---|
@@ -534,28 +535,34 @@ Implement up to the question mark and leave these open until ruled.
 | Generator, Sound tab, bake | `tools/watch-composer/sound-engine.js`, the composer, `orbtheme-baker.js` |
 | Sounds into any existing theme | `tools/orbsound.py add/list/strip` |
 
-**Internal RAM.** This board has none to spare: the first flash, with ~3 KB of
-engine statics, starved `esp_wifi_init`. Every buffer, the voice table and the
-theme's sound table are PSRAM; the build is DIRAM 247,475 B against main's
-246,355 B, and almost all of the 1,120 B is the I2S driver itself. The engine
-comes up last in `app_main`, after everything that allocates internal RAM.
+**Internal RAM.** The engine adds no internal statics: every buffer, the voice
+table and the theme's sound table are PSRAM, and its 1,120 B of DIRAM is almost
+all the I2S driver itself. It comes up last in `app_main`, after everything that
+allocates internal RAM. The branch sits on main's two memory fixes of
+2026-10-31 — the boot overlay's band released once the dial is up, and the httpd
+response buffers in PSRAM — so the build is DIRAM 216,155 B, 30 KB under the
+v1.1.42 that could not bring Wi-Fi up on orb-B, and the board idles with ~39 KB
+internal free with the engine running.
 
 ### 11.2 What the bench has and has not shown
 
-- **Shown on orb-B** (`44:bd:8d:78:26:18`): the codec answers at 0x18 with chip
-  id 8311 and takes the playback sequence; the engine comes up; the dial runs the
-  sound policy with no panic and at main's own frame rate (4–5 fps on "Triple
-  calendar", identical to `96ef302` flashed and measured the same way).
-- **Not shown: anything audible.** On orb-B, main's v1.1.42 fails
-  `esp_wifi_init` with `ESP_ERR_NO_MEM` (8 of 10 static rx buffers at
-  `96ef302` alone, with no sound code in the image), so there is no web door and
-  no serial door to ask the engine for a ding. orb-A runs v1.1.43 with a 1.4 MB
-  theme and has Wi-Fi; the difference looks like the installed theme's internal
-  RAM, which is main's budget and not this feature's.
-- **Next on a board with a network:** `curl -X POST -d '{"sound":"ding"}'
-  /api/v1/sound/test`, then `"loop"` beside a stepping second hand for M-S2's
-  offset, a theme with `tools/orbsound.py add` for the quarters, and M-S1 under
-  an install.
+On orb-B (`44:bd:8d:78:26:18`), `v1.1.43+893c6f8`, 2026-10-31, from
+`/api/v1/sound`'s counters:
+
+| Check | Result |
+|---|---|
+| Codec and engine | ES8311 at 0x18, chip id 8311; engine up after Wi-Fi with all 10 rx buffers |
+| Real time | 32 blocks in 0.4 s; 1,726 blocks per 20 s = 20.04 s of audio |
+| Idle | amp and I2S off 2 s after the last voice, back on for the next |
+| Anchored bench loop, 60 s | loop error 0 samples, 0 nudges, 0 snaps: the I2S clock and the wall second agree |
+| A theme with sounds (`skeleton.orbtheme` + seven slots by `tools/orbsound.py`, 5.07 MB) | installs through the ordinary upload door; the tick loop starts with the dial, error 0 with a one-sample nudge every minute or so |
+| Minute jump | one voice per wall minute, on the orb's own minute (which runs ~2 s behind the bench PC) |
+| :15 | the first Westminster quarter starts beside the loop and ends 5.4 s later |
+| :00 (the zone set to Asia/Kolkata for one hour boundary, then restored) | clunk + the hour phrase at once, 8 strokes queued behind it and starting 2 s apart after its 14.7 s; 10 voices at the peak |
+
+**Not shown:** nothing above was listened to — the counters prove timing, not
+tone. M-S1 (a store under a running loop) and M-S2 (the glass offset, 90 ms by
+default) are unmeasured, and the repeater's trigger is still open.
 
 ## 10. The one sentence to remember
 

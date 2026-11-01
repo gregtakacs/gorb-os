@@ -307,7 +307,16 @@ def unpack_blob(blob, abi=GEOM_ABI3):
     for i in range(n_spr):
         o, sz, w, h = struct.unpack_from("<4I", blob, off + i * sw * 4)
         if delta:
-            dx, dy = struct.unpack_from("<2h", blob, off + i * sw * 4 + 16)
+            # Each is its own u32 word (pack_blob writes "i16" fields one word
+            # apiece, as orb_bundle.c reads them at +16 and +20); "<2h" here read
+            # both halves of the diffx word and handed back diffy = 0 for every
+            # row, so a Python round trip flattened every delta rect onto the
+            # plate's top row.
+            wx, wy = struct.unpack_from("<2I", blob, off + i * sw * 4 + 16)
+            dx = wx & 0xFFFF
+            dy = wy & 0xFFFF
+            dx = dx - 0x10000 if dx & 0x8000 else dx
+            dy = dy - 0x10000 if dy & 0x8000 else dy
             sprs.append({"off": o, "size": sz, "w": w, "h": h,
                          "diffx": dx, "diffy": dy})
         else:

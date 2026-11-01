@@ -372,6 +372,25 @@ except ValueError as _e:
     check("blob checksum" in str(_e),
           "per-blob tamper refused for the wrong reason: %s" % _e)
 
+# C4's delta catalogue rows round-trip through the Python reader: diffx and diffy
+# are one u32 word each, as pack_blob writes them and orb_bundle.c reads them. The
+# reader once unpacked both from the diffx word, so every diffy came back 0 and a
+# theme re-written in Python (tools/orbsound.py) drew its delta rects on the
+# plate's top row — orb-B's skeleton, 2026-10-31.
+_dpath = tmp + ".dxy"
+_dspr = [{"off": 0, "size": 12, "w": 2, "h": 2, "diffx": 0, "diffy": 0},
+         {"off": 12, "size": 6, "w": 1, "h": 2, "diffx": 86, "diffy": 44},
+         {"off": 18, "size": 3, "w": 1, "h": 1, "diffx": -7, "diffy": -32768},
+         {"off": 21, "size": 3, "w": 1, "h": 1, "diffx": 32767, "diffy": -1}]
+ob.write_bundle(_dpath, "Delta Rows", [{"slug": "clock", "elements": [],
+                                        "sprites": _dspr, "art": b"\x01" * 24,
+                                        "abi_min": 4, "abi_max": 4}])
+_dback = ob.read_bundle(_dpath)[1][0]["blob"]["sprites"]
+check([(x["diffx"], x["diffy"]) for x in _dback] == [(x["diffx"], x["diffy"]) for x in _dspr],
+      "delta rows' diffx/diffy do not round-trip: %s"
+      % [(x["diffx"], x["diffy"]) for x in _dback])
+os.unlink(_dpath)
+
 for f in (tmp, v2, tornpath, rtpath, btpath, offpath, blobpath,
           tmp + ".x", tmp + ".f1", tmp + ".f1b", tmp + ".f2", tmp + ".f3",
           tmp + ".f4", tmp + ".v2g", tmp + ".v2a", tmp + ".v2eg", tmp + ".v2ea"):
@@ -381,7 +400,7 @@ for f in (tmp, v2, tornpath, rtpath, btpath, offpath, blobpath,
         pass
 
 print("== FORMAT 3 BUNDLE SUITE: %d checks, %d refusal(s), %d failure(s)"
-      % (30 + len(SENT) + 2, len(SENT) + 2, len(failures)))
+      % (31 + len(SENT) + 2, len(SENT) + 2, len(failures)))
 for _f in failures:
     print("  FAIL " + _f)
 sys.exit(1 if failures else 0)

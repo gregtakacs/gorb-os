@@ -32,6 +32,16 @@ ok(E.motionPose({ path: 'slide-y', from: -70, travel: 160 }, 60, 60).d[1] === 90
 ok(!E.motionOn({ path: 'rotate', cadence: 'inherit' }) && E.motionOn({ cadence: 'jump' }) && E.motionOn({ path: 'disc' }),
    'only a path or a cadence of its own counts as motion');
 
+// ---- ease: the same curves the dial's ease_pose draws, read from the wall clock ----
+const ezs = E.easeOf('minute', { cadence: 'jump', ease: 120 });
+ok(ezs(at(1, 2, 0, 0)) && near(ezs(at(1, 2, 0, 60)).bump, 1), 'a jumping minute settles: half way through 120 ms is the full overshoot');
+ok(ezs(at(1, 2, 0, 130)) === null, 'and the settle is over by 120 ms');
+ok(E.easeOf('second', { cadence: 'step', steps: 1, ease: 120 })(at(1, 2, 3, 10)) === null, 'a seconds step never settles');
+const ezf = E.easeOf('minute', { path: 'retrograde', cadence: 'sweep', ease: 400 });
+ok(ezf(at(1, 0, 0, 200)).fly && near(ezf(at(1, 0, 0, 200)).sm, 0.5), 'a minute fan flies back over 400 ms at the top of the hour');
+ok(ezf(at(1, 0, 1, 0)) === null, 'and travels plainly after');
+ok(E.easeOf('hour', { cadence: 'jump' })(at(1, 0, 0)) === null, 'no ease, no animation');
+
 // ---- the presets that exercise them ----
 const OPTS = { finish: 'train', plate: 'train', tick: 'sweep', glow: 1, temp: 2200 };
 const faceOf = (k) => { const P = E.PRESETS[k]; return E.face(Object.assign({}, OPTS, { design: E.canonDesign(JSON.parse(JSON.stringify(P.design))), train: P.train || 'classic', hands: P.hands, handFinish: P.handFinish })); };
@@ -39,8 +49,9 @@ const flux = faceOf('flux'), orbit = faceOf('orbit');
 const fh = (f, id) => f.hands.find((h) => h.id === id);
 ok(fh(flux, 'centre-hour').motion.path === 'retrograde' && fh(flux, 'centre-minute').motion.path === 'retrograde', 'Flux: hour and minute are retrograde fans');
 ok(typeof fh(flux, 'centre-second').slide === 'function', 'Flux: the seconds slide');
-const fs = fh(flux, 'centre-second'), xy0 = E.handXY(fs, at(1, 0, 0)), xy30 = E.handXY(fs, at(1, 0, 30));
+const fs = fh(flux, 'centre-second'), xy0 = E.handXY(fs, at(1, 0, 1)), xy30 = E.handXY(fs, at(1, 0, 31));   // past :00, where the bar flies back
 ok(near(xy30[0] - xy0[0], 80) && xy30[1] === xy0[1], 'Flux: the seconds bar travels 80 px across half a minute', JSON.stringify([xy0, xy30]));
+ok(E.handXY(fs, at(1, 0, 0, 200))[0] > E.handXY(fs, at(1, 0, 0, 300))[0] && E.handXY(fs, at(1, 0, 0, 300))[0] > xy0[0], 'Flux: at :00 the bar flies back along its track');
 ok(near(deg(E.handAngle(fh(flux, 'centre-hour'), at(6, 59, 0))), 270), 'Flux: the jumping hour reads 6 at 06:59, on its fan');
 ok(['centre-hour', 'centre-minute', 'centre-second'].every((id) => fh(orbit, id).disc && fh(orbit, id).noShadow), 'Orbit: three discs, none casting');
 const od = fh(orbit, 'centre-minute');
@@ -67,6 +78,7 @@ const sc = it.driveCols3('second', { path: 'slide-x', from: -70, travel: 160, ca
 ok(sc.motion === 'slide-x' && sc.span === 160 && sc.zero === -70 && sc.cadence === 2 && sc.cad_arg === 1, 'a slide encodes its start as zero and its travel as span', JSON.stringify(sc));
 ok(it.driveCols3('minute', { path: 'retrograde', start: 30, span: 120 }).cadence === 1, 'an inherited cadence on a path of its own is written as sweep');
 ok(it.driveCols3('hour', { path: 'rotate' }) === null, 'a plain rotation writes nothing');
+ok(it.driveCols3('hour', { path: 'retrograde', start: 210, span: 120, cadence: 'jump', ease: 200 }).ease === 200, 'the bake carries the ease');
 const pp = it.motionRows3(it.design(), { rows: [], refuses: [] });
 ok(pp.rows.length === 1 && pp.rows[0].id === 'centre-second' && pp.rows[0].motion === 'slide-x' && pp.rows[0].freeze,
    'Flux: the sliding seconds joins the pointer table, lifted at rest', JSON.stringify(pp.rows.map((r) => r.id)));

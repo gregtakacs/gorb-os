@@ -77,6 +77,7 @@ typedef struct {
     int16_t  zero;
     uint16_t value_min;
     uint16_t value_max;
+    uint16_t ease;             /* settle (jump/step) or flyback (retrograde) ms; 0 = none */
 } clk_drive_t;
 
 typedef struct {
@@ -297,4 +298,5 @@ typedef struct {
      * pointer has always drawn. */
     uint8_t  cadence;          /* CLK_CAD_* */
     uint16_t cad_arg;          /* step N, stop-to-go P (0.1 s), drag window (min) */
+    uint16_t ease;             /* settle or flyback ms; 0 = none */
 } clk_aux_t;

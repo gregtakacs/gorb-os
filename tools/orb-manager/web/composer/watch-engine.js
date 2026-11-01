@@ -802,7 +802,7 @@
       print: 'station', numerals: 'all', numColor: '#111111', handShade: 'flat', color: 'white', aging: 0, stains: 0, dust: 0, secStyle: 'station', centre: { hour: 1, minute: 1, second: 1 },
       // D41: the station clock's own rhythm -- the minute jumps on the boundary and the
       // red seconds disc runs round in 58.5 s, then waits at 12 for the minute to release it
-      hands: { 'centre-second': { finish: 'red', motion: { cadence: 'stop-to-go' } }, 'centre-minute': { motion: { cadence: 'jump' } } }, comps: [
+      hands: { 'centre-second': { finish: 'red', motion: { cadence: 'stop-to-go' } }, 'centre-minute': { motion: { cadence: 'jump', ease: 150 } } }, comps: [
         { id: 'c1', type: 'flare', host: 'dial', angle: 0, dist: 108, rot: 0, size: 9, style: 'print', icon: 'plus', color: '#ffffff', bg: '#e3000f', bgShape: 'rect', bgW: 2.4, bgH: 1.05 },
       ] } },
     luna: { name: 'Luna', blurb: 'Midnight sunburst · big realistic moon at 6', hands: 'dauphine', handFinish: 'gilt', design: {
@@ -829,9 +829,9 @@
     flux: { name: 'Flux', blurb: 'Retrograde hour & minute fans · sliding seconds bar · acid on forged carbon', hands: 'pencil', handFinish: 'steel', caseMetal: 'gunmetal', design: {
       print: 'none', numerals: 'none', font: 'unbounded', surface: 'forged', color: 'black', aging: 0, stains: 0, dust: 0, handShade: 'flat', centre: { hour: 1, minute: 1, second: 1 },
       hands: {
-        'centre-hour': { finish: 'lime', len: 1, wid: 1.4, motion: { path: 'retrograde', start: 210, span: 120, cadence: 'jump', accent: '#c6ff00' } },
-        'centre-minute': { finish: 'white', motion: { path: 'retrograde', start: 30, span: 120, cadence: 'sweep', accent: '#f2f2f2' } },
-        'centre-second': { finish: 'red', len: 0.12, wid: 3, motion: { path: 'slide-x', travel: 160, from: -70, cadence: 'step', steps: 1, accent: '#ff3b30' } },
+        'centre-hour': { finish: 'lime', len: 1, wid: 1.4, motion: { path: 'retrograde', start: 210, span: 120, cadence: 'jump', ease: 200, accent: '#c6ff00' } },
+        'centre-minute': { finish: 'white', motion: { path: 'retrograde', start: 30, span: 120, cadence: 'sweep', ease: 700, accent: '#f2f2f2' } },
+        'centre-second': { finish: 'red', len: 0.12, wid: 3, motion: { path: 'slide-x', travel: 160, from: -70, cadence: 'step', steps: 1, ease: 400, accent: '#ff3b30' } },
       },
       comps: [
         { id: 'c1', type: 'flare', host: 'dial', angle: 180, dist: 92, rot: 0, size: 7, style: 'print', icon: 'text', text: 'FLUX', font: 'unbounded', weight: 'bold', spacing: 0.4, color: '#c6ff00' },
@@ -840,7 +840,7 @@
       print: 'none', numerals: 'none', font: 'orbitron', surface: 'guilloche', color: '#140a24', aging: 0, stains: 0, dust: 0, centre: { hour: 1, minute: 1, second: 1 },
       hands: {
         'centre-hour': { motion: { path: 'disc', start: 90, cadence: 'sweep', discBg: '#1c0d33', discInk: '#ffffff', accent: '#ff2bd6' } },
-        'centre-minute': { motion: { path: 'disc', start: 90, cadence: 'jump', discBg: '#120f1c', discInk: '#e9e4ff', accent: '#ff2bd6' } },
+        'centre-minute': { motion: { path: 'disc', start: 90, cadence: 'jump', ease: 160, discBg: '#120f1c', discInk: '#e9e4ff', accent: '#ff2bd6' } },
         'centre-second': { motion: { path: 'disc', start: 90, cadence: 'step', steps: 1, discBg: '#0a0910', discInk: '#bdb6d6', accent: '#ff2bd6' } },
       },
       comps: [
@@ -2380,6 +2380,27 @@
     ox.setTransform(1, 0, 0, 1, 0, 0); ox.drawImage(c, 0, 0);
     return { c: out, px, py };
   }
+  /* D41's ease, the same curves clock_view.c's ease_pose draws, read from the wall
+   * clock instead of from state: how long since this row last stepped (the settle,
+   * sin(pi*tau)) and how long since its domain began (a fan's or slide's flyback,
+   * smoothstep back from the far end). null when nothing is easing at `t`. */
+  function easeOf(kind, m) {
+    const ms = Math.max(0, Math.min(1000, +m.ease || 0));
+    if (!ms) return () => null;
+    const unit = kind === 'hour' ? 3600 : kind === 'minute' ? 60 : 1;
+    const n = m.cadence === 'jump' ? 1 : m.cadence === 'step' ? Math.max(1, +m.steps | 0) : 0;
+    const settles = n && kind !== 'second', flies = m.path === 'retrograde' || m.path === 'slide-x' || m.path === 'slide-y';
+    return (t) => {
+      const h = t.getHours() % 12, mi = t.getMinutes(), s = t.getSeconds() + t.getMilliseconds() / 1000;
+      const dom = kind === 'hour' ? h * 3600 + mi * 60 + s : kind === 'minute' ? mi * 60 + s : s;
+      if (flies && dom * 1000 < ms) { const tau = (dom * 1000) / ms; return { fly: true, sm: tau * tau * (3 - 2 * tau) }; }
+      if (settles) {
+        const f = kind === 'hour' ? (mi * 60 + s) / 3600 : s / 60, into = f * n - Math.floor(f * n), since = ((into * unit) / n) * 1000;
+        if (since < ms) return { fly: false, bump: Math.sin((Math.PI * since) / ms) };
+      }
+      return null;
+    };
+  }
   /* D41's turning disc: the hand IS an annulus printed with its own scale, value 0 at
    * 12 and counting clockwise, so turning it by start - value/domain brings the value
    * under a fixed index at `start`. Labels stand upright at that index. */
@@ -2416,9 +2437,23 @@
     const units = explicit ? (t) => driveUnits(hd.kind, m, t)
       : hd.kind === 'second' ? (t) => secT(t) * 60 : (t) => TURN[hd.kind](t) * vmax;
     hd.motion = Object.assign({ path: 'rotate', cadence: 'inherit' }, m);
-    hd.turn = (t) => motionPose(hd.motion, vmax, units(t)).a / TAU;
-    if (m.path === 'slide-x' || m.path === 'slide-y') {
-      hd.slide = (t) => motionPose(hd.motion, vmax, units(t)).d;
+    const slides = m.path === 'slide-x' || m.path === 'slide-y';
+    const ez = easeOf(hd.kind, hd.motion);
+    // D41 ease, the dial's own: a settle after each step, a flyback at the domain's start
+    const eased = (t) => {
+      const u = units(t), p = motionPose(hd.motion, vmax, u), e = ez(t);
+      if (!e) return p;
+      if (e.fly) {
+        if (slides) { const [f0, tr] = slideGeom(hd.motion), o = f0 + tr * (1 - e.sm); return { a: 0, d: m.path === 'slide-x' ? [o, 0] : [0, o] }; }
+        return { a: rad(+m.start || 0) + rad(m.span != null ? +m.span : 180) * (1 - e.sm) };
+      }
+      const dir = m.path === 'disc' ? -1 : (m.path === 'retrograde' && (+m.span || 180) < 0) ? -1 : 1;
+      if (slides) { const k = e.bump * 3 * dir; return { a: 0, d: m.path === 'slide-x' ? [p.d[0] + k, 0] : [0, p.d[1] + k] }; }
+      return { a: p.a + rad(1.5) * e.bump * dir };
+    };
+    hd.turn = (t) => eased(t).a / TAU;
+    if (slides) {
+      hd.slide = (t) => eased(t).d;
       hd.capR = 0; hd.rot = m.path === 'slide-y' ? Math.PI / 2 : 0;   // a vertical slide points across its track
     }
     if (m.path === 'disc') {
@@ -3632,5 +3667,5 @@
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,
-    drawAsset, artInDial, finishOver, finishTex, keyMask, KEY_TOL_DEF, FINISH_BLENDS, handSpriteAsset, artBox, caseOpenR, faceScale, dynScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handXY, handZeroDeg, MOTION_PATHS, CADENCES, DRIVE_DOM, motionOn, driveUnits, motionPose, slideGeom, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
+    drawAsset, artInDial, finishOver, finishTex, keyMask, KEY_TOL_DEF, FINISH_BLENDS, handSpriteAsset, artBox, caseOpenR, faceScale, dynScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handXY, handZeroDeg, MOTION_PATHS, CADENCES, DRIVE_DOM, motionOn, driveUnits, motionPose, slideGeom, easeOf, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
 })();

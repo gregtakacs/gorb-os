@@ -337,6 +337,8 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
                       <input type="number" step="1" value="{{ h.bVal }}" onChange="{{ h.onB }}" disabled="{{ h.bOff }}" title="{{ h.bTip }}" style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
                       <span style="font-size:12px;color:#b5ab97" title="Steps per unit of the hand's value (per second on a seconds hand). A seconds hand's steps also set the dial's tick rate.">Steps</span>
                       <input type="number" min="1" max="8" step="1" value="{{ h.steps }}" onChange="{{ h.onSteps }}" disabled="{{ h.stepsOff }}" style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
+                      <span style="font-size:12px;color:#b5ab97" title="{{ h.easeTip }}">Ease</span>
+                      <input type="number" min="0" max="1000" step="10" value="{{ h.ease }}" onChange="{{ h.onEase }}" disabled="{{ h.easeOff }}" title="{{ h.easeTip }}" style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
                     </div>
                   </sc-if>
                 </div>
@@ -2641,7 +2643,7 @@ class Component extends DCLogic {
       pathOpts: mark(paths, path), cadOpts: mark(cads, cad),
       onPath: (e) => this.setMotion(id, { path: e.target.value }),
       onCad: (e) => this.setMotion(id, { cadence: e.target.value }),
-      showMotionNums: retro || slide || disc || cad === 'step',
+      showMotionNums: retro || slide || disc || cad === 'step' || cad === 'jump',
       aLabel: slide ? 'From' : 'Start', aVal: slide ? Math.round(g[0]) : (+m.start || 0),
       aTip: slide ? 'Where the travel starts, px from the arbour along the slide' : retro ? 'Where the fan starts, degrees clockwise from 12' : disc ? 'The fixed index the disc is read against, degrees clockwise from 12' : 'Only a fan, a disc or a slide places a start',
       onA: num(slide ? 'from' : 'start'),
@@ -2649,6 +2651,11 @@ class Component extends DCLogic {
       bTip: slide ? 'How far the slide travels across the whole value, px' : 'How far the fan sweeps across the whole value, degrees (negative runs anticlockwise)',
       onB: num(slide ? 'travel' : 'span'),
       steps: +m.steps || 1, stepsOff: cad !== 'step', onSteps: (e) => this.setMotion(id, { steps: Math.max(1, Math.min(8, +e.target.value | 0)) }),
+      // D41 ease: a settle needs a jump or a step slower than the second; a flyback a fan or a slide
+      easeOff: !(((cad === 'jump' || cad === 'step') && kind !== 'second') || retro || slide),
+      ease: +m.ease || 0,
+      easeTip: retro || slide ? 'Flyback: how long the hand takes to travel back to its start, ms (0 snaps)' : 'Settle: the small overshoot after each jump, ms (0 lands dead). Not offered on a step every second: it would cost a burst of frames each second',
+      onEase: (e) => this.setMotion(id, { ease: Math.max(0, Math.min(1000, +e.target.value | 0)) }),
     };
   }
   driveCols3(kind, m) {
@@ -2661,7 +2668,8 @@ class Component extends DCLogic {
       if (kind === 'second' && t && t !== 'sweep') { cad = 'step'; carg = Math.max(1, +t | 0); } else cad = 'sweep';
     } else if (cad === 'step') carg = Math.max(1, +m.steps | 0);
     else if (cad === 'stop-to-go') carg = Math.round(+m.p || 585);
-    const out = { src: dom[0], vmin: 0, vmax, cadence: CAD[cad], cad_arg: carg, path };
+    const out = { src: dom[0], vmin: 0, vmax, cadence: CAD[cad], cad_arg: carg, path,
+                  ease: Math.max(0, Math.min(1000, Math.round(+m.ease || 0))) };
     const st = Math.round((((+m.start || 0) % 360) + 360) % 360 * 10);
     if (path === 'retrograde') {
       const sp = Math.round((m.span != null ? +m.span : 180) * 10);
@@ -2745,8 +2753,8 @@ class Component extends DCLogic {
        * slot's mapping (no source named); a fan or a disc names its source and path. */
       const dc = this.driveCols3(h.kind, mo);
       if (dc) {
-        hrow.drive = dc.path === 'rotate' ? { cadence: dc.cadence, cad_arg: dc.cad_arg }
-          : { src: dc.src, motion: dc.motion, span: dc.span, zero: dc.zero, vmin: dc.vmin, vmax: dc.vmax, cadence: dc.cadence, cad_arg: dc.cad_arg };
+        hrow.drive = dc.path === 'rotate' ? { cadence: dc.cadence, cad_arg: dc.cad_arg, ease: dc.ease }
+          : { src: dc.src, motion: dc.motion, span: dc.span, zero: dc.zero, vmin: dc.vmin, vmax: dc.vmax, cadence: dc.cadence, cad_arg: dc.cad_arg, ease: dc.ease };
       }
       hands.push(hrow);
       if (h.noShadow) continue;   // a disc casts nothing the device could turn with it
@@ -3381,7 +3389,7 @@ class Component extends DCLogic {
       }
       auxB += w * h * 3;
       const row = { slot: ri, id: String(r.id), src: r.src, motion: r.motion, span: r.span, zero: r.zero, vmin: r.vmin, vmax: r.vmax,
-                    cadence: r.cadence | 0, cad_arg: r.cad_arg | 0,
+                    cadence: r.cadence | 0, cad_arg: r.cad_arg | 0, ease: r.ease | 0,
                     x: bx, y: by, w, h, pivot_x: gx - bx, pivot_y: gy - by, plane: { rgba: rgba, w: w, h: h } };
       /* The pointer's own cast shadow, down the §25.2 twin the centred hands take:
        * the plate carries ink only, and the shadow is a second row — a padded black

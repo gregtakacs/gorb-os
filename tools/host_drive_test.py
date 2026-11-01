@@ -316,6 +316,39 @@ C_BODY = r"""
         }
     }
 
+    /* Ease: a settle overshoots and returns; a flyback goes back along the fan. */
+    {
+        ease_t e = { 0 }; uint32_t busy;
+        float p = ease_pose(&e, 30.0f, 0, 120, true, false, 1, 360.0f, 1.5f, &busy);
+        checks++; if (p != 30.0f || busy) { fails++; printf("FAIL ease: the first pose is the pose\n"); }
+        p = ease_pose(&e, 36.0f, 1000, 120, true, false, 1, 360.0f, 1.5f, &busy);
+        checks++; if (p != 36.0f || busy != 120) { fails++; printf("FAIL ease: a jump starts its settle (%f, %u)\n", p, busy); }
+        p = ease_pose(&e, 36.0f, 1060, 120, true, false, 1, 360.0f, 1.5f, &busy);
+        checks++; if (fabsf(p - 37.5f) > 1e-3f || busy != 60) { fails++; printf("FAIL ease: half way the settle is 1.5 over (%f)\n", p); }
+        p = ease_pose(&e, 36.0f, 1120, 120, true, false, 1, 360.0f, 1.5f, &busy);
+        checks++; if (p != 36.0f || busy || e.kind != EASE_NONE) { fails++; printf("FAIL ease: the settle ends on the pose (%f)\n", p); }
+        p = ease_pose(&e, 30.0f, 2000, 120, true, false, 1, 360.0f, 1.5f, &busy);
+        p = ease_pose(&e, 30.0f, 2060, 120, true, false, 1, 360.0f, 1.5f, &busy);
+        checks++; if (fabsf(p - 28.5f) > 1e-3f) { fails++; printf("FAIL ease: a backward step settles backward (%f)\n", p); }
+        ease_t f = { 0 };
+        ease_pose(&f, 60.0f, 0, 400, false, true, 1, 360.0f, 1.5f, &busy);    /* a fan 300..60, at its end */
+        p = ease_pose(&f, 300.0f, 100, 400, false, true, 1, 360.0f, 1.5f, &busy);
+        checks++; if (p != 60.0f || busy != 400) { fails++; printf("FAIL ease: the flyback starts at the fan's end (%f)\n", p); }
+        p = ease_pose(&f, 300.0f, 300, 400, false, true, 1, 360.0f, 1.5f, &busy);
+        checks++; if (fabsf(p - 0.0f) > 1e-3f) { fails++; printf("FAIL ease: half way back is the fan's middle, through 12 (%f)\n", p); }
+        p = ease_pose(&f, 300.5f, 900, 400, false, true, 1, 360.0f, 1.5f, &busy);
+        checks++; if (p != 300.5f || busy) { fails++; printf("FAIL ease: forward travel after the flyback is plain (%f)\n", p); }
+        ease_t g = { 0 };
+        ease_pose(&g, 10.0f, 0, 0, true, false, 1, 360.0f, 1.5f, &busy);
+        p = ease_pose(&g, 16.0f, 10, 0, true, false, 1, 360.0f, 1.5f, &busy);
+        checks++; if (p != 16.0f || busy) { fails++; printf("FAIL ease: no ease, no animation\n"); }
+        ease_t sl = { 0 };
+        ease_pose(&sl, 80.0f, 0, 300, false, true, 1, 0.0f, 3.0f, &busy);
+        p = ease_pose(&sl, -70.0f, 10, 300, false, true, 1, 0.0f, 3.0f, &busy);
+        p = ease_pose(&sl, -70.0f, 160, 300, false, true, 1, 0.0f, 3.0f, &busy);
+        checks++; if (fabsf(p - 5.0f) > 1e-3f) { fails++; printf("FAIL ease: a slide flies straight back, never wrapping (%f)\n", p); }
+    }
+
     /* G5: what steps on a dial decides which jump slots sound. */
     {
         uint8_t st[3];
@@ -387,6 +420,11 @@ MUTATIONS = [
     ("        .src = a->src, .path = a->kind, .cadence = a->cadence, .cad_arg = a->cad_arg,",
      "        .src = a->src, .path = a->kind, .cadence = 0, .cad_arg = a->cad_arg,"),
     ("    if (t->src) return *t;", ""),
+    ("        e->shown = target + e->amp * sinf((float)M_PI * tau);", "        e->shown = target;"),
+    ("            if (span_sign >= 0) { while (d > 0.0f) d -= turn; }", "            if (span_sign >= 0) { }"),
+    ("        const float sm = tau * tau * (3.0f - 2.0f * tau);", "        const float sm = 1.0f;"),
+    ("        const bool back = retro && (span_sign >= 0 ? d < 0.0f : d > 0.0f);", "        const bool back = retro;"),
+    ("    if (gone >= ms) { e->kind = EASE_NONE; e->shown = target; return target; }", "    if (gone > 10 * ms) { e->kind = EASE_NONE; e->shown = target; return target; }"),
     ("        if (!clk_theme.hand[k].w || !clk_theme.hand[k].show) continue;", ""),
     ("            n = 1;                                       /* the railway minute */", ""),
     ("        if ((a->flags & CLK_FLAG_AUX_SHADOW) || !a->spr.show) continue;", "        if (!a->spr.show) continue;"),
@@ -428,6 +466,9 @@ def lifted_c(mutations=()):
         lift(cview, "static int32_t drive_travel("),
         lift(cview, "static float drive_hand_deg(const clk_drive_t *d, const drive_now_t *n)\n{"),
         lift(cview, "static bool drive_aux("),
+        lift_block(cview, "enum { EASE_NONE = 0,", "} ease_t;"),
+        lift(cview, "static float ease_wrap("),
+        lift(cview, "static float ease_pose("),
         lift_block(cview, "enum { SND_STEP_MIN,", "};"),
         lift(cview, "static int snd_step_class("),
         lift(cview, "static uint8_t snd_cad_steps("),

@@ -144,8 +144,14 @@ refuses(() => B.packElements(tooMany), 'past the bound of 32', '33 rows are refu
   ok(B.unpackElements(B.packElements([HJ], undefined, B.GEOM_ABI5), 1)[0].cadence === 3,
      'D41: the cadence round-trips');
   refuses(() => B.packElements([HJ]), 'v5 stamp', 'D41: the v4 pack refuses a cadence');
-  refuses(() => B.packElements([E({ class: HAND, slot: 1, cadence: 3, ease: 120 })], undefined, B.GEOM_ABI5),
-          'not built yet', 'D41: an ease is refused until it is built');
+  ok(B.packElements([E({ class: HAND, slot: 1, cadence: 3, ease: 120 })], undefined, B.GEOM_ABI5).length === 28,
+     'D41: a jumping minute may settle');
+  refuses(() => B.packElements([E({ class: HAND, slot: 1, cadence: 1, ease: 120 })], undefined, B.GEOM_ABI5),
+          'nothing to ease', 'D41: a sweeping minute has nothing to ease');
+  refuses(() => B.packElements([E({ class: HAND, slot: 2, cadence: 2, cad_arg: 1, ease: 120 })], undefined, B.GEOM_ABI5),
+          'nothing to ease', 'D41: a seconds step never settles');
+  refuses(() => B.packElements([E({ class: HAND, slot: 1, cadence: 3, ease: 1500 })], undefined, B.GEOM_ABI5),
+          'at most a second', 'D41: an ease runs at most a second');
   refuses(() => B.packElements([E({ class: HAND, slot: 2, cadence: 2 })], undefined, B.GEOM_ABI5),
           'step 0', 'D41: step 0 is refused');
   refuses(() => B.packElements([E({ class: HAND, slot: 1, cadence: 4 })], undefined, B.GEOM_ABI5),

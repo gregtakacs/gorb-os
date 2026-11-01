@@ -146,6 +146,10 @@ bool orb_sched_running(void);
  * timer exists at all — the shipped bounce did those two in that order, and
  * keeping them separate is what lets the tick read the gate verbatim. */
 void orb_sched_set_running(bool on);
+/* D41's ease: tick at the panel's ceiling (33 ms) for the next `ms`, then fall back to
+ * the dial's own beat. Called from the dial's tick, so the period picked at the end of
+ * that same tick already honours it. A dial that never eases never calls it. */
+void orb_sched_burst(uint32_t ms);
 void orb_sched_resume(void);
 void orb_sched_pause(void);
 /* Re-anchor the gif due clock and the beat ladder to now after a park; re-zero

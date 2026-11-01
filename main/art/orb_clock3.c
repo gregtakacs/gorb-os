@@ -196,10 +196,23 @@ static const char *cadence_check(const orb_bundle_elem_t *e, uint8_t eff, bool s
     if (e->cadence >= CLK_CAD__MAX)
         return reject("element %u names cadence %u: this dial knows %u",
                       (unsigned)e->n, (unsigned)e->cadence, (unsigned)CLK_CAD__MAX);
-    if (e->ease)
-        return reject("element %u eases its moves over %u ms: settle and flyback are "
-                      "ruled (D41 §2.1) and not built yet", (unsigned)e->n,
-                      (unsigned)e->ease);
+    if (e->ease) {
+        /* D41 §2.1: a settle eases a jump or a step slower than the second; a flyback
+         * eases a retrograde path's return. Nothing else has an instant worth easing,
+         * and a seconds step would buy a burst of frames every second. */
+        /* a slide comes back to its start every lap, so it flies back like a fan */
+        const bool retro = (e->cls == CLS_AUX || (e->cls == CLS_HAND && e->src)) &&
+                           (e->kind == MOTION_RETROGRADE || MOTION_IS_SLIDE(e->kind));
+        const bool steps = (e->cadence == CLK_CAD_JUMP || e->cadence == CLK_CAD_STEP) &&
+                           eff != CLK_SRC_SECOND && e->cls != CLS_BANK;
+        if (e->ease > 1000u)
+            return reject("element %u eases over %u ms: an ease runs at most a second",
+                          (unsigned)e->n, (unsigned)e->ease);
+        if (!retro && !steps)
+            return reject("element %u eases over %u ms with nothing to ease: a settle "
+                          "needs a jump or a step slower than the second, a flyback a "
+                          "retrograde path", (unsigned)e->n, (unsigned)e->ease);
+    }
     if (e->cadence == CLK_CAD_STEP && !e->cad_arg)
         return reject("element %u steps 0 times a unit: name how many steps per unit",
                       (unsigned)e->n);
@@ -918,6 +931,7 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         }
         d->cadence = e.cadence;
         d->cad_arg = e.cad_arg;
+        d->ease    = e.ease;
         d->hand    = 1;
         if (i == 1 && !e.src && e.cadence == CLK_CAD_JUMP) minute_jumps = true;
     }
@@ -1220,6 +1234,7 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                           (unsigned)slot, (unsigned)e.cad_arg, (unsigned)t->tick_rate);
         a->cadence    = e.cadence;          /* D41: 0 under every stamp before v5 */
         a->cad_arg    = e.cad_arg;
+        a->ease       = e.ease;
         if (e.flags & AUX_F_SHADOW) {
             /* The twin takes its pose from the row before it and draws under it, so
              * the row before it must exist and must be a hand. A twin with no hand

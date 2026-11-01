@@ -2112,7 +2112,8 @@ def d41_battery(exe, base):
     plate = [i for i, e in enumerate(rows) if int(e["class"]) == ts.CLASS_PLATE][0]
     vectors = [
         ("a cadence past the vocabulary", hand[1], {W_CAD: 9}, "names cadence 9"),
-        ("an ease", hand[1], {W_EASE: 120}, "not built yet"),
+        ("an ease past a second", hand[1], {W_EASE: 1500}, "at most a second"),
+        ("an ease on nothing", hand[2], {W_EASE: 120}, "nothing to ease"),
         ("step 0", hand[2], {W_CAD: ts.CAD_STEP}, "steps 0 times"),
         ("an argument on a jump", hand[1], {W_CARG: 3}, "takes none"),
         ("stop-to-go on the minute", hand[1], {W_CAD: ts.CAD_STOP_TO_GO}, "seconds hand's rhythm"),
@@ -2195,7 +2196,8 @@ def d41_mutants(exe, forged):
 
 
 D41_MUTANTS = (
-    ("the ease refusal", "    if (e->ease)\n", "    if (0)\n", "an ease"),
+    ("the ease's bound", "if (e->ease > 1000u)", "if (0)", "an ease past a second"),
+    ("the ease's instant", "if (!retro && !steps)", "if (0)", "an ease on nothing"),
     ("step 0", "if (e->cadence == CLK_CAD_STEP && !e->cad_arg)", "if (0)", "step 0"),
     ("the stop-to-go source", "if (e->cadence == CLK_CAD_STOP_TO_GO && eff != CLK_SRC_SECOND)",
      "if (0)", "stop-to-go on the minute"),

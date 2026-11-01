@@ -579,6 +579,8 @@ static void sched_fill_asks(void)
  * static one rides the hand beat (orb_sched_tick_base_ms), which the pick does
  * not schedule (§40). The plate's play-running test is live, so a one-shot play
  * that just started speeds the beat this tick, as the retired per-tick gate did. */
+static uint32_t s_burst_until;   /* lv_tick ms the ease burst runs to; 0 = none (D41) */
+
 static uint32_t sched_tick_period_ms(void)
 {
     const bool anim = orb_bg_gif_mode()
@@ -909,7 +911,11 @@ static void tick_timer_cb(lv_timer_t *timer)
      * bank: the flush path books ~54 ms of TE-wait + band submits per commit, so
      * a rung asking 15 still arrives ~67 ms apart (~12 fps delivered) — the
      * ladder keeps the SCHEDULE honest; true 16 needs the flush path trimmed. */
-    const uint32_t period = sched_tick_period_ms();
+    uint32_t period = sched_tick_period_ms();
+    if (s_burst_until) {
+        if ((int32_t)(s_burst_until - t_start_ms) > 0) { if (period > 33) period = 33; }
+        else s_burst_until = 0;                       /* the ease ran out: the beat resumes */
+    }
     if (!s_tick_due) s_tick_due = t_start_ms + period;
     else             s_tick_due += period;
     if ((int32_t)(t_start_ms - s_tick_due) >= (int32_t)period)
@@ -937,6 +943,12 @@ void orb_sched_start(uint32_t period_ms, const orb_sched_policy_t *policy)
 #endif
     s_tick_timer = lv_timer_create(tick_timer_cb, period_ms, NULL);
     lv_timer_pause(s_tick_timer);   /* parked until the clock is on the glass */
+}
+
+void orb_sched_burst(uint32_t ms)
+{
+    const uint32_t until = lv_tick_get() + ms;
+    if (!s_burst_until || (int32_t)(until - s_burst_until) > 0) s_burst_until = until;
 }
 
 bool orb_sched_started(void) { return s_tick_timer != NULL; }

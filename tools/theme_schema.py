@@ -998,10 +998,6 @@ def check_element(rec, where="elem"):
         if not 0 <= cad < len(CADENCES):
             raise ValueError("%s.cadence: %d is not a cadence (%s, 0..%d)"
                              % (where, cad, "/".join(CADENCES), len(CADENCES) - 1))
-        if ease:
-            raise ValueError("%s.ease: %d ms — settle and flyback are ruled (D41 §2.1) "
-                             "and not built yet, so the dial would draw no ease"
-                             % (where, ease))
         if cls == CLASS_HAND and not src:
             slot = int(rec["slot"])
             eff = HAND_SLOT_SOURCE[slot] if slot < len(HAND_SLOT_SOURCE) else "none"
@@ -1028,6 +1024,16 @@ def check_element(rec, where="elem"):
         if cls == CLASS_HAND and int(rec["slot"]) == 5 and (cad or src or kind):
             raise ValueError("%s: the carriage turns with the seconds row — give that row "
                              "the cadence" % where)
+        if ease:
+            retro = ((cls == CLASS_AUX or (cls == CLASS_HAND and src)) and
+                     (kind == MOTION_RETROGRADE or kind in MOTION_SLIDES))
+            steps = cad in (CAD_JUMP, CAD_STEP) and eff != "second" and cls != CLASS_BANK
+            if ease > 1000:
+                raise ValueError("%s.ease: %d ms — an ease runs at most a second" % (where, ease))
+            if not (retro or steps):
+                raise ValueError("%s.ease: %d ms with nothing to ease — a settle needs a jump "
+                                 "or a step slower than the second, a flyback a retrograde path"
+                                 % (where, ease))
         if cls == CLASS_AUX and kind == MOTION_INDEXED and cad not in (CAD_INHERIT, CAD_JUMP):
             raise ValueError("%s.cadence: indexed already snaps to whole units; %s "
                              "contradicts it" % (where, name))
@@ -1491,7 +1497,9 @@ if __name__ == "__main__":
                        (dict(_e, slot=2, cadence=CAD_STEP), "step 0"),
                        (dict(_e, slot=1, cadence=CAD_JUMP, cad_arg=3), "no argument"),
                        (dict(_e, slot=0, cadence=CAD_DRAG), "calendar"),
-                       (dict(_e, slot=1, cadence=CAD_JUMP, ease=120), "not built"),
+                       (dict(_e, slot=1, cadence=CAD_SWEEP, ease=120), "nothing to ease"),
+                       (dict(_e, slot=2, cadence=CAD_STEP, cad_arg=1, ease=120), "nothing to ease"),
+                       (dict(_e, slot=1, cadence=CAD_JUMP, ease=1500), "at most a second"),
                        (dict(_e, slot=5, cadence=CAD_JUMP), "carriage"),
                        (dict(_e, slot=3, cadence=CAD_SWEEP), "still"),
                        (dict(_e, cadence=9), "not a cadence"),
@@ -1501,7 +1509,8 @@ if __name__ == "__main__":
         except ValueError as e:
             assert _why in str(e), (str(e), _why)
     check_element(dict(_e, src=SOURCES.index("hour12"), kind=MOTION_RETROGRADE,
-                       span=1800, vmax=12, cadence=CAD_SWEEP))  # a retrograde hour
+                       span=1800, vmax=12, cadence=CAD_SWEEP, ease=400))  # a flyback
+    check_element(dict(_e, slot=1, cadence=CAD_JUMP, ease=120))           # a settle
     check_clock_drive([dict(_e, slot=1, cadence=CAD_JUMP),
                        dict(_e, n=1, slot=2, cadence=CAD_STOP_TO_GO, cad_arg=585)], 1, 1)
     check_clock_drive([dict(_e, slot=2, cadence=CAD_STEP, cad_arg=4)], 0, 4)

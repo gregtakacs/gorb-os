@@ -351,6 +351,82 @@ static uint32_t hand_beat_ticks(void)
     return n < 1 ? 1 : n;
 }
 
+/* ---- D41: ease -------------------------------------------------------------
+ * A settle: after a jump (or a step slower than the second) the row overshoots its
+ * new pose by a small amount and comes back, sin(pi*tau) over `ease` ms. A flyback:
+ * when a retrograde row returns against its span, it travels back over `ease` ms
+ * (smoothstep) instead of landing in one frame. Both run on frames the dial asks for
+ * (orb_sched_burst) only while they last; a row without an ease costs nothing.
+ *
+ * ease_pose is pure: the caller passes the clock in, so the host bench drives it.
+ * `turn` is the size of a turn in the row's unit (360 for a hand's degrees, 3600 for
+ * a pointer's tenths, 0 for a slide's px, which never wraps). */
+enum { EASE_NONE = 0, EASE_SETTLE, EASE_FLY };
+typedef struct {
+    float    shown, from, to, amp;
+    uint32_t t0;
+    uint8_t  kind;
+    bool     init;
+} ease_t;
+
+static float ease_wrap(float d, float turn)
+{
+    if (turn <= 0.0f) return d;
+    while (d >  turn / 2) d -= turn;
+    while (d <= -turn / 2) d += turn;
+    return d;
+}
+
+static float ease_pose(ease_t *e, float target, uint32_t now_ms, uint16_t ms, bool stepping,
+                       bool retro, int span_sign, float turn, float amp, uint32_t *busy_ms)
+{
+    *busy_ms = 0;
+    if (!ms) { e->init = false; return target; }
+    if (!e->init) {
+        e->init = true; e->to = e->shown = target; e->kind = EASE_NONE;
+        return target;
+    }
+    if (target != e->to) {
+        const float d = ease_wrap(target - e->to, turn);
+        const bool back = retro && (span_sign >= 0 ? d < 0.0f : d > 0.0f);
+        if (back) { e->kind = EASE_FLY; e->from = e->shown; }
+        else if (stepping) { e->kind = EASE_SETTLE; e->amp = d > 0.0f ? amp : -amp; }
+        else e->kind = EASE_NONE;
+        e->t0 = now_ms; e->to = target;
+    }
+    if (e->kind == EASE_NONE) { e->shown = target; return target; }
+    const uint32_t gone = now_ms - e->t0;
+    if (gone >= ms) { e->kind = EASE_NONE; e->shown = target; return target; }
+    *busy_ms = ms - gone;
+    const float tau = (float)gone / (float)ms;
+    if (e->kind == EASE_SETTLE) {
+        e->shown = target + e->amp * sinf((float)M_PI * tau);
+    } else {
+        /* back along the fan, the way the span runs reversed -- never the short way
+         * round the dial, which on a wide fan would sweep through the empty side */
+        float d = target - e->from;
+        if (turn > 0.0f) {
+            if (span_sign >= 0) { while (d > 0.0f) d -= turn; }
+            else                { while (d < 0.0f) d += turn; }
+        }
+        const float sm = tau * tau * (3.0f - 2.0f * tau);
+        e->shown = e->from + d * sm;
+    }
+    return e->shown;
+}
+
+static ease_t s_hand_ease[5];
+static ease_t s_aux_ease[CLK_AUX_MAX];
+
+/* The settle's overshoot, per unit: 1.5 degrees on a turn, 3 px on a slide. */
+#define EASE_SETTLE_DEG   1.5f
+#define EASE_SETTLE_PX    3.0f
+
+static bool cad_steps_slow(uint8_t cad, uint8_t src)
+{
+    return (cad == CLK_CAD_JUMP || cad == CLK_CAD_STEP) && src != CLK_SRC_SECOND;
+}
+
 /* D41 §3: one reading of the wall clock, handed to the drive function for every
  * driven row a frame poses. hand_sec is the second the HAND chain shows (sweep,
  * tick_rate steps, or whole), worked out once per frame because the delta-bank beat
@@ -446,6 +522,28 @@ static void hand_angles(double wall_frac, const struct tm *ti, time_t t, float a
         const clk_drive_t d = hand_row(k);
         ang[k] = drive_hand_deg(&d, &now);
     }
+}
+
+/* D41: each hand slot's ease, after the pose is known and before it is pushed. A
+ * dial that eases nothing passes straight through; one that does asks the scheduler
+ * for frames exactly as long as an ease is running. */
+static void hand_ease(float ang[5])
+{
+    uint32_t want = 0;
+    const uint32_t now = lv_tick_get();
+    for (int k = 0; k < 5; k++) {
+        const clk_drive_t d = hand_row(k);
+        if (!d.ease && !s_hand_ease[k].init) continue;
+        uint32_t busy = 0;
+        float a = ease_pose(&s_hand_ease[k], ang[k], now, d.ease,
+                            cad_steps_slow(d.cadence, d.src),
+                            d.src && d.path == CLK_MOTION_RETROGRADE, d.span >= 0 ? 1 : -1,
+                            360.0f, EASE_SETTLE_DEG, &busy);
+        a = fmodf(a, 360.0f);
+        ang[k] = a < 0.0f ? a + 360.0f : a;
+        if (busy > want) want = busy;
+    }
+    if (want) orb_sched_burst(want + 40);
 }
 
 
@@ -1794,6 +1892,20 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
          * — the same figure the carriage row itself wears (s_ang_10[2] plus the
          * row's start orientation). The twin is untouched: it mirrors its hand
          * row's stored angle and inherits the sum with it. */
+        /* D41: the pointer's own ease, on the pose the drive just gave it. A twin
+         * takes its hand's eased pose through s_aux_ang_10 below. */
+        if (a->ease && a_new > AUX_HIDDEN && a_new != INT32_MIN && !(a->flags & CLK_FLAG_AUX_SHADOW)) {
+            uint32_t busy = 0;
+            const bool slide = MOTION_IS_SLIDE(a->kind);
+            float v = ease_pose(&s_aux_ease[i], (float)a_new, lv_tick_get(), a->ease,
+                                cad_steps_slow(a->cadence, a->src),
+                                a->kind == CLK_MOTION_RETROGRADE || slide, a->span >= 0 ? 1 : -1,
+                                slide ? 0.0f : 3600.0f,
+                                slide ? EASE_SETTLE_PX : EASE_SETTLE_DEG * 10.0f, &busy);
+            if (!slide) { v = fmodf(v, 3600.0f); if (v < 0.0f) v += 3600.0f; }
+            a_new = (int32_t)lroundf(v);
+            if (busy) orb_sched_burst(busy + 40);
+        }
         if (a->parent_row && a->parent_row == s_car_row_1 && s_car &&
             a_new > AUX_HIDDEN && !MOTION_IS_SLIDE(a->kind) &&
             s_ang_10[2] != INT32_MIN)
@@ -2225,6 +2337,7 @@ static void compose_now(void)
 
     float ang[5];
     hand_angles(frac, &ti, t, ang);
+    hand_ease(ang);
     apply_angles(ang);
 
     /* The complication pass: every window/strip re-reads its value from the

@@ -2078,9 +2078,6 @@
       if (!(cad >= 0 && cad < CADENCES.length))
         throw new Error(where + '.cadence: ' + cad + ' is not a cadence (' + CADENCES.join('/') +
           ', 0..' + (CADENCES.length - 1) + ')');
-      if (ease)
-        throw new Error(where + '.ease: ' + ease + ' ms — settle and flyback are ruled (D41 §2.1) ' +
-          'and not built yet, so the dial would draw no ease');
       var eff = (cls === CLASS_HAND && !src)
         ? (HAND_SLOT_SOURCE[Math.trunc(rec.slot | 0)] || 'none') : (SOURCES[src] || 'none');
       var cname = CADENCES[cad];
@@ -2100,6 +2097,14 @@
           cname + ' waits for a ring the dial can turn');
       if (cls === CLASS_HAND && Math.trunc(rec.slot | 0) === 5 && (cad || src || kind))
         throw new Error(where + ': the carriage turns with the seconds row — give that row the cadence');
+      if (ease) {
+        var eretro = (cls === CLASS_AUX || (cls === CLASS_HAND && src)) && (kind === MOTION_RETROGRADE || motionIsSlide(kind));
+        var esteps = (cad === CAD_JUMP || cad === CAD_STEP) && eff !== 'second' && cls !== CLASS_BANK;
+        if (ease > 1000) throw new Error(where + '.ease: ' + ease + ' ms — an ease runs at most a second');
+        if (!eretro && !esteps)
+          throw new Error(where + '.ease: ' + ease + ' ms with nothing to ease — a settle needs a jump or a ' +
+            'step slower than the second, a flyback a retrograde path');
+      }
       if (cls === CLASS_AUX && kind === MOTION_INDEXED && cad !== CAD_INHERIT && cad !== CAD_JUMP)
         throw new Error(where + '.cadence: indexed already snaps to whole units; ' + cname + ' contradicts it');
     }
@@ -3259,7 +3264,7 @@
             src: hd5.src ? SOURCES.indexOf(String(hd5.src)) : 0, kind: hd5.src ? hm5 : 0,
             span: hd5.src ? hd5.span | 0 : 0, zero: hd5.src ? hd5.zero | 0 : 0,
             vmin: hd5.src ? hd5.vmin | 0 : 0, vmax: hd5.src ? hd5.vmax | 0 : 0,
-            cadence: hd5.cadence | 0, cad_arg: hd5.cad_arg | 0 }, h, true);
+            cadence: hd5.cadence | 0, cad_arg: hd5.cad_arg | 0, ease: hd5.ease | 0 }, h, true);
     }
     for (k = 0; k < shadows.length; k++) {
       var s = shadows[k];
@@ -3405,7 +3410,7 @@
             pivot_y: motionIsSlide(m5) ? ((a5.h | 0) >> 1) : (a5.pivot_y | 0),
             order: or5, alpha: 255, n_frames: 1,
             span: a5.span | 0, zero: a5.zero | 0, vmin: a5.vmin | 0, vmax: a5.vmax | 0,
-            cadence: a5.cadence | 0, cad_arg: a5.cad_arg | 0,
+            cadence: a5.cadence | 0, cad_arg: a5.cad_arg | 0, ease: a5.ease | 0,
             flags: a5.hidden ? EF_HIDDEN : 0 }, a5.plane, true);
       /* The twin: the hand's drive words verbatim — the loader validates them like
        * any row's and the driver ignores them, taking the pose from the hand — and

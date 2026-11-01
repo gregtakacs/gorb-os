@@ -333,8 +333,14 @@ var deviceRoutes = map[string][]string{
 	// path would be a second answer to the same question that could disagree with the
 	// first. Refused before it is ever dialed if the name will not pass the device's
 	// own rules — see orbfleet.CheckNameASCII.
-	"/api/v1/name":   {http.MethodPost},
-	"/api/v1/reboot": {http.MethodPost},
+	"/api/v1/name": {http.MethodPost},
+	// D39: the owner's sound settings (level, switches, quiet hours, glass offset,
+	// pattern override) and the bench door that plays a built-in sound with no theme.
+	// Both are device config the owner sets the way they set the zone, and neither
+	// reaches the card or the slot.
+	"/api/v1/sound":      {http.MethodGet, http.MethodPost},
+	"/api/v1/sound/test": {http.MethodPost},
+	"/api/v1/reboot":     {http.MethodPost},
 	// Recovery, not a reboot: arms D2's one-shot intent and comes back in its SoftAP with
 	// the stored credential intact. Allowlisted because the hub's Manage card has to be
 	// able to reach an orb it can no longer configure any other way — a wrong SSID or a

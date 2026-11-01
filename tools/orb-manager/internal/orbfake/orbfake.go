@@ -57,6 +57,7 @@ type Theme struct {
 // Orb is the fake. The zero value is not useful; build one with New.
 type Orb struct {
 	mu     sync.Mutex
+	sound  *soundCfg // D39's settings, nil until first read (the device's defaults)
 	themes []*Theme
 	active string
 
@@ -263,6 +264,12 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveConfigPost(w, r)
 	case r.URL.Path == "/api/v1/name" && r.Method == http.MethodPost:
 		o.serveNamePost(w, r)
+	case r.URL.Path == "/api/v1/sound" && r.Method == http.MethodGet:
+		o.serveSound(w)
+	case r.URL.Path == "/api/v1/sound" && r.Method == http.MethodPost:
+		o.serveSoundPost(w, r)
+	case r.URL.Path == "/api/v1/sound/test" && r.Method == http.MethodPost:
+		o.serveSoundTest(w, r)
 	case r.URL.Path == "/api/v1/reboot" && r.Method == http.MethodPost:
 		o.serveReboot(w)
 	case r.URL.Path == "/api/v1/ota" && r.Method == http.MethodPost:

@@ -1087,3 +1087,134 @@ func quoteJSONString(s string) string {
 	}
 	return string(b)
 }
+
+// soundCfg mirrors orb_sound_cfg_t and its defaults (main/audio/orb_sound.c s_cfg).
+type soundCfg struct {
+	Volume    int  `json:"volume"`
+	Tick      bool `json:"tick"`
+	Chimes    bool `json:"chimes"`
+	Strikes   bool `json:"strikes"`
+	Jumps     bool `json:"jumps"`
+	QuietFrom int  `json:"quiet_from"`
+	QuietTo   int  `json:"quiet_to"`
+	OffsetMs  int  `json:"offset_ms"`
+	Pattern   int  `json:"pattern"`
+}
+
+func (o *Orb) soundLocked() *soundCfg {
+	if o.sound == nil {
+		o.sound = &soundCfg{Volume: 60, Tick: true, Chimes: true, Strikes: true, Jumps: true,
+			QuietFrom: 22, QuietTo: 7, OffsetMs: 90, Pattern: -1}
+	}
+	return o.sound
+}
+
+func soundReply(c soundCfg) string {
+	b, _ := json.Marshal(struct {
+		Ready bool `json:"ready"`
+		soundCfg
+		Stats map[string]any `json:"stats"`
+	}{true, c, map[string]any{"blocks": 0, "sent": 0, "voices": 0, "started": 0,
+		"nudges": 0, "snaps": 0, "loop_err": 0, "pa": false, "running": false}})
+	return string(b)
+}
+
+// serveSound mirrors h_sound_get (orb_net.c): the settings and the engine's counters.
+func (o *Orb) serveSound(w http.ResponseWriter) {
+	o.mu.Lock()
+	c := *o.soundLocked()
+	o.mu.Unlock()
+	writeJSON(w, 200, soundReply(c))
+}
+
+// serveSoundPost mirrors h_sound_post: any subset of the keys, each range-checked by
+// orb_sound_cfg_set's rules, and a body naming none of them refused.
+func (o *Orb) serveSoundPost(w http.ResponseWriter, r *http.Request) {
+	body, ok := readBoundedBody(w, r, 256)
+	if !ok {
+		return
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil {
+		writeJSON(w, 400, `{"error":"no sound setting in body"}`)
+		return
+	}
+	o.mu.Lock()
+	c := *o.soundLocked()
+	named := 0
+	num := func(k string, dst *int) {
+		if v, ok := m[k]; ok {
+			var n int
+			if json.Unmarshal(v, &n) == nil {
+				*dst = n
+			} else if string(v) == "true" {
+				*dst = 1
+			} else {
+				*dst = 0
+			}
+			named++
+		}
+	}
+	flag := func(k string, dst *bool) {
+		var n int
+		before := named
+		num(k, &n)
+		if named > before {
+			*dst = n != 0
+		}
+	}
+	num("volume", &c.Volume)
+	flag("tick", &c.Tick)
+	flag("chimes", &c.Chimes)
+	flag("strikes", &c.Strikes)
+	flag("jumps", &c.Jumps)
+	num("quiet_from", &c.QuietFrom)
+	num("quiet_to", &c.QuietTo)
+	num("offset_ms", &c.OffsetMs)
+	num("pattern", &c.Pattern)
+	why := ""
+	switch {
+	case named == 0:
+		why = "no sound setting in body"
+	case c.Volume < 0 || c.Volume > 100:
+		why = "volume runs 0..100"
+	case c.QuietFrom < -1 || c.QuietFrom > 23 || c.QuietTo < -1 || c.QuietTo > 23:
+		why = "quiet hours are an hour 0..23, or -1 for none"
+	case (c.QuietFrom < 0) != (c.QuietTo < 0):
+		why = "quiet hours need both ends, or neither"
+	case c.OffsetMs < 0 || c.OffsetMs > 500:
+		why = "offset runs 0..500 ms"
+	case c.Pattern < -1 || c.Pattern > 4:
+		why = "pattern is -1 (the theme's) or 0..4"
+	}
+	if why != "" {
+		o.mu.Unlock()
+		writeJSON(w, 400, fmt.Sprintf(`{"error":%q}`, why))
+		return
+	}
+	*o.sound = c
+	o.mu.Unlock()
+	writeJSON(w, 200, soundReply(c))
+}
+
+// serveSoundTest mirrors h_sound_test: ding, tick or loop, anything else refused.
+func (o *Orb) serveSoundTest(w http.ResponseWriter, r *http.Request) {
+	body, ok := readBoundedBody(w, r, 256)
+	if !ok {
+		return
+	}
+	var req struct {
+		Sound string `json:"sound"`
+	}
+	_ = json.Unmarshal(body, &req)
+	switch req.Sound {
+	case "ding", "tick", "loop":
+	case "":
+		writeJSON(w, 400, `{"error":"no sound in body"}`)
+		return
+	default:
+		writeJSON(w, 400, `{"error":"unknown bench sound (ding, tick, loop)"}`)
+		return
+	}
+	o.serveSound(w)
+}

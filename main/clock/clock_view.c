@@ -1907,7 +1907,7 @@ typedef struct {
     int64_t loop_anchor;
     int     min, hour, mday; /* the last boundary seen; -1 = none yet */
     time_t  last_t;
-    int64_t queued[3];       /* SND_STEP_*: the step instant already queued, 0 = none */
+    int64_t queued[3];       /* SND_STEP_*: the step already queued, by wall identity */
     uint8_t steps[3];        /* SND_STEP_*: steps per unit of a row that steps, 0 = none */
     bool    steps_known;
 } snd_state_t;
@@ -2135,25 +2135,30 @@ static void sound_policy(const struct tm *ti, time_t t, double frac)
         const double into = ti->tm_sec + frac;
         const int64_t next_min_us = minute_us + 60000000;
         const int nmin = (ti->tm_min + 1) % 60;
+        /* A step is named by wall time, never by its microsecond instant: sec_us is
+         * re-read every tick, so an instant compared by value would queue anew on
+         * every frame. */
+        const int64_t wall_min = (int64_t)(t - ti->tm_sec);   /* this minute's epoch second */
         const uint8_t mn = s_snd->steps[SND_STEP_MIN], hn = s_snd->steps[SND_STEP_HOUR];
         if (mn) {
             const int idx = (int)(into * mn / 60.0) + 1;          /* the next step, 1..mn */
             const double at_s = idx * 60.0 / mn;
             const int64_t at_us = minute_us + (int64_t)(at_s * 1e6);
-            if (at_s - into <= 1.5 && s_snd->queued[SND_STEP_MIN] != at_us) {
-                s_snd->queued[SND_STEP_MIN] = at_us;
+            const int64_t key = wall_min * 64 + idx;
+            if (at_s - into <= 1.5 && s_snd->queued[SND_STEP_MIN] != key) {
+                s_snd->queued[SND_STEP_MIN] = key;
                 snd_at(snd_find(tab, n, CLK_SND_JUMP_MINUTE), at_us);
             }
         }
         if (into >= 58.5) {
             if (hn && (nmin == 0 || (nmin * hn) / 60 != (ti->tm_min * hn) / 60) &&
-                s_snd->queued[SND_STEP_HOUR] != next_min_us) {
-                s_snd->queued[SND_STEP_HOUR] = next_min_us;
+                s_snd->queued[SND_STEP_HOUR] != wall_min) {
+                s_snd->queued[SND_STEP_HOUR] = wall_min;
                 snd_at(snd_find(tab, n, CLK_SND_JUMP_HOUR), next_min_us);
             }
             if (s_snd->steps[SND_STEP_CAL] && ti->tm_hour == 23 && ti->tm_min == 59 &&
-                s_snd->queued[SND_STEP_CAL] != next_min_us) {
-                s_snd->queued[SND_STEP_CAL] = next_min_us;
+                s_snd->queued[SND_STEP_CAL] != wall_min) {
+                s_snd->queued[SND_STEP_CAL] = wall_min;
                 snd_at(snd_find(tab, n, CLK_SND_JUMP_DATE), next_min_us);
             }
         }

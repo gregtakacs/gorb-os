@@ -35,6 +35,27 @@ static const char *TAG = "orb_flights";
  * TX buffers for the request. Set from the bench (§6), not guessed. */
 #define FLIGHTS_MIN_LARGEST 1536
 
+/* A 4xx is the provider saying no: rest it, starting at a minute and doubling
+ * to a quarter hour, and ask the other one meanwhile. orb-os's record is the
+ * reason: retrying a rate limit at full rate is the one response guaranteed to
+ * make it worse, and the owner has seen adsb.lol's site 403 a page left open
+ * until it was reloaded (2026-11-01). Transport failures do not rest: those
+ * are the network's, and the next poll is the retry. */
+#define REST_MIN_MS   60000u
+#define REST_MAX_MS   900000u
+static int64_t  s_rest_until_us[2];
+static uint32_t s_rest_ms[2];
+
+static bool resting(int src) { return esp_timer_get_time() < s_rest_until_us[src]; }
+
+static void rest(int src)
+{
+    s_rest_ms[src] = s_rest_ms[src] ? s_rest_ms[src] * 2 : REST_MIN_MS;
+    if (s_rest_ms[src] > REST_MAX_MS) s_rest_ms[src] = REST_MAX_MS;
+    s_rest_until_us[src] = esp_timer_get_time() + (int64_t)s_rest_ms[src] * 1000;
+    ESP_LOGW(TAG, "FLT provider %d refused; resting it %u s", src, (unsigned)(s_rest_ms[src] / 1000));
+}
+
 static const char *const s_origin[] = {
     [ORB_FLIGHTS_ADSB_LOL] = "https://api.adsb.lol",
     [ORB_FLIGHTS_ADSB_FI]  = "https://opendata.adsb.fi",
@@ -42,7 +63,8 @@ static const char *const s_origin[] = {
 
 static orb_flights_cfg_t   s_cfg = {
     .enabled = false, .lat = 33.45, .lon = -112.07, .radius_nm = 40,
-    .period_ms = 10000, .source = ORB_FLIGHTS_ADSB_LOL, .keep_alive = true,
+    .period_ms = 15000, .bg_period_ms = 60000, .visible = true, .boost = true,
+    .hide_ground = false, .source = ORB_FLIGHTS_ADSB_LOL, .keep_alive = true,
 };
 static orb_flights_stats_t s_st;
 static SemaphoreHandle_t   s_mux;
@@ -63,11 +85,13 @@ static int64_t       s_pub_us;
 typedef struct {
     orb_readsb_t p;
     double lat0, lon0, coslat0;
+    bool   hide_ground;
 } poll_ctx_t;
 
 static void emit(const orb_ac_t *a, void *ctx)
 {
     const poll_ctx_t *c = ctx;
+    if (c->hide_ground && a->on_ground) return;
     /* Equirectangular is exact enough inside a few hundred km, and the dial
      * cannot draw the difference. */
     const double dy = (a->lat - c->lat0) * 111.195;
@@ -87,6 +111,25 @@ static void emit(const orb_ac_t *a, void *ctx)
     s_work[slot].dist_km = d;
     float b = (float)(atan2(dx, dy) * 180.0 / M_PI);
     s_work[slot].bearing_deg = b < 0 ? b + 360.0f : b;
+}
+
+/* Worth a faster background poll (§5): close, low and closing, or squawking. */
+static bool interesting(const orb_flight_t *t, int n)
+{
+    for (int i = 0; i < n; i++) {
+        const orb_ac_t *a = &t[i].ac;
+        if (a->squawk == 7500 || a->squawk == 7600 || a->squawk == 7700) return true;
+        if (a->on_ground) continue;
+        if (t[i].dist_km < 9.26f) return true;                       /* 5 nm */
+        if (a->has_alt && a->alt_ft < 3000 && t[i].dist_km < 18.52f && !isnan(a->track)) {
+            /* Closing: its track points within 60 deg of the bearing back home. */
+            float home = t[i].bearing_deg + 180.0f;
+            float d = fmodf(fabsf(a->track - home), 360.0f);
+            if (d > 180.0f) d = 360.0f - d;
+            if (d < 60.0f) return true;
+        }
+    }
+    return false;
 }
 
 static bool sink(const char *buf, size_t len, void *ctx)
@@ -191,15 +234,25 @@ static void poll_once(const orb_flights_cfg_t *cfg)
         ESP_LOGI(TAG, "FLT skip: %s", why);
         return;
     }
-    if (!s_https || s_https_src != cfg->source || s_https_ka != cfg->keep_alive) {
+    int src = cfg->source;
+    if (resting(src)) {
+        if (resting(!src)) {
+            s_st.skip_rest++;
+            ESP_LOGI(TAG, "FLT skip: both providers resting");
+            return;
+        }
+        src = !src;
+        s_st.failovers++;
+    }
+    if (!s_https || s_https_src != src || s_https_ka != cfg->keep_alive) {
         stage("pre-free");
         orb_https_free(s_https);
         stage("pre-new");
         char ua[64];
         snprintf(ua, sizeof ua, "gorb-os/%s (flight tracker)", esp_app_get_description()->version);
-        s_https = orb_https_new(s_origin[cfg->source], ua,
+        s_https = orb_https_new(s_origin[src], ua,
                                 cfg->keep_alive, FLIGHTS_TIMEOUT_MS);
-        s_https_src = cfg->source;
+        s_https_src = (uint8_t)src;
         s_https_ka = cfg->keep_alive;
         if (!s_https) { s_st.fail++; ESP_LOGW(TAG, "FLT client alloc failed"); return; }
         stage("post-new");
@@ -209,7 +262,7 @@ static void poll_once(const orb_flights_cfg_t *cfg)
 #endif
     }
     char path[96];
-    if (cfg->source == ORB_FLIGHTS_ADSB_FI)
+    if (src == ORB_FLIGHTS_ADSB_FI)
         snprintf(path, sizeof path, "/api/v2/lat/%.4f/lon/%.4f/dist/%u", cfg->lat, cfg->lon,
                  (unsigned)cfg->radius_nm);
     else
@@ -221,6 +274,7 @@ static void poll_once(const orb_flights_cfg_t *cfg)
     c->lat0 = cfg->lat;
     c->lon0 = cfg->lon;
     c->coslat0 = cos(cfg->lat * M_PI / 180.0);
+    c->hide_ground = cfg->hide_ground;
     orb_readsb_init(&c->p, emit, c);
     s_work_n = 0;
 
@@ -246,7 +300,13 @@ static void poll_once(const orb_flights_cfg_t *cfg)
     if (r.int_largest_min < s_st.poll_int_largest_min || !s_st.poll_int_largest_min)
         s_st.poll_int_largest_min = r.int_largest_min;
 
+    s_st.last_src = (uint8_t)src;
+    if (r.status >= 400 && r.status < 500) {
+        s_st.refused++;
+        rest(src);
+    }
     if (good) {
+        s_rest_ms[src] = 0;                  /* forgiven: the next refusal starts at a minute */
         s_st.ok++;
         s_st.last_kept = (uint32_t)s_work_n;
         s_st.last_ok_us = esp_timer_get_time();
@@ -254,6 +314,8 @@ static void poll_once(const orb_flights_cfg_t *cfg)
         orb_flight_t *t = s_pub; s_pub = s_work; s_work = t;   /* swap, no copy */
         s_pub_n = s_work_n;
         s_pub_us = s_st.last_ok_us;
+        s_st.seq++;
+        s_st.interesting = interesting(s_pub, s_pub_n);
         xSemaphoreGive(s_mux);
     } else {
         s_st.fail++;
@@ -275,6 +337,17 @@ static void poll_once(const orb_flights_cfg_t *cfg)
     heap_caps_free(c);
 }
 
+/* The wait before the next poll: the visible rate, the background rate, or the
+ * boost while the last picture held something worth watching. 0 = none. */
+static uint32_t next_wait_ms(const orb_flights_cfg_t *cfg)
+{
+    if (cfg->visible) return cfg->period_ms;
+    if (!cfg->bg_period_ms) return 0;
+    if (cfg->boost && s_st.interesting && ORB_FLIGHTS_BOOST_MS < cfg->bg_period_ms)
+        return ORB_FLIGHTS_BOOST_MS;
+    return cfg->bg_period_ms;
+}
+
 static void flights_task(void *arg)
 {
     (void)arg;
@@ -282,7 +355,8 @@ static void flights_task(void *arg)
     for (;;) {
         orb_flights_cfg_t cfg;
         orb_flights_get_cfg(&cfg);
-        if (!cfg.enabled) {
+        const bool polling = cfg.enabled && (cfg.visible || cfg.bg_period_ms);
+        if (!polling) {
             if (s_https) {
                 stage("pre-free");
                 orb_https_free(s_https); s_https = NULL; s_https_src = 0xFF;
@@ -292,7 +366,9 @@ static void flights_task(void *arg)
             continue;
         }
         poll_once(&cfg);
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(cfg.period_ms));
+        orb_flights_get_cfg(&cfg);       /* the wait follows the cfg as it is NOW */
+        const uint32_t w = next_wait_ms(&cfg);
+        ulTaskNotifyTake(pdTRUE, w ? pdMS_TO_TICKS(w) : portMAX_DELAY);
     }
 }
 
@@ -331,6 +407,7 @@ void orb_flights_get_cfg(orb_flights_cfg_t *out)
 esp_err_t orb_flights_set_cfg(const orb_flights_cfg_t *cfg)
 {
     if (cfg->radius_nm < 1 || cfg->radius_nm > 250 || cfg->period_ms < 2000 ||
+        (cfg->bg_period_ms && cfg->bg_period_ms < 2000) ||
         cfg->source > ORB_FLIGHTS_ADSB_FI || fabs(cfg->lat) > 90 || fabs(cfg->lon) > 180)
         return ESP_ERR_INVALID_ARG;
     if (!s_task && !cfg->enabled) { s_cfg = *cfg; return ESP_OK; }
@@ -345,12 +422,13 @@ esp_err_t orb_flights_set_cfg(const orb_flights_cfg_t *cfg)
 
 void orb_flights_stats(orb_flights_stats_t *out) { *out = s_st; }
 
-int orb_flights_snapshot(orb_flight_t *out, int max, uint32_t *age_ms)
+int orb_flights_snapshot(orb_flight_t *out, int max, uint32_t *age_ms, uint32_t *seq)
 {
+    if (seq) *seq = s_st.seq;
     if (!s_mux) { if (age_ms) *age_ms = UINT32_MAX; return 0; }
     xSemaphoreTake(s_mux, portMAX_DELAY);
     const int n = s_pub_n < max ? s_pub_n : max;
-    memcpy(out, s_pub, (size_t)n * sizeof *out);
+    if (out && n > 0) memcpy(out, s_pub, (size_t)n * sizeof *out);
     if (age_ms) *age_ms = s_pub_us ? (uint32_t)((esp_timer_get_time() - s_pub_us) / 1000) : UINT32_MAX;
     xSemaphoreGive(s_mux);
     return n;
@@ -364,17 +442,21 @@ int orb_flights_json(char *buf, size_t cap)
     orb_sched_jank_t j;
     orb_sched_jank_snapshot(&j);
     int n = snprintf(buf, cap,
-        "{\"cfg\":{\"on\":%d,\"lat\":%.4f,\"lon\":%.4f,\"nm\":%u,\"period_ms\":%u,\"src\":%u,\"ka\":%d},"
-        "\"stats\":{\"polls\":%u,\"ok\":%u,\"fail\":%u,\"skip\":{\"net\":%u,\"jobs\":%u,\"card\":%u,\"heap\":%u},"
+        "{\"cfg\":{\"on\":%d,\"lat\":%.4f,\"lon\":%.4f,\"nm\":%u,\"period_ms\":%u,\"bg_ms\":%u,\"vis\":%d,\"boost\":%d,\"hg\":%d,\"src\":%u,\"ka\":%d},"
+        "\"stats\":{\"polls\":%u,\"ok\":%u,\"fail\":%u,\"skip\":{\"net\":%u,\"jobs\":%u,\"card\":%u,\"heap\":%u,\"rest\":%u},"
+        "\"refused\":%u,\"failovers\":%u,\"src\":%u,\"seq\":%u,\"interesting\":%d,"
         "\"opens\":%u,\"status\":%d,\"err\":%d,\"open_ms\":%u,\"total_ms\":%u,\"max_total_ms\":%u,"
         "\"bytes\":%u,\"objects\":%u,\"kept\":%u,\"int_free_min\":%u,\"int_largest_min\":%u},"
         "\"heap\":{\"tls_int\":%d,\"int_free\":%u,\"int_largest\":%u,\"int_lowwater\":%u,\"psram_free\":%u},"
         "\"jank\":{\"ticks\":%u,\"le125\":%u,\"le150\":%u,\"le200\":%u,\"le300\":%u,\"gt300\":%u,"
-        "\"max_gap_ms\":%u,\"period_ms\":%u,\"rung\":%u,\"rung_moves\":%u},\"ac\":[",
+        "\"max_gap_ms\":%u,\"period_ms\":%u,\"rung\":%u,\"rung_moves\":%u,\"burst_ignored\":%u},\"ac\":[",
         cfg.enabled, cfg.lat, cfg.lon, (unsigned)cfg.radius_nm, (unsigned)cfg.period_ms,
+        (unsigned)cfg.bg_period_ms, cfg.visible, cfg.boost, cfg.hide_ground,
         (unsigned)cfg.source, cfg.keep_alive,
         (unsigned)st.polls, (unsigned)st.ok, (unsigned)st.fail, (unsigned)st.skip_net,
         (unsigned)st.skip_jobs, (unsigned)st.skip_card, (unsigned)st.skip_heap,
+        (unsigned)st.skip_rest, (unsigned)st.refused, (unsigned)st.failovers, (unsigned)st.last_src,
+        (unsigned)st.seq, st.interesting,
         (unsigned)st.opens, st.last_status, st.last_err, (unsigned)st.last_open_ms,
         (unsigned)st.last_total_ms, (unsigned)st.max_total_ms, (unsigned)st.last_bytes,
         (unsigned)st.last_objects, (unsigned)st.last_kept, (unsigned)st.poll_int_free_min,
@@ -386,7 +468,7 @@ int orb_flights_json(char *buf, size_t cap)
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
         (unsigned)j.ticks, (unsigned)j.le125, (unsigned)j.le150, (unsigned)j.le200,
         (unsigned)j.le300, (unsigned)j.gt300, (unsigned)j.max_gap_ms, (unsigned)j.period_ms,
-        (unsigned)j.rung_fps, (unsigned)j.rung_moves);
+        (unsigned)j.rung_fps, (unsigned)j.rung_moves, (unsigned)orb_sched_bg_bursts_ignored());
     if (n < 0 || (size_t)n >= cap) return -1;
     if (!s_mux) return n + snprintf(buf + n, cap - (size_t)n, "]}");
     xSemaphoreTake(s_mux, portMAX_DELAY);

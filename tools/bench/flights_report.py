@@ -125,7 +125,8 @@ for n, a, b in bounds:
     if s0 and s1:
         h0, h1 = s0["heap"], s1["heap"]
         print(f"  {n:8} start free {h0['int_free']:6} largest {h0['int_largest']:6} | "
-              f"end free {h1['int_free']:6} largest {h1['int_largest']:6} | lowwater since boot {h1['int_lowwater']}")
+              f"end free {h1['int_free']:6} largest {h1['int_largest']:6} | lowwater since boot {h1['int_lowwater']}"
+              + (f" | rung {h1 and s1['jank']['rung']} moves {s1['jank']['rung_moves']} handshake-seconds forgiven {s1['jank'].get('burst_ignored', '-')}"))
 fails = [(n, x) for n, *_ in bounds for x in rows[n]["flt"] if not x["ok"]]
 for n, x in fails[:10]:
     print(f"FAIL in {n}: status {x['status']} total {x['total']} ms bytes {x['bytes']}")

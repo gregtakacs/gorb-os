@@ -4829,7 +4829,8 @@ static esp_err_t h_debug_panic(httpd_req_t *req)
 /* GET|POST /api/v1/debug/flights — the flight feed's bench door
  * (docs/flight-tracker-design.md §6). GET answers config, poll stats, the
  * dial's tick-gap histogram and the nearest aircraft; POST sets any of
- * on, lat, lon, nm, period (ms), src (0 adsb.lol, 1 adsb.fi), ka (keep-alive)
+ * on, lat, lon, nm, period (ms), src (0 adsb.lol, 1 adsb.fi), ka (keep-alive),
+ * bg (background ms, 0 = none), vis (tracker on the glass), boost, hg (hide ground)
  * from the query string and kicks a poll. Debug-gated: the shipped tracker
  * configures itself through its app settings, not through this. */
 static esp_err_t h_debug_flights(httpd_req_t *req)
@@ -4846,6 +4847,10 @@ static esp_err_t h_debug_flights(httpd_req_t *req)
         if (q_param(req, "period", v, sizeof v)) c.period_ms = (uint32_t)atol(v);
         if (q_param(req, "src", v, sizeof v))    c.source = (uint8_t)atoi(v);
         if (q_param(req, "ka", v, sizeof v))     c.keep_alive = atoi(v) != 0;
+        if (q_param(req, "bg", v, sizeof v))     c.bg_period_ms = (uint32_t)atol(v);
+        if (q_param(req, "vis", v, sizeof v))    c.visible = atoi(v) != 0;
+        if (q_param(req, "boost", v, sizeof v))  c.boost = atoi(v) != 0;
+        if (q_param(req, "hg", v, sizeof v))     c.hide_ground = atoi(v) != 0;
         if (orb_flights_set_cfg(&c) != ESP_OK) {
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req, "{\"error\":\"nm 1-250, period>=2000, src 0|1\"}");
@@ -5835,6 +5840,55 @@ static esp_err_t h_app_clear(httpd_req_t *req)
     }
     char b[224];
     snprintf(b, sizeof b, "{\"state\":\"cleared\",\"slug\":\"%s\",\"reboot\":true}", id);
+    return httpd_resp_sendstr(req, b);
+}
+
+/* POST /api/v1/apps/cfg?id=<slug>&key=<setting>&value=<v> — write one of an
+ * app's DECLARED settings, the way the app itself would: through the service
+ * table's cfg entries, so the manifest's type, its min..max and the per-app
+ * quota all apply, and the owner's config revocation still holds. The hub's
+ * app editor is the caller (the flight tracker's home position is the first
+ * setting nobody can type on a knob); the app notices through its row's cfg
+ * generation (orb_svc_cfg_gen) and re-reads. */
+static esp_err_t h_app_cfg(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char id[ORB_APP_SLUG_MAX + 1] = "", key[16] = "", val[40] = "";
+    if (!q_param(req, "id", id, sizeof id) || !q_param(req, "key", key, sizeof key)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id and key are required\"}");
+    }
+    (void)q_param(req, "value", val, sizeof val);          /* absent = "" (a STRING clear) */
+    orb_app_t *a = (orb_app_t *)orb_app_find_slug(id);
+    if (!a) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "{\"error\":\"no such app\"}");
+    }
+    const orb_setting_desc_t *d = NULL;
+    for (int i = 0; i < a->n_settings && !d; i++)
+        if (!strcmp(a->settings[i].id, key)) d = &a->settings[i];
+    if (!d) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "{\"error\":\"the app declares no such setting\"}");
+    }
+    const orb_svc_t *svc = orb_svc_table();
+    esp_err_t e;
+    if (d->type == ORB_SET_STRING) {
+        e = svc->cfg_set_str(a, key, val);
+    } else {
+        char *end;
+        const long v = strtol(val, &end, 10);
+        e = (end == val || *end) ? ESP_ERR_INVALID_ARG : svc->cfg_set(a, key, (int32_t)v);
+    }
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, door_http_status(e));
+        char b[160];
+        snprintf(b, sizeof b, "{\"error\":\"%s refused: %s\"}", key, esp_err_to_name(e));
+        return httpd_resp_sendstr(req, b);
+    }
+    char b[96];
+    snprintf(b, sizeof b, "{\"state\":\"set\",\"slug\":\"%s\",\"key\":\"%s\"}", id, key);
     return httpd_resp_sendstr(req, b);
 }
 
@@ -7223,8 +7277,10 @@ static esp_err_t net_start_httpd(void)
      * to 38, so the ceiling moves to 48 — the same one-quiet-404-away reasoning,
      * re-checked by host_tz_test.py's textual table count rather than by this. v1.1.20
      * (D36) deleted /api/v1/apps/factory with the factory tier: textual count 40,
-     * gated-off 37; the ceiling stays 48. */
-    cfg.max_uri_handlers  = 48;
+     * gated-off 37; the ceiling stays 48. The flight tracker adds the debug
+     * door's GET/POST pair (/api/v1/debug/flights) and /api/v1/apps/cfg, the
+     * hub's settings write: textual 49, so the ceiling moves to 56. */
+    cfg.max_uri_handlers  = 56;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
      * FAT with their own buffers, and the OTA chunk and upload receive buffers are
@@ -7392,6 +7448,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/apps/face", .method = HTTP_POST, .handler = h_app_face },
         { .uri = "/api/v1/apps/uninstall", .method = HTTP_POST, .handler = h_app_uninstall },
         { .uri = "/api/v1/apps/clear", .method = HTTP_POST, .handler = h_app_clear },
+        { .uri = "/api/v1/apps/cfg",  .method = HTTP_POST, .handler = h_app_cfg },
         { .uri = "/api/v1/sd/app",      .method = HTTP_POST, .handler = h_app_upload },
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },

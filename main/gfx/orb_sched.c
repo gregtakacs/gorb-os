@@ -635,6 +635,29 @@ static void sched_rung_move(uint32_t from_fps)
  * ORB_SCHED_HYST_PROMOTE_SEC stable seconds carrying ORB_SCHED_HYST_SLACK_PCT%
  * headroom. A distinct GIF/carriage pin moves the floor but not the rung, so no
  * line prints — a rung that cannot fire is not claimed to have fired. */
+static volatile int      s_burst_depth;
+static volatile uint32_t s_burst_end_ms;
+static uint32_t          s_burst_ignored;
+#define BURST_TAIL_MS    1500    /* the report-second the burst's tail lands in */
+
+void orb_sched_bg_burst(bool begin)
+{
+    if (begin) {
+        s_burst_depth++;
+    } else if (s_burst_depth > 0) {
+        s_burst_end_ms = lv_tick_get();
+        s_burst_depth--;
+    }
+}
+
+uint32_t orb_sched_bg_bursts_ignored(void) { return s_burst_ignored; }
+
+static bool burst_covers(uint32_t now)
+{
+    return s_burst_depth > 0 ||
+           (s_burst_end_ms && (uint32_t)(now - s_burst_end_ms) < BURST_TAIL_MS);
+}
+
 static void sched_hysteresis(uint32_t measured)
 {
     sched_fill_asks();                       /* the asks follow the live bake  */
@@ -642,6 +665,11 @@ static void sched_hysteresis(uint32_t measured)
     const uint32_t now = lv_tick_get();
     if (measured < s_rung_fps) {
         s_promote_run = 0;
+        if (burst_covers(now)) {             /* a handshake's second: ride it out */
+            s_burst_ignored++;
+            s_demote_run = 0;
+            return;
+        }
         if (++s_demote_run >= ORB_SCHED_HYST_DEMOTE_SEC &&
             (uint32_t)(now - s_last_demote_ms) >= ORB_SCHED_HYST_DEMOTE_MS) {
             const uint32_t from = s_rung_fps;

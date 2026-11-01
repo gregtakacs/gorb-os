@@ -375,6 +375,9 @@ enum {
                                       * is a card row over this module exactly like
                                       * the picker over kind 1 — the id was claimed
                                       * by the P9 ruling, so it is never reused     */
+    ORB_BEHAVIOUR_FLIGHTS      = 4,  /* the flight tracker (docs/flight-tracker-
+                                      * design.md): canvas-drawn, over the OS's
+                                      * orb_flights feed, `net` declared            */
 };
 
 /** The iface the compiled-in module behind `behaviour_kind` builds with, or NULL

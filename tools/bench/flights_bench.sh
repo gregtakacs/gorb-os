@@ -6,11 +6,13 @@
 # the scenario is the standalone orb, the clock on the glass, the feed polling.
 # tools/bench/flights_report.py reads the output directory.
 #
-#   tools/bench/flights_bench.sh OUTDIR [scale]
+#   tools/bench/flights_bench.sh OUTDIR [scale] [profile]
 #
 # scale multiplies every arm's minutes (default 1; 0.2 for a quick shake-out).
+# profile: full (default, §9's arms) or gate (handshakes back to back, for the
+# scheduler's handshake gate: no rung move may follow).
 set -u
-OUT=${1:?outdir}; SCALE=${2:-1}
+OUT=${1:?outdir}; SCALE=${2:-1}; PROFILE=${3:-full}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 . "$ROOT/tools/orb_bind.sh" >/dev/null 2>&1 || true
 IP=${ORB_IP:-192.168.2.32}
@@ -26,6 +28,14 @@ ARMS=(
   "stress5|10|on=1&ka=0&period=5000&src=0&lat=33.94&lon=-118.40&nm=100"
   "off2|10|on=0"
 )
+if [ "$PROFILE" = gate ]; then
+  ARMS=(
+    "settle|2|"
+    "off|5|on=0"
+    "hs5|20|on=1&ka=0&period=5000&src=0&lat=33.45&lon=-112.07&nm=40"
+    "off2|5|on=0"
+  )
+fi
 total=0
 for a in "${ARMS[@]}"; do IFS='|' read -r _ m _ <<<"$a"; total=$(python3 -c "print($total+$m*$SCALE)"); done
 secs=$(python3 -c "print(int($total*60+900))")   # + boot, + a slow reach (above)

@@ -11,12 +11,15 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
+#include "orb_sched.h"
+
 static const char *TAG = "orb_https";
 
 struct orb_https {
     esp_http_client_handle_t c;
     char      origin[64];
     bool      keep_alive;
+    bool      live;           /* a kept connection is believed open */
     uint32_t  opens;          /* HTTP_EVENT_ON_CONNECTED count */
 };
 
@@ -93,12 +96,18 @@ static esp_err_t get_once(orb_https_t *h, const char *path, orb_https_sink_fn si
     snprintf(url, sizeof url, "%s%s", h->origin, path);
     esp_http_client_set_url(h->c, url);
 
+    /* No live connection means this open is a TLS handshake: tell the dial's
+     * scheduler to ride it out rather than re-rate (orb_sched_bg_burst). */
+    const bool handshake = !h->live;
+    if (handshake) orb_sched_bg_burst(true);
     esp_err_t err = esp_http_client_open(h->c, 0);
+    if (handshake) orb_sched_bg_burst(false);
     r->reused = (h->opens == opens0);
     r->open_ms = ms_since(t0);
     sample(r);
     if (err != ESP_OK) {
         esp_http_client_close(h->c);
+        h->live = false;
         return err;
     }
     const int64_t t1 = esp_timer_get_time();
@@ -108,6 +117,7 @@ static esp_err_t get_once(orb_https_t *h, const char *path, orb_https_sink_fn si
     sample(r);
     if (r->content_len < 0 && r->status == 0) {
         esp_http_client_close(h->c);
+        h->live = false;
         return ESP_ERR_HTTP_FETCH_HEADER;
     }
 
@@ -124,6 +134,7 @@ static esp_err_t get_once(orb_https_t *h, const char *path, orb_https_sink_fn si
     r->complete = esp_http_client_is_complete_data_received(h->c);
     if (!r->complete) keep = false;
     if (!h->keep_alive || !keep) esp_http_client_close(h->c);
+    h->live = h->keep_alive && keep;
     r->total_ms = ms_since(t0);
     return r->complete ? ESP_OK : (err != ESP_OK ? err : ESP_FAIL);
 }
@@ -137,6 +148,7 @@ esp_err_t orb_https_get(orb_https_t *h, const char *path, orb_https_sink_fn sink
         /* The server dropped the idle connection; that is keep-alive's normal
          * end, not a failure. One fresh try, and its numbers are the result. */
         ESP_LOGI(TAG, "kept connection was closed by the server; reconnecting");
+        h->live = false;
         orb_https_result_t r2 = { .int_free_min = r.int_free_min,
                                   .int_largest_min = r.int_largest_min };
         err = get_once(h, path, sink, ctx, &r2);

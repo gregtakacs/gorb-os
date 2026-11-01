@@ -76,6 +76,10 @@ typedef struct {
     uint32_t calls, denials;/* lifetime totals, any entry, either outcome  */
     uint32_t beat_ms;       /* D16 rate in force; 0 = stopped              */
     uint32_t cfg_used;      /* bytes charged against ORB_CFG_QUOTA_BYTES   */
+    uint32_t cfg_gen;       /* bumped on every successful cfg write, so an
+                             * app can notice a change it did not make (the
+                             * hub's /api/v1/apps/cfg door) without re-reading
+                             * NVS on a timer */
     uint32_t faults;        /* C2: unexpected resets with this app shown   */
     bool     faulted;       /* C2: two consecutive faults — never boots    */
     bool     loaded;        /* grant word read from NVS                    */
@@ -305,6 +309,7 @@ static esp_err_t svc_cfg_set(orb_app_t *a, const char *id, int32_t v)
     esp_err_t w = nvs_set_u32(h, id, (uint32_t)v);
     if (w == ESP_OK) w = nvs_commit(h);
     nvs_close(h);
+    if (w == ESP_OK) s_row[slot].cfg_gen++;
     return w;
 }
 
@@ -375,6 +380,7 @@ static esp_err_t svc_cfg_set_str(orb_app_t *a, const char *id, const char *v)
             s_row[slot].cfg_used = (old) ? base + (uint32_t)old : base;
     }
     nvs_close(h);
+    if (e == ESP_OK) s_row[slot].cfg_gen++;
     return e;
 }
 
@@ -1006,6 +1012,12 @@ uint32_t orb_svc_beat_ms(const orb_app_t *a)
 {
     const int slot = orb_app_index_of(a);
     return (slot >= 0) ? s_row[slot].beat_ms : 0;
+}
+
+uint32_t orb_svc_cfg_gen(const orb_app_t *a)
+{
+    const int slot = orb_app_index_of(a);
+    return slot >= 0 ? s_row[slot].cfg_gen : 0;
 }
 
 uint32_t orb_svc_cfg_used(const orb_app_t *a)

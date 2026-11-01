@@ -485,9 +485,11 @@ func TestEveryFirmwareDeviceRouteIsAllowedAndFakeable(t *testing.T) {
 	// (deviceRoutes' comment records why). The captive-portal probes are UI-unused.
 	// /api/v1/debug/panic is the bench's deliberate crash (orb_panic.c's proof): a
 	// page has no business crashing a dial, so the hub never relays it.
+	// /api/v1/debug/flights is the flight feed's bench door (its viability bench
+	// drives it from the bench host); the app configures the feed, not a page.
 	refused := map[string]bool{"/api/v1/ota": true, "/generate_204": true,
 		"/hotspot-detect.html": true, "/connect/test.php": true,
-		"/api/v1/debug/panic": true}
+		"/api/v1/debug/panic": true, "/api/v1/debug/flights": true}
 	checked := 0
 	for _, m := range found {
 		uri, method := m[1], strings.ToUpper(m[2])

@@ -1,8 +1,9 @@
 # Flight tracker — design and viability bench
 
-Status: design + bench, 2026-10-31, branch `feat/flights-bench`. The OS half
-(HTTPS client, feed service, parser) is built and measured on orb-A; the app's
-view is designed here and not yet built.
+Status: built on branch `feat/flights-bench` (rebased on `main` 404c480),
+2026-11-01. The OS half (HTTPS client, feed service, parser, the scheduler's
+handshake gate) and the app (`flights.orbapp`, behaviour kind 4) run on
+orb-A; §6.5 records what was verified there.
 
 ## 0. What the owner asked for
 
@@ -165,10 +166,28 @@ is wired.
   `/api/v1/debug/panic`) for config, stats, the dial's tick-gap histogram and
   the snapshot. The shipped tracker configures itself through its app
   settings (§6.3), not through this.
-- **Policy, proposed:** while the tracker is on the glass, poll every 10 s
-  (orb-os's cadence, inside adsb.lol's guidance). While it is not, poll at the
-  background rate, 30 s by default, set in the app's options. No reboot
-  watchdog: a feed that is down shows its age, and the poll retries.
+- **Cadence (owner, 2026-11-01: avoid being throttled, but don't miss a
+  close or interesting pass):**
+  - *on the glass:* every 15 s;
+  - *background:* every 60 s by default (1,440 requests a day);
+  - *boost:* while the last picture holds something interesting, the
+    background rate rises to 20 s, and it drops back once the contact leaves.
+    Interesting means within 5 nm, or under 3,000 ft within 10 nm and closing
+    on home, or an emergency squawk.
+
+  A 60 s base doesn't miss approaches: a 250 kt aircraft covers ~7.7 km a
+  minute, so one entering a 40 nm (74 km) circle is sampled ~9 times before
+  it reaches home, and the boost then catches the close pass.
+- **Refusals (built):** a 4xx rests that provider, starting at 1 minute and
+  doubling to 15, and polls go to the other provider meanwhile. If both are
+  resting the poll is a counted skip. A good answer forgives the provider.
+  Transport failures don't rest anything: they're the network's, and the
+  next poll is the retry. The owner has seen adsb.lol's own site 403 a page
+  left open until it was reloaded. adsb.lol's API sends no rate-limit headers,
+  and its terms say an API key (got by feeding) will be required "in the
+  future"; §6.3 has a slot for one.
+- **No reboot watchdog:** a feed that is down shows its age, and the poll
+  retries.
 - **Aging (from orb-os, v1 view):** merge each poll into a persistent table
   keyed by `hex`. A contact missing from one poll keeps its last position for
   60 s, drawn dimmed, then drops. Without this a routine missed poll makes
@@ -222,12 +241,101 @@ pays every frame. The view draws nothing while suspended.
 
 | id | type | default | note |
 |---|---|---|---|
-| `home_lat`, `home_lon` | STRING | unset | Decimal degrees. Required: the orb only knows its time zone, not where it is. Set from the hub's app editor (a map pick) or the options page. |
+| (home) | — | — | Not an app setting: the OS's home location (§6.4), read through a `location` capability. |
 | `range_nm` | ENUM | 40 | 10/20/40/80 |
 | `source` | ENUM | adsb.lol | adsb.lol / adsb.fi |
-| `bg_poll_s` | ENUM | 30 | 0 (off) / 15 / 30 / 60 / 120: the background rate |
+| `bg_poll_s` | ENUM | 60 | 0 (off) / 60 / 120 / 300: the background base rate; the boost (§5) rides on top |
+| `boost` | TOGGLE | on | the 20 s rate while something interesting is near |
+| `api_key` | STRING | "" | for when adsb.lol starts requiring one |
 | `hide_ground` | TOGGLE | on | |
 | `units` | ENUM | ft/kt | ft/kt or m/km/h |
+
+### 6.4 Home location replaces the time-zone pick (owner ruling, 2026-11-01)
+
+The orb gets one **home location**, an OS setting rather than an app's. It
+drives both the time zone and every app that needs a position, so the tracker
+has nothing of its own to configure. Apps read it through a `location`
+capability, declared at install like `net`: a position is personal, and D19's
+consent rule applies.
+
+- **Stored:** lat/lon (1e-6°, two int32), a short label, and the resolved zone
+  (the IANA key and the POSIX string the clock already uses), in NVS beside
+  today's tz key. Today's zone pick becomes an override under it, for the case
+  where the derived zone is wrong.
+- **From the hub (the main path):** the orb page offers *Use this browser's
+  location* (Geolocation API) or *Pin on a map*. The hub turns the point into
+  a zone. A browser fix comes with the browser's own zone
+  (`Intl.DateTimeFormat().resolvedOptions().timeZone`), right when the
+  computer is local. A map pin needs a point-to-zone lookup in the hub (an
+  embedded boundary set, e.g. the `tzf` Go library). The hub sends lat/lon,
+  label and zone to the orb in one config write. Existing zone-table rows keep
+  their keys (the frozen NVS contract in `host_tz_test.py`); the hub sends the
+  POSIX string for zones outside the table.
+- **On the orb alone (menu):** two entry forms, digit by digit on the knob:
+  - *decimal coordinates;*
+  - *a full plus code* (8+2 characters). Open Location Code decodes offline
+    in ~100 lines of C. Short codes ("XXXX+XX City") need a reference point
+    the orb doesn't have, so they're refused with that reason.
+
+  Zone and city then come from a small embedded city list: cities of 500k+
+  people, ~1,200 rows of name, lat/lon and zone index, about 25 KB of flash.
+  The nearest one names the place ("near Phoenix") and proposes its zone. The
+  menu shows both for confirmation, because a border can make the nearest big
+  city's zone wrong. That's the efficient way to put a city on it without a
+  geocoder.
+- **Not in v1 of the tracker:** the tracker ships reading home from the OS. If
+  the location work lands later, the tracker's options page holds a temporary
+  lat/lon until it does.
+
+### 6.5 As built (orb-A, 2026-11-01)
+
+- **Module:** `main/flights/flights_view.c`, behaviour kind 4 in `orb_app.c`.
+  The seed container `tools/orb-manager/apps/flights.orbapp` (4,096 B) comes
+  from `make_factory_apps.py`, declares `net` and the eight settings of §6.3
+  (home as `lat`/`lon` STRINGs until §6.4 lands), and ships in the hub's
+  library beside the clock and the picker.
+- **Drawing:** one 466×466 RGB565 canvas in PSRAM. Rings, dots, markers and
+  emergency/selection rings are written straight into its pixels; only the
+  callsign labels and the range figure go through LVGL's draw layer. Four
+  label objects (header, footer, detail card) plus the canvas: the LVGL pool
+  (22 KB, ~20 KB peak) has no room for a widget per aircraft.
+- **Labels:** nearest six airborne. Each tries right/left/above/below its dot
+  and takes the first spot that is on the round glass and clear of labels
+  already placed, else goes unlabelled. The first frame on the bench stacked
+  six labels on Sky Harbor; this one is legible.
+- **Merging:** a contact table of 32 in PSRAM. Each poll is merged by `hex`,
+  a contact the latest poll missed is drawn dimmed, and one missing for 60 s
+  drops. Dead reckoning runs at 1 Hz, capped at 90 s.
+- **Knob:** a push arms the view. Then a turn steps 10/20/40/80 nm (saved at
+  disarm) and a push cycles the detail card through the drawn aircraft by
+  `hex`, nearest first, then none. The long press is the shell's. The options
+  page cycles Range, Source, Background, Boost and Ground on a press and shows
+  Home read-only.
+- **Feed control:** `activate`/`resume` set the visible rate (15 s);
+  `suspend` drops to the background rate (60 s, 20 s boost). The feed only
+  runs when home is set and `net` is granted.
+- **Settings from outside:** `POST /api/v1/apps/cfg?id=&key=&value=` writes
+  one declared setting through the service table's own gate (type, range,
+  quota, revocation). The row's `orb_svc_cfg_gen` bumps, and the view
+  re-reads on its service hook. The hub allows and fakes the door, and
+  `/api/v1/debug/flights` is on the contract test's refused list.
+- **Verified on orb-A** (screen captures through `/api/v1/fb`, knob through
+  `/api/v1/screen`):
+  - install from the card, then a reboot to initialize the row;
+  - background polling with the clock on the glass, the boost engaging over
+    Phoenix;
+  - the view with labels, dimmed contacts, the detail card (type, altitude,
+    vertical rate, speed, track, distance, bearing) and the 80 nm zoom;
+  - the settings door's refusals (undeclared key 404, out-of-range 400);
+  - resume-to-clock across a reboot.
+- **Handshake gate bench** (`flights_bench.sh … gate`): 159 handshakes in 20
+  min, 0 rung moves, 33 report-seconds forgiven, 159/159 polls ok, radio
+  clean.
+- **Seen, not caused by the tracker:** after any app visit (the menu does it
+  too) the clock re-seeds its rung and settles at 7-8 fps instead of a fresh
+  boot's 10, because a promote needs 25% slack it never shows. That's the
+  scheduler's re-seed path, outside this work; noted for whoever owns
+  `orb_sched`.
 
 ## 7. Later in the design chain
 
@@ -334,22 +442,27 @@ The design commits to:
    `stress5` are worst cases, not the plan);
 2. a background rate no faster than 30 s, so a server that does drop idle
    connections costs a handshake per 30 s at most;
-3. a fix for the rung step before the tracker ships, one of: the scheduler
-   discounts a report-second during which the feed ran a handshake (the feed
-   already knows when), or the promote path re-tries the higher rung after a
-   quiet interval instead of requiring 25% slack. The second also helps any
-   other one-off burst, so it's the recommendation. Owner's call (§10).
+3. the scheduler rides out handshakes (owner ruling 2026-11-01; built). While
+   `orb_https` runs a TLS handshake, and for 1.5 s after, report-seconds under
+   the rung don't count toward a demote (`orb_sched_bg_burst`). With
+   keep-alive a handshake is rare, and the frame rate is back the moment one
+   ends, so nothing needs to stay lowered. `host_sched_rung_test.py` lints the
+   gate's order. Bench: §9.3.
 
-## 10. For the owner
+## 10. Owner rulings, 2026-11-01
 
-- **The rung step (§9.1):** pick the fix: a handshake-aware demotion gate, or
-  a promote that re-tries after a quiet interval (recommended).
-- **Wi-Fi/lwIP statics in PSRAM (§4.2):** shipping this is the biggest memory
-  change here (+30 KB internal at boot, the reason-202 first-join failure
-  gone). Two 77-minute runs were clean. It's the same family as fix 4, so it
-  wants a hub soak (`store_check.sh`, the preview stress) before it ships,
-  even without the tracker.
-- **Background polling:** confirm 30 s default and whether "off" belongs in
-  the options (§6.3).
-- **Home location:** set from the hub's app editor (a map pick) or typed on
-  the options page.
+1. **Handshakes:** ignore the drop during them; built (§9.2 item 3).
+2. **Wi-Fi/lwIP statics in PSRAM:** this isn't fix 4.
+   - *Fix 4* was `SPIRAM_TRY_ALLOCATE_WIFI_LWIP`, which moves the radio's and
+     lwIP's *packet buffers* to PSRAM. It was tried twice (plan §17 on
+     2026-10-14, and §41 fix 4 on 2026-10-31) and failed both times: httpd
+     wouldn't fit, then lost leases and AES/SHA bounce failures.
+   - *This one* is `SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`, which moves those
+     libraries' *zero-initialised statics* and leaves every packet buffer
+     internal.
+
+   It is already on `main` as `aaa577e` (adopted from this branch), and both
+   77-minute runs here ran on it with the radio clean.
+3. **Cadence:** a lower background rate with a boost for close passes, plus
+   4xx backoff and failover (§5).
+4. **Home location** replaces the zone pick and feeds the tracker (§6.4).

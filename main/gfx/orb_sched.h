@@ -179,6 +179,17 @@ typedef struct {
 } orb_sched_jank_t;
 void orb_sched_jank_snapshot(orb_sched_jank_t *out);
 
+/* A background burst the dial should ride out rather than re-rate for: a TLS
+ * handshake (orb_https.c), ~2 s of PSRAM-heavy maths that slowed the flush by
+ * ~20% for its length on the bench and twice cost a permanent 10->9 demote,
+ * because a promote then needs 25% slack the dial never shows
+ * (docs/flight-tracker-design.md §9.1). While a burst is open, and for one
+ * report-second after it closes, measured seconds do not count toward a
+ * demote. Nesting-safe; callable from any task. Owner ruling 2026-11-01:
+ * handshakes are rare, the frame rate rebounds the moment one ends. */
+void orb_sched_bg_burst(bool begin);
+uint32_t orb_sched_bg_bursts_ignored(void);   /* demote-seconds forgiven, for the bench */
+
 /* ---- the rung pick (P8.1, D16/D32; mode-aware per the owner ruling §40) -----
  *
  * The OS owns ONE flush cadence; every live element rides on top of it. Since

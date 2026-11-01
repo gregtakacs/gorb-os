@@ -208,6 +208,32 @@ MUTS = [
 ]
 
 
+# ---- the handshake gate (owner ruling 2026-11-01, flight-tracker-design §9) ----
+# A TLS handshake twice cost the dial a permanent 10->9 demote on the bench. The
+# gate is two textual facts: the hysteresis forgives a burst's second BEFORE it
+# counts the demote, and orb_https brackets exactly the open that handshakes.
+def burst_lint():
+    fails = []
+    txt = open(SRC).read()
+    h = txt[txt.index("static void sched_hysteresis("):]
+    h = h[:h.index("\n}\n")]
+    if "if (burst_covers(now))" not in h:
+        fails.append("sched_hysteresis no longer asks burst_covers()")
+    elif h.index("if (burst_covers(now))") > h.index("if (++s_demote_run"):
+        fails.append("the burst gate runs after the demote counter: a handshake's second still counts")
+    https = open(os.path.join(os.path.dirname(SRC), "..", "net", "orb_https.c")).read()
+    g = https[https.index("static esp_err_t get_once("):]
+    try:
+        a = g.index("if (handshake) orb_sched_bg_burst(true);")
+        o = g.index("esp_http_client_open(h->c, 0);")
+        b = g.index("if (handshake) orb_sched_bg_burst(false);")
+        if not a < o < b:
+            fails.append("orb_https: the burst no longer brackets the open")
+    except ValueError:
+        fails.append("orb_https: the handshake is no longer marked to the scheduler")
+    return fails
+
+
 def mut_count():
     caught = 0
     total = 0
@@ -227,6 +253,7 @@ def main():
     fails = []
     fails += lint()
     fails += check_vectors()
+    fails += burst_lint()
     n = 0
     for asks, floor, exp in VECTORS:
         n += 1

@@ -230,6 +230,7 @@ uint32_t     orb_svc_denials(const orb_app_t *a);
 const char  *orb_svc_last_status(const orb_app_t *a); /* what SVC->status printed */
 uint32_t     orb_svc_beat_ms(const orb_app_t *a);  /* the D16 rate in force; the scheduler reads this */
 uint32_t     orb_svc_cfg_used(const orb_app_t *a); /* bytes charged against the quota */
+uint32_t     orb_svc_cfg_gen(const orb_app_t *a);  /* bumps on every successful cfg write */
 
 /* P5.5's ledger pair for the compositor face, for /api/v1/status: how many
  * rows the app holds right now, and how many times its own table refused it

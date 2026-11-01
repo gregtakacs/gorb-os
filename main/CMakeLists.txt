@@ -36,6 +36,8 @@ idf_component_register(
         "clock/clock_themes.c"
         "knob/knob.c"
         "color/color_picker.c"
+        # The flight tracker's view (docs/flight-tracker-design.md §6), kind 4.
+        "flights/flights_view.c"
         "menu/menu_view.c"
         "input/input_router.c"
         "imu/imu.c"
@@ -89,6 +91,7 @@ idf_component_register(
         "clock"
         "knob"
         "color"
+        "flights"
         "menu"
         "input"
         "imu"

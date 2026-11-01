@@ -405,7 +405,11 @@ var deviceRoutes = map[string][]string{
 	// embed, leaving the sd/app and apps/install doors below as the one way an
 	// app reaches a card — the operator's copy, filed by the drop zone.
 	"/api/v1/apps/clear": {http.MethodPost},
-	"/api/v1/sd/app":     {http.MethodPost},
+	// One declared app setting, written through the device's own config gate (type,
+	// range, quota, the owner's revocation). The app editor's door: the flight
+	// tracker's home position is the first setting a knob cannot reasonably type.
+	"/api/v1/apps/cfg": {http.MethodPost},
+	"/api/v1/sd/app":   {http.MethodPost},
 	// v1.1.18's file-manager doors and the LAN twin of serial RESET ALL. The
 	// proxy forwards these verbatim (token, caps, lane) and owns none of the
 	// policy: the device already refuses traversal, the device-owned

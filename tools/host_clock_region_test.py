@@ -46,11 +46,12 @@ zf = zipfile.ZipFile(io.BytesIO(region))
 names = [i.filename for i in zf.infolist()]
 entry = zf.read("index.html").decode("utf-8")
 
-# 1. The member set is exactly the four files, manifest first. A fifth member
-#    would be an editor file the region does not declare; a missing engine or
-#    renderer is a dead iframe that loads no dial.
-check("members are exactly the four, editor.json first",
-      names == ["editor.json", "index.html", "watch-engine.js", "dial-renderer.js"], str(names))
+# 1. The member set is exactly the five files, manifest first. A sixth member
+#    would be an editor file the region does not declare; a missing engine,
+#    renderer or sound generator is a dead iframe or a silent Sound tab (D39).
+check("members are exactly the five, editor.json first",
+      names == ["editor.json", "index.html", "watch-engine.js", "dial-renderer.js",
+                "sound-engine.js"], str(names))
 check("no member is DEFLATEd (the hub streams without unpacking)",
       all(i.compress_type == zipfile.ZIP_STORED for i in zf.infolist()))
 check("region fits the firmware's 2 MiB cap", len(region) <= 2 * 1024 * 1024,
@@ -79,7 +80,8 @@ check("orbtheme-baker.js resolves to the hub's shared writer",
       and '<script src="orbtheme-baker.js">' not in entry)
 check("the region's own members stay relative",
       '<script src="watch-engine.js"></script>' in entry
-      and '<script src="dial-renderer.js"></script>' in entry)
+      and '<script src="dial-renderer.js"></script>' in entry
+      and '<script src="sound-engine.js"></script>' in entry)
 
 # 4. The fonts links stay the page's own CDN references: serve-time offline
 #    rewrite is the hub's job (injectOffline), and baking them in would freeze

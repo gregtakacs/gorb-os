@@ -1837,11 +1837,19 @@
   // from estimate3 and the dial only reads it. All eight bits of the u8 column are named.
   var EF_SMOOTH = 128;
   var EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | AUX_F_SHADOW3 | EF_DELTA_WRAP | EF_SMOOTH;
-  var CLASS_NAMES = ['text', 'sprite', 'hand', 'plate', 'ring', 'bank', 'layer', 'status', 'aux', 'preview'];
+  var CLASS_NAMES = ['text', 'sprite', 'hand', 'plate', 'ring', 'bank', 'layer', 'status', 'aux', 'preview', 'sound'];
   var CLASS_TEXT = 0, CLASS_SPRITE = 1, CLASS_HAND = 2, CLASS_PLATE = 3;
   var CLASS_RING = 4, CLASS_BANK = 5, CLASS_LAYER = 6, CLASS_STATUS = 7;
   var CLASS_AUX = 8;                       // D34: a pointer, appended at 8
   var CLASS_PREVIEW = 9;                   // the picker's plane, appended at 9
+  var CLASS_SOUND = 10;                    // D39: a waveform, appended at 10
+  /* D39: the clock's sound vocabulary (theme_schema.CLOCK_SOUND_SLOTS / HOUR_PATTERNS,
+   * orb_clock3.h CLK_SND_* / CLK_PAT_*), in slot order. */
+  var SOUND_SLOTS = ['tick_loop', 'chime_q1', 'chime_half', 'chime_q3', 'chime_hour',
+    'strike_hour', 'jump_minute', 'jump_hour', 'jump_date', 'morse_dit', 'morse_dah',
+    'strike_qtr', 'strike_min'];
+  var HOUR_PATTERNS = ['count', 'ships_bells', 'morse', 'repeater', 'none'];
+  var SOUND_RATE = 22050;
   // How an AUX row moves (theme_schema.MOTION_NAMES / clk_types.h's CLK_MOTION_*).
   // The motion IS the unit of span/zero: an angle in tenths of a degree, or pixels
   // along the named axis. One vocabulary, so a row cannot name a motion and a unit
@@ -1854,7 +1862,7 @@
   // decides the editor's element class for an animated region: an OS-paced region is a
   // SPRITE row, because a bank or a text row holds app state and a layer is composited.
   var CLASS_APP_ADV = [CLASS_BANK, CLASS_TEXT, CLASS_STATUS];
-  var CLASS_NO_ANIM = [CLASS_LAYER, CLASS_STATUS, CLASS_PREVIEW];
+  var CLASS_NO_ANIM = [CLASS_LAYER, CLASS_STATUS, CLASS_PREVIEW, CLASS_SOUND];
 
   function blankElement() {
     var r = {};
@@ -1947,11 +1955,20 @@
      * the domain's own count of plates. Rules and sentences mirror
      * theme_schema.check_element rule for rule. */
     var kind = Math.trunc(rec.kind | 0), src = Math.trunc(rec.src | 0);
-    if (kind && cls !== CLASS_BANK && cls !== CLASS_AUX) {
+    /* D39 widens the pair the way D34 did: on a SOUND row `kind` is the hour pattern
+     * and `src` the encoding; checkClockSounds reads them. */
+    if (cls === CLASS_SOUND) {
+      if (src !== 0)
+        throw new Error(where + '.src: a sound in encoding ' + src + ' — this build plays 16-bit ' +
+          'PCM at ' + SOUND_RATE + ' Hz (encoding 0) and nothing else');
+      if (!(kind >= 0 && kind < HOUR_PATTERNS.length))
+        throw new Error(where + '.kind: ' + kind + ' is not an hour pattern (' +
+          HOUR_PATTERNS.join('/') + ', 0..' + (HOUR_PATTERNS.length - 1) + ')');
+    } else if (kind && cls !== CLASS_BANK && cls !== CLASS_AUX) {
       throw new Error(where + '.kind: ' + kind + ' on a ' + CLASS_NAMES[cls] + ' row — how a row ' +
         'draws or moves is a driven element’s question, and this class answers it with its slot');
     }
-    if (src && cls !== CLASS_BANK && cls !== CLASS_AUX) {
+    if (src && cls !== CLASS_BANK && cls !== CLASS_AUX && cls !== CLASS_SOUND) {
       throw new Error(where + '.src: ' + src + ' on a ' + CLASS_NAMES[cls] + ' row — what drives ' +
         'a row is a driven element’s question, and this class answers it with its slot');
     }
@@ -2694,6 +2711,66 @@
    * write: a full-panel keyframe costs w*h*2 and a comp tile w*h*3, the cap
    * binds long before the dialect's 16-frame bound, and an owner choosing
    * frames needs both numbers. */
+  /* D39: the clock's sound rows, refused for the reasons orb_clock3.c refuses them and
+   * in theme_schema.check_clock_sounds' words. `sprites` is the catalogue ({off, size,
+   * w, h}); the tick loop's beat is held against the section's seconds cadence.
+   * Returns the hour pattern the rows agree on, or -1 when there are none. */
+  function checkClockSounds(elems, sprites, secondSweep, tickRate) {
+    var at = {}, i, slot;
+    for (i = 0; i < elems.length; i++) {
+      var r = elems[i];
+      if ((r['class'] | 0) !== CLASS_SOUND) continue;
+      slot = r.slot | 0;
+      if (slot >= SOUND_SLOTS.length)
+        throw new Error('a sound at slot ' + slot + ': the clock declares ' + SOUND_SLOTS.length + ' sound slots');
+      if ((r.n_frames | 0) !== 1)
+        throw new Error('a sound at slot ' + slot + ' names ' + r.n_frames + ' planes: a sound is one waveform');
+      if ((r.w | 0) || (r.h | 0))
+        throw new Error('element ' + r.n + ' is a sound sized ' + r.w + 'x' + r.h + ': a sound places nothing, and its length is its plane\u2019s');
+      at[slot] = r;
+    }
+    var pattern = -1, tick = SOUND_SLOTS.indexOf('tick_loop');
+    for (slot = 0; slot < SOUND_SLOTS.length; slot++) {
+      var e = at[slot];
+      if (!e) continue;
+      var sp = sprites[e.frame0 | 0];
+      if (sp.h !== 1 || sp.w < 2 || sp.size !== sp.w * 2)
+        throw new Error('sound slot ' + slot + '\u2019s plane is ' + sp.w + 'x' + sp.h + ' in ' + sp.size + ' B: a sound is w samples by 1, two bytes each');
+      if (sp.off & 1)
+        throw new Error('sound slot ' + slot + ' starts at odd offset ' + sp.off + ': its samples would load unaligned');
+      var kind = e.kind | 0;
+      if (pattern >= 0 && kind !== pattern)
+        throw new Error('sound slot ' + slot + ' names hour pattern ' + kind + ' and an earlier sound names ' + pattern + ': a theme has one pattern');
+      pattern = kind;
+      var loop = !!((e.flags | 0) & EF_LOOP), vmax = e.vmax >>> 0, vmin = e.vmin >>> 0;
+      if (slot === tick && !loop) throw new Error('the tick loop is not flagged to loop: it would tick once through and stop');
+      if (slot !== tick && loop) throw new Error('sound slot ' + slot + ' is flagged to loop: only the tick loop runs until it is stopped');
+      if (slot === tick) {
+        if (!vmax) throw new Error('the tick loop names no beat: the dial cannot hold it against the seconds hand');
+        if ((sp.w * vmax) % (SOUND_RATE * 100))
+          throw new Error('the tick loop\u2019s ' + sp.w + ' samples are not a whole number of beats at ' + vmax + ' beats per 100 s');
+        var step = tickRate || 1;
+        if (!secondSweep && vmax !== step * 100)
+          throw new Error('the tick loop beats ' + Math.floor(vmax / 100) + '.' + ('0' + vmax % 100).slice(-2) +
+            ' times a second and the seconds hand steps ' + step + ': the sound would walk off the hand');
+        if (vmin * vmax >= SOUND_RATE * 100)
+          throw new Error('the tick loop\u2019s first beat at sample ' + vmin + ' sits past one beat');
+      } else if (vmax || vmin) {
+        throw new Error('sound slot ' + slot + ' carries a beat: only the tick loop has one');
+      }
+    }
+    if (pattern >= 0) {
+      var has = function (n) { return !!at[SOUND_SLOTS.indexOf(n)]; }, name = HOUR_PATTERNS[pattern];
+      if ((name === 'count' || name === 'ships_bells') && !has('strike_hour'))
+        throw new Error('the hour pattern strikes and the theme carries no hour stroke');
+      if (name === 'morse' && !(has('morse_dit') && has('morse_dah')))
+        throw new Error('the hour pattern is morse and the theme lacks a dit or a dah');
+      if (name === 'repeater' && !(has('strike_hour') && has('strike_qtr') && has('strike_min')))
+        throw new Error('the hour pattern is a repeater and the theme lacks one of its three strokes');
+    }
+    return pattern;
+  }
+
   function bakeClock3(o) {
     var scrW = o.scr_w || SCREEN_W, scrH = o.scr_h || SCREEN_H;
     var hands = o.hands || [], shadows = o.shadows || [], plates = o.plates || [];
@@ -2817,6 +2894,28 @@
     // plane is ever counted twice and the plate's rows keep the colour-only cost the
     // projection reads them at.
     var bank = { art: new Uint8Array(0), sprites: [], size: 0 };
+    /* D39: the theme's sounds enter FIRST, so every one sits at an even offset (the
+     * dial refuses an odd one: a 16-bit load from the mapped bank would fault) and
+     * every pixel plane after them moves by the same even amount. plate_off and, on
+     * a delta plate, bg_key_off follow the plate past them — orb_sched seeds the
+     * canvas from blob() + bg_key_off, so a zero left there would paint PCM.
+     * o.sounds: [{slot: name, pcm: Int16Array, beat_chz, first_beat}], o.soundPattern. */
+    var sounds3 = (o.sounds || []).slice().sort(function (a, b) {
+      return SOUND_SLOTS.indexOf(a.slot) - SOUND_SLOTS.indexOf(b.slot); });
+    var soundB = 0;
+    for (var si = 0; si < sounds3.length; si++) {
+      var sn = sounds3[si];
+      if (SOUND_SLOTS.indexOf(sn.slot) < 0) throw new Error('a sound for slot ' + q(String(sn.slot)) + ': the clock declares ' + SOUND_SLOTS.join(', '));
+      var pcm = sn.pcm;
+      if (!pcm || !(pcm.length >= 2)) throw new Error('the ' + sn.slot + ' sound carries no samples');
+      var pb8 = new Uint8Array(pcm.length * 2), pdv = new DataView(pb8.buffer);
+      for (var pi = 0; pi < pcm.length; pi++) pdv.setInt16(pi * 2, pcm[pi], true);
+      bank.art = concat([bank.art, pb8]);
+      bank.sprites.push({ off: bank.size, size: pb8.length, w: pcm.length, h: 1 });
+      bank.size += pb8.length;
+    }
+    soundB = bank.size;
+    sc.plate_off = soundB;
     /* §32.6 (D32 ruling C reversed): a theme that ships a carriage reserves order 1 —
      * one rung above the plate's 0, below every hand — so both the classic LVGL path
      * (which creates s_car before the hand loop) and the L4 tile painter (whose
@@ -3264,6 +3363,24 @@
       prev.alpha = 255;
       elems.push(prev);
       prevB = pb.sprites[0].size;
+    }
+
+    /* D39: the sound rows, last in the table (elems[0] stays the plate the delta
+     * self-verify reads), each naming its plane at the head of the bank. */
+    if (sounds3.length) {
+      var patIx = HOUR_PATTERNS.indexOf(o.soundPattern || 'none');
+      if (patIx < 0) throw new Error('hour pattern ' + q(String(o.soundPattern)) + ': the clock knows ' + HOUR_PATTERNS.join(', '));
+      for (si = 0; si < sounds3.length; si++) {
+        var srec = blankElement(), sslot = SOUND_SLOTS.indexOf(sounds3[si].slot), stick = sslot === 0;
+        srec.n = nid++; srec['class'] = CLASS_SOUND; srec.slot = sslot;
+        srec.frame0 = si; srec.n_frames = 1; srec.kind = patIx; srec.src = 0;
+        srec.flags = stick ? EF_LOOP : 0;
+        srec.vmax = stick ? (sounds3[si].beat_chz | 0) : 0;
+        srec.vmin = stick ? (sounds3[si].first_beat | 0) : 0;
+        elems.push(srec);
+      }
+      if (sc.bg_mode === 1) sc.bg_key_off = soundB;
+      checkClockSounds(elems, bank.sprites, sc.second_sweep | 0, sc.tick_rate | 0);
     }
 
     // The D29 sum, named before the file is written: the plate bank is the part
@@ -3812,7 +3929,10 @@
     bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3, estimate3: estimate3,
     carriageRect3: carriageRect3, carriageStart3: carriageStart3,
     liveComps3: liveComps3, compPlan3: compPlan3, pointerPlan3: pointerPlan3,
-    pointerDefault3: pointerDefault3
+    pointerDefault3: pointerDefault3,
+    // D39: the sound vocabulary and the mirror of the dial's sound refusals.
+    SOUND_SLOTS: SOUND_SLOTS, HOUR_PATTERNS: HOUR_PATTERNS, CLASS_SOUND: CLASS_SOUND,
+    checkClockSounds: checkClockSounds
   };
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 if (typeof module !== 'undefined' && module.exports) module.exports = (typeof window !== 'undefined' ? window : globalThis).GorbBake;

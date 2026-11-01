@@ -84,7 +84,7 @@ manager:
 ## Committed for the same reason as the firmware bundle: a plain build must work.
 COMPOSER_SRC := $(REPO)/tools/watch-composer
 COMPOSER_ENTRY := Watch Composer.dc.html
-COMPOSER_JS := dial-renderer.js orbtheme-baker.js support.js watch-engine.js
+COMPOSER_JS := dial-renderer.js orbtheme-baker.js sound-engine.js support.js watch-engine.js
 composer:
 	@test -f "$(COMPOSER_SRC)/$(COMPOSER_ENTRY)" || { echo "no $(COMPOSER_SRC) — run this from the gorb-os clone"; exit 1; }
 	@mkdir -p web/composer

@@ -783,6 +783,41 @@ setTimeout(async () => {
     scen.exact = false;
   }
 
+  // ---- D39: the Sound tab. Each preset opens on its §7.2 default, the loop's beat is
+  // the hand's (never picked), and the bake carries what the tab shows. ----
+  ok(it.TABS.some((t) => t[0] === 'sound'), 'the composer has a Sound tab beside Export');
+  const sndAt = (dial, cfg) => { it.state.dial = dial; it.state.cfg = cfg || {}; it.state.sounds = {}; return labels('sound'); };
+  let sf = sndAt('station');
+  ok(byLabel(sf, 'Voice') && byLabel(sf, 'Voice').opts.find((o) => o.sel).v === '',
+     'the station opens with no tick: its seconds hand waits for the minute');
+  ok(byLabel(sf, ':00') && byLabel(sf, ':00').opts.find((o) => o.sel).v === 'station_dingdong_3tone' &&
+     byLabel(sf, 'Each minute').opts.find((o) => o.sel).v === 'station_minute_clunk',
+     'the station chimes its three-tone on the hour and clunks each minute');
+  let sb = it.sndBake();
+  ok(sb.sounds && sb.sounds.map((x) => x.slot).join() === 'chime_hour,jump_minute' && sb.soundPattern === 'none',
+     'the station bake carries exactly the hour chime and the minute clunk', sb.sounds && sb.sounds.map((x) => x.slot).join());
+  sf = sndAt('regulator', { tick: '2' });
+  ok(/steps 2 times a second/.test((byLabel(sf, 'Beat') || {}).note || ''),
+     'the beat line names the hand\u2019s 2-per-second step', (byLabel(sf, 'Beat') || {}).note);
+  sb = it.sndBake();
+  const tl = sb.sounds.find((x) => x.slot === 'tick_loop');
+  ok(tl && tl.beat_chz === 200 && tl.pcm.length === 22050 * 8,
+     'a regulator stepping twice a second bakes an 8 s loop at that beat', tl && tl.beat_chz);
+  ok(sb.soundPattern === 'count' && sb.sounds.some((x) => x.slot === 'strike_hour'),
+     'the regulator counts the hour on its low gong');
+  sf = sndAt('diver', { tick: 'sweep', balance: '4' });
+  ok(/balance: 4 times/.test((byLabel(sf, 'Beat') || {}).note || ''),
+     'under a sweep the loop beats with the balance', (byLabel(sf, 'Beat') || {}).note);
+  ok(it.sndBake().soundPattern === 'ships_bells', 'the diver keeps ship\u2019s bells');
+  ok(!byLabel(sndAt('diver', { tick: '8' }), 'Voice').opts.some((o) => o.v === 'heartbeat'),
+     'a voice that cannot beat 8 times a second is not offered to an 8-per-second hand');
+  it.sndUpd((d) => { d.pattern = 'morse'; delete d.slots.strike_hour; });
+  sf = labels('sound');
+  ok(sf.some((f) => f.isNote && /needs morse dit and morse dah/.test(f.note || '')),
+     'choosing Morse names the two symbols it still needs');
+  it.resetTab('sound');
+  ok(!it.state.sounds[it.state.dial], 'Reset sound returns the dial to its preset\u2019s sounds');
+
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);
 }, 15);

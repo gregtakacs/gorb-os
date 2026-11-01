@@ -32,6 +32,7 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
 </style>
 <script src="dial-renderer.js"></script>
 <script src="watch-engine.js"></script>
+<script src="sound-engine.js"></script>
 <script src="orbtheme-baker.js"></script>
 </helmet>
 <div style="height:100vh;background:#12110f;color:#e9e2d2;font-family:'IBM Plex Sans',sans-serif;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden">
@@ -250,7 +251,7 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
                 <sc-if value="{{ f.isSwatch }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-wrap:wrap;gap:6px"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="6"><button onClick="{{ o.pick }}" title="{{ o.label }}" style="width:24px;height:24px;border-radius:50%;background:{{ o.bg }};border:2px solid {{ o.bd }};box-shadow:inset 0 0 0 1px rgba(0,0,0,.5);cursor:pointer;padding:0;font:600 11px 'IBM Plex Sans',sans-serif;color:#e9e2d2">{{ o.text }}</button></sc-for></div></sc-if>
                 <sc-if value="{{ f.isColor }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="6"><button onClick="{{ o.pick }}" title="{{ o.label }}" style="width:22px;height:22px;border-radius:50%;background:{{ o.bg }};border:2px solid {{ o.bd }};box-shadow:inset 0 0 0 1px rgba(0,0,0,.5);cursor:pointer;padding:0;font:600 10px 'IBM Plex Sans',sans-serif;color:#e9e2d2">{{ o.text }}</button></sc-for><input type="color" value="{{ f.value }}" onChange="{{ f.on }}" title="Custom colour" style="width:30px;height:24px;padding:0;border:1px solid #3a352d;border-radius:5px;background:#0d0c0a;cursor:pointer"><input type="text" value="{{ f.hexText }}" onChange="{{ f.onHex }}" onBlur="{{ f.onHexBlur }}" placeholder="#rrggbb or r, g, b" title="{{ f.hexTitle }}" style="flex:1 1 140px;min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',ui-monospace,monospace"></div></sc-if>
                 <sc-if value="{{ f.isText }}" hint-placeholder-val="{{ false }}"><input type="text" value="{{ f.value }}" onChange="{{ f.on }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%;box-sizing:border-box"></sc-if>
-                <sc-if value="{{ f.isFile }}" hint-placeholder-val="{{ false }}"><input type="file" accept="image/png,image/svg+xml,image/jpeg,image/webp" onChange="{{ f.on }}" style="font:500 12px 'IBM Plex Sans',sans-serif;color:#b5ab97;width:100%"></sc-if>
+                <sc-if value="{{ f.isFile }}" hint-placeholder-val="{{ false }}"><input type="file" accept="{{ f.accept }}" onChange="{{ f.on }}" style="font:500 12px 'IBM Plex Sans',sans-serif;color:#b5ab97;width:100%"></sc-if>
                 <sc-if value="{{ f.isNote }}" hint-placeholder-val="{{ false }}"><div style="font-size:12px;color:#c9a25a;text-wrap:pretty">{{ f.note }}</div></sc-if>
               </div>
               <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#e9e2d2;text-align:right;overflow:hidden;text-overflow:ellipsis">{{ f.valText }}</div>
@@ -414,10 +415,10 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '' };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
-  TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['export', 'Export']];
+  TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
   LAYERS = [
     ['outer', '6', 'Case & outer shine', 'Bezel, vignette, halo'],
     ['glass', '5', 'Glass', 'Reflections follow the outer light'],
@@ -1032,9 +1033,178 @@ class Component extends DCLogic {
     if (tab === 'hands') { this.upd((d) => { delete d.hands; delete d.order; delete d.secStyle; delete d.handLume; delete d.handShade; delete d.extra; ['perim', 'perimShrink', 'perimColor', 'perimFont', 'perimOrient', 'perimSize', 'perimPos'].forEach((k) => delete d[k]); if (P.design.handShade) d.handShade = P.design.handShade; if (P.design.handLume) d.handLume = P.design.handLume; if (P.design.secStyle) d.secStyle = P.design.secStyle; d.centre = JSON.parse(JSON.stringify(P.design.centre || {})); if (P.design.hands) d.hands = JSON.parse(JSON.stringify(P.design.hands)); }); this.setState({ hands: 'auto', handFinish: 'auto' }); drop(['tick', 'shAngle', 'shDist', 'shBlur', 'shOp', 'shMove']); say('Hands'); }
     if (tab === 'move') { drop(['rearFinish', 'plateAngle', 'plateScale', 'plate', 'spokes', 'etching', 'pinion', 'center', 'finish', 'balance', 'trainAngle', 'orbD', 'orbTip', 'cageD']); this.setState({ train: P.train || 'classic' }); say('Movement'); }
     if (tab === 'light') { drop(['glow', 'temp', 'innerAngle', 'outerLight', 'outerAngle', 'outerTemp', 'hue', 'hueSat', 'outerHue', 'outerSat', 'wb']); say('Light'); }
+    if (tab === 'sound') { this.sndStop(); this.setState((st) => { const o = { ...st.sounds }; delete o[st.dial]; return { sounds: o, sndMsg: '' }; }); say('Sound'); }
     if (tab === 'case') { this.setState({ caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed' }); say('Case & glass'); }
   }
   roll(k) { this.setState((s) => ({ seeds: { ...s.seeds, [k]: Math.floor(Math.random() * 1e6) } })); }
+
+  /* ---- D39: the Sound tab (docs/sound-plan.md §7) ------------------------------------
+   * A dial's sound design is { tick, pattern, slots: {slot: catalog id}, up: {slot:
+   * {name, pcm}}, seed }. tick is a SoundEngine voice, 'upload' or null; a slot holds a
+   * catalog id or 'upload'. The default is the preset's §7.2 mapping. Nothing here
+   * persists an upload past the page (§7 "re-editing"): the installed theme is the copy.
+   * The tick loop's beat is derived, never picked: a stepping seconds hand's rate, or
+   * the balance's beat under a sweep (§4.2). */
+  _snd = {};
+  sndDesign() {
+    const SE = window.SoundEngine, mine = this.state.sounds[this.state.dial];
+    if (mine) return mine;
+    const P = (SE && SE.PRESETS[this.state.dial]) || { tick: null, pattern: 'none', slots: {} };
+    return { tick: P.tick, pattern: P.pattern, slots: { ...P.slots }, up: {}, seed: 1 };
+  }
+  sndUpd(fn) {
+    this.setState((st) => {
+      const d = JSON.parse(JSON.stringify({ ...this.sndDesign(), up: {} }));
+      d.up = { ...(this.sndDesign().up || {}) };
+      fn(d);
+      return { sounds: { ...st.sounds, [st.dial]: d } };
+    });
+  }
+  sndRate() {
+    const c = this.cfg();
+    if (c.tick && c.tick !== 'sweep') return { sweep: false, rate: Math.max(1, +c.tick | 0) };
+    return { sweep: true, rate: Math.max(1, +c.balance | 0) };
+  }
+  /* The PCM a slot will bake, rendered once per (source, rate, seed) and cached. */
+  sndPcm(slot) {
+    const SE = window.SoundEngine, d = this.sndDesign();
+    if (!SE) return null;
+    if (slot === 'tick_loop') {
+      if (!d.tick) return null;
+      const r = this.sndRate().rate;
+      if (d.tick === 'upload') {
+        const u = d.up.tick_loop;
+        if (!u) return null;
+        if (u.loop) return u.pcm;                           // a recorded loop, checked at upload
+        const key = 'upl|' + u.name + '|' + r + '|' + d.seed;
+        return this._snd[key] || (this._snd[key] = SE.loopFromTick(u.pcm, r, d.seed));
+      }
+      const rates = SE.voiceRates(d.tick);
+      if (d.tick !== 'geiger' && rates.indexOf(r) < 0) return null;
+      const key = 'loop|' + d.tick + '|' + r + '|' + d.seed;
+      return this._snd[key] || (this._snd[key] = SE.renderLoop(d.tick, r, d.seed));
+    }
+    const id = d.slots[slot];
+    if (!id) return null;
+    if (id === 'upload') return d.up[slot] ? d.up[slot].pcm : null;
+    const key = 'one|' + id + '|' + d.seed;
+    return this._snd[key] || (this._snd[key] = SE.renderSound(id, d.seed));
+  }
+  /* What the bake carries: every filled slot, the pattern, and the loop's beat. */
+  sndBake() {
+    const G = window.GorbBake, d = this.sndDesign(), out = [];
+    if (!G || !window.SoundEngine) return {};
+    const rr = this.sndRate();
+    G.SOUND_SLOTS.forEach((slot) => {
+      const pcm = this.sndPcm(slot);
+      if (!pcm) return;
+      const o = { slot, pcm };
+      if (slot === 'tick_loop') {
+        const u = d.tick === 'upload' ? d.up.tick_loop : null;
+        o.beat_chz = (u && u.loop ? u.rate : rr.rate) * 100;
+        o.first_beat = u && u.loop ? u.first : 0;
+      }
+      out.push(o);
+    });
+    return out.length ? { sounds: out, soundPattern: d.pattern || 'none' } : {};
+  }
+  sndCtx() {
+    if (!this._actx) this._actx = new (window.AudioContext || window.webkitAudioContext)();
+    return this._actx;
+  }
+  sndStop() {
+    if (this._src) { try { this._src.stop(); } catch (e) { /* already ended */ } this._src = null; }
+  }
+  /* Play through WebAudio, sample-exact, so a loop's seam is heard exactly as the orb
+   * will play it; the "orb speaker" toggle runs the same 350 Hz floor the board has. */
+  sndPlay(slot) {
+    const pcm = this.sndPcm(slot);
+    this.sndStop();
+    if (!pcm) { this.setState({ sndMsg: 'Nothing in ' + slot.replace('_', ' ') + ' to play' }); return; }
+    const ctx = this.sndCtx(), SR = window.SoundEngine.SR;
+    const buf = ctx.createBuffer(1, pcm.length, SR), ch = buf.getChannelData(0);
+    for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = slot === 'tick_loop';
+    let node = src;
+    if (this.state.sndSim) {
+      for (let k = 0; k < 2; k++) {
+        const hp = ctx.createBiquadFilter();
+        hp.type = 'highpass'; hp.frequency.value = window.SoundEngine.HP; hp.Q.value = Math.SQRT1_2;
+        node.connect(hp); node = hp;
+      }
+    }
+    node.connect(ctx.destination);
+    if (ctx.state === 'suspended') ctx.resume();
+    src.start();
+    this._src = src;
+    this.setState({ sndMsg: 'Playing ' + slot.replace(/_/g, ' ') + (src.loop ? ' (looping — Stop to end)' : '') });
+  }
+  /* An owner's file for the chosen slot: any rate or channel count the browser decodes,
+   * resampled to 22,050 Hz mono, trimmed, normalized to -1 dBFS and, unless the owner
+   * turned it off, cut below 350 Hz. A tick shorter than half a second is one tick and
+   * becomes a varied loop at the hand's rate; a longer one is a recorded loop, which is
+   * trimmed to whole seconds, crossfaded at its seam, and refused if it does not beat at
+   * the rate the hand steps (§7 "uploaded ticks"). */
+  async sndUpload(e) {
+    const f = e && e.target && e.target.files && e.target.files[0];
+    if (!f) return;
+    const slot = this.state.sndUp, SE = window.SoundEngine, SR = SE.SR;
+    try {
+      const raw = await f.arrayBuffer();
+      const dec = await this.sndCtx().decodeAudioData(raw.slice(0));
+      const n = Math.max(1, Math.ceil(dec.duration * SR));
+      const off = new OfflineAudioContext(1, n, SR), src = off.createBufferSource();
+      src.buffer = dec; src.connect(off.destination); src.start();
+      const ren = await off.startRendering(), x = Float64Array.from(ren.getChannelData(0));
+      let pcm;
+      if (slot === 'tick_loop' && dec.duration >= 0.5) {
+        const secs = Math.min(SE.LOOP_S, Math.floor(x.length / SR));
+        if (secs < 1) throw new Error('a recorded loop needs at least one whole second');
+        /* The head blends with what followed the cut in the recording, so the wrap
+         * from the loop's last sample to its first is the recording's own join. */
+        const L = secs * SR, lp = x.slice(0, L), xf = Math.round(0.01 * SR);
+        for (let i = 0; i < xf; i++) {
+          const t = i / xf, after = L + i < x.length ? x[L + i] : lp[L - xf + i];
+          lp[i] = lp[i] * t + after * (1 - t);
+        }
+        const rate = this.sndBeatOf(lp, SR), want = this.sndRate();
+        if (!want.sweep && rate !== want.rate)
+          throw new Error('the recording beats ' + rate + ' times a second and the seconds hand steps ' + want.rate + ' — the sound would walk off the hand');
+        let first = 0, pk = 0;
+        for (const v of lp) pk = Math.max(pk, Math.abs(v));
+        while (first < lp.length && Math.abs(lp[first]) < pk * 0.3) first++;
+        first = first % Math.round(SR / rate);
+        pcm = SE.finishLoop(lp);                          // a loop always takes the circular floor
+        this.sndUpd((d) => { d.tick = 'upload'; d.up.tick_loop = { name: f.name, pcm, loop: true, rate, first }; });
+      } else {
+        pcm = this.state.sndCut ? SE.finish(x) : SE.finish(x, { raw: true });
+        this.sndUpd((d) => {
+          d.up[slot] = { name: f.name, pcm, loop: false };
+          if (slot === 'tick_loop') d.tick = 'upload'; else d.slots[slot] = 'upload';
+        });
+      }
+      this.setState({ sndMsg: f.name + ' → ' + slot.replace(/_/g, ' ') + ' (' + (pcm.length / SR).toFixed(2) + ' s, ' + (pcm.length * 2) + ' B)' });
+    } catch (err) {
+      this.setState({ sndMsg: 'Not used: ' + (err && err.message ? err.message : String(err)) });
+    }
+  }
+  /* The beat of a recorded loop: the candidate rate whose period the onset envelope
+   * repeats at most strongly. */
+  sndBeatOf(x, SR) {
+    const hop = 64, env = [];
+    for (let i = 0; i + hop <= x.length; i += hop) { let s = 0; for (let j = i; j < i + hop; j++) s += x[j] * x[j]; env.push(Math.sqrt(s / hop)); }
+    let best = 1, bestS = -Infinity;
+    for (const r of window.SoundEngine.RATES) {
+      const lag = Math.round(SR / r / hop);
+      let s = 0, n = 0;
+      for (let i = 0; i + lag < env.length; i++) { s += env[i] * env[i + lag]; n++; }
+      s /= Math.max(1, n);
+      if (s > bestS * 1.05) { bestS = s; best = r; }     // the slowest rate that explains it wins ties
+    }
+    return best;
+  }
 
   async componentDidMount() {
     const p = {}; this.KEYS.forEach((k) => { if (this.props && this.props[k] != null) p[k] = this.props[k]; });
@@ -2629,6 +2799,8 @@ class Component extends DCLogic {
      * as an unfinished export rather than a smaller theme. Keyframe 0 at the
      * design pose, so this line cannot drift the serial the next fold computes. */
     opts.preview = { plane: this.previewPlane3(), x: 0, y: 0 };
+    /* D39: the Sound tab's slots ride the same bake, at the head of the bank. */
+    Object.assign(opts, this.sndBake());
     // The content-aware serial, now every shipped plane is on opts. It folds the
     // baked art's own CRC (geom + art) so any pixel change — the plate texture
     // above all — moves it, and the hub's ?precheck=1 leg answers the duplicate
@@ -3259,7 +3431,7 @@ class Component extends DCLogic {
       opts: [...(X.none ? [{ label: 'None', text: '∅', bg: '#1f1d1a', bd: value === 'none' ? '#f0d79a' : '#3a352d', pick: () => onv('none') }] : []),
         ...(X.noAuto ? [] : [{ label: autoText || 'Auto', text: 'A', bg: '#1f1d1a', bd: !value || value === 'auto' ? '#f0d79a' : '#3a352d', pick: () => onv('auto') }]), ...INKS.map(([c, n]) => ({ label: n, text: '', bg: c, bd: c === value ? '#f0d79a' : '#2e2a24', pick: () => onv(c) }))] }); };
     const Tx = (label, value, onv) => mk({ label, isText: true, value: value == null ? '' : String(value), on: (e) => onv(e.target.value) });
-    const Fi = (label, onv, valText) => mk({ label, isFile: true, on: onv, valText: valText || '' });
+    const Fi = (label, onv, valText, accept) => mk({ label, isFile: true, on: onv, valText: valText || '', accept: accept || 'image/png,image/svg+xml,image/jpeg,image/webp' });
     const T = ready ? E.TRAINS[s.train] : null;
 
     const selFields = [];
@@ -3647,6 +3819,58 @@ class Component extends DCLogic {
         H('Camera'),
         Rg('White balance', +c0.wb, 2500, 10000, 100, cf('wb'), +c0.wb === 6500 ? 'neutral' : c0.wb + 'K'),
         Nt('', 'Lower = cooler picture, higher = warmer. Baked into exported layers.'));
+    }
+    if (ready && s.tab === 'sound' && window.SoundEngine && window.GorbBake) {
+      const SE = window.SoundEngine, G = window.GorbBake, sd = this.sndDesign(), rr = this.sndRate();
+      const nice = (x) => x.replace(/_/g, ' ');
+      const catLabel = (id) => SE.CATALOG[id].group + ' · ' + SE.CATALOG[id].label;
+      const slotOpts = (slot) => [{ v: '', label: 'Silent' }]
+        .concat(SE.fits(slot).map((id) => ({ v: id, label: catLabel(id) })))
+        .concat(sd.up[slot] ? [{ v: 'upload', label: 'Uploaded · ' + sd.up[slot].name }] : []);
+      const setSlot = (slot) => (v) => this.sndUpd((d) => { if (v) d.slots[slot] = v; else delete d.slots[slot]; });
+      const play = (slot) => Ch('', '', [{ v: 'p', label: '▶ ' + nice(slot) }, { v: 's', label: '■' }], (v) => (v === 'p' ? this.sndPlay(slot) : this.sndStop()));
+      const voices = Object.keys(SE.VOICES).filter((v) => {
+        const r = SE.VOICES[v].rates;
+        return (rr.sweep && v === 'geiger') || r.indexOf(rr.rate) >= 0;
+      });
+      fields.push(H('Tick'),
+        Sl('Voice', sd.tick || '', [{ v: '', label: 'Silent' }].concat(voices.map((v) => ({ v, label: SE.VOICES[v].label })))
+          .concat(sd.up.tick_loop ? [{ v: 'upload', label: 'Uploaded · ' + sd.up.tick_loop.name }] : []),
+          (v) => this.sndUpd((d) => { d.tick = v || null; })),
+        Nt('Beat', (rr.sweep ? 'The seconds hand sweeps, so the loop beats with the balance: ' : 'The seconds hand steps ')
+          + rr.rate + ' time' + (rr.rate > 1 ? 's' : '') + ' a second' + (rr.sweep ? '' : ', so the loop does too')
+          + '. Change it on the Movement tab (Motion and Balance beats).'),
+        play('tick_loop'));
+      fields.push(H('Quarters & hour'));
+      ['chime_q1', 'chime_half', 'chime_q3', 'chime_hour'].forEach((slot) => {
+        fields.push(Sl({ chime_q1: ':15', chime_half: ':30', chime_q3: ':45', chime_hour: ':00' }[slot], sd.slots[slot] || '', slotOpts(slot), setSlot(slot)), play(slot));
+      });
+      fields.push(H('Hour pattern'),
+        Ch('Pattern', sd.pattern, [['count', 'Count the hour'], ['ships_bells', 'Ship’s bells'], ['morse', 'Morse'], ['repeater', 'Repeater'], ['none', 'None']]
+          .map(([v, label]) => ({ v, label })), (v) => this.sndUpd((d) => { d.pattern = v; })));
+      const need = { count: ['strike_hour'], ships_bells: ['strike_hour'], morse: ['morse_dit', 'morse_dah'],
+                     repeater: ['strike_hour', 'strike_qtr', 'strike_min'], none: [] }[sd.pattern] || [];
+      need.forEach((slot) => fields.push(Sl(nice(slot), sd.slots[slot] || '', slotOpts(slot), setSlot(slot)), play(slot)));
+      if (sd.pattern === 'ships_bells') fields.push(Nt('', 'Every half hour, 1 to 8 strokes in pairs through each four-hour watch. Ship’s bells replace the quarters.'));
+      if (sd.pattern === 'repeater') fields.push(Nt('', 'At the hour a repeater strikes the hours; the quarters and minutes sound when it is asked to repeat.'));
+      const miss = need.filter((slot) => !sd.slots[slot]);
+      if (miss.length) fields.push(Nt('', 'The pattern needs ' + miss.map(nice).join(' and ') + ' — the bake refuses a pattern with a stroke missing.'));
+      fields.push(H('Jumps'));
+      ['jump_minute', 'jump_hour', 'jump_date'].forEach((slot) => {
+        fields.push(Sl({ jump_minute: 'Each minute', jump_hour: 'Each hour', jump_date: 'At midnight' }[slot], sd.slots[slot] || '', slotOpts(slot), setSlot(slot)), play(slot));
+      });
+      fields.push(H('Your own sounds'),
+        Sl('For', s.sndUp, G.SOUND_SLOTS.map((v) => ({ v, label: nice(v) })), (v) => this.setState({ sndUp: v })),
+        Fi('File', (e) => this.sndUpload(e), '', 'audio/*'),
+        Ch('Low cut', s.sndCut ? 'on' : 'off', [{ v: 'on', label: 'Cut below 350 Hz' }, { v: 'off', label: 'Keep' }], (v) => this.setState({ sndCut: v === 'on' })),
+        Nt('', 'WAV, MP3, OGG or FLAC at any rate. A tick under half a second becomes a varied loop at the hand’s rate; a longer one is used as a recorded loop.'));
+      let total = 0;
+      const rows = G.SOUND_SLOTS.map((slot) => { const p = this.sndPcm(slot); if (p) total += p.length * 2; return p ? nice(slot) + ' ' + (p.length * 2 / 1024).toFixed(0) + ' KB' : null; }).filter(Boolean);
+      fields.push(H('Listen & budget'),
+        Ch('Speaker', s.sndSim ? 'orb' : 'full', [{ v: 'orb', label: 'Orb speaker' }, { v: 'full', label: 'Full range' }], (v) => this.setState({ sndSim: v === 'orb' })),
+        Ch('Variation', '', [{ v: 'r', label: '⟳ Re-roll the generated sounds' }], () => this.sndUpd((d) => { d.seed = 1 + Math.floor(Math.random() * 1e6); })),
+        Nt('Bytes', (rows.length ? rows.join(' · ') + ' — ' : 'No sounds — ') + (total / 1024 / 1024).toFixed(2) + ' MB of the theme’s ' + (G.ART_CAP / 1024 / 1024).toFixed(1) + ' MB'));
+      if (s.sndMsg) fields.push(Nt('', s.sndMsg));
     }
     if (ready && s.tab === 'case') {
       fields.push(H('Case metal'), Ch('Metal', s.caseMetal, ['auto', 'brass', 'copper', 'gunmetal', 'steel', 'rose'].map((id) => ({ v: id, label: id === 'auto' ? 'Match movement' : cap(id) })), (v) => this.setState({ caseMetal: v })));

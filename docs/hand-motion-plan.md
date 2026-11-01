@@ -21,7 +21,7 @@ replaces, and the slices. Read it before touching `hand_angles`,
 `aux_value_1000` or `aux_angle_10`, FORMAT 3's element columns, or the
 composer's Hands and Comps tabs.
 
-**Status: RULED (owner, 2026-10-30, generalized 2026-10-31). G1, G2 and G3 built 2026-11-01 (G2 without AUX depth, ease or bank cadences — see §4; G3 as §5.1 records); G4–G5 not built.**
+**Status: RULED (owner, 2026-10-30, generalized 2026-10-31). G1, G2, G3 and G5 built 2026-11-01 (G2 without AUX depth, ease or bank cadences — see §4; G3 as §5.1 records); G4 not built.**
 
 | Parameter | Ruled value |
 |---|---|
@@ -250,6 +250,10 @@ cut-out layer costs per frame.
   both at fixed times and compares angles.
 - **Presets.** The station preset becomes a jumping minute plus a stop-to-go
   second. Every other preset keeps `inherit`, so its renders do not move.
+  **Done 2026-11-01.** On orb-B the red disc's angle, sampled across 12:16, fits
+  stop-to-go (6.154°/s, a rest at 12) with one constant clock offset (1.7 ± 0.2 s
+  over 14 frames from :40 to :15); a plain sweep would need that offset to drift by
+  a second inside the minute.
 
 ### 5.1 What G3 built (2026-11-01)
 
@@ -313,7 +317,7 @@ Both bake at v5 from the composer and pass the shipped C projection
 | **G2** ✔ (part) | v5: the three columns, drive columns on HAND rows, depth on AUX rows, §2.2's refusals. Mirror, reader and baker move together | host suites green, one mutant caught per new refusal — **DONE 2026-11-01** except AUX depth, ease and bank cadences (§4, "What G2 left"): `host_clock3_test.py`'s D41 battery (13 refusals at both ends, 6 mutants), `host_drive_test.py` (17 mutants), `headless-bundle3` (11 D41 checks), the hub's container reader takes v5 |
 | **G3** ✔ (part) | Composer: per-hand and per-pointer Source / Path / Cadence / Ease / depth, the JS drive twin, the station preset | the preview-versus-reader angle check; `_selftest` green — **DONE 2026-11-01** as §5.1 records: path and cadence per hand (ease and depth wait on G2's refusals), the JS twin, the Flux and Orbit presets; the station preset is not re-cut yet |
 | **G4** | Bench: stop-to-go plus a jumping minute, a retrograde hour's flyback, a disc under a cut-out layer, settle cost | rests and releases on the wall minute; frame cost recorded here |
-| **G5** | Step sounds, landed with D39's S6 | the clunk lands on the jump's frame |
+| **G5** ✔ | Step sounds, landed with D39's S6 | the clunk lands on the jump's frame — **DONE 2026-11-01**: `clock_view.c` scans the dial once (`snd_steps_scan`) for what steps per source class (hand slots' rows and the railway minute, pointers' cadence or jump flag, calendar plates) and sounds `jump_minute` / `jump_hour` / `jump_date` on each step's own instant, sub-minute steps included; sweep, drag and stop-to-go stay silent. `host_drive_test.py` pins the scan (23 mutants). On orb-B, Station's jumping minute sounded exactly once per minute, on the boundary |
 
 ## 8. The one sentence to remember
 

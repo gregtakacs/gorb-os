@@ -537,7 +537,7 @@ Implement up to the question mark and leave these open until ruled.
 | **S3** ✔ | Format: `ORB_ASSET_SOUND` = 10, the row columns (no header, §3.2), the baker's emitter, the C reader, sound slots in `theme_schema.py`'s clock table. Three-way mirror plus mutants, the D34/preview pattern | host suites green with new mutants caught — **DONE 2026-10-31** (D39 battery: 18 refusals both ends, 6 mutants) |
 | **S4** | Bench bring-up: I2S plus ES8311 plus amp on GPIO 46 plays one PCM buffer. Run M-S1 and M-S2 | numbers recorded here before S5 is ruled — **PARTIAL**: codec up and heard on orb-B; M-S1 accepted as silence; M-S2 waits for the owner on `skeleton-tick` (§11.2) |
 | **S5** | OS engine: mixer, `sound` capability, service entries (after §8 items 1 and 6 are ruled), loop anchoring | bench: a loop holds phase against the hand for an hour — **BUILT**; loop error 0 over 60 s on the bench; the capability and svc entries are built (§8 item 1); the hour-long run is still owed |
-| **S6** | Clock policy: schedule, the §5.1 hour patterns, jump slots (with D41's G5), settings, quiet hours | bench: :00/:15/:30/:45 on a real dial, ship's bells across a watch change, a clunk on a jumping minute — **BUILT**; :00, :15, the minute jump and the repeater are shown on orb-B (§11.2); ship's bells and Morse are host-tested only; jump slots wait for D41's G5 |
+| **S6** | Clock policy: schedule, the §5.1 hour patterns, jump slots (with D41's G5), settings, quiet hours | bench: :00/:15/:30/:45 on a real dial, ship's bells across a watch change, a clunk on a jumping minute — **BUILT**; :00, :15, the repeater and (since G5, 2026-11-01) a clunk on Station's jumping minute are shown on orb-B (§11.2); ship's bells and Morse are host-tested only |
 
 ## 11. What was built, 2026-10-31
 
@@ -593,9 +593,17 @@ answer:
 | The Sound page | menu → Sound (its menu row shows the level, "off" while muted) → Volume / Quiet hours / Play a test sound / back. A press on Volume stepped 0 → 20, and five more wrapped it back to 0, each saved to `/api/v1/sound` |
 | M-S1 | accepted as silence (§8 item 6), not measured |
 
+**G5, 2026-11-01 (`v1.1.43+39f758f`).** Jump slots now sound only where a row of
+that source steps (hand-motion-plan §7). Station re-cut (jumping minute, stop-to-go
+seconds) with `jump_minute` and `chime_hour` added by `orbsound.py`: across the
+12:16 boundary `started` rose by exactly one, at :00–:01 on the bench PC (the orb
+runs ~1.7 s behind it), and by none in the 10 s either side.
+
 **Not shown:**
 
-- **M-S2.** The glass offset (90 ms) needs an ear. The bench theme on orb-B is
+- ~~**M-S2.**~~ **Ruled by ear, 2026-11-01: 90 ms stands** (the owner, tuning
+  against the stepping pointer below: "the 90ms you set looks perfect"). The
+  record of how it was heard follows. The glass offset (90 ms) needed an ear. The bench theme on orb-B is
   `skeleton-step`: the skeleton with every stroke slot, re-packed at v5 (D41) so
   its seconds pointer steps once a second (`step 1`) and its minute jumps. The
   first upload, `skeleton-tick`, still swept: this skeleton's second hand is an

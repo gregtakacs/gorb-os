@@ -98,6 +98,7 @@
 #include "orb_files.h"      /* the source this init re-declares through orb_theme_src_register() */
 #include "orb_sd.h"         /* ORB_SD_THEME_DIR, the directory that source names */
 #include "orb_theme.h"      /* orb_theme_src_register(), and the geo the dial draws */
+#include "orb_sound.h"      /* D39: the engine the sound policy below schedules into */
 
 static const char *TAG = "clock";
 
@@ -1711,6 +1712,210 @@ static void aux_update(const struct tm *ti, time_t t, double frac)
     }
 }
 
+/* ---- D39: the clock's sound policy (docs/sound-plan.md §5) --------------------
+ *
+ * The theme carries the sounds (orb_theme_sounds), the OS plays them (orb_sound),
+ * and this is the part that is the clock's own: which sound, and when. It runs off
+ * compose_now's one wall reading, so a chime and the hands agree on the minute.
+ *
+ *   - The tick loop runs while the dial ticks, anchored to a wall second so beat k
+ *     lands with step k of the seconds hand (§4.2). The projection already refused
+ *     a loop whose beat disagrees with a stepping hand.
+ *   - At a minute boundary: :15/:30/:45 sound the quarter chimes, :00 the hour
+ *     chime and then the hour pattern (§5.1), each queued for its exact instant.
+ *   - Every minute, hour and date change sounds its jump slot when the theme
+ *     carries one (D41's step events).
+ *
+ * Every voice is LEASED and the lease is renewed each tick, so when the scheduler
+ * parks this dial the sounds stop with it. A boundary seen more than two seconds
+ * late, or a clock that jumped (an SNTP step), sounds nothing: a chime belongs to
+ * the instant, not to the catching-up.
+ *
+ * State lives in PSRAM behind one pointer: this board has no internal RAM to spare
+ * (orb_sound.c's header has the measurement). */
+typedef struct {
+    int     loop;            /* the tick loop's handle, 0 = not running */
+    int64_t loop_anchor;
+    int     min, hour, mday; /* the last boundary seen; -1 = none yet */
+    time_t  last_t;
+} snd_state_t;
+static snd_state_t *s_snd;
+
+static const clk_sound_t *snd_find(const clk_sound_t *t, uint32_t n, int slot)
+{
+    for (uint32_t i = 0; i < n; i++)
+        if (t[i].slot == slot) return &t[i];
+    return NULL;
+}
+
+static int64_t snd_us(const clk_sound_t *s)      /* a sound's length in µs */
+{
+    return (int64_t)s->n * 1000000 / CLK_SND_RATE;
+}
+
+static void snd_at(const clk_sound_t *s, int64_t at_us)
+{
+    if (!s) return;
+    orb_sound_play((const int16_t *)(const void *)(blob() + s->pcm_off), s->n,
+                   ORB_SOUND_GAIN_1, ORB_SOUND_LEASED, at_us, 0);
+}
+
+/* The pattern the owner hears: theirs when the theme carries its strokes, else the
+ * theme's own. */
+static int snd_pattern(const clk_sound_t *t, uint32_t n, uint8_t theme_pat)
+{
+    orb_sound_cfg_t c;
+    orb_sound_cfg_get(&c);
+    const int p = c.pattern;
+    const bool strike = snd_find(t, n, CLK_SND_STRIKE_HOUR) != NULL;
+    switch (p) {
+    case CLK_PAT_COUNT: case CLK_PAT_SHIPS_BELLS:
+        return strike ? p : theme_pat;
+    case CLK_PAT_MORSE:
+        return (snd_find(t, n, CLK_SND_MORSE_DIT) && snd_find(t, n, CLK_SND_MORSE_DAH))
+               ? p : theme_pat;
+    case CLK_PAT_REPEATER:
+        return (strike && snd_find(t, n, CLK_SND_STRIKE_QUARTER) &&
+                snd_find(t, n, CLK_SND_STRIKE_MINUTE)) ? p : theme_pat;
+    case CLK_PAT_NONE:
+        return p;
+    default:
+        return theme_pat;
+    }
+}
+
+/* The hour pattern from `t0`. h12 is 1..12; minute is 0 or 30 (ship's bells only). */
+static void snd_hour_pattern(const clk_sound_t *t, uint32_t n, int pat,
+                             int64_t t0, int h12, int hour24, int minute)
+{
+    const clk_sound_t *stroke = snd_find(t, n, CLK_SND_STRIKE_HOUR);
+    switch (pat) {
+    case CLK_PAT_COUNT:
+        for (int i = 0; i < h12; i++) snd_at(stroke, t0 + (int64_t)i * 2000000);
+        break;
+    case CLK_PAT_SHIPS_BELLS: {
+        /* Four-hour watches: 00:30 is one bell, 04:00 eight, 04:30 one again. */
+        int bells = (hour24 % 4) * 2 + (minute >= 30 ? 1 : 0);
+        if (!bells) bells = 8;
+        for (int i = 0; i < bells; i++)
+            snd_at(stroke, t0 + (int64_t)(i / 2) * 1600000 + (i % 2) * 450000);
+        break; }
+    case CLK_PAT_MORSE: {
+        const clk_sound_t *dit = snd_find(t, n, CLK_SND_MORSE_DIT);
+        const clk_sound_t *dah = snd_find(t, n, CLK_SND_MORSE_DAH);
+        static const char *const DIGIT[10] = {
+            "-----", ".----", "..---", "...--", "....-",
+            ".....", "-....", "--...", "---..", "----.",
+        };
+        const int64_t unit = snd_us(dit);
+        char num[12];
+        snprintf(num, sizeof num, "%d", h12);
+        int64_t at = t0;
+        for (const char *d = num; *d; d++) {
+            for (const char *e = DIGIT[*d - '0']; *e; e++) {
+                const clk_sound_t *sym = *e == '.' ? dit : dah;
+                snd_at(sym, at);
+                at += snd_us(sym) + unit;              /* one unit between symbols */
+            }
+            at += 2 * unit;                            /* three between digits */
+        }
+        break; }
+    case CLK_PAT_REPEATER:
+        /* At the hour a repeater has no quarters and no minutes to sound. */
+        for (int i = 0; i < h12; i++) snd_at(stroke, t0 + (int64_t)i * 900000);
+        break;
+    default:
+        break;
+    }
+}
+
+static void sound_policy(const struct tm *ti, time_t t, double frac)
+{
+    if (!orb_sound_ready()) return;
+    if (!s_snd) {
+        s_snd = heap_caps_calloc(1, sizeof *s_snd, MALLOC_CAP_SPIRAM);
+        if (!s_snd) return;
+        s_snd->min = s_snd->hour = s_snd->mday = -1;
+    }
+    orb_sound_lease_renew();
+
+    uint32_t n = 0;
+    uint8_t theme_pat = CLK_PAT_NONE;
+    const clk_sound_t *tab = orb_theme_sounds(&n, &theme_pat);
+    orb_sound_cfg_t c;
+    orb_sound_cfg_get(&c);
+    const bool quiet = c.volume == 0 || orb_sound_quiet_at(ti->tm_hour);
+    const int64_t sec_us = esp_timer_get_time() - (int64_t)(frac * 1e6);   /* this second began */
+
+    /* The tick loop. */
+    const clk_sound_t *loop = snd_find(tab, n, CLK_SND_TICK_LOOP);
+    const bool want = loop && c.tick && !quiet;
+    if (s_snd->loop && (!want || !orb_sound_active(s_snd->loop))) {
+        orb_sound_stop(s_snd->loop);
+        s_snd->loop = 0;
+    }
+    if (want) {
+        /* Sample first_beat sounds on a wall second; the loop is a whole number of
+         * seconds long, so any second is the anchor. Re-anchor when the wall clock
+         * itself was re-anchored under the loop (orb_time_now's drift rule). */
+        const int64_t anchor = sec_us - (int64_t)loop->first_beat * 1000000 / CLK_SND_RATE;
+        if (!s_snd->loop) {
+            s_snd->loop = orb_sound_play((const int16_t *)(const void *)(blob() + loop->pcm_off),
+                                         loop->n, ORB_SOUND_GAIN_1,
+                                         ORB_SOUND_LOOP | ORB_SOUND_ANCHORED | ORB_SOUND_LEASED,
+                                         0, anchor);
+            if (s_snd->loop < 0) s_snd->loop = 0;
+            s_snd->loop_anchor = anchor;
+        } else {
+            int64_t d = (anchor - s_snd->loop_anchor) % 1000000;
+            if (d < 0) d += 1000000;
+            if (d > 2000 && d < 998000) {
+                orb_sound_reanchor(s_snd->loop, anchor);
+                s_snd->loop_anchor = anchor;
+            }
+        }
+    }
+
+    /* Boundaries. The first reading after boot, and any reading that is not the
+     * very next minute, only records where the clock is. */
+    const bool first = s_snd->min < 0;
+    const bool next = !first && t - s_snd->last_t < 120 &&
+                      ti->tm_min == (s_snd->min + 1) % 60;
+    const bool changed = first || ti->tm_min != s_snd->min;
+    const int prev_hour = s_snd->hour, prev_mday = s_snd->mday;
+    s_snd->last_t = t;
+    if (!changed) return;
+    s_snd->min = ti->tm_min; s_snd->hour = ti->tm_hour; s_snd->mday = ti->tm_mday;
+    if (!next || ti->tm_sec > 2 || quiet || !n) return;
+
+    const int64_t at = sec_us - (int64_t)ti->tm_sec * 1000000;   /* the minute's instant */
+    if (c.jumps) {
+        snd_at(snd_find(tab, n, CLK_SND_JUMP_MINUTE), at);
+        if (ti->tm_hour != prev_hour) snd_at(snd_find(tab, n, CLK_SND_JUMP_HOUR), at);
+        if (ti->tm_mday != prev_mday) snd_at(snd_find(tab, n, CLK_SND_JUMP_DATE), at);
+    }
+    const int pat = snd_pattern(tab, n, theme_pat);
+    const int h12 = ti->tm_hour % 12 ? ti->tm_hour % 12 : 12;
+    if (pat == CLK_PAT_SHIPS_BELLS) {
+        /* Ship's bells replace the quarters: every half hour, nothing between. */
+        if (c.strikes && (ti->tm_min == 0 || ti->tm_min == 30))
+            snd_hour_pattern(tab, n, pat, at, h12, ti->tm_hour, ti->tm_min);
+        return;
+    }
+    if (c.chimes) {
+        if (ti->tm_min == 15) snd_at(snd_find(tab, n, CLK_SND_CHIME_Q1), at);
+        if (ti->tm_min == 30) snd_at(snd_find(tab, n, CLK_SND_CHIME_HALF), at);
+        if (ti->tm_min == 45) snd_at(snd_find(tab, n, CLK_SND_CHIME_Q3), at);
+    }
+    if (ti->tm_min == 0) {
+        const clk_sound_t *ch = c.chimes ? snd_find(tab, n, CLK_SND_CHIME_HOUR) : NULL;
+        snd_at(ch, at);
+        /* The strokes follow the chime's own length and a breath. */
+        const int64_t t0 = at + (ch ? snd_us(ch) + 400000 : 0);
+        if (c.strikes) snd_hour_pattern(tab, n, pat, t0, h12, ti->tm_hour, 0);
+    }
+}
+
 static void compose_now(void)
 {
     /* The wall reading is the OS's now: the two sources, the CLOCK_EPOCH
@@ -1748,6 +1953,9 @@ static void compose_now(void)
      * the other. frac is the wall fraction hand_angles swept against, which is
      * what lets a sub-dial second hand sweep too instead of stamping 6 degrees. */
     aux_update(&ti, t, frac);
+
+    /* D39: the sounds, off the same reading the hands just took. */
+    sound_policy(&ti, t, frac);
 }
 
 
@@ -1965,6 +2173,7 @@ static void clock_layers_build(orb_app_t *self)
         if (e.cls == ORB_ASSET_HAND && e.slot == 5u)
             s_car_row_1 = (uint16_t)(i + 1u);  /* C4: needles parented to this row ride it */
         if (e.cls == ORB_ASSET_PLATE && e.slot == 0u) continue;   /* the canvas */
+        if (e.cls == ORB_ASSET_SOUND) continue;   /* D39: played by sound_policy, never drawn */
         if (e.flags & CLK_EF_HIDDEN) { hidden++; continue; }
         if ((e.cls == ORB_ASSET_HAND || e.cls == ORB_ASSET_SPRITE)
             && e.slot < 5u && (matte & (1u << e.slot))) { folded++; continue; }

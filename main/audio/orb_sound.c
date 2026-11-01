@@ -32,6 +32,7 @@ static const char *TAG = "sound";
 #define SNAP_SAMP  (ORB_SOUND_RATE / 20u)   /* 50 ms: past this a loop re-enters */
 #define QUIET_PEAK 600         /* about -35 dBFS: a block this quiet hides a nudge */
 #define MIXER_PRIO 6           /* above lvgl (5): a late block is an audible gap */
+#define LEASE_US   1500000     /* a leased voice outlives its owner's last tick by this */
 
 typedef struct {
     const int16_t *pcm;
@@ -69,6 +70,7 @@ static uint32_t s_sent;
 static volatile bool s_running;
 static volatile bool s_pa;
 static uint32_t s_blocks, s_started, s_nudges, s_snaps;
+static volatile int64_t s_lease_us;
 static int32_t  s_loop_err;
 
 static bool on_sent(i2s_chan_handle_t h, i2s_event_data_t *ev, void *ctx)
@@ -145,12 +147,14 @@ static int mix_block(int16_t *out, int64_t t_us)
     int32_t *acc = s_acc;
     memset(acc, 0, BLOCK * sizeof acc[0]);
     const int64_t off_us = (int64_t)s_cfg.offset_ms * 1000;
+    const bool lapsed = esp_timer_get_time() - s_lease_us > LEASE_US;
     int alive = 0;
 
     xSemaphoreTake(s_mx, portMAX_DELAY);
     for (int k = 0; k < VOICES; k++) {
         voice_t *v = &s_v[k];
         if (!v->state) continue;
+        if ((v->flags & ORB_SOUND_LEASED) && lapsed) { v->state = 0; continue; }
         uint32_t i0 = 0;
         const bool anchored = (v->flags & ORB_SOUND_ANCHORED) != 0;
         if (v->state == 1) {
@@ -310,6 +314,17 @@ bool orb_sound_active(int handle)
     xSemaphoreGive(s_mx);
     return on;
 }
+
+void orb_sound_reanchor(int handle, int64_t anchor_us)
+{
+    if (!s_ready || handle <= 0) return;
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    for (int k = 0; k < VOICES; k++)
+        if (s_v[k].state && s_v[k].id == handle) s_v[k].anchor_us = anchor_us;
+    xSemaphoreGive(s_mx);
+}
+
+void orb_sound_lease_renew(void) { s_lease_us = esp_timer_get_time(); }
 
 bool orb_sound_ready(void) { return s_ready; }
 

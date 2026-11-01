@@ -39,6 +39,7 @@ extern "C" {
 
 #define ORB_SOUND_LOOP     0x01u      /* repeat until stopped */
 #define ORB_SOUND_ANCHORED 0x02u      /* loop phase follows `anchor_us` (needs LOOP) */
+#define ORB_SOUND_LEASED   0x04u      /* lives only while orb_sound_lease_renew() is called */
 
 /** Bring up I2S, the codec and the mixer task, and load the owner's settings.
  *  Never fatal: a board without the codec logs why and every call below becomes a
@@ -65,6 +66,15 @@ void orb_sound_stop_all(void);
 
 /** True while the handle's voice is queued or sounding. */
 bool orb_sound_active(int handle);
+
+/** Move an anchored loop's anchor (the wall clock re-anchored under it). */
+void orb_sound_reanchor(int handle, int64_t anchor_us);
+
+/** Keep LEASED voices alive. An app renews on every tick it runs; when its ticks
+ *  stop — the dial left the glass, the app was suspended — the lease lapses after
+ *  1.5 s and its voices fall silent without the app having to be asked (C7, read
+ *  for audio). Queued strokes that would sound after the lapse never do. */
+void orb_sound_lease_renew(void);
 
 /* ---- owner settings: device config, like the tz (§5) ------------------------ */
 typedef struct {

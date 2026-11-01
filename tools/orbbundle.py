@@ -46,9 +46,11 @@ import orbtheme as _ot
 import theme_schema as _ts
 
 FORMAT3      = 3
-GEOM_ABI3    = 3                    # the container stamp of every file before C4
-GEOM_ABI4    = 4                    # C4's delta dialect: a v4 clock section rode along
-GEOM_ABI5    = 5                    # D41's motion columns: a v5 clock section rode along
+GEOM_ABI3    = 3                    # the container stamp of a bundle of app sections
+GEOM_ABI6    = 6                    # D42: a v6 clock section rides along. 4 and 5 were
+                                    # the old clock dialects, and only the clock wrote
+                                    # them, so a container stamped either is refused
+GEOM_ABIS    = (GEOM_ABI3, GEOM_ABI6)
 SECT_MAX     = 8                    # B5's app cap, the index's width
 IDX_WORDS    = 10                   # IDX_PACK below: 4H + 7I + 2H = 40 B
 SCALARS_N    = len(_ot.THEME_FIELDS)   # 26 today; the clock dialect, carried opaque
@@ -159,9 +161,9 @@ def parse_header3(raw):
     if hdr[1] != FORMAT3:
         raise ValueError("theme format %d; this reader takes format %d"
                          % (hdr[1], FORMAT3))
-    if hdr[2] not in (GEOM_ABI3, GEOM_ABI4, GEOM_ABI5):
-        raise ValueError("bundle geometry v%d; this build reads v%d to v%d — "
-                         "re-bake it" % (hdr[2], GEOM_ABI3, GEOM_ABI5))
+    if hdr[2] not in GEOM_ABIS:
+        raise ValueError("bundle geometry v%d; this build reads v%d (apps) and v%d "
+                         "(a clock) — re-bake it" % (hdr[2], GEOM_ABI3, GEOM_ABI6))
     if hdr[_ot.W_HDR_CRC] != _ot._hdr_crc(hdr):
         raise ValueError("container header checksum mismatch — re-copy the file "
                          "onto the card")
@@ -191,19 +193,26 @@ def pack_blob(slug, elements, scalars=None, sprites=(), abi=GEOM_ABI3):
     bank by byte range — validated against the bank's length by write_bundle, the
     only caller that holds those bytes.
 
-    `abi` is the section's own geometry stamp (C4). At the delta stamp (4) the
-    element rows pack 25 wide and the catalogue rows carry the delta rect
-    position — `diffx`/`diffy`, signed, default 0,0 — beside the byte range they
-    always carried. At 3 the rows pack 23 wide, diff fields are refused before
-    they can be silently dropped, and the shipped bytes are the bytes C3 verified.
-    At 5 (D41) the rows pack 28 wide with the motion columns; the catalogue is v4's.
+    `abi` is the section's own geometry stamp. The clock writes v6 (D42) and nothing
+    else: its rows pack 33 wide, its catalogue rows carry the delta rect position —
+    `diffx`/`diffy`, signed, default 0,0 — beside the byte range, its whole-table
+    rules run here, and the scalars D42 retired must be absent or 0. Every other app
+    section packs the v3 row: 23 words, a 4-word catalogue, and diff fields refused
+    before they could be silently dropped.
     """
     elements = list(elements or ())
     _ts.check_table(elements)
     if slug == "clock":
-        _ts.check_clock_drive(elements, (scalars or {}).get("second_sweep", 0),
-                              (scalars or {}).get("tick_rate", 0))
-    delta = abi >= _ts.CLOCK_ABI_V4
+        if abi != _ts.CLOCK_ABI:
+            raise ValueError("a clock section stamped geometry v%d; the clock writes v%d "
+                             "and nothing older (D42)" % (abi, _ts.CLOCK_ABI))
+        _ts.check_clock_rows(elements, scalars)
+        for name in _ts.CLOCK_RETIRED_SCALARS:
+            if int((scalars or {}).get(name, 0)):
+                raise ValueError("clock scalar %r is %d: D42 retired it, and a v6 section "
+                                 "carries it as 0 — the rows say what it said"
+                                 % (name, int(scalars[name])))
+    delta = abi == GEOM_ABI6
     sb = slug.encode("utf-8")
     if not 1 <= len(sb) <= SLUG_MAX:
         raise ValueError("bundle slug %r is %d bytes, outside 1..%d"
@@ -240,8 +249,7 @@ def pack_blob(slug, elements, scalars=None, sprites=(), abi=GEOM_ABI3):
                          SCALARS_N, len(sb))
     body = struct.pack("<%dI" % SCALARS_N, *scal_words)
     if elements:
-        words = (_ts.pack_elements_v5(elements) if abi >= _ts.CLOCK_ABI_V5
-                 else _ts.pack_elements(elements) if delta
+        words = (_ts.pack_elements(elements) if delta
                  else _ts.pack_elements_v3(elements))
         body += struct.pack("<%dI" % len(words), *words)
     if spr_words:
@@ -259,7 +267,7 @@ def unpack_blob(blob, abi=GEOM_ABI3):
     stride's length equality cannot be honest twice over: it cannot both derive
     the row width and pay for a catalogue of a width it has to guess), and the
     delta columns decode behind the same guards the device reader uses."""
-    delta = abi >= _ts.CLOCK_ABI_V4
+    delta = abi == GEOM_ABI6
     sw = SPR_WORDS2 if delta else SPR_WORDS
     if len(blob) < BLOB_HEAD * 4:
         raise ValueError("section blob is shorter than its counts and scalars")
@@ -278,8 +286,7 @@ def unpack_blob(blob, abi=GEOM_ABI3):
                          "file, not a short one" % (len(blob), want_min))
     eb = len(blob) - want_min
     # A table with no rows carries no width; it reads as the width its stamp writes.
-    elem_words = (_ts.ELEMENT_WORDS if abi >= _ts.CLOCK_ABI_V5
-                  else _ts.ELEMENT_WORDS_V4 if delta else _ts.ELEMENT_WORDS_V3)
+    elem_words = _ts.ELEMENT_WORDS if delta else _ts.ELEMENT_WORDS_V3
     if (eb % (n_elem * 4)) if n_elem else eb:
         raise ValueError("blob is %d bytes; its %d rows leave %d B, no whole number "
                          "of words — a torn file, not a short one"
@@ -477,8 +484,8 @@ def write_bundle(path, name, sections, serial=0, baked_ms=0, one_section=True):
     geom_crc = zlib.crc32(bytes(region)) & 0xFFFFFFFF
     hdr = pack_header3(name, len(sections), len(region), geom_crc, art_off,
                        art_size, art_crc_all, serial, baked_ms,
-                       abi=max([s.get("abi_max", GEOM_ABI3) for s in sections]
-                               + [GEOM_ABI3]))
+                       abi=GEOM_ABI6 if any(s.get("abi_max", GEOM_ABI3) == GEOM_ABI6
+                                            for s in sections) else GEOM_ABI3)
     out = bytearray(hdr)
     out += region
     out += b"\0" * (art_off - len(out))

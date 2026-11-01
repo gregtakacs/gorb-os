@@ -1,8 +1,7 @@
 # D42 (proposed): one row for everything that moves
 
-**Status: PROPOSED 2026-11-01; owner's rulings recorded the same day (§11). One
-question is still open (§11.3, the Mechanical switch's default); no code moves until
-it is answered.** It builds on D41 (`docs/hand-motion-plan.md`): D41's drive (source,
+**Status: RULED (owner, 2026-11-01, §11). E1 built 2026-11-01 (§8.2), host-proven;
+its bench on orb-B is owed.** It builds on D41 (`docs/hand-motion-plan.md`): D41's drive (source,
 cadence, ease) is kept, and this file replaces the parts of D41 that still treat a
 hand, a pointer and a ring as different things. **AUX pointer depth (D41 §4, "What G2
 left") is held for this ruling** and lands as part of slice E1, not on the current
@@ -122,9 +121,9 @@ Source, cadence (`sweep`, `step` *N*, `jump`, `stop-to-go`, `drag`) and ease kee
 D41's meanings, refusals and sound events.
 
 **`inherit` goes.** It meant "what this row did before D41", and with no old themes
-there is nothing to inherit. Every v6 row names its source and its cadence, and a row
-that names neither is refused. The composer always writes both, so this costs the
-author nothing.
+there is nothing to inherit. A moving v6 row names its source and its cadence; a row
+with no source is a still layer and names no cadence (§8). The composer always writes
+both, so this costs the author nothing.
 
 **The seconds hand's speed comes from its row (owner, 2026-11-01).** The scheduler
 reads the dial's tempo from the rows: the fastest stepping or sweeping seconds row
@@ -213,22 +212,49 @@ cost estimate uses), so it costs no new geometry.
 
 ## 8. Encoding: v6
 
-**The wire.**
+**The wire (settled while building E1, 2026-11-01).**
 
-- One class for every moving row. AUX is the natural one to widen, since its rows
-  already carry source, path and drive. Its slot cap rises from 8 to 24 (§11.1).
-- Columns added to the element row:
-  - `x0`, `y0`, `dx`, `dy` (i16 px): the pose offset and its travel;
-  - `end` (u8): wrap, flyback or hold;
-  - `shape` (u8): arm, ring, text or plate;
-  - `digit` (u8): whole, units or tens;
-  - `shadow_of` (u16): the row this one shadows, or none;
-  - `str` (u16): a text row's offset into the string table.
-  The existing `zero` and `span` stay the angle P0 and Δθ.
-- A **v6 stamp** gates all of it, and the stride grows (28 → about 35 words). The
-  stride is one width, gated exactly, with no narrower widths admitted.
-- No HAND rows. The carriage, the dial disc and the counterweight are rows like any
-  other.
+- **One class for every row that can move: AUX (class 8), slots 0–23.** A BANK row stays
+  the value-plate (window) row. The clock section refuses HAND (class 2) and SPRITE
+  (class 1) rows outright.
+- **A v6 clock stamp (6), 33-word element rows.** Five columns are appended to the 28:
+
+  | Column | Type | Meaning on an AUX row |
+  |---|---|---|
+  | `dx`, `dy` | i16 | the travel of the pivot from P0 to P1, in px (±466) |
+  | `end` | u8 | 0 wrap, 1 flyback, 2 hold |
+  | `digit` | u8 | 0 the whole value, 1 its units digit, 2 its tens digit |
+  | `str` | u16 | a text row's offset into the string table; 0 until E4 |
+
+- **Existing columns, read anew on an AUX row:**
+  - `kind` is the **shape**: 0 arm, 1 ring, 2 text (refused until E4).
+  - `zero` is θ0 and `span` is Δθ, both in tenths of a degree, each within ±3600.
+  - The row's own `x`, `y` and pivot place the art **at P0**, so P0 carries no offset of
+    its own. The bake draws a hand where its pose at the start of the domain puts it.
+  - `vmin` and `vmax` are the domain, read as *t* = (*u* − vmin) / (vmax − vmin). A
+    wrapping row's domain is half-open, so a 1–31 date ring is vmin 1, vmax 32.
+  - `order` is the depth (0–63) on one scale shared with the BANK rows. The plate is
+    below everything and the glass above everything.
+  - `parent` names another AUX row whose pose this one adds to its own. A parent that
+    turns must share the child's centre.
+- **Still rows are legal.** An AUX row with source `none` never moves: a bridge, a
+  dial with a window, a counterweight. Its cadence, travel, domain, end and digit are
+  all 0. A moving row names a source **and** a cadence. `inherit` is gone: cadence 0
+  now means "none" and is legal only on a still row.
+- **Shadows stay twins.** A shadow is the AUX row directly after its hand, flagged
+  `EF_AUX_SHADOW`, and takes its hand's whole pose. No `shadow_of` column is needed.
+- **The animated row.** At most one AUX row may carry frames (`n_frames` > 1, up to 16,
+  with `delay` its frame time in ms). It is the carriage, and its `zero` is the start
+  orientation the old `degrees` carried.
+- **Scalars.** The section keeps its 26 words. Words 1–8, 14–20, 24 and 25
+  (`plate_follow`, the shadow trio, `second_sweep`, `second_railway`,
+  `text_over_hands`, `tick_rate`, the order table, `matte_mask`, the tourbillon pair)
+  must be 0 under v6. The reader **derives** the tempo the scheduler reads (`second_sweep`,
+  `tick_rate`) from the seconds rows, and the carriage pair from the animated row.
+- **Folding.** A still layer the bake folds into the plate is simply not shipped as a
+  row, so no mask is needed.
+- **The container header** accepts GEOM_ABI 3 (app bundles, which carry no clock
+  section) and 6. A bundle stamped 4 or 5 could only carry an old clock and is refused.
 
 ### 8.1 What v6 deletes
 
@@ -259,6 +285,55 @@ is installed.
 widget or layer job per row. A theme with more rows is refused. The rotated poses are
 still not cached in internal RAM (owner's earlier ruling).
 
+### 8.2 What E1 built (2026-11-01)
+
+**The wire.** `theme_schema.py` (the 33-word row, `SHAPES`/`ENDS`/`DIGITS`, cadence 0 as
+`none`, `check_element`'s moving-row rules, `check_clock_rows`, `clock_tempo`,
+`CLOCK_RETIRED_SCALARS`, 24 `ptr` slots, `ELEM_MAX` 64), `orbbundle.py` (`GEOM_ABI6`),
+`orb_bundle.{c,h}` (`ORB_BUNDLE3_ABI6`, the five columns read), `orb_clock3.c`
+(`row_check`, the row projection, the tempo and carriage derivations), the baker's
+mirror, and the hub's `themecontainer.go` and fake device. The container header is 6
+when a v6 section rides along and 3 otherwise; 4 and 5 are refused at every door.
+
+**The dial.** `clk_row_t` (`clk_types.h`) replaces the hand slots, `clk_drive_t` and
+`clk_aux_t`; the row table and the dial's per-row state live in PSRAM (internal `.bss`
+fell by 2.1 kB). `clock_view.c` has one drive (`drive_units` with digits, `drive_t`,
+`row_pose`, `row_ease` in fraction space), one update pass (`rows_update`: own poses,
+parents, twins, marks, widgets) and one depth key (`depth_key`) that the classic
+creation walk and the L4 layer table both sort by. The carriage is the animated row:
+its frames swap on its own widget and its orbit still marks by ink chords. A twin takes
+its row's sampling, and the carriage never takes the filter.
+
+**Settled while building, beyond §8's list:**
+
+- **A sweep names its own frame rate** in `cad_arg` (0 = none, at most 30). The beat
+  the scheduler reads is the sweep's rate when it names one, else the fastest rate the
+  dial's animation names — the plate's `bg_fps`, the carriage's — else the sweep tier,
+  15. A stepping seconds row's beat is its N; a dial with no moving seconds row beats
+  once a second.
+- **Domains are half-open on a wrap.** *t* = (*u* − vmin) / (vmax − vmin), so a 1–31
+  date ring is vmin 1, vmax 32 and the 31st sits one step short of P0.
+- **The composer's inputs are unchanged until E2.** `bakeClock3` still takes hands by
+  slot, shadows as sprites and pointers with D34's motion names, and translates each
+  into rows (`v6Drive`): a rotation over a whole turn wraps, a partial one holds, a
+  retrograde and a slide fly back, and a slide's start offset moves the placement.
+- **Old bundles in the repo** were rewritten by `tools/migrate_v6.py`, a one-way
+  host-side converter with the same translation (the pixel bank is untouched): the
+  hub's default Skeleton and the golden pair. Nothing on a device or hub path reads its
+  input format.
+
+**Gates.** Every host suite green, with its mutants: `host_clock3_test.py` (444 checks;
+28 projection and 6 sound mutants caught), `host_drive_test.py` (58 vectors, 27
+mutants), `host_comp_math_test.py`, `host_orb_bundle_c_test.py` (33 mutants),
+`host_orbelems_test.py`, `host_sd_test.py`, `host_hand_aa_test.py` (now the row-AA
+rule); the composer's headless suites (`headless-bundle3` 226 checks with the shipped C
+projecting six browser bakes, `headless-estimate` with the migrated Skeleton priced at
+94 ms a flush against the 95 ms measured, `headless-motion`'s new check that every
+motion hand of Flux, Orbit and Station bakes to a row that poses where the preview
+draws); `go test ./...`. Retired with the hand slots: `host_from_bundle_test.py` and
+`mut_from_bundle.py` (the compiled pair's reverse path has no v6 meaning) and the
+v4-parity half of `host_drive_test.py`.
+
 ## 9. Cost
 
 More rows means more to repaint, so the composer's estimate (`estimate3`, the
@@ -276,8 +351,8 @@ row, not just the five slots. Two properties keep it honest:
 
 | Slice | Content | Gate |
 |---|---|---|
-| **E0** | The owner rules this file. Done 2026-11-01 except §11.3 | — |
-| **E1** | v6 end to end, legacy deleted (§8.1): the row array and one depth walk in the firmware; the two-pose motion and end rule; depth on every row (the held pointer-depth work); digit selectors; the tempo read from the rows. Python schema, baker, C reader and Go container move together | host suites green, one mutant caught per new refusal; every older stamp refused at every door; the JS twin and the C reader agree on pose at fixed times for every preset |
+| **E0** ✔ | The owner rules this file. Done 2026-11-01 | — |
+| **E1** ✔ | v6 end to end, legacy deleted (§8.1): the row array and one depth walk in the firmware; the two-pose motion and end rule; depth on every row (the held pointer-depth work); digit selectors; the tempo read from the rows. Python schema, baker, C reader and Go container move together | host suites green, one mutant caught per new refusal; every older stamp refused at every door; the JS twin and the C reader agree on pose at fixed times for every preset — **DONE 2026-11-01** (§8.2); the bench on orb-B is owed |
 | **E2** | Composer: one list of rows (centre and sub-dial hands alike), each with shape, motion, drive, placement and depth; tick speed and Sweep offered as today. Every preset and bench theme rebuilt as v6 | the preview-versus-reader pose check; each preset installs on orb-B |
 | **E3** | Calendar presets: a double-rotator date and a 1–31 ring behind a window | renders on orb-B, a clean `jump_date` |
 | **E4** | Text rows: glyph sets, background, format, string table | a `HH:MM` readout and a `ddd DD` readout on orb-B |
@@ -289,11 +364,9 @@ row, not just the five slots. Two properties keep it honest:
 1. **Row cap: 24.** A theme that needs more is refused; that is acceptable.
 2. **Tempo from the rows.** The seconds hand's speed comes from its own definition
    (§4). The composer still offers distinct tick speeds and Sweep.
-3. **The Mechanical switch: OPEN.** It is the composer setting that turns §7's
-   physical-plausibility warnings on or off for a design. Off lets a radical dial do
-   impossible things silently. On flags what a real movement could not build. Either
-   way the bake goes through. Proposal: off by default, and on for presets that
-   imitate a real movement.
+3. **The Mechanical switch** is the composer setting that turns §7's
+   physical-plausibility warnings on for a design. Off by default; on for presets that
+   imitate a real movement. The bake goes through either way.
 4. **Text fonts:** the composer's existing font list. More fonts are added later as
    needed.
 5. **Wrap with an offset: refused**, at design time and by the firmware reader (§3).

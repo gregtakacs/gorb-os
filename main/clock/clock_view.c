@@ -104,52 +104,43 @@ static const char *TAG = "clock";
 
 static lv_obj_t *s_scr;
 static lv_obj_t *s_overlay;
-static lv_obj_t *s_hand[5];
-static lv_obj_t *s_shadow[5];
-
 static lv_image_dsc_t s_overlay_dsc;
-static lv_image_dsc_t s_hand_dsc[5];
-static lv_image_dsc_t s_shadow_dsc[5];
 
-/* Which motions travel in pixels rather than an angle. One predicate, shared by the
- * maths, the mark and the painter, because a slide recognised in one place and not the
- * other is a pointer whose rows nobody dirtied — ghost ink outside the restored rows,
- * the exact failure the swept-box contract exists to prevent. */
-#define MOTION_IS_SLIDE(k) ((k) == CLK_MOTION_SLIDE_X || (k) == CLK_MOTION_SLIDE_Y)
+/* ---- D42: the moving rows (clk_row_t, docs/element-model-plan.md) ----------
+ * Every hand, pointer, ring, still layer, shadow twin and the carriage is one row,
+ * and this is each row's tick state: its widget for the classic path, the pose it
+ * shows now (an angle in tenths and the pivot's travel in px), the sprite at that
+ * travel, and its ease. The L4 hook paints from the poses, the classic path from
+ * the widgets, and both read ONE truth per tick. PSRAM, once: 24 rows of widget
+ * descriptors and poses would sit on the internal heap boundary httpd_start needs
+ * (the 2026-10-24 lesson the layer keys below record), and a row is read a handful
+ * of times a frame. ROW_HIDDEN is the nothing-drawn mark; no pose reaches it. */
+typedef struct {
+    float    shown, from, to, amp;
+    uint32_t t0;
+    uint8_t  kind;
+    bool     init;
+} ease_t;
 
-/* ---- the sub-dial pointers (the theme's clk_aux_t rows) -------------------
- * One widget, descriptor, and last-shown angle per row — the same shape of
- * state s_hand/s_shadow/s_ang_10 are for the five compiled-in slots, and for
- * the same reason: the L4 hook paints from the angles, the classic path from
- * the widgets, and both read ONE truth per tick. A hand and its blur/offset
- * twin are two rows (see the aux block for the pairing rule), which is why the
- * arrays are indexed by row and not by pointer. */
-static lv_obj_t *s_aux_obj[CLK_AUX_MAX];
-static lv_image_dsc_t s_aux_dsc[CLK_AUX_MAX];
-/* What is currently shown per row, in the unit the row's MOTION names: tenths of a
- * degree for a rotate/retrograde/indexed pointer, whole pixels for a slide. One array
- * covers both because a row has one motion and never changes it, and a "last shown"
- * figure that had to be two types is where a slide and a rotation would start
- * disagreeing about the same tick. AUX_HIDDEN (INT32_MIN) is the nothing-drawn mark,
- * unreachable by either unit. */
-static int32_t   s_aux_ang_10[CLK_AUX_MAX];
-#define AUX_HIDDEN INT32_MIN
-/* The record a slide actually paints: its theme sprite with centery/centerx displaced
- * by the current offset. Kept whole rather than computed inside the commit hook, which
- * runs per flush and must not redo the arithmetic per pointer per flush. */
-static clk_sprite_t s_aux_pose[CLK_AUX_MAX];
-static uint32_t  s_aux_logged;                /* bit i: "no input" printed for row i */
-static int       s_aux_at = -1;               /* order position the block inserts before */
-
-
+typedef struct {
+    lv_obj_t      *obj;
+    lv_image_dsc_t dsc;
+    int32_t        ang_10;     /* the angle shown, tenths; ROW_HIDDEN = not drawn */
+    int16_t        ox, oy;     /* the pivot's travel shown, px                    */
+    clk_sprite_t   pose;       /* the row's sprite moved by (ox, oy)              */
+    ease_t         ease;
+    bool           logged;     /* "no input" printed for this row                 */
+} row_state_t;
+static row_state_t *s_row;
+#define ROW_HIDDEN INT32_MIN
 
 /* CLK_BG_DIRECT_PUSH, the L3/L4 switch the block below and the scheduler's delta
  * push both key on, lives in orb_sched.h: one number, both TUs, so the push and
  * the hook can never disagree about who owns a row. */
 
 
-/* GIF-mode hand beat state (hand_angles): tick counter, the true seconds it
- * was last re-anchored to, and the wall fraction held between beats. */
+/* GIF-mode beat state (compose_now): tick counter, the true seconds it was last
+ * re-anchored to, and the wall fraction held between beats. */
 static uint32_t         s_bt_ctr = 0;
 static int              s_bt_sec = -1;
 static double           s_bt_frac = 0.0;
@@ -167,23 +158,6 @@ static double           s_bt_frac = 0.0;
 static int32_t        s_tourb_shown = -1;   /* frame composited now, -1 = never */
 static uint32_t       s_tourb_t0;           /* lv_tick ms the frame clock started */
 static lv_image_dsc_t s_tourb_dsc[CLK_TOURB_MAX];
-
-/* D32 ruling C: the carriage is its own object. A FORMAT 3 theme places it
- * with the carriage row's geometry and turns it with the seconds angle plus
- * the row's start orientation (R-G's wall sampler, one offset), so a theme
- * that also carries a plain second hand draws BOTH — the hand as layer 2 and
- * the animated carriage directly above it, the pair a real tourbillon bridge
- * reads. Before this ruling the bank was the seconds layer (the .h's comment
- * still says so at the tourbillon array); that swap is gone, and the shipped
- * av-kit pair — tourbillon_n 0 — draws byte-identically either way. */
-static lv_obj_t       *s_car;               /* the carriage object, NULL = none */
-static lv_image_dsc_t  s_car_dsc;           /* its descriptor until the first swap */
-static int32_t         s_car_start_10;      /* start orientation, tenths of a degree */
-/* C4's consumed parent column: the carriage row's element index + 1 (0 = the
- * table holds no carriage row). The projection put the parent's ROW INDEX in
- * clk_aux_t.parent_row; this is the one figure needed to recognise it. A needle
- * whose parent_row equals this rides the carriage's rotation — see aux_update. */
-static uint16_t        s_car_row_1;
 
 /* Orbit marks (sweep perf). The generic hand marking would take the union
  * of the two rotated bounding boxes of the carriage (~260x350 swung around
@@ -294,20 +268,20 @@ static bool row_smooth(uint8_t cls, uint16_t slot)
     return false;
 }
 
-static bool hand_aa_for(const clk_theme_t *t, int slot, uint8_t cls, uint16_t row_slot,
-                        const char **src)
+static bool row_aa(const clk_theme_t *t, const clk_row_t *r, const char **src)
 {
 #if CLK_BG_DIRECT_PUSH
     if (orb_sched_restore_src() != NULL) {
         if (src) *src = "flag";
-        return row_smooth(cls, row_slot);
+        return row_smooth(ORB_ASSET_AUX, r->tag);
     }
 #endif
     if (src) *src = "classic-rule";
     if (t->bg_mode != 0 || t->bg_frames != 0 || t->gif_frames != 0 ||
         t->tourbillon_n != 0)
         return false;
-    if (slot == 2 && t->second_sweep)
+    if (r->src == CLK_SRC_SECOND &&
+        (r->cadence == CLK_CAD_SWEEP || r->cadence == CLK_CAD_STOP_TO_GO))
         return false;
     return true;
 }
@@ -315,7 +289,7 @@ static bool hand_aa_for(const clk_theme_t *t, int slot, uint8_t cls, uint16_t ro
 /* Create one rotated-hand/shadow layer from a sprite record. The object is
  * placed so its stored pivot (in cropped coords) lands on the sprite's screen
  * centre; LVGL then rotates it about that pivot. `aa` carries the sampling
- * decision for THIS layer from hand_aa_for() above: LVGL defaults rotation to
+ * decision for THIS layer from row_aa() above: LVGL defaults rotation to
  * 4-tap bilinear, ~4x the per-px cost of the nearest path on the S3, and the
  * old build forced nearest on every dial because the hands-over-animated-orb
  * re-composite could not carry it. The bake's motion words now say which
@@ -354,20 +328,14 @@ static uint32_t hand_beat_ticks(void)
 /* ---- D41: ease -------------------------------------------------------------
  * A settle: after a jump (or a step slower than the second) the row overshoots its
  * new pose by a small amount and comes back, sin(pi*tau) over `ease` ms. A flyback:
- * when a retrograde row returns against its span, it travels back over `ease` ms
- * (smoothstep) instead of landing in one frame. Both run on frames the dial asks for
+ * when a flyback row returns to P0, it travels back over `ease` ms (smoothstep)
+ * instead of landing in one frame. Both run on frames the dial asks for
  * (orb_sched_burst) only while they last; a row without an ease costs nothing.
  *
- * ease_pose is pure: the caller passes the clock in, so the host bench drives it.
- * `turn` is the size of a turn in the row's unit (360 for a hand's degrees, 3600 for
- * a pointer's tenths, 0 for a slide's px, which never wraps). */
+ * ease_pose is pure: the caller passes the clock in, so the host bench drives it. The
+ * rows ease their fraction t (row_ease), so `turn` is 1 on a wrapping row, whose
+ * fraction wraps, and 0 on every other. */
 enum { EASE_NONE = 0, EASE_SETTLE, EASE_FLY };
-typedef struct {
-    float    shown, from, to, amp;
-    uint32_t t0;
-    uint8_t  kind;
-    bool     init;
-} ease_t;
 
 static float ease_wrap(float d, float turn)
 {
@@ -415,10 +383,7 @@ static float ease_pose(ease_t *e, float target, uint32_t now_ms, uint16_t ms, bo
     return e->shown;
 }
 
-static ease_t s_hand_ease[5];
-static ease_t s_aux_ease[CLK_AUX_MAX];
-
-/* The settle's overshoot, per unit: 1.5 degrees on a turn, 3 px on a slide. */
+/* The settle's overshoot: 1.5 degrees on a turn, 3 px on a travel. */
 #define EASE_SETTLE_DEG   1.5f
 #define EASE_SETTLE_PX    3.0f
 
@@ -427,285 +392,28 @@ static bool cad_steps_slow(uint8_t cad, uint8_t src)
     return (cad == CLK_CAD_JUMP || cad == CLK_CAD_STEP) && src != CLK_SRC_SECOND;
 }
 
-/* D41 §3: one reading of the wall clock, handed to the drive function for every
- * driven row a frame poses. hand_sec is the second the HAND chain shows (sweep,
- * tick_rate steps, or whole), worked out once per frame because the delta-bank beat
- * that feeds it keeps state. */
+/* D41 §3: one reading of the wall clock, handed to the drive function for every row
+ * a frame poses. frac is the wall fraction, beat-held on a delta-bank dial. */
 typedef struct {
     const struct tm *ti;
     time_t           t;
-    double           frac;       /* the wall fraction, beat-held on a delta-bank dial */
-    float            hand_sec;
+    double           frac;
 } drive_now_t;
 
-static float drive_hand_deg(const clk_drive_t *d, const drive_now_t *n);
-
-/* The five HAND slots as driven rows (D41 §3): what each slot has always meant.
- * Under v4 every slot reads its row from here; v5 (G2) lets a theme's own row
- * columns replace one. */
-static const clk_drive_t HAND_ROW[5] = {
-    { .src = CLK_SRC_HOUR12, .path = CLK_MOTION_ROTATE, .hand = 1, .span = 3600, .value_max = 12 },
-    { .src = CLK_SRC_MINUTE, .path = CLK_MOTION_ROTATE, .hand = 1, .span = 3600, .value_max = 60 },
-    { .src = CLK_SRC_SECOND, .path = CLK_MOTION_ROTATE, .hand = 1, .span = 3600, .value_max = 60 },
-    { .src = CLK_SRC_NONE,   .hand = 1 },          /* dial: still */
-    { .src = CLK_SRC_NONE,   .hand = 1 },          /* counterweight: still */
-};
-
-/* Seconds 0..60 (fractional while sweeping), minutes 0..60 (fractional unless a
- * railway dial sits it on a mark), hour 0..12 fractional. Mirrors orb-os
- * compose_custom: minute_hand_mins() and the p_min/p_hr derivation. The beat is
- * worked out here; each slot's angle is its HAND_ROW through the drive function. */
-/* A slot's driven row: the theme's own when v5 named a source, else the slot's
- * mapping wearing whatever cadence the theme gave it (all-zero before v5). */
-static clk_drive_t hand_row(int k)
-{
-    const clk_drive_t *t = &clk_theme.hand_drive[k];
-    if (t->src) return *t;
-    clk_drive_t d = HAND_ROW[k];
-    d.cadence = t->cadence;
-    d.cad_arg = t->cad_arg;
-    return d;
-}
-
-static void hand_angles(double wall_frac, const struct tm *ti, time_t t, float ang[5])
-{
-    const int sec = ti->tm_sec;
-    const bool sweep   = clk_theme.second_sweep;
-
-    /* GIF-mode hand cadence: the tick delivers exactly one GIF frame per tick,
-     * so the second hand's beat rides the TICK COUNTER, not a wall-clock grid.
-     * The theme's tickRate (beats/s) becomes ticks-per-beat (hand_beat_ticks):
-     * 4 bps on a 12 fps tick = advance every 3rd tick, always the 3rd — an
-     * evenly spaced beat even though 250 ms is not an exact multiple of the
-     * ~83 ms the pipe actually delivers. Quantising the wall clock instead
-     * would stretch or squash beats by one tick every time the phases slip.
-     * On each beat the angle is sampled from the wall clock, so the hand
-     * reads true time (position error <= one beat, re-anchored at every
-     * second boundary); between beats the angle holds, apply_angles' eps
-     * gate skips the re-pose, and the tick's commit carries GIF rows only.
-     * tpb <= 1 means the tick is at or below the beat: a true sweep, wall
-     * sampled every tick. Non-GIF themes are untouched — there the tick
-     * already runs at tickRate and sampling once per tick IS the beat. */
-    if (sweep && clk_theme.tick_rate > 0 && orb_bg_gif_mode()) {
-        const uint32_t tpb = hand_beat_ticks();
-        if (tpb > 1) {
-            if (sec != s_bt_sec) {          /* true seconds re-anchor the phase */
-                s_bt_sec = sec;
-                s_bt_ctr = 0;
-            }
-            if ((s_bt_ctr % tpb) == 0) s_bt_frac = wall_frac;
-            s_bt_ctr++;
-            wall_frac = s_bt_frac;
-        }
-    }
-
-    /* The second hand's beat, from the theme's own motion words. A sweep reads
-     * the wall clock's fraction whole (subdivided above when the tick runs
-     * faster than the beat).  A TICK beats at tick_rate steps per second: 4/s
-     * quantises the wall fraction into quarter-steps, so a bank-rate tick
-     * shows that beat even between wall-second changes, and a 1/s or classic
-     * theme (tick_rate 0/1) stays the integer step it always was.  A ticking
-     * hand over a delta plate strobes — its box repaints between the bank's
-     * row pushes — which is exactly the cost the composer's Motion choice now
-     * accepts instead of silently overruling it. */
-    float secF;
-    if (sweep)
-        secF = (float)sec + (float)wall_frac;
-    else if (clk_theme.tick_rate > 1)
-        secF = (float)sec + (float)((int)(wall_frac * (float)clk_theme.tick_rate))
-                           / (float)clk_theme.tick_rate;
-    else
-        secF = (float)sec;
-
-    const drive_now_t now = { .ti = ti, .t = t, .frac = wall_frac, .hand_sec = secF };
-    for (int k = 0; k < 5; k++) {
-        const clk_drive_t d = hand_row(k);
-        ang[k] = drive_hand_deg(&d, &now);
-    }
-}
-
-/* D41: each hand slot's ease, after the pose is known and before it is pushed. A
- * dial that eases nothing passes straight through; one that does asks the scheduler
- * for frames exactly as long as an ease is running. */
-static void hand_ease(float ang[5])
-{
-    uint32_t want = 0;
-    const uint32_t now = lv_tick_get();
-    for (int k = 0; k < 5; k++) {
-        const clk_drive_t d = hand_row(k);
-        if (!d.ease && !s_hand_ease[k].init) continue;
-        uint32_t busy = 0;
-        float a = ease_pose(&s_hand_ease[k], ang[k], now, d.ease,
-                            cad_steps_slow(d.cadence, d.src),
-                            d.src && d.path == CLK_MOTION_RETROGRADE, d.span >= 0 ? 1 : -1,
-                            360.0f, EASE_SETTLE_DEG, &busy);
-        a = fmodf(a, 360.0f);
-        ang[k] = a < 0.0f ? a + 360.0f : a;
-        if (busy > want) want = busy;
-    }
-    if (want) orb_sched_burst(want + 40);
-}
-
-
-/* Last angle pushed onto each hand layer, so an unchanged hand is a no-op and
- * so the outgoing wedge is known when a hand does move. INT_MIN = never set. */
-static int32_t s_ang_10[5] = { INT32_MIN, INT32_MIN, INT32_MIN, INT32_MIN, INT32_MIN };
-
-/* Push the current angles onto the live widgets. lv_image_set_rotation returns
- * early when the 0.1-degree value is unchanged, so at a 1 Hz tick only the hand
- * that actually moved (the second, for a ticking dial) dirties its area — the
- * hour/minute are re-pose no-ops and the plate is never touched.
- *
- * HARD GATE for sweeping dials: re-posing a hand invalidates its FULL rotated
- * bounding box (tens of thousands of px; measured 38 ms/frame while all three
- * hands re-posed every 40 ms tick). While sweeping, the minute/hour angles
- * advance sub-pixel amounts per tick (minute = 0.0002 deg/tick at 25 fps —
- * ~0.00007 px of tip motion), so re-posing them every tick is pure waste:
- * only re-pose a layer when its angle left the drawn one by >= 0.2 deg
- * (~0.4 px at the longest tip — at or below visibility). The second hand
- * sweeps 1.44 deg/tick so it always passes; the minute hand re-poses every
- * ~2 s and the hour every few minutes, catching up exactly.
- *
- * The invalidations lv_image_set_rotation() issues for itself are the whole
- * (previously unfixable) cost: it queues the FULL transformed box of BOTH the
- * old and the new pose (measured: hand+shadow re-blit = ~39 ms/frame of
- * per-pixel inverse-rotate + RGB565A8 blend with LV_DRAW_SW_ASM_NONE), which
- * re-rasterizes ~2x18.6k px for a wedge that is a few hundred px wide. Wrap
- * the setters in lv_display_enable_invalidation(false/true) — the same nesting
- * counter lv_image.c itself uses around lv_obj_refresh_ext_draw_size — and
- * push only the swept union ourselves. The software renderer then clips the
- * rotated blit to that refresh area, so cost scales with the wedge, not the
- * box. */
-/* Sweep marking by the carriage's rotated ink chords; defined with the
- * tourbillon block below. Returns true when it placed the marks for both
- * poses, false when the caller must fall back to the swept-box union (no
- * bank, no prior composite, shadowed seconds, or classic path). */
+/* Sweep marking by the carriage's rotated ink chords; defined with the tourbillon
+ * block below. Returns true when it placed the marks for both poses, false when the
+ * caller must fall back to the swept-box union (no bank, no prior composite, or the
+ * classic path). */
 static bool tourbillon_ink_mark(int f, int32_t prev_ang_10, int32_t new_ang_10);
 static void tourb_mark(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out);
 
-#define HAND_REDRAW_EPS_10 2
-static void apply_angles(const float ang[5])
+/* A row's sprite with its pivot moved by a travel: the record every mark and every
+ * paint of a travelled pose reads, so a mark and a paint never disagree. */
+static void pose_spr(const clk_sprite_t *s, int16_t ox, int16_t oy, clk_sprite_t *out)
 {
-    lv_display_t * disp = lv_obj_get_display(s_scr);
-
-    for (int i = 0; i < 5; i++) {
-        const int32_t a = (int32_t)lroundf(ang[i] * 10.0f);
-        if (a == s_ang_10[i]) continue;
-        if (s_ang_10[i] != INT32_MIN &&
-            abs((int)(a - s_ang_10[i])) < HAND_REDRAW_EPS_10) continue;
-        if (!s_hand[i] && !s_shadow[i] && !(i == 2 && s_car)) { s_ang_10[i] = a; continue; }
-
-        const int32_t prev = s_ang_10[i];
-        lv_area_t u;
-        bool have = false;
-        /* The carriage turns with the seconds layer plus its own start
-         * orientation; every mark and setter below uses whichever angle the
-         * layer's pixels actually stand at. */
-        const bool car = (i == 2 && s_car);
-        const int32_t c_prev = car && prev != INT32_MIN ? prev + s_car_start_10 : prev;
-        const int32_t c_a    = car ? a + s_car_start_10 : a;
-
-        /* Sweep tourbillon: the orbit rotates the whole carriage, so the
-         * box union below is most of the page on EVERY tick and the commit
-         * hook re-composites the full dial+glass across it (measured: sweep
-         * ran at half tick's frame rate, the whole gap in those marks).
-         * A carriage with no needle and no shadow sharing its angle is the
-         * case the chord model was built for: mark the two poses' rotated
-         * ink instead — each source row's ink extent rotated as a segment,
-         * accumulated per device row — so the rebuild is confined to what
-         * the carriage actually covered or vacated. The frame swap's
-         * changed pixels are added by tourbillon_advance's diff-box marks.
-         * Anything else sharing this angle still owes its own wedge, so the
-         * box path runs whenever the chords are not the whole story. */
-        const bool car_alone = car && !s_hand[2] && !s_shadow[2];
-        const bool inked = car_alone && prev != INT32_MIN &&
-                           tourbillon_ink_mark((int)s_tourb_shown, c_prev, c_a);
-
-        if (!inked && prev != INT32_MIN) {
-            /* Union of the old and new wedge of every layer sharing this angle,
-             * in both their un-shifted (hand) and shifted (shadow) positions.
-             * A standalone carriage contributes its own rotated box at the
-             * carriage angle, not the hand's at the plain seconds angle. */
-            if (car) {
-                const clk_sprite_t *cs = &clk_theme.tourbillon[
-                    s_tourb_shown >= 0 ? s_tourb_shown : 0];
-                tourb_mark(cs, c_prev, &u);
-                lv_area_t n; tourb_mark(cs, c_a, &n);
-                gfx_area_union(&u, &n);
-                have = true;
-            }
-            if (s_hand[i]) {
-                lv_area_t w0, w1;
-                gfx_swept_box(&clk_theme.hand[i],   prev, &w0);
-                gfx_swept_box(&clk_theme.hand[i],   a,    &w1);
-                gfx_area_union(&w0, &w1);
-                if (have) gfx_area_union(&u, &w0);
-                else { u = w0; have = true; }
-            }
-            if (s_shadow[i]) {
-                lv_area_t su; gfx_swept_box(&clk_theme.shadow[i], prev, &su);
-                lv_area_t sn; gfx_swept_box(&clk_theme.shadow[i], a, &sn);
-                gfx_area_union(&su, &sn);
-                if (have) gfx_area_union(&u, &su);
-                else { u = su; have = true; }
-            }
-        }
-        else if (!inked && (s_hand[i] || car)) {
-            if (car) {
-                const clk_sprite_t *cs = &clk_theme.tourbillon[
-                    s_tourb_shown >= 0 ? s_tourb_shown : 0];
-                tourb_mark(cs, c_a, &u);
-            } else {
-                gfx_swept_box(&clk_theme.hand[i], a, &u);
-            }
-            if (s_shadow[i]) {
-                lv_area_t sn; gfx_swept_box(&clk_theme.shadow[i], a, &sn);
-                gfx_area_union(&u, &sn);
-            }
-            have = true;
-        }
-
-        /* Under L4 the commit painter owns these rows outright: restoring the
-         * background from the canvas and re-painting every layer over them is
-         * both cheaper and more correct than asking LVGL to re-composite the
-         * rotated boxes (which was the 36-48 ms we are replacing), so it does
-         * not invalidate them and only the painter runs. Without a canvas the
-         * classic path is back in charge and the wedge goes to LVGL. */
-        if (have) {
-#if CLK_BG_DIRECT_PUSH
-            if (orb_sched_l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
-            else
-#endif
-                lv_obj_invalidate_area(s_scr, &u);
-        }
-
-        if (prev == INT32_MIN) {
-            /* First pose ever: nothing painted yet, the setter's own
-             * (full-box) invalidation is the one that paints it. */
-            if (s_hand[i])   lv_image_set_rotation(s_hand[i],   a);
-            if (s_shadow[i]) lv_image_set_rotation(s_shadow[i], a);
-            if (car)         lv_image_set_rotation(s_car,       c_a);
-        }
-        else {
-            lv_display_enable_invalidation(disp, false);
-            if (s_hand[i])   lv_image_set_rotation(s_hand[i],   a);
-            if (s_shadow[i]) lv_image_set_rotation(s_shadow[i], a);
-            if (car)         lv_image_set_rotation(s_car,       c_a);
-            lv_display_enable_invalidation(disp, true);
-            /* The setter early-returns without applying its angle if it
-             * already equals the widget's — impossible here since s_ang_10 is
-             * only updated together with the setters, but re-mark the swept
-             * box once more so a lost invalidation can never stick. */
-            if (have) {
-#if CLK_BG_DIRECT_PUSH
-                if (orb_sched_l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
-                else
-#endif
-                    lv_obj_invalidate_area(s_scr, &u);
-            }
-        }
-        s_ang_10[i] = a;
-    }
+    *out = *s;
+    out->centerx = (int16_t)(out->centerx + ox);
+    out->centery = (int16_t)(out->centery + oy);
 }
 
 /* ---- tourbillon: pick the wall-clock frame and swap it in -----------------
@@ -713,7 +421,7 @@ static void apply_angles(const float ang[5])
  * the OUTGOING and INCOMING frame at the current angle (both are chained
  * against neighbours by the baker, like the delta bank); a first-ever draw has
  * no prior composite of this layer, so it takes the full swept box. The angle
- * changes (the orbit step) are marked by apply_angles itself, exactly as for
+ * changes (the orbit step) are marked by rows_update itself, exactly as for
  * any other hand. */
 static void tourb_mark(const clk_sprite_t *spr, int32_t ang_10, lv_area_t *out)
 {
@@ -901,35 +609,39 @@ static bool tourbillon_ink_mark(int f, int32_t prev_ang_10, int32_t new_ang_10)
 static void tourbillon_advance(void)
 {
     const int n = (int)clk_theme.tourbillon_n;
-    if (n <= 0 || !s_car) return;
+    const uint8_t cr = clk_theme.car_row;
+    if (n <= 0 || cr >= CLK_ROW_MAX || !s_row || !s_row[cr].obj) return;
+    row_state_t *st = &s_row[cr];
 
     const uint32_t fps = clk_theme.tourbillon_fps ? clk_theme.tourbillon_fps : 15;
     const int f = (int)(((uint64_t)(lv_tick_get() - s_tourb_t0) * fps)
                         / 1000u % (uint32_t)n);
     if (f == s_tourb_shown) return;
 
-    /* The carriage stands at the seconds angle plus its start orientation —
-     * the pose apply_angles just set on it, whatever that was when the frame
-     * clock started and between its ticks. */
-    const int32_t a = s_ang_10[2] == INT32_MIN ? INT32_MIN : s_ang_10[2] + s_car_start_10;
+    /* The carriage stands at its own row's pose — the one rows_update just set on
+     * it, whatever that was when the frame clock started and between its ticks. */
+    const int32_t a = st->ang_10;
+    clk_sprite_t fo, fn;
+    pose_spr(&clk_theme.tourbillon[f], st->ox, st->oy, &fn);
     lv_area_t u;
-    if (s_tourb_shown < 0 || a == INT32_MIN) {
+    if (s_tourb_shown < 0 || a == ROW_HIDDEN) {
         /* First draw of this layer: no prior composite exists to diff against,
          * so the whole (rotation-0 if not posed yet) swept box goes dirty. */
-        gfx_swept_box(&clk_theme.tourbillon[f], a == INT32_MIN ? 0 : a, &u);
+        gfx_swept_box(&fn, a == ROW_HIDDEN ? 0 : a, &u);
     } else {
-        tourb_mark(&clk_theme.tourbillon[s_tourb_shown], a, &u);
+        pose_spr(&clk_theme.tourbillon[s_tourb_shown], st->ox, st->oy, &fo);
+        tourb_mark(&fo, a, &u);
         lv_area_t v;
-        tourb_mark(&clk_theme.tourbillon[f], a, &v);
+        tourb_mark(&fn, a, &v);
         gfx_area_union(&u, &v);
     }
 
-    /* Mirror apply_angles' etiquette: the src setter would invalidate the
+    /* Mirror rows_update's etiquette: the src setter would invalidate the
      * widget's whole transformed box; the marks below cover exactly what
      * needs rebuilding. Under L4 the commit painter owns the rows outright. */
     lv_display_t *disp = lv_obj_get_display(s_scr);
     lv_display_enable_invalidation(disp, false);
-    lv_image_set_src(s_car, &s_tourb_dsc[f]);
+    lv_image_set_src(st->obj, &s_tourb_dsc[f]);
     lv_display_enable_invalidation(disp, true);
 #if CLK_BG_DIRECT_PUSH
     if (orb_sched_l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
@@ -942,7 +654,7 @@ static void tourbillon_advance(void)
      * rectangle around the escapement. The stamps cover the exact rotated
      * ink; the diff-box mark above stays as the belt to the chords' braces
      * (and is what paints when the chord tables cannot be built). */
-    if (s_tourb_shown >= 0 && a != INT32_MIN)
+    if (s_tourb_shown >= 0 && a != ROW_HIDDEN && !st->ox && !st->oy)
         tourbillon_ink_mark(f, INT32_MIN, a);
     s_tourb_shown = f;
 }
@@ -1199,7 +911,7 @@ static lv_image_dsc_t  s_comp_dsc[CLK_COMP_MAX][CLK_COMP_SLOTS];
  * drawn. Sole truth for both paths: the layer table's pose pass reads these
  * to pick each BANK row's plane, and the classic path reads the LVGL widgets
  * comp_slot_show keeps in step. Any drift between the two is the one-tick
- * ghost the hands paid for before apply_angles learned to hold its angles. */
+ * ghost the hands paid for before the redraw gate learned to hold its angles. */
 static int32_t         s_comp_frame[CLK_COMP_MAX][CLK_COMP_SLOTS];
 static uint32_t        s_comp_logged;        /* bit i: hide reason for comp i printed */
 
@@ -1482,15 +1194,15 @@ static void comps_update(const struct tm *ti, time_t t)
 }
 
 /* One comp's widgets, hidden until comp_slot_show points them at pixels — the
- * same widgets the L4 hook mirrors, so both paths must create them in the same
- * relative order or a row LVGL renders itself disagrees with a row the hook
- * paints. The caller creates them at the point in the sibling chain that puts
- * the tile UNDER the live layer the bake named: the classic path's only notion
- * of z-order is creation order, and the tile must sit under its frame, not
- * just somewhere on the page. */
-static void comp_create_slots(const orb_theme_geo_t *g, uint16_t i)
+ * same widgets the L4 hook mirrors. clock_view_init calls this at the comp's place
+ * in the depth walk, because creation order is the classic path's only notion of
+ * z-order and a window must sit where its depth says: under the live layer that
+ * frames it, over the plate it is cut into. */
+static void complication_create(const orb_theme_geo_t *g, uint16_t i)
 {
     const clk_comp_t *c = &g->comps[i];
+    if (!c->show || (c->flags & CLK_FLAG_DISABLED)) return;
+    if (s_comp_obj[i][0]) return;                     /* created already */
     int slots = 0;
     if      (c->kind == CLK_KIND_WINDOW) slots = 1;
     else if (c->kind == CLK_KIND_STRIP)  slots = comp_strip_positions(c) + 2;
@@ -1504,182 +1216,32 @@ static void comp_create_slots(const orb_theme_geo_t *g, uint16_t i)
     }
 }
 
-/* The z bucket of one record: a WINDOW's `first` IS it, and every other kind
- * addresses the bank with that field, so it rides the bottom bucket. */
-static int comp_bucket(const clk_comp_t *c)
+static void complications_reset(void)
 {
-    return (c->kind == CLK_KIND_WINDOW) ? (int)c->first : 0;
-}
-
-/* Create the widgets of ONE bucket, in record order. clock_view_init calls this
- * at the point in the sibling chain that puts the tile UNDER the live layer the
- * bake named — the classic path's only notion of z-order is creation order, so
- * the bucket has to be honoured HERE and not just in the L4 job list, or the two
- * paths disagree about who covers whom. Already-created records are skipped, so
- * a bucket nobody asked for is not lost: the caller drains the rest afterwards. */
-static void complications_create_bucket(const orb_theme_geo_t *g, int bucket)
-{
-    for (uint16_t i = 0; i < g->n_comps && i < CLK_COMP_MAX; i++) {
-        const clk_comp_t *c = &g->comps[i];
-        if (!c->show || (c->flags & CLK_FLAG_DISABLED)) continue;
-        if (s_comp_obj[i][0]) continue;                     /* created already */
-        if (comp_bucket(c) != bucket) continue;
-        comp_create_slots(g, i);
-    }
-}
-
-static void complications_create(void)
-{
-    const orb_theme_geo_t *g = orb_theme_geo();
     memset(s_comp_obj,   0,    sizeof s_comp_obj);
     memset(s_comp_frame, 0xFF, sizeof s_comp_frame);      /* -1: nothing drawn yet */
-    complications_create_bucket(g, 0);
 }
 
 
-/* ---- aux hands: the sub-dial pointers a theme's style declares -------------
+/* ---- D42: the moving rows -------------------------------------------------------
  *
- * One clk_aux_t row is a sprite plus how it is driven: the value named by `src`
- * turns it through `span` tenths of a degree from `zero`, once across the domain
- * value_max wide. The five compiled-in slots cannot carry them — a sub-dial
- * pointer is not the dial's hour hand, and the clock cannot grow a compiled-in
- * count for a theme that arrives on a card — and the kit's geometry mounts each
- * one on its OWN sub-dial's centre, which is why the row owns its pivot/centre
- * pair and its driver reads the same struct tm compose_now already sampled. The
- * value comes from comp_value(), so a date ring and the date WINDOW can never
- * disagree about what day it is.
+ * One clk_row_t is a sprite plus how it moves (docs/element-model-plan.md §3): its
+ * art sits at P0 — the row's own placement, turned to `zero` — and across its domain
+ * it turns a further `span` and its pivot travels (dx, dy) to P1. The value comes
+ * from comp_value(), so a date ring and the date WINDOW can never disagree about
+ * what day it is, and every row reads the one struct tm compose_now sampled.
  *
- * A shadowed pointer is TWO rows: the hand, then its blur/offset twin flagged
- * CLK_FLAG_AUX_SHADOW (tools/bake_clock.py lays them down adjacent, hand first,
- * and tools/theme_schema.py packs that pair; the FORMAT 3 composer bakes the
- * same pair through orbtheme-baker.js, where row flag bit 4 — AUX_F_SHADOW3,
- * mapped in orb_clock3.c — carries it into this vocabulary). The twin owns
- * pixels and a centre (the hand's, moved by the light vector) and no input of
- * its own — the tick gives it the row before it's angle — so it can never come
- * loose from the pixels it exists to darken. The bake packs the twin so its
- * pivot lands on its own centre, the hand's centre plus the light: pointer and
- * twin turn as one rigid pair, and the offset stays fixed in screen space
- * while the pointer sweeps.
+ * A shadowed row is TWO rows: the row, then its blur/offset twin flagged
+ * CLK_FLAG_AUX_SHADOW, adjacent in slot order (orbtheme-baker.js packs the pair;
+ * row flag bit 4 — AUX_F_SHADOW3, mapped in orb_clock3.c — carries it into this
+ * vocabulary). The twin owns pixels and a centre (its row's, moved by the light
+ * vector) and no input of its own — the tick gives it its row's whole pose — so it
+ * can never come loose from the pixels it exists to darken: row and twin turn as
+ * one rigid pair, and the light's offset stays fixed in screen space.
  *
- * z-order: the block inserts BEFORE the first live hand (a pointer on its own
- * ring belongs under the main hands that sweep across it) and above every live
- * static (it belongs on top of the plate it points at), which is the kit's own
- * reading — the date pointer is z=1, the hour z=2.
- * s_aux_at is that order position, computed once per view in clock_view_init and
- * honoured by BOTH paint paths, because a row LVGL renders itself has to come
- * out identical to a row the L4 hook paints. */
-
-/* Where the block joins clk_theme.order: the order position it goes BEFORE. A
- * sub-dial pointer stands on its own ring, UNDER the main hands that sweep
- * across it, so the block precedes the first live hand — which for every bake
- * that orders statics first (the kit bakes, the composer's, bake_clock.py's) is
- * also the index directly above the last live static, the same join point this
- * function has always resolved to for those tables. A theme with live statics
- * and no live hand joins above the last static; one with neither returns -1,
- * which leaves the callers' fall-through ride the block above everything that
- * does exist — the only reading left when there is no hand to hide it under.
- * The D34 composer bakes order:[0,1] with no static rows at all, and a block
- * appended after the loop then drew the seconds pointer OVER the hour hand. */
-static int aux_insert_at(void)
-{
-    int last_static = -1;
-    for (int oi = 0; oi < (int)clk_theme.order_n; ++oi) {
-        const int k = clk_theme.order[oi];
-        if (k < 0 || k > 4) continue;
-        if (clk_theme.matte_mask & (1u << k)) continue;   /* folded into the bg */
-        if (k <= 2) return oi;              /* below the first live hand */
-        last_static = oi + 1;               /* above the last live static */
-    }
-    return last_static;
-}
-
-/* The value that turns a pointer, in thousandths of one unit: day 5 is 5000, and
- * a sub-dial seconds hand at 30.4 s is 30400. aux_angle_10() divides by
- * value_max, so the fraction has to reach that division or a sweep becomes a
- * stutter — and CLK_FLAG_JUMP is the kit ASKING for the stutter, the mechanical
- * cadence of a date ring that only moves at midnight anyway. */
-static bool aux_value_1000(const clk_aux_t *a, const struct tm *ti, time_t t,
-                           double frac, int64_t *out)
-{
-    int32_t v;
-    if (!comp_value(a->src, ti, t, &v)) return false;   /* no input on this orb */
-
-    int64_t v1000 = (int64_t)v * 1000;
-    if (!(a->flags & CLK_FLAG_JUMP)) {                  /* next finer field = sweep */
-        switch (a->src) {
-        case CLK_SRC_SECOND:  v1000 += (int64_t)(frac * 1000.0);        break;
-        case CLK_SRC_MINUTE:  v1000 += (int64_t)ti->tm_sec * 1000 / 60; break;
-        case CLK_SRC_HOUR12:
-        case CLK_SRC_HOUR24:  v1000 += (int64_t)ti->tm_min * 1000 / 60; break;
-        default:                                                        break;
-        }
-    }
-    if (!(a->flags & CLK_FLAG_WRAP)) {        /* WRAP is the ring that keeps going */
-        const int64_t lo = (int64_t)a->value_min * 1000;
-        const int64_t hi = (int64_t)a->value_max * 1000;
-        if (v1000 < lo) v1000 = lo;
-        if (v1000 > hi) v1000 = hi;
-    }
-    *out = v1000;
-    return true;
-}
-
-/* One line of arithmetic, two readings of its answer. D34 gave a pointer a MOTION
- * column, and the motion decides what `span` and `zero` ARE: tenths of a degree on a
- * rotate/retrograde/indexed row, pixels along the named axis on a slide-x/slide-y row.
- * Both are "zero + value * span / value_max", so the divide is written ONCE — a second
- * copy of that expression is where a slide and a rotation would start disagreeing about
- * the same theme. Half-up, not truncated: the bake placed day 5 at 58.1 degrees, and a
- * truncated read parks the pointer a tenth off the mark the art was drawn to.
- *
- * Returns the raw figure. The caller interprets it, because the two readings have
- * genuinely different bounds: an angle wraps the circle and a displacement does not —
- * clamping a slide to 3600 would stop a reserve bar a third of the way across its own
- * scale and read as a watch that lies about its battery. */
-static int32_t aux_travel(const clk_aux_t *a, int64_t v1000)
-{
-    const int64_t den = (int64_t)a->value_max * 1000;
-    const int64_t num = (int64_t)a->zero * den + v1000 * (int64_t)a->span;
-    return (int32_t)((num >= 0) ? (num + den / 2) / den : -((-num + den / 2) / den));
-}
-
-/* The angle a pointer holds, in tenths of a degree. The wrap belongs HERE: an angle
- * has no meaning past a turn, and CLK_MOTION_RETROGRADE is the one that must not wrap
- * — it reaches its span and comes back, which is what a retrograde date ring does.
- * It is expressed as a clamp rather than a bounce because the value driving it already
- * resets at the top of its own domain: tm_mday returns to 1 without ever passing 31,
- * so clamping at the span is exactly the mechanical "reach the far mark, then jump
- * home" and no extra state is needed to draw it. */
-static int32_t aux_angle_10(const clk_aux_t *a, int64_t v1000)
-{
-    int32_t t = aux_travel(a, v1000);
-    /* One clamp, in the direction the span points. A negative span is a ring that
-     * reads counter-clockwise, and its retrograde limit is that same far mark. */
-    if (a->kind == CLK_MOTION_RETROGRADE &&
-        ((a->span >= 0 && t > a->span) || (a->span < 0 && t < a->span)))
-        t = a->span;
-    t %= 3600;
-    if (t < 0) t += 3600;
-    return t;
-}
-
-/* The displacement a slide holds, in whole pixels from its row's placed origin. No
- * wrap and no modulus: a reserve bar at 100% sits at zero+span and stays there, and a
- * figure that wrapped at 3600 would stop the bar a third of the way across its own
- * scale and draw a watch that lies about its battery. */
-static int32_t aux_offset_px(const clk_aux_t *a, int64_t v1000)
-{
-    return aux_travel(a, v1000);
-}
-
-/* ---- D41 §3: the one drive function ------------------------------------------
- * A driven row's pose is its source, plus as much of the next finer field as its
- * cadence shows, carried along its path. INHERIT is each row class's motion from
- * before D41, verbatim, so no v4 theme moves differently (§2.3): a HAND slot keeps
- * hand_angles' chain, where the hour reads the minute the hand shows and the minute
- * the second the hand shows, and a pointer keeps aux_value_1000's whole units of the
- * next finer field. Every other cadence is new arithmetic, one copy for both
- * classes. Under v4 nothing names one; v5 (slice G2) gives the rows the columns. */
+ * Depth is one number per row, on the scale the complication windows share, and
+ * both paint paths stack by it (clock_view_init's creation walk and the layer
+ * table's sort read the same key). */
 
 /* How far into the current unit of `src` the wall clock is, 0..1, and that unit's
  * length in minutes (0 for a source with no finer field: battery, reserve, a moon
@@ -1707,33 +1269,42 @@ static double drive_finer(uint8_t src, const struct tm *ti, double frac, double 
     }
 }
 
-/* The value a row shows under a cadence other than INHERIT, in units of its source:
- * day 5 swept to noon is 5.5. False when this orb has no input for the source. */
-static bool drive_units(const clk_drive_t *d, const drive_now_t *n, double *out)
+/* The value a row shows, in units of its source: day 5 swept to noon is 5.5. A digit
+ * row reads one decimal digit (D42 §4): the units ring turns with the whole value's
+ * finer field, and the tens ring's finer field is the units it is counting toward.
+ * False when this orb has no input for the source. */
+static bool drive_units(const clk_row_t *r, const drive_now_t *n, double *out)
 {
     int32_t v;
-    if (!comp_value(d->src, n->ti, n->t, &v)) return false;
+    if (!comp_value(r->src, n->ti, n->t, &v)) return false;
     double unit_min;
-    const double f = drive_finer(d->src, n->ti, n->frac, &unit_min);
+    double f = drive_finer(r->src, n->ti, n->frac, &unit_min);
+    if (r->digit == CLK_DIGIT_UNITS) {
+        v %= 10;
+    } else if (r->digit == CLK_DIGIT_TENS) {
+        f = ((v % 10) + f) / 10.0;
+        unit_min *= 10.0;
+        v = (v / 10) % 10;
+    }
     double shown = 0.0;
-    switch (d->cadence) {
+    switch (r->cadence) {
     case CLK_CAD_SWEEP:
         shown = f;
         break;
     case CLK_CAD_STEP: {
-        const unsigned steps = d->cad_arg ? d->cad_arg : 1;   /* §2.2 refuses 0 at the door */
+        const unsigned steps = r->cad_arg ? r->cad_arg : 1;   /* refused 0 at the door */
         shown = floor(f * steps) / steps;
         break; }
     case CLK_CAD_STOP_TO_GO: {
         /* The whole dial in P tenths of a second, then a rest at the top until the
          * minute releases it: the value runs fast and stops at value_max. */
-        const double p = d->cad_arg ? d->cad_arg : 585;
+        const double p = r->cad_arg ? r->cad_arg : 585;
         const double run = (v + f) * 600.0 / p;
-        *out = run < d->value_max ? run : d->value_max;
+        *out = run < r->value_max ? run : r->value_max;
         return true; }
     case CLK_CAD_DRAG: {
         /* Held, then a creep across the last cad_arg minutes of the unit. */
-        const double w = d->cad_arg ? d->cad_arg : 120;
+        const double w = r->cad_arg ? r->cad_arg : 120;
         if (unit_min > 0.0) {
             const double into = f * unit_min - (unit_min - (w < unit_min ? w : unit_min));
             shown = into > 0.0 ? into / (w < unit_min ? w : unit_min) : 0.0;
@@ -1746,250 +1317,214 @@ static bool drive_units(const clk_drive_t *d, const drive_now_t *n, double *out)
     return true;
 }
 
-/* A value in units carried along the row's path: tenths of a degree on a rotation,
- * pixels on a slide. aux_travel's arithmetic, half-up, with the same clamp to the
- * domain unless the row wraps, the retrograde stop at the span, and the turn's wrap. */
-static int32_t drive_travel(const clk_drive_t *d, double units)
+/* Units carried to the fraction t of the way from P0 to P1 (D42 §3): t = (u - vmin) /
+ * (vmax - vmin). A wrap takes the fraction modulo one — the next unit starts at P0 —
+ * and a flyback or a hold clamps it, the source's own reset bringing it home. */
+static double drive_t(const clk_row_t *r, double units)
 {
-    if (!(d->flags & CLK_FLAG_WRAP)) {
-        if (units < d->value_min) units = d->value_min;
-        if (units > d->value_max) units = d->value_max;
+    const double w = (double)r->value_max - (double)r->value_min;
+    double t = w > 0.0 ? (units - (double)r->value_min) / w : 0.0;
+    if (r->end == CLK_END_WRAP) {
+        t -= floor(t);
+    } else {
+        if (t < 0.0) t = 0.0;
+        if (t > 1.0) t = 1.0;
     }
-    const double vmax = d->value_max ? d->value_max : 1;
-    const double x = d->zero + units * d->span / vmax;
-    int32_t t = (int32_t)(x >= 0.0 ? floor(x + 0.5) : -floor(-x + 0.5));
-    if (MOTION_IS_SLIDE(d->path)) return t;
-    if (d->path == CLK_MOTION_RETROGRADE &&
-        ((d->span >= 0 && t > d->span) || (d->span < 0 && t < d->span)))
-        t = d->span;
-    t %= 3600;
-    if (t < 0) t += 3600;
     return t;
 }
 
-/* A HAND slot's angle in degrees. INHERIT is the hand chain in float, the exact
- * expressions hand_angles has always evaluated (30 and 6 degrees per unit come out of
- * span/10/value_max exactly), so a v4 dial's hands land on the same tenth. */
-static float drive_hand_deg(const clk_drive_t *d, const drive_now_t *n)
+/* The pose at fraction t: an angle in tenths (half-up, wrapped into the turn) and
+ * the pivot's travel in px. */
+static void row_pose(const clk_row_t *r, double t, int32_t *ang_10, int16_t *ox, int16_t *oy)
 {
-    if (d->src == CLK_SRC_NONE) return 0.0f;
-    if (d->cadence == CLK_CAD_INHERIT) {
-        const float secF = n->hand_sec;
-        const float minF = (clk_theme.second_railway && clk_theme.second_sweep)
-                               ? (float)n->ti->tm_min
-                               : (float)n->ti->tm_min + secF / 60.0f;
-        float units;
-        if (d->src == CLK_SRC_SECOND)      units = secF;
-        else if (d->src == CLK_SRC_MINUTE) units = minF;
-        else                               units = (float)(n->ti->tm_hour % 12) + minF / 60.0f;
-        return units * ((float)d->span / 10.0f / (float)d->value_max);
-    }
-    double u;
-    if (!drive_units(d, n, &u)) return 0.0f;
-    return (float)drive_travel(d, u) / 10.0f;
+    const double a = (double)r->zero + t * (double)r->span;
+    int32_t ai = (int32_t)(a >= 0.0 ? floor(a + 0.5) : -floor(-a + 0.5));
+    ai %= 3600;
+    if (ai < 0) ai += 3600;
+    *ang_10 = ai;
+    const double x = t * (double)r->dx, y = t * (double)r->dy;
+    *ox = (int16_t)(x >= 0.0 ? floor(x + 0.5) : -floor(-x + 0.5));
+    *oy = (int16_t)(y >= 0.0 ? floor(y + 0.5) : -floor(-y + 0.5));
 }
 
-/* An AUX row's pose: tenths of a degree, or px on a slide. False when this orb has
- * no input for its source. INHERIT is aux_value_1000 and its path, unchanged; v5
- * gives the row its own cadence. */
-static bool drive_aux(const clk_aux_t *a, const drive_now_t *n, int32_t *out)
+/* D41's ease, in fraction space: a settle overshoots by 1.5 degrees (or 3 px on a
+ * row that only travels) after a jump or a step slower than the second; a flyback
+ * runs back along the path when a flyback row's source resets. A wrapping row's
+ * fraction wraps, so a minute hand's 59 -> 0 settles forward, never back round. */
+static double row_ease(const clk_row_t *r, ease_t *e, double t, uint32_t now, uint32_t *busy)
 {
-    const clk_drive_t d = {
-        .src = a->src, .path = a->kind, .cadence = a->cadence, .cad_arg = a->cad_arg,
-        .flags = a->flags,
-        .span = a->span, .zero = a->zero, .value_min = a->value_min, .value_max = a->value_max,
-    };
-    if (d.cadence == CLK_CAD_INHERIT) {
-        int64_t v1000;
-        if (!aux_value_1000(a, n->ti, n->t, n->frac, &v1000)) return false;
-        *out = MOTION_IS_SLIDE(a->kind) ? aux_offset_px(a, v1000) : aux_angle_10(a, v1000);
-        return true;
-    }
-    double u;
-    if (!drive_units(&d, n, &u)) return false;
-    *out = drive_travel(&d, u);
-    return true;
+    *busy = 0;
+    if (!r->ease) { e->init = false; return t; }
+    const int32_t trav = abs(r->dx) > abs(r->dy) ? abs(r->dx) : abs(r->dy);
+    const float amp = r->span ? EASE_SETTLE_DEG * 10.0f / (float)abs(r->span)
+                              : (trav ? EASE_SETTLE_PX / (float)trav : 0.0f);
+    float v = ease_pose(e, (float)t, now, r->ease, cad_steps_slow(r->cadence, r->src),
+                        r->end == CLK_END_FLYBACK, 1, r->end == CLK_END_WRAP ? 1.0f : 0.0f,
+                        amp, busy);
+    if (r->end == CLK_END_WRAP) v -= floorf(v);
+    return v;
 }
 
-/* The box a pointer at its current pose covers, in whichever geometry its motion
- * uses. A slide's swept box is the displaced record at no angle, which gfx_swept_box
- * answers correctly given the displaced sprite — so one helper serves both and the
- * invalidation below cannot mark the rows of the wrong shape. */
-static void aux_mark_box(const clk_aux_t *a, int32_t move_10, lv_area_t *out)
+/* The fps bucket a row's blends count under on the scheduler's line: the hour,
+ * minute and seconds slots the report has always named, the still layers, and the
+ * rest as pointers. A label only — nothing paints by it. */
+static uint8_t row_role(const clk_row_t *r)
 {
-    if (MOTION_IS_SLIDE(a->kind)) {
-        clk_sprite_t d = a->spr;
-        if (a->kind == CLK_MOTION_SLIDE_X) d.centerx = (int16_t)(d.centerx + move_10);
-        else                              d.centery = (int16_t)(d.centery + move_10);
-        gfx_swept_box(&d, 0, out);
-        return;
+    switch (r->src) {
+    case CLK_SRC_HOUR12: case CLK_SRC_HOUR24: return 0;
+    case CLK_SRC_MINUTE: return 1;
+    case CLK_SRC_SECOND: return 2;
+    case CLK_SRC_NONE:   return 3;
+    default:             return CLK_ROLE_AUX;
     }
-    gfx_swept_box(&a->spr, move_10, out);
 }
 
-/* Widgets for every row the theme ships, twin before hand so a shadow goes down
- * directly under its own pointer. make_layer() is the helper the five slots use,
- * so the pivot/centre contract, the blend mapping, and the nearest-neighbour
- * rotation are the same code here — the two paths cannot disagree about a layer
- * they were not both built from. Called from clock_view_init at the order point
- * s_aux_at marks, which is what puts the block above its plate. */
-static void aux_create(void)
+/* The sprite a row draws: the carriage's shown frame, or the row's own plate. */
+static const clk_sprite_t *row_spr(uint16_t i)
+{
+    const clk_row_t *r = &orb_theme_geo()->rows[i];
+    if (i == clk_theme.car_row && clk_theme.tourbillon_n)
+        return &clk_theme.tourbillon[s_tourb_shown >= 0 ? s_tourb_shown : 0];
+    return &r->spr;
+}
+
+/* The box a row covers at a pose. */
+static void row_mark_box(uint16_t i, int32_t ang_10, int16_t ox, int16_t oy, lv_area_t *out)
+{
+    clk_sprite_t p;
+    pose_spr(row_spr(i), ox, oy, &p);
+    gfx_swept_box(&p, ang_10, out);
+}
+
+#define ROW_REDRAW_EPS_10 2
+
+/* The per-tick pass. Every row's own pose first, then the poses it rides (a parent's,
+ * two links at most — the projection refused deeper), then each twin takes its row's,
+ * then each row that moved marks the box it vacates and the one it takes, and its
+ * widget follows. A row that stands still costs one compare.
+ *
+ * HARD GATE for sweeping dials (the hands' rule since the first port): re-posing a
+ * row invalidates its whole rotated box, so a slow sweep — a minute hand advancing a
+ * fraction of a pixel a tick — re-poses only once its angle has left the drawn one by
+ * 0.2 degrees (~0.4 px at the longest tip), catching up exactly. The carriage's orbit
+ * marks its rotated ink chords instead of the box when it can (tourbillon_ink_mark). */
+static void rows_update(const struct tm *ti, time_t t, double frac)
 {
     const orb_theme_geo_t *g = orb_theme_geo();
-    uint16_t n = g->n_aux; if (n > CLK_AUX_MAX) n = CLK_AUX_MAX;
+    if (!s_row || !g->rows) return;
+    const uint16_t n = g->n_rows < CLK_ROW_MAX ? g->n_rows : CLK_ROW_MAX;
+    int32_t ang[CLK_ROW_MAX];
+    int16_t ox[CLK_ROW_MAX], oy[CLK_ROW_MAX];
+    const drive_now_t now = { .ti = ti, .t = t, .frac = frac };
+    const uint32_t tick = lv_tick_get();
+    uint32_t want = 0;
+
     for (uint16_t i = 0; i < n; i++) {
-        if (g->aux[i].flags & CLK_FLAG_AUX_SHADOW) continue;   /* with its hand */
-        /* The pointer takes the dial's AA rule through its own source: a
-         * seconds hand on a sweeping still dial rides the hot tick and stays
-         * nearest, exactly like the main seconds slot; everything else on a
-         * still dial re-beats at wall cadence and can afford the filter. A
-         * slide never rotates, so the flag is inert on it either way. */
-        const int aa_slot = (g->aux[i].src == CLK_SRC_SECOND) ? 2 : 1;
-        const bool aa = hand_aa_for(&clk_theme, aa_slot, ORB_ASSET_AUX, g->aux[i].tag, NULL);
-        if (i + 1 < n && (g->aux[i + 1].flags & CLK_FLAG_AUX_SHADOW))
-            s_aux_obj[i + 1] = make_layer(&g->aux[i + 1].spr, &s_aux_dsc[i + 1], aa);
-        s_aux_obj[i] = make_layer(&g->aux[i].spr, &s_aux_dsc[i], aa);
+        const clk_row_t *r = &g->rows[i];
+        ox[i] = oy[i] = 0;
+        if (!r->spr.show && i != clk_theme.car_row) { ang[i] = ROW_HIDDEN; continue; }
+        if (r->src == CLK_SRC_NONE) { ang[i] = 0; continue; }   /* a still row: unturned */
+        double u;
+        if (!drive_units(r, &now, &u)) {
+            ang[i] = ROW_HIDDEN;
+            if (!s_row[i].logged) {
+                s_row[i].logged = true;
+                ESP_LOGW(TAG, "row %u: source %u has no input on this device — not drawn",
+                         (unsigned)r->tag, (unsigned)r->src);
+            }
+            continue;
+        }
+        uint32_t busy = 0;
+        const double tf = row_ease(r, &s_row[i].ease, drive_t(r, u), tick, &busy);
+        if (busy > want) want = busy;
+        row_pose(r, tf, &ang[i], &ox[i], &oy[i]);
     }
-}
-
-/* The per-tick pass. A pointer dirties pixels only when its angle actually
- * moved, so a date hand costs one integer compare a tick until midnight, and a
- * theme with no rows costs one loop exit. A row the reader hid (an unknown src
- * or kind, a sprite with no size) and a row whose value this orb cannot supply
- * are both INT32_MIN: no job, no widget, one log line each. */
-static void aux_update(const struct tm *ti, time_t t, double frac)
-{
-    const orb_theme_geo_t *g = orb_theme_geo();
-    uint16_t n = g->n_aux; if (n > CLK_AUX_MAX) n = CLK_AUX_MAX;
+    if (want) orb_sched_burst(want + 40);
+    /* The poses rows ride: a child adds its parent's own pose — eased, as drawn — and
+     * the grandparent's, two links at most (the projection refused deeper), so a
+     * needle on the carriage turns with the carriage. Every row's art is stored
+     * unturned, so the parent's whole angle is what the child rides, not its turn
+     * since P0. */
+    int32_t own_a[CLK_ROW_MAX];
+    int16_t own_x[CLK_ROW_MAX], own_y[CLK_ROW_MAX];
+    memcpy(own_a, ang, sizeof(int32_t) * n);
+    memcpy(own_x, ox, sizeof(int16_t) * n);
+    memcpy(own_y, oy, sizeof(int16_t) * n);
     for (uint16_t i = 0; i < n; i++) {
-        const clk_aux_t *a = &g->aux[i];
-        int32_t a_new;
-        if (a->flags & CLK_FLAG_AUX_SHADOW) {
-            a_new = (i > 0) ? s_aux_ang_10[i - 1] : AUX_HIDDEN;  /* follow the hand */
-        } else if (!a->spr.show) {
-            a_new = AUX_HIDDEN;
-        } else {
-            /* One call, one reading of the row's own motion: the angle a pointer
-             * turns through, or the pixels a bar slides. Reading a slide through
-             * the angle path would wrap its offset at 3600 tenths and park a reserve
-             * bar a third of the way across its own scale — a dial that lies about
-             * its battery while every number on the wire stays legal. */
-            const drive_now_t now = { .ti = ti, .t = t, .frac = frac };
-            if (!drive_aux(a, &now, &a_new)) {
-                a_new = INT32_MIN;
-                if (!(s_aux_logged & (1u << i))) {
-                    s_aux_logged |= 1u << i;
-                    ESP_LOGW(TAG, "aux %" PRIu32 ": source %u has no input on this "
-                                  "device — pointer not drawn", (uint32_t)i,
-                             (unsigned)a->src);
-                }
-            }
+        if (!g->rows[i].parent_row || ang[i] == ROW_HIDDEN) continue;
+        for (uint16_t p = g->rows[i].parent_row, hops = 0; p && hops < 2; hops++) {
+            const uint16_t pi = (uint16_t)(p - 1u);
+            if (pi >= n || own_a[pi] == ROW_HIDDEN) break;
+            ang[i] = (ang[i] + own_a[pi]) % 3600;
+            ox[i] = (int16_t)(ox[i] + own_x[pi]);
+            oy[i] = (int16_t)(oy[i] + own_y[pi]);
+            p = g->rows[pi].parent_row;
         }
-        /* C4's other half, unspent since the column landed: a needle parented to
-         * the carriage rides the carriage's rotation too. The needle's arbour IS
-         * the carriage's axis (the §25.2 crop pivot carries it), so rotation
-         * about a shared centre commutes and the whole pose is one summed angle
-         * — the same figure the carriage row itself wears (s_ang_10[2] plus the
-         * row's start orientation). The twin is untouched: it mirrors its hand
-         * row's stored angle and inherits the sum with it. */
-        /* D41: the pointer's own ease, on the pose the drive just gave it. A twin
-         * takes its hand's eased pose through s_aux_ang_10 below. */
-        if (a->ease && a_new > AUX_HIDDEN && a_new != INT32_MIN && !(a->flags & CLK_FLAG_AUX_SHADOW)) {
-            uint32_t busy = 0;
-            const bool slide = MOTION_IS_SLIDE(a->kind);
-            float v = ease_pose(&s_aux_ease[i], (float)a_new, lv_tick_get(), a->ease,
-                                cad_steps_slow(a->cadence, a->src),
-                                a->kind == CLK_MOTION_RETROGRADE || slide, a->span >= 0 ? 1 : -1,
-                                slide ? 0.0f : 3600.0f,
-                                slide ? EASE_SETTLE_PX : EASE_SETTLE_DEG * 10.0f, &busy);
-            if (!slide) { v = fmodf(v, 3600.0f); if (v < 0.0f) v += 3600.0f; }
-            a_new = (int32_t)lroundf(v);
-            if (busy) orb_sched_burst(busy + 40);
+    }
+    for (uint16_t i = 1; i < n; i++)
+        if (g->rows[i].flags & CLK_FLAG_AUX_SHADOW) {
+            ang[i] = ang[i - 1]; ox[i] = ox[i - 1]; oy[i] = oy[i - 1];
         }
-        if (a->parent_row && a->parent_row == s_car_row_1 && s_car &&
-            a_new > AUX_HIDDEN && !MOTION_IS_SLIDE(a->kind) &&
-            s_ang_10[2] != INT32_MIN)
-            a_new = (int32_t)(((int64_t)a_new + s_ang_10[2] + s_car_start_10) % 3600);
-        if (a_new == s_aux_ang_10[i]) continue;               /* nothing moved */
 
-        /* The wedge to rebuild: where the pointer was and where it is going,
-         * about the point the device pins its pivot. Same discipline as
-         * apply_angles() — under L4 the commit hook owns those rows. */
-        const int32_t prev = s_aux_ang_10[i];
-        /* Stage the INCOMING pose before anything reads it: the commit hook and the
-         * classic widget below both draw a slide from s_aux_pose, and a mark computed
-         * from one displacement with a paint reading another is the ghost the swept-box
-         * contract exists to prevent. */
-        if (a_new != AUX_HIDDEN && MOTION_IS_SLIDE(a->kind)) {
-            s_aux_pose[i] = a->spr;
-            if (a->kind == CLK_MOTION_SLIDE_X)
-                s_aux_pose[i].centerx = (int16_t)(s_aux_pose[i].centerx + a_new);
-            else
-                s_aux_pose[i].centery = (int16_t)(s_aux_pose[i].centery + a_new);
+    lv_display_t *disp = lv_obj_get_display(s_scr);
+    for (uint16_t i = 0; i < n; i++) {
+        row_state_t *st = &s_row[i];
+        const int32_t a = ang[i], prev = st->ang_10;
+        if (a == prev && ox[i] == st->ox && oy[i] == st->oy) continue;
+        if (a != ROW_HIDDEN && prev != ROW_HIDDEN && ox[i] == st->ox && oy[i] == st->oy) {
+            int32_t d = a - prev;
+            if (d > 1800) d -= 3600;
+            if (d < -1800) d += 3600;
+            if (abs((int)d) < ROW_REDRAW_EPS_10) continue;
         }
-        if (s_aux_obj[i]) {
-            lv_area_t u;
-            bool have = false;
-            if (prev != AUX_HIDDEN) {
-                aux_mark_box(a, prev, &u); have = true;
-                if (a_new != AUX_HIDDEN) {
-                    lv_area_t nn; aux_mark_box(a, a_new, &nn);
-                    gfx_area_union(&u, &nn);
-                }
-            } else if (a_new != AUX_HIDDEN) {
-                aux_mark_box(a, a_new, &u); have = true;
+
+        /* The wedge to rebuild: where the row was and where it is going. The carriage
+         * alone on its arbour marks its rotated ink instead of the box when it can. */
+        lv_area_t u;
+        bool have = false;
+        const bool car = i == clk_theme.car_row && clk_theme.tourbillon_n;
+        const bool inked = car && prev != ROW_HIDDEN && a != ROW_HIDDEN &&
+                           !ox[i] && !oy[i] && !st->ox && !st->oy &&
+                           tourbillon_ink_mark((int)s_tourb_shown, prev, a);
+        if (!inked) {
+            if (prev != ROW_HIDDEN) { row_mark_box(i, prev, st->ox, st->oy, &u); have = true; }
+            if (a != ROW_HIDDEN) {
+                lv_area_t nn;
+                row_mark_box(i, a, ox[i], oy[i], &nn);
+                if (have) gfx_area_union(&u, &nn); else { u = nn; have = true; }
             }
-            if (have) {
-                if (u.x1 < 0) u.x1 = 0;
-                if (u.y1 < 0) u.y1 = 0;
-                if (u.x2 > CLK_SCR_W - 1) u.x2 = CLK_SCR_W - 1;
-                if (u.y2 > CLK_SCR_H - 1) u.y2 = CLK_SCR_H - 1;
+        }
+        if (have) {
+            if (u.x1 < 0) u.x1 = 0;
+            if (u.y1 < 0) u.y1 = 0;
+            if (u.x2 > CLK_SCR_W - 1) u.x2 = CLK_SCR_W - 1;
+            if (u.y2 > CLK_SCR_H - 1) u.y2 = CLK_SCR_H - 1;
 #if CLK_BG_DIRECT_PUSH
-                if (orb_sched_l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
-                else
+            if (orb_sched_l4_active()) gfx_mark_rows(u.y1, u.y2, u.x1, u.x2, false);
+            else
 #endif
-                    lv_obj_invalidate_area(s_scr, &u);
-            }
+                lv_obj_invalidate_area(s_scr, &u);
         }
-        if (s_aux_obj[i]) {
-            /* Same discipline as apply_angles(): a rotation setter invalidates
-             * the FULL transformed box of both poses, which is the 36-48 ms a
-             * rotating layer used to cost every tick. Under L4 the hook owns the
-             * rows we just marked, so the setter runs with invalidation off; the
-             * first pose ever needs LVGL's own render because nothing has ever
-             * painted these pixels. */
-            lv_display_t *disp = lv_obj_get_display(s_scr);
-            /* One pose, two setters. A pointer that turns gets the rotation setter
-             * apply_angles() uses for the hands; a pointer that slides gets a position
-             * setter and NO rotation at all, because rotating a sprite the commit
-             * paints at zero would put the classic path and the L4 path on two
-             * different pixels. The displacement rides the same s_aux_pose record
-             * the mark and the table's pose pass read, so all three paths move by
-             * one number. */
-            const bool slide = MOTION_IS_SLIDE(a->kind);
-            if (a_new == AUX_HIDDEN) {
-                lv_obj_set_hidden(s_aux_obj[i], true);
-            } else {
-                if (prev == AUX_HIDDEN) lv_obj_set_hidden(s_aux_obj[i], false);
-                else lv_display_enable_invalidation(disp, false);
-                if (slide) {
-                    /* make_layer() parked the widget so its pivot lands on the sprite's
-                     * centre; the slide moves it along ONE axis from there by the same
-                     * displacement s_aux_pose carries and the mark was computed from. */
-                    const lv_coord_t base_x = a->spr.centerx - a->spr.pivotx;
-                    const lv_coord_t base_y = a->spr.centery - a->spr.pivoty;
-                    lv_obj_set_pos(s_aux_obj[i],
-                                   a->kind == CLK_MOTION_SLIDE_X
-                                       ? (lv_coord_t)(base_x + a_new) : base_x,
-                                   a->kind == CLK_MOTION_SLIDE_Y
-                                       ? (lv_coord_t)(base_y + a_new) : base_y);
-                } else {
-                    lv_image_set_rotation(s_aux_obj[i], (uint16_t)a_new);
-                }
-                if (prev != AUX_HIDDEN) lv_display_enable_invalidation(disp, true);
-            }
-        }
-        s_aux_ang_10[i] = a_new;
+        /* Stage the INCOMING pose before anything reads it: the commit hook and the
+         * classic widget both draw from it, and a mark computed from one travel with a
+         * paint reading another is the ghost the swept-box contract exists to prevent. */
+        st->ang_10 = a;
+        st->ox = ox[i]; st->oy = oy[i];
+        if (a != ROW_HIDDEN) pose_spr(&g->rows[i].spr, ox[i], oy[i], &st->pose);
+        if (!st->obj) continue;
+        /* One pose, two setters, with LVGL's own invalidation off: a rotation setter
+         * invalidates the FULL transformed box of both poses (the 36-48 ms a rotating
+         * layer used to cost every tick), and the marks above already cover the change.
+         * The first pose ever needs LVGL's own render, because nothing has painted
+         * these pixels yet. */
+        if (a == ROW_HIDDEN) { lv_obj_set_hidden(st->obj, true); continue; }
+        if (prev == ROW_HIDDEN) lv_obj_set_hidden(st->obj, false);
+        else lv_display_enable_invalidation(disp, false);
+        const clk_sprite_t *sp = row_spr(i);
+        lv_obj_set_pos(st->obj, (lv_coord_t)(sp->centerx - sp->pivotx + ox[i]),
+                       (lv_coord_t)(sp->centery - sp->pivoty + oy[i]));
+        lv_image_set_rotation(st->obj, a);
+        if (prev != ROW_HIDDEN) lv_display_enable_invalidation(disp, true);
     }
 }
 
@@ -2042,7 +1577,7 @@ static int snd_step_class(uint8_t src)
 }
 
 /* Steps per unit a cadence makes: jump is one, step N is N, everything else (sweep,
- * stop-to-go, drag, inherit) has no single instant to sound. */
+ * stop-to-go, drag) has no single instant to sound. */
 static uint8_t snd_cad_steps(uint8_t cad, uint16_t arg)
 {
     if (cad == CLK_CAD_JUMP) return 1;
@@ -2055,28 +1590,17 @@ static void snd_note_step(uint8_t out[3], int cls, uint8_t n)
     if (cls >= 0 && n > out[cls]) out[cls] = n;
 }
 
-/* What steps on this dial: every hand slot's driven row (and the railway minute that
- * jumps without one), every pointer's cadence or its old jump flag, and every
- * calendar plate, which turns whole values at midnight by construction. */
+/* What steps on this dial: every drawn row's cadence, and every calendar plate, which
+ * turns whole values at midnight by construction. A digit row steps with its source:
+ * a date's units ring jumps at midnight like the date. */
 static void snd_steps_scan(uint8_t out[3])
 {
     memset(out, 0, 3);
-    for (int k = 0; k < 5; k++) {
-        if (!clk_theme.hand[k].w || !clk_theme.hand[k].show) continue;
-        const clk_drive_t d = hand_row(k);
-        uint8_t n = snd_cad_steps(d.cadence, d.cad_arg);
-        if (k == 1 && d.cadence == CLK_CAD_INHERIT && !clk_theme.hand_drive[1].src &&
-            clk_theme.second_railway && clk_theme.second_sweep)
-            n = 1;                                       /* the railway minute */
-        snd_note_step(out, snd_step_class(d.src), n);
-    }
     const orb_theme_geo_t *g = orb_theme_geo();
-    for (uint16_t i = 0; i < g->n_aux && i < CLK_AUX_MAX; i++) {
-        const clk_aux_t *a = &g->aux[i];
-        if ((a->flags & CLK_FLAG_AUX_SHADOW) || !a->spr.show) continue;
-        uint8_t n = snd_cad_steps(a->cadence, a->cad_arg);
-        if (a->cadence == CLK_CAD_INHERIT && (a->flags & CLK_FLAG_JUMP)) n = 1;
-        snd_note_step(out, snd_step_class(a->src), n);
+    for (uint16_t i = 0; i < g->n_rows && i < CLK_ROW_MAX; i++) {
+        const clk_row_t *r = &g->rows[i];
+        if ((r->flags & CLK_FLAG_AUX_SHADOW) || !r->spr.show) continue;
+        snd_note_step(out, snd_step_class(r->src), snd_cad_steps(r->cadence, r->cad_arg));
     }
     for (uint16_t i = 0; i < g->n_comps && i < CLK_COMP_MAX; i++)
         if (snd_step_class(g->comps[i].src) == SND_STEP_CAL) out[SND_STEP_CAL] = 1;
@@ -2335,25 +1859,41 @@ static void compose_now(void)
     struct tm ti;
     localtime_r(&t, &ti);
 
-    float ang[5];
-    hand_angles(frac, &ti, t, ang);
-    hand_ease(ang);
-    apply_angles(ang);
+    /* Delta-bank cadence: the tick delivers exactly one bank frame per tick, so a
+     * sweeping dial's beat rides the TICK COUNTER, not a wall-clock grid. The dial's
+     * beat (tick_rate, derived from its seconds rows) becomes ticks-per-beat
+     * (hand_beat_ticks): 4 bps on a 12 fps tick = sample every 3rd tick, always the
+     * 3rd — evenly spaced beats even though 250 ms is not a multiple of the ~83 ms
+     * the pipe delivers. On each beat the fraction is sampled from the wall clock,
+     * so the rows read true time (re-anchored at every second boundary); between
+     * beats it holds, the redraw gate skips the re-pose, and the tick's commit
+     * carries bank rows only. Every row reads the held fraction, so a sub-dial
+     * seconds hand beats with the main one. */
+    const double wall_frac = frac;
+    if (clk_theme.second_sweep && clk_theme.tick_rate > 0 && orb_bg_gif_mode()) {
+        const uint32_t tpb = hand_beat_ticks();
+        if (tpb > 1) {
+            if (ti.tm_sec != s_bt_sec) {        /* true seconds re-anchor the phase */
+                s_bt_sec = ti.tm_sec;
+                s_bt_ctr = 0;
+            }
+            if ((s_bt_ctr % tpb) == 0) s_bt_frac = frac;
+            s_bt_ctr++;
+            frac = s_bt_frac;
+        }
+    }
 
-    /* The complication pass: every window/strip re-reads its value from the
-     * SAME local minute the hands were sampled from, and only the comps whose
-     * selected frame actually changed dirty their rows (see the block above
-     * compose_now). A theme with no complications costs one counter here. */
+    /* Every moving row, off one reading: a date ring and the date window are two
+     * views of one tm_mday, and the tick that moved one has moved the other. */
+    rows_update(&ti, t, frac);
+
+    /* The complication pass: every window re-reads its value from the SAME local
+     * minute the rows were sampled from, and only the comps whose selected frame
+     * actually changed dirty their rows. */
     comps_update(&ti, t);
 
-    /* Then the sub-dial pointers, off the SAME reading: a date ring and the date
-     * window are two views of one tm_mday, and the tick that moved one has moved
-     * the other. frac is the wall fraction hand_angles swept against, which is
-     * what lets a sub-dial second hand sweep too instead of stamping 6 degrees. */
-    aux_update(&ti, t, frac);
-
-    /* D39: the sounds, off the same reading the hands just took. */
-    sound_policy(&ti, t, frac);
+    /* D39: the sounds, off the same reading the rows just took. */
+    sound_policy(&ti, t, wall_frac);
 }
 
 
@@ -2387,10 +1927,9 @@ static void compose_now(void)
  * against the dial-c3 baselines.
  *
  * What is not a row: the plate (class plate slot 0 — the canvas is the plate,
- * and a row for it would blend the background over its own restore); a row the
- * bake folded into the plate (the matte mask names it, honoured the way the
- * legacy job list skips a folded layer); and a switched-off row (EF_HIDDEN),
- * which is a theme's own off switch and not a refusal.
+ * and a row for it would blend the background over its own restore), a sound,
+ * and a switched-off row (EF_HIDDEN), which is a theme's own off switch and not a
+ * refusal. A still layer the bake folded into the plate is simply not shipped.
  */
 
 /* One claimed row: the identity the bundle named, what the pose pass needs
@@ -2401,15 +1940,16 @@ typedef struct {
     uint16_t cls, slot;        /* the identity, echoed back for logs          */
     uint16_t frame0, n_frames; /* the element's own frame window into the bank */
     int16_t  x, y;             /* theme placement — what a slide displaces     */
-    uint8_t  kind;             /* BANK: CLK_KIND_*; AUX: CLK_MOTION_*; else 0  */
+    uint8_t  kind;             /* BANK: CLK_KIND_*; AUX: CLK_SHAPE_*; else 0   */
     uint8_t  gidx;             /* BANK/AUX: this row's index in the geo table
                                 * the tick state is indexed by; 0xFF = none */
     orb_layer_desc_t d;        /* the pose the table holds right now          */
 } clk_layer_key_t;
 #define CLK_EF_AUX_TWIN   0x10u  /* theme_schema EF_AUX_SHADOW, the twin bit */
-#define CLK_LAYER_KEYS_MAX 37   /* the clock's whole drawn vocabulary: 2 plates, 6 hands,
-                                 * 5 shadows, 16 complications, 8 pointers. An ADOPTED
-                                 * table cannot exceed it — orb_clock3.c refuses a row
+#define CLK_LAYER_KEYS_MAX (2 + CLK_ROW_MAX + CLK_COMP_MAX)
+                                /* the clock's whole drawn vocabulary: 2 plates, the
+                                 * moving rows, 16 complications. An ADOPTED table
+                                 * cannot exceed it — orb_clock3.c refuses a row
                                  * outside those cells and a duplicate inside — so the
                                  * bound here is a belt, not a budget. */
 /* 2026-10-24: PSRAM heap, lazy in clock_layers_build. As .bss these 2,960
@@ -2433,19 +1973,15 @@ static const orb_bundle_sec_t *s_lay_sec;
 static uint32_t s_lay_bank_off;
 
 #define CLK_EF_HIDDEN  0x08u    /* theme_schema EF_HIDDEN, the mirror orb_clock3.c keeps */
-#define CLK_W_MATTE    20u      /* orb_clock3.c W_MATTE_MASK: one truth, read the same way */
 
-/* The fps bucket a row's art belongs to — the mapping the legacy job list
- * uses: an ordered layer counts under its slot, the carriage (hand slot 5)
- * rides the seconds count it turns with, a shadow counts with the hand casting
- * it, and the glass and the baked rows keep their own buckets. */
-static uint8_t clk_row_role(uint16_t cls, uint16_t slot)
+/* The one stacking key both paint paths sort by (D42): the row's depth, and at a tie
+ * a shadow twin goes under every row at that depth, so it falls beneath the row
+ * casting it. Equal keys keep table order. clock_view_init's creation walk and
+ * clock_layers_build's sort both call this, so a row LVGL renders and a row the L4
+ * hook paints can never stack differently. */
+static uint16_t depth_key(uint8_t order, bool twin)
 {
-    if (cls == ORB_ASSET_HAND)   return (uint8_t)(slot == 5u ? 2u : slot);
-    if (cls == ORB_ASSET_SPRITE) return (uint8_t)slot;
-    if (cls == ORB_ASSET_PLATE)  return CLK_ROLE_GLASS;
-    if (cls == ORB_ASSET_BANK)   return CLK_ROLE_COMP;
-    return CLK_ROLE_AUX;
+    return (uint16_t)((uint16_t)order * 2u + (twin ? 0u : 1u));
 }
 
 /* One element's row. The descriptor's own placement, pivot and blend stay
@@ -2453,7 +1989,7 @@ static uint8_t clk_row_role(uint16_t cls, uint16_t slot)
  * FORMAT 3 dialect carries no blend column (a shadow is its own alpha plate);
  * and the angle starts at the theme's fixed degrees — the wall angle is what
  * Commit 4's tick adds, per row, per beat. */
-static void clk_row_desc(const orb_elem_t *e, uint32_t bank_off,
+static void clk_row_desc(const orb_elem_t *e, uint32_t bank_off, uint8_t role,
                          orb_layer_desc_t *d)
 {
     d->art.cls     = e->cls;
@@ -2464,36 +2000,17 @@ static void clk_row_desc(const orb_elem_t *e, uint32_t bank_off,
     d->art.h       = (int16_t)e->h;
     d->art.pivotx  = e->pivot_x;
     d->art.pivoty  = e->pivot_y;
-    /* A shadow twin (class sprite, slot<5) carries the §25.2 light offset on
-     * its pivot COLUMN: its centre is hand-centre + (dx,dy) while its rotation
-     * pivot is the CROP pivot (hand centre minus its own draw point). The two
-     * break the centre = top-left + pivot identity that orb_layer_desc_t and
-     * theme_spr bake into every other row, so feeding the raw pivot_x here made
-     * the L4 painter spin the shadow about a point (dx,dy) off its true arbour:
-     * the shadow swung out around the hand as it turned, worst on the second
-     * hand (largest offset, full sweep). orb_clock3_parse already worked the
-     * identity back into clk_theme.shadow[slot]; restate the row's box and
-     * pivot from it so the L4 path rotates the shadow about the hand's real
-     * arbour and lands its centre on hand + light, exactly like the LVGL path. */
-    if (e->cls == ORB_ASSET_SPRITE && e->slot < 5u) {
-        const clk_sprite_t *sh = &clk_theme.shadow[e->slot];
-        d->art.x       = (int16_t)(sh->centerx - sh->pivotx);   /* top-left */
-        d->art.y       = (int16_t)(sh->centery - sh->pivoty);
-        d->art.pivotx  = sh->pivotx;                             /* crop pivot */
-        d->art.pivoty  = sh->pivoty;
-    }
     d->art.prim    = (uint16_t)orb_asset_class_prim((orb_asset_class_t)e->cls);
     d->art.global  = 0;                               /* the clock's namespace  */
     d->art.off     = bank_off + e->off;               /* the fold — see above   */
     d->art.bytes   = e->size;
     d->ang_10      = (int16_t)(e->degrees / 10u);     /* hundredths -> tenths   */
     d->show        = 0;                               /* Commit 4 wakes it      */
-    d->role        = clk_row_role(e->cls, e->slot);
+    d->role        = role;
     d->gen_prim    = 0xFFu;                           /* the answer's own prim  */
     d->alpha       = 255;
-    /* The painter's half of hand_aa_for's answer: the bake's bit, on a turned row. */
-    d->smooth      = (e->cls == ORB_ASSET_HAND || e->cls == ORB_ASSET_SPRITE || e->cls == ORB_ASSET_AUX)
-                     && (e->flags & CLK_EF_SMOOTH) ? 1u : 0u;
+    /* The painter's half of row_aa's answer: the bake's bit, on a moving row. */
+    d->smooth      = e->cls == ORB_ASSET_AUX && (e->flags & CLK_EF_SMOOTH) ? 1u : 0u;
 }
 
 /* The claim, handed to the OS, and the verdict it buys printed beside it: one
@@ -2529,7 +2046,6 @@ static void clock_layers_build(orb_app_t *self)
     s_lay_n = 0;
     s_lay_sec = NULL;                          /* the pose pass parks with the  */
     s_lay_bank_off = 0;                        /* rows it cannot resolve        */
-    s_car_row_1 = 0;                           /* no carriage row seen yet      */
 
     const orb_bundle_sec_t *sec = NULL;
     uint32_t bank_off = 0;
@@ -2556,35 +2072,24 @@ static void clock_layers_build(orb_app_t *self)
     const orb_theme_geo_t *g_geo = orb_theme_geo();
     const int n_comps_geo = (int)g_geo->n_comps  < CLK_COMP_MAX
                             ? (int)g_geo->n_comps  : CLK_COMP_MAX;
-    const int n_aux_geo   = (int)g_geo->n_aux     < CLK_AUX_MAX
-                            ? (int)g_geo->n_aux    : CLK_AUX_MAX;
+    const int n_rows_geo  = (int)g_geo->n_rows    < CLK_ROW_MAX
+                            ? (int)g_geo->n_rows   : CLK_ROW_MAX;
 
-    /* Depth first, table order second. The insert sort is over at most 37
-     * entries before anything is claimed. */
-    const uint32_t matte = orb_bundle_scalar(sec, CLK_W_MATTE);
+    /* Depth first, table order second (depth_key, the classic path's key too).
+     * The insert sort is over at most CLK_LAYER_KEYS_MAX entries before anything
+     * is claimed. The glass rides above everything. */
     uint16_t pick_cls[CLK_LAYER_KEYS_MAX], pick_slot[CLK_LAYER_KEYS_MAX];
     uint16_t pick_ord[CLK_LAYER_KEYS_MAX];
-    int n = 0, hidden = 0, folded = 0;
+    int n = 0, hidden = 0;
     for (uint32_t i = 0; i < sec->n_elem && n < CLK_LAYER_KEYS_MAX; i++) {
         orb_bundle_elem_t e;
         orb_bundle_elem_at(sec, i, &e);
-        if (e.cls == ORB_ASSET_HAND && e.slot == 5u)
-            s_car_row_1 = (uint16_t)(i + 1u);  /* C4: needles parented to this row ride it */
         if (e.cls == ORB_ASSET_PLATE && e.slot == 0u) continue;   /* the canvas */
         if (e.cls == ORB_ASSET_SOUND) continue;   /* D39: played by sound_policy, never drawn */
         if (e.flags & CLK_EF_HIDDEN) { hidden++; continue; }
-        if ((e.cls == ORB_ASSET_HAND || e.cls == ORB_ASSET_SPRITE)
-            && e.slot < 5u && (matte & (1u << e.slot))) { folded++; continue; }
-        if (e.cls == ORB_ASSET_PLATE && (matte & 0x20u)) { folded++; continue; }
-        /* A pointer's twin draws UNDER its hand — the legacy job list put it
-         * there and the classic path's sibling order agrees. The bake packs
-         * the pair adjacent, hand first, and gives both the hand's depth, so
-         * depth-ties must break twin-first: the twin's sort key steps down
-         * one rung. Equal keys otherwise keep table order. */
-        const uint8_t twin = (e.cls == ORB_ASSET_AUX &&
-                              (e.flags & CLK_EF_AUX_TWIN)) ? 1u : 0u;
         pick_cls[n] = e.cls; pick_slot[n] = e.slot;
-        pick_ord[n] = (twin && e.order) ? (uint16_t)(e.order - 1u) : e.order;
+        pick_ord[n] = e.cls == ORB_ASSET_PLATE ? 0xFFFFu
+                    : depth_key(e.order, e.cls == ORB_ASSET_AUX && (e.flags & CLK_EF_AUX_TWIN));
         n++;
     }
     for (int a = 1; a < n; a++) {                 /* stable: equal depths keep table order */
@@ -2596,7 +2101,7 @@ static void clock_layers_build(orb_app_t *self)
             pick_slot[b + 1] = pick_slot[b];
             b--;
         }
-        pick_ord[b + 1] = (uint8_t)ko;
+        pick_ord[b + 1] = ko;
         pick_cls[b + 1] = kc;
         pick_slot[b + 1] = ks;
     }
@@ -2615,9 +2120,28 @@ static void clock_layers_build(orb_app_t *self)
             refused++;
             continue;
         }
+        /* The tick state — s_comp_frame, s_row — is indexed by the GEO table's
+         * own slot, which a dense bake makes the element slot and a sparse one
+         * not. Resolve it once here, against the same projection the update
+         * passes walk, and the pose pass never guesses. */
+        uint8_t gidx = 0xFFu, role = CLK_ROLE_AUX;
+        if (pick_cls[k] == ORB_ASSET_BANK && el.kind == CLK_KIND_WINDOW) {
+            role = CLK_ROLE_COMP;
+            for (int c = 0; c < n_comps_geo; c++)
+                if (g_geo->comps[c].tag == el.slot) { gidx = (uint8_t)c; break; }
+        } else if (pick_cls[k] == ORB_ASSET_AUX) {
+            for (int c = 0; c < n_rows_geo; c++)
+                if (g_geo->rows[c].tag == el.slot) {
+                    gidx = (uint8_t)c;
+                    role = row_role(&g_geo->rows[c]);
+                    break;
+                }
+        } else if (pick_cls[k] == ORB_ASSET_PLATE) {
+            role = CLK_ROLE_GLASS;
+        }
         orb_layer_desc_t d;
         memset(&d, 0, sizeof d);
-        clk_row_desc(&el, bank_off, &d);
+        clk_row_desc(&el, bank_off, role, &d);
         const int h = svc->layer_add(self, &d);
         if (h < 0) { refused++; continue; }   /* full, malformed, or no heap: the
                                                * table counted it; the walk moves on */
@@ -2626,26 +2150,14 @@ static void clock_layers_build(orb_app_t *self)
         r->frame0 = el.frame0; r->n_frames = el.n_frames;
         r->x = el.x; r->y = el.y;
         r->kind = (uint8_t)el.kind;
-        /* The tick state — s_comp_frame, s_aux_ang_10 — is indexed by the
-         * GEO table's own slot, which a dense bake makes the element slot and
-         * a sparse one not. Resolve it once here, against the same projection
-         * the update passes walk, and the pose pass never guesses. */
-        r->gidx = 0xFFu;
-        if (pick_cls[k] == ORB_ASSET_BANK && el.kind == CLK_KIND_WINDOW) {
-            for (int c = 0; c < n_comps_geo; c++)
-                if (g_geo->comps[c].tag == el.slot) { r->gidx = (uint8_t)c; break; }
-        } else if (pick_cls[k] == ORB_ASSET_AUX) {
-            for (int c = 0; c < n_aux_geo; c++)
-                if (g_geo->aux[c].tag == el.slot) { r->gidx = (uint8_t)c; break; }
-        }
+        r->gidx = gidx;
         r->d = d;                               /* the pose the table holds now */
         s_lay_handle[s_lay_n] = h;
         s_lay_n++;
     }
 
-    ESP_LOGI(TAG, "layer table: %d row%s, %d hidden, %d folded, %d refused (base %lu)",
-             s_lay_n, s_lay_n == 1 ? "" : "s", hidden, folded, refused,
-             (unsigned long)bank_off);
+    ESP_LOGI(TAG, "layer table: %d row%s, %d hidden, %d refused (base %lu)",
+             s_lay_n, s_lay_n == 1 ? "" : "s", hidden, refused, (unsigned long)bank_off);
     clock_layers_claim(s_lay_n, refused);
 }
 
@@ -2654,24 +2166,18 @@ static void clock_layers_build(orb_app_t *self)
  * state at the tick instead — once per row, on the numbers that pass already
  * kept, and nothing reaches the gate twice.
  *
- * Each row's pose is DERIVED, never stored twice: hands and shadows read
- * s_ang_10 (apply_angles' angle, set before this runs), the carriage reads it
- * plus its start orientation at the frame tourbillon_advance just composited,
- * BANK rows read s_comp_frame the complication pass just selected, pointer
- * rows read s_aux_ang_10 / the slide s_aux_pose aux_update just staged, and
- * the glass is the static it was baked as. The gates match the retired job
- * list line for line — an angle of INT32_MIN means never posed, a comp frame
- * of -1 means the pass already hid it, shadow rows honour the theme's
- * shadow_on scalar — so a row that the legacy path would not have painted
- * wakes hidden and stays that way.
+ * Each row's pose is DERIVED, never stored twice: a moving row reads the pose
+ * rows_update just staged in s_row (the carriage at the frame tourbillon_advance
+ * just composited), a BANK row the frame the complication pass just selected,
+ * and the glass is the static it was baked as. A row never posed (ROW_HIDDEN)
+ * or a comp frame of -1 wakes hidden and stays that way.
  *
- * Diff first: an hour hand that stands still costs one integer compare, the
- * way the retired hook made it cost. A 0->1 transition also TOUCHES: that is
- * the one damage a mark site cannot have computed, because until now the row
- * drew nothing and its box never entered the row bank. Vacated poses need no
- * touch here — every move-mark (apply_angles' wedges, the comp and pointer
- * boxes, the tourbillon diff) marks old and new together, exactly as the
- * legacy path demanded, and the flush weld restores and repaints both. */
+ * Diff first: an hour hand that stands still costs one integer compare. A 0->1
+ * transition also TOUCHES: that is the one damage a mark site cannot have
+ * computed, because until now the row drew nothing and its box never entered the
+ * row bank. Vacated poses need no touch here — every move-mark (the row wedges,
+ * the comp boxes, the tourbillon diff) marks old and new together, and the flush
+ * weld restores and repaints both. */
 static void clock_layers_refresh(void)
 {
     if (s_lay_n == 0 || !orb_sched_l4_active())
@@ -2682,41 +2188,11 @@ static void clock_layers_refresh(void)
         orb_layer_desc_t d = r->d;    /* start from the pose the table holds */
         uint8_t show = 0;
 
-        /* The visibility gates are the retired job list's own, widgets and
-         * all: s_hand/s_shadow/s_car/s_overlay exist exactly where
-         * clock_view_init decided a layer draws, and a row whose widget the
-         * compiled vocabulary does not build — a pointer twin's hand that
-         * was matte-folded, a sprite beyond the shadowed slots — stays
-         * hidden here for the same reason it stayed out of that list. The
-         * ledger counts it (the bake named a real row); generalising the
-         * renderer past the compiled five is a later commit's bench. */
+        /* The visibility gates: a row whose widget the dial did not build, or whose
+         * pose the update pass hid, stays hidden here for the same reason. */
         switch (r->cls) {
-        case ORB_ASSET_HAND:
-            if (r->slot < 5u) {
-                const int32_t a = s_ang_10[r->slot];
-                if (s_hand[r->slot] && a != INT32_MIN) { show = 1; d.ang_10 = (int16_t)a; }
-            } else if (s_car && s_ang_10[2] != INT32_MIN) {
-                /* The carriage: the seconds angle plus its start orientation,
-                 * at the frame the wall clock just picked — the same figure
-                 * apply_angles and tourbillon_advance mark against. */
-                int f = s_tourb_shown;
-                if (f < 0 || f >= (int)r->n_frames) f = 0;
-                orb_bundle_spr_t sp;
-                orb_bundle_spr_at(s_lay_sec, (uint32_t)(r->frame0 + f), &sp);
-                d.art.off = s_lay_bank_off + sp.off;
-                d.art.bytes = sp.size;
-                d.ang_10 = (int16_t)(s_ang_10[2] + s_car_start_10);
-                show = 1;
-            }
-            break;
-        case ORB_ASSET_SPRITE:
-            if (r->slot < 5u && s_shadow[r->slot]) {
-                const int32_t a = s_ang_10[r->slot];
-                if (a != INT32_MIN) { show = 1; d.ang_10 = (int16_t)a; }
-            }
-            break;
         case ORB_ASSET_PLATE:
-            if (s_overlay) show = 1;  /* the glass: built, unfolded, static   */
+            if (s_overlay) show = 1;  /* the glass: built and static */
             break;
         case ORB_ASSET_BANK: {
             /* FORMAT 3 admits no comp kind but the window, so one row is one
@@ -2732,21 +2208,27 @@ static void clock_layers_refresh(void)
             }
             break; }
         case ORB_ASSET_AUX: {
-            const int32_t v = (r->gidx != 0xFFu) ? s_aux_ang_10[r->gidx] : AUX_HIDDEN;
-            if (v != AUX_HIDDEN && v != INT32_MIN) {
-                if (MOTION_IS_SLIDE(r->kind)) {
-                    /* A slide reaches the compositor as the one thing it is:
-                     * the plate at its placed origin, displaced along its
-                     * axis by aux_update's own figure — the same number
-                     * s_aux_pose carries to the marks and the widgets, so
-                     * all three paths move by one and the static paint path
-                     * costs what every static row costs. */
-                    d.x = (int16_t)(r->x + (r->kind == CLK_MOTION_SLIDE_X ? v : 0));
-                    d.y = (int16_t)(r->y + (r->kind == CLK_MOTION_SLIDE_Y ? v : 0));
-                    d.ang_10 = 0;
+            const row_state_t *st = (r->gidx != 0xFFu && s_row) ? &s_row[r->gidx] : NULL;
+            if (st && st->obj && st->ang_10 != ROW_HIDDEN) {
+                /* A travelled pose reaches the compositor as the plate at its placed
+                 * origin moved by the update pass's own figure — the number the marks
+                 * and the widget read — and turned about its moved pivot. */
+                if (st->ox || st->oy) {
+                    d.x = (int16_t)(r->x + st->ox);
+                    d.y = (int16_t)(r->y + st->oy);
                 } else {
-                    d.x = 0; d.y = 0;   /* the resolver's own placement        */
-                    d.ang_10 = (int16_t)v;
+                    d.x = 0; d.y = 0;   /* the resolver's own placement */
+                }
+                d.ang_10 = (int16_t)st->ang_10;
+                if (r->gidx == clk_theme.car_row && clk_theme.tourbillon_n) {
+                    /* The carriage, at the frame the wall clock just picked — the
+                     * frame tourbillon_advance marks against. */
+                    int f = s_tourb_shown;
+                    if (f < 0 || f >= (int)r->n_frames) f = 0;
+                    orb_bundle_spr_t sp;
+                    orb_bundle_spr_at(s_lay_sec, (uint32_t)(r->frame0 + f), &sp);
+                    d.art.off = s_lay_bank_off + sp.off;
+                    d.art.bytes = sp.size;
                 }
                 show = 1;
             }
@@ -2869,103 +2351,70 @@ esp_err_t clock_view_init(orb_app_t *self)
     lv_image_set_src(plate, plate_src);
     orb_bg_set_plate(plate);
     orb_bg_init_frames();
-    /* Fresh widgets are all at rotation 0, so forget the angles we last pushed;
-     * otherwise a rebuilt view would skip the re-pose as "unchanged". */
-    for (int i = 0; i < 5; i++) s_ang_10[i] = INT32_MIN;
-    /* The sub-dial pointers take the same rule, and the reason is the same and
-     * worse: s_aux_ang_10 is static-zero, and 0 is a REAL pose rather than a
-     * "never posed" mark — a seconds pointer rebuilt at 30 s would compare its
-     * new angle against the dead theme's last one, skip the setter as
-     * "unchanged" when they match, and the stale s_aux_obj entries would point
-     * at widgets this destroy already freed. AUX_HIDDEN is the honest "nothing
-     * drawn yet", so the first tick poses every fresh widget and marks its box. */
-    for (int i = 0; i < CLK_AUX_MAX; i++) {
-        s_aux_ang_10[i] = AUX_HIDDEN;
-        s_aux_obj[i] = NULL;
-    }
-    s_aux_logged = 0;
+    /* Fresh widgets: forget every pose last pushed, so the first tick poses each new
+     * widget and marks its box — a rebuilt view must never compare its first pose
+     * against a dead theme's last one and skip the setter as "unchanged", and
+     * ROW_HIDDEN is the honest "nothing drawn yet". */
+    if (!s_row)
+        s_row = heap_caps_calloc(CLK_ROW_MAX, sizeof *s_row,
+                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_row)
+        for (int i = 0; i < CLK_ROW_MAX; i++) {
+            memset(&s_row[i], 0, sizeof s_row[i]);
+            s_row[i].ang_10 = ROW_HIDDEN;
+        }
+    else
+        ESP_LOGE(TAG, "row state: PSRAM alloc failed — the dial draws its plate only");
 
-    /* Complication widgets, bucket 0 first: created BEFORE the hand/layer loop
-     * below so the classic path's sibling order is plate -> comp tiles -> S2 H2
-     * S1 H1 S0 H0 -> glass — the tile a value selects sits under the live dial
-     * frame, as the bake's runtime-composite policy requires. The tiles with a
-     * bucket (a hosted window: the moon under its sub-dial's plate) are created
-     * INSIDE that loop, at the point that puts them under the layer the bake
-     * named, because creation order is the only z this path has. No-op for every
-     * theme that ships no complications (the compiled-in pair and every
-     * pre-calendar container both report n_comps == 0). */
-    complications_create();
+    /* The stack, by one key (D42): every moving row and every complication window
+     * in depth order, a twin under the rows at its depth, table order at a tie —
+     * depth_key, the sort the layer table runs too, so the classic path's creation
+     * order (its only notion of z) and the L4 job list agree. The plate is below it
+     * all and the glass above. A row's widget is a turned layer (make_layer: the
+     * pivot/centre contract, the blend mapping, the sampling row_aa picks); the
+     * carriage's starts on its first frame. */
+    complications_reset();
     const orb_theme_geo_t *geo = orb_theme_geo();
-    s_aux_at = aux_insert_at();
-
-    /* D32 ruling C REVERSED (§32.6): the carriage rides at geartrain depth, under
-     * every hand, exactly as the preview composes it (watch-engine.js draws the cage
-     * inside the geartrain pass). It used to be created after the hand loop, so the
-     * frame bank blitted unrotated over the needle and hands the carriage was meant
-     * to carry. Created here — after the bucket-0 complications and before the
-     * shadow/hand loop — it sits above the plate and below the hands, and the
-     * bucketed hosted windows created later still cover it the way their bucket says.
-     * One object when the theme names a frame bank, placed by the bank's own shared
-     * geometry and turned by tourbillon_advance with the seconds angle plus the row's
-     * start orientation. A theme that carries both hand/2 and hand/5 now draws both. */
-    s_car = NULL;
-    s_car_start_10 = ((int32_t)clk_theme.tourbillon_start + 5) / 10 % 3600;
-    if (clk_theme.tourbillon_n > 0 && clk_theme.tourbillon_n <= CLK_TOURB_MAX &&
-        clk_theme.tourbillon[0].show &&
-        gfx_sprite_drawable(&clk_theme.tourbillon[0]))
-        s_car = make_layer(&clk_theme.tourbillon[0], &s_car_dsc, false);
-
-    /* Each shadow goes down immediately before its OWN hand, walking the
-     * theme's back-to-front order, so the z-stack is
-     *     S2 H2 S1 H1 S0 H0   (S=shadow, H=hand, 2=second, 1=minute, 0=hour)
-     * rather than every shadow under every hand. A shadow is cast by the hand
-     * above onto the plane of the hands below it, so a hand must never stand
-     * over the shadow of a hand that draws above it — with all the shadows in
-     * one group first, the minute shadow fell UNDER the second hand and the
-     * second hand was never darkened by it. (orb-os groups all shadows first;
-     * that reads as a smudge on a hand the theme orders below, and it is the
-     * one place this port diverges from it on purpose.)
-     * Statics (3,4) are the face, not hands: they cast no shadow. */
-    bool aux_built = false;
-    for (int oi = 0; oi < clk_theme.order_n; ++oi) {
-        const int k = clk_theme.order[oi];
-        if (k < 0 || k > 4) continue;
-        /* The sub-dial block joins BEFORE the first live hand — the depth a
-         * pointer on its own ring must sit at, since the main hands sweep over
-         * it (see aux_insert_at). */
-        if (!aux_built && oi == s_aux_at) { aux_create(); aux_built = true; }
-        /* Folded into the background at bake time (tools/bake_clock.py
-         * --matte): the plate/bank already carries this layer's pixels, so an
-         * object here would paint a SECOND copy over them. The bake also ships
-         * the sprite blank, so this is the belt to that pair of braces -- it
-         * is what keeps a half-swapped bin+header pair from double-blending. */
-        if (clk_theme.matte_mask & (1u << k)) continue;
-        complications_create_bucket(geo, k);      /* the tiles under layer k */
-        /* Statics (3, 4) never take an angle — hand_angles parks them at 0 —
-         * so the sampling flag rides whatever the dial-level answer is; no
-         * transform ever runs on them. Slots 0/1/2 get the per-slot rule, and
-         * a shadow always shares its own hand's answer, so a filtered hand
-         * never stands on an unfiltered twin. */
-        const bool aa = hand_aa_for(&clk_theme, k, ORB_ASSET_HAND, (uint16_t)k, NULL);
-        if (k <= 2 && clk_theme.shadow_on)
-            s_shadow[k] = make_layer(&clk_theme.shadow[k], &s_shadow_dsc[k], aa);
-        s_hand[k] = make_layer(&clk_theme.hand[k], &s_hand_dsc[k], aa);
+    const orb_bundle_sec_t *zsec = NULL;
+    uint32_t zoff = 0;
+    if (orb_theme_live_sec(ORB_CLOCK3_SLUG, &zsec, &zoff)) {
+        uint16_t zkey[CLK_LAYER_KEYS_MAX], zcls[CLK_LAYER_KEYS_MAX], zslot[CLK_LAYER_KEYS_MAX];
+        int zn = 0;
+        for (uint32_t i = 0; i < zsec->n_elem && zn < CLK_LAYER_KEYS_MAX; i++) {
+            orb_bundle_elem_t e;
+            orb_bundle_elem_at(zsec, i, &e);
+            if (e.cls != ORB_ASSET_AUX && e.cls != ORB_ASSET_BANK) continue;
+            const uint16_t k = depth_key(e.order, e.cls == ORB_ASSET_AUX &&
+                                                  (e.flags & CLK_EF_AUX_TWIN));
+            int at = zn++;
+            while (at > 0 && zkey[at - 1] > k) {          /* stable insert */
+                zkey[at] = zkey[at - 1]; zcls[at] = zcls[at - 1]; zslot[at] = zslot[at - 1];
+                at--;
+            }
+            zkey[at] = k; zcls[at] = e.cls; zslot[at] = e.slot;
+        }
+        for (int z = 0; z < zn; z++) {
+            if (zcls[z] == ORB_ASSET_BANK) {
+                for (uint16_t c = 0; c < geo->n_comps && c < CLK_COMP_MAX; c++)
+                    if (geo->comps[c].tag == zslot[z]) { complication_create(geo, c); break; }
+                continue;
+            }
+            for (uint16_t i = 0; s_row && i < geo->n_rows && i < CLK_ROW_MAX; i++) {
+                if (geo->rows[i].tag != zslot[z]) continue;
+                const clk_row_t *r = &geo->rows[i];
+                const bool car = i == clk_theme.car_row && clk_theme.tourbillon_n;
+                const clk_sprite_t *sp = car ? &clk_theme.tourbillon[0] : &r->spr;
+                if (car ? !sp->show : !r->spr.show) break;
+                /* A twin shares its row's sampling, so a filtered hand never stands on
+                 * an unfiltered shadow; the carriage's frames never take the filter. */
+                const clk_row_t *ar = ((r->flags & CLK_FLAG_AUX_SHADOW) && i > 0)
+                                    ? &geo->rows[i - 1] : r;
+                s_row[i].obj = make_layer(sp, &s_row[i].dsc,
+                                          !car && row_aa(&clk_theme, ar, NULL));
+                break;
+            }
+        }
     }
-    if (!aux_built) aux_create();                 /* nothing to join under: ride the top */
-    /* The carriage (s_car) is already created above, at geartrain depth — see the
-     * D32-reversal note before the hand loop. What the dial actually built for the
-     * sub-dials, in the line the owner reads after a re-bake: the count the theme
-     * declared, and the order position the block joined. A row with an src this
-     * build cannot drive is reported by aux_update the first time it tries, and
-     * shows no blends/s here either. */
-    if (geo->n_aux)
-        ESP_LOGI(TAG, "aux: %u sub-dial pointer row%s above order[%d]",
-                 (unsigned)geo->n_aux, (geo->n_aux == 1) ? "" : "s", s_aux_at);
-    /* Any bucket whose layer never got an object (hidden, or folded under a
-     * --matte force) lands above the layers that do exist, which is still the
-     * plate's own position in the kit's stack and better than never drawing the
-     * window at all. */
-    for (int b = 1; b < 5; b++) complications_create_bucket(geo, b);
 
     /* Glass / hub cap last, on top of everything. */
     s_overlay = make_layer(&clk_theme.overlay, &s_overlay_dsc, false);
@@ -2982,8 +2431,8 @@ esp_err_t clock_view_init(orb_app_t *self)
     s_lay_app = self;
     clock_layers_build(self);
 
-    /* Tourbillon frame bank: descriptors for the second-hand layer's swap.
-     * Reset the frame state so the first tick (re)draws it whole. */
+    /* The carriage's frame bank: descriptors for its widget's swap. Reset the frame
+     * state so the first tick (re)draws it whole. */
     for (int i = 0; i < (int)clk_theme.tourbillon_n && i < CLK_TOURB_MAX; i++)
         if (gfx_sprite_drawable(&clk_theme.tourbillon[i]))
             gfx_fill_sprite_dsc(&s_tourb_dsc[i], &clk_theme.tourbillon[i], blob());
@@ -3062,50 +2511,40 @@ esp_err_t clock_view_init(orb_app_t *self)
                  (unsigned)sw_bps, (unsigned)orb_sched_tick_base_ms());
     }
 
-    ESP_LOGI(TAG, "analog clock: %d hand(s), shadow %s(%d,%d), sweep %s, bg %s",
-             (clk_theme.hand[0].show ? 1 : 0) + (clk_theme.hand[1].show ? 1 : 0)
-                 + (clk_theme.hand[2].show ? 1 : 0),
-             clk_theme.shadow_on ? "on" : "off", clk_theme.shadow_dx, clk_theme.shadow_dy,
+    int n_moving = 0, n_still = 0, n_twin = 0;
+    for (uint16_t i = 0; i < geo->n_rows && i < CLK_ROW_MAX; i++) {
+        const clk_row_t *r = &geo->rows[i];
+        if (r->flags & CLK_FLAG_AUX_SHADOW) n_twin++;
+        else if (r->src == CLK_SRC_NONE) n_still++;
+        else n_moving++;
+    }
+    ESP_LOGI(TAG, "analog clock: %d moving row%s, %d still, %d shadow%s, sweep %s, bg %s",
+             n_moving, n_moving == 1 ? "" : "s", n_still, n_twin, n_twin == 1 ? "" : "s",
              sweepdesc, bgdesc);
-    /* Which compositing method this art was baked for. A set bit means that
-     * static layer is already folded into the plate/bank and costs no
-     * gfx_blend_px on any commit (tools/bake_clock.py --matte, which only ever
-     * sets a bit it PROVED pixel-identical); mask 0 is the ordinary dial where
-     * every layer is composited by the layer-table commit each tick. */
-    ESP_LOGI(TAG, "composite: %s",
-             clk_theme.matte_mask ? "baked static matte" : "runtime layers");
     /* The sampling each turned layer was BUILT with, asked of the same function
      * make_layer and the layer table took it from, with the rule that answered:
      * `flag` is the bake's EF_SMOOTH on a painter-owned dial, `classic-rule` the
      * motion words on a dial LVGL draws. Never derived from theme fields alone —
      * that is how the old line reported the shipped rule under an ablation arm. */
     {
-        static const char *const nm[3] = { "hr", "min", "sec" };
-        char aab[200];
+        char aab[240];
         int o = 0;
-        for (int k = 0; k < 3 && o < (int)sizeof aab - 40; k++) {
-            if (!gfx_sprite_drawable(&clk_theme.hand[k])) continue;
+        for (uint16_t i = 0; i < geo->n_rows && i < CLK_ROW_MAX && o < (int)sizeof aab - 40; i++) {
+            const clk_row_t *r = &geo->rows[i];
+            if ((r->flags & CLK_FLAG_AUX_SHADOW) || r->src == CLK_SRC_NONE) continue;
             const char *why = "";
-            const bool sm = hand_aa_for(&clk_theme, k, ORB_ASSET_HAND, (uint16_t)k, &why);
-            o += snprintf(aab + o, sizeof aab - (size_t)o, "%s%s %s=%s", o ? ", " : "",
-                          nm[k], sm ? "smooth" : "nearest", why);
+            const bool sm = row_aa(&clk_theme, r, &why);
+            o += snprintf(aab + o, sizeof aab - (size_t)o, "%sptr%u %s=%s", o ? ", " : "",
+                          (unsigned)r->tag, sm ? "smooth" : "nearest", why);
         }
-        const orb_theme_geo_t *ag = orb_theme_geo();
-        const uint16_t na = ag->n_aux < CLK_AUX_MAX ? ag->n_aux : CLK_AUX_MAX;
-        for (uint16_t a = 0; a < na && o < (int)sizeof aab - 40; a++) {
-            if (ag->aux[a].flags & CLK_FLAG_AUX_SHADOW) continue;
-            const char *why = "";
-            const int as = (ag->aux[a].src == CLK_SRC_SECOND) ? 2 : 1;
-            const bool sm = hand_aa_for(&clk_theme, as, ORB_ASSET_AUX, ag->aux[a].tag, &why);
-            o += snprintf(aab + o, sizeof aab - (size_t)o, "%saux%u %s=%s", o ? ", " : "",
-                          (unsigned)ag->aux[a].tag, sm ? "smooth" : "nearest", why);
-        }
-        ESP_LOGI(TAG, "hand AA: %s", o ? aab : "no turned layers");
+        ESP_LOGI(TAG, "row AA: %s", o ? aab : "no turned rows");
     }
-    if (clk_theme.tourbillon_n)
-        ESP_LOGI(TAG, "tourbillon: %u frames @ %u fps on the second-hand slot, orbit about (%d,%d)",
+    if (clk_theme.tourbillon_n && clk_theme.car_row < geo->n_rows)
+        ESP_LOGI(TAG, "carriage: ptr%u, %u frames @ %u fps, orbit about (%d,%d)",
+                 (unsigned)geo->rows[clk_theme.car_row].tag,
                  (unsigned)clk_theme.tourbillon_n, (unsigned)clk_theme.tourbillon_fps,
-                 (int)clk_theme.hand[2].centerx, (int)clk_theme.hand[2].centery);
+                 (int)geo->rows[clk_theme.car_row].spr.centerx,
+                 (int)geo->rows[clk_theme.car_row].spr.centery);
     return ESP_OK;
 }
 

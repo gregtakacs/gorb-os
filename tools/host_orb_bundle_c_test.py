@@ -464,7 +464,7 @@ ALPHA = {"slug": "alpha", "elements": [elem(2, 0, w=2, h=2)], "scalars": {},
          "sprites": [], "art": b""}
 
 GOLDEN = build(name="Bundle Two Apps",
-               specs=[dict(SOLO, slug="clock"), dict(BETA, slug="paint")],
+               specs=[dict(SOLO, slug="chrono"), dict(BETA, slug="paint")],
                serial=3)
 SOLO_RAW = build(specs=[SOLO])
 
@@ -524,7 +524,7 @@ def _cap_file():
 
 VECTORS = [
     # id, flags, row, queries, raw, kind, expect, rule substring
-    (0, F_LAYOUT | F_FIND, 0, ["clock", "paint", "nowhere"], GOLDEN,
+    (0, F_LAYOUT | F_FIND, 0, ["chrono", "paint", "nowhere"], GOLDEN,
      "dump", None, None),
     (1, F_LAYOUT | F_FIND, 0, ["solo"], SOLO_RAW, "ok", None, None),
     (2, 0, NO_ROW, [], build(specs=[dict(SOLO, raw_blob=_w(solo_blob, 2, 11))]),
@@ -574,14 +574,14 @@ VECTORS = [
      "same", None, "1..8"),
     (20, 0, NO_ROW, [], build(specs=[SOLO], idx_n=0),
      "same", None, "1..8"),
-    (21, 0, NO_ROW, [], build(specs=[dict(SOLO, slug="clock"), BETA],
+    (21, 0, NO_ROW, [], build(specs=[dict(SOLO, slug="chrono"), BETA],
                               hdr_words={9: 1}),
      "same", None, "header names"),
     (22, 0, NO_ROW, [], build(specs=[SOLO], hdr_words={1: 2, 2: ob.GEOM_ABI3}),
      "pair", ("theme format this firmware cannot read",
               "theme format 2; this reader takes format 3"), "format"),
-    (23, 0, NO_ROW, [], build(specs=[SOLO], hdr_words={2: 6}),
-     "same", None, "geometry v6"),
+    (23, 0, NO_ROW, [], build(specs=[SOLO], hdr_words={2: 7}),
+     "same", None, "geometry v7"),
     (24, 0, NO_ROW, [], build(specs=[SOLO], hdr_crc_break=True),
      "pair", ("container header is damaged — re-copy the file onto the card",
               "container header checksum mismatch — re-copy the file onto "
@@ -689,7 +689,7 @@ IDX_BYTES_PY  = 40                  # orb_bundle.c IDX_BYTES (4H + 7I + 2H)
 REC_ART_OFF_PY = 24                 # word 7: the byte the rebase edits
 
 TWIN = build(name="Twin Banks",
-             specs=[dict(SOLO, slug="clock"),
+             specs=[dict(SOLO, slug="chrono"),
                     dict(SOLO, slug="paint",
                          art=bytes((i * 7 + 3) & 0xFF for i in range(3000)))],
              serial=9)
@@ -1113,8 +1113,8 @@ MUTANTS = [
      "e->x        = (int16_t)b32(r + 32);",
      "e->x        = (int16_t)b32(r + 36);", 0),
     ("skip the abi stamp check",
-     "if (w[W_GEOM_ABI] != ORB_BUNDLE3_ABI && w[W_GEOM_ABI] != ORB_BUNDLE3_ABI2 &&",
-     "if (0 && w[W_GEOM_ABI] != ORB_BUNDLE3_ABI && w[W_GEOM_ABI] != ORB_BUNDLE3_ABI2 &&", 23),
+     "if (w[W_GEOM_ABI] != ORB_BUNDLE3_ABI && w[W_GEOM_ABI] != ORB_BUNDLE3_ABI6)",
+     "if (0 && w[W_GEOM_ABI] != ORB_BUNDLE3_ABI && w[W_GEOM_ABI] != ORB_BUNDLE3_ABI6)", 23),
     ("compute the header crc over the stored crc",
      "zeroed[W_HDR_CRC] = 0;", ";", 0),
     ("drop the geometry budget refusal",

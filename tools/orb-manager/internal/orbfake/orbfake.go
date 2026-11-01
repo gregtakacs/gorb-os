@@ -727,7 +727,7 @@ const (
 	fMagic      = 0x474F5254 // 'T','R','O','G' little-endian on the wire
 	fFormat     = 3
 	fABI        = 3
-	fABI2       = 4 // ORB_BUNDLE3_ABI2: C4's delta dialect, the same stamp the firmware door takes
+	fABI6       = 6 // ORB_BUNDLE3_ABI6: D42's clock dialect, the one clock stamp the firmware door takes
 	fNameWord   = 14
 	fNameBytes  = 56
 	fHdrCRCWord = 28
@@ -934,8 +934,8 @@ func containerName(b []byte) (string, string) {
 	if f := w(1); f != fFormat {
 		return "", "theme format this firmware cannot read"
 	}
-	if abi := w(2); abi != fABI && abi != fABI2 {
-		return "", fmt.Sprintf("bundle geometry v%d; this build reads v%d and v%d — re-bake it", abi, fABI, fABI2)
+	if abi := w(2); abi != fABI && abi != fABI6 {
+		return "", fmt.Sprintf("bundle geometry v%d; this build reads v%d (apps) and v%d (a clock) — re-bake it", abi, fABI, fABI6)
 	}
 	if w(fHdrCRCWord) != hdrCRC(b) {
 		return "", "container header is damaged — re-copy the file onto the card"

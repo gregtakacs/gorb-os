@@ -142,10 +142,14 @@ func TestContainerRefusals(t *testing.T) {
 			"reads FORMAT 3 only", false},
 		{"a pre-FORMAT-2 artifact", func(b []byte) { putWord(b, 1, 1) },
 			"reads FORMAT 3 only", false},
-		{"a foreign ABI, one stamp past the motion dialect", func(b []byte) { putWord(b, 2, 6) },
-			"reads v3 to v5", false},
+		{"a foreign ABI, one stamp past the clock's", func(b []byte) { putWord(b, 2, 7) },
+			"reads v3 (apps) and v6 (a clock)", false},
+		{"a retired clock dialect (D41's v5)", func(b []byte) { putWord(b, 2, 5) },
+			"reads v3 (apps) and v6 (a clock)", false},
+		{"a retired clock dialect (C4's v4)", func(b []byte) { putWord(b, 2, 4) },
+			"reads v3 (apps) and v6 (a clock)", false},
 		{"a pre-delta ABI", func(b []byte) { putWord(b, 2, 2) },
-			"reads v3 to v5", false},
+			"reads v3 (apps) and v6 (a clock)", false},
 		{"a torn header", func(b []byte) { putWord(b, 3, 129) },
 			"container header is damaged", false},
 
@@ -180,21 +184,20 @@ func TestContainerRefusals(t *testing.T) {
 	}
 }
 
-// The delta dialect the C4/C5 animated-plate bake stamps on the header is v4, and the
-// device door takes 3 and 4. The hub must forward a v4 container, not refuse a theme its
-// own device installs — the §4.1 mirror rule that this gate drifted from. Re-stamp the
-// authority's fixture header to v4, re-seat its checksum (the ABI word is inside the CRC
-// span), and the gate must open and carry the stamp through.
-func TestContainerAcceptsTheDeltaDialect(t *testing.T) {
+// Every clock theme is stamped v6 since D42, and the device door takes 3 and 6. The hub
+// must forward a v6 container, not refuse a theme its own device installs — the §4.1
+// mirror rule. Re-stamp the authority's fixture header to v6, re-seat its checksum (the
+// ABI word is inside the CRC span), and the gate must open and carry the stamp through.
+func TestContainerAcceptsTheClockDialect(t *testing.T) {
 	body := fixture(t, "format3-pair.orbtheme")
-	putWord(body, wGeomABI, themeABI4)
+	putWord(body, wGeomABI, themeABI6)
 	putWord(body, wHdrCRC, crc32.ChecksumIEEE(headerForCRC(body)))
 	c, err := ContainerName(body)
 	if err != nil {
-		t.Fatalf("the hub refused a v4 delta container the device installs: %v", err)
+		t.Fatalf("the hub refused a v6 clock container the device installs: %v", err)
 	}
-	if c.ABI != themeABI4 {
-		t.Errorf("ABI = %d, want the v4 delta stamp it carries", c.ABI)
+	if c.ABI != themeABI6 {
+		t.Errorf("ABI = %d, want the v6 stamp it carries", c.ABI)
 	}
 }
 

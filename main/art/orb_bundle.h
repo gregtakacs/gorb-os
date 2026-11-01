@@ -42,48 +42,32 @@ extern "C" {
 
 #define ORB_BUNDLE3_FORMAT   3u        /* the header's FORMAT word */
 #define ORB_BUNDLE3_ABI      3u        /* the header's GEOM_ABI word */
-#define ORB_BUNDLE3_ABI2     4u        /* C4's clock delta dialect. A container
-                                        * stamped 4 carries a clock section whose
-                                        * own stamp is 4: element rows are exactly
-                                        * 25 words (parent, delay appended), and
-                                        * catalogue rows are six (diffx, diffy).
-                                        * The strict gate is this stamp — the
-                                        * version word the format already checks
-                                        * and already refuses in a sentence naming
-                                        * both numbers — not a row width the
-                                        * loader infers. A reader that knows only
-                                        * v3 refuses the whole container at the
-                                        * header, which is the failure the §4.1
-                                        * ruling asked for. */
-#define ORB_BUNDLE3_ABI3     5u        /* D41's motion dialect: a clock section
-                                        * stamped 5 carries element rows of exactly
-                                        * 28 words (cadence, cad_arg, ease after
-                                        * C4's pair) and v4's six-word catalogue.
-                                        * Written only when a row claims a motion
-                                        * column, so every other theme stays v4. */
+#define ORB_BUNDLE3_ABI6     6u        /* D42's clock dialect, and the only one this
+                                        * reader takes: a container stamped 6 carries
+                                        * a clock section whose own stamp is 6 —
+                                        * element rows of exactly 33 words (C4's
+                                        * pair, D41's three, D42's five) and the
+                                        * six-word delta catalogue. Stamps 4 and 5
+                                        * were the clock's older dialects; no
+                                        * legacy is kept (D42), so a container
+                                        * carrying either is refused at the header
+                                        * in a sentence naming the stamps it takes.
+                                        * A bundle of app sections alone stays 3. */
 #define ORB_BUNDLE_SPR_WORDS 4u        /* a catalogue row before the delta dialect */
 #define ORB_BUNDLE_SPR_WORDS2 6u       /* and at ABI 2: off,size,w,h,diffx,diffy */
 #define ORB_BUNDLE_SECT_MAX  8u        /* B5's app cap: the index's width */
 #define ORB_BUNDLE_IDX_WORDS 10u       /* 4H + 7I + 2H = 40-byte records */
 #define ORB_BUNDLE_SCALARS_N 26u       /* the clock dialect, carried opaque */
-#define ORB_BUNDLE_ELEM_WORDS_V3 23u   /* the widest row a v3 stamp writes */
-#define ORB_BUNDLE_ELEM_WORDS_V4 25u   /* C4's row */
-#define ORB_BUNDLE_ELEM_WORDS 28u      /* theme_schema.ELEMENT_FIELDS: the width a
-                                        * D41 write carries and this reader decodes.
-                                        * A read row's STRIDE is the blob's own
-                                        * number (§23.5): blob_check() derives it
-                                        * from the length equality, an older row
-                                        * stride decodes with the appended
-                                        * columns at their defaults — zero for
-                                        * D32/D34's set-to-zero columns, parent's
-                                        * 0xFFFF NONE for the C4 pair (a narrower
-                                        * row names no parent, which IS none) —
-                                        * and D32's ruling A — append-only, no
-                                        * format bump — holds for the clock
-                                        * section only under its own stamp gate:
-                                        * orb_clock3.c requires v3 stamps to carry
-                                        * 17, 19 or 23 words and v4 stamps to
-                                        * carry exactly 25. */
+#define ORB_BUNDLE_ELEM_WORDS_V3 23u   /* an app section's row, whatever the stamp */
+#define ORB_BUNDLE_ELEM_WORDS 33u      /* theme_schema.ELEMENT_FIELDS: the clock's v6
+                                        * row, the width this reader decodes. A read
+                                        * row's STRIDE is the blob's own number
+                                        * (§23.5): blob_check() derives it from the
+                                        * length equality, and a narrower app row
+                                        * decodes with the appended columns at their
+                                        * defaults — zero, and parent's 0xFFFF NONE.
+                                        * The clock section's exact width is gated
+                                        * by orb_clock3.c against its v6 stamp. */
 #define ORB_BUNDLE_ELEM_WORDS_MIN 17u  /* the narrowest row the shipped dialect
                                         * ever wrote, pre-D32: the floor the
                                         * derived stride is refused below */
@@ -114,9 +98,9 @@ typedef struct {
     uint32_t    art_off,  art_size;             /* its bank inside the file */
     uint32_t    art_crc;                        /* record's, cross-checked to blob */
     uint16_t    n_elem, n_spr;
-    uint16_t    elem_words;    /* the blob's own row stride (§23.5): 25 from a
-                                * C4 clock bake, 23/19/17 from older ones; 0
-                                * reads as the current width */
+    uint16_t    elem_words;    /* the blob's own row stride (§23.5): 33 from a
+                                * v6 clock bake, 23 from an app's; 0 reads as
+                                * the current width */
     uint16_t    spr_words;     /* the blob's catalogue row width: 4 before the
                                 * delta dialect, 6 (off,size,w,h,diffx,diffy) at
                                 * a clock section stamped for it; 0 reads as 4 */
@@ -242,17 +226,14 @@ typedef struct {
     uint16_t w, h;
     int16_t  pivot_x, pivot_y;
     uint16_t radius, degrees, scale16;
-    uint8_t  kind;   /* BANK: CLK_KIND_*.  AUX: MOTION_* */
+    uint8_t  kind;   /* BANK: CLK_KIND_*.  AUX: CLK_SHAPE_* (D42) */
     uint8_t  src;    /* BANK and AUX: CLK_SRC_* */
-    /* D34's four drive columns, for an AUX row and for no other class. A row baked
-     * before them reads each as zero — the same append-only answer `kind` and `src`
-     * get from a 17-word stride — and orb_clock3.c refuses an AUX row whose vmax is
-     * zero rather than divide by it. The units follow the motion: tenths of a degree
-     * for rotate/retrograde/indexed, pixels for a slide. */
-    int16_t  span;   /* AUX: travel across the whole value domain */
-    int16_t  zero;   /* AUX: where the pointer sits at vmin        */
-    uint16_t vmin;   /* AUX: the value `zero` stands for           */
-    uint16_t vmax;   /* AUX: the domain `span` divides; 0 refuses  */
+    /* D34's four drive columns, read by D42 as the angular half of an AUX row's two
+     * poses (tenths of a degree) over its domain. Every other class reads zero. */
+    int16_t  span;   /* AUX: the turn from P0 to P1 */
+    int16_t  zero;   /* AUX: P0's angle             */
+    uint16_t vmin;   /* AUX: the value at P0        */
+    uint16_t vmax;   /* AUX: the value at P1        */
     /* C4's two delta columns, read only from a row wide enough to hold them.
      * `parent` is the element-row `n` of the drawing row this one hangs on,
      * 0xFFFF for none: a row from before the column reads 0xFFFF, which is the
@@ -261,11 +242,15 @@ typedef struct {
      * the bake meant the plate (whose row is tagged 0) or meant none. */
     uint16_t parent;  /* parent row's n; 0xFFFF = none */
     uint16_t delay;   /* per-frame ms; 0 = the dial's own default tempo */
-    /* D41's three, read only from a row wide enough to hold them; a narrower row
-     * reads 0 for each — inherit, no argument, no ease: its pre-D41 motion. */
+    /* D41's three and D42's five, read only from a row wide enough to hold them
+     * (the clock's v6 row); an app row reads 0 for each. */
     uint8_t  cadence; /* CLK_CAD_* */
     uint16_t cad_arg; /* step N, stop-to-go P (0.1 s), drag window (min) */
     uint16_t ease;    /* settle or flyback ms */
+    int16_t  dx, dy;  /* AUX: the pivot's travel from P0 to P1, px */
+    uint8_t  end;     /* AUX: CLK_END_* */
+    uint8_t  digit;   /* AUX: CLK_DIGIT_* */
+    uint16_t str;     /* AUX text row: string-table offset (D42 E4) */
 } orb_bundle_elem_t;
 
 void orb_bundle_elem_at(const orb_bundle_sec_t *s, uint32_t i,

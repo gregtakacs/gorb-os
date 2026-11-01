@@ -41,7 +41,8 @@ call sites:
 # dial cannot grow these at runtime.
 # ---------------------------------------------------------------------------
 CLK_COMP_MAX   = 16    # complications: windows, strips, rings, flares
-CLK_AUX_MAX    = 8     # extra hands beyond the 5 baked hand slots
+CLK_AUX_MAX    = 8     # FORMAT 2's pointer table (retired with the dialect)
+CLK_ROW_MAX    = 24    # D42: the clock's AUX rows, every hand and pointer (orb_clock3.c)
 CLK_BANK_MAX   = 256   # shared RGBA sprites: ring slots, strip glyphs, flares
 CLK_STRIP_GLYPHS = 8   # glyph image objects created per strip
 CLK_COMP_WORDS = 26    # == len(COMP_FIELDS); the C mirror and the size check use it
@@ -489,21 +490,16 @@ ELEMENT_FIELDS = (
     # each, which is window/NONE — a plate that never changes — so the default
     # is an element every app may ignore, never a drawn value.
     ("kind",     "u8"),    # BANK: KINDS id, how the plates are drawn.
-                           # AUX: MOTION_NAMES id, how the pointer moves.
+                           # AUX: SHAPES id, what the row's art is (D42).
     ("src",      "u8"),    # BANK and AUX: SOURCES id, what value drives the row.
-    # D34's four drive columns, for an AUX row and for no other class. `kind` and `src`
-    # already ride the row and already answer the same two questions for it — HOW it
-    # moves (its MOTION_NAMES id, read straight as clk_aux_t.kind) and WHAT moves it
-    # (its SOURCES id) — so they carry no new meaning here; these four finish the
-    # sentence with how far, from where, across what domain. Every one is written in the
-    # unit the motion names (MOTION_UNIT): tenths of a degree for an angle, pixels for a
-    # slide. A row read from a table narrower than these carries zero for each, which
-    # check_element refuses on an AUX row rather than draw as a pointer that never
-    # leaves home — the same "refuse, never guess" the class gate itself runs by.
-    ("span",     "i16"),   # AUX: travel across the whole value domain, in motion's unit
-    ("zero",     "i16"),   # AUX: where the pointer sits at value_min, same unit
-    ("vmin",     "u16"),   # AUX: the value `zero` stands for
-    ("vmax",     "u16"),   # AUX: the domain `span` divides. 0 is a refusal, never a /0
+    # D34's four drive columns, for an AUX row and for no other class. D42 reads them
+    # as the angular half of the row's two poses: `zero` is P0's angle and `span` the
+    # turn from P0 to P1, both in tenths of a degree, across the domain vmin..vmax
+    # (t = (u - vmin) / (vmax - vmin)). The pivot's travel rides dx/dy, appended below.
+    ("span",     "i16"),   # AUX: the turn from P0 to P1, tenths of a degree
+    ("zero",     "i16"),   # AUX: P0's angle, tenths of a degree
+    ("vmin",     "u16"),   # AUX: the value at P0
+    ("vmax",     "u16"),   # AUX: the value at P1 (a wrap's next P0). Above vmin
     # C4's delta dialect, appended exactly as D32's ruling A did. Both columns
     # mean nothing below the v4 clock stamp, and the stamp gate (orb_clock3.c,
     # mirrored here and in the baker) is what says so; a row packed into a
@@ -516,30 +512,28 @@ ELEMENT_FIELDS = (
     # pair was. They mean nothing below the v5 clock stamp: a v4 pack refuses a
     # non-default one, and a narrower row reads each as 0 — inherit, no argument,
     # no ease — which is every row's pre-D41 motion.
-    ("cadence",  "u8"),    # HAND/AUX/BANK: CADENCES id, when the row moves
+    ("cadence",  "u8"),    # AUX/BANK: CADENCES id, when the row moves
     ("cad_arg",  "u16"),   # step N, stop-to-go P (tenths of a second), drag window (min)
-    ("ease",     "u16"),   # settle on a step/jump, flyback on a retrograde, in ms
+    ("ease",     "u16"),   # settle on a step/jump, flyback on a flyback row, in ms
+    # D42's motion columns (docs/element-model-plan.md §8), the clock's v6 row. An AUX
+    # row moves from P0 (its own placement, turned to `zero`) to P1 (turned a further
+    # `span`, its pivot moved by dx/dy) across its domain, and `end` says what happens
+    # past the end. Zero on every other class.
+    ("dx",       "i16"),   # AUX: the pivot's travel from P0 to P1, px
+    ("dy",       "i16"),
+    ("end",      "u8"),    # AUX: ENDS id — wrap, flyback, hold
+    ("digit",    "u8"),    # AUX: DIGITS id — the whole value, its units, its tens
+    ("str",      "u16"),   # AUX text row: offset into the string table (D42 E4); 0
 )
-ELEMENT_WORDS = len(ELEMENT_FIELDS)          # 28 words, 112 bytes per row
-ELEMENT_WORDS_V4 = 25                        # the C4 row, before D41's three
-# The v3 clock row — every file shipped before C4, and every app row whatever
-# the stamp — and the widths the two clock dialects themselves carry. The clock
-# section's stride is gated EXACTLY against its stamp (Decision A): a v3 clock
-# row is one of the three widths that stamp has ever written, a v4 clock row is
-# one width. Anything else is a torn file or a lying stamp, and refused.
+ELEMENT_WORDS = len(ELEMENT_FIELDS)          # 33 words, 132 bytes per row
+# Every app row but the clock's is the 23-word v3 row, whatever the container's stamp.
 ELEMENT_WORDS_V3 = 23
-ELEMENT_WORDS_CLOCK_V3 = (17, 19, 23)
-ELEMENT_WORDS_CLOCK_V4 = (25,)
-ELEMENT_WORDS_CLOCK_V5 = (28,)
-# The clock section's own geometry stamp values. The index record has carried
-# abi_min/abi_max words since FORMAT 3's first byte; C4 gives them their first
-# meaning: the clock's dialect version, gated exactly by orb_clock3.c and by
-# check_clock_stamp() here. The container header's GEOM_ABI moves to 4 only
-# when a v4 clock section rides along — old readers refuse a 4 header at the
-# door with the sentence they already have.
-CLOCK_ABI_V3 = 3      # == orbbundle.GEOM_ABI3 == orb_bundle.h ORB_BUNDLE3_ABI
-CLOCK_ABI_V4 = 4      # == orbbundle.GEOM_ABI4 == orb_bundle.h ORB_BUNDLE3_ABI2
-CLOCK_ABI_V5 = 5      # == orbbundle.GEOM_ABI5 == orb_bundle.h ORB_BUNDLE3_ABI3 (D41)
+# The clock section's own geometry stamp. D42 ruled out legacy: the clock reads v6
+# and nothing older, at exactly ELEMENT_WORDS a row (orb_clock3.c and
+# check_clock_stamp() here gate it). The container header carries 6 whenever a clock
+# section rides along and 3 (APP_ABI) for a bundle of app sections alone.
+APP_ABI = 3           # == orbbundle.GEOM_ABI3 == orb_bundle.h ORB_BUNDLE3_ABI
+CLOCK_ABI = 6         # == orbbundle.GEOM_ABI6 == orb_bundle.h ORB_BUNDLE3_ABI6 (D42)
 PARENT_NONE = 0xFFFF
 # The narrowest row the FORMAT 3 dialect has ever written, before D32's ruling A
 # appended kind and src. A blob's element-row stride is derived from its own
@@ -547,6 +541,13 @@ PARENT_NONE = 0xFFFF
 # dialect but a torn file; the reader refuses it rather than read a width that
 # cannot be the current schema's. orb_bundle.c's ORB_BUNDLE_ELEM_WORDS_MIN agrees.
 ELEMENT_WORDS_MIN = 17
+# The clock section's scalar words D42 retired: a v6 section carries each as 0, and a
+# non-zero one is a bake from before the ruling. orb_clock3.c refuses the same list.
+# (Names are orbtheme.THEME_FIELDS'; the tempo they carried is derived from the rows.)
+CLOCK_RETIRED_SCALARS = ("plate_follow", "shadow_on", "shadow_dx", "shadow_dy",
+                         "second_sweep", "second_railway", "text_over_hands",
+                         "tick_rate", "order0", "order1", "order2", "order3", "order4",
+                         "order_n", "matte_mask", "tourbillon_n", "tourbillon_fps")
 
 # Flag bits, kept in the low nibble so a high bit means "a schema this build does
 # not know", which check_element refuses rather than painting wrongly.
@@ -585,7 +586,7 @@ EF_SMOOTH = 1 << 7      # the unified render path's slice 5: this layer samples 
 EF_ALL = (EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | EF_AUX_SHADOW | EF_INSTANCE
           | EF_DELTA_WRAP | EF_SMOOTH)
 
-ELEM_ORDER_N    = 64   # depth rungs; the clock's hand order is 0..4 today
+ELEM_ORDER_N    = 64   # depth rungs: one scale for every row the clock draws (D42)
 
 # ---- the clock's slot vocabulary (D32's join, ruled by the app that declares) ----
 # A theme's element row carries (class, slot) and never a name: slot is "which
@@ -612,17 +613,6 @@ CLOCK_SLOTS = (
     # name           class     slot   what the dial draws with it
     ("bg",            "plate",  0,    "the one static background, full panel"),
     ("glass",         "plate",  1,    "the crystal, over everything"),
-    ("hour",          "hand",   0,    "the hour hand"),
-    ("minute",        "hand",   1,    "the minute hand"),
-    ("second",        "hand",   2,    "the seconds hand, or the carriage it rides"),
-    ("dial",          "hand",   3,    "a rotating dial disc"),
-    ("counterw",      "hand",   4,    "the counterweight on that disc"),
-    ("carriage",      "hand",   5,    "an animated tourbillon: n_frames frames, OS-advanced"),
-    ("sh_hour",       "sprite", 0,    "the hour hand's cast shadow"),
-    ("sh_minute",     "sprite", 1,    "the minute hand's cast shadow"),
-    ("sh_second",     "sprite", 2,    "the seconds hand's cast shadow"),
-    ("sh_dial",       "sprite", 3,    "the rotating disc's cast shadow"),
-    ("sh_counterw",   "sprite", 4,    "the counterweight's cast shadow"),
     ("comp0",         "bank",   0,    "complication 0: one plate per value"),
     ("comp1",         "bank",   1,    "complication 1: one plate per value"),
     ("comp2",         "bank",   2,    "complication 2: one plate per value"),
@@ -639,19 +629,35 @@ CLOCK_SLOTS = (
     ("comp13",        "bank",   13,   "complication 13: one plate per value"),
     ("comp14",        "bank",   14,   "complication 14: one plate per value"),
     ("comp15",        "bank",   15,   "complication 15: one plate per value"),
-    # D34: the pointer slots. Identity is still (class, slot), so an AUX row claims one
-    # of these eight by ordinal and the clock keeps them in CLK_AUX_MAX's own order.
-    # Names are `ptr0..ptr7` and NOT `subdial_seconds` or `reserve`: the clock does not
-    # know what a pointer indicates, only that one row turns it, and a name that claimed
-    # the role would be a second source of truth about the art.
-    ("ptr0",          "aux",    0,    "pointer 0: one plate, moved by the row's own drive"),
-    ("ptr1",          "aux",    1,    "pointer 1: one plate, moved by the row's own drive"),
-    ("ptr2",          "aux",    2,    "pointer 2: one plate, moved by the row's own drive"),
-    ("ptr3",          "aux",    3,    "pointer 3: one plate, moved by the row's own drive"),
-    ("ptr4",          "aux",    4,    "pointer 4: one plate, moved by the row's own drive"),
-    ("ptr5",          "aux",    5,    "pointer 5: one plate, moved by the row's own drive"),
-    ("ptr6",          "aux",    6,    "pointer 6: one plate, moved by the row's own drive"),
-    ("ptr7",          "aux",    7,    "pointer 7: one plate, moved by the row's own drive"),
+    # D34's pointer slots, widened by D42 into the clock's one moving-row vocabulary:
+    # every hand, pointer, ring, still layer and carriage is an AUX row, claimed by
+    # ordinal. Names are `ptr0..ptr23` and NOT `hour` or `subdial_seconds`: the clock
+    # does not know what a row indicates, only how its own drive moves it, and a name
+    # that claimed the role would be a second source of truth about the art.
+    ("ptr0",          "aux",    0,    "row 0: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr1",          "aux",    1,    "row 1: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr2",          "aux",    2,    "row 2: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr3",          "aux",    3,    "row 3: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr4",          "aux",    4,    "row 4: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr5",          "aux",    5,    "row 5: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr6",          "aux",    6,    "row 6: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr7",          "aux",    7,    "row 7: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr8",          "aux",    8,    "row 8: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr9",          "aux",    9,    "row 9: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr10",         "aux",    10,   "row 10: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr11",         "aux",    11,   "row 11: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr12",         "aux",    12,   "row 12: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr13",         "aux",    13,   "row 13: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr14",         "aux",    14,   "row 14: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr15",         "aux",    15,   "row 15: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr16",         "aux",    16,   "row 16: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr17",         "aux",    17,   "row 17: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr18",         "aux",    18,   "row 18: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr19",         "aux",    19,   "row 19: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr20",         "aux",    20,   "row 20: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr21",         "aux",    21,   "row 21: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr22",         "aux",    22,   "row 22: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr23",         "aux",    23,   "row 23: one plate (or a carriage's frames), moved by its own drive"),
     # D39: the sound slots, one per event (docs/sound-plan.md §3.1). The order IS the
     # slot number main/art/orb_clock3.h's CLK_SND_* enum reads, and the suite pins it.
     # Played by the clock's sound policy, never drawn, so none is in CLOCK_SLOTS_DRAWN.
@@ -694,18 +700,14 @@ CLOCK_WINDOW_DOMAIN = {
 
 # The slots the shipped dial draws, and the only ones a bundle may fill and boot.
 # Ruling D32-E put every class the vocabulary names into scope; the dial draws all
-# of them now — plate, hands including the carriage, shadows, and the sixteen
-# complication slots — so the refusal a row can still meet is the projection's own
+# of them now — plate, the twenty-four moving rows (hands, shadows, the carriage),
+# and the sixteen complication slots — so the refusal a row can still meet is the projection's own
 # (a class this app's manifest does not offer, a plate whose art the bundle does
 # not hold), and ruling D32-F makes any of those refusals fall the whole flip to
 # the dial's digits rather than draw a partial theme.
-CLOCK_SLOTS_DRAWN = ("bg", "glass", "hour", "minute", "second", "dial", "counterw",
-                     "carriage", "sh_hour", "sh_minute", "sh_second", "sh_dial",
-                     "sh_counterw",
-                     "comp0", "comp1", "comp2", "comp3", "comp4", "comp5", "comp6",
-                     "comp7", "comp8", "comp9", "comp10", "comp11", "comp12",
-                     "comp13", "comp14", "comp15",
-                     "ptr0", "ptr1", "ptr2", "ptr3", "ptr4", "ptr5", "ptr6", "ptr7")
+CLOCK_SLOTS_DRAWN = (("bg", "glass")
+                     + tuple("comp%d" % i for i in range(CLK_COMP_MAX))
+                     + tuple("ptr%d" % i for i in range(CLK_ROW_MAX)))
 
 
 def clock_slot(name):
@@ -724,7 +726,7 @@ def clock_slot_name(cls, slot):
             return n
     return None
 
-ELEM_MAX        = 32   # rows one app's table may carry
+ELEM_MAX        = 64   # rows one app's table may carry (the clock: 2 + 24 + 16 + 1 + 13)
 ELEM_FRAMES_MAX = 360  # bound on frame0+n_frames (av-kit's busiest bank uses 208)
 
 # Mirrors orb_asset_class_t in main/assets/orb_assets.h, in that enum's order. A
@@ -759,30 +761,44 @@ CLASS_PREVIEW = 9
 # CLASS_ABI, the AUX and PREVIEW precedent.
 CLASS_SOUND = 10
 
-# How an AUX row moves, in the order clk_aux_t.kind reads it. The first three are the
-# vocabulary clk_types.h has always carried; the two slide kinds are D34's append and
-# the first thing a theme can ask for that is NOT an angle.
-MOTION_NAMES = ("rotate", "retrograde", "indexed", "slide-x", "slide-y")
-MOTION_ROTATE, MOTION_RETROGRADE, MOTION_INDEXED, MOTION_SLIDE_X, MOTION_SLIDE_Y = 0, 1, 2, 3, 4
-# Which unit `span` and `zero` are written in, per motion. A theme that names
-# slide-x and a span of 3600 means 3600 PIXELS, not a turn — the motion decides the
-# unit, so no extra column has to be trusted to say what the number one means.
-MOTION_UNIT = {"rotate": "tenths of a degree", "retrograde": "tenths of a degree",
-               "indexed": "tenths of a degree", "slide-x": "px", "slide-y": "px"}
-MOTION_SLIDES = (MOTION_SLIDE_X, MOTION_SLIDE_Y)
+# D42: what an AUX row's art is, read from its `kind` column (clk_types.h CLK_SHAPE_*).
+# The shape says nothing about motion: an arm and a ring move by the same two poses. A
+# text row draws glyphs from the string table, which lands with E4; until then the
+# reader refuses it rather than draw a row it cannot.
+SHAPES = ("arm", "ring", "text")
+SHAPE_ARM, SHAPE_RING, SHAPE_TEXT = 0, 1, 2
+# D42 §3: what a row does past the end of its domain (clk_types.h CLK_END_*). A wrap
+# starts the next unit at P0 with no visible jump, so it is legal only where P1 looks
+# like P0: a whole turn (±3600 tenths) and no travel. A flyback returns to P0 when the
+# source resets, eased by the row's `ease`; a hold rests at P1 until it does.
+ENDS = ("wrap", "flyback", "hold")
+END_WRAP, END_FLYBACK, END_HOLD = 0, 1, 2
+# D42 §4: which part of the source value a row reads (clk_types.h CLK_DIGIT_*). The
+# units and tens of a date drive a double-rotator calendar's two rings.
+DIGITS = ("whole", "units", "tens")
+DIGIT_WHOLE, DIGIT_UNITS, DIGIT_TENS = 0, 1, 2
+# The bounds a pose is written within: tenths of a degree for an angle, px for travel.
+TURN_10 = 3600
+PANEL_PX = 466
 
 # D41 §2.1: when a driven row moves, in the order clk_types.h's CLK_CAD_* reads it.
-# inherit is each row class's pre-D41 motion, so a row that names nothing keeps it.
-CADENCES = ("inherit", "sweep", "step", "jump", "stop-to-go", "drag")
-CAD_INHERIT, CAD_SWEEP, CAD_STEP, CAD_JUMP, CAD_STOP_TO_GO, CAD_DRAG = 0, 1, 2, 3, 4, 5
-# The cadences whose instant an ease can settle (a step, a jump, a release).
-CAD_HAS_INSTANT = (CAD_STEP, CAD_JUMP, CAD_STOP_TO_GO)
+# D42 retired `inherit` (there is nothing older to inherit from): 0 is `none`, the
+# cadence of a still row and of nothing else.
+CADENCES = ("none", "sweep", "step", "jump", "stop-to-go", "drag")
+CAD_NONE, CAD_SWEEP, CAD_STEP, CAD_JUMP, CAD_STOP_TO_GO, CAD_DRAG = 0, 1, 2, 3, 4, 5
 # The sources a drag may hold a calendar row on.
 CAD_DRAG_SOURCES = ("date", "weekday", "month", "day_of_year")
-# What a HAND slot reads when its row names no source (the slot's own meaning):
-# hour, minute, second, the two stills, and the carriage on the seconds.
-HAND_SLOT_SOURCE = ("hour12", "minute", "second", "none", "none", "second")
-DRIVE_COLUMNS = ("span", "zero", "vmin", "vmax")
+# A sweep's own frame rate rides its cad_arg (0 = no figure of its own): the seconds
+# row is the dial's beat, and the scheduler asks for that rate (orb_clock3.c).
+SWEEP_TIER = 15        # a sweep that names no rate and rides nothing animated
+SWEEP_FPS_MAX = 30     # the panel's ceiling
+# The sources no row can move by: text and value are never inputs of the dial.
+UNDRIVABLE_SOURCES = ("text", "value")
+# The columns a still row leaves zero, and the D42 motion columns no class but AUX uses.
+MOTION_COLUMNS = ("span", "zero", "vmin", "vmax", "dx", "dy", "end", "digit")
+D42_COLUMNS = ("dx", "dy", "end", "digit", "str")
+# The most frames an animated row (the carriage) carries: clk_types.h CLK_TOURB_MAX.
+ROW_FRAMES_MAX = 16
 
 # Classes whose frame is app state, not a clock (R6). A BANK is indexed "one plate
 # per value", so OS advancement would march a date wheel on a tick nobody asked for.
@@ -864,9 +880,8 @@ def check_element(rec, where="elem"):
     # on any other class is a row written for a driven element that names a plain slot —
     # the same lie the radius-on-a-text-row rule refuses, and refused in the same shape.
     # D34 widened the pair's scope rather than appending look-alikes: on a BANK row
-    # `kind` is a KINDS id and on an AUX row it is a MOTION_NAMES id, and the class
-    # decides which of the two vocabularies the byte is read in, exactly as the class
-    # already decides whether `degrees` is a face or a carriage's start.
+    # `kind` is a KINDS id and on an AUX row a SHAPES id (D42), and the class decides
+    # which of the two vocabularies the byte is read in.
     kind, src = int(rec["kind"]), int(rec["src"])
     # D39 widens the pair once more, the same way D34 did: on a SOUND row `kind` is the
     # app's hour pattern and `src` the encoding. check_clock_sounds reads them.
@@ -878,165 +893,141 @@ def check_element(rec, where="elem"):
         if not 0 <= kind < len(HOUR_PATTERNS):
             raise ValueError("%s.kind: %d is not an hour pattern (%s, 0..%d)"
                              % (where, kind, "/".join(HOUR_PATTERNS), len(HOUR_PATTERNS) - 1))
-    elif kind and cls not in (CLASS_BANK, CLASS_AUX, CLASS_HAND):
+    elif kind and cls not in (CLASS_BANK, CLASS_AUX):
         raise ValueError("%s.kind: %d on a %s row — how a row draws or moves is a "
                          "driven element's question, and this class answers it with "
                          "its slot" % (where, kind, CLASS_NAMES[cls]))
-    if src and cls not in (CLASS_BANK, CLASS_AUX, CLASS_SOUND, CLASS_HAND):
+    if src and cls not in (CLASS_BANK, CLASS_AUX, CLASS_SOUND):
         raise ValueError("%s.src: %d on a %s row — what drives a row is a driven "
                          "element's question, and this class answers it with "
                          "its slot" % (where, src, CLASS_NAMES[cls]))
-    # ---- D34: the pointer row, and the four numbers that make it move ----
-    # An AUX row is a sprite with a drive. The checks below are the ones that keep a
-    # mis-declared pointer from shipping as a hand that sits at 12 forever and reads as
-    # a watch that is simply wrong: the motion must exist, the source must be one the
-    # dial can derive, the domain must be wide enough to divide, and an angle must stay
-    # an angle. Mirrored rule for rule by main/art/orb_clock3.c's AUX projection.
+    # ---- D42: the moving row ----
+    # An AUX row is the clock's one row that moves: an arm, a ring, a carriage, a still
+    # layer. A still row (source none) names nothing about motion. A moving row names its
+    # source and cadence, a domain wide enough to divide, and somewhere to go. Mirrored
+    # rule for rule by main/art/orb_clock3.c's row projection.
+    cad, carg, ease = (int(rec.get("cadence", 0)), int(rec.get("cad_arg", 0)),
+                       int(rec.get("ease", 0)))
+    if cls != CLASS_AUX:
+        for c in D42_COLUMNS:
+            if int(rec.get(c, 0)):
+                raise ValueError("%s.%s: %d on a %s row — a row's poses are a moving row's "
+                                 "question (class aux)" % (where, c, int(rec[c]),
+                                                          CLASS_NAMES[cls]))
+        if cls != CLASS_SOUND and any(int(rec.get(c, 0)) for c in ("span", "zero", "vmin", "vmax")):
+            raise ValueError("%s: span, zero, vmin and vmax are a moving row's poses, and "
+                             "class %r does not move — every row that moves is an AUX row "
+                             "(D42)" % (where, CLASS_NAMES[cls]))
     if cls == CLASS_AUX:
-        if not 0 <= kind < len(MOTION_NAMES):
-            raise ValueError("%s.kind: %d is not a way for a pointer to move (%s, 0..%d)"
-                             % (where, kind, "/".join(MOTION_NAMES), len(MOTION_NAMES) - 1))
+        if not 0 <= kind < len(SHAPES):
+            raise ValueError("%s.kind: %d is not a row's shape (%s, 0..%d)"
+                             % (where, kind, "/".join(SHAPES), len(SHAPES) - 1))
+        if kind == SHAPE_TEXT:
+            raise ValueError("%s.kind: a text row waits for the string table (D42 E4)" % where)
+        if int(rec.get("str", 0)):
+            raise ValueError("%s.str: %d — only a text row points into the string table"
+                             % (where, int(rec["str"])))
         if not 0 <= src < len(SOURCES):
             raise ValueError("%s.src: %d is not a value this dial can read (0..%d)"
                              % (where, src, len(SOURCES) - 1))
+        if SOURCES[src] in UNDRIVABLE_SOURCES:
+            raise ValueError("%s.src: %r is no input of this dial, and a row that moves by "
+                             "it would never move" % (where, SOURCES[src]))
+        span, zero, vmin, vmax = (int(rec["span"]), int(rec["zero"]),
+                                  int(rec["vmin"]), int(rec["vmax"]))
+        dx, dy = int(rec.get("dx", 0)), int(rec.get("dy", 0))
+        end, digit = int(rec.get("end", 0)), int(rec.get("digit", 0))
+        if int(rec["degrees"]):
+            raise ValueError("%s.degrees: %d — a row's angle at rest is its `zero`"
+                             % (where, int(rec["degrees"])))
         if SOURCES[src] == "none":
-            raise ValueError("%s.src: an AUX pointer driven by 'none' never moves, and a "
-                             "row that never moves is plate art that was written as a "
-                             "row" % where)
-        vmax, vmin = int(rec["vmax"]), int(rec["vmin"])
-        span, zero = int(rec["span"]), int(rec["zero"])
-        if vmax < 1:
-            raise ValueError("%s.vmax: %d cannot divide a %s — a pointer's span is shared "
-                             "across its domain, so the domain has to hold at least one "
-                             "unit" % (where, vmax, MOTION_NAMES[kind]))
-        if span == 0:
-            raise ValueError("%s.span: 0 is a pointer that goes nowhere; give it the %s it "
-                             "travels, or bake the plate and name no row"
-                             % (where, MOTION_UNIT[MOTION_NAMES[kind]]))
-        if vmin > vmax:
-            raise ValueError("%s.vmin: %d is above vmax %d — the domain runs low to high, "
-                             "and frame 0 indexes the bottom of it" % (where, vmin, vmax))
-        if kind in MOTION_SLIDES:
-            # A slide is placed by its own origin and travels in pixels, so it has no
-            # pivot to turn about and no angle to stay inside. A slide of more than the
-            # panel's width is a bar that leaves the glass at one end of its domain.
-            if abs(span) > 466 or abs(zero) > 466:
-                raise ValueError("%s: a %s of %d px cannot stay on a 466 px panel — a "
-                                 "slide's span and zero are pixels, not tenths"
-                                 % (where, MOTION_NAMES[kind], span))
+            for c in MOTION_COLUMNS + ("cadence", "cad_arg", "ease"):
+                if int(rec.get(c, 0)):
+                    raise ValueError("%s.%s: %d on a still row — a row with no source "
+                                     "never moves, so it names no motion"
+                                     % (where, c, int(rec[c])))
         else:
-            # A rotation turns about a point inside its own plate, the same bound a HAND
-            # is held to, and for the same reason: a pivot off the ink is a pointer
-            # swinging about a point that is not on it.
-            if int(rec["w"]) and int(rec["h"]):
-                px, py = int(rec["pivot_x"]), int(rec["pivot_y"])
-                w, h = int(rec["w"]), int(rec["h"])
-                if not (0 <= px < w and 0 <= py < h):
-                    raise ValueError("%s: an AUX pointer's pivot (%d,%d) sits outside its "
-                                     "own %dx%d plate, so it would turn about a point off "
-                                     "the glass" % (where, px, py, w, h))
-            if abs(zero) > 3600:
-                raise ValueError("%s.zero: %d is an offset past one full turn "
-                                 "(±3600 tenths), which is not a direction"
-                                 % (where, zero))
-            if abs(span) > 3600:
-                raise ValueError("%s.span: %d asks a pointer to travel more than one full "
-                                 "turn; a %s that needs more is a disc, not a hand"
-                                 % (where, span, MOTION_NAMES[kind]))
-        # One plane, whatever the motion: a pointer is one plate that moves, and a row
-        # naming several is a bank wearing an AUX label.
-        if int(rec["n_frames"]) != 1:
-            raise ValueError("%s: an AUX row carries one plate, not %d — several plates "
-                             "indexed by a value is a BANK row"
-                             % (where, int(rec["n_frames"])))
-    # ---- D41: a HAND row may name its own drive (v5 only; the v4 pack refuses it) ----
-    # All-zero is the slot's own mapping. A source makes the row a driven row with a
-    # path, a domain and a span, held to the AUX row's rules for the same reasons.
-    if cls == CLASS_HAND:
-        drive = [int(rec.get(c, 0)) for c in DRIVE_COLUMNS]
-        if not src:
-            if kind or any(drive):
-                raise ValueError("%s: a HAND row that names no source reads its slot's own "
-                                 "mapping, so kind, span, zero, vmin and vmax must be 0 — "
-                                 "name the source the path is written for" % where)
-        else:
-            if not 0 <= src < len(SOURCES) or SOURCES[src] in ("text", "value", "ampm"):
-                raise ValueError("%s.src: %d is not a value a hand can turn by" % (where, src))
-            if not 0 <= kind < len(MOTION_NAMES):
-                raise ValueError("%s.kind: %d is not a way for a hand to move (%s, 0..%d)"
-                                 % (where, kind, "/".join(MOTION_NAMES), len(MOTION_NAMES) - 1))
-            if kind in MOTION_SLIDES:
-                raise ValueError("%s.kind: a hand layer turns, and %s is a pointer's path — "
-                                 "bake a sliding hand as an AUX row" % (where, MOTION_NAMES[kind]))
-            if not int(rec.get("cadence", 0)):
-                raise ValueError("%s.cadence: a hand that names its own source names when it "
-                                 "moves too — inherit is the slot's own mapping" % where)
-            vmax, vmin, span, zero = (int(rec["vmax"]), int(rec["vmin"]),
-                                      int(rec["span"]), int(rec["zero"]))
-            if vmax < 1:
-                raise ValueError("%s.vmax: %d cannot divide a hand's %s — its domain has to "
-                                 "hold at least one unit" % (where, vmax, MOTION_NAMES[kind]))
-            if span == 0:
-                raise ValueError("%s.span: 0 is a hand that goes nowhere" % where)
-            if vmin > vmax:
-                raise ValueError("%s.vmin: %d is above vmax %d" % (where, vmin, vmax))
-            if kind in MOTION_SLIDES:
-                if abs(span) > 466 or abs(zero) > 466:
-                    raise ValueError("%s: a %s of %d px cannot stay on a 466 px panel"
-                                     % (where, MOTION_NAMES[kind], span))
-            elif abs(zero) > 3600 or abs(span) > 3600:
-                raise ValueError("%s: a hand's span and zero stay within one turn (±3600 "
-                                 "tenths)" % where)
+            if not cad:
+                raise ValueError("%s.cadence: a row moving by %r names when it moves "
+                                 "(sweep, step, jump, stop-to-go, drag)"
+                                 % (where, SOURCES[src]))
+            if not 0 <= end < len(ENDS):
+                raise ValueError("%s.end: %d is not an end rule (%s, 0..%d)"
+                                 % (where, end, "/".join(ENDS), len(ENDS) - 1))
+            if not 0 <= digit < len(DIGITS):
+                raise ValueError("%s.digit: %d is not a digit selector (%s, 0..%d)"
+                                 % (where, digit, "/".join(DIGITS), len(DIGITS) - 1))
+            if vmax <= vmin:
+                raise ValueError("%s.vmax: %d is not above vmin %d — a domain has to hold "
+                                 "at least one unit to divide" % (where, vmax, vmin))
+            if not (span or dx or dy):
+                raise ValueError("%s: a moving row that neither turns nor travels goes "
+                                 "nowhere; bake it as a still row" % where)
+            if abs(zero) > TURN_10 or abs(span) > TURN_10:
+                raise ValueError("%s: zero %d and span %d stay within one turn (±%d "
+                                 "tenths)" % (where, zero, span, TURN_10))
+            if abs(dx) > PANEL_PX or abs(dy) > PANEL_PX:
+                raise ValueError("%s: a travel of (%d,%d) px cannot stay on a %d px panel"
+                                 % (where, dx, dy, PANEL_PX))
+            if end == END_WRAP and (abs(span) != TURN_10 or dx or dy):
+                raise ValueError("%s.end: a wrap starts the next unit at P0, so P1 must "
+                                 "look like P0 — a whole turn (±%d) and no travel, not "
+                                 "span %d and (%d,%d)" % (where, TURN_10, span, dx, dy))
+        if int(rec["w"]) and int(rec["h"]):
+            px, py = int(rec["pivot_x"]), int(rec["pivot_y"])
+            w, h = int(rec["w"]), int(rec["h"])
+            if not (0 <= px < w and 0 <= py < h):
+                raise ValueError("%s: a row's pivot (%d,%d) sits outside its own %dx%d "
+                                 "plate, so it would turn about a point off the glass"
+                                 % (where, px, py, w, h))
+        nf = int(rec["n_frames"])
+        if nf > ROW_FRAMES_MAX:
+            raise ValueError("%s: an animated row carries at most %d frames, not %d"
+                             % (where, ROW_FRAMES_MAX, nf))
+        if nf > 1 and not int(rec.get("delay", 0)):
+            raise ValueError("%s.delay: an animated row of %d frames names its frame time"
+                             % (where, nf))
+        if flags & EF_AUX_SHADOW and (nf != 1 or src or cad):
+            raise ValueError("%s: a shadow twin takes its hand's whole pose — one plate, "
+                             "no source, no cadence" % where)
     # ---- D41: the cadence columns (§2.2's row-local refusals) ----
-    cad, carg, ease = (int(rec.get("cadence", 0)), int(rec.get("cad_arg", 0)),
-                       int(rec.get("ease", 0)))
     if cad or carg or ease:
-        if cls not in (CLASS_HAND, CLASS_AUX, CLASS_BANK):
+        if cls not in (CLASS_AUX, CLASS_BANK):
             raise ValueError("%s.cadence: when a row moves is a driven row's question "
-                             "(hand, pointer, bank); class %r does not move by a value"
+                             "(a moving row, a bank); class %r does not move by a value"
                              % (where, CLASS_NAMES[cls]))
         if not 0 <= cad < len(CADENCES):
             raise ValueError("%s.cadence: %d is not a cadence (%s, 0..%d)"
                              % (where, cad, "/".join(CADENCES), len(CADENCES) - 1))
-        if cls == CLASS_HAND and not src:
-            slot = int(rec["slot"])
-            eff = HAND_SLOT_SOURCE[slot] if slot < len(HAND_SLOT_SOURCE) else "none"
-        else:
-            eff = SOURCES[src] if 0 <= src < len(SOURCES) else "none"
+        eff = SOURCES[src] if 0 <= src < len(SOURCES) else "none"
         name = CADENCES[cad]
         if cad == CAD_STEP and carg < 1:
             raise ValueError("%s.cad_arg: step 0 divides a unit into no steps — name how "
                              "many per unit" % where)
-        if cad in (CAD_INHERIT, CAD_SWEEP, CAD_JUMP) and carg:
+        if cad in (CAD_NONE, CAD_JUMP) and carg:
             raise ValueError("%s.cad_arg: %d on a %s row, which takes no argument"
                              % (where, carg, name))
+        if cad == CAD_SWEEP and carg > SWEEP_FPS_MAX:
+            raise ValueError("%s.cad_arg: a sweep at %d frames a second — the panel draws "
+                             "%d at most" % (where, carg, SWEEP_FPS_MAX))
         if cad == CAD_STOP_TO_GO and eff != "second":
             raise ValueError("%s.cadence: stop-to-go is a seconds hand's rhythm, and this "
                              "row reads %r" % (where, eff))
         if cad == CAD_DRAG and eff not in CAD_DRAG_SOURCES:
             raise ValueError("%s.cadence: drag holds a calendar row (%s), and this row "
                              "reads %r" % (where, "/".join(CAD_DRAG_SOURCES), eff))
-        if cls == CLASS_HAND and eff == "none" and cad:
-            raise ValueError("%s.cadence: a still hand slot has no value to move by" % where)
-        if cls == CLASS_BANK and cad not in (CAD_INHERIT, CAD_JUMP):
+        if cls == CLASS_BANK and cad not in (CAD_NONE, CAD_JUMP):
             raise ValueError("%s.cadence: a complication's plates are whole values, so it "
                              "jumps — %s waits for a ring the dial can turn" % (where, name))
-        if cls == CLASS_HAND and int(rec["slot"]) == 5 and (cad or src or kind):
-            raise ValueError("%s: the carriage turns with the seconds row — give that row "
-                             "the cadence" % where)
         if ease:
-            retro = ((cls == CLASS_AUX or (cls == CLASS_HAND and src)) and
-                     (kind == MOTION_RETROGRADE or kind in MOTION_SLIDES))
+            fly = cls == CLASS_AUX and int(rec.get("end", 0)) == END_FLYBACK
             steps = cad in (CAD_JUMP, CAD_STEP) and eff != "second" and cls != CLASS_BANK
             if ease > 1000:
                 raise ValueError("%s.ease: %d ms — an ease runs at most a second" % (where, ease))
-            if not (retro or steps):
+            if not (fly or steps):
                 raise ValueError("%s.ease: %d ms with nothing to ease — a settle needs a jump "
-                                 "or a step slower than the second, a flyback a retrograde path"
+                                 "or a step slower than the second, a flyback a flyback row"
                                  % (where, ease))
-        if cls == CLASS_AUX and kind == MOTION_INDEXED and cad not in (CAD_INHERIT, CAD_JUMP):
-            raise ValueError("%s.cadence: indexed already snaps to whole units; %s "
-                             "contradicts it" % (where, name))
     if cls == CLASS_BANK:
         if not 0 <= kind < len(KINDS):
             raise ValueError("%s.kind: %d is not a way to draw plates (0..%d)"
@@ -1245,79 +1236,29 @@ def check_table(recs):
 
 
 def check_clock_stamp(rec):
-    """The §4.1 Decision-A gate, host side: a clock section's derived element
-    stride must be one of the widths its own stamp has ever carried, and its
-    catalogue row must be the width the stamp's dialect writes. `rec` carries
-    the index record's stamp and the blob reader's derived widths. Refusals
+    """The clock section's dialect gate, host side (D42: v6 and nothing older). `rec`
+    carries the index record's stamp and the blob reader's derived widths. Refusals
     name both the stride and the stamp, mirroring orb_clock3.c's sentences."""
-    abi = rec.get("abi_max", CLOCK_ABI_V3)
+    abi = rec.get("abi_max", APP_ABI)
     ew = rec.get("elem_words", ELEMENT_WORDS)
-    spw = rec.get("spr_words") or (6 if abi >= CLOCK_ABI_V4 else 4)
-    if abi < CLOCK_ABI_V3 or abi > CLOCK_ABI_V5:
+    spw = rec.get("spr_words") or 6
+    if abi != CLOCK_ABI:
         raise ValueError("a clock section stamped geometry v%d; this reader's clock "
-                         "dialect is v%d to v%d — re-bake it"
-                         % (abi, CLOCK_ABI_V3, CLOCK_ABI_V5))
-    if abi >= CLOCK_ABI_V4:
-        want = ELEMENT_WORDS_CLOCK_V5 if abi >= CLOCK_ABI_V5 else ELEMENT_WORDS_CLOCK_V4
-        if ew not in want:
-            raise ValueError("clock rows are %d words under geometry v%d; that stamp "
-                             "writes exactly %d" % (ew, abi, want[0]))
-        if spw != 6:
-            raise ValueError("clock catalogue rows are %d words under geometry v%d; "
-                             "that stamp writes 6" % (spw, abi))
-    else:
-        if ew not in ELEMENT_WORDS_CLOCK_V3:
-            raise ValueError("clock rows are %d words under geometry v%d; that stamp "
-                             "writes 17, 19 or 23" % (ew, abi))
-        if spw != 4:
-            raise ValueError("clock catalogue rows are %d words under geometry v%d; "
-                             "that stamp writes 4" % (spw, abi))
+                         "dialect is v%d and nothing older (D42) — re-bake it"
+                         % (abi, CLOCK_ABI))
+    if ew != ELEMENT_WORDS:
+        raise ValueError("clock rows are %d words under geometry v%d; that stamp writes "
+                         "exactly %d" % (ew, abi, ELEMENT_WORDS))
+    if spw != 6:
+        raise ValueError("clock catalogue rows are %d words under geometry v%d; that "
+                         "stamp writes 6" % (spw, abi))
 
 
 def pack_elements(recs, cap=ELEM_MAX):
-    """Checked pack of a whole table at the v4 width (25 words): real rows only, no
-    padding to the cap, exactly
-    as pack_records does its own tables. C4's two appended columns default HERE
-    (parent NONE, delay 0) rather than at pack_record's door: a row dict from
-    before the delta dialect carries no claim, which is exactly what the
-    defaults say. A v3-width pack additionally refuses a non-default pair — the
-    bake that sets delay and packs 23 words is the same lie Decision A refuses
-    on the reader's side.
-    """
-    check_table(recs)
-    if len(recs) > cap:
-        raise ValueError("element table: %d rows exceed the cap of %d"
-                         % (len(recs), cap))
-    for i, r in enumerate(recs):
-        why = v5_claim(r)
-        if why:
-            raise ValueError("elem[%d] names %s at stride %d: the v4 clock stamp has no "
-                             "reading for it — bake the section at the v5 stamp"
-                             % (i, why, ELEMENT_WORDS_V4))
-    out = []
-    for i, r in enumerate(recs):
-        r = dict(r)
-        r.setdefault("parent", PARENT_NONE)
-        r.setdefault("delay", 0)
-        out += pack_record(r, ELEMENT_FIELDS[:ELEMENT_WORDS_V4], "elem[%d]" % i)
-    return out
-
-
-def v5_claim(rec):
-    """What a row says that only the v5 stamp can carry (D41), or None: a cadence
-    column, or a HAND row's own drive. A bake packs v5 exactly when a row does."""
-    for c in ("cadence", "cad_arg", "ease"):
-        if int(rec.get(c, 0)):
-            return "%s %d" % (c, int(rec[c]))
-    if int(rec["class"]) == CLASS_HAND:
-        for c in ("kind", "src") + DRIVE_COLUMNS:
-            if int(rec.get(c, 0)):
-                return "a hand's own %s %d" % (c, int(rec[c]))
-    return None
-
-
-def pack_elements_v5(recs, cap=ELEM_MAX):
-    """The D41 width: 28 words, the three motion columns after C4's pair."""
+    """Checked pack of a clock table at the v6 width (33 words): real rows only, no
+    padding to the cap. The appended columns default HERE (parent NONE, the rest 0)
+    rather than at pack_record's door, so a row dict that names nothing about them
+    carries exactly what the defaults say."""
     check_table(recs)
     if len(recs) > cap:
         raise ValueError("element table: %d rows exceed the cap of %d"
@@ -1326,64 +1267,115 @@ def pack_elements_v5(recs, cap=ELEM_MAX):
     for i, r in enumerate(recs):
         r = dict(r)
         r.setdefault("parent", PARENT_NONE)
-        for c in ("delay", "cadence", "cad_arg", "ease"):
+        for c in ("delay", "cadence", "cad_arg", "ease") + D42_COLUMNS:
             r.setdefault(c, 0)
         out += pack_record(r, ELEMENT_FIELDS, "elem[%d]" % i)
     return out
 
 
-def check_clock_drive(recs, second_sweep, tick_rate):
-    """D41 §2.2's refusals that need the whole table or the section's tempo:
-    stop-to-go needs a jumping minute to release it, and a seconds hand's cadence
-    must be the tempo the scheduler keeps — sweep and stop-to-go on a sweeping dial,
-    step N at tick_rate N, jump at 1. Mirrors orb_clock3.c."""
-    minute_jumps = False
+def clock_tempo(recs, scalars=None):
+    """The beat a v6 dial keeps, derived from its rows (D42 §4; the scheduler reads it
+    as clk_theme's second_sweep and tick_rate): (sweep, rate). A seconds row that sweeps
+    or runs stop-to-go asks for the sweep, at its own frame rate when a sweep names one
+    (cad_arg), else at the fastest animation the dial carries (the plate's, the
+    carriage's), else at SWEEP_TIER. A stepping seconds row asks for its N a second; a
+    dial with no moving seconds row beats once a second. `scalars` are the section's
+    (bg_fps: an animated plate's named rate). Mirrors orb_clock3.c's derivation."""
+    sweep, rate, sweep_fps = 0, 0, 0
     for r in recs:
-        if int(r["class"]) == CLASS_HAND and int(r["slot"]) == 1 and not int(r["src"]) \
-                and int(r.get("cadence", 0)) == CAD_JUMP:
-            minute_jumps = True
-    for i, r in enumerate(recs):
+        if int(r["class"]) != CLASS_AUX or int(r["flags"]) & EF_HIDDEN:
+            continue
+        if SOURCES[int(r["src"])] != "second" or int(r.get("digit", 0)):
+            continue
         cad = int(r.get("cadence", 0))
-        cls = int(r["class"])
-        if cls not in (CLASS_HAND, CLASS_AUX):
-            continue
-        if cls == CLASS_HAND and not int(r["src"]):
-            slot = int(r["slot"])
-            eff = HAND_SLOT_SOURCE[slot] if slot < len(HAND_SLOT_SOURCE) else "none"
-        else:
-            eff = SOURCES[int(r["src"])]
+        if cad in (CAD_SWEEP, CAD_STOP_TO_GO):
+            sweep = 1
+        if cad == CAD_SWEEP:
+            sweep_fps = max(sweep_fps, int(r.get("cad_arg", 0)))
+        elif cad == CAD_STEP:
+            rate = max(rate, int(r["cad_arg"]))
+    if not sweep:
+        return 0, rate or 1
+    if sweep_fps:
+        return 1, sweep_fps
+    sc = scalars or {}
+    fps = 0
+    for r in recs:
+        if int(r["class"]) == CLASS_PLATE and int(r["slot"]) == 0 and int(r["n_frames"]) > 1:
+            if int(sc.get("bg_fps", 0)) > 0:           # the rate its author named
+                fps = int(sc["bg_fps"])
+        if int(r["class"]) == CLASS_AUX and int(r["n_frames"]) > 1 and int(r.get("delay", 0)):
+            fps = max(fps, (1000 + int(r["delay"]) // 2) // int(r["delay"]))
+    return 1, min(255, fps if fps >= 2 else SWEEP_TIER)
+
+
+def check_clock_rows(recs, scalars=None):
+    """D42's whole-table rules for the clock's moving rows, the refusals that need more
+    than one row to state. Returns clock_tempo(recs). Mirrors orb_clock3.c:
+      - stop-to-go rests until a jumping minute row releases it;
+      - every stepping seconds row steps at one rate, the dial's beat;
+      - at most one row is animated (the carriage);
+      - a shadow twin follows a moving or still row, never another twin, in slot order;
+      - a parent is a moving row, and a parent that turns shares its child's centre."""
+    aux = {int(r["slot"]): r for r in recs if int(r["class"]) == CLASS_AUX}
+    by_n = {int(r["n"]): r for r in recs}
+    minute_jumps = any(SOURCES[int(r["src"])] == "minute" and not int(r.get("digit", 0))
+                       and int(r.get("cadence", 0)) == CAD_JUMP for r in aux.values())
+    steps, animated = set(), []
+    for slot in sorted(aux):
+        r = aux[slot]
+        where = "ptr%d" % slot
+        if slot >= CLK_ROW_MAX:
+            raise ValueError("%s: the clock seats %d moving rows (ptr0..ptr%d)"
+                             % (where, CLK_ROW_MAX, CLK_ROW_MAX - 1))
+        cad = int(r.get("cadence", 0))
         if cad == CAD_STOP_TO_GO and not minute_jumps:
-            raise ValueError("elem[%d]: stop-to-go rests until the minute releases it, and "
-                             "the minute hand does not jump" % i)
-        if eff != "second" or not cad:
-            continue
-        rate = max(1, int(tick_rate))
-        if cls == CLASS_AUX:
-            bad = cad == CAD_STEP and int(r["cad_arg"]) != rate
-        else:
-            fast = cad in (CAD_SWEEP, CAD_STOP_TO_GO)
-            bad = (fast != bool(second_sweep) or
-                   (cad == CAD_STEP and int(r["cad_arg"]) != rate) or
-                   (cad == CAD_JUMP and rate != 1))
-        if bad:
-            raise ValueError("elem[%d]: a seconds row moving by %s (%d) on a dial whose "
-                             "tempo is sweep %d, tick_rate %d — the scheduler's tempo and "
-                             "the hand must agree" % (i, CADENCES[cad], int(r["cad_arg"]),
-                                                      int(second_sweep), int(tick_rate)))
+            raise ValueError("%s: stop-to-go rests until the minute releases it, and no "
+                             "minute row jumps" % where)
+        if SOURCES[int(r["src"])] == "second" and cad == CAD_STEP and not int(r.get("digit", 0)):
+            steps.add(int(r["cad_arg"]))
+        if int(r["n_frames"]) > 1:
+            animated.append(where)
+        if int(r["flags"]) & EF_AUX_SHADOW:
+            prev = aux.get(slot - 1)
+            if prev is None:
+                raise ValueError("%s: a shadow twin with no row before it — the twin "
+                                 "takes its pose from the row in the slot under it" % where)
+            if int(prev["flags"]) & EF_AUX_SHADOW:
+                raise ValueError("%s: a shadow twin under another twin — a twin darkens "
+                                 "a row, not a shadow" % where)
+        par = int(r.get("parent", PARENT_NONE))
+        if par != PARENT_NONE:
+            p = by_n.get(par)
+            if p is None or int(p["class"]) != CLASS_AUX:
+                raise ValueError("%s: names parent %d, which is not a moving row — a row "
+                                 "rides another row's pose" % (where, par))
+            if int(p["span"]) and (int(p["x"]) + int(p["pivot_x"]) != int(r["x"]) + int(r["pivot_x"])
+                                   or int(p["y"]) + int(p["pivot_y"]) != int(r["y"]) + int(r["pivot_y"])):
+                raise ValueError("%s: rides a parent that turns about another centre — a "
+                                 "child of a turning row shares its arbour" % where)
+    if len(steps) > 1:
+        raise ValueError("seconds rows step at %s a second: a dial keeps one beat"
+                         % "/".join(str(n) for n in sorted(steps)))
+    if len(animated) > 1:
+        raise ValueError("%s are all animated: a dial carries one animated row (the "
+                         "carriage)" % ", ".join(animated))
+    return clock_tempo(recs, scalars)
 
 
 def pack_elements_v3(recs, cap=ELEM_MAX):
-    """The v3-width pack: every app section, and every clock file that names no
-    delta vocabulary. Non-default delta columns are refused at this door, not
-    silently truncated — the writer cannot undo a claim."""
+    """The v3-width pack: every app section but the clock's. A column past the 23rd
+    is refused at this door, not silently truncated — the writer cannot undo a claim."""
     check_table(recs)
     for i, r in enumerate(recs):
-        par, dly = r.get("parent", PARENT_NONE), r.get("delay", 0)
-        if par != PARENT_NONE or dly:
-            raise ValueError("elem[%d] names parent %d delay %d at stride %d: the "
-                             "v3 clock stamp has no reading for them — bake the "
-                             "section at the v4 stamp" % (i, par, dly,
-                                                          ELEMENT_WORDS_V3))
+        par = r.get("parent", PARENT_NONE)
+        later = [c for c, _t in ELEMENT_FIELDS[ELEMENT_WORDS_V3:]
+                 if c != "parent" and int(r.get(c, 0))]
+        if par != PARENT_NONE or later:
+            raise ValueError("elem[%d] names %s at stride %d: an app row is 23 words and "
+                             "carries none of the clock's appended columns"
+                             % (i, ", ".join(later) or "parent %d" % par,
+                                ELEMENT_WORDS_V3))
     if len(recs) > cap:
         raise ValueError("element table: %d rows exceed the cap of %d"
                          % (len(recs), cap))
@@ -1467,93 +1459,116 @@ if __name__ == "__main__":
     # The element table (D32). Same habit as the rows above: the widths and the
     # bounds are what the firmware's mirror and the P6.1 suite are pinned against,
     # so they fail here on `python3 tools/theme_schema.py` and not on a dial.
-    assert ELEMENT_WORDS == 28 == len(ELEMENT_FIELDS), "element row width moved"
+    assert ELEMENT_WORDS == 33 == len(ELEMENT_FIELDS), "element row width moved"
     assert ELEMENT_WORDS_V3 == 23 and ELEMENT_FIELDS[23][0] == "parent" \
         and ELEMENT_FIELDS[24][0] == "delay", "C4's append moved"
-    assert ELEMENT_WORDS_V4 == 25 and [n for n, _t in ELEMENT_FIELDS[25:]] == \
-        ["cadence", "cad_arg", "ease"], "D41's append moved"
+    assert [n for n, _t in ELEMENT_FIELDS[25:]] == \
+        ["cadence", "cad_arg", "ease", "dx", "dy", "end", "digit", "str"], "D41/D42's append moved"
     assert len(CLASS_NAMES) == 11, "class vocabulary moved; orb_assets.h's bound must agree"
-    assert len(MOTION_NAMES) == 5, "the pointer's motion vocabulary moved"
+    assert (len(SHAPES), len(ENDS), len(DIGITS), len(CADENCES)) == (3, 3, 3, 6), \
+        "the moving row's vocabulary moved; clk_types.h must agree"
     assert class_id("hand") == CLASS_HAND and class_id("nope") is None
     assert class_id("aux") == CLASS_AUX == 8, "D34's class must append at 8, never move"
     assert class_id("preview") == CLASS_PREVIEW == 9, "preview must append at 9, never move"
+    # A plain (app) hand row: the generic class rules still hold for every app.
     _e = dict(blank_element(), **{"n": 0, "class": CLASS_HAND, "slot": 0,
                                   "flags": EF_OS_ADV, "order": 1, "alpha": 255,
                                   "frame0": 0, "n_frames": 1, "x": 10, "y": 20,
                                   "w": 8, "h": 90, "pivot_x": 4, "pivot_y": 88,
                                   "radius": 0, "degrees": 9000, "scale16": 16})
-    assert pack_elements([_e]) == pack_record(_e, ELEMENT_FIELDS[:ELEMENT_WORDS_V4], "elem[0]")
-    assert unpack_elements(pack_elements([_e]), 1, stride=ELEMENT_WORDS_V4)[0] == _e, \
-        "element row must round-trip"
-    assert unpack_elements(pack_elements_v5([_e]), 1)[0] == _e, "a v5 row must round-trip"
-    # ---- D41: a cadence rides only the v5 pack, and §2.2 refuses what cannot apply ----
-    _st = dict(_e, slot=2, cadence=CAD_STEP, cad_arg=4)
-    assert unpack_elements(pack_elements_v5([_st]), 1)[0] == _st
-    try:
-        pack_elements([_st]); raise AssertionError("a v4 pack carried a cadence")
-    except ValueError as e:
-        assert "v5" in str(e)
-    for _bad, _why in ((dict(_e, cadence=CAD_STOP_TO_GO), "seconds"),
-                       (dict(_e, slot=2, cadence=CAD_STEP), "step 0"),
-                       (dict(_e, slot=1, cadence=CAD_JUMP, cad_arg=3), "no argument"),
-                       (dict(_e, slot=0, cadence=CAD_DRAG), "calendar"),
-                       (dict(_e, slot=1, cadence=CAD_SWEEP, ease=120), "nothing to ease"),
-                       (dict(_e, slot=2, cadence=CAD_STEP, cad_arg=1, ease=120), "nothing to ease"),
-                       (dict(_e, slot=1, cadence=CAD_JUMP, ease=1500), "at most a second"),
-                       (dict(_e, slot=5, cadence=CAD_JUMP), "carriage"),
-                       (dict(_e, slot=3, cadence=CAD_SWEEP), "still"),
-                       (dict(_e, cadence=9), "not a cadence"),
-                       (dict(_e, kind=MOTION_RETROGRADE), "names no source")):
-        try:
-            check_element(_bad); raise AssertionError("D41 let through: " + _why)
-        except ValueError as e:
-            assert _why in str(e), (str(e), _why)
-    check_element(dict(_e, src=SOURCES.index("hour12"), kind=MOTION_RETROGRADE,
-                       span=1800, vmax=12, cadence=CAD_SWEEP, ease=400))  # a flyback
-    check_element(dict(_e, slot=1, cadence=CAD_JUMP, ease=120))           # a settle
-    check_clock_drive([dict(_e, slot=1, cadence=CAD_JUMP),
-                       dict(_e, n=1, slot=2, cadence=CAD_STOP_TO_GO, cad_arg=585)], 1, 1)
-    check_clock_drive([dict(_e, slot=2, cadence=CAD_STEP, cad_arg=4)], 0, 4)
-    for _rows, _sw, _rate, _why in (
-            ([dict(_e, slot=2, cadence=CAD_STOP_TO_GO)], 1, 1, "release"),
-            ([dict(_e, slot=2, cadence=CAD_STEP, cad_arg=4)], 0, 1, "agree"),
-            ([dict(_e, slot=2, cadence=CAD_SWEEP)], 0, 1, "agree")):
-        try:
-            check_clock_drive(_rows, _sw, _rate); raise AssertionError(_why)
-        except ValueError as e:
-            assert ("releases" if _why == "release" else _why) in str(e), str(e)
-    # A D32-width row still reads: the four drive columns land on the zeros they were
-    # written after, which is the append-only promise the stride derivation exists for.
-    _narrow = unpack_elements(pack_record(_e, ELEMENT_FIELDS[:19], "e"), 1, stride=19)[0]
-    assert _narrow == dict(_e, span=0, zero=0, vmin=0, vmax=0), "a narrow row must widen"
-    # ---- D34: the pointer row, accepted and refused, and round-tripped ----
+    assert unpack_elements(pack_elements([_e]), 1)[0] == _e, "element row must round-trip"
+    assert unpack_elements(pack_elements_v3([_e]), 1, stride=ELEMENT_WORDS_V3)[0] == _e
+    # ---- D42: the moving row, accepted and refused, and round-tripped ----
     _ax = dict(blank_element(), **{"n": 5, "class": CLASS_AUX, "slot": 0, "order": 3,
                                    "alpha": 255, "frame0": 4, "n_frames": 1,
                                    "x": 300, "y": 120, "w": 40, "h": 8,
                                    "pivot_x": 4, "pivot_y": 4,
-                                   "kind": MOTION_ROTATE, "src": SOURCES.index("second"),
-                                   "span": 3600, "zero": 0, "vmin": 0, "vmax": 60})
-    # `class` is a Python keyword, so every override below is a dict KEY and the
-    # helper applies it with update() — a kwarg here is a SyntaxError, not a test.
+                                   "kind": SHAPE_ARM, "src": SOURCES.index("second"),
+                                   "span": 3600, "zero": 0, "vmin": 0, "vmax": 60,
+                                   "cadence": CAD_STEP, "cad_arg": 1, "end": END_WRAP})
+    assert unpack_elements(pack_elements([_ax]), 1)[0] == _ax, "a row must round-trip"
+    _fan = dict(_ax, slot=1, n=6, src=SOURCES.index("hour12"), span=1800, zero=-900,
+                vmax=12, cadence=CAD_JUMP, cad_arg=0, end=END_FLYBACK, ease=400)
+    _bar = dict(_ax, slot=2, n=7, span=0, dx=160, dy=-20, cadence=CAD_SWEEP, cad_arg=0,
+                end=END_FLYBACK)
+    _still = dict(_ax, slot=3, n=8, src=0, span=0, vmax=0, cadence=0, cad_arg=0)
+    _units = dict(_ax, slot=4, n=9, kind=SHAPE_RING, src=SOURCES.index("date"),
+                  digit=DIGIT_UNITS, vmin=0, vmax=10, span=-3600, cadence=CAD_JUMP,
+                  cad_arg=0)
+    _twin = dict(_still, slot=1, n=10, flags=EF_AUX_SHADOW)
+    for _ok in (_fan, _bar, _still, _units, _twin):
+        assert check_element(_ok, "sentinel-ok") == _ok
+    assert check_table([_e, _ax])
+    for _bad, _why in (
+        (dict(_ax, kind=3), "not a row's shape"),
+        (dict(_ax, kind=SHAPE_TEXT), "string table"),
+        (dict(_ax, src=SOURCES.index("text")), "no input"),
+        (dict(_ax, cadence=0, cad_arg=0), "names when it moves"),
+        (dict(_ax, vmax=0), "not above vmin"),
+        (dict(_ax, span=0), "goes nowhere"),
+        (dict(_ax, span=3700), "within one turn"),
+        (dict(_bar, dx=500), "466 px panel"),
+        (dict(_ax, span=1800), "whole turn"),
+        (dict(_bar, end=END_WRAP), "whole turn"),
+        (dict(_ax, end=3), "not an end rule"),
+        (dict(_ax, digit=3), "not a digit selector"),
+        (dict(_ax, degrees=900), "angle at rest"),
+        (dict(_still, dx=4), "still row"),
+        (dict(_still, cadence=CAD_JUMP), "still row"),
+        (dict(_ax, pivot_x=44), "outside its own"),
+        (dict(_ax, n_frames=17, delay=60), "at most 16"),
+        (dict(_ax, n_frames=4), "frame time"),
+        (dict(_twin, src=SOURCES.index("second"), cadence=CAD_SWEEP, span=3600, vmax=60),
+         "whole pose"),
+        (dict(_ax, cadence=CAD_STOP_TO_GO, cad_arg=0, src=SOURCES.index("minute")), "seconds hand"),
+        (dict(_ax, cadence=CAD_DRAG, cad_arg=0), "calendar"),
+        (dict(_ax, cadence=CAD_STEP, cad_arg=0), "step 0"),
+        (dict(_ax, cadence=CAD_SWEEP, cad_arg=31), "30 at most"),
+        (dict(_ax, cadence=CAD_JUMP, cad_arg=2), "takes no argument"),
+        (dict(_ax, ease=120), "nothing to ease"),
+        (dict(_fan, ease=1500), "at most a second"),
+        (dict(_e, dx=3), "moving row's question"),
+        (dict(_e, span=3600, vmax=12), "does not move"),
+        (dict(_e, kind=1), "driven element"),
+    ):
+        try:
+            check_element(_bad, "sentinel"); raise AssertionError("D42 let through: " + _why)
+        except ValueError as e:
+            assert _why in str(e), (str(e), _why)
+    # ---- the table: the tempo is the rows', and the rows agree on it ----
+    _min = dict(_ax, slot=5, n=11, src=SOURCES.index("minute"), cadence=CAD_JUMP, cad_arg=0)
+    _stg = dict(_ax, slot=6, n=12, cadence=CAD_STOP_TO_GO, cad_arg=585)
+    assert check_clock_rows([_ax]) == (0, 1)
+    assert check_clock_rows([dict(_ax, cad_arg=4)]) == (0, 4)
+    assert check_clock_rows([_min, _stg]) == (1, SWEEP_TIER)
+    assert check_clock_rows([dict(_ax, cadence=CAD_SWEEP, cad_arg=8)]) == (1, 8)
+    assert check_clock_rows([dict(_ax, cadence=CAD_SWEEP, cad_arg=0),
+                             dict(_still, slot=9, n=20, n_frames=4, delay=100)]) == (1, 10)
+    assert check_clock_rows([_ax, _twin]) == (0, 1)
+    for _rows, _why in (([_stg], "releases"),
+                        ([dict(_ax, slot=24)], "seats 24 moving rows"),
+                        ([_ax, dict(_ax, slot=7, n=13, cad_arg=2)], "one beat"),
+                        ([dict(_ax, n_frames=4, delay=60),
+                          dict(_ax, slot=7, n=13, n_frames=4, delay=60)], "one animated"),
+                        ([dict(_twin, slot=0)], "no row before"),
+                        ([_ax, _twin, dict(_twin, slot=2, n=14)], "another twin"),
+                        ([_ax, dict(_fan, parent=5, x=0)], "another centre"),
+                        ([_e, dict(_fan, parent=0 + 0 or 99)], "not a moving row")):
+        try:
+            check_clock_rows(_rows); raise AssertionError(_why)
+        except ValueError as e:
+            assert _why in str(e), (str(e), _why)
+    # A D32-width row still reads: the columns past it land on the zeros they were
+    # written after, which is the append-only promise the stride derivation exists for.
+    _narrow = unpack_elements(pack_record(_e, ELEMENT_FIELDS[:19], "e"), 1, stride=19)[0]
+    assert _narrow == _e, "a narrow row must widen"
     def _with(**over):
         r = dict(_e)
         r.update({str(k): v for k, v in over.items()})
         return r
     assert check_table([_e, _with(n=1, **{"class": CLASS_TEXT, "slot": 3, "radius": 0,
                                           "pivot_x": 0, "pivot_y": 0, "flags": 0})])
-    assert unpack_elements(pack_elements([_ax]), 1)[0] == _ax, "a pointer row must round-trip"
-    assert check_table([_e, _ax])
-    _slide = dict(_ax, **{"slot": 1, "kind": MOTION_SLIDE_X, "span": 90, "zero": -45,
-                          "vmin": 0, "vmax": 100, "pivot_x": 0, "pivot_y": 0})
-    assert check_element(_slide, "sentinel-aux-slide")
-    # §26 slice 4: the twin row is a flagged aux row, legal on its class and only there.
-    _twin = dict(_ax, **{"slot": 1, "flags": EF_AUX_SHADOW})
-    assert check_element(_twin, "sentinel-aux-twin")
-    assert unpack_elements(pack_elements([_twin]), 1)[0] == _twin, "a twin row must round-trip"
     for _bad, _why in (
-        # Derived from the vocabulary's own width, so the next class appended at the
-        # end cannot quietly turn this refusal into an acceptance: an id past the end
-        # is a class this build cannot draw, and that is what D26 refuses at the door.
         (_with(**{"class": len(CLASS_NAMES)}), "unknown class"),
         (_with(**{"class": 200}), "class far past the vocabulary"),
         (_with(flags=EF_ALPHA | 0x100), "unknown flag bit"),
@@ -1569,35 +1584,21 @@ if __name__ == "__main__":
         (_with(pivot_x=99), "hand pivot off the plate"),
         (_with(**{"class": CLASS_TEXT, "slot": 1, "radius": 40}), "radius on a text row"),
         (_with(scale16=8), "scale below one sixteenth"),
-        (_with(**{"class": CLASS_AUX, "kind": 1}), "a drive on a plain hand row"),
         (_with(flags=EF_DELTA_WRAP), "a closing delta on a hand row"),
-        # CLASS_PREVIEW: a preview row is one plane and this table refuses a second.
-        # The picker draws one picture; several frames would want a compositor the
-        # shell does not have, and the class's slot_bytes is w*h*2 for one plane.
         (_with(**{"class": CLASS_PREVIEW, "n_frames": 2}), "an animated preview"),
         (_with(**{"class": CLASS_PREVIEW, "kind": 1}), "a preview naming a driven kind"),
         (_with(**{"class": CLASS_PREVIEW, "src": 1}), "a preview naming a driven source"),
-        (_ax, "an accepted pointer refuses — the fixture broke"),
-        (dict(_ax, kind=5), "motion past the vocabulary"),
-        (dict(_ax, src=0), "a pointer driven by none"),
-        (dict(_ax, vmax=0), "a domain that cannot divide"),
-        (dict(_ax, span=0), "a pointer that goes nowhere"),
-        (dict(_ax, vmin=61), "vmin above vmax"),
-        (dict(_ax, n_frames=2), "a pointer carrying two plates"),
-        (dict(_ax, zero=3700), "a pointer zero past a turn"),
-        (dict(_ax, span=3700), "a pointer travelling past a turn"),
-        (dict(_ax, pivot_x=44), "a pointer pivot off the plate"),
-        (dict(_slide, span=900), "a slide off the panel"),
     ):
-        if _why.startswith("an accepted"):
-            assert check_element(_bad, "sentinel-aux") == _bad
-            continue
         try:
             check_element(_bad, "sentinel")
         except ValueError:
             pass
         else:
             raise AssertionError("check_element accepted %s" % _why)
+    try:
+        pack_elements_v3([_ax]); raise AssertionError("an app pack carried a clock column")
+    except ValueError as e:
+        assert "23 words" in str(e), str(e)
     for _dup, _why in (([_e, dict(_e)], "two rows on one slot"),
                        ([_e, _with(**{"class": CLASS_TEXT, "slot": 9, "n": 0})],
                         "duplicate n")):
@@ -1631,6 +1632,6 @@ if __name__ == "__main__":
     # A slot the dial draws with must be one the shipped reader can seat, or the
     # vocabulary is promising a picture the projection refuses.
     assert clock_slot("bg") == ("plate", 0) and clock_slot("glass") == ("plate", 1)
-    assert clock_slot("carriage") == ("hand", 5)
+    assert clock_slot("ptr23") == ("aux", 23) and clock_slot("carriage") is None
     print("             %d clock slots, %d drawn, names within %d chars"
           % (len(CLOCK_SLOTS), len(CLOCK_SLOTS_DRAWN), 11))

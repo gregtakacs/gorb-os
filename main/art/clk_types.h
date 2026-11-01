@@ -45,12 +45,11 @@ typedef struct {
  * --from-bundle) refuse a longer bank with this number. */
 #define CLK_BG_MAX    16
 
-/* D41: when a driven row moves (docs/hand-motion-plan.md §2.1). Paths above say
- * how a value becomes a pose; a cadence says how much of the next finer field the
- * value shows. FORMAT 3 v4 has no column for it, so every row reads INHERIT — each
- * row class's behaviour before D41 — until v5 (slice G2) gives a row its own. */
+/* D41: when a driven row moves (docs/hand-motion-plan.md §2.1). D42 retired
+ * INHERIT with the old dialects it inherited from: 0 is NONE, the cadence of a still
+ * row and of nothing else (docs/element-model-plan.md §4). */
 enum {
-    CLK_CAD_INHERIT    = 0,   /* the row class's pre-D41 motion (§2.3)               */
+    CLK_CAD_NONE       = 0,   /* a still row: it never moves                         */
     CLK_CAD_SWEEP      = 1,   /* the whole fraction                                  */
     CLK_CAD_STEP       = 2,   /* the fraction quantised to 1/cad_arg of a unit       */
     CLK_CAD_JUMP       = 3,   /* no fraction: moves on the unit boundary             */
@@ -59,61 +58,52 @@ enum {
     CLK_CAD__MAX
 };
 
-/* D41 §3: a driven row as the one drive function reads it — source, path, cadence,
- * and the path's span, zero and domain. A HAND slot is a pre-filled one of these
- * (hour12 over 12, minute over 60, second over 60, the two statics still), and an AUX
- * row is its record's own columns, so the hands are three rows rather than a second
- * code path. `hand` picks which INHERIT a row means: the hand chain (the hour reads
- * the minute the hand shows, the minute the second the hand shows) or the pointer's
- * (whole units of the next finer field, CLK_FLAG_JUMP to drop them). */
-typedef struct {
-    uint8_t  src;              /* CLK_SRC_*    */
-    uint8_t  path;             /* CLK_MOTION_* */
-    uint8_t  cadence;          /* CLK_CAD_*    */
-    uint8_t  hand;             /* 1: a HAND slot's row */
-    uint16_t cad_arg;          /* N steps, P tenths of a second, or a drag window in minutes */
-    uint16_t flags;            /* CLK_FLAG_JUMP / CLK_FLAG_WRAP, as on an AUX row */
-    int16_t  span;             /* tenths of a degree, or px on a slide */
-    int16_t  zero;
-    uint16_t value_min;
-    uint16_t value_max;
-    uint16_t ease;             /* settle (jump/step) or flyback (retrograde) ms; 0 = none */
-} clk_drive_t;
+/* D42 §3: what a row does past the end of its domain. */
+enum {
+    CLK_END_WRAP    = 0,   /* the next unit starts at P0 unseen: a whole turn, no travel */
+    CLK_END_FLYBACK = 1,   /* back to P0 when the source resets, eased by `ease`       */
+    CLK_END_HOLD    = 2,   /* rests at P1 until the source resets                      */
+    CLK_END__MAX
+};
 
+/* D42 §4: which part of the source value a row reads. */
+enum {
+    CLK_DIGIT_WHOLE = 0,
+    CLK_DIGIT_UNITS = 1,   /* v % 10: a double-rotator date's units ring */
+    CLK_DIGIT_TENS  = 2,   /* v / 10 % 10: its tens ring                 */
+    CLK_DIGIT__MAX
+};
+
+/* D42 §2: what a row's art is. The shape says nothing about how it moves. */
+enum {
+    CLK_SHAPE_ARM  = 0,
+    CLK_SHAPE_RING = 1,
+    CLK_SHAPE_TEXT = 2,    /* glyphs from the string table: E4, refused until then */
+    CLK_SHAPE__MAX
+};
+
+/* D42: the clock's moving rows, and the most frames the one animated row carries. */
+#define CLK_ROW_MAX   24   /* theme_schema.CLK_ROW_MAX */
+
+/* The dial's section-wide geometry. D42 moved every hand, shadow and carriage into
+ * clk_row_t (below); what stays here is the plate, the glass and the background's
+ * animation, plus the tempo and carriage figures the reader DERIVES from the rows
+ * for the scheduler (orb_sched.c reads second_sweep, tick_rate and the tourbillon
+ * pair, and no longer from carried scalars). */
 typedef struct {
   uint32_t bg;
-  uint8_t  plate_follow;    /* 0 none 1 hour 2 minute 3 second */
-  uint8_t  shadow_on;
-  int8_t   shadow_dx, shadow_dy;
-  uint8_t  second_sweep, second_railway, text_over_hands, tick_rate;
+  uint8_t  second_sweep, tick_rate;   /* derived: the dial's beat (clock_tempo) */
   uint16_t bg_frames;       /* distinct extra plate frames (0 = still) */
   int16_t  bg_fps; uint8_t bg_loop; uint16_t bg_every;
   uint32_t plate_off;       /* full-screen RGB565 colour plane offset */
-  uint8_t  order[5]; uint8_t order_n;
-  uint8_t  matte_mask;      /* bit i = hand slot i folded into the
-                             *   background at bake time, never
-                             *   composited at runtime; bit 5 = the
-                             *   glass overlay was folded too */
-  clk_sprite_t hand[5];
-  clk_sprite_t shadow[5];
   clk_sprite_t overlay;
   uint8_t  bg_mode;         /* 0 = plate + bgAnim frames, 1 = animated delta bank */
   uint32_t bg_key_off;      /* mode 1: full RGB565 keyframe (frame 0) */
   uint16_t gif_frames;      /* mode 1: frames in the loop (incl. keyframe) */
-  uint16_t tourbillon_n;    /* second-hand frame bank size (0 = plain hand) */
-  uint16_t tourbillon_fps;  /* bank playback tempo */
-  clk_sprite_t tourbillon[CLK_TOURB_MAX];  /* shown frame's pixels replace hand[2]'s */
-  /* D32 ruling C, appended at the END so a positional initializer list
-   * (tools/bake_clock.py, and every .h it has ever printed) still lands field
-   * for field: a pair baked before this line carries 0, which is what it means
-   * — no start orientation, a plain bank at the seconds angle. */
-  uint16_t tourbillon_start;/* the carriage row's start orientation, fixed-point
-                             *   100ths of a degree, added to the seconds angle */
-  /* D41 (v5): each live hand slot's own driven row, as the projection read it.
-   * All-zero (src NONE, cadence INHERIT) is the slot's own mapping — every theme
-   * before v5 — and clock_view.c's HAND_ROW supplies it. A row with src NONE and a
-   * cadence keeps the slot's mapping and takes the cadence. */
-  clk_drive_t hand_drive[5];
+  uint16_t tourbillon_n;    /* derived: the animated row's frames (0 = none) */
+  uint16_t tourbillon_fps;  /* derived: 1000 / its frame time */
+  clk_sprite_t tourbillon[CLK_TOURB_MAX];  /* the animated row's frames, one geometry */
+  uint8_t  car_row;         /* the animated row's index in the row table; 0xFF none */
 } clk_theme_t;
 
 typedef struct {
@@ -142,24 +132,6 @@ enum {
     CLK_KIND_RING   = 2,   /* count sprites on a circle, ring rotated by value      */
     CLK_KIND_FLARE  = 3,   /* one sprite picked by value, drawn with a blend        */
     CLK_KIND__MAX
-};
-
-/* D34: how a clk_aux_t pointer MOVES. The first three are the values clk_aux_t.kind
- * has always carried, written out so the enum and the struct's comment cannot drift
- * apart. The two slides are the append that lets a pointer travel in PIXELS rather
- * than an angle, which is what a sliding power-reserve bar or a linear date scale
- * needs and what no rotation of a sprite can imitate.
- *
- * The motion IS the unit. On rotate/retrograde/indexed, `span` and `zero` are tenths
- * of a degree; on slide-x/slide-y they are pixels along that axis. No column claims
- * the unit separately, so a row cannot name a motion and contradict its own unit. */
-enum {
-    CLK_MOTION_ROTATE     = 0,   /* angle = zero + value*span/value_max              */
-    CLK_MOTION_RETROGRADE = 1,   /* as rotate, clamped: reaches span, then returns    */
-    CLK_MOTION_INDEXED    = 2,   /* as rotate, snapped to whole units                 */
-    CLK_MOTION_SLIDE_X    = 3,   /* offset px = zero + value*span/value_max, along x  */
-    CLK_MOTION_SLIDE_Y    = 4,   /* the same along y: a vertical reserve gauge         */
-    CLK_MOTION__MAX
 };
 
 /* What drives a comp's value. Every one derives from the wall clock and the
@@ -198,7 +170,6 @@ enum {
                                   * theme_schema.CLK_STRIP_GLYPHS, which is what
                                   * the bake packed against. */
 #define CLK_COMP_MAX  16   /* complication records      — theme_schema.CLK_COMP_MAX  */
-#define CLK_AUX_MAX    8   /* extra hands beyond the 5  — theme_schema.CLK_AUX_MAX   */
 #define CLK_BANK_MAX 256   /* shared bank sprites       — theme_schema.CLK_BANK_MAX  */
 _Static_assert(CLK_SRC__MAX == 17, "SOURCES tuple of theme_schema.py grew; the "
                                    "bake and this reader must agree on its length");
@@ -272,31 +243,28 @@ typedef struct {
     uint16_t delay_ms;         /* per-frame interval; 0 = the dial's own default */
 } clk_comp_t;
 
-/* One extra hand: a baked sprite plus how it is driven. The sub-dial hour /
- * hour+min / minute / second / 24h hands, the battery reserve and a retrograde
- * sweep are all one record here, so none of them costs one of the five
- * compiled-in hand slots or a new field in the generated header. */
+/* D42: one moving row — a hand, a pointer, a ring, a still layer, a shadow twin or
+ * the carriage. Every one is an AUX row on the wire (docs/element-model-plan.md §8) and
+ * one of these at runtime, drawn by one path in clock_view.c. Its art sits at P0 (the
+ * row's own placement, turned to `zero`); across its domain it turns a further `span`
+ * and its pivot travels (dx, dy) to P1, and `end` says what it does past the end. */
 typedef struct {
-    clk_sprite_t spr;          /* w,h,off,pivot,centre,blend,show,color_off */
-    uint16_t tag;              /* manifest hand index, or the comp tag it belongs to */
-    uint8_t  src;              /* CLK_SRC_*   */
-    uint8_t  kind;             /* CLK_MOTION_*: how it moves, and therefore in what
-                                 * unit `span` and `zero` are written. D34. */
-    uint16_t host;             /* 0 = main dial centre, else a comp tag */
-    int16_t  span;             /* tenths of a degree swept across the value range */
-    int16_t  zero;             /* tenths of a degree at value_min */
-    uint16_t value_min;
-    uint16_t value_max;
-    uint16_t flags;            /* CLK_FLAG_*  */
-    /* C4: the same appended pair as clk_comp_t, same meanings, same 0 = none.
-     * The pointer rows are the attach points the escapement needs: a needle
-     * parented to the carriage it rides is the one claim the wire makes and
-     * the compositor must honour. */
-    uint16_t parent_row;       /* parent's element row n + 1; 0 = none */
-    uint16_t delay_ms;         /* per-frame interval; 0 = the dial's own default */
-    /* D41 (v5): when the pointer moves. 0 = INHERIT, the sweep every FORMAT 3
-     * pointer has always drawn. */
+    clk_sprite_t spr;          /* the art at P0: w,h,off,pivot,centre,blend,show */
+    uint16_t tag;              /* the AUX slot the row claimed */
+    uint8_t  src;              /* CLK_SRC_*; NONE = a still row */
+    uint8_t  shape;            /* CLK_SHAPE_* */
+    uint8_t  digit;            /* CLK_DIGIT_* */
+    uint8_t  end;              /* CLK_END_* */
     uint8_t  cadence;          /* CLK_CAD_* */
+    uint8_t  order;            /* depth, 0..63, on the scale the BANK rows share */
+    int16_t  zero;             /* P0's angle, tenths of a degree */
+    int16_t  span;             /* the turn from P0 to P1, tenths of a degree */
+    int16_t  dx, dy;           /* the pivot's travel from P0 to P1, px */
+    uint16_t value_min;        /* the value at P0 */
+    uint16_t value_max;        /* the value at P1 (a wrap's next P0) */
     uint16_t cad_arg;          /* step N, stop-to-go P (0.1 s), drag window (min) */
     uint16_t ease;             /* settle or flyback ms; 0 = none */
-} clk_aux_t;
+    uint16_t flags;            /* CLK_FLAG_AUX_SHADOW */
+    uint16_t parent_row;       /* the row this one rides, its index + 1; 0 = none */
+    uint16_t delay_ms;         /* the animated row's frame time */
+} clk_row_t;

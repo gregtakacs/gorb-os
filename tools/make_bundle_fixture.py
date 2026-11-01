@@ -68,29 +68,30 @@ def elem(n, cls, **kw):
     r.update(kw)
     return r
 
-# ---- section: clock — the compiled dialect orb_clock3.c reads -----------------
-# Two plates (the base and its overlay), one hour hand, and D34's pointer row: the
-# shape the compiled clock's (class, slot) index expects, plus the one class the
-# fixture did not carry before — a sub-dial seconds hand turned by the row's own
-# drive. It is in the GOLDEN file deliberately: every reader pinned to these bytes
-# (orb_bundle.c, orb_theme.c, orbbundle.py, orbtheme-baker.js) then exercises the
-# 23-word row and the AUX class on every run, and a writer that dropped the four
-# drive columns would change the digest rather than pass quietly.
+# ---- section: clock — the v6 dialect orb_clock3.c reads (D42) ------------------
+# Two plates (the base and its overlay) and two moving rows: an hour hand and a
+# sub-dial seconds hand, each an AUX row turned by its own drive. It is in the GOLDEN
+# file deliberately: every reader pinned to these bytes (orb_bundle.c, orb_theme.c,
+# orbbundle.py, orbtheme-baker.js) then exercises the 33-word v6 row on every run, and
+# a writer that dropped a column would change the digest rather than pass quietly.
 clock_elems = [
     elem(1, ts.CLASS_NAMES.index("plate"), slot=0, x=0, y=0, w=466, h=466,
          order=0, alpha=255),
     elem(2, ts.CLASS_NAMES.index("plate"), slot=1, x=0, y=0, w=466, h=466,
          order=1, alpha=128, frame0=3),
-    elem(3, ts.CLASS_NAMES.index("hand"), slot=0, x=233, y=233, w=40, h=200,
-         order=2, pivot_x=20, pivot_y=190, frame0=1),
-    elem(4, ts.CLASS_NAMES.index("aux"), slot=0, x=300, y=120, w=28, h=64,
+    elem(3, ts.CLASS_AUX, slot=0, x=233, y=233, w=40, h=200,
+         order=2, pivot_x=20, pivot_y=190, frame0=1,
+         kind=ts.SHAPE_ARM, src=ts.SOURCES.index("hour12"), span=3600, vmax=12,
+         cadence=ts.CAD_SWEEP, end=ts.END_WRAP),
+    elem(4, ts.CLASS_AUX, slot=1, x=300, y=120, w=28, h=64,
          order=3, alpha=255, pivot_x=14, pivot_y=56, frame0=2,
-         kind=ts.MOTION_ROTATE, src=ts.SOURCES.index("second"),
-         span=3600, zero=0, vmin=0, vmax=60),
+         kind=ts.SHAPE_ARM, src=ts.SOURCES.index("second"),
+         span=3600, zero=0, vmin=0, vmax=60, cadence=ts.CAD_STEP, cad_arg=1,
+         end=ts.END_WRAP),
 ]
-# The pointer plate is MASKED (colour then a planar alpha stride), the way every
-# hand and every comp tile enters a bank: an AUX row's cost is w*h*3, and a fixture
-# that carried it colour-only would pin a shape no bake produces.
+# Both row plates are MASKED (colour then a planar alpha stride), the way every hand
+# and every comp tile enters a bank: an AUX row's cost is w*h*3, and a fixture that
+# carried it colour-only would pin a shape no bake produces.
 # The hand plate is masked for the same arithmetic and the harder reason: D32
 # slice 2's catalogue gate in orb_clock3.c keeps only the PLATE row's own key frames
 # opaque — every other plane the dial composites must carry a planar alpha stride,
@@ -152,10 +153,9 @@ SECTIONS = [
                 [{k: (v + _LA if k == "off" else v) for k, v in sp.items()}
                  for sp in weather_sprites],
      "scr_w": 466, "scr_h": 466,
-     # D34: orb_clock3 refuses a seated live hand the order table omits — the
-     # fixture's own hand at slot 0 must be named, so this clock is a projection
-     # -legal dial and not just wire-legal bytes.
-     "scalars": {"order0": 0, "order_n": 1}},
+     # D42: the clock section is v6 and nothing older; its depth is each row's own
+     # order, so no scalar names a layer table.
+     "abi_min": ob.GEOM_ABI6, "abi_max": ob.GEOM_ABI6},
 ]
 
 def write_vectors(outdir):
@@ -187,6 +187,8 @@ def write_vectors(outdir):
                      "scalars": s.get("scalars") or {},
                      "sprites": s.get("sprites") or [],
                      "scr_w": s.get("scr_w", 0), "scr_h": s.get("scr_h", 0),
+                     "abi_min": s.get("abi_min", ob.GEOM_ABI3),
+                     "abi_max": s.get("abi_max", ob.GEOM_ABI3),
                      "art_file": fname if art else None, "art_len": len(art)})
     tmp = os.path.join(outdir, "container.bin")
     ob.write_bundle(tmp, NAME, SECTIONS, serial=SERIAL, baked_ms=BAKED_MS)
@@ -310,7 +312,7 @@ def main():
         "card_stems": {sec["slug"]: ob.card_stem(NAME, [sec]) for sec in SECTIONS},
         "theme_ids": {sec["slug"]: _ot.theme_id(sec["slug"], NAME) for sec in SECTIONS},
         "format": 3,
-        "abi": ob.GEOM_ABI3,
+        "abi": ob.GEOM_ABI6,
         "bytes": len(raw),
         "serial": SERIAL,
         "baked_ms": BAKED_MS,

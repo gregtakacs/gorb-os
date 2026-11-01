@@ -463,10 +463,10 @@ static void use_no_art(void)
     s_geo.gif_delays = NULL;
     s_geo.bg_frames  = NULL;
     s_geo.comps      = NULL;
-    s_geo.aux        = NULL;
+    s_geo.rows       = NULL;
     s_geo.bank       = NULL;
     s_geo.n_comps    = 0;
-    s_geo.n_aux      = 0;
+    s_geo.n_rows     = 0;
     s_geo.n_bank     = 0;
     s_geo.art_size   = 0;
     s_geo.blob_off   = 0;
@@ -803,7 +803,7 @@ typedef struct {
     clk_bg_rect_t rects[ORB_CLOCK3_N_RECTS];
     uint16_t      first[GIFS_MAX + 1], delays[GIFS_MAX];
     uint32_t      bgf[ORB_CLOCK3_N_BGF];
-    clk_aux_t     aux[CLK_AUX_MAX];
+    clk_row_t     rows[CLK_ROW_MAX];
     clk_comp_t    comps[CLK_COMP_MAX];
     clk_sound_t   sounds[CLK_SND_SLOTS];   /* D39 */
 } chk_scratch_t;
@@ -823,7 +823,7 @@ static const char *clock3_verdict(const orb_bundle_t *b)
     pio.gif_delays = s_chk->delays; pio.bg_frames = s_chk->bgf;
     pio.first_cap = GIFS_MAX + 1; pio.delays_cap = GIFS_MAX;
     pio.comps = s_chk->comps; pio.comp_cap = CLK_COMP_MAX;
-    pio.aux   = s_chk->aux;   pio.aux_cap   = CLK_AUX_MAX;
+    pio.rows  = s_chk->rows;  pio.row_cap   = CLK_ROW_MAX;
     pio.sounds = s_chk->sounds; pio.sound_cap = CLK_SND_SLOTS;   /* D39 */
     const char *r = orb_clock3_parse(sec, &pio);
     xSemaphoreGive(s_verdict_mx);
@@ -1649,14 +1649,13 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
 static uint16_t  s_b3_first[GIFS_MAX + 1], s_b3_delays[GIFS_MAX];
 static clk_bg_rect_t s_b3_rects[ORB_CLOCK3_N_RECTS];
 static uint32_t  s_b3_bgf[ORB_CLOCK3_N_BGF];
-static clk_aux_t  s_b3_aux[CLK_AUX_MAX];      /* D34: the FORMAT 3 dial's pointer rows,
-                                               * the table a bundle's AUX elements project
-                                               * into. Static for the same reason as the
-                                               * comp table beside it: the projection
-                                               * allocates nothing, and clock_view's aux
-                                               * pass reads the rows for the life of the
-                                               * theme. Sized to CLK_AUX_MAX because that
-                                               * is the cap the projection refuses past. */
+/* D42: the dial's moving rows — every hand, pointer, ring, still layer, twin and the
+ * carriage — the table a bundle's AUX elements project into, read by clock_view for the
+ * life of the theme. PSRAM, allocated once at the first adoption: 24 rows would add
+ * ~1.6 kB to .bss on a board whose internal heap boundary is what httpd_start needs
+ * (the 2026-10-24 lesson clock_view.c's layer keys record), and the dial reads each row
+ * a handful of times a frame. */
+static clk_row_t *s_b3_rows;
 static clk_comp_t s_b3_comps[CLK_COMP_MAX];   /* D32 slice 2: the FORMAT 3 dial's
                                                * complications, filled by the
                                                * projection and read by clock_view
@@ -1713,7 +1712,10 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     io.gif_delays = s_b3_delays; io.bg_frames = s_b3_bgf;
     io.first_cap = GIFS_MAX + 1; io.delays_cap = GIFS_MAX;
     io.comps = s_b3_comps; io.comp_cap = CLK_COMP_MAX;
-    io.aux   = s_b3_aux;   io.aux_cap   = CLK_AUX_MAX;   /* D34 */
+    if (!s_b3_rows)
+        s_b3_rows = heap_caps_calloc(CLK_ROW_MAX, sizeof *s_b3_rows,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    io.rows = s_b3_rows;   io.row_cap = s_b3_rows ? CLK_ROW_MAX : 0;   /* D42 */
     if (!s_snd) s_snd = heap_caps_calloc(1, sizeof *s_snd, MALLOC_CAP_SPIRAM);
     /* The parse fills a scratch table, not the live one: a refused bundle must
      * leave the playing dial's sounds as they were, and the live rows are copied
@@ -1774,14 +1776,13 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
      * was reachable (D32 R-F), so a count of zero here means the table carries
      * no bank row, not that a row was dropped. */
     s_geo.comps = io.out_n_comps ? s_b3_comps : NULL;
-    /* D34: the pointers a bundle carried ride the same static table the projection
-     * filled. A count of zero names a dial with no pointer rows, not a row that was
-     * dropped — the projection refuses the whole draw past its own guards (D32 R-F),
-     * so nothing can be partly drawn here. */
-    s_geo.aux = io.out_n_aux ? s_b3_aux : NULL;
+    /* D42: the rows a bundle carried ride the table the projection filled. A count of
+     * zero names a dial with no moving rows, not a row that was dropped — the
+     * projection refuses the whole draw past its own guards (D32 R-F). */
+    s_geo.rows = io.out_n_rows ? s_b3_rows : NULL;
     s_geo.bank = NULL;
     s_geo.n_comps = (uint16_t)io.out_n_comps;
-    s_geo.n_aux   = (uint16_t)io.out_n_aux;
+    s_geo.n_rows  = (uint16_t)io.out_n_rows;
     s_geo.n_bank = 0;
     if (s_snd) {
         memcpy(s_snd->s, snd_tmp, io.out_n_sounds * sizeof *snd_tmp);
@@ -1796,11 +1797,11 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
      * reads as its frame count, a bank row as a comp; both zero is the plain
      * dial, which is every bundle before D32 and every refusal's alternative. */
     ESP_LOGI(TAG, "bundle \"%s\" projected into a dial: %u complication row%s, "
-             "%u pointer row%s, tourbillon_n %u @ %u fps start %u",
+             "%u moving row%s, carriage %u frames @ %u fps, beat %s %u/s",
              h->name, (unsigned)io.out_n_comps, io.out_n_comps == 1 ? "" : "s",
-             (unsigned)io.out_n_aux, io.out_n_aux == 1 ? "" : "s",
+             (unsigned)io.out_n_rows, io.out_n_rows == 1 ? "" : "s",
              (unsigned)s_theme.tourbillon_n, (unsigned)s_theme.tourbillon_fps,
-             (unsigned)s_theme.tourbillon_start);
+             s_theme.second_sweep ? "sweep" : "step", (unsigned)s_theme.tick_rate);
     if (s_theme.bg_frames)                      /* §31: an animated plate says so */
         ESP_LOGI(TAG, "plate bank: %u keyframes @ %u fps, %s",
                  (unsigned)s_theme.bg_frames + 1u, (unsigned)s_theme.bg_fps,

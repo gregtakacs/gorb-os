@@ -100,11 +100,11 @@ def add_sounds(sec, sounds, pattern="none", check=True):
         sec["elements"].append(rec)
     if not check:
         return None
-    sc = sec["scalars"]
     sprites = [(int(p["off"]), int(p["size"]), int(p["w"]), int(p["h"]))
                for p in sec["sprites"]]
-    return ts.check_clock_sounds(sec["elements"], sprites,
-                                 int(sc.get("second_sweep", 0)), int(sc.get("tick_rate", 0)))
+    # D42: the beat the loop is held against is the rows', derived as the dial derives it.
+    sweep, rate = ts.clock_tempo(sec["elements"], sec["scalars"])
+    return ts.check_clock_sounds(sec["elements"], sprites, sweep, rate)
 
 
 def read_wav(path, loop_seconds=None):
@@ -144,8 +144,8 @@ def save(path, hdr, s, sec):
 
 def cmd_list(a):
     _hdr, _s, sec = load(a.theme)
-    sc = sec["scalars"]
-    print("second_sweep %d tick_rate %d" % (sc.get("second_sweep", 0), sc.get("tick_rate", 0)))
+    sweep, rate = ts.clock_tempo(sec["elements"], sec["scalars"])
+    print("beat: %s %d a second (from the rows)" % ("sweep" if sweep else "step", rate))
     any_ = False
     for e in sec["elements"]:
         if not _is_sound(e):

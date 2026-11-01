@@ -1,5 +1,5 @@
 {
-  "abi": 3,
+  "abi": 6,
   "art_crc": 1534424489,
   "art_off": 4096,
   "art_size": 1263892,
@@ -14,9 +14,9 @@
     "clock.bank": 4,
     "clock.sprite": 12
   },
-  "geom_crc": 1919705042,
+  "geom_crc": 1055748167,
   "geom_off": 128,
-  "geom_size": 932,
+  "geom_size": 1268,
   "n_elem": {
     "clock": 7
   },

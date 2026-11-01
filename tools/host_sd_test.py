@@ -307,7 +307,7 @@ _H3_FMT2 = _recrc([orbtheme.FORMAT if i == orbtheme.W_FORMAT else w
 _H3_FMT_SENT  = "theme format this firmware cannot read"
 _H3_TORN_SENT = "container header is damaged — re-copy the file onto the card"
 _H3_NONAME_SENT = "theme has no name in its header — re-bake it"
-_H3_ABISIZE_SENT = "bundle geometry v99; this build reads v3 to v5 — re-bake it"
+_H3_ABISIZE_SENT = "bundle geometry v99; this build reads v3 (apps) and v6 (a clock) — re-bake it"
 _H3_BIG_SENT = ("pixel payload is %d B; a theme slot holds %d B — theme is larger "
                 "than a slot" % (orbtheme.ART_BUDGET + 1, orbtheme.ART_BUDGET))
 
@@ -1253,7 +1253,7 @@ def caps_lint():
     print("%-5s %-16s reader %4d  schema %4d" % ("ok" if ok else "FAIL", "CLK_SRC__MAX", int(m.group(1)), len(ts.SOURCES)))
     if not ok:
         rc = 1
-    rec_types = lift(th_hdr, r"enum \{\s*CLK_KIND_WINDOW[\s\S]*?\} clk_aux_t;", TH_H)
+    rec_types = lift(th_hdr, r"enum \{\s*CLK_KIND_WINDOW[\s\S]*?\} clk_row_t;", TH_H)
     for stem, want in (("CLK_KIND_", ts.KINDS), ("CLK_SRC_", ts.SOURCES)):
         names = re.findall(r"\b(" + stem + r"[A-Z0-9_]+)\b", rec_types)
         names = [n for n in dict.fromkeys(names) if not n.endswith("__MAX")]

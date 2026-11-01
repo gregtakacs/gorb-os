@@ -82,10 +82,10 @@ typedef struct {
      * tables above they are never freed while the dial is running. Non-const for
      * the same reason rects is: orb_clock3_parse() fills them in place. */
     clk_comp_t   *comps;
-    clk_aux_t    *aux;
+    clk_row_t    *rows;        /* D42: every hand, pointer, ring and the carriage */
     clk_sprite_t *bank;
     uint16_t      n_comps;
-    uint16_t      n_aux;
+    uint16_t      n_rows;
     uint16_t      n_bank;
     size_t         art_size;          /* pixel bytes, not partition bytes */
     uint32_t       blob_off;          /* the theme's bank's offset inside the mapped

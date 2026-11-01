@@ -54,11 +54,12 @@ ART_B = bytes((i * 13 + 5) & 0xFF for i in range(2048))
 GATE = {
     "slug": "clock", "scr_w": 464, "scr_h": 464,
     "elements": [elem(0, ts.CLASS_PLATE, 0, 0, x=100, y=100, w=32, h=32),
-                 elem(1, ts.CLASS_HAND, 0, 1, frame0=6, n_frames=12,
+                 elem(1, ts.CLASS_AUX, 0, 1, frame0=6, n_frames=12, delay=60,
                       flags=ts.EF_OS_ADV, radius=90)],
-    "scalars": {"tourbillon_n": 12, "shadow_dx": -3, "bg": 0x11223344},
+    "scalars": {"bg_every": 12, "bg_fps": -3, "bg": 0x11223344},
     "sprites": [{"off": 0, "size": 1024, "w": 32, "h": 32}],
     "art": ART_A,
+    "abi_min": ob.GEOM_ABI6, "abi_max": ob.GEOM_ABI6,
 }
 SECTIONS = [dict(GATE,
                  elements=GATE["elements"] + [elem(2, ts.CLASS_SPRITE, 0, 2, x=-12, y=300)],
@@ -76,7 +77,7 @@ size = ob.write_bundle(tmp, "One App Bundle", SECTIONS)
 raw = open(tmp, "rb").read()
 h, secs = ob.read_bundle(tmp)
 check(h["fmt"] == ob.FORMAT3, "header does not stamp format 3")
-check(h["abi"] == ob.GEOM_ABI3, "header does not stamp geometry v3")
+check(h["abi"] == ob.GEOM_ABI6, "header does not stamp the clock's geometry v6")
 check(h["n_sections"] == 1, "header word 9 lost the section count")
 check(h["name"] == "One App Bundle", "the bundle name came back wrong (R4 input)")
 check(ot.theme_id("clock", h["name"]) == ot.theme_id("clock", "One App Bundle"),
@@ -91,14 +92,15 @@ check(ob.find_section(secs, "weather") is None and
       ob.find_section(secs, "paint_studio") is None,
       "find_section invented an answer for a slug no theme carries (D31, one-section)")
 check(c["art"] == ART_A + ART_B, "a bank came back not byte-identical")
-check(c["blob"]["scalars"]["shadow_dx"] == -3,
-      "a negative i8 scalar came back as %r, not -3" % c["blob"]["scalars"]["shadow_dx"])
-check(c["blob"]["scalars"]["tourbillon_n"] == 12, "a u8 scalar came back wrong")
+check(c["blob"]["scalars"]["bg_fps"] == -3,
+      "a negative i16 scalar came back as %r, not -3" % c["blob"]["scalars"]["bg_fps"])
+check(c["blob"]["scalars"]["bg_every"] == 12, "a u16 scalar came back wrong")
 check(c["blob"]["scalars"]["bg"] == 0x11223344, "a u32 scalar came back wrong")
 check(c["blob"]["elements"][2]["x"] == -12,
       "an element at x=-12 did not survive the round trip")
 check(c["blob"]["elements"][1]["flags"] & ts.EF_OS_ADV, "EF_OS_ADV was lost in the pack")
-check(c["blob"]["sprites"] == SECTIONS[0]["sprites"], "the sprite directory drifted")
+check(c["blob"]["sprites"] == [dict({"diffx": 0, "diffy": 0}, **sp) for sp in SECTIONS[0]["sprites"]],
+      "the sprite directory drifted")
 check(h["art_off"] % ot.SECTOR == 0, "the art region starts off a sector boundary")
 check(all(r["rec"]["art_off"] % ot.SECTOR == 0 for r in secs),
       "a bank starts off a sector boundary; the device mmaps them")
@@ -157,7 +159,7 @@ try:
     # bank. The figure moves with the width the default (v3) pack lays, because a
     # budget gate pinned to one width would test the width and not the rule (D32
     # ruled append-only, and C4's delta width is opt-in per section).
-    ob.GEOM_CAP = 48 + (4 + 26 + 2 * ts.ELEMENT_WORDS_V3 + 4) * 4 + 8 - 1
+    ob.GEOM_CAP = 48 + (4 + 26 + 2 * ts.ELEMENT_WORDS + 6) * 4 + 8 - 1
     _gate("region past the table area", "table area",
           lambda: ob.write_bundle(tmp + ".x", "Gate", [GATE]))
     _gate("the refusal is the device's pre-erase sentence", "overrun the pixels",
@@ -168,7 +170,7 @@ try:
           lambda: ob.write_bundle(tmp + ".x", "Gate", [GATE]))
     # The moved boundary, §21's lesson stated for themes: == cap is legal.
     ob.SLOT_ART_CAP = 4096
-    ob.GEOM_CAP = 48 + (4 + 26 + 2 * ts.ELEMENT_WORDS_V3 + 4) * 4 + 8
+    ob.GEOM_CAP = 48 + (4 + 26 + 2 * ts.ELEMENT_WORDS + 6) * 4 + 8
     try:
         ob.write_bundle(tmp + ".x", "Edge", [GATE])
         _h, _s = ob.read_bundle(tmp + ".x")
@@ -240,17 +242,21 @@ sent("sprite past its bank", "past its own bank",
      lambda: ob.write_bundle(tmp + ".x", "Run",
                              [dict(GATE, sprites=[{"off": 0, "size": 10 ** 7,
                                                           "w": 1, "h": 1}])]))
-sent("unknown class row", "class", lambda: ob.pack_blob("clock", [elem(0, 99, 0, 0)]))
+sent("unknown class row", "class", lambda: ob.pack_blob("weather", [elem(0, 99, 0, 0)]))
 sent("unknown scalar name", "dialect",
-     lambda: ob.pack_blob("clock", [elem(0, 1, 0, 0)], scalars={"nope": 1}))
+     lambda: ob.pack_blob("weather", [elem(0, 1, 0, 0)], scalars={"nope": 1}))
 sent("scalar out of range", "does not fit",
-     lambda: ob.pack_blob("clock", [elem(0, 1, 0, 0)], scalars={"shadow_dx": 300}))
+     lambda: ob.pack_blob("weather", [elem(0, 1, 0, 0)], scalars={"shadow_dx": 300}))
+sent("a clock at an old stamp", "nothing older",
+     lambda: ob.pack_blob("clock", [elem(0, 1, 0, 0)], abi=5))
+sent("a clock naming a retired scalar", "D42 retired it",
+     lambda: ob.pack_blob("clock", [], scalars={"tick_rate": 4}, abi=ob.GEOM_ABI6))
 sent("index head count 9", "1..8",
      lambda: ob.unpack_index(struct.pack("<2I", 9, 0)))
 sent("index longer than region", "torn file",
      lambda: ob.unpack_index(struct.pack("<2I", 1, 0) + b"\0" * 8))
 sent("blob length contradicts counts", "torn file",
-     lambda: ob.unpack_blob(ob.pack_blob("clock", [elem(0, 1, 0, 0)]) + b"\0\0"))
+     lambda: ob.unpack_blob(ob.pack_blob("weather", [elem(0, 1, 0, 0)]) + b"\0\0"))
 
 for _name, _must, _fn in SENT:
     try:
@@ -384,7 +390,7 @@ _dspr = [{"off": 0, "size": 12, "w": 2, "h": 2, "diffx": 0, "diffy": 0},
          {"off": 21, "size": 3, "w": 1, "h": 1, "diffx": 32767, "diffy": -1}]
 ob.write_bundle(_dpath, "Delta Rows", [{"slug": "clock", "elements": [],
                                         "sprites": _dspr, "art": b"\x01" * 24,
-                                        "abi_min": 4, "abi_max": 4}])
+                                        "abi_min": ob.GEOM_ABI6, "abi_max": ob.GEOM_ABI6}])
 _dback = ob.read_bundle(_dpath)[1][0]["blob"]["sprites"]
 check([(x["diffx"], x["diffy"]) for x in _dback] == [(x["diffx"], x["diffy"]) for x in _dspr],
       "delta rows' diffx/diffy do not round-trip: %s"

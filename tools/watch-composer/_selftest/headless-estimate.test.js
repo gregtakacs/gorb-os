@@ -59,8 +59,8 @@ const VECTORS = [
   ['a cheap still dial at rung 15 is granted smoothing', (G) => still(G, 15, 1).smooth === true],
   ['a granted dial is priced WITH the AA term', (G) => { const e = still(G, 15, 1); return e.est_fps === e.aa_fps && /AA priced at the Station bench rate/.test(e.sentence); }],
   ['a dial the filter slows but still grants ships the slower, smoothed estimate', (G) => { const e = medium(G); return e.smooth && e.near_fps === 15 && e.aa_fps === 13 && e.est_fps === 13; }],
-  ['a keyframe bank under a 15 sweep rides the panel floor rung 4', (G) => G.estimate3(fake({ bg_mode: 0, bg_frames: 7, bg_fps: 4, bg_loop: 1, gif_frames: 0, tourbillon_n: 0, second_sweep: 1, tick_rate: 15 }, 0)).rung === 4],
-  ['a keyframe bank is priced on the classic path', (G) => /keyframe bank \(LVGL\)/.test(G.estimate3(fake({ bg_mode: 0, bg_frames: 7, bg_fps: 4, bg_loop: 1, gif_frames: 0, tourbillon_n: 0, second_sweep: 1, tick_rate: 15 }, 0)).carrier)],
+  ['a keyframe bank under a 15 sweep rides the panel floor rung 4', (G) => G.estimate3(fake({ bg_mode: 0, bg_frames: 7, bg_fps: 4, bg_loop: 1, gif_frames: 0 }, 0, [sweepRow(15)])).rung === 4],
+  ['a keyframe bank is priced on the classic path', (G) => /keyframe bank \(LVGL\)/.test(G.estimate3(fake({ bg_mode: 0, bg_frames: 7, bg_fps: 4, bg_loop: 1, gif_frames: 0 }, 0, [sweepRow(15)])).carrier)],
   ['a costly still dial (wide hands, glass) is refused smoothing', (G) => heavy(G).smooth === false && heavy(G).est_fps === heavy(G).near_fps],
   ['the costly dial still prints what smoothing would cost', (G) => /smoothing would land \d+ fps/.test(heavy(G).sentence)],
   ['the sweeping seconds pays no AA', (G) => { const e = still(G, 15, 1); return e.aa_kpx < e.ink_kpx; }],
@@ -81,31 +81,44 @@ const VECTORS = [
   ['and the report still names the honest verdict for those bytes', (G) => G.bakeClock3(Object.assign(stillOpts(15, 1, true), { smooth: true })).est.smooth === false],
   ['the bit off a turned row is refused at the writer', (G) => { try { G.checkElement(Object.assign(G.blankElement(), { 'class': 3, slot: 0, flags: 128, w: 466, h: 466, n_frames: 1 }), 'e'); return false; } catch (e) { return /smoothing/.test(e.message); } }],
 ];
-/* Each turned row's flags after a bake: h<slot> for hands, any = OR of every row. */
+/* Each moving row's flags after a bake, by the hand it is (D42: hands are rows):
+ * h0 the hour, h1 the minute, h2 the seconds; any = OR of every row. */
 function flags(G, opts) {
   const els = G.verifyBundle3(G.bakeClock3(opts).bytes).sections[0].blob.elements;
-  const f = { any: 0 };
-  for (const e of els) { f.any |= e.flags; if (e['class'] === 2) f['h' + e.slot] = e.flags; }
+  const f = { any: 0 }, SRC = { hour12: 'h0', minute: 'h1', second: 'h2' };
+  for (const e of els) {
+    f.any |= e.flags;
+    if (e['class'] === 8 && !(e.flags & 16) && SRC[G.SOURCES[e.src]]) f[SRC[G.SOURCES[e.src]]] = e.flags;
+  }
   return f;
 }
 
+/* A sweeping seconds row asking `fps` (its cadence argument, D42), and an animated
+ * row — the carriage — at `fps`. The rows, not scalars, carry the dial's asks now. */
+const sweepRow = (fps) => ({ class: 8, slot: 0, flags: 0, frame0: 0, n_frames: 1, delay: 0, src: 7,
+                             cadence: 1, cad_arg: fps, digit: 0, pivot_x: 0, pivot_y: 0 });
+const carRow = (fps) => ({ class: 8, slot: 1, flags: 0, frame0: 0, n_frames: 8, delay: Math.round(1000 / fps),
+                           src: 0, cadence: 0, cad_arg: 0, digit: 0, pivot_x: 0, pivot_y: 0 });
 function rung(G, asks, floor) {
-  // pickRung3 is private; reach it through a scalar set that yields exactly these asks.
+  // pickRung3 is private; reach it through a table that yields exactly these asks.
   // The four ask shapes map one-to-one onto rateOf3's inputs.
-  const sc = { bg_mode: 0, bg_frames: 0, gif_frames: 0, tourbillon_n: 0, second_sweep: 0, tick_rate: 0, bg_fps: 0, bg_loop: 1 };
+  const sc = { bg_mode: 0, bg_frames: 0, gif_frames: 0, bg_fps: 0, bg_loop: 1 };
   let delay = 0;
+  const rows = [];
   for (const a of asks) {
-    if (a.mode === 'fluid') { sc.second_sweep = 1; sc.tick_rate = a.fps; }
+    if (a.mode === 'fluid') rows.push(sweepRow(a.fps));
     else if (floor === 12) { sc.bg_mode = 1; sc.gif_frames = 8; delay = Math.round(1000 / a.fps); }
-    else { sc.tourbillon_n = 8; sc.tourbillon_fps = a.fps; }
+    else rows.push(carRow(a.fps));
   }
-  return G.estimate3(fake(sc, delay)).rung;
+  return G.estimate3(fake(sc, delay, rows)).rung;
 }
-/* The smallest section estimate3 reads: a plate row and nothing that moves. */
-function fake(sc, delay) {
+/* The smallest section estimate3 reads: a plate row and the moving rows given. Their
+ * planes are zero-size, so they price no ink: only their asks count. */
+function fake(sc, delay, rows) {
   const art = new Uint8Array(4);
   return { art, blob: { scalars: sc, sprites: [{ off: 0, size: 0, w: 0, h: 0 }],
-    elements: [{ class: 3, slot: 0, flags: 0, frame0: 0, n_frames: sc.bg_mode === 1 ? 2 : 1, delay, pivot_x: 0, pivot_y: 0 }] } };
+    elements: [{ class: 3, slot: 0, flags: 0, frame0: 0, n_frames: sc.bg_mode === 1 ? 2 : 1, delay, pivot_x: 0, pivot_y: 0 }]
+      .concat(rows || []) } };
 }
 /* The heavy dial is Station-shaped: a tailed seconds hand, cast shadows, a full glass. */
 const HEAVY = [hand(0, 30, 150, 120), hand(1, 26, 200, 170), hand(2, 40, 280, 200)];
@@ -133,13 +146,13 @@ const MUTANTS = [
   ['fluid asks stop capping', "if (c < cap) cap = c; continue; }", "continue; }"],
   ['the grant threshold loosened', 'SMOOTH_FPS: 12', 'SMOOTH_FPS: 4'],
   ['a granted dial priced nearest', 'var est = smooth ? aaFps : nearFps;', 'var est = nearFps;'],
-  ['the sweeping seconds pays AA', "var paysAA = !(e.slot === 2 && sc.second_sweep && c !== CLASS_AUX);", 'var paysAA = true;'],
+  ['the sweeping seconds pays AA', "var paysAA = !(sweeps && sc.second_sweep);", 'var paysAA = true;'],
   ['the glass forgotten', 'glassPx += inkOf3(art, spr[e0.frame0], e0).n / 1000;', 'glassPx += 0;'],
   ['the policy drops the estimate', "r.sentence = r.sentence + '; ' + m.est.sentence;", ''],
   ['the ticking still rides the pick', "if (!anim) return { rate:", "if (false) return { rate:"],
   ['the delta bank seeds the still floor', 'var floor = gif ? 12 : (live ? 4 : 15);', 'var floor = 15;'],
-  ['the grant never reaches the rows', 'if (turned && !hot) { er.flags', 'if (false) { er.flags'],
-  ['the hot-tick seconds smooths too', 'if (turned && !hot) {', 'if (turned) {'],
+  ['the grant never reaches the rows', 'if (!hot && !((er.n_frames | 0) > 1)) { er.flags', 'if (false) { er.flags'],
+  ['the hot-tick seconds smooths too', ": !!tempo3[0] && er.src === SOURCES.indexOf('second');", ': false;'],
   ['the bench force ignored', "var grant = o.smooth === true ? true : (o.smooth === false ? false : est.smooth);", 'var grant = est.smooth;'],
   ['EF_SMOOTH legal on any class', "if ((flags & EF_SMOOTH) && cls !== CLASS_HAND && cls !== CLASS_SPRITE && cls !== CLASS_AUX) {", 'if (false) {'],
 ];

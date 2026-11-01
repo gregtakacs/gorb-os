@@ -172,18 +172,29 @@ def rebake(src, dst, name=None, serial=0):
     scal = {n: v for n, v in g["scalars"].items()}
     # §22.2: the screen scalars MOVE into the section; the source header's pair
     # is the truth a FORMAT 3 reader must find in the record, not the file head.
-    secs = [{"slug": "clock", "elements": recs, "scalars": scal,
-             "scr_w": scr_w, "scr_h": scr_h,
-             "sprites": [{"off": o, "size": sz, "w": w, "h": hh}
-                         for _k, _i, o, sz, w, hh in planes],
-             "art": art}]
+    sprites = [{"off": o, "size": sz, "w": w, "h": hh} for _k, _i, o, sz, w, hh in planes]
     nm = name or h["name"]
+    # The mapping is checked on the rows it produced, before D42 turns them into v6
+    # rows: verify() states FORMAT 2's own placement rules, which the old classes carry.
+    mapped = {"rec": {"scr_w": scr_w, "scr_h": scr_h}, "art": art,
+              "blob": {"elements": recs, "scalars": scal, "sprites": sprites}}
+    nfail = verify(mapped, g, planes, art, scr_w, scr_h, {"name": nm}, nm)
+    # D42: the clock reads v6 and nothing older, so the mapped section is written as
+    # v6 rows (tools/migrate_v6.py's translation, the pixel bank untouched).
+    import migrate_v6
+    v6 = migrate_v6.migrate_clock({"abi": 3, "elements": recs, "scalars": scal,
+                                   "sprites": sprites, "art": art})
+    secs = [{"slug": "clock", "elements": v6["elements"], "scalars": v6["scalars"],
+             "scr_w": scr_w, "scr_h": scr_h, "sprites": sprites, "art": art,
+             "abi_min": ob.GEOM_ABI6, "abi_max": ob.GEOM_ABI6}]
     out = ob.write_bundle(dst, nm, secs, serial=serial,
                           baked_ms=int(__import__("time").time() * 1000) & 0xFFFFFFFF)
     hdr, got = ob.read_bundle(dst)
-    nfail = verify(got[0], g, planes, art, scr_w, scr_h, hdr, name or h["name"])
+    if got[0]["art"] != art:
+        nfail += 1
+        print("FAIL: art bytes differ from the source's after the v6 write")
     print("wrote %s: %d B, format %d, %d elements, art %d B; verify %d failure(s)"
-          % (dst, out, hdr["fmt"], len(recs), len(art), nfail))
+          % (dst, out, hdr["fmt"], len(v6["elements"]), len(art), nfail))
     # The identity the device keys on: the pair the single section names.
     print("  name %-20r -> card file %s" % (nm, ob.card_name(nm, got)))
     if nfail:

@@ -91,5 +91,51 @@ ok(it.design().hands['centre-hour'].motion.path === 'disc' && it.design().hands[
 const secRow = it.renderVals().handRows.find((q) => q.label === 'Centre second');
 ok(/pointer row/.test(secRow.motionNote) && secRow.aLabel === 'From' && secRow.bLabel === 'Travel', 'a slide says it bakes as a pointer and asks for its travel', secRow.motionNote);
 
+// ---- D42: the v6 row the bake writes lands where the preview draws ----
+// The bake turns each authored motion into a v6 row (GorbBake.v6Drive: two poses and an
+// end rule); the dial poses that row by orb_clock3.c's row_pose, whose arithmetic
+// tools/host_drive_test.py pins against hand-worked vectors: t = (u - vmin) / (vmax -
+// vmin), a wrap takes t modulo one and a flyback clamps it, the angle is zero + t * span
+// and the pivot's travel t * (dx, dy), plus the placement shift a slide's start became.
+// Every motion hand of the motion presets, sampled across its whole domain.
+{
+  const B = require('../orbtheme-baker.js');
+  const v6Pose = (r, u) => {
+    let t = (u - r.vmin) / (r.vmax - r.vmin);
+    if (r.end === 0) t -= Math.floor(t); else t = Math.min(1, Math.max(0, t));
+    const a = r.zero + t * r.span;
+    return { deg: (((a / 10) % 360) + 360) % 360, x: r.x + t * r.dx, y: r.y + t * r.dy };
+  };
+  const ROLE = { 'centre-hour': 'hour', 'centre-minute': 'minute', 'centre-second': 'second' };
+  const DOM = { hour: 12, minute: 60, second: 60 };
+  let rows = 0, bad = [];
+  for (const key of ['flux', 'orbit', 'station']) {
+    const P = E.PRESETS[key];
+    for (const id of Object.keys(P.design.hands || {})) {
+      const m = (P.design.hands[id] || {}).motion;
+      if (!m || !ROLE[id] || !E.motionOn(m)) continue;
+      const cols = it.driveCols3(ROLE[id], m);
+      if (!cols) continue;                       // a cadence-only hand keeps its slot's turn
+      const r = B.v6Drive(cols.motion, cols, 0, 0);
+      rows++;
+      const n = DOM[ROLE[id]];
+      for (let k = 0; k <= 4 * n; k++) {
+        const u = k / 4;
+        const want = E.motionPose(m, n, u), got = v6Pose(r, u);
+        const wdeg = ((((want.a || 0) * 180 / Math.PI) % 360) + 360) % 360;
+        const dd = Math.abs(((got.deg - wdeg + 540) % 360) - 180);
+        const wx = (want.d && want.d[0]) || 0, wy = (want.d && want.d[1]) || 0;
+        if (dd > 1e-6 || Math.abs(got.x - wx) > 1e-6 || Math.abs(got.y - wy) > 1e-6) {
+          bad.push(key + ' ' + id + ' u=' + u + ' preview ' + wdeg.toFixed(3) + '/(' + wx + ',' + wy +
+                   ') row ' + got.deg.toFixed(3) + '/(' + got.x + ',' + got.y + ')');
+          break;
+        }
+      }
+    }
+  }
+  ok(rows >= 5 && !bad.length, 'D42: every motion hand of Flux, Orbit and Station bakes to a v6 row that poses where the preview draws, across its whole domain',
+     rows + ' rows' + (bad.length ? '; ' + bad[0] : ''));
+}
+
 console.log(fails ? fails + ' FAILED of ' + checked : 'all green (' + checked + ' checks)');
 process.exit(fails ? 1 : 0);

@@ -1769,8 +1769,8 @@
    * panel. One container themes several apps, and the element table — not a dialect's
    * field list — is how a theme says what it paints (D32, R1). */
   var FORMAT3 = 3, GEOM_ABI3 = 3, SECT_MAX = 8, IDX_WORDS = 10;   // Ruling A: the
-  var GEOM_ABI4 = 4;    // C4's delta dialect, one stamp up from what shipped before
-  var GEOM_ABI5 = 5;    // D41's motion columns: written only when a row claims one
+  var GEOM_ABI6 = 6;    // D42: the clock's dialect, and the only one it reads. An app
+                        // section stays 3; the clock's 4 and 5 were retired with no legacy
   var DELTA_TOL = 16;   // §36: the summed |dR|+|dG|+|dB|+|dA| (max 1020) a texel must clear to
                        // earn a delta byte. diffRect and selfVerify3 read the same number, so
                        // the codec's floor and the bake's round-trip promise can never disagree.
@@ -1799,13 +1799,11 @@
     ['x', 'i16'], ['y', 'i16'], ['w', 'u16'], ['h', 'u16'],
     ['pivot_x', 'i16'], ['pivot_y', 'i16'], ['radius', 'u16'],
     ['degrees', 'u16'], ['scale16', 'u16'],
-    ['kind', 'u8'], ['src', 'u8'],   // D32's ruling A. On an AUX row (D34) the pair
-                             // reads as the motion id and the driving source.
+    ['kind', 'u8'], ['src', 'u8'],   // D32's ruling A. On an AUX row the pair reads as
+                             // the row's shape (D42) and its driving source.
     ['span', 'i16'], ['zero', 'i16'], ['vmin', 'u16'], ['vmax', 'u16'],
-    // D34's four drive columns, an AUX row's and nobody else's. The motion names the
-    // unit: tenths of a degree on rotate/retrograde/indexed, pixels on a slide. A row
-    // read through a narrower stride carries zero for each, which checkElement refuses
-    // on an AUX row rather than draws as a pointer frozen at its own zero.
+    // D34's four drive columns, read by D42 as an AUX row's angular poses: zero is P0's
+    // angle, span the turn to P1 (tenths of a degree), across the domain vmin..vmax.
     // C4's delta dialect, appended exactly as D32's ruling A did. Both mean nothing
     // below the v4 clock stamp; a row read through a narrower stride lands on their
     // defaults — parent NONE, delay 0 — the same append-only answer the drive four got.
@@ -1813,24 +1811,23 @@
     ['delay', 'u16'],     // per-frame ms for this row's animation; 0 = the dial's default
     // D41's motion columns (docs/hand-motion-plan.md §4), appended the same way. They
     // mean nothing below the v5 clock stamp; a narrower row reads 0 — inherit.
-    ['cadence', 'u8'],    // HAND/AUX/BANK: CADENCES id, when the row moves
-    ['cad_arg', 'u16'],   // step N, stop-to-go P (0.1 s), drag window (min)
-    ['ease', 'u16']       // settle/flyback ms — ruled, refused until built
+    ['cadence', 'u8'],    // AUX/BANK: CADENCES id, when the row moves
+    ['cad_arg', 'u16'],   // step N, stop-to-go P (0.1 s), drag window (min), sweep fps
+    ['ease', 'u16'],      // settle/flyback ms
+    // D42's five (docs/element-model-plan.md §8): the clock's v6 row.
+    ['dx', 'i16'], ['dy', 'i16'],   // AUX: the pivot's travel from P0 to P1, px
+    ['end', 'u8'],        // AUX: ENDS id — wrap, flyback, hold
+    ['digit', 'u8'],      // AUX: DIGITS id — whole, units, tens
+    ['str', 'u16']        // AUX text row: string-table offset (E4); 0
   ];
-  var ELEMENT_WORDS = ELEMENT_FIELDS.length;   // 28 words, 112 bytes a row
-  var ELEMENT_WORDS_V4 = 25;                    // C4's row, before D41's three
-  var ELEMENT_WORDS_V3 = 23;                    // every clock row shipped before C4
-  // The widths each clock stamp has ever written. The clock section's stride is
-  // gated EXACTLY against its stamp (theme_schema.ELEMENT_WORDS_CLOCK_V3/V4): a v3
-  // clock row is one of three widths, a v4 clock row is exactly one. The reader
-  // that refuses otherwise is orb_clock3.c's stamp gate, mirrored in checkClockStamp.
-  var CLOCK_STRIDES_V3 = [17, 19, 23], CLOCK_STRIDES_V4 = [25], CLOCK_STRIDES_V5 = [28];
+  var ELEMENT_WORDS = ELEMENT_FIELDS.length;   // 33 words, 132 bytes a row: the clock's v6
+  var ELEMENT_WORDS_V3 = 23;                    // every app's row, whatever the stamp
   var SPR_WORDS2 = 6;
   var PARENT_NONE = 0xFFFF;
   // The pre-D32 width, the floor a derived row stride is refused below
   // (theme_schema.ELEMENT_WORDS_MIN; orb_bundle.c's ORB_BUNDLE_ELEM_WORDS_MIN).
   var ELEMENT_WORDS_MIN = 17;
-  var ELEM_MAX = 32, ELEM_ORDER_N = 64, ELEM_FRAMES_MAX = 360;
+  var ELEM_MAX = 64, ELEM_ORDER_N = 64, ELEM_FRAMES_MAX = 360;
   var EF_ALPHA = 1, EF_LOOP = 2, EF_OS_ADV = 4, EF_HIDDEN = 8;
   // §37: a looping delta plate carries ONE sprite past its own frame window — the rect
   // that returns the finished canvas to the keyframe — and claims it with this bit. The
@@ -1858,21 +1855,36 @@
     'strike_qtr', 'strike_min'];
   var HOUR_PATTERNS = ['count', 'ships_bells', 'morse', 'repeater', 'none'];
   var SOUND_RATE = 22050;
-  // How an AUX row moves (theme_schema.MOTION_NAMES / clk_types.h's CLK_MOTION_*).
-  // The motion IS the unit of span/zero: an angle in tenths of a degree, or pixels
-  // along the named axis. One vocabulary, so a row cannot name a motion and a unit
-  // that contradict each other.
+  // D42 (theme_schema.SHAPES / ENDS / DIGITS, clk_types.h CLK_SHAPE_* / CLK_END_* /
+  // CLK_DIGIT_*): what an AUX row's art is, what it does past its domain, and which
+  // digit of its source it reads.
+  var SHAPES = ['arm', 'ring', 'text'];
+  var SHAPE_ARM = 0, SHAPE_RING = 1, SHAPE_TEXT = 2;
+  var ENDS = ['wrap', 'flyback', 'hold'];
+  var END_WRAP = 0, END_FLYBACK = 1, END_HOLD = 2;
+  var DIGITS = ['whole', 'units', 'tens'];
+  var TURN_10 = 3600, PANEL_PX = 466;
+  var CLK_ROW_MAX = 24;                    // theme_schema.CLK_ROW_MAX
+  // The composer's authoring motions (D34's names). The wire no longer carries them —
+  // bakeClock3's v6Drive turns each into a row's two poses — but the composer still
+  // speaks them until its rows are rebuilt (D42 E2).
   var MOTION_NAMES = ['rotate', 'retrograde', 'indexed', 'slide-x', 'slide-y'];
   var MOTION_ROTATE = 0, MOTION_RETROGRADE = 1, MOTION_INDEXED = 2,
       MOTION_SLIDE_X = 3, MOTION_SLIDE_Y = 4;
   function motionIsSlide(k) { return k === MOTION_SLIDE_X || k === MOTION_SLIDE_Y; }
-  // D41 §2.1 (theme_schema.CADENCES / clk_types.h CLK_CAD_*): when a driven row moves.
-  var CADENCES = ['inherit', 'sweep', 'step', 'jump', 'stop-to-go', 'drag'];
-  var CAD_INHERIT = 0, CAD_SWEEP = 1, CAD_STEP = 2, CAD_JUMP = 3, CAD_STOP_TO_GO = 4, CAD_DRAG = 5;
+  var ROW_FRAMES_MAX = 16;                 // clk_types.h CLK_TOURB_MAX
+  // D41 §2.1 (theme_schema.CADENCES / clk_types.h CLK_CAD_*). D42 retired inherit: 0 is
+  // none, a still row's cadence and nobody else's.
+  var CADENCES = ['none', 'sweep', 'step', 'jump', 'stop-to-go', 'drag'];
+  var CAD_NONE = 0, CAD_SWEEP = 1, CAD_STEP = 2, CAD_JUMP = 3, CAD_STOP_TO_GO = 4, CAD_DRAG = 5;
   var CAD_DRAG_SOURCES = ['date', 'weekday', 'month', 'day_of_year'];
-  // What a HAND slot reads when its row names no source.
-  var HAND_SLOT_SOURCE = ['hour12', 'minute', 'second', 'none', 'none', 'second'];
-  var DRIVE_COLUMNS = ['span', 'zero', 'vmin', 'vmax'];
+  var SWEEP_FPS_MAX = 30;                  // theme_schema.SWEEP_FPS_MAX
+  var MOTION_COLUMNS = ['span', 'zero', 'vmin', 'vmax', 'dx', 'dy', 'end', 'digit'];
+  var D42_COLUMNS = ['dx', 'dy', 'end', 'digit', 'str'];
+  // theme_schema.CLOCK_RETIRED_SCALARS: a v6 clock section carries each as 0.
+  var CLOCK_RETIRED_SCALARS = ['plate_follow', 'shadow_on', 'shadow_dx', 'shadow_dy',
+    'second_sweep', 'second_railway', 'text_over_hands', 'tick_rate', 'order0', 'order1',
+    'order2', 'order3', 'order4', 'order_n', 'matte_mask', 'tourbillon_n', 'tourbillon_fps'];
   // R6: whose frames the OS may advance, and which classes cannot animate at all. This
   // decides the editor's element class for an animated region: an OS-paced region is a
   // SPRITE row, because a bank or a text row holds app state and a layer is composited.
@@ -1979,134 +1991,125 @@
       if (!(kind >= 0 && kind < HOUR_PATTERNS.length))
         throw new Error(where + '.kind: ' + kind + ' is not an hour pattern (' +
           HOUR_PATTERNS.join('/') + ', 0..' + (HOUR_PATTERNS.length - 1) + ')');
-    } else if (kind && cls !== CLASS_BANK && cls !== CLASS_AUX && cls !== CLASS_HAND) {
+    } else if (kind && cls !== CLASS_BANK && cls !== CLASS_AUX) {
       throw new Error(where + '.kind: ' + kind + ' on a ' + CLASS_NAMES[cls] + ' row — how a row ' +
         'draws or moves is a driven element’s question, and this class answers it with its slot');
     }
-    if (src && cls !== CLASS_BANK && cls !== CLASS_AUX && cls !== CLASS_SOUND && cls !== CLASS_HAND) {
+    if (src && cls !== CLASS_BANK && cls !== CLASS_AUX && cls !== CLASS_SOUND) {
       throw new Error(where + '.src: ' + src + ' on a ' + CLASS_NAMES[cls] + ' row — what drives ' +
         'a row is a driven element’s question, and this class answers it with its slot');
     }
-    /* ---- D34: the pointer row. Rule for rule the Python's and rule for rule
-     * orb_clock3.c's: the browser refuses the shapes the dial would refuse, in the
-     * dial's own words, so an author never spends an upload learning what the host
-     * already knew. No missing drive column is defaulted — a pointer with no domain
-     * is a refusal, not a zero. ---- */
+    /* ---- D42: the moving row. Rule for rule theme_schema.check_element and
+     * orb_clock3.c's row_check, in their words: the browser refuses the shapes the dial
+     * would refuse, so an author never spends an upload learning what the host knew. */
+    var cad = Math.trunc(rec.cadence | 0), carg = Math.trunc(rec.cad_arg | 0),
+        ease = Math.trunc(rec.ease | 0);
+    if (cls !== CLASS_AUX) {
+      D42_COLUMNS.forEach(function (c) {
+        if (Math.trunc(rec[c] | 0))
+          throw new Error(where + '.' + c + ': ' + rec[c] + ' on a ' + CLASS_NAMES[cls] +
+            ' row — a row’s poses are a moving row’s question (class aux)');
+      });
+      if (cls !== CLASS_SOUND && ['span', 'zero', 'vmin', 'vmax'].some(function (c) { return Math.trunc(rec[c] | 0); }))
+        throw new Error(where + ': span, zero, vmin and vmax are a moving row’s poses, and class ' +
+          q(CLASS_NAMES[cls]) + ' does not move — every row that moves is an AUX row (D42)');
+    }
     if (cls === CLASS_AUX) {
       var span = Math.trunc(rec.span | 0), zero = Math.trunc(rec.zero | 0);
       var vmin = Math.trunc(rec.vmin >>> 0), vmax = Math.trunc(rec.vmax >>> 0);
-      if (!(kind >= 0 && kind < MOTION_NAMES.length))
-        throw new Error(where + '.kind: ' + kind + ' is not a way for a pointer to move (' +
-          MOTION_NAMES.join(', ') + ')');
+      var dx = Math.trunc(rec.dx | 0), dy = Math.trunc(rec.dy | 0);
+      var end = Math.trunc(rec.end | 0), digit = Math.trunc(rec.digit | 0);
+      if (!(kind >= 0 && kind < SHAPES.length))
+        throw new Error(where + '.kind: ' + kind + ' is not a row’s shape (' + SHAPES.join('/') + ')');
+      if (kind === SHAPE_TEXT)
+        throw new Error(where + '.kind: a text row waits for the string table (D42 E4)');
+      if (Math.trunc(rec.str | 0))
+        throw new Error(where + '.str: ' + rec.str + ' — only a text row points into the string table');
       if (!(src >= 0 && src < SOURCES.length))
         throw new Error(where + '.src: ' + src + ' is not a value this dial can read (0..' +
           (SOURCES.length - 1) + ')');
-      if (SOURCES[src] === 'none')
-        throw new Error(where + ".src: an AUX pointer driven by 'none' never moves, and a row " +
-          'that never moves is plate art that was written as a row');
       if (SOURCES[src] === 'text' || SOURCES[src] === 'value')
-        throw new Error(where + '.src: an AUX pointer driven by ' + q(SOURCES[src]) +
-          ': this dial has no such input');
-      if (vmax < 1)
-        throw new Error(where + '.vmax: ' + vmax + ' cannot divide a ' + MOTION_NAMES[kind] +
-          ' — a pointer’s span is shared across its domain');
-      if (vmin > vmax)
-        throw new Error(where + '.vmin: ' + vmin + ' is above vmax ' + vmax +
-          ' — the domain runs low to high');
-      if (!span)
-        throw new Error(where + '.span: 0 is a pointer that goes nowhere; give it the ' +
-          (motionIsSlide(kind) ? 'distance' : 'angle') + ' it travels');
-      if (Math.trunc(rec.n_frames | 0) !== 1)
-        throw new Error(where + ': an AUX row carries one plate, not ' + rec.n_frames +
-          ' — several plates indexed by a value is a BANK row');
-      if (motionIsSlide(kind)) {
-        if (Math.abs(span) > SCREEN_W || Math.abs(zero) > SCREEN_W)
-          throw new Error(where + ': a ' + MOTION_NAMES[kind] + ' of ' + span + ' px from ' +
-            zero + ' cannot stay on a ' + SCREEN_W + ' px panel — a slide’s span and zero ' +
-            'are pixels, not tenths');
+        throw new Error(where + '.src: ' + q(SOURCES[src]) + ' is no input of this dial, and a row ' +
+          'that moves by it would never move');
+      if (Math.trunc(rec.degrees | 0))
+        throw new Error(where + '.degrees: ' + rec.degrees + ' — a row’s angle at rest is its `zero`');
+      if (SOURCES[src] === 'none') {
+        MOTION_COLUMNS.concat(['cadence', 'cad_arg', 'ease']).forEach(function (c) {
+          if (Math.trunc(rec[c] | 0))
+            throw new Error(where + '.' + c + ': ' + rec[c] + ' on a still row — a row with no source ' +
+              'never moves, so it names no motion');
+        });
       } else {
-        var pw = Math.trunc(rec.w | 0), ph = Math.trunc(rec.h | 0);
-        var ppx = Math.trunc(rec.pivot_x | 0), ppy = Math.trunc(rec.pivot_y | 0);
-        if (pw && ph && !(ppx >= 0 && ppx < pw && ppy >= 0 && ppy < ph))
-          throw new Error(where + ': an AUX pointer’s pivot (' + ppx + ',' + ppy +
-            ') sits outside its own ' + pw + 'x' + ph + ' plate, so it would turn about a ' +
-            'point off the glass');
-        if (Math.abs(zero) > 3600)
-          throw new Error(where + '.zero: ' + zero + ' is an offset past one full turn ' +
-            '(3600 tenths), which is not a direction');
-        if (Math.abs(span) > 3600)
-          throw new Error(where + '.span: ' + span + ' asks a pointer to travel more than one ' +
-            'full turn; a ' + MOTION_NAMES[kind] + ' that needs more is a disc, not a hand');
+        if (!cad)
+          throw new Error(where + '.cadence: a row moving by ' + q(SOURCES[src]) + ' names when it moves ' +
+            '(sweep, step, jump, stop-to-go, drag)');
+        if (!(end >= 0 && end < ENDS.length))
+          throw new Error(where + '.end: ' + end + ' is not an end rule (' + ENDS.join('/') + ')');
+        if (!(digit >= 0 && digit < DIGITS.length))
+          throw new Error(where + '.digit: ' + digit + ' is not a digit selector (' + DIGITS.join('/') + ')');
+        if (vmax <= vmin)
+          throw new Error(where + '.vmax: ' + vmax + ' is not above vmin ' + vmin +
+            ' — a domain has to hold at least one unit to divide');
+        if (!(span || dx || dy))
+          throw new Error(where + ': a moving row that neither turns nor travels goes nowhere; ' +
+            'bake it as a still row');
+        if (Math.abs(zero) > TURN_10 || Math.abs(span) > TURN_10)
+          throw new Error(where + ': zero ' + zero + ' and span ' + span + ' stay within one turn (±' +
+            TURN_10 + ' tenths)');
+        if (Math.abs(dx) > PANEL_PX || Math.abs(dy) > PANEL_PX)
+          throw new Error(where + ': a travel of (' + dx + ',' + dy + ') px cannot stay on a ' +
+            PANEL_PX + ' px panel');
+        if (end === END_WRAP && (Math.abs(span) !== TURN_10 || dx || dy))
+          throw new Error(where + '.end: a wrap starts the next unit at P0, so P1 must look like P0 ' +
+            '— a whole turn (±' + TURN_10 + ') and no travel, not span ' + span + ' and (' +
+            dx + ',' + dy + ')');
       }
-    }
-    // D41: a HAND row may name its own drive (v5 only; the v4 pack refuses it).
-    if (cls === CLASS_HAND) {
-      var hd = DRIVE_COLUMNS.map(function (c) { return Math.trunc(rec[c] | 0); });
-      if (!src) {
-        if (kind || hd.some(function (x) { return x; }))
-          throw new Error(where + ': a HAND row that names no source reads its slot\u2019s own ' +
-            'mapping, so kind, span, zero, vmin and vmax must be 0 — name the source the path ' +
-            'is written for');
-      } else {
-        if (!(src >= 0 && src < SOURCES.length) || ['text', 'value', 'ampm'].indexOf(SOURCES[src]) >= 0)
-          throw new Error(where + '.src: ' + src + ' is not a value a hand can turn by');
-        if (!(kind >= 0 && kind < MOTION_NAMES.length))
-          throw new Error(where + '.kind: ' + kind + ' is not a way for a hand to move');
-        if (motionIsSlide(kind))
-          throw new Error(where + '.kind: a hand layer turns, and ' + MOTION_NAMES[kind] +
-            ' is a pointer\u2019s path — bake a sliding hand as an AUX row');
-        if (!Math.trunc(rec.cadence | 0))
-          throw new Error(where + '.cadence: a hand that names its own source names when it moves ' +
-            'too — inherit is the slot\u2019s own mapping');
-        var hspan = hd[0], hzero = hd[1], hvmin = hd[2], hvmax = hd[3];
-        if (hvmax < 1) throw new Error(where + '.vmax: ' + hvmax + ' cannot divide a hand\u2019s ' +
-          MOTION_NAMES[kind] + ' — its domain has to hold at least one unit');
-        if (hspan === 0) throw new Error(where + '.span: 0 is a hand that goes nowhere');
-        if (hvmin > hvmax) throw new Error(where + '.vmin: ' + hvmin + ' is above vmax ' + hvmax);
-        if (motionIsSlide(kind) ? (Math.abs(hspan) > 466 || Math.abs(hzero) > 466)
-                                : (Math.abs(hspan) > 3600 || Math.abs(hzero) > 3600))
-          throw new Error(where + ': a hand\u2019s span and zero stay within one turn, or on the panel');
-      }
+      var pw = Math.trunc(rec.w | 0), ph = Math.trunc(rec.h | 0);
+      var ppx = Math.trunc(rec.pivot_x | 0), ppy = Math.trunc(rec.pivot_y | 0);
+      if (pw && ph && !(ppx >= 0 && ppx < pw && ppy >= 0 && ppy < ph))
+        throw new Error(where + ': a row’s pivot (' + ppx + ',' + ppy + ') sits outside its own ' +
+          pw + 'x' + ph + ' plate, so it would turn about a point off the glass');
+      if (nf > ROW_FRAMES_MAX)
+        throw new Error(where + ': an animated row carries at most ' + ROW_FRAMES_MAX + ' frames, not ' + nf);
+      if (nf > 1 && !Math.trunc(rec.delay | 0))
+        throw new Error(where + '.delay: an animated row of ' + nf + ' frames names its frame time');
+      if ((flags & AUX_F_SHADOW3) && (nf !== 1 || src || cad))
+        throw new Error(where + ': a shadow twin takes its hand’s whole pose — one plate, ' +
+          'no source, no cadence');
     }
     // D41 §2.2, row-local (theme_schema.check_element, rule for rule).
-    var cad = Math.trunc(rec.cadence | 0), carg = Math.trunc(rec.cad_arg | 0),
-        ease = Math.trunc(rec.ease | 0);
     if (cad || carg || ease) {
-      if (cls !== CLASS_HAND && cls !== CLASS_AUX && cls !== CLASS_BANK)
-        throw new Error(where + '.cadence: when a row moves is a driven row\u2019s question (hand, ' +
-          'pointer, bank); class ' + q(CLASS_NAMES[cls]) + ' does not move by a value');
+      if (cls !== CLASS_AUX && cls !== CLASS_BANK)
+        throw new Error(where + '.cadence: when a row moves is a driven row’s question (a moving ' +
+          'row, a bank); class ' + q(CLASS_NAMES[cls]) + ' does not move by a value');
       if (!(cad >= 0 && cad < CADENCES.length))
         throw new Error(where + '.cadence: ' + cad + ' is not a cadence (' + CADENCES.join('/') +
           ', 0..' + (CADENCES.length - 1) + ')');
-      var eff = (cls === CLASS_HAND && !src)
-        ? (HAND_SLOT_SOURCE[Math.trunc(rec.slot | 0)] || 'none') : (SOURCES[src] || 'none');
+      var eff = SOURCES[src] || 'none';
       var cname = CADENCES[cad];
       if (cad === CAD_STEP && carg < 1)
         throw new Error(where + '.cad_arg: step 0 divides a unit into no steps — name how many per unit');
-      if ((cad === CAD_INHERIT || cad === CAD_SWEEP || cad === CAD_JUMP) && carg)
+      if ((cad === CAD_NONE || cad === CAD_JUMP) && carg)
         throw new Error(where + '.cad_arg: ' + carg + ' on a ' + cname + ' row, which takes no argument');
+      if (cad === CAD_SWEEP && carg > SWEEP_FPS_MAX)
+        throw new Error(where + '.cad_arg: a sweep at ' + carg + ' frames a second — the panel draws ' +
+          SWEEP_FPS_MAX + ' at most');
       if (cad === CAD_STOP_TO_GO && eff !== 'second')
-        throw new Error(where + '.cadence: stop-to-go is a seconds hand\u2019s rhythm, and this row reads ' + q(eff));
+        throw new Error(where + '.cadence: stop-to-go is a seconds hand’s rhythm, and this row reads ' + q(eff));
       if (cad === CAD_DRAG && CAD_DRAG_SOURCES.indexOf(eff) < 0)
         throw new Error(where + '.cadence: drag holds a calendar row (' + CAD_DRAG_SOURCES.join('/') +
           '), and this row reads ' + q(eff));
-      if (cls === CLASS_HAND && eff === 'none' && cad)
-        throw new Error(where + '.cadence: a still hand slot has no value to move by');
-      if (cls === CLASS_BANK && cad !== CAD_INHERIT && cad !== CAD_JUMP)
-        throw new Error(where + '.cadence: a complication\u2019s plates are whole values, so it jumps — ' +
+      if (cls === CLASS_BANK && cad !== CAD_NONE && cad !== CAD_JUMP)
+        throw new Error(where + '.cadence: a complication’s plates are whole values, so it jumps — ' +
           cname + ' waits for a ring the dial can turn');
-      if (cls === CLASS_HAND && Math.trunc(rec.slot | 0) === 5 && (cad || src || kind))
-        throw new Error(where + ': the carriage turns with the seconds row — give that row the cadence');
       if (ease) {
-        var eretro = (cls === CLASS_AUX || (cls === CLASS_HAND && src)) && (kind === MOTION_RETROGRADE || motionIsSlide(kind));
+        var efly = cls === CLASS_AUX && Math.trunc(rec.end | 0) === END_FLYBACK;
         var esteps = (cad === CAD_JUMP || cad === CAD_STEP) && eff !== 'second' && cls !== CLASS_BANK;
         if (ease > 1000) throw new Error(where + '.ease: ' + ease + ' ms — an ease runs at most a second');
-        if (!eretro && !esteps)
+        if (!efly && !esteps)
           throw new Error(where + '.ease: ' + ease + ' ms with nothing to ease — a settle needs a jump or a ' +
-            'step slower than the second, a flyback a retrograde path');
+            'step slower than the second, a flyback a flyback row');
       }
-      if (cls === CLASS_AUX && kind === MOTION_INDEXED && cad !== CAD_INHERIT && cad !== CAD_JUMP)
-        throw new Error(where + '.cadence: indexed already snaps to whole units; ' + cname + ' contradicts it');
     }
     if (cls === CLASS_BANK) {
       if (!(kind >= 0 && kind < COMP_KINDS.length)) {
@@ -2199,28 +2202,28 @@
   }
 
   /* Checked pack of a whole table: real rows only, no padding to the cap, and a missing
-   * key is the bake's bug rather than a zero — theme_schema.pack_elements' order. */
+   * key is the bake's bug rather than a zero — theme_schema.pack_elements' order. The
+   * clock's v6 width (abi 6, the default) writes all 33 columns; an app section's v3
+   * width writes 23 and refuses a claim past them rather than silently truncating it. */
   function packElements(recs, cap, abi) {
     cap = (cap === undefined) ? ELEM_MAX : cap;
-    abi = (abi === undefined) ? GEOM_ABI4 : abi;
+    abi = (abi === undefined) ? GEOM_ABI6 : abi;
     checkTable(recs);
     if (recs.length > cap) {
       throw new Error('element table: ' + recs.length + ' rows exceed the cap of ' + cap);
     }
-    var words = abi >= GEOM_ABI5 ? ELEMENT_WORDS : abi >= GEOM_ABI4 ? ELEMENT_WORDS_V4 : ELEMENT_WORDS_V3;
+    var words = abi === GEOM_ABI6 ? ELEMENT_WORDS : ELEMENT_WORDS_V3;
     var out = [];
     for (var i = 0; i < recs.length; i++) {
       var r = recs[i];
-      var why5 = abi < GEOM_ABI5 ? v5Claim(r) : null;
-      if (why5) {
-        throw new Error('elem[' + i + '] names ' + why5 + ' at stride ' + words + ': the v' + abi +
-          ' clock stamp has no reading for it — bake the section at the v5 stamp');
-      }
-      var par = (r.parent === undefined || r.parent === null) ? PARENT_NONE : r.parent;
-      if (words === ELEMENT_WORDS_V3 && (par !== PARENT_NONE || (r.delay | 0))) {
-        throw new Error('elem[' + i + '] names parent ' + par + ' delay ' + (r.delay | 0) +
-          ' at stride ' + ELEMENT_WORDS_V3 + ': the v3 clock stamp has no reading for them — ' +
-          'bake the section at the v4 stamp');
+      if (words === ELEMENT_WORDS_V3) {
+        var par = (r.parent === undefined || r.parent === null) ? PARENT_NONE : r.parent;
+        var later = ELEMENT_FIELDS.slice(ELEMENT_WORDS_V3).map(function (f) { return f[0]; })
+          .filter(function (c) { return c !== 'parent' && Math.trunc(r[c] | 0); });
+        if (par !== PARENT_NONE || later.length)
+          throw new Error('elem[' + i + '] names ' + (later.join(', ') || 'parent ' + par) +
+            ' at stride ' + ELEMENT_WORDS_V3 + ': an app row is 23 words and carries none of ' +
+            'the clock’s appended columns');
       }
       for (var k = 0; k < words; k++) {
         var name = ELEMENT_FIELDS[k][0], t = ELEMENT_FIELDS[k][1];
@@ -2230,47 +2233,81 @@
     }
     return out;
   }
-  /* What a row says that only the v5 stamp can carry (theme_schema.v5_claim), or null. */
-  function v5Claim(r) {
-    var c, i;
-    var cols = ['cadence', 'cad_arg', 'ease'];
-    for (i = 0; i < cols.length; i++) { c = cols[i]; if (Math.trunc(r[c] | 0)) return c + ' ' + Math.trunc(r[c] | 0); }
-    if (Math.trunc(r.class | 0) === CLASS_HAND) {
-      cols = ['kind', 'src'].concat(DRIVE_COLUMNS);
-      for (i = 0; i < cols.length; i++) {
-        c = cols[i];
-        if (Math.trunc(r[c] | 0)) return 'a hand\u2019s own ' + c + ' ' + Math.trunc(r[c] | 0);
-      }
+  /* The beat a v6 dial keeps, from its rows (theme_schema.clock_tempo, orb_clock3.c):
+   * [sweep, rate]. A sweeping seconds row asks for its own frame rate (cad_arg) when it
+   * names one, else the fastest animation the dial carries, else SWEEP_TIER3. */
+  function clockTempo(recs, scalars) {
+    var sweep = 0, rate = 0, sweepFps = 0, i, r;
+    for (i = 0; i < recs.length; i++) {
+      r = recs[i];
+      if ((r.class | 0) !== CLASS_AUX || ((r.flags | 0) & EF_HIDDEN)) continue;
+      if (SOURCES[r.src | 0] !== 'second' || (r.digit | 0)) continue;
+      var cad = r.cadence | 0;
+      if (cad === CAD_SWEEP || cad === CAD_STOP_TO_GO) sweep = 1;
+      if (cad === CAD_SWEEP) sweepFps = Math.max(sweepFps, r.cad_arg | 0);
+      else if (cad === CAD_STEP) rate = Math.max(rate, r.cad_arg | 0);
     }
-    return null;
+    if (!sweep) return [0, rate || 1];
+    if (sweepFps) return [1, sweepFps];
+    var sc = scalars || {}, fps = 0;
+    for (i = 0; i < recs.length; i++) {
+      r = recs[i];
+      var d = r.delay | 0;
+      if ((r.class | 0) === CLASS_PLATE && (r.slot | 0) === 0 && (r.n_frames | 0) > 1) {
+        if ((sc.bg_fps | 0) > 0) fps = sc.bg_fps | 0;          // the rate its author named
+      }
+      if ((r.class | 0) === CLASS_AUX && (r.n_frames | 0) > 1 && d)
+        fps = Math.max(fps, Math.floor((1000 + (d >> 1)) / d));
+    }
+    return [1, Math.min(255, fps >= 2 ? fps : SWEEP_TIER3)];
   }
-  /* D41 §2.2's table-wide refusals (theme_schema.check_clock_drive). */
-  function checkClockDrive(recs, secondSweep, tickRate) {
-    var minuteJumps = recs.some(function (r) {
-      return (r.class | 0) === CLASS_HAND && (r.slot | 0) === 1 && !(r.src | 0) &&
-        (r.cadence | 0) === CAD_JUMP;
-    });
-    for (var i = 0; i < recs.length; i++) {
-      var r = recs[i], cad = r.cadence | 0, cls = r.class | 0;
-      if (cls !== CLASS_HAND && cls !== CLASS_AUX) continue;
-      var eff = (cls === CLASS_HAND && !(r.src | 0)) ? (HAND_SLOT_SOURCE[r.slot | 0] || 'none')
-                                                    : SOURCES[r.src | 0];
-      if (cad === CAD_STOP_TO_GO && !minuteJumps)
-        throw new Error('elem[' + i + ']: stop-to-go rests until the minute releases it, and the ' +
-          'minute hand does not jump');
-      if (eff !== 'second' || !cad) continue;
-      var rate = Math.max(1, tickRate | 0), bad;
-      if (cls === CLASS_AUX) bad = cad === CAD_STEP && (r.cad_arg | 0) !== rate;
-      else {
-        var fast = cad === CAD_SWEEP || cad === CAD_STOP_TO_GO;
-        bad = fast !== !!secondSweep || (cad === CAD_STEP && (r.cad_arg | 0) !== rate) ||
-          (cad === CAD_JUMP && rate !== 1);
-      }
-      if (bad)
-        throw new Error('elem[' + i + ']: a seconds row moving by ' + CADENCES[cad] + ' (' + (r.cad_arg | 0) +
-          ') on a dial whose tempo is sweep ' + (secondSweep | 0) + ', tick_rate ' + (tickRate | 0) +
-          ' — the scheduler\u2019s tempo and the hand must agree');
+  /* D42's whole-table rules (theme_schema.check_clock_rows, orb_clock3.c). */
+  function checkClockRows(recs, scalars) {
+    var aux = {}, byN = {}, i, r;
+    for (i = 0; i < recs.length; i++) {
+      byN[recs[i].n | 0] = recs[i];
+      if ((recs[i].class | 0) === CLASS_AUX) aux[recs[i].slot | 0] = recs[i];
     }
+    var minuteJumps = Object.keys(aux).some(function (k) {
+      var x = aux[k];
+      return SOURCES[x.src | 0] === 'minute' && !(x.digit | 0) && (x.cadence | 0) === CAD_JUMP;
+    });
+    var steps = {}, nSteps = 0, animated = [];
+    var slots = Object.keys(aux).map(Number).sort(function (a, b) { return a - b; });
+    for (i = 0; i < slots.length; i++) {
+      var slot = slots[i], where = 'ptr' + slot;
+      r = aux[slot];
+      if (slot >= CLK_ROW_MAX)
+        throw new Error(where + ': the clock seats ' + CLK_ROW_MAX + ' moving rows (ptr0..ptr' + (CLK_ROW_MAX - 1) + ')');
+      var cad = r.cadence | 0;
+      if (cad === CAD_STOP_TO_GO && !minuteJumps)
+        throw new Error(where + ': stop-to-go rests until the minute releases it, and no minute row jumps');
+      if (SOURCES[r.src | 0] === 'second' && cad === CAD_STEP && !(r.digit | 0) && !steps[r.cad_arg | 0]) {
+        steps[r.cad_arg | 0] = 1; nSteps++;
+      }
+      if ((r.n_frames | 0) > 1) animated.push(where);
+      if ((r.flags | 0) & AUX_F_SHADOW3) {
+        var prev = aux[slot - 1];
+        if (!prev)
+          throw new Error(where + ': a shadow twin with no row before it — the twin takes its pose from the row in the slot under it');
+        if ((prev.flags | 0) & AUX_F_SHADOW3)
+          throw new Error(where + ': a shadow twin under another twin — a twin darkens a row, not a shadow');
+      }
+      var par = (r.parent === undefined || r.parent === null) ? PARENT_NONE : r.parent;
+      if (par !== PARENT_NONE) {
+        var p = byN[par];
+        if (!p || (p.class | 0) !== CLASS_AUX)
+          throw new Error(where + ': names parent ' + par + ', which is not a moving row — a row rides another row’s pose');
+        if ((p.span | 0) && ((p.x | 0) + (p.pivot_x | 0) !== (r.x | 0) + (r.pivot_x | 0) ||
+                             (p.y | 0) + (p.pivot_y | 0) !== (r.y | 0) + (r.pivot_y | 0)))
+          throw new Error(where + ': rides a parent that turns about another centre — a child of a turning row shares its arbour');
+      }
+    }
+    if (nSteps > 1)
+      throw new Error('seconds rows step at ' + Object.keys(steps).join('/') + ' a second: a dial keeps one beat');
+    if (animated.length > 1)
+      throw new Error(animated.join(', ') + ' are all animated: a dial carries one animated row (the carriage)');
+    return clockTempo(recs, scalars);
   }
   function unpackElements(words, n, stride) {
     // The reader honours the stride the BLOB carries, not the width this build writes:
@@ -2342,9 +2379,18 @@
     var elems = (elements || []).slice();
     checkTable(elems);
     abi = (abi === undefined) ? GEOM_ABI3 : abi;
-    if (slug === 'clock')
-      checkClockDrive(elems, (scalars || {}).second_sweep | 0, (scalars || {}).tick_rate | 0);
-    var delta = abi >= GEOM_ABI4;
+    if (slug === 'clock') {
+      if (abi !== GEOM_ABI6)
+        throw new Error('a clock section stamped geometry v' + abi + '; the clock writes v' +
+          GEOM_ABI6 + ' and nothing older (D42)');
+      checkClockRows(elems, scalars);
+      CLOCK_RETIRED_SCALARS.forEach(function (n) {
+        if ((scalars || {})[n] | 0)
+          throw new Error('clock scalar ' + q(n) + ' is ' + scalars[n] + ': D42 retired it, and a v6 ' +
+            'section carries it as 0 — the rows say what it said');
+      });
+    }
+    var delta = abi === GEOM_ABI6;
     var sb = utf8(slug);
     if (sb.length < 1 || sb.length > SLUG_MAX) {
       throw new Error('bundle slug ' + q(slug) + ' is ' + sb.length + ' bytes, outside 1..' + SLUG_MAX);
@@ -2392,7 +2438,7 @@
       throw new Error('section blob is shorter than its counts and scalars');
     }
     abi = (abi === undefined) ? GEOM_ABI3 : abi;
-    var delta = abi >= GEOM_ABI4;
+    var delta = abi === GEOM_ABI6;
     var sw = delta ? SPR_WORDS2 : SPR_WORDS;
     var v = new DataView(blob.buffer, blob.byteOffset, blob.length);
     var nElem = v.getUint32(0, true), nSpr = v.getUint32(4, true);
@@ -2411,7 +2457,7 @@
     }
     // A table with no rows carries no width: it reads as the width its stamp writes.
     var eb = blob.length - wantMin,
-        elemWords = abi >= GEOM_ABI5 ? ELEMENT_WORDS : delta ? ELEMENT_WORDS_V4 : ELEMENT_WORDS_V3;
+        elemWords = delta ? ELEMENT_WORDS : ELEMENT_WORDS_V3;
     if (nElem === 0 ? eb !== 0 : eb % (nElem * 4) !== 0) {
       throw new Error('blob is ' + blob.length + ' bytes; its ' + nElem + ' rows leave ' +
         eb + ' B, no whole number of words — a torn file, not a short one');
@@ -2476,36 +2522,23 @@
     return { slug: s, slug_b: sb, elements: elems, sprites: sprs, scalars: sc,
              elem_words: elemWords, spr_words: sw, abi: abi };
   }
-  /* The §4.1 Decision-A stamp gate, mirrored from theme_schema.check_clock_stamp: a
-   * clock section's derived element stride and catalogue width must be exactly the
-   * family its own stamp wrote, never the other stamp's. A clock stamped v3 with a
-   * 25-word row is a lying stamp; a clock stamped v4 at any width but 25 (or a 4-word
-   * catalogue) is the same lie mirrored. Refused here rather than painted wrong. */
+  /* The clock's stamp gate, mirrored from theme_schema.check_clock_stamp: v6 and
+   * nothing older (D42), at exactly the v6 row and the six-word delta catalogue. */
   function checkClockStamp(rec) {
     var abi = rec.abi_max === undefined ? GEOM_ABI3 : rec.abi_max;
     var ew = rec.elem_words === undefined ? ELEMENT_WORDS : rec.elem_words;
-    var spw = rec.spr_words || (abi >= GEOM_ABI4 ? SPR_WORDS2 : SPR_WORDS);
-    if (abi < GEOM_ABI3 || abi > GEOM_ABI5) {
-      throw new Error('a clock section stamped geometry v' + abi + '; this reader\u2019s clock ' +
-        'dialect is v' + GEOM_ABI3 + ' to v' + GEOM_ABI5 + ' — re-bake it');
-    }
-    if (abi >= GEOM_ABI4) {
-      var want = abi >= GEOM_ABI5 ? CLOCK_STRIDES_V5 : CLOCK_STRIDES_V4;
-      if (want.indexOf(ew) < 0)
-        throw new Error('clock rows are ' + ew + ' words under geometry v' + abi +
-          '; that stamp writes exactly ' + want[0]);
-      if (spw !== SPR_WORDS2)
-        throw new Error('clock catalogue rows are ' + spw + ' words under geometry v' + abi +
-          '; that stamp writes 6');
-    } else {
-      if (CLOCK_STRIDES_V3.indexOf(ew) < 0)
-        throw new Error('clock rows are ' + ew + ' words under geometry v' + abi +
-          '; that stamp writes 17, 19 or 23');
-      if (spw !== SPR_WORDS)
-        throw new Error('clock catalogue rows are ' + spw + ' words under geometry v' + abi +
-          '; that stamp writes 4');
-    }
+    var spw = rec.spr_words || SPR_WORDS2;
+    if (abi !== GEOM_ABI6)
+      throw new Error('a clock section stamped geometry v' + abi + '; this reader’s clock ' +
+        'dialect is v' + GEOM_ABI6 + ' and nothing older (D42) — re-bake it');
+    if (ew !== ELEMENT_WORDS)
+      throw new Error('clock rows are ' + ew + ' words under geometry v' + abi +
+        '; that stamp writes exactly ' + ELEMENT_WORDS);
+    if (spw !== SPR_WORDS2)
+      throw new Error('clock catalogue rows are ' + spw + ' words under geometry v' + abi +
+        '; that stamp writes 6');
   }
+
 
   /* The index region: a two-word head, then one fixed 40-byte record per section.
    * IDX_ORDER / IDX_OFF / IDX_TYPES are orbbundle.IDX_ORDER and its "<4H7I2H" wire,
@@ -2665,10 +2698,11 @@
     checkBudget3(run, artSize);
 
     var region = concat([packIndex3(recs)].concat(blobs));
+    // The header stamps the clock's v6 when a v6 section rides along, else v3 (D42):
+    // the two stamps a reader takes, never an app section's own forward aim.
     var hdrAbi = GEOM_ABI3;
     for (i = 0; i < sections.length; i++)
-      if ((sections[i].abi_max === undefined ? GEOM_ABI3 : sections[i].abi_max) > hdrAbi)
-        hdrAbi = sections[i].abi_max;
+      if (sections[i].abi_max === GEOM_ABI6) hdrAbi = GEOM_ABI6;
     var hdr = packHeader3({ geomSize: region.length, geomCrc: crc32(region), artOff: artOff,
                            artSize: artSize, artCrc: artCrcAll, nSections: sections.length,
                            serial: o.serial || 0, bakedMs: o.bakedMs || 0, name: o.name, abi: hdrAbi });
@@ -2696,9 +2730,9 @@
     if (w[1] !== FORMAT3) {
       throw new Error('theme format ' + w[1] + '; this reader takes format ' + FORMAT3);
     }
-    if (w[2] !== GEOM_ABI3 && w[2] !== GEOM_ABI4 && w[2] !== GEOM_ABI5) {
+    if (w[2] !== GEOM_ABI3 && w[2] !== GEOM_ABI6) {
       throw new Error('bundle geometry v' + w[2] + '; this build reads v' + GEOM_ABI3 +
-        ' to v' + GEOM_ABI5 + ' — re-bake it');
+        ' (apps) and v' + GEOM_ABI6 + ' (a clock) — re-bake it');
     }
     var z = w.slice(); z[W_HDR_CRC] = 0;
     if (w[W_HDR_CRC] !== crc32(wordsToBytes(z))) {
@@ -2786,8 +2820,10 @@
    * usable, while [1,2] is a section this build has no business painting. D24's
    * no-backward-path rule bites inside the refusal, not the range. */
   function sectionAbiOk(rec) {
-    return rec.abi_min >= 1 && rec.abi_min <= rec.abi_max &&
-           rec.abi_max >= GEOM_ABI3 && rec.abi_min <= GEOM_ABI3;
+    // A section resolves when its interval reaches a stamp this build reads: v3 for an
+    // app, v6 for a clock (D42).
+    var reach = function (v) { return rec.abi_max >= v && rec.abi_min <= v; };
+    return rec.abi_min >= 1 && rec.abi_min <= rec.abi_max && (reach(GEOM_ABI3) || reach(GEOM_ABI6));
   }
 
   /* The bake path: drawn planes in, an installable bundle out.
@@ -2907,6 +2943,28 @@
     return pattern;
   }
 
+  /* The composer's authoring motions (MOTION_NAMES) in v6 terms. The art stays where
+   * the composer placed it, at P0; a slide's start offset moves the placement itself,
+   * because v6 carries no offset at P0. A rotation over a whole turn wraps; a partial
+   * one holds at its end; a retrograde and a slide fly back. */
+  function v6Drive(motion, d, x, y) {
+    var m = motion === undefined ? MOTION_ROTATE
+          : (typeof motion === 'string' ? MOTION_NAMES.indexOf(motion) : motion);
+    if (!(m >= 0 && m < MOTION_NAMES.length))
+      throw new Error('a row moving as ' + JSON.stringify(motion) + ': the composer names ' +
+        MOTION_NAMES.join(', ') + ' and this names none of them');
+    var span = d.span | 0, zero = d.zero | 0, vmax = d.vmax | 0;
+    var out = { span: span, zero: zero, vmin: 0, vmax: vmax, dx: 0, dy: 0, x: x | 0, y: y | 0,
+                end: m === MOTION_RETROGRADE ? END_FLYBACK
+                   : Math.abs(span) === TURN_10 ? END_WRAP : END_HOLD,
+                jump: m === MOTION_INDEXED, slide: motionIsSlide(m) };
+    if (out.slide) {
+      if (m === MOTION_SLIDE_X) { out.dx = span; out.x += zero; }
+      else { out.dy = span; out.y += zero; }
+      out.span = 0; out.zero = 0; out.end = END_FLYBACK;
+    }
+    return out;
+  }
   function bakeClock3(o) {
     var scrW = o.scr_w || SCREEN_W, scrH = o.scr_h || SCREEN_H;
     var hands = o.hands || [], shadows = o.shadows || [], plates = o.plates || [];
@@ -2966,7 +3024,6 @@
      * bounding box as the row's extent and the loop's fps as the scalar. */
     var car = o.carriage;
     if (car) {
-      if (sc.tourbillon_n) throw new Error('a carriage row while the scalars name tourbillon_n = ' + sc.tourbillon_n + ': the row’s planes are the bank’s length');
       if (!(car.frames && car.frames.length >= 2)) throw new Error('a carriage bank of ' + (car.frames ? car.frames.length : 0) + ' frames: a carriage is an animation, and one frame is a static hand this bake seats elsewhere');
       if (car.frames.length > TOURB_MAX) throw new Error('a carriage bank of ' + car.frames.length + ' frames: the dial holds ' + TOURB_MAX + ' tourbillon records');
       if (!(car.fps >= 1)) throw new Error('a carriage bank at ' + (car.fps || 0) + ' fps: the row animates at its own tempo, and a loop with no tempo is a frame that never arrives');
@@ -2975,9 +3032,6 @@
         var cf = car.frames[k];
         if (!cf || cf.w !== cw || cf.h !== chh) throw new Error('carriage frame ' + k + ' is ' + (cf ? cf.w + 'x' + cf.h : 'nothing') + ' against a ' + cw + 'x' + chh + ' row: every frame of one bank is one extent, the same box the dial invalidates');
       }
-      sc.tourbillon_n = car.frames.length; sc.tourbillon_fps = car.fps;
-    } else {
-      if (sc.tourbillon_n) throw new Error('tourbillon_n = ' + sc.tourbillon_n + ': a carriage is a row this bake does not assemble, and the scalar would name a bank the section does not hold');
     }
     /* §31's comp table, D32's ruling A: a window row per live complication, its
      * plates contiguous and masked. Every check below is orb_clock3.c's
@@ -3009,9 +3063,9 @@
         throw new Error('a window at slot ' + slot3 + ' places its ' + cwr + 'x' + chr + ' box at (' +
           (cr.x | 0) + ',' + (cr.y | 0) + ') of a ' + scrW + 'x' + scrH + ' panel: the runtime would draw it off the glass');
       var ordr = cr.order | 0;
-      if (ordr < 0 || ordr > 4)
-        throw new Error('a bank row at slot ' + slot3 + ' ordered at rung ' + ordr +
-          ': a window\u2019s depth is a bucket under one of the dial\u2019s five live layers');
+      if (ordr < 0 || ordr >= ELEM_ORDER_N)
+        throw new Error('a bank row at slot ' + slot3 + ' at depth ' + ordr +
+          ': the dial has ' + ELEM_ORDER_N + ' rungs');
       for (j3 = 0; j3 < pl3.length; j3++) {
         var pp3 = pl3[j3];
         if (!pp3 || pp3.w !== cwr || pp3.h !== chr)
@@ -3020,7 +3074,6 @@
       }
       compB += cwr * chr * 3 * want3;
     }
-    if (!sc.tourbillon_n) sc.tourbillon_n = 0;
     sc.plate_off = 0;
     if (frames === undefined) { sc.bg_frames = 0; sc.gif_frames = 0; }
 
@@ -3240,40 +3293,85 @@
       row({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
             order: 0, alpha: 255, n_frames: 1 }, pl, false);
     }
-    // Depth: plate, then the hands in the order given, then their shadows beneath the hands
-    // that cast them, then the overlay last — FORMAT 2's clock_view draws the crystal over
-    // everything, and the table says what the renderer already does.
+    /* D42: every hand, shadow, carriage and pointer is one AUX row, claimed in slot
+     * order — a hand, then its shadow twin in the very next slot (clock_view's pairing
+     * rule), then the next. The composer still hands the bake its centre hands by slot,
+     * its shadows as sprites and its pointers with a motion name; v6Row turns each into
+     * the two poses the dial reads (orb_clock3.c's row_check, theme_schema's rules), and
+     * the depth each carried rides the row's own `order`. What the dial cannot hold is
+     * refused here, before art. */
+    var auxSlotW = 0, auxB = 0;
+    function nextSlot(what) {
+      if (auxSlotW >= CLK_ROW_MAX)
+        throw new Error(what + ': the dial seats ' + CLK_ROW_MAX + ' moving rows, shadow twins counted, and this bake needs more');
+      return auxSlotW++;
+    }
+    /* An authored cadence, with D41's `inherit` read as the motion it always drew: a
+     * sweep for a pointer, the slot's own motion for a hand. */
+    function v6Cadence(cad, arg, fallback) {
+      var c = typeof cad === 'string' ? CADENCES.indexOf(cad === 'inherit' ? 'none' : cad) : (cad | 0);
+      return c > 0 ? { cadence: c, cad_arg: arg | 0 } : fallback;
+    }
+    // The seconds hand's beat the composer priced, read once and never written: the dial
+    // derives its tempo from the rows (D42 ruling 2).
+    var authorSweep = sc.second_sweep === undefined ? 1 : (sc.second_sweep | 0);
+    var authorRate = sc.tick_rate | 0;
+    var secCad = authorSweep ? { cadence: CAD_SWEEP, cad_arg: authorRate >= 2 ? Math.min(SWEEP_FPS_MAX, authorRate) : 0 }
+                             : { cadence: CAD_STEP, cad_arg: Math.max(1, authorRate) };
+    var SLOT_DRIVE = [{ src: 'hour12', vmax: 12 }, { src: 'minute', vmax: 60 }, { src: 'second', vmax: 60 },
+                      null, null];
+    var elemOfHand = {};
     for (k = 0; k < hands.length; k++) {
       var h = hands[k];
-      if (!(h.slot >= 0 && h.slot < 5)) throw new Error('a hand at slot ' + h.slot + ': the compiled clock has five hand fields, slots 0-4');
+      if (!(h.slot >= 0 && h.slot < 5)) throw new Error('a hand at slot ' + h.slot + ': the composer names hands 0-4');
+      if (handSlot[h.slot]) throw new Error('two hands at slot ' + h.slot);
       handSlot[h.slot] = 1;
       /* The hand's rung is the author's list position if the list names it, the
-       * centre-stack natural otherwise; the shadow twin below rides one rung
-       * under, which is the S-before-H pairing both clock_view paths use. */
+       * centre-stack natural otherwise; its shadow twin shares it and draws under it. */
       var hid3 = h.id ? String(h.id) : ('centre-' + (['hour', 'minute', 'second', 'static1', 'static2'][h.slot] || h.slot));
       handOrd[h.slot] = Math.max(1, Math.min(63, dOrder3.indexOf(hid3) >= 0 ? rung3[hid3]
                                      : (h.order | 0) >= 1 ? (h.order | 0)
                                      : SUBDIAL_RUNG + ((o.aux || []).length) + k));
-      /* D41: the hand's own drive, when the composer gave it one — a cadence alone keeps
-       * the slot's mapping; a source brings its path and domain (a fan, a disc). */
-      var hd5 = h.drive || {}, hm5 = hd5.motion === undefined ? 0
-              : (typeof hd5.motion === 'string' ? MOTION_NAMES.indexOf(hd5.motion) : hd5.motion);
-      row({ n: nid++, 'class': classId('hand'), slot: h.slot, x: h.x, y: h.y, w: h.w, h: h.h,
-            pivot_x: h.pivot_x, pivot_y: h.pivot_y, order: handOrd[h.slot], alpha: h.alpha === undefined ? 255 : h.alpha,
-            n_frames: 1, flags: h.flags || 0, scale16: h.scale16 || 0,
-            src: hd5.src ? SOURCES.indexOf(String(hd5.src)) : 0, kind: hd5.src ? hm5 : 0,
-            span: hd5.src ? hd5.span | 0 : 0, zero: hd5.src ? hd5.zero | 0 : 0,
-            vmin: hd5.src ? hd5.vmin | 0 : 0, vmax: hd5.src ? hd5.vmax | 0 : 0,
-            cadence: hd5.cadence | 0, cad_arg: hd5.cad_arg | 0, ease: hd5.ease | 0 }, h, true);
+      var hd5 = h.drive || {}, sd = SLOT_DRIVE[h.slot];
+      var hrow = { n: nid++, 'class': CLASS_AUX, slot: nextSlot('the hand at slot ' + h.slot),
+                   kind: SHAPE_ARM, x: h.x, y: h.y, w: h.w, h: h.h,
+                   pivot_x: h.pivot_x, pivot_y: h.pivot_y, order: handOrd[h.slot],
+                   alpha: h.alpha === undefined ? 255 : h.alpha, n_frames: 1,
+                   flags: h.flags || 0, scale16: h.scale16 || 0 };
+      var hsrc = hd5.src ? String(hd5.src) : (sd ? sd.src : null);
+      if (hsrc) {
+        var hv = v6Drive(hd5.src ? hd5.motion : 'rotate',
+                         hd5.src ? hd5 : { span: TURN_10, zero: 0, vmax: sd.vmax }, h.x, h.y);
+        var hc = v6Cadence(hd5.cadence, hd5.cad_arg,
+                           hsrc === 'second' ? secCad : { cadence: CAD_SWEEP, cad_arg: 0 });
+        if (hv.jump && hc.cadence === CAD_SWEEP) hc = { cadence: CAD_JUMP, cad_arg: 0 };
+        hrow.src = SOURCES.indexOf(hsrc); hrow.x = hv.x; hrow.y = hv.y;
+        hrow.span = hv.span; hrow.zero = hv.zero; hrow.vmin = hv.vmin; hrow.vmax = hv.vmax;
+        hrow.dx = hv.dx; hrow.dy = hv.dy; hrow.end = hv.end;
+        hrow.cadence = hc.cadence; hrow.cad_arg = hc.cad_arg; hrow.ease = hd5.ease | 0;
+        if (hv.slide) { hrow.pivot_x = (h.w | 0) >> 1; hrow.pivot_y = (h.h | 0) >> 1; }
+      }
+      row(hrow, h, true);
+      elemOfHand[h.slot] = hrow;
+      for (var ks = 0; ks < shadows.length; ks++) {
+        var s = shadows[ks];
+        if (s.slot !== h.slot) continue;
+        /* The sprite shadow's §25.2 placement, restated as a twin's: its arbour in its
+         * own art is the hand's centre less its draw point, and that arbour lands on
+         * the hand's centre plus the light (the row's x + pivot column). */
+        var hcx = (h.x | 0) + (h.pivot_x | 0), hcy = (h.y | 0) + (h.pivot_y | 0);
+        var scx = (s.x | 0) + (s.pivot_x | 0), scy = (s.y | 0) + (s.pivot_y | 0);
+        var tpx = hcx - (s.x | 0), tpy = hcy - (s.y | 0);
+        row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the shadow of the hand at slot ' + h.slot),
+              kind: SHAPE_ARM, x: scx - tpx + hrow.x - (h.x | 0), y: scy - tpy + hrow.y - (h.y | 0),
+              w: s.w, h: s.h, pivot_x: tpx, pivot_y: tpy, order: handOrd[h.slot],
+              alpha: s.alpha === undefined ? 255 : s.alpha, n_frames: 1,
+              flags: (s.flags || 0) | AUX_F_SHADOW3 }, s, true);
+      }
     }
     for (k = 0; k < shadows.length; k++) {
-      var s = shadows[k];
-      if (!handSlot[s.slot]) {
-        throw new Error('a shadow at slot ' + s.slot + ' with no hand there: a shadow’s crop pivot is its hand’s centre minus its own draw point, so the light offset is only recoverable from the hand it hangs under');
-      }
-      row({ n: nid++, 'class': classId('sprite'), slot: s.slot, x: s.x, y: s.y, w: s.w, h: s.h,
-            pivot_x: s.pivot_x, pivot_y: s.pivot_y, order: (handOrd[s.slot] || 2) - 1, alpha: s.alpha === undefined ? 255 : s.alpha,
-            n_frames: 1, flags: s.flags || 0 }, s, true);
+      if (!handSlot[shadows[k].slot])
+        throw new Error('a shadow at slot ' + shadows[k].slot + ' with no hand there: a shadow twin takes its hand’s pose, and there is no hand to take it from');
     }
     for (k = 0; k < plates.length; k++) {
       row({ n: nid++, 'class': classId('plate'), slot: 1, x: plates[k].x, y: plates[k].y,
@@ -3298,95 +3396,67 @@
         cx3 += cr3[0]; cy3 += cr3[1]; cpx -= cr3[0]; cpy -= cr3[1];
         cw = cr3[2] - cr3[0]; chh = cr3[3] - cr3[1];
       }
-      rowFrames({ n: nid++, 'class': classId('hand'), slot: 5, x: cx3, y: cy3,
-                  w: cw, h: chh, pivot_x: cpx, pivot_y: cpy,
+      /* The carriage turns with the seconds, from its own start orientation: a seconds
+       * row of its own, at the seconds hand's cadence, animated at its frame time. */
+      var carCad = elemOfHand[2] && SOURCES[elemOfHand[2].src] === 'second'
+                 ? { cadence: elemOfHand[2].cadence, cad_arg: elemOfHand[2].cad_arg } : secCad;
+      rowFrames({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the carriage'), kind: SHAPE_ARM,
+                  x: cx3, y: cy3, w: cw, h: chh, pivot_x: cpx, pivot_y: cpy,
                   order: 1, alpha: 255, n_frames: car.frames.length,
-                  degrees: car.degrees || 0 }, carPl, true);
+                  delay: Math.max(1, Math.round(1000 / car.fps)),
+                  src: SOURCES.indexOf('second'), span: TURN_10,
+                  zero: Math.round((car.degrees || 0) / 10) % TURN_10, vmin: 0, vmax: 60,
+                  end: END_WRAP, cadence: carCad.cadence, cad_arg: carCad.cad_arg }, carPl, true);
     }
-    /* D34: the pointers. Every refusal below is orb_clock3.c's AUX projection said
-     * here, at the author's elbow, so a bake never ships a pointer the dial would
-     * refuse at the flip — the same mirroring the bank rows above run by. A pointer
-     * costs ONE masked plate whatever its domain, which is the whole point of the
-     * class: a sub-dial seconds hand used to be sixty whole dials. */
-    var auxRows = o.aux || [], auxB = 0, k4;
+    /* D34's pointers, as rows: one masked plate whatever its domain — a sub-dial seconds
+     * hand used to be sixty whole dials. */
+    var auxRows = o.aux || [], k4;
     for (k4 = 0; k4 < auxRows.length; k4++) {
-      var ar = auxRows[k4];
-      var m4 = ar.motion === undefined ? MOTION_ROTATE
-                                       : (typeof ar.motion === 'string' ? MOTION_NAMES.indexOf(ar.motion) : ar.motion);
-      if (!(m4 >= 0 && m4 < MOTION_NAMES.length))
-        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' moves as motion ' +
-          JSON.stringify(ar.motion) + ': the dialect names ' + MOTION_NAMES.join(', ') +
-          ' and this names none of them');
-      if (!(ar.slot >= 0 && ar.slot < CLK_AUX_MAX))
-        throw new Error('a pointer at slot ' + (ar.slot | 0) + ': the clock declares ' +
-          CLK_AUX_MAX + ' pointer slots and the manifest of any app may not invent one');
-      var s4 = String(ar.src), sid4 = SOURCES.indexOf(s4);
-      if (sid4 < 0)
-        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' driven by ' + q(s4) +
-          ': this dial reads ' + SOURCES.length + ' values and none of them is that');
-      if (s4 === 'none' || s4 === 'text' || s4 === 'value')
-        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' driven by ' + q(s4) +
-          ': a value that never changes, or one this dial cannot derive, is a row that ' +
-          'would sit still and read as a watch that is simply wrong');
-      if (!(ar.vmax >= 1))
-        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' with a domain of ' + ar.vmax +
-          ': its span is shared across the domain, so nothing can be computed from it');
-      if ((ar.vmin | 0) > (ar.vmax | 0))
-        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' whose vmin ' + (ar.vmin | 0) +
-          ' is above vmax ' + (ar.vmax | 0) + ': the domain runs low to high');
-      if (!(ar.span | 0))
-        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' with a span of 0: it would ' +
-          'sit at its zero forever, which is a plate drawn as a row');
-      if (motionIsSlide(m4)) {
-        if (Math.abs(ar.span) > scrW || Math.abs(ar.zero | 0) > scrW)
-          throw new Error('a pointer at slot ' + (ar.slot | 0) + ' slides by ' + ar.span +
-            ' from ' + (ar.zero | 0) + ': a slide’s span and zero are pixels and this ' +
-            'one leaves the ' + scrW + ' px panel');
-      } else {
-        if (Math.abs(ar.zero | 0) > 3600)
-          throw new Error('a pointer at slot ' + (ar.slot | 0) + ' with a zero of ' + (ar.zero | 0) +
-            ': an offset past one full turn is not a direction');
-        if (Math.abs(ar.span) > 3600)
-          throw new Error('a pointer at slot ' + (ar.slot | 0) + ' with a span of ' + ar.span +
-            ': more than one full turn is a disc, not a hand');
-      }
-      var apr = ar.plane;
-      if (!apr) throw new Error('a pointer at slot ' + (ar.slot | 0) + ' with no plate');
-      if (apr.w !== (ar.w | 0) || apr.h !== (ar.h | 0))
-        throw new Error('a pointer at slot ' + (ar.slot | 0) + ' is ' + (apr.w|0) + 'x' + (apr.h|0) +
-          ' against the row’s ' + (ar.w|0) + 'x' + (ar.h|0) + ': one row, one extent');
-      if (!motionIsSlide(m4)) {
-        var apx = ar.pivot_x | 0, apy = ar.pivot_y | 0;
-        if (!(apx >= 0 && apx < (ar.w|0) && apy >= 0 && apy < (ar.h|0)))
-          throw new Error('a pointer at slot ' + (ar.slot | 0) + ' turns about (' + apx + ',' + apy +
-            '), outside its own ' + (ar.w|0) + 'x' + (ar.h|0) + ' plate');
-      }
-      /* The twin row the composer raised with this pointer (auxPass3): pixels, an
-       * extent, and a pivot the dial will rotate it about, same three checks the
-       * hand's own plate passes. A slide's twin turns about nothing — its motion is
-       * a displacement, and the row below forces the pivot to the plate middle as
-       * it does for the hand — so the pivot check is the rotation path's alone. */
-      if (ar.shadow) {
-        var av = ar.shadow;
-        if (!av.rgba) throw new Error('a pointer at slot ' + (ar.slot | 0) + ' carries a shadow row with no pixels');
+      var a5 = auxRows[k4];
+      var s4 = String(a5.src);
+      if (SOURCES.indexOf(s4) < 0)
+        throw new Error('a pointer driven by ' + q(s4) + ': this dial reads ' + SOURCES.length + ' values and none of them is that');
+      var apr = a5.plane;
+      if (!apr) throw new Error('a pointer driven by ' + q(s4) + ' with no plate');
+      if (apr.w !== (a5.w | 0) || apr.h !== (a5.h | 0))
+        throw new Error('a pointer driven by ' + q(s4) + ' is ' + (apr.w|0) + 'x' + (apr.h|0) +
+          ' against the row’s ' + (a5.w|0) + 'x' + (a5.h|0) + ': one row, one extent');
+      var av5 = v6Drive(a5.motion, a5, a5.x, a5.y);
+      var ac5 = v6Cadence(a5.cadence, a5.cad_arg, { cadence: CAD_SWEEP, cad_arg: 0 });
+      if (av5.jump && ac5.cadence === CAD_SWEEP) ac5 = { cadence: CAD_JUMP, cad_arg: 0 };
+      var aid5 = a5.id ? String(a5.id) : null;
+      var or5 = a5.order === undefined ? (aid5 && dOrder3.indexOf(aid5) >= 0 ? rung3[aid5]
+                            : (aid5 ? SUBDIAL_RUNG + nat3.indexOf(aid5) : ord)) : a5.order;
+      // A slide carries no pivot to turn about; its centre is the origin the row places.
+      row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('a pointer driven by ' + q(s4)), kind: SHAPE_ARM,
+            src: SOURCES.indexOf(s4), x: av5.x, y: av5.y, w: a5.w | 0, h: a5.h | 0,
+            pivot_x: av5.slide ? ((a5.w | 0) >> 1) : (a5.pivot_x | 0),
+            pivot_y: av5.slide ? ((a5.h | 0) >> 1) : (a5.pivot_y | 0),
+            order: or5, alpha: 255, n_frames: 1,
+            span: av5.span, zero: av5.zero, vmin: av5.vmin, vmax: av5.vmax,
+            dx: av5.dx, dy: av5.dy, end: av5.end,
+            cadence: ac5.cadence, cad_arg: ac5.cad_arg, ease: a5.ease | 0,
+            flags: a5.hidden ? EF_HIDDEN : 0 }, a5.plane, true);
+      auxB += (a5.w | 0) * (a5.h | 0) * 3;
+      /* The twin the composer raised with this pointer (auxPass3): its own draw point
+       * and pivot, whose sum is the pointer's centre plus the light, and no drive —
+       * AUX_F_SHADOW3 is what tells the dial it takes its pointer's whole pose. */
+      if (a5.shadow) {
+        var av = a5.shadow;
+        if (!av.rgba) throw new Error('a pointer driven by ' + q(s4) + ' carries a shadow row with no pixels');
         if (!(av.w > 0 && av.h > 0) || av.rgba.length !== (av.w | 0) * (av.h | 0) * 4)
-          throw new Error('the shadow of the pointer at slot ' + (ar.slot | 0) + ' is ' + (av.w | 0) + 'x' + (av.h | 0)
+          throw new Error('the shadow of a pointer driven by ' + q(s4) + ' is ' + (av.w | 0) + 'x' + (av.h | 0)
             + ' against ' + av.rgba.length + ' bytes: one row, one extent');
-        if (!motionIsSlide(m4) && !((av.pivot_x | 0) >= 0 && (av.pivot_x | 0) < (av.w | 0)
-                                    && (av.pivot_y | 0) >= 0 && (av.pivot_y | 0) < (av.h | 0)))
-          throw new Error('the shadow of the pointer at slot ' + (ar.slot | 0) + ' turns about (' + (av.pivot_x | 0) + ',' + (av.pivot_y | 0)
-            + '), outside its own ' + (av.w | 0) + 'x' + (av.h | 0) + ' plate');
+        row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the shadow of a pointer'), kind: SHAPE_ARM,
+              x: (av.x | 0) + av5.x - (a5.x | 0), y: (av.y | 0) + av5.y - (a5.y | 0),
+              w: av.w | 0, h: av.h | 0,
+              pivot_x: av5.slide ? ((av.w | 0) >> 1) : (av.pivot_x | 0),
+              pivot_y: av5.slide ? ((av.h | 0) >> 1) : (av.pivot_y | 0),
+              order: or5, alpha: 255, n_frames: 1,
+              flags: (a5.hidden ? EF_HIDDEN : 0) | AUX_F_SHADOW3 }, a5.shadow, true);
+        auxB += (av.w | 0) * (av.h | 0) * 3;
       }
-      auxB += (ar.w | 0) * (ar.h | 0) * 3 + (ar.shadow ? (ar.shadow.w | 0) * (ar.shadow.h | 0) * 3 : 0);
     }
-    /* One slot a row, and the twin takes the slot directly after its hand — that
-     * adjacency is clock_view's pairing rule, not a layout preference, so the
-     * physical numbering is the baker's and every pointer after a shadowed one
-     * shifts by two. What the dial cannot hold is refused here, before art. */
-    var auxSlot3 = 0;
-    for (k4 = 0; k4 < auxRows.length; k4++) auxSlot3 += auxRows[k4].shadow ? 2 : 1;
-    if (auxSlot3 > CLK_AUX_MAX)
-      throw new Error(auxSlot3 + ' pointer rows — shadow twins counted — exceed the dial\u2019s cap of ' + CLK_AUX_MAX);
     for (k3 = 0; k3 < compRows.length; k3++) {
       var c4 = compRows[k3];
       rowFrames({ n: nid++, 'class': classId('bank'), slot: c4.slot, kind: 0, src: SOURCES.indexOf(String(c4.src)),
@@ -3394,84 +3464,9 @@
                   n_frames: c4.planes.length, scale16: c4.scale16 | 0,
                   flags: c4.hidden ? EF_HIDDEN : 0 }, c4.planes, true);
     }
-    var auxSlotW = 0;
-    for (k4 = 0; k4 < auxRows.length; k4++) {
-      var a5 = auxRows[k4], m5 = a5.motion === undefined ? MOTION_ROTATE
-              : (typeof a5.motion === 'string' ? MOTION_NAMES.indexOf(a5.motion) : a5.motion);
-      // A slide carries no pivot to turn about; its own centre is the origin the row
-      // places, and clk_sprite_t's pivot is read only by the dirty-mark maths. The
-      // motion rides the row's `kind` column and the drive its four appended words.
-      var aid5 = a5.id ? String(a5.id) : null;
-      var or5 = a5.order === undefined ? (aid5 && dOrder3.indexOf(aid5) >= 0 ? rung3[aid5]
-                            : (aid5 ? SUBDIAL_RUNG + nat3.indexOf(aid5) : ord)) : a5.order;
-      row({ n: nid++, 'class': classId('aux'), slot: auxSlotW++, kind: m5, src: SOURCES.indexOf(String(a5.src)),
-            x: a5.x | 0, y: a5.y | 0, w: a5.w | 0, h: a5.h | 0,
-            pivot_x: motionIsSlide(m5) ? ((a5.w | 0) >> 1) : (a5.pivot_x | 0),
-            pivot_y: motionIsSlide(m5) ? ((a5.h | 0) >> 1) : (a5.pivot_y | 0),
-            order: or5, alpha: 255, n_frames: 1,
-            span: a5.span | 0, zero: a5.zero | 0, vmin: a5.vmin | 0, vmax: a5.vmax | 0,
-            cadence: a5.cadence | 0, cad_arg: a5.cad_arg | 0, ease: a5.ease | 0,
-            flags: a5.hidden ? EF_HIDDEN : 0 }, a5.plane, true);
-      /* The twin: the hand's drive words verbatim — the loader validates them like
-       * any row's and the driver ignores them, taking the pose from the hand — and
-       * its own draw point and pivot column, whose sum (x + pivot) is the hand's
-       * centre plus the light, which is the whole §25.2 placement in three numbers.
-       * AUX_F_SHADOW3 is what tells the dial this row never drives itself. */
-      if (a5.shadow) {
-        row({ n: nid++, 'class': classId('aux'), slot: auxSlotW++, kind: m5, src: SOURCES.indexOf(String(a5.src)),
-              x: a5.shadow.x | 0, y: a5.shadow.y | 0, w: a5.shadow.w | 0, h: a5.shadow.h | 0,
-              pivot_x: motionIsSlide(m5) ? ((a5.shadow.w | 0) >> 1) : (a5.shadow.pivot_x | 0),
-              pivot_y: motionIsSlide(m5) ? ((a5.shadow.h | 0) >> 1) : (a5.shadow.pivot_y | 0),
-              order: or5, alpha: 255, n_frames: 1,
-              span: a5.span | 0, zero: a5.zero | 0, vmin: a5.vmin | 0, vmax: a5.vmax | 0,
-              flags: (a5.hidden ? EF_HIDDEN : 0) | AUX_F_SHADOW3 }, a5.shadow, true);
-      }
-    }
-    for (k = 0; k < 5; k++) sc['order' + k] = (o.order && o.order[k]) || 0;
-    sc.order_n = o.order ? Math.min(o.order.length, 5) : 0;
-    // The D34 bench lesson, enforced: clock_view treats every order entry as a
-    // hand-slot id verbatim, so a seated hand that no order entry names is art
-    // the file carries and the dial never paints. A bake that mis-spells its
-    // order (the +1 FORMAT 2 residue that lost Skeleton its hour hand on glass)
-    // must fail here, not on the watch.
-    if (o.order) {
-      for (k = 0; k < hands.length; k++) {
-        if (o.order.indexOf(hands[k].slot) < 0) {
-          throw new Error('the hand at slot ' + hands[k].slot + ' is seated but the order table [' +
-            o.order.join(',') + '] never names it: order entries are hand-slot ids verbatim, ' +
-            'and a hand the order omits draws nothing on the watch');
-        }
-      }
-    }
-
-    /* The cadence, named. packBlob3 zero-fills the scalars a bake does not
-     * name, and clock_view reads those zeros as a deadbeat second at 1 Hz: a
-     * 4 fps bank then animates its escapement four times a second while the
-     * carriage that carries it turns once a second, which is the frozen-orbit
-     * defect §31 exists to stop, arriving from the cadence side instead of the
-     * carrier side. Name the FORMAT 2 path's rule here — an animated dial
-     * sweeps, sampled at the fastest tempo on the wire — and let the author's
-     * own words win: a bake that names second_sweep or tick_rate keeps them.
-     *
-     * A sweep with no tempo on the wire is the case the first version got wrong,
-     * and the Station report of Oct 30 is the witness. A still plate names no
-     * bg_fps and no tourbillon_fps, so the floor of 1 packed tick_rate 1 against
-     * second_sweep 1. The pane drew a 15 fps sweep; the board clamped the 1 Hz
-     * ask to its 4 fps panel floor and stepped the hand twice a second. A sweep
-     * naming no tempo now names the sweep tier instead. The scheduler still owns
-     * the delivered rate: orb_sched_pick_rung clamps a fluid ask into [4..15]
-     * against the measured floor, and the composer names the tier IT priced
-     * (Watch Composer.dc.html's Motion block), which wins over this backstop. A
-     * dial that does carry a bank or carriage tempo keeps Oct 23's rule verbatim,
-     * and a bake naming a deadbeat second keeps the floor of 1: a tick is a beat
-     * the author chose, and 1 Hz is a real answer for one. */
-    if (sc.second_sweep === undefined) sc.second_sweep = 1;
-    if (!sc.tick_rate) {
-      var tempo3 = Math.max(frames !== undefined ? (sc.bg_fps || fps || 0) : 0,
-                            sc.tourbillon_fps || 0, 1);
-      if (sc.second_sweep && tempo3 < 2) tempo3 = SWEEP_TIER3;
-      sc.tick_rate = Math.min(255, tempo3 | 0);
-    }
+    // D42: the scalars the rows replaced are carried as 0 (CLOCK_RETIRED_SCALARS).
+    CLOCK_RETIRED_SCALARS.forEach(function (n) { delete sc[n]; });
+    var tempo3 = clockTempo(elems, sc);
 
     /* A theme's preview: one opaque RGB565 plate the OS picker paints and this dial
      * does not. The caller hands `preview: { plane, x, y }` where plane is the
@@ -3525,7 +3520,7 @@
         elems.push(srec);
       }
       if (sc.bg_mode === 1) sc.bg_key_off = soundB;
-      checkClockSounds(elems, bank.sprites, sc.second_sweep | 0, sc.tick_rate | 0);
+      checkClockSounds(elems, bank.sprites, tempo3[0], tempo3[1]);
     }
 
     // The D29 sum, named before the file is written: the plate bank is the part
@@ -3544,10 +3539,8 @@
         ' — drop frames or shrink the art');
     }
 
-    // D41: a row that claims a motion column rides v5; otherwise the stamps stay as
-    // they were, so every other bake's bytes do not move.
-    var secAbi = elems.some(function (r) { return v5Claim(r); }) ? GEOM_ABI5
-               : deltaBank ? GEOM_ABI4 : GEOM_ABI3;
+    // D42: every clock section is v6.
+    var secAbi = GEOM_ABI6;
     var pack = function () {
       return writeBundle3({ name: o.name, serial: o.serial || 0, bakedMs: o.bakedMs || 0,
         sections: [{ slug: 'clock', scr_w: scrW, scr_h: scrH, elements: elems, scalars: sc,
@@ -3571,13 +3564,16 @@
     var est = estimate3(verifyBundle3(b.bytes).sections[0]);
     var grant = o.smooth === true ? true : (o.smooth === false ? false : est.smooth);
     if (grant) {
-      var smoothed = 0;
+      var smoothed = 0, prevHot = false;
       for (k = 0; k < elems.length; k++) {
-        var er = elems[k], ec = er['class'];
-        var turned = (ec === CLASS_HAND && er.slot < 5) || (ec === CLASS_SPRITE && er.slot < 3) || ec === CLASS_AUX;
-        var hot = sc.second_sweep && (((ec === CLASS_HAND || ec === CLASS_SPRITE) && er.slot === 2) ||
-                                      (ec === CLASS_AUX && er.src === SOURCES.indexOf('second')));
-        if (turned && !hot) { er.flags = (er.flags | 0) | EF_SMOOTH; smoothed++; }
+        var er = elems[k];
+        if (er['class'] !== CLASS_AUX) continue;
+        // A twin rides its row (the slot before it): hot with it, cool with it.
+        var hot = (er.flags & AUX_F_SHADOW3) ? prevHot
+                : !!tempo3[0] && er.src === SOURCES.indexOf('second');
+        if (!(er.flags & AUX_F_SHADOW3)) prevHot = hot;
+        // the carriage's frames never take the filter (clock_view.c's creation walk)
+        if (!hot && !((er.n_frames | 0) > 1)) { er.flags = (er.flags | 0) | EF_SMOOTH; smoothed++; }
       }
       if (smoothed) b = pack();
     }
@@ -3685,7 +3681,18 @@
     return sum / N / 1000;
   }
   function estimate3(sec) {
-    var sc = sec.blob.scalars, els = sec.blob.elements, spr = sec.blob.sprites, art = sec.art;
+    var els = sec.blob.elements, spr = sec.blob.sprites, art = sec.art;
+    /* D42: the tempo and the carriage are the rows', so the figures the scheduler reads
+     * are derived here exactly as orb_clock3.c derives them. */
+    var sc = {}, kk;
+    for (kk in sec.blob.scalars) sc[kk] = sec.blob.scalars[kk];
+    var tp3 = clockTempo(els, sc);
+    sc.second_sweep = tp3[0]; sc.tick_rate = tp3[1]; sc.tourbillon_n = 0; sc.tourbillon_fps = 0;
+    for (kk = 0; kk < els.length; kk++)
+      if (els[kk]['class'] === CLASS_AUX && els[kk].n_frames > 1 && els[kk].delay) {
+        sc.tourbillon_n = els[kk].n_frames;
+        sc.tourbillon_fps = Math.max(1, Math.round(1000 / els[kk].delay));
+      }
     var panel = SCREEN_W * SCREEN_H / 1000;
     var plate = null, glassPx = 0, i;
     for (i = 0; i < els.length; i++) {
@@ -3695,20 +3702,21 @@
     }
     var r = rateOf3(sc, plate ? plate.delay : 0), R = r.rate;
     var step = sc.second_sweep ? 6 / Math.max(1, R) : 6 / Math.max(1, sc.tick_rate || 1);
-    var dx = sc.shadow_on ? sc.shadow_dx : 0, dy = sc.shadow_on ? sc.shadow_dy : 0;
-    var box = 0, mover = 0, still = 0, aaMover = 0, aaStill = 0, carInk = 0;
+    var box = 0, mover = 0, still = 0, aaMover = 0, aaStill = 0, carInk = 0, secHot = false;
     for (i = 0; i < els.length; i++) {
       var e = els[i], c = e['class'];
-      if (e.flags & EF_HIDDEN) continue;
-      var rot = (c === CLASS_HAND && e.slot < 5) || (c === CLASS_SPRITE && e.slot < 3) || c === CLASS_AUX;
-      if (c === CLASS_HAND && e.slot === 5 && e.n_frames) {         // the carriage: chord-marked
+      if (c !== CLASS_AUX || (e.flags & EF_HIDDEN)) continue;
+      if (e.n_frames > 1) {                                          // the carriage: chord-marked
         carInk = inkOf3(art, spr[e.frame0], e).n / 1000; box += 2 * carInk; continue;
       }
-      if (!rot) continue;
       var ink = inkOf3(art, spr[e.frame0], e);
-      var sweeps = (e.slot === 2 && (c === CLASS_HAND || c === CLASS_SPRITE)) || (c === CLASS_AUX && e.src === 7);
-      var paysAA = !(e.slot === 2 && sc.second_sweep && c !== CLASS_AUX);   // the hot-tick seconds stays nearest
-      if (sweeps) { box += sweptKpx3(ink.pts, step, c === CLASS_HAND ? dx : 0, c === CLASS_HAND ? dy : 0); mover += ink.n / 1000; if (paysAA) aaMover += ink.n / 1000; }
+      // A seconds row re-poses every tick; its twin rides it. The hot-tick seconds of a
+      // sweeping dial stays nearest.
+      var twin = !!(e.flags & AUX_F_SHADOW3);
+      var sweeps = twin ? secHot : e.src === SOURCES.indexOf('second');
+      if (!twin) secHot = sweeps;
+      var paysAA = !(sweeps && sc.second_sweep);
+      if (sweeps) { box += sweptKpx3(ink.pts, step, 0, 0); mover += ink.n / 1000; if (paysAA) aaMover += ink.n / 1000; }
       else { still += ink.n / 1000; if (paysAA) aaStill += ink.n / 1000; }
     }
     if (plate && sc.bg_mode === 1 && plate.n_frames > 1) {           // the delta bank's own rects
@@ -4046,8 +4054,9 @@
     // fixture. packElements refuses through the same check_element / check_table rules the
     // device door applies, so an element a theme cannot name never reaches a card.
     FORMAT3: FORMAT3, GEOM_ABI3: GEOM_ABI3, SECT_MAX: SECT_MAX, IDX_WORDS: IDX_WORDS,
-    GEOM_ABI4: GEOM_ABI4, GEOM_ABI5: GEOM_ABI5, DELTA_TOL: DELTA_TOL,
-    CADENCES: CADENCES, checkClockDrive: checkClockDrive, v5Claim: v5Claim,   // the delta floor, so a suite asserts against the codec's number, not a literal
+    GEOM_ABI6: GEOM_ABI6, DELTA_TOL: DELTA_TOL,   // the delta floor, so a suite asserts against the codec's number, not a literal
+    CADENCES: CADENCES, SHAPES: SHAPES, ENDS: ENDS, DIGITS: DIGITS, CLK_ROW_MAX: CLK_ROW_MAX,
+    checkClockRows: checkClockRows, clockTempo: clockTempo, v6Drive: v6Drive,
     SCALARS_N: SCALARS_N, ELEMENT_WORDS: ELEMENT_WORDS, ELEMENT_FIELDS: ELEMENT_FIELDS,
     CLASS_NAMES: CLASS_NAMES, CLASS_APP_ADV: CLASS_APP_ADV, CLASS_NO_ANIM: CLASS_NO_ANIM,
     EF_ALPHA: EF_ALPHA, EF_LOOP: EF_LOOP, EF_OS_ADV: EF_OS_ADV, EF_HIDDEN: EF_HIDDEN,

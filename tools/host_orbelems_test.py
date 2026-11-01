@@ -100,7 +100,8 @@ GOLDEN = (
 
 def build(elements=None, sprites=None, art=None, slug="clock"):
     """One section's bundle, through the writer that the device's reader mirrors."""
-    return {"slug": slug,
+    abi = ob.GEOM_ABI6 if slug == "clock" else ob.GEOM_ABI3   # D42: the clock is v6
+    return {"slug": slug, "abi_min": abi, "abi_max": abi,
             "elements": elements if elements is not None else golden_elements(),
             "scalars": {},
             "sprites": sprites if sprites is not None else golden_sprites(),
@@ -367,6 +368,9 @@ def golden_checks(binp, path):
 W_HDR_CRC_W = 28                       # orbtheme.W_HDR_CRC: hdr_crc's word index in the header
 
 
+SPR_BYTES = 24   # the clock's v6 catalogue row: off, size, w, h, diffx, diffy (D42)
+
+
 def derived_stride(buf, geom_off, blob_off):
     """The element row width the blob itself carries (§23.5): its length less
     the fixed head, scalars, sprite catalogue and padded slug, over its own row
@@ -375,7 +379,7 @@ def derived_stride(buf, geom_off, blob_off):
     import struct as st
     base = geom_off + blob_off
     n_elem, n_spr, n_scal, n_slug = st.unpack_from("<4I", buf, base)
-    fixed = (4 + n_scal) * 4 + n_spr * 16 + n_slug + (-n_slug % 4)
+    fixed = (4 + n_scal) * 4 + n_spr * SPR_BYTES + n_slug + (-n_slug % 4)
     geom_size = st.unpack_from("<I", buf, geom_off + 8 + 16)[0]      # IDX_GEOM_SIZE
     if not n_elem:
         return ts.ELEMENT_WORDS
@@ -403,14 +407,15 @@ def elem_word(buf, row, word):
 
 def spr_word(buf, row, word):
     """The byte offset of one sprite-catalogue row's word: the catalogue follows the
-    element rows, four words each, exactly as orb_bundle.c's blob_check() walks it."""
+    element rows, six words each on the clock's v6 stamp, exactly as orb_bundle.c's
+    blob_check() walks it."""
     import struct as st
     from orbtheme import W_GEOM_OFF
     geom_off = st.unpack_from("<I", buf, 4 * W_GEOM_OFF)[0]
     blob_off = st.unpack_from("<I", buf, geom_off + 8 + 12)[0]
     head = geom_off + blob_off + (4 + 26) * 4
     n_elem = st.unpack_from("<I", buf, geom_off + blob_off)[0]
-    return head + n_elem * derived_stride(buf, geom_off, blob_off) * 4 + row * 4 * 4 + word * 4
+    return head + n_elem * derived_stride(buf, geom_off, blob_off) * 4 + row * SPR_BYTES + word * 4
 
 
 def regeom(buf):

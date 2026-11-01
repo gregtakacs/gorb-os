@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""host_hand_aa_test.py — the hand-AA capability rule, mirrored and mutated.
+"""host_hand_aa_test.py — the row-AA capability rule, mirrored and mutated.
 
-The shipped hand_aa_for() in main/clock/clock_view.c is pure (reads the theme
-scalars only), but the TU cannot be verbatim-compiled on a host — it drags
+D42 made every hand a row, so the rule is asked per row: row_aa() in
+main/clock/clock_view.c. A row's "hot tick" is no longer slot 2 but any seconds row
+that sweeps (sweep or stop-to-go), and a shadow twin takes its row's answer.
+
+The shipped row_aa() is pure (reads the theme's carrier words and the row's own
+source and cadence), but the TU cannot be verbatim-compiled on a host — it drags
 lvgl/display headers. So this is a mirror, the host_sched_rung_test.py
 discipline: a Python restatement of the rule, a lint that reads the SHIPPING C
 and asserts every branch the mirror depends on is still present, a truth table
@@ -48,6 +52,7 @@ SRC = os.path.join(HERE, "..", "main", "clock", "clock_view.c")
 # ---- the mirror ------------------------------------------------------------
 MIRROR_SRC = '''
 def hand_aa_for(bg_mode, bg_frames, gif_frames, tourbillon_n, second_sweep, painter, slot, flag):
+    # slot 2 stands for "a seconds row", second_sweep for "that row sweeps"
     if painter:
         return flag
     if bg_mode != 0 or bg_frames != 0 or gif_frames != 0 or tourbillon_n != 0:
@@ -70,7 +75,7 @@ hand_aa_for = _run(MIRROR_SRC)
 # ---- the lint: the mirror must still match the shipped code -----------------
 def lint():
     txt = open(SRC).read()
-    start = txt.index("static bool hand_aa_for(")
+    start = txt.index("static bool row_aa(")
     # the body ends at make_layer's comment block
     body = txt[start:txt.index("static lv_obj_t *make_layer(", start)]
     checks = [
@@ -78,22 +83,21 @@ def lint():
          "if (t->bg_mode != 0 || t->bg_frames != 0 || t->gif_frames != 0 ||"),
         ("carriage in the guard", "t->tourbillon_n != 0)"),
         ("painter-owned dial answers from the bake's bit, kill switch exempt",
-         "#if CLK_BG_DIRECT_PUSH\n    if (orb_sched_restore_src() != NULL) {\n        if (src) *src = \"flag\";\n        return row_smooth(cls, row_slot);\n    }\n#endif"),
+         "#if CLK_BG_DIRECT_PUSH\n    if (orb_sched_restore_src() != NULL) {\n        if (src) *src = \"flag\";\n        return row_smooth(ORB_ASSET_AUX, r->tag);\n    }\n#endif"),
         ("the bit is EF_SMOOTH, bit 7", "#define CLK_EF_SMOOTH 0x80u"),
-        ("the painter reads the same bit", "&& (e->flags & CLK_EF_SMOOTH) ? 1u : 0u;"),
-        ("the boot line asks the same function", "hand_aa_for(&clk_theme, k, ORB_ASSET_HAND, (uint16_t)k, &why)"),
-        ("hot-tick seconds guard", "if (slot == 2 && t->second_sweep)"),
+        ("the painter reads the same bit",
+         "d->smooth      = e->cls == ORB_ASSET_AUX && (e->flags & CLK_EF_SMOOTH) ? 1u : 0u;"),
+        ("the boot line asks the same function", "row_aa(&clk_theme, r, &why)"),
+        ("hot-tick seconds guard",
+         "if (r->src == CLK_SRC_SECOND &&\n        (r->cadence == CLK_CAD_SWEEP || r->cadence == CLK_CAD_STOP_TO_GO))"),
         ("make_layer consumes the flag", "lv_image_set_antialias(o, aa);"),
         ("make_layer takes the flag", "bool aa)"),
-        ("hands loop asks per slot", "hand_aa_for(&clk_theme, k, ORB_ASSET_HAND, (uint16_t)k, NULL)"),
-        ("shadow shares its hand's answer",
-         "make_layer(&clk_theme.shadow[k], &s_shadow_dsc[k], aa)"),
-        ("carriage never takes the filter",
-         "make_layer(&clk_theme.tourbillon[0], &s_car_dsc, false)"),
+        ("a twin shares its row's answer",
+         "const clk_row_t *ar = ((r->flags & CLK_FLAG_AUX_SHADOW) && i > 0)\n                                    ? &geo->rows[i - 1] : r;"),
+        ("the rows ask per row, the carriage never takes the filter",
+         "!car && row_aa(&clk_theme, ar, NULL)"),
         ("overlay never takes the filter",
          "make_layer(&clk_theme.overlay, &s_overlay_dsc, false)"),
-        ("aux routes its own source and row",
-         "hand_aa_for(&clk_theme, aa_slot, ORB_ASSET_AUX, g->aux[i].tag, NULL)"),
     ]
     fails = []
     for why, needle in checks:
@@ -101,8 +105,8 @@ def lint():
             fails.append("%s: %r no longer in clock_view.c" % (why, needle))
     # the body must be the three guards and one yes, and nothing grew around them
     if (body.count("return false;") != 2 or body.count("return true;") != 1
-            or body.count("return row_smooth(cls, row_slot);") != 1):
-        fails.append("hand_aa_for's branch shape changed: the mirror's truth "
+            or body.count("return row_smooth(ORB_ASSET_AUX, r->tag);") != 1):
+        fails.append("row_aa's branch shape changed: the mirror's truth "
                      "table no longer covers it — re-read and re-pin")
     return fails
 
@@ -215,7 +219,7 @@ def main():
     fails = lint() + check_vectors() + check_mutants()
     for f in fails:
         print("FAIL: " + f)
-    print("hand AA rule: %d checks, %d failures" % (
+    print("row AA rule: %d checks, %d failures" % (
         len(VECTORS) + len(MUTANTS) + 16, len(fails)))
     return 1 if fails else 0
 

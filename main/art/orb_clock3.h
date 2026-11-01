@@ -113,22 +113,20 @@ typedef struct {
      *  same refuse-whole a refused class is, never a half-drawn dial. Rows land
      *  in record order by BANK slot, so comp0 is s_geo.comps[0] whether or not
      *  comp1 exists; the count written out is the number of rows projected.
-     *  The tourbillon needs no surface of its own: its frames land in the
-     *  theme struct the caller already handed over, at
-     *  theme->tourbillon[]/tourbillon_n/tourbillon_fps/tourbillon_start. */
+     *  The carriage's frames land in the theme struct (see `rows` below). */
     clk_comp_t      *comps;
     uint32_t         comp_cap;
     uint32_t         out_n_comps;
 
-    /* D34: the pointer table. A bundle's AUX rows project here, one clk_aux_t per
-     *  row, in slot order. Same contract as `comps` directly above: a caller with no
-     *  room for pointers passes NULL/0 and the projection refuses a bundle that names
-     *  one, so a dial never comes up with its sub-dial hands quietly missing. The row
-     *  carries its own drive (src/motion/span/zero/vmin/vmax) because, unlike a BANK
-     *  row, an AUX row is not indexed by its value — it MOVES by it. */
-    clk_aux_t       *aux;
-    uint32_t         aux_cap;
-    uint32_t         out_n_aux;
+    /* D42: the row table. A bundle's AUX rows — every hand, pointer, ring, still
+     *  layer, shadow twin and the carriage — project here, one clk_row_t per row, in
+     *  slot order. Same contract as `comps` directly above: a caller with no room for
+     *  rows passes NULL/0 and the projection refuses a bundle that names one, so a dial
+     *  never comes up with its hands quietly missing. The animated row's frames land in
+     *  the theme struct (tourbillon[], tourbillon_n/fps, car_row). */
+    clk_row_t       *rows;
+    uint32_t         row_cap;
+    uint32_t         out_n_rows;
 
     /* D39: the sound table, one clk_sound_t per SOUND row in slot order, and the
      *  hour pattern they agree on (CLK_PAT_NONE when no row carries one). Same

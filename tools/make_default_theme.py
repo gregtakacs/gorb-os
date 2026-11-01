@@ -57,7 +57,7 @@ THEME_NAME = "Skeleton"
 THEME_SECTION = "clock"
 PANEL_PX = 466                    # the glass, so the preview's ceiling is its half
 PREVIEW_MAX_PX = PANEL_PX // 2    # the picker reads one plane into a half-res buffer
-FIRMWARE_ABIS = (3, 4)            # orb_bundle.c reads GEOM_ABI 3 and 4 and nothing else
+FIRMWARE_ABIS = (6,)              # orb_bundle.c reads a clock at GEOM_ABI 6 and nothing older (D42)
 ART_CAP = 8 << 20                 # one 8 MB slot, the installer's own ceiling
 
 

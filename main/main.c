@@ -21,6 +21,8 @@
 #include "orb_app_scan.h"   /* the /sd/apps drop zone registers beside the card */
 #include "orb_app_install.h" /* orb_app_install_resolve_boot: the card table from the apps partition */
 #include "orb_jobs.h"
+#include "orb_flights.h"
+#include "orb_tls_mem.h"
 #include "orb_svc.h"
 #include "orb_carousel.h"
 #include "knob.h"
@@ -73,6 +75,9 @@ void app_main(void)
     /* Before anything can panic again: count this boot so a panic record the RTC
      * kept can say how many boots ago it happened. */
     orb_panic_boot();
+    /* mbedTLS's allocator before anything uses it: the radio's supplicant
+     * allocates through it from esp_wifi_start on (net/orb_tls_mem.c). */
+    orb_tls_mem_init();
 
     ESP_LOGI(TAG, "=== gorb-os booting ===");
 
@@ -301,6 +306,10 @@ void app_main(void)
      * product, and this is a device in a sealed case. */
     if (orb_net_start() != ESP_OK)
         ESP_LOGE(TAG, "networking down — clock running without config page");
+    /* The flight feed (docs/flight-tracker-design.md): a parked task until
+     * something turns it on, so a dial that never tracks pays a PSRAM stack. */
+    if (orb_flights_init() != ESP_OK)
+        ESP_LOGW(TAG, "flight feed not started");
 #endif
 
 /* First act of the storage ladder and deliberately ahead of it: consume the "next

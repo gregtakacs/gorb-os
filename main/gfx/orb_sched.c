@@ -530,6 +530,8 @@ static orb_sched_ask_t s_dial_asks[SCHED_DIAL_ASKS];
 static unsigned        s_dial_n;
 static uint32_t        s_floor_fps    = ORB_SCHED_FPS_CEILING; /* hysteresis cap  */
 static uint32_t        s_rung_fps     = ORB_SCHED_FPS_CEILING; /* current pick    */
+static orb_sched_jank_t s_jank;                                   /* see orb_sched.h */
+static uint32_t        s_jank_prev_ms;                            /* 0 = no previous tick */
 static uint32_t        s_rung_period  = 66;                     /* 1000/rung, ms    */
 static uint32_t        s_demote_run, s_promote_run;
 static uint32_t        s_last_demote_ms;
@@ -621,6 +623,7 @@ static void sched_rung_move(uint32_t from_fps)
 {
     s_rung_fps = orb_sched_pick_rung(s_dial_asks, s_dial_n, s_floor_fps);
     if (s_rung_fps == from_fps) return;          /* floor moved; the rung did not */
+    s_jank.rung_moves++;
     sched_apply_rung();
     ESP_LOGI(TAG, "RUNG %u->%u fps (measured floor %u)",
              (unsigned)from_fps, (unsigned)s_rung_fps, (unsigned)s_floor_fps);
@@ -852,12 +855,37 @@ static void sched_flush_commit(void)
 }
 #endif
 
+static void jank_book(uint32_t t_start_ms)
+{
+    const uint32_t period = sched_tick_period_ms();
+    if (s_jank_prev_ms && period) {
+        const uint32_t gap = t_start_ms - s_jank_prev_ms;
+        const uint32_t x100 = gap * 100u / period;
+        s_jank.ticks++;
+        if      (x100 <= 125) s_jank.le125++;
+        else if (x100 <= 150) s_jank.le150++;
+        else if (x100 <= 200) s_jank.le200++;
+        else if (x100 <= 300) s_jank.le300++;
+        else                  s_jank.gt300++;
+        if (gap > s_jank.max_gap_ms) s_jank.max_gap_ms = gap;
+        s_jank.period_ms = period;
+    }
+    s_jank_prev_ms = t_start_ms;
+}
+
+void orb_sched_jank_snapshot(orb_sched_jank_t *out)
+{
+    *out = s_jank;
+    out->rung_fps = s_rung_fps;
+}
+
 static void tick_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
-    if (!s_running) return;      /* parked: clock not on the glass */
+    if (!s_running) { s_jank_prev_ms = 0; return; }   /* parked: clock not on the glass */
     s_fps_ticks++;
     const uint32_t t_start_ms = lv_tick_get();
+    jank_book(t_start_ms);
     if (orb_bg_gif_mode()) {
         /* Pace the GIF by its OWN delays: the tick rides the baked GIF delay
          * (orb_bg_gif_tick_ms), so the background advances exactly one frame per tick
@@ -960,6 +988,7 @@ void orb_sched_reanchor_gif(void)
      * counter would desync canvas vs deltas. */
     s_gif_due = lv_tick_get();
     s_tick_due = 0;                 /* re-anchor the beat ladder */
+    s_jank_prev_ms = 0;             /* the park is not a held beat */
 }
 
 void orb_sched_reset_fps(void)

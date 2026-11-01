@@ -57,6 +57,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include "orb_flights.h"
 #include "orb_net.h"
 #include "input_router.h"
 #include "orb_app.h"   /* h_screen: ?to=<slug> resolves through the registry */
@@ -4825,6 +4826,41 @@ static esp_err_t h_debug_panic(httpd_req_t *req)
     *(volatile uint32_t *)0 = 0;
     return ESP_OK;
 }
+/* GET|POST /api/v1/debug/flights — the flight feed's bench door
+ * (docs/flight-tracker-design.md §6). GET answers config, poll stats, the
+ * dial's tick-gap histogram and the nearest aircraft; POST sets any of
+ * on, lat, lon, nm, period (ms), src (0 adsb.lol, 1 adsb.fi), ka (keep-alive)
+ * from the query string and kicks a poll. Debug-gated: the shipped tracker
+ * configures itself through its app settings, not through this. */
+static esp_err_t h_debug_flights(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    if (req->method == HTTP_POST) {
+        orb_flights_cfg_t c;
+        orb_flights_get_cfg(&c);
+        char v[24];
+        if (q_param(req, "on", v, sizeof v))     c.enabled = atoi(v) != 0;
+        if (q_param(req, "lat", v, sizeof v))    c.lat = strtod(v, NULL);
+        if (q_param(req, "lon", v, sizeof v))    c.lon = strtod(v, NULL);
+        if (q_param(req, "nm", v, sizeof v))     c.radius_nm = (uint16_t)atoi(v);
+        if (q_param(req, "period", v, sizeof v)) c.period_ms = (uint32_t)atol(v);
+        if (q_param(req, "src", v, sizeof v))    c.source = (uint8_t)atoi(v);
+        if (q_param(req, "ka", v, sizeof v))     c.keep_alive = atoi(v) != 0;
+        if (orb_flights_set_cfg(&c) != ESP_OK) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"nm 1-250, period>=2000, src 0|1\"}");
+        }
+    }
+    /* PSRAM, not the httpd stack: the snapshot alone is ~3 KB. */
+    const size_t cap = 6144;
+    char *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
+    if (!buf) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+    const int n = orb_flights_json(buf, cap);
+    const esp_err_t e = n < 0 ? httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "too long")
+                              : httpd_resp_send(req, buf, n);
+    heap_caps_free(buf);
+    return e;
+}
 #endif /* CONFIG_ORB_DEBUG_HTTP */
 
 #if CONFIG_ORB_DEBUG_HTTP
@@ -7339,6 +7375,8 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/fb",         .method = HTTP_GET,  .handler = h_fb },
         { .uri = "/api/v1/log",        .method = HTTP_GET,  .handler = h_log },
         { .uri = "/api/v1/debug/panic", .method = HTTP_POST, .handler = h_debug_panic },
+        { .uri = "/api/v1/debug/flights", .method = HTTP_GET,  .handler = h_debug_flights },
+        { .uri = "/api/v1/debug/flights", .method = HTTP_POST, .handler = h_debug_flights },
 #endif
         /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
          * backing calls. Migration 1 deleted the flip and default doors: under the

@@ -183,6 +183,50 @@ static void blank_sprite(clk_sprite_t *sp, int16_t cx, int16_t cy)
  * pivot. `crop_pivot` is NULL for every layer except a shadow, whose crop pivot is
  * its hand's centre minus its own draw point — the light offset the source baked,
  * recoverable and never carried. */
+/* D41 §2.2, row-local: what a row's cadence columns may say, given the source the
+ * row actually reads (`eff`: a hand slot's own when the row names none). The same
+ * refusals as theme_schema.check_element, in its words where they can be shared. */
+static const char *cadence_check(const orb_bundle_elem_t *e, uint8_t eff, bool still)
+{
+    if (!e->cadence && !e->cad_arg && !e->ease) return NULL;
+    if (e->cls != CLS_HAND && e->cls != CLS_AUX && e->cls != CLS_BANK)
+        return reject("element %u is class %u and names a cadence: when a row moves is "
+                      "a driven row's question (hand, pointer, bank)",
+                      (unsigned)e->n, (unsigned)e->cls);
+    if (e->cadence >= CLK_CAD__MAX)
+        return reject("element %u names cadence %u: this dial knows %u",
+                      (unsigned)e->n, (unsigned)e->cadence, (unsigned)CLK_CAD__MAX);
+    if (e->ease)
+        return reject("element %u eases its moves over %u ms: settle and flyback are "
+                      "ruled (D41 §2.1) and not built yet", (unsigned)e->n,
+                      (unsigned)e->ease);
+    if (e->cadence == CLK_CAD_STEP && !e->cad_arg)
+        return reject("element %u steps 0 times a unit: name how many steps per unit",
+                      (unsigned)e->n);
+    if ((e->cadence == CLK_CAD_INHERIT || e->cadence == CLK_CAD_SWEEP ||
+         e->cadence == CLK_CAD_JUMP) && e->cad_arg)
+        return reject("element %u carries a cadence argument of %u on a cadence that "
+                      "takes none", (unsigned)e->n, (unsigned)e->cad_arg);
+    if (e->cadence == CLK_CAD_STOP_TO_GO && eff != CLK_SRC_SECOND)
+        return reject("element %u is stop-to-go and reads source %u: stop-to-go is a "
+                      "seconds hand's rhythm", (unsigned)e->n, (unsigned)eff);
+    if (e->cadence == CLK_CAD_DRAG && eff != CLK_SRC_DATE && eff != CLK_SRC_WEEKDAY &&
+        eff != CLK_SRC_MONTH && eff != CLK_SRC_DAY_OF_YEAR)
+        return reject("element %u drags and reads source %u: drag holds a calendar row",
+                      (unsigned)e->n, (unsigned)eff);
+    if (still && e->cadence)
+        return reject("element %u names a cadence on a still hand slot: it has no value "
+                      "to move by", (unsigned)e->n);
+    if (e->cls == CLS_BANK && e->cadence != CLK_CAD_INHERIT && e->cadence != CLK_CAD_JUMP)
+        return reject("element %u is a complication's plates and names cadence %u: "
+                      "whole plates jump", (unsigned)e->n, (unsigned)e->cadence);
+    if (e->cls == CLS_AUX && e->kind == MOTION_INDEXED &&
+        e->cadence != CLK_CAD_INHERIT && e->cadence != CLK_CAD_JUMP)
+        return reject("element %u is indexed and names cadence %u: indexed already "
+                      "snaps to whole units", (unsigned)e->n, (unsigned)e->cadence);
+    return NULL;
+}
+
 static void fill_sprite(clk_sprite_t *sp, const orb_bundle_elem_t *e,
                         const orb_bundle_spr_t *plane, const int16_t *crop_pivot)
 {
@@ -231,17 +275,20 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
      * whole bundle at the door (orb_bundle.c); this is the clock's own line. */
     const uint8_t cabi = sec->abi_max;
     if (sec->abi_min > cabi ||
-        (cabi != (uint8_t)ORB_BUNDLE3_ABI && cabi != (uint8_t)ORB_BUNDLE3_ABI2))
+        (cabi != (uint8_t)ORB_BUNDLE3_ABI && cabi != (uint8_t)ORB_BUNDLE3_ABI2 &&
+         cabi != (uint8_t)ORB_BUNDLE3_ABI3))
         return reject("a clock section stamped geometry v%u..v%u; this reader's clock "
-                      "dialect is v%u and v%u — re-bake it",
+                      "dialect is v%u to v%u — re-bake it",
                       (unsigned)sec->abi_min, (unsigned)cabi,
-                      (unsigned)ORB_BUNDLE3_ABI, (unsigned)ORB_BUNDLE3_ABI2);
-    const bool delta = cabi == (uint8_t)ORB_BUNDLE3_ABI2;
+                      (unsigned)ORB_BUNDLE3_ABI, (unsigned)ORB_BUNDLE3_ABI3);
+    /* D41's v5 is v4 plus three motion columns: every delta rule still holds. */
+    const bool delta  = cabi >= (uint8_t)ORB_BUNDLE3_ABI2;
+    const bool motion = cabi == (uint8_t)ORB_BUNDLE3_ABI3;
     const uint32_t ew = orb_bundle_elem_stride(sec);
-    if (delta ? (ew != 25u) : (ew != 17u && ew != 19u && ew != 23u))
+    if (motion ? (ew != 28u) : delta ? (ew != 25u) : (ew != 17u && ew != 19u && ew != 23u))
         return reject("clock rows are %lu words under geometry v%u; that stamp writes %s",
                       (unsigned long)ew, (unsigned)cabi,
-                      delta ? "exactly 25" : "17, 19 or 23");
+                      motion ? "exactly 28" : delta ? "exactly 25" : "17, 19 or 23");
     if (ne > CLOCK_ROWS_MAX)   /* the walk's own bound, asserted before its slots */
         return reject("%lu clock rows: the dial's slot vocabulary seats %u at most",
                       (unsigned long)ne, (unsigned)CLOCK_ROWS_MAX);
@@ -370,6 +417,28 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                               nm, (unsigned)e.slot);
             *cell = (int16_t)i;
         }
+
+        /* D41: a hand that names its own drive or any row's cadence speaks v5. A
+         * narrower stride reads the cadence columns as 0, so only a hand's own
+         * kind/src can reach here under an older stamp — the columns D32 already
+         * refused on a hand. */
+        if (!motion && e.cls == CLS_HAND && (e.kind || e.src))
+            return reject("element %u is a hand naming its own drive under geometry v%u: "
+                          "a hand's source and path ride the v5 stamp",
+                          (unsigned)e.n, (unsigned)cabi);
+        {
+            const uint8_t eff = (e.cls == CLS_HAND && !e.src)
+                ? (e.slot == 0 ? CLK_SRC_HOUR12 : e.slot == 1 ? CLK_SRC_MINUTE
+                   : (e.slot == 2 || e.slot == 5) ? CLK_SRC_SECOND : CLK_SRC_NONE)
+                : e.src;
+            const char *why = cadence_check(&e, eff,
+                                            e.cls == CLS_HAND && eff == CLK_SRC_NONE);
+            if (why) return why;
+        }
+        if (e.cls == CLS_HAND && e.slot == 5 && (e.src || e.kind || e.cadence))
+            return reject("element %u is the carriage and names its own motion: it turns "
+                          "with the seconds row — give that row the cadence",
+                          (unsigned)e.n);
 
         /* C4's per-row rules, run once the row has a slot: the delta columns
          * mean nothing to a v3 stamp (and the gate above already proved no v3
@@ -804,6 +873,8 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         orb_bundle_spr_at(sec, e.frame0, &sp);
         fill_sprite(&t->overlay, &e, &sp, NULL);
     }
+    memset(t->hand_drive, 0, sizeof t->hand_drive);
+    bool minute_jumps = false;
     for (int i = 0; i < 5; i++) {
         if (at_hand[i] < 0) continue;
         orb_bundle_elem_t e;
@@ -811,6 +882,60 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         orb_bundle_elem_at(sec, (uint32_t)at_hand[i], &e);
         orb_bundle_spr_at(sec, e.frame0, &sp);
         fill_sprite(&t->hand[i], &e, &sp, NULL);
+        /* D41: the slot's own row, as v5 wrote it. A source makes it a driven row
+         * held to the pointer's rules; none keeps the slot's mapping, so its drive
+         * columns must be zero. */
+        clk_drive_t *d = &t->hand_drive[i];
+        if (e.src) {
+            if (e.src >= CLK_SRC__MAX || e.src == CLK_SRC_TEXT || e.src == CLK_SRC_VALUE ||
+                e.src == CLK_SRC_AMPM)
+                return reject("a hand at slot %u driven by source %u: not a value a hand "
+                              "can turn by", (unsigned)i, (unsigned)e.src);
+            if (e.kind > MOTION_LAST)
+                return reject("a hand at slot %u moves as motion %u: the dial knows %u",
+                              (unsigned)i, (unsigned)e.kind, (unsigned)(MOTION_LAST + 1));
+            if (!e.vmax || e.vmin > e.vmax || !e.span)
+                return reject("a hand at slot %u with domain %u..%u and span %d: a driven "
+                              "hand needs a domain to divide and somewhere to go",
+                              (unsigned)i, (unsigned)e.vmin, (unsigned)e.vmax, (int)e.span);
+            if (MOTION_IS_SLIDE(e.kind)
+                    ? (e.span > 466 || e.span < -466 || e.zero > 466 || e.zero < -466)
+                    : (e.span > 3600 || e.span < -3600 || e.zero > 3600 || e.zero < -3600))
+                return reject("a hand at slot %u travels %d from %d: past one turn, or "
+                              "off the panel", (unsigned)i, (int)e.span, (int)e.zero);
+            d->src = e.src; d->path = e.kind;
+            d->span = e.span; d->zero = e.zero;
+            d->value_min = e.vmin; d->value_max = e.vmax;
+        } else if (e.kind || e.span || e.zero || e.vmin || e.vmax) {
+            return reject("a hand at slot %u names a path and no source: a hand that "
+                          "names no source reads its slot's own mapping", (unsigned)i);
+        }
+        d->cadence = e.cadence;
+        d->cad_arg = e.cad_arg;
+        d->hand    = 1;
+        if (i == 1 && !e.src && e.cadence == CLK_CAD_JUMP) minute_jumps = true;
+    }
+    /* D41 §2.2, the table-wide halves: stop-to-go rests until a jumping minute
+     * releases it, and a seconds row's rhythm must be the tempo the scheduler
+     * keeps (the scalars stay the tempo hint under v5). */
+    for (int i = 0; i < 5; i++) {
+        const clk_drive_t *d = &t->hand_drive[i];
+        if (!d->cadence) continue;
+        const uint8_t eff = d->src ? d->src : (i == 2 ? CLK_SRC_SECOND : CLK_SRC_NONE);
+        if (d->cadence == CLK_CAD_STOP_TO_GO && !minute_jumps)
+            return reject("a stop-to-go hand at slot %u rests until the minute releases "
+                          "it, and the minute hand does not jump", (unsigned)i);
+        if (eff != CLK_SRC_SECOND) continue;
+        const bool fast = d->cadence == CLK_CAD_SWEEP || d->cadence == CLK_CAD_STOP_TO_GO;
+        const uint32_t rate = t->tick_rate ? t->tick_rate : 1u;
+        if (fast != (t->second_sweep != 0) ||
+            (d->cadence == CLK_CAD_STEP && d->cad_arg != rate) ||
+            (d->cadence == CLK_CAD_JUMP && rate != 1u))
+            return reject("a seconds row at slot %u moves by cadence %u (%u) on a dial "
+                          "whose tempo is sweep %u, tick_rate %u — the scheduler's tempo "
+                          "and the hand must agree", (unsigned)i, (unsigned)d->cadence,
+                          (unsigned)d->cad_arg, (unsigned)t->second_sweep,
+                          (unsigned)t->tick_rate);
     }
     for (int i = 0; i < 5; i++) {
         if (at_shadow[i] < 0) continue;
@@ -1079,6 +1204,16 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
          * (none, default) for every row a v3 stamp or a flat v4 bake carried. */
         a->parent_row = row_par[at_aux[slot]];
         a->delay_ms   = e.delay;
+        if (e.cadence == CLK_CAD_STOP_TO_GO && !minute_jumps)
+            return reject("a stop-to-go pointer at slot %u rests until the minute releases "
+                          "it, and the minute hand does not jump", (unsigned)slot);
+        if (e.cadence == CLK_CAD_STEP && e.src == CLK_SRC_SECOND &&
+            e.cad_arg != (t->tick_rate ? t->tick_rate : 1u))
+            return reject("a seconds pointer at slot %u steps %u a second on a dial whose "
+                          "tick_rate is %u — the scheduler's tempo and the hand must agree",
+                          (unsigned)slot, (unsigned)e.cad_arg, (unsigned)t->tick_rate);
+        a->cadence    = e.cadence;          /* D41: 0 under every stamp before v5 */
+        a->cad_arg    = e.cad_arg;
         if (e.flags & AUX_F_SHADOW) {
             /* The twin takes its pose from the row before it and draws under it, so
              * the row before it must exist and must be a hand. A twin with no hand

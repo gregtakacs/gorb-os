@@ -55,13 +55,21 @@ extern "C" {
                                         * v3 refuses the whole container at the
                                         * header, which is the failure the §4.1
                                         * ruling asked for. */
+#define ORB_BUNDLE3_ABI3     5u        /* D41's motion dialect: a clock section
+                                        * stamped 5 carries element rows of exactly
+                                        * 28 words (cadence, cad_arg, ease after
+                                        * C4's pair) and v4's six-word catalogue.
+                                        * Written only when a row claims a motion
+                                        * column, so every other theme stays v4. */
 #define ORB_BUNDLE_SPR_WORDS 4u        /* a catalogue row before the delta dialect */
 #define ORB_BUNDLE_SPR_WORDS2 6u       /* and at ABI 2: off,size,w,h,diffx,diffy */
 #define ORB_BUNDLE_SECT_MAX  8u        /* B5's app cap: the index's width */
 #define ORB_BUNDLE_IDX_WORDS 10u       /* 4H + 7I + 2H = 40-byte records */
 #define ORB_BUNDLE_SCALARS_N 26u       /* the clock dialect, carried opaque */
-#define ORB_BUNDLE_ELEM_WORDS 25u      /* theme_schema.ELEMENT_FIELDS: the width a
-                                        * C4 write carries and this reader decodes.
+#define ORB_BUNDLE_ELEM_WORDS_V3 23u   /* the widest row a v3 stamp writes */
+#define ORB_BUNDLE_ELEM_WORDS_V4 25u   /* C4's row */
+#define ORB_BUNDLE_ELEM_WORDS 28u      /* theme_schema.ELEMENT_FIELDS: the width a
+                                        * D41 write carries and this reader decodes.
                                         * A read row's STRIDE is the blob's own
                                         * number (§23.5): blob_check() derives it
                                         * from the length equality, an older row
@@ -253,6 +261,11 @@ typedef struct {
      * the bake meant the plate (whose row is tagged 0) or meant none. */
     uint16_t parent;  /* parent row's n; 0xFFFF = none */
     uint16_t delay;   /* per-frame ms; 0 = the dial's own default tempo */
+    /* D41's three, read only from a row wide enough to hold them; a narrower row
+     * reads 0 for each — inherit, no argument, no ease: its pre-D41 motion. */
+    uint8_t  cadence; /* CLK_CAD_* */
+    uint16_t cad_arg; /* step N, stop-to-go P (0.1 s), drag window (min) */
+    uint16_t ease;    /* settle or flyback ms */
 } orb_bundle_elem_t;
 
 void orb_bundle_elem_at(const orb_bundle_sec_t *s, uint32_t i,

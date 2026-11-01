@@ -142,10 +142,10 @@ func TestContainerRefusals(t *testing.T) {
 			"reads FORMAT 3 only", false},
 		{"a pre-FORMAT-2 artifact", func(b []byte) { putWord(b, 1, 1) },
 			"reads FORMAT 3 only", false},
-		{"a foreign ABI, one stamp past the delta dialect", func(b []byte) { putWord(b, 2, 5) },
-			"reads v3 and v4", false},
+		{"a foreign ABI, one stamp past the motion dialect", func(b []byte) { putWord(b, 2, 6) },
+			"reads v3 to v5", false},
 		{"a pre-delta ABI", func(b []byte) { putWord(b, 2, 2) },
-			"reads v3 and v4", false},
+			"reads v3 to v5", false},
 		{"a torn header", func(b []byte) { putWord(b, 3, 129) },
 			"container header is damaged", false},
 

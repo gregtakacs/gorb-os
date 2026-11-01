@@ -1770,6 +1770,7 @@
    * field list — is how a theme says what it paints (D32, R1). */
   var FORMAT3 = 3, GEOM_ABI3 = 3, SECT_MAX = 8, IDX_WORDS = 10;   // Ruling A: the
   var GEOM_ABI4 = 4;    // C4's delta dialect, one stamp up from what shipped before
+  var GEOM_ABI5 = 5;    // D41's motion columns: written only when a row claims one
   var DELTA_TOL = 16;   // §36: the summed |dR|+|dG|+|dB|+|dA| (max 1020) a texel must clear to
                        // earn a delta byte. diffRect and selfVerify3 read the same number, so
                        // the codec's floor and the bake's round-trip promise can never disagree.
@@ -1809,15 +1810,22 @@
     // below the v4 clock stamp; a row read through a narrower stride lands on their
     // defaults — parent NONE, delay 0 — the same append-only answer the drive four got.
     ['parent', 'u16'],    // row n of the drawing row this one hangs on; 0xFFFF = none
-    ['delay', 'u16']      // per-frame ms for this row's animation; 0 = the dial's default
+    ['delay', 'u16'],     // per-frame ms for this row's animation; 0 = the dial's default
+    // D41's motion columns (docs/hand-motion-plan.md §4), appended the same way. They
+    // mean nothing below the v5 clock stamp; a narrower row reads 0 — inherit.
+    ['cadence', 'u8'],    // HAND/AUX/BANK: CADENCES id, when the row moves
+    ['cad_arg', 'u16'],   // step N, stop-to-go P (0.1 s), drag window (min)
+    ['ease', 'u16']       // settle/flyback ms — ruled, refused until built
   ];
-  var ELEMENT_WORDS = ELEMENT_FIELDS.length;   // 25 words, 100 bytes a row
+  var ELEMENT_WORDS = ELEMENT_FIELDS.length;   // 28 words, 112 bytes a row
+  var ELEMENT_WORDS_V4 = 25;                    // C4's row, before D41's three
   var ELEMENT_WORDS_V3 = 23;                    // every clock row shipped before C4
   // The widths each clock stamp has ever written. The clock section's stride is
   // gated EXACTLY against its stamp (theme_schema.ELEMENT_WORDS_CLOCK_V3/V4): a v3
   // clock row is one of three widths, a v4 clock row is exactly one. The reader
   // that refuses otherwise is orb_clock3.c's stamp gate, mirrored in checkClockStamp.
-  var CLOCK_STRIDES_V3 = [17, 19, 23], CLOCK_STRIDES_V4 = [25], SPR_WORDS2 = 6;
+  var CLOCK_STRIDES_V3 = [17, 19, 23], CLOCK_STRIDES_V4 = [25], CLOCK_STRIDES_V5 = [28];
+  var SPR_WORDS2 = 6;
   var PARENT_NONE = 0xFFFF;
   // The pre-D32 width, the floor a derived row stride is refused below
   // (theme_schema.ELEMENT_WORDS_MIN; orb_bundle.c's ORB_BUNDLE_ELEM_WORDS_MIN).
@@ -1858,6 +1866,13 @@
   var MOTION_ROTATE = 0, MOTION_RETROGRADE = 1, MOTION_INDEXED = 2,
       MOTION_SLIDE_X = 3, MOTION_SLIDE_Y = 4;
   function motionIsSlide(k) { return k === MOTION_SLIDE_X || k === MOTION_SLIDE_Y; }
+  // D41 §2.1 (theme_schema.CADENCES / clk_types.h CLK_CAD_*): when a driven row moves.
+  var CADENCES = ['inherit', 'sweep', 'step', 'jump', 'stop-to-go', 'drag'];
+  var CAD_INHERIT = 0, CAD_SWEEP = 1, CAD_STEP = 2, CAD_JUMP = 3, CAD_STOP_TO_GO = 4, CAD_DRAG = 5;
+  var CAD_DRAG_SOURCES = ['date', 'weekday', 'month', 'day_of_year'];
+  // What a HAND slot reads when its row names no source.
+  var HAND_SLOT_SOURCE = ['hour12', 'minute', 'second', 'none', 'none', 'second'];
+  var DRIVE_COLUMNS = ['span', 'zero', 'vmin', 'vmax'];
   // R6: whose frames the OS may advance, and which classes cannot animate at all. This
   // decides the editor's element class for an animated region: an OS-paced region is a
   // SPRITE row, because a bank or a text row holds app state and a layer is composited.
@@ -1964,11 +1979,11 @@
       if (!(kind >= 0 && kind < HOUR_PATTERNS.length))
         throw new Error(where + '.kind: ' + kind + ' is not an hour pattern (' +
           HOUR_PATTERNS.join('/') + ', 0..' + (HOUR_PATTERNS.length - 1) + ')');
-    } else if (kind && cls !== CLASS_BANK && cls !== CLASS_AUX) {
+    } else if (kind && cls !== CLASS_BANK && cls !== CLASS_AUX && cls !== CLASS_HAND) {
       throw new Error(where + '.kind: ' + kind + ' on a ' + CLASS_NAMES[cls] + ' row — how a row ' +
         'draws or moves is a driven element’s question, and this class answers it with its slot');
     }
-    if (src && cls !== CLASS_BANK && cls !== CLASS_AUX && cls !== CLASS_SOUND) {
+    if (src && cls !== CLASS_BANK && cls !== CLASS_AUX && cls !== CLASS_SOUND && cls !== CLASS_HAND) {
       throw new Error(where + '.src: ' + src + ' on a ' + CLASS_NAMES[cls] + ' row — what drives ' +
         'a row is a driven element’s question, and this class answers it with its slot');
     }
@@ -2023,6 +2038,64 @@
           throw new Error(where + '.span: ' + span + ' asks a pointer to travel more than one ' +
             'full turn; a ' + MOTION_NAMES[kind] + ' that needs more is a disc, not a hand');
       }
+    }
+    // D41: a HAND row may name its own drive (v5 only; the v4 pack refuses it).
+    if (cls === CLASS_HAND) {
+      var hd = DRIVE_COLUMNS.map(function (c) { return Math.trunc(rec[c] | 0); });
+      if (!src) {
+        if (kind || hd.some(function (x) { return x; }))
+          throw new Error(where + ': a HAND row that names no source reads its slot\u2019s own ' +
+            'mapping, so kind, span, zero, vmin and vmax must be 0 — name the source the path ' +
+            'is written for');
+      } else {
+        if (!(src >= 0 && src < SOURCES.length) || ['text', 'value', 'ampm'].indexOf(SOURCES[src]) >= 0)
+          throw new Error(where + '.src: ' + src + ' is not a value a hand can turn by');
+        if (!(kind >= 0 && kind < MOTION_NAMES.length))
+          throw new Error(where + '.kind: ' + kind + ' is not a way for a hand to move');
+        var hspan = hd[0], hzero = hd[1], hvmin = hd[2], hvmax = hd[3];
+        if (hvmax < 1) throw new Error(where + '.vmax: ' + hvmax + ' cannot divide a hand\u2019s ' +
+          MOTION_NAMES[kind] + ' — its domain has to hold at least one unit');
+        if (hspan === 0) throw new Error(where + '.span: 0 is a hand that goes nowhere');
+        if (hvmin > hvmax) throw new Error(where + '.vmin: ' + hvmin + ' is above vmax ' + hvmax);
+        if (motionIsSlide(kind) ? (Math.abs(hspan) > 466 || Math.abs(hzero) > 466)
+                                : (Math.abs(hspan) > 3600 || Math.abs(hzero) > 3600))
+          throw new Error(where + ': a hand\u2019s span and zero stay within one turn, or on the panel');
+      }
+    }
+    // D41 §2.2, row-local (theme_schema.check_element, rule for rule).
+    var cad = Math.trunc(rec.cadence | 0), carg = Math.trunc(rec.cad_arg | 0),
+        ease = Math.trunc(rec.ease | 0);
+    if (cad || carg || ease) {
+      if (cls !== CLASS_HAND && cls !== CLASS_AUX && cls !== CLASS_BANK)
+        throw new Error(where + '.cadence: when a row moves is a driven row\u2019s question (hand, ' +
+          'pointer, bank); class ' + q(CLASS_NAMES[cls]) + ' does not move by a value');
+      if (!(cad >= 0 && cad < CADENCES.length))
+        throw new Error(where + '.cadence: ' + cad + ' is not a cadence (' + CADENCES.join('/') +
+          ', 0..' + (CADENCES.length - 1) + ')');
+      if (ease)
+        throw new Error(where + '.ease: ' + ease + ' ms — settle and flyback are ruled (D41 §2.1) ' +
+          'and not built yet, so the dial would draw no ease');
+      var eff = (cls === CLASS_HAND && !src)
+        ? (HAND_SLOT_SOURCE[Math.trunc(rec.slot | 0)] || 'none') : (SOURCES[src] || 'none');
+      var cname = CADENCES[cad];
+      if (cad === CAD_STEP && carg < 1)
+        throw new Error(where + '.cad_arg: step 0 divides a unit into no steps — name how many per unit');
+      if ((cad === CAD_INHERIT || cad === CAD_SWEEP || cad === CAD_JUMP) && carg)
+        throw new Error(where + '.cad_arg: ' + carg + ' on a ' + cname + ' row, which takes no argument');
+      if (cad === CAD_STOP_TO_GO && eff !== 'second')
+        throw new Error(where + '.cadence: stop-to-go is a seconds hand\u2019s rhythm, and this row reads ' + q(eff));
+      if (cad === CAD_DRAG && CAD_DRAG_SOURCES.indexOf(eff) < 0)
+        throw new Error(where + '.cadence: drag holds a calendar row (' + CAD_DRAG_SOURCES.join('/') +
+          '), and this row reads ' + q(eff));
+      if (cls === CLASS_HAND && eff === 'none' && cad)
+        throw new Error(where + '.cadence: a still hand slot has no value to move by');
+      if (cls === CLASS_BANK && cad !== CAD_INHERIT && cad !== CAD_JUMP)
+        throw new Error(where + '.cadence: a complication\u2019s plates are whole values, so it jumps — ' +
+          cname + ' waits for a ring the dial can turn');
+      if (cls === CLASS_HAND && Math.trunc(rec.slot | 0) === 5 && (cad || src || kind))
+        throw new Error(where + ': the carriage turns with the seconds row — give that row the cadence');
+      if (cls === CLASS_AUX && kind === MOTION_INDEXED && cad !== CAD_INHERIT && cad !== CAD_JUMP)
+        throw new Error(where + '.cadence: indexed already snaps to whole units; ' + cname + ' contradicts it');
     }
     if (cls === CLASS_BANK) {
       if (!(kind >= 0 && kind < COMP_KINDS.length)) {
@@ -2123,10 +2196,15 @@
     if (recs.length > cap) {
       throw new Error('element table: ' + recs.length + ' rows exceed the cap of ' + cap);
     }
-    var words = abi >= GEOM_ABI4 ? ELEMENT_WORDS : ELEMENT_WORDS_V3;
+    var words = abi >= GEOM_ABI5 ? ELEMENT_WORDS : abi >= GEOM_ABI4 ? ELEMENT_WORDS_V4 : ELEMENT_WORDS_V3;
     var out = [];
     for (var i = 0; i < recs.length; i++) {
       var r = recs[i];
+      var why5 = abi < GEOM_ABI5 ? v5Claim(r) : null;
+      if (why5) {
+        throw new Error('elem[' + i + '] names ' + why5 + ' at stride ' + words + ': the v' + abi +
+          ' clock stamp has no reading for it — bake the section at the v5 stamp');
+      }
       var par = (r.parent === undefined || r.parent === null) ? PARENT_NONE : r.parent;
       if (words === ELEMENT_WORDS_V3 && (par !== PARENT_NONE || (r.delay | 0))) {
         throw new Error('elem[' + i + '] names parent ' + par + ' delay ' + (r.delay | 0) +
@@ -2140,6 +2218,48 @@
       }
     }
     return out;
+  }
+  /* What a row says that only the v5 stamp can carry (theme_schema.v5_claim), or null. */
+  function v5Claim(r) {
+    var c, i;
+    var cols = ['cadence', 'cad_arg', 'ease'];
+    for (i = 0; i < cols.length; i++) { c = cols[i]; if (Math.trunc(r[c] | 0)) return c + ' ' + Math.trunc(r[c] | 0); }
+    if (Math.trunc(r.class | 0) === CLASS_HAND) {
+      cols = ['kind', 'src'].concat(DRIVE_COLUMNS);
+      for (i = 0; i < cols.length; i++) {
+        c = cols[i];
+        if (Math.trunc(r[c] | 0)) return 'a hand\u2019s own ' + c + ' ' + Math.trunc(r[c] | 0);
+      }
+    }
+    return null;
+  }
+  /* D41 §2.2's table-wide refusals (theme_schema.check_clock_drive). */
+  function checkClockDrive(recs, secondSweep, tickRate) {
+    var minuteJumps = recs.some(function (r) {
+      return (r.class | 0) === CLASS_HAND && (r.slot | 0) === 1 && !(r.src | 0) &&
+        (r.cadence | 0) === CAD_JUMP;
+    });
+    for (var i = 0; i < recs.length; i++) {
+      var r = recs[i], cad = r.cadence | 0, cls = r.class | 0;
+      if (cls !== CLASS_HAND && cls !== CLASS_AUX) continue;
+      var eff = (cls === CLASS_HAND && !(r.src | 0)) ? (HAND_SLOT_SOURCE[r.slot | 0] || 'none')
+                                                    : SOURCES[r.src | 0];
+      if (cad === CAD_STOP_TO_GO && !minuteJumps)
+        throw new Error('elem[' + i + ']: stop-to-go rests until the minute releases it, and the ' +
+          'minute hand does not jump');
+      if (eff !== 'second' || !cad) continue;
+      var rate = Math.max(1, tickRate | 0), bad;
+      if (cls === CLASS_AUX) bad = cad === CAD_STEP && (r.cad_arg | 0) !== rate;
+      else {
+        var fast = cad === CAD_SWEEP || cad === CAD_STOP_TO_GO;
+        bad = fast !== !!secondSweep || (cad === CAD_STEP && (r.cad_arg | 0) !== rate) ||
+          (cad === CAD_JUMP && rate !== 1);
+      }
+      if (bad)
+        throw new Error('elem[' + i + ']: a seconds row moving by ' + CADENCES[cad] + ' (' + (r.cad_arg | 0) +
+          ') on a dial whose tempo is sweep ' + (secondSweep | 0) + ', tick_rate ' + (tickRate | 0) +
+          ' — the scheduler\u2019s tempo and the hand must agree');
+    }
   }
   function unpackElements(words, n, stride) {
     // The reader honours the stride the BLOB carries, not the width this build writes:
@@ -2211,6 +2331,8 @@
     var elems = (elements || []).slice();
     checkTable(elems);
     abi = (abi === undefined) ? GEOM_ABI3 : abi;
+    if (slug === 'clock')
+      checkClockDrive(elems, (scalars || {}).second_sweep | 0, (scalars || {}).tick_rate | 0);
     var delta = abi >= GEOM_ABI4;
     var sb = utf8(slug);
     if (sb.length < 1 || sb.length > SLUG_MAX) {
@@ -2276,7 +2398,9 @@
       throw new Error('blob is ' + blob.length + ' bytes; its counts say at least ' +
         wantMin + ' — a torn file, not a short one');
     }
-    var eb = blob.length - wantMin, elemWords = ELEMENT_WORDS;
+    // A table with no rows carries no width: it reads as the width its stamp writes.
+    var eb = blob.length - wantMin,
+        elemWords = abi >= GEOM_ABI5 ? ELEMENT_WORDS : delta ? ELEMENT_WORDS_V4 : ELEMENT_WORDS_V3;
     if (nElem === 0 ? eb !== 0 : eb % (nElem * 4) !== 0) {
       throw new Error('blob is ' + blob.length + ' bytes; its ' + nElem + ' rows leave ' +
         eb + ' B, no whole number of words — a torn file, not a short one');
@@ -2350,14 +2474,15 @@
     var abi = rec.abi_max === undefined ? GEOM_ABI3 : rec.abi_max;
     var ew = rec.elem_words === undefined ? ELEMENT_WORDS : rec.elem_words;
     var spw = rec.spr_words || (abi >= GEOM_ABI4 ? SPR_WORDS2 : SPR_WORDS);
-    if (abi < GEOM_ABI3 || abi > GEOM_ABI4) {
+    if (abi < GEOM_ABI3 || abi > GEOM_ABI5) {
       throw new Error('a clock section stamped geometry v' + abi + '; this reader\u2019s clock ' +
-        'dialect is v' + GEOM_ABI3 + ' and v' + GEOM_ABI4 + ' — re-bake it');
+        'dialect is v' + GEOM_ABI3 + ' to v' + GEOM_ABI5 + ' — re-bake it');
     }
     if (abi >= GEOM_ABI4) {
-      if (CLOCK_STRIDES_V4.indexOf(ew) < 0)
+      var want = abi >= GEOM_ABI5 ? CLOCK_STRIDES_V5 : CLOCK_STRIDES_V4;
+      if (want.indexOf(ew) < 0)
         throw new Error('clock rows are ' + ew + ' words under geometry v' + abi +
-          '; that stamp writes exactly 25');
+          '; that stamp writes exactly ' + want[0]);
       if (spw !== SPR_WORDS2)
         throw new Error('clock catalogue rows are ' + spw + ' words under geometry v' + abi +
           '; that stamp writes 6');
@@ -2560,9 +2685,9 @@
     if (w[1] !== FORMAT3) {
       throw new Error('theme format ' + w[1] + '; this reader takes format ' + FORMAT3);
     }
-    if (w[2] !== GEOM_ABI3 && w[2] !== GEOM_ABI4) {
+    if (w[2] !== GEOM_ABI3 && w[2] !== GEOM_ABI4 && w[2] !== GEOM_ABI5) {
       throw new Error('bundle geometry v' + w[2] + '; this build reads v' + GEOM_ABI3 +
-        ' and v' + GEOM_ABI4 + ' — re-bake it');
+        ' to v' + GEOM_ABI5 + ' — re-bake it');
     }
     var z = w.slice(); z[W_HDR_CRC] = 0;
     if (w[W_HDR_CRC] !== crc32(wordsToBytes(z))) {
@@ -3399,11 +3524,15 @@
         ' — drop frames or shrink the art');
     }
 
+    // D41: a row that claims a motion column rides v5; otherwise the stamps stay as
+    // they were, so every other bake's bytes do not move.
+    var secAbi = elems.some(function (r) { return v5Claim(r); }) ? GEOM_ABI5
+               : deltaBank ? GEOM_ABI4 : GEOM_ABI3;
     var pack = function () {
       return writeBundle3({ name: o.name, serial: o.serial || 0, bakedMs: o.bakedMs || 0,
         sections: [{ slug: 'clock', scr_w: scrW, scr_h: scrH, elements: elems, scalars: sc,
                      sprites: bank.sprites, art: bank.art,
-                     abi_min: deltaBank ? GEOM_ABI4 : GEOM_ABI3, abi_max: deltaBank ? GEOM_ABI4 : GEOM_ABI3 }] });
+                     abi_min: secAbi, abi_max: secAbi }] });
     };
     var b = pack();
     if (deltaBank && !selfVerify3(frames, bank.sprites, (elems[0].frame0 | 0),
@@ -3897,7 +4026,8 @@
     // fixture. packElements refuses through the same check_element / check_table rules the
     // device door applies, so an element a theme cannot name never reaches a card.
     FORMAT3: FORMAT3, GEOM_ABI3: GEOM_ABI3, SECT_MAX: SECT_MAX, IDX_WORDS: IDX_WORDS,
-    GEOM_ABI4: GEOM_ABI4, DELTA_TOL: DELTA_TOL,   // the delta floor, so a suite asserts against the codec's number, not a literal
+    GEOM_ABI4: GEOM_ABI4, GEOM_ABI5: GEOM_ABI5, DELTA_TOL: DELTA_TOL,
+    CADENCES: CADENCES, checkClockDrive: checkClockDrive, v5Claim: v5Claim,   // the delta floor, so a suite asserts against the codec's number, not a literal
     SCALARS_N: SCALARS_N, ELEMENT_WORDS: ELEMENT_WORDS, ELEMENT_FIELDS: ELEMENT_FIELDS,
     CLASS_NAMES: CLASS_NAMES, CLASS_APP_ADV: CLASS_APP_ADV, CLASS_NO_ANIM: CLASS_NO_ANIM,
     EF_ALPHA: EF_ALPHA, EF_LOOP: EF_LOOP, EF_OS_ADV: EF_OS_ADV, EF_HIDDEN: EF_HIDDEN,

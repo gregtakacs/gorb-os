@@ -379,7 +379,19 @@ static const clk_drive_t HAND_ROW[5] = {
  * railway dial sits it on a mark), hour 0..12 fractional. Mirrors orb-os
  * compose_custom: minute_hand_mins() and the p_min/p_hr derivation. The beat is
  * worked out here; each slot's angle is its HAND_ROW through the drive function. */
-static void hand_angles(double wall_frac, const struct tm *ti, float ang[5])
+/* A slot's driven row: the theme's own when v5 named a source, else the slot's
+ * mapping wearing whatever cadence the theme gave it (all-zero before v5). */
+static clk_drive_t hand_row(int k)
+{
+    const clk_drive_t *t = &clk_theme.hand_drive[k];
+    if (t->src) return *t;
+    clk_drive_t d = HAND_ROW[k];
+    d.cadence = t->cadence;
+    d.cad_arg = t->cad_arg;
+    return d;
+}
+
+static void hand_angles(double wall_frac, const struct tm *ti, time_t t, float ang[5])
 {
     const int sec = ti->tm_sec;
     const bool sweep   = clk_theme.second_sweep;
@@ -429,8 +441,11 @@ static void hand_angles(double wall_frac, const struct tm *ti, float ang[5])
     else
         secF = (float)sec;
 
-    const drive_now_t now = { .ti = ti, .t = 0, .frac = wall_frac, .hand_sec = secF };
-    for (int k = 0; k < 5; k++) ang[k] = drive_hand_deg(&HAND_ROW[k], &now);
+    const drive_now_t now = { .ti = ti, .t = t, .frac = wall_frac, .hand_sec = secF };
+    for (int k = 0; k < 5; k++) {
+        const clk_drive_t d = hand_row(k);
+        ang[k] = drive_hand_deg(&d, &now);
+    }
 }
 
 
@@ -1677,11 +1692,13 @@ static float drive_hand_deg(const clk_drive_t *d, const drive_now_t *n)
 }
 
 /* An AUX row's pose: tenths of a degree, or px on a slide. False when this orb has
- * no input for its source. INHERIT is aux_value_1000 and its path, unchanged. */
+ * no input for its source. INHERIT is aux_value_1000 and its path, unchanged; v5
+ * gives the row its own cadence. */
 static bool drive_aux(const clk_aux_t *a, const drive_now_t *n, int32_t *out)
 {
     const clk_drive_t d = {
-        .src = a->src, .path = a->kind, .cadence = CLK_CAD_INHERIT, .flags = a->flags,
+        .src = a->src, .path = a->kind, .cadence = a->cadence, .cad_arg = a->cad_arg,
+        .flags = a->flags,
         .span = a->span, .zero = a->zero, .value_min = a->value_min, .value_max = a->value_max,
     };
     if (d.cadence == CLK_CAD_INHERIT) {
@@ -2109,7 +2126,7 @@ static void compose_now(void)
     localtime_r(&t, &ti);
 
     float ang[5];
-    hand_angles(frac, &ti, ang);
+    hand_angles(frac, &ti, t, ang);
     apply_angles(ang);
 
     /* The complication pass: every window/strip re-reads its value from the

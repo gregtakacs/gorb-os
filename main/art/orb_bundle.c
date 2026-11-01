@@ -169,6 +169,9 @@ void orb_bundle_elem_at(const orb_bundle_sec_t *s, uint32_t i,
             p = 0xFFFFu;
         e->parent = p;
         e->delay  = st >= 25u ? (uint16_t)b32(r + 96) : 0u;
+        e->cadence = st >= 26u ? (uint8_t) b32(r + 100) : 0u;
+        e->cad_arg = st >= 27u ? (uint16_t)b32(r + 104) : 0u;
+        e->ease    = st >= 28u ? (uint16_t)b32(r + 108) : 0u;
     }
 }
 
@@ -183,10 +186,11 @@ const char *orb_bundle3_hdr_parse(const uint32_t *w, orb_bundle3_hdr_t *o)
                                                             * suite: the host
                                                             * bake names both
                                                             * numbers */
-    if (w[W_GEOM_ABI] != ORB_BUNDLE3_ABI && w[W_GEOM_ABI] != ORB_BUNDLE3_ABI2)
-        return reject("bundle geometry v%lu; this build reads v%lu and v%lu — re-bake it",
+    if (w[W_GEOM_ABI] != ORB_BUNDLE3_ABI && w[W_GEOM_ABI] != ORB_BUNDLE3_ABI2 &&
+        w[W_GEOM_ABI] != ORB_BUNDLE3_ABI3)
+        return reject("bundle geometry v%lu; this build reads v%lu to v%lu — re-bake it",
                       (unsigned long)w[W_GEOM_ABI], (unsigned long)ORB_BUNDLE3_ABI,
-                      (unsigned long)ORB_BUNDLE3_ABI2);
+                      (unsigned long)ORB_BUNDLE3_ABI3);
 
     /* The self-checksum first, on the header's SHAPE — one rule for every
      * .orbtheme the door admits: same 128 bytes, same zeroed word 28 — the
@@ -470,6 +474,12 @@ static const char *parse_core(const orb_bundle3_hdr_t *h, const uint8_t *file,
                                      spr_bytes_of(s->abi_max),
                                      &ne, &ns, &so, &sl, &ew);
         if (why) return why;
+        /* A table with no rows carries no width: it reads as the width its stamp
+         * writes, as orbbundle.unpack_blob reads it. */
+        if (ne == 0)
+            ew = s->abi_max >= (uint8_t)ORB_BUNDLE3_ABI3 ? ORB_BUNDLE_ELEM_WORDS
+               : s->abi_max >= (uint8_t)ORB_BUNDLE3_ABI2 ? ORB_BUNDLE_ELEM_WORDS_V4
+               : ORB_BUNDLE_ELEM_WORDS_V3;
         s->elem_words = (uint16_t)ew;
         /* The record's window first — sized, not summed, so no u32 wrap can
          * walk memcmp out of the region — and the lengths before the bytes:

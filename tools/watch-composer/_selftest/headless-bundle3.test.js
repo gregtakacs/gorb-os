@@ -136,9 +136,34 @@ refuses(() => B.packElements([E({ class: SPRITE }), E({ class: LAYER, n: 1 })]),
 const tooMany = [];
 for (let i = 0; i < 33; i++) tooMany.push(E({ class: SPRITE, slot: i, n: i + 1 }));
 refuses(() => B.packElements(tooMany), 'past the bound of 32', '33 rows are refused');
-ok(B.packElements([E({ class: SPRITE, n_frames: 12, flags: B.EF_OS_ADV | B.EF_LOOP })]).length === B.ELEMENT_WORDS,
+// D41: the motion columns ride only the v5 stamp, and §2.2's row rules refuse what cannot apply.
+{
+  const HJ = E({ class: HAND, slot: 1, cadence: 3 });
+  ok(B.packElements([HJ], undefined, B.GEOM_ABI5).length === 28,
+     'D41: a jumping minute packs 28 words at v5');
+  ok(B.unpackElements(B.packElements([HJ], undefined, B.GEOM_ABI5), 1)[0].cadence === 3,
+     'D41: the cadence round-trips');
+  refuses(() => B.packElements([HJ]), 'v5 stamp', 'D41: the v4 pack refuses a cadence');
+  refuses(() => B.packElements([E({ class: HAND, slot: 1, cadence: 3, ease: 120 })], undefined, B.GEOM_ABI5),
+          'not built yet', 'D41: an ease is refused until it is built');
+  refuses(() => B.packElements([E({ class: HAND, slot: 2, cadence: 2 })], undefined, B.GEOM_ABI5),
+          'step 0', 'D41: step 0 is refused');
+  refuses(() => B.packElements([E({ class: HAND, slot: 1, cadence: 4 })], undefined, B.GEOM_ABI5),
+          'seconds hand', 'D41: stop-to-go on the minute is refused');
+  refuses(() => B.packElements([E({ class: HAND, slot: 5, cadence: 3 })], undefined, B.GEOM_ABI5),
+          'carriage', 'D41: the carriage takes the seconds row\u2019s motion');
+  refuses(() => B.packElements([E({ class: HAND, slot: 2, kind: 1 })], undefined, B.GEOM_ABI5),
+          'names no source', 'D41: a hand path with no source is refused');
+  refuses(() => B.checkClockDrive([E({ class: HAND, slot: 2, cadence: 4, cad_arg: 585 })], 1, 1),
+          'does not jump', 'D41: stop-to-go needs a jumping minute');
+  B.checkClockDrive([HJ, E({ n: 2, class: HAND, slot: 2, cadence: 4, cad_arg: 585 })], 1, 1);
+  ok(true, 'D41: stop-to-go under a jumping minute on a sweeping dial is accepted');
+  refuses(() => B.checkClockDrive([E({ class: HAND, slot: 2, cadence: 2, cad_arg: 4 })], 0, 1),
+          'must agree', 'D41: a seconds step off the tick_rate is refused');
+}
+ok(B.packElements([E({ class: SPRITE, n_frames: 12, flags: B.EF_OS_ADV | B.EF_LOOP })], undefined, B.GEOM_ABI5).length === B.ELEMENT_WORDS,
    'an animated SPRITE row — the legal shape — packs to one fixed row');
-ok(B.packElements([E({ class: BANK, n_frames: 4 })]).length === B.ELEMENT_WORDS,
+ok(B.packElements([E({ class: BANK, n_frames: 4 })], undefined, B.GEOM_ABI5).length === B.ELEMENT_WORDS,
    'and a value-per-plate BANK without OS_ADV packs too');
 
 // ---- 4. the D29 gate, at the boundary rather than near it ------------------
@@ -278,8 +303,8 @@ function restamp(src, word, value) {
 }
 refuses(() => B.parseBundle3(restamp(fixture, 2, 2)), 'reads v3',
         'a bundle ABI this build is not (v2) is refused as an ABI, not as damage');
-refuses(() => B.parseBundle3(restamp(fixture, 2, 5)), 'reads v3',
-        'and so is one stamped ahead of it (v5, past C4\u2019s delta dialect), which is the D24 no-backward-path rule');
+refuses(() => B.parseBundle3(restamp(fixture, 2, 6)), 'reads v3',
+        'and so is one stamped ahead of it (v6, past D41\u2019s motion dialect), which is the D24 no-backward-path rule');
 refuses(() => B.parseBundle3(restamp(fixture, 5, 61441)), 'overrun the pixels',
         'a header claiming more geometry than the table area is refused at the caps');
 refuses(() => B.parseBundle3(restamp(fixture, 7, B.ORB_THEME_SLOT_CAP + 1)), 'larger than a slot',

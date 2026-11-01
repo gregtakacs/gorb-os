@@ -48,6 +48,7 @@ import theme_schema as _ts
 FORMAT3      = 3
 GEOM_ABI3    = 3                    # the container stamp of every file before C4
 GEOM_ABI4    = 4                    # C4's delta dialect: a v4 clock section rode along
+GEOM_ABI5    = 5                    # D41's motion columns: a v5 clock section rode along
 SECT_MAX     = 8                    # B5's app cap, the index's width
 IDX_WORDS    = 10                   # IDX_PACK below: 4H + 7I + 2H = 40 B
 SCALARS_N    = len(_ot.THEME_FIELDS)   # 26 today; the clock dialect, carried opaque
@@ -158,9 +159,9 @@ def parse_header3(raw):
     if hdr[1] != FORMAT3:
         raise ValueError("theme format %d; this reader takes format %d"
                          % (hdr[1], FORMAT3))
-    if hdr[2] not in (GEOM_ABI3, GEOM_ABI4):
-        raise ValueError("bundle geometry v%d; this build reads v%d and v%d — "
-                         "re-bake it" % (hdr[2], GEOM_ABI3, GEOM_ABI4))
+    if hdr[2] not in (GEOM_ABI3, GEOM_ABI4, GEOM_ABI5):
+        raise ValueError("bundle geometry v%d; this build reads v%d to v%d — "
+                         "re-bake it" % (hdr[2], GEOM_ABI3, GEOM_ABI5))
     if hdr[_ot.W_HDR_CRC] != _ot._hdr_crc(hdr):
         raise ValueError("container header checksum mismatch — re-copy the file "
                          "onto the card")
@@ -195,9 +196,13 @@ def pack_blob(slug, elements, scalars=None, sprites=(), abi=GEOM_ABI3):
     position — `diffx`/`diffy`, signed, default 0,0 — beside the byte range they
     always carried. At 3 the rows pack 23 wide, diff fields are refused before
     they can be silently dropped, and the shipped bytes are the bytes C3 verified.
+    At 5 (D41) the rows pack 28 wide with the motion columns; the catalogue is v4's.
     """
     elements = list(elements or ())
     _ts.check_table(elements)
+    if slug == "clock":
+        _ts.check_clock_drive(elements, (scalars or {}).get("second_sweep", 0),
+                              (scalars or {}).get("tick_rate", 0))
     delta = abi >= _ts.CLOCK_ABI_V4
     sb = slug.encode("utf-8")
     if not 1 <= len(sb) <= SLUG_MAX:
@@ -235,7 +240,8 @@ def pack_blob(slug, elements, scalars=None, sprites=(), abi=GEOM_ABI3):
                          SCALARS_N, len(sb))
     body = struct.pack("<%dI" % SCALARS_N, *scal_words)
     if elements:
-        words = (_ts.pack_elements(elements) if delta
+        words = (_ts.pack_elements_v5(elements) if abi >= _ts.CLOCK_ABI_V5
+                 else _ts.pack_elements(elements) if delta
                  else _ts.pack_elements_v3(elements))
         body += struct.pack("<%dI" % len(words), *words)
     if spr_words:
@@ -271,7 +277,9 @@ def unpack_blob(blob, abi=GEOM_ABI3):
         raise ValueError("blob is %d bytes; its counts say at least %d — a torn "
                          "file, not a short one" % (len(blob), want_min))
     eb = len(blob) - want_min
-    elem_words = _ts.ELEMENT_WORDS
+    # A table with no rows carries no width; it reads as the width its stamp writes.
+    elem_words = (_ts.ELEMENT_WORDS if abi >= _ts.CLOCK_ABI_V5
+                  else _ts.ELEMENT_WORDS_V4 if delta else _ts.ELEMENT_WORDS_V3)
     if (eb % (n_elem * 4)) if n_elem else eb:
         raise ValueError("blob is %d bytes; its %d rows leave %d B, no whole number "
                          "of words — a torn file, not a short one"

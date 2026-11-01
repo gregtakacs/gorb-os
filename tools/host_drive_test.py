@@ -123,7 +123,7 @@ static void day_parity(int sweep, int railway, int rate, int gif)
             const double frac = k / 12.0 + 0.013;
             float a[5], b[5];
             legacy_hand_angles(frac, ti.tm_hour, ti.tm_min, ti.tm_sec, a);
-            hand_angles(frac, &ti, b);
+            hand_angles(frac, &ti, timegm(&ti), b);
             checks++;
             if (memcmp(a, b, sizeof a)) {
                 if (bad++ < 3)
@@ -280,6 +280,38 @@ C_BODY = r"""
         }
     }
 
+    /* v5: the theme's own rows reach the hands. A minute that jumps keeps the
+     * slot's mapping; an hour that names its own retrograde path takes it. */
+    {
+        memset(&clk_theme, 0, sizeof clk_theme);
+        clk_theme.hand_drive[1].cadence = CLK_CAD_JUMP;
+        clk_theme.hand_drive[0] = (clk_drive_t){ .src = CLK_SRC_HOUR12,
+            .path = CLK_MOTION_RETROGRADE, .span = 1800, .value_max = 12,
+            .cadence = CLK_CAD_SWEEP, .hand = 1 };
+        struct tm ti = mk(2026, 11, 1, 18, 34, 59);
+        float a[5];
+        hand_angles(0.9, &ti, timegm(&ti), a);
+        checks++;
+        if (a[1] != 34 * 6.0f) { fails++; printf("FAIL a jumping minute moved early: %f\n", a[1]); }
+        checks++;
+        if (fabsf(a[0] - (float)drive_travel(&clk_theme.hand_drive[0], 6 + 34.0/60 + 59.9/3600) / 10.0f) > 1e-4f)
+        { fails++; printf("FAIL the hour did not take its own row: %f\n", a[0]); }
+        checks++;
+        if (a[2] != (59.0f) * 6.0f) { fails++; printf("FAIL the untouched second moved: %f\n", a[2]); }
+        memset(&clk_theme, 0, sizeof clk_theme);
+    }
+    {
+        clk_aux_t ax = { .src = CLK_SRC_SECOND, .kind = CLK_MOTION_ROTATE, .span = 3600,
+                         .value_max = 60, .cadence = CLK_CAD_STEP, .cad_arg = 2 };
+        struct tm ti = mk(2026, 11, 1, 1, 2, 10);
+        const drive_now_t now = { .ti = &ti, .t = timegm(&ti), .frac = 0.7 };
+        int32_t got = -1;
+        checks++;
+        if (!drive_aux(&ax, &now, &got) || got != 630) {
+            fails++; printf("FAIL a pointer's own cadence: want 630 got %d\n", (int)got);
+        }
+    }
+
     d = (clk_drive_t){ .src = CLK_SRC_WEEKDAY, .path = CLK_MOTION_ROTATE, .span = 3600,
                        .value_max = 7, .cadence = CLK_CAD_SWEEP };
     units("sweep weekday: Sunday noon", d, mk(2026, 11, 1, 12, 0, 0), 0.0, 6.5);
@@ -311,6 +343,10 @@ MUTATIONS = [
      "    if (d->src == CLK_SRC_NONE) return 0.0f;\n    if (d->cadence == CLK_CAD_INHERIT && d->src != CLK_SRC_HOUR12) {"),
     ("    if (d->src == CLK_SRC_NONE) return 0.0f;\n", ""),
     ("    if (d.cadence == CLK_CAD_INHERIT) {", "    if (d.cadence != CLK_CAD_INHERIT) {"),
+    ("        .src = a->src, .path = a->kind, .cadence = a->cadence, .cad_arg = a->cad_arg,",
+     "        .src = a->src, .path = a->kind, .cadence = 0, .cad_arg = a->cad_arg,"),
+    ("    if (t->src) return *t;", ""),
+    ("    d.cadence = t->cadence;", ""),
     ("    if (MOTION_IS_SLIDE(d->path)) return t;", ""),
     ("    if (d->path == CLK_MOTION_RETROGRADE &&", "    if (0 &&"),
     ("    { .src = CLK_SRC_MINUTE, .path = CLK_MOTION_ROTATE, .hand = 1, .span = 3600, .value_max = 60 },",
@@ -332,6 +368,7 @@ def lifted_c(mutations=()):
         lift(cview, "static uint32_t hand_beat_ticks("),
         lift_block(cview, "typedef struct {\n    const struct tm *ti;", "static const clk_drive_t HAND_ROW[5] = {"),
         lift_block(cview, "    { .src = CLK_SRC_HOUR12, .path = CLK_MOTION_ROTATE, .hand = 1", "};"),
+        lift(cview, "static clk_drive_t hand_row("),
         lift(cview, "static void hand_angles("),
         lift(cview, "static bool comp_year_leap("),
         lift(cview, "static bool comp_value("),

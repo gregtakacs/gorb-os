@@ -101,7 +101,7 @@ for _cls in (ts.CLASS_HAND, ts.CLASS_SPRITE):
     check(ts.check_element(row(flags=ts.EF_SMOOTH, **{"class": _cls})) is not None,
           "EF_SMOOTH refused on class %s, a turned layer" % ts.CLASS_NAMES[_cls])
 check(ts.EF_SMOOTH == 0x80 and ts.EF_ALL == 0xFF, "EF_SMOOTH is not bit 7 or EF_ALL lost it")
-check(ts.unpack_elements(ts.pack_elements([row(flags=ts.EF_SMOOTH)]), 1)[0]["flags"] == 0x80,
+check(ts.unpack_elements(ts.pack_elements_v5([row(flags=ts.EF_SMOOTH)]), 1)[0]["flags"] == 0x80,
       "EF_SMOOTH did not survive the pack round trip")
 recs = [row(),
         row(n=1, **{"class": ts.CLASS_SPRITE, "x": -10, "y": -1, "w": 100, "h": 40,
@@ -113,7 +113,7 @@ recs = [row(),
         row(n=4, **{"class": ts.CLASS_PLATE, "slot": 0, "flags": ts.EF_HIDDEN,
                     "x": -32768, "y": 32767, "pivot_x": 0, "pivot_y": 0})]
 ts.check_table(recs)
-words = ts.pack_elements(recs)
+words = ts.pack_elements_v5(recs)
 check(len(words) == len(recs) * ts.ELEMENT_WORDS,
       "pack wrote %d words for %d rows of %d" % (len(words), len(recs), ts.ELEMENT_WORDS))
 back = ts.unpack_elements(words, len(recs))

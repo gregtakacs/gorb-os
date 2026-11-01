@@ -512,8 +512,16 @@ ELEMENT_FIELDS = (
     ("parent",   "u16"),   # row `n` of the drawing row this one hangs on;
                            # 0xFFFF = none. 0 is the plate's tag and a refusal.
     ("delay",    "u16"),   # per-frame ms for this row's animation; 0 = default
+    # D41's motion columns (docs/hand-motion-plan.md §4), appended exactly as C4's
+    # pair was. They mean nothing below the v5 clock stamp: a v4 pack refuses a
+    # non-default one, and a narrower row reads each as 0 — inherit, no argument,
+    # no ease — which is every row's pre-D41 motion.
+    ("cadence",  "u8"),    # HAND/AUX/BANK: CADENCES id, when the row moves
+    ("cad_arg",  "u16"),   # step N, stop-to-go P (tenths of a second), drag window (min)
+    ("ease",     "u16"),   # settle on a step/jump, flyback on a retrograde, in ms
 )
-ELEMENT_WORDS = len(ELEMENT_FIELDS)          # 25 words, 100 bytes per row
+ELEMENT_WORDS = len(ELEMENT_FIELDS)          # 28 words, 112 bytes per row
+ELEMENT_WORDS_V4 = 25                        # the C4 row, before D41's three
 # The v3 clock row — every file shipped before C4, and every app row whatever
 # the stamp — and the widths the two clock dialects themselves carry. The clock
 # section's stride is gated EXACTLY against its stamp (Decision A): a v3 clock
@@ -522,6 +530,7 @@ ELEMENT_WORDS = len(ELEMENT_FIELDS)          # 25 words, 100 bytes per row
 ELEMENT_WORDS_V3 = 23
 ELEMENT_WORDS_CLOCK_V3 = (17, 19, 23)
 ELEMENT_WORDS_CLOCK_V4 = (25,)
+ELEMENT_WORDS_CLOCK_V5 = (28,)
 # The clock section's own geometry stamp values. The index record has carried
 # abi_min/abi_max words since FORMAT 3's first byte; C4 gives them their first
 # meaning: the clock's dialect version, gated exactly by orb_clock3.c and by
@@ -530,6 +539,7 @@ ELEMENT_WORDS_CLOCK_V4 = (25,)
 # door with the sentence they already have.
 CLOCK_ABI_V3 = 3      # == orbbundle.GEOM_ABI3 == orb_bundle.h ORB_BUNDLE3_ABI
 CLOCK_ABI_V4 = 4      # == orbbundle.GEOM_ABI4 == orb_bundle.h ORB_BUNDLE3_ABI2
+CLOCK_ABI_V5 = 5      # == orbbundle.GEOM_ABI5 == orb_bundle.h ORB_BUNDLE3_ABI3 (D41)
 PARENT_NONE = 0xFFFF
 # The narrowest row the FORMAT 3 dialect has ever written, before D32's ruling A
 # appended kind and src. A blob's element-row stride is derived from its own
@@ -761,6 +771,19 @@ MOTION_UNIT = {"rotate": "tenths of a degree", "retrograde": "tenths of a degree
                "indexed": "tenths of a degree", "slide-x": "px", "slide-y": "px"}
 MOTION_SLIDES = (MOTION_SLIDE_X, MOTION_SLIDE_Y)
 
+# D41 §2.1: when a driven row moves, in the order clk_types.h's CLK_CAD_* reads it.
+# inherit is each row class's pre-D41 motion, so a row that names nothing keeps it.
+CADENCES = ("inherit", "sweep", "step", "jump", "stop-to-go", "drag")
+CAD_INHERIT, CAD_SWEEP, CAD_STEP, CAD_JUMP, CAD_STOP_TO_GO, CAD_DRAG = 0, 1, 2, 3, 4, 5
+# The cadences whose instant an ease can settle (a step, a jump, a release).
+CAD_HAS_INSTANT = (CAD_STEP, CAD_JUMP, CAD_STOP_TO_GO)
+# The sources a drag may hold a calendar row on.
+CAD_DRAG_SOURCES = ("date", "weekday", "month", "day_of_year")
+# What a HAND slot reads when its row names no source (the slot's own meaning):
+# hour, minute, second, the two stills, and the carriage on the seconds.
+HAND_SLOT_SOURCE = ("hour12", "minute", "second", "none", "none", "second")
+DRIVE_COLUMNS = ("span", "zero", "vmin", "vmax")
+
 # Classes whose frame is app state, not a clock (R6). A BANK is indexed "one plate
 # per value", so OS advancement would march a date wheel on a tick nobody asked for.
 CLASS_APP_ADV = (CLASS_BANK, CLASS_TEXT, CLASS_STATUS)
@@ -855,11 +878,11 @@ def check_element(rec, where="elem"):
         if not 0 <= kind < len(HOUR_PATTERNS):
             raise ValueError("%s.kind: %d is not an hour pattern (%s, 0..%d)"
                              % (where, kind, "/".join(HOUR_PATTERNS), len(HOUR_PATTERNS) - 1))
-    elif kind and cls not in (CLASS_BANK, CLASS_AUX):
+    elif kind and cls not in (CLASS_BANK, CLASS_AUX, CLASS_HAND):
         raise ValueError("%s.kind: %d on a %s row — how a row draws or moves is a "
                          "driven element's question, and this class answers it with "
                          "its slot" % (where, kind, CLASS_NAMES[cls]))
-    if src and cls not in (CLASS_BANK, CLASS_AUX, CLASS_SOUND):
+    if src and cls not in (CLASS_BANK, CLASS_AUX, CLASS_SOUND, CLASS_HAND):
         raise ValueError("%s.src: %d on a %s row — what drives a row is a driven "
                          "element's question, and this class answers it with "
                          "its slot" % (where, src, CLASS_NAMES[cls]))
@@ -926,6 +949,82 @@ def check_element(rec, where="elem"):
             raise ValueError("%s: an AUX row carries one plate, not %d — several plates "
                              "indexed by a value is a BANK row"
                              % (where, int(rec["n_frames"])))
+    # ---- D41: a HAND row may name its own drive (v5 only; the v4 pack refuses it) ----
+    # All-zero is the slot's own mapping. A source makes the row a driven row with a
+    # path, a domain and a span, held to the AUX row's rules for the same reasons.
+    if cls == CLASS_HAND:
+        drive = [int(rec.get(c, 0)) for c in DRIVE_COLUMNS]
+        if not src:
+            if kind or any(drive):
+                raise ValueError("%s: a HAND row that names no source reads its slot's own "
+                                 "mapping, so kind, span, zero, vmin and vmax must be 0 — "
+                                 "name the source the path is written for" % where)
+        else:
+            if not 0 <= src < len(SOURCES) or SOURCES[src] in ("text", "value", "ampm"):
+                raise ValueError("%s.src: %d is not a value a hand can turn by" % (where, src))
+            if not 0 <= kind < len(MOTION_NAMES):
+                raise ValueError("%s.kind: %d is not a way for a hand to move (%s, 0..%d)"
+                                 % (where, kind, "/".join(MOTION_NAMES), len(MOTION_NAMES) - 1))
+            vmax, vmin, span, zero = (int(rec["vmax"]), int(rec["vmin"]),
+                                      int(rec["span"]), int(rec["zero"]))
+            if vmax < 1:
+                raise ValueError("%s.vmax: %d cannot divide a hand's %s — its domain has to "
+                                 "hold at least one unit" % (where, vmax, MOTION_NAMES[kind]))
+            if span == 0:
+                raise ValueError("%s.span: 0 is a hand that goes nowhere" % where)
+            if vmin > vmax:
+                raise ValueError("%s.vmin: %d is above vmax %d" % (where, vmin, vmax))
+            if kind in MOTION_SLIDES:
+                if abs(span) > 466 or abs(zero) > 466:
+                    raise ValueError("%s: a %s of %d px cannot stay on a 466 px panel"
+                                     % (where, MOTION_NAMES[kind], span))
+            elif abs(zero) > 3600 or abs(span) > 3600:
+                raise ValueError("%s: a hand's span and zero stay within one turn (±3600 "
+                                 "tenths)" % where)
+    # ---- D41: the cadence columns (§2.2's row-local refusals) ----
+    cad, carg, ease = (int(rec.get("cadence", 0)), int(rec.get("cad_arg", 0)),
+                       int(rec.get("ease", 0)))
+    if cad or carg or ease:
+        if cls not in (CLASS_HAND, CLASS_AUX, CLASS_BANK):
+            raise ValueError("%s.cadence: when a row moves is a driven row's question "
+                             "(hand, pointer, bank); class %r does not move by a value"
+                             % (where, CLASS_NAMES[cls]))
+        if not 0 <= cad < len(CADENCES):
+            raise ValueError("%s.cadence: %d is not a cadence (%s, 0..%d)"
+                             % (where, cad, "/".join(CADENCES), len(CADENCES) - 1))
+        if ease:
+            raise ValueError("%s.ease: %d ms — settle and flyback are ruled (D41 §2.1) "
+                             "and not built yet, so the dial would draw no ease"
+                             % (where, ease))
+        if cls == CLASS_HAND and not src:
+            slot = int(rec["slot"])
+            eff = HAND_SLOT_SOURCE[slot] if slot < len(HAND_SLOT_SOURCE) else "none"
+        else:
+            eff = SOURCES[src] if 0 <= src < len(SOURCES) else "none"
+        name = CADENCES[cad]
+        if cad == CAD_STEP and carg < 1:
+            raise ValueError("%s.cad_arg: step 0 divides a unit into no steps — name how "
+                             "many per unit" % where)
+        if cad in (CAD_INHERIT, CAD_SWEEP, CAD_JUMP) and carg:
+            raise ValueError("%s.cad_arg: %d on a %s row, which takes no argument"
+                             % (where, carg, name))
+        if cad == CAD_STOP_TO_GO and eff != "second":
+            raise ValueError("%s.cadence: stop-to-go is a seconds hand's rhythm, and this "
+                             "row reads %r" % (where, eff))
+        if cad == CAD_DRAG and eff not in CAD_DRAG_SOURCES:
+            raise ValueError("%s.cadence: drag holds a calendar row (%s), and this row "
+                             "reads %r" % (where, "/".join(CAD_DRAG_SOURCES), eff))
+        if cls == CLASS_HAND and eff == "none" and cad:
+            raise ValueError("%s.cadence: a still hand slot has no value to move by" % where)
+        if cls == CLASS_BANK and cad not in (CAD_INHERIT, CAD_JUMP):
+            raise ValueError("%s.cadence: a complication's plates are whole values, so it "
+                             "jumps — %s waits for a ring the dial can turn" % (where, name))
+        if cls == CLASS_HAND and int(rec["slot"]) == 5 and (cad or src or kind):
+            raise ValueError("%s: the carriage turns with the seconds row — give that row "
+                             "the cadence" % where)
+        if cls == CLASS_AUX and kind == MOTION_INDEXED and cad not in (CAD_INHERIT, CAD_JUMP):
+            raise ValueError("%s.cadence: indexed already snaps to whole units; %s "
+                             "contradicts it" % (where, name))
     if cls == CLASS_BANK:
         if not 0 <= kind < len(KINDS):
             raise ValueError("%s.kind: %d is not a way to draw plates (0..%d)"
@@ -1142,14 +1241,15 @@ def check_clock_stamp(rec):
     abi = rec.get("abi_max", CLOCK_ABI_V3)
     ew = rec.get("elem_words", ELEMENT_WORDS)
     spw = rec.get("spr_words") or (6 if abi >= CLOCK_ABI_V4 else 4)
-    if abi < CLOCK_ABI_V3 or abi > CLOCK_ABI_V4:
+    if abi < CLOCK_ABI_V3 or abi > CLOCK_ABI_V5:
         raise ValueError("a clock section stamped geometry v%d; this reader's clock "
-                         "dialect is v%d and v%d — re-bake it"
-                         % (abi, CLOCK_ABI_V3, CLOCK_ABI_V4))
+                         "dialect is v%d to v%d — re-bake it"
+                         % (abi, CLOCK_ABI_V3, CLOCK_ABI_V5))
     if abi >= CLOCK_ABI_V4:
-        if ew not in ELEMENT_WORDS_CLOCK_V4:
+        want = ELEMENT_WORDS_CLOCK_V5 if abi >= CLOCK_ABI_V5 else ELEMENT_WORDS_CLOCK_V4
+        if ew not in want:
             raise ValueError("clock rows are %d words under geometry v%d; that stamp "
-                             "writes exactly 25" % (ew, abi))
+                             "writes exactly %d" % (ew, abi, want[0]))
         if spw != 6:
             raise ValueError("clock catalogue rows are %d words under geometry v%d; "
                              "that stamp writes 6" % (spw, abi))
@@ -1163,7 +1263,8 @@ def check_clock_stamp(rec):
 
 
 def pack_elements(recs, cap=ELEM_MAX):
-    """Checked pack of a whole table: real rows only, no padding to the cap, exactly
+    """Checked pack of a whole table at the v4 width (25 words): real rows only, no
+    padding to the cap, exactly
     as pack_records does its own tables. C4's two appended columns default HERE
     (parent NONE, delay 0) rather than at pack_record's door: a row dict from
     before the delta dialect carries no claim, which is exactly what the
@@ -1175,13 +1276,88 @@ def pack_elements(recs, cap=ELEM_MAX):
     if len(recs) > cap:
         raise ValueError("element table: %d rows exceed the cap of %d"
                          % (len(recs), cap))
+    for i, r in enumerate(recs):
+        why = v5_claim(r)
+        if why:
+            raise ValueError("elem[%d] names %s at stride %d: the v4 clock stamp has no "
+                             "reading for it — bake the section at the v5 stamp"
+                             % (i, why, ELEMENT_WORDS_V4))
     out = []
     for i, r in enumerate(recs):
         r = dict(r)
         r.setdefault("parent", PARENT_NONE)
         r.setdefault("delay", 0)
+        out += pack_record(r, ELEMENT_FIELDS[:ELEMENT_WORDS_V4], "elem[%d]" % i)
+    return out
+
+
+def v5_claim(rec):
+    """What a row says that only the v5 stamp can carry (D41), or None: a cadence
+    column, or a HAND row's own drive. A bake packs v5 exactly when a row does."""
+    for c in ("cadence", "cad_arg", "ease"):
+        if int(rec.get(c, 0)):
+            return "%s %d" % (c, int(rec[c]))
+    if int(rec["class"]) == CLASS_HAND:
+        for c in ("kind", "src") + DRIVE_COLUMNS:
+            if int(rec.get(c, 0)):
+                return "a hand's own %s %d" % (c, int(rec[c]))
+    return None
+
+
+def pack_elements_v5(recs, cap=ELEM_MAX):
+    """The D41 width: 28 words, the three motion columns after C4's pair."""
+    check_table(recs)
+    if len(recs) > cap:
+        raise ValueError("element table: %d rows exceed the cap of %d"
+                         % (len(recs), cap))
+    out = []
+    for i, r in enumerate(recs):
+        r = dict(r)
+        r.setdefault("parent", PARENT_NONE)
+        for c in ("delay", "cadence", "cad_arg", "ease"):
+            r.setdefault(c, 0)
         out += pack_record(r, ELEMENT_FIELDS, "elem[%d]" % i)
     return out
+
+
+def check_clock_drive(recs, second_sweep, tick_rate):
+    """D41 §2.2's refusals that need the whole table or the section's tempo:
+    stop-to-go needs a jumping minute to release it, and a seconds hand's cadence
+    must be the tempo the scheduler keeps — sweep and stop-to-go on a sweeping dial,
+    step N at tick_rate N, jump at 1. Mirrors orb_clock3.c."""
+    minute_jumps = False
+    for r in recs:
+        if int(r["class"]) == CLASS_HAND and int(r["slot"]) == 1 and not int(r["src"]) \
+                and int(r.get("cadence", 0)) == CAD_JUMP:
+            minute_jumps = True
+    for i, r in enumerate(recs):
+        cad = int(r.get("cadence", 0))
+        cls = int(r["class"])
+        if cls not in (CLASS_HAND, CLASS_AUX):
+            continue
+        if cls == CLASS_HAND and not int(r["src"]):
+            slot = int(r["slot"])
+            eff = HAND_SLOT_SOURCE[slot] if slot < len(HAND_SLOT_SOURCE) else "none"
+        else:
+            eff = SOURCES[int(r["src"])]
+        if cad == CAD_STOP_TO_GO and not minute_jumps:
+            raise ValueError("elem[%d]: stop-to-go rests until the minute releases it, and "
+                             "the minute hand does not jump" % i)
+        if eff != "second" or not cad:
+            continue
+        rate = max(1, int(tick_rate))
+        if cls == CLASS_AUX:
+            bad = cad == CAD_STEP and int(r["cad_arg"]) != rate
+        else:
+            fast = cad in (CAD_SWEEP, CAD_STOP_TO_GO)
+            bad = (fast != bool(second_sweep) or
+                   (cad == CAD_STEP and int(r["cad_arg"]) != rate) or
+                   (cad == CAD_JUMP and rate != 1))
+        if bad:
+            raise ValueError("elem[%d]: a seconds row moving by %s (%d) on a dial whose "
+                             "tempo is sweep %d, tick_rate %d — the scheduler's tempo and "
+                             "the hand must agree" % (i, CADENCES[cad], int(r["cad_arg"]),
+                                                      int(second_sweep), int(tick_rate)))
 
 
 def pack_elements_v3(recs, cap=ELEM_MAX):
@@ -1279,9 +1455,11 @@ if __name__ == "__main__":
     # The element table (D32). Same habit as the rows above: the widths and the
     # bounds are what the firmware's mirror and the P6.1 suite are pinned against,
     # so they fail here on `python3 tools/theme_schema.py` and not on a dial.
-    assert ELEMENT_WORDS == 25 == len(ELEMENT_FIELDS), "element row width moved"
-    assert ELEMENT_WORDS_V3 == 23 and ELEMENT_FIELDS[-2][0] == "parent" \
-        and ELEMENT_FIELDS[-1][0] == "delay", "C4's append moved"
+    assert ELEMENT_WORDS == 28 == len(ELEMENT_FIELDS), "element row width moved"
+    assert ELEMENT_WORDS_V3 == 23 and ELEMENT_FIELDS[23][0] == "parent" \
+        and ELEMENT_FIELDS[24][0] == "delay", "C4's append moved"
+    assert ELEMENT_WORDS_V4 == 25 and [n for n, _t in ELEMENT_FIELDS[25:]] == \
+        ["cadence", "cad_arg", "ease"], "D41's append moved"
     assert len(CLASS_NAMES) == 11, "class vocabulary moved; orb_assets.h's bound must agree"
     assert len(MOTION_NAMES) == 5, "the pointer's motion vocabulary moved"
     assert class_id("hand") == CLASS_HAND and class_id("nope") is None
@@ -1292,8 +1470,43 @@ if __name__ == "__main__":
                                   "frame0": 0, "n_frames": 1, "x": 10, "y": 20,
                                   "w": 8, "h": 90, "pivot_x": 4, "pivot_y": 88,
                                   "radius": 0, "degrees": 9000, "scale16": 16})
-    assert pack_elements([_e]) == pack_record(_e, ELEMENT_FIELDS, "elem[0]")
-    assert unpack_elements(pack_elements([_e]), 1)[0] == _e, "element row must round-trip"
+    assert pack_elements([_e]) == pack_record(_e, ELEMENT_FIELDS[:ELEMENT_WORDS_V4], "elem[0]")
+    assert unpack_elements(pack_elements([_e]), 1, stride=ELEMENT_WORDS_V4)[0] == _e, \
+        "element row must round-trip"
+    assert unpack_elements(pack_elements_v5([_e]), 1)[0] == _e, "a v5 row must round-trip"
+    # ---- D41: a cadence rides only the v5 pack, and §2.2 refuses what cannot apply ----
+    _st = dict(_e, slot=2, cadence=CAD_STEP, cad_arg=4)
+    assert unpack_elements(pack_elements_v5([_st]), 1)[0] == _st
+    try:
+        pack_elements([_st]); raise AssertionError("a v4 pack carried a cadence")
+    except ValueError as e:
+        assert "v5" in str(e)
+    for _bad, _why in ((dict(_e, cadence=CAD_STOP_TO_GO), "seconds"),
+                       (dict(_e, slot=2, cadence=CAD_STEP), "step 0"),
+                       (dict(_e, slot=1, cadence=CAD_JUMP, cad_arg=3), "no argument"),
+                       (dict(_e, slot=0, cadence=CAD_DRAG), "calendar"),
+                       (dict(_e, slot=1, cadence=CAD_JUMP, ease=120), "not built"),
+                       (dict(_e, slot=5, cadence=CAD_JUMP), "carriage"),
+                       (dict(_e, slot=3, cadence=CAD_SWEEP), "still"),
+                       (dict(_e, cadence=9), "not a cadence"),
+                       (dict(_e, kind=MOTION_RETROGRADE), "names no source")):
+        try:
+            check_element(_bad); raise AssertionError("D41 let through: " + _why)
+        except ValueError as e:
+            assert _why in str(e), (str(e), _why)
+    check_element(dict(_e, src=SOURCES.index("hour12"), kind=MOTION_RETROGRADE,
+                       span=1800, vmax=12, cadence=CAD_SWEEP))  # a retrograde hour
+    check_clock_drive([dict(_e, slot=1, cadence=CAD_JUMP),
+                       dict(_e, n=1, slot=2, cadence=CAD_STOP_TO_GO, cad_arg=585)], 1, 1)
+    check_clock_drive([dict(_e, slot=2, cadence=CAD_STEP, cad_arg=4)], 0, 4)
+    for _rows, _sw, _rate, _why in (
+            ([dict(_e, slot=2, cadence=CAD_STOP_TO_GO)], 1, 1, "release"),
+            ([dict(_e, slot=2, cadence=CAD_STEP, cad_arg=4)], 0, 1, "agree"),
+            ([dict(_e, slot=2, cadence=CAD_SWEEP)], 0, 1, "agree")):
+        try:
+            check_clock_drive(_rows, _sw, _rate); raise AssertionError(_why)
+        except ValueError as e:
+            assert ("releases" if _why == "release" else _why) in str(e), str(e)
     # A D32-width row still reads: the four drive columns land on the zeros they were
     # written after, which is the append-only promise the stride derivation exists for.
     _narrow = unpack_elements(pack_record(_e, ELEMENT_FIELDS[:19], "e"), 1, stride=19)[0]

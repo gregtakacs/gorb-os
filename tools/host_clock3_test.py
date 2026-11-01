@@ -306,6 +306,14 @@ int main(int argc, char **argv)
                (int)a->spr.centerx, (int)a->spr.centery,
                a->parent_row, (unsigned)a->delay_ms);
     }
+    /* D41: each hand slot's driven row and each pointer's cadence, as projected. */
+    for (int i = 0; i < 5; i++) {
+        const clk_drive_t *d = &th.hand_drive[i];
+        printf("drive %d %u %u %u %u %d %d %u %u\n", i, d->src, d->path, d->cadence,
+               d->cad_arg, d->span, d->zero, d->value_min, d->value_max);
+    }
+    for (uint32_t i = 0; i < io.out_n_aux; i++)
+        printf("auxcad %u %u %u\n", i, auxs[i].cadence, auxs[i].cad_arg);
     /* D39: slot n pcm_off beat_chz first_beat flags, then the pattern they share. */
     printf("pattern %u\n", (unsigned)io.out_pattern);
     for (uint32_t i = 0; i < io.out_n_sounds; i++)
@@ -1788,6 +1796,7 @@ def c4_battery(exe, base):
 # accept at both ends, and a refusal is refused at both in the same words.
 # ---------------------------------------------------------------------------
 import orbsound as osnd            # noqa: E402
+import shutil                      # noqa: E402
 
 D39_LOOP_N = ts.SOUND_RATE * 8      # an 8 s loop: a whole number of beats at 1/2/4/8
 
@@ -2049,6 +2058,154 @@ def d39_mutants(exe, base, full):
     print("  D39 mutants: %d guards, each asked about its own lie" % len(D39_MUTANTS))
 
 
+# ---------------------------------------------------------------------------
+# D41 — motion. A v5 clock section's rows carry cadence, cad_arg and ease after
+# C4's pair, and a HAND row may name its own drive. The writer refuses every lie
+# below when it packs (check_element / check_clock_drive), so each refusal reaches
+# the device as an honest v5 file with one row word forged, and must be refused
+# there in the reader's own words and by the schema on the same rows.
+# ---------------------------------------------------------------------------
+W_KIND, W_SRC, W_SPAN, W_ZERO, W_VMIN, W_VMAX = 17, 18, 19, 20, 21, 22
+W_CAD, W_CARG, W_EASE = 25, 26, 27
+
+
+def d41_rows_of(path):
+    return c4_forge_rows(path)
+
+
+def d41_battery(exe, base):
+    sweep, step = d39_step(base)
+
+    def honest(els, sc, art, spr):
+        c4_defaults(els, sc, art, spr)
+        for e in els:
+            if int(e["class"]) == ts.CLASS_HAND and int(e["slot"]) == 1:
+                e["cadence"] = ts.CAD_JUMP
+            if int(e["class"]) == ts.CLASS_HAND and int(e["slot"]) == 0:
+                e.update(src=ts.SOURCES.index("hour12"), kind=ts.MOTION_RETROGRADE,
+                         span=1800, zero=0, vmin=0, vmax=12, cadence=ts.CAD_SWEEP)
+    path = c4_forge(base, 5, honest)
+    rc, out, err = run(exe, "--dump3f", path)
+    ck(rc == 0, "D41 accept: the device refused an honest v5 section: %r" % out[:240])
+    drv = {int(w[1]): w[2:] for w in (l.split() for l in out.splitlines())
+           if w and w[0] == "drive"}
+    ck(drv.get(1, [])[:4] == ["0", "0", "3", "0"],
+       "D41 accept: the jumping minute did not project: %r" % drv.get(1))
+    ck(drv.get(0, []) == ["4", "1", "1", "0", "1800", "0", "0", "12"],
+       "D41 accept: the retrograde hour did not project: %r" % drv.get(0))
+    ck("geom 5 28 6" in out, "D41 accept: the stamp and strides did not read v5")
+    # v4 still packs byte-identical when no row claims motion
+    v4 = c4_forge(base, 4, c4_defaults)
+    rc, out4, _ = run(exe, "--dump3f", v4)
+    ck(rc == 0 and "geom 4 25 6" in out4, "D41: a v4 section stopped reading as v4")
+    try:
+        c4_forge(base, 4, honest)
+        ck(False, "D41: the v4 pack carried a cadence")
+    except ValueError as e:
+        ck("v5" in str(e), "D41: the v4 pack refused for the wrong reason: %s" % e)
+    print("  D41 accept: a jumping minute and a retrograde hour at v5; v4 unchanged")
+
+    rows = d41_rows_of(path)
+    hand = {int(e["slot"]): i for i, e in enumerate(rows) if int(e["class"]) == ts.CLASS_HAND}
+    aux = [i for i, e in enumerate(rows) if int(e["class"]) == ts.CLASS_AUX]
+    bank = [i for i, e in enumerate(rows) if int(e["class"]) == ts.CLASS_BANK]
+    plate = [i for i, e in enumerate(rows) if int(e["class"]) == ts.CLASS_PLATE][0]
+    vectors = [
+        ("a cadence past the vocabulary", hand[1], {W_CAD: 9}, "names cadence 9"),
+        ("an ease", hand[1], {W_EASE: 120}, "not built yet"),
+        ("step 0", hand[2], {W_CAD: ts.CAD_STEP}, "steps 0 times"),
+        ("an argument on a jump", hand[1], {W_CARG: 3}, "takes none"),
+        ("stop-to-go on the minute", hand[1], {W_CAD: ts.CAD_STOP_TO_GO}, "seconds hand's rhythm"),
+        ("drag on the minute", hand[1], {W_CAD: ts.CAD_DRAG}, "drag holds a calendar"),
+        ("a cadence on the plate", plate, {W_CAD: ts.CAD_JUMP}, "driven row's question"),
+        ("a path with no source", hand[2], {W_KIND: ts.MOTION_RETROGRADE}, "names a path and no source"),
+        ("a driven hand with no domain", hand[0], {W_VMAX: 0}, "a domain to divide"),
+        ("a hand driven by text", hand[0], {W_SRC: ts.SOURCES.index("text")}, "not a value a hand"),
+        ("stop-to-go with a creeping minute", None, None, "does not jump"),
+        # a sweeping dial with a seconds hand that steps at the dial's own rate (or a
+        # stepping dial with a sweep): only the sweep/step mismatch is wrong
+        ("a seconds hand off the tempo", hand[2],
+         ({W_CAD: ts.CAD_STEP, W_CARG: step} if sweep else {W_CAD: ts.CAD_SWEEP}),
+         "must agree"),
+    ]
+    if 5 in hand:
+        vectors.append(("a carriage with its own motion", hand[5], {W_CAD: ts.CAD_JUMP},
+                        "turns with the seconds row"))
+    if aux:
+        vectors.append(("a cadence on an indexed pointer", aux[0],
+                        {W_KIND: ts.MOTION_INDEXED, W_CAD: ts.CAD_SWEEP}, "already snaps"))
+    if bank:
+        vectors.append(("a complication that sweeps", bank[0], {W_CAD: ts.CAD_SWEEP},
+                        "whole plates jump"))
+    refused = 0
+    forged = {}
+    for what, row, words, needle in vectors:
+        if row is None:
+            # the minute creeps (cadence back to inherit) under a stop-to-go second
+            t = elem_tamper(path, hand[1], W_CAD, 0)
+            row, words = hand[2], {W_CAD: ts.CAD_STOP_TO_GO, W_CARG: 585}
+            prows = d41_rows_of(path)
+            prows[hand[1]]["cadence"] = 0
+        else:
+            t, prows = path, d41_rows_of(path)
+        for w, v in words.items():
+            t = elem_tamper(t, row, w, v)
+            name = {W_KIND: "kind", W_SRC: "src", W_SPAN: "span", W_ZERO: "zero",
+                    W_VMIN: "vmin", W_VMAX: "vmax", W_CAD: "cadence", W_CARG: "cad_arg",
+                    W_EASE: "ease"}[w]
+            prows[row][name] = v
+        # elem_tamper names its file by row and word; keep each vector's own copy
+        keep = "%s.d41-%d.orbtheme" % (path, len(forged))
+        shutil.copyfile(t, keep)
+        t = forged[what] = keep
+        rc, out, err = run(exe, "--refuse", t)
+        ck(rc == 0 and needle in out, "D41 %s: the device did not refuse in its own words "
+                                       "(%r): %r" % (what, needle, out[:240]))
+        try:
+            ts.check_table(prows)
+            _h, secs = ob.read_bundle(path)
+            sc = secs[0]["blob"]["scalars"]
+            ts.check_clock_drive(prows, int(sc["second_sweep"]), int(sc["tick_rate"]))
+            ck(False, "D41 %s: theme_schema let the rows through" % what)
+        except ValueError:
+            pass
+        refused += 1
+    # a v4 file whose hand names a source: the drive rides v5
+    t = elem_tamper(v4, hand[0], W_SRC, ts.SOURCES.index("hour12"))
+    rc, out, err = run(exe, "--refuse", t)
+    ck(rc == 0 and "ride the v5 stamp" in out,
+       "D41: a v4 hand naming a source was not refused: %r" % out[:240])
+    forged["v4 hand"] = t
+    refused += 1
+    print("  D41 refusals: %d vectors, refused by the device and the schema alike" % refused)
+    return forged
+
+
+def d41_mutants(exe, forged):
+    for what, old, new, tag in D41_MUTANTS:
+        path = forged[tag]
+        hrc, hout, _ = run(exe, "--refuse", path)
+        m = build(mut=(old, new))
+        rc, out, err = run(m, "--refuse", path)
+        ck(rc != hrc or out != hout, "uncaught D41 mutant: %s — broken, it answered %r"
+           % (what, out[:160]))
+    print("  D41 mutants: %d guards, each asked about its own lie" % len(D41_MUTANTS))
+
+
+D41_MUTANTS = (
+    ("the ease refusal", "    if (e->ease)\n", "    if (0)\n", "an ease"),
+    ("step 0", "if (e->cadence == CLK_CAD_STEP && !e->cad_arg)", "if (0)", "step 0"),
+    ("the stop-to-go source", "if (e->cadence == CLK_CAD_STOP_TO_GO && eff != CLK_SRC_SECOND)",
+     "if (0)", "stop-to-go on the minute"),
+    ("the release", "if (d->cadence == CLK_CAD_STOP_TO_GO && !minute_jumps)", "if (0)",
+     "stop-to-go with a creeping minute"),
+    ("the tempo agreement", "if (fast != (t->second_sweep != 0) ||", "if (0 ||",
+     "a seconds hand off the tempo"),
+    ("the v4 hand drive", "if (!motion && e.cls == CLS_HAND && (e.kind || e.src))", "if (0)",
+     "v4 hand"),
+)
+
+
 if __name__ == "__main__":
     EXE, PAIR = main()
     refusals(EXE, PAIR)
@@ -2057,7 +2214,9 @@ if __name__ == "__main__":
     d34_battery(EXE, PAIR)
     c4_battery(EXE, PAIR)
     d39_battery(EXE, PAIR)
+    D41_FORGED = d41_battery(EXE, PAIR)
     if "--mutations" in sys.argv:
+        d41_mutants(EXE, D41_FORGED)
         mutants(EXE, PAIR)
     print("%d checks, %d failures" % (checks[0], len(failures)))
     sys.exit(1 if failures else 0)

@@ -21,7 +21,7 @@ replaces, and the slices. Read it before touching `hand_angles`,
 `aux_value_1000` or `aux_angle_10`, FORMAT 3's element columns, or the
 composer's Hands and Comps tabs.
 
-**Status: RULED (owner, 2026-10-30, generalized 2026-10-31). G1 built 2026-11-01; G2–G5 not built.**
+**Status: RULED (owner, 2026-10-30, generalized 2026-10-31). G1 and G2 built 2026-11-01 (G2 without AUX depth, ease or bank cadences — see §4); G3–G5 not built.**
 
 | Parameter | Ruled value |
 |---|---|
@@ -194,6 +194,29 @@ row.
 widening `second_railway` against appending scalars. Columns answer it for every
 row class at once and leave the scalar gate alone.
 
+**Built (G2, 2026-11-01).** `theme_schema.py` (`ELEMENT_WORDS` 28, `CADENCES`,
+`v5_claim`, `pack_elements_v5`, `check_clock_drive`), `orbbundle.py` (`GEOM_ABI5`),
+`orb_bundle.{c,h}` (`ORB_BUNDLE3_ABI3`), `orb_clock3.c` (`cadence_check`, the hand
+drive projection into `clk_theme_t.hand_drive[5]`, the pointer's `cadence`/`cad_arg`),
+`orbtheme-baker.js` and the hub's container reader. A bake packs v5 exactly when a
+row claims a motion column; every other bake's bytes do not move. Two rules were
+settled while building:
+
+- **The carriage names no motion of its own.** It turns with the seconds row, so
+  the seconds row carries the cadence.
+- **A seconds row's cadence must be the section's tempo.** Sweep and stop-to-go
+  need `second_sweep`, step *N* needs `tick_rate` *N*, and jump needs `tick_rate` 1
+  with no sweep. The scalars stay the scheduler's tempo hint.
+
+**What G2 left, refused rather than silently ignored:**
+
+- **`ease`.** The column rides the wire, but every reader refuses a non-zero
+  ease until settle and flyback are drawn (G4).
+- **Bank cadences other than inherit and jump.** FORMAT 3 projects only windows,
+  whose plates are whole values. Sweep and drag wait for a ring the dial can turn.
+- **AUX `order` as depth.** Pointers still join `aux_insert_at`'s one block. A
+  disc behind a window needs it, and it lands with G4's bench.
+
 **A disc behind a window is a depth question, and the bench answers it.** The
 aperture has to be art in a live layer above the disc's bucket, not a hole in
 the restore plate. The commit pass restores marked rows from the plate
@@ -238,7 +261,7 @@ cut-out layer costs per frame.
 | Slice | Content | Gate |
 |---|---|---|
 | **G1** ✔ | §3's drive function: `hand_angles` and the AUX path become one, with HAND slots as pre-filled rows. No format change | the host test samples a day of times and proves every v4 dial's angles identical before and after — **DONE 2026-11-01**: `tools/host_drive_test.py`, a day at 12 fps under all 40 v4 hand-word combinations (sweep × railway × tick_rate 0/1/2/4/8 × delta-bank beat), bit-identical to the pre-G1 `hand_angles`; eight v4 pointers identical to `aux_value_1000`; the new cadences pinned by hand-worked vectors; 14 mutants caught |
-| **G2** | v5: the three columns, drive columns on HAND rows, depth on AUX rows, §2.2's refusals. Mirror, reader and baker move together | host suites green, one mutant caught per new refusal |
+| **G2** ✔ (part) | v5: the three columns, drive columns on HAND rows, depth on AUX rows, §2.2's refusals. Mirror, reader and baker move together | host suites green, one mutant caught per new refusal — **DONE 2026-11-01** except AUX depth, ease and bank cadences (§4, "What G2 left"): `host_clock3_test.py`'s D41 battery (13 refusals at both ends, 6 mutants), `host_drive_test.py` (17 mutants), `headless-bundle3` (11 D41 checks), the hub's container reader takes v5 |
 | **G3** | Composer: per-hand and per-pointer Source / Path / Cadence / Ease / depth, the JS drive twin, the station preset | the preview-versus-reader angle check; `_selftest` green |
 | **G4** | Bench: stop-to-go plus a jumping minute, a retrograde hour's flyback, a disc under a cut-out layer, settle cost | rests and releases on the wall minute; frame cost recorded here |
 | **G5** | Step sounds, landed with D39's S6 | the clunk lands on the jump's frame |

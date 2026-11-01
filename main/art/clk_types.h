@@ -45,6 +45,40 @@ typedef struct {
  * --from-bundle) refuse a longer bank with this number. */
 #define CLK_BG_MAX    16
 
+/* D41: when a driven row moves (docs/hand-motion-plan.md §2.1). Paths above say
+ * how a value becomes a pose; a cadence says how much of the next finer field the
+ * value shows. FORMAT 3 v4 has no column for it, so every row reads INHERIT — each
+ * row class's behaviour before D41 — until v5 (slice G2) gives a row its own. */
+enum {
+    CLK_CAD_INHERIT    = 0,   /* the row class's pre-D41 motion (§2.3)               */
+    CLK_CAD_SWEEP      = 1,   /* the whole fraction                                  */
+    CLK_CAD_STEP       = 2,   /* the fraction quantised to 1/cad_arg of a unit       */
+    CLK_CAD_JUMP       = 3,   /* no fraction: moves on the unit boundary             */
+    CLK_CAD_STOP_TO_GO = 4,   /* one turn in cad_arg tenths of a second, then rests  */
+    CLK_CAD_DRAG       = 5,   /* holds, then creeps over cad_arg minutes to the boundary */
+    CLK_CAD__MAX
+};
+
+/* D41 §3: a driven row as the one drive function reads it — source, path, cadence,
+ * and the path's span, zero and domain. A HAND slot is a pre-filled one of these
+ * (hour12 over 12, minute over 60, second over 60, the two statics still), and an AUX
+ * row is its record's own columns, so the hands are three rows rather than a second
+ * code path. `hand` picks which INHERIT a row means: the hand chain (the hour reads
+ * the minute the hand shows, the minute the second the hand shows) or the pointer's
+ * (whole units of the next finer field, CLK_FLAG_JUMP to drop them). */
+typedef struct {
+    uint8_t  src;              /* CLK_SRC_*    */
+    uint8_t  path;             /* CLK_MOTION_* */
+    uint8_t  cadence;          /* CLK_CAD_*    */
+    uint8_t  hand;             /* 1: a HAND slot's row */
+    uint16_t cad_arg;          /* N steps, P tenths of a second, or a drag window in minutes */
+    uint16_t flags;            /* CLK_FLAG_JUMP / CLK_FLAG_WRAP, as on an AUX row */
+    int16_t  span;             /* tenths of a degree, or px on a slide */
+    int16_t  zero;
+    uint16_t value_min;
+    uint16_t value_max;
+} clk_drive_t;
+
 typedef struct {
   uint32_t bg;
   uint8_t  plate_follow;    /* 0 none 1 hour 2 minute 3 second */
@@ -74,6 +108,11 @@ typedef struct {
    * — no start orientation, a plain bank at the seconds angle. */
   uint16_t tourbillon_start;/* the carriage row's start orientation, fixed-point
                              *   100ths of a degree, added to the seconds angle */
+  /* D41 (v5): each live hand slot's own driven row, as the projection read it.
+   * All-zero (src NONE, cadence INHERIT) is the slot's own mapping — every theme
+   * before v5 — and clock_view.c's HAND_ROW supplies it. A row with src NONE and a
+   * cadence keeps the slot's mapping and takes the cadence. */
+  clk_drive_t hand_drive[5];
 } clk_theme_t;
 
 typedef struct {
@@ -121,40 +160,6 @@ enum {
     CLK_MOTION_SLIDE_Y    = 4,   /* the same along y: a vertical reserve gauge         */
     CLK_MOTION__MAX
 };
-
-/* D41: when a driven row moves (docs/hand-motion-plan.md §2.1). Paths above say
- * how a value becomes a pose; a cadence says how much of the next finer field the
- * value shows. FORMAT 3 v4 has no column for it, so every row reads INHERIT — each
- * row class's behaviour before D41 — until v5 (slice G2) gives a row its own. */
-enum {
-    CLK_CAD_INHERIT    = 0,   /* the row class's pre-D41 motion (§2.3)               */
-    CLK_CAD_SWEEP      = 1,   /* the whole fraction                                  */
-    CLK_CAD_STEP       = 2,   /* the fraction quantised to 1/cad_arg of a unit       */
-    CLK_CAD_JUMP       = 3,   /* no fraction: moves on the unit boundary             */
-    CLK_CAD_STOP_TO_GO = 4,   /* one turn in cad_arg tenths of a second, then rests  */
-    CLK_CAD_DRAG       = 5,   /* holds, then creeps over cad_arg minutes to the boundary */
-    CLK_CAD__MAX
-};
-
-/* D41 §3: a driven row as the one drive function reads it — source, path, cadence,
- * and the path's span, zero and domain. A HAND slot is a pre-filled one of these
- * (hour12 over 12, minute over 60, second over 60, the two statics still), and an AUX
- * row is its record's own columns, so the hands are three rows rather than a second
- * code path. `hand` picks which INHERIT a row means: the hand chain (the hour reads
- * the minute the hand shows, the minute the second the hand shows) or the pointer's
- * (whole units of the next finer field, CLK_FLAG_JUMP to drop them). */
-typedef struct {
-    uint8_t  src;              /* CLK_SRC_*    */
-    uint8_t  path;             /* CLK_MOTION_* */
-    uint8_t  cadence;          /* CLK_CAD_*    */
-    uint8_t  hand;             /* 1: a HAND slot's row */
-    uint16_t cad_arg;          /* N steps, P tenths of a second, or a drag window in minutes */
-    uint16_t flags;            /* CLK_FLAG_JUMP / CLK_FLAG_WRAP, as on an AUX row */
-    int16_t  span;             /* tenths of a degree, or px on a slide */
-    int16_t  zero;
-    uint16_t value_min;
-    uint16_t value_max;
-} clk_drive_t;
 
 /* What drives a comp's value. Every one derives from the wall clock and the
  * battery state the view already has, so a new theme feature needs no new input
@@ -288,4 +293,8 @@ typedef struct {
      * the compositor must honour. */
     uint16_t parent_row;       /* parent's element row n + 1; 0 = none */
     uint16_t delay_ms;         /* per-frame interval; 0 = the dial's own default */
+    /* D41 (v5): when the pointer moves. 0 = INHERIT, the sweep every FORMAT 3
+     * pointer has always drawn. */
+    uint8_t  cadence;          /* CLK_CAD_* */
+    uint16_t cad_arg;          /* step N, stop-to-go P (0.1 s), drag window (min) */
 } clk_aux_t;

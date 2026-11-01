@@ -51,6 +51,8 @@ const (
 	themeABI4     = 4          // ORB_BUNDLE3_ABI2: C4's clock delta dialect. An animated
 	// plate bake stamps the header 4; the device door and the
 	// browser reader both take 3 and 4, so the hub must too.
+	themeABI5 = 5 // ORB_BUNDLE3_ABI3: D41's motion columns. A bake whose rows name a
+	// cadence or a hand's own drive stamps 5; the device and the browser take it.
 	themeNameBytes = 56 // ORB_THEME_NAME_MAX: 55 usable + the NUL
 	bundleSectMax  = 8  // ORB_BUNDLE_SECT_MAX: the index's width
 	bundleIdxWords = 10 // ORB_BUNDLE_IDX_WORDS: a 40-byte record
@@ -130,8 +132,8 @@ func parseContainer(body []byte, head bool) (*ThemeContainer, error) {
 	if f != themeFormat3 {
 		return nil, fmt.Errorf("orbnet: that is a FORMAT %d theme container and the orb reads FORMAT 3 only — the FORMAT 2 reader is out of the firmware, so re-export it from the Theme Editor", f)
 	}
-	if w(wGeomABI) != themeABI3 && w(wGeomABI) != themeABI4 {
-		return nil, fmt.Errorf("orbnet: bundle geometry v%d; this build reads v%d and v%d — re-bake it", w(wGeomABI), themeABI3, themeABI4)
+	if w(wGeomABI) != themeABI3 && w(wGeomABI) != themeABI4 && w(wGeomABI) != themeABI5 {
+		return nil, fmt.Errorf("orbnet: bundle geometry v%d; this build reads v%d to v%d — re-bake it", w(wGeomABI), themeABI3, themeABI5)
 	}
 	// The header's own checksum, over the header's SHAPE: the same 128 bytes with word 28
 	// zeroed. That is the torn-copy check, and it does not vary with the dialect inside the

@@ -72,6 +72,7 @@ STUBS = r'''
 #include "nvs.h"
 #include "orb_app.h"
 #include "orb_svc.h"
+#include "orb_home.h"     /* the LOCATION door's record, stubbed below */
 #include "orb_theme.h"
 
 /* The NVS store. Keys are namespace+key pairs, values u32 or string, exactly
@@ -326,6 +327,19 @@ esp_err_t orb_net_tz_offset(time_t when, int32_t *off)
     return ESP_OK;
 }
 
+/* ---- the location leaves: the home record, counted so a refusal can be seen
+ * to come BEFORE the read (a gate after the copy has already leaked it) ---- */
+int g_home_reads;
+uint32_t orb_home_gen(void) { return 7; }
+bool orb_home_get(orb_home_t *out)
+{
+    g_home_reads++;
+    memset(out, 0, sizeof *out);
+    out->set = true; out->lat_e6 = 33448400; out->lon_e6 = -112074000;
+    strcpy(out->place, "Phoenix");
+    return true;
+}
+
 /* ---- the power leaves: what the broker's request path must call ----------- */
 int g_pwr_calls;                       /* app_request invocations */
 int g_rel_calls;                       /* app_release invocations */
@@ -441,8 +455,21 @@ int main(int argc, char **argv)
     F(http_get); F(bank); F(layer_add); F(layer_set); F(layer_touch); F(layer_del);
     F(job_post); F(set_beat);
     F(theme_count); F(theme_id); F(theme_active); F(theme_changed); F(theme_note);
-    F(theme_install); F(status);
-    CK("all 23 frozen entries wired", holes == 0);
+    F(theme_install); F(status); F(home);
+    CK("all 24 frozen entries wired", holes == 0);
+
+    /* The LOCATION door (flight-tracker-design §6.4): an app that never
+     * declared the cap is refused before the record is read, and the refusal
+     * is counted in its denied mask like any other owner cap. */
+    {
+        orb_svc_home_t h;
+        g_home_reads = 0;
+        CK("home: undeclared app refused, record never read",
+           S->home(A, &h) == ESP_ERR_NOT_ALLOWED && S->home(G, &h) == ESP_ERR_NOT_ALLOWED &&
+           g_home_reads == 0 && (orb_svc_denied_mask(A) & (1u << CAP_LOCATION)) != 0);
+        CK("home: location is an owner cap, not a free one",
+           !(CAP_FREE_MASK & (1u << CAP_LOCATION)) && CAP_N == 9);
+    }
 
     /* ---- the wall clock: one scripted timeline, the compose_now rules ---- */
     time_t sec; double frac; bool synced;

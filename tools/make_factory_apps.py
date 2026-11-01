@@ -57,7 +57,7 @@ CLOCK_CAPS = orbapp.cap_bit("sd_read") | orbapp.cap_bit("themes")
 PICKER_CAPS = 0
 # The flight tracker opens sockets (the OS feed, docs/flight-tracker-design.md),
 # so it declares net: an app that declared nothing never reaches the network.
-FLIGHTS_CAPS = orbapp.cap_bit("net")
+FLIGHTS_CAPS = orbapp.cap_bit("net") | orbapp.cap_bit("location")
 
 # S6 (§4.1): the release stamp both starter containers carry, and the serial derived
 # from it. The number is not typed here. It is read out of version.txt — the same file
@@ -108,12 +108,10 @@ PICKER_SETTINGS = (
     {"id": "bri", "type": "int", "min": 0, "max": 100, "default": 90},
 )
 
-# The tracker's settings (design §6.3). Home is two STRINGs until the OS home
-# location (§6.4) replaces them; enums are indices the view names:
-# range 10/20/40/80 nm, source adsb.lol/adsb.fi, bg off/1/2/5 min.
+# The tracker's settings (design §6.3). Home is not among them: it is the OS
+# home location (§6.4), read through the location cap. Enums are indices the
+# view names: range 10/20/40/80 nm, source adsb.lol/adsb.fi, bg off/1/2/5 min.
 FLIGHTS_SETTINGS = (
-    {"id": "lat",    "type": "string", "def_str": ""},
-    {"id": "lon",    "type": "string", "def_str": ""},
     {"id": "range",  "type": "enum",   "min": 0, "max": 3, "default": 2},
     {"id": "source", "type": "enum",   "min": 0, "max": 1, "default": 0},
     {"id": "bg",     "type": "enum",   "min": 0, "max": 3, "default": 1},

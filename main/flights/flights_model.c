@@ -78,11 +78,14 @@ int fm_find(const fm_t *m, const char *hex)
     return -1;
 }
 
-void fm_sel_next(const fm_t *m, const char *hex, char *hex_out)
+void fm_sel_step(const fm_t *m, const char *hex, int step, char *hex_out)
 {
-    const int next = fm_find(m, hex) + 1;
-    if (next < m->norder) memcpy(hex_out, m->t[m->order[next]].ac.hex, sizeof m->t[0].ac.hex);
-    else hex_out[0] = 0;
+    if (m->norder <= 0) { hex_out[0] = 0; return; }
+    const int at = fm_find(m, hex);
+    int next;
+    if (at < 0) next = step < 0 ? m->norder - 1 : 0;
+    else        next = ((at + (step < 0 ? -1 : 1)) % m->norder + m->norder) % m->norder;
+    memcpy(hex_out, m->t[m->order[next]].ac.hex, sizeof m->t[0].ac.hex);
 }
 
 static bool on_glass(const fm_rect_t *a, int cx, int cy, int r)

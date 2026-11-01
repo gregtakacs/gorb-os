@@ -75,7 +75,8 @@ typedef enum {
     CAP_NET = 5,      /* owner: the OS http client, P4                 */
     CAP_SD_READ = 6,  /* owner: /sd/apps/<id>/ only, P4                */
     CAP_THEMES = 7,   /* owner: enumerate + request the D11 install    */
-    CAP_N             /* 8                                              */
+    CAP_LOCATION = 8, /* owner: the OS home location (flight-tracker §6.4) */
+    CAP_N             /* 9                                              */
 } orb_cap_t;
 
 /* TIME|CONFIG|UI|ART: never stored, never revoked — §4.2's "free, always on"
@@ -116,6 +117,11 @@ typedef struct {
  * struct is the frozen ABI; a stub refuses loudly rather than pretending, and
  * the host suite pins that each stub sits BEHIND its gate, not in place of it. */
 typedef struct { uint8_t *data; size_t cap, len; } orb_buf_t;
+typedef struct {
+    int32_t  lat_e6, lon_e6;      /* millionths of a degree                 */
+    uint32_t gen;                 /* orb_home_gen() when read               */
+    char     place[40];           /* "Phoenix", "near Phoenix", ...         */
+} orb_svc_home_t;
 /* P5.5: the layer records are no longer a placeholder. The full types live in
  * main/gfx/orb_layers.h, which the CONSUMER includes when it builds a
  * descriptor; this header forward-declares them so the frozen table reaches an
@@ -165,6 +171,11 @@ typedef struct {
   esp_err_t (*theme_install)(orb_app_t *, const char *id);
   /* ui: the shell's list primitives for the app's settings page */
   void (*status)(orb_app_t *, const char *fmt, ...);
+  /* location: the owner's home (flight-tracker-design §6.4), cap LOCATION.
+   * ESP_ERR_NOT_FOUND while none is set. `gen` moves on every change, so an
+   * app re-reads when it does and not before. Appended: the table's earlier
+   * entries keep their places. */
+  esp_err_t (*home)(orb_app_t *, orb_svc_home_t *out);
 } orb_svc_t;
 
 /** The gate, §4.2 made real. Counts the call either way — the P3 pass line is

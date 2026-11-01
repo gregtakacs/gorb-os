@@ -31,6 +31,7 @@
 #include "orb_jobs.h"
 #include "art_bank.h"
 #include "orb_net.h"          /* orb_net_time_synced / tz_label / tz_offset */
+#include "orb_home.h"         /* the LOCATION door: the owner's home       */
 #include "orb_theme.h"        /* the D18 family: enumerate and request, never bytes */
 #include "idle_dim.h"         /* the power request path — a request, not a write */
 #include "orb_layers.h"       /* P5.5: the layer table the four entries drive */
@@ -719,6 +720,20 @@ static void svc_status(orb_app_t *a, const char *fmt, ...)
     }
 }
 
+static esp_err_t svc_home(orb_app_t *a, orb_svc_home_t *out)
+{
+    SVC(a, LOCATION);
+    if (!out) return ESP_ERR_INVALID_ARG;
+    orb_home_t h;
+    memset(out, 0, sizeof *out);
+    out->gen = orb_home_gen();
+    if (!orb_home_get(&h)) return ESP_ERR_NOT_FOUND;
+    out->lat_e6 = h.lat_e6;
+    out->lon_e6 = h.lon_e6;
+    snprintf(out->place, sizeof out->place, "%s", h.place);
+    return ESP_OK;
+}
+
 /* The frozen table. The order IS orb_svc_t's field order — the one place a
  * missing entry becomes a compile-visible shape rather than a NULL an app
  * discovers at runtime — and nothing below is reachable without going through
@@ -747,6 +762,7 @@ static const orb_svc_t S_TABLE = {
     .theme_note    = svc_theme_note,
     .theme_install = svc_theme_install,
     .status        = svc_status,
+    .home          = svc_home,
 };
 
 const orb_svc_t *orb_svc_table(void) { return &S_TABLE; }
@@ -754,7 +770,7 @@ const orb_svc_t *orb_svc_table(void) { return &S_TABLE; }
 const char *orb_svc_cap_name(orb_cap_t cap)
 {
     static const char *const N[CAP_N] = {
-        "time", "config", "ui", "art", "power", "net", "sd_read", "themes"
+        "time", "config", "ui", "art", "power", "net", "sd_read", "themes", "location"
     };
     return (unsigned)cap < CAP_N ? N[cap] : "?";
 }

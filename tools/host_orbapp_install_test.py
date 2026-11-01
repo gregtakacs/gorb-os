@@ -528,7 +528,13 @@ def lint(src):
             dtail = ubody[dlo:ubody.find("{", dlo)]
             for word in ("oh.geom_crc == h.geom_crc", "oh.code_crc == h.code_crc",
                          "oh.code_size == h.code_size", "oh.editor_crc == h.editor_crc",
-                         "oh.serial == h.serial", "strcmp(oh.slug, h.slug) == 0"):
+                         "oh.serial == h.serial", "strcmp(oh.slug, h.slug) == 0",
+                         # 2026-11-01: the gate words. The flight tracker gained
+                         # the location cap at an unchanged release and the card
+                         # kept the old consent; caps is D19's grant itself.
+                         "oh.caps == h.caps", "oh.period_ms == h.period_ms",
+                         "oh.n_settings == h.n_settings",
+                         "oh.behaviour_kind == h.behaviour_kind"):
                 if word not in dtail:
                     bad.append("upload: the identity tuple dropped %s — an app differing only in "
                                "that word is filed as unchanged and its new bytes are discarded"

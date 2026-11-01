@@ -343,10 +343,11 @@ func TestThemeEditorIsAppOwnedNotAGlobalLink(t *testing.T) {
 // the page has to survive it in the open. Live on 2026-10-26: the operator ran
 // a firmware update, the Orb face's zone fetch died against a dial that was
 // busy booting, and the card sat reading "reading the board's zone table..."
-// forever — the exact frozen-page costume the update overlay used to wear. Two
+// forever (the zone table left the face on 2026-11-01; the home read
+// inherited its ladder) — the exact frozen-page costume the update overlay used to wear. Two
 // sentences keep that class out of the code:
 //
-//   - loadZonesTable names its failure in the card's own line instead of
+//   - loadHome names its failure in the card's own line instead of
 //     leaving the fetch's silence painted as progress, re-throws so the
 //     lazy ledger drops the key and a later press reloads, and re-dials the
 //     read itself on a bounded boot-clock ladder: a board that answers
@@ -358,20 +359,20 @@ func TestThemeEditorIsAppOwnedNotAGlobalLink(t *testing.T) {
 func TestZoneFaceTellsTheTruthAndFacesRearmOnReturn(t *testing.T) {
 	tabs := readWebFile(t, "tabs.js")
 	app := readAppJS(t)
-	if !strings.Contains(tabs, "the zone table did not load: ") {
-		t.Error("loadZonesTable is back to leaving the card parked on \"reading...\" when the fetch dies")
+	if !strings.Contains(tabs, "the home did not load: ") {
+		t.Error("loadHome is back to leaving the card parked on its loading line when the fetch dies")
 	}
 	if !strings.Contains(tabs, "throw e;") {
-		t.Error("loadZonesTable swallows its failure; lazyTab can no longer re-arm the key for a retry")
+		t.Error("loadHome swallows its failure; lazyTab can no longer re-arm the key for a retry")
 	}
 	// The old line promised "it reloads when the board answers again" while no
 	// mechanism owned that reload; the sentence may only return with a ladder
 	// behind it, and this pair is the ladder.
-	if !strings.Contains(tabs, "zoneWakeTmr = setTimeout(") || !strings.Contains(tabs, "ZONE_WAKE_MAX") {
-		t.Error("loadZonesTable's failure line is back to promising a reload it never schedules")
+	if !strings.Contains(tabs, "homeWakeTmr = setTimeout(") || !strings.Contains(tabs, "HOME_WAKE_MAX") {
+		t.Error("loadHome's failure line is back to promising a reload it never schedules")
 	}
-	if !strings.Contains(tabs, "stopZoneWake()") {
-		t.Error("the zone wake ladder is no longer retired when a different board opens")
+	if !strings.Contains(tabs, "stopHomeWake()") {
+		t.Error("the home wake ladder is no longer retired when a different board opens")
 	}
 	if strings.Contains(tabs, "it reloads when the board answers again") {
 		t.Error("the false reload promise is back in the zone card's failure line")

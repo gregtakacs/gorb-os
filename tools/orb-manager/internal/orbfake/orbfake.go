@@ -262,6 +262,10 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveConfigGet(w)
 	case r.URL.Path == "/api/v1/config" && r.Method == http.MethodPost:
 		o.serveConfigPost(w, r)
+	case r.URL.Path == "/api/v1/home" && r.Method == http.MethodGet:
+		o.serveHomeGet(w, r)
+	case r.URL.Path == "/api/v1/home" && r.Method == http.MethodPost:
+		o.serveHomePost(w, r)
 	case r.URL.Path == "/api/v1/name" && r.Method == http.MethodPost:
 		o.serveNamePost(w, r)
 	case r.URL.Path == "/api/v1/sound" && r.Method == http.MethodGet:

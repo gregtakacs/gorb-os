@@ -334,6 +334,11 @@ var deviceRoutes = map[string][]string{
 	// first. Refused before it is ever dialed if the name will not pass the device's
 	// own rules — see orbfleet.CheckNameASCII.
 	"/api/v1/name": {http.MethodPost},
+	// The OS home location (flight-tracker-design §6.4): the Orb tab's "use this
+	// browser's location" and map pin. GET answers the record, and with ?lat=&lon=
+	// what that point would become; POST sets or clears it. Device config like the
+	// zone it drives, and it reaches neither the card nor the slot.
+	"/api/v1/home": {http.MethodGet, http.MethodPost},
 	// D39: the owner's sound settings (level, switches, quiet hours, glass offset,
 	// pattern override) and the bench door that plays a built-in sound with no theme.
 	// Both are device config the owner sets the way they set the zone, and neither

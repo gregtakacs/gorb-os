@@ -65,6 +65,8 @@ type device struct {
 	// TZOffset is what the device measured, not what was stored: h_config_post
 	// returns the EFFECT, so a zone newlib degraded to UTC cannot look like a win.
 	TZOffset int
+	// Home is the OS home location (/api/v1/home, orb_home.c). Zero value = unset.
+	Home Home
 	// Name is the device's own, and the DEVICE is the authority for it — the
 	// hub's fleet row caches this value rather than owning it. Empty means
 	// unnamed, which the firmware reports as "" and never as a placeholder, so a

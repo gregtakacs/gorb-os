@@ -11,6 +11,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>     /* /api/v1/home: strtod/llround of a browser fix */
 #include <string.h>
 #include <sys/time.h>
 #include <sys/socket.h>
@@ -58,6 +59,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "nvs_flash.h"
 
 #include "orb_flights.h"
+#include "orb_home.h"   /* /api/v1/home: the OS home location (flight-tracker-design §6.4) */
 #include "orb_net.h"
 #include "input_router.h"
 #include "orb_app.h"   /* h_screen: ?to=<slug> resolves through the registry */
@@ -816,12 +818,12 @@ static const char *net_mode_set(const char *mode)
     return NULL;
 }
 
-/* ---- the zone table, as the on-dial menu sees it (see orb_net.h) -------------
+/* ---- the zone table, as the OS's other readers see it (see orb_net.h) -------
  *
  * Thin accessors over the one table this file already serves, each reaching the
  * model through the same helpers the HTTP handlers use. Nothing here validates
- * twice: orb_net_tz_select() hands the row's own key to net_tz_set(), which is
- * the same call POST /api/v1/config makes after its body parse. */
+ * twice: a write goes through net_tz_set(), the same call POST /api/v1/config
+ * makes after its body parse. */
 int orb_net_tz_count(void)
 {
     return NET_TZ_N;
@@ -845,6 +847,12 @@ const char *orb_net_tz_key(int i)
 {
     if (i < 0 || i >= NET_TZ_N) return "";
     return s_tz_tbl[i].name;
+}
+
+const char *orb_net_tz_iana(int i)
+{
+    if (i < 0 || i >= NET_TZ_N) return "";
+    return s_tz_tbl[i].iana;
 }
 
 const char *orb_net_tz_label(int i)
@@ -877,19 +885,23 @@ int orb_net_tz_current_index(void)
     return -1;
 }
 
-esp_err_t orb_net_tz_select(int i)
+/* The home location's door into the same write (orb_home.c): a table key or a
+ * rule, through net_tz_set() and nothing else, so its validation and the
+ * persist-before-apply order hold for a zone that arrived as coordinates. */
+const char *orb_net_tz_set_str(const char *tz)
 {
-    if (i < 0 || i >= NET_TZ_N) return ESP_ERR_INVALID_ARG;
-    /* Through net_tz_set() and nothing else: it validates before it writes, so a
-     * row this build no longer accepts cannot land in NVS and un-set the dial on
-     * the next boot. */
-    const char *why = net_tz_set(s_tz_tbl[i].name);
-    if (why) {
-        ESP_LOGW(TAG, "menu tz: row %d (\"%s\") refused (%s)", i, s_tz_tbl[i].name, why);
-        return ESP_FAIL;
-    }
-    ESP_LOGI(TAG, "menu tz: set to \"%s\"", s_tz_tbl[i].name);
-    return ESP_OK;
+    if (!tz) return "no zone";
+    const char *why = net_tz_set(tz);
+    if (why) ESP_LOGW(TAG, "home tz: \"%s\" refused (%s)", tz, why);
+    return why;
+}
+
+int orb_net_tz_find_iana(const char *iana)
+{
+    if (!iana || !iana[0]) return -1;
+    for (int i = 0; i < NET_TZ_N; i++)
+        if (strcmp(s_tz_tbl[i].iana, iana) == 0) return i;
+    return -1;
 }
 
 const char *orb_net_name(void)
@@ -2532,11 +2544,11 @@ static esp_err_t h_status(httpd_req_t *req)
             char declared[64];
             int doff = 0;
             declared[0] = '\0';
-            static const orb_cap_t OC[4] = { CAP_POWER, CAP_NET,
-                                             CAP_SD_READ, CAP_THEMES };
+            static const orb_cap_t OC[5] = { CAP_POWER, CAP_NET,
+                                             CAP_SD_READ, CAP_THEMES, CAP_LOCATION };
             const uint32_t gm = orb_svc_grants(a);
             const uint32_t dm = orb_svc_declared(a);
-            for (unsigned c = 0; c < 4; c++) {
+            for (unsigned c = 0; c < 5; c++) {
                 if (!(gm & (1u << OC[c]))) continue;
                 const int gw = snprintf(grants + goff, sizeof grants - (size_t)goff,
                                         "%s\"%s\"", goff ? "," : "",
@@ -2548,7 +2560,7 @@ static esp_err_t h_status(httpd_req_t *req)
              * cannot tell "the app never asked" from "the owner revoked it",
              * and the difference is the whole answer to "what can this thing
              * do on my network". declared is the install-time consent. */
-            for (unsigned c = 0; c < 4; c++) {
+            for (unsigned c = 0; c < 5; c++) {
                 if (!(dm & (1u << OC[c]))) continue;
                 const int dw = snprintf(declared + doff, sizeof declared - (size_t)doff,
                                         "%s\"%s\"", doff ? "," : "",
@@ -2852,6 +2864,184 @@ static esp_err_t h_config_post(httpd_req_t *req)
     if (n < 0 || (size_t)n >= sizeof(resp))
         return httpd_resp_sendstr(req, "{\"state\":\"zoned\"}");
     return httpd_resp_sendstr(req, resp);
+}
+
+/* --------------------------------------------------------------------------
+ * Home — the OS home location (flight-tracker-design §6.4), main/net/orb_home.c.
+ *
+ * GET  /api/v1/home                 the record, and the zone in force
+ * GET  /api/v1/home?lat=..&lon=..   plus what that point would become (place,
+ *                                   zone, and the point itself), stored
+ *                                   nowhere: the hub shows it on its map and
+ *                                   beside its Set button before the owner commits
+ * GET  /api/v1/home?code=8559CWXG%2B9C   the same for a full plus code, decoded
+ *                                   here so the hub pins the point this orb
+ *                                   would store, not its own reading of the code
+ * POST /api/v1/home {"lat":..,"lon":..}   or {"code":"8559CWXG+9C"}
+ *      optional "tz" (a table key or rule, as /api/v1/config takes; "keep"
+ *      leaves the zone alone; absent = the nearest city's), "zone" (the IANA
+ *      name the tz stands for, for display), "place" (absent = from the city
+ *      list); {"clear":true} forgets the home and keeps the zone.
+ *
+ * Its own route rather than more keys on /api/v1/config: config's contract
+ * is frozen around tz being the one key, and a home is more than a zone.
+ * ------------------------------------------------------------------------ */
+#define NET_HOME_BODY_MAX 256
+
+/* Defined further down with their first users (the sound and query doors). */
+static bool json_int(const char *body, size_t len, const char *key, long *out);
+static bool q_param(httpd_req_t *req, const char *key, char *out, size_t outsz);
+
+/* A JSON number (or a quoted one) at `key`, as millionths of a degree. The
+ * browser's fix has 15 digits; round, do not refuse. */
+static bool json_deg_e6(const char *body, size_t len, const char *key, int32_t *out)
+{
+    const char *v = json_find(body, len, key);
+    if (!v) return false;
+    if (*v == '"') v++;
+    char *end = NULL;
+    const double d = strtod(v, &end);
+    if (end == v || !isfinite(d) || fabs(d) > 180.0) return false;
+    *out = (int32_t)llround(d * 1e6);
+    return true;
+}
+
+static esp_err_t home_reply(httpd_req_t *req, const char *state, const orb_home_prop_t *p)
+{
+    char *json = heap_caps_malloc(768, MALLOC_CAP_SPIRAM);
+    if (!json) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"no memory\"}");
+    }
+    orb_home_t h;
+    orb_home_get(&h);
+    char la[16], lo[16], zl[ORB_HOME_ZONE_MAX];
+    orb_geo_fmt(h.lat_e6, la, sizeof la);
+    orb_geo_fmt(h.lon_e6, lo, sizeof lo);
+    orb_home_zone_label(zl, sizeof zl);
+    int n = snprintf(json, 768, "{%s%s%s\"home\":", state ? "\"state\":\"" : "", state ? state : "",
+                     state ? "\"," : "");
+    if (h.set)
+        n += snprintf(json + n, 768 - (size_t)n,
+                      "{\"set\":true,\"lat\":%s,\"lon\":%s,\"place\":\"%s\",\"zone\":\"%s\",\"follows\":%s}",
+                      la, lo, h.place, h.zone, orb_home_zone_follows() ? "true" : "false");
+    else
+        n += snprintf(json + n, 768 - (size_t)n, "{\"set\":false}");
+    if (p) {
+        char pla[16], plo[16];
+        orb_geo_fmt(p->lat_e6, pla, sizeof pla);
+        orb_geo_fmt(p->lon_e6, plo, sizeof plo);
+        n += snprintf(json + n, 768 - (size_t)n,
+                      ",\"proposal\":{\"lat\":%s,\"lon\":%s,\"place\":\"%s\",\"zone\":\"%s\",\"tz\":\"%s\",\"exact\":%s,\"city_km\":%u}",
+                      pla, plo, p->place, p->zone, p->tz, p->exact ? "true" : "false", (unsigned)(p->city_m / 1000));
+    }
+    n += snprintf(json + n, 768 - (size_t)n, ",\"tz\":\"%s\",\"zone_label\":\"%s\",\"tz_offset\":%d}",
+                  s_tz[0] ? s_tz : "UTC", zl, tz_offset_min(time(NULL)));
+    esp_err_t r;
+    if (n < 0 || n >= 768) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        r = httpd_resp_sendstr(req, "{\"error\":\"home too large\"}");
+    } else {
+        r = httpd_resp_sendstr(req, json);
+    }
+    heap_caps_free(json);
+    return r;
+}
+
+static esp_err_t h_home_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char qla[24] = "", qlo[24] = "";
+    int32_t la, lo;
+    const char *why;
+    if (q_param(req, "code", qla, sizeof qla)) {
+        why = orb_geo_olc_decode(qla, &la, &lo);
+    } else if (q_param(req, "lat", qla, sizeof qla) && q_param(req, "lon", qlo, sizeof qlo)) {
+        char both[52];
+        snprintf(both, sizeof both, "%s,%s", qla, qlo);
+        why = orb_geo_parse_coords(both, &la, &lo);
+    } else {
+        return home_reply(req, NULL, NULL);
+    }
+    if (why) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        char b[96];
+        snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
+        return httpd_resp_sendstr(req, b);
+    }
+    orb_home_prop_t p;
+    orb_home_propose(la, lo, &p);
+    return home_reply(req, NULL, &p);
+}
+
+static esp_err_t h_home_post(httpd_req_t *req)
+{
+    static char body[NET_HOME_BODY_MAX + 1];
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const int clen = (int)req->content_len;
+    if (clen <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"content-length required\"}");
+    }
+    if (clen > NET_HOME_BODY_MAX) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        return httpd_resp_sendstr(req, "{\"error\":\"body too large\"}");
+    }
+    int got = 0;
+    while (got < clen) {
+        const int r = httpd_req_recv(req, body + got, (size_t)(clen - got));
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"body read failed\"}");
+        }
+        got += r;
+    }
+    body[got] = '\0';
+    const size_t len = (size_t)got;
+
+    const char *why = NULL;
+    long clr = 0;
+    if (json_int(body, len, "clear", &clr) && clr) {
+        why = orb_home_clear();
+    } else {
+        int32_t la = 0, lo = 0;
+        char code[24], tz[NET_TZ_MAX + 1], zone[ORB_HOME_ZONE_MAX], place[ORB_GEO_PLACE_MAX];
+        if (json_str(body, len, "code", code, sizeof code)) {
+            why = orb_geo_olc_decode(code, &la, &lo);
+        } else if (!json_deg_e6(body, len, "lat", &la) || !json_deg_e6(body, len, "lon", &lo)) {
+            why = "lat and lon (or code) required";
+        }
+        /* The same escape rule as config's tz, for all three echoed strings:
+         * json_str drops a backslash and keeps the next character. */
+        for (const char *q = body; !why && *q; q++)
+            if (*q == '\\') why = "no escapes";
+        bool has_tz = false, has_zone = false, has_place = false;
+        if (!why && json_find(body, len, "tz")) {
+            has_tz = json_str(body, len, "tz", tz, sizeof tz);
+            if (!has_tz) why = "tz not a string, or too long";
+        }
+        if (!why && json_find(body, len, "zone")) {
+            has_zone = json_str(body, len, "zone", zone, sizeof zone);
+            if (!has_zone) why = "zone not a string, or too long";
+        }
+        if (!why && json_find(body, len, "place")) {
+            has_place = json_str(body, len, "place", place, sizeof place);
+            if (!has_place) why = "place not a string, or too long";
+        }
+        if (!why)
+            why = orb_home_set(la, lo, has_place ? place : NULL, has_tz ? tz : NULL,
+                               has_zone ? zone : NULL);
+    }
+    if (why) {
+        ESP_LOGW(TAG, "home: refused (%s)", why);
+        httpd_resp_set_status(req, "400 Bad Request");
+        char b[112];
+        snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
+        return httpd_resp_sendstr(req, b);
+    }
+    return home_reply(req, "homed", NULL);
 }
 
 /* --------------------------------------------------------------------------
@@ -7403,6 +7593,8 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/config",   .method = HTTP_GET,  .handler = h_config_get },
         { .uri = "/api/v1/config",   .method = HTTP_POST, .handler = h_config_post },
         { .uri = "/api/v1/name",     .method = HTTP_POST, .handler = h_name_post },
+        { .uri = "/api/v1/home",     .method = HTTP_GET,  .handler = h_home_get },
+        { .uri = "/api/v1/home",     .method = HTTP_POST, .handler = h_home_post },
         { .uri = "/api/v1/sound",    .method = HTTP_GET,  .handler = h_sound_get },
         { .uri = "/api/v1/sound",    .method = HTTP_POST, .handler = h_sound_post },
         { .uri = "/api/v1/sound/test", .method = HTTP_POST, .handler = h_sound_test },
@@ -7915,7 +8107,6 @@ const char *orb_net_tz_key(int i) { (void)i; return ""; }
 const char *orb_net_tz_label(int i) { (void)i; return ""; }
 const char *orb_net_tz_current(void) { return ""; }
 int orb_net_tz_current_index(void) { return -1; }
-esp_err_t orb_net_tz_select(int i) { (void)i; return ESP_ERR_NOT_SUPPORTED; }
 /* No zone machinery in a disabled build: UTC is the only honest answer, and
  * ESP_OK keeps the broker's tz_offset entry a plain pass-through. */
 esp_err_t orb_net_tz_offset(time_t when, int32_t *offset_min)

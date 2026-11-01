@@ -47,9 +47,11 @@ void fm_project(fm_t *m, float range_km, int64_t now_us, int cx, int cy, int rin
 
 /* Where the contact with this hex sits in m->order, or -1. */
 int  fm_find(const fm_t *m, const char *hex);
-/* The next selection after hex in nearest-first order ("" = none); writes ""
- * after the last. hex_out holds 8 bytes. */
-void fm_sel_next(const fm_t *m, const char *hex, char *hex_out);
+/* The selection one step from hex in nearest-first order, wrapping at both
+ * ends: from none (or a contact no longer drawn) a step forward takes the
+ * nearest and a step back the farthest. "" only when nothing is drawn.
+ * hex_out holds 8 bytes. */
+void fm_sel_step(const fm_t *m, const char *hex, int step, char *hex_out);
 
 /* A label of w x h px for a dot at (x, y): the first of right, left, above,
  * below (the side away from the centre first) whose corners stay inside

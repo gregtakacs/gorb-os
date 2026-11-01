@@ -60,7 +60,7 @@ function showTab(name) {
   else if (name === "themes") lazyTab("themes", themeOpen);
   else if (name === "files") lazyTab("files", fmOpen);
   else if (name === "wifi") lazyTab("wifi", wifiOpen);
-  else if (name === "orb") lazyTab("tz", loadZonesTable);
+  else if (name === "orb") lazyTab("home", () => loadHome());
 }
 
 // wifiOpen is the Wi-Fi face's first request, and it asks for the cached table
@@ -118,7 +118,8 @@ function tabRearm() {
 // wrong paint. app.js calls it from openOrbByIP before the first loadOrb.
 function orbTabsReset() {
   tabLoaded.clear();
-  stopZoneWake();                 // last orb's zone wait is not this orb's promise
+  stopHomeWake();                 // last orb's home wait is not this orb's promise
+  homeClearPend();                // nor is a point proposed to it
   themeFaceReset();
   appList = null; appsSub = "clock"; cardApps = []; appData = null;
   fmPath = "";
@@ -172,18 +173,31 @@ $("#mn-name-go").onclick = async () => {
   }
 };
 
-// ---- face: Orb — the /timezone page's picker, ported ----------------------------
-// The zone table comes from the board itself (GET /api/v1/config), exactly what
-// the orb's own page reads; the GMT labels come from this browser, because the
-// orb's newlib has no zoneinfo and every desktop browser has the full IANA
-// data. The phone row synthesizes POSIX rules for a zone the table does not
-// carry — the orb page's own bisect and two-year cross-check, ported unchanged
-// in behavior — and every write is verified by the device's echoed measured
-// offset, never by the word the page sent.
-let tzRows = null;
-let tzCur = "UTC";
-let tzPhone = "";
-let tzWant = "";
+// ---- face: Orb — the home location (flight-tracker-design §6.4) --------------
+// One OS setting: where the orb is. It sets the zone, and every app that needs a
+// position reads it (the flight tracker through its location cap). There is no
+// zone picker here any more (owner ruling 2026-11-01): the location drives the
+// zone.
+//
+// Two steps. Every source only PROPOSES a point:
+//   * a city from the orb's own list (web/cities.json, baked by
+//     tools/make_cities.py from the rows orb_cities.c is baked from),
+//   * this browser's location,
+//   * a click on the map,
+//   * typed coordinates or a full plus code.
+// The orb previews it (GET /api/v1/home?lat=&lon= or ?code=): the place and zone
+// it would store, and the point itself, which is what the map pins — a plus code
+// is decoded by the orb, not here, so the pin is the point Set home stores. Set
+// home then posts that point, and the orb takes the zone with it.
+const homeURL = (q) => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/home" + (q || "");
+let homeMap = null;
+let homeMark = null;
+let homePend = null;          // the orb's preview of the proposed point, or null
+let homeAsk = 0;              // the newest preview asked for; older answers are dropped
+let homeCities = null;
+
+// The zone's offset now, from this browser's IANA data: the orb's newlib has
+// none, and every desktop browser has all of it.
 const _tzoc = {};
 function tzOffAt(zn, ms) {
   const k = zn + "|" + Math.floor(ms / 864e5), c = _tzoc[k];
@@ -201,221 +215,270 @@ function tzOffAt(zn, ms) {
   _tzoc[k] = o;
   return o;
 }
-const tzOffMin = (zn) => tzOffAt(zn, Date.now());
 function tzHm(m) {
   if (m == null || isNaN(m)) return "GMT?";
   const s = m < 0 ? "-" : "+";
   m = Math.abs(m);
   return "GMT" + s + String("0" + Math.floor(m / 60)).slice(-2) + ":" + String("0" + (m % 60)).slice(-2);
 }
-const tzName = (z) => z.iana || z.name;
-const tzLbl = (z) => tzHm(tzOffMin(tzName(z))) + " - " + (z.label || z.name);
-function tzPhoneZone() {
-  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) { return ""; }
+const homeZone = (zone, off) => zone + " (" + tzHm(off) + " now)";
+const homeAt = (lat, lon) => (+lat).toFixed(6) + ", " + (+lon).toFixed(6);
+
+function homeLine(d) {
+  const h = d && d.home;
+  if (!h || !h.set) return "No home set. The clock shows " + homeZone(d && d.zone_label || "UTC", d && d.tz_offset);
+  return "Home: " + h.place + " · " + homeAt(h.lat, h.lon) + " · " + homeZone(d.zone_label || d.tz, d.tz_offset) +
+    (h.follows ? "" : " — set apart from the home; Set home again to make it follow");
 }
-// Name first (exact IANA); offset second, and only when it names exactly one
-// zone — guessing between Denver and Phoenix is how clocks get quietly wrong.
-function tzMatchPhone() {
-  if (!tzPhone || !tzRows) return null;
-  for (const z of tzRows) if (z.iana === tzPhone || z.name === tzPhone) return z;
-  const po = -new Date().getTimezoneOffset();
-  let hit = null, n = 0;
-  for (const z of tzRows) {
-    const o = tzOffMin(tzName(z));
-    if (o != null && o === po) { n++; hit = z; }
-  }
-  return n === 1 ? hit : null;
-}
-// Synthesis for a zone the table does not carry: bisect each monthly window to
-// the minute by offset, encode last-weekday-of-month as the .5 C libraries read
-// as "last", cross-check the next two years, and refuse (null) anything whose
-// pattern moves — the fixed-offset row is that zone's honest fallback.
-function tzFoff(e) {
-  const w = -e, x = w < 0 ? "-" : "", a = Math.abs(w);
-  const h = Math.floor(a / 60), r = a % 60;
-  return x + h + (r ? ":" + ("0" + r).slice(-2) : "");
-}
-function tzTransY(zn, y) {
-  const out = [];
-  for (let m = 0; m < 12; m++) {
-    const a0 = Date.UTC(y, m, 1) / 6e4;
-    const a1 = (m === 11 ? Date.UTC(y + 1, 0, 1) : Date.UTC(y, m + 1, 1)) / 6e4;
-    const o0 = tzOffAt(zn, a0 * 6e4), o1 = tzOffAt(zn, a1 * 6e4);
-    if (o0 == null || o1 == null) return null;
-    if (o0 === o1) continue;
-    let lo = a0, hi = a1;
-    while (hi - lo > 1) {
-      const mid = lo + ((hi - lo) >> 1);
-      if (tzOffAt(zn, mid * 6e4) === o0) lo = mid; else hi = mid;
-    }
-    out.push([hi * 6e4, o0, o1]);
-  }
-  return out;
-}
-function tzMrule(t, pre) {
-  const d = new Date(t + pre * 6e4);
-  const day = d.getUTCDate();
-  const dim = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
-  const wd = d.getUTCDay(), wk = (day + 7 > dim) ? 5 : Math.floor((day - 1) / 7) + 1;
-  const hh = d.getUTCHours(), mm = d.getUTCMinutes(), ss = d.getUTCSeconds();
-  const tt = (hh === 2 && mm === 0 && ss === 0) ? ""
-    : (hh === 0 && mm === 0 && ss === 0) ? "/0"
-    : "/" + hh + (mm || ss ? ":" + ("0" + mm).slice(-2) : "") + (ss ? ":" + ("0" + ss).slice(-2) : "");
-  return "M" + (d.getUTCMonth() + 1) + "." + wk + "." + wd + tt;
-}
-function tzSym(zn) {
-  const c = String(zn).split("/").pop().replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-  return (c || "X").slice(0, 5);
-}
-function tzGmtRule(m) {
-  const s = m >= 0 ? "-" : "+";
-  m = Math.abs(m);
-  const h = Math.floor(m / 60), r = m % 60;
-  return "GMT" + s + h + (r ? ":" + ("0" + r).slice(-2) : "");
-}
-function tzSynth(zn) {
-  const y = new Date().getUTCFullYear(), ts = tzTransY(zn, y);
-  if (!ts || ts.length !== 2) return null;
-  const a = ts[0], b = ts[1];
-  const std = a[1] < b[1] ? a[1] : b[1], dst = a[1] < b[1] ? b[1] : a[1];
-  if (std === dst) return null;
-  const td = a[2] === dst ? a : b, tsd = a[2] === dst ? b : a, nm = tzSym(zn);
-  const parts = [nm + tzFoff(std) + nm + "D" + tzFoff(dst), tzMrule(td[0], td[1]), tzMrule(tsd[0], tsd[1])];
-  for (let k = 1; k <= 2; k++) {
-    const o = tzTransY(zn, y + k);
-    if (!o || o.length !== 2) return null;
-    const p0 = o[0][2] > o[0][1]
-      ? [tzMrule(o[0][0], o[0][1]), tzMrule(o[1][0], o[1][1])]
-      : [tzMrule(o[1][0], o[1][1]), tzMrule(o[0][0], o[0][1])];
-    if (p0[0] !== parts[1] || p0[1] !== parts[2]) return null;
-  }
-  const r = parts[0] + "," + parts[1] + "," + parts[2];
-  return r.length > 64 ? null : r;
-}
-// The zone table comes from the board itself, so it can die exactly the way the
-// board's other slow reads die: dialing while the dial is mid-boot or mid-theme-
-// draw, its single-task httpd accepting the connection and answering nothing
+
+// The home read can die the way every slow read of a booting board dies: the
+// dial mid-boot or mid-theme-draw, its httpd accepting and answering nothing
 // until the 8 s device budget gives up (owner, 2026-10-28: connected onto an orb
-// that had just rebooted onto a stored theme; status answered, this dial timed
+// that had just rebooted onto a stored theme; status answered, this read timed
 // out). app.js's orbWake only re-dials when the STATUS read fails, so a board
-// that answers status and starves config left this card parked on the old
-// sentence's false promise of a reload that no mechanism owned. This ladder is
-// that missing mechanism — same shape, same 5 s beat, retired the moment the
-// card opens another orb or the table lands.
-let zoneWakeTmr = 0;
-let zoneWakeTok = "";
-let zoneWakeN = 0;
-const ZONE_WAKE_MAX = 24;   // ≈ a boot, SNTP and a big theme draw, at 5 s a beat
+// that answers status and starves this read would leave the card parked on a
+// promise no mechanism owned. This ladder is that mechanism — 5 s a beat,
+// retired the moment the card opens another orb or the read lands.
+let homeWakeTmr = 0;
+let homeWakeTok = "";
+let homeWakeN = 0;
+const HOME_WAKE_MAX = 24;   // ≈ a boot, SNTP and a big theme draw, at 5 s a beat
 
-function stopZoneWake() {
-  if (zoneWakeTmr) { clearTimeout(zoneWakeTmr); zoneWakeTmr = 0; }
+function stopHomeWake() {
+  if (homeWakeTmr) { clearTimeout(homeWakeTmr); homeWakeTmr = 0; }
 }
 
-async function loadZonesTable(retry) {
+async function loadHome(retry) {
   if (!current.ip) return;
-  if (!retry) { stopZoneWake(); zoneWakeN = 0; }   // a fresh read starts a new wait
-  const cur = $("#tz-cur");
-  cur.textContent = "reading the board's zone table\u2026";
+  if (!retry) { stopHomeWake(); homeWakeN = 0; }   // a fresh read starts a new wait
+  const cur = $("#home-cur");
   try {
-    const d = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/config"));
-    if (!d || !d.zones || !d.zones.length) throw new Error("the board answered no zones");
-    tzRows = d.zones;
-    tzCur = d.tz || "UTC";
-    tzPhone = tzPhoneZone();
-    cur.textContent = "the orb now shows " + tzCur + " \u00b7 " + d.zones.length + " zones it knows by name";
-    renderTzList();
-    tabLoaded.add("tz");   // a wake re-dial that lands restores the mark lazyTab dropped
-    stopZoneWake();
+    const d = await readDeviceJSON(await hubFetch(homeURL()));
+    cur.textContent = homeLine(d);
+    tabLoaded.add("home");   // a wake re-dial that lands restores the mark lazyTab dropped
+    stopHomeWake();
+    homeShow(d);
+    return d;
   } catch (e) {
-    // A card parked on "reading…" forever is what the owner saw during an
-    // update: the dial was mid-reboot, the fetch died, and the silence wore
-    // the costume of a page still working. Name the failure, re-dial on the
-    // boot's clock, and re-throw so lazyTab drops its mark and a press works
-    // even mid-ladder.
-    cur.textContent = "the zone table did not load: " + (e && e.message ? e.message : String(e)) +
-      " \u2014 the orb may be mid-boot; re-reading it every 5 s";
+    // Name the failure, re-dial on the boot's clock, and re-throw so lazyTab
+    // drops its mark and a press works even mid-ladder.
+    cur.textContent = "the home did not load: " + (e && e.message ? e.message : String(e)) +
+      " — the orb may be mid-boot; re-reading it every 5 s";
     const tok = current.mac || current.ip;
-    if (tok !== zoneWakeTok) { zoneWakeTok = tok; zoneWakeN = 0; }   // a different card resets the wait
-    if (zoneWakeN < ZONE_WAKE_MAX && !zoneWakeTmr) {
-      zoneWakeTmr = setTimeout(() => {
-        zoneWakeTmr = 0;
-        if ((current.mac || current.ip) !== zoneWakeTok) return;     // a different card is open now
-        if (++zoneWakeN > ZONE_WAKE_MAX) {
-          cur.textContent = "the zone table stopped re-reading \u2014 press the Orb face when the board answers";
+    if (tok !== homeWakeTok) { homeWakeTok = tok; homeWakeN = 0; }   // a different card resets the wait
+    if (homeWakeN < HOME_WAKE_MAX && !homeWakeTmr) {
+      homeWakeTmr = setTimeout(() => {
+        homeWakeTmr = 0;
+        if ((current.mac || current.ip) !== homeWakeTok) return;     // a different card is open now
+        if (++homeWakeN > HOME_WAKE_MAX) {
+          cur.textContent = "the home stopped re-reading — press the Orb face when the board answers";
           return;
         }
-        loadZonesTable(true).catch(() => {});
+        loadHome(true).catch(() => {});
       }, 5000);
     }
     throw e;
   }
 }
 
-function renderTzList() {
-  const box = $("#tz-list");
-  box.innerHTML = "";
-  if (!tzRows) return;
-  const f = (tzWant || "").toLowerCase();
-  const list = tzRows.filter((z) => !f
-    || (z.label || "").toLowerCase().includes(f)
-    || z.name.toLowerCase().includes(f)
-    || (z.iana || "").toLowerCase().includes(f));
-  list.sort((a, b) => {
-    let x = tzOffMin(tzName(a)), y = tzOffMin(tzName(b));
-    if (x == null) x = -9999;
-    if (y == null) y = -9999;
-    return x - y || String(a.label || a.name).localeCompare(String(b.label || a.name));
+// Leaflet (BSD-2, vendored under web/vendor/leaflet) loads with the face, so a
+// hub that never opens it never parses it. Tiles are OpenStreetMap's, fetched by
+// this browser; the attribution is theirs to require.
+function homeLeaflet() {
+  if (window.L) return Promise.resolve(window.L);
+  return new Promise((ok, bad) => {
+    const css = document.createElement("link");
+    css.rel = "stylesheet"; css.href = "/web/vendor/leaflet/leaflet.css";
+    document.head.appendChild(css);
+    const js = document.createElement("script");
+    js.src = "/web/vendor/leaflet/leaflet.js";
+    js.onload = () => ok(window.L);
+    js.onerror = () => bad(new Error("the map library did not load"));
+    document.head.appendChild(js);
   });
-  for (const z of list)
-    box.appendChild(tzRowEl(tzLbl(z), () => tzSet(z.name, z.label || z.name), z.name === tzCur ? "cur" : ""));
-  if (tzPhone && !tzMatchPhone()) {
-    const po = -new Date().getTimezoneOffset(), city = tzSym(tzPhone), r = tzSynth(tzPhone);
-    if (r) box.appendChild(tzRowEl(tzHm(po) + " - " + city + " (this browser's zone, follows its clock changes)",
-      () => tzSet(r, city + " from this browser", po), "phone"));
-    else box.appendChild(tzRowEl(tzHm(po) + " - Same as this browser (does not follow DST automatically)",
-      () => tzSet(tzGmtRule(po), "browser time", po), "phone"));
+}
+
+async function homeMapReady() {
+  if (homeMap) { homeMap.invalidateSize(); return homeMap; }
+  const L = await homeLeaflet();
+  if (homeMap) return homeMap;     // two callers raced the first load
+  L.Icon.Default.imagePath = "/web/vendor/leaflet/images/";
+  homeMap = L.map($("#home-map")).setView([20, 0], 2);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(homeMap);
+  homeMap.on("click", (ev) => homePropose("?lat=" + (+ev.latlng.lat.toFixed(6)) +
+    "&lon=" + (+(((ev.latlng.lng + 540) % 360) - 180).toFixed(6)), "the pin", false));
+  return homeMap;
+}
+
+// One marker, always the point in question: the proposal while there is one,
+// else the stored home. A map that shows anything else is lying about what Set
+// home would do.
+async function homePin(lat, lon, recentre) {
+  let map;
+  try { map = await homeMapReady(); } catch (e) { $("#home-msg").textContent = e.message; return; }
+  if (lat == null) {
+    if (homeMark) { homeMark.remove(); homeMark = null; }
+    return;
+  }
+  if (homeMark) homeMark.setLatLng([lat, lon]); else homeMark = window.L.marker([lat, lon]).addTo(map);
+  if (recentre) map.setView([lat, lon], Math.max(map.getZoom(), 9));
+}
+
+function homeShow(d) {
+  if (homePend) return;            // the proposal owns the map until it is set or replaced
+  const h = d && d.home;
+  homePin(h && h.set ? h.lat : null, h && h.set ? h.lon : null, true);
+}
+
+function homeClearPend() {
+  homePend = null;
+  homeAsk++;
+  $("#home-next").hidden = true;
+}
+
+// Step one, for every source: ask the orb what this point would become, pin
+// that point, and show it beside the Set button with its zone and the zone's
+// offset today.
+async function homePropose(query, what, recentre) {
+  const ask = ++homeAsk;
+  const msg = $("#home-msg");
+  msg.textContent = "asking the orb about " + what + "…";
+  try {
+    const d = await readDeviceJSON(await hubFetch(homeURL(query)));
+    if (ask !== homeAsk) return;   // a newer proposal won
+    const p = d && d.proposal;
+    if (!p) throw new Error("the orb sent no preview");
+    homePend = p;
+    await homePin(p.lat, p.lon, recentre);
+    $("#home-pend").textContent = p.place + " · " + homeAt(p.lat, p.lon) + " · zone " +
+      homeZone(p.zone, tzOffAt(p.zone, Date.now())) +
+      (p.exact ? "" : " · the orb only approximates this zone's clock changes");
+    $("#home-next").hidden = false;
+    msg.textContent = "";
+  } catch (e) {
+    if (ask === homeAsk) msg.textContent = "the orb could not place " + what + ": " + e.message;
   }
 }
 
-function tzRowEl(txt, on, cls) {
-  const b = document.createElement("button");
-  b.type = "button";
-  b.textContent = txt;
-  b.className = "tzrow" + (cls ? " " + cls : "");
-  b.onclick = on;
-  return b;
-}
-
-async function tzSet(v, txt, want) {
-  const msg = $("#tz-msg");
-  msg.textContent = "setting " + txt + "\u2026";
+// Step two: store the previewed point. The zone comes with it.
+$("#home-set").onclick = async () => {
+  const p = homePend;
+  if (!p) return;
+  const msg = $("#home-msg");
+  msg.textContent = "setting " + p.place + "…";
   try {
-    const d = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/config", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tz: v }),
+    const d = await readDeviceJSON(await hubFetch(homeURL(), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lat: p.lat, lon: p.lon }),
     }));
-    if (!d || d.error) throw new Error((d && d.error) || "the orb refused it");
-    tzCur = d.tz;
-    renderTzList();
-    if (want != null && d.tz_offset === want)
-      msg.textContent = "orb now shows " + tzHm(want) + " \u2014 matches this browser";
-    else if (want != null)
-      msg.textContent = "orb shows " + tzHm(d.tz_offset) + ", not the " + tzHm(want) + " asked for \u2014 that zone did not stick";
-    else msg.textContent = "orb now shows " + tzHm(d.tz_offset);
+    homeClearPend();
+    $("#home-cur").textContent = homeLine(d);
+    homeShow(d);
+    msg.textContent = "home set: " + d.home.place + ", clock on " + homeZone(d.zone_label || d.tz, d.tz_offset);
     pullFound();
   } catch (e) {
     msg.textContent = "the orb refused it: " + e.message;
   }
+};
+
+$("#home-clear").onclick = async () => {
+  const msg = $("#home-msg");
+  try {
+    const d = await readDeviceJSON(await hubFetch(homeURL(), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clear: true }),
+    }));
+    homeClearPend();
+    $("#home-cur").textContent = homeLine(d);
+    homeShow(d);
+    msg.textContent = "home forgotten; the clock keeps its zone";
+  } catch (e) {
+    msg.textContent = "the orb refused it: " + e.message;
+  }
+};
+
+$("#home-loc").onclick = () => {
+  const msg = $("#home-msg");
+  if (!navigator.geolocation || !window.isSecureContext) {
+    msg.textContent = "this browser will only share its location with a page on localhost or https " +
+      "— open the hub at http://localhost, or search or pin the map instead";
+    return;
+  }
+  msg.textContent = "asking this browser where it is…";
+  navigator.geolocation.getCurrentPosition(
+    (p) => homePropose("?lat=" + (+p.coords.latitude.toFixed(6)) + "&lon=" + (+p.coords.longitude.toFixed(6)),
+      "this browser's location", true),
+    (e) => { msg.textContent = "the browser did not say (" + (e.message || "denied") + ") — search or pin the map instead"; },
+    { enableHighAccuracy: false, timeout: 15000, maximumAge: 600000 });
+};
+
+// ---- the search box: a city, coordinates, or a full plus code ----
+const HOME_COORDS = /^\s*([-+]?\d*\.?\d+)\s*[, ]\s*([-+]?\d*\.?\d+)\s*$/;
+
+async function homeCityList() {
+  if (homeCities) return homeCities;
+  const r = await fetch("/web/cities.json");
+  if (!r.ok) throw new Error("the city list did not load (" + r.status + ")");
+  homeCities = (await r.json()).cities;
+  return homeCities;
 }
 
-$("#tz-q").addEventListener("input", function () { tzWant = this.value; renderTzList(); });
-$("#tz-loc").onclick = () => {
-  const m = tzMatchPhone();
-  if (m) { tzSet(m.name, m.label || m.name, -new Date().getTimezoneOffset()); return; }
-  renderTzList();   // makes the phone row visible: it is the answer to press
-  $("#tz-msg").textContent = tzPhone
-    ? "this browser says " + tzPhone + " \u2014 press the row at the end of the list"
-    : "this browser will not say where it is";
-};
+// Names that start with the words typed first, then names that contain them;
+// biggest first within each, which is the file's order.
+function homeFind(q) {
+  const f = q.toLowerCase().replace(/\s*,\s*([a-z]{2})$/, "");   // "Portland, US" finds Portland
+  const head = [], rest = [];
+  for (const c of homeCities) {
+    const n = c[0].toLowerCase();
+    if (n.startsWith(f)) head.push(c); else if (n.includes(f)) rest.push(c);
+    if (head.length >= 8) break;
+  }
+  return head.concat(rest).slice(0, 8);
+}
+
+function homeHits(list) {
+  const box = $("#home-hits");
+  box.innerHTML = "";
+  box.hidden = !list.length;
+  for (const c of list) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "tzrow";
+    b.setAttribute("role", "option");
+    b.textContent = c[0] + ", " + c[1];
+    b.onclick = () => homeCity(c);
+    box.appendChild(b);
+  }
+}
+
+function homeCity(c) {
+  $("#home-q").value = c[0] + ", " + c[1];
+  homeHits([]);
+  homePropose("?lat=" + c[2] + "&lon=" + c[3], c[0], true);
+}
+
+$("#home-q").addEventListener("input", async function () {
+  const v = this.value.trim();
+  if (v.length < 2 || v.includes("+") || HOME_COORDS.test(v) || /^[-+\d.,\s]+$/.test(v)) { homeHits([]); return; }
+  try { await homeCityList(); } catch (e) { $("#home-msg").textContent = e.message; return; }
+  if (this.value.trim() === v) homeHits(homeFind(v));
+});
+
+$("#home-q").addEventListener("keydown", function (ev) {
+  if (ev.key === "Escape") { homeHits([]); return; }
+  if (ev.key !== "Enter") return;
+  ev.preventDefault();
+  const v = this.value.trim();
+  if (!v) return;
+  if (v.includes("+")) { homeHits([]); homePropose("?code=" + encodeURIComponent(v.split(/\s+/)[0]), v, true); return; }
+  const m = v.match(HOME_COORDS);
+  if (m) { homeHits([]); homePropose("?lat=" + encodeURIComponent(m[1]) + "&lon=" + encodeURIComponent(m[2]), v, true); return; }
+  const first = $("#home-hits").firstChild;
+  if (first) first.click();
+  else $("#home-msg").textContent = "no city by that name in the orb's list — try a bigger one nearby, or pin the map";
+});
 
 // ---- face: Apps — one sub-tab per app the LEDGER carries --------------------
 // GET /api/v1/apps answers with two arrays, and the first cut of this face read

@@ -22,6 +22,7 @@
 #include "orb_app_install.h" /* orb_app_install_resolve_boot: the card table from the apps partition */
 #include "orb_jobs.h"
 #include "orb_flights.h"
+#include "orb_home.h"
 #include "orb_tls_mem.h"
 #include "orb_svc.h"
 #include "orb_carousel.h"
@@ -231,6 +232,10 @@ void app_main(void)
      * (plan §8, the P3 pass line). Inert until an app calls through it; the
      * compiled-in pair reaches the OS directly until P6, as §14 records. */
     ESP_ERROR_CHECK(orb_svc_init());
+    /* The home location (flight-tracker-design §6.4) loads beside the grant
+     * words and for the same reason: the apps that read it build next. One
+     * NVS blob read; the zone it set is applied by orb_net_start's tz load. */
+    orb_home_init();
     /* P4a's rung: the owner's enable words apply after the broker has the
      * partition up and before anything builds a screen — an installed app
      * walks this boot only if its stored word says so, and one with no word

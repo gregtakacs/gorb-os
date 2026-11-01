@@ -69,6 +69,9 @@ idf_component_register(
         "assets/orb_assets.c"
         "net/orb_net.c"
         "net/orb_https.c"
+        "net/orb_home.c"
+        "net/orb_geo.c"
+        "net/orb_cities.c"
         "net/orb_tls_mem.c"   # mbedTLS allocator: PSRAM for the task that asks
         "net/orb_readsb.c"
         "net/orb_mdns.c"      # _orb._tcp advertiser (docs/orb-manager-plan.md §5 item 4)

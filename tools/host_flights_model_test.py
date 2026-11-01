@@ -12,7 +12,7 @@ behaviour the view and the feed lean on:
   reckon    position advances along track at ground speed, capped at 90 s;
             ground traffic and contacts without a track stay put
   project   range filter, nearest-first order, north up and east right
-  select    by hex, so a re-sort does not move the highlight; cycles to none
+  select    by hex, so a re-sort does not move the highlight; wraps both ways
   labels    outward side first, then the other side, above, below; refused
             off the glass and when every spot collides
   boost     emergency squawk, within 5 nm, low and closing; not low and
@@ -112,13 +112,34 @@ int main(void)
     fm_merge_begin(&m); fm_upsert(&m, &s1, 5, 0, 0); fm_upsert(&m, &s2, 10, 0, 0); fm_merge_end(&m, 0);
     fm_project(&m, 40, 0, 233, 233, 184);
     char sel[8] = "";
-    fm_sel_next(&m, sel, sel);
-    CHECK(!strcmp(sel, "s00001"), "select: the first push takes the nearest");
+    fm_sel_step(&m, sel, 1, sel);
+    CHECK(!strcmp(sel, "s00001"), "select: a step forward from none takes the nearest");
     fm_merge_begin(&m); fm_upsert(&m, &s1, 20, 0, S); fm_upsert(&m, &s2, 10, 0, S); fm_merge_end(&m, S);
     fm_project(&m, 40, S, 233, 233, 184);
     CHECK(fm_find(&m, sel) == 1, "select: the highlight follows the hex through a re-sort");
-    fm_sel_next(&m, sel, sel);
-    CHECK(sel[0] == 0, "select: past the last one is none");
+    fm_sel_step(&m, sel, 1, sel);
+    CHECK(!strcmp(sel, "s00002"), "select: past the farthest wraps to the nearest");
+    fm_sel_step(&m, sel, -1, sel);
+    CHECK(!strcmp(sel, "s00001"), "select: back from the nearest wraps to the farthest");
+    fm_sel_step(&m, sel, -1, sel);
+    CHECK(!strcmp(sel, "s00002"), "select: a step back walks toward the nearest");
+    orb_ac_t s3 = ac("s00003", NAN, NAN, 5000, 0);
+    fm_merge_begin(&m); fm_upsert(&m, &s1, 20, 0, S); fm_upsert(&m, &s2, 10, 0, S); fm_upsert(&m, &s3, 30, 0, S); fm_merge_end(&m, S);
+    fm_project(&m, 40, S, 233, 233, 184);
+    strcpy(sel, "s00001");
+    fm_sel_step(&m, sel, -1, sel);
+    CHECK(!strcmp(sel, "s00002"), "select: of three, back from the middle is the nearer one");
+    strcpy(sel, "s00001");
+    fm_sel_step(&m, sel, 1, sel);
+    CHECK(!strcmp(sel, "s00003"), "select: of three, forward from the middle is the farther one");
+    char none[8] = "";
+    fm_sel_step(&m, none, -1, none);
+    CHECK(!strcmp(none, "s00003"), "select: a step back from none takes the farthest");
+    fm_t empty;
+    memset(&empty, 0, sizeof empty);
+    strcpy(none, "s00001");
+    fm_sel_step(&empty, none, 1, none);
+    CHECK(none[0] == 0, "select: nothing drawn, nothing selected");
 
     /* ---- labels ---- */
     fm_rect_t placed[4], r;
@@ -202,6 +223,9 @@ def main():
             ("north is down", "t->y = cy - n / range_km * ring_r;", "t->y = cy + n / range_km * ring_r;"),
             ("order unsorted", "m->t[m->order[j]].d_km < m->t[m->order[j - 1]].d_km", "0"),
             ("select by index, not hex", "if (!strcmp(m->t[m->order[o]].ac.hex, hex)) return o;", "if (o == 0) return o;"),
+            ("select steps only forward", "(step < 0 ? -1 : 1)) % m->norder", "1) % m->norder"),
+            ("select never wraps", "else        next = ((at + (step < 0 ? -1 : 1)) % m->norder + m->norder) % m->norder;",
+             "else { next = at + (step < 0 ? -1 : 1); if (next < 0 || next >= m->norder) { hex_out[0] = 0; return; } }"),
             ("labels ignore collisions", "if (on_glass(&a, cx, cy, glass_r) && clear_of(&a, placed, np))", "if (on_glass(&a, cx, cy, glass_r))"),
             ("labels may leave the glass", "if (on_glass(&a, cx, cy, glass_r) && clear_of", "if (clear_of"),
             ("boost ignores emergencies", "a->squawk == 7700) return true;", "a->squawk == 7777) return true;"),

@@ -268,7 +268,7 @@ header nav{display:flex;gap:10px;align-items:baseline}
   padding:6px 10px;border-radius:6px;cursor:pointer;font:inherit}
 .tzrow:hover{border-color:var(--acc)}
 .tzrow.cur{border-color:var(--acc);font-weight:600}
-.tzrow.phone{border-style:dashed}
+.homemap{height:360px;margin:6px 0;border:1px solid var(--line);border-radius:6px}
 .filelist{list-style:none;padding:0;margin:6px 0;display:flex;flex-direction:column;gap:2px}
 .filerow{display:flex;gap:10px;align-items:baseline;border:1px solid var(--line);border-radius:6px;padding:5px 10px}
 .filerow.dir{background:rgba(125,125,125,.07)}

@@ -21,6 +21,7 @@
 #include "esp_timer.h"
 #include "flights_model.h"
 #include "orb_flights.h"
+#include "orb_home.h"     /* orb_home_gen: when to re-read through the gate */
 #include "orb_svc.h"
 
 static const char *TAG = "flights";
@@ -43,26 +44,40 @@ static const char *const SRC_TXT[] = { "adsb.lol", "adsb.fi" };
 /* ---- settings (the container declares them; tools/make_factory_apps.py) --- */
 
 typedef struct {
-    char    lat[32], lon[32];
-    double  latd, lond;
+    double  latd, lond;          /* the OS home (cap LOCATION), not a setting */
     bool    home_ok;
+    char    place[40];
     int32_t range, source, bg, boost, ground;
 } settings_t;
 
 static orb_app_t *s_app;
 static settings_t s_set = { .range = 2, .bg = 1, .boost = 1, .ground = 1 };
 static uint32_t   s_cfg_gen;
+static uint32_t   s_home_gen = UINT32_MAX;
 static bool       s_visible;
-static bool       s_armed;
 
-static bool parse_deg(const char *s, double lim, double *out)
+/* The knob's three levels (owner ruling 2026-11-01): roaming (the router
+ * turns between apps), then each push steps zoom -> info -> back to roaming.
+ * Zoom turns the range; info turns the detail card through the drawn
+ * aircraft. The third push disarms from in here, and the router sees it on
+ * its next poll through flights_view_armed(). */
+typedef enum { MODE_ROAM, MODE_ZOOM, MODE_INFO } knob_mode_t;
+static knob_mode_t s_mode;
+
+/* Home is the OS's (flight-tracker-design §6.4): one owner setting the zone
+ * and every app read, through the LOCATION cap the container declares. A
+ * revoked cap reads as no home, and the footer says why. */
+static void load_home(void)
 {
-    if (!s[0]) return false;
-    char *end;
-    const double v = strtod(s, &end);
-    if (end == s || *end || !isfinite(v) || fabs(v) > lim) return false;
-    *out = v;
-    return true;
+    if (!s_app) return;
+    orb_svc_home_t h;
+    const esp_err_t e = orb_svc_table()->home(s_app, &h);
+    s_home_gen = orb_home_gen();
+    s_set.home_ok = e == ESP_OK;
+    s_set.latd = h.lat_e6 / 1e6;
+    s_set.lond = h.lon_e6 / 1e6;
+    snprintf(s_set.place, sizeof s_set.place, "%s", e == ESP_OK ? h.place :
+             e == ESP_ERR_NOT_FOUND ? "" : "location not allowed");
 }
 
 static void load_settings(void)
@@ -75,9 +90,7 @@ static void load_settings(void)
     if (svc->cfg_get(s_app, "bg", &v) == ESP_OK)     s_set.bg = v;
     if (svc->cfg_get(s_app, "boost", &v) == ESP_OK)  s_set.boost = v;
     if (svc->cfg_get(s_app, "ground", &v) == ESP_OK) s_set.ground = v;
-    if (svc->cfg_get_str(s_app, "lat", s_set.lat, sizeof s_set.lat) != ESP_OK) s_set.lat[0] = 0;
-    if (svc->cfg_get_str(s_app, "lon", s_set.lon, sizeof s_set.lon) != ESP_OK) s_set.lon[0] = 0;
-    s_set.home_ok = parse_deg(s_set.lat, 90, &s_set.latd) && parse_deg(s_set.lon, 180, &s_set.lond);
+    load_home();
     if (s_set.range < 0 || s_set.range >= N_RANGES) s_set.range = 2;
     if (s_set.bg < 0 || s_set.bg >= N_BG) s_set.bg = 1;
     s_cfg_gen = orb_svc_cfg_gen(s_app);
@@ -289,15 +302,27 @@ static void draw_text(void)
     char b[64];
     int live = 0;
     for (int i = 0; i < s_m->norder; i++) live += s_m->t[s_m->order[i]].live;
-    snprintf(b, sizeof b, "%d aircraft", s_m->norder);
+    /* Info always shows a card while anything is drawn: the selected contact
+     * left the range or aged out, so the nearest takes over. */
+    if (s_mode == MODE_INFO && fm_find(s_m, s_sel) < 0) fm_sel_step(s_m, "", 1, s_sel);
+    /* The header says which level the knob is on, so a turn is never a guess. */
+    if (s_mode == MODE_ZOOM)
+        snprintf(b, sizeof b, "zoom  %u nm", (unsigned)RANGES_NM[s_set.range]);
+    else if (s_mode == MODE_INFO && s_m->norder)
+        snprintf(b, sizeof b, "%d of %d", fm_find(s_m, s_sel) + 1, s_m->norder);
+    else if (s_mode == MODE_INFO)
+        snprintf(b, sizeof b, "no aircraft in range");
+    else
+        snprintf(b, sizeof b, "%d aircraft", s_m->norder);
     lv_label_set_text(s_head, b);
+    lv_obj_set_style_text_color(s_head, lv_color_hex(s_mode == MODE_ROAM ? 0xD0D0D0 : 0x39FF14), 0);
 
     orb_flights_stats_t st;
     orb_flights_stats(&st);
     uint32_t age_ms = UINT32_MAX;
     (void)orb_flights_snapshot(NULL, 0, &age_ms, NULL);
     uint32_t col = 0x909090;
-    if (!s_set.home_ok)               { snprintf(b, sizeof b, "set home location"); col = 0xFFB23C; }
+    if (!s_set.home_ok)               { snprintf(b, sizeof b, "%s", s_set.place[0] ? s_set.place : "set home in the hub (Orb tab)"); col = 0xFFB23C; }
     else if (!net_ok())               { snprintf(b, sizeof b, "network permission off"); col = 0xFFB23C; }
     else if (age_ms == UINT32_MAX)    snprintf(b, sizeof b, st.skip_rest ? "feed refused, resting" : "waiting for the feed");
     else if (age_ms < 20000)          snprintf(b, sizeof b, "live  %s", SRC_TXT[st.last_src & 1]);
@@ -418,20 +443,30 @@ void flights_view_show(void)
 
 void flights_view_service(void)
 {
-    /* A setting written from outside (the hub's /api/v1/apps/cfg door) lands
-     * here: the row's generation moved, so re-read and re-apply. */
-    if (s_app && orb_svc_cfg_gen(s_app) != s_cfg_gen) {
+    /* A setting written from outside (the hub's /api/v1/apps/cfg door) or a
+     * new home (from the hub) lands here: a generation moved, so
+     * re-read and re-apply. Reading the home's generation word is not reading
+     * the home; the copy goes through the gate. */
+    if (s_app && (orb_svc_cfg_gen(s_app) != s_cfg_gen || orb_home_gen() != s_home_gen)) {
+        /* A new home invalidates every kept contact: their east/north offsets
+         * are from the old one, and they would sit around the new centre until
+         * they aged out a minute later. */
+        if (orb_home_gen() != s_home_gen && s_m) {
+            s_m->n = s_m->norder = 0;
+            s_sel[0] = 0;
+        }
         load_settings();
         apply_feed();
+        if (s_visible) tick(NULL);
     }
 }
 
-bool flights_view_armed(void) { return s_armed; }
+bool flights_view_armed(void) { return s_mode != MODE_ROAM; }
 
 void flights_view_set_armed(bool armed)
 {
-    if (s_armed == armed) return;
-    s_armed = armed;
+    if ((s_mode != MODE_ROAM) == armed) return;
+    s_mode = armed ? MODE_ZOOM : MODE_ROAM;
     if (!armed) {
         s_sel[0] = 0;
         if (s_app) {
@@ -444,16 +479,22 @@ void flights_view_set_armed(bool armed)
 
 void flights_view_input(int32_t delta, bool pressed)
 {
-    if (!s_armed) return;
+    if (s_mode == MODE_ROAM) return;
     if (pressed) {
-        /* Cycle the detail card through the drawn aircraft, nearest first,
-         * then back to none. */
-        fm_sel_next(s_m, s_sel, s_sel);
-    } else if (delta) {
+        if (s_mode == MODE_ZOOM) {
+            s_mode = MODE_INFO;          /* the nearest aircraft's card opens */
+            fm_sel_step(s_m, "", 1, s_sel);
+        } else {
+            flights_view_set_armed(false);   /* back to turning between apps */
+            return;
+        }
+    } else if (delta && s_mode == MODE_ZOOM) {
         const int r = s_set.range + (delta > 0 ? 1 : -1);
         if (r < 0 || r >= N_RANGES) return;
         s_set.range = r;
         apply_feed();                    /* the next poll asks for the new radius */
+    } else if (delta) {
+        fm_sel_step(s_m, s_sel, delta > 0 ? 1 : -1, s_sel);
     } else {
         return;
     }
@@ -485,8 +526,8 @@ const char *flights_opt_value(orb_app_t *app, int idx)
     case OPT_BOOST:  return s_set.boost ? "on" : "off";
     case OPT_GROUND: return s_set.ground ? "hidden" : "shown";
     case OPT_HOME:
-        if (!s_set.home_ok) return "not set (hub)";
-        snprintf(v, sizeof v, "%.3f, %.3f", s_set.latd, s_set.lond);
+        if (!s_set.home_ok) return s_set.place[0] ? s_set.place : "not set (hub: Orb tab)";
+        snprintf(v, sizeof v, "%s", s_set.place);
         break;
     default: return "";
     }

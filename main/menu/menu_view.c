@@ -8,8 +8,8 @@
  *
  * ---- why there is a task in here -------------------------------------------
  *
- * What still blocks on this screen is NVS: the zone write (net_tz_select) and the
- * two DISPLAY setters, each of which can hit a sector erase. A theme walk used to
+ * What still blocks on this screen is NVS: the two DISPLAY setters and the grant
+ * writes, each of which can hit a sector erase. A theme walk used to
  * be here too; B2 gave the theme picker to the clock app, and its card work runs
  * on the shell's one worker (main/app/orb_jobs.c) rather than on a task this file
  * owns, so the dial's repaint is never held up by a directory read.
@@ -31,7 +31,10 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_attr.h"         /* EXT_RAM_BSS_ATTR: the QR plane lives in PSRAM */
 #include "orb_jobs.h"
+#include "libs/qrcode/qrcodegen.h"   /* ABOUT: the phone door (LVGL's copy, CONFIG_LV_USE_QRCODE) */
+#include "orb_home.h"          /* ABOUT: the zone, named from the home that set it */
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
@@ -74,12 +77,11 @@ static const char *TAG = "menu";
 typedef enum {
     PG_LANDING = 0,   /* inert title; the knob belongs to the router   */
     PG_TOP,           /* s_top, then one row per app with options, exit */
-    PG_TZ,            /* the zone table                               */
     PG_APP,           /* one app's own options (its opt_* answers, B1) */
     PG_DISPLAY,       /* the two idle-dim settings                    */
     PG_TO,            /* the timeout presets                          */
     PG_PERMS,         /* one row per installed app: what it may do    */
-    PG_CAPS,          /* the selected app's four owner caps, togglable */
+    PG_CAPS,          /* the selected app's owner caps, togglable       */
     PG_APPS,          /* the catalog: every installed app, its state, its doors (B3/B4) */
     PG_APPACT,        /* one app's own doors: activate / enable / uninstall */
     PG_ABOUT,         /* inert identity list — no press does anything  */
@@ -140,9 +142,6 @@ static const menu_page_t *s_pg = &s_pages[PG_LANDING];
  * it is. */
 static int  rows_top(void);      static void label_top(int, char *, size_t, bool *);
 static const char *title_top(void);
-static int  rows_tz(void);       static void label_tz(int, char *, size_t, bool *);
-static const char *title_tz(void);   static const char *hint_tz(void);
-static void act_tz(int);         static void enter_tz(void);
 static int  rows_app(void);      static void label_app(int, char *, size_t, bool *);
 static const char *title_app(void);  static const char *hint_app(void);
 static void act_app(int);        static void open_app(const orb_app_t *);
@@ -171,7 +170,7 @@ static const char *title_about(void);
 static int  rows_share(void);    static void label_share(int, char *, size_t, bool *);
 static const char *title_share(void);  static const char *hint_share(void);
 static int  top_os_rows(void);   static int app_row_index(const orb_app_t *);
-static void act_ap(void);        static void go_to(int to, int cur);
+static void go_to(int to, int cur);
 static int  cap_pack(const orb_app_t *, int row);
 static int  door_pack(const orb_app_t *, int act);
 static void job_grant(void *arg);
@@ -275,8 +274,9 @@ static int    s_painted_rows;     /* page_rows() the last repaint drew, for the 
  * reading it.
  */
 static int      s_perm_slot = -1;              /* the app under inspection  */
-static const orb_cap_t OWNER_CAPS[4] = { CAP_POWER, CAP_NET,
-                                         CAP_SD_READ, CAP_THEMES };
+static const orb_cap_t OWNER_CAPS[] = { CAP_POWER, CAP_NET,
+                                        CAP_SD_READ, CAP_THEMES, CAP_LOCATION };
+#define OWNER_CAPS_N ((int)(sizeof OWNER_CAPS / sizeof OWNER_CAPS[0]))
 
 /* The installed, non-chrome entries — which is NOT the same list as the top
  * page's app rows: those are the apps that declare options, while
@@ -354,23 +354,10 @@ static void worker_publish(const ui_t *src)
     s_dirty = true;                 /* published last: the reader trusts the copy */
 }
 
-/* The three jobs this screen still needs. Each takes the copied payload the
+/* The jobs this screen still needs. Each takes the copied payload the
  * shell's worker hands it and writes only its own status line: nothing here
  * touches a widget, which is the half of the rule that keeps the dial moving
  * while NVS erases a sector. */
-static void job_tz(void *arg)
-{
-    const int idx = *(const int *)arg;
-    ui_t out; memset(&out, 0, sizeof out);
-    const esp_err_t er = orb_net_tz_select(idx);
-    if (er != ESP_OK)
-        snprintf(out.status, sizeof(out.status), "\"%s\" not set (%s)",
-                 orb_net_tz_label(idx), esp_err_to_name(er));
-    else
-        snprintf(out.status, sizeof(out.status), "zone set: %s", orb_net_tz_label(idx));
-    worker_publish(&out);
-}
-
 static void job_dim_en(void *arg)
 {
     (void)arg;
@@ -521,25 +508,27 @@ static void shape_check(int rows)
  * rules the clock app supplies the theme picker and the shell only renders it,
  * so it arrives through the dynamic app rows. APPS and ABOUT landed here with
  * P5.3 — a new row is one entry plus its page row, with no switch anywhere to
- * open. The AP row stays a stub on
- * purpose: joining needs a passphrase, and a single push-input cannot type
- * one; the browser page is the way in until a keypad screen exists. */
+ * open.
+ *
+ * ABOUT leads (owner ruling, 2026-11-01). It took the AP row, a stub that
+ * never worked (a push-input cannot type a passphrase): ABOUT opens on a QR
+ * code for the orb's own page, which is where settings grow from here on, so
+ * the first row of the menu is the way to a phone. */
 static const menu_row_t s_top[] = {
-    { "AP",          MENU_GO_NONE,   act_ap },
-    { "TZ",          PG_TZ,          NULL },
+    { "ABOUT",       PG_ABOUT,       NULL },
+    /* TZ is gone from the dial (owner ruling, 2026-11-01): the home location
+     * sets the zone, and it is set from the hub, where a map and a city search
+     * are a good experience and a character-per-press editor is not. Every
+     * back_cur literal into this run moved up one with it. */
     { "DISPLAY",     PG_DISPLAY,     NULL },
     /* The marker this row can carry is the refusal signal, not an ask: any
      * app the gate closed this boot leaves one '*' on it, and the owner reads
      * it on the top page rather than being interrupted on the dial (D19).
      * Nothing waits on an answer. */
     { "PERMISSIONS", PG_PERMS,       NULL },
-    /* APPS and ABOUT join the OS's own run rather than the dynamic one: they
-     * describe the machine, not one app, and the plan's §7.2 top level names
-     * both. Appending them after PERMISSIONS rather than slotting them before
-     * it keeps every back_cur literal in the table below valid — the row each
-     * sub-page returns to is the row it was written for. */
+    /* APPS joins the OS's own run rather than the dynamic one: it describes
+     * the machine, not one app, and the plan's §7.2 top level names it. */
     { "APPS",        PG_APPS,        NULL },
-    { "ABOUT",       PG_ABOUT,       NULL },
 };
 
 /* ---- the page table, and what its rows answer ------------------------------
@@ -553,11 +542,10 @@ static const menu_row_t s_top[] = {
  * answers through the D12 shape predicates above, which stay untouched. */
 
 static int rows_top(void)     { return TOP_OS_N + app_rows() + 1; }   /* +1: exit */
-static int rows_tz(void)      { return orb_net_tz_count() + 1; }      /* last row is back */
 static int rows_display(void) { return 3; }                     /* dim, timeout, back */
 static int rows_to(void)      { return TO_PRESET_N + 1; }       /* last row is back */
 static int rows_perms(void)   { return perm_rows() + 1; }
-static int rows_caps(void)    { return 4 + 1; }
+static int rows_caps(void)    { return OWNER_CAPS_N + 1; }
 
 /* The app counts every row it has; the shell decides how many of them are on
  * the glass, which is the whole of ruling D12 and the reason the count below
@@ -635,18 +623,6 @@ static int app_row_index(const orb_app_t *a)
     return 0;
 }
 
-static void label_tz(int row, char *out, size_t outsz, bool *sel_hi)
-{
-    const int n = orb_net_tz_count();
-    if (row >= n) { snprintf(out, outsz, "<- back"); return; }
-    /* The row the dial is actually on is marked, so re-entering the picker
-     * answers "where am I?" without the owner having to remember what they
-     * set. */
-    const bool cur = (row == orb_net_tz_current_index());
-    if (sel_hi) *sel_hi = cur;
-    snprintf(out, outsz, "%s%s", orb_net_tz_label(row), cur ? "  *" : "");
-}
-
 static void label_app(int row, char *out, size_t outsz, bool *sel_hi)
 {
     if (!s_app) return;
@@ -688,7 +664,7 @@ static void label_perms(int row, char *out, size_t outsz, bool *sel_hi)
      * actually asks — what did I agree to, and what is live now. */
     int nd = 0, ng = 0;
     const uint32_t dm = orb_svc_declared(a), gm = orb_svc_grants(a);
-    for (unsigned c = 0; c < 4; c++) {
+    for (int c = 0; c < OWNER_CAPS_N; c++) {
         if (dm & (1u << OWNER_CAPS[c])) nd++;
         if (gm & (1u << OWNER_CAPS[c])) ng++;
     }
@@ -708,7 +684,7 @@ static void label_perms(int row, char *out, size_t outsz, bool *sel_hi)
 
 static void label_caps(int row, char *out, size_t outsz, bool *sel_hi)
 {
-    if (row >= 4) { snprintf(out, outsz, "<- back"); return; }
+    if (row >= OWNER_CAPS_N) { snprintf(out, outsz, "<- back"); return; }
     const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
     if (!a) { snprintf(out, outsz, "?"); return; }
     const uint32_t bit = 1u << OWNER_CAPS[row];
@@ -766,7 +742,6 @@ static void label_to(int row, char *out, size_t outsz, bool *sel_hi)
  * the list it came from. Static buffer, one writer, the LVGL task: same
  * reasoning as every painted string in this file. */
 static const char *title_top(void)  { return "MENU"; }
-static const char *title_tz(void)   { return "TIME ZONE"; }
 static const char *title_app(void)  { return (s_app && s_app->title) ? s_app->title : "OPTIONS"; }
 static const char *title_display(void) { return "DISPLAY"; }
 static const char *title_to(void)   { return "DIM TIMEOUT"; }
@@ -787,7 +762,6 @@ static const char *title_caps(void)
  * card nobody presses. The app page's own hint lost its second string on
  * 2026-10-26: back is a row and the group header is inert, so the plain
  * sentence is true again. */
-static const char *hint_tz(void) { return "rotate: choose   push: set"; }
 static const char *hint_to(void) { return "rotate: choose   push: set"; }
 static const char *hint_caps(void) { return "rotate: choose   push: toggle"; }
 static const char *hint_app(void)
@@ -798,27 +772,15 @@ static const char *hint_app(void)
 }
 static const char *hint_display(void) { return "rotate: choose   push: change"; }
 
-/* The presses that answer without a page of their own. AP is stubbed on
- * purpose (joining needs a passphrase a push-input cannot type; the browser
- * page stays the way in until a keypad screen exists). The others post the one
- * job the row names and repaint — showing "working..." while the single worker
+/* The presses that answer without a page of their own: each posts the one job
+ * the row names and repaints — showing "working..." while the single worker
  * gets to it. Nothing that can block runs on the task that paints the dial:
- * net_tz_set() writes NVS then tzset()s, the dim setter nvs_commits, and the
- * grant writes the broker's word. */
-static void act_ap(void)
-{
-    snprintf(s_ui.status, sizeof(s_ui.status),
-             "AP needs a passphrase: use the web page");
-    ESP_LOGI(TAG, "AP selected (stub)");
-    repaint();
-}
-static void act_tz(int row) { job_post(job_tz, row); repaint(); }
+ * the dim setter nvs_commits, and the grant writes the broker's word. */
 static void act_display(int row)
 {
     if (row == 0) { job_post(job_dim_en, 0); repaint(); return; }
     /* Timeout row: open the picker. enter_to() starts it on the row that
-     * matches the value in force -- the same "where am I?" courtesy PG_TZ
-     * gives -- so this arm says nothing about the cursor. */
+     * matches the value in force, so this arm says nothing about the cursor. */
     go_to(PG_TO, 0);
     repaint();
 }
@@ -857,14 +819,6 @@ static void act_caps(int row)
      * instead of two that can disagree. */
     job_post(job_grant, cap_pack(a, row));
     repaint();                                          /* shows "working..." */
-}
-static void enter_tz(void)
-{
-    /* Start on the zone in effect rather than at row 0: the common reason to
-     * open this is to nudge a neighbouring city, and UTC-first would make
-     * every visit a scroll. */
-    const int c = orb_net_tz_current_index();
-    s_cur = (c < 0) ? 0 : c;
 }
 static void enter_to(void)
 {
@@ -924,6 +878,16 @@ static bool slug_on_dial(const char *slug);
 static int rows_apps(void)   { return perm_rows() + card_rows_n() + 2; } /* +1 cap, +1 back */
 static int rows_appact(void) { return appact_n() + 1; }                  /* this subject's doors + back */
 static int rows_about(void)  { return 5 + 1; }             /* 5 facts + back      */
+
+/* ABOUT's first row is the address, and with the cursor on it (the page opens
+ * there) the glass shows a QR code for the orb's own page instead of the list:
+ * a phone on the same Wi-Fi scans it and lands where the settings live. An
+ * orb with no address has nothing to point at, so the row stays a row. */
+enum { ABOUT_ROW_ADDR = 0 };
+static bool about_qr_on(void)
+{
+    return s_armed && s_pg == P(PG_ABOUT) && s_cur == ABOUT_ROW_ADDR && orb_net_ip_str()[0];
+}
 
 /* The subject PG_APPACT is showing, by registry index when it is on the dial
  * (the same convention s_perm_slot uses for PG_CAPS, so the two "which app"
@@ -1491,11 +1455,13 @@ static void label_about(int row, char *out, size_t outsz, bool *sel_hi)
 {
     if (sel_hi) *sel_hi = false;
     switch (row) {
-    case 0:
-        snprintf(out, outsz, "firmware  %s", esp_app_get_description()->version);
+    case ABOUT_ROW_ADDR:
+        /* The row the page opens on, and the one that shows the QR: with the
+         * cursor here the list gives way to the code (about_qr_on). */
+        snprintf(out, outsz, "address  %s", orb_net_ip_str()[0] ? orb_net_ip_str() : "none (not on Wi-Fi)");
         return;
     case 1:
-        snprintf(out, outsz, "address  %s", orb_net_ip_str());
+        snprintf(out, outsz, "firmware  %s", esp_app_get_description()->version);
         return;
     case 2:
         snprintf(out, outsz, "card  %s",
@@ -1506,14 +1472,18 @@ static void label_about(int row, char *out, size_t outsz, bool *sel_hi)
         snprintf(out, outsz, "installed  %d of %d", perm_rows(), ORB_APP_CAP);
         return;
     case 4:
-        snprintf(out, outsz, "zone  %s", orb_net_tz_current());
+        {
+            char zl[ORB_HOME_ZONE_MAX];
+            orb_home_zone_label(zl, sizeof zl);
+            snprintf(out, outsz, "zone  %s", zl);
+        }
         return;
     default: snprintf(out, outsz, "<- back"); return;
     }
 }
 
 static const char *title_about(void) { return "ABOUT"; }
-static const char *hint_about(void)  { return "rotate: read   push: nothing here"; }
+static const char *hint_about(void)  { return about_qr_on() ? "scan with a phone on this Wi-Fi" : "rotate: read   push: nothing here"; }
 
 
 /* ---- D38: the share card ---------------------------------------------------
@@ -1770,8 +1740,80 @@ static const void *app_preview(uint16_t *w, uint16_t *h, uint32_t *stamp)
  * licence, spelled for the cursor); the answer drawn is app_preview's, which
  * is reaped state only: the callback that paints the page never touches the
  * card, the same rule opt_label and opt_value live under. */
+/* ---- ABOUT's QR: the orb's own page, for a phone ---------------------------
+ * Built with LVGL's qrcodegen into a PSRAM plane of one pixel per module and
+ * drawn through the preview image, scaled up nearest. No lv_qrcode widget: it
+ * would take its draw buffer from the LVGL pool, which has ~4 KB of headroom
+ * (flights_view.c's note), and the menu already owns an image object that
+ * scales a plane exactly this way. Black on white with the spec's four-module
+ * quiet zone, because the glass around it is black and a scanner needs the
+ * light border to find the code. "http://255.255.255.255/" is 23 bytes:
+ * version 2 at ECC medium, so version 4 is headroom, not a limit in use. */
+#define QR_VER_MAX 4
+#define QR_QUIET   4
+#define QR_SIDE_MAX (QR_VER_MAX * 4 + 17 + 2 * QR_QUIET)
+#define QR_GLASS_PX 232                       /* the code's side on the glass, at most */
+EXT_RAM_BSS_ATTR static uint16_t s_qr_px[QR_SIDE_MAX * QR_SIDE_MAX];
+static lv_image_dsc_t s_qr_dsc;
+static char s_qr_url[32];                     /* what s_qr_px encodes, "" = nothing */
+static int  s_qr_side;                        /* modules per side, quiet zone in    */
+
+static void qr_url(char *out, size_t outsz)
+{
+    snprintf(out, outsz, "http://%s/", orb_net_ip_str());
+}
+
+/* Encode once per address: the paint asks every repaint, the work happens on
+ * a change. False when the URL does not fit (it always does). */
+static bool qr_build(void)
+{
+    char url[sizeof s_qr_url];
+    qr_url(url, sizeof url);
+    if (s_qr_side && !strcmp(url, s_qr_url)) return true;
+    uint8_t tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_VER_MAX)];
+    uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(QR_VER_MAX)];
+    s_qr_side = 0;
+    if (!qrcodegen_encodeText(url, tmp, qr, qrcodegen_Ecc_MEDIUM, 1, QR_VER_MAX,
+                              qrcodegen_Mask_AUTO, true)) {
+        ESP_LOGW(TAG, "about: \"%s\" does not fit a version-%d code", url, QR_VER_MAX);
+        return false;
+    }
+    const int size = qrcodegen_getSize(qr), n = size + 2 * QR_QUIET;
+    for (int y = 0; y < n; y++)
+        for (int x = 0; x < n; x++)
+            s_qr_px[y * n + x] = qrcodegen_getModule(qr, x - QR_QUIET, y - QR_QUIET) ? 0x0000 : 0xFFFF;
+    memset(&s_qr_dsc, 0, sizeof s_qr_dsc);
+    s_qr_dsc.header.magic  = LV_IMAGE_HEADER_MAGIC;
+    s_qr_dsc.header.cf     = LV_COLOR_FORMAT_RGB565;
+    s_qr_dsc.header.w      = (uint32_t)n;
+    s_qr_dsc.header.h      = (uint32_t)n;
+    s_qr_dsc.header.stride = (uint32_t)n * 2u;
+    s_qr_dsc.data_size     = (uint32_t)(n * n * 2);
+    s_qr_dsc.data          = (const uint8_t *)s_qr_px;
+    snprintf(s_qr_url, sizeof s_qr_url, "%s", url);
+    s_qr_side = n;
+    return true;
+}
+
+/* The plane while ABOUT's cursor is on the address. It borrows the preview
+ * image, so the preview's own memory is cleared: the next app plane re-blits
+ * rather than trusting a stamp that last described a QR code. */
+static void paint_qr(void)
+{
+    s_pv_stamp = 0; s_pv_w = 0; s_pv_h = 0;
+    if (!qr_build()) { lv_obj_add_flag(s_pv_img, LV_OBJ_FLAG_HIDDEN); return; }
+    const int n = s_qr_side, mod = QR_GLASS_PX / n;   /* whole pixels per module */
+    lv_image_set_src(s_pv_img, &s_qr_dsc);
+    lv_obj_set_size(s_pv_img, n, n);
+    lv_image_set_pivot(s_pv_img, n / 2, n / 2);
+    lv_image_set_scale(s_pv_img, (uint32_t)(mod * 256));
+    lv_obj_center(s_pv_img);
+    lv_obj_remove_flag(s_pv_img, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void paint_preview(void)
 {
+    if (about_qr_on()) { paint_qr(); return; }
     if (s_pg == P(PG_APP) && s_app) {
         const int rows = orb_app_opt_count(s_app);
         const int ar = vis_to_row(rows, s_cur);
@@ -1875,9 +1917,10 @@ static void repaint(void)
 
     char buf[64];
     char gl[96];                                   /* fold scratch: status is 72 B */
+    const bool qr = about_qr_on();                 /* the code takes the list's place */
     for (int i = 0; i < ROW_MAX; i++) {
         const int r = win + i;
-        if (rows == 0 || r >= rows) {
+        if (rows == 0 || r >= rows || qr) {
             lv_label_set_text(s_row_lbl[i], "");
             lv_obj_set_style_bg_color(s_row[i], lv_color_black(), 0);
             continue;
@@ -1913,8 +1956,13 @@ static void repaint(void)
         lv_label_set_text(s_title, gl);
         dial_text(gl, sizeof gl, page_hint());
         lv_label_set_text(s_hint, gl);
-        dial_text(gl, sizeof gl, s_ui.status);
+        char url[sizeof s_qr_url];
+        if (qr) qr_url(url, sizeof url);
+        dial_text(gl, sizeof gl, qr ? url : s_ui.status);
         lv_label_set_text(s_status, gl);
+        /* The URL sits under the code, centred like it; status lines elsewhere
+         * keep the left edge they wrap from. */
+        lv_obj_set_style_text_align(s_status, qr ? LV_TEXT_ALIGN_CENTER : LV_TEXT_ALIGN_LEFT, 0);
     }
 
     /* The plane over the list, asked and drawn in the same pass that decided
@@ -2030,8 +2078,7 @@ esp_err_t menu_view_init(void)
     lv_obj_remove_flag(s_pv_img, LV_OBJ_FLAG_CLICKABLE);
 
     repaint();
-    ESP_LOGI(TAG, "menu ready (worker up, %d zones, %s)", orb_net_tz_count(),
-             orb_sd_mounted() ? "card mounted" : "no card");
+    ESP_LOGI(TAG, "menu ready (worker up, %s)", orb_sd_mounted() ? "card mounted" : "no card");
     return ESP_OK;
 
 nomem:
@@ -2075,7 +2122,10 @@ void menu_view_show(void) { repaint(); }
  * stored row: the cursor there is a fact about the current setting, not a place
  * the owner parked it. */
 #define MENU_POS_NS  "orb_menu"
-#define MENU_POS_KEY_PG  "pg"
+/* "pg2" since the zone page left the enum (2026-11-01) and every later id moved
+ * down one: a record under the old key names a different page now, so it is
+ * ignored and the first open after the update is at the top. */
+#define MENU_POS_KEY_PG  "pg2"
 #define MENU_POS_KEY_CUR "cur"
 
 static int  s_pos_pg = PG_TOP;    /* the page the last exit left, RAM mirror */
@@ -2091,7 +2141,7 @@ static bool s_pos_loaded;         /* the record has been read once this boot */
  * and LANDING is unarmed. */
 static bool pos_restorable(int pg)
 {
-    const unsigned ok = (1u << PG_TOP) | (1u << PG_TZ) | (1u << PG_DISPLAY)
+    const unsigned ok = (1u << PG_TOP) | (1u << PG_DISPLAY)
                       | (1u << PG_TO)  | (1u << PG_PERMS) | (1u << PG_ABOUT);
     return pg >= 0 && pg < PG_N && ((ok >> pg) & 1u) != 0;
 }
@@ -2280,18 +2330,16 @@ const menu_page_t s_pages[PG_N] = {
     [PG_LANDING] = { .title = title_top, .back_to = MENU_GO_NONE },
     [PG_TOP]     = { .rows = rows_top, .label = label_top, .title = title_top,
                      .act = act_top, .back_to = MENU_GO_EXIT },
-    [PG_TZ]      = { .rows = rows_tz, .label = label_tz, .title = title_tz, .hint = hint_tz,
-                     .act = act_tz, .enter = enter_tz, .back_to = PG_TOP, .back_cur = 1 },
     [PG_APP]     = { .rows = rows_app, .label = label_app, .title = title_app, .hint = hint_app,
                      .act = act_app, .open = open_app, .ordinal = ord_app,
                      .leave = leave_app, .back_to = PG_TOP, .back_cur = 0 },
     [PG_DISPLAY] = { .rows = rows_display, .label = label_display, .title = title_display,
                      .hint = hint_display, .act = act_display,
-                     .back_to = PG_TOP, .back_cur = 2 },
+                     .back_to = PG_TOP, .back_cur = 1 },
     [PG_TO]      = { .rows = rows_to, .label = label_to, .title = title_to, .hint = hint_to,
                      .act = act_to, .enter = enter_to, .back_to = PG_DISPLAY, .back_cur = 1 },
     [PG_PERMS]   = { .rows = rows_perms, .label = label_perms, .title = title_perms,
-                     .act = act_perms, .back_to = PG_TOP, .back_cur = 3 },
+                     .act = act_perms, .back_to = PG_TOP, .back_cur = 2 },
     [PG_CAPS]    = { .rows = rows_caps, .label = label_caps, .title = title_caps,
                      .hint = hint_caps, .act = act_caps, .ordinal = ord_caps,
                      .back_to = PG_PERMS, .back_cur = 0 },
@@ -2301,13 +2349,13 @@ const menu_page_t s_pages[PG_N] = {
      * changing — rows_top() reads TOP_OS_N by sizeof. */
     [PG_APPS]    = { .rows = rows_apps, .label = label_apps, .title = title_apps,
                      .hint = hint_apps, .act = act_apps, .enter = enter_apps,
-                     .back_to = PG_TOP, .back_cur = 4 },
+                     .back_to = PG_TOP, .back_cur = 3 },
     [PG_APPACT]  = { .rows = rows_appact, .label = label_appact, .title = title_appact,
                      .hint = hint_appact, .act = act_appact, .open = open_appact,
                      .ordinal = ord_appact,
                      .back_to = PG_APPS, .back_cur = 0 },
     [PG_ABOUT]   = { .rows = rows_about, .label = label_about, .title = title_about,
-                     .hint = hint_about, .back_to = PG_TOP, .back_cur = 5 },
+                     .hint = hint_about, .back_to = PG_TOP, .back_cur = 0 },
     /* The share card: reachable from no row, carrying no rows of its own, and
      * answering no press with navigation — the whole page is the door. The
      * table holds it so the paint path stays the table's; the window installs

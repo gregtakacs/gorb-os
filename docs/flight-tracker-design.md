@@ -228,10 +228,14 @@ rate.
 - **Motion between polls:** dead-reckon each dot along track at its ground
   speed at 1 Hz. It reads as live, costs a few small invalidations a second,
   and the next poll snaps it back. A 10 s gap is visibly stale without it.
-- **Knob:** turning steps the range through 10/20/40/80 nm (the next poll uses
-  it, and the rings rescale at once). Pressing cycles a detail card through
-  the nearest aircraft (callsign, type, altitude, ground speed, vertical rate,
-  distance/bearing), highlighting that dot. A long press is the shell's.
+- **Knob** (owner ruling 2026-11-01): turning flips between apps, as on any
+  screen. A push enters *zoom*: turning steps the range through 10/20/40/80 nm
+  (the next poll uses it, and the rings rescale at once). A second push enters
+  *info*: the nearest aircraft's detail card opens (callsign, type, altitude,
+  ground speed, vertical rate, distance/bearing, its dot ringed), and turning
+  steps the card through the drawn aircraft, wrapping at both ends. A third
+  push goes back to flipping between apps. The header names the level
+  ("zoom  40 nm", "3 of 24", in green). A long press is the shell's.
 
 Drawing cost: at most 24 × (dot + line + optional label) LVGL objects, moved at
 1 Hz, each invalidating a small area. That's well under what the clock's dial
@@ -246,9 +250,11 @@ pays every frame. The view draws nothing while suspended.
 | `source` | ENUM | adsb.lol | adsb.lol / adsb.fi |
 | `bg_poll_s` | ENUM | 60 | 0 (off) / 60 / 120 / 300: the background base rate; the boost (§5) rides on top |
 | `boost` | TOGGLE | on | the 20 s rate while something interesting is near |
-| `api_key` | STRING | "" | for when adsb.lol starts requiring one |
+| `api_key` | STRING | "" | for when adsb.lol starts requiring one (declared as `key`; not sent yet) |
 | `hide_ground` | TOGGLE | on | |
-| `units` | ENUM | ft/kt | ft/kt or m/km/h |
+| `units` | ENUM | ft/kt | ft/kt or m/km/h (designed; not built) |
+
+As shipped the container declares `range`, `source`, `bg`, `boost`, `ground`, `key`, and the caps `net, location`. The two `lat`/`lon` strings the first build carried went away with §6.4.
 
 ### 6.4 Home location replaces the time-zone pick (owner ruling, 2026-11-01)
 
@@ -271,7 +277,10 @@ consent rule applies.
   label and zone to the orb in one config write. Existing zone-table rows keep
   their keys (the frozen NVS contract in `host_tz_test.py`); the hub sends the
   POSIX string for zones outside the table.
-- **On the orb alone (menu):** two entry forms, digit by digit on the knob:
+- **On the orb alone (menu):** *built, then removed (owner ruling
+  2026-11-01: a character-per-press editor is a poor way to say where you
+  live, and owners set it from the hub). The design as it stood:* two entry
+  forms, digit by digit on the knob:
   - *decimal coordinates;*
   - *a full plus code* (8+2 characters). Open Location Code decodes offline
     in ~100 lines of C. Short codes ("XXXX+XX City") need a reference point
@@ -286,6 +295,21 @@ consent rule applies.
 - **Not in v1 of the tracker:** the tracker ships reading home from the OS. If
   the location work lands later, the tracker's options page holds a temporary
   lat/lon until it does.
+
+### 6.4.1 Home location as built (orb-A, 2026-11-01)
+
+- **Record:** `main/net/orb_home.c`, one blob in `storage`/`orb.home`: lat/lon at 1e-6°, the place, the IANA zone it set and the exact tz string it wrote. "The zone follows home" is the comparison of that string with the zone in force, so a zone written past the home (`POST /api/v1/config`, the orb's own `/timezone` page) shows as not following it without a flag to drift.
+- **Zone from a point:** the nearest row of `main/net/orb_cities.c`. That is 1,055 places of 500k+ plus 185 correction rows: places of 100k+ whose zone *rule* differs from their nearest big city's. Without them, Boise was "555 km E of Portland" in Pacific time; now it is "Boise", in Mountain time. The rules are derived from zoneinfo for 2027 and checked through glibc from 2026-11-01 for 800 days. This machine's tzdata (2026e) has BC, Alberta and Manitoba on permanent daylight time, and the table follows it. Asia/Jerusalem is the one approximate rule (standard time only), flagged `"exact":false` on the wire. Tables in the zone list keep their keys: a city whose zone is in the 62-row table stores that key ("US/Arizona"), any other stores the rule.
+- **Hub (`GET/POST /api/v1/home`, Orb tab), two steps (owner ruling 2026-11-01).** There is no zone picker on the hub; the location drives the zone. Every source only *proposes* a point:
+  - a city from the orb's own list, searched by name (`web/cities.json`, baked with `orb_cities.c` from the same TSV, so a city the hub offers is a city the orb names);
+  - *Use this browser's location* (only on localhost or https);
+  - a click on the map (Leaflet 1.9.4, vendored, BSD-2, over OpenStreetMap tiles; always shown);
+  - typed coordinates or a full plus code.
+
+  The orb previews it (`GET ?lat=&lon=` or `?code=`, which answers with the point, the place and the zone), the map pins that point, and the zone shows beside *Set home* with today's offset. A plus code is decoded by the orb, so the pin is the point Set stores. *Set home* posts the point; the orb takes the nearest city's zone with it. The browser's own zone is no longer sent. No `tzf`: the hub keeps its one dependency. Verified in headless Chrome against orb-A: city search, plus code, short-code refusal, coordinates, a map click past the antimeridian, Set, and a restore of the home that was there.
+- **Dial:** nothing to set (owner ruling 2026-11-01). The HOME page (a character-per-press editor for coordinates or a plus code) and the zone list it overrode were both removed from the menu; the top page is AP, DISPLAY, PERMISSIONS, APPS, ABOUT. ABOUT still names the zone in force. The tracker's footer says "set home in the hub (Orb tab)" until one is set. The menu's saved position moved to NVS key `pg2`, because the page ids after the zone page shifted down one; an old record is ignored once.
+- **Tracker:** reads home through `svc->home` (cap `location`), re-reads when `orb_home_gen()` moves, and drops its contacts on a move: their offsets are from the old home. Bench: knob-typed `8559CWXG+9C` set Phoenix and US/Arizona; an API move to LAX re-centred within one poll; back to Phoenix cleared the screen at once and refilled on the next poll.
+- **Cost:** +35 KB of image (city table ~23 KB). The 2 MB slot now has **35 KB free**. Internal RAM is unchanged: the record and the editor's state are in PSRAM, and only the mutex is internal.
 
 ### 6.5 As built (orb-A, 2026-11-01)
 
@@ -306,9 +330,13 @@ consent rule applies.
 - **Merging:** a contact table of 32 in PSRAM. Each poll is merged by `hex`,
   a contact the latest poll missed is drawn dimmed, and one missing for 60 s
   drops. Dead reckoning runs at 1 Hz, capped at 90 s.
-- **Knob:** a push arms the view. Then a turn steps 10/20/40/80 nm (saved at
-  disarm) and a push cycles the detail card through the drawn aircraft by
-  `hex`, nearest first, then none. The long press is the shell's. The options
+- **Knob:** turn flips apps; push → zoom (turn steps 10/20/40/80 nm, saved
+  at disarm) → push → info (turn steps the card through the drawn aircraft by
+  `hex`, nearest first, wrapping; `fm_sel_step`) → push → back to flipping
+  apps. The view disarms itself on the third push; the router reads
+  `flights_view_armed()` each poll. Bench on orb-A through `/api/v1/screen`:
+  every level and the turn after the third push landing on the next app.
+  The long press is the shell's. The options
   page cycles Range, Source, Background, Boost and Ground on a press and shows
   Home read-only.
 - **Feed control:** `activate`/`resume` set the visible rate (15 s);

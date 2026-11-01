@@ -184,8 +184,8 @@ BEAT_MAX_MS = 86400000         # a day; past this the app means "never", and 0
 # this tuple's order ever disagrees: a silent renumber would move every installed
 # app's D19 consent onto a different permission.
 CAP_FREE  = ("time", "config", "ui", "art")     # declarable NEVER
-CAP_OWNER = ("power", "net", "sd_read", "themes")
-CAP_BITS  = len(CAP_FREE) + len(CAP_OWNER)      # 8 == CAP_N
+CAP_OWNER = ("power", "net", "sd_read", "themes", "sound")   # sound: D39, appended
+CAP_BITS  = len(CAP_FREE) + len(CAP_OWNER)      # 9 == CAP_N
 
 # C9's settings types, frozen, in orb_svc.h's orb_set_type_t order.
 SET_TYPES = ("int", "enum", "toggle", "string")

@@ -36,6 +36,11 @@ struct _lv_obj_t *clock_view_screen(void);
 /** Enable/disable ticking (and force a clean repaint on enable). Safe any time after init. */
 void clock_view_set_bounce(bool on);
 
+/** D39's repeater: sound the time on the theme's three strokes, now. The knob's
+ *  press on the dial calls it (the clock's set_armed hook); a press that arrives
+ *  with the dial's own arrival is ignored. */
+void clock_view_repeater(void);
+
 /** Query current tick state. */
 bool clock_view_bounce(void);
 

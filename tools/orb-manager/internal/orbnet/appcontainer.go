@@ -136,8 +136,9 @@ const (
 	AppCapNet    = 1 << 5
 	AppCapSDRead = 1 << 6
 	AppCapThemes = 1 << 7
+	AppCapSound  = 1 << 8 // D39: the app's own theme sounds, through the OS engine
 
-	appCapOwnerAll = AppCapPower | AppCapNet | AppCapSDRead | AppCapThemes
+	appCapOwnerAll = AppCapPower | AppCapNet | AppCapSDRead | AppCapThemes | AppCapSound
 )
 
 // AppCapNames is orbapp.CAP_OWNER in orb_cap_t order, so a caps value names itself the
@@ -150,6 +151,7 @@ var AppCapNames = []struct {
 	{AppCapNet, "net"},
 	{AppCapSDRead, "sd_read"},
 	{AppCapThemes, "themes"},
+	{AppCapSound, "sound"},
 }
 
 // AppContainer is one .orbapp's identity: what the hub shows an operator, and the fields

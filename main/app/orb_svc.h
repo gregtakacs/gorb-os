@@ -75,7 +75,8 @@ typedef enum {
     CAP_NET = 5,      /* owner: the OS http client, P4                 */
     CAP_SD_READ = 6,  /* owner: /sd/apps/<id>/ only, P4                */
     CAP_THEMES = 7,   /* owner: enumerate + request the D11 install    */
-    CAP_N             /* 8                                              */
+    CAP_SOUND = 8,    /* owner: play its own theme sounds (D39)        */
+    CAP_N             /* 9                                              */
 } orb_cap_t;
 
 /* TIME|CONFIG|UI|ART: never stored, never revoked — §4.2's "free, always on"
@@ -165,7 +166,21 @@ typedef struct {
   esp_err_t (*theme_install)(orb_app_t *, const char *id);
   /* ui: the shell's list primitives for the app's settings page */
   void (*status)(orb_app_t *, const char *fmt, ...);
+  /* sound — cap SOUND (owner, D39), appended. The app's OWN theme sounds, by slot
+   * (its section's ORB_ASSET_SOUND rows), played by the OS engine under the owner's
+   * level and quiet hours, and silenced when the app is suspended (C7). flags:
+   * ORB_SVC_SOUND_LOOP repeats until stopped, ORB_SVC_SOUND_SECOND (with LOOP)
+   * anchors sample 0 to the wall second. sound_play answers a handle > 0, or a
+   * negative esp_err_t — ESP_ERR_NOT_ALLOWED without the cap, ESP_ERR_NOT_FOUND for
+   * a slot the theme leaves empty, ESP_ERR_INVALID_STATE in quiet hours. stop and
+   * active see only the caller's own handles. */
+  int  (*sound_play)(orb_app_t *, uint16_t slot, uint32_t flags, uint32_t delay_ms);
+  void (*sound_stop)(orb_app_t *, int handle);
+  bool (*sound_active)(orb_app_t *, int handle);
 } orb_svc_t;
+
+#define ORB_SVC_SOUND_LOOP   0x01u
+#define ORB_SVC_SOUND_SECOND 0x02u
 
 /** The gate, §4.2 made real. Counts the call either way — the P3 pass line is
  *  a number on /api/v1/status, and a denial that is not counted is a denial

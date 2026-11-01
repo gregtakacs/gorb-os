@@ -906,7 +906,7 @@ def seed_check():
     # release that moved both together, which is the case a literal would confuse.
     want_version = open(os.path.join(HERE, os.pardir, "version.txt")).read().strip()
     want_serial = orbapp.serial_of_version(want_version)
-    want = [("clock", "Clock", 3, "sd_read|themes"),
+    want = [("clock", "Clock", 3, "sd_read|themes|sound"),   # sound: D39
             ("color_picker", "HSB", 1, "")]
     for slug, title, kind, capnames in want:
         path = os.path.join(seed_dir, slug + ".orbapp")

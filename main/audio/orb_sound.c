@@ -3,6 +3,7 @@
 #include "orb_sound.h"
 
 #include <math.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -35,6 +36,7 @@ static const char *TAG = "sound";
 #define LEASE_US   1500000     /* a leased voice outlives its owner's last tick by this */
 
 typedef struct {
+    const void    *owner;      /* who started it: orb_sound_stop_owner's key */
     const int16_t *pcm;
     uint32_t n, pos;
     int64_t  at_us, anchor_us;
@@ -148,6 +150,7 @@ static int mix_block(int16_t *out, int64_t t_us)
     memset(acc, 0, BLOCK * sizeof acc[0]);
     const int64_t off_us = (int64_t)s_cfg.offset_ms * 1000;
     const bool lapsed = esp_timer_get_time() - s_lease_us > LEASE_US;
+    const bool quiet = orb_sound_quiet_now();
     int alive = 0;
 
     xSemaphoreTake(s_mx, portMAX_DELAY);
@@ -155,6 +158,7 @@ static int mix_block(int16_t *out, int64_t t_us)
         voice_t *v = &s_v[k];
         if (!v->state) continue;
         if ((v->flags & ORB_SOUND_LEASED) && lapsed) { v->state = 0; continue; }
+        if (quiet && !(v->flags & ORB_SOUND_ASKED)) { v->state = 0; continue; }   /* the OS's quiet hours */
         uint32_t i0 = 0;
         const bool anchored = (v->flags & ORB_SOUND_ANCHORED) != 0;
         if (v->state == 1) {
@@ -267,14 +271,23 @@ static void mixer_task(void *arg)
 int orb_sound_play(const int16_t *pcm, uint32_t n, uint16_t gain_q12,
                    uint32_t flags, int64_t at_us, int64_t anchor_us)
 {
+    return orb_sound_play_owned(NULL, pcm, n, gain_q12, flags, at_us, anchor_us);
+}
+
+int orb_sound_play_owned(const void *owner, const int16_t *pcm, uint32_t n,
+                         uint16_t gain_q12, uint32_t flags, int64_t at_us,
+                         int64_t anchor_us)
+{
     if (!s_ready) return ESP_ERR_INVALID_STATE;
-    if (!pcm || n < 2) return ESP_ERR_INVALID_ARG;
+    if (!pcm || n < 2 || ((uintptr_t)pcm & 1u)) return ESP_ERR_INVALID_ARG;
     if ((flags & ORB_SOUND_ANCHORED) && !(flags & ORB_SOUND_LOOP)) return ESP_ERR_INVALID_ARG;
+    if (!(flags & ORB_SOUND_ASKED) && orb_sound_quiet_now()) return ESP_ERR_INVALID_STATE;
     int id = ESP_ERR_NO_MEM;
     xSemaphoreTake(s_mx, portMAX_DELAY);
     for (int k = 0; k < VOICES; k++) {
         if (s_v[k].state) continue;
         voice_t *v = &s_v[k];
+        v->owner = owner;
         v->pcm = pcm; v->n = n; v->pos = 0;
         v->at_us = at_us; v->anchor_us = anchor_us;
         v->gain = gain_q12; v->flags = (uint8_t)flags; v->state = 1;
@@ -294,6 +307,39 @@ void orb_sound_stop(int handle)
     for (int k = 0; k < VOICES; k++)
         if (s_v[k].state && s_v[k].id == handle) s_v[k].state = 0;
     xSemaphoreGive(s_mx);
+}
+
+void orb_sound_stop_owner(const void *owner)
+{
+    if (!s_ready || !owner) return;
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    for (int k = 0; k < VOICES; k++)
+        if (s_v[k].state && s_v[k].owner == owner) s_v[k].state = 0;
+    xSemaphoreGive(s_mx);
+}
+
+/* Act on `handle` only when `owner` started it: an app's handle is a number, and a
+ * number an app made up must not stop another app's sound. */
+static bool owned(const void *owner, int handle)
+{
+    bool yes = false;
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    for (int k = 0; k < VOICES; k++)
+        if (s_v[k].state && s_v[k].id == handle && s_v[k].owner == owner) yes = true;
+    xSemaphoreGive(s_mx);
+    return yes;
+}
+
+void orb_sound_app_stop(const void *owner, int handle)
+{
+    if (!s_ready || handle <= 0 || !owner) return;
+    if (owned(owner, handle)) orb_sound_stop(handle);
+}
+
+bool orb_sound_app_active(const void *owner, int handle)
+{
+    if (!s_ready || handle <= 0 || !owner) return false;
+    return owned(owner, handle);
 }
 
 void orb_sound_stop_all(void)
@@ -380,6 +426,22 @@ const char *orb_sound_cfg_set(const orb_sound_cfg_t *in)
     return NULL;
 }
 
+/* Read once a second at most: the mixer asks every block, and localtime_r is not
+ * free. TZ is the OS's (orb_net applies it with setenv+tzset). */
+bool orb_sound_quiet_now(void)
+{
+    static time_t s_at;
+    static bool   s_q;
+    const time_t t = time(NULL);
+    if (t != s_at) {
+        struct tm ti;
+        localtime_r(&t, &ti);
+        s_q = orb_sound_quiet_at(ti.tm_hour);
+        s_at = t;
+    }
+    return s_q;
+}
+
 bool orb_sound_quiet_at(int hour)
 {
     const int a = s_cfg.quiet_from, b = s_cfg.quiet_to;
@@ -441,10 +503,10 @@ const char *orb_sound_test(const char *which)
     make_bench_sounds();
     if (!s_ding || !s_tick || !s_loop1) return "no PSRAM for the bench sounds";
     if (!strcmp(which, "ding")) {
-        return orb_sound_play(s_ding, s_ding_n, ORB_SOUND_GAIN_1, 0, 0, 0) > 0 ? NULL : "no free voice";
+        return orb_sound_play(s_ding, s_ding_n, ORB_SOUND_GAIN_1, ORB_SOUND_ASKED, 0, 0) > 0 ? NULL : "no free voice";
     }
     if (!strcmp(which, "tick")) {
-        return orb_sound_play(s_tick, s_tick_n, ORB_SOUND_GAIN_1, 0, 0, 0) > 0 ? NULL : "no free voice";
+        return orb_sound_play(s_tick, s_tick_n, ORB_SOUND_GAIN_1, ORB_SOUND_ASKED, 0, 0) > 0 ? NULL : "no free voice";
     }
     if (!strcmp(which, "loop")) {
         if (s_loop_id && orb_sound_active(s_loop_id)) {
@@ -458,7 +520,7 @@ const char *orb_sound_test(const char *which)
         orb_time_now(&sec, &frac, &synced);
         const int64_t anchor = esp_timer_get_time() - (int64_t)(frac * 1e6);
         s_loop_id = orb_sound_play(s_loop1, ORB_SOUND_RATE, ORB_SOUND_GAIN_1,
-                                   ORB_SOUND_LOOP | ORB_SOUND_ANCHORED, 0, anchor);
+                                   ORB_SOUND_LOOP | ORB_SOUND_ANCHORED | ORB_SOUND_ASKED, 0, anchor);
         return s_loop_id > 0 ? NULL : "no free voice";
     }
     return "unknown bench sound (ding, tick, loop)";

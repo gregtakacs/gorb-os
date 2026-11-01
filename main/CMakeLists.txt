@@ -40,6 +40,8 @@ idf_component_register(
         # docs/sound-plan.md §4; the clock schedules, this plays.
         "audio/orb_es8311.c"
         "audio/orb_sound.c"
+        "audio/orb_sound_app.c"      # the svc entries' half: an app's theme sounds by slot
+        "audio/orb_sound_menu.c"     # the OS's Sound page: level and quiet hours, every app
         "power/idle_dim.c"
         "art/art_bank.c"
         "art/orb_theme.c"

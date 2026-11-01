@@ -1740,6 +1740,7 @@ typedef struct {
     time_t  last_t;
 } snd_state_t;
 static snd_state_t *s_snd;
+static orb_app_t   *s_lay_app;   /* the clock's row (defined with the layer table below) */
 
 static const clk_sound_t *snd_find(const clk_sound_t *t, uint32_t n, int slot)
 {
@@ -1753,11 +1754,23 @@ static int64_t snd_us(const clk_sound_t *s)      /* a sound's length in µs */
     return (int64_t)s->n * 1000000 / CLK_SND_RATE;
 }
 
-static void snd_at(const clk_sound_t *s, int64_t at_us)
+/* The clock's voices are owned by its row, so the registry's suspend silences them
+ * (orb_svc_app_suspended), and leased, so a parked tick does too. */
+static void snd_at_flags(const clk_sound_t *s, int64_t at_us, uint32_t extra)
 {
     if (!s) return;
-    orb_sound_play((const int16_t *)(const void *)(blob() + s->pcm_off), s->n,
-                   ORB_SOUND_GAIN_1, ORB_SOUND_LEASED, at_us, 0);
+    orb_sound_play_owned(s_lay_app, (const int16_t *)(const void *)(blob() + s->pcm_off),
+                         s->n, ORB_SOUND_GAIN_1, ORB_SOUND_LEASED | extra, at_us, 0);
+}
+
+static void snd_at(const clk_sound_t *s, int64_t at_us) { snd_at_flags(s, at_us, 0); }
+
+/* D19 for sound: the clock declares the cap, and the owner may revoke it on the
+ * dial like any other. Read the grant word, not the counting gate: this runs every
+ * tick, and a revoked cap is a state, not a stream of refusals. */
+static bool snd_granted(void)
+{
+    return s_lay_app && (orb_svc_grants(s_lay_app) & (1u << CAP_SOUND));
 }
 
 /* The pattern the owner hears: theirs when the theme carries its strokes, else the
@@ -1838,6 +1851,10 @@ static void sound_policy(const struct tm *ti, time_t t, double frac)
         s_snd->min = s_snd->hour = s_snd->mday = -1;
     }
     orb_sound_lease_renew();
+    if (!snd_granted()) {
+        if (s_snd->loop) { orb_sound_stop(s_snd->loop); s_snd->loop = 0; }
+        return;
+    }
 
     uint32_t n = 0;
     uint8_t theme_pat = CLK_PAT_NONE;
@@ -1860,7 +1877,8 @@ static void sound_policy(const struct tm *ti, time_t t, double frac)
          * itself was re-anchored under the loop (orb_time_now's drift rule). */
         const int64_t anchor = sec_us - (int64_t)loop->first_beat * 1000000 / CLK_SND_RATE;
         if (!s_snd->loop) {
-            s_snd->loop = orb_sound_play((const int16_t *)(const void *)(blob() + loop->pcm_off),
+            s_snd->loop = orb_sound_play_owned(s_lay_app,
+                                         (const int16_t *)(const void *)(blob() + loop->pcm_off),
                                          loop->n, ORB_SOUND_GAIN_1,
                                          ORB_SOUND_LOOP | ORB_SOUND_ANCHORED | ORB_SOUND_LEASED,
                                          0, anchor);
@@ -2025,7 +2043,7 @@ typedef struct {
 static clk_layer_key_t *s_lay_key;
 static int *s_lay_handle;
 static int s_lay_n;
-static orb_app_t *s_lay_app;                /* the row the table is claimed under */
+/* s_lay_app — the row the table is claimed under — is declared above sound_policy. */
 /* The section and bank base the rows' frame offsets resolve against. The
  * adopted bundle changes only at boot — the store door stages, the flip
  * worker reboots — and this pass rebuilds on any re-show, so caching what
@@ -2716,8 +2734,49 @@ lv_obj_t *clock_view_screen(void)
     return s_scr;
 }
 
+/* When the dial last came onto the glass: the press that picked it from the
+ * carousel also arms whatever lands (input_router's "press once, you are inside"),
+ * and that press must not be read as a request for the repeater. */
+static int64_t s_shown_us;
+
+/* D39 §5.1's repeater, on demand: a press of the knob while the dial is on the glass
+ * sounds the time — the hours on the low stroke, the quarters past as ting-tang
+ * pairs, the minutes past the quarter on the high stroke — the way a minute
+ * repeater does. The theme must carry all three strokes. It is the owner asking,
+ * so quiet hours do not apply; the clock's own sound grant still does. */
+void clock_view_repeater(void)
+{
+    if (!orb_sound_ready() || !snd_granted()) return;
+    if (esp_timer_get_time() - s_shown_us < 800000) return;   /* the press that picked the dial */
+    uint32_t n = 0;
+    uint8_t pat = CLK_PAT_NONE;
+    const clk_sound_t *tab = orb_theme_sounds(&n, &pat);
+    const clk_sound_t *hr = snd_find(tab, n, CLK_SND_STRIKE_HOUR);
+    const clk_sound_t *qt = snd_find(tab, n, CLK_SND_STRIKE_QUARTER);
+    const clk_sound_t *mn = snd_find(tab, n, CLK_SND_STRIKE_MINUTE);
+    if (!hr || !qt || !mn) {
+        ESP_LOGI(TAG, "repeater: the theme lacks a stroke (hour %d, quarter %d, minute %d)",
+                 hr != NULL, qt != NULL, mn != NULL);
+        return;
+    }
+    time_t t; double frac; bool synced;
+    orb_time_now(&t, &frac, &synced);
+    struct tm ti;
+    localtime_r(&t, &ti);
+    const int h12 = ti.tm_hour % 12 ? ti.tm_hour % 12 : 12;
+    const int quarters = ti.tm_min / 15, minutes = ti.tm_min % 15;
+    int64_t at = esp_timer_get_time() + 150000;
+    for (int i = 0; i < h12; i++, at += 900000)       snd_at_flags(hr, at, ORB_SOUND_ASKED);
+    at += 600000;
+    for (int i = 0; i < quarters; i++, at += snd_us(qt) + 250000) snd_at_flags(qt, at, ORB_SOUND_ASKED);
+    if (quarters) at += 600000;
+    for (int i = 0; i < minutes; i++, at += 450000)   snd_at_flags(mn, at, ORB_SOUND_ASKED);
+    ESP_LOGI(TAG, "repeater: %d:%02d — %d, %d, %d strokes", h12, ti.tm_min, h12, quarters, minutes);
+}
+
 void clock_view_set_bounce(bool on)
 {
+    if (on) s_shown_us = esp_timer_get_time();
     /* Repurposed from the old digital label's bounce: this is the router's
      * "clock is the visible screen" gate. Park the tick timer when the clock is
      * not on the glass so a hidden dial burns no flush work; on re-show, repaint

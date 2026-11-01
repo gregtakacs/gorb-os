@@ -40,6 +40,8 @@ extern "C" {
 #define ORB_SOUND_LOOP     0x01u      /* repeat until stopped */
 #define ORB_SOUND_ANCHORED 0x02u      /* loop phase follows `anchor_us` (needs LOOP) */
 #define ORB_SOUND_LEASED   0x04u      /* lives only while orb_sound_lease_renew() is called */
+#define ORB_SOUND_ASKED    0x08u      /* the owner asked for it this moment (a bench test,
+                                       * a repeater press): quiet hours do not apply */
 
 /** Bring up I2S, the codec and the mixer task, and load the owner's settings.
  *  Never fatal: a board without the codec logs why and every call below becomes a
@@ -58,6 +60,29 @@ bool orb_sound_ready(void);
  *  instant the dial SHOWS the event and the sound lands with the pixels. */
 int orb_sound_play(const int16_t *pcm, uint32_t n, uint16_t gain_q12,
                    uint32_t flags, int64_t at_us, int64_t anchor_us);
+
+/** The same, owned: `owner` (an app row, or any stable pointer) tags the voice, so
+ *  orb_sound_stop_owner() can silence everything one app started — the registry
+ *  does that when it suspends the app (C7, read for audio). Quiet hours are the
+ *  OS's (orb_sound_cfg_t), applied here to every voice of every app: during them
+ *  a voice without ORB_SOUND_ASKED is refused, and one already sounding is dropped
+ *  at the boundary. */
+int orb_sound_play_owned(const void *owner, const int16_t *pcm, uint32_t n,
+                         uint16_t gain_q12, uint32_t flags, int64_t at_us,
+                         int64_t anchor_us);
+void orb_sound_stop_owner(const void *owner);
+
+/* ---- the app surface (orb_svc_t's sound entries, cap SOUND) -------------------
+ * An app plays ITS OWN theme's sounds by slot: the (ORB_ASSET_SOUND, slot) row of
+ * its section in the adopted theme, resolved here, never a pointer it hands over.
+ * flags: ORB_SOUND_LOOP repeats; ORB_SOUND_ANCHORED (with LOOP) puts sample 0 on a
+ * wall second. delay_ms schedules it. Returns a handle > 0 or a negative esp_err_t:
+ * ESP_ERR_NOT_FOUND for a slot the theme does not fill. stop/active act only on
+ * the caller's own voices. */
+int  orb_sound_app_play(const void *owner, const char *slug, uint16_t slot,
+                        uint32_t flags, uint32_t delay_ms);
+void orb_sound_app_stop(const void *owner, int handle);
+bool orb_sound_app_active(const void *owner, int handle);
 
 /** Stop one voice (a handle from orb_sound_play), or every voice. Safe on a handle
  *  that already ended. */
@@ -95,6 +120,8 @@ const char *orb_sound_cfg_set(const orb_sound_cfg_t *in);
 
 /** True when `hour` (0..23, local) falls inside the owner's quiet hours. */
 bool orb_sound_quiet_at(int hour);
+/** True now, by the local wall clock. */
+bool orb_sound_quiet_now(void);
 
 /* ---- bench ------------------------------------------------------------------ */
 typedef struct {

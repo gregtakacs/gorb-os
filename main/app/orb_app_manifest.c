@@ -350,7 +350,7 @@ const char *orbapp_check_header(const orbapp_hdr_t *h, uint32_t expect_app_id,
     if ((h->caps >> CAP_N) || (h->caps & ~owner_mask))
         return refuse(reason, cap,
                       "header caps 0x%X are not a legal declaration — owner"
-                      " caps only (power, net, sd_read, themes), and nothing"
+                      " caps only (power, net, sd_read, themes, sound), and nothing"
                       " at or above CAP_N", h->caps);
 
     const uint32_t want = orbapp_app_id_of(h->slug);
@@ -583,12 +583,12 @@ const char *orbapp_unpack_settings(const uint32_t *words, size_t nwords,
 
 int orbapp_caps_names(uint32_t caps, char *dst, size_t cap)
 {
-    static const char *const NAMES[4] = { "power", "net", "sd_read", "themes" };
+    static const char *const NAMES[CAP_N - CAP_POWER] = { "power", "net", "sd_read", "themes", "sound" };
     size_t len = 0;
     if (cap == 0)
         return -1;
     dst[0] = '\0';
-    for (unsigned i = 0; i < 4; i++) {
+    for (unsigned i = 0; i < CAP_N - CAP_POWER; i++) {
         if (!(caps & (1u << (CAP_POWER + i))))
             continue;
         const size_t n = strlen(NAMES[i]);

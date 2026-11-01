@@ -50,9 +50,10 @@ KIND_CLOCK = 3
 
 # The one owned caps each factory app declares (D19: the declaration is the
 # consent). The clock walks the card for theme containers and asks for the D11
-# install, so it names sd_read|themes; the picker owns nothing — its three
+# install, so it names sd_read|themes, and it ticks and chimes (D39), so it names
+# sound — revocable on the dial like the other two; the picker owns nothing — its three
 # settings ride the free config cap, which is not declarable (CAP_FREE).
-CLOCK_CAPS = orbapp.cap_bit("sd_read") | orbapp.cap_bit("themes")
+CLOCK_CAPS = orbapp.cap_bit("sd_read") | orbapp.cap_bit("themes") | orbapp.cap_bit("sound")
 PICKER_CAPS = 0
 
 # S6 (§4.1): the release stamp both starter containers carry, and the serial derived

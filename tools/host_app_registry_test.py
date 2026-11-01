@@ -285,6 +285,17 @@ orb_app_t orb_app_usb_files_row = {
     .iface = &s_usb_stub_iface, .installed = true, .enabled = true,
     .art_slot = -1, .flash_slot = -1,
 };
+/* D39: the OS's Sound page, main/audio/orb_sound_menu.c in the firmware — the
+ * tier's second row, always present. */
+orb_app_t orb_app_sound_row = {
+    .slug = (char *)"sound", .title = (char *)"Sound",
+    .kind = ORB_APP_KIND_APP, .behaviour_kind = ORB_BEHAVIOUR_NONE,
+    .iface = &s_usb_stub_iface, .installed = true, .enabled = true,
+    .art_slot = -1, .flash_slot = -1,
+};
+/* The clock's knob press (D39's repeater): the registry's set_armed hook calls it. */
+int g_repeater;
+void clock_view_repeater(void) { g_repeater++; }
 
 /* ---- the cases ---------------------------------------------------------- */
 static int g_fail;
@@ -426,8 +437,15 @@ int main(void)
 
     /* -- arming, and the dial's deliberate inertness -- */
     restore_table(); orb_app_init_all(); orb_app_activate(A("clock"));
-    ck("the dial never reports armed, so a press cannot disappear into it",
-       orb_app_current_armed() == false && orb_app_arm_current() == false);
+    /* D39 gave the press on the dial a job: it is the repeater's. The dial still never
+     * reports armed, so the press cannot disappear into an armed view, and the turn
+     * that follows it still walks the carousel. */
+    {
+        const int r0 = g_repeater;
+        ck("the dial never reports armed; a press there asks for the time",
+           orb_app_current_armed() == false && orb_app_arm_current() == true &&
+           g_repeater == r0 + 1 && orb_app_current_armed() == false);
+    }
     orb_app_activate(A("menu"));
     ck("the menu arms and reports it", orb_app_arm_current() == true && orb_app_current_armed() == true);
     TR(); orb_app_disarm_all();
@@ -742,9 +760,14 @@ int main(void)
     restore_table();
     const size_t nface = orb_app_count();
     const int    ncard = orb_app_card_count();
-    ck("one service row, and the index past it answers nothing",
-       orb_app_menu_count() == 1 && orb_app_menu_at(0) == &orb_app_usb_files_row &&
-       orb_app_menu_at(1) == NULL);
+    ck("two service rows — USB Files, then Sound — and the index past them answers nothing",
+       orb_app_menu_count() == 2 && orb_app_menu_at(0) == &orb_app_usb_files_row &&
+       orb_app_menu_at(1) == &orb_app_sound_row && orb_app_menu_at(2) == NULL);
+    ck("the Sound page is a service row too: past the ledger, never walked, never a face",
+       orb_app_is_menu_only(&orb_app_sound_row) &&
+       orb_app_index_of(&orb_app_sound_row) == ORB_APP_MENU_BASE + 1 &&
+       orb_app_activate(&orb_app_sound_row) == ESP_ERR_NOT_SUPPORTED &&
+       orb_app_neighbour(A("clock"), 1) != &orb_app_sound_row);
     ck("a service is a menu row only — no slug lookup, so no route reaches it",
        A("usb-files") == NULL);
     ck("its index is an address past the ledger span, not a key into it",
@@ -769,14 +792,14 @@ int main(void)
      * from the menu rather than leave a row that refuses its own press. */
     orb_app_usb_files_row.enabled = false;
     ck("a disabled service has no menu row",
-       orb_app_menu_count() == 0 && orb_app_menu_at(0) == NULL);
+       orb_app_menu_count() == 1 && orb_app_menu_at(0) == &orb_app_sound_row);
     orb_app_usb_files_row.enabled = true;
     orb_app_usb_files_row.failed = true;
     ck("a failed service likewise vanishes",
-       orb_app_menu_count() == 0 && orb_app_menu_at(0) == NULL);
+       orb_app_menu_count() == 1 && orb_app_menu_at(0) == &orb_app_sound_row);
     orb_app_usb_files_row.failed = false;
     ck("and it comes back when its module re-enables it",
-       orb_app_menu_count() == 1 && orb_app_menu_at(0) == &orb_app_usb_files_row);
+       orb_app_menu_count() == 2 && orb_app_menu_at(0) == &orb_app_usb_files_row);
 
     /* -- the shell page is chrome, not an app -- */
     restore_table();
@@ -784,6 +807,26 @@ int main(void)
     ck("the two real apps are tagged apps",
        A("clock")->kind == ORB_APP_KIND_APP && A("color_picker")->kind == ORB_APP_KIND_APP);
     ck("the table fits the installed-app cap B5 sets", ORB_APP_N <= ORB_APP_CAP);
+
+    /* -- D39: a press on the dial is the repeater's, and leaves the dial unarmed -- */
+    restore_table();
+    {
+        const orb_app_t *clk = A("clock");
+        const orb_app_t *was = orb_app_current();
+        if (clk && orb_app_activate((orb_app_t *)clk) == ESP_OK) {
+            const int r0 = g_repeater;
+            const bool took = orb_app_arm_current();
+            ck("a press on the dial asks the clock for the time",
+               took && g_repeater == r0 + 1);
+            ck("and the dial stays unarmed, so the turn still walks the carousel",
+               !orb_app_current_armed());
+            orb_app_disarm_all();
+            ck("a disarm is nothing to the dial", g_repeater == r0 + 1);
+        } else {
+            ck("the clock row activates for the press check", 0);
+        }
+        (void)was;
+    }
 
     printf("%s\n", g_fail ? "SOME FAILED" : "ALL PASS");
     return g_fail ? 1 : 0;

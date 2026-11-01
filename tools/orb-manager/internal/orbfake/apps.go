@@ -52,7 +52,7 @@ const (
 // capNames is orbapp_caps_names's table (orb_app_manifest.c:400) in bit order. The double
 // keeps its own copy for the same reason it keeps its own idOK: sharing the hub's copy
 // would make the two agree by construction instead of by agreement.
-var capNames = [4]string{"power", "net", "sd_read", "themes"}
+var capNames = [5]string{"power", "net", "sd_read", "themes", "sound"}
 
 // CardApp is one app the double knows about: the container staged on the card and the
 // flash row it becomes once installed. One struct for both because the firmware walks one
@@ -153,7 +153,7 @@ func sdNameOK(s string) bool {
 // of the hub learning a second, wrong, table from a passing suite.
 func capsNames(caps uint32) string {
 	var parts []string
-	for i := 0; i < 4; i++ {
+	for i := range capNames {
 		if caps&(1<<uint(4+i)) != 0 {
 			parts = append(parts, capNames[i])
 		}

@@ -34,6 +34,7 @@
 #include "orb_theme.h"        /* the D18 family: enumerate and request, never bytes */
 #include "idle_dim.h"         /* the power request path — a request, not a write */
 #include "orb_layers.h"       /* P5.5: the layer table the four entries drive */
+#include "orb_sound.h"        /* D39: the engine the sound entries hand off to */
 
 #include <math.h>             /* fabs, floor — the drift rule's own tools */
 #include <stdarg.h>
@@ -717,6 +718,28 @@ static void svc_status(orb_app_t *a, const char *fmt, ...)
  * missing entry becomes a compile-visible shape rather than a NULL an app
  * discovers at runtime — and nothing below is reachable without going through
  * a gate in its own entry. */
+/* ---- sound (D39, cap SOUND) ------------------------------------------------
+ * Thin by design: the gate is here, the theme lookup and the engine are
+ * orb_sound_app.c's. The svc flags are the engine's own bits (ORB_SVC_SOUND_LOOP
+ * is ORB_SOUND_LOOP, _SECOND is ORB_SOUND_ANCHORED), and nothing else may pass. */
+_Static_assert(ORB_SVC_SOUND_LOOP == ORB_SOUND_LOOP && ORB_SVC_SOUND_SECOND == ORB_SOUND_ANCHORED,
+               "orb_svc.h's sound flags must be orb_sound.h's");
+static int svc_sound_play(orb_app_t *a, uint16_t slot, uint32_t flags, uint32_t delay_ms)
+{
+    if (!orb_grant_ok(a, CAP_SOUND)) return ESP_ERR_NOT_ALLOWED;
+    return orb_sound_app_play(a, a->slug, slot, flags, delay_ms);
+}
+static void svc_sound_stop(orb_app_t *a, int handle)
+{
+    if (!orb_grant_ok(a, CAP_SOUND)) return;
+    orb_sound_app_stop(a, handle);
+}
+static bool svc_sound_active(orb_app_t *a, int handle)
+{
+    if (!orb_grant_ok(a, CAP_SOUND)) return false;
+    return orb_sound_app_active(a, handle);
+}
+
 static const orb_svc_t S_TABLE = {
     .now           = svc_now,
     .tz_label      = svc_tz_label,
@@ -741,6 +764,9 @@ static const orb_svc_t S_TABLE = {
     .theme_note    = svc_theme_note,
     .theme_install = svc_theme_install,
     .status        = svc_status,
+    .sound_play    = svc_sound_play,
+    .sound_stop    = svc_sound_stop,
+    .sound_active  = svc_sound_active,
 };
 
 const orb_svc_t *orb_svc_table(void) { return &S_TABLE; }
@@ -748,7 +774,7 @@ const orb_svc_t *orb_svc_table(void) { return &S_TABLE; }
 const char *orb_svc_cap_name(orb_cap_t cap)
 {
     static const char *const N[CAP_N] = {
-        "time", "config", "ui", "art", "power", "net", "sd_read", "themes"
+        "time", "config", "ui", "art", "power", "net", "sd_read", "themes", "sound"
     };
     return (unsigned)cap < CAP_N ? N[cap] : "?";
 }
@@ -1303,6 +1329,8 @@ void orb_svc_app_suspended(const orb_app_t *a)
     const int slot = orb_app_index_of(a);
     if (slot < 0) return;                      /* not a registered entry */
     idle_dim_app_release(a->slug);
+    orb_sound_stop_owner(a);                   /* D39: C7 read for audio — an app
+                                                * behind the dial makes no sound */
     if (s_row[slot].layers)                    /* P5.5: an app behind the dial
                                               * holding rows on the glass is
                                               * §4.2's clause's other half. The

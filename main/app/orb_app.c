@@ -82,6 +82,17 @@ static void clock_resume(orb_app_t *app)
     clock_view_set_bounce(true);
 }
 
+/* The dial has no armed view (a press there used to be inert by design), so the
+ * press is the repeater's (D39 §5.1): arming asks for the time and leaves the dial
+ * unarmed, so the turn still walks the carousel. A disarm is nothing to the dial. */
+static void clock_set_armed(orb_app_t *app, bool armed)
+{
+    (void)app;
+    if (armed) clock_view_repeater();
+}
+
+static bool clock_armed(const orb_app_t *app) { (void)app; return false; }
+
 static struct _lv_obj_t *clock_screen(orb_app_t *app)
 {
     (void)app;
@@ -111,6 +122,8 @@ static const orb_app_iface_t s_clock_iface = {
     .init        = clock_init,
     .activate    = clock_activate,
     .suspend     = clock_suspend,
+    .armed       = clock_armed,
+    .set_armed   = clock_set_armed,
     .resume      = clock_resume,
     .service     = clock_service,
     .screen      = clock_screen,
@@ -327,16 +340,20 @@ static orb_app_t s_apps[] = {
  * refused by orb_app_activate() on its own predicate rather than by being
  * absent from a lookup.
  */
+/* One row per settings-only OS feature. USB Files is exported by whichever mode this
+ * build chose — orb_usb_mtp.c or orb_usb_msc.c, never both, since the two are a
+ * Kconfig choice. Sound (D39) is the OS's level and quiet hours, applied to every
+ * app's sound, so it is a page here and not any app's. */
 #if CONFIG_ORB_USB_MTP || CONFIG_ORB_USB_MSC
-/* One row for the feature, exported by whichever mode this build chose —
- * orb_usb_mtp.c or orb_usb_msc.c, never both, since the two are a Kconfig choice.
- * The tier is written as a table rather than a bare reference so the next
- * settings-only OS feature lands in the same list instead of inventing its own. */
 extern orb_app_t orb_app_usb_files_row;   /* main/usb/orb_usb_{mtp,msc}.c */
-static orb_app_t *const s_service[] = { &orb_app_usb_files_row };
-#else
-static orb_app_t *const s_service[] = { NULL };   /* the tier, empty */
 #endif
+extern orb_app_t orb_app_sound_row;       /* main/audio/orb_sound_menu.c */
+static orb_app_t *const s_service[] = {
+#if CONFIG_ORB_USB_MTP || CONFIG_ORB_USB_MSC
+    &orb_app_usb_files_row,
+#endif
+    &orb_app_sound_row,
+};
 #define ORB_APP_SERVICE_N ((int)(sizeof(s_service) / sizeof(s_service[0])))
 
 size_t orb_app_menu_count(void)

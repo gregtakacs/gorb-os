@@ -257,6 +257,14 @@ The owner wants every hand and pointer general: a retrograde hour or second hand
 | D41 | How hands, pointers and rings move | **Every element that shows a value is a driven row with four independent axes:** a **source** (`SOURCES`), a **path** (D34's `rotate` / `retrograde` / `slide-x` / `slide-y`, with `indexed` kept only as an old spelling of rotate plus jump), a **cadence** (`sweep`, `step` *N*, `jump` = step 1, `stop-to-go`, `drag`, with an `ease` that is a settle on a step and a flyback on a retrograde), and a **placement** (pivot, C4's `parent`, and depth). It covers all six HAND slots (the dial slot can turn, as a wandering or jump hour), AUX pointers, and BANK rings. It is theme content in the three-way mirror, read by the clock app; **no OS change**. **Encoding:** a v5 clock stamp appends three element columns (`cadence`, `cad_arg`, `ease`; stride 25 → 28, the C4 precedent). HAND rows may carry the drive columns AUX rows already have, AUX rows honour `order` as a depth bucket, and `ORB_BUNDLE_SCALARS_N` stays 26. A row that names nothing keeps today's behaviour exactly. Meaningless combinations are refused at the door (D26). `hand_angles` and the AUX path become one drive function before any format change (slice G1). |
 | D39 (amended) | Rates, patterns, jumps, defaults | The tick loop beats at the second hand's step rate, or at the balance's beat under a sweep, and every voice renders at 1/2/4/8. The hour patterns are `count`, `ships_bells`, `morse`, and `repeater` (trigger open). Jumps get event slots (`jump_minute`, `jump_hour`, `jump_date`). Every catalog sound is available for any slot of its kind, and each of the 15 presets has a default mapping. Sweep-hand anchoring (open item 4) is ruled. |
 
+### 0.15 Owner's rulings, 2026-11-01 (fourteenth round) — sound becomes an OS service (D39 amended again)
+
+With the plane tracker about to want sound, the owner moved it from the clock's private call to the app platform. `docs/sound-plan.md` §8 has the detail.
+
+| Ref | Decision | Ruling |
+|---|---|---|
+| D39 (amended) | Sound as a platform service | **`CAP_SOUND` is owner cap 8** (`sound` in a manifest, revocable on the dial). **`orb_svc_t` gains three entries** (26): `sound_play(app, slot, flags, delay_ms)`, `sound_stop`, `sound_active` — an app plays its OWN theme's sounds by slot, never a pointer, and its voices die when it is suspended (C7). **Level and quiet hours are the OS's**, applied by the engine to every app, set on the dial's new **Sound** page or over `/api/v1/sound`. The clock declares `sound`. The repeater sounds on a **knob press on the dial**. Silence during a theme install is accepted. Compressed encodings are shelved (ADPCM likely the default when they return). The Python sound prototypes retire; the JS generator is the only one. |
+
 ---
 
 ## 1. The line, drawn at today's files

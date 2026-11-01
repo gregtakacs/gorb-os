@@ -206,7 +206,8 @@ static orb_setting_desc_t A_SET[] = {
 };
 #define DECL_A (1u << CAP_POWER | 1u << CAP_NET)
 #define DECL_B (1u << CAP_THEMES)
-static orb_app_t TBL[3];
+#define DECL_D (1u << CAP_SOUND)               /* D39: delta makes sound, and nothing else */
+static orb_app_t TBL[4];
 static orb_app_t *GHOST;              /* an app the table does not know */
 static orb_app_t *SERVICE;            /* the USB Files row: settings, no face */
 static void mk_tbl(void)
@@ -219,6 +220,8 @@ static void mk_tbl(void)
     TBL[1].caps = DECL_B;
     TBL[2].slug = "gamma"; TBL[2].period_ms = 67; TBL[2].art_slot = 2;
     TBL[2].caps = 0;                    /* never asked for an owner cap, ever */
+    TBL[3].slug = "delta"; TBL[3].period_ms = 67; TBL[3].art_slot = -1;
+    TBL[3].caps = DECL_D;
     static orb_app_t ghost; memset(&ghost, 0, sizeof ghost);
     ghost.slug = "ghost"; ghost.period_ms = 67; ghost.art_slot = -1;
     GHOST = &ghost;
@@ -234,7 +237,7 @@ static void mk_tbl(void)
 }
 int orb_app_index_of(const orb_app_t *a)
 {
-    for (int i = 0; i < 3; i++) if (&TBL[i] == a) return i;
+    for (int i = 0; i < 4; i++) if (&TBL[i] == a) return i;
     if (a == SERVICE) return ORB_APP_MENU_BASE;   /* in range, and not a key */
     return -1;
 }
@@ -245,7 +248,7 @@ bool orb_app_is_menu_only(const orb_app_t *a) { return a == SERVICE; }
  * broker must survive without granting anything. */
 const orb_app_t *orb_app_row(size_t i)
 {
-    return i < 3 ? &TBL[i] : NULL;
+    return i < 4 ? &TBL[i] : NULL;
 }
 static orb_app_t *g_cur;                /* the entry on the glass, for the
                                          * boot-RUN stamp */
@@ -282,6 +285,16 @@ int orb_layers_jobs(const orb_layer_tab_t *t, const uint8_t *b,
 bool gfx_prim_ctx_init(struct gfx_paint_ctx *pc, const orb_prim_arg_t *a,
                        uint8_t *plane, uint32_t plane_cap, uint8_t role)
 { (void)pc; (void)a; (void)plane; (void)plane_cap; (void)role; return false; }
+/* D39's engine, behind the sound entries: what the gate let through, and to whom. */
+int g_snd_play, g_snd_stop, g_snd_active, g_snd_stop_owner;
+const void *g_snd_owner; const char *g_snd_slug; unsigned g_snd_slot, g_snd_flags, g_snd_delay;
+int orb_sound_app_play(const void *o, const char *slug, uint16_t slot, uint32_t flags,
+                       uint32_t delay_ms)
+{ g_snd_play++; g_snd_owner = o; g_snd_slug = slug; g_snd_slot = slot;
+  g_snd_flags = flags; g_snd_delay = delay_ms; return 7; }
+void orb_sound_app_stop(const void *o, int h) { (void)o; (void)h; g_snd_stop++; }
+bool orb_sound_app_active(const void *o, int h) { (void)o; (void)h; g_snd_active++; return true; }
+void orb_sound_stop_owner(const void *o) { g_snd_stop_owner++; g_snd_owner = o; }
 void *heap_caps_malloc(size_t n, uint32_t f) { (void)f; return malloc(n); }
 void heap_caps_free(void *p) { free(p); }
 static int g_caps_fail;                    /* arm: the next SPIRAM calloc says no */
@@ -442,7 +455,33 @@ int main(int argc, char **argv)
     F(job_post); F(set_beat);
     F(theme_count); F(theme_id); F(theme_active); F(theme_changed); F(theme_note);
     F(theme_install); F(status);
-    CK("all 23 frozen entries wired", holes == 0);
+    F(sound_play); F(sound_stop); F(sound_active);
+    CK("all 26 frozen entries wired (D39 appended the three sound entries)", holes == 0);
+
+    /* D39: the sound entries sit behind the owner cap SOUND, like net and themes.
+     * alpha declares power|net and not sound: every sound call is refused and never
+     * reaches the engine. Declared, the call goes through with the app's own row as
+     * the owner and its own slug as the theme section to resolve in. */
+    {
+        CK("an app that did not declare sound is refused, and the engine never hears it",
+           S->sound_play(A, 3, 0, 0) == ESP_ERR_NOT_ALLOWED && g_snd_play == 0 &&
+           (S->sound_stop(A, 7), g_snd_stop == 0) &&
+           S->sound_active(A, 7) == false && g_snd_active == 0);
+        orb_app_t *D = &TBL[3];
+        const int h = S->sound_play(D, 3, ORB_SVC_SOUND_LOOP | ORB_SVC_SOUND_SECOND, 250);
+        CK("declared, sound_play reaches the engine as the app, for its own section",
+           h == 7 && g_snd_play == 1 && g_snd_owner == D && !strcmp(g_snd_slug, "delta") &&
+           g_snd_slot == 3 && g_snd_flags == (ORB_SVC_SOUND_LOOP | ORB_SVC_SOUND_SECOND) &&
+           g_snd_delay == 250);
+        S->sound_stop(D, h);
+        CK("stop and active reach it too", g_snd_stop == 1 && S->sound_active(D, h) && g_snd_active == 1);
+        const int so = g_snd_stop_owner;
+        const int rel0 = g_rel_calls;          /* the suspend also releases power:  */
+        orb_svc_app_suspended(D);              /* the power checks below count it    */
+        g_rel_calls = rel0;
+        CK("an app sent behind the dial is silenced, by its own row (C7)",
+           g_snd_stop_owner == so + 1 && g_snd_owner == D);
+    }
 
     /* ---- the wall clock: one scripted timeline, the compose_now rules ---- */
     time_t sec; double frac; bool synced;
@@ -999,7 +1038,8 @@ def build_run(td, tag, extra_cflags, arg):
             "-I", td]                          # the IDF-shaped stubs shadow mine
            + ["-I", P("app"), "-I", P("art"), "-I", P("gfx"), "-I", P("."),
               "-I", P("assets"), "-I", P("net"),
-              "-I", P("power"), "-I", os.path.join(ROOT, "assets")]  # real project headers
+              "-I", P("power"), "-I", P("audio"),
+              "-I", os.path.join(ROOT, "assets")]  # real project headers
            + extra_cflags + [SVC_C, cpath, "-lm", "-o", exe])
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:

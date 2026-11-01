@@ -595,10 +595,15 @@ answer:
 
 **Not shown:**
 
-- **M-S2.** The glass offset (90 ms) needs an ear. `skeleton-tick.orbtheme` is now
-  on orb-B for it: the same skeleton with a second hand that steps once a second
-  and every stroke slot. Tune `offset_ms` with `POST /api/v1/sound` until the tick
-  lands on the hand's step.
+- **M-S2.** The glass offset (90 ms) needs an ear. The bench theme on orb-B is
+  `skeleton-step`: the skeleton with every stroke slot, re-packed at v5 (D41) so
+  its seconds pointer steps once a second (`step 1`) and its minute jumps. The
+  first upload, `skeleton-tick`, still swept: this skeleton's second hand is an
+  AUX pointer, and a pointer swept whatever `second_sweep` said until v5 gave it
+  a cadence. Tune `offset_ms` with `POST /api/v1/sound` until the tick lands on
+  the step. The step is drawn on the first frame after the wall second, and this
+  delta-plate dial runs about 12–13 frames a second, so the hand itself lands
+  0–80 ms late. Tune for the average.
 - **Hour patterns on the glass** (ship's bells, Morse, the repeater at the hour).
   The clock reads volume 0 as quiet, so a muted night bench records no
   boundaries. They wait for the owner's ear; set one with

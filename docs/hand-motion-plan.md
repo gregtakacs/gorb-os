@@ -208,6 +208,15 @@ settled while building:
   need `second_sweep`, step *N* needs `tick_rate` *N*, and jump needs `tick_rate` 1
   with no sweep. The scalars stay the scheduler's tempo hint.
 
+**On orb-B, 2026-11-01 (`v1.1.43+3aa1ae3`).** The bench theme
+`skeleton-tick` was re-packed at v5 with one claim: the minute hand's row names
+`jump`. It installed through the ordinary upload door. The tip of the minute
+hand (the blue pixel farthest from the centre, outside the sub-dial) sat at
+(117, 363) at 09:37:12 and still at 09:37:51, then at (104, 351) at 09:38:18: one
+6° mark, taken on the boundary. The hour, the stepping second and the delta
+plate draw as before. G1's v4 parity was also confirmed on the glass
+(`v1.1.43+039d7c2`, 01:35).
+
 **What G2 left, refused rather than silently ignored:**
 
 - **`ease`.** The column rides the wire, but every reader refuses a non-zero

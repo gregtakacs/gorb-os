@@ -1,7 +1,7 @@
 # D42 (proposed): one row for everything that moves
 
-**Status: RULED (owner, 2026-11-01, §11). E1 built 2026-11-01 (§8.2), host-proven;
-its bench on orb-B is owed.** It builds on D41 (`docs/hand-motion-plan.md`): D41's drive (source,
+**Status: RULED (owner, 2026-11-01, §11). E1 built and seen on orb-B 2026-11-01
+(§8.2). E2 (the composer) is next.** It builds on D41 (`docs/hand-motion-plan.md`): D41's drive (source,
 cadence, ease) is kept, and this file replaces the parts of D41 that still treat a
 hand, a pointer and a ring as different things. **AUX pointer depth (D41 §4, "What G2
 left") is held for this ruling** and lands as part of slice E1, not on the current
@@ -333,6 +333,18 @@ motion hand of Flux, Orbit and Station bakes to a row that poses where the previ
 draws); `go test ./...`. Retired with the hand slots: `host_from_bundle_test.py` and
 `mut_from_bundle.py` (the compiled pair's reverse path has no v6 meaning) and the
 v4-parity half of `host_drive_test.py`.
+
+**On orb-B (`v1.1.43+8c8cde3`).** After the flash every theme on the card listed as
+refused with its stamp's sentence, and the dial fell to the base face. Four bundles
+migrated to v6 were then installed through the ordinary upload door, and the
+framebuffer (`tools/fbgrab.py`) read against the wall clock:
+
+| Theme | Rows exercised | On the glass |
+|---|---|---|
+| Flux | a jumping hour fan and a sweeping minute fan (flyback), a sliding seconds bar (step 1, 400 ms flyback ease), three twins | 15:43 drawn as the hour on 3 at 240°, the minute at 43 (≈116°), the bar along its track; the minute boundary ran a 10-frame burst, then 1 fps; L4 claimed all 8 layer rows, none refused |
+| Orbit | three discs, a whole turn backwards from a 3 o'clock index (wrap): sweep, jump, step | 15:44:09 read 3.7 h, 44 min, 9 s under the index |
+| Station | a stop-to-go second released by a jumping minute with a 150 ms settle | 15:45:14 the minute exactly on 45 and the second at 13.4 s of dial for 13 s of wall time; 9.4 s later it had moved 9.4 s on |
+| Skeleton (the hub's default) | a delta-bank plate, hour and minute rows over a sub-dial seconds row, twins | 15:46:51 drawn as 3.8 h, 46 min, 51 s on the sub-dial |
 
 ## 9. Cost
 

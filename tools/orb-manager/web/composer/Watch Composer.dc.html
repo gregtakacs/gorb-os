@@ -1093,7 +1093,7 @@ class Component extends DCLogic {
   /* What the bake carries: every filled slot, the pattern, and the loop's beat. */
   sndBake() {
     const G = window.GorbBake, d = this.sndDesign(), out = [];
-    if (!G || !window.SoundEngine) return {};
+    if (!G || !G.SOUND_SLOTS || !window.SoundEngine) return {};   // a hub's baker older than D39 bakes no sound
     const rr = this.sndRate();
     G.SOUND_SLOTS.forEach((slot) => {
       const pcm = this.sndPcm(slot);
@@ -3820,7 +3820,12 @@ class Component extends DCLogic {
         Rg('White balance', +c0.wb, 2500, 10000, 100, cf('wb'), +c0.wb === 6500 ? 'neutral' : c0.wb + 'K'),
         Nt('', 'Lower = cooler picture, higher = warmer. Baked into exported layers.'));
     }
-    if (ready && s.tab === 'sound' && window.SoundEngine && window.GorbBake) {
+    if (ready && s.tab === 'sound' && !(window.GorbBake && window.GorbBake.SOUND_SLOTS && window.SoundEngine)) {
+      fields.push(H('Sound'), Nt('', window.SoundEngine
+        ? 'This hub\u2019s theme baker predates sound, so a bake from here would carry none. Run a hub built from main of 2026-11-01 or later and reopen the editor.'
+        : 'The sound generator did not load with this editor.'));
+    }
+    if (ready && s.tab === 'sound' && window.SoundEngine && window.GorbBake && window.GorbBake.SOUND_SLOTS) {
       const SE = window.SoundEngine, G = window.GorbBake, sd = this.sndDesign(), rr = this.sndRate();
       const nice = (x) => x.replace(/_/g, ' ');
       const catLabel = (id) => SE.CATALOG[id].group + ' · ' + SE.CATALOG[id].label;

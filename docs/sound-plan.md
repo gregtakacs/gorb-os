@@ -535,9 +535,9 @@ Implement up to the question mark and leave these open until ruled.
 | **S1** | Prototype generator committed as `tools/sound_synth_proto.py` | **DONE 2026-10-28**; retired with the other two prototypes on 2026-11-01 |
 | **S2** ✔ | JS generator plus the Sound tab: generate, upload, preview, budget, the §7.1 catalog at every grid rate and the §7.2 preset mapping. Host-side only, no format change. `make_clock_region.py`'s `members()` gains the generator file, and `host_clock_region_test.py`'s member set learns it in the same commit. The prototype retires | the tab renders all defaults; the seam and RMS checks of §6 rerun on the JS output — **DONE 2026-10-31** (`headless-sound.test.js`, `headless-ui.test.js`). The prototypes are kept until the JS output has been heard on the bench |
 | **S3** ✔ | Format: `ORB_ASSET_SOUND` = 10, the row columns (no header, §3.2), the baker's emitter, the C reader, sound slots in `theme_schema.py`'s clock table. Three-way mirror plus mutants, the D34/preview pattern | host suites green with new mutants caught — **DONE 2026-10-31** (D39 battery: 18 refusals both ends, 6 mutants) |
-| **S4** | Bench bring-up: I2S plus ES8311 plus amp on GPIO 46 plays one PCM buffer. Run M-S1 and M-S2 | numbers recorded here before S5 is ruled — **PARTIAL**: codec up on orb-B (chip 8311 at 0x18); nothing heard, M-S1/M-S2 unmeasured (§11.2) |
-| **S5** | OS engine: mixer, `sound` capability, service entries (after §8 items 1 and 6 are ruled), loop anchoring | bench: a loop holds phase against the hand for an hour — **BUILT, unproved on the bench**; the svc entries and capability stay open (§4.1) |
-| **S6** | Clock policy: schedule, the §5.1 hour patterns, jump slots (with D41's G5), settings, quiet hours | bench: :00/:15/:30/:45 on a real dial, ship's bells across a watch change, a clunk on a jumping minute — **BUILT, unproved on the bench** |
+| **S4** | Bench bring-up: I2S plus ES8311 plus amp on GPIO 46 plays one PCM buffer. Run M-S1 and M-S2 | numbers recorded here before S5 is ruled — **PARTIAL**: codec up and heard on orb-B; M-S1 accepted as silence; M-S2 waits for the owner on `skeleton-tick` (§11.2) |
+| **S5** | OS engine: mixer, `sound` capability, service entries (after §8 items 1 and 6 are ruled), loop anchoring | bench: a loop holds phase against the hand for an hour — **BUILT**; loop error 0 over 60 s on the bench; the capability and svc entries are built (§8 item 1); the hour-long run is still owed |
+| **S6** | Clock policy: schedule, the §5.1 hour patterns, jump slots (with D41's G5), settings, quiet hours | bench: :00/:15/:30/:45 on a real dial, ship's bells across a watch change, a clunk on a jumping minute — **BUILT**; :00, :15, the minute jump and the repeater are shown on orb-B (§11.2); ship's bells and Morse are host-tested only; jump slots wait for D41's G5 |
 
 ## 11. What was built, 2026-10-31
 
@@ -578,9 +578,32 @@ On orb-B (`44:bd:8d:78:26:18`), `v1.1.43+893c6f8`, 2026-10-31, from
 | :15 | the first Westminster quarter starts beside the loop and ends 5.4 s later |
 | :00 (the zone set to Asia/Kolkata for one hour boundary, then restored) | clunk + the hour phrase at once, 8 strokes queued behind it and starting 2 s apart after its 14.7 s; 10 voices at the peak |
 
-**Not shown:** nothing above was listened to — the counters prove timing, not
-tone. M-S1 (a store under a running loop) and M-S2 (the glass offset, 90 ms by
-default) are unmeasured, and the repeater's trigger is still open.
+**Heard, 2026-10-31 evening:** the owner listened to that theme on orb-B. The
+ticks and chimes are audible, and volume 60 is right.
+
+On `v1.1.43+4a50724`, 2026-11-01, 01:15–01:30 CDT. The orb was muted (volume 0)
+because it was night. The engine still mixes at volume 0, so its counters still
+answer:
+
+| Check | Result |
+|---|---|
+| The clock's grant | `/api/v1/status` lists the clock declared and granted `sd_read, themes, sound`. Before this build the ledger and the PERMISSIONS page walked a hard-coded four caps, so a granted `sound` never showed and could not be revoked on the dial. Both now walk every owner cap |
+| Quiet hours | 22–09 was in force at 01:11: the clock's loop never started, and `started` stayed 0 with the dial on the glass |
+| Repeater | one press on the dial with the bench theme (`skeleton-tick`, which carries all three strokes): the log reads `repeater: 1:24 — 1, 1, 9 strokes`, and `started` rose by 11. They are ASKED voices, so they played through quiet hours. On a theme without `strike_qtr`/`strike_min` (`skeleton-sound`), the press logs which stroke is missing and plays nothing |
+| The Sound page | menu → Sound (its menu row shows the level, "off" while muted) → Volume / Quiet hours / Play a test sound / back. A press on Volume stepped 0 → 20, and five more wrapped it back to 0, each saved to `/api/v1/sound` |
+| M-S1 | accepted as silence (§8 item 6), not measured |
+
+**Not shown:**
+
+- **M-S2.** The glass offset (90 ms) needs an ear. `skeleton-tick.orbtheme` is now
+  on orb-B for it: the same skeleton with a second hand that steps once a second
+  and every stroke slot. Tune `offset_ms` with `POST /api/v1/sound` until the tick
+  lands on the hand's step.
+- **Hour patterns on the glass** (ship's bells, Morse, the repeater at the hour).
+  The clock reads volume 0 as quiet, so a muted night bench records no
+  boundaries. They wait for the owner's ear; set one with
+  `POST /api/v1/sound {"pattern":1}` (1 ship's bells, 2 Morse, 3 repeater; -1
+  returns to the theme's own). The host suite covers their schedules.
 
 ## 10. The one sentence to remember
 

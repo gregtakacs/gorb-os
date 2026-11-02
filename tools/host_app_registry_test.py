@@ -103,6 +103,7 @@ STUBS = r'''
 #include "orb_app.h"
 #include "clock_view.h"
 #include "color_picker.h"
+#include "flights_view.h"
 #include "menu_view.h"
 #include "art_bank.h"
 
@@ -221,6 +222,22 @@ void menu_view_apply_input(int32_t d, bool p) { T("menu_input(%d,%d)", (int)d, p
 bool menu_view_armed(void)              { return g_menu_armed != 0; }
 void menu_view_set_armed(bool a)        { g_menu_armed = a ? 1 : 0; T(a ? "menu_arm(1)" : "menu_arm(0)"); }
 void menu_view_service(void)            { g_service_calls++; T("menu_service"); }
+/* The flight tracker (kind 4) only has to link: this suite pins the registry's
+ * table and walk, and no vector here installs a tracker row. */
+static int tok_flights;
+esp_err_t flights_view_init(orb_app_t *a) { (void)a; T("flights_init"); return ESP_OK; }
+lv_obj_t *flights_view_screen(void)     { return (lv_obj_t *)&tok_flights; }
+void flights_view_set_visible(bool v)   { (void)v; }
+void flights_view_show(void)            { }
+void flights_view_input(int32_t d, bool p) { (void)d; (void)p; }
+bool flights_view_armed(void)           { return false; }
+void flights_view_set_armed(bool a)     { (void)a; }
+void flights_view_service(void)         { }
+int  flights_opt_count(orb_app_t *a)    { (void)a; return 0; }
+const char *flights_opt_label(orb_app_t *a, int i) { (void)a; (void)i; return ""; }
+const char *flights_opt_value(orb_app_t *a, int i) { (void)a; (void)i; return ""; }
+void flights_opt_sel(orb_app_t *a, int i) { (void)a; (void)i; }
+void flights_opt_arm(orb_app_t *a, bool on) { (void)a; (void)on; }
 
 /* The broker's revoke door — §4.2's auto-revoke, called by the registry when
  * an entry leaves the glass. Recorded, and asserted below: a swap that stops
@@ -851,6 +868,7 @@ def build_and_run(tmpdir):
            "-I", P("main", "art"),
            "-I", P("main", "clock"),
            "-I", P("main", "color"),
+           "-I", P("main", "flights"),
            "-I", P("main", "menu"),
            cpath, "-o", exe]
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -904,6 +922,17 @@ def main():
                 check("harness compiled and ran", False, out[:1500])
             else:
                 check("every case reported", rc == 0 and "ALL PASS" in out)
+    # The menu lists an app's options page only when its iface declares
+    # opt_count, opt_label AND opt_arm (orb_app_has_options). The flight tracker
+    # shipped the first two without the third, and its settings page was
+    # unreachable on the dial with nothing red anywhere (2026-11-01). Every
+    # compiled iface that offers rows must declare the hook that lists them.
+    app_c = open(os.path.join(ROOT, "main", "app", "orb_app.c")).read()
+    ifaces = re.findall(r"static const orb_app_iface_t (\w+) = \{(.*?)\n\};", app_c, re.S)
+    offering = [(n, b) for n, b in ifaces if ".opt_count" in b]
+    check("every iface that offers option rows declares opt_arm, or the menu never lists it",
+          bool(offering) and all(".opt_arm" in b for _, b in offering),
+          ", ".join(n for n, b in offering if ".opt_arm" not in b))
     print("all host checks pass" if not FAILS else "%d FAILED" % len(FAILS))
     return 1 if FAILS else 0
 

@@ -528,7 +528,7 @@ def vectors_refuse(add):
                  hash_calls=1, py=("refuse", msg) if refuse else ("ok", None)))
     # -- the D19 consent word map -------------------------------------------------
     for nm, bits in (("caps_free_bit_time", 0x01), ("caps_free_bit_ui", 0x04),
-                     ("caps_bit_at_cap_n", 0x200), ("caps_bit_above", 0x8000)):
+                     ("caps_bit_at_cap_n", 0x400), ("caps_bit_above", 0x8000)):
         cp = patch(build_hdr()[0][:], orbapp.W_CAPS, bits)
         ok, msg = python_outcome(cp)
         add(Case(nm, cp, flags=F_CHECK, check=msg, hash_calls=0,
@@ -1070,15 +1070,15 @@ def lint():
                    "ORBAPP_ART_BYTES_MAX  0x003D0000u",
                    "ORBAPP_SETTINGS_MAX   16u",
                    "ORBAPP_MAGIC      0x00415247u",
-                   '{ "power", "net", "sd_read", "themes", "sound" }'):
+                   '{ "power", "net", "sd_read", "themes", "sound", "location" }'):
         assert needle in both, "reader drifted from the agreed numbers: " + needle
     assert orbapp.BEAT_MIN_MS == 3000 and orbapp.BEAT_MAX_MS == 86400000
     assert orbapp.GEOM_BYTES_MAX == 0x40000 and orbapp.ART_BYTES_MAX == 0x3D0000
     assert orbapp.SETTINGS_MAX == 16 and orbapp.MAGIC == 0x00415247
     assert (orbapp.CAP_FREE, orbapp.CAP_OWNER) == \
            (("time", "config", "ui", "art"),
-            ("power", "net", "sd_read", "themes", "sound"))
-    assert orbapp.CAP_BITS == 9
+            ("power", "net", "sd_read", "themes", "sound", "location"))
+    assert orbapp.CAP_BITS == 10
     # the hand-written reasons, live-verified against the writer's own voice
     try:
         orbapp.unpack_settings(b"\0" * 64, 17)

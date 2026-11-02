@@ -1,0 +1,8 @@
+{"now": 1793494440.0, "msg": "a \"quoted\" note \\ with éscapes", "aircraft": [
+ {"hex":"a1b2c3","flight":"AB\"C1  ","t":"A320","true_heading":90.5,"track":180.25,"lat":33.1,"lon":-112.2,"alt_baro":12000,"squawk":null,"seen_pos":1.5,"dbFlags":1,
+  "nav":{"lat":-9.9,"lon":9.9,"hex":"bad","track":1.0},"mlat":[],"tisb":[{"alt_baro":"ground"}],"empty":{}},
+ {"hex":"~d4e5f6","lat":33.2,"lon":-112.3,"alt_baro":"ground","track":0,"gs":12.5,"baro_rate":-64,"squawk":"7700"},
+ {"hex":"nopos1","flight":"NOPOS","alt_baro":3000},
+ {},
+ {"lon":-112.4,"hex":"0f0f0f","lat":33.4,"note":"A[{]}\\","alt_geom":5000}
+]}

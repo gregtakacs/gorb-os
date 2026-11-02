@@ -76,7 +76,8 @@ typedef enum {
     CAP_SD_READ = 6,  /* owner: /sd/apps/<id>/ only, P4                */
     CAP_THEMES = 7,   /* owner: enumerate + request the D11 install    */
     CAP_SOUND = 8,    /* owner: play its own theme sounds (D39)        */
-    CAP_N             /* 9                                              */
+    CAP_LOCATION = 9, /* owner: the OS home location (flight-tracker §6.4) */
+    CAP_N             /* 10                                             */
 } orb_cap_t;
 
 /* TIME|CONFIG|UI|ART: never stored, never revoked — §4.2's "free, always on"
@@ -117,6 +118,11 @@ typedef struct {
  * struct is the frozen ABI; a stub refuses loudly rather than pretending, and
  * the host suite pins that each stub sits BEHIND its gate, not in place of it. */
 typedef struct { uint8_t *data; size_t cap, len; } orb_buf_t;
+typedef struct {
+    int32_t  lat_e6, lon_e6;      /* millionths of a degree                 */
+    uint32_t gen;                 /* orb_home_gen() when read               */
+    char     place[40];           /* "Phoenix", "near Phoenix", ...         */
+} orb_svc_home_t;
 /* P5.5: the layer records are no longer a placeholder. The full types live in
  * main/gfx/orb_layers.h, which the CONSUMER includes when it builds a
  * descriptor; this header forward-declares them so the frozen table reaches an
@@ -177,6 +183,11 @@ typedef struct {
   int  (*sound_play)(orb_app_t *, uint16_t slot, uint32_t flags, uint32_t delay_ms);
   void (*sound_stop)(orb_app_t *, int handle);
   bool (*sound_active)(orb_app_t *, int handle);
+  /* location: the owner's home (flight-tracker-design §6.4), cap LOCATION.
+   * ESP_ERR_NOT_FOUND while none is set. `gen` moves on every change, so an
+   * app re-reads when it does and not before. Appended: the table's earlier
+   * entries keep their places. */
+  esp_err_t (*home)(orb_app_t *, orb_svc_home_t *out);
 } orb_svc_t;
 
 #define ORB_SVC_SOUND_LOOP   0x01u
@@ -245,6 +256,7 @@ uint32_t     orb_svc_denials(const orb_app_t *a);
 const char  *orb_svc_last_status(const orb_app_t *a); /* what SVC->status printed */
 uint32_t     orb_svc_beat_ms(const orb_app_t *a);  /* the D16 rate in force; the scheduler reads this */
 uint32_t     orb_svc_cfg_used(const orb_app_t *a); /* bytes charged against the quota */
+uint32_t     orb_svc_cfg_gen(const orb_app_t *a);  /* bumps on every successful cfg write */
 
 /* P5.5's ledger pair for the compositor face, for /api/v1/status: how many
  * rows the app holds right now, and how many times its own table refused it

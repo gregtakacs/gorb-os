@@ -39,6 +39,7 @@
 #include "clock_view.h"
 #include "clock_themes.h"
 #include "color_picker.h"
+#include "flights_view.h"
 #include "menu_view.h"
 #include "art_bank.h"
 
@@ -181,6 +182,43 @@ static const orb_app_iface_t s_picker_iface = {
     .screen     = picker_screen,
 };
 
+/* The flight tracker: one canvas over the OS's feed. Visibility is the whole
+ * of its lifecycle — on the glass it polls at the visible rate and redraws at
+ * 1 Hz, off it the feed drops to the background rate and the view draws
+ * nothing — so activate/resume and suspend reduce to that one switch. */
+static esp_err_t flights_init(orb_app_t *app)     { return flights_view_init(app); }
+static esp_err_t flights_activate(orb_app_t *app) { (void)app; flights_view_set_visible(true); return ESP_OK; }
+static void      flights_suspend(orb_app_t *app)  { (void)app; flights_view_set_visible(false); }
+static void      flights_resume(orb_app_t *app)   { (void)app; flights_view_set_visible(true); }
+static void      flights_show(orb_app_t *app)     { (void)app; flights_view_show(); }
+static void      flights_input(orb_app_t *app, int32_t d, bool p)
+{
+    (void)app;
+    flights_view_input(d, p);
+}
+static bool      flights_armed(const orb_app_t *app) { (void)app; return flights_view_armed(); }
+static void      flights_set_armed(orb_app_t *app, bool a) { (void)app; flights_view_set_armed(a); }
+static void      flights_service(orb_app_t *app)  { (void)app; flights_view_service(); }
+static struct _lv_obj_t *flights_screen(orb_app_t *app) { (void)app; return flights_view_screen(); }
+
+static const orb_app_iface_t s_flights_iface = {
+    .init       = flights_init,
+    .activate   = flights_activate,
+    .suspend    = flights_suspend,
+    .resume     = flights_resume,
+    .show       = flights_show,
+    .input      = flights_input,
+    .armed      = flights_armed,
+    .set_armed  = flights_set_armed,
+    .service    = flights_service,
+    .screen     = flights_screen,
+    .opt_count  = flights_opt_count,
+    .opt_label  = flights_opt_label,
+    .opt_value  = flights_opt_value,
+    .opt_sel    = flights_opt_sel,
+    .opt_arm    = flights_opt_arm,
+};
+
 static esp_err_t menu_init(orb_app_t *app)   { (void)app; return menu_view_init(); }
 static void      menu_show(orb_app_t *app)   { (void)app; menu_view_show(); }
 static void      menu_input(orb_app_t *app, int32_t d, bool p)
@@ -264,6 +302,8 @@ static const orb_behaviour_module_t s_behaviour[] = {
      * apps sharing this iface are two rows over two M3 runtimes — unlike the picker,
      * which is a C6 singleton. The iface's hooks are the guest's entry points. */
     { ORB_BEHAVIOUR_WASM,         &orb_wasm_iface },
+    /* The flight tracker: a singleton like the picker (one canvas, one feed). */
+    { ORB_BEHAVIOUR_FLIGHTS,      &s_flights_iface },
 };
 
 const orb_app_iface_t *orb_app_behaviour_iface(uint32_t behaviour_kind)

@@ -132,13 +132,14 @@ const (
 // and the D19 consent screen a wrong bit would mislabel is why these numbers are
 // load-bearing rather than decorative.
 const (
-	AppCapPower  = 1 << 4
-	AppCapNet    = 1 << 5
-	AppCapSDRead = 1 << 6
-	AppCapThemes = 1 << 7
-	AppCapSound  = 1 << 8 // D39: the app's own theme sounds, through the OS engine
+	AppCapPower    = 1 << 4
+	AppCapNet      = 1 << 5
+	AppCapSDRead   = 1 << 6
+	AppCapThemes   = 1 << 7
+	AppCapSound    = 1 << 8 // D39: the app's own theme sounds, through the OS engine
+	AppCapLocation = 1 << 9 // flight-tracker §6.4: the OS home location
 
-	appCapOwnerAll = AppCapPower | AppCapNet | AppCapSDRead | AppCapThemes | AppCapSound
+	appCapOwnerAll = AppCapPower | AppCapNet | AppCapSDRead | AppCapThemes | AppCapSound | AppCapLocation
 )
 
 // AppCapNames is orbapp.CAP_OWNER in orb_cap_t order, so a caps value names itself the
@@ -152,6 +153,7 @@ var AppCapNames = []struct {
 	{AppCapSDRead, "sd_read"},
 	{AppCapThemes, "themes"},
 	{AppCapSound, "sound"},
+	{AppCapLocation, "location"},
 }
 
 // AppContainer is one .orbapp's identity: what the hub shows an operator, and the fields
@@ -300,7 +302,7 @@ func ParseApp(body []byte) (*AppContainer, error) {
 	}
 	caps := w(appWCaps)
 	if caps&^appCapOwnerAll != 0 {
-		return nil, fmt.Errorf("orbnet: header caps 0x%X are not a legal declaration — owner caps only (power, net, sd_read, themes), and nothing at or above CAP_N",
+		return nil, fmt.Errorf("orbnet: header caps 0x%X are not a legal declaration — owner caps only (power, net, sd_read, themes, location), and nothing at or above CAP_N",
 			caps)
 	}
 	// app_id is sha256(slug)'s first four bytes big-endian, and the one cheap defence

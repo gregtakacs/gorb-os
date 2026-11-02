@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -52,7 +53,7 @@ const (
 // capNames is orbapp_caps_names's table (orb_app_manifest.c:400) in bit order. The double
 // keeps its own copy for the same reason it keeps its own idOK: sharing the hub's copy
 // would make the two agree by construction instead of by agreement.
-var capNames = [5]string{"power", "net", "sd_read", "themes", "sound"}
+var capNames = [6]string{"power", "net", "sd_read", "themes", "sound", "location"}
 
 // CardApp is one app the double knows about: the container staged on the card and the
 // flash row it becomes once installed. One struct for both because the firmware walks one
@@ -69,6 +70,12 @@ type CardApp struct {
 	ArtSz  uint32
 	Bytes  uint32
 	Why    string // disclosure line; empty when the row is clean
+
+	// Cfg holds what POST /api/v1/apps/cfg wrote, by setting id. The device checks
+	// the id against the manifest's declared settings; a fixture that declares
+	// some (CfgKeys non-nil) gets the same 404 for anything else.
+	Cfg     map[string]string
+	CfgKeys []string
 
 	Installed bool
 	Enabled   bool
@@ -616,6 +623,32 @@ func (o *Orb) serveAppClear(w http.ResponseWriter, r *http.Request) {
 	a.Installed = true
 	a.Enabled = true
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"cleared","slug":%q,"reboot":true}`, jsonSafe(slug)))
+}
+
+// serveAppCfg mirrors h_app_cfg: one declared setting written by id. The device
+// also applies the manifest's type and range; the double keeps the value as text.
+func (o *Orb) serveAppCfg(w http.ResponseWriter, r *http.Request) {
+	slug, key := appID(r), r.URL.Query().Get("key")
+	if slug == "" || key == "" {
+		writeJSON(w, 400, `{"error":"id and key are required"}`)
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	a := o.apps[slug]
+	if a == nil {
+		writeJSON(w, 404, `{"error":"no such app"}`)
+		return
+	}
+	if a.CfgKeys != nil && !slices.Contains(a.CfgKeys, key) {
+		writeJSON(w, 404, `{"error":"the app declares no such setting"}`)
+		return
+	}
+	if a.Cfg == nil {
+		a.Cfg = map[string]string{}
+	}
+	a.Cfg[key] = r.URL.Query().Get("value")
+	writeJSON(w, 200, fmt.Sprintf(`{"state":"set","slug":%q,"key":%q}`, jsonSafe(slug), jsonSafe(key)))
 }
 
 // serveAppUninstall mirrors h_app_uninstall. Uninstalling the row on the glass is the

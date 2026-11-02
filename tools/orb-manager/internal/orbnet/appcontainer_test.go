@@ -184,7 +184,7 @@ func TestParseAppRefusesWhatTheDialRefuses(t *testing.T) {
 			func(b []byte) { stamp(b, appWCaps, AppCapThemes|0x1) },
 			"not a legal declaration"},
 		{"cap above the top bit",
-			func(b []byte) { stamp(b, appWCaps, 1<<9) },
+			func(b []byte) { stamp(b, appWCaps, 1<<10) },
 			"not a legal declaration"},
 		{"app_id disagrees",
 			func(b []byte) { stamp(b, appWAppID, 0x12345678) },

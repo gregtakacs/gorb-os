@@ -262,6 +262,14 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveConfigGet(w)
 	case r.URL.Path == "/api/v1/config" && r.Method == http.MethodPost:
 		o.serveConfigPost(w, r)
+	case r.URL.Path == "/api/v1/home" && r.Method == http.MethodGet:
+		o.serveHomeGet(w, r)
+	case r.URL.Path == "/api/v1/home" && r.Method == http.MethodPost:
+		o.serveHomePost(w, r)
+	case r.URL.Path == "/api/v1/flights/key" && r.Method == http.MethodGet:
+		o.serveFeedKey(w, nil)
+	case r.URL.Path == "/api/v1/flights/key" && r.Method == http.MethodPost:
+		o.serveFeedKey(w, r)
 	case r.URL.Path == "/api/v1/name" && r.Method == http.MethodPost:
 		o.serveNamePost(w, r)
 	case r.URL.Path == "/api/v1/sound" && r.Method == http.MethodGet:
@@ -327,6 +335,8 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 7c9ff63's recovery doors, mirrored gate-for-gate.
 	case r.URL.Path == "/api/v1/apps/clear" && r.Method == http.MethodPost:
 		o.serveAppClear(w, r)
+	case r.URL.Path == "/api/v1/apps/cfg" && r.Method == http.MethodPost:
+		o.serveAppCfg(w, r)
 	case r.URL.Path == "/api/v1/sd/app" && r.Method == http.MethodPost:
 		o.serveAppUpload(w, r)
 	default:

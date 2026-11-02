@@ -1519,7 +1519,15 @@ esp_err_t orb_app_upload_end(orb_app_up_t **u, bool overwrite, const char **why)
             if (!or_ && oh.geom_crc == h.geom_crc && oh.code_crc == h.code_crc &&
                 oh.code_size == h.code_size && oh.editor_crc == h.editor_crc &&
                 oh.serial == h.serial && strcmp(oh.version, h.version) == 0 &&
-                strcmp(oh.slug, h.slug) == 0) {
+                strcmp(oh.slug, h.slug) == 0 && oh.caps == h.caps &&
+                oh.period_ms == h.period_ms && oh.n_settings == h.n_settings &&
+                oh.behaviour_kind == h.behaviour_kind) {
+                /* The gate words joined the tuple on 2026-11-01: the flight
+                 * tracker's container gained the location cap and lost two
+                 * settings at the same release, and the upload was called
+                 * unchanged and dropped, so the card kept a container that
+                 * declared less than the new one asks. caps is the owner's
+                 * consent (D19); a tuple blind to it keeps the wrong consent. */
                 /* geom_crc + the code pair + the editor triple's checksum + serial +
                  * version + slug is the whole identity tuple. D20 made the code region
                  * the app's payload, so two files whose modules differ are two apps

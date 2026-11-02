@@ -11,6 +11,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>     /* /api/v1/home: strtod/llround of a browser fix */
 #include <string.h>
 #include <sys/time.h>
 #include <sys/socket.h>
@@ -57,6 +58,8 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include "orb_flights.h"
+#include "orb_home.h"   /* /api/v1/home: the OS home location (flight-tracker-design §6.4) */
 #include "orb_net.h"
 #include "input_router.h"
 #include "orb_app.h"   /* h_screen: ?to=<slug> resolves through the registry */
@@ -815,12 +818,12 @@ static const char *net_mode_set(const char *mode)
     return NULL;
 }
 
-/* ---- the zone table, as the on-dial menu sees it (see orb_net.h) -------------
+/* ---- the zone table, as the OS's other readers see it (see orb_net.h) -------
  *
  * Thin accessors over the one table this file already serves, each reaching the
  * model through the same helpers the HTTP handlers use. Nothing here validates
- * twice: orb_net_tz_select() hands the row's own key to net_tz_set(), which is
- * the same call POST /api/v1/config makes after its body parse. */
+ * twice: a write goes through net_tz_set(), the same call POST /api/v1/config
+ * makes after its body parse. */
 int orb_net_tz_count(void)
 {
     return NET_TZ_N;
@@ -844,6 +847,12 @@ const char *orb_net_tz_key(int i)
 {
     if (i < 0 || i >= NET_TZ_N) return "";
     return s_tz_tbl[i].name;
+}
+
+const char *orb_net_tz_iana(int i)
+{
+    if (i < 0 || i >= NET_TZ_N) return "";
+    return s_tz_tbl[i].iana;
 }
 
 const char *orb_net_tz_label(int i)
@@ -876,19 +885,23 @@ int orb_net_tz_current_index(void)
     return -1;
 }
 
-esp_err_t orb_net_tz_select(int i)
+/* The home location's door into the same write (orb_home.c): a table key or a
+ * rule, through net_tz_set() and nothing else, so its validation and the
+ * persist-before-apply order hold for a zone that arrived as coordinates. */
+const char *orb_net_tz_set_str(const char *tz)
 {
-    if (i < 0 || i >= NET_TZ_N) return ESP_ERR_INVALID_ARG;
-    /* Through net_tz_set() and nothing else: it validates before it writes, so a
-     * row this build no longer accepts cannot land in NVS and un-set the dial on
-     * the next boot. */
-    const char *why = net_tz_set(s_tz_tbl[i].name);
-    if (why) {
-        ESP_LOGW(TAG, "menu tz: row %d (\"%s\") refused (%s)", i, s_tz_tbl[i].name, why);
-        return ESP_FAIL;
-    }
-    ESP_LOGI(TAG, "menu tz: set to \"%s\"", s_tz_tbl[i].name);
-    return ESP_OK;
+    if (!tz) return "no zone";
+    const char *why = net_tz_set(tz);
+    if (why) ESP_LOGW(TAG, "home tz: \"%s\" refused (%s)", tz, why);
+    return why;
+}
+
+int orb_net_tz_find_iana(const char *iana)
+{
+    if (!iana || !iana[0]) return -1;
+    for (int i = 0; i < NET_TZ_N; i++)
+        if (strcmp(s_tz_tbl[i].iana, iana) == 0) return i;
+    return -1;
 }
 
 const char *orb_net_name(void)
@@ -2532,7 +2545,7 @@ static esp_err_t h_status(httpd_req_t *req)
             int doff = 0;
             declared[0] = '\0';
             static const orb_cap_t OC[] = { CAP_POWER, CAP_NET, CAP_SD_READ,
-                                            CAP_THEMES, CAP_SOUND };
+                                            CAP_THEMES, CAP_SOUND, CAP_LOCATION };
             _Static_assert(sizeof OC / sizeof OC[0] == CAP_N - CAP_POWER,
                            "the ledger names every owner cap");
             const uint32_t gm = orb_svc_grants(a);
@@ -2853,6 +2866,262 @@ static esp_err_t h_config_post(httpd_req_t *req)
     if (n < 0 || (size_t)n >= sizeof(resp))
         return httpd_resp_sendstr(req, "{\"state\":\"zoned\"}");
     return httpd_resp_sendstr(req, resp);
+}
+
+/* --------------------------------------------------------------------------
+ * Home — the OS home location (flight-tracker-design §6.4), main/net/orb_home.c.
+ *
+ * GET  /api/v1/home                 the record, and the zone in force
+ * GET  /api/v1/home?lat=..&lon=..   plus what that point would become (place,
+ *                                   zone, and the point itself), stored
+ *                                   nowhere: the hub shows it on its map and
+ *                                   beside its Set button before the owner commits
+ * GET  /api/v1/home?code=8559CWXG%2B9C   the same for a full plus code, decoded
+ *                                   here so the hub pins the point this orb
+ *                                   would store, not its own reading of the code
+ * POST /api/v1/home {"lat":..,"lon":..}   or {"code":"8559CWXG+9C"}
+ *      optional "tz" (a table key or rule, as /api/v1/config takes; "keep"
+ *      leaves the zone alone; absent = the nearest city's), "zone" (the IANA
+ *      name the tz stands for, for display), "place" (absent = from the city
+ *      list); {"clear":true} forgets the home and keeps the zone.
+ *
+ * Its own route rather than more keys on /api/v1/config: config's contract
+ * is frozen around tz being the one key, and a home is more than a zone.
+ * ------------------------------------------------------------------------ */
+#define NET_HOME_BODY_MAX 256
+
+/* Defined further down with their first users (the sound and query doors). */
+static bool json_int(const char *body, size_t len, const char *key, long *out);
+static bool q_param(httpd_req_t *req, const char *key, char *out, size_t outsz);
+
+/* A JSON number (or a quoted one) at `key`, as millionths of a degree. The
+ * browser's fix has 15 digits; round, do not refuse. */
+static bool json_deg_e6(const char *body, size_t len, const char *key, int32_t *out)
+{
+    const char *v = json_find(body, len, key);
+    if (!v) return false;
+    if (*v == '"') v++;
+    char *end = NULL;
+    const double d = strtod(v, &end);
+    if (end == v || !isfinite(d) || fabs(d) > 180.0) return false;
+    *out = (int32_t)llround(d * 1e6);
+    return true;
+}
+
+static esp_err_t home_reply(httpd_req_t *req, const char *state, const orb_home_prop_t *p)
+{
+    char *json = heap_caps_malloc(768, MALLOC_CAP_SPIRAM);
+    if (!json) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"no memory\"}");
+    }
+    orb_home_t h;
+    orb_home_get(&h);
+    char la[16], lo[16], zl[ORB_HOME_ZONE_MAX];
+    orb_geo_fmt(h.lat_e6, la, sizeof la);
+    orb_geo_fmt(h.lon_e6, lo, sizeof lo);
+    orb_home_zone_label(zl, sizeof zl);
+    int n = snprintf(json, 768, "{%s%s%s\"home\":", state ? "\"state\":\"" : "", state ? state : "",
+                     state ? "\"," : "");
+    if (h.set)
+        n += snprintf(json + n, 768 - (size_t)n,
+                      "{\"set\":true,\"lat\":%s,\"lon\":%s,\"place\":\"%s\",\"zone\":\"%s\",\"follows\":%s}",
+                      la, lo, h.place, h.zone, orb_home_zone_follows() ? "true" : "false");
+    else
+        n += snprintf(json + n, 768 - (size_t)n, "{\"set\":false}");
+    if (p) {
+        char pla[16], plo[16];
+        orb_geo_fmt(p->lat_e6, pla, sizeof pla);
+        orb_geo_fmt(p->lon_e6, plo, sizeof plo);
+        n += snprintf(json + n, 768 - (size_t)n,
+                      ",\"proposal\":{\"lat\":%s,\"lon\":%s,\"place\":\"%s\",\"zone\":\"%s\",\"tz\":\"%s\",\"exact\":%s,\"city_km\":%u}",
+                      pla, plo, p->place, p->zone, p->tz, p->exact ? "true" : "false", (unsigned)(p->city_m / 1000));
+    }
+    n += snprintf(json + n, 768 - (size_t)n, ",\"tz\":\"%s\",\"zone_label\":\"%s\",\"tz_offset\":%d}",
+                  s_tz[0] ? s_tz : "UTC", zl, tz_offset_min(time(NULL)));
+    esp_err_t r;
+    if (n < 0 || n >= 768) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        r = httpd_resp_sendstr(req, "{\"error\":\"home too large\"}");
+    } else {
+        r = httpd_resp_sendstr(req, json);
+    }
+    heap_caps_free(json);
+    return r;
+}
+
+static esp_err_t h_home_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char qla[24] = "", qlo[24] = "";
+    int32_t la, lo;
+    const char *why;
+    if (q_param(req, "code", qla, sizeof qla)) {
+        why = orb_geo_olc_decode(qla, &la, &lo);
+    } else if (q_param(req, "lat", qla, sizeof qla) && q_param(req, "lon", qlo, sizeof qlo)) {
+        char both[52];
+        snprintf(both, sizeof both, "%s,%s", qla, qlo);
+        why = orb_geo_parse_coords(both, &la, &lo);
+    } else {
+        return home_reply(req, NULL, NULL);
+    }
+    if (why) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        char b[96];
+        snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
+        return httpd_resp_sendstr(req, b);
+    }
+    orb_home_prop_t p;
+    orb_home_propose(la, lo, &p);
+    return home_reply(req, NULL, &p);
+}
+
+static esp_err_t h_home_post(httpd_req_t *req)
+{
+    static char body[NET_HOME_BODY_MAX + 1];
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const int clen = (int)req->content_len;
+    if (clen <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"content-length required\"}");
+    }
+    if (clen > NET_HOME_BODY_MAX) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        return httpd_resp_sendstr(req, "{\"error\":\"body too large\"}");
+    }
+    int got = 0;
+    while (got < clen) {
+        const int r = httpd_req_recv(req, body + got, (size_t)(clen - got));
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"body read failed\"}");
+        }
+        got += r;
+    }
+    body[got] = '\0';
+    const size_t len = (size_t)got;
+
+    const char *why = NULL;
+    long clr = 0;
+    if (json_int(body, len, "clear", &clr) && clr) {
+        why = orb_home_clear();
+    } else {
+        int32_t la = 0, lo = 0;
+        char code[24], tz[NET_TZ_MAX + 1], zone[ORB_HOME_ZONE_MAX], place[ORB_GEO_PLACE_MAX];
+        if (json_str(body, len, "code", code, sizeof code)) {
+            why = orb_geo_olc_decode(code, &la, &lo);
+        } else if (!json_deg_e6(body, len, "lat", &la) || !json_deg_e6(body, len, "lon", &lo)) {
+            why = "lat and lon (or code) required";
+        }
+        /* The same escape rule as config's tz, for all three echoed strings:
+         * json_str drops a backslash and keeps the next character. */
+        for (const char *q = body; !why && *q; q++)
+            if (*q == '\\') why = "no escapes";
+        bool has_tz = false, has_zone = false, has_place = false;
+        if (!why && json_find(body, len, "tz")) {
+            has_tz = json_str(body, len, "tz", tz, sizeof tz);
+            if (!has_tz) why = "tz not a string, or too long";
+        }
+        if (!why && json_find(body, len, "zone")) {
+            has_zone = json_str(body, len, "zone", zone, sizeof zone);
+            if (!has_zone) why = "zone not a string, or too long";
+        }
+        if (!why && json_find(body, len, "place")) {
+            has_place = json_str(body, len, "place", place, sizeof place);
+            if (!has_place) why = "place not a string, or too long";
+        }
+        if (!why)
+            why = orb_home_set(la, lo, has_place ? place : NULL, has_tz ? tz : NULL,
+                               has_zone ? zone : NULL);
+    }
+    if (why) {
+        ESP_LOGW(TAG, "home: refused (%s)", why);
+        httpd_resp_set_status(req, "400 Bad Request");
+        char b[112];
+        snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
+        return httpd_resp_sendstr(req, b);
+    }
+    return home_reply(req, "homed", NULL);
+}
+
+/* --------------------------------------------------------------------------
+ * The flight feed's adsb.lol API key (orb_flights.h). An owner credential, so
+ * it is written here and never read back: GET says whether one is set, the
+ * header it goes in, and its last four characters.
+ *
+ * GET  /api/v1/flights/key
+ * POST /api/v1/flights/key {"key":"...","header":"x-api-key"}   header optional
+ * POST /api/v1/flights/key {"clear":true}
+ * ------------------------------------------------------------------------ */
+#define NET_FKEY_BODY_MAX 256
+
+static esp_err_t fkey_reply(httpd_req_t *req, const char *state)
+{
+    char hdr[ORB_FLIGHTS_HDR_MAX + 1], tail[5], b[160];
+    const bool set = orb_flights_key_info(hdr, sizeof hdr, tail);
+    snprintf(b, sizeof b, "{%s%s%s\"set\":%s,\"header\":\"%s\",\"tail\":\"%s\"}",
+             state ? "\"state\":\"" : "", state ? state : "", state ? "\"," : "",
+             set ? "true" : "false", hdr, set ? tail : "");
+    return httpd_resp_sendstr(req, b);
+}
+
+static esp_err_t h_fkey_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return fkey_reply(req, NULL);
+}
+
+static esp_err_t h_fkey_post(httpd_req_t *req)
+{
+    static char body[NET_FKEY_BODY_MAX + 1];
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const int clen = (int)req->content_len;
+    if (clen <= 0 || clen > NET_FKEY_BODY_MAX) {
+        httpd_resp_set_status(req, clen > 0 ? "413 Payload Too Large" : "400 Bad Request");
+        return httpd_resp_sendstr(req, clen > 0 ? "{\"error\":\"body too large\"}"
+                                                : "{\"error\":\"content-length required\"}");
+    }
+    int got = 0;
+    while (got < clen) {
+        const int r = httpd_req_recv(req, body + got, (size_t)(clen - got));
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"body read failed\"}");
+        }
+        got += r;
+    }
+    body[got] = '\0';
+    const size_t len = (size_t)got;
+    const char *why = NULL;
+    long clr = 0;
+    bool cleared = false;
+    if (json_int(body, len, "clear", &clr) && clr) {
+        why = orb_flights_key_set(NULL, NULL);
+        cleared = true;
+    } else {
+        /* json_str drops a backslash and keeps what follows; a key with one in
+         * it would be stored as something other than what was sent. */
+        for (const char *q = body; !why && *q; q++)
+            if (*q == '\\') why = "no escapes";
+        char key[ORB_FLIGHTS_KEY_MAX + 1], hdr[ORB_FLIGHTS_HDR_MAX + 1];
+        const bool has_hdr = !why && json_find(body, len, "header");
+        if (!why && !json_str(body, len, "key", key, sizeof key)) why = "key required (a string, at most 128)";
+        if (!why && has_hdr && !json_str(body, len, "header", hdr, sizeof hdr)) why = "header not a string, or too long";
+        if (!why) why = orb_flights_key_set(key, has_hdr ? hdr : NULL);
+        memset(key, 0, sizeof key);
+    }
+    memset(body, 0, sizeof body);                 /* the key does not linger in .bss */
+    if (why) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        char b[112];
+        snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
+        return httpd_resp_sendstr(req, b);
+    }
+    return fkey_reply(req, cleared ? "cleared" : "keyed");
 }
 
 /* --------------------------------------------------------------------------
@@ -4827,6 +5096,48 @@ static esp_err_t h_debug_panic(httpd_req_t *req)
     *(volatile uint32_t *)0 = 0;
     return ESP_OK;
 }
+/* GET|POST /api/v1/debug/flights — the flight feed's bench door
+ * (docs/flight-tracker-design.md §6). GET answers config, poll stats, the
+ * dial's tick-gap histogram and the nearest aircraft; POST sets any of
+ * on, lat, lon, nm, period (ms), src (0 adsb.lol, 1 adsb.fi), ka (keep-alive),
+ * bg (background ms, 0 = none), vis (tracker on the glass), boost, hg (hide ground),
+ * refuse0 (provider 0 answers 403: the failover bench)
+ * from the query string and kicks a poll. Debug-gated: the shipped tracker
+ * configures itself through its app settings, not through this. */
+static esp_err_t h_debug_flights(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    if (req->method == HTTP_POST) {
+        orb_flights_cfg_t c;
+        orb_flights_get_cfg(&c);
+        char v[24];
+        if (q_param(req, "on", v, sizeof v))     c.enabled = atoi(v) != 0;
+        if (q_param(req, "lat", v, sizeof v))    c.lat = strtod(v, NULL);
+        if (q_param(req, "lon", v, sizeof v))    c.lon = strtod(v, NULL);
+        if (q_param(req, "nm", v, sizeof v))     c.radius_nm = (uint16_t)atoi(v);
+        if (q_param(req, "period", v, sizeof v)) c.period_ms = (uint32_t)atol(v);
+        if (q_param(req, "src", v, sizeof v))    c.source = (uint8_t)atoi(v);
+        if (q_param(req, "ka", v, sizeof v))     c.keep_alive = atoi(v) != 0;
+        if (q_param(req, "bg", v, sizeof v))     c.bg_period_ms = (uint32_t)atol(v);
+        if (q_param(req, "vis", v, sizeof v))    c.visible = atoi(v) != 0;
+        if (q_param(req, "boost", v, sizeof v))  c.boost = atoi(v) != 0;
+        if (q_param(req, "hg", v, sizeof v))     c.hide_ground = atoi(v) != 0;
+        if (q_param(req, "refuse0", v, sizeof v)) orb_flights_bench_refuse0(atoi(v) != 0);
+        if (orb_flights_set_cfg(&c) != ESP_OK) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"nm 1-250, period>=2000, src 0|1\"}");
+        }
+    }
+    /* PSRAM, not the httpd stack: the snapshot alone is ~3 KB. */
+    const size_t cap = 6144;
+    char *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
+    if (!buf) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+    const int n = orb_flights_json(buf, cap);
+    const esp_err_t e = n < 0 ? httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "too long")
+                              : httpd_resp_send(req, buf, n);
+    heap_caps_free(buf);
+    return e;
+}
 #endif /* CONFIG_ORB_DEBUG_HTTP */
 
 #if CONFIG_ORB_DEBUG_HTTP
@@ -5820,6 +6131,55 @@ static esp_err_t h_app_clear(httpd_req_t *req)
     }
     char b[224];
     snprintf(b, sizeof b, "{\"state\":\"cleared\",\"slug\":\"%s\",\"reboot\":true}", id);
+    return httpd_resp_sendstr(req, b);
+}
+
+/* POST /api/v1/apps/cfg?id=<slug>&key=<setting>&value=<v> — write one of an
+ * app's DECLARED settings, the way the app itself would: through the service
+ * table's cfg entries, so the manifest's type, its min..max and the per-app
+ * quota all apply, and the owner's config revocation still holds. The hub's
+ * app editor is the caller (the flight tracker's home position is the first
+ * setting nobody can type on a knob); the app notices through its row's cfg
+ * generation (orb_svc_cfg_gen) and re-reads. */
+static esp_err_t h_app_cfg(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char id[ORB_APP_SLUG_MAX + 1] = "", key[16] = "", val[40] = "";
+    if (!q_param(req, "id", id, sizeof id) || !q_param(req, "key", key, sizeof key)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id and key are required\"}");
+    }
+    (void)q_param(req, "value", val, sizeof val);          /* absent = "" (a STRING clear) */
+    orb_app_t *a = (orb_app_t *)orb_app_find_slug(id);
+    if (!a) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "{\"error\":\"no such app\"}");
+    }
+    const orb_setting_desc_t *d = NULL;
+    for (int i = 0; i < a->n_settings && !d; i++)
+        if (!strcmp(a->settings[i].id, key)) d = &a->settings[i];
+    if (!d) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "{\"error\":\"the app declares no such setting\"}");
+    }
+    const orb_svc_t *svc = orb_svc_table();
+    esp_err_t e;
+    if (d->type == ORB_SET_STRING) {
+        e = svc->cfg_set_str(a, key, val);
+    } else {
+        char *end;
+        const long v = strtol(val, &end, 10);
+        e = (end == val || *end) ? ESP_ERR_INVALID_ARG : svc->cfg_set(a, key, (int32_t)v);
+    }
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, door_http_status(e));
+        char b[160];
+        snprintf(b, sizeof b, "{\"error\":\"%s refused: %s\"}", key, esp_err_to_name(e));
+        return httpd_resp_sendstr(req, b);
+    }
+    char b[96];
+    snprintf(b, sizeof b, "{\"state\":\"set\",\"slug\":\"%s\",\"key\":\"%s\"}", id, key);
     return httpd_resp_sendstr(req, b);
 }
 
@@ -7208,8 +7568,10 @@ static esp_err_t net_start_httpd(void)
      * to 38, so the ceiling moves to 48 — the same one-quiet-404-away reasoning,
      * re-checked by host_tz_test.py's textual table count rather than by this. v1.1.20
      * (D36) deleted /api/v1/apps/factory with the factory tier: textual count 40,
-     * gated-off 37; the ceiling stays 48. */
-    cfg.max_uri_handlers  = 48;
+     * gated-off 37; the ceiling stays 48. The flight tracker adds the debug
+     * door's GET/POST pair (/api/v1/debug/flights) and /api/v1/apps/cfg, the
+     * hub's settings write: textual 49, so the ceiling moves to 56. */
+    cfg.max_uri_handlers  = 56;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
      * FAT with their own buffers, and the OTA chunk and upload receive buffers are
@@ -7330,6 +7692,10 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/config",   .method = HTTP_GET,  .handler = h_config_get },
         { .uri = "/api/v1/config",   .method = HTTP_POST, .handler = h_config_post },
         { .uri = "/api/v1/name",     .method = HTTP_POST, .handler = h_name_post },
+        { .uri = "/api/v1/home",     .method = HTTP_GET,  .handler = h_home_get },
+        { .uri = "/api/v1/home",     .method = HTTP_POST, .handler = h_home_post },
+        { .uri = "/api/v1/flights/key", .method = HTTP_GET,  .handler = h_fkey_get },
+        { .uri = "/api/v1/flights/key", .method = HTTP_POST, .handler = h_fkey_post },
         { .uri = "/api/v1/sound",    .method = HTTP_GET,  .handler = h_sound_get },
         { .uri = "/api/v1/sound",    .method = HTTP_POST, .handler = h_sound_post },
         { .uri = "/api/v1/sound/test", .method = HTTP_POST, .handler = h_sound_test },
@@ -7360,6 +7726,8 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/fb",         .method = HTTP_GET,  .handler = h_fb },
         { .uri = "/api/v1/log",        .method = HTTP_GET,  .handler = h_log },
         { .uri = "/api/v1/debug/panic", .method = HTTP_POST, .handler = h_debug_panic },
+        { .uri = "/api/v1/debug/flights", .method = HTTP_GET,  .handler = h_debug_flights },
+        { .uri = "/api/v1/debug/flights", .method = HTTP_POST, .handler = h_debug_flights },
 #endif
         /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
          * backing calls. Migration 1 deleted the flip and default doors: under the
@@ -7375,6 +7743,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/apps/face", .method = HTTP_POST, .handler = h_app_face },
         { .uri = "/api/v1/apps/uninstall", .method = HTTP_POST, .handler = h_app_uninstall },
         { .uri = "/api/v1/apps/clear", .method = HTTP_POST, .handler = h_app_clear },
+        { .uri = "/api/v1/apps/cfg",  .method = HTTP_POST, .handler = h_app_cfg },
         { .uri = "/api/v1/sd/app",      .method = HTTP_POST, .handler = h_app_upload },
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },
@@ -7839,7 +8208,6 @@ const char *orb_net_tz_key(int i) { (void)i; return ""; }
 const char *orb_net_tz_label(int i) { (void)i; return ""; }
 const char *orb_net_tz_current(void) { return ""; }
 int orb_net_tz_current_index(void) { return -1; }
-esp_err_t orb_net_tz_select(int i) { (void)i; return ESP_ERR_NOT_SUPPORTED; }
 /* No zone machinery in a disabled build: UTC is the only honest answer, and
  * ESP_OK keeps the broker's tz_offset entry a plain pass-through. */
 esp_err_t orb_net_tz_offset(time_t when, int32_t *offset_min)

@@ -91,9 +91,8 @@ void idle_dim_set_user_level(uint8_t percent);
  * owner turns the feature off or picks a different timeout on the dial, the
  * choice is written to NVS, and from then on the NVS value wins on every boot.
  * Both getters are safe from any task (one 32-bit read each). Both setters
- * write NVS and so belong on a worker task, not the LVGL one -- the same rule
- * orb_net_tz_select() follows from the menu worker, because an NVS write is
- * normally milliseconds but can hit a sector erase, and a dial that drops
+ * write NVS and so belong on a worker task, not the LVGL one, because an NVS
+ * write is normally milliseconds but can hit a sector erase, and a dial that drops
  * frames while somebody chooses is the un-reproducible bug this file keeps
  * refusing. */
 

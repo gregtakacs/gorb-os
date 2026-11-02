@@ -55,7 +55,8 @@ Three rules this writer enforces, all of them from `.clinerules:444-458` and
     §4.2 grants them unconditionally, so recording one in the mask would put a
     revocation on the owner's ladder that nothing implements, and would let an
     app's ledger row claim a permission no code consults — the exact complaint
-    D19 made against B3. Only power, net, sd_read and themes may be declared.
+    D19 made against B3. Only power, net, sd_read, themes and location may be
+    declared.
   * a half-written file is invisible: `.part` names are refused here, and the
     scan never globs them (§4.1's upload rule).
 
@@ -180,12 +181,12 @@ BEAT_MAX_MS = 86400000         # a day; past this the app means "never", and 0
                                # is the word for that
 
 # The owner-granted caps, in orb_svc.h's orb_cap_t order (POWER=4 NET=5
-# SD_READ=6 THEMES=7). tools/host_orbapp_test.py lifts the C enum and fails if
+# SD_READ=6 THEMES=7 LOCATION=8). tools/host_orbapp_test.py lifts the C enum and fails if
 # this tuple's order ever disagrees: a silent renumber would move every installed
 # app's D19 consent onto a different permission.
 CAP_FREE  = ("time", "config", "ui", "art")     # declarable NEVER
-CAP_OWNER = ("power", "net", "sd_read", "themes", "sound")   # sound: D39, appended
-CAP_BITS  = len(CAP_FREE) + len(CAP_OWNER)      # 9 == CAP_N
+CAP_OWNER = ("power", "net", "sd_read", "themes", "sound", "location")   # sound: D39, location: flights §6.4; appended
+CAP_BITS  = len(CAP_FREE) + len(CAP_OWNER)      # 10 == CAP_N
 
 # C9's settings types, frozen, in orb_svc.h's orb_set_type_t order.
 SET_TYPES = ("int", "enum", "toggle", "string")

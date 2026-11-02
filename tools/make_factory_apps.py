@@ -47,6 +47,7 @@ OUT_DIR = os.path.join(HERE, "..", "tools", "orb-manager", "apps")
 # Behaviour kind ids must match main/app/orb_app.h's enum (C6 append-only).
 KIND_COLOR_PICKER = 1
 KIND_CLOCK = 3
+KIND_FLIGHTS = 4
 
 # The one owned caps each factory app declares (D19: the declaration is the
 # consent). The clock walks the card for theme containers and asks for the D11
@@ -55,6 +56,9 @@ KIND_CLOCK = 3
 # settings ride the free config cap, which is not declarable (CAP_FREE).
 CLOCK_CAPS = orbapp.cap_bit("sd_read") | orbapp.cap_bit("themes") | orbapp.cap_bit("sound")
 PICKER_CAPS = 0
+# The flight tracker opens sockets (the OS feed, docs/flight-tracker-design.md),
+# so it declares net: an app that declared nothing never reaches the network.
+FLIGHTS_CAPS = orbapp.cap_bit("net") | orbapp.cap_bit("location")
 
 # S6 (§4.1): the release stamp both starter containers carry, and the serial derived
 # from it. The number is not typed here. It is read out of version.txt — the same file
@@ -105,10 +109,26 @@ PICKER_SETTINGS = (
     {"id": "bri", "type": "int", "min": 0, "max": 100, "default": 90},
 )
 
+# The tracker's settings (design §6.3). Home is not among them: it is the OS
+# home location (§6.4), read through the location cap. Enums are indices the
+# view names: range 10/20/40/80 nm, source adsb.lol/adsb.fi, bg off/1/2/5 min.
+# The defaults are the light ones (2026-11-01, after api.adsb.lol banned the
+# owner's IP): adsb.fi first, background every 2 min, boost off. On the glass
+# the poll is 15 s whatever these say.
+FLIGHTS_SETTINGS = (
+    {"id": "range",  "type": "enum",   "min": 0, "max": 3, "default": 2},
+    {"id": "source", "type": "enum",   "min": 0, "max": 1, "default": 1},
+    {"id": "bg",     "type": "enum",   "min": 0, "max": 3, "default": 2},
+    {"id": "boost",  "type": "toggle", "default": 0},
+    {"id": "ground", "type": "toggle", "default": 1},
+    {"id": "key",    "type": "string", "def_str": ""},
+)
+
 APPS = (
     # slug, title, kind, caps, settings, editor-region bytes (b"()" when none)
     ("clock",        "Clock", KIND_CLOCK,        CLOCK_CAPS,  (), "_clock_editor"),
     ("color_picker", "HSB",   KIND_COLOR_PICKER, PICKER_CAPS, PICKER_SETTINGS, None),
+    ("flights",      "Flights", KIND_FLIGHTS,    FLIGHTS_CAPS, FLIGHTS_SETTINGS, None),
 )
 
 
@@ -160,16 +180,16 @@ def main():
                 sys.stderr.write("%s.orbapp is stale — run tools/make_factory_apps.py\n" % slug)
                 rc = 1
         if rc == 0:
-            print("seed containers fresh (%d containers, %d + %d B)"
-                  % (len(files), len(files["clock"]), len(files["color_picker"])))
+            print("seed containers fresh (%d containers: %s)"
+                  % (len(files), ", ".join("%s %d B" % (k, len(v)) for k, v in files.items())))
         return rc
     os.makedirs(OUT_DIR, exist_ok=True)
     for slug, blob in files.items():
         with open(os.path.join(OUT_DIR, slug + ".orbapp"), "wb") as f:
             f.write(blob)
-    print("wrote %s: clock %d B, color_picker %d B, version %s (serial %u)"
+    print("wrote %s: %s, version %s (serial %u)"
           % (os.path.relpath(OUT_DIR, os.path.join(HERE, os.pardir)),
-             len(files["clock"]), len(files["color_picker"]), VERSION, SERIAL))
+             ", ".join("%s %d B" % (k, len(v)) for k, v in files.items()), VERSION, SERIAL))
     return 0
 
 

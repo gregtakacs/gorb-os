@@ -178,23 +178,44 @@
   </article>
 
   <article class="card tabpane" data-tab="orb">
-    <h3>Time zone</h3>
-    <!-- The same picker the orb's own /timezone page runs: the board's zone
-         table fetched from the board, GMT offsets measured by THIS browser's
-         IANA data (the orb's newlib has no zoneinfo — the page is the oracle),
-         a city filter, and the phone row for a zone the table does not carry,
-         whose DST rules get synthesized from the browser and posted as a
-         POSIX rule. Selecting a row sets it; the echo of the device's measured
-         offset is the verdict, never the word the page sent. -->
+    <h3>Home</h3>
+    <!-- The OS home location (flight-tracker-design §6.4): where the orb is. It
+         sets the time zone and every app that needs a position reads it. Two
+         steps (owner ruling 2026-11-01): any source — a city from the orb's own
+         list, this browser's location, a map pin, coordinates or a plus code —
+         only proposes a point, which the orb previews (place, zone) and the map
+         shows; Set home stores it, and the zone comes with it. There is no
+         separate zone picker: the location drives the zone. -->
+    <div class="row"><span class="hint" id="home-cur">the home loads with this tab</span></div>
     <div class="row">
-      <span class="hint" id="tz-cur">the zone table loads when this tab is first opened</span>
-      <button id="tz-loc" class="ghost" type="button" title="Ask the browser where it is, and use that zone — synthesized if the orb does not know its name">Use my location</button>
+      <input id="home-q" size="34" placeholder="a city, 33.4484, -112.074, or 8559CWXG+9C" autocomplete="off"
+             aria-label="Find a city, or type coordinates or a full plus code" aria-controls="home-hits">
+      <button id="home-loc" class="ghost" type="button" title="Ask this browser where it is">Use this browser's location</button>
+    </div>
+    <div id="home-hits" class="tzlist" role="listbox" hidden></div>
+    <div id="home-map" class="homemap"></div>
+    <div class="row" id="home-next" hidden>
+      <span id="home-pend"></span>
+      <button id="home-set" class="primary" type="button">Set home</button>
     </div>
     <div class="row">
-      <input id="tz-q" size="24" placeholder="search a city" autocomplete="off" aria-label="Search time zones">
+      <span class="hint" id="home-msg"></span>
+      <button id="home-clear" class="ghost" type="button" title="Forget the home; the clock keeps its zone">Forget home</button>
     </div>
-    <div id="tz-list" class="tzlist" role="listbox"></div>
-    <div class="row"><span class="hint" id="tz-msg"></span></div>
+    <h3>Flight feed</h3>
+    <!-- The adsb.lol API key (orb_flights.h): an owner credential the orb keeps
+         beside the Wi-Fi password and sends only to adsb.lol. Written here,
+         never read back: the line below shows set or not, the header, and the
+         last four characters. -->
+    <div class="row"><span class="hint" id="fkey-cur">the key state loads with this tab</span></div>
+    <div class="row">
+      <input id="fkey-key" type="password" size="34" placeholder="adsb.lol API key" autocomplete="off" aria-label="adsb.lol API key">
+      <input id="fkey-hdr" size="14" placeholder="x-api-key" autocomplete="off" aria-label="Header the key is sent in"
+             title="The HTTP header adsb.lol wants the key in. Leave empty for x-api-key.">
+      <button id="fkey-set" class="ghost" type="button">Save key</button>
+      <button id="fkey-clear" class="ghost" type="button">Remove</button>
+    </div>
+    <div class="row"><span class="hint" id="fkey-msg"></span></div>
   </article>
 
 

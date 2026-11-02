@@ -42,6 +42,10 @@ CONFIG_LV_FONT_MONTSERRAT_48=y
 # Small fonts for the color-picker chips + hint line
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
+# The menu's ABOUT page draws a QR code for the orb's own page (http://<ip>/)
+# with LVGL's qrcodegen into a PSRAM plane; the lv_qrcode widget this also
+# compiles is unused (its draw buffer would come out of the LVGL pool).
+CONFIG_LV_USE_QRCODE=y
 
 # ---------------------------------------------------------------------------
 # Networking (config page). Bring-up + heap instrumentation build: the
@@ -285,6 +289,20 @@ CONFIG_TINYUSB_MTP_MAX_OBJECTS=64
 # silent through a share that enumerates and publishes nothing. Read absence from
 # it accordingly; §14 is what that silence cost.
 CONFIG_TINYUSB_MTP_TRACE_WRITES=y
+
+# TLS sessions live in PSRAM, chosen per task (docs/flight-tracker-design.md §4,
+# main/net/orb_tls_mem.c). The default puts every mbedTLS allocation in the
+# internal pool: a 16 KB record buffer, a 4 KB send buffer and the handshake's
+# working set, from a pool that idles at ~11 KB free with a ~4 KB largest block
+# once the radio and the display's tile ring are up (orb-A, 2026-10-31). An
+# outbound HTTPS call cannot start there. EXTERNAL_MEM_ALLOC fixes that and
+# breaks the radio: it moves the WPA supplicant's contexts too, and the AES
+# engine's bounce for them failed at boot ("esp-aes: Failed to allocate memory")
+# where the internal pool bottoms out. CUSTOM keeps the supplicant internal and
+# gives PSRAM only to the task that asks (the flight feed's). CUSTOM binds nothing
+# by itself: orb_tls_mem_init() installs the allocator at runtime, and without it
+# mbedTLS quietly uses libc calloc (internal for anything <= 16 KB).
+CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
 
 # Lets a static buffer opt into PSRAM with EXT_RAM_BSS_ATTR. Nothing moves unless
 # it is marked; the two httpd response buffers in orb_net.c (17 KB, CPU-only,

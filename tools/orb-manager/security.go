@@ -334,6 +334,15 @@ var deviceRoutes = map[string][]string{
 	// first. Refused before it is ever dialed if the name will not pass the device's
 	// own rules — see orbfleet.CheckNameASCII.
 	"/api/v1/name": {http.MethodPost},
+	// The OS home location (flight-tracker-design §6.4): the Orb tab's "use this
+	// browser's location" and map pin. GET answers the record, and with ?lat=&lon=
+	// what that point would become; POST sets or clears it. Device config like the
+	// zone it drives, and it reaches neither the card nor the slot.
+	"/api/v1/home": {http.MethodGet, http.MethodPost},
+	// The flight feed's adsb.lol API key: an owner credential the Orb tab writes.
+	// The orb never reads it back (GET says set/unset, the header, the last four
+	// characters), and it goes only to adsb.lol. Neither the card nor the slot.
+	"/api/v1/flights/key": {http.MethodGet, http.MethodPost},
 	// D39: the owner's sound settings (level, switches, quiet hours, glass offset,
 	// pattern override) and the bench door that plays a built-in sound with no theme.
 	// Both are device config the owner sets the way they set the zone, and neither
@@ -405,7 +414,11 @@ var deviceRoutes = map[string][]string{
 	// embed, leaving the sd/app and apps/install doors below as the one way an
 	// app reaches a card — the operator's copy, filed by the drop zone.
 	"/api/v1/apps/clear": {http.MethodPost},
-	"/api/v1/sd/app":     {http.MethodPost},
+	// One declared app setting, written through the device's own config gate (type,
+	// range, quota, the owner's revocation). The app editor's door: the flight
+	// tracker's home position is the first setting a knob cannot reasonably type.
+	"/api/v1/apps/cfg": {http.MethodPost},
+	"/api/v1/sd/app":   {http.MethodPost},
 	// v1.1.18's file-manager doors and the LAN twin of serial RESET ALL. The
 	// proxy forwards these verbatim (token, caps, lane) and owns none of the
 	// policy: the device already refuses traversal, the device-owned

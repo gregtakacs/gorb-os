@@ -13,6 +13,9 @@ idf_component_register(
         "app/orb_app_wasm.c"
         "app/orb_carousel.c"
         "app/orb_jobs.c"
+        # The flight feed: a background HTTPS poll over orb_https, parsed as it
+        # streams by orb_readsb (host-tested by tools/host_readsb_test.py).
+        "app/orb_flights.c"
         "app/orb_svc.c"
         "display/display.c"
         # C2 (theme-delta plan §6.2): the boot/install overlay — the one painter
@@ -33,6 +36,10 @@ idf_component_register(
         "clock/clock_themes.c"
         "knob/knob.c"
         "color/color_picker.c"
+        # The flight tracker's view (docs/flight-tracker-design.md §6), kind 4.
+        "flights/flights_view.c"
+        # Its model, LVGL-free so tools/host_flights_model_test.py compiles it.
+        "flights/flights_model.c"
         "menu/menu_view.c"
         "input/input_router.c"
         "imu/imu.c"
@@ -63,6 +70,12 @@ idf_component_register(
         # manifest reader's harness, which no other main/ TU makes possible.
         "assets/orb_assets.c"
         "net/orb_net.c"
+        "net/orb_https.c"
+        "net/orb_home.c"
+        "net/orb_geo.c"
+        "net/orb_cities.c"
+        "net/orb_tls_mem.c"   # mbedTLS allocator: PSRAM for the task that asks
+        "net/orb_readsb.c"
         "net/orb_mdns.c"      # _orb._tcp advertiser (docs/orb-manager-plan.md §5 item 4)
         "sd/orb_sd.c"
         "sd/orb_files.c"
@@ -85,6 +98,7 @@ idf_component_register(
         "clock"
         "knob"
         "color"
+        "flights"
         "menu"
         "input"
         "imu"
@@ -117,6 +131,7 @@ idf_component_register(
         esp_netif              # "
         esp_event              # "
         esp_http_server        # plain-HTTP config API (TLS terminated upstream)
+        esp_http_client        # orb_https: the outbound client the flight feed polls through
         lwip                   # "
         esp_app_format         # esp_app_get_description() for the status endpoint
         app_update             # OTA: esp_ota_begin/write/end + set_boot_partition + rollback confirm

@@ -1,0 +1,1241 @@
+# population	name	lat	lon	country	zone  (GeoNames cities15000, CC-BY 4.0; tools/make_cities.py --import; 500k+ first, then the 100k+ zone corrections)
+24874500	Shanghai	31.2222	121.4581	CN	Asia/Shanghai
+22000000	Chongqing	29.5603	106.5577	CN	Asia/Shanghai
+20937757	Chengdu	30.6667	104.0667	CN	Asia/Shanghai
+18960744	Beijing	39.9075	116.3972	CN	Asia/Shanghai
+18676605	Guangzhou	23.1167	113.2500	CN	Asia/Shanghai
+17494398	Shenzhen	22.5455	114.0683	CN	Asia/Shanghai
+16000000	Kinshasa	-4.3276	15.3136	CD	Africa/Kinshasa
+15701602	Istanbul	41.0138	28.9497	TR	Europe/Istanbul
+15388000	Lagos	6.4541	3.3947	NG	Africa/Lagos
+14002598	Ho Chi Minh City	10.8230	106.6296	VN	Asia/Ho_Chi_Minh
+13866009	Tianjin	39.1422	117.1767	CN	Asia/Shanghai
+13739000	Wuhan	30.5833	114.2667	CN	Asia/Shanghai
+13004135	Lahore	31.5580	74.3507	PK	Asia/Karachi
+12952907	Xi'an	34.2583	108.9286	CN	Asia/Shanghai
+12691836	Mumbai	19.0728	72.8826	IN	Asia/Kolkata
+12400232	Sao Paulo	-23.5475	-46.6361	BR	America/Sao_Paulo
+12294193	Mexico City	19.4285	-99.1277	MX	America/Mexico_City
+11936010	Hangzhou	30.2936	120.1614	CN	Asia/Shanghai
+11624219	Karachi	24.8608	67.0104	PK	Asia/Karachi
+11034555	Delhi	28.6519	77.2315	IN	Asia/Kolkata
+10381222	Moscow	55.7520	37.6178	RU	Europe/Moscow
+10356500	Dhaka	23.7104	90.4074	BD	Asia/Dhaka
+10349312	Seoul	37.5660	126.9784	KR	Asia/Seoul
+10009854	Harbin	45.7500	126.6500	CN	Asia/Shanghai
+9733276	Tokyo	35.6895	139.6917	JP	Asia/Tokyo
+9644871	Dongguan	23.0180	113.7487	CN	Asia/Shanghai
+9606916	Cairo	30.0626	31.2497	EG	Africa/Cairo
+9465881	Hefei	31.8639	117.2808	CN	Asia/Shanghai
+9418183	Johannesburg	-26.2023	28.0436	ZA	Africa/Johannesburg
+9386705	Weifang	36.7100	119.1019	CN	Asia/Shanghai
+9314685	Nanjing	32.0617	118.7778	CN	Asia/Shanghai
+9070093	Shenyang	41.7922	123.4328	CN	Asia/Shanghai
+9042509	Foshan	23.0268	113.1315	CN	Asia/Shanghai
+8961989	London	51.5085	-0.1257	GB	Europe/London
+8804190	New York City	40.7143	-74.0060	US	America/New_York
+8540121	Jakarta	-6.2146	106.8451	ID	Asia/Jakarta
+8495492	Bengaluru	12.9719	77.5937	IN	Asia/Kolkata
+8352574	Jinan	36.6683	116.9972	CN	Asia/Shanghai
+8053663	Hanoi	21.0245	105.8412	VN	Asia/Bangkok
+7871900	Taipei	25.0531	121.5264	TW	Asia/Taipei
+7737002	Lima	-12.0432	-77.0282	PE	America/Lima
+7674366	Bogota	4.6097	-74.0817	CO	America/Bogota
+7450785	Dalian	38.9122	121.6022	CN	Asia/Shanghai
+7396076	Hong Kong	22.2783	114.1747	HK	Asia/Hong_Kong
+7216000	Baghdad	33.3406	44.4009	IQ	Asia/Baghdad
+7202654	Wuzhong	37.9867	106.2010	CN	Asia/Shanghai
+7172451	Qingdao	36.0649	120.3804	CN	Asia/Shanghai
+7153309	Tehran	35.6944	51.4215	IR	Asia/Tehran
+7102100	Yantai	37.4765	121.4408	CN	Asia/Shanghai
+6993262	Hyderabad	17.3840	78.4564	IN	Asia/Kolkata
+6747815	Rio de Janeiro	-22.9064	-43.1822	BR	America/Sao_Paulo
+6715559	Suzhou	31.3041	120.5954	CN	Asia/Shanghai
+6650532	Zhengzhou	34.7578	113.6486	CN	Asia/Shanghai
+6357693	Ahmedabad	23.0258	72.5873	IN	Asia/Kolkata
+6321017	Abidjan	5.3544	-4.0017	CI	Africa/Abidjan
+5977185	Nanning	22.8167	108.3167	CN	Asia/Shanghai
+5950578	Kunming	25.0389	102.7183	CN	Asia/Shanghai
+5758403	Shijiazhuang	38.0414	114.4786	CN	Asia/Shanghai
+5691024	Changchun	43.8800	125.3228	CN	Asia/Shanghai
+5638830	Sydney	-33.8678	151.2073	AU	Australia/Sydney
+5638700	Singapore	1.2897	103.8501	SG	Asia/Singapore
+5435590	Melbourne	-37.8140	144.9633	AU	Australia/Melbourne
+5383728	Dar es Salaam	-6.8235	39.2695	TZ	Africa/Dar_es_Salaam
+5351935	Saint Petersburg	59.9386	30.3141	RU	Europe/Moscow
+5305061	Taiyuan	37.8694	112.5603	CN	Asia/Shanghai
+5263542	Alexandria	31.2018	29.9158	EG	Africa/Cairo
+5104476	Bangkok	13.7540	100.5014	TH	Asia/Bangkok
+4910000	Kano	12.0001	8.5167	NG	Africa/Lagos
+4837295	Santiago	-33.4569	-70.6483	CL	America/Santiago
+4772846	Cape Town	-33.9258	18.4232	ZA	Africa/Johannesburg
+4758762	Peshawar	34.0080	71.5785	PK	Asia/Karachi
+4704138	Zibo	36.7906	118.0633	CN	Asia/Shanghai
+4697000	Jeddah	21.4901	39.1862	SA	Asia/Riyadh
+4681087	Chennai	13.0878	80.2785	IN	Asia/Kolkata
+4631392	Kolkata	22.5626	88.3630	IN	Asia/Kolkata
+4617251	Xiamen	24.4798	118.0819	CN	Asia/Shanghai
+4591246	Surat	21.1959	72.8302	IN	Asia/Kolkata
+4559797	Yangzhou	32.3972	119.4358	CN	Asia/Shanghai
+4556230	Huai'an	33.5886	119.0192	CN	Asia/Shanghai
+4506134	Guiyang	26.5833	106.7167	CN	Asia/Shanghai
+4477638	Yangon	16.8053	96.1561	MM	Asia/Yangon
+4476554	Bao'an	22.5521	113.8829	CN	Asia/Shanghai
+4434550	Kabul	34.5281	69.1723	AF	Asia/Kabul
+4397073	Nairobi	-1.2833	36.8167	KE	Africa/Nairobi
+4396835	Wuxi	31.5689	120.2886	CN	Asia/Shanghai
+4359446	Lanzhou	36.0570	103.8399	CN	Asia/Shanghai
+4227569	Bamako	12.6091	-7.9752	ML	Africa/Bamako
+4205961	Riyadh	24.6877	46.7219	SA	Asia/Riyadh
+4094491	Fuzhou	26.0614	119.3061	CN	Asia/Shanghai
+4054000	UEruemqi	43.8010	87.6005	CN	Asia/Urumqi
+3920222	Chattogram	22.3384	91.8317	BD	Asia/Dhaka
+3860000	Addis Ababa	9.0250	38.7469	ET	Africa/Addis_Ababa
+3855601	Zaozhuang	34.8647	117.5542	CN	Asia/Shanghai
+3841873	Zhongshan	22.5231	113.3791	CN	Asia/Shanghai
+3838900	Shantou	23.3549	116.6788	CN	Asia/Shanghai
+3820914	Los Angeles	34.0522	-118.2437	US	America/Los_Angeles
+3800193	Faisalabad	31.4155	73.0897	PK	Asia/Karachi
+3790000	Dubai	25.0772	55.3093	AE	Asia/Dubai
+3777491	Yokohama	35.4333	139.6500	JP	Asia/Tokyo
+3731203	Ningbo	29.8782	121.5494	CN	Asia/Shanghai
+3665954	Casablanca	33.5883	-7.6114	MA	Africa/Casablanca
+3649000	Ibadan	7.3776	3.9059	NG	Africa/Lagos
+3590000	Puyang	29.4568	119.8887	CN	Asia/Shanghai
+3517182	Ankara	39.9199	32.8543	TR	Europe/Istanbul
+3460000	Shiyan	32.6475	110.7781	CN	Asia/Shanghai
+3446100	Hohhot	40.8106	111.6522	CN	Asia/Shanghai
+3426354	Berlin	52.5244	13.4105	DE	Europe/Berlin
+3372102	Tangshan	39.6438	118.1832	CN	Asia/Shanghai
+3357612	Rawalpindi	33.5973	73.0479	PK	Asia/Karachi
+3346500	Lueliang	37.5192	111.1444	CN	Asia/Shanghai
+3338026	Durban	-29.8579	31.0292	ZA	Africa/Johannesburg
+3325372	Anshan	41.1236	122.9900	CN	Asia/Shanghai
+3290918	Changzhou	31.7736	119.9540	CN	Asia/Shanghai
+3285147	Busan	35.1017	129.0300	KR	Asia/Seoul
+3255944	Madrid	40.4165	-3.7026	ES	Europe/Madrid
+3222000	Pyongyang	39.0339	125.7543	KP	Asia/Pyongyang
+3124458	Pune	18.5196	73.8554	IN	Asia/Kolkata
+3105591	Datong	40.0936	113.2914	CN	Asia/Shanghai
+3101833	Bursa	40.1956	29.0601	TR	Europe/Istanbul
+3093980	Changsha	28.1987	112.9709	CN	Asia/Shanghai
+3084270	Quezon City	14.6488	121.0509	PH	Asia/Manila
+3046163	Jaipur	26.9196	75.7878	IN	Asia/Kolkata
+3033528	Huainan	32.6264	116.9969	CN	Asia/Shanghai
+3018022	Surabaya	-7.2492	112.7508	ID	Asia/Jakarta
+3015482	Incheon	37.4565	126.7052	KR	Asia/Seoul
+3001600	Haikou	20.0342	110.3465	CN	Asia/Shanghai
+3000000	Caracas	10.4880	-66.8792	VE	America/Caracas
+2952301	Kyiv	50.4547	30.5238	UA	Europe/Kyiv
+2938292	Izmir	38.4127	27.1384	TR	Europe/Istanbul
+2900113	Huizhou	23.1115	114.4152	CN	Asia/Shanghai
+2891082	Buenos Aires	-34.6131	-58.3772	AR	America/Argentina/Buenos_Aires
+2859074	Yinchuan	38.4681	106.2731	CN	Asia/Shanghai
+2850285	Taichung	24.1469	120.6839	TW	Asia/Taipei
+2823249	Kanpur	26.4652	80.3498	IN	Asia/Kolkata
+2794356	Toronto	43.7064	-79.3986	CA	America/Toronto
+2781641	Quito	-0.2298	-78.5250	EC	America/Guayaquil
+2780063	Brisbane	-27.4679	153.0281	AU	Australia/Brisbane
+2776168	Luanda	-8.8368	13.2343	AO	Africa/Luanda
+2761700	Baotou	40.6516	109.8439	CN	Asia/Shanghai
+2753862	Osaka	34.6938	135.5011	JP	Asia/Tokyo
+2743843	Linyi	35.0631	118.3428	CN	Asia/Shanghai
+2739887	Baoding	38.8729	115.4625	CN	Asia/Shanghai
+2737660	Kaohsiung	22.6163	120.3133	TW	Asia/Taipei
+2723665	Guayaquil	-2.1962	-79.8862	EC	America/Guayaquil
+2721564	Belo Horizonte	-19.9208	-43.9378	BR	America/Sao_Paulo
+2712894	Bazhong	31.8694	106.7443	CN	Asia/Shanghai
+2711840	Salvador	-12.9756	-38.4910	BR	America/Bahia
+2690000	Abuja	9.0579	7.4951	NG	Africa/Lagos
+2674697	Gazipur	23.9984	90.4223	BD	Asia/Dhaka
+2664452	Chicago	41.8500	-87.6500	US	America/Chicago
+2650000	Wenzhou	27.9994	120.6668	CN	Asia/Shanghai
+2648272	Bekasi	-6.2349	106.9896	ID	Asia/Jakarta
+2646503	Dakar	14.6937	-17.4441	SN	Africa/Dakar
+2625200	Haiphong	20.8648	106.6834	VN	Asia/Bangkok
+2612800	Yunfu	22.9279	112.0381	CN	Asia/Shanghai
+2587183	Mogadishu	2.0371	45.3438	SO	Africa/Mogadishu
+2544530	Kumasi	6.6885	-1.6244	GH	Africa/Accra
+2528163	Bandung	-6.9222	107.6069	ID	Asia/Jakarta
+2511118	Gujranwala	32.1557	74.1870	PK	Asia/Karachi
+2486283	Medan	3.5833	98.6667	ID	Asia/Jakarta
+2472011	Lucknow	26.8393	80.9231	IN	Asia/Kolkata
+2467965	Xining	36.6255	101.7574	CN	Asia/Shanghai
+2415266	Ouagadougou	12.3657	-1.5339	BF	Africa/Ouagadougou
+2405665	Nagpur	21.1463	79.0849	IN	Asia/Kolkata
+2400000	Fortaleza	-3.7172	-38.5431	BR	America/Fortaleza
+2392877	Cali	3.4305	-76.5199	CO	America/Bogota
+2384371	Perth	-31.9522	115.8614	AU	Australia/Perth
+2365523	Daegu	35.8710	128.6012	KR	Asia/Seoul
+2364230	Algiers	36.7323	3.0875	DZ	Africa/Algiers
+2357839	Nanchang	28.6840	115.8531	CN	Asia/Shanghai
+2351300	Baku	40.3777	49.8920	AZ	Asia/Baku
+2332176	Nagoya	35.1815	136.9064	JP	Asia/Tokyo
+2318895	Rome	41.8919	12.5113	IT	Europe/Rome
+2314157	Houston	29.7633	-95.3633	US	America/Chicago
+2307177	Mashhad	36.2981	59.6057	IR	Asia/Tehran
+2300000	Shaoxing	30.0024	120.5786	CN	Asia/Shanghai
+2273326	Nantong	32.0303	120.8747	CN	Asia/Shanghai
+2265900	Baoshan	31.4084	121.4896	CN	Asia/Shanghai
+2222415	Gaziantep	37.0594	37.3825	TR	Europe/Istanbul
+2221925	Lubumbashi	-11.6609	27.4794	CD	Africa/Lubumbashi
+2219580	Manaus	-3.1019	-60.0250	BR	America/Manaus
+2212301	Lusaka	-15.4067	28.2871	ZM	Africa/Lusaka
+2207718	Brasilia	-15.7797	-47.9297	BR	America/Sao_Paulo
+2207090	Zhuhai	22.2769	113.5678	CN	Asia/Shanghai
+2201941	Santo Domingo	18.4719	-69.8923	DO	America/Santo_Domingo
+2188376	Lome	6.1287	1.2215	TG	Africa/Lome
+2169915	Multan	30.1968	71.4782	PK	Asia/Karachi
+2163824	Havana	23.1330	-82.3830	CU	America/Havana
+2163635	Depok	-6.4000	106.8186	ID	Asia/Jakarta
+2153638	Ordos	39.6086	109.7816	CN	Asia/Shanghai
+2138551	Paris	48.8534	2.3488	FR	Europe/Paris
+2136916	Coimbatore	11.0055	76.9661	IN	Asia/Kolkata
+2125400	Qingyang	35.7098	107.6445	CN	Asia/Shanghai
+2120000	Port Harcourt	4.7774	7.0134	NG	Africa/Lagos
+2112693	Pretoria	-25.7449	28.1878	ZA	Africa/Johannesburg
+2106734	Cordoba	-31.4065	-64.1885	AR	America/Argentina/Cordoba
+2101332	Mbuji-Mayi	-6.1360	23.5898	CD	Africa/Lubumbashi
+2098210	Aleppo	36.2012	37.1612	SY	Asia/Damascus
+2092496	Kunshan	31.3776	120.9543	CN	Asia/Shanghai
+2037775	Zunyi	27.6867	106.9072	CN	Asia/Shanghai
+2004652	La Paz	-16.5000	-68.1500	BO	America/La_Paz
+2001009	Lianyungang	34.5984	119.2156	CN	Asia/Shanghai
+1999979	Medellin	6.2450	-75.5715	CO	America/Bogota
+1998619	Puning	23.3107	116.1687	CN	Asia/Shanghai
+1994397	Indore	22.7179	75.8333	IN	Asia/Kolkata
+1978028	Tashkent	41.2647	69.2163	UZ	Asia/Tashkent
+1977253	Ganzhou	25.8466	114.9326	CN	Asia/Shanghai
+1977011	Almaty	43.2525	76.9115	KZ	Asia/Almaty
+1974647	Khartoum	15.5518	32.5324	SD	Africa/Khartoum
+1973896	Hamburg	53.5507	9.9930	DE	Europe/Berlin
+1973832	Sapporo	43.0667	141.3500	JP	Asia/Tokyo
+1973500	Songjiang	31.0344	121.2233	CN	Asia/Shanghai
+1963264	Accra	5.5560	-0.1969	GH	Africa/Accra
+1948626	Curitiba	-25.4278	-49.2731	BR	America/Sao_Paulo
+1937451	Sanaa	15.3545	44.2065	YE	Asia/Aden
+1928389	Conakry	9.5380	-13.6773	GN	Africa/Conakry
+1927815	Tangerang	-6.1781	106.6300	ID	Asia/Jakarta
+1922523	Tijuana	32.5027	-117.0037	MX	America/Tijuana
+1921275	Hyderabad	25.3969	68.3772	PK	Asia/Karachi
+1916100	Beirut	33.8933	35.5016	LB	Asia/Beirut
+1899394	Jieyang	23.5418	116.3658	CN	Asia/Shanghai
+1895865	Jilin	43.8465	126.5608	CN	Asia/Shanghai
+1886100	Jiading	31.3858	121.2446	CN	Asia/Shanghai
+1877155	Bucharest	44.4323	26.1063	RO	Europe/Bucharest
+1867579	Kakamega	0.2842	34.7523	KE	Africa/Nairobi
+1859723	Shangqiu	34.4143	115.6561	CN	Asia/Shanghai
+1858875	Nanchong	30.7951	106.0847	CN	Asia/Shanghai
+1856642	Tainan	22.9926	120.2051	TW	Asia/Taipei
+1850000	Kaduna	10.5264	7.4388	NG	Africa/Lagos
+1848947	Davao	7.0731	125.6128	PH	Asia/Manila
+1841488	Thane	19.1970	72.9635	IN	Asia/Kolkata
+1833684	Diyarbakir	37.9136	40.2172	TR	Europe/Istanbul
+1831434	Santa Cruz de la Sierra	-17.7863	-63.1812	BO	America/La_Paz
+1822221	Vadodara	22.2994	73.2081	IN	Asia/Kolkata
+1816750	Adana	36.9862	35.3253	TR	Europe/Istanbul
+1811812	Nanyang	33.0052	112.5466	CN	Asia/Shanghai
+1807000	Abu Dhabi	24.4512	54.3970	AE	Asia/Dubai
+1801367	Palembang	-2.9167	104.7458	ID	Asia/Jakarta
+1800000	Sharjah	25.3342	55.4122	AE	Asia/Dubai
+1798218	Bhopal	23.2547	77.4029	IN	Asia/Kolkata
+1795459	Jiangmen	22.5833	113.0833	CN	Asia/Shanghai
+1782000	Benin City	6.3381	5.6258	NG	Africa/Lagos
+1779515	Jiangyin	31.9110	120.2630	CN	Asia/Shanghai
+1768947	Fuyang	32.9000	115.8167	CN	Asia/Shanghai
+1762949	Montreal	45.5088	-73.5878	CA	America/Toronto
+1760000	Bayan Nur	40.7414	107.3860	CN	Asia/Shanghai
+1756300	Chengtangcun	35.0836	117.1907	CN	Asia/Shanghai
+1752602	Maracaibo	10.6423	-71.6109	VE	America/Caracas
+1750945	Chaozhou	23.6540	116.6226	CN	Asia/Shanghai
+1742124	Minsk	53.9002	27.5665	BY	Europe/Minsk
+1741041	Budapest	47.4984	19.0404	HU	Europe/Budapest
+1738424	Qingyuan	23.7000	113.0333	CN	Asia/Shanghai
+1735425	Tai'an	36.1853	117.1200	CN	Asia/Shanghai
+1728128	Rasapudipalem	17.7331	83.3162	IN	Asia/Kolkata
+1702139	Warsaw	52.2298	21.0118	PL	Europe/Warsaw
+1695047	Soweto	-26.2678	27.8585	ZA	Africa/Johannesburg
+1694740	Semarang	-6.9931	110.4208	ID	Asia/Jakarta
+1692181	Puebla	19.0478	-98.2072	MX	America/Mexico_City
+1691468	Vienna	48.2085	16.3721	AT	Europe/Vienna
+1686208	Barcelona	41.3888	2.1590	ES	Europe/Madrid
+1684297	Patna	25.5941	85.1356	IN	Asia/Kolkata
+1683000	Mosul	36.3350	43.1189	IQ	Asia/Baghdad
+1682687	Kallakurichi	11.7338	78.9592	IN	Asia/Kolkata
+1680600	Kampala	0.3163	32.5822	UG	Africa/Kampala
+1677050	Changshu	31.6461	120.7422	CN	Asia/Shanghai
+1655753	Rabat	34.0132	-6.8326	MA	Africa/Casablanca
+1653461	Recife	-8.0539	-34.8811	BR	America/Recife
+1650070	Phoenix	33.4484	-112.0740	US	America/Phoenix
+1647642	Suzhou	33.6361	116.9789	CN	Asia/Shanghai
+1645352	Ecatepec de Morelos	19.6001	-99.0486	MX	America/Mexico_City
+1644344	Lu'an	31.7356	116.5169	CN	Asia/Shanghai
+1619470	Valencia	10.1615	-68.0004	VE	America/Caracas
+1618879	Ludhiana	30.9120	75.8538	IN	Asia/Kolkata
+1615717	Yancheng	33.3575	120.1573	CN	Asia/Shanghai
+1612833	Novosibirsk	55.0226	82.9317	RU	Asia/Novosibirsk
+1612700	Erbil	36.1912	44.0094	IQ	Asia/Baghdad
+1612392	Fukuoka	33.6000	130.4167	JP	Asia/Tokyo
+1607108	Taizhou	32.4907	119.9081	CN	Asia/Shanghai
+1604027	Daqing	46.5833	125.0000	CN	Asia/Shanghai
+1602144	Kisangani	0.5153	25.1910	CD	Africa/Lubumbashi
+1598165	Wuhu	31.3526	118.4295	CN	Asia/Shanghai
+1594212	Santiago de Queretaro	20.5881	-100.3881	MX	America/Mexico_City
+1589435	Dazhou	31.2106	107.4631	CN	Asia/Shanghai
+1579803	Leon de los Aldama	21.1218	-101.6825	MX	America/Mexico_City
+1578722	Makkah	21.4266	39.8256	SA	Asia/Riyadh
+1573916	Philadelphia	39.9524	-75.1636	US	America/New_York
+1573544	Phnom Penh	11.5625	104.9160	KH	Asia/Phnom_Penh
+1572300	Guilin	25.2802	110.2964	CN	Asia/Shanghai
+1569394	Damascus	33.5102	36.2913	SY	Asia/Damascus
+1565546	Quetta	30.1841	67.0014	PK	Asia/Karachi
+1553109	Zhaoqing	23.0489	112.4609	CN	Asia/Shanghai
+1553000	Onitsha	6.1498	6.7857	NG	Africa/Lagos
+1550000	Mianyang	31.4678	104.6817	CN	Asia/Shanghai
+1547200	Auckland	-36.8485	174.7635	NZ	Pacific/Auckland
+1547164	Isfahan	32.6525	51.6746	IR	Asia/Tehran
+1545900	Wanzhou	30.7645	108.3959	CN	Asia/Shanghai
+1544142	Astana	51.1801	71.4460	KZ	Asia/Almaty
+1542813	Harare	-17.8277	31.0534	ZW	Africa/Harare
+1542549	Monrovia	6.3005	-10.7969	LR	Africa/Monrovia
+1539389	Putian	25.4394	119.0103	CN	Asia/Shanghai
+1536097	Goiania	-16.6786	-49.2539	BR	America/Sao_Paulo
+1526656	San Antonio	29.4241	-98.4936	US	America/Chicago
+1525152	Kobe	34.6913	135.1830	JP	Asia/Tokyo
+1524362	Jinzhou	41.1078	121.1417	CN	Asia/Shanghai
+1515017	Stockholm	59.3294	18.0687	SE	Europe/Stockholm
+1512450	Ciudad Juarez	31.7202	-106.4608	MX	America/Ciudad_Juarez
+1507187	Can Tho	10.0371	105.7883	VN	Asia/Ho_Chi_Minh
+1505005	Munich	48.1374	11.5755	DE	Europe/Berlin
+1500689	Khulna	22.8098	89.5644	BD	Asia/Dhaka
+1499641	Belem	-1.4558	-48.5044	BR	America/Belem
+1495066	Yekaterinburg	56.8573	60.6153	RU	Asia/Yekaterinburg
+1488252	Porto Alegre	-30.0328	-51.2302	BR	America/Sao_Paulo
+1486053	Nashik	19.9973	73.7910	IN	Asia/Kolkata
+1485502	Taizhou	28.6627	121.4331	CN	Asia/Shanghai
+1482200	Asuncion	-25.2865	-57.6470	PY	America/Asuncion
+1481384	Yiwu	29.3151	120.0768	CN	Asia/Shanghai
+1476491	Zapopan	20.7211	-103.3874	MX	America/Mexico_City
+1474393	Makassar	-5.1486	119.4319	ID	Asia/Makassar
+1469163	Adelaide	-34.9287	138.5986	AU	Australia/Adelaide
+1469157	Quanzhou	24.9139	118.5858	CN	Asia/Shanghai
+1465625	Madurai	9.9190	78.1195	IN	Asia/Kolkata
+1463990	Jinhua	29.1068	119.6442	CN	Asia/Shanghai
+1463723	Kyoto	35.0211	135.7538	JP	Asia/Tokyo
+1457510	Cixi	30.1764	121.2457	CN	Asia/Shanghai
+1457419	Changde	29.0321	111.6984	CN	Asia/Shanghai
+1453975	Kuala Lumpur	3.1412	101.6865	MY	Asia/Kuala_Lumpur
+1452458	Kayseri	38.7322	35.4853	TR	Europe/Istanbul
+1451741	Kaifeng	34.7986	114.3074	CN	Asia/Shanghai
+1448075	Karaj	35.8327	50.9915	IR	Asia/Tehran
+1442271	Kathmandu	27.7017	85.3206	NP	Asia/Kathmandu
+1441203	Daejeon	36.3502	127.3848	KR	Asia/Seoul
+1437802	Baoji	34.3678	107.2370	CN	Asia/Shanghai
+1437685	Suqian	33.9492	118.2958	CN	Asia/Shanghai
+1436599	Liuzhou	24.3240	109.4070	CN	Asia/Shanghai
+1435844	Tirunelveli	8.7274	77.6838	IN	Asia/Kolkata
+1433861	Konya	37.8713	32.4846	TR	Europe/Istanbul
+1432044	Zhangjiagang	31.8650	120.5389	CN	Asia/Shanghai
+1430055	Agra	27.1833	78.0167	IN	Asia/Kolkata
+1429529	South Tangerang	-6.2886	106.7179	ID	Asia/Jakarta
+1424641	Tabriz	38.0800	46.2919	IR	Asia/Tehran
+1421125	Kharkiv	49.9818	36.2548	UA	Europe/Kyiv
+1416800	Xinyang	32.1228	114.0656	CN	Asia/Shanghai
+1414050	Faridabad	28.4112	77.3132	IN	Asia/Kolkata
+1409436	Bozhou	33.8772	115.7703	CN	Asia/Shanghai
+1408500	Qujing	25.4833	103.7833	CN	Asia/Shanghai
+1404452	San Diego	32.7157	-117.1647	US	America/Los_Angeles
+1401235	Gwangju	35.1547	126.9156	KR	Asia/Seoul
+1400709	Zhanjiang	21.2339	110.3875	CN	Asia/Shanghai
+1400646	Fushun	41.8867	123.9436	CN	Asia/Shanghai
+1390640	Rajkot	22.2916	70.7932	IN	Asia/Kolkata
+1390581	Luoyang	34.6735	112.4368	CN	Asia/Shanghai
+1385108	The Bronx	40.8499	-73.8664	US	America/New_York
+1380000	Guankou	28.1586	113.6271	CN	Asia/Shanghai
+1380000	Hue	16.4619	107.5955	VN	Asia/Bangkok
+1371498	Milan	45.4643	9.1895	IT	Europe/Rome
+1365000	Najafgarh	28.6092	76.9798	IN	Asia/Kolkata
+1363470	Lianjiang	21.6467	110.2817	CN	Asia/Shanghai
+1359526	N'Djamena	12.1067	15.0444	TD	Africa/Ndjamena
+1358318	Handan	36.6100	114.4876	CN	Asia/Shanghai
+1357890	Bannu	32.9853	70.6040	PK	Asia/Karachi
+1350150	Yichang	30.7144	111.2847	CN	Asia/Shanghai
+1349501	Antananarivo	-18.9137	47.5361	MG	Indian/Antananarivo
+1346717	Heze	35.2393	115.4736	CN	Asia/Shanghai
+1339438	Jamshedpur	22.8028	86.1855	IN	Asia/Kolkata
+1338082	Douala	4.0483	9.7043	CM	Africa/Douala
+1335002	Antalya	36.9081	30.6956	TR	Europe/Istanbul
+1326564	Basrah	30.5085	47.7804	IQ	Asia/Baghdad
+1326087	Dallas	32.7831	-96.8067	US	America/Chicago
+1324854	Saitama	35.9081	139.6566	JP	Asia/Tokyo
+1323691	Niamey	13.5137	2.1098	NE	Africa/Niamey
+1320825	Liupanshui	26.5944	104.8333	CN	Asia/Shanghai
+1307802	Maoming	21.6663	110.9136	CN	Asia/Shanghai
+1306784	Calgary	51.0501	-114.0853	CA	America/Edmonton
+1302947	Tripoli	32.8874	13.1873	LY	Africa/Tripoli
+1300000	Madinah	24.4686	39.6142	SA	Asia/Riyadh
+1299369	Yaounde	3.8667	11.5167	CM	Africa/Douala
+1296960	Batam	1.1494	104.0249	ID	Asia/Jakarta
+1296300	Qinzhou	21.9825	108.6506	CN	Asia/Shanghai
+1294974	Luohe	33.5742	114.0326	CN	Asia/Shanghai
+1294733	Xiangyang	32.0422	112.1448	CN	Asia/Shanghai
+1292987	Yangjiang	21.8556	111.9627	CN	Asia/Shanghai
+1285785	Yixing	31.3606	119.8202	CN	Asia/Shanghai
+1276000	Da Nang	16.0678	108.2208	VN	Asia/Ho_Chi_Minh
+1275857	Amman	31.9552	35.9450	JO	Asia/Amman
+1273715	Budta	7.2042	124.4397	PH	Asia/Manila
+1273651	Belgrade	44.8040	20.4651	RS	Europe/Belgrade
+1272235	Bien Hoa	10.9447	106.8243	VN	Asia/Ho_Chi_Minh
+1271704	Kananga	-5.8962	22.4166	CD	Africa/Lubumbashi
+1271424	Qingpu	31.1539	121.1141	CN	Asia/Shanghai
+1270737	Montevideo	-34.9033	-56.1882	UY	America/Montevideo
+1265536	Xuchang	34.0319	113.8630	CN	Asia/Shanghai
+1262255	Kalyan	19.2437	73.1355	IN	Asia/Kolkata
+1262064	Zigong	29.3416	104.7769	CN	Asia/Shanghai
+1259013	Nizhniy Novgorod	56.3287	44.0020	RU	Europe/Moscow
+1257912	Jepara	-6.5924	110.6710	ID	Asia/Jakarta
+1254837	Maputo	-25.9655	32.5832	MZ	Africa/Maputo
+1253991	Xuzhou	34.2044	117.2839	CN	Asia/Shanghai
+1252523	Dammam	26.4344	50.1033	SA	Asia/Riyadh
+1251095	Neijiang	29.5835	105.0622	CN	Asia/Shanghai
+1249942	Shiraz	29.6103	52.5311	IR	Asia/Tehran
+1249807	Heshan	28.5694	112.3473	CN	Asia/Shanghai
+1243500	Kazan	55.7887	49.1221	RU	Europe/Moscow
+1241012	Jining	35.4050	116.5814	CN	Asia/Shanghai
+1240714	Barquisimeto	10.0647	-69.3570	VE	America/Caracas
+1234742	Port-au-Prince	18.5435	-72.3388	HT	America/Port-au-Prince
+1234582	Suwon	37.2782	127.0316	KR	Asia/Seoul
+1229768	Liaocheng	36.4506	116.0025	CN	Asia/Shanghai
+1226617	Jinzhong	37.6840	112.7547	CN	Asia/Shanghai
+1223184	Meerut	28.9800	77.7064	IN	Asia/Kolkata
+1222390	Virar	19.4559	72.8114	IN	Asia/Kolkata
+1220946	Nowrangapur	19.2311	82.5483	IN	Asia/Kolkata
+1218732	Karbala	32.6160	44.0249	IQ	Asia/Baghdad
+1214940	Changzhi	36.1839	113.1053	CN	Asia/Shanghai
+1212791	Tianshui	34.5795	105.7424	CN	Asia/Shanghai
+1208333	Mombasa	-4.0547	39.6636	KE	Africa/Nairobi
+1208099	Mandalay	21.9747	96.0836	MM	Asia/Yangon
+1206419	Srinagar	34.0857	74.8055	IN	Asia/Kolkata
+1206319	Barranquilla	10.9685	-74.7813	CO	America/Bogota
+1202371	Chelyabinsk	55.1611	61.4288	RU	Asia/Yekaterinburg
+1201000	Merida	20.9670	-89.6232	MX	America/Merida
+1200754	Hiroshima	34.4000	132.4500	JP	Asia/Tokyo
+1200000	Santiago de los Caballe	19.4504	-70.6908	DO	America/Santo_Domingo
+1200000	Shymkent	42.3099	69.6004	KZ	Asia/Almaty
+1199290	Weinan	34.5035	109.5089	CN	Asia/Shanghai
+1199191	Ghaziabad	28.6654	77.4391	IN	Asia/Kolkata
+1196214	Dhanbad	23.7976	86.4299	IN	Asia/Kolkata
+1195700	Arequipa	-16.3990	-71.5375	PE	America/Lima
+1191905	Fes	34.0331	-5.0003	MA	Africa/Casablanca
+1184530	Nouakchott	18.0858	-15.9785	MR	Africa/Nouakchott
+1180000	Jiaxing	30.7522	120.7500	CN	Asia/Shanghai
+1175116	Aurangabad	19.8776	75.3423	IN	Asia/Kolkata
+1174600	Zhongwei	37.5113	105.1907	CN	Asia/Shanghai
+1172070	Omsk	54.9924	73.3686	RU	Asia/Omsk
+1167599	Pekanbaru	0.5167	101.4417	ID	Asia/Jakarta
+1166481	Panjin	41.1210	122.0739	CN	Asia/Shanghai
+1166066	Bandar Lampung	-5.4292	105.2611	ID	Asia/Jakarta
+1165581	Prague	50.0880	14.4208	CZ	Europe/Prague
+1164404	Varanasi	25.3167	83.0104	IN	Asia/Kolkata
+1164268	Jiujiang	29.7048	116.0021	CN	Asia/Shanghai
+1163399	Samara	53.2077	50.1355	RU	Europe/Samara
+1160000	Aba	5.1066	7.3667	NG	Africa/Lagos
+1159227	Amritsar	31.6223	74.8753	IN	Asia/Kolkata
+1157603	Birmingham	52.4814	-1.8998	GB	Europe/London
+1153615	Copenhagen	55.6759	12.5655	DK	Europe/Copenhagen
+1152556	Sofia	42.6975	23.3241	BG	Europe/Sofia
+1146839	Anyang	36.0960	114.3828	CN	Asia/Shanghai
+1144700	Yerevan	40.1776	44.5126	AM	Asia/Yerevan
+1143232	Vijayawada	16.5074	80.6466	IN	Asia/Kolkata
+1140872	Fengxiang	30.8584	121.4678	CN	Asia/Shanghai
+1137383	Bijie	27.3019	105.2863	CN	Asia/Shanghai
+1135512	Monterrey	25.6843	-100.3172	MX	America/Monterrey
+1132686	Kigali	-1.9500	30.0588	RW	Africa/Kigali
+1130305	Rostov-on-Don	47.2200	39.7077	RU	Europe/Moscow
+1129687	Zhuzhou	27.8333	113.1500	CN	Asia/Shanghai
+1125000	Rui'an	27.7761	120.6586	CN	Asia/Shanghai
+1120824	Touba	14.8623	-15.8753	SN	Africa/Dakar
+1120547	Ufa	54.7431	55.9678	RU	Asia/Yekaterinburg
+1120374	Ranchi	23.3432	85.3094	IN	Asia/Kolkata
+1116692	Zoucheng	35.4006	116.9656	CN	Asia/Shanghai
+1116486	Shangrao	28.4518	117.9429	CN	Asia/Shanghai
+1115815	Lilongwe	-13.9669	33.7873	MW	Africa/Blantyre
+1113321	Huaibei	33.9744	116.7917	CN	Asia/Shanghai
+1110000	Maiduguri	11.8469	13.1571	NG	Africa/Lagos
+1107742	Meishan	30.0439	103.8370	CN	Asia/Shanghai
+1104521	Mwanza	-2.5167	32.9000	TZ	Africa/Dar_es_Salaam
+1098421	Ulsan	35.5392	129.3124	KR	Asia/Seoul
+1096704	Sendai	38.2667	140.8667	JP	Asia/Tokyo
+1090811	Krasnoyarsk	56.0374	92.9314	RU	Asia/Krasnoyarsk
+1089888	Fuzhou	27.9600	116.3333	CN	Asia/Shanghai
+1086327	Guigang	23.1160	109.5947	CN	Asia/Shanghai
+1082575	Oslo	59.9127	10.7461	NO	Europe/Oslo
+1081677	Jabalpur	23.1670	79.9501	IN	Asia/Kolkata
+1080000	Ilorin	8.4966	4.5421	NG	Africa/Lagos
+1079670	Aden	12.7796	45.0385	YE	Asia/Aden
+1078351	Bogor	-6.5944	106.7892	ID	Asia/Jakarta
+1075516	Hengyang	26.8895	112.6189	CN	Asia/Shanghai
+1073438	Prayagraj	25.4448	81.8432	IN	Asia/Kolkata
+1067700	Trujillo	-8.1160	-79.0300	PE	America/Lima
+1061752	Goyang-si	37.6564	126.8350	KR	Asia/Seoul
+1056743	Yulin	22.6305	110.1469	CN	Asia/Shanghai
+1056191	Jodhpur	26.2684	73.0059	IN	Asia/Kolkata
+1054420	Gwalior	26.2298	78.1734	IN	Asia/Kolkata
+1052282	Jingzhou	30.3503	112.1903	CN	Asia/Shanghai
+1050078	Gqeberha	-33.9611	25.6149	ZA	Africa/Johannesburg
+1049498	Tbilisi	41.6914	44.8341	GE	Asia/Tbilisi
+1047549	Voronezh	51.6683	39.1920	RU	Europe/Moscow
+1047088	Xinxiang	35.1903	113.8015	CN	Asia/Shanghai
+1045952	Yichun	27.8333	114.4000	CN	Asia/Shanghai
+1040000	Jos	9.9285	8.8921	NG	Africa/Lagos
+1040000	Sokoto	13.0627	5.2432	NG	Africa/Lagos
+1035141	Tangier	35.7673	-5.7998	MA	Africa/Casablanca
+1034081	Xianyang	34.3378	108.7026	CN	Asia/Shanghai
+1032686	Mexicali	32.6278	-115.4545	MX	America/Tijuana
+1032000	Pointe-Noire	-4.7761	11.8635	CG	Africa/Brazzaville
+1031597	Maceio	-9.6658	-35.7353	BR	America/Maceio
+1031554	Campinas	-22.9056	-47.0608	BR	America/Sao_Paulo
+1031396	Sanya	18.2543	109.5095	CN	Asia/Shanghai
+1031388	Rangpur	25.7466	89.2517	BD	Asia/Dhaka
+1031000	Kirkuk	35.4681	44.3922	IQ	Asia/Baghdad
+1030063	Ashgabat	37.9500	58.3833	TM	Asia/Ashgabat
+1028460	Shaoguan	24.8000	113.5833	CN	Asia/Shanghai
+1027264	Raipur	21.2333	81.6333	IN	Asia/Kolkata
+1025702	Changwon	35.2281	128.6811	KR	Asia/Seoul
+1025087	Longyan	25.0749	117.0178	CN	Asia/Shanghai
+1024621	Koeln	50.9333	6.9500	DE	Europe/Berlin
+1024027	Dublin	53.3331	-6.2489	IE	Europe/Dublin
+1022518	Tiruchirappalli	10.8155	78.6965	IN	Asia/Kolkata
+1020715	Yongzhou	26.4239	111.6131	CN	Asia/Shanghai
+1019022	Brussels	50.8505	4.3488	BE	Europe/Brussels
+1018849	Zamboanga	6.9103	122.0739	PH	Asia/Manila
+1017449	Ottawa	45.4112	-75.6981	CA	America/Toronto
+1015937	Huzhou	30.8703	120.0933	CN	Asia/Shanghai
+1014577	Xinyi	22.3730	110.9475	CN	Asia/Shanghai
+1013533	Volgograd	48.7138	44.4976	RU	Europe/Volgograd
+1010899	Edmonton	53.5501	-113.4687	CA	America/Edmonton
+1010537	Odesa	46.4857	30.7438	UA	Europe/Kyiv
+1010295	Wuwei	37.9267	102.6320	CN	Asia/Shanghai
+1009833	Jacksonville	30.3322	-81.6556	US	America/New_York
+1008106	Fort Worth	32.7254	-97.3208	US	America/Chicago
+1007100	Yishui	35.7847	118.6281	CN	Asia/Shanghai
+1006557	Hanzhong	33.0751	107.0221	CN	Asia/Shanghai
+1005490	Hezhou	24.4036	111.5667	CN	Asia/Shanghai
+1001694	Kota	25.1825	75.8391	IN	Asia/Kolkata
+1000000	Zhu Cheng City	35.9950	119.4026	CN	Asia/Shanghai
+998968	Dongying	37.4627	118.4917	CN	Asia/Shanghai
+998900	Luzhou	28.8903	105.4257	CN	Asia/Shanghai
+997368	San Jose	37.3394	-121.8950	US	America/Los_Angeles
+997281	Sholapur	17.6715	75.9104	IN	Asia/Kolkata
+995871	Marrakesh	31.6342	-7.9999	MA	Africa/Casablanca
+994938	Guatemala City	14.6407	-90.5133	GT	America/Guatemala
+992351	Meizhou	24.2886	116.1177	CN	Asia/Shanghai
+991465	Yueyang	29.3745	113.0948	CN	Asia/Shanghai
+989535	Laiwu	36.1928	117.6569	CN	Asia/Shanghai
+983571	Esenyurt	41.0270	28.6773	TR	Europe/Istanbul
+982419	Perm	58.0105	56.2502	RU	Asia/Yekaterinburg
+980000	Zaria	11.1113	7.7227	NG	Africa/Lagos
+979768	Chiba	35.6000	140.1167	JP	Asia/Tokyo
+979130	Pingdingshan	33.7309	113.3155	CN	Asia/Shanghai
+978202	Ciudad Guayana	8.3512	-62.6410	VE	America/Caracas
+975886	Sargodha	32.0859	72.6742	PK	Asia/Karachi
+974447	Austin	30.2672	-97.7431	US	America/Chicago
+973087	Managua	12.1328	-86.2504	NI	America/Managua
+972784	Bengbu	32.9408	117.3608	CN	Asia/Shanghai
+971800	Jerusalem	31.7690	35.2163	IL	Asia/Jerusalem
+970602	Chandigarh	30.7363	76.7884	IN	Asia/Kolkata
+968502	Dnipro	48.4666	35.0407	UA	Europe/Kyiv
+968100	Feicheng	36.2486	116.7658	CN	Asia/Shanghai
+965332	Cebu City	10.3167	123.8907	PH	Asia/Manila
+965075	Sanhe	39.9805	117.0689	CN	Asia/Shanghai
+964203	Guli	28.8816	120.0331	CN	Asia/Shanghai
+963173	Tiruppur	11.1154	77.3546	IN	Asia/Kolkata
+962334	Guwahati	26.1844	91.7458	IN	Asia/Kolkata
+959303	Xiangtan	27.8500	112.9000	CN	Asia/Shanghai
+959198	Linfen	36.0889	111.5189	CN	Asia/Shanghai
+950516	Zhenjiang	32.2109	119.4551	CN	Asia/Shanghai
+950000	Enugu	6.4413	7.4988	NG	Africa/Lagos
+948312	Rosario	-32.9468	-60.6393	AR	America/Argentina/Cordoba
+944495	Huludao	40.7524	120.8355	CN	Asia/Shanghai
+943788	Hubballi	15.3478	75.1338	IN	Asia/Kolkata
+942938	Padang	-0.9492	100.3543	ID	Asia/Jakarta
+940978	Kitakyushu	33.8518	130.8503	JP	Asia/Tokyo
+940600	Taiz	13.5795	44.0209	YE	Asia/Aden
+937700	Kingston	17.9970	-76.7936	JM	America/Jamaica
+935618	Baoshan	25.1163	99.1637	CN	Asia/Shanghai
+925762	Chihuahua	28.6353	-106.0889	MX	America/Chihuahua
+925000	Nay Pyi Taw	19.7450	96.1297	MM	Asia/Yangon
+921630	Eskisehir	39.7767	30.5206	TR	Europe/Istanbul
+920550	Mysuru	12.2979	76.6393	IN	Asia/Kolkata
+920395	Chengde	40.9519	117.9588	CN	Asia/Shanghai
+917414	Salem	11.6538	78.1554	IN	Asia/Kolkata
+917237	Sao Luis	-2.5297	-44.3028	BR	America/Fortaleza
+914832	Seongnam-si	37.4386	127.1378	KR	Asia/Seoul
+914552	Cartagena	10.3982	-75.4933	CO	America/Bogota
+913175	Columbus	39.9612	-82.9988	US	America/New_York
+911817	Sialkot	32.4927	74.5313	PK	Asia/Karachi
+911311	Charlotte	35.2271	-80.8431	US	America/New_York
+910282	Laibin	23.7474	109.2222	CN	Asia/Shanghai
+910000	Warri	5.5174	5.7501	NG	Africa/Lagos
+909048	Naples	40.8522	14.2681	IT	Europe/Rome
+908266	Xiaogan	30.9269	113.9222	CN	Asia/Shanghai
+907354	Wuchuan	21.4571	110.7659	CN	Asia/Shanghai
+906092	Campo Grande	-20.4428	-54.6464	BR	America/Campo_Grande
+905729	Ziyang	30.1211	104.6481	CN	Asia/Shanghai
+904920	Bobo-Dioulasso	11.1806	-4.2949	BF	Africa/Ouagadougou
+903795	Bahawalpur	29.3978	71.6752	PK	Asia/Karachi
+902767	Quzhou	28.9594	118.8686	CN	Asia/Shanghai
+902588	Blantyre	-15.7850	35.0085	MW	Africa/Blantyre
+901645	Donetsk	48.0230	37.8022	UA	Europe/Kyiv
+900000	Abu Ghurayb	33.3056	44.1848	IQ	Asia/Baghdad
+900000	Bishkek	42.8700	74.5900	KG	Asia/Bishkek
+900000	Qom	34.6401	50.8764	IR	Asia/Tehran
+899541	Krasnodar	45.0453	38.9818	RU	Europe/Moscow
+896708	Natal	-5.7950	-35.2094	BR	America/Fortaleza
+893550	Pingxiang	27.6167	113.8535	CN	Asia/Shanghai
+889359	Malang	-7.9797	112.6304	ID	Asia/Jakarta
+888797	Cancun	21.1743	-86.8466	MX	America/Cancun
+887642	Indianapolis	39.7684	-86.1580	US	America/Indiana/Indianapolis
+886519	Gurugram	28.4601	77.0263	IN	Asia/Kolkata
+885363	Bhubaneswar	20.2724	85.8338	IN	Asia/Kolkata
+882932	Zhoushan	29.9887	122.2049	CN	Asia/Shanghai
+882364	Qiqihar	47.3392	123.9615	CN	Asia/Shanghai
+878146	Sulaymaniyah	35.5650	45.4329	IQ	Asia/Baghdad
+877215	Marseille	43.2970	5.3811	FR	Europe/Paris
+872309	Soshanguve	-25.4729	28.0992	ZA	Africa/Johannesburg
+872000	Laiyang	36.9758	120.7136	CN	Asia/Shanghai
+871214	Daye	30.0833	114.9500	CN	Asia/Shanghai
+871126	Teresina	-5.0892	-42.8019	BR	America/Fortaleza
+870126	Ankang	32.6800	109.0172	CN	Asia/Shanghai
+868929	Jalandhar	31.3256	75.5792	IN	Asia/Kolkata
+868135	Rotterdam	51.9225	4.4792	NL	Europe/Amsterdam
+868066	Langfang	39.5208	116.7147	CN	Asia/Shanghai
+867900	Lhasa	29.6500	91.1000	CN	Asia/Shanghai
+866347	Duque de Caxias	-22.7856	-43.3117	BR	America/Sao_Paulo
+865863	Viana	-8.9055	13.3750	AO	Africa/Luanda
+865413	Jiaozuo	35.2392	113.2391	CN	Asia/Shanghai
+865306	Samarinda	-0.4917	117.1458	ID	Asia/Makassar
+865215	Benxi	41.2886	123.7650	CN	Asia/Shanghai
+858159	Guang'an	30.4741	106.6370	CN	Asia/Shanghai
+858118	Johor Bahru	1.4655	103.7578	MY	Asia/Kuala_Lumpur
+854462	Arifwala	30.2906	73.0657	PK	Asia/Karachi
+852147	Cheongju-si	36.6372	127.4897	KR	Asia/Seoul
+851406	Kanayannur	9.9667	76.2667	IN	Asia/Kolkata
+850848	Tegucigalpa	14.0818	-87.2068	HN	America/Tegucigalpa
+850000	Thanh Hoa	19.8000	105.7667	VN	Asia/Bangkok
+847287	Turin	45.0705	7.6868	IT	Europe/Rome
+846747	Al Ain City	24.1917	55.7606	AE	Asia/Dubai
+846090	Libreville	0.3924	9.4536	GA	Africa/Libreville
+844858	Saratov	51.5405	45.9901	RU	Europe/Saratov
+844818	Ulan Bator	47.9077	106.8832	MN	Asia/Ulaanbaatar
+844310	Weihai	37.5091	122.1136	CN	Asia/Shanghai
+843931	Takeo	10.9908	104.7850	KH	Asia/Phnom_Penh
+841276	Cochabamba	-17.3819	-66.1599	BO	America/La_Paz
+841145	Ahvaz	31.3190	48.6842	IR	Asia/Tehran
+840940	Vientiane	17.9667	102.6000	LA	Asia/Vientiane
+840499	Sao Bernardo do Campo	-23.6939	-46.5650	BR	America/Sao_Paulo
+839747	Shangyu	30.0156	120.8711	CN	Asia/Shanghai
+839488	Xinyu	27.8043	114.9334	CN	Asia/Shanghai
+839327	Pietermaritzburg	-29.6168	30.3928	ZA	Africa/Johannesburg
+836340	Yibin	28.7593	104.6399	CN	Asia/Shanghai
+833571	Kampung Baru Subang	3.1500	101.5333	MY	Asia/Kuala_Lumpur
+832371	Bouake	7.6939	-5.0303	CI	Africa/Abidjan
+831113	Taicang	31.4478	121.0939	CN	Asia/Shanghai
+827526	San Francisco	37.7749	-122.4194	US	America/Los_Angeles
+824340	Valencia	39.4739	-0.3797	ES	Europe/Madrid
+822776	Jinshan	30.8356	121.2937	CN	Asia/Shanghai
+822534	Chenzhou	25.8000	113.0333	CN	Asia/Shanghai
+817511	Joao Pessoa	-7.1150	-34.8631	BR	America/Fortaleza
+816811	Bukavu	-2.4908	28.8428	CD	Africa/Lubumbashi
+816614	Krakow	50.0614	19.9366	PL	Europe/Warsaw
+815858	Dandong	40.1292	124.3947	CN	Asia/Shanghai
+815141	Barcelona	10.1384	-64.6877	VE	America/Caracas
+812407	Bangui	4.3612	18.5550	CF	Africa/Bangui
+812229	Hermosillo	29.0887	-110.9668	MX	America/Hermosillo
+809378	Bhayandar	19.3016	72.8511	IN	Asia/Kolkata
+808416	Culiacan	24.8021	-107.3942	MX	America/Mazatlan
+804493	Anqing	30.5136	117.0472	CN	Asia/Shanghai
+803329	Oran	35.6991	-0.6359	DZ	Africa/Algiers
+802639	Freetown	8.4871	-13.2356	SL	Africa/Freetown
+801259	San Pedro Sula	15.5059	-88.0259	HN	America/Tegucigalpa
+800000	Narela	28.8527	77.0929	IN	Asia/Kolkata
+798770	Xingtai	37.0622	114.4927	CN	Asia/Shanghai
+797591	Niigata	37.9226	139.0412	JP	Asia/Tokyo
+797000	Muscat	23.5841	58.4078	OM	Asia/Muscat
+792665	Zarqa	32.0727	36.0880	JO	Asia/Amman
+791707	Hamamatsu	34.7000	137.7333	JP	Asia/Tokyo
+790248	Kolwezi	-10.7148	25.4667	CD	Africa/Lubumbashi
+790000	Vinh	18.6734	105.6923	VN	Asia/Bangkok
+788271	Thiruvananthapuram	8.4855	76.9492	IN	Asia/Kolkata
+787845	Zhaotong	27.3167	103.7167	CN	Asia/Shanghai
+787177	Panzhihua	26.5851	101.7128	CN	Asia/Shanghai
+782671	Chuzhou	32.3219	118.2978	CN	Asia/Shanghai
+780995	Seattle	47.6062	-122.3321	US	America/Los_Angeles
+780515	Port Said	31.2653	32.3019	EG	Africa/Cairo
+777106	Cucuta	7.9074	-72.5049	CO	America/Bogota
+775404	Homs	34.7240	36.7256	SY	Asia/Damascus
+774332	Xuancheng	30.9525	118.7553	CN	Asia/Shanghai
+771514	Ibb	13.9667	44.1833	YE	Asia/Aden
+770839	Tasikmalaya	-7.3274	108.2207	ID	Asia/Jakarta
+770379	Nampula	-15.1165	39.2666	MZ	Africa/Maputo
+769317	Bujumbura	-3.3819	29.3614	BI	Africa/Bujumbura
+768358	Tyumen	57.1522	65.5272	RU	Asia/Yekaterinburg
+767848	Erzurum	39.9086	41.2769	TR	Europe/Istanbul
+765313	Anshun	26.2500	105.9333	CN	Asia/Shanghai
+765179	Dodoma	-6.1722	35.7395	TZ	Africa/Dar_es_Salaam
+763580	Rajshahi	24.3740	88.6011	BD	Asia/Dhaka
+763195	Dera Ismail Khan	31.8313	70.9017	PK	Asia/Karachi
+762172	Sorocaba	-23.5017	-47.4581	BR	America/Sao_Paulo
+761948	Wuzhou	23.4805	111.2885	CN	Asia/Shanghai
+759952	Ipoh	4.5841	101.0829	MY	Asia/Kuala_Lumpur
+759718	Qinhuangdao	39.9410	119.5894	CN	Asia/Shanghai
+757490	Benghazi	32.1149	20.0686	LY	Africa/Tripoli
+754954	Uberlandia	-18.9186	-48.2772	BR	America/Sao_Paulo
+753207	Aligarh	27.8815	78.0746	IN	Asia/Kolkata
+753194	Shaoyang	27.2382	111.4621	CN	Asia/Shanghai
+750491	Malatya	38.3502	38.3167	TR	Europe/Istanbul
+749607	Winnipeg	49.8844	-97.1470	CA	America/Winnipeg
+747800	Andijon	40.7834	72.3507	UZ	Asia/Tashkent
+745435	Bareilly	28.3668	79.4317	IN	Asia/Kolkata
+745353	Buraydah	26.3260	43.9750	SA	Asia/Riyadh
+743307	Hegang	47.3473	130.2903	CN	Asia/Shanghai
+743275	Morelia	19.7008	-101.1844	MX	America/Mexico_City
+742572	Riga	56.9460	24.1059	LV	Europe/Riga
+742496	Zhuanghe	39.7008	122.9911	CN	Asia/Shanghai
+741636	Amsterdam	52.3740	4.8897	NL	Europe/Amsterdam
+741617	Cagayan de Oro	8.4822	124.6472	PH	Asia/Manila
+741531	Ma'anshan	31.6858	118.5101	CN	Asia/Shanghai
+739400	Shizuishan	38.9808	106.3892	CN	Asia/Shanghai
+738907	Kumamoto	32.8059	130.6918	JP	Asia/Tokyo
+736072	Oyo	7.8537	3.9324	NG	Africa/Lagos
+735651	Serang	-6.1153	106.1542	ID	Asia/Jakarta
+735340	Torreon	25.5439	-103.4190	MX	America/Monterrey
+735070	Deyang	31.1302	104.3820	CN	Asia/Shanghai
+735000	Abeokuta	7.1557	3.3451	NG	Africa/Lagos
+734699	Al Hudaydah	14.7978	42.9545	YE	Asia/Aden
+731228	Yangquan	37.8575	113.5633	CN	Asia/Shanghai
+730000	Akure	7.2526	5.1931	NG	Africa/Lagos
+729019	Denver	39.7392	-104.9847	US	America/Denver
+728615	Osasco	-23.5325	-46.7917	BR	America/Sao_Paulo
+727078	Sao Jose dos Campos	-23.1794	-45.8869	BR	America/Sao_Paulo
+725493	Aihara	35.6000	139.3167	JP	Asia/Tokyo
+725468	Evaton	-26.5333	27.8500	ZA	Africa/Johannesburg
+725000	Muzaffarabad	34.3700	73.4708	PK	Asia/Karachi
+724691	Okayama	34.6500	133.9333	JP	Asia/Tokyo
+722772	San Luis Potosi	22.1523	-100.9714	MX	America/Monterrey
+722250	Aguascalientes	21.8826	-102.2843	MX	America/Mexico_City
+722059	General Santos	6.1128	125.1717	PH	Asia/Manila
+721670	Zhumadian	32.9838	114.0259	CN	Asia/Shanghai
+721139	Moradabad	28.8389	78.7768	IN	Asia/Kolkata
+717961	Mississauga	43.5789	-79.6583	CA	America/Toronto
+717273	Lviv	49.8383	24.0232	UA	Europe/Kyiv
+713220	Namangan	40.9983	71.6726	UZ	Asia/Tashkent
+710052	Zaporizhzhya	47.8517	35.1171	UA	Europe/Kyiv
+709809	Zanzibar	-6.1639	39.1979	TZ	Africa/Dar_es_Salaam
+709671	Saltillo	25.4260	-100.9796	MX	America/Monterrey
+709000	Latakia	35.5312	35.7909	SY	Asia/Damascus
+704570	Warangal	18.0000	79.5833	IN	Asia/Kolkata
+703245	Paranaque City	14.4816	121.0175	PH	Asia/Manila
+702879	Tolyatti	53.5303	49.3461	RU	Europe/Samara
+700000	Battagram	34.6772	73.0233	PK	Asia/Karachi
+699541	Suez	29.9737	32.5263	EG	Africa/Cairo
+699514	Changzhi	35.2089	111.7386	CN	Asia/Shanghai
+698642	Ribeirao Preto	-21.1775	-47.8103	BR	America/Sao_Paulo
+698310	Agadir	30.4202	-9.5982	MA	Africa/Casablanca
+696731	Sarajevo	43.8486	18.3564	BA	Europe/Sarajevo
+695287	Balikpapan	-1.2675	116.8289	ID	Asia/Makassar
+693700	Bauchi	10.3103	9.8439	NG	Africa/Lagos
+693389	Shizuoka	34.9833	138.3833	JP	Asia/Tokyo
+693210	Tunis	36.8190	10.1658	TN	Africa/Tunis
+692602	Zhangjiakou	40.7834	114.8714	CN	Asia/Shanghai
+689545	Washington	38.8951	-77.0364	US	America/New_York
+689447	Nashville	36.1659	-86.7844	US	America/Chicago
+689050	Fuxin	42.0156	121.6589	CN	Asia/Shanghai
+688693	Ta'if	21.2703	40.4158	SA	Asia/Riyadh
+688242	Changsha	22.3812	112.6849	CN	Asia/Shanghai
+688090	Huangshi	30.2471	115.0481	CN	Asia/Shanghai
+687890	Liaoyang	41.2719	123.1731	CN	Asia/Shanghai
+687764	Beira	-19.8436	34.8389	MZ	Africa/Maputo
+686986	Zaragoza	41.6561	-0.8773	ES	Europe/Madrid
+686741	Sevilla	37.3828	-5.9732	ES	Europe/Madrid
+686078	Baise	23.8901	106.6268	CN	Asia/Shanghai
+686019	Pontianak	-0.0319	109.3250	ID	Asia/Pontianak
+685967	Situbondo	-7.7062	114.0098	ID	Asia/Jakarta
+683600	Agege	6.6156	3.3334	NG	Africa/Lagos
+682717	Binzhou	37.3667	118.0167	CN	Asia/Shanghai
+681054	Oklahoma City	35.4676	-97.5164	US	America/Chicago
+680036	Yuncheng	35.0231	110.9928	CN	Asia/Shanghai
+679535	Dezhou	37.4466	116.3671	CN	Asia/Shanghai
+679400	Dushanbe	38.5358	68.7790	TJ	Asia/Dushanbe
+679012	Cotonou	6.3654	2.4183	BJ	Africa/Porto-Novo
+674246	Gorakhpur	26.7663	83.3689	IN	Asia/Kolkata
+672545	Wroclaw	51.1029	17.0301	PL	Europe/Warsaw
+670210	Denpasar	-8.6500	115.2167	ID	Asia/Makassar
+670073	Guntur	16.2997	80.4573	IN	Asia/Kolkata
+670000	Katsina	12.9908	7.6018	NG	Africa/Lagos
+669307	Sanmenxia	34.7808	111.1929	CN	Asia/Shanghai
+668727	E'zhou	30.3961	114.8865	CN	Asia/Shanghai
+667000	Tabuk	28.3998	36.5715	SA	Asia/Riyadh
+665961	Kitwe	-12.8024	28.2132	ZM	Africa/Lusaka
+665952	Bulawayo	-20.1500	28.5833	ZW	Africa/Harare
+665915	Mudanjiang	44.5480	129.6259	CN	Asia/Shanghai
+664908	Aracaju	-10.9111	-37.0717	BR	America/Maceio
+664500	Joinville	-26.3044	-48.8456	BR	America/Sao_Paulo
+664046	Athens	37.9838	23.7278	GR	Europe/Athens
+663592	Zagreb	45.8144	15.9780	HR	Europe/Zagreb
+662814	Leshan	29.5623	103.7639	CN	Asia/Shanghai
+662248	Vancouver	49.2497	-123.1193	CA	America/Vancouver
+661943	Rizhao	35.4141	119.5291	CN	Asia/Shanghai
+658864	Helsinki	60.1695	24.9354	FI	Europe/Helsinki
+658831	Cheonan	36.8065	127.1522	KR	Asia/Seoul
+658609	Acapulco de Juarez	16.8494	-99.9089	MX	America/Mexico_City
+658000	Dongcun	36.7767	121.1597	CN	Asia/Shanghai
+657663	Banjarmasin	-3.3199	114.5907	ID	Asia/Makassar
+657209	Puducherry	11.9338	79.8298	IN	Asia/Kolkata
+656760	Suining	30.5080	105.5733	CN	Asia/Shanghai
+655674	Puyang	35.7564	115.0436	CN	Asia/Shanghai
+655025	Soacha	4.5794	-74.2168	CO	America/Bogota
+653833	Boston	42.3584	-71.0598	US	America/New_York
+652503	Portland	45.5234	-122.6762	US	America/Los_Angeles
+652270	Calumbo	-9.1469	13.4194	AO	Africa/Luanda
+650000	Frankfurt am Main	50.1155	8.6842	DE	Europe/Berlin
+648260	Palermo	38.1166	13.3636	IT	Europe/Rome
+648213	Izhevsk	56.8522	53.1986	RU	Europe/Samara
+648034	Colombo	6.9355	79.8487	LK	Asia/Colombo
+647459	Maturin	9.7457	-63.1832	VE	America/Caracas
+647057	Amravati	20.9333	77.7500	IN	Asia/Kolkata
+646000	Lingyuan	41.2400	119.4011	CN	Asia/Shanghai
+645705	Detroit	42.3314	-83.0457	US	America/Detroit
+645000	Mingguang	32.7802	117.9638	CN	Asia/Shanghai
+645000	Osogbo	7.7710	4.5570	NG	Africa/Lagos
+644406	Bikaner	28.0176	73.3149	IN	Asia/Kolkata
+644037	Jaboatao dos Guararapes	-8.1128	-35.0147	BR	America/Recife
+641903	Las Vegas	36.1750	-115.1372	US	America/Los_Angeles
+640890	Hwaseong-si	37.2068	126.8169	KR	Asia/Seoul
+640778	Gold Coast	-28.0003	153.4309	AU	Australia/Brisbane
+639890	Lodz	51.7706	19.4739	PL	Europe/Warsaw
+638421	Jeonju	35.8248	127.1480	KR	Asia/Seoul
+637921	Chongming	31.6185	121.6962	CN	Asia/Shanghai
+637411	Al Ahmadi	29.0769	48.0839	KW	Asia/Kuwait
+636996	Cuenca	-2.8953	-78.9963	EC	America/Guayaquil
+635994	Chisinau	47.0090	28.8594	MD	Europe/Chisinau
+635768	Likasi	-10.9830	26.7384	CD	Africa/Lubumbashi
+635101	Jambi City	-1.6000	103.6167	ID	Asia/Jakarta
+634721	Hebi	35.7323	114.2862	CN	Asia/Shanghai
+634654	Comilla	23.4619	91.1850	BD	Asia/Dhaka
+634529	Tshikapa	-6.4162	20.7999	CD	Africa/Lubumbashi
+634236	Chunian	30.9662	73.9791	PK	Asia/Karachi
+633104	Memphis	35.1495	-90.0490	US	America/Chicago
+632954	Jingmen	31.0336	112.2047	CN	Asia/Shanghai
+632372	Barnaul	53.3620	83.7279	RU	Asia/Barnaul
+630000	Piura	-5.1819	-80.6572	PE	America/Lima
+627957	Siping	43.1614	124.3778	CN	Asia/Shanghai
+627734	Bhilai	21.2092	81.4285	IN	Asia/Kolkata
+627503	Ndola	-12.9587	28.6366	ZM	Africa/Lusaka
+626540	Ulyanovsk	54.3282	48.3866	RU	Europe/Ulyanovsk
+626512	Djibouti	11.5890	43.1450	DJ	Africa/Djibouti
+626410	Glasgow	55.8651	-4.2576	GB	Europe/London
+624444	Louisville	38.2542	-85.7594	US	America/Kentucky/Louisville
+623869	Irkutsk	52.2957	104.2908	RU	Asia/Irkutsk
+621953	Al Mansurah	31.0364	31.3807	EG	Africa/Cairo
+621100	Kermanshah	34.3142	47.0650	IR	Asia/Tehran
+619266	Jiaozhou	36.2839	120.0033	CN	Asia/Shanghai
+618685	Duesseldorf	51.2232	6.7793	DE	Europe/Berlin
+618582	Suizhou	31.7111	113.3631	CN	Asia/Shanghai
+618397	Villa Nueva	14.5251	-90.5854	GT	America/Guatemala
+618150	Khabarovsk	48.4620	135.0971	RU	Asia/Vladivostok
+618124	Cuiaba	-15.5961	-56.0967	BR	America/Cuiaba
+617631	Arusha	-3.3667	36.6833	TZ	Africa/Dar_es_Salaam
+616272	Feira de Santana	-12.2667	-38.9667	BR	America/Bahia
+615274	Chizhou	30.6613	117.4778	CN	Asia/Shanghai
+612663	Stuttgart	48.7823	9.1770	DE	Europe/Berlin
+612056	Ya'an	29.9852	102.9990	CN	Asia/Shanghai
+610189	Cuttack	20.4650	85.8793	IN	Asia/Kolkata
+609400	Chiclayo	-6.7701	-79.8550	PE	America/Lima
+608722	Yaroslavl	57.6299	39.8737	RU	Europe/Moscow
+608462	Gothenburg	57.7072	11.9668	SE	Europe/Stockholm
+606533	Jhang Sadr	31.2698	72.3169	PK	Asia/Karachi
+605930	Ha'il	27.5219	41.6907	SA	Asia/Riyadh
+605882	Bhavnagar	21.7629	72.1533	IN	Asia/Kolkata
+605344	Benoni	-26.1885	28.3208	ZA	Africa/Johannesburg
+604901	Vladivostok	43.1056	131.8735	RU	Asia/Vladivostok
+604147	Tuxtla	16.7536	-93.1158	MX	America/Merida
+603904	Kryvyy Rih	47.9057	33.3940	UA	Europe/Kyiv
+602166	Sanming	26.2486	117.6186	CN	Asia/Shanghai
+601214	Sangli	16.8544	74.5642	IN	Asia/Kolkata
+600943	Jamnagar	22.4729	70.0667	IN	Asia/Kolkata
+600751	Lubango	-14.9172	13.4925	AO	Africa/Luanda
+600051	Pokhara	28.2669	83.9685	NP	Asia/Kathmandu
+600000	Shuangyashan	46.6769	131.1327	CN	Asia/Shanghai
+597842	Borama	9.9361	43.1828	SO	Africa/Mogadishu
+597130	Luancheng	37.8845	114.6463	CN	Asia/Shanghai
+596356	Makhachkala	42.9778	47.5003	RU	Europe/Moscow
+595644	Anyang-si	37.3925	126.9269	KR	Asia/Seoul
+595304	Huambo	-12.7761	15.7392	AO	Africa/Luanda
+595200	Samarkand	39.6546	66.9644	UZ	Asia/Samarkand
+595100	Mengzi	23.3678	103.3821	CN	Asia/Shanghai
+595049	Kagoshima	31.5667	130.5500	JP	Asia/Tokyo
+594951	Mukalla	14.5425	49.1242	YE	Asia/Aden
+594590	Rasht	37.2761	49.5886	IR	Asia/Tehran
+593337	Mar del Plata	-38.0004	-57.5562	AR	America/Argentina/Buenos_Aires
+593085	Essen	51.4566	7.0123	DE	Europe/Berlin
+592573	Al Mahallah al Kubra	30.9706	31.1669	EG	Africa/Cairo
+592346	Malaga	36.7202	-4.4203	ES	Europe/Madrid
+591424	Shekhupura	31.7129	73.9856	PK	Asia/Karachi
+591159	Yingkou	40.6647	122.2318	CN	Asia/Shanghai
+589831	Zhangzhou	24.5133	117.6556	CN	Asia/Shanghai
+589466	Reynosa	26.0800	-98.2846	MX	America/Matamoros
+588462	Dortmund	51.5149	7.4660	DE	Europe/Berlin
+585708	Baltimore	39.2904	-76.6122	US	America/New_York
+581382	Londrina	-23.3103	-51.1628	BR	America/Sao_Paulo
+581130	Bucaramanga	7.1250	-73.1189	CO	America/Bogota
+580097	Genoa	44.4048	8.9444	IT	Europe/Rome
+579000	Malacca	2.1960	102.2405	MY	Asia/Kuala_Lumpur
+579000	Nha Trang	12.2451	109.1943	VN	Asia/Ho_Chi_Minh
+577514	Kerman	30.2832	57.0788	IR	Asia/Tehran
+577307	Orumiyeh	37.5527	45.0761	IR	Asia/Tehran
+576648	Tanta	30.7885	31.0019	EG	Africa/Cairo
+576198	Jammu	32.7353	74.8617	IN	Asia/Kolkata
+575977	Iskandar Puteri	1.3932	103.6232	MY	Asia/Kuala_Lumpur
+575046	Calamba	14.2117	121.1653	PH	Asia/Manila
+574577	Tlalpan	19.2951	-99.1621	MX	America/Mexico_City
+574300	Herat	34.3482	62.1997	AF	Asia/Kabul
+574242	Dongsheng	39.8161	109.9776	CN	Asia/Shanghai
+574240	Gujrat	32.5742	74.0754	PK	Asia/Karachi
+574002	Tomsk	56.5005	84.9822	RU	Asia/Tomsk
+572772	Shihezi	44.3023	86.0369	CN	Asia/Urumqi
+570674	Nakuru	-0.3072	36.0722	KE	Africa/Nairobi
+569353	Hamilton	43.2501	-79.8496	CA	America/Toronto
+569068	Irbid	32.5556	35.8500	JO	Asia/Amman
+568996	Manchester	53.4809	-2.2374	GB	Europe/London
+568900	Kota Bharu	6.1236	102.2433	MY	Asia/Kuala_Lumpur
+568322	Surrey	49.1063	-122.8251	CA	America/Vancouver
+568295	Meknes	33.8935	-5.5473	MA	Africa/Casablanca
+568106	Puente Alto	-33.6117	-70.5758	CL	America/Santiago
+565734	Nyala	12.0489	24.8807	SD	Africa/Khartoum
+565634	Xinmin	41.9908	122.8253	CN	Asia/Shanghai
+564904	Dresden	51.0509	13.7383	DE	Europe/Berlin
+564773	Orenburg	51.7671	55.0988	RU	Asia/Yekaterinburg
+564559	Albuquerque	35.0845	-106.6511	US	America/Denver
+564319	Bokaro	23.6693	86.1516	IN	Asia/Kolkata
+563930	Asmara	15.3381	38.9318	ER	Africa/Asmara
+563851	Sukkur	27.7032	68.8589	PK	Asia/Karachi
+563531	Milwaukee	43.0389	-87.9065	US	America/Chicago
+560894	Wenchang	19.5516	110.8028	CN	Asia/Shanghai
+560000	Gombe	10.2897	11.1673	NG	Africa/Lagos
+560000	Ile-Ife	7.4824	4.5603	NG	Africa/Lagos
+559056	Hamhung	39.9183	127.5364	KP	Asia/Pyongyang
+558973	Kemerovo	55.3542	86.1043	RU	Asia/Novokuznetsk
+558400	Nasiriyah	31.0580	46.2573	IQ	Asia/Baghdad
+556637	Bloemfontein	-29.1211	26.2140	ZA	Africa/Johannesburg
+556500	Sheffield	53.3830	-1.4659	GB	Europe/London
+555865	Santiago de Cuba	20.0229	-75.8217	CU	America/Havana
+555163	Cuautitlan Izcalli	19.6439	-99.2160	MX	America/Mexico_City
+555124	Benguela	-12.5767	13.4027	AO	Africa/Luanda
+555081	Chuxiong	25.0364	101.5456	CN	Asia/Shanghai
+552622	Huaihua	27.5634	110.0040	CN	Asia/Shanghai
+552300	Sishui	35.6489	117.2758	CN	Asia/Shanghai
+551980	Zahedan	29.4963	60.8629	IR	Asia/Tehran
+550564	Nanded	19.1602	77.3150	IN	Asia/Kolkata
+550440	Kozhikode	11.2480	75.7804	IN	Asia/Kolkata
+550231	Ulanqab	40.9930	113.1330	CN	Asia/Shanghai
+550000	Cabinda	-5.5620	12.1948	AO	Africa/Luanda
+550000	Pristina	42.6727	21.1669	XK	Europe/Belgrade
+549774	Ogbia	4.6884	6.3152	NG	Africa/Lagos
+549549	Jiamusi	46.7971	130.3112	CN	Asia/Shanghai
+549324	Korla	41.7606	86.1523	CN	Asia/Urumqi
+549236	Kolhapur	16.6956	74.2317	IN	Asia/Kolkata
+548952	Porto Velho	-8.7619	-63.9039	BR	America/Porto_Velho
+548866	San Miguel de Tucuman	-26.8160	-65.2105	AR	America/Argentina/Tucuman
+548014	Kuantan	3.8077	103.3260	MY	Asia/Kuala_Lumpur
+547820	Sevastopol	44.6080	33.5213	UA	Europe/Simferopol
+547621	Nellore	14.4499	79.9870	IN	Asia/Kolkata
+546501	Bremen	53.0758	8.8072	DE	Europe/Berlin
+545992	Wanning	18.7993	110.3841	CN	Asia/Shanghai
+545000	Owerri	5.4836	7.0332	NG	Africa/Lagos
+544984	Kota Kuala Muda	5.5882	100.3709	MY	Asia/Kuala_Lumpur
+544683	Xinzhou	38.4092	112.7333	CN	Asia/Shanghai
+543147	Kalaburagi	17.3358	76.8376	IN	Asia/Kolkata
+542629	Tucson	32.2217	-110.9265	US	America/Phoenix
+542366	Vilnius	54.6892	25.2798	LT	Europe/Vilnius
+542321	Ajmer	26.4521	74.6387	IN	Asia/Kolkata
+542234	Pingdu	36.7844	119.9464	CN	Asia/Shanghai
+542107	Fresno	36.7477	-119.7724	US	America/Los_Angeles
+541603	Mbeya	-8.9000	33.4500	TZ	Africa/Dar_es_Salaam
+540756	Juiz de Fora	-21.7642	-43.3503	BR	America/Sao_Paulo
+540000	Calabar	4.9589	8.3270	NG	Africa/Lagos
+539711	Oujda	34.6814	-1.9086	MA	Africa/Casablanca
+539616	Novokuznetsk	53.7575	87.1360	RU	Asia/Novokuznetsk
+538962	Ryazan'	54.6270	39.7041	RU	Europe/Moscow
+538699	Ji'an	27.1172	114.9793	CN	Asia/Shanghai
+538344	Sahiwal	31.9739	72.3311	PK	Asia/Karachi
+538344	Sahiwal	30.6659	73.1019	PK	Asia/Karachi
+537842	Mersin	36.8120	34.6389	TR	Europe/Istanbul
+536280	Leeds	53.7965	-1.5478	GB	Europe/London
+536151	Poznan	52.4069	16.9299	PL	Europe/Warsaw
+535657	Aqsu	41.1842	80.2792	CN	Asia/Urumqi
+535619	Ebute Ikorodu	6.6009	3.4882	NG	Africa/Lagos
+535547	Ananindeua	-1.3656	-48.3722	BR	America/Belem
+535298	Tanggu	39.0211	117.6469	CN	Asia/Shanghai
+534659	Pasir Gudang	1.4620	103.9053	MY	Asia/Kuala_Lumpur
+533925	Astrakhan	46.3497	48.0408	RU	Europe/Astrakhan
+533693	Okara	30.8103	73.4515	PK	Asia/Karachi
+531966	Kimhae	35.2342	128.8811	KR	Asia/Seoul
+531952	Ar Raqqah	35.9528	39.0079	SY	Asia/Damascus
+531902	Quebec	46.8123	-71.2145	CA	America/Toronto
+531696	Shangluo	33.8667	109.9306	CN	Asia/Shanghai
+530495	Himeji	34.8167	134.7000	JP	Asia/Tokyo
+529635	Ibague	4.4357	-75.2029	CO	America/Bogota
+529247	Antwerp	51.2205	4.4003	BE	Europe/Brussels
+528669	Assiut	27.1810	31.1837	EG	Africa/Cairo
+528256	Hamadan	34.7992	48.5146	IR	Asia/Tehran
+528238	Qionghai	19.2425	110.4642	CN	Asia/Shanghai
+527796	Aparecida de Goiania	-16.8233	-49.2439	BR	America/Sao_Paulo
+527681	Cangzhou	38.3112	116.8533	CN	Asia/Shanghai
+527571	Mohammadpur	24.8984	88.5284	BD	Asia/Dhaka
+526870	Surakarta	-7.5561	110.8317	ID	Asia/Jakarta
+526000	Yuanping	38.7153	112.7575	CN	Asia/Shanghai
+525990	San Salvador	13.6893	-89.1872	SV	America/El_Salvador
+525329	Beihai	21.4835	109.1155	CN	Asia/Shanghai
+525016	Van	38.4946	43.3832	TR	Europe/Istanbul
+524943	Sacramento	38.5816	-121.4944	US	America/Los_Angeles
+523553	Penza	53.1957	45.0108	RU	Europe/Moscow
+523300	Kandahar	31.6133	65.7101	AF	Asia/Kabul
+523300	Mazar-e Sharif	36.7090	67.1109	AF	Asia/Kabul
+522147	Hengshui	37.7391	115.6835	CN	Asia/Shanghai
+522081	Dehradun	30.3244	78.0339	IN	Asia/Kolkata
+521891	Erode	11.3428	77.7274	IN	Asia/Kolkata
+520774	Lyon	45.7491	4.8479	FR	Europe/Paris
+520683	Salta	-24.8065	-65.4200	AR	America/Argentina/Salta
+520653	Serra	-20.1286	-40.3078	BR	America/Sao_Paulo
+520000	Daxing'anling	52.3338	124.7124	CN	Asia/Shanghai
+519208	Qui Nhon	13.7765	109.2237	VN	Asia/Ho_Chi_Minh
+519047	Al Fayyum	29.3100	30.8418	EG	Africa/Cairo
+518872	Durgapur	23.5158	87.3080	IN	Asia/Kolkata
+518757	Utsunomiya	36.5667	139.8833	JP	Asia/Tokyo
+518709	Victoria de Durango	24.0203	-104.6576	MX	America/Monterrey
+517802	Lisbon	38.7251	-9.1498	PT	Europe/Lisbon
+517000	Rahim Yar Khan	28.4199	70.3034	PK	Asia/Karachi
+516424	Guangyuan	32.4420	105.8230	CN	Asia/Shanghai
+515574	Siliguri	26.7100	88.4285	IN	Asia/Kolkata
+515543	Nuremberg	49.4542	11.0775	DE	Europe/Berlin
+515215	Ujjain	23.1824	75.7764	IN	Asia/Kolkata
+515140	Hannover	52.3705	9.7332	DE	Europe/Berlin
+514990	Edinburgh	55.9521	-3.1965	GB	Europe/London
+512902	Macapa	0.0389	-51.0664	BR	America/Belem
+512517	Xianning	29.8435	114.3220	CN	Asia/Shanghai
+511684	Toulouse	43.6043	1.4437	FR	Europe/Paris
+511655	Thembisa	-25.9964	28.2268	ZA	Africa/Johannesburg
+511192	Matsuyama	33.8392	132.7657	JP	Asia/Tokyo
+510879	Bilimora	20.7696	72.9613	IN	Asia/Kolkata
+510875	Kasur	31.1187	74.4502	PK	Asia/Karachi
+510823	Atlanta	33.7490	-84.3880	US	America/New_York
+510739	Heroica Matamoros	25.8797	-97.5042	MX	America/Matamoros
+510000	Mianzhu, Deyang, Sichua	31.3379	104.2206	CN	Asia/Shanghai
+510000	Tonghua	41.7197	125.9264	CN	Asia/Shanghai
+509870	Naberezhnyye Chelny	55.7372	52.4196	RU	Europe/Moscow
+509735	Lipetsk	52.5876	39.5515	RU	Europe/Moscow
+509367	Kikwit	-5.0410	18.8162	CD	Africa/Kinshasa
+508826	Florianopolis	-27.5967	-48.5492	BR	America/Sao_Paulo
+508703	Banan	29.3786	106.5400	CN	Asia/Shanghai
+508437	Newcastle	-32.9295	151.7801	AU	Australia/Sydney
+507900	Tuen Mun	22.3917	113.9716	HK	Asia/Hong_Kong
+507433	Zhangye	38.9342	100.4517	CN	Asia/Shanghai
+507155	Kirov	58.5981	49.6578	RU	Europe/Kirov
+506640	Kashgar	39.4672	75.9868	CN	Asia/Urumqi
+505652	Najran	17.4933	44.1277	SA	Asia/Riyadh
+505171	Zhoukou	33.6147	114.6499	CN	Asia/Shanghai
+504971	Leipzig	51.3396	12.3713	DE	Europe/Berlin
+504848	Pingliang	35.5392	106.6861	CN	Asia/Shanghai
+504358	Duisburg	51.4325	6.7652	DE	Europe/Berlin
+504271	Asansol	23.6833	86.9833	IN	Asia/Kolkata
+503647	Arak	34.0949	49.6981	IR	Asia/Tehran
+501193	Homyel'	52.4345	30.9754	BY	Europe/Minsk
+500757	Aktobe	50.2797	57.2072	KZ	Asia/Aqtobe
+500421	Kota Kinabalu	5.9749	116.0724	MY	Asia/Kuching
+500000	Jalalpur Pirwala	29.5051	71.2220	PK	Asia/Karachi
+489725	Port Sudan	19.6175	37.2164	SD	Africa/Khartoum
+487014	Miami	25.7743	-80.1937	US	America/New_York
+475056	Kaliningrad	54.7064	20.5110	RU	Europe/Kaliningrad
+471559	Halifax	44.6427	-63.5769	CA	America/Halifax
+450000	Juba	4.8517	31.5825	SS	Africa/Juba
+448733	Kursk	51.7269	36.1846	RU	Europe/Moscow
+419452	Rio Branco	-9.9747	-67.8100	BR	America/Rio_Branco
+410852	Jayapura	-2.5337	140.7181	ID	Asia/Jayapura
+410000	Gaza	31.5016	34.4667	PS	Asia/Gaza
+402738	Kuching	1.5500	110.3333	MY	Asia/Kuching
+401477	Kassala	15.4510	36.4000	SD	Africa/Khartoum
+401096	Antofagasta	-23.6509	-70.3975	CL	America/Santiago
+400146	Bhagalpur	25.2445	86.9718	IN	Asia/Kolkata
+400004	Agartala	23.8361	91.2794	IN	Asia/Kolkata
+399282	Bunia	1.5594	30.2522	CD	Africa/Lubumbashi
+393000	Saurimo	-9.6608	20.3915	AO	Africa/Luanda
+386219	Windhoek	-22.5594	17.0832	NA	Africa/Windhoek
+383516	Las Palmas de Gran Cana	28.1018	-15.4157	ES	Atlantic/Canary
+381583	Mazatlan	23.2216	-106.4189	MX	America/Mazatlan
+363718	Hrodna	53.6758	23.8289	BY	Europe/Minsk
+352173	Bandar Abbas	27.1865	56.2808	IR	Asia/Tehran
+350964	Honolulu	21.3069	-157.8583	US	Pacific/Honolulu
+349389	Dumai	1.6671	101.4432	ID	Asia/Jakarta
+349005	Chita	52.0431	113.4917	RU	Asia/Chita
+347288	Ambon	-3.6958	128.1833	ID	Asia/Jayapura
+345289	Belgorod	50.6034	36.5809	RU	Europe/Moscow
+332863	Tepic	21.5073	-104.8933	MX	America/Mazatlan
+330606	Khorramshahr	30.4408	48.1843	IR	Asia/Tehran
+330000	Oral	51.2460	51.4256	KZ	Asia/Oral
+329002	Pavlodar	52.2760	76.9688	KZ	Asia/Almaty
+327000	Chongjin	41.7956	129.7758	KP	Asia/Pyongyang
+326957	Yanji	42.8882	129.5024	CN	Asia/Shanghai
+322164	Osh	40.5283	72.7985	KG	Asia/Bishkek
+319067	Ust-Kamenogorsk	49.9714	82.6059	KZ	Asia/Almaty
+318247	Palangkaraya	-2.2083	113.9167	ID	Asia/Pontianak
+317625	Naha	26.2130	127.6785	JP	Asia/Tokyo
+306258	Vladikavkaz	43.0410	44.6699	RU	Europe/Moscow
+300000	Merida	8.5790	-71.1692	VE	America/Caracas
+295683	Bialystok	53.1333	23.1643	PL	Europe/Warsaw
+295683	Mwene	-9.8170	22.8702	CD	Africa/Lubumbashi
+293642	Vigo	42.2328	-8.7226	ES	Europe/Madrid
+290700	Atyrau	47.1048	51.8843	KZ	Asia/Atyrau
+289852	San Cristobal	7.7659	-72.2358	VE	America/Caracas
+289600	Anchorage	61.2181	-149.9003	US	America/Anchorage
+288112	Sinuiju	40.1006	124.3981	KP	Asia/Pyongyang
+285788	Bathinda	30.2075	74.9389	IN	Asia/Kolkata
+285316	Haifa	32.8130	34.9993	IL	Asia/Jerusalem
+283733	Port Moresby	-9.4772	147.1509	PG	Pacific/Port_Moresby
+282747	Chernihiv	51.5054	31.2866	UA	Europe/Kyiv
+279695	St. Louis	38.6273	-90.1979	US	America/Chicago
+279485	Brahmanbaria	23.9746	91.1123	BD	Asia/Dhaka
+271900	Jalalabad	34.4265	70.4515	AF	Asia/Kabul
+260000	Skardu	35.2979	75.6337	PK	Asia/Karachi
+257000	Gdynia	54.5189	18.5319	PL	Europe/Warsaw
+256474	Sumy	50.9174	34.7991	UA	Europe/Kyiv
+252687	Porto	41.1485	-8.6110	PT	Europe/Lisbon
+250849	Timisoara	45.7537	21.2257	RO	Europe/Bucharest
+246880	Chitato	-7.3000	20.7333	AO	Africa/Luanda
+244937	Nizhnevartovsk	60.9344	76.5531	RU	Asia/Yekaterinburg
+244750	Biratnagar	26.4550	87.2701	NP	Asia/Kathmandu
+241653	Arica	-18.4755	-70.3006	CL	America/Santiago
+238321	Kasulu	-4.5767	30.1025	TZ	Africa/Dar_es_Salaam
+237780	Sri Ganganagar	29.9201	73.8750	IN	Asia/Kolkata
+235684	Boise	43.6135	-116.2035	US	America/Boise
+235600	Yakutsk	62.0311	129.7229	RU	Asia/Yakutsk
+235585	Bole	44.8933	82.0699	CN	Asia/Shanghai
+231198	Neuquen	-38.9508	-68.0592	AR	America/Argentina/Salta
+226838	Ashdod	31.7921	34.6497	IL	Asia/Jerusalem
+226404	Regina	50.4501	-104.6178	CA	America/Regina
+225091	Blagoveshchensk	50.2759	127.5264	RU	Asia/Yakutsk
+224166	Puerto Vallarta	20.6170	-105.2302	MX	America/Mexico_City
+223832	Heihe	50.2441	127.4902	CN	Asia/Shanghai
+221300	Mbarara	-0.6047	30.6485	UG	Africa/Kampala
+213943	Cartagena	37.6020	-0.9840	ES	Europe/Madrid
+210646	Burgas	42.5065	27.4689	BG	Europe/Sofia
+209530	Kanggye	40.9695	126.5852	KP	Asia/Pyongyang
+204788	Dhangadhi	28.7016	80.5899	NP	Asia/Kathmandu
+200920	Petropavl	54.8734	69.1506	KZ	Asia/Almaty
+200452	Nicosia	35.1728	33.3540	CY	Asia/Nicosia
+199243	Arish	31.1316	33.7984	EG	Africa/Cairo
+198973	Yuzhno-Sakhalinsk	46.9543	142.7356	RU	Asia/Sakhalin
+198317	Rzeszow	50.0413	21.9990	PL	Europe/Warsaw
+196982	Birjand	32.8663	59.2211	IR	Asia/Tehran
+196357	Birmingham	33.5207	-86.8025	US	America/Chicago
+196331	Laayoune	27.1418	-13.1880	EH	Africa/El_Aaiun
+195097	Grand Rapids	42.9634	-85.6681	US	America/Detroit
+193501	Bukan	36.5210	46.2089	IR	Asia/Tehran
+192041	Bojnurd	37.4747	57.3290	IR	Asia/Tehran
+191696	Hat Yai	7.0084	100.4767	TH	Asia/Bangkok
+188014	Riohacha	11.5444	-72.9072	CO	America/Bogota
+186949	Batumi	41.6408	41.6306	GE	Asia/Tbilisi
+186600	Beersheba	31.2518	34.7913	IL	Asia/Jerusalem
+182800	Tirmiz	37.2242	67.2783	UZ	Asia/Samarkand
+181216	Petropavlovsk-Kamchatsk	53.0639	158.6275	RU	Asia/Kamchatka
+180547	Baharampur	24.1047	88.2515	IN	Asia/Kolkata
+180002	Edirne	41.6772	26.5560	TR	Europe/Istanbul
+179636	Kasama	-10.2129	31.1808	ZM	Africa/Lusaka
+177743	Sittwe	20.1462	92.8983	MM	Asia/Yangon
+177400	Gulu	2.7746	32.2990	UG	Africa/Kampala
+176685	San Luis Rio Colorado	32.4555	-114.7704	MX	America/Hermosillo
+173531	Tlemcen	34.8783	-1.3150	DZ	Africa/Algiers
+173298	Myeik	12.4395	98.6003	MM	Asia/Yangon
+172292	Klaipeda	55.7068	21.1391	LT	Europe/Vilnius
+171620	Keng Tung	21.6309	99.9268	MM	Asia/Yangon
+171544	Sioux Falls	43.5437	-96.7280	US	America/Chicago
+170252	Raiganj	25.6128	88.1245	IN	Asia/Kolkata
+170039	Malda	25.0045	88.1457	IN	Asia/Kolkata
+169793	Olsztyn	53.7838	20.4927	PL	Europe/Warsaw
+169028	Chetumal	18.5196	-88.3040	MX	America/Cancun
+167027	Mary	37.5938	61.8303	TM	Asia/Ashgabat
+165241	Bechar	31.6167	-2.2167	DZ	Africa/Algiers
+165022	Mu-se	23.9974	97.9011	MM	Asia/Yangon
+163140	Salalah	17.0150	54.0924	OM	Asia/Muscat
+162711	Ning'er	23.0405	101.0368	CN	Asia/Shanghai
+161902	Kunduz	36.7289	68.8570	AF	Asia/Kabul
+161065	Rubtsovsk	51.5147	81.2061	RU	Asia/Barnaul
+161037	Tacheng	46.7454	82.9585	CN	Asia/Urumqi
+160961	Kalemie	-5.9475	29.1947	CD	Africa/Lubumbashi
+160766	Szeged	46.2530	20.1482	HU	Europe/Budapest
+160470	Hebron	31.5294	35.0938	PS	Asia/Hebron
+159269	Tarija	-21.5355	-64.7296	BO	America/La_Paz
+155226	Port Louis	-20.1619	57.4989	MU	Indian/Mauritius
+154586	Bumba	2.1877	22.4683	CD	Africa/Kinshasa
+153279	Balurghat	25.2210	88.7773	IN	Asia/Kolkata
+153000	Thi Tran Thuan Chau	21.4385	103.6900	VN	Asia/Ho_Chi_Minh
+149257	Cagliari	39.2305	9.1192	IT	Europe/Rome
+147443	Aktau	43.6611	51.1739	KZ	Asia/Aqtau
+144899	Brest	48.3903	-4.4863	FR	Europe/Paris
+143523	Tres Lagoas	-20.7876	-51.7034	BR	America/Campo_Grande
+140800	Norilsk	69.3535	88.2027	RU	Asia/Krasnoyarsk
+140223	Lakhimpur	27.9482	80.7793	IN	Asia/Kolkata
+139983	Abeche	13.8292	20.8324	TD	Africa/Ndjamena
+139902	Darwin	-12.4611	130.8418	AU	Australia/Darwin
+137868	Praia	14.9315	-23.5125	CV	Atlantic/Cape_Verde
+136654	Marivan	35.5183	46.1830	IR	Asia/Tehran
+135773	Osorno	-40.5740	-73.1335	CL	America/Santiago
+135369	Itaituba	-4.2761	-55.9836	BR	America/Santarem
+135204	Tyre	33.2733	35.1939	LB	Asia/Beirut
+134264	El Geneina Fort	13.4748	22.4574	SD	Africa/Khartoum
+133110	Gao	16.2717	-0.0447	ML	Africa/Bamako
+132524	Midland	31.9974	-102.0779	US	America/Chicago
+130692	Narowal	32.1020	74.8730	PK	Asia/Karachi
+130671	Lao Cai	22.4856	103.9707	VN	Asia/Bangkok
+130326	Nablus	32.2211	35.2544	PS	Asia/Hebron
+130258	Rawson	-31.5819	-68.5421	AR	America/Argentina/San_Juan
+130224	Umea	63.8284	20.2597	SE	Europe/Stockholm
+129843	Pingxiang	22.0969	106.7567	CN	Asia/Shanghai
+127240	Chiang Mai	18.7904	98.9847	TH	Asia/Bangkok
+126805	Neftekamsk	56.0888	54.2638	RU	Asia/Yekaterinburg
+124483	Agri	39.7147	43.0401	TR	Europe/Istanbul
+123340	Birigui	-21.2886	-50.3400	BR	America/Sao_Paulo
+122700	Hoima	1.4331	31.3524	UG	Africa/Kampala
+121582	Stara Zagora	42.4320	25.6426	BG	Europe/Sofia
+121414	Algeciras	36.1333	-5.4505	ES	Europe/Madrid
+119943	Evansville	37.9748	-87.5559	US	America/Chicago
+119828	Rize	41.0208	40.5219	TR	Europe/Istanbul
+118918	Reykjavik	64.1355	-21.8954	IS	Atlantic/Reykjavik
+118523	Fargo	46.8772	-96.7898	US	America/Chicago
+118009	San Rafael	-34.6153	-68.3324	AR	America/Argentina/Mendoza
+117811	Sokode	8.9833	1.1333	TG	Africa/Lome
+117430	Punta Arenas	-53.1628	-70.9092	CL	America/Punta_Arenas
+117245	Ilebo	-4.3311	20.5864	CD	Africa/Lubumbashi
+117116	Billings	45.7833	-108.5007	US	America/Denver
+115449	Uzhhorod	48.6242	22.2947	UA	Europe/Kyiv
+112578	Mengmao	24.0014	97.8650	CN	Asia/Shanghai
+112050	Port Blair	11.6661	92.7464	IN	Asia/Kolkata
+111752	Quchan	37.1060	58.5095	IR	Asia/Tehran
+110525	St. John's	47.5649	-52.7093	CA	America/St_Johns
+110456	Kfar Saba	32.1750	34.9069	IL	Asia/Jerusalem
+110313	Firozpur	30.9257	74.6131	IN	Asia/Kolkata
+110075	Gabes	33.8815	10.0982	TN	Africa/Tunis
+108843	Thunder Bay	48.3820	-89.2502	CA	America/Toronto
+108553	Mong Cai	21.5247	107.9662	VN	Asia/Bangkok
+108200	Oktyabrsky	54.4815	53.4710	RU	Asia/Yekaterinburg
+107828	Jalai Nur	49.4500	117.7000	CN	Asia/Shanghai
+107620	Umm Qasr	30.0362	47.9195	IQ	Asia/Baghdad
+103693	Male	4.1752	73.5092	MV	Indian/Maldives
+103262	Lida	53.8833	25.2997	BY	Europe/Minsk
+102996	Parsabad	39.6482	47.9174	IR	Asia/Tehran
+101855	Parintins	-2.6283	-56.7358	BR	America/Manaus
+101700	Igdir	39.9237	44.0450	TR	Europe/Istanbul
+101516	South Bend	41.6834	-86.2500	US	America/Indiana/Indianapolis
+100870	Errachidia	31.9314	-4.4266	MA	Africa/Casablanca
+100442	Thakurgaon	26.0310	88.4699	BD	Asia/Dhaka
+100271	Ust'-Ilimsk	58.0006	102.6619	RU	Asia/Irkutsk

@@ -55,6 +55,9 @@ enum {
     CLK_CAD_JUMP       = 3,   /* no fraction: moves on the unit boundary             */
     CLK_CAD_STOP_TO_GO = 4,   /* one turn in cad_arg tenths of a second, then rests  */
     CLK_CAD_DRAG       = 5,   /* holds, then creeps over cad_arg minutes to the boundary */
+    CLK_CAD_ROLL       = 6,   /* D43 P5d.3, a wheel's smooth: holds its figure, and in the
+                               * last unit before the figure changes rolls on to the next
+                               * one (an odometer). The figure count is vmax - vmin.     */
     CLK_CAD__MAX
 };
 
@@ -71,6 +74,8 @@ enum {
     CLK_DIGIT_WHOLE = 0,
     CLK_DIGIT_UNITS = 1,   /* v % 10: a double-rotator date's units ring */
     CLK_DIGIT_TENS  = 2,   /* v / 10 % 10: its tens ring                 */
+    CLK_DIGIT_HUNDREDS  = 3,   /* D43 P5d.3: v / 100 % 10 (a year's)         */
+    CLK_DIGIT_THOUSANDS = 4,   /* v / 1000 % 10                              */
     CLK_DIGIT__MAX
 };
 
@@ -143,6 +148,8 @@ enum {
     CLK_SRC_MOON_AGE, CLK_SRC_BATTERY, CLK_SRC_POWER_RESERVE, CLK_SRC_TEXT,
     CLK_SRC_AMPM, CLK_SRC_WEEK, CLK_SRC_DAY_OF_YEAR, CLK_SRC_QUARTER,
     CLK_SRC_VALUE,
+    CLK_SRC_YEAR,          /* D43 P5d.3: the year itself (2026); no window domain, so a
+                            * row reads it by digit */
     CLK_SRC__MAX
 };
 
@@ -171,7 +178,7 @@ enum {
                                   * the bake packed against. */
 #define CLK_COMP_MAX  16   /* complication records      — theme_schema.CLK_COMP_MAX  */
 #define CLK_BANK_MAX 256   /* shared bank sprites       — theme_schema.CLK_BANK_MAX  */
-_Static_assert(CLK_SRC__MAX == 17, "SOURCES tuple of theme_schema.py grew; the "
+_Static_assert(CLK_SRC__MAX == 18, "SOURCES tuple of theme_schema.py grew; the "
                                    "bake and this reader must agree on its length");
 
 /* One window tile is w*h*3 bytes: the raw colour plane (w*h*2, stride w*2)

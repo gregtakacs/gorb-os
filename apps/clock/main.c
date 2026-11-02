@@ -186,6 +186,7 @@ static bool comp_value(uint8_t src, const tm_t *ti, time_t t, int32_t *out)
     case CLK_SRC_WEEK:        *out = comp_iso_week(ti);       break;
     case CLK_SRC_DAY_OF_YEAR: *out = ti->tm_yday + 1;         break;
     case CLK_SRC_QUARTER:     *out = ti->tm_mon / 3 + 1;      break;
+    case CLK_SRC_YEAR:        *out = ti->tm_year + 1900;      break;
     case CLK_SRC_MOON_AGE: {
         int64_t m = ((int64_t)t - MOON_NEW_MOON_S) % MOON_SYNODIC_S;
         if (m < 0) m += MOON_SYNODIC_S;
@@ -196,7 +197,7 @@ static bool comp_value(uint8_t src, const tm_t *ti, time_t t, int32_t *out)
     return true;
 }
 
-static double drive_finer(uint8_t src, const tm_t *ti, double frac, double *unit_min)
+static double drive_finer(uint8_t src, const tm_t *ti, time_t t, double frac, double *unit_min)
 {
     const double day = ((double)ti->tm_hour * 3600.0 + ti->tm_min * 60.0 + ti->tm_sec + frac)
                        / 86400.0;
@@ -215,8 +216,60 @@ static double drive_finer(uint8_t src, const tm_t *ti, double frac, double *unit
         if (ti->tm_mon == 1 && comp_year_leap(ti->tm_year + 1900)) dim = 29;
         *unit_min = 1440.0 * dim;
         return (ti->tm_mday - 1 + day) / dim; }
+    case CLK_SRC_MOON_AGE: {          /* the moon's day: comp_value's age is whole days */
+        int64_t m = ((int64_t)t - MOON_NEW_MOON_S) % MOON_SYNODIC_S;
+        if (m < 0) m += MOON_SYNODIC_S;
+        *unit_min = 1440.0;
+        return ((double)(m % 86400) + frac) / 86400.0; }
+    case CLK_SRC_YEAR: {
+        const int ydays = comp_year_leap(ti->tm_year + 1900) ? 366 : 365;
+        *unit_min = 1440.0 * ydays;
+        return (ti->tm_yday + day) / ydays; }
     default:              *unit_min = 0.0;        return 0.0;
     }
+}
+
+/* D43 P5d.3: a digit reads the number the dial shows, not the source's index: a 12-hour
+ * source's 0 is 12 and a month's 0..11 is 1..12. */
+static int32_t digit_of(uint8_t src, uint8_t digit, int32_t v)
+{
+    if (digit == CLK_DIGIT_WHOLE) return v;
+    if (src == CLK_SRC_HOUR12) v = v ? v : 12;
+    else if (src == CLK_SRC_MONTH) v = v + 1;
+    switch (digit) {
+    case CLK_DIGIT_UNITS:     return v % 10;
+    case CLK_DIGIT_TENS:      return v / 10 % 10;
+    case CLK_DIGIT_HUNDREDS:  return v / 100 % 10;
+    default:                  return v / 1000 % 10;
+    }
+}
+
+/* The value the next unit starts on, from the calendar rather than v + 1: the 31st
+ * runs on to the 1st and so does the 28th of a February. A roll needs it to know
+ * whether its figure is about to change. */
+static bool comp_next(uint8_t src, const tm_t *ti, int32_t v, int32_t *out)
+{
+    static const uint8_t DIM[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    switch (src) {
+    case CLK_SRC_WEEKDAY: *out = (v + 1) % 7;  break;
+    case CLK_SRC_MONTH:   *out = (v + 1) % 12; break;
+    case CLK_SRC_DATE: {
+        int dim = DIM[ti->tm_mon % 12];
+        if (ti->tm_mon == 1 && comp_year_leap(ti->tm_year + 1900)) dim = 29;
+        *out = v >= dim ? 1 : v + 1;
+        break; }
+    case CLK_SRC_HOUR12:  *out = (v + 1) % 12; break;
+    case CLK_SRC_HOUR24:  *out = (v + 1) % 24; break;
+    case CLK_SRC_MINUTE:
+    case CLK_SRC_SECOND:  *out = (v + 1) % 60; break;
+    case CLK_SRC_DAY_OF_YEAR:
+        *out = v >= (comp_year_leap(ti->tm_year + 1900) ? 366 : 365) ? 1 : v + 1;
+        break;
+    case CLK_SRC_YEAR:    *out = v + 1;        break;
+    case CLK_SRC_MOON_AGE: *out = v + 1;       break;   /* a moon disc's next face, never back to 0 */
+    default:              return false;
+    }
+    return true;
 }
 
 static bool drive_units(const clk_row_t *r, const drive_now_t *n, double *out)
@@ -224,13 +277,27 @@ static bool drive_units(const clk_row_t *r, const drive_now_t *n, double *out)
     int32_t v;
     if (!comp_value(r->src, n->ti, n->t, &v)) return false;
     double unit_min;
-    double f = drive_finer(r->src, n->ti, n->frac, &unit_min);
+    double f = drive_finer(r->src, n->ti, n->t, n->frac, &unit_min);
+    if (r->cadence == CLK_CAD_ROLL) {
+        /* D43 P5d.3: hold the figure; in the last unit before it changes, roll on to
+         * the next one, forward round the wheel's vmax - vmin figures (an odometer). */
+        const int32_t figs = (int32_t)r->value_max - (int32_t)r->value_min;
+        int32_t nx;
+        const int32_t a = digit_of(r->src, r->digit, v);
+        if (figs <= 0 || !comp_next(r->src, n->ti, v, &nx)) { *out = a; return true; }
+        const int32_t b = digit_of(r->src, r->digit, nx);
+        *out = a + (double)((((b - a) % figs) + figs) % figs) * f;
+        return true;
+    }
     if (r->digit == CLK_DIGIT_UNITS) {
-        v %= 10;
-    } else if (r->digit == CLK_DIGIT_TENS) {
-        f = ((v % 10) + f) / 10.0;
-        unit_min *= 10.0;
-        v = (v / 10) % 10;
+        v = digit_of(r->src, r->digit, v);
+    } else if (r->digit != CLK_DIGIT_WHOLE) {
+        /* D42 §4: a higher digit's sweep counts the lower ones toward its next figure */
+        const int32_t place = r->digit == CLK_DIGIT_TENS ? 10 : r->digit == CLK_DIGIT_HUNDREDS ? 100 : 1000;
+        int32_t w = r->src == CLK_SRC_HOUR12 ? (v ? v : 12) : r->src == CLK_SRC_MONTH ? v + 1 : v;
+        f = ((w % place) + f) / (double)place;
+        unit_min *= (double)place;
+        v = digit_of(r->src, r->digit, v);
     }
     double shown = 0.0;
     switch (r->cadence) {

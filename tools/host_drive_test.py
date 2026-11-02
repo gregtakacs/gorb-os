@@ -190,6 +190,43 @@ C_BODY = r"""
     units("tens ring: a sweep counts the units toward the next ten", d,
           mk(2026, 10, 25, 12, 0, 0), 0.0, 2.55);
 
+    /* D43 P5d.3: a year's digits, the shown number's digits, and the roll. */
+    d = (clk_row_t){ .src = CLK_SRC_YEAR, .digit = CLK_DIGIT_THOUSANDS, .span = -3600,
+                     .value_max = 10, .cadence = CLK_CAD_JUMP, .end = CLK_END_WRAP };
+    units("year thousands: 2026 reads 2", d, mk(2026, 11, 2, 12, 0, 0), 0.0, 2.0);
+    d.digit = CLK_DIGIT_HUNDREDS;
+    units("year hundreds: 2026 reads 0", d, mk(2026, 11, 2, 12, 0, 0), 0.0, 0.0);
+    d.digit = CLK_DIGIT_UNITS;
+    units("year units: 2026 reads 6", d, mk(2026, 11, 2, 12, 0, 0), 0.0, 6.0);
+    d = (clk_row_t){ .src = CLK_SRC_HOUR12, .digit = CLK_DIGIT_TENS, .span = 3600,
+                     .value_max = 2, .cadence = CLK_CAD_JUMP, .end = CLK_END_WRAP };
+    units("a 12-hour tens digit reads the 12 the dial shows at noon", d, mk(2026, 11, 2, 12, 5, 0), 0.0, 1.0);
+    d = (clk_row_t){ .src = CLK_SRC_MONTH, .digit = CLK_DIGIT_UNITS, .span = 3600,
+                     .value_max = 10, .cadence = CLK_CAD_JUMP, .end = CLK_END_WRAP };
+    units("a month's units digit reads November as 1", d, mk(2026, 11, 2, 12, 0, 0), 0.0, 1.0);
+    d = (clk_row_t){ .src = CLK_SRC_DATE, .digit = CLK_DIGIT_TENS, .span = -3600,
+                     .value_max = 4, .cadence = CLK_CAD_ROLL, .end = CLK_END_WRAP };
+    units("roll: the tens holds on the 15th", d, mk(2026, 10, 15, 18, 0, 0), 0.0, 1.0);
+    units("roll: the tens rolls through the 19th", d, mk(2026, 10, 19, 18, 0, 0), 0.0, 1.75);
+    units("roll: the 31st rolls the tens 3 on to 0", d, mk(2026, 10, 31, 12, 0, 0), 0.0, 3.5);
+    units("roll: the 30th of a 31-day month holds its 3", d, mk(2026, 10, 30, 12, 0, 0), 0.0, 3.0);
+    units("roll: the 30th of November rolls on to the 1st's 0", d, mk(2026, 11, 30, 12, 0, 0), 0.0, 3.5);
+    d.digit = CLK_DIGIT_UNITS; d.value_max = 10;
+    units("roll: the units creep every day", d, mk(2026, 10, 23, 6, 0, 0), 0.0, 3.25);
+    units("roll: a February's 28th rolls 8 on to the 1st's 1 (three figures)", d, mk(2026, 2, 28, 12, 0, 0), 0.0, 9.5);
+    d = (clk_row_t){ .src = CLK_SRC_DATE, .span = 3600, .value_min = 1, .value_max = 32,
+                     .cadence = CLK_CAD_ROLL, .end = CLK_END_WRAP };
+    units("roll on a whole date wheel: the 28th of February runs four figures to the 1st", d, mk(2026, 2, 28, 18, 0, 0), 0.0, 31.0);
+    d = (clk_row_t){ .src = CLK_SRC_MOON_AGE, .span = 3600, .value_max = 60,
+                     .cadence = CLK_CAD_ROLL, .end = CLK_END_WRAP };
+    {
+        struct tm ti = mk(2026, 11, 2, 0, 0, 0);
+        const time_t t0 = timegm(&ti);
+        const int64_t m = ((int64_t)t0 - MOON_NEW_MOON_S) % MOON_SYNODIC_S;
+        const double want = (double)(m / 86400) + (double)(m % 86400) / 86400.0;
+        units("roll: a moon disc creeps through its day", d, ti, 0.0, want);
+    }
+
     /* A source with no input on this orb poses nothing. */
     d = (clk_row_t){ .src = CLK_SRC_BATTERY, .dx = 80, .value_max = 100,
                      .cadence = CLK_CAD_SWEEP, .end = CLK_END_HOLD };
@@ -308,9 +345,16 @@ MUTATIONS = [
     ("shown = into > 0.0 ? into / (w < unit_min ? w : unit_min) : 0.0;", "shown = into / w;"),
     ("    case CLK_SRC_MINUTE:  *unit_min = 1.0;        return (ti->tm_sec + frac) / 60.0;",
      "    case CLK_SRC_MINUTE:  *unit_min = 1.0;        return ti->tm_sec / 60.0;"),
-    ("        v %= 10;\n", ""),
-    ("        f = ((v % 10) + f) / 10.0;\n", ""),
-    ("        v = (v / 10) % 10;\n", "        v = v / 10;\n"),
+    ("    case CLK_DIGIT_UNITS:     return v % 10;", "    case CLK_DIGIT_UNITS:     return v;"),
+    ("        f = ((w % place) + f) / (double)place;\n", ""),
+    ("    case CLK_DIGIT_TENS:      return v / 10 % 10;", "    case CLK_DIGIT_TENS:      return v / 10;"),
+    ("    case CLK_DIGIT_HUNDREDS:  return v / 100 % 10;", "    case CLK_DIGIT_HUNDREDS:  return v / 10 % 10;"),
+    ("    if (src == CLK_SRC_HOUR12) v = v ? v : 12;", ""),
+    ("    else if (src == CLK_SRC_MONTH) v = v + 1;", ""),
+    ("        *out = v >= dim ? 1 : v + 1;", "        *out = v + 1;"),
+    ("        *out = a + (double)((((b - a) % figs) + figs) % figs) * f;", "        *out = a + f;"),
+    ("    case CLK_SRC_YEAR:        *out = ti->tm_year + 1900;      break;", "    case CLK_SRC_YEAR:        *out = ti->tm_year;      break;"),
+    ("        return ((double)(m % 86400) + frac) / 86400.0; }", "        return frac; }"),
     ("    double t = w > 0.0 ? (units - (double)r->value_min) / w : 0.0;",
      "    double t = w > 0.0 ? units / w : 0.0;"),
     ("        t -= floor(t);\n", ""),
@@ -358,6 +402,8 @@ def lifted_c(mutations=()):
         lift(cview, "static bool comp_year_leap("),
         lift(cview, "static bool comp_value("),
         lift(cview, "static double drive_finer("),
+        lift(cview, "static int32_t digit_of("),
+        lift(cview, "static bool comp_next("),
         lift(cview, "static bool drive_units("),
         lift(cview, "static double drive_t("),
         lift(cview, "static void row_pose("),

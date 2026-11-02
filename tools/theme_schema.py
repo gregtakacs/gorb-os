@@ -90,6 +90,8 @@ SOURCES = (
                      # authority (docs/behaviour-vocabulary.md G2; the
                      # earlier "0..3" comment was wrong, no bake reached it)
     "value",         # raw: index == the comp's own value, for bake-decided art
+    "year",          # D43 P5d.3: the year itself (2026); no window domain, so a row
+                     # reads it by digit (a year wheel's four)
 )
 
 # How a comp's frames are laid down.
@@ -775,8 +777,10 @@ ENDS = ("wrap", "flyback", "hold")
 END_WRAP, END_FLYBACK, END_HOLD = 0, 1, 2
 # D42 §4: which part of the source value a row reads (clk_types.h CLK_DIGIT_*). The
 # units and tens of a date drive a double-rotator calendar's two rings.
-DIGITS = ("whole", "units", "tens")
-DIGIT_WHOLE, DIGIT_UNITS, DIGIT_TENS = 0, 1, 2
+# D43 P5d.3 adds a year's hundreds and thousands. A digit reads the number the dial
+# shows: a 12-hour source's 0 is 12, a month's 0..11 is 1..12.
+DIGITS = ("whole", "units", "tens", "hundreds", "thousands")
+DIGIT_WHOLE, DIGIT_UNITS, DIGIT_TENS, DIGIT_HUNDREDS, DIGIT_THOUSANDS = 0, 1, 2, 3, 4
 # The bounds a pose is written within: tenths of a degree for an angle, px for travel.
 TURN_10 = 3600
 PANEL_PX = 466
@@ -784,8 +788,10 @@ PANEL_PX = 466
 # D41 §2.1: when a driven row moves, in the order clk_types.h's CLK_CAD_* reads it.
 # D42 retired `inherit` (there is nothing older to inherit from): 0 is `none`, the
 # cadence of a still row and of nothing else.
-CADENCES = ("none", "sweep", "step", "jump", "stop-to-go", "drag")
-CAD_NONE, CAD_SWEEP, CAD_STEP, CAD_JUMP, CAD_STOP_TO_GO, CAD_DRAG = 0, 1, 2, 3, 4, 5
+# D43 P5d.3's roll is a wheel's smooth: the figure holds, and in the last unit before
+# it changes it rolls on to the next (an odometer); vmax - vmin is its figure count.
+CADENCES = ("none", "sweep", "step", "jump", "stop-to-go", "drag", "roll")
+CAD_NONE, CAD_SWEEP, CAD_STEP, CAD_JUMP, CAD_STOP_TO_GO, CAD_DRAG, CAD_ROLL = 0, 1, 2, 3, 4, 5, 6
 # The sources a drag may hold a calendar row on.
 CAD_DRAG_SOURCES = ("date", "weekday", "month", "day_of_year")
 # A sweep's own frame rate rides its cad_arg (0 = no figure of its own): the seconds
@@ -1004,7 +1010,7 @@ def check_element(rec, where="elem"):
         if cad == CAD_STEP and carg < 1:
             raise ValueError("%s.cad_arg: step 0 divides a unit into no steps — name how "
                              "many per unit" % where)
-        if cad in (CAD_NONE, CAD_JUMP) and carg:
+        if cad in (CAD_NONE, CAD_JUMP, CAD_ROLL) and carg:
             raise ValueError("%s.cad_arg: %d on a %s row, which takes no argument"
                              % (where, carg, name))
         if cad == CAD_SWEEP and carg > SWEEP_FPS_MAX:
@@ -1444,7 +1450,7 @@ if __name__ == "__main__":
                if n.startswith("FLAG_")}
     assert cflags == pyflags, ("flag bits diverged from main/art/clk_types.h: "
                                "python %s vs C %s" % (pyflags, cflags))
-    assert len(SOURCES) == 17, "SOURCES grew; clk_types.h's CLK_SRC__MAX assert must agree"
+    assert len(SOURCES) == 18, "SOURCES grew; clk_types.h's CLK_SRC__MAX assert must agree"
     # D32's ruling B mirror: CLOCK_WINDOW_DOMAIN here and the WINDOW_DOMAIN
     # table of main/art/orb_clock3.c are one calendar, and a drift would have
     # the device check a window against a year of some other length. Parse the
@@ -1465,7 +1471,7 @@ if __name__ == "__main__":
     assert [n for n, _t in ELEMENT_FIELDS[25:]] == \
         ["cadence", "cad_arg", "ease", "dx", "dy", "end", "digit", "str"], "D41/D42's append moved"
     assert len(CLASS_NAMES) == 11, "class vocabulary moved; orb_assets.h's bound must agree"
-    assert (len(SHAPES), len(ENDS), len(DIGITS), len(CADENCES)) == (3, 3, 3, 6), \
+    assert (len(SHAPES), len(ENDS), len(DIGITS), len(CADENCES)) == (3, 3, 5, 7), \
         "the moving row's vocabulary moved; clk_types.h must agree"
     assert class_id("hand") == CLASS_HAND and class_id("nope") is None
     assert class_id("aux") == CLASS_AUX == 8, "D34's class must append at 8, never move"
@@ -1511,7 +1517,7 @@ if __name__ == "__main__":
         (dict(_ax, span=1800), "whole turn"),
         (dict(_bar, end=END_WRAP), "whole turn"),
         (dict(_ax, end=3), "not an end rule"),
-        (dict(_ax, digit=3), "not a digit selector"),
+        (dict(_ax, digit=5), "not a digit selector"),
         (dict(_ax, degrees=900), "angle at rest"),
         (dict(_still, dx=4), "still row"),
         (dict(_still, cadence=CAD_JUMP), "still row"),

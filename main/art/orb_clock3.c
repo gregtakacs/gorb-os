@@ -190,7 +190,8 @@ static const char *cadence_check(const orb_bundle_elem_t *e)
     if (e->cadence == CLK_CAD_STEP && !e->cad_arg)
         return reject("element %u steps 0 times a unit: name how many steps per unit",
                       (unsigned)e->n);
-    if ((e->cadence == CLK_CAD_NONE || e->cadence == CLK_CAD_JUMP) && e->cad_arg)
+    if ((e->cadence == CLK_CAD_NONE || e->cadence == CLK_CAD_JUMP ||
+         e->cadence == CLK_CAD_ROLL) && e->cad_arg)
         return reject("element %u carries a cadence argument of %u on a cadence that "
                       "takes none", (unsigned)e->n, (unsigned)e->cad_arg);
     if (e->cadence == CLK_CAD_SWEEP && e->cad_arg > CLK_SWEEP_FPS_MAX)

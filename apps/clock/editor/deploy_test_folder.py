@@ -27,7 +27,7 @@ RUNTIME = os.path.join(HERE, "..", "..", "..", "tools", "orb-manager", "web", "r
 # ../watch-engine.js, so the folder depth is part of the contract. (source, name):
 # the app's own files from here, the runtime's from the hub.
 APP_FILES = [(os.path.join(HERE, f), f) for f in
-             ("Watch Composer.dc.html", "dial-renderer.js", "watch-engine.js", "sound-engine.js")] + [
+             ("Watch Composer.dc.html", "dial-renderer.js", "watch-engine.js", "sound-engine.js", "stack.js")] + [
              (os.path.join(RUNTIME, "support@1", "support.js"), "support.js"),
              (os.path.join(RUNTIME, "baker@1", "orbtheme-baker.js"), "orbtheme-baker.js")]
 SELFTEST_DIR = "_selftest"

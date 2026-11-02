@@ -353,6 +353,36 @@ class Component extends DCLogic {
     this.upd((d) => { d.order = order; });
   }
   setHand(hid, patch) { this.upd((d) => { d.hands = d.hands || {}; d.hands[hid] = { ...(d.hands[hid] || {}), ...patch }; }); }
+  /* D43 P4: the stack. stack.js builds it from the face the stage draws and moves a
+   * layer under the rules; what it answers is the new value of design.order (the hands)
+   * or design.comps (sub-dials and discs) — the same fields the old ↑/↓ buttons wrote —
+   * so a preset's stack bakes exactly the preset. A refusal lands in the status line
+   * with the rule it broke. */
+  stackInput() {
+    const fc = this.face(), d = this.design() || {}, c = this.cfg();
+    if (!fc) return null;
+    return { comps: d.comps || [], order: (fc.handOrder || []).slice(), E: window.WatchEngine,
+             hands: (fc.hands || []).map((h) => ({ id: h.id, kind: h.kind, sub: !!h.sub, x: h.x, y: h.y, len: h.len })),
+             shadows: +c.shMove > 0.01 && +c.shOp > 0.01, carriage: !!(this.base && this.base.cageAt) };
+  }
+  stackApply(r) {
+    if (!r || !r.ok) { this.setState({ status: (r && r.reason) || 'That layer does not move' }); return false; }
+    if (!r.order && !r.comps) return true;
+    this.upd((d) => { if (r.order) d.order = r.order; if (r.comps) d.comps = r.comps.map((q) => d.comps.find((x) => x.id === q.id) || q); });
+    if (r.partial) this.setState({ status: 'Moved as far as the rules allow — ' + r.partial });
+    return true;
+  }
+  stackMove(id, dir) { const inp = this.stackInput(); if (inp && window.OrbStack) this.stackApply(window.OrbStack.move(inp, id, dir)); }
+  stackDrop(target) {
+    const from = this._dragRow; this._dragRow = null;
+    const inp = this.stackInput(); if (!inp || !from || from === target || !window.OrbStack) return;
+    this.stackApply(window.OrbStack.moveTo(inp, from, target));
+  }
+  stackPick(it) {
+    if (!it.sel) return;
+    if (it.sel.kind === 'dial') return this.setState({ sel: 'dial', selKind: 'dial', tab: this.selTab.dial });
+    this.setState({ sel: it.sel.id, selKind: it.sel.kind, tab: this.selTab[it.sel.kind] });
+  }
   /* Facing stepper. Reads the design as it is NOW rather than the value the row was
    * rendered with -- a control that reports its own snapshot sticks after one click, so
    * reaching 90 degrees by 15-degree steps would need nine presses and land nowhere.
@@ -1134,6 +1164,40 @@ class Component extends DCLogic {
     if (this.guideOn()) this.drawGuide(x, fc, d, k);
     const s = d.getSeconds();
     if (s !== this._sec) { this._sec = s; this.drawLayer('hands'); if (this.base && this.base.cageAt) this.drawLayer('geartrain'); }
+  }
+  /* The stack panel's rows (D43 P4). Arrows are pre-checked against the rules, so a dim
+   * arrow already says, on hover, which rule keeps that layer where it is. */
+  stackVals() {
+    const S = window.OrbStack, inp = this.stackInput(), s = this.state, d = this.design() || {};
+    const off = { stackRows: [], stackWarns: [], stackCap: '', stackCapFg: '#8d8472', mech: { bg: '#1f1d1a', bd: '#3a352d', fg: '#b5ab97' }, toggleMech: () => this.upd((dd) => { if (dd.mechanical) delete dd.mechanical; else dd.mechanical = 1; }) };
+    if (!S || !inp) return off;
+    const items = S.build(inp), warns = d.mechanical ? S.warnings(inp) : [], rc = S.rowCount(inp);
+    const warnOf = {}; warns.forEach((w) => { warnOf[w.id] = (warnOf[w.id] ? warnOf[w.id] + ' · ' : '') + w.text; });
+    const HEAD = { crystal: 'Crystal · pinned on top', rows: 'Layers', plate: 'Plate · pinned at the bottom' };
+    const rows = []; let band = null;
+    const selId = s.selKind === 'hand' ? 'hand:' + s.sel : s.selKind === 'comp' ? 'comp:' + s.sel : s.selKind === 'dial' ? 'dial' : null;
+    items.forEach((it) => {
+      if (it.band !== band) { band = it.band; rows.push({ isHead: true, isRow: false, label: HEAD[band] }); }
+      const up = it.movable ? S.move(inp, it.id, -1) : { ok: false, reason: '' }, dn = it.movable ? S.move(inp, it.id, 1) : { ok: false, reason: '' };
+      const hidden = !!s.hidden[it.hide], on = selId === it.id;
+      rows.push({ isHead: false, isRow: true, label: it.label, warn: warnOf[it.id] ? ' ⚠' : '',
+        note: it.badge + (it.kind === 'hand' || it.kind === 'pointer' ? (it.shadow ? ' · casts a shadow' : '') : '') + (warnOf[it.id] ? ' · ' + warnOf[it.id] : ''),
+        tip: it.movable ? 'Drag onto another layer, or use the arrows' : (S.move(inp, it.id, 1).reason || ''),
+        pad: it.parent ? 22 : 6, weight: it.parent ? 500 : 600, op: hidden ? 0.45 : 1, bg: on ? '#2a2316' : 'transparent', edge: on ? '#c9a25a' : 'transparent',
+        arrows: it.movable ? 'visible' : 'hidden',
+        upOp: up.ok ? 1 : 0.35, downOp: dn.ok ? 1 : 0.35, upTip: up.ok ? 'Up one' : up.reason, downTip: dn.ok ? 'Down one' : dn.reason,
+        up: (e) => { e.stopPropagation(); this.stackMove(it.id, -1); }, down: (e) => { e.stopPropagation(); this.stackMove(it.id, 1); },
+        drag: it.movable ? 'true' : 'false',
+        dragStart: (e) => { this._dragRow = it.id; try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', it.id); } catch (err) { /* headless */ } },
+        dragOver: (e) => { if (this._dragRow) e.preventDefault(); },
+        drop: (e) => { e.preventDefault(); this.stackDrop(it.id); },
+        pick: () => this.stackPick(it),
+        eye: hidden ? 'hidden' : 'shown', eyeFg: hidden ? '#8d8472' : '#c9a25a',
+        eyeTip: 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)',
+        eyeToggle: (e) => { e.stopPropagation(); this.setState((st) => ({ hidden: { ...st.hidden, [it.hide]: !st.hidden[it.hide] } })); } });
+    });
+    return { stackRows: rows, stackWarns: warns, stackCap: rc.rows + ' of ' + rc.cap + ' live rows', stackCapFg: rc.over ? '#e05a4a' : '#8d8472',
+      mech: d.mechanical ? { bg: '#2a2316', bd: '#c9a25a', fg: '#f0d79a' } : off.mech, toggleMech: off.toggleMech };
   }
   /* D43 §5.2: the Panel view. The stage is split the way the device stacks it (the plate
    * under the hands, the hands, the glass and case over them), each layer is taken to
@@ -3128,17 +3192,30 @@ class Component extends DCLogic {
     const feats = ready ? E.features(s.train) : [];
     const opt = (obj) => Object.entries(obj).map(([v, label]) => ({ v, label }));
     const mark = (list, v) => list.map((o) => ({ ...o, sel: String(o.v) === String(v) }));
-    const mk = (o) => ({ label: '', isHead: false, isRow: true, isRange: false, isSelect: false, isChips: false, isNote: false, isColor: false, isText: false, isFile: false, min: 0, max: 1, step: 1, value: '', on: null, opts: [], valText: '', note: '', anchor: null, ...o });
+    const mk = (o) => ({ label: '', isHead: false, isRow: true, isRange: false, isSelect: false, isChips: false, isNote: false, isColor: false, isText: false, isFile: false, min: 0, max: 1, step: 1, value: '', on: null, opts: [], valText: '', note: '', anchor: null,
+      hasLink: false, linkText: '', linkTip: '', linkFg: '', linkCursor: 'default', relink: null, ...o });
+    /* D43 §2.3: a property that can follow a source (the dial's style, or the hand
+     * defaults) says which it is doing. Linked: it follows, and changing it here
+     * unlinks it. Overridden: one click re-links it. Read off the control's own inherit
+     * option, so every control that offers "Same as dial" or a "Default" gets it. */
+    const linkOf = (opts, value, onv) => {
+      const inh = opts.find((o) => /^(Same as dial|Match dial)/.test(String(o.label || ''))) || opts.find((o) => /^Default\b/.test(String(o.label || '')));
+      if (!inh) return {};
+      const src = /dial/i.test(inh.label) ? 'the dial' : 'the defaults', linked = String(value) === String(inh.v);
+      return { hasLink: true, linkText: linked ? '\u26d3 ' + src : '\u21ba re-link', linkFg: linked ? '#8d8472' : '#c9a25a', linkCursor: linked ? 'default' : 'pointer',
+        linkTip: linked ? 'Follows ' + src + '; choose another value to set it here' : 'Set here, not from ' + src + ' — click to follow ' + src + ' again',
+        relink: linked ? () => {} : () => onv(inh.v) };
+    };
     /* anchor: the pane's scroll destination for a selection (see scrollTargetFor). An
      * optional second argument, because only a handful of sections are ever aimed at --
      * a label alone would leave the field objects carrying names nothing reads. */
     const H = (label, anchor) => mk({ label, isHead: true, isRow: false, anchor });
     const Rg = (label, value, min, max, step, onv, valText) => mk({ label, isRange: true, min, max, step, value, on: (e) => onv(+e.target.value), valText });
-    const Sl = (label, value, opts, onv) => mk({ label, isSelect: true, value, opts: mark(opts, value), on: (e) => onv(e.target.value) });
+    const Sl = (label, value, opts, onv) => mk({ label, isSelect: true, value, opts: mark(opts, value), on: (e) => onv(e.target.value), ...linkOf(opts, value, onv) });
     const Ch = (label, value, opts, onv) => mk({ label, isChips: true, opts: opts.map((o) => ({ ...on(String(o.v) === String(value)), label: o.label, pick: () => onv(o.v) })) });
     const Nt = (label, note) => mk({ label, isNote: true, note });
     const sw = (k) => 'linear-gradient(135deg,' + E.DIAL_COLORS[k][0] + ',' + E.DIAL_COLORS[k][1] + ')';
-    const Sw = (label, value, keys, onv, extra) => mk({ label, isSwatch: true, valText: keys.includes(value) ? E.COLOR_NAMES[value] : '', opts: [...(extra || []), ...keys.map((k) => ({ label: E.COLOR_NAMES[k], text: '', bg: sw(k), bd: k === value ? '#f0d79a' : '#2e2a24', pick: () => onv(k) }))] });
+    const Sw = (label, value, keys, onv, extra) => mk({ label, isSwatch: true, valText: keys.includes(value) ? E.COLOR_NAMES[value] : '', opts: [...(extra || []), ...keys.map((k) => ({ label: E.COLOR_NAMES[k], text: '', bg: sw(k), bd: k === value ? '#f0d79a' : '#2e2a24', pick: () => onv(k) }))], ...linkOf((extra || []).map((o) => ({ v: /Match dial/.test(o.label) ? 'match' : o.label, label: o.label })), value, onv) });
     const INKS = [['#f6f3ec', 'White'], ['#1a140c', 'Black'], ['#c9a25a', 'Gold'], ['#d7dbe0', 'Silver'], ['#cfe8b0', 'Lume green'], ['#9fd8ff', 'Lume blue'], ['#c8322a', 'Red'], ['#ff7a1a', 'Orange'], ['#2b59c3', 'Blue'], ['#ff2bd6', 'Magenta'], ['#22e6ff', 'Cyan'], ['#b6ff2e', 'Acid']];
     const parseCol = (t) => {
       t = String(t || '').trim().toLowerCase(); let m;
@@ -3768,6 +3845,7 @@ class Component extends DCLogic {
       }),
       caseOpts: ready ? Object.entries(E.CASE_STYLES).map(([id, label]) => ({ ...on(id === s.caseStyle), label, ref: this.cb('caseEls', id, (i) => this.drawCaseThumb('case', i)), pick: () => this.setState({ caseStyle: id }) })) : [],
       glassOpts: ready ? Object.entries(E.GLASS_STYLES).map(([id, label]) => ({ ...on(id === s.glassStyle), label, ref: this.cb('glassEls', id, (i) => this.drawCaseThumb('glass', i)), pick: () => this.setState({ glassStyle: id }) })) : [],
+      ...this.stackVals(),
       layers: this.LAYERS.map(([id, n, name, note]) => ({
         ref: this.cb('layerEls', id, (i) => this.drawLayer(i)), num: n, name, note,
         eye: s.hidden[id] ? 'hidden' : 'shown', eyeFg: s.hidden[id] ? '#8d8472' : '#c9a25a', op: s.hidden[id] ? 0.45 : 1,

@@ -167,6 +167,44 @@ R1–R7 are design-time mirrors of what the reader or the format already require
 of what the bake can express. Enforcing them in the panel turns a bake-time refusal
 into a drag that never lands.
 
+### 3.1 As built (P4, 2026-11-01)
+
+- **The stack is a view of the design's own fields.** `apps/clock/editor/stack.js`
+  (`OrbStack`) builds the banded stack from the face the stage draws: the crystal
+  (case, glass), then the hands top first (centre hands and sub-dial pointers, one
+  group, `design.order`), each sub-dial face with what is printed on it and the discs it
+  frames, the dial with its flares and openings, the discs it frames, then the plate
+  (geartrain, movement). Depth among sub-dials and among one host's discs is their
+  order in `design.comps`. A move answers with the new value of those fields — the
+  same ones the old ↑/↓ buttons wrote — so every preset's stack bakes exactly the
+  preset, and hands the stage does not draw keep their slots in `design.order`.
+- **The rules.** R1, R3, R4 and R7 refuse a move and name themselves; R2 holds by
+  construction (a shadow is a hand's flag, never a row); R5 is each row's badge (live,
+  value plate, baked in, printed on it, cut through it, crystal overlay); R6 counts the
+  live rows against 24 in the panel header; R8 (coaxial order, a hand sweeping through
+  an arbor stacked above it) is listed only with the design's `mechanical` field on and
+  never blocks. Drag and drop walks step by step and stops at the rule that bites.
+- **The panel** replaces the fixed Layers list: bands, indented children, live/baked
+  badges, arrows pre-checked against the rules (a dim arrow names its rule on hover),
+  drag and drop, the stage eye per group, the Mechanical switch, the R6 count. A row
+  click selects the layer and opens its tab.
+- **Style inheritance (§2.3).** Every select whose options include "Same as dial" /
+  "Match dial" (or a hand's "Default …") shows whether the value follows that source
+  (⛓) or is set here (↺ re-link, one click back). Built once, in the shared field
+  builders.
+- **Gates.** `headless-stack` (248 checks over all 17 presets and every rule, 7/7
+  mutants), `headless-stack-ui` (21 checks through the real component). All 17 presets
+  were re-baked with the current composer (dither included) and installed on orb-B
+  (v1.1.45+12c1682) through the upload door, replacing the card's older bakes: each bake
+  passed its own checks, the store rebooted onto it (`active` = its name, nothing staged),
+  and the framebuffer drew it (ink 98-99 %). One upload (Perpetual calendar) was refused
+  once by the card ("the card refused the write", HTTP 500) and stored cleanly on retry;
+  it did not recur. orb-B was left on Skeleton.
+- **P4b, not built:** a still layer above a moving one — a sub-dial face over the
+  hands, a flare over them, a ring under the dial — needs that layer shipped as a live
+  still row (R5's promotion, R7's dial promotion) and drawn in stack order by
+  `compose()`. The panel refuses those moves today with "Not in this build … (D43 P4b)".
+
 ## 4. The build flow
 
 A step bar across the top. Each step is a filtered view of the same stack, not a
@@ -540,7 +578,8 @@ long as an app in its library or on a known orb still names it.
 | **P1** ◐ | Panel view and Compare (§5.1–5.2): the JS mirror of `blend_px` (all three modes), the device quantization of each stage layer, crystal overlay | **built 2026-11-01**: `GorbBake.mix1616/blendPx/panelPlate/panelLayer/panelRGBA`, `WatchEngine.composeLayers`, the Render row (Design · Panel · Compare with a wipe). `headless-panel.test.js`: `blendPx` equals the C lifted from `orb_gfx.c` on 300,000 random texels, the panel plate and overlay equal the bake's stored codes, 8/8 mutants caught. Glass: the device model equals `fbgrab` outside the hands (§5.4). **Owed:** hands are rotated by the canvas (smoothed), the device samples nearest, so a hand's edge can differ by a texel — not yet measured against `bench_preview_parity.py`'s tolerance; sub-dial pointers are drawn in the under-hands layer, so Panel dithers them while the device ships them truncated |
 | **P2** ◐ | Bake-time blue-noise dither (§5.3, §5.4) of every still, screen-locked plane, colour and alpha: the plate, its bank, folded layers, the crystal overlay (alpha on the 32-step lattice). The table and its generator (`tools/make_bluenoise.py`), JS and Python twins, the per-layer `dither` setting with `on` allowed for rings and discs, every preset rebaked | both table copies pinned to one hash; vectors equal in both twins, with mutants caught (table transposed, frac comparison flipped, truncation restored); exact 565 colours unchanged at every pixel; delta row band and bank bytes for every animated preset recorded before and after; §5.4's band metric re-run on the new bakes; the glass no longer bands where P0 recorded it — **built 2026-11-01**: `tools/make_bluenoise.py`, `tools/orbdither.py`, the baker's still-row dither; `headless-dither.test.js` 24 checks, 11/11 mutants; bank bytes and delta texels unchanged on Skeleton, Luna and Neon moon; glass contour 17.9 % → 6.9 % on orb-B (§5.4). the hub default (`tools/orb-manager/themes/skeleton.orbtheme`) rebaked and installed through `make_default_theme.py`. **Owed:** the composer's per-layer `dither` setting, which needs the stack (P4) |
 | **P3** ✔ | The OS theme runtime and the end of `/composer/` (§9): the runtime's source moved into the hub tree and served under versioned `/runtime/` paths; `editor.json`'s `runtime` list validated, with a refusal that names the missing version; the clock app's sources moved to their own home and the region built from there, pointed at `/runtime/`; every reader of `tools/watch-composer/` repointed; then the route, `composer.go`, the embedded document copy, their tests and `tools/watch-composer/` deleted | the clock editor loads in the Themes pane with no `/composer/` route present; an editor naming a runtime version the hub lacks is refused with its reason; the baker's headless suites pass from their new home; `make_factory_apps.py --check` and `go test ./...` green; no reference to `/composer/` or `watch-composer` left in `tools/` (grep) — **done 2026-11-01** (§9.4) |
-| **P4** | The stack model and panel (§2, §3), D42 E2's composer half: one list, parenting, shadows as properties, the three bands, R1–R7 enforced on drop, R8 warnings behind the Mechanical switch, style inheritance (§2.3). Every preset expressed as a stack | headless tests per rule (each illegal drop refused with its reason, each R8 warning raised only with the switch on); each preset's stack bakes to the same v6 rows `v6Drive` produces today, or the difference is explained; D42 E2's own gate: preview-versus-reader pose check, each preset installed on orb-B |
+| **P4** ✔ | The stack model and panel (§2, §3), D42 E2's composer half: one list, parenting, shadows as properties, the three bands, R1–R7 enforced on drop, R8 warnings behind the Mechanical switch, style inheritance (§2.3). Every preset expressed as a stack | headless tests per rule (each illegal drop refused with its reason, each R8 warning raised only with the switch on); each preset's stack bakes to the same v6 rows `v6Drive` produces today, or the difference is explained; D42 E2's own gate: preview-versus-reader pose check, each preset installed on orb-B — **done 2026-11-01** (§3.1); still-row promotion split out as **P4b** |
+| **P4b** | Still-row promotion (§3 R5, R7): a still layer placed above a moving one ships as a live still AUX row, `compose()` draws the row band in stack order, and the dial is promoted when a ring sits under it | the panel moves that P4 refuses with "P4b" land, bake to still rows the C reader accepts, and draw on orb-B where the preview does |
 | **P5** | The build flow and layout (§4): step bar, Add catalogue with compatibility, properties grouped by D42 parts, diagnostics drawer, light moods | headless UI test walks Start → Render on a scratch build and on a preset; nothing removed from today's controls (a checklist of every current field and where it now lives) |
 | **P6** | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here |
 | **P7** | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs |

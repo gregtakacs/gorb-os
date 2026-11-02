@@ -46,12 +46,13 @@ zf = zipfile.ZipFile(io.BytesIO(region))
 names = [i.filename for i in zf.infolist()]
 entry = zf.read("index.html").decode("utf-8")
 
-# 1. The member set is exactly the five files, manifest first. A sixth member
+# 1. The member set is exactly the six files, manifest first. A seventh member
 #    would be an editor file the region does not declare; a missing engine,
-#    renderer or sound generator is a dead iframe or a silent Sound tab (D39).
-check("members are exactly the five, editor.json first",
+#    renderer, sound generator or stack is a dead iframe, a silent Sound tab (D39)
+#    or an empty layer panel (D43 P4).
+check("members are exactly the six, editor.json first",
       names == ["editor.json", "index.html", "watch-engine.js", "dial-renderer.js",
-                "sound-engine.js"], str(names))
+                "sound-engine.js", "stack.js"], str(names))
 check("no member is DEFLATEd (the hub streams without unpacking)",
       all(i.compress_type == zipfile.ZIP_STORED for i in zf.infolist()))
 check("region fits the firmware's 2 MiB cap", len(region) <= 2 * 1024 * 1024,
@@ -93,7 +94,8 @@ check("nothing names the retired /composer/ route", "/composer/" not in entry)
 check("the region's own members stay relative",
       '<script src="watch-engine.js"></script>' in entry
       and '<script src="dial-renderer.js"></script>' in entry
-      and '<script src="sound-engine.js"></script>' in entry)
+      and '<script src="sound-engine.js"></script>' in entry
+      and '<script src="stack.js"></script>' in entry)
 
 # 4. The fonts: one vendored sheet from the runtime, no Google reference left.
 check("the fonts are the runtime's one vendored sheet",

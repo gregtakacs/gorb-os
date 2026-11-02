@@ -66,6 +66,8 @@ MEMBER_RENDERER = "dial-renderer.js"
 # D39: the clock's default sounds ship as this generator, never as WAVs
 # (docs/sound-plan.md §6). App-owned like the engine, so it is a member, relative.
 MEMBER_SOUND = "sound-engine.js"
+# D43 P4: the layer stack and its rules, app-owned like the engine.
+MEMBER_STACK = "stack.js"
 
 # The OS runtime ids this editor resolves against on the hub (D43 §9.1). The hub
 # serves each at /runtime/<id>/ and refuses an editor naming one it does not carry.
@@ -226,7 +228,7 @@ def members():
     with open(os.path.join(COMPOSER_DIR, COMPOSER_ENTRY), "rb") as f:
         entry = _rewrite(f.read().decode("utf-8")).encode("utf-8")
     out = [(MEMBER_MANIFEST, _manifest()), (MEMBER_ENTRY, entry)]
-    for name in (MEMBER_ENGINE, MEMBER_RENDERER, MEMBER_SOUND):
+    for name in (MEMBER_ENGINE, MEMBER_RENDERER, MEMBER_SOUND, MEMBER_STACK):
         with open(os.path.join(COMPOSER_DIR, name), "rb") as f:
             out.append((name, f.read()))
     return out

@@ -149,5 +149,6 @@ require(path.join(DIR, 'watch-engine.js'));
 require(require('./runtime-paths.js').BAKER);
 // D39: the Sound tab renders from the generator the region ships beside the engine
 require(path.join(DIR, 'sound-engine.js'));
+require(path.join(DIR, 'stack.js'));
 const E = win.WatchEngine;
 module.exports = { E, SIZES, loaded, FakeCanvas, ALPHAS, CANVASES };

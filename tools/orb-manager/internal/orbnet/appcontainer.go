@@ -201,7 +201,12 @@ type AppContainer struct {
 // HasThemes reports whether this app can hold a theme at all. That is the cap question,
 // and it is the only truthful way to decide whether a Themes pane should exist for an app
 // that has never had a theme written for it — the inversion D37 exists to close.
-func (a *AppContainer) HasThemes() bool { return a.Caps&AppCapThemes != 0 }
+//
+// Since §43 the wasm clock no longer declares `themes` (the OS's Themes page picks, and it
+// never walks the card), yet it is the app whose themes the card holds and whose editor
+// composes them. So an app that ships an editor is theme-aware too: an editor's only job
+// is to make that app's themes (D48: one app per theme).
+func (a *AppContainer) HasThemes() bool { return a.Caps&AppCapThemes != 0 || a.HasEditor() }
 
 // HasEditor reports whether the container carries an authoring payload.
 func (a *AppContainer) HasEditor() bool { return a.EditorSize > 0 }

@@ -133,7 +133,11 @@ func (c *Client) ThemeAppsFrom(ip string, apps *AppList, appErr error, list *The
 
 	if apps != nil {
 		for _, a := range apps.Installed {
-			if !a.HasCap("themes") {
+			// Theme-aware: the app declares `themes`, or the device reports a verified
+			// editor region for it, or the card already holds themes filed under it. The
+			// wasm clock (§43) declares only `sound` -- the OS picks its themes now -- and
+			// keyed on the cap alone the hub lost its pane and its Compose button.
+			if ed, answered := editorFromRow(a); !a.HasCap("themes") && !(answered && ed) && groups[a.Slug] == nil {
 				continue
 			}
 			g := groups[a.Slug]

@@ -25,6 +25,7 @@ const (
 	capPower  = 1 << 4
 	capSdRead = 1 << 6
 	capThemes = 1 << 7
+	capSound  = 1 << 8
 )
 
 type themeAppsRow struct {
@@ -248,6 +249,25 @@ func TestThemeAppsOpensTheContainersEditorWhenTheDeviceReportsOne(t *testing.T) 
 	if want := "/editor/" + ip + "/hue/"; !row.HasEditor || row.EditorURL != want {
 		t.Errorf("an app reporting a region got has_editor=%v url=%q, want the container route %q",
 			row.HasEditor, row.EditorURL, want)
+	}
+}
+
+// §43's wasm clock declares only `sound`: the OS's Themes page picks its themes and it
+// never walks the card. It is still the app whose themes the card holds and whose editor
+// composes them, so a device-reported editor makes it theme-aware -- keyed on the cap
+// alone, the hub dropped the clock's pane and its Compose button after the merge.
+func TestThemeAppsKeepsAnAppThatShipsAnEditorWithoutTheThemesCap(t *testing.T) {
+	orb := orbfake.New(orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 1, OK: true}).
+		WithCardApps(orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capSound,
+			Installed: true, Serial: 10200, GeomCRC: 0xabcd, Editor: []byte("zip")})
+	s, ip, _, _ := fakeOrbHubWith(t, orb)
+	_, got := getThemeApps(t, s, ip)
+	row := appRow(got.Apps, "clock")
+	if row == nil {
+		t.Fatalf("a sound-only app shipping an editor vanished from the theme face: %+v", got.Apps)
+	}
+	if want := "/editor/" + ip + "/clock/"; !row.HasEditor || row.EditorURL != want {
+		t.Errorf("has_editor=%v url=%q, want the container route %q", row.HasEditor, row.EditorURL, want)
 	}
 }
 

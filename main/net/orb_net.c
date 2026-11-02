@@ -4888,10 +4888,14 @@ static void json_put(char *dst, size_t dsz, const char *src)
     dst[o] = '\0';
 }
 
-/* Per-app theming: sixteen rows is the listing ceiling (the walk's source cap
- * and the page's scroll agree on it), and a row's id is now the compound card
- * stem, not the 12-hex tail, so the row bound and the json[] budget grew. */
-#define THEME_LIST_MAX 16
+/* The listing ceiling is orb_theme.h's one number, shared with the walk's source
+ * cap, the glass picker and the service family; h_sd's json[] scales with it. */
+#define THEME_LIST_MAX ORB_THEME_LIST_MAX
+#define SD_JSON_ROW_B  640
+#define SD_JSON_BASE_B 1024
+
+static esp_err_t send_paced(httpd_req_t *req, const void *buf, size_t len,
+                            size_t *left_out, bool *budgeted_out);
 
 /* GET /api/v1/sd — the card, the installed theme, and what is on the card. */
 static esp_err_t h_sd(httpd_req_t *req)
@@ -4899,33 +4903,25 @@ static esp_err_t h_sd(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
-    static orb_theme_entry_t ent[THEME_LIST_MAX];
+    /* PSRAM, like json[] below: at the listing ceiling this copy is ~30 kB, and
+     * the internal pool's idle margin is ~11 kB (flight-tracker-design §4). */
+    EXT_RAM_BSS_ATTR static orb_theme_entry_t ent[THEME_LIST_MAX];
     const int n = orb_theme_scan(ent, THEME_LIST_MAX);
     uint64_t total = 0, freeb = 0;
     orb_sd_space(&total, &freeb);
 
-    /* The bound is the point, not the number: 12 rows whose owner name can each run
-     * to ORB_THEME_NAME_MAX characters (JSON-escaped to twice that) plus a 115-char
-     * why and the refused-install, damage, and staged sentences. Worst case
-     * arithmetic, from the format strings below: ~102 B of fixed row text and digits
-     * + 113 (name) + 12 (id) + 115 (why) + ~22 B of the P6.4 fmt/sects pair
-     * + ~12 B of §26 slice 3's slot letter = ~374 B a row, ~4.4 kB for 12 of them, plus ~700 B of the original base fields, ~190 B
-     * more for the staged pair at its full-width why and two 10-digit refill figures,
-     * and ~50 B for the bundle pair at two 10-digit figures and ~15 B for the
-     * job-busy witness = ~955 B. Measured against
-     * the live device at 192.168.2.34: the same route answers 653 B today with four
-     * short-named themes and every new field empty, and a truncated body would look
-     * exactly like the empty list "no card" prints — which is why an overflow is an
-     * error string, not a partial body. Same reason h_status carries its own bound. */
-    /* Worst-case row: ~104 B of fixed row text and digits + 113 (name) + 113
-     * (id, at the compound stem's ceiling) + 115 (why) + 49 (app) + ~34 B of
-     * the fmt/sects and slot-letter pairs = ~628 B a row, ~10 kB for 16 of
-     * them, plus ~955 B of base fields. Measured against the live device the
-     * same route answers ~650 B with four short-named themes; a truncated
-     * body would read as "no card", which is why an overflow is an error.
-     * PSRAM (EXT_RAM_BSS_ATTR): CPU-only, copied into lwIP by the send, and
-     * 11 KB is the internal pool's whole idle margin (flight-tracker-design §4). */
-    EXT_RAM_BSS_ATTR static char json[11264];
+    /* Worst-case row, from the format strings below: ~104 B of fixed row text and
+     * digits + 113 (name, JSON-escaped at ORB_THEME_NAME_MAX) + 113 (id, at the
+     * compound stem's ceiling) + 115 (why) + 49 (app) + ~34 B of the fmt/sects and
+     * stored pairs = ~628 B, budgeted at SD_JSON_ROW_B. The base fields — the
+     * refused-install, staged and bundle pairs at full width and the job witness —
+     * come to ~955 B, budgeted at SD_JSON_BASE_B. The bound is the point: a
+     * truncated body would read as "no card", so an overflow is an error string,
+     * not a partial body. The body actually sent is what the card holds — 16 rows
+     * of composer presets answered 3,357 B on orb-B (2026-11-01) — and it goes out
+     * one segment at a time (send_paced), so the ceiling is PSRAM, not one write.
+     * PSRAM (EXT_RAM_BSS_ATTR): CPU-only, copied into lwIP by the send. */
+    EXT_RAM_BSS_ATTR static char json[SD_JSON_BASE_B + THEME_LIST_MAX * SD_JSON_ROW_B];
     /* The last install refused, if any, travels with the list: the dial's row and
      * this page read the same two strings out of orb_theme, so a pick the firmware
      * said no to cannot come back as a silent no-op on the glass that pressed it
@@ -5010,7 +5006,16 @@ static esp_err_t h_sd(httpd_req_t *req)
         ESP_LOGE(TAG, "sd status overflow (%d B) — raise the json[] bound", off);
         return httpd_resp_sendstr(req, "{\"error\":\"sd status too large\"}");
     }
-    return httpd_resp_sendstr(req, json);
+    size_t left = 0;
+    bool budgeted = false;
+    const esp_err_t r = send_paced(req, json, (size_t)off, &left, &budgeted);
+    if (left) {
+        ESP_LOGE(TAG, "sd status: %s after %u of %d B",
+                 budgeted ? "out of budget" : "socket refused more",
+                 (unsigned)((size_t)off - left), off);
+        sock_abort_on_close(req);
+    }
+    return r;
 }
 
 /* POST /api/v1/sd/bundle?id=X — the theme store door. The same press shape the FORMAT 2
@@ -5136,6 +5141,42 @@ static esp_err_t h_theme_del(httpd_req_t *req)
  * 107,652 B in 4.05 s; 20 s is that five times over, for a cold card. */
 #define PREVIEW_BUDGET_MS 20000
 
+/* One body, chunked by hand at one MSS per write with airtime between writes and
+ * a wall-clock budget on the whole — the stall measurement above, as the one send
+ * every large reply on this single-task httpd takes. A failed chunk means the
+ * peer is gone or the window will not take more; the response cannot be re-cut
+ * or retried at that point, since httpd has already framed the chunk, so the
+ * caller names the shortfall (*left_out, and *budgeted_out when the clock ran
+ * out rather than the peer) and refuses the close. */
+static esp_err_t send_paced(httpd_req_t *req, const void *buf, size_t len,
+                            size_t *left_out, bool *budgeted_out)
+{
+    const uint8_t *p = (const uint8_t *)buf;
+    size_t left = len;
+    esp_err_t r = ESP_OK;
+    bool budgeted = false;
+    const int64_t deadline = esp_timer_get_time() + (int64_t)PREVIEW_BUDGET_MS * 1000;
+    while (left > 0) {
+        const size_t n = left > PREVIEW_CHUNK ? PREVIEW_CHUNK : left;
+        if (httpd_resp_send_chunk(req, (const char *)p, n) != ESP_OK) {
+            r = ESP_FAIL;
+            break;
+        }
+        p += n;
+        left -= n;
+        vTaskDelay(pdMS_TO_TICKS(PREVIEW_AIR_MS));   /* let the radio drain */
+        if (esp_timer_get_time() > deadline) {
+            r = ESP_FAIL;
+            budgeted = true;
+            break;
+        }
+    }
+    if (r == ESP_OK && httpd_resp_send_chunk(req, NULL, 0) != ESP_OK) r = ESP_FAIL;
+    *left_out = left;
+    *budgeted_out = budgeted;
+    return r;
+}
+
 static esp_err_t h_sd_preview(httpd_req_t *req)
 {
     char id[ORB_THEME_HANDLE_MAX + 1] = "";
@@ -5203,36 +5244,14 @@ static esp_err_t h_sd_preview(httpd_req_t *req)
     }
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    /* Chunked by hand, one MSS per write: see the stall measurement in this
-     * handler's header. The 4-byte extent rides as the first chunk's opening
-     * bytes, so the wire shape the page unpacks ([u16 w][u16 h][RGB565]) is
-     * unchanged. A failed chunk means the peer is gone or the window will not
-     * take more — the response cannot be re-cut or retried at that point, since
-     * httpd has already framed this chunk, so the honest end is early free and a
-     * refused close. The budget below is what keeps a stalled peer from holding
-     * this task past a bounded window. */
+    /* Chunked by hand, one MSS per write (send_paced): see the stall measurement
+     * in this handler's header. The 4-byte extent rides as the first chunk's
+     * opening bytes, so the wire shape the page unpacks ([u16 w][u16 h][RGB565])
+     * is unchanged. */
     const size_t total = (size_t)4 + bytes;
-    const uint8_t *p = px;
-    size_t left = total;
-    esp_err_t r = ESP_OK;
+    size_t left = 0;
     bool budgeted = false;                 /* the loop ran out its clock, not its peer */
-    const int64_t deadline = esp_timer_get_time() + (int64_t)PREVIEW_BUDGET_MS * 1000;
-    while (left > 0) {
-        const size_t n = left > PREVIEW_CHUNK ? PREVIEW_CHUNK : left;
-        if (httpd_resp_send_chunk(req, (const char *)p, n) != ESP_OK) {
-            r = ESP_FAIL;
-            break;
-        }
-        p += n;
-        left -= n;
-        vTaskDelay(pdMS_TO_TICKS(PREVIEW_AIR_MS));   /* let the radio drain */
-        if (esp_timer_get_time() > deadline) {
-            r = ESP_FAIL;
-            budgeted = true;
-            break;
-        }
-    }
-    if (r == ESP_OK && httpd_resp_send_chunk(req, NULL, 0) != ESP_OK) r = ESP_FAIL;
+    const esp_err_t r = send_paced(req, px, total, &left, &budgeted);
     if (left) {
         /* The 200 is already on the wire and cannot be walked back, so the one
          * honest thing left is to name the shortfall where the bench will read it

@@ -2343,11 +2343,12 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
  * never a table write, so the httpd task can take it without racing a worker's
  * walk — the law orb_files.h writes the whole registration API under.
  * =========================================================================== */
+_Static_assert(ORB_THEME_LIST_MAX <= 255, "orb_file_src_t.max_entries is a uint8_t");
 static const orb_file_src_t s_clock_themes_src = {
     .id          = "themes",
     .dir         = ORB_SD_THEME_DIR,
     .ext         = ORB_THEME_EXT,
-    .max_entries = 16,
+    .max_entries = ORB_THEME_LIST_MAX,
     /* Every app's themes share this directory; the compound stem names its
      * owner, and the prefix keeps this source's cap and rows the clock's. */
     .name_prefix = "clock-",

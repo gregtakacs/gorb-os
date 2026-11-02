@@ -42,10 +42,11 @@
 #include "esp_err.h"
 #include "esp_timer.h"     /* the preview's settle timer */
 #include "esp_heap_caps.h" /* the plane's PSRAM buffer */
+#include "esp_attr.h"      /* EXT_RAM_BSS_ATTR: the list copies live in PSRAM */
 
 static const char *TAG = "clock_theme";
 
-#define THEME_MAX 8     /* a card realistically holds a handful of themes */
+#define THEME_MAX ORB_THEME_LIST_MAX   /* the one listing ceiling, orb_theme.h */
 
 /* The page's own row numbers, in the order the shell will draw them. The group
  * header comes first so the card list is always in the same place, and a closed
@@ -61,8 +62,9 @@ typedef struct {
     char              status[72];
 } cui_t;
 
-static cui_t   s_ui;        /* LVGL task only */
-static cui_t   s_shared;    /* worker writes this under s_mx */
+/* PSRAM: at the listing ceiling one copy is ~30 kB, and there are three. */
+EXT_RAM_BSS_ATTR static cui_t s_ui;      /* LVGL task only */
+EXT_RAM_BSS_ATTR static cui_t s_shared;  /* worker writes this under s_mx */
 static SemaphoreHandle_t s_mx;
 static volatile bool s_dirty;
 static volatile bool s_walk;      /* a list walk is posted and unreaped     */
@@ -129,7 +131,9 @@ static void publish(const cui_t *src)
 static void job_run(void *arg)
 {
     (void)arg;                        /* the scan takes no payload */
-    cui_t out;
+    /* Static, not a local: a full listing is far past the worker's stack, and
+     * only the worker runs this, so one scratch copy is never shared. */
+    EXT_RAM_BSS_ATTR static cui_t out;
     memset(&out, 0, sizeof out);
 
     if (orb_theme_upload_busy()) {

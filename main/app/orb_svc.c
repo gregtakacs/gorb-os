@@ -45,6 +45,7 @@
 #include "esp_system.h"       /* esp_reset_reason_t — who ended last boot */
 #include "esp_timer.h"        /* the anchor half of the time pair */
 #include "esp_heap_caps.h"    /* the layer planes: PSRAM, off the frame path */
+#include "esp_attr.h"         /* EXT_RAM_BSS_ATTR: the theme list copy lives in PSRAM */
 #include "nvs.h"
 #include "nvs_flash.h"        /* nvs_flash_init_partition("storage") — the
                               * same idempotent call idle_dim.c makes before
@@ -624,8 +625,8 @@ static esp_err_t svc_set_beat(orb_app_t *a, uint32_t period_ms)
  * same call left behind, which is what makes a settings page able to ask a
  * row's state inside its own tick. An app that never called count gets the
  * empty answer from every one of them, not a stale one. */
-#define SVC_THEME_MAX 8
-static orb_theme_entry_t s_te[SVC_THEME_MAX];
+#define SVC_THEME_MAX ORB_THEME_LIST_MAX     /* the one listing ceiling, orb_theme.h */
+EXT_RAM_BSS_ATTR static orb_theme_entry_t s_te[SVC_THEME_MAX];   /* ~30 kB: PSRAM */
 static int s_te_n = -1;                       /* -1: nothing scanned yet */
 
 static int svc_theme_count(orb_app_t *a)

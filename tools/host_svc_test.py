@@ -995,6 +995,8 @@ HDRS = {
              "void heap_caps_free(void *);\n",
     "esp_timer.h": "#pragma once\n#include <stdint.h>\n"
                    "int64_t esp_timer_get_time(void);\n",
+    # The theme list copy sits in PSRAM on the device; on the host it is plain .bss.
+    "esp_attr.h": "#pragma once\n#define EXT_RAM_BSS_ATTR\n",
     # Copied verbatim from IDF 5.4's esp_system.h, order included: the shipped
     # classifier switches on these enumerators, so a drift here or a rename in
     # IDF lands on the table vectors below rather than silently unbilling a panic.

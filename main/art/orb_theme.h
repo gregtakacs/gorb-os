@@ -56,6 +56,14 @@
  * the card cannot hold — pinned by an assert in orb_theme.c. */
 #define ORB_THEME_HANDLE_MAX 55
 #define ORB_THEME_APP_MAX    23      /* ORB_BUNDLE_SLUG_MAX: the stem's leading token */
+/* The most themes one listing holds — the card walk, the hub's /api/v1/sd, the
+ * glass picker and the D18 service family all read this one number. It was 8 on
+ * the glass and 16 on the wire, sized to "a card realistically holds a handful";
+ * the composer ships 17 presets, so a full shelf hid themes from both. Every copy
+ * of the list lives in PSRAM, so the ceiling costs no internal RAM. A listing
+ * opens each file's header: 17 rows answered /api/v1/sd in 0.3 s on orb-B
+ * (2026-11-01). The walk's max_entries is a uint8_t, which bounds this at 255. */
+#define ORB_THEME_LIST_MAX   128
 
 /* Partition offsets inside `assets`. One slot at the head of the partition: a 4 KB
  * header at offset 0, 64 KB-aligned geometry at 0x1000 and pixels at 0x10000. See

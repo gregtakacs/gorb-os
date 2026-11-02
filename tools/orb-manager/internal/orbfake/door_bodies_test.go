@@ -47,16 +47,12 @@ func TestDoorRefusalBodiesMatchTheFirmware(t *testing.T) {
 		{doorBusyBody, "orb_app_install.c", install},
 		{notFoundBody, "orb_app_install.c", install},
 		{builtinBody, "orb_app_install.c", install},
-		{onDialBody, "orb_app_install.c", install},
-		{noIfaceBody, "orb_app_install.c", install},
-		{reviveFailBody, "orb_app_install.c", install},
 		{notUsableNameBody, "orb_app_install.c", install},
 		{uninstallHoldBody, "orb_app_install.c", install},
 		{missingIDBody, "orb_net.c", net},
-		{badOnBody, "orb_net.c", net},
 		{noStemBody, "orb_net.c", net},
-		{notEnabledBody, "orb_net.c", net},
 		{failedFaceBody, "orb_net.c", net},
+		{noIfaceBody, "orb_net.c", net},
 	} {
 		sentence := strings.TrimSuffix(strings.TrimPrefix(c.body, `{"error":"`), `"}`)
 		if sentence == c.body {
@@ -138,9 +134,9 @@ func TestLedgerSplitMatchesTheDevice(t *testing.T) {
 	if at := strings.Index(sb, `"apps":[{`+"\"slug\":\"menu\""); at < 0 {
 		t.Error("ledger does not start at row zero; h_status walks from the first registered app")
 	}
-	// The built-in refusal on both doors, at the status the device measured (NOT_SUPPORTED
-	// maps to 400, which door_http_status's arms are pinned on above).
-	for _, path := range []string{"/api/v1/apps/enable?id=menu&on=0", "/api/v1/apps/uninstall?id=menu"} {
+	// The built-in refusal, at the status the device measured (NOT_SUPPORTED maps to 400,
+	// which door_http_status's arms are pinned on above).
+	for _, path := range []string{"/api/v1/apps/uninstall?id=menu"} {
 		if code, body := appDo(t, srv, http.MethodPost, path, []byte("{}")); code != 400 ||
 			!strings.Contains(body, builtinBody) {
 			t.Errorf("POST %s -> %d %s, want 400 %s", path, code, body, builtinBody)

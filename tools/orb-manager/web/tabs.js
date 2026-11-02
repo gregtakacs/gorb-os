@@ -60,7 +60,7 @@ function showTab(name) {
   else if (name === "themes") lazyTab("themes", themeOpen);
   else if (name === "files") lazyTab("files", fmOpen);
   else if (name === "wifi") lazyTab("wifi", wifiOpen);
-  else if (name === "orb") lazyTab("home", () => { loadFeedKey().catch(() => {}); return loadHome(); });
+  else if (name === "orb") lazyTab("home", () => { loadSecrets().catch(() => {}); return loadHome(); });
 }
 
 // wifiOpen is the Wi-Fi face's first request, and it asks for the cached table
@@ -414,38 +414,81 @@ $("#home-loc").onclick = () => {
     { enableHighAccuracy: false, timeout: 15000, maximumAge: 600000 });
 };
 
-// ---- the flight feed's adsb.lol API key (orb_flights.h) ----
-// Written, never read back: the orb answers set or not, the header and the last
-// four characters, and that is all this line shows.
-const fkeyURL = () => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/flights/key";
-function fkeyLine(d) {
-  return d && d.set ? "adsb.lol key set (\u2026" + d.tail + ", sent as " + d.header + ")"
-                    : "no adsb.lol key: the orb asks adsb.lol without one";
+// ---- app secrets (§43): one write-only field per declared secret setting ----
+// GET /api/v1/apps names each installed app's secret ids; GET /api/v1/apps/cfg answers
+// a secret's host, whether it is set, its header and its last four characters, and
+// never its value. POST writes {"value","header"}; an empty value clears it.
+const cfgURL = (slug, id) => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/apps/cfg?id=" +
+  encodeURIComponent(slug) + "&key=" + encodeURIComponent(id);
+function secretLine(d) {
+  return d && d.set ? "set (…" + d.tail + ", sent as " + d.header + " to " + d.host + ")"
+                    : "not set: sent only to " + (d && d.host ? d.host : "the host the app declared");
 }
-async function loadFeedKey() {
+function secretRow(app, id) {
+  const box = document.createElement("div");
+  const cur = document.createElement("span"), msg = document.createElement("span");
+  cur.className = msg.className = "hint";
+  const head = document.createElement("div");
+  head.className = "row";
+  const name = document.createElement("strong");
+  name.textContent = (app.title || app.slug) + " · " + id + ": ";
+  head.append(name, cur);
+  const form = document.createElement("div");
+  form.className = "row";
+  const key = document.createElement("input"), hdr = document.createElement("input");
+  key.type = "password"; key.size = 34; key.autocomplete = "off"; key.placeholder = id;
+  key.setAttribute("aria-label", (app.title || app.slug) + " " + id);
+  hdr.size = 14; hdr.autocomplete = "off"; hdr.placeholder = "x-api-key";
+  hdr.setAttribute("aria-label", "Header the value is sent in");
+  hdr.title = "The HTTP header the service wants the value in. Leave empty for x-api-key.";
+  const set = document.createElement("button"), clr = document.createElement("button");
+  set.className = clr.className = "ghost";
+  set.type = clr.type = "button";
+  set.textContent = "Save"; clr.textContent = "Remove";
+  form.append(key, hdr, set, clr);
+  const foot = document.createElement("div");
+  foot.className = "row";
+  foot.append(msg);
+  box.append(head, form, foot);
+  const url = cfgURL(app.slug, id);
+  const post = async (body, what) => {
+    msg.textContent = what + "…";
+    try {
+      await readDeviceJSON(await hubFetch(url, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      }));
+      const d = await readDeviceJSON(await hubFetch(url));
+      cur.textContent = secretLine(d);
+      key.value = "";
+      msg.textContent = d.set ? "saved; the orb sends it on the app's next request" : "removed";
+    } catch (e) {
+      msg.textContent = "the orb refused it: " + e.message;
+    }
+  };
+  set.onclick = () => {
+    const v = key.value.trim(), h = hdr.value.trim();
+    if (!v) { msg.textContent = "paste the value first"; return; }
+    post(h ? { value: v, header: h } : { value: v }, "saving");
+  };
+  clr.onclick = () => post({ value: "" }, "removing");
+  hubFetch(url).then(readDeviceJSON).then((d) => { cur.textContent = secretLine(d); })
+    .catch((e) => { cur.textContent = "unreadable: " + e.message; });
+  return box;
+}
+async function loadSecrets() {
   if (!current.ip) return;
-  $("#fkey-cur").textContent = fkeyLine(await readDeviceJSON(await hubFetch(fkeyURL())));
-}
-async function fkeyPost(body, what) {
-  const msg = $("#fkey-msg");
-  msg.textContent = what + "\u2026";
-  try {
-    const d = await readDeviceJSON(await hubFetch(fkeyURL(), {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    }));
-    $("#fkey-cur").textContent = fkeyLine(d);
-    $("#fkey-key").value = "";
-    msg.textContent = d.set ? "saved; adsb.lol gets it on the orb's next request there" : "key removed";
-  } catch (e) {
-    msg.textContent = "the orb refused it: " + e.message;
+  const box = $("#secrets");
+  const d = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/apps"));
+  box.innerHTML = "";
+  for (const app of d.installed || [])
+    for (const id of app.secrets || []) box.appendChild(secretRow(app, id));
+  if (!box.children.length) {
+    const r = document.createElement("div");
+    r.className = "row";
+    r.innerHTML = '<span class="hint">no installed app declares a key</span>';
+    box.appendChild(r);
   }
 }
-$("#fkey-set").onclick = () => {
-  const key = $("#fkey-key").value.trim(), header = $("#fkey-hdr").value.trim();
-  if (!key) { $("#fkey-msg").textContent = "paste the key first"; return; }
-  fkeyPost(header ? { key, header } : { key }, "saving the key");
-};
-$("#fkey-clear").onclick = () => fkeyPost({ clear: true }, "removing the key");
 
 // ---- the search box: a city, coordinates, or a full plus code ----
 const HOME_COORDS = /^\s*([-+]?\d*\.?\d+)\s*[, ]\s*([-+]?\d*\.?\d+)\s*$/;

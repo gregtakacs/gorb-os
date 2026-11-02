@@ -93,7 +93,7 @@ func TestEditorRegionComesOffTheDiskForTheSameRelease(t *testing.T) {
 		editorInvalidate() // a restart: no memo, only the disk
 		orb := orbfake.New().WithCardApps(orbfake.CardApp{
 			Stem: "sentinel", Slug: "sentinel", Title: "Sentinel",
-			Installed: true, Enabled: true, Version: dialStamp, Editor: region,
+			Installed: true, Version: dialStamp, Editor: region,
 		})
 		s, ip, _, f := fakeOrbHubWith(t, orb)
 		s.lib = &Library{AppsDir: t.TempDir()} // no shelf copy: only the dial or the disk

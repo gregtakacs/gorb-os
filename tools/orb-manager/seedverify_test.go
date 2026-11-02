@@ -44,7 +44,7 @@ func deviceHub(t *testing.T, appsJSON, sdJSON string) (*Server, *[]string) {
 
 const (
 	goodApps = `{"mounted":true,"apps":[{"stem":"clock","ok":true}],` +
-		`"installed":[{"slug":"clock","enabled":true}]}`
+		`"installed":[{"slug":"clock"}]}`
 	goodSD = `{"mounted":true,"card_count":1,"active":"skeleton"}`
 )
 
@@ -55,17 +55,6 @@ func TestVerifySeedRefusesTheFacelessRow(t *testing.T) {
 	err := s.verifySeedRun(context.Background(), "127.0.0.1", func(installStep) {})
 	if err == nil {
 		t.Fatal("a clock with no theme on the card verified, which is the false-green this gate exists to stop")
-	}
-}
-
-// An installed-and-disabled row is symptom 2: the row stands, the enable bit is off, nothing draws.
-func TestVerifySeedRefusesTheDisabledRow(t *testing.T) {
-	s, _ := deviceHub(t,
-		`{"mounted":true,"apps":[{"stem":"clock","ok":true}],`+
-			`"installed":[{"slug":"clock","enabled":false}]}`, goodSD)
-	err := s.verifySeedRun(context.Background(), "127.0.0.1", func(installStep) {})
-	if err == nil {
-		t.Fatal("a disabled clock row verified; it cannot be on the glass while switched off")
 	}
 }
 
@@ -109,8 +98,8 @@ func TestWhereResolvesTheChipToItsLiveAddress(t *testing.T) {
 // and the page headline claimed the glass wore a clock. A hollow, disabled row is leftover,
 // not curatorship: the gate must answer false so the ladder refills the promise.
 const hollowApps = `{"mounted":true,"apps":[],"installed":[` +
-	`{"slug":"menu","title":"Menu","enabled":true,"failed":false,"walkable":true,"on_glass":true,"compiled":true},` +
-	`{"slug":"clock","title":"Clock","enabled":false,"failed":false,"walkable":true,"on_glass":false,"code_size":0,"serial":10129,"version":"v1.1.29"}]}`
+	`{"slug":"menu","title":"Menu","failed":false,"walkable":true,"on_glass":true,"compiled":true},` +
+	`{"slug":"clock","title":"Clock","failed":false,"walkable":true,"on_glass":false,"code_size":0,"serial":10129,"version":"v1.1.29"}]}`
 
 func TestShelfGateRefusesToCountTheHollowRow(t *testing.T) {
 	s, _ := deviceHub(t, hollowApps, `{"mounted":true,"card_count":0,"active":"Skeleton","themes":[]}`)
@@ -500,7 +489,7 @@ func TestWaitOrbCycleDemandsTheSilenceFirst(t *testing.T) {
 // parkedApps is goodApps with the one bit the seeding arm now gates on: the dial says the
 // clock is the face it is showing. Every other fact is the same.
 const parkedApps = `{"mounted":true,"apps":[{"stem":"clock","ok":true}],` +
-	`"installed":[{"slug":"clock","enabled":true,"on_glass":true}]}`
+	`"installed":[{"slug":"clock","on_glass":true}]}`
 
 // The owner ruling of 2026-10-29: an orb that finishes provisioning showing the menu is half
 // set up, and "the dial has not made it the face yet" is not a note a modal may close on. The

@@ -339,10 +339,6 @@ var deviceRoutes = map[string][]string{
 	// what that point would become; POST sets or clears it. Device config like the
 	// zone it drives, and it reaches neither the card nor the slot.
 	"/api/v1/home": {http.MethodGet, http.MethodPost},
-	// The flight feed's adsb.lol API key: an owner credential the Orb tab writes.
-	// The orb never reads it back (GET says set/unset, the header, the last four
-	// characters), and it goes only to adsb.lol. Neither the card nor the slot.
-	"/api/v1/flights/key": {http.MethodGet, http.MethodPost},
 	// D39: the owner's sound settings (level, switches, quiet hours, glass offset,
 	// pattern override) and the bench door that plays a built-in sound with no theme.
 	// Both are device config the owner sets the way they set the zone, and neither
@@ -400,24 +396,24 @@ var deviceRoutes = map[string][]string{
 	// card file and not in the installed prefix.
 	"/api/v1/apps/editor":  {http.MethodGet},
 	"/api/v1/apps/install": {http.MethodPost},
-	"/api/v1/apps/enable":  {http.MethodPost},
-	// The glass door: enable walks a row, this parks it. The seed dials it so a
-	// board never finishes enabled-and-not-showing (seedverify.go's note).
+	// The glass door: an installed row walks the carousel, this parks it. The seed
+	// dials it so a board never finishes installed-and-not-showing (seedverify.go).
 	"/api/v1/apps/face":      {http.MethodPost},
 	"/api/v1/apps/uninstall": {http.MethodPost},
 	// 7c9ff63's recovery door. clear faults a QUARANTINED built-in without the
 	// RESET ALL collateral: a compiled tier's menu that panicked at boot reads
-	// installed false, so both door_open gates refuse the enable revive and this is
+	// installed false, so this is
 	// the only way back short of wiping the owner's WiFi. The reboot is the
 	// firmware's, not the proxy's arm. D36 deleted the factory door with the
 	// in-image tier; S5 deleted the hub's /api/orb/seed restore path with the
 	// embed, leaving the sd/app and apps/install doors below as the one way an
 	// app reaches a card — the operator's copy, filed by the drop zone.
 	"/api/v1/apps/clear": {http.MethodPost},
-	// One declared app setting, written through the device's own config gate (type,
-	// range, quota, the owner's revocation). The app editor's door: the flight
-	// tracker's home position is the first setting a knob cannot reasonably type.
-	"/api/v1/apps/cfg": {http.MethodPost},
+	// One declared app setting, read or written through the device's own config gate
+	// (type, range, quota, the owner's revocation). A secret setting (§43) is the
+	// Orb tab's App keys: GET answers set or not, the header, the host and the last
+	// four characters, never the value, and the orb sends it only to that host.
+	"/api/v1/apps/cfg": {http.MethodGet, http.MethodPost},
 	"/api/v1/sd/app":   {http.MethodPost},
 	// v1.1.18's file-manager doors and the LAN twin of serial RESET ALL. The
 	// proxy forwards these verbatim (token, caps, lane) and owns none of the

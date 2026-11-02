@@ -593,7 +593,7 @@ func TestThePassWalksRegionsOnlyForTheOpenEditor(t *testing.T) {
 		orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 2, OK: true, Active: true},
 	).WithCardApps(orbfake.CardApp{
 		Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes,
-		Installed: true, Enabled: true, Editor: region,
+		Installed: true, Editor: region,
 	})
 	s, ip, _, fake := fakeOrbHubWith(t, f)
 	mux := http.NewServeMux()

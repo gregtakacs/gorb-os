@@ -626,7 +626,7 @@ func TestOldFirmwareIsRefusedBeforeTheUpload(t *testing.T) {
 			// sitting on its 90-second hard stop, so the mutant fails on an assertion
 			// instead of a timeout.
 			if sawUpload {
-				w.Write([]byte(`{"mounted":true,"apps":[],"installed":[{"slug":"clock","enabled":true}]}`))
+				w.Write([]byte(`{"mounted":true,"apps":[],"installed":[{"slug":"clock"}]}`))
 				return
 			}
 			w.Write([]byte(`{"mounted":true,"apps":[],"installed":[]}`))
@@ -694,7 +694,7 @@ func TestAppUploadRidesTheBulkClient(t *testing.T) {
 			switch r.URL.Path {
 			case "/api/v1/apps":
 				if installedNow {
-					w.Write([]byte(`{"apps":[],"installed":[{"slug":"sentinel","enabled":true}]}`))
+					w.Write([]byte(`{"apps":[],"installed":[{"slug":"sentinel"}]}`))
 					return
 				}
 				w.Write([]byte(`{"apps":[],"installed":[]}`))
@@ -702,8 +702,6 @@ func TestAppUploadRidesTheBulkClient(t *testing.T) {
 				installedNow = true
 				io.Copy(io.Discard, r.Body)
 				w.Write([]byte(`{"ok":true,"queued":true}`))
-			case "/api/v1/apps/enable":
-				w.Write([]byte(`{"ok":true}`))
 			default:
 				w.Write([]byte(`{}`))
 			}
@@ -750,14 +748,12 @@ func TestAppUploadRidesTheBulkClient(t *testing.T) {
 	}
 }
 
-// TestInstallOneAppReEnablesADisabledRow pins the leg the library row's Install door is
-// relied on for a board whose app sits in a slot with the enable word off -- P4a's default
-// for a fresh install, and the state a card-scan re-adoption lands in. The row must answer
-// with one enable POST and nothing else: no card write (the bulk client stays silent), no
-// install queue, no reboot. The UI offers Install for exactly this state -- the toggle is
-// gone by ruling, so if this leg ever stopped writing the enable word, the switched-off row
-// would become the dead-end the bench hit today with a v1.1.28 clock and no door back on.
-func TestInstallOneAppReEnablesADisabledRow(t *testing.T) {
+// TestInstallOneAppSkipsAnInstalledRow pins the leg the library row's Install door takes
+// for a board whose app already sits in a slot with its card copy behind it. An installed
+// app is on the dial (D47): the run answers skipped and nothing else — no card write (the
+// bulk client stays silent), no install queue, no reboot, and no call to the retired
+// enable door, which a current orb answers 404.
+func TestInstallOneAppSkipsAnInstalledRow(t *testing.T) {
 	blob := cloneFixture(t, t.TempDir(), "sentinel")
 	body, err := os.ReadFile(blob)
 	if err != nil {
@@ -768,12 +764,12 @@ func TestInstallOneAppReEnablesADisabledRow(t *testing.T) {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/api/v1/apps":
-				// The ledger's answer under test: the row IS on the dial, switched off,
-				// and the card still backs it. The card copy is not decoration — an
+				// The ledger's answer under test: the row IS on the dial and the card
+				// still backs it. The card copy is not decoration — an
 				// installed row is a partition header, and a header over an empty
 				// card/apps is a hollow row the hub must refill rather than skip
 				// (TestHollowRowSendsBytesInsteadOfSkipping pins that half).
-				w.Write([]byte(`{"apps":[{"stem":"sentinel","ok":true}],"installed":[{"slug":"sentinel","enabled":false}]}`))
+				w.Write([]byte(`{"apps":[{"stem":"sentinel","ok":true}],"installed":[{"slug":"sentinel"}]}`))
 			case "/api/v1/apps/enable":
 				*isEnable = true
 				io.Copy(io.Discard, r.Body)
@@ -804,10 +800,10 @@ func TestInstallOneAppReEnablesADisabledRow(t *testing.T) {
 	var steps []installStep
 	send := func(st installStep) { steps = append(steps, st) }
 	if err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", body, false, send); err != nil {
-		t.Fatalf("the enable run refused: %v", err)
+		t.Fatalf("the skip run refused: %v", err)
 	}
-	if !sawEnable {
-		t.Error("installOneApp left a switched-off row off, so the Install press rewrote nothing and enabled nothing")
+	if sawEnable {
+		t.Error("installOneApp called the retired enable door; an installed row has no off state")
 	}
 	if sawInstall {
 		t.Error("installOneApp queued a card install for a row already in a slot")
@@ -815,18 +811,14 @@ func TestInstallOneAppReEnablesADisabledRow(t *testing.T) {
 	if sawUploadOnBulk {
 		t.Error("installOneApp rewrote the container for a row already in a slot")
 	}
-	sawEnabledStep := false
 	sawSkipStep := false
 	for _, st := range steps {
-		if st.Action == "enabled" {
-			sawEnabledStep = true
-		}
 		if st.Action == "skipped" {
 			sawSkipStep = true
 		}
 	}
-	if !sawSkipStep || !sawEnabledStep {
-		t.Errorf("the run streamed %v; the panel must say skipped then enabled", steps)
+	if !sawSkipStep {
+		t.Errorf("the run streamed %v; the panel must say skipped", steps)
 	}
 }
 
@@ -983,7 +975,7 @@ func TestLibraryKeepOverOnlyReplacesWhenAsked(t *testing.T) {
 
 // TestHollowRowSendsBytesInsteadOfSkipping is the regression for the false "installed"
 // handed to the owner of a freshly flashed board on 2026-10-29: the dial carried a clock
-// row with no clock.orbapp on the card, so the row enabled, never reached the glass, and
+// row with no clock.orbapp on the card, so the row never reached the glass, and
 // the hub printed "already on the dial" without crossing a byte. An installed row is a
 // partition header, not the code. A remove-from-card, a swapped card, or a store that died
 // mid-write each leaves the row standing over an empty card/apps.
@@ -1000,7 +992,7 @@ func TestHollowRowSendsBytesInsteadOfSkipping(t *testing.T) {
 	run := func(t *testing.T, cardTier string) (uploaded bool, steps []installStep, err error) {
 		t.Helper()
 		ledgerBody := "{\"apps\":" + cardTier +
-			",\"installed\":[{\"slug\":\"sentinel\",\"enabled\":false}]}"
+			",\"installed\":[{\"slug\":\"sentinel\"}]}"
 		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/api/v1/sd/app" {
 				uploaded = true
@@ -1016,8 +1008,6 @@ func TestHollowRowSendsBytesInsteadOfSkipping(t *testing.T) {
 			case "/api/v1/apps/install":
 				io.Copy(io.Discard, r.Body)
 				w.Write([]byte("{\"ok\":true,\"queued\":true}"))
-			case "/api/v1/apps/enable":
-				w.Write([]byte("{\"ok\":true}"))
 			default:
 				w.Write([]byte("{}"))
 			}
@@ -1070,29 +1060,19 @@ func TestHollowRowSendsBytesInsteadOfSkipping(t *testing.T) {
 	})
 }
 
-// TestBootRowLandsEnabled is the third pin on the same bench report's second symptom. A fresh
-// board restored the clock from its card and the dial said `off`: card_fill memsets its row and
-// never set the enable bit, so the row's default was false. main/app/orb_app_install.c:969
-// (card_fill) and :755 (the install confirm) now set it, and docs/bugfix-batch-2026-10-29.md #2
-// had claimed exactly that since fae7c23 while the line was never written — the same shape of
-// overclaim as #3, caught the same way: grep the literal, do not trust the commit message.
-func TestBootRowLandsEnabled(t *testing.T) {
-	src := firmwareFile(t, "main/app/orb_app_install.c")
-
-	// Both fill sites, each brace-matched so the claim is about the function and not
-	// about a comment that describes it. The install path fills its row inside
-	// install_ladder; the boot path fills it inside resolve_boot (card_fill).
+// TestFirmwareHasNoOnOffState pins D47 from the hub's side: an app is installed or it is
+// not. The 2026-10-29 batch (#2) once had to set an enable bit at both of the installer's
+// row-fill sites; the bit, its stored word and its door are gone, and a hub that still
+// called the door would be dialling a 404. Both halves are read off the firmware files.
+func TestFirmwareHasNoOnOffState(t *testing.T) {
+	install := firmwareFile(t, "main/app/orb_app_install.c")
 	for _, fn := range []string{"install_ladder", "orb_app_install_resolve_boot"} {
-		body := cBody(t, src, fn)
-		if !strings.Contains(body, "row.enabled") {
-			t.Errorf("%s never sets the enable bit, so a board that boots from its card "+
-				"restores every app disabled and the dial shows no face", fn)
+		if strings.Contains(cBody(t, install, fn), "row.enabled") {
+			t.Errorf("%s sets an enable bit again; D47 retired the state", fn)
 		}
 	}
-
-	// The word must be true, not merely mentioned.
-	if n := strings.Count(src, "row.enabled    = true;") + strings.Count(src, "row.enabled = true;"); n < 2 {
-		t.Errorf("only %d fill site(s) land enabled, want 2: an install and a card boot are the same ruling", n)
+	if strings.Contains(firmwareFile(t, "main/net/orb_net.c"), `"/api/v1/apps/enable"`) {
+		t.Error("orb_net.c registers /api/v1/apps/enable again; D47 retired the door")
 	}
 }
 
@@ -1166,7 +1146,7 @@ func TestAdoptionOutranksTheOwnersShelfGate(t *testing.T) {
 }
 
 // TestJoinRunSeedsTheThemeIsTheRegression for the second half of the 2026-10-29 report: the
-// clock installed, the row enabled, and the dial still wore no clock. The clock is a themed
+// clock installed and the dial still wore no clock. The clock is a themed
 // face, so a board with zero themes on the card has a clock row that cannot draw. The theme
 // step sat behind `only == ""`, and the join-time install asks for exactly one slug — so the
 // path that runs on a freshly flashed board was the one path that could not seed a face.
@@ -1182,10 +1162,10 @@ func TestJoinRunSeedsTheTheme(t *testing.T) {
 		case "/api/v1/status":
 			w.Write([]byte(`{"state":"connected","fw":"` + installMinFW + `"}`))
 		case "/api/v1/apps":
-			// Card-backed and enabled, so installOneApp skips without touching the bulk
+			// Card-backed, so installOneApp skips without touching the bulk
 			// client and the run arrives at the theme step with its gate the only question.
 			w.Write([]byte(`{"mounted":true,"apps":[{"stem":"clock","ok":true}],` +
-				`"installed":[{"slug":"clock","enabled":true}]}`))
+				`"installed":[{"slug":"clock"}]}`))
 		case "/api/v1/sd":
 			w.Write([]byte(`{"mounted":true,"card_count":1,"active":"Aviator"}`))
 		default:
@@ -1244,8 +1224,8 @@ func TestCleanSlateUninstallsBeforeItErasesCard(t *testing.T) {
 		case r.URL.Path == "/api/v1/apps" && r.Method == http.MethodGet:
 			order = append(order, "read")
 			w.Write([]byte(`{"mounted":true,"apps":[],"installed":[` +
-				`{"slug":"menu","compiled":true,"enabled":true},` +
-				`{"slug":"clock","enabled":true},{"slug":"thermo","enabled":false}]}`))
+				`{"slug":"menu","compiled":true},` +
+				`{"slug":"clock"},{"slug":"thermo"}]}`))
 		case r.URL.Path == "/api/v1/apps/uninstall":
 			order = append(order, "uninstall:"+r.URL.Query().Get("id"))
 			w.Write([]byte(`{"state":"uninstalled"}`))

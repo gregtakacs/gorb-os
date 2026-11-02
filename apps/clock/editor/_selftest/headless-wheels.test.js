@@ -145,6 +145,20 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(t.o.caseStyle === 'polished' && t.o.train === 'classic' && it.state.caseStyle === 'tachy' && it.state.dial === 'opentour', 'a card renders its own case and train, and leaves the selected watch alone', JSON.stringify([t.o.caseStyle, t.o.train]));
   ok(typeof E.prime === 'function', 'and the engine can be primed back to the stage after one');
 }
+// ---- P5d.3f: a date at 2 o'clock in a window tilted with the ring ---------------------------------
+{
+  const ring = (face2, cut) => face([{ id: 'w', type: 'wheel', host: 'dial', size: 175, form: 'ring', inner: 130, trad: 152, read: 60, shows: 'date', face: face2 },
+    Object.assign({ id: 'k', type: 'cutout', host: 'w' }, cut || {})]).lay.dialHoles.find((h) => h.kind === 'rect');
+  const r60 = Math.PI / 3;
+  ok(near(ring('out').rot, r60) && near(ring('in').rot, r60), 'figures along the ring at 2 o\u2019clock: the window tilts with them, 60\u00b0, by itself');
+  ok(near(ring('up').rot, 0), 'level figures, a level window');
+  ok(near(ring('up', { lie: 'ring' }).rot, r60) && near(ring('out', { lie: 'level' }).rot, 0), 'and either can be told otherwise');
+  const nw = face([Object.assign({ id: 'n', type: 'wheel', host: 'dial' }, E.NEW_COMP.wheel)]).lay.wheels[0], pitch = (2 * Math.PI * nw.lr) / nw.spec.n;
+  ok(nw.fs >= E.LEGIBLE_PX && pitch >= nw.fs * (0.62 * 2 + 0.35) - 1e-6, 'a new wheel\u2019s figures fit round it without touching, at a legible size', nw.fs.toFixed(1) + ' px, pitch ' + pitch.toFixed(1));
+  ok(near(ring('out', { rot: 5 }).rot, r60 + Math.PI / 36), 'Turn adds to how it lies');
+  const h = ring('out'), d = Math.hypot(h.x - 233, h.y - 233);
+  ok(near(d, 152) && near(Math.atan2(h.x - 233, 233 - h.y), r60), 'and it stands on the figures where the wheel reads');
+}
 // ---- canon ----------------------------------------------------------------------------------
 {
   const c = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', host: 'dial', shows: 'nope', digit: 'whole', dir: 'cw', cadence: 'jump', ease: 0, overhang: 'shown', wbg: 'auto', tsize: 1, blank0: true },

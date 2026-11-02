@@ -744,7 +744,10 @@
   const WHEEL_SRC = { date: 'date', day: 'weekday', month: 'month', year: 'year', hour: 'hour12', hours24: 'hour24', minute: 'minute', second: 'second', moon: 'moon_age' };
   const SYNODIC = 29.530588853;
   const WHEEL_FORMS = { disc: 'Disc', ring: 'Ring', barrel: 'Barrel' };
-  const WHEEL_FACES = { up: 'Upright where it reads', out: 'Tops to the rim', in: 'Tops to the centre' };
+  const WHEEL_FACES = { up: 'Level where it reads', out: 'Along the ring · tops out', in: 'Along the ring · tops in' };
+  // D43 P5d.3f: how a cutout lies -- with its wheel's figures (level where they are level, along the
+  // ring where they follow it, and turned with their turn), or level, or along the ring, whatever they do
+  const CUT_LIES = { auto: 'With the figures', level: 'Level', ring: 'Along the ring' };
   const WHEEL_STYLES = { bold: 'Bold', regular: 'Regular', italic: 'Italic', bolditalic: 'Bold italic' };
   // a wheel's figure size: the author's px, or (a design from before P5d.3c) the old relative
   // size it was drawn at -- never below what the dial can be read by
@@ -1154,8 +1157,13 @@
       if (c.type !== 'wheel') return;
       const g = G[c.id], r = Math.max(10, +c.size || 40), onSub = g.host !== 'dial' && subHoles[g.host] ? g.host : null;
       const spec = wheelSpec(c.shows || 'date', c.digit, !!c.blank0); if (!spec) return;
-      const form = spec.moon ? 'disc' : WHEEL_FORMS[c.form] ? c.form : 'disc', fs = wheelFontPx(c);
+      const form = spec.moon ? 'disc' : WHEEL_FORMS[c.form] ? c.form : 'disc';
       const ri = form === 'ring' ? Math.max(2, Math.min(r - 4, c.inner != null ? +c.inner : r * 0.62)) : 0;
+      // a wheel the author has given no figure size takes the largest its figures fit round it without
+      // touching (never below the legible floor); an old relative size keeps the px it drew at
+      const len0 = Math.max(1, ...Array.from({ length: Math.min(spec.n, 60) }, (_, i) => String(spec.lab(i)).length));
+      const r0 = form === 'ring' ? (c.trad != null ? +c.trad : (r + ri) / 2) : c.trad != null ? +c.trad : r * 0.86;
+      const fs = c.fpx == null && c.tsize == null ? legible(Math.min(r * 0.3, form === 'barrel' ? r * 0.9 : (TAU * r0) / spec.n / (0.62 * len0 + 0.35))) : wheelFontPx(c);
       const lr = form === 'barrel' ? 0 : Math.max(ri + 1, Math.min(r - 1, c.trad != null ? +c.trad : form === 'ring' ? (r + ri) / 2 : r - fs * 0.85));
       const longest = Math.max(1, ...Array.from({ length: Math.min(spec.n, 60) }, (_, i) => String(spec.lab(i)).length));
       wheels.push({ id: c.id, x: g.x, y: g.y, r, ri, form, host: onSub || 'dial', spec, fs, lr, longest,
@@ -1171,7 +1179,9 @@
     // where a cutout stands: along the wheel's figures at `at` (its reading point by default), then moved
     const cutAt = (w, c) => {
       const at = c.at != null ? rad(+c.at) : w.read, bx = w.form === 'barrel' ? w.x : w.x + Math.sin(at) * w.lr, by = w.form === 'barrel' ? w.y : w.y - Math.cos(at) * w.lr;
-      return { at, x: bx + (+c.dx || 0), y: by + (+c.dy || 0), rot: rad(+c.rot || 0) + (w.form === 'barrel' ? w.trot : 0) };
+      const lie = CUT_LIES[c.lie] ? c.lie : 'auto', along = lie === 'ring' || (lie === 'auto' && w.face !== 'up');
+      const tilt = w.form === 'barrel' ? w.trot : (along ? at : 0) + (lie === 'auto' ? w.trot : 0);
+      return { at, x: bx + (+c.dx || 0), y: by + (+c.dy || 0), rot: rad(+c.rot || 0) + tilt };
     };
     // a cutout's size when the author has not set one: the widest figure and a margin, at the figure size
     const cutW = (w) => w.fs * (0.62 * w.longest + 0.55), cutH = (w) => w.fs * 1.3;
@@ -4396,6 +4406,7 @@
       if (c.type === 'cutout') {
         ['angle', 'dist', 'size'].forEach((k) => delete c[k]);
         ['dx', 'dy', 'rot'].forEach((k) => { if (!(+c[k])) delete c[k]; });
+        if (!CUT_LIES[c.lie] || c.lie === 'auto') delete c.lie;
         if (!c.shape || c.shape === 'window') delete c.shape;
         if (!c.style || c.style === 'frame') delete c.style;
         if (c.shape !== 'arc') delete c.span;
@@ -4447,7 +4458,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

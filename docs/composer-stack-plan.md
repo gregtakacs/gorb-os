@@ -1039,6 +1039,19 @@ at odd angles and left their windows partly open onto the movement.
 - Tests: `headless-wheels` 70 (every preset cutout backed and every ring concentric, the
   shrink and the flag, two rings at one radius, a card's own options).
 
+**As built (P5d.3f, owner 2026-11-02).** A date at 2 o'clock in a window tilted 60° was
+"extremely hard to achieve": the figures' face was there (tops to the rim follows the ring)
+but named obscurely, and the window never followed it, so it took a hand-worked Turn.
+- The faces read *Level where it reads*, *Along the ring · tops out*, *· tops in*.
+- A cutout **lies** (`lie`) *with the figures* by default: level where they are level, along
+  the ring where they follow it, turned with their Figure turn. *Level* and *Along the ring*
+  override it; Turn adds to whichever. Align resets it. Presets (level faces) are unchanged.
+- **Found on the way:** a wheel with no figure size took the old relative size (~35 px on a
+  date ring), its figures piled round the ring. It now takes the largest size that fits round
+  the ring without touching, never below the floor.
+- Tests: `headless-wheels` 76 (the 2 o'clock window tilting by itself, the overrides, Turn,
+  a new wheel's figures fitting).
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views

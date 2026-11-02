@@ -4305,13 +4305,14 @@ class Component extends DCLogic {
         if (hw.form !== 'barrel') R('Along the figures at', 'at', 0, 359, 1, (v) => v + '\u00b0', hw.read != null ? +hw.read : 90);
         R('Move across', 'dx', -120, 120, 0.5, (v) => v + ' px', 0);
         R('Move down', 'dy', -120, 120, 0.5, (v) => v + ' px', 0);
-        R('Turn', 'rot', -180, 180, 1, (v) => v + '\u00b0', 0);
+        if (hw.form !== 'barrel') Cx('Lies', 'lie', opt(E.CUT_LIES), 'auto');
+        R('Turn', 'rot', -180, 180, 1, (v) => (v ? v + '\u00b0 more' : 'none more'), 0);
         // P5d.3e: a cutout the wheel does not back all the way round opens onto the movement
         const lw = ((fc && fc.lay && fc.lay.wheels) || []).find((q) => String(q.id) === String(sel.host));
         const lh = lw ? lw.holes[lw.cut.findIndex((q) => String(q.id) === String(sel.id))] : null;
         if (lh && lh.uncovered) selFields.push(Nt('', 'This cutout runs past its ' + (lw.form === 'ring' ? 'ring\u2019s band' : 'disc') + ': the movement shows through the part the wheel does not cover. Shrink it, move it back onto the figures, or grow the wheel.'));
-        const aligned = (sel.at == null || +sel.at === (hw.read != null ? +hw.read : 90)) && !(+sel.dx) && !(+sel.dy) && !(+sel.rot);
-        selFields.push(Ch('Align', aligned ? 'on' : '', [{ v: 'on', label: aligned ? 'On the figures' : 'Align to the figures' }], () => this.setComp(sel.id, { at: hw.read != null ? +hw.read : 90, dx: 0, dy: 0, rot: 0 })));
+        const aligned = (sel.at == null || +sel.at === (hw.read != null ? +hw.read : 90)) && !(+sel.dx) && !(+sel.dy) && !(+sel.rot) && (!sel.lie || sel.lie === 'auto');
+        selFields.push(Ch('Align', aligned ? 'on' : '', [{ v: 'on', label: aligned ? 'On the figures' : 'Align to the figures' }], () => this.setComp(sel.id, { at: hw.read != null ? +hw.read : 90, dx: 0, dy: 0, rot: 0, lie: 'auto' })));
         Cx('Shape', 'shape', [{ v: 'window', label: 'Window' }, { v: 'round', label: 'Round' }, { v: 'arc', label: 'Arc' }, { v: 'slot', label: 'Slot' }, { v: 'moon', label: 'Moon' }], 'window');
         if (sel.shape === 'arc') R('Arc', 'span', 6, 180, 1, (v) => v + '\u00b0', 36);
         R('Width', 'w', 0, 120, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);
@@ -4386,7 +4387,7 @@ class Component extends DCLogic {
           R('Figure size', 'fpx', E.LEGIBLE_PX, 72, 0.5, (v) => v + ' px \u00b7 ' + E.pxMm(v * E.LEGIBLE.capEm).toFixed(2) + ' mm tall', fw ? fw.fs : E.LEGIBLE_PX);
           selFields.push(Sl('Typeface', sel.wfont || 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], set('wfont')));
           Cx('Style', 'fstyle', opt(E.WHEEL_STYLES), 'bold');
-          if (form !== 'barrel') Cx('Figures face', 'face', opt(E.WHEEL_FACES), 'up');
+          if (form !== 'barrel') Cx('Figures face', 'face', opt(E.WHEEL_FACES), 'up');   // its cutouts lie with them unless told otherwise
           R(form === 'barrel' ? 'Drum turn' : 'Figure turn', 'trot', -180, 180, 1, (v) => v + '\u00b0', 0);
           selFields.push(Co('Disc colour', sel.wbg, set('wbg'), 'Auto'), Co('Figures', sel.wink, set('wink'), 'Auto'));
           // the figures must not run into each other round the ring

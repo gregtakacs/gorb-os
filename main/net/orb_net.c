@@ -2617,12 +2617,17 @@ static esp_err_t h_status(httpd_req_t *req)
                  base_mac[3], base_mac[4], base_mac[5]);
     }
 
+    uint32_t lvm_total, lvm_free, lvm_biggest, lvm_peak;
+    display_lv_mem(&lvm_total, &lvm_free, &lvm_biggest, &lvm_peak);
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
         /* §43: the deepest the wasm apps' shared native stack has run, in bytes of
          * its ORB_WASM_NATIVE_STACK. The interpreter's depth is measured, not assumed. */
         "\"wasm_stack_peak\":%u,"
+        /* The LVGL pool every page is built from, wasm apps' included: a widget the
+         * pool cannot hold is silently absent, so the peak is the number to watch. */
+        "\"lv_mem\":{\"total\":%u,\"free\":%u,\"biggest\":%u,\"peak\":%u},"
 #if CONFIG_ORB_USB_MTP || CONFIG_ORB_USB_MSC
         /* Either share window has no console, so this is the only place an owner
          * can ask what the mode is doing. reason is the field that matters: without
@@ -2694,6 +2699,7 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
         (unsigned)orb_wasm_stack_peak(),
+        (unsigned)lvm_total, (unsigned)lvm_free, (unsigned)lvm_biggest, (unsigned)lvm_peak,
 #if CONFIG_ORB_USB_MSC
         orb_usb_msc_state(), orb_usb_msc_host_up() ? "true" : "false", orb_usb_msc_reason(),
 #elif CONFIG_ORB_USB_MTP

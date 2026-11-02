@@ -361,7 +361,7 @@ class Component extends DCLogic {
   stackInput() {
     const fc = this.face(), d = this.design() || {}, c = this.cfg();
     if (!fc) return null;
-    return { comps: d.comps || [], order: (fc.handOrder || []).slice(), E: window.WatchEngine,
+    return { comps: d.comps || [], order: (fc.liveSeq || []).map((e) => (e.kind === 'sub' ? 'comp:' + e.id : e.id)), E: window.WatchEngine,
              hands: (fc.hands || []).map((h) => ({ id: h.id, kind: h.kind, sub: !!h.sub, x: h.x, y: h.y, len: h.len })),
              shadows: +c.shMove > 0.01 && +c.shOp > 0.01, carriage: !!(this.base && this.base.cageAt) };
   }
@@ -1208,10 +1208,12 @@ class Component extends DCLogic {
     const E = window.WatchEngine, G = window.GorbBake;
     if (!E || !E.composeLayers || !G || !G.panelPlate) return;
     const L = E.composeLayers(this.base, gt, fc, d, this.state.hidden), wb = +this.cfg().wb;
-    if (wb !== 6500) [L.under, L.hands, L.top].forEach((cv) => E.wb(cv, wb));
+    if (wb !== 6500) [L.under, L.hands, L.top].concat((L.live || []).map((l) => l.canvas)).forEach((cv) => E.wb(cv, wb));
     const px = (cv) => cv.getContext('2d').getImageData(0, 0, 466, 466).data;
     const codes = G.panelPlate(px(L.under), 466, 466, true);
-    G.panelLayer(codes, 466, px(L.hands), 466, 466, {});
+    // the live band bottom first: hand runs as truncated sprites, lifted sub-dial
+    // faces as still rows (dithered, as the bake ships them) — D43 P4b
+    (L.live && L.live.length ? L.live : [{ canvas: L.hands, still: false }]).forEach((l) => G.panelLayer(codes, 466, px(l.canvas), 466, 466, { dither: !!l.still }));
     G.panelLayer(codes, 466, px(L.top), 466, 466, { dither: true });
     const img = x.createImageData(466, 466);
     G.panelRGBA(codes, img.data);
@@ -2173,7 +2175,7 @@ class Component extends DCLogic {
     // every animated dial — the walk's answer dropped on the floor, t3bake's tripwire
     // reporting it as "union 0 px", and every moving plate bake refused as stale.
     const un = m3.unionPx, bw = m3.bboxW, bh = m3.bboxH;
-    this._t3 = { pxs, un, bw, bh, compRows, compB, auxRows, auxB,
+    this._t3 = { pxs, un, bw, bh, compRows, compB, auxRows, auxB, onlyBase,
                  orbital: !!m3.orbital, carW: m3.carriageW | 0, carH: m3.carriageH | 0 };
     await this.t3bake(nm, fc, M, gt, B, fps, opts.send);
   }
@@ -2391,7 +2393,7 @@ class Component extends DCLogic {
    * frame pixels in its locals and the bake should not also hold its stack. */
   async t3bake(nm, fc, M, gt, B, fps, send) {
     const G = window.GorbBake;
-    const { pxs, un, bw, bh, compRows, compB, auxRows, auxB, orbital, carW, carH } = this._t3; this._t3 = null;
+    const { pxs, un, bw, bh, compRows, compB, auxRows, auxB, orbital, carW, carH, onlyBase } = this._t3; this._t3 = null;
     const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer);
     const ROLE = { 'centre-hour': 0, 'centre-minute': 1, 'centre-second': 2 };
     const hands = [], shadows = [];
@@ -2457,6 +2459,21 @@ class Component extends DCLogic {
       const gp = pixOf(gc);
       for (let p = 3; p < gp.length; p += 4096) if (gp[p] > 2) { glassB = 466 * 466 * 3; break; }
       if (glassB) glassP = { x: 0, y: 0, w: 466, h: 466, rgba: gp };
+    }
+    /* D43 P4b: every sub-dial face lifted among the hands ships as a still row at its
+     * stack depth. Rendered through composeLayers with only the static discs (a live
+     * window stays its own value row, placed just under the face), cropped to its ink. */
+    const stills = [], E3 = window.WatchEngine;
+    const seq3 = fc.liveSeq || [];
+    if (seq3.some((e) => e.kind === 'sub')) {
+      const L3 = E3.composeLayers(M, gt[0], fc, this.now(), { glass: 1, outer: 1 }, onlyBase);
+      for (const l of (L3.live || [])) {
+        if (!l.still) continue;
+        const rgba = pixOf(l.canvas), cr = G.cropLayer(rgba, 466, 466, 1);
+        if (!cr) continue;
+        stills.push({ id: l.id, rgba: cr.rgba, w: cr.w, h: cr.h, x: cr.offx, y: cr.offy });
+        oth += cr.w * cr.h * 3;
+      }
     }
     const m3p = { frames: B, fps, unionPx: un, bboxW: bw, bboxH: bh, otherB: oth + glassB, compB: compB || 0, auxB: auxB || 0,
                   hasCage: !!M.cageAt, orbital, carriageW: carW, carriageH: carH };
@@ -2575,7 +2592,19 @@ class Component extends DCLogic {
      * preview draws by and the layer kit ships. The baker turns it into the element
      * order column, so the rung the author set in the studio is the rung the L4
      * compositor sorts by and the glass shows. */
-    if (fc.handOrder && fc.handOrder.length) opts.depthOrder = fc.handOrder.slice();
+    /* The stack's live band, bottom first (D43 P4b): the hands, each lifted face as
+     * 'comp:<id>' with the live windows it frames ('bank:<id>') just under it. With
+     * nothing lifted this is handOrder exactly, so those bakes do not change. */
+    if (seq3.length) {
+      const dep = [];
+      seq3.forEach((e) => {
+        if (e.kind === 'hand') { dep.push(e.id); return; }
+        compRows.filter((r) => r.host === e.id).forEach((r) => dep.push('bank:' + r.id));
+        dep.push('comp:' + e.id);
+      });
+      opts.depthOrder = dep;
+    } else if (fc.handOrder && fc.handOrder.length) opts.depthOrder = fc.handOrder.slice();
+    if (stills.length) opts.stills = stills;
 
     /* The preview rides every bake. The glass picker, the orb's own /themes page,
      * and the hub's Theme card all paint this plane, and a theme without one reads
@@ -2954,7 +2983,7 @@ class Component extends DCLogic {
         return { rgba: sx.getImageData(0, 0, w, h).data, w, h };
       });
       compB += w * h * 3 * r.count;
-      out.push({ slot: ri, src: r.src, x: bx, y: by, w, h, planes });
+      out.push({ slot: ri, id: r.id, host: r.host || 'dial', src: r.src, x: bx, y: by, w, h, planes });   // the design's host: a lifted face is not a plan row
     }
     return { rows: out, compB };
   }

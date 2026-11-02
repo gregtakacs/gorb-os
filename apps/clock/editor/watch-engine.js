@@ -2548,6 +2548,23 @@
     const nat = handSlots(lay, design).map((h) => h.id), saved = (design.order || []).filter((id) => nat.includes(id));
     return saved.concat(nat.filter((id) => !saved.includes(id)));
   }
+  /* D43 P4b: the live band, bottom first — the hands, and any sub-dial face the author
+   * lifted among them. design.order carries both: a hand id, or 'comp:<id>' for a lifted
+   * sub-dial, in the place the author dropped it. handOrder() ignores the comp entries,
+   * so a dial with nothing lifted draws and bakes exactly as before. Hands design.order
+   * does not name are appended on top, as handOrder() appends them. */
+  function liveSeq(lay, design) {
+    const nat = handSlots(lay, design).map((h) => h.id), subs = {};
+    lay.subs.forEach((s) => { subs[s.id] = 1; });
+    const out = [], seen = {};
+    (design.order || []).forEach((e) => {
+      const id = String(e);
+      if (nat.includes(id) && !seen[id]) { out.push({ kind: 'hand', id }); seen[id] = 1; }
+      else if (id.indexOf('comp:') === 0 && subs[id.slice(5)] && !seen[id]) { out.push({ kind: 'sub', id: id.slice(5) }); seen[id] = 1; }
+    });
+    nat.forEach((id) => { if (!seen[id]) out.push({ kind: 'hand', id }); });
+    return out;
+  }
   function buildHands(lay, design, defStyle, defFin, tick) {
     const secT = tickTurn(tick === 'sweep' || !tick ? 0 : +tick);
     const cfg = design.hands || {}, ce = design.centre || {}, PG = perimGeom(design), R = (REACH[design.print] || 205) * (PG ? PG.k : 1), all = {};
@@ -3183,7 +3200,7 @@
     const F = {
       design, lay, en, pal, style, handFinish: hf,
       subLayers: buildSubdials(design, lay, en, pal, G, SH),
-      hands: buildHands(lay, design, style, hf, o.tick), inset: faceScale(o), dynK: dynScale(o), caseOpen: caseOpenR(o), handOrder: handOrder(lay, design), handSlots: handSlots(lay, design), light: Object.assign({}, LIGHT),
+      hands: buildHands(lay, design, style, hf, o.tick), inset: faceScale(o), dynK: dynScale(o), caseOpen: caseOpenR(o), handOrder: handOrder(lay, design), liveSeq: liveSeq(lay, design), handSlots: handSlots(lay, design), light: Object.assign({}, LIGHT),
     };
     // Under "no case" the opening pulls the DRAWN dial in through buildDial's lens; under a
     // drawn case everything eases in through compose's inset instead, unsplit.
@@ -3521,11 +3538,34 @@
     const cp = F.comps(date, compOnly), df = F.dateFlares ? F.dateFlares(date) : null;
     if (!hidden.complications) dz(() => ctx.drawImage(cp.dial, 0, 0));
     if (!hidden.dial) { ctx.drawImage(F.dial, 0, 0); if (df) dz(() => ctx.drawImage(df.dial, 0, 0)); }
-    F.subLayers.forEach((sl) => {
+    const lifted = {}; (F.liveSeq || []).forEach((e) => { if (e.kind === 'sub') lifted[e.id] = 1; });
+    const subBlock = (sl) => {
       if (!hidden.complications && cp.subs[sl.id]) dz(() => ctx.drawImage(cp.subs[sl.id], 0, 0));
       if (!hidden.subdials) { dz(() => ctx.drawImage(sl.canvas, 0, 0)); if (df && df.subs[sl.id]) dz(() => ctx.drawImage(df.subs[sl.id], 0, 0)); }
-    });
-    if (!hidden.hands) dz(() => F.drawHands(ctx, date, compOnly, noHands, noSh));
+    };
+    F.subLayers.forEach((sl) => { if (!lifted[sl.id]) subBlock(sl); });
+    /* D43 P4b: the live band in stack order. With nothing lifted this is one drawHands
+     * call, as it always was; a lifted sub-dial face (with what it prints and frames)
+     * paints between the hand segments it was dropped among. The plate bake holds the
+     * hands back (hidden.hands), so it holds the lifted faces back with them: they ship
+     * as still rows at their own depth instead. */
+    if (!hidden.hands) {
+      const seq = F.liveSeq || [], subOf = {}; F.subLayers.forEach((sl) => { subOf[sl.id] = sl; });
+      if (!seq.some((e) => e.kind === 'sub')) dz(() => F.drawHands(ctx, date, compOnly, noHands, noSh));
+      else {
+        let seg = [];
+        const flush = () => { if (!seg.length) return; const ids = compOnly ? seg.filter((id) => compOnly.indexOf(id) >= 0) : seg; if (ids.length) dz(() => F.drawHands(ctx, date, ids, noHands, noSh)); seg = []; };
+        // A bake render (compOnly given) never draws a lifted face: the face ships as its
+        // own still row. The discs it frames still draw, filtered like every comp, so a
+        // window's value tiles keep their art and its plate stays the disc alone.
+        const liftBlock = (sl) => {
+          if (!compOnly) return subBlock(sl);
+          if (!hidden.complications && cp.subs[sl.id]) dz(() => ctx.drawImage(cp.subs[sl.id], 0, 0));
+        };
+        seq.forEach((e) => { if (e.kind === 'hand') seg.push(e.id); else { flush(); if (subOf[e.id]) liftBlock(subOf[e.id]); } });
+        flush();
+      }
+    }
     if (!hidden.glass) dz(() => ctx.drawImage(F.glass, 0, 0));
     if (k < 1) { out.save(); out.translate(C, C); out.scale(k, k); out.translate(-C, -C); out.drawImage(F._in, 0, 0); out.restore(); }
     if (!hidden.outer) out.drawImage(F.outer, 0, 0);
@@ -3536,7 +3576,7 @@
    * (the live rows); `top` is the glass and the case alone on transparency (the crystal
    * overlay). Every transform compose() applies — the zoom (dynK) and the case inset —
    * is applied the same way, so the three layers stack back to the design pixels. */
-  function composeLayers(base, gt, F, date, hidden) {
+  function composeLayers(base, gt, F, date, hidden, compOnly) {
     hidden = hidden || {};
     const under = cv(S), hands = cv(S), top = cv(S);
     compose(under.getContext('2d'), base, gt, F, date, Object.assign({}, hidden, { hands: 1, glass: 1, outer: 1 }));
@@ -3551,7 +3591,30 @@
     if (!hidden.hands) inset(hands, (ctx) => F.drawHands(ctx, date));
     if (!hidden.glass) inset(top, (ctx) => ctx.drawImage(F.glass, 0, 0));
     if (!hidden.outer) top.getContext('2d').drawImage(F.outer, 0, 0);
-    return { under, hands, top };
+    /* D43 P4b: the live band as the device stacks it, bottom first — runs of hands
+     * (sprites, shipped truncated) and lifted sub-dial faces (still rows, shipped
+     * dithered like any still plane). `hands` stays the whole set for callers that
+     * want one layer; `live` is the ordered list Panel view blends. */
+    const live = [], seq = hidden.hands ? [] : (F.liveSeq || []), subOf = {};
+    F.subLayers.forEach((sl) => { subOf[sl.id] = sl; });
+    // compOnly: the bake asks for a lifted face with only its static discs; its live
+    // windows ship as their own value rows (D43 P4b)
+    const cp = F.comps(date, compOnly), df = compOnly ? null : (F.dateFlares ? F.dateFlares(date) : null);
+    let run = [];
+    const flush = () => { if (!run.length) return; const ids = run; const c = cv(S); inset(c, (ctx) => F.drawHands(ctx, date, ids)); live.push({ canvas: c, still: false }); run = []; };
+    seq.forEach((e) => {
+      if (e.kind === 'hand') { run.push(e.id); return; }
+      flush();
+      const sl = subOf[e.id]; if (!sl) return;
+      const c = cv(S);
+      inset(c, (ctx) => {
+        if (!hidden.complications && cp.subs[sl.id]) ctx.drawImage(cp.subs[sl.id], 0, 0);
+        if (!hidden.subdials) { ctx.drawImage(sl.canvas, 0, 0); if (df && df.subs[sl.id]) ctx.drawImage(df.subs[sl.id], 0, 0); }
+      });
+      live.push({ canvas: c, still: true, id: e.id });
+    });
+    flush();
+    return { under, hands, top, live };
   }
   function canonDesign(d) {
     if (!d.surface || d.surface === 'enamel') { delete d.surface; delete d.texture; }
@@ -3686,7 +3749,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, CAL_HANDS, EXTRA_HANDS, EXTRA_RING, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, CAL_HANDS, EXTRA_HANDS, EXTRA_RING, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

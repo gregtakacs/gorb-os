@@ -81,6 +81,22 @@ const eyeRow = row(/^Glass$/);
 eyeRow.eyeToggle(ev);
 ok(it.state.hidden.glass === true, 'the eye hides the glass on the stage');
 
+// D43 P4b: the lowest hand's down arrow lifts the face below it among the hands
+{
+  it.upd((dd) => { delete dd.order; delete dd.mechanical; });
+  it.setState({ hidden: {} });
+  const live = V().stackRows.filter((r) => r.isRow && r.arrows === 'visible' && /hand/i.test(r.label));
+  const low = live[live.length - 1];
+  low.down(ev);
+  const ord = it.design().order || [];
+  ok(ord.some((e) => String(e).indexOf('comp:') === 0), 'the arrow writes the lifted face into design.order', ord.join());
+  const fc2 = it.face();
+  ok(fc2.liveSeq.some((e) => e.kind === 'sub'), 'the face the stage draws carries it in its live band');
+  ok(V().stackRows.some((r) => r.isRow && /still row/.test(r.note)), 'its row is badged a still row');
+  ok(/^\d+ of 24/.test(V().stackCap), 'the R6 count still reads', V().stackCap);
+  it.upd((dd) => { delete dd.order; });
+}
+
 // D43 §2.3: a property that follows the dial says so, and re-links in one click
 {
   it.upd((dd) => { dd.comps = (dd.comps || []).concat([{ id: 'fx', type: 'flare', host: 'dial', angle: 0, dist: 60, size: 10, style: 'print', icon: 'text', text: 'LINK' }]); });

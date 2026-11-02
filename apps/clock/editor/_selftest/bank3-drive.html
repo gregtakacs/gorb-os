@@ -71,6 +71,16 @@
     IT.state.themeName = NAME;
     await IT.componentDidMount();
     await mount(DIAL);
+    // ?lift=<comp id> (D43 P4b): lift that sub-dial face to the top of the live band —
+    // over every hand — the way the stack panel writes it, before the real export runs.
+    const LIFT = new URLSearchParams(location.search).get('lift');
+    if (LIFT) {
+      const ord = IT.face().handOrder.concat(['comp:' + LIFT]);
+      IT.state.designs[DIAL].order = ord; IT.faces = {};
+      say('lifted ' + LIFT + ' over the hands: order ' + ord.join(','));
+      IT.buildMovement();
+      if (!await settle()) throw new Error('did not settle after the lift');
+    }
     // Intercept the download rather than clicking an <a>: headless Chrome has no save dir.
     // The ticker runs through the bake the way it runs under a live button press: settled3()
     // prices the walk against a half-filled loop, and the D34 tripwire says so in words.
@@ -132,6 +142,13 @@
     }
     const nf = plate ? (plate.n_frames | 0) : 0;
     say('reader: plate row n_frames=' + nf + '  row slots [' + hands.join(',') + ']  bytes ' + bytes.length);
+    if (w && w.sections.length) {
+      const els3 = w.sections[0].blob.elements;
+      const st3 = els3.filter((e) => (e.cls !== undefined ? e.cls : e.class) === 8 && e.src === 0 && !(e.flags & 16));   // a shadow twin is source 0 too
+      say('still rows: ' + st3.length + st3.map((e) => ' [' + e.w + 'x' + e.h + ' at ' + e.x + ',' + e.y + ' depth ' + e.order + ']').join('') +
+          '  hands at depth ' + els3.filter((e) => (e.cls !== undefined ? e.cls : e.class) === 8 && e.src !== 0).map((e) => e.order).join(',') +
+          '  windows at depth ' + els3.filter((e) => (e.cls !== undefined ? e.cls : e.class) === 5).map((e) => e.order).join(','));
+    }
     ok('the plate row carries the frames the carrier promised', nf >= 2 || /still|shimmer band|rides the still/.test(st), 'n_frames ' + nf);
     ok('every centre hand rode the bake as its own v6 row', hands.length >= 2, hands.join(','));
     // One preview row, opaque, square, at half the panel — the plane the OS picker and the

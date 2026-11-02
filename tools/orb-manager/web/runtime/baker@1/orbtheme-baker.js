@@ -3674,10 +3674,27 @@
         auxB += (av.w | 0) * (av.h | 0) * 3;
       }
     }
+    /* D43 P4b: a still row — a sub-dial face the author lifted among the hands. It never
+     * moves (source none, no cadence, no travel), takes its depth from depthOrder's
+     * 'comp:<id>' entry, and is a still, screen-locked plane, so it dithers. */
+    var stills = o.stills || [];
+    for (var ks = 0; ks < stills.length; ks++) {
+      var st = stills[ks], stKey = 'comp:' + st.id;
+      if (rung3[stKey] === undefined)
+        throw new Error('a lifted face (' + st.id + ') with no place in depthOrder: a still row takes its depth from the stack, and this one has none');
+      if (!(st.w > 0 && st.h > 0) || !st.rgba || st.rgba.length !== st.w * st.h * 4)
+        throw new Error('a lifted face (' + st.id + ') with no pixels: a still row ships its art or it is not a row');
+      row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the lifted face ' + q(String(st.id))), kind: SHAPE_ARM,
+            src: SOURCES.indexOf('none'), x: st.x | 0, y: st.y | 0, w: st.w, h: st.h,
+            order: Math.max(1, Math.min(63, rung3[stKey])), alpha: 255, n_frames: 1 }, st, true, true);
+      auxB += st.w * st.h * 3;
+    }
     for (k3 = 0; k3 < compRows.length; k3++) {
       var c4 = compRows[k3];
+      // a window a lifted face frames rides just under that face (depthOrder 'bank:<id>')
+      var bankOrd = c4.id !== undefined && rung3['bank:' + c4.id] !== undefined ? Math.min(63, rung3['bank:' + c4.id]) : (c4.order | 0);
       rowFrames({ n: nid++, 'class': classId('bank'), slot: c4.slot, kind: 0, src: SOURCES.indexOf(String(c4.src)),
-                  x: c4.x | 0, y: c4.y | 0, w: c4.w, h: c4.h, order: c4.order | 0, alpha: 255,
+                  x: c4.x | 0, y: c4.y | 0, w: c4.w, h: c4.h, order: bankOrd, alpha: 255,
                   n_frames: c4.planes.length, scale16: c4.scale16 | 0,
                   flags: c4.hidden ? EF_HIDDEN : 0 }, c4.planes, true, true);
     }

@@ -200,10 +200,39 @@ into a drag that never lands.
   and the framebuffer drew it (ink 98-99 %). One upload (Perpetual calendar) was refused
   once by the card ("the card refused the write", HTTP 500) and stored cleanly on retry;
   it did not recur. orb-B was left on Skeleton.
-- **P4b, not built:** a still layer above a moving one — a sub-dial face over the
-  hands, a flare over them, a ring under the dial — needs that layer shipped as a live
-  still row (R5's promotion, R7's dial promotion) and drawn in stack order by
-  `compose()`. The panel refuses those moves today with "Not in this build … (D43 P4b)".
+- **P4b, as built (2026-11-01).** A sub-dial face can be *lifted* among the hands. The
+  lowest hand stepping under a face lifts the face just above it; the top face on the
+  dial stepping up lifts it over the lowest hand; a lifted face stepping down from the
+  bottom of the live band settles back on the dial. `design.order` carries the live
+  band, bottom first (hand ids, and `comp:<id>` for a lifted face); the engine's
+  `liveSeq` reads it and `handOrder` ignores the comp entries, so a design with nothing
+  lifted draws and bakes exactly as before. R3 holds across the band: a lifted face
+  never rises over its own pointer. A lifted face carries what it prints and the discs it
+  frames (R4), counts as one more live row (R6), and is badged "live · still row" (R5).
+  - **Stage and Panel view:** `compose()` draws the hands in segments with each lifted
+    face between them; `composeLayers` returns the live band as an ordered list (hand
+    runs truncated, still rows dithered), which Panel view blends in order.
+  - **Bake:** the plate holds lifted faces back with the hands. Each lifted face ships
+    as a still AUX row (source none, no cadence or travel, dithered) rendered through
+    `composeLayers` with only its static discs, cropped to its ink, at depth
+    `comp:<id>` in `depthOrder`; a live window it frames rides just under it
+    (`bank:<id>`). Bake renders that pass `compOnly` (the comp tiles, the pointer
+    plates) never draw a lifted face, only the discs it frames.
+  - **Gates:** `headless-still` (11 checks, 5/5 mutants) holds still rows to the
+    baker's walk-back and to the shipped `orb_clock3.c` projection; `headless-stack`
+    (263 checks, 10/10 mutants) and `headless-stack-ui` (25) cover lifting through the
+    model and the real panel. On orb-B (v1.1.45), Perpetual calendar with its 6 o'clock
+    moon face lifted over every hand baked (face at depth 9, its moon window at 8, the
+    hands at 5–7, the other windows at 0) and the C projection accepted it; grabbed at
+    :30, the seconds hand runs under the face on the glass and over it in the ordinary
+    bake, with the moon window showing through the face's aperture in both.
+  - **Cost:** the bake's own estimate put that dial's flush at ~122 ms against ~94 ms
+    unlifted: a still row over moving hands is repainted when they pass under it. The
+    stack badge names the promotion; pricing it in the composer's pace readout at the
+    moment of the drop (§6) is owed to P5's Render-step budget.
+  - **Not covered:** flares and openings stay part of their host (a flare printed on the
+    dial cannot be lifted alone), and there are no ring rows yet, so R7's dial promotion
+    waits for D42 E3's rings.
 
 ## 4. The build flow
 
@@ -579,7 +608,7 @@ long as an app in its library or on a known orb still names it.
 | **P2** ◐ | Bake-time blue-noise dither (§5.3, §5.4) of every still, screen-locked plane, colour and alpha: the plate, its bank, folded layers, the crystal overlay (alpha on the 32-step lattice). The table and its generator (`tools/make_bluenoise.py`), JS and Python twins, the per-layer `dither` setting with `on` allowed for rings and discs, every preset rebaked | both table copies pinned to one hash; vectors equal in both twins, with mutants caught (table transposed, frac comparison flipped, truncation restored); exact 565 colours unchanged at every pixel; delta row band and bank bytes for every animated preset recorded before and after; §5.4's band metric re-run on the new bakes; the glass no longer bands where P0 recorded it — **built 2026-11-01**: `tools/make_bluenoise.py`, `tools/orbdither.py`, the baker's still-row dither; `headless-dither.test.js` 24 checks, 11/11 mutants; bank bytes and delta texels unchanged on Skeleton, Luna and Neon moon; glass contour 17.9 % → 6.9 % on orb-B (§5.4). the hub default (`tools/orb-manager/themes/skeleton.orbtheme`) rebaked and installed through `make_default_theme.py`. **Owed:** the composer's per-layer `dither` setting, which needs the stack (P4) |
 | **P3** ✔ | The OS theme runtime and the end of `/composer/` (§9): the runtime's source moved into the hub tree and served under versioned `/runtime/` paths; `editor.json`'s `runtime` list validated, with a refusal that names the missing version; the clock app's sources moved to their own home and the region built from there, pointed at `/runtime/`; every reader of `tools/watch-composer/` repointed; then the route, `composer.go`, the embedded document copy, their tests and `tools/watch-composer/` deleted | the clock editor loads in the Themes pane with no `/composer/` route present; an editor naming a runtime version the hub lacks is refused with its reason; the baker's headless suites pass from their new home; `make_factory_apps.py --check` and `go test ./...` green; no reference to `/composer/` or `watch-composer` left in `tools/` (grep) — **done 2026-11-01** (§9.4) |
 | **P4** ✔ | The stack model and panel (§2, §3), D42 E2's composer half: one list, parenting, shadows as properties, the three bands, R1–R7 enforced on drop, R8 warnings behind the Mechanical switch, style inheritance (§2.3). Every preset expressed as a stack | headless tests per rule (each illegal drop refused with its reason, each R8 warning raised only with the switch on); each preset's stack bakes to the same v6 rows `v6Drive` produces today, or the difference is explained; D42 E2's own gate: preview-versus-reader pose check, each preset installed on orb-B — **done 2026-11-01** (§3.1); still-row promotion split out as **P4b** |
-| **P4b** | Still-row promotion (§3 R5, R7): a still layer placed above a moving one ships as a live still AUX row, `compose()` draws the row band in stack order, and the dial is promoted when a ring sits under it | the panel moves that P4 refuses with "P4b" land, bake to still rows the C reader accepts, and draw on orb-B where the preview does |
+| **P4b** ✔ | Still-row promotion (§3 R5, R7): a still layer placed above a moving one ships as a live still AUX row, `compose()` draws the row band in stack order, and the dial is promoted when a ring sits under it | the panel moves that P4 refuses with "P4b" land, bake to still rows the C reader accepts, and draw on orb-B where the preview does — **done 2026-11-01** (§3.1) |
 | **P5** | The build flow and layout (§4): step bar, Add catalogue with compatibility, properties grouped by D42 parts, diagnostics drawer, light moods | headless UI test walks Start → Render on a scratch build and on a preset; nothing removed from today's controls (a checklist of every current field and where it now lives) |
 | **P6** | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here |
 | **P7** | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs |

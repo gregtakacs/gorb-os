@@ -43,6 +43,10 @@ html,body{height:100%;overflow:hidden}
 .wc-ph{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 4px}
 .wc-list{flex:1;overflow-y:auto;padding:0 6px 10px;min-height:0}
 .wc-band{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);padding:9px 8px 3px}
+.wc-gap{min-height:28px;margin:2px 6px;border:1.5px dashed var(--focus);border-radius:6px;background:rgba(88,166,255,.08);font-size:11px;color:var(--focus);display:flex;align-items:center;padding:3px 8px;animation:wcgap .12s ease-out}
+.wc-gap.no{border-color:var(--danger);color:var(--danger);background:rgba(248,81,73,.08)}
+@keyframes wcgap{from{min-height:0;opacity:0}}
+.wc-lr.dragging{opacity:.35}
 .wc-lr{display:grid;grid-template-columns:22px minmax(0,1fr) auto;align-items:center;gap:7px;min-height:30px;padding:0 4px 0 6px;border-radius:5px;cursor:pointer;border-left:2px solid transparent}
 .wc-lr:hover{background:var(--hover)}
 .wc-lr.on{background:var(--sel);border-left-color:var(--focus)}
@@ -166,8 +170,9 @@ html,body{height:100%;overflow:hidden}
     <div class="wc-list">
       <sc-for list="{{ stackRows }}" as="r" hint-placeholder-count="10">
         <sc-if value="{{ r.isHead }}" hint-placeholder-val="{{ false }}"><div class="wc-band">{{ r.label }}</div></sc-if>
+        <sc-if value="{{ r.isGap }}" hint-placeholder-val="{{ false }}"><div class="wc-gap {{ r.cls }}" onDragOver="{{ r.dragOver }}" onDrop="{{ r.drop }}" style="margin-left:{{ r.indent }}px">{{ r.label }}</div></sc-if>
         <sc-if value="{{ r.isRow }}" hint-placeholder-val="{{ true }}">
-          <div class="wc-lr {{ r.cls }}" draggable="{{ r.drag }}" onDragStart="{{ r.dragStart }}" onDragOver="{{ r.dragOver }}" onDrop="{{ r.drop }}" onClick="{{ r.pick }}" title="{{ r.title }}" style="margin-left:{{ r.indent }}px;opacity:{{ r.op }}">
+          <div class="wc-lr {{ r.cls }}" draggable="{{ r.drag }}" onDragStart="{{ r.dragStart }}" onDragOver="{{ r.dragOver }}" onDrop="{{ r.drop }}" onDragEnd="{{ r.dragEnd }}" onClick="{{ r.pick }}" title="{{ r.title }}" style="margin-left:{{ r.indent }}px;opacity:{{ r.op }}">
             <span class="wc-ic">{{ r.icon }}</span>
             <span class="wc-nm" style="font-weight:{{ r.weight }}">{{ r.label }}<span class="wc-warn">{{ r.warn }}</span><small>{{ r.tag }}</small></span>
             <span class="wc-acts">
@@ -852,13 +857,9 @@ class Component extends DCLogic {
     if (this.state.sel === cid) this.setState({ sel: null, selKind: null });
   }
   moveComp(cid, dir) { this.upd((d) => { const i = d.comps.findIndex((c) => c.id === cid), j = i + dir; if (i < 0 || j < 0 || j >= d.comps.length) return; const t = d.comps[i]; d.comps[i] = d.comps[j]; d.comps[j] = t; }); }
-  moveHand(hid, dir) {
-    const fc = this.face(); if (!fc) return;
-    const order = fc.handOrder.slice(), i = order.indexOf(hid), j = i + dir;
-    if (i < 0 || j < 0 || j >= order.length) return;
-    order[i] = order[j]; order[j] = hid;
-    this.upd((d) => { d.order = order; });
-  }
+  // a hand's own up/down arrows are the stack's: up one (dir 1) is a step toward the glass
+  moveHand(hid, dir) { this.stackMove('hand:' + hid, dir > 0 ? -1 : 1); }
+
   // D43 P5c: a hand is a comp of type 'hand'. handComp reads it; setHand patches it, and a
   // null in the patch clears that field back to the default.
   // the first hand on the dial's own arbour showing `shows`: the one the baker seats in its slot
@@ -885,16 +886,36 @@ class Component extends DCLogic {
   stackApply(r) {
     if (!r || !r.ok) { this.setState({ status: (r && r.reason) || 'That layer does not move' }); return false; }
     if (!r.order && !r.comps) return true;
-    this.upd((d) => { if (r.order) d.order = r.order; if (r.comps) d.comps = r.comps.map((q) => d.comps.find((x) => x.id === q.id) || q); });
+    // r.comps is the new comps order; a hand the drop re-hosted carries its new host with it
+    this.upd((d) => { if (r.order) d.order = r.order; if (r.comps) d.comps = r.comps.map((q) => { const c = d.comps.find((x) => x.id === q.id) || q; return q.type === 'hand' ? Object.assign(c, { host: q.host }) : c; }); });
     if (r.partial) this.setState({ status: 'Moved as far as the rules allow — ' + r.partial });
     return true;
   }
   stackMove(id, dir) { const inp = this.stackInput(); if (inp && window.OrbStack) this.stackApply(window.OrbStack.move(inp, id, dir)); }
-  stackDrop(target) {
-    const from = this._dragRow; this._dragRow = null;
-    const inp = this.stackInput(); if (!inp || !from || from === target || !window.OrbStack) return;
-    this.stackApply(window.OrbStack.moveTo(inp, from, target));
+  /* D43 P5d: the drag. Every row the drag passes over asks OrbStack.place where the
+   * layer would land (above or below that row, by which half the pointer is on); the
+   * panel opens a gap there when the answer is ok and shows the rule when it is not.
+   * Releasing applies exactly what the gap showed. */
+  stackHover(e, it) {
+    const from = this._dragRow; if (!from) return;
+    if (e && e.preventDefault) e.preventDefault();
+    if (from === it.id) { if (this.state.dropAt) this.setState({ dropAt: null }); return; }
+    let where = 'above';
+    try { const r = e.currentTarget.getBoundingClientRect(); where = e.clientY > r.top + r.height / 2 ? 'below' : 'above'; } catch (err) { where = (e && e.where) || 'above'; }
+    const cur = this.state.dropAt;
+    if (cur && cur.target === it.id && cur.where === where) return;
+    const inp = this.stackInput(), res = inp && window.OrbStack ? window.OrbStack.place(inp, from, it.id, where) : { ok: false, reason: '' };
+    this.setState({ dropAt: { target: it.id, where, ok: !!res.ok && !res.same, same: !!res.same, reason: res.reason || '' } });
   }
+  stackDrop(target) {
+    const from = this._dragRow, at = this.state.dropAt; this._dragRow = null;
+    this.setState({ dropAt: null, dragging: null });
+    const inp = this.stackInput(); if (!inp || !from || from === target || !window.OrbStack) return;
+    if (at && at.ok) this.stackApply(window.OrbStack.place(inp, from, at.target, at.where));
+    else if (at && !at.ok && at.reason) this.setState({ status: at.reason });
+    else this.stackApply(window.OrbStack.moveTo(inp, from, target));
+  }
+  stackDragEnd() { this._dragRow = null; if (this.state.dropAt || this.state.dragging) this.setState({ dropAt: null, dragging: null }); }
   stackPick(it) {
     if (!it.sel) return;
     this._scrollTo = this.scrollTargetFor(it.sel);
@@ -1711,8 +1732,8 @@ class Component extends DCLogic {
       const up = it.movable ? S.move(inp, it.id, -1) : { ok: false, reason: '' }, dn = it.movable ? S.move(inp, it.id, 1) : { ok: false, reason: '' };
       const hidden = !!s.hidden[it.hide], on = selId === it.id;
       const ICON = { case: '◎', glass: '◌', dial: '◯', subdial: '◷', disc: '◐', flare: 'A', opening: '◇', comp: '▭', hand: '╱', pointer: '╱', geartrain: '⚙', movement: '▦' };
-      rows.push({ isHead: false, isRow: true, label: it.label, warn: warnOf[it.id] ? ' ⚠' : '', icon: ICON[it.kind] || '•',
-        cls: (on ? 'on' : '') + (it.parent ? ' child' : ''), indent: it.parent ? 14 : 0, tag: it.lifted ? 'still row' : '',
+      rows.push({ id: it.id, parent: it.parent || null, isHead: false, isRow: true, label: it.label, warn: warnOf[it.id] ? ' ⚠' : '', icon: ICON[it.kind] || '•',
+        cls: (on ? 'on' : '') + (it.parent ? ' child' : '') + (s.dragging === it.id ? ' dragging' : ''), indent: it.parent ? 14 : 0, tag: it.lifted ? 'still row' : '',
         note: it.badge + (it.kind === 'hand' || it.kind === 'pointer' ? (it.shadow ? ' · casts a shadow' : '') : '')
           + (it.lifted && liftCov ? (liftCov[it.ref] ? ' · repainted on ~' + Math.round(liftCov[it.ref] * 100) + '% of sweep ticks' : ' · clear of the sweep') : '')
           + (warnOf[it.id] ? ' · ' + warnOf[it.id] : ''),
@@ -1722,9 +1743,10 @@ class Component extends DCLogic {
         upOp: up.ok ? 1 : 0.35, downOp: dn.ok ? 1 : 0.35, upTip: up.ok ? 'Up one' : up.reason, downTip: dn.ok ? 'Down one' : dn.reason,
         up: (e) => { e.stopPropagation(); this.stackMove(it.id, -1); }, down: (e) => { e.stopPropagation(); this.stackMove(it.id, 1); },
         drag: it.movable ? 'true' : 'false',
-        dragStart: (e) => { this._dragRow = it.id; try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', it.id); } catch (err) { /* headless */ } },
-        dragOver: (e) => { if (this._dragRow) e.preventDefault(); },
+        dragStart: (e) => { this._dragRow = it.id; try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', it.id); } catch (err) { /* headless */ } this.setState({ dragging: it.id }); },
+        dragOver: (e) => this.stackHover(e, it),
         drop: (e) => { e.preventDefault(); this.stackDrop(it.id); },
+        dragEnd: () => this.stackDragEnd(),
         pick: () => this.stackPick(it),
         eye: hidden ? 'hidden' : 'shown', eyeIcon: hidden ? '○' : '◉', eyeFg: hidden ? '#5d6b78' : '#8b98a5',
         eyeTip: 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)',
@@ -1732,6 +1754,24 @@ class Component extends DCLogic {
     });
     // the row's explanation (its badge, what it costs, why it cannot move) is its tooltip
     rows.forEach((r) => { if (r.isRow) r.title = [r.label, r.note, r.tip].filter(Boolean).join(' · '); });
+    // D43 P5d: the drop gap -- where the dragged layer lands, or the rule that refuses it
+    const at = s.dropAt;
+    if (at && !at.same && this._dragRow) {
+      const ti = items.findIndex((x) => x.id === at.target), di = items.findIndex((x) => x.id === this._dragRow);
+      if (ti >= 0 && di >= 0) {
+        const tgt = items[ti], dk = items[di].kind;
+        // a face dropped below a face lands under that face's whole group; a hand dropped
+        // below a face goes into it, at the top of its hands
+        let ri = rows.findIndex((r) => r.isRow && r.id === at.target);
+        if (at.where === 'below' && tgt.kind === 'subdial' && dk !== 'hand' && dk !== 'pointer')
+          while (ri + 1 < rows.length && rows[ri + 1].isRow && rows[ri + 1].parent === at.target) ri++;
+        const into = at.where === 'below' && tgt.kind === 'subdial' && (dk === 'hand' || dk === 'pointer');
+        const gap = { isGap: true, isRow: false, isHead: false, cls: at.ok ? '' : 'no', indent: (tgt.parent || into) ? 14 : 0,
+          label: at.ok ? (into || tgt.kind === 'pointer' ? 'Drop here · on ' + (into ? tgt.label : (items.find((x) => x.id === tgt.parent) || {}).label || 'this face') : 'Drop here') : '⊘ ' + at.reason,
+          dragOver: (e) => { if (e && e.preventDefault) e.preventDefault(); }, drop: (e) => { if (e && e.preventDefault) e.preventDefault(); this.stackDrop(at.target); } };
+        if (ri >= 0) rows.splice(at.where === 'below' ? ri + 1 : ri, 0, gap);
+      }
+    }
     return { stackRows: rows, stackWarns: warns, stackCap: rc.rows + ' of ' + rc.cap + ' live rows', stackCapFg: rc.over ? '#f85149' : '#8b98a5',
       stackCapShort: rc.rows + ' / ' + rc.cap, mechCls: d.mechanical ? 'on' : '', warnCount: warns.length ? warns.length + ' warning' + (warns.length === 1 ? '' : 's') : '',
       mech: d.mechanical ? { bg: '#1f3a5f', bd: '#58a6ff', fg: '#e6edf3' } : off.mech, toggleMech: off.toggleMech };
@@ -4098,6 +4138,13 @@ class Component extends DCLogic {
           Cx('Direction', 'tdir', [{ v: 'cw', label: 'Clockwise' }, { v: 'ccw', label: 'Anticlockwise' }], 'cw');
           R('Text size', 'tsize', 0.6, 1.6, 0.05, (v) => Math.round(v * 100) + '%', 1);
         }
+        // D43 P5d: the look a hand placed on this face starts from; each hand follows it
+        // until it names its own style or finish
+        const nh = D.comps.filter((c) => c.type === 'hand' && c.host === sel.id).length;
+        selFields.push(H('Hands on it'),
+          Sl('Style', sel.hstyle || 'auto', [{ v: 'auto', label: 'Follow the dial' }, ...opt(E.HAND_STYLES)], set('hstyle')),
+          Sl('Finish', sel.hfinish || 'auto', [{ v: 'auto', label: 'Follow the dial' }, ...opt(E.HAND_FINISHES)], set('hfinish')),
+          Nt('', nh ? nh + ' hand' + (nh > 1 ? 's' : '') + ' on this sub-dial follow' + (nh > 1 ? '' : 's') + ' these unless set otherwise in the hand\u2019s own panel.' : 'No hand on it yet: add one from Parts while this sub-dial is selected.'));
       }
       if (sel.type === 'window') {
         Sx('Shows', 'shows', opt(E.SHOWS));
@@ -4498,7 +4545,7 @@ class Component extends DCLogic {
         label: id === 'auto' ? 'Preset' : E.HAND_STYLES[id], pick: () => this.setState({ hands: id }),
       })),
       handRows: slots.map((id, i) => {
-        const hc = this.handComp(id, D) || {}, isC = (hc.host || 'dial') === 'dial', k = hc.shows;
+        const hc = this.handComp(id, D) || {}, isC = (hc.host || 'dial') === 'dial', k = hc.shows, hostFace = isC ? null : D.comps.find((c) => c.id === hc.host);
         const len = +hc.len || 1, wid = +hc.wid || 1, off = Math.round(+hc.offset || 0);
         const ringNote = isC && E.HAND_RING[k] ? (E.HAND_RING[k] === D.perim && (D.perimShrink == null || +D.perimShrink < 1)
           ? 'Its tip lands on the ' + E.PERIMS[D.perim].toLowerCase() + ' ring the dial prints; Length trims it off the ticks.'
@@ -4517,8 +4564,8 @@ class Component extends DCLogic {
           isGmt: k === 'gmt', offset: off, offsetText: off === 0 ? 'local' : (off > 0 ? '+' : '') + off + ' h',
           onOffset: (e) => this.setHand(id, { offset: +e.target.value || null }),
           showsNote: ringNote,
-          styleOpts: mark([{ v: 'auto', label: 'Default style' }, ...(ready ? opt(E.HAND_STYLES) : [])], hc.style || 'auto'),
-          finOpts: mark([{ v: 'auto', label: 'Default finish' }, ...(ready ? opt(E.HAND_FINISHES) : [])], hc.finish || 'auto'),
+          styleOpts: mark([{ v: 'auto', label: hostFace && hostFace.hstyle ? 'Follow the sub-dial · ' + (E.HAND_STYLES[hostFace.hstyle] || hostFace.hstyle) : 'Default style' }, ...(ready ? opt(E.HAND_STYLES) : [])], hc.style || 'auto'),
+          finOpts: mark([{ v: 'auto', label: hostFace && hostFace.hfinish ? 'Follow the sub-dial · ' + (E.HAND_FINISHES[hostFace.hfinish] || hostFace.hfinish) : 'Default finish' }, ...(ready ? opt(E.HAND_FINISHES) : [])], hc.finish || 'auto'),
           onStyle: (e) => this.setHand(id, { style: e.target.value }),
           onFinish: (e) => this.setHand(id, { finish: e.target.value }),
           len, wid, lenText: Math.round(len * 100) + '%', widText: wid.toFixed(2) + '×',

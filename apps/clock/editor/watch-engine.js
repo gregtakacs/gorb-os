@@ -2586,27 +2586,31 @@
     return handComps(design).filter((c) => !c.host || c.host === 'dial' || subs[c.host])
       .map((c) => ({ id: c.id, kind: c.shows, sub: !!(c.host && c.host !== 'dial'), host: c.host && c.host !== 'dial' ? c.host : 'dial' }));
   }
-  function handOrder(lay, design) {
-    const nat = handSlots(lay, design).map((h) => h.id), saved = (design.order || []).filter((id) => nat.includes(id));
-    return saved.concat(nat.filter((id) => !saved.includes(id)));
-  }
-  /* D43 P4b: the live band, bottom first — the hands, and any sub-dial face the author
-   * lifted among them. design.order carries both: a hand id, or 'comp:<id>' for a lifted
-   * sub-dial, in the place the author dropped it. handOrder() ignores the comp entries,
-   * so a dial with nothing lifted draws and bakes exactly as before. Hands design.order
-   * does not name are appended on top, as handOrder() appends them. */
+  /* D43 P5d: the draw order, bottom first. A sub-dial's hands ride its face: the group
+   * of a face left on the dial sits under the live band, its hands in comps order, and a
+   * face the author lifted among the dial's hands carries its own hands with it.
+   * design.order names the live band only: the dial's own hands, and 'comp:<id>' for a
+   * lifted face. Dial hands it does not name are appended on top, so a dial with no
+   * order draws its sub-dial hands first and then the dial's, in comps order. */
   function liveSeq(lay, design) {
-    const nat = handSlots(lay, design).map((h) => h.id), subs = {};
+    const slots = handSlots(lay, design), subs = {}, own = {};
     lay.subs.forEach((s) => { subs[s.id] = 1; });
-    const out = [], seen = {};
+    slots.forEach((h) => { if (h.sub) (own[h.host] = own[h.host] || []).push(h.id); });
+    const dialHands = slots.filter((h) => !h.sub).map((h) => h.id), live = [], seen = {};
     (design.order || []).forEach((e) => {
       const id = String(e);
-      if (nat.includes(id) && !seen[id]) { out.push({ kind: 'hand', id }); seen[id] = 1; }
-      else if (id.indexOf('comp:') === 0 && subs[id.slice(5)] && !seen[id]) { out.push({ kind: 'sub', id: id.slice(5) }); seen[id] = 1; }
+      if (dialHands.includes(id) && !seen[id]) { live.push({ kind: 'hand', id }); seen[id] = 1; }
+      else if (id.indexOf('comp:') === 0 && subs[id.slice(5)] && !seen[id]) { live.push({ kind: 'sub', id: id.slice(5) }); seen[id] = 1; }
     });
-    nat.forEach((id) => { if (!seen[id]) out.push({ kind: 'hand', id }); });
+    dialHands.forEach((id) => { if (!seen[id]) live.push({ kind: 'hand', id }); });
+    const lifted = {}; live.forEach((e) => { if (e.kind === 'sub') lifted[e.id] = 1; });
+    const out = [];
+    lay.subs.forEach((s) => { if (!lifted[s.id]) (own[s.id] || []).forEach((id) => out.push({ kind: 'hand', id })); });
+    live.forEach((e) => { out.push(e); if (e.kind === 'sub') (own[e.id] || []).forEach((id) => out.push({ kind: 'hand', id })); });
     return out;
   }
+  // every drawn hand, bottom first: the live sequence without its faces
+  function handOrder(lay, design) { return liveSeq(lay, design).filter((e) => e.kind === 'hand').map((e) => e.id); }
   function buildHands(lay, design, defStyle, defFin, tick) {
     const secT = tickTurn(tick === 'sweep' || !tick ? 0 : +tick);
     const PG = perimGeom(design), R = (REACH[design.print] || 205) * (PG ? PG.k : 1), all = {};
@@ -2630,8 +2634,13 @@
     // print -- the numerals print at 181..190 depending on the style, so these stop at
     // 161..174 and the heads land at different radii instead of one clump.
     const CAL_DIM = { hours24: [0.85, 0.0155], gmt: [0.865, 0.015], day: [0.8, 0.017], date: [0.835, 0.0165], month: [0.82, 0.016] };
+    // D43 P5d: a sub-dial offers the default look of the hands placed on it (hstyle, hfinish);
+    // a hand follows it until it names its own, and the dial's default stands behind both
+    const faceDef = {}; (design.comps || []).forEach((c) => { if (c.type === 'subdial') faceDef[c.id] = c; });
     handSlots(lay, design).forEach((slot) => {
-      const k = slot.kind, id = slot.id, hc = handComps(design).find((c) => c.id === id) || {};
+      const k = slot.kind, id = slot.id, hc0 = handComps(design).find((c) => c.id === id) || {}, fd = slot.sub ? faceDef[slot.host] || {} : {};
+      const hc = Object.assign({}, hc0, (!hc0.style || hc0.style === 'auto') && fd.hstyle && fd.hstyle !== 'auto' ? { style: fd.hstyle } : {},
+        (!hc0.finish || hc0.finish === 'auto') && fd.hfinish && fd.hfinish !== 'auto' ? { finish: fd.hfinish } : {});
       const lk = +hc.len || 1, wk = +hc.wid || 1, fin = handFin(pickF(hc));
       if (slot.sub) {
         // a hand on a sub-dial: sized off that sub-dial, turned with its print's direction,
@@ -3749,6 +3758,8 @@
         if (c.tfont === 'dial') delete c.tfont; if (c.tstyle === 'classic') delete c.tstyle; if (!c.tcolor || c.tcolor === 'auto') delete c.tcolor; if (c.torient === 'upright') delete c.torient; if (c.tdir === 'cw') delete c.tdir; if (c.tweight === 'bold') delete c.tweight; if (c.tsize != null && +c.tsize === 1) delete c.tsize;
         if (c.scale === 'none') ['tfont', 'torient', 'tdir', 'tweight', 'tsize', 'tstyle', 'tcolor'].forEach((k) => delete c[k]);
         if (c.color === 'match') delete c.color;
+        if (!c.hstyle || c.hstyle === 'auto') delete c.hstyle;
+        if (!c.hfinish || c.hfinish === 'auto') delete c.hfinish;
         if (c.height != null && +c.height === 1) delete c.height;
         if (c.style !== 'carbon') delete c.weaveAngle; if (c.style !== 'carbon' && c.style !== 'forged') delete c.weaveScale;
         if (c.tex != null && (c.style === 'enamel' || !c.style)) delete c.tex;

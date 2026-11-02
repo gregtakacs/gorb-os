@@ -464,6 +464,158 @@ every other hand ships as a pointer row.
   33, motion 41, pace 14, regression 106, and the runtime suites green. The clock region
   suite has 0 failures, `go test` is green, and the clock container was rebuilt (807,106 B).
 
+### 4.4 Faces, hands, wheels and cutouts (P5d, owner 2026-11-02)
+
+The owner's test of P5c, ruled 2026-11-02:
+
+1. **Drag any layer anywhere it can legally go.** While a layer is dragged, the list
+   opens a gap where it would land. Over a spot the rules refuse, no gap opens and the row
+   names the rule. R1–R7 stay hard (owner's answer: "legal gaps only").
+2. **A sub-dial's hands nest under the sub-dial,** the way its windows do, and are not
+   forced above it as layers of their own. The sub-dial's face is the base of its own
+   group, and the bake reads it that way.
+3. **A sub-dial does not define hands, and a hand does not define a sub-dial.** A sub-dial
+   offers the default style for the hands placed on it. A hand follows that default until
+   the author breaks the link on purpose, the way a flare follows the dial's typeface.
+4. **Retrograde and sliding are dial forms, not hand motions.** The fan and slide scales a
+   hand's motion draws today are primitive. A fan (retrograde) sub-dial and a linear
+   (slider) sub-dial become full sub-dial types, with the same scale styling (colour,
+   typeface, markers, size). A hand placed on one rides it. The slider has a real cut slot
+   with frame options. An indicator can be as small as a dot, a jewel, a star or a flare,
+   not only a hand.
+5. **The wheel behind a cutout runs smooth or steps** (owner's answer: the wheel behind a
+   cutout).
+6. **Wheels are a part of their own.** A date, day, hour or minute indicator shaped like a
+   wheel is a wheel: a printed disc for any time measure, placed under a face (the dial or
+   a sub-dial), seen through a cutout cut into that face. Hands and wheels are two separate
+   parts, and each can show any measure. Cutouts are their own part too (window, round,
+   arc, slot, each with its frame). Today's window, which carries its own disc, splits into
+   a cutout and a wheel.
+
+**The model (revised 2026-11-02 with the owner: a wheel owns its cutouts).**
+
+The pairing is symmetric. A face (the dial or a sub-dial) carries a still scale, and a hand
+moves over it as the pointer. A wheel carries a moving scale, and a cutout stands still over
+it as the pointer.
+
+| Part | What it is | Placed on | What drives its motion |
+|---|---|---|---|
+| Face | the dial, or a sub-dial with `form: round, fan or slider` and its scale print (`measure`, markers, typeface, colour, size; a fan's start and span; a slider's length, angle and slot frame) | the dial (sub-dial) | nothing: a face stands still |
+| Hand | an indicator showing `shows` (any measure); shape is a hand style or a marker (dot, jewel, star, flare) | a face | its host's form: round turns, fan sweeps and flies back, slider slides |
+| Wheel | a printed disc for any measure, or one `digit` of it (whole, tens, units), turning about its own centre; `cadence` smooth or jump (with ease); `overhang` hidden or shown | under a face (the dial or a sub-dial) | its measure (or digit) |
+| Cutout | an aperture in the face the wheel sits under (window, round, arc, slot), with a frame; placed by angle along its wheel's printed track, its radius locked to the track; may join a neighbouring cutout into one frame with an optional centre bar | its wheel (one wheel, any number of cutouts) | nothing: it is the wheel's pointer |
+| Opening | today's cut through a face onto the movement; no wheel behind it | a face | nothing |
+
+**The owner's decisions on the wheel (2026-11-02).**
+- **Ownership.** A wheel owns its cutouts, the way a face owns its hands. A cutout pierces
+  the face its wheel sits under. Placing a cutout along its wheel's track always lands it on
+  the figures, and the bake knows which cutouts crop which wheel without inferring it from
+  geometry. A wheel may have several cutouts. The moon becomes a wheel with moon art and a
+  moon-shaped cutout. Today's window becomes a wheel with one cutout.
+- **A big date is two wheels, not a special type.** A tens wheel (0–3, with "leave 0
+  blank") and a units wheel (0–9), each with its own cutout, the two cutouts joined into one
+  frame with a centre bar. The wheels may share an arbour (a units disc inside a tens ring)
+  or sit side by side. The same parts make a jumping-hour or digital-minute display. As
+  value tiles, the two cost 4 + 10 against 31 for a combined wheel.
+- **Digit sources in the firmware.** The device gains a source for each digit of each
+  measure:
+  - date tens and units;
+  - hour (12 and 24) tens and units;
+  - minute tens and units;
+  - second tens and units;
+  - day of year: hundreds, tens and units;
+  - year digits: thousands, hundreds, tens and units.
+
+  This is a D42 wire change: new `CLK_SRC_*` values, and the schema's SOURCES tuple and the
+  baker's SOURCES list in step.
+
+  **It waits on the merge of `feat/wasm-apps`.** That merge moves the dial stage to
+  `main/stage/orb_stage.*` (its D45), and the sources belong in that file, not in the
+  `clock_view.c` it replaces.
+- **Overhang** is a choice on a wheel sitting under a sub-dial over the main dial, with two
+  settings:
+  - **Hidden** (the default): only what shows through its cutouts is drawn, as in a real
+    movement where the wheel is under the plate. Cheapest: a jumping wheel's tiles are
+    cropped to its cutouts.
+  - **Shown**: the part beyond the sub-dial lies on the main dial, under the sub-dial's
+    drop shadow.
+
+  On the device the sub-dial's face is normally baked into the still plate, so a wheel row
+  drawn above it would paint over it.
+  - A jumping wheel solves this at bake: each value tile has the sub-dial's area punched
+    out, except through the wheel's cutouts. No extra row is needed.
+  - A smooth wheel cannot carry a punch that stays still while the row turns. Its
+    sub-dial is lifted above it as a still row (P4b's lift), at one more live row and the
+    pace the model prices. The panel says so when Shown is picked.
+
+**Slices.**
+- **P5d.1, the stack:** face groups (a sub-dial's hands nested under it), drag with live
+  gaps at legal positions and refusal reasons, re-hosting on a drop into another face, and
+  hand style defaults inherited from the host face.
+- **P5d.2, face forms:** the fan and slider sub-dials with full scale styling and the
+  slider's framed slot, marker indicators, and motion taken from the host form. This
+  retires the hand-motion scales.
+- **P5d.3, wheels and cutouts:**
+  - the wheel as a part, for any measure or a digit of it, with smooth or jump cadence and
+    hidden or shown overhang;
+  - cutouts as the wheel's children, placed along its track and joinable;
+  - today's window becomes a wheel with one cutout, and the moon a wheel with moon art;
+  - the bake's carrier choice: tiles cropped to the cutouts for a jumping wheel, a
+    rotating row for a smooth one, with the overhang punch or lift.
+
+  The digit wheels need the firmware's digit sources, so the firmware half waits on the
+  `feat/wasm-apps` merge. Until then the editor draws digit wheels and the bake refuses
+  them by name.
+- **P5d.4, the bench:** a Gold bake of each, including P5c's owed pointer sources.
+
+**As built (P5d.1, 2026-11-02).**
+
+*Depth.*
+- The engine's `liveSeq` and `handOrder` draw each face's group in one piece. The hands
+  of a face left on the dial come first, in `design.comps` order. Then comes the live
+  band (`design.order`: the dial's own hands and `comp:<id>` for lifted faces), and a
+  lifted face carries its hands.
+- No preset names an order, so all 17 render identically.
+- The one legacy edge case that interleaved sub-dial pointers among the dial's hands now
+  draws them with their face. That interleaving can no longer be expressed, which is
+  ruling 2.
+
+*Stack (stack.js).*
+- A sub-dial's hands are `pointer` children of its face row, top first. They reorder
+  among themselves, and a step out of the face is refused (R3, "drag it onto another face").
+- `place(input, id, target, above|below)` is the drag:
+  - a hand dropped into a face's group is re-hosted on it, and onto the dial's band it
+    turns on the dial;
+  - a hand dropped below a face left on the dial lifts every face shown above the drop;
+  - a face lifts among the hands or reorders among the faces;
+  - a disc stays with its frame (R4);
+  - R1 and R3 refuse with their reason.
+- `moveTo` now goes through `place`, and the old own-pointer R3 is gone because pointers
+  travel with their face.
+
+*Layers panel.*
+- Each row the drag passes over asks `place` (above or below by pointer half). A
+  dashed gap opens at the landing spot ("Drop here", or "Drop here · on Sub-dial…" for a
+  re-host). A refused spot shows a red gap with the rule. Releasing applies what the gap
+  showed, and the dragged row dims.
+- A hand's old up/down arrows go through the stack.
+
+*Inheritance (ruling 3).*
+- A sub-dial's panel offers "Hands on it": Style and Finish, each with "Follow the dial".
+  These are stored as `hstyle` and `hfinish`; canon drops "auto".
+- A hand without its own choice takes its face's choice, and its panel names it
+  ("Follow the sub-dial · Leaf"). Choosing a style breaks the link, and Default re-links.
+
+*Tests.*
+- stack 287, 12/12 mutants. The new mutants are: no re-host, a hand under the dial, and a
+  face's hands leaving it.
+- stack-ui 37, with a drag through the panel's own handlers (the gap inside a face, the
+  refusal under the dial, the drop re-hosting).
+- engine 190 (inheritance and canon), and every other suite green. The region suite has
+  0 failures, `go test` is green, and the clock container was rebuilt (819,477 B).
+- In Chrome, real drag events at 1280×720 showed the gap inside a sub-dial, the red R3
+  refusal under the dial, and the drop re-hosting the hour hand onto the seconds sub-dial.
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views
@@ -814,6 +966,7 @@ long as an app in its library or on a known orb still names it.
 | **P5** ✔ | The build flow and layout (§4): step bar, Add catalogue with compatibility, properties grouped by D42 parts, diagnostics drawer, light moods | headless UI test walks Start → Render on a scratch build and on a preset; nothing removed from today's controls (a checklist of every current field and where it now lives) — **done 2026-11-02** (§4.1) |
 | **P5b** ✔ | The studio layout (§4.2): the editor fills the hub window as one three-pane studio — layers left on every step, the stage centre, the inspector right — in the hub's palette, with one title bar; Arrange folds into the layers panel; the hub page itself goes fluid | nothing removed (the P5 checklist, re-pointed at the new panes); the stage zoom stays inside its pane at every stop; no page scroll at 1280×720 and 1920×1080 (Chrome screenshots of both, inside the hub); `go test` and every app suite green — **built 2026-11-02** (§4.2); the owner's test on the hub is owed |
 | **P5c** ✔ | Hands are complications (§4.3): one Add catalogue, hands placed anywhere in any number, a selected hand's panel alone; the plate rows open Movement, and its backdrop and the plate art sit at the tab's foot | the presets render and bake pixel-identical in the new shape; ten hands on the dial within R6; every suite green — **built 2026-11-02** (§4.3 as built); the presets' hand geometry is identical across 22 designs; a bench bake of the new pointer sources and the owner's test are owed |
+| **P5d** ◐ | Faces, hands, wheels and cutouts (§4.4): face groups and a drag that shows where it lands, hands that inherit from their face, fan and slider sub-dials, wheels under cutouts | each slice keeps every preset rendering as before and every suite green; the bench bake of each new row kind — **P5d.1 built 2026-11-02** (§4.4 as built); P5d.2–P5d.4 to come |
 | **P6** | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here |
 | **P7** | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs |
 

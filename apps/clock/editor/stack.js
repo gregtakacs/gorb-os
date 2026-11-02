@@ -28,8 +28,14 @@
  *
  * D43 P4b: a sub-dial face may be LIFTED among the hands. It then ships as a live still
  * row at its depth instead of folding into the plate (R5's promotion), and the hands
- * below it pass under it. design.order carries the live band: hand ids and
- * 'comp:<id>' for a lifted face, bottom first; the engine's liveSeq reads the same. */
+ * below it pass under it. design.order carries the live band: the dial's own hand ids
+ * and 'comp:<id>' for a lifted face, bottom first; the engine's liveSeq reads the same.
+ *
+ * D43 P5d: a face is a group. A sub-dial's hands are its children, like its windows:
+ * they turn above its face and travel with it, lifted or not, and their order among
+ * themselves is their order in design.comps. place() is the drag: it puts a layer above
+ * or below any other and answers the design fields that says, or the rule that refuses
+ * it -- a hand dropped into another face's group is re-hosted there. */
 (function (root) {
   'use strict';
 
@@ -72,7 +78,7 @@
     push({ id: 'outer', kind: 'case', label: 'Case & outer shine', band: 'crystal', hide: 'outer', badge: 'crystal overlay', movable: false });
     push({ id: 'glass', kind: 'glass', label: 'Glass', band: 'crystal', hide: 'glass', badge: 'crystal overlay', movable: false });
 
-    var order = (input.order || hands.map(function (h) { return h.id; })).map(String);
+    var order = liveKeys(input);
     var drawnHand = {}; hands.forEach(function (h) { drawnHand[h.id] = h; });
     var lifted = {};
     order.forEach(function (e) { if (e.indexOf('comp:') === 0 && byId[e.slice(5)] && byId[e.slice(5)].type === 'subdial') lifted[e.slice(5)] = 1; });
@@ -80,6 +86,14 @@
       push({ id: 'comp:' + sb.id, ref: sb.id, kind: 'subdial', group: live ? 'live' : 'subdials', band: 'rows', label: compTitle(sb, E),
              host: 'dial', hide: 'subdials', sel: { kind: 'comp', id: sb.id }, lifted: !!live,
              badge: live ? 'live · still row' : (sb.transparent ? 'baked in · open' : 'baked in'), movable: true });
+      // its hands, top first: they turn above its face and ride it wherever it goes
+      for (var q = hands.length - 1; q >= 0; q--) {
+        var ph = hands[q];
+        if (!ph.sub || ph.host !== sb.id) continue;
+        push({ id: 'hand:' + ph.id, ref: ph.id, kind: 'pointer', group: 'ptr:' + sb.id, band: 'rows', label: HAND_NAME[ph.kind] || 'Hand',
+               parent: 'comp:' + sb.id, handKind: ph.kind, host: 'comp:' + sb.id, shadow: !!input.shadows,
+               hide: 'hands', sel: { kind: 'hand', id: ph.id }, badge: 'live', movable: true, pivot: [ph.x, ph.y], reach: ph.len });
+      }
       comps.forEach(function (c) {
         if (c.type === 'flare' && hostOf(c) === sb.id)
           push({ id: 'comp:' + c.id, ref: c.id, kind: 'flare', band: 'rows', label: compTitle(c, E), parent: 'comp:' + sb.id,
@@ -97,12 +111,9 @@
     for (var i = order.length - 1; i >= 0; i--) {
       var e = order[i];
       if (e.indexOf('comp:') === 0) { if (lifted[e.slice(5)]) subBlock(byId[e.slice(5)], true); continue; }
-      var h = drawnHand[e]; if (!h) continue;
-      var host = h.sub ? (h.host && h.host !== 'dial' ? h.host : h.id) : null;   // D43 P5c: a hand names its host
-      push({ id: 'hand:' + h.id, ref: h.id, kind: h.sub ? 'pointer' : 'hand', group: 'live', band: 'rows',
-             label: h.sub ? ((HAND_NAME[h.kind] || 'Hand') + ' · on ' + compTitle(byId[host] || { type: 'subdial' }, E))
-                          : (HAND_NAME[h.kind] || 'Hand'),
-             handKind: h.kind, host: host ? 'comp:' + host : 'dial', shadow: !!input.shadows,
+      var h = drawnHand[e]; if (!h || h.sub) continue;
+      push({ id: 'hand:' + h.id, ref: h.id, kind: 'hand', group: 'live', band: 'rows', label: HAND_NAME[h.kind] || 'Hand',
+             handKind: h.kind, host: 'dial', shadow: !!input.shadows,
              hide: 'hands', sel: { kind: 'hand', id: h.id }, badge: 'live', movable: true,
              pivot: [h.x, h.y], reach: h.len });
     }
@@ -156,7 +167,8 @@
     if (it.group === 'live' && dir > 0 && nb.kind === 'subdial') return null;
     if (it.group === 'subdials' && dir < 0 && nb.group === 'live') return null;
     if (it.kind === 'subdial' && it.lifted && dir > 0) return null;
-    if ((it.kind === 'hand' || it.kind === 'pointer') && dir > 0) return 'R3: a hand turns above the dial, so it stays above the dial’s face';
+    if (it.kind === 'pointer') return 'R3: a sub-dial\u2019s hand rides its face \u2014 drag it onto another face to move it there';
+    if (it.kind === 'hand' && dir > 0) return 'R3: a hand turns above the dial, so it stays above the dial’s face';
     if (it.kind === 'subdial' && dir > 0) return 'R3: a sub-dial sits on the dial, so it stays above the dial’s face';
     if (it.kind === 'disc' && dir < 0) return 'R4: a disc stays under the face that frames it' + (it.host === 'dial' ? ' (the dial)' : '');
     if (it.kind === 'disc' && dir > 0) return 'R4: a disc stays with the face that frames it';
@@ -177,13 +189,13 @@
     while (j >= 0 && j < items.length && items[j].parent && items[j].group !== it.group) j += dir;
     var nb = items[j] || null, why = refusal(it, nb, dir);
     if (why) return { ok: false, reason: why };
-    var full = (input.order || (input.hands || []).map(function (h) { return h.id; })).map(String);
+    var full = liveKeys(input);
     var key = function (x) { return x.kind === 'subdial' ? 'comp:' + x.ref : x.ref; };
     if (it.group === 'live' && nb.group === 'live') {
       var a = full.indexOf(key(it)), b = full.indexOf(key(nb));
       if (a < 0 || b < 0) return { ok: false, reason: 'a layer missing from the order' };
-      full[a] = key(nb); full[b] = key(it);            // the two trade slots; hidden hands keep theirs
-      return r3(full, input) || { ok: true, order: full };
+      full[a] = key(nb); full[b] = key(it);            // the two trade slots
+      return { ok: true, order: full };
     }
     if (it.group === 'live' && it.kind === 'subdial' && dir > 0) {
       // a lifted face stepping below the live band settles back on the dial
@@ -192,12 +204,12 @@
     if (it.group === 'live' && dir > 0 && nb.kind === 'subdial') {
       // the lowest hand steps under a face: the face is lifted just above it
       full.splice(full.indexOf(key(it)) + 1, 0, 'comp:' + nb.ref);
-      return r3(full, input) || { ok: true, order: full, lift: nb.ref };
+      return { ok: true, order: full, lift: nb.ref };
     }
     if (it.group === 'subdials' && dir < 0 && nb.group === 'live') {
       // the top face on the dial steps up among the hands: lifted just above the lowest
       full.splice(full.indexOf(key(nb)) + 1, 0, 'comp:' + it.ref);
-      return r3(full, input) || { ok: true, order: full, lift: it.ref };
+      return { ok: true, order: full, lift: it.ref };
     }
     // sub-dials and discs: trade the two comps' places in design.comps
     var comps = (input.comps || []).slice();
@@ -208,43 +220,117 @@
     return { ok: true, comps: comps };
   }
 
-  /* R3 over the live band: a lifted face's own pointer must stay above it. */
-  function r3(full, input) {
-    // D43 P5c: a sub-dial's own pointers are the hands it hosts, whatever their ids
-    var own = {}; (input.hands || []).forEach(function (h) { if (h.sub && h.host) (own[h.host] = own[h.host] || []).push(h.id); });
-    for (var i = 0; i < full.length; i++) {
-      var e = full[i];
-      if (e.indexOf('comp:') !== 0) continue;
-      var ptrs = own[e.slice(5)] || [];
-      for (var k = 0; k < ptrs.length; k++) {
-        var p = full.indexOf(ptrs[k]);
-        if (p >= 0 && p < i) return { ok: false, reason: 'R3: a sub-dial\u2019s own pointer rides it, so the face stays under that pointer' };
-      }
-    }
-    return null;
+  /* The live band, bottom first: the dial's own hands and 'comp:<id>' for each lifted
+   * face. A sub-dial's hands are not in it: they ride their face. */
+  function liveKeys(input) {
+    var sub = {}; (input.hands || []).forEach(function (h) { if (h.sub) sub[h.id] = 1; });
+    var subs = {}; (input.comps || []).forEach(function (c) { if (c.type === 'subdial') subs[c.id] = 1; });
+    var out = [], seen = {};
+    (input.order || (input.hands || []).map(function (h) { return h.id; })).forEach(function (e) {
+      e = String(e);
+      if (seen[e]) return;
+      if (e.indexOf('comp:') === 0 ? subs[e.slice(5)] : !sub[e]) { out.push(e); seen[e] = 1; }
+    });
+    (input.hands || []).forEach(function (h) { if (!h.sub && !seen[h.id]) { out.push(h.id); seen[h.id] = 1; } });
+    return out;
   }
 
-  /* Move `id` to sit where `targetId` sits (drag and drop), step by step, stopping at
-   * the first refusal so the reason is the one that bites. */
+  /* D43 P5d: the drag. Put `id` directly above or below `targetId` as the panel shows
+   * them (top first), and answer the design fields that say so -- { ok, order, comps } --
+   * or { ok: false, reason } naming the rule. The panel asks this for every row the
+   * drag passes over, and opens a gap only where it answers ok.
+   *   a hand: anywhere above the dial. Into a sub-dial's group it is re-hosted there; onto
+   *     the dial's own band it turns on the dial. Dropped below a face left on the dial,
+   *     every face displayed above the drop is lifted over it (P4b's lift, generalized).
+   *   a sub-dial: among the hands (lifted there) or among the faces on the dial.
+   *   a disc: among the discs its own face frames (R4).
+   * The crystal and the plate are pinned (R1), and nothing turns under the dial (R3). */
+  function place(input, id, targetId, where) {
+    var items = build(input), i = find(items, id), t = find(items, targetId);
+    if (i < 0 || t < 0) return { ok: false, reason: 'no such layer' };
+    if (i === t) return { ok: true, same: true };
+    var it = items[i], tg = items[t], above = where !== 'below';
+    if (!it.movable) return { ok: false, reason: refusal(it, null, 1) };
+    if (tg.band === 'crystal' && !(tg.id === 'glass' && !above)) return { ok: false, reason: 'R1: nothing goes above the glass and the case' };
+    if (tg.band === 'crystal') { tg = items[t + 1]; above = true; }        // just under the glass is the top of the stack
+    if (tg.band === 'plate') return { ok: false, reason: 'R1: nothing goes below the movement plate' };
+    var live = liveKeys(input), comps = (input.comps || []).map(function (c) { return Object.assign({}, c); });
+    var byId = {}; comps.forEach(function (c) { byId[c.id] = c; });
+    var faceOf = function (x) { return x.kind === 'subdial' ? x.ref : (x.parent && x.parent.indexOf('comp:') === 0 ? x.parent.slice(5) : null); };
+    var lifted = function (sid) { return live.indexOf('comp:' + sid) >= 0; };
+    var onDial = function (x) { return x.kind === 'dial' || x.parent === 'dial' || x.group === 'discs:dial'; };
+    var face = faceOf(tg), tLive = tg.group === 'live' || (face && lifted(face));
+    var keyOf = function (x) { return x.kind === 'subdial' ? 'comp:' + x.ref : x.ref; };
+    // the unlifted faces displayed above a target on the dial side, top first
+    var facesAbove = function (stop) { var out = []; for (var k = 0; k < stop; k++) if (items[k].kind === 'subdial' && !lifted(items[k].ref)) out.push(items[k].ref); return out; };
+    var moveComp = function (cid, refId, after) {
+      var c = comps.filter(function (x) { return x.id === cid; })[0];
+      comps = comps.filter(function (x) { return x.id !== cid; });
+      var at = -1; comps.forEach(function (x, n) { if (x.id === refId) at = n; });
+      comps.splice(at < 0 ? comps.length : at + (after ? 1 : 0), 0, c);
+    };
+    var tIdx = function (x) { return x ? live.indexOf(keyOf(x)) : -1; };
+
+    if (it.kind === 'hand' || it.kind === 'pointer') {
+      var hid = it.ref, hc = byId[hid];
+      if (!hc) return { ok: false, reason: 'no hand ' + hid };
+      live = live.filter(function (e) { return e !== hid; });
+      // into a face's group: the hand is re-hosted on that sub-dial
+      var into = face && (tg.kind === 'pointer' || tg.kind === 'flare' || (tg.kind === 'subdial' && !above)) ? face : null;
+      if (into) {
+        if (byId[into].type !== 'subdial') return { ok: false, reason: 'R3: a hand turns on the dial or on a sub-dial' };
+        hc.host = into;
+        // display is top first and design.comps bottom first: above a sibling is after it
+        var sibs = comps.filter(function (x) { return x.type === 'hand' && x.host === into && x.id !== hid; });
+        if (tg.kind === 'pointer') moveComp(hid, tg.ref, above);
+        else if (sibs.length) moveComp(hid, sibs[sibs.length - 1].id, true);
+        return { ok: true, order: live, comps: comps, host: into };
+      }
+      if (tg.kind === 'disc' || (onDial(tg) && !(tg.kind === 'dial' && above)))
+        return { ok: false, reason: onDial(tg) ? 'R3: a hand turns above the dial, never under it' : 'R3: a hand turns above its face, never under what the face frames' };
+      hc.host = 'dial';
+      if (tLive) {
+        var anchor = tg.kind === 'subdial' || tg.kind === 'hand' ? tg : items[find(items, 'comp:' + face)];
+        var n = live.indexOf(keyOf(anchor));
+        live.splice(above ? n + 1 : n, 0, hid);
+        return { ok: true, order: live, comps: comps, host: 'dial' };
+      }
+      // below every lifted layer, on the dial side: the hand goes to the bottom of the live
+      // band, and the faces displayed above the drop point are lifted over it
+      var up = facesAbove(tg.kind === 'subdial' && above ? t : (tg.kind === 'dial' ? t : t)).reverse();
+      live = [hid].concat(up.map(function (sid) { return 'comp:' + sid; })).concat(live);
+      return { ok: true, order: live, comps: comps, host: 'dial', lift: up[0] };
+    }
+    if (it.kind === 'subdial') {
+      var sid = it.ref;
+      if (face === sid) return { ok: true, same: true };
+      live = live.filter(function (e) { return e !== 'comp:' + sid; });
+      if (tLive) {
+        var anc = tg.kind === 'hand' ? tg : items[find(items, 'comp:' + face)];
+        var m = live.indexOf(keyOf(anc));
+        live.splice(above ? m + 1 : m, 0, 'comp:' + sid);
+        return { ok: true, order: live, lift: sid };
+      }
+      if (face) { moveComp(sid, face, tg.kind === 'subdial' && above); return { ok: true, order: live, comps: comps }; }
+      if (tg.kind === 'dial' && above) {
+        var subsOnDial = comps.filter(function (x) { return x.type === 'subdial' && !lifted(x.id) && x.id !== sid; });
+        if (subsOnDial.length) moveComp(sid, subsOnDial[0].id, false);
+        return { ok: true, order: live, comps: comps };
+      }
+      return { ok: false, reason: 'R3: a sub-dial sits on the dial, so it stays above the dial’s face' };
+    }
+    if (it.kind === 'disc') {
+      if (tg.kind !== 'disc' || tg.group !== it.group) return { ok: false, reason: 'R4: a disc stays under the face that frames it' + (it.host === 'dial' ? ' (the dial)' : '') };
+      moveComp(it.ref, tg.ref, above);
+      return { ok: true, comps: comps };
+    }
+    return { ok: false, reason: refusal(it, null, 1) };
+  }
+  // the old drop: onto a row, landing where the row is (above it when moving up)
   function moveTo(input, id, targetId) {
     var items = build(input), from = find(items, id), to = find(items, targetId);
     if (from < 0 || to < 0) return { ok: false, reason: 'no such layer' };
-    if (from === to) return { ok: true };
-    var dir = to < from ? -1 : 1, cur = Object.assign({}, input), out = null;
-    for (var guard = 0; guard < items.length; guard++) {
-      var r = move(cur, id, dir);
-      if (!r.ok) return out ? Object.assign({}, out, { partial: r.reason }) : r;
-      out = r;
-      if (r.order) cur = Object.assign({}, cur, { order: r.order, hands: reorderHands(cur.hands, r.order) });
-      if (r.comps) cur = Object.assign({}, cur, { comps: r.comps });
-      var now = build(cur);
-      if (find(now, id) === find(now, targetId) || (dir < 0 ? find(now, id) <= to : find(now, id) >= to)) return out;
-    }
-    return out || { ok: false, reason: 'no move' };
-  }
-  function reorderHands(hands, order) {
-    var by = {}; hands.forEach(function (h) { by[h.id] = h; });
-    return order.map(function (id) { return by[id]; }).filter(Boolean);
+    return place(input, id, targetId, to < from ? 'above' : 'below');
   }
 
   /* R8: the mechanical warnings, only for a design with the Mechanical switch on. A
@@ -274,11 +360,11 @@
     (input.comps || []).forEach(function (c) { if (c.type === 'window' || c.type === 'moon') n += 1; });
     if (input.carriage) n += 1;
     // a lifted sub-dial face ships as one still row (D43 P4b)
-    (input.order || []).forEach(function (e) { if (String(e).indexOf('comp:') === 0) n += 1; });
+    liveKeys(input).forEach(function (e) { if (e.indexOf('comp:') === 0) n += 1; });
     return { rows: n, cap: ROW_CAP, over: n > ROW_CAP };
   }
 
-  var api = { build: build, move: move, moveTo: moveTo, warnings: warnings, rowCount: rowCount, ROW_CAP: ROW_CAP };
+  var api = { build: build, move: move, moveTo: moveTo, place: place, liveKeys: liveKeys, warnings: warnings, rowCount: rowCount, ROW_CAP: ROW_CAP };
   root.OrbStack = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

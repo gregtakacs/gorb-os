@@ -26,14 +26,14 @@ ok(rows0.filter((r) => r.isRow).length === window.OrbStack.build(it.stackInput()
 ok(/^\d+ of 24 live rows$/.test(v0.stackCap), 'R6: the header counts the live rows against the cap', v0.stackCap);
 ok(rows0.filter((r) => r.isRow && r.pad === 22).length > 0, 'children are indented under their host');
 
-// the top hand down one: exactly what moveHand(id, -1) wrote
-const fc = it.face(), order = fc.handOrder.slice(), drawn = order.filter((id) => fc.hands.some((h) => h.id === id));
+// the top hand down one: the live band (the dial's own hands, D43 P5d) with the top two traded
+const fc = it.face(), order = window.OrbStack.liveKeys(it.stackInput()), drawn = order.filter((id) => fc.hands.some((h) => h.id === id));
 const topId = drawn[drawn.length - 1], nextId = drawn[drawn.length - 2];
 const want = order.slice(); want[order.indexOf(topId)] = nextId; want[order.indexOf(nextId)] = topId;
 const topRow = V().stackRows.find((r) => r.isRow && r.upOp === 0.35 && r.arrows === 'visible');
 ok(!!topRow && /R1/.test(topRow.upTip), 'the top layer’s up arrow is dim and names R1', topRow && topRow.upTip);
 topRow.down(ev);
-ok((it.design().order || []).join() === want.join(), 'the down arrow writes what moveHand wrote', (it.design().order || []).join());
+ok((it.design().order || []).join() === want.join(), 'the down arrow trades the top two hands in design.order', (it.design().order || []).join());
 // a refusal leaves the design alone and says why
 const before = JSON.stringify(it.design());
 const top2 = V().stackRows.find((r) => r.isRow && r.arrows === 'visible');
@@ -105,7 +105,7 @@ ok(it.state.hidden.glass === true, 'the eye hides the glass on the stage');
 {
   it.upd((dd) => { delete dd.order; delete dd.mechanical; });
   it.setState({ hidden: {} });
-  const live = V().stackRows.filter((r) => r.isRow && r.arrows === 'visible' && /hand/i.test(r.label));
+  const live = V().stackRows.filter((r) => r.isRow && !r.parent && r.arrows === 'visible' && /hand/i.test(r.label));
   const low = live[live.length - 1];
   low.down(ev);
   const ord = it.design().order || [];
@@ -115,6 +115,28 @@ ok(it.state.hidden.glass === true, 'the eye hides the glass on the stage');
   ok(V().stackRows.some((r) => r.isRow && /still row/.test(r.note)), 'its row is badged a still row');
   ok(/^\d+ of 24/.test(V().stackCap), 'the R6 count still reads', V().stackCap);
   it.upd((dd) => { delete dd.order; });
+}
+
+// D43 P5d: a drag opens a gap where the layer would land, or names the rule that refuses it
+{
+  it.upd((dd) => { delete dd.order; });
+  const rowsD = () => V().stackRows;
+  const dHand = rowsD().find((r) => r.isRow && !r.parent && /hand/i.test(r.label));
+  const sub = rowsD().find((r) => r.isRow && /^Sub-dial/.test(r.label));
+  dHand.dragStart(ev);
+  sub.dragOver(Object.assign({}, ev, { where: 'below' }));
+  const r1 = rowsD(), g1 = r1.find((r) => r.isGap);
+  ok(g1 && g1.cls === '' && /on Sub-dial/.test(g1.label) && r1.indexOf(g1) === r1.findIndex((r) => r.id === sub.id) + 1, 'hovering below a sub-dial opens a gap inside it, saying the hand goes on that face', g1 && g1.label);
+  const dialRow = rowsD().find((r) => r.isRow && r.label === 'Dial');
+  dialRow.dragOver(Object.assign({}, ev, { where: 'below' }));
+  const g2 = rowsD().find((r) => r.isGap);
+  ok(g2 && g2.cls === 'no' && /R3/.test(g2.label), 'hovering under the dial shows the refusal where the gap would be', g2 && g2.label);
+  sub.dragOver(Object.assign({}, ev, { where: 'below' }));
+  rowsD().find((r) => r.isGap).drop(ev);
+  const moved = it.design().comps.find((c) => c.id === dHand.id.slice(5));
+  ok(moved && moved.host === sub.id.slice(5) && !rowsD().some((r) => r.isGap), 'releasing on the gap re-hosts the hand on that sub-dial, and the gap closes', JSON.stringify(moved));
+  ok(rowsD().some((r) => r.isRow && r.id === dHand.id && r.parent === sub.id), 'and Layers shows it nested under that face');
+  it.upd((dd) => { const c = dd.comps.find((x) => x.id === moved.id); c.host = 'dial'; });
 }
 
 // D43 P4b: a lifted face over the sweep is priced — the pace drops, the reason names it,

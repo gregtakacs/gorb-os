@@ -15,9 +15,11 @@ if (process.argv.includes('--mutations')) {
   const M = [
     ['every move allowed', 'var nb = items[j] || null, why = refusal(it, nb, dir);', 'var nb = items[j] || null, why = null;'],
     ['the two hands do not trade slots', 'full[a] = key(nb); full[b] = key(it);', 'full[a] = key(it); full[b] = key(nb);'],
-    ['a lift skips R3', "return r3(full, input) || { ok: true, order: full, lift: nb.ref };", "return { ok: true, order: full, lift: nb.ref };"],
+    ['a drop into a face does not re-host', "        hc.host = into;\n", "\n"],
+    ['a hand may turn under the dial', "      if (tg.kind === 'disc' || (onDial(tg) && !(tg.kind === 'dial' && above)))", "      if (false)"],
+    ['a face\u2019s hands leave its group', "    if (it.kind === 'pointer') return 'R3: a sub-dial\\u2019s hand rides its face", "    if (false) return 'R3: a sub-dial\\u2019s hand rides its face"],
     ['a lifted face never settles back', "return { ok: true, order: full.filter(function (x) { return x !== key(it); }) };", "return { ok: false, reason: 'stuck' };"],
-    ['a lifted face is not counted as a row', "(input.order || []).forEach(function (e) { if (String(e).indexOf('comp:') === 0) n += 1; });", ""],
+    ['a lifted face is not counted as a row', "liveKeys(input).forEach(function (e) { if (e.indexOf('comp:') === 0) n += 1; });", ""],
     ['children block the move', 'while (j >= 0 && j < items.length && items[j].parent && items[j].group !== it.group) j += dir;', ''],
     ['the dial moves', "push({ id: 'dial', kind: 'dial', band: 'rows', label: 'Dial', hide: 'dial', sel: { kind: 'dial', id: 'dial' },\n           badge: 'baked in', movable: false });",
       "push({ id: 'dial', kind: 'dial', group: 'subdials', band: 'rows', label: 'Dial', hide: 'dial', sel: { kind: 'dial', id: 'dial' },\n           badge: 'baked in', movable: true });"],
@@ -65,18 +67,20 @@ Object.keys(E.PRESETS).forEach((k) => {
   ok((d.comps || []).every((c) => st.some((x) => x.id === (c.type === 'hand' ? 'hand:' : 'comp:') + c.id)), k + ': every complication is a layer, a hand as a hand');
   ok(!st.some((x) => x.kind === 'shadow') && st.filter((x) => x.group === 'live').every((x) => x.shadow), k + ': R2 shadows are their hands’ property, never a layer');
   const iSub = st.findIndex((x) => x.kind === 'subdial'), iDial = st.findIndex((x) => x.id === 'dial');
-  ok(st.filter((x) => x.group === 'live').every((x) => iSub < 0 || st.indexOf(x) < iSub), k + ': R3 every hand sits above every sub-dial face');
+  ok(st.filter((x) => x.kind === 'hand').every((x) => iSub < 0 || st.indexOf(x) < iSub), k + ': R3 every hand on the dial sits above every sub-dial face');
+  // D43 P5d: a sub-dial's hands are its children, directly under its face row
+  ok(st.filter((x) => x.kind === 'pointer').every((x) => { const f = st.findIndex((y) => y.id === x.parent); return f >= 0 && st.indexOf(x) > f && st.slice(f + 1, st.indexOf(x)).every((y) => y.parent === x.parent); }), k + ': a sub-dial\u2019s hands are nested under its face');
   ok(st.filter((x) => x.kind === 'disc').every((x) => st.indexOf(x) > st.findIndex((y) => y.id === x.host)), k + ': R4 every disc sits under the face that frames it');
   ok(iSub < 0 || st.filter((x) => x.kind === 'subdial').every((x) => st.indexOf(x) < iDial), k + ': R3 every sub-dial sits above the dial');
   // the hands, top first, are WatchEngine's draw order reversed
-  ok(st.filter((x) => x.group === 'live').map((x) => x.ref).reverse().join() === drawn(fc).join(), k + ': the hands are the engine\u2019s draw order, top first');
+  ok(st.filter((x) => x.kind === 'hand' || x.kind === 'pointer').map((x) => x.ref).reverse().join() === drawn(fc).join(), k + ': the hands are the engine\u2019s draw order, top first', st.filter((x) => x.kind === 'hand' || x.kind === 'pointer').map((x) => x.ref).reverse().join() + ' vs ' + drawn(fc).join());
   // a round trip is a no-op: what the stack writes is what the design already held
   const hs = st.filter((x) => x.group === 'live');
   if (hs.length >= 2) {
     const down = S.move(inp, hs[0].id, 1);
     ok(down.ok, k + ': the top hand moves down one', down.reason);
-    const back = S.move(Object.assign({}, inp, { order: down.order, hands: down.order.map((id) => inp.hands.find((h) => h.id === id)).filter(Boolean) }), hs[0].id, -1);
-    ok(back.ok && back.order.join() === fc.handOrder.join(), k + ': moving it back restores design.order exactly');
+    const back = S.move(Object.assign({}, inp, { order: down.order }), hs[0].id, -1);
+    ok(back.ok && back.order.join() === S.liveKeys(inp).join(), k + ': moving it back restores design.order exactly');
   }
   const rc = S.rowCount(inp);
   ok(!rc.over && rc.rows > 0, k + ': R6 the live rows fit the cap', rc.rows + ' of ' + rc.cap);
@@ -96,17 +100,19 @@ ok(presets >= 17, 'every preset was built', presets);
     { id: 'o1', type: 'opening', host: 'dial', angle: 45, dist: 80, size: 30 } ] }));
   const fc = E.face(Object.assign({}, OPTS, { design: d, train: 'classic' }));
   const inp = input(d, fc), st = S.build(inp), at = (id) => st.findIndex((x) => x.id === id);
-  // moveHand(hid, dir) on handOrder (bottom first): dir -1 is one step DOWN the stack
-  const order = fc.handOrder.slice(), top = order[order.length - 1];
-  const want = order.slice(); want[want.length - 1] = want[want.length - 2]; want[want.length - 2] = top;
+  const live0 = S.liveKeys(inp), top = live0[live0.length - 1];
+  ok(live0.join() === 'centre-hour,centre-minute,centre-second', 'the live band is the dial’s own hands; a sub-dial’s hands ride their face', live0.join());
+  const want = live0.slice(); want[want.length - 1] = want[want.length - 2]; want[want.length - 2] = top;
   const r = S.move(inp, 'hand:' + top, 1);
-  ok(r.ok && r.order.join() === want.join(), 'a hand one step down writes what moveHand(id, -1) wrote', r.order && r.order.join());
+  ok(r.ok && r.order.join() === want.join(), 'a hand one step down trades places with the hand below', r.order && r.order.join());
   const sd = S.move(inp, 'comp:s2', 1);
   ok(sd.ok && noH(sd.comps) === 's2,s1,w1,w2,w3,f1,o1', 'a sub-dial down trades its comps slot with the next sub-dial, over the other’s children', sd.ok ? noH(sd.comps) : sd.reason);
   const dd = S.move(inp, 'comp:w2', 1);
   ok(dd.ok && noH(dd.comps) === 's1,s2,w2,w1,w3,f1,o1', 'a disc under the dial trades with the disc below it', dd.ok ? noH(dd.comps) : dd.reason);
-  ok(at('comp:w3') > at('comp:s2') && at('comp:w3') < at('comp:s1'), 'a disc a sub-dial frames sits in that sub-dial\u2019s block, above the next face');
+  ok(at('comp:w3') > at('comp:s2') && at('comp:w3') < at('comp:s1'), 'a disc a sub-dial frames sits in that sub-dial’s block, above the next face');
   ok(st[at('comp:f1')].parent === 'dial' && st[at('comp:o1')].parent === 'dial', 'what is printed on and cut through the dial rides the dial');
+  // D43 P5d: the face's hands are its children, first under it
+  ok(at('hand:s2-hand') === at('comp:s2') + 1 && st[at('hand:s2-hand')].parent === 'comp:s2' && at('hand:s1-hand') === at('comp:s1') + 1, 'a sub-dial’s hand is nested directly under its face, like its windows');
 
   // ---- every refusal names its rule ----
   const refuse = (id, dir, re, what) => { const x = S.move(inp, id, dir); ok(!x.ok && re.test(x.reason || ''), what, x.reason || 'allowed'); };
@@ -121,50 +127,62 @@ ok(presets >= 17, 'every preset was built', presets);
   refuse('dial', -1, /^R7/, 'R7: the dial does not rise either');
   refuse('comp:f1', -1, /^R3/, 'R3: a flare printed on the dial moves with the dial');
   refuse('comp:o1', 1, /^R3/, 'R3: an opening is cut through the dial');
-  const withHands = (hs) => Object.assign({}, inp, { hands: hs, order: hs.map((h) => h.id) });
-  // ---- D43 P4b: lifting a sub-dial face among the hands ----
-  // natural order, bottom first: s1's pointer, s2's pointer, then the centre hands
+  refuse('hand:s2-hand', -1, /^R3.*another face/, 'R3: a sub-dial’s hand does not step out of its face; the drag re-hosts it');
+  // ---- D43 P4b: lifting a sub-dial face among the hands, its hands with it ----
   const lowest = st.filter((x) => x.group === 'live').pop();
-  ok(lowest.id === 'hand:s1-hand', 'the lowest live layer is the first sub-dial\u2019s pointer', lowest.id);
+  ok(lowest.id === 'hand:centre-hour', 'the lowest live layer is the dial’s lowest hand', lowest.id);
   const lift = S.move(inp, lowest.id, 1);
-  ok(lift.ok && lift.lift === 's2' && lift.order.slice(0, 3).join() === 's1-hand,comp:s2,s2-hand', 'the lowest hand stepping under s2 lifts s2 just above it, under its own pointer', lift.ok ? lift.order.join() : lift.reason);
+  ok(lift.ok && lift.lift === 's2' && lift.order.join() === 'centre-hour,comp:s2,centre-minute,centre-second', 'the lowest hand stepping under s2 lifts s2 just above it', lift.ok ? lift.order.join() : lift.reason);
   const lifted = Object.assign({}, inp, { order: lift.order }), stL = S.build(lifted), atL = (id) => stL.findIndex((x) => x.id === id);
   const s2 = stL[atL('comp:s2')];
   ok(s2.group === 'live' && s2.lifted && /still row/.test(s2.badge), 'the lifted face joins the live band, badged a still row', s2.badge);
-  ok(atL('comp:w3') === atL('comp:s2') + 1 && stL[atL('comp:w3')].parent === 'comp:s2', 'its disc comes with it, directly under it (R4)');
-  ok(atL('hand:s2-hand') < atL('comp:s2') && atL('comp:s2') < atL('hand:s1-hand'), 'it sits under its own pointer and over the hand below');
+  ok(atL('hand:s2-hand') === atL('comp:s2') + 1 && atL('comp:w3') > atL('hand:s2-hand') && stL[atL('comp:w3')].parent === 'comp:s2', 'its hand and its disc come with it (R4)');
+  ok(atL('comp:s2') < atL('hand:centre-hour'), 'and it sits over the hand below');
   ok(S.rowCount(lifted).rows === S.rowCount(inp).rows + 1, 'R6: the lifted face counts as one more live row');
   const step = S.move(lifted, 'comp:s2', 1);
-  ok(step.ok && step.order.slice(0, 2).join() === 'comp:s2,s1-hand', 'one step down trades it with the hand below, still lifted', step.ok ? step.order.join() : step.reason);
+  ok(step.ok && step.order.slice(0, 2).join() === 'comp:s2,centre-hour', 'one step down trades it with the hand below, still lifted', step.ok ? step.order.join() : step.reason);
   const back = S.move(Object.assign({}, inp, { order: step.order }), 'comp:s2', 1);
-  ok(back.ok && back.order.join() === inp.order.join(), 'a step down from the bottom of the live band settles it on the dial, and the order is the original', back.ok ? back.order.join() : back.reason);
-  const overOwn = S.move(lifted, 'comp:s2', -1);
-  ok(!overOwn.ok && /^R3/.test(overOwn.reason), 'R3: a lifted face cannot rise over its own pointer', overOwn.reason);
-  const ownBottom = Object.assign({}, inp, { order: ['s2-hand', 's1-hand'].concat(inp.order.filter((x) => x !== 's1-hand' && x !== 's2-hand')) });
-  const sink = S.move(ownBottom, 'hand:s2-hand', 1);
-  ok(!sink.ok && /^R3/.test(sink.reason), 'R3: a pointer cannot step under its own face (that would lift the face over it)', sink.reason);
+  ok(back.ok && back.order.join() === live0.join(), 'a step down from the bottom of the live band settles it on the dial, and the order is the original', back.ok ? back.order.join() : back.reason);
   const up = S.move(inp, 'comp:s2', -1);
-  ok(up.ok && up.order.slice(0, 2).join() === 's1-hand,comp:s2', 'the top face on the dial stepping up is lifted over the lowest hand', up.ok ? up.order.join() : up.reason);
-  const ownPtrLowest = Object.assign({}, inp, { order: ['s2-hand', 's1-hand'].concat(inp.order.filter((x) => x !== 's1-hand' && x !== 's2-hand')) });
-  const up2 = S.move(ownPtrLowest, 'comp:s2', -1);
-  ok(!up2.ok && /^R3/.test(up2.reason), 'R3: a face cannot lift over its own pointer when that pointer is the lowest hand', up2.reason);
-  // the engine draws what the stack says
+  ok(up.ok && up.order.slice(0, 2).join() === 'centre-hour,comp:s2', 'the top face on the dial stepping up is lifted over the lowest hand', up.ok ? up.order.join() : up.reason);
+  // the engine draws what the stack says: a lifted face carries its hands
   const dL = E.canonDesign(JSON.parse(JSON.stringify(d))); dL.order = lift.order;
   const fcL = E.face(Object.assign({}, OPTS, { design: dL, train: 'classic' }));
-  ok(fcL.liveSeq.map((e) => (e.kind === 'sub' ? 'comp:' + e.id : e.id)).join() === lift.order.join(), 'WatchEngine.liveSeq reads the lifted order exactly', fcL.liveSeq.map((e) => e.id).join());
-  ok(fcL.handOrder.join() === fc.handOrder.join(), 'and handOrder (what an unlifted bake ships) is untouched by the lift');
+  ok(fcL.liveSeq.map((e) => (e.kind === 'sub' ? 'comp:' + e.id : e.id)).join() === 's1-hand,centre-hour,comp:s2,s2-hand,centre-minute,centre-second', 'WatchEngine.liveSeq draws the lifted face with its hand on it', fcL.liveSeq.map((e) => (e.kind === 'sub' ? 'comp:' + e.id : e.id)).join());
+  ok(fcL.handOrder.join() === 's1-hand,centre-hour,s2-hand,centre-minute,centre-second', 'and handOrder moves that hand with its face', fcL.handOrder.join());
   const plainFc = E.face(Object.assign({}, OPTS, { design: d, train: 'classic' }));
   ok(plainFc.liveSeq.every((e) => e.kind === 'hand') && plainFc.liveSeq.map((e) => e.id).join() === plainFc.handOrder.join(), 'with nothing lifted the live band is handOrder');
   const noSubs = Object.assign({}, inp, { comps: inp.comps.filter((c) => c.type !== 'subdial' && c.host !== 's1' && c.host !== 's2'), hands: inp.hands.filter((h) => !h.sub), order: inp.order.filter((x) => x.indexOf('centre') === 0) });
   const lowC = S.build(noSubs).filter((x) => x.group === 'live').pop();
   const dn = S.move(noSubs, lowC.id, 1);
   ok(!dn.ok && /^R3/.test(dn.reason), 'R3: with no face to lift, the lowest hand cannot sink under the dial', dn.reason);
+  // ---- D43 P5d: place(), the drag ----
+  const P = (id, t, w) => S.place(inp, id, t, w);
+  const into = P('hand:centre-second', 'comp:s1', 'below');
+  ok(into.ok && into.host === 's1' && into.comps.find((c) => c.id === 'centre-second').host === 's1' && into.order.indexOf('centre-second') < 0, 'a dial hand dropped into a face’s group is re-hosted on that sub-dial', JSON.stringify(into.order));
+  const out = P('hand:s1-hand', 'hand:centre-minute', 'above');
+  ok(out.ok && out.host === 'dial' && out.order.join() === 'centre-hour,centre-minute,s1-hand,centre-second', 'a sub-dial’s hand dropped among the dial’s hands turns on the dial there', out.ok ? out.order.join() : out.reason);
+  const across = P('hand:s2-hand', 'hand:s1-hand', 'above');
+  ok(across.ok && across.host === 's1' && across.comps.filter((c) => c.type === 'hand' && c.host === 's1').map((c) => c.id).join() === 's1-hand,s2-hand', 'dropped onto another face’s hand it moves to that face, above it', JSON.stringify(across.comps.filter((c) => c.type === 'hand').map((c) => c.id + '@' + c.host)));
+  const under = P('hand:centre-hour', 'dial', 'below');
+  ok(!under.ok && /^R3/.test(under.reason), 'R3: no hand turns under the dial', under.reason);
+  const sky = P('hand:centre-hour', 'outer', 'above');
+  ok(!sky.ok && /^R1/.test(sky.reason), 'R1: nothing goes above the glass and the case', sky.reason);
+  const topFace = P('comp:s1', 'hand:' + top, 'above');
+  ok(topFace.ok && topFace.lift === 's1' && topFace.order[topFace.order.length - 1] === 'comp:s1', 'a face dropped above the top hand is lifted to the top of the stack', topFace.ok ? topFace.order.join() : topFace.reason);
+  const discUp = P('comp:w2', 'hand:' + top, 'above');
+  ok(!discUp.ok && /^R4/.test(discUp.reason), 'R4: a disc stays under the face that frames it, wherever it is dragged', discUp.reason);
+  const sink = P('hand:centre-hour', 'dial', 'above');
+  ok(sink.ok && sink.order.slice(0, 3).join() === 'centre-hour,comp:s1,comp:s2', 'a hand dropped just above the dial passes under every face: those faces are lifted over it', sink.ok ? sink.order.join() : sink.reason);
+  const dS = E.canonDesign(JSON.parse(JSON.stringify(d))); dS.order = sink.order;
+  const fcS = E.face(Object.assign({}, OPTS, { design: dS, train: 'classic' }));
+  ok(fcS.handOrder[0] === 'centre-hour', 'and the engine draws that hand first, under the faces', fcS.handOrder.join());
   // drag and drop goes step by step and stops at the rule that bites
   const dnd = S.moveTo(inp, 'comp:w2', 'comp:w1');
   ok(dnd.ok && noH(dnd.comps) === 's1,s2,w2,w1,w3,f1,o1', 'a drop onto the disc below trades the two', dnd.reason);
   const bad = S.moveTo(inp, 'comp:w2', 'hand:' + top);
   ok(!bad.ok && /^R4/.test(bad.reason), 'a drop over the dial stops at R4', bad.reason);
-
+  const withHands = (hs) => Object.assign({}, inp, { hands: hs, order: hs.map((h) => h.id) });
   // ---- R8: warnings, never refusals ----
   ok(S.warnings(inp).length === 0, 'R8: the natural stack raises no mechanical warning', S.warnings(inp).map((w) => w.text).join(' | '));
   const hourAbove = withHands(inp.hands.filter((h) => h.id !== 'centre-hour').concat(inp.hands.filter((h) => h.id === 'centre-hour')));

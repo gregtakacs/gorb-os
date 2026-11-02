@@ -37,6 +37,21 @@ eq(sfBlank, clean, 'canonDesign: an empty sf reference drops the whole group, st
 ok(E.artInDial({}, 'no-such-asset', {}) === false, 'artInDial refuses an id with no bytes instead of drawing nothing silently');
 ok(!!E.COMP_STYLES.subdial.transparent, 'COMP_STYLES.subdial carries the transparent entry');
 
+// ---- D43 P5d: a sub-dial offers the look of the hands placed on it --------------------
+{
+  const OPT = { finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, hands: 'breguet', handFinish: 'blued' };
+  const sd = (hand, face) => E.face(Object.assign({ design: E.canonDesign({ print: 'roman', comps: [Object.assign({ id: 's1', type: 'subdial', angle: 180, dist: 100, size: 60, scale: 'seconds', style: 'enamel' }, face),
+    Object.assign({ id: 'p1', type: 'hand', host: 's1', shows: 'second' }, hand), { id: 'p2', type: 'hand', host: 'dial', shows: 'minute' }] }) }, OPT));
+  const fin = (f, id) => f.hands.find((h) => h.id === id).fin;
+  const plain = sd({}, {}), gilt = sd({}, { hfinish: 'gilt' }), own = sd({ finish: 'steel' }, { hfinish: 'gilt' });
+  ok(JSON.stringify(fin(gilt, 'p1')) !== JSON.stringify(fin(plain, 'p1')) && JSON.stringify(fin(gilt, 'p1')) === JSON.stringify(sd({ finish: 'gilt' }, {}).hands.find((h) => h.id === 'p1').fin),
+    'a hand on a sub-dial takes the finish its face offers, as if it had chosen it');
+  ok(JSON.stringify(fin(gilt, 'p2')) === JSON.stringify(fin(plain, 'p2')), 'and a hand on the dial is untouched by it');
+  ok(JSON.stringify(fin(own, 'p1')) === JSON.stringify(sd({ finish: 'steel' }, {}).hands.find((h) => h.id === 'p1').fin), 'a hand that names its own finish breaks the link');
+  const c0 = E.canonDesign({ comps: [{ id: 's1', type: 'subdial', scale: 'seconds', hstyle: 'auto', hfinish: 'auto' }] }).comps[0];
+  ok(!('hstyle' in c0) && !('hfinish' in c0), 'canon drops a face\u2019s auto defaults, so an untouched sub-dial keeps its Design ID');
+}
+
 // ---- layout()/buildSubdials(): the plate really is gone ----------------------------
 const faceOf = (style, bgId) => {
   const d = E.canonDesign(legacy3({ print: 'roman',

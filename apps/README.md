@@ -153,7 +153,9 @@ carry keys up to 31 bytes and strings up to 95. Longer text is cut, and
 - **Time budget.** `orb_init` gets 1000 ms. Every other entry point gets 250 ms
   (the shipped apps use under 40). An app that runs past its budget traps. Two
   traps quarantine it (C2), and the dial shows it as failed with a **retry**
-  door. Do bounded work and return. For a long job, process N items per call and
+  door. A deadline that lands while the OS runs a large transfer (a card upload, a theme store, an
+  OTA) is extended by up to 2 s, so an app the transfer starved is not blamed. Do bounded work
+  and return. For a long job, process N items per call and
   carry on next tick, as the flight tracker does with its 400 JSON events a pass.
 - **Memory.** A module's linear memory is fixed at build time and capped at
   128 KB (`ORB_WASM_MEM_MAX`). The wasm shadow stack is 8 KB. Avoid large locals

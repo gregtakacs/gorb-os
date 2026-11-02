@@ -89,6 +89,7 @@ idf_component_register(
         # and reported by /api/v1/status after the reset (2026-10-31).
         "util/orb_panic.c"
         "util/orb_layout_carry.c"
+        "util/orb_io_window.c"
     INCLUDE_DIRS
         "."
         "app"

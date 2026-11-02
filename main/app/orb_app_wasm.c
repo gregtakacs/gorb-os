@@ -28,6 +28,8 @@
  * after that init_all's existing C2 gate keeps the row off the dial until reinstall).
  */
 #include "orb_app_wasm.h"
+#include "esp_attr.h"        /* RTC_NOINIT_ATTR: the slip count survives a soft reset */
+#include "orb_io_window.h"   /* the time budget forgives a deadline lost to I/O */
 
 #include <math.h>             /* the orb.sin/cos/... imports are the OS's libm */
 #include <stdio.h>            /* snprintf — the C2 fault reason is built, not literal */
@@ -237,20 +239,57 @@ static void xcall_fn(void)
  * by the recorded addition in components/wasm3 — on every loop iteration, and this
  * file's strong m3_Yield answers a trap once the call's deadline passed. The deadline
  * is an esp_timer that only sets a flag, so the check on the hot path is one load. The
- * trap bills C2 exactly like any other: a second overrun quarantines the app. */
+ * trap bills C2 exactly like any other: a second overrun quarantines the app.
+ *
+ * Wall time is only the guest's own when nothing heavy shares the board. A deadline
+ * that lands while a large transfer runs, or after one started during the call
+ * (orb_io_window.h), re-arms for another slice instead of trapping, up to
+ * ORB_WASM_IO_SLIP_MS of extra time per call: a guest starved by a 3 MB upload is
+ * not a runaway, and one that really spins still traps once the slip is spent. */
 #ifndef ORB_WASM_INIT_BUDGET_MS
 #define ORB_WASM_INIT_BUDGET_MS 1000u   /* orb_init: builds the page, compiles on first use */
 #endif
 #ifndef ORB_WASM_CALL_BUDGET_MS
 #define ORB_WASM_CALL_BUDGET_MS 250u    /* every other entry; the shipped apps use < 40 ms */
 #endif
+#ifndef ORB_WASM_IO_SLIP_MS
+#define ORB_WASM_IO_SLIP_MS     2000u   /* extra time one call may get while I/O runs */
+#endif
 
 static const char s_overrun_trap[] = "[trap] the app ran past its time budget";
 static esp_timer_handle_t s_budget;
 static volatile bool      s_overrun;
 static uint32_t           s_budget_ms = ORB_WASM_CALL_BUDGET_MS;
+static uint32_t           s_slip_ms;      /* extra time this call has had      */
+static uint32_t           s_call_gen;     /* the I/O window's gen it last saw  */
+/* Deadlines forgiven since power-on. RTC memory survives the software reset a theme
+ * store ends in, which is the transfer most likely to cost a guest its deadline, so a
+ * bench can read the count after the reboot (the magic says the word is ours). */
+#define SLIPS_MAGIC 0x51195EEDu
+static RTC_NOINIT_ATTR uint32_t s_slips_magic;
+static RTC_NOINIT_ATTR uint32_t s_slips;
 
-static void budget_fire(void *arg) { (void)arg; s_overrun = true; }
+/* The deadline. It is an esp_timer callback, so it may re-arm its own timer. */
+static void budget_fire(void *arg)
+{
+    (void)arg;
+    const uint32_t gen = orb_io_heavy_gen();
+    const bool io = orb_io_heavy_now() || gen != s_call_gen;
+    if (io && s_slip_ms + s_budget_ms <= ORB_WASM_IO_SLIP_MS) {
+        s_slip_ms += s_budget_ms;
+        s_call_gen = gen;                 /* the next slice needs I/O of its own */
+        if (s_slips_magic != SLIPS_MAGIC) { s_slips_magic = SLIPS_MAGIC; s_slips = 0; }
+        s_slips++;
+        esp_timer_start_once(s_budget, (uint64_t)s_budget_ms * 1000u);
+        return;
+    }
+    s_overrun = true;
+}
+
+uint32_t orb_wasm_budget_slips(void)
+{
+    return s_slips_magic == SLIPS_MAGIC ? s_slips : 0;
+}
 
 M3Result m3_Yield(void)
 {
@@ -274,6 +313,8 @@ static M3Result guest_call(IM3Function f, uint32_t argc, const void *argv[])
     s_xcall.argc = argc;
     s_xcall.argv = argv;
     s_overrun = false;
+    s_slip_ms = 0;
+    s_call_gen = orb_io_heavy_gen();
     if (s_budget) esp_timer_start_once(s_budget, (uint64_t)s_budget_ms * 1000u);
     s_on_xstack = true;
     esp_execute_shared_stack_function(s_xlock, s_xstack, ORB_WASM_NATIVE_STACK, xcall_fn);

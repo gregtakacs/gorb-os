@@ -26,6 +26,7 @@
 #include "sd_protocol_defs.h"
 
 #include "orb_sd.h"
+#include "orb_io_window.h"
 #include "board_config.h"
 #include "display.h"              // tile-ring loan: the SD driver's DMA asks and the display's
                                   // ring come from one internal pool (see orb_sd_lock)
@@ -563,6 +564,7 @@ void orb_sd_lock(void)
      * capped, and a drain that does not settle REFUSES the loan rather than
      * waiting, so a card path that somehow runs ahead of a flush cannot hang. */
     display_dma_borrow();
+    orb_io_heavy_begin();       /* card I/O starves the LVGL task's guests */
 }
 
 void orb_sd_unlock(void)
@@ -572,6 +574,7 @@ void orb_sd_unlock(void)
      * kept it), display_dma_return clears the loan anyway and the flush path
      * re-funds the ring on its own next frame. */
     display_dma_return();
+    orb_io_heavy_end();
     if (s_lock) {
         s_lock_last_release_us = esp_timer_get_time();
         s_lock_holder = NULL;

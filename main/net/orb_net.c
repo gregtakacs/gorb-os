@@ -66,6 +66,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "orb_app_wasm.h"   /* orb_wasm_stack_peak: the guest stack depth, in /api/v1/status */
 #include "knob.h"     /* h_screen injection; h_status reads the raw/detent pair */
 #include "art_bank.h"
+#include "orb_io_window.h"  /* h_ota brackets itself for the wasm time budget */
 #include "display.h"        /* h_fb: the one-shot frame capture over the panel mirror */
 #include "board_config.h"   /* h_fb: SCREEN_WIDTH/HEIGHT, the row scratch's size */
 #include "orb_sd.h"
@@ -2625,6 +2626,9 @@ static esp_err_t h_status(httpd_req_t *req)
         /* §43: the deepest the wasm apps' shared native stack has run, in bytes of
          * its ORB_WASM_NATIVE_STACK. The interpreter's depth is measured, not assumed. */
         "\"wasm_stack_peak\":%u,"
+        /* Deadlines the wasm time budget forgave because a large transfer shared the
+         * call (orb_io_window.h), since power-on — it survives a theme store's reboot. */
+        "\"wasm_slips\":%u,"
         /* The LVGL pool every page is built from, wasm apps' included: a widget the
          * pool cannot hold is silently absent, so the peak is the number to watch. */
         "\"lv_mem\":{\"total\":%u,\"free\":%u,\"biggest\":%u,\"peak\":%u},"
@@ -2699,6 +2703,7 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
         (unsigned)orb_wasm_stack_peak(),
+        (unsigned)orb_wasm_budget_slips(),
         (unsigned)lvm_total, (unsigned)lvm_free, (unsigned)lvm_biggest, (unsigned)lvm_peak,
 #if CONFIG_ORB_USB_MSC
         orb_usb_msc_state(), orb_usb_msc_host_up() ? "true" : "false", orb_usb_msc_reason(),
@@ -4285,7 +4290,7 @@ static esp_err_t ota_reject(httpd_req_t *req, esp_ota_handle_t *h,
     return httpd_resp_sendstr(req, body);
 }
 
-static esp_err_t h_ota(httpd_req_t *req)
+static esp_err_t h_ota_body(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -4423,6 +4428,16 @@ static esp_err_t h_ota(httpd_req_t *req)
              "{\"state\":\"staged\",\"slot\":\"%s\",\"bytes\":%d,"
              "\"reboot\":\"POST /api/v1/reboot\"}", target->label, clen);
     return httpd_resp_sendstr(req, resp);
+}
+
+/* The OTA door is a multi-megabyte write that starves the LVGL task's guests: bracket
+ * it for their time budget (orb_io_window.h). */
+static esp_err_t h_ota(httpd_req_t *req)
+{
+    orb_io_heavy_begin();
+    const esp_err_t e = h_ota_body(req);
+    orb_io_heavy_end();
+    return e;
 }
 
 /* Reboot is a separate verb from staging (see h_ota). The response must leave

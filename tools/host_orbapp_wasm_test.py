@@ -325,7 +325,9 @@ def lint(text):
     if not re.search(r"M3Result m3_Yield\(void\)\s*\{\s*return s_overrun \? s_overrun_trap : m3Err_none;", text):
         fails.append("  device lint: m3_Yield no longer answers the overrun trap — a spinning "
                      "app freezes the dial")
-    order(r"esp_timer_start_once\(s_budget", r"esp_execute_shared_stack_function\(",
+    # The call-site arm, spelled with its guard: budget_fire re-arms the same timer for
+    # an I/O slip (orb_io_window.h), and that re-arm is not the call's own deadline.
+    order(r"if \(s_budget\) esp_timer_start_once\(s_budget", r"esp_execute_shared_stack_function\(",
           "budget armed", "the guest call", "the deadline must run while the guest does")
     order(r"esp_execute_shared_stack_function\(", r"esp_timer_stop\(s_budget\)",
           "the guest call", "budget stopped", "a finished call must not trip the next one")

@@ -7,7 +7,7 @@ Neither tool clamps today, which is exactly what this pins down -- a future refa
 that adds a max(0, ...) or a bounds assert would silently move a hidden arbour onto the
 ink and start every hand pointing at the wrong numeral.
 
-    python3 tools/watch-composer/_selftest/pivot_passthrough_check.py
+    python3 apps/clock/editor/_selftest/pivot_passthrough_check.py
 """
 import os
 import sys
@@ -15,8 +15,8 @@ import sys
 import numpy as np
 from PIL import Image
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.insert(0, ROOT)                                            # two levels up from _selftest is tools/
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "tools"))
+sys.path.insert(0, ROOT)                                            # the repo's tools/
 import bake_clock as bake                                    # noqa: E402
 import prep_watch_kit as prep                                # noqa: E402
 

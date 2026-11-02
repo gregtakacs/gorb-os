@@ -3,7 +3,7 @@
 //
 // The container format now has three implementations: tools/orbtheme.py (the definition),
 // the device reader in main/art/orb_theme.c (pinned by tools/host_sd_test.py), and
-// tools/watch-composer/orbtheme-baker.js, which lets the studio ship a theme a person can
+// tools/orb-manager/web/runtime/baker@1/orbtheme-baker.js, which lets the studio ship a theme a person can
 // copy onto a card without running the bench pipeline. Nothing compiles the JS against the
 // Python, so this suite does it instead: orbtheme_vectors.py packs a sentinel model with
 // the Python and dumps every input plane as raw RGBA, and the checks below require the JS
@@ -14,7 +14,7 @@
 // whose hand pivots read as overlay offsets — bad art, not an error message — and a bank
 // whose rects do not replay leaves a stale rectangle frozen on the glass forever.
 //
-//   ~/.local/share/nodeenv-gorb/bin/node tools/watch-composer/_selftest/headless-orbtheme.test.js
+//   ~/.local/share/nodeenv-gorb/bin/node tools/orb-manager/web/runtime/_selftest/headless-orbtheme.test.js
 //
 // Needs the bake venv (pillow + numpy) for the reference run:
 //   python3 -m venv /tmp/bakevenv && /tmp/bakevenv/bin/pip install pillow numpy
@@ -22,9 +22,9 @@
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const B = require('../orbtheme-baker.js');
+const B = require('../baker@1/orbtheme-baker.js');
 
-const ROOT = path.resolve(__dirname, '..', '..', '..');
+const ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..');
 const OUT = process.env.ORBTHEM_VEC || '/tmp/orbtheme_vectors';
 const PY = process.env.PY || '/tmp/bakevenv/bin/python3';
 let fails = 0, checked = 0;

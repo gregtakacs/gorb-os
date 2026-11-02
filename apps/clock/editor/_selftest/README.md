@@ -1,4 +1,4 @@
-# watch-composer selftests
+# clock editor selftests (apps/clock/editor/_selftest)
 
 Two headless tests and three probes. The tests print a line report into
 `<pre id="out">` and set `<title>` to PASS or FAIL, so CI can grep the title
@@ -301,7 +301,7 @@ at what radius.
 no browser at all:
 
 ```sh
-python3 tools/watch-composer/_selftest/pivot_passthrough_check.py
+python3 apps/clock/editor/_selftest/pivot_passthrough_check.py
 ```
 
 It calls `prep_watch_kit._placed` and `bake_clock.snap_pivot_to_hub` directly and pins

@@ -304,14 +304,14 @@ func stubDevTools(t *testing.T, open func() bool) *httptest.Server {
 	return srv
 }
 
-// The Theme Editor card navigates the SAME window to /composer/. That page
-// target must still count as our window being open, or the hub would shut down
-// while the operator is mid-design and the editor's pushes would have nothing
-// to talk to.
-func TestWindowTrackerCountsTheComposerPageAsOurWindow(t *testing.T) {
+// An app's theme editor opens on the hub's own origin (/editor/<ip>/<app>/, D37; the
+// hub-hosted /composer/ retired in D43). That page target must still count as our
+// window being open, or the hub would shut down while the operator is mid-design and
+// the editor's pushes would have nothing to talk to.
+func TestWindowTrackerCountsTheEditorPageAsOurWindow(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/json/list" {
-			_, _ = w.Write([]byte(`[{"type":"page","url":"http://127.0.0.1:3779/composer/"}]`))
+			_, _ = w.Write([]byte(`[{"type":"page","url":"http://127.0.0.1:3779/editor/192.168.2.34/clock/"}]`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"Browser":"Stub"}`))

@@ -566,7 +566,7 @@ setTimeout(async () => {
       await it.finishTheme([], { size: 466 }, 'ok');
       ok(/did not load/.test(it.state.status), 'a missing baker names the file that is gone', it.state.status.slice(0, 56));
     } finally {
-      global.window.GorbBake = require('../orbtheme-baker.js');
+      global.window.GorbBake = require(require('./runtime-paths.js').BAKER);
       delete it.download;
       const n = checked; if (n < 1) fails++;
     }

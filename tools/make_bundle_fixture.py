@@ -166,7 +166,7 @@ def write_vectors(outdir):
 
     Leaves `model.json` (name, stamps, and every section's elements / scalars / sprites /
     panel) plus one `art_<slug>.bin` of raw encoded pixels per section, and the container
-    this model packs to at `container.bin`. tools/watch-composer/_selftest/
+    this model packs to at `container.bin`. apps/clock/editor/_selftest/
     headless-bundle3.test.js feeds those to orbtheme-baker.js's writeBundle3 and requires
     the result to match the committed tests/fixtures/format3-pair.orbtheme byte for byte.
 

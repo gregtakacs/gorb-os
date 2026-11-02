@@ -21,12 +21,12 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = path.resolve(__dirname, '..', '..', '..');
-const BAKER = process.env.DITHER_BAKER || path.join(__dirname, '..', 'orbtheme-baker.js');
+const ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..');
+const BAKER = process.env.DITHER_BAKER || path.join(__dirname, '..', 'baker@1', 'orbtheme-baker.js');
 const PY = process.env.PY || 'python3';
 
 if (process.argv.includes('--mutations')) {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'orbtheme-baker.js'), 'utf8');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'baker@1', 'orbtheme-baker.js'), 'utf8');
   const M = [
     ['table transposed', 'v = ditherQuant565(rgba[i], rgba[i + 1], rgba[i + 2], DITHER_T[row + ((dith.x + x) & (DITHER_N - 1))]);',
       'v = ditherQuant565(rgba[i], rgba[i + 1], rgba[i + 2], DITHER_T[((dith.x + x) & (DITHER_N - 1)) * DITHER_N + ((dith.y + y) & (DITHER_N - 1))]);'],

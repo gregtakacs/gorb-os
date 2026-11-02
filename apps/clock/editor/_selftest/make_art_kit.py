@@ -1,7 +1,7 @@
 """Build a custom-art kit fixture from a REAL composer kit, so prep_watch_kit and
 bake_clock run against byte formats the composer actually emits.
 
-    python3 tools/watch-composer/_selftest/make_art_kit.py <kit.zip> /tmp/artkit
+    python3 apps/clock/editor/_selftest/make_art_kit.py <kit.zip> /tmp/artkit
     python3 tools/prep_watch_kit.py /tmp/artkit/watch-artfixture-kit.zip /tmp/artkit/out
     python3 tools/bake_clock.py /tmp/artkit/out/theme --bg-frames /tmp/artkit/out/frames \
         --bg-fps 8 --tourbillon /tmp/artkit/out/tourbillon --tourbillon-fps 8 \

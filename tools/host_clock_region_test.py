@@ -63,31 +63,42 @@ man = json.loads(zf.read("editor.json").decode("utf-8"))
 check("editor.json: dialect 1, entry index.html",
       man.get("editor") == 1 and man.get("entry") == "index.html")
 check("editor.json: baker 3 (the hub's writer is FORMAT 3 only)", man.get("baker") == 3)
-# The names the hub serves today: react/babel from the vendor tree, support.js
-# and orbtheme-baker.js as composer siblings. An unlisted name is a runtime the
-# hub does not have — and §5.1's promise is that the hub refuses it, so the
-# list here must stay inside what the hub actually serves.
+# D43 §9: the runtime is the hub's OS runtime, named by versioned id. The list must
+# name exactly the ids tools/orb-manager/runtime.go's catalog serves — the hub refuses
+# an editor naming one it does not carry (editorRuntimeMissing), and an unversioned
+# entry is an editor from before the runtime existed.
+check("editor.json: the runtime is the hub's versioned ids",
+      man.get("runtime") == ["support@1", "baker@1", "react@18.3.1", "babel@7.29.0", "fonts@1"],
+      str(man.get("runtime")))
+cat = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "orb-manager", "runtime.go")).read()
+check("every declared id is in the hub's runtime catalog",
+      all('"%s":' % i in cat for i in man.get("runtime", [])))
 
-# 3. The two hub-runtime rewrites landed and the app's own stay relative. These
-#    are the exact strings the bake anchors on; a source drift is already a
-#    SystemExit inside the builder, so a FAIL here means the rewrite itself
-#    changed shape, not that the source moved.
-check("support.js resolves to the hub's shared runtime",
-      '<script src="/composer/support.js"></script>' in entry
-      and 'src="./support.js"' not in entry)
-check("orbtheme-baker.js resolves to the hub's shared writer",
-      '<script src="/composer/orbtheme-baker.js"></script>' in entry
+# 3. The runtime rewrites landed and the app's own stay relative. These are the exact
+#    strings the bake anchors on; a source drift is already a SystemExit inside the
+#    builder, so a FAIL here means the rewrite itself changed shape.
+check("support.js resolves to the hub's runtime, with the CDN map ahead of it",
+      '<script src="/runtime/support@1/support.js"></script>' in entry
+      and 'src="./support.js"' not in entry
+      and entry.find("window.__resources[") < entry.find('/runtime/support@1/support.js') != -1)
+check("the CDN map sends React, ReactDOM and Babel to the hub's runtime",
+      all(('"%s"' % u) in entry for u in (
+          "/runtime/react@18.3.1/react.production.min.js",
+          "/runtime/react@18.3.1/react-dom.production.min.js",
+          "/runtime/babel@7.29.0/babel.min.js")))
+check("orbtheme-baker.js resolves to the hub's theme builder",
+      '<script src="/runtime/baker@1/orbtheme-baker.js"></script>' in entry
       and '<script src="orbtheme-baker.js">' not in entry)
+check("nothing names the retired /composer/ route", "/composer/" not in entry)
 check("the region's own members stay relative",
       '<script src="watch-engine.js"></script>' in entry
       and '<script src="dial-renderer.js"></script>' in entry
       and '<script src="sound-engine.js"></script>' in entry)
 
-# 4. The fonts links stay the page's own CDN references: serve-time offline
-#    rewrite is the hub's job (injectOffline), and baking them in would freeze
-#    one hub's vendor state into a card file.
-check("google font links untouched (serve-time is the hub's)",
-      entry.count("fonts.googleapis.com") == 11, str(entry.count("fonts.googleapis.com")))
+# 4. The fonts: one vendored sheet from the runtime, no Google reference left.
+check("the fonts are the runtime's one vendored sheet",
+      entry.count('<link href="/runtime/fonts@1/fonts.css" rel="stylesheet">') == 1
+      and "fonts.googleapis.com" not in entry and "fonts.gstatic.com" not in entry)
 
 # 5. The bridge shim: present once, speaks the shipped vocabulary (the one
 #    app.js's themeBridge implements — NOT §7.1's stale table), frames-only,

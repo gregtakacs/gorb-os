@@ -7,13 +7,18 @@
 // it does expose is the override hooks it was built with: window.__resources maps a
 // CDN URL to a local src, and that is the seam this tool fills.
 //
-// It writes web/composer/vendor/: the three scripts, one fonts.css, the woff2 files
+// It writes web/runtime/vendor/ (the hub's OS theme runtime, D43 §9): the three
+// scripts, one fonts.css, the woff2 files
 // it references, and a MANIFEST.json recording every URL, its sha256, its size and
 // the SRI the composer expects. Re-running is a no-op when the bytes already match,
 // so drift is visible in git rather than silent.
 //
-//	orbvendor -out web/composer/vendor             # download what is missing
-//	orbvendor -out web/composer/vendor -verify     # check the tree, fetch nothing
+//	orbvendor -out web/runtime/vendor             # download what is missing
+//	orbvendor -out web/runtime/vendor -verify     # check the tree, fetch nothing
+//
+// The font list comes from the clock editor's page (-editor) and the SRI pins from the
+// runtime's support.js (-support): since D43 the two live apart, the page with the app
+// and support.js with the hub.
 package main
 
 import (
@@ -145,8 +150,9 @@ type manifestEntry struct {
 }
 
 func main() {
-	out := flag.String("out", "web/composer/vendor", "directory to write the vendored assets into")
-	source := flag.String("composer", "tools/watch-composer", "the composer dir whose .dc.html names the font links")
+	out := flag.String("out", "web/runtime/vendor", "directory to write the vendored assets into")
+	editor := flag.String("editor", "apps/clock/editor", "the editor dir whose .dc.html names the font links")
+	support := flag.String("support", "tools/orb-manager/web/runtime/support@1/support.js", "the runtime's support.js, whose SRI pins the scripts must match")
 	verify := flag.Bool("verify", false, "check the existing tree against the manifest and download nothing")
 	flag.Parse()
 
@@ -158,7 +164,7 @@ func main() {
 		fmt.Println("orbvendor: vendored tree matches its manifest")
 		return
 	}
-	if err := vendor(*out, *source); err != nil {
+	if err := vendor(*out, *editor, *support); err != nil {
 		fmt.Fprintln(os.Stderr, "orbvendor:", err)
 		os.Exit(1)
 	}
@@ -281,8 +287,7 @@ func verifyTree(out string) error {
 
 // vendor downloads everything and writes the manifest. It is idempotent: a file whose
 // bytes already match is left alone, so a re-run produces no diff.
-func vendor(out, source string) error {
-	supportPath := filepath.Join(source, "support.js")
+func vendor(out, source, supportPath string) error {
 	if err := checkSRIsMatchSupport(supportPath); err != nil {
 		return err
 	}

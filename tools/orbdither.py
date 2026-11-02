@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """orbdither.py — the bake's RGB565 dither (D43 §5.3, §5.4), the Python twin.
 
-The JS baker (tools/watch-composer/orbtheme-baker.js, `dither565` / `ditherAlpha`) is the
+The JS baker (tools/orb-manager/web/runtime/baker@1/orbtheme-baker.js, `dither565` / `ditherAlpha`) is the
 one that ships themes; this module is its bit-exact twin for the parity suite
 (`_selftest/headless-dither.test.js`) and for any Python tool that writes a still plane
 the dial blends. Both read the same 64x64 blue-noise table (generated once by

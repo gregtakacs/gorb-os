@@ -594,7 +594,7 @@ ELEM_ORDER_N    = 64   # depth rungs: one scale for every row the clock draws (D
 # belong to the APP, and this table is the one place the clock's names, classes and
 # slots are written down. Three readers depend on it and none may paraphrase it:
 # `main/clock/clock_slots.c` mirrors it for the compiled app,
-# `tools/watch-composer/orbtheme-baker.js` mirrors it for the bake that fills the
+# `tools/orb-manager/web/runtime/baker@1/orbtheme-baker.js` mirrors it for the bake that fills the
 # slots, and `tools/host_orbelems_test.py` fails the build if a word drifts.
 #
 # A name is a manifest reference's `<name>` half, so it obeys the wire's own bound:

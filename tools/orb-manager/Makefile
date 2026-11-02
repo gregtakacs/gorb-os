@@ -1,14 +1,15 @@
 # orb-manager — build the hub binary, the headless flasher, run checks.
 #
 # Nothing here needs esptool, Python, or a stub loader, nor an ESP-IDF build dir:
-# the hub ships its firmware as a committed bundle (make firmware) and its Theme
-# Editor as committed copies (make composer), and both are compiled in. The web UI
+# the hub ships its firmware as a committed bundle (make firmware) and the OS theme
+# runtime every app's editor builds with (web/runtime/: the dc-runtime, the theme
+# builder, and the vendored React/Babel/fonts), and both are compiled in. The web UI
 # is embedded at compile time (main.go //go:embed web), so editing web/ files and
 # rebuilding is all a "web build" means here.
 #
-# When a gorb-os clone IS reachable, the hub still serves the Theme Editor live
-# from tools/watch-composer, so the composer stays one source of truth during
-# development. The embedded copies are what an end user gets.
+# An app's editor itself is not the hub's: it travels in the app's .orbapp (the
+# clock's sources are apps/clock/editor/), and the hub serves it out of the
+# container at /editor/<ip>/<app>/ against /runtime/<id>/ (D43 §9).
 
 # Find the toolchain. A tarball install into /usr/local/go does not land on a
 # default login PATH, so probe PATH first, then the known install locations.
@@ -28,7 +29,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash library test vet fmt check run desktop cdp reload flash windows win-test crosscheck clean firmware composer vendor-composer vendor-check release usb-doc-test
+.PHONY: all build manager orbflash library test vet fmt check run desktop cdp reload flash windows win-test crosscheck clean firmware vendor-runtime vendor-check release usb-doc-test
 
 all: test build
 
@@ -77,40 +78,28 @@ manager:
 	@echo "built $(BIN_DIR)/orb-manager $(VERSION)"
 	$(call LIB_COPY,$(BIN_DIR))
 
-## composer: re-copy the Theme Editor into web/composer/ so the shipped binary can
-## serve it. The hub prefers the live files under $(REPO)/tools/watch-composer when
-## a clone is reachable — that is the developer's live-edit path — and falls back to
-## this embedded copy otherwise, which is the only option for a downloaded app.
-## Committed for the same reason as the firmware bundle: a plain build must work.
-COMPOSER_SRC := $(REPO)/tools/watch-composer
-COMPOSER_ENTRY := Watch Composer.dc.html
-COMPOSER_JS := dial-renderer.js orbtheme-baker.js sound-engine.js support.js watch-engine.js
-composer:
-	@test -f "$(COMPOSER_SRC)/$(COMPOSER_ENTRY)" || { echo "no $(COMPOSER_SRC) — run this from the gorb-os clone"; exit 1; }
-	@mkdir -p web/composer
-	@cp "$(COMPOSER_SRC)/$(COMPOSER_ENTRY)" "web/composer/$(COMPOSER_ENTRY)"
-	@for f in $(COMPOSER_JS); do cp "$(COMPOSER_SRC)/$$f" web/composer/$$f || exit 1; done
-	@echo "copied the Theme Editor (entry + $(words $(COMPOSER_JS)) scripts) into web/composer/"
-
-## vendor-composer: download the composer's external dependencies into web/composer/
-## vendor/ so the Theme Editor works with no internet at all. The editor pulls React,
-## ReactDOM and Babel from unpkg.com through support.js, and 36 font families from
-## Google; blocked or absent DNS gives a blank editor whose only complaint is a console
-## a chromeless window cannot show. Committed for the same reason as the firmware
-## bundle: a plain build must produce an offline-capable hub. Idempotent — a re-run
-## whose bytes already match produces no diff. Requires network access.
-VENDOR_DIR := web/composer/vendor
-vendor-composer:
-	@test -f "$(COMPOSER_SRC)/support.js" || { echo "no $(COMPOSER_SRC)/support.js — run this from the gorb-os clone"; exit 1; }
-	$(GO) run ./cmd/orbvendor -out $(VENDOR_DIR) -composer "$(COMPOSER_SRC)"
+## vendor-runtime: download the runtime's third-party dependencies into
+## web/runtime/vendor/ so an app's editor works with no internet at all. support.js
+## pulls React, ReactDOM and Babel from unpkg.com, and the clock editor's page links 36
+## font families from Google; the hub serves the vendored copies at
+## /runtime/react@18.3.1/, /runtime/babel@7.29.0/ and /runtime/fonts@1/. Committed for
+## the same reason as the firmware bundle: a plain build must produce an
+## offline-capable hub. Idempotent — a re-run whose bytes already match produces no
+## diff. Requires network access.
+VENDOR_DIR := web/runtime/vendor
+EDITOR_SRC := $(REPO)/apps/clock/editor
+SUPPORT_JS := web/runtime/support@1/support.js
+vendor-runtime:
+	@test -f "$(EDITOR_SRC)/Watch Composer.dc.html" || { echo "no $(EDITOR_SRC) — run this from the gorb-os clone"; exit 1; }
+	$(GO) run ./cmd/orbvendor -out $(VENDOR_DIR) -editor "$(EDITOR_SRC)" -support $(SUPPORT_JS)
 
 ## vendor-check: verify the committed vendor tree, fetching nothing. It re-checks every
-## file against the sha256 in its own MANIFEST.json and against the SRI the composer
+## file against the sha256 in its own MANIFEST.json and against the SRI the runtime
 ## demands at load time, and re-reads those pins out of support.js rather than trusting
 ## the tool's copy — so a hand-edited vendored React fails here, not as a blank editor.
 vendor-check:
-	@test -f "$(VENDOR_DIR)/MANIFEST.json" || { echo "no $(VENDOR_DIR)/MANIFEST.json — run make vendor-composer"; exit 1; }
-	$(GO) run ./cmd/orbvendor -out $(VENDOR_DIR) -composer "$(COMPOSER_SRC)" -verify
+	@test -f "$(VENDOR_DIR)/MANIFEST.json" || { echo "no $(VENDOR_DIR)/MANIFEST.json — run make vendor-runtime"; exit 1; }
+	$(GO) run ./cmd/orbvendor -out $(VENDOR_DIR) -verify
 
 orbflash:
 	@mkdir -p $(BIN_DIR)
@@ -137,7 +126,7 @@ vet:
 
 ## check: the verification ladder in one command — the suite with the bundle guard
 ## armed, vet, every supported GOOS/GOARCH type-checked including tests, and the
-## vendored composer assets verified against their manifest and SRI pins. Run this
+## vendored runtime assets verified against their manifest and SRI pins. Run this
 ## before every commit that touches the hub.
 check: test vet crosscheck vendor-check
 	@echo 'check: tests, vet, crosscheck and vendor-check all green'
@@ -192,8 +181,8 @@ flash: orbflash
 ## The flag rides in a make variable chosen per platform, never in a shell
 ## variable inside the quoted arg list: the go tool parses $ as command
 ## substitution inside -ldflags, so '$$guilf' there silently ate the flags.
-## Consumes nothing from the network: the firmware bundle, the Theme Editor and the
-## vendored composer assets are all committed and compiled in.
+## Consumes nothing from the network: the firmware bundle and the OS theme runtime
+## (its vendored assets included) are all committed and compiled in.
 LDFLAGS_GUI   := $(LDFLAGS) -H windowsgui
 RELEASE_DIR       ?= $(BIN_DIR)/release
 RELEASE_NAME      ?= orb-manager

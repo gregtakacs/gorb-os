@@ -14,9 +14,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const S = require('../sound-engine.js');
-const B = require('../orbtheme-baker.js');
+const B = require(require('./runtime-paths.js').BAKER);
 
-const ROOT = path.resolve(__dirname, '..', '..', '..');
+const ROOT = require('./runtime-paths.js').ROOT;
 const PY = process.env.B3_PY || 'python3';
 let checked = 0, fails = 0;
 const ok = (c, n, x) => { checked++; console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  [' + x + ']' : '')); if (!c) fails++; };

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """The reference side of the composer''s in-browser .orbtheme baker.
 
-    /tmp/bakevenv/bin/python3 tools/watch-composer/_selftest/orbtheme_vectors.py [dir]
+    /tmp/bakevenv/bin/python3 tools/orb-manager/web/runtime/_selftest/orbtheme_vectors.py [dir]
 
 Packs one sentinel model with the Python that DEFINES the format (tools/orbtheme.py,
 tools/theme_schema.py, tools/bake_clock.py) and leaves, in <dir>: every input plane as raw
 RGBA bytes, geom.bin / art.bin / container.bin, and units.json describing the model.
-headless-orbtheme.test.js feeds those same planes to tools/watch-composer/orbtheme-baker.js
+headless-orbtheme.test.js feeds those same planes to tools/orb-manager/web/runtime/baker@1/orbtheme-baker.js
 and requires the geometry blob, the pixel bank and the container to match byte for byte.
 
 Why a mirror test and not just a reader test: the format now has three implementations --
@@ -23,7 +23,7 @@ rule keeps on purpose ("alpha is IGNORED here", rgb565_le).
 import json, os, shutil, sys, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))        # the repo root
+ROOT = os.path.abspath(os.path.join(HERE, '..', '..', '..', '..', '..'))   # the repo root
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 from PIL import Image
 import bake_clock as bc

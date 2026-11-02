@@ -194,9 +194,11 @@ func hubSourceFile(t *testing.T, rel string) string {
 	return string(b)
 }
 
-// The clock is the one app the hub can serve an editor for before GEOM_ABI 3 lands,
-// and it is the HUB saying so: the web layer must not carry that slug itself.
-func TestThemeAppsClockEditorComesFromTheHub(t *testing.T) {
+// A dial that cannot say whether its container carries an editor (no identity tuple)
+// gets no editor from the hub any more: until D43 the hub answered for the clock with
+// its own /composer/, and that route is retired (ruling 4). The web layer still must
+// not carry the clock's slug itself — the row says "no editor", and that is the truth.
+func TestThemeAppsClockOffersNoHubEditorWhenTheDialCannotAnswer(t *testing.T) {
 	orb := orbfake.New().WithCardApps(
 		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes, Installed: true, Enabled: true},
 	)
@@ -209,11 +211,8 @@ func TestThemeAppsClockEditorComesFromTheHub(t *testing.T) {
 		}
 		t.Fatal("clock missing from the enumeration")
 	}
-	if !row.HasEditor || row.EditorURL == "" {
-		t.Fatalf("clock reported no editor, hiding the one door that works: %+v", row)
-	}
-	if !strings.HasPrefix(row.EditorURL, "/") {
-		t.Errorf("editor_url = %q, want a same-origin hub path", row.EditorURL)
+	if row.HasEditor || row.EditorURL != "" {
+		t.Fatalf("clock reported a hub-hosted editor the hub no longer has: %+v", row)
 	}
 }
 
@@ -254,11 +253,11 @@ func TestThemeAppsOpensTheContainersEditorWhenTheDeviceReportsOne(t *testing.T) 
 	}
 }
 
-// The other direction, and the one that could regress the shipped clock: a container that
-// reports NO region does not take away an editor the hub hosts. The clock's editor moves
-// into its container in S4; until then its container is empty of one and /composer/ is the
-// truth, so a dial saying editor_crc=0 must leave the pane open rather than blank it.
-func TestThemeAppsKeepsTheHostedEditorWhenTheContainerCarriesNone(t *testing.T) {
+// The other direction. Before D43 the hub hosted the clock's editor at /composer/, so a
+// container reporting no region still left the pane open. That route is retired (D43
+// ruling 4): the editor travels only inside the container, so a dial saying
+// editor_crc=0 has no editor to offer, and the face must not point at one.
+func TestThemeAppsOffersNoEditorWhenTheContainerCarriesNone(t *testing.T) {
 	orb := orbfake.New().WithCardApps(
 		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes,
 			Installed: true, Enabled: true, Serial: 3, GeomCRC: 0x1234})
@@ -268,8 +267,8 @@ func TestThemeAppsKeepsTheHostedEditorWhenTheContainerCarriesNone(t *testing.T) 
 	if row == nil {
 		t.Fatal("clock missing")
 	}
-	if !row.HasEditor || row.EditorURL != "/composer/" {
-		t.Errorf("a clock whose container holds no region got has_editor=%v url=%q; the hub still serves its editor",
+	if row.HasEditor || row.EditorURL != "" {
+		t.Errorf("a clock whose container holds no region got has_editor=%v url=%q; there is no hosted editor any more",
 			row.HasEditor, row.EditorURL)
 	}
 }

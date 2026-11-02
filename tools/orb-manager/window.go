@@ -17,11 +17,11 @@ import (
 // puts it in a window instead of a browser tab, so the operator sees an app
 // titled "Orb Manager" rather than a URL on 127.0.0.1.
 //
-// Chromium-family only, on purpose. The Theme Editor card is the repo's watch
+// Chromium-family only, on purpose. The clock's theme editor is the watch
 // composer — a Blink canvas app whose file dialogs and localStorage asset store
 // are only ever exercised in Chrome (see .clinerules, "Testing the Watch
 // Composer"). Hosting the hub in the same engine the composer is verified on
-// keeps one Blink in play and lets /composer/ open inside the same window. A
+// keeps one Blink in play and lets the editor open inside the same window. A
 // WebKit-based wrapper would put an untested engine between the user and those
 // 712 KB of canvas code, so this tool does not use one.
 //

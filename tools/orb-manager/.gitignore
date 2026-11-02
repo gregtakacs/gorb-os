@@ -13,7 +13,8 @@ bin/
 /orbvendor
 /serprov
 
-# Do NOT ignore internal/firmware/bundle/*.zip or web/composer/*. That pair is
-# the firmware and the Theme Editor compiled into the binary — committed on
-# purpose, so `make build` works with no ESP-IDF and a downloaded .exe flashes an
-# orb with no clone on disk. Refresh them with `make firmware` / `make composer`.
+# Do NOT ignore internal/firmware/bundle/*.zip or web/runtime/*. That pair is the
+# firmware and the OS theme runtime (D43 §9) compiled into the binary — committed on
+# purpose, so `make build` works with no ESP-IDF and a downloaded .exe flashes an orb
+# and opens an app's editor with no clone on disk. Refresh them with `make firmware` /
+# `make vendor-runtime`.

@@ -11,15 +11,15 @@
  *   3. slice 5's grant rule, priced at the AA rate Station measured with the bit on and off (1,740 us/kpx): smoothing only where the estimate WITH the AA term holds 12,
  *      and est_fps is priced with the term exactly then.
  *
- * Run: node tools/watch-composer/_selftest/headless-estimate.test.js
+ * Run: node apps/clock/editor/_selftest/headless-estimate.test.js
  */
 'use strict';
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const BAKER = path.join(__dirname, '..', 'orbtheme-baker.js');
-const SKEL = path.join(__dirname, '..', '..', 'orb-manager', 'themes', 'skeleton.orbtheme');
+const BAKER = require('./runtime-paths.js').BAKER;
+const SKEL = path.join(require('./runtime-paths.js').ROOT, 'tools', 'orb-manager', 'themes', 'skeleton.orbtheme');
 const SRC = fs.readFileSync(BAKER, 'utf8');
 
 function load(src) {

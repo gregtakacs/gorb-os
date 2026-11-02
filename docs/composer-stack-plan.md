@@ -497,6 +497,41 @@ long as an app in its library or on a known orb still names it.
   - `.clinerules` (the composer testing recipe).
   Re-grep when P3 starts.
 
+### 9.4 As built (P3, 2026-11-01)
+
+- **Homes.** The clock editor's sources are `apps/clock/editor/` (the document,
+  `watch-engine.js`, `dial-renderer.js`, `sound-engine.js`, `deploy_test_folder.py`,
+  and the selftests that exercise the app). The runtime is
+  `tools/orb-manager/web/runtime/`: `support@1/support.js`, `baker@1/orbtheme-baker.js`,
+  and `vendor/` (written by `cmd/orbvendor`, now `-editor` and `-support` inputs). The
+  runtime-only suites (`headless-dither`, `headless-panel`, `headless-orbtheme` and its
+  `orbtheme_vectors.py`) live in `web/runtime/_selftest/` with their own runner;
+  `go:embed` skips `_`-prefixed directories, so they stay out of the binary. The app
+  suites find the runtime through `_selftest/runtime-paths.js`; the browser pages keep
+  loading `../orbtheme-baker.js`, because the deployer flattens the runtime's two files
+  into the test folder beside the app's.
+- **The route.** `runtime.go` serves `/runtime/<id>/` from a catalog: `support@1` and
+  `baker@1` are their own directories (revalidated, no-cache), and `react@18.3.1`,
+  `babel@7.29.0` and `fonts@1` map onto the vendor tree, each serving only its own
+  files (immutable). Guarded by the launch token, like `/editor/`.
+- **The check.** `serveEditor` reads the region's `editor.json` before handing out an
+  entry document and refuses one naming an id the hub lacks, or an unversioned entry
+  (an editor from before the runtime), with a page naming both sides. `make_clock_region.py`
+  writes the versioned ids, points the two script tags at `/runtime/`, sets
+  `window.__resources` ahead of `support.js`, and collapses the Google Fonts sheets onto
+  `/runtime/fonts@1/fonts.css`.
+- **What else moved.** The clone marker (`repoMarkerRel`) is `tools/orb-manager/go.mod`;
+  `editorAvailability`'s fallback for dials that cannot answer no longer names
+  `/composer/`, so such a dial offers no editor. `composer.go` and its two test files
+  are deleted; `TestComposerHasNoUnknownExternalDependencies` survives as
+  `TestRuntimeScriptsReachOnlyVendoredURLs`. `TestTheShippedClockEditorRunsAgainstThisHubsRuntime`
+  serves the library's real `clock.orbapp` through `/editor/` and fetches every
+  `/runtime/` URL its entry names. Chrome rendered that entry from a hub-shaped layout
+  with no network.
+- **Found while moving, not fixed here.** `gfx_parity_test.py` fails on `tick_timer_cb`
+  and `bench/loopcheck.py` fails four source checks (`_budget`'s flag, the seal mode);
+  both fail identically at `edabd47`, before D43.
+
 ## 10. Slices
 
 | Slice | Content | Gate |
@@ -504,7 +539,7 @@ long as an app in its library or on a known orb still names it.
 | **P0** ✔ | Measure the banding: bake presets with gradients, `fbgrab` them, and record where the glass bands (plate vs live rows) | **done 2026-11-01 (§5.4)**: host and glass agree; the overlay's live blend dominates |
 | **P1** ◐ | Panel view and Compare (§5.1–5.2): the JS mirror of `blend_px` (all three modes), the device quantization of each stage layer, crystal overlay | **built 2026-11-01**: `GorbBake.mix1616/blendPx/panelPlate/panelLayer/panelRGBA`, `WatchEngine.composeLayers`, the Render row (Design · Panel · Compare with a wipe). `headless-panel.test.js`: `blendPx` equals the C lifted from `orb_gfx.c` on 300,000 random texels, the panel plate and overlay equal the bake's stored codes, 8/8 mutants caught. Glass: the device model equals `fbgrab` outside the hands (§5.4). **Owed:** hands are rotated by the canvas (smoothed), the device samples nearest, so a hand's edge can differ by a texel — not yet measured against `bench_preview_parity.py`'s tolerance; sub-dial pointers are drawn in the under-hands layer, so Panel dithers them while the device ships them truncated |
 | **P2** ◐ | Bake-time blue-noise dither (§5.3, §5.4) of every still, screen-locked plane, colour and alpha: the plate, its bank, folded layers, the crystal overlay (alpha on the 32-step lattice). The table and its generator (`tools/make_bluenoise.py`), JS and Python twins, the per-layer `dither` setting with `on` allowed for rings and discs, every preset rebaked | both table copies pinned to one hash; vectors equal in both twins, with mutants caught (table transposed, frac comparison flipped, truncation restored); exact 565 colours unchanged at every pixel; delta row band and bank bytes for every animated preset recorded before and after; §5.4's band metric re-run on the new bakes; the glass no longer bands where P0 recorded it — **built 2026-11-01**: `tools/make_bluenoise.py`, `tools/orbdither.py`, the baker's still-row dither; `headless-dither.test.js` 24 checks, 11/11 mutants; bank bytes and delta texels unchanged on Skeleton, Luna and Neon moon; glass contour 17.9 % → 6.9 % on orb-B (§5.4). the hub default (`tools/orb-manager/themes/skeleton.orbtheme`) rebaked and installed through `make_default_theme.py`. **Owed:** the composer's per-layer `dither` setting, which needs the stack (P4) |
-| **P3** | The OS theme runtime and the end of `/composer/` (§9): the runtime's source moved into the hub tree and served under versioned `/runtime/` paths; `editor.json`'s `runtime` list validated, with a refusal that names the missing version; the clock app's sources moved to their own home and the region built from there, pointed at `/runtime/`; every reader of `tools/watch-composer/` repointed; then the route, `composer.go`, the embedded document copy, their tests and `tools/watch-composer/` deleted | the clock editor loads in the Themes pane with no `/composer/` route present; an editor naming a runtime version the hub lacks is refused with its reason; the baker's headless suites pass from their new home; `make_factory_apps.py --check` and `go test ./...` green; no reference to `/composer/` or `watch-composer` left in `tools/` (grep) |
+| **P3** ✔ | The OS theme runtime and the end of `/composer/` (§9): the runtime's source moved into the hub tree and served under versioned `/runtime/` paths; `editor.json`'s `runtime` list validated, with a refusal that names the missing version; the clock app's sources moved to their own home and the region built from there, pointed at `/runtime/`; every reader of `tools/watch-composer/` repointed; then the route, `composer.go`, the embedded document copy, their tests and `tools/watch-composer/` deleted | the clock editor loads in the Themes pane with no `/composer/` route present; an editor naming a runtime version the hub lacks is refused with its reason; the baker's headless suites pass from their new home; `make_factory_apps.py --check` and `go test ./...` green; no reference to `/composer/` or `watch-composer` left in `tools/` (grep) — **done 2026-11-01** (§9.4) |
 | **P4** | The stack model and panel (§2, §3), D42 E2's composer half: one list, parenting, shadows as properties, the three bands, R1–R7 enforced on drop, R8 warnings behind the Mechanical switch, style inheritance (§2.3). Every preset expressed as a stack | headless tests per rule (each illegal drop refused with its reason, each R8 warning raised only with the switch on); each preset's stack bakes to the same v6 rows `v6Drive` produces today, or the difference is explained; D42 E2's own gate: preview-versus-reader pose check, each preset installed on orb-B |
 | **P5** | The build flow and layout (§4): step bar, Add catalogue with compatibility, properties grouped by D42 parts, diagnostics drawer, light moods | headless UI test walks Start → Render on a scratch build and on a preset; nothing removed from today's controls (a checklist of every current field and where it now lives) |
 | **P6** | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here |

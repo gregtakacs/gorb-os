@@ -99,7 +99,7 @@ ok(/pointer row/.test(secRow.motionNote) && secRow.aLabel === 'From' && secRow.b
 // and the pivot's travel t * (dx, dy), plus the placement shift a slide's start became.
 // Every motion hand of the motion presets, sampled across its whole domain.
 {
-  const B = require('../orbtheme-baker.js');
+  const B = require(require('./runtime-paths.js').BAKER);
   const v6Pose = (r, u) => {
     let t = (u - r.vmin) / (r.vmax - r.vmin);
     if (r.end === 0) t -= Math.floor(t); else t = Math.min(1, Math.max(0, t));

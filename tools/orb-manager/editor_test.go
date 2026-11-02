@@ -217,7 +217,7 @@ func TestProductionHubDialsTheEditorDoorWithoutAStub(t *testing.T) {
 	editorInvalidate()
 	t.Cleanup(editorInvalidate)
 	region := zipWith(t, map[string]string{
-		"editor.json": `{"editor":1,"entry":"index.html","baker":3,"runtime":["support"]}`,
+		"editor.json": `{"editor":1,"entry":"index.html","baker":3,"runtime":["support@1"]}`,
 		"index.html":  `<body><h1>dialed for real</h1></body>`,
 	})
 	orb := orbfake.New().WithCardApps(orbfake.CardApp{

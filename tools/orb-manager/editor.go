@@ -388,6 +388,18 @@ func (s *Server) serveEditor(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "this app's editor ships no "+file, http.StatusNotFound)
 		return
 	}
+	// D43 §9: an editor document runs against the runtime its editor.json names. One
+	// this hub does not carry — an id from a newer app, or an unversioned entry from an
+	// editor built before the runtime existed — is refused here, by name, rather than
+	// served into a frame that would load a 404 and paint nothing.
+	if isHTMLDoc(file) {
+		if raw, found := editorMember(zr, editorManifestName); found {
+			if missing := editorRuntimeMissing(raw); len(missing) > 0 {
+				runtimeRefused(w, r, slug, missing)
+				return
+			}
+		}
+	}
 	// Only the entry document receives the launch token. It is the document that
 	// will make the upload; a sibling .js has no business holding a credential, and
 	// handing one to every member of an unreviewed archive would be a wider grant

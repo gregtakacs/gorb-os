@@ -48,8 +48,12 @@ CLK_TOURB_MAX = 16
 # advances exactly one bank frame per tick, so a deeper bank plays the same
 # authored loop more slowly. Everything that counts FRAMES uses this; everything
 # that PACEs them, and the rows/tick the tier ladder compares, uses the tempo.
-_bank_src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         '..', 'watch-composer', 'dial-renderer.js')
+# D43 §9.3: the clock's editor sources live with the app, the dc-runtime with the hub.
+EDITOR_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          '..', '..', 'apps', 'clock', 'editor')
+SUPPORT_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          '..', 'orb-manager', 'web', 'runtime', 'support@1', 'support.js')
+_bank_src = os.path.join(EDITOR_DIR, 'dial-renderer.js')
 def _load_banks():
     import re
     try:
@@ -320,8 +324,7 @@ def source_cycle_check(html=None):
     failure it prevents is a load-time stack overflow rather than a wrong number.
     Returns the names of the checks that did not hold.
     """
-    p = html or os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             '..', 'watch-composer', 'Watch Composer.dc.html')
+    p = html or os.path.join(EDITOR_DIR, 'Watch Composer.dc.html')
     src = open(p, encoding='utf-8').read()
     body = src.split('_budget(forceWant) {')[-1].split('\n  preset(')[0]
     checks = [
@@ -354,7 +357,7 @@ def source_syntax_check(html=None):
     syntax error the browser reports while every check here stays green. The two
     mutants below are what stop this gate from passing vacuously.
     """
-    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'watch-composer')
+    d = EDITOR_DIR
     try:
         from tree_sitter import Language, Parser
         import tree_sitter_javascript as tsj
@@ -374,7 +377,7 @@ def source_syntax_check(html=None):
     inline = src[i:src.index('</script>', i)]
     units = [('composer inline script', inline)]
     for f in ('support.js', 'watch-engine.js', 'dial-renderer.js'):
-        units.append((f, open(os.path.join(d, f), encoding='utf-8').read()))
+        units.append((f, open(SUPPORT_JS if f == 'support.js' else os.path.join(d, f), encoding='utf-8').read()))
     print('=== source: shipped scripts parse ===')
     out = [n for n, code in units if broken(code)]
     for n, code in units:
@@ -421,7 +424,7 @@ def gear_marking_check(renderer=None, engine=None):
     import re
     from fractions import Fraction
     from math import ceil, cos, pi, sin, floor
-    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'watch-composer')
+    d = EDITOR_DIR
     dr = open(renderer or os.path.join(d, 'dial-renderer.js'), encoding='utf-8').read()
     en = open(engine or os.path.join(d, 'watch-engine.js'), encoding='utf-8').read()
     print('=== gear teeth: a bank tick must change pixels AND read forward ===')
@@ -723,10 +726,10 @@ def seal_cull_check(engine=None, html=None, bake=None):
     picked); seal the shipped dial but price the holed one and the readout over-charges.
     The two mutants below are those one-sided edits; both MUST be caught here.
     """
-    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'watch-composer')
+    d = EDITOR_DIR
     en = open(engine or os.path.join(d, 'watch-engine.js'), encoding='utf-8').read()
     src = open(html or os.path.join(d, 'Watch Composer.dc.html'), encoding='utf-8').read()
-    bk = open(bake or os.path.join(d, '..', 'bake_clock.py'), encoding='utf-8').read()
+    bk = open(bake or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'bake_clock.py'), encoding='utf-8').read()
     print('=== date/moon seal: the aperture is an occluder, not a viewport ===')
 
     # predicates: engine, composer-inline, bake source -> bool

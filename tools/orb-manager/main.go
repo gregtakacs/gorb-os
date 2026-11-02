@@ -907,7 +907,7 @@ func bindHub(addr string) (net.Listener, string) {
 // installed on every machine that will run this: a Windows box that only ever
 // flashed through WSL has no git on PATH, and the old fallback of "just use the
 // working directory" then handed the hub tools/orb-manager as the clone root, so
-// /composer/ 404'd and the build plan came back missing. Falling back to a walk
+// the Theme Editor 404'd and the build plan came back missing. Falling back to a walk
 // up from a real marker is what makes the same binary work there.
 func detectRepoDir() string {
 	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
@@ -934,9 +934,9 @@ func detectRepoDir() string {
 }
 
 // repoMarkerRel is the file that says "this directory is the gorb-os clone": the
-// Theme Editor's entry point, which the hub serves straight out of the tree and
-// so cannot do without.
-func repoMarkerRel() string { return filepath.Join(composerDirRel, composerEntry) }
+// hub's own module file, which every clone carries and nothing moves. (It was the
+// Theme Editor's entry page until D43 moved the editor into the clock app.)
+func repoMarkerRel() string { return filepath.Join("tools", "orb-manager", "go.mod") }
 
 // repoFrom walks up from start until it finds the clone marker, returning "" if
 // the whole chain has none.
@@ -1160,8 +1160,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// (/wifi/join, /config, /reboot), and the page driving it is served by us.
 	mux.Handle("/orb/", s.requireControl(http.HandlerFunc(s.proxyOrb)))
 
-	// Theme Editor: the watch-composer, served from the repo.
-	s.routesComposer(mux)
+	// D43 §9: the OS theme runtime every app's editor builds with (the dc-runtime, the
+	// theme builder, React, Babel, the fonts), versioned per id.
+	s.routesRuntime(mux)
 	// D37: an installed app's own editor, served out of its container region.
 	s.routesEditor(mux)
 }

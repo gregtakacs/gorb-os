@@ -341,7 +341,7 @@ Three switches cover the exceptions:
 
 Chromium only, deliberately: the Theme Editor is a Blink canvas app whose file
 dialogs and `localStorage` asset store are exercised in Chrome, so the hub is
-hosted in the same engine and `/composer/` opens inside that window. No Chromium
+hosted in the same engine and an app's editor opens inside that window. No Chromium
 on the host, or an unreadable profile directory, falls back to the default
 browser and the hub still works as a plain web app.
 
@@ -681,22 +681,23 @@ beside the raw string, so no front end parses semver.
 `cmd/orbpack` refuses to ship a bundle whose stamp does not parse; `-force` overrides
 that for a bench build, and a hand-loaded `.zip` is still accepted whatever it says,
 so a deliberate downgrade stays possible.
-- **Theme Editor** — the watch-composer at `/composer/`. With a gorb-os clone
-  reachable it is served from `tools/watch-composer`, so edits to the composer
-  appear on reload with no rebuild; with no clone, as on every end user's machine,
-  the copy compiled into the binary is served instead (`make composer` refreshes
-  it, and `TestEmbeddedComposerMatchesSource` fails if it drifts). The card is a
-  plain link into it; the hub adds a "← Orb Manager" link to get back (an app
-  window has no back button) and, when React never arrives from the CDN, a line
-  saying so rather than a blank page. Both are added at serve time; neither copy
-  of the composer file is ever modified.
-  The editor needs React, ReactDOM and Babel and 36 font families, and it normally
-  reaches for them at `unpkg.com` and `fonts.googleapis.com`. `make vendor-composer`
-  commits local copies under `web/composer/vendor/` — with them compiled in, the hub
-  rewrites those references at serve time and the editor opens with no network at
-  all. The vendored `support.js` is never edited: it reads a `window.__resources`
-  URL→local map the hub injects ahead of it, which is the hook it was built with.
-  Each vendored file carries a sha256 and the SRI the composer demands, recorded in
+- **Theme Editor** — an app's editor, served out of the app's own container at
+  `/editor/<orb-ip>/<app>/` (D37), from the hub's library copy when its version stamp
+  equals the installed one and from the orb's card otherwise. The clock's editor is
+  the watch composer, whose sources live in `apps/clock/editor/`. Since D43 the
+  pieces every editor builds with are the hub's **OS theme runtime**, compiled in under
+  `web/runtime/` and served at `/runtime/<name>@<version>/`: the dc-runtime
+  (`support@1`), the theme builder (`baker@1`), React and ReactDOM (`react@18.3.1`),
+  Babel (`babel@7.29.0`) and the font faces (`fonts@1`). An editor's `editor.json`
+  names the ids it needs; the hub refuses, by name, an editor naming one it does not
+  carry (an unversioned entry is an editor from before the runtime existed). The old
+  hub-hosted `/composer/` is retired.
+  The libraries normally come from `unpkg.com` and `fonts.googleapis.com`.
+  `make vendor-runtime` commits local copies under `web/runtime/vendor/`, and an
+  editor's own document points `support.js` at them through the `window.__resources`
+  URL→local map it was built with (the clock region sets it at bake time), so the
+  editor opens with no network at all. `support.js` itself is never edited.
+  Each vendored file carries a sha256 and the SRI `support.js` demands, recorded in
   `MANIFEST.json`; `make vendor-check` re-verifies both and runs as part of
   `make check`, so a hand-edited React fails the build instead of blanking the page.
 - **Manage** — the card a fleet tile opens: the tile is the door, so a press anywhere on
@@ -1072,10 +1073,10 @@ discover.go          the mDNS listener: candidate list, GET /api/orbs (merged by
                      the pushed GET /api/orbs/stream, and the upkeep tick.
                      It listens and lists; a listing never dials and never grants, and
                      internal/orbmdns cannot import an HTTP client to make it otherwise
-composer.go          serves the repo's watch-composer at /composer/, and the vendored
-                     React/Babel/fonts offline copies at /composer/vendor/
+runtime.go           the OS theme runtime at /runtime/<id>/ (dc-runtime, theme builder,
+                     vendored React/Babel/fonts) and the editor-runtime check (D43 §9)
 cmd/orbflash/        headless face of the same flasher
-cmd/orbvendor/       one-time fetcher: CDN scripts + font subsets -> web/composer/vendor/
+cmd/orbvendor/       one-time fetcher: CDN scripts + font subsets -> web/runtime/vendor/
                      with a sha256/SRI MANIFEST; -verify checks the committed tree
 cmd/serprov/         headless wired-provisioning round-trip tester (bench gate)
 internal/esprom/     the native ROM flasher (serial, SLIP, commands, plan, session, boot console, serial-provision)
@@ -1167,8 +1168,7 @@ make check      # the whole ladder: test (guard armed) + vet + crosscheck + vend
 make vet        # go vet ./...
 make fmt        # go fmt ./...
 make firmware   # re-pack the embedded firmware bundle from this clone's build dir
-make composer   # re-copy the Theme Editor into web/composer/ for the shipped binary
-make vendor-composer  # fetch React/Babel + font subsets into web/composer/vendor/
+make vendor-runtime   # fetch React/Babel + font subsets into web/runtime/vendor/
                 # (needs internet; idempotent, so a re-run produces no diff)
 make vendor-check     # verify that committed tree against its manifest and SRI pins
 make run        # rebuild + open the app window against 127.0.0.1:3779
@@ -1458,11 +1458,10 @@ where Chrome's own named-pipe and GCM complaints go instead of your terminal.
 Closing the window must end the process: `Get-Process orb-manager` should find
 nothing.
 
-Nothing needs the clone. The firmware is compiled in, and so is the Theme Editor,
+Nothing needs the clone. The firmware is compiled in, and so is the OS theme runtime,
 so a bare `.\orb-manager.exe` serves every card from `C:\Users\<you>\Downloads`
-with `repoDir` empty and `git` absent from `PATH`. Add `-repo` only to edit the
-composer against the live source — then your edits to `tools/watch-composer/`
-appear on reload instead of coming from the copy built into the binary. Quote the
+with `repoDir` empty and `git` absent from `PATH`. Add `-repo` to read the library
+(the `.orbapp` and `.orbtheme` shelves) from a clone instead of beside the binary. Quote the
 UNC path: the shell collapses an unquoted `\\` to `\`, and the hub reports the
 mangled path it tried. Go reads the WSL filesystem over UNC fine:
 
@@ -1499,15 +1498,14 @@ works in a shell where bare `go` is not on `PATH`.
 
 ## Caveats
 
-- The Theme Editor's only external dependencies are React 18, ReactDOM, and Babel
-  from `unpkg.com` (pulled by `support.js`) and the Google Fonts stylesheets the entry
-  page links to. With the vendor tree compiled in — the committed default — the hub
-  rewrites all of them to `/composer/vendor/` and the editor needs no network at all.
-  A build made without it — a tree where `web/composer/vendor/` was deleted, or one
-  where `make vendor-composer` was never run — still needs internet on first paint,
-  and the hub then names that failure on screen instead of leaving a blank page.
-  `make vendor-composer` produces the tree; `make vendor-check` proves it still
-  matches its manifest and the composer's SRI pins.
+- An editor's only external dependencies are React 18, ReactDOM, and Babel from
+  `unpkg.com` (pulled by `support.js`) and the Google Fonts faces. With the vendor tree
+  compiled in — the committed default — the runtime serves all of them and the editor
+  needs no network at all. A build made without it (a tree where `web/runtime/vendor/`
+  was deleted) does not carry `react@18.3.1`, `babel@7.29.0` or `fonts@1`, and the hub
+  refuses an editor that names them, by name, rather than serving a blank page.
+  `make vendor-runtime` produces the tree; `make vendor-check` proves it still
+  matches its manifest and `support.js`'s SRI pins.
 - USB-Serial/JTAG does not tick the RTC/SWD watchdogs, so a long erase trips
   them and resets the chip mid-write. `Session` disables both before flashing
   (esptool's `disable_watchdogs()` equivalent).
@@ -1529,7 +1527,7 @@ works in a shell where bare `go` is not on `PATH`.
   device. Confirming it takes one `ioreg -p IOUSB -l -x > dump.xml` beside an orb and
   one read of `GET /api/ports`, which must show `"attributed": true` and a `usbMac`.
 - Maintainers: `support.js` pulls its scripts from a fixed list of CDN URLs, and
-  `TestComposerHasNoUnknownExternalDependencies` fails if that list ever grows to a
+  `TestRuntimeScriptsReachOnlyVendoredURLs` fails if that list ever grows to a
   fourth script. That failure is the alarm, not a bug — add the new URL to
-  `cmd/orbvendor` and re-run `make vendor-composer`, or the editor silently goes
+  `cmd/orbvendor` and the runtime catalog and re-run `make vendor-runtime`, or the editor silently goes
   back to needing internet for it.

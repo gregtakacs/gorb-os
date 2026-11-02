@@ -104,7 +104,7 @@ const txt = (s) => ({ name: 'x', _url: 'data:text/plain;base64,' + Buffer.from(s
     let same = plane.rgba.length === plane2.rgba.length;
     for (let i = 0; same && i < plane.rgba.length; i += 601) if (plane.rgba[i] !== plane2.rgba[i]) same = false;
     ok(same, 'the same dial hands back identical bytes, so the serial stays a quiet no-op');
-    const BKR = require('../orbtheme-baker.js');
+    const BKR = require(require('./runtime-paths.js').BAKER);
     const baseOpts = () => ({ plate: { rgba: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), w: 2, h: 2 }, x: 0, y: 0, w: 2, h: 2 });
     const s1 = iv.serialContent3(BKR, 'nm', 16, [], { carrier: 'still' }, baseOpts());
     const s2 = iv.serialContent3(BKR, 'nm', 16, [], { carrier: 'still' }, Object.assign(baseOpts(), { preview: plane }));

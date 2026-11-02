@@ -208,9 +208,10 @@ func editorFromRow(a AppInstalledRow) (has bool, answered bool) {
 // hub still knows the one editor that predates the whole system. It is a stopgap with an
 // explicit end: when every dial in the fleet reports a tuple, delete this and take the
 // device's answer unconditionally.
+//
+// D43 retired the hub-hosted /composer/ this used to name for the clock, so a dial
+// that cannot answer has no editor to offer: the editor now travels only inside the
+// app's container, and the device's row is the only source of truth for it.
 func editorAvailability(slug string) (has bool, url string) {
-	if slug == "clock" {
-		return true, "/composer/"
-	}
 	return false, ""
 }

@@ -17,7 +17,7 @@
 // without check_element ships a row the device paints wrongly instead of refusing it, and
 // §29's rule that an OS-paced region is a SPRITE row would be a convention nobody enforces.
 //
-//   ~/.local/share/nodeenv-gorb/bin/node tools/watch-composer/_selftest/headless-bundle3.test.js
+//   ~/.local/share/nodeenv-gorb/bin/node apps/clock/editor/_selftest/headless-bundle3.test.js
 //
 // Needs node and a python3 that can import the repo's own tools/. The writer leg needs
 // nothing else; the bake-path leg shells out to tools/verify_js_bake.py, which compiles the
@@ -26,9 +26,9 @@
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const B = require('../orbtheme-baker.js');
+const B = require(require('./runtime-paths.js').BAKER);
 
-const ROOT = path.resolve(__dirname, '..', '..', '..');
+const ROOT = require('./runtime-paths.js').ROOT;
 const PY = process.env.B3_PY || 'python3';
 const GEN = path.join(ROOT, 'tools', 'make_bundle_fixture.py');
 const FIX = path.join(ROOT, 'tests', 'fixtures', 'format3-pair.orbtheme');

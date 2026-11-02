@@ -704,7 +704,7 @@ def pack_tourbillon(blob, imgs, px, py, cx, cy, pad, diff_thresh, fps=15):
     """The carriage bank, fed with already-decoded frames. Split out of
     bake_tourbillon for the same reason pack_bg_bank was: the composer's in-browser
     baker holds itself against this maths on the same pixels (see
-    tools/watch-composer/_selftest/headless-orbtheme.test.js)."""
+    tools/orb-manager/web/runtime/_selftest/headless-orbtheme.test.js)."""
     import numpy as np
     arrs = [np.asarray(im, dtype=np.int16) for im in imgs]
 
@@ -1297,7 +1297,7 @@ def pack_bg_bank(blob, imgs, delays, diff_thresh, denoise=2, fit="cover",
                  src="?", kind="frames"):
     """The delta-rect packer, fed with already-decoded panel-size RGBA frames.
 
-    Split out of bake_bg_bank so the composer's in-browser baker (tools/watch-composer/
+    Split out of bake_bg_bank so the composer's in-browser baker (apps/clock/editor/
     orbtheme-baker.js) can be held against THIS code on the same frames: a browser cannot
     read a GIF or a folder of PNGs the way PIL does, but it can be given the same pixels,
     and the packing is the half where a mismatch costs someone's dial. The two share this

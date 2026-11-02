@@ -6,16 +6,18 @@ S4 moves the clock's editor from a hub-hosted alias into the clock's own
 files the clock owns — the composer document, the watch engine, the dial
 renderer — about 652 KB STOREd, inside the 2 MiB cap the firmware enforces.
 
-The entry document is a DERIVED copy of the tracked composer, never an edit of
-it: TestEmbeddedComposerMatchesSource pins the tracked file, and the standalone
-`file://` page must keep working byte-identically. Two script srcs are
-rewritten to the hub's shared runtime (§5.3):
+The entry document is a DERIVED copy of the tracked composer
+(apps/clock/editor/), never an edit of it. It is pointed at the hub's OS theme
+runtime (D43 §9), whose ids the region's editor.json declares and the hub checks:
 
-    src="./support.js"          ->  src="/composer/support.js"
-    src="orbtheme-baker.js"     ->  src="/composer/orbtheme-baker.js"
+    src="./support.js"          ->  src="/runtime/support@1/support.js"
+    src="orbtheme-baker.js"     ->  src="/runtime/baker@1/orbtheme-baker.js"
+    the CDN React/ReactDOM/Babel ->  window.__resources, set ahead of support.js,
+                                     onto /runtime/react@18.3.1/ and babel@7.29.0/
+    the Google Fonts sheets      ->  /runtime/fonts@1/fonts.css
 
-so the 274 KB of React/Babel loader and FORMAT 3 writer ride once for every
-app and the region never carries them. `dial-renderer.js` and `watch-engine.js`
+so the dc-runtime, the theme builder and the libraries ride once, in the hub, for
+every app, and the region never carries them. `dial-renderer.js` and `watch-engine.js`
 stay relative: they are members of this region beside this document, and the
 hub serves them from the ZIP at the same URL depth.
 
@@ -41,6 +43,7 @@ spans both lanes.
 import importlib.util
 import io
 import json
+import re
 import os
 import sys
 import zipfile
@@ -48,10 +51,9 @@ import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# The composer sources. web/composer is the tracked location `make composer`
-# maintains; its twin under tools/watch-composer is pinned identical, so either
-# reads the same bytes.
-COMPOSER_DIR = os.path.join(HERE, "orb-manager", "web", "composer")
+# The clock app's editor sources (D43 §9.3): the app owns its document and engines;
+# the runtime they build against is the hub's (tools/orb-manager/web/runtime/).
+COMPOSER_DIR = os.path.join(HERE, "..", "apps", "clock", "editor")
 COMPOSER_ENTRY = "Watch Composer.dc.html"
 
 # Members in region order. editor.json first: it is the one file §5.1 requires,
@@ -65,8 +67,20 @@ MEMBER_RENDERER = "dial-renderer.js"
 # (docs/sound-plan.md §6). App-owned like the engine, so it is a member, relative.
 MEMBER_SOUND = "sound-engine.js"
 
-# The resources this editor resolves against on the hub (§5.3).
-RUNTIME = ["react", "babel", "baker", "support"]
+# The OS runtime ids this editor resolves against on the hub (D43 §9.1). The hub
+# serves each at /runtime/<id>/ and refuses an editor naming one it does not carry.
+RUNTIME = ["support@1", "baker@1", "react@18.3.1", "babel@7.29.0", "fonts@1"]
+# The exact CDN URLs support.js compares against (its cdnScriptFor), and where the
+# hub's runtime serves each. support.js consults window.__resources first.
+CDN_LOCAL = (
+    ("https://unpkg.com/react@18.3.1/umd/react.production.min.js",
+     "/runtime/react@18.3.1/react.production.min.js"),
+    ("https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js",
+     "/runtime/react@18.3.1/react-dom.production.min.js"),
+    ("https://unpkg.com/@babel/standalone@7.29.0/babel.min.js",
+     "/runtime/babel@7.29.0/babel.min.js"),
+)
+FONTS_LOCAL = "/runtime/fonts@1/fonts.css"
 
 
 # The pane bridge, app-owned and bake-injected. It is active only when this
@@ -170,17 +184,19 @@ def _rewrite(text):
     """The bake-time transform of the tracked composer into the region entry.
 
     Every rewrite is anchored on the exact shipped tag text, so a source drift
-    raises here instead of baking a half-moved editor: the two hub-served
-    runtime tags go absolute, and the shim lands before the document's last
-    closing tag. Nothing else changes — fonts and preconnects stay the hub's
-    serve-time rewrite (injectOffline), and the engine/renderer tags must stay
-    relative or the ZIP's own members stop resolving.
+    raises here instead of baking a half-moved editor: the runtime tags go to their
+    versioned /runtime/ paths with the CDN map ahead of support.js, the Google Fonts
+    sheets collapse onto the vendored one, and the shim lands before the document's
+    last closing tag. The engine/renderer/sound tags stay relative, or the ZIP's own
+    members stop resolving.
     """
+    resources = "<script>window.__resources=window.__resources||{};%s</script>" % "".join(
+        "window.__resources[%s]=%s;" % (json.dumps(u), json.dumps(l)) for u, l in CDN_LOCAL)
     pairs = (
         ('<script src="./support.js"></script>',
-         '<script src="/composer/support.js"></script>'),
+         resources + '\n<script src="/runtime/support@1/support.js"></script>'),
         ('<script src="orbtheme-baker.js"></script>',
-         '<script src="/composer/orbtheme-baker.js"></script>'),
+         '<script src="/runtime/baker@1/orbtheme-baker.js"></script>'),
     )
     for old, new in pairs:
         n = text.count(old)
@@ -188,6 +204,18 @@ def _rewrite(text):
             raise SystemExit("make_clock_region: the composer source no longer carries "
                              "%r exactly once (found %d) — re-point the bake" % (old, n))
         text = text.replace(old, new)
+    # The fonts: the helmet's Google Fonts sheets become the one vendored sheet, and the
+    # preconnect hints go — with the faces local they would only open sockets to Google.
+    sheets = re.findall(r'<link href="https://fonts\.googleapis\.com/css2[^"]*" rel="stylesheet">\n?', text)
+    if not sheets:
+        raise SystemExit("make_clock_region: the composer source no longer links its fonts "
+                         "the way this bake rewrites them — re-point the bake")
+    text = text.replace(sheets[0], '<link href="%s" rel="stylesheet">\n' % FONTS_LOCAL, 1)
+    for sh in sheets[1:]:
+        text = text.replace(sh, "", 1)
+    text = re.sub(r'<link rel="preconnect" href="https://fonts\.(googleapis|gstatic)\.com"[^>]*>\n?', "", text)
+    if "fonts.googleapis.com" in text:
+        raise SystemExit("make_clock_region: a Google Fonts reference survived the rewrite")
     if text.count("</body>") != 1:
         raise SystemExit("make_clock_region: the composer entry lost its single </body>")
     return text.replace("</body>", BRIDGE_SHIM + "</body>")

@@ -1088,7 +1088,7 @@ point at this suite — do not claim a rendered-output pass.
 
 ## Testing the Watch Composer: deploy it to Windows and drive Chrome there
 
-The composer (`tools/watch-composer/Watch Composer.dc.html`) is a browser app. Its real
+The composer (`apps/clock/editor/Watch Composer.dc.html`) is a browser app. Its real
 behaviour lives in canvas pixels, file dialogs, and a localStorage asset store, so those
 three must be exercised in the Windows Chrome. **This WSL box reaches that Chrome directly:
 the host binary is `/mnt/c/Program Files/Google/Chrome/Application/chrome.exe`, and it runs
@@ -1102,8 +1102,8 @@ Ask for "test the composer" and the expected action is these two commands:
 
 ```sh
 cd /home/greg/docker/Projects/gorb-os
-python3 tools/watch-composer/deploy_test_folder.py            # -> /mnt/c/Users/greg/Downloads/test
-~/.local/share/nodeenv-gorb/bin/node tools/watch-composer/_selftest/headless-test.js   # the WSL-side node gate
+python3 apps/clock/editor/deploy_test_folder.py            # -> /mnt/c/Users/greg/Downloads/test
+~/.local/share/nodeenv-gorb/bin/node apps/clock/editor/_selftest/headless-test.js   # the WSL-side node gate
 
 # the browser suites, through the host Chrome. Launch detached: a headless run of
 # export-test/bake3/motion exceeds the 30 s inline tool cap (it boots React from unpkg
@@ -1427,8 +1427,9 @@ serves the bytes it was built with, never the ones on disk.
   design, not a crash. Not yet bench-pressed: the only door is the menu row
   "Restart to share disk", so the owner's next press is the live test.
 - **Preview is a hub page, never a firmware page (D28/D33):** the theme
-  editor/preview is orb-manager's Watch Composer at
-  `http://127.0.0.1:3779/composer/` (`web/composer/dial-renderer.js`).
+  editor/preview is the clock app's Watch Composer, served by orb-manager out of the
+  app's container at `/editor/<orb-ip>/clock/` against the hub's OS theme runtime at
+  `/runtime/<id>/` (D43 §9; the hub-hosted `/composer/` is retired).
   `orb_net.c` contains zero previews by design. SD theme load is
   firmware-side and live at `http://<orb>/themes` — it lists the CARD, so an
   empty card reads as "No themes on the card yet. Upload a .orbtheme below"
@@ -1863,7 +1864,7 @@ correct.
   still dial, `off(4 bps, base 250 ms)` on a ticking one, and the GIF branches keep their
   `every N ticks` form. `base` is the beat the ladder starts from; the running
   `clock %u fps` line stays the answer to what the glass held.
-- **Measured.** `tools/watch-composer/_selftest/headless-bundle3.test.js`: 201 checks,
+- **Measured.** `apps/clock/editor/_selftest/headless-bundle3.test.js`: 201 checks,
   four of them the new cadence vectors (still + sweep → 15, author 8 → 8, author 4
   ticking → 4, animated bank → unchanged). `tools/host_sched_rung_test.py`: 21 vectors,
   mutants 7/7. Re-baked Station through real Chrome (`bank3-drive.html?dial=station`):
@@ -1941,17 +1942,18 @@ correct.
   preset the tightest margin is 4.79 px, so the clamp never engages.
 - **Uploaded hands opt out at the seat.** `handSpriteAsset` sets `capR: 0`, because the art
   carries its own boss. No painter needs a branch for it.
-- **Verified on baked bytes, not just pixels on screen.** `tools/watch-composer/_selftest/
+- **Verified on baked bytes, not just pixels on screen.** `apps/clock/editor/_selftest/
   headless-engine.test.js` pins all four facts (one crown; crown arc on the glass canvas;
   sub-dial hub NOT on the glass; sub-dial hub present in its own plate at the integral pivot,
   with no cap trailed at the seat). End to end: a fresh Station bake ships `(232,32,40)
   a=255` at the arbour where it shipped `(216,200,184) a=29`; a fresh Skeleton bake keeps the
   blued minute crown opaque at 233,233 while 290,290 reads `a=14`, the translucent glass a
   pre-fix bake shows — and the c2 plate now carries `(28,57,123) a=255` at its own pivot.
-- **Gotcha that cost a false alarm.** `tools/watch-composer/deploy_test_folder.py` copies
+- **Gotcha that cost a false alarm.** `apps/clock/editor/deploy_test_folder.py` copies
   the engine to the Windows bake folder. A stale copy there bakes a stale theme and looks
   like an engine bug: the sub-dial hub appeared baked while the repo test said it was not.
   Compare `cmp /mnt/c/Users/greg/Downloads/test/watch-engine.js
-  tools/watch-composer/watch-engine.js` before believing a bake. The same trap applies to
-  `tools/orb-manager/web/composer/`: run `make -C tools/orb-manager composer` first, or
-  `make_factory_apps.py` re-embeds the previous engine and the shipped app keeps the bug.
+  apps/clock/editor/watch-engine.js` before believing a bake. Since D43 the region is built
+  straight from `apps/clock/editor/` (there is no embedded copy to refresh), but the
+  clock `.orbapp` still has to be rebuilt with `make_factory_apps.py` for a fix to reach
+  the hub's shelf.

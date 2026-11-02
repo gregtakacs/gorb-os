@@ -17,11 +17,11 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const ROOT = path.resolve(__dirname, '..', '..', '..');
-const BAKER = process.env.PANEL_BAKER || path.join(__dirname, '..', 'orbtheme-baker.js');
+const ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..');
+const BAKER = process.env.PANEL_BAKER || path.join(__dirname, '..', 'baker@1', 'orbtheme-baker.js');
 
 if (process.argv.includes('--mutations')) {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'orbtheme-baker.js'), 'utf8');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'baker@1', 'orbtheme-baker.js'), 'utf8');
   const M = [
     ['coverage rounds differently', 'var m5 = (mix + 4) >> 3;', 'var m5 = mix >> 3;'],
     ['the packed result loses its field mask', '(((((Math.imul((fg - bg) | 0, m5) + 0x2008010) >>> 0) >>> 5) + bg) & 0x7E0F81F) >>> 0', '((((Math.imul((fg - bg) | 0, m5) + 0x2008010) >>> 0) >>> 5) + bg) >>> 0'],

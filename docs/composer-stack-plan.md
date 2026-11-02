@@ -262,6 +262,42 @@ rest under "More".
 and bank size, the screen-ruler calibration, and the bake prose that the Export tab
 shows inline today. Nothing in it is removed, only moved.
 
+### 4.1 As built (P5, 2026-11-02)
+
+- **Steps over the existing views.** The seven steps are a layer over the views every
+  field builder already answers to: Start (its own view: the gallery and *Build from
+  scratch*), Movement, Dial, Complications & hands (both views, as chips), Arrange (the
+  stack, large, in the pane, plus the selected layer's fields), Finish (Light, Case &
+  glass, Sound) and Render. The old `renderVals` is `renderVals0`, unchanged; the new
+  one adds the step view and overrides only the flags it needs, so no builder was
+  rewritten. A selection that lands on a view the current step does not show moves to
+  the step that does; one that it does show keeps the step (selecting on the stage in
+  Arrange stays in Arrange).
+- **Build from scratch** loads a plain dial with hour, minute and seconds hands and no
+  complications, and moves to Movement.
+- **The Add catalogue** offers every complication type and a hand, each with a line on
+  what it is; a window or moon that would pass the 24-row cap is refused with R6.
+- **Grouped properties.** A selected complication's fields fall under Placement, Shape
+  and Paint; each group shows five rows and folds the rest under *More (n)*. Hands keep
+  their per-hand panels, which already group style, motion and art.
+- **Light moods.** *As designed*, *Warm lamp*, *Daylight*, *Studio*, *Night* set the nine
+  light values at once; the sliders sit under *More*.
+- **Render** leads with a badge (fits / runs slower / too many live layers, with the
+  pace model's fps and the live rows), the theme name, *Send to orb* (in the hub) and the
+  `.orbtheme` download; the layer kit, frames, design file, Design ID and the bake prose
+  sit under *More export options*.
+- **Diagnostics drawer**, closed by default: the bank line, the frame stepper and
+  slow-motion, the true-size ruler and its calibration, the seam check.
+- **Gate.** `headless-flow` (30 checks) walks Start → Render from scratch and from a
+  preset through the real component, and proves nothing was removed: every field every
+  old tab offered is reachable from a step with the folds open, every complication
+  type's fields included, and every binding the pre-P5 template used is still bound (two
+  renamed on purpose: `tabs` → `stepOpts`, `isDial` → `isStart`). Checked in Chrome on
+  Start, Complications & hands, Arrange (drawer open), Finish and Render.
+- **Owed:** the badge reads the composer's device-pace model, which does not yet price a
+  lifted face's still row; the bake's own estimate does (§3.1). Folding the hands'
+  panels into D42's parts is left with the hands as they are.
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views
@@ -609,7 +645,7 @@ long as an app in its library or on a known orb still names it.
 | **P3** ✔ | The OS theme runtime and the end of `/composer/` (§9): the runtime's source moved into the hub tree and served under versioned `/runtime/` paths; `editor.json`'s `runtime` list validated, with a refusal that names the missing version; the clock app's sources moved to their own home and the region built from there, pointed at `/runtime/`; every reader of `tools/watch-composer/` repointed; then the route, `composer.go`, the embedded document copy, their tests and `tools/watch-composer/` deleted | the clock editor loads in the Themes pane with no `/composer/` route present; an editor naming a runtime version the hub lacks is refused with its reason; the baker's headless suites pass from their new home; `make_factory_apps.py --check` and `go test ./...` green; no reference to `/composer/` or `watch-composer` left in `tools/` (grep) — **done 2026-11-01** (§9.4) |
 | **P4** ✔ | The stack model and panel (§2, §3), D42 E2's composer half: one list, parenting, shadows as properties, the three bands, R1–R7 enforced on drop, R8 warnings behind the Mechanical switch, style inheritance (§2.3). Every preset expressed as a stack | headless tests per rule (each illegal drop refused with its reason, each R8 warning raised only with the switch on); each preset's stack bakes to the same v6 rows `v6Drive` produces today, or the difference is explained; D42 E2's own gate: preview-versus-reader pose check, each preset installed on orb-B — **done 2026-11-01** (§3.1); still-row promotion split out as **P4b** |
 | **P4b** ✔ | Still-row promotion (§3 R5, R7): a still layer placed above a moving one ships as a live still AUX row, `compose()` draws the row band in stack order, and the dial is promoted when a ring sits under it | the panel moves that P4 refuses with "P4b" land, bake to still rows the C reader accepts, and draw on orb-B where the preview does — **done 2026-11-01** (§3.1) |
-| **P5** | The build flow and layout (§4): step bar, Add catalogue with compatibility, properties grouped by D42 parts, diagnostics drawer, light moods | headless UI test walks Start → Render on a scratch build and on a preset; nothing removed from today's controls (a checklist of every current field and where it now lives) |
+| **P5** ✔ | The build flow and layout (§4): step bar, Add catalogue with compatibility, properties grouped by D42 parts, diagnostics drawer, light moods | headless UI test walks Start → Render on a scratch build and on a preset; nothing removed from today's controls (a checklist of every current field and where it now lives) — **done 2026-11-02** (§4.1) |
 | **P6** | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here |
 | **P7** | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs |
 

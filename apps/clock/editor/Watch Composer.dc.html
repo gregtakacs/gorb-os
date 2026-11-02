@@ -40,7 +40,7 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
   <header style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px 20px;padding:16px 28px;border-bottom:1px solid #25221e;background:#151412">
     <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
       <div style="font-size:18px;font-weight:600;letter-spacing:-0.01em">Watch composer</div>
-      <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#a39a87">{{ metaLabel }}</div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#a39a87">{{ headLabel }}</div>
     </div>
     <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#c9a25a;min-height:16px">{{ status }}</div>
   </header>
@@ -50,11 +50,7 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
         <canvas ref="{{ mainRef }}" width="466" height="466" onPointerDown="{{ onDown }}" onPointerMove="{{ onMove }}" onPointerUp="{{ onUp }}" onPointerCancel="{{ onUp }}" style="display:block;flex:none;margin:auto;width:{{ stageCv }}px;height:{{ stageCv }}px;cursor:{{ cursor }};touch-action:none"></canvas>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin-top:10px">
-        <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#f0d79a;min-width:110px">{{ frameLabel }}</div>
-        <button onClick="{{ prev }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">←</button>
         <button onClick="{{ toggle }}" style="background:#c9a25a;border:1px solid #c9a25a;color:#17130c;padding:7px 14px;border-radius:6px;font:600 13px 'IBM Plex Sans',sans-serif;cursor:pointer;min-width:66px" style-hover="background:#ddb66c">{{ playLabel }}</button>
-        <button onClick="{{ next }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">→</button>
-        <button onClick="{{ toggleSlow }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="background:#2a2722">{{ slowLabel }}</button>
         <sc-for list="{{ timeOpts }}" as="c" hint-placeholder-count="2">
           <button onClick="{{ c.pick }}" style="background:{{ c.bg }};border:1px solid {{ c.bd }};color:{{ c.fg }};padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap">{{ c.label }}</button>
         </sc-for>
@@ -84,6 +80,16 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
         <button onClick="{{ clearSel }}" title="Clear the selection: with the dial picked every pixel of the face is the dial, so there is no empty spot to click" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 10px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap;opacity:{{ clearOp }}" style-hover="color:#f0d79a">{{ clearLabel }}</button>
         <button onClick="{{ pickGuide }}" title="Auto shows the alignment guide while a dial or hand is selected and during a drag" style="background:{{ g.bg }};border:1px solid {{ g.bd }};color:{{ g.fg }};padding:6px 10px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap">{{ g.label }}</button>
       </div>
+      <button onClick="{{ toggleDiag }}" title="The technical readouts: frame stepping, the screen ruler, the seam check, the bank and the bake notes" style="background:transparent;border:1px solid #3a352d;color:#a39a87;padding:4px 10px;border-radius:5px;font:500 11px 'IBM Plex Sans',sans-serif;cursor:pointer">{{ diagLabel }}</button>
+      <sc-if value="{{ diagOpen }}" hint-placeholder-val="{{ false }}">
+        <div style="width:100%;display:flex;flex-direction:column;gap:10px;align-items:center;padding:10px 0;border-top:1px dashed #2e2a24;border-bottom:1px dashed #2e2a24">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#a39a87;text-align:center">{{ metaLabel }}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#f0d79a;min-width:110px">{{ frameLabel }}</div>
+        <button onClick="{{ prev }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">←</button>
+        <button onClick="{{ next }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">→</button>
+        <button onClick="{{ toggleSlow }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="background:#2a2722">{{ slowLabel }}</button>
+          </div>
       <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472;text-align:center">{{ viewText }}</div>
       <sc-if value="{{ showRuler }}" hint-placeholder-val="{{ false }}">
         <div style="display:flex;flex-direction:column;gap:7px;align-items:center;width:100%;padding:2px 0 6px">
@@ -111,6 +117,8 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
         </div>
       </sc-if>
       <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472;text-align:center">{{ seamText }}</div>
+        </div>
+      </sc-if>
       <div style="width:100%;display:flex;flex-direction:column;gap:2px;margin-top:6px;border-top:1px solid #25221e;padding-top:12px">
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap">
           <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">Stack · top to bottom</div>
@@ -141,10 +149,20 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
       </div>
     </div>
     <div ref="{{ paneRef }}" style="flex:1;min-width:320px;max-width:640px;display:flex;flex-direction:column;gap:18px;overflow-y:auto;min-height:0">
-      <div style="display:flex;flex-wrap:wrap;gap:4px;padding:4px;border-radius:9px;background:#1a1916;border:1px solid #2a2722;position:sticky;top:0;z-index:3;box-shadow:0 10px 0 -4px #12110f">
-        <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="7">
-          <button onClick="{{ t.pick }}" style="background:{{ t.bg }};border:0;color:{{ t.fg }};padding:8px 12px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap;flex:1 1 auto">{{ t.label }}</button>
-        </sc-for>
+      <div style="display:flex;flex-direction:column;gap:6px;position:sticky;top:0;z-index:3;background:#12110f;padding-bottom:4px;box-shadow:0 10px 0 -4px #12110f">
+        <div style="display:flex;flex-wrap:wrap;gap:4px;padding:4px;border-radius:9px;background:#1a1916;border:1px solid #2a2722">
+          <sc-for list="{{ stepOpts }}" as="t" hint-placeholder-count="7">
+            <button onClick="{{ t.pick }}" title="{{ t.tip }}" style="background:{{ t.bg }};border:0;color:{{ t.fg }};padding:7px 10px;border-radius:6px;font:500 12.5px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap;flex:1 1 auto"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;opacity:.6;margin-right:5px">{{ t.num }}</span>{{ t.label }}</button>
+          </sc-for>
+        </div>
+        <sc-if value="{{ hasSubs }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-wrap:wrap;gap:4px">
+            <sc-for list="{{ subOpts }}" as="t" hint-placeholder-count="3">
+              <button onClick="{{ t.pick }}" style="background:{{ t.bg }};border:1px solid {{ t.bd }};color:{{ t.fg }};padding:5px 11px;border-radius:999px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer">{{ t.label }}</button>
+            </sc-for>
+          </div>
+        </sc-if>
+        <div style="font-size:12px;color:#8d8472;text-wrap:pretty">{{ stepHint }}</div>
       </div>
       <sc-if value="{{ hasTabReset }}" hint-placeholder-val="{{ true }}">
         <div style="display:flex;justify-content:flex-end;margin-top:-6px">
@@ -152,10 +170,11 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
         </div>
       </sc-if>
 
-      <sc-if value="{{ isDial }}" hint-placeholder-val="{{ true }}">
+      <sc-if value="{{ isStart }}" hint-placeholder-val="{{ true }}">
         <div style="display:flex;flex-direction:column;gap:10px">
+          <button onClick="{{ fromScratch }}" title="A plain dial with hour, minute and seconds hands and nothing else: add the movement, the dial and every complication yourself" style="text-align:left;background:#1f1d1a;border:1px dashed #5a5246;color:#e9e2d2;padding:12px 14px;border-radius:8px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer">＋ Build from scratch<span style="display:block;font-size:12px;color:#8d8472;margin-top:2px">A plain dial and three hands; everything else is yours to add</span></button>
           <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-            <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">Start from</div>
+            <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">Or start from a finished watch</div>
             <button onClick="{{ resetDesign }}" style="background:transparent;border:1px solid #3a352d;color:#a39a87;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="color:#f0d79a">Reset everything</button>
           </div>
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px">
@@ -171,6 +190,33 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
               </div>
             </sc-for>
           </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isArrange }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;gap:2px;border:1px solid #2a2722;border-radius:9px;padding:8px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;padding:0 6px 4px">
+            <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">The stack · top to bottom</div>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:{{ stackCapFg }}">{{ stackCap }}</span>
+          </div>
+          <sc-for list="{{ stackRows }}" as="r" hint-placeholder-count="10">
+            <sc-if value="{{ r.isHead }}" hint-placeholder-val="{{ false }}">
+              <div style="font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:#6f6858;padding:8px 6px 2px">{{ r.label }}</div>
+            </sc-if>
+            <sc-if value="{{ r.isRow }}" hint-placeholder-val="{{ true }}">
+              <div draggable="{{ r.drag }}" onDragStart="{{ r.dragStart }}" onDragOver="{{ r.dragOver }}" onDrop="{{ r.drop }}" onClick="{{ r.pick }}" title="{{ r.tip }}" style="display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px;align-items:center;padding:6px 6px 6px {{ r.pad }}px;border-radius:6px;cursor:pointer;opacity:{{ r.op }};background:{{ r.bg }};border-left:2px solid {{ r.edge }}" style-hover="background:#1b1a17">
+                <div style="display:flex;flex-direction:column;gap:1px;min-width:0">
+                  <span style="font-size:14px;font-weight:{{ r.weight }}">{{ r.label }}<span style="color:#e0a34a">{{ r.warn }}</span></span>
+                  <span style="font-size:11px;color:#8d8472">{{ r.note }}</span>
+                </div>
+                <button onClick="{{ r.up }}" title="{{ r.upTip }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;border-radius:5px;padding:3px 9px;cursor:pointer;opacity:{{ r.upOp }};visibility:{{ r.arrows }}">↑</button>
+                <button onClick="{{ r.down }}" title="{{ r.downTip }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;border-radius:5px;padding:3px 9px;cursor:pointer;opacity:{{ r.downOp }};visibility:{{ r.arrows }}">↓</button>
+              </div>
+            </sc-if>
+          </sc-for>
+          <sc-for list="{{ stackWarns }}" as="w" hint-placeholder-count="0">
+            <div style="font-size:11px;color:#e0a34a;padding:2px 6px">⚠ {{ w.text }}</div>
+          </sc-for>
         </div>
       </sc-if>
 
@@ -196,6 +242,11 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
             </sc-for>
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <sc-for list="{{ catOpts }}" as="a" hint-placeholder-count="6">
+              <button onClick="{{ a.go }}" title="{{ a.tip }}" style="text-align:left;flex:1 1 180px;background:#1f1d1a;border:1px dashed #5a5246;color:#e9e2d2;padding:9px 12px;border-radius:8px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:{{ a.cursor }};opacity:{{ a.op }}">{{ a.label }}<span style="display:block;font-size:11px;color:#8d8472;margin-top:2px;line-height:1.35">{{ a.blurb }}</span></button>
+            </sc-for>
+          </div>
+          <div style="display:none">
             <sc-for list="{{ addOpts }}" as="a" hint-placeholder-count="4">
               <button onClick="{{ a.go }}" style="background:#1f1d1a;border:1px dashed #5a5246;color:#e9e2d2;padding:7px 12px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="border-color:#c9a25a;color:#f0d79a">{{ a.label }}</button>
             </sc-for>
@@ -399,17 +450,24 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
 
       <sc-if value="{{ isExport }}" hint-placeholder-val="{{ false }}">
         <div style="display:flex;flex-direction:column;gap:10px">
-          <button onClick="{{ exportKit }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Layer kit</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ kitNote }}</span></button>
+          <div title="{{ badgeTip }}" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid {{ badgeBd }};background:{{ badgeBg }}">
+            <span style="font-size:13px;font-weight:600;color:{{ badgeFg }}">{{ badgeText }}</span>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#a39a87">{{ badgeNote }}</span>
+          </div>
           <div style="display:flex;align-items:center;gap:8px">
             <span style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472;white-space:nowrap">Theme name</span>
             <input type="text" value="{{ themeNameVal }}" onChange="{{ themeNameIn }}" placeholder="{{ themeNamePh }}" title="What the watch lists this theme as, and the only thing that identifies it: the card files the upload under sha256(name)[:12], so the name may hold spaces, capitals and an em dash. The header holds 55 UTF-8 bytes of it." style="flex:1 1 auto;min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 9px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif">
             <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472;white-space:nowrap">{{ themeNameLen }}</span>
           </div>
-          <button onClick="{{ exportTheme }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Device theme (.orbtheme)</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ themeNote }}</span></button>
           <sc-if value="{{ isHub }}" hint-placeholder-val="{{ false }}">
             <button onClick="{{ sendToOrb }}" style="text-align:left;background:#1f2a1f;border:1px solid #3a5a3a;color:#d6ecd6;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#26321f"><span>Send to orb</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d9f82;font-size:12px">{{ sendNote }}</span></button>
             <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">Bakes the same <span style="font-family:'IBM Plex Mono',monospace">.orbtheme</span> the download button ships, then pushes it straight to the orb this hub is talking to, through the hub's FORMAT 3 upload door. The hub learns the orb's address itself — the one it saw over the USB cable or was handed on the Manage card — so a board on a new DHCP lease never leaves this button dialing a stale one. The device answers the upload as a store, not a new dial: it verifies the bundle and files it under the name inside the header, into the slot the glass is <span style="font-family:'IBM Plex Mono',monospace">not</span> drawing. Nothing moves on its own. The dial keeps showing its current face until you flip to this one — the flip is a separate press on the Manage card (or the watch’s own themes page), and that press is what reboots the orb onto the new dial. If a different theme already holds this name the orb refuses; the button asks, and a second press replaces it.</div>
           </sc-if>
+          <button onClick="{{ exportTheme }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Device theme (.orbtheme)</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ themeNote }}</span></button>
+          <button onClick="{{ toggleMoreExport }}" style="align-self:flex-start;background:transparent;border:1px solid #3a352d;color:#a39a87;padding:5px 10px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer">{{ moreExportLabel }}</button>
+          <sc-if value="{{ moreExportOpen }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;flex-direction:column;gap:10px">
+          <button onClick="{{ exportKit }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Layer kit</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ kitNote }}</span></button>
           <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">One <span style="font-family:'IBM Plex Mono',monospace">.orbtheme</span> FORMAT 3 bundle: the compiled clock dial — plate (or its §31 keyframe bank), masked hands, the crystal overlay — packed as one section, and the name inside it is the whole identity: the watch files it under <span style="font-family:'IBM Plex Mono',monospace">/orbtheme/&lt;sha256(name)[:12]&gt;.orbtheme</span> and re-naming is a re-install under a new hash. The bake measures the plate’s motion across the loop first (without the carriage, so a turning carriage never prices its own plate out of a fit) and picks the plate’s carrier by the cap arithmetic the baker shares with the selftest: a still under the shimmer band, a plate keyframe bank otherwise, thinned to what fits. A caged train gets its carriage row too, priced on the carriage’s own box and billed first: on an orbital dial the carriage IS the seconds hand, and a keyframe bank is blitted unrotated, so the bake refuses rather than ship a dial whose escapement animates while its orbit sits frozen. Upload the file (hub or the watch’s own door); the watch verifies it and stores it into the slot the glass is not drawing, and the dial keeps showing what it showed — no flip, no reboot. A store only ever files the bundle. Flipping to it is a separate press, and that press reboots the orb onto the new dial — every claim in this sentence is the store/flip contract, not an install in place. The same bytes come out of <span style="font-family:'IBM Plex Mono',monospace">tools/bake_clock.py --from-bundle</span> run against a baked container, which is the mirror the parity suite pins.</div>
           <button onClick="{{ exportFrames }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Flattened frames</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ zipNote }}</span></button>
           <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">The layer kit holds the looping base frames, each static layer as a transparent PNG, any tourbillon carriage frames, every complication value as a cropped sprite and every hand as its sprite with its pivot — plus manifest.json with draw order and positions. An uploaded hand is stored pointing the way the drawing points; manifest.json carries that in <span style="font-family:'IBM Plex Mono',monospace">zeroRotationDeg</span>, so the device turns the sprite by its value plus that offset and no artwork needs redrawing to face 12.</div>
@@ -431,6 +489,8 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
             <input type="file" accept=".wckit,application/json" onChange="{{ loadBundle }}" style="flex:1;min-width:0;font:500 12px 'IBM Plex Sans',sans-serif;color:#b5ab97;background:#0d0c0a;border:1px solid #3a352d;border-radius:6px;padding:8px 9px">
           </div>
           <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">Paste a design ID and the art it references only arrives if this browser still holds it. If the row above names a missing asset, ask whoever sent the ID for their <span style="font-family:'IBM Plex Mono',monospace">.wckit</span> and load it here.</div>
+                    </div>
+          </sc-if>
         </div>
       </sc-if>
     </div>
@@ -459,7 +519,7 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233 };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, moreExport: false, more: {} };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
@@ -3656,7 +3716,120 @@ class Component extends DCLogic {
     };
     rd.readAsText(file);
   }
+  /* D43 P5: the build flow. Seven steps over the existing views: each step shows one or
+   * more of the tabs every field builder already answers to, so nothing a tab offered is
+   * lost — the steps choose, order and explain. A selection that lands on a tab the
+   * current step does not show moves to the step that does (stepNow). */
+  STEPS = [
+    ['start', 'Start', ['start'], 'Pick a finished watch to change, or build from scratch.'],
+    ['movement', 'Movement', ['move'], 'The movement is the back of the watch: the plate and the train every opening shows.'],
+    ['dial', 'Dial', ['dial'], 'The dial\u2019s style: its print, numerals, colour, surface and art. Complications you add follow it.'],
+    ['parts', 'Complications & hands', ['comps', 'hands'], 'Add what the dial shows. Each one follows the dial\u2019s style until you set it otherwise.'],
+    ['arrange', 'Arrange', ['comps', 'hands', 'dial'], 'Drag layers to reorder them, drag on the watch to move them. The rules say what cannot stack where.'],
+    ['finish', 'Finish', ['light', 'case', 'sound'], 'Light, case and glass, and the sounds the watch makes.'],
+    ['render', 'Render', ['export'], 'Check it fits the orb, then send it.'],
+  ];
+  SUBLABEL = { comps: 'Complications', hands: 'Hands', dial: 'Dial', light: 'Light', case: 'Case & glass', sound: 'Sound', move: 'Movement', export: 'Export' };
+  MOODS = [
+    ['as', 'As designed', {}],
+    ['lamp', 'Warm lamp', { glow: 1.2, temp: 2200, hue: 30, hueSat: 0, outerLight: 0.8, outerTemp: 2700, outerHue: 210, outerSat: 0, wb: 6500 }],
+    ['day', 'Daylight', { glow: 0.6, temp: 4500, hue: 30, hueSat: 0, outerLight: 1.2, outerTemp: 5600, outerHue: 210, outerSat: 0, wb: 6500 }],
+    ['studio', 'Studio', { glow: 0.9, temp: 3200, hue: 30, hueSat: 0, outerLight: 1, outerTemp: 4500, outerHue: 210, outerSat: 0, wb: 6500 }],
+    ['night', 'Night', { glow: 1.4, temp: 1900, hue: 30, hueSat: 0, outerLight: 0.5, outerTemp: 7000, outerHue: 210, outerSat: 0, wb: 6000 }],
+  ];
+  stepNow() {
+    const s = this.state, tab = s.tab, at = this.STEPS.find((x) => x[0] === s.step);
+    if (at && at[2].includes(tab)) return at;
+    return this.STEPS.find((x) => x[0] !== 'start' && x[0] !== 'arrange' && x[2].includes(tab)) || this.STEPS[2];
+  }
+  goStep(id) { const st = this.STEPS.find((x) => x[0] === id); if (st) this.setState({ step: id, tab: st[2][0] }); }
+  fromScratch() {
+    const E = window.WatchEngine, d = E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.skeleton.design)));
+    d.comps = []; delete d.order; delete d.openwork; delete d.extra; d.centre = { hour: 1, minute: 1, second: 1 };
+    this.setState((st) => ({ dial: 'skeleton', designs: { ...st.designs, skeleton: E.canonDesign(d) }, sel: null, selKind: null, step: 'movement', tab: 'move',
+      status: 'A plain dial with three hands: choose the movement, then the dial, then add what it shows' }));
+  }
+  setMood(vals) {
+    const def = this.DEF;
+    ['glow', 'temp', 'hue', 'hueSat', 'outerLight', 'outerTemp', 'outerHue', 'outerSat', 'wb'].forEach((k) => this.setCfg(k, vals[k] !== undefined ? vals[k] : def[k]));
+  }
+  /* Fold a run of rows: the first `keep` show, the rest behind one More chip. */
+  foldRows(rows, key, keep, Ch) {
+    if (rows.length <= keep) return rows;
+    const open = !!(this.state.more || {})[key], hid = rows.length - keep;
+    const chip = Object.assign({}, rows[0], { label: '', valText: '', isHead: false, isRow: true, anchor: null, isRange: false, isSelect: false, isSwatch: false, isColor: false, isText: false, isFile: false, isNote: false, hasLink: false, isChips: true,
+      opts: [{ label: open ? 'Less' : 'More (' + hid + ')', bg: '#1f1d1a', bd: '#3a352d', fg: '#a39a87', pick: () => this.setState((st) => ({ more: { ...(st.more || {}), [key]: !open } })) }] });
+    return (open ? rows : rows.slice(0, keep)).concat([chip]);
+  }
   renderVals() {
+    const v = this.renderVals0(), s = this.state, E = window.WatchEngine, st = this.stepNow(), step = st[0];
+    const tabs = st[2], ready = !!(this.ready && E), d = ready ? (this.design() || {}) : {};
+    const head = (f) => f && f.isHead;
+    const out = {
+      headLabel: (this.ready && this.preset ? (this.preset() || {}).name || '' : '') + (s.designs && s.designs[s.dial] ? ' (edited)' : '') + ' · ' + st[1],
+      stepOpts: this.STEPS.map(([id, label, , tip], i) => ({ num: i + 1, label, tip, bg: id === step ? '#2e2719' : 'transparent', fg: id === step ? '#f0d79a' : '#b5ab97', pick: () => this.goStep(id) })),
+      hasSubs: tabs.length > 1,
+      subOpts: tabs.map((t) => ({ label: this.SUBLABEL[t] || t, bg: s.tab === t ? '#2a2316' : 'transparent', bd: s.tab === t ? '#c9a25a' : '#3a352d', fg: s.tab === t ? '#f0d79a' : '#b5ab97', pick: () => this.setState({ step, tab: t }) })),
+      stepHint: st[3],
+      isStart: step === 'start', isArrange: step === 'arrange',
+      hasTabReset: step === 'start' ? false : v.hasTabReset,   // Start's gallery carries its own Reset everything
+      isDial: false,
+      isComps: v.isComps && step === 'parts', isHands: v.isHands && step === 'parts',
+      diagOpen: !!s.diag, diagLabel: s.diag ? 'Hide diagnostics' : 'Diagnostics', toggleDiag: () => this.setState((x) => ({ diag: !x.diag })),
+      fromScratch: () => this.fromScratch(),
+      moreExportOpen: !!s.moreExport, moreExportLabel: s.moreExport ? 'Fewer export options' : 'More export options · layer kit, frames, design file, design ID',
+      toggleMoreExport: () => this.setState((x) => ({ moreExport: !x.moreExport })),
+    };
+    // Start shows the gallery alone; the dial's own fields belong to the Dial step
+    let fields = v.fields;   // the Start view has no builder of its own: the gallery is its whole pane
+    // Parts: the add catalogue, with what the dial can and cannot take, and why
+    if (ready) {
+      const inp = this.stackInput(), rc = inp && window.OrbStack ? window.OrbStack.rowCount(inp) : { rows: 0, cap: 24 };
+      const sel = (d.comps || []).find((c) => c.id === s.sel), onSub = sel && sel.type === 'subdial';
+      const BLURB = { subdial: 'A small dial of its own: seconds, hours, date, day or month', window: 'An aperture showing the date, day or month',
+        moon: 'The moon\u2019s phase on a disc behind an aperture', flare: 'Printed or applied text, a logo or a mark', opening: 'A cut through the dial that shows the movement' };
+      const LIVE = { window: 1, moon: 1 };
+      out.catOpts = Object.entries(E.COMP_TYPES).map(([t, label]) => {
+        const why = LIVE[t] && rc.rows + 1 > rc.cap ? 'R6: one more live row would pass the dial\u2019s ' + rc.cap : '';
+        return { label: '+ ' + label + (onSub && t !== 'subdial' && t !== 'opening' ? ' on this sub-dial' : ''), blurb: why || BLURB[t] || '', tip: why || BLURB[t] || '',
+          op: why ? 0.45 : 1, cursor: why ? 'not-allowed' : 'pointer', go: why ? () => this.setState({ status: why }) : () => this.addComp(t) };
+      }).concat([{ label: '+ Hand', blurb: 'Hour, minute and seconds, or one more: 24-hour, GMT, day or date', tip: 'The hands are set on the Hands view', op: 1, cursor: 'pointer',
+        go: () => this.setState({ step: 'parts', tab: 'hands' }) }]);
+      // Render: does it fit the orb
+      const b = this.budget ? this.budget() : null, want = b ? b.fps : 0, pace = b && b.dev && b.dev.pace ? b.dev.pace : want;
+      const fits = !rc.over, full = pace >= want, near = pace >= want * 0.75;
+      out.badgeText = !fits ? '\u2715 Too many live layers for the orb' : full ? '\u2713 Fits the orb'
+        : near ? '\u2713 Fits — runs a little slower than designed' : '\u2713 Fits — the orb paints it slower than designed';
+      out.badgeNote = '~' + pace + ' of ' + want + ' fps · ' + rc.rows + ' of ' + rc.cap + ' live rows';
+      out.badgeTip = 'The device-pace model\u2019s estimate for this design (the frame rate the orb can paint it at) and the live rows it ships against the dial\u2019s cap. A lifted layer or a large sweeping disc costs pace.';
+      out.badgeFg = !fits ? '#f08a7a' : full ? '#b8e0a8' : '#f0d79a'; out.badgeBd = !fits ? '#6a2e26' : full ? '#3a5a3a' : '#5a4a2a'; out.badgeBg = !fits ? '#2a1714' : full ? '#1a241a' : '#221d12';
+    }
+    // Finish · Light: moods first, the sliders behind More
+    if (ready && s.tab === 'light' && fields.length) {
+      const c = this.cfg(), keys = ['glow', 'temp', 'hue', 'hueSat', 'outerLight', 'outerTemp', 'outerHue', 'outerSat', 'wb'];
+      const isMood = (vals) => keys.every((k) => +c[k] === +(vals[k] !== undefined ? vals[k] : this.DEF[k]));
+      const proto = fields.find((f) => f.isRow) || {};
+      const moodRow = Object.assign({}, proto, { label: 'Mood', valText: '', isRange: false, isSelect: false, isSwatch: false, isColor: false, isText: false, isFile: false, isNote: false, hasLink: false, isChips: true,
+        opts: this.MOODS.map(([id, label, vals]) => ({ label, bg: isMood(vals) ? '#2a2316' : '#1f1d1a', bd: isMood(vals) ? '#c9a25a' : '#3a352d', fg: isMood(vals) ? '#f0d79a' : '#e9e2d2', pick: () => this.setMood(vals) })) });
+      const moodHead = Object.assign({}, fields.find(head) || proto, { label: 'Lighting', isHead: true, isRow: false });
+      fields = [moodHead, moodRow].concat(this.foldRows(fields, 'light', 0));
+    }
+    // Parts / Arrange: a complication's fields grouped by part — Placement, Shape, Paint
+    if (ready && s.tab === 'comps' && fields.length && (d.comps || []).some((c) => c.id === s.sel)) {
+      const PLACE = /^(Host|Angle|Distance|Rotation|Radius|Width|Height|Size|Place it|Offset|Position)\b/;
+      const PAINT = /(colou?r|Texture|Vivid|Custom|Shading|Lume|Finish)/i;
+      const proto = fields.find((f) => f.isRow) || {};
+      const H = (label) => Object.assign({}, proto, { label, isHead: true, isRow: false });
+      const place = [], shape = [], paint = [];
+      fields.forEach((f) => { if (f.isHead) shape.push(f); else if (PLACE.test(f.label)) place.push(f); else if (PAINT.test(f.label)) paint.push(f); else shape.push(f); });
+      fields = [].concat(place.length ? [H('Placement')].concat(this.foldRows(place, 'place', 5)) : [],
+                         shape.length ? [H('Shape')].concat(this.foldRows(shape, 'shape', 5)) : [],
+                         paint.length ? [H('Paint')].concat(this.foldRows(paint, 'paint', 5)) : []);
+    }
+    out.fields = fields;
+    return Object.assign(v, out);
+  }
+  renderVals0() {
     /* HB.fps is the BANK rate: the sampler's own tempo, and what a banked
      * carrier ships as tick_rate. HB.dev.pace is what the glass will hold --
      * the scheduler can floor below the bank, and a still carrier's ticks pay

@@ -2,7 +2,7 @@ window.COMP_CLASS = function (DCLogic) {
 
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233 };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, moreExport: false, more: {} };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
@@ -3199,7 +3199,120 @@ class Component extends DCLogic {
     };
     rd.readAsText(file);
   }
+  /* D43 P5: the build flow. Seven steps over the existing views: each step shows one or
+   * more of the tabs every field builder already answers to, so nothing a tab offered is
+   * lost — the steps choose, order and explain. A selection that lands on a tab the
+   * current step does not show moves to the step that does (stepNow). */
+  STEPS = [
+    ['start', 'Start', ['start'], 'Pick a finished watch to change, or build from scratch.'],
+    ['movement', 'Movement', ['move'], 'The movement is the back of the watch: the plate and the train every opening shows.'],
+    ['dial', 'Dial', ['dial'], 'The dial\u2019s style: its print, numerals, colour, surface and art. Complications you add follow it.'],
+    ['parts', 'Complications & hands', ['comps', 'hands'], 'Add what the dial shows. Each one follows the dial\u2019s style until you set it otherwise.'],
+    ['arrange', 'Arrange', ['comps', 'hands', 'dial'], 'Drag layers to reorder them, drag on the watch to move them. The rules say what cannot stack where.'],
+    ['finish', 'Finish', ['light', 'case', 'sound'], 'Light, case and glass, and the sounds the watch makes.'],
+    ['render', 'Render', ['export'], 'Check it fits the orb, then send it.'],
+  ];
+  SUBLABEL = { comps: 'Complications', hands: 'Hands', dial: 'Dial', light: 'Light', case: 'Case & glass', sound: 'Sound', move: 'Movement', export: 'Export' };
+  MOODS = [
+    ['as', 'As designed', {}],
+    ['lamp', 'Warm lamp', { glow: 1.2, temp: 2200, hue: 30, hueSat: 0, outerLight: 0.8, outerTemp: 2700, outerHue: 210, outerSat: 0, wb: 6500 }],
+    ['day', 'Daylight', { glow: 0.6, temp: 4500, hue: 30, hueSat: 0, outerLight: 1.2, outerTemp: 5600, outerHue: 210, outerSat: 0, wb: 6500 }],
+    ['studio', 'Studio', { glow: 0.9, temp: 3200, hue: 30, hueSat: 0, outerLight: 1, outerTemp: 4500, outerHue: 210, outerSat: 0, wb: 6500 }],
+    ['night', 'Night', { glow: 1.4, temp: 1900, hue: 30, hueSat: 0, outerLight: 0.5, outerTemp: 7000, outerHue: 210, outerSat: 0, wb: 6000 }],
+  ];
+  stepNow() {
+    const s = this.state, tab = s.tab, at = this.STEPS.find((x) => x[0] === s.step);
+    if (at && at[2].includes(tab)) return at;
+    return this.STEPS.find((x) => x[0] !== 'start' && x[0] !== 'arrange' && x[2].includes(tab)) || this.STEPS[2];
+  }
+  goStep(id) { const st = this.STEPS.find((x) => x[0] === id); if (st) this.setState({ step: id, tab: st[2][0] }); }
+  fromScratch() {
+    const E = window.WatchEngine, d = E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.skeleton.design)));
+    d.comps = []; delete d.order; delete d.openwork; delete d.extra; d.centre = { hour: 1, minute: 1, second: 1 };
+    this.setState((st) => ({ dial: 'skeleton', designs: { ...st.designs, skeleton: E.canonDesign(d) }, sel: null, selKind: null, step: 'movement', tab: 'move',
+      status: 'A plain dial with three hands: choose the movement, then the dial, then add what it shows' }));
+  }
+  setMood(vals) {
+    const def = this.DEF;
+    ['glow', 'temp', 'hue', 'hueSat', 'outerLight', 'outerTemp', 'outerHue', 'outerSat', 'wb'].forEach((k) => this.setCfg(k, vals[k] !== undefined ? vals[k] : def[k]));
+  }
+  /* Fold a run of rows: the first `keep` show, the rest behind one More chip. */
+  foldRows(rows, key, keep, Ch) {
+    if (rows.length <= keep) return rows;
+    const open = !!(this.state.more || {})[key], hid = rows.length - keep;
+    const chip = Object.assign({}, rows[0], { label: '', valText: '', isHead: false, isRow: true, anchor: null, isRange: false, isSelect: false, isSwatch: false, isColor: false, isText: false, isFile: false, isNote: false, hasLink: false, isChips: true,
+      opts: [{ label: open ? 'Less' : 'More (' + hid + ')', bg: '#1f1d1a', bd: '#3a352d', fg: '#a39a87', pick: () => this.setState((st) => ({ more: { ...(st.more || {}), [key]: !open } })) }] });
+    return (open ? rows : rows.slice(0, keep)).concat([chip]);
+  }
   renderVals() {
+    const v = this.renderVals0(), s = this.state, E = window.WatchEngine, st = this.stepNow(), step = st[0];
+    const tabs = st[2], ready = !!(this.ready && E), d = ready ? (this.design() || {}) : {};
+    const head = (f) => f && f.isHead;
+    const out = {
+      headLabel: (this.ready && this.preset ? (this.preset() || {}).name || '' : '') + (s.designs && s.designs[s.dial] ? ' (edited)' : '') + ' · ' + st[1],
+      stepOpts: this.STEPS.map(([id, label, , tip], i) => ({ num: i + 1, label, tip, bg: id === step ? '#2e2719' : 'transparent', fg: id === step ? '#f0d79a' : '#b5ab97', pick: () => this.goStep(id) })),
+      hasSubs: tabs.length > 1,
+      subOpts: tabs.map((t) => ({ label: this.SUBLABEL[t] || t, bg: s.tab === t ? '#2a2316' : 'transparent', bd: s.tab === t ? '#c9a25a' : '#3a352d', fg: s.tab === t ? '#f0d79a' : '#b5ab97', pick: () => this.setState({ step, tab: t }) })),
+      stepHint: st[3],
+      isStart: step === 'start', isArrange: step === 'arrange',
+      hasTabReset: step === 'start' ? false : v.hasTabReset,   // Start's gallery carries its own Reset everything
+      isDial: false,
+      isComps: v.isComps && step === 'parts', isHands: v.isHands && step === 'parts',
+      diagOpen: !!s.diag, diagLabel: s.diag ? 'Hide diagnostics' : 'Diagnostics', toggleDiag: () => this.setState((x) => ({ diag: !x.diag })),
+      fromScratch: () => this.fromScratch(),
+      moreExportOpen: !!s.moreExport, moreExportLabel: s.moreExport ? 'Fewer export options' : 'More export options · layer kit, frames, design file, design ID',
+      toggleMoreExport: () => this.setState((x) => ({ moreExport: !x.moreExport })),
+    };
+    // Start shows the gallery alone; the dial's own fields belong to the Dial step
+    let fields = v.fields;   // the Start view has no builder of its own: the gallery is its whole pane
+    // Parts: the add catalogue, with what the dial can and cannot take, and why
+    if (ready) {
+      const inp = this.stackInput(), rc = inp && window.OrbStack ? window.OrbStack.rowCount(inp) : { rows: 0, cap: 24 };
+      const sel = (d.comps || []).find((c) => c.id === s.sel), onSub = sel && sel.type === 'subdial';
+      const BLURB = { subdial: 'A small dial of its own: seconds, hours, date, day or month', window: 'An aperture showing the date, day or month',
+        moon: 'The moon\u2019s phase on a disc behind an aperture', flare: 'Printed or applied text, a logo or a mark', opening: 'A cut through the dial that shows the movement' };
+      const LIVE = { window: 1, moon: 1 };
+      out.catOpts = Object.entries(E.COMP_TYPES).map(([t, label]) => {
+        const why = LIVE[t] && rc.rows + 1 > rc.cap ? 'R6: one more live row would pass the dial\u2019s ' + rc.cap : '';
+        return { label: '+ ' + label + (onSub && t !== 'subdial' && t !== 'opening' ? ' on this sub-dial' : ''), blurb: why || BLURB[t] || '', tip: why || BLURB[t] || '',
+          op: why ? 0.45 : 1, cursor: why ? 'not-allowed' : 'pointer', go: why ? () => this.setState({ status: why }) : () => this.addComp(t) };
+      }).concat([{ label: '+ Hand', blurb: 'Hour, minute and seconds, or one more: 24-hour, GMT, day or date', tip: 'The hands are set on the Hands view', op: 1, cursor: 'pointer',
+        go: () => this.setState({ step: 'parts', tab: 'hands' }) }]);
+      // Render: does it fit the orb
+      const b = this.budget ? this.budget() : null, want = b ? b.fps : 0, pace = b && b.dev && b.dev.pace ? b.dev.pace : want;
+      const fits = !rc.over, full = pace >= want, near = pace >= want * 0.75;
+      out.badgeText = !fits ? '\u2715 Too many live layers for the orb' : full ? '\u2713 Fits the orb'
+        : near ? '\u2713 Fits — runs a little slower than designed' : '\u2713 Fits — the orb paints it slower than designed';
+      out.badgeNote = '~' + pace + ' of ' + want + ' fps · ' + rc.rows + ' of ' + rc.cap + ' live rows';
+      out.badgeTip = 'The device-pace model\u2019s estimate for this design (the frame rate the orb can paint it at) and the live rows it ships against the dial\u2019s cap. A lifted layer or a large sweeping disc costs pace.';
+      out.badgeFg = !fits ? '#f08a7a' : full ? '#b8e0a8' : '#f0d79a'; out.badgeBd = !fits ? '#6a2e26' : full ? '#3a5a3a' : '#5a4a2a'; out.badgeBg = !fits ? '#2a1714' : full ? '#1a241a' : '#221d12';
+    }
+    // Finish · Light: moods first, the sliders behind More
+    if (ready && s.tab === 'light' && fields.length) {
+      const c = this.cfg(), keys = ['glow', 'temp', 'hue', 'hueSat', 'outerLight', 'outerTemp', 'outerHue', 'outerSat', 'wb'];
+      const isMood = (vals) => keys.every((k) => +c[k] === +(vals[k] !== undefined ? vals[k] : this.DEF[k]));
+      const proto = fields.find((f) => f.isRow) || {};
+      const moodRow = Object.assign({}, proto, { label: 'Mood', valText: '', isRange: false, isSelect: false, isSwatch: false, isColor: false, isText: false, isFile: false, isNote: false, hasLink: false, isChips: true,
+        opts: this.MOODS.map(([id, label, vals]) => ({ label, bg: isMood(vals) ? '#2a2316' : '#1f1d1a', bd: isMood(vals) ? '#c9a25a' : '#3a352d', fg: isMood(vals) ? '#f0d79a' : '#e9e2d2', pick: () => this.setMood(vals) })) });
+      const moodHead = Object.assign({}, fields.find(head) || proto, { label: 'Lighting', isHead: true, isRow: false });
+      fields = [moodHead, moodRow].concat(this.foldRows(fields, 'light', 0));
+    }
+    // Parts / Arrange: a complication's fields grouped by part — Placement, Shape, Paint
+    if (ready && s.tab === 'comps' && fields.length && (d.comps || []).some((c) => c.id === s.sel)) {
+      const PLACE = /^(Host|Angle|Distance|Rotation|Radius|Width|Height|Size|Place it|Offset|Position)\b/;
+      const PAINT = /(colou?r|Texture|Vivid|Custom|Shading|Lume|Finish)/i;
+      const proto = fields.find((f) => f.isRow) || {};
+      const H = (label) => Object.assign({}, proto, { label, isHead: true, isRow: false });
+      const place = [], shape = [], paint = [];
+      fields.forEach((f) => { if (f.isHead) shape.push(f); else if (PLACE.test(f.label)) place.push(f); else if (PAINT.test(f.label)) paint.push(f); else shape.push(f); });
+      fields = [].concat(place.length ? [H('Placement')].concat(this.foldRows(place, 'place', 5)) : [],
+                         shape.length ? [H('Shape')].concat(this.foldRows(shape, 'shape', 5)) : [],
+                         paint.length ? [H('Paint')].concat(this.foldRows(paint, 'paint', 5)) : []);
+    }
+    out.fields = fields;
+    return Object.assign(v, out);
+  }
+  renderVals0() {
     /* HB.fps is the BANK rate: the sampler's own tempo, and what a banked
      * carrier ships as tick_rate. HB.dev.pace is what the glass will hold --
      * the scheduler can floor below the bank, and a still carrier's ticks pay

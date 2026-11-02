@@ -220,7 +220,14 @@ int32_t gfx_trigo_sin(int32_t angle)
     return (ret == 32767) ? 32768 : (ret == -32767) ? -32768 : ret;
 }
 
-/* lv_color_16_16_mix_inlined(), copied from lv_draw_sw_blend_private.h. */
+/* lv_color_16_16_mix_inlined(), copied from lv_draw_sw_blend_private.h, with one
+ * change (D43 §5.4): 0x2008010 adds half a step (16) to each of the three packed
+ * fields before the >> 5, so every field ROUNDS where LVGL's truncates. Truncation
+ * pulled every blended texel about half a level down — the glass sat ~3 luma under
+ * the preview — and left the crystal overlay's soft edges banded. Checked equal to a
+ * per-field round on 200,000 inputs with no field overflowing. LVGL's own image
+ * blends take the same rounding through main/gfx/orb_lv_blend.c (the custom-ASM
+ * hooks), so the two paint paths still agree texel for texel. */
 static inline uint16_t mix_16_16(uint16_t c1, uint16_t c2, uint8_t mix)
 {
     if (mix == 255) return c1;
@@ -229,7 +236,7 @@ static inline uint16_t mix_16_16(uint16_t c1, uint16_t c2, uint8_t mix)
     uint32_t mix5 = ((uint32_t)mix + 4) >> 3;
     uint32_t bg = (uint32_t)(c2 | ((uint32_t)c2 << 16)) & 0x7E0F81F;
     uint32_t fg = (uint32_t)(c1 | ((uint32_t)c1 << 16)) & 0x7E0F81F;
-    uint32_t res = ((((fg - bg) * mix5) >> 5) + bg) & 0x7E0F81F;
+    uint32_t res = ((((fg - bg) * mix5 + 0x2008010u) >> 5) + bg) & 0x7E0F81F;
     return (uint16_t)((res >> 16) | res);
 }
 

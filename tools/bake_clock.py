@@ -195,11 +195,12 @@ def _mix565(dst, fg, a):
     import numpy as np
     a = np.asarray(a, dtype=np.int64)
     mix5 = (a + 4) >> 3                       # lv's (mix+4)>>3, 0..32
+    # + 16 before >> 5: each field rounds, as mix_16_16 has since D43 §5.4
     dr, dg, db = (dst >> 11) & 31, (dst >> 5) & 63, dst & 31
     fr, fg6, fb = (fg >> 11) & 31, (fg >> 5) & 63, fg & 31
-    r = (((fr - dr) * mix5 >> 5) + dr) & 31
-    g = (((fg6 - dg) * mix5 >> 5) + dg) & 63
-    b = (((fb - db) * mix5 >> 5) + db) & 31
+    r = ((((fr - dr) * mix5 + 16) >> 5) + dr) & 31
+    g = ((((fg6 - dg) * mix5 + 16) >> 5) + dg) & 63
+    b = ((((fb - db) * mix5 + 16) >> 5) + db) & 31
     return (r << 11) | (g << 5) | b
 
 

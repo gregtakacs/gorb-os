@@ -82,6 +82,10 @@ NAMES = {
 
 def canon(t):
     t = re.sub(r'\bstatic\b|\binline\b', ' ', t)      # linkage moved; the maths did not
+    # D43 §5.4: mix_16_16 rounds each packed field (+0x2008010 before the >> 5) where
+    # the pinned copy truncated. That one term is the whole intended delta; drop it
+    # and the rest of the function must still match the pinned blend token for token.
+    t = t.replace(' + 0x2008010u) >> 5)', ') >> 5)')
     t = re.sub(r'const uint8_t \*base[,)]',
                lambda m: ')' if m.group(0).endswith(')') else '', t)
     t = re.sub(r'\bbase \+', 'blob() +', t)            # ... resolved from a param now

@@ -521,7 +521,7 @@
     if (c1 === c2) return c1;
     var m5 = (mix + 4) >> 3;
     var bg = (c2 | (c2 << 16)) & 0x7E0F81F, fg = (c1 | (c1 << 16)) & 0x7E0F81F;
-    var res = (((Math.imul((fg - bg) | 0, m5) >>> 5) + bg) & 0x7E0F81F) >>> 0;
+    var res = (((((Math.imul((fg - bg) | 0, m5) + 0x2008010) >>> 0) >>> 5) + bg) & 0x7E0F81F) >>> 0;   // D43 §5.4: rounds, as the firmware does
     return ((res >>> 16) | res) & 0xffff;
   }
   function blendPx(dest, c, a, mode) {
@@ -1074,13 +1074,14 @@
    * the one the runtime composite used to produce. blend_px()'s NORMAL path is
    * mix_16_16(fg, dst, a) on the panel's own 5/6/5-bit channels. */
   function q565(r, g, b) { return ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3); }
+  /* + 16 before >> 5: the device rounds each field since D43 §5.4 (orb_gfx.c's mix_16_16). */
   function mix565(dst, fg, a) {
     var mix = (a + 4) >> 3;
     var dr = (dst >> 11) & 31, dg = (dst >> 5) & 63, db = dst & 31;
     var fr = (fg >> 11) & 31, fg6 = (fg >> 5) & 63, fb = fg & 31;
-    var r = (((fr - dr) * mix >> 5) + dr) & 31;
-    var g = (((fg6 - dg) * mix >> 5) + dg) & 63;
-    var b = (((fb - db) * mix >> 5) + db) & 31;
+    var r = ((((fr - dr) * mix + 16) >> 5) + dr) & 31;
+    var g = ((((fg6 - dg) * mix + 16) >> 5) + dg) & 63;
+    var b = ((((fb - db) * mix + 16) >> 5) + db) & 31;
     return (r << 11) | (g << 5) | b;
   }
   function unq565(v) {

@@ -309,3 +309,6 @@ CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
 # copied into lwIP by the send) are, which pays for the TLS layer's statics many
 # times over at the boot ladder's low point (docs/flight-tracker-design.md §4).
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+# D43 §5.4: LVGL's RGB565 image blends round like orb_gfx.c's mix_16_16
+CONFIG_LV_DRAW_SW_ASM_CUSTOM=y
+CONFIG_LV_DRAW_SW_ASM_CUSTOM_INCLUDE="orb_lv_blend.h"

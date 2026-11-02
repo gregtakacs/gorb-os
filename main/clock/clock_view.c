@@ -678,6 +678,8 @@ static void tourbillon_advance(void)
  * path (and lv_color_16_16_mix_inlined / rgb565_image_blend for the blend)
  * operation for operation, so our pixels are bit-identical to what LVGL
  * draws for the first paint and for the wedges it still renders itself.
+ * Since D43 §5.4 both sides ROUND that blend: orb_gfx.c's mix_16_16 and
+ * LVGL's RGB565 image blends through main/gfx/orb_lv_blend.c's hooks.
  * Cost is the clipped box with two early-outs (source bounds, alpha==0):
  * the needles are mostly empty box, so the mask skip drops ~3/4 of it. */
 /* The per-tick dial policy the scheduler drives: read the time, pose the hands

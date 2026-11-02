@@ -326,7 +326,15 @@ three overlays cover 100 % of the disc at partial alpha.
   remove it. Adding `0x2008010` to the packed product before `>> 5` rounds every
   field (checked equal to a per-field round on 200,000 inputs, no field overflows).
   It is one add per blended pixel, and the baker's `mix565` fold mirror moves with
-  it. **Proposed, not ruled** (§12, Q1).
+  it. **Ruled 2026-11-01 (ruling 9) and built:** `orb_gfx.c`'s `mix_16_16` rounds;
+  LVGL's own RGB565 image blends (the first paint and the wedges it still draws)
+  round too, through the custom-ASM hooks `main/gfx/orb_lv_blend.c` implements and
+  `main/lvhook/orb_lv_blend.h` declares (`CONFIG_LV_DRAW_SW_ASM_CUSTOM`), so the two
+  paint paths still agree texel for texel without patching the managed LVGL
+  component. The mirrors moved with it: the baker's `mix1616` and `mix565`, and
+  `bake_clock.py`'s `_mix565`. `headless-panel` holds the JS to the lifted C, holds
+  `orb_lv_blend.c`'s mix token-identical to `orb_gfx.c`'s, and catches a blend that
+  truncates again; `gfx_parity_test.py` declares the one term as its intended delta.
 
 **The glass (orb-B, v1.1.44, 2026-11-01).** Luna was baked twice under test names
 ("P0 Luna trunc" with `dither: false`, "P2 Luna dither" with the P2 bake), each put on
@@ -533,13 +541,13 @@ its version carry what was built.
    theme and the OS builds the file. Everything else stays with the hub code (§9.1).
 8. **No standalone composer (2026-11-01).** `tools/watch-composer/` is deleted in P3
    once its contents have moved (§9.3). The `file://` path is not kept.
+9. **The blend rounds (2026-11-01).** `mix_16_16` and LVGL's RGB565 image blends round
+   each field instead of truncating (§5.4). The clock app's version moves with the
+   editor changes (v1.1.45), so a version stamp still names one set of bytes.
 
 ## 12. Open questions (raised during execution)
 
-1. **Rounding in `mix_16_16`** (§5.4). One constant add in the firmware blend
-   removes the 3-luma darkening and the rest of the overlay contours. It changes every
-   blended pixel on every theme, and the baker's fold mirror moves with it. Build it
-   as its own firmware slice after P2, or leave the blend alone?
+None open. Q1 (rounding in `mix_16_16`) became ruling 9.
 
 ## 13. The one sentence to remember
 

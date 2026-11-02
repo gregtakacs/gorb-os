@@ -24,7 +24,8 @@ if (process.argv.includes('--mutations')) {
   const src = fs.readFileSync(path.join(__dirname, '..', 'orbtheme-baker.js'), 'utf8');
   const M = [
     ['coverage rounds differently', 'var m5 = (mix + 4) >> 3;', 'var m5 = mix >> 3;'],
-    ['the packed result loses its field mask', '(((Math.imul((fg - bg) | 0, m5) >>> 5) + bg) & 0x7E0F81F) >>> 0', '((Math.imul((fg - bg) | 0, m5) >>> 5) + bg) >>> 0'],
+    ['the packed result loses its field mask', '(((((Math.imul((fg - bg) | 0, m5) + 0x2008010) >>> 0) >>> 5) + bg) & 0x7E0F81F) >>> 0', '((((Math.imul((fg - bg) | 0, m5) + 0x2008010) >>> 0) >>> 5) + bg) >>> 0'],
+    ['the blend truncates again', '(Math.imul((fg - bg) | 0, m5) + 0x2008010) >>> 0', '(Math.imul((fg - bg) | 0, m5)) >>> 0'],
     ['MULTIPLY drops its white shortcut', '      if (c === 0xffff) return dest;\n', ''],
     ['MULTIPLY green uses a 5-bit shift', '((c >> 5) & 0x3F)) >> 6) << 5)', '((c >> 5) & 0x3F)) >> 5) << 5)'],
     ['ADDITIVE stops saturating', 'var r = Math.min((dest >> 11) + (c >> 11), 31)', 'var r = ((dest >> 11) + (c >> 11)) & 31'],
@@ -61,6 +62,17 @@ const lift = (sig) => {
 };
 const mixSrc = lift('static inline uint16_t mix_16_16('), blendSrc = lift('static inline void blend_px(');
 ok(!!mixSrc && !!blendSrc, 'mix_16_16 and blend_px lift out of orb_gfx.c');
+// D43 §5.4: LVGL's image blends go through main/gfx/orb_lv_blend.c, whose mix must be
+// orb_gfx.c's token for token — or LVGL-painted texels and orb_gfx-painted texels part.
+{
+  const lvSrc = fs.readFileSync(path.join(ROOT, 'main', 'gfx', 'orb_lv_blend.c'), 'utf8');
+  const i = lvSrc.indexOf('static inline uint16_t mix_rounded(');
+  let d = 0, j = lvSrc.indexOf('{', i);
+  for (; j < lvSrc.length; j++) { if (lvSrc[j] === '{') d++; else if (lvSrc[j] === '}' && --d === 0) break; }
+  const norm = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\b(mix_16_16|mix_rounded)\b/g, 'MIX').replace(/\bresult\b/g, 'res').replace(/\s+/g, ' ').trim();
+  ok(i >= 0 && norm(lvSrc.slice(i, j + 1)) === norm(mixSrc || ''), 'orb_lv_blend.c rounds exactly as orb_gfx.c\'s mix_16_16 (the two paint paths agree)');
+  ok(/0x2008010u/.test(mixSrc || ''), 'the shipped mix_16_16 rounds (D43 §5.4)');
+}
 const N = 300000;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'panel.'));
 fs.writeFileSync(path.join(tmp, 'p.c'), [

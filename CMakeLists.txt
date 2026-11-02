@@ -10,6 +10,11 @@ set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/components")
 # guards it with #ifndef, so a global -D is the supported override.)
 add_compile_definitions(LV_INV_BUF_SIZE=96)
 
+# D43 §5.4: LVGL's software renderer includes CONFIG_LV_DRAW_SW_ASM_CUSTOM_INCLUDE
+# (orb_lv_blend.h) from inside its own blend headers, so the hook's directory must be
+# on LVGL's include path too. Same global mechanism as the -D above.
+include_directories("${CMAKE_CURRENT_LIST_DIR}/main/lvhook")
+
 # ---------------------------------------------------------------------------
 # Firmware version stamp: docs/firmware-versioning-plan.md.
 #

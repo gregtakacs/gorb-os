@@ -23,6 +23,9 @@ idf_component_register(
         "display/orb_boot_overlay.c"
         "gfx/orb_gfx.c"
         "gfx/orb_sched.c"
+        # D43 §5.4: LVGL's RGB565 image blends with mix_16_16's rounding (the
+        # custom-ASM hooks main/lvhook/orb_lv_blend.h declares).
+        "gfx/orb_lv_blend.c"
         # P5.5: the app layer table. Its header stays LVGL-free and the suite
         # shims the lvgl.h its .c reaches for, so tools/host_orblayers_test.py
         # compiles the shipped file as-is — the suite is the proof the
@@ -161,3 +164,10 @@ idf_component_register(
 # orb_panic.c records every panic before ESP-IDF's handler prints and resets: the
 # wrap is the only hook that sees faults, abort() and both watchdogs alike.
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_panic_handler")
+
+# D43 §5.4: LVGL calls these three blend hooks (main/lvhook/orb_lv_blend.h), but the
+# linker scans this component's archive before LVGL's, so nothing would pull
+# orb_lv_blend.o in and LVGL's references would go unresolved. -u makes them
+# undefined from the start, so the object is extracted on the first pass.
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u orb_lv_rgb565_with_opa"
+                      "-u orb_lv_rgb565_with_mask" "-u orb_lv_rgb565_mix_mask_opa")

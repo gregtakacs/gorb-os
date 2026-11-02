@@ -564,9 +564,17 @@ it as the pointer.
     - A face's printed figures run in its direction, so a face set anticlockwise prints
       backwards and its hands run backwards with it. This generalizes today's sub-dial
       `tdir` to the main dial too.
-    - A hand follows its face's direction, the way it follows the face's default look.
-      Setting a hand's own direction breaks that link on purpose: a hand running against
-      its own scale is legal but deliberate.
+    - **The face drives and the hand may override (owner, 2026-11-02).** A hand follows
+      its face for direction, start angle, sweep (fan), travel (slider), length and zero
+      offset, each shown as "Follows the dial · …". Setting any one breaks that field's
+      link alone, and Default re-links it, as with the inherited look. Two hands on one
+      scale may run in opposite directions.
+    - **A face whose art the editor cannot read** (an uploaded background) carries its
+      scale as geometry only: start angle, sweep and direction, or a slider's track ends,
+      with printing set to none so nothing draws over the art. A two-point **Set from
+      the art** tool fills that geometry: drag the hand to the art's lowest value, then
+      to its highest, and the editor derives start, sweep and direction. It works on a
+      face's scale and on a single hand's override alike.
     - A wheel's figures are printed in the order that makes them advance under its
       cutout in the direction it turns.
     - **On the wire** this is the row's span sign: a negative span for rotate and

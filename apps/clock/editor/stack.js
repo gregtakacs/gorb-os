@@ -50,7 +50,7 @@
 
   /* input: {
    *   comps:   design.comps (in order),
-   *   hands:   [{ id, kind, sub, x, y, len }] the hands drawn, bottom first (WatchEngine's F.hands),
+   *   hands:   [{ id, kind, sub, host, x, y, len }] the hands drawn, bottom first (WatchEngine's F.hands),
  *   order:   the full live band, bottom first: WatchEngine's handOrder with any lifted
  *            sub-dial as 'comp:<id>' in its place (design.order). It can name hands that
  *            are not drawn (a seconds hand the carriage replaces, a hand switched off),
@@ -98,7 +98,7 @@
       var e = order[i];
       if (e.indexOf('comp:') === 0) { if (lifted[e.slice(5)]) subBlock(byId[e.slice(5)], true); continue; }
       var h = drawnHand[e]; if (!h) continue;
-      var host = h.sub ? h.id : null;
+      var host = h.sub ? (h.host && h.host !== 'dial' ? h.host : h.id) : null;   // D43 P5c: a hand names its host
       push({ id: 'hand:' + h.id, ref: h.id, kind: h.sub ? 'pointer' : 'hand', group: 'live', band: 'rows',
              label: h.sub ? ((HAND_NAME[h.kind] || 'Hand') + ' · on ' + compTitle(byId[host] || { type: 'subdial' }, E))
                           : (HAND_NAME[h.kind] || 'Hand'),
@@ -127,8 +127,8 @@
              host: 'dial', hide: 'complications', sel: { kind: 'comp', id: dc.id }, badge: 'live · value plate', movable: true });
     }
     push({ id: 'geartrain', kind: 'geartrain', band: 'plate', label: input.carriage ? 'Geartrain & carriage' : 'Geartrain',
-           hide: 'geartrain', badge: input.carriage ? 'plate bank · carriage live' : 'plate bank', movable: false });
-    push({ id: 'movement', kind: 'movement', band: 'plate', label: 'Clock insides', hide: 'movement', badge: 'plate', movable: false });
+           hide: 'geartrain', sel: { kind: 'move', id: 'geartrain' }, badge: input.carriage ? 'plate bank · carriage live' : 'plate bank', movable: false });
+    push({ id: 'movement', kind: 'movement', band: 'plate', label: 'Clock insides', hide: 'movement', sel: { kind: 'move', id: 'movement' }, badge: 'plate', movable: false });
     comps.forEach(function (c) {
       if (c.type === 'flare' && hostOf(c) === 'plate')
         push({ id: 'comp:' + c.id, ref: c.id, kind: 'flare', band: 'plate', label: compTitle(c, E), parent: 'movement', host: 'movement',
@@ -210,12 +210,16 @@
 
   /* R3 over the live band: a lifted face's own pointer must stay above it. */
   function r3(full, input) {
-    var hands = {}; (input.hands || []).forEach(function (h) { hands[h.id] = h; });
+    // D43 P5c: a sub-dial's own pointers are the hands it hosts, whatever their ids
+    var own = {}; (input.hands || []).forEach(function (h) { if (h.sub && h.host) (own[h.host] = own[h.host] || []).push(h.id); });
     for (var i = 0; i < full.length; i++) {
       var e = full[i];
       if (e.indexOf('comp:') !== 0) continue;
-      var sid = e.slice(5), p = full.indexOf(sid);
-      if (hands[sid] && p >= 0 && p < i) return { ok: false, reason: 'R3: a sub-dial\u2019s own pointer rides it, so the face stays under that pointer' };
+      var ptrs = own[e.slice(5)] || [];
+      for (var k = 0; k < ptrs.length; k++) {
+        var p = full.indexOf(ptrs[k]);
+        if (p >= 0 && p < i) return { ok: false, reason: 'R3: a sub-dial\u2019s own pointer rides it, so the face stays under that pointer' };
+      }
     }
     return null;
   }

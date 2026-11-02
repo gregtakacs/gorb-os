@@ -26,7 +26,7 @@ names.forEach((k) => {
 });
 
 // the procedural hand contract is exactly what the kit manifest reads
-const h = E.face(Object.assign({}, OPTS, { design: E.canonDesign({ print: 'roman', comps: [{ id: 's1', type: 'subdial', angle: 30, dist: 100, size: 60, scale: 'seconds', style: 'guilloche' }], centre: { hour: 1, minute: 1, second: 1 } }), train: 'classic' }));
+const h = E.face(Object.assign({}, OPTS, { design: E.canonDesign({ print: 'roman', comps: [{ id: 's1', type: 'subdial', angle: 30, dist: 100, size: 60, scale: 'seconds', style: 'guilloche' }].concat(global.hands3({ shows: 'second', host: 's1', id: 'hp' }, 'hour', 'minute', 'second')) }), train: 'classic' }));
 const keys = (o) => Object.keys(o).sort().join(',');
 ok(keys(h.hands[0].sp).indexOf('c,px,py') === 0, 'procedural sprite still answers c,px,py first', keys(h.hands[0].sp));
 ok(h.hands.every((x) => !x.art), 'a procedural hand carries no art record');
@@ -35,9 +35,9 @@ ok(h.subLayers.every((l) => !l.transparent), 'no plate is transparent in this de
 require('./headless-stub.js').SIZES['data:image/png;base64,' + Buffer.from('hand').toString('base64')] = [40, 12];
 E.assetRestore([{ id: 'hk-1', name: 'hk.png', kind: 'png', dataUrl: 'data:image/png;base64,' + Buffer.from('hand').toString('base64') }]);
 setTimeout(() => {
-  const d2 = E.canonDesign({ print: 'roman', comps: [], centre: { hour: 1, minute: 1 }, hands: { 'centre-hour': { art: 'hk-1', pivotX: 20, pivotY: 20 } } });
+  const d2 = E.canonDesign({ print: 'roman', comps: global.hands3({ shows: 'hour', id: 'hh', art: 'hk-1', pivotX: 20, pivotY: 20 }, 'minute') });
   const f2 = E.face(Object.assign({}, OPTS, { design: d2, train: 'classic' }));
-  const hh = f2.hands.find((q) => q.id === 'centre-hour');
+  const hh = f2.hands.find((q) => q.id === 'hh');
   ok(hh && hh.art && hh.art.asset === 'hk-1', 'the art hand is marked as art-backed');
   ok(hh && keys({ c: hh.sp.c, px: hh.sp.px, py: hh.sp.py }).indexOf('c,px,py') === 0, 'the art hand answers the same contract as the procedural one');
   ok(hh && hh.cap === 0, 'no hub cap is drawn over an art hand');
@@ -49,7 +49,7 @@ require('./headless-stub.js').SIZES[u3] = [24, 24];
 E.assetRestore([{ id: 'fl-1', name: 'mark.png', kind: 'png', dataUrl: u3 }]);
 setTimeout(() => {
   ok(E.IMAGES['fl-1'] !== undefined && !!E.IMAGES['fl-1'], 'a registered asset is visible through the legacy IMAGES view');
-  const d4 = E.canonDesign({ print: 'roman', comps: [{ id: 'f1', type: 'flare', host: 'dial', angle: 0, dist: 60, size: 20, style: 'print', icon: 'image', img: 'fl-1', color: 'auto' }], centre: { hour: 1 } });
+  const d4 = E.canonDesign({ print: 'roman', comps: [{ id: 'f1', type: 'flare', host: 'dial', angle: 0, dist: 60, size: 20, style: 'print', icon: 'image', img: 'fl-1', color: 'auto' }].concat(global.hands3('hour')) });
   const f4 = E.face(Object.assign({}, OPTS, { design: d4, train: 'classic' }));
   ok(!!f4.dial, 'a flare with registry-backed art still renders');
   E.assetDrop('fl-1');

@@ -3,29 +3,30 @@
 // the field changes), that a transparent subdial ships no plate and punches nothing, and
 // that the registry, the fit gate and the sprite pivot maths behave.
 const { E, SIZES } = require('./headless-stub.js');
+const legacy3 = global.legacy3, hand3 = global.hand3;
 let fails = 0;
 let checked = 0;
 const ok = (cond, name, extra) => { checked++; console.log((cond ? 'PASS ' : 'FAIL ') + name + (extra ? '  [' + extra + ']' : '')); if (!cond) fails++; };
 const eq = (a, b, name) => ok(JSON.stringify(a) === JSON.stringify(b), name, JSON.stringify(a) + ' vs ' + JSON.stringify(b));
-const base = { print: 'roman', color: 'cream', comps: [{ id: 'c1', type: 'subdial', angle: 30, dist: 100, size: 60, scale: 'seconds', style: 'enamel' }], centre: { hour: 1, minute: 1 } };
+const base = legacy3({ print: 'roman', color: 'cream', comps: [{ id: 'c1', type: 'subdial', angle: 30, dist: 100, size: 60, scale: 'seconds', style: 'enamel' }], centre: { hour: 1, minute: 1 } });
 
 // ---- canonDesign: an art-free design must be byte-identical to the old one ---------
 const clean = E.canonDesign(JSON.parse(JSON.stringify(base)));
-const withArt = E.canonDesign(JSON.parse(JSON.stringify(Object.assign({}, base, {
+const withArt = E.canonDesign(legacy3(JSON.parse(JSON.stringify(Object.assign({}, base, {
   bgArt: '', bgFit: 'cover', bgX: 0, bgY: 0, bgSize: 442, bgOpacity: 1,
   hands: { 'centre-hour': { art: '', pivotX: 0, pivotY: 0 } },
-}))));
+})))));
 eq(withArt, clean, 'canonDesign: empty art fields vanish, so an old Design ID still matches');
-const placed = E.canonDesign(JSON.parse(JSON.stringify(Object.assign({}, base, {
+const placed = E.canonDesign(legacy3(JSON.parse(JSON.stringify(Object.assign({}, base, {
   bgArt: 'sky-abcd1234', bgFit: 'contain', bgX: 12, bgSize: 442, hands: { 'centre-hour': { art: 'h-11112222', pivotX: 20, pivotY: 33 } },
-}))));
+})))));
 ok(placed.bgArt === 'sky-abcd1234' && placed.bgFit === 'contain' && placed.bgX === 12, 'canonDesign: set bg fields survive');
 ok(!('bgSize' in placed), 'canonDesign: the default bgSize 442 is deleted');
-ok(placed.hands['centre-hour'].art === 'h-11112222' && placed.hands['centre-hour'].pivotY === 33, 'canonDesign: hand art and authored pivot survive');
-const zeroPivot = E.canonDesign(JSON.parse(JSON.stringify(Object.assign({}, base, { hands: { 'centre-hour': { art: 'h-1', pivotX: 0, pivotY: 0 } } }))));
-ok(zeroPivot.hands['centre-hour'].pivotX === undefined, 'canonDesign: a 0,0 pivot falls back to hub-ink auto');
-const noArt = E.canonDesign(JSON.parse(JSON.stringify(Object.assign({}, base, { hands: { 'centre-hour': { pivotX: 44, pivotY: 9 } } }))));
-ok(!noArt.hands || !noArt.hands['centre-hour'] || noArt.hands['centre-hour'].pivotX === undefined, 'canonDesign: a pivot with no art reference vanishes');
+ok(hand3(placed, 'centre-hour').art === 'h-11112222' && hand3(placed, 'centre-hour').pivotY === 33, 'canonDesign: hand art and authored pivot survive');
+const zeroPivot = E.canonDesign(legacy3(JSON.parse(JSON.stringify(Object.assign({}, base, { hands: { 'centre-hour': { art: 'h-1', pivotX: 0, pivotY: 0 } } })))));
+ok(hand3(zeroPivot, 'centre-hour').pivotX === undefined, 'canonDesign: a 0,0 pivot falls back to hub-ink auto');
+const noArt = E.canonDesign(legacy3(JSON.parse(JSON.stringify(Object.assign({}, base, { hands: { 'centre-hour': { pivotX: 44, pivotY: 9 } } })))));
+ok(!hand3(noArt, 'centre-hour') || hand3(noArt, 'centre-hour').pivotX === undefined, 'canonDesign: a pivot with no art reference vanishes');
 // the surface slot is its own decision: filling it must not leave plate keys on the design
 const sfOnly = E.canonDesign(JSON.parse(JSON.stringify(Object.assign({}, base, { sfArt: 'face-99990000', sfFit: 'contain', sfX: 7, sfSize: 442, sfOpacity: 1 }))));
 ok(sfOnly.sfArt === 'face-99990000' && sfOnly.sfFit === 'contain' && sfOnly.sfX === 7, 'canonDesign: set sf fields survive');
@@ -38,10 +39,10 @@ ok(!!E.COMP_STYLES.subdial.transparent, 'COMP_STYLES.subdial carries the transpa
 
 // ---- layout()/buildSubdials(): the plate really is gone ----------------------------
 const faceOf = (style, bgId) => {
-  const d = E.canonDesign({ print: 'roman',
+  const d = E.canonDesign(legacy3({ print: 'roman',
     comps: [{ id: 'c1', type: 'subdial', angle: 30, dist: 100, size: 60, scale: 'seconds', style: style, open: 0.5 },
       { id: 'c2', type: 'window', host: 'c1', angle: 0, dist: 0, size: 1, shows: 'date' }],
-    centre: { hour: 1, minute: 1 } });
+    centre: { hour: 1, minute: 1 } }));
   return E.face(Object.assign({ design: d, finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }, bgId ? { bgArt: bgId, bgSize: 442 } : {}));
 };
 const solid = faceOf('enamel'), ghost = faceOf('transparent');
@@ -50,8 +51,8 @@ ok(ghost.lay.dialHoles.filter((h) => h.hidden).length === 0, 'layout: a transpar
 ok(ghost.lay.dialHoles.filter((h) => h.seal).length >= 1, 'layout: a window hosted on a transparent subdial is carried by the dial');
 ok(solid.lay.subHoles['c1'] && solid.lay.subHoles['c1'].length === 1, 'layout: a window on a real subdial still cuts that subdial');
 ok(ghost.subLayers.length === 1 && ghost.subLayers[0].transparent === true, 'buildSubdials: the transparent plate is flagged');
-ok((ghost.handOrder || []).indexOf('c1') >= 0, 'the pointer hand on a transparent subdial is still mounted', (ghost.handOrder || []).join(','));
-ok(!!(ghost.hands || []).find((h) => h.id === 'c1'), 'the transparent subdial keeps its hand record for the kit');
+ok((ghost.handOrder || []).indexOf('c1-hand') >= 0, 'the pointer hand on a transparent subdial is still mounted', (ghost.handOrder || []).join(','));
+ok(!!(ghost.hands || []).find((h) => h.id === 'c1-hand'), 'the transparent subdial keeps its hand record for the kit');
 console.log('   solid dialHoles=' + JSON.stringify(solid.lay.dialHoles.map((h) => [h.kind, !!h.hidden, !!h.seal])));
 console.log('   ghost dialHoles=' + JSON.stringify(ghost.lay.dialHoles.map((h) => [h.kind, !!h.hidden, !!h.seal])));
 ok(solid.lay.dialHoles.filter((h) => h.hidden).length - ghost.lay.dialHoles.filter((h) => h.hidden).length === 1,
@@ -91,7 +92,7 @@ setTimeout(() => {
   const big = E.handSpriteAsset('beta-svg', { maxW: 30, maxH: 30 });
   ok(big && big.c.width <= 30 && big.c.height <= 30, 'a sprite is capped to the box the hand could sweep');
   // a dangling reference must not take the render down with it
-  const dangling = E.face({ design: E.canonDesign({ print: 'roman', bgArt: 'gone-1', comps: [], centre: { hour: 1 } }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
+  const dangling = E.face({ design: E.canonDesign(legacy3({ print: 'roman', bgArt: 'gone-1', comps: [], centre: { hour: 1 } })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
   ok(!!dangling.dial && !!dangling.outer, 'face() with a dangling art reference still builds every layer');
   ok(E.drawAsset(dangling.dial.getContext('2d'), 'gone-1', { x: 233, y: 233, w: 100, h: 100 }) === false, 'drawAsset says false for art that cannot draw');
   ok(E.drawAsset(dangling.dial.getContext('2d'), 'alpha-1', { x: 233, y: 233, w: 100, h: 100 }) === true, 'drawAsset draws held art');
@@ -110,7 +111,7 @@ setTimeout(() => {
    * A stub cannot show colour, but it can show sequence. On the dial canvas the art's
    * drawImage has to come before the first numeral fillText; art drawn after the print
    * would bury the numerals, markers and chapter ring the user sets themselves. */
-  const SF = { print: 'roman', numerals: 'all', comps: [], centre: { hour: 1, minute: 1 } };
+  const SF = legacy3({ print: 'roman', numerals: 'all', comps: [], centre: { hour: 1, minute: 1 } });
   const sfFace = E.face({ design: E.canonDesign(Object.assign({ sfArt: 'alpha-1' }, JSON.parse(JSON.stringify(SF)))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
   const sfOps = sfFace.dial.getContext('2d').ops || [];
   const iArt = sfOps.findIndex((o) => o.op === 'drawImage' && o.src === urlA);
@@ -204,7 +205,7 @@ setTimeout(() => {
        * half-width and inside the 95 px reach — a probe answers only along whichever
        * axis the ink actually lies on, which is exactly the thing Facing sets, so this
        * pair fails if rot0 is parsed but never actually turns anything. */
-      const HF = (rot0) => E.face({ design: E.canonDesign({ print: 'none', numerals: 'none', comps: [], centre: { hour: 0, minute: 0, second: 1 }, hands: { 'centre-second': { art: 'tall-1', rot0: rot0, pivotX: 10, pivotY: 95 } } }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
+      const HF = (rot0) => E.face({ design: E.canonDesign(legacy3({ print: 'none', numerals: 'none', comps: [], centre: { hour: 0, minute: 0, second: 1 }, hands: { 'centre-second': { art: 'tall-1', rot0: rot0, pivotX: 10, pivotY: 95 } } })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
       const t0 = new Date(2026, 0, 1, 10, 9, 0);
       const hd0 = HF(0).hands.find((q) => q.id === 'centre-second');
       const hd90 = HF(90).hands.find((q) => q.id === 'centre-second');
@@ -214,10 +215,10 @@ setTimeout(() => {
       ok(tipY(hd0, 40) && !tipX(hd0, 40), 'at facing 0 the art reads up out of the arbour, the way it was drawn', JSON.stringify([tipY(hd0, 40), tipX(hd0, 40)]));
       ok(!tipY(hd90, 40) && tipX(hd90, 40), 'at facing 90 the same art reads to the right: the correction really turns it', JSON.stringify([tipY(hd90, 40), tipX(hd90, 40)]));
       ok(E.handZeroDeg(hd0) === 0 && E.handZeroDeg(hd90) === 90, 'zeroRotationDeg ships the facing, so the device turns the sprite the same way', JSON.stringify([E.handZeroDeg(hd0), E.handZeroDeg(hd90)]));
-      const cal = { print: 'none', numerals: 'none', comps: [{ id: 'c1', type: 'subdial', host: 'dial', angle: 90, dist: 100, rot: 30, size: 60, scale: 'seconds', style: 'azure' }], centre: { hour: 0, minute: 0, second: 0 }, hands: { c1: { art: 'tall-1', rot0: 45 } } };
-      const hdSub = E.face({ design: E.canonDesign(JSON.parse(JSON.stringify(cal))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).hands.find((q) => q.id === 'c1');
+      const cal = legacy3({ print: 'none', numerals: 'none', comps: [{ id: 'c1', type: 'subdial', host: 'dial', angle: 90, dist: 100, rot: 30, size: 60, scale: 'seconds', style: 'azure' }], centre: { hour: 0, minute: 0, second: 0 }, hands: { c1: { art: 'tall-1', rot0: 45 } } });
+      const hdSub = E.face({ design: E.canonDesign(JSON.parse(JSON.stringify(cal))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).hands.find((q) => q.id === 'c1-hand');
       ok(hdSub && Math.abs(E.handZeroDeg(hdSub) - 75) < 0.01, 'a tilted subdial hand ships its host tilt AND its own facing as one angle', String(hdSub && E.handZeroDeg(hdSub)));
-      const noArt = E.canonDesign({ hands: { 'centre-hour': { rot0: 90, pivotX: 4, pivotY: 4 } } });
+      const noArt = E.canonDesign(legacy3({ hands: { 'centre-hour': { rot0: 90, pivotX: 4, pivotY: 4 } } }));
       ok(!noArt.hands, 'a facing and pivot on a hand with no art under them are stripped, not shipped as a no-op');
       /* ---- what a click lands on ---------------------------------------------------
        * The face answered for complications alone, so grabbing a hand or the dial read
@@ -225,7 +226,7 @@ setTimeout(() => {
        * here is a SUBDIAL: its hit radius is geometric, while a window's is measured
        * from its text -- which a stub cannot measure, and an assertion built on it
        * would be about the stub rather than about the engine. */
-      const PF = { print: 'none', numerals: 'none', comps: [{ id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 110, rot: 0, size: 60, scale: 'seconds', style: 'azure' }], centre: { hour: 1, minute: 1, second: 1 } };
+      const PF = legacy3({ print: 'none', numerals: 'none', comps: [{ id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 110, rot: 0, size: 60, scale: 'seconds', style: 'azure' }], centre: { hour: 1, minute: 1, second: 1 } });
       const fp = E.face({ design: E.canonDesign(JSON.parse(JSON.stringify(PF))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
       const hdS = fp.hands.find((q) => q.id === 'centre-second');
       const sub = fp.lay.subs[0];
@@ -247,7 +248,7 @@ setTimeout(() => {
        * sat at the rim at full width and marched inward as the opening shrank, painting
        * their printed case out. The opening is now the ring the guide paints -- and the
        * lens the DRAWN content is eased through (dynScale), never the author's art. */
-      const NC = { print: 'none', numerals: 'none', comps: [], centre: { hour: 1, minute: 1 } };
+      const NC = legacy3({ print: 'none', numerals: 'none', comps: [], centre: { hour: 1, minute: 1 } });
       const mkFace = (o) => E.face(Object.assign({ design: E.canonDesign(JSON.parse(JSON.stringify(NC))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }, o));
       ok(mkFace({ caseStyle: 'polished' }).inset === 1, 'a plain case leaves the content at full size');
       ok(Math.abs(mkFace({ caseStyle: 'tachy' }).inset - 193.5 / 221) < 1e-9, 'a bezel style keeps its own fixed opening, exactly as before');
@@ -280,16 +281,19 @@ setTimeout(() => {
         'the projected hand shadows are pinned to the hands: offsets and blur at opening 160 are the full cast times dynK, not the unscaled device-space numbers',
         JSON.stringify([castFull[0], castFit[0]]));
 
-      /* ---- the hands row eye on a CENTRE hand ---------------------------------------
-       * The eye wrote hands['centre-hour'].on = false and nothing read it: buildHands
-       * skipped only the subdial rows, and the row read its label off design.centre alone.
-       * The button moved on the centre rows too -- and did nothing. */
-      const mkHidden = (hcfg) => { const d = JSON.parse(JSON.stringify(NC)); d.hands = hcfg; return E.face({ design: E.canonDesign(d), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, caseStyle: 'polished' }); };
-      const fHid = mkHidden({ 'centre-hour': { on: false } });
-      ok(fHid.hands.some((h) => h.id === 'centre-minute') && !fHid.hands.some((h) => h.id === 'centre-hour'),
-        'the eye hides a CENTRE hand: the engine drops it from the drawn list, as it always did for a subdial hand', (fHid.hands || []).map((h) => h.id).join(','));
-      ok(fHid.handSlots.some((s) => s.id === 'centre-hour'), 'and the hidden hand keeps its row -- an author who hides a hand must still be able to show it again', (fHid.handSlots || []).map((s) => s.id).join(','));
-      ok(mkHidden({ 'centre-hour': { on: true } }).hands.some((h) => h.id === 'centre-hour'), 'on:true is showing, not a second kind of hidden');
+      /* ---- D43 P5c: a hand is there or it is not ------------------------------------
+       * The old per-hand eye (hands[id].on) is gone with the hands map: a hand is a part,
+       * and Remove takes it off the dial. A stray `on` on a hand comp is noise canon drops,
+       * and an `on: false` does not hide a hand some other way. */
+      const NC3 = E.canonDesign(JSON.parse(JSON.stringify(NC)));
+      const withOn = JSON.parse(JSON.stringify(NC3)); global.hand3(withOn, 'centre-hour').on = false;
+      const cOn = E.canonDesign(withOn);
+      ok(!('on' in global.hand3(cOn, 'centre-hour')), 'canon drops a stray on from a hand', JSON.stringify(global.hand3(cOn, 'centre-hour')));
+      const fOn = E.face({ design: cOn, finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, caseStyle: 'polished' });
+      ok(fOn.hands.some((h) => h.id === 'centre-hour') && fOn.hands.some((h) => h.id === 'centre-minute'), 'and the hand is drawn: there is no hidden hand, only a removed one', fOn.hands.map((h) => h.id).join(','));
+      const gone = JSON.parse(JSON.stringify(NC3)); gone.comps = gone.comps.filter((c) => c.id !== 'centre-hour');
+      const fGone = E.face({ design: E.canonDesign(gone), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, caseStyle: 'polished' });
+      ok(!fGone.hands.some((h) => h.id === 'centre-hour') && !fGone.handSlots.some((x) => x.id === 'centre-hour'), 'a removed hand leaves no drawn hand and no slot');
       ok(E.faceScale({ caseStyle: 'none', caseOpen: 90 }) === 1 && E.faceScale({ caseStyle: 'tachy' }) === 193.5 / 221,
         'faceScale agrees: the authorable opening never shrinks the face, a bezel style always does', JSON.stringify([E.faceScale({ caseStyle: 'none', caseOpen: 90 }), E.faceScale({ caseStyle: 'tachy' })]));
       ok(mkFace({ caseStyle: 'polished', caseOpen: 120 }).inset === 1, 'and an opening typed in beside a style that cannot use it changes nothing at all');
@@ -325,7 +329,7 @@ setTimeout(() => {
       /* ---- a round window -----------------------------------------------------------
        * The shape has to reach the hole, or the device ships a square disc inside a
        * round punch and the four corners sit over the dial. */
-      const CW = { print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [{ id: 'w9', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 30, wshape: 'circle' }] };
+      const CW = legacy3({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [{ id: 'w9', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 30, wshape: 'circle' }] });
       const fcw = E.face({ design: E.canonDesign(JSON.parse(JSON.stringify(CW))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
       const hole9 = fcw.lay.comps.find((c) => c.id === 'w9').hole;
       ok(hole9.kind === 'circle' && isFinite(hole9.r) && hole9.r > 0, 'a window asked for round is laid out round', JSON.stringify(hole9));
@@ -357,19 +361,19 @@ setTimeout(() => {
       ok(!!p1 && Math.abs(p1.scale * 210 - 168) < 0.5, 'a hand buried in transparent padding reaches the same ring as the tight crop of the same bar', p1 && p1.scale);
       const fb = E.handSpriteAsset('tall-1', { maxW: 466, maxH: 466, pivotX: 10, pivotY: 95, fitTo: 200 });
       ok(!!fb && fb.scale === 1, 'an asset with no measurable ink keeps the old fit-to-box, unenlarged', fb && fb.scale);
-      const MF = (lk) => E.face({ design: E.canonDesign({ print: 'roman', numerals: 'none', comps: [], centre: { hour: 0, minute: 1 }, hands: { 'centre-minute': { art: 'bar-up', pivotX: 15, pivotY: 220, len: lk } } }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).hands.find((q) => q.id === 'centre-minute');
+      const MF = (lk) => E.face({ design: E.canonDesign(legacy3({ print: 'roman', numerals: 'none', comps: [], centre: { hour: 0, minute: 1 }, hands: { 'centre-minute': { art: 'bar-up', pivotX: 15, pivotY: 220, len: lk } } })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).hands.find((q) => q.id === 'centre-minute');
       const m1 = MF(1), mh = MF(0.5), mReac = Math.min(216, 205 * 0.96);
       ok(!!m1 && !!m1.art && Math.abs(m1.sp.scale * 200 - mReac) < 0.5, 'at Length 100% an uploaded minute hand tips exactly where the drawn one would', m1 && m1.sp.scale.toFixed(4));
       ok(!!mh && !!m1 && Math.abs(mh.sp.scale - m1.sp.scale / 2) < 1e-9, 'and half the slider halves that reach, whichever way the pixels came', mh && mh.sp.scale.toFixed(4));
       /* ---- the metal an aperture is framed in --------------------------------------
        * The ring used to be gilt by decree of the movement finish. The choice rides
        * to the cut as hole.fc; the default never enters the Design ID. */
-      const GF = (o) => E.face({ design: E.canonDesign({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [Object.assign({ id: 'g1', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 30 }, o)] }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).lay.dialHoles.find((h) => !h.hidden);
+      const GF = (o) => E.face({ design: E.canonDesign(legacy3({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [Object.assign({ id: 'g1', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 30 }, o)] })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).lay.dialHoles.find((h) => !h.hidden);
       ok(GF({ style: 'frame', frameColor: 'steel' }).fc === 'steel', 'a window struck in steel carries its metal down to the cut');
       ok(!GF({ style: 'frame' }).fc, 'with no choice the frame is the movement metal and nothing rides along');
       ok(!GF({ style: 'frame', frameColor: 'gilt' }).fc, 'naming Gilt is that same no-choice, and the field stays out of the Design ID');
       ok(!GF({ style: 'bevel', frameColor: 'steel' }).fc, 'a bevel strikes no frame, so the metal choice is dropped with it');
-      ok(!('frameColor' in E.canonDesign({ print: 'none', centre: { hour: 1 }, comps: [{ id: 'g1', type: 'moon', style: 'sphere', frameColor: 'steel' }] }).comps[0]), 'a moon carries no frame colour: the field vanishes on types that draw no ring');
+      ok(!('frameColor' in E.canonDesign(legacy3({ print: 'none', centre: { hour: 1 }, comps: [{ id: 'g1', type: 'moon', style: 'sphere', frameColor: 'steel' }] })).comps[0]), 'a moon carries no frame colour: the field vanishes on types that draw no ring');
       ok(!!(E.FRAME_COLORS && E.FRAME_COLORS.gilt && E.FRAME_COLORS.steel), 'the metal list ships with the engine');
       /* ---- art rotation, oval apertures, and the finish blended over the art -------
        * Three author decisions the pixels must obey: a backdrop may turn about its own
@@ -399,7 +403,7 @@ setTimeout(() => {
       ok(CAN({ bgArt: 'x-1', bgFinishBlend: 'multiply', bgFinishKey: '#ff0044', bgFinishKeyTol: 0 }).bgFinishKeyTol === 0, 'tolerance 0 is an authored choice and survives');
       ok(CAN({ bgArt: 'x-1', bgFinishBlend: 'multiply', bgFinishKey: '#ff0044', bgFinishKeyTol: 300 }).bgFinishKeyTol === undefined, 'a tolerance outside the slider is not shipped');
       ok(!('bgFinishKey' in CAN({ bgFinishBlend: 'multiply', bgFinishKey: '#ff0044' })), 'a key with no art reference vanishes with the art group');
-      const OW = (o) => E.face({ design: E.canonDesign({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, aging: 0, stains: 0, dust: 0, comps: [Object.assign({ id: 'w1', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 1 }, o)] }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
+      const OW = (o) => E.face({ design: E.canonDesign(legacy3({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, aging: 0, stains: 0, dust: 0, comps: [Object.assign({ id: 'w1', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 1 }, o)] })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
       const oRound = OW({ wshape: 'circle' }).lay.dialHoles.find((h) => !h.hidden && h.kind === 'circle');
       ok(oRound.ry == null && oRound.r === 15, 'an untouched round window is the long-side circle it always was', oRound.r);
       const oOval = OW({ wshape: 'circle', ww: 2, wh: 1 });
@@ -462,15 +466,15 @@ setTimeout(() => {
       ok(fkey(Object.assign({}, kOn, { style: 'enamel' })).drew === false, 'enamel still declines, keyed or not');
       ok(fkey(Object.assign({}, kOn, { style: 'carbon', keyColor: 'nope' })).mask === null, 'a key that is not a colour leaves the plain whole-image blend in charge');
       // the rotation reaches the pixels: drawAsset turns the picture about its centre
-      const Rf = (rot) => E.face({ design: E.canonDesign({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [], sfArt: 'alpha-1', sfRot: rot }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, caseStyle: 'none' });
+      const Rf = (rot) => E.face({ design: E.canonDesign(legacy3({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [], sfArt: 'alpha-1', sfRot: rot })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, caseStyle: 'none' });
       ok(Rf(45).dial.getContext('2d').geom.some((g) => g.op === 'rotate' && Math.abs(g.a[0] - 45 * Math.PI / 180) < 1e-9), 'a 45° dial-surface art really turns on the glass');
       ok(!Rf(0).dial.getContext('2d').geom.some((g) => g.op === 'rotate' && Math.abs(g.a[0] - 0) < 1e-9 && g.a.length === 1), 'an unrotated art is drawn exactly as it was before the slider existed');
       // ---- the two shadow gates: the MOVING twin versus the STATIC plate relief ----
       {
         const { FakeCanvas } = require('./headless-stub.js');
-        const shFace = (o) => E.face(Object.assign({ design: E.canonDesign({ print: 'roman',
+        const shFace = (o) => E.face(Object.assign({ design: E.canonDesign(legacy3({ print: 'roman',
           comps: [{ id: 'c1', type: 'subdial', angle: 30, dist: 100, size: 60, scale: 'seconds', style: 'enamel', height: 0.8 }],
-          centre: { hour: 1, minute: 1, second: 1 } }),
+          centre: { hour: 1, minute: 1, second: 1 } })),
           finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }, o));
         const shOn = shFace({}), shOff = shFace({ shMove: 0 }), shFlat = shFace({ shOp: 0 });
         eq([shOn.shadow.mv, shOff.shadow.mv, shFlat.shadow.mv], [1, 0, 1], 'shMove is on unless the author says otherwise, and the static gate ignores it');
@@ -493,7 +497,7 @@ setTimeout(() => {
          * every hand, so both the preview and every bake read the same pixels. The
          * stub cannot show colour, so the check is placement: which canvas the disc's
          * arc lands in, and that only the top pointer of an arbour is crowned. */
-        const capFace = E.face({ design: E.canonDesign({ print: 'station', numerals: 'all', color: 'white', secStyle: 'station', handShade: 'flat', comps: [], centre: { hour: 1, minute: 1, second: 1 }, hands: { 'centre-second': { finish: 'red' } } }), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, hands: 'station', handFinish: 'black' });
+        const capFace = E.face({ design: E.canonDesign(legacy3({ print: 'station', numerals: 'all', color: 'white', secStyle: 'station', handShade: 'flat', comps: [], centre: { hour: 1, minute: 1, second: 1 }, hands: { 'centre-second': { finish: 'red' } } })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, hands: 'station', handFinish: 'black' });
         const capped = capFace.hands.filter((h) => h.cap > 0);
         ok(capped.length === 1 && capped[0].id === 'centre-second',
           'one crown per arbour, on the top pointer — here the seconds hand',
@@ -515,14 +519,14 @@ setTimeout(() => {
          * the preview shows — the plane is the top of the stack by construction. So a lower
          * arbour's hub is baked into its OWN hand plate, which is the seat the wire ships
          * (hands/NN_id.png IS sp.c) and which the rows above it still paint over. */
-        const subFace = E.face({ design: E.canonDesign({ print: 'roman', numerals: 'all', color: 'white',
+        const subFace = E.face({ design: E.canonDesign(legacy3({ print: 'roman', numerals: 'all', color: 'white',
           centre: { hour: 1, minute: 1, second: 0 }, comps: [
-            { id: 'c2', type: 'subdial', host: 'dial', angle: 135, dist: 80.6, rot: 0, size: 78.5, style: 'enamel', scale: 'seconds', open: 0 }] }),
+            { id: 'c2', type: 'subdial', host: 'dial', angle: 135, dist: 80.6, rot: 0, size: 78.5, style: 'enamel', scale: 'seconds', open: 0 }] })),
           finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, hands: 'breguet', handFinish: 'blued' });
         const subCapped = subFace.hands.filter((h) => h.cap > 0);
         const subCrown = subFace.hands[subFace.hands.length - 1];
         const subSub = subCapped.filter((h) => h !== subCrown);
-        ok(subCapped.length === 2 && subSub.length === 1 && subSub[0].id === 'c2' && subCrown.id === 'centre-minute',
+        ok(subCapped.length === 2 && subSub.length === 1 && subSub[0].id === 'c2-hand' && subCrown.id === 'centre-minute',
           'a subdial dials crowned arbour: the sub-dial keeps its own, and the crown is the top row',
           subFace.hands.map((h) => h.id + ':' + h.cap).join(' '));
         const capArcs = (f, h) => (f.glass.getContext('2d').geom || []).filter((e) => e.op === 'arc'

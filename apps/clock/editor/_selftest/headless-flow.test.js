@@ -34,30 +34,53 @@ const stepOf = (it) => it.stepNow()[0];
   ok(V().stepOpts.filter((t) => t.cls === 'on').length === 1 && V().stepOpts[0].cls === 'on', 'one step is marked, the one shown');
   ok(V().stackRows.some((r) => r.isRow), 'the layers panel is there from Start');
   V().fromScratch();
-  ok(stepOf(it) === 'movement' && (it.design().comps || []).length === 0, 'Build from scratch: a plain dial, no complications, on to the movement');
+  const nonHand = () => (it.design().comps || []).filter((c) => c.type !== 'hand');
+  const handsOn = (host) => (it.design().comps || []).filter((c) => c.type === 'hand' && (c.host || 'dial') === host);
+  ok(stepOf(it) === 'movement' && nonHand().length === 0 && handsOn('dial').map((h) => h.shows).join() === 'hour,minute,second', 'Build from scratch: a plain dial with three hands and no complications, on to the movement', JSON.stringify(it.design().comps));
   ok(V().isMove, 'the Movement step shows the movement cards');
   V().stepOpts[2].pick();
   ok(stepOf(it) === 'dial' && labels(V()).length > 5, 'the Dial step shows the dial’s fields', labels(V()).slice(0, 4).join(','));
   V().stepOpts[3].pick();
   const v4 = V();
-  ok(stepOf(it) === 'parts' && v4.isComps && v4.hasSubs && v4.subOpts.map((t) => t.label).join() === 'Complications,Hands', 'Complications & hands shows both views');
-  ok(v4.catOpts.length === Object.keys(E.COMP_TYPES).length + 1 && v4.catOpts.every((c) => c.blurb), 'the catalogue offers every kind of complication and a hand, each with a line on what it is');
+  // D43 P5c: Parts is one view -- the catalogue, or the selected part's panel -- with no sub-tabs
+  ok(stepOf(it) === 'parts' && v4.isComps && !v4.hasSubs && v4.noSel, 'Parts opens on the catalogue, one view with no sub-tabs');
+  ok(v4.catOpts.length === Object.keys(E.COMP_TYPES).length + 1 && v4.catOpts.every((c) => c.blurb) && /Hand/.test(v4.catOpts[0].label), 'the catalogue offers every kind of part, a hand first among them, each with a line on what it is', v4.catOpts.map((c) => c.label).join());
   v4.catOpts.find((c) => /Subdial/.test(c.label)).go();
+  const sd = nonHand().find((c) => c.type === 'subdial');
+  ok(!!sd && handsOn(sd.id).length === 1 && handsOn(sd.id)[0].shows === E.SCALE_SHOWS[sd.scale], 'a new sub-dial comes with one hand reading its scale', JSON.stringify(handsOn(sd && sd.id)));
+  it.setState({ sel: null, selKind: null });
   V().catOpts.find((c) => /Window/.test(c.label)).go();
-  ok(it.design().comps.length === 2, 'adding from the catalogue adds to the design', it.design().comps.map((c) => c.type).join());
+  ok(nonHand().length === 2, 'adding from the catalogue adds to the design', nonHand().map((c) => c.type).join());
   // the selected complication's fields are grouped by part
-  it.setState({ tab: 'comps', sel: it.design().comps[0].id, selKind: 'comp' });
+  it.setState({ tab: 'comps', sel: sd.id, selKind: 'comp' });
   const heads = V().fields.filter((f) => f.isHead).map((f) => f.label);
   ok(heads[0] === 'Placement' && heads.includes('Shape'), 'a complication’s fields are grouped: Placement, Shape, Paint', heads.join(','));
   // the inspector names the selection, and Remove takes it off the dial
   ok(V().inspKind === 'Subdial' || /Sub/i.test(V().inspKind), 'the inspector names the kind of the selected part', V().inspKind + ' / ' + V().inspTitle);
   ok(V().hasDel && /subdial/i.test(V().delLabel), 'and offers to remove it', V().delLabel);
-  const n0 = it.design().comps.length; V().delSel();
-  ok(it.design().comps.length === n0 - 1 && !V().hasDel, 'Remove takes the part off the dial', n0 + ' -> ' + it.design().comps.length);
-  // the layers panel's add list adds and closes
-  V().toggleAdd(); ok(V().addOpen && V().catOpts.length > 3, 'the layers panel opens the add list');
+  const n0 = nonHand().length; V().delSel();
+  ok(nonHand().length === n0 - 1 && !V().hasDel && handsOn(sd.id).length === 0, 'Remove takes the part off the dial, and its own hand with it', n0 + ' -> ' + nonHand().length);
+  // the layers panel's Add opens the catalogue on the right, from any step
+  V().stepOpts[2].pick(); it.setState({ sel: handsOn('dial')[0].id, selKind: 'hand' });
+  V().toggleAdd();
+  ok(stepOf(it) === 'parts' && V().isComps && V().noSel && V().catOpts.length > 3 && it.state.sel == null, 'the layers panel\u2019s Add opens the catalogue in the inspector, from any step');
   V().catOpts.find((c) => /Flare/.test(c.label)).go();
-  ok(!V().addOpen && it.design().comps.some((c) => c.type === 'flare'), 'picking from it adds the part and closes the list');
+  ok(nonHand().some((c) => c.type === 'flare') && it.state.selKind === 'comp', 'picking from it adds the part and selects it');
+  // a hand is a part like the rest: added from the catalogue, it opens its own panel
+  it.setState({ sel: null, selKind: null });
+  const nh0 = handsOn('dial').length;
+  V().catOpts.find((c) => /^\+ Hand/.test(c.label)).go();
+  const added = handsOn('dial')[nh0];
+  ok(!!added && it.state.sel === added.id && it.state.selKind === 'hand' && stepOf(it) === 'parts', 'adding a hand places it on the dial and selects it', JSON.stringify(added));
+  const hp = V();
+  ok(hp.isHands && hp.handRows.length === 1 && hp.handRows[0].showsOpts.length === Object.keys(E.HAND_SHOWS).length && hp.inspKind === 'Hand', 'its panel alone, opening on what it shows', hp.handRows.map((h) => h.label).join());
+  hp.handRows[0].onShows({ target: { value: 'hours24' } });
+  ok(handsOn('dial')[nh0].shows === 'hours24' && it.face().hands.some((h) => h.id === added.id && h.kind === 'hours24'), 'choosing what it shows changes the hand on the dial');
+  ok(V().hasDel && V().delLabel === 'hand', 'and the inspector offers to remove it like any part');
+  // every hand is arbitrary: ten on the dial is a legal design, priced against R6
+  for (let k = handsOn('dial').length; k < 10; k++) { it.setState({ sel: null, selKind: null }); V().catOpts.find((c) => /^\+ Hand/.test(c.label)).go(); }
+  ok(handsOn('dial').length === 10 && it.face().hands.filter((h) => !h.sub).length === 10, 'ten hands on the main dial draw', handsOn('dial').length + ' / ' + it.face().hands.length);
+  ok(/^\d+ of 24 live rows$/.test(V().stackCap) && V().stackRows.filter((r) => r.isRow && /hand/i.test(r.label) && r.arrows === 'visible').length >= 10, 'each is a layer with its own arrows, counted against the 24 live rows', V().stackCap);
   V().stepOpts[4].pick();
   let v6 = V();
   ok(stepOf(it) === 'finish' && v6.subOpts.map((t) => t.label).join() === 'Light,Case & glass,Sound', 'Finish holds light, case & glass and sound');
@@ -83,20 +106,21 @@ const stepOf = (it) => it.stepNow()[0];
 // ---- the hand panels: Shape, Paint, Motion, artwork folded --------------------
 {
   const it = mount('skeleton'), V = () => it.renderVals();
-  it.setState({ step: 'parts', tab: 'hands' });
-  const rows = V().handRows;
-  ok(rows.length > 0 && rows.every((h) => h.artOpen === false && /Artwork/.test(h.artToggleLabel)), 'every hand\u2019s artwork upload starts folded', rows.length + ' hands');
-  rows[0].toggleArt();
-  const r2 = V().handRows;
-  ok(r2[0].artOpen === true && r2.slice(1).every((h) => !h.artOpen), 'opening one hand\u2019s artwork opens that hand\u2019s only');
-  ok(V().handGrid, 'with no hand selected the default-style grid shows');
-  it.setState({ sel: 'centre-minute', selKind: 'hand' });
-  ok(V().handRows.length === 1 && V().handRows[0].anchor === 'hand-centre-minute' && !V().handGrid && V().inspKind === 'Hand', 'a selected hand: its panel alone', V().handRows.map((h) => h.anchor).join());
+  const ids = it.design().comps.filter((c) => c.type === 'hand').map((c) => c.id);
+  const pan = (id) => { it.setState({ sel: id, selKind: 'hand', step: 'parts', tab: 'hands' }); return V().handRows; };
+  ok(ids.length > 0 && ids.every((id) => { const r = pan(id); return r.length === 1 && r[0].anchor === 'hand-' + id && r[0].artOpen === false && /Artwork/.test(r[0].artToggleLabel); }), 'every hand\u2019s panel stands alone, its artwork upload folded', ids.length + ' hands');
+  pan(ids[0])[0].toggleArt();
+  ok(pan(ids[0])[0].artOpen === true && ids.slice(1).every((id) => !pan(id)[0].artOpen), 'opening one hand\u2019s artwork opens that hand\u2019s only');
+  ok(!V().handGrid && V().inspKind === 'Hand' && !V().fields.length, 'a selected hand shows nothing but its panel', V().fields.map((f) => f.label).join());
+  // the style every hand starts from is the dial's: the Dial step's Hand style view
+  it.setState({ sel: null, selKind: null, step: 'dial', tab: 'hands' });
+  ok(V().handGrid && !V().handRows.length && V().fields.some((f) => f.label === 'Cast shadows'), 'the Dial step\u2019s Hand style shows the default-style grid and the shared settings, and no hand panels');
+  ok(V().subOpts.map((t) => t.label).join() === 'Dial,Hand style', 'the Dial step offers Dial and Hand style', V().subOpts.map((t) => t.label).join());
   it.setState({ sel: null, selKind: null });
   const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
   const panel = html.slice(html.indexOf('<sc-for list="{{ handRows }}"'), html.indexOf('{{ h.onArtFile }}'));
-  const order = ['>Shape<', 'h.onStyle', 'h.onLen', '>Paint<', 'h.onFinish', 'h.onShade', 'h.onLume', 'h.onPath', 'h.toggleArt', 'h.artOpen', 'h.artRef'].map((k) => panel.indexOf(k));
-  ok(order.every((x, i) => x >= 0 && (i === 0 || x > order[i - 1])), 'the panel reads Shape, Paint, Motion, then the folded artwork', order.join(','));
+  const order = ['>Shows<', 'h.onShows', 'h.onHost', '>Shape<', 'h.onStyle', 'h.onLen', '>Paint<', 'h.onFinish', 'h.onShade', 'h.onLume', 'h.onPath', 'h.toggleArt', 'h.artOpen', 'h.artRef'].map((k) => panel.indexOf(k));
+  ok(order.every((x, i) => x >= 0 && (i === 0 || x > order[i - 1])), 'the panel reads Shows, Shape, Paint, Motion, then the folded artwork', order.join(','));
 }
 
 // ---- from a preset ------------------------------------------------------------

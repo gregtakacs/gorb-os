@@ -1538,7 +1538,9 @@
     var centre = {}, auxSpec = [];
     (M.hands || []).forEach(function (h) {
       var onCentre = String(h.mount || 'centre').indexOf('centre') === 0;
-      if ((h.kind === 'hour' || h.kind === 'minute' || h.kind === 'second') && onCentre) centre[h.kind] = h;
+      // the first hour, minute and seconds hand on the dial's arbour take the slots; a dial may
+      // carry more (D43 P5c), and those join the pointer table like any other hand
+      if ((h.kind === 'hour' || h.kind === 'minute' || h.kind === 'second') && onCentre && !centre[h.kind]) centre[h.kind] = h;
       else if (h.kind === undefined || h.kind === null) return;               // a fixture entry, not a hand
       else if (!AUX_KINDS[h.kind]) throw new Error('hand kind ' + JSON.stringify(h.kind) +
         ' is neither a dial hand nor a drivable pointer (' + Object.keys(AUX_KINDS).join(', ') +
@@ -4155,6 +4157,7 @@
     (comps || []).forEach(function (c) {
       var src = null, id = c.id === undefined ? '?' : c.id;
       if (c.type === 'opening') return;                                  // a hole in the plate
+      if (c.type === 'hand') return;                                     // D43 P5c: a hand slot or a pointer row, never a window row
       if (c.type === 'flare') {
         if (c.icon !== 'datetext') return;                               // engraving
         refuses.push('the flare \u201c' + id + '\u201d prints the date, and printing it needs the glyph fields no element row holds');
@@ -4213,7 +4216,8 @@
   function pointerDefault3(c, comps) {
     if (c.type !== 'subdial' || c.carrier != null) return false;
     if (!(c.scale === undefined || c.scale === 'seconds' || c.scale === 'hours')) return false;
-    return !(comps || []).some(function (x) { return x.host === c.id; });
+    // a hand on the sub-dial is its pointer, not another indication (D43 P5c)
+    return !(comps || []).some(function (x) { return x.host === c.id && x.type !== 'hand'; });
   }
   var COMP3_POINTER_SPAN = 3600;                       // one whole turn, tenths of a degree
   function pointerPlan3(comps) {
@@ -4223,7 +4227,7 @@
       if (c.carrier === 'plates') return;
       if (c.carrier !== 'pointer' && !pointerDefault3(c, comps)) return;
       var id = c.id === undefined ? '?' : c.id;
-      if ((comps || []).some(function (x) { return x.host === id; })) {
+      if ((comps || []).some(function (x) { return x.host === id && x.type !== 'hand'; })) {
         refuses.push('the subdial \u201c' + id + '\u201d hosts another indication: the plates carrier punches its '
           + 'plate so the hosted tile sits inside the hole, and a pointer row carries nothing to punch — drive it as plates');
         return;

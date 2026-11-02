@@ -52,8 +52,8 @@ ok(paceAt('modern', { fps: 15, measured: true, car: true }).pace < 15, 'and that
 // calendar subdials clamp to 4 for the same reason. So the gate is shOn (the runtime
 // twin), not the plate's own animation. Build the static-moon dial both ways.
 const staticMoon = {
-  print: 'baton', centre: { hour: 1, minute: 1, second: 1 },
-  comps: [{ id: 'c9', type: 'moon', host: 'dial', angle: 180, dist: 100, rot: 0, size: 64, style: 'classic' }],
+  print: 'baton',
+  comps: [{ id: 'c9', type: 'moon', host: 'dial', angle: 180, dist: 100, rot: 0, size: 64, style: 'classic' }].concat(global.hands3('hour', 'minute', 'second')),
 };
 const iS = mount('modern');
 iS.state.designs.modern = staticMoon;

@@ -12,7 +12,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const DCLogic = function () { };
 DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
 const Comp = global.COMP_CLASS(DCLogic);
-const mk = () => { const i = new Comp({}); i.ready = true; i.state.dial = 't'; i.state.designs.t = { print: 'roman', comps: [], centre: { hour: 1, minute: 1 } }; return i; };
+const mk = () => { const i = new Comp({}); i.ready = true; i.state.dial = 't'; i.state.designs.t = { print: 'roman', comps: global.hands3({ shows: 'hour', id: 'centre-hour' }, { shows: 'minute', id: 'centre-minute' }) }; return i; };
 const urlFor = (tag, w, h) => { const u = 'data:image/png;base64,' + Buffer.from(tag).toString('base64'); S.SIZES[u] = [w, h]; return u; };
 const txt = (s) => ({ name: 'x', _url: 'data:text/plain;base64,' + Buffer.from(s).toString('base64') });
 
@@ -27,8 +27,8 @@ const txt = (s) => ({ name: 'x', _url: 'data:text/plain;base64,' + Buffer.from(s
   const i1 = mk(), d = i1.state.designs.t;
   d.bgArt = 'bg-1';
   d.sfArt = 'sf-1';
-  d.hands = { 'centre-minute': { art: 'hand-1', pivotX: 60, pivotY: 20 } };
-  d.comps = [{ id: 'c9', type: 'flare', icon: 'image', img: 'flare-1' }];
+  Object.assign(global.hand3(d, 'centre-minute'), { art: 'hand-1', pivotX: 60, pivotY: 20 });
+  d.comps = d.comps.concat([{ id: 'c9', type: 'flare', icon: 'image', img: 'flare-1' }]);
   const refs = i1.artRefs(d);
   eq(refs.map((r) => r.slot).sort(), ['bg', 'comp:c9', 'hand:centre-minute', 'sf'], 'artRefs finds both backdrop slots, the hand sprite and the flare art');
   eq(refs.map((r) => r.usedBy).sort(), ['dial surface', 'flare #c9', 'hand centre-minute', 'plate backdrop'], 'each reference names its slot in the words the UI uses');
@@ -40,10 +40,10 @@ const txt = (s) => ({ name: 'x', _url: 'data:text/plain;base64,' + Buffer.from(s
   ok(rShared.length === 4 && /3\/3 art assets held/.test(i1.artNote(rShared)),
     'artNote counts distinct assets when two slots share one file: ' + i1.artNote(rShared));
   d.sfArt = 'sf-1';
-  d.comps[0].img = 'gone-77';
+  d.comps.find((c) => c.id === 'c9').img = 'gone-77';
   const r2 = i1.artRefs(d);
   ok(/MISSING.*flare #c9/.test(i1.artNote(r2)), 'artNote names the slot whose bytes are not here', i1.artNote(r2));
-  d.comps[0].img = 'flare-1';
+  d.comps.find((c) => c.id === 'c9').img = 'flare-1';
 
   i1.saveArt();
   ok(i1.artSaved === true, 'saveArt reports it stored');

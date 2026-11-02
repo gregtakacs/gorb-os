@@ -2,6 +2,7 @@
 // D43 P4: the stack panel, driven through the real component (renderVals' stack rows).
 'use strict';
 require('./headless-stub.js');
+const legacy3 = global.legacy3;
 const E = global.WatchEngine;
 global.React = { createRef: () => ({ current: null }) };
 require('./component.js');
@@ -69,12 +70,31 @@ ok(it.design().mechanical === 1, 'the Mechanical switch is a design field');
 // above the minute, written through upd() like every panel move
 it.upd((dd) => { delete dd.order; });
 ok(V().stackWarns.length === 0, 'R8: the preset\u2019s own order raises no warning with the switch on', V().stackWarns.map((w) => w.text).join(' | '));
-const o2 = it.face().handOrder.slice(), ih = o2.indexOf('centre-hour'), im = o2.indexOf('centre-minute');
-if (ih >= 0 && im >= 0) { o2[ih] = 'centre-minute'; o2[im] = 'centre-hour'; it.upd((dd) => { dd.order = o2; }); }
+// D43 P5c: the preset's hands are comps; the dial's hour and minute by what they show
+const hidOf = (k) => it.design().comps.find((c) => c.type === 'hand' && (c.host || 'dial') === 'dial' && c.shows === k).id;
+const o2 = it.face().handOrder.slice(), ih = o2.indexOf(hidOf('hour')), im = o2.indexOf(hidOf('minute'));
+if (ih >= 0 && im >= 0) { o2[ih] = hidOf('minute'); o2[im] = hidOf('hour'); it.upd((dd) => { dd.order = o2; }); }
 const v3 = V();
 ok(v3.stackWarns.some((w) => /Coaxial/.test(w.text) && /hour hand sits above the faster minute/.test(w.text)) && v3.stackRows.some((r) => r.isRow && / ⚠$/.test(r.warn)), 'R8: the hour above the minute warns, and its row carries the mark', v3.stackWarns.map((w) => w.text).join(' | '));
 V().toggleMech();
 ok(!it.design().mechanical && V().stackWarns.length === 0, 'switching it off clears the warnings and the field');
+
+// the plate band's rows open the Movement tab where their controls are: the geartrain at
+// the top, the clock insides at Backdrop, which sits at the bottom with the plate's art
+{
+  const gt = row(/^Geartrain/), mv = row(/^Clock insides$/);
+  gt.pick();
+  ok(it.state.selKind === 'move' && it.state.tab === 'move' && it._scrollTo === '#', 'the geartrain row opens the Movement tab at its top', it.state.selKind + '/' + it.state.tab + ' ' + it._scrollTo);
+  ok(row(/^Geartrain/).edge === '#58a6ff', 'and is marked selected in the panel');
+  mv.pick();
+  ok(it.state.sel === 'movement' && it.state.tab === 'move' && it._scrollTo === 'move-backdrop', 'the clock insides row opens it at Backdrop', it.state.sel + ' ' + it._scrollTo);
+  const heads = V().fields.filter((f) => f.isHead);
+  const bi = heads.findIndex((f) => f.anchor === 'move-backdrop'), ai = heads.findIndex((f) => /^Background art/.test(f.label));
+  ok(bi >= 0 && ai === bi + 1 && ai === heads.length - 1, 'Backdrop is the last section of the Movement tab, with the background art under it', heads.map((f) => f.label).join(' | '));
+  it.setState({ tab: 'dial', sel: null, selKind: null });
+  ok(!V().fields.some((f) => f.isHead && /^Background art/.test(f.label)) && V().fields.some((f) => f.isHead && /^Dial surface art/.test(f.label)), 'the Dial tab keeps its own surface art and no longer offers the plate backdrop');
+  it.setState({ tab: 'dial' });
+}
 
 // the eye hides a group on the stage only
 const eyeRow = row(/^Glass$/);
@@ -102,8 +122,8 @@ ok(it.state.hidden.glass === true, 'the eye hides the glass on the stage');
 {
   const it2 = new Comp({});
   it2.ready = true; it2.rendering = false; it2.state.dial = 'skeleton'; it2.state.playing = false; it2.state.hidden = {};
-  it2.state.designs = { skeleton: E.canonDesign({ print: 'roman', centre: { hour: 1, minute: 1, second: 1 },
-    comps: [{ id: 's1', type: 'subdial', host: 'dial', angle: 180, dist: 100, size: 60, scale: 'none', style: 'guilloche' }] }) };
+  it2.state.designs = { skeleton: E.canonDesign(legacy3({ print: 'roman', centre: { hour: 1, minute: 1, second: 1 },
+    comps: [{ id: 's1', type: 'subdial', host: 'dial', angle: 180, dist: 100, size: 60, scale: 'none', style: 'guilloche' }] })) };
   const b0 = it2._devPace({ fps: 15, measured: true });
   it2.upd((dd) => { dd.order = it2.face().handOrder.concat(['comp:s1']); });
   const b1 = it2._devPace({ fps: 15, measured: true });

@@ -151,4 +151,40 @@ require(require('./runtime-paths.js').BAKER);
 require(path.join(DIR, 'sound-engine.js'));
 require(path.join(DIR, 'stack.js'));
 const E = win.WatchEngine;
-module.exports = { E, SIZES, loaded, FakeCanvas, ALPHAS, CANVASES };
+/* D43 P5c: hands are comps. hands3('hour', 'minute', { shows: 'second', id: 'hs', finish: 'red' })
+ * builds dial hands h1, h2, hs...; give `host` to seat one on a sub-dial. */
+const hands3 = (...spec) => spec.map((x, i) => Object.assign({ id: 'h' + (i + 1), type: 'hand', host: 'dial' }, typeof x === 'string' ? { shows: x } : x));
+win.hands3 = hands3;
+/* Fixtures written before P5c name their hands the old way: centre {hour, minute, ...},
+ * extra, hands {<id>: look}, gmtOffset, one implied pointer per sub-dial. legacy3 rewrites
+ * one into hand comps with ids a test can still name: a dial hand is 'centre-<shows>', a
+ * sub-dial's pointer '<sub id>-hand'. Natural order is the old one (pointers, then hour,
+ * minute, seconds, then the calendar hand). */
+const legacy3 = (d0) => {
+  const d = JSON.parse(JSON.stringify(d0)), H = d.hands || {}, ce = d.centre || {}, comps = d.comps || (d.comps = []);
+  if (!['centre', 'extra', 'hands', 'gmtOffset'].some((k) => k in d)) return d;   // already P5c
+  const has = (id) => comps.some((c) => c.id === id);
+  const SUB = { seconds: 'second', date: 'date', day: 'day', month: 'month', hours: 'hour' }, CAL = ['hours24', 'gmt', 'day', 'date'];
+  const RING = { hours24: 'hours24', gmt: 'hours24', day: 'day', date: 'date' }, add = [], ren = {};
+  const mk = (old, id, host, shows) => {
+    const cfg = Object.assign({}, H[old] || {});
+    if (has(id)) { const c = comps.find((q) => q.id === id); if (cfg.on === false) comps.splice(comps.indexOf(c), 1); else { delete cfg.on; Object.assign(c, cfg); } ren[old] = id; return; }
+    if (cfg.on === false) return;
+    delete cfg.on; ren[old] = id;
+    const h = Object.assign({ id, type: 'hand', host, shows }, cfg);
+    if (shows === 'gmt' && Math.round(+d.gmtOffset || 0)) h.offset = Math.round(+d.gmtOffset);
+    add.push(h);
+  };
+  comps.forEach((c) => { if (c.type === 'subdial' && SUB[c.scale]) mk(c.id, c.id + '-hand', c.id, SUB[c.scale]); });
+  ['hour', 'minute', 'second'].forEach((k) => { if (+ce[k] || (!('centre' in d) && has('centre-' + k))) mk('centre-' + k, 'centre-' + k, 'dial', k); });
+  const ex = d.extra && d.extra !== 'none' ? d.extra : CAL.find((k) => +ce[k]);
+  if (ex && +ce[ex]) { mk('centre-' + ex, 'centre-' + ex, 'dial', ex); if (!d.perim) d.perim = RING[ex]; }
+  comps.push(...add);
+  if (d.order) d.order = d.order.map((e) => ren[e] || e);
+  delete d.centre; delete d.extra; delete d.hands; delete d.gmtOffset;
+  return d;
+};
+win.legacy3 = legacy3;
+// a hand comp by id, where a pre-P5c test read design.hands[id]
+win.hand3 = (d, id) => ((d && d.comps) || []).find((c) => c.type === 'hand' && c.id === id);
+module.exports = { E, SIZES, loaded, FakeCanvas, ALPHAS, CANVASES, hands3, legacy3 };

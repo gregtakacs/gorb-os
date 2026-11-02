@@ -18,29 +18,41 @@ const it = new Comp({});
 // reads HB.dev.pace for every rate label, so a stub without it is not a budget.
 it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
 it.state.dial = 'calendar'; it.state.tab = 'dial'; it.state.playing = false; it.state.hidden = {};
-it.state.designs = { calendar: E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.calendar.design))) };
-const labels = (tab) => { it.state.tab = tab; return it.renderVals().fields; };
+// D43 P5c: hands are comps; this suite names the dial's own as 'centre-<shows>'
+const C3 = (d) => { const ren = {}; d.comps.forEach((c) => { if (c.type === 'hand' && (c.host || 'dial') === 'dial') { ren[c.id] = 'centre-' + c.shows; c.id = ren[c.id]; } }); if (d.order) d.order = d.order.map((e) => ren[e] || e); return d; };
+it.state.designs = { calendar: C3(E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.calendar.design)))) };
+const labels = (tab) => { it.state.tab = tab; it.state.step = null; return it.renderVals().fields; };
+const hand3 = global.hand3;
+// a hand's panel: it shows when that hand is selected, on Parts
+const panel = (id) => { it.state.sel = id; it.state.selKind = 'hand'; it.state.step = 'parts'; it.state.tab = 'hands'; return it.renderVals().handRows[0]; };
+// what `design.hands = map` used to do: every hand's own look replaced by the map's
+const LOOK = ['art', 'pivotX', 'pivotY', 'rot0', 'zoom', 'style', 'finish', 'len', 'wid', 'sec', 'lume', 'shade', 'motion'];
+const looks = (map) => { it.state.designs.calendar.comps.forEach((c) => { if (c.type !== 'hand') return; LOOK.forEach((k) => delete c[k]); Object.assign(c, (map || {})[c.id] || {}); }); };
+const looksOf = () => { const m = {}; it.state.designs.calendar.comps.forEach((c) => { if (c.type === 'hand') { const o = {}; LOOK.forEach((k) => { if (k in c) o[k] = c[k]; }); m[c.id] = o; } }); return m; };
 const byLabel = (fs, l) => fs.find((f) => f.label === l);
+// D43 P5c: the plate backdrop is on the Movement tab, the dial-surface art on the Dial tab;
+// a check about both art slots reads the two together
+const artRows = () => labels('dial').concat(labels('move'));
 
-const dial = labels('dial');
+const dial = labels('move');
 const bgHead = dial.find((f) => f.isHead && /Background art/.test(f.label));
-ok(!!bgHead, 'the Dial tab has a Background art section');
+ok(!!bgHead, 'the Movement tab has the plate\u2019s Background art section');
 const fi0 = byLabel(dial, 'Image');
 ok(!!fi0 && fi0.isFile, 'the file input is offered before anything is chosen', JSON.stringify(!!fi0));
 ok(dial.some((f) => f.isNote && /No backdrop/.test(f.note || '')), 'and the row says the plate is procedural today');
-const after = labels('dial');
+const after = labels('move');
 it.state.designs.calendar.bgArt = 'ui-art';
 setTimeout(async () => {
-  const h2 = labels('dial').find((f) => f.isNote && /one-time store|No bytes|re-export|fills a/.test(f.note || ''));
+  const h2 = labels('move').find((f) => f.isNote && /one-time store|No bytes|re-export|fills a/.test(f.note || ''));
   ok(/one-time store|re-export/.test((h2 || {}).note || ''), 'the line prices the art or refuses it, with numbers', (h2 || {}).note);
-  const held = labels('dial');
+  const held = labels('move');
   for (const l of ['Fit', 'Offset X', 'Offset Y', 'Size', 'Opacity']) ok(!!byLabel(held, l), 'held art reveals the ' + l + ' control');
   ok(held.some((f) => f.isChips && (f.opts || []).some((o) => /Remove this image/.test(o.label))), 'and a way back to the procedural plate');
   const rm = held.find((f) => f.isChips && (f.opts || []).some((o) => /Remove this image/.test(o.label)));
   rm.opts.find((o) => /Remove/.test(o.label)).pick();
   ok(!it.design().bgArt, 'Remove clears the reference from the design');
   it.state.designs.calendar.bgArt = 'nowhere';
-  const miss = labels('dial').find((f) => f.isNote && /No bytes for/.test(f.note || ''));
+  const miss = labels('move').find((f) => f.isNote && /No bytes for/.test(f.note || ''));
   ok(!!miss, 'a dangling reference is reported on the control row', miss && miss.note);
 
   // ---- slot two: the dial face, next to the plate slot, behaving the same way ------
@@ -50,7 +62,7 @@ setTimeout(async () => {
   // the slot's own price text rather than a refusal to place it
   it.state.designs.calendar.bgArt = 'ui-big';
   it.state.designs.calendar.sfArt = 'ui-big';
-  const heldSf = labels('dial');
+  const heldSf = artRows();
   ok(heldSf.filter((f) => f.isFile && f.label === 'Image').length === 2, 'each backdrop slot keeps its own upload, so two images can be authored independently');
   const sfNote = heldSf.find((f) => f.isNote && /dial sprite/.test(f.note || ''));
   ok(!!sfNote, 'the surface line says the art ships inside the dial sprite, not as a new layer', sfNote && sfNote.note);
@@ -58,7 +70,7 @@ setTimeout(async () => {
   ok(!!bgNote, 'the plate line still prices the plate slot, unchanged by the new section');
   const chips = heldSf.filter((f) => f.isChips && (f.opts || []).some((o) => /Remove this image/.test(o.label)));
   ok(chips.length === 2, 'each slot gets its own Remove, so clearing one leaves the other', chips.length);
-  chips[1].opts.find((o) => /Remove/.test(o.label)).pick();
+  chips[0].opts.find((o) => /Remove/.test(o.label)).pick();   // the Dial tab's slot reads first
   ok(!it.design().sfArt && it.design().bgArt === 'ui-big', 'removing the dial-surface art leaves the plate backdrop referenced');
   it.state.designs.calendar.sfArt = 'ui-big';
   // leave the plate slot dangling again: the export-tab assertion further down proves the
@@ -105,77 +117,65 @@ setTimeout(async () => {
   delete it._est3;
   ok(JSON.stringify(mOptLabels(mot(4)).slice(0, 3)) === JSON.stringify(['1 tick / s', '2 / s', '4 / s']), 'the calm rungs and the free sweep are always offered', JSON.stringify(mOptLabels(mot(4))));
   ok(mOptLabels(mot(4)).includes('Sweep'), 'sweep stays selectable at the floor rate (it is a look, the dial sets the rate)');
-  const rows = (it.state.tab = 'hands', it.renderVals().handRows);
-  ok(rows.length >= 3, 'rows built: ' + rows.length);
-  const r = rows.find((q) => q.label === 'Centre hour');
+  const rows = it.design().comps.filter((c) => c.type === 'hand').map((c) => panel(c.id));
+  ok(rows.length >= 3 && rows.every(Boolean), 'every hand has a panel when selected: ' + rows.length);
+  const r = panel('centre-hour');
   ok(!!r.onArtFile && !!r.onArtClear, 'each hand row offers an art upload and a way back to procedural');
   ok(!!r.artRef && !!r.onArtDown && !!r.onArtMove, 'each row carries the pivot thumbnail with a click/drag handler');
   ok(/antialias/i.test(r.artNote), 'a procedural hand is told why final-size art matters', r.artNote.slice(0, 60));
-  it.state.designs.calendar.hands = { 'centre-hour': { art: 'ui-art', pivotX: 120, pivotY: 140 } };
-  const r2 = it.renderVals().handRows.find((q) => q.label === 'Centre hour');
+  looks({ 'centre-hour': { art: 'ui-art', pivotX: 120, pivotY: 140 } });
+  const r2 = panel('centre-hour');
   ok(r2.hasArt === true && r2.artLabel === 'art.png', 'the row reports the sprite it is using', r2.artLabel);
   ok(r2.pivotX === 120 && r2.pivotY === 140, 'the authored pivot reads back into the fields');
   ok(/hub ink \(auto\)/.test(r2.artNote) === false && /pivot 120,140/.test(r2.artNote), 'the note reports the authored pivot', r2.artNote);
   r2.onPivotHub();
-  ok(!it.state.designs.calendar.hands['centre-hour'].pivotX, 'Snap to hub ink clears the authored pivot');
-  it.state.designs.calendar.hands['centre-hour'].pivotX = null; it.state.designs.calendar.hands['centre-hour'].pivotY = null;
-  ok(/hub ink \(auto\)/.test(it.renderVals().handRows.find((q) => q.label === 'Centre hour').artNote), 'and the note says it is on hub ink');
+  ok(!hand3(it.state.designs.calendar, 'centre-hour').pivotX, 'Snap to hub ink clears the authored pivot');
+  delete hand3(it.state.designs.calendar, 'centre-hour').pivotX; delete hand3(it.state.designs.calendar, 'centre-hour').pivotY;
+  ok(/hub ink \(auto\)/.test(panel('centre-hour').artNote), 'and the note says it is on hub ink');
 
   // ---- the seconds row: the hand-style dropdown there chose nothing at all ----------
   // handParts() ignores `style` once kind is 'second', so the seconds row carries the
   // seconds list in that slot instead. isSec/notSec are what the template branches on,
   // so a row that gets them backwards silently shows a control with no effect.
-  const handsBefore = JSON.stringify(it.state.designs.calendar.hands || {});
-  const twoRows = (it.state.tab = 'hands', it.renderVals().handRows);
-  const secRow = twoRows.find((q) => q.label === 'Centre second');
-  const hourRow = twoRows.find((q) => q.label === 'Centre hour');
+  const handsBefore = looksOf();
+  const secRow = panel('centre-second');
+  const hourRow = panel('centre-hour');
   ok(!!secRow && secRow.isSec === true && secRow.notSec === false, 'the centre seconds row is flagged as the row whose style slot holds the seconds list', JSON.stringify(secRow && [secRow.isSec, secRow.notSec]));
   ok(hourRow.isSec === false && hourRow.notSec === true, 'every other row keeps its style list', JSON.stringify([hourRow.isSec, hourRow.notSec]));
   ok(secRow.secOpts.length === Object.keys(E.SEC_STYLES).length + 1 && secRow.secOpts.slice(1).every((o) => E.SEC_STYLES[o.v] === o.label), 'that slot is filled from the seconds list, not the hand-style list', JSON.stringify(secRow.secOpts.map((o) => o.v).slice(0, 5)));
   ok(secRow.secOpts.filter((o) => o.sel).length === 1 && secRow.secOpts.find((o) => o.sel).v === 'auto', 'with the preset/default entry selected to begin with', JSON.stringify(secRow.secOpts.filter((o) => o.sel).map((o) => o.v)));
   ok(typeof secRow.onSec === 'function' && typeof secRow.onStyle === 'function', 'both handlers are still on the row, so either branch of the template has something to call');
   secRow.onSec({ target: { value: 'lollipop' } });
-  ok(it.design().hands['centre-second'].sec === 'lollipop', 'choosing a seconds style writes what the engine reads', JSON.stringify(it.design().hands['centre-second']));
-  const secRow2 = (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.label === 'Centre second');
+  ok(hand3(it.design(), 'centre-second').sec === 'lollipop', 'choosing a seconds style writes what the engine reads', JSON.stringify(hand3(it.design(), 'centre-second')));
+  const secRow2 = panel('centre-second');
   ok(secRow2.secOpts.filter((o) => o.sel).length === 1 && secRow2.secOpts.find((o) => o.sel).v === 'lollipop', 'and the select reads the choice back after a re-render', JSON.stringify(secRow2.secOpts.find((o) => o.sel)));
   hourRow.onStyle({ target: { value: 'poire' } });
-  ok(it.design().hands['centre-hour'].style === 'poire' && !it.design().hands['centre-hour'].sec, 'the hour row still takes a hand style and no seconds value', JSON.stringify(it.design().hands['centre-hour']));
-  // a seconds SUBDIAL hand is the same kind to the engine, so it gets the same swap.
+  ok(hand3(it.design(), 'centre-hour').style === 'poire' && !hand3(it.design(), 'centre-hour').sec, 'the hour row still takes a hand style and no seconds value', JSON.stringify(hand3(it.design(), 'centre-hour')));
+  // a seconds hand on a SUB-DIAL is the same kind to the engine, so it gets the same swap.
   // design() hands back a canonDesign COPY, so the change has to land on the stored design.
-  const sub = it.state.designs.calendar.comps.find((c) => c.type === 'subdial');
-  ok(!!sub, 'the preset has a subdial to turn into a seconds counter', JSON.stringify(!!sub));
-  const subScale = sub.scale;
-  sub.scale = 'seconds';
-  const subRow = (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.anchor === 'hand-' + sub.id);
-  ok(!!subRow && subRow.isSec === true && subRow.notSec === false, 'a subdial counting seconds loses the dead style list too', JSON.stringify(subRow && [subRow.label, subRow.isSec, subRow.notSec]));
-  sub.scale = subScale;
-  it.state.designs.calendar.hands = JSON.parse(handsBefore);
+  const subH = it.state.designs.calendar.comps.find((c) => c.type === 'hand' && c.host !== 'dial');
+  ok(!!subH, 'the preset has a hand on a sub-dial to turn into a seconds counter', JSON.stringify(!!subH));
+  const subShows = subH.shows;
+  subH.shows = 'second';
+  const subRow = panel(subH.id);
+  ok(!!subRow && subRow.isSec === true && subRow.notSec === false, 'a sub-dial hand counting seconds loses the dead style list too', JSON.stringify(subRow && [subRow.label, subRow.isSec, subRow.notSec]));
+  subH.shows = subShows;
+  looks(handsBefore);
 
-  // ---- the eye on the hands rows ---------------------------------------------------
-  // Centre rows read their label off design.centre alone and buildHands honoured
-  // hands[id].on only for subdial hands: the eye on a centre row wrote a flag nobody
-  // read, so the hand stayed on the glass and the button never changed. Round-trip it.
-  const eyeRow = (label) => (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.label === label);
+  // ---- D43 P5c: a hand is removed like any part -------------------------------------
+  // The old eye (hands[id].on) is gone: a selected hand's panel is the hand, and the
+  // inspector's Remove takes it off the dial. Put it back the way a part comes back.
   ok(it.face().hands.some((h) => h.id === 'centre-hour'), 'the hour hand starts on the glass');
-  eyeRow('Centre hour').toggle();
-  ok(it.design().hands['centre-hour'].on === false, 'the eye writes the hide where the engine can read it');
+  panel('centre-hour');
+  const rvDel = it.renderVals();
+  ok(rvDel.hasDel === true && rvDel.delLabel === 'hand', 'a selected hand offers Remove, named a hand', JSON.stringify([rvDel.hasDel, rvDel.delLabel]));
+  const savedHour = JSON.parse(JSON.stringify(hand3(it.state.designs.calendar, 'centre-hour'))), savedAt = it.state.designs.calendar.comps.findIndex((c) => c.id === 'centre-hour');
+  rvDel.delSel();
   ok(!it.face().hands.some((h) => h.id === 'centre-hour') && it.face().hands.some((h) => h.id === 'centre-minute'),
-    'and that hand is gone from the render while its neighbours keep turning');
-  const hidRow = eyeRow('Centre hour');
-  ok(hidRow.eye === 'hidden' && hidRow.op === 0.5 && /hidden/.test(hidRow.meta),
-    'the row admits it is hidden -- the button that never moved now moves', JSON.stringify([hidRow.eye, hidRow.op, hidRow.meta]));
-  hidRow.toggle();
-  ok(it.face().hands.some((h) => h.id === 'centre-hour'), 'and a second click puts the hand back');
-  ok(!('on' in (it.design().hands['centre-hour'] || {})), 'showing again canonicalises to no flag at all, so the Design ID survives the round trip');
-  const anySubRow = (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.anchor && !/^hand-centre-/.test(q.anchor));
-  if (anySubRow) {
-    const sid = anySubRow.anchor.slice(5);
-    anySubRow.toggle();
-    ok(it.face().hands.every((h) => h.id !== sid), 'the eye hides a subdial hand too', sid);
-    (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.anchor === 'hand-' + sid).toggle();
-    ok(it.face().hands.some((h) => h.id === sid), 'and shows it again', sid);
-  }
-
+    'Remove takes that hand off while its neighbours keep turning');
+  ok(!hand3(it.design(), 'centre-hour') && it.state.selKind == null, 'the design no longer carries it, and nothing stays selected');
+  it.state.designs.calendar.comps.splice(savedAt, 0, savedHour);   // back in its own place, so the stack is as it was
+  ok(it.face().hands.some((h) => h.id === 'centre-hour'), 'and it comes back as a part');
 
   // ---- the subdial style list and the export row ----------------------------------
   it.state.designs.calendar.comps.forEach((c) => { if (c.type === 'subdial') c.style = 'transparent'; });
@@ -194,24 +194,23 @@ setTimeout(async () => {
   it.state.tab = 'comps'; it.state.sel = null; it.state.selKind = null;
   it.onDown(ev(top.x, top.y));                                             // the arbour is inside every hand's own plane
   ok(it.state.selKind === 'hand' && it.state.sel === top.id, 'grabbing the top hand selects that hand', JSON.stringify([it.state.selKind, it.state.sel, top.id]));
-  ok(it.state.tab === 'hands', 'and the Editing Pane jumps to Hands, where its fields are', it.state.tab);
+  ok(it.state.tab === 'hands' && it.state.step === 'parts', 'and the Editing Pane jumps to that hand\u2019s panel on Parts, where its fields are', it.state.step + '/' + it.state.tab);
   ok(!(it.drag && it.drag.kind === 'hand'), 'a procedural hand selects but arms no pivot drag: its arbour is built from the style, not authored', JSON.stringify(it.drag && it.drag.kind));
-  it.state.designs.calendar.hands = Object.assign({}, it.state.designs.calendar.hands, { [top.id]: { art: 'ui-big', pivotX: 150, pivotY: 150 } });
+  Object.assign(hand3(it.state.designs.calendar, top.id), { art: 'ui-big', pivotX: 150, pivotY: 150 });
   const fcA = it.face(), topA = fcA.hands[fcA.hands.length - 1];
   it.state.tab = 'comps'; it._clickAt = null; it.onDown(ev(topA.x, topA.y));
   ok(it.drag && it.drag.kind === 'hand' && it.drag.id === topA.id, 'an image-backed hand arms the pivot drag, which is the whole point of selecting one', JSON.stringify(it.drag && [it.drag.kind, it.drag.id, topA.id]));
   ok(isFinite(it.drag.k) && it.drag.k > 0 && isFinite(it.drag.ang), 'the drag carries the sprite scale and the held angle, so the cursor maps into the frame of the art', JSON.stringify(it.drag && [it.drag.k, it.drag.ang]));
-  const p0 = it.design().hands[topA.id].pivotX;
+  const p0 = hand3(it.design(), topA.id).pivotX;
   it.onMove(ev(topA.x + 20, topA.y));
   it.flushDrag();
-  ok(+it.design().hands[topA.id].pivotX !== p0, 'dragging the hand across the face moves its arbour', JSON.stringify([p0, it.design().hands[topA.id].pivotX]));
+  ok(+hand3(it.design(), topA.id).pivotX !== p0, 'dragging the hand across the face moves its arbour', JSON.stringify([p0, hand3(it.design(), topA.id).pivotX]));
   it.setHand(topA.id, { pivotX: -40, pivotY: -12 });
-  const neg = it.design().hands[topA.id];
+  const neg = hand3(it.design(), topA.id);
   ok(neg.pivotX === -40 && neg.pivotY === -12, 'a pivot outside the sprite survives, because an arbour hidden under a subdial is a real design', JSON.stringify([neg.pivotX, neg.pivotY]));
-  const want = 'centre ' + String(topA.id).slice(7);
-  const negRow = (it.state.tab = 'hands', it.renderVals().handRows.find((q) => q.label.toLowerCase() === want));
+  const negRow = panel(topA.id);
   ok(negRow && /off the artwork/.test(negRow.artNote), 'and the row says so in words, rather than showing a number the author cannot interpret', negRow && negRow.artNote.slice(-70));
-  it.state.designs.calendar.hands = {};
+  looks({});
   let barePt = null;
   for (let a = 0; a < 360 && !barePt; a += 15) for (const r of [190, 150, 60]) {
     const s0 = fcS.pickAll(233 + Math.sin(a * Math.PI / 180) * r, 233 - Math.cos(a * Math.PI / 180) * r, dS);
@@ -268,7 +267,7 @@ setTimeout(async () => {
   ok(gGeo.some((o) => o.op === 'moveTo' && Math.abs(o.a[0] - 233) < 0.01), 'with a ray through the centre, so vertical alignment is read against the dial axis');
   ok(gGeo.some((o) => o.op === 'strokeRect'), 'the zoomed art is framed by a box, so the author sees what the crop will keep');
   const ghostRots = (rot0) => {
-    it.state.designs.calendar.hands = { 'centre-hour': { art: 'ui-big', rot0: rot0 } };
+    looks({ 'centre-hour': { art: 'ui-big', rot0: rot0 } });
     it.state.selKind = 'hand'; it.state.sel = 'centre-hour';
     const c = new S.FakeCanvas(); c.width = 466; c.height = 466;
     it.drawHandGhost(c.getContext('2d'), it.face(), dS, 1, (v) => v);
@@ -279,11 +278,11 @@ setTimeout(async () => {
     'the virtual hand\u2019s picture turns with its facing: the same art at 90 degrees is drawn exactly a quarter turn round', JSON.stringify([gr0, gr90]));
   ok(Math.abs((gr90[0] + gr90[1]) - (gr0[0] + gr0[1])) < 1e-9,
     'while the read ray stands still: it marks the angle the clock shows, and the facing swings the art under it instead of running away with it', JSON.stringify([gr0[0] + gr0[1], gr90[0] + gr90[1]]));
-  it.state.designs.calendar.hands = { 'centre-hour': { art: 'ui-big', rot0: 90 } };
+  looks({ 'centre-hour': { art: 'ui-big', rot0: 90 } });
   const gCan3 = new S.FakeCanvas(); gCan3.width = 466; gCan3.height = 466;
   it.drawHandGhost(gCan3.getContext('2d'), it.face(), dS, 1, (v) => v);
   ok(gCan3.getContext('2d').geom.some((o) => o.op === 'strokeRect'), 'and its sprite is outlined where it really lies, which is what shows a wrong facing');
-  it.state.designs.calendar.hands = {}; delete it.state.designs.calendar.sfZoom;
+  looks({}); delete it.state.designs.calendar.sfZoom;
   /* ---- the picked complication is dragged through the hand on top of it -----------
    * Selected on the Complications tab, reached for on the dial: the author means that
    * item, and a hand painted across it must not steal the grab. The same-spot cycle
@@ -319,7 +318,7 @@ setTimeout(async () => {
   ok(String(it.state.sel) === String(overId) && it.state.selKind === 'comp', 'a pointer-down that bubbled up from the canvas keeps its own verdict', String(it.state.sel));
   it.state.sel = null; it.state.selKind = null;
   // ---- the controls themselves -------------------------------------------------------
-  const dialZ = labels('dial');
+  const dialZ = artRows();
   ok(!!byLabel(dialZ, 'Zoom'), 'each art slot offers a zoom, not only a box size');
   it.state.caseStyle = 'none';
   const caseNone = labels('case');
@@ -350,17 +349,17 @@ setTimeout(async () => {
     ok(!byLabel(labels('comps'), 'Frame colour'), 'a plain cut offers no frame: nothing there draws one');
     winLive().style = 'frame'; winLive().frameColor = 'gilt';
   }
-  const hRows = (it.state.designs.calendar.hands = { 'centre-hour': { art: 'ui-big' } }, it.state.tab = 'hands', it.renderVals().handRows);
-  const hr = hRows.find((q) => q.label === 'Centre hour');
+  looks({ 'centre-hour': { art: 'ui-big' } });
+  const hr = panel('centre-hour');
   for (const k of ['onRot0', 'onZoom', 'onFacingUp', 'onFacingDown', 'onFacingReset', 'rot0', 'zoom'])
     ok(hr[k] !== undefined, 'a hand row exposes ' + k);
   hr.onFacingUp();
-  ok(it.design().hands['centre-hour'].rot0 === 15, 'the facing stepper turns the art 15 degrees clockwise', String(it.design().hands['centre-hour'].rot0));
+  ok(hand3(it.design(), 'centre-hour').rot0 === 15, 'the facing stepper turns the art 15 degrees clockwise', String(hand3(it.design(), 'centre-hour').rot0));
   hr.onFacingDown(); hr.onFacingDown(); hr.onFacingDown();
-  ok(it.design().hands['centre-hour'].rot0 === 330, 'and keeps stepping off the live design (15 down to 0, then 345, then 330) instead of sticking on the value the row was drawn with', String(it.design().hands['centre-hour'].rot0));
+  ok(hand3(it.design(), 'centre-hour').rot0 === 330, 'and keeps stepping off the live design (15 down to 0, then 345, then 330) instead of sticking on the value the row was drawn with', String(hand3(it.design(), 'centre-hour').rot0));
   hr.onFacingReset();
-  ok(!it.design().hands['centre-hour'].rot0, 'Facing to 12 clears it, which is the identity the Design ID already had');
-  it.state.designs.calendar.hands = {};
+  ok(!hand3(it.design(), 'centre-hour').rot0, 'Facing to 12 clears it, which is the identity the Design ID already had');
+  looks({});
   // ---- the reference is the clock's, so it cannot ride along with the art ----------
   // The complaint this answers: every pointer on the overlay moved with the thing being
   // dragged, leaving nothing fixed to line an off-centre graphic up against.
@@ -438,7 +437,7 @@ setTimeout(async () => {
   // a target is only worth having if the pane really emits that anchor: a mismatch is a
   // silent no-op, and a silent no-op is exactly the bug that let the tab change while the
   // view stayed put
-  const rvH = (it.state.tab = 'hands', it.renderVals());
+  const rvH = (panel('centre-second'), it.renderVals());
   ok(rvH.handRows.some((q) => q.anchor === 'hand-centre-second'), 'the hands pane emits the anchor a selected hand aims at', JSON.stringify(rvH.handRows.map((q) => q.anchor)));
   const rvD = (it.state.tab = 'dial', it.renderVals());
   ok(rvD.fields.some((f) => f.anchor === 'art-sf'), 'and the dial pane anchors its surface-art section', JSON.stringify(rvD.fields.filter((f) => f.anchor).map((f) => f.anchor)));
@@ -466,14 +465,14 @@ setTimeout(async () => {
   ok(it.scrollToAnchor('hand-nothing') === false, 'an anchor the pane does not emit is reported as not scrolled, not as success');
   it.paneRef.current = null;
   it.state.designs.calendar.sfArt = null;
-  it.state.designs.calendar.hands = {};
+  looks({});
   if (checked < 20) { fails++; console.log('FAIL only ' + checked + ' checks ran'); }
   // every {{ }} binding the template reads must exist on the props object, or the DC
   // runtime renders an empty control with no warning at all
   it.state.sel = null; it.state.selKind = null;   // D43 §4.2: a selected hand narrows the inspector to that hand
   const ex2 = (it.state.tab = 'export', it.renderVals());
   const rv = it.renderVals();
-  const r3 = rv.handRows.find((q) => q.label === 'Centre hour');
+  const r3 = panel('centre-hour');
   for (const k of ['onPivotX', 'onPivotY', 'onPivotCentre', 'onPivotHub', 'onArtFile', 'onArtClear', 'artRef', 'artLabel', 'artNote', 'onArtDown', 'onArtMove', 'hasArt'])
     ok(r3[k] !== undefined, 'handRows exposes ' + k);
   for (const k of ['exportKit', 'exportTheme', 'themeNote', 'exportBundle', 'exportFrames', 'loadBundle', 'bundleNote', 'artNote', 'kitNote', 'designId', 'loadDesign', 'copyId', 'onIdInput', 'selectAll',
@@ -595,53 +594,53 @@ setTimeout(async () => {
   // rotate, finish blend and its colour live in each art block; the blend exists only
   // where a texture can be pressed through, and Width now belongs to drawn hands alone.
   it.state.designs.calendar.bgArt = 'ui-art'; it.state.designs.calendar.sfArt = 'ui-art';
-  const nxRot = labels('dial');
+  const nxRot = artRows();
   ok(nxRot.filter((f) => f.label === 'Rotate').length === 2, 'both art blocks gained a Rotate slider', nxRot.filter((f) => f.label === 'Rotate').length);
   const nxRf = nxRot.filter((f) => f.label === 'Rotate')[0];
   ok(nxRf.isRange && nxRf.min === 0 && nxRf.max === 359, 'and it walks the whole circle in degrees');
   ok(!nxRot.some((f) => f.label === 'Finish blend'), 'over enamel there is no texture to blend, so the control withholds itself');
   it.state.designs.calendar.surface = 'guilloche';
-  const nxBl = labels('dial');
+  const nxBl = artRows();
   const nxChips = nxBl.filter((f) => f.label === 'Finish blend');
   ok(nxChips.length === 2 && nxChips[0].isChips, 'a textured surface offers the blend on both art slots', nxChips.length);
   const nxChipV = nxChips[0].opts.map((o) => o.label);
   ok(['Off', 'Multiply', 'Screen', 'Overlay'].every((w) => nxChipV.some((l) => l.indexOf(w) === 0)), 'the modes offered are off, multiply, screen and overlay', JSON.stringify(nxChipV));
   it.state.designs.calendar.bgFinishBlend = 'multiply';
-  const nxCo = labels('dial').filter((f) => f.label === 'Blend colour');
+  const nxCo = artRows().filter((f) => f.label === 'Blend colour');
   ok(nxCo.length === 1 && nxCo[0].isColor, 'a live blend offers its target colour picker', nxCo.length);
   it.state.designs.calendar.bgFinishColor = '#223344';
-  ok(labels('dial').filter((f) => f.label === 'Blend colour')[0].value === '#223344', 'and the picker reports the colour it holds');
+  ok(artRows().filter((f) => f.label === 'Blend colour')[0].value === '#223344', 'and the picker reports the colour it holds');
   // both carbon finishes were withheld on the theory that a palette cannot be tinted;
   // their weave and their flake field are geometry, so the control must appear for them
   it.state.designs.calendar.surface = 'carbon';
-  ok(labels('dial').filter((f) => f.label === 'Finish blend').length === 2, 'woven carbon offers the blend on both art slots, not just the engine-turned finishes');
+  ok(artRows().filter((f) => f.label === 'Finish blend').length === 2, 'woven carbon offers the blend on both art slots, not just the engine-turned finishes');
   it.state.designs.calendar.surface = 'forged';
-  ok(labels('dial').filter((f) => f.label === 'Finish blend').length === 2, 'forged carbon offers it too');
+  ok(artRows().filter((f) => f.label === 'Finish blend').length === 2, 'forged carbon offers it too');
   it.state.designs.calendar.surface = 'enamel';
-  ok(!labels('dial').some((f) => f.label === 'Finish blend'), 'and enamel still withholds it: there is genuinely nothing to press through');
+  ok(!artRows().some((f) => f.label === 'Finish blend'), 'and enamel still withholds it: there is genuinely nothing to press through');
   it.state.designs.calendar.surface = 'forged';
   it.state.designs.calendar.bgFinishBlend = 'multiply';
-  ok(labels('dial').filter((f) => f.label === 'Blend colour').length === 1, 'with the blend live on a carbon dial the colour picker is there');
+  ok(artRows().filter((f) => f.label === 'Blend colour').length === 1, 'with the blend live on a carbon dial the colour picker is there');
   // the colour key is a gate ON TOP of that blend: it appears beside it, and its
   // tolerance only exists while a key colour actually gates something
-  const nxKey0 = labels('dial').filter((f) => f.label === 'Key colour');
+  const nxKey0 = artRows().filter((f) => f.label === 'Key colour');
   ok(nxKey0.length === 1 && nxKey0[0].isColor, 'a live blend offers the key colour beside the blend colour', nxKey0.length);
   ok(!nxKey0[0].opts.some((o) => /^Auto/.test(o.label)) && nxKey0[0].opts.some((o) => o.label === 'None'), 'the key starts at None and has no auto to fall back to', JSON.stringify(nxKey0[0].opts.map((o) => o.label).slice(0, 3)));
-  ok(!labels('dial').some((f) => f.label === 'Key tolerance'), 'no key colour, no tolerance slider');
+  ok(!artRows().some((f) => f.label === 'Key tolerance'), 'no key colour, no tolerance slider');
   nxKey0[0].opts.find((o) => o.label === 'Red').pick();
   ok(it.state.designs.calendar.bgFinishKey === '#c8322a', 'a key chip writes the hex it names', it.state.designs.calendar.bgFinishKey);
-  const nxTol = labels('dial').filter((f) => f.label === 'Key tolerance');
+  const nxTol = artRows().filter((f) => f.label === 'Key tolerance');
   ok(nxTol.length === 1 && nxTol[0].isRange && nxTol[0].min === 0 && nxTol[0].max === 128, 'and a live key gains the tolerance slider, 0 to 128', nxTol.length && [nxTol[0].min, nxTol[0].max]);
   nxTol[0].on({ target: { value: '7' } });
   ok(it.state.designs.calendar.bgFinishKeyTol === 7, 'the tolerance slider writes the design', it.state.designs.calendar.bgFinishKeyTol);
   nxKey0[0].opts.find((o) => o.label === 'None').pick();
   ok(it.state.designs.calendar.bgFinishKey === undefined, 'None takes the key off again — canonDesign drops it — without touching the blend');
   ok(it.state.designs.calendar.bgFinishBlend === 'multiply', 'and the whole-image blend the author had is still on');
-  ok(!labels('dial').some((f) => f.label === 'Key tolerance'), 'the tolerance slider goes away with the key it belonged to');
+  ok(!artRows().some((f) => f.label === 'Key tolerance'), 'the tolerance slider goes away with the key it belonged to');
   it.state.designs.calendar.bgFinishKey = '#c8322a';
-  ok(labels('dial').some((f) => f.label === 'Key tolerance'), 'and it comes back with the key');
+  ok(artRows().some((f) => f.label === 'Key tolerance'), 'and it comes back with the key');
   it.state.designs.calendar.bgFinishBlend = 'off';
-  ok(!labels('dial').some((f) => f.label === 'Key colour'), 'blend off and the key withholds itself too: there is no pass left to gate');
+  ok(!artRows().some((f) => f.label === 'Key colour'), 'blend off and the key withholds itself too: there is no pass left to gate');
   it.state.designs.calendar.bgFinishBlend = 'multiply';
   delete it.state.designs.calendar.bgFinishKey; delete it.state.designs.calendar.bgFinishKeyTol;
   const kA = it.mvKey(1);
@@ -654,14 +653,14 @@ setTimeout(async () => {
   ok(it.mvKey(1) === kA, 'and dropping the key returns the movement to the signature it had before');
   it.state.designs.calendar.bgFinishKey = '#c8322a';
   it.state.designs.calendar.surface = 'enamel';
-  ok(!labels('dial').some((f) => f.label === 'Key colour'), 'enamel withholds all three: no texture means nothing to key');
+  ok(!artRows().some((f) => f.label === 'Key colour'), 'enamel withholds all three: no texture means nothing to key');
   delete it.state.designs.calendar.bgFinishColor; delete it.state.designs.calendar.bgFinishBlend; delete it.state.designs.calendar.surface;
   delete it.state.designs.calendar.bgFinishKey; delete it.state.designs.calendar.bgFinishKeyTol;
-  it.state.designs.calendar.hands = { 'centre-hour': { art: 'ui-big' } };
-  const nxWRow = (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.label === 'Centre hour');
+  looks({ 'centre-hour': { art: 'ui-big' } });
+  const nxWRow = panel('centre-hour');
   ok(nxWRow.hideWid === true && nxWRow.showWid === false, 'the sprite-hand row takes its Width slider away', nxWRow.artLabel);
-  delete it.state.designs.calendar.hands['centre-hour'].art;
-  const nxDRow = (it.state.tab = 'hands', it.renderVals().handRows).find((q) => q.label === 'Centre hour');
+  delete hand3(it.state.designs.calendar, 'centre-hour').art;
+  const nxDRow = panel('centre-hour');
   ok(nxDRow.showWid === true && nxDRow.hideWid === false, 'and the drawn hand keeps it: the slider shapes a silhouette a sprite does not have');
   // ---- §32 the send leg: watched, modal-armed, never a browser dialog --------------
   {

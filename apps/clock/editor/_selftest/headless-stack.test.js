@@ -39,13 +39,16 @@ if (process.argv.includes('--mutations')) {
 }
 
 require('./headless-stub.js');
+const legacy3 = global.legacy3;
 const E = global.WatchEngine;
 const S = require(process.env.STACK_SRC || SRC);
 let fails = 0, checked = 0;
 const ok = (c, n, x) => { checked++; if (!c || process.env.VERBOSE) console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  [' + x + ']' : '')); if (!c) fails++; };
 const OPTS = { finish: 'train', plate: 'train', tick: 'sweep', glow: 1, beats: 1, spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, frames: 8 };
-const input = (d, fc, extra) => Object.assign({ comps: d.comps || [], hands: fc.hands.map((h) => ({ id: h.id, kind: h.kind, sub: !!h.sub, x: h.x, y: h.y, len: h.len })),
+const input = (d, fc, extra) => Object.assign({ comps: d.comps || [], hands: fc.hands.map((h) => ({ id: h.id, kind: h.kind, sub: !!h.sub, host: h.host, x: h.x, y: h.y, len: h.len })),
   order: fc.handOrder.slice(), shadows: true, carriage: false, E }, extra || {});
+// a move's comps answer, the hands left out: their depth is the live band's, not the comps order
+const noH = (cs) => cs.filter((c) => c.type !== 'hand').map((c) => c.id).join();
 const drawn = (fc) => fc.handOrder.filter((id) => fc.hands.some((h) => h.id === id));
 const ids = (items) => items.map((x) => x.id);
 
@@ -59,7 +62,7 @@ Object.keys(E.PRESETS).forEach((k) => {
   ok(st[0].id === 'outer' && st[1].id === 'glass' && st[st.length - 1].band === 'plate', k + ': crystal pinned on top, plate at the bottom');
   ok(new Set(ids(st)).size === st.length, k + ': every layer appears once');
   ok(fc.hands.every((h) => st.some((x) => x.id === 'hand:' + h.id)), k + ': every hand is a layer');
-  ok((d.comps || []).every((c) => st.some((x) => x.id === 'comp:' + c.id)), k + ': every complication is a layer');
+  ok((d.comps || []).every((c) => st.some((x) => x.id === (c.type === 'hand' ? 'hand:' : 'comp:') + c.id)), k + ': every complication is a layer, a hand as a hand');
   ok(!st.some((x) => x.kind === 'shadow') && st.filter((x) => x.group === 'live').every((x) => x.shadow), k + ': R2 shadows are their hands’ property, never a layer');
   const iSub = st.findIndex((x) => x.kind === 'subdial'), iDial = st.findIndex((x) => x.id === 'dial');
   ok(st.filter((x) => x.group === 'live').every((x) => iSub < 0 || st.indexOf(x) < iSub), k + ': R3 every hand sits above every sub-dial face');
@@ -83,14 +86,14 @@ ok(presets >= 17, 'every preset was built', presets);
 
 // ---- the moves write what the old buttons wrote ----------------------------------
 {
-  const d = E.canonDesign({ print: 'roman', centre: { hour: 1, minute: 1, second: 1 }, comps: [
+  const d = E.canonDesign(legacy3({ print: 'roman', centre: { hour: 1, minute: 1, second: 1 }, comps: [
     { id: 's1', type: 'subdial', angle: 180, dist: 100, size: 60, scale: 'seconds', style: 'guilloche' },
     { id: 's2', type: 'subdial', angle: 0, dist: 100, size: 60, scale: 'hours', style: 'guilloche' },
     { id: 'w1', type: 'window', host: 'dial', angle: 90, dist: 120, size: 12, shows: 'date' },
     { id: 'w2', type: 'window', host: 'dial', angle: 270, dist: 120, size: 12, shows: 'day' },
     { id: 'w3', type: 'window', host: 's2', angle: 0, dist: 20, size: 8, shows: 'date' },
     { id: 'f1', type: 'flare', host: 'dial', angle: 0, dist: 60, size: 10, style: 'print', icon: 'text', text: 'X' },
-    { id: 'o1', type: 'opening', host: 'dial', angle: 45, dist: 80, size: 30 } ] });
+    { id: 'o1', type: 'opening', host: 'dial', angle: 45, dist: 80, size: 30 } ] }));
   const fc = E.face(Object.assign({}, OPTS, { design: d, train: 'classic' }));
   const inp = input(d, fc), st = S.build(inp), at = (id) => st.findIndex((x) => x.id === id);
   // moveHand(hid, dir) on handOrder (bottom first): dir -1 is one step DOWN the stack
@@ -99,9 +102,9 @@ ok(presets >= 17, 'every preset was built', presets);
   const r = S.move(inp, 'hand:' + top, 1);
   ok(r.ok && r.order.join() === want.join(), 'a hand one step down writes what moveHand(id, -1) wrote', r.order && r.order.join());
   const sd = S.move(inp, 'comp:s2', 1);
-  ok(sd.ok && sd.comps.map((c) => c.id).join() === 's2,s1,w1,w2,w3,f1,o1', 'a sub-dial down trades its comps slot with the next sub-dial, over the other’s children', sd.ok ? sd.comps.map((c) => c.id).join() : sd.reason);
+  ok(sd.ok && noH(sd.comps) === 's2,s1,w1,w2,w3,f1,o1', 'a sub-dial down trades its comps slot with the next sub-dial, over the other’s children', sd.ok ? noH(sd.comps) : sd.reason);
   const dd = S.move(inp, 'comp:w2', 1);
-  ok(dd.ok && dd.comps.map((c) => c.id).join() === 's1,s2,w2,w1,w3,f1,o1', 'a disc under the dial trades with the disc below it', dd.ok ? dd.comps.map((c) => c.id).join() : dd.reason);
+  ok(dd.ok && noH(dd.comps) === 's1,s2,w2,w1,w3,f1,o1', 'a disc under the dial trades with the disc below it', dd.ok ? noH(dd.comps) : dd.reason);
   ok(at('comp:w3') > at('comp:s2') && at('comp:w3') < at('comp:s1'), 'a disc a sub-dial frames sits in that sub-dial\u2019s block, above the next face');
   ok(st[at('comp:f1')].parent === 'dial' && st[at('comp:o1')].parent === 'dial', 'what is printed on and cut through the dial rides the dial');
 
@@ -122,27 +125,27 @@ ok(presets >= 17, 'every preset was built', presets);
   // ---- D43 P4b: lifting a sub-dial face among the hands ----
   // natural order, bottom first: s1's pointer, s2's pointer, then the centre hands
   const lowest = st.filter((x) => x.group === 'live').pop();
-  ok(lowest.id === 'hand:s1', 'the lowest live layer is the first sub-dial\u2019s pointer', lowest.id);
+  ok(lowest.id === 'hand:s1-hand', 'the lowest live layer is the first sub-dial\u2019s pointer', lowest.id);
   const lift = S.move(inp, lowest.id, 1);
-  ok(lift.ok && lift.lift === 's2' && lift.order.slice(0, 3).join() === 's1,comp:s2,s2', 'the lowest hand stepping under s2 lifts s2 just above it, under its own pointer', lift.ok ? lift.order.join() : lift.reason);
+  ok(lift.ok && lift.lift === 's2' && lift.order.slice(0, 3).join() === 's1-hand,comp:s2,s2-hand', 'the lowest hand stepping under s2 lifts s2 just above it, under its own pointer', lift.ok ? lift.order.join() : lift.reason);
   const lifted = Object.assign({}, inp, { order: lift.order }), stL = S.build(lifted), atL = (id) => stL.findIndex((x) => x.id === id);
   const s2 = stL[atL('comp:s2')];
   ok(s2.group === 'live' && s2.lifted && /still row/.test(s2.badge), 'the lifted face joins the live band, badged a still row', s2.badge);
   ok(atL('comp:w3') === atL('comp:s2') + 1 && stL[atL('comp:w3')].parent === 'comp:s2', 'its disc comes with it, directly under it (R4)');
-  ok(atL('hand:s2') < atL('comp:s2') && atL('comp:s2') < atL('hand:s1'), 'it sits under its own pointer and over the hand below');
+  ok(atL('hand:s2-hand') < atL('comp:s2') && atL('comp:s2') < atL('hand:s1-hand'), 'it sits under its own pointer and over the hand below');
   ok(S.rowCount(lifted).rows === S.rowCount(inp).rows + 1, 'R6: the lifted face counts as one more live row');
   const step = S.move(lifted, 'comp:s2', 1);
-  ok(step.ok && step.order.slice(0, 2).join() === 'comp:s2,s1', 'one step down trades it with the hand below, still lifted', step.ok ? step.order.join() : step.reason);
+  ok(step.ok && step.order.slice(0, 2).join() === 'comp:s2,s1-hand', 'one step down trades it with the hand below, still lifted', step.ok ? step.order.join() : step.reason);
   const back = S.move(Object.assign({}, inp, { order: step.order }), 'comp:s2', 1);
   ok(back.ok && back.order.join() === inp.order.join(), 'a step down from the bottom of the live band settles it on the dial, and the order is the original', back.ok ? back.order.join() : back.reason);
   const overOwn = S.move(lifted, 'comp:s2', -1);
   ok(!overOwn.ok && /^R3/.test(overOwn.reason), 'R3: a lifted face cannot rise over its own pointer', overOwn.reason);
-  const ownBottom = Object.assign({}, inp, { order: ['s2', 's1'].concat(inp.order.filter((x) => x !== 's1' && x !== 's2')) });
-  const sink = S.move(ownBottom, 'hand:s2', 1);
+  const ownBottom = Object.assign({}, inp, { order: ['s2-hand', 's1-hand'].concat(inp.order.filter((x) => x !== 's1-hand' && x !== 's2-hand')) });
+  const sink = S.move(ownBottom, 'hand:s2-hand', 1);
   ok(!sink.ok && /^R3/.test(sink.reason), 'R3: a pointer cannot step under its own face (that would lift the face over it)', sink.reason);
   const up = S.move(inp, 'comp:s2', -1);
-  ok(up.ok && up.order.slice(0, 2).join() === 's1,comp:s2', 'the top face on the dial stepping up is lifted over the lowest hand', up.ok ? up.order.join() : up.reason);
-  const ownPtrLowest = Object.assign({}, inp, { order: ['s2', 's1'].concat(inp.order.filter((x) => x !== 's1' && x !== 's2')) });
+  ok(up.ok && up.order.slice(0, 2).join() === 's1-hand,comp:s2', 'the top face on the dial stepping up is lifted over the lowest hand', up.ok ? up.order.join() : up.reason);
+  const ownPtrLowest = Object.assign({}, inp, { order: ['s2-hand', 's1-hand'].concat(inp.order.filter((x) => x !== 's1-hand' && x !== 's2-hand')) });
   const up2 = S.move(ownPtrLowest, 'comp:s2', -1);
   ok(!up2.ok && /^R3/.test(up2.reason), 'R3: a face cannot lift over its own pointer when that pointer is the lowest hand', up2.reason);
   // the engine draws what the stack says
@@ -158,7 +161,7 @@ ok(presets >= 17, 'every preset was built', presets);
   ok(!dn.ok && /^R3/.test(dn.reason), 'R3: with no face to lift, the lowest hand cannot sink under the dial', dn.reason);
   // drag and drop goes step by step and stops at the rule that bites
   const dnd = S.moveTo(inp, 'comp:w2', 'comp:w1');
-  ok(dnd.ok && dnd.comps.map((c) => c.id).join() === 's1,s2,w2,w1,w3,f1,o1', 'a drop onto the disc below trades the two', dnd.reason);
+  ok(dnd.ok && noH(dnd.comps) === 's1,s2,w2,w1,w3,f1,o1', 'a drop onto the disc below trades the two', dnd.reason);
   const bad = S.moveTo(inp, 'comp:w2', 'hand:' + top);
   ok(!bad.ok && /^R4/.test(bad.reason), 'a drop over the dial stops at R4', bad.reason);
 

@@ -352,6 +352,118 @@ this branch has rebuilt the unreleased v1.1.45 region at every slice. Screenshot
 1280×720 and 1920×1080 were taken in Chrome with the page framed full-window, standalone
 (`file://`); the hub-served frame awaits the owner's test.
 
+### 4.3 Hands are complications (P5c, owner 2026-11-02)
+
+The owner's test of P5b, ruled 2026-11-02:
+
+1. **The plate rows open the Movement tab.** Picking *Geartrain* in Layers opens
+   Movement at its top. *Clock insides* opens it at *Backdrop*, which is now the tab's
+   last section.
+2. **The plate's background art moves to Movement,** under Backdrop. The Dial tab keeps
+   only the dial-surface art.
+3. **A hand is a complication.** Brief point 1 ("hands, complications and dials are
+   handled the same way") was met for depth only. The design still had three fixed
+   centre hands, one optional "additional" hand, and one implied pointer per sub-dial.
+   That was wrong:
+   - **Every hand is arbitrary and every dial is arbitrary.** Ten hands on the main
+     dial is a legal design, subject only to R6's 24 live rows.
+   - **Add a part** (left) opens one catalogue on the right, of every complication type;
+     a hand is one entry in it. Once placed, the author picks what it shows and its style.
+   - **Picking a hand in Layers** shows that hand's properties alone, never every hand's.
+   - **A complication nested on a sub-dial** is nesting for depth (R3) and placement;
+     it says nothing about what the part is.
+
+**The model (P5c).** `design.comps` gains `type: 'hand'`:
+`{ id, host: 'dial' | <sub-dial id>, shows, ...look }`.
+- `shows` is one of hour, minute, second, 24-hour, GMT, day of week, date or month. A
+  GMT hand also carries its offset.
+- The look is the per-hand fields `design.hands[<id>]` used to hold: style, finish,
+  shading, lume, length, width, seconds style, artwork and motion.
+- `design.centre`, `design.extra`, `design.hands` and `design.gmtOffset` are removed.
+- A sub-dial's `scale` is only its print, and no longer implies a pointer. Adding a
+  sub-dial adds one hand on it that reads its scale, and that hand can be removed or
+  changed like any other.
+- The outer ring (`perim`) becomes a Dial property in its own right, instead of being
+  derived from the one additional hand.
+- `design.order` still carries the live band, and a hand's entry is its comp id.
+- No backward compatibility is needed (D43). The presets are rewritten to the new
+  shape, and each must still render and bake pixel-identical: the regression suite is
+  the gate.
+
+**The wire is unchanged.** The firmware drives every pointer from a row that names its
+source, pivot, motion and depth (D42). Only the composer's hand-off changes: the first
+hour, minute and seconds hand on the dial's centre keep the baker's hand slots, and
+every other hand ships as a pointer row.
+
+**As built (P5c, 2026-11-02).**
+
+*1 and 2: the plate rows and the backdrop.*
+- The Geartrain and Clock insides rows carry a `move` selection, and the inspector names
+  them.
+- The plate's art block moved to Movement under Backdrop, the tab's last section. The Dial
+  tab keeps the surface art.
+
+*3: the model and the engine.*
+- `buildHands` walks the hand comps. A hand is sized off its host (the dial's reach, or the
+  sub-dial's radius) and turned by `shows`. A GMT hand carries its own `offset`, and a
+  hand reading the printed ring takes the ring's `offTurn`.
+- Hands are listed bottom to top in `design.comps` order, and the sub-dial's tilt and
+  print direction still apply.
+- The 17 presets were rewritten to the new shape. A geometry snapshot of all 22 designs
+  matches the pre-change engine: the presets plus five legacy edge cases (24-hour with a
+  turned ring, GMT +3, day, date, and five sub-dial scales with tilt, ccw print and
+  motion). That is 76 hands, compared on position, angle at three instants, sprite box,
+  pivot, cap and stacking height. The one difference: calendar hands now carry `len`.
+
+*3: the editor.*
+- Parts is one view. With nothing selected it shows the catalogue, whose first entry is
+  Hand.
+- A selected hand shows its own panel: Shows, On (the dial's centre or any sub-dial), the
+  GMT offset, then Shape, Paint, Motion and Artwork. Remove takes it off like any part.
+- The old on/off switch is gone, and canon drops a stray `on`.
+- The Add a part button in Layers opens the catalogue on the right.
+- Hands added on the dial fill hour, minute and seconds first, then hour. A new sub-dial
+  brings one hand reading its scale. Changing a sub-dial's scale carries the hands that
+  read the old scale. Removing a sub-dial removes its hands.
+- The style every hand starts from, and the shared settings (tick, cast shadows, shading,
+  lume), sit on the Dial step under Hand style.
+- The outer ring is a Dial choice (None, 24 hours, Date, Day of week). Its note names
+  the hands that read it.
+
+*3: the bake.*
+- `handSeats3` gives the first non-sliding hour, minute and seconds hand on the dial the
+  baker's slots 0–2.
+- `pointerRows3` makes every other hand a pointer row from its own source: `hour12`,
+  `minute`, `second`, `hour24` (24-hour and GMT, whose offset rides the plate lifted at
+  00:00), `weekday`, `date` (1..32, so a day lands where the preview draws it) and `month`.
+  The device poses each at zero + span·(units − vmin)/(vmax − vmin).
+- A sub-dial driven as plates keeps carrying, in its tiles, the hand that reads its own
+  scale.
+- baker@1: `compPlan3` skips hand comps, `pointerDefault3` no longer counts a sub-dial's
+  own hand as "hosting another indication", and the kit reader seats only the first
+  centre hand of each kind.
+- The calendar and extra hands the old model never shipped (the kit marked them
+  `deviceReady: false`) now go to the device as pointer rows.
+
+*Owed.*
+- A bench bake on Gold of a 24-hour, a date and a second seconds hand: no pointer row with
+  a `weekday`, `date`, `month` or `hour24` source has been posed on glass yet.
+- The pace model prices only the first centre seconds sweep.
+- The month hand creeps through the month in the preview. The device moves it on its
+  source's units.
+
+*Tests.*
+- The suites now speak the new model. The stub's `legacy3` converts old-shape fixtures
+  (dial hands keep `centre-<shows>`, a sub-dial pointer becomes `<sub>-hand`), and
+  `hands3` and `hand3` build and read hand comps.
+- The old eye checks became Remove checks.
+- The flow suite adds: a hand from the catalogue, its panel alone, Shows changing the
+  hand, ten hands on the dial counted against R6, a sub-dial arriving with its hand, and
+  Remove taking a sub-dial's hand with it.
+- Results: flow 58, ui 279, component 59, engine 186, stack 263 (10/10 mutants), stack-ui
+  33, motion 41, pace 14, regression 106, and the runtime suites green. The clock region
+  suite has 0 failures, `go test` is green, and the clock container was rebuilt (807,106 B).
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views
@@ -701,6 +813,7 @@ long as an app in its library or on a known orb still names it.
 | **P4b** ✔ | Still-row promotion (§3 R5, R7): a still layer placed above a moving one ships as a live still AUX row, `compose()` draws the row band in stack order, and the dial is promoted when a ring sits under it | the panel moves that P4 refuses with "P4b" land, bake to still rows the C reader accepts, and draw on orb-B where the preview does — **done 2026-11-01** (§3.1) |
 | **P5** ✔ | The build flow and layout (§4): step bar, Add catalogue with compatibility, properties grouped by D42 parts, diagnostics drawer, light moods | headless UI test walks Start → Render on a scratch build and on a preset; nothing removed from today's controls (a checklist of every current field and where it now lives) — **done 2026-11-02** (§4.1) |
 | **P5b** ✔ | The studio layout (§4.2): the editor fills the hub window as one three-pane studio — layers left on every step, the stage centre, the inspector right — in the hub's palette, with one title bar; Arrange folds into the layers panel; the hub page itself goes fluid | nothing removed (the P5 checklist, re-pointed at the new panes); the stage zoom stays inside its pane at every stop; no page scroll at 1280×720 and 1920×1080 (Chrome screenshots of both, inside the hub); `go test` and every app suite green — **built 2026-11-02** (§4.2); the owner's test on the hub is owed |
+| **P5c** ✔ | Hands are complications (§4.3): one Add catalogue, hands placed anywhere in any number, a selected hand's panel alone; the plate rows open Movement, and its backdrop and the plate art sit at the tab's foot | the presets render and bake pixel-identical in the new shape; ten hands on the dial within R6; every suite green — **built 2026-11-02** (§4.3 as built); the presets' hand geometry is identical across 22 designs; a bench bake of the new pointer sources and the owner's test are owed |
 | **P6** | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here |
 | **P7** | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs |
 

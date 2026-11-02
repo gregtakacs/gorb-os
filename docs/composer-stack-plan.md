@@ -705,14 +705,28 @@ Escape cancels.
   - a framed date slider carrying a jewel;
   - a small anticlockwise day fan with a flare marker.
 
-*Owed.*
-- The main dial's own direction: its chapter print lives in many print styles with no one
-  angle helper. A dial hand can run anticlockwise by its override, and a whole backwards
-  dial can be a round sub-dial set anticlockwise.
-- The bench (P5d.4): retrograde and angled-slide rows for calendar measures, and the
-  `vmin` fix, have not been seen on glass.
-- Flux still uses its own hand paths. Rebuilding it from fan and slider faces would change
-  its look, which is the owner's call.
+*Closed the same day (owner: "do the missing parts").*
+- **The main dial's own direction.** Set by `design.dir: 'ccw'`, offered under Face on
+  the Dial tab.
+  - The chapter print and the perimeter ring are drawn mirrored about the vertical through
+    the centre (`mirrorPrint`), with every `fillText` and `strokeText` flipped back where
+    it lands, so figures read and only their places move: 12 stays, 3 and 9 trade.
+  - The holes `printMain` culls against are mirrored with it. The dial's comps and flares
+    are the author's placements and stay put.
+  - Its hands follow it. A hand may still be set clockwise.
+  - Dial hands that run anticlockwise ride the pointer table.
+  - Seen in Chrome beside the clockwise twin: Arabic numerals, a 24-hour ring, a text
+    flare and a date window.
+- **Flux rebuilt from faces.** A lime hour fan (bold) on the left, a white minute fan
+  (railway) on the right, and a red seconds slider with a lit-lip slot along the bottom,
+  all forged plates. Its hands keep their cadences and eases, and the FLUX mark and the
+  Unbounded type are unchanged. Seen in Chrome at 10:09:36 and 04:47:12.
+- **Fixed on the way:**
+  - a slider's hand never flew back (`easeOf` knew only `slide-x` and `slide-y`);
+  - the composer refused to bake a dial with no hand on the centre arbour. A dial whose
+    every hand is a pointer row is legitimate, so only a dial with no hand at all is
+    refused now.
+- **Still owed:** the bench (P5d.4).
 
 ## 5. Preview: 1:1, and the panel
 

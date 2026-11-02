@@ -48,12 +48,13 @@ const faceOf = (k) => { const P = E.PRESETS[k]; return E.face(Object.assign({}, 
 const flux = faceOf('flux'), orbit = faceOf('orbit');
 // D43 P5c: a preset's hands are comps with their own ids; 'centre-<shows>' names the dial's hand of that kind
 const fh = (f, id) => f.hands.find((h) => h.id === id) || f.hands.find((h) => !h.sub && 'centre-' + h.kind === id);
-ok(fh(flux, 'centre-hour').motion.path === 'retrograde' && fh(flux, 'centre-minute').motion.path === 'retrograde', 'Flux: hour and minute are retrograde fans');
-ok(typeof fh(flux, 'centre-second').slide === 'function', 'Flux: the seconds slide');
-const fs = fh(flux, 'centre-second'), xy0 = E.handXY(fs, at(1, 0, 1)), xy30 = E.handXY(fs, at(1, 0, 31));   // past :00, where the bar flies back
-ok(near(xy30[0] - xy0[0], 80) && xy30[1] === xy0[1], 'Flux: the seconds bar travels 80 px across half a minute', JSON.stringify([xy0, xy30]));
+// D43 P5d.2: Flux is built from faces -- its hour and minute ride fan sub-dials, its seconds a slider
+ok(fh(flux, 'h1').motion.path === 'retrograde' && fh(flux, 'h2').motion.path === 'retrograde' && fh(flux, 'h1').motion.fromFace, 'Flux: hour and minute ride retrograde fans, their motion the fans\u2019');
+ok(typeof fh(flux, 'h3').slide === 'function' && fh(flux, 'h3').motion.path === 'slide', 'Flux: the seconds rides its slider');
+const fs = fh(flux, 'h3'), xy0 = E.handXY(fs, at(1, 0, 1)), xy30 = E.handXY(fs, at(1, 0, 31));   // past :00, where the bar flies back
+ok(near(xy30[0] - xy0[0], 75) && near(xy30[1], xy0[1]), 'Flux: the seconds travels half its 150 px track in half a minute', JSON.stringify([xy0, xy30]));
 ok(E.handXY(fs, at(1, 0, 0, 200))[0] > E.handXY(fs, at(1, 0, 0, 300))[0] && E.handXY(fs, at(1, 0, 0, 300))[0] > xy0[0], 'Flux: at :00 the bar flies back along its track');
-ok(near(deg(E.handAngle(fh(flux, 'centre-hour'), at(6, 59, 0))), 270), 'Flux: the jumping hour reads 6 at 06:59, on its fan');
+ok(near(Math.abs(((deg(E.handAngle(fh(flux, 'h1'), at(6, 59, 0))) + 180) % 360) - 180), 0), 'Flux: the jumping hour reads 6 at 06:59, the middle of its 240\u00b0 fan from 240\u00b0');
 ok(['centre-hour', 'centre-minute', 'centre-second'].every((id) => fh(orbit, id).disc && fh(orbit, id).noShadow), 'Orbit: three discs, none casting');
 const od = fh(orbit, 'centre-minute');
 ok(near(deg(E.handAngle(od, at(3, 15, 59))) % 360, 0), 'Orbit: the jumping minute disc holds 15 under the 3 o’clock index');
@@ -81,19 +82,25 @@ ok(it.driveCols3('minute', { path: 'retrograde', start: 30, span: 120 }).cadence
 ok(it.driveCols3('hour', { path: 'rotate' }) === null, 'a plain rotation writes nothing');
 ok(it.driveCols3('hour', { path: 'retrograde', start: 210, span: 120, cadence: 'jump', ease: 200 }).ease === 200, 'the bake carries the ease');
 // D43 P5c: Flux's hands are comps; name them by what they show
-const hid = (k) => it.design().comps.find((c) => c.type === 'hand' && (c.host || 'dial') === 'dial' && c.shows === k).id;
-const pp = it.pointerRows3(it.design(), { rows: [] });
-ok(pp.rows.length === 1 && pp.rows[0].id === hid('second') && pp.rows[0].motion === 'slide-x' && pp.rows[0].freeze,
-   'Flux: the sliding seconds joins the pointer table, lifted at rest', JSON.stringify(pp.rows.map((r) => r.id)));
+const hid = (k) => it.design().comps.find((c) => c.type === 'hand' && c.shows === k).id;
+const pp = it.pointerRows3(it.design(), { rows: [] }), pr = (k) => pp.rows.find((r) => r.id === hid(k)) || {};
+ok(pp.rows.length === 3 && pr('hour').motion === 'retrograde' && pr('minute').motion === 'retrograde' && pr('second').motion === 'slide-x' && pr('second').angle === 0 && pp.rows.every((r) => r.freeze),
+   'Flux: every hand rides the pointer table -- two fans and a slide -- lifted at rest', JSON.stringify(pp.rows.map((r) => r.id + ':' + r.motion)));
 // a hand's panel shows when that hand is selected, on Parts
 const panel = (k) => { it.setState({ sel: hid(k), selKind: 'hand', step: 'parts', tab: 'hands' }); return it.renderVals().handRows[0]; };
 const hrRow = panel('hour');
-ok(hrRow && hrRow.canMove && hrRow.pathOpts.some((o) => o.v === 'retrograde' && o.sel), 'the Hands tab offers the path, set to the fan', hrRow && hrRow.motionNote);
+ok(hrRow && hrRow.canMove && hrRow.pathOpts.length === 1 && /from its fan/.test(hrRow.pathOpts[0].label), 'a fan\u2019s hand shows its path as the fan\u2019s', hrRow && hrRow.pathOpts.map((o) => o.label).join('|'));
 ok(hrRow.cadOpts.some((o) => o.v === 'jump' && o.sel) && !hrRow.cadOpts.some((o) => o.v === 'stop-to-go'), 'and the cadence; stop-to-go only on a seconds hand');
 hrRow.onPath({ target: { value: 'disc' } });
-ok(global.hand3(it.design(), hid('hour')).motion.path === 'disc' && global.hand3(it.design(), hid('hour')).motion.cadence === 'jump', 'picking a path keeps the cadence');
+ok(!(global.hand3(it.design(), hid('hour')).motion || {}).path && global.hand3(it.design(), hid('hour')).motion.cadence === 'jump', 'a face-driven hand cannot be given a path of its own; its cadence stays');
 const secRow = panel('second');
-ok(/pointer row/.test(secRow.motionNote) && secRow.aLabel === 'From' && secRow.bLabel === 'Travel', 'a slide says it bakes as a pointer and asks for its travel', secRow.motionNote);
+ok(/along its slider/.test(secRow.pathOpts[0].label) && secRow.showSpan && secRow.spanLabel === 'Travel', 'a slider\u2019s hand takes its path from it and offers its travel as an override', secRow.pathOpts[0].label);
+// a hand that names a fan path of its own (an older design) keeps it, and may still change it
+it.setState({ designs: { flux: E.canonDesign({ print: 'none', comps: [{ id: 'old', type: 'hand', host: 'dial', shows: 'hour', motion: { path: 'retrograde', start: 210, span: 120, cadence: 'jump' } }] }) }, sel: 'old', selKind: 'hand', step: 'parts', tab: 'hands' });
+const oldRow = it.renderVals().handRows[0];
+ok(oldRow.pathOpts.some((o) => o.v === 'retrograde' && o.sel && /its own scale/.test(o.label)) && oldRow.pathOpts.some((o) => o.v === 'disc'), 'an older hand keeps its own fan path, marked, beside rotate and disc');
+oldRow.onPath({ target: { value: 'disc' } });
+ok(global.hand3(it.design(), 'old').motion.path === 'disc' && global.hand3(it.design(), 'old').motion.cadence === 'jump', 'picking a path keeps the cadence');
 
 // ---- D42: the v6 row the bake writes lands where the preview draws ----
 // The bake turns each authored motion into a v6 row (GorbBake.v6Drive: two poses and an
@@ -112,10 +119,10 @@ ok(/pointer row/.test(secRow.motionNote) && secRow.aLabel === 'From' && secRow.b
   };
   const DOM = { hour: 12, minute: 60, second: 60 };
   let rows = 0, bad = [];
+  // the engine's own motion for each hand: a face-made fan or slide included (D43 P5d.2)
   for (const key of ['flux', 'orbit', 'station']) {
-    const P = E.PRESETS[key];
-    for (const hc of P.design.comps.filter((c) => c.type === 'hand' && (c.host || 'dial') === 'dial')) {
-      const id = hc.id, m = hc.motion, role = DOM[hc.shows] ? hc.shows : null;
+    for (const hd of faceOf(key).hands) {
+      const id = hd.id, m = hd.motion, role = DOM[hd.kind] ? hd.kind : null;
       if (!m || !role || !E.motionOn(m)) continue;
       const cols = it.driveCols3(role, m);
       if (!cols) continue;                       // a cadence-only hand keeps its slot's turn

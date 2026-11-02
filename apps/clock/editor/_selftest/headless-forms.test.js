@@ -37,6 +37,13 @@ const sub = (o) => Object.assign({ id: 's1', type: 'subdial', host: 'dial', angl
   ok(near(deg(E.handAngle(H(d, 'm'), new Date(2026, 2, 7, 10, 15, 0))), 270), 'a dial hand set anticlockwise runs backwards');
   ok(near(deg(E.handAngle(H(d, 'z'), new Date(2026, 2, 7, 10, 0, 0))), 90), 'and a start override turns its zero');
 }
+// ---- the main dial's own direction ---------------------------------------------------------
+{
+  const f = face([{ id: 'm', type: 'hand', host: 'dial', shows: 'minute' }, { id: 'n', type: 'hand', host: 'dial', shows: 'minute', dir: 'cw' }], { dir: 'ccw' });
+  ok(near(deg(E.handAngle(H(f, 'm'), new Date(2026, 2, 7, 10, 15, 0))), 270) && H(f, 'm').dir === 'ccw', 'an anticlockwise dial runs its hands anticlockwise');
+  ok(near(deg(E.handAngle(H(f, 'n'), new Date(2026, 2, 7, 10, 15, 0))), 90), 'and a hand may still be set clockwise on it');
+  ok(E.canonDesign({ dir: 'cw', comps: [] }).dir === undefined && E.canonDesign({ dir: 'ccw', comps: [] }).dir === 'ccw', 'canon: clockwise is no field, anticlockwise is kept');
+}
 // ---- the hand's sweep override on a fan, any measure ------------------------------------
 {
   const f = face([sub({ scale: 'date', form: 'fan', fanStart: 270, fanSpan: 180 }), { id: 'h', type: 'hand', host: 's1', shows: 'date' }, { id: 'k', type: 'hand', host: 's1', shows: 'date', span: 90 }]);
@@ -89,6 +96,8 @@ const sub = (o) => Object.assign({ id: 's1', type: 'subdial', host: 'dial', angl
   it.state.designs = { skeleton: E.canonDesign({ print: 'roman', comps: [sub({ form: 'slider', slideLen: 120, size: 50 }), sub({ id: 's2', angle: 0, form: 'fan' }),
     { id: 'p1', type: 'hand', host: 's1', shows: 'second', marker: 'dot' }, { id: 'p2', type: 'hand', host: 's2', shows: 'second' },
     { id: 'hh', type: 'hand', host: 'dial', shows: 'hour' }, { id: 'mm', type: 'hand', host: 'dial', shows: 'minute', dir: 'ccw' }, { id: 'ss', type: 'hand', host: 'dial', shows: 'second' }] }) };
+  const seat0 = it.handSeats3(Object.assign({}, it.design(), { dir: 'ccw' }));
+  ok(seat0.hh === undefined && seat0.ss === undefined, 'on an anticlockwise dial every hand that follows it rides the pointer table', JSON.stringify(seat0));
   const seat = it.handSeats3(it.design());
   ok(seat.hh === 0 && seat.ss === 2 && seat.mm === undefined, 'a reversed dial hand gives up its slot; the plain ones keep theirs', JSON.stringify(seat));
   const pp = it.pointerRows3(it.design(), { rows: [] });

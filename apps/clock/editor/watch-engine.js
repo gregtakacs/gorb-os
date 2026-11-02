@@ -881,12 +881,17 @@
         { id: 'h3', type: 'hand', host: 'dial', shows: 'minute' },
       ] } },
     // D41's two exercise dials: every path a hand can take, on faces built around them.
+    // D43 P5d.2: Flux rebuilt from faces -- the retrograde fans and the sliding bar are a fan
+    // and a slider sub-dial now, printing their own scales, and its hands ride them
     flux: { name: 'Flux', blurb: 'Retrograde hour & minute fans · sliding seconds bar · acid on forged carbon', hands: 'pencil', handFinish: 'steel', caseMetal: 'gunmetal', design: {
       print: 'none', numerals: 'none', font: 'unbounded', surface: 'forged', color: 'black', aging: 0, stains: 0, dust: 0, handShade: 'flat', comps: [
-        { id: 'c1', type: 'flare', host: 'dial', angle: 180, dist: 92, rot: 0, size: 7, style: 'print', icon: 'text', text: 'FLUX', font: 'unbounded', weight: 'bold', spacing: 0.4, color: '#c6ff00' },
-        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', finish: 'lime', len: 1, wid: 1.4, motion: { path: 'retrograde', start: 210, span: 120, cadence: 'jump', ease: 200, accent: '#c6ff00' } },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', finish: 'white', motion: { path: 'retrograde', start: 30, span: 120, cadence: 'sweep', ease: 700, accent: '#f2f2f2' } },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'red', len: 0.12, wid: 3, motion: { path: 'slide-x', travel: 160, from: -70, cadence: 'step', steps: 1, ease: 400, accent: '#ff3b30' } },
+        { id: 'c1', type: 'flare', host: 'dial', angle: 180, dist: 96, rot: 0, size: 7, style: 'print', icon: 'text', text: 'FLUX', font: 'unbounded', weight: 'bold', spacing: 0.4, color: '#c6ff00' },
+        { id: 's1', type: 'subdial', host: 'dial', angle: 270, dist: 100, rot: 0, size: 80, style: 'forged', scale: 'hours', open: 0, form: 'fan', fanStart: 240, fanSpan: 240, height: 0.6, tstyle: 'bold', tcolor: '#c6ff00', tfont: 'unbounded' },
+        { id: 's2', type: 'subdial', host: 'dial', angle: 90, dist: 100, rot: 0, size: 80, style: 'forged', scale: 'seconds', open: 0, form: 'fan', fanStart: 240, fanSpan: 240, height: 0.6, tstyle: 'railway', tcolor: '#f2f2f2', tfont: 'unbounded' },
+        { id: 's3', type: 'subdial', host: 'dial', angle: 180, dist: 160, rot: 0, size: 26, style: 'forged', scale: 'seconds', open: 0, form: 'slider', slideLen: 150, slotStyle: 'lip', height: 0.4, tstyle: 'minimal', tcolor: '#ff3b30', tfont: 'unbounded' },
+        { id: 'h1', type: 'hand', host: 's1', shows: 'hour', finish: 'lime', wid: 1.4, motion: { cadence: 'jump', ease: 200 } },
+        { id: 'h2', type: 'hand', host: 's2', shows: 'minute', finish: 'white', motion: { cadence: 'sweep', ease: 700 } },
+        { id: 'h3', type: 'hand', host: 's3', shows: 'second', finish: 'red', len: 0.7, wid: 3, motion: { cadence: 'step', steps: 1, ease: 400 } },
       ] } },
     orbit: { name: 'Orbit', blurb: 'Three turning discs · wandering hour, jumping minute, stepping seconds · laser index', hands: 'baton', handFinish: 'magenta', caseMetal: 'gunmetal', design: {
       print: 'none', numerals: 'none', font: 'orbitron', surface: 'guilloche', color: '#140a24', aging: 0, stains: 0, dust: 0, comps: [
@@ -1759,6 +1764,24 @@
     sx.globalCompositeOperation = 'destination-in'; sx.beginPath(); sx.arc(C, C, DR, 0, TAU); sx.fill();
     ctx.save(); ctx.globalCompositeOperation = 'destination-over'; ctx.drawImage(sh, 0, 0); ctx.restore();
   }
+  /* D43 P5d.2: an anticlockwise dial (D.dir 'ccw'). Its chapter print and its perimeter
+   * ring are the clockwise print mirrored about the vertical through the centre -- 12 stays
+   * at 12, 3 and 9 trade places -- with every glyph flipped back where it is drawn, so the
+   * figures read and only their places move. The dial's comps and flares are the author's
+   * placements, not the scale's, and are not mirrored. printMain culls its ink against the
+   * holes in its own (unmirrored) coordinates, so it is handed the holes mirrored too. */
+  const mirH = (holes) => holes.map((h) => Object.assign({}, h, { x: 2 * C - h.x, rot: h.rot ? -h.rot : h.rot }));
+  function mirrorPrint(ctxs) {
+    const undo = [];
+    ctxs.filter(Boolean).forEach((c) => {
+      c.save(); c.translate(C, C); c.scale(-1, 1); c.translate(-C, -C);
+      const f = c.fillText, st = c.strokeText;
+      c.fillText = function (t, x, y, w) { this.save(); this.translate(x, y); this.scale(-1, 1); w == null ? f.call(this, t, 0, 0) : f.call(this, t, 0, 0, w); this.restore(); };
+      c.strokeText = function (t, x, y, w) { this.save(); this.translate(x, y); this.scale(-1, 1); w == null ? st.call(this, t, 0, 0) : st.call(this, t, 0, 0, w); this.restore(); };
+      undo.push(() => { delete c.fillText; delete c.strokeText; if (c.fillText !== f) c.fillText = f; if (c.strokeText !== st) c.strokeText = st; c.restore(); });
+    });
+    return () => undo.forEach((u) => u());
+  }
   function buildDial(D, lay, baseEn, pal, glow, seal, clipR, dynK) {
     const _en = surfaceEn(colorEn(baseEn, D.color), D.surface);
     const kk = dynK == null ? 1 : +dynK;
@@ -1783,9 +1806,11 @@
     const push = (x2) => { if (pk === 1 || !x2) return null; x2.save(); x2.translate(C, C); x2.scale(pk, pk); x2.translate(-C, -C); return x2; };
     const pop = (x2) => { if (x2) x2.restore(); };
     const cxP = push(ctx), nxP = NM && push(NM.getContext('2d'));
-    printMain(ctx, D, en, pkHoles, NM && NM.getContext('2d'));
+    const ccw = D.dir === 'ccw', unM = ccw ? mirrorPrint([ctx, NM && NM.getContext('2d')]) : null;
+    printMain(ctx, D, en, ccw ? mirH(pkHoles) : pkHoles, NM && NM.getContext('2d'));
+    if (unM) unM();
     pop(cxP); pop(nxP);
-    if (pk !== 1) drawPerimeter(ctx, D, en, holes);
+    if (pk !== 1) { const unP = ccw ? mirrorPrint([ctx]) : null; drawPerimeter(ctx, D, en, ccw ? mirH(holes) : holes); if (unP) unP(); }
     weather(ctx, C, C, lay.wearIn || 0, DR, 57, en, wearOf(D), 1.5 * (lay.wearIn ? 1 : 0.75));
     applied(ctx, D, pal, lay.dialHoles);
     if (NM) {
@@ -1825,10 +1850,12 @@
     const push = (x2) => { if (pkd === 1 || !x2) return null; x2.save(); x2.translate(C, C); x2.scale(pkd, pkd); x2.translate(-C, -C); return x2; };
     const pop = (x2) => { if (x2) x2.restore(); };
     const cxP = push(ctx), nxP = NM && push(NM.getContext('2d'));
-    printMain(ctx, D, en, pkHoles, NM && NM.getContext('2d'));
+    const ccw = D.dir === 'ccw', unM = ccw ? mirrorPrint([ctx, NM && NM.getContext('2d')]) : null;
+    printMain(ctx, D, en, ccw ? mirH(pkHoles) : pkHoles, NM && NM.getContext('2d'));
+    if (unM) unM();
     pop(cxP); pop(nxP);
     lens();
-    if (pk !== 1) drawPerimeter(ctx, D, en, holes);
+    if (pk !== 1) { const unP = ccw ? mirrorPrint([ctx]) : null; drawPerimeter(ctx, D, en, ccw ? mirH(holes) : holes); if (unP) unP(); }
     weather(ctx, C, C, lay.wearIn || 0, DR, 57, en, wearOf(D), 1.5 * (lay.wearIn ? 1 : 0.75));
     applied(ctx, D, pal, lay.dialHoles);
     unlens();
@@ -2558,7 +2585,7 @@
     if (!ms) return () => null;
     const unit = kind === 'hour' ? 3600 : kind === 'minute' ? 60 : 1;
     const n = m.cadence === 'jump' ? 1 : m.cadence === 'step' ? Math.max(1, +m.steps | 0) : 0;
-    const settles = n && kind !== 'second', flies = m.path === 'retrograde' || m.path === 'slide-x' || m.path === 'slide-y';
+    const settles = n && kind !== 'second', flies = m.path === 'retrograde' || m.path === 'slide-x' || m.path === 'slide-y' || m.path === 'slide';
     return (t) => {
       const h = t.getHours() % 12, mi = t.getMinutes(), s = t.getSeconds() + t.getMilliseconds() / 1000;
       const dom = kind === 'hour' ? h * 3600 + mi * 60 + s : kind === 'minute' ? mi * 60 + s : s;
@@ -2796,7 +2823,7 @@
       // motion from its own geometry, keeping only the hand's cadence, steps and ease.
       const hd = all[id], s = slot.sub ? subOf[slot.host] : null, form = s ? s.form : 'round';
       hd.rawTurn = hd.rawTurn || (slot.sub && s.t && s.t.dir === 'ccw' ? ((f) => (d) => -f(d))(hd.turn) : hd.turn);
-      const faceDir = s && s.t && s.t.dir === 'ccw' ? 'ccw' : 'cw', dir = hc.dir === 'cw' || hc.dir === 'ccw' ? hc.dir : faceDir, sg = dir === 'ccw' ? -1 : 1;
+      const faceDir = (s ? s.t && s.t.dir === 'ccw' : design.dir === 'ccw') ? 'ccw' : 'cw', dir = hc.dir === 'cw' || hc.dir === 'ccw' ? hc.dir : faceDir, sg = dir === 'ccw' ? -1 : 1;
       hd.dir = dir;
       const cad = {}; ['cadence', 'steps', 'ease', 'p'].forEach((q) => { if (hc.motion && hc.motion[q] != null) cad[q] = hc.motion[q]; });
       let hcM = hc;
@@ -2808,7 +2835,8 @@
         hd.x = sl.sx; hd.y = sl.sy;
         hcM = Object.assign({}, hc, { motion: Object.assign(cad, { path: 'slide', angle: (sl.ang * 180) / Math.PI, fromFace: true, off: hc.offset, from: -sg * L0 / 2, travel: sg * L0 }) });
       } else {
-        if (sg !== (faceDir === 'ccw' ? -1 : 1) || (slot.sub ? false : sg < 0)) { const raw = hd.rawTurn; hd.turn = sg < 0 ? (d) => -raw(d) : raw; }
+        // a sub-dial's built turn already runs its face's way; a dial hand's runs clockwise
+        if (slot.sub ? sg !== (faceDir === 'ccw' ? -1 : 1) : sg < 0) { const raw = hd.rawTurn; hd.turn = sg < 0 ? (d) => -raw(d) : raw; }
         if (hc.start != null && hc.start !== '' && +hc.start) hd.rot = (hd.rot || 0) + rad(+hc.start);
       }
       // a marker in place of the drawn hand: at the tip on a round face or a fan, on the slot on a slider
@@ -3846,6 +3874,7 @@
       if (!d.perimPos || d.perimPos === 'ontick') delete d.perimPos;
       if (d.perimRot != null && perimRotDeg(d) === 0) delete d.perimRot;
     }
+    if (d.dir !== 'ccw') delete d.dir;   // the dial's direction: clockwise is no field at all
     // the pre-P5c hand fields: every hand is a comps entry now
     ['centre', 'extra', 'hands', 'gmtOffset'].forEach((k) => delete d[k]);
     /* Uploaded art is REFERENCED here, never embedded: a design carries the asset id

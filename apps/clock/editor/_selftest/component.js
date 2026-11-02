@@ -2527,7 +2527,7 @@ class Component extends DCLogic {
       // a hand the author reversed or re-zeroed (D43 P5d.2) rides the pointer table, whose
       // rows carry a signed span and a lifted rest pose; the slots keep the plain clockwise turn
       const h = (D.comps || []).find((c) => c.type === 'hand' && (c.host || 'dial') === 'dial' && c.shows === k && !(c.motion && (c.motion.path === 'slide-x' || c.motion.path === 'slide-y'))
-        && c.dir !== 'ccw' && !(+c.start));
+        && (c.dir || (D.dir === 'ccw' ? 'ccw' : 'cw')) !== 'ccw' && !(+c.start));
       if (h) seat[h.id] = i;
     });
     return seat;
@@ -2648,7 +2648,9 @@ class Component extends DCLogic {
         if (ROLE[h.id] === 0) { sdx = dx; sdy = dy; }   // theme-wide light = the hour hand's
       }
     }
-    if (!hands.length) { this.setState({ status: 'Not baked: no centre hour/minute/second hand to seat — a clock dial needs hands of its own' }); return; }
+    // D43 P5d.2: a dial whose every hand rides a fan, a slider or a sub-dial ships them all as
+    // pointer rows; it is only a dial with no hand at all that has nothing to show the time
+    if (!hands.length && !auxRows.length) { this.setState({ status: 'Not baked: this dial has no hand at all — add one under Parts' }); return; }
     /* The crystal comes home as a row. The FORMAT 3 element table never carried
      * the case or the glass, so every baked dial lost the bezel ring and the
      * reflections the preview draws above the hands. One masked plate: outer
@@ -3872,6 +3874,8 @@ class Component extends DCLogic {
       const ud = (k) => (v) => this.upd((d) => { d[k] = v; });
       const pr = D.print || 'roman', col = D.color || 'cream', surf = D.surface || 'enamel';
       fields.push(H('Face'),
+        // D43 P5d.2: the dial's own direction -- its chapter and ring print mirrored, its hands following
+        Ch('Direction', D.dir === 'ccw' ? 'ccw' : 'cw', [{ v: 'cw', label: 'Clockwise' }, { v: 'ccw', label: 'Anticlockwise' }], (v) => this.upd((d) => { if (v === 'ccw') d.dir = 'ccw'; else delete d.dir; })),
         Sl('Chapter ring', pr, opt(E.PRINTS), ud('print')),
         Sl('Numerals', D.numerals || 'all', opt(E.NUMERALS), ud('numerals')));
       if (E.HAS_NUMS.includes(pr) && D.numerals !== 'none') fields.push(Ch('Orientation', D.numOrient || (pr === 'roman' ? 'radial' : 'upright'), [{ v: 'upright', label: 'Bottom aligned' }, { v: 'radial', label: 'Circular' }], ud('numOrient')));
@@ -4192,7 +4196,7 @@ class Component extends DCLogic {
           isGmt: k === 'gmt', offset: off, offsetText: off === 0 ? 'local' : (off > 0 ? '+' : '') + off + ' h',
           // D43 P5d.2: what the face drives, each field followed until set here
           ...(() => {
-            const form = hostFace ? hostFace.form || 'round' : 'round', faceDir = hostFace && hostFace.tdir === 'ccw' ? 'ccw' : 'cw';
+            const form = hostFace ? hostFace.form || 'round' : 'round', faceDir = (hostFace ? hostFace.tdir === 'ccw' : D.dir === 'ccw') ? 'ccw' : 'cw';
             const dirW = { cw: 'clockwise', ccw: 'anticlockwise' }, slider = form === 'slider', fan = form === 'fan';
             const sG = fc && fc.lay && hostFace ? fc.lay.subs.find((q) => q.id === hostFace.id) : null;
             const faceSpan = fan ? Math.abs(sG && sG.fan ? sG.fan.span : 180) : slider ? (sG && sG.slide ? sG.slide.len : 0) : 0;

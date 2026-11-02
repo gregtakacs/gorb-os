@@ -33,6 +33,7 @@ typedef struct {
     uint32_t  total_ms;
     size_t    int_free_min;   /* internal heap, lowest seen during the call   */
     size_t    int_largest_min;/* internal largest free block, lowest seen     */
+    uint32_t  retry_after_s;  /* the response's Retry-After seconds, 0 = none */
 } orb_https_result_t;
 
 /* host is the whole origin, "https://api.adsb.lol". keep_alive=false closes
@@ -45,6 +46,11 @@ void         orb_https_free(orb_https_t *h);
  * out to have been closed by the server while idle. */
 esp_err_t orb_https_get(orb_https_t *h, const char *path, orb_https_sink_fn sink, void *ctx,
                         orb_https_result_t *res);
+
+/* One more request header on every call this client makes (an API key). The
+ * value is copied. Set it before the first call; a changed value means a new
+ * client, so a kept connection never carries the old one. */
+esp_err_t    orb_https_set_header(orb_https_t *h, const char *name, const char *value);
 
 /* Connections opened since orb_https_new (each one a handshake). */
 uint32_t orb_https_opens(const orb_https_t *h);

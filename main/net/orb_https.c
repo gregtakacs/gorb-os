@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>          /* strcasecmp: header names are case-insensitive */
 
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
@@ -21,13 +22,21 @@ struct orb_https {
     bool      keep_alive;
     bool      live;           /* a kept connection is believed open */
     uint32_t  opens;          /* HTTP_EVENT_ON_CONNECTED count */
+    uint32_t  retry_after_s;  /* this response's Retry-After, 0 = none or a date */
 };
 
 static esp_err_t on_event(esp_http_client_event_t *e)
 {
+    orb_https_t *h = e->user_data;
     if (e->event_id == HTTP_EVENT_ON_CONNECTED) {
-        orb_https_t *h = e->user_data;
         if (h) h->opens++;
+    } else if (e->event_id == HTTP_EVENT_ON_HEADER && h && e->header_key && e->header_value &&
+               !strcasecmp(e->header_key, "Retry-After")) {
+        /* Delta-seconds only: the HTTP-date form reads as 0, and the caller's
+         * own back-off then stands. */
+        char *end = NULL;
+        const unsigned long v = strtoul(e->header_value, &end, 10);
+        h->retry_after_s = (end && end != e->header_value && v < 86400UL * 31) ? (uint32_t)v : 0;
     }
     return ESP_OK;
 }
@@ -78,6 +87,12 @@ orb_https_t *orb_https_new(const char *origin, const char *user_agent, bool keep
     return h;
 }
 
+esp_err_t orb_https_set_header(orb_https_t *h, const char *name, const char *value)
+{
+    if (!h || !h->c || !name || !value) return ESP_ERR_INVALID_ARG;
+    return esp_http_client_set_header(h->c, name, value);
+}
+
 void orb_https_free(orb_https_t *h)
 {
     if (!h) return;
@@ -92,6 +107,7 @@ static esp_err_t get_once(orb_https_t *h, const char *path, orb_https_sink_fn si
 {
     const int64_t t0 = esp_timer_get_time();
     const uint32_t opens0 = h->opens;
+    h->retry_after_s = 0;
     char url[192];
     snprintf(url, sizeof url, "%s%s", h->origin, path);
     esp_http_client_set_url(h->c, url);
@@ -114,6 +130,7 @@ static esp_err_t get_once(orb_https_t *h, const char *path, orb_https_sink_fn si
     r->content_len = esp_http_client_fetch_headers(h->c);
     r->ttfb_ms = ms_since(t1);
     r->status = esp_http_client_get_status_code(h->c);
+    r->retry_after_s = h->retry_after_s;
     sample(r);
     if (r->content_len < 0 && r->status == 0) {
         esp_http_client_close(h->c);

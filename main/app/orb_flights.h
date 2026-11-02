@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "orb_readsb.h"
+#include "flights_model.h"    /* fm_route_t */
 
 #define ORB_FLIGHTS_MAX 24          /* nearest kept per poll: a 466 px scope's worth */
 
@@ -67,6 +68,34 @@ void      orb_flights_stats(orb_flights_stats_t *out);
 /* Copies the latest snapshot; returns the count, its age in ms via *age_ms and
  * its sequence number via *seq (either may be NULL). */
 int       orb_flights_snapshot(orb_flight_t *out, int max, uint32_t *age_ms, uint32_t *seq);
+/* A flight's route, when adsbdb.com knows it (docs/flight-tracker-design.md
+ * §6.6). Asking is cheap and never blocks: an unseen airline callsign is
+ * queued and the feed task looks it up between polls, on its own connection,
+ * under the same gate as a poll. FOUND fills *out; PENDING means queued or in
+ * flight; NONE means not an airline callsign, unknown to adsbdb, or failed.
+ * Answers are kept for the last ORB_FLIGHTS_ROUTES callsigns asked about.
+ * Whether the aircraft is plausibly on the route is the caller's question
+ * (fm_route_plausible): the answer is a schedule, and the caller has the
+ * position. */
+#define ORB_FLIGHTS_ROUTES 16
+typedef enum { ORB_ROUTE_NONE, ORB_ROUTE_PENDING, ORB_ROUTE_FOUND } orb_route_state_t;
+orb_route_state_t orb_flights_route(const char *callsign, fm_route_t *out);
+
+/* The owner's adsb.lol API key (2026-11-01: adsb.lol is moving to keys, and
+ * had banned this network's IP without one). An OS credential, not an app
+ * setting: it lives in NVS `storage`/"orb.flights" beside the Wi-Fi password,
+ * goes only to api.adsb.lol as one request header, and is never read back
+ * out. A bare key is sent as ORB_FLIGHTS_KEY_HDR; the owner can name another
+ * header when the provider says so. */
+#define ORB_FLIGHTS_KEY_MAX  128
+#define ORB_FLIGHTS_HDR_MAX  32
+#define ORB_FLIGHTS_KEY_HDR  "x-api-key"
+/* Set (key and header; header NULL/"" = the default) or clear (key NULL or
+ * ""). NULL on success, else the reason. Blocks on NVS: not on the LVGL task. */
+const char *orb_flights_key_set(const char *key, const char *header);
+/* Whether a key is set; its header name and last four characters when it is. */
+bool        orb_flights_key_info(char *header, size_t hcap, char tail[5]);
+
 /* Bench only (the debug door): provider 0 refuses, to drive the failover. */
 void      orb_flights_bench_refuse0(bool on);
 /* The bench's JSON: config, stats, jank deltas and the snapshot. */

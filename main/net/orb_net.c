@@ -3045,6 +3045,84 @@ static esp_err_t h_home_post(httpd_req_t *req)
 }
 
 /* --------------------------------------------------------------------------
+ * The flight feed's adsb.lol API key (orb_flights.h). An owner credential, so
+ * it is written here and never read back: GET says whether one is set, the
+ * header it goes in, and its last four characters.
+ *
+ * GET  /api/v1/flights/key
+ * POST /api/v1/flights/key {"key":"...","header":"x-api-key"}   header optional
+ * POST /api/v1/flights/key {"clear":true}
+ * ------------------------------------------------------------------------ */
+#define NET_FKEY_BODY_MAX 256
+
+static esp_err_t fkey_reply(httpd_req_t *req, const char *state)
+{
+    char hdr[ORB_FLIGHTS_HDR_MAX + 1], tail[5], b[160];
+    const bool set = orb_flights_key_info(hdr, sizeof hdr, tail);
+    snprintf(b, sizeof b, "{%s%s%s\"set\":%s,\"header\":\"%s\",\"tail\":\"%s\"}",
+             state ? "\"state\":\"" : "", state ? state : "", state ? "\"," : "",
+             set ? "true" : "false", hdr, set ? tail : "");
+    return httpd_resp_sendstr(req, b);
+}
+
+static esp_err_t h_fkey_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return fkey_reply(req, NULL);
+}
+
+static esp_err_t h_fkey_post(httpd_req_t *req)
+{
+    static char body[NET_FKEY_BODY_MAX + 1];
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const int clen = (int)req->content_len;
+    if (clen <= 0 || clen > NET_FKEY_BODY_MAX) {
+        httpd_resp_set_status(req, clen > 0 ? "413 Payload Too Large" : "400 Bad Request");
+        return httpd_resp_sendstr(req, clen > 0 ? "{\"error\":\"body too large\"}"
+                                                : "{\"error\":\"content-length required\"}");
+    }
+    int got = 0;
+    while (got < clen) {
+        const int r = httpd_req_recv(req, body + got, (size_t)(clen - got));
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"body read failed\"}");
+        }
+        got += r;
+    }
+    body[got] = '\0';
+    const size_t len = (size_t)got;
+    const char *why = NULL;
+    long clr = 0;
+    bool cleared = false;
+    if (json_int(body, len, "clear", &clr) && clr) {
+        why = orb_flights_key_set(NULL, NULL);
+        cleared = true;
+    } else {
+        /* json_str drops a backslash and keeps what follows; a key with one in
+         * it would be stored as something other than what was sent. */
+        for (const char *q = body; !why && *q; q++)
+            if (*q == '\\') why = "no escapes";
+        char key[ORB_FLIGHTS_KEY_MAX + 1], hdr[ORB_FLIGHTS_HDR_MAX + 1];
+        const bool has_hdr = !why && json_find(body, len, "header");
+        if (!why && !json_str(body, len, "key", key, sizeof key)) why = "key required (a string, at most 128)";
+        if (!why && has_hdr && !json_str(body, len, "header", hdr, sizeof hdr)) why = "header not a string, or too long";
+        if (!why) why = orb_flights_key_set(key, has_hdr ? hdr : NULL);
+        memset(key, 0, sizeof key);
+    }
+    memset(body, 0, sizeof body);                 /* the key does not linger in .bss */
+    if (why) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        char b[112];
+        snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
+        return httpd_resp_sendstr(req, b);
+    }
+    return fkey_reply(req, cleared ? "cleared" : "keyed");
+}
+
+/* --------------------------------------------------------------------------
  * Sound — D39's owner settings and the bench door (docs/sound-plan.md §5).
  *
  * GET /api/v1/sound answers the settings plus the engine's own counters, so a bench
@@ -7595,6 +7673,8 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/name",     .method = HTTP_POST, .handler = h_name_post },
         { .uri = "/api/v1/home",     .method = HTTP_GET,  .handler = h_home_get },
         { .uri = "/api/v1/home",     .method = HTTP_POST, .handler = h_home_post },
+        { .uri = "/api/v1/flights/key", .method = HTTP_GET,  .handler = h_fkey_get },
+        { .uri = "/api/v1/flights/key", .method = HTTP_POST, .handler = h_fkey_post },
         { .uri = "/api/v1/sound",    .method = HTTP_GET,  .handler = h_sound_get },
         { .uri = "/api/v1/sound",    .method = HTTP_POST, .handler = h_sound_post },
         { .uri = "/api/v1/sound/test", .method = HTTP_POST, .handler = h_sound_test },

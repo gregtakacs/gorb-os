@@ -2,6 +2,7 @@
 #include "flights_model.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef M_PI
@@ -88,44 +89,6 @@ void fm_sel_step(const fm_t *m, const char *hex, int step, char *hex_out)
     memcpy(hex_out, m->t[m->order[next]].ac.hex, sizeof m->t[0].ac.hex);
 }
 
-static bool on_glass(const fm_rect_t *a, int cx, int cy, int r)
-{
-    for (int c = 0; c < 4; c++) {
-        const int px = (c & 1) ? a->x2 : a->x1, py = (c & 2) ? a->y2 : a->y1;
-        if ((px - cx) * (px - cx) + (py - cy) * (py - cy) >= r * r) return false;
-    }
-    return true;
-}
-
-static bool clear_of(const fm_rect_t *a, const fm_rect_t *placed, int np)
-{
-    for (int q = 0; q < np; q++)
-        if (!(a->x2 < placed[q].x1 - 2 || a->x1 > placed[q].x2 + 2 ||
-              a->y2 < placed[q].y1 - 1 || a->y1 > placed[q].y2 + 1))
-            return false;
-    return true;
-}
-
-bool fm_place_label(const fm_rect_t *placed, int np, int x, int y, int w, int h,
-                    int cx, int cy, int glass_r, fm_rect_t *out)
-{
-    const bool right = x >= cx;
-    const int cand[4][2] = {
-        { right ? x + 8 : x - 8 - w, y - h / 2 },
-        { right ? x - 8 - w : x + 8, y - h / 2 },
-        { x - w / 2, y - 10 - h },
-        { x - w / 2, y + 10 },
-    };
-    for (int k = 0; k < 4; k++) {
-        const fm_rect_t a = { cand[k][0], cand[k][1], cand[k][0] + w, cand[k][1] + h };
-        if (on_glass(&a, cx, cy, glass_r) && clear_of(&a, placed, np)) {
-            *out = a;
-            return true;
-        }
-    }
-    return false;
-}
-
 bool fm_interesting(const orb_ac_t *a, float dist_km, float bearing_deg)
 {
     if (a->squawk == 7500 || a->squawk == 7600 || a->squawk == 7700) return true;
@@ -138,4 +101,122 @@ bool fm_interesting(const orb_ac_t *a, float dist_km, float bearing_deg)
         if (d < 60.0f) return true;
     }
     return false;
+}
+
+/* ---- route ---------------------------------------------------------------- */
+
+bool fm_route_callsign_ok(const char *cs)
+{
+    for (int i = 0; i < 3; i++)
+        if (cs[i] < 'A' || cs[i] > 'Z') return false;
+    if (cs[3] < '0' || cs[3] > '9') return false;
+    int i = 4;
+    for (; cs[i]; i++)
+        if (i >= 7 || !((cs[i] >= '0' && cs[i] <= '9') || (cs[i] >= 'A' && cs[i] <= 'Z'))) return false;
+    return true;
+}
+
+/* The value after "key": inside [p, end), or NULL. */
+static const char *json_val(const char *p, const char *end, const char *key)
+{
+    const size_t kl = strlen(key);
+    for (const char *q = p; q + kl + 3 <= end; q++)
+        if (q[0] == '"' && !memcmp(q + 1, key, kl) && q[kl + 1] == '"' && q[kl + 2] == ':')
+            return q + kl + 3;
+    return NULL;
+}
+
+static bool json_code(const char *p, const char *end, const char *key, char *out, size_t n)
+{
+    const char *v = json_val(p, end, key);
+    if (!v || *v != '"') return false;                  /* null, or absent */
+    size_t i = 0;
+    for (v++; v < end && *v != '"'; v++) {
+        if (*v < '0' || (*v > '9' && *v < 'A') || *v > 'Z' || i + 1 >= n) return false;
+        out[i++] = *v;
+    }
+    out[i] = 0;
+    return v < end && i > 0;
+}
+
+static bool json_num(const char *p, const char *end, const char *key, float *out)
+{
+    const char *v = json_val(p, end, key);
+    if (!v) return false;
+    char *e = NULL;
+    const double d = strtod(v, &e);
+    if (e == v || e > end || !isfinite(d)) return false;
+    *out = (float)d;
+    return true;
+}
+
+/* One end of the route: the flat object after "origin": or "destination":. */
+static bool airport(const char *json, const char *key, char code[5], float *lat, float *lon)
+{
+    const char *o = json_val(json, json + strlen(json), key);
+    if (!o || *o != '{') return false;
+    const char *end = strchr(o, '}');
+    if (!end) return false;
+    if (!json_code(o, end, "iata_code", code, 5) && !json_code(o, end, "icao_code", code, 5)) return false;
+    return json_num(o, end, "latitude", lat) && json_num(o, end, "longitude", lon)
+        && fabsf(*lat) <= 90.0f && fabsf(*lon) <= 180.0f;
+}
+
+bool fm_route_parse(const char *json, fm_route_t *out)
+{
+    fm_route_t r;
+    memset(&r, 0, sizeof r);
+    if (!json_val(json, json + strlen(json), "flightroute")) return false;
+    if (!airport(json, "origin", r.from, &r.from_lat, &r.from_lon)) return false;
+    if (!airport(json, "destination", r.to, &r.to_lat, &r.to_lon)) return false;
+    *out = r;
+    return true;
+}
+
+/* Central angle between two points, radians (haversine). */
+static float arc(float la1, float lo1, float la2, float lo2)
+{
+    const float a = sinf((la2 - la1) / 2), b = sinf((lo2 - lo1) / 2);
+    const float h = a * a + cosf(la1) * cosf(la2) * b * b;
+    return 2.0f * asinf(sqrtf(h > 1.0f ? 1.0f : h));
+}
+
+static float course(float la1, float lo1, float la2, float lo2)
+{
+    return atan2f(sinf(lo2 - lo1) * cosf(la2),
+                  cosf(la1) * sinf(la2) - sinf(la1) * cosf(la2) * cosf(lo2 - lo1));
+}
+
+/* The angle between a track (deg) and a course (rad), 0..180 deg. */
+static float off_course(float track_deg, float course_rad)
+{
+    float d = fmodf(fabsf(track_deg - course_rad * 180.0f / (float)M_PI), 360.0f);
+    return d > 180.0f ? 360.0f - d : d;
+}
+
+bool fm_route_plausible(const fm_route_t *r, double lat, double lon, float track, float baro_rate)
+{
+    const float R = 6371.0f, k = (float)(M_PI / 180.0);
+    const float la1 = r->from_lat * k, lo1 = r->from_lon * k;
+    const float la2 = r->to_lat * k, lo2 = r->to_lon * k;
+    const float la3 = (float)lat * k, lo3 = (float)lon * k;
+    const bool dir = !isnan(track);
+    const float d13 = arc(la1, lo1, la3, lo3), d23 = arc(la2, lo2, la3, lo3);
+    const bool at_from = d13 * R < 100.0f, at_to = d23 * R < 100.0f;
+    if (at_from || at_to) {
+        if (!dir) return true;
+        const bool leaving  = off_course(track, course(la1, lo1, la3, lo3)) < 90.0f || baro_rate > 0.0f;
+        const bool arriving = off_course(track, course(la3, lo3, la2, lo2)) < 90.0f || baro_rate < 0.0f;
+        return (at_from && leaving) || (at_to && arriving);
+    }
+    const float d12 = arc(la1, lo1, la2, lo2);
+    const float dth = course(la1, lo1, la3, lo3) - course(la1, lo1, la2, lo2);
+    if (cosf(dth) <= 0.0f) return false;                                 /* behind the origin */
+    const float xt = asinf(sinf(d13) * sinf(dth));                       /* off the line */
+    const float off = fmaxf(150.0f, 0.15f * d12 * R);
+    if (fabsf(xt) * R > off) return false;
+    const float c = cosf(d13) / cosf(xt);
+    const float at = acosf(c > 1.0f ? 1.0f : c < -1.0f ? -1.0f : c);     /* along it */
+    if (at > d12) return false;                                          /* past the end */
+    return !dir || off_course(track, course(la3, lo3, la2, lo2)) < 90.0f;
 }

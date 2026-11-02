@@ -1,8 +1,10 @@
 /* The flight tracker's view — contract in flights_view.h.
  *
  * Drawing: one full-screen canvas in PSRAM. Rings, dots and direction markers
- * are written straight into its pixels; only the callsign labels go through
- * LVGL's draw layer. The LVGL object pool is 22 KB with ~20 KB of measured
+ * are written straight into its pixels; only the range figure goes through
+ * LVGL's draw layer. No aircraft carries a label on the radar (owner ruling
+ * 2026-11-01): the one aircraft named is the selected one, in the detail
+ * card, in the knob's info level. The LVGL object pool is 22 KB with ~20 KB of measured
  * peak (sdkconfig.defaults, CONFIG_LV_MEM_SIZE), so a widget per aircraft
  * (~75 objects) would overrun it silently; this view adds five objects.
  *
@@ -31,7 +33,6 @@ static const char *TAG = "flights";
 #define CX       (W / 2)
 #define CY       (H / 2)
 #define RING_R   184                 /* full range, px: header and footer sit outside it */
-#define LABELS   6                   /* callsigns drawn, nearest first */
 #define VIS_MS   15000               /* poll period while on the glass */
 
 static const uint16_t RANGES_NM[] = { 10, 20, 40, 80 };
@@ -51,7 +52,7 @@ typedef struct {
 } settings_t;
 
 static orb_app_t *s_app;
-static settings_t s_set = { .range = 2, .bg = 1, .boost = 1, .ground = 1 };
+static settings_t s_set = { .range = 2, .source = 1, .bg = 2, .boost = 0, .ground = 1 };
 static uint32_t   s_cfg_gen;
 static uint32_t   s_home_gen = UINT32_MAX;
 static bool       s_visible;
@@ -216,15 +217,7 @@ static bool emergency(const orb_ac_t *a)
 
 /* ---- one frame ------------------------------------------------------------ */
 
-static char s_lbl[LABELS][32];
 static char s_rng_txt[12];
-
-static void fmt_alt(const orb_ac_t *a, char *b, size_t n)
-{
-    if (a->on_ground)     snprintf(b, n, "GND");
-    else if (!a->has_alt) snprintf(b, n, "---");
-    else                  snprintf(b, n, "FL%03d", (int)((a->alt_ft + 50) / 100));
-}
 
 static void draw_frame(void)
 {
@@ -254,40 +247,11 @@ static void draw_frame(void)
         if (s_sel[0] && !strcmp(t->ac.hex, s_sel)) ring_at(x, y, 8, c16(0xFFFFFF));
     }
 
-    /* Callsigns for the nearest LABELS airborne contacts. Each tries four spots
-     * around its dot (outward side first) and takes the first that overlaps no
-     * label already placed and stays on the round glass; a contact with no free
-     * spot goes unlabelled rather than stacked (the first bench frame showed six
-     * labels piled on the airport at the centre). */
     lv_layer_t layer;
     lv_canvas_init_layer(s_canvas, &layer);
     lv_draw_label_dsc_t d;
     lv_draw_label_dsc_init(&d);
     d.font = &lv_font_montserrat_14;
-    fm_rect_t placed[LABELS + 1];
-    int np = 0;
-    placed[np++] = (fm_rect_t){ CX - 6, CY - 6, CX + 6, CY + 6 };   /* home */
-    int nl = 0;
-    for (int o = 0; o < s_m->norder && nl < LABELS; o++) {
-        const fm_trk_t *t = &s_m->t[s_m->order[o]];
-        if (t->ac.on_ground) continue;
-        char alt[16];
-        fmt_alt(&t->ac, alt, sizeof alt);
-        snprintf(s_lbl[nl], sizeof s_lbl[nl], "%s %s",
-                 t->ac.flight[0] ? t->ac.flight : t->ac.hex, alt);
-        lv_point_t sz;
-        lv_text_get_size(&sz, s_lbl[nl], d.font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-        fm_rect_t r;
-        const bool ok = fm_place_label(placed, np, (int)lroundf(t->x), (int)lroundf(t->y),
-                                       sz.x, sz.y, CX, CY, 222, &r);
-        if (!ok) continue;
-        placed[np++] = r;
-        lv_area_t a = { r.x1, r.y1, r.x2, r.y2 };
-        d.color = t->live ? lv_color_hex(0xD0D0D0) : lv_color_hex(0x707070);
-        d.text = s_lbl[nl];
-        lv_draw_label(&layer, &d, &a);
-        nl++;
-    }
     snprintf(s_rng_txt, sizeof s_rng_txt, "%u nm", (unsigned)RANGES_NM[s_set.range]);
     d.color = lv_color_hex(0x4A7A62);
     d.text = s_rng_txt;
@@ -346,10 +310,18 @@ static void draw_text(void)
     else snprintf(spd, sizeof spd, "%d kt", (int)t->ac.gs);
     float brg = atan2f(t->x - CX, CY - t->y) * 180.0f / (float)M_PI;
     if (brg < 0) brg += 360.0f;
-    char card[160];
-    snprintf(card, sizeof card, "%s  %s\n%s%s\n%s  trk %d\n%.1f nm  brg %d",
+    /* The route line, when adsbdb knows the callsign and the aircraft is
+     * plausibly flying it (§6.6). Asking queues the lookup; the line appears
+     * on a later tick, and a stale schedule never does. */
+    char route[24] = "";
+    fm_route_t rt;
+    if (orb_flights_route(t->ac.flight, &rt) == ORB_ROUTE_FOUND &&
+        fm_route_plausible(&rt, t->ac.lat, t->ac.lon, t->ac.on_ground ? NAN : t->ac.track, t->ac.baro_rate))
+        snprintf(route, sizeof route, "%s " LV_SYMBOL_RIGHT " %s\n", rt.from, rt.to);
+    char card[192];
+    snprintf(card, sizeof card, "%s  %s\n%s%s%s\n%s  trk %d\n%.1f nm  brg %d",
              t->ac.flight[0] ? t->ac.flight : t->ac.hex, t->ac.type[0] ? t->ac.type : "",
-             alt, vs, spd, isnan(t->ac.track) ? 0 : (int)t->ac.track,
+             route, alt, vs, spd, isnan(t->ac.track) ? 0 : (int)t->ac.track,
              t->d_km / 1.852f, (int)brg);
     lv_label_set_text(s_card, card);
     lv_obj_set_hidden(s_card, false);
@@ -532,6 +504,16 @@ const char *flights_opt_value(orb_app_t *app, int idx)
     default: return "";
     }
     return v;
+}
+
+/* The menu lists an app's page only when it declares this hook
+ * (orb_app_has_options); without it the tracker's settings were unreachable on
+ * the dial. Opening the page re-reads the settings, so a value written from
+ * outside (POST /api/v1/apps/cfg) is what the rows show. */
+void flights_opt_arm(orb_app_t *app, bool armed)
+{
+    (void)app;
+    if (armed) load_settings();
 }
 
 void flights_opt_sel(orb_app_t *app, int idx)

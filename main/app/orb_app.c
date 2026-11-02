@@ -203,6 +203,7 @@ static const orb_app_iface_t s_flights_iface = {
     .opt_label  = flights_opt_label,
     .opt_value  = flights_opt_value,
     .opt_sel    = flights_opt_sel,
+    .opt_arm    = flights_opt_arm,
 };
 
 static esp_err_t menu_init(orb_app_t *app)   { (void)app; return menu_view_init(); }

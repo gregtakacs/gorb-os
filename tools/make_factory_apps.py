@@ -111,11 +111,14 @@ PICKER_SETTINGS = (
 # The tracker's settings (design §6.3). Home is not among them: it is the OS
 # home location (§6.4), read through the location cap. Enums are indices the
 # view names: range 10/20/40/80 nm, source adsb.lol/adsb.fi, bg off/1/2/5 min.
+# The defaults are the light ones (2026-11-01, after api.adsb.lol banned the
+# owner's IP): adsb.fi first, background every 2 min, boost off. On the glass
+# the poll is 15 s whatever these say.
 FLIGHTS_SETTINGS = (
     {"id": "range",  "type": "enum",   "min": 0, "max": 3, "default": 2},
-    {"id": "source", "type": "enum",   "min": 0, "max": 1, "default": 0},
-    {"id": "bg",     "type": "enum",   "min": 0, "max": 3, "default": 1},
-    {"id": "boost",  "type": "toggle", "default": 1},
+    {"id": "source", "type": "enum",   "min": 0, "max": 1, "default": 1},
+    {"id": "bg",     "type": "enum",   "min": 0, "max": 3, "default": 2},
+    {"id": "boost",  "type": "toggle", "default": 0},
     {"id": "ground", "type": "toggle", "default": 1},
     {"id": "key",    "type": "string", "def_str": ""},
 )

@@ -220,9 +220,9 @@ rate.
   its length scaled by ground speed (6-22 px), so the screen reads as moving
   traffic. With no track the dot has no marker. Emergency squawks
   (7500/7600/7700) get a red ring.
-- **Labels:** callsign and flight level ("SWA3291 FL035") beside the nearest
-  six, placed on the side away from the centre. Not on all 24: at 40 nm over a
-  city they collide.
+- **Labels:** none on the radar (owner ruling 2026-11-01): the dots, their
+  track lines and colours carry the picture, and the one aircraft named is the
+  selected one, in the detail card at the knob's info level.
 - **Header and footer text:** "12 aircraft" at the top. Data age at the bottom
   ("now", "25 s", "feed down 3 min" in amber).
 - **Motion between polls:** dead-reckon each dot along track at its ground
@@ -320,13 +320,13 @@ consent rule applies.
   library beside the clock and the picker.
 - **Drawing:** one 466×466 RGB565 canvas in PSRAM. Rings, dots, markers and
   emergency/selection rings are written straight into its pixels; only the
-  callsign labels and the range figure go through LVGL's draw layer. Four
+  range figure goes through LVGL's draw layer. Four
   label objects (header, footer, detail card) plus the canvas: the LVGL pool
   (22 KB, ~20 KB peak) has no room for a widget per aircraft.
-- **Labels:** nearest six airborne. Each tries right/left/above/below its dot
-  and takes the first spot that is on the round glass and clear of labels
-  already placed, else goes unlabelled. The first frame on the bench stacked
-  six labels on Sky Harbor; this one is legible.
+- **Labels:** the first build labelled the nearest six airborne contacts,
+  placed clear of each other on the round glass. Removed on 2026-11-01 (owner
+  ruling) with the placement code (`fm_place_label`): the radar is dots only,
+  and the info level's card names the selected aircraft.
 - **Merging:** a contact table of 32 in PSRAM. Each poll is merged by `hex`,
   a contact the latest poll missed is drawn dimmed, and one missing for 60 s
   drops. Dead reckoning runs at 1 Hz, capped at 90 s.
@@ -338,7 +338,11 @@ consent rule applies.
   every level and the turn after the third push landing on the next app.
   The long press is the shell's. The options
   page cycles Range, Source, Background, Boost and Ground on a press and shows
-  Home read-only.
+  Home read-only. That page was unreachable until 2026-11-01: the menu lists
+  an app's page only when its iface declares `opt_arm`, and the tracker's did
+  not, so no Flights row ever appeared. Fixed (the hook re-reads the settings
+  on open), seen on orb-A's glass, and `host_app_registry_test.py` now fails
+  any iface that offers rows without the hook.
 - **Feed control:** `activate`/`resume` set the visible rate (15 s);
   `suspend` drops to the background rate (60 s, 20 s boost). The feed only
   runs when home is set and `net` is granted.
@@ -364,6 +368,65 @@ consent rule applies.
   boot's 10, because a promote needs 25% slack it never shows. That's the
   scheduler's re-seed path, outside this work; noted for whoever owns
   `orb_sched`.
+
+### 6.6 Route on the info card (2026-11-01)
+
+- **Source:** adsbdb.com, `GET https://api.adsbdb.com/v0/callsign/<cs>`, free,
+  no key, ~700 B, ~0.15 s on a kept connection. The feed's own providers
+  carry no route, and adsb.lol's `/api/0/routeset` answered every request
+  that day with an empty 201.
+- **When:** only at the info level, only for the selected aircraft, and only
+  for an airline callsign (`fm_route_callsign_ok`: three letters, a digit, at
+  most seven characters). A registration has nothing to look up, and adsbdb
+  took 7.7 s to say so on the bench.
+- **How:** `orb_flights_route()` never blocks. It queues an unseen callsign in
+  a 16-entry cache (PSRAM), and the feed task looks it up between polls on its
+  own kept connection, under the same gate as a poll (network, jobs, card,
+  internal heap). A wake for a route does not trigger a feed poll. A 404 is
+  "unknown"; another 4xx rests route lookups from a minute doubling to 15 min,
+  as the feed rests a provider. The connection closes when the tracker leaves
+  the glass. `/api/v1/debug/flights` reports `route` counters.
+- **Plausibility (`fm_route_plausible`):** adsbdb answers with a schedule, not
+  a flight plan, and over DFW (American's hub) most answers are another
+  flight under the same number. The card shows the route only when the
+  aircraft is near an end, or within max(150 km, 15% of the route) of the
+  great circle and not past either end; and, with a track, heading the right
+  way: leaving the origin (away, or climbing), arriving at the destination
+  (toward, or descending), toward the destination between them. Bench over
+  Fort Worth, 2026-11-01: 68 airline callsigns in 40 nm, adsbdb knew 57, 12
+  passed (MEX-DFW descending, PVR-ORD overhead at FL370, DFW-LHR climbing
+  out, UPS SDF-DFW descending). Those hidden included "CLE-DFW" on a jet
+  climbing east out of DFW, and LGA-ORD at 6,000 ft over Dallas.
+- **Card:** a line "PHL → PBI" (IATA, ICAO when there is none) under the
+  callsign, absent while the lookup runs and whenever the route is unknown
+  or implausible.
+- **Cost:** ~4.5 KB of flash (25.2 KB left in the slot); one more kept TLS
+  connection while the tracker is on the glass and a card was opened.
+
+### 6.7 adsb.lol API key and the ban (2026-11-01)
+
+- **What happened:** api.adsb.lol answered `403 banned` to the owner's public
+  IP (the website still loaded in a browser). Likely cause: a day of bench
+  probing from the dev machine on top of the orb's 15-20 s polls; the orb and
+  the machine share the address. adsb.lol's README: limits are dynamic, "if
+  you get 4xx errors, you are doing something wrong", keys are coming (earned
+  by feeding).
+- **Back-off:** a 403 now rests a provider 1 h doubling to 12 h (a 429 or
+  other 4xx keeps 1 min to 15 min); any good answer forgives it.
+  `/api/v1/debug/flights` reports `rest_s` per provider, so the ban is watched
+  from the orb, never by probing adsb.lol. The orb's source was switched to
+  adsb.fi; adsb.lol is the fallback.
+- **The key:** an OS credential, not an app setting (the container's
+  `key` STRING tops out at 31 characters and is still unused). NVS
+  `storage`/"orb.flights" (`lol_key`, `lol_hdr`), read on first use, never
+  read back. `GET/POST /api/v1/flights/key` (`{"key":..,"header":..}` or
+  `{"clear":true}`; GET answers set, header, last four), allowed and faked in
+  the hub, with a form on the Orb tab. Sent only on the adsb.lol client, as
+  one header, default `x-api-key`: adsb.lol has not published the header
+  name, so the owner names it when the key arrives. Setting a key forgives
+  adsb.lol's rest so the next fallback (or a switch of Source back) tries it.
+  Bench on orb-A: refusals, set, header override, survival across a reboot,
+  clear. Not yet seen on the wire: that needs adsb.lol, and the key.
 
 ## 7. Later in the design chain
 

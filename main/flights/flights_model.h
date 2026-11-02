@@ -1,6 +1,7 @@
 #pragma once
 /* The flight tracker's model: the contact table, dead reckoning, projection,
- * label placement and the boost test (docs/flight-tracker-design.md §5-6).
+ * selection, the boost test and the route check (docs/flight-tracker-design.md
+ * §5-6).
  *
  * Pure C with no LVGL or IDF include, like orb_readsb.c, so
  * tools/host_flights_model_test.py compiles the shipped file and drives it.
@@ -31,8 +32,6 @@ typedef struct {
     int      norder;
 } fm_t;
 
-typedef struct { int x1, y1, x2, y2; } fm_rect_t;
-
 /* One poll's merge: begin, one upsert per aircraft in the picture, end. A
  * contact the picture did not carry stays, not live, until FM_STALE_US. */
 void fm_merge_begin(fm_t *m);
@@ -53,13 +52,40 @@ int  fm_find(const fm_t *m, const char *hex);
  * hex_out holds 8 bytes. */
 void fm_sel_step(const fm_t *m, const char *hex, int step, char *hex_out);
 
-/* A label of w x h px for a dot at (x, y): the first of right, left, above,
- * below (the side away from the centre first) whose corners stay inside
- * glass_r of (cx, cy) and that clears every placed rect by 2 px across and 1 px
- * down. False when no spot is free; the contact then goes unlabelled. */
-bool fm_place_label(const fm_rect_t *placed, int np, int x, int y, int w, int h,
-                    int cx, int cy, int glass_r, fm_rect_t *out);
 
 /* Worth the background boost (§5): an emergency squawk, airborne within 5 nm,
  * or under 3,000 ft within 10 nm with its track within 60 deg of home. */
 bool fm_interesting(const orb_ac_t *ac, float dist_km, float bearing_deg);
+
+/* ---- route: where a flight is going, when adsbdb knows -------------------
+ * adsbdb.com answers a callsign with the route that callsign is scheduled to
+ * fly. The answer is a schedule, not a flight plan: a reused flight number
+ * names last season's route (bench, 2026-11-01: Envoy 3776 over Fort Worth
+ * came back Boston to Chicago), so a route is shown only when the aircraft is
+ * plausibly on it. */
+typedef struct {
+    char  from[5], to[5];          /* IATA, or ICAO when the airport has none */
+    float from_lat, from_lon, to_lat, to_lon;
+} fm_route_t;
+
+/* Worth asking about: an ICAO airline callsign, at most seven characters:
+ * three letters, a digit, then up to three letters or digits ("AAL1393",
+ * "SWA12A"). A
+ * registration ("N570AM") has no route to look up, and adsbdb takes seconds
+ * to say so. */
+bool fm_route_callsign_ok(const char *cs);
+
+/* adsbdb's /v0/callsign/<cs> answer, NUL-terminated, into *out. False when it
+ * names no route (an unknown callsign, a missing airport or position). */
+bool fm_route_parse(const char *json, fm_route_t *out);
+
+/* True when an aircraft at (lat, lon) is plausibly flying this route.
+ * Where: within 100 km of either end, or within 150 km (or 15% of the
+ * route's length, whichever is more) of the great circle between them and
+ * not past either end. Which way, when the track is known (not NAN): near the
+ * origin it is leaving (heading away, or climbing); near the destination it
+ * is arriving (heading toward it, or descending, which a downwind leg is);
+ * between them it is heading toward the destination. A flight number flown
+ * the other way back (bench, 2026-11-01: "CLE > DFW" on a jet climbing east
+ * out of DFW) fails the direction, not the position. baro_rate NAN = unknown. */
+bool fm_route_plausible(const fm_route_t *r, double lat, double lon, float track, float baro_rate);

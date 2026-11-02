@@ -13,10 +13,11 @@ behaviour the view and the feed lean on:
             ground traffic and contacts without a track stay put
   project   range filter, nearest-first order, north up and east right
   select    by hex, so a re-sort does not move the highlight; wraps both ways
-  labels    outward side first, then the other side, above, below; refused
-            off the glass and when every spot collides
   boost     emergency squawk, within 5 nm, low and closing; not low and
             opening, not far, not on the ground
+  route     airline callsigns only; adsbdb's answer parsed (IATA, else ICAO;
+            unknown callsigns and null airports refused); shown only when the
+            aircraft is plausibly on it (the bench's stale Envoy 3776 is not)
 
 The screenshots in docs/flight-tracker-design.md §6.5 show the view once; this
 is what keeps it right after the next edit.
@@ -141,28 +142,6 @@ int main(void)
     fm_sel_step(&empty, none, 1, none);
     CHECK(none[0] == 0, "select: nothing drawn, nothing selected");
 
-    /* ---- labels ---- */
-    fm_rect_t placed[4], r;
-    int np = 0;
-    CHECK(fm_place_label(placed, np, 300, 233, 80, 16, 233, 233, 222, &r) && r.x1 == 308,
-          "labels: a dot right of centre labels to its right");
-    placed[np++] = r;
-    CHECK(fm_place_label(placed, np, 300, 233, 80, 16, 233, 233, 222, &r) && r.x2 == 292,
-          "labels: taken on the right, it goes left");
-    placed[np++] = r;
-    CHECK(fm_place_label(placed, np, 300, 233, 80, 16, 233, 233, 222, &r) && r.y2 == 223,
-          "labels: both sides taken, it goes above");
-    placed[np++] = r;
-    CHECK(fm_place_label(placed, np, 300, 233, 80, 16, 233, 233, 222, &r) && r.y1 == 243,
-          "labels: three taken, it goes below");
-    placed[np++] = r;
-    CHECK(!fm_place_label(placed, np, 300, 233, 80, 16, 233, 233, 222, &r),
-          "labels: all four taken, no label");
-    CHECK(fm_place_label(NULL, 0, 150, 233, 80, 16, 233, 233, 222, &r) && r.x2 == 142,
-          "labels: a dot left of centre labels to its left");
-    CHECK(!fm_place_label(NULL, 0, 233, 15, 200, 16, 233, 233, 222, &r),
-          "labels: nothing that would leave the round glass");
-
     /* ---- boost ---- */
     orb_ac_t b = ac("b00001", 0, 200, 20000, 0);
     CHECK(fm_interesting(&b, 9.0f, 45), "boost: airborne within 5 nm");
@@ -181,6 +160,73 @@ int main(void)
     CHECK(!fm_interesting(&b, 25, 0), "boost: low and closing but past 10 nm is not");
     b = ac("b00005", 0, 0, 0, 1);
     CHECK(!fm_interesting(&b, 1, 0), "boost: ground traffic is not");
+
+    /* ---- route ---- */
+    CHECK(fm_route_callsign_ok("AAL1393") && fm_route_callsign_ok("SWA12A") && fm_route_callsign_ok("CLX251"),
+          "route: airline callsigns are worth asking about");
+    CHECK(!fm_route_callsign_ok("N570AM") && !fm_route_callsign_ok("") && !fm_route_callsign_ok("AA1393")
+          && !fm_route_callsign_ok("AAL") && !fm_route_callsign_ok("AALX93") && !fm_route_callsign_ok("aal1393")
+          && !fm_route_callsign_ok("AAL12345"),
+          "route: registrations, short, lower-case and over-long callsigns are not");
+    /* adsbdb's answers, verbatim from the bench (2026-11-01) */
+    static const char ENY3776[] =
+        "{\"response\":{\"flightroute\":{\"callsign\":\"ENY3776\",\"callsign_icao\":\"ENY3776\",\"callsign_iata\":\"3776\","
+        "\"airline\":{\"name\":\"Envoy Air\",\"icao\":\"ENY\",\"iata\":null,\"country\":\"United States\",\"country_iso\":\"US\",\"callsign\":\"Envoy\"},"
+        "\"origin\":{\"country_iso_name\":\"US\",\"country_name\":\"United States\",\"elevation\":20,\"iata_code\":\"BOS\",\"icao_code\":\"KBOS\","
+        "\"latitude\":42.3643,\"longitude\":-71.0052,\"municipality\":\"Boston\",\"name\":\"Logan International Airport\"},"
+        "\"destination\":{\"country_iso_name\":\"US\",\"country_name\":\"United States\",\"elevation\":672,\"iata_code\":\"ORD\",\"icao_code\":\"KORD\","
+        "\"latitude\":41.9786,\"longitude\":-87.9048,\"municipality\":\"Chicago\",\"name\":\"Chicago O'Hare International Airport\"}}}}";
+    static const char AAL1393[] =
+        "{\"response\":{\"flightroute\":{\"callsign\":\"AAL1393\",\"airline\":{\"name\":\"American Airlines\",\"icao\":\"AAL\",\"iata\":\"AA\"},"
+        "\"origin\":{\"elevation\":36,\"iata_code\":\"PHL\",\"icao_code\":\"KPHL\",\"latitude\":39.8719,\"longitude\":-75.2411,\"municipality\":\"Philadelphia\"},"
+        "\"destination\":{\"elevation\":19,\"iata_code\":\"PBI\",\"icao_code\":\"KPBI\",\"latitude\":26.6832,\"longitude\":-80.0956,\"municipality\":\"West Palm Beach\"}}}}";
+    fm_route_t rt;
+    CHECK(fm_route_parse(ENY3776, &rt) && !strcmp(rt.from, "BOS") && !strcmp(rt.to, "ORD")
+          && NEAR(rt.from_lat, 42.3643f, 1e-4f) && NEAR(rt.to_lon, -87.9048f, 1e-4f),
+          "route: the codes and ends come from origin and destination, not the airline");
+    CHECK(!fm_route_parse("{\"response\":\"unknown callsign\"}", &rt), "route: an unknown callsign names none");
+    static const char NOIATA[] =
+        "{\"response\":{\"flightroute\":{\"origin\":{\"iata_code\":null,\"icao_code\":\"EGLL\",\"latitude\":51.47,\"longitude\":-0.4543},"
+        "\"destination\":{\"iata_code\":\"JFK\",\"icao_code\":\"KJFK\",\"latitude\":40.6398,\"longitude\":-73.7789}}}}";
+    CHECK(fm_route_parse(NOIATA, &rt) && !strcmp(rt.from, "EGLL") && !strcmp(rt.to, "JFK"),
+          "route: an airport with no IATA code goes by its ICAO code");
+    static const char NOPOS[] =
+        "{\"response\":{\"flightroute\":{\"origin\":{\"iata_code\":\"BOS\",\"latitude\":42.36},"
+        "\"destination\":{\"iata_code\":\"ORD\",\"latitude\":41.97,\"longitude\":-87.9}}}}";
+    CHECK(!fm_route_parse(NOPOS, &rt), "route: an end with no position names no route");
+    static const char ODD[] =
+        "{\"response\":{\"flightroute\":{\"origin\":{\"iata_code\":\"B\\\"S\",\"latitude\":42.36,\"longitude\":-71.0},"
+        "\"destination\":{\"iata_code\":\"ORD\",\"latitude\":41.97,\"longitude\":-87.9}}}}";
+    CHECK(fm_route_parse(ODD, &rt) == false, "route: a code that is not letters and digits is refused, not drawn");
+
+    fm_route_t eny, aal;
+    fm_route_parse(ENY3776, &eny);
+    fm_route_parse(AAL1393, &aal);
+    CHECK(!fm_route_plausible(&eny, 32.89, -97.16, NAN, NAN), "route: Boston-Chicago is not a plane over Fort Worth");
+    CHECK(fm_route_plausible(&aal, 33.3, -77.5, NAN, NAN), "route: a plane mid-route, on the line, is on it");
+    CHECK(fm_route_plausible(&aal, 33.3, -79.0, NAN, NAN), "route: 140 km off the line still is");
+    CHECK(!fm_route_plausible(&aal, 33.3, -73.0, NAN, NAN), "route: 400 km off the line is not");
+    CHECK(fm_route_plausible(&aal, 39.9, -74.4, NAN, NAN), "route: climbing out near the origin is");
+    CHECK(fm_route_plausible(&aal, 26.9, -80.6, NAN, NAN), "route: on approach near the destination is");
+    CHECK(!fm_route_plausible(&aal, 22.0, -81.5, NAN, NAN), "route: well past the destination is not");
+    CHECK(!fm_route_plausible(&aal, 43.0, -73.8, NAN, NAN), "route: well behind the origin is not");
+    fm_route_t hop = { "DAL", "HOU", 32.847f, -96.852f, 29.645f, -95.279f };
+    CHECK(fm_route_plausible(&hop, 30.9, -97.04, NAN, NAN), "route: a short hop, 100 km off its line, is (the 150 km floor)");
+
+    /* Which way: the bench's AAL2336, "CLE > DFW" on a jet 25 km SE of DFW
+     * heading east and climbing — the flight number flown the other way. */
+    fm_route_t cle = { "CLE", "DFW", 41.4117f, -81.8498f, 32.8968f, -97.038f };
+    CHECK(!fm_route_plausible(&cle, 32.77, -96.88, 87.0f, 2560.0f),
+          "route: climbing away from the destination is the flight the other way");
+    CHECK(fm_route_plausible(&cle, 32.77, -96.88, 300.0f, -1200.0f), "route: heading in and descending is arriving");
+    CHECK(fm_route_plausible(&cle, 32.77, -96.88, 120.0f, -800.0f), "route: a downwind leg away from it, descending, is arriving");
+    CHECK(fm_route_plausible(&cle, 32.77, -96.88, 300.0f, NAN), "route: heading in with no climb rate is arriving");
+    CHECK(fm_route_plausible(&cle, 32.77, -96.88, NAN, NAN), "route: no track, the position alone decides");
+    CHECK(fm_route_plausible(&aal, 39.9, -74.4, 160.0f, 1500.0f), "route: near the origin, heading out and climbing is leaving");
+    CHECK(fm_route_plausible(&aal, 39.9, -74.4, 340.0f, 1500.0f), "route: near the origin, climbing through a turn is leaving");
+    CHECK(!fm_route_plausible(&aal, 39.9, -74.4, 260.0f, -900.0f), "route: near the origin, heading in and descending is not leaving");
+    CHECK(fm_route_plausible(&aal, 33.3, -77.5, 200.0f, NAN), "route: mid-route heading for the destination is on it");
+    CHECK(!fm_route_plausible(&aal, 33.3, -77.5, 20.0f, NAN), "route: mid-route heading back the way it came is not");
 
     printf("END %d checks, %d failed\n", checks, fails);
     return fails != 0;
@@ -215,6 +261,20 @@ def main():
     if "--mutations" in sys.argv:
         src = open(SRC).read()
         mutants = [
+            ("route asks about registrations", "if (cs[3] < '0' || cs[3] > '9') return false;", ""),
+            ("route takes eight-character callsigns", "if (i >= 7 ||", "if (i >= 8 ||"),
+            ("route codes come from the airline object", 'const char *o = json_val(json, json + strlen(json), key);', 'const char *o = json_val(json, json + strlen(json), key); o = json_val(json, json + strlen(json), "airline");'),
+            ("route never falls back to ICAO", ' && !json_code(o, end, "icao_code", code, 5)) return false;', ') return false;'),
+            ("route ignores the off-line distance", "if (fabsf(xt) * R > off) return false;", "if (fabsf(xt) * R > off * 100.0f) return false;"),
+            ("route ignores which side of the origin", "    if (cosf(dth) <= 0.0f) return false;                                 /* behind the origin */\n", ""),
+            ("route runs past the destination", "if (at > d12) return false;", "if (at > d12 * 10.0f) return false;"),
+            ("route ignores the heading mid-route", "    return !dir || off_course(track, course(la3, lo3, la2, lo2)) < 90.0f;", "    return true || off_course(track, course(la3, lo3, la2, lo2)) < 90.0f;"),
+            ("route ends ignore which way", "        return (at_from && leaving) || (at_to && arriving);", "        return (at_from || at_to) || leaving || arriving;"),
+            ("route ignores the climb", "|| baro_rate > 0.0f;", ";"),
+            ("route ignores the descent", "|| baro_rate < 0.0f;", ";"),
+            ("route reads the track backwards", "off_course(track, course(la1, lo1, la3, lo3)) < 90.0f", "off_course(track, course(la3, lo3, la1, lo1)) < 90.0f"),
+            ("route ends count from anywhere", "at_from = d13 * R < 100.0f, at_to = d23 * R < 100.0f;", "at_from = d13 * R < 2000.0f, at_to = d23 * R < 2000.0f;"),
+            ("route short hops lose the floor", "fmaxf(150.0f, 0.15f * d12 * R)", "(0.15f * d12 * R)"),
             ("missed contact stays live", "m->t[i].live = false;", "(void)0;"),
             ("staleness never drops", "> FM_STALE_US", "> FM_STALE_US * 1000"),
             ("full table drops the newest", "if (m->t[j].t_seen_us < m->t[k].t_seen_us) k = j;", "if (m->t[j].t_seen_us > m->t[k].t_seen_us) k = j;"),
@@ -226,8 +286,6 @@ def main():
             ("select steps only forward", "(step < 0 ? -1 : 1)) % m->norder", "1) % m->norder"),
             ("select never wraps", "else        next = ((at + (step < 0 ? -1 : 1)) % m->norder + m->norder) % m->norder;",
              "else { next = at + (step < 0 ? -1 : 1); if (next < 0 || next >= m->norder) { hex_out[0] = 0; return; } }"),
-            ("labels ignore collisions", "if (on_glass(&a, cx, cy, glass_r) && clear_of(&a, placed, np))", "if (on_glass(&a, cx, cy, glass_r))"),
-            ("labels may leave the glass", "if (on_glass(&a, cx, cy, glass_r) && clear_of", "if (clear_of"),
             ("boost ignores emergencies", "a->squawk == 7700) return true;", "a->squawk == 7777) return true;"),
             ("boost ignores heading", "if (d < 60.0f) return true;", "return true;"),
             ("boost forgets the wrap", "if (d > 180.0f) d = 360.0f - d;", ""),

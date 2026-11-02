@@ -60,7 +60,7 @@ function showTab(name) {
   else if (name === "themes") lazyTab("themes", themeOpen);
   else if (name === "files") lazyTab("files", fmOpen);
   else if (name === "wifi") lazyTab("wifi", wifiOpen);
-  else if (name === "orb") lazyTab("home", () => loadHome());
+  else if (name === "orb") lazyTab("home", () => { loadFeedKey().catch(() => {}); return loadHome(); });
 }
 
 // wifiOpen is the Wi-Fi face's first request, and it asks for the cached table
@@ -413,6 +413,39 @@ $("#home-loc").onclick = () => {
     (e) => { msg.textContent = "the browser did not say (" + (e.message || "denied") + ") — search or pin the map instead"; },
     { enableHighAccuracy: false, timeout: 15000, maximumAge: 600000 });
 };
+
+// ---- the flight feed's adsb.lol API key (orb_flights.h) ----
+// Written, never read back: the orb answers set or not, the header and the last
+// four characters, and that is all this line shows.
+const fkeyURL = () => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/flights/key";
+function fkeyLine(d) {
+  return d && d.set ? "adsb.lol key set (\u2026" + d.tail + ", sent as " + d.header + ")"
+                    : "no adsb.lol key: the orb asks adsb.lol without one";
+}
+async function loadFeedKey() {
+  if (!current.ip) return;
+  $("#fkey-cur").textContent = fkeyLine(await readDeviceJSON(await hubFetch(fkeyURL())));
+}
+async function fkeyPost(body, what) {
+  const msg = $("#fkey-msg");
+  msg.textContent = what + "\u2026";
+  try {
+    const d = await readDeviceJSON(await hubFetch(fkeyURL(), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    }));
+    $("#fkey-cur").textContent = fkeyLine(d);
+    $("#fkey-key").value = "";
+    msg.textContent = d.set ? "saved; adsb.lol gets it on the orb's next request there" : "key removed";
+  } catch (e) {
+    msg.textContent = "the orb refused it: " + e.message;
+  }
+}
+$("#fkey-set").onclick = () => {
+  const key = $("#fkey-key").value.trim(), header = $("#fkey-hdr").value.trim();
+  if (!key) { $("#fkey-msg").textContent = "paste the key first"; return; }
+  fkeyPost(header ? { key, header } : { key }, "saving the key");
+};
+$("#fkey-clear").onclick = () => fkeyPost({ clear: true }, "removing the key");
 
 // ---- the search box: a city, coordinates, or a full plus code ----
 const HOME_COORDS = /^\s*([-+]?\d*\.?\d+)\s*[, ]\s*([-+]?\d*\.?\d+)\s*$/;

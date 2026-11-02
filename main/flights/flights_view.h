@@ -24,3 +24,4 @@ int          flights_opt_count(orb_app_t *app);
 const char  *flights_opt_label(orb_app_t *app, int idx);
 const char  *flights_opt_value(orb_app_t *app, int idx);
 void         flights_opt_sel(orb_app_t *app, int idx);
+void         flights_opt_arm(orb_app_t *app, bool armed);

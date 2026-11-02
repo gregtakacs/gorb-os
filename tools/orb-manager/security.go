@@ -339,6 +339,10 @@ var deviceRoutes = map[string][]string{
 	// what that point would become; POST sets or clears it. Device config like the
 	// zone it drives, and it reaches neither the card nor the slot.
 	"/api/v1/home": {http.MethodGet, http.MethodPost},
+	// The flight feed's adsb.lol API key: an owner credential the Orb tab writes.
+	// The orb never reads it back (GET says set/unset, the header, the last four
+	// characters), and it goes only to adsb.lol. Neither the card nor the slot.
+	"/api/v1/flights/key": {http.MethodGet, http.MethodPost},
 	// D39: the owner's sound settings (level, switches, quiet hours, glass offset,
 	// pattern override) and the bench door that plays a built-in sound with no theme.
 	// Both are device config the owner sets the way they set the zone, and neither

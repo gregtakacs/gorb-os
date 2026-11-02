@@ -202,6 +202,20 @@
       <span class="hint" id="home-msg"></span>
       <button id="home-clear" class="ghost" type="button" title="Forget the home; the clock keeps its zone">Forget home</button>
     </div>
+    <h3>Flight feed</h3>
+    <!-- The adsb.lol API key (orb_flights.h): an owner credential the orb keeps
+         beside the Wi-Fi password and sends only to adsb.lol. Written here,
+         never read back: the line below shows set or not, the header, and the
+         last four characters. -->
+    <div class="row"><span class="hint" id="fkey-cur">the key state loads with this tab</span></div>
+    <div class="row">
+      <input id="fkey-key" type="password" size="34" placeholder="adsb.lol API key" autocomplete="off" aria-label="adsb.lol API key">
+      <input id="fkey-hdr" size="14" placeholder="x-api-key" autocomplete="off" aria-label="Header the key is sent in"
+             title="The HTTP header adsb.lol wants the key in. Leave empty for x-api-key.">
+      <button id="fkey-set" class="ghost" type="button">Save key</button>
+      <button id="fkey-clear" class="ghost" type="button">Remove</button>
+    </div>
+    <div class="row"><span class="hint" id="fkey-msg"></span></div>
   </article>
 
 

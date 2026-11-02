@@ -39,8 +39,8 @@ assets,   data, ,           0x720000, 0x800000,
 # which esp_wifi may then repopulate, but which can no longer take the user's
 # SSID/passphrase with it, because those live here under "orb.net".
 # §43 moved it from 0xD60000 (the old `www` row ahead of it, 1.25 MB that nothing
-# ever read, is gone). A board crossing from Layout B keeps its credentials only if
-# these 24 KB are carried across by hand (read at the old offset, written here).
+# ever read, is gone). A board crossing from Layout B gets its 24 KB carried on its
+# first boot (main/util/orb_layout_carry.c): old offset → here, then the old copy erased.
 storage,  data, nvs,        0xF20000, 0x6000,
 # The app install ledger (plan §3.2): one 4 KB header sector plus up to 100 KB of
 # manifest, settings, geometry and wasm code per app, eight slots (B5's cap) —

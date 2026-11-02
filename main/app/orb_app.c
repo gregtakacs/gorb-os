@@ -190,7 +190,7 @@ static orb_app_t s_apps[] = {
  * is the bug where the menu lists a row the knob disagrees about.
  *
  * It is deliberately NOT a card row and NOT a fourth behaviour kind. A card
- * row's index keys its grant, fault and enable words in NVS (P4a), so filing an
+ * row's index keys its grant, fault and settings words in NVS (P4a), so filing an
  * OS feature under slot 1 would hand it the retired clock's words; and a kind
  * id is how a package names the module that interprets ITS data, which is not
  * what is happening — this row carries no data, only code. So it sits outside
@@ -460,10 +460,10 @@ static size_t orb_app_walk_gather(orb_app_t **list, size_t max)
 
 size_t orb_app_count(void)
 {
-    /* Only walkable entries count: a disabled app stays in the table so the
+    /* Only walkable entries count: a failed app stays in the table so the
      * APPS page can still show it with its reason, but the carousel must not
      * stop on a blank screen. The count is computed, not cached, because
-     * P4's enable/disable flips these flags at runtime and a cached count is
+     * install, uninstall and C2 flip these flags at runtime and a cached count is
      * one more thing to forget to update. Card rows join once installed AND
      * their behaviour_kind resolved to a registered module (walkable gather);
      * with nothing installed s_card is empty and this is the compiled count. */
@@ -504,7 +504,7 @@ size_t orb_app_rows(void)
      * row a caller enumerates. A sparse table (slot 2 and slot 5 installed,
      * 3 and 4 free) answers row() with NULL for the holes; ledger walkers
      * skip them. A rank-dense span would drift on every uninstall and hand
-     * a removed app's grant, fault and enable words to its successor —
+     * a removed app's grant, fault and settings words to its successor —
      * exactly the misfiling D19 forbids.
      *
      * D35 drew the boundary at ORB_APP_BASE, not ORB_APP_N: the compiled tier
@@ -653,7 +653,7 @@ esp_err_t orb_app_init_all(void)
      * init()s ahead of the clock's worker task (the boot-order rule above).
      * card_fill() leaves every card disabled until the run-on-boot decision
      * lands, so on a real flash this loop is inert and nothing is installed; the
-     * registry's host sentinel enables a row to prove an installed app's iface
+     * registry's host sentinel upserts a row to prove an installed app's iface
      * init/screen hooks run exactly like a compiled entry's. A card row here
      * always has an iface — the caller resolved behaviour_kind to a registered
      * module — so a NULL iface means an unregistered kind: it stays ledger-only
@@ -687,7 +687,7 @@ esp_err_t orb_app_init_all(void)
          * first widget tree (color_picker_init builds a fresh s_scr and leaks
          * the old one). Two
          * rows, one face: the carousel may show the same live module twice,
-         * and the ledger keeps each row's own grant, fault and enable words. */
+         * and the ledger keeps each row's own grant, fault and settings words. */
         /* The wasm iface is the exception: it is one iface over N instances, each with
          * its own engine, page and state keyed by flash_slot, so every row runs its own
          * init (§43; with the clock, picker and flights all wasm, the singleton rule
@@ -807,9 +807,8 @@ esp_err_t orb_app_activate(const orb_app_t *app_cp)
      * can never reach the iface derefs below and take the dial down with it. */
     if (!app->iface) return ESP_ERR_NOT_SUPPORTED;
 
-    /* D35's open follow-up (bench orb-B 2026-10-21): a card row whose enable
-     * word landed AFTER the boot gather — an app installed after the boot, a
-     * seeder enable pressed before any reboot — was never init()ed, and its
+    /* D35's open follow-up (bench orb-B 2026-10-21): a card row that landed AFTER
+     * the boot gather — an app installed after the boot — was never init()ed, and its
      * screen() answer is NULL until it is. Gather only builds rows installed at
      * the moment it runs. Build once here: both callers of this function, the
      * router's poll and the menu's press, run on the LVGL task, which is the

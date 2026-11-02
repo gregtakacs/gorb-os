@@ -20,7 +20,7 @@
 #include "orb_app.h"
 #include "orb_app_scan.h"   /* the /sd/apps drop zone registers beside the card */
 #include "orb_app_install.h"
-#include "orb_app_net.h"     /* orb_app_cred_sweep: the boot's secret sweep */ /* orb_app_install_resolve_boot: the card table from the apps partition */
+#include "orb_app_net.h"     /* orb_app_cred_sweep: the boot's secret sweep */
 #include "orb_jobs.h"
 #include "orb_home.h"
 #include "orb_tls_mem.h"
@@ -37,6 +37,7 @@
 #include "orb_usb_msc.h"   /* D38: the disk mode's claim, same seam, opposite mount rule  */
 #include "orb_log.h"       /* the RAM log ring: /api/v1/log's only source */
 #include "orb_panic.h"     /* the last panic, kept across its reset for /api/v1/status */
+#include "orb_layout_carry.h" /* storage across the Layout B -> C table change */
 #include "orb_theme.h"
 #include "art_bank.h"
 
@@ -96,6 +97,10 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_erase());
         ESP_ERROR_CHECK(nvs_flash_init());
     }
+
+    /* Before anything opens `storage`: a board that crossed from Layout B still keeps
+     * its credentials at the old offset, and nothing else on this boot could find them. */
+    orb_layout_carry_storage();
 
     /* A serial RESET ALL acked last boot lands its erase HERE, at the top of the
      * heap's rich moment — before the theme, Wi-Fi, or the display have anything

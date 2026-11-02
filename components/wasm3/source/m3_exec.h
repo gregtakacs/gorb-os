@@ -1978,6 +1978,12 @@ d_m3Op(Loop)
         // linear memory pointer needs refreshed here because the block it's looping over
         // can potentially invoke the grow operation.
         _mem = memory->mallocated;
+        // gorb-os addition (PROVENANCE.md): a back edge is where a guest can spin
+        // without ever calling, so the embedder's yield hook gets every iteration.
+        if (r == _pc) {
+            m3ret_t y = m3_Yield();
+            if (M3_UNLIKELY(y)) { r = y; break; }
+        }
     } while (r == _pc);
 
 #if d_m3HasStackSwitching

@@ -320,6 +320,15 @@ def lint(text):
           "the fault is billed where the trap is reported, in one place")
     # The strike cap is honoured live: release happens only once the broker says the
     # row is faulted, so a single trap keeps the app running and two end it.
+    # §43.4: the time budget. The strong m3_Yield answers the overrun trap, and the
+    # deadline is armed before the guest's stack call and stopped after it.
+    if not re.search(r"M3Result m3_Yield\(void\)\s*\{\s*return s_overrun \? s_overrun_trap : m3Err_none;", text):
+        fails.append("  device lint: m3_Yield no longer answers the overrun trap — a spinning "
+                     "app freezes the dial")
+    order(r"esp_timer_start_once\(s_budget", r"esp_execute_shared_stack_function\(",
+          "budget armed", "the guest call", "the deadline must run while the guest does")
+    order(r"esp_execute_shared_stack_function\(", r"esp_timer_stop\(s_budget\)",
+          "the guest call", "budget stopped", "a finished call must not trip the next one")
     order(r"orb_svc_faulted\s*\(", r"orb_wasm_unload\s*\(",
           "orb_svc_faulted check", "orb_wasm_unload",
           "the engine is released only at the second strike, not the first")
@@ -456,6 +465,12 @@ MUTATIONS = [
     ("rung before the broker", "seam_main",
      _rex(r"(    ESP_ERROR_CHECK\(orb_svc_init\(\)\);)",
           r"    orb_app_install_apply_code();\n\1")),
+    # lint: m3_Yield stops answering the deadline — a call-free loop runs forever.
+    ("yield ignores the deadline", "lint",
+     _sub("return s_overrun ? s_overrun_trap : m3Err_none;", "return m3Err_none;")),
+    # lint: the deadline is never armed.
+    ("budget never armed", "lint",
+     _sub("if (s_budget) esp_timer_start_once(s_budget, (uint64_t)s_budget_ms * 1000u);", ";")),
     # lint: the raw-call sig reverts to the module-dump underscore spelling — the
     # bench bug of 2026-10-21: m3_bind.c parses it as returns and refuses the link.
     ("underscore sig notation", "lint",

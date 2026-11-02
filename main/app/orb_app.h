@@ -16,7 +16,7 @@
  * the OS drops and logs those marks.
  *
  * Compiled-in entries only, for now. The .orbapp manifest reader, the `apps`
- * partition catalog, the enable/failed states and the install path arrive in
+ * partition catalog, the failed state and the install path arrive in
  * P4; the fields they need (slug, art offset/size, entry point) are already
  * here so the ABI does not move underneath them, and the entries stay
  * enumerable so a slug resolves to a slot rather than an integer.
@@ -178,7 +178,7 @@ struct orb_app {
     /* P4a: the apps-partition slot this card row was resolved from (0..7), or
      * -1 for a compiled-in entry. It is the row's STABLE identity: the registry
      * index of a card entry is ORB_APP_BASE + flash_slot by construction, so
-     * uninstalling one app never renumbers another's grant, fault or enable
+     * uninstalling one app never renumbers another's grant, fault or settings
      * words (the migration a rank-keyed table would need on every removal).
      * boot_resolve assigns it from the flash scan; the install ladder from the
      * verdict. card_fill places the entry at exactly this index. */
@@ -301,10 +301,9 @@ struct orb_app {
  *  broker's grant word. */
 int orb_app_card_upsert(const orb_app_t *row);
 
-/** P4a enable/uninstall. Both refuse compiled-in entries; the toggle and the
- *  erase exist for card apps. Context: like card_upsert, these run on the
- *  worker or the boot ladder (the enable call additionally from the httpd
- *  task) — they only write scalars, never widgets. */
+/* P4a uninstall. It refuses compiled-in entries; the erase exists for card apps.
+ * Context: like card_upsert, it runs on the worker or the boot ladder — it only
+ * writes scalars, never widgets. */
 /** Free a card row's table entry. False means refused or absent: an unknown
  *  slug, or the row is on the glass (current or active) — the walkable set may
  *  not lose the entry the knob is holding. NVS cleanup is the caller's, which
@@ -312,7 +311,7 @@ int orb_app_card_upsert(const orb_app_t *row);
  *  slot plus stale owner state is the dirty-slot case the install wipes. */
 bool orb_app_card_remove(const char *slug);
 /** True for a row that lives in the card table (P4a keying check for the
- *  broker's per-slot words; compiled and shell rows are never togglable). */
+ *  broker's per-slot words; compiled and shell rows are never uninstallable). */
 bool orb_app_is_card(const orb_app_t *app);
 
 /* ---- the service tier (D36) ----------------------------------------------
@@ -322,7 +321,7 @@ bool orb_app_is_card(const orb_app_t *app);
  * menu view, because "what rows exist on the glass" already has one owner — and
  * a second one is the bug where the menu and the knob disagree about what is
  * installed. They are NOT card rows: a card row's index is its NVS key for
- * grants, faults and the enable word (P4a), and an OS feature with no capability
+ * grants, faults and settings (P4a), and an OS feature with no capability
  * demand and no uninstall must not file words under a retired app's key. So they
  * live outside the ledger span, at indices >= ORB_APP_MENU_BASE.
  */

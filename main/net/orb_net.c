@@ -58,7 +58,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "nvs.h"
 #include "nvs_flash.h"
 
-#include "orb_app_net.h"   /* /api/v1/flights/key: the flight tracker's credential (§43) */
+#include "orb_app_net.h"   /* the per-app credential store behind /api/v1/apps/cfg secrets (§43) */
 #include "orb_home.h"   /* /api/v1/home: the OS home location (flight-tracker-design §6.4) */
 #include "orb_net.h"
 #include "input_router.h"
@@ -1067,7 +1067,7 @@ static void creds_commit(const char *ssid, const char *pass)
 
 /* Erase the whole application store, then let the caller reboot into the
  * first-boot branch. This is a FACTORY reset: the literal `ALL` in the verb is the
- * scope, so the theme choice, the grant and enable words, every per-app setting, the
+ * scope, so the theme choice, the grant words, every per-app setting and secret, the
  * fault ledger and the idle-dim timeout die with the credentials. `storage` carries
  * all of those as separate namespaces (orb.net, orb.settings, orb.apps, orb.grants,
  * orb.fault, orb.idle, orb.app<slot>), and erasing the partition rather than a list
@@ -1100,7 +1100,7 @@ static void creds_commit(const char *ssid, const char *pass)
  * The limit of "every namespace": NVS is everything an owner can set, and it is all
  * gone, but installed apps resolve their rows from the `apps` partition headers
  * (orb_app_install_resolve_boot), not from NVS. A reset orb therefore still carries
- * its app blobs and still lists them on the dial — with their grants, enables and
+ * its app blobs and still lists them on the dial — with their grants, secrets and
  * per-app settings erased, so each one comes back defaulted and unarmed. Clearing
  * those headers is uninstall, one app at a time, and that asymmetry is worth knowing
  * before this verb is advertised as "erases the device". */
@@ -2408,8 +2408,11 @@ static esp_err_t h_status(httpd_req_t *req)
      * on the single httpd task, so one instance is safe, and .bss is the honest
      * place for a buffer this size. Nothing on the host checks this one. The
      * /api/v1/config buffer has host_tz_test.py recomputing its worst case from the
-     * zone table, and this has no equivalent. */
-    static char json[2048];
+     * zone table, and this has no equivalent.
+     * §43: PSRAM, and 6 KB. Five installed apps' records (wasm apps carry more of them)
+     * overflowed 2048 B on orb-A ("status body overflow (2090 B)"), and 2 KB of internal
+     * .bss is worth more elsewhere; httpd copies out of it, so PSRAM costs nothing. */
+    EXT_RAM_BSS_ATTR static char json[6144];
 
     /* Which A/B slot is running, and whether the bootloader still considers it
      * unproven. This is what makes an OTA observable: /api/v1/ota stages into the
@@ -2517,7 +2520,7 @@ static esp_err_t h_status(httpd_req_t *req)
      * makes "no code path lets an app call below its grant" checkable from
      * the LAN — a broker nobody can audit is a broker nobody has to trust.
      * Rows, not walkable entries: the ledger is exactly about the failed
-     * and disabled apps the carousel hides. */
+     * and failed apps the carousel hides. */
     /* D35 grew the shipped ledger past the old 1024 B static's six-row reach
      * (the seeded pair names caps and slugs longer than the compiled trio
      * did), and this file's own memory note rules out growing an internal
@@ -3052,88 +3055,6 @@ static esp_err_t h_home_post(httpd_req_t *req)
 }
 
 /* --------------------------------------------------------------------------
- * The flight tracker's adsb.lol API key. An owner credential, kept by the OS's
- * per-app credential store (orb_app_net.h) and attached to the app's requests by
- * flag, so the app never reads it either. Written here and never read back: GET
- * says whether one is set, the header it goes in, and its last four characters.
- * The URL predates the store and stays because the hub calls it.
- *
- * GET  /api/v1/flights/key
- * POST /api/v1/flights/key {"key":"...","header":"x-api-key"}   header optional
- * POST /api/v1/flights/key {"clear":true}
- * ------------------------------------------------------------------------ */
-#define NET_FKEY_BODY_MAX 256
-
-static esp_err_t fkey_reply(httpd_req_t *req, const char *state)
-{
-    char hdr[ORB_APP_CRED_HDR_MAX + 1], tail[5], b[160];
-    /* §43: an alias for the flight tracker's declared `key` secret, kept for the hub
-     * until it writes that through /api/v1/apps/cfg like any other app option. */
-    const bool set = orb_app_cred_info(orb_app_find_slug("flights"), "key", hdr, sizeof hdr, tail);
-    snprintf(b, sizeof b, "{%s%s%s\"set\":%s,\"header\":\"%s\",\"tail\":\"%s\"}",
-             state ? "\"state\":\"" : "", state ? state : "", state ? "\"," : "",
-             set ? "true" : "false", hdr, set ? tail : "");
-    return httpd_resp_sendstr(req, b);
-}
-
-static esp_err_t h_fkey_get(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return fkey_reply(req, NULL);
-}
-
-static esp_err_t h_fkey_post(httpd_req_t *req)
-{
-    static char body[NET_FKEY_BODY_MAX + 1];
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    const int clen = (int)req->content_len;
-    if (clen <= 0 || clen > NET_FKEY_BODY_MAX) {
-        httpd_resp_set_status(req, clen > 0 ? "413 Payload Too Large" : "400 Bad Request");
-        return httpd_resp_sendstr(req, clen > 0 ? "{\"error\":\"body too large\"}"
-                                                : "{\"error\":\"content-length required\"}");
-    }
-    int got = 0;
-    while (got < clen) {
-        const int r = httpd_req_recv(req, body + got, (size_t)(clen - got));
-        if (r <= 0) {
-            httpd_resp_set_status(req, "400 Bad Request");
-            return httpd_resp_sendstr(req, "{\"error\":\"body read failed\"}");
-        }
-        got += r;
-    }
-    body[got] = '\0';
-    const size_t len = (size_t)got;
-    const char *why = NULL;
-    long clr = 0;
-    bool cleared = false;
-    if (json_int(body, len, "clear", &clr) && clr) {
-        why = orb_app_cred_set(orb_app_find_slug("flights"), "key", NULL, NULL);
-        cleared = true;
-    } else {
-        /* json_str drops a backslash and keeps what follows; a key with one in
-         * it would be stored as something other than what was sent. */
-        for (const char *q = body; !why && *q; q++)
-            if (*q == '\\') why = "no escapes";
-        char key[ORB_APP_CRED_MAX + 1], hdr[ORB_APP_CRED_HDR_MAX + 1];
-        const bool has_hdr = !why && json_find(body, len, "header");
-        if (!why && !json_str(body, len, "key", key, sizeof key)) why = "key required (a string, at most 128)";
-        if (!why && has_hdr && !json_str(body, len, "header", hdr, sizeof hdr)) why = "header not a string, or too long";
-        if (!why) why = orb_app_cred_set(orb_app_find_slug("flights"), "key", key, has_hdr ? hdr : NULL);
-        memset(key, 0, sizeof key);
-    }
-    memset(body, 0, sizeof body);                 /* the key does not linger in .bss */
-    if (why) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        char b[112];
-        snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
-        return httpd_resp_sendstr(req, b);
-    }
-    return fkey_reply(req, cleared ? "cleared" : "keyed");
-}
-
-/* --------------------------------------------------------------------------
  * Sound — D39's owner settings and the bench door (docs/sound-plan.md §5).
  *
  * GET /api/v1/sound answers the settings plus the engine's own counters, so a bench
@@ -3563,7 +3484,7 @@ static bool dispatch_serial_cmd(char *line, size_t vlen)
      * line on an open console must never wipe a working device, so the destructive
      * verb is un-shoutable-by-accident — and ALL is the scope it earns. Everything in
      * both NVS partitions goes (see net_factory_reset): credentials, tz, name, mode,
-     * the theme choice, the app grants and enables, every per-app setting, the fault
+     * the theme choice, the app grants, every per-app setting and secret, the fault
      * ledger and the idle-dim timeout. The ack is therefore final — no door reopens
      * this state, because the orb comes back as the unconfigured provisioning AP it
      * was the day it was flashed — named only by the default word the reset itself
@@ -4613,10 +4534,9 @@ static bool q_param_path(httpd_req_t *req, const char *key, char *out, size_t ou
  * no cable at it. It runs the same net_factory_reset(), so "reset the settings,
  * not the flash" means
  * here exactly what it means on the console: credentials, tz, name, mode, grants
- * and enable words go; the apps partition, the theme slot, and everything on the
- * card stay. Installed rows come back off — D36 made every app, the seeded
- * clock and picker included, an ordinary card row that boots as installed and
- * stands until its owner turns it on. The board comes back unconfigured — a
+ * words go; the apps partition, the theme slot, and everything on the card stay.
+ * Installed apps come back installed with default settings and no secrets. The
+ * board comes back unconfigured — a
  * factory-boot SoftAP named
  * "The Orb" — so this is the one LAN verb that can make the caller's own orb
  * unreachable, which is why it demands the same literal ALL the serial door
@@ -5650,6 +5570,21 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
         /* D36: no row carries a shipping label. The hub seeds the clock and the
          * picker as ordinary .orbapp files through this page’s own doors, so a
          * row’s history is not a fact about the row — the ledger is the ledger. */
+        /* §43: the ids of the app's secret settings, so the hub can draw a write-only
+         * field for each without knowing the app. Ids are [a-z0-9_] by the reader's
+         * grammar, so they need no escape; 16 of 15 B is 288 B of the row's headroom. */
+        char secrets[16 * 18 + 3];
+        size_t sn = 0;
+        secrets[sn++] = '[';
+        for (int k = 0; k < a->n_settings; k++) {
+            if (a->settings[k].type != ORB_SET_SECRET) continue;
+            const int m = snprintf(secrets + sn, sizeof secrets - sn, "%s\"%s\"",
+                                   sn > 1 ? "," : "", a->settings[k].id);
+            if (m < 0 || (size_t)m >= sizeof secrets - sn - 1) break;
+            sn += (size_t)m;
+        }
+        secrets[sn++] = ']';
+        secrets[sn] = '\0';
         /* D37: the identity tuple rides the card tier and only the card tier. A
          * compiled row was never a container, so its five words are zero, and printing
          * that zero would tell an operator reading the field on the hub that their clock
@@ -5661,14 +5596,14 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
             "\"failed\":%s,\"walkable\":%s,\"on_glass\":%s,"
             "\"geom_crc\":%" PRIu32 ",\"code_crc\":%" PRIu32 ","
             "\"code_size\":%" PRIu32 ",\"serial\":%" PRIu32 ","
-            "\"editor_crc\":%" PRIu32 ",\"version\":\"%s\"}",
+            "\"editor_crc\":%" PRIu32 ",\"version\":\"%s\",\"secrets\":%s}",
             seen++ ? "," : "", e_slug, e_title, (int)(i - ORB_APP_BASE), caps,
             a->period_ms, a->n_settings,
             a->failed ? "true" : "false",
             a->iface ? "true" : "false",
             (a == orb_app_current() || a->active) ? "true" : "false",
             a->geom_crc, a->code_crc, a->code_size, a->serial, a->editor_crc,
-            e_version);
+            e_version, secrets);
         if (w < 0 || (size_t)w >= rowsz) {        /* cannot: bounds are arithmetic;
                                                   * a placeholder keeps the body valid */
             ESP_LOGE(TAG, "installed app row exceeded %d B", (int)rowsz);
@@ -5973,20 +5908,18 @@ static const char *door_http_status(esp_err_t e)
     }
 }
 
-/* POST /api/v1/apps/face?id=<slug> — the glass door. Enable puts a row in the
+/* POST /api/v1/apps/face?id=<slug> — the glass door. An install puts a row in the
  * carousel; it does not put it on the glass. Until now the resume record that
  * names the face a boot returns to had exactly one network writer: the theme
  * store's own job (orb_theme.c's bundle_job), and the hub's seed skips that store
  * whenever the card already carries themes — the owner-shelf rule. A board that
- * took the skip finished provisioning enabled, card-backed and themed while
+ * took the skip finished provisioning installed, card-backed and themed while
  * still showing the menu: verified green, and half set up (bench, owner,
  * 2026-10-29). This door is the missing primitive — park the glass on a row the
  * dial already runs, and reboot onto it, without touching the shelf.
  *
  * The gate is the two bits the Apps face gates its own buttons on: a row must be
- * enabled and walkable. Never the enable word — a face its owner switched off
- * would come back refused at boot and fall home anyway (resume_last), and forcing
- * one on would tread on the rule the store stands on. An already-parked row
+ * un-faulted and walkable. An already-parked row
  * answers without arming a boot nobody needed. */
 static esp_err_t h_app_face(httpd_req_t *req)
 {
@@ -6037,9 +5970,8 @@ static esp_err_t h_app_face(httpd_req_t *req)
     return httpd_resp_sendstr(req, b);
 }
 /* POST /api/v1/apps/clear?id=<slug> — the fault-record door, the third owner
- * door (P4a's set). A built-in app that failed twice at boot cannot use the
- * enable door above to revive (it refuses non-card rows, and a quarantine also
- * leaves installed=false), and the only other way back was RESET ALL — which
+ * door (P4a's set). A built-in app that failed twice at boot reads
+ * installed=false, and the only other way back was RESET ALL — which
  * wipes the owner's WiFi with it. This clears just the fault record; a reboot
  * rebuilds the app into the carousel. Card rows are accepted too, so an owner
  * can clear a failed card app without uninstalling it. */
@@ -7553,7 +7485,7 @@ static esp_err_t net_start_httpd(void)
      * below rather than trusting the count. The /timezone page brings the table
      * to 15 registered routes; the /apps pair brought it to 25, the /apps install
      * POST is the 26th, the /api/v1/sd/app upload POST is the 27th, and P4a's
-     * enable and uninstall doors make 29 registered, and the /api/v1/name door
+     * uninstall door and its since-retired twin made 29 registered, and the /api/v1/name door
      * makes 30 — one over the old ceiling of 29 that line records, still inside
      * the 32 that keeps the headroom the plan's route budget (P5's APPS-page mirror
      * and the theme pair) was priced against touching this line again. The
@@ -7708,8 +7640,6 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/name",     .method = HTTP_POST, .handler = h_name_post },
         { .uri = "/api/v1/home",     .method = HTTP_GET,  .handler = h_home_get },
         { .uri = "/api/v1/home",     .method = HTTP_POST, .handler = h_home_post },
-        { .uri = "/api/v1/flights/key", .method = HTTP_GET,  .handler = h_fkey_get },
-        { .uri = "/api/v1/flights/key", .method = HTTP_POST, .handler = h_fkey_post },
         { .uri = "/api/v1/sound",    .method = HTTP_GET,  .handler = h_sound_get },
         { .uri = "/api/v1/sound",    .method = HTTP_POST, .handler = h_sound_post },
         { .uri = "/api/v1/sound/test", .method = HTTP_POST, .handler = h_sound_test },

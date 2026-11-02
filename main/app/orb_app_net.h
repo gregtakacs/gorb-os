@@ -10,9 +10,8 @@
  * body lands in a PSRAM buffer the app reads in pieces and frees.
  *
  * Credentials never cross into an app. The owner stores one (a header name and a
- * value) per app through the LAN door; an app asks for it to be attached to a request
- * by flag, and only ever learns whether one is set. The flight tracker's adsb.lol key
- * is the first, and /api/v1/flights/key stays its door.
+ * value) per declared secret setting through POST /api/v1/apps/cfg; an app asks for it
+ * to be attached to a request by id, and only ever learns whether one is set.
  *
  * The request-side calls run on the LVGL task (from the wasm shim); the work runs on
  * the service's own task. The state word is the only thing the two share in flight.
@@ -76,7 +75,7 @@ int32_t   orb_app_json_skip(int slot);
 const char *orb_app_cred_set(const struct orb_app *app, const char *id, const char *key,
                              const char *header);
 /** Read every declared secret of `app` into the RAM copy requests answer from.
- *  Internal-stack callers only (it reads NVS): the bind at boot and the enable door. */
+ *  Internal-stack callers only (it reads NVS): the bind at boot. */
 void        orb_app_cred_preload(const struct orb_app *app);
 /** From the RAM copy: whether the app's secret `id` is set. */
 bool        orb_app_cred_has(const struct orb_app *app, const char *id);

@@ -39,6 +39,11 @@ re-recorded here.
   component's config flags are PRIVATE) and refused every module, so the walk lives
   here, built with the flags that define the struct. Appended at the end of the file;
   upstream code is untouched.
+- `m3_exec.h` `op_Loop`: one `m3_Yield()` per loop iteration (plan §43.4). Upstream
+  yields only on calls, so a guest spinning in a call-free loop never reached the
+  embedder; `orb_app_wasm.c` overrides the weak `m3_Yield` with a deadline check, so an
+  app that runs past its time budget traps (and C2's two strikes quarantine it) instead
+  of freezing the dial.
 
 ## Build flags (see CMakeLists.txt)
 

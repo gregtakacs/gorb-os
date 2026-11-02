@@ -408,7 +408,7 @@ void orb_app_net_release(int slot)
  * NVS is read only from a task on an internal stack: a flash read with the stack in
  * PSRAM trips IDF's assert in spi_flash_disable_interrupts_caches_and_other_cpu, and
  * both the guest's stack and this service's are PSRAM. So a request answers from a
- * RAM copy that the bind (boot, or the enable door — both internal stacks) and the
+ * RAM copy that the bind (boot, an internal stack) and the
  * LAN door fill, and never from NVS. */
 
 #define CRED_PART "storage"

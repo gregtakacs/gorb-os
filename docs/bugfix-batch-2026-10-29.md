@@ -24,43 +24,13 @@ seeding. The boot log witnesses it: `orb_theme: slot holds bundle "Aviator"`.
 so the skeleton seeds over it and the board reboots onto the skeleton.
 The hub's `ThemeList` binding gains `CardCount`; the firmware already reports it.
 
-## 2. Install lands disabled; a manual enable was needed
+## 2. Install landed in an off state
 
-**Symptom.** After provisioning the clock shows as installed, but the owner had
-to open the orb's menu to enable it. Owner ruling: installed means enabled;
-there is no separate enable state.
-
-**Root cause.** Both places that build a registry row memset it and never set the enable bit:
-`orb_app_install.c:755` inside `install_ladder` (the install door) and `orb_app_install.c:969`
-inside `orb_app_install_resolve_boot` (the card-sourced boot row, the file's own comment calls
-it `card_fill`). The row's default was therefore `false`. `apply_enable` is the rung that could
-have carried the bit and it does honour an absent word as ON, but it starts with
-`if (!orb_app_card_count()) return;` — a slot whose card copy is gone, or a card the scan
-refuses, leaves the whole rung skipped and the row standing disabled. The hub's ladder POSTs
-enable after an install, which is the only reason the bench ever saw a clock come on.
-
-**Fix.** Both fill sites now set `row.enabled = true`, so an installed row is an enabled row
-wherever it came from and whatever the card is doing this boot. The `st` word the broker holds
-stays readable and writable for recovery, but no surface treats it as a toggle: the dial's door
-page loses its enable switch (bug 3's change carries this). The uninstall door stays, because an
-installed app is still removable.
-
-**Second correction, same day, on this section's own claim.** The first version of this section
-named `orb_app.c/card_fill` and said the fix was one line there. It was not: `fae7c23` changed
-`apply_enable`'s arms and the compiled shell row's `.enabled`, and wrote a comment claiming
-`card_fill` set the bit. Nothing set it. The bench re-report of 2026-10-29 (fresh board, clock
-reported installed, dial showing no face, door offering uninstall) is the direct consequence, and
-it is the second fix in this document that was described and never written. The pin is
-`TestBootRowLandsEnabled` in `library_test.go`, which reads both function bodies out of the
-firmware file and goes red on the mutation — verified red, not assumed.
-
-**Correction on the hub step, same day.** This section claimed `installflow.go`
-stopped printing the `enabled` step. It does not, and it should not: the ladder
-POSTs enable after a fresh upload (`installflow.go:388`) and after a skip whose row
-the ledger holds off (`installflow.go:309`). The second is the only way a board
-running pre-fix firmware gets its stale off word cleared, and the first still buys
-C2's fault clear. The step is honest for exactly as long as one board on the bench
-can still land a row disabled.
+**Retired by D47 (app-platform-plan §43.3, 2026-11-01).** The bench saw an installed clock that
+still needed a manual turn-on; the owner's ruling was that installed means on. The 2026-10-29 fix
+set the registry's on bit at both row-fill sites. D47 then deleted the on/off state outright: the
+registry flag, the stored word, the door, the boot rung and the hub's turn-on step are gone, so this
+bug has no surface left to recur on. An app is installed or it is not.
 
 ## 3. App menu offers install and uninstall together
 
@@ -73,18 +43,13 @@ unconditionally. A row that is off or faulted therefore reads "install" and
 "uninstall" at once.
 
 **Correction, same day.** The section above described a fix that was never
-written, and the "off: `enable` only" bullet below it is wrong: it contradicts
-both `install means enabled` and `host_menu_test.py`, which already specified
-`install`, `uninstall`, `remove from card` for an off row. The page kept drawing
-`enable` with no uninstall. The owner's bench pass caught it on a freshly flashed
-board, and `tools/host_menu_test.py` reported 13 failures against the file as
-committed.
+written. The owner's bench pass caught it on a freshly flashed board, and
+`tools/host_menu_test.py` reported 13 failures against the file as committed.
 
 **Fix, now actually in the file.** `appact_id` emits the row list the test
 specifies, and `label_appact` names the off door `install`:
 
-- on the dial, enabled, not failed: `show on the dial`, `uninstall`, `remove from card`
-- off: `install`, `uninstall`, `remove from card`
+- installed, not failed: `show on the dial`, `uninstall`, `remove from card`
 - failed: `retry`, `uninstall`, `remove from card`
 - card-only file: `install`, `remove from card`
 
@@ -290,14 +255,14 @@ the clock is installed. The dial's APPS page says `clock off`, its door page off
 
 **Root cause.** `installflow.go` `installOneApp` asked one question and treated the
 answer as the whole promise: it reads the dial's app ledger, finds a row for the
-slug, prints `skipped / already on the dial`, posts the enable word, and returns
+slug, prints `skipped / already on the dial`, and returns
 success. The installed tier is a list of `apps` partition headers, written by
 `orb_app_install_resolve_boot`. For the native apps that exist today that header
 carries no `code_size` to point at — the bench's known-good orb-B reports
 `geom_crc:0, code_crc:0, code_size:0` for its healthy clock — so a header says a row
 exists and says nothing about the bytes. The card tier is where a card app's code
 lives, and the ledger reports it separately in `apps`. A row over an empty `/apps`
-is a row that enables, never reaches the glass, and answers `installed` to a hub
+is a row that never reaches the glass, and answers `installed` to a hub
 that never looked at the second tier.
 
 **Fix.** `installOneApp` believes an installed row only when the card tier backs it
@@ -315,7 +280,7 @@ took the reason with it, so the log showed only the probe exemption saying
 
 ## 10. A join-time install never seeded a theme, so the clock had no face
 
-**Symptom.** The clock installs, enables, and still does not appear on the dial. Bug 1's
+**Symptom.** The clock installs and still does not appear on the dial. Bug 1's
 fix did not prevent it on the freshly flashed board.
 
 **Root cause.** The clock is a themed face: with no theme stored, the shell keeps the
@@ -337,19 +302,18 @@ no other change. `on_glass` is the dial's own answer to "is this the face it is 
 and the hub's `AppInstalledRow` had no field for it, so no caller could ask the question
 the owner was asking. It does now.
 
-## 11. A "clean flash" leaves the app registry and the enable words standing
+## 11. A "clean flash" leaves the app registry and the owner's words standing
 
 **Symptom.** The board behaves as though it were wiped and yet arrives holding an
-installed clock row, an off enable word, and an empty card.
+installed clock row, its stored owner words, and an empty card.
 
 **Root cause.** The bundle's own `flasher_args.json` writes four regions: `0x0`
 bootloader, `0x8000` partition table, `0x11000` otadata, `0x20000` app. The
-installed ledger lives in `apps` at `0xD80000` and the enable words in `storage`
+installed ledger lives in `apps` at `0xD80000` and the per-row words in `storage`
 NVS at `0xD60000` (`partitions.csv`), and a flash touches neither. The retention
 invariant at the head of that file is deliberate — it is what lets credentials
 survive an upgrade — and it applies to a reflash exactly as it applies to an OTA.
-So `apps` keeps the row and `storage` keeps the stored off word the pre-bug-2
-firmware wrote, while the card the owner formatted holds nothing.
+So `apps` keeps the row and `storage` keeps its words, while the card the owner formatted holds nothing.
 
 **Fix.** None in the flash path: erasing `storage` on every reflash would take the
 owner's Wi-Fi credentials with it, which the invariant exists to prevent, and it
@@ -368,7 +332,7 @@ the initial clock only app and the skeleton theme to both flash and the sd card.
 
 **Why the hub has to remember this rather than read it.** Bug 11 is the reason no
 device answer exists: a reflash writes four regions and leaves `apps` (the installed
-rows) and `storage` NVS (the enable words) standing on purpose, so a leftover row and a
+rows) and `storage` NVS (the per-row words) standing on purpose, so a leftover row and a
 row the owner chose look identical from the far side. The only moment the two cases
 separate is the flash itself, and the question must be asked before the flash files the
 chip as proven: had this MAC already been an orb on this hub's books.
@@ -470,7 +434,7 @@ bits and card-copy presence, and the card's own theme count — and `h_libraryIn
 on the automatic arm unless that verify is clean. A refusal leaves the slate mark armed, so the
 next announce retries the seed instead of leaving the board half-written and marked finished. Four
 tests (`seedverify_test.go`) pin the faceless-row, disabled-row, empty-theme refusals and the green
-board. `TestBootRowLandsEnabled` still pins the firmware enable bit from #2.
+board. (`TestBootRowLandsEnabled` pinned the on bit from #2 until D47 retired it.)
 
 *Open this orb* moved off the raw fleet scan and onto a new `GET /api/orb/where?mac=` that resolves
 a chip to its live address by MAC through the fleet store — the same answer, reached by the one
@@ -675,11 +639,9 @@ image no matter what the tree says.
 
 **Two real defects did fall out of that pass, and both were mine.**
 
-1. Bug 2's fix was never written. `orb_app_install.c` memsets its row at both fill sites and
-   neither set the enable bit — the same failure shape as bug 3, caught the same way, by reading
-   the file instead of trusting the commit message. A board booting from its card therefore
-   restored the clock installed-and-off, and the dial showed no face. Fixed at both sites, pinned
-   by `TestBootRowLandsEnabled`, and verified red by mutation before it was trusted.
+1. Bug 2's fix was never written — the same failure shape as bug 3, caught the same way, by
+   reading the file instead of trusting the commit message. (The state it concerned is retired
+   by D47; see bug 2.)
 2. Bug 12's clean slate could not run on the lonely path. The page's join-time gate read the SD
    card, saw the previous orb life's leftovers, and never POSTed. A chip erase does not touch the
    card, so every lonely-erased board had leftovers. The gate moved into the hub behind the slate
@@ -733,10 +695,10 @@ instant Connect is pressed is the door opening, not a fault.
 
 **Two: the orb reboots again before the theme lands.** This was the known
 firmware debt, mitigated on purpose: the upload door builds its registry at
-boot, so a clock freshly enabled mid-run is invisible to it, and the door
+boot, so a clock freshly installed mid-run is invisible to it, and the door
 cries "no card in the socket" at a card sitting right there. The hub takes one
 reboot for it and says exactly that on the step: "the upload door waits on a
-boot the fresh enable never got — rebooting for it." No card is lost; one boot
+boot the fresh install never got — rebooting for it." No card is lost; one boot
 is spent, and the patience above covers the silence it creates. The real fix
 is firmware (`orb_net.c` distinguishing missing-card from
 uninitialized-registry) and stays on the books as debt. — PAID the same
@@ -782,8 +744,8 @@ for provisioning, and the theme lands on the first upload. The gate
 going through `theme_src()`, the boot registration, the recommit branch's
 vocabulary, and the single copy of the declaration in the tree — verified red
 when the old door line is pasted back. `host_app_registry_test.py` carried a
-stale D40 assertion (card rows now land *enabled*; commit 8748a72 shipped that
-ruling and missed the test) and is updated to the new contract. The rest of
+stale D40 assertion (commit 8748a72 shipped that ruling and missed the test) and
+is updated to the new contract. The rest of
 the host suite passes; `host_carousel_test.py`,
 `host_orbapp_install_test.py` and `host_svc_test.py` fail identically on the
 clean pre-fix tree — pre-existing, unrelated, and left on the books.
@@ -867,8 +829,8 @@ enabled and on the card; the dial has not made it the face yet." The orb sat on
 the menu. The owner's ruling on the report: that is a half-set-up board, and the
 modal has no business closing on it.
 
-**Root cause.** Nothing in the seed moves the glass. `POST /api/v1/apps/enable`
-persists the enable word and flips RAM; it never switches the screen. The face a
+**Root cause.** Nothing in the seed moves the glass: installing a row never
+switches the screen. The face a
 dial boots to is one NVS record, `orb_page/last`, and `input_router.c` writes it
 from a real switch (`page_remember`) or from one network path: `orb_theme.c`'s
 `bundle_job`, which stores a theme, calls `input_router_remember_slug("clock")`
@@ -885,7 +847,7 @@ the knob — the same species of dead end as item 19's "enter its IP", reported 
 same way: a soft exit for a condition only the operator can resolve.
 
 **Fix.** The firmware gained the primitive the seed was missing:
-`POST /api/v1/apps/face?id=<slug>` (`h_app_face`), gated on enabled, un-faulted and
+`POST /api/v1/apps/face?id=<slug>` (`h_app_face`), gated on installed, un-faulted and
 walkable,
 which writes the resume record and arms the same 750 ms reboot `bundle_job` arms,
 and answers `parked` without a boot when the row already wears the glass. The hub

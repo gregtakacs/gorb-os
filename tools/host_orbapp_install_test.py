@@ -787,18 +787,18 @@ MUTATIONS = [
      _m("""    uint8_t *scratch = heap_caps_malloc(ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS * 4u +
                                         ORBAPP_SETTINGS_MAX * sizeof(orb_setting_desc_t),
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!scratch) { install_close(fd);
+    if (!scratch)
         return install_failed(ESP_ERR_NO_MEM, "out of memory for the settings table",
-                              why, whysz); }
+                              why, whysz);
     uint32_t *sw = (uint32_t *)scratch;
     orb_setting_desc_t *settings = (orb_setting_desc_t *)(scratch +
                                         ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS * 4u);""",
         """    orb_setting_desc_t settings[ORBAPP_SETTINGS_MAX];
     uint32_t sw[ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS];
     uint8_t *scratch = NULL;
-    if (false) { install_close(fd);
+    if (false)
         return install_failed(ESP_ERR_NO_MEM, "out of memory for the settings table",
-                              why, whysz); }""")),
+                              why, whysz);""")),
     ("upload scratch carries the walk's extension (a half-file is selectable)", "device",
      _m('#define APPS_SCRATCH "upload.part"',
         '#define APPS_SCRATCH "upload.orbapp"')),

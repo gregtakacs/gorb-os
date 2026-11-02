@@ -231,9 +231,39 @@ static void xcall_fn(void)
     s_xcall.r = m3_Call(s_xcall.f, s_xcall.argc, s_xcall.argv);
 }
 
+/* ---- the time budget (§43.4) ----------------------------------------------------
+ * A guest runs on the LVGL task, so one that loops forever is a frozen dial. wasm3 has
+ * no instruction budget of its own; it calls the weak m3_Yield() on every call and —
+ * by the recorded addition in components/wasm3 — on every loop iteration, and this
+ * file's strong m3_Yield answers a trap once the call's deadline passed. The deadline
+ * is an esp_timer that only sets a flag, so the check on the hot path is one load. The
+ * trap bills C2 exactly like any other: a second overrun quarantines the app. */
+#ifndef ORB_WASM_INIT_BUDGET_MS
+#define ORB_WASM_INIT_BUDGET_MS 1000u   /* orb_init: builds the page, compiles on first use */
+#endif
+#ifndef ORB_WASM_CALL_BUDGET_MS
+#define ORB_WASM_CALL_BUDGET_MS 250u    /* every other entry; the shipped apps use < 40 ms */
+#endif
+
+static const char s_overrun_trap[] = "[trap] the app ran past its time budget";
+static esp_timer_handle_t s_budget;
+static volatile bool      s_overrun;
+static uint32_t           s_budget_ms = ORB_WASM_CALL_BUDGET_MS;
+
+static void budget_fire(void *arg) { (void)arg; s_overrun = true; }
+
+M3Result m3_Yield(void)
+{
+    return s_overrun ? s_overrun_trap : m3Err_none;
+}
+
 static M3Result guest_call(IM3Function f, uint32_t argc, const void *argv[])
 {
     if (s_on_xstack) return m3_Call(f, argc, argv);   /* nested: already on it */
+    if (!s_budget) {
+        const esp_timer_create_args_t a = { .callback = budget_fire, .name = "wasmbudget" };
+        if (esp_timer_create(&a, &s_budget) != ESP_OK) s_budget = NULL;
+    }
     if (!s_xstack) {
         s_xlock = xSemaphoreCreateMutex();
         s_xstack = heap_caps_malloc(ORB_WASM_NATIVE_STACK, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -243,9 +273,13 @@ static M3Result guest_call(IM3Function f, uint32_t argc, const void *argv[])
     s_xcall.f = f;
     s_xcall.argc = argc;
     s_xcall.argv = argv;
+    s_overrun = false;
+    if (s_budget) esp_timer_start_once(s_budget, (uint64_t)s_budget_ms * 1000u);
     s_on_xstack = true;
     esp_execute_shared_stack_function(s_xlock, s_xstack, ORB_WASM_NATIVE_STACK, xcall_fn);
     s_on_xstack = false;
+    if (s_budget) esp_timer_stop(s_budget);
+    s_overrun = false;
     return s_xcall.r;
 }
 
@@ -1287,7 +1321,9 @@ static esp_err_t wasm_init(orb_app_t *app)
         bool base = true;
         if (stage_open(app, &base) != ESP_OK) s->stage = false;
     }
+    s_budget_ms = ORB_WASM_INIT_BUDGET_MS;
     const int32_t r = wasm_call_i32(s, W_INIT, NULL, 0, ESP_FAIL);
+    s_budget_ms = ORB_WASM_CALL_BUDGET_MS;
     if (r != 0) ESP_LOGW(TAG, "\"%s\" refused to start (%ld)", app->slug, (long)r);
     ESP_LOGI(TAG, "\"%s\" started; guest stack peak %u of %u B", app->slug,
              (unsigned)orb_wasm_stack_peak(), (unsigned)ORB_WASM_NATIVE_STACK);
@@ -1572,12 +1608,12 @@ bool orb_wasm_loaded(int slot)
 
 /* The registry sets the row this instance answers to, so an import can hand the broker
  * its caller. orb_app_install's load rung (P7.4) calls this right after every
- * orb_wasm_load that succeeds — at boot and behind the enable door. */
+ * orb_wasm_load that succeeds, at boot. */
 void orb_wasm_bind_app(int slot, orb_app_t *app)
 {
     if (slot < 0 || slot >= WASM_N_SLOTS) return;
     s_slot[slot].app = app;
-    /* Both callers are on internal stacks (boot, the enable door), which is where an
+    /* The caller is on an internal stack (the boot ladder), which is where an
      * NVS read may happen; a guest's network request answers from this copy. */
     if (app && app->slug && (orb_svc_grants(app) & (1u << CAP_NET)))   /* not the counting gate */
         orb_app_cred_preload(app);

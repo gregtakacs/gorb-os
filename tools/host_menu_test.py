@@ -2097,11 +2097,11 @@ MUTATIONS = [
      'snprintf(out, outsz, "%d of %d slots used", n, ORB_APP_CAP);',
      'snprintf(out, outsz, "%d slots used", n);'),
     ("the doors page drops uninstall",
-     "static int rows_appact(void) { return 3 + 1; }",
-     "static int rows_appact(void) { return 2 + 1; }"),
+     "        ids[n++] = ACT_UNINSTALL;\n",
+     ""),
     ("a door page forgets which app it is about",
-     "static void open_appact(const orb_app_t *a)\n{\n    s_door_slot = orb_app_index_of(a);\n}",
-     "static void open_appact(const orb_app_t *a)\n{\n    (void)a;\n}"),
+     "static void open_appact(const orb_app_t *a)\n{\n    s_door_slot = orb_app_index_of(a);\n",
+     "static void open_appact(const orb_app_t *a)\n{\n    (void)a;\n"),
     ("back from the doors page lands on row 0 rather than its own app",
      "    return a ? perm_row_of(a) : 0;",
      "    return 0;"),
@@ -2115,10 +2115,10 @@ MUTATIONS = [
      "const esp_err_t e = orb_app_clear_faults(a->slug, why, sizeof why);",
      "const esp_err_t e = orb_app_clear_faults(\"menu\", why, sizeof why);"),
     ("the first uninstall press fires it",
-     "        if (s_uninst_arm != s_door_slot) {",
+     "        if (s_uninst_arm != door_subject()) {",
      "        if (0) {"),
     ("a detent leaves the uninstall armed",
-     "    unarm_uninstall();\n    s_cur = next;",
+     "    unarm_arms();\n    s_cur = next;",
      "    s_cur = next;"),
     ("leaving the catalog keeps the previous subject and its arms",
      "static void enter_apps(void)\n{\n    s_door_slot  = -1;\n    s_doormode   = 0;\n    s_card_sub   = -1;\n    unarm_arms();\n    job_post(job_scan, 0);\n}",
@@ -2165,13 +2165,10 @@ MUTATIONS = [
     ("an item with no header above it disappears instead of being drawn",
      "    return (owner_group(rows, idx) < 0) ? OPT_ROW : OPT_ITEM;",
      "    return OPT_ITEM;"),
-    ("the cursor escapes an open group",
-     "            if (lo >= 0 && hi >= lo) {\n                if (next < lo) next = lo;\n"
-     "                if (next > hi) next = hi;\n            }",
-     "            if (0) { }"),
-    ("the long press skips an open group and takes the exit door instead",
-     "        if (s_group_open >= 0) {",
-     "        if (0) {"),
+    # "the cursor escapes an open group" retired 2026-11-01: input walks one row per
+    # event, so a step off an item lands on the header or the back row before the
+    # clamp in menu_view_apply_input can bind. The walk vectors above pin the
+    # behaviour; no input reaches the clamp, so no mutant of it can be caught.
     ("the shell steals the header press back from the app",
      'const int ar = vis_to_row(rows, row);\n    if (ar < 0) { go_back(); repaint(); return; }   /* unreachable: rows_app sized it */\n    orb_app_opt_sel(s_app, ar);',
      'const int ar = vis_to_row(rows, row);\n    if (ar < 0) { go_back(); repaint(); return; }   /* unreachable: rows_app sized it */\n    if (drawn_kind(rows, ar) == OPT_GROUP) { s_group_open = ar; repaint(); return; }\n    orb_app_opt_sel(s_app, ar);'),
@@ -2323,18 +2320,20 @@ MUTATIONS = [
     # armed uninstall row. Both halves are pinned: the literal, and the fold
     # that saves a borrowed sentence this file cannot rewrite.
     ("P5.4: an unrenderable codepoint goes back into a dial row",
-     's_uninst_arm == s_door_slot ? " - press again" : "");',
-     's_uninst_arm == s_door_slot ? " \u2014 press again" : "");'),
+     'armed_u ? " - press again" : "");',
+     'armed_u ? " \u2014 press again" : "");'),
     ("P5.4: the fold loses its em-dash mapping",
      '{ 0x2014, "-"  }, { 0x2015, "-"  }, { 0x2212, "-"  },',
      '{ 0x2015, "-"  }, { 0x2212, "-"  },'),
     # A cancel is two halves of one fact. Each mutant keeps the arm correct and
     # breaks only what the owner can see — the shape the bug shipped in.
     ("P5.3: a detent ends the arm and leaves its prompt on the glass",
-     "    unarm_uninstall();\n    s_cur = next;",
+     "    unarm_arms();\n    s_cur = next;",
      "    s_uninst_arm = -1;\n    s_cur = next;"),
     ("P5.3: a cancel wipes the status line whatever is on it",
-     'if (strstr(s_ui.status, "press uninstall again to confirm")) s_ui.status[0] = \'\\0\';',
+     'if (strstr(s_ui.status, "press uninstall again to confirm") ||\n'
+     '        strstr(s_ui.status, "press again to erase the card copy"))\n'
+     "        s_ui.status[0] = '\\0';",
      "s_ui.status[0] = '\\0';"),
 ]
 

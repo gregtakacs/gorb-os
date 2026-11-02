@@ -18,7 +18,7 @@ idf_component_register(
         "app/orb_jobs.c"
         # §43: the HTTPS service a wasm app fetches through (the flight feed's gate
         # and TLS discipline, with no idea what a flight is) and the per-app
-        # credential store behind /api/v1/flights/key.
+        # credential store behind /api/v1/apps/cfg's secrets.
         "app/orb_app_net.c"
         # D46: the streaming JSON tokenizer apps parse through, natively. Pure C,
         # host-tested as shipped by tools/host_json_test.py.
@@ -88,6 +88,7 @@ idf_component_register(
         # The last panic, recorded in RTC memory by a wrap of esp_panic_handler (below)
         # and reported by /api/v1/status after the reset (2026-10-31).
         "util/orb_panic.c"
+        "util/orb_layout_carry.c"
     INCLUDE_DIRS
         "."
         "app"

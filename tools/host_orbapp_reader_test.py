@@ -1244,8 +1244,8 @@ MUTATIONS = [
     # can pin the pair. Bumping one side alone is the shape of a firmware that accepts
     # a container written for a class table it does not have.
     ("asset_abi_bumped_alone", "d",
-     "#define ORB_ASSET_CLASS_ABI   2u",
-     "#define ORB_ASSET_CLASS_ABI   3u"),
+     "#define ORB_ASSET_CLASS_ABI   3u",
+     "#define ORB_ASSET_CLASS_ABI   4u"),
     # The registry's name field widened past the wire's twelve bytes: the writer keeps
     # accepting a name the device then truncates, and the truncated reference resolves
     # as a different slot rather than as a failure.

@@ -4,7 +4,7 @@
 P1 promised zero behaviour change in two extractions — the paint path into
 orb_gfx.c, and the delta bank plus the frame tick into orb_sched.c. A promise
 like that is not kept by eye. This lifts each routine the moves claim to have
-relocated out of the pre-extraction orb_stage.c AND out of the file that now
+relocated out of the pre-extraction clock_view.c AND out of the file that now
 holds it, canonicalises the renames, and compares token streams. Anything beyond
 the intended deltas fails the run.
 
@@ -21,7 +21,7 @@ reordered clamp in bg_rate — goes red. Mutation-checked: perturbing a single
 character inside rot_sin_cos or the tick callback makes this exit 1.
 
 Two baselines, because the two halves were lifted from different revisions.
-786efcd is the last orb_stage.c holding the PAINT path whole. 3116942 is the
+786efcd is the last clock_view.c holding the PAINT path whole. 3116942 is the
 last one holding the BANK and the TICK whole: by then orb_gfx.c's extraction had
 already rewritten request_commit and the fps report's role loop, so comparing
 those against 786efcd would read someone else's change as this move's. Pass refs
@@ -33,22 +33,25 @@ Run:  python3 tools/gfx_parity_test.py        (rc 0 = identical modulo renames)
 import re, subprocess, sys, pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+# The baselines are historical: at 786efcd and 3116942 the stage was still
+# main/clock/clock_view.c (D45 moved it to main/stage/orb_stage.c later), so the
+# path read at those refs is the old one, whatever the file is called today.
 REF = sys.argv[1] if len(sys.argv) > 1 else "786efcd"
 
-old = subprocess.run(['git', '-C', str(ROOT), 'show', f'{REF}:main/stage/orb_stage.c'],
+old = subprocess.run(['git', '-C', str(ROOT), 'show', f'{REF}:main/clock/clock_view.c'],
                      capture_output=True, text=True).stdout
-assert old, f'no main/stage/orb_stage.c at {REF} — wrong repo or ref?'
+assert old, f'no main/clock/clock_view.c at {REF} — wrong repo or ref?'
 new = (ROOT / 'main' / 'gfx' / 'orb_gfx.c').read_text()
 sched = (ROOT / 'main' / 'gfx' / 'orb_sched.c').read_text()
 
-# The bank and the tick were lifted out of a orb_stage.c that orb_gfx.c's P1
+# The bank and the tick were lifted out of a clock_view.c that orb_gfx.c's P1
 # half had ALREADY trimmed (gfx_commit_needed/consumed, gfx_role_snapshot). Pin
 # the second half to the last revision holding them whole, or those earlier
 # rewrites read as deltas this move did not make.
 SCHED_REF = sys.argv[2] if len(sys.argv) > 2 else "3116942"
-old2 = subprocess.run(['git', '-C', str(ROOT), 'show', f'{SCHED_REF}:main/stage/orb_stage.c'],
+old2 = subprocess.run(['git', '-C', str(ROOT), 'show', f'{SCHED_REF}:main/clock/clock_view.c'],
                       capture_output=True, text=True).stdout
-assert old2, f'no main/stage/orb_stage.c at {SCHED_REF} — wrong repo or ref?'
+assert old2, f'no main/clock/clock_view.c at {SCHED_REF} — wrong repo or ref?'
 
 
 def lift(src, sig):

@@ -19,16 +19,124 @@
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400..900&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400..800&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400..900&display=swap" rel="stylesheet">
-<style>html,body{margin:0;background:#12110f}a{color:#c9a25a}a:hover{color:#f0d79a}
-/* the two option columns scroll on their own, so their scrollbars are part of the studio:
-   thin, dark, rounded, inset from the track -- the default bright gutter is too loud here */
-body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
-::-webkit-scrollbar{width:10px;height:10px}
-::-webkit-scrollbar-track{background:#12110f}
-::-webkit-scrollbar-thumb{background:#3a352d;border-radius:8px;border:2px solid #12110f;min-height:48px}
-::-webkit-scrollbar-thumb:hover{background:#5b5241}
-::-webkit-scrollbar-button{display:none;width:0;height:0}
-::-webkit-scrollbar-corner{background:#12110f}
+<link href="ui.css" rel="stylesheet">
+<style>
+/* D43 §4.2: the studio. The editor owns the whole hub window: one top bar, layers on the
+   left, the stage, the inspector on the right. Only the two side lists and a magnified
+   stage scroll. Colours are ui@1's tokens: the hub's own. */
+html,body{height:100%;overflow:hidden}
+.wc{height:100vh;display:grid;grid-template-rows:48px minmax(0,1fr);grid-template-columns:264px minmax(0,1fr) 320px}
+.wc-top{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 12px;border-bottom:1px solid var(--line);background:var(--card);min-width:0}
+.wc-crumb{display:flex;align-items:center;gap:7px;min-width:0;flex:0 1 auto}
+.wc-crumb>span{white-space:nowrap}
+.wc-name{font:600 14px var(--sans)!important;width:180px!important;background:none!important;border-color:transparent!important;padding:3px 6px!important}
+.wc-name:hover,.wc-name:focus{border-color:var(--line)!important;background:var(--well)!important}
+.wc-steps{display:flex;margin:0 auto;align-self:stretch}
+.wc-steps>button{border:0;border-radius:0;background:none;color:var(--mut);padding:0 11px;border-bottom:2px solid transparent;height:100%}
+.wc-steps>button:hover{color:var(--fg)}
+.wc-steps>button.on{color:var(--fg);border-bottom-color:var(--focus)}
+.wc-fit{display:flex;align-items:center;gap:6px;color:var(--mut);font-size:12px;white-space:nowrap;cursor:default}
+.wc-dot{width:8px;height:8px;border-radius:50%;flex:none}
+.wc-side{background:var(--card);display:flex;flex-direction:column;min-height:0;min-width:0}
+.wc-layers{border-right:1px solid var(--line)}
+.wc-insp{border-left:1px solid var(--line)}
+.wc-ph{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 4px}
+.wc-list{flex:1;overflow-y:auto;padding:0 6px 10px;min-height:0}
+.wc-band{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);padding:9px 8px 3px}
+.wc-lr{display:grid;grid-template-columns:22px minmax(0,1fr) auto;align-items:center;gap:7px;min-height:30px;padding:0 4px 0 6px;border-radius:5px;cursor:pointer;border-left:2px solid transparent}
+.wc-lr:hover{background:var(--hover)}
+.wc-lr.on{background:var(--sel);border-left-color:var(--focus)}
+.wc-lr.child{position:relative}
+.wc-lr.child::before{content:"";position:absolute;left:14px;top:0;bottom:0;border-left:1px solid #2b3540}
+.wc-ic{width:20px;height:20px;border-radius:4px;background:#232b36;display:grid;place-items:center;font-size:11px;color:var(--mut)}
+.wc-nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wc-nm small{color:var(--dim);margin-left:6px;font-size:11px}
+.wc-warn{color:var(--warn)}
+.wc-acts{display:flex;gap:2px;align-items:center}
+.wc-mini{padding:0 5px;height:20px;font-size:11px;line-height:18px;background:none;border-color:transparent;color:var(--mut);display:none}
+.wc-lr:hover .wc-mini,.wc-lr.on .wc-mini{display:inline-block}
+.wc-mini:hover{border-color:var(--line);color:var(--fg)}
+.wc-eye{padding:0;width:22px;height:20px;background:none;border:0;font-size:12px}
+.wc-lock{width:22px;text-align:center;color:var(--dim);font-size:11px}
+.wc-warnrow{font-size:11px;color:var(--warn);padding:3px 8px}
+.wc-add{margin:8px 4px 4px;width:calc(100% - 8px);text-align:left;background:none;border:1px dashed #33404d;color:var(--mut)}
+.wc-pop{margin:0 4px;display:flex;flex-direction:column;gap:4px;padding:6px;border:1px solid var(--line);border-radius:7px;background:var(--well)}
+.wc-pop>button{text-align:left;white-space:normal;background:none;border-color:transparent;padding:6px 8px}
+.wc-pop>button:hover{background:var(--hover);border-color:var(--line)}
+.wc-pop>button span{display:block;color:var(--dim);font-size:11px;margin-top:1px}
+.wc-foot{border-top:1px solid var(--line);padding:8px 12px;display:flex;align-items:center;justify-content:space-between;color:var(--mut);font-size:12px}
+.wc-switch{display:inline-flex;align-items:center;gap:7px;background:none;border:0;padding:0;color:var(--mut)}
+.wc-switch i{width:26px;height:14px;border-radius:7px;background:#2b3540;position:relative;flex:none}
+.wc-switch i::after{content:"";position:absolute;left:2px;top:2px;width:10px;height:10px;border-radius:50%;background:var(--mut);transition:left .12s}
+.wc-switch.on{color:var(--fg)}
+.wc-switch.on i{background:var(--prim)}
+.wc-switch.on i::after{left:14px;background:#fff}
+.wc-stage{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;background:radial-gradient(circle at 50% 45%,#141a22 0,#0b0e13 70%)}
+/* the stage scrolls inside itself: a magnified dial never steps out of its pane, and
+   margin:auto centres it while it fits without pushing it off the top-left once it does */
+.wc-scroll{flex:1;min-height:0;overflow:auto;display:flex}
+.wc-glass{margin:auto;flex:none;background:#000;box-shadow:0 0 0 5px #10151c,0 0 0 6px #2a333e,0 24px 70px rgba(0,0,0,.6);overflow:hidden}
+.wc-glass canvas{display:block;touch-action:none}
+.wc-ztag{position:absolute;top:10px;left:12px;color:var(--dim);font:11px var(--mono);pointer-events:none}
+.wc-toast{position:absolute;top:10px;left:50%;transform:translateX(-50%);max-width:min(80%,640px);background:rgba(28,35,48,.94);border:1px solid var(--line);padding:5px 12px;border-radius:6px;color:var(--mut);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.wc-tool{display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 10px 10px;flex-wrap:wrap}
+.wc-play{width:30px;height:30px;padding:0;border-radius:50%;font-size:11px}
+.wc-tool .on.ui-ghost{border-color:var(--focus);color:var(--focus)}
+.wc-sheet{position:absolute;inset:0;background:var(--bg);display:flex;flex-direction:column;z-index:4}
+.wc-sheet-in{flex:1;overflow-y:auto;padding:24px 32px}
+.wc-sheet h2{margin:0 0 14px;font-size:17px;font-weight:600}
+.wc-gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:12px}
+.wc-gc{display:flex;flex-direction:column;align-items:center;gap:3px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 10px;cursor:pointer;text-align:center;white-space:normal;font-size:13px}
+.wc-gc:hover{border-color:var(--focus)}
+.wc-gc.on{border-color:var(--focus);background:var(--sel)}
+.wc-gc canvas,.wc-blank{width:96px;height:96px;border-radius:50%;margin-bottom:6px;background:#000;display:block}
+.wc-blank{background:none;border:1px dashed #3a4654;display:grid;place-items:center;font-size:28px;color:var(--mut)}
+.wc-gc>span{color:var(--dim);font-size:11px;line-height:1.3}
+.wc-sheet-foot{display:flex;justify-content:flex-end;gap:8px;padding:10px 32px;border-top:1px solid var(--line)}
+.wc-diag{position:absolute;left:12px;right:12px;bottom:52px;max-height:60%;overflow:auto;background:rgba(22,27,34,.97);border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;align-items:center;z-index:3;font-size:12px}
+.wc-ihead{padding:10px 14px 8px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
+.wc-ititle{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:15px;font-weight:600;min-width:0}
+.wc-ititle>span:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wc-iacts{display:flex;gap:4px;flex:none}
+.wc-sm{padding:3px 8px;font-size:12px}
+.wc-subs{align-self:flex-start}
+.wc-ibody{flex:1;overflow-y:auto;min-height:0;padding:4px 14px 16px;display:flex;flex-direction:column;gap:8px}
+.wc-ifoot{padding:10px 14px;border-top:1px solid var(--line);display:flex;gap:8px}
+.wc-ifoot>button{flex:1}
+.wc-sec{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);padding:10px 0 2px;border-top:1px solid var(--line);margin-top:4px}
+.wc-sec.first{border-top:0;margin-top:0}
+.wc-row{display:grid;grid-template-columns:96px minmax(0,1fr) 48px;gap:8px;align-items:center;min-height:28px}
+.wc-row>label{color:var(--mut);font-size:12px;overflow:hidden;text-overflow:ellipsis}
+.wc-row>label>span{display:block;font-size:10px;cursor:pointer}
+.wc-val{font:11px var(--mono);color:var(--mut);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Only a slider keeps the value column, at a fixed width. Every other control reads its
+   value on a line of its own under it, so a longer colour name never resizes the column
+   and reflows the swatches, and is never cut short. */
+.wc-row.wide{grid-template-columns:96px minmax(0,1fr)}
+.wc-row.wide>.wc-val{display:none}
+.wc-cname{font-size:11px;color:var(--mut);margin-top:4px;overflow-wrap:anywhere}
+.wc-row:not(.wide) .wc-cname,.wc-cname:empty{display:none}
+.wc-sw{width:22px;height:22px;border-radius:50%;padding:0;border-width:2px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.5);font-size:10px}
+.wc-note{font-size:11px;line-height:1.35;color:var(--warn);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;cursor:help}
+.wc-hint{font-size:12px;color:var(--mut)}
+.wc-cards{display:grid;grid-template-columns:1fr;gap:6px}
+.wc-card{text-align:left;white-space:normal;padding:8px 10px;border-radius:7px}
+.wc-card b{display:block;font-weight:600}
+.wc-card span{display:block;color:var(--dim);font-size:11px;margin-top:2px}
+.wc-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:6px}
+.wc-tile{display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 4px;border-radius:7px;border:1px solid;cursor:pointer;font-size:11px;white-space:nowrap}
+.wc-hand{display:flex;flex-direction:column;gap:6px;padding:10px 0;border-top:1px solid var(--line)}
+.wc-hand-h{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.wc-grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px}
+.wc-num4{display:grid;grid-template-columns:44px minmax(0,1fr) 44px minmax(0,1fr);gap:6px;align-items:center;font-size:12px;color:var(--mut)}
+.wc-badge{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 11px;border-radius:7px;border:1px solid;margin-top:6px}
+.wc-badge span{font:11px var(--mono);color:var(--mut)}
+.wc-big{display:flex;justify-content:space-between;gap:10px;text-align:left;padding:10px 12px;white-space:normal}
+.wc-big span{font:11px var(--mono);opacity:.75}
+.wc-modal{position:fixed;inset:0;background:rgba(5,8,12,.72);display:flex;align-items:center;justify-content:center;z-index:50}
+.wc-modal>div{width:440px;max-width:92vw;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 30px 80px rgba(0,0,0,.6);padding:20px 22px}
+@media (max-width:1360px){.wc-tool .wc-lab{display:none}.ui-seg>button{padding:4px 7px}.wc-steps>button{padding:0 8px}}
+@media (max-width:1100px){.wc{grid-template-columns:200px minmax(0,1fr) 300px}.wc-name{width:120px!important}}
 </style>
 <script src="dial-renderer.js"></script>
 <script src="watch-engine.js"></script>
@@ -36,487 +144,317 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
 <script src="sound-engine.js"></script>
 <script src="orbtheme-baker.js"></script>
 </helmet>
-<div style="height:100vh;background:#12110f;color:#e9e2d2;font-family:'IBM Plex Sans',sans-serif;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden">
-  <header style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px 20px;padding:16px 28px;border-bottom:1px solid #25221e;background:#151412">
-    <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
-      <div style="font-size:18px;font-weight:600;letter-spacing:-0.01em">Watch composer</div>
-      <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#a39a87">{{ headLabel }}</div>
+<div class="wc">
+  <header class="wc-top">
+    <div class="wc-crumb">
+      <sc-if value="{{ inFrame }}" hint-placeholder-val="{{ false }}"><button class="ui-ghost" onClick="{{ closeEditor }}" title="Back to this orb's themes">←</button></sc-if>
+      <span class="ui-mut">{{ crumbLabel }}</span><span class="ui-mut">/</span>
+      <input class="wc-name" type="text" value="{{ themeNameVal }}" onChange="{{ themeNameIn }}" placeholder="{{ themeNamePh }}" title="{{ themeNameTip }}">
     </div>
-    <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#c9a25a;min-height:16px">{{ status }}</div>
+    <nav class="wc-steps">
+      <sc-for list="{{ stepOpts }}" as="t" hint-placeholder-count="6">
+        <button class="{{ t.cls }}" onClick="{{ t.pick }}" title="{{ t.tip }}">{{ t.label }}</button>
+      </sc-for>
+    </nav>
+    <div class="wc-fit" title="{{ badgeTip }}"><span class="wc-dot" style="background:{{ fitDot }}"></span>{{ fitShort }}</div>
+    <sc-if value="{{ isHub }}" hint-placeholder-val="{{ false }}"><button class="ui-primary" onClick="{{ sendToOrb }}" title="{{ sendTip }}">Send to orb</button></sc-if>
+    <sc-if value="{{ notHub }}" hint-placeholder-val="{{ true }}"><button class="ui-primary" onClick="{{ exportTheme }}" title="{{ themeNote }}">Download .orbtheme</button></sc-if>
   </header>
-  <div style="flex:1;min-height:0;display:flex;flex-wrap:nowrap;gap:32px;align-items:stretch;padding:28px;overflow:auto">
-    <div style="display:flex;flex-direction:column;gap:16px;align-items:center;width:490px;max-width:100%;flex:none;overflow-y:auto">
-      <div style="width:{{ stageWin }}px;height:{{ stageWin }}px;flex:none;border-radius:{{ stageRound }};background:#000;box-shadow:0 0 0 {{ stageRing }}px #1c1a17,0 0 0 {{ stageRing2 }}px #2e2a24,0 30px 80px rgba(0,0,0,.6);overflow:{{ stageFlow }};display:flex;margin-top:12px" onPointerDown="{{ stageDown }}">
-        <canvas ref="{{ mainRef }}" width="466" height="466" onPointerDown="{{ onDown }}" onPointerMove="{{ onMove }}" onPointerUp="{{ onUp }}" onPointerCancel="{{ onUp }}" style="display:block;flex:none;margin:auto;width:{{ stageCv }}px;height:{{ stageCv }}px;cursor:{{ cursor }};touch-action:none"></canvas>
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin-top:10px">
-        <button onClick="{{ toggle }}" style="background:#c9a25a;border:1px solid #c9a25a;color:#17130c;padding:7px 14px;border-radius:6px;font:600 13px 'IBM Plex Sans',sans-serif;cursor:pointer;min-width:66px" style-hover="background:#ddb66c">{{ playLabel }}</button>
-        <sc-for list="{{ timeOpts }}" as="c" hint-placeholder-count="2">
-          <button onClick="{{ c.pick }}" style="background:{{ c.bg }};border:1px solid {{ c.bd }};color:{{ c.fg }};padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap">{{ c.label }}</button>
-        </sc-for>
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center">
-        <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8d8472;min-width:52px">Preview</div>
-        <sc-for list="{{ viewOpts }}" as="c" hint-placeholder-count="3">
-          <button onClick="{{ c.pick }}" title="{{ c.tip }}" style="background:{{ c.bg }};border:1px solid {{ c.bd }};color:{{ c.fg }};padding:6px 10px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap">{{ c.label }}</button>
-        </sc-for>
-        <sc-if value="{{ hasZoom }}" hint-placeholder-val="{{ false }}">
-          <sc-for list="{{ zoomOpts }}" as="c" hint-placeholder-count="3">
-            <button onClick="{{ c.pick }}" title="Magnify the 466 px frame — it enlarges the artwork, it adds no detail" style="background:{{ c.bg }};border:1px solid {{ c.bd }};color:{{ c.fg }};padding:6px 10px;border-radius:6px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer">{{ c.label }}</button>
+
+  <aside class="wc-side wc-layers">
+    <div class="wc-ph"><span class="ui-label">Layers</span><span class="ui-mono" style="font-size:11px;color:{{ stackCapFg }}" title="R6: the live rows the bake ships (hands and their shadow twins, the discs' value rows, the carriage) against the dial's cap">{{ stackCapShort }}</span></div>
+    <div class="wc-list">
+      <sc-for list="{{ stackRows }}" as="r" hint-placeholder-count="10">
+        <sc-if value="{{ r.isHead }}" hint-placeholder-val="{{ false }}"><div class="wc-band">{{ r.label }}</div></sc-if>
+        <sc-if value="{{ r.isRow }}" hint-placeholder-val="{{ true }}">
+          <div class="wc-lr {{ r.cls }}" draggable="{{ r.drag }}" onDragStart="{{ r.dragStart }}" onDragOver="{{ r.dragOver }}" onDrop="{{ r.drop }}" onClick="{{ r.pick }}" title="{{ r.title }}" style="margin-left:{{ r.indent }}px;opacity:{{ r.op }}">
+            <span class="wc-ic">{{ r.icon }}</span>
+            <span class="wc-nm" style="font-weight:{{ r.weight }}">{{ r.label }}<span class="wc-warn">{{ r.warn }}</span><small>{{ r.tag }}</small></span>
+            <span class="wc-acts">
+              <button class="wc-mini" onClick="{{ r.up }}" title="{{ r.upTip }}" style="opacity:{{ r.upOp }};visibility:{{ r.arrows }}">↑</button>
+              <button class="wc-mini" onClick="{{ r.down }}" title="{{ r.downTip }}" style="opacity:{{ r.downOp }};visibility:{{ r.arrows }}">↓</button>
+              <button class="wc-eye" onClick="{{ r.eyeToggle }}" title="{{ r.eyeTip }}" style="color:{{ r.eyeFg }}">{{ r.eyeIcon }}</button>
+            </span>
+          </div>
+        </sc-if>
+      </sc-for>
+      <sc-for list="{{ stackWarns }}" as="w" hint-placeholder-count="0"><div class="wc-warnrow">⚠ {{ w.text }}</div></sc-for>
+      <button class="wc-add" onClick="{{ toggleAdd }}" title="Add a complication or a hand to the dial">{{ addLabel }}</button>
+      <sc-if value="{{ addOpen }}" hint-placeholder-val="{{ false }}">
+        <div class="wc-pop">
+          <sc-for list="{{ catOpts }}" as="a" hint-placeholder-count="6">
+            <button onClick="{{ a.go }}" title="{{ a.tip }}" style="opacity:{{ a.op }};cursor:{{ a.cursor }}">{{ a.label }}<span>{{ a.blurb }}</span></button>
           </sc-for>
-        </sc-if>
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center">
-        <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8d8472;min-width:52px">Render</div>
-        <sc-for list="{{ renderOpts }}" as="c" hint-placeholder-count="3">
-          <button onClick="{{ c.pick }}" title="{{ c.tip }}" style="background:{{ c.bg }};border:1px solid {{ c.bd }};color:{{ c.fg }};padding:6px 10px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap">{{ c.label }}</button>
-        </sc-for>
-        <sc-if value="{{ isCompare }}" hint-placeholder-val="{{ false }}">
-          <input type="range" min="0" max="466" step="1" value="{{ wipeVal }}" onChange="{{ setWipe }}" title="Where the split sits: Panel on the left, Design on the right" style="width:150px;accent-color:#c9a25a">
-        </sc-if>
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center">
-        <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#8d8472;min-width:52px">Overlay</div>
-        <button onClick="{{ clearSel }}" title="Clear the selection: with the dial picked every pixel of the face is the dial, so there is no empty spot to click" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 10px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap;opacity:{{ clearOp }}" style-hover="color:#f0d79a">{{ clearLabel }}</button>
-        <button onClick="{{ pickGuide }}" title="Auto shows the alignment guide while a dial or hand is selected and during a drag" style="background:{{ g.bg }};border:1px solid {{ g.bd }};color:{{ g.fg }};padding:6px 10px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap">{{ g.label }}</button>
-      </div>
-      <button onClick="{{ toggleDiag }}" title="The technical readouts: frame stepping, the screen ruler, the seam check, the bank and the bake notes" style="background:transparent;border:1px solid #3a352d;color:#a39a87;padding:4px 10px;border-radius:5px;font:500 11px 'IBM Plex Sans',sans-serif;cursor:pointer">{{ diagLabel }}</button>
-      <sc-if value="{{ diagOpen }}" hint-placeholder-val="{{ false }}">
-        <div style="width:100%;display:flex;flex-direction:column;gap:10px;align-items:center;padding:10px 0;border-top:1px dashed #2e2a24;border-bottom:1px dashed #2e2a24">
-          <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#a39a87;text-align:center">{{ metaLabel }}</div>
-          <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center">
-        <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#f0d79a;min-width:110px">{{ frameLabel }}</div>
-        <button onClick="{{ prev }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">←</button>
-        <button onClick="{{ next }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">→</button>
-        <button onClick="{{ toggleSlow }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 11px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="background:#2a2722">{{ slowLabel }}</button>
-          </div>
-      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472;text-align:center">{{ viewText }}</div>
-      <sc-if value="{{ showRuler }}" hint-placeholder-val="{{ false }}">
-        <div style="display:flex;flex-direction:column;gap:7px;align-items:center;width:100%;padding:2px 0 6px">
-          <div style="position:relative;box-sizing:content-box;width:{{ rulerPx }}px;height:24px;border-bottom:1px solid #5b5241">
-            <sc-for list="{{ rulerTicks }}" as="t" hint-placeholder-count="41">
-              <div style="position:absolute;bottom:0;left:{{ t.left }}%;width:1px;background:#c9a25a;opacity:{{ t.op }};height:{{ t.h }}px"></div>
-            </sc-for>
-            <sc-for list="{{ rulerTicks }}" as="t" hint-placeholder-count="41">
-              <div style="position:absolute;bottom:15px;left:{{ t.left }}%;transform:translateX(-50%);font-family:'IBM Plex Mono',monospace;font-size:9px;color:#8d8472">{{ t.lab }}</div>
-            </sc-for>
-          </div>
-          <div style="display:flex;flex-wrap:wrap;gap:7px;align-items:center;justify-content:center">
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472">Screen ruler — hold a real one here</div>
-            <button onClick="{{ calDown }}" title="Nudge the calibration down" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 9px;border-radius:6px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer">−</button>
-            <input type="range" min="{{ calMin }}" max="{{ calMax }}" step="{{ calStep }}" value="{{ calVal }}" onChange="{{ setCal }}" style="width:150px;accent-color:#c9a25a">
-            <button onClick="{{ calUp }}" title="Nudge the calibration up" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 9px;border-radius:6px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer">+</button>
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#e9e2d2">{{ calText }}</div>
-          </div>
-          <div style="display:flex;flex-wrap:wrap;gap:7px;align-items:center;justify-content:center">
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472">The ruler measures</div>
-            <input type="text" onChange="{{ solve }}" placeholder="mm" title="Read the bar against a real ruler and type what it measures — this solves the calibration outright" style="width:52px;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;text-align:right">
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472">mm — solve</div>
-            <button onClick="{{ resetCal }}" title="Back to the 96 px/in standard" style="background:#1f1d1a;border:1px solid #3a352d;color:#b5ab97;padding:5px 9px;border-radius:6px;font:500 11px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="color:#f0d79a">Reset</button>
-          </div>
         </div>
       </sc-if>
-      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472;text-align:center">{{ seamText }}</div>
-        </div>
-      </sc-if>
-      <div style="width:100%;display:flex;flex-direction:column;gap:2px;margin-top:6px;border-top:1px solid #25221e;padding-top:12px">
-        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap">
-          <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">Stack · top to bottom</div>
-          <div style="display:flex;gap:10px;align-items:center;font-size:11px;color:#8d8472">
-            <span title="R6: the live rows the bake ships (hands and their shadow twins, the discs' value rows, the carriage) against the dial's 24" style="font-family:'IBM Plex Mono',monospace;color:{{ stackCapFg }}">{{ stackCap }}</span>
-            <button onClick="{{ toggleMech }}" title="Mechanical: warn when the stack could not be built as a real movement (R8). Warnings never block a move or a bake." style="background:{{ mech.bg }};border:1px solid {{ mech.bd }};color:{{ mech.fg }};padding:3px 8px;border-radius:5px;font:500 11px 'IBM Plex Sans',sans-serif;cursor:pointer">Mechanical</button>
-          </div>
-        </div>
-        <sc-for list="{{ stackRows }}" as="r" hint-placeholder-count="10">
-          <sc-if value="{{ r.isHead }}" hint-placeholder-val="{{ false }}">
-            <div style="font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:#6f6858;padding:8px 6px 2px">{{ r.label }}</div>
-          </sc-if>
-          <sc-if value="{{ r.isRow }}" hint-placeholder-val="{{ true }}">
-            <div draggable="{{ r.drag }}" onDragStart="{{ r.dragStart }}" onDragOver="{{ r.dragOver }}" onDrop="{{ r.drop }}" onClick="{{ r.pick }}" title="{{ r.tip }}" style="display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;gap:6px;align-items:center;padding:5px 6px 5px {{ r.pad }}px;border-radius:6px;cursor:pointer;opacity:{{ r.op }};background:{{ r.bg }};border-left:2px solid {{ r.edge }}" style-hover="background:#1b1a17">
-              <div style="display:flex;flex-direction:column;gap:1px;min-width:0">
-                <span style="font-size:13px;font-weight:{{ r.weight }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.label }}<span style="color:#e0a34a">{{ r.warn }}</span></span>
-                <span style="font-size:11px;color:#8d8472;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.note }}</span>
-              </div>
-              <button onClick="{{ r.up }}" title="{{ r.upTip }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;border-radius:5px;padding:2px 7px;cursor:pointer;opacity:{{ r.upOp }};visibility:{{ r.arrows }}">↑</button>
-              <button onClick="{{ r.down }}" title="{{ r.downTip }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;border-radius:5px;padding:2px 7px;cursor:pointer;opacity:{{ r.downOp }};visibility:{{ r.arrows }}">↓</button>
-              <span onClick="{{ r.eyeToggle }}" title="{{ r.eyeTip }}" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:{{ r.eyeFg }};min-width:44px;text-align:right">{{ r.eye }}</span>
-            </div>
-          </sc-if>
-        </sc-for>
-        <sc-for list="{{ stackWarns }}" as="w" hint-placeholder-count="0">
-          <div style="font-size:11px;color:#e0a34a;padding:2px 6px">⚠ {{ w.text }}</div>
-        </sc-for>
+    </div>
+    <div class="wc-foot">
+      <button class="wc-switch {{ mechCls }}" onClick="{{ toggleMech }}" title="Mechanical: warn when the stack could not be built as a real movement (R8). Warnings never block a move or a bake."><i></i>Mechanical</button>
+      <span class="wc-warn">{{ warnCount }}</span>
+    </div>
+  </aside>
+
+  <main class="wc-stage">
+    <div class="wc-scroll" ref="{{ stageRef }}" onPointerDown="{{ stageDown }}">
+      <div class="wc-glass" style="width:{{ stageCv }}px;height:{{ stageCv }}px;border-radius:{{ stageRound }}">
+        <canvas ref="{{ mainRef }}" width="466" height="466" onPointerDown="{{ onDown }}" onPointerMove="{{ onMove }}" onPointerUp="{{ onUp }}" onPointerCancel="{{ onUp }}" style="width:{{ stageCv }}px;height:{{ stageCv }}px;cursor:{{ cursor }}"></canvas>
       </div>
     </div>
-    <div ref="{{ paneRef }}" style="flex:1;min-width:320px;max-width:640px;display:flex;flex-direction:column;gap:18px;overflow-y:auto;min-height:0">
-      <div style="display:flex;flex-direction:column;gap:6px;position:sticky;top:0;z-index:3;background:#12110f;padding-bottom:4px;box-shadow:0 10px 0 -4px #12110f">
-        <div style="display:flex;flex-wrap:wrap;gap:4px;padding:4px;border-radius:9px;background:#1a1916;border:1px solid #2a2722">
-          <sc-for list="{{ stepOpts }}" as="t" hint-placeholder-count="7">
-            <button onClick="{{ t.pick }}" title="{{ t.tip }}" style="background:{{ t.bg }};border:0;color:{{ t.fg }};padding:7px 10px;border-radius:6px;font:500 12.5px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap;flex:1 1 auto"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;opacity:.6;margin-right:5px">{{ t.num }}</span>{{ t.label }}</button>
-          </sc-for>
-        </div>
-        <sc-if value="{{ hasSubs }}" hint-placeholder-val="{{ false }}">
-          <div style="display:flex;flex-wrap:wrap;gap:4px">
-            <sc-for list="{{ subOpts }}" as="t" hint-placeholder-count="3">
-              <button onClick="{{ t.pick }}" style="background:{{ t.bg }};border:1px solid {{ t.bd }};color:{{ t.fg }};padding:5px 11px;border-radius:999px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer">{{ t.label }}</button>
+    <div class="wc-ztag">{{ zoomTag }}</div>
+    <sc-if value="{{ hasStatus }}" hint-placeholder-val="{{ false }}"><div class="wc-toast" title="{{ status }}">{{ status }}</div></sc-if>
+    <sc-if value="{{ isStart }}" hint-placeholder-val="{{ true }}">
+      <div class="wc-sheet">
+        <div class="wc-sheet-in">
+          <h2>Start a theme</h2>
+          <div class="wc-gal">
+            <button class="wc-gc" onClick="{{ fromScratch }}" title="A plain dial with hour, minute and seconds hands and nothing else: add the movement, the dial and every complication yourself"><span class="wc-blank">＋</span><b>From scratch</b><span>A plain dial and three hands</span></button>
+            <sc-for list="{{ dials }}" as="d" hint-placeholder-count="8">
+              <div class="wc-gc {{ d.cls }}" onClick="{{ d.pick }}" title="{{ d.blurb }}">
+                <canvas ref="{{ d.ref }}" width="96" height="96"></canvas>
+                <b>{{ d.name }}</b><span>{{ d.short }}</span>
+              </div>
             </sc-for>
+          </div>
+        </div>
+        <div class="wc-sheet-foot">
+          <button class="ui-ghost" onClick="{{ resetDesign }}" title="Put the selected watch back to its preset: design, movement, case and light">Reset everything</button>
+          <button class="ui-primary" onClick="{{ startGo }}">Continue with {{ dialName }}</button>
+        </div>
+      </div>
+    </sc-if>
+    <sc-if value="{{ diagOpen }}" hint-placeholder-val="{{ false }}">
+      <div class="wc-diag">
+        <div class="ui-mono ui-mut">{{ metaLabel }}</div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:center">
+          <span class="ui-mono" style="min-width:110px">{{ frameLabel }}</span>
+          <button onClick="{{ prev }}" title="Previous bank frame">←</button>
+          <button onClick="{{ next }}" title="Next bank frame">→</button>
+          <button onClick="{{ toggleSlow }}" title="Play at a fifth of the pace">{{ slowLabel }}</button>
+        </div>
+        <div class="ui-mono ui-mut" style="font-size:11px;text-align:center">{{ viewText }}</div>
+        <sc-if value="{{ showRuler }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-direction:column;gap:7px;align-items:center;width:100%">
+            <div style="position:relative;box-sizing:content-box;width:{{ rulerPx }}px;height:24px;border-bottom:1px solid var(--mut)">
+              <sc-for list="{{ rulerTicks }}" as="t" hint-placeholder-count="41"><div style="position:absolute;bottom:0;left:{{ t.left }}%;width:1px;background:var(--focus);opacity:{{ t.op }};height:{{ t.h }}px"></div></sc-for>
+              <sc-for list="{{ rulerTicks }}" as="t" hint-placeholder-count="41"><div style="position:absolute;bottom:15px;left:{{ t.left }}%;transform:translateX(-50%);font:9px var(--mono);color:var(--mut)">{{ t.lab }}</div></sc-for>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:center">
+              <span class="ui-mut" title="Hold a real ruler against the bar: True size is only true once this matches">Screen ruler</span>
+              <button onClick="{{ calDown }}" title="Nudge the calibration down">−</button>
+              <input type="range" min="{{ calMin }}" max="{{ calMax }}" step="{{ calStep }}" value="{{ calVal }}" onChange="{{ setCal }}" style="width:150px">
+              <button onClick="{{ calUp }}" title="Nudge the calibration up">+</button>
+              <span class="ui-mono">{{ calText }}</span>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center">
+              <span class="ui-mut">It measures</span>
+              <input type="text" onChange="{{ solve }}" placeholder="mm" title="Read the bar against a real ruler and type what it measures: this solves the calibration outright" style="width:56px;text-align:right">
+              <span class="ui-mut">mm</span>
+              <button onClick="{{ resetCal }}" title="Back to the 96 px/in standard">Reset</button>
+            </div>
           </div>
         </sc-if>
-        <div style="font-size:12px;color:#8d8472;text-wrap:pretty">{{ stepHint }}</div>
+        <div class="ui-mono ui-mut" style="font-size:11px;text-align:center">{{ seamText }}</div>
       </div>
-      <sc-if value="{{ hasTabReset }}" hint-placeholder-val="{{ true }}">
-        <div style="display:flex;justify-content:flex-end;margin-top:-6px">
-          <button onClick="{{ tabReset }}" style="background:transparent;border:1px solid #3a352d;color:#a39a87;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="color:#f0d79a">{{ tabResetLabel }}</button>
-        </div>
-      </sc-if>
+    </sc-if>
+    <div class="wc-tool">
+      <button class="wc-play" onClick="{{ toggle }}" title="{{ playLabel }}">{{ playIcon }}</button>
+      <div class="ui-seg"><sc-for list="{{ timeOpts }}" as="c" hint-placeholder-count="3"><button class="{{ c.cls }}" onClick="{{ c.pick }}" title="{{ c.tip }}">{{ c.label }}</button></sc-for></div>
+      <span class="ui-mut wc-lab">View</span>
+      <div class="ui-seg"><sc-for list="{{ viewOpts }}" as="c" hint-placeholder-count="4"><button class="{{ c.cls }}" onClick="{{ c.pick }}" title="{{ c.tip }}">{{ c.label }}</button></sc-for></div>
+      <sc-if value="{{ hasZoom }}" hint-placeholder-val="{{ false }}"><div class="ui-seg"><sc-for list="{{ zoomOpts }}" as="c" hint-placeholder-count="4"><button class="{{ c.cls }}" onClick="{{ c.pick }}" title="Magnify the 466 px frame: it enlarges the artwork, it adds no detail">{{ c.label }}</button></sc-for></div></sc-if>
+      <span class="ui-mut wc-lab">Render</span>
+      <div class="ui-seg"><sc-for list="{{ renderOpts }}" as="c" hint-placeholder-count="3"><button class="{{ c.cls }}" onClick="{{ c.pick }}" title="{{ c.tip }}">{{ c.label }}</button></sc-for></div>
+      <sc-if value="{{ isCompare }}" hint-placeholder-val="{{ false }}"><input type="range" min="0" max="466" step="1" value="{{ wipeVal }}" onChange="{{ setWipe }}" title="Where the split sits: Panel on the left, Design on the right" style="width:120px"></sc-if>
+      <button class="ui-ghost {{ g.cls }}" onClick="{{ pickGuide }}" title="{{ g.label }}: the alignment guide. Auto shows it while a dial or hand is selected and during a drag; press to cycle on, off, auto">⌖</button>
+      <button class="ui-ghost {{ diagCls }}" onClick="{{ toggleDiag }}" title="Diagnostics: frame stepping, the screen ruler, the seam check and the bank">⚙</button>
+    </div>
+  </main>
 
-      <sc-if value="{{ isStart }}" hint-placeholder-val="{{ true }}">
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <button onClick="{{ fromScratch }}" title="A plain dial with hour, minute and seconds hands and nothing else: add the movement, the dial and every complication yourself" style="text-align:left;background:#1f1d1a;border:1px dashed #5a5246;color:#e9e2d2;padding:12px 14px;border-radius:8px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer">＋ Build from scratch<span style="display:block;font-size:12px;color:#8d8472;margin-top:2px">A plain dial and three hands; everything else is yours to add</span></button>
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-            <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">Or start from a finished watch</div>
-            <button onClick="{{ resetDesign }}" style="background:transparent;border:1px solid #3a352d;color:#a39a87;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="color:#f0d79a">Reset everything</button>
-          </div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px">
-            <sc-for list="{{ dials }}" as="d" hint-placeholder-count="8">
-              <div onClick="{{ d.pick }}" style="display:flex;gap:10px;align-items:center;padding:8px;border-radius:8px;border:1px solid {{ d.bd }};background:{{ d.bg }};cursor:pointer">
-                <div style="width:48px;height:48px;flex:none;border-radius:50%;overflow:hidden;background:#000">
-                  <canvas ref="{{ d.ref }}" width="96" height="96" style="display:block;width:48px;height:48px"></canvas>
-                </div>
-                <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
-                  <div style="font-size:13px;font-weight:600;color:{{ d.fg }}">{{ d.name }}</div>
-                  <div style="font-size:11px;line-height:1.35;color:#8d8472;text-wrap:pretty">{{ d.blurb }}</div>
-                </div>
-              </div>
-            </sc-for>
-          </div>
-        </div>
+  <aside class="wc-side wc-insp">
+    <div class="wc-ihead">
+      <div class="ui-label">{{ inspKind }}</div>
+      <div class="wc-ititle">
+        <span>{{ inspTitle }}</span>
+        <span class="wc-iacts">
+          <sc-if value="{{ hasTabReset }}" hint-placeholder-val="{{ true }}"><button class="ui-ghost wc-sm" onClick="{{ tabReset }}" title="{{ tabResetLabel }}">Reset</button></sc-if>
+          <sc-if value="{{ hasSelAny }}" hint-placeholder-val="{{ false }}"><button class="ui-ghost wc-sm" onClick="{{ clearSel }}" title="{{ clearLabel }}" style="opacity:{{ clearOp }}">✕</button></sc-if>
+        </span>
+      </div>
+      <sc-if value="{{ hasSubs }}" hint-placeholder-val="{{ false }}">
+        <div class="ui-seg wc-subs"><sc-for list="{{ subOpts }}" as="t" hint-placeholder-count="3"><button class="{{ t.cls }}" onClick="{{ t.pick }}">{{ t.label }}</button></sc-for></div>
       </sc-if>
+    </div>
+    <div class="wc-ibody" ref="{{ paneRef }}">
+      <sc-if value="{{ isStart }}" hint-placeholder-val="{{ true }}"><div class="wc-hint" style="padding-top:8px">Pick a watch to start from, or build one from scratch.</div></sc-if>
 
-      <sc-if value="{{ isArrange }}" hint-placeholder-val="{{ false }}">
-        <div style="display:flex;flex-direction:column;gap:2px;border:1px solid #2a2722;border-radius:9px;padding:8px">
-          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;padding:0 6px 4px">
-            <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">The stack · top to bottom</div>
-            <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:{{ stackCapFg }}">{{ stackCap }}</span>
-          </div>
-          <sc-for list="{{ stackRows }}" as="r" hint-placeholder-count="10">
-            <sc-if value="{{ r.isHead }}" hint-placeholder-val="{{ false }}">
-              <div style="font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:#6f6858;padding:8px 6px 2px">{{ r.label }}</div>
-            </sc-if>
-            <sc-if value="{{ r.isRow }}" hint-placeholder-val="{{ true }}">
-              <div draggable="{{ r.drag }}" onDragStart="{{ r.dragStart }}" onDragOver="{{ r.dragOver }}" onDrop="{{ r.drop }}" onClick="{{ r.pick }}" title="{{ r.tip }}" style="display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px;align-items:center;padding:6px 6px 6px {{ r.pad }}px;border-radius:6px;cursor:pointer;opacity:{{ r.op }};background:{{ r.bg }};border-left:2px solid {{ r.edge }}" style-hover="background:#1b1a17">
-                <div style="display:flex;flex-direction:column;gap:1px;min-width:0">
-                  <span style="font-size:14px;font-weight:{{ r.weight }}">{{ r.label }}<span style="color:#e0a34a">{{ r.warn }}</span></span>
-                  <span style="font-size:11px;color:#8d8472">{{ r.note }}</span>
-                </div>
-                <button onClick="{{ r.up }}" title="{{ r.upTip }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;border-radius:5px;padding:3px 9px;cursor:pointer;opacity:{{ r.upOp }};visibility:{{ r.arrows }}">↑</button>
-                <button onClick="{{ r.down }}" title="{{ r.downTip }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;border-radius:5px;padding:3px 9px;cursor:pointer;opacity:{{ r.downOp }};visibility:{{ r.arrows }}">↓</button>
-              </div>
-            </sc-if>
-          </sc-for>
-          <sc-for list="{{ stackWarns }}" as="w" hint-placeholder-count="0">
-            <div style="font-size:11px;color:#e0a34a;padding:2px 6px">⚠ {{ w.text }}</div>
+      <sc-if value="{{ isMove }}" hint-placeholder-val="{{ false }}">
+        <div class="wc-cards" style="padding-top:6px">
+          <sc-for list="{{ trainOpts }}" as="t" hint-placeholder-count="6">
+            <button class="wc-card" onClick="{{ t.pick }}" title="{{ t.blurb }}" style="background:{{ t.bg }};border-color:{{ t.bd }};color:{{ t.fg }}"><b>{{ t.name }}</b><span>{{ t.short }}</span></button>
           </sc-for>
         </div>
       </sc-if>
 
       <sc-if value="{{ isComps }}" hint-placeholder-val="{{ false }}">
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
-            <div style="font-size:12px;color:#8d8472;text-wrap:pretty">Listed bottom to top: later items stack over earlier ones. Click one on the dial to select it, drag to move it.</div>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:6px">
-            <sc-for list="{{ compRows }}" as="c" hint-placeholder-count="3">
-              <div data-a="{{ c.anchor }}" onClick="{{ c.pick }}" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;border:1px solid {{ c.bd }};background:{{ c.bg }};cursor:pointer">
-                <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#c9a25a;min-width:18px">{{ c.num }}</span>
-                <div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:0">
-                  <div style="font-size:13px;font-weight:600;color:{{ c.fg }}">{{ c.title }}</div>
-                  <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.meta }}</div>
-                </div>
-                <div style="display:flex;gap:4px">
-                  <button onClick="{{ c.up }}" title="Lower in the stack" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 8px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="color:#f0d79a">↑</button>
-                  <button onClick="{{ c.down }}" title="Raise in the stack" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 8px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="color:#f0d79a">↓</button>
-                  <button onClick="{{ c.del }}" title="Remove" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 8px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="color:#f0a080">×</button>
-                </div>
-              </div>
-            </sc-for>
-          </div>
-          <div style="display:flex;flex-wrap:wrap;gap:8px">
+        <sc-if value="{{ noSel }}" hint-placeholder-val="{{ true }}">
+          <div class="wc-hint" style="padding-top:8px">Select a part on the dial or in Layers, or add one:</div>
+          <div class="wc-cards">
             <sc-for list="{{ catOpts }}" as="a" hint-placeholder-count="6">
-              <button onClick="{{ a.go }}" title="{{ a.tip }}" style="text-align:left;flex:1 1 180px;background:#1f1d1a;border:1px dashed #5a5246;color:#e9e2d2;padding:9px 12px;border-radius:8px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:{{ a.cursor }};opacity:{{ a.op }}">{{ a.label }}<span style="display:block;font-size:11px;color:#8d8472;margin-top:2px;line-height:1.35">{{ a.blurb }}</span></button>
+              <button class="wc-card" onClick="{{ a.go }}" title="{{ a.tip }}" style="opacity:{{ a.op }};cursor:{{ a.cursor }}"><b>{{ a.label }}</b><span>{{ a.blurb }}</span></button>
             </sc-for>
           </div>
-          <div style="display:none">
-            <sc-for list="{{ addOpts }}" as="a" hint-placeholder-count="4">
-              <button onClick="{{ a.go }}" style="background:#1f1d1a;border:1px dashed #5a5246;color:#e9e2d2;padding:7px 12px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="border-color:#c9a25a;color:#f0d79a">{{ a.label }}</button>
-            </sc-for>
-          </div>
-          <sc-if value="{{ noSel }}" hint-placeholder-val="{{ true }}">
-            <div style="font-size:12px;color:#8d8472;padding:12px;border:1px dashed #2e2a24;border-radius:8px;text-align:center">Select a complication to edit its position, shape and style</div>
-          </sc-if>
-        </div>
+        </sc-if>
       </sc-if>
 
-      <sc-if value="{{ isHands }}" hint-placeholder-val="{{ false }}">
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">Default style</div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(66px,1fr));gap:6px">
-            <sc-for list="{{ handOpts }}" as="h" hint-placeholder-count="11">
-              <div onClick="{{ h.pick }}" style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 4px;border-radius:8px;border:1px solid {{ h.bd }};background:{{ h.bg }};cursor:pointer">
-                <canvas ref="{{ h.ref }}" width="104" height="104" style="display:block;width:52px;height:52px"></canvas>
-                <div style="font-size:11px;color:{{ h.fg }};white-space:nowrap">{{ h.label }}</div>
-              </div>
-            </sc-for>
-          </div>
+      <sc-if value="{{ isCase }}" hint-placeholder-val="{{ false }}">
+        <div class="wc-sec first">Case</div>
+        <div class="wc-tiles">
+          <sc-for list="{{ caseOpts }}" as="h" hint-placeholder-count="5">
+            <div class="wc-tile" onClick="{{ h.pick }}" style="border-color:{{ h.bd }};background:{{ h.bg }};color:{{ h.fg }}"><canvas ref="{{ h.ref }}" width="112" height="112" style="display:block;width:52px;height:52px;border-radius:6px"></canvas>{{ h.label }}</div>
+          </sc-for>
         </div>
-      </sc-if>
-
-      <sc-if value="{{ isMove }}" hint-placeholder-val="{{ false }}">
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px">
-          <sc-for list="{{ trainOpts }}" as="t" hint-placeholder-count="6">
-            <div onClick="{{ t.pick }}" style="display:flex;flex-direction:column;gap:3px;padding:9px 11px;border-radius:8px;border:1px solid {{ t.bd }};background:{{ t.bg }};cursor:pointer">
-              <div style="font-size:13px;font-weight:600;color:{{ t.fg }}">{{ t.name }}</div>
-              <div style="font-size:11px;line-height:1.4;color:#8d8472;text-wrap:pretty">{{ t.blurb }}</div>
-            </div>
+        <div class="wc-sec">Glass</div>
+        <div class="wc-tiles">
+          <sc-for list="{{ glassOpts }}" as="h" hint-placeholder-count="4">
+            <div class="wc-tile" onClick="{{ h.pick }}" style="border-color:{{ h.bd }};background:{{ h.bg }};color:{{ h.fg }}"><canvas ref="{{ h.ref }}" width="112" height="112" style="display:block;width:52px;height:52px;border-radius:50%"></canvas>{{ h.label }}</div>
           </sc-for>
         </div>
       </sc-if>
 
-      <sc-if value="{{ isCase }}" hint-placeholder-val="{{ false }}">
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472">Case</div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px">
-            <sc-for list="{{ caseOpts }}" as="h" hint-placeholder-count="5">
-              <div onClick="{{ h.pick }}" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 6px 6px;border-radius:8px;border:1px solid {{ h.bd }};background:{{ h.bg }};cursor:pointer">
-                <canvas ref="{{ h.ref }}" width="112" height="112" style="display:block;width:56px;height:56px;border-radius:6px"></canvas>
-                <div style="font-size:12px;color:{{ h.fg }};white-space:nowrap">{{ h.label }}</div>
-              </div>
-            </sc-for>
-          </div>
-          <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472;margin-top:8px">Glass</div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px">
-            <sc-for list="{{ glassOpts }}" as="h" hint-placeholder-count="4">
-              <div onClick="{{ h.pick }}" style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 6px 6px;border-radius:8px;border:1px solid {{ h.bd }};background:{{ h.bg }};cursor:pointer">
-                <canvas ref="{{ h.ref }}" width="112" height="112" style="display:block;width:56px;height:56px;border-radius:50%"></canvas>
-                <div style="font-size:12px;color:{{ h.fg }};white-space:nowrap">{{ h.label }}</div>
-              </div>
-            </sc-for>
-          </div>
+      <sc-if value="{{ handGrid }}" hint-placeholder-val="{{ false }}">
+        <div class="wc-sec first" style="display:flex;justify-content:space-between;align-items:center">Default style<button class="ui-ghost wc-sm" onClick="{{ resetHands }}" title="Every hand back to the default style, finish, length and lume">Reset hands</button></div>
+        <div class="wc-tiles">
+          <sc-for list="{{ handOpts }}" as="h" hint-placeholder-count="11">
+            <div class="wc-tile" onClick="{{ h.pick }}" style="border-color:{{ h.bd }};background:{{ h.bg }};color:{{ h.fg }}"><canvas ref="{{ h.ref }}" width="104" height="104" style="display:block;width:48px;height:48px"></canvas>{{ h.label }}</div>
+          </sc-for>
         </div>
       </sc-if>
 
-      <div style="display:flex;flex-direction:column;gap:8px">
-        <sc-if value="{{ hasSelHead }}" hint-placeholder-val="{{ false }}"><div style="font-size:14px;font-weight:600;color:#f0d79a;padding-top:4px">{{ selTitle }}</div></sc-if>
-        <sc-for list="{{ fields }}" as="f" hint-placeholder-count="5">
-          <sc-if value="{{ f.isHead }}" hint-placeholder-val="{{ false }}">
-            <div data-a="{{ f.anchor }}" style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472;padding-top:12px;margin-top:4px;border-top:1px solid #25221e">{{ f.label }}</div>
-          </sc-if>
-          <sc-if value="{{ f.isRow }}" hint-placeholder-val="{{ true }}">
-            <div data-a="{{ f.anchor }}" style="display:grid;grid-template-columns:112px minmax(0,1fr) 64px;gap:10px;align-items:center;min-height:30px">
-              <div style="font-size:13px;color:#b5ab97">{{ f.label }}<sc-if value="{{ f.hasLink }}" hint-placeholder-val="{{ false }}"><span onClick="{{ f.relink }}" title="{{ f.linkTip }}" style="display:block;font-size:10px;letter-spacing:.02em;color:{{ f.linkFg }};cursor:{{ f.linkCursor }}">{{ f.linkText }}</span></sc-if></div>
-              <div style="min-width:0">
-                <sc-if value="{{ f.isRange }}" hint-placeholder-val="{{ true }}"><input type="range" min="{{ f.min }}" max="{{ f.max }}" step="{{ f.step }}" value="{{ f.value }}" onChange="{{ f.on }}" style="width:100%;accent-color:#c9a25a"></sc-if>
-                <sc-if value="{{ f.isSelect }}" hint-placeholder-val="{{ false }}"><select onChange="{{ f.on }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for></select></sc-if>
-                <sc-if value="{{ f.isChips }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-wrap:wrap;gap:4px"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="3"><button onClick="{{ o.pick }}" style="background:{{ o.bg }};border:1px solid {{ o.bd }};color:{{ o.fg }};padding:5px 10px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap">{{ o.label }}</button></sc-for></div></sc-if>
-                <sc-if value="{{ f.isSwatch }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-wrap:wrap;gap:6px"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="6"><button onClick="{{ o.pick }}" title="{{ o.label }}" style="width:24px;height:24px;border-radius:50%;background:{{ o.bg }};border:2px solid {{ o.bd }};box-shadow:inset 0 0 0 1px rgba(0,0,0,.5);cursor:pointer;padding:0;font:600 11px 'IBM Plex Sans',sans-serif;color:#e9e2d2">{{ o.text }}</button></sc-for></div></sc-if>
-                <sc-if value="{{ f.isColor }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="6"><button onClick="{{ o.pick }}" title="{{ o.label }}" style="width:22px;height:22px;border-radius:50%;background:{{ o.bg }};border:2px solid {{ o.bd }};box-shadow:inset 0 0 0 1px rgba(0,0,0,.5);cursor:pointer;padding:0;font:600 10px 'IBM Plex Sans',sans-serif;color:#e9e2d2">{{ o.text }}</button></sc-for><input type="color" value="{{ f.value }}" onChange="{{ f.on }}" title="Custom colour" style="width:30px;height:24px;padding:0;border:1px solid #3a352d;border-radius:5px;background:#0d0c0a;cursor:pointer"><input type="text" value="{{ f.hexText }}" onChange="{{ f.onHex }}" onBlur="{{ f.onHexBlur }}" placeholder="#rrggbb or r, g, b" title="{{ f.hexTitle }}" style="flex:1 1 140px;min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',ui-monospace,monospace"></div></sc-if>
-                <sc-if value="{{ f.isText }}" hint-placeholder-val="{{ false }}"><input type="text" value="{{ f.value }}" onChange="{{ f.on }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%;box-sizing:border-box"></sc-if>
-                <sc-if value="{{ f.isFile }}" hint-placeholder-val="{{ false }}"><input type="file" accept="{{ f.accept }}" onChange="{{ f.on }}" style="font:500 12px 'IBM Plex Sans',sans-serif;color:#b5ab97;width:100%"></sc-if>
-                <sc-if value="{{ f.isNote }}" hint-placeholder-val="{{ false }}"><div style="font-size:12px;color:#c9a25a;text-wrap:pretty">{{ f.note }}</div></sc-if>
+      <sc-if value="{{ isHands }}" hint-placeholder-val="{{ false }}">
+        <sc-for list="{{ handRows }}" as="h" hint-placeholder-count="3">
+          <div class="wc-hand" data-a="{{ h.anchor }}" style="opacity:{{ h.op }}">
+            <div class="wc-hand-h">
+              <b>{{ h.label }}<span class="ui-mono ui-mut" style="font-size:11px;font-weight:400;margin-left:6px">{{ h.meta }}</span></b>
+              <button class="ui-ghost wc-sm" onClick="{{ h.toggle }}" title="Whether the dial carries this hand at all (a design setting, unlike the layer eye)">{{ h.eye }}</button>
+            </div>
+            <div class="wc-sec first" style="padding-top:2px">Shape</div>
+            <div class="wc-row"><label>Style</label><div>
+              <sc-if value="{{ h.notSec }}" hint-placeholder-val="{{ false }}"><select onChange="{{ h.onStyle }}"><sc-for list="{{ h.styleOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for></select></sc-if>
+              <sc-if value="{{ h.isSec }}" hint-placeholder-val="{{ false }}"><select onChange="{{ h.onSec }}"><sc-for list="{{ h.secOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for></select></sc-if>
+            </div><span></span></div>
+            <div class="wc-row"><label title="At 100% the tip lands where this hand reaches when the composer draws it. An uploaded sprite is normalised to that length first.">Length</label><input type="range" min="0.5" max="1.3" step="0.01" value="{{ h.len }}" onChange="{{ h.onLen }}"><span class="wc-val">{{ h.lenText }}</span></div>
+            <sc-if value="{{ h.showWid }}" hint-placeholder-val="{{ true }}">
+              <div class="wc-row"><label title="Only the drawn hand obeys this: an uploaded sprite carries its own outline">Width</label><input type="range" min="0.4" max="2.5" step="0.05" value="{{ h.wid }}" onChange="{{ h.onWid }}"><span class="wc-val">{{ h.widText }}</span></div>
+            </sc-if>
+            <div class="wc-sec" style="border:0;padding-top:4px">Paint</div>
+            <div class="wc-row"><label>Finish</label><select onChange="{{ h.onFinish }}"><sc-for list="{{ h.finOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for></select><span></span></div>
+            <div class="wc-row"><label>Shading</label><select onChange="{{ h.onShade }}"><sc-for list="{{ h.shadeOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for></select><span></span></div>
+            <div class="wc-row"><label>Lume</label><select onChange="{{ h.onLume }}"><sc-for list="{{ h.lumeOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for></select><span></span></div>
+            <sc-if value="{{ h.canMove }}" hint-placeholder-val="{{ true }}">
+              <div class="wc-sec" style="border:0;padding-top:4px" title="D41: how this hand's value becomes a pose (path) and when it moves (cadence). The preview moves the way the dial will; the bake writes the same numbers.">Motion <span class="ui-mut" style="text-transform:none;letter-spacing:0">· {{ h.motionNote }}</span></div>
+              <div class="wc-row"><label>Path</label><select onChange="{{ h.onPath }}"><sc-for list="{{ h.pathOpts }}" as="o" hint-placeholder-count="5"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for></select><span></span></div>
+              <div class="wc-row"><label>Cadence</label><select onChange="{{ h.onCad }}"><sc-for list="{{ h.cadOpts }}" as="o" hint-placeholder-count="5"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for></select><span></span></div>
+              <sc-if value="{{ h.showMotionNums }}" hint-placeholder-val="{{ false }}">
+                <div class="wc-num4">
+                  <span title="{{ h.aTip }}">{{ h.aLabel }}</span><input type="number" step="1" value="{{ h.aVal }}" onChange="{{ h.onA }}" title="{{ h.aTip }}">
+                  <span title="{{ h.bTip }}">{{ h.bLabel }}</span><input type="number" step="1" value="{{ h.bVal }}" onChange="{{ h.onB }}" disabled="{{ h.bOff }}" title="{{ h.bTip }}">
+                  <span title="Steps per unit of the hand's value (per second on a seconds hand). A seconds hand's steps also set the dial's tick rate.">Steps</span><input type="number" min="1" max="8" step="1" value="{{ h.steps }}" onChange="{{ h.onSteps }}" disabled="{{ h.stepsOff }}">
+                  <span title="{{ h.easeTip }}">Ease</span><input type="number" min="0" max="1000" step="10" value="{{ h.ease }}" onChange="{{ h.onEase }}" disabled="{{ h.easeOff }}" title="{{ h.easeTip }}">
+                </div>
+              </sc-if>
+            </sc-if>
+            <button class="ui-ghost wc-sm" onClick="{{ h.toggleArt }}" title="Replace the drawn hand with your own PNG or SVG" style="align-self:flex-start;margin-top:4px">{{ h.artToggleLabel }}</button>
+            <sc-if value="{{ h.artOpen }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;gap:10px;align-items:flex-start">
+                <canvas ref="{{ h.artRef }}" width="112" height="112" onMouseDown="{{ h.onArtDown }}" onMouseMove="{{ h.onArtMove }}" title="Click or drag to set the pivot: the point the device rotates this hand about" style="display:block;width:84px;height:84px;background:var(--well);border:1px solid var(--line);border-radius:6px;cursor:crosshair;flex:none"></canvas>
+                <div style="display:flex;flex-direction:column;gap:6px;min-width:0;flex:1">
+                  <div class="wc-hint">Sprite · <span style="color:var(--fg)">{{ h.artLabel }}</span></div>
+                  <input type="file" accept="image/png,image/svg+xml" onChange="{{ h.onArtFile }}">
+                  <sc-if value="{{ h.hasArt }}" hint-placeholder-val="{{ false }}">
+                    <div class="wc-num4">
+                      <span>Pivot X</span><input type="number" value="{{ h.pivotX }}" onChange="{{ h.onPivotX }}" placeholder="hub" title="Source pixels from the image's left edge. Negative and beyond the image are allowed: an arbour hidden under a sub-dial sits outside the ink.">
+                      <span>Pivot Y</span><input type="number" value="{{ h.pivotY }}" onChange="{{ h.onPivotY }}" placeholder="hub" title="Source pixels from the image's top edge. Negative and beyond the image are allowed.">
+                      <span>Facing</span><input type="number" step="1" value="{{ h.rot0 }}" onChange="{{ h.onRot0 }}" title="Which way the drawing points: 0 is 12 o'clock; set it to the clockwise angle your image points at.">
+                      <span>Zoom</span><input type="number" min="0.05" step="0.05" value="{{ h.zoom }}" onChange="{{ h.onZoom }}" title="Scale the art about the arbour on top of the length fit">
+                    </div>
+                    <div class="ui-chips">
+                      <button onClick="{{ h.onFacingDown }}" title="Rotate 15° anticlockwise">−15°</button>
+                      <button onClick="{{ h.onFacingUp }}" title="Rotate 15° clockwise">+15°</button>
+                      <button onClick="{{ h.onFacingReset }}">Facing to 12</button>
+                      <button onClick="{{ h.onPivotHub }}" title="Put the pivot on the centroid of the hub ink, the way bake_clock.py checks it">Snap to hub ink</button>
+                      <button onClick="{{ h.onPivotCentre }}">Sprite centre</button>
+                      <button onClick="{{ h.onArtClear }}">Use procedural</button>
+                    </div>
+                  </sc-if>
+                  <div class="wc-hint" style="font-size:11px">{{ h.artNote }}</div>
+                </div>
               </div>
-              <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#e9e2d2;text-align:right;overflow:hidden;text-overflow:ellipsis">{{ f.valText }}</div>
+            </sc-if>
+          </div>
+        </sc-for>
+      </sc-if>
+
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <sc-for list="{{ fields }}" as="f" hint-placeholder-count="5">
+          <sc-if value="{{ f.isHead }}" hint-placeholder-val="{{ false }}"><div class="wc-sec" data-a="{{ f.anchor }}">{{ f.label }}</div></sc-if>
+          <sc-if value="{{ f.isRow }}" hint-placeholder-val="{{ true }}">
+            <div class="wc-row {{ f.rowCls }}" data-a="{{ f.anchor }}">
+              <label title="{{ f.label }}">{{ f.label }}<sc-if value="{{ f.hasLink }}" hint-placeholder-val="{{ false }}"><span onClick="{{ f.relink }}" title="{{ f.linkTip }}" style="color:{{ f.linkFg }};cursor:{{ f.linkCursor }}">{{ f.linkText }}</span></sc-if></label>
+              <div style="min-width:0">
+                <sc-if value="{{ f.isRange }}" hint-placeholder-val="{{ true }}"><input type="range" min="{{ f.min }}" max="{{ f.max }}" step="{{ f.step }}" value="{{ f.value }}" onChange="{{ f.on }}"></sc-if>
+                <sc-if value="{{ f.isSelect }}" hint-placeholder-val="{{ false }}"><select onChange="{{ f.on }}"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for></select></sc-if>
+                <sc-if value="{{ f.isChips }}" hint-placeholder-val="{{ false }}"><div class="ui-chips"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="3"><button onClick="{{ o.pick }}" style="background:{{ o.bg }};border-color:{{ o.bd }};color:{{ o.fg }}">{{ o.label }}</button></sc-for></div></sc-if>
+                <sc-if value="{{ f.isSwatch }}" hint-placeholder-val="{{ false }}"><div class="ui-chips"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="6"><button class="wc-sw" onClick="{{ o.pick }}" title="{{ o.label }}" style="background:{{ o.bg }};border-color:{{ o.bd }}">{{ o.text }}</button></sc-for></div></sc-if>
+                <sc-if value="{{ f.isColor }}" hint-placeholder-val="{{ false }}"><div class="ui-chips" style="align-items:center"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="6"><button class="wc-sw" onClick="{{ o.pick }}" title="{{ o.label }}" style="background:{{ o.bg }};border-color:{{ o.bd }}">{{ o.text }}</button></sc-for><input type="color" value="{{ f.value }}" onChange="{{ f.on }}" title="Custom colour"><input type="text" value="{{ f.hexText }}" onChange="{{ f.onHex }}" onBlur="{{ f.onHexBlur }}" placeholder="#rrggbb" title="{{ f.hexTitle }}" style="flex:1 1 80px;font-family:var(--mono)"></div></sc-if>
+                <sc-if value="{{ f.isText }}" hint-placeholder-val="{{ false }}"><input type="text" value="{{ f.value }}" onChange="{{ f.on }}"></sc-if>
+                <sc-if value="{{ f.isFile }}" hint-placeholder-val="{{ false }}"><input type="file" accept="{{ f.accept }}" onChange="{{ f.on }}"></sc-if>
+                <sc-if value="{{ f.isNote }}" hint-placeholder-val="{{ false }}"><div class="wc-note" title="{{ f.note }}">{{ f.note }}</div></sc-if>
+                <div class="wc-cname">{{ f.valText }}</div>
+              </div>
+              <div class="wc-val" title="{{ f.valText }}">{{ f.valText }}</div>
             </div>
           </sc-if>
         </sc-for>
       </div>
 
-      <sc-if value="{{ isHands }}" hint-placeholder-val="{{ false }}">
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding-top:12px;border-top:1px solid #25221e">
-            <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472" title="This list is the dial's one depth order. Top of the list draws nearest you on the glass: the preview draws by it, the theme bake ships it, and the watch composites by it. Sub-dial needles turn under the main hands unless you raise them.">Each hand · top of the stack first · depth on the glass</div>
-            <button onClick="{{ resetHands }}" style="background:transparent;border:1px solid #3a352d;color:#a39a87;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="color:#f0d79a">Reset all to defaults</button>
-          </div>
-          <div style="display:none">Each hand · top of the stack first</div>
-          <sc-for list="{{ handRows }}" as="h" hint-placeholder-count="3">
-            <div data-a="{{ h.anchor }}" style="display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-radius:8px;border:1px solid #2e2a24;background:#171614;opacity:{{ h.op }}">
-              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-                <div style="display:flex;gap:8px;align-items:baseline;min-width:0">
-                  <span style="font-size:13px;font-weight:600;white-space:nowrap">{{ h.label }}</span>
-                  <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472">{{ h.meta }}</span>
-                </div>
-                <div style="display:flex;gap:4px">
-                  <button onClick="{{ h.up }}" title="Raise" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:3px 8px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="color:#f0d79a">↑</button>
-                  <button onClick="{{ h.down }}" title="Lower" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:3px 8px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="color:#f0d79a">↓</button>
-                  <button onClick="{{ h.toggle }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:3px 8px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer;min-width:54px" style-hover="color:#f0d79a">{{ h.eye }}</button>
-                </div>
-              </div>
-              <div style="font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:#6f6858;margin-top:2px">Shape</div>
-              <div style="display:flex;flex-direction:column;gap:8px">
-                <sc-if value="{{ h.notSec }}" hint-placeholder-val="{{ false }}">
-                  <select onChange="{{ h.onStyle }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%">
-                    <sc-for list="{{ h.styleOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for>
-                  </select>
-                </sc-if>
-                <sc-if value="{{ h.isSec }}" hint-placeholder-val="{{ false }}">
-                  <select onChange="{{ h.onSec }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%">
-                    <sc-for list="{{ h.secOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for>
-                  </select>
-                </sc-if>
-              </div>
-              <sc-if value="{{ h.showWid }}" hint-placeholder-val="{{ true }}">
-                <div style="display:grid;grid-template-columns:56px minmax(0,1fr) 44px 56px minmax(0,1fr) 44px;gap:8px;align-items:center">
-                  <span style="font-size:12px;color:#b5ab97" title="At 100% the hand's tip lands where that hand reaches when drawn by the composer. An uploaded sprite is normalised to that length first, so the slider scales it from the right answer instead of from the image's own pixel count.">Length</span>
-                  <input type="range" min="0.5" max="1.3" step="0.01" value="{{ h.len }}" onChange="{{ h.onLen }}" style="width:100%;accent-color:#c9a25a">
-                  <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;text-align:right">{{ h.lenText }}</span>
-                  <span style="font-size:12px;color:#b5ab97" title="Only the drawn hand obeys this: an uploaded sprite carries its own outline, so there is no stroke to widen.">Width</span>
-                  <input type="range" min="0.4" max="2.5" step="0.05" value="{{ h.wid }}" onChange="{{ h.onWid }}" style="width:100%;accent-color:#c9a25a">
-                  <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;text-align:right">{{ h.widText }}</span>
-                </div>
-              </sc-if>
-              <sc-if value="{{ h.hideWid }}" hint-placeholder-val="{{ false }}">
-                <div style="display:grid;grid-template-columns:56px minmax(0,1fr) 44px;gap:8px;align-items:center">
-                  <span style="font-size:12px;color:#b5ab97" title="At 100% the hand's tip lands where that hand reaches when drawn by the composer. An uploaded sprite is normalised to that length first, so the slider scales it from the right answer instead of from the image's own pixel count.">Length</span>
-                  <input type="range" min="0.5" max="1.3" step="0.01" value="{{ h.len }}" onChange="{{ h.onLen }}" style="width:100%;accent-color:#c9a25a">
-                  <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;text-align:right">{{ h.lenText }}</span>
-                </div>
-              </sc-if>
-              <div style="font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:#6f6858;margin-top:2px">Paint</div>
-              <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px">
-                <select onChange="{{ h.onFinish }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%">
-                  <sc-for list="{{ h.finOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for>
-                </select>
-                <select onChange="{{ h.onShade }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%">
-                <sc-for list="{{ h.shadeOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for>
-              </select>
-              </div>
-              <select onChange="{{ h.onLume }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%">
-                <sc-for list="{{ h.lumeOpts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for>
-              </select>
-              <sc-if value="{{ h.canMove }}" hint-placeholder-val="{{ true }}">
-                <div style="display:flex;flex-direction:column;gap:6px;padding-top:8px;border-top:1px solid #25221e">
-                  <div style="font-size:12px;color:#b5ab97" title="D41: how this hand's value becomes a pose (path) and when it moves (cadence). The preview moves the way the dial will; the bake writes the same numbers into the theme.">Motion · <span style="color:#e9e2d2">{{ h.motionNote }}</span></div>
-                  <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px">
-                    <select onChange="{{ h.onPath }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%">
-                      <sc-for list="{{ h.pathOpts }}" as="o" hint-placeholder-count="5"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for>
-                    </select>
-                    <select onChange="{{ h.onCad }}" style="background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:6px 8px;border-radius:6px;font:500 12px 'IBM Plex Sans',sans-serif;width:100%">
-                      <sc-for list="{{ h.cadOpts }}" as="o" hint-placeholder-count="5"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for>
-                    </select>
-                  </div>
-                  <sc-if value="{{ h.showMotionNums }}" hint-placeholder-val="{{ false }}">
-                    <div style="display:grid;grid-template-columns:44px minmax(0,1fr) 44px minmax(0,1fr) 44px minmax(0,1fr);gap:6px;align-items:center">
-                      <span style="font-size:12px;color:#b5ab97" title="{{ h.aTip }}">{{ h.aLabel }}</span>
-                      <input type="number" step="1" value="{{ h.aVal }}" onChange="{{ h.onA }}" title="{{ h.aTip }}" style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
-                      <span style="font-size:12px;color:#b5ab97" title="{{ h.bTip }}">{{ h.bLabel }}</span>
-                      <input type="number" step="1" value="{{ h.bVal }}" onChange="{{ h.onB }}" disabled="{{ h.bOff }}" title="{{ h.bTip }}" style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
-                      <span style="font-size:12px;color:#b5ab97" title="Steps per unit of the hand's value (per second on a seconds hand). A seconds hand's steps also set the dial's tick rate.">Steps</span>
-                      <input type="number" min="1" max="8" step="1" value="{{ h.steps }}" onChange="{{ h.onSteps }}" disabled="{{ h.stepsOff }}" style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
-                      <span style="font-size:12px;color:#b5ab97" title="{{ h.easeTip }}">Ease</span>
-                      <input type="number" min="0" max="1000" step="10" value="{{ h.ease }}" onChange="{{ h.onEase }}" disabled="{{ h.easeOff }}" title="{{ h.easeTip }}" style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
-                    </div>
-                  </sc-if>
-                </div>
-              </sc-if>
-              <button onClick="{{ h.toggleArt }}" title="Replace the drawn hand with your own PNG or SVG" style="align-self:flex-start;background:transparent;border:1px solid #3a352d;color:#a39a87;padding:4px 10px;border-radius:5px;font:500 11px 'IBM Plex Sans',sans-serif;cursor:pointer">{{ h.artToggleLabel }}</button>
-              <sc-if value="{{ h.artOpen }}" hint-placeholder-val="{{ false }}">
-              <div style="display:flex;gap:10px;align-items:flex-start;padding-top:8px;border-top:1px solid #25221e">
-                <canvas ref="{{ h.artRef }}" width="112" height="112" onMouseDown="{{ h.onArtDown }}" onMouseMove="{{ h.onArtMove }}" title="Click or drag to set the pivot — the point the device rotates this hand about" style="display:block;width:88px;height:88px;background:#1b1916;border:1px solid #2e2a24;border-radius:6px;cursor:crosshair;flex:none"></canvas>
-                <div style="display:flex;flex-direction:column;gap:6px;min-width:0;flex:1">
-                  <div style="font-size:12px;color:#b5ab97">Sprite · <span style="color:#e9e2d2">{{ h.artLabel }}</span></div>
-                  <input type="file" accept="image/png,image/svg+xml" onChange="{{ h.onArtFile }}" style="font:500 12px 'IBM Plex Sans',sans-serif;color:#b5ab97;width:100%">
-                  <sc-if value="{{ h.hasArt }}" hint-placeholder-val="{{ false }}">
-                    <div style="display:grid;grid-template-columns:52px minmax(0,1fr) 52px minmax(0,1fr);gap:6px;align-items:center">
-                      <span style="font-size:12px;color:#b5ab97">Pivot X</span>
-                      <input type="number" value="{{ h.pivotX }}" onChange="{{ h.onPivotX }}" placeholder="hub ink" title="Source pixels from the image's left edge. Negative and beyond the image are allowed: an arbour hidden under a subdial sits outside the visible ink, and the plane is grown to hold it." style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
-                      <span style="font-size:12px;color:#b5ab97">Pivot Y</span>
-                      <input type="number" value="{{ h.pivotY }}" onChange="{{ h.onPivotY }}" placeholder="hub ink" title="Source pixels from the image's top edge. Negative and beyond the image are allowed." style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
-                    </div>
-                    <div style="display:grid;grid-template-columns:52px minmax(0,1fr) 52px minmax(0,1fr) 52px minmax(0,1fr);gap:6px;align-items:center">
-                      <span style="font-size:12px;color:#b5ab97">Facing</span>
-                      <input type="number" step="1" value="{{ h.rot0 }}" onChange="{{ h.onRot0 }}" title="Which way the drawing points. 0 means the art was drawn pointing at 12 o'clock; set it to the clockwise angle your image actually points at." style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
-                      <span style="font-size:12px;color:#b5ab97">Zoom</span>
-                      <input type="number" min="0.05" step="0.05" value="{{ h.zoom }}" onChange="{{ h.onZoom }}" title="Scale the art about the arbour on top of the length fit: 2 doubles a sprite already fitted to this hand's reach." style="min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:5px 7px;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace">
-                      <button onClick="{{ h.onFacingDown }}" title="Rotate 15 degrees anticlockwise" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 0;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="background:#2a2722">-15°</button>
-                      <button onClick="{{ h.onFacingUp }}" title="Rotate 15 degrees clockwise" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 0;border-radius:5px;font:500 12px 'IBM Plex Mono',monospace;cursor:pointer" style-hover="background:#2a2722">+15°</button>
-                    </div>
-                    <div style="display:flex;gap:6px;flex-wrap:wrap">
-                      <button onClick="{{ h.onPivotHub }}" title="Put the pivot on the centroid of the hub ink, the way bake_clock.py checks it" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">Snap to hub ink</button>
-                      <button onClick="{{ h.onPivotCentre }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">Sprite centre</button>
-                      <button onClick="{{ h.onFacingReset }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">Facing to 12</button>
-                      <button onClick="{{ h.onArtClear }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:4px 9px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">Use procedural</button>
-                    </div>
-                  </sc-if>
-                  <div style="font-size:11px;line-height:1.5;color:#8d8472;text-wrap:pretty">{{ h.artNote }}</div>
-                </div>
-              </div>
-            </sc-if>
-            </div>
-          </sc-for>
-        </div>
-      </sc-if>
 
       <sc-if value="{{ isExport }}" hint-placeholder-val="{{ false }}">
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <div title="{{ badgeTip }}" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid {{ badgeBd }};background:{{ badgeBg }}">
-            <span style="font-size:13px;font-weight:600;color:{{ badgeFg }}">{{ badgeText }}</span>
-            <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#a39a87">{{ badgeNote }}</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472;white-space:nowrap">Theme name</span>
-            <input type="text" value="{{ themeNameVal }}" onChange="{{ themeNameIn }}" placeholder="{{ themeNamePh }}" title="What the watch lists this theme as, and the only thing that identifies it: the card files the upload under sha256(name)[:12], so the name may hold spaces, capitals and an em dash. The header holds 55 UTF-8 bytes of it." style="flex:1 1 auto;min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:7px 9px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif">
-            <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8d8472;white-space:nowrap">{{ themeNameLen }}</span>
-          </div>
-          <sc-if value="{{ isHub }}" hint-placeholder-val="{{ false }}">
-            <button onClick="{{ sendToOrb }}" style="text-align:left;background:#1f2a1f;border:1px solid #3a5a3a;color:#d6ecd6;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#26321f"><span>Send to orb</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d9f82;font-size:12px">{{ sendNote }}</span></button>
-            <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">Bakes the same <span style="font-family:'IBM Plex Mono',monospace">.orbtheme</span> the download button ships, then pushes it straight to the orb this hub is talking to, through the hub's FORMAT 3 upload door. The hub learns the orb's address itself — the one it saw over the USB cable or was handed on the Manage card — so a board on a new DHCP lease never leaves this button dialing a stale one. The device answers the upload as a store, not a new dial: it verifies the bundle and files it under the name inside the header, into the slot the glass is <span style="font-family:'IBM Plex Mono',monospace">not</span> drawing. Nothing moves on its own. The dial keeps showing its current face until you flip to this one — the flip is a separate press on the Manage card (or the watch’s own themes page), and that press is what reboots the orb onto the new dial. If a different theme already holds this name the orb refuses; the button asks, and a second press replaces it.</div>
-          </sc-if>
-          <button onClick="{{ exportTheme }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Device theme (.orbtheme)</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ themeNote }}</span></button>
-          <button onClick="{{ toggleMoreExport }}" style="align-self:flex-start;background:transparent;border:1px solid #3a352d;color:#a39a87;padding:5px 10px;border-radius:5px;font:500 12px 'IBM Plex Sans',sans-serif;cursor:pointer">{{ moreExportLabel }}</button>
-          <sc-if value="{{ moreExportOpen }}" hint-placeholder-val="{{ false }}">
-            <div style="display:flex;flex-direction:column;gap:10px">
-          <button onClick="{{ exportKit }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Layer kit</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ kitNote }}</span></button>
-          <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">One <span style="font-family:'IBM Plex Mono',monospace">.orbtheme</span> FORMAT 3 bundle: the compiled clock dial — plate (or its §31 keyframe bank), masked hands, the crystal overlay — packed as one section, and the name inside it is the whole identity: the watch files it under <span style="font-family:'IBM Plex Mono',monospace">/orbtheme/&lt;sha256(name)[:12]&gt;.orbtheme</span> and re-naming is a re-install under a new hash. The bake measures the plate’s motion across the loop first (without the carriage, so a turning carriage never prices its own plate out of a fit) and picks the plate’s carrier by the cap arithmetic the baker shares with the selftest: a still under the shimmer band, a plate keyframe bank otherwise, thinned to what fits. A caged train gets its carriage row too, priced on the carriage’s own box and billed first: on an orbital dial the carriage IS the seconds hand, and a keyframe bank is blitted unrotated, so the bake refuses rather than ship a dial whose escapement animates while its orbit sits frozen. Upload the file (hub or the watch’s own door); the watch verifies it and stores it into the slot the glass is not drawing, and the dial keeps showing what it showed — no flip, no reboot. A store only ever files the bundle. Flipping to it is a separate press, and that press reboots the orb onto the new dial — every claim in this sentence is the store/flip contract, not an install in place. The same bytes come out of <span style="font-family:'IBM Plex Mono',monospace">tools/bake_clock.py --from-bundle</span> run against a baked container, which is the mirror the parity suite pins.</div>
-          <button onClick="{{ exportFrames }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Flattened frames</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ zipNote }}</span></button>
-          <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">The layer kit holds the looping base frames, each static layer as a transparent PNG, any tourbillon carriage frames, every complication value as a cropped sprite and every hand as its sprite with its pivot — plus manifest.json with draw order and positions. An uploaded hand is stored pointing the way the drawing points; manifest.json carries that in <span style="font-family:'IBM Plex Mono',monospace">zeroRotationDeg</span>, so the device turns the sprite by its value plus that offset and no artwork needs redrawing to face 12.</div>
-          <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">Custom-format date windows and date flares ship as a sprite kit under <span style="font-family:'IBM Plex Mono',monospace">text/&lt;id&gt;_&lt;kind&gt;/</span>: the two end caps, one tileable 1px vertical slice of the frame, and a tile for every glyph the format can ever produce. The device assembles the day's string to whatever width manifest.json declares. The zip's preview.png is always posed at 10:09:36 with a waxing gibbous moon, never the transport you are watching.</div>
-          <div style="font-size:11px;line-height:1.5;color:#c9a25a;font-family:'IBM Plex Mono',monospace">{{ dateKitNote }}</div>
-          <button onClick="{{ exportBundle }}" style="text-align:left;background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:12px 14px;border-radius:6px;font:500 14px 'IBM Plex Sans',sans-serif;cursor:pointer;display:flex;justify-content:space-between;gap:12px" style-hover="background:#2a2722"><span>Design bundle (.wckit)</span><span style="font-family:'IBM Plex Mono',monospace;color:#8d8472;font-size:12px">{{ bundleNote }}</span></button>
-          <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">One JSON file: the design, the movement and case settings, and every uploaded asset as base64 inside it. A Design ID carries a <span style="font-family:'IBM Plex Mono',monospace">reference</span> to your art, never the bytes — this is what carries them to another browser or back after a cleared store. The layer kit also writes them under <span style="font-family:'IBM Plex Mono',monospace">sources/</span> and lists them in <span style="font-family:'IBM Plex Mono',monospace">manifest.json → assets[]</span>.</div>
-          <div style="font-size:11px;line-height:1.5;color:#c9a25a;font-family:'IBM Plex Mono',monospace">{{ artNote }}</div>
-          <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#8d8472;padding-top:12px;margin-top:4px;border-top:1px solid #25221e">Design ID</div>
-          <div style="display:flex;gap:8px">
-            <input readonly value="{{ designId }}" onFocus="{{ selectAll }}" style="flex:1;min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#f0d79a;padding:9px 10px;border-radius:6px;font:500 12px 'IBM Plex Mono',monospace">
-            <button onClick="{{ copyId }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:9px 14px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="background:#2a2722">Copy</button>
-          </div>
-          <div style="display:flex;gap:8px">
-            <input value="{{ idInput }}" onChange="{{ onIdInput }}" placeholder="Paste a design ID…" style="flex:1;min-width:0;background:#0d0c0a;border:1px solid #3a352d;color:#e9e2d2;padding:9px 10px;border-radius:6px;font:500 12px 'IBM Plex Mono',monospace">
-            <button onClick="{{ loadDesign }}" style="background:#c9a25a;border:1px solid #c9a25a;color:#17130c;padding:9px 14px;border-radius:6px;font:600 13px 'IBM Plex Sans',sans-serif;cursor:pointer;white-space:nowrap" style-hover="background:#ddb66c">Load</button>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <input type="file" accept=".wckit,application/json" onChange="{{ loadBundle }}" style="flex:1;min-width:0;font:500 12px 'IBM Plex Sans',sans-serif;color:#b5ab97;background:#0d0c0a;border:1px solid #3a352d;border-radius:6px;padding:8px 9px">
-          </div>
-          <div style="font-size:12px;line-height:1.5;color:#8d8472;text-wrap:pretty">Paste a design ID and the art it references only arrives if this browser still holds it. If the row above names a missing asset, ask whoever sent the ID for their <span style="font-family:'IBM Plex Mono',monospace">.wckit</span> and load it here.</div>
-                    </div>
-          </sc-if>
-        </div>
+        <div class="wc-badge" title="{{ badgeTip }}" style="border-color:{{ badgeBd }};background:{{ badgeBg }}"><b style="color:{{ badgeFg }}">{{ badgeText }}</b><span>{{ badgeNote }}</span></div>
+        <sc-if value="{{ isHub }}" hint-placeholder-val="{{ false }}">
+          <button class="wc-big ui-primary" onClick="{{ sendToOrb }}" title="{{ sendTip }}"><b>Send to orb</b><span>{{ sendNote }}</span></button>
+        </sc-if>
+        <button class="wc-big" onClick="{{ exportTheme }}" title="The same .orbtheme Send to orb bakes, downloaded. Import it on any orb's Themes tab."><b>Download .orbtheme</b><span>{{ themeNote }}</span></button>
+        <button class="ui-ghost wc-sm" onClick="{{ toggleMoreExport }}" style="align-self:flex-start">{{ moreExportLabel }}</button>
+        <sc-if value="{{ moreExportOpen }}" hint-placeholder-val="{{ false }}">
+          <button class="wc-big" onClick="{{ exportKit }}" title="A .zip of the layers: base frames, static layers as transparent PNGs, carriage frames, complication sprites and hand sprites with pivots, plus manifest.json with draw order and positions"><b>Layer kit</b><span>{{ kitNote }}</span></button>
+          <button class="wc-big" onClick="{{ exportFrames }}" title="The looping frames, flattened, with a preview posed at 10:09:36"><b>Flattened frames</b><span>{{ zipNote }}</span></button>
+          <div class="wc-hint ui-mono" style="font-size:11px;color:var(--warn)">{{ dateKitNote }}</div>
+          <button class="wc-big" onClick="{{ exportBundle }}" title="One JSON file: the design, the movement and case settings, and every uploaded asset inside it. This is what carries your art to another browser."><b>Design file (.wckit)</b><span>{{ bundleNote }}</span></button>
+          <div class="wc-hint ui-mono" style="font-size:11px;color:var(--warn)">{{ artNote }}</div>
+          <div class="wc-sec">Design ID</div>
+          <div style="display:flex;gap:6px"><input type="text" readonly value="{{ designId }}" onFocus="{{ selectAll }}" style="font-family:var(--mono)"><button onClick="{{ copyId }}">Copy</button></div>
+          <div style="display:flex;gap:6px"><input type="text" value="{{ idInput }}" onChange="{{ onIdInput }}" placeholder="Paste a design ID…" title="A design ID carries a reference to your art, never the bytes: the art arrives only if this browser still holds it" style="font-family:var(--mono)"><button onClick="{{ loadDesign }}">Load</button></div>
+          <div class="wc-row" style="grid-template-columns:96px minmax(0,1fr)"><label>Open a .wckit</label><input type="file" accept=".wckit,application/json" onChange="{{ loadBundle }}"></div>
+        </sc-if>
       </sc-if>
     </div>
-  </div>
+    <sc-if value="{{ hasDel }}" hint-placeholder-val="{{ false }}">
+      <div class="wc-ifoot"><button class="ui-danger" onClick="{{ delSel }}">Remove {{ delLabel }}</button></div>
+    </sc-if>
+  </aside>
+
   <sc-if value="{{ dupOpen }}" hint-placeholder-val="{{ false }}">
-    <div style="position:fixed;inset:0;background:rgba(8,7,6,.72);display:flex;align-items:center;justify-content:center;z-index:50" onClick="{{ dupCancel }}">
-      <div onClick="{{ dupStop }}" style="width:440px;max-width:92vw;background:#151412;border:1px solid #3a352d;border-radius:10px;box-shadow:0 30px 80px rgba(0,0,0,.6);padding:22px 24px">
-        <div style="font-size:15px;font-weight:600;letter-spacing:-0.01em;color:#e9e2d2">That name is already on the card</div>
-        <div style="font-size:13px;line-height:1.6;color:#b5ab97;margin-top:10px;text-wrap:pretty">
-          A different dial already lives under <span style="font-family:'IBM Plex Mono',monospace;color:#f0d79a">{{ dupNm }}</span>
-          <span style="font-family:'IBM Plex Mono',monospace;color:#8d8472"> ({{ dupStem }})</span>.
-          {{ dupNote }}
+    <div class="wc-modal" onClick="{{ dupCancel }}">
+      <div onClick="{{ dupStop }}">
+        <div style="font-size:15px;font-weight:600">That name is already on the card</div>
+        <div style="font-size:13px;line-height:1.6;color:var(--mut);margin-top:10px">
+          A different dial already lives under <span class="ui-mono" style="color:var(--fg)">{{ dupNm }}</span>
+          <span class="ui-mono"> ({{ dupStem }})</span>. {{ dupNote }}
         </div>
-        <div style="font-size:12px;line-height:1.5;color:#8d8472;margin-top:10px;text-wrap:pretty">
-          Replacing overwrites that dial with this bake and reboots the orb onto it. This bake is already held — Replace ships these exact bytes, no re-bake.
-        </div>
-        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px">
-          <button onClick="{{ dupCancel }}" style="background:#1f1d1a;border:1px solid #3a352d;color:#e9e2d2;padding:9px 15px;border-radius:6px;font:500 13px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#2a2722">Cancel</button>
-          <button onClick="{{ dupReplace }}" style="background:#c9a25a;border:1px solid #c9a25a;color:#17130c;padding:9px 15px;border-radius:6px;font:600 13px 'IBM Plex Sans',sans-serif;cursor:pointer" style-hover="background:#ddb66c">Replace on the card</button>
+        <div class="wc-hint" style="margin-top:10px">Replace overwrites that dial with this bake: these exact bytes, no re-bake.</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">
+          <button onClick="{{ dupCancel }}">Cancel</button>
+          <button class="ui-primary" onClick="{{ dupReplace }}">Replace on the card</button>
         </div>
       </div>
     </div>
@@ -526,7 +464,7 @@ body{scrollbar-width:thin;scrollbar-color:#3a352d #12110f}
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, moreExport: false, more: {} };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, moreExport: false, more: {} };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
@@ -543,6 +481,7 @@ class Component extends DCLogic {
   base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _ftierOcc = null; _rpDiag = null; _occCover = -1; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null; _occ = null; _occKey = null; _bi = null; _biKey = null; _hbFps = 0; _rmTimer = 0; _rmAt = 0; _shLast = 0; _opLast = 0;
   dialEls = {}; handEls = {}; layerEls = {}; caseEls = {}; glassEls = {}; artEls = {}; cbs = {};
   mainRef = React.createRef();
+  stageRef = React.createRef();
   paneRef = React.createRef();
   cfg() {
     const c = { ...this.DEF, ...this.state.cfg }, E = window.WatchEngine, T = E && E.TRAINS[this.state.train];
@@ -1009,6 +948,7 @@ class Component extends DCLogic {
    * bigger frame through the stage for precision work. */
   viewK() {
     const s = this.state, E = window.WatchEngine;
+    if (s.view === 'fit') return (+s.fitPx || 466) / 466;
     if (s.view === 'full') return 1;
     if (s.view === 'zoom') return Math.min(4, Math.max(1, +s.zoom || 2));
     return ((E && E.REAL_Z) || 168 / 466) * this.cal();
@@ -1020,9 +960,11 @@ class Component extends DCLogic {
    * every layer is baked at 466 px, so magnifying enlarges the artwork without inventing detail. */
   viewVals() {
     const E = window.WatchEngine, cal = this.cal(), k = this.viewK(), v = this.state.view;
-    const sel = (b) => ({ bg: b ? '#2a2316' : '#1f1d1a', bd: b ? '#c9a25a' : '#3a352d', fg: b ? '#f0d79a' : '#e9e2d2' });
+    const sel = (b) => ({ cls: b ? 'on' : '', bg: b ? '#1f3a5f' : '#1c2330', bd: b ? '#58a6ff' : '#2b3540', fg: b ? '#e6edf3' : '#e6edf3' });
     // one source for each size: the engine owns what true size and the ruler mean
     const css = v === 'true' ? E.realCss(cal) : Math.max(60, Math.round(466 * k)), inch = E.screenInch(css, cal);
+    // D43 §4.2: the stage pane scrolls a dial bigger than itself, so every stop keeps
+    // the round glass and nothing steps out of the pane
     // the stage box holds 466 px: the canvas only scrolls through it once it is physically
     // bigger than that, whether the user picked Magnify or just calibrated a dense screen
     const zoomed = v === 'zoom' || css > 466;
@@ -1033,8 +975,9 @@ class Component extends DCLogic {
     const nudge = (d) => this.setCal(this.cal() + d * this.calStep());
     return {
       stageCv: css, stageWin: zoomed ? 466 : css, stageRing: bez, stageRing2: bez + 1,
-      stageFlow: zoomed ? 'auto' : 'hidden', stageRound: zoomed ? '14px' : '50%',
-      hasZoom: zoomed,
+      stageFlow: zoomed ? 'auto' : 'hidden', stageRound: '50%', stageRef: this.stageRef,
+      hasZoom: v === 'zoom',
+      zoomTag: v === 'fit' ? 'Fit · ' + k.toFixed(2) + '×' : v === 'full' ? '1:1 · 466 px' : v === 'true' ? 'True size · ' + inch.toFixed(2) + ' in' : k + '× · scroll to pan',
       // the ruler belongs to true size only: Full and Magnify are magnifications of the artwork,
       // and a physical claim drawn there would be a claim about the zoom, not the watch
       showRuler: v === 'true', rulerPx: E.rulerPx(cal), rulerMm: mm, rulerTicks: ticks,
@@ -1044,20 +987,23 @@ class Component extends DCLogic {
       calUp: () => nudge(1), calDown: () => nudge(-1),
       solve: (e) => this.solveCal(e.target.value),
       resetCal: () => { this.setCal(1); this.setState({ status: 'Screen calibration reset to the 96 px/in standard' }); },
-      viewOpts: [['true', 'True size · 1.75 in', 'The whole dial at the size the panel is on the wrist. The only preview that tells you how print will read. Needs the ruler calibrated once.'],
-                 ['full', 'Full · 1:1 · 466 px', 'The whole dial at the artwork\'s own scale, magnified for authoring detail.'],
+      viewOpts: [['fit', 'Fit', 'The whole dial as large as the stage holds it.'],
+                 ['full', '1:1', 'The artwork at its own 466 px: one canvas pixel per screen pixel.'],
+                 ['true', 'True size', 'The dial at the size the panel is on the wrist: the only preview that tells you how print will read. Calibrate the ruler once under ⚙.'],
                  ['zoom', 'Magnify', 'Scroll a bigger frame through the stage to inspect the print. The layers are baked at 466 px, so this enlarges them; it does not add detail.']]
         .map(([id, label, tip]) => ({ label, tip, pick: () => this.setView(id), ...sel(v === id) })),
-      zoomOpts: [1, 1.5, 2, 3, 4].map((z) => ({ label: z + '×', pick: () => this.setZoom(z), ...sel(k === z) })),
+      zoomOpts: [1.5, 2, 3, 4].map((z) => ({ label: z + '×', pick: () => this.setZoom(z), ...sel(k === z) })),
       // D43 §5.1: what the pixels are, independent of how big they are drawn. Panel is the
       // glass: RGB565, the bake's dither, the device's 32-step blend (GorbBake.panel*).
       renderOpts: [['design', 'Design', 'The artwork as the composer draws it: 8 bits a channel, smooth blending.'],
-                   ['panel', 'Panel · RGB565', 'What the orb will show: the plate as the bake stores it (RGB565, dithered), the hands and the glass blended the way the device blends them. Banding and the slight darkening the glass adds show here.'],
-                   ['compare', 'Compare', 'Panel on the left of the split, Design on the right. Move the split with the slider.']]
+                   ['panel', 'Panel', 'RGB565, what the orb will show: the plate as the bake stores it (RGB565, dithered), the hands and the glass blended the way the device blends them. Banding and the slight darkening the glass adds show here.'],
+                   ['compare', 'Split', 'Panel on the left of the split, Design on the right. Move the split with the slider.']]
         .map(([id, label, tip]) => ({ label, tip, pick: () => this.setState({ render: id }), ...sel((this.state.render || 'design') === id) })),
       isCompare: this.state.render === 'compare', wipeVal: this.state.wipe,
       setWipe: (e) => this.setState({ wipe: Math.max(0, Math.min(466, +e.target.value || 0)) }),
-      viewText: (v === 'full'
+      viewText: (v === 'fit'
+        ? 'Fitted to the stage: ' + k.toFixed(2) + '× the artwork, ' + inch.toFixed(2) + ' in across on this screen'
+        : v === 'full'
         ? 'Shown at the artwork\'s own scale: ' + inch.toFixed(2) + ' in across on this screen, ' + (inch / E.PANEL.inch).toFixed(1) + '× the 1.75 in panel'
         : v === 'zoom'
           ? 'Magnified ' + k.toFixed(2) + '× — the frame is baked at 466 px, so this enlarges it without adding detail'
@@ -1399,14 +1345,29 @@ class Component extends DCLogic {
     if (this.hubSend3()) { try { await this.hubOrbIp(); } catch (e) {} }
     this.buildMovement(); this.startTimer(); this.forceUpdate();
   }
-  componentWillUnmount() { clearInterval(this.timer); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
+  componentWillUnmount() { if (this._ro) this._ro.disconnect(); clearInterval(this.timer); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
   ensureFont(k) {
     this._fl = this._fl || {}; if (!k || this._fl[k]) return; this._fl[k] = 1;
     const n = WatchEngine.FONT_NAME(k); if (!n) return;
     Promise.race([Promise.all(['700 31px', '500 21px', 'italic 600 30px', '600 40px'].map((f) => document.fonts.load(f + ' "' + n + '"'))), new Promise((r) => setTimeout(r, 5000))])
       .catch(() => {}).then(() => { this.faces = {}; this._fk = null; this._tk = null; this.forceUpdate(); });
   }
+  /* D43 §4.2: Fit is the stage pane's own size, less a margin for the case ring. */
+  measureStage() {
+    const el = this.stageRef && this.stageRef.current;
+    if (!el || typeof el.getBoundingClientRect !== 'function') return;
+    const r = el.getBoundingClientRect(), px = Math.max(160, Math.floor(Math.min(r.width, r.height) - 40));
+    if (Math.abs(px - (+this.state.fitPx || 0)) >= 2) this.setState({ fitPx: px });
+  }
   componentDidUpdate() {
+    if (!this._ro && this.stageRef && this.stageRef.current && typeof ResizeObserver === 'function') {
+      this._ro = new ResizeObserver(() => this.measureStage()); this._ro.observe(this.stageRef.current); this.measureStage();
+    }
+    const vz = this.state.view + ':' + this.state.zoom + ':' + this.state.fitPx, sc = this.stageRef && this.stageRef.current;
+    if (vz !== this._vz && sc && typeof sc.scrollTo === 'function') {
+      this._vz = vz; const cx = (sc.scrollWidth - sc.clientWidth) / 2, cy = (sc.scrollHeight - sc.clientHeight) / 2;
+      if (cx > 0 || cy > 0) sc.scrollTo(cx, cy);
+    }
     // A selection armed a scroll target in onDown; the rows it names only exist once
     // this commit has bound them, so this is the first place the jump can be honoured.
     if (this._scrollTo) { const a = this._scrollTo; this._scrollTo = null; this.scrollToAnchor(a); }
@@ -1698,7 +1659,7 @@ class Component extends DCLogic {
     if (this.state.render === 'panel' || this.state.render === 'compare') this.drawPanel(c, x, gt, fc, d);
     const o = this.state.sel && this.state.tab === 'comps' && fc.outline(this.state.sel), k = ((fc.inset || 1) * (fc.dynK || 1));
     if (o) {
-      x.save(); x.setLineDash([5, 4]); x.lineWidth = 1.5; x.strokeStyle = 'rgba(240,215,154,.95)'; x.shadowColor = 'rgba(0,0,0,.8)'; x.shadowBlur = 3;
+      x.save(); x.setLineDash([5, 4]); x.lineWidth = 1.5; x.strokeStyle = 'rgba(88,166,255,.95)'; x.shadowColor = 'rgba(0,0,0,.8)'; x.shadowBlur = 3;
       x.beginPath(); x.arc(233 + (o.x - 233) * k, 233 + (o.y - 233) * k, (o.r + 3) * k, 0, Math.PI * 2); x.stroke(); x.restore();
     }
     if (this.guideOn()) this.drawGuide(x, fc, d, k);
@@ -1709,7 +1670,7 @@ class Component extends DCLogic {
    * arrow already says, on hover, which rule keeps that layer where it is. */
   stackVals() {
     const S = window.OrbStack, inp = this.stackInput(), s = this.state, d = this.design() || {};
-    const off = { stackRows: [], stackWarns: [], stackCap: '', stackCapFg: '#8d8472', mech: { bg: '#1f1d1a', bd: '#3a352d', fg: '#b5ab97' }, toggleMech: () => this.upd((dd) => { if (dd.mechanical) delete dd.mechanical; else dd.mechanical = 1; }) };
+    const off = { stackRows: [], stackWarns: [], stackCap: '', stackCapShort: '', mechCls: '', warnCount: '', stackCapFg: '#8b98a5', mech: { bg: '#1c2330', bd: '#2b3540', fg: '#8b98a5' }, toggleMech: () => this.upd((dd) => { if (dd.mechanical) delete dd.mechanical; else dd.mechanical = 1; }) };
     if (!S || !inp) return off;
     const items = S.build(inp), warns = d.mechanical ? S.warnings(inp) : [], rc = S.rowCount(inp);
     let liftCov = null;   // null: the pace model could not price this design, so say nothing
@@ -1722,12 +1683,14 @@ class Component extends DCLogic {
       if (it.band !== band) { band = it.band; rows.push({ isHead: true, isRow: false, label: HEAD[band] }); }
       const up = it.movable ? S.move(inp, it.id, -1) : { ok: false, reason: '' }, dn = it.movable ? S.move(inp, it.id, 1) : { ok: false, reason: '' };
       const hidden = !!s.hidden[it.hide], on = selId === it.id;
-      rows.push({ isHead: false, isRow: true, label: it.label, warn: warnOf[it.id] ? ' ⚠' : '',
+      const ICON = { case: '◎', glass: '◌', dial: '◯', subdial: '◷', disc: '◐', flare: 'A', opening: '◇', comp: '▭', hand: '╱', pointer: '╱', geartrain: '⚙', movement: '▦' };
+      rows.push({ isHead: false, isRow: true, label: it.label, warn: warnOf[it.id] ? ' ⚠' : '', icon: ICON[it.kind] || '•',
+        cls: (on ? 'on' : '') + (it.parent ? ' child' : ''), indent: it.parent ? 14 : 0, tag: it.lifted ? 'still row' : '',
         note: it.badge + (it.kind === 'hand' || it.kind === 'pointer' ? (it.shadow ? ' · casts a shadow' : '') : '')
           + (it.lifted && liftCov ? (liftCov[it.ref] ? ' · repainted on ~' + Math.round(liftCov[it.ref] * 100) + '% of sweep ticks' : ' · clear of the sweep') : '')
           + (warnOf[it.id] ? ' · ' + warnOf[it.id] : ''),
         tip: it.movable ? 'Drag onto another layer, or use the arrows' : (S.move(inp, it.id, 1).reason || ''),
-        pad: it.parent ? 22 : 6, weight: it.parent ? 500 : 600, op: hidden ? 0.45 : 1, bg: on ? '#2a2316' : 'transparent', edge: on ? '#c9a25a' : 'transparent',
+        pad: it.parent ? 22 : 6, weight: 400, op: hidden ? 0.45 : 1, bg: on ? '#1f3a5f' : 'transparent', edge: on ? '#58a6ff' : 'transparent',
         arrows: it.movable ? 'visible' : 'hidden',
         upOp: up.ok ? 1 : 0.35, downOp: dn.ok ? 1 : 0.35, upTip: up.ok ? 'Up one' : up.reason, downTip: dn.ok ? 'Down one' : dn.reason,
         up: (e) => { e.stopPropagation(); this.stackMove(it.id, -1); }, down: (e) => { e.stopPropagation(); this.stackMove(it.id, 1); },
@@ -1736,12 +1699,15 @@ class Component extends DCLogic {
         dragOver: (e) => { if (this._dragRow) e.preventDefault(); },
         drop: (e) => { e.preventDefault(); this.stackDrop(it.id); },
         pick: () => this.stackPick(it),
-        eye: hidden ? 'hidden' : 'shown', eyeFg: hidden ? '#8d8472' : '#c9a25a',
+        eye: hidden ? 'hidden' : 'shown', eyeIcon: hidden ? '○' : '◉', eyeFg: hidden ? '#5d6b78' : '#8b98a5',
         eyeTip: 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)',
         eyeToggle: (e) => { e.stopPropagation(); this.setState((st) => ({ hidden: { ...st.hidden, [it.hide]: !st.hidden[it.hide] } })); } });
     });
-    return { stackRows: rows, stackWarns: warns, stackCap: rc.rows + ' of ' + rc.cap + ' live rows', stackCapFg: rc.over ? '#e05a4a' : '#8d8472',
-      mech: d.mechanical ? { bg: '#2a2316', bd: '#c9a25a', fg: '#f0d79a' } : off.mech, toggleMech: off.toggleMech };
+    // the row's explanation (its badge, what it costs, why it cannot move) is its tooltip
+    rows.forEach((r) => { if (r.isRow) r.title = [r.label, r.note, r.tip].filter(Boolean).join(' · '); });
+    return { stackRows: rows, stackWarns: warns, stackCap: rc.rows + ' of ' + rc.cap + ' live rows', stackCapFg: rc.over ? '#f85149' : '#8b98a5',
+      stackCapShort: rc.rows + ' / ' + rc.cap, mechCls: d.mechanical ? 'on' : '', warnCount: warns.length ? warns.length + ' warning' + (warns.length === 1 ? '' : 's') : '',
+      mech: d.mechanical ? { bg: '#1f3a5f', bd: '#58a6ff', fg: '#e6edf3' } : off.mech, toggleMech: off.toggleMech };
   }
   /* D43 §5.2: the Panel view. The stage is split the way the device stacks it (the plate
    * under the hands, the hands, the glass and case over them), each layer is taken to
@@ -1764,7 +1730,7 @@ class Component extends DCLogic {
     if (this.state.render === 'compare') {
       const w = Math.max(0, Math.min(466, this.state.wipe | 0));
       if (w > 0) x.putImageData(img, 0, 0, 0, 0, w, 466);
-      x.save(); x.strokeStyle = 'rgba(240,215,154,.9)'; x.lineWidth = 1; x.beginPath(); x.moveTo(w + 0.5, 0); x.lineTo(w + 0.5, 466); x.stroke(); x.restore();
+      x.save(); x.strokeStyle = 'rgba(88,166,255,.9)'; x.lineWidth = 1; x.beginPath(); x.moveTo(w + 0.5, 0); x.lineTo(w + 0.5, 466); x.stroke(); x.restore();
     } else x.putImageData(img, 0, 0);
   }
   guideOn() {
@@ -1811,9 +1777,9 @@ class Component extends DCLogic {
     // The mask cuts here in panel space, so the ring is drawn there and not through the
     // face's own scale: asking the author to line art up to a ring the metal is not on
     // would be a guide that lies.
-    x.lineWidth = 1; x.strokeStyle = 'rgba(240,215,154,.55)';
+    x.lineWidth = 1; x.strokeStyle = 'rgba(88,166,255,.55)';
     x.beginPath(); x.arc(233, 233, OP, 0, TAU); x.stroke();
-    x.setLineDash([3, 5]); x.lineWidth = 1; x.strokeStyle = 'rgba(240,215,154,.3)';
+    x.setLineDash([3, 5]); x.lineWidth = 1; x.strokeStyle = 'rgba(88,166,255,.3)';
     for (let i = 0; i < 24; i++) {                               // 15 degree spokes, out of the hub: the dial's own grid, and the axis an off-centre print is set by
       const a = (i / 24) * TAU;
       x.beginPath(); x.moveTo(233, 233); x.lineTo(233 + Math.sin(a) * 216, 233 - Math.cos(a) * 216); x.stroke();
@@ -1829,7 +1795,7 @@ class Component extends DCLogic {
         x.beginPath(); x.arc(gx, gy, 3, 0, TAU); x.stroke();
       });
     }
-    x.setLineDash([]); x.lineWidth = 1.5; x.strokeStyle = 'rgba(240,215,154,.95)';
+    x.setLineDash([]); x.lineWidth = 1.5; x.strokeStyle = 'rgba(88,166,255,.95)';
     x.beginPath(); x.moveTo(220, 233); x.lineTo(246, 233); x.moveTo(233, 220); x.lineTo(233, 246); x.stroke();
     x.beginPath(); x.arc(233, 233, 3.5, 0, TAU); x.stroke();     // THE hub: fixed, and not the art's centre
     const slot = (this.state.selKind === 'dial' && ((this.drag && this.drag.kind === 'dial' && this.drag.slot) || this.artSlot())) || null;
@@ -1878,16 +1844,16 @@ class Component extends DCLogic {
     let reach = 0;
     [[-sp.px, -sp.py], [w - sp.px, -sp.py], [-sp.px, h - sp.py], [w - sp.px, h - sp.py]].forEach((q) => { reach = Math.max(reach, Math.hypot(q[0], q[1])); });
     x.save(); x.translate(px(hd.x), px(hd.y));
-    x.setLineDash([3, 5]); x.lineWidth = 1; x.strokeStyle = 'rgba(240,215,154,.4)';
+    x.setLineDash([3, 5]); x.lineWidth = 1; x.strokeStyle = 'rgba(88,166,255,.4)';
     x.beginPath(); x.arc(0, 0, reach * k, 0, Math.PI * 2); x.stroke();          // the sweep envelope
     x.rotate(ang); x.scale(k, k);
     x.setLineDash([4, 3]); x.lineWidth = 1.25 / k; x.strokeStyle = 'rgba(122,214,255,.95)';
     x.strokeRect(-sp.px, -sp.py, w, h);                                          // the sprite, turned
     x.save(); x.rotate(-(hd.artRot || 0));                                       // off the facing, back onto the time
-    x.strokeStyle = 'rgba(240,215,154,.8)'; x.lineWidth = 1 / k;
+    x.strokeStyle = 'rgba(88,166,255,.8)'; x.lineWidth = 1 / k;
     x.beginPath(); x.moveTo(0, 0); x.lineTo(0, -(reach - 6)); x.stroke();        // where it should read
     x.restore();
-    x.strokeStyle = '#f0d79a'; x.lineWidth = 1.6 / k; x.setLineDash([]);         // the arbour itself
+    x.strokeStyle = '#58a6ff'; x.lineWidth = 1.6 / k; x.setLineDash([]);         // the arbour itself
     x.beginPath(); x.moveTo(-7 / k, 0); x.lineTo(7 / k, 0); x.moveTo(0, -7 / k); x.lineTo(0, 7 / k); x.stroke();
     x.beginPath(); x.arc(0, 0, 3 / k, 0, Math.PI * 2); x.stroke();
     x.restore();
@@ -2052,10 +2018,10 @@ class Component extends DCLogic {
       // isolate reads as a broken render. Say what the empty means: here is the rim the
       // device owns, and there is no pixel of ours on it.
       if (this.state.caseStyle === 'none') {
-        s.setLineDash([5, 4]); s.lineWidth = 1.5; s.strokeStyle = 'rgba(240,215,154,.85)';
+        s.setLineDash([5, 4]); s.lineWidth = 1.5; s.strokeStyle = 'rgba(88,166,255,.85)';
         s.beginPath(); s.arc(233, 233, fc.caseOpen == null ? 221.5 : fc.caseOpen, 0, Math.PI * 2); s.stroke();
         s.setLineDash([]);
-        s.font = "600 13px 'IBM Plex Mono',ui-monospace,monospace"; s.fillStyle = 'rgba(240,215,154,.9)';
+        s.font = "600 13px 'IBM Plex Mono',ui-monospace,monospace"; s.fillStyle = 'rgba(88,166,255,.9)';
         s.fillText('no case drawn', 178, 30);
       }
     }
@@ -2089,7 +2055,7 @@ class Component extends DCLogic {
       if (id === 'none') {
         const r = E.caseOpenR ? E.caseOpenR(o) : 221.5;
         out.drawImage(sc, 0, 0, 466, 466, 0, 0, 112, 112);
-        out.setLineDash([4, 3]); out.lineWidth = 1.5; out.strokeStyle = 'rgba(240,215,154,.85)';
+        out.setLineDash([4, 3]); out.lineWidth = 1.5; out.strokeStyle = 'rgba(88,166,255,.85)';
         out.beginPath(); out.arc(56, 56, (r / 233) * 56, 0, Math.PI * 2); out.stroke(); out.setLineDash([]);
         return;
       }
@@ -2127,7 +2093,7 @@ class Component extends DCLogic {
       x.strokeStyle = 'rgba(122,214,255,.5)'; x.lineWidth = 1;
       x.strokeRect(ox + sp.ink[0] * k, oy + sp.ink[1] * k, (sp.ink[2] - sp.ink[0]) * k, (sp.ink[3] - sp.ink[1]) * k);
     }
-    x.strokeStyle = '#c9a25a'; x.lineWidth = 1; x.beginPath();
+    x.strokeStyle = '#58a6ff'; x.lineWidth = 1; x.beginPath();
     x.moveTo(ox + sp.px * k - 6, oy + sp.py * k); x.lineTo(ox + sp.px * k + 6, oy + sp.py * k);
     x.moveTo(ox + sp.px * k, oy + sp.py * k - 6); x.lineTo(ox + sp.px * k, oy + sp.py * k + 6); x.stroke();
     /* Which way the device will make this hand read, measured from the arbour: the art
@@ -2138,7 +2104,7 @@ class Component extends DCLogic {
       let reach = 0;
       [[0, 0], [sp.c.width, 0], [0, sp.c.height], [sp.c.width, sp.c.height]].forEach((q) => { reach = Math.max(reach, Math.hypot(q[0] - sp.px, q[1] - sp.py)); });
       const a = ((hd.rot0 || 0) - 90) * Math.PI / 180;                    // 0 deg facing means the art points up
-      x.strokeStyle = 'rgba(240,215,154,.85)'; x.setLineDash([3, 3]); x.lineWidth = 1.25; x.beginPath();
+      x.strokeStyle = 'rgba(88,166,255,.85)'; x.setLineDash([3, 3]); x.lineWidth = 1.25; x.beginPath();
       x.moveTo(ox + sp.px * k, oy + sp.py * k);
       x.lineTo(ox + sp.px * k + Math.cos(a) * reach * k, oy + sp.py * k + Math.sin(a) * reach * k);
       x.stroke(); x.setLineDash([]);
@@ -3743,16 +3709,16 @@ class Component extends DCLogic {
     };
     rd.readAsText(file);
   }
-  /* D43 P5: the build flow. Seven steps over the existing views: each step shows one or
-   * more of the tabs every field builder already answers to, so nothing a tab offered is
+  /* D43 P5: the build flow. Steps over the existing views: each step shows one or more
+   * of the tabs every field builder already answers to, so nothing a tab offered is
    * lost — the steps choose, order and explain. A selection that lands on a tab the
-   * current step does not show moves to the step that does (stepNow). */
+   * current step does not show moves to the step that does (stepNow). P5b (§4.2) folded
+   * Arrange into the layers panel, which every step shows. */
   STEPS = [
     ['start', 'Start', ['start'], 'Pick a finished watch to change, or build from scratch.'],
     ['movement', 'Movement', ['move'], 'The movement is the back of the watch: the plate and the train every opening shows.'],
     ['dial', 'Dial', ['dial'], 'The dial\u2019s style: its print, numerals, colour, surface and art. Complications you add follow it.'],
-    ['parts', 'Complications & hands', ['comps', 'hands'], 'Add what the dial shows. Each one follows the dial\u2019s style until you set it otherwise.'],
-    ['arrange', 'Arrange', ['comps', 'hands', 'dial'], 'Drag layers to reorder them, drag on the watch to move them. The rules say what cannot stack where.'],
+    ['parts', 'Parts', ['comps', 'hands'], 'Complications and hands: add what the dial shows. Each follows the dial\u2019s style until you set it otherwise.'],
     ['finish', 'Finish', ['light', 'case', 'sound'], 'Light, case and glass, and the sounds the watch makes.'],
     ['render', 'Render', ['export'], 'Check it fits the orb, then send it.'],
   ];
@@ -3767,9 +3733,16 @@ class Component extends DCLogic {
   stepNow() {
     const s = this.state, tab = s.tab, at = this.STEPS.find((x) => x[0] === s.step);
     if (at && at[2].includes(tab)) return at;
-    return this.STEPS.find((x) => x[0] !== 'start' && x[0] !== 'arrange' && x[2].includes(tab)) || this.STEPS[2];
+    return this.STEPS.find((x) => x[0] !== 'start' && x[2].includes(tab)) || this.STEPS[2];
   }
   goStep(id) { const st = this.STEPS.find((x) => x[0] === id); if (st) this.setState({ step: id, tab: st[2][0] }); }
+  /* D43 §4.2: under the hub the editor fills the window, and its back arrow is the way out. */
+  inFrame() { try { return typeof window !== 'undefined' && !!window.parent && window.parent !== window; } catch (e) { return false; } }
+  closeEditor() { try { window.parent.postMessage({ type: 'theme.close' }, location.origin); } catch (e) { /* standalone: nowhere to go back to */ } }
+  crumbLabel() {
+    let q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
+    return ((q && (q.get('label') || q.get('orb'))) || 'Clock') + (q && (q.get('label') || q.get('orb')) ? ' · Clock' : ' theme');
+  }
   fromScratch() {
     const E = window.WatchEngine, d = E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.skeleton.design)));
     d.comps = []; delete d.order; delete d.openwork; delete d.extra; d.centre = { hour: 1, minute: 1, second: 1 };
@@ -3785,7 +3758,7 @@ class Component extends DCLogic {
     if (rows.length <= keep) return rows;
     const open = !!(this.state.more || {})[key], hid = rows.length - keep;
     const chip = Object.assign({}, rows[0], { label: '', valText: '', isHead: false, isRow: true, anchor: null, isRange: false, isSelect: false, isSwatch: false, isColor: false, isText: false, isFile: false, isNote: false, hasLink: false, isChips: true,
-      opts: [{ label: open ? 'Less' : 'More (' + hid + ')', bg: '#1f1d1a', bd: '#3a352d', fg: '#a39a87', pick: () => this.setState((st) => ({ more: { ...(st.more || {}), [key]: !open } })) }] });
+      opts: [{ label: open ? 'Less' : 'More (' + hid + ')', bg: '#1c2330', bd: '#2b3540', fg: '#8b98a5', pick: () => this.setState((st) => ({ more: { ...(st.more || {}), [key]: !open } })) }] });
     return (open ? rows : rows.slice(0, keep)).concat([chip]);
   }
   renderVals() {
@@ -3794,19 +3767,31 @@ class Component extends DCLogic {
     const head = (f) => f && f.isHead;
     const out = {
       headLabel: (this.ready && this.preset ? (this.preset() || {}).name || '' : '') + (s.designs && s.designs[s.dial] ? ' (edited)' : '') + ' · ' + st[1],
-      stepOpts: this.STEPS.map(([id, label, , tip], i) => ({ num: i + 1, label, tip, bg: id === step ? '#2e2719' : 'transparent', fg: id === step ? '#f0d79a' : '#b5ab97', pick: () => this.goStep(id) })),
+      stepOpts: this.STEPS.map(([id, label, , tip], i) => ({ num: i + 1, label, tip, cls: id === step ? 'on' : '', bg: id === step ? '#1f3a5f' : 'transparent', fg: id === step ? '#e6edf3' : '#8b98a5', pick: () => this.goStep(id) })),
       hasSubs: tabs.length > 1,
-      subOpts: tabs.map((t) => ({ label: this.SUBLABEL[t] || t, bg: s.tab === t ? '#2a2316' : 'transparent', bd: s.tab === t ? '#c9a25a' : '#3a352d', fg: s.tab === t ? '#f0d79a' : '#b5ab97', pick: () => this.setState({ step, tab: t }) })),
+      subOpts: tabs.map((t) => ({ label: this.SUBLABEL[t] || t, cls: s.tab === t ? 'on' : '', bg: s.tab === t ? '#1f3a5f' : 'transparent', bd: s.tab === t ? '#58a6ff' : '#2b3540', fg: s.tab === t ? '#e6edf3' : '#8b98a5', pick: () => this.setState({ step, tab: t }) })),
       stepHint: st[3],
-      isStart: step === 'start', isArrange: step === 'arrange',
+      isStart: step === 'start',
       hasTabReset: step === 'start' ? false : v.hasTabReset,   // Start's gallery carries its own Reset everything
       isDial: false,
       isComps: v.isComps && step === 'parts', isHands: v.isHands && step === 'parts',
-      diagOpen: !!s.diag, diagLabel: s.diag ? 'Hide diagnostics' : 'Diagnostics', toggleDiag: () => this.setState((x) => ({ diag: !x.diag })),
+      diagOpen: !!s.diag, diagLabel: s.diag ? 'Hide diagnostics' : 'Diagnostics', toggleDiag: () => this.setState((x) => ({ diag: !x.diag })), diagCls: s.diag ? 'on' : '',
+      // D43 §4.2: the studio's chrome
+      inFrame: this.inFrame(), closeEditor: () => this.closeEditor(), crumbLabel: this.crumbLabel(),
+      notHub: !v.isHub, hasStatus: !!s.status, playIcon: s.playing ? '\u275a\u275a' : '\u25b6',
+      themeNameTip: 'The theme\u2019s name: what the orb lists it as, and its identity on the card · ' + v.themeNameLen,
+      sendTip: 'Bake the .orbtheme and store it on the orb, beside the theme on the glass. Switching to it is a separate press on the Themes tab. ' + (v.sendNote || ''),
+      addOpen: !!s.addOpen, addLabel: s.addOpen ? 'Close the list' : '\uff0b Add a part\u2026', toggleAdd: () => this.setState((x) => ({ addOpen: !x.addOpen })),
+      startGo: () => this.goStep('movement'), dialName: ready ? ((E.PRESETS[s.dial] || {}).name || '') : '',
+      fitShort: '', fitDot: '#5d6b78',
       fromScratch: () => this.fromScratch(),
       moreExportOpen: !!s.moreExport, moreExportLabel: s.moreExport ? 'Fewer export options' : 'More export options · layer kit, frames, design file, design ID',
       toggleMoreExport: () => this.setState((x) => ({ moreExport: !x.moreExport })),
     };
+    const short = (t, n) => String(t || '').split(/ · |[.;:\u2014]/).slice(0, n).join(' · ').trim();
+    out.dials = (v.dials || []).map((d) => Object.assign({}, d, { short: short(d.blurb, 2) }));
+    out.trainOpts = (v.trainOpts || []).map((t) => Object.assign({}, t, { short: short(t.blurb, 1) }));
+    out.timeOpts = (v.timeOpts || []).map((c, i) => Object.assign({}, c, { label: ['Live', '10:09', 'Dates'][i] || c.label, tip: ['The time now', 'The classic 10:09 pose', 'Step through dates to check every window and disc'][i] || '' }));
     // Start shows the gallery alone; the dial's own fields belong to the Dial step
     let fields = v.fields;   // the Start view has no builder of its own: the gallery is its whole pane
     // Parts: the add catalogue, with what the dial can and cannot take, and why
@@ -3821,7 +3806,7 @@ class Component extends DCLogic {
         return { label: '+ ' + label + (onSub && t !== 'subdial' && t !== 'opening' ? ' on this sub-dial' : ''), blurb: why || BLURB[t] || '', tip: why || BLURB[t] || '',
           op: why ? 0.45 : 1, cursor: why ? 'not-allowed' : 'pointer', go: why ? () => this.setState({ status: why }) : () => this.addComp(t) };
       }).concat([{ label: '+ Hand', blurb: 'Hour, minute and seconds, or one more: 24-hour, GMT, day or date', tip: 'The hands are set on the Hands view', op: 1, cursor: 'pointer',
-        go: () => this.setState({ step: 'parts', tab: 'hands' }) }]);
+        go: () => this.setState({ step: 'parts', tab: 'hands' }) }]).map((c) => Object.assign({}, c, { go: () => { this.setState({ addOpen: false }); c.go(); } }));
       // Render: does it fit the orb
       const b = this.budget ? this.budget() : null, want = b ? b.fps : 0, pace = b && b.dev && b.dev.pace ? b.dev.pace : want;
       const fits = !rc.over, full = pace >= want, near = pace >= want * 0.75;
@@ -3829,7 +3814,9 @@ class Component extends DCLogic {
         : near ? '\u2713 Fits — runs a little slower than designed' : '\u2713 Fits — the orb paints it slower than designed';
       out.badgeNote = '~' + pace + ' of ' + want + ' fps · ' + rc.rows + ' of ' + rc.cap + ' live rows';
       out.badgeTip = 'The device-pace model\u2019s estimate for this design (the frame rate the orb can paint it at) and the live rows it ships against the dial\u2019s cap. A lifted layer or a large sweeping disc costs pace.';
-      out.badgeFg = !fits ? '#f08a7a' : full ? '#b8e0a8' : '#f0d79a'; out.badgeBd = !fits ? '#6a2e26' : full ? '#3a5a3a' : '#5a4a2a'; out.badgeBg = !fits ? '#2a1714' : full ? '#1a241a' : '#221d12';
+      out.fitShort = !fits ? 'Over · ' + rc.rows + ' / ' + rc.cap + ' rows' : (full ? 'Fits' : 'Fits, slower') + ' · ' + pace + ' fps';
+      out.fitDot = !fits ? '#f85149' : full ? '#3fb950' : '#d29922';
+      out.badgeFg = !fits ? '#f85149' : full ? '#3fb950' : '#d29922'; out.badgeBd = !fits ? '#5c2326' : full ? '#23502c' : '#5a4614'; out.badgeBg = !fits ? '#2a1416' : full ? '#12241a' : '#241d0e';
     }
     // Finish · Light: moods first, the sliders behind More
     if (ready && s.tab === 'light' && fields.length) {
@@ -3837,7 +3824,7 @@ class Component extends DCLogic {
       const isMood = (vals) => keys.every((k) => +c[k] === +(vals[k] !== undefined ? vals[k] : this.DEF[k]));
       const proto = fields.find((f) => f.isRow) || {};
       const moodRow = Object.assign({}, proto, { label: 'Mood', valText: '', isRange: false, isSelect: false, isSwatch: false, isColor: false, isText: false, isFile: false, isNote: false, hasLink: false, isChips: true,
-        opts: this.MOODS.map(([id, label, vals]) => ({ label, bg: isMood(vals) ? '#2a2316' : '#1f1d1a', bd: isMood(vals) ? '#c9a25a' : '#3a352d', fg: isMood(vals) ? '#f0d79a' : '#e9e2d2', pick: () => this.setMood(vals) })) });
+        opts: this.MOODS.map(([id, label, vals]) => ({ label, bg: isMood(vals) ? '#1f3a5f' : '#1c2330', bd: isMood(vals) ? '#58a6ff' : '#2b3540', fg: isMood(vals) ? '#e6edf3' : '#e6edf3', pick: () => this.setMood(vals) })) });
       const moodHead = Object.assign({}, fields.find(head) || proto, { label: 'Lighting', isHead: true, isRow: false });
       fields = [moodHead, moodRow].concat(this.foldRows(fields, 'light', 0));
     }
@@ -3859,7 +3846,20 @@ class Component extends DCLogic {
       return Object.assign({}, h, { artOpen: open, artToggleLabel: open ? 'Hide artwork' : 'Artwork \u00b7 use your own PNG or SVG',
         toggleArt: () => this.setState((x) => ({ more: { ...(x.more || {}), [key]: !open } })) });
     });
-    out.fields = fields;
+    // D43 §4.2: the inspector names what it shows — the selection, or the step's view
+    const selComp = (d.comps || []).find((c) => c.id === s.sel);
+    const selHand = s.selKind === 'hand' && s.sel != null ? (out.handRows || []).find((h) => h.anchor === 'hand-' + s.sel) : null;
+    if (selHand) out.handRows = [selHand];
+    out.handGrid = !!(v.isHands && step === 'parts' && !selHand);
+    out.hasSelAny = s.sel != null || s.selKind != null;
+    if (s.selKind === 'comp' && selComp) { out.inspKind = (E.COMP_TYPES && E.COMP_TYPES[selComp.type]) || 'Complication'; out.inspTitle = v.selTitle || out.inspKind; }
+    else if (selHand) { out.inspKind = 'Hand'; out.inspTitle = selHand.label; }
+    else if (s.selKind === 'dial') { out.inspKind = 'Dial'; out.inspTitle = out.dialName || 'Dial'; }
+    else { out.inspKind = st[1]; out.inspTitle = step === 'start' ? 'Start a theme' : step === 'render' ? 'Render' : (this.SUBLABEL[s.tab] || st[1]); }
+    out.hasDel = !!(s.selKind === 'comp' && selComp);
+    out.delLabel = selComp ? ((E.COMP_TYPES && E.COMP_TYPES[selComp.type]) || 'part').toLowerCase() : '';
+    out.delSel = () => { if (selComp) this.delComp(selComp.id); };
+    out.fields = fields.map((f) => (f && f.isRow ? Object.assign({}, f, { rowCls: f.isRange ? '' : 'wide' }) : f));
     return Object.assign(v, out);
   }
   renderVals0() {
@@ -3873,7 +3873,7 @@ class Component extends DCLogic {
     const stop = (fn) => () => this.setState((st) => ({ playing: false, frame: fn(st.frame) }));
     const E = window.WatchEngine, ready = !!(this.ready && E);
     const PR = ready ? this.preset() : null, D = ready ? this.design() : { comps: [], centre: {} };
-    const on = (b) => ({ bg: b ? '#2a2316' : '#1f1d1a', bd: b ? '#c9a25a' : '#3a352d', fg: b ? '#f0d79a' : '#e9e2d2' });
+    const on = (b) => ({ cls: b ? 'on' : '', bg: b ? '#1f3a5f' : '#1c2330', bd: b ? '#58a6ff' : '#2b3540', fg: b ? '#e6edf3' : '#e6edf3' });
     const did = this.designId(), fc = ready ? this.face() : null, tr = ready ? this.train() : { deg: 0, by: null };
     const cap = (t) => t[0].toUpperCase() + t.slice(1);
     const subs = D.comps.filter((c) => c.type === 'subdial');
@@ -3894,7 +3894,7 @@ class Component extends DCLogic {
       const inh = opts.find((o) => /^(Same as dial|Match dial)/.test(String(o.label || ''))) || opts.find((o) => /^Default\b/.test(String(o.label || '')));
       if (!inh) return {};
       const src = /dial/i.test(inh.label) ? 'the dial' : 'the defaults', linked = String(value) === String(inh.v);
-      return { hasLink: true, linkText: linked ? '\u26d3 ' + src : '\u21ba re-link', linkFg: linked ? '#8d8472' : '#c9a25a', linkCursor: linked ? 'default' : 'pointer',
+      return { hasLink: true, linkText: linked ? '\u26d3 ' + src : '\u21ba re-link', linkFg: linked ? '#8b98a5' : '#58a6ff', linkCursor: linked ? 'default' : 'pointer',
         linkTip: linked ? 'Follows ' + src + '; choose another value to set it here' : 'Set here, not from ' + src + ' — click to follow ' + src + ' again',
         relink: linked ? () => {} : () => onv(inh.v) };
     };
@@ -3907,7 +3907,7 @@ class Component extends DCLogic {
     const Ch = (label, value, opts, onv) => mk({ label, isChips: true, opts: opts.map((o) => ({ ...on(String(o.v) === String(value)), label: o.label, pick: () => onv(o.v) })) });
     const Nt = (label, note) => mk({ label, isNote: true, note });
     const sw = (k) => 'linear-gradient(135deg,' + E.DIAL_COLORS[k][0] + ',' + E.DIAL_COLORS[k][1] + ')';
-    const Sw = (label, value, keys, onv, extra) => mk({ label, isSwatch: true, valText: keys.includes(value) ? E.COLOR_NAMES[value] : '', opts: [...(extra || []), ...keys.map((k) => ({ label: E.COLOR_NAMES[k], text: '', bg: sw(k), bd: k === value ? '#f0d79a' : '#2e2a24', pick: () => onv(k) }))], ...linkOf((extra || []).map((o) => ({ v: /Match dial/.test(o.label) ? 'match' : o.label, label: o.label })), value, onv) });
+    const Sw = (label, value, keys, onv, extra) => mk({ label, isSwatch: true, valText: keys.includes(value) ? E.COLOR_NAMES[value] : '', opts: [...(extra || []), ...keys.map((k) => ({ label: E.COLOR_NAMES[k], text: '', bg: sw(k), bd: k === value ? '#e6edf3' : '#232c36', pick: () => onv(k) }))], ...linkOf((extra || []).map((o) => ({ v: /Match dial/.test(o.label) ? 'match' : o.label, label: o.label })), value, onv) });
     const INKS = [['#f6f3ec', 'White'], ['#1a140c', 'Black'], ['#c9a25a', 'Gold'], ['#d7dbe0', 'Silver'], ['#cfe8b0', 'Lume green'], ['#9fd8ff', 'Lume blue'], ['#c8322a', 'Red'], ['#ff7a1a', 'Orange'], ['#2b59c3', 'Blue'], ['#ff2bd6', 'Magenta'], ['#22e6ff', 'Cyan'], ['#b6ff2e', 'Acid']];
     const parseCol = (t) => {
       t = String(t || '').trim().toLowerCase(); let m;
@@ -3927,8 +3927,8 @@ class Component extends DCLogic {
         onHex: (e) => { const v = e.target.value, p = parseCol(v); if (p) { delete this._drafts[key]; onv(p); } else { this._drafts[key] = v; this.forceUpdate(); } },
         onHexBlur: () => { if (this._drafts[key] != null) { delete this._drafts[key]; this.forceUpdate(); } },
         valText: value === 'none' ? 'None' : !value || value === 'auto' ? (X.noAuto ? 'None' : autoText || 'Auto') : value, valText: value === 'none' ? 'None' : !value || value === 'auto' ? (X.noAuto ? 'None' : autoText || 'Auto') : value,
-      opts: [...(X.none ? [{ label: 'None', text: '∅', bg: '#1f1d1a', bd: value === 'none' ? '#f0d79a' : '#3a352d', pick: () => onv('none') }] : []),
-        ...(X.noAuto ? [] : [{ label: autoText || 'Auto', text: 'A', bg: '#1f1d1a', bd: !value || value === 'auto' ? '#f0d79a' : '#3a352d', pick: () => onv('auto') }]), ...INKS.map(([c, n]) => ({ label: n, text: '', bg: c, bd: c === value ? '#f0d79a' : '#2e2a24', pick: () => onv(c) }))] }); };
+      opts: [...(X.none ? [{ label: 'None', text: '∅', bg: '#1c2330', bd: value === 'none' ? '#e6edf3' : '#2b3540', pick: () => onv('none') }] : []),
+        ...(X.noAuto ? [] : [{ label: autoText || 'Auto', text: 'A', bg: '#1c2330', bd: !value || value === 'auto' ? '#e6edf3' : '#2b3540', pick: () => onv('auto') }]), ...INKS.map(([c, n]) => ({ label: n, text: '', bg: c, bd: c === value ? '#e6edf3' : '#232c36', pick: () => onv(c) }))] }); };
     const Tx = (label, value, onv) => mk({ label, isText: true, value: value == null ? '' : String(value), on: (e) => onv(e.target.value) });
     const Fi = (label, onv, valText, accept) => mk({ label, isFile: true, on: onv, valText: valText || '', accept: accept || 'image/png,image/svg+xml,image/jpeg,image/webp' });
     const T = ready ? E.TRAINS[s.train] : null;
@@ -3970,7 +3970,7 @@ class Component extends DCLogic {
             ? fa.name + ' · ' + fa.kind + ' · ' + fa.w + '×' + fa.h + ' source · ' + Math.round(fa.dataUrl.length / 1024) + ' KB · held in this browser and shipped in sources/ with the kit'
             : sel.img ? 'That reference has no bytes in this browser — load the .wckit bundle that carries it.'
               : 'PNG or SVG. Colour Auto keeps the image’s own colours. The reference travels in the Design ID; the bytes travel in the .wckit bundle and in the kit’s sources/. The device reads a PNG rotated without antialiasing, so author it at final size.'));
-          if (fa) selFields.push(mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'x', label: 'Remove image', bg: '#1f1d1a', bd: '#3a352d', fg: '#e9e2d2', pick: () => this.setComp(sel.id, { img: undefined }) }] }));
+          if (fa) selFields.push(mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'x', label: 'Remove image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: () => this.setComp(sel.id, { img: undefined }) }] }));
         }
       }
       if (sel.type !== 'opening' && !(sel.type === 'flare' && sel.icon === 'arctext') || (sel.shape && sel.shape !== 'circle')) R('Rotation', 'rot', -180, 180, 1, (v) => v + '°');
@@ -4022,7 +4022,7 @@ class Component extends DCLogic {
         if (sel.style === 'carbon' || sel.style === 'forged') R(sel.style === 'carbon' ? 'Weave size' : 'Flake size', 'weaveScale', 0.4, 3, 0.05, (v) => v.toFixed(2) + '×', D.weaveScale == null ? 1 : +D.weaveScale);
         if (sel.style && sel.style !== 'enamel') R('Texture', 'tex', 0, 2.5, 0.05, (v) => v.toFixed(2) + '×', D.texture == null ? 1 : +D.texture);
         const cv = sel.color || 'match', setC = set('color');
-        selFields.push(Sw('Colour', cv, E.COLOR_GROUPS.classic, setC, [{ label: 'Match dial', text: '=', bg: '#1f1d1a', bd: cv === 'match' ? '#f0d79a' : '#3a352d', pick: () => setC('match') }]));
+        selFields.push(Sw('Colour', cv, E.COLOR_GROUPS.classic, setC, [{ label: 'Match dial', text: '=', bg: '#1c2330', bd: cv === 'match' ? '#e6edf3' : '#2b3540', pick: () => setC('match') }]));
         selFields.push(Sw('Vivid', cv, E.COLOR_GROUPS.vivid, setC));
         selFields.push(Co('Custom', E.isHex(cv) ? cv : null, (v) => setC(v === 'auto' ? 'match' : v), 'Preset'));
         if (sel.scale !== 'none') {
@@ -4197,7 +4197,7 @@ class Component extends DCLogic {
         const line = !E.assetReady(id) ? 'No bytes for ' + id + ' in this browser — the reference is in the Design ID, the .wckit bundle carries the art.'
           : fits && fits.ok ? price : fits.why;
         out.push(Nt('', a ? a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' source into a ' + Math.round(box * zm) + '×' + Math.round(box * zm) + ' box' + (zm !== 1 ? ' at ' + zm.toFixed(2) + ' zoom' : '') + ' · ' + Math.round(a.dataUrl.length / 1024) + ' KB · ' + line : line),
-          mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'drag', label: (this.state.artSlot === p ? 'Dragging the dial pans THIS slot' : 'Drag the dial to pan this slot'), bg: this.state.artSlot === p ? '#2a2722' : '#1f1d1a', bd: this.state.artSlot === p ? '#c9a25a' : '#3a352d', fg: '#e9e2d2', pick: () => this.setState({ artSlot: p, guide: 'on' }) }, { v: 'x', label: 'Remove this image', bg: '#1f1d1a', bd: '#3a352d', fg: '#e9e2d2', pick: drop }] }));
+          mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'drag', label: (this.state.artSlot === p ? 'Dragging the dial pans THIS slot' : 'Drag the dial to pan this slot'), bg: this.state.artSlot === p ? '#1c2330' : '#1c2330', bd: this.state.artSlot === p ? '#58a6ff' : '#2b3540', fg: '#e6edf3', pick: () => this.setState({ artSlot: p, guide: 'on' }) }, { v: 'x', label: 'Remove this image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: drop }] }));
         return out;
       };
       fields.push.apply(fields, artBlock('bg', 'Background art · behind the geartrain',
@@ -4407,7 +4407,7 @@ class Component extends DCLogic {
       clearSel: () => this.clearSel(), clearLabel: (s.sel != null ? 'Deselect ' + (s.selKind === 'hand' ? 'hand' : s.selKind === 'dial' ? 'dial' : 'item') : 'Deselect') + ' (Esc)',
       clearOp: s.sel != null || s.selKind != null ? 1 : 0.45,
       pickGuide: () => this.cycleGuide(),
-      g: (() => { const lab = 'Guide: ' + s.guide, lit = s.guide !== 'off'; return { label: lab, bg: lit ? '#2a2722' : '#1f1d1a', bd: lit ? '#c9a25a' : '#3a352d', fg: lit ? '#f0d79a' : '#8d8472' }; })(),
+      g: (() => { const lab = 'Guide: ' + s.guide, lit = s.guide !== 'off'; return { label: lab, cls: lit ? 'on' : '', bg: lit ? '#1c2330' : '#1c2330', bd: lit ? '#58a6ff' : '#2b3540', fg: lit ? '#e6edf3' : '#8b98a5' }; })(),
       frameLabel: 'Frame ' + pad(s.frame + 1) + ' / ' + B + '  (' + (DEV < F ? '~' + DEV + ' fps · bank ' + F : F + ' fps') + ')',
       playLabel: s.playing ? 'Pause' : 'Play',
       slowLabel: s.slow ? Math.max(1, Math.round(DEV / 5)) + ' fps' : (DEV < F ? '~' + DEV + ' fps · bank ' + F : DEV + ' fps'),
@@ -4418,7 +4418,7 @@ class Component extends DCLogic {
       toggleSlow: () => this.setState((st) => ({ slow: !st.slow })),
       timeOpts: [['live', 'Live'], ['pose', '10:09'], ['cycle', 'Cycle dates']].map(([id, label]) => ({ ...on(s.timeMode === id), label, pick: () => this.setState({ timeMode: id }) })),
       seamText: s.seam, status: s.status,
-      tabs: this.TABS.map(([id, label]) => ({ label, bg: s.tab === id ? '#2e2719' : 'transparent', fg: s.tab === id ? '#f0d79a' : '#b5ab97', pick: () => this.setState({ tab: id }) })),
+      tabs: this.TABS.map(([id, label]) => ({ label, bg: s.tab === id ? '#1f3a5f' : 'transparent', fg: s.tab === id ? '#e6edf3' : '#8b98a5', pick: () => this.setState({ tab: id }) })),
       isDial: s.tab === 'dial', isComps: s.tab === 'comps', isHands: s.tab === 'hands', isMove: s.tab === 'move', isCase: s.tab === 'case', isExport: s.tab === 'export',
       fields, hasSel: !!sel, noSel: !sel, hasSelHead: !!sel && s.tab === 'comps',
       resetHands: () => this.upd((d) => { Object.values(d.hands || {}).forEach((hc) => { delete hc.style; delete hc.finish; delete hc.len; delete hc.wid; delete hc.sec; delete hc.lume; delete hc.shade; }); }), selTitle: sel ? '#' + num(sel.id) + ' ' + compTitle(sel) : '',
@@ -4540,7 +4540,7 @@ class Component extends DCLogic {
       ...this.stackVals(),
       layers: this.LAYERS.map(([id, n, name, note]) => ({
         ref: this.cb('layerEls', id, (i) => this.drawLayer(i)), num: n, name, note,
-        eye: s.hidden[id] ? 'hidden' : 'shown', eyeFg: s.hidden[id] ? '#8d8472' : '#c9a25a', op: s.hidden[id] ? 0.45 : 1,
+        eye: s.hidden[id] ? 'hidden' : 'shown', eyeFg: s.hidden[id] ? '#8b98a5' : '#58a6ff', op: s.hidden[id] ? 0.45 : 1,
         toggle: () => this.setState((st) => ({ hidden: { ...st.hidden, [id]: !st.hidden[id] } })),
       })),
       kitNote: F + ' base frames + layers + sprites · .zip',

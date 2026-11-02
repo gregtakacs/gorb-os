@@ -3324,11 +3324,16 @@ function openThemeEditor(row) {
   // every answer, including the refusal.
   pane.classList.add("loading");
   const base = row.editor_url.replace(/\/$/, "") + "/";
-  frame.src = base + "?orb=" + encodeURIComponent(themeIP) + "&app=" + encodeURIComponent(row.slug);
+  // D43 §4.2: the editor fills the window and names the orb in its own breadcrumb, so
+  // it is handed the name the hub shows (label) beside the address it dials (orb).
+  const orbName = current.name || (current.row && current.row.instance) || "";
+  frame.src = base + "?orb=" + encodeURIComponent(themeIP) + "&app=" + encodeURIComponent(row.slug) +
+    (orbName ? "&label=" + encodeURIComponent(orbName) : "");
   title.textContent = themeAppTitle(row.slug) + " theme editor";
-  state.textContent = "reading the " + row.slug + " editor source from " + themeIP + "\u2026";
+  state.textContent = "";
   themeEditorApp = row.slug;
   pane.hidden = false;
+  document.body.classList.add("editing");
 }
 // The veil's one release. A load event means a document arrived — but which one:
 // closing sets src to about:blank, and that old document can fire its load AFTER a
@@ -3346,19 +3351,23 @@ function openThemeEditor(row) {
     try { doc = frame.contentDocument; } catch (e) { return; }   // cross-origin: not ours
     if (!doc || !doc.body || !doc.body.hasChildNodes()) return;  // about:blank stray
     if (pane) pane.classList.remove("loading");
-    if (state && pane && !pane.hidden) state.textContent = "editing through the hub";
+    if (state && pane && !pane.hidden) state.textContent = "";
   });
 })();
 
 // themeEditorApp is which app the open frame belongs to, so a message from a frame
 // that has since been replaced cannot file a theme under the previous app.
 let themeEditorApp = "";
+let themeSayTimer = 0;
 
 function closeThemeEditor() {
   const pane = $("#mn-theme-editor"), frame = $("#mn-theme-editor-frame");
   if (!pane) return;
   pane.hidden = true;
   pane.classList.remove("loading");
+  document.body.classList.remove("editing");
+  const state = $("#mn-theme-editor-state");
+  if (state) state.textContent = "";
   if (frame) frame.src = "about:blank";
   themeEditorApp = "";
 }
@@ -3378,11 +3387,18 @@ async function themeBridge(ev) {
   if (!frame || ev.source !== frame.contentWindow) return;      // not our editor
   if (ev.origin !== window.location.origin) return;             // not this hub
   const state = $("#mn-theme-editor-state");
-  const say = (t) => { if (state) state.textContent = t; };
+  // The corner note says what the hub is doing for the editor and then gets out of the
+  // way: a line that is still the latest one after eight seconds is cleared.
+  const say = (t) => {
+    if (!state) return;
+    state.textContent = t;
+    clearTimeout(themeSayTimer);
+    if (t) themeSayTimer = setTimeout(() => { if (state.textContent === t) state.textContent = ""; }, 8000);
+  };
   const back = (payload) => {
     try { ev.source.postMessage(Object.assign({ type: "theme.status" }, payload), ev.origin); } catch (e) {}
   };
-  if (m.type === "theme.ready") { say("editor ready"); back({ state: "ok" }); return; }
+  if (m.type === "theme.ready") { back({ state: "ok" }); return; }
   if (m.type === "theme.close") { closeThemeEditor(); return; }
   // D43: the editor's refusal page found the orb running an older release of this app
   // than the hub's shelf carries and offers the fix. It is the Apps face's own Update

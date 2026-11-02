@@ -415,7 +415,7 @@ setTimeout(async () => {
   ok(it.guideOn() === false, 'and the overlay goes back to auto, so a clean look at the watch is one keypress away');
   it.state.sel = 'centre-hour'; it.state.selKind = 'hand';
   const rvOv = it.renderVals();
-  ok(/Deselect hand/.test(rvOv.clearLabel), 'the button under the stage names what it will clear', rvOv.clearLabel);
+  ok(/Deselect hand/.test(rvOv.clearLabel), 'the deselect button names what it will clear', rvOv.clearLabel);
   ok(rvOv.clearOp === 1, 'and is lit while there is something to clear', String(rvOv.clearOp));
   it.state.sel = null; it.state.selKind = null;
   ok(it.renderVals().clearOp === 0.45, 'faded when there is nothing to clear');
@@ -424,7 +424,7 @@ setTimeout(async () => {
   it.cycleGuide(); ok(it.state.guide === 'off', 'off');
   it.cycleGuide(); ok(it.state.guide === 'auto', 'and back to auto');
   const rvG = it.renderVals().g;
-  ok(rvG.label === 'Guide: auto' && rvG.bd === '#c9a25a', 'and the button says which of the three it is', JSON.stringify(rvG));
+  ok(rvG.label === 'Guide: auto' && rvG.bd === '#58a6ff' && rvG.cls === 'on', 'and the button says which of the three it is', JSON.stringify(rvG));
   // ---- the pane must scroll to the section, not merely change tab ------------------
   it.state.selKind = 'hand'; it.state.sel = 'centre-second';
   ok(it.scrollTarget() === 'hand-centre-second', 'a selected hand asks for its own row', String(it.scrollTarget()));
@@ -470,6 +470,7 @@ setTimeout(async () => {
   if (checked < 20) { fails++; console.log('FAIL only ' + checked + ' checks ran'); }
   // every {{ }} binding the template reads must exist on the props object, or the DC
   // runtime renders an empty control with no warning at all
+  it.state.sel = null; it.state.selKind = null;   // D43 §4.2: a selected hand narrows the inspector to that hand
   const ex2 = (it.state.tab = 'export', it.renderVals());
   const rv = it.renderVals();
   const r3 = rv.handRows.find((q) => q.label === 'Centre hour');

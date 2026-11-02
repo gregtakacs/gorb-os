@@ -311,6 +311,47 @@ shows inline today. Nothing in it is removed, only moved.
   Apps face's own forced install and reopen the editor; and an install now drops the
   hub's cached editor region for that orb, so the reopened editor is the new one.
 
+### 4.2 The studio layout (P5b, owner 2026-11-02)
+
+The P5 composer lived in a 70vh frame inside the Themes card, inside a page capped at
+900 px: about 800×630 px for a layout whose fixed columns needed 900, so it scrolled
+both ways, carried two title bars (the hub's and its own), and spoke a warm gold palette
+beside the hub's blue-grey. The owner's ruling on the mockup:
+
+1. **The editor fills the hub window.** The hub draws no bar over it; the editor's own
+   top bar is the only one (breadcrumb to the orb and app, the theme's name, the steps,
+   the fit badge, Send to orb) and its back arrow closes it (`theme.close`).
+2. **One palette: the hub's.** Selection and focus are the hub's blue. The tokens ship
+   as the OS runtime's `ui@1` stylesheet, so any app's editor matches the hub.
+3. **Three panes, no page scroll.** Layers (left, every step: the stack panel, where
+   arranging happens), the stage (centre: Fit by default, 1:1, True size and 2× are
+   zoom stops that scroll inside the stage and never step out of it), the inspector
+   (right: the selection's properties, or the step's). Only the layer list, the
+   inspector and a zoomed stage scroll.
+4. **Six steps.** Start · Movement · Dial · Parts · Finish · Render. Arrange is the
+   layers panel. Start is a gallery sheet over the stage.
+5. **Text diet.** Explanations move to tooltips; the persistent UI carries labels.
+6. **The hub page is fluid.** It resizes to its window instead of a fixed 900 px column.
+7. **The floor is 1280×720.**
+
+**As built (2026-11-02).** The studio is the composer page's template rewritten over the
+same component: every binding the P5 page used is still bound or retired with its
+replacement named (`headless-flow`: `compRows` → the layers panel, `selTitle` → the
+inspector's title, the stage box → the pane), and the P5 checklist still finds every
+field every old tab offered. New: `ui@1` in the runtime catalog and the region's
+`editor.json` (its tokens held equal to `app.css` by `TestUISheetTokensAreTheHubsOwn`);
+Fit as the default view, measured off the stage pane, with 1:1, True size and Magnify as
+stops that scroll inside it (opening centred); the inspector names the selection, shows
+a selected hand's panel alone and first, and carries Remove; the layers panel carries
+the add list; a field's long note is two lines with the rest in its tooltip. The hub's
+pane is a fixed sheet over the page with no bar (`#mn-theme-editor`); its status note
+floats above the editor's toolbar and clears itself after eight seconds; the refusal
+page wears the hub's colours and has its own Back. `.view` is fluid to 1600 px and
+centres. The clock app keeps v1.1.45: `version.txt` is also the firmware's stamp, and
+this branch has rebuilt the unreleased v1.1.45 region at every slice. Screenshots at
+1280×720 and 1920×1080 were taken in Chrome with the page framed full-window, standalone
+(`file://`); the hub-served frame awaits the owner's test.
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views
@@ -659,6 +700,7 @@ long as an app in its library or on a known orb still names it.
 | **P4** ✔ | The stack model and panel (§2, §3), D42 E2's composer half: one list, parenting, shadows as properties, the three bands, R1–R7 enforced on drop, R8 warnings behind the Mechanical switch, style inheritance (§2.3). Every preset expressed as a stack | headless tests per rule (each illegal drop refused with its reason, each R8 warning raised only with the switch on); each preset's stack bakes to the same v6 rows `v6Drive` produces today, or the difference is explained; D42 E2's own gate: preview-versus-reader pose check, each preset installed on orb-B — **done 2026-11-01** (§3.1); still-row promotion split out as **P4b** |
 | **P4b** ✔ | Still-row promotion (§3 R5, R7): a still layer placed above a moving one ships as a live still AUX row, `compose()` draws the row band in stack order, and the dial is promoted when a ring sits under it | the panel moves that P4 refuses with "P4b" land, bake to still rows the C reader accepts, and draw on orb-B where the preview does — **done 2026-11-01** (§3.1) |
 | **P5** ✔ | The build flow and layout (§4): step bar, Add catalogue with compatibility, properties grouped by D42 parts, diagnostics drawer, light moods | headless UI test walks Start → Render on a scratch build and on a preset; nothing removed from today's controls (a checklist of every current field and where it now lives) — **done 2026-11-02** (§4.1) |
+| **P5b** ✔ | The studio layout (§4.2): the editor fills the hub window as one three-pane studio — layers left on every step, the stage centre, the inspector right — in the hub's palette, with one title bar; Arrange folds into the layers panel; the hub page itself goes fluid | nothing removed (the P5 checklist, re-pointed at the new panes); the stage zoom stays inside its pane at every stop; no page scroll at 1280×720 and 1920×1080 (Chrome screenshots of both, inside the hub); `go test` and every app suite green — **built 2026-11-02** (§4.2); the owner's test on the hub is owed |
 | **P6** | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here |
 | **P7** | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs |
 

@@ -2,7 +2,7 @@ window.COMP_CLASS = function (DCLogic) {
 
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, moreExport: false, more: {} };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, moreExport: false, more: {} };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
@@ -19,6 +19,7 @@ class Component extends DCLogic {
   base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _ftierOcc = null; _rpDiag = null; _occCover = -1; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null; _occ = null; _occKey = null; _bi = null; _biKey = null; _hbFps = 0; _rmTimer = 0; _rmAt = 0; _shLast = 0; _opLast = 0;
   dialEls = {}; handEls = {}; layerEls = {}; caseEls = {}; glassEls = {}; artEls = {}; cbs = {};
   mainRef = React.createRef();
+  stageRef = React.createRef();
   paneRef = React.createRef();
   cfg() {
     const c = { ...this.DEF, ...this.state.cfg }, E = window.WatchEngine, T = E && E.TRAINS[this.state.train];
@@ -485,6 +486,7 @@ class Component extends DCLogic {
    * bigger frame through the stage for precision work. */
   viewK() {
     const s = this.state, E = window.WatchEngine;
+    if (s.view === 'fit') return (+s.fitPx || 466) / 466;
     if (s.view === 'full') return 1;
     if (s.view === 'zoom') return Math.min(4, Math.max(1, +s.zoom || 2));
     return ((E && E.REAL_Z) || 168 / 466) * this.cal();
@@ -496,9 +498,11 @@ class Component extends DCLogic {
    * every layer is baked at 466 px, so magnifying enlarges the artwork without inventing detail. */
   viewVals() {
     const E = window.WatchEngine, cal = this.cal(), k = this.viewK(), v = this.state.view;
-    const sel = (b) => ({ bg: b ? '#2a2316' : '#1f1d1a', bd: b ? '#c9a25a' : '#3a352d', fg: b ? '#f0d79a' : '#e9e2d2' });
+    const sel = (b) => ({ cls: b ? 'on' : '', bg: b ? '#1f3a5f' : '#1c2330', bd: b ? '#58a6ff' : '#2b3540', fg: b ? '#e6edf3' : '#e6edf3' });
     // one source for each size: the engine owns what true size and the ruler mean
     const css = v === 'true' ? E.realCss(cal) : Math.max(60, Math.round(466 * k)), inch = E.screenInch(css, cal);
+    // D43 §4.2: the stage pane scrolls a dial bigger than itself, so every stop keeps
+    // the round glass and nothing steps out of the pane
     // the stage box holds 466 px: the canvas only scrolls through it once it is physically
     // bigger than that, whether the user picked Magnify or just calibrated a dense screen
     const zoomed = v === 'zoom' || css > 466;
@@ -509,8 +513,9 @@ class Component extends DCLogic {
     const nudge = (d) => this.setCal(this.cal() + d * this.calStep());
     return {
       stageCv: css, stageWin: zoomed ? 466 : css, stageRing: bez, stageRing2: bez + 1,
-      stageFlow: zoomed ? 'auto' : 'hidden', stageRound: zoomed ? '14px' : '50%',
-      hasZoom: zoomed,
+      stageFlow: zoomed ? 'auto' : 'hidden', stageRound: '50%', stageRef: this.stageRef,
+      hasZoom: v === 'zoom',
+      zoomTag: v === 'fit' ? 'Fit · ' + k.toFixed(2) + '×' : v === 'full' ? '1:1 · 466 px' : v === 'true' ? 'True size · ' + inch.toFixed(2) + ' in' : k + '× · scroll to pan',
       // the ruler belongs to true size only: Full and Magnify are magnifications of the artwork,
       // and a physical claim drawn there would be a claim about the zoom, not the watch
       showRuler: v === 'true', rulerPx: E.rulerPx(cal), rulerMm: mm, rulerTicks: ticks,
@@ -520,20 +525,23 @@ class Component extends DCLogic {
       calUp: () => nudge(1), calDown: () => nudge(-1),
       solve: (e) => this.solveCal(e.target.value),
       resetCal: () => { this.setCal(1); this.setState({ status: 'Screen calibration reset to the 96 px/in standard' }); },
-      viewOpts: [['true', 'True size · 1.75 in', 'The whole dial at the size the panel is on the wrist. The only preview that tells you how print will read. Needs the ruler calibrated once.'],
-                 ['full', 'Full · 1:1 · 466 px', 'The whole dial at the artwork\'s own scale, magnified for authoring detail.'],
+      viewOpts: [['fit', 'Fit', 'The whole dial as large as the stage holds it.'],
+                 ['full', '1:1', 'The artwork at its own 466 px: one canvas pixel per screen pixel.'],
+                 ['true', 'True size', 'The dial at the size the panel is on the wrist: the only preview that tells you how print will read. Calibrate the ruler once under ⚙.'],
                  ['zoom', 'Magnify', 'Scroll a bigger frame through the stage to inspect the print. The layers are baked at 466 px, so this enlarges them; it does not add detail.']]
         .map(([id, label, tip]) => ({ label, tip, pick: () => this.setView(id), ...sel(v === id) })),
-      zoomOpts: [1, 1.5, 2, 3, 4].map((z) => ({ label: z + '×', pick: () => this.setZoom(z), ...sel(k === z) })),
+      zoomOpts: [1.5, 2, 3, 4].map((z) => ({ label: z + '×', pick: () => this.setZoom(z), ...sel(k === z) })),
       // D43 §5.1: what the pixels are, independent of how big they are drawn. Panel is the
       // glass: RGB565, the bake's dither, the device's 32-step blend (GorbBake.panel*).
       renderOpts: [['design', 'Design', 'The artwork as the composer draws it: 8 bits a channel, smooth blending.'],
-                   ['panel', 'Panel · RGB565', 'What the orb will show: the plate as the bake stores it (RGB565, dithered), the hands and the glass blended the way the device blends them. Banding and the slight darkening the glass adds show here.'],
-                   ['compare', 'Compare', 'Panel on the left of the split, Design on the right. Move the split with the slider.']]
+                   ['panel', 'Panel', 'RGB565, what the orb will show: the plate as the bake stores it (RGB565, dithered), the hands and the glass blended the way the device blends them. Banding and the slight darkening the glass adds show here.'],
+                   ['compare', 'Split', 'Panel on the left of the split, Design on the right. Move the split with the slider.']]
         .map(([id, label, tip]) => ({ label, tip, pick: () => this.setState({ render: id }), ...sel((this.state.render || 'design') === id) })),
       isCompare: this.state.render === 'compare', wipeVal: this.state.wipe,
       setWipe: (e) => this.setState({ wipe: Math.max(0, Math.min(466, +e.target.value || 0)) }),
-      viewText: (v === 'full'
+      viewText: (v === 'fit'
+        ? 'Fitted to the stage: ' + k.toFixed(2) + '× the artwork, ' + inch.toFixed(2) + ' in across on this screen'
+        : v === 'full'
         ? 'Shown at the artwork\'s own scale: ' + inch.toFixed(2) + ' in across on this screen, ' + (inch / E.PANEL.inch).toFixed(1) + '× the 1.75 in panel'
         : v === 'zoom'
           ? 'Magnified ' + k.toFixed(2) + '× — the frame is baked at 466 px, so this enlarges it without adding detail'
@@ -875,14 +883,29 @@ class Component extends DCLogic {
     if (this.hubSend3()) { try { await this.hubOrbIp(); } catch (e) {} }
     this.buildMovement(); this.startTimer(); this.forceUpdate();
   }
-  componentWillUnmount() { clearInterval(this.timer); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
+  componentWillUnmount() { if (this._ro) this._ro.disconnect(); clearInterval(this.timer); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
   ensureFont(k) {
     this._fl = this._fl || {}; if (!k || this._fl[k]) return; this._fl[k] = 1;
     const n = WatchEngine.FONT_NAME(k); if (!n) return;
     Promise.race([Promise.all(['700 31px', '500 21px', 'italic 600 30px', '600 40px'].map((f) => document.fonts.load(f + ' "' + n + '"'))), new Promise((r) => setTimeout(r, 5000))])
       .catch(() => {}).then(() => { this.faces = {}; this._fk = null; this._tk = null; this.forceUpdate(); });
   }
+  /* D43 §4.2: Fit is the stage pane's own size, less a margin for the case ring. */
+  measureStage() {
+    const el = this.stageRef && this.stageRef.current;
+    if (!el || typeof el.getBoundingClientRect !== 'function') return;
+    const r = el.getBoundingClientRect(), px = Math.max(160, Math.floor(Math.min(r.width, r.height) - 40));
+    if (Math.abs(px - (+this.state.fitPx || 0)) >= 2) this.setState({ fitPx: px });
+  }
   componentDidUpdate() {
+    if (!this._ro && this.stageRef && this.stageRef.current && typeof ResizeObserver === 'function') {
+      this._ro = new ResizeObserver(() => this.measureStage()); this._ro.observe(this.stageRef.current); this.measureStage();
+    }
+    const vz = this.state.view + ':' + this.state.zoom + ':' + this.state.fitPx, sc = this.stageRef && this.stageRef.current;
+    if (vz !== this._vz && sc && typeof sc.scrollTo === 'function') {
+      this._vz = vz; const cx = (sc.scrollWidth - sc.clientWidth) / 2, cy = (sc.scrollHeight - sc.clientHeight) / 2;
+      if (cx > 0 || cy > 0) sc.scrollTo(cx, cy);
+    }
     // A selection armed a scroll target in onDown; the rows it names only exist once
     // this commit has bound them, so this is the first place the jump can be honoured.
     if (this._scrollTo) { const a = this._scrollTo; this._scrollTo = null; this.scrollToAnchor(a); }
@@ -1174,7 +1197,7 @@ class Component extends DCLogic {
     if (this.state.render === 'panel' || this.state.render === 'compare') this.drawPanel(c, x, gt, fc, d);
     const o = this.state.sel && this.state.tab === 'comps' && fc.outline(this.state.sel), k = ((fc.inset || 1) * (fc.dynK || 1));
     if (o) {
-      x.save(); x.setLineDash([5, 4]); x.lineWidth = 1.5; x.strokeStyle = 'rgba(240,215,154,.95)'; x.shadowColor = 'rgba(0,0,0,.8)'; x.shadowBlur = 3;
+      x.save(); x.setLineDash([5, 4]); x.lineWidth = 1.5; x.strokeStyle = 'rgba(88,166,255,.95)'; x.shadowColor = 'rgba(0,0,0,.8)'; x.shadowBlur = 3;
       x.beginPath(); x.arc(233 + (o.x - 233) * k, 233 + (o.y - 233) * k, (o.r + 3) * k, 0, Math.PI * 2); x.stroke(); x.restore();
     }
     if (this.guideOn()) this.drawGuide(x, fc, d, k);
@@ -1185,7 +1208,7 @@ class Component extends DCLogic {
    * arrow already says, on hover, which rule keeps that layer where it is. */
   stackVals() {
     const S = window.OrbStack, inp = this.stackInput(), s = this.state, d = this.design() || {};
-    const off = { stackRows: [], stackWarns: [], stackCap: '', stackCapFg: '#8d8472', mech: { bg: '#1f1d1a', bd: '#3a352d', fg: '#b5ab97' }, toggleMech: () => this.upd((dd) => { if (dd.mechanical) delete dd.mechanical; else dd.mechanical = 1; }) };
+    const off = { stackRows: [], stackWarns: [], stackCap: '', stackCapShort: '', mechCls: '', warnCount: '', stackCapFg: '#8b98a5', mech: { bg: '#1c2330', bd: '#2b3540', fg: '#8b98a5' }, toggleMech: () => this.upd((dd) => { if (dd.mechanical) delete dd.mechanical; else dd.mechanical = 1; }) };
     if (!S || !inp) return off;
     const items = S.build(inp), warns = d.mechanical ? S.warnings(inp) : [], rc = S.rowCount(inp);
     let liftCov = null;   // null: the pace model could not price this design, so say nothing
@@ -1198,12 +1221,14 @@ class Component extends DCLogic {
       if (it.band !== band) { band = it.band; rows.push({ isHead: true, isRow: false, label: HEAD[band] }); }
       const up = it.movable ? S.move(inp, it.id, -1) : { ok: false, reason: '' }, dn = it.movable ? S.move(inp, it.id, 1) : { ok: false, reason: '' };
       const hidden = !!s.hidden[it.hide], on = selId === it.id;
-      rows.push({ isHead: false, isRow: true, label: it.label, warn: warnOf[it.id] ? ' ⚠' : '',
+      const ICON = { case: '◎', glass: '◌', dial: '◯', subdial: '◷', disc: '◐', flare: 'A', opening: '◇', comp: '▭', hand: '╱', pointer: '╱', geartrain: '⚙', movement: '▦' };
+      rows.push({ isHead: false, isRow: true, label: it.label, warn: warnOf[it.id] ? ' ⚠' : '', icon: ICON[it.kind] || '•',
+        cls: (on ? 'on' : '') + (it.parent ? ' child' : ''), indent: it.parent ? 14 : 0, tag: it.lifted ? 'still row' : '',
         note: it.badge + (it.kind === 'hand' || it.kind === 'pointer' ? (it.shadow ? ' · casts a shadow' : '') : '')
           + (it.lifted && liftCov ? (liftCov[it.ref] ? ' · repainted on ~' + Math.round(liftCov[it.ref] * 100) + '% of sweep ticks' : ' · clear of the sweep') : '')
           + (warnOf[it.id] ? ' · ' + warnOf[it.id] : ''),
         tip: it.movable ? 'Drag onto another layer, or use the arrows' : (S.move(inp, it.id, 1).reason || ''),
-        pad: it.parent ? 22 : 6, weight: it.parent ? 500 : 600, op: hidden ? 0.45 : 1, bg: on ? '#2a2316' : 'transparent', edge: on ? '#c9a25a' : 'transparent',
+        pad: it.parent ? 22 : 6, weight: 400, op: hidden ? 0.45 : 1, bg: on ? '#1f3a5f' : 'transparent', edge: on ? '#58a6ff' : 'transparent',
         arrows: it.movable ? 'visible' : 'hidden',
         upOp: up.ok ? 1 : 0.35, downOp: dn.ok ? 1 : 0.35, upTip: up.ok ? 'Up one' : up.reason, downTip: dn.ok ? 'Down one' : dn.reason,
         up: (e) => { e.stopPropagation(); this.stackMove(it.id, -1); }, down: (e) => { e.stopPropagation(); this.stackMove(it.id, 1); },
@@ -1212,12 +1237,15 @@ class Component extends DCLogic {
         dragOver: (e) => { if (this._dragRow) e.preventDefault(); },
         drop: (e) => { e.preventDefault(); this.stackDrop(it.id); },
         pick: () => this.stackPick(it),
-        eye: hidden ? 'hidden' : 'shown', eyeFg: hidden ? '#8d8472' : '#c9a25a',
+        eye: hidden ? 'hidden' : 'shown', eyeIcon: hidden ? '○' : '◉', eyeFg: hidden ? '#5d6b78' : '#8b98a5',
         eyeTip: 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)',
         eyeToggle: (e) => { e.stopPropagation(); this.setState((st) => ({ hidden: { ...st.hidden, [it.hide]: !st.hidden[it.hide] } })); } });
     });
-    return { stackRows: rows, stackWarns: warns, stackCap: rc.rows + ' of ' + rc.cap + ' live rows', stackCapFg: rc.over ? '#e05a4a' : '#8d8472',
-      mech: d.mechanical ? { bg: '#2a2316', bd: '#c9a25a', fg: '#f0d79a' } : off.mech, toggleMech: off.toggleMech };
+    // the row's explanation (its badge, what it costs, why it cannot move) is its tooltip
+    rows.forEach((r) => { if (r.isRow) r.title = [r.label, r.note, r.tip].filter(Boolean).join(' · '); });
+    return { stackRows: rows, stackWarns: warns, stackCap: rc.rows + ' of ' + rc.cap + ' live rows', stackCapFg: rc.over ? '#f85149' : '#8b98a5',
+      stackCapShort: rc.rows + ' / ' + rc.cap, mechCls: d.mechanical ? 'on' : '', warnCount: warns.length ? warns.length + ' warning' + (warns.length === 1 ? '' : 's') : '',
+      mech: d.mechanical ? { bg: '#1f3a5f', bd: '#58a6ff', fg: '#e6edf3' } : off.mech, toggleMech: off.toggleMech };
   }
   /* D43 §5.2: the Panel view. The stage is split the way the device stacks it (the plate
    * under the hands, the hands, the glass and case over them), each layer is taken to
@@ -1240,7 +1268,7 @@ class Component extends DCLogic {
     if (this.state.render === 'compare') {
       const w = Math.max(0, Math.min(466, this.state.wipe | 0));
       if (w > 0) x.putImageData(img, 0, 0, 0, 0, w, 466);
-      x.save(); x.strokeStyle = 'rgba(240,215,154,.9)'; x.lineWidth = 1; x.beginPath(); x.moveTo(w + 0.5, 0); x.lineTo(w + 0.5, 466); x.stroke(); x.restore();
+      x.save(); x.strokeStyle = 'rgba(88,166,255,.9)'; x.lineWidth = 1; x.beginPath(); x.moveTo(w + 0.5, 0); x.lineTo(w + 0.5, 466); x.stroke(); x.restore();
     } else x.putImageData(img, 0, 0);
   }
   guideOn() {
@@ -1287,9 +1315,9 @@ class Component extends DCLogic {
     // The mask cuts here in panel space, so the ring is drawn there and not through the
     // face's own scale: asking the author to line art up to a ring the metal is not on
     // would be a guide that lies.
-    x.lineWidth = 1; x.strokeStyle = 'rgba(240,215,154,.55)';
+    x.lineWidth = 1; x.strokeStyle = 'rgba(88,166,255,.55)';
     x.beginPath(); x.arc(233, 233, OP, 0, TAU); x.stroke();
-    x.setLineDash([3, 5]); x.lineWidth = 1; x.strokeStyle = 'rgba(240,215,154,.3)';
+    x.setLineDash([3, 5]); x.lineWidth = 1; x.strokeStyle = 'rgba(88,166,255,.3)';
     for (let i = 0; i < 24; i++) {                               // 15 degree spokes, out of the hub: the dial's own grid, and the axis an off-centre print is set by
       const a = (i / 24) * TAU;
       x.beginPath(); x.moveTo(233, 233); x.lineTo(233 + Math.sin(a) * 216, 233 - Math.cos(a) * 216); x.stroke();
@@ -1305,7 +1333,7 @@ class Component extends DCLogic {
         x.beginPath(); x.arc(gx, gy, 3, 0, TAU); x.stroke();
       });
     }
-    x.setLineDash([]); x.lineWidth = 1.5; x.strokeStyle = 'rgba(240,215,154,.95)';
+    x.setLineDash([]); x.lineWidth = 1.5; x.strokeStyle = 'rgba(88,166,255,.95)';
     x.beginPath(); x.moveTo(220, 233); x.lineTo(246, 233); x.moveTo(233, 220); x.lineTo(233, 246); x.stroke();
     x.beginPath(); x.arc(233, 233, 3.5, 0, TAU); x.stroke();     // THE hub: fixed, and not the art's centre
     const slot = (this.state.selKind === 'dial' && ((this.drag && this.drag.kind === 'dial' && this.drag.slot) || this.artSlot())) || null;
@@ -1354,16 +1382,16 @@ class Component extends DCLogic {
     let reach = 0;
     [[-sp.px, -sp.py], [w - sp.px, -sp.py], [-sp.px, h - sp.py], [w - sp.px, h - sp.py]].forEach((q) => { reach = Math.max(reach, Math.hypot(q[0], q[1])); });
     x.save(); x.translate(px(hd.x), px(hd.y));
-    x.setLineDash([3, 5]); x.lineWidth = 1; x.strokeStyle = 'rgba(240,215,154,.4)';
+    x.setLineDash([3, 5]); x.lineWidth = 1; x.strokeStyle = 'rgba(88,166,255,.4)';
     x.beginPath(); x.arc(0, 0, reach * k, 0, Math.PI * 2); x.stroke();          // the sweep envelope
     x.rotate(ang); x.scale(k, k);
     x.setLineDash([4, 3]); x.lineWidth = 1.25 / k; x.strokeStyle = 'rgba(122,214,255,.95)';
     x.strokeRect(-sp.px, -sp.py, w, h);                                          // the sprite, turned
     x.save(); x.rotate(-(hd.artRot || 0));                                       // off the facing, back onto the time
-    x.strokeStyle = 'rgba(240,215,154,.8)'; x.lineWidth = 1 / k;
+    x.strokeStyle = 'rgba(88,166,255,.8)'; x.lineWidth = 1 / k;
     x.beginPath(); x.moveTo(0, 0); x.lineTo(0, -(reach - 6)); x.stroke();        // where it should read
     x.restore();
-    x.strokeStyle = '#f0d79a'; x.lineWidth = 1.6 / k; x.setLineDash([]);         // the arbour itself
+    x.strokeStyle = '#58a6ff'; x.lineWidth = 1.6 / k; x.setLineDash([]);         // the arbour itself
     x.beginPath(); x.moveTo(-7 / k, 0); x.lineTo(7 / k, 0); x.moveTo(0, -7 / k); x.lineTo(0, 7 / k); x.stroke();
     x.beginPath(); x.arc(0, 0, 3 / k, 0, Math.PI * 2); x.stroke();
     x.restore();
@@ -1528,10 +1556,10 @@ class Component extends DCLogic {
       // isolate reads as a broken render. Say what the empty means: here is the rim the
       // device owns, and there is no pixel of ours on it.
       if (this.state.caseStyle === 'none') {
-        s.setLineDash([5, 4]); s.lineWidth = 1.5; s.strokeStyle = 'rgba(240,215,154,.85)';
+        s.setLineDash([5, 4]); s.lineWidth = 1.5; s.strokeStyle = 'rgba(88,166,255,.85)';
         s.beginPath(); s.arc(233, 233, fc.caseOpen == null ? 221.5 : fc.caseOpen, 0, Math.PI * 2); s.stroke();
         s.setLineDash([]);
-        s.font = "600 13px 'IBM Plex Mono',ui-monospace,monospace"; s.fillStyle = 'rgba(240,215,154,.9)';
+        s.font = "600 13px 'IBM Plex Mono',ui-monospace,monospace"; s.fillStyle = 'rgba(88,166,255,.9)';
         s.fillText('no case drawn', 178, 30);
       }
     }
@@ -1565,7 +1593,7 @@ class Component extends DCLogic {
       if (id === 'none') {
         const r = E.caseOpenR ? E.caseOpenR(o) : 221.5;
         out.drawImage(sc, 0, 0, 466, 466, 0, 0, 112, 112);
-        out.setLineDash([4, 3]); out.lineWidth = 1.5; out.strokeStyle = 'rgba(240,215,154,.85)';
+        out.setLineDash([4, 3]); out.lineWidth = 1.5; out.strokeStyle = 'rgba(88,166,255,.85)';
         out.beginPath(); out.arc(56, 56, (r / 233) * 56, 0, Math.PI * 2); out.stroke(); out.setLineDash([]);
         return;
       }
@@ -1603,7 +1631,7 @@ class Component extends DCLogic {
       x.strokeStyle = 'rgba(122,214,255,.5)'; x.lineWidth = 1;
       x.strokeRect(ox + sp.ink[0] * k, oy + sp.ink[1] * k, (sp.ink[2] - sp.ink[0]) * k, (sp.ink[3] - sp.ink[1]) * k);
     }
-    x.strokeStyle = '#c9a25a'; x.lineWidth = 1; x.beginPath();
+    x.strokeStyle = '#58a6ff'; x.lineWidth = 1; x.beginPath();
     x.moveTo(ox + sp.px * k - 6, oy + sp.py * k); x.lineTo(ox + sp.px * k + 6, oy + sp.py * k);
     x.moveTo(ox + sp.px * k, oy + sp.py * k - 6); x.lineTo(ox + sp.px * k, oy + sp.py * k + 6); x.stroke();
     /* Which way the device will make this hand read, measured from the arbour: the art
@@ -1614,7 +1642,7 @@ class Component extends DCLogic {
       let reach = 0;
       [[0, 0], [sp.c.width, 0], [0, sp.c.height], [sp.c.width, sp.c.height]].forEach((q) => { reach = Math.max(reach, Math.hypot(q[0] - sp.px, q[1] - sp.py)); });
       const a = ((hd.rot0 || 0) - 90) * Math.PI / 180;                    // 0 deg facing means the art points up
-      x.strokeStyle = 'rgba(240,215,154,.85)'; x.setLineDash([3, 3]); x.lineWidth = 1.25; x.beginPath();
+      x.strokeStyle = 'rgba(88,166,255,.85)'; x.setLineDash([3, 3]); x.lineWidth = 1.25; x.beginPath();
       x.moveTo(ox + sp.px * k, oy + sp.py * k);
       x.lineTo(ox + sp.px * k + Math.cos(a) * reach * k, oy + sp.py * k + Math.sin(a) * reach * k);
       x.stroke(); x.setLineDash([]);
@@ -3219,16 +3247,16 @@ class Component extends DCLogic {
     };
     rd.readAsText(file);
   }
-  /* D43 P5: the build flow. Seven steps over the existing views: each step shows one or
-   * more of the tabs every field builder already answers to, so nothing a tab offered is
+  /* D43 P5: the build flow. Steps over the existing views: each step shows one or more
+   * of the tabs every field builder already answers to, so nothing a tab offered is
    * lost — the steps choose, order and explain. A selection that lands on a tab the
-   * current step does not show moves to the step that does (stepNow). */
+   * current step does not show moves to the step that does (stepNow). P5b (§4.2) folded
+   * Arrange into the layers panel, which every step shows. */
   STEPS = [
     ['start', 'Start', ['start'], 'Pick a finished watch to change, or build from scratch.'],
     ['movement', 'Movement', ['move'], 'The movement is the back of the watch: the plate and the train every opening shows.'],
     ['dial', 'Dial', ['dial'], 'The dial\u2019s style: its print, numerals, colour, surface and art. Complications you add follow it.'],
-    ['parts', 'Complications & hands', ['comps', 'hands'], 'Add what the dial shows. Each one follows the dial\u2019s style until you set it otherwise.'],
-    ['arrange', 'Arrange', ['comps', 'hands', 'dial'], 'Drag layers to reorder them, drag on the watch to move them. The rules say what cannot stack where.'],
+    ['parts', 'Parts', ['comps', 'hands'], 'Complications and hands: add what the dial shows. Each follows the dial\u2019s style until you set it otherwise.'],
     ['finish', 'Finish', ['light', 'case', 'sound'], 'Light, case and glass, and the sounds the watch makes.'],
     ['render', 'Render', ['export'], 'Check it fits the orb, then send it.'],
   ];
@@ -3243,9 +3271,16 @@ class Component extends DCLogic {
   stepNow() {
     const s = this.state, tab = s.tab, at = this.STEPS.find((x) => x[0] === s.step);
     if (at && at[2].includes(tab)) return at;
-    return this.STEPS.find((x) => x[0] !== 'start' && x[0] !== 'arrange' && x[2].includes(tab)) || this.STEPS[2];
+    return this.STEPS.find((x) => x[0] !== 'start' && x[2].includes(tab)) || this.STEPS[2];
   }
   goStep(id) { const st = this.STEPS.find((x) => x[0] === id); if (st) this.setState({ step: id, tab: st[2][0] }); }
+  /* D43 §4.2: under the hub the editor fills the window, and its back arrow is the way out. */
+  inFrame() { try { return typeof window !== 'undefined' && !!window.parent && window.parent !== window; } catch (e) { return false; } }
+  closeEditor() { try { window.parent.postMessage({ type: 'theme.close' }, location.origin); } catch (e) { /* standalone: nowhere to go back to */ } }
+  crumbLabel() {
+    let q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
+    return ((q && (q.get('label') || q.get('orb'))) || 'Clock') + (q && (q.get('label') || q.get('orb')) ? ' · Clock' : ' theme');
+  }
   fromScratch() {
     const E = window.WatchEngine, d = E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.skeleton.design)));
     d.comps = []; delete d.order; delete d.openwork; delete d.extra; d.centre = { hour: 1, minute: 1, second: 1 };
@@ -3261,7 +3296,7 @@ class Component extends DCLogic {
     if (rows.length <= keep) return rows;
     const open = !!(this.state.more || {})[key], hid = rows.length - keep;
     const chip = Object.assign({}, rows[0], { label: '', valText: '', isHead: false, isRow: true, anchor: null, isRange: false, isSelect: false, isSwatch: false, isColor: false, isText: false, isFile: false, isNote: false, hasLink: false, isChips: true,
-      opts: [{ label: open ? 'Less' : 'More (' + hid + ')', bg: '#1f1d1a', bd: '#3a352d', fg: '#a39a87', pick: () => this.setState((st) => ({ more: { ...(st.more || {}), [key]: !open } })) }] });
+      opts: [{ label: open ? 'Less' : 'More (' + hid + ')', bg: '#1c2330', bd: '#2b3540', fg: '#8b98a5', pick: () => this.setState((st) => ({ more: { ...(st.more || {}), [key]: !open } })) }] });
     return (open ? rows : rows.slice(0, keep)).concat([chip]);
   }
   renderVals() {
@@ -3270,19 +3305,31 @@ class Component extends DCLogic {
     const head = (f) => f && f.isHead;
     const out = {
       headLabel: (this.ready && this.preset ? (this.preset() || {}).name || '' : '') + (s.designs && s.designs[s.dial] ? ' (edited)' : '') + ' · ' + st[1],
-      stepOpts: this.STEPS.map(([id, label, , tip], i) => ({ num: i + 1, label, tip, bg: id === step ? '#2e2719' : 'transparent', fg: id === step ? '#f0d79a' : '#b5ab97', pick: () => this.goStep(id) })),
+      stepOpts: this.STEPS.map(([id, label, , tip], i) => ({ num: i + 1, label, tip, cls: id === step ? 'on' : '', bg: id === step ? '#1f3a5f' : 'transparent', fg: id === step ? '#e6edf3' : '#8b98a5', pick: () => this.goStep(id) })),
       hasSubs: tabs.length > 1,
-      subOpts: tabs.map((t) => ({ label: this.SUBLABEL[t] || t, bg: s.tab === t ? '#2a2316' : 'transparent', bd: s.tab === t ? '#c9a25a' : '#3a352d', fg: s.tab === t ? '#f0d79a' : '#b5ab97', pick: () => this.setState({ step, tab: t }) })),
+      subOpts: tabs.map((t) => ({ label: this.SUBLABEL[t] || t, cls: s.tab === t ? 'on' : '', bg: s.tab === t ? '#1f3a5f' : 'transparent', bd: s.tab === t ? '#58a6ff' : '#2b3540', fg: s.tab === t ? '#e6edf3' : '#8b98a5', pick: () => this.setState({ step, tab: t }) })),
       stepHint: st[3],
-      isStart: step === 'start', isArrange: step === 'arrange',
+      isStart: step === 'start',
       hasTabReset: step === 'start' ? false : v.hasTabReset,   // Start's gallery carries its own Reset everything
       isDial: false,
       isComps: v.isComps && step === 'parts', isHands: v.isHands && step === 'parts',
-      diagOpen: !!s.diag, diagLabel: s.diag ? 'Hide diagnostics' : 'Diagnostics', toggleDiag: () => this.setState((x) => ({ diag: !x.diag })),
+      diagOpen: !!s.diag, diagLabel: s.diag ? 'Hide diagnostics' : 'Diagnostics', toggleDiag: () => this.setState((x) => ({ diag: !x.diag })), diagCls: s.diag ? 'on' : '',
+      // D43 §4.2: the studio's chrome
+      inFrame: this.inFrame(), closeEditor: () => this.closeEditor(), crumbLabel: this.crumbLabel(),
+      notHub: !v.isHub, hasStatus: !!s.status, playIcon: s.playing ? '\u275a\u275a' : '\u25b6',
+      themeNameTip: 'The theme\u2019s name: what the orb lists it as, and its identity on the card · ' + v.themeNameLen,
+      sendTip: 'Bake the .orbtheme and store it on the orb, beside the theme on the glass. Switching to it is a separate press on the Themes tab. ' + (v.sendNote || ''),
+      addOpen: !!s.addOpen, addLabel: s.addOpen ? 'Close the list' : '\uff0b Add a part\u2026', toggleAdd: () => this.setState((x) => ({ addOpen: !x.addOpen })),
+      startGo: () => this.goStep('movement'), dialName: ready ? ((E.PRESETS[s.dial] || {}).name || '') : '',
+      fitShort: '', fitDot: '#5d6b78',
       fromScratch: () => this.fromScratch(),
       moreExportOpen: !!s.moreExport, moreExportLabel: s.moreExport ? 'Fewer export options' : 'More export options · layer kit, frames, design file, design ID',
       toggleMoreExport: () => this.setState((x) => ({ moreExport: !x.moreExport })),
     };
+    const short = (t, n) => String(t || '').split(/ · |[.;:\u2014]/).slice(0, n).join(' · ').trim();
+    out.dials = (v.dials || []).map((d) => Object.assign({}, d, { short: short(d.blurb, 2) }));
+    out.trainOpts = (v.trainOpts || []).map((t) => Object.assign({}, t, { short: short(t.blurb, 1) }));
+    out.timeOpts = (v.timeOpts || []).map((c, i) => Object.assign({}, c, { label: ['Live', '10:09', 'Dates'][i] || c.label, tip: ['The time now', 'The classic 10:09 pose', 'Step through dates to check every window and disc'][i] || '' }));
     // Start shows the gallery alone; the dial's own fields belong to the Dial step
     let fields = v.fields;   // the Start view has no builder of its own: the gallery is its whole pane
     // Parts: the add catalogue, with what the dial can and cannot take, and why
@@ -3297,7 +3344,7 @@ class Component extends DCLogic {
         return { label: '+ ' + label + (onSub && t !== 'subdial' && t !== 'opening' ? ' on this sub-dial' : ''), blurb: why || BLURB[t] || '', tip: why || BLURB[t] || '',
           op: why ? 0.45 : 1, cursor: why ? 'not-allowed' : 'pointer', go: why ? () => this.setState({ status: why }) : () => this.addComp(t) };
       }).concat([{ label: '+ Hand', blurb: 'Hour, minute and seconds, or one more: 24-hour, GMT, day or date', tip: 'The hands are set on the Hands view', op: 1, cursor: 'pointer',
-        go: () => this.setState({ step: 'parts', tab: 'hands' }) }]);
+        go: () => this.setState({ step: 'parts', tab: 'hands' }) }]).map((c) => Object.assign({}, c, { go: () => { this.setState({ addOpen: false }); c.go(); } }));
       // Render: does it fit the orb
       const b = this.budget ? this.budget() : null, want = b ? b.fps : 0, pace = b && b.dev && b.dev.pace ? b.dev.pace : want;
       const fits = !rc.over, full = pace >= want, near = pace >= want * 0.75;
@@ -3305,7 +3352,9 @@ class Component extends DCLogic {
         : near ? '\u2713 Fits — runs a little slower than designed' : '\u2713 Fits — the orb paints it slower than designed';
       out.badgeNote = '~' + pace + ' of ' + want + ' fps · ' + rc.rows + ' of ' + rc.cap + ' live rows';
       out.badgeTip = 'The device-pace model\u2019s estimate for this design (the frame rate the orb can paint it at) and the live rows it ships against the dial\u2019s cap. A lifted layer or a large sweeping disc costs pace.';
-      out.badgeFg = !fits ? '#f08a7a' : full ? '#b8e0a8' : '#f0d79a'; out.badgeBd = !fits ? '#6a2e26' : full ? '#3a5a3a' : '#5a4a2a'; out.badgeBg = !fits ? '#2a1714' : full ? '#1a241a' : '#221d12';
+      out.fitShort = !fits ? 'Over · ' + rc.rows + ' / ' + rc.cap + ' rows' : (full ? 'Fits' : 'Fits, slower') + ' · ' + pace + ' fps';
+      out.fitDot = !fits ? '#f85149' : full ? '#3fb950' : '#d29922';
+      out.badgeFg = !fits ? '#f85149' : full ? '#3fb950' : '#d29922'; out.badgeBd = !fits ? '#5c2326' : full ? '#23502c' : '#5a4614'; out.badgeBg = !fits ? '#2a1416' : full ? '#12241a' : '#241d0e';
     }
     // Finish · Light: moods first, the sliders behind More
     if (ready && s.tab === 'light' && fields.length) {
@@ -3313,7 +3362,7 @@ class Component extends DCLogic {
       const isMood = (vals) => keys.every((k) => +c[k] === +(vals[k] !== undefined ? vals[k] : this.DEF[k]));
       const proto = fields.find((f) => f.isRow) || {};
       const moodRow = Object.assign({}, proto, { label: 'Mood', valText: '', isRange: false, isSelect: false, isSwatch: false, isColor: false, isText: false, isFile: false, isNote: false, hasLink: false, isChips: true,
-        opts: this.MOODS.map(([id, label, vals]) => ({ label, bg: isMood(vals) ? '#2a2316' : '#1f1d1a', bd: isMood(vals) ? '#c9a25a' : '#3a352d', fg: isMood(vals) ? '#f0d79a' : '#e9e2d2', pick: () => this.setMood(vals) })) });
+        opts: this.MOODS.map(([id, label, vals]) => ({ label, bg: isMood(vals) ? '#1f3a5f' : '#1c2330', bd: isMood(vals) ? '#58a6ff' : '#2b3540', fg: isMood(vals) ? '#e6edf3' : '#e6edf3', pick: () => this.setMood(vals) })) });
       const moodHead = Object.assign({}, fields.find(head) || proto, { label: 'Lighting', isHead: true, isRow: false });
       fields = [moodHead, moodRow].concat(this.foldRows(fields, 'light', 0));
     }
@@ -3335,7 +3384,20 @@ class Component extends DCLogic {
       return Object.assign({}, h, { artOpen: open, artToggleLabel: open ? 'Hide artwork' : 'Artwork \u00b7 use your own PNG or SVG',
         toggleArt: () => this.setState((x) => ({ more: { ...(x.more || {}), [key]: !open } })) });
     });
-    out.fields = fields;
+    // D43 §4.2: the inspector names what it shows — the selection, or the step's view
+    const selComp = (d.comps || []).find((c) => c.id === s.sel);
+    const selHand = s.selKind === 'hand' && s.sel != null ? (out.handRows || []).find((h) => h.anchor === 'hand-' + s.sel) : null;
+    if (selHand) out.handRows = [selHand];
+    out.handGrid = !!(v.isHands && step === 'parts' && !selHand);
+    out.hasSelAny = s.sel != null || s.selKind != null;
+    if (s.selKind === 'comp' && selComp) { out.inspKind = (E.COMP_TYPES && E.COMP_TYPES[selComp.type]) || 'Complication'; out.inspTitle = v.selTitle || out.inspKind; }
+    else if (selHand) { out.inspKind = 'Hand'; out.inspTitle = selHand.label; }
+    else if (s.selKind === 'dial') { out.inspKind = 'Dial'; out.inspTitle = out.dialName || 'Dial'; }
+    else { out.inspKind = st[1]; out.inspTitle = step === 'start' ? 'Start a theme' : step === 'render' ? 'Render' : (this.SUBLABEL[s.tab] || st[1]); }
+    out.hasDel = !!(s.selKind === 'comp' && selComp);
+    out.delLabel = selComp ? ((E.COMP_TYPES && E.COMP_TYPES[selComp.type]) || 'part').toLowerCase() : '';
+    out.delSel = () => { if (selComp) this.delComp(selComp.id); };
+    out.fields = fields.map((f) => (f && f.isRow ? Object.assign({}, f, { rowCls: f.isRange ? '' : 'wide' }) : f));
     return Object.assign(v, out);
   }
   renderVals0() {
@@ -3349,7 +3411,7 @@ class Component extends DCLogic {
     const stop = (fn) => () => this.setState((st) => ({ playing: false, frame: fn(st.frame) }));
     const E = window.WatchEngine, ready = !!(this.ready && E);
     const PR = ready ? this.preset() : null, D = ready ? this.design() : { comps: [], centre: {} };
-    const on = (b) => ({ bg: b ? '#2a2316' : '#1f1d1a', bd: b ? '#c9a25a' : '#3a352d', fg: b ? '#f0d79a' : '#e9e2d2' });
+    const on = (b) => ({ cls: b ? 'on' : '', bg: b ? '#1f3a5f' : '#1c2330', bd: b ? '#58a6ff' : '#2b3540', fg: b ? '#e6edf3' : '#e6edf3' });
     const did = this.designId(), fc = ready ? this.face() : null, tr = ready ? this.train() : { deg: 0, by: null };
     const cap = (t) => t[0].toUpperCase() + t.slice(1);
     const subs = D.comps.filter((c) => c.type === 'subdial');
@@ -3370,7 +3432,7 @@ class Component extends DCLogic {
       const inh = opts.find((o) => /^(Same as dial|Match dial)/.test(String(o.label || ''))) || opts.find((o) => /^Default\b/.test(String(o.label || '')));
       if (!inh) return {};
       const src = /dial/i.test(inh.label) ? 'the dial' : 'the defaults', linked = String(value) === String(inh.v);
-      return { hasLink: true, linkText: linked ? '\u26d3 ' + src : '\u21ba re-link', linkFg: linked ? '#8d8472' : '#c9a25a', linkCursor: linked ? 'default' : 'pointer',
+      return { hasLink: true, linkText: linked ? '\u26d3 ' + src : '\u21ba re-link', linkFg: linked ? '#8b98a5' : '#58a6ff', linkCursor: linked ? 'default' : 'pointer',
         linkTip: linked ? 'Follows ' + src + '; choose another value to set it here' : 'Set here, not from ' + src + ' — click to follow ' + src + ' again',
         relink: linked ? () => {} : () => onv(inh.v) };
     };
@@ -3383,7 +3445,7 @@ class Component extends DCLogic {
     const Ch = (label, value, opts, onv) => mk({ label, isChips: true, opts: opts.map((o) => ({ ...on(String(o.v) === String(value)), label: o.label, pick: () => onv(o.v) })) });
     const Nt = (label, note) => mk({ label, isNote: true, note });
     const sw = (k) => 'linear-gradient(135deg,' + E.DIAL_COLORS[k][0] + ',' + E.DIAL_COLORS[k][1] + ')';
-    const Sw = (label, value, keys, onv, extra) => mk({ label, isSwatch: true, valText: keys.includes(value) ? E.COLOR_NAMES[value] : '', opts: [...(extra || []), ...keys.map((k) => ({ label: E.COLOR_NAMES[k], text: '', bg: sw(k), bd: k === value ? '#f0d79a' : '#2e2a24', pick: () => onv(k) }))], ...linkOf((extra || []).map((o) => ({ v: /Match dial/.test(o.label) ? 'match' : o.label, label: o.label })), value, onv) });
+    const Sw = (label, value, keys, onv, extra) => mk({ label, isSwatch: true, valText: keys.includes(value) ? E.COLOR_NAMES[value] : '', opts: [...(extra || []), ...keys.map((k) => ({ label: E.COLOR_NAMES[k], text: '', bg: sw(k), bd: k === value ? '#e6edf3' : '#232c36', pick: () => onv(k) }))], ...linkOf((extra || []).map((o) => ({ v: /Match dial/.test(o.label) ? 'match' : o.label, label: o.label })), value, onv) });
     const INKS = [['#f6f3ec', 'White'], ['#1a140c', 'Black'], ['#c9a25a', 'Gold'], ['#d7dbe0', 'Silver'], ['#cfe8b0', 'Lume green'], ['#9fd8ff', 'Lume blue'], ['#c8322a', 'Red'], ['#ff7a1a', 'Orange'], ['#2b59c3', 'Blue'], ['#ff2bd6', 'Magenta'], ['#22e6ff', 'Cyan'], ['#b6ff2e', 'Acid']];
     const parseCol = (t) => {
       t = String(t || '').trim().toLowerCase(); let m;
@@ -3403,8 +3465,8 @@ class Component extends DCLogic {
         onHex: (e) => { const v = e.target.value, p = parseCol(v); if (p) { delete this._drafts[key]; onv(p); } else { this._drafts[key] = v; this.forceUpdate(); } },
         onHexBlur: () => { if (this._drafts[key] != null) { delete this._drafts[key]; this.forceUpdate(); } },
         valText: value === 'none' ? 'None' : !value || value === 'auto' ? (X.noAuto ? 'None' : autoText || 'Auto') : value, valText: value === 'none' ? 'None' : !value || value === 'auto' ? (X.noAuto ? 'None' : autoText || 'Auto') : value,
-      opts: [...(X.none ? [{ label: 'None', text: '∅', bg: '#1f1d1a', bd: value === 'none' ? '#f0d79a' : '#3a352d', pick: () => onv('none') }] : []),
-        ...(X.noAuto ? [] : [{ label: autoText || 'Auto', text: 'A', bg: '#1f1d1a', bd: !value || value === 'auto' ? '#f0d79a' : '#3a352d', pick: () => onv('auto') }]), ...INKS.map(([c, n]) => ({ label: n, text: '', bg: c, bd: c === value ? '#f0d79a' : '#2e2a24', pick: () => onv(c) }))] }); };
+      opts: [...(X.none ? [{ label: 'None', text: '∅', bg: '#1c2330', bd: value === 'none' ? '#e6edf3' : '#2b3540', pick: () => onv('none') }] : []),
+        ...(X.noAuto ? [] : [{ label: autoText || 'Auto', text: 'A', bg: '#1c2330', bd: !value || value === 'auto' ? '#e6edf3' : '#2b3540', pick: () => onv('auto') }]), ...INKS.map(([c, n]) => ({ label: n, text: '', bg: c, bd: c === value ? '#e6edf3' : '#232c36', pick: () => onv(c) }))] }); };
     const Tx = (label, value, onv) => mk({ label, isText: true, value: value == null ? '' : String(value), on: (e) => onv(e.target.value) });
     const Fi = (label, onv, valText, accept) => mk({ label, isFile: true, on: onv, valText: valText || '', accept: accept || 'image/png,image/svg+xml,image/jpeg,image/webp' });
     const T = ready ? E.TRAINS[s.train] : null;
@@ -3446,7 +3508,7 @@ class Component extends DCLogic {
             ? fa.name + ' · ' + fa.kind + ' · ' + fa.w + '×' + fa.h + ' source · ' + Math.round(fa.dataUrl.length / 1024) + ' KB · held in this browser and shipped in sources/ with the kit'
             : sel.img ? 'That reference has no bytes in this browser — load the .wckit bundle that carries it.'
               : 'PNG or SVG. Colour Auto keeps the image’s own colours. The reference travels in the Design ID; the bytes travel in the .wckit bundle and in the kit’s sources/. The device reads a PNG rotated without antialiasing, so author it at final size.'));
-          if (fa) selFields.push(mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'x', label: 'Remove image', bg: '#1f1d1a', bd: '#3a352d', fg: '#e9e2d2', pick: () => this.setComp(sel.id, { img: undefined }) }] }));
+          if (fa) selFields.push(mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'x', label: 'Remove image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: () => this.setComp(sel.id, { img: undefined }) }] }));
         }
       }
       if (sel.type !== 'opening' && !(sel.type === 'flare' && sel.icon === 'arctext') || (sel.shape && sel.shape !== 'circle')) R('Rotation', 'rot', -180, 180, 1, (v) => v + '°');
@@ -3498,7 +3560,7 @@ class Component extends DCLogic {
         if (sel.style === 'carbon' || sel.style === 'forged') R(sel.style === 'carbon' ? 'Weave size' : 'Flake size', 'weaveScale', 0.4, 3, 0.05, (v) => v.toFixed(2) + '×', D.weaveScale == null ? 1 : +D.weaveScale);
         if (sel.style && sel.style !== 'enamel') R('Texture', 'tex', 0, 2.5, 0.05, (v) => v.toFixed(2) + '×', D.texture == null ? 1 : +D.texture);
         const cv = sel.color || 'match', setC = set('color');
-        selFields.push(Sw('Colour', cv, E.COLOR_GROUPS.classic, setC, [{ label: 'Match dial', text: '=', bg: '#1f1d1a', bd: cv === 'match' ? '#f0d79a' : '#3a352d', pick: () => setC('match') }]));
+        selFields.push(Sw('Colour', cv, E.COLOR_GROUPS.classic, setC, [{ label: 'Match dial', text: '=', bg: '#1c2330', bd: cv === 'match' ? '#e6edf3' : '#2b3540', pick: () => setC('match') }]));
         selFields.push(Sw('Vivid', cv, E.COLOR_GROUPS.vivid, setC));
         selFields.push(Co('Custom', E.isHex(cv) ? cv : null, (v) => setC(v === 'auto' ? 'match' : v), 'Preset'));
         if (sel.scale !== 'none') {
@@ -3673,7 +3735,7 @@ class Component extends DCLogic {
         const line = !E.assetReady(id) ? 'No bytes for ' + id + ' in this browser — the reference is in the Design ID, the .wckit bundle carries the art.'
           : fits && fits.ok ? price : fits.why;
         out.push(Nt('', a ? a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' source into a ' + Math.round(box * zm) + '×' + Math.round(box * zm) + ' box' + (zm !== 1 ? ' at ' + zm.toFixed(2) + ' zoom' : '') + ' · ' + Math.round(a.dataUrl.length / 1024) + ' KB · ' + line : line),
-          mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'drag', label: (this.state.artSlot === p ? 'Dragging the dial pans THIS slot' : 'Drag the dial to pan this slot'), bg: this.state.artSlot === p ? '#2a2722' : '#1f1d1a', bd: this.state.artSlot === p ? '#c9a25a' : '#3a352d', fg: '#e9e2d2', pick: () => this.setState({ artSlot: p, guide: 'on' }) }, { v: 'x', label: 'Remove this image', bg: '#1f1d1a', bd: '#3a352d', fg: '#e9e2d2', pick: drop }] }));
+          mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'drag', label: (this.state.artSlot === p ? 'Dragging the dial pans THIS slot' : 'Drag the dial to pan this slot'), bg: this.state.artSlot === p ? '#1c2330' : '#1c2330', bd: this.state.artSlot === p ? '#58a6ff' : '#2b3540', fg: '#e6edf3', pick: () => this.setState({ artSlot: p, guide: 'on' }) }, { v: 'x', label: 'Remove this image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: drop }] }));
         return out;
       };
       fields.push.apply(fields, artBlock('bg', 'Background art · behind the geartrain',
@@ -3883,7 +3945,7 @@ class Component extends DCLogic {
       clearSel: () => this.clearSel(), clearLabel: (s.sel != null ? 'Deselect ' + (s.selKind === 'hand' ? 'hand' : s.selKind === 'dial' ? 'dial' : 'item') : 'Deselect') + ' (Esc)',
       clearOp: s.sel != null || s.selKind != null ? 1 : 0.45,
       pickGuide: () => this.cycleGuide(),
-      g: (() => { const lab = 'Guide: ' + s.guide, lit = s.guide !== 'off'; return { label: lab, bg: lit ? '#2a2722' : '#1f1d1a', bd: lit ? '#c9a25a' : '#3a352d', fg: lit ? '#f0d79a' : '#8d8472' }; })(),
+      g: (() => { const lab = 'Guide: ' + s.guide, lit = s.guide !== 'off'; return { label: lab, cls: lit ? 'on' : '', bg: lit ? '#1c2330' : '#1c2330', bd: lit ? '#58a6ff' : '#2b3540', fg: lit ? '#e6edf3' : '#8b98a5' }; })(),
       frameLabel: 'Frame ' + pad(s.frame + 1) + ' / ' + B + '  (' + (DEV < F ? '~' + DEV + ' fps · bank ' + F : F + ' fps') + ')',
       playLabel: s.playing ? 'Pause' : 'Play',
       slowLabel: s.slow ? Math.max(1, Math.round(DEV / 5)) + ' fps' : (DEV < F ? '~' + DEV + ' fps · bank ' + F : DEV + ' fps'),
@@ -3894,7 +3956,7 @@ class Component extends DCLogic {
       toggleSlow: () => this.setState((st) => ({ slow: !st.slow })),
       timeOpts: [['live', 'Live'], ['pose', '10:09'], ['cycle', 'Cycle dates']].map(([id, label]) => ({ ...on(s.timeMode === id), label, pick: () => this.setState({ timeMode: id }) })),
       seamText: s.seam, status: s.status,
-      tabs: this.TABS.map(([id, label]) => ({ label, bg: s.tab === id ? '#2e2719' : 'transparent', fg: s.tab === id ? '#f0d79a' : '#b5ab97', pick: () => this.setState({ tab: id }) })),
+      tabs: this.TABS.map(([id, label]) => ({ label, bg: s.tab === id ? '#1f3a5f' : 'transparent', fg: s.tab === id ? '#e6edf3' : '#8b98a5', pick: () => this.setState({ tab: id }) })),
       isDial: s.tab === 'dial', isComps: s.tab === 'comps', isHands: s.tab === 'hands', isMove: s.tab === 'move', isCase: s.tab === 'case', isExport: s.tab === 'export',
       fields, hasSel: !!sel, noSel: !sel, hasSelHead: !!sel && s.tab === 'comps',
       resetHands: () => this.upd((d) => { Object.values(d.hands || {}).forEach((hc) => { delete hc.style; delete hc.finish; delete hc.len; delete hc.wid; delete hc.sec; delete hc.lume; delete hc.shade; }); }), selTitle: sel ? '#' + num(sel.id) + ' ' + compTitle(sel) : '',
@@ -4016,7 +4078,7 @@ class Component extends DCLogic {
       ...this.stackVals(),
       layers: this.LAYERS.map(([id, n, name, note]) => ({
         ref: this.cb('layerEls', id, (i) => this.drawLayer(i)), num: n, name, note,
-        eye: s.hidden[id] ? 'hidden' : 'shown', eyeFg: s.hidden[id] ? '#8d8472' : '#c9a25a', op: s.hidden[id] ? 0.45 : 1,
+        eye: s.hidden[id] ? 'hidden' : 'shown', eyeFg: s.hidden[id] ? '#8b98a5' : '#58a6ff', op: s.hidden[id] ? 0.45 : 1,
         toggle: () => this.setState((st) => ({ hidden: { ...st.hidden, [id]: !st.hidden[id] } })),
       })),
       kitNote: F + ' base frames + layers + sprites · .zip',

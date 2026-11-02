@@ -47,6 +47,7 @@ type runtimeEntry struct {
 var runtimeCatalog = map[string]runtimeEntry{
 	"support@1":    {dir: "support@1"},
 	"baker@1":      {dir: "baker@1"},
+	"ui@1":         {dir: "ui@1"}, // the hub's look for an editor (D43 §4.2)
 	"react@18.3.1": {dir: "vendor", files: []string{"react.production.min.js", "react-dom.production.min.js"}, vendor: true},
 	"babel@7.29.0": {dir: "vendor", files: []string{"babel.min.js"}, vendor: true},
 	"fonts@1":      {dir: "vendor", files: []string{"fonts.css"}, prefix: "fonts/", vendor: true},
@@ -183,27 +184,31 @@ func runtimeRefused(w http.ResponseWriter, r *http.Request, slug string, missing
 	if strings.Contains(r.Header.Get("Accept"), "text/html") {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusConflict)
-		css := `<style>body{font:15px/1.5 system-ui,sans-serif;margin:2rem;color:#222}code{background:#f2f2f2;padding:.1em .3em;border-radius:3px}` +
-			`button{margin-top:1rem;padding:.55em 1.2em;background:#3b5bdb;color:#fff;border:0;border-radius:6px;font:inherit;cursor:pointer}` +
-			`button[disabled]{opacity:.6;cursor:default}.why{color:#666;font-size:13px;margin-top:1.5rem}</style>`
+		// The frame fills the hub window (D43 §4.2), so this page wears the hub's colours
+		// and carries its own way back: the editor's back arrow is not here to press.
+		css := `<style>body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:2rem;background:#0e1116;color:#e6edf3;max-width:720px}` +
+			`code{background:#161b22;border:1px solid #232c36;padding:.1em .3em;border-radius:3px}` +
+			`button{margin:1rem .5rem 0 0;padding:.55em 1.2em;background:#1f6feb;color:#fff;border:1px solid #1f6feb;border-radius:6px;font:inherit;cursor:pointer}` +
+			`button.back{background:none;color:#e6edf3;border-color:#232c36}button[disabled]{opacity:.6;cursor:default}.why{color:#8b98a5;font-size:13px;margin-top:1.5rem}</style>`
+		back := `<button class="back" onclick="try{parent.postMessage({type:'theme.close'},location.origin)}catch(e){}">Back to themes</button>`
 		if orbOlder {
 			esc := template.HTMLEscapeString
 			_, _ = fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>Update the %[1]s app on this orb</title>%[4]s`+
 				`<h1>This orb's %[1]s app is older than the hub's</h1>`+
 				`<p>The orb runs <b>%[1]s %[2]s</b>; this hub has <b>%[1]s %[3]s</b>. The editor comes from the app, so update the app on the orb to open the current editor.</p>`+
-				`<button id="u">Update %[1]s on this orb</button><p id="s"></p>`+
+				`<button id="u">Update %[1]s on this orb</button>%[7]s<p id="s"></p>`+
 				`<p class="why">Why: <code>%[5]s</code>.</p>`+
 				`<script>document.getElementById('u').onclick=function(){this.disabled=true;`+
-				`document.getElementById('s').textContent='Asking the hub to update the app… its progress shows under the editor.';`+
+				`document.getElementById('s').textContent='Asking the hub to update the app… its progress shows at the foot of this window.';`+
 				`try{parent.postMessage({type:'theme.update',app:%[6]q},location.origin);}catch(e){document.getElementById('s').textContent='The hub page did not answer: update it from the Apps page.';}};</script>`,
-				esc(slug), esc(v.orb), esc(v.hub), css, esc(sentence), slug)
+				esc(slug), esc(v.orb), esc(v.hub), css, esc(sentence), slug, back)
 			return
 		}
 		_, _ = fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>Editor needs a newer hub or app</title>%s`+
 			`<h1>This editor and this hub do not match</h1><p><code>%s</code>.</p>`+
 			`<p>An entry with no version (no <code>@</code>) is an editor from before the hub served its own theme runtime: `+
-			`install the current release of the app. A version this hub does not carry means the app is newer than the hub: update the hub.</p>`,
-			css, template.HTMLEscapeString(sentence))
+			`install the current release of the app. A version this hub does not carry means the app is newer than the hub: update the hub.</p>%s`,
+			css, template.HTMLEscapeString(sentence), back)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

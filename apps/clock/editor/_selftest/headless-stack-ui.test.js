@@ -50,7 +50,7 @@ ok(it.state.selKind === 'comp' && it.state.tab === 'comps', 'a sub-dial row sele
 const hand = V().stackRows.find((r) => r.isRow && /hand/i.test(r.label) && r.arrows === 'visible');
 hand.pick();
 ok(it.state.selKind === 'hand' && it.state.tab === 'hands', 'a hand row selects it on the Hands tab');
-ok(V().stackRows.some((r) => r.isRow && r.edge === '#c9a25a'), 'the selected layer is marked in the panel');
+ok(V().stackRows.some((r) => r.isRow && r.edge === '#58a6ff' && /\bon\b/.test(r.cls)), 'the selected layer is marked in the panel');
 
 // drag and drop between two sub-dials trades their comps slots
 const subs = V().stackRows.filter((r) => r.isRow && /^Sub-dial/.test(r.label));

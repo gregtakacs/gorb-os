@@ -1,0 +1,38 @@
+/* ui@1 — the hub's look, offered to every app's editor (D43 §4.2, ruling 7).
+   The tokens are the hub page's own (web/app.css :root; runtime_test.go holds the two
+   equal), so an editor framed by the hub reads as the hub. The classes are the plain
+   controls an editor needs and nothing app-specific: layout stays with the app. */
+:root{--bg:#0e1116;--fg:#e6edf3;--mut:#8b98a5;--card:#161b22;--line:#232c36;--acc:#3fb950;--warn:#d29922;--danger:#f85149;--focus:#58a6ff;
+  --well:#0b0f14;--raise:#1c2330;--hover:#1b222c;--sel:#1f3a5f;--dim:#5d6b78;--prim:#1f6feb;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.4 var(--sans)}
+a{color:var(--focus)}
+button{font:inherit;color:var(--fg);background:var(--raise);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;white-space:nowrap}
+button:hover{border-color:var(--focus)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.ui-primary{background:var(--prim);border-color:var(--prim);color:#fff;font-weight:600}
+button.ui-ghost{background:none}
+button.ui-danger{background:none;border-color:var(--danger);color:var(--danger)}
+select,input[type=text],input[type=number]{font:inherit;width:100%;min-width:0;background:var(--well);color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:4px 6px}
+select:focus,input:focus{outline:none;border-color:var(--focus)}
+input[type=range]{width:100%;accent-color:var(--focus)}
+input[type=color]{width:30px;height:24px;padding:0;border:1px solid var(--line);border-radius:5px;background:var(--well);cursor:pointer}
+input[type=file]{font:inherit;color:var(--mut);width:100%}
+/* a segmented control: one well, the chosen segment raised */
+.ui-seg{display:inline-flex;background:var(--well);border:1px solid var(--line);border-radius:7px;padding:2px;gap:2px}
+.ui-seg>button{border:0;background:none;padding:4px 9px;border-radius:5px;color:var(--mut)}
+.ui-seg>button.on{background:var(--raise);color:var(--fg);box-shadow:inset 0 0 0 1px var(--line)}
+.ui-seg>button:hover{color:var(--fg)}
+/* a chip row: small pills, the chosen one outlined in focus blue */
+.ui-chips{display:flex;flex-wrap:wrap;gap:4px}
+.ui-chips>button{padding:3px 9px;font-size:12px;border-radius:12px}
+.ui-chips>button.on{border-color:var(--focus);color:var(--focus);background:var(--sel)}
+.ui-label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
+.ui-mono{font-family:var(--mono)}
+.ui-mut{color:var(--mut)}
+*{scrollbar-width:thin;scrollbar-color:#2b3540 transparent}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#2b3540;border-radius:6px}
+::-webkit-scrollbar-thumb:hover{background:#3a4654}
+::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}

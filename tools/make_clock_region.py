@@ -71,7 +71,7 @@ MEMBER_STACK = "stack.js"
 
 # The OS runtime ids this editor resolves against on the hub (D43 §9.1). The hub
 # serves each at /runtime/<id>/ and refuses an editor naming one it does not carry.
-RUNTIME = ["support@1", "baker@1", "react@18.3.1", "babel@7.29.0", "fonts@1"]
+RUNTIME = ["support@1", "baker@1", "ui@1", "react@18.3.1", "babel@7.29.0", "fonts@1"]
 # The exact CDN URLs support.js compares against (its cdnScriptFor), and where the
 # hub's runtime serves each. support.js consults window.__resources first.
 CDN_LOCAL = (
@@ -199,6 +199,9 @@ def _rewrite(text):
          resources + '\n<script src="/runtime/support@1/support.js"></script>'),
         ('<script src="orbtheme-baker.js"></script>',
          '<script src="/runtime/baker@1/orbtheme-baker.js"></script>'),
+        # D43 §4.2: the hub's look, the runtime's ui@1 sheet
+        ('<link href="ui.css" rel="stylesheet">',
+         '<link href="/runtime/ui@1/ui.css" rel="stylesheet">'),
     )
     for old, new in pairs:
         n = text.count(old)

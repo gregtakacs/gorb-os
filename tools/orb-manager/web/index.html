@@ -254,10 +254,12 @@
     <h3>Themes on this orb</h3>
     <p class="hint" id="mn-themestate">Themes load when this tab first opens.</p>
     <nav class="subtabs" id="mn-themes-tabs"></nav>
-    <!-- D37 §6.2: one app's editor opens INSIDE this card rather than in a new tab
-         the operator has to find again. The frame is same-origin by construction —
-         the hub built the URL from an ip the hub learned — which is what lets the
-         bridge below postMessage to it without a channel id. -->
+    <!-- D37 §6.2: one app's editor opens from this card rather than in a new tab the
+         operator has to find again; since D43 §4.2 it fills the whole window, over the
+         page, with the editor's own bar as the only one (app.css #mn-theme-editor).
+         The frame is same-origin by construction — the hub built the URL from an ip
+         the hub learned — which is what lets the bridge below postMessage to it
+         without a channel id. -->
     <section id="mn-theme-editor" class="themee" hidden>
       <div class="row ehead">
         <b id="mn-theme-editor-title">Theme editor</b>

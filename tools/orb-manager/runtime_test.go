@@ -30,6 +30,7 @@ func TestRuntimeServesEveryCatalogID(t *testing.T) {
 	cases := map[string]string{
 		"support@1/support.js":                     "web/runtime/support@1/support.js",
 		"baker@1/orbtheme-baker.js":                "web/runtime/baker@1/orbtheme-baker.js",
+		"ui@1/ui.css":                              "web/runtime/ui@1/ui.css",
 		"react@18.3.1/react.production.min.js":     "web/runtime/vendor/react.production.min.js",
 		"react@18.3.1/react-dom.production.min.js": "web/runtime/vendor/react-dom.production.min.js",
 		"babel@7.29.0/babel.min.js":                "web/runtime/vendor/babel.min.js",
@@ -242,7 +243,7 @@ func TestRuntimeRefusalOffersTheUpdateWhenTheOrbIsBehind(t *testing.T) {
 	req.Header.Set("Accept", "text/html")
 	runtimeRefused(rec, req, "clock", []string{"react", "baker"}, editorVersionPair{orb: "v1.1.43", hub: "v1.1.45"})
 	body := rec.Body.String()
-	for _, want := range []string{"v1.1.43", "v1.1.45", "Update clock on this orb", "type:'theme.update'", `app:"clock"`} {
+	for _, want := range []string{"v1.1.43", "v1.1.45", "Update clock on this orb", "type:'theme.update'", `app:"clock"`, "type:'theme.close'", "Back to themes"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the behind-the-shelf page lacks %q", want)
 		}
@@ -250,7 +251,7 @@ func TestRuntimeRefusalOffersTheUpdateWhenTheOrbIsBehind(t *testing.T) {
 	// a hub that cannot tell which is newer keeps the general sentence and no button
 	rec2 := httptest.NewRecorder()
 	runtimeRefused(rec2, req, "clock", []string{"baker@9"}, editorVersionPair{orb: "v1.1.45", hub: ""})
-	if strings.Contains(rec2.Body.String(), "theme.update") || !strings.Contains(rec2.Body.String(), "update the hub") {
+	if strings.Contains(rec2.Body.String(), "theme.update") || !strings.Contains(rec2.Body.String(), "update the hub") || !strings.Contains(rec2.Body.String(), "Back to themes") {
 		t.Error("with no shelf version the page must not offer an app update")
 	}
 	// the JSON answer carries both stamps
@@ -276,5 +277,35 @@ func TestAnInstallForgetsTheEditorItRemembered(t *testing.T) {
 	editorGet(t, s, "/editor/"+ip+"/clock/", true)
 	if len(*dialed) != 2 {
 		t.Errorf("after the cache drop the editor must be read again: %d dials, want 2", len(*dialed))
+	}
+}
+
+// D43 §4.2: an editor framed by the hub wears the hub's look, so ui@1's tokens are the
+// hub page's own. A token changed on one side and not the other is the clash this sheet
+// exists to end.
+func TestUISheetTokensAreTheHubsOwn(t *testing.T) {
+	tokens := func(path string) map[string]string {
+		raw, err := webFS.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		root := regexp.MustCompile(`(?s):root\{(.*?)\}`).FindStringSubmatch(string(raw))
+		if root == nil {
+			t.Fatalf("%s has no :root block", path)
+		}
+		out := map[string]string{}
+		for _, m := range regexp.MustCompile(`(--[a-z]+):([^;}]+)`).FindAllStringSubmatch(root[1], -1) {
+			out[m[1]] = strings.TrimSpace(m[2])
+		}
+		return out
+	}
+	hub, ui := tokens("web/app.css"), tokens("web/runtime/ui@1/ui.css")
+	if len(hub) < 8 {
+		t.Fatalf("the hub sheet carries only %d tokens", len(hub))
+	}
+	for k, v := range hub {
+		if ui[k] != v {
+			t.Errorf("token %s: hub %q, ui@1 %q", k, v, ui[k])
+		}
 	}
 }

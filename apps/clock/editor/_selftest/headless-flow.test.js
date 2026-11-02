@@ -2,7 +2,8 @@
 // D43 P5: the build flow, walked through the real component — from scratch and from a
 // preset, Start to Render — and the promise that the steps removed nothing: every field
 // every old tab offered is still reachable from a step (with every More fold opened), and
-// every binding the pre-P5 template used is still bound.
+// every binding the pre-P5 template used is still bound, or retired with its replacement
+// named. P5b (§4.2) re-laid it as the studio: layers on every step, the inspector.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -29,7 +30,9 @@ const stepOf = (it) => it.stepNow()[0];
 {
   const it = mount('skeleton'), V = () => it.renderVals();
   ok(stepOf(it) === 'start' && V().isStart && V().fields.length === 0, 'the composer opens on Start: the gallery, no fields');
-  ok(V().stepOpts.map((t) => t.label).join(' | ') === 'Start | Movement | Dial | Complications & hands | Arrange | Finish | Render', 'seven steps, in build order', V().stepOpts.map((t) => t.label).join(' | '));
+  ok(V().stepOpts.map((t) => t.label).join(' | ') === 'Start | Movement | Dial | Parts | Finish | Render', 'six steps, in build order', V().stepOpts.map((t) => t.label).join(' | '));
+  ok(V().stepOpts.filter((t) => t.cls === 'on').length === 1 && V().stepOpts[0].cls === 'on', 'one step is marked, the one shown');
+  ok(V().stackRows.some((r) => r.isRow), 'the layers panel is there from Start');
   V().fromScratch();
   ok(stepOf(it) === 'movement' && (it.design().comps || []).length === 0, 'Build from scratch: a plain dial, no complications, on to the movement');
   ok(V().isMove, 'the Movement step shows the movement cards');
@@ -46,11 +49,16 @@ const stepOf = (it) => it.stepNow()[0];
   it.setState({ tab: 'comps', sel: it.design().comps[0].id, selKind: 'comp' });
   const heads = V().fields.filter((f) => f.isHead).map((f) => f.label);
   ok(heads[0] === 'Placement' && heads.includes('Shape'), 'a complication’s fields are grouped: Placement, Shape, Paint', heads.join(','));
+  // the inspector names the selection, and Remove takes it off the dial
+  ok(V().inspKind === 'Subdial' || /Sub/i.test(V().inspKind), 'the inspector names the kind of the selected part', V().inspKind + ' / ' + V().inspTitle);
+  ok(V().hasDel && /subdial/i.test(V().delLabel), 'and offers to remove it', V().delLabel);
+  const n0 = it.design().comps.length; V().delSel();
+  ok(it.design().comps.length === n0 - 1 && !V().hasDel, 'Remove takes the part off the dial', n0 + ' -> ' + it.design().comps.length);
+  // the layers panel's add list adds and closes
+  V().toggleAdd(); ok(V().addOpen && V().catOpts.length > 3, 'the layers panel opens the add list');
+  V().catOpts.find((c) => /Flare/.test(c.label)).go();
+  ok(!V().addOpen && it.design().comps.some((c) => c.type === 'flare'), 'picking from it adds the part and closes the list');
   V().stepOpts[4].pick();
-  const v5 = V();
-  ok(stepOf(it) === 'arrange' && v5.isArrange && v5.stackRows.some((r) => r.isRow), 'Arrange shows the stack in the pane');
-  ok(!v5.isComps, 'and not the add list (Arrange arranges)');
-  V().stepOpts[5].pick();
   let v6 = V();
   ok(stepOf(it) === 'finish' && v6.subOpts.map((t) => t.label).join() === 'Light,Case & glass,Sound', 'Finish holds light, case & glass and sound');
   const mood = v6.fields.find((f) => f.label === 'Mood');
@@ -58,11 +66,12 @@ const stepOf = (it) => it.stepNow()[0];
   ok(v6.fields.some((f) => f.isChips && f.opts && /More \(\d+\)/.test(f.opts[0].label)), 'and the sliders wait under More');
   mood.opts.find((o) => o.label === 'Night').pick();
   ok(+it.cfg().glow === 1.4 && +it.cfg().outerTemp === 7000, 'a mood sets the light', it.cfg().glow + '/' + it.cfg().outerTemp);
-  ok(V().fields.find((f) => f.label === 'Mood').opts.find((o) => o.label === 'Night').bd === '#c9a25a', 'and is marked as the mood in use');
-  V().stepOpts[6].pick();
+  ok(V().fields.find((f) => f.label === 'Mood').opts.find((o) => o.label === 'Night').bd === '#58a6ff', 'and is marked as the mood in use');
+  V().stepOpts[5].pick();
   const v7 = V();
   ok(stepOf(it) === 'render' && v7.isExport, 'Render shows the export');
   ok(/Fits the orb/.test(v7.badgeText) && /live rows/.test(v7.badgeNote), 'the badge says whether it fits, with the pace and the rows', v7.badgeText + ' · ' + v7.badgeNote);
+  ok(/^Fits/.test(v7.fitShort) && v7.fitDot === '#3fb950', 'the top bar carries the same verdict in two words', v7.fitShort);
   ok(!v7.moreExportOpen && /More export options/.test(v7.moreExportLabel), 'the other exports wait under More export options');
   v7.toggleMoreExport();
   ok(V().moreExportOpen, 'and open on a press');
@@ -80,6 +89,10 @@ const stepOf = (it) => it.stepNow()[0];
   rows[0].toggleArt();
   const r2 = V().handRows;
   ok(r2[0].artOpen === true && r2.slice(1).every((h) => !h.artOpen), 'opening one hand\u2019s artwork opens that hand\u2019s only');
+  ok(V().handGrid, 'with no hand selected the default-style grid shows');
+  it.setState({ sel: 'centre-minute', selKind: 'hand' });
+  ok(V().handRows.length === 1 && V().handRows[0].anchor === 'hand-centre-minute' && !V().handGrid && V().inspKind === 'Hand', 'a selected hand: its panel alone', V().handRows.map((h) => h.anchor).join());
+  it.setState({ sel: null, selKind: null });
   const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
   const panel = html.slice(html.indexOf('<sc-for list="{{ handRows }}"'), html.indexOf('{{ h.onArtFile }}'));
   const order = ['>Shape<', 'h.onStyle', 'h.onLen', '>Paint<', 'h.onFinish', 'h.onShade', 'h.onLume', 'h.onPath', 'h.toggleArt', 'h.artOpen', 'h.artRef'].map((k) => panel.indexOf(k));
@@ -92,11 +105,11 @@ const stepOf = (it) => it.stepNow()[0];
   const card = V().dials.find((d) => /Perpetual/.test(d.name));
   card.pick();
   ok(it.state.dial === 'perpetual', 'picking a preset on Start loads it');
-  V().stepOpts[4].pick();
-  ok(V().stackRows.filter((r) => r.isRow && /^Sub-dial/.test(r.label)).length === 4, 'Arrange shows the preset’s four sub-dials');
-  // a selection on the stage while in Arrange stays in Arrange
+  V().stepOpts[2].pick();
+  ok(V().stackRows.filter((r) => r.isRow && /^Sub-dial/.test(r.label)).length === 4, 'the layers panel shows the preset’s four sub-dials on any step');
+  // a part picked while on the Dial step opens where its fields live
   it.setState({ sel: 'c1', selKind: 'comp', tab: 'comps' });
-  ok(stepOf(it) === 'arrange' && V().fields.some((f) => f.isHead && f.label === 'Placement'), 'selecting a complication in Arrange keeps Arrange and shows its placement');
+  ok(stepOf(it) === 'parts' && V().fields.some((f) => f.isHead && f.label === 'Placement'), 'selecting a complication shows its placement on Parts');
   // a selection that needs another step moves there
   it.setState({ tab: 'light' });
   ok(stepOf(it) === 'finish', 'a view the step does not show moves to the step that does');
@@ -125,7 +138,12 @@ const stepOf = (it) => it.stepNow()[0];
 
   // every binding the pre-P5 template used is still bound (two renamed on purpose)
   const PRE = 'addOpts artNote bundleNote calDown calMax calMin calStep calText calUp calVal caseOpts clearLabel clearOp clearSel compRows copyId cursor dateKitNote designId dials dupCancel dupNm dupNote dupOpen dupReplace dupStem dupStop exportBundle exportFrames exportKit exportTheme fields frameLabel glassOpts handOpts handRows hasSelHead hasTabReset hasZoom idInput isCase isCompare isComps isDial isExport isHands isHub isMove kitNote loadBundle loadDesign mainRef mech metaLabel next noSel onDown onIdInput onMove onUp paneRef pickGuide playLabel prev renderOpts resetCal resetDesign resetHands rulerPx rulerTicks seamText selTitle selectAll sendNote sendToOrb setCal setWipe showRuler slowLabel solve stackCap stackCapFg stackRows stackWarns stageCv stageDown stageFlow stageRing stageRing2 stageRound stageWin status tabReset tabResetLabel tabs themeNameIn themeNameLen themeNamePh themeNameVal themeNote timeOpts toggle toggleMech toggleSlow trainOpts viewOpts viewText wipeVal zipNote zoomOpts'.split(' ');
-  const RENAMED = { tabs: 'stepOpts', isDial: 'isStart' };
+  const RENAMED = { tabs: 'stepOpts', isDial: 'isStart',
+    // P5b (§4.2): the layers panel arranges and the inspector removes, so the old
+    // complication list (and its hidden add row) went; the stage box became the pane
+    compRows: 'stackRows', addOpts: 'catOpts', hasSelHead: 'inspKind', selTitle: 'inspTitle',
+    stageWin: 'stageCv', stageFlow: 'stageRef', stageRing: 'stageRound', stageRing2: 'stageRound',
+    mech: 'mechCls', stackCap: 'stackCapShort', themeNameLen: 'themeNameTip' };
   const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
   const tpl = html.slice(html.indexOf('<x-dc>'), html.indexOf('</x-dc>'));
   const bound = new Set((tpl.match(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)/g) || []).map((m) => m.replace(/\{\{\s*/, '')));
@@ -134,6 +152,27 @@ const stepOf = (it) => it.stepNow()[0];
   const v = it.renderVals();
   const unbound = [...bound].filter((k) => !['a', 'c', 'd', 'f', 'g', 'h', 'o', 'r', 't', 'w', 'true', 'false'].includes(k) && v[k] === undefined);
   ok(unbound.length === 0, 'every binding in the page has a value', unbound.join(','));
+}
+
+// ---- P5b: the studio's stage and chrome --------------------------------------
+{
+  const it = mount('skeleton'), V = () => it.renderVals();
+  ok(it.state.view === 'fit' && /^Fit/.test(V().zoomTag) && V().stageCv === 466, 'the stage opens on Fit, sized by the pane (466 off-screen)', V().zoomTag + ' ' + V().stageCv);
+  it.setState({ fitPx: 700 });
+  ok(V().stageCv === 700 && /1\.50×/.test(V().zoomTag), 'Fit follows the measured pane', V().stageCv + ' ' + V().zoomTag);
+  V().viewOpts.find((o) => o.label === 'Magnify').pick();
+  ok(V().hasZoom && V().stageRound === '50%' && V().stageCv === 932, 'Magnify is a zoom stop: the glass stays round and the pane scrolls it', V().stageCv);
+  // a colour's name sits under its swatches, never in a column its length resizes
+  it.setState({ step: 'dial', tab: 'dial', sel: null, selKind: null });
+  const rowsD = V().fields.filter((f) => f.isRow);
+  ok(rowsD.some((f) => f.isColor || f.isSwatch) && rowsD.every((f) => (f.rowCls === 'wide') === !f.isRange), 'only sliders keep the value column; every other row reads its value underneath',
+     rowsD.filter((f) => (f.rowCls === 'wide') === !!f.isRange).map((f) => f.label).join());
+  ok(V().viewOpts.map((o) => o.label).join() === 'Fit,1:1,True size,Magnify', 'the four view stops', V().viewOpts.map((o) => o.label).join());
+  ok(V().inFrame === false && V().notHub === true && /Clock/.test(V().crumbLabel), 'standalone: no back arrow, the download in the top bar', V().crumbLabel);
+  const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
+  ok(html.indexOf('Watch composer') < 0 && (html.match(/<header/g) || []).length === 1, 'one title bar: the studio\u2019s own, no second heading');
+  ok(/<link href="ui.css" rel="stylesheet">/.test(html), 'the look is the runtime\u2019s ui@1 sheet');
+  ok(!/#c9a25a|#f0d79a|#2a2316/.test(html.slice(html.indexOf('<x-dc>'), html.indexOf('</x-dc>'))), 'no gold left in the studio\u2019s chrome');
 }
 
 console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');

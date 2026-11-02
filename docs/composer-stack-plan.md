@@ -555,6 +555,26 @@ it as the pointer.
 - **P5d.2, face forms:** the fan and slider sub-dials with full scale styling and the
   slider's framed slot, marker indicators, and motion taken from the host form. This
   retires the hand-motion scales.
+  - **Direction (owner, 2026-11-02): every moving thing's direction is a choice.**
+    - Direction belongs to whatever carries the scale:
+      - a round face or a fan runs clockwise or anticlockwise;
+      - a slider runs left to right or right to left, top to bottom or bottom to top,
+        and any angle between, through its track angle;
+      - a wheel turns clockwise or anticlockwise.
+    - A face's printed figures run in its direction, so a face set anticlockwise prints
+      backwards and its hands run backwards with it. This generalizes today's sub-dial
+      `tdir` to the main dial too.
+    - A hand follows its face's direction, the way it follows the face's default look.
+      Setting a hand's own direction breaks that link on purpose: a hand running against
+      its own scale is legal but deliberate.
+    - A wheel's figures are printed in the order that makes them advance under its
+      cutout in the direction it turns.
+    - **On the wire** this is the row's span sign: a negative span for rotate and
+      retrograde (the disc path already ships −3600), and a negative travel or the
+      opposite axis for a slide. The three centre hand slots must be checked for a
+      reversed drive before relying on them; failing that, a reversed centre hand ships
+      as a pointer row.
+
 - **P5d.3, wheels and cutouts:**
   - the wheel as a part, for any measure or a digit of it, with smooth or jump cadence and
     hidden or shown overhang;

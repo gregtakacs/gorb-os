@@ -591,9 +591,11 @@ it as the pointer.
   - the bake's carrier choice: tiles cropped to the cutouts for a jumping wheel, a
     rotating row for a smooth one, with the overhang punch or lift.
 
-  The digit wheels need the firmware's digit sources, so the firmware half waits on the
-  `feat/wasm-apps` merge. Until then the editor draws digit wheels and the bake refuses
-  them by name.
+  ~~The digit wheels need the firmware's digit sources … the bake refuses them by name.~~
+  *Corrected as built:* a jumping digit wheel bakes without them, as one plate per value
+  of the whole measure (a units wheel ships 31 date plates, each printing its digit). The
+  firmware's digit sources would cut that to ten, so they remain a size win to take
+  after the merge, not a precondition.
 - **P5d.4, the bench:** a Gold bake of each, including P5c's owed pointer sources.
 
 **As built (P5d.1, 2026-11-02).**
@@ -748,6 +750,76 @@ Escape cancels.
   - **Still not seen on glass:** an angled (non-horizontal) slider, and a slider or fan in
     a lifted face. Both bench themes stay on the card as *P5d bench* and *P5d bench ccw*.
     Gold is back on Modern.
+
+**As built (P5d.3, 2026-11-02).**
+
+*The model.*
+- A wheel is a comp `{type:'wheel', host, angle, dist, size, shows, digit, blank0, dir,
+  cadence, ease, overhang, wbg, ink, font, tsize}` on the dial or on a sub-dial. It
+  reads date, day, month, hour, 24-hour, minute or second, whole or one digit (tens or
+  units), with a blank zero on request. `wheelSpec(shows, digit, blank0)` gives its
+  figure count, labels and a continuous position: a digit holds its figure and only
+  creeps in the unit before it changes.
+- A cutout is a comp `{type:'cutout', host:<wheel>, at, shape, span, w, h, style,
+  frameColor, join, bar}`. It owns no placement; `at` is where on its wheel it reads.
+  Shapes are window, round, slot and arc (an annular sector about the wheel). A wheel
+  can own any number of cutouts.
+- Cutouts are holes in the face the wheel sits under: the dial's are sealed (the plate
+  keeps them closed, the rows show through), a sub-dial's are cut in its layer. Two
+  joined cutouts become one frame over both wheels, with a centre bar across the seam
+  if asked. A big date is a tens and a units wheel, concentric, read at 270° through one
+  joined frame.
+- `drawWheel` turns the wheel so its figure sits under the first cutout, upright there,
+  with the ease on a jump. Wheels draw largest first, each clipped to its own cutouts
+  unless its overhang is shown.
+
+*Editor.*
+- The catalogue offers Wheel and Cutout. A new wheel comes with a cutout and is
+  selected; a cutout needs a selected wheel and lands at a free place on it.
+- The wheel's panel: Shows, Digit, Zero, Direction, Motion, Ease, Overhang, Disc colour,
+  Figures, Typeface, Figure size. The cutout's: Wheel, Reads at, Shape, Arc, Width,
+  Height, Frame, Join with, Centre bar, with no host or placement of its own.
+- Layers: a wheel is a disc row, its cutouts nested under it (dial→hand,
+  wheel→cutout). A cutout does not move on its own (R4). A wheel counts as one live row
+  against R6, its cutouts as none.
+
+*Bake.*
+- `compPlan3`: a jumping wheel is one window row over its measure's whole domain, cropped
+  to its cutouts by the comp pass; a cutout is not a row. A smooth wheel is refused by
+  name ("set it to Jump"): the dial cannot yet clip a turning row to its cutouts.
+- **Found and fixed on the bench:** the plate walk composed through the dial with its
+  sealed holes open, so the train turning behind a dial cutout read as plate motion and
+  the plate baked as a 15-frame bank (1,912 px changed). The walk now composes with
+  `hidden.sealed`, which draws `F.dialSealed`; the plate's motion fell to 47 px, under
+  the shimmer band, and it bakes still.
+
+*Tests.*
+- New suite `headless-wheels.test.js` (26 checks): what a wheel reads and its digits,
+  cutouts as holes (joined, barred, arc, under a sub-dial with overhang), stage picks,
+  canon, Layers, the bake's rows and refusal, the panels and adding.
+- Every suite green (engine 190, stack 285 with 12/12 mutants, ui 279, forms 38, wheels
+  26 and the rest); the geometry gate holds across all 22 designs; runtime suites, the
+  clock region suite and `go test` green; the clock container rebuilt (889,780 B).
+
+*Bench, on Gold at v1.2.0+d241445.*
+- A 4-wheel design: a big date (tens with a blank zero, units, one joined frame), a day
+  wheel under an arc cutout, and a month wheel under a sub-dial with its overhang shown.
+  It baked 4,034,308 B with a still plate, stored by `store_check.sh upload` in 23.4 s
+  with 0 panic lines.
+- `fbgrab` on Monday 2 November read ` 2`, MON and NOV, the month disc's overhang
+  showing past the sub-dial. It stays on the card as *P5d bench wheels*; Gold is back
+  on Modern.
+- Gold's `/status` panic record (13 boots ago, a stack-overflow abort) has the same
+  backtrace as the known `stack overflow in task main` from the 6a65022 bundle's boot
+  loop. It is not new.
+
+*Still owed.*
+- Today's date window and the moon as wheel + cutout, pending parity with custom-text
+  windows.
+- A smooth wheel on the device needs the dial to clip a row (a firmware change, to be
+  ruled).
+- The firmware digit sources (tens/units for every measure, the year's digits), after
+  the merge, to cut a digit wheel from a plate per value to ten.
 
 ## 5. Preview: 1:1, and the panel
 
@@ -1099,7 +1171,7 @@ long as an app in its library or on a known orb still names it.
 | **P5** ✔ | The build flow and layout (§4): step bar, Add catalogue with compatibility, properties grouped by D42 parts, diagnostics drawer, light moods | headless UI test walks Start → Render on a scratch build and on a preset; nothing removed from today's controls (a checklist of every current field and where it now lives) — **done 2026-11-02** (§4.1) |
 | **P5b** ✔ | The studio layout (§4.2): the editor fills the hub window as one three-pane studio — layers left on every step, the stage centre, the inspector right — in the hub's palette, with one title bar; Arrange folds into the layers panel; the hub page itself goes fluid | nothing removed (the P5 checklist, re-pointed at the new panes); the stage zoom stays inside its pane at every stop; no page scroll at 1280×720 and 1920×1080 (Chrome screenshots of both, inside the hub); `go test` and every app suite green — **built 2026-11-02** (§4.2); the owner's test on the hub is owed |
 | **P5c** ✔ | Hands are complications (§4.3): one Add catalogue, hands placed anywhere in any number, a selected hand's panel alone; the plate rows open Movement, and its backdrop and the plate art sit at the tab's foot | the presets render and bake pixel-identical in the new shape; ten hands on the dial within R6; every suite green — **built 2026-11-02** (§4.3 as built); the presets' hand geometry is identical across 22 designs; a bench bake of the new pointer sources and the owner's test are owed |
-| **P5d** ◐ | Faces, hands, wheels and cutouts (§4.4): face groups and a drag that shows where it lands, hands that inherit from their face, fan and slider sub-dials, wheels under cutouts | each slice keeps every preset rendering as before and every suite green; the bench bake of each new row kind — **P5d.1 and P5d.2 built 2026-11-02** (§4.4 as built); P5d.3–P5d.4 to come |
+| **P5d** ◐ | Faces, hands, wheels and cutouts (§4.4): face groups and a drag that shows where it lands, hands that inherit from their face, fan and slider sub-dials, wheels under cutouts | each slice keeps every preset rendering as before and every suite green; the bench bake of each new row kind — **P5d.1–P5d.3 built and benched 2026-11-02** (§4.4 as built); P5d.4's angled and lifted fan/slider still to see on glass |
 | **P6** | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here |
 | **P7** | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs |
 

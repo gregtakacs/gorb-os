@@ -4160,12 +4160,29 @@
    * a pointer on one gets the window row, and this is the sentence that says so.
    * The scales that qualify are the ones the complaint was ever about. */
   var COMP3_RING_FULL = { second: 60, minute: 60, hour12: 12, hour24: 24 };
+  // D43 P5d.3: what each wheel measure reads on the dial (a digit wheel bakes over the whole domain)
+  var WHEEL3_SRC = { date: 'date', day: 'weekday', month: 'month', hour: 'hour12', hours24: 'hour24', minute: 'minute', second: 'second' };
   function compPlan3(comps) {
     var rows = [], refuses = [];
     (comps || []).forEach(function (c) {
       var src = null, id = c.id === undefined ? '?' : c.id;
       if (c.type === 'opening') return;                                  // a hole in the plate
       if (c.type === 'hand') return;                                     // D43 P5c: a hand slot or a pointer row, never a window row
+      if (c.type === 'cutout') return;                                   // D43 P5d.3: a wheel's window; its wheel is the row
+      if (c.type === 'wheel') {
+        // a jumping wheel is one plate per value, cropped to its cutouts by the comp pass;
+        // a smooth one would be a turning row the dial cannot clip to them, so it would
+        // show the whole disc over the face -- refused by name until the dial can
+        if (c.cadence === 'smooth') {
+          refuses.push('the wheel \u201c' + id + '\u201d turns smoothly: the dial cannot yet clip a turning row to its cutouts, so it would show the whole disc over the face \u2014 set it to Jump');
+          return;
+        }
+        src = WHEEL3_SRC[c.shows || 'date'];
+        if (!src) { refuses.push('the wheel \u201c' + id + '\u201d shows \u201c' + c.shows + '\u201d: no source on this dial reads that'); return; }
+        var wdom = CLOCK_WINDOW_DOMAIN[src];
+        rows.push({ id: id, type: 'wheel', src: src, count: wdom[1], valueMin: wdom[0], host: c.host || 'dial' });
+        return;
+      }
       if (c.type === 'flare') {
         if (c.icon !== 'datetext') return;                               // engraving
         refuses.push('the flare \u201c' + id + '\u201d prints the date, and printing it needs the glyph fields no element row holds');

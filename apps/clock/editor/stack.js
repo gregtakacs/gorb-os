@@ -46,6 +46,8 @@
                     hours24: '24-hour hand', gmt: 'GMT hand', day: 'Day hand', date: 'Date hand', month: 'Month hand' };
 
   function compTitle(c, E) {
+    if (c.type === 'wheel') return ((E && E.WHEEL_SHOWS && E.WHEEL_SHOWS[c.shows]) || 'Date') + (c.digit === 'tens' ? ' tens' : c.digit === 'units' ? ' units' : '') + ' wheel';
+    if (c.type === 'cutout') return 'Cutout' + (c.shape && c.shape !== 'window' ? ' · ' + c.shape : '');
     if (c.type === 'subdial') return 'Sub-dial' + (c.scale && c.scale !== 'none' && E && E.SCALES && E.SCALES[c.scale] ? ' · ' + E.SCALES[c.scale] : '');
     if (c.type === 'window') return ((E && E.SHOWS && E.SHOWS[c.shows]) || 'Date') + ' window';
     if (c.type === 'moon') return 'Moon phase';
@@ -70,7 +72,15 @@
     var byId = {};
     comps.forEach(function (c) { byId[c.id] = c; });
     var subs = comps.filter(function (c) { return c.type === 'subdial'; });
-    var isDisc = function (c) { return c.type === 'window' || c.type === 'moon'; };
+    // D43 P5d.3: a wheel is a disc under its face; its cutouts are its children
+    var isDisc = function (c) { return c.type === 'window' || c.type === 'moon' || c.type === 'wheel'; };
+    var cutoutsOf = function (w, hostKey) {
+      comps.forEach(function (c) {
+        if (c.type === 'cutout' && c.host === w.id)
+          push({ id: 'comp:' + c.id, ref: c.id, kind: 'cutout', band: 'rows', label: compTitle(c, E), parent: 'comp:' + w.id, host: hostKey,
+                 hide: 'complications', sel: { kind: 'comp', id: c.id }, badge: 'cut through ' + (hostKey === 'dial' ? 'the dial' : 'its face'), movable: false });
+      });
+    };
     var hostOf = function (c) { return c.host && c.host !== 'dial' && byId[c.host] ? c.host : (c.host === 'plate' ? 'plate' : 'dial'); };
     var items = [];
     var push = function (it) { items.push(it); return it; };
@@ -104,6 +114,7 @@
           push({ id: 'comp:' + c.id, ref: c.id, kind: 'disc', group: 'discs:' + sb.id, band: 'rows', label: compTitle(c, E),
                  parent: 'comp:' + sb.id, host: 'comp:' + sb.id, hide: 'complications', sel: { kind: 'comp', id: c.id },
                  badge: 'live · value plate', movable: true });
+        if (c.type === 'wheel' && hostOf(c) === sb.id) cutoutsOf(c, 'comp:' + sb.id);
       });
     };
     // the live band, top of the stack first (the engine draws it bottom first): the
@@ -136,6 +147,7 @@
       var dc = dDiscs[k];
       push({ id: 'comp:' + dc.id, ref: dc.id, kind: 'disc', group: 'discs:dial', band: 'rows', label: compTitle(dc, E) + ' · under the dial',
              host: 'dial', hide: 'complications', sel: { kind: 'comp', id: dc.id }, badge: 'live · value plate', movable: true });
+      if (dc.type === 'wheel') cutoutsOf(dc, 'dial');
     }
     push({ id: 'geartrain', kind: 'geartrain', band: 'plate', label: input.carriage ? 'Geartrain & carriage' : 'Geartrain',
            hide: 'geartrain', sel: { kind: 'move', id: 'geartrain' }, badge: input.carriage ? 'plate bank · carriage live' : 'plate bank', movable: false });
@@ -155,6 +167,7 @@
   function refusal(it, nb, dir) {
     if (!it.movable) {
       if (it.kind === 'dial') return 'R7: the dial is the face every other layer is placed against, so it does not move';
+      if (it.kind === 'cutout') return 'R4: a cutout belongs to its wheel \u2014 move the wheel, or set where it reads along the wheel\u2019s track';
       if (it.kind === 'flare' || it.kind === 'opening') return 'R3: ' + it.label + ' is part of ' + (it.parent === 'dial' ? 'the dial' : 'its host') + ' — move the host instead';
       return 'R1: the crystal and the plate are pinned';
     }
@@ -357,14 +370,14 @@
   function rowCount(input) {
     var n = 0;
     (input.hands || []).forEach(function () { n += input.shadows ? 2 : 1; });
-    (input.comps || []).forEach(function (c) { if (c.type === 'window' || c.type === 'moon') n += 1; });
+    (input.comps || []).forEach(function (c) { if (c.type === 'window' || c.type === 'moon' || c.type === 'wheel') n += 1; });
     if (input.carriage) n += 1;
     // a lifted sub-dial face ships as one still row (D43 P4b)
     liveKeys(input).forEach(function (e) { if (e.indexOf('comp:') === 0) n += 1; });
     return { rows: n, cap: ROW_CAP, over: n > ROW_CAP };
   }
 
-  var api = { build: build, move: move, moveTo: moveTo, place: place, liveKeys: liveKeys, warnings: warnings, rowCount: rowCount, ROW_CAP: ROW_CAP };
+  var api = { compTitle: compTitle, build: build, move: move, moveTo: moveTo, place: place, liveKeys: liveKeys, warnings: warnings, rowCount: rowCount, ROW_CAP: ROW_CAP };
   root.OrbStack = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

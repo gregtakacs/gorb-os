@@ -847,6 +847,16 @@ class Component extends DCLogic {
     const sel0 = d0.comps.find((c) => c.id === st.sel), sel = sel0 && sel0.type === 'hand' && sel0.host !== 'dial' ? d0.comps.find((c) => c.id === sel0.host) : sel0;
     const host = sel && sel.type === 'subdial' && type !== 'subdial' ? sel.id : 'dial';
     const add = [];
+    if (type === 'cutout') {
+      // a cutout belongs to a wheel: the selected one, or the wheel of the selected cutout
+      const w = sel0 && sel0.type === 'wheel' ? sel0 : sel0 && sel0.type === 'cutout' ? d0.comps.find((c) => c.id === sel0.host) : null;
+      if (!w) { this.setState({ status: 'A cutout is read off a wheel: select the wheel first, then add the cutout' }); return; }
+      const used = d0.comps.filter((c) => c.type === 'cutout' && c.host === w.id).map((c) => +c.at || 0);
+      add.push({ id: 'c' + n, type: 'cutout', host: w.id, at: [90, 270, 0, 180].find((a) => used.indexOf(a) < 0) ?? 45 });
+      this.upd((d) => { d.comps.push(...JSON.parse(JSON.stringify(add))); });
+      this.setState({ sel: add[0].id, selKind: 'comp', step: 'parts', tab: 'comps' });
+      return;
+    }
     if (type === 'hand') {
       const onDial = d0.comps.filter((c) => c.type === 'hand' && c.host === 'dial').map((c) => c.shows);
       add.push(Object.assign({ id: 'h' + n, type: 'hand', host, shows: host !== 'dial' ? (E.SCALE_SHOWS[sel.scale] || 'second') : (['hour', 'minute', 'second'].find((k) => onDial.indexOf(k) < 0) || 'hour') },
@@ -854,6 +864,8 @@ class Component extends DCLogic {
     } else {
       add.push({ id: 'c' + n, type, host, ...JSON.parse(JSON.stringify(E.NEW_COMP[type])), ...(host !== 'dial' ? { dist: 0, size: type === 'moon' || type === 'opening' ? Math.round(sel.size * 0.5) : type === 'flare' ? Math.round(sel.size * 0.22) : 1 } : {}) });
       if (type === 'subdial' && E.SCALE_SHOWS[E.NEW_COMP.subdial.scale]) add.push({ id: 'h' + (n + 1), type: 'hand', host: 'c' + n, shows: E.SCALE_SHOWS[E.NEW_COMP.subdial.scale] });
+      // a new wheel comes with the cutout it is read through
+      if (type === 'wheel') add.push({ id: 'c' + (n + 1), type: 'cutout', host: 'c' + n, at: 90 });
     }
     this.upd((d) => { d.comps.push(...JSON.parse(JSON.stringify(add))); });
     this.setState(type === 'hand' ? { sel: add[0].id, selKind: 'hand', step: 'parts', tab: 'hands' } : { sel: add[0].id, selKind: 'comp', step: 'parts', tab: 'comps' });
@@ -2811,7 +2823,8 @@ class Component extends DCLogic {
      * carrier on every orbital dial — then shipped the carriage frozen into the bank.
      * The carriage's own box is measured off the cage planes and priced separately. */
     const m3 = { frames: B, fps, unionPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!M.cageAt, orbital: !!M.orbital };
-    const pxs = this.measureFrames3((f) => this.frameCanvas(f, { hands: 1, glass: 1, outer: 1, cage: 1 }, null, compRows.length ? onlyBase : undefined), m3);
+    // the plate ships under its value rows, so it is walked with the sealed dial (D43 P5d.3)
+    const pxs = this.measureFrames3((f) => this.frameCanvas(f, { hands: 1, glass: 1, outer: 1, cage: 1, sealed: compRows.length ? 1 : 0 }, null, compRows.length ? onlyBase : undefined), m3);
     if (m3.hasCage) {
       const cb = this.measureCarriage3(gt, m3.frames);
       if (cb) { m3.carriageW = cb[0]; m3.carriageH = cb[1]; }
@@ -3976,9 +3989,9 @@ class Component extends DCLogic {
     if (ready) {
       const inp = this.stackInput(), rc = inp && window.OrbStack ? window.OrbStack.rowCount(inp) : { rows: 0, cap: 24 };
       const sel0 = (d.comps || []).find((c) => c.id === s.sel), sel = sel0 && sel0.type === 'hand' && sel0.host !== 'dial' ? (d.comps || []).find((c) => c.id === sel0.host) : sel0, onSub = sel && sel.type === 'subdial';
-      const BLURB = { hand: 'A pointer on the dial or a sub-dial: hour, minute, seconds, 24-hour, GMT, day, date or month', subdial: 'A small dial of its own: seconds, hours, date, day or month', window: 'An aperture showing the date, day or month',
+      const BLURB = { wheel: 'A printed disc under the dial or a sub-dial, for any measure or one digit of it, read through its cutouts', cutout: 'Another window onto the selected wheel: a window, round, arc or slot, joinable into one frame', hand: 'A pointer on the dial or a sub-dial: hour, minute, seconds, 24-hour, GMT, day, date or month', subdial: 'A small dial of its own: seconds, hours, date, day or month', window: 'An aperture showing the date, day or month',
         moon: 'The moon\u2019s phase on a disc behind an aperture', flare: 'Printed or applied text, a logo or a mark', opening: 'A cut through the dial that shows the movement' };
-      const LIVE = { window: 1, moon: 1, hand: 1 };
+      const LIVE = { window: 1, moon: 1, hand: 1, wheel: 1 };
       out.catOpts = [['hand', 'Hand']].concat(Object.entries(E.COMP_TYPES)).map(([t, label]) => {
         const why = LIVE[t] && rc.rows + 1 > rc.cap ? 'R6: one more live row would pass the dial\u2019s ' + rc.cap : '';
         return { label: '+ ' + label + (onSub && t !== 'subdial' && t !== 'opening' ? ' on this sub-dial' : ''), blurb: why || BLURB[t] || '', tip: why || BLURB[t] || '',
@@ -4062,7 +4075,7 @@ class Component extends DCLogic {
     const cap = (t) => t[0].toUpperCase() + t.slice(1);
     const subs = D.comps.filter((c) => c.type === 'subdial');
     const num = (cid) => D.comps.findIndex((c) => c.id === cid) + 1;
-    const compTitle = (c) => !ready ? '' : c.type === 'subdial' ? 'Subdial · ' + E.SCALES[c.scale] : c.type === 'window' ? E.SHOWS[c.shows] + ' window' : c.type === 'moon' ? 'Moon phase' : c.type === 'flare' ? 'Flare · ' + (E.FLARE_ICONS[c.icon] || '') : c.show === 'balance' ? 'Escapement opening' : 'Opening';
+    const compTitle = (c) => !ready ? '' : c.type === 'wheel' || c.type === 'cutout' ? (window.OrbStack ? window.OrbStack.compTitle(c, E) : c.type) : c.type === 'subdial' ? 'Subdial · ' + E.SCALES[c.scale] : c.type === 'window' ? E.SHOWS[c.shows] + ' window' : c.type === 'moon' ? 'Moon phase' : c.type === 'flare' ? 'Flare · ' + (E.FLARE_ICONS[c.icon] || '') : c.show === 'balance' ? 'Escapement opening' : 'Opening';
     const hostName = (h) => (!h || h === 'dial' ? 'dial' : h === 'plate' ? 'movement plate' : '#' + num(h) + ' subdial');
     // the selected complication: a hand is a comp too (D43 P5c), but it has its own panel
     const sel = s.selKind !== 'hand' && s.selKind !== 'dial' && s.selKind !== 'move' ? D.comps.find((c) => c.id === s.sel && c.type !== 'hand') : null;
@@ -4124,11 +4137,24 @@ class Component extends DCLogic {
       const R = (label, k, min, max, step, fmt, dflt) => { const v = sel[k] == null ? (dflt ?? 0) : +sel[k]; selFields.push(Rg(label, v, min, max, step, set(k, true), fmt ? fmt(v) : String(v))); };
       const Sx = (label, k, opts, n) => selFields.push(Sl(label, String(sel[k] ?? ''), opts, set(k, n)));
       const Cx = (label, k, opts, dflt) => selFields.push(Ch(label, sel[k] ?? dflt, opts, set(k)));
-      const follow = sel.type === 'opening' && sel.show === 'balance';
-      if (sel.type !== 'subdial' && !follow) Sx('Host', 'host', [{ v: 'dial', label: 'Main dial' }, ...(sel.type === 'flare' ? [{ v: 'plate', label: 'Movement plate · seen through openings' }] : []), ...subs.map((q) => ({ v: q.id, label: '#' + num(q.id) + ' ' + compTitle(q) }))]);
+      const follow = sel.type === 'opening' && sel.show === 'balance', cut = sel.type === 'cutout';
+      /* D43 P5d.3: a cutout is its wheel's pointer: placed along the wheel's track, not on a host */
+      if (cut) {
+        const wheels = D.comps.filter((c) => c.type === 'wheel'), mates = D.comps.filter((c) => c.type === 'cutout' && c.id !== sel.id);
+        Sx('Wheel', 'host', wheels.map((c) => ({ v: c.id, label: '#' + num(c.id) + ' ' + compTitle(c) })));
+        R('Reads at', 'at', 0, 359, 1, (v) => v + '\u00b0', 90);
+        Cx('Shape', 'shape', [{ v: 'window', label: 'Window' }, { v: 'round', label: 'Round' }, { v: 'arc', label: 'Arc' }, { v: 'slot', label: 'Slot' }], 'window');
+        if (sel.shape === 'arc') R('Arc', 'span', 6, 180, 1, (v) => v + '\u00b0', 36);
+        R('Width', 'w', 0, 120, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);
+        R('Height', 'h', 0, 80, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);
+        Sx('Frame', 'style', opt(E.COMP_STYLES.cutout));
+        selFields.push(Sl('Join with', sel.join || '', [{ v: '', label: 'Nothing \u00b7 its own frame' }].concat(mates.map((c) => ({ v: c.id, label: '#' + num(c.id) + ' on ' + compTitle(D.comps.find((q) => q.id === c.host) || {}) }))), (v) => this.setComp(sel.id, { join: v || undefined })));
+        if (sel.join) Cx('Centre bar', 'bar', [{ v: true, label: 'Bar between' }, { v: false, label: 'No bar' }], true);
+      }
+      if (sel.type !== 'subdial' && !follow && !cut) Sx('Host', 'host', [{ v: 'dial', label: 'Main dial' }, ...(sel.type === 'flare' ? [{ v: 'plate', label: 'Movement plate · seen through openings' }] : []), ...subs.map((q) => ({ v: q.id, label: '#' + num(q.id) + ' ' + compTitle(q) }))]);
       if (follow && tr.by && tr.by !== sel.id) selFields.push(Nt('Angle', 'Riding on the balance — the train is aimed by #' + num(tr.by)));
-      else R(follow ? 'Angle · train' : 'Angle', 'angle', 0, 359, 1, (v) => v + '°');
-      if (!follow) R('Distance', 'dist', 0, 220, 0.5, (v) => v + 'px');
+      else if (!cut) R(follow ? 'Angle · train' : 'Angle', 'angle', 0, 359, 1, (v) => v + '°');
+      if (!follow && !cut) R('Distance', 'dist', 0, 220, 0.5, (v) => v + 'px');
       if (sel.type === 'opening') Sx('Shape', 'shape', opt(E.SHAPES));
       if (sel.type === 'flare') {
         selFields.push(Sl('Kind', String(sel.icon ?? ''), opt(E.FLARE_ICONS), (v) => this.setComp(sel.id, v === 'datetext' && sel.icon !== 'datetext' ? { icon: v, size: Math.min(+sel.size || 16, 8) } : { icon: v })));
@@ -4158,12 +4184,29 @@ class Component extends DCLogic {
           if (fa) selFields.push(mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'x', label: 'Remove image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: () => this.setComp(sel.id, { img: undefined }) }] }));
         }
       }
-      if (sel.type !== 'opening' && !(sel.type === 'flare' && sel.icon === 'arctext') || (sel.shape && sel.shape !== 'circle')) R('Rotation', 'rot', -180, 180, 1, (v) => v + '°');
+      if (!cut && sel.type !== 'wheel' && (sel.type !== 'opening' && !(sel.type === 'flare' && sel.icon === 'arctext') || (sel.shape && sel.shape !== 'circle'))) R('Rotation', 'rot', -180, 180, 1, (v) => v + '°');
       const sr = E.SIZE_RANGE[sel.type];
-      R(sel.type === 'window' ? 'Text size' : sel.type === 'flare' ? (sel.bg && sel.bg !== 'none' ? 'Overall size' : 'Size') : 'Radius', 'size', sr[0], sr[1], sr[2], (v) => (sel.type === 'window' ? v.toFixed(2) + '×' : v + 'px'));
+      if (!cut) R(sel.type === 'window' ? 'Text size' : sel.type === 'flare' ? (sel.bg && sel.bg !== 'none' ? 'Overall size' : 'Size') : 'Radius', 'size', sr[0], sr[1], sr[2], (v) => (sel.type === 'window' ? v.toFixed(2) + '×' : v + 'px'));
       if (sel.type === 'window') { R('Width', 'ww', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1); R('Height', 'wh', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1);
         if (sel.wshape === 'circle') selFields.push(Nt('', 'At equal Width and Height the round aperture takes the longer side as its diameter. Pull the two apart and the round opening becomes a true ellipse: half of each is a radius, so the aperture can stand taller than wide.')); }
-      Sx('Style', 'style', opt(E.COMP_STYLES[sel.type]));
+      if (!cut && sel.type !== 'wheel') Sx('Style', 'style', opt(E.COMP_STYLES[sel.type]));
+      /* D43 P5d.3: a wheel -- what it shows (or one digit of it), how it turns, how it looks */
+      if (sel.type === 'wheel') {
+        const numeric = ['date', 'hour', 'hours24', 'minute', 'second'].includes(sel.shows || 'date');
+        Sx('Shows', 'shows', opt(E.WHEEL_SHOWS));
+        if (numeric) Cx('Digit', 'digit', [{ v: 'whole', label: 'Whole' }, { v: 'tens', label: 'Tens' }, { v: 'units', label: 'Units' }], 'whole');
+        if (sel.digit === 'tens') Cx('Zero', 'blank0', [{ v: false, label: 'Print 0' }, { v: true, label: 'Leave blank' }], false);
+        Cx('Direction', 'dir', [{ v: 'cw', label: 'Clockwise' }, { v: 'ccw', label: 'Anticlockwise' }], 'cw');
+        Cx('Motion', 'cadence', [{ v: 'jump', label: 'Jumps' }, { v: 'smooth', label: 'Smooth' }], 'jump');
+        if (sel.cadence !== 'smooth') R('Ease', 'ease', 0, 1000, 10, (v) => (v ? v + ' ms' : 'snaps'), 0);
+        if (sel.host && sel.host !== 'dial') Cx('Overhang', 'overhang', [{ v: 'hidden', label: 'Hidden \u00b7 inside its face' }, { v: 'shown', label: 'Shown \u00b7 lies on the dial' }], 'hidden');
+        selFields.push(Co('Disc colour', sel.wbg, set('wbg'), 'Auto'), Co('Figures', sel.wink, set('wink'), 'Auto'),
+          Sl('Typeface', sel.wfont || 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], set('wfont')));
+        R('Figure size', 'tsize', 0.5, 2, 0.05, (v) => Math.round(v * 100) + '%', 1);
+        const nc = D.comps.filter((c) => c.type === 'cutout' && c.host === sel.id).length;
+        selFields.push(Nt('', (nc ? nc + ' cutout' + (nc > 1 ? 's read' : ' reads') + ' it' : 'No cutout reads it yet: add one from Parts while this wheel is selected') +
+          (sel.cadence === 'smooth' ? '. A smooth wheel turns as one row on the orb, which cannot yet be clipped to its cutouts: the bake refuses it until then \u2014 set it to Jump to send it.' : '.')));
+      }
       // The raised ring only exists when the style draws it: the choice appears with the
       // style that uses it, and Gilt is the movement's own metal -- nothing was decided
       // until a different one is picked, so the Design ID of an untouched dial is unchanged.

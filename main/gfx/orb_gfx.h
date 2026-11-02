@@ -11,7 +11,7 @@
  * What it does NOT own is WHAT gets painted: the layer order, which sprite is
  * live, the complication and sub-dial job lists and the whole idea of a hand all
  * stay with the app that asks for them. P1 moved this code out of
- * main/clock/clock_view.c unchanged, so the shipped dial composites exactly the
+ * main/stage/orb_stage.c unchanged, so the shipped dial composites exactly the
  * bytes it did before; the renames below are the only diff to the maths.
  *
  * Debt this carries deliberately, all owned by P6:
@@ -85,7 +85,7 @@ int32_t gfx_trigo_sin(int32_t angle);
  * stamps: LVGL's lv_draw_sw_transform interpolation of gfx_trigo_sin at the
  * exact tenth of a degree, quantised the way LVGL quantises it (>> 5), LVGL's
  * /1024 scale (1.0 == 1024 — NOT a 16.16 value: callers that multiply these
- * into a >> 16 product must scale by 64, see clock_view.c's tourb_stamp_pose).
+ * into a >> 16 product must scale by 64, see orb_stage.c's tourb_stamp_pose).
  * Stamps and painter must consume exactly these numbers: any other pair (the
  * whole-degree table, or a different scale) displaces the stamped pose from the
  * painted one, and rows outside the stamped spans are neither restored nor

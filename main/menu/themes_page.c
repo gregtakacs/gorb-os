@@ -1,5 +1,13 @@
 /**
- * clock_themes.c — the clock app's answer to the shell's options hooks (B2).
+ * themes_page.c — the dial's Themes page: an OS menu row, like USB Drive and Sound.
+ *
+ * §43 moved it here from the clock app (it was main/stage/clock_themes.c, answering
+ * the clock's options hooks under B2). A theme covers every app at once (D21's
+ * capacity note), so choosing one is the OS's act, not one app's; and the clock is a
+ * wasm module now, which reaches the OS through orb.* and could not own a page that
+ * walks the card and installs into the assets partition. The page is the owner on
+ * the dial's own menu, so the clock's sd_read and themes grants no longer gate it.
+ * The history below is the page's, from when it was the clock's.
  *
  * What moved here from menu_view.c is the theme page's *knowledge*: that the
  * rows are the card's themes, that the one on the dial is marked, that a damaged
@@ -26,12 +34,12 @@
  * repaint a half-copied list.
  */
 
-#include "clock_themes.h"
+#include "themes_page.h"
 #include "orb_jobs.h"
 #include "orb_theme.h"
 #include "orb_sd.h"        /* orb_sd_mounted(), for the reason line only */
 #include "orb_app.h"       /* D35: this app's own ledger row */
-#include "orb_svc.h"       /* orb_grant_ok — the caps this manifest declares */
+#include "orb_svc.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -209,9 +217,9 @@ static void pv_job_run(void *arg)
 /* The one job this file owns. A refused post is reported, not swallowed: a page
  * that sits at its old rows because the queue was busy is the "card ignored me"
  * report, and the shell's busy gate is the only reason it happens. */
-void clock_themes_request_scan(void)
+void themes_page_request_scan(void)
 {
-    if (!s_mx) return;          /* clock_themes_init() did not run */
+    if (!s_mx) return;          /* themes_page_init() did not run */
     const esp_err_t e = orb_jobs_post(job_run, NULL, 0);
     if (e == ESP_OK) s_walk = true;   /* in flight from here to the publish */
     else if (e == ESP_ERR_INVALID_STATE)
@@ -228,36 +236,36 @@ void clock_themes_request_scan(void)
  * that could move or press through the walk would stand on a row the publish
  * may delete). The rejected posts are not outstanding — the page shows the
  * refusal instead of a lock the queue never armed. */
-bool clock_themes_walk_outstanding(void)
+bool themes_page_walk_outstanding(void)
 {
     return s_walk || s_dirty;
 }
 
-bool clock_themes_busy(void)
+bool themes_page_busy(void)
 {
     return orb_jobs_busy();
 }
 
-const char *clock_themes_status(void)
+const char *themes_page_status(void)
 {
     return s_ui.status;
 }
 
-void clock_themes_reset(void)
+void themes_page_reset(void)
 {
     /* Nothing to carry: the rows are re-walked on entry, so there is no mid-list
      * position to restore and no stale row to point at. The preview goes with
      * the rows — the leave path drops the plane, so re-entering answers "what
      * is on the card" again rather than holding a picture of the theme the
      * cursor last sat on. */
-    clock_themes_drop_preview();
+    themes_page_drop_preview();
 }
 
 /* Drop the displayed plane and any published-but-unreaped answer. Runs on the
  * LVGL task only (the leave path, and service()'s discard): the buffer it
  * frees may be the one the shell blitted on the last repaint, and the worker
  * never paints, so the worker never frees. */
-void clock_themes_drop_preview(void)
+void themes_page_drop_preview(void)
 {
     if (s_pvu.px) heap_caps_free(s_pvu.px);
     memset(&s_pvu, 0, sizeof s_pvu);
@@ -265,7 +273,7 @@ void clock_themes_drop_preview(void)
     s_pv_since = 0;
 }
 
-void clock_themes_service(void)
+void themes_page_service(void)
 {
     if (s_dirty) {
         s_dirty = false;
@@ -333,7 +341,7 @@ void clock_themes_service(void)
  * the container, copies it and reboots the dial, or it puts the reason on the row
  * and the device stays exactly as it was. The queue answer is reported, not
  * swallowed — a press the firmware dropped has to say so on the glass (C8). */
-void clock_themes_pick(int idx)
+void themes_page_pick(int idx)
 {
     if (s_ui.n <= 0 || idx < 0 || idx >= s_ui.n) return;
     const orb_theme_entry_t *e = &s_ui.e[idx];
@@ -370,13 +378,13 @@ void clock_themes_pick(int idx)
  * a previous card would offer a press on a file that may no longer exist.
  */
 
-esp_err_t clock_themes_init(void)
+esp_err_t themes_page_init(void)
 {
     s_mx = xSemaphoreCreateMutex();
     return s_mx ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-int clock_opt_count(orb_app_t *app)
+int themes_opt_count(orb_app_t *app)
 {
     (void)app;
     /* The one group header plus the card's themes. Nothing here ever counted the
@@ -393,7 +401,7 @@ int clock_opt_count(orb_app_t *app)
  *  shape the shell validates and renders, and the reason the card's themes are
  *  ITEMs rather than loose rows. Migration 1 dropped the plain factory-default row
  *  that used to lead the page. */
-orb_opt_kind_t clock_opt_kind(orb_app_t *app, int idx)
+orb_opt_kind_t themes_opt_kind(orb_app_t *app, int idx)
 {
     (void)app;
     if (idx == ROW_GROUP)   return OPT_GROUP;
@@ -401,7 +409,7 @@ orb_opt_kind_t clock_opt_kind(orb_app_t *app, int idx)
     return OPT_ROW;                     /* out of range: the shell's bounds answer */
 }
 
-const char *clock_opt_label(orb_app_t *app, int idx)
+const char *themes_opt_label(orb_app_t *app, int idx)
 {
     (void)app;
     /* The card is a GROUP, at row 0, always. Migration 1 retired the factory-default
@@ -416,7 +424,7 @@ const char *clock_opt_label(orb_app_t *app, int idx)
     return e->name[0] ? e->name : e->id;
 }
 
-const char *clock_opt_value(orb_app_t *app, int idx)
+const char *themes_opt_value(orb_app_t *app, int idx)
 {
     (void)app;
     static char v[48];                  /* one row's answer, repainted per poll */
@@ -465,7 +473,7 @@ const char *clock_opt_value(orb_app_t *app, int idx)
     return "";
 }
 
-void clock_opt_inc(orb_app_t *app, int idx, int32_t steps)
+void themes_opt_inc(orb_app_t *app, int idx, int32_t steps)
 {
     (void)app;
     /* Rows here are chosen, not spun: there is no value to increment, so the
@@ -474,7 +482,7 @@ void clock_opt_inc(orb_app_t *app, int idx, int32_t steps)
     (void)idx; (void)steps;
 }
 
-void clock_opt_sel(orb_app_t *app, int idx)
+void themes_opt_sel(orb_app_t *app, int idx)
 {
     /* D35/D19: a theme pick is the clock asking for the D11 install, and the
      * clock's manifest DECLARES themes — so the declaration is consulted here,
@@ -483,15 +491,11 @@ void clock_opt_sel(orb_app_t *app, int idx)
      * owner just pressed, and the install never reaches the worker. Migration 1
      * left the group header as the only non-item row, so an ITEM press is the
      * only one that needs the themes cap. */
-    if (idx >= ROW_ITEMS && !orb_grant_ok(app, CAP_THEMES)) {
-        strlcpy(s_ui.status, "theme permission revoked", sizeof s_ui.status);
-        return;
-    }
     if (idx == ROW_GROUP)   return;
-    clock_themes_pick(idx - ROW_ITEMS);
+    themes_page_pick(idx - ROW_ITEMS);
 }
 
-void clock_opt_arm(orb_app_t *app, bool armed)
+void themes_opt_arm(orb_app_t *app, bool armed)
 {
     s_armed = armed;
     if (armed) {
@@ -500,21 +504,20 @@ void clock_opt_arm(orb_app_t *app, bool armed)
          * reads the card, the manifest declares sd_read, and the ledger counts
          * the refusal the same way it counts a guest's — denied is a state the
          * page shows, not an error the app hides. */
-        if (orb_grant_ok(app, CAP_SD_READ)) clock_themes_request_scan();
-        else strlcpy(s_ui.status, "card permission revoked", sizeof s_ui.status);
+        themes_page_request_scan();
     } else {
-        clock_themes_reset();
+        themes_page_reset();
     }
 }
 
-void clock_opt_focus(orb_app_t *app, int idx)
+void themes_opt_focus(orb_app_t *app, int idx)
 {
     /* The preview read is a card read: the manifest declares sd_read and the
-     * gate says whether it still runs, exactly as clock_opt_arm's walk does.
+     * gate says whether it still runs, exactly as themes_opt_arm's walk does.
      * A revoked cap makes the focus a no-op — the revoke is already on the
      * status line from the arm, and a row with no preview is the same page
      * every theme without one draws. */
-    if (!orb_grant_ok(app, CAP_SD_READ)) return;
+    (void)app;
     /* The shell tells the app where its cursor landed, in the app's own row
      * numbers. A land on the group header (row 0) or past the walk's end shows
      * nothing; the plane drops so the list the owner can actually see is the
@@ -529,7 +532,7 @@ void clock_opt_focus(orb_app_t *app, int idx)
     }
 }
 
-const void *clock_opt_preview(orb_app_t *app, int idx, uint16_t *w,
+const void *themes_opt_preview(orb_app_t *app, int idx, uint16_t *w,
                               uint16_t *h, uint32_t *stamp)
 {
     (void)app;
@@ -551,7 +554,38 @@ const void *clock_opt_preview(orb_app_t *app, int idx, uint16_t *w,
     return s_pvu.px;
 }
 
-bool clock_opt_armed(void)
+bool themes_opt_armed(void)
 {
     return s_armed;
 }
+
+/* ---- the menu row ----------------------------------------------------------------
+ * A settings-only OS row (orb_app.c's s_service table): no face, no ledger slot, and
+ * the menu draws its options page from the hooks below. */
+static esp_err_t page_init(orb_app_t *app)    { (void)app; return themes_page_init(); }
+static void      page_service(orb_app_t *app) { (void)app; themes_page_service(); }
+
+static const orb_app_iface_t s_themes_iface = {
+    .init        = page_init,
+    .service     = page_service,
+    .opt_count   = themes_opt_count,
+    .opt_label   = themes_opt_label,
+    .opt_value   = themes_opt_value,
+    .opt_kind    = themes_opt_kind,
+    .opt_inc     = themes_opt_inc,
+    .opt_sel     = themes_opt_sel,
+    .opt_arm     = themes_opt_arm,
+    .opt_focus   = themes_opt_focus,
+    .opt_preview = themes_opt_preview,
+};
+
+orb_app_t orb_app_themes_row = {
+    .slug       = "themes",
+    .title      = "Themes",
+    .kind       = ORB_APP_KIND_APP,
+    .behaviour_kind = ORB_BEHAVIOUR_NONE,
+    .art_slot   = -1,
+    .flash_slot = -1,
+    .iface      = &s_themes_iface,
+    .installed  = true,
+};

@@ -2,15 +2,20 @@
 /* A streaming reader for the readsb aircraft JSON that adsb.lol and adsb.fi
  * answer with (docs/flight-tracker-design.md §3).
  *
- * Fed in whatever pieces the socket hands over, it never holds the body: one
- * aircraft's worth of fields at a time, emitted to a callback when that
- * object closes. The body is 10-70 KB depending on radius and traffic, and the
- * point of reading it this way is that its size costs nothing but time.
+ * D46: the OS tokenizes the body (orb_json, natively, over the bytes it holds); this
+ * file is only the schema — which keys are an aircraft's and what they mean — fed one
+ * token at a time, one aircraft's fields kept, emitted when that object closes.
  *
- * Pure C with no IDF include, so tools/host_readsb_test.py compiles it as is. */
+ * Pure C: the app builds it against apps/sdk/orb.h, and tools/host_readsb_test.py
+ * builds it against main/app/orb_json.h, whose token is the same type. */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#ifdef __wasm__
+#include "orb.h"          /* orb_json_tok_t, ORB_JSON_* */
+#else
+#include "orb_json.h"
+#endif
 
 typedef struct {
     char     hex[8];        /* ICAO 24-bit id, "~" prefix kept (a TIS-B track) */
@@ -31,36 +36,22 @@ typedef struct {
 /* Called once per aircraft object that carried hex, lat and lon. */
 typedef void (*orb_readsb_emit_fn)(const orb_ac_t *ac, void *ctx);
 
-#define ORB_READSB_DEPTH 8
-
 typedef struct {
     orb_readsb_emit_fn emit;
     void              *ctx;
-    /* container stack: '{' or '[' per level */
-    char     stack[ORB_READSB_DEPTH];
-    int      depth;          /* may exceed ORB_READSB_DEPTH; deeper levels are skipped */
-    int      list_depth;     /* depth of the aircraft array, 0 until "ac"/"aircraft" opens */
-    /* lexer */
-    uint8_t  mode;           /* see orb_readsb.c */
-    bool     esc;
-    bool     want_key;       /* inside an object, the next string is a key */
-    char     key[16];
-    uint8_t  key_len;
-    bool     key_trunc;
-    char     tok[24];        /* scalar text: string body or a bare literal */
-    uint8_t  tok_len;
-    bool     tok_str;
-    /* the aircraft being read */
+    int      list_depth;     /* depth of the aircraft array's own events, -1 until seen */
+    bool     in_ac;          /* inside one aircraft object */
+    bool     closed;         /* the document's outermost container closed */
     orb_ac_t ac;
     bool     have_lat, have_lon, have_track;
-    /* totals */
     uint32_t objects;        /* aircraft objects closed                     */
     uint32_t emitted;        /* of those, the ones with hex+lat+lon         */
-    bool     error;          /* malformed input; feed() stops consuming      */
+    bool     error;          /* malformed input; tokens stop being taken     */
 } orb_readsb_t;
 
 void orb_readsb_init(orb_readsb_t *r, orb_readsb_emit_fn emit, void *ctx);
-/* Returns false once the input is known malformed (r->error). */
-bool orb_readsb_feed(orb_readsb_t *r, const char *buf, size_t len);
+/* One event from the OS's JSON tokenizer (D46). Returns false once the input is known
+ * malformed (r->error) — a tokenizer error included. */
+bool orb_readsb_token(orb_readsb_t *r, const orb_json_tok_t *t);
 /* True when the whole document closed cleanly and the aircraft array was seen. */
 bool orb_readsb_done(const orb_readsb_t *r);

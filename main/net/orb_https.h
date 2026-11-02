@@ -51,6 +51,18 @@ esp_err_t orb_https_get(orb_https_t *h, const char *path, orb_https_sink_fn sink
  * value is copied. Set it before the first call; a changed value means a new
  * client, so a kept connection never carries the old one. */
 esp_err_t    orb_https_set_header(orb_https_t *h, const char *name, const char *value);
+esp_err_t    orb_https_del_header(orb_https_t *h, const char *name);
+
+/* D46: any method, an optional request body, every status's body to the sink, and the
+ * response's headers kept ("name: value\n" lines, 768 B) until the next request.
+ * The origin may be http:// as well as https://. orb_https_get is GET with no body. */
+typedef enum {
+    ORB_HTTPS_GET = 0, ORB_HTTPS_POST, ORB_HTTPS_PUT, ORB_HTTPS_DELETE, ORB_HTTPS_HEAD
+} orb_https_method_t;
+esp_err_t orb_https_request(orb_https_t *h, orb_https_method_t method, const char *path,
+                            const void *body, size_t body_len,
+                            orb_https_sink_fn sink, void *ctx, orb_https_result_t *res);
+const char *orb_https_resp_headers(const orb_https_t *h);
 
 /* Connections opened since orb_https_new (each one a handshake). */
 uint32_t orb_https_opens(const orb_https_t *h);

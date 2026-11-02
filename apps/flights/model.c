@@ -1,5 +1,5 @@
 /* The flight tracker's model — contract in flights_model.h. */
-#include "flights_model.h"
+#include "model.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -116,60 +116,70 @@ bool fm_route_callsign_ok(const char *cs)
     return true;
 }
 
-/* The value after "key": inside [p, end), or NULL. */
-static const char *json_val(const char *p, const char *end, const char *key)
+/* adsbdb's answer, read from the OS's JSON events (D46): the two flat objects under
+ * "flightroute", "origin" and "destination", each an airport code (IATA, else ICAO:
+ * upper-case letters and digits, one to four) and a position. */
+void fm_route_begin(fm_route_rd_t *r)
 {
-    const size_t kl = strlen(key);
-    for (const char *q = p; q + kl + 3 <= end; q++)
-        if (q[0] == '"' && !memcmp(q + 1, key, kl) && q[kl + 1] == '"' && q[kl + 2] == ':')
-            return q + kl + 3;
-    return NULL;
+    memset(r, 0, sizeof *r);
+    r->fr_depth = -1;
 }
 
-static bool json_code(const char *p, const char *end, const char *key, char *out, size_t n)
+static bool code_ok(const orb_json_tok_t *t)
 {
-    const char *v = json_val(p, end, key);
-    if (!v || *v != '"') return false;                  /* null, or absent */
-    size_t i = 0;
-    for (v++; v < end && *v != '"'; v++) {
-        if (*v < '0' || (*v > '9' && *v < 'A') || *v > 'Z' || i + 1 >= n) return false;
-        out[i++] = *v;
-    }
-    out[i] = 0;
-    return v < end && i > 0;
-}
-
-static bool json_num(const char *p, const char *end, const char *key, float *out)
-{
-    const char *v = json_val(p, end, key);
-    if (!v) return false;
-    char *e = NULL;
-    const double d = strtod(v, &e);
-    if (e == v || e > end || !isfinite(d)) return false;
-    *out = (float)d;
+    if (t->type != ORB_JSON_STR || t->str_trunc || !t->str[0] || strlen(t->str) > 4) return false;
+    for (const char *c = t->str; *c; c++)
+        if (*c < '0' || (*c > '9' && *c < 'A') || *c > 'Z') return false;
     return true;
 }
 
-/* One end of the route: the flat object after "origin": or "destination":. */
-static bool airport(const char *json, const char *key, char code[5], float *lat, float *lon)
+void fm_route_take(fm_route_rd_t *r, const orb_json_tok_t *t)
 {
-    const char *o = json_val(json, json + strlen(json), key);
-    if (!o || *o != '{') return false;
-    const char *end = strchr(o, '}');
-    if (!end) return false;
-    if (!json_code(o, end, "iata_code", code, 5) && !json_code(o, end, "icao_code", code, 5)) return false;
-    return json_num(o, end, "latitude", lat) && json_num(o, end, "longitude", lon)
-        && fabsf(*lat) <= 90.0f && fabsf(*lon) <= 180.0f;
+    if (t->type == ORB_JSON_OBJ && r->fr_depth < 0 && !strcmp(t->key, "flightroute")) {
+        r->fr_depth = t->depth;
+        r->saw_fr = true;
+        return;
+    }
+    if (r->fr_depth < 0) return;
+    if (t->type == ORB_JSON_OBJ_END && t->depth == r->fr_depth) { r->fr_depth = -1; return; }
+    if (t->type == ORB_JSON_OBJ && t->depth == r->fr_depth + 1) {
+        r->end = !strcmp(t->key, "origin") ? 1 : !strcmp(t->key, "destination") ? 2 : 0;
+        return;
+    }
+    if (t->type == ORB_JSON_OBJ_END && t->depth == r->fr_depth + 1) { r->end = 0; return; }
+    if (!r->end || t->depth != r->fr_depth + 2 || t->key_trunc) return;
+    const int e = r->end - 1;
+    if (!strcmp(t->key, "iata_code")) {
+        r->iata_ok[e] = code_ok(t);
+        if (r->iata_ok[e]) memcpy(r->iata[e], t->str, strlen(t->str) + 1);
+    } else if (!strcmp(t->key, "icao_code")) {
+        r->icao_ok[e] = code_ok(t);
+        if (r->icao_ok[e]) memcpy(r->icao[e], t->str, strlen(t->str) + 1);
+    } else if (!strcmp(t->key, "latitude") && t->type == ORB_JSON_NUM && isfinite(t->num)) {
+        r->lat[e] = (float)t->num;
+        r->has_lat[e] = true;
+    } else if (!strcmp(t->key, "longitude") && t->type == ORB_JSON_NUM && isfinite(t->num)) {
+        r->lon[e] = (float)t->num;
+        r->has_lon[e] = true;
+    }
 }
 
-bool fm_route_parse(const char *json, fm_route_t *out)
+bool fm_route_end(const fm_route_rd_t *r, fm_route_t *out)
 {
-    fm_route_t r;
-    memset(&r, 0, sizeof r);
-    if (!json_val(json, json + strlen(json), "flightroute")) return false;
-    if (!airport(json, "origin", r.from, &r.from_lat, &r.from_lon)) return false;
-    if (!airport(json, "destination", r.to, &r.to_lat, &r.to_lon)) return false;
-    *out = r;
+    if (!r->saw_fr) return false;
+    fm_route_t rt;
+    memset(&rt, 0, sizeof rt);
+    char *code[2] = { rt.from, rt.to };
+    float *lat[2] = { &rt.from_lat, &rt.to_lat }, *lon[2] = { &rt.from_lon, &rt.to_lon };
+    for (int e = 0; e < 2; e++) {
+        if (!r->iata_ok[e] && !r->icao_ok[e]) return false;
+        if (!r->has_lat[e] || !r->has_lon[e]) return false;
+        if (fabsf(r->lat[e]) > 90.0f || fabsf(r->lon[e]) > 180.0f) return false;
+        memcpy(code[e], r->iata_ok[e] ? r->iata[e] : r->icao[e], 5);
+        *lat[e] = r->lat[e];
+        *lon[e] = r->lon[e];
+    }
+    *out = rt;
     return true;
 }
 

@@ -602,7 +602,7 @@ int main(void)
     for (int i = 0; i < 3; i++) {
         orb_layer_desc_t r = mk(ORB_ASSET_SPRITE, ORB_ASSET_OK, 8 * i, 8 * i, 8, 8);
         r.art.off = BANK_B_OFF + PL_SPR_OFF;
-        r.show = 0;                                   /* exactly clock_view.c's add */
+        r.show = 0;                                   /* exactly orb_stage.c's add */
         ck("inert: a hidden row claims", orb_layers_add(&V, &r) > 0, 0);
     }
     int nv = hook_mirror(&V, THEME, CANVAS);
@@ -741,7 +741,7 @@ def lint(tmp, out):
     pin("static gfx_paint_ctx_t s_lay_jc[ORB_LAYER_JOB_MAX];" in sc,
         "the commit hook's job array left file scope — at ORB_LAYER_JOB_MAX (16) "
         "deep it is a kilobyte of the LVGL task's stack per flush, which is the "
-        "one thing clock_view.c's retired hook never spent")
+        "one thing orb_stage.c's retired hook never spent")
     hm = re.search(r"void orb_sched_commit_layers\(const orb_app_t \*active\)\n"
                    r"\{(.*?)\n\}", sc, re.S)
     pin(hm is not None, "orb_sched_commit_layers is gone from orb_sched.c")
@@ -807,8 +807,8 @@ def lint(tmp, out):
             ("art/orb_theme.c",  "s_geo.blob_off = io.out_art_off - SLOT_ART_OFF;",
              "orb_theme.c's blob_off is no longer the section bank's offset INTO the "
              "mapped payload — the disagreement this commit reported may have moved"),
-            ("clock/clock_view.c", "s_art = art_bank_ptr() + orb_theme_geo()->blob_off;",
-             "clock_view.c's blob() is no longer payload+blob_off — the classic "
+            ("stage/orb_stage.c", "s_art = art_bank_ptr() + orb_theme_geo()->blob_off;",
+             "orb_stage.c's blob() is no longer payload+blob_off — the classic "
              "path still routes its LVGL descriptors through it, and the fold "
              "proved here is what lets the table path not need it"),
             ("assets/orb_assets.h", "uint32_t off;        /* tier 1: offset into the theme's art payload",

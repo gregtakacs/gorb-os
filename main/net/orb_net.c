@@ -58,11 +58,12 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "nvs.h"
 #include "nvs_flash.h"
 
-#include "orb_flights.h"
+#include "orb_app_net.h"   /* /api/v1/flights/key: the flight tracker's credential (§43) */
 #include "orb_home.h"   /* /api/v1/home: the OS home location (flight-tracker-design §6.4) */
 #include "orb_net.h"
 #include "input_router.h"
 #include "orb_app.h"   /* h_screen: ?to=<slug> resolves through the registry */
+#include "orb_app_wasm.h"   /* orb_wasm_stack_peak: the guest stack depth, in /api/v1/status */
 #include "knob.h"     /* h_screen injection; h_status reads the raw/detent pair */
 #include "art_bank.h"
 #include "display.h"        /* h_fb: the one-shot frame capture over the panel mirror */
@@ -2616,6 +2617,9 @@ static esp_err_t h_status(httpd_req_t *req)
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
+        /* §43: the deepest the wasm apps' shared native stack has run, in bytes of
+         * its ORB_WASM_NATIVE_STACK. The interpreter's depth is measured, not assumed. */
+        "\"wasm_stack_peak\":%u,"
 #if CONFIG_ORB_USB_MTP || CONFIG_ORB_USB_MSC
         /* Either share window has no console, so this is the only place an owner
          * can ask what the mode is doing. reason is the field that matters: without
@@ -2686,6 +2690,7 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        (unsigned)orb_wasm_stack_peak(),
 #if CONFIG_ORB_USB_MSC
         orb_usb_msc_state(), orb_usb_msc_host_up() ? "true" : "false", orb_usb_msc_reason(),
 #elif CONFIG_ORB_USB_MTP
@@ -3047,9 +3052,11 @@ static esp_err_t h_home_post(httpd_req_t *req)
 }
 
 /* --------------------------------------------------------------------------
- * The flight feed's adsb.lol API key (orb_flights.h). An owner credential, so
- * it is written here and never read back: GET says whether one is set, the
- * header it goes in, and its last four characters.
+ * The flight tracker's adsb.lol API key. An owner credential, kept by the OS's
+ * per-app credential store (orb_app_net.h) and attached to the app's requests by
+ * flag, so the app never reads it either. Written here and never read back: GET
+ * says whether one is set, the header it goes in, and its last four characters.
+ * The URL predates the store and stays because the hub calls it.
  *
  * GET  /api/v1/flights/key
  * POST /api/v1/flights/key {"key":"...","header":"x-api-key"}   header optional
@@ -3059,8 +3066,10 @@ static esp_err_t h_home_post(httpd_req_t *req)
 
 static esp_err_t fkey_reply(httpd_req_t *req, const char *state)
 {
-    char hdr[ORB_FLIGHTS_HDR_MAX + 1], tail[5], b[160];
-    const bool set = orb_flights_key_info(hdr, sizeof hdr, tail);
+    char hdr[ORB_APP_CRED_HDR_MAX + 1], tail[5], b[160];
+    /* §43: an alias for the flight tracker's declared `key` secret, kept for the hub
+     * until it writes that through /api/v1/apps/cfg like any other app option. */
+    const bool set = orb_app_cred_info(orb_app_find_slug("flights"), "key", hdr, sizeof hdr, tail);
     snprintf(b, sizeof b, "{%s%s%s\"set\":%s,\"header\":\"%s\",\"tail\":\"%s\"}",
              state ? "\"state\":\"" : "", state ? state : "", state ? "\"," : "",
              set ? "true" : "false", hdr, set ? tail : "");
@@ -3100,18 +3109,18 @@ static esp_err_t h_fkey_post(httpd_req_t *req)
     long clr = 0;
     bool cleared = false;
     if (json_int(body, len, "clear", &clr) && clr) {
-        why = orb_flights_key_set(NULL, NULL);
+        why = orb_app_cred_set(orb_app_find_slug("flights"), "key", NULL, NULL);
         cleared = true;
     } else {
         /* json_str drops a backslash and keeps what follows; a key with one in
          * it would be stored as something other than what was sent. */
         for (const char *q = body; !why && *q; q++)
             if (*q == '\\') why = "no escapes";
-        char key[ORB_FLIGHTS_KEY_MAX + 1], hdr[ORB_FLIGHTS_HDR_MAX + 1];
+        char key[ORB_APP_CRED_MAX + 1], hdr[ORB_APP_CRED_HDR_MAX + 1];
         const bool has_hdr = !why && json_find(body, len, "header");
         if (!why && !json_str(body, len, "key", key, sizeof key)) why = "key required (a string, at most 128)";
         if (!why && has_hdr && !json_str(body, len, "header", hdr, sizeof hdr)) why = "header not a string, or too long";
-        if (!why) why = orb_flights_key_set(key, has_hdr ? hdr : NULL);
+        if (!why) why = orb_app_cred_set(orb_app_find_slug("flights"), "key", key, has_hdr ? hdr : NULL);
         memset(key, 0, sizeof key);
     }
     memset(body, 0, sizeof body);                 /* the key does not linger in .bss */
@@ -5096,48 +5105,6 @@ static esp_err_t h_debug_panic(httpd_req_t *req)
     *(volatile uint32_t *)0 = 0;
     return ESP_OK;
 }
-/* GET|POST /api/v1/debug/flights — the flight feed's bench door
- * (docs/flight-tracker-design.md §6). GET answers config, poll stats, the
- * dial's tick-gap histogram and the nearest aircraft; POST sets any of
- * on, lat, lon, nm, period (ms), src (0 adsb.lol, 1 adsb.fi), ka (keep-alive),
- * bg (background ms, 0 = none), vis (tracker on the glass), boost, hg (hide ground),
- * refuse0 (provider 0 answers 403: the failover bench)
- * from the query string and kicks a poll. Debug-gated: the shipped tracker
- * configures itself through its app settings, not through this. */
-static esp_err_t h_debug_flights(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "application/json");
-    if (req->method == HTTP_POST) {
-        orb_flights_cfg_t c;
-        orb_flights_get_cfg(&c);
-        char v[24];
-        if (q_param(req, "on", v, sizeof v))     c.enabled = atoi(v) != 0;
-        if (q_param(req, "lat", v, sizeof v))    c.lat = strtod(v, NULL);
-        if (q_param(req, "lon", v, sizeof v))    c.lon = strtod(v, NULL);
-        if (q_param(req, "nm", v, sizeof v))     c.radius_nm = (uint16_t)atoi(v);
-        if (q_param(req, "period", v, sizeof v)) c.period_ms = (uint32_t)atol(v);
-        if (q_param(req, "src", v, sizeof v))    c.source = (uint8_t)atoi(v);
-        if (q_param(req, "ka", v, sizeof v))     c.keep_alive = atoi(v) != 0;
-        if (q_param(req, "bg", v, sizeof v))     c.bg_period_ms = (uint32_t)atol(v);
-        if (q_param(req, "vis", v, sizeof v))    c.visible = atoi(v) != 0;
-        if (q_param(req, "boost", v, sizeof v))  c.boost = atoi(v) != 0;
-        if (q_param(req, "hg", v, sizeof v))     c.hide_ground = atoi(v) != 0;
-        if (q_param(req, "refuse0", v, sizeof v)) orb_flights_bench_refuse0(atoi(v) != 0);
-        if (orb_flights_set_cfg(&c) != ESP_OK) {
-            httpd_resp_set_status(req, "400 Bad Request");
-            return httpd_resp_sendstr(req, "{\"error\":\"nm 1-250, period>=2000, src 0|1\"}");
-        }
-    }
-    /* PSRAM, not the httpd stack: the snapshot alone is ~3 KB. */
-    const size_t cap = 6144;
-    char *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
-    if (!buf) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
-    const int n = orb_flights_json(buf, cap);
-    const esp_err_t e = n < 0 ? httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "too long")
-                              : httpd_resp_send(req, buf, n);
-    heap_caps_free(buf);
-    return e;
-}
 #endif /* CONFIG_ORB_DEBUG_HTTP */
 
 #if CONFIG_ORB_DEBUG_HTTP
@@ -5658,11 +5625,11 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
         const int w = snprintf(row, rowsz,
             "%s{\"slug\":\"%s\",\"title\":\"%s\",\"slot\":%d,\"caps\":\"%s\","
             "\"period_ms\":%" PRIu32 ",\"n_settings\":%d,"
-            "\"enabled\":%s,\"failed\":%s,\"walkable\":%s,\"on_glass\":%s,"
+            "\"failed\":%s,\"walkable\":%s,\"on_glass\":%s,"
             "\"compiled\":true,\"reason\":\"%s\"}",
             seen++ ? "," : "", e_slug, e_title, (int)i, caps,
             a->period_ms, a->n_settings,
-            a->enabled ? "true" : "false", a->failed ? "true" : "false",
+            a->failed ? "true" : "false",
             a->iface ? "true" : "false",
             (a == orb_app_current() || a->active) ? "true" : "false", e_reason);
         if (w < 0 || (size_t)w >= rowsz) {
@@ -5691,13 +5658,13 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
         const int w = snprintf(row, rowsz,
             "%s{\"slug\":\"%s\",\"title\":\"%s\",\"slot\":%d,\"caps\":\"%s\","
             "\"period_ms\":%" PRIu32 ",\"n_settings\":%d,"
-            "\"enabled\":%s,\"failed\":%s,\"walkable\":%s,\"on_glass\":%s,"
+            "\"failed\":%s,\"walkable\":%s,\"on_glass\":%s,"
             "\"geom_crc\":%" PRIu32 ",\"code_crc\":%" PRIu32 ","
             "\"code_size\":%" PRIu32 ",\"serial\":%" PRIu32 ","
             "\"editor_crc\":%" PRIu32 ",\"version\":\"%s\"}",
             seen++ ? "," : "", e_slug, e_title, (int)(i - ORB_APP_BASE), caps,
             a->period_ms, a->n_settings,
-            a->enabled ? "true" : "false", a->failed ? "true" : "false",
+            a->failed ? "true" : "false",
             a->iface ? "true" : "false",
             (a == orb_app_current() || a->active) ? "true" : "false",
             a->geom_crc, a->code_crc, a->code_size, a->serial, a->editor_crc,
@@ -5983,13 +5950,14 @@ static esp_err_t h_apps_install(httpd_req_t *req)
     return httpd_resp_sendstr(req, b);
 }
 
-/* ---- P4a's two owner doors: /api/v1/apps/enable and /apps/uninstall ----------
+/* ---- P4a's owner doors: /api/v1/apps/uninstall and /apps/clear ---------------
+ * There is no enable door: an app is installed or it is not (§43.3).
  * Both are synchronous — the opposite of the install POST, and for the same
  * reason inverted: install is a multi-second card copy that must not sit on
- * this task, while these touch one NVS key or one 4 KB header sector, so the
+ * this task, while these touch a few NVS keys or one 4 KB header sector, so the
  * handler can answer with the TRUTH of the attempt instead of a 202 the page
  * has to reload to discover. The id is the app's SLUG (the identity the
- * reader validated as FATFS-safe), never a path; orb_app_enable/uninstall
+ * reader validated as FATFS-safe), never a path; orb_app_uninstall
  * re-validate it and own every refusal sentence the body echoes. The slugs
  * and the reason texts here are device-authored (no quotes, no backslashes),
  * so the bodies need no json_put — same rule h_apps_install cites. */
@@ -6005,38 +5973,6 @@ static const char *door_http_status(esp_err_t e)
     }
 }
 
-/* POST /api/v1/apps/enable?id=<slug>&on=0|1 — the owner's toggle (P4a). The
- * install confirm's "stays off until you turn it on" ends here: ON persists
- * the word before the RAM flip, so the choice survives whatever the dial
- * does next, and a failed app's ON doubles as the fault-record clear (C2's
- * owner door, its first caller). */
-static esp_err_t h_app_enable(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    char id[ORB_APP_SLUG_MAX + 1] = "", onv[4] = "";
-    if (!q_param(req, "id", id, sizeof id)) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        return httpd_resp_sendstr(req, "{\"error\":\"id is missing\"}");
-    }
-    if (!q_param(req, "on", onv, sizeof onv) ||
-        (strcmp(onv, "0") != 0 && strcmp(onv, "1") != 0)) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        return httpd_resp_sendstr(req, "{\"error\":\"on must be 0 or 1\"}");
-    }
-    char why[144] = "";
-    const esp_err_t e = orb_app_enable(id, strcmp(onv, "1") == 0, why, sizeof why);
-    if (e != ESP_OK) {
-        httpd_resp_set_status(req, door_http_status(e));
-        char b[208];
-        snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
-        return httpd_resp_sendstr(req, b);
-    }
-    char b[224];
-    snprintf(b, sizeof b, "{\"state\":\"%s\",\"slug\":\"%s\"}",
-             strcmp(onv, "1") == 0 ? "enabled" : "disabled", id);
-    return httpd_resp_sendstr(req, b);
-}
 /* POST /api/v1/apps/face?id=<slug> — the glass door. Enable puts a row in the
  * carousel; it does not put it on the glass. Until now the resume record that
  * names the face a boot returns to had exactly one network writer: the theme
@@ -6067,14 +6003,9 @@ static esp_err_t h_app_face(httpd_req_t *req)
         return httpd_resp_sendstr(req,
             "{\"error\":\"no app by that name is installed on this dial\"}");
     }
-    if (!a->enabled) {
-        httpd_resp_set_status(req, "409 Conflict");
-        return httpd_resp_sendstr(req,
-            "{\"error\":\"the row is switched off — enable it before parking the glass on it\"}");
-    }
     /* A faulted row cannot wear the glass: its activate would refuse the boot's resume
      * and the dial would fall back home, spending a reboot to prove the point. The clear
-     * door (apps/clear, or enable on a card row) is the step that belongs before this one. */
+     * door (apps/clear) is the step that belongs before this one. */
     if (a->failed) {
         httpd_resp_set_status(req, "409 Conflict");
         return httpd_resp_sendstr(req,
@@ -6145,7 +6076,7 @@ static esp_err_t h_app_cfg(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    char id[ORB_APP_SLUG_MAX + 1] = "", key[16] = "", val[40] = "";
+    char id[ORB_APP_SLUG_MAX + 1] = "", key[16] = "", val[ORB_APP_CRED_MAX + 1] = "";
     if (!q_param(req, "id", id, sizeof id) || !q_param(req, "key", key, sizeof key)) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "{\"error\":\"id and key are required\"}");
@@ -6162,6 +6093,51 @@ static esp_err_t h_app_cfg(httpd_req_t *req)
     if (!d) {
         httpd_resp_set_status(req, "404 Not Found");
         return httpd_resp_sendstr(req, "{\"error\":\"the app declares no such setting\"}");
+    }
+    if (d->type == ORB_SET_SECRET) {
+        /* §43: the value goes to the credential store, never the app's settings. It may
+         * arrive as a JSON body {"value":"...","header":"..."} (keeps it out of URLs)
+         * or as the query's value/header. An empty value clears it. */
+        char hdr[ORB_APP_CRED_HDR_MAX + 1] = "";
+        (void)q_param(req, "header", hdr, sizeof hdr);
+        static char body[ORB_APP_CRED_MAX + ORB_APP_CRED_HDR_MAX + 64];
+        const int clen = (int)req->content_len;
+        if (clen > (int)sizeof body - 1) {
+            httpd_resp_set_status(req, "413 Payload Too Large");
+            return httpd_resp_sendstr(req, "{\"error\":\"body too large\"}");
+        }
+        int got = 0;
+        while (got < clen) {
+            const int r = httpd_req_recv(req, body + got, (size_t)(clen - got));
+            if (r <= 0) break;
+            got += r;
+        }
+        body[got] = 0;
+        if (got > 0) {
+            if (strchr(body, '\\')) {
+                memset(body, 0, sizeof body);
+                httpd_resp_set_status(req, "400 Bad Request");
+                return httpd_resp_sendstr(req, "{\"error\":\"no escapes\"}");
+            }
+            if (!json_str(body, (size_t)got, "value", val, sizeof val)) val[0] = 0;
+            if (json_find(body, (size_t)got, "header")) (void)json_str(body, (size_t)got, "header", hdr, sizeof hdr);
+            memset(body, 0, sizeof body);
+        }
+        const char *why = orb_app_cred_set(a, key, val, hdr[0] ? hdr : NULL);
+        memset(val, 0, sizeof val);
+        if (why) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            char b[160];
+            snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
+            return httpd_resp_sendstr(req, b);
+        }
+        char b[96];
+        snprintf(b, sizeof b, "{\"state\":\"set\",\"slug\":\"%s\",\"key\":\"%s\"}", id, key);
+        return httpd_resp_sendstr(req, b);
+    }
+    if (strlen(val) >= 40) {                                /* a STRING's own width */
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"value too long\"}");
     }
     const orb_svc_t *svc = orb_svc_table();
     esp_err_t e;
@@ -6180,6 +6156,46 @@ static esp_err_t h_app_cfg(httpd_req_t *req)
     }
     char b[96];
     snprintf(b, sizeof b, "{\"state\":\"set\",\"slug\":\"%s\",\"key\":\"%s\"}", id, key);
+    return httpd_resp_sendstr(req, b);
+}
+
+/* GET /api/v1/apps/cfg?id=<slug>&key=<setting> — one declared setting's value, for
+ * the hub's app options page. A secret (§43) answers whether it is set, the header it
+ * travels in, its last four characters and the one host it may go to — never itself. */
+static esp_err_t h_app_cfg_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char id[ORB_APP_SLUG_MAX + 1] = "", key[16] = "";
+    if (!q_param(req, "id", id, sizeof id) || !q_param(req, "key", key, sizeof key)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id and key are required\"}");
+    }
+    const orb_app_t *a = orb_app_find_slug(id);
+    const orb_setting_desc_t *d = NULL;
+    for (int i = 0; a && i < a->n_settings && !d; i++)
+        if (!strcmp(a->settings[i].id, key)) d = &a->settings[i];
+    if (!d) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "{\"error\":\"no such app or setting\"}");
+    }
+    char b[224];
+    if (d->type == ORB_SET_SECRET) {
+        char hdr[ORB_APP_CRED_HDR_MAX + 1], tail[5];
+        const bool set = orb_app_cred_info(a, key, hdr, sizeof hdr, tail);
+        snprintf(b, sizeof b, "{\"slug\":\"%s\",\"key\":\"%s\",\"type\":\"secret\",\"host\":\"%s\","
+                 "\"set\":%s,\"header\":\"%s\",\"tail\":\"%s\"}", id, key, d->def_str,
+                 set ? "true" : "false", hdr, set ? tail : "");
+    } else if (d->type == ORB_SET_STRING) {
+        char v[40] = "";
+        (void)orb_svc_table()->cfg_get_str((orb_app_t *)a, key, v, sizeof v);
+        snprintf(b, sizeof b, "{\"slug\":\"%s\",\"key\":\"%s\",\"type\":\"string\",\"value\":\"%s\"}",
+                 id, key, v);
+    } else {
+        int32_t v = d->def;
+        (void)orb_svc_table()->cfg_get((orb_app_t *)a, key, &v);
+        snprintf(b, sizeof b, "{\"slug\":\"%s\",\"key\":\"%s\",\"value\":%ld}", id, key, (long)v);
+    }
     return httpd_resp_sendstr(req, b);
 }
 
@@ -7352,14 +7368,12 @@ static const char HTML_APPS[] =
 "for(var i=0;i<x.length;i++){var a=x[i];"
 "h=h+'<div class=row><div class=nm>'+(a.title?esc(a.title):esc(a.slug))+'</div>';"
 "h=h+'<div class=sub>'+esc(a.slug)+' \\u00b7 '+(a.compiled?'shell':'slot '+a.slot)+' \\u00b7 may use: '+(a.caps?esc(a.caps):'nothing')+(a.n_settings?' \\u00b7 '+a.n_settings+' settings':'')+(a.failed?' \\u00b7 FAILED':'')+(a.on_glass?' \\u00b7 on the glass':'')+'</div>';"
-"h=h+'<div class=sub>'+(a.enabled?'on the carousel':'turned off')+(a.period_ms?' \\u00b7 every '+(a.period_ms/1000)+' s':'')+(a.walkable?'':' \\u00b7 no behaviour module for it')+'</div>';"
+"h=h+'<div class=sub>'+(a.failed?'stopped by the OS (faulted)':'on the carousel')+(a.period_ms?' \\u00b7 every '+(a.period_ms/1000)+' s':'')+(a.walkable?'':' \\u00b7 no behaviour module for it')+'</div>';"
 "h=h+'<div style=\"margin-top:.3rem\">';"
-"h=h+(a.compiled?'':(a.enabled?'<button onclick=\"setOn(\\''+esc(a.slug)+'\\',0)\">Turn off</button> ':'<button onclick=\"setOn(\\''+esc(a.slug)+'\\',1)\">Turn on</button> '));"
 "h=h+(a.failed?'<button onclick=\"clearFault(\\''+esc(a.slug)+'\\')\">Clear fault</button>':'')+(a.compiled?'':'<button onclick=\"unin(\\''+esc(a.slug)+'\\')\">Uninstall</button>')+(a.compiled&&!a.failed?'built into the firmware - always on':'')+'</div></div>';}"
 "I.innerHTML=h;"
 "}"
-"function setOn(s,on){say((on?'turning on ':'turning off ')+s+'...','');j('/api/v1/apps/enable?id='+encodeURIComponent(s)+'&on='+on,{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say(on?'turned on - it walks the dial now':'turned off - the slot keeps its place','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
-"function unin(s){if(!confirm('Uninstall '+s+'? The dial erases its slot and forgets its permissions.'+' The file stays on your card.')){return;}say('uninstalling '+s+'...','');j('/api/v1/apps/uninstall?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('uninstalled '+s+' - the slot is free again','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
+"function unin(s){if(!confirm('Uninstall '+s+'? The dial erases its slot and forgets its permissions, settings and secrets.'+' The file stays on your card.')){return;}say('uninstalling '+s+'...','');j('/api/v1/apps/uninstall?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('uninstalled '+s+' - the slot is free again','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
 "function clearFault(s){if(!confirm('Clear the fault record for '+s+'? A reboot brings it back; WiFi and the card are untouched.')){return;}say('clearing the fault for '+s+'...','');j('/api/v1/apps/clear?id='+encodeURIComponent(s),{method:'POST'}).then(function(r){if(!r.ok){say('orb refused: '+(r.d&&r.d.error?r.d.error:r.st),'bad');refresh();return;}say('fault cleared - reboot the dial to rebuild it','ok');refresh();}).catch(function(){say('orb not reachable','bad');});}"
 "function refresh(){j('/api/v1/apps').then(function(r){if(!r.ok){say('orb refused the listing: '+(r.d&&r.d.error?r.d.error:r.st),'bad');return;}data=r.d;draw();}).catch(function(){say('orb not reachable','bad');});}"
 "refresh();"
@@ -7726,8 +7740,6 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/fb",         .method = HTTP_GET,  .handler = h_fb },
         { .uri = "/api/v1/log",        .method = HTTP_GET,  .handler = h_log },
         { .uri = "/api/v1/debug/panic", .method = HTTP_POST, .handler = h_debug_panic },
-        { .uri = "/api/v1/debug/flights", .method = HTTP_GET,  .handler = h_debug_flights },
-        { .uri = "/api/v1/debug/flights", .method = HTTP_POST, .handler = h_debug_flights },
 #endif
         /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
          * backing calls. Migration 1 deleted the flip and default doors: under the
@@ -7739,11 +7751,11 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/apps",       .method = HTTP_GET,  .handler = h_apps_list },
         { .uri = "/api/v1/apps/editor", .method = HTTP_GET, .handler = h_app_editor },
         { .uri = "/api/v1/apps/install",.method = HTTP_POST, .handler = h_apps_install },
-        { .uri = "/api/v1/apps/enable", .method = HTTP_POST, .handler = h_app_enable },
         { .uri = "/api/v1/apps/face", .method = HTTP_POST, .handler = h_app_face },
         { .uri = "/api/v1/apps/uninstall", .method = HTTP_POST, .handler = h_app_uninstall },
         { .uri = "/api/v1/apps/clear", .method = HTTP_POST, .handler = h_app_clear },
         { .uri = "/api/v1/apps/cfg",  .method = HTTP_POST, .handler = h_app_cfg },
+        { .uri = "/api/v1/apps/cfg",  .method = HTTP_GET,  .handler = h_app_cfg_get },
         { .uri = "/api/v1/sd/app",      .method = HTTP_POST, .handler = h_app_upload },
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },

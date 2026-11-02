@@ -9,7 +9,7 @@
  * picture is worth a faster background poll. */
 #include <stdbool.h>
 #include <stdint.h>
-#include "orb_readsb.h"
+#include "readsb.h"
 
 #define FM_MAX_TRK  32                 /* contacts kept between polls        */
 #define FM_STALE_US (60LL * 1000000)   /* a missed contact dims, then drops   */
@@ -75,9 +75,20 @@ typedef struct {
  * to say so. */
 bool fm_route_callsign_ok(const char *cs);
 
-/* adsbdb's /v0/callsign/<cs> answer, NUL-terminated, into *out. False when it
- * names no route (an unknown callsign, a missing airport or position). */
-bool fm_route_parse(const char *json, fm_route_t *out);
+/* adsbdb's /v0/callsign/<cs> answer, read from the OS's JSON events (D46): begin,
+ * take every event, end. end() is false when it names no route (an unknown callsign,
+ * a missing airport or position). */
+typedef struct {
+    int     fr_depth;             /* depth of "flightroute"'s own events; -1 outside it */
+    int     end;                  /* 1 origin, 2 destination, 0 neither */
+    bool    saw_fr;
+    char    iata[2][5], icao[2][5];
+    bool    iata_ok[2], icao_ok[2], has_lat[2], has_lon[2];
+    float   lat[2], lon[2];
+} fm_route_rd_t;
+void fm_route_begin(fm_route_rd_t *r);
+void fm_route_take(fm_route_rd_t *r, const orb_json_tok_t *t);
+bool fm_route_end(const fm_route_rd_t *r, fm_route_t *out);
 
 /* True when an aircraft at (lat, lon) is plausibly flying this route.
  * Where: within 100 km of either end, or within 150 km (or 15% of the

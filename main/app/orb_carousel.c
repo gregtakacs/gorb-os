@@ -11,7 +11,7 @@
  *     above its own widgets, and keep it out of its own repaint maths.
  *  2. The beat is parked for the length of the peek. clock_layer_commit()
  *     rebuilds marked rows from the GIF canvas plus an explicit layer list
- *     (clock_view.c:938), and the chip is in neither, so an unparked tick
+ *     (orb_stage.c:938), and the chip is in neither, so an unparked tick
  *     erases it inside one frame. Park the tick and there is nothing to erase
  *     it. That is orb_sched_pause(), NOT the app's suspend hook: suspend also
  *     releases the art bank, and the view it feeds is still the one on the

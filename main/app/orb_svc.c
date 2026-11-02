@@ -179,6 +179,15 @@ static svc_row_t *row_of(const orb_app_t *a)
     return &s_row[slot];
 }
 
+/* The grant word is read lazily, from NVS, on an app's first owner-cap check. A wasm
+ * guest runs on a PSRAM stack where no flash read may start (§43), so its shim warms
+ * the word here, on the task's own stack, before every call into the guest. */
+void orb_svc_grants_warm(const orb_app_t *a)
+{
+    svc_row_t *r = row_of(a);
+    if (r && !r->loaded) row_load_grants(r, a, orb_app_index_of(a));
+}
+
 bool orb_grant_ok(const orb_app_t *a, orb_cap_t cap)
 {
     svc_row_t *r = row_of(a);
@@ -400,7 +409,7 @@ static esp_err_t svc_cfg_set_str(orb_app_t *a, const char *id, const char *v)
 
 /* ---- the wall clock: compose_now's anchoring, moved verbatim (plan §4.3,
  * the P3 time commit). The clock reads it through the same door every app
- * will; what stayed in clock_view.c is dial policy — the zone conversion,
+ * will; what stayed in orb_stage.c is dial policy — the zone conversion,
  * the hands, the complications. The SECOND and its fraction are the OS's, as
  * ruling D15 signed, and this block is the ONLY anchor pair in the firmware.
  *
@@ -419,7 +428,7 @@ static time_t s_epoch_base     = CLOCK_EPOCH;
 static int64_t s_t0_us         = 0;
 static bool   s_anchor_is_real = false;   /* has s_epoch_base ever come from time()? */
 static bool   s_seeded         = false;   /* the first call stamps t0 — the role
-                                           * clock_view_init's seed line played,
+                                           * stage_init's seed line played,
                                            * keeping the pair sampled together */
 #define CLOCK_RESYNC_SLACK 2.0            /* s of drift that re-triggers a re-anchor */
 
@@ -823,43 +832,10 @@ static esp_err_t store_grants(int slot, uint32_t mask)
     return w;
 }
 
-/* ---- the enable ledger and the uninstall wipe (P4a) --------------------------
- * One u32 per row, key e<slot> beside the grant words it lives with: the same
- * owner's-door provenance, the same slot keying. The default flipped on
- * 2026-10-29 (owner ruling: installed IS enabled): an absent word now means ON,
- * and only an explicit stored 0 — the recovery door's off-record — walks an app
- * off. A ledger that cannot be read still answers false, because a dial with no
- * NVS should not grow screens it cannot govern. */
-bool orb_svc_enabled(int slot)
-{
-    nvs_handle_t h;
-    if (nvs_open_from_partition("storage", GRANTS_NS, NVS_READONLY, &h) != ESP_OK)
-        return false;                        /* no ledger readable: the dial stands */
-    char key[12];
-    snprintf(key, sizeof key, "e%d", slot);
-    uint32_t v = 1;                          /* absent = on: installed is enabled */
-    const esp_err_t r = nvs_get_u32(h, key, &v);
-    nvs_close(h);
-    if (r == ESP_ERR_NVS_NOT_FOUND) return true;
-    return r == ESP_OK && (v & 1u) != 0;
-}
-
-esp_err_t orb_svc_set_enabled(int slot, bool on)
-{
-    nvs_handle_t h;
-    const esp_err_t e = nvs_open_from_partition("storage", GRANTS_NS,
-                                                NVS_READWRITE, &h);
-    if (e != ESP_OK) return e;
-    char key[12];
-    snprintf(key, sizeof key, "e%d", slot);
-    /* Off is a stored 0, never an erase: since the default flipped, an erased
-     * word reads as ON and the next boot would walk the app straight back. */
-    esp_err_t w = nvs_set_u32(h, key, on ? 1u : 0u);
-    if (w == ESP_OK) w = nvs_commit(h);
-    nvs_close(h);
-    return w;
-}
-
+/* ---- the uninstall wipe (P4a) ----------------------------------------------------
+ * An app is installed or not (§43.3): uninstall erases every word the row owned —
+ * grants, faults, its settings namespace — and orb_app_net erases its secrets, so a
+ * later install of the same app is a fresh provisioning. */
 esp_err_t orb_svc_forget_row(int slot)
 {
     if (slot < 0 || slot >= ORB_SVC_ROWS) return ESP_ERR_INVALID_ARG;
@@ -867,7 +843,6 @@ esp_err_t orb_svc_forget_row(int slot)
     if (nvs_open_from_partition("storage", GRANTS_NS, NVS_READWRITE, &h) == ESP_OK) {
         char key[12];
         snprintf(key, sizeof key, "g%d", slot); nvs_erase_key(h, key);
-        snprintf(key, sizeof key, "e%d", slot); nvs_erase_key(h, key);
         nvs_commit(h);
         nvs_close(h);
     }
@@ -1055,6 +1030,14 @@ uint32_t orb_svc_beat_ms(const orb_app_t *a)
 {
     const int slot = orb_app_index_of(a);
     return (slot >= 0) ? s_row[slot].beat_ms : 0;
+}
+
+/* §43: a write the broker did not make (an app's secret, in the credential store) still
+ * moves the app's generation, so the app re-asks what it can know about it. */
+void orb_svc_cfg_touch(const orb_app_t *a)
+{
+    const int slot = orb_app_index_of(a);
+    if (slot >= 0 && slot < ORB_SVC_ROWS) s_row[slot].cfg_gen++;
 }
 
 uint32_t orb_svc_cfg_gen(const orb_app_t *a)

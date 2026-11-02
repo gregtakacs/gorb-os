@@ -1497,7 +1497,7 @@ serves the bytes it was built with, never the ones on disk.
 - **The clock-app disappearance was self-inflicted by the 22:11 rebuilt
   `storage` image** (`/tmp/stor_new.bin`): it was regenerated containing
   only `orb.net`/`orb.idle`/`orb.grants`, so it silently dropped the
-  `orb.app<slot>` enable words, `orb.os`, `tz`, and the whole `orb.fault`
+  `orb.app<slot>` settings, `orb.os`, `tz`, and the whole `orb.fault`
   namespace — `appinstall: resolved 1`, dial lost clock. **Re-flashing the
   untouched pre-repair capture `/tmp/storB.bin` restored everything**
   (`enabled "clock" from its stored word`, 2 walkable apps, tz US/Central,

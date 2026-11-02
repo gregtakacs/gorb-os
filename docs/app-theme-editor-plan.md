@@ -58,7 +58,7 @@ first token is the owning slug (`orb_theme.h:51-57`). The whole hub surface
 `/api/theme/{list,install,delete,rescan,preview,upload,commit,upload-status,stem}`
 already ignores the app. The Themes face already has a per-app chooser. Only its
 **source** is wrong: `renderThemeTabs` (`app.js:2325`) builds sub-tabs from theme
-rows already on the card, so an enabled theme-aware app with zero themes is
+rows already on the card, so an installed theme-aware app with zero themes is
 invisible. §6 fixes the source, not the shape.
 
 **The signal already ships.** `themes` is one of the four frozen caps
@@ -524,16 +524,16 @@ Themes face stays its own lazy per-app face. Theme rows stay built with DOM APIs
    cap has ~1.9 MB of headroom over the clock's own UI, so S4 carries no sizing risk
    and the split is worth doing for the byte count it saves rather than because the
    cap forces it. Re-measure only if the app-owned files grow tenfold.
-4. **Editing for a disabled app.** The Themes face lists enabled apps, so an app with
-   an editor that is not enabled has no pane. Whether it should get one for
-   authoring is open.
+4. **Editing for an app that is on the card but not installed.** The Themes face lists
+   installed apps, so a card-only app with an editor has no pane. Whether it should get
+   one for authoring is open. (There is no third state: an app is installed or not, §43.3.)
 
 ## 11. The one sentence to remember
 
 The `.orbapp` carries an app's editor as an optional CRC-covered region the firmware
 verifies, never installs, and never runs. The hub reads it back off the card over
 `GET /api/v1/apps/editor?slug=`, serves it same-origin beside a shared baker and
-runtime, and the Themes face lists every enabled `themes`-cap app from the ledger
+runtime, and the Themes face lists every installed theme-aware app from the ledger
 with an Edit button only where a region exists. If a session is told to "move the
 theme editor into the Themes tab," it is implementing this.
 

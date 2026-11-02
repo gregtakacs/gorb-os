@@ -41,20 +41,28 @@ _cr = importlib.util.spec_from_file_location("make_clock_region",
 clock_region = importlib.util.module_from_spec(_cr)
 _cr.loader.exec_module(clock_region)
 
+# §43: an app's code is a wasm module built from apps/<slug>/ against apps/sdk and
+# nothing else. build_apps is the one compiler of those modules; this file packs them.
+_ba = importlib.util.spec_from_file_location("build_apps", os.path.join(HERE, "build_apps.py"))
+build_apps = importlib.util.module_from_spec(_ba)
+_ba.loader.exec_module(build_apps)
+
 
 OUT_DIR = os.path.join(HERE, "..", "tools", "orb-manager", "apps")
 
 # Behaviour kind ids must match main/app/orb_app.h's enum (C6 append-only).
-KIND_COLOR_PICKER = 1
-KIND_CLOCK = 3
-KIND_FLIGHTS = 4
+KIND_COLOR_PICKER = 1      # retired: the picker is a wasm app now (§43)
+KIND_WASM = 2
+KIND_CLOCK = 3             # retired: the clock is a wasm app now (§43)
+KIND_FLIGHTS = 4           # retired: the flight tracker is a wasm app now (§43)
 
 # The one owned caps each factory app declares (D19: the declaration is the
-# consent). The clock walks the card for theme containers and asks for the D11
-# install, so it names sd_read|themes, and it ticks and chimes (D39), so it names
-# sound — revocable on the dial like the other two; the picker owns nothing — its three
-# settings ride the free config cap, which is not declarable (CAP_FREE).
-CLOCK_CAPS = orbapp.cap_bit("sd_read") | orbapp.cap_bit("themes") | orbapp.cap_bit("sound")
+# consent). The clock ticks and chimes (D39), so it names sound — revocable on the
+# dial like the other two. It no longer names sd_read or themes: the theme picker it
+# used to carry is the OS's Themes page since §43, and a wasm clock never walks the
+# card. The picker owns nothing — its three settings ride the free config cap, which
+# is not declarable (CAP_FREE).
+CLOCK_CAPS = orbapp.cap_bit("sound")
 PICKER_CAPS = 0
 # The flight tracker opens sockets (the OS feed, docs/flight-tracker-design.md),
 # so it declares net: an app that declared nothing never reaches the network.
@@ -64,7 +72,7 @@ FLIGHTS_CAPS = orbapp.cap_bit("net") | orbapp.cap_bit("location")
 # from it. The number is not typed here. It is read out of version.txt — the same file
 # root CMakeLists.txt stamps into the image through tools/orb_version.sh — because these
 # two containers are compiled from sources this repo tracks (the clock's behaviour
-# module is main/clock/, and the picker's editor is built by make_clock_region.py from
+# module is main/stage/, and the picker's editor is built by make_clock_region.py from
 # composer sources under version control), so the release they belong to IS the release
 # of the tree. A VERSIONS table typed beside the script would be a second source, and the
 # two would drift the first time a release bumped one and not the other.
@@ -121,15 +129,21 @@ FLIGHTS_SETTINGS = (
     {"id": "bg",     "type": "enum",   "min": 0, "max": 3, "default": 2},
     {"id": "boost",  "type": "toggle", "default": 0},
     {"id": "ground", "type": "toggle", "default": 1},
-    {"id": "key",    "type": "string", "def_str": ""},
+    # §43: the owner's adsb.lol API key. A secret: the app never reads it, the OS sends
+    # it only to this host, and the hub edits it like any other option.
+    {"id": "key",    "type": "secret", "host": "api.adsb.lol"},
 )
 
 APPS = (
     # slug, title, kind, caps, settings, editor-region bytes (b"()" when none)
-    ("clock",        "Clock", KIND_CLOCK,        CLOCK_CAPS,  (), "_clock_editor"),
-    ("color_picker", "HSB",   KIND_COLOR_PICKER, PICKER_CAPS, PICKER_SETTINGS, None),
-    ("flights",      "Flights", KIND_FLIGHTS,    FLIGHTS_CAPS, FLIGHTS_SETTINGS, None),
+    ("clock",        "Clock", KIND_WASM,         CLOCK_CAPS,  (), "_clock_editor"),
+    ("color_picker", "HSB",   KIND_WASM,         PICKER_CAPS, PICKER_SETTINGS, None),
+    ("flights",      "Flights", KIND_WASM,       FLIGHTS_CAPS, FLIGHTS_SETTINGS, None),
 )
+
+# The fastest beat each app may ask for (D16): set_beat may only slow from here, and
+# an app absent from this table never ticks.
+PERIOD_MS = {"flights": 1000, "clock": 1000}
 
 # Built and checked with the rest, but kept off the hub's shelf until the owner
 # releases it (2026-11-01: the flight tracker is not ready). `--unreleased DIR`
@@ -156,10 +170,15 @@ def containers():
     out = []
     with tempfile.TemporaryDirectory() as td:
         for slug, title, kind, caps, settings, editor in APPS:
+            code, mem = b"", 0
+            if kind == KIND_WASM:
+                code, _imports, mem = build_apps.build(slug)
             orbapp.write_container(
                 os.path.join(td, slug + ".orbapp"), slug, title, caps=caps,
                 settings=settings, behaviour_kind=kind, serial=SERIAL,
-                baked_ms=BAKED_MS, editor=editor_region(editor), version=VERSION)
+                period_ms=PERIOD_MS.get(slug, 0),
+                baked_ms=BAKED_MS, editor=editor_region(editor), version=VERSION,
+                code=code, wasm_mem_max=mem)
             with open(os.path.join(td, slug + ".orbapp"), "rb") as f:
                 blob = f.read()
             out.append((slug, title, kind, caps, blob))

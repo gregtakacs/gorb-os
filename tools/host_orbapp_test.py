@@ -399,7 +399,7 @@ check("app_id_of is stable for a slug", A.app_id_of("clock") == A.app_id_of("clo
 check("two near-identical slugs do not collide on app_id",
       A.app_id_of("clock") != A.app_id_of("cl0ck"))
 
-expect_refuse("a beat below the commit floor is refused", lambda: A._period(2999))
+expect_refuse("a beat below the commit floor is refused", lambda: A._period(999))
 check("the beat floor itself is accepted", A._period(A.BEAT_MIN_MS) == A.BEAT_MIN_MS)
 check("0 means never ticks and is accepted", A._period(0) == 0)
 expect_refuse("a beat past a day is refused (say 0 instead)",
@@ -632,6 +632,21 @@ check("a toggle's min/max are forced to 0..1 regardless of what was asked",
       A.check_settings([dict(id="a", type="toggle", min=-5, max=99,
                              default=1)]) == [("a", 2, 0, 1, 1, "")],
       A.check_settings([dict(id="a", type="toggle", min=-5, max=99, default=1)]))
+# §43: a secret names the one host its value may go to, carries no default, costs
+# nothing against the NVS quota (the credential store holds it), and round-trips.
+SEC = [dict(id="key", type="secret", host="api.adsb.lol")]
+check("a secret packs its host into the descriptor's string field",
+      A.check_settings(SEC) == [("key", 4, 0, 0, 0, "api.adsb.lol")], A.check_settings(SEC))
+check("a secret costs nothing against the settings quota", A.cfg_charge(A.check_settings(SEC)) == 0)
+check("a secret round-trips through pack and unpack",
+      A.unpack_settings(A.pack_settings(A.check_settings(SEC)), 1)[0]["type"] == "secret"
+      and A.unpack_settings(A.pack_settings(A.check_settings(SEC)), 1)[0]["def_str"] == "api.adsb.lol")
+expect_refuse("a secret with no host is refused",
+              lambda: A.check_settings([dict(id="key", type="secret")]), "host")
+expect_refuse("a secret's host must be a lower-case DNS name",
+              lambda: A.check_settings([dict(id="key", type="secret", host="API.adsb.lol/x")]), "host")
+expect_refuse("a secret never carries a default",
+              lambda: A.check_settings([dict(id="key", type="secret", host="a.b", def_str="k")]), "host")
 # 16 STRINGs at 31 B is 512 B: inside the 2048 B quota, so the cap that binds is
 # SETTINGS_MAX and not the byte charge — and the charge is per value, not per row.
 BIG = [dict(id="k%d" % i, type="string", def_str="x" * 31) for i in range(16)]
@@ -743,8 +758,8 @@ MUTATIONS = [
      'CAP_OWNER = ("power", "net", "sd_read", "themes")',
      'CAP_OWNER = ("power", "net", "themes")'),
     ("the setting types lose one (wire renumber)",
-     'SET_TYPES = ("int", "enum", "toggle", "string")',
-     'SET_TYPES = ("int", "enum", "string")'),
+     'SET_TYPES = ("int", "enum", "toggle", "string", "secret")',
+     'SET_TYPES = ("int", "enum", "string", "secret")'),
     ("the beat floor is gone", "if period_ms < BEAT_MIN_MS:", "if 0:"),
     ("the D21 art-carry gate is gone from check_header",
      'if h["art_size"] != 0 or h["art_crc"] != 0:', "if False:"),

@@ -1,0 +1,747 @@
+/**
+ * flights — the flight tracker, as an app (apps/sdk/orb.h; docs/flight-tracker-design.md).
+ *
+ * Everything that is the tracker's own lives here: which provider to ask and how
+ * often, resting a provider that refused, adsb.lol's hourly budget, the streaming
+ * parse (readsb.c), the contact table and its dead reckoning (model.c), route
+ * lookups, the radar and the knob's three levels. What it borrows from the OS is the
+ * HTTPS fetch (orb.net_*: one request at a time, gated, run off the UI task, with the
+ * owner's adsb.lol key attached by the OS and never seen here), the home location,
+ * its declared settings, a canvas with drawn primitives, and the beat.
+ *
+ * Moved out of the firmware (main/flights/ + main/app/orb_flights.c) by §43 with its
+ * behaviour unchanged. One shape changed: the feed used to be its own task, and is now
+ * a state machine stepped from orb_service, which the OS calls every pass whether or
+ * not the tracker is on the glass — so background polling still runs off the glass.
+ * A body is parsed a slice per pass, so a 70 KB answer never holds the dial.
+ */
+#include "orb.h"
+
+#include "model.h"
+#include "readsb.h"
+
+#define W        ORB_SCREEN_W
+#define H        ORB_SCREEN_H
+#define CX       (W / 2)
+#define CY       (H / 2)
+#define RING_R   184                 /* full range, px: header and footer sit outside it */
+#define VIS_MS   15000               /* poll period while on the glass */
+#define BOOST_MS 20000               /* background poll while something is worth watching */
+#define TICK_MS  1000                /* redraw while on the glass (the manifest floor) */
+
+#define SYM_UP    "\xEF\x81\xB7"
+#define SYM_DOWN  "\xEF\x81\xB8"
+#define SYM_RIGHT "\xEF\x81\x94"
+
+static const uint16_t RANGES_NM[] = { 10, 20, 40, 80 };
+static const uint32_t BG_MS[]     = { 0, 60000, 120000, 300000 };
+static const char *const BG_TXT[] = { "off", "1 min", "2 min", "5 min" };
+static const char *const SRC_TXT[] = { "adsb.lol", "adsb.fi" };
+#define N_RANGES (int)(sizeof RANGES_NM / sizeof RANGES_NM[0])
+#define N_BG     (int)(sizeof BG_MS / sizeof BG_MS[0])
+
+enum { SRC_LOL = 0, SRC_FI = 1 };
+
+static int64_t now_ms(void) { return orb_uptime_us() / 1000; }
+
+/* ---- settings (declared in the container; tools/make_factory_apps.py) ------------ */
+
+typedef struct {
+    double  latd, lond;          /* the OS home (cap location), not a setting */
+    bool    home_ok;
+    char    place[40];
+    int32_t range, source, bg, boost, ground;
+} settings_t;
+
+static settings_t s_set = { .range = 2, .source = 1, .bg = 2, .boost = 0, .ground = 1 };
+static uint32_t   s_cfg_gen, s_home_gen = 0xFFFFFFFFu;
+static bool       s_visible;
+
+typedef enum { MODE_ROAM, MODE_ZOOM, MODE_INFO } knob_mode_t;
+static knob_mode_t s_mode;
+
+/* Home is the OS's: one owner setting, read through the location cap. A revoked cap
+ * reads as no home, and the footer says why. */
+static void load_home(void)
+{
+    orb_home_t h;
+    memset(&h, 0, sizeof h);
+    const int32_t e = orb_home(&h);
+    s_home_gen = orb_home_gen();
+    s_set.home_ok = e == ORB_OK;
+    s_set.latd = h.lat_e6 / 1e6;
+    s_set.lond = h.lon_e6 / 1e6;
+    snprintf(s_set.place, sizeof s_set.place, "%s", e == ORB_OK ? h.place :
+             e == ORB_ERR_NOT_FOUND ? "" : "location not allowed");
+}
+
+static void load_settings(void)
+{
+    int32_t v;
+    if (orb_cfg_get("range", &v) == ORB_OK)  s_set.range = v;
+    if (orb_cfg_get("source", &v) == ORB_OK) s_set.source = v;
+    if (orb_cfg_get("bg", &v) == ORB_OK)     s_set.bg = v;
+    if (orb_cfg_get("boost", &v) == ORB_OK)  s_set.boost = v;
+    if (orb_cfg_get("ground", &v) == ORB_OK) s_set.ground = v;
+    load_home();
+    if (s_set.range < 0 || s_set.range >= N_RANGES) s_set.range = 2;
+    if (s_set.bg < 0 || s_set.bg >= N_BG) s_set.bg = 1;
+    s_cfg_gen = orb_cfg_gen();
+}
+
+/* ---- the feed ------------------------------------------------------------------- */
+
+#define FLIGHTS_MAX 24               /* nearest kept per poll: a 466 px scope's worth */
+
+typedef struct {
+    orb_ac_t ac;
+    float    dist_km, bearing_deg;
+} flight_t;
+
+/* A 4xx is the provider saying no: rest it, starting at a minute and doubling to a
+ * quarter hour; a 403 is a ban and rests an hour, doubling to twelve. */
+#define REST_MIN_MS   60000u
+#define REST_MAX_MS   900000u
+#define BAN_MIN_MS    3600000u
+#define BAN_MAX_MS    43200000u
+/* adsb.lol's budget (the owner's free key, 2026-11-01): 150 requests an hour, so one
+ * request every ten minutes at most, whatever the settings say. */
+#define LOL_GAP_MS    600000u
+
+static uint32_t next_rest_ms(uint32_t last, int status)
+{
+    const bool ban = status == 403;
+    const uint32_t lo = ban ? BAN_MIN_MS : REST_MIN_MS, hi = ban ? BAN_MAX_MS : REST_MAX_MS;
+    uint32_t r = last ? last * 2 : lo;
+    if (r < lo) r = lo;
+    return r > hi ? hi : r;
+}
+
+static struct {
+    int64_t  rest_until[2];
+    uint32_t rest_ms[2];
+    int64_t  lol_next;
+    int64_t  next_poll;          /* 0 = poll now; INT64_MAX = no poll scheduled */
+    bool     kick;               /* a setting changed: poll at the next chance */
+    /* the picture */
+    flight_t work[FLIGHTS_MAX], pub[FLIGHTS_MAX];
+    int      work_n, pub_n;
+    int64_t  pub_ms;             /* 0 = never */
+    uint32_t seq;
+    bool     interesting;
+    int      last_src;
+    uint32_t polls, ok, fail, skip_rest;
+} F;
+
+static bool resting(int src)
+{
+    const int64_t t = now_ms();
+    return t < F.rest_until[src] || (src == SRC_LOL && t < F.lol_next);
+}
+
+/* A 429's Retry-After is a floor: the rest is never shorter than asked. */
+static void rest(int src, int status, uint32_t retry_after_s)
+{
+    F.rest_ms[src] = next_rest_ms(F.rest_ms[src], status);
+    if (retry_after_s && (uint64_t)retry_after_s * 1000 > F.rest_ms[src])
+        F.rest_ms[src] = retry_after_s > 86400u ? 86400000u : retry_after_s * 1000u;
+    F.rest_until[src] = now_ms() + F.rest_ms[src];
+    orb_logf("FLT provider %d refused (%d); resting it %u s", src, status,
+             (unsigned)(F.rest_ms[src] / 1000));
+}
+
+static bool feed_enabled(void)
+{
+    return s_set.home_ok && (s_visible || BG_MS[s_set.bg]);
+}
+
+static uint32_t next_wait_ms(void)
+{
+    if (s_visible) return VIS_MS;
+    const uint32_t bg = BG_MS[s_set.bg];
+    if (!bg) return 0;
+    if (s_set.boost && F.interesting && BOOST_MS < bg) return BOOST_MS;
+    return bg;
+}
+
+/* The sink: nearest-N as the body streams past. */
+typedef struct {
+    orb_readsb_t p;
+    double lat0, lon0, coslat0;
+    bool   hide_ground;
+} poll_ctx_t;
+static poll_ctx_t s_pc;
+
+static void emit(const orb_ac_t *a, void *ctx)
+{
+    const poll_ctx_t *c = ctx;
+    if (c->hide_ground && a->on_ground) return;
+    /* Equirectangular is exact enough inside a few hundred km, and the dial cannot
+     * draw the difference. */
+    const double dy = (a->lat - c->lat0) * 111.195;
+    const double dx = (a->lon - c->lon0) * 111.195 * c->coslat0;
+    const float d = (float)sqrt(dx * dx + dy * dy);
+    int slot;
+    if (F.work_n < FLIGHTS_MAX) {
+        slot = F.work_n++;
+    } else {
+        int far = 0;
+        for (int i = 1; i < F.work_n; i++)
+            if (F.work[i].dist_km > F.work[far].dist_km) far = i;
+        if (d >= F.work[far].dist_km) return;
+        slot = far;
+    }
+    F.work[slot].ac = *a;
+    F.work[slot].dist_km = d;
+    float b = (float)(atan2(dx, dy) * 180.0 / M_PI);
+    F.work[slot].bearing_deg = b < 0 ? b + 360.0f : b;
+}
+
+/* ---- routes (§6.6): adsbdb.com, one GET per callsign, ~700 B ---------------------- */
+
+#define ROUTE_ORIGIN  "https://api.adsbdb.com"
+#define ROUTE_TRIES   2
+#define ROUTES_N      16
+enum { ROUTE_NONE, ROUTE_PENDING, ROUTE_FOUND };
+
+typedef struct {
+    char       cs[9];
+    uint8_t    state, tries;
+    fm_route_t r;
+} route_slot_t;
+
+static route_slot_t s_routes[ROUTES_N];
+static int          s_route_next;
+static int64_t      s_route_rest_until;
+static uint32_t     s_route_rest_ms;
+static char         s_route_cs[9];        /* the callsign in flight */
+
+static int route_state(const char *cs, fm_route_t *out)
+{
+    if (!cs || !fm_route_callsign_ok(cs)) return ROUTE_NONE;
+    for (int k = 0; k < ROUTES_N; k++)
+        if (!strcmp(s_routes[k].cs, cs)) {
+            if (s_routes[k].state == ROUTE_FOUND && out) *out = s_routes[k].r;
+            return s_routes[k].state;
+        }
+    route_slot_t *e = &s_routes[s_route_next];          /* the oldest goes */
+    s_route_next = (s_route_next + 1) % ROUTES_N;
+    memset(e, 0, sizeof *e);
+    snprintf(e->cs, sizeof e->cs, "%s", cs);
+    e->state = ROUTE_PENDING;
+    return ROUTE_PENDING;
+}
+
+static bool route_pending(char cs[9])
+{
+    for (int k = 0; k < ROUTES_N; k++) {
+        const route_slot_t *e = &s_routes[(s_route_next + k) % ROUTES_N];
+        if (e->cs[0] && e->state == ROUTE_PENDING) { memcpy(cs, e->cs, 9); return true; }
+    }
+    return false;
+}
+
+static void route_answer(const char *cs, int st, const fm_route_t *r, bool failed)
+{
+    for (int k = 0; k < ROUTES_N; k++) {
+        route_slot_t *e = &s_routes[k];
+        if (strcmp(e->cs, cs)) continue;
+        if (failed && ++e->tries < ROUTE_TRIES) break;  /* stays pending: try again */
+        e->state = (uint8_t)st;
+        if (r) e->r = *r;
+        break;
+    }
+}
+
+/* ---- the request state machine ---------------------------------------------------- */
+
+typedef enum { REQ_NONE, REQ_POLL, REQ_ROUTE } req_t;
+static req_t    s_req;
+static int      s_req_src;
+static bool     s_parsing;           /* the body is landed and being tokenized */
+#define PARSE_SLICE 400              /* JSON events taken per service pass (D46: the OS
+                                      * lexes natively; this bounds the app's own work) */
+
+static void schedule_next(void)
+{
+    const uint32_t w = next_wait_ms();
+    F.next_poll = w ? now_ms() + w : INT64_MAX;
+}
+
+static bool start_poll(void)
+{
+    F.polls++;
+    int src = s_set.source ? SRC_FI : SRC_LOL;
+    if (resting(src)) {
+        if (resting(!src)) {
+            F.skip_rest++;
+            orb_log("FLT skip: both providers resting");
+            schedule_next();
+            return false;
+        }
+        src = !src;
+    }
+    char url[128];
+    const unsigned nm = RANGES_NM[s_set.range];
+    if (src == SRC_FI)
+        snprintf(url, sizeof url, "https://opendata.adsb.fi/api/v2/lat/%.4f/lon/%.4f/dist/%u",
+                 s_set.latd, s_set.lond, nm);
+    else
+        snprintf(url, sizeof url, "https://api.adsb.lol/v2/point/%.4f/%.4f/%u",
+                 s_set.latd, s_set.lond, nm);
+    /* The owner's adsb.lol key is this app's `key` secret: the OS attaches it, and only
+     * to api.adsb.lol (the manifest says so), so asking for it costs nothing elsewhere. */
+    const char *cred = src == SRC_LOL && orb_net_cred("key") ? "key" : NULL;
+    if (orb_net_get(url, cred) != ORB_OK) return false;
+    /* Spent before the answer, so a request that hangs still counts. */
+    if (src == SRC_LOL) F.lol_next = now_ms() + LOL_GAP_MS;
+    s_req = REQ_POLL;
+    s_req_src = src;
+    s_parsing = false;
+    memset(&s_pc, 0, sizeof s_pc);
+    s_pc.lat0 = s_set.latd;
+    s_pc.lon0 = s_set.lond;
+    s_pc.coslat0 = cos(s_set.latd * M_PI / 180.0);
+    s_pc.hide_ground = s_set.ground != 0;
+    orb_readsb_init(&s_pc.p, emit, &s_pc);
+    F.work_n = 0;
+    return true;
+}
+
+static void finish_poll(const orb_net_info_t *ni, bool good)
+{
+    F.last_src = s_req_src;
+    if (ni->status >= 400 && ni->status < 500) rest(s_req_src, ni->status, ni->retry_after_s);
+    if (good) {
+        F.rest_ms[s_req_src] = 0;            /* forgiven: the next refusal starts at a minute */
+        F.ok++;
+        memcpy(F.pub, F.work, sizeof F.pub);
+        F.pub_n = F.work_n;
+        F.pub_ms = now_ms();
+        F.seq++;
+        F.interesting = false;
+        for (int i = 0; i < F.pub_n; i++)
+            if (fm_interesting(&F.pub[i].ac, F.pub[i].dist_km, F.pub[i].bearing_deg))
+                F.interesting = true;
+    } else {
+        F.fail++;
+    }
+    orb_logf("FLT %s %d %s total=%u B=%u ac=%u kept=%d", good ? "ok" : "FAIL", (int)ni->status,
+             SRC_TXT[s_req_src], (unsigned)ni->total_ms, (unsigned)ni->len,
+             (unsigned)s_pc.p.objects, F.work_n);
+    orb_net_free();
+    s_req = REQ_NONE;
+    schedule_next();
+}
+
+static bool start_route(void)
+{
+    char cs[9];
+    if (!route_pending(cs) || now_ms() < s_route_rest_until) return false;
+    char path[32];
+    snprintf(path, sizeof path, "/v0/callsign/%s", cs);
+    char url[64];
+    snprintf(url, sizeof url, "%s%s", ROUTE_ORIGIN, path);
+    if (orb_net_get(url, NULL) != ORB_OK) return false;
+    memcpy(s_route_cs, cs, sizeof s_route_cs);
+    s_req = REQ_ROUTE;
+    return true;
+}
+
+/* A 404 is adsbdb not knowing the callsign; another 4xx rests route lookups the way a
+ * refusal rests a feed provider, and the callsign waits. */
+static void finish_route(const orb_net_info_t *ni)
+{
+    const char *cs = s_route_cs;
+    /* The ~700 B answer is a few dozen events: read in one pass, through the OS's
+     * reader, straight off the landed body. */
+    fm_route_t rt;
+    bool found = false;
+    if (ni->state == ORB_NET_DONE && ni->status == 200 && orb_json_begin(NULL, 0) == ORB_OK) {
+        fm_route_rd_t rd;
+        fm_route_begin(&rd);
+        orb_json_tok_t t;
+        for (int guard = 0; guard < 4096; guard++) {
+            const int32_t k = orb_json_next(&t);
+            if (k == ORB_JSON_END || k == ORB_JSON_ERROR) break;
+            fm_route_take(&rd, &t);
+        }
+        found = fm_route_end(&rd, &rt);
+    }
+    if (found) {
+        s_route_rest_ms = 0;
+        route_answer(cs, ROUTE_FOUND, &rt, false);
+        orb_logf("RTE %s %s-%s total=%u", cs, rt.from, rt.to, (unsigned)ni->total_ms);
+    } else if (ni->state == ORB_NET_DONE && (ni->status == 200 || ni->status == 404)) {
+        route_answer(cs, ROUTE_NONE, NULL, false);
+        orb_logf("RTE %s none (%d)", cs, (int)ni->status);
+    } else if (ni->status >= 400 && ni->status < 500) {
+        s_route_rest_ms = next_rest_ms(s_route_rest_ms, ni->status);
+        if (ni->retry_after_s && (uint64_t)ni->retry_after_s * 1000 > s_route_rest_ms)
+            s_route_rest_ms = ni->retry_after_s > 86400u ? 86400000u : ni->retry_after_s * 1000u;
+        s_route_rest_until = now_ms() + s_route_rest_ms;
+        orb_logf("RTE refused (%d); resting %u s", (int)ni->status, (unsigned)(s_route_rest_ms / 1000));
+    } else {
+        route_answer(cs, ROUTE_NONE, NULL, true);
+        orb_logf("RTE %s failed: err %d status %d", cs, (int)ni->err, (int)ni->status);
+    }
+    orb_net_free();
+    s_req = REQ_NONE;
+}
+
+static void feed_step(void)
+{
+    orb_net_info_t ni;
+    switch (s_req) {
+    case REQ_NONE:
+        if (!feed_enabled()) { F.next_poll = 0; return; }
+        if (F.kick || (F.next_poll != INT64_MAX && now_ms() >= F.next_poll)) {
+            F.kick = false;
+            if (start_poll()) return;
+        }
+        /* Routes ride the time between polls, one lookup per pass, and only the
+         * tracker on the glass asks. */
+        if (s_visible) (void)start_route();
+        return;
+    case REQ_POLL:
+        if (orb_net_info(&ni) != ORB_OK || ni.state == ORB_NET_BUSY) return;
+        if (ni.state != ORB_NET_DONE || ni.status != 200) { finish_poll(&ni, false); return; }
+        if (!s_parsing) {
+            if (orb_json_begin(NULL, 0) != ORB_OK) { finish_poll(&ni, false); return; }
+            s_parsing = true;
+        }
+        for (int n = 0; n < PARSE_SLICE; n++) {
+            orb_json_tok_t t;
+            const int32_t k = orb_json_next(&t);
+            if (!orb_readsb_token(&s_pc.p, &t) || k == ORB_JSON_END || k == ORB_JSON_ERROR) {
+                s_parsing = false;
+                finish_poll(&ni, orb_readsb_done(&s_pc.p));
+                return;
+            }
+        }
+        return;                                    /* the next slice, next pass */
+        return;
+    case REQ_ROUTE:
+        if (orb_net_info(&ni) != ORB_OK || ni.state == ORB_NET_BUSY) return;
+        finish_route(&ni);
+        return;
+    }
+}
+
+/* ---- the contact table (model.c: merge, aging, projection) ------------------------ */
+
+static fm_t     s_m;
+static uint32_t s_seq_seen;
+static char     s_sel[8];          /* the selected contact's hex, "" = none */
+
+static void merge(void)
+{
+    const int64_t now = orb_uptime_us();
+    fm_merge_begin(&s_m);
+    for (int i = 0; i < F.pub_n; i++)
+        fm_upsert(&s_m, &F.pub[i].ac, F.pub[i].dist_km, F.pub[i].bearing_deg, now);
+    fm_merge_end(&s_m, now);
+}
+
+/* ---- pixels --------------------------------------------------------------------- */
+
+static int32_t s_cv, s_head, s_foot, s_card;
+static float   s_ring_cos[48], s_ring_sin[48];
+
+static uint32_t dim(uint32_t rgb) { return (rgb >> 1) & 0x7F7F7F; }
+
+static void ring_at(int cx, int cy, int r, uint32_t c)
+{
+    for (int a = 0; a < 48; a++)
+        orb_cv_pixel(s_cv, cx + (int)lroundf(r * s_ring_cos[a]), cy + (int)lroundf(r * s_ring_sin[a]), c);
+}
+
+/* orb-os's altitude legend. */
+static uint32_t alt_rgb(const orb_ac_t *a)
+{
+    if (a->on_ground)       return 0x888888;
+    if (!a->has_alt)        return 0xC0C0C0;
+    if (a->alt_ft < 3000)   return 0xFF5A3C;
+    if (a->alt_ft < 10000)  return 0xFFB23C;
+    if (a->alt_ft < 20000)  return 0xC8FF3C;
+    if (a->alt_ft < 30000)  return 0x39FF14;
+    return 0x3CE0FF;
+}
+
+static bool emergency(const orb_ac_t *a)
+{
+    return a->squawk == 7500 || a->squawk == 7600 || a->squawk == 7700;
+}
+
+static void draw_frame(void)
+{
+    const float range_km = RANGES_NM[s_set.range] * 1.852f;
+    fm_project(&s_m, range_km, orb_uptime_us(), CX, CY, RING_R);
+
+    orb_cv_fill(s_cv, 0);
+    orb_cv_ring(s_cv, CX, CY, RING_R, 0x2A4A3A);
+    orb_cv_ring(s_cv, CX, CY, RING_R / 2, 0x1C3026);
+    orb_cv_line(s_cv, CX, CY - RING_R - 6, CX, CY - RING_R + 6, 0x2A4A3A);   /* north tick */
+    orb_cv_disc(s_cv, CX, CY, 3, 0xFFFFFF);                                  /* home */
+
+    for (int o = s_m.norder - 1; o >= 0; o--) {                              /* far first */
+        const fm_trk_t *t = &s_m.t[s_m.order[o]];
+        const uint32_t c = t->live ? alt_rgb(&t->ac) : dim(alt_rgb(&t->ac));
+        const int x = (int)lroundf(t->x), y = (int)lroundf(t->y);
+        if (!isnan(t->ac.track) && !t->ac.on_ground) {
+            float len = 6.0f + (isnan(t->ac.gs) ? 0.0f : t->ac.gs / 600.0f * 16.0f);
+            if (len > 22.0f) len = 22.0f;
+            const float tr = t->ac.track * (float)M_PI / 180.0f;
+            orb_cv_line(s_cv, x, y, x + (int)lroundf(len * sinf(tr)), y - (int)lroundf(len * cosf(tr)), c);
+        }
+        orb_cv_disc(s_cv, x, y, 3, c);
+        if (emergency(&t->ac)) ring_at(x, y, 9, 0xFF2020);
+        if (s_sel[0] && !strcmp(t->ac.hex, s_sel)) ring_at(x, y, 8, 0xFFFFFF);
+    }
+    char rng[12];
+    snprintf(rng, sizeof rng, "%u nm", (unsigned)RANGES_NM[s_set.range]);
+    orb_cv_text(s_cv, CX + 122, CY + 136, 61, ORB_FONT_14, 0x4A7A62, rng);
+    orb_cv_flush(s_cv);
+}
+
+static void draw_text(void)
+{
+    char b[64];
+    /* Info always shows a card while anything is drawn: the selected contact left the
+     * range or aged out, so the nearest takes over. */
+    if (s_mode == MODE_INFO && fm_find(&s_m, s_sel) < 0) fm_sel_step(&s_m, "", 1, s_sel);
+    /* The header says which level the knob is on, so a turn is never a guess. */
+    if (s_mode == MODE_ZOOM)
+        snprintf(b, sizeof b, "zoom  %u nm", (unsigned)RANGES_NM[s_set.range]);
+    else if (s_mode == MODE_INFO && s_m.norder)
+        snprintf(b, sizeof b, "%d of %d", fm_find(&s_m, s_sel) + 1, s_m.norder);
+    else if (s_mode == MODE_INFO)
+        snprintf(b, sizeof b, "no aircraft in range");
+    else
+        snprintf(b, sizeof b, "%d aircraft", s_m.norder);
+    orb_ui_text(s_head, b);
+    orb_ui_set(s_head, ORB_P_TEXT_COLOR, s_mode == MODE_ROAM ? 0xD0D0D0 : 0x39FF14);
+
+    const int64_t age = F.pub_ms ? now_ms() - F.pub_ms : -1;
+    uint32_t col = 0x909090;
+    if (!s_set.home_ok)         { snprintf(b, sizeof b, "%s", s_set.place[0] ? s_set.place : "set home in the hub (Orb tab)"); col = 0xFFB23C; }
+    else if (age < 0)           snprintf(b, sizeof b, F.skip_rest ? "feed refused, resting" : "waiting for the feed");
+    else if (age < 20000)       snprintf(b, sizeof b, "live  %s", SRC_TXT[F.last_src & 1]);
+    else if (age < 3 * VIS_MS)  snprintf(b, sizeof b, "%u s ago", (unsigned)(age / 1000));
+    else { snprintf(b, sizeof b, "feed down %u min", (unsigned)(age / 60000 + 1)); col = 0xFFB23C; }
+    orb_ui_text(s_foot, b);
+    orb_ui_set(s_foot, ORB_P_TEXT_COLOR, (int32_t)col);
+
+    const int si = fm_find(&s_m, s_sel);
+    if (si < 0) { s_sel[0] = 0; orb_ui_set(s_card, ORB_P_HIDDEN, 1); return; }
+    const fm_trk_t *t = &s_m.t[s_m.order[si]];
+    char alt[16], vs[24], spd[24];
+    if (t->ac.on_ground) snprintf(alt, sizeof alt, "on ground");
+    else if (t->ac.has_alt) snprintf(alt, sizeof alt, "%d ft", (int)t->ac.alt_ft);
+    else snprintf(alt, sizeof alt, "alt ---");
+    if (isnan(t->ac.baro_rate) || fabsf(t->ac.baro_rate) < 100) vs[0] = 0;
+    else snprintf(vs, sizeof vs, "  %s %d fpm", t->ac.baro_rate > 0 ? SYM_UP : SYM_DOWN,
+                  abs((int)t->ac.baro_rate));
+    if (isnan(t->ac.gs)) snprintf(spd, sizeof spd, "--- kt");
+    else snprintf(spd, sizeof spd, "%d kt", (int)t->ac.gs);
+    float brg = atan2f(t->x - CX, CY - t->y) * 180.0f / (float)M_PI;
+    if (brg < 0) brg += 360.0f;
+    /* The route line, when adsbdb knows the callsign and the aircraft is plausibly
+     * flying it (§6.6). Asking queues the lookup; the line appears on a later tick,
+     * and a stale schedule never does. */
+    char route[24] = "";
+    fm_route_t rt;
+    if (route_state(t->ac.flight, &rt) == ROUTE_FOUND &&
+        fm_route_plausible(&rt, t->ac.lat, t->ac.lon, t->ac.on_ground ? NAN : t->ac.track, t->ac.baro_rate))
+        snprintf(route, sizeof route, "%s " SYM_RIGHT " %s\n", rt.from, rt.to);
+    char card[192];
+    snprintf(card, sizeof card, "%s  %s\n%s%s%s\n%s  trk %d\n%.1f nm  brg %d",
+             t->ac.flight[0] ? t->ac.flight : t->ac.hex, t->ac.type[0] ? t->ac.type : "",
+             route, alt, vs, spd, isnan(t->ac.track) ? 0 : (int)t->ac.track,
+             (double)(t->d_km / 1.852f), (int)brg);
+    orb_ui_text(s_card, card);
+    orb_ui_set(s_card, ORB_P_HIDDEN, 0);
+}
+
+static void redraw(void)
+{
+    if (!s_visible) return;
+    if (F.seq != s_seq_seen) { s_seq_seen = F.seq; merge(); }
+    draw_frame();
+    draw_text();
+}
+
+static int32_t text(int32_t font, uint32_t rgb, int32_t align, int32_t y)
+{
+    const int32_t h = orb_ui_create(ORB_UI_LABEL, 0);
+    orb_ui_set(h, ORB_P_FONT, font);
+    orb_ui_set(h, ORB_P_TEXT_COLOR, (int32_t)rgb);
+    orb_ui_align(h, align, 0, y);
+    return h;
+}
+
+/* ---- entry points ---------------------------------------------------------------- */
+
+ORB_EXPORT("orb_init") int32_t orb_init(void)
+{
+    s_cv = orb_cv_create(0, W, H);
+    if (!s_cv) return ORB_ERR_NO_MEM;
+    s_head = text(ORB_FONT_16, 0xD0D0D0, ORB_AL_TOP_MID, 16);
+    s_foot = text(ORB_FONT_14, 0x909090, ORB_AL_BOTTOM_MID, -14);
+    s_card = text(ORB_FONT_16, 0xFFFFFF, ORB_AL_BOTTOM_MID, -40);
+    orb_ui_set(s_card, ORB_P_TEXT_ALIGN, 1);
+    orb_ui_set(s_card, ORB_P_BG, 0x101820);
+    orb_ui_set(s_card, ORB_P_BG_OPA, 204);
+    orb_ui_set(s_card, ORB_P_PAD, 8);
+    orb_ui_set(s_card, ORB_P_RADIUS, 10);
+    orb_ui_set(s_card, ORB_P_HIDDEN, 1);
+    for (int a = 0; a < 48; a++) {
+        const double t = a * M_PI / 24.0;
+        s_ring_cos[a] = (float)cos(t);
+        s_ring_sin[a] = (float)sin(t);
+    }
+    load_settings();
+    s_visible = false;
+    F.next_poll = 0;                 /* background polling starts at the first pass */
+    orb_logf("flight tracker ready: home %s, range %u nm, background %s",
+             s_set.home_ok ? "set" : "not set", (unsigned)RANGES_NM[s_set.range], BG_TXT[s_set.bg]);
+    return ORB_OK;
+}
+
+static void set_visible(bool v)
+{
+    if (s_visible == v) return;
+    s_visible = v;
+    orb_set_beat(v ? TICK_MS : 0);
+    /* On the glass: a fresh picture now, unless the one in hand (or the one being
+     * fetched) is already fresh — a background poll that just ran is not repeated. */
+    if (v) F.kick = s_req != REQ_POLL && (!F.pub_ms || now_ms() - F.pub_ms > 5000);
+    else schedule_next();
+}
+
+ORB_EXPORT("orb_activate") void orb_activate(void) { set_visible(true); }
+ORB_EXPORT("orb_resume")   void orb_resume(void)   { set_visible(true); }
+ORB_EXPORT("orb_suspend")  void orb_suspend(void)  { set_visible(false); }
+
+ORB_EXPORT("orb_show") void orb_show(void)
+{
+    set_visible(true);
+    redraw();
+}
+
+ORB_EXPORT("orb_tick") void orb_tick(uint32_t now)
+{
+    redraw();
+}
+
+ORB_EXPORT("orb_service") void orb_service(void)
+{
+    /* A setting written from outside (the hub's /api/v1/apps/cfg door, the options
+     * page) or a new home lands here: a generation moved, so re-read and re-apply. */
+    if (orb_cfg_gen() != s_cfg_gen || orb_home_gen() != s_home_gen) {
+        /* A new home invalidates every kept contact: their east/north offsets are from
+         * the old one. */
+        if (orb_home_gen() != s_home_gen) {
+            s_m.n = s_m.norder = 0;
+            s_sel[0] = 0;
+        }
+        load_settings();
+        F.kick = true;
+        redraw();
+    }
+    feed_step();
+}
+
+ORB_EXPORT("orb_set_armed") int32_t orb_set_armed(int32_t armed)
+{
+    if ((s_mode != MODE_ROAM) == (armed != 0)) return s_mode != MODE_ROAM;
+    s_mode = armed ? MODE_ZOOM : MODE_ROAM;
+    if (!armed) {
+        s_sel[0] = 0;
+        orb_cfg_set("range", s_set.range);                  /* commit edge */
+        s_cfg_gen = orb_cfg_gen();
+    }
+    redraw();
+    return s_mode != MODE_ROAM;
+}
+
+ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
+{
+    if (s_mode == MODE_ROAM) return;
+    if (pressed) {
+        if (s_mode == MODE_ZOOM) {
+            s_mode = MODE_INFO;          /* the nearest aircraft's card opens */
+            fm_sel_step(&s_m, "", 1, s_sel);
+        } else {
+            /* Back to turning between apps: the router reads the disarm on its
+             * next poll. */
+            orb_set_armed(0);
+            orb_armed(0);
+            return;
+        }
+    } else if (delta && s_mode == MODE_ZOOM) {
+        const int r = s_set.range + (delta > 0 ? 1 : -1);
+        if (r < 0 || r >= N_RANGES) return;
+        s_set.range = r;
+        F.kick = true;                   /* the next poll asks for the new radius */
+    } else if (delta) {
+        fm_sel_step(&s_m, s_sel, delta > 0 ? 1 : -1, s_sel);
+    } else {
+        return;
+    }
+    redraw();
+}
+
+/* ---- options page (the menu renders, these rows answer) ---------------------------- */
+
+enum { OPT_RANGE, OPT_SOURCE, OPT_BG, OPT_BOOST, OPT_GROUND, OPT_HOME, OPT_N };
+
+ORB_EXPORT("orb_opt_count") int32_t orb_opt_count(void) { return OPT_N; }
+
+ORB_EXPORT("orb_opt_label") void orb_opt_label(int32_t idx)
+{
+    static const char *const L[OPT_N] = { "Range", "Source", "Background", "Boost",
+                                          "Ground traffic", "Home" };
+    orb_reply(idx >= 0 && idx < OPT_N ? L[idx] : "");
+}
+
+ORB_EXPORT("orb_opt_value") void orb_opt_value(int32_t idx)
+{
+    char v[40];
+    switch (idx) {
+    case OPT_RANGE:  snprintf(v, sizeof v, "%u nm", (unsigned)RANGES_NM[s_set.range]); break;
+    case OPT_SOURCE: snprintf(v, sizeof v, "%s", SRC_TXT[s_set.source & 1]); break;
+    case OPT_BG:     snprintf(v, sizeof v, "%s", BG_TXT[s_set.bg]); break;
+    case OPT_BOOST:  snprintf(v, sizeof v, "%s", s_set.boost ? "on" : "off"); break;
+    case OPT_GROUND: snprintf(v, sizeof v, "%s", s_set.ground ? "hidden" : "shown"); break;
+    case OPT_HOME:
+        snprintf(v, sizeof v, "%s", !s_set.home_ok && !s_set.place[0] ? "not set (hub: Orb tab)"
+                                                                      : s_set.place);
+        break;
+    default: v[0] = 0; break;
+    }
+    orb_reply(v);
+}
+
+/* Opening the page re-reads the settings, so a value written from outside is what
+ * the rows show. */
+ORB_EXPORT("orb_opt_arm") void orb_opt_arm(int32_t armed)
+{
+    if (armed) load_settings();
+}
+
+/* A press cycles the row's value and commits it: the page is a deliberate act, unlike
+ * a turn on the radar. */
+ORB_EXPORT("orb_opt_sel") void orb_opt_sel(int32_t idx)
+{
+    switch (idx) {
+    case OPT_RANGE:  s_set.range = (s_set.range + 1) % N_RANGES; orb_cfg_set("range", s_set.range); break;
+    case OPT_SOURCE: s_set.source = !s_set.source; orb_cfg_set("source", s_set.source); break;
+    case OPT_BG:     s_set.bg = (s_set.bg + 1) % N_BG; orb_cfg_set("bg", s_set.bg); break;
+    case OPT_BOOST:  s_set.boost = !s_set.boost; orb_cfg_set("boost", s_set.boost); break;
+    case OPT_GROUND: s_set.ground = !s_set.ground; orb_cfg_set("ground", s_set.ground); break;
+    default: return;
+    }
+    s_cfg_gen = orb_cfg_gen();           /* our own write: no reload needed */
+    F.kick = true;
+}

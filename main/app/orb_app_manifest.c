@@ -563,9 +563,9 @@ const char *orbapp_unpack_settings(const uint32_t *words, size_t nwords,
         const uint32_t *b = words + (size_t)i * ORBAPP_SETTINGS_WORDS;
         memset(&out[i], 0, sizeof out[i]);
         const uint32_t t = b[ORBAPP_S_TYPE];
-        if (t > (uint32_t)ORB_SET_STRING)      /* C9's four, frozen */
+        if (t > (uint32_t)ORB_SET_SECRET)      /* C9's four + §43's secret, frozen */
             return refuse(reason, cap, "setting %u has type word %u, outside"
-                          " C9's frozen 4", i, t);
+                          " C9's frozen 5", i, t);
         out[i].type = (orb_set_type_t)t;
         const char *e = get_field(b, ORBAPP_S_ID, ORBAPP_ID_MAX, out[i].id,
                                   sizeof out[i].id, DAMAGED);

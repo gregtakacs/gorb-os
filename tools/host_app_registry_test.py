@@ -11,7 +11,7 @@ suspend is an app that keeps burning flush work while it is off the glass, and a
 bank that is never released is the next app getting ESP_ERR_NO_MEM at boot.
 
 So the shipped functions are lifted VERBATIM out of main/app/orb_app.c and
-compiled here against the REAL orb_app.h, art_bank.h, clock_view.h,
+compiled here against the REAL orb_app.h, art_bank.h, orb_stage.h,
 color_picker.h and menu_view.h, with only the leaves stubbed — not re-typed in
 Python. An empty lift dies loudly, because a suite that silently tests a stale
 copy is worse than no suite. Compiling against the shipped headers is the point:
@@ -101,9 +101,7 @@ STUBS = r'''
 #include "esp_heap_caps.h"
 #include "lvgl.h"
 #include "orb_app.h"
-#include "clock_view.h"
-#include "color_picker.h"
-#include "flights_view.h"
+#include "orb_stage.h"
 #include "menu_view.h"
 #include "art_bank.h"
 
@@ -159,7 +157,7 @@ void *heap_caps_calloc(size_t n, size_t sz, uint32_t caps)
  * pointer); the hooks' own behaviour is host_orbapp_wasm_test.py's and the device's. */
 const orb_app_iface_t orb_wasm_iface = { 0 };
 
-esp_err_t clock_view_init(orb_app_t *self)  { (void)self; T("clock_init");  return g_rc_clock; }
+esp_err_t stage_init(orb_app_t *self)  { (void)self; T("clock_init");  return g_rc_clock; }
 /* The clock's options surface (B1/B2). Stubbed rather than lifted: what this
  * suite proves is that the registry DISPATCHES them, and the answers themselves
  * are host_menu_test.py's and the device's to check. */
@@ -208,11 +206,11 @@ esp_err_t color_picker_init(void){ T("picker_init"); return g_rc_picker; }
 void color_picker_bind_app(orb_app_t *a) { (void)a; T("picker_bind"); }
 esp_err_t menu_view_init(void)   { T("menu_init");   return g_rc_menu; }
 
-lv_obj_t *clock_view_screen(void)       { return (lv_obj_t *)&tok_clock; }
+lv_obj_t *stage_screen(void)       { return (lv_obj_t *)&tok_clock; }
 lv_obj_t *color_picker_screen(void)     { return (lv_obj_t *)&tok_picker; }
 lv_obj_t *menu_view_screen(void)        { return (lv_obj_t *)&tok_menu; }
-void clock_view_set_bounce(bool on)     { g_bounce = on ? 1 : 0; T(on ? "bounce(1)" : "bounce(0)"); }
-bool clock_view_bounce(void)            { return g_bounce != 0; }
+void stage_run(bool on)     { g_bounce = on ? 1 : 0; T(on ? "bounce(1)" : "bounce(0)"); }
+bool stage_running(void)            { return g_bounce != 0; }
 void color_picker_show(void)            { T("picker_show"); }
 void color_picker_apply_input(int32_t d, bool p) { T("picker_input(%d,%d)", (int)d, p ? 1 : 0); }
 bool color_picker_armed(void)           { return g_picker_armed != 0; }
@@ -306,6 +304,13 @@ orb_app_t orb_app_usb_files_row = {
  * tier's second row, always present. */
 orb_app_t orb_app_sound_row = {
     .slug = (char *)"sound", .title = (char *)"Sound",
+    .kind = ORB_APP_KIND_APP, .behaviour_kind = ORB_BEHAVIOUR_NONE,
+    .iface = &s_usb_stub_iface, .installed = true, .enabled = true,
+    .art_slot = -1, .flash_slot = -1,
+};
+/* §43: the OS's Themes page, main/menu/themes_page.c — the tier's first row. */
+orb_app_t orb_app_themes_row = {
+    .slug = (char *)"themes", .title = (char *)"Themes",
     .kind = ORB_APP_KIND_APP, .behaviour_kind = ORB_BEHAVIOUR_NONE,
     .iface = &s_usb_stub_iface, .installed = true, .enabled = true,
     .art_slot = -1, .flash_slot = -1,
@@ -777,9 +782,10 @@ int main(void)
     restore_table();
     const size_t nface = orb_app_count();
     const int    ncard = orb_app_card_count();
-    ck("two service rows — USB Files, then Sound — and the index past them answers nothing",
-       orb_app_menu_count() == 2 && orb_app_menu_at(0) == &orb_app_usb_files_row &&
-       orb_app_menu_at(1) == &orb_app_sound_row && orb_app_menu_at(2) == NULL);
+    ck("three service rows — Themes, USB Files, then Sound — and the index past them answers nothing",
+       orb_app_menu_count() == 3 && orb_app_menu_at(0) == &orb_app_themes_row &&
+       orb_app_menu_at(1) == &orb_app_usb_files_row &&
+       orb_app_menu_at(2) == &orb_app_sound_row && orb_app_menu_at(3) == NULL);
     ck("the Sound page is a service row too: past the ledger, never walked, never a face",
        orb_app_is_menu_only(&orb_app_sound_row) &&
        orb_app_index_of(&orb_app_sound_row) == ORB_APP_MENU_BASE + 1 &&
@@ -866,7 +872,7 @@ def build_and_run(tmpdir):
            "-I", tmpdir,                       # the leaf stubs shadow the IDF ones
            "-I", P("main", "app"),
            "-I", P("main", "art"),
-           "-I", P("main", "clock"),
+           "-I", P("main", "stage"),
            "-I", P("main", "color"),
            "-I", P("main", "flights"),
            "-I", P("main", "menu"),
@@ -927,7 +933,10 @@ def main():
     # shipped the first two without the third, and its settings page was
     # unreachable on the dial with nothing red anywhere (2026-11-01). Every
     # compiled iface that offers rows must declare the hook that lists them.
-    app_c = open(os.path.join(ROOT, "main", "app", "orb_app.c")).read()
+    # §43: the ifaces that offer rows live in the wasm shim and the OS pages now.
+    app_c = "".join(open(os.path.join(ROOT, *f)).read() for f in (
+        ("main", "app", "orb_app.c"), ("main", "app", "orb_app_wasm.c"),
+        ("main", "menu", "themes_page.c"), ("main", "audio", "orb_sound_menu.c")))
     ifaces = re.findall(r"static const orb_app_iface_t (\w+) = \{(.*?)\n\};", app_c, re.S)
     offering = [(n, b) for n, b in ifaces if ".opt_count" in b]
     check("every iface that offers option rows declares opt_arm, or the menu never lists it",

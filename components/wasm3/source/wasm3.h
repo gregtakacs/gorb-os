@@ -395,6 +395,9 @@ M3Result       m3_RunStart (IM3Module i_module);
 // Arguments and return values are passed in and out through the stack pointer _sp.
 // Placeholder return value slots are first and arguments after. So, the first argument is at _sp [numReturns]
 // Return values should be written into _sp [0] to _sp [num_returns - 1]
+// gorb-os addition: the first import nothing linked, or NULL (m3_bind.c).
+const char *   m3_FirstUnlinkedImport (IM3Module i_module);
+
 M3Result       m3_LinkRawFunction (IM3Module         io_module,
                                    const char* const i_moduleName,
                                    const char* const i_functionName,

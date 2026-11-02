@@ -11,11 +11,18 @@ idf_component_register(
         # tree that reaches the interpreter; the registry sees it as one iface behind
         # one behaviour_kind, exactly like the picker.
         "app/orb_app_wasm.c"
+        # The widget and canvas service a wasm app draws through (§43): per-slot
+        # handle tables, so an app names its own objects and never an OS pointer.
+        "app/orb_ui.c"
         "app/orb_carousel.c"
         "app/orb_jobs.c"
-        # The flight feed: a background HTTPS poll over orb_https, parsed as it
-        # streams by orb_readsb (host-tested by tools/host_readsb_test.py).
-        "app/orb_flights.c"
+        # §43: the HTTPS service a wasm app fetches through (the flight feed's gate
+        # and TLS discipline, with no idea what a flight is) and the per-app
+        # credential store behind /api/v1/flights/key.
+        "app/orb_app_net.c"
+        # D46: the streaming JSON tokenizer apps parse through, natively. Pure C,
+        # host-tested as shipped by tools/host_json_test.py.
+        "app/orb_json.c"
         "app/orb_svc.c"
         "display/display.c"
         # C2 (theme-delta plan §6.2): the boot/install overlay — the one painter
@@ -28,19 +35,11 @@ idf_component_register(
         # compiles the shipped file as-is — the suite is the proof the
         # gate-to-table path is honest.
         "gfx/orb_layers.c"
-        "clock/clock_view.c"
-        # §26 slice 1: the face shown when no theme is resident. Own TU because the
-        # themed dial's job is drawing sprites and this one's contract is that it draws
-        # none — the two must not be able to reach for each other's state.
-        "clock/clock_base.c"
-        "clock/clock_themes.c"
+        "stage/orb_stage.c"
         "knob/knob.c"
-        "color/color_picker.c"
-        # The flight tracker's view (docs/flight-tracker-design.md §6), kind 4.
-        "flights/flights_view.c"
-        # Its model, LVGL-free so tools/host_flights_model_test.py compiles it.
-        "flights/flights_model.c"
         "menu/menu_view.c"
+        # §43: the Themes page, an OS menu row (it was the clock app's options page).
+        "menu/themes_page.c"
         "input/input_router.c"
         "imu/imu.c"
         # D39: the sound engine (I2S + ES8311 + NS4150B and the mixer) and its codec.
@@ -75,7 +74,6 @@ idf_component_register(
         "net/orb_geo.c"
         "net/orb_cities.c"
         "net/orb_tls_mem.c"   # mbedTLS allocator: PSRAM for the task that asks
-        "net/orb_readsb.c"
         "net/orb_mdns.c"      # _orb._tcp advertiser (docs/orb-manager-plan.md §5 item 4)
         "sd/orb_sd.c"
         "sd/orb_files.c"
@@ -95,10 +93,8 @@ idf_component_register(
         "app"
         "display"
         "gfx"
-        "clock"
+        "stage"
         "knob"
-        "color"
-        "flights"
         "menu"
         "input"
         "imu"
@@ -154,7 +150,7 @@ idf_component_register(
 #
 # It now lives in the `assets` data partition (partitions.csv), is flashed by
 # the esptool_py_flash_target_image() rule in the top-level CMakeLists.txt, and
-# is mapped once at boot by main/art/art_bank.c; clock_view.c's blob() returns
+# is mapped once at boot by main/art/art_bank.c; orb_stage.c's blob() returns
 # the mapped base, so sprite reads are unchanged. Geometry parsed offline from
 # the theme's clock_style.json still lives in assets/clock_assets.h.
 

@@ -172,3 +172,18 @@ M3Result m3_LinkRawFunction (IM3Module         io_module,
 {
     return FindAndLinkFunction(io_module, i_moduleName, i_functionName, i_signature, (voidptr_t)i_function, NULL);
 }
+
+/* gorb-os addition (PROVENANCE.md "Local additions"): the first imported function the
+ * module declares and nothing has linked, or NULL when every import is linked. Lives
+ * here because M3Function's layout is this component's own (its config flags are
+ * PRIVATE), so only code built with them may walk the table. */
+const char * m3_FirstUnlinkedImport (IM3Module i_module)
+{
+    if (!i_module) return NULL;
+    for (u32 i = 0; i < i_module->numFunctions; ++i) {
+        const IM3Function f = &i_module->functions[i];
+        if (f->import.moduleUtf8 && f->import.fieldUtf8 && !f->compiled)
+            return f->import.fieldUtf8;
+    }
+    return NULL;
+}

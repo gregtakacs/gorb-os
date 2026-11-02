@@ -173,10 +173,11 @@ VERSION_RE = re.compile(
 # which is the number the owner prices the app at on the install confirm. 0 is a
 # real answer — no tick at all, the vector-only app. Below the floor it is not an
 # answer but a request for frames the dial cannot commit: the measured commit pass
-# costs 185 ms, so 3000 ms is the honest lower bound for a beat the shared
-# scheduler can honour, and this writer will not emit a manifest promising what
-# the OS cannot deliver.
-BEAT_MIN_MS = 3000
+# costs 185 ms, so 1000 ms is the honest lower bound for a beat the shared
+# scheduler can honour (§43 lowered it from 3000: a wasm app's beat redraws its own
+# page, and the flight tracker it replaced ran at 1 Hz), and this writer will not
+# emit a manifest promising what the OS cannot deliver.
+BEAT_MIN_MS = 1000
 BEAT_MAX_MS = 86400000         # a day; past this the app means "never", and 0
                                # is the word for that
 
@@ -189,7 +190,9 @@ CAP_OWNER = ("power", "net", "sd_read", "themes", "sound", "location")   # sound
 CAP_BITS  = len(CAP_FREE) + len(CAP_OWNER)      # 10 == CAP_N
 
 # C9's settings types, frozen, in orb_svc.h's orb_set_type_t order.
-SET_TYPES = ("int", "enum", "toggle", "string")
+SET_TYPES = ("int", "enum", "toggle", "string", "secret")   # secret: §43
+# A secret's one allowed host: a DNS name, lower case, fits the 31-byte field.
+HOST_RE = re.compile(r"^(?=.{1,31}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$")
 CFG_QUOTA_BYTES = 2048                          # ORB_CFG_QUOTA_BYTES (§9.4.4)
 
 
@@ -506,6 +509,16 @@ def check_settings(settings):
                              % (sid, tname, ", ".join(SET_TYPES)))
         t = SET_TYPES.index(tname)
         dstr = s.get("def_str", "") or ""
+        if t == SET_TYPES.index("secret"):
+            # §43: a value the app never reads. The descriptor's string field names
+            # the one host the OS may send it to; the OS refuses any other.
+            host = s.get("host", "")
+            if dstr or not isinstance(host, str) or not HOST_RE.match(host):
+                raise ValueError("setting '%s' is a secret and needs \"host\": the one "
+                                 "lower-case host name (1..%d chars) the OS may send it "
+                                 "to, and no def_str" % (sid, DEFSTR_MAX - 1))
+            rows.append((sid, t, 0, 0, 0, host))
+            continue
         if t != SET_TYPES.index("string"):
             if dstr:
                 raise ValueError("setting '%s' carries a def_str but its type is "
@@ -557,7 +570,8 @@ def cfg_charge(rows):
     be a check that can never fire, which is worse than none: it reads as
     coverage and is a comment.
     """
-    return sum(4 if t != SET_TYPES.index("string") else len(d) + 1
+    return sum(0 if t == SET_TYPES.index("secret")       # the credential store's, not NVS quota
+               else 4 if t != SET_TYPES.index("string") else len(d) + 1
                for _, t, _, _, _, d in rows)
 
 

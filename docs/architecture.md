@@ -30,9 +30,10 @@ Order is load-bearing; the comments in `main.c` carry the why for each rung.
 4. App platform, in this exact order:
    `orb_app_install_resolve_boot()` (rebuild the card table from the apps
    partition — the image ships no apps) →
-   `orb_svc_init()` (grant + enable words into RAM) →
-   `orb_app_install_apply_enable()` → `orb_app_install_apply_code()` (wasm
-   runtimes for enabled code apps) → `orb_app_init_all()` (builds every app's
+   `orb_svc_init()` (grant and fault words into RAM) →
+   `orb_app_cred_sweep()` (secrets no installed app declares are erased) →
+   `orb_app_install_apply_code()` (wasm runtimes for installed code apps) →
+   `orb_app_init_all()` (builds every app's
    screen in registry-table order — table order IS boot order).
 5. `orb_carousel_init()` — soft-fail: no name chip just degrades the knob walk.
 6. `knob_init()`, `input_router_init()` — knob events route to the active
@@ -79,15 +80,16 @@ Order is load-bearing; the comments in `main.c` carry the why for each rung.
   list. `behaviour_kind` picks the iface: `ORB_BEHAVIOUR_COLOR_PICKER`,
   `ORB_BEHAVIOUR_WASM`, … (append-only enum).
 - **Install** (`orb_app_install.c`): the `apps` partition catalog — manifest
-  copies + geometry, survives a card pull. Enable/failed/grant words in NVS.
+  copies + geometry + wasm code, survives a card pull. Grant and fault words
+  in NVS; secrets in the credential store.
   Slot index = registry position, pinned in the catalog, and the key for
   every per-app NVS namespace.
-- **Three states, not four** (hub-side ruling). The device answers
-  `/api/v1/apps/enable` and the hub proxies it, but the Apps face never asks:
-  an orb either RUNS an app (in flash, in a slot, on the carousel — one fact)
-  or does not have it installed. A toggle that could hide an installed row off
-  the carousel re-created a state the product ruled out, and it made "which
-  apps do I have" unanswerable from the page. What the face offers per row:
+- **Installed or not, full stop** (owner ruling, plan §43.3). An app on the
+  card can be installed from there; an installed app runs (in its slot, on the
+  carousel — one fact) unless the OS quarantined it after two faults (C2), which
+  `/api/v1/apps/clear` lifts. There is no other state.
+  Uninstall releases the app and erases its grants, faults, settings and
+  secrets; installing it again is a fresh provisioning. What the face offers per row:
   Install and shelf-delete when the dial does not carry the app; Uninstall and
   **Remove from card** when it does. Remove from card walks the uninstall door
   and then `POST /api/v1/sd/rm`, in that order, because uninstall alone leaves
@@ -136,7 +138,7 @@ provisioning AP is LAN-isolated by design, and STA mode assumes a trusted LAN.
 | Device config | `GET POST /api/v1/config` (zone table + set), `POST /api/v1/name` (32 printable-ASCII bytes; the DEVICE owns this string, the hub keeps a copy) |
 | WiFi | `GET /api/v1/wifi/scan`, `POST wifi/join` (SSID+pass+tz+name in one body), `wifi/ap`, `wifi/mode` (persistent reachability mode; reboots) |
 | Firmware | `POST /api/v1/ota` (A/B with rollback), `POST /api/v1/reboot`, `POST /api/v1/reprov` (one-shot return to the provisioning AP, creds intact) |
-| Apps | `GET /api/v1/apps`; `POST /api/v1/apps/install` `enable` `uninstall` `clear`. No `factory`: D36 deleted the factory tier, so a seeded row arrives as an ordinary card file and has no restore door |
+| Apps | `GET /api/v1/apps`; `POST /api/v1/apps/install` `uninstall` `clear`; `GET POST /api/v1/apps/cfg` (one setting; a secret answers set/header/tail, never its value). No `factory`: D36 deleted the factory tier, so a seeded row arrives as an ordinary card file and has no restore door |
 | SD / themes | `GET /api/v1/sd`; `POST sd/app` `sd/theme` `sd/bundle` `sd/delete` `sd/rescan` |
 | Debug only (`CONFIG_ORB_DEBUG_HTTP`) | `GET /api/v1/screen` `/api/v1/fb` — framebuffer grabs for the bench |
 | Captive-portal probes | `GET /generate_204` `/gen_204` `/hotspot-detect.html` `/connect/test.php` `/favicon.ico` |

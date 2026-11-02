@@ -21,7 +21,7 @@
  *
  * Hook calling order on a switch is the order input_router.c used to run
  * inline, and it is deliberately kept: pre-load visibility, then
- * lv_screen_load(), then the post-load re-sync. clock_view_set_bounce() before
+ * lv_screen_load(), then the post-load re-sync. stage_run() before
  * the load is what parks or starts the tick against the RIGHT view, and the
  * picker's and the menu's *_show() after it is what re-pushes their values from
  * module statics into widgets lv_screen_load() just invalidated.
@@ -36,10 +36,6 @@
 
 #include "esp_heap_caps.h"   /* the card table lives in PSRAM, not internal .bss */
 
-#include "clock_view.h"
-#include "clock_themes.h"
-#include "color_picker.h"
-#include "flights_view.h"
 #include "menu_view.h"
 #include "art_bank.h"
 
@@ -49,175 +45,6 @@
 static const char *TAG = "app";
 
 /* ---- per-app state, behind the ABI the shell calls ----------------------- */
-
-/* The clock owns the primary art bank, which art_bank_init() mapped at boot
- * and which nothing unmaps: clock_view.c's image descriptors cache raw
- * pointers into it, so its lifetime outlasts every screen. An app that owns a
- * SECONDARY bank sets art_bytes below, and the map/unmap pair in
- * orb_app_activate()/suspend() is what claims and releases that. */
-static esp_err_t clock_activate(orb_app_t *app)
-{
-    (void)app;
-    /* The dial's animation beat is the only thing that costs flush work on
-     * every tick, so it runs only while the clock is on the glass. This is
-     * today's clock_view_set_bounce(true), reached pre-load exactly where
-     * input_router.c called it: the outgoing app is suspended first, so a
-     * switch away and a switch back cannot both leave a beat running. */
-    clock_view_set_bounce(true);
-    return ESP_OK;
-}
-
-static void clock_suspend(orb_app_t *app)
-{
-    (void)app;
-    clock_view_set_bounce(false);
-}
-
-/* Reveal the dial again without rebuilding it: this is the hook a refused
- * switch uses, and the tick has to come back with it. Leaving it parked would
- * mean a dial that stopped animating because an app it never showed could not
- * fit in the page window — a bug nobody would trace back to here. */
-static void clock_resume(orb_app_t *app)
-{
-    (void)app;
-    clock_view_set_bounce(true);
-}
-
-/* The dial has no armed view (a press there used to be inert by design), so the
- * press is the repeater's (D39 §5.1): arming asks for the time and leaves the dial
- * unarmed, so the turn still walks the carousel. A disarm is nothing to the dial. */
-static void clock_set_armed(orb_app_t *app, bool armed)
-{
-    (void)app;
-    if (armed) clock_view_repeater();
-}
-
-static bool clock_armed(const orb_app_t *app) { (void)app; return false; }
-
-static struct _lv_obj_t *clock_screen(orb_app_t *app)
-{
-    (void)app;
-    return clock_view_screen();
-}
-
-/* The clock's option answers live in clock_themes.c, not here: B2 rules that the
- * clock app owns the theme picker and the OS only renders the rows it is handed,
- * so the registry's job is to point at them and nothing more. */
-static esp_err_t clock_init(orb_app_t *app)
-{
-    if (clock_themes_init() != ESP_OK) return ESP_ERR_NO_MEM;
-    return clock_view_init(app);
-}
-
-static void clock_service(orb_app_t *app)
-{
-    (void)app;
-    /* Reaps the card walk and the staging verify whether or not the dial is on
-     * the glass: a scan that finishes while the owner has rotated away must still
-     * land, or the page shows a stale answer until they come back. Repainting is
-     * the shell's, on the LVGL task, from these results. */
-    clock_themes_service();
-}
-
-static const orb_app_iface_t s_clock_iface = {
-    .init        = clock_init,
-    .activate    = clock_activate,
-    .suspend     = clock_suspend,
-    .armed       = clock_armed,
-    .set_armed   = clock_set_armed,
-    .resume      = clock_resume,
-    .service     = clock_service,
-    .screen      = clock_screen,
-    /* No armed view and no input: the dial itself stays inert by design, so a
-     * press on the clock means nothing rather than arming a list that is not
-     * there. The options are the exception and the whole of B1/B2 — the shell
-     * renders this page, the clock answers it. */
-    .opt_count   = clock_opt_count,
-    .opt_label   = clock_opt_label,
-    .opt_value   = clock_opt_value,
-    .opt_kind    = clock_opt_kind,
-    .opt_inc     = clock_opt_inc,
-    .opt_sel     = clock_opt_sel,
-    .opt_arm     = clock_opt_arm,
-    .opt_focus   = clock_opt_focus,
-    .opt_preview = clock_opt_preview,
-};
-
-static esp_err_t picker_init(orb_app_t *app)
-{
-    /* D35: the row owns the picker's settings; bind it before the screen builds
-     * so the first frame shows the stored color, not the static default. */
-    const esp_err_t e = color_picker_init();
-    if (e == ESP_OK) color_picker_bind_app(app);
-    return e;
-}
-static void      picker_show(orb_app_t *app)   { (void)app; color_picker_show(); }
-static void      picker_input(orb_app_t *app, int32_t d, bool p)
-{
-    (void)app;
-    color_picker_apply_input(d, p);
-}
-static bool      picker_armed(const orb_app_t *app)
-{
-    (void)app;
-    return color_picker_armed();
-}
-static void      picker_set_armed(orb_app_t *app, bool a)
-{
-    (void)app;
-    color_picker_set_armed(a);
-}
-static struct _lv_obj_t *picker_screen(orb_app_t *app)
-{
-    (void)app;
-    return color_picker_screen();
-}
-
-static const orb_app_iface_t s_picker_iface = {
-    .init       = picker_init,
-    .show       = picker_show,
-    .input      = picker_input,
-    .armed      = picker_armed,
-    .set_armed  = picker_set_armed,
-    .screen     = picker_screen,
-};
-
-/* The flight tracker: one canvas over the OS's feed. Visibility is the whole
- * of its lifecycle — on the glass it polls at the visible rate and redraws at
- * 1 Hz, off it the feed drops to the background rate and the view draws
- * nothing — so activate/resume and suspend reduce to that one switch. */
-static esp_err_t flights_init(orb_app_t *app)     { return flights_view_init(app); }
-static esp_err_t flights_activate(orb_app_t *app) { (void)app; flights_view_set_visible(true); return ESP_OK; }
-static void      flights_suspend(orb_app_t *app)  { (void)app; flights_view_set_visible(false); }
-static void      flights_resume(orb_app_t *app)   { (void)app; flights_view_set_visible(true); }
-static void      flights_show(orb_app_t *app)     { (void)app; flights_view_show(); }
-static void      flights_input(orb_app_t *app, int32_t d, bool p)
-{
-    (void)app;
-    flights_view_input(d, p);
-}
-static bool      flights_armed(const orb_app_t *app) { (void)app; return flights_view_armed(); }
-static void      flights_set_armed(orb_app_t *app, bool a) { (void)app; flights_view_set_armed(a); }
-static void      flights_service(orb_app_t *app)  { (void)app; flights_view_service(); }
-static struct _lv_obj_t *flights_screen(orb_app_t *app) { (void)app; return flights_view_screen(); }
-
-static const orb_app_iface_t s_flights_iface = {
-    .init       = flights_init,
-    .activate   = flights_activate,
-    .suspend    = flights_suspend,
-    .resume     = flights_resume,
-    .show       = flights_show,
-    .input      = flights_input,
-    .armed      = flights_armed,
-    .set_armed  = flights_set_armed,
-    .service    = flights_service,
-    .screen     = flights_screen,
-    .opt_count  = flights_opt_count,
-    .opt_label  = flights_opt_label,
-    .opt_value  = flights_opt_value,
-    .opt_sel    = flights_opt_sel,
-    .opt_arm    = flights_opt_arm,
-};
 
 static esp_err_t menu_init(orb_app_t *app)   { (void)app; return menu_view_init(); }
 static void      menu_show(orb_app_t *app)   { (void)app; menu_view_show(); }
@@ -292,18 +119,11 @@ typedef struct {
 } orb_behaviour_module_t;
 
 static const orb_behaviour_module_t s_behaviour[] = {
-    { ORB_BEHAVIOUR_COLOR_PICKER, &s_picker_iface },
-    /* D35 (§35): the dial face registers exactly like the picker — one compiled
-     * iface behind one kind id. The seed container for "clock" names kind 3,
-     * and the row it fills walks, draws and faults like any other card app. */
-    { ORB_BEHAVIOUR_CLOCK,        &s_clock_iface  },
     /* P7.2 (D20): the wasm3 code tier. One compiled iface serves every code-bearing
      * .orbapp; orb_app_wasm.c keys per-app state by flash_slot, so two installed wasm
      * apps sharing this iface are two rows over two M3 runtimes — unlike the picker,
      * which is a C6 singleton. The iface's hooks are the guest's entry points. */
     { ORB_BEHAVIOUR_WASM,         &orb_wasm_iface },
-    /* The flight tracker: a singleton like the picker (one canvas, one feed). */
-    { ORB_BEHAVIOUR_FLIGHTS,      &s_flights_iface },
 };
 
 const orb_app_iface_t *orb_app_behaviour_iface(uint32_t behaviour_kind)
@@ -329,7 +149,7 @@ bool orb_app_behaviour_known(uint32_t behaviour_kind)
  *
  * The clock's art coordinates are zero because its bank is the PRIMARY mapping:
  * orb_theme_boot() picked the slot and art_bank_init() mapped it before
- * display_init(), and clock_view.c reads it through the base that mapping hands
+ * display_init(), and orb_stage.c reads it through the base that mapping hands
  * out. Only a SECONDARY bank goes through the fields below. */
 /* D35 (§35) took the clock and the HSB editor out of this table; D36 (§0.11)
  * took their containers out of the image. They are card rows now — the same
@@ -357,7 +177,6 @@ static orb_app_t s_apps[] = {
         .flash_slot = -1,          /* chrome: no flash slot, no toggle, no uninstall */
         .iface      = &s_menu_iface,
         .installed  = true,
-        .enabled    = true,
     },
 };
 
@@ -388,7 +207,9 @@ static orb_app_t s_apps[] = {
 extern orb_app_t orb_app_usb_files_row;   /* main/usb/orb_usb_{mtp,msc}.c */
 #endif
 extern orb_app_t orb_app_sound_row;       /* main/audio/orb_sound_menu.c */
+extern orb_app_t orb_app_themes_row;      /* main/menu/themes_page.c (§43) */
 static orb_app_t *const s_service[] = {
+    &orb_app_themes_row,
 #if CONFIG_ORB_USB_MTP || CONFIG_ORB_USB_MSC
     &orb_app_usb_files_row,
 #endif
@@ -400,14 +221,14 @@ size_t orb_app_menu_count(void)
 {
     size_t n = 0;
     for (int i = 0; i < ORB_APP_SERVICE_N; i++)
-        if (s_service[i] && s_service[i]->enabled && !s_service[i]->failed) n++;
+        if (s_service[i] && !s_service[i]->failed) n++;
     return n;
 }
 
 const orb_app_t *orb_app_menu_at(size_t idx)
 {
     for (int i = 0; i < ORB_APP_SERVICE_N; i++) {
-        if (!s_service[i] || !s_service[i]->enabled || s_service[i]->failed) continue;
+        if (!s_service[i] || s_service[i]->failed) continue;
         if (idx-- == 0) return s_service[i];
     }
     return NULL;
@@ -428,7 +249,7 @@ static orb_app_t *s_current;
  * A card app draws nothing until its declared behaviour_kind names a
  * compiled-in module (D1/C6): orb_app_behaviour_iface() turns that integer into
  * the orb_app_iface_t that builds its widgets. A qualified card row — used,
- * enabled, not failed, iface non-NULL — walks the carousel exactly like a
+ * installed, not failed, iface non-NULL — walks the carousel exactly like a
  * compiled entry; orb_app_walk_gather() below is the one place that ordering is
  * defined, so neighbour()/count()/service_all()/disarm_all() all agree on the
  * walkable set. A row whose iface is NULL (ORB_BEHAVIOUR_NONE or a kind this
@@ -526,12 +347,7 @@ static void card_fill(card_entry_t *s, const orb_app_t *row)
      * iface into the resident record. */
     s->app.iface        = orb_app_behaviour_iface(s->app.behaviour_kind);
     s->app.is_home      = false;           /* home is the shell's (C8 as amended)  */
-    s->app.installed    = true;
-    s->app.enabled      = true;            /* owner ruling, bench 2026-10-29: installed IS
-                                            * enabled. There is no separate on/off state a
-                                            * surface can toggle; the enable word survives
-                                            * only as the durable off-record the recovery
-                                            * door writes, and apply_enable lifts it. */
+    s->app.installed    = true;           /* §43.3: installed is the whole state */
     s->app.active       = false;
     /* The entry index IS the identity (P4a): stamp it so a row placed by the
      * fallback path still knows its own key, and an upserted row's word keys
@@ -589,29 +405,15 @@ void orb_app_card_reset(void)
     if (s_card) memset(s_card, 0, (size_t)ORB_APP_CAP * sizeof *s_card);
 }
 
-/* ---- the enable path and the uninstall door (P4a) --------------------------
- * The registry answers RAM state only; persistence is the broker's (the e<slot>
- * word in orb.grants), because the sentinel forbids NVS in the installer and
- * the broker already owns every per-row NVS key. Contexts: set_enabled runs on
- * the worker (via orb_app_enable) or the httpd task; card_remove only on the
- * worker / boot ladder — neither touches a widget. */
+/* ---- the uninstall door (P4a) ------------------------------------------------
+ * An app is installed or it is not (owner ruling, §43.3): there is no enable state.
+ * card_remove runs only on the worker or the boot ladder and touches no widget. */
 
 bool orb_app_is_card(const orb_app_t *app)
 {
     if (!app || !s_card) return false;
     return app >= (const orb_app_t *)&s_card[0] &&
            app <  (const orb_app_t *)&s_card[ORB_APP_CAP];
-}
-
-esp_err_t orb_app_set_enabled(const orb_app_t *app, bool on)
-{
-    if (!app) return ESP_ERR_INVALID_ARG;
-    if (!orb_app_is_card(app))
-        return ESP_ERR_NOT_SUPPORTED;   /* the compiled tier and the shell chrome
-                                         * ARE the dial: no row to turn off */
-    orb_app_t *a = (orb_app_t *)app;
-    a->enabled = on;
-    return ESP_OK;
 }
 
 bool orb_app_card_remove(const char *slug)
@@ -630,7 +432,7 @@ bool orb_app_card_remove(const char *slug)
  *
  * The one definition of "what the knob can stop on": the compiled entries in
  * table order, then the qualified card rows in slot order. A card row is
- * qualified when it is used, enabled, not failed, and its behaviour_kind named a
+ * qualified when it is used, not failed, and its behaviour_kind named a
  * registered module — so iface is non-NULL and there is code to run it. That
  * last clause is the whole point of the registry: an installed package cannot
  * walk the dial unless the firmware actually ships the module it names, exactly
@@ -645,10 +447,10 @@ static size_t orb_app_walk_gather(orb_app_t **list, size_t max)
 {
     size_t n = 0;
     for (size_t i = 0; i < ORB_APP_N && n < max; i++)
-        if (s_apps[i].enabled && !s_apps[i].failed) list[n++] = &s_apps[i];
+        if (!s_apps[i].failed) list[n++] = &s_apps[i];
     if (s_card)
         for (int k = 0; k < ORB_APP_CAP && n < max; k++)
-            if (s_card[k].used && s_card[k].app.enabled &&
+            if (s_card[k].used &&
                 !s_card[k].app.failed && s_card[k].app.iface)
                 list[n++] = &s_card[k].app;
     return n;
@@ -662,7 +464,7 @@ size_t orb_app_count(void)
      * APPS page can still show it with its reason, but the carousel must not
      * stop on a blank screen. The count is computed, not cached, because
      * P4's enable/disable flips these flags at runtime and a cached count is
-     * one more thing to forget to update. Card rows join only once enabled AND
+     * one more thing to forget to update. Card rows join once installed AND
      * their behaviour_kind resolved to a registered module (walkable gather);
      * with nothing installed s_card is empty and this is the compiled count. */
     orb_app_t *list[ORB_APP_N + ORB_APP_CAP];
@@ -683,7 +485,7 @@ const orb_app_t *orb_app_at(size_t idx)
      * caller that loops `i < orb_app_count()` — menu_view's app_rows/app_row,
      * which is the menu's whole dynamic run — asked for the card rows at ranks
      * the compiled array could not answer, got NULL, and drew a menu with no app
-     * rows on a dial whose apps are installed, enabled, and on the glass. Bench,
+     * rows on a dial whose apps are installed and on the glass. Bench,
      * orb-B 2026-10-25. The ledger's positional accessor stays orb_app_row(). */
     orb_app_t *list[ORB_APP_N + ORB_APP_CAP];
     const size_t n = orb_app_walk_gather(list, sizeof list / sizeof list[0]);
@@ -692,7 +494,7 @@ const orb_app_t *orb_app_at(size_t idx)
 
 size_t orb_app_rows(void)
 {
-    /* Raw row span, disabled and FAILED entries included: the owner's
+    /* Raw row span, FAILED entries included: the owner's
      * ledger (/api/v1/status, the APPS page) is exactly about the apps
      * the carousel hides. The carousel keeps using orb_app_count(). Card
      * apps appear here and nowhere the knob can reach.
@@ -798,10 +600,10 @@ esp_err_t orb_app_init_all(void)
             ESP_LOGE(TAG, "%s: faulting HOME entry — it still boots; there is "
                          "no other destination", app->slug);
         }
-        if (!app->enabled || app->failed) continue;
+        if (app->failed) continue;
         if (!app->iface || !app->iface->init || !app->iface->screen) {
-            ESP_LOGE(TAG, "%s: no init/screen hook — disabled", app->slug);
-            app->enabled = false;
+            ESP_LOGE(TAG, "%s: no init/screen hook — not built", app->slug);
+            app->failed = true;
             continue;
         }
         /* No alignment check here on purpose: art_bank_map_extra() is the one
@@ -817,7 +619,6 @@ esp_err_t orb_app_init_all(void)
              * app into a bricked device. */
             ESP_LOGE(TAG, "%s: init failed (%s) — dropped from the carousel",
                      app->slug, esp_err_to_name(err));
-            app->enabled = false;
             app->failed  = true;
             continue;
         }
@@ -859,7 +660,7 @@ esp_err_t orb_app_init_all(void)
      * (never built, never walkable), the validated-not-drawn rule made literal. */
     for (int k = 0; s_card && k < ORB_APP_CAP; k++) {
         orb_app_t *app = &s_card[k].app;
-        if (!s_card[k].used || !app->enabled || app->failed) continue;
+        if (!s_card[k].used || app->failed) continue;
         /* C2, uniform for the card tier: two unexpected resets with this row on
          * the glass and it does not build this boot — no is_home exemption lives
          * here, because no card row is home (D35 moved homing to the chrome). The
@@ -877,8 +678,7 @@ esp_err_t orb_app_init_all(void)
         if (!app->iface || !app->iface->init || !app->iface->screen) {
             ESP_LOGW(TAG, "%s: no registered behaviour module (kind %lu) — ledger only",
                      app->slug, (unsigned long)app->behaviour_kind);
-            app->enabled = false;
-            continue;
+            continue;                     /* the walkable gather needs an iface anyway */
         }
         /* C6 singleton rule: a behaviour module builds its widgets once. A row
          * whose module is already built — two installed containers naming one
@@ -888,12 +688,16 @@ esp_err_t orb_app_init_all(void)
          * the old one). Two
          * rows, one face: the carousel may show the same live module twice,
          * and the ledger keeps each row's own grant, fault and enable words. */
+        /* The wasm iface is the exception: it is one iface over N instances, each with
+         * its own engine, page and state keyed by flash_slot, so every row runs its own
+         * init (§43; with the clock, picker and flights all wasm, the singleton rule
+         * built only the first and left the others a blank page, orb-A 2026-11-01). */
         bool built = false;
-        for (size_t i = 0; i < ORB_APP_N; i++)
-            if (s_apps[i].iface == app->iface && s_apps[i].enabled && !s_apps[i].failed)
+        for (size_t i = 0; i < ORB_APP_N && app->iface != &orb_wasm_iface; i++)
+            if (s_apps[i].iface == app->iface && !s_apps[i].failed)
                 built = true;
-        for (int j = 0; j < k && !built; j++)
-            if (s_card[j].used && s_card[j].app.installed && s_card[j].app.enabled &&
+        for (int j = 0; j < k && !built && app->iface != &orb_wasm_iface; j++)
+            if (s_card[j].used && s_card[j].app.installed &&
                 s_card[j].app.iface == app->iface)
                 built = true;
         if (built) {
@@ -907,7 +711,6 @@ esp_err_t orb_app_init_all(void)
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "%s: init failed (%s) — dropped from the carousel",
                      app->slug, esp_err_to_name(err));
-            app->enabled = false;
             app->failed  = true;
             continue;
         }
@@ -952,7 +755,7 @@ static void app_art_release(orb_app_t *app)
 {
     if (app->art_slot < 0) return;
     /* Anything the app cached out of this mapping must be gone already: the
-     * compositor holds that lifetime, exactly as clock_view.c holds the
+     * compositor holds that lifetime, exactly as orb_stage.c holds the
      * primary's never-unmap promise. */
     const esp_err_t err = art_bank_unmap_extra(app->art_slot);
     if (err != ESP_OK)
@@ -997,7 +800,6 @@ esp_err_t orb_app_activate(const orb_app_t *app_cp)
         return ESP_ERR_NOT_SUPPORTED;
     }
     if (app->failed)  return ESP_ERR_INVALID_STATE;
-    if (!app->enabled) return ESP_ERR_NOT_SUPPORTED;
     /* D1/C6: an installed card app whose declared behaviour_kind no firmware
      * module registered has no iface — nothing was ever built to draw it. The
      * gather already keeps it out of the carousel; refusing it here too closes
@@ -1006,9 +808,9 @@ esp_err_t orb_app_activate(const orb_app_t *app_cp)
     if (!app->iface) return ESP_ERR_NOT_SUPPORTED;
 
     /* D35's open follow-up (bench orb-B 2026-10-21): a card row whose enable
-     * word landed AFTER the boot gather — the picker re-enabled from /apps, a
+     * word landed AFTER the boot gather — an app installed after the boot, a
      * seeder enable pressed before any reboot — was never init()ed, and its
-     * screen() answer is NULL until it is. Gather only builds rows enabled at
+     * screen() answer is NULL until it is. Gather only builds rows installed at
      * the moment it runs. Build once here: both callers of this function, the
      * router's poll and the menu's press, run on the LVGL task, which is the
      * one task widget construction is allowed to happen on. A wasm row's init
@@ -1025,7 +827,7 @@ esp_err_t orb_app_activate(const orb_app_t *app_cp)
     if (old == app) {
         /* Re-revealing the app already on the glass still runs the hooks: the
          * long-press on the dial is exactly this case, and today it forces a
-         * clean repaint through clock_view_set_bounce(true). Skipping the work
+         * clean repaint through stage_run(true). Skipping the work
          * because "it is already showing" is how a held knob stops meaning
          * anything. */
         app_art_claim(app);
@@ -1102,7 +904,7 @@ bool orb_app_arm_current(void)
     /* False means the entry on the glass has no armed view at all — the dial's
      * case. The router logs the arming only when it happened, because a press
      * that silently did nothing is exactly the "knob appears not to work"
-     * failure clock_view's inertness is designed to avoid. */
+     * failure the stage's inertness is designed to avoid. */
     if (!s_current || !s_current->iface->set_armed) return false;
     s_current->iface->set_armed(s_current, true);
     return true;
@@ -1122,7 +924,7 @@ void orb_app_input(int32_t delta, bool pressed)
 
 void orb_app_service_all(void)
 {
-    /* Every enabled entry, not just the visible one: C7 keeps a parked app's
+    /* Every installed entry, not just the visible one: C7 keeps a parked app's
      * worker jobs reaping, so a refresh posted before a rotation still lands.
      * Repainting from here would be the cadence collapse the fps findings
      * measured, which is why nothing in this loop loads a screen. The combined
@@ -1133,6 +935,13 @@ void orb_app_service_all(void)
     for (size_t k = 0; k < n; k++) {
         orb_app_t *app = list[k];
         if (app->iface->service) app->iface->service(app);
+    }
+    /* The settings-only OS rows are not walkable, but a page can still post work
+     * (the Themes page's card walk, §43) that must reap whether or not it is open. */
+    for (int i = 0; i < ORB_APP_SERVICE_N; i++) {
+        orb_app_t *svc = s_service[i];
+        if (svc && !svc->failed && svc->iface && svc->iface->service)
+            svc->iface->service(svc);
     }
 }
 
@@ -1200,7 +1009,7 @@ const orb_app_t *orb_app_neighbour(const orb_app_t *from, int step)
 
 int orb_app_opt_count(const orb_app_t *app)
 {
-    if (!app || !app->enabled || app->failed) return 0;
+    if (!app || app->failed) return 0;
     if (!app->iface || !app->iface->opt_count) return 0;
     const int n = app->iface->opt_count((orb_app_t *)app);
     return n < 0 ? 0 : n;
@@ -1317,7 +1126,7 @@ bool orb_app_has_options(const orb_app_t *app)
      * with no Clock entry at all — the exact reachability this whole layer is
      * for. Declaring the hooks is the honest signal that there is something to
      * show; the rows fill in once the first walk lands. */
-    if (!app || !app->enabled || app->failed) return false;
+    if (!app || app->failed) return false;
     return app->iface && app->iface->opt_count && app->iface->opt_label
            && app->iface->opt_arm;
 }

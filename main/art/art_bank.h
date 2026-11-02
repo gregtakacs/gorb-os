@@ -6,7 +6,7 @@
  * embedded in the app image via target_add_binary_data(), which meant it was
  * linked into .rodata and shipped inside every OTA payload. It now lives in its
  * own `assets` data partition and is mapped once at boot with
- * esp_partition_mmap(); clock_view.c's blob() returns the mapped base, so every
+ * esp_partition_mmap(); orb_stage.c's blob() returns the mapped base, so every
  * sprite read is a plain flash-mapped pointer dereference exactly as before.
  *
  * Why this matters beyond a tidier app image:
@@ -17,9 +17,9 @@
  *   - The map is byte-addressable (ESP_PARTITION_MMAP_DATA / Vaddr0), which the
  *     unaligned sprite offsets require; the instruction MMU would not.
  *
- * Lifetime: mapped by the theme path before clock_view_init() and never
+ * Lifetime: mapped by the theme path before stage_init() and never
  * unmapped while the dial reads it — the LVGL image descriptors built in
- * clock_view.c cache raw pointers into it, so the mapping must outlive every
+ * orb_stage.c cache raw pointers into it, so the mapping must outlive every
  * screen. One release exists and it is ordered, not opportunistic:
  * art_bank_unmap() runs between the store door's park and its erase, and the
  * reboot the store always asks for re-establishes the map from the bytes on
@@ -162,7 +162,7 @@ void art_bank_lat_probe(void);
 void art_bank_m3_probe(void);
 
 /** The resident bench bank's base — the flash map (arm A) or the PSRAM arena
- *  (arm B) — for clock_view.c's DISPLAY_BENCH blocks to read their colours
+ *  (arm B) — for orb_stage.c's DISPLAY_BENCH blocks to read their colours
  *  from, so the steady-state ladder measures the SAME source the probe just
  *  priced. NULL/0/false until the probe has mapped successfully: a bench build
  *  whose plane never arrived logs that fact rather than silently blending its
@@ -338,7 +338,7 @@ unsigned art_bank_extra_count(void);
 
 /** Release secondary slot `slot`. Every cached pointer into its mapping must
  *  be gone first — the app's compositor holds that lifetime, exactly as
- *  clock_view.c holds the primary's never-unmap promise. Unmapping a bank
+ *  orb_stage.c holds the primary's never-unmap promise. Unmapping a bank
  *  something still reads is a silent garbage paint, the same failure the
  *  primary's header comment has fenced off since it was written. */
 esp_err_t art_bank_unmap_extra(int slot);

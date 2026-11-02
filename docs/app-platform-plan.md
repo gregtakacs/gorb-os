@@ -30,7 +30,7 @@ builds from this tree's `build/`.
 It answers the three questions the owner asked:
 
 1. Which part of the current clock implementation is the OS, and which is the clock app?
-2. Can every enabled app's art sit in one shared store so the knob carousel stays lively?
+2. Can every installed app's art sit in one shared store so the knob carousel stays lively?
 3. What does running apps "not natively" cost in frames?
 
 On question 2 the ruling is sharper than the original framing. Rotating between
@@ -209,7 +209,7 @@ fallback moves from slot A's pixels to the baked-in `clock_assets` mmap, which i
 "A is never an install target" is no longer load-bearing. Verify the mmap fallback
 covers the card-less boot before erasing A — bench item §20.5(2).**
 
-**The capacity question D21 does not answer.** A theme covers every enabled app at
+**The capacity question D21 does not answer.** A theme covers every installed app at
 once, so a bundle carries N flagship banks against one 4 MB ceiling. The clock's
 shipped av-kit bank is 1,173,563 B (18 pages) and the kit3 stress bank measured
 3,858,874 B (59 pages), so one kit3-sized app nearly fills a slot by itself. The
@@ -264,6 +264,18 @@ With the plane tracker about to want sound, the owner moved it from the clock's 
 | Ref | Decision | Ruling |
 |---|---|---|
 | D39 (amended) | Sound as a platform service | **`CAP_SOUND` is owner cap 8** (`sound` in a manifest, revocable on the dial). **`orb_svc_t` gains three entries** (26): `sound_play(app, slot, flags, delay_ms)`, `sound_stop`, `sound_active` — an app plays its OWN theme's sounds by slot, never a pointer, and its voices die when it is suspended (C7). **Level and quiet hours are the OS's**, applied by the engine to every app, set on the dial's new **Sound** page or over `/api/v1/sound`. The clock declares `sound`. The repeater sounds on a **knob press on the dial**. Silence during a theme install is accepted. Compressed encodings are shelved (ADPCM likely the default when they return). The Python sound prototypes retire; the JS generator is the only one. |
+
+### 0.16 Owner's rulings, 2026-11-01 (fifteenth round) — one app per theme, themes picked in the OS, a generic stage, JSON in the OS, installed-or-not (D43–D47)
+
+Taken after §43 landed. §43's move of the clock's theme picker into an OS page was right in place and wrong in shape; these rows fix the shape.
+
+| Ref | Decision | Ruling |
+|---|---|---|
+| D43 | What a `.orbtheme` holds | **One app's theme, full stop.** Each app bakes and delivers its own theme. FORMAT 3's N-sections-addressed-by-slug shape is reverted: it was never used and never will be. The writer (`tools/orbbundle.py`), the reader (`main/art/orb_bundle.c`) and the parity suite move together (three-way rule). Supersedes the multi-app half of D21's capacity note and of §22.2. |
+| D44 | Where themes are picked | **In the OS menu under Themes.** One layer per theme-aware app beneath it (Clock, Flights, …); when only one installed app is theme-aware, Themes opens straight onto that app's themes. An app's own menu entry carries its settings only (range, boost, …), never theme choice. Theme-awareness is a manifest declaration. |
+| D45 | The dial stage | **Generic, not clock-shaped.** The §43 stage is renamed and opens the calling app's own theme by slug, so any theme-aware app poses rows, sets complications and plays its own sound slots through it. |
+| D47 | App states | **Installed or not, full stop** (2026-11-01). An app can be on the SD card and installed from there; that is all. There is no third state, no toggle and no door for one. Uninstall releases the app (engine and page) and erases its grants, faults, settings and secrets; installing it again is a fresh provisioning. C2's fault quarantine stays: an installed app the OS refuses to run until `/api/v1/apps/clear` (or the dial's retry) lifts it. §43.3 records the removal. |
+| D46 | JSON | **An OS service.** A streaming pull tokenizer (events with nesting depth), run natively over an OS-held network body or a small app buffer; apps keep only their key-to-field mapping. Rides with the HTTP generalization (http and https, methods, request body, headers both ways). |
 
 ---
 
@@ -489,7 +501,7 @@ module. The slot stride is `APPS_SLOT_STRIDE` (0x41000, 260 KB) and the geometry
 is `APPS_SLOT_GEOM_CAP` (256 KB), so the per-app budget is now the code budget, and a
 real wasm app costs tens of KB. Every one of the 8 slots fits with orders of magnitude
 to spare, and the flagship question moves off the `apps` partition entirely: it becomes
-how much art one 0x3F0000 theme bundle can carry for all enabled apps at once (D29),
+how much art one 0x3F0000 theme bundle can carry for all installed apps at once (D29),
 which is a theme-editor budget decision and not a firmware one. The former
 *two flagship + several small* mix in this paragraph is obsolete: nothing is
 flagship-sized on the app side any more.
@@ -5963,3 +5975,80 @@ The flight tracker (docs/flight-tracker-design.md) brought three platform change
 - **The home location replaces the dial's zone choice (owner rulings 2026-11-01).** `main/net/orb_home.c` stores lat/lon (1e-6°), a place name and the zone it set (blob `home` in `storage`/`orb.home`, so a factory reset's partition erase takes it). Setting a home sets the zone: the caller's when it sends one, else the nearest big city's (the hub sends none since its two-step card, 2026-11-01: the location drives the zone) from `main/net/orb_cities.c` (GeoNames 500k+ plus 185 zone-correction rows, ~23 KB, generated by `tools/make_cities.py`). The one door is `GET/POST /api/v1/home` (`?lat=&lon=` or `?code=` previews without storing, and answers with the point), driven by the hub's Orb tab. The dial has no zone or home page any more: a HOME page with a character-per-press editor was built and then removed by a second ruling the same day, together with the TZ page it replaced (top page: AP, DISPLAY, PERMISSIONS, APPS, ABOUT; the menu's saved position moved to NVS key `pg2` because the page ids shifted). `orb_net_tz_select()` went with its only caller. A third ruling the same day removed AP (a stub that never worked: a push-input cannot type a passphrase) and gave its row to ABOUT, so the top page is ABOUT, DISPLAY, PERMISSIONS, APPS. ABOUT opens on its address row, where the list gives way to a QR code for `http://<ip>/`, the orb's own page, which is where settings are to be developed from now on; turning shows the other facts. The code is LVGL's qrcodegen (`CONFIG_LV_USE_QRCODE`, +7.8 KB flash) drawn into a 3.3 KB PSRAM plane and shown through the menu's preview image, so the LVGL pool pays nothing. Bench on orb-A: the frame decodes (OpenCV) to `http://192.168.2.32/`. Flash headroom after this: 29.6 KB. Host suite: `tools/host_geo_test.py` (1,545 checks, 14/14 mutants).
 - **The upload identity tuple now includes the gate words** (`caps`, `period_ms`, `n_settings`, `behaviour_kind`). Before, a container that changed its declared caps at the same release was filed "unchanged" and dropped, leaving the card's old consent in place (found on orb-A when the tracker gained `location`). A settings-table edit that keeps the same count is still invisible to the tuple: the table sits outside `hdr_crc` and nothing checksums it.
 - **Install still needs a reboot** before a re-installed row's new caps take effect: the broker loads grant words once at boot. Seen on orb-A: declared `net, location`, granted `net` until the reboot.
+
+## 43 — Apps carry their code: the clock, the HSB editor and the flight tracker are wasm, and Layout C — 2026-11-01
+
+Owner's request (2026-11-01): make the apps legitimate apps, their code inside the `.orbapp` and not just their ledger, self-reliant on OS methods only; then shrink the app partition to what an app actually takes and give the space to the OS. The menu stays OS. Asked and answered the same day: **the code tier is wasm3, per D20** (the native-ELF alternative was offered and declined). Benched end to end on orb-A.
+
+**What an app is now.** One wasm32 module in the container's code region, built from `apps/<slug>/*.c` by `tools/build_apps.py` against `apps/sdk/` and nothing else — no libc (`apps/sdk/orb_rt.c` is the runtime: mem/str, a bounded `snprintf` with `%f`, `strtod`, rounding; `apps/sdk/libc/` the headers), no OS header, no LVGL. The whole OS surface is the `orb` import module in `apps/sdk/orb.h` (+ `orb_dial.h` for the dial). The build refuses an import outside `orb`, a name the shim does not bind, and a signature that differs from the shim's bind table (the 2026-10-21 underscore-signature class of bug, caught at build instead of at load). `make_factory_apps.py` packs the module as `behaviour_kind` 2 with `wasm_mem_max` = the module's one 64 KB page. Kinds 1, 3 and 4 are retired and unregistered (C6: never reused).
+
+| App | wasm code | ledger slot | imports |
+|---|---|---|---|
+| clock | 16,967 B | 28 KB (its 756 KB Composer editor stays on the card) | 26 |
+| color_picker | 9,263 B | 20 KB | 9 |
+| flights | 28,768 B | 40 KB | 33 |
+
+**The OS side** (`main/app/`): `orb_app_wasm.c` binds ~60 imports — time and local time, log, settings, beat and burst, widgets (`orb_ui.c`: per-slot handle tables, box/label/props, and a PSRAM canvas whose fill/pixel/ring/disc/line/text loops are compiled C, §5's rule), option pages (the guest answers `orb_opt_label/value` through `orb.reply`), sound, home, power, the network (`orb_app_net.c`: one HTTPS GET per app on one PSRAM-stacked task behind the flight feed's old gate, the body in PSRAM read in slices; per-app credentials the app asks to have attached and never reads — `/api/v1/flights/key` is now this store's door for slug `flights`, NVS location unchanged), maths, and the dial. Exports: `orb_init` required; activate/suspend/resume/show/tick/service/input/set_armed and the opt family optional. The beat is the shim's own `lv_timer`, armed only on the glass. A press an app hands back on its own reports through `orb.armed`.
+
+**Two hardware facts that shaped it.**
+1. *wasm3 cannot tail-call on this toolchain.* The Xtensa windowed ABI makes every executed op a native frame until its block returns. The picker's `orb_init` ran the LVGL task's 8 KB stack into the heap (LoadProhibited inside `heap_caps_malloc` under m3's lazy compile). Every guest call now runs on one shared 64 KB **PSRAM** stack via `esp_execute_shared_stack_function`; measured peaks: picker 0.7 KB, clock 15.3 KB, flights 18.5 KB (`wasm_stack_peak` in `/api/v1/status`).
+2. *No flash operation may start on a PSRAM stack* (`spi_flash_disable_interrupts_caches_and_other_cpu` asserts `esp_ptr_in_dram(sp)`). So settings reads answer from a per-app RAM mirror loaded before each call on the task's own stack, writes are validated against the descriptor and persisted by the jobs worker, the grant word is warmed before every call (`orb_svc_grants_warm`), credentials are cached at bind, and the dial stage is built and run/parked by the shim's hooks, never from inside a guest.
+
+**The dial stage.** `main/clock/clock_view.c` keeps everything that is pixels and frames — plate and delta bank, row widgets and the L4 painter's rows, tourbillon frame bank and chord marks, complication windows/strips, damage marks, the delta-bank beat-hold of the second fraction — and lost everything that decides what the dial says. `apps/clock/main.c` carries that policy verbatim (lifted, only the OS calls respelled): D41's drive (source, path, cadence, ease, parent, twin), complication values and blink, D39's sound schedule and the minute repeater, and §26's base face (D31: the app's default, three labels). Each frame the stage calls `orb_tick`; the guest reads `dial_now`, posts `dial_pose`/`dial_comp_set`, plays its own theme sounds with `dial_snd_*` (absolute instants, anchored loops, owner settings); the stage leases the voices per frame. Records cross verbatim (`apps/sdk/clk_types.h` is a byte copy the build keeps identical). Only the app whose slug owns the `clock` section (D23) may open it. On the bench the themed dial poses correctly against local time at the same 4–5 fps the compiled clock delivered.
+
+**The Themes page is the OS's** (`main/menu/themes_page.c`, a settings-only row beside USB Drive and Sound; `orb_app_service_all` now services those rows). A theme covers every app, and a wasm clock cannot walk the card or install into `assets`; the clock's `sd_read`/`themes` caps are gone from its manifest.
+
+**Layout C** (`partitions.csv`; image 2,063,056 B):
+
+| Partition | Offset | Size | Was |
+|---|---|---|---|
+| ota_0 / ota_1 | 0x020000 / 0x3A0000 | 3.5 MB each | 2 MB each (0.7% free before this work) |
+| assets | 0x720000 | 8 MB | unchanged size |
+| storage | 0xF20000 | 24 KB | moved from 0xD60000 |
+| apps | 0xF30000 | 832 KB (8 × 104 KB: 4 KB header + 100 KB payload) | 2.5 MB (8 × 260 KB) |
+| www | — | — | 1.25 MB, read by nothing ("Phase 4" never built): removed |
+
+`APPS_SLOT_GEOM_CAP` is now its own 100 KB, decoupled from `ORBAPP_GEOM_BYTES_MAX`. The image has 1.6 MB (44%) of slot headroom. orb-A crossed with its credentials intact by reading the 24 KB `storage` at the old offset and writing it at the new one in the same esptool session as the table (`0x8000`), otadata, and the app; `assets` and `apps` came up empty and were refilled from the card through the ordinary doors.
+
+**Smaller rulings taken on the way, each recorded where it bites:**
+- D16's floor, `ORBAPP_BEAT_MIN_MS`, 3000 → **1000 ms** (writer, reader, suites): a wasm beat redraws its own page, and flights ran at 1 Hz.
+- **An install of a code row ends in a reboot** (`orb_jobs_reboot_soon`): the module loads only at boot (D11's "an install ends in a reboot", now literal for code apps).
+- `CONFIG_ESP_MAIN_TASK_STACK_SIZE` 3584 → **6144**: `init_all` runs code apps' settings/grant reads on the main task ("stack overflow in task main" on the first boot with two code apps). `app_main` returns, so it is boot-time only.
+
+**Owed.**
+1. `tools/host_app_registry_test.py`: its behaviour vectors drive the compiled clock/picker modules (kinds 3/1). They need a tracing stub over `orb_wasm_iface`; until then the suite is red (the opt_arm lint and the service-row vector are already updated).
+2. `tools/host_orbapp_reader_test.py --mutations` stops at `asset_abi_bumped_alone: anchor lost in orb_assets.h` — **pre-existing at `edabd47`**, not this work; the 74 vectors pass.
+3. A new flights key no longer forgives adsb.lol's rest at once (the rest is the app's state now); it waits out its rest.
+4. An upgrade keeps the slot's owner words (grants, faults, settings). Superseded in part by §43.3: there is no on/off word any more to carry.
+5. The dial stage still lives under `main/clock/` with `clock_view_*` names; renaming it `main/dial/` is cosmetic and was left for a quiet commit.
+6. Sound on a themed dial was exercised only as far as "this theme carries no strokes" (Skeleton has no sound slots); a sound-bearing theme should be benched.
+7. The PSRAM redistribution the owner asked for after this: what left the image's internal RAM (`clock_view` .bss, the flight feed's task) and what the wasm tier costs in PSRAM (64 KB native stack, ~64 KB linear memory + module copy per app) are the inputs; not yet acted on.
+
+### 43.1 — D45 and D46 land: the generic stage, the HTTP client, the JSON tokenizer — 2026-11-01
+
+- **D45, the stage.** `main/clock/clock_view.*` is `main/stage/orb_stage.*`; `clock_view_*`/`dial_*` are `stage_*`, and the guest imports are `stage_open`/`stage_row`/`stage_comp`/`stage_sound`/`stage_now`/`stage_pose`/`stage_comp_set`/`stage_snd_*` (`apps/sdk/orb_stage.h`). The theme store takes a bundle's sole section (D43) and remembers its slug (`orb_theme_live_slug()`); the stage belongs to that app, and any other app's `stage_open` answers `base = 1` so it draws its own face. Sound slots are numbered; the clock's slot names and hour patterns moved into `apps/clock/main.c`. The store's existing one-section refusal now says D43. Benched on orb-A: the clock drives its live theme through the renamed stage at 4–5 fps, 0 denials, 0 faults.
+- **D46, HTTP.** `orb_https_request()` takes a method (GET/POST/PUT/DELETE/HEAD) and a body, accepts `http://` origins, hands every status's body to the sink, and keeps the response headers. `orb_app_net_request()` takes a full URL, per-request header lines (set, sent, removed — never carried into the next request on a kept connection), and a body up to 16 KB; the credential flag attaches over TLS only. Guest imports: `net_request`, `net_header`, plus `orb_net_get()` as an inline over it.
+- **D46, JSON.** `main/app/orb_json.c`: a pull tokenizer with key, depth, unescaped string or double per event, `skip` for whole containers, sticky errors, a 16-deep stack. Guest imports `json_begin` (landed body or a ≤16 KB app buffer), `json_next`, `json_skip`; the 152-byte token crosses verbatim (size asserted both sides). `tools/host_json_test.py` checks event streams against Python's `json` over 14 valid and 16 malformed documents under ASan/UBSan, 8/8 mutants caught. Flights' `readsb.c` is now the schema only (a token consumer, 27,467 B app from 28,768); `tools/host_readsb_test.py` feeds it the host-compiled tokenizer's events, 24 checks, 6/6 mutants.
+- **Still owed from §43:** the Themes page's per-app layer (D44) and the assets slot holding one theme per theme-aware app (one app per bundle means several resident at once); `model.c`'s adsbdb route parser still scans its ~700 B body itself rather than through the tokenizer; the registry suite.
+- **Two bench catches, fixed (orb-A, same day).** (1) The registry's C6 singleton rule — a second row naming an already-built iface rides the first row's screen — built only the first wasm app once all three shared `orb_wasm_iface`, leaving the picker and flights a black page; the wasm iface is exempt (one iface, N instances). (2) The loader now refuses a module that imports a function the OS does not bind, by name, before any of its code runs: an old flights module still importing the retired `net_get` crashed (InstructionFetchError) and took two C2 strikes. The check is `m3_FirstUnlinkedImport()`, a recorded addition to the vendored wasm3 (`components/wasm3/PROVENANCE.md`) — walking `M3Function` from `main` read a different layout than the component's PRIVATE flags define, and refused everything.
+- **Measured after the move:** a 45 KB adsb.fi body (40 nm, 85 aircraft) goes from landed to parsed picture in ~340 ms of wall time at 400 events per service pass — twice the bytes of the pre-D46 23 KB measurement in about the same time.
+- **Route lookups on the OS reader (D46).** `model.c`'s adsbdb scanner is replaced by a token consumer (`fm_route_begin`/`fm_route_take`/`fm_route_end`, same acceptance rules); the app reads the landed body through `json_begin(NULL)` and no longer copies it (flights 26,017 B). Host suite: same vectors through the host-compiled tokenizer, 57 checks, 29/29 mutants. Benched: ENY4173 DFW–CRP and AAL590 PHL–MCO parsed ~14 ms after landing.
+- **Owner ruling on the theme area (2026-11-01).** The 8 MB `assets` area stays one shared pool, deliberately: an animated clock needs megabytes and a photo gallery almost nothing. Several apps' themes live in it at once, each taking what it needs, packed — never fixed equal slices. The Themes layer (D44) and its packing table are the next piece of theme work.
+
+### 43.2 — App secrets: an option the app declares and can never read — 2026-11-01
+
+Owner's question: an API key is an app option the hub must serve, and it must also reach the request. Answered with a fifth settings type, device side built and benched on orb-A (the hub side waits on the owner's hub work).
+
+- **`ORB_SET_SECRET` = 4** (`orb_svc.h`; writer `SET_TYPES`, reader gate "outside C9's frozen 5", parity suites moved together). A secret's descriptor carries the **one host** its value may go to in its string field (`{"id":"key","type":"secret","host":"api.adsb.lol"}`); no default, no quota charge (it is not in the app's NVS namespace). The flight tracker's `key` is now a secret bound to `api.adsb.lol`.
+- **Storage.** The credential store (`orb_app_net.c`) is keyed by (app, secret id); flights/`key` keeps its old NVS location, so orb-A's stored key carried over. Requests answer from a RAM copy filled at bind and on every write (no NVS on a PSRAM stack). **Uninstall erases the app's secrets** with its other owner words.
+- **The app never reads it.** `cfg_get_str` and the settings mirror refuse a secret. The app learns only whether it is set — `orb_net_cred("key")`, re-asked when its cfg generation moves (a secret write moves it) — and names it on a request: `orb_net_request(..., cred "key")`.
+- **The OS checks before it attaches**: the app declared that secret, the URL is `https://`, and its host is exactly the declared one. Anything else is refused outright (`ESP_ERR_NOT_ALLOWED`), never sent without it. Benched with a throwaway probe app: attached to its declared `https://example.com` (200), refused for `https://api.adsbdb.com` and for `http://example.com`.
+- **The hub's contract** (for when it moves off `/api/v1/flights/key`): render a `secret` setting from the manifest as a write-only field; `GET /api/v1/apps/cfg?id=<slug>&key=<id>` answers `{"type":"secret","host":…,"set":…,"header":…,"tail":"<last 4>"}` and never the value; `POST /api/v1/apps/cfg?id=<slug>&key=<id>` with a JSON body `{"value":"…","header":"…"}` (header optional, default `x-api-key`; empty value clears). The same GET answers ints and strings too (`"value"`), so the hub's options page needs one read door. `/api/v1/flights/key` stays as an alias for flights/`key` until the hub switches, then goes.
+
+### 43.3 — D47: an app is installed or it is not; the secret sweep — 2026-11-01
+
+- **The on/off state is gone from the firmware.** The registry's `enabled` field and `orb_app_set_enabled`, the broker's stored per-row word and its two entries, the installer's door and its boot rung, `POST /api/v1/apps/enable`, the `enabled` field in `GET /api/v1/apps`, and the device page's Turn on/off buttons are deleted. A row whose init refuses is `failed` (shown with its reason, off the carousel) rather than hidden. The dial's doors page offers show / uninstall / remove-from-card, and **retry** on a faulted row, which posts C2's fault clear (`orb_app_clear_faults`) — the one way an installed app the OS stopped comes back.
+- **Uninstall is a full forget.** `orb_svc_forget_row` already erased the grant word, the fault record and the app's `orb.app<slot>` settings; uninstall now also erases its secrets (`orb_app_cred_forget`, before the words, pinned by a lint and a reproducing mutant). Installing the app again provisions it fresh.
+- **The secret sweep.** Boot rung `orb_app_cred_sweep()`, after `orb_svc_init()` and before the code rung: every stored secret no installed app declares is erased (including flights' old location when no installed flights declares `key`). Benched: the first boot erased the two values the bench probe left behind; the owner's flights key (ends `fvKA`) stayed.
+- **Suites.** svc, menu, carousel, install and wasm suites moved off the retired state (the menu's retry vectors and the "retry clears another app" mutant are new; the wasm ladder lint now orders the code rung after the broker; the install ladder lint orders svc_init → sweep → code → init_all). The install suite's `verify_payload(fd, h)` mutation anchor was stale at `edabd47` and is repaired; further stale anchors in that battery (`scratch = heap_caps_malloc(...)`) and ten in the menu battery (eight still) predate this work and are owed separately. The registry suite stays held for the owner's hub work.
+- **Documents.** `architecture.md`, `hub-app-library-plan.md`, `app-theme-editor-plan.md` and `.clinerules` describe the present and no longer carry the retired state. The dated records — this file's §0–§42 history and `bugfix-batch-2026-10-29.md` — still narrate the mechanism as it was on those dates.

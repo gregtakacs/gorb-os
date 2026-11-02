@@ -305,7 +305,7 @@ def blank(kind):
 def bank_bytes(rec):
     """Pixels a bank row occupies: RGB565A8, colour plane then alpha plane.
     Must agree with SPRITE_BYTES in orb_theme.c and sprite_bytes in
-    clock_view.c, which is what the loader's bounds check is compared against."""
+    orb_stage.c, which is what the loader's bounds check is compared against."""
     return int(rec["w"]) * int(rec["h"]) * 3
 
 
@@ -396,7 +396,7 @@ def kind_of(word):
 
 
 # ---------------------------------------------------------------------------
-# The value -> frame maths. clock_view.c carries the same arithmetic, so it lives
+# The value -> frame maths. orb_stage.c carries the same arithmetic, so it lives
 # here once and the sentinel test pins it: a theme and a device that disagree
 # about which frame "Saturday" is produce a dial one day wrong that reads as an
 # art bug, which is the class of failure this whole file is arranged to avoid.
@@ -593,7 +593,7 @@ ELEM_ORDER_N    = 64   # depth rungs: one scale for every row the clock draws (D
 # declaration of this class this row fulfils" (ELEMENT_FIELDS). Names therefore
 # belong to the APP, and this table is the one place the clock's names, classes and
 # slots are written down. Three readers depend on it and none may paraphrase it:
-# `main/clock/clock_slots.c` mirrors it for the compiled app,
+# `main/stage/clock_slots.c` mirrors it for the compiled app,
 # `tools/watch-composer/orbtheme-baker.js` mirrors it for the bake that fills the
 # slots, and `tools/host_orbelems_test.py` fails the build if a word drifts.
 #

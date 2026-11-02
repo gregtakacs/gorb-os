@@ -102,7 +102,7 @@ _Static_assert(ORB_SD_NAME_MAX <= ORB_FILES_MAX_NAME,
 
 /** Register the ("orb","apps") file source. Call on the boot ladder after
  *  orb_files' own init and before any scan can be asked for, exactly as
- *  clock_view.c registers the theme source. Idempotent by orb_files' rule. */
+ *  orb_stage.c registers the theme source. Idempotent by orb_files' rule. */
 esp_err_t orb_app_scan_init(void);
 
 /** Walk ORB_APP_DIR, up to cap rows; -1 when the card is not mounted or the

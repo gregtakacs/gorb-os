@@ -314,7 +314,7 @@ def main():
     # docs/tourbillon-axis-spec.md before flipping it.
     filt_on = False
     try:
-        with open(os.path.join(ROOT, "main", "clock", "clock_view.c"),
+        with open(os.path.join(ROOT, "main", "stage", "orb_stage.c"),
                   encoding="utf-8") as fh:
             src = fh.read()
         m = re.search(r"#define\s+CLK_TOURB_FILTER\s+(\d)", src)

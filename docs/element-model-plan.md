@@ -1,7 +1,14 @@
 # D42 (proposed): one row for everything that moves
 
 **Status: RULED (owner, 2026-11-01, §11). E1 built and seen on orb-B 2026-11-01
-(§8.2). E2 (the composer) is next.** It builds on D41 (`docs/hand-motion-plan.md`): D41's drive (source,
+(§8.2). E2 (the composer) is next.**
+
+**Superseded for the theme editor (owner, 2026-11-01): see D43,
+`docs/composer-stack-plan.md`.** For the composer and the design it authors, D43
+replaces this file's E2 and E5 and adopts §7's warnings as its R8. This file still
+governs the wire, the firmware and the reader.
+
+It builds on D41 (`docs/hand-motion-plan.md`): D41's drive (source,
 cadence, ease) is kept, and this file replaces the parts of D41 that still treat a
 hand, a pointer and a ring as different things. **AUX pointer depth (D41 §4, "What G2
 left") is held for this ruling** and lands as part of slice E1, not on the current
@@ -365,10 +372,10 @@ row, not just the five slots. Two properties keep it honest:
 |---|---|---|
 | **E0** ✔ | The owner rules this file. Done 2026-11-01 | — |
 | **E1** ✔ | v6 end to end, legacy deleted (§8.1): the row array and one depth walk in the firmware; the two-pose motion and end rule; depth on every row (the held pointer-depth work); digit selectors; the tempo read from the rows. Python schema, baker, C reader and Go container move together | host suites green, one mutant caught per new refusal; every older stamp refused at every door; the JS twin and the C reader agree on pose at fixed times for every preset — **DONE 2026-11-01** (§8.2); the bench on orb-B is owed |
-| **E2** | Composer: one list of rows (centre and sub-dial hands alike), each with shape, motion, drive, placement and depth; tick speed and Sweep offered as today. Every preset and bench theme rebuilt as v6 | the preview-versus-reader pose check; each preset installs on orb-B |
+| **E2** → D43 | Superseded by `docs/composer-stack-plan.md` (D43), slices P3–P5. Original scope: composer, one list of rows (centre and sub-dial hands alike), each with shape, motion, drive, placement and depth; tick speed and Sweep offered as today; every preset and bench theme rebuilt as v6 | carried into D43 P4: the preview-versus-reader pose check; each preset installs on orb-B |
 | **E3** | Calendar presets: a double-rotator date and a 1–31 ring behind a window | renders on orb-B, a clean `jump_date` |
 | **E4** | Text rows: glyph sets, background, format, string table | a `HH:MM` readout and a `ddd DD` readout on orb-B |
-| **E5** | Mechanical warnings in the composer | headless tests per warning |
+| **E5** → D43 | Superseded: the mechanical warnings are D43 R8, built in D43 P4 | D43 P4: headless tests per warning |
 | **E6** | Bench (D41's G4 folded in): stop-to-go, a flyback, a disc under a window, a sweeping disc's frame cost, a readout's cost | figures recorded here |
 
 ## 11. Rulings (owner, 2026-11-01)

@@ -1,5 +1,9 @@
 # Watch Composer — evaluation and improvement plan
 
+**Superseded (owner, 2026-11-01) by D43, `docs/composer-stack-plan.md`.** This file
+evaluated the standalone tool before D37. D43 retires the hub's `/composer/` route and
+the hub-embedded copy. Kept as history; do not plan from it.
+
 Status: evaluation only. The four files sit in `tools/watch-composer/` byte-identical
 (md5-matched against `/mnt/c/Users/greg/Downloads/Skeleton Dial Animation/`). Nothing was
 altered, renamed, or reformatted, per instruction. Line references below are into the

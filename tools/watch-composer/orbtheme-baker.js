@@ -403,20 +403,226 @@
     return out;
   };
 
+  /* D43 §5.3/§5.4: the still-plane dither. A 64x64 blue-noise threshold table (made once
+   * by tools/make_bluenoise.py, pinned by DITHER_SHA256 here and in tools/orbdither.py,
+   * the bit-exact Python twin) tiled across the PANEL, so a texel's threshold depends on
+   * where it lands on the glass and never on which crop carried it: an unchanged input
+   * texel bakes to an unchanged output texel in every keyframe and delta rect.
+   * Colour: level = base[v] + (frac[v] > T). base[v] is the highest level whose device
+   * decode is <= v and frac[v] where v sits toward the next, 0..255 — a 565-exact colour
+   * has frac 0 and never moves, and the mean decode is v, so truncation's darkening goes.
+   * Alpha: coverage lands on the 32-step lattice mix_16_16 reads ((a + 4) >> 3), stored
+   * as m5 * 8, with the table shifted (32, 32) so it never correlates with the colour. */
+  var DITHER_B64 =
+    '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';
+  var DITHER_SHA256 = '683a759b831dc8d0c83205827301e65adbb2d06f6b5b11af800a694f6f8f2bc7';
+  var DITHER_N = 64, DITHER_ALPHA_SHIFT = 32;
+  // Decoded here rather than through atob/Buffer: the baker also runs inside bare vm
+  // sandboxes (the headless suites) that carry neither.
+  var DITHER_T = (function () {
+    var A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', t = [], acc = 0, bits = 0;
+    for (var i = 0; i < DITHER_B64.length; i++) {
+      var v = A.indexOf(DITHER_B64.charAt(i));
+      if (v < 0) continue;                        // '=' padding
+      acc = (acc << 6) | v; bits += 6;
+      if (bits >= 8) { bits -= 8; t.push((acc >> bits) & 255); }
+    }
+    return new Uint8Array(t);
+  })();
+  function ditherLuts(bits) {
+    var n = 1 << bits, dec = [], base = new Uint8Array(256), frac = new Uint8Array(256), l = 0, v;
+    for (v = 0; v < n; v++) dec.push((v << (8 - bits)) | (v >> (2 * bits - 8)));
+    for (v = 0; v < 256; v++) {
+      while (l + 1 < n && dec[l + 1] <= v) l++;
+      base[v] = l;
+      frac[v] = (l + 1 < n && v > dec[l]) ? Math.floor(256 * (v - dec[l]) / (dec[l + 1] - dec[l])) : 0;
+    }
+    return { base: base, frac: frac };
+  }
+  var D5 = ditherLuts(5), D6 = ditherLuts(6);
+  function ditherQuant565(r, g, b, t) {
+    return ((D5.base[r] + (D5.frac[r] > t ? 1 : 0)) << 11) |
+           ((D6.base[g] + (D6.frac[g] > t ? 1 : 0)) << 5) |
+           (D5.base[b] + (D5.frac[b] > t ? 1 : 0));
+  }
+  function ditherAlphaStep(a, t) {
+    if (a === 0 || a === 255) return a;
+    var exact = a * 32, lo = Math.floor(exact / 255), fr = Math.floor((exact - lo * 255) * 256 / 255);
+    var m5 = Math.min(lo + (fr > t ? 1 : 0), 32);
+    return m5 >= 32 ? 255 : m5 * 8;
+  }
+
+  /* D43 §5.2: the panel, simulated. The device composites in RGB565 on its own mirror:
+   * a plate quantized as the bake stored it, then every live row and the crystal overlay
+   * through blend_px (main/gfx/orb_gfx.c), whose NORMAL/MULTIPLY/ADDITIVE modes all end
+   * in mix_16_16 — coverage on 32 steps, each field truncated. These are those two
+   * functions, operation for operation (Math.imul and >>> carry the C's uint32
+   * wraparound), so the composer's Panel view shows what the glass will, banding and
+   * darkening included. headless-panel.test.js holds them to the C on random inputs. */
+  function mix1616(c1, c2, mix) {
+    if (mix === 255) return c1;
+    if (mix === 0) return c2;
+    if (c1 === c2) return c1;
+    var m5 = (mix + 4) >> 3;
+    var bg = (c2 | (c2 << 16)) & 0x7E0F81F, fg = (c1 | (c1 << 16)) & 0x7E0F81F;
+    var res = (((Math.imul((fg - bg) | 0, m5) >>> 5) + bg) & 0x7E0F81F) >>> 0;
+    return ((res >>> 16) | res) & 0xffff;
+  }
+  function blendPx(dest, c, a, mode) {
+    if (mode === 1) {                                  /* MULTIPLY (shadow layers) */
+      if (c === 0xffff) return dest;
+      var res = ((((dest >> 11) * (c >> 11)) >> 5) << 11) |
+                (((((dest >> 5) & 0x3F) * ((c >> 5) & 0x3F)) >> 6) << 5) |
+                (((dest & 0x1F) * (c & 0x1F)) >> 5);
+      return mix1616(res, dest, a);
+    }
+    if (mode === 2) {                                  /* SCREEN (mapped to ADDITIVE) */
+      if (c === 0) return dest;
+      var r = Math.min((dest >> 11) + (c >> 11), 31), g = Math.min(((dest >> 5) & 0x3F) + ((c >> 5) & 0x3F), 63),
+          b = Math.min((dest & 0x1F) + (c & 0x1F), 31);
+      return mix1616((r << 11) | (g << 5) | b, dest, a);
+    }
+    return a >= 255 ? c : mix1616(c, dest, a);        /* NORMAL */
+  }
+  /* A whole-panel RGBA plane as the codes the plate row stores: dithered at the panel
+   * origin when `dither`, truncated otherwise — the two ways bakeClock3 can ship it. */
+  function panelPlate(rgba, w, h, dither) {
+    var out = new Uint16Array(w * h), x, y, i, t;
+    for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+      i = y * w + x;
+      if (dither) { t = DITHER_T[(y & (DITHER_N - 1)) * DITHER_N + (x & (DITHER_N - 1))]; out[i] = ditherQuant565(rgba[i * 4], rgba[i * 4 + 1], rgba[i * 4 + 2], t); }
+      else out[i] = ((rgba[i * 4] & 0xf8) << 8) | ((rgba[i * 4 + 1] & 0xfc) << 3) | (rgba[i * 4 + 2] >> 3);
+    }
+    return out;
+  }
+  /* One RGBA layer blended onto the panel codes in place, as the device blends a row:
+   * o.x/o.y its top-left, o.mode the blend (0 NORMAL, 1 MULTIPLY, 2 ADDITIVE), o.dither
+   * the still-plane dither the bake applies to its colour and coverage (the overlay,
+   * window plates) — off for a hand, whose sprite ships truncated. */
+  function panelLayer(dst, pw, rgba, w, h, o) {
+    o = o || {};
+    var ox = o.x | 0, oy = o.y | 0, mode = o.mode | 0, dith = !!o.dither, x, y, i, a, c, X, Y, t, ta;
+    for (y = 0; y < h; y++) {
+      Y = oy + y; if (Y < 0 || Y * pw >= dst.length) continue;
+      for (x = 0; x < w; x++) {
+        X = ox + x; if (X < 0 || X >= pw) continue;
+        i = (y * w + x) * 4; a = rgba[i + 3];
+        if (dith) {
+          t = DITHER_T[(Y & (DITHER_N - 1)) * DITHER_N + (X & (DITHER_N - 1))];
+          ta = DITHER_T[((Y + DITHER_ALPHA_SHIFT) & (DITHER_N - 1)) * DITHER_N + ((X + DITHER_ALPHA_SHIFT) & (DITHER_N - 1))];
+          a = ditherAlphaStep(a, ta);
+          if (!a) continue;
+          c = ditherQuant565(rgba[i], rgba[i + 1], rgba[i + 2], t);
+        } else {
+          if (!a) continue;
+          c = ((rgba[i] & 0xf8) << 8) | ((rgba[i + 1] & 0xfc) << 3) | (rgba[i + 2] >> 3);
+        }
+        dst[Y * pw + X] = blendPx(dst[Y * pw + X], c, a, mode);
+      }
+    }
+    return dst;
+  }
+  /* Panel codes back to RGBA for a canvas, through the device's own decode. */
+  function panelRGBA(codes, out) {
+    out = out || new Uint8ClampedArray(codes.length * 4);
+    for (var i = 0; i < codes.length; i++) {
+      var v = codes[i], r = v >> 11, g = (v >> 5) & 63, b = v & 31;
+      out[i * 4] = (r << 3) | (r >> 2); out[i * 4 + 1] = (g << 2) | (g >> 4); out[i * 4 + 2] = (b << 3) | (b >> 2); out[i * 4 + 3] = 255;
+    }
+    return out;
+  }
+
   /* The colour plane: native-LE RGB565, w*h*2 bytes. Alpha is ignored here — every
    * texel keeps its stored colour so the planar alpha plane alone decides coverage,
-   * which avoids a dark edge fringe (bake_clock.py's rgb565_le). */
-  function rgb565Plane(rgba, w, h) {
-    var out = new Uint8Array(w * h * 2);
-    for (var i = 0, o = 0; i < w * h; i++) {
+   * which avoids a dark edge fringe (bake_clock.py's rgb565_le). `dith` = {x, y}, the
+   * plane's top-left on the panel, dithers it (above); without it the plane truncates,
+   * byte for byte what rgb565_le packs, which the parity vectors pin. */
+  function rgb565Plane(rgba, w, h, dith) {
+    var out = new Uint8Array(w * h * 2), x, y, i, o = 0, v, row;
+    if (dith) {
+      for (y = 0; y < h; y++) {
+        row = ((dith.y + y) & (DITHER_N - 1)) * DITHER_N;
+        for (x = 0; x < w; x++) {
+          i = (y * w + x) * 4;
+          v = ditherQuant565(rgba[i], rgba[i + 1], rgba[i + 2], DITHER_T[row + ((dith.x + x) & (DITHER_N - 1))]);
+          out[o++] = v & 0xff; out[o++] = (v >> 8) & 0xff;
+        }
+      }
+      return out;
+    }
+    for (i = 0; i < w * h; i++) {
       var r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
-      var v = ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3);
+      v = ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3);
       out[o++] = v & 0xff; out[o++] = (v >> 8) & 0xff;
     }
     return out;
   }
-  function alphaPlane(rgba, w, h) {
-    var out = new Uint8Array(w * h);
+  function alphaPlane(rgba, w, h, dith) {
+    var out = new Uint8Array(w * h), x, y, row;
+    if (dith) {
+      for (y = 0; y < h; y++) {
+        row = ((dith.y + y + DITHER_ALPHA_SHIFT) & (DITHER_N - 1)) * DITHER_N;
+        for (x = 0; x < w; x++)
+          out[y * w + x] = ditherAlphaStep(rgba[(y * w + x) * 4 + 3], DITHER_T[row + ((dith.x + x + DITHER_ALPHA_SHIFT) & (DITHER_N - 1))]);
+      }
+      return out;
+    }
     for (var i = 0; i < w * h; i++) out[i] = rgba[i * 4 + 3];
     return out;
   }
@@ -2839,6 +3045,9 @@
   function bank3(planes, o) {
     o = o || {};
     var alpha = o.alpha === undefined ? true : !!o.alpha;
+    // o.dither {x, y}: the row's top-left on the panel; a plane's own ox/oy (a delta
+    // crop's place inside its row) adds to it. Absent, every plane truncates.
+    var dith = o.dither || null, at2;
     var out = [], rows = [], at = 0, i, p, col, cost;
     if (!planes || !planes.length) throw new Error('a bank holds at least one plane; an empty one draws nothing');
     for (i = 0; i < planes.length; i++) {
@@ -2850,8 +3059,9 @@
         throw new Error('bank plane ' + i + ' is ' + (p.rgba ? p.rgba.length : 0) + ' B of RGBA, not the ' +
           (p.w * p.h * 4) + ' B its ' + p.w + 'x' + p.h + ' extent calls for');
       }
-      col = rgb565Plane(p.rgba, p.w, p.h);
-      if (alpha) col = concat([col, alphaPlane(p.rgba, p.w, p.h)]);
+      at2 = dith ? { x: dith.x + (p.ox | 0), y: dith.y + (p.oy | 0) } : null;
+      col = rgb565Plane(p.rgba, p.w, p.h, at2);
+      if (alpha) col = concat([col, alphaPlane(p.rgba, p.w, p.h, at2)]);
       cost = col.length;
       out.push(col);
       rows.push({ off: at, size: cost, w: p.w, h: p.h });
@@ -3129,8 +3339,12 @@
      * with no depthOrder list ships the depth the preview already shows. */
     var nat3 = (o.aux || []).map(function (a) { return a.id ? String(a.id) : null; })
                   .concat(['centre-hour', 'centre-minute', 'centre-second']);
-    function row(e, plane, masked) {
-      var b = bank3([plane], { alpha: masked });
+    /* D43 §5.3: `dith` is true for a still, screen-locked plane (the plate, its bank, the
+     * crystal overlay, a window's plates, the preview). It dithers at the row's own x/y,
+     * unless the whole bake asked for truncation (o.dither === false). */
+    function ditherAt(e, dith) { return dith && o.dither !== false ? { x: e.x | 0, y: e.y | 0 } : null; }
+    function row(e, plane, masked, dith) {
+      var b = bank3([plane], { alpha: masked, dither: ditherAt(e, dith) });
       bank.art = concat([bank.art, b.art]);
       bank.sprites.push({ off: bank.size, size: b.sprites[0].size, w: plane.w, h: plane.h });
       bank.size += b.sprites[0].size;
@@ -3142,12 +3356,12 @@
     // §31: one row, N planes. The keyframes enter contiguously, in bank order,
     // colour-only like the plate — the projection seats the row against exactly
     // this shape, and the bgAnim consumer flips through it on its beat.
-    function rowFrames(e, planes, masked) {
+    function rowFrames(e, planes, masked, dith) {
       var rec = blankElement();
       for (var f in e) rec[f] = e[f];
       rec.frame0 = bank.sprites.length;
       for (var j = 0; j < planes.length; j++) {
-        var b = bank3([planes[j]], { alpha: masked });
+        var b = bank3([planes[j]], { alpha: masked, dither: ditherAt(e, dith) });
         bank.art = concat([bank.art, b.art]);
         bank.sprites.push({ off: bank.size, size: b.sprites[0].size, w: planes[j].w, h: planes[j].h });
         bank.size += b.sprites[0].size;
@@ -3164,7 +3378,7 @@
     // the composited result the device ends up with; the encode is lossy at the
     // DELTA_TOL floor, so selfVerify3 re-derives it to that same floor, closing rect
     // included, before ship.
-    function rowDelta(e, planes, delay, masked) {
+    function rowDelta(e, planes, delay, masked, dith) {
       var rec = blankElement();
       for (var f in e) rec[f] = e[f];
       rec.frame0 = bank.sprites.length;
@@ -3175,7 +3389,7 @@
         var p = planes[j], spr;
         if (j === 0) {
           canvas = copyPlane(p);                   // frame 0: the whole base plane
-          var b0 = bank3([p], { alpha: masked });
+          var b0 = bank3([p], { alpha: masked, dither: ditherAt(e, dith) });
           bank.art = concat([bank.art, b0.art]);
           spr = { off: bank.size, size: b0.sprites[0].size, w: p.w, h: p.h, diffx: 0, diffy: 0 };
           bank.size += b0.sprites[0].size;
@@ -3189,7 +3403,8 @@
           } else {
             paintRect(canvas, p, rect);            // apply the delta, exact
             var crop = cropRect(p, rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]);
-            var b2 = bank3([crop], { alpha: masked });
+            crop.ox = rect[0]; crop.oy = rect[1];
+            var b2 = bank3([crop], { alpha: masked, dither: ditherAt(e, dith) });
             bank.art = concat([bank.art, b2.art]);
             spr = { off: bank.size, size: b2.sprites[0].size, w: crop.w, h: crop.h,
                     diffx: rect[0], diffy: rect[1] };
@@ -3207,7 +3422,8 @@
       var wr = diffRect(planes[0], canvas, DELTA_TOL);
       if (wr) {
         var wcrop = cropRect(planes[0], wr[0], wr[1], wr[0] + wr[2], wr[1] + wr[3]);
-        var b3 = bank3([wcrop], { alpha: masked });
+        wcrop.ox = wr[0]; wcrop.oy = wr[1];
+        var b3 = bank3([wcrop], { alpha: masked, dither: ditherAt(e, dith) });
         bank.art = concat([bank.art, b3.art]);
         bank.sprites.push({ off: bank.size, size: b3.sprites[0].size,
                             w: wcrop.w, h: wcrop.h, diffx: wr[0], diffy: wr[1] });
@@ -3280,18 +3496,18 @@
         // the shipped banks printed (15 Hz, the §5.1 default delay_ms) when none named.
         var dms = fps >= 1 ? Math.round(1000 / fps) : 67;
         rowDelta({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
-                   order: 0, alpha: 255 }, frames, dms, false);
+                   order: 0, alpha: 255 }, frames, dms, false, true);
         // bg_mode 1: the row is the delta dialect. gif_frames is the whole loop, the
         // row's own plane count (orb_clock3.c:539), and bg_frames is zero — the base
         // plane is frame 0 of that loop, not an extra keyed frame beside it.
         sc.bg_mode = 1; sc.gif_frames = frames.length; sc.bg_frames = 0;
       } else {
         rowFrames({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
-                    order: 0, alpha: 255, n_frames: frames.length }, frames, false);
+                    order: 0, alpha: 255, n_frames: frames.length }, frames, false, true);
       }
     } else {
       row({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
-            order: 0, alpha: 255, n_frames: 1 }, pl, false);
+            order: 0, alpha: 255, n_frames: 1 }, pl, false, true);
     }
     /* D42: every hand, shadow, carriage and pointer is one AUX row, claimed in slot
      * order — a hand, then its shadow twin in the very next slot (clock_view's pairing
@@ -3351,7 +3567,7 @@
         hrow.cadence = hc.cadence; hrow.cad_arg = hc.cad_arg; hrow.ease = hd5.ease | 0;
         if (hv.slide) { hrow.pivot_x = (h.w | 0) >> 1; hrow.pivot_y = (h.h | 0) >> 1; }
       }
-      row(hrow, h, true);
+      row(hrow, h, true, !!h.dither);   // D43 ruling 3: an arm stays undithered unless it asks
       elemOfHand[h.slot] = hrow;
       for (var ks = 0; ks < shadows.length; ks++) {
         var s = shadows[ks];
@@ -3376,7 +3592,7 @@
     for (k = 0; k < plates.length; k++) {
       row({ n: nid++, 'class': classId('plate'), slot: 1, x: plates[k].x, y: plates[k].y,
             w: plates[k].w, h: plates[k].h, order: 63 - (plates.length - 1 - k), flags: plates[k].flags || 0,
-            alpha: plates[k].alpha === undefined ? 255 : plates[k].alpha, n_frames: 1 }, plates[k], true);
+            alpha: plates[k].alpha === undefined ? 255 : plates[k].alpha, n_frames: 1 }, plates[k], true, true);
     }
     if (car) {
       /* The row ships CROPPED to carriageRect3, and that crop is the byte figure the
@@ -3436,7 +3652,7 @@
             span: av5.span, zero: av5.zero, vmin: av5.vmin, vmax: av5.vmax,
             dx: av5.dx, dy: av5.dy, end: av5.end,
             cadence: ac5.cadence, cad_arg: ac5.cad_arg, ease: a5.ease | 0,
-            flags: a5.hidden ? EF_HIDDEN : 0 }, a5.plane, true);
+            flags: a5.hidden ? EF_HIDDEN : 0 }, a5.plane, true, !!a5.dither);   // a ring or disc may ask (D43 ruling 3)
       auxB += (a5.w | 0) * (a5.h | 0) * 3;
       /* The twin the composer raised with this pointer (auxPass3): its own draw point
        * and pivot, whose sum is the pointer's centre plus the light, and no drive —
@@ -3462,7 +3678,7 @@
       rowFrames({ n: nid++, 'class': classId('bank'), slot: c4.slot, kind: 0, src: SOURCES.indexOf(String(c4.src)),
                   x: c4.x | 0, y: c4.y | 0, w: c4.w, h: c4.h, order: c4.order | 0, alpha: 255,
                   n_frames: c4.planes.length, scale16: c4.scale16 | 0,
-                  flags: c4.hidden ? EF_HIDDEN : 0 }, c4.planes, true);
+                  flags: c4.hidden ? EF_HIDDEN : 0 }, c4.planes, true, true);
     }
     // D42: the scalars the rows replaced are carried as 0 (CLOCK_RETIRED_SCALARS).
     CLOCK_RETIRED_SCALARS.forEach(function (n) { delete sc[n]; });
@@ -3489,7 +3705,7 @@
       if (pp.w > (scrW >> 1) || pp.h > (scrH >> 1))
         throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ' on a ' + scrW + 'x' + scrH + ' panel: the shell reads a preview ' +
           'into one buffer sized for the half-res of the glass, and a plane past it cannot be held');
-      var pb = bank3([pp], { alpha: false });      // RGB565 only: w*h*2 B, the exception orb_asset_slot_bytes names
+      var pb = bank3([pp], { alpha: false, dither: o.dither === false ? null : { x: 0, y: 0 } });   // RGB565 only: w*h*2 B, the exception orb_asset_slot_bytes names
       bank.art = concat([bank.art, pb.art]);
       bank.sprites.push({ off: bank.size, size: pb.sprites[0].size, w: pp.w, h: pp.h });
       bank.size += pb.sprites[0].size;
@@ -4027,6 +4243,12 @@
     packHeader: packHeader, writeContainer: writeContainer, artOffset: artOffset,
     Blob: Blob, blob: function () { return new Blob(); },
     rgb565Plane: rgb565Plane, alphaPlane: alphaPlane, alphaBbox: alphaBbox,
+    // D43 §5.3: the still-plane dither, its table and its per-texel steps, so the
+    // parity suite holds them to tools/orbdither.py and Panel view reuses them.
+    DITHER_SHA256: DITHER_SHA256, DITHER_T: DITHER_T, ditherQuant565: ditherQuant565,
+    ditherAlphaStep: ditherAlphaStep, DITHER_ALPHA_SHIFT: DITHER_ALPHA_SHIFT,
+    // D43 §5.2: the device blend and the Panel view's three steps.
+    mix1616: mix1616, blendPx: blendPx, panelPlate: panelPlate, panelLayer: panelLayer, panelRGBA: panelRGBA,
     cropLayer: cropLayer, emitSprite: emitSprite, blankSprite: blankSprite,
     copyPlane: copyPlane, blankPlane: blankPlane, compositeOver: compositeOver,
     matteFold: matteFold, matteOverBlack: matteOverBlack,

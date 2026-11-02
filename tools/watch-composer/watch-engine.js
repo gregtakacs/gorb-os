@@ -3530,6 +3530,29 @@
     if (k < 1) { out.save(); out.translate(C, C); out.scale(k, k); out.translate(-C, -C); out.drawImage(F._in, 0, 0); out.restore(); }
     if (!hidden.outer) out.drawImage(F.outer, 0, 0);
   }
+  /* D43 §5.2: the stage split the way the device stacks it, for the Panel view. `under`
+   * is compose() with the hands, glass and case held back (opaque: what the plate row
+   * and the folds carry); `hands` is the hands and their shadows alone on transparency
+   * (the live rows); `top` is the glass and the case alone on transparency (the crystal
+   * overlay). Every transform compose() applies — the zoom (dynK) and the case inset —
+   * is applied the same way, so the three layers stack back to the design pixels. */
+  function composeLayers(base, gt, F, date, hidden) {
+    hidden = hidden || {};
+    const under = cv(S), hands = cv(S), top = cv(S);
+    compose(under.getContext('2d'), base, gt, F, date, Object.assign({}, hidden, { hands: 1, glass: 1, outer: 1 }));
+    const k = F.inset || 1, dk = F.dynK || 1;
+    const inset = (dst, fn) => {
+      const o = dst.getContext('2d');
+      let ctx = o, tmp = null;
+      if (k < 1) { tmp = cv(S); ctx = tmp.getContext('2d'); }
+      if (dk === 1) fn(ctx); else { ctx.save(); ctx.translate(C, C); ctx.scale(dk, dk); ctx.translate(-C, -C); fn(ctx); ctx.restore(); }
+      if (tmp) { o.save(); o.translate(C, C); o.scale(k, k); o.translate(-C, -C); o.drawImage(tmp, 0, 0); o.restore(); }
+    };
+    if (!hidden.hands) inset(hands, (ctx) => F.drawHands(ctx, date));
+    if (!hidden.glass) inset(top, (ctx) => ctx.drawImage(F.glass, 0, 0));
+    if (!hidden.outer) top.getContext('2d').drawImage(F.outer, 0, 0);
+    return { under, hands, top };
+  }
   function canonDesign(d) {
     if (!d.surface || d.surface === 'enamel') { delete d.surface; delete d.texture; }
     if (d.texture != null && +d.texture === 1) delete d.texture;
@@ -3663,7 +3686,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, CAL_HANDS, EXTRA_HANDS, EXTRA_RING, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, CAL_HANDS, EXTRA_HANDS, EXTRA_RING, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

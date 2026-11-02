@@ -76,6 +76,20 @@
     // prices the walk against a half-filled loop, and the D34 tripwire says so in words.
     let blob = null, fname = null;
     IT.download = (b, n) => { blob = b; fname = n; };
+    // ?plate=1 (D43 P0): also print the plate exactly as bakeClock3 received it — 8-bit
+    // RGBA before any RGB565 quantization — so the stored bytes and the glass can be
+    // measured against the pixels the composer drew. Keyframe 0 when the plate is a bank.
+    let plate8 = null;
+    const wantPlate = /[?&]plate=1/.test(location.search), noDither = /[?&]nodither=1/.test(location.search);
+    if (wantPlate || noDither) {
+      // ?nodither=1 (D43 P2): bake with o.dither === false, the truncating bake, so the
+      // same preset can go on the glass both ways and be grabbed side by side.
+      const real = G.bakeClock3;
+      G.bakeClock3 = (o) => {
+        if (wantPlate) { const p = o.plate.frames ? o.plate.frames[0] : o.plate; plate8 = { w: p.w, h: p.h, rgba: p.rgba.slice() }; }
+        return real(noDither ? Object.assign({}, o, { dither: false }) : o);
+      };
+    }
     say('--- baking ' + DIAL + ' (theme name "' + NAME + '") through exportTheme3 ---');
     pump();
     await wait(400);   // let the ticker fill the loop before the first settle check
@@ -133,6 +147,12 @@
     for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
     say('B64LEN ' + bytes.length);
     say('B64:' + btoa(bin));
+    if (plate8) {
+      let pb = '';
+      for (let i = 0; i < plate8.rgba.length; i += CH) pb += String.fromCharCode.apply(null, plate8.rgba.subarray(i, i + CH));
+      say('PLATE8 ' + plate8.w + 'x' + plate8.h);
+      say('PLATE64:' + btoa(pb));
+    }
     say(fails ? 'RESULT: FAIL — ' + fails + ' check(s)' : 'RESULT: PASS');
     document.title = fails ? 'FAIL' : 'PASS';
   }

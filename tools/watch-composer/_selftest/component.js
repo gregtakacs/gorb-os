@@ -2,7 +2,7 @@ window.COMP_CLASS = function (DCLogic) {
 
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '' };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'dial', cfg: {}, view: 'true', zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233 };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
@@ -479,6 +479,14 @@ class Component extends DCLogic {
                  ['zoom', 'Magnify', 'Scroll a bigger frame through the stage to inspect the print. The layers are baked at 466 px, so this enlarges them; it does not add detail.']]
         .map(([id, label, tip]) => ({ label, tip, pick: () => this.setView(id), ...sel(v === id) })),
       zoomOpts: [1, 1.5, 2, 3, 4].map((z) => ({ label: z + '×', pick: () => this.setZoom(z), ...sel(k === z) })),
+      // D43 §5.1: what the pixels are, independent of how big they are drawn. Panel is the
+      // glass: RGB565, the bake's dither, the device's 32-step blend (GorbBake.panel*).
+      renderOpts: [['design', 'Design', 'The artwork as the composer draws it: 8 bits a channel, smooth blending.'],
+                   ['panel', 'Panel · RGB565', 'What the orb will show: the plate as the bake stores it (RGB565, dithered), the hands and the glass blended the way the device blends them. Banding and the slight darkening the glass adds show here.'],
+                   ['compare', 'Compare', 'Panel on the left of the split, Design on the right. Move the split with the slider.']]
+        .map(([id, label, tip]) => ({ label, tip, pick: () => this.setState({ render: id }), ...sel((this.state.render || 'design') === id) })),
+      isCompare: this.state.render === 'compare', wipeVal: this.state.wipe,
+      setWipe: (e) => this.setState({ wipe: Math.max(0, Math.min(466, +e.target.value || 0)) }),
       viewText: (v === 'full'
         ? 'Shown at the artwork\'s own scale: ' + inch.toFixed(2) + ' in across on this screen, ' + (inch / E.PANEL.inch).toFixed(1) + '× the 1.75 in panel'
         : v === 'zoom'
@@ -1117,6 +1125,7 @@ class Component extends DCLogic {
     const f = this.state.frame, gt = this.gt[f] || this.gt.find(Boolean), d = this.now(), x = c.getContext('2d');
     WatchEngine.compose(x, this.base, gt, fc, d, this.state.hidden);
     if (+this.cfg().wb !== 6500) WatchEngine.wb(c, +this.cfg().wb);
+    if (this.state.render === 'panel' || this.state.render === 'compare') this.drawPanel(c, x, gt, fc, d);
     const o = this.state.sel && this.state.tab === 'comps' && fc.outline(this.state.sel), k = ((fc.inset || 1) * (fc.dynK || 1));
     if (o) {
       x.save(); x.setLineDash([5, 4]); x.lineWidth = 1.5; x.strokeStyle = 'rgba(240,215,154,.95)'; x.shadowColor = 'rgba(0,0,0,.8)'; x.shadowBlur = 3;
@@ -1125,6 +1134,28 @@ class Component extends DCLogic {
     if (this.guideOn()) this.drawGuide(x, fc, d, k);
     const s = d.getSeconds();
     if (s !== this._sec) { this._sec = s; this.drawLayer('hands'); if (this.base && this.base.cageAt) this.drawLayer('geartrain'); }
+  }
+  /* D43 §5.2: the Panel view. The stage is split the way the device stacks it (the plate
+   * under the hands, the hands, the glass and case over them), each layer is taken to
+   * RGB565 the way the bake stores it, and they are blended with the device's own
+   * mix_16_16 — GorbBake's panel functions, held to orb_gfx.c by headless-panel. In
+   * Compare the design pixels already on the canvas keep the right of the split. */
+  drawPanel(c, x, gt, fc, d) {
+    const E = window.WatchEngine, G = window.GorbBake;
+    if (!E || !E.composeLayers || !G || !G.panelPlate) return;
+    const L = E.composeLayers(this.base, gt, fc, d, this.state.hidden), wb = +this.cfg().wb;
+    if (wb !== 6500) [L.under, L.hands, L.top].forEach((cv) => E.wb(cv, wb));
+    const px = (cv) => cv.getContext('2d').getImageData(0, 0, 466, 466).data;
+    const codes = G.panelPlate(px(L.under), 466, 466, true);
+    G.panelLayer(codes, 466, px(L.hands), 466, 466, {});
+    G.panelLayer(codes, 466, px(L.top), 466, 466, { dither: true });
+    const img = x.createImageData(466, 466);
+    G.panelRGBA(codes, img.data);
+    if (this.state.render === 'compare') {
+      const w = Math.max(0, Math.min(466, this.state.wipe | 0));
+      if (w > 0) x.putImageData(img, 0, 0, 0, 0, w, 466);
+      x.save(); x.strokeStyle = 'rgba(240,215,154,.9)'; x.lineWidth = 1; x.beginPath(); x.moveTo(w + 0.5, 0); x.lineTo(w + 0.5, 466); x.stroke(); x.restore();
+    } else x.putImageData(img, 0, 0);
   }
   guideOn() {
     const s = this.state;

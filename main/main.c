@@ -275,7 +275,8 @@ void app_main(void)
     ESP_ERROR_CHECK(idle_dim_init());
 
     /* Launch LVGL handler task */
-    xTaskCreate(lvgl_task, "lvgl", 8192, NULL, 5, NULL);
+    /* Pinned to the LCD bus's ISR core: see DISPLAY_LCD_CORE (display.h). */
+    xTaskCreatePinnedToCore(lvgl_task, "lvgl", 8192, NULL, 5, NULL, DISPLAY_LCD_CORE);
 
     ESP_LOGI(TAG, "gorb-os running — knob: turn swaps apps, push opens, hold returns to the menu");
 

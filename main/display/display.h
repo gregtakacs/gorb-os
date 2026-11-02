@@ -12,6 +12,19 @@
 extern "C" {
 #endif
 
+/** The one core the LCD bus lives on: the SPI2 interrupt is registered here
+ *  (display.c, isr_cpu_id) and the LVGL task is pinned here (main.c). IDF's
+ *  spi_bus_lock races across cores -- an acquire on one core and the
+ *  trans-done ISR on the other can lose the bus hand-off, leaving the acquirer
+ *  blocked forever (portMAX_DELAY). Seen twice overnight on orb-B, v1.1.45:
+ *  lvgl parked in spi_device_acquire_bus holding the ring mutex, httpd behind
+ *  it in display_dma_borrow, the bus lock showing LOCK set with no acquiring
+ *  device and no BG work. Espressif's LCD note ("SPI bus lock has concurrency
+ *  race in multi-core scenarios") prescribes exactly this pinning. Core 1 keeps
+ *  the panel off the radio's core. display_band_commit hops a caller that is
+ *  not pinned here onto a helper task that is, so the overlay obeys it too. */
+#define DISPLAY_LCD_CORE 1
+
 /** Bring up QSPI + panel + disp_on + the LVGL handle, WITHOUT arming the flush
  *  path. Call before anything that may take seconds in front of the glass
  *  (theme load, install) so the boot overlay has a live panel (§6.2). */
@@ -29,7 +42,9 @@ esp_lcd_panel_handle_t display_get_panel(void);
  *  only after its DMA has retired (§32.5). The boot overlay reuses one band
  *  buffer; an async submit would race the next band's stamp against the
  *  current band's wire bytes. Safe from any task once display_panel_early()
- *  has run; bad geometry answers ESP_ERR_INVALID_ARG. */
+ *  has run: a caller not pinned to DISPLAY_LCD_CORE is served by a helper task
+ *  that is, and blocks until it answers. Bad geometry answers
+ *  ESP_ERR_INVALID_ARG. */
 esp_err_t display_band_commit(int y, int rows, const uint16_t *band);
 
 /** Drain the band seam to a quiet bus (§32.5 residual (a)). Waits until every

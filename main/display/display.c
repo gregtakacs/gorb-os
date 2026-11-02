@@ -456,11 +456,8 @@ esp_err_t display_band_quiet(void)
     return (s_band_inflight == 0) ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
-esp_err_t display_band_commit(int y, int rows, const uint16_t *band)
+static esp_err_t band_commit_here(int y, int rows, const uint16_t *band)
 {
-    if (!s_panel || !band || rows <= 0 || y < 0 || y + rows > SCREEN_HEIGHT) {
-        return ESP_ERR_INVALID_ARG;
-    }
     if (s_ring_mux) xSemaphoreTake(s_ring_mux, portMAX_DELAY);
     /* Start from a quiet bus, so s_tile_done can advance only for our own
      * transaction. 500 ms outlasts a full frame of tiles: whoever is inflight
@@ -518,6 +515,71 @@ esp_err_t display_band_commit(int y, int rows, const uint16_t *band)
     }
     if (s_ring_mux) xSemaphoreGive(s_ring_mux);
     return e;
+}
+
+/* ---- The band seam's core hop (DISPLAY_LCD_CORE, display.h) ----
+ * Every acquire of the LCD bus must run on the core its trans-done ISR lives
+ * on, or IDF's spi_bus_lock can lose the hand-off and park the acquirer for
+ * good (the overnight freeze of 2026-11-02). LVGL is pinned there; the band
+ * seam's callers are not -- the boot overlay runs on app_main (CPU0) and the
+ * store's progress frames on whichever unpinned task runs the store. So every
+ * caller hands its band to s_band_task, pinned to the LCD core, and blocks
+ * until it answers. Every one, not "every one seen off core 1": an unpinned
+ * task seen on core 1 can migrate before its acquire, and asking a task's
+ * affinity links xTaskGetCoreID into IRAM for a case no caller has.
+ *
+ * The request rides the task notification as a pointer to the caller's own
+ * stack frame, so the hop adds no queue and no .bss beyond the handle (the
+ * boot margin at esp_wifi_start is ~2 KB): 4 B of internal RAM in all,
+ * measured against the build without it. Its stack and TCB are PSRAM: it
+ * never touches flash, and every caller sleeps on it while it runs. */
+typedef struct {
+    int y, rows;
+    const uint16_t *band;
+    esp_err_t e;
+    TaskHandle_t caller;
+} band_req_t;
+
+static TaskHandle_t s_band_task;
+
+static void band_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        /* Take, not Wait: it returns the value too, and is already linked --
+         * xTaskNotifyWait would add 236 B of kernel IRAM to a ~2 KB margin. */
+        band_req_t *r = (band_req_t *)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (!r) continue;
+        r->e = band_commit_here(r->y, r->rows, r->band);
+        xTaskNotifyGive(r->caller);
+    }
+}
+
+static void band_task_start(void)
+{
+    if (s_band_task) return;
+    if (xTaskCreatePinnedToCoreWithCaps(band_task, "lcd_band", 4096, NULL, 5,
+                                        &s_band_task, DISPLAY_LCD_CORE,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        s_band_task = NULL;
+        ESP_LOGE(TAG, "lcd_band task not started: overlay bands commit on the caller's core");
+    }
+}
+
+esp_err_t display_band_commit(int y, int rows, const uint16_t *band)
+{
+    if (!s_panel || !band || rows <= 0 || y < 0 || y + rows > SCREEN_HEIGHT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_band_task) return band_commit_here(y, rows, band);
+    band_req_t r = { .y = y, .rows = rows, .band = band, .e = ESP_FAIL,
+                     .caller = xTaskGetCurrentTaskHandle() };
+    ulTaskNotifyTake(pdTRUE, 0);                    /* no stale give answers us */
+    /* One request at a time: a second caller retries until the hop is free. */
+    while (xTaskNotify(s_band_task, (uint32_t)&r, eSetValueWithoutOverwrite) != pdPASS)
+        vTaskDelay(1);
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);        /* band_commit_here is bounded (2 x 500 ms) */
+    return r.e;
 }
 
 
@@ -1127,11 +1189,14 @@ esp_err_t display_panel_early(void)
     }
 
     /* 2. QSPI bus on SPI2 (GPSPI2) — dedicated data0..3 pins */
-    const spi_bus_config_t bus_cfg =
+    spi_bus_config_t bus_cfg =
         CO5300_PANEL_BUS_QSPI_CONFIG(PIN_LCD_SCLK,
                                      PIN_LCD_D0, PIN_LCD_D1,
                                      PIN_LCD_D2, PIN_LCD_D3,
                                      buf_bytes);
+    /* The trans-done ISR on the LVGL task's core (display.h DISPLAY_LCD_CORE). */
+    bus_cfg.isr_cpu_id = (DISPLAY_LCD_CORE == 1) ? ESP_INTR_CPU_AFFINITY_1
+                                                 : ESP_INTR_CPU_AFFINITY_0;
     ESP_RETURN_ON_ERROR(
         spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO),
         TAG, "spi_bus_initialize");
@@ -1231,6 +1296,7 @@ esp_err_t display_panel_early(void)
                         TAG, "panel_set_gap");
 
     ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel, true), TAG, "disp_on");
+    band_task_start();   /* before the first overlay band (DISPLAY_LCD_CORE) */
 
     /* 5. Tear-effect sync. The panel is scanning by now and (its default init
      *    having sent TEARON) should be pulsing LCD_TE at vertical blanking.

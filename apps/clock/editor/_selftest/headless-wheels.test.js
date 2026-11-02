@@ -8,6 +8,7 @@ global.React = { createRef: () => ({ current: null }) };
 require('./component.js');
 const B = require(require('./runtime-paths.js').BAKER);
 const S = require('../stack.js');
+const holePts = (h) => E._holePts(h);
 let fails = 0, checked = 0;
 const ok = (c, n, x) => { checked++; if (!c || process.env.VERBOSE) console.log((c ? 'PASS ' : 'FAIL ') + n + (x ? '  [' + x + ']' : '')); if (!c) fails++; };
 const near = (a, b, e) => Math.abs(a - b) < (e || 1e-6);
@@ -113,6 +114,36 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
     row('hand:h').eyeToggle({ stopPropagation() { } });
     ok(it.state.hidden.ids.h === 1 && !it.state.hidden.hands, 'and a hand\u2019s that hand alone');
   } else ok(false, 'the layers list carries the wheel row', Object.keys(it.renderVals()).join(','));
+}
+// ---- P5d.3e: every cutout backed by its wheel; snapping wheels read through their own cutouts ----------
+{
+  const backed = (w, h) => holePts(h).every(([x, y]) => { const d = Math.hypot(x - w.x, y - w.y); return d <= w.r + 0.01 && d >= (w.form === 'ring' ? w.ri : 0) - 0.01; });
+  const odd = [];
+  Object.keys(E.PRESETS).forEach((k) => {
+    const P = E.PRESETS[k]; if (!P.design.comps.some((c) => c.type === 'wheel')) return;
+    const f = face(JSON.parse(JSON.stringify(P.design.comps)));
+    f.lay.wheels.forEach((w) => w.holes.forEach((h) => { if (h.kind !== 'moon' && !h.uncovered && !backed(w, h)) odd.push(k + '/' + w.id); if (h.uncovered) odd.push(k + '/' + w.id + ' flagged'); }));
+    f.lay.wheels.filter((w) => w.form === 'ring').forEach((w) => { if (Math.hypot(w.x - 233, w.y - 233) > 0.5) odd.push(k + '/' + w.id + ' off-centre'); });
+  });
+  ok(!odd.length, 'every preset\u2019s wheels are concentric rings, each backing its cutouts all the way round', odd.join(' '));
+  const un = face([{ id: 'w', type: 'wheel', host: 'dial', size: 120, form: 'ring', inner: 100, trad: 110, read: 90, shows: 'day' }, { id: 'k', type: 'cutout', host: 'w' }]).lay;
+  ok(backed(un.wheels[0], un.dialHoles[0]) && !un.dialHoles[0].uncovered, 'a cutout the author has not sized shrinks onto a narrow ring');
+  const au = face([{ id: 'w', type: 'wheel', host: 'dial', size: 120, form: 'ring', inner: 100, trad: 110, read: 90, shows: 'day' }, { id: 'k', type: 'cutout', host: 'w', w: 60, h: 40 }]).lay;
+  ok(au.dialHoles[0].uncovered === true, 'one the author sized past the band is flagged, not changed');
+  const two = face([{ id: 'a', type: 'wheel', host: 'dial', size: 117, form: 'ring', inner: 66, trad: 91, read: 270, shows: 'day' }, { id: 'ak', type: 'cutout', host: 'a', at: 270 },
+    { id: 'b', type: 'wheel', host: 'dial', size: 117, form: 'ring', inner: 66, trad: 91, read: 90, shows: 'month' }, { id: 'bk', type: 'cutout', host: 'b', at: 90 }]);
+  global.__TEXT_AUDIT = []; two.comps(new Date(2026, 10, 2), null); const txt = global.__TEXT_AUDIT.map((r) => r.text); global.__TEXT_AUDIT = null;
+  ok(txt.includes('MON') && txt.includes('NOV'), 'two rings at one radius each draw their own figures, each seen through its own window');
+}
+// ---- the preset cards: each watch as picking it would show it -------------------------------------
+{
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  const it = new (global.COMP_CLASS(DCLogic))({});
+  it.ready = true; it.state.dial = 'opentour'; it.state.caseStyle = 'tachy'; it.state.train = 'skeltour'; it.state.cfg = { temp: 4000 };
+  const t = it.thumbOpts('modern');
+  ok(t.o.caseStyle === 'polished' && t.o.train === 'classic' && it.state.caseStyle === 'tachy' && it.state.dial === 'opentour', 'a card renders its own case and train, and leaves the selected watch alone', JSON.stringify([t.o.caseStyle, t.o.train]));
+  ok(typeof E.prime === 'function', 'and the engine can be primed back to the stage after one');
 }
 // ---- canon ----------------------------------------------------------------------------------
 {

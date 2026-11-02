@@ -844,10 +844,10 @@
     calendar: { name: 'Triple calendar', blurb: 'Open heart · day & month wheels · pointer date + moon disc', hands: 'leaf', handFinish: 'gilt', design: {
       print: 'arabic', comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 349, dist: 138, rot: 0, size: 41, style: 'bevel', show: 'balance', hour: 12 },
-        { id: 'c2', type: 'wheel', host: 'dial', angle: 270, dist: 30, rot: 0, size: 74, shows: 'day', tsize: 1.02 },
-        { id: 'c2k', type: 'cutout', host: 'c2', at: 270, w: 60, h: 30 },
-        { id: 'c3', type: 'wheel', host: 'dial', angle: 20, dist: 91, rot: 0, size: 117, shows: 'month', tsize: 0.64 },
-        { id: 'c3k', type: 'cutout', host: 'c3', at: 145, w: 60, h: 30 },
+        { id: 'c2', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 117, form: 'ring', inner: 66, trad: 91, read: 270, shows: 'day', fpx: 18 },
+        { id: 'c2k', type: 'cutout', host: 'c2', at: 270 },
+        { id: 'c3', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 117, form: 'ring', inner: 66, trad: 91, read: 90, shows: 'month', fpx: 18 },
+        { id: 'c3k', type: 'cutout', host: 'c3', at: 90 },
         { id: 'c4', type: 'subdial', host: 'dial', angle: 180, dist: 102, rot: 0, size: 62, style: 'guilloche', scale: 'date', open: 0 },
         { id: 'c5', type: 'wheel', host: 'c4', angle: 0, dist: 2, rot: 0, size: 29, shows: 'moon' },
         { id: 'c5k', type: 'cutout', host: 'c5', at: 0, shape: 'moon' },
@@ -859,8 +859,8 @@
     modern: { name: 'Modern', blurb: 'Railway track · hex escapement window · date at 3', hands: 'dauphine', handFinish: 'steel', design: {
       print: 'railway', numerals: 'quarters', surface: 'guilloche', color: 'slate', aging: 0.3, stains: 0, dust: 0.4, comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 315, dist: 140, rot: 0, size: 42, shape: 'hex', style: 'bevel', show: 'balance', hour: 12 },
-        { id: 'c2', type: 'wheel', host: 'dial', angle: 356, dist: 41, rot: 0, size: 173.5, shows: 'date', tsize: 0.52, wbg: '#1b1916', wink: '#ecdfbf' },
-        { id: 'c2k', type: 'cutout', host: 'c2', at: 105, w: 32, h: 30, style: 'plain' },
+        { id: 'c2', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 170, form: 'ring', inner: 130, trad: 150, read: 90, shows: 'date', fpx: 18, wbg: '#1b1916', wink: '#ecdfbf' },
+        { id: 'c2k', type: 'cutout', host: 'c2', at: 90, style: 'plain' },
         { id: 'c3', type: 'subdial', host: 'dial', angle: 180, dist: 104, rot: 0, size: 58, style: 'azure', scale: 'seconds', open: 0, color: 'black' },
         { id: 'h1', type: 'hand', host: 'c3', shows: 'second' },
         { id: 'h2', type: 'hand', host: 'dial', shows: 'hour' },
@@ -876,8 +876,8 @@
       ] } },
     diver: { name: 'Broad arrow', blurb: 'Black grained dial · lume plots · broad arrow hands', hands: 'broad', handFinish: 'steel', design: {
       print: 'diver', numerals: 'all', surface: 'matte', color: 'black', aging: 0.4, stains: 0, dust: 0.5, comps: [
-        { id: 'c1', type: 'wheel', host: 'dial', angle: 332, dist: 15.5, rot: 0, size: 173.5, shows: 'date', tsize: 0.52, wbg: '#1b1916', wink: '#ecdfbf' },
-        { id: 'c1k', type: 'cutout', host: 'c1', at: 95, w: 32, h: 30, style: 'plain' },
+        { id: 'c1', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 170, form: 'ring', inner: 130, trad: 150, read: 90, shows: 'date', fpx: 18, wbg: '#1b1916', wink: '#ecdfbf' },
+        { id: 'c1k', type: 'cutout', host: 'c1', at: 90, style: 'plain' },
         { id: 'c2', type: 'opening', host: 'dial', angle: 0, dist: 0, rot: 0, size: 26, shape: 'slot', style: 'bevel', show: 'balance', hour: 12 },
         { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
         { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
@@ -940,18 +940,18 @@
       print: 'railway', numerals: 'all', font: 'jost', color: 'porcelain', aging: 0, stains: 0, dust: 0, comps: [
         { id: 'c1', type: 'subdial', host: 'dial', angle: 180, dist: 100, rot: 0, size: 56, style: 'azure', scale: 'none', open: 0, color: 'white' },
         { id: 'c2', type: 'moon', host: 'c1', angle: 0, dist: 0, rot: 0, size: 70, style: 'graphic' },
-        { id: 'c3', type: 'wheel', host: 'dial', angle: 270, dist: 8, rot: 0, size: 173.5, shows: 'date', tsize: 0.52, wbg: '#f2ecdd', wink: '#18120b' },
-        { id: 'c3k', type: 'cutout', host: 'c3', at: 90, w: 32, h: 30, style: 'plain' },
+        { id: 'c3', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 170, form: 'ring', inner: 130, trad: 150, read: 90, shows: 'date', fpx: 18, wbg: '#f2ecdd', wink: '#18120b' },
+        { id: 'c3k', type: 'cutout', host: 'c3', at: 90, style: 'plain' },
         { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
         { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
         { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'red' },
       ] } },
-    regulator: { name: 'Regulator', blurb: 'Centre minutes · hours at 12 with date · open seconds', hands: 'spade', handFinish: 'blued', design: {
+    regulator: { name: 'Regulator', blurb: 'Centre minutes · hours at 12 · date at 3 · open seconds', hands: 'spade', handFinish: 'blued', design: {
       print: 'regulator', comps: [
         { id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 103, rot: 0, size: 64, style: 'azure', scale: 'hours', open: 0 },
         { id: 'c2', type: 'subdial', host: 'dial', angle: 180, dist: 103, rot: 0, size: 64, style: 'enamel', scale: 'seconds', open: 0.64 },
-        { id: 'c3', type: 'wheel', host: 'c1', angle: 0, dist: 126, rot: 0, size: 173.5, shows: 'date', tsize: 0.52 },
-        { id: 'c3k', type: 'cutout', host: 'c3', at: 180, w: 32, h: 30 },
+        { id: 'c3', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 170, form: 'ring', inner: 130, trad: 150, read: 90, shows: 'date', fpx: 18 },
+        { id: 'c3k', type: 'cutout', host: 'c3', at: 90 },
         { id: 'h1', type: 'hand', host: 'c1', shows: 'hour' },
         { id: 'h2', type: 'hand', host: 'c2', shows: 'second' },
         { id: 'h3', type: 'hand', host: 'dial', shows: 'minute' },
@@ -1040,6 +1040,17 @@
       }
       ctx.setTransform(m);
     };
+  }
+  // points round a hole's outline (D43 P5d.3e: is a cutout backed by its wheel all the way round?)
+  function holePts(h) {
+    if (h.kind === 'arc') { const out = []; for (let i = 0; i <= 12; i++) { const a = h.a0 + ((h.a1 - h.a0) * i) / 12; out.push([h.cx + Math.cos(a) * h.r0, h.cy + Math.sin(a) * h.r0], [h.cx + Math.cos(a) * h.r1, h.cy + Math.sin(a) * h.r1]); } return out; }
+    if (h.kind === 'circle') return Array.from({ length: 24 }, (_, i) => [h.x + Math.cos((i / 24) * TAU) * h.r, h.y + Math.sin((i / 24) * TAU) * (h.ry || h.r)]);
+    if (h.kind === 'rect' || h.kind === 'slot') {
+      const c = Math.cos(h.rot || 0), sn = Math.sin(h.rot || 0), out = [];
+      for (let i = 0; i <= 8; i++) for (const [u, v] of [[-1 + i / 4, -1], [-1 + i / 4, 1], [-1, -1 + i / 4], [1, -1 + i / 4]]) { const lx = (u * h.w) / 2, ly = (v * h.h) / 2; out.push([h.x + lx * c - ly * sn, h.y + lx * sn + ly * c]); }
+      return out;
+    }
+    return [];
   }
   function holeBox(h) {
     if (h.kind === 'arc') { const xs = [], ys = []; for (let i = 0; i <= 8; i++) { const a = h.a0 + ((h.a1 - h.a0) * i) / 8; [h.r0, h.r1].forEach((r) => { xs.push(h.cx + Math.cos(a) * r); ys.push(h.cy + Math.sin(a) * r); }); } return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]; }
@@ -1189,6 +1200,19 @@
         taken[mate.id] = true;
         if (c.bar !== false) (bars[w.host] = bars[w.host] || []).push({ x: (cx + m.x) / 2, y: (y0 + y1) / 2, h: y1 - y0, fc: c.frameColor });
         w2.cut.push({ id: mate.id, at: p2.at }); w2.holes.push(hole);
+      }
+      /* a cutout is backed by its wheel all the way round, or it opens onto the movement: one the
+       * author has not sized shrinks until it is, one the author sized is flagged for the panel */
+      if (w.form !== 'barrel' && hole.kind !== 'moon' && !mate) {   // (a joined frame spans two wheels: each backs its own half)
+        const lo = (w.form === 'ring' ? w.ri : 0) + 0.5, hi = w.r - 0.5;
+        const off = (q) => holePts(q).some(([px, py]) => { const d = Math.hypot(px - w.x, py - w.y); return d > hi || d < lo; });
+        if (off(hole) && !(+c.w) && !(+c.h)) {
+          for (let i = 0; i < 40 && off(hole); i++) {
+            if (hole.kind === 'arc') { const m = (hole.r0 + hole.r1) / 2, hw = (hole.r1 - hole.r0) * 0.47; hole.r0 = m - hw; hole.r1 = m + hw; }
+            else if (hole.kind === 'circle') hole.r *= 0.95; else { hole.w *= 0.95; hole.h *= 0.95; }
+          }
+        }
+        if (off(hole)) hole.uncovered = true;
       }
       hole.style = style === 'lip' ? 'frame' : style; if (hole.style === 'frame' && c.frameColor && c.frameColor !== 'gilt') hole.fc = c.frameColor;
       // a cutout on a dial-hosted wheel is sealed like a dial window: the value is composited, no hole ships
@@ -3716,6 +3740,17 @@
     return { deg: Math.round((((+manual || 0) % 360) + 360) % 360), by: null };
   }
 
+  /* The engine keeps one set of globals -- the train's gears, the palette config, the lights,
+   * the colour temperature, the typeface -- that face() and movement() set as they start and
+   * that a face's lazily drawn parts (its wheels, discs, windows) read later. Building some
+   * other dial's face, movement, case or glass in between (a picker thumbnail) leaves them set
+   * for that dial. prime(o) puts them back for the dial `o` describes, exactly as face(o) sets
+   * them, without building anything. */
+  function prime(o) {
+    tune(o);
+    const _ = L(); _.setTrain(trainOf(o.train).gears); o = _.configure(resolve(o));
+    setFace((o.design && o.design.font) || 'auto'); setLights(o); _.setTemp(o.temp || 2200, o.hue, o.hueSat);
+  }
   function face(o) {
     tune(o);
     const _ = L(); _.setTrain(trainOf(o.train).gears); o = _.configure(resolve(o));
@@ -3821,8 +3856,19 @@
        * and composited, so the cutouts, not the face, are what stops a disc there. */
       const wheelsOf = {};
       lay.wheels.forEach((w) => { if ((!only || only.indexOf(w.id) >= 0) && !ex[w.id]) (wheelsOf[w.host] = wheelsOf[w.host] || []).push(w); });
+      /* P5d.3e: a wheel that snaps ships as its own plates at its own cutouts, so it is seen
+       * through those alone (two rings at one radius, each read through its own window, never
+       * show each other); the wheels that turn ship as one stack under one cover, so they are
+       * seen through the union of theirs. The turning stack lies under the snapping plates. */
+      const turns = (w) => w.smooth || w.ease > 0 || w.spec.unit === 864e5 * 365;   // orbtheme-baker.js wheelTurns3: smooth, eased, or a year
+      const groups = [];
       Object.keys(wheelsOf).forEach((host) => {
-        const ws = wheelsOf[host].sort((p, q) => q.r - p.r), en1 = host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === host) || {}).en || en;
+        const all = wheelsOf[host].sort((p, q) => q.r - p.r), tw = all.filter(turns);
+        if (tw.length) groups.push([host, tw]);
+        all.filter((w) => !turns(w)).forEach((w) => groups.push([host, [w]]));
+      });
+      groups.forEach(([host, ws]) => {
+        const en1 = host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === host) || {}).en || en;
         const st = cv(S), sx = st.getContext('2d');
         setFace(fontKey);
         ws.forEach((w) => { w.fill = F.wheelFill || null; drawWheel(sx, w, date, en1, pal); w.fill = null; });
@@ -4401,7 +4447,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

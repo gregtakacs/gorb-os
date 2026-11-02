@@ -1004,6 +1004,41 @@ whatever text sizes they chose, raised to the floor wherever the engine sets the
   window fixtures of the engine, stack and UI suites move to the rendered-text window, whose
   aperture rules they test. Geometry gate unchanged from P5d.3c.
 
+**As built (P5d.3e, owner 2026-11-02).** The owner asked why the converted presets' rings sat
+at odd angles and left their windows partly open onto the movement.
+
+- **Why, recorded.** The P5d.3b conversion kept each cutout on its window and searched the
+  ring's centre first-fit (the window's own angle, then ±5° steps) for a band clear of every
+  opening, because a *turning* wheel's cover would freeze the movement it lies over. The
+  converted wheels all *snap*, which ships plates at the cutout alone, so the constraint did
+  not apply. Then P5d.3c raised the figures and widened the cutouts without regrowing the
+  discs: Triple calendar's cutouts ran 15-16 px past their discs, Modern's 4 px, Broad arrow's,
+  Phase's and Regulator's 0.4-2.5 px.
+- **The presets** are concentric rings on the dial, figures at the window's distance, each
+  band backing its cutout with a 3 px margin: dates at 150 px reading at 3 (Modern, Broad
+  arrow, Phase), the day and month at 91 px reading at 9 and 3 (Triple calendar). Regulator's
+  date moves from its hours face to 3 o'clock on the dial: 31 legible figures need a 141 px
+  radius, which a 64 px face cannot hold.
+- **Coverage, built in.** A cutout's outline is sampled (`holePts`): one the author has not
+  sized shrinks until its wheel backs it all the way round; one the author sized is flagged
+  (`hole.uncovered`) and the panel says the movement shows through. Joined frames back each
+  half on its own wheel.
+- **Snapping wheels read through their own cutouts.** A snapping wheel ships as its own plates
+  at its own cutouts, so the editor now draws it through those alone; only turning wheels
+  share the stack and its union mask (they share one cover row on the device). Two rings at
+  one radius (Triple calendar's) each show only through their own window. *Not physical:* two
+  discs cannot share a plane; the device and the preview agree, and a different radius each
+  would be the watchmaker's answer.
+- **The preset cards** had been composed through the *selected* watch's movement and options,
+  so picking Open tourbillon gave every card its tachymetre case and skeleton train. A card
+  now renders as a fresh pick of its preset would (`thumbOpts`: its config, train, case,
+  metal, default hands, and the author's edits to its design), through its own movement frame,
+  cached per options and design. The engine's globals (train gears, palette, lights, colour
+  temperature, typeface), which face()/movement()/caseLayer() set and a face's lazy parts
+  read, are put back for the stage after any card or case/glass option (`WatchEngine.prime`).
+- Tests: `headless-wheels` 70 (every preset cutout backed and every ring concentric, the
+  shrink and the flag, two rings at one radius, a card's own options).
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views

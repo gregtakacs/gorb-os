@@ -1733,11 +1733,34 @@ class Component extends DCLogic {
     }
     x.clearRect(0, 0, el.width, el.height); x.drawImage(sc, 0, 0, el.width, el.height);
   }
+  /* A preset's card shows that watch as picking it would: its own config, train, case, metal and
+   * hands (and the author's edits to its design), never the selected watch's. Each card had been
+   * composed through the SELECTED dial's movement and options, so picking Open tourbillon gave
+   * every card its tachymetre case and skeleton train. Built once per (options, design), cached;
+   * the engine's globals are primed back to the stage after, so a card never leaks into it. */
+  thumbOpts(id) {
+    const P = WatchEngine.PRESETS[id], st0 = this.state;
+    try {
+      this.state = { ...st0, dial: id, cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', hands: 'auto', handFinish: 'auto' };
+      return { o: this.opts(id), hd: this.handDef(id) };
+    } finally { this.state = st0; }
+  }
+  primeStage() { if (this.ready) WatchEngine.prime({ ...this.opts(), design: this.design() }); }
   drawDialThumb(id) {
-    const el = this.dialEls[id]; if (!el || !this.gt[0] || !this.ready) return;
-    const fc = this.face(id), sc = this.scr(), d = new Date(); d.setHours(10, 9, 36, 0);
-    WatchEngine.compose(sc.getContext('2d'), this.base, this.gt[0], fc, d, {});
-    el.getContext('2d').drawImage(sc, 0, 0, el.width, el.height);
+    const el = this.dialEls[id]; if (!el || !this.ready) return;
+    const E = WatchEngine, t = this.thumbOpts(id), design = this.design(id), key = JSON.stringify(t.o) + '|' + JSON.stringify(design) + '|' + t.hd.style + '|' + t.hd.finish;
+    const cache = this._thumbC || (this._thumbC = new Map());
+    let c = cache.get(key);
+    if (!c) {
+      const d = new Date(); d.setHours(10, 9, 36, 0);
+      const mv = E.movement(t.o), gt = mv.render(0).gt, fc = E.face({ ...t.o, design, hands: t.hd.style, handFinish: t.hd.finish });
+      const sc = document.createElement('canvas'); sc.width = sc.height = 466;
+      E.compose(sc.getContext('2d'), mv, gt, fc, d, {});
+      c = document.createElement('canvas'); c.width = el.width; c.height = el.height; c.getContext('2d').drawImage(sc, 0, 0, el.width, el.height);
+      cache.set(key, c); if (cache.size > 40) cache.delete(cache.keys().next().value);
+      this.primeStage();
+    }
+    const x = el.getContext('2d'); x.clearRect(0, 0, el.width, el.height); x.drawImage(c, 0, 0);
   }
   dialThumbs() {
     const tok = this._tk, ids = Object.keys(WatchEngine.PRESETS);
@@ -1768,6 +1791,7 @@ class Component extends DCLogic {
       x.drawImage(E.caseLayer({ ...o, caseStyle: id }), 0, 0); out.drawImage(sc, 168, -2, 130, 130, 0, 0, 112, 112);
     }
     else { x.drawImage(E.glassLayer({ ...o, glassStyle: id }), 0, 0); x.drawImage(fc.outer, 0, 0); out.drawImage(sc, 0, 0, 466, 466, 0, 0, 112, 112); }
+    this.primeStage();   // caseLayer/glassLayer set the engine's lights for that option
   }
   drawHandOpt(id) {
     const el = this.handEls[id], fc = this.face(); if (!el || !fc) return;
@@ -3808,6 +3832,10 @@ class Component extends DCLogic {
         R('Move across', 'dx', -120, 120, 0.5, (v) => v + ' px', 0);
         R('Move down', 'dy', -120, 120, 0.5, (v) => v + ' px', 0);
         R('Turn', 'rot', -180, 180, 1, (v) => v + '\u00b0', 0);
+        // P5d.3e: a cutout the wheel does not back all the way round opens onto the movement
+        const lw = ((fc && fc.lay && fc.lay.wheels) || []).find((q) => String(q.id) === String(sel.host));
+        const lh = lw ? lw.holes[lw.cut.findIndex((q) => String(q.id) === String(sel.id))] : null;
+        if (lh && lh.uncovered) selFields.push(Nt('', 'This cutout runs past its ' + (lw.form === 'ring' ? 'ring\u2019s band' : 'disc') + ': the movement shows through the part the wheel does not cover. Shrink it, move it back onto the figures, or grow the wheel.'));
         const aligned = (sel.at == null || +sel.at === (hw.read != null ? +hw.read : 90)) && !(+sel.dx) && !(+sel.dy) && !(+sel.rot);
         selFields.push(Ch('Align', aligned ? 'on' : '', [{ v: 'on', label: aligned ? 'On the figures' : 'Align to the figures' }], () => this.setComp(sel.id, { at: hw.read != null ? +hw.read : 90, dx: 0, dy: 0, rot: 0 })));
         Cx('Shape', 'shape', [{ v: 'window', label: 'Window' }, { v: 'round', label: 'Round' }, { v: 'arc', label: 'Arc' }, { v: 'slot', label: 'Slot' }, { v: 'moon', label: 'Moon' }], 'window');

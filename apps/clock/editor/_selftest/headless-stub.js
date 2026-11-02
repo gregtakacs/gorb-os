@@ -57,8 +57,15 @@ function stubCtx() {
       if (this.ops.length < 400) this.ops.push({ op: 'drawImage', src: img && img._src });
       if (img && img._src && ALPHAS[img._src] && c.canvas) c.canvas._alpha = ALPHAS[img._src];
     },
-    fillText(t) { if (this.ops.length < 400) this.ops.push({ op: 'fillText', text: String(t) }); },
-    strokeText(t) { if (this.ops.length < 400) this.ops.push({ op: 'fillText', text: String(t) }); },
+    fillText(t) { if (this.ops.length < 400) this.ops.push({ op: 'fillText', text: String(t) }); this._audit(t); },
+    strokeText(t) { if (this.ops.length < 400) this.ops.push({ op: 'fillText', text: String(t) }); this._audit(t); },
+    // the legibility audit (text-audit.js): every glyph run the engine sets, at the size it lands
+    _audit(t) {
+      if (!global.__TEXT_AUDIT || !String(t).trim()) return;
+      const px = parseFloat((String(this.font).match(/([\d.]+)px/) || [])[1] || 0), k = Math.sqrt(Math.abs(m.a * m.d - m.b * m.c));
+      const at = (new Error().stack.split('\n').slice(2).find((l) => /watch-engine|dial-renderer/.test(l)) || '').trim();
+      global.__TEXT_AUDIT.push({ text: String(t), px: px * k, at });
+    },
   };
   // Helper pushes live on the context so the method shorthands above can share one cap.
   c._g = function (op) { if (this.geom.length < 6000) this.geom.push({ op, a: Array.prototype.slice.call(arguments, 1) }); };

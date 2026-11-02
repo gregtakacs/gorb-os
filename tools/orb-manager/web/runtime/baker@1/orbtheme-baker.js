@@ -4233,6 +4233,9 @@
         { refuses.push('the wheel \u201c' + id + '\u201d reads a digit of the ' + (wd.moon ? 'moon' : 'day of the week') + ', which has none'); return; }
       if ((dg === 'hundreds' || dg === 'thousands') && c.shows !== 'year')
         { refuses.push('the wheel \u201c' + id + '\u201d reads the ' + dg + ' of ' + c.shows + ', which never reaches them'); return; }
+      // D43 P5d.3c: a barrel's figures foreshorten as it rolls, which a turned or slid plate cannot
+      // draw; until the stage can draw a drum, a barrel ships only by snapping (true plates)
+      if (c.form === 'barrel') { refuses.push('the barrel \u201c' + id + '\u201d rolls between figures: the orb cannot draw a drum turning yet \u2014 set it to Jump with no ease, and it ships a true picture per figure'); return; }
       var n = dg === 'whole' ? wd.n : dg === 'tens' ? wd.tens : 10;
       var dir = c.dir === 'ccw' ? -1 : 1, smooth = c.cadence === 'smooth';
       // the engine turns a ring back by a figure as its value goes up (the next figure comes

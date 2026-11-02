@@ -46,6 +46,39 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   const sorted = L.wheels.filter((q) => q.host === 'dial').map((q) => q.r);
   ok(sorted.length === 3, 'every wheel is laid out');
 }
+// ---- P5d.3c: the author sizes the wheel, its figures and its cutout separately -------------------
+{
+  const base = { id: 'w', type: 'wheel', host: 'dial', angle: 0, dist: 0, size: 150, shows: 'date', digit: 'units', read: 90, fpx: 30 };
+  const lay = (w, k) => face([w, Object.assign({ id: 'k', type: 'cutout', host: 'w', at: 90 }, k || {})]).lay;
+  const a = lay(base), b = lay(base, { w: 80, h: 60 }), wa = a.wheels[0], wb = b.wheels[0];
+  ok(wa.fs === 30 && wb.fs === 30 && wa.lr === wb.lr, 'the figures keep their px size and radius whatever the cutout\u2019s size', wa.fs + '/' + wb.fs);
+  const r = lay(Object.assign({}, base, { form: 'ring', inner: 110, trad: 128 })).wheels[0];
+  ok(r.form === 'ring' && r.ri === 110 && r.lr === 128 && r.r === 150, 'a ring has its outer and inner radius, and its figures sit where the author puts them');
+  const k0 = a.dialHoles.find((h) => h.kind === 'rect'), k1 = lay(base, { dx: 12, dy: -5, rot: 20 }).dialHoles.find((h) => h.kind === 'rect');
+  ok(near(k1.x - k0.x, 12) && near(k1.y - k0.y, -5) && near(k1.rot, 20 * Math.PI / 180), 'a cutout moves and turns off the figures by its own offset');
+  ok(near(k0.x, 233 + 128) || near(k0.x, 233 + wa.lr), 'and stands on them, at the wheel\u2019s reading point, until moved');
+  ok(face([Object.assign({}, base, { fpx: 5 })]).lay.wheels[0].fs === E.LEGIBLE_PX, 'no figure is set below what reads at 2-3 ft (' + E.LEGIBLE_PX + ' px)');
+  const bar = face([{ id: 'b', type: 'wheel', host: 'dial', angle: 90, dist: 120, size: 22, form: 'barrel', shows: 'date', digit: 'units' }, { id: 'bk', type: 'cutout', host: 'b' }]).lay;
+  ok(bar.wheels[0].form === 'barrel' && near(bar.dialHoles[0].x, bar.wheels[0].x) && near(bar.dialHoles[0].y, bar.wheels[0].y), 'a barrel reads at its front, where its cutout stands');
+  ok(face([Object.assign({}, base, { form: 'barrel' })]).comps(new Date(2026, 10, 2), null).dial, 'and draws');
+  const mig = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', size: 165, shows: 'date', tsize: 0.52 }] }).comps[0];
+  ok(mig.fpx >= E.LEGIBLE_PX && !('tsize' in mig), 'an old relative figure size becomes px, raised to the legible floor', JSON.stringify(mig));
+  const rb = B.wheelPlan3([{ id: 'b', type: 'wheel', form: 'barrel', shows: 'date', cadence: 'smooth' }]);
+  ok(!rb.rows.length && /barrel/.test(rb.refuses[0]), 'a rolling barrel is refused by name; a snapping one plates', rb.refuses[0]);
+}
+// ---- Layers: a disc to another face, a cutout to another wheel ----------------------------------
+{
+  const comps = [{ id: 's', type: 'subdial', host: 'dial', angle: 180, dist: 100, size: 50 },
+    { id: 'w', type: 'wheel', host: 'dial', angle: 180, dist: 120, shows: 'date' }, { id: 'k', type: 'cutout', host: 'w', at: 90 },
+    { id: 'v', type: 'wheel', host: 'dial', angle: 0, dist: 90, shows: 'day' }];
+  const r = S.place({ comps, hands: [], order: [], E }, 'comp:w', 'comp:s', 'below');
+  const w = (r.comps || []).find((c) => c.id === 'w');
+  ok(r.ok && w.host === 's' && w.dist === 20 && w.angle === 180, 'a wheel dragged onto a sub-dial goes under it, where it stood on the dial', JSON.stringify(r));
+  const q = S.place({ comps, hands: [], order: [], E }, 'comp:k', 'comp:v', 'below');
+  ok(q.ok && q.comps.find((c) => c.id === 'k').host === 'v', 'a cutout dragged onto another wheel reveals that wheel', JSON.stringify(q));
+  const z = S.place({ comps, hands: [], order: [], E }, 'comp:k', 'comp:s', 'below');
+  ok(!z.ok && /reveals a wheel/.test(z.reason), 'and onto anything but a wheel, says why', z.reason);
+}
 // ---- canon ----------------------------------------------------------------------------------
 {
   const c = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', host: 'dial', shows: 'nope', digit: 'whole', dir: 'cw', cadence: 'jump', ease: 0, overhang: 'shown', wbg: 'auto', tsize: 1, blank0: true },
@@ -139,10 +172,16 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(ks.length === 2 && ks[1].host === w.id && ks[1].at !== ks[0].at, 'another cutout goes on the selected wheel, at a free place', JSON.stringify(ks));
   it.setState({ sel: w.id, selKind: 'comp', step: 'parts', tab: 'comps' });
   const fl = it.renderVals().fields, lab = (l) => fl.find((x) => x.label === l);
-  ok(lab('Shows') && lab('Digit') && lab('Direction') && lab('Motion') && lab('Ease') && lab('Disc colour') && !lab('Rotation') && !lab('Style'), 'a wheel’s panel: what it shows, its digit, direction, motion and look');
+  ok(['Shows', 'Digit', 'Form', 'Outer diameter', 'Figures at radius', 'Reads at', 'Edge curvature', 'Figure size', 'Typeface', 'Style', 'Figures face', 'Figure turn', 'Disc colour', 'Direction', 'Motion', 'Ease'].every(lab) && !lab('Rotation') && !lab('Radius'),
+    'a wheel’s panel: what it shows, its form and sizes, where its figures sit and read, their size, type, face and turn, its edge, and its motion', fl.map((f) => f.label).join('|'));
+  ok(/px · \d+\.\d mm/.test(lab('Outer diameter').valText || ''), 'its sizes read in px and in mm on the 1.75 in dial', lab('Outer diameter').valText);
   it.setState({ sel: ks[1].id, selKind: 'comp' });
   const fk = it.renderVals().fields, lk = (l) => fk.find((x) => x.label === l);
-  ok(lk('Wheel') && lk('Reads at') && lk('Shape') && lk('Join with') && !lk('Host') && !lk('Angle') && !lk('Distance'), 'a cutout’s panel: its wheel, where it reads, its shape and join -- no host or placement of its own');
+  ok(lk('Wheel') && lk('Along the figures at') && lk('Move across') && lk('Move down') && lk('Turn') && lk('Align') && lk('Shape') && lk('Join with') && !lk('Host') && !lk('Angle') && !lk('Distance'),
+    'a cutout’s panel: its wheel, where along the figures, moved and turned freely, aligned back in one press; its shape and join', fk.map((f) => f.label).join('|'));
+  it.setComp(ks[1].id, { dx: 9, rot: 12 }); const al = it.renderVals().fields.find((x) => x.label === 'Align'); if (al) al.opts[0].pick();
+  const k2 = it.design().comps.find((c) => c.id === ks[1].id);
+  ok(!k2.dx && !k2.rot, 'Align to the figures puts a moved cutout back on them', JSON.stringify(k2));
   ok(it.renderVals().catOpts.some((c) => /\+ Wheel/.test(c.label)) && it.renderVals().catOpts.some((c) => /\+ Cutout/.test(c.label)), 'the catalogue offers a wheel and a cutout');
 }
 

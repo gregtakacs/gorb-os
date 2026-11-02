@@ -914,6 +914,70 @@ rebuilt container (code 17,766 B).*
   when its angle changes), which would make a resting wheel cost a still blit. A stage
   change, to be ruled.
 
+**As built (P5d.3c, owner 2026-11-02).** The owner's test of a new date wheel: its own heavy
+shadow made it read as a ring; no font size or style; a radius that was neither the wheel's
+outside nor a ring's inside; no choice of disc or ring; figures that could not be turned; a
+jagged cutout; and the cutout's size setting the figures'. Asked for: the wheel's size, form,
+edge curvature, and where, how big, in what type and which way up its figures stand, with the
+opening a separate part that aligns with them but moves freely; a barrel that rolls like an
+odometer; dragging wheels and cutouts between faces in Layers; and every text on every preset
+legible on the 1.75 in dial from 2-3 ft.
+
+*The wheel.* `form` disc, ring or barrel. A disc or ring is sized outright: `size` its outer
+radius (the panel shows the diameter in px and mm), `inner` a ring's inner radius, `trad` the
+radius its figures stand on, `read` the angle it reads at (where the value stands and cutouts
+align). Its figures: `fpx` in px, `wfont`, `fstyle` (bold, regular, italic, bold italic),
+`face` (upright where it reads, tops to the rim, tops to the centre) and `trot`, a further
+turn. `edge` is the curvature of its edge (0 a flat cut, 1 well rounded): the old wheel's
+fixed dark rim and stroke, the "shadow of its own", is gone, and the default is a light 15%.
+A barrel is a drum seen side on (`size` its radius, `len` its length, `trot` turns the drum):
+its figures foreshorten by the cosine and fall into the shading over the curve. The panel
+warns when figures round a ring would overlap. Old designs: a relative `tsize` becomes the px
+it drew at (canon).
+
+*The cutout.* Stands at `at` along the wheel's figures (its reading point unless set), then
+wherever `dx`, `dy` and `rot` move it; *Align to the figures* puts it back. Its size, when
+the author has not set one, comes from the figure size (and on a ring stays inside the band);
+it never sets the figures' size. **Fixed:** the wheel stack was seen through a path clip, which
+Chrome draws hard-edged; it is now an antialiased mask, a hair wider than the cutouts, so the
+dial's own soft edge is the one seen.
+
+*The bake.* A snapping barrel plates exactly (a true picture per figure). A rolling barrel is
+refused by name: a turned or slid plate cannot foreshorten, so the orb would need to draw a
+drum (a stage change, owed). Rings and discs are unchanged on the wire.
+
+*Layers.* A wheel (any disc: wheel, window, moon) dropped on another face, among its discs or
+cutouts, or onto the face from below, moves under that face where it stood on the dial (its
+polar place recomputed about the new face); a face lifted among the hands refuses it. A cutout
+dropped on a wheel, or beside one of its cutouts, reveals that wheel.
+
+*Legibility.* `LEGIBLE`: a 1.6 mm cap height, which subtends 6 arcmin at 3 ft (a normal eye
+resolves 5') and 9' at 2 ft; at 0.0954 mm a px and digits ~0.7 em, `LEGIBLE_PX` = 24. No text
+the engine sets lands below it:
+- sub-dial scales (round, fan, slider, every display style) are set at it at least, moved in by
+  what they grew (an open face keeps its band), and each ring of labels thinned to every k-th,
+  the smallest k of 1, 2, 3, 4, 6, 12 at which none collide (12, 3, 6, 9 on a small face), with
+  names falling back to their initials when that keeps more (S M T W T F S);
+- the chapter numerals, at their scale; perimeter rings (the band and the chapter's shrink
+  follow the figures); windows (never below the size that lands their text on it: 1.33x for a
+  date); text, curved and date flares; wheel figures; the orbit discs and retrograde scales
+  (thinned); the bezels (the tachymetre's speeds in priority order, each kept only where it
+  clears the others, its name only where the 500s leave room).
+- Presets changed: Perpetual's faces grow 50 to 58 px (its names print as initials), Triple
+  calendar's day and month cutouts and the date cutouts widen to their figures, and every
+  preset's small print grows or thins. The hand-geometry gate moves on Perpetual alone.
+- `headless-legible.test.js` sets every preset and 149 option combinations (each print and
+  perimeter ring, each sub-dial display x scale x form, windows, text flares) through the
+  stub's canvas, records every glyph run at the size it lands, and fails on any under 24 px.
+
+*Bench, orb-B.* Modern (its legible date ring) with a snapping barrel big date: the glass reads
+0|2 with the neighbouring figures foreshortened over the drums, the date 2, and the seconds
+face 60, 40, 20; L4, 13 rows, 9 fps (the plate's keyframe bank sets that rate).
+
+*Owed.* A rolling barrel (the stage would draw a drum: a vertical remap of a slid strip). A
+resting turned row drawn from a cache of its pose. Designs saved by owners before today keep
+whatever text sizes they chose, raised to the floor wherever the engine sets them.
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views

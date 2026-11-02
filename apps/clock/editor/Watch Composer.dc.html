@@ -877,8 +877,10 @@ class Component extends DCLogic {
       // a cutout belongs to a wheel: the selected one, or the wheel of the selected cutout
       const w = sel0 && sel0.type === 'wheel' ? sel0 : sel0 && sel0.type === 'cutout' ? d0.comps.find((c) => c.id === sel0.host) : null;
       if (!w) { this.setState({ status: 'A cutout is read off a wheel: select the wheel first, then add the cutout' }); return; }
-      const used = d0.comps.filter((c) => c.type === 'cutout' && c.host === w.id).map((c) => +c.at || 0);
-      add.push({ id: 'c' + n, type: 'cutout', host: w.id, at: [90, 270, 0, 180].find((a) => used.indexOf(a) < 0) ?? 45 });
+      // the first stands where the wheel reads; another goes a quarter round from the ones there
+      const used = d0.comps.filter((c) => c.type === 'cutout' && c.host === w.id).map((c) => (c.at != null ? +c.at : w.read != null ? +w.read : 90));
+      const r0 = w.read != null ? +w.read : 90;
+      add.push({ id: 'c' + n, type: 'cutout', host: w.id, at: [r0, r0 + 90, r0 + 180, r0 + 270].map((a) => a % 360).find((a) => used.indexOf(a) < 0) ?? (r0 + 45) % 360 });
       this.upd((d) => { d.comps.push(...JSON.parse(JSON.stringify(add))); });
       this.setState({ sel: add[0].id, selKind: 'comp', step: 'parts', tab: 'comps' });
       return;
@@ -891,7 +893,7 @@ class Component extends DCLogic {
       add.push({ id: 'c' + n, type, host, ...JSON.parse(JSON.stringify(E.NEW_COMP[type])), ...(host !== 'dial' ? { dist: 0, size: type === 'moon' || type === 'opening' ? Math.round(sel.size * 0.5) : type === 'flare' ? Math.round(sel.size * 0.22) : 1 } : {}) });
       if (type === 'subdial' && E.SCALE_SHOWS[E.NEW_COMP.subdial.scale]) add.push({ id: 'h' + (n + 1), type: 'hand', host: 'c' + n, shows: E.SCALE_SHOWS[E.NEW_COMP.subdial.scale] });
       // a new wheel comes with the cutout it is read through
-      if (type === 'wheel') add.push({ id: 'c' + (n + 1), type: 'cutout', host: 'c' + n, at: 90 });
+      if (type === 'wheel') add.push({ id: 'c' + (n + 1), type: 'cutout', host: 'c' + n, at: 90 });   // at the ring's reading point
     }
     this.upd((d) => { d.comps.push(...JSON.parse(JSON.stringify(add))); });
     this.setState(type === 'hand' ? { sel: add[0].id, selKind: 'hand', step: 'parts', tab: 'hands' } : { sel: add[0].id, selKind: 'comp', step: 'parts', tab: 'comps' });
@@ -4145,12 +4147,20 @@ class Component extends DCLogic {
       // D43 P5d.2: a face's form and the geometry its hands ride stand in a group of their own, unfolded
       const FORM = /^(Form|Direction|Track angle|Track length|Slot frame|Slot width|Slot shows|Start|Sweep)$/;
       const isForm = (f) => FORM.test(f.label) || (f.isChips && (f.opts || []).some((o) => /Set from the art|Click on the dial/.test(o.label))) || (f.isNote && /^Set from the art/.test(f.note || ''));
+      const selC = (d.comps || []).find((c) => c.id === s.sel);
+      if (selC && (selC.type === 'wheel' || selC.type === 'cutout')) {
+        // D43 P5d.3c: a wheel and a cutout lay out their own sections (Form, Figures, Motion), unfolded,
+        // under the placement every part shares
+        const pl = fields.filter((f) => !f.isHead && /^(Host|Angle|Distance)$/.test(f.label)), rest = fields.filter((f) => pl.indexOf(f) < 0);
+        fields = (pl.length ? [H('Placement')].concat(pl) : []).concat(rest[0] && rest[0].isHead ? [] : [H(selC.type === 'wheel' ? 'Wheel' : 'Cutout')]).concat(rest);
+      } else {
       const form = [], place = [], shape = [], paint = [];
       fields.forEach((f) => { if (f.isHead) shape.push(f); else if (isForm(f)) form.push(f); else if (PLACE.test(f.label)) place.push(f); else if (PAINT.test(f.label)) paint.push(f); else shape.push(f); });
       fields = [].concat(form.length ? [H('Form')].concat(form) : [],
                          place.length ? [H('Placement')].concat(this.foldRows(place, 'place', 5)) : [],
                          shape.length ? [H('Shape')].concat(this.foldRows(shape, 'shape', 5)) : [],
                          paint.length ? [H('Paint')].concat(this.foldRows(paint, 'paint', 5)) : []);
+      }
     }
     // Hands: each panel reads Shape, Paint, Motion; the artwork upload folds behind its own toggle
     if (Array.isArray(v.handRows)) out.handRows = v.handRows.map((h) => {
@@ -4260,7 +4270,13 @@ class Component extends DCLogic {
       if (cut) {
         const wheels = D.comps.filter((c) => c.type === 'wheel'), mates = D.comps.filter((c) => c.type === 'cutout' && c.id !== sel.id);
         Sx('Wheel', 'host', wheels.map((c) => ({ v: c.id, label: '#' + num(c.id) + ' ' + compTitle(c) })));
-        R('Reads at', 'at', 0, 359, 1, (v) => v + '\u00b0', 90);
+        const hw = D.comps.find((c) => c.id === sel.host) || {};
+        if (hw.form !== 'barrel') R('Along the figures at', 'at', 0, 359, 1, (v) => v + '\u00b0', hw.read != null ? +hw.read : 90);
+        R('Move across', 'dx', -120, 120, 0.5, (v) => v + ' px', 0);
+        R('Move down', 'dy', -120, 120, 0.5, (v) => v + ' px', 0);
+        R('Turn', 'rot', -180, 180, 1, (v) => v + '\u00b0', 0);
+        const aligned = (sel.at == null || +sel.at === (hw.read != null ? +hw.read : 90)) && !(+sel.dx) && !(+sel.dy) && !(+sel.rot);
+        selFields.push(Ch('Align', aligned ? 'on' : '', [{ v: 'on', label: aligned ? 'On the figures' : 'Align to the figures' }], () => this.setComp(sel.id, { at: hw.read != null ? +hw.read : 90, dx: 0, dy: 0, rot: 0 })));
         Cx('Shape', 'shape', [{ v: 'window', label: 'Window' }, { v: 'round', label: 'Round' }, { v: 'arc', label: 'Arc' }, { v: 'slot', label: 'Slot' }, { v: 'moon', label: 'Moon' }], 'window');
         if (sel.shape === 'arc') R('Arc', 'span', 6, 180, 1, (v) => v + '\u00b0', 36);
         R('Width', 'w', 0, 120, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);
@@ -4304,31 +4320,55 @@ class Component extends DCLogic {
       }
       if (!cut && sel.type !== 'wheel' && (sel.type !== 'opening' && !(sel.type === 'flare' && sel.icon === 'arctext') || (sel.shape && sel.shape !== 'circle'))) R('Rotation', 'rot', -180, 180, 1, (v) => v + '°');
       const sr = E.SIZE_RANGE[sel.type];
-      if (!cut) R(sel.type === 'window' ? 'Text size' : sel.type === 'flare' ? (sel.bg && sel.bg !== 'none' ? 'Overall size' : 'Size') : 'Radius', 'size', sr[0], sr[1], sr[2], (v) => (sel.type === 'window' ? v.toFixed(2) + '×' : v + 'px'));
+      if (!cut && sel.type !== 'wheel') R(sel.type === 'window' ? 'Text size' : sel.type === 'flare' ? (sel.bg && sel.bg !== 'none' ? 'Overall size' : 'Size') : 'Radius', 'size', sr[0], sr[1], sr[2], (v) => (sel.type === 'window' ? v.toFixed(2) + '×' : v + 'px'));
       if (sel.type === 'window') { R('Width', 'ww', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1); R('Height', 'wh', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1);
         if (sel.wshape === 'circle') selFields.push(Nt('', 'At equal Width and Height the round aperture takes the longer side as its diameter. Pull the two apart and the round opening becomes a true ellipse: half of each is a radius, so the aperture can stand taller than wide.')); }
       if (!cut && sel.type !== 'wheel') Sx('Style', 'style', opt(E.COMP_STYLES[sel.type]));
       /* D43 P5d.3: a wheel -- what it shows (or one digit of it), how it turns, how it looks */
       if (sel.type === 'wheel') {
         const sh = sel.shows || 'date', moon = sh === 'moon', numeric = ['date', 'month', 'hour', 'hours24', 'minute', 'second', 'year'].includes(sh);
+        const fw = ((fc && fc.lay && fc.lay.wheels) || []).find((q) => String(q.id) === String(sel.id));
+        const mmOf = (px) => ' \u00b7 ' + E.pxMm(px).toFixed(1) + ' mm';
         Sx('Shows', 'shows', opt(E.WHEEL_SHOWS));
         // a year reads by digit (its four rings); the other numbers whole, or their tens or units
         if (numeric) Cx('Digit', 'digit', (sh === 'year' ? [] : [{ v: 'whole', label: 'Whole' }]).concat(sh === 'year' ? [{ v: 'thousands', label: 'Thousands' }, { v: 'hundreds', label: 'Hundreds' }] : [])
           .concat([{ v: 'tens', label: 'Tens' }, { v: 'units', label: 'Units' }]), sh === 'year' ? 'units' : 'whole');
         if (sel.digit === 'tens') Cx('Zero', 'blank0', [{ v: false, label: 'Print 0' }, { v: true, label: 'Leave blank' }], false);
+        if (!moon) {
+          selFields.push(Object.assign(Nt('', ''), { label: 'Form', isHead: true, isNote: false, isRow: false }));
+          Cx('Form', 'form', opt(E.WHEEL_FORMS), 'disc');
+          const form = sel.form || 'disc', r = fw ? fw.r : +sel.size || 40;
+          R(form === 'barrel' ? 'Drum radius' : 'Outer diameter', 'size', 10, 230, 0.5, (v) => (form === 'barrel' ? v + ' px' + mmOf(v) : (2 * v) + ' px' + mmOf(2 * v)), 40);
+          if (form === 'ring') R('Inner diameter', 'inner', 4, Math.max(8, r - 4), 0.5, (v) => (2 * v) + ' px' + mmOf(2 * v), fw ? fw.ri : r * 0.62);
+          if (form === 'barrel') R('Drum length', 'len', 8, 200, 0.5, (v) => v + ' px' + mmOf(v), fw ? fw.len : 40);
+          else {
+            R('Figures at radius', 'trad', fw ? Math.ceil(fw.ri + 1) : 2, Math.max(4, Math.floor(r - 1)), 0.5, (v) => v + ' px', fw ? Math.round(fw.lr * 2) / 2 : r * 0.7);
+            R('Reads at', 'read', 0, 359, 1, (v) => v + '\u00b0 (where the value stands, and the cutouts align)', 90);
+          }
+          R('Edge curvature', 'edge', 0, 1, 0.05, (v) => (v ? Math.round(v * 100) + '%' : 'flat cut'), 0.15);
+          selFields.push(Object.assign(Nt('', ''), { label: 'Figures', isHead: true, isNote: false, isRow: false }));
+          R('Figure size', 'fpx', E.LEGIBLE_PX, 72, 0.5, (v) => v + ' px \u00b7 ' + E.pxMm(v * E.LEGIBLE.capEm).toFixed(2) + ' mm tall', fw ? fw.fs : E.LEGIBLE_PX);
+          selFields.push(Sl('Typeface', sel.wfont || 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], set('wfont')));
+          Cx('Style', 'fstyle', opt(E.WHEEL_STYLES), 'bold');
+          if (form !== 'barrel') Cx('Figures face', 'face', opt(E.WHEEL_FACES), 'up');
+          R(form === 'barrel' ? 'Drum turn' : 'Figure turn', 'trot', -180, 180, 1, (v) => v + '\u00b0', 0);
+          selFields.push(Co('Disc colour', sel.wbg, set('wbg'), 'Auto'), Co('Figures', sel.wink, set('wink'), 'Auto'));
+          // the figures must not run into each other round the ring
+          if (fw && form !== 'barrel') {
+            const pitch = (2 * Math.PI * fw.lr) / fw.spec.n, wide = fw.fs * (0.62 * fw.longest + 0.1);
+            if (pitch < wide) selFields.push(Nt('', 'The figures overlap: ' + fw.spec.n + ' of them round a ' + Math.round(fw.lr) + ' px radius leave ' + pitch.toFixed(1) + ' px each, and one is ~' + Math.round(wide) + ' px wide. Move them out, grow the wheel, or read a digit instead.'));
+          }
+        } else selFields.push(Sl('Sky', sel.mstyle || 'classic', [{ v: 'classic', label: 'Navy & gold' }, { v: 'silver', label: 'Silver night' }, { v: 'black', label: 'Black sky' }], set('mstyle')));
+        selFields.push(Object.assign(Nt('', ''), { label: 'Motion', isHead: true, isNote: false, isRow: false }));
         Cx('Direction', 'dir', [{ v: 'cw', label: 'Clockwise' }, { v: 'ccw', label: 'Anticlockwise' }], 'cw');
         Cx('Motion', 'cadence', [{ v: 'jump', label: 'Jumps' }, { v: 'smooth', label: 'Smooth' }], 'jump');
         if (sel.cadence !== 'smooth' && sh !== 'second') R('Ease', 'ease', 0, 1000, 10, (v) => (v ? v + ' ms' : 'snaps'), 0);
         if (sel.host && sel.host !== 'dial') Cx('Overhang', 'overhang', [{ v: 'hidden', label: 'Hidden \u00b7 inside its face' }, { v: 'shown', label: 'Shown \u00b7 lies on the dial' }], 'hidden');
-        if (moon) selFields.push(Sl('Sky', sel.mstyle || 'classic', [{ v: 'classic', label: 'Navy & gold' }, { v: 'silver', label: 'Silver night' }, { v: 'black', label: 'Black sky' }], set('mstyle')));
-        else {
-          selFields.push(Co('Disc colour', sel.wbg, set('wbg'), 'Auto'), Co('Figures', sel.wink, set('wink'), 'Auto'),
-            Sl('Typeface', sel.wfont || 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], set('wfont')));
-          R('Figure size', 'tsize', 0.3, 2, 0.05, (v) => Math.round(v * 100) + '%', 1);
-        }
         const nc = D.comps.filter((c) => c.type === 'cutout' && c.host === sel.id).length;
         selFields.push(Nt('', (nc ? nc + ' cutout' + (nc > 1 ? 's read' : ' reads') + ' it' : 'No cutout reads it yet: add one from Parts while this wheel is selected') +
-          '. ' + ((window.GorbBake && window.GorbBake.wheelTurns3 && window.GorbBake.wheelTurns3(sel))
+          '. ' + ((sel.form === 'barrel' && window.GorbBake && window.GorbBake.wheelTurns3 && window.GorbBake.wheelTurns3(sel))
+            ? 'A barrel that rolls cannot ship yet: the orb would need to draw a drum. Let it snap, and it ships a true picture per figure.'
+            : (window.GorbBake && window.GorbBake.wheelTurns3 && window.GorbBake.wheelTurns3(sel))
             ? 'Moving between figures, it turns on the orb as its own row under the face: every tick of a sweep across it repaints the disc turned, so each such wheel costs the dial frame rate.'
             : 'Snapping, it ships a picture per figure at its cutouts, as a window did: no frame-rate cost.') + (moon ? ' Give it a Moon cutout to read the phase through the humps.' : '')));
       }

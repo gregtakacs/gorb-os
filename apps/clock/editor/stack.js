@@ -78,7 +78,7 @@
       comps.forEach(function (c) {
         if (c.type === 'cutout' && c.host === w.id)
           push({ id: 'comp:' + c.id, ref: c.id, kind: 'cutout', band: 'rows', label: compTitle(c, E), parent: 'comp:' + w.id, host: hostKey,
-                 hide: 'complications', sel: { kind: 'comp', id: c.id }, badge: 'cut through ' + (hostKey === 'dial' ? 'the dial' : 'its face'), movable: false });
+                 hide: 'complications', sel: { kind: 'comp', id: c.id }, badge: 'cut through ' + (hostKey === 'dial' ? 'the dial' : 'its face'), movable: true, group: 'cuts:' + w.id });
       });
     };
     var hostOf = function (c) { return c.host && c.host !== 'dial' && byId[c.host] ? c.host : (c.host === 'plate' ? 'plate' : 'dial'); };
@@ -167,7 +167,6 @@
   function refusal(it, nb, dir) {
     if (!it.movable) {
       if (it.kind === 'dial') return 'R7: the dial is the face every other layer is placed against, so it does not move';
-      if (it.kind === 'cutout') return 'R4: a cutout belongs to its wheel \u2014 move the wheel, or set where it reads along the wheel\u2019s track';
       if (it.kind === 'flare' || it.kind === 'opening') return 'R3: ' + it.label + ' is part of ' + (it.parent === 'dial' ? 'the dial' : 'its host') + ' — move the host instead';
       return 'R1: the crystal and the plate are pinned';
     }
@@ -183,6 +182,7 @@
     if (it.kind === 'pointer') return 'R3: a sub-dial\u2019s hand rides its face \u2014 drag it onto another face to move it there';
     if (it.kind === 'hand' && dir > 0) return 'R3: a hand turns above the dial, so it stays above the dial’s face';
     if (it.kind === 'subdial' && dir > 0) return 'R3: a sub-dial sits on the dial, so it stays above the dial’s face';
+    if (it.kind === 'cutout') return 'R4: a cutout reveals its wheel \u2014 drag it onto another wheel to read that one';
     if (it.kind === 'disc' && dir < 0) return 'R4: a disc stays under the face that frames it' + (it.host === 'dial' ? ' (the dial)' : '');
     if (it.kind === 'disc' && dir > 0) return 'R4: a disc stays with the face that frames it';
     return 'R3: ' + it.label + ' stays with its host';
@@ -333,9 +333,34 @@
       return { ok: false, reason: 'R3: a sub-dial sits on the dial, so it stays above the dial’s face' };
     }
     if (it.kind === 'disc') {
-      if (tg.kind !== 'disc' || tg.group !== it.group) return { ok: false, reason: 'R4: a disc stays under the face that frames it' + (it.host === 'dial' ? ' (the dial)' : '') };
-      moveComp(it.ref, tg.ref, above);
-      return { ok: true, comps: comps };
+      // the face it lands under: the one whose discs, cutouts or prints it is dropped among, or
+      // a face dropped on from below (into it); a disc stays under a face, never among the hands
+      var hostKey = function (x) { return x.host === 'dial' || !x.host ? 'dial' : x.host.slice(5); };
+      var dest = tg.kind === 'disc' || tg.kind === 'cutout' ? hostKey(tg)
+        : tg.kind === 'subdial' && !above && !lifted(tg.ref) ? tg.ref
+        : tg.kind === 'dial' && !above ? 'dial'
+        : (tg.kind === 'flare' || tg.kind === 'opening' || tg.kind === 'pointer') ? (tg.parent === 'dial' ? 'dial' : faceOf(tg)) : null;
+      if (!dest) return { ok: false, reason: 'R4: a disc turns under a face \u2014 drop it among that face\u2019s discs, or on the face itself' };
+      var dc = byId[it.ref], from = dc.host && dc.host !== 'dial' ? dc.host : 'dial';
+      if (dest !== from) {
+        if (dest !== 'dial' && lifted(dest)) return { ok: false, reason: 'R4: that face is lifted among the hands \u2014 a disc turns only under a face on the dial' };
+        // re-hosted where it already stands on the dial: its polar place recomputed about the new face
+        var centre = function (h) { if (h === 'dial' || !byId[h]) return [233, 233]; var q = byId[h], a = (+q.angle || 0) * Math.PI / 180, d = +q.dist || 0; return [233 + Math.sin(a) * d, 233 - Math.cos(a) * d]; };
+        var c0 = centre(from), a0 = (+dc.angle || 0) * Math.PI / 180, d0 = +dc.dist || 0, px = c0[0] + Math.sin(a0) * d0, py = c0[1] - Math.cos(a0) * d0, c1 = centre(dest);
+        var dx = px - c1[0], dy = py - c1[1], dd = Math.sqrt(dx * dx + dy * dy);
+        dc.host = dest; dc.dist = Math.round(dd * 2) / 2; dc.angle = dd < 0.5 ? 0 : Math.round(((Math.atan2(dx, -dy) * 180 / Math.PI) + 360) % 360);
+      }
+      if (tg.kind === 'disc') moveComp(it.ref, tg.ref, above);
+      else if (tg.kind === 'cutout') moveComp(it.ref, byId[tg.ref].host, true);
+      return { ok: true, comps: comps, host: dest };
+    }
+    if (it.kind === 'cutout') {
+      // a cutout reveals the wheel it is dropped on (or the wheel of the cutout it lands beside)
+      var wid = tg.kind === 'disc' && byId[tg.ref] && byId[tg.ref].type === 'wheel' ? tg.ref : tg.kind === 'cutout' ? byId[tg.ref].host : null;
+      if (!wid) return { ok: false, reason: 'R4: a cutout reveals a wheel \u2014 drop it on a wheel, or beside one of its cutouts' };
+      byId[it.ref].host = wid;
+      if (tg.kind === 'cutout') moveComp(it.ref, tg.ref, !above);
+      return { ok: true, comps: comps, host: wid };
     }
     return { ok: false, reason: refusal(it, null, 1) };
   }

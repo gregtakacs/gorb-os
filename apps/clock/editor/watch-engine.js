@@ -99,6 +99,13 @@
   const PANEL = { px: S, inch: 1.75, cssInch: 96 };
   const MM_PER_PX = (PANEL.inch * 25.4) / PANEL.px;
   const pxMm = (px) => px * MM_PER_PX;
+  /* Legibility (owner 2026-11-02: the dial is 1.75 in across and read from 2-3 ft). A
+   * figure's cap height of 1.6 mm subtends 6 arcmin at 3 ft -- just over the 5' a normal
+   * eye resolves -- and 9' at 2 ft. Digits stand ~0.7 em, so no text the dial prints is
+   * set below LEGIBLE_PX; where a scale cannot fit its labels at that size it prints fewer. */
+  const LEGIBLE = { capMm: 1.6, capEm: 0.7 };
+  const LEGIBLE_PX = Math.ceil(LEGIBLE.capMm / MM_PER_PX / LEGIBLE.capEm);
+  const legible = (px) => Math.max(LEGIBLE_PX, px);
   // CSS px the whole dial occupies at true size, and the zoom factor that means (1.0 = today's
   // 466 px stage). 1 CSS in is nominally 96 px, but the page cannot measure the screen it lands
   // on: Chrome draws 1 CSS px as 1 device px at 100% zoom, so the same 168 px is 1.75 in on a
@@ -730,6 +737,13 @@
   const WHEEL_DIGITS = { whole: 'Whole', thousands: 'Thousands', hundreds: 'Hundreds', tens: 'Tens', units: 'Units' };
   const WHEEL_SRC = { date: 'date', day: 'weekday', month: 'month', year: 'year', hour: 'hour12', hours24: 'hour24', minute: 'minute', second: 'second', moon: 'moon_age' };
   const SYNODIC = 29.530588853;
+  const WHEEL_FORMS = { disc: 'Disc', ring: 'Ring', barrel: 'Barrel' };
+  const WHEEL_FACES = { up: 'Upright where it reads', out: 'Tops to the rim', in: 'Tops to the centre' };
+  const WHEEL_STYLES = { bold: 'Bold', regular: 'Regular', italic: 'Italic', bolditalic: 'Bold italic' };
+  // a wheel's figure size: the author's px, or (a design from before P5d.3c) the old relative
+  // size it was drawn at -- never below what the dial can be read by
+  const wheelFontPx = (c) => legible(c.fpx != null ? +c.fpx
+    : Math.max(6, Math.min(Math.max(14, +c.size || 40) * 0.42, (+c.tsize || 1) * Math.max(8, Math.max(14, +c.size || 40) * 0.2))));
   const dimOf = (t) => new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
   const yearLen = (t) => (new Date(t.getFullYear() + 1, 0, 1) - new Date(t.getFullYear(), 0, 1)) / 864e5;
   const dayFrac = (t) => (t.getHours() * 3600 + t.getMinutes() * 60 + t.getSeconds() + t.getMilliseconds() / 1000) / 86400;
@@ -825,9 +839,9 @@
       print: 'arabic', comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 349, dist: 138, rot: 0, size: 41, style: 'bevel', show: 'balance', hour: 12 },
         { id: 'c2', type: 'wheel', host: 'dial', angle: 270, dist: 30, rot: 0, size: 74, shows: 'day', tsize: 1.02 },
-        { id: 'c2k', type: 'cutout', host: 'c2', at: 270, w: 52, h: 22 },
+        { id: 'c2k', type: 'cutout', host: 'c2', at: 270, w: 60, h: 30 },
         { id: 'c3', type: 'wheel', host: 'dial', angle: 20, dist: 91, rot: 0, size: 117, shows: 'month', tsize: 0.64 },
-        { id: 'c3k', type: 'cutout', host: 'c3', at: 145, w: 52, h: 22 },
+        { id: 'c3k', type: 'cutout', host: 'c3', at: 145, w: 60, h: 30 },
         { id: 'c4', type: 'subdial', host: 'dial', angle: 180, dist: 102, rot: 0, size: 62, style: 'guilloche', scale: 'date', open: 0 },
         { id: 'c5', type: 'wheel', host: 'c4', angle: 0, dist: 2, rot: 0, size: 29, shows: 'moon' },
         { id: 'c5k', type: 'cutout', host: 'c5', at: 0, shape: 'moon' },
@@ -840,7 +854,7 @@
       print: 'railway', numerals: 'quarters', surface: 'guilloche', color: 'slate', aging: 0.3, stains: 0, dust: 0.4, comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 315, dist: 140, rot: 0, size: 42, shape: 'hex', style: 'bevel', show: 'balance', hour: 12 },
         { id: 'c2', type: 'wheel', host: 'dial', angle: 356, dist: 41, rot: 0, size: 173.5, shows: 'date', tsize: 0.52, wbg: '#1b1916', wink: '#ecdfbf' },
-        { id: 'c2k', type: 'cutout', host: 'c2', at: 105, w: 30, h: 22, style: 'plain' },
+        { id: 'c2k', type: 'cutout', host: 'c2', at: 105, w: 32, h: 30, style: 'plain' },
         { id: 'c3', type: 'subdial', host: 'dial', angle: 180, dist: 104, rot: 0, size: 58, style: 'azure', scale: 'seconds', open: 0, color: 'black' },
         { id: 'h1', type: 'hand', host: 'c3', shows: 'second' },
         { id: 'h2', type: 'hand', host: 'dial', shows: 'hour' },
@@ -857,7 +871,7 @@
     diver: { name: 'Broad arrow', blurb: 'Black grained dial · lume plots · broad arrow hands', hands: 'broad', handFinish: 'steel', design: {
       print: 'diver', numerals: 'all', surface: 'matte', color: 'black', aging: 0.4, stains: 0, dust: 0.5, comps: [
         { id: 'c1', type: 'wheel', host: 'dial', angle: 332, dist: 15.5, rot: 0, size: 173.5, shows: 'date', tsize: 0.52, wbg: '#1b1916', wink: '#ecdfbf' },
-        { id: 'c1k', type: 'cutout', host: 'c1', at: 95, w: 30, h: 22, style: 'plain' },
+        { id: 'c1k', type: 'cutout', host: 'c1', at: 95, w: 32, h: 30, style: 'plain' },
         { id: 'c2', type: 'opening', host: 'dial', angle: 0, dist: 0, rot: 0, size: 26, shape: 'slot', style: 'bevel', show: 'balance', hour: 12 },
         { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
         { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
@@ -921,7 +935,7 @@
         { id: 'c1', type: 'subdial', host: 'dial', angle: 180, dist: 100, rot: 0, size: 56, style: 'azure', scale: 'none', open: 0, color: 'white' },
         { id: 'c2', type: 'moon', host: 'c1', angle: 0, dist: 0, rot: 0, size: 70, style: 'graphic' },
         { id: 'c3', type: 'wheel', host: 'dial', angle: 270, dist: 8, rot: 0, size: 173.5, shows: 'date', tsize: 0.52, wbg: '#f2ecdd', wink: '#18120b' },
-        { id: 'c3k', type: 'cutout', host: 'c3', at: 90, w: 30, h: 22, style: 'plain' },
+        { id: 'c3k', type: 'cutout', host: 'c3', at: 90, w: 32, h: 30, style: 'plain' },
         { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
         { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
         { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'red' },
@@ -931,7 +945,7 @@
         { id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 103, rot: 0, size: 64, style: 'azure', scale: 'hours', open: 0 },
         { id: 'c2', type: 'subdial', host: 'dial', angle: 180, dist: 103, rot: 0, size: 64, style: 'enamel', scale: 'seconds', open: 0.64 },
         { id: 'c3', type: 'wheel', host: 'c1', angle: 0, dist: 126, rot: 0, size: 173.5, shows: 'date', tsize: 0.52 },
-        { id: 'c3k', type: 'cutout', host: 'c3', at: 180, w: 30, h: 22 },
+        { id: 'c3k', type: 'cutout', host: 'c3', at: 180, w: 32, h: 30 },
         { id: 'h1', type: 'hand', host: 'c1', shows: 'hour' },
         { id: 'h2', type: 'hand', host: 'c2', shows: 'second' },
         { id: 'h3', type: 'hand', host: 'dial', shows: 'minute' },
@@ -958,10 +972,10 @@
       ] } },
     perpetual: { name: 'Perpetual calendar', blurb: 'Day · date · month subdials · moon at 6', hands: 'baton', handFinish: 'gilt', design: {
       print: 'baton', comps: [
-        { id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 102, rot: 0, size: 50, style: 'azure', scale: 'month', open: 0 },
-        { id: 'c2', type: 'subdial', host: 'dial', angle: 90, dist: 102, rot: 0, size: 50, style: 'azure', scale: 'date', open: 0 },
-        { id: 'c3', type: 'subdial', host: 'dial', angle: 270, dist: 102, rot: 0, size: 50, style: 'azure', scale: 'day', open: 0 },
-        { id: 'c4', type: 'subdial', host: 'dial', angle: 180, dist: 102, rot: 0, size: 50, style: 'azure', scale: 'none', open: 0 },
+        { id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 106, rot: 0, size: 58, style: 'azure', scale: 'month', open: 0 },
+        { id: 'c2', type: 'subdial', host: 'dial', angle: 90, dist: 106, rot: 0, size: 58, style: 'azure', scale: 'date', open: 0 },
+        { id: 'c3', type: 'subdial', host: 'dial', angle: 270, dist: 106, rot: 0, size: 58, style: 'azure', scale: 'day', open: 0 },
+        { id: 'c4', type: 'subdial', host: 'dial', angle: 180, dist: 106, rot: 0, size: 58, style: 'azure', scale: 'none', open: 0 },
         { id: 'c5', type: 'wheel', host: 'c4', angle: 180, dist: 8, rot: 0, size: 34, shows: 'moon' },
         { id: 'c5k', type: 'cutout', host: 'c5', at: 0, shape: 'moon' },
         { id: 'h1', type: 'hand', host: 'c1', shows: 'month' },
@@ -979,7 +993,7 @@
     moon: { angle: 180, dist: 110, rot: 0, size: 32, style: 'classic' },
     flare: { angle: 0, dist: 110, rot: 0, size: 16, style: 'print', icon: 'star', color: 'auto', opacity: 1, text: 'BRAND' },
     // D43 P5d.3: a wheel under a face, and the cutout it is read through (at: degrees clockwise from 12, about the wheel)
-    wheel: { angle: 90, dist: 120, rot: 0, size: 44, shows: 'date' },
+    wheel: { angle: 0, dist: 0, rot: 0, size: 192, form: 'ring', inner: 140, shows: 'date', read: 90 },   // a date ring under the dial: one legible figure per window
     cutout: { at: 90 },
   };
 
@@ -1111,52 +1125,76 @@
       if (s.open && !s.transparent) dialHoles.push({ kind: 'circle', x: s.x, y: s.y, r: s.open + 4, hidden: true });
       hits.push({ id: c.id, x: g.x, y: g.y, r: (s.form === 'slider' ? Math.max(s.slide.hl, s.slide.hh) : r) + 2.5, z: subZ[c.id] });
     });
+    /* D43 P5d.3c: a wheel is a disc, a ring or a barrel the author sizes outright: its outer
+     * radius (`size`), a ring's inner radius, the radius its figures sit on (`trad`), their
+     * px size, face and turn, and its edge's curvature. It reads its value at `read`
+     * degrees round its own centre (a barrel: at its front). A cutout is its own part: it
+     * stands at `at` along the wheel's figures (the reading point, unless moved) and then
+     * wherever its offset and turn put it; its size never touches the figures. */
     const wheels = [], bars = { dial: [] };
+    const firstAt = {}; list.forEach((c) => { if (c.type === 'cutout' && firstAt[c.host] == null) firstAt[c.host] = +c.at || 0; });
     list.forEach((c) => {
       if (c.type !== 'wheel') return;
-      const g = G[c.id], r = Math.max(14, +c.size || 40), onSub = g.host !== 'dial' && subHoles[g.host] ? g.host : null;
+      const g = G[c.id], r = Math.max(10, +c.size || 40), onSub = g.host !== 'dial' && subHoles[g.host] ? g.host : null;
       const spec = wheelSpec(c.shows || 'date', c.digit, !!c.blank0); if (!spec) return;
-      const fs = Math.max(6, Math.min(r * 0.42, (+c.tsize || 1) * Math.max(8, r * 0.2))), lr = r - fs * 0.85;
-      wheels.push({ id: c.id, x: g.x, y: g.y, r, host: onSub || 'dial', spec, fs, lr, dir: c.dir === 'ccw' ? -1 : 1, smooth: c.cadence === 'smooth', ease: +c.ease || 0,
+      const form = spec.moon ? 'disc' : WHEEL_FORMS[c.form] ? c.form : 'disc', fs = wheelFontPx(c);
+      const ri = form === 'ring' ? Math.max(2, Math.min(r - 4, c.inner != null ? +c.inner : r * 0.62)) : 0;
+      const lr = form === 'barrel' ? 0 : Math.max(ri + 1, Math.min(r - 1, c.trad != null ? +c.trad : form === 'ring' ? (r + ri) / 2 : r - fs * 0.85));
+      const longest = Math.max(1, ...Array.from({ length: Math.min(spec.n, 60) }, (_, i) => String(spec.lab(i)).length));
+      wheels.push({ id: c.id, x: g.x, y: g.y, r, ri, form, host: onSub || 'dial', spec, fs, lr, longest,
+        read: rad(c.read != null ? +c.read : firstAt[c.id] != null ? firstAt[c.id] : 90), face: WHEEL_FACES[c.face] ? c.face : 'up', trot: rad(+c.trot || 0),
+        style: WHEEL_STYLES[c.fstyle] ? c.fstyle : 'bold', edge: c.edge == null ? 0.15 : Math.max(0, Math.min(1, +c.edge)),
+        len: form === 'barrel' ? Math.max(fs, c.len != null ? +c.len : fs * (0.62 * longest + 0.6)) : 0,
+        dir: c.dir === 'ccw' ? -1 : 1, smooth: c.cadence === 'smooth', ease: +c.ease || 0,
         overhang: onSub && c.overhang === 'shown', bg: c.wbg, ink: c.wink, font: c.wfont, mstyle: c.mstyle, seed: String(c.id).split('').reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) | 0, 7) & 0xffff, cut: [], holes: [] });
-      hits.push({ id: c.id, x: g.x, y: g.y, r: r * 0.35, z: (onSub ? subZ[onSub] : 0) - 0.5 });
+      hits.push({ id: c.id, x: g.x, y: g.y, r: form === 'barrel' ? r : r * 0.35, z: (onSub ? subZ[onSub] : 0) - 0.5 });
     });
     const wheelOf = {}; wheels.forEach((w) => { wheelOf[w.id] = w; });
+    // where a cutout stands: along the wheel's figures at `at` (its reading point by default), then moved
+    const cutAt = (w, c) => {
+      const at = c.at != null ? rad(+c.at) : w.read, bx = w.form === 'barrel' ? w.x : w.x + Math.sin(at) * w.lr, by = w.form === 'barrel' ? w.y : w.y - Math.cos(at) * w.lr;
+      return { at, x: bx + (+c.dx || 0), y: by + (+c.dy || 0), rot: rad(+c.rot || 0) + (w.form === 'barrel' ? w.trot : 0) };
+    };
+    // a cutout's size when the author has not set one: the widest figure and a margin, at the figure size
+    const cutW = (w) => w.fs * (0.62 * w.longest + 0.55), cutH = (w) => w.fs * 1.3;
     const cuts = list.filter((c) => c.type === 'cutout' && wheelOf[c.host]), taken = {};
     cuts.forEach((c) => {
       if (taken[c.id]) return;
-      const w = wheelOf[c.host], at = rad(+c.at || 0), cx = w.x + Math.sin(at) * w.lr, cy = w.y - Math.cos(at) * w.lr;
-      const cw = Math.max(6, +c.w || w.fs * (w.spec.n > 12 || w.spec.dg !== 'whole' ? 1.6 : 2.6)), ch = Math.max(6, +c.h || w.fs * 1.5), style = c.style || 'frame';
+      const w = wheelOf[c.host], p = cutAt(w, c), at = p.at, cx = p.x, cy = p.y;
+      let cw = Math.max(6, +c.w || cutW(w)), ch = Math.max(6, +c.h || cutH(w)); const style = c.style || 'frame';
+      // on a ring, a cutout the author has not sized stays inside the band across its radius
+      if (w.form === 'ring') { const lim = Math.max(8, w.r - w.ri - 4); if (Math.abs(Math.sin(at)) > 0.5) { if (!+c.w) cw = Math.min(cw, lim); } else if (!+c.h) ch = Math.min(ch, lim); }
       // a moon cutout is the moonphase's aperture: a half circle over the wheel's own centre,
       // opening toward `at`, its two humps hiding the moon that is not in season
-      let hole = c.shape === 'moon' ? { kind: 'moon', x: w.x, y: w.y, a: w.r, rot: at }
+      let hole = c.shape === 'moon' ? { kind: 'moon', x: w.x + (+c.dx || 0), y: w.y + (+c.dy || 0), a: w.r, rot: at }
         : c.shape === 'round' ? { kind: 'circle', x: cx, y: cy, r: Math.max(cw, ch) / 2 }
-        : c.shape === 'slot' ? { kind: 'slot', x: cx, y: cy, w: cw * 1.4, h: ch * 0.8, rot: at + Math.PI / 2 }
-        : c.shape === 'arc' ? (() => { const half = Math.max(rad(4), Math.min(Math.PI, rad(+c.span || 36) / 2)), r0 = w.lr - ch / 2, r1 = w.lr + ch / 2;
-          return { kind: 'arc', x: cx, y: cy, cx: w.x, cy: w.y, r0, r1, a0: at - half - Math.PI / 2, a1: at + half - Math.PI / 2 }; })()
-        : { kind: 'rect', x: cx, y: cy, w: cw, h: ch, rad: 2, rot: 0 };
+        : c.shape === 'slot' ? { kind: 'slot', x: cx, y: cy, w: cw * 1.4, h: ch * 0.8, rot: at + Math.PI / 2 + p.rot }
+        : c.shape === 'arc' && w.form !== 'barrel' ? (() => { const half = Math.max(rad(4), Math.min(Math.PI, rad(+c.span || 36) / 2)), r0 = w.lr - ch / 2, r1 = w.lr + ch / 2;
+          return { kind: 'arc', x: cx, y: cy, cx: w.x + (+c.dx || 0), cy: w.y + (+c.dy || 0), r0, r1, a0: at - half - Math.PI / 2, a1: at + half - Math.PI / 2 }; })()
+        : { kind: 'rect', x: cx, y: cy, w: cw, h: ch, rad: 2, rot: p.rot };
       // two joined windows read as one frame, with a bar across the seam (a big date)
       const mate = c.join ? cuts.find((q) => q.id === c.join && !taken[q.id]) : null;
-      if (mate && hole.kind === 'rect' && (mate.shape || 'window') === 'window') {
-        const w2 = wheelOf[mate.host], a2 = rad(+mate.at || 0), m = { x: w2.x + Math.sin(a2) * w2.lr, y: w2.y - Math.cos(a2) * w2.lr, w: Math.max(6, +mate.w || w2.fs * 1.6), h: Math.max(6, +mate.h || w2.fs * 1.5) };
+      if (mate && hole.kind === 'rect' && !hole.rot && (mate.shape || 'window') === 'window') {
+        const w2 = wheelOf[mate.host], p2 = cutAt(w2, mate), m = { x: p2.x, y: p2.y, w: Math.max(6, +mate.w || cutW(w2)), h: Math.max(6, +mate.h || cutH(w2)) };
         const x0 = Math.min(cx - cw / 2, m.x - m.w / 2), x1 = Math.max(cx + cw / 2, m.x + m.w / 2), y0 = Math.min(cy - ch / 2, m.y - m.h / 2), y1 = Math.max(cy + ch / 2, m.y + m.h / 2);
         hole = { kind: 'rect', x: (x0 + x1) / 2, y: (y0 + y1) / 2, w: x1 - x0, h: y1 - y0, rad: 2, rot: 0 };
         taken[mate.id] = true;
         if (c.bar !== false) (bars[w.host] = bars[w.host] || []).push({ x: (cx + m.x) / 2, y: (y0 + y1) / 2, h: y1 - y0, fc: c.frameColor });
-        w2.cut.push({ id: mate.id, at: a2 }); w2.holes.push(hole);
+        w2.cut.push({ id: mate.id, at: p2.at }); w2.holes.push(hole);
       }
       hole.style = style === 'lip' ? 'frame' : style; if (hole.style === 'frame' && c.frameColor && c.frameColor !== 'gilt') hole.fc = c.frameColor;
       // a cutout on a dial-hosted wheel is sealed like a dial window: the value is composited, no hole ships
       if (w.host === 'dial') hole.seal = true;
       (w.host === 'dial' ? dialHoles : subHoles[w.host]).push(hole);
-      if (!w.cut.length && c.shape === 'arc') w.along = true;
       w.cut.push({ id: c.id, at }); w.holes.push(hole);
       const b = holeBox(hole);
       hits.push({ id: c.id, x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, r: Math.max(b[2] - b[0], b[3] - b[1]) / 2 + 2, z: w.host === 'dial' ? 0.002 : subZ[w.host] + 0.006 });
     });
     list.forEach((c) => {
       if (c.type === 'subdial' || c.type === 'hand' || c.type === 'wheel' || c.type === 'cutout') return;   // a hand is drawn by buildHands; wheels and cutouts above
-      const g = G[c.id], sz = +c.size || 1, onSub = g.host !== 'dial' && subHoles[g.host] ? g.host : null;
+      // legibility: a window's text is 18 px (a date) or 15 px at size 1, so a window is never set
+      // smaller than the size that lands it on LEGIBLE_PX -- its aperture grows with it
+      const g = G[c.id], sz = c.type === 'window' ? Math.max(+c.size || 1, LEGIBLE_PX / (c.shows === 'date' || !c.shows ? 18 : 15)) : +c.size || 1, onSub = g.host !== 'dial' && subHoles[g.host] ? g.host : null;
       // A transparent subdial ships no plate of its own, so anything hosted on it has
       // to be carried by the dial instead -- otherwise it exists only in the pointer
       // hand's geometry and vanishes from both the preview and the kit.
@@ -1290,7 +1328,8 @@
     // has to overlap the chapter print, and perimPos 'between' moves the labels into the
     // space between two divisions (with their pointer, so the pair still reads).
     const spec = PERIM_SPEC[D.perim], out = DR - 3, tl = spec.tl;
-    const fs = spec.fs * Math.min(2.6, Math.max(0.6, +D.perimSize || 1)), between = D.perimPos === 'between';
+    // legibility: the ring's figures never below LEGIBLE_PX; the band (and the chapter's shrink) follows them
+    const fs = legible(spec.fs * Math.min(2.6, Math.max(0.6, +D.perimSize || 1))), between = D.perimPos === 'between';
     const rot = perimRotDeg(D), rotR = (rot * Math.PI) / 180;
     const tick1 = out - tl, lab = tick1 - fs * 0.52 - 3;
     // offTurn is what the pointer that reads this ring must add to its own angle: half a
@@ -1344,7 +1383,9 @@
       const x = C + Math.cos(a) * r, y = C + Math.sin(a) * r;
       if (blocked(x, y, holes, 6 * sc)) return;
       X.save(); X.font = hF(h); X.globalAlpha = NX ? 1 : ctx.globalAlpha; X.textAlign = 'center'; X.textBaseline = 'middle';
-      X.translate(x, y); if (radial) X.rotate(a + Math.PI / 2); X.scale(sc, sc); X.fillStyle = hC(h, NI);
+      // legibility: a numeral lands at its font px x its scale, and never below LEGIBLE_PX
+      const fpx = parseFloat((X.font.match(/([\d.]+)px/) || [])[1]) || LEGIBLE_PX, sl = fpx * sc < LEGIBLE_PX ? LEGIBLE_PX / fpx : sc;
+      X.translate(x, y); if (radial) X.rotate(a + Math.PI / 2); X.scale(sl, sl); X.fillStyle = hC(h, NI);
       if (!NX) { X.shadowColor = 'rgba(0,0,0,.4)'; const sk = devS(X); X.shadowBlur = 1.3 * sk; X.shadowOffsetY = sk; } X.fillText(s, 0, 1); X.restore();
     };
     const dot = (r, rr, h) => { const q = P(C, C, r, A(h, 12)); if (blocked(q[0], q[1], holes, 2)) return; ctx.beginPath(); ctx.arc(q[0], q[1], rr, 0, TAU); ctx.fill(); };
@@ -1456,19 +1497,57 @@
     const t = s.t || {}, { x, y, r } = s, k = r / 46, bi = s.open || 0, sz = +t.size || 1, ccw = t.dir === 'ccw', radial = t.orient === 'radial';
     setFace(t.font && t.font !== 'dial' ? t.font : dialFont);
     const wt = t.weight === 'regular' ? '500 ' : t.weight === 'italic' ? 'italic 600 ' : '700 ';
-    const font = (px) => wt + Math.max(5, Math.round(px * sz)) + 'px ' + SERIF;
+    // legibility: no label is set below LEGIBLE_PX; how far a label grew is remembered, so it
+    // can stand that much further in from the ticks it was placed against
+    let asked = 0;
+    const font = (px) => { asked = Math.round(px * sz); return wt + Math.max(LEGIBLE_PX, asked) + 'px ' + SERIF; };
     ctx.save(); inkCtx(ctx, en);
     if (t.color && t.color !== 'auto') { ctx.fillStyle = t.color; ctx.strokeStyle = t.color; }
     const A = (i, n) => (ccw ? -1 : 1) * (i / n) * TAU - Math.PI / 2 + (s.rot || 0);
     const ring = (rr, lw) => { ctx.lineWidth = lw; ctx.beginPath(); ctx.arc(x, y, rr, 0, TAU); ctx.stroke(); };
     const tick = (a, r0, r1, lw) => { const m = P(x, y, (r0 + r1) / 2, a); if (blocked(m[0], m[1], holes, 1.5)) return; const p1 = P(x, y, r0, a), p2 = P(x, y, r1, a); ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.stroke(); };
-    const txt = (str, a, rr) => {
+    const put = (str, a, rr) => {
       const q = P(x, y, rr, a); if (blocked(q[0], q[1], holes, 3)) return;
       if (radial) { ctx.save(); ctx.translate(q[0], q[1]); ctx.rotate(a + Math.PI / 2); ctx.fillText(str, 0, 0.5); ctx.restore(); } else ctx.fillText(str, q[0], q[1] + 0.5);
     };
+    /* The labels are held and set together (labels()), each ring of them thinned to every
+     * k-th -- the smallest k of 1, 2, 3, 4, 6, 12 at which no two collide -- so a face too
+     * small for twelve legible hours prints 12, 3, 6, 9, and one too small for any prints
+     * its ticks alone. */
+    const want = [];
+    // (an open face has no room inward of its band: its labels keep their radius and only thin)
+    const txt = (str, a, rr) => { want.push({ str, a, rr, f: ctx.font, grow: bi ? 0 : Math.max(0, LEGIBLE_PX - asked) }); };
+    const labels = () => {
+      const rings = [];
+      want.forEach((w) => { let g = rings.find((q) => q.f === w.f && Math.abs(q.rr - w.rr) < 0.5); if (!g) rings.push(g = { f: w.f, rr: w.rr, items: [] }); g.items.push(w); });
+      rings.forEach((g) => {
+        ctx.font = g.f;
+        const fpx = parseFloat((g.f.match(/([\d.]+)px/) || [])[1]) || LEGIBLE_PX;
+        const pos = g.items.map((w) => { const rr = w.rr - w.grow * 0.55, q = P(x, y, rr, w.a); return { w, rr, q, h: Math.max(ctx.measureText(w.str).width / 2, fpx * 0.36) + 1 }; })
+          .filter((p) => p.rr > fpx * 0.6);
+        const fits = (c) => c.every((p, i) => c.every((o, j) => j <= i || Math.hypot(p.q[0] - o.q[0], p.q[1] - o.q[1]) >= p.h + o.h));
+        const thin = (ps) => {
+          for (const k of [1, 2, 3, 4, 6, 12]) {
+            const c = ps.filter((_, j) => j % k === 0);
+            if (fits(c)) return c;
+            // a count k does not divide meets its first label again at the wrap: drop the last
+            if (c.length > 2 && fits(c.slice(0, -1))) return c.slice(0, -1);
+          }
+          return [];
+        };
+        let pick = thin(pos);
+        // names too wide to keep half of them: their initials instead (S M T W T F S), if that keeps more
+        if (pick.length * 2 < pos.length && pos.some((p) => /^[A-Z]{3,}$/.test(p.w.str))) {
+          const ini = pos.map((p) => Object.assign({}, p, { w: Object.assign({}, p.w, { str: p.w.str[0] }), h: Math.max(ctx.measureText(p.w.str[0]).width / 2, fpx * 0.36) + 1 }));
+          const alt = thin(ini); if (alt.length > pick.length) pick = alt;
+        }
+        pick.forEach((p) => put(p.w.str, p.w.a, p.rr));
+      });
+      want.length = 0;
+    };
     const ro = bi ? r - 3 : r - 4 * k, st = t.style || 'classic';
-    if (s.form === 'fan' || s.form === 'slider') { printTrack(ctx, s, st, { tick, txt, font, k, holes, ccw }); ctx.restore(); setFace(dialFont); return; }
-    if (st !== 'classic') { subDisplay(ctx, s, st, { A, ring, tick, txt, font, ro, k, bi, x, y, holes }); ctx.restore(); setFace(dialFont); return; }
+    if (s.form === 'fan' || s.form === 'slider') { printTrack(ctx, s, st, { tick, txt, font, k, holes, ccw }); labels(); ctx.restore(); setFace(dialFont); return; }
+    if (st !== 'classic') { subDisplay(ctx, s, st, { A, ring, tick, txt, font, ro, k, bi, x, y, holes }); labels(); ctx.restore(); setFace(dialFont); return; }
     ring(ro, 0.7);
     if (s.scale === 'seconds') {
       const ri = bi ? ro - 5 : ro - 7.5 * k; ring(ri, 0.5);
@@ -1494,6 +1573,7 @@
       ctx.font = font(11 * k);
       for (let i = 0; i < 12; i++) txt(String(i || 12), A(i, 12), r - 16 * k);
     }
+    labels();
     ctx.restore();
     setFace(dialFont);
   }
@@ -1750,7 +1830,9 @@
   // ---------- flares: logos, icons and doodads printed or applied onto their host
   const FW = { bold: '700', regular: '500', italic: 'italic 600' };
   function flareMask(f, date) {
-    const m = cv(S), x = m.getContext('2d'), s = (+f.size || 16) * (f.icon === 'arctext' ? 1 : +f.fgScale || 1), txt = f.icon === 'datetext' ? fmtDate(f.fmt == null ? 'ddd DD MMM' : f.fmt, date || new Date(), f.fcase) : String(f.text == null ? 'BRAND' : f.text);
+    const s0 = (+f.size || 16) * (f.icon === 'arctext' ? 1 : +f.fgScale || 1), isText = f.icon === 'text' || f.icon === 'arctext' || f.icon === 'datetext';
+    // legibility: lettering is set at 2 x its size, never below LEGIBLE_PX
+    const m = cv(S), x = m.getContext('2d'), s = isText ? Math.max(s0, LEGIBLE_PX / 2) : s0, txt = f.icon === 'datetext' ? fmtDate(f.fmt == null ? 'ddd DD MMM' : f.fmt, date || new Date(), f.fcase) : String(f.text == null ? 'BRAND' : f.text);
     const fam = (FONTS[f.font] && FONTS[f.font][1]) || SANS, font = (FW[f.weight] || '700') + ' ' + (s * 2).toFixed(1) + 'px ' + fam;
     x.fillStyle = '#fff'; x.textAlign = 'center'; x.textBaseline = 'middle';
     if (f.icon === 'arctext') {
@@ -2037,6 +2119,22 @@
    * first cutout (the reference), each figure upright when it is there. Jump holds the
    * whole figure and, with an ease, rolls into the next one over that many ms; smooth
    * creeps through the unit. */
+  // a wheel's face, darkened toward an edge in proportion to its curvature: 0 is a flat-cut
+  // edge, 1 a strongly rounded one (the light falling off over the turn of the edge)
+  function wheelEdge(ctx, r0, r1, edge, inner) {
+    if (!(edge > 0)) return;
+    const wdt = Math.max(0.8, (r1 - r0) * 0.5 * edge), a = 0.5 * edge;
+    const g = ctx.createRadialGradient(0, 0, inner ? r0 : r1 - wdt, 0, 0, inner ? r0 + wdt : r1);
+    if (inner) { g.addColorStop(0, 'rgba(0,0,0,' + a + ')'); g.addColorStop(1, 'rgba(0,0,0,0)'); }
+    else { g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,' + a + ')'); }
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r1, 0, TAU); if (r0 > 0) ctx.arc(0, 0, r0, TAU, 0, true); ctx.fill();
+  }
+  const wheelFontOf = (w, fs) => ({ bold: '700 ', regular: '400 ', italic: 'italic 400 ', bolditalic: 'italic 700 ' }[w.style] || '700 ') + fs.toFixed(1) + 'px ' + ((FONTS[w.font] && FONTS[w.font][1]) || SERIF);
+  /* D43 P5d.3: a wheel at an instant. It turns so the figure it stands at sits at its
+   * reading point; jump holds the whole figure and, with an ease, rolls into the next one
+   * over that many ms; smooth creeps through the unit. P5d.3c: a disc or a ring, its
+   * figures at the author's radius, size, face and turn; or a barrel, seen side on, its
+   * figures foreshortened and shaded over the drum's curve. */
   function drawWheel(ctx, w, date, en, pal, idxAt) {
     const sp = w.spec, n = sp.n;
     let idx = idxAt != null ? idxAt : sp.at(date);
@@ -2046,29 +2144,47 @@
       if (w.ease > 0 && since < w.ease) { const prev = sp.held(new Date(date.getTime() - since - 1)), q = since / w.ease, d = (((i0 - prev) % n) + n) % n;
         idx = prev + d * q * q * (3 - 2 * q); } else idx = i0;
     }
-    const ref = w.cut.length ? w.cut[0].at : 0, dark = w.bg ? false : !!en.dark;
+    const ref = w.read, dark = w.bg ? false : !!en.dark;
     if (sp.moon) {
       // two moons on a sky, half a turn a lunation, read through a moon cutout's humps (the classic moonphase)
       ctx.save(); if (w.fill) { ctx.fillStyle = w.fill; ctx.beginPath(); ctx.arc(w.x, w.y, w.r, 0, TAU); ctx.fill(); }
       else moonDisc(ctx, w.x, w.y, w.r, (w.dir * idx) / 30, pal || {}, w.seed, ref, w.mstyle || 'classic');
       ctx.restore(); return;
     }
-    const rot = ref - (w.dir * idx * TAU) / n;
     const bg = w.bg && w.bg !== 'auto' ? w.bg : dark ? '#1b1916' : '#f2ecdd', ink = w.ink && w.ink !== 'auto' ? w.ink : dark ? '#ecdfbf' : '#18120b';
     ctx.save(); ctx.translate(w.x, w.y);
-    if (w.fill) { ctx.fillStyle = w.fill; ctx.beginPath(); ctx.arc(0, 0, w.r, 0, TAU); ctx.fill(); ctx.restore(); return; }
-    const g = ctx.createRadialGradient(0, 0, w.r * 0.2, 0, 0, w.r);
-    g.addColorStop(0, bg); g.addColorStop(0.92, bg); g.addColorStop(1, 'rgba(0,0,0,.35)');
-    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, w.r, 0, TAU); ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.lineWidth = 0.7; ctx.beginPath(); ctx.arc(0, 0, w.r - 1, 0, TAU); ctx.stroke();
-    const longest = Math.max(1, ...Array.from({ length: n }, (_, i) => String(sp.lab(i)).length));
-    const fs = Math.max(5, Math.min(w.fs, ((TAU * w.lr) / n) / (0.62 * longest + 0.35)));
-    ctx.font = '700 ' + fs.toFixed(1) + 'px ' + ((FONTS[w.font] && FONTS[w.font][1]) || SERIF);
-    ctx.fillStyle = ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    if (w.form === 'barrel') {
+      // a drum seen side on, its axis across: the figure at the front reads flat, the ones
+      // rolling over the top and under the bottom shrink by the cosine and fall into shadow
+      const R = w.r, L = w.len; ctx.rotate(w.trot);
+      if (w.fill) { ctx.fillStyle = w.fill; ctx.fillRect(-L / 2, -R, L, 2 * R); ctx.restore(); return; }
+      ctx.fillStyle = bg; ctx.fillRect(-L / 2, -R, L, 2 * R);
+      ctx.font = wheelFontOf(w, w.fs); ctx.fillStyle = ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.save(); ctx.beginPath(); ctx.rect(-L / 2, -R, L, 2 * R); ctx.clip();
+      for (let i = 0; i < n; i++) {
+        let ph = ((i - idx) * TAU) / n; ph = ((ph + Math.PI) % TAU + TAU) % TAU - Math.PI;
+        if (Math.abs(ph) >= Math.PI / 2) continue;
+        const l = sp.lab(i); if (!l) continue;
+        ctx.save(); ctx.translate(0, w.dir * R * Math.sin(ph)); ctx.scale(1, Math.max(0.02, Math.cos(ph))); ctx.fillText(l, 0, w.fs * 0.05); ctx.restore();
+      }
+      ctx.restore();
+      const k = 0.25 + 0.6 * w.edge, g = ctx.createLinearGradient(0, -R, 0, R);
+      g.addColorStop(0, 'rgba(0,0,0,' + k + ')'); g.addColorStop(0.3, 'rgba(0,0,0,0)'); g.addColorStop(0.5, 'rgba(255,255,255,' + (0.08 * w.edge) + ')');
+      g.addColorStop(0.7, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,' + k + ')');
+      ctx.fillStyle = g; ctx.fillRect(-L / 2, -R, L, 2 * R);
+      ctx.restore(); return;
+    }
+    const ring = w.form === 'ring' ? w.ri : 0, rot = ref - (w.dir * idx * TAU) / n;
+    const body = (x) => { x.beginPath(); x.arc(0, 0, w.r, 0, TAU); if (ring) x.arc(0, 0, ring, TAU, 0, true); };
+    if (w.fill) { ctx.fillStyle = w.fill; body(ctx); ctx.fill('evenodd'); ctx.restore(); return; }
+    ctx.fillStyle = bg; body(ctx); ctx.fill('evenodd');
+    wheelEdge(ctx, ring, w.r, w.edge, false); if (ring) wheelEdge(ctx, ring, w.r, w.edge, true);
+    ctx.font = wheelFontOf(w, w.fs); ctx.fillStyle = ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     for (let i = 0; i < n; i++) {
       const a = rot + (w.dir * i * TAU) / n, l = sp.lab(i); if (!l) continue;
-      // figures stand upright where the first cutout reads them -- or, read through an arc, run along the ring
-      ctx.save(); ctx.translate(Math.sin(a) * w.lr, -Math.cos(a) * w.lr); ctx.rotate(w.along ? a : a - ref); ctx.fillText(l, 0, fs * 0.05); ctx.restore();
+      // upright where the wheel reads, or along the ring (tops to the rim or to the centre); then the author's turn
+      const turn = (w.face === 'out' ? a : w.face === 'in' ? a + Math.PI : a - ref) + w.trot;
+      ctx.save(); ctx.translate(Math.sin(a) * w.lr, -Math.cos(a) * w.lr); ctx.rotate(turn); ctx.fillText(l, 0, w.fs * 0.05); ctx.restore();
     }
     ctx.restore();
   }
@@ -2454,7 +2570,7 @@
     if (style === 'mariner') {
       for (let i = 1; i < 60; i++) {
         const a = A(i / 60);
-        if (i % 10 === 0) word(String(i), a, 210, '600 16px ' + SANS0);
+        if (i % 10 === 0) word(String(i), a, 210, '600 ' + LEGIBLE_PX + 'px ' + SANS0);
         else if (i % 5 === 0) { ctx.save(); ctx.translate(C + Math.cos(a) * 210, C + Math.sin(a) * 210); ctx.rotate(a + Math.PI / 2); ctx.fillRect(-1.8, -8, 3.6, 16); ctx.restore(); }
         else if (i < 15) line(a, 214, 221, 1.2);
       }
@@ -2463,10 +2579,19 @@
       ctx.fillStyle = '#e9f5d8'; ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(C, C - 215, 3.2, 0, TAU); ctx.fill(); ctx.stroke();
     } else {
       const big = [500, 400, 300, 250, 200, 180, 160, 150, 140, 130, 120, 110, 100, 90, 80, 70, 60], minor = [450, 350, 225, 190, 170, 95, 85, 75, 65];
-      big.forEach((v) => { const a = A(60 / v); line(a, 197, 203, 1.2); word(String(v), a, 212, '600 10px ' + SANS0); });
-      minor.forEach((v) => line(A(60 / v), 197, 201, 0.8));
-      const txt = 'TACHYMETRE';
-      for (let i = 0; i < txt.length; i++) word(txt[i], A(0.03 + i * 0.0085), 212, '600 8px ' + SANS0);
+      // legibility: the figures at LEGIBLE_PX, so not all fit -- the round speeds first, each kept only
+      // where it clears the ones already set (the marks all stay); the name runs where the 500s leave room
+      const tf = '600 ' + LEGIBLE_PX + 'px ' + SANS0, Rw = 212, set = [];
+      ctx.font = tf;
+      const clear = (a0, a1) => set.every(([b0, b1]) => a1 < b0 || a0 > b1);
+      const span = (sw) => (sw / 2 + 2) / (TAU * Rw);
+      big.forEach((v) => line(A(60 / v), 197, 203, 1.2)); minor.forEach((v) => line(A(60 / v), 197, 201, 0.8));
+      [60, 100, 120, 150, 200, 300, 500, 80, 90, 70, 250, 180, 400, 140, 160, 130, 110].forEach((v) => {
+        const f = 60 / v, h = span(ctx.measureText(String(v)).width);
+        if (clear(f - h, f + h)) { set.push([f - h, f + h]); word(String(v), A(f), Rw, tf); }
+      });
+      const name = 'TACHYMETRE', step = (ctx.measureText('M').width * 0.8) / (TAU * Rw), from = 1 - step * name.length - 0.01;
+      if (clear(from, 1)) for (let i = 0; i < name.length; i++) word(name[i], A(from + (i + 0.5) * step), Rw, tf);
     }
     ctx.restore();
   }
@@ -2764,7 +2889,8 @@
     x.translate(o, o);
     x.beginPath(); x.arc(0, 0, ro, 0, TAU); x.arc(0, 0, ri, TAU, 0, true); x.fillStyle = bg; x.fill();
     x.lineWidth = 1.2; x.strokeStyle = acc; x.beginPath(); x.arc(0, 0, ro - 0.6, 0, TAU); x.stroke(); x.beginPath(); x.arc(0, 0, ri + 0.6, 0, TAU); x.stroke();
-    const band = ro - ri, idx = rad(+m.start || 0), fs = Math.max(8, Math.min(26, band * (kind === 'hour' ? 0.5 : 0.36)));
+    const band = ro - ri, idx = rad(+m.start || 0), fs = legible(Math.max(8, Math.min(26, band * (kind === 'hour' ? 0.5 : 0.36))));
+    const pitch = (TAU * (ri + band * 0.52)) / 12, wide = fs * 0.62 * 2 + 3, thinK = [1, 2, 3, 4, 6, 12].find((q) => pitch * q >= wide) || 12;
     for (let i = 0; i < n; i++) {
       const a = (TAU * i) / n, major = kind === 'hour' || i % 5 === 0;
       x.save(); x.rotate(a);
@@ -2773,6 +2899,8 @@
       x.restore();
       if (!major) continue;
       const lbl = kind === 'hour' ? String(i || 12) : String(i).padStart(2, '0');
+      // legibility: figures at LEGIBLE_PX at least, every k-th where twelve would collide
+      if (((kind === 'hour' ? i : i / 5) % thinK) !== 0) continue;
       const rr = ri + band * 0.52, px = Math.sin(a) * rr, py = -Math.cos(a) * rr;
       x.save(); x.translate(px, py); x.rotate(a - idx);
       x.fillStyle = ink; x.font = '600 ' + fs.toFixed(1) + 'px ' + SANS; x.textAlign = 'center'; x.textBaseline = 'middle';
@@ -2830,9 +2958,10 @@
       const m = hd.motion, dom = DRIVE_DOM[hd.kind];
       if (!m || !dom || m.scale === false || m.fromFace || !(m.path === 'retrograde' || m.path === 'slide-x' || m.path === 'slide-y')) return;
       const vmax = dom[1], ink = m.scaleInk || (en && en.ink) || '#e8e8e8', acc = m.accent || (hd.fin && hd.fin.m) || '#ff2d55';
-      const every = hd.kind === 'hour' ? 1 : 5, lab = hd.kind === 'hour' ? 1 : (m.path === 'retrograde' && Math.abs(+m.span || 180) < 200 ? 15 : 10);
+      const every = hd.kind === 'hour' ? 1 : 5; let lab = hd.kind === 'hour' ? 1 : (m.path === 'retrograde' && Math.abs(+m.span || 180) < 200 ? 15 : 10);
       const text = (v) => (hd.kind === 'hour' ? String(v % 12 || 12) : String(v));
-      const fs = hd.kind === 'hour' ? 15 : 12;
+      const fs0 = hd.kind === 'hour' ? 15 : 12, fs = legible(fs0);
+      lab *= Math.ceil(fs / fs0);   // legibility: a grown figure takes a wider share of the scale
       x.save(); x.lineCap = 'round';
       x.font = '700 ' + fs + 'px ' + SANS; x.textAlign = 'center'; x.textBaseline = 'middle';
       if (m.path === 'retrograde') {
@@ -3684,10 +3813,13 @@
         const st = cv(S), sx = st.getContext('2d');
         setFace(fontKey);
         ws.forEach((w) => { w.fill = F.wheelFill || null; drawWheel(sx, w, date, en1, pal); w.fill = null; });
-        const t = (host === 'dial' ? a : subs[host] || (subs[host] = cv(S))).getContext('2d');
-        t.save(); t.beginPath();
-        ws.forEach((w) => { w.holes.forEach((q) => holePath(q)(t)); if (w.overhang) { t.moveTo(w.x + w.r, w.y); t.arc(w.x, w.y, w.r, 0, TAU); } });
-        t.rect(0, 0, 0, 0); t.clip(); t.drawImage(st, 0, 0); t.restore();
+        // seen through the union of the cutouts as an antialiased mask (a path clip is hard-edged,
+        // and its stair-step showed through the dial's own soft hole edge), widened a hair so the
+        // dial's edge, not the mask's, is the one the eye reads
+        const mk = cv(S), mx = mk.getContext('2d'); mx.fillStyle = mx.strokeStyle = '#000'; mx.lineWidth = 2;
+        ws.forEach((w) => { w.holes.forEach((q) => { mx.beginPath(); holePath(q)(mx); mx.fill(); mx.stroke(); }); if (w.overhang) { mx.beginPath(); mx.arc(w.x, w.y, w.r, 0, TAU); mx.fill(); } });
+        sx.globalCompositeOperation = 'destination-in'; sx.drawImage(mk, 0, 0); sx.globalCompositeOperation = 'source-over';
+        (host === 'dial' ? a : subs[host] || (subs[host] = cv(S))).getContext('2d').drawImage(st, 0, 0);
       });
       ck = key; cvals = { dial: a, subs };
       return cvals;
@@ -4144,11 +4276,23 @@
         if (c.overhang !== 'shown' || !c.host || c.host === 'dial') delete c.overhang;
         if (c.digit !== 'tens' || !c.blank0) delete c.blank0;
         ['wbg', 'wink', 'wfont'].forEach((k) => { if (!c[k] || c[k] === 'auto' || c[k] === 'dial') delete c[k]; });
-        if (c.tsize != null && +c.tsize === 1) delete c.tsize;
+        // P5d.3c: the figures are sized in px, and an old relative size becomes the px it drew at
+        if (c.fpx == null && c.tsize != null && c.shows !== 'moon') c.fpx = Math.round(wheelFontPx(c) * 2) / 2;
+        delete c.tsize;
+        if (c.shows === 'moon') ['fpx', 'form', 'face', 'trot', 'fstyle', 'trad', 'inner', 'len'].forEach((k) => delete c[k]);
+        if (!WHEEL_FORMS[c.form] || c.form === 'disc') delete c.form;
+        if (c.form !== 'ring') delete c.inner;
+        if (c.form !== 'barrel') delete c.len; else ['trad', 'face', 'read'].forEach((k) => delete c[k]);
+        if (!WHEEL_FACES[c.face] || c.face === 'up') delete c.face;
+        if (!WHEEL_STYLES[c.fstyle] || c.fstyle === 'bold') delete c.fstyle;
+        if (!(+c.trot)) delete c.trot;
+        if (c.edge == null || Math.abs(+c.edge - 0.15) < 1e-9) delete c.edge;
+        ['fpx', 'trad', 'inner', 'len', 'read'].forEach((k) => { if (c[k] == null || !isFinite(+c[k])) delete c[k]; });
         return;
       }
       if (c.type === 'cutout') {
-        ['angle', 'dist', 'rot', 'size'].forEach((k) => delete c[k]);
+        ['angle', 'dist', 'size'].forEach((k) => delete c[k]);
+        ['dx', 'dy', 'rot'].forEach((k) => { if (!(+c[k])) delete c[k]; });
         if (!c.shape || c.shape === 'window') delete c.shape;
         if (!c.style || c.style === 'frame') delete c.style;
         if (c.shape !== 'arc') delete c.span;
@@ -4200,7 +4344,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

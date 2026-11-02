@@ -30,7 +30,8 @@ eq(paceAt('sector').pace, 15, 'sector (bare ring, cov 0) still holds the full ti
 const pp = paceAt('perpetual');
 eq(pp.pace, 4, 'perpetual (four banked gilt subdials, cov 0.32) still clamps to the floor 4');
 // D43 P5d.3: its moon is a wheel now, whose plates sit at its cutout inside the moon face: a fifth crossing, on that face's bearing
-ok(pp.cross === 5 && pp.cov > 0.3 && pp.cov < 0.35, 'perpetual prices four crossed plates and the moon wheel\u2019s plates in one, at cov ~0.33', pp.cross + ' cov=' + pp.cov.toFixed(4));
+// P5d.3c: its faces grew (50 -> 58 px) so their calendar names read at 2-3 ft
+ok(pp.cross === 5 && pp.cov > 0.3 && pp.cov < 0.37, 'perpetual prices four crossed plates and the moon wheel\u2019s plates in one, at cov ~0.35', pp.cross + ' cov=' + pp.cov.toFixed(4));
 
 // ---- the rounding edit: integer fps, no longer pinned to a rung ----------------------
 const mp = paceAt('modern');

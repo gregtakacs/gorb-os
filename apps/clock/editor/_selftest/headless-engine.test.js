@@ -420,11 +420,13 @@ setTimeout(() => {
       ok(!('bgFinishKey' in CAN({ bgFinishBlend: 'multiply', bgFinishKey: '#ff0044' })), 'a key with no art reference vanishes with the art group');
       const OW = (o) => E.face({ design: E.canonDesign(legacy3({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, aging: 0, stains: 0, dust: 0, comps: [Object.assign({ id: 'w1', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 1 }, o)] })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
       const oRound = OW({ wshape: 'circle' }).lay.dialHoles.find((h) => !h.hidden && h.kind === 'circle');
-      ok(oRound.ry == null && oRound.r === 15, 'an untouched round window is the long-side circle it always was', oRound.r);
+      // P5d.3c: a size-1 date window lands its text on LEGIBLE_PX (18 px x kL), and its aperture grows with it
+      const kL = E.LEGIBLE_PX / 18, nr = (a, b) => Math.abs(a - b) < 1e-6;
+      ok(oRound.ry == null && nr(oRound.r, 15 * kL), 'an untouched round window is the long-side circle it always was, at the legible scale', oRound.r);
       const oOval = OW({ wshape: 'circle', ww: 2, wh: 1 });
       const oHole = oOval.lay.dialHoles.find((h) => !h.hidden && h.kind === 'circle');
-      ok(oHole.r === 30 && oHole.ry === 11, 'pulling Width away from Height turns the round aperture into a true ellipse', oHole.r + ',' + oHole.ry);
-      ok(oOval.dial.getContext('2d').geom.some((g) => g.op === 'ellipse' && Math.abs(g.a[2] - 30) < 1e-6 && Math.abs(g.a[3] - 11) < 1e-6), 'and the punch itself cuts the ellipse, not a circle that could only approximate it');
+      ok(nr(oHole.r, 30 * kL) && nr(oHole.ry, 11 * kL), 'pulling Width away from Height turns the round aperture into a true ellipse', oHole.r + ',' + oHole.ry);
+      ok(oOval.dial.getContext('2d').geom.some((g) => g.op === 'ellipse' && Math.abs(g.a[2] - 30 * kL) < 1e-6 && Math.abs(g.a[3] - 11 * kL) < 1e-6), 'and the punch itself cuts the ellipse, not a circle that could only approximate it');
       const fo = (f) => { const x = new FakeCanvas().getContext('2d'); const drew = E.finishOver(x, f, 100); return { drew, mode: x.globalCompositeOperation, strokes: x.geom.filter((g) => g.op === 'stroke'), cells: x.geom.filter((g) => g.op === 'fillRect'), fills: x.geom.filter((g) => g.op === 'fill'), turns: x.geom.filter((g) => g.op === 'rotate'), }; };
       const fGu = fo({ style: 'guilloche', blend: 'multiply', color: '#223344' });
       ok(fGu.drew === true && fGu.strokes.length > 100 && fGu.mode === 'multiply', 'the sunburst texture is pressed over the art under multiply', fGu.strokes.length);

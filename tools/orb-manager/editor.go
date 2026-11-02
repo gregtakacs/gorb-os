@@ -395,7 +395,7 @@ func (s *Server) serveEditor(w http.ResponseWriter, r *http.Request) {
 	if isHTMLDoc(file) {
 		if raw, found := editorMember(zr, editorManifestName); found {
 			if missing := editorRuntimeMissing(raw); len(missing) > 0 {
-				runtimeRefused(w, r, slug, missing)
+				runtimeRefused(w, r, slug, missing, s.editorVersions(t.IP, slug))
 				return
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io/fs"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -230,5 +231,50 @@ func TestTheShippedClockEditorRunsAgainstThisHubsRuntime(t *testing.T) {
 	}
 	if strings.Contains(entry, "/composer/") || strings.Contains(entry, "unpkg.com/react@") && !strings.Contains(entry, "__resources") {
 		t.Error("the clock editor still reaches for the retired route or the CDN with no local map")
+	}
+}
+
+// An orb running an older release of the app than the shelf gets a page that says so in
+// those words and offers the Apps face's Update, through the pane (D43, 2026-11-02).
+func TestRuntimeRefusalOffersTheUpdateWhenTheOrbIsBehind(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/editor/203.0.113.8/clock/", nil)
+	req.Header.Set("Accept", "text/html")
+	runtimeRefused(rec, req, "clock", []string{"react", "baker"}, editorVersionPair{orb: "v1.1.43", hub: "v1.1.45"})
+	body := rec.Body.String()
+	for _, want := range []string{"v1.1.43", "v1.1.45", "Update clock on this orb", "type:'theme.update'", `app:"clock"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the behind-the-shelf page lacks %q", want)
+		}
+	}
+	// a hub that cannot tell which is newer keeps the general sentence and no button
+	rec2 := httptest.NewRecorder()
+	runtimeRefused(rec2, req, "clock", []string{"baker@9"}, editorVersionPair{orb: "v1.1.45", hub: ""})
+	if strings.Contains(rec2.Body.String(), "theme.update") || !strings.Contains(rec2.Body.String(), "update the hub") {
+		t.Error("with no shelf version the page must not offer an app update")
+	}
+	// the JSON answer carries both stamps
+	rec3 := httptest.NewRecorder()
+	runtimeRefused(rec3, httptest.NewRequest(http.MethodGet, "/editor/203.0.113.8/clock/x.js", nil), "clock", []string{"react"}, editorVersionPair{orb: "v1.1.43", hub: "v1.1.45"})
+	if !strings.Contains(rec3.Body.String(), `"orb_version":"v1.1.43"`) || !strings.Contains(rec3.Body.String(), `"hub_version":"v1.1.45"`) {
+		t.Errorf("JSON refusal = %s", rec3.Body)
+	}
+}
+
+// After an install the card holds new containers, so the editor the hub remembered for
+// that orb is stale: the card-cache drop every install path makes drops it too.
+func TestAnInstallForgetsTheEditorItRemembered(t *testing.T) {
+	const ip = "203.0.113.12"
+	raw := zipWith(t, map[string]string{"editor.json": `{"entry":"index.html"}`, "index.html": `<body>old</body>`})
+	s, dialed := editorHub(t, ip, raw, nil)
+	editorGet(t, s, "/editor/"+ip+"/clock/", true)
+	editorGet(t, s, "/editor/"+ip+"/clock/", true)
+	if len(*dialed) != 1 {
+		t.Fatalf("the region is memoised: %d dials for two reads, want 1", len(*dialed))
+	}
+	s.dropThemeCache(ip)
+	editorGet(t, s, "/editor/"+ip+"/clock/", true)
+	if len(*dialed) != 2 {
+		t.Errorf("after the cache drop the editor must be read again: %d dials, want 2", len(*dialed))
 	}
 }

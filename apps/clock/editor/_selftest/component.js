@@ -142,20 +142,34 @@ class Component extends DCLogic {
      * plates sharing a bearing cost the sweep once, then /360 for the fraction of beats
      * on which a tick actually re-blits a plate (the duty cycle). The comp's own angle is
      * its bearing; asin only sets the interval WIDTH from the plate's half at its radius. */
-    const iv = [];
-    for (const x of crossed) {
-      const w = (Math.asin(Math.min(1, half(x) / Math.max(1, +x.dist || 1))) * 180) / Math.PI;
-      const a = +x.angle || 0, lo = (((a - w) % 360) + 360) % 360, hi = lo + 2 * w;
-      if (hi <= 360) iv.push([lo, hi]); else iv.push([lo, 360], [0, hi - 360]);
-    }
-    iv.sort((p, q) => p[0] - q[0]);
-    let deg = 0, cur = null;
-    for (const [s0, e0] of iv) {
-      if (cur && s0 <= cur[1]) { if (e0 > cur[1]) cur[1] = e0; }
-      else { if (cur) deg += cur[1] - cur[0]; cur = [s0, e0]; }
-    }
-    if (cur) deg += cur[1] - cur[0];
-    const cov = out.cov = Math.min(1, deg / 360);
+    const covOf = (list) => {
+      const iv = [];
+      for (const x of list) {
+        const w = (Math.asin(Math.min(1, half(x) / Math.max(1, +x.dist || 1))) * 180) / Math.PI;
+        const a = +x.angle || 0, lo = (((a - w) % 360) + 360) % 360, hi = lo + 2 * w;
+        if (hi <= 360) iv.push([lo, hi]); else iv.push([lo, 360], [0, hi - 360]);
+      }
+      iv.sort((p, q) => p[0] - q[0]);
+      let deg = 0, cur = null;
+      for (const [s0, e0] of iv) {
+        if (cur && s0 <= cur[1]) { if (e0 > cur[1]) cur[1] = e0; }
+        else { if (cur) deg += cur[1] - cur[0]; cur = [s0, e0]; }
+      }
+      if (cur) deg += cur[1] - cur[0];
+      return Math.min(1, deg / 360);
+    };
+    const cov = out.cov = covOf(crossed);
+    /* D43 P4b: a sub-dial face lifted among the hands is a still row ABOVE the sweep, so
+     * on every beat the wedge crosses it the device paints the face again on top — one
+     * more plate-sized blit on exactly those beats. Priced as one plain crossed-plate
+     * bill (K_PLAIN) on the lifted faces' own coverage. ESTIMATED, not fitted to a panel
+     * measurement yet: the bake's own estimate for perpetual with its moon face lifted
+     * put the flush at ~122 ms against ~94 ms. */
+    // read off design.order, never this.face(): the face's key reads the export frame
+    // count, which reads this budget — the recursion the get F() guard names
+    const liftedIds = {}; (D.order || []).forEach((e) => { if (String(e).indexOf('comp:') === 0) liftedIds[String(e).slice(5)] = 1; });
+    const covLift = out.covLift = covOf(crossed.filter((x) => liftedIds[x.id]));
+    out.liftCov = {}; crossed.forEach((x) => { if (liftedIds[x.id]) out.liftCov[x.id] = covOf([x]); });
     /* Only the MOVING gate doubles the re-blit bill: each twin is a second plate under
      * the wedge. Plate relief is art already in the statics, so shOp changes the look and
      * not the pace. Both slopes below re-fit the two panel anchors measured in 07d3411
@@ -187,11 +201,13 @@ class Component extends DCLogic {
      * median 10 and neon (static moon, cov 0.11) a median 12 — near-identical coverage,
      * both under moving shadows. Floor-snapping called both 8; rounded both land 11. */
     const est = (raw) => Math.max(4, Math.min(b.fps, Math.round(raw)));
-    out.pace = est(b.fps * (1 - (shOn ? K_TWIN : K_PLAIN) * cov));
-    const plain = est(b.fps * (1 - K_PLAIN * cov));
+    const K_LIFT = 1.16;
+    out.pace = est(b.fps * (1 - (shOn ? K_TWIN : K_PLAIN) * cov - K_LIFT * covLift));
+    const plain = est(b.fps * (1 - K_PLAIN * cov - K_LIFT * covLift));
     if (out.pace < b.fps) out.why = 'Sweep crosses ' + n + ' plate' + (n > 1 ? 's' : '') + ' on ' +
       Math.round(cov * 100) + '% of beats: each re-blits it under the wedge, so the device holds ~' +
-      out.pace + ' fps' + (shOn && plain > out.pace ? '. Cast shadows off predicts ~' + plain + ' fps.' : '.');
+      out.pace + ' fps' + (covLift > 0 ? ', a lifted face over the sweep repainting on top on ' + Math.round(covLift * 100) + '% of them' : '') +
+      (shOn && plain > out.pace ? '. Cast shadows off predicts ~' + plain + ' fps.' : '.');
     return out;
   }
   /* "Cast shadows off" is the pace switch, and it touches the MOVING shadow only.
@@ -1172,6 +1188,8 @@ class Component extends DCLogic {
     const off = { stackRows: [], stackWarns: [], stackCap: '', stackCapFg: '#8d8472', mech: { bg: '#1f1d1a', bd: '#3a352d', fg: '#b5ab97' }, toggleMech: () => this.upd((dd) => { if (dd.mechanical) delete dd.mechanical; else dd.mechanical = 1; }) };
     if (!S || !inp) return off;
     const items = S.build(inp), warns = d.mechanical ? S.warnings(inp) : [], rc = S.rowCount(inp);
+    let liftCov = null;   // null: the pace model could not price this design, so say nothing
+    if (items.some((x) => x.lifted)) { try { const b = this.budget(); liftCov = (b && b.dev && b.dev.liftCov) || null; } catch (e) { liftCov = null; } }
     const warnOf = {}; warns.forEach((w) => { warnOf[w.id] = (warnOf[w.id] ? warnOf[w.id] + ' · ' : '') + w.text; });
     const HEAD = { crystal: 'Crystal · pinned on top', rows: 'Layers', plate: 'Plate · pinned at the bottom' };
     const rows = []; let band = null;
@@ -1181,7 +1199,9 @@ class Component extends DCLogic {
       const up = it.movable ? S.move(inp, it.id, -1) : { ok: false, reason: '' }, dn = it.movable ? S.move(inp, it.id, 1) : { ok: false, reason: '' };
       const hidden = !!s.hidden[it.hide], on = selId === it.id;
       rows.push({ isHead: false, isRow: true, label: it.label, warn: warnOf[it.id] ? ' ⚠' : '',
-        note: it.badge + (it.kind === 'hand' || it.kind === 'pointer' ? (it.shadow ? ' · casts a shadow' : '') : '') + (warnOf[it.id] ? ' · ' + warnOf[it.id] : ''),
+        note: it.badge + (it.kind === 'hand' || it.kind === 'pointer' ? (it.shadow ? ' · casts a shadow' : '') : '')
+          + (it.lifted && liftCov ? (liftCov[it.ref] ? ' · repainted on ~' + Math.round(liftCov[it.ref] * 100) + '% of sweep ticks' : ' · clear of the sweep') : '')
+          + (warnOf[it.id] ? ' · ' + warnOf[it.id] : ''),
         tip: it.movable ? 'Drag onto another layer, or use the arrows' : (S.move(inp, it.id, 1).reason || ''),
         pad: it.parent ? 22 : 6, weight: it.parent ? 500 : 600, op: hidden ? 0.45 : 1, bg: on ? '#2a2316' : 'transparent', edge: on ? '#c9a25a' : 'transparent',
         arrows: it.movable ? 'visible' : 'hidden',
@@ -3309,6 +3329,12 @@ class Component extends DCLogic {
                          shape.length ? [H('Shape')].concat(this.foldRows(shape, 'shape', 5)) : [],
                          paint.length ? [H('Paint')].concat(this.foldRows(paint, 'paint', 5)) : []);
     }
+    // Hands: each panel reads Shape, Paint, Motion; the artwork upload folds behind its own toggle
+    if (Array.isArray(v.handRows)) out.handRows = v.handRows.map((h) => {
+      const key = 'art:' + h.anchor, open = !!(s.more || {})[key] || !!h.hasArt;
+      return Object.assign({}, h, { artOpen: open, artToggleLabel: open ? 'Hide artwork' : 'Artwork \u00b7 use your own PNG or SVG',
+        toggleArt: () => this.setState((x) => ({ more: { ...(x.more || {}), [key]: !open } })) });
+    });
     out.fields = fields;
     return Object.assign(v, out);
   }

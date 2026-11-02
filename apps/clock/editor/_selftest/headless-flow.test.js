@@ -71,6 +71,21 @@ const stepOf = (it) => it.stepNow()[0];
   ok(V().diagOpen, 'and opens on a press');
 }
 
+// ---- the hand panels: Shape, Paint, Motion, artwork folded --------------------
+{
+  const it = mount('skeleton'), V = () => it.renderVals();
+  it.setState({ step: 'parts', tab: 'hands' });
+  const rows = V().handRows;
+  ok(rows.length > 0 && rows.every((h) => h.artOpen === false && /Artwork/.test(h.artToggleLabel)), 'every hand\u2019s artwork upload starts folded', rows.length + ' hands');
+  rows[0].toggleArt();
+  const r2 = V().handRows;
+  ok(r2[0].artOpen === true && r2.slice(1).every((h) => !h.artOpen), 'opening one hand\u2019s artwork opens that hand\u2019s only');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
+  const panel = html.slice(html.indexOf('<sc-for list="{{ handRows }}"'), html.indexOf('{{ h.onArtFile }}'));
+  const order = ['>Shape<', 'h.onStyle', 'h.onLen', '>Paint<', 'h.onFinish', 'h.onShade', 'h.onLume', 'h.onPath', 'h.toggleArt', 'h.artOpen', 'h.artRef'].map((k) => panel.indexOf(k));
+  ok(order.every((x, i) => x >= 0 && (i === 0 || x > order[i - 1])), 'the panel reads Shape, Paint, Motion, then the folded artwork', order.join(','));
+}
+
 // ---- from a preset ------------------------------------------------------------
 {
   const it = mount('skeleton'), V = () => it.renderVals();

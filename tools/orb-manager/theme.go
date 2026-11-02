@@ -333,6 +333,10 @@ type cardRead struct {
 // drop them explicitly.
 func (s *Server) dropThemeCache(ip string) {
 	s.dropPreviews(ip)
+	// The card changed, so an app's editor region on it may have too: an install or an
+	// update rewrites the container the region is read from. Without this the hub kept
+	// serving the editor it remembered from before the update (D43, 2026-11-02).
+	dropEditorRegions(ip)
 	s.cardMu.Lock()
 	defer s.cardMu.Unlock()
 	if h, ok := s.cardReads[ip]; ok {

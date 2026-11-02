@@ -294,9 +294,22 @@ shows inline today. Nothing in it is removed, only moved.
   type's fields included, and every binding the pre-P5 template used is still bound (two
   renamed on purpose: `tabs` → `stepOpts`, `isDial` → `isStart`). Checked in Chrome on
   Start, Complications & hands, Arrange (drawer open), Finish and Render.
-- **Owed:** the badge reads the composer's device-pace model, which does not yet price a
-  lifted face's still row; the bake's own estimate does (§3.1). Folding the hands'
-  panels into D42's parts is left with the hands as they are.
+- **Follow-ups (2026-11-02), both closed:**
+  - *Lifted faces are priced.* The device-pace model adds one plain crossed-plate bill
+    (K_PLAIN) on the coverage of each lifted face the seconds sweep crosses: the device
+    paints the still row again on top on exactly those beats. Estimated, not fitted to a
+    panel measurement yet. The Render badge, the pace explanation ("a lifted face over the
+    sweep repainting on top on N % of them") and the lifted row's note ("repainted on ~N %
+    of sweep ticks") all read it. On a centre-seconds dial with one 60 px sub-dial the
+    estimate drops 12 → 10 fps when the face is lifted.
+  - *Hand panels read like complications.* Each hand reads Shape (style, length, width),
+    Paint (finish, shading, lume), Motion, and the artwork upload folds behind its own
+    toggle (open when the hand already carries art).
+- **The editor door after a hub update (2026-11-02).** An orb whose app is older than the
+  hub's shelf used to meet a bare "editor and hub do not match". The refusal now names
+  both versions and offers *Update <app> on this orb*, which asks the hub page to run the
+  Apps face's own forced install and reopen the editor; and an install now drops the
+  hub's cached editor region for that orb, so the reopened editor is the new one.
 
 ## 5. Preview: 1:1, and the panel
 

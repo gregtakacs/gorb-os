@@ -3384,6 +3384,24 @@ async function themeBridge(ev) {
   };
   if (m.type === "theme.ready") { say("editor ready"); back({ state: "ok" }); return; }
   if (m.type === "theme.close") { closeThemeEditor(); return; }
+  // D43: the editor's refusal page found the orb running an older release of this app
+  // than the hub's shelf carries and offers the fix. It is the Apps face's own Update
+  // (the same streamed, forced install), run for the one app this pane opened, with its
+  // steps in the pane's status line, and the editor reopened when it lands.
+  if (m.type === "theme.update") {
+    if (!themeEditorApp || m.app !== themeEditorApp || !themeIP) return;
+    const pane = $("#mn-theme-editor");
+    say("updating " + m.app + " on " + themeIP + "\u2026");
+    let ok = false;
+    try {
+      ok = await streamInstall(themeIP, m.app, false, null, true, false, (j, t) => { if (t) say(t); });
+    } catch (e) { say("update refused: " + e.message); return; }
+    if (!ok) { say("the update did not finish \u2014 the Apps page shows why"); return; }
+    say("updated " + m.app + "; reopening the editor\u2026");
+    if (pane) pane.classList.add("loading");
+    try { frame.contentWindow.location.reload(); } catch (e) { frame.src = frame.src; }
+    return;
+  }
   if (m.type !== "theme.save") return;
   if (!m.container || typeof m.container !== "string") {
     back({ state: "error", message: "the editor sent no container" }); return;

@@ -97,6 +97,23 @@ ok(it.state.hidden.glass === true, 'the eye hides the glass on the stage');
   it.upd((dd) => { delete dd.order; });
 }
 
+// D43 P4b: a lifted face over the sweep is priced — the pace drops, the reason names it,
+// and its stack row says how often it repaints
+{
+  const it2 = new Comp({});
+  it2.ready = true; it2.rendering = false; it2.state.dial = 'skeleton'; it2.state.playing = false; it2.state.hidden = {};
+  it2.state.designs = { skeleton: E.canonDesign({ print: 'roman', centre: { hour: 1, minute: 1, second: 1 },
+    comps: [{ id: 's1', type: 'subdial', host: 'dial', angle: 180, dist: 100, size: 60, scale: 'none', style: 'guilloche' }] }) };
+  const b0 = it2._devPace({ fps: 15, measured: true });
+  it2.upd((dd) => { dd.order = it2.face().handOrder.concat(['comp:s1']); });
+  const b1 = it2._devPace({ fps: 15, measured: true });
+  ok(b0.cov > 0 && b1.covLift > 0 && b1.pace < b0.pace, 'lifting the face the sweep crosses lowers the estimated pace', b0.pace + ' -> ' + b1.pace + ' fps (cov ' + b1.covLift.toFixed(3) + ')');
+  ok(/lifted face/.test(b1.why), 'and the estimate says why', b1.why);
+  it2.budget = () => ({ fps: 15, dev: it2._devPace({ fps: 15, measured: true }) });
+  const row = it2.renderVals().stackRows.find((r) => r.isRow && /still row/.test(r.note));
+  ok(row && /repainted on ~\d+% of sweep ticks/.test(row.note), 'its stack row names the repaint share', row && row.note);
+}
+
 // D43 §2.3: a property that follows the dial says so, and re-links in one click
 {
   it.upd((dd) => { dd.comps = (dd.comps || []).concat([{ id: 'fx', type: 'flare', host: 'dial', angle: 0, dist: 60, size: 10, style: 'print', icon: 'text', text: 'LINK' }]); });

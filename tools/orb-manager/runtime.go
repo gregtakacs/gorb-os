@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
 // The OS theme runtime (D43 §9). An app's editor authors content; the hub builds the
@@ -148,26 +150,65 @@ func editorRuntimeMissing(manifest []byte) []string {
 	return missing
 }
 
+// editorVersions are the two release stamps behind a refusal: the app the orb runs and
+// the one on this hub's shelf. Either is "" when it cannot be read.
+type editorVersionPair struct{ orb, hub string }
+
+func (s *Server) editorVersions(ip, slug string) editorVersionPair {
+	var v editorVersionPair
+	if row := s.installedRow(ip, slug); row != nil {
+		v.orb = row.Version
+	}
+	if lib := s.library(); lib != nil && lib.AppsDir != "" {
+		if body, err := lib.Container(slug); err == nil {
+			if c, err := orbnet.ParseApp(body); err == nil {
+				v.hub = c.Version
+			}
+		}
+	}
+	return v
+}
+
 // runtimeRefused answers an editor this hub cannot run: a page for the frame, JSON for
-// anything else, and in both the ids it named and the ids this hub holds.
-func runtimeRefused(w http.ResponseWriter, r *http.Request, slug string, missing []string) {
+// anything else. When the cause is an orb running an older release of the app than the
+// hub's shelf carries — the ordinary case after a hub update — the page says so in those
+// words and offers the fix: a button that asks the hub page (the frame's parent) to run
+// the Apps face's own Update for this app on this orb, then reopen the editor.
+func runtimeRefused(w http.ResponseWriter, r *http.Request, slug string, missing []string, v editorVersionPair) {
 	have := strings.Join(runtimeIDs(), ", ")
 	sentence := fmt.Sprintf("the %s editor needs %s, and this hub carries %s", slug, strings.Join(missing, ", "), have)
+	cmp, comparable := orbnet.AppVersionCompare(v.hub, v.orb)
+	orbOlder := comparable && cmp > 0
 	w.Header().Set("Cache-Control", "no-store")
 	if strings.Contains(r.Header.Get("Accept"), "text/html") {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusConflict)
-		_, _ = fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>Editor needs a newer hub or app</title>`+
-			`<style>body{font:15px/1.5 system-ui,sans-serif;margin:2rem;color:#222}code{background:#f2f2f2;padding:.1em .3em;border-radius:3px}</style>`+
+		css := `<style>body{font:15px/1.5 system-ui,sans-serif;margin:2rem;color:#222}code{background:#f2f2f2;padding:.1em .3em;border-radius:3px}` +
+			`button{margin-top:1rem;padding:.55em 1.2em;background:#3b5bdb;color:#fff;border:0;border-radius:6px;font:inherit;cursor:pointer}` +
+			`button[disabled]{opacity:.6;cursor:default}.why{color:#666;font-size:13px;margin-top:1.5rem}</style>`
+		if orbOlder {
+			esc := template.HTMLEscapeString
+			_, _ = fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>Update the %[1]s app on this orb</title>%[4]s`+
+				`<h1>This orb's %[1]s app is older than the hub's</h1>`+
+				`<p>The orb runs <b>%[1]s %[2]s</b>; this hub has <b>%[1]s %[3]s</b>. The editor comes from the app, so update the app on the orb to open the current editor.</p>`+
+				`<button id="u">Update %[1]s on this orb</button><p id="s"></p>`+
+				`<p class="why">Why: <code>%[5]s</code>.</p>`+
+				`<script>document.getElementById('u').onclick=function(){this.disabled=true;`+
+				`document.getElementById('s').textContent='Asking the hub to update the app… its progress shows under the editor.';`+
+				`try{parent.postMessage({type:'theme.update',app:%[6]q},location.origin);}catch(e){document.getElementById('s').textContent='The hub page did not answer: update it from the Apps page.';}};</script>`,
+				esc(slug), esc(v.orb), esc(v.hub), css, esc(sentence), slug)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>Editor needs a newer hub or app</title>%s`+
 			`<h1>This editor and this hub do not match</h1><p><code>%s</code>.</p>`+
 			`<p>An entry with no version (no <code>@</code>) is an editor from before the hub served its own theme runtime: `+
 			`install the current release of the app. A version this hub does not carry means the app is newer than the hub: update the hub.</p>`,
-			template.HTMLEscapeString(sentence))
+			css, template.HTMLEscapeString(sentence))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusConflict)
-	_, _ = fmt.Fprintf(w, `{"ok":false,"error":%q,"missing":%s}`, sentence, mustJSON(missing))
+	_, _ = fmt.Fprintf(w, `{"ok":false,"error":%q,"missing":%s,"orb_version":%q,"hub_version":%q}`, sentence, mustJSON(missing), v.orb, v.hub)
 }
 
 func mustJSON(v any) string {

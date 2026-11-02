@@ -86,6 +86,13 @@ def canon(t):
     # the pinned copy truncated. That one term is the whole intended delta; drop it
     # and the rest of the function must still match the pinned blend token for token.
     t = t.replace(' + 0x2008010u) >> 5)', ') >> 5)')
+    # fd7dbf4 (the flights work): the tick books its own jank — one ledger call after
+    # the start stamp, and a reset of the held-beat clock when the dial is parked so a
+    # park never reads as a late beat. Both are additions with no pinned counterpart;
+    # everything the tick did before them stays under comparison. Reword either and
+    # this stops matching, and the parity line fails loudly again.
+    t = re.sub(r'\{\s*s_jank_prev_ms = 0;\s*return;\s*\}', 'return;', t)
+    t = re.sub(r'jank_book\(t_start_ms\);\s*', '', t)
     t = re.sub(r'const uint8_t \*base[,)]',
                lambda m: ')' if m.group(0).endswith(')') else '', t)
     t = re.sub(r'\bbase \+', 'blob() +', t)            # ... resolved from a param now

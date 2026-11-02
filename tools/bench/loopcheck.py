@@ -329,9 +329,11 @@ def source_cycle_check(html=None):
     body = src.split('_budget(forceWant) {')[-1].split('\n  preset(')[0]
     checks = [
         ('get F() throws on a re-entrant budget', 'if (this._bG) throw' in src),
+        # the guarded call became `b = this._budget(...)` in a try/finally when budget()
+        # grew a post-step; the flag still rises before it and drops in the finally
         ('budget() raises the flag around _budget',
-         'this._bG = 1;' in src and 'return this._budget(forceWant);' in src
-         and 'finally { this._bG = 0; }' in src),
+         'this._bG = 1;' in src
+         and 'try { b = this._budget(forceWant); } finally { this._bG = 0; }' in src),
         ('opts() reads the bank only behind noframes',
          'frames: noframes ? 0 : this.B' in src),
         ('the bank is a tempo, never a literal frame count',
@@ -734,21 +736,26 @@ def seal_cull_check(engine=None, html=None, bake=None):
 
     # predicates: engine, composer-inline, bake source -> bool
     preds = [
+        # buildDial grew clipR and dynK after seal (uploaded art, the case inset)
         ('engine: buildDial takes a seal mode',
-         lambda e, s, b: 'function buildDial(D, lay, baseEn, pal, glow, seal)' in e),
+         lambda e, s, b: 'function buildDial(D, lay, baseEn, pal, glow, seal,' in e),
         ('engine: seal mode drops the sealed apertures',
          lambda e, s, b: 'seal ? lay.dialHoles.filter((h) => !h.seal) : lay.dialHoles' in e),
         ('engine: the window/moon branch is the only seal',
          lambda e, s, b: e.count('hole.seal = true') == 1),
-        ('engine: seal is set only on a dial-hosted disc',
-         lambda e, s, b: 'if (!onSub) hole.seal = true;' in e),
+        # c32244a: a disc on a TRANSPARENT sub-dial cuts its aperture in the dial too
+        # (there is no sub-dial plate to punch), so it is sealed like a dial-hosted one;
+        # an opaque sub-dial's disc still keeps its punch
+        ('engine: seal is set only on a disc whose hole is in the dial',
+         lambda e, s, b: 'if (!onSub || thost) hole.seal = true;' in e),
         ('engine: an opening returns before it can be sealed',
          lambda e, s, b: (e.split("if (c.type === 'opening') {", 1)[-1]
                           .split('hole.seal', 1)[0].count('return;') >= 1)),
         ('engine: face exposes F.dialSealed',
          lambda e, s, b: 'F.dialSealed = lay.dialHoles.some((h) => h.seal)' in e),
+        # the dial bake now passes the case inset after the canvas
         ('composer: ships layers/dial.png from the sealed canvas',
-         lambda e, s, b: 'await this.png(bake(lf.dialSealed))' in s),
+         lambda e, s, b: 'await this.png(bake(lf.dialSealed' in s),
         ('composer: occlMask prices the sealed dial',
          lambda e, s, b: '[fc.dialSealed, fc.glass, fc.outer]' in s),
         ('bake: the occluder still demands one opaque layer alone at 255',
@@ -760,13 +767,13 @@ def seal_cull_check(engine=None, html=None, bake=None):
         print('  %-48s %s' % (n, 'FAIL' if n in out else 'ok'))
 
     # mutants: the two one-sided edits must be caught, or this gate passes vacuously.
-    ships_holed = src.replace('await this.png(bake(lf.dialSealed))',
-                              'await this.png(bake(lf.dial))')
+    ships_holed = src.replace('await this.png(bake(lf.dialSealed',
+                              'await this.png(bake(lf.dial')
     prices_holed = src.replace('[fc.dialSealed, fc.glass, fc.outer]',
                                '[fc.dial, fc.glass, fc.outer]')
     for n, msrc in (('mutant: ships a holed dial (bake still pushes the train)', ships_holed),
                     ('mutant: prices the holed dial (over-counts the sealed disc)', prices_holed)):
-        caught = ('await this.png(bake(lf.dialSealed))' not in msrc) or \
+        caught = ('await this.png(bake(lf.dialSealed' not in msrc) or \
                  ('[fc.dialSealed, fc.glass, fc.outer]' not in msrc)
         print('  %-48s %s' % (n, 'ok' if caught else 'FAIL: gate cannot fail'))
         if not caught:

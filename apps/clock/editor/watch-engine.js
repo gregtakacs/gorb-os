@@ -171,12 +171,20 @@
    * writes the same numbers into the v5 row, so the preview and the glass agree. */
   const MOTION_PATHS = { rotate: 'Rotate', retrograde: 'Retrograde fan', 'slide-x': 'Slide \u00b7 across', 'slide-y': 'Slide \u00b7 up/down', disc: 'Turning disc' };
   const CADENCES = { inherit: 'Default', sweep: 'Sweep', step: 'Step', jump: 'Jump', 'stop-to-go': 'Stop-to-go' };
-  const DRIVE_DOM = { hour: ['hour12', 12], minute: ['minute', 60], second: ['second', 60] };
+  // a hand's drive: [source, units in one sweep, the source's first value]. D43 P5d.2: every
+  // measure a hand can show, so a fan or a slider can carry any of them
+  const DRIVE_DOM = { hour: ['hour12', 12], minute: ['minute', 60], second: ['second', 60], hours24: ['hour24', 24], gmt: ['hour24', 24],
+    day: ['weekday', 7], date: ['date', 31, 1], month: ['month', 12] };
   const motionOn = (m) => !!m && ((m.path && m.path !== 'rotate') || (m.cadence && m.cadence !== 'inherit'));
   function driveUnits(kind, m, t) {
     const h = t.getHours() % 12, mi = t.getMinutes(), s = t.getSeconds(), fr = t.getMilliseconds() / 1000;
-    const v = kind === 'hour' ? h : kind === 'minute' ? mi : s;
-    const f = kind === 'hour' ? (mi * 60 + s + fr) / 3600 : kind === 'minute' ? (s + fr) / 60 : fr;
+    // the whole units since the domain's start, and the fraction into the next; the
+    // calendar measures move once a day (their TURN has no fraction either)
+    const h24 = kind === 'gmt' ? ((t.getHours() + Math.round(+m.off || 0)) % 24 + 24) % 24 : t.getHours();
+    const v = kind === 'hour' ? h : kind === 'minute' ? mi : kind === 'second' ? s : kind === 'hours24' || kind === 'gmt' ? h24
+      : kind === 'day' ? t.getDay() : kind === 'date' ? t.getDate() - 1 : kind === 'month' ? t.getMonth() : s;
+    const f = kind === 'hour' || kind === 'hours24' || kind === 'gmt' ? (mi * 60 + s + fr) / 3600 : kind === 'minute' ? (s + fr) / 60
+      : kind === 'second' ? fr : kind === 'month' ? (t.getDate() - 1) / 31 : 0;
     switch (m.cadence) {
       case 'step': { const n = Math.max(1, +m.steps | 0); return v + Math.floor(f * n) / n; }
       case 'jump': return v;
@@ -193,6 +201,8 @@
       case 'retrograde': return { a: rad(+m.start || 0) + rad(m.span != null ? +m.span : 180) * q };
       case 'disc': return { a: rad(+m.start || 0) - (TAU * u) / vmax };
       case 'slide-x': case 'slide-y': { const [f0, tr] = slideGeom(m), o = f0 + tr * q; return { a: 0, d: m.path === 'slide-x' ? [o, 0] : [0, o] }; }
+      // D43 P5d.2: a slider face's track at any angle (0 = rightward, clockwise in degrees)
+      case 'slide': { const [f0, tr] = slideGeom(m), o = f0 + tr * q, g = rad(+m.angle || 0); return { a: 0, d: [Math.cos(g) * o, Math.sin(g) * o] }; }
       default: return { a: (TAU * u) / vmax };
     }
   }
@@ -998,14 +1008,38 @@
       const g = G[c.id], r = Math.max(10, +c.size || 50);
       const s = { id: c.id, x: g.x, y: g.y, r, rot: g.rot, scale: c.scale || 'none', style: c.style || 'enamel', color: c.color || 'match', open: c.open > 0 ? r * Math.min(0.85, +c.open) : 0,
         t: { font: c.tfont, orient: c.torient, dir: c.tdir, weight: c.tweight, size: c.tsize, style: c.tstyle, color: c.tcolor }, height: c.height == null ? 1 : +c.height, tex: c.tex, wa: c.weaveAngle, ws: c.weaveScale };
+      /* D43 P5d.2: a face's form. A fan prints its scale along an arc from `fanStart` over
+       * `fanSpan` degrees, its direction the print's (tdir); a hand on it sweeps that arc and
+       * flies back. A slider is a plate along a track `slideLen` px long at `slideAngle`
+       * degrees (0 = the lowest value at the left), with a slot cut through it the hand
+       * rides in; its scale prints along the slot. */
+      s.form = c.form === 'fan' || c.form === 'slider' ? c.form : 'round';
+      if (s.form === 'fan') {
+        const sp = Math.max(20, Math.min(330, Math.abs(c.fanSpan == null ? 180 : +c.fanSpan)));
+        s.fan = { start: c.fanStart == null ? 270 : +c.fanStart, span: (c.tdir === 'ccw' ? -1 : 1) * sp };
+      }
+      if (s.form === 'slider') {
+        const len = Math.max(40, Math.min(400, c.slideLen == null ? Math.round(r * 2) : +c.slideLen)), ang = rad(c.slideAngle == null ? 0 : +c.slideAngle);
+        const hh = Math.max(14, r * 0.5), hl = len / 2 + Math.max(10, r * 0.3), ux = Math.cos(ang), uy = Math.sin(ang), nx = -uy, ny = ux;
+        const off = -hh * 0.32, sw = Math.max(5, Math.min(hh * 0.8, c.slotW == null ? r * 0.16 : +c.slotW));
+        s.slide = { len, ang, ux, uy, nx, ny, hh, hl, rad: hh * 0.55, sx: g.x + nx * off, sy: g.y + ny * off, sw, floor: c.slotFloor === 'movement' ? 'movement' : 'dial' };
+        s.open = 0;
+      }
       subs.push(s); subHoles[c.id] = []; subZ[c.id] = 1 + subs.length * 0.01;
+      if (s.form === 'slider' && !s.transparent) {
+        // the slot is a real cut: through the plate onto the dial, or on through the dial to the movement
+        const sl = s.slide, hole = { kind: 'slot', x: sl.sx, y: sl.sy, w: sl.len + sl.sw, h: sl.sw, rot: sl.ang, style: c.slotStyle || 'bevel' };
+        if (hole.style === 'frame' && c.frameColor && c.frameColor !== 'gilt') hole.fc = c.frameColor;
+        subHoles[c.id].push(hole);
+        if (sl.floor === 'movement') dialHoles.push(Object.assign({}, hole, { hidden: true }));
+      }
       // The open-centre punch exists to expose the movement under a plate that is
       // otherwise opaque. A transparent subdial lays no plate, so punching would only
       // erase the author's baked-in art: the layout skips it and exportKit skips the
       // layer, which is the same "no subdial in this kit" route prep already supports.
       s.transparent = s.style === 'transparent';
       if (s.open && !s.transparent) dialHoles.push({ kind: 'circle', x: s.x, y: s.y, r: s.open + 4, hidden: true });
-      hits.push({ id: c.id, x: g.x, y: g.y, r: r + 2.5, z: subZ[c.id] });
+      hits.push({ id: c.id, x: g.x, y: g.y, r: (s.form === 'slider' ? Math.max(s.slide.hl, s.slide.hh) : r) + 2.5, z: subZ[c.id] });
     });
     list.forEach((c) => {
       if (c.type === 'subdial' || c.type === 'hand') return;   // a hand is drawn by buildHands, on its host's arbour
@@ -1320,6 +1354,7 @@
       if (radial) { ctx.save(); ctx.translate(q[0], q[1]); ctx.rotate(a + Math.PI / 2); ctx.fillText(str, 0, 0.5); ctx.restore(); } else ctx.fillText(str, q[0], q[1] + 0.5);
     };
     const ro = bi ? r - 3 : r - 4 * k, st = t.style || 'classic';
+    if (s.form === 'fan' || s.form === 'slider') { printTrack(ctx, s, st, { tick, txt, font, k, holes, ccw }); ctx.restore(); setFace(dialFont); return; }
     if (st !== 'classic') { subDisplay(ctx, s, st, { A, ring, tick, txt, font, ro, k, bi, x, y, holes }); ctx.restore(); setFace(dialFont); return; }
     ring(ro, 0.7);
     if (s.scale === 'seconds') {
@@ -1384,6 +1419,61 @@
       }
     }
     if (st !== 'minimal') { ctx.font = font(fs); SC.lab.forEach(([str, i]) => txt(str, A(i, SC.n), lr)); }
+  }
+  /* D43 P5d.2: the scale of a fan or a slider face. The same tables the round faces print
+   * from (TRACK), laid along the fan's arc or the slider's slot instead of a full turn.
+   * Index i of n sits at fraction i/n of the sweep, exactly where the hand's pose puts that
+   * value (motionPose's q = u / vmax), and a measure that reaches its top (seconds,
+   * minutes, hours) prints its last figure at the far end. The display styles keep their
+   * character: railway and classic draw the track line, dots and minimal draw no figures
+   * but the majors' marks, bold doubles the figures. */
+  const TRACK = {
+    seconds: { n: 60, top: true, maj: (i) => i % 5 === 0, lab: (i) => (i % 10 === 0 ? String(i) : null) },
+    hours: { n: 12, top: true, maj: () => true, lab: (i) => String(i || 12) },
+    date: { n: 31, top: false, maj: (i) => (i + 1) % 5 === 0 || i === 0 || i === 30, lab: (i) => ((i + 1) % 5 === 0 || i === 0 ? String(i + 1) : null) },
+    day: { n: 7, top: false, maj: () => true, lab: (i) => DAYS[i] },
+    month: { n: 12, top: false, maj: () => true, lab: (i) => MONTHS[i] },
+  };
+  function printTrack(ctx, s, st, o) {
+    const T = TRACK[s.scale]; if (!T) return;
+    const { tick, txt, font, k } = o, last = T.top ? T.n : T.n - 1, big = st === 'bold' || st === 'numerals';
+    const marks = st !== 'numerals', figs = st !== 'minimal' && st !== 'dots', line = st === 'classic' || st === 'railway' || st === 'sector';
+    if (s.form === 'fan') {
+      const { x, y } = s, ro = s.r - 4 * k, a0 = rad(s.fan.start) - Math.PI / 2 + (s.rot || 0), sp = rad(s.fan.span);
+      // figures stand inside the ticks, and shrink to the arc a crowded short fan gives each one
+      const at = (i) => a0 + (sp * i) / T.n, fs0 = (T.n > 12 ? 10 : 8.6) * k * (big ? 1.35 : 1);
+      if (line) { ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(x, y, ro, at(0), at(last), sp < 0); ctx.stroke(); if (st === 'railway') { ctx.beginPath(); ctx.arc(x, y, ro - 3.5 * k, at(0), at(last), sp < 0); ctx.stroke(); } }
+      for (let i = 0; i <= last; i++) {
+        const m = T.maj(i), a = at(i);
+        if (marks && st === 'dots') { const q = P(x, y, ro - 2.2 * k, a); ctx.beginPath(); ctx.arc(q[0], q[1], (m ? 1.5 : 0.55) * k, 0, TAU); ctx.fill(); }
+        else if (marks && (m || T.n > 12)) tick(a, m ? ro - 6 * k : ro - 3 * k, ro, m ? 1.6 : 0.6);
+      }
+      if (figs) {
+        const nl = Array.from({ length: last + 1 }, (_, i) => T.lab(i % T.n === 0 && i ? 0 : i)).filter(Boolean).length || 1;
+        const wide = s.scale === 'day' || s.scale === 'month' ? 1.9 : 1.2, r0 = ro - 6.5 * k;
+        const fs = Math.max(4.5, Math.min(fs0, (Math.abs(sp) * (r0 - fs0)) / (nl * wide))), rl = r0 - fs * 0.75;
+        ctx.font = font(fs);
+        for (let i = 0; i <= last; i++) { const l = T.lab(i % T.n === 0 && i ? 0 : i) || null; if (l && (i < T.n || T.top)) txt(i === T.n && T.n === 60 ? '60' : l, at(i), rl); }
+      }
+      return;
+    }
+    // a slider: ticks just under the slot, figures under the ticks, along the track
+    const sl = s.slide, L = sl.len, ux = sl.ux, uy = sl.uy, nx = sl.nx, ny = sl.ny, dirS = o.ccw ? -1 : 1;
+    const pt = (i, d) => { const u = (dirS * ((i / T.n) - 0.5)) * L; return [sl.sx + ux * u + nx * d, sl.sy + uy * u + ny * d]; };
+    const t0 = sl.sw / 2 + 2 * k;
+    for (let i = 0; i <= last; i++) {
+      const m = T.maj(i);
+      if (!marks || (!m && T.n <= 12)) continue;
+      const a = pt(i, t0), b = pt(i, t0 + (m ? 6 : 3) * k);
+      if (st === 'dots') { ctx.beginPath(); ctx.arc(a[0], a[1], (m ? 1.4 : 0.5) * k, 0, TAU); ctx.fill(); continue; }
+      ctx.lineWidth = m ? 1.5 : 0.6; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    }
+    if (figs) {
+      ctx.font = font((T.n > 12 ? 9 : 8) * k * (big ? 1.3 : 1));
+      const prev = ctx.textAlign; ctx.textAlign = 'center';
+      for (let i = 0; i <= last; i++) { const l = i === T.n ? (T.n === 60 ? '60' : T.lab(0)) : T.lab(i); if (!l) continue; const q = pt(i, t0 + 13 * k); ctx.save(); ctx.translate(q[0], q[1]); ctx.rotate(sl.ang > Math.PI / 2 && sl.ang < 3 * Math.PI / 2 ? sl.ang + Math.PI : sl.ang); ctx.fillText(l, 0, 0); ctx.restore(); }
+      ctx.textAlign = prev;
+    }
   }
   // ---------- dial & elevated dials
   function surfaceShade(ctx, x, y, r) {
@@ -1768,30 +1858,36 @@
       // full plane over it. The caller keeps the record for handSlots, which still
       // mounts the pointer hand on this centre.
       if (s.transparent) return { id: s.id, canvas: c, en, transparent: true };
-      const band = (cx) => { cx.beginPath(); cx.moveTo(x + r + 2.5, y); cx.arc(x, y, r + 2.5, 0, TAU); if (s.open) { cx.moveTo(x + s.open - 2.5, y); cx.arc(x, y, s.open - 2.5, 0, TAU, true); } };
+      // the plate's outline, grown by g: a disc, or (D43 P5d.2) a slider's rounded bar along its track
+      const sl = s.slide, R = sl ? Math.max(sl.hl, sl.hh) : r;
+      const outline = (cx, g) => {
+        if (!sl) { cx.moveTo(x + r + g, y); cx.arc(x, y, r + g, 0, TAU); return; }
+        const m = cx.getTransform(); cx.translate(x, y); cx.rotate(sl.ang); cx.roundRect(-sl.hl - g, -sl.hh - g, 2 * (sl.hl + g), 2 * (sl.hh + g), sl.rad + g); cx.setTransform(m);
+      };
+      const band = (cx) => { cx.beginPath(); outline(cx, 2.5); if (s.open) { cx.moveTo(x + s.open - 2.5, y); cx.arc(x, y, s.open - 2.5, 0, TAU, true); } };
       const ht = s.height, dir = SH ? SH.dir : away(1), dm = SH ? SH.dist : 1, bm = SH ? SH.blur : 1, om = SH ? SH.op : 1;
       if (ht > 0) [[2, 3, 4, 0.8], [8, 13, 20, 0.7], [14, 22, 34, 0.5]].forEach(([ox, oy, b, a]) => {
         const d = Math.hypot(ox, oy) * k * ht * dm;
         ctx.save(); ctx.shadowColor = 'rgba(0,0,0,' + Math.min(1, a * om * Math.min(1, 0.4 + ht * 0.6)) + ')'; ctx.shadowBlur = b * k * Math.max(0.3, ht) * bm; ctx.shadowOffsetX = dir[0] * d; ctx.shadowOffsetY = dir[1] * d;
         band(ctx); ctx.fillStyle = '#000'; ctx.fill(); ctx.restore();
       });
-      band(ctx); ctx.fillStyle = _.grad(ctx, x, y, r + 3, pal); ctx.fill();
-      ctx.save(); ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); if (s.open) ctx.arc(x, y, s.open, 0, TAU, true); ctx.clip();
-      surface(ctx, Object.assign({}, s, { tex: s.tex == null ? D.texture : s.tex, weave: { ang: s.wa == null ? D.weaveAngle : s.wa, sc: s.ws == null ? D.weaveScale : s.ws } }), en, 23 + i * 7, true);
+      band(ctx); ctx.fillStyle = _.grad(ctx, x, y, R + 3, pal); ctx.fill();
+      ctx.save(); ctx.beginPath(); outline(ctx, 0); if (s.open) ctx.arc(x, y, s.open, 0, TAU, true); ctx.clip();
+      surface(ctx, Object.assign({}, s, { r: R, tex: s.tex == null ? D.texture : s.tex, weave: { ang: s.wa == null ? D.weaveAngle : s.wa, sc: s.ws == null ? D.weaveScale : s.ws } }), en, 23 + i * 7, true);
       if (ht < 0) {
         const dd = -ht;
         [[3, 4, 0.75], [9, 14, 0.55]].forEach(([o, b, a]) => {
           const d = o * k * dd * dm;
           ctx.save(); ctx.shadowColor = 'rgba(0,0,0,' + Math.min(1, a * om) + ')'; ctx.shadowBlur = b * k * Math.max(0.4, dd) * bm; ctx.shadowOffsetX = dir[0] * d; ctx.shadowOffsetY = dir[1] * d;
-          ctx.beginPath(); ctx.rect(-60, -60, S + 120, S + 120); ctx.arc(x, y, r, 0, TAU); ctx.fillStyle = '#000'; ctx.fill('evenodd'); ctx.restore();
+          ctx.beginPath(); ctx.rect(-60, -60, S + 120, S + 120); outline(ctx, 0); ctx.fillStyle = '#000'; ctx.fill('evenodd'); ctx.restore();
         });
       }
       printSub(ctx, s, en, holes, dialFont);
       setFace(dialFont); drawFlares(ctx, lay.flares.filter((f) => f.host === s.id && f.icon !== 'datetext'), en, pal);
-      weather(ctx, x, y, s.open || 0, r, 63 + i * 17, en, wearOf(D), 0.6);
+      weather(ctx, x, y, s.open || 0, R, 63 + i * 17, en, wearOf(D), 0.6);
       ctx.restore();
-      ctx.strokeStyle = 'rgba(0,0,0,.5)'; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke();
-      if (ht < 0) { ctx.save(); ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.clip(); ctx.strokeStyle = 'rgba(255,250,235,' + Math.min(0.4, 0.22 * -ht) + ')'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(x - dir[0] * 1.2, y - dir[1] * 1.2, r, 0, TAU); ctx.stroke(); ctx.restore(); }
+      ctx.strokeStyle = 'rgba(0,0,0,.5)'; ctx.lineWidth = 0.8; ctx.beginPath(); outline(ctx, 0); ctx.stroke();
+      if (ht < 0 && !sl) { ctx.save(); ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.clip(); ctx.strokeStyle = 'rgba(255,250,235,' + Math.min(0.4, 0.22 * -ht) + ')'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(x - dir[0] * 1.2, y - dir[1] * 1.2, r, 0, TAU); ctx.stroke(); ctx.restore(); }
       if (s.open) { ctx.beginPath(); ctx.arc(x, y, s.open, 0, TAU); ctx.stroke(); }
       cutHoles(ctx, holes, pal, glow);
       return { id: s.id, canvas: c, en };
@@ -2201,6 +2297,34 @@
   function glassLayer(o) { const _ = L(); _.configure(o); setLights(o); _.setTemp(o.outerTemp || 2200, o.outerHue, o.outerSat); return buildGlass(LIGHT.outerK, o.glassStyle); }
 
   // ---------- hands: sprites pointing at 12, pivot known — exactly what firmware rotates
+  /* D43 P5d.2: an indicator that is not a hand -- a dot, a jewel, a star or a flare --
+   * centred `at` px out from the pivot (0 on a slider, where it rides the slot itself).
+   * It answers the { c, px, py } every hand sprite answers, so it turns, slides, casts and
+   * bakes exactly as a hand does. */
+  const MARKERS = { hand: 'Hand', dot: 'Dot', jewel: 'Jewel', star: 'Star', flare: 'Flare' };
+  function markerSprite(kind, at, size, fin) {
+    const pad = 3, ext = Math.ceil(at + size + pad), c = cv(2 * ext), x = c.getContext('2d');
+    x.translate(ext, ext - at);
+    if (kind === 'jewel') {
+      const g = x.createRadialGradient(-size * 0.3, -size * 0.35, size * 0.1, 0, 0, size);
+      g.addColorStop(0, '#ffd2d8'); g.addColorStop(0.35, '#e0213e'); g.addColorStop(1, '#5a0812');
+      x.fillStyle = fin.m; x.beginPath(); x.arc(0, 0, size, 0, TAU); x.fill();
+      x.fillStyle = g; x.beginPath(); x.arc(0, 0, size * 0.78, 0, TAU); x.fill();
+      x.fillStyle = 'rgba(255,255,255,.75)'; x.beginPath(); x.arc(-size * 0.28, -size * 0.3, size * 0.16, 0, TAU); x.fill();
+    } else if (kind === 'star' || kind === 'flare') {
+      const d = kind === 'star' ? FLARE_SVG.star : FLARE_SVG.triangle, k = (2 * size) / 24;
+      // the flare's apex points outward, away from the pivot, like a hand's tip
+      x.save(); if (kind === 'flare') x.rotate(Math.PI); x.translate(-size, -size); x.scale(k, k);
+      const g = x.createLinearGradient(0, 0, 24, 24); g.addColorStop(0, fin.b); g.addColorStop(0.5, fin.m); g.addColorStop(1, fin.a);
+      x.fillStyle = g; x.fill(new Path2D(d)); x.lineWidth = 0.8 / k; x.strokeStyle = fin.edge; x.stroke(new Path2D(d)); x.restore();
+    } else {
+      const g = x.createRadialGradient(-size * 0.3, -size * 0.3, size * 0.1, 0, 0, size);
+      g.addColorStop(0, fin.b); g.addColorStop(0.6, fin.m); g.addColorStop(1, fin.a);
+      x.fillStyle = g; x.beginPath(); x.arc(0, 0, size, 0, TAU); x.fill();
+      x.lineWidth = 0.8; x.strokeStyle = fin.edge; x.stroke();
+    }
+    return { c, px: ext, py: ext };
+  }
   function handFin(k) {
     const F = L().FIN;
     return ({
@@ -2475,38 +2599,44 @@
   /* A hand's motion, applied: its turn (and a slide's offset) re-derived through the
    * drive twin, its sprite swapped for a disc on the disc path. A hand with no motion
    * keeps the turn buildHands gave it, so every older design draws as it did. */
+  // the unit vector a slide travels along: across, up/down, or a slider face's own angle
+  const slideVec = (m) => (m.path === 'slide-x' ? [1, 0] : m.path === 'slide-y' ? [0, 1] : [Math.cos(rad(+m.angle || 0)), Math.sin(rad(+m.angle || 0))]);
+  const isSlide = (m) => !!m && (m.path === 'slide-x' || m.path === 'slide-y' || m.path === 'slide');
   function applyMotion(hd, hc, secT, design) {
     const m = hc.motion, dom = DRIVE_DOM[hd.kind];
     if (!motionOn(m) || !dom) return;
-    const vmax = dom[1], base = hd.turn, explicit = m.cadence && m.cadence !== 'inherit';
+    // units come off the hand's own reading before any direction was applied: a fan's or a
+    // slider's direction is the sign of its span, never a negated turn
+    const vmax = dom[1], raw = hd.rawTurn || hd.turn, explicit = m.cadence && m.cadence !== 'inherit';
     const units = explicit ? (t) => driveUnits(hd.kind, m, t)
-      : hd.kind === 'second' ? (t) => secT(t) * 60 : (t) => TURN[hd.kind](t) * vmax;
+      : hd.kind === 'second' ? (t) => secT(t) * 60 : (t) => raw(t) * vmax;
     hd.motion = Object.assign({ path: 'rotate', cadence: 'inherit' }, m);
-    const slides = m.path === 'slide-x' || m.path === 'slide-y';
+    const slides = isSlide(m), V = slides ? slideVec(m) : null;
     const ez = easeOf(hd.kind, hd.motion);
     // D41 ease, the dial's own: a settle after each step, a flyback at the domain's start
     const eased = (t) => {
       const u = units(t), p = motionPose(hd.motion, vmax, u), e = ez(t);
       if (!e) return p;
       if (e.fly) {
-        if (slides) { const [f0, tr] = slideGeom(hd.motion), o = f0 + tr * (1 - e.sm); return { a: 0, d: m.path === 'slide-x' ? [o, 0] : [0, o] }; }
+        if (slides) { const [f0, tr] = slideGeom(hd.motion), o = f0 + tr * (1 - e.sm); return { a: 0, d: [V[0] * o, V[1] * o] }; }
         return { a: rad(+m.start || 0) + rad(m.span != null ? +m.span : 180) * (1 - e.sm) };
       }
-      const dir = m.path === 'disc' ? -1 : (m.path === 'retrograde' && (+m.span || 180) < 0) ? -1 : 1;
-      if (slides) { const k = e.bump * 3 * dir; return { a: 0, d: m.path === 'slide-x' ? [p.d[0] + k, 0] : [0, p.d[1] + k] }; }
+      const dir = m.path === 'disc' ? -1 : (m.path === 'retrograde' && (+m.span || 180) < 0) ? -1 : slides && (+m.travel || 1) < 0 ? -1 : 1;
+      if (slides) { const k = e.bump * 3 * dir; return { a: 0, d: [p.d[0] + V[0] * k, p.d[1] + V[1] * k] }; }
       return { a: p.a + rad(1.5) * e.bump * dir };
     };
     hd.turn = (t) => eased(t).a / TAU;
     if (slides) {
       hd.slide = (t) => eased(t).d;
-      hd.capR = 0; hd.rot = m.path === 'slide-y' ? Math.PI / 2 : 0;   // a vertical slide points across its track
+      // a hand on a track points across it; a marker has no facing to keep
+      hd.capR = 0; hd.rot = m.path === 'slide-y' ? Math.PI / 2 : m.path === 'slide' ? rad(+m.angle || 0) : 0;
     }
     if (m.path === 'disc') {
-      const b = DISC_BAND[hd.kind], k = +hc.len || 1;
+      const b = DISC_BAND[hd.kind] || DISC_BAND.hour, k = +hc.len || 1;
       const ri = (m.ri != null ? +m.ri : b[0]) * (hd.sub ? 0.3 : 1), ro = (m.ro != null ? +m.ro : b[1]) * (hd.sub ? 0.3 : 1) * k;
       hd.sp = discSprite(hd.kind, ri, ro, m, hd.fin); hd.capR = 0; hd.art = null; hd.artRot = 0; hd.noShadow = true; hd.disc = { ri, ro };
     }
-    void base; void design;
+    void design;
   }
   /* The scale a moving hand reads, printed by the hand itself so the two can never
    * disagree: a retrograde fan gets its arc just inside its tip, a slide gets its
@@ -2514,7 +2644,7 @@
   function paintMotionPrint(x, hands, en) {
     hands.forEach((hd) => {
       const m = hd.motion, dom = DRIVE_DOM[hd.kind];
-      if (!m || !dom || m.scale === false || !(m.path === 'retrograde' || m.path === 'slide-x' || m.path === 'slide-y')) return;
+      if (!m || !dom || m.scale === false || m.fromFace || !(m.path === 'retrograde' || m.path === 'slide-x' || m.path === 'slide-y')) return;
       const vmax = dom[1], ink = m.scaleInk || (en && en.ink) || '#e8e8e8', acc = m.accent || (hd.fin && hd.fin.m) || '#ff2d55';
       const every = hd.kind === 'hour' ? 1 : 5, lab = hd.kind === 'hour' ? 1 : (m.path === 'retrograde' && Math.abs(+m.span || 180) < 200 ? 15 : 10);
       const text = (v) => (hd.kind === 'hour' ? String(v % 12 || 12) : String(v));
@@ -2660,7 +2790,33 @@
         const base = baseTurn(k, hc), off = PG && HAND_RING[k] === design.perim ? PG.offTurn : 0;
         all[id] = { id, kind: k, host: 'dial', x: C, y: C, rot: 0, sp: art || handSprite(pickS(hc, CAL_DEF[k]), 'hour', len, w, fin, null, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn: off ? ((d) => base(d) + off) : base, capR: art ? 0 : Math.max(2.2, w * 1.1), fin, art: art || null, artRot: art ? rad(+hc.rot0 || 0) : 0, len };
       }
-      applyMotion(all[id], hc, secT, design);
+      // D43 P5d.2: what the face drives and the hand may override. Direction: the hand's
+      // own, else its face's (a sub-dial's print direction; the main dial runs clockwise).
+      // A round face's start turns the hand's zero; a fan or a slider makes the hand's
+      // motion from its own geometry, keeping only the hand's cadence, steps and ease.
+      const hd = all[id], s = slot.sub ? subOf[slot.host] : null, form = s ? s.form : 'round';
+      hd.rawTurn = hd.rawTurn || (slot.sub && s.t && s.t.dir === 'ccw' ? ((f) => (d) => -f(d))(hd.turn) : hd.turn);
+      const faceDir = s && s.t && s.t.dir === 'ccw' ? 'ccw' : 'cw', dir = hc.dir === 'cw' || hc.dir === 'ccw' ? hc.dir : faceDir, sg = dir === 'ccw' ? -1 : 1;
+      hd.dir = dir;
+      const cad = {}; ['cadence', 'steps', 'ease', 'p'].forEach((q) => { if (hc.motion && hc.motion[q] != null) cad[q] = hc.motion[q]; });
+      let hcM = hc;
+      if (form === 'fan') {
+        hcM = Object.assign({}, hc, { motion: Object.assign(cad, { path: 'retrograde', fromFace: true, off: hc.offset,
+          start: hc.start != null && hc.start !== '' ? +hc.start : s.fan.start, span: sg * Math.abs(hc.span != null && hc.span !== '' ? +hc.span : s.fan.span) }) });
+      } else if (form === 'slider') {
+        const sl = s.slide, L0 = hc.span != null && hc.span !== '' ? Math.max(10, +hc.span) : sl.len;
+        hd.x = sl.sx; hd.y = sl.sy;
+        hcM = Object.assign({}, hc, { motion: Object.assign(cad, { path: 'slide', angle: (sl.ang * 180) / Math.PI, fromFace: true, off: hc.offset, from: -sg * L0 / 2, travel: sg * L0 }) });
+      } else {
+        if (sg !== (faceDir === 'ccw' ? -1 : 1) || (slot.sub ? false : sg < 0)) { const raw = hd.rawTurn; hd.turn = sg < 0 ? (d) => -raw(d) : raw; }
+        if (hc.start != null && hc.start !== '' && +hc.start) hd.rot = (hd.rot || 0) + rad(+hc.start);
+      }
+      // a marker in place of the drawn hand: at the tip on a round face or a fan, on the slot on a slider
+      if (hc.marker && hc.marker !== 'hand' && MARKERS[hc.marker] && !hd.art) {
+        const onSlot = form === 'slider', at = onSlot ? 0 : Math.max(8, (hd.len || 60) - 6), size = (onSlot ? Math.max(3, s.slide.sw * 0.42) : Math.max(4.5, (hd.len || 60) * 0.12)) * (+hc.wid || 1);
+        hd.sp = markerSprite(hc.marker, at, size, hd.fin || handFin(pickF(hc))); hd.capR = 0; hd.marker = hc.marker;
+      }
+      applyMotion(hd, hcM, secT, design);
     });
     const list = handOrder(lay, design).filter((id) => all[id]).map((id) => all[id]);
     // each hand sits higher than the one below it, so shadows lengthen up the stack; the cap crowns the top hand of each arbor
@@ -3736,6 +3892,10 @@
         if (c.len != null && +c.len === 1) delete c.len;
         if (c.wid != null && +c.wid === 1) delete c.wid;
         if (c.shows !== 'gmt' || !Math.round(+c.offset || 0)) delete c.offset; else c.offset = Math.round(+c.offset);
+        // D43 P5d.2: what a hand overrides of its face; an unset field follows the face
+        if (c.dir !== 'cw' && c.dir !== 'ccw') delete c.dir;
+        ['start', 'span'].forEach((k) => { if (c[k] == null || c[k] === '' || !isFinite(+c[k])) delete c[k]; else c[k] = +c[k]; });
+        if (!c.marker || c.marker === 'hand' || !MARKERS[c.marker]) delete c.marker;
         // an art-backed hand keeps its reference plus the authored pivot, in source
         // pixels, so a re-render can rebuild the sprite without the file. The pivot is
         // allowed outside the ink (an arbour hidden under a subdial is a real case), so
@@ -3759,6 +3919,11 @@
         if (c.scale === 'none') ['tfont', 'torient', 'tdir', 'tweight', 'tsize', 'tstyle', 'tcolor'].forEach((k) => delete c[k]);
         if (c.color === 'match') delete c.color;
         if (!c.hstyle || c.hstyle === 'auto') delete c.hstyle;
+        // a face's form and its own geometry; a round face carries none of the others'
+        if (c.form !== 'fan' && c.form !== 'slider') delete c.form;
+        if (c.form !== 'fan') { delete c.fanStart; delete c.fanSpan; }
+        if (c.form !== 'slider') ['slideLen', 'slideAngle', 'slotW', 'slotStyle', 'slotFloor'].forEach((k) => delete c[k]);
+        else { if (!c.slotStyle || c.slotStyle === 'bevel') delete c.slotStyle; if (c.slotFloor !== 'movement') delete c.slotFloor; }
         if (!c.hfinish || c.hfinish === 'auto') delete c.hfinish;
         if (c.height != null && +c.height === 1) delete c.height;
         if (c.style !== 'carbon') delete c.weaveAngle; if (c.style !== 'carbon' && c.style !== 'forged') delete c.weaveScale;
@@ -3789,7 +3954,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

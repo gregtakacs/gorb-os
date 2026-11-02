@@ -54,7 +54,7 @@ const stepOf = (it) => it.stepNow()[0];
   // the selected complication's fields are grouped by part
   it.setState({ tab: 'comps', sel: sd.id, selKind: 'comp' });
   const heads = V().fields.filter((f) => f.isHead).map((f) => f.label);
-  ok(heads[0] === 'Placement' && heads.includes('Shape'), 'a complication’s fields are grouped: Placement, Shape, Paint', heads.join(','));
+  ok(heads[0] === 'Form' && heads[1] === 'Placement' && heads.includes('Shape'), 'a sub-dial\u2019s fields are grouped: its Form first, then Placement, Shape, Paint', heads.join(','));
   // the inspector names the selection, and Remove takes it off the dial
   ok(V().inspKind === 'Subdial' || /Sub/i.test(V().inspKind), 'the inspector names the kind of the selected part', V().inspKind + ' / ' + V().inspTitle);
   ok(V().hasDel && /subdial/i.test(V().delLabel), 'and offers to remove it', V().delLabel);

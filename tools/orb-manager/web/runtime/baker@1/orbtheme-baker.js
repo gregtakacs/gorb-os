@@ -3166,13 +3166,21 @@
     if (!(m >= 0 && m < MOTION_NAMES.length))
       throw new Error('a row moving as ' + JSON.stringify(motion) + ': the composer names ' +
         MOTION_NAMES.join(', ') + ' and this names none of them');
-    var span = d.span | 0, zero = d.zero | 0, vmax = d.vmax | 0;
-    var out = { span: span, zero: zero, vmin: 0, vmax: vmax, dx: 0, dy: 0, x: x | 0, y: y | 0,
+    // vmin is the source's first value (a date runs 1..32): the dial poses at
+    // (units - vmin) / (vmax - vmin), so dropping it here put every day 1/32 turn off
+    var span = d.span | 0, zero = d.zero | 0, vmax = d.vmax | 0, vmin = d.vmin | 0;
+    var out = { span: span, zero: zero, vmin: vmin, vmax: vmax, dx: 0, dy: 0, x: x | 0, y: y | 0,
                 end: m === MOTION_RETROGRADE ? END_FLYBACK
                    : Math.abs(span) === TURN_10 ? END_WRAP : END_HOLD,
                 jump: m === MOTION_INDEXED, slide: motionIsSlide(m) };
     if (out.slide) {
-      if (m === MOTION_SLIDE_X) { out.dx = span; out.x += zero; }
+      // D43 P5d.2: a slider face's track at any angle (degrees, 0 = rightward): the row
+      // already carries independent dx and dy, so the travel is just split along it
+      if (d.angle != null && isFinite(+d.angle)) {
+        var ga = (+d.angle * Math.PI) / 180, cx = Math.cos(ga), cy = Math.sin(ga);
+        out.dx = Math.round(span * cx); out.dy = Math.round(span * cy);
+        out.x += Math.round(zero * cx); out.y += Math.round(zero * cy);
+      } else if (m === MOTION_SLIDE_X) { out.dx = span; out.x += zero; }
       else { out.dy = span; out.y += zero; }
       out.span = 0; out.zero = 0; out.end = END_FLYBACK;
     }
@@ -4170,6 +4178,7 @@
       } else if (c.type === 'moon') src = 'moon_age';
       else if (c.type === 'subdial') {
         if (c.scale === 'none') return;                                  // no hand: plate art
+        if (c.form === 'fan' || c.form === 'slider') return;              // D43 P5d.2: its hands are pointer rows
         if (c.carrier === 'pointer' || pointerDefault3(c, comps)) return;   // D34: pointerPlan3 owns this row, not the bank
         src = (c.scale === undefined) ? 'second' : COMP3_SCALE_SRC[c.scale];
         if (!src) { refuses.push('the subdial \u201c' + id + '\u201d reads scale \u201c' + c.scale + '\u201d: the dial indexes plates by calendar value and none matches'); return; }
@@ -4214,6 +4223,7 @@
    * tile so the hosted tile sits inside it, and a pointer row carries nothing
    * to punch. The UI and the bake share this one predicate. */
   function pointerDefault3(c, comps) {
+    if (c.type === 'subdial' && (c.form === 'fan' || c.form === 'slider')) return true;   // a fan or a slider is always pointer-driven
     if (c.type !== 'subdial' || c.carrier != null) return false;
     if (!(c.scale === undefined || c.scale === 'seconds' || c.scale === 'hours')) return false;
     // a hand on the sub-dial is its pointer, not another indication (D43 P5c)

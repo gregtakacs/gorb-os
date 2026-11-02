@@ -644,6 +644,76 @@ it as the pointer.
 - In Chrome, real drag events at 1280×720 showed the gap inside a sub-dial, the red R3
   refusal under the dial, and the drop re-hosting the hour hand onto the seconds sub-dial.
 
+**As built (P5d.2, 2026-11-02).**
+
+*Faces.* A sub-dial has a `form`: `round`, `fan` or `slider`.
+- **Fan:** `fanStart` and `fanSpan`, its sign from `tdir`. It prints its scale along the
+  arc with the round faces' tables (`printTrack`): ticks by display style, and figures
+  inside the ticks, shrunk to the arc a crowded short fan gives each.
+- **Slider:** `slideLen` and `slideAngle`, where 0 is left→right and the Direction chips
+  give left→right, right→left, top→bottom and bottom→top. Its plate is a rounded bar along
+  the track, with the round faces' shadows, surface, wear and rim. A real `slot` hole is
+  cut along the track (`slotStyle` bevel, frame, lip or plain; `slotW`). It goes through
+  the plate onto the dial, or with `slotFloor: movement` through the dial too. Ticks and
+  figures run under the slot.
+- A fan or slider face is always pointer-driven: baker@1's `compPlan3` and
+  `pointerDefault3`.
+- The Drive chip and the open centre stay on round faces only.
+- A face's Form fields (form, direction, geometry, *Set from the art*) stand in a group of
+  their own, ahead of Placement.
+
+*Hands follow the face, and each field can be overridden.*
+- **Direction:** `dir`, else the face's `tdir`, else clockwise. A dial hand may run
+  anticlockwise.
+- **Start:** `start`, a round face's zero turn or a fan's start.
+- **Span:** `span`, a fan's sweep or a slider's travel.
+- The hand panel shows each field as "Follow the …" or the face's value as placeholder,
+  and blank re-links it.
+- On a fan or slider the hand's motion is made from the face (`fromFace`), keeping only
+  its cadence, steps and ease. The engine's motion model gained every measure
+  (`DRIVE_DOM`: 24-hour, GMT with its offset, day, date from 1, month) and an angled
+  slide path.
+- A hand that names its own retrograde or slide path (Flux) keeps it and its hand-painted
+  scale, marked in the panel as such. A new hand can only rotate or turn as a disc.
+- **Indicators** (`marker`): a dot, jewel, star or flare in place of the drawn hand. It
+  sits at the tip on a round face or a fan, and rides the slot on a slider. A hand added
+  on a slider starts as a dot.
+
+*Set from the art.* Two stage clicks set a face's fields or a hand's overrides:
+- a round face's zero and direction (the comp's `rot` and `tdir`);
+- a fan's start and sweep, going the way the face runs;
+- a slider's length and angle, with the plate moved so the clicked line is its slot.
+
+Escape cancels.
+
+*The bake.*
+- Dial hands set anticlockwise or re-zeroed give up their slot and ship as pointer rows
+  with a signed span.
+- A fan's hands ship as retrograde rows, and a slider's as slide rows along their angle.
+  The baker's `v6Drive` splits the travel into the row's `dx`/`dy`; the firmware's rows
+  have always carried both.
+- **Found and fixed:** `v6Drive` dropped a source's `vmin`. P5c's date pointer rows
+  (1..32) would have posed each day 1/32 turn off on the device.
+
+*Tests.*
+- New suite `headless-forms.test.js` (34 checks): the poses on fans and sliders, both
+  directions and the overrides, any measure, markers, canon, the baker's `vmin` and
+  angled slide, seats and pointer rows, the panels, and *Set from the art*.
+- The geometry gate holds across all 22 designs, and every suite is green.
+- Seen in Chrome:
+  - a 240° seconds fan;
+  - a framed date slider carrying a jewel;
+  - a small anticlockwise day fan with a flare marker.
+
+*Owed.*
+- The main dial's own direction: its chapter print lives in many print styles with no one
+  angle helper. A dial hand can run anticlockwise by its override, and a whole backwards
+  dial can be a round sub-dial set anticlockwise.
+- The bench (P5d.4): retrograde and angled-slide rows for calendar measures, and the
+  `vmin` fix, have not been seen on glass.
+- Flux still uses its own hand paths. Rebuilding it from fan and slider faces would change
+  its look, which is the owner's call.
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views
@@ -994,7 +1064,7 @@ long as an app in its library or on a known orb still names it.
 | **P5** ✔ | The build flow and layout (§4): step bar, Add catalogue with compatibility, properties grouped by D42 parts, diagnostics drawer, light moods | headless UI test walks Start → Render on a scratch build and on a preset; nothing removed from today's controls (a checklist of every current field and where it now lives) — **done 2026-11-02** (§4.1) |
 | **P5b** ✔ | The studio layout (§4.2): the editor fills the hub window as one three-pane studio — layers left on every step, the stage centre, the inspector right — in the hub's palette, with one title bar; Arrange folds into the layers panel; the hub page itself goes fluid | nothing removed (the P5 checklist, re-pointed at the new panes); the stage zoom stays inside its pane at every stop; no page scroll at 1280×720 and 1920×1080 (Chrome screenshots of both, inside the hub); `go test` and every app suite green — **built 2026-11-02** (§4.2); the owner's test on the hub is owed |
 | **P5c** ✔ | Hands are complications (§4.3): one Add catalogue, hands placed anywhere in any number, a selected hand's panel alone; the plate rows open Movement, and its backdrop and the plate art sit at the tab's foot | the presets render and bake pixel-identical in the new shape; ten hands on the dial within R6; every suite green — **built 2026-11-02** (§4.3 as built); the presets' hand geometry is identical across 22 designs; a bench bake of the new pointer sources and the owner's test are owed |
-| **P5d** ◐ | Faces, hands, wheels and cutouts (§4.4): face groups and a drag that shows where it lands, hands that inherit from their face, fan and slider sub-dials, wheels under cutouts | each slice keeps every preset rendering as before and every suite green; the bench bake of each new row kind — **P5d.1 built 2026-11-02** (§4.4 as built); P5d.2–P5d.4 to come |
+| **P5d** ◐ | Faces, hands, wheels and cutouts (§4.4): face groups and a drag that shows where it lands, hands that inherit from their face, fan and slider sub-dials, wheels under cutouts | each slice keeps every preset rendering as before and every suite green; the bench bake of each new row kind — **P5d.1 and P5d.2 built 2026-11-02** (§4.4 as built); P5d.3–P5d.4 to come |
 | **P6** | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here |
 | **P7** | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs |
 

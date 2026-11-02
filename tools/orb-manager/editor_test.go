@@ -222,7 +222,7 @@ func TestProductionHubDialsTheEditorDoorWithoutAStub(t *testing.T) {
 	})
 	orb := orbfake.New().WithCardApps(orbfake.CardApp{
 		Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes,
-		Installed: true, Enabled: true, Editor: region})
+		Installed: true, Editor: region})
 	s, ip, _, f := fakeOrbHubWith(t, orb)
 	rec := editorGet(t, s, "/editor/"+ip+"/clock/", true)
 	if rec.Code != http.StatusOK {
@@ -382,7 +382,7 @@ func TestEditorIsServedFromTheLibraryOnlyWhenTheVersionsAgree(t *testing.T) {
 		}
 		orb := orbfake.New().WithCardApps(orbfake.CardApp{
 			Stem: "sentinel", Slug: "sentinel", Title: "Sentinel",
-			Installed: true, Enabled: true, Version: dialStamp, Editor: region,
+			Installed: true, Version: dialStamp, Editor: region,
 		})
 		s, ip, _, f := fakeOrbHubWith(t, orb)
 		s.lib = &Library{AppsDir: dir}

@@ -401,7 +401,7 @@ def matte_plan(live, mode):
 # what those texels are worth, and the answer is "not zero".
 #
 # The cull is safe because nothing changes a layer's visibility at runtime: the
-# show flags come from clock_style.json at load and clock_view.c never writes
+# show flags come from clock_style.json at load and orb_stage.c never writes
 # one (checked: no write to .show outside the style parse).
 #
 # Worth the trouble: on the skeleton calendar kit, where the matte proof
@@ -684,7 +684,7 @@ def bake_tourbillon(blob, style, args):
     device rotates the frame it shows by the seconds angle; the diff rect is
     what makes that cheap: between swaps only those pixels can have changed,
     so the tick re-marks the rotated diff rect instead of the layer's full
-    swept box (see clock_view.c's mark_all_layers/tourbillon_advance)."""
+    swept box (see orb_stage.c's mark_all_layers/tourbillon_advance)."""
     import numpy as np
     hs = (style.get("hands", {}) or {}).get("second", {}) or {}
     px = int(hs.get("pivotX", SCREEN_W // 2)); py = int(hs.get("pivotY", SCREEN_H // 2))
@@ -2279,7 +2279,7 @@ def _bundle_clock_state(section, hdr, src_path):
         cls, slot = e["class"], e["slot"]
         if cls == ts.CLASS_AUX:
             # D34's honest asymmetry, said as itself. The DEVICE projects an AUX row
-            # into the clk_aux_t table clock_view.c draws; the compiled PAIR has no
+            # into the clk_aux_t table orb_stage.c draws; the compiled PAIR has no
             # such array to receive it, because the .h's aux table was FORMAT 2's and
             # §26 retired the pair that carried it. So this tool refuses a pointer the
             # device accepts — and says which half is short, rather than borrow the
@@ -2662,7 +2662,7 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
                        gif["frames"], ", ".join(str(d) for d in gif["delays"])))
     else:
         # Classic theme: tables unused (bg_mode 0, gif_frames 0) but emitted so
-        # clock_view.c's gif path always compiles, GIF bake or no GIF bake.
+        # orb_stage.c's gif path always compiles, GIF bake or no GIF bake.
         hdr.append("static const clk_bg_rect_t clk_bg_rects[1] = { { 0, 0, 0, 0, 0 } };\n\n")
         hdr.append("static const uint16_t clk_bg_rect_first[1] = { 0 };\n\n")
         hdr.append("static const uint16_t clk_gif_delays[1] = { 40 };\n\n")
@@ -2747,7 +2747,7 @@ def _finish(style, theme_name, bg, shadow_on, shadow_dx, shadow_dy,
             "tourbillon_fps": int(getattr(args, "tourbillon_fps", 15) or 15),
         }
         # Mirrors the generated header's tables EXACTLY, including the placeholder
-        # rows it emits for a classic (non-GIF) theme so clock_view.c's GIF path
+        # rows it emits for a classic (non-GIF) theme so orb_stage.c's GIF path
         # always compiles: one zero rect, one index, one 40 ms delay. Feeding the
         # device empty tables instead would make the two artefacts of this one bake
         # describe different themes.

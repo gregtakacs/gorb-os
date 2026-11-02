@@ -1,8 +1,8 @@
 /* main/gfx/orb_sched.c — the OS-owned frame scheduler and delta bank.
  *
- * Extracted from main/clock/clock_view.c in P1 with the code unchanged; see
+ * Extracted from main/stage/orb_stage.c in P1 with the code unchanged; see
  * orb_sched.h for what moved and where the seam is. gfx_parity_test.py lifts
- * every routine below out of both the pinned pre-extraction clock_view.c and
+ * every routine below out of both the pinned pre-extraction orb_stage.c and
  * this file and compares token streams, so "unchanged" is checked, not claimed.
  *
  * The one thing this TU used to be able to say about itself — that it keeps no
@@ -410,7 +410,7 @@ void orb_bg_classic_init(void)
  * the whole dial runs on the fastest shared beat.
  *
  * The beat used to be read only for a sweep, and a TICKING theme fell to 1000 ms
- * however fast it named. clock_view's hand_angles quantises the wall fraction
+ * however fast it named. the stage's hand_angles quantises the wall fraction
  * into tick_rate steps, so a 4/s dial woken once a second showed one of those
  * four steps a second — the Motion dropdown's tick rungs were inert on a dial
  * with no bank to drive the beat, which is every still dial (the Station report
@@ -821,7 +821,7 @@ void orb_sched_ink_px_add(uint32_t n)
 /* The commit hook's job array. Static rather than per-call stack: with the
  * table's ceiling at ORB_LAYER_MAX (16) it is ~1 KB of the LVGL task's stack
  * per flush, and that stack is not ours to spend — the same reasoning
- * clock_view.c's retired hook gave its own list. One caller (the flush hook
+ * orb_stage.c's retired hook gave its own list. One caller (the flush hook
  * below), on one task (the LVGL one), exactly as that retired hook ran. */
 static gfx_paint_ctx_t s_lay_jc[ORB_LAYER_JOB_MAX];
 
@@ -838,7 +838,7 @@ static gfx_paint_ctx_t s_lay_jc[ORB_LAYER_JOB_MAX];
  * draws nothing (orb_layers.c:320-323), which is what a dial with no art is
  * supposed to do. A tier-1 row's `art.off` indexes THAT, not the clock's blob:
  * the fold happens at the resolve step, into orb_asset_t.off — see the shipped
- * clock's build pass (clock_view.c's clock_layers_build) and the base
+ * clock's build pass (orb_stage.c's clock_layers_build) and the base
  * convention vectors in tools/host_orblayers_test.py section 14.
  *
  * The mark-set ownership that made Commits 2 and 3 land this pass in the tick

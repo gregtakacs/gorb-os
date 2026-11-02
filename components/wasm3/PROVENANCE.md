@@ -28,7 +28,22 @@ What stays: `m3_deterministic.c` compiles to nothing (`d_m3DeterministicProfile`
 but is kept so a future profile flip is a define, not a re-vendor.
 
 The remaining 13 `.c` files are the interpreter core and are byte-for-byte upstream at
-the pinned commit. Any edit to them (there are none) must be re-recorded here.
+the pinned commit, with one recorded addition below. Any edit to them must be
+re-recorded here.
+
+## Local additions
+
+- `m3_bind.c` + `wasm3.h`: `m3_FirstUnlinkedImport(IM3Module)` (plan §43, 2026-11-01).
+  The loader in `main/app/orb_app_wasm.c` refuses a module that imports a function the
+  OS does not bind; walking `M3Function` from `main` read a different layout (this
+  component's config flags are PRIVATE) and refused every module, so the walk lives
+  here, built with the flags that define the struct. Appended at the end of the file;
+  upstream code is untouched.
+- `m3_exec.h` `op_Loop`: one `m3_Yield()` per loop iteration (plan §43.4). Upstream
+  yields only on calls, so a guest spinning in a call-free loop never reached the
+  embedder; `orb_app_wasm.c` overrides the weak `m3_Yield` with a deadline check, so an
+  app that runs past its time budget traps (and C2's two strikes quarantine it) instead
+  of freezing the dial.
 
 ## Build flags (see CMakeLists.txt)
 

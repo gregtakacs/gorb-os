@@ -505,7 +505,6 @@ orb_app_t orb_app_usb_files_row = {
     .flash_slot = -1,          /* no card slot, and no card to put one on */
     .iface     = &s_usb_iface,
     .installed = true,
-    .enabled   = true,
 };
 
 #else  /* !CONFIG_ORB_USB_MSC ---------------------------------------------- */

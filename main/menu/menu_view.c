@@ -43,7 +43,7 @@
 #include "orb_net.h"
 #include "orb_sd.h"
 #include "orb_app.h"
-#include "orb_app_install.h"   /* APPS: the enable/uninstall doors (P5.3) */
+#include "orb_app_install.h"   /* APPS: the uninstall and fault-clear doors (P5.3) */
 #include "orb_app_scan.h"      /* D38: the APPS catalog walks the card too */
 #include "idle_dim.h"          /* DISPLAY submenu: the two runtime settings */
 #include "input_router.h"     /* exit -> input_router_menu_exit() */
@@ -83,7 +83,7 @@ typedef enum {
     PG_PERMS,         /* one row per installed app: what it may do    */
     PG_CAPS,          /* the selected app's owner caps, togglable */
     PG_APPS,          /* the catalog: every installed app, its state, its doors (B3/B4) */
-    PG_APPACT,        /* one app's own doors: activate / enable / uninstall */
+    PG_APPACT,        /* one app's own doors: show / retry / uninstall */
     PG_ABOUT,         /* inert identity list — no press does anything  */
     PG_SHARE,         /* D38: the USB share window's own card, forced over any page */
     PG_N
@@ -174,7 +174,7 @@ static void go_to(int to, int cur);
 static int  cap_pack(const orb_app_t *, int row);
 static int  door_pack(const orb_app_t *, int act);
 static void job_grant(void *arg);
-static void job_enable(void *arg);   static void job_uninstall(void *arg);
+static void job_clear(void *arg);    static void job_uninstall(void *arg);
 static void job_scan(void *arg);     static void job_install_card(void *arg);
 static void job_cardrm(void *arg);
 static int  page_rows(void);
@@ -202,7 +202,7 @@ static int app_rows(void)
 }
 
 /** The i-th app that declares options, or NULL. Resolved through the registry
- *  every time rather than cached: P4 enables and disables apps at runtime, and
+ *  every time rather than cached: apps install and uninstall at runtime, and
  *  a cached entry is a screen the owner can reach and find nothing on. */
 static const orb_app_t *app_row(int i)
 {
@@ -833,18 +833,15 @@ static void enter_to(void)
  *
  * The catalog is the registry's installed tier, the same set PERMISSIONS walks
  * (perm_rows/perm_row) and for the same reason: `orb_app_at()` hides the
- * shell's own entries and every installed-but-disabled app, and a page whose
- * job is the owner's doors cannot afford to hide the disabled ones — "turned
- * off" is exactly the row they come to turn back on.
+ * shell's own entries and every faulted app, and a page whose job is the
+ * owner's doors cannot afford to hide a faulted one — it is exactly the row
+ * they come to retry.
  *
- * The four states, restated 2026-10-24: the row says one of them rather than a
- * boolean: `on the dial` (the entry the glass is showing), `enabled`
- * (on the carousel, not showing), `off` (installed and walkable but switched
- * off), and `failed: <reason>` (C2's fault record, shown with its
- * reason verbatim — the orb_theme_scan rule that a row which cannot be used is
- * still a row that must be explained). The reason wins over the enable state
- * because a failed app that reads merely "off" tells the owner to go looking
- * for a switch.
+ * An app is installed or it is not (§43.3), so the row says one of three things:
+ * `on the dial` (the entry the glass is showing), `installed` (on the carousel,
+ * not showing), and `failed: <reason>` (C2's fault record, shown with its reason
+ * verbatim — the orb_theme_scan rule that a row which cannot be used is still a
+ * row that must be explained).
  *
  * `off` is the word now, and the word it replaced was a lie. This row read
  * `on card` since P5.3, naming the drop zone an app is copied FROM rather than
@@ -988,15 +985,16 @@ static int appact_id(int row)
         const orb_app_t *a = s_door_slot >= 0 ? orb_app_row((size_t)s_door_slot) : NULL;
         if (!a) return -1;
         /* Row 0 is the state's answer, rows 1 and 2 are the two removals every
-         * registry row owns. Only the FIRST row moves with the state: an app that
-         * is off or faulted cannot be "shown", and the one press that answers that
-         * row is the install, which carries the enable word and the fault clear.
+         * registry row owns. Only the FIRST row moves with the state: an installed
+         * app either runs (show it) or the OS stopped it after two faults (C2), and
+         * the press that answers that row is the fault clear — "retry". There is no
+         * off state (§43.3).
          * The removals stand whether or not the row runs — an owner who cannot use
          * an app is an owner who may want it gone. The card door rides the worker's
          * honesty, not a pre-check here: `g_scan_n == 0` at press time means the
          * walk had not landed on this page yet, and the door answers "the card held
          * no copy" rather than the page guessing (bench, orb-B 2026-10-24). */
-        ids[n++] = (a->enabled && !a->failed) ? ACT_SHOW : ACT_INSTALL;
+        ids[n++] = !a->failed ? ACT_SHOW : ACT_INSTALL;
         ids[n++] = ACT_UNINSTALL;
         ids[n++] = ACT_CARDRM;
     }
@@ -1085,7 +1083,7 @@ static void label_apps(int row, char *out, size_t outsz, bool *sel_hi)
     }
     const bool on_glass = app_on_glass(a);
     snprintf(out, outsz, "%s  %s", a->title ? a->title : a->slug,
-             on_glass ? "on the dial" : (a->enabled ? "enabled" : "off"));
+             on_glass ? "on the dial" : "installed");
 }
 
 static void act_apps(int row)
@@ -1133,9 +1131,9 @@ static void enter_apps(void)
 }
 
 /* The doors this subject answers, in the order appact_id() lays them out. D38
- * cut the enable switch: the hub has no toggle and the dial now matches it —
- * an app that is off or faulted gets an install row (the press that carries
- * the enable word and the fault clear), and every subject gets uninstall and
+ * cut the enable switch and §43.3 the state with it: an app is installed or
+ * not, a faulted one gets a retry row (C2's fault clear), and every subject
+ * gets uninstall and
  * remove-from-card. The row count and label are one function, so a page cannot
  * draw a door its press would refuse. */
 static void label_appact(int row, char *out, size_t outsz, bool *sel_hi)
@@ -1154,12 +1152,8 @@ static void label_appact(int row, char *out, size_t outsz, bool *sel_hi)
         return;
     }
     case ACT_INSTALL: {
-        /* The label follows the press. A card file installs; a faulted row retries
-         * (C2's fault clear rides this door); a row held off installs back onto the
-         * glass. The off case never says "enable": installed means enabled, so the
-         * dial offers no enable state and the word for the press that puts an app
-         * on the dial is the one the catalog already uses (bench, owner,
-         * 2026-10-29). */
+        /* The label follows the press: a card file installs; a faulted row retries
+         * (C2's fault clear). An app is installed or not — there is no third word. */
         const orb_app_t *a = s_doormode ? NULL : orb_app_row((size_t)s_door_slot);
         snprintf(out, outsz, (a && a->failed) ? "retry" : "install");
         return;
@@ -1195,7 +1189,7 @@ static const char *title_appact(void)
  * consent on either. */
 static const char *hint_appact(void) { return "rotate: choose   push: run   removals need two presses"; }
 
-/* slot in the high bits, the wanted enable state low. Same shape as cap_pack
+/* slot in the high bits, a one-bit action low. Same shape as cap_pack
  * for the same reason: this is the whole contract between a press and a write,
  * and the host suite builds packs against it directly. */
 static int door_pack(const orb_app_t *a, int on)
@@ -1263,14 +1257,13 @@ static void act_appact(int row)
         return;
     }
     case ACT_INSTALL:
-        /* Off-or-faulted registry row: the press is the enable door's ON, which
-         * is C2's fault clear too. Uninstalled card file: the press installs
-         * from the card and turns the row on, the hub's one-press shape. */
+        /* Faulted registry row: the press is C2's fault clear. Uninstalled card
+         * file: the press installs it from the card, the hub's one-press shape. */
         if (s_doormode) job_post(job_install_card, 0);
         else {
             const orb_app_t *a = orb_app_row((size_t)s_door_slot);
             if (!a) { go_to(PG_APPS, 0); repaint(); return; }
-            job_post(job_enable, door_pack(a, 1));
+            job_post(job_clear, door_pack(a, 1));
         }
         repaint();
         return;
@@ -1309,31 +1302,22 @@ static void act_appact(int row)
     }
 }
 
-static void job_enable(void *arg)
+static void job_clear(void *arg)
 {
     const int pack = *(const int *)arg;
-    const int slot = pack >> 2, on = pack & 1;
+    const int slot = pack >> 2;
     ui_t out; memset(&out, 0, sizeof out);
     const orb_app_t *a = orb_app_row((size_t)slot);
-    /* The row can go between the press and the worker: an uninstall from the
-     * browser, or a reboot that resolved the slot away, both leave the pack
-     * naming an index the registry no longer holds. The sentence names which
-     * door found nothing, so an owner reading the dial can tell a switch that
-     * never happened from a cap toggle that did. */
-    if (!a) { snprintf(out.status, sizeof out.status, "that switch found no app"); worker_publish(&out); return; }
+    /* The row can go between the press and the worker (an uninstall from the
+     * browser, a reboot that resolved the slot away); say so rather than guess. */
+    if (!a) { snprintf(out.status, sizeof out.status, "that press found no app"); worker_publish(&out); return; }
     /* The status line is 72 bytes and a whole title has to fit beside the
-     * sentence, so the door is asked for a line that fits rather than for
-     * everything it knows: .48 leaves room for the slug and the quotes, and
-     * every refusal it returns is complete well inside that. */
+     * sentence, so the door is asked for a line that fits. */
     char why[48] = "";
-    const esp_err_t e = orb_app_enable(a->slug, on != 0, why, sizeof why);
-    /* The refusal sentence is the door's own, verbatim. D38: this job now answers
-     * only the install row's press — turning an off-or-faulted row back on, which
-     * doubles as C2's fault clear — so the OK word says the hub's word, and the
-     * dial has no press that turns a row off any more. */
+    const esp_err_t e = orb_app_clear_faults(a->slug, why, sizeof why);
     snprintf(out.status, sizeof out.status, "\"%s\": %s",
              a->title ? a->title : a->slug,
-             e == ESP_OK ? (on ? "installed" : "off") : why);
+             e == ESP_OK ? "fault cleared - it runs after the reboot" : why);
     worker_publish(&out);
 }
 
@@ -1351,10 +1335,9 @@ static void job_scan(void *arg)
     worker_publish(&out);
 }
 
-/* Install a card file the dial does not run, then put the row on the carousel —
- * one press, the hub's shape: h_apps_install's own queue would split the copy
- * and the enable word across two witnesses the dial never reads, so the worker
- * runs the ladder synchronously, as every other dial door does. */
+/* Install a card file the dial does not run — one press, the hub's shape. The
+ * worker runs the ladder synchronously, as every other dial door does; an
+ * installed app is on the carousel (a code app after the install's own reboot). */
 static void job_install_card(void *arg)
 {
     (void)arg;
@@ -1368,13 +1351,7 @@ static void job_install_card(void *arg)
         worker_publish(&out);
         return;
     }
-    char why2[48] = "";
-    if (s_pend_slug[0] &&
-        orb_app_enable(s_pend_slug, true, why2, sizeof why2) != ESP_OK)
-        snprintf(out.status, sizeof out.status, "\"%.30s\": installed, but %.21s",
-                 appact_name(), why2);
-    else
-        snprintf(out.status, sizeof out.status, "\"%s\": installed", appact_name());
+    snprintf(out.status, sizeof out.status, "\"%s\": installed", appact_name());
     const int n = orb_app_scan(s_card_ent, ORB_APP_SCAN_MAX);   /* the tier moved */
     s_card_n = n < 0 ? 0 : n;
     worker_publish(&out);
@@ -1642,7 +1619,7 @@ static void job_post(orb_job_fn fn, int idx)
  * The fold belongs HERE, at the last point that is still the dial's own
  * decision, and not in the strings. Two reasons, both load-bearing:
  *   - The switch/uninstall doors print orb_app_install()'s refusal sentence
- *     verbatim by rule (see job_enable's note), and those sentences carry em
+ *     verbatim by rule (see job_clear), and those sentences carry em
  *     dashes like every other string in this repo, because the writing style
  *     wants them. The same words are pinned against tools/orbapp.py and against
  *     tools/orb-manager's fake device, and they also print to the browser,

@@ -2,7 +2,7 @@
  * that replaces lv_draw_sw_transform() on the L4 path, the swept-box geometry,
  * the per-row mark set, and the commit band that restores, paints and DMA-gates.
  *
- * Extracted from main/clock/clock_view.c in P1 with the maths unchanged: the
+ * Extracted from main/stage/orb_stage.c in P1 with the maths unchanged: the
  * renames and the row-state consolidation are the only diff, so the shipped dial
  * composites the same bytes it did before the move.
  *

@@ -31,7 +31,8 @@
 #include <string.h>
 
 #include "orb_svc.h"   /* ORB_CFG_QUOTA_BYTES, ORB_SET_STRING, orb_setting_desc_t */
-#include "orb_app_wasm.h"  /* P7.4: orb_wasm_loaded/_load/_bind_app for the load rung */
+#include "orb_app_wasm.h"
+#include "orb_app_net.h"   /* orb_app_cred_forget: uninstall erases the app's secrets (§43) */  /* P7.4: orb_wasm_loaded/_load/_bind_app for the load rung */
 #include "input_router.h"  /* D38: input_router_request — the task-safe home switch */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -235,7 +236,7 @@ static esp_err_t ensure_chunk(void)
 
 /* The apps partition found by label — the sibling of art_bank_partition(), but
  * looked up here because this is the only layer that writes the label in
- * partitions.csv (offset 0xD80000 size 0x280000). NULL means a board whose
+ * partitions.csv (offset 0xF30000 size 0xD0000, §43). NULL means a board whose
  * partition table predates P4: the honest answer is NOT_FOUND, not a crash. */
 static const esp_partition_t *apps_partition(void)
 {
@@ -645,6 +646,8 @@ static esp_err_t write_slot_header(const esp_partition_t *p, int slot,
  * The PSRAM scratch note below belongs to orb_jobs's 4096 B worker and the main
  * task's 3584 B boot stack alike: it is why the two tables never sit in a frame
  * of either caller, and the ladder keeps that rule for both sources. */
+static bool s_installed_code;            /* the last install carried a wasm module */
+
 static esp_err_t install_ladder(const esp_partition_t *p, const appsrc_t *src,
                                 const orbapp_hdr_t *h, const uint32_t *raw,
                                 const char *stem, char *why, size_t whysz)
@@ -704,9 +707,9 @@ static esp_err_t install_ladder(const esp_partition_t *p, const appsrc_t *src,
     }
 
     /* P4a fresh-install wipe: when the chosen slot is not the slug's own, any
-     * grant revoke, fault count or enable word it carries belongs to a former
+     * grant revoke or fault count it carries belongs to a former
      * occupant — an inherited revoke denies an innocent app, an inherited
-     * fault count fails one that never crashed, an inherited enable makes the
+     * fault count fails one that never crashed, and inherited settings make the
      * confirm's promise lie. An upgrade (same slug, same slot) keeps them all:
      * re-flashing an app does not un-ask its owner's decisions (D19). Nothing
      * has erased yet, so a refusal after this point still costs no slot — it
@@ -748,11 +751,6 @@ static esp_err_t install_ladder(const esp_partition_t *p, const appsrc_t *src,
     row.art_offset = 0;
     row.art_bytes  = 0;               /* D21: the container carries no art */
     row.art_slot   = -1;
-    /* Owner ruling, bench 2026-10-29: installed IS enabled. The row lands switched on
-     * here rather than waiting for apply_enable, which early-returns as soon as the card
-     * holds no readable file (a slot whose card copy was removed has nobody to ask), and
-     * only an explicit stored 0 from the recovery door walks it back off. */
-    row.enabled    = true;
     /* D37: the same six words the duplicate policy above compares, off the same header
      * it was parsed from — so a row's identity is what its flash says, and an install
      * cannot be made to look current by a caller that believed it was. */
@@ -774,6 +772,11 @@ static esp_err_t install_ladder(const esp_partition_t *p, const appsrc_t *src,
 
     ESP_LOGI(TAG, "installed \"%s\" (%s) into app slot %d in %lld ms",
              h->title, stem ? stem : h->slug, v.slot, (long long)((esp_timer_get_time() - t0) / 1000));
+    /* §43: a code app's module is read off its slot by the boot rung (apply_code) or
+     * nothing else, and this row arrives installed mid-boot, so neither ran for it;
+     * the reboot D11 says an install ends in is what puts the new module on the dial,
+     * and it is also what re-derives the broker's grant word from the new header. */
+    if (h->code_size) s_installed_code = true;
 
 
 out:
@@ -841,8 +844,10 @@ static void install_job(void *arg)
 {
     const install_req_t *r = arg;
     char why[128] = "";
+    s_installed_code = false;
     const esp_err_t e = orb_app_install(r->stem, why, sizeof why);
     try_note(r->stem, (e == ESP_OK) ? NULL : (why[0] ? why : "the install failed"));
+    if (e == ESP_OK && s_installed_code) (void)orb_jobs_reboot_soon("a code app was installed");
 }
 
 /* Queue an install onto the worker. The name is validated here, on the caller's
@@ -959,14 +964,6 @@ int orb_app_install_resolve_boot(void)
         row.art_offset = 0;
         row.art_bytes  = 0;        /* D21: the container carries no art */
         row.art_slot   = -1;
-        /* Owner ruling, bench 2026-10-29: installed IS enabled, and a board that boots
-         * straight off its card is the case that has to honour it. apply_enable runs one
-         * rung later and is the only thing that could have carried this bit, but it
-         * early-returns when the card reports nothing — and a card-restored row on a
-         * board whose enable words were just wiped lands there with no word to read.
-         * Before this line the row's own default came from memset(0), so a fresh flash
-         * restored the clock INSTALLED AND OFF and the dial showed no face. */
-        row.enabled    = true;
         /* D37: read back off the slot header this rung already checksummed, so the
          * identity the listing reports is the one the flash carries even after a
          * half-completed install or a card swapped between boots — the case where a
@@ -999,34 +996,15 @@ int orb_app_install_resolve_boot(void)
 }
 
 /* ============================================================================
- *  P4a — the owner's two doors: enable and uninstall (plan §8 P4, B4).
+ *  P4a — the owner's doors: uninstall and the fault clear (plan §8 P4, B4).
+ *  There is no enable door: an app is installed or it is not (§43.3).
  * =========================================================================== */
 
-/* The boot ladder's second step (after orb_svc_init, before orb_app_init_all):
- * an installed app walks only what its stored word says it may. resolve_boot
- * could not read these words — it runs before the NVS partition is initialised
- * and its contract is partition-reads-only — so the enable pass is its own rung.
- * Under the installed-IS-enabled ruling the rung carries BOTH arms: an absent
- * word leaves card_fill's enabled standing, and only an explicit stored 0 walks
- * the row off — the recovery door's durable off-record, nothing else. */
-void orb_app_install_apply_enable(void)
-{
-    if (!orb_app_card_count()) return;                /* nothing installed: nothing to ask */
-    for (size_t i = ORB_APP_BASE; i < orb_app_rows(); i++) {
-        const orb_app_t *row = orb_app_row(i);
-        if (!row || !row->installed) continue;        /* positional span: holes are free slots */
-        const bool on = orb_svc_enabled(ORB_APP_BASE + row->flash_slot);
-        if (row->enabled == on) continue;             /* the default already agrees with the word */
-        if (orb_app_set_enabled(row, on) == ESP_OK)
-            ESP_LOGI(TAG, "%s \"%s\" from its stored word",
-                     on ? "enabled" : "held off", row->slug);
-    }
-}
 
 /* ---- P7.4: the code tier's load rung (plan §8 P7, D20/D27) -----------------
  *
- * The third boot rung, after the enable words land and before init_all builds
- * screens: every enabled WASM-kind row gets its module read back from its slot
+ * The boot rung after the broker's words load and before init_all builds
+ * screens: every installed WASM-kind row gets its module read back from its slot
  * and handed to the engine. It runs HERE, not inside the wasm module, because
  * only this file knows the slot layout (D9's geometry) — the shim takes bytes,
  * never partition offsets, exactly as it takes settings the caller unpacked.
@@ -1095,7 +1073,7 @@ void orb_app_install_apply_code(void)
     if (!p) return;                                    /* no partition: no code apps */
     for (size_t i = ORB_APP_BASE; i < orb_app_rows(); i++) {
         const orb_app_t *row = orb_app_row(i);
-        if (!row || !row->installed || !row->enabled || row->failed) continue;
+        if (!row || !row->installed || row->failed) continue;
         if (row->behaviour_kind != ORB_BEHAVIOUR_WASM) continue;
         /* C2 rows stay cold: init_all runs next and quarantines them, and a
          * quarantined app must not cost its memory while it is quarantined. */
@@ -1103,7 +1081,7 @@ void orb_app_install_apply_code(void)
         char why[128] = "";
         if (wasm_row_load(p, (orb_app_t *)row, why, sizeof why) != ESP_OK)
             ESP_LOGW(TAG, "code app \"%s\" refused at load: %s", row->slug, why);
-            /* No enable rollback: init_all calls the module's init, gets FAIL
+            /* No rollback: init_all calls the module's init, gets FAIL
              * for the row that never loaded, and drops it from the carousel —
              * the same refusal path every other app's broken init already walks,
              * so one broken module cannot cost the dial anything but its slot. */
@@ -1129,7 +1107,7 @@ static const orb_app_t *door_open(const char *slug, char *why, size_t whysz,
         return NULL;
     }
     /* The gate refuses a door asked for while the card is committed elsewhere.
-     * A door already running on the worker — the glass's own enable/uninstall
+     * A door already running on the worker — the glass's own uninstall
      * press, posted as this job — meets only its own busy flag, so the gate
      * must not refuse it: that deadlock refused every switch press on the
      * dial. The upload window is a separate, non-worker thing and still refuses. */
@@ -1147,7 +1125,7 @@ static const orb_app_t *door_open(const char *slug, char *why, size_t whysz,
     }
     if (!orb_app_is_card(row)) {
         *err = door_refuse(ESP_ERR_NOT_SUPPORTED,
-                           "the shell menu is part of the dial — it cannot be turned off",
+                           "the shell menu is part of the dial — it cannot be uninstalled",
                            why, whysz);
         return NULL;
     }
@@ -1155,78 +1133,10 @@ static const orb_app_t *door_open(const char *slug, char *why, size_t whysz,
 }
 
 
-esp_err_t orb_app_enable(const char *slug, bool on, char *why, size_t whysz)
-{
-    if (why && whysz) why[0] = '\0';
-    esp_err_t err = ESP_OK;
-    const orb_app_t *row = door_open(slug, why, whysz, &err);
-    if (!row) return err;
-
-    if (!on && (orb_app_current() == row || row->active))
-        return door_refuse(ESP_ERR_INVALID_STATE,
-                           "that app is on the dial — carousel away from it first",
-                           why, whysz);
-
-    if (on) {
-        if (!row->iface)
-            return door_refuse(ESP_ERR_INVALID_STATE,
-                               "no firmware module implements this app's behaviour — "
-                               "it cannot be shown", why, whysz);
-        if (row->failed) {
-            /* The owner pressing ON IS the revive gesture (C2): clear the
-             * record first, and say so if NVS refuses — a failed app turned
-             * on with its counts still standing would fail the boot it cannot
-             * win. This is clear_faults' first device caller. */
-            if (orb_svc_clear_faults((orb_app_t *)row) != ESP_OK)
-                return door_refuse(ESP_FAIL, "the fault record would not clear — "
-                                             "the app stays failed", why, whysz);
-            ((orb_app_t *)row)->failed = false;
-            ((orb_app_t *)row)->fault_count = 0;
-        }
-        /* P7.4: a code app turns on only if its module reads back and the engine
-         * takes it NOW — the door promises a working app, not one that waits for
-         * a reboot to find out it rotted. The guard is !enabled, not !loaded, on
-         * purpose: a row already on means its own module is already resident (or
-         * this boot refused it at apply_code and failed the row), while a row off
-         * may face engine state left by a PREVIOUS occupant of the slot — an app
-         * uninstalled since the last reboot. Released before the load, and safe
-         * to release from here: an off row is not walkable, so no LVGL-task hook
-         * can be inside the slot it names. Loading itself is also race-free off
-         * the LVGL task for the same reason — the row joins the walkable set only
-         * when the word below lands. */
-        if (row->behaviour_kind == ORB_BEHAVIOUR_WASM && !row->enabled) {
-            orb_wasm_unload(row->flash_slot);
-            const esp_partition_t *cp = apps_partition();
-            char lw[128] = "";
-            if (!cp || wasm_row_load(cp, (orb_app_t *)row, lw, sizeof lw) != ESP_OK)
-                return door_refuse(ESP_FAIL, lw[0] ? lw
-                                 : "no apps partition to read the module from",
-                                   why, whysz);
-        }
-    }
-
-    /* Word first, RAM second: a crash between the two leaves the intent on
-     * disk and next boot applies it (apply_enable). The reverse order loses
-     * the owner's decision with nothing to show for it. */
-    const int slot = orb_app_index_of(row);
-    const esp_err_t e = orb_svc_set_enabled(slot, on);
-    if (e != ESP_OK)
-        return door_refuse(e, "the owner ledger refused it — nothing changed",
-                           why, whysz);
-    orb_app_set_enabled(row, on);
-    ESP_LOGI(TAG, "%s \"%s\"", on ? "enabled" : "disabled", row->slug);
-    return ESP_OK;
-}
-
-/* Third owner door: clear one app's fault record — compiled tier included.
- *
- * This exists because the ON gesture above cannot reach a built-in app.
- * orb_app_enable revives a failed app through clear_faults only on the CARD
- * path: door_open refuses a compiled row at the is_card gate before the revive
- * branch runs, and a two-strike C2 quarantine also leaves that row installed=
- * false (init_all skips it), so the enable door's NOT_FOUND gate would refuse it
- * too. A dial whose menu panicked at boot — the failure this hardening closes —
- * therefore had one way back: RESET ALL, which also wipes the owner's WiFi.
+/* The other owner door: clear one app's fault record (C2's quarantine) — the one
+ * way an installed app the OS stopped running comes back, card or compiled tier.
+ * A dial whose menu panicked at boot had, before this door, one way back: RESET
+ * ALL, which also wipes the owner's WiFi.
  *
  * This door clears only the fault record. It skips both door_open gates on
  * purpose: the app is a built-in (not a card), and a quarantine is exactly the
@@ -1332,8 +1242,11 @@ esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz)
      * runs on the httpd task while the LVGL task may be inside the module's
      * service hook, and a slot_release under it is the race every rule here
      * exists to avoid. The row is gone from the registry, so nothing reaches
-     * the slot again; the state goes at the next reboot, or at the enable door
+     * the slot again; the state goes at the next reboot, or at the install
      * of whatever app takes this slot next, which releases before loading. */
+    /* §43: the app's secrets are owner words too — an API key must not outlive the
+     * app it was entered for. Erased while the row still names what it declared. */
+    orb_app_cred_forget(orb_app_find_slug(slug));
     if (orb_svc_forget_row(slot) != ESP_OK)
         ESP_LOGW(TAG, "uninstall \"%s\": some owner words could not be erased — "
                       "reinstalling will wipe them again", slug);

@@ -1,0 +1,257 @@
+/**
+ * orb.h — the whole surface a gorb-os app may call (docs/app-platform-plan.md D15,
+ * D20; the ABI is §43 of that file).
+ *
+ * An app is one wasm32 module carried in its .orbapp's code region. It links against
+ * NOTHING but this header and apps/sdk/orb_rt.c: every OS service arrives as an import
+ * from module "orb", bound by main/app/orb_app_wasm.c to the broker table, and every
+ * import is gated by the caps the manifest declared — a call the owner did not grant
+ * answers a refusal, exactly as it would for any other app. There is no libc, no LVGL,
+ * no pointer into the OS: strings cross as NUL-terminated pointers into the app's own
+ * linear memory, and the OS copies them.
+ *
+ * The OS calls the app back through the exports named under "Entry points" below.
+ * Every one is optional except orb_init. They all run on the dial's one UI task, so an
+ * entry point that loops is a frozen dial: do bounded work and return.
+ */
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include <math.h>        /* apps/sdk/libc: the C an app may use */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define ORB_IMPORT(name) __attribute__((import_module("orb"), import_name(name)))
+#define ORB_EXPORT(name) __attribute__((export_name(name)))
+
+/* esp_err_t values the imports answer with (the OS's own numbers). */
+#define ORB_OK              0
+#define ORB_FAIL           -1
+#define ORB_ERR_NO_MEM      0x101
+#define ORB_ERR_INVALID_ARG 0x102
+#define ORB_ERR_INVALID_STATE 0x103
+#define ORB_ERR_INVALID_SIZE 0x104
+#define ORB_ERR_NOT_FOUND   0x105
+#define ORB_ERR_NOT_SUPPORTED 0x106
+#define ORB_ERR_NOT_ALLOWED 0x10A
+
+#define ORB_SCREEN_W 466
+#define ORB_SCREEN_H 466
+
+/* ---- time (free) -------------------------------------------------------------- */
+
+/** Wall time: whole seconds into *sec, the fraction in nanoseconds into *frac_ns.
+ *  Answers 1 when the clock has synced at least once, 0 while it is still a guess. */
+ORB_IMPORT("now")        int32_t orb_now(int64_t *sec, int32_t *frac_ns);
+/** Monotonic time since boot. */
+ORB_IMPORT("uptime_ms")  uint32_t orb_uptime_ms(void);
+ORB_IMPORT("uptime_us")  int64_t  orb_uptime_us(void);
+
+/** Local broken-down time for `t` in the owner's zone. */
+typedef struct {
+    int32_t sec, min, hour, mday, mon, year, wday, yday, isdst;
+} orb_tm_t;
+ORB_IMPORT("localtime")  int32_t orb_localtime(int64_t t, orb_tm_t *out);
+/** The zone's UTC offset at `t`, in minutes. */
+ORB_IMPORT("tz_offset")  int32_t orb_tz_offset(int64_t t);
+
+/* ---- logging (free) ----------------------------------------------------------- */
+
+/** One line on the console, prefixed with the app's slug. */
+ORB_IMPORT("log")        void orb_log(const char *line);
+
+/* ---- settings (free: only the settings the manifest declared) ----------------- */
+
+ORB_IMPORT("cfg_get")     int32_t orb_cfg_get(const char *id, int32_t *out);
+ORB_IMPORT("cfg_set")     int32_t orb_cfg_set(const char *id, int32_t v);
+ORB_IMPORT("cfg_get_str") int32_t orb_cfg_get_str(const char *id, char *buf, uint32_t cap);
+ORB_IMPORT("cfg_set_str") int32_t orb_cfg_set_str(const char *id, const char *v);
+/** Moves every time any of this app's settings change, from the dial or the LAN. */
+ORB_IMPORT("cfg_gen")     uint32_t orb_cfg_gen(void);
+
+/* ---- the beat (free; the manifest's period_ms is the floor) ------------------- */
+
+/** Ask for orb_tick every `period_ms` while the app is on the glass; 0 stops it. */
+ORB_IMPORT("set_beat")   int32_t orb_set_beat(uint32_t period_ms);
+/** Ask the OS to keep the dial's frame rate up for `ms` (an animation in flight). */
+ORB_IMPORT("burst")      void orb_burst(uint32_t ms);
+
+/* ---- widgets (free) ----------------------------------------------------------- *
+ * Each app owns one full-screen page. Objects are handles > 0; parent 0 is the page.
+ * A refused call answers 0 (create) or does nothing (set). */
+
+enum { ORB_UI_BOX = 0, ORB_UI_LABEL = 1 };
+
+/* Alignment, numbered as the OS's widget library numbers them. */
+enum {
+    ORB_AL_TOP_LEFT = 1, ORB_AL_TOP_MID, ORB_AL_TOP_RIGHT,
+    ORB_AL_BOTTOM_LEFT, ORB_AL_BOTTOM_MID, ORB_AL_BOTTOM_RIGHT,
+    ORB_AL_LEFT_MID, ORB_AL_RIGHT_MID, ORB_AL_CENTER
+};
+
+/* Properties for orb_ui_set. Colours are 0xRRGGBB. */
+enum {
+    ORB_P_X = 0, ORB_P_Y, ORB_P_W, ORB_P_H,
+    ORB_P_BG,             /* background colour (also makes the background opaque) */
+    ORB_P_BG_OPA,         /* 0..255 */
+    ORB_P_RADIUS,         /* px; ORB_RADIUS_CIRCLE for a disc */
+    ORB_P_BORDER_W, ORB_P_BORDER_COLOR,
+    ORB_P_PAD,
+    ORB_P_TEXT_COLOR,
+    ORB_P_FONT,           /* ORB_FONT_* */
+    ORB_P_TEXT_ALIGN,     /* 0 left, 1 centre, 2 right */
+    ORB_P_HIDDEN,         /* 0/1 */
+};
+#define ORB_RADIUS_CIRCLE 0x7FFF
+
+enum { ORB_FONT_14 = 0, ORB_FONT_16 = 1, ORB_FONT_48 = 2 };
+
+ORB_IMPORT("ui_create")  int32_t orb_ui_create(int32_t kind, int32_t parent);
+ORB_IMPORT("ui_set")     void    orb_ui_set(int32_t h, int32_t prop, int32_t v);
+ORB_IMPORT("ui_text")    void    orb_ui_text(int32_t h, const char *s);
+ORB_IMPORT("ui_align")   void    orb_ui_align(int32_t h, int32_t align, int32_t x, int32_t y);
+/** Repaint the whole page on the next frame. */
+ORB_IMPORT("ui_refresh") void    orb_ui_refresh(void);
+
+/* ---- canvas (free): an OS-owned RGB565 surface with OS-drawn primitives -------- *
+ * The pixel loops are the OS's (an interpreted pixel is a slow pixel); the app says
+ * what to draw. Coordinates are canvas-local. */
+
+ORB_IMPORT("cv_create")  int32_t orb_cv_create(int32_t parent, int32_t w, int32_t h);
+ORB_IMPORT("cv_fill")    void orb_cv_fill(int32_t h, uint32_t rgb);
+ORB_IMPORT("cv_pixel")   void orb_cv_pixel(int32_t h, int32_t x, int32_t y, uint32_t rgb);
+ORB_IMPORT("cv_ring")    void orb_cv_ring(int32_t h, int32_t cx, int32_t cy, int32_t r, uint32_t rgb);
+ORB_IMPORT("cv_disc")    void orb_cv_disc(int32_t h, int32_t cx, int32_t cy, int32_t r, uint32_t rgb);
+ORB_IMPORT("cv_line")    void orb_cv_line(int32_t h, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                                          uint32_t rgb);
+ORB_IMPORT("cv_text")    void orb_cv_text(int32_t h, int32_t x, int32_t y, int32_t w, int32_t font,
+                                          uint32_t rgb, const char *s);
+/** Show what was drawn since the last flush. */
+ORB_IMPORT("cv_flush")   void orb_cv_flush(int32_t h);
+
+/** Tell the OS the app left (or entered) its armed state on its own — a third push
+ *  that hands the knob back, say. The router reads it on its next poll. */
+ORB_IMPORT("armed")      void orb_armed(int32_t armed);
+
+/* ---- option pages (free) ------------------------------------------------------- *
+ * The dial's menu draws an app's options; the app answers orb_opt_label and
+ * orb_opt_value by calling orb_reply with the text, during that call. */
+
+ORB_IMPORT("reply")      void orb_reply(const char *s);
+enum { ORB_OPT_ROW = 0, ORB_OPT_GROUP, ORB_OPT_ITEM };
+
+/* ---- sound (cap "sound") ------------------------------------------------------- */
+
+#define ORB_SOUND_LOOP   0x01u
+#define ORB_SOUND_SECOND 0x02u
+/** Play one of this app's own theme sounds by slot. Answers a handle > 0, or a
+ *  negative error (not granted, slot empty, quiet hours). */
+ORB_IMPORT("sound_play")   int32_t orb_sound_play(uint32_t slot, uint32_t flags, uint32_t delay_ms);
+ORB_IMPORT("sound_stop")   void    orb_sound_stop(int32_t handle);
+ORB_IMPORT("sound_active") int32_t orb_sound_active(int32_t handle);
+
+/* ---- location (cap "location") ------------------------------------------------- */
+
+typedef struct {
+    int32_t  lat_e6, lon_e6;
+    uint32_t gen;            /* moves on every change: re-read when it does */
+    char     place[40];
+} orb_home_t;
+ORB_IMPORT("home")       int32_t orb_home(orb_home_t *out);
+ORB_IMPORT("home_gen")   uint32_t orb_home_gen(void);
+
+/* ---- power (cap "power") ------------------------------------------------------- */
+
+ORB_IMPORT("power_request") int32_t orb_power_request(uint32_t timeout_s, int32_t hold);
+
+/* ---- network (cap "net") ------------------------------------------------------- *
+ * The OS's HTTP and HTTPS client (D46): one request at a time per app, run off the UI
+ * task behind the network gate. The body (any status's) lands in an OS buffer the app
+ * reads in pieces — or tokenizes in place with orb_json_begin(NULL, 0). */
+
+enum { ORB_GET = 0, ORB_POST, ORB_PUT, ORB_DELETE, ORB_HEAD };
+enum { ORB_NET_IDLE = 0, ORB_NET_BUSY = 1, ORB_NET_DONE = 2, ORB_NET_FAILED = 3 };
+typedef struct {
+    int32_t  state;          /* ORB_NET_* */
+    int32_t  status;         /* HTTP status, 0 on transport failure */
+    uint32_t len;            /* body bytes held */
+    uint32_t retry_after_s;  /* the response's Retry-After, 0 = none */
+    uint32_t total_ms;
+    int32_t  err;            /* the transport's error, ORB_OK when a status arrived */
+} orb_net_info_t;
+
+/** Start a request to a full http:// or https:// URL. `headers` is "Name: value" lines
+ *  separated by \n (NULL for none; up to 255 B); `body` up to 16 KB (NULL for none).
+ *  `cred` names one of the app's declared secret settings for the OS to attach (NULL
+ *  for none): the app never sees its value, and the OS refuses the request unless the
+ *  URL is https to the one host the manifest declared for it. Refused while a request
+ *  is in flight. */
+ORB_IMPORT("net_request") int32_t orb_net_request(uint32_t method, const char *url,
+                                                  const char *headers, const void *body,
+                                                  uint32_t body_len, const char *cred);
+ORB_IMPORT("net_info")    int32_t orb_net_info(orb_net_info_t *out);
+ORB_IMPORT("net_read")    int32_t orb_net_read(uint32_t off, void *buf, uint32_t cap);
+/** One response header's value; answers its full length, or -1 when absent. */
+ORB_IMPORT("net_header")  int32_t orb_net_header(const char *name, char *buf, uint32_t cap);
+ORB_IMPORT("net_free")    void    orb_net_free(void);
+/** 1 when the owner has set the app's secret setting `id`. */
+ORB_IMPORT("net_cred")    int32_t orb_net_cred(const char *id);
+
+static inline int32_t orb_net_get(const char *url, const char *cred)
+{
+    return orb_net_request(ORB_GET, url, NULL, NULL, 0, cred);
+}
+
+/* ---- JSON (free): the OS's streaming tokenizer (D46) ----------------------------- *
+ * Begin over the landed network body (buf NULL) or a buffer of the app's own (copied,
+ * up to 16 KB); each orb_json_next answers one event with the member key it sits
+ * under ("" inside an array), its depth and its value. orb_json_skip jumps past the
+ * container the last OBJ/ARR event opened, natively. */
+
+enum {
+    ORB_JSON_END = 0, ORB_JSON_OBJ, ORB_JSON_OBJ_END, ORB_JSON_ARR, ORB_JSON_ARR_END,
+    ORB_JSON_STR, ORB_JSON_NUM, ORB_JSON_TRUE, ORB_JSON_FALSE, ORB_JSON_NULL,
+    ORB_JSON_ERROR = -1
+};
+typedef struct {
+    int32_t type, depth;
+    double  num;
+    uint8_t key_trunc, str_trunc;
+    char    key[32];
+    char    str[96];
+} orb_json_tok_t;
+_Static_assert(sizeof(orb_json_tok_t) == 152, "the OS copies this token verbatim");
+
+ORB_IMPORT("json_begin") int32_t orb_json_begin(const void *buf, uint32_t len);
+ORB_IMPORT("json_next")  int32_t orb_json_next(orb_json_tok_t *t);
+ORB_IMPORT("json_skip")  int32_t orb_json_skip(void);
+
+/* ---- logging helper (apps/sdk/orb_rt.c) ------------------------------------- */
+
+/** printf-style orb_log through a 160-byte line. */
+void orb_logf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+/* ---- entry points the OS calls (all optional except orb_init) ------------------ *
+ *
+ *   int32_t orb_init(void)              build the page; nonzero refuses the app
+ *   void    orb_activate(void)          on the glass (after a switch to it)
+ *   void    orb_suspend(void)           off the glass
+ *   void    orb_resume(void)            back on the glass without a rebuild
+ *   void    orb_show(void)              the page was just loaded: re-push state
+ *   void    orb_tick(uint32_t now_ms)   the beat, while on the glass
+ *   void    orb_service(void)           every service pass, on the glass or not
+ *   void    orb_input(int32_t delta, int32_t pressed)   the knob, while armed
+ *   int32_t orb_set_armed(int32_t armed) a press arms, a hold disarms; answer the
+ *                                       armed state the app actually took
+ *   int32_t orb_opt_count(void)         option rows for the menu's page
+ *   int32_t orb_opt_kind(int32_t i)     ORB_OPT_*
+ *   void    orb_opt_label(int32_t i)    answer with orb_reply()
+ *   void    orb_opt_value(int32_t i)    answer with orb_reply()
+ *   void    orb_opt_inc(int32_t i, int32_t steps)
+ *   void    orb_opt_sel(int32_t i)
+ *   void    orb_opt_arm(int32_t armed)
+ */

@@ -67,9 +67,6 @@ type device struct {
 	TZOffset int
 	// Home is the OS home location (/api/v1/home, orb_home.c). Zero value = unset.
 	Home Home
-	// FeedKey mirrors the orb's adsb.lol key record (orb_flights.h); the
-	// double, like the orb, never answers the key itself.
-	FeedKey, FeedKeyHeader string
 	// Name is the device's own, and the DEVICE is the authority for it — the
 	// hub's fleet row caches this value rather than owning it. Empty means
 	// unnamed, which the firmware reports as "" and never as a placeholder, so a

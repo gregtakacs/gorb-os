@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host parity bench for the complication render maths in clock_view.c.
+"""Host parity bench for the complication render maths in orb_stage.c.
 
 tools/host_sd_test.py proves the READER. This proves the PAINTER's arithmetic:
 it lifts the pure value/frame/digit functions OUT OF THE SHIPPING FILE VERBATIM,
@@ -16,7 +16,7 @@ import datetime, os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-CLOCK = os.path.join(ROOT, "main", "clock", "clock_view.c")
+CLOCK = os.path.join(ROOT, "main", "stage", "orb_stage.c")
 HEADER = os.path.join(ROOT, "main", "art", "clk_types.h")   # D32: the comp
 # vocabulary and clk_comp_t moved out of orb_theme.h with the projection, so the
 # mirror greps the header the firmware actually compiles now.
@@ -41,6 +41,7 @@ C_PRE = """
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+typedef struct tm tm_t;
 """
 
 C_HARNESS = """
@@ -229,16 +230,18 @@ def lifted_c(mutations=()):
     """One TU: the CLK_SRC_* enum from the shipping header verbatim, the pure value,
     frame and digit functions from the shipping .c verbatim, the harness, and vectors.
     The moving rows' drive (D42) is host_drive_test.py's."""
-    cview = open(CLOCK).read()
+    # §43: the frame and digit maths stayed in the dial stage; the value maths moved to
+    # the clock app with the rest of the dial's policy. One text, both files.
+    cview = open(CLOCK).read() + "\n" + open(os.path.join(ROOT, "apps", "clock", "main.c")).read()
     cheader = open(HEADER).read()
     m = re.search(r"enum \{[^{}]*CLK_SRC_NONE[^{}]*CLK_SRC__MAX[^{}]*\};", cheader)
     assert m, "CLK_SRC_* enum not found in orb_theme.h — did it change shape?"
     mo = re.search(r"#define MOON_NEW_MOON_S[^\n]*\n#define MOON_SYNODIC_S[^\n]*",
                    cview)
-    assert mo, ("moon constants not found adjacent in clock_view.c — the vectors "
+    assert mo, ("moon constants not found adjacent in orb_stage.c — the vectors "
                 "own the spec (MOON_*_S above); the C must match them verbatim")
     assert "947182440" in mo.group(0) and "2551443" in mo.group(0), \
-        "clock_view.c moved the moon off this spec — realign it or update the " \
+        "orb_stage.c moved the moon off this spec — realign it or update the " \
         "vectors deliberately, in the same commit"
     funcs = "\n".join([
         lift(cview, "static uint16_t comp_frame_index("),

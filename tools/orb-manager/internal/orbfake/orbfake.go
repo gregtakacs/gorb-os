@@ -128,11 +128,8 @@ type Orb struct {
 	// for tests that never arm a store to get it.
 	TearStore bool
 
-	// ReviveFails makes the fault-record clear on a failed app's ON refuse, which is the
-	// only path where ESP_FAIL reaches the client and door_http_status's default arm sends
-	// 500 rather than 409. UninstallSticks is its twin on the uninstall door, where the slot
-	// erased but the registry kept the row.
-	ReviveFails     bool
+	// UninstallSticks makes the uninstall door answer the case where the slot erased but
+	// the registry kept the row.
 	UninstallSticks bool
 
 	// fm is v1.1.18's file-manager volume (see fm.go), seeded empty so a test
@@ -152,7 +149,7 @@ func New(themes ...Theme) *Orb {
 	// set is the shell menu alone; the seed supplies the two card apps.
 	for _, slug := range builtInSlugs {
 		o.apps[slug] = &CardApp{Stem: slug, Slug: slug, Title: slug,
-			Installed: true, Enabled: true, Builtin: true}
+			Installed: true, Builtin: true}
 		o.appsOrder = append(o.appsOrder, slug)
 	}
 	for i := range themes {
@@ -266,10 +263,6 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveHomeGet(w, r)
 	case r.URL.Path == "/api/v1/home" && r.Method == http.MethodPost:
 		o.serveHomePost(w, r)
-	case r.URL.Path == "/api/v1/flights/key" && r.Method == http.MethodGet:
-		o.serveFeedKey(w, nil)
-	case r.URL.Path == "/api/v1/flights/key" && r.Method == http.MethodPost:
-		o.serveFeedKey(w, r)
 	case r.URL.Path == "/api/v1/name" && r.Method == http.MethodPost:
 		o.serveNamePost(w, r)
 	case r.URL.Path == "/api/v1/sound" && r.Method == http.MethodGet:
@@ -326,8 +319,6 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveAppEditor(w, r)
 	case r.URL.Path == "/api/v1/apps/install" && r.Method == http.MethodPost:
 		o.serveAppInstall(w, r)
-	case r.URL.Path == "/api/v1/apps/enable" && r.Method == http.MethodPost:
-		o.serveAppEnable(w, r)
 	case r.URL.Path == "/api/v1/apps/face" && r.Method == http.MethodPost:
 		o.serveAppFace(w, r)
 	case r.URL.Path == "/api/v1/apps/uninstall" && r.Method == http.MethodPost:
@@ -335,6 +326,8 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 7c9ff63's recovery doors, mirrored gate-for-gate.
 	case r.URL.Path == "/api/v1/apps/clear" && r.Method == http.MethodPost:
 		o.serveAppClear(w, r)
+	case r.URL.Path == "/api/v1/apps/cfg" && r.Method == http.MethodGet:
+		o.serveAppCfgGet(w, r)
 	case r.URL.Path == "/api/v1/apps/cfg" && r.Method == http.MethodPost:
 		o.serveAppCfg(w, r)
 	case r.URL.Path == "/api/v1/sd/app" && r.Method == http.MethodPost:

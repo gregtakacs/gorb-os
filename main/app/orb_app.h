@@ -16,7 +16,7 @@
  * the OS drops and logs those marks.
  *
  * Compiled-in entries only, for now. The .orbapp manifest reader, the `apps`
- * partition catalog, the enable/failed states and the install path arrive in
+ * partition catalog, the failed state and the install path arrive in
  * P4; the fields they need (slug, art offset/size, entry point) are already
  * here so the ABI does not move underneath them, and the entries stay
  * enumerable so a slug resolves to a slot rather than an integer.
@@ -178,7 +178,7 @@ struct orb_app {
     /* P4a: the apps-partition slot this card row was resolved from (0..7), or
      * -1 for a compiled-in entry. It is the row's STABLE identity: the registry
      * index of a card entry is ORB_APP_BASE + flash_slot by construction, so
-     * uninstalling one app never renumbers another's grant, fault or enable
+     * uninstalling one app never renumbers another's grant, fault or settings
      * words (the migration a rank-keyed table would need on every removal).
      * boot_resolve assigns it from the flash scan; the install ladder from the
      * verdict. card_fill places the entry at exactly this index. */
@@ -244,18 +244,17 @@ struct orb_app {
 
     const orb_app_iface_t *iface;
 
-    /* Runtime state, written on the LVGL task only. P4 moves enabled/failed
+    /* Runtime state, written on the LVGL task only. P4 moves failed
      * into NVS beside the catalog; they live here now so the shell's read is
      * the same field either way. */
     bool                installed;
-    bool                enabled;
     bool                active;
     uint8_t             fault_count;   /* C2: two consecutive faults mark failed */
     bool                failed;
     /** True once this row's behaviour module has been built this boot. The
      *  boot gather sets it for every row it passes; orb_app_activate() builds
      *  a row it finds without it — the only task that may, and the case D35
-     *  created: a card row enabled after the gather has had no init yet. */
+     *  created: a card row installed after the gather has had no init yet. */
     bool                init_done;
 };
 
@@ -302,16 +301,9 @@ struct orb_app {
  *  broker's grant word. */
 int orb_app_card_upsert(const orb_app_t *row);
 
-/** P4a enable/uninstall. Both refuse compiled-in entries; the toggle and the
- *  erase exist for card apps. Context: like card_upsert, these run on the
- *  worker or the boot ladder (the enable call additionally from the httpd
- *  task) — they only write scalars, never widgets. */
-/** Flip the RAM-enabled bit of a card row. Compiled-in and shell entries are
- *  not togglable (refused); an app whose behaviour_kind resolved to no module
- *  may be enabled — it stays ledger-only either way. Persistence is the
- *  caller's (orb_svc_enable): the registry answers what IS, not what NVS
- *  says. */
-esp_err_t orb_app_set_enabled(const orb_app_t *app, bool on);
+/* P4a uninstall. It refuses compiled-in entries; the erase exists for card apps.
+ * Context: like card_upsert, it runs on the worker or the boot ladder — it only
+ * writes scalars, never widgets. */
 /** Free a card row's table entry. False means refused or absent: an unknown
  *  slug, or the row is on the glass (current or active) — the walkable set may
  *  not lose the entry the knob is holding. NVS cleanup is the caller's, which
@@ -319,7 +311,7 @@ esp_err_t orb_app_set_enabled(const orb_app_t *app, bool on);
  *  slot plus stale owner state is the dirty-slot case the install wipes. */
 bool orb_app_card_remove(const char *slug);
 /** True for a row that lives in the card table (P4a keying check for the
- *  broker's per-slot words; compiled and shell rows are never togglable). */
+ *  broker's per-slot words; compiled and shell rows are never uninstallable). */
 bool orb_app_is_card(const orb_app_t *app);
 
 /* ---- the service tier (D36) ----------------------------------------------
@@ -329,7 +321,7 @@ bool orb_app_is_card(const orb_app_t *app);
  * menu view, because "what rows exist on the glass" already has one owner — and
  * a second one is the bug where the menu and the knob disagree about what is
  * installed. They are NOT card rows: a card row's index is its NVS key for
- * grants, faults and the enable word (P4a), and an OS feature with no capability
+ * grants, faults and settings (P4a), and an OS feature with no capability
  * demand and no uninstall must not file words under a retired app's key. So they
  * live outside the ledger span, at indices >= ORB_APP_MENU_BASE.
  */
@@ -368,21 +360,24 @@ void orb_app_card_reset(void);
  * module across every firmware build. */
 enum {
     ORB_BEHAVIOUR_NONE         = 0,  /* reserved: not a module, entry keeps its own iface */
-    ORB_BEHAVIOUR_COLOR_PICKER = 1,  /* the HSB editor: LVGL-drawn, vector-only   */
+    ORB_BEHAVIOUR_COLOR_PICKER = 1,  /* RETIRED §43: the HSB editor is a wasm app;
+                                      * no module registers 1, and it is never reused */
     ORB_BEHAVIOUR_WASM         = 2,  /* the wasm3 code tier (P7/D20): one generic
                                       * iface, N instances, over orb_svc_t        */
-    ORB_BEHAVIOUR_CLOCK        = 3,  /* the dial face (D35, §35): the factory clock
+    ORB_BEHAVIOUR_CLOCK        = 3,  /* RETIRED §43 (the clock is a wasm app over the
+                                      * dial stage). Was: the dial face (D35, §35): the factory clock
                                       * is a card row over this module exactly like
                                       * the picker over kind 1 — the id was claimed
                                       * by the P9 ruling, so it is never reused     */
-    ORB_BEHAVIOUR_FLIGHTS      = 4,  /* the flight tracker (docs/flight-tracker-
+    ORB_BEHAVIOUR_FLIGHTS      = 4,  /* RETIRED §43 (a wasm app over orb_app_net).
+                                      * Was: the flight tracker (docs/flight-tracker-
                                       * design.md): canvas-drawn, over the OS's
                                       * orb_flights feed, `net` declared            */
 };
 
 /** The iface the compiled-in module behind `behaviour_kind` builds with, or NULL
  *  when nothing is registered under that id. A card app is walkable only when
- *  this answers non-NULL AND it is enabled: an unregistered kind is the
+ *  this answers non-NULL: an unregistered kind is the
  *  validated-not-drawn discipline's bad row — it stays in the ledger, unreachable
  *  by the knob, exactly as theme_schema.py:23 treats an unknown vocabulary kind. */
 const orb_app_iface_t *orb_app_behaviour_iface(uint32_t behaviour_kind);
@@ -394,13 +389,13 @@ const orb_app_iface_t *orb_app_behaviour_iface(uint32_t behaviour_kind);
  *  booting as a blank screen. */
 bool orb_app_behaviour_known(uint32_t behaviour_kind);
 
-/** Build every enabled app in table order. Call after display_init and before
+/** Build every installed app in table order. Call after display_init and before
  *  input_router_init: the clock must exist before the router loads it. */
 esp_err_t orb_app_init_all(void);
 
 /** Table access. Index order IS the knob's carousel order. */
 size_t            orb_app_count(void);
-/** The idx-th WALKABLE row, DENSE: enabled, not failed, iface registered — the
+/** The idx-th WALKABLE row, DENSE: installed, not failed, iface registered — the
  *  same set orb_app_count() counted, card rows included. A rank past the set is
  *  NULL. Never pair this with a positional key: that lookup is orb_app_row(). */
 const orb_app_t  *orb_app_at(size_t idx);

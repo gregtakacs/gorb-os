@@ -19,9 +19,9 @@
 #include "orb_boot_overlay.h"
 #include "orb_app.h"
 #include "orb_app_scan.h"   /* the /sd/apps drop zone registers beside the card */
-#include "orb_app_install.h" /* orb_app_install_resolve_boot: the card table from the apps partition */
+#include "orb_app_install.h"
+#include "orb_app_net.h"     /* orb_app_cred_sweep: the boot's secret sweep */
 #include "orb_jobs.h"
-#include "orb_flights.h"
 #include "orb_home.h"
 #include "orb_tls_mem.h"
 #include "orb_svc.h"
@@ -37,6 +37,7 @@
 #include "orb_usb_msc.h"   /* D38: the disk mode's claim, same seam, opposite mount rule  */
 #include "orb_log.h"       /* the RAM log ring: /api/v1/log's only source */
 #include "orb_panic.h"     /* the last panic, kept across its reset for /api/v1/status */
+#include "orb_layout_carry.h" /* storage across the Layout B -> C table change */
 #include "orb_theme.h"
 #include "art_bank.h"
 
@@ -96,6 +97,10 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_erase());
         ESP_ERROR_CHECK(nvs_flash_init());
     }
+
+    /* Before anything opens `storage`: a board that crossed from Layout B still keeps
+     * its credentials at the old offset, and nothing else on this boot could find them. */
+    orb_layout_carry_storage();
 
     /* A serial RESET ALL acked last boot lands its erase HERE, at the top of the
      * heap's rich moment — before the theme, Wi-Fi, or the display have anything
@@ -232,19 +237,17 @@ void app_main(void)
      * (plan §8, the P3 pass line). Inert until an app calls through it; the
      * compiled-in pair reaches the OS directly until P6, as §14 records. */
     ESP_ERROR_CHECK(orb_svc_init());
+    /* §43.3: a secret lives only as long as an installed app declares it; the card
+     * table is complete here, and NVS is up. */
+    orb_app_cred_sweep();
     /* The home location (flight-tracker-design §6.4) loads beside the grant
      * words and for the same reason: the apps that read it build next. One
      * NVS blob read; the zone it set is applied by orb_net_start's tz load. */
     orb_home_init();
-    /* P4a's rung: the owner's enable words apply after the broker has the
-     * partition up and before anything builds a screen — an installed app
-     * walks this boot only if its stored word says so, and one with no word
-     * stays exactly as installed: off. */
-    orb_app_install_apply_enable();
-    /* P7.4's rung: the code tier loads after the enable words are known (a
-     * disabled app must not cost its D27 memory) and before init_all asks each
+    /* P7.4's rung: the code tier loads after the broker's words are known (a
+     * quarantined app must not cost its D27 memory) and before init_all asks each
      * module to build — the wasm module's init answers OK only once its slot
-     * holds a runtime, so this rung is what makes an enabled code app walkable. */
+     * holds a runtime, so this rung is what makes an installed code app walkable. */
     orb_app_install_apply_code();
     ESP_ERROR_CHECK(orb_app_init_all());
 
@@ -312,10 +315,6 @@ void app_main(void)
      * product, and this is a device in a sealed case. */
     if (orb_net_start() != ESP_OK)
         ESP_LOGE(TAG, "networking down — clock running without config page");
-    /* The flight feed (docs/flight-tracker-design.md): a parked task until
-     * something turns it on, so a dial that never tracks pays a PSRAM stack. */
-    if (orb_flights_init() != ESP_OK)
-        ESP_LOGW(TAG, "flight feed not started");
 #endif
 
 /* First act of the storage ladder and deliberately ahead of it: consume the "next
@@ -349,7 +348,7 @@ void app_main(void)
     /* The /sd/apps drop zone, registered beside the card itself (P4). A table
      * write with no I/O, so it stands or fails identically with or without a
      * card in the socket; the walk asks the volume to mount when it runs. The
-     * theme source is declared by clock_view.c next to the scans it serves —
+     * theme source is declared by orb_stage.c next to the scans it serves —
      * this one is declared here because no compiled app owns the drop zone:
      * the OS does (an app that could declare where card apps live would move
      * everyone's front door). A refusal is loud and permanent: the apps page

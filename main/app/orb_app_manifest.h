@@ -108,9 +108,11 @@ extern "C" {
 
 /* D16: the manifest's period_ms is the FASTEST beat the app may run. 0 means
  * never ticks; the floor is the commit pass measured at 185 ms, priced at
- * 3000 by the writer. The reader refuses under it so a card cannot smuggle
- * in a beat the shared scheduler cannot honour. */
-#define ORBAPP_BEAT_MIN_MS 3000u
+ * 1000 by the writer (§43: it was 3000 while every beat was a dial commit; a
+ * wasm app's beat redraws its own page, and the flight tracker it replaced ran
+ * at 1 Hz). The reader refuses under it so a card cannot smuggle in a beat the
+ * shared scheduler cannot honour. */
+#define ORBAPP_BEAT_MIN_MS 1000u
 #define ORBAPP_BEAT_MAX_MS 86400000u
 
 

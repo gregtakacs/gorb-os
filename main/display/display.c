@@ -1144,6 +1144,8 @@ static uint32_t lvgl_tick_cb(void)
  * The buffer/ring/mirror allocations ride with the panel half so the io's
  * trans_queue_depth and user_ctx — both baked at creation — match what
  * display_init later arms. */
+/* PSRAM pools LVGL gets beside its internal array, CONFIG_LV_MEM_SIZE each (§43.5). */
+#define LV_PSRAM_POOLS 3
 static void *s_buf1, *s_buf2;
 static size_t s_buf_bytes;
 
@@ -1156,6 +1158,22 @@ esp_err_t display_panel_early(void)
      *    (the IO's trans-done callback carries it as user_ctx). */
     lv_init();
     lv_tick_set_cb(lvgl_tick_cb);
+    /* §43.5: the wasm apps build their pages from LVGL's pool, and the 24 KB internal
+     * array (CONFIG_LV_MEM_SIZE, kept small so httpd's stack fits on a provisioning
+     * boot) peaked at 21,032 of 21,964 usable bytes on orb-A's first v1.2.0 boot, with
+     * four pages built. A pool that runs dry fails silently: the widget is just absent.
+     * PSRAM is the room the apps' move freed, so it joins as more TLSF pools; the
+     * internal array stays where it is. LVGL sizes TLSF's index for CONFIG_LV_MEM_SIZE,
+     * which refuses any one pool larger than that, so the PSRAM comes as pools of the
+     * same size (one allocation never needed more than the whole internal pool). */
+    for (int i = 0; i < LV_PSRAM_POOLS; i++) {
+        void *lv_ext = heap_caps_malloc(CONFIG_LV_MEM_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!lv_ext || !lv_mem_add_pool(lv_ext, CONFIG_LV_MEM_SIZE)) {
+            heap_caps_free(lv_ext);
+            ESP_LOGW(TAG, "LVGL got %d of its %d PSRAM pools", i, LV_PSRAM_POOLS);
+            break;
+        }
+    }
 
     const size_t buf_bytes = (size_t)SCREEN_WIDTH * LVGL_BUF_LINES * 2; /* RGB565 */
     s_buf_bytes = buf_bytes;
@@ -1551,7 +1569,26 @@ esp_err_t display_capture_direct(uint32_t *seq)
  * driver's trans-done ISR, which does not take this mutex, so the drain cannot
  * deadlock against the task blocked behind it. */
 static volatile uint32_t s_lv_passes;
-void     display_lvgl_pass_mark(void) { s_lv_passes++; }
+/* The LVGL pool, sampled about once a second on the LVGL task (the only task that may
+ * walk it). Wasm apps build their pages from this pool (§43), and a pool that runs
+ * dry fails silently: lv_obj_create answers NULL and the widget just never appears. */
+static volatile uint32_t s_lvm_total, s_lvm_free, s_lvm_biggest, s_lvm_peak;
+static int64_t s_lvm_next_us;
+void display_lvgl_pass_mark(void)
+{
+    s_lv_passes++;
+    const int64_t now = esp_timer_get_time();
+    if (now < s_lvm_next_us) return;
+    s_lvm_next_us = now + 1000000;
+    lv_mem_monitor_t m;
+    lv_mem_monitor(&m);
+    s_lvm_total = (uint32_t)m.total_size; s_lvm_free = (uint32_t)m.free_size;
+    s_lvm_biggest = (uint32_t)m.free_biggest_size; s_lvm_peak = (uint32_t)m.max_used;
+}
+void display_lv_mem(uint32_t *total, uint32_t *free_b, uint32_t *biggest, uint32_t *peak)
+{
+    *total = s_lvm_total; *free_b = s_lvm_free; *biggest = s_lvm_biggest; *peak = s_lvm_peak;
+}
 uint32_t display_lvgl_passes(void)    { return s_lv_passes; }
 
 size_t display_dma_borrow(void)

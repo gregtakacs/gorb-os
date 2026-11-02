@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host check for main/flights/flights_model.c, the flight tracker's model.
+"""Host check for apps/flights/model.c, the flight tracker's model.
 
     python3 tools/host_flights_model_test.py             # all checks
     python3 tools/host_flights_model_test.py --mutations # do the checks actually bite?
@@ -25,14 +25,31 @@ is what keeps it right after the next edit.
 import os, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = os.path.join(ROOT, "main", "flights", "flights_model.c")
-INC = [os.path.join(ROOT, "main", "flights"), os.path.join(ROOT, "main", "net")]
+SRC = os.path.join(ROOT, "apps", "flights", "model.c")
+INC = [os.path.join(ROOT, "apps", "flights"), os.path.join(ROOT, "main", "app")]   # readsb.h takes orb_json.h (D46)
 
 DRIVER = r"""
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-#include "flights_model.h"
+#include "model.h"
+
+/* D46: adsbdb's answer is read from the OS tokenizer's events; the vectors keep their
+ * one-call shape through this harness-only helper over the host-compiled orb_json.c. */
+static bool fm_route_parse(const char *json, fm_route_t *out)
+{
+    orb_json_t j;
+    orb_json_begin(&j, json, strlen(json));
+    fm_route_rd_t rd;
+    fm_route_begin(&rd);
+    orb_json_tok_t t;
+    for (;;) {
+        const int32_t k = orb_json_next(&j, &t);
+        if (k == ORB_JSON_END || k == ORB_JSON_ERROR) break;
+        fm_route_take(&rd, &t);
+    }
+    return fm_route_end(&rd, out);
+}
 
 static int fails, checks;
 #define CHECK(cond, what) do { checks++; if (!(cond)) { fails++; printf("FAIL %s\n", what); } } while (0)
@@ -241,7 +258,8 @@ def build(src, out):
     args = ["gcc", "-std=c11", "-O1", "-Wall", "-Werror", "-Wno-unused-function", "-D_GNU_SOURCE"]
     for i in INC:
         args += ["-I", i]
-    r = subprocess.run(args + [drv, src, "-lm", "-o", out], capture_output=True, text=True)
+    r = subprocess.run(args + [drv, src, os.path.join(ROOT, "main", "app", "orb_json.c"), "-lm",
+                               "-o", out], capture_output=True, text=True)
     if r.returncode:
         sys.exit("build failed:\n" + r.stderr)
 
@@ -263,8 +281,11 @@ def main():
         mutants = [
             ("route asks about registrations", "if (cs[3] < '0' || cs[3] > '9') return false;", ""),
             ("route takes eight-character callsigns", "if (i >= 7 ||", "if (i >= 8 ||"),
-            ("route codes come from the airline object", 'const char *o = json_val(json, json + strlen(json), key);', 'const char *o = json_val(json, json + strlen(json), key); o = json_val(json, json + strlen(json), "airline");'),
-            ("route never falls back to ICAO", ' && !json_code(o, end, "icao_code", code, 5)) return false;', ') return false;'),
+            ("route codes come from the airline object", 'r->end = !strcmp(t->key, "origin") ? 1 : !strcmp(t->key, "destination") ? 2 : 0;',
+             'r->end = !strcmp(t->key, "airline") ? 1 : !strcmp(t->key, "destination") ? 2 : 0;'),
+            ("route never falls back to ICAO", "if (!r->iata_ok[e] && !r->icao_ok[e]) return false;", "if (!r->iata_ok[e]) return false;"),
+            ("route takes any code text", "if (*c < '0' || (*c > '9' && *c < 'A') || *c > 'Z') return false;", ";"),
+            ("route takes an end with no position", "if (!r->has_lat[e] || !r->has_lon[e]) return false;", ";"),
             ("route ignores the off-line distance", "if (fabsf(xt) * R > off) return false;", "if (fabsf(xt) * R > off * 100.0f) return false;"),
             ("route ignores which side of the origin", "    if (cosf(dth) <= 0.0f) return false;                                 /* behind the origin */\n", ""),
             ("route runs past the destination", "if (at > d12) return false;", "if (at > d12 * 10.0f) return false;"),
@@ -294,7 +315,7 @@ def main():
         for label, a, z in mutants:
             if a not in src:
                 sys.exit("mutation anchor gone: " + label)
-            p = os.path.join(tempfile.mkdtemp(), "flights_model.c")
+            p = os.path.join(tempfile.mkdtemp(), "model.c")
             open(p, "w").write(src.replace(a, z, 1))
             mb = p[:-2]
             build(p, mb)

@@ -94,8 +94,8 @@ const id25 = "aaaaaaaaaaaaaaaaaaaaaaaaa"
 func TestAppVerbRefusals(t *testing.T) {
 	o := New().WithCardApps(
 
-		CardApp{Stem: "hue", Slug: "hue", Installed: true, Enabled: true},
-		CardApp{Stem: "glass", Slug: "glass", Installed: true, Enabled: true, OnGlass: true},
+		CardApp{Stem: "hue", Slug: "hue", Installed: true},
+		CardApp{Stem: "glass", Slug: "glass", Installed: true, OnGlass: true},
 		CardApp{Stem: "bad", Slug: "bad", Installed: true, Failed: true},
 	)
 	srv := httptest.NewServer(o)
@@ -112,32 +112,22 @@ func TestAppVerbRefusals(t *testing.T) {
 		{"/api/v1/apps/install", noStemBody, 400},
 		{"/api/v1/apps/install?id=..%2Fevil", noStemBody, 400},
 		{"/api/v1/apps/install?name=hue", noStemBody, 400},
-		{"/api/v1/apps/enable?id=hue", badOnBody, 400},
-		{"/api/v1/apps/enable?id=hue&on=2", badOnBody, 400},
 		// q_param drops a decoded separator before the door ever sees a name.
-		{"/api/v1/apps/enable?id=..%2Fevil&on=1", missingIDBody, 400},
 		{"/api/v1/apps/uninstall?id=..%2Fevil", missingIDBody, 400},
 		// A leading dot passes q_param and is caught by orb_sd_name_ok inside door_open.
 		// Two different 400s from two layers, and the device really distinguishes them.
-		{"/api/v1/apps/enable?id=..foo&on=1", notUsableNameBody, 400},
 		{"/api/v1/apps/uninstall?id=..foo", notUsableNameBody, 400},
-		{"/api/v1/apps/enable?id=nope&on=1", notFoundBody, 404},
-		// The glass door's own refusals, in its gate order: id, lookup, enabled.
+		// The glass door's own refusals, in its gate order: id, lookup, fault.
 		{"/api/v1/apps/face", missingIDBody, 400},
 		{"/api/v1/apps/face?id=nope", notFoundBody, 404},
-		// `bad` installed and failed but never enabled: an off row is no destination.
-		{"/api/v1/apps/face?id=bad", notEnabledBody, 409},
+		// `bad` is installed and failed: a faulted row is no destination.
+		{"/api/v1/apps/face?id=bad", failedFaceBody, 409},
 		{"/api/v1/apps/uninstall?id=nope", notFoundBody, 404},
 		// A 25-character id overflows the handler's 24-byte buffer and is truncated rather
 		// than refused, so it lands on the lookup and misses.
-		{"/api/v1/apps/enable?id=" + id25 + "&on=1", notFoundBody, 404},
-		// Inside-the-firmware rows are refused on both doors with the same sentence, at 400
-		// because NOT_SUPPORTED maps there. A Manage card that rendered a toggle for these
-		// would ship a control that can only ever fail.
-		{"/api/v1/apps/enable?id=menu&on=0", builtinBody, 400},
-		{"/api/v1/apps/enable?id=menu&on=0", builtinBody, 400},
+		{"/api/v1/apps/uninstall?id=" + id25, notFoundBody, 404},
+		// The inside-the-firmware row is refused at 400 because NOT_SUPPORTED maps there.
 		{"/api/v1/apps/uninstall?id=menu", builtinBody, 400},
-		{"/api/v1/apps/uninstall?id=glass", onDialBody, 409},
 	}
 	for _, c := range cases {
 		code, body := appDo(t, srv, http.MethodPost, c.path, []byte("{}"))
@@ -145,9 +135,9 @@ func TestAppVerbRefusals(t *testing.T) {
 			t.Errorf("POST %s -> %d %s, want %d containing %s", c.path, code, body, c.want, c.wantBody)
 		}
 	}
-	// The refusal body carries no caller text. Enabling a name that does not exist returns
-	// the firmware's own sentence, not the name the caller supplied.
-	_, body := appDo(t, srv, http.MethodPost, "/api/v1/apps/enable?id=zzz&on=1", []byte("{}"))
+	// The refusal body carries no caller text. Uninstalling a name that does not exist
+	// returns the firmware's own sentence, not the name the caller supplied.
+	_, body := appDo(t, srv, http.MethodPost, "/api/v1/apps/uninstall?id=zzz", []byte("{}"))
 	if strings.Contains(body, "zzz") {
 		t.Errorf("refusal body echoed caller input: %s", body)
 	}
@@ -155,21 +145,11 @@ func TestAppVerbRefusals(t *testing.T) {
 	// so an unknown id on a busy orb reports the job. Reordering this in the double would
 	// show an operator a reason the orb never had.
 	o.JobBusy = true
-	if code, body := appDo(t, srv, http.MethodPost, "/api/v1/apps/enable?id=nope&on=1", []byte("{}")); code != 409 ||
+	if code, body := appDo(t, srv, http.MethodPost, "/api/v1/apps/uninstall?id=nope", []byte("{}")); code != 409 ||
 		!strings.Contains(body, doorBusyBody) {
 		t.Errorf("busy orb, unknown id -> %d %s, want 409 job-busy", code, body)
 	}
 	o.JobBusy = false
-	// Turning ON a failed app is the revive gesture (C2), not a dead end: the device clears
-	// the fault record and lets it through. The old expectation here (flat 409) was wrong in
-	// a way that would have cost the hub the only control that recovers a failed card.
-	if code, body := appDo(t, srv, http.MethodPost, "/api/v1/apps/enable?id=bad&on=1", []byte("{}")); code != 200 ||
-		!strings.Contains(body, `"enabled"`) {
-		t.Errorf("revive via enable -> %d %s, want 200 enabled", code, body)
-	}
-	if o.apps["bad"].Failed {
-		t.Error("enable on a failed app must clear the fault record")
-	}
 	// The one answer that looks wrong and is not: a well-formed stem naming nothing is
 	// accepted, because h_apps_install queues before it looks. The failure surfaces on
 	// the next listing rather than as a refusal here.
@@ -304,9 +284,9 @@ func TestReprovRefusesBeforeArming(t *testing.T) {
 // parking one row takes it off every other.
 func TestFaceDoorParksTheGlass(t *testing.T) {
 	o := New().WithCardApps(
-		CardApp{Stem: "hue", Slug: "hue", Installed: true, Enabled: true},
-		CardApp{Stem: "glass", Slug: "glass", Installed: true, Enabled: true, OnGlass: true},
-		CardApp{Stem: "brkn", Slug: "brkn", Installed: true, Enabled: true, Failed: true},
+		CardApp{Stem: "hue", Slug: "hue", Installed: true},
+		CardApp{Stem: "glass", Slug: "glass", Installed: true, OnGlass: true},
+		CardApp{Stem: "brkn", Slug: "brkn", Installed: true, Failed: true},
 	)
 	srv := httptest.NewServer(o)
 	defer srv.Close()
@@ -337,7 +317,8 @@ func TestFaceDoorParksTheGlass(t *testing.T) {
 
 	// The shell is a face like any other: h_app_face has no built-in gate, because the
 	// dial homing on the menu is the state an owner most often wants back. A double
-	// that answered enable's builtinBody here would hide a request the real orb takes.
+	// that answered the uninstall door's builtinBody here would hide a request the real orb
+	// takes.
 	code, body = appDo(t, srv, http.MethodPost, "/api/v1/apps/face?id=menu", nil)
 	if code != 200 || !strings.Contains(body, `"state":"rebooting"`) {
 		t.Errorf("parking the shell = %d %s, want 200 rebooting, not enable's builtin refusal", code, body)
@@ -346,5 +327,41 @@ func TestFaceDoorParksTheGlass(t *testing.T) {
 	hue, _ = o.apps["hue"]
 	if !menu.OnGlass || hue.OnGlass {
 		t.Errorf("the shell park left the glass on menu=%v hue=%v", menu.OnGlass, hue.OnGlass)
+	}
+}
+
+// A secret setting (§43) goes in through the cfg door's JSON body and never comes back
+// out: the read answers set, the header, the host and the last four characters, the
+// installed row names its id so the hub can draw a field, and uninstall forgets it.
+func TestAppSecretRoundTrip(t *testing.T) {
+	o := New().WithCardApps(CardApp{Stem: "flights", Slug: "flights", Installed: true,
+		Secrets: map[string]string{"key": "api.adsb.lol"}})
+	srv := httptest.NewServer(o)
+	defer srv.Close()
+
+	if _, body := appDo(t, srv, http.MethodGet, "/api/v1/apps", nil); !strings.Contains(body, `"secrets":["key"]`) {
+		t.Errorf("the installed row does not name its secret: %s", body)
+	}
+	const cfg = "/api/v1/apps/cfg?id=flights&key=key"
+	if code, body := appDo(t, srv, http.MethodGet, cfg, nil); code != 200 ||
+		!strings.Contains(body, `"set":false`) || !strings.Contains(body, `"host":"api.adsb.lol"`) {
+		t.Errorf("unset secret read -> %d %s", code, body)
+	}
+	if code, body := appDo(t, srv, http.MethodPost, cfg,
+		[]byte(`{"value":"sekrit-value-fvKA","header":"api-auth"}`)); code != 200 {
+		t.Fatalf("secret write -> %d %s", code, body)
+	}
+	code, body := appDo(t, srv, http.MethodGet, cfg, nil)
+	if code != 200 || !strings.Contains(body, `"set":true`) || !strings.Contains(body, `"tail":"fvKA"`) ||
+		!strings.Contains(body, `"header":"api-auth"`) {
+		t.Errorf("set secret read -> %d %s", code, body)
+	}
+	if strings.Contains(body, "sekrit") {
+		t.Errorf("the read answered the value itself: %s", body)
+	}
+	appDo(t, srv, http.MethodPost, "/api/v1/apps/uninstall?id=flights", []byte("{}"))
+	appDo(t, srv, http.MethodPost, "/api/v1/apps/install?id=flights", []byte("{}"))
+	if _, body := appDo(t, srv, http.MethodGet, cfg, nil); !strings.Contains(body, `"set":false`) {
+		t.Errorf("a reinstall kept the uninstalled app's secret: %s", body)
 	}
 }

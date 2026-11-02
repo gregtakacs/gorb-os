@@ -109,5 +109,4 @@ orb_app_t orb_app_sound_row = {
     .flash_slot = -1,          /* an OS row: no card slot, outside the ledger span */
     .iface     = &s_sound_iface,
     .installed = true,
-    .enabled   = true,
 };

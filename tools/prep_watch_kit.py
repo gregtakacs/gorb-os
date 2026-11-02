@@ -641,7 +641,7 @@ def main():
             s2 = Image.alpha_composite(s2, s)
         s2.save(f"{theme}/clock_hand_static2.png")
     # Earlier == lower, and the shadow always goes down directly under its OWN
-    # hand (clock_view.c's etiquette), so the order list carries the movers only.
+    # hand (orb_stage.c's etiquette), so the order list carries the movers only.
     #
     # WHERE THE SECOND SLOT SITS IS NOT ONE RULE FOR EVERY KIT. The tuple that
     # decided it put `second` below the statics unconditionally. That is right for
@@ -672,7 +672,7 @@ def main():
     # The sub-dial pointers travel in the style, not as extra hand slots: five
     # slots is a compiled-in constant (clk_theme.hand[5]) and a pointer belongs
     # to a sub-dial, not to the dial. bake_clock.bake_aux() packs each into one
-    # clk_aux_t row (sprite + how it is driven) and clock_view.c drives it from
+    # clk_aux_t row (sprite + how it is driven) and orb_stage.c drives it from
     # the wall-clock value named by `src`. Empty for every classic kit, which is
     # what keeps those bakes byte-for-byte what they were.
     if aux_recs:

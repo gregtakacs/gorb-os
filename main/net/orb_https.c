@@ -23,6 +23,9 @@ struct orb_https {
     bool      live;           /* a kept connection is believed open */
     uint32_t  opens;          /* HTTP_EVENT_ON_CONNECTED count */
     uint32_t  retry_after_s;  /* this response's Retry-After, 0 = none or a date */
+    char      hdrs[768];      /* this response's headers, "name: value\n" each, cut
+                               * at the buffer's end (D46: apps read them) */
+    size_t    hlen;
 };
 
 static esp_err_t on_event(esp_http_client_event_t *e)
@@ -30,8 +33,14 @@ static esp_err_t on_event(esp_http_client_event_t *e)
     orb_https_t *h = e->user_data;
     if (e->event_id == HTTP_EVENT_ON_CONNECTED) {
         if (h) h->opens++;
-    } else if (e->event_id == HTTP_EVENT_ON_HEADER && h && e->header_key && e->header_value &&
-               !strcasecmp(e->header_key, "Retry-After")) {
+    } else if (e->event_id == HTTP_EVENT_ON_HEADER && h && e->header_key && e->header_value) {
+        const int n = snprintf(h->hdrs + h->hlen, sizeof h->hdrs - h->hlen, "%s: %s\n",
+                               e->header_key, e->header_value);
+        if (n > 0 && h->hlen + (size_t)n < sizeof h->hdrs) h->hlen += (size_t)n;
+        else h->hdrs[h->hlen] = 0;                   /* a header that does not fit is dropped */
+    }
+    if (e->event_id == HTTP_EVENT_ON_HEADER && h && e->header_key && e->header_value &&
+        !strcasecmp(e->header_key, "Retry-After")) {
         /* Delta-seconds only: the HTTP-date form reads as 0, and the caller's
          * own back-off then stands. */
         char *end = NULL;
@@ -63,7 +72,7 @@ orb_https_t *orb_https_new(const char *origin, const char *user_agent, bool keep
     snprintf(h->origin, sizeof h->origin, "%s", origin);
     h->keep_alive = keep_alive;
     char url[96];
-    snprintf(url, sizeof url, "%s/", origin);
+    snprintf(url, sizeof url, "%s/", origin);           /* http:// or https:// (D46) */
     const esp_http_client_config_t cfg = {
         .url = url,
         .user_agent = user_agent,
@@ -102,22 +111,34 @@ void orb_https_free(orb_https_t *h)
 
 uint32_t orb_https_opens(const orb_https_t *h) { return h ? h->opens : 0; }
 
-static esp_err_t get_once(orb_https_t *h, const char *path, orb_https_sink_fn sink, void *ctx,
-                          orb_https_result_t *r)
+static esp_err_t get_once(orb_https_t *h, orb_https_method_t method, const char *path,
+                          const void *body, size_t body_len,
+                          orb_https_sink_fn sink, void *ctx, orb_https_result_t *r)
 {
+    static const esp_http_client_method_t M[] = {
+        [ORB_HTTPS_GET] = HTTP_METHOD_GET, [ORB_HTTPS_POST] = HTTP_METHOD_POST,
+        [ORB_HTTPS_PUT] = HTTP_METHOD_PUT, [ORB_HTTPS_DELETE] = HTTP_METHOD_DELETE,
+        [ORB_HTTPS_HEAD] = HTTP_METHOD_HEAD,
+    };
     const int64_t t0 = esp_timer_get_time();
     const uint32_t opens0 = h->opens;
     h->retry_after_s = 0;
-    char url[192];
+    h->hlen = 0;
+    h->hdrs[0] = 0;
+    char url[320];
     snprintf(url, sizeof url, "%s%s", h->origin, path);
     esp_http_client_set_url(h->c, url);
+    esp_http_client_set_method(h->c, (unsigned)method <= ORB_HTTPS_HEAD ? M[method] : HTTP_METHOD_GET);
 
     /* No live connection means this open is a TLS handshake: tell the dial's
      * scheduler to ride it out rather than re-rate (orb_sched_bg_burst). */
     const bool handshake = !h->live;
     if (handshake) orb_sched_bg_burst(true);
-    esp_err_t err = esp_http_client_open(h->c, 0);
+    esp_err_t err = esp_http_client_open(h->c, body ? (int)body_len : 0);
     if (handshake) orb_sched_bg_burst(false);
+    if (err == ESP_OK && body && body_len &&
+        esp_http_client_write(h->c, body, (int)body_len) != (int)body_len)
+        err = ESP_ERR_HTTP_WRITE_DATA;
     r->reused = (h->opens == opens0);
     r->open_ms = ms_since(t0);
     sample(r);
@@ -146,7 +167,8 @@ static esp_err_t get_once(orb_https_t *h, const char *path, orb_https_sink_fn si
         if (n == 0) break;
         r->bytes += (size_t)n;
         sample(r);
-        if (r->status == 200 && sink && !sink(buf, (size_t)n, ctx)) { keep = false; break; }
+        /* Every status's body reaches the sink: an app may want the error page. */
+        if (sink && !sink(buf, (size_t)n, ctx)) { keep = false; break; }
     }
     r->complete = esp_http_client_is_complete_data_received(h->c);
     if (!r->complete) keep = false;
@@ -156,22 +178,35 @@ static esp_err_t get_once(orb_https_t *h, const char *path, orb_https_sink_fn si
     return r->complete ? ESP_OK : (err != ESP_OK ? err : ESP_FAIL);
 }
 
-esp_err_t orb_https_get(orb_https_t *h, const char *path, orb_https_sink_fn sink, void *ctx,
-                        orb_https_result_t *res)
+esp_err_t orb_https_request(orb_https_t *h, orb_https_method_t method, const char *path,
+                            const void *body, size_t body_len,
+                            orb_https_sink_fn sink, void *ctx, orb_https_result_t *res)
 {
     orb_https_result_t r = { .int_free_min = SIZE_MAX, .int_largest_min = SIZE_MAX };
-    esp_err_t err = get_once(h, path, sink, ctx, &r);
+    esp_err_t err = get_once(h, method, path, body, body_len, sink, ctx, &r);
     if (err != ESP_OK && r.reused && r.bytes == 0) {
-        /* The server dropped the idle connection; that is keep-alive's normal
-         * end, not a failure. One fresh try, and its numbers are the result. */
         ESP_LOGI(TAG, "kept connection was closed by the server; reconnecting");
         h->live = false;
         orb_https_result_t r2 = { .int_free_min = r.int_free_min,
                                   .int_largest_min = r.int_largest_min };
-        err = get_once(h, path, sink, ctx, &r2);
+        err = get_once(h, method, path, body, body_len, sink, ctx, &r2);
         r = r2;
     }
     r.err = err;
     if (res) *res = r;
     return err;
+}
+
+esp_err_t orb_https_get(orb_https_t *h, const char *path, orb_https_sink_fn sink, void *ctx,
+                        orb_https_result_t *res)
+{
+    return orb_https_request(h, ORB_HTTPS_GET, path, NULL, 0, sink, ctx, res);
+}
+
+const char *orb_https_resp_headers(const orb_https_t *h) { return h ? h->hdrs : ""; }
+
+esp_err_t orb_https_del_header(orb_https_t *h, const char *name)
+{
+    if (!h || !h->c || !name) return ESP_ERR_INVALID_ARG;
+    return esp_http_client_delete_header(h->c, name);
 }

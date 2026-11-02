@@ -17,7 +17,7 @@ Seven owner requirements drive it. They number as the owner numbered them.
 | The serial console answers only `NAME SCAN MODE RESET PING PROV` — no file verb exists | `main/net/orb_net.c` |
 | Mounting is implicit, plus `POST /api/v1/sd/rescan`; there is no mount door | `main/sd/orb_sd.h` |
 | Storing a theme IS activating it, and the store reboots the board | `main/net/orb_net.c` |
-| A reinstall reuses the slot and keeps its serial, so grants, enable and settings survive | `orb_app_install.c`'s `decide()` |
+| An upgrade over an installed app reuses its slot, so grants and settings survive; an uninstall erases them (§43.3) | `orb_app_install.c`'s `decide()` |
 | A card row's identity words are read from its own slot header at boot and at install | `orb_app_install.c` |
 | The header's trailing free word sits OUTSIDE the `hdr_crc` span | `orb_app_manifest.h`'s word enum |
 
@@ -378,12 +378,10 @@ a reading taken from an older firmware (`"installed":[]` on a board running thre
 correcting them is part of this change, because a double that hides the shell cannot model
 the one built-in state with a verb on it.
 
-**An app has three states, not four.** The face dropped its enable/disable toggle. An orb
-either runs an app — in flash, in a slot, on the carousel, one fact — or it does not have it
-installed. A switch that could hide an installed row off the carousel re-created a state the
-product decided not to have, and it made "which apps do I have" unanswerable from the page.
-`POST /api/v1/apps/enable` still exists on the device and the hub still proxies it; the Apps
-face never asks, and a gate in `ui_test.go` fails if the button comes back.
+**An app is installed or it is not.** An orb either runs an app — in a slot, on the carousel,
+one fact — or it does not have it installed; the card may hold it ready to install. The device
+has no other state and no door for one (plan §43.3), and
+a gate in `ui_test.go` fails if a toggle comes back.
 
 What the face offers instead, per row:
 
@@ -461,8 +459,9 @@ had been sending the library stem, so the dial landed on a default the operator 
   press. A resurrected `//go:embed` of app bytes fails it, which is the S5 invariant.
 - `library_test.go`, `installflow_test.go`, `import_test.go`, plus `themeapps_test.go`
   rows for the hub-only pane.
-- `orbfake` grows `GET /api/v1/apps`, `POST /api/v1/sd/app`, `/apps/install` and
-  `/apps/enable`, scripted off `orb_net.c` and not off the hub's client.
+- `orbfake` grows `GET /api/v1/apps`, `POST /api/v1/sd/app` and `/apps/install`, scripted
+  off `orb_net.c` and not off the hub's client (it still answers the retired `/apps/enable`,
+  which the device dropped in §43.3 — the hub work owes its removal).
 - `docs/architecture.md` loses the firmware-baked-factory-blobs claim. This file gains
   the bench verdict.
 

@@ -473,8 +473,7 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 			// `apps` partition header, and a card-tier app keeps its code on the card
 			// (the firmware reports code_size 0 for such a row), so the row can stand
 			// with nothing behind it: a remove-from-card, a card swapped out, or a
-			// store that died mid-write each leaves a row that enables, never reaches
-			// the glass, and answers "installed" to a hub that skipped on the row
+			// store that died mid-write each leaves a row that never reaches the glass, and answers "installed" to a hub that skipped on the row
 			// alone (bench, new board, 2026-10-29: clean flash then Wi-Fi setup, and
 			// the hub printed installed while no byte had ever crossed). A built-in
 			// row carries its code in the image and has no card copy to miss.
@@ -484,12 +483,6 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 				break
 			}
 			send(installStep{Step: slug, Action: "skipped", Note: "already on the dial"})
-			if !row.Enabled && !row.Failed {
-				if _, e := s.device.AppEnable(ip, slug, true); e != nil {
-					return fmt.Errorf("enabling %s: %w", slug, plainDeviceErr(e, 0))
-				}
-				send(installStep{Step: slug, Action: "enabled"})
-			}
 			return nil
 		}
 	}
@@ -564,10 +557,6 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 			for _, row := range list.Installed {
 				if row.Slug == slug {
 					send(installStep{Step: slug, Action: "installed"})
-					if _, e := s.device.AppEnable(ip, slug, true); e != nil {
-						return fmt.Errorf("enabling %s: %w", slug, plainDeviceErr(e, 0))
-					}
-					send(installStep{Step: slug, Action: "enabled"})
 					return nil
 				}
 			}
@@ -731,12 +720,11 @@ func (s *Server) shelfHoldsOwnersContent(ip string) (bool, error) {
 		if r.Compiled || r.Failed {
 			continue
 		}
-		// A row is a promise; the card copy and the enable bit are the substance. A row
-		// that stands switched off with no card behind it is leftover from a broken orb
-		// life, not a shelf anybody curated — counting it as the owner's is how an
+		// A row is a promise; the bytes behind it are the substance. A row that needs
+		// a card copy and has none is leftover from a broken orb life, not a shelf anybody curated — counting it as the owner's is how an
 		// adoption skipped over a zero-file card while the page said installed (bench,
 		// 2026-10-29, Bronze). The ladder's hollow-row gate refills exactly this row.
-		if !r.Enabled && !cardHolds(list, r.Slug) {
+		if needsCardBytes(r) && !cardHolds(list, r.Slug) {
 			continue
 		}
 		return true, nil

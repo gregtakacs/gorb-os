@@ -70,7 +70,7 @@ def lift(text, pattern, where):
 src = read(WASM_C)
 hdr = read(WASM_H)
 F_PLAN = lift(src, r"orb_wasm_plan_t orb_wasm_plan\(const orbapp_hdr_t \*h\)\s*\{[\s\S]*?\n\}", WASM_C)
-F_ENTRY_ENUM = lift(src, r"enum \{ W_ACTIVATE = 0,[\s\S]*?W_COUNT \};", WASM_C)
+F_ENTRY_ENUM = lift(src, r"enum \{\s*W_INIT = 0,[\s\S]*?W_COUNT\s*\};", WASM_C)
 F_ENTRY_STRUCT = lift(src, r"typedef struct \{\s*\n\s*const char \*export_name;[\s\S]*?\} wasm_entry_t;", WASM_C)
 F_ENTRIES = lift(src, r"static const wasm_entry_t s_entries\[W_COUNT\] = \{[\s\S]*?\n\};", WASM_C)
 F_PLANSTRUCT = lift(hdr, r"typedef struct \{\s*\n\s*bool\s+load;[\s\S]*?\} orb_wasm_plan_t;", WASM_H)
@@ -236,14 +236,26 @@ def run_plan(binp, cases, cases_file):
 
 
 # The vocabulary the device half and the guest both depend on: (index, required, name).
-# Only orb_tick is required; the rest are optional.
+# Only orb_init is required (§43): a module that never builds itself is not an app;
+# every other hook — the beat included — is optional, as its compiled twin may be NULL.
+# apps/sdk/orb.h lists the same names for the app's author.
 EXPECT_ENTRIES = [
-    (0, 0, "orb_activate"),
-    (1, 1, "orb_tick"),
-    (2, 0, "orb_suspend"),
-    (3, 0, "orb_resume"),
-    (4, 0, "orb_input"),
-    (5, 0, "orb_service"),
+    (0, 1, "orb_init"),
+    (1, 0, "orb_activate"),
+    (2, 0, "orb_tick"),
+    (3, 0, "orb_suspend"),
+    (4, 0, "orb_resume"),
+    (5, 0, "orb_input"),
+    (6, 0, "orb_service"),
+    (7, 0, "orb_show"),
+    (8, 0, "orb_set_armed"),
+    (9, 0, "orb_opt_count"),
+    (10, 0, "orb_opt_kind"),
+    (11, 0, "orb_opt_label"),
+    (12, 0, "orb_opt_value"),
+    (13, 0, "orb_opt_inc"),
+    (14, 0, "orb_opt_sel"),
+    (15, 0, "orb_opt_arm"),
 ]
 
 
@@ -300,7 +312,7 @@ def lint(text):
     # Raw-fn signatures are written in m3's results(params) notation. The module-dump
     # underscore spelling throws in SignatureToFuncType (m3_bind.c has no case for
     # '_'): the bench refused the first import-bearing module over it, 2026-10-21.
-    if not re.search(r"\{\s*\"orb\",\s*\"now\",\s*\"v\(iii\)\"", text):
+    if not re.search(r"\{\s*\"orb\",\s*\"now\",\s*\"i\(ii\)\"", text):
         fails.append("  device lint: the orb.now binding is not in m3's results(params) "
                      "notation — the underscore form throws return-count-overflow")
     order(r"trapped in", r"orb_svc_note_fault\s*\(",
@@ -308,6 +320,17 @@ def lint(text):
           "the fault is billed where the trap is reported, in one place")
     # The strike cap is honoured live: release happens only once the broker says the
     # row is faulted, so a single trap keeps the app running and two end it.
+    # §43.4: the time budget. The strong m3_Yield answers the overrun trap, and the
+    # deadline is armed before the guest's stack call and stopped after it.
+    if not re.search(r"M3Result m3_Yield\(void\)\s*\{\s*return s_overrun \? s_overrun_trap : m3Err_none;", text):
+        fails.append("  device lint: m3_Yield no longer answers the overrun trap — a spinning "
+                     "app freezes the dial")
+    # The call-site arm, spelled with its guard: budget_fire re-arms the same timer for
+    # an I/O slip (orb_io_window.h), and that re-arm is not the call's own deadline.
+    order(r"if \(s_budget\) esp_timer_start_once\(s_budget", r"esp_execute_shared_stack_function\(",
+          "budget armed", "the guest call", "the deadline must run while the guest does")
+    order(r"esp_execute_shared_stack_function\(", r"esp_timer_stop\(s_budget\)",
+          "the guest call", "budget stopped", "a finished call must not trip the next one")
     order(r"orb_svc_faulted\s*\(", r"orb_wasm_unload\s*\(",
           "orb_svc_faulted check", "orb_wasm_unload",
           "the engine is released only at the second strike, not the first")
@@ -350,15 +373,12 @@ def lint_seam(inst, mn):
     order(r"orb_svc_faulted\(row\)", r"wasm_row_load\(p,",
           "orb_svc_faulted skip", "wasm_row_load",
           "quarantined code apps stay cold", inst)
-    # The enable door releases a stale slot before loading the new occupant.
-    order(r"orb_wasm_unload\(row->flash_slot\)", r"wasm_row_load\(cp,",
-          "stale-slot orb_wasm_unload", "enable-door wasm_row_load",
-          "a slot reused after an uninstall never keeps its previous module", inst)
-    # main.c's ladder: enable words, then code, then init.
-    order(r"orb_app_install_apply_enable\s*\(\s*\)\s*;",
+    # main.c's ladder: the broker's words (grants, faults), then code, then init. There
+    # is no enable rung (§43.3); a code app installed live reboots into its module.
+    order(r"orb_svc_init\s*\(\s*\)",
           r"orb_app_install_apply_code\s*\(\s*\)\s*;",
-          "apply_enable", "apply_code",
-          "disabled apps never pay their D27 memory at boot", mn)
+          "orb_svc_init", "apply_code",
+          "quarantined code apps never pay their D27 memory at boot", mn)
     order(r"orb_app_install_apply_code\s*\(\s*\)\s*;",
           r"orb_app_init_all\s*\(\s*\)",
           "apply_code", "orb_app_init_all",
@@ -404,8 +424,8 @@ MUTATIONS = [
     ("ignore the ceiling", "plan", _sub("h->wasm_mem_max > ORB_WASM_MEM_MAX", "0")),
     # plan: pass a bogus cap — a legal load now reports the wrong bound.
     ("wrong cap", "plan", _sub("p.mem_cap = h->wasm_mem_max;", "p.mem_cap = 1;")),
-    # entries: tick stops being required — a module with no tick would load.
-    ("tick not required", "entries", _rex(r'("orb_tick",\s*)true', r'\1false')),
+    # entries: init stops being required — a module that never builds would load.
+    ("init not required", "entries", _rex(r'("orb_init",\s*)true', r'\1false')),
     # entries: an export is renamed — the guest contract drifts silently.
     ("rename tick", "entries", _rex(r'"orb_tick"', '"orb_frame"')),
     # entries: a second required export appears — an optional hook turns mandatory.
@@ -439,21 +459,24 @@ MUTATIONS = [
     # seam: the boot rung loads a C2-quarantined code app — its memory held hostage.
     ("load despite fault words", "seam",
      _sub("if (orb_svc_faulted(row)) continue;", "/* no quarantine check */")),
-    # seam: the enable door keeps a previous occupant's engine state on the slot.
-    ("keep stale slot", "seam",
-     _sub("orb_wasm_unload(row->flash_slot);", "/* stale state kept */")),
-    # seam_main: the boot ladder skips the rung — enabled code apps never load.
+    # seam_main: the boot ladder skips the rung — installed code apps never load.
     ("no code rung at boot", "seam_main",
      _sub("orb_app_install_apply_code();", "/* rung skipped */")),
-    # seam_main: the rung runs BEFORE the enable words — every installed code app
-    # pays its D27 memory, even the ones the owner turned off.
-    ("rung before enable words", "seam_main",
-     _rex(r"(orb_app_install_apply_enable\(\);)",
-          r"orb_app_install_apply_code();\n    \1")),
+    # seam_main: the rung runs BEFORE the broker's words — a quarantined code app
+    # pays its D27 memory, and the fault check reads words not yet loaded.
+    ("rung before the broker", "seam_main",
+     _rex(r"(    ESP_ERROR_CHECK\(orb_svc_init\(\)\);)",
+          r"    orb_app_install_apply_code();\n\1")),
+    # lint: m3_Yield stops answering the deadline — a call-free loop runs forever.
+    ("yield ignores the deadline", "lint",
+     _sub("return s_overrun ? s_overrun_trap : m3Err_none;", "return m3Err_none;")),
+    # lint: the deadline is never armed.
+    ("budget never armed", "lint",
+     _sub("if (s_budget) esp_timer_start_once(s_budget, (uint64_t)s_budget_ms * 1000u);", ";")),
     # lint: the raw-call sig reverts to the module-dump underscore spelling — the
     # bench bug of 2026-10-21: m3_bind.c parses it as returns and refuses the link.
     ("underscore sig notation", "lint",
-     _sub("\"orb\", \"now\", \"v(iii)\"", "\"orb\", \"now\", \"iii_\"")),
+     _sub("\"orb\", \"now\",           \"i(ii)\"", "\"orb\", \"now\",           \"ii_i\"")),
     # seam: the upload identity tuple drops the code pair again — a code-only
     # re-upload reads as "unchanged" and the old module survives on the card.
     ("tuple ignores the code region", "seam",

@@ -242,6 +242,9 @@ void display_bench_reset(void);
  *  twice: one pass may have started before it looked, the second began after. */
 void     display_lvgl_pass_mark(void);
 uint32_t display_lvgl_passes(void);
+/** The LVGL pool as last sampled on the LVGL task (about 1 Hz): its size, free bytes,
+ *  largest free block and high-water mark. All zero before the first sample. */
+void     display_lv_mem(uint32_t *total, uint32_t *free_b, uint32_t *biggest, uint32_t *peak);
 
 #ifdef __cplusplus
 }

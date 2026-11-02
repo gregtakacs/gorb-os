@@ -186,7 +186,7 @@ static void mk(orb_app_t *a, const char *slug, const char *title)
     memset(a, 0, sizeof *a);
     a->slug = slug; a->title = title;
     a->kind = ORB_APP_KIND_APP;
-    a->art_slot = -1; a->installed = true; a->enabled = true;
+    a->art_slot = -1; a->installed = true;
 }
 /* The table the device ships today (clock, color_picker, menu — the menu's title
  * deliberately absent, so the slug fallback is exercised), with the module's own
@@ -216,7 +216,7 @@ const orb_app_t *orb_app_neighbour(const orb_app_t *from, int step)
     if (i < 0) return g_ring_n ? g_ring[0] : NULL;
     for (int hops = 0; hops < g_ring_n; hops++) {
         i = (i + step) % g_ring_n; if (i < 0) i += g_ring_n;
-        if (g_ring[i]->enabled && !g_ring[i]->failed) return g_ring[i];
+        if (!g_ring[i]->failed) return g_ring[i];
     }
     return NULL;
 }

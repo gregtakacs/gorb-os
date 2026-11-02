@@ -89,7 +89,10 @@ typedef enum {
  * them and refuses any key the app did not declare — "its own namespace, its
  * declared types and the per-app byte quota" (§4.2). */
 typedef enum {
-    ORB_SET_INT = 0, ORB_SET_ENUM, ORB_SET_TOGGLE, ORB_SET_STRING   /* C9, frozen */
+    ORB_SET_INT = 0, ORB_SET_ENUM, ORB_SET_TOGGLE, ORB_SET_STRING,  /* C9, frozen */
+    ORB_SET_SECRET  /* §43: a value the app may never read (an API key). The OS keeps
+                     * it in the credential store and attaches it to the app's HTTPS
+                     * requests to the one host def_str names, and nowhere else. */
 } orb_set_type_t;
 
 typedef struct {
@@ -201,6 +204,9 @@ typedef struct {
  *  which says only "this call was closed this boot" — by a revocation, or by an
  *  app that asked for a cap it never declared. Only the log line says which. */
 bool orb_grant_ok(const orb_app_t *a, orb_cap_t cap);
+/* Load `a`'s grant word now if it has not been read yet (it reads NVS). For callers
+ * about to run code on a stack where no flash read may start (the wasm guest's). */
+void orb_svc_grants_warm(const orb_app_t *a);
 
 #define SVC(a, cap)  do { if (!orb_grant_ok((a), CAP_##cap)) \
                               return ESP_ERR_NOT_ALLOWED; } while (0)
@@ -218,7 +224,7 @@ esp_err_t orb_svc_init(void);
 const orb_svc_t *orb_svc_table(void);
 
 /** The wall reading the now() entry reports, minus the gate: the OS's own
- *  callers (clock_view's compose_now, the boot ladder) take the same pair the
+ *  callers (the stage's compose_now, the boot ladder) take the same pair the
  *  apps do — two anchors is the bug the extraction was for. D15: raw second
  *  plus scheduler fraction plus trust flag; conversion stays app-side. */
 void orb_time_now(time_t *sec, double *frac, bool *synced);
@@ -234,15 +240,7 @@ uint32_t     orb_svc_declared(const orb_app_t *a); /* the install-time consent,
 uint32_t     orb_svc_denied_mask(const orb_app_t *a); /* caps refused this boot */
 esp_err_t    orb_svc_set_grant(const orb_app_t *a, orb_cap_t cap, bool on);  /* the owner's toggle */
 
-/* ---- P4a: the owner's enable ledger and the uninstall wipe --------------------
- * The enable word lives in the SAME namespace as the grants (orb.grants, key
- * e<slot>): both are owner decisions keyed by registry slot, and the installer
- * may touch neither (D19) — the /apps page reaches both through this door.
- * Absent means ON (owner ruling 2026-10-29: installed IS enabled), so the only
- * durable off is a stored 0 — the recovery door's off-record. An unreadable
- * ledger still answers false. */
-bool orb_svc_enabled(int slot);                            /* the stored word, absent = true */
-esp_err_t orb_svc_set_enabled(int slot, bool on);          /* on writes 1, off writes 0 */
+/* ---- P4a: the uninstall wipe -------------------------------------------------- */
 /** Uninstall and fresh-install wipe: erase every per-slot word this row owns —
  *  g, e, the c/x/r fault record, the orb.app<slot> settings namespace — and
  *  zero the broker's RAM row. Owner state never outlives the app it names:
@@ -256,7 +254,8 @@ uint32_t     orb_svc_denials(const orb_app_t *a);
 const char  *orb_svc_last_status(const orb_app_t *a); /* what SVC->status printed */
 uint32_t     orb_svc_beat_ms(const orb_app_t *a);  /* the D16 rate in force; the scheduler reads this */
 uint32_t     orb_svc_cfg_used(const orb_app_t *a); /* bytes charged against the quota */
-uint32_t     orb_svc_cfg_gen(const orb_app_t *a);  /* bumps on every successful cfg write */
+uint32_t     orb_svc_cfg_gen(const orb_app_t *a);
+void         orb_svc_cfg_touch(const orb_app_t *a);   /* §43: move the gen for a secret write */  /* bumps on every successful cfg write */
 
 /* P5.5's ledger pair for the compositor face, for /api/v1/status: how many
  * rows the app holds right now, and how many times its own table refused it

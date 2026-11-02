@@ -76,7 +76,7 @@ static const char *const CLASS_NAMES[CLASS_N] = {
                                  * free for a pointer (alpha/loop/os-adv mean nothing
                                  * to a single-frame row). orbtheme-baker.js writes it
                                  * as AUX_F_SHADOW3; the projection below maps it onto
-                                 * the runtime flag, so clock_view's pairing rules
+                                 * the runtime flag, so the stage's pairing rules
                                  * read one vocabulary however the theme arrived. */
 
 /* theme_schema.CLOCK_WINDOW_DOMAIN, mirrored for the device's re-check of a

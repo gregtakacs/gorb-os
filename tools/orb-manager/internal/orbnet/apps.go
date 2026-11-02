@@ -3,8 +3,8 @@ package orbnet
 // The device-side APP doors, quoted from main/net/orb_net.c: GET /api/v1/apps
 // (h_apps_list), POST /api/v1/sd/app (h_app_upload — the raw-bytes twin of
 // ThemeUpload, named by the container's own header), POST /api/v1/apps/install?id=<stem>
-// (h_apps_install — queues the card-to-slot job and answers 202), and
-// POST /api/v1/apps/enable?id=<slug>&on=0|1 (h_app_enable — the owner's toggle).
+// (h_apps_install — queues the card-to-slot job and answers 202). An installed app is
+// on the dial; there is no toggle (D47).
 // D36's hub seed was their only hub-side caller; S5 deleted the seed route and
 // left these as the library surface for the same doors the Apps face's drop
 // zone already dials. One install path, unchanged — only the hub-side presser
@@ -57,12 +57,14 @@ type AppInstalledRow struct {
 	Title   string `json:"title"`
 	Slot    int    `json:"slot"`
 	Caps    string `json:"caps"`
-	Enabled bool   `json:"enabled"`
 	Failed  bool   `json:"failed"`
+	// Secrets names the app's secret settings (§43): the Orb tab's App keys draws a
+	// write-only field for each through /api/v1/apps/cfg.
+	Secrets []string `json:"secrets,omitempty"`
 	// OnGlass is the dial's own answer to "is this the face it is showing right now":
 	// orb_net.c prints `app_on_glass`, which is true when the row is `orb_app_current()`
 	// or its active bit stands. It is NOT "installed" and not "in the carousel". A
-	// card-tier app can be installed, enabled, and off the glass in the same moment,
+	// card-tier app can be installed and off the glass in the same moment,
 	// which is exactly where a fresh board lands while the theme slot still holds the
 	// factory face. The hub had no field for it, so a caller could ask "is there a row"
 	// and read that as "the owner can see it".
@@ -213,22 +215,9 @@ func (c *Client) AppInstallCard(ip, stem string) (json.RawMessage, error) {
 	return c.devicePost(ip, "/api/v1/apps/install?id="+url.QueryEscape(stem), nil, "")
 }
 
-// AppEnable writes the owner's enable word (POST /api/v1/apps/enable?id=&on=).
-func (c *Client) AppEnable(ip, slug string, on bool) (json.RawMessage, error) {
-	if slug == "" {
-		return nil, fmt.Errorf("orbnet: refusing an enable with no slug")
-	}
-	onv := "0"
-	if on {
-		onv = "1"
-	}
-	return c.devicePost(ip, "/api/v1/apps/enable?id="+url.QueryEscape(slug)+"&on="+onv, nil, "")
-}
-
-// AppFace parks the glass on one row (POST /api/v1/apps/face?id=). Enable does not:
-// the enable word puts a row in the carousel, and only a switch writes the resume
-// record a boot returns to, which is why a seeded clock could stand enabled,
-// card-backed and themed while the dial still showed the menu (seedverify.go's
+// AppFace parks the glass on one row (POST /api/v1/apps/face?id=). An install does
+// not: it puts a row in the carousel, and only a switch writes the resume record a
+// boot returns to, which is why a seeded clock could stand installed, card-backed and themed while the dial still showed the menu (seedverify.go's
 // note, bench 2026-10-29). The door answers `rebooting` when the park needs a boot
 // and `parked` when the row already wore the glass, so a caller that wants the
 // clock on the glass asks once and then waits the reboot out exactly as it does

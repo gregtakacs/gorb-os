@@ -51,7 +51,7 @@ import zlib
 
 MAGIC         = 0x474F5254        # 'T','R','O','G' little-endian on the wire
 FORMAT        = 2                 # this file's container layout
-GEOM_ABI      = 1                 # the clock_view.c geometry struct it describes
+GEOM_ABI      = 1                 # the orb_stage.c geometry struct it describes
 SECTOR        = 4096
 HDR_WORDS     = 32                # 128 B, the rest reserved for the next format
 NAME_MAX      = 56                # one name field; 55 usable bytes + NUL
@@ -93,7 +93,7 @@ W_HDR_CRC   = W_NAME + ((NAME_MAX + 3) // 4)      # crc32 over the whole header 
 HDR_WORDS   = W_HDR_CRC + 4                       # +4 words spare for the next format
 
 
-# clk_theme_t's scalars in clock_view.c's declaration order, as (name, type).
+# clk_theme_t's scalars in orb_stage.c's declaration order, as (name, type).
 # The type only drives sign extension on read; every field is one u32 word on
 # the wire. Keep this list and orb_theme.c's parse table in step — the sentinel
 # test in tools/host_tz_test.py is what notices when they are not.

@@ -1,18 +1,18 @@
 /**
- * orb_theme_geo.h — the six names clock_view.c reads theme geometry through.
+ * orb_theme_geo.h — the six names orb_stage.c reads theme geometry through.
  *
  * Include this AFTER assets/clock_assets.h. The generated header declares
  * `static const clk_theme_t clk_theme = {…}` and `#define CLK_BLOB_BYTES …`;
  * defining these macros before it would expand them inside its own definitions,
  * which is a compile error that reads like a broken generator.
  *
- * Why macros and not a struct of pointers at every call site: clock_view.c
+ * Why macros and not a struct of pointers at every call site: orb_stage.c
  * references clk_theme in 85 places and subscript-uses the four tables, and the
  * bake chose their lengths. This header is therefore the whole of the firmware
- * change for theme-at-runtime — clock_view.c adds one #include and stops treating
+ * change for theme-at-runtime — orb_stage.c adds one #include and stops treating
  * these as compile-time constants.
  *
- * What this forbids, and clock_view.c honours: no sizeof() of any of the four
+ * What this forbids, and orb_stage.c honours: no sizeof() of any of the four
  * tables, and no array declarator sized by them. Both would silently become
  * pointer arithmetic (or fail to compile), losing the length the bake picked.
  */
@@ -27,7 +27,7 @@
 #undef clk_bg_frames
 #undef CLK_BLOB_BYTES
 
-/* The dereference here is the whole trick: `clk_theme.tick_rate` in clock_view.c
+/* The dereference here is the whole trick: `clk_theme.tick_rate` in orb_stage.c
  * expands to `(*orb_theme_geo()->theme).tick_rate`, so the 85 read sites are
  * untouched and the value still comes from one cached pointer — orb_theme_geo()
  * returns a file static, which keeps this exactly as cheap on the per-frame paint

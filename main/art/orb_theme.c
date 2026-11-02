@@ -1,7 +1,7 @@
 /**
  * orb_theme.c — see orb_theme.h for the model. An installed theme is a container
  * from the card copied into the single slot at the head of the `assets` partition,
- * and the geometry it carries is what clock_view.c reads instead of the compiled-in
+ * and the geometry it carries is what orb_stage.c reads instead of the compiled-in
  * one.
  *
  * The wire format is DEFINED in tools/orbtheme.py and mirrored here. That mirror
@@ -147,7 +147,7 @@ _Static_assert(ORB_THEME_HANDLE_MAX == ORB_SD_NAME_MAX,
 /* Words a blob of each layout must hold, given its own counts — see geom_counts()
  * below, which is the definition and the only caller-facing form of this rule. */
 
-/* Bounds the loader accepts, from clock_view.c's own array sizes and from what
+/* Bounds the loader accepts, from orb_stage.c's own array sizes and from what
  * the shipped bake measures (128 rects, 8 GIF frames). A theme wanting more than
  * the dial holds is refused as unloadable rather than installed and then clamped
  * at paint time into a half-drawn frame. The plate bank's own bound is no loader
@@ -157,7 +157,7 @@ _Static_assert(ORB_THEME_HANDLE_MAX == ORB_SD_NAME_MAX,
 #define GIFS_MAX        32                         /* CLK_GIF_MAX */
 
 /* A sprite occupies colour w*h*2 then alpha w*h. Must match sprite_bytes() in
- * clock_view.c, which is the code these offsets are checked against. */
+ * orb_stage.c, which is the code these offsets are checked against. */
 #define SPRITE_BYTES(s) ((uint64_t)(s)->w * (uint64_t)(s)->h * 3u)
 #define PLATE_BYTES     ((uint64_t)CLK_SCR_W * (uint64_t)CLK_SCR_H * 2u)
 
@@ -445,7 +445,7 @@ static uint32_t      s_bundle_bytes;
 
 /* The no-resident-art fallback (§26 P6.5). The compiled FORMAT 2 pair is retired, so
  * there is no baked-in dial to fall back to: a board whose default bundle and installed
- * slot both fail to draw clears the geometry so clock_view's residency gate fails and it
+ * slot both fail to draw clears the geometry so the stage's residency gate fails and it
  * paints the base digital face, which still tells the time. s_geo.theme stays NULL and is
  * only ever dereferenced on the themed leg, which the residency gate has already fenced
  * off by the time anything reads it. */
@@ -509,10 +509,13 @@ bool orb_theme_live_sec(const char *slug, const orb_bundle_sec_t **sec,
 }
 
 const char *orb_theme_source(void)         { return s_source; }
+
+/* D45: the app the live theme belongs to (its one section's slug), "" when none. */
+const char *orb_theme_live_slug(void)      { return s_live_sec ? s_live_sec->slug : ""; }
 /* The residency verdict the boot ladder reached: an adopted, drawable theme whose
  * geometry is published. Not the same question as art_bank_ready() — that answers
  * only whether a span is mapped, and a mapped span whose clock projection refused
- * is pixels with no dial. clock_view_init gates its themed leg on the two together;
+ * is pixels with no dial. stage_init gates its themed leg on the two together;
  * §26's fallback is about losing the theme, not about mapping bytes no parse adopted. */
 bool orb_theme_resident(void)              { return s_active_valid; }
 const char *orb_theme_active_name(void)    { return s_active_name; }
@@ -809,11 +812,20 @@ typedef struct {
 } chk_scratch_t;
 static chk_scratch_t *s_chk;
 
+/* D43: a bundle is one app's theme. Its one section is the theme, whatever app it is
+ * addressed to; the section's own slug says which app draws it. (The reader still
+ * parses the N-section shape until the format reversion lands with its writer and
+ * suite; until then the first section is the theme.) */
+static const orb_bundle_sec_t *sole_sec(const orb_bundle_t *b)
+{
+    return (b && b->n_sections >= 1) ? &b->sec[0] : NULL;
+}
+
 static const char *clock3_verdict(const orb_bundle_t *b)
 {
-    const orb_bundle_sec_t *sec = orb_bundle_find(b, ORB_CLOCK3_SLUG);
+    const orb_bundle_sec_t *sec = sole_sec(b);
     if (!sec)
-        return "the bundle carries no clock section to draw";
+        return "the bundle carries no theme section to draw";
     if (!s_verdict_mx || !s_chk) return "out of memory for the verdict lock";
     xSemaphoreTake(s_verdict_mx, portMAX_DELAY);
     orb_clock3_io_t pio;
@@ -1653,7 +1665,7 @@ static uint32_t  s_b3_bgf[ORB_CLOCK3_N_BGF];
  * carriage — the table a bundle's AUX elements project into, read by clock_view for the
  * life of the theme. PSRAM, allocated once at the first adoption: 24 rows would add
  * ~1.6 kB to .bss on a board whose internal heap boundary is what httpd_start needs
- * (the 2026-10-24 lesson clock_view.c's layer keys record), and the dial reads each row
+ * (the 2026-10-24 lesson orb_stage.c's layer keys record), and the dial reads each row
  * a handful of times a frame. */
 static clk_row_t *s_b3_rows;
 static clk_comp_t s_b3_comps[CLK_COMP_MAX];   /* D32 slice 2: the FORMAT 3 dial's
@@ -1687,12 +1699,12 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
         heap_caps_free(region);
         return ESP_ERR_INVALID_CRC;
     }
-    const orb_bundle_sec_t *sec = orb_bundle_find(&b, ORB_CLOCK3_SLUG);
+    const orb_bundle_sec_t *sec = sole_sec(&b);
     if (!sec) {
-        /* Not damage — a bundle that carries other apps and no clock. The row's
-         * sentence says which, because "the file I stored is not on the wall" without
-         * a reason is what an owner reads as a broken button. */
-        ESP_LOGI(TAG, "bundle in %s carries no %s section", src_name, ORB_CLOCK3_SLUG);
+        /* Not damage — an empty bundle. The row's sentence says so, because "the
+         * file I stored is not on the wall" without a reason is what an owner reads
+         * as a broken button. */
+        ESP_LOGI(TAG, "bundle in %s carries no theme section", src_name);
         heap_caps_free(region);
         return ESP_ERR_NOT_FOUND;
     }
@@ -1767,7 +1779,7 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     heap_caps_free(s_live_region);
     s_live_region = region;
     s_live_b = b;
-    s_live_sec = orb_bundle_find(&s_live_b, ORB_CLOCK3_SLUG);   /* re-found in the copy */
+    s_live_sec = sole_sec(&s_live_b);                            /* re-found in the copy */
 
     s_geo.theme = &s_theme;
     s_geo.rects = s_b3_rects; s_geo.rect_first = s_b3_first;
@@ -1876,7 +1888,7 @@ esp_err_t orb_theme_boot(void)
     /* The clock's themes source enters the OS's file table HERE, on the boot
      * rung and before any door task exists — not on the clock app's init. The
      * join-time theme death this replaces (bench, 2026-10-29) had the upload door
-     * asking for a declaration only clock_view_init() writes, on the boot where
+     * asking for a declaration only stage_init() writes, on the boot where
      * the hub had just installed and enabled the clock and no reboot had rebuilt
      * the table; the door's ESP_ERR_NOT_FOUND came back as "no card in the
      * socket" over a mounted card. A no-I/O table write belongs with the module
@@ -2277,7 +2289,7 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
     const char *dr = clock3_verdict3(fd, &b3, fsz3, sec0, &nsec);
     if (!dr && nsec != 1) {
         snprintf(e->why, sizeof e->why,
-                 "a theme file carries exactly one section — this one carries %lu",
+                 "one app per theme file (D43); this one has %lu sections",
                  (unsigned long)nsec);
         dr = e->why;
     }
@@ -2320,21 +2332,21 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
  * The clock's themes source, owned here.
  *
  * orb_files is the OS's walk and apps declare their directories into it, so the
- * declaration below is the one clock_view_init() hands up at boot — lifted here
+ * declaration below is the one stage_init() hands up at boot — lifted here
  * so the theme doors can answer from it themselves. The reason is the join-time
  * theme death (bench, Bronze, 2026-10-29): the hub installs the clock over the
  * wire on a board that booted without one, enables it in the same run, and asks
- * the upload door for the theme seconds later. clock_view_init() has never run
+ * the upload door for the theme seconds later. stage_init() has never run
  * on that boot, orb_files_src() answers NULL, upload_begin() returns
  * ESP_ERR_NOT_FOUND, and the door calls the whole thing "no card in the socket"
  * over a card that /api/v1/sd swears is mounted. The hub's mitigation spent a
  * full reboot and a second 3.7 MB upload to work around a door that did not
  * know where its own themes live.
  *
- * The values are clock_view.c's declaration field for field, and this file is
+ * The values are orb_stage.c's declaration field for field, and this file is
  * now the one copy of them: orb_theme_src_register() puts them in the OS table
  * on the boot ladder (from orb_theme_boot, before any task that can ask exists),
- * and clock_view_init() re-declares the same source through the same call when
+ * and stage_init() re-declares the same source through the same call when
  * the clock builds — orb_files_register() takes a re-declaration as an app's
  * init running twice and overwrites in place.
  *

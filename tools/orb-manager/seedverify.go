@@ -27,7 +27,6 @@ import (
 // error so the caller can log the whole picture and still send one sentence.
 type seedFacts struct {
 	RowFound  bool
-	Enabled   bool
 	Failed    bool
 	OnGlass   bool
 	CardBytes bool
@@ -51,7 +50,6 @@ func (s *Server) verifySeed(ctx context.Context, ip string) (seedFacts, error) {
 			continue
 		}
 		f.RowFound = true
-		f.Enabled = row.Enabled
 		f.Failed = row.Failed
 		f.OnGlass = row.OnGlass
 		f.CardBytes = !needsCardBytes(row) || cardHolds(list, "clock")
@@ -62,8 +60,6 @@ func (s *Server) verifySeed(ctx context.Context, ip string) (seedFacts, error) {
 		return f, errSeed("the ledger answers no clock row, so nothing reached the dial")
 	case f.Failed:
 		return f, errSeed("the dial refused the clock container it has")
-	case !f.Enabled:
-		return f, errSeed("the clock row stands switched off, so the glass draws no face")
 	case !f.CardBytes:
 		return f, errSeed("the clock row stands but its card copy is gone")
 	case f.CardCount == 0:

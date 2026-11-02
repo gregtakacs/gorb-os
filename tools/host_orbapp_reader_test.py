@@ -575,7 +575,7 @@ def vectors_refuse(add):
              py=("refuse", msg),
              note="a forged 100 B bank (req tied to it, old-file shape): refused "
                   "as art-carrying, not priced — no size fits post-D21"))
-    per = patch(build_hdr()[0][:], orbapp.W_PERIOD_MS, 2999)
+    per = patch(build_hdr()[0][:], orbapp.W_PERIOD_MS, 999)
     ok, msg = python_outcome(per)
     add(Case("beat_under_the_floor", per, flags=F_CHECK, check=msg,
              py=("refuse", msg)))
@@ -673,10 +673,10 @@ def vectors_refuse(add):
              unpack="settings blob is 192 B, short of the 256 B its count claims",
              py=("skip", None)))
     bad_blob = bytearray(sblob)
-    bad_blob[16] = 4                                  # descriptor 0's type word
+    bad_blob[16] = 5                                  # descriptor 0's type word (4 is §43's secret)
     add(Case("unpack_type_out_of_c9", g, bytes(bad_blob),
              flags=F_CHECK | F_LAYOUT | F_UNPACK, n_unpack=4,
-             unpack="setting 0 has type word 4, outside C9's frozen 4",
+             unpack="setting 0 has type word 5, outside C9's frozen 5",
              py=("skip", None)))
     nid = bytearray(sblob)
     for k in range(16):                               # id field, no NUL
@@ -1065,14 +1065,14 @@ def lint():
     hc = open(READER_C).read()
     hh = open(READER_H).read()
     both = hc + hh
-    for needle in ("ORBAPP_BEAT_MIN_MS 3000u", "ORBAPP_BEAT_MAX_MS 86400000u",
+    for needle in ("ORBAPP_BEAT_MIN_MS 1000u", "ORBAPP_BEAT_MAX_MS 86400000u",
                    "ORBAPP_GEOM_BYTES_MAX 0x00040000u",
                    "ORBAPP_ART_BYTES_MAX  0x003D0000u",
                    "ORBAPP_SETTINGS_MAX   16u",
                    "ORBAPP_MAGIC      0x00415247u",
                    '{ "power", "net", "sd_read", "themes", "sound", "location" }'):
         assert needle in both, "reader drifted from the agreed numbers: " + needle
-    assert orbapp.BEAT_MIN_MS == 3000 and orbapp.BEAT_MAX_MS == 86400000
+    assert orbapp.BEAT_MIN_MS == 1000 and orbapp.BEAT_MAX_MS == 86400000
     assert orbapp.GEOM_BYTES_MAX == 0x40000 and orbapp.ART_BYTES_MAX == 0x3D0000
     assert orbapp.SETTINGS_MAX == 16 and orbapp.MAGIC == 0x00415247
     assert (orbapp.CAP_FREE, orbapp.CAP_OWNER) == \
@@ -1092,12 +1092,12 @@ def lint():
         assert str(e) == ("settings blob is 192 B, short of the 256 B its "
                           "count claims"), str(e)
     t4 = bytearray(64)
-    t4[16] = 4
+    t4[16] = 5
     try:
         orbapp.unpack_settings(bytes(t4), 1)
-        raise AssertionError("writer accepted type word 4")
+        raise AssertionError("writer accepted type word 5")
     except ValueError as e:
-        assert str(e) == "setting 0 has type word 4, outside C9's frozen 4", str(e)
+        assert str(e) == "setting 0 has type word 5, outside C9's frozen 5", str(e)
 
     # ---- P5b: the asset mirror, read out of the shipped text ----------------
     lint_asset_mirror(hc, hh, open(ASSETS_H).read())
@@ -1155,8 +1155,8 @@ def lint_asset_mirror(hc, hh, ah):
 
 
 MUTATIONS = [
-    ("beat_floor_dropped", "h", "ORBAPP_BEAT_MIN_MS 3000u",
-     "ORBAPP_BEAT_MIN_MS 2000u"),
+    ("beat_floor_dropped", "h", "ORBAPP_BEAT_MIN_MS 1000u",
+     "ORBAPP_BEAT_MIN_MS 500u"),
     ("geom_cap_doubled", "h", "ORBAPP_GEOM_BYTES_MAX 0x00040000u",
      "ORBAPP_GEOM_BYTES_MAX 0x00080000u"),
     ("settings_cliff_offbyone", "c",
@@ -1244,8 +1244,8 @@ MUTATIONS = [
     # can pin the pair. Bumping one side alone is the shape of a firmware that accepts
     # a container written for a class table it does not have.
     ("asset_abi_bumped_alone", "d",
-     "#define ORB_ASSET_CLASS_ABI   2u",
-     "#define ORB_ASSET_CLASS_ABI   3u"),
+     "#define ORB_ASSET_CLASS_ABI   3u",
+     "#define ORB_ASSET_CLASS_ABI   4u"),
     # The registry's name field widened past the wire's twelve bytes: the writer keeps
     # accepting a name the device then truncates, and the truncated reference resolves
     # as a different slot rather than as a failure.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host check for main/net/orb_readsb.c, the flight feed's streaming reader.
+"""Host check for apps/flights/readsb.c, the flight tracker's streaming reader.
 
     python3 tools/host_readsb_test.py             # all checks
     python3 tools/host_readsb_test.py --mutations # do the checks actually bite?
@@ -18,15 +18,18 @@ nav_modes) that must be skipped, "ground" as an altitude, and null squawks.
 import glob, json, math, os, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = os.path.join(ROOT, "main", "net", "orb_readsb.c")
-INC = os.path.join(ROOT, "main", "net")
+SRC = os.path.join(ROOT, "apps", "flights", "readsb.c")
+INC = os.path.join(ROOT, "apps", "flights")
+# D46: the OS tokenizes; the app's readsb.c only maps tokens. The suite runs both.
+JSON_C = os.path.join(ROOT, "main", "app", "orb_json.c")
+JSON_INC = os.path.join(ROOT, "main", "app")
 FIX = sorted(glob.glob(os.path.join(ROOT, "tests", "fixtures", "readsb", "*.json")))
 
 DRIVER = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "orb_readsb.h"
+#include "readsb.h"
 static void emit(const orb_ac_t *a, void *ctx) {
     (void)ctx;
     printf("AC %s|%s|%s|%.5f|%.5f|%d|%d|%d|%.2f|%.1f|%.0f|%d|%.1f|%d\n", a->hex, a->flight,
@@ -39,10 +42,16 @@ int main(int argc, char **argv) {
     static char buf[1 << 20];
     size_t n = fread(buf, 1, sizeof buf, f);
     if (argc > 3) n = (size_t)atol(argv[3]);           /* truncate */
+    (void)chunk;                        /* the OS tokenizer reads the whole body */
     orb_readsb_t r;
     orb_readsb_init(&r, emit, NULL);
-    for (size_t at = 0; at < n; at += chunk)
-        orb_readsb_feed(&r, buf + at, (n - at < chunk) ? n - at : chunk);
+    orb_json_t j;
+    orb_json_begin(&j, buf, n);
+    orb_json_tok_t t;
+    for (;;) {
+        const int32_t k = orb_json_next(&j, &t);
+        if (!orb_readsb_token(&r, &t) || k == ORB_JSON_END || k == ORB_JSON_ERROR) break;
+    }
     printf("END objects=%u emitted=%u done=%d error=%d\n",
            r.objects, r.emitted, orb_readsb_done(&r), r.error);
     return 0;
@@ -54,8 +63,8 @@ def build(src_path, out):
     d = tempfile.mkdtemp()
     drv = os.path.join(d, "drv.c")
     open(drv, "w").write(DRIVER)
-    r = subprocess.run(["gcc", "-std=c11", "-O1", "-Wall", "-Werror", "-I", INC,
-                        drv, src_path, "-lm", "-o", out], capture_output=True, text=True)
+    r = subprocess.run(["gcc", "-std=c11", "-O1", "-Wall", "-Werror", "-I", INC, "-I", JSON_INC,
+                        drv, src_path, JSON_C, "-lm", "-o", out], capture_output=True, text=True)
     if r.returncode:
         sys.exit("build failed:\n" + r.stderr)
 
@@ -126,18 +135,20 @@ def main():
     if "--mutations" in sys.argv:
         src = open(SRC).read()
         mutants = [
-            ("track loses to true_heading", "if (!r->have_track && num(r, &v)) a->track", "if (num(r, &v)) a->track"),
+            ("track loses to true_heading", "if (!r->have_track && num) a->track", "if (num) a->track"),
             ("callsign keeps its padding", "while (n && dst[n - 1] == ' ') n--;", ""),
-            ("nested arrays read as fields", "r->depth == r->list_depth + 1 &&", "r->depth >= r->list_depth + 1 &&"),
-            ("adsb.fi's key ignored", '|| !strcmp(r->key, "aircraft")', ""),
-            ("escape ends the string", "r->esc = true;\n                continue;", "r->esc = false;"),
-            ("truncation reads as done", "r->depth == 0 && r->list_depth > 0", "r->list_depth > 0"),
+            ("nested arrays read as fields", "t->depth == r->list_depth + 2", "t->depth >= r->list_depth + 2"),
+            ("adsb.fi's key ignored", '|| !strcmp(t->key, "aircraft")', ""),
+            ("an aircraft with no position is emitted", "if (r->ac.hex[0] && r->have_lat && r->have_lon)",
+             "if (r->ac.hex[0])"),
+            ("truncation reads as done", "return !r->error && r->closed && r->list_depth >= 0;",
+             "return !r->error && r->list_depth >= 0;"),
         ]
         survived = []
         for label, a, b in mutants:
             if a not in src:
                 sys.exit(f"mutation anchor gone: {label}")
-            p = os.path.join(tempfile.mkdtemp(), "orb_readsb.c")
+            p = os.path.join(tempfile.mkdtemp(), "readsb.c")
             open(p, "w").write(src.replace(a, b, 1))
             mb = p[:-2]
             build(p, mb)

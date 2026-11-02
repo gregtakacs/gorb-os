@@ -37,7 +37,7 @@ import kit_check             # noqa: E402  red_components + the red thresholds
 import sim_tourb_mark as mk  # noqa: E402  the firmware integer maths
 
 HUB_WINDOW = 16        # texels about the declared centre to sample the hub in
-PAINT_ALPHA_MIN = 13   # clock_view.c paint_row_ctx's own alpha cutoff
+PAINT_ALPHA_MIN = 13   # orb_stage.c paint_row_ctx's own alpha cutoff
 PIVOT_AXIS_TOL = 0.25  # px; the same tolerance kit_check.py holds the art to
 ROW_TRAVEL_TOL = 0.35  # px peak-to-peak; sub-texel is the requirement
 STEP_10 = 2            # 0.02 deg: fine enough to catch any single-texel jump

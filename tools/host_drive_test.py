@@ -5,7 +5,7 @@ Every moving row on the dial — hand, pointer, ring, carriage — is posed by o
 its source (or one digit of it), as much of the next finer field as its cadence shows,
 the fraction t of the way across its domain, and the two poses that fraction lands
 between (an angle and the pivot's travel). This bench lifts the shipping functions OUT
-OF clock_view.c VERBATIM, compiles them with host gcc -Werror, and pins them against
+OF orb_stage.c VERBATIM, compiles them with host gcc -Werror, and pins them against
 hand-worked vectors: each cadence, each end rule, the digit selectors, a travel and a
 turn at once, the ease in fraction space, and the step scan the jump sounds read.
 
@@ -19,7 +19,8 @@ import os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-CLOCK = os.path.join(ROOT, "main", "clock", "clock_view.c")
+# §43: the dial's drive is the clock app's own code now, carried verbatim.
+CLOCK = os.path.join(ROOT, "apps", "clock", "main.c")
 ART = os.path.join(ROOT, "main", "art")
 
 def lift(src, sig):
@@ -48,6 +49,10 @@ C_PRE = r"""
 typedef struct { uint16_t n_comps, n_rows; clk_comp_t comps[CLK_COMP_MAX]; clk_row_t rows[CLK_ROW_MAX]; } orb_theme_geo_t;
 static orb_theme_geo_t s_geo;
 static const orb_theme_geo_t *orb_theme_geo(void) { return &s_geo; }
+/* the app's spellings of the same things (apps/clock/main.c) */
+typedef struct tm tm_t;
+typedef orb_theme_geo_t geo_t;
+#define G s_geo
 """
 
 C_HARNESS = r"""
@@ -341,7 +346,7 @@ def lifted_c(mutations=()):
         assert old in cview, "mutation target vanished: %r" % old
         cview = cview.replace(old, new, 1)
     moon = re.search(r"#define MOON_NEW_MOON_S[^\n]*\n#define MOON_SYNODIC_S[^\n]*", cview)
-    assert moon, "the moon constants moved out of clock_view.c"
+    assert moon, "the moon constants moved out of apps/clock/main.c"
     funcs = "\n".join([
         lift_block(cview, "typedef struct {\n    float    shown, from, to, amp;", "} ease_t;"),
         lift_block(cview, "enum { EASE_NONE = 0,", "};"),
@@ -349,7 +354,7 @@ def lifted_c(mutations=()):
         lift(cview, "static float ease_pose("),
         lift_block(cview, "#define EASE_SETTLE_DEG", "#define EASE_SETTLE_PX    3.0f"),
         lift(cview, "static bool cad_steps_slow("),
-        lift_block(cview, "typedef struct {\n    const struct tm *ti;", "} drive_now_t;"),
+        lift_block(cview, "typedef struct {\n    const tm_t *ti;", "} drive_now_t;"),
         lift(cview, "static bool comp_year_leap("),
         lift(cview, "static bool comp_value("),
         lift(cview, "static double drive_finer("),

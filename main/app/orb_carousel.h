@@ -17,7 +17,7 @@
  *
  * The chip is an ordinary LVGL object, and the dial's L4 pass would wipe it:
  * clock_layer_commit() rebuilds every marked row straight out of the GIF canvas
- * plus an explicit layer list (clock_view.c:938), and the chip is in neither.
+ * plus an explicit layer list (orb_stage.c:938), and the chip is in neither.
  * So the beat that marks those rows has to stop for the length of the peek.
  *
  * That is `orb_sched_pause()`, not the app's `suspend` hook. `suspend` is

@@ -1,6 +1,6 @@
 /* main/gfx/orb_sched.h — the OS-owned frame scheduler and delta bank.
  *
- * Extracted from main/clock/clock_view.c in P1 with the code unchanged: the
+ * Extracted from main/stage/orb_stage.c in P1 with the code unchanged: the
  * orb_bg_/orb_sched_ prefixes, the state passed back in at the callers that
  * still own it, and the per-tick policy callback are the only diffs.
  * gfx_parity_test.py proves that claim against the pinned pre-extraction
@@ -23,13 +23,13 @@
  * The seam is a policy struct installed at start (orb_sched_start): the
  * functions the tick drives that ARE dial policy (compose_now plus the
  * tourbillon advance plus the layer-table pose pass, and the bench plan) stay
- * in clock_view.c and are called through it. This TU includes no clock header,
+ * in orb_stage.c and are called through it. This TU includes no clock header,
  * so the dependency
  * stays one-way — app -> gfx, never gfx -> app. Same shape as
  * gfx_set_band_hook(), which already carries a commit callback from here.
  *
  * What deliberately did NOT move: the hand-beat state (s_bt_ctr/sec/frac),
- * which only hand_angles() reads and clock_view_set_bounce() re-anchors, and
+ * which only hand_angles() reads and stage_run() re-anchors, and
  * the layer/shadow/tourbillon widget sets the classic path renders.
  * Those are dial policy, and moving them would need an interface nobody has
  * asked for yet — P2's loader and P3's first foreign app will.
@@ -56,7 +56,7 @@
  * silently disagrees across a TU boundary is a path that stops marking. */
 /* The fallback beat the boot log quotes when a bake recorded no per-frame
  * delays at all: orb_bg_gif_tick_ms()'s real floor is the baked table's own,
- * clamped to 20 ms. Read by clock_view_init()'s cadence line. */
+ * clamped to 20 ms. Read by stage_init()'s cadence line. */
 #define CLK_GIF_TICK_MS 40
 
 #ifndef CLK_BG_DIRECT_PUSH
@@ -82,7 +82,7 @@ typedef struct {
 
 /* ---- the delta bank ------------------------------------------------------ */
 /* The bank base is registered once by the app rather than read here: gfx must
- * not learn about art_bank, so clock_view_init() hands its own blob() value to
+ * not learn about art_bank, so stage_init() hands its own blob() value to
  * orb_bg_init() and this TU never maps the assets partition itself. */
 void orb_bg_init(const uint8_t *base);
 
@@ -92,10 +92,10 @@ void orb_bg_init(const uint8_t *base);
 const lv_image_dsc_t *orb_bg_gif_canvas_init(void);
 /* Fill the still-plate descriptor and build the classic plate-frame bank from
  * it. Only reached after orb_bg_gif_canvas_init() returned NULL, exactly as
- * clock_view_init() ordered the two. */
+ * stage_init() ordered the two. */
 void orb_bg_classic_init(void);
 const lv_image_dsc_t *orb_bg_plate_dsc(void);
-/* The plate widget, handed in once after clock_view_init() creates it: the
+/* The plate widget, handed in once after stage_init() creates it: the
  * frame cycling and the 1 px commit nudge both invalidate through it. */
 void orb_bg_set_plate(lv_obj_t *plate);
 
@@ -280,6 +280,6 @@ typedef struct orb_app orb_app_t;
  *  table, no commit. An app that never called layer_add owns no table, and the
  *  getter answers NULL without minting one — see orb_svc_layer_table(). Since
  *  Commit 4 the clock feeds this table and owns no other L4 commit path; the
- *  dial's rows wake on the tick's pose pass (clock_view.c's
+ *  dial's rows wake on the tick's pose pass (orb_stage.c's
  *  clock_layers_refresh). */
 void orb_sched_commit_layers(const orb_app_t *active);

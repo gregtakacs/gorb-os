@@ -2,7 +2,7 @@
 """host_hand_aa_test.py — the row-AA capability rule, mirrored and mutated.
 
 D42 made every hand a row, so the rule is asked per row: row_aa() in
-main/clock/clock_view.c. A row's "hot tick" is no longer slot 2 but any seconds row
+main/stage/orb_stage.c. A row's "hot tick" is no longer slot 2 but any seconds row
 that sweeps (sweep or stop-to-go), and a shadow twin takes its row's answer.
 
 The shipped row_aa() is pure (reads the theme's carrier words and the row's own
@@ -46,7 +46,7 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.join(HERE, "..", "main", "clock", "clock_view.c")
+SRC = os.path.join(HERE, "..", "main", "stage", "orb_stage.c")
 
 
 # ---- the mirror ------------------------------------------------------------
@@ -102,7 +102,7 @@ def lint():
     fails = []
     for why, needle in checks:
         if needle not in txt:
-            fails.append("%s: %r no longer in clock_view.c" % (why, needle))
+            fails.append("%s: %r no longer in orb_stage.c" % (why, needle))
     # the body must be the three guards and one yes, and nothing grew around them
     if (body.count("return false;") != 2 or body.count("return true;") != 1
             or body.count("return row_smooth(ORB_ASSET_AUX, r->tag);") != 1):

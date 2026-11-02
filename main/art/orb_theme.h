@@ -5,11 +5,11 @@
  * THE PROBLEM THIS SOLVES. A bake has always produced a pair: the pixel bank
  * (assets/clock_assets.bin, into the `assets` partition, mmap'd by art_bank.c)
  * and the geometry that describes it (assets/clock_assets.h, COMPILED INTO THE
- * APP). clock_view.c reads that geometry in 85 places. So a theme arriving from a
+ * APP). orb_stage.c reads that geometry in 85 places. So a theme arriving from a
  * browser could bring its pixels but not its numbers, and loading an arbitrary
  * theme was impossible without a reflash. The container in tools/orbtheme.py
  * carries the geometry next to the pixels, and the accessor macros below are how
- * clock_view.c stops reading it as compile-time constants — with the compiled-in
+ * orb_stage.c stops reading it as compile-time constants — with the compiled-in
  * pair left in place as the fallback, which is what keeps `idf.py flash` and the
  * shipped dial working exactly as they did.
  *
@@ -77,7 +77,7 @@
  * fills them from a bundle's BANK rows, and that file compiles on a host with
  * nothing but clk_types.h and orb_bundle.h. This header includes it. */
 
-/* What clock_view.c reads in place of the generated header's constants. */
+/* What orb_stage.c reads in place of the generated header's constants. */
 typedef struct {
     clk_theme_t   *theme;
     clk_bg_rect_t *rects;
@@ -102,20 +102,20 @@ typedef struct {
                                        *   region's first byte; a FORMAT 3 bundle
                                        *   packs one bank per section, so the clock's
                                        *   pixels begin wherever its record said and
-                                       *   clock_view's blob base must follow. */
+                                       *   the stage's blob base must follow. */
     bool           from_container;    /* false = the compiled-in pair */
     char           name[ORB_THEME_NAME_MAX + 1];  /* the installed theme's owner name */
 } orb_theme_geo_t;
 
-/* The five accessors clock_view.c reads through — clk_theme, clk_bg_rects,
+/* The five accessors orb_stage.c reads through — clk_theme, clk_bg_rects,
  * clk_bg_rect_first, clk_gif_delays, clk_bg_frames, CLK_BLOB_BYTES — live in
  * orb_theme_geo.h, NOT here. They cannot be here: assets/clock_assets.h defines
  * those very names, and a macro would expand inside its own definition line.
- * clock_view.c includes the generated header first and the macro header second. */
+ * orb_stage.c includes the generated header first and the macro header second. */
 
 /**
  * Read the one slot's header, verify its bytes, and hand back the geometry the
- * dial draws. Call BEFORE clock_view_init(), which maps the bank — this reads the
+ * dial draws. Call BEFORE stage_init(), which maps the bank — this reads the
  * same multi-megabyte region the paint path is about to map, and resolving first is
  * what stops the dial drawing half of one theme and half of another.
  *
@@ -131,7 +131,7 @@ esp_err_t orb_theme_boot(void);
  *  The declaration lives in orb_theme.c because the theme doors read it on boots
  *  where the clock app never built — a hub that installs and enables the clock
  *  over the wire reaches the upload door before any reboot can run the app's own
- *  init (bench, 2026-10-29). orb_theme_boot() calls this, and clock_view_init()
+ *  init (bench, 2026-10-29). orb_theme_boot() calls this, and stage_init()
  *  calls it again as an ordinary re-declaration. */
 esp_err_t orb_theme_src_register(void);
 
@@ -147,7 +147,7 @@ const clk_sound_t *orb_theme_sounds(uint32_t *n, uint8_t *pattern);
  *  published its geometry. Distinct from art_bank_ready(), which answers only
  *  whether a pixel span is mapped — a mapped span whose clock projection refused
  *  is bytes with no dial, and a fallback that tests only the mapping walks the
- *  themed leg over them. A themed leg needs both: see clock_view_init()'s gate. */
+ *  themed leg over them. A themed leg needs both: see stage_init()'s gate. */
 bool orb_theme_resident(void);
 
 /** The adopted bundle's section for `slug`, with the offset at which that
@@ -203,6 +203,8 @@ orb_asset_ans_t orb_theme_preview_read(const char *handle,
 
 /** "slot" when the dial draws the slot's bundle, "none" for the base face. */
 const char *orb_theme_source(void);
+/** D45: the slug of the app the live theme belongs to, "" when no theme is live. */
+const char *orb_theme_live_slug(void);
 /** The owner name of the theme currently on the wall, "" for the base face. */
 const char *orb_theme_active_name(void);
 
@@ -231,7 +233,7 @@ uint32_t orb_theme_refill_bytes(void);
 /** C3 (§5.3): true from the store's unmap of the primary bank until the reboot
  *  that re-establishes it. Between those two points the theme's pixels are gone
  *  for this boot, so the dial must not be re-posed from cached descriptors —
- *  clock_view's bounce refuses to wake on it. False until a store parks, and
+ *  the stage's bounce refuses to wake on it. False until a store parks, and
  *  false again only on the next boot. */
 bool orb_theme_store_torn(void);
 /* True from the moment a store parks the dial until the reboot that ends it: the

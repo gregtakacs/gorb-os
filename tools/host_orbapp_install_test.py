@@ -211,7 +211,7 @@ NL = "\n"
 # re-derives them from the source text and fails if a constant here and the device
 # ever disagree — a re-typed number that quietly drifts is the whole reason the
 # decision is lifted instead of reimplemented.
-GEOM_CAP = 0x00040000          # ORBAPP_GEOM_BYTES_MAX == APPS_SLOT_GEOM_CAP
+GEOM_CAP = 0x00019000          # APPS_SLOT_GEOM_CAP: 100 KB per slot (§43)
 WASM_MEM_MAX = 0x00020000      # ORBAPP_WASM_MEM_MAX — D27's linear-memory ceiling
 ART_JUNK = 0x003D0001          # over the OLD slot cap; install_decide must not
                                # read the art word at all since D21 (P4b) — the
@@ -577,19 +577,15 @@ def lint(src):
             bad.append("D38: uninstall must no longer refuse a row the knob is holding")
         if "UNHOME_WAIT_MS" not in ub:
             bad.append("D38: the home wait must be bounded by UNHOME_WAIT_MS")
-    elo = src.find("esp_err_t orb_app_enable(")
-    ehi = src.find("esp_err_t orb_app_uninstall(", elo if elo >= 0 else 0)
-    if elo < 0 or ehi < 0:
-        bad.append("P4a: could not locate orb_app_enable body")
-    else:
-        eb = src[elo:ehi]
-        iw, ir = eb.find("orb_svc_set_enabled("), eb.find("orb_app_set_enabled(")
-        if iw < 0 or ir < 0 or iw > ir:
-            bad.append("P4a: enable must persist the word BEFORE the RAM flip")
-        if "orb_svc_clear_faults(" not in eb:
-            bad.append("P4a: enabling a failed app must clear its record first")
-        if "that app is on the dial" not in eb:
-            bad.append("P4a: disabling the app on the glass must be refused")
+    # §43.3: there is no enable door — an app is installed or it is not — and an
+    #       uninstall erases the app's secrets with its other owner words.
+    if "esp_err_t orb_app_enable(" in src or "orb_app_install_apply_enable" in src:
+        bad.append("§43.3: the enable door or its boot rung is back")
+    if ulo2 >= 0 and uhi2 > ulo2:
+        ub2 = src[ulo2:uhi2]
+        ic, iw = ub2.find("orb_app_cred_forget("), ub2.find("orb_svc_forget_row(")
+        if ic < 0 or iw < 0 or ic > iw:
+            bad.append("§43.3: uninstall must erase the app's secrets before forgetting its words")
     # 7b. THE DOOR GATE'S WORKER EXEMPTION (bench, orb-B 2026-10-21). The dial
     #       menu runs the enable/uninstall doors AS its orb_jobs job; busy() is
     #       that job's own flag, so a gate that reads it unconditionally refuses
@@ -598,7 +594,7 @@ def lint(src):
     #       is not the worker, and orb_jobs.c must answer on_worker by task
     #       identity (never by a flag a posted-but-unstarted job could fake).
     dlo = src.find("static const orb_app_t *door_open(")
-    dhi = src.find("esp_err_t orb_app_enable(", dlo if dlo >= 0 else 0)
+    dhi = src.find("\n}\n", dlo) if dlo >= 0 else -1
     if dlo < 0 or dhi < 0:
         bad.append("P7: could not locate door_open body")
     else:
@@ -615,25 +611,21 @@ def lint(src):
     #    the broker coming up and the first screen building.
     if "if (v.slot != sl.existing_slot)" not in src:
         bad.append("P4a: a fresh install must wipe a reused slot stale words")
-    blo = src.find("void orb_app_install_apply_enable(void)")
-    if blo < 0 or src.find("orb_svc_enabled(", blo) < 0:
-        bad.append("P4a: the boot apply rung must read the stored enable words")
     ms = read(os.path.join(ROOT, "main", "main.c"))
-    i1, i2, i3 = (ms.find("orb_svc_init())"),
-                  ms.find("orb_app_install_apply_enable();"),
-                  ms.find("orb_app_init_all())"))
-    if not (0 <= i1 < i2 < i3):
-        bad.append("P4a: main.c ladder order (apply after svc_init, before init_all)")
+    i1, i2, i3, i4 = (ms.find("orb_svc_init())"), ms.find("orb_app_cred_sweep();"),
+                      ms.find("orb_app_install_apply_code();"), ms.find("orb_app_init_all())"))
+    if not (0 <= i1 < i2 < i3 < i4):
+        bad.append("main.c ladder order (svc_init, the secret sweep, apply_code, init_all)")
     # 9. net doors: both POSTs registered, both reaching the device, and the
     #    installed tier streamed — refusal text stays the device sentence.
     nsrc = read(os.path.join(ROOT, "main", "net", "orb_net.c"))
-    for lit in ("/api/v1/apps/enable", "/api/v1/apps/uninstall",
-                "h_app_enable", "h_app_uninstall",
-                "orb_app_enable(id", "orb_app_uninstall(id",
+    for lit in ("/api/v1/apps/uninstall", "h_app_uninstall", "orb_app_uninstall(id",
                 "apps_send_installed(req, row, APPS_ROW_MAX);"):
         if lit not in nsrc:
             bad.append("P4a: orb_net.c lost %r" % lit)
-    for uri in ("/api/v1/apps/enable", "/api/v1/apps/uninstall"):
+    if "/api/v1/apps/enable" in nsrc:
+        bad.append("§43.3: orb_net.c still answers /api/v1/apps/enable")
+    for uri in ("/api/v1/apps/uninstall",):
         iu = nsrc.find('.uri = "%s"' % uri)
         if iu < 0 or "HTTP_POST" not in nsrc[iu:iu + 120]:
             bad.append("P4a: %s must be registered as a POST" % uri)
@@ -767,7 +759,7 @@ MUTATIONS = [
         "is too big\"); return false; }\n\n"
         "    /* Gate 1 — the manifest+geometry+code prefix the slot must hold.")),
     ("off-card payload check dropped (erase before verify)", "device",
-     _m("const char *vv = verify_payload(fd, h);",
+     _m("const char *vv = verify_payload(src, h);",
         "const char *vv = NULL; (void)verify_payload;")),
     ("slot header written before the geometry reads back", "device",
      _m("    if (e == ESP_OK) e = verify_slot_geom(p, h, v.slot, &fw);\n"
@@ -795,18 +787,18 @@ MUTATIONS = [
      _m("""    uint8_t *scratch = heap_caps_malloc(ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS * 4u +
                                         ORBAPP_SETTINGS_MAX * sizeof(orb_setting_desc_t),
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!scratch) { install_close(fd);
+    if (!scratch)
         return install_failed(ESP_ERR_NO_MEM, "out of memory for the settings table",
-                              why, whysz); }
+                              why, whysz);
     uint32_t *sw = (uint32_t *)scratch;
     orb_setting_desc_t *settings = (orb_setting_desc_t *)(scratch +
                                         ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS * 4u);""",
         """    orb_setting_desc_t settings[ORBAPP_SETTINGS_MAX];
     uint32_t sw[ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS];
     uint8_t *scratch = NULL;
-    if (false) { install_close(fd);
+    if (false)
         return install_failed(ESP_ERR_NO_MEM, "out of memory for the settings table",
-                              why, whysz); }""")),
+                              why, whysz);""")),
     ("upload scratch carries the walk's extension (a half-file is selectable)", "device",
      _m('#define APPS_SCRATCH "upload.part"',
         '#define APPS_SCRATCH "upload.orbapp"')),
@@ -821,11 +813,8 @@ MUTATIONS = [
         "const esp_err_t e = ESP_OK; (void)slot_base;")),
     ("P4a: uninstall keeps the owner words (revokes outlive their app)", "device",
      _m("if (orb_svc_forget_row(slot) != ESP_OK)", "if ((slot) != ESP_OK)")),
-    ("P4a: enable flips RAM before the word persists", "device",
-     _m("const esp_err_t e = orb_svc_set_enabled(slot, on);",
-        "orb_app_set_enabled(row, on); const esp_err_t e = orb_svc_set_enabled(slot, on);")),
-    ("P4a: enable skips clear_faults (revive over live crash counts)", "device",
-     _m("if (orb_svc_clear_faults((orb_app_t *)row) != ESP_OK)", "if (false)")),
+    ("§43.3: uninstall leaves the app's secrets behind", "device",
+     _m("    orb_app_cred_forget(orb_app_find_slug(slug));\n", "")),
     ("P4a: fresh install inherits a dirty slot stale words", "device",
      _m("if (v.slot != sl.existing_slot) {", "if (false) {")),
     ("P4a: uninstall erases the whole slot stride", "device",
@@ -912,8 +901,10 @@ def seed_check():
     # release that moved both together, which is the case a literal would confuse.
     want_version = open(os.path.join(HERE, os.pardir, "version.txt")).read().strip()
     want_serial = orbapp.serial_of_version(want_version)
-    want = [("clock", "Clock", 3, "sd_read|themes|sound"),   # sound: D39
-            ("color_picker", "HSB", 1, "")]
+    # §43: both are wasm apps (kind 2) carrying their own code; the clock names only
+    # sound now that the theme picker is the OS's Themes page.
+    want = [("clock", "Clock", 2, "sound"),   # sound: D39
+            ("color_picker", "HSB", 2, "")]
     for slug, title, kind, capnames in want:
         path = os.path.join(seed_dir, slug + ".orbapp")
         try:
@@ -933,7 +924,8 @@ def seed_check():
         # same fact — the string in the header and the number in version.txt — disagree.
         ok = (h["slug"] == slug and h["title"] == title
               and h["behaviour_kind"] == kind and got_caps == want_caps
-              and h["serial"] == want_serial and h["code_size"] == 0
+              and h["serial"] == want_serial and h["code_size"] > 0
+              and h["wasm_mem_max"] > 0
               and h["art_size"] == 0
               and h["version"] == want_version)
         check("starter %s.orbapp is the %s row the ruling names" % (slug, title), ok,

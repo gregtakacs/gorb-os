@@ -90,7 +90,7 @@ func TestThemeAppsListsThemeCapableAppWithZeroThemes(t *testing.T) {
 	orb := orbfake.New(
 		orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 1, OK: true, Active: true},
 	).WithCardApps(
-		orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: capThemes, Installed: true, Enabled: true},
+		orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: capThemes, Installed: true},
 	)
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
 	code, got := getThemeApps(t, s, ip)
@@ -113,15 +113,14 @@ func TestThemeAppsListsThemeCapableAppWithZeroThemes(t *testing.T) {
 }
 
 // The cap filter is the whole point: an app that does not declare `themes` must not
-// appear, and a theme-capable app that is installed but switched off must still
-// appear rather than hide the themes on its card.
-func TestThemeAppsFiltersByCapAndKeepsDisabled(t *testing.T) {
+// appear, and every installed theme-capable app must.
+func TestThemeAppsFiltersByCap(t *testing.T) {
 	orb := orbfake.New(
 		orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 1, OK: true, Active: true},
 	).WithCardApps(
-		orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: capThemes, Installed: true, Enabled: true},
-		orbfake.CardApp{Stem: "lamp", Slug: "lamp", Title: "Lamp", Caps: capPower, Installed: true, Enabled: true},
-		orbfake.CardApp{Stem: "thermo", Slug: "thermo", Title: "Thermo", Caps: capSdRead | capThemes, Installed: true, Enabled: false},
+		orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: capThemes, Installed: true},
+		orbfake.CardApp{Stem: "lamp", Slug: "lamp", Title: "Lamp", Caps: capPower, Installed: true},
+		orbfake.CardApp{Stem: "thermo", Slug: "thermo", Title: "Thermo", Caps: capSdRead | capThemes, Installed: true},
 	)
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
 	_, got := getThemeApps(t, s, ip)
@@ -132,8 +131,7 @@ func TestThemeAppsFiltersByCapAndKeepsDisabled(t *testing.T) {
 		t.Error("the theme-capable app is missing")
 	}
 	if appRow(got.Apps, "thermo") == nil {
-		t.Error("a DISABLED theme-capable app vanished; its card themes would be unreachable, " +
-			"and D37 keeps the pane so an author can still work")
+		t.Error("a second theme-capable app vanished; its card themes would be unreachable")
 	}
 }
 
@@ -143,7 +141,7 @@ func TestThemeAppsShowsOrphanCardGroup(t *testing.T) {
 	orb := orbfake.New(
 		orbfake.Theme{Name: "stray", App: "ghost", Bytes: 44, Serial: 1, OK: true},
 	).WithCardApps(
-		orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: capThemes, Installed: true, Enabled: true},
+		orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: capThemes, Installed: true},
 	)
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
 	_, got := getThemeApps(t, s, ip)
@@ -200,7 +198,7 @@ func hubSourceFile(t *testing.T, rel string) string {
 // not carry the clock's slug itself — the row says "no editor", and that is the truth.
 func TestThemeAppsClockOffersNoHubEditorWhenTheDialCannotAnswer(t *testing.T) {
 	orb := orbfake.New().WithCardApps(
-		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes, Installed: true, Enabled: true},
+		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes, Installed: true},
 	)
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
 	_, got := getThemeApps(t, s, ip)
@@ -238,7 +236,7 @@ func TestThemeAppsRefusesAnUnlearnedAddress(t *testing.T) {
 func TestThemeAppsOpensTheContainersEditorWhenTheDeviceReportsOne(t *testing.T) {
 	orb := orbfake.New(orbfake.Theme{Name: "aurora", Bytes: 99, Serial: 1, OK: true}).
 		WithCardApps(orbfake.CardApp{Stem: "hue", Slug: "hue", Title: "Hue", Caps: capThemes,
-			Installed: true, Enabled: true, Serial: 7, GeomCRC: 0xabcd, Editor: []byte("zip")})
+			Installed: true, Serial: 7, GeomCRC: 0xabcd, Editor: []byte("zip")})
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
 	_, got := getThemeApps(t, s, ip)
 	row := appRow(got.Apps, "hue")
@@ -260,7 +258,7 @@ func TestThemeAppsOpensTheContainersEditorWhenTheDeviceReportsOne(t *testing.T) 
 func TestThemeAppsOffersNoEditorWhenTheContainerCarriesNone(t *testing.T) {
 	orb := orbfake.New().WithCardApps(
 		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes,
-			Installed: true, Enabled: true, Serial: 3, GeomCRC: 0x1234})
+			Installed: true, Serial: 3, GeomCRC: 0x1234})
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
 	_, got := getThemeApps(t, s, ip)
 	row := appRow(got.Apps, "clock")
@@ -281,7 +279,7 @@ func TestThemeAppsReportsDriftAgainstTheHubsOwnContainer(t *testing.T) {
 	// difference nobody could resolve by re-pushing a file.
 	orb := orbfake.New().WithCardApps(
 		orbfake.CardApp{Stem: "sentinel", Slug: "sentinel", Title: "Sentinel", Caps: capThemes,
-			Installed: true, Enabled: true, Serial: 1, GeomCRC: 0x1111,
+			Installed: true, Serial: 1, GeomCRC: 0x1111,
 			Editor: []byte("an editor the hub's copy does not have")})
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
 	s.device.Containers = func(slug string) ([]byte, error) {
@@ -332,7 +330,7 @@ func TestThemeAppsReportsNoDriftForAMatchingStarter(t *testing.T) {
 	region := body[c.EditorOff : c.EditorOff+c.EditorSize]
 	orb := orbfake.New().WithCardApps(
 		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes,
-			Installed: true, Enabled: true, GeomCRC: c.GeomCRC, CodeCRC: c.CodeCRC,
+			Installed: true, GeomCRC: c.GeomCRC, CodeCRC: c.CodeCRC,
 			CodeSize: c.CodeSize, Serial: c.Serial, Editor: region})
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
 	s.device.Containers = func(slug string) ([]byte, error) { return cloneLibrary().Container(slug) }
@@ -363,7 +361,7 @@ func TestThemeAppsReportsNoDriftForAMatchingStarter(t *testing.T) {
 func TestThemeAppsSaysNothingWithoutAHubsCopy(t *testing.T) {
 	orb := orbfake.New().WithCardApps(
 		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes,
-			Installed: true, Enabled: true, Serial: 3, GeomCRC: 0x1234})
+			Installed: true, Serial: 3, GeomCRC: 0x1234})
 	s, ip, _, _ := fakeOrbHubWith(t, orb)
 	_, got := getThemeApps(t, s, ip)
 	row := appRow(got.Apps, "clock")

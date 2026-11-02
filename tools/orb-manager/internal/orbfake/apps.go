@@ -1,5 +1,5 @@
 // This file is the P4 card-app surface of the double, written from main/net/orb_net.c's
-// h_apps / h_apps_install / h_app_enable / h_app_uninstall / h_app_upload and from the
+// h_apps / h_apps_install / h_app_uninstall / h_app_upload and from the
 // container header in main/app/orb_app_manifest.h — not from themes.go and not from any
 // hub client. That distinction is this package's whole reason to exist (orbfake.go's
 // header comment): a double built from the caller's side agrees with the caller about the
@@ -10,10 +10,12 @@ package orbfake
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"hash/crc32"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -60,7 +62,7 @@ var capNames = [6]string{"power", "net", "sd_read", "themes", "sound", "location
 // registry and reports two views of it.
 type CardApp struct {
 	Stem   string // the card file's stem — the only handle install accepts
-	Slug   string // the header's own slug, which is what enable/uninstall key on
+	Slug   string // the header's own slug, which is what uninstall keys on
 	Title  string
 	AppID  uint32
 	Caps   uint32
@@ -76,18 +78,20 @@ type CardApp struct {
 	// some (CfgKeys non-nil) gets the same 404 for anything else.
 	Cfg     map[string]string
 	CfgKeys []string
+	// Secrets maps each secret setting's id to the one host the manifest declared for
+	// it (§43). The installed row names the ids; GET /api/v1/apps/cfg answers set, the
+	// header, the host and the last four characters, and never the value.
+	Secrets map[string]string
 
 	Installed bool
-	Enabled   bool
 	Failed    bool
 	OnGlass   bool
 	// Status is the app's own runtime line as h_status reports it. The device sends "" for
 	// a built-in that never reported one, so the double sends "" and a caller sets it
 	// deliberately rather than the formatter inventing a word.
 	Status string
-	// NoIface marks a card whose behaviour no firmware module implements. orb_app_enable
-	// refuses to turn one on at all, so a Manage card that offered a toggle for it would
-	// be offering a button that can only ever fail.
+	// NoIface marks a card whose behaviour no firmware module implements: the dial can
+	// list it and never show it.
 	NoIface bool
 	// Editor holds the D37 editor region's bytes. GET /api/v1/apps/editor streams
 	// exactly these, and the double stores bytes rather than a placement: the device
@@ -103,7 +107,7 @@ type CardApp struct {
 	CodeCRC  uint32
 	CodeSize uint32
 	// Builtin marks a row that ships inside the firmware. door_open refuses to
-	// enable/disable/uninstall those with NOT_SUPPORTED, and they sit below
+	// uninstall those with NOT_SUPPORTED, and they sit below
 	// ORB_APP_BASE.
 	//
 	// The comment this field used to carry said such rows appear in h_status's ledger but
@@ -270,7 +274,7 @@ func (o *Orb) allRowsLocked() []*CardApp {
 // the built-in check. The order carries weight twice over. A card job in flight answers 409
 // about the job even when the id names nothing, so a double that checked the lookup first
 // would show the hub a reason the orb never had. And the name rule runs before the busy
-// check, which is why enable?id=..foo on a busy orb reports the name, not the job.
+// check, which is why uninstall?id=..foo on a busy orb reports the name, not the job.
 func (o *Orb) doorAppLocked(slug string) (*CardApp, int, string) {
 	if !sdNameOK(slug) {
 		return nil, 400, notUsableNameBody
@@ -296,31 +300,26 @@ func (o *Orb) doorAppLocked(slug string) (*CardApp, int, string) {
 //
 // Note what the device never does: put caller-controlled text in a REFUSAL body. Every
 // string below is the firmware's own sentence. The success bodies do echo the slug, because
-// h_app_enable formats it after the work succeeded — that difference is deliberate, and a
+// the door formats it after the work succeeded — that difference is deliberate, and a
 // double that echoes on refusal would teach the hub to render a string it cannot trust.
 const (
 	doorBusyBody      = `{"error":"a card job is running — try again when it finishes"}`
 	notFoundBody      = `{"error":"no app by that name is installed on this dial"}`
-	builtinBody       = `{"error":"the shell menu is part of the dial — it cannot be turned off"}`
-	onDialBody        = `{"error":"that app is on the dial — carousel away from it first"}`
+	builtinBody       = `{"error":"the shell menu is part of the dial — it cannot be uninstalled"}`
 	noIfaceBody       = `{"error":"no firmware module implements this app's behaviour — it cannot be shown"}`
-	reviveFailBody    = `{"error":"the fault record would not clear — the app stays failed"}`
 	notUsableNameBody = `{"error":"not a usable app name"}`
 	missingIDBody     = `{"error":"id is missing"}`
-	badOnBody         = `{"error":"on must be 0 or 1"}`
 	noStemBody        = `{"error":"id is missing or not a usable app name"}`
 	uninstallHoldBody = `{"error":"it came off the flash but the registry still holds it"}`
-	// h_app_face's refusal: an off row is not a destination. Word-for-word the
+	// h_app_face's refusal: a faulted row cannot wear the glass. Word-for-word the
 	// firmware's sentence, pinned by door_bodies_test.go against orb_net.c.
-	notEnabledBody = `{"error":"the row is switched off — enable it before parking the glass on it"}`
-	// h_app_face's second refusal: a faulted row cannot wear the glass.
 	failedFaceBody = `{"error":"the row carries a fault — clear it before parking the glass on it"}`
 )
 
 // appID reads the id query parameter the way q_param resolves it, which is NOT the way the
 // name rule works. q_param rejects only an empty value and a decoded separator, so
-// enable?id=..%2Fevil answers "id is missing"; a leading dot or a space survives q_param and
-// is caught by orb_sd_name_ok inside door_open, so enable?id=..foo answers "not a usable app
+// uninstall?id=..%2Fevil answers "id is missing"; a leading dot or a space survives q_param and
+// is caught by orb_sd_name_ok inside door_open, so uninstall?id=..foo answers "not a usable app
 // name" instead. The two 400s are different layers, and measuring the difference is the only
 // reason this function does not just call sdNameOK. A value longer than the handler's 24-byte
 // buffer is truncated rather than refused, so a 25-character id is accepted and matches
@@ -391,15 +390,21 @@ func (o *Orb) installedJSONLocked() string {
 		if a.Builtin {
 			tail = fmt.Sprintf(`,"compiled":true,"reason":"%s"}`, jsonSafe(a.Why))
 		} else {
+			ids := make([]string, 0, len(a.Secrets))
+			for id := range a.Secrets {
+				ids = append(ids, strconv.Quote(id))
+			}
+			slices.Sort(ids)
 			tail = fmt.Sprintf(`,"geom_crc":%d,"code_crc":%d,"code_size":%d,"serial":%d,`+
-				`"editor_crc":%d,"version":"%s"}`,
-				a.GeomCRC, a.CodeCRC, a.CodeSize, a.Serial, editorCRC(a.Editor), jsonSafe(a.Version))
+				`"editor_crc":%d,"version":"%s","secrets":[%s]}`,
+				a.GeomCRC, a.CodeCRC, a.CodeSize, a.Serial, editorCRC(a.Editor), jsonSafe(a.Version),
+				strings.Join(ids, ","))
 		}
 		rows = append(rows, fmt.Sprintf(
 			`{"slug":%q,"title":%q,"slot":%d,"caps":%q,"period_ms":%d,"n_settings":%d,`+
-				`"enabled":%s,"failed":%s,"walkable":%s,"on_glass":%s`,
+				`"failed":%s,"walkable":%s,"on_glass":%s`,
 			jsonSafe(a.Slug), jsonSafe(a.Title), slot, jsonSafe(capsNames(a.Caps)),
-			a.Period, a.NSet, tf(a.Enabled), tf(a.Failed), tf(!a.Failed), tf(a.OnGlass))+tail)
+			a.Period, a.NSet, tf(a.Failed), tf(!a.Failed), tf(a.OnGlass))+tail)
 		slot++
 	}
 	return strings.Join(rows, ",")
@@ -495,60 +500,11 @@ func (o *Orb) serveAppInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	row.Installed, row.Enabled, row.Failed = true, true, row.Why != ""
-}
-
-// serveAppEnable mirrors h_app_enable: both 400s come before any lookup, and refusals come
-// back through door_http_status's mapping — an unknown slug is ESP_ERR_NOT_FOUND, so a
-// 404; an app that cannot be shown is ESP_ERR_INVALID_STATE, so a 409.
-func (o *Orb) serveAppEnable(w http.ResponseWriter, r *http.Request) {
-	slug, on := appID(r), r.URL.Query().Get("on")
-	if slug == "" {
-		writeJSON(w, 400, missingIDBody)
-		return
-	}
-	if on != "0" && on != "1" {
-		writeJSON(w, 400, badOnBody)
-		return
-	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	a, code, body := o.doorAppLocked(slug)
-	if a == nil {
-		writeJSON(w, code, body)
-		return
-	}
-	// Disabling the row the dial is showing is refused before anything else: the panel would
-	// otherwise drop the app under the user's finger while the registry still claimed it.
-	if on == "0" && a.OnGlass {
-		writeJSON(w, 409, onDialBody)
-		return
-	}
-	if on == "1" {
-		if a.NoIface {
-			writeJSON(w, 409, noIfaceBody)
-			return
-		}
-		if a.Failed {
-			// Pressing ON on a failed app IS the revive gesture (C2): the device clears the
-			// fault record first and refuses only if NVS won't take the write. A double that
-			// flat-refused here hides the one control that recovers a failed card, and the
-			// hub gets written to show a dead end where the orb offers a repair.
-			if o.ReviveFails {
-				writeJSON(w, 500, reviveFailBody) // ESP_FAIL: door_http_status's default arm
-				return
-			}
-			a.Failed = false
-		}
-	}
-	a.Enabled = on == "1"
-	writeJSON(w, 200, fmt.Sprintf(`{"state":%q,"slug":%q}`,
-		map[bool]string{true: "enabled", false: "disabled"}[a.Enabled], jsonSafe(slug)))
+	row.Installed, row.Failed = true, row.Why != ""
 }
 
 // serveAppFace mirrors h_app_face, the glass door. The gates run in the firmware's
-// order: id, then the name/busy/installed lookup, then enabled, then fault, then
-// walkable. The lookup is doorAppLocked's own first three arms and NOT its built-in
+// order: id, then the name/busy/installed lookup, then fault, then walkable. The lookup is doorAppLocked's own first three arms and NOT its built-in
 // refusal: h_app_face has no such gate, because the shell is a face like any other and
 // parking on it is a legal thing to ask a dial. A double that refused it there would
 // hide a state the real orb accepts, which is the drift this file's header is about.
@@ -575,10 +531,6 @@ func (o *Orb) serveAppFace(w http.ResponseWriter, r *http.Request) {
 	a := o.apps[slug]
 	if a == nil || !a.Installed {
 		writeJSON(w, 404, notFoundBody)
-		return
-	}
-	if !a.Enabled {
-		writeJSON(w, 409, notEnabledBody)
 		return
 	}
 	if a.Failed {
@@ -621,17 +573,31 @@ func (o *Orb) serveAppClear(w http.ResponseWriter, r *http.Request) {
 	}
 	a.Failed = false
 	a.Installed = true
-	a.Enabled = true
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"cleared","slug":%q,"reboot":true}`, jsonSafe(slug)))
 }
 
 // serveAppCfg mirrors h_app_cfg: one declared setting written by id. The device
-// also applies the manifest's type and range; the double keeps the value as text.
+// also applies the manifest's type and range; the double keeps the value as text. A
+// secret (§43) takes a JSON body {"value","header"}, and an empty value clears it.
 func (o *Orb) serveAppCfg(w http.ResponseWriter, r *http.Request) {
 	slug, key := appID(r), r.URL.Query().Get("key")
 	if slug == "" || key == "" {
 		writeJSON(w, 400, `{"error":"id and key are required"}`)
 		return
+	}
+	var sec struct{ Value, Header string }
+	_, isSecret := o.secretHost(slug, key)
+	if isSecret && r.ContentLength > 0 {
+		body, ok := readBoundedBody(w, r, cfgBodyMax)
+		if !ok {
+			return
+		}
+		if json.Unmarshal(body, &sec) != nil {
+			writeJSON(w, 400, `{"error":"no escapes"}`)
+			return
+		}
+	} else {
+		sec.Value, sec.Header = r.URL.Query().Get("value"), r.URL.Query().Get("header")
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -640,15 +606,75 @@ func (o *Orb) serveAppCfg(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, `{"error":"no such app"}`)
 		return
 	}
-	if a.CfgKeys != nil && !slices.Contains(a.CfgKeys, key) {
+	if _, ok := a.Secrets[key]; !ok && a.CfgKeys != nil && !slices.Contains(a.CfgKeys, key) {
 		writeJSON(w, 404, `{"error":"the app declares no such setting"}`)
 		return
 	}
 	if a.Cfg == nil {
 		a.Cfg = map[string]string{}
 	}
-	a.Cfg[key] = r.URL.Query().Get("value")
+	if isSecret {
+		if sec.Value == "" {
+			delete(a.Cfg, key)
+			delete(a.Cfg, key+"\x00hdr")
+		} else {
+			a.Cfg[key], a.Cfg[key+"\x00hdr"] = sec.Value, sec.Header
+		}
+	} else {
+		a.Cfg[key] = sec.Value
+	}
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"set","slug":%q,"key":%q}`, jsonSafe(slug), jsonSafe(key)))
+}
+
+// cfgBodyMax bounds a secret's JSON body, as h_app_cfg does.
+const cfgBodyMax = 256
+
+func (o *Orb) secretHost(slug, key string) (string, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	a := o.apps[slug]
+	if a == nil {
+		return "", false
+	}
+	h, ok := a.Secrets[key]
+	return h, ok
+}
+
+// serveAppCfgGet mirrors h_app_cfg_get. A secret answers its host, whether it is set,
+// its header and its last four characters, and never its value.
+func (o *Orb) serveAppCfgGet(w http.ResponseWriter, r *http.Request) {
+	slug, key := appID(r), r.URL.Query().Get("key")
+	if slug == "" || key == "" {
+		writeJSON(w, 400, `{"error":"id and key are required"}`)
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	a := o.apps[slug]
+	host, secret := "", false
+	if a != nil {
+		host, secret = a.Secrets[key]
+	}
+	switch {
+	case a == nil || (!secret && a.CfgKeys != nil && !slices.Contains(a.CfgKeys, key)):
+		writeJSON(w, 404, `{"error":"no such app or setting"}`)
+	case secret:
+		v, hdr := a.Cfg[key], a.Cfg[key+"\x00hdr"]
+		if hdr == "" {
+			hdr = "x-api-key"
+		}
+		tail := ""
+		if len(v) >= 4 {
+			tail = v[len(v)-4:]
+		}
+		if v == "" {
+			hdr = ""
+		}
+		writeJSON(w, 200, fmt.Sprintf(`{"slug":%q,"key":%q,"type":"secret","host":%q,"set":%t,"header":%q,"tail":%q}`,
+			jsonSafe(slug), jsonSafe(key), host, v != "", hdr, tail))
+	default:
+		writeJSON(w, 200, fmt.Sprintf(`{"slug":%q,"key":%q,"value":%q}`, jsonSafe(slug), jsonSafe(key), a.Cfg[key]))
+	}
 }
 
 // serveAppUninstall mirrors h_app_uninstall. Uninstalling the row on the glass is the
@@ -668,17 +694,17 @@ func (o *Orb) serveAppUninstall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, code, body)
 		return
 	}
-	// The page confirms first; the device does not trust the confirm. Anything on the dial is
-	// refused with the same sentence the disable door uses.
-	if a.OnGlass {
-		writeJSON(w, 409, onDialBody)
-		return
-	}
+	// D38: an app on the glass is uninstallable — the device homes the dial first and
+	// carries on once the switch lands. The double has no poll to wait on, so it homes
+	// in place.
+	a.OnGlass = false
 	if o.UninstallSticks {
 		writeJSON(w, 409, uninstallHoldBody)
 		return
 	}
-	a.Installed, a.Enabled = false, false
+	a.Installed = false
+	// Uninstall is a full forget (D47): settings and secrets go with the row.
+	a.Cfg = nil
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"uninstalled","slug":%q}`, jsonSafe(slug)))
 }
 

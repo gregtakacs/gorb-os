@@ -94,8 +94,13 @@ extern const orb_app_iface_t orb_wasm_iface;
 
 /* Point slot `slot`'s instance at its registry row, so a guest import reaches the
  * broker with its real caller. The callers are orb_app_install's load rung
- * (apply_code at boot, wasm_row_load behind the enable door), never the shim. */
+ * (apply_code at boot), never the shim. */
 void orb_wasm_bind_app(int slot, orb_app_t *app);
+
+/** Bytes of the guest's shared native stack ever touched (§43), 0 before any call. */
+uint32_t orb_wasm_stack_peak(void);
+/** Deadlines the time budget forgave because a large transfer shared the call. */
+uint32_t orb_wasm_budget_slips(void);
 
 /** The beat landing for a resident code app: call its orb_tick(now_ms). Safe on an
  *  unloaded slot (no-op). The registry's tick path drives this on the LVGL task. */

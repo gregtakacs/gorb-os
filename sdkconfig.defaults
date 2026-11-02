@@ -312,3 +312,10 @@ CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 # D43 §5.4: LVGL's RGB565 image blends round like orb_gfx.c's mix_16_16
 CONFIG_LV_DRAW_SW_ASM_CUSTOM=y
 CONFIG_LV_DRAW_SW_ASM_CUSTOM_INCLUDE="orb_lv_blend.h"
+
+# §43: the main task runs orb_app_init_all, and a wasm app's init does its settings
+# mirror and grant-word reads (NVS) on this stack before its guest code runs on its
+# own PSRAM stack. At 3584 the first boot with two code apps enabled overflowed it
+# ("A stack overflow in task main", orb-A 2026-11-01). app_main returns at the end of
+# the boot ladder, so this is boot-time internal RAM only, and it is freed after.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144

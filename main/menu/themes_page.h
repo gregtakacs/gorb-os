@@ -18,7 +18,7 @@
  * Threading. The two operations that can take seconds — walking the card and
  * streaming a container through CRC (measured at 2952 ms for 3.87 MB) — never
  * run here. They go to orb_jobs_post(), which runs them on the shell's one
- * worker task, and their results are reaped by clock_themes_service() on the
+ * worker task, and their results are reaped by themes_page_service() on the
  * LVGL task. opt_label() and opt_value() therefore only ever read a copy that
  * already arrived; a page that asked the card for a name would hold the task
  * that paints the dial, and the knob would stop answering mid-turn.
@@ -35,40 +35,40 @@ extern "C" {
 /** Ask the worker for the card's theme list. Ignored while one is outstanding:
  *  a double-tap must not queue two multi-second walks, and the first result
  *  repaints the list anyway. Call from the shell's poll, never the worker. */
-void clock_themes_request_scan(void);
+void themes_page_request_scan(void);
 
 /** Reap a finished walk into the rows the option hooks answer from. Call from
  *  the LVGL task on every poll, whether or not the page is showing: a scan that
  *  finishes while the owner has rotated to the dial must still land, or the
  *  list would show a stale answer until they came back. */
-void clock_themes_service(void);
+void themes_page_service(void);
 
 /** True while a walk, an install or the default switch is outstanding, for the
  *  hint line. */
-bool clock_themes_busy(void);
+bool themes_page_busy(void);
 
 /** The status line the last job left — why the card did not answer, or what
  *  the last pick did. Empty when there is nothing to report. */
-const char *clock_themes_status(void);
+const char *themes_page_status(void);
 
 /** Press the row the shell's cursor is on. The shell owns the cursor, the clamp
  *  and the window; this module keeps no second idea of which row is highlighted,
  *  because two cursors for one row is how a page ends up staging the theme
  *  nobody is looking at. */
-void clock_themes_pick(int idx);
+void themes_page_pick(int idx);
 
 /** Leave the theme page: the cursor goes back to the top so re-entering answers
  *  "what is on the card" rather than dropping the owner mid-list where they
  *  left it, which on a round screen with no scroll bar reads as a lost knob.
- *  The preview plane goes with the visit (clock_themes_drop_preview). */
-void clock_themes_reset(void);
+ *  The preview plane goes with the visit (themes_page_drop_preview). */
+void themes_page_reset(void);
 
 /** Free the preview plane the shell may be blitting and any published answer.
  *  Call from the LVGL task only — the buffer it frees is one the paint may
  *  have drawn on the last repaint, and only the task that paints may retire a
- *  buffer it painted. clock_themes_reset() runs it; it is exposed for the same
+ *  buffer it painted. themes_page_reset() runs it; it is exposed for the same
  *  reason reset() is. */
-void clock_themes_drop_preview(void);
+void themes_page_drop_preview(void);
 
 #ifdef __cplusplus
 }
@@ -89,23 +89,23 @@ extern "C" {
 
 /** Build the theme page's state. Call before orb_app_init_all() reaches the
  *  clock's init, which is where the boot ladder puts it. */
-esp_err_t clock_themes_init(void);
+esp_err_t themes_page_init(void);
 
 /** True while a theme-list card walk is posted and unreaped. The clock no
  *  longer paints this state anywhere (owner ruling, 2026-10-26: the Themes
  *  header answers with the count and nothing else); it remains the dedupe
  *  the entry re-scan asks before posting another walk. */
-bool clock_themes_walk_outstanding(void);
+bool themes_page_walk_outstanding(void);
 
-int          clock_opt_count(orb_app_t *app);
-const char  *clock_opt_label(orb_app_t *app, int idx);
-const char  *clock_opt_value(orb_app_t *app, int idx);
-orb_opt_kind_t clock_opt_kind(orb_app_t *app, int idx);
-void         clock_opt_inc(orb_app_t *app, int idx, int32_t steps);
-void         clock_opt_sel(orb_app_t *app, int idx);
-void         clock_opt_arm(orb_app_t *app, bool armed);
-void         clock_opt_focus(orb_app_t *app, int idx);
-const void  *clock_opt_preview(orb_app_t *app, int idx, uint16_t *w,
+int          themes_opt_count(orb_app_t *app);
+const char  *themes_opt_label(orb_app_t *app, int idx);
+const char  *themes_opt_value(orb_app_t *app, int idx);
+orb_opt_kind_t themes_opt_kind(orb_app_t *app, int idx);
+void         themes_opt_inc(orb_app_t *app, int idx, int32_t steps);
+void         themes_opt_sel(orb_app_t *app, int idx);
+void         themes_opt_arm(orb_app_t *app, bool armed);
+void         themes_opt_focus(orb_app_t *app, int idx);
+const void  *themes_opt_preview(orb_app_t *app, int idx, uint16_t *w,
                                uint16_t *h, uint32_t *stamp);
 
 #ifdef __cplusplus

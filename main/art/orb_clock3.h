@@ -2,7 +2,7 @@
  *
  * P6.5 §25.5(2): the device reader that makes a stored bundle drawable. A bundle
  * carries no blob for the clock to read, so this file rebuilds the two things
- * clock_view.c actually consumes — one clk_theme_t and the blob base the colour
+ * orb_stage.c actually consumes — one clk_theme_t and the blob base the colour
  * offsets index — out of the element table §25.2 ruled and the four gif tables
  * §25.6 proved derivable. It is `bake_clock.py --from-bundle` on the device, over
  * the same mapping, refusing the same list (§25.3) for the same reasons.
@@ -139,7 +139,7 @@ typedef struct {
 
     /* Out: where the section's bank sits inside a mapped art region, so a
      *  multi-section bundle's clock pixels are found by adding this to the
-     *  region base, and how long that bank is. clock_view's bounds check reads
+     *  region base, and how long that bank is. the stage's bounds check reads
      *  the second; orb_theme's blob accessor reads the first. */
     uint32_t        out_art_off;
     uint32_t        out_art_size;

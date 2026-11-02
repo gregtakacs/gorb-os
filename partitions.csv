@@ -1,4 +1,4 @@
-# Layout B (A/B OTA + mmap'd art bank + SD theme archive).
+# Layout C (§43): A/B OTA at 3.5 MB, one theme slot, the app ledger sized to wasm apps.
 #
 # RETENTION INVARIANT — do not change the nvs row's offset or size. Neither
 # `idf.py flash` nor OTA ever rewrites nvs (it is absent from build/flash_args),
@@ -11,54 +11,41 @@ nvs,      data, nvs,     0x9000,    0x8000,
 otadata,  data, ota,     0x11000,   0x2000,
 phy_init, data, phy,     0x13000,   0x1000,
 # Two app slots: the S3 cannot OTA into the partition it is running from.
-# Sized for CODE ONLY (~1.31 MB today, measured from build/gorb-os.bin
-# after the network + OTA modules landed; was ~0.74 MB before Phase 2) — the art
-# bank moved out to `assets`, so nothing here carries pixels. 2 MB per slot leaves
-# ~0.7 MB of headroom; check the real number before shrinking either slot, since a
-# slot smaller than the image turns every upgrade into an ESP_ERR_OTA_VALIDATE_FAILED.
-ota_0,    app,  ota_0,   0x20000,   0x200000,
-ota_1,    app,  ota_1,   0x220000,  0x200000,
+# §43 grew them from 2 MB to 3.5 MB once the apps left the image: the clock, the
+# HSB editor and the flight tracker are wasm modules in the `apps` ledger now, and
+# the image is the OS alone (2,063,056 B at the move, measured from build/gorb-os.bin).
+# A slot smaller than the image turns every upgrade into ESP_ERR_OTA_VALIDATE_FAILED.
+ota_0,    app,  ota_0,   0x20000,   0x380000,
+ota_1,    app,  ota_1,   0x3A0000,  0x380000,
 # No `factory` partition on purpose: with otadata erased the bootloader logs
 # "No factory image, trying OTA 0" and seeds otadata itself
 # (bootloader_support/src/bootloader_utility.c), and `idf.py flash` resolves the
 # app slot to ota_0 (partition_table/parttool.py default-boot search = factory,
 # then ota_0..15). So first boot and USB reflash both land in ota_0.
 #
-# Active clock art bank (GIF keyframe + delta rects + hand sprites, ~1.85 MB
-# today) — mmap'd at boot by main/art/art_bank.c and handed to clock_view.c
-# as the base pointer every sprite read goes through. Offset and size are 64 KB
-# aligned so esp_partition_mmap wastes no MMU page entries on rounding.
+# The active theme slot (Migration 1), mmap'd at boot by main/art/art_bank.c and
+# handed to the dial stage as the base pointer every sprite read goes through.
+# Offset and size are 64 KB aligned so esp_partition_mmap wastes no MMU page entries
+# on rounding. ORB_THEME_SLOT_CAP (orb_bundle.h) is this size less the header block.
 # The blank SubType column is deliberate but must stay PRESENT: gen_esp32part.py
 # parses this CSV positionally (name,type,subtype,offset,size — see
 # PartitionDefinition.from_csv) and turns a blank data subtype into `undefined`
 # 0x06; delete the comma and offset/size shift left into the wrong fields.
 # Lookup is always by LABEL, never by subtype.
-assets,   data, ,           0x420000, 0x800000,
-# Pre-gzipped PWA shell for the config page (manifest + SW + one JS bundle).
-# Raw bytes, served with Content-Encoding: gzip; NOT a filesystem partition.
-www,      data, ,           0xC20000, 0x140000,
+assets,   data, ,           0x720000, 0x800000,
 # Application settings + WiFi credentials, in their OWN NVS partition.
 # This is the retention fix: main.c still calls nvs_flash_erase() to recover from
 # a corrupt default NVS, and that call only wipes the `nvs` partition above —
 # which esp_wifi may then repopulate, but which can no longer take the user's
 # SSID/passphrase with it, because those live here under "orb.net".
-storage,  data, nvs,        0xD60000, 0x6000,
-# The app install ledger (plan §3.2): catalog rows, manifest copies, and the
-# geometry blobs — every per-app byte that must survive a card pull. The art
-# payloads do NOT live here: they install into the three `assets` slots (D9),
-# and installed/enabled/order/grants live in NVS "orb.apps" inside `storage`.
-# Sized for B5's cap of 8 at the writer's own ceilings: 8 x 256 KB geometry
-# (GEOM_BYTES_MAX, tools/orbapp.py) + 8 manifest blocks + the catalog + the
-# art-light banks = ~2.34 MB worst case, < 0.2 MB for the real install set.
-# Starts at the next 64 KB boundary after `storage` — mmap-alignment rule as
-# the assets row above — and ends at exactly 0x1000000: the whole flash. The
-# 104 KB gap before it is `storage`'s free in-place growth room. Subtype
-# blank-and-present for the same positional-parse reason as the assets row.
-apps,     data, ,           0xD80000, 0x280000,
-# Ends at the 16 MB limit; nothing left unallocated. (Was: tail free from
-# 0xD66000, "deliberately unallocated" — claimed 2026-10-12 for the P4 apps
-# ledger; `storage` and every row above it keep byte-identical offsets, so
-# the retention invariant at the top of this file still holds. The board
-# needs the new table written once at 0x8000: serflash.sh pushes only app +
-# otadata, so without that push the board never learns this row exists.)
-
+# §43 moved it from 0xD60000 (the old `www` row ahead of it, 1.25 MB that nothing
+# ever read, is gone). A board crossing from Layout B gets its 24 KB carried on its
+# first boot (main/util/orb_layout_carry.c): old offset → here, then the old copy erased.
+storage,  data, nvs,        0xF20000, 0x6000,
+# The app install ledger (plan §3.2): one 4 KB header sector plus up to 100 KB of
+# manifest, settings, geometry and wasm code per app, eight slots (B5's cap) —
+# APPS_SLOT_STRIDE 0x1A000 in orb_app_install.h. Sized off the apps as built (§43):
+# clock 28 KB, flights 40 KB, HSB 20 KB of slot each, so a slot holds two and a half
+# flight trackers. An app's editor region never lands here (it stays on the card).
+# Starts at the next 64 KB boundary after `storage` and ends at exactly 0x1000000.
+apps,     data, ,           0xF30000, 0xD0000,

@@ -12,7 +12,7 @@
  * (D9). A copy torn by a power cut or a pulled card has no header, so its slot
  * reads as an ABSENT app, never as corrupt art.
  *
- * The apps partition (partitions.csv:57, offset 0xD80000 size 0x280000) holds,
+ * The apps partition (partitions.csv, offset 0xF30000 size 0xD0000 since §43) holds,
  * per app, ONE slot of a header sector (written last) plus a geometry blob. It
  * holds NO pixels and never will: ruling D21 (§0.9) voided the container's art
  * claim, so art_size is always 0 and art_slot always -1 — the bank machinery
@@ -26,7 +26,7 @@
  * NOT the installer's to write (D19): the installer fills orb_app_t.caps from
  * the manifest, never from a scan row and never a stored grant word, so an
  * absent or stale orb.grants can only ever under-grant. P4a's two owner doors
- * in this file (enable, uninstall) still never WRITE a grant — uninstall only
+ * in this file (uninstall, the fault clear) still never WRITE a grant — uninstall only
  * ERASES the removed row's owner words through orb_svc_forget_row(), and a
  * fresh install wipes a reused slot's stale ones for the same reason.
  *
@@ -58,8 +58,13 @@ extern "C" {
 #define APPS_PARTITION_NAME  "apps"                       /* partitions.csv label */
 #define APPS_SECTOR          0x1000u                      /* NOR erase granularity */
 #define APPS_SLOT_HDR_BYTES  0x1000u                      /* one header sector, written last */
-#define APPS_SLOT_GEOM_CAP   ORBAPP_GEOM_BYTES_MAX        /* 256 KB — the writer's ceiling */
-#define APPS_SLOT_STRIDE     (APPS_SLOT_HDR_BYTES + APPS_SLOT_GEOM_CAP)  /* 0x41000 */
+/* The payload one slot holds after its header: manifest, settings, geometry and the
+ * wasm module (§43). It was ORBAPP_GEOM_BYTES_MAX (256 KB) while the ledger was sized
+ * for geometry blobs no shipped app carries; the apps as built use 20-40 KB, so a
+ * slot is 100 KB and the eight of them are partitions.csv's 0xD0000. The manifest's
+ * own geometry ceiling stays a format bound; this is the installer's. */
+#define APPS_SLOT_GEOM_CAP   0x00019000u                  /* 100 KB */
+#define APPS_SLOT_STRIDE     (APPS_SLOT_HDR_BYTES + APPS_SLOT_GEOM_CAP)  /* 0x1A000 */
 #define APPS_N_SLOTS         ORB_APP_CAP                  /* B5: 8 slots, one per app */
 
 /* install_decide()'s inputs: the slot state the caller read under the lock, plus
@@ -116,33 +121,24 @@ esp_err_t orb_app_install_post(const char *stem);
 const char *orb_app_install_try_stem(void);
 const char *orb_app_install_try_why(void);
 
-/* ---- P4a: the owner's doors — enable, uninstall ------------------------------
- * Both take the app's SLUG (not a card stem — an installed app has left the
- * card; its identity is the header's slug, which is FATFS-safe by the reader's
- * own rule, so it passes orb_sd_name_ok too). The /apps page is the only
- * caller today; the dial's APPS page (P5) will reach the same two entries.
- * Both refuse while a card job owns the queue, because an install landing in
- * the same slot mid-toggle is the only way these two can interleave.
- *
- * Enable: persist the e<slot> word FIRST (a crash between the two leaves the
- * intent on disk and the boot applies it), then flip the registry's RAM bit.
- * Turning an app ON revives a failed one — the owner's press IS the clear-
- * faults gesture, and it is that door's first caller. Turning one OFF while
- * it is the entry on the glass is refused: the walkable set may not lose the
- * row the knob is holding; carousel away first.
+/* ---- P4a: the owner's doors — uninstall and the fault clear ------------------------
+ * An app is installed or it is not (§43.3): there is no enable door. Both doors take
+ * the app's SLUG (not a card stem — an installed app has left the card; its identity
+ * is the header's slug, which is FATFS-safe by the reader's own rule, so it passes
+ * orb_sd_name_ok too), and both refuse while a card job owns the queue.
  *
  * Uninstall: a row on the glass is UNINSTALLABLE — the door first asks the
  * router for home (task-safe, applied on the LVGL poll) and waits, bounded,
  * for the switch to land, so the knob never holds a row that vanishes under it
  * (D38). Then: erase the slot's HEADER sector first — from that byte the D9
- * rule makes it no app at all — then forget the row's owner words, then free
- * the registry entry. A power cut after the erase costs an app the owner had
- * already ordered gone and grants nothing: the next fresh install wipes the
- * leftover words anyway. The blob bytes stay behind, unreferenced, until the
- * slot's next copy_prefix erases them — the geometry of an app nobody can
- * name is nobody's quota. The card is never touched: the owner's /sd/apps
- * file stays exactly where it was, ready to reinstall from. */
-esp_err_t orb_app_enable(const char *slug, bool on, char *why, size_t whysz);
+ * rule makes it no app at all — then forget the row's owner words (grants,
+ * faults, settings) and its secrets, then free the registry entry, so a later
+ * install of the same app is a fresh provisioning. A power cut after the erase
+ * costs an app the owner had already ordered gone and grants nothing: the next
+ * fresh install wipes the leftover words anyway. The blob bytes stay behind,
+ * unreferenced, until the slot's next copy_prefix erases them. The card is never
+ * touched: the owner's /sd/apps file stays exactly where it was, ready to
+ * reinstall from. */
 esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz);
 
 /* Clear: one app's fault record, compiled tier included — the door ON cannot
@@ -154,14 +150,8 @@ esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz);
  * input rules forbid). Card apps are accepted too: a clear without an uninstall. */
 esp_err_t orb_app_clear_faults(const char *slug, char *why, size_t whysz);
 
-/** Boot ladder, AFTER orb_svc_init() and BEFORE orb_app_init_all(): apply the
- *  stored enable words to the rows resolve_boot placed. Separate from resolve
- *  because the words live in NVS and resolve runs before the partition is up
- *  (its contract is partition-reads-only); an app with no stored word stays
- *  exactly as installed — off. */
-void orb_app_install_apply_enable(void);
 
-/** Boot ladder, AFTER orb_app_install_apply_enable() and BEFORE orb_app_init_all()
+/** Boot ladder, AFTER orb_svc_init() and BEFORE orb_app_init_all()
  *  (P7.4): read every ENABLED wasm-kind row's module back from its flash slot,
  *  CRC it against the header word the installer wrote, and hand it to the engine.
  *  Disabled and C2-quarantined rows are never read — an app off at the toggle

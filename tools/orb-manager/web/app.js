@@ -1866,7 +1866,6 @@ function describeStep(j) {
     case "uploaded": return j.step + " sent; asking the orb to install it";
     case "installing": return "the orb is writing " + j.step + " to its app slot";
     case "installed": return j.step + " installed";
-    case "enabled": return j.step + " enabled";
     // The clean slate's three words. A panel that ran a wipe and printed nothing would
     // read as a hub that did something to an orb without saying what (owner rule,
     // 2026-10-29: every erase the hub performs is said on the panel).

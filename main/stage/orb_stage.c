@@ -1,5 +1,5 @@
 /**
- * clock_view.c — themed ANALOG clock (Steam Punk et al.), ported from the
+ * orb_stage.c — themed ANALOG clock (Steam Punk et al.), ported from the
  * orb-os (Arduino) theme compositor onto LVGL 9 / ESP-IDF.
  *
  * The dial is composed as LVGL sibling objects rather than one CPU canvas:
@@ -20,7 +20,7 @@
  * hand: the minute hand casts onto the plane the second hand lives on, so the
  * minute shadow must overpaint the second hand it falls across. (orb-os lays
  * all the shadows down first; that reads as a smudge across a hand the theme
- * orders below, so this port interleaves instead — see clock_view_init and
+ * orders below, so this port interleaves instead — see stage_init and
  * the layer table's depth sort, which must and do agree on the stack.)
  *
  * Because LVGL runs in LV_DISPLAY_RENDER_MODE_PARTIAL it renders and flushes
@@ -66,7 +66,7 @@
  *       achieved rate and average flush cost via display_bench_snapshot.
  */
 
-#include "clock_view.h"
+#include "orb_stage.h"
 #include "board_config.h"
 
 #include <stdio.h>
@@ -81,11 +81,12 @@
 #include "display.h"
 #include "orb_gfx.h"   /* the OS compositor: gfx_commit() paints the layers this file picks */
 #include "orb_sched.h" /* the delta bank + frame tick: the canvas, the plate frames, the ladder */
-#include "clock_base.h"  /* §26: the face shown when no theme is resident */
+#include "orb_ui.h"      /* §43: the stage builds on its app's own page */
+#include "orb_app_wasm.h" /* orb_wasm_tick: the app's frame, run from the scheduler */
 #include "orb_svc.h"    /* orb_time_now(): the dial's wall second, OS-owned since the P3 time commit */
 #include "orb_layers.h" /* orb_layer_desc_t + orb_asset_class_prim: the rows clock_layers_build claims */
 #include "orb_elems.h"  /* orb_elems_at: the element dialect's reader — Migration 2's first caller */
-#include "orb_clock3.h" /* ORB_CLOCK3_SLUG: the one name the clock's section answers to */
+#include "orb_clock3.h" /* the section projection the stage draws (clk_sound_t, CLK_*) */
 
 #include "clk_types.h"   /* clk_theme, clk_sprite_t, clk_bg_frames, CLK_BLOB_BYTES */
 /* Second, deliberately: this header #defines the names clock_assets.h just defined
@@ -115,12 +116,6 @@ static lv_image_dsc_t s_overlay_dsc;
  * descriptors and poses would sit on the internal heap boundary httpd_start needs
  * (the 2026-10-24 lesson the layer keys below record), and a row is read a handful
  * of times a frame. ROW_HIDDEN is the nothing-drawn mark; no pose reaches it. */
-typedef struct {
-    float    shown, from, to, amp;
-    uint32_t t0;
-    uint8_t  kind;
-    bool     init;
-} ease_t;
 
 typedef struct {
     lv_obj_t      *obj;
@@ -128,11 +123,21 @@ typedef struct {
     int32_t        ang_10;     /* the angle shown, tenths; ROW_HIDDEN = not drawn */
     int16_t        ox, oy;     /* the pivot's travel shown, px                    */
     clk_sprite_t   pose;       /* the row's sprite moved by (ox, oy)              */
-    ease_t         ease;
     bool           logged;     /* "no input" printed for this row                 */
 } row_state_t;
 static row_state_t *s_row;
 #define ROW_HIDDEN INT32_MIN
+
+/* §43: what the app posted this frame (stage_pose / stage_comp_set) and the reading it
+ * posted it from (stage_now). A row the app never posed stays hidden. */
+static int32_t s_g_ang[CLK_ROW_MAX];
+static int16_t s_g_ox[CLK_ROW_MAX], s_g_oy[CLK_ROW_MAX];
+static int32_t s_g_cval[CLK_COMP_MAX];
+static uint8_t s_g_clive[CLK_COMP_MAX];
+static time_t  s_now_t;
+static double  s_now_frac, s_now_wall;
+static bool    s_base;            /* no resident theme: the stage draws nothing */
+static bool    s_opened;
 
 /* CLK_BG_DIRECT_PUSH, the L3/L4 switch the block below and the scheduler's delta
  * push both key on, lives in orb_sched.h: one number, both TUs, so the push and
@@ -188,7 +193,7 @@ static int32_t  s_wp_lo, s_wp_hi;
 
 static bool     s_warned_screen = false;
 
-/* Mapped base of the art bank, filled in by clock_view_init() (NULL until then).
+/* Mapped base of the art bank, filled in by stage_init() (NULL until then).
  * Kept as a file static rather than calling art_bank_ptr() on every sprite read:
  * blob() is on the per-frame paint path and this keeps it a single load. */
 static const uint8_t *s_art;
@@ -259,7 +264,7 @@ static bool row_smooth(uint8_t cls, uint16_t slot)
 {
     const orb_bundle_sec_t *sec = NULL;
     uint32_t off = 0;
-    if (!orb_theme_live_sec(ORB_CLOCK3_SLUG, &sec, &off)) return false;
+    if (!orb_theme_live_sec(orb_theme_live_slug(), &sec, &off)) return false;
     for (uint32_t i = 0; i < sec->n_elem; i++) {
         orb_bundle_elem_t e;
         orb_bundle_elem_at(sec, i, &e);
@@ -335,70 +340,13 @@ static uint32_t hand_beat_ticks(void)
  * ease_pose is pure: the caller passes the clock in, so the host bench drives it. The
  * rows ease their fraction t (row_ease), so `turn` is 1 on a wrapping row, whose
  * fraction wraps, and 0 on every other. */
-enum { EASE_NONE = 0, EASE_SETTLE, EASE_FLY };
 
-static float ease_wrap(float d, float turn)
-{
-    if (turn <= 0.0f) return d;
-    while (d >  turn / 2) d -= turn;
-    while (d <= -turn / 2) d += turn;
-    return d;
-}
 
-static float ease_pose(ease_t *e, float target, uint32_t now_ms, uint16_t ms, bool stepping,
-                       bool retro, int span_sign, float turn, float amp, uint32_t *busy_ms)
-{
-    *busy_ms = 0;
-    if (!ms) { e->init = false; return target; }
-    if (!e->init) {
-        e->init = true; e->to = e->shown = target; e->kind = EASE_NONE;
-        return target;
-    }
-    if (target != e->to) {
-        const float d = ease_wrap(target - e->to, turn);
-        const bool back = retro && (span_sign >= 0 ? d < 0.0f : d > 0.0f);
-        if (back) { e->kind = EASE_FLY; e->from = e->shown; }
-        else if (stepping) { e->kind = EASE_SETTLE; e->amp = d > 0.0f ? amp : -amp; }
-        else e->kind = EASE_NONE;
-        e->t0 = now_ms; e->to = target;
-    }
-    if (e->kind == EASE_NONE) { e->shown = target; return target; }
-    const uint32_t gone = now_ms - e->t0;
-    if (gone >= ms) { e->kind = EASE_NONE; e->shown = target; return target; }
-    *busy_ms = ms - gone;
-    const float tau = (float)gone / (float)ms;
-    if (e->kind == EASE_SETTLE) {
-        e->shown = target + e->amp * sinf((float)M_PI * tau);
-    } else {
-        /* back along the fan, the way the span runs reversed -- never the short way
-         * round the dial, which on a wide fan would sweep through the empty side */
-        float d = target - e->from;
-        if (turn > 0.0f) {
-            if (span_sign >= 0) { while (d > 0.0f) d -= turn; }
-            else                { while (d < 0.0f) d += turn; }
-        }
-        const float sm = tau * tau * (3.0f - 2.0f * tau);
-        e->shown = e->from + d * sm;
-    }
-    return e->shown;
-}
 
-/* The settle's overshoot: 1.5 degrees on a turn, 3 px on a travel. */
-#define EASE_SETTLE_DEG   1.5f
-#define EASE_SETTLE_PX    3.0f
 
-static bool cad_steps_slow(uint8_t cad, uint8_t src)
-{
-    return (cad == CLK_CAD_JUMP || cad == CLK_CAD_STEP) && src != CLK_SRC_SECOND;
-}
 
 /* D41 §3: one reading of the wall clock, handed to the drive function for every row
  * a frame poses. frac is the wall fraction, beat-held on a delta-bank dial. */
-typedef struct {
-    const struct tm *ti;
-    time_t           t;
-    double           frac;
-} drive_now_t;
 
 /* Sweep marking by the carriage's rotated ink chords; defined with the tourbillon
  * block below. Returns true when it placed the marks for both poses, false when the
@@ -974,63 +922,9 @@ static void comp_strip_digits(int32_t value, int npos, bool zero_pad,
  * moon a bake lays out indexes the age once per day — the half-day the mean
  * month carries over 29.53 costs a tile-edge rounding at most, which is what
  * a float-free dial path buys. */
-#define MOON_NEW_MOON_S  947182440LL
-#define MOON_SYNODIC_S   2551443LL        /* 29.530588853 d */
 
-static bool comp_year_leap(int y) { return (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0); }
 
-/* ISO 8601 week number: week 1 holds the year's first Thursday, so the
- * Thursday of the date's own week says which year the week belongs to. A
- * Thursday past the year end is the coming year's week 1; one before its
- * start is the outgoing year's LAST week — numbered off ITS Dec 28, which
- * always sits inside that final week (Dec 31's Thursday can already be in the
- * new year, which is exactly how numbering off Dec 31 over-counted). All from
- * the tm fields compose_now already filled: no mktime round-trip here. */
-static int32_t comp_iso_week(const struct tm *ti)
-{
-    const int yday1 = ti->tm_yday + 1;
-    const int wd7   = (ti->tm_wday + 6) % 7 + 1;           /* Mon==1 .. Sun==7 */
-    const int pdays = comp_year_leap(ti->tm_year + 1900) ? 366 : 365;
-    const int th    = yday1 + 4 - wd7;                     /* week's Thursday  */
-    if (th > pdays) return 1;                              /* next year's W1   */
-    if (th >= 1)    return (yday1 + 10 - wd7) / 7;
-    const int py    = ti->tm_year + 1900 - 1;
-    const int pyd   = comp_year_leap(py) ? 366 : 365;
-    const int jan1  = ((wd7 - 1 - (ti->tm_yday % 7)) % 7 + 7) % 7 + 1;
-    const int d31   = ((jan1 - 2) % 7 + 7) % 7 + 1;        /* prev Dec 31      */
-    const int d28   = ((d31 - 4) % 7 + 7) % 7 + 1;         /* three days on    */
-    return (pyd - 3 + 10 - d28) / 7;
-}
 
-/* The value that drives a comp, from the same local struct tm and whole
- * second compose_now sampled the hands from. The tile ORDER is the bake's
- * (bake_clock._WEEKDAY_TILES is Monday-first, _MONTH_TILES January-first),
- * so tm_wday/tm_mon map into the frame domain directly. Returns false = no
- * input exists on this hardware for that source. */
-static bool comp_value(uint8_t src, const struct tm *ti, time_t t, int32_t *out)
-{
-    switch (src) {
-    case CLK_SRC_NONE:        *out = 0;                            break;  /* a FORMAT 3 static window: one plate, frame 0 (D32 R-B: no fixed domain to consult, the row is one tile) */
-    case CLK_SRC_WEEKDAY:     *out = (ti->tm_wday + 6) % 7;   break;
-    case CLK_SRC_MONTH:       *out = ti->tm_mon;              break;
-    case CLK_SRC_DATE:        *out = ti->tm_mday;             break;
-    case CLK_SRC_HOUR12:      *out = ti->tm_hour % 12;        break;
-    case CLK_SRC_HOUR24:      *out = ti->tm_hour;             break;
-    case CLK_SRC_MINUTE:      *out = ti->tm_min;              break;
-    case CLK_SRC_SECOND:      *out = ti->tm_sec;              break;
-    case CLK_SRC_AMPM:        *out = ti->tm_hour >= 12;       break;
-    case CLK_SRC_WEEK:        *out = comp_iso_week(ti);       break;
-    case CLK_SRC_DAY_OF_YEAR: *out = ti->tm_yday + 1;         break;
-    case CLK_SRC_QUARTER:     *out = ti->tm_mon / 3 + 1;      break;
-    case CLK_SRC_MOON_AGE: {
-        int64_t m = ((int64_t)t - MOON_NEW_MOON_S) % MOON_SYNODIC_S;
-        if (m < 0) m += MOON_SYNODIC_S;
-        *out = (int32_t)(m / 86400);
-        break; }
-    default:                  return false;  /* none/text/value/battery/reserve */
-    }
-    return true;
-}
 
 /* Point one comp slot's image at blob pixels and un-hide it. Under L4 the
  * widget never paints — nothing invalidates it — but it must still say what
@@ -1090,7 +984,7 @@ static void comp_touch_box(const clk_comp_t *c, int32_t box_h)
  * tile index, glyph digits, shown/hidden — so a hung calendar costs one
  * integer compare per comp per tick, and a theme with no complications costs
  * one loop-exit. */
-static void comps_update(const struct tm *ti, time_t t)
+static void comps_update(void)
 {
     const orb_theme_geo_t *g = orb_theme_geo();
     for (uint16_t i = 0; i < g->n_comps && i < CLK_COMP_MAX; i++) {
@@ -1121,16 +1015,10 @@ static void comps_update(const struct tm *ti, time_t t)
                               "draws raw tiles under the live frame only", (uint32_t)i);
             }
         }
-        int32_t value = 0;
-        if (live && !comp_value(c->src, ti, t, &value)) {
-            live = false;
-            if (!(s_comp_logged & (1u << i))) {
-                s_comp_logged |= 1u << i;
-                ESP_LOGW(TAG, "comp %" PRIu32 ": source %u has no input on this device — not drawn",
-                         (uint32_t)i, (unsigned)c->src);
-            }
-        }
-        if (live && (c->flags & CLK_FLAG_BLINK) && (t % 2) != 0) live = false;
+        /* §43: the value is the app's (its sources, its blink); a source this
+         * device has no input for comes back not live, and stays hidden. */
+        const int32_t value = s_g_cval[i];
+        if (live && !s_g_clive[i]) live = false;
 
         int32_t box_h = (int32_t)c->h;
         if (strip && npos > 0 && c->count) {
@@ -1196,7 +1084,7 @@ static void comps_update(const struct tm *ti, time_t t)
 }
 
 /* One comp's widgets, hidden until comp_slot_show points them at pixels — the
- * same widgets the L4 hook mirrors. clock_view_init calls this at the comp's place
+ * same widgets the L4 hook mirrors. stage_init calls this at the comp's place
  * in the depth walk, because creation order is the classic path's only notion of
  * z-order and a window must sit where its depth says: under the live layer that
  * frames it, over the plate it is cut into. */
@@ -1242,130 +1130,13 @@ static void complications_reset(void)
  * one rigid pair, and the light's offset stays fixed in screen space.
  *
  * Depth is one number per row, on the scale the complication windows share, and
- * both paint paths stack by it (clock_view_init's creation walk and the layer
+ * both paint paths stack by it (stage_init's creation walk and the layer
  * table's sort read the same key). */
 
-/* How far into the current unit of `src` the wall clock is, 0..1, and that unit's
- * length in minutes (0 for a source with no finer field: battery, reserve, a moon
- * age, a week number — on those every cadence lands whole). */
-static double drive_finer(uint8_t src, const struct tm *ti, double frac, double *unit_min)
-{
-    const double day = ((double)ti->tm_hour * 3600.0 + ti->tm_min * 60.0 + ti->tm_sec + frac)
-                       / 86400.0;
-    switch (src) {
-    case CLK_SRC_SECOND:  *unit_min = 1.0 / 60.0; return frac;
-    case CLK_SRC_MINUTE:  *unit_min = 1.0;        return (ti->tm_sec + frac) / 60.0;
-    case CLK_SRC_HOUR12:
-    case CLK_SRC_HOUR24:  *unit_min = 60.0;
-                          return (ti->tm_min * 60.0 + ti->tm_sec + frac) / 3600.0;
-    case CLK_SRC_DATE:
-    case CLK_SRC_WEEKDAY:
-    case CLK_SRC_DAY_OF_YEAR: *unit_min = 1440.0; return day;
-    case CLK_SRC_MONTH: {
-        static const uint8_t DIM[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-        int dim = DIM[ti->tm_mon % 12];
-        if (ti->tm_mon == 1 && comp_year_leap(ti->tm_year + 1900)) dim = 29;
-        *unit_min = 1440.0 * dim;
-        return (ti->tm_mday - 1 + day) / dim; }
-    default:              *unit_min = 0.0;        return 0.0;
-    }
-}
 
-/* The value a row shows, in units of its source: day 5 swept to noon is 5.5. A digit
- * row reads one decimal digit (D42 §4): the units ring turns with the whole value's
- * finer field, and the tens ring's finer field is the units it is counting toward.
- * False when this orb has no input for the source. */
-static bool drive_units(const clk_row_t *r, const drive_now_t *n, double *out)
-{
-    int32_t v;
-    if (!comp_value(r->src, n->ti, n->t, &v)) return false;
-    double unit_min;
-    double f = drive_finer(r->src, n->ti, n->frac, &unit_min);
-    if (r->digit == CLK_DIGIT_UNITS) {
-        v %= 10;
-    } else if (r->digit == CLK_DIGIT_TENS) {
-        f = ((v % 10) + f) / 10.0;
-        unit_min *= 10.0;
-        v = (v / 10) % 10;
-    }
-    double shown = 0.0;
-    switch (r->cadence) {
-    case CLK_CAD_SWEEP:
-        shown = f;
-        break;
-    case CLK_CAD_STEP: {
-        const unsigned steps = r->cad_arg ? r->cad_arg : 1;   /* refused 0 at the door */
-        shown = floor(f * steps) / steps;
-        break; }
-    case CLK_CAD_STOP_TO_GO: {
-        /* The whole dial in P tenths of a second, then a rest at the top until the
-         * minute releases it: the value runs fast and stops at value_max. */
-        const double p = r->cad_arg ? r->cad_arg : 585;
-        const double run = (v + f) * 600.0 / p;
-        *out = run < r->value_max ? run : r->value_max;
-        return true; }
-    case CLK_CAD_DRAG: {
-        /* Held, then a creep across the last cad_arg minutes of the unit. */
-        const double w = r->cad_arg ? r->cad_arg : 120;
-        if (unit_min > 0.0) {
-            const double into = f * unit_min - (unit_min - (w < unit_min ? w : unit_min));
-            shown = into > 0.0 ? into / (w < unit_min ? w : unit_min) : 0.0;
-        }
-        break; }
-    default:                                    /* JUMP: the boundary only */
-        break;
-    }
-    *out = v + shown;
-    return true;
-}
 
-/* Units carried to the fraction t of the way from P0 to P1 (D42 §3): t = (u - vmin) /
- * (vmax - vmin). A wrap takes the fraction modulo one — the next unit starts at P0 —
- * and a flyback or a hold clamps it, the source's own reset bringing it home. */
-static double drive_t(const clk_row_t *r, double units)
-{
-    const double w = (double)r->value_max - (double)r->value_min;
-    double t = w > 0.0 ? (units - (double)r->value_min) / w : 0.0;
-    if (r->end == CLK_END_WRAP) {
-        t -= floor(t);
-    } else {
-        if (t < 0.0) t = 0.0;
-        if (t > 1.0) t = 1.0;
-    }
-    return t;
-}
 
-/* The pose at fraction t: an angle in tenths (half-up, wrapped into the turn) and
- * the pivot's travel in px. */
-static void row_pose(const clk_row_t *r, double t, int32_t *ang_10, int16_t *ox, int16_t *oy)
-{
-    const double a = (double)r->zero + t * (double)r->span;
-    int32_t ai = (int32_t)(a >= 0.0 ? floor(a + 0.5) : -floor(-a + 0.5));
-    ai %= 3600;
-    if (ai < 0) ai += 3600;
-    *ang_10 = ai;
-    const double x = t * (double)r->dx, y = t * (double)r->dy;
-    *ox = (int16_t)(x >= 0.0 ? floor(x + 0.5) : -floor(-x + 0.5));
-    *oy = (int16_t)(y >= 0.0 ? floor(y + 0.5) : -floor(-y + 0.5));
-}
 
-/* D41's ease, in fraction space: a settle overshoots by 1.5 degrees (or 3 px on a
- * row that only travels) after a jump or a step slower than the second; a flyback
- * runs back along the path when a flyback row's source resets. A wrapping row's
- * fraction wraps, so a minute hand's 59 -> 0 settles forward, never back round. */
-static double row_ease(const clk_row_t *r, ease_t *e, double t, uint32_t now, uint32_t *busy)
-{
-    *busy = 0;
-    if (!r->ease) { e->init = false; return t; }
-    const int32_t trav = abs(r->dx) > abs(r->dy) ? abs(r->dx) : abs(r->dy);
-    const float amp = r->span ? EASE_SETTLE_DEG * 10.0f / (float)abs(r->span)
-                              : (trav ? EASE_SETTLE_PX / (float)trav : 0.0f);
-    float v = ease_pose(e, (float)t, now, r->ease, cad_steps_slow(r->cadence, r->src),
-                        r->end == CLK_END_FLYBACK, 1, r->end == CLK_END_WRAP ? 1.0f : 0.0f,
-                        amp, busy);
-    if (r->end == CLK_END_WRAP) v -= floorf(v);
-    return v;
-}
 
 /* The fps bucket a row's blends count under on the scheduler's line: the hour,
  * minute and seconds slots the report has always named, the still layers, and the
@@ -1410,63 +1181,16 @@ static void row_mark_box(uint16_t i, int32_t ang_10, int16_t ox, int16_t oy, lv_
  * fraction of a pixel a tick — re-poses only once its angle has left the drawn one by
  * 0.2 degrees (~0.4 px at the longest tip), catching up exactly. The carriage's orbit
  * marks its rotated ink chords instead of the box when it can (tourbillon_ink_mark). */
-static void rows_update(const struct tm *ti, time_t t, double frac)
+static void rows_update(void)
 {
     const orb_theme_geo_t *g = orb_theme_geo();
     if (!s_row || !g->rows) return;
     const uint16_t n = g->n_rows < CLK_ROW_MAX ? g->n_rows : CLK_ROW_MAX;
-    int32_t ang[CLK_ROW_MAX];
-    int16_t ox[CLK_ROW_MAX], oy[CLK_ROW_MAX];
-    const drive_now_t now = { .ti = ti, .t = t, .frac = frac };
-    const uint32_t tick = lv_tick_get();
-    uint32_t want = 0;
-
-    for (uint16_t i = 0; i < n; i++) {
-        const clk_row_t *r = &g->rows[i];
-        ox[i] = oy[i] = 0;
-        if (!r->spr.show && i != clk_theme.car_row) { ang[i] = ROW_HIDDEN; continue; }
-        if (r->src == CLK_SRC_NONE) { ang[i] = 0; continue; }   /* a still row: unturned */
-        double u;
-        if (!drive_units(r, &now, &u)) {
-            ang[i] = ROW_HIDDEN;
-            if (!s_row[i].logged) {
-                s_row[i].logged = true;
-                ESP_LOGW(TAG, "row %u: source %u has no input on this device — not drawn",
-                         (unsigned)r->tag, (unsigned)r->src);
-            }
-            continue;
-        }
-        uint32_t busy = 0;
-        const double tf = row_ease(r, &s_row[i].ease, drive_t(r, u), tick, &busy);
-        if (busy > want) want = busy;
-        row_pose(r, tf, &ang[i], &ox[i], &oy[i]);
-    }
-    if (want) orb_sched_burst(want + 40);
-    /* The poses rows ride: a child adds its parent's own pose — eased, as drawn — and
-     * the grandparent's, two links at most (the projection refused deeper), so a
-     * needle on the carriage turns with the carriage. Every row's art is stored
-     * unturned, so the parent's whole angle is what the child rides, not its turn
-     * since P0. */
-    int32_t own_a[CLK_ROW_MAX];
-    int16_t own_x[CLK_ROW_MAX], own_y[CLK_ROW_MAX];
-    memcpy(own_a, ang, sizeof(int32_t) * n);
-    memcpy(own_x, ox, sizeof(int16_t) * n);
-    memcpy(own_y, oy, sizeof(int16_t) * n);
-    for (uint16_t i = 0; i < n; i++) {
-        if (!g->rows[i].parent_row || ang[i] == ROW_HIDDEN) continue;
-        for (uint16_t p = g->rows[i].parent_row, hops = 0; p && hops < 2; hops++) {
-            const uint16_t pi = (uint16_t)(p - 1u);
-            if (pi >= n || own_a[pi] == ROW_HIDDEN) break;
-            ang[i] = (ang[i] + own_a[pi]) % 3600;
-            ox[i] = (int16_t)(ox[i] + own_x[pi]);
-            oy[i] = (int16_t)(oy[i] + own_y[pi]);
-            p = g->rows[pi].parent_row;
-        }
-    }
-    for (uint16_t i = 1; i < n; i++)
-        if (g->rows[i].flags & CLK_FLAG_AUX_SHADOW) {
-            ang[i] = ang[i - 1]; ox[i] = ox[i - 1]; oy[i] = oy[i - 1];
-        }
+    /* §43: every pose is the app's — its drive, cadence, ease, the parent it rides
+     * and the twin that follows it, posted through stage_pose this frame. What is the
+     * stage's is everything below: the marks, the staged pose, the widget. */
+    const int32_t *ang = s_g_ang;
+    const int16_t *ox = s_g_ox, *oy = s_g_oy;
 
     lv_display_t *disp = lv_obj_get_display(s_scr);
     for (uint16_t i = 0; i < n; i++) {
@@ -1551,332 +1275,48 @@ static void rows_update(const struct tm *ti, time_t t, double frac)
  *
  * State lives in PSRAM behind one pointer: this board has no internal RAM to spare
  * (orb_sound.c's header has the measurement). */
-typedef struct {
-    int     loop;            /* the tick loop's handle, 0 = not running */
-    int64_t loop_anchor;
-    int     min, hour, mday; /* the last boundary seen; -1 = none yet */
-    time_t  last_t;
-    int64_t queued[3];       /* SND_STEP_*: the step already queued, by wall identity */
-    uint8_t steps[3];        /* SND_STEP_*: steps per unit of a row that steps, 0 = none */
-    bool    steps_known;
-} snd_state_t;
-static snd_state_t *s_snd;
 
 /* D41 G5: a jump slot is the sound of a row stepping (docs/sound-plan.md §3.1), so it
  * plays only on a dial where some row reading that source steps, and on the instant
  * it does. Three classes, one per slot: minute, hour, calendar. */
-enum { SND_STEP_MIN, SND_STEP_HOUR, SND_STEP_CAL };
 
-static int snd_step_class(uint8_t src)
-{
-    switch (src) {
-    case CLK_SRC_MINUTE: return SND_STEP_MIN;
-    case CLK_SRC_HOUR12: case CLK_SRC_HOUR24: return SND_STEP_HOUR;
-    case CLK_SRC_DATE: case CLK_SRC_WEEKDAY: case CLK_SRC_MONTH: case CLK_SRC_DAY_OF_YEAR:
-        return SND_STEP_CAL;
-    default: return -1;
-    }
-}
 
-/* Steps per unit a cadence makes: jump is one, step N is N, everything else (sweep,
- * stop-to-go, drag) has no single instant to sound. */
-static uint8_t snd_cad_steps(uint8_t cad, uint16_t arg)
-{
-    if (cad == CLK_CAD_JUMP) return 1;
-    if (cad == CLK_CAD_STEP) return (uint8_t)(arg ? (arg > 60 ? 60 : arg) : 1);
-    return 0;
-}
 
-static void snd_note_step(uint8_t out[3], int cls, uint8_t n)
-{
-    if (cls >= 0 && n > out[cls]) out[cls] = n;
-}
 
-/* What steps on this dial: every drawn row's cadence, and every calendar plate, which
- * turns whole values at midnight by construction. A digit row steps with its source:
- * a date's units ring jumps at midnight like the date. */
-static void snd_steps_scan(uint8_t out[3])
-{
-    memset(out, 0, 3);
-    const orb_theme_geo_t *g = orb_theme_geo();
-    for (uint16_t i = 0; i < g->n_rows && i < CLK_ROW_MAX; i++) {
-        const clk_row_t *r = &g->rows[i];
-        if ((r->flags & CLK_FLAG_AUX_SHADOW) || !r->spr.show) continue;
-        snd_note_step(out, snd_step_class(r->src), snd_cad_steps(r->cadence, r->cad_arg));
-    }
-    for (uint16_t i = 0; i < g->n_comps && i < CLK_COMP_MAX; i++)
-        if (snd_step_class(g->comps[i].src) == SND_STEP_CAL) out[SND_STEP_CAL] = 1;
-}
 static orb_app_t   *s_lay_app;   /* the clock's row (defined with the layer table below) */
 
-static const clk_sound_t *snd_find(const clk_sound_t *t, uint32_t n, int slot)
-{
-    for (uint32_t i = 0; i < n; i++)
-        if (t[i].slot == slot) return &t[i];
-    return NULL;
-}
 
-static int64_t snd_us(const clk_sound_t *s)      /* a sound's length in µs */
-{
-    return (int64_t)s->n * 1000000 / CLK_SND_RATE;
-}
 
-/* The clock's voices are owned by its row, so the registry's suspend silences them
- * (orb_svc_app_suspended), and leased, so a parked tick does too. */
-static void snd_at_flags(const clk_sound_t *s, int64_t at_us, uint32_t extra)
-{
-    if (!s) return;
-    orb_sound_play_owned(s_lay_app, (const int16_t *)(const void *)(blob() + s->pcm_off),
-                         s->n, ORB_SOUND_GAIN_1, ORB_SOUND_LEASED | extra, at_us, 0);
-}
 
-static void snd_at(const clk_sound_t *s, int64_t at_us) { snd_at_flags(s, at_us, 0); }
 
-/* D19 for sound: the clock declares the cap, and the owner may revoke it on the
- * dial like any other. Read the grant word, not the counting gate: this runs every
- * tick, and a revoked cap is a state, not a stream of refusals. */
-static bool snd_granted(void)
-{
-    return s_lay_app && (orb_svc_grants(s_lay_app) & (1u << CAP_SOUND));
-}
 
-/* The pattern the owner hears: theirs when the theme carries its strokes, else the
- * theme's own. */
-static int snd_pattern(const clk_sound_t *t, uint32_t n, uint8_t theme_pat)
-{
-    orb_sound_cfg_t c;
-    orb_sound_cfg_get(&c);
-    const int p = c.pattern;
-    const bool strike = snd_find(t, n, CLK_SND_STRIKE_HOUR) != NULL;
-    switch (p) {
-    case CLK_PAT_COUNT: case CLK_PAT_SHIPS_BELLS:
-        return strike ? p : theme_pat;
-    case CLK_PAT_MORSE:
-        return (snd_find(t, n, CLK_SND_MORSE_DIT) && snd_find(t, n, CLK_SND_MORSE_DAH))
-               ? p : theme_pat;
-    case CLK_PAT_REPEATER:
-        return (strike && snd_find(t, n, CLK_SND_STRIKE_QUARTER) &&
-                snd_find(t, n, CLK_SND_STRIKE_MINUTE)) ? p : theme_pat;
-    case CLK_PAT_NONE:
-        return p;
-    default:
-        return theme_pat;
-    }
-}
 
-/* The hour pattern from `t0`. h12 is 1..12; minute is 0 or 30 (ship's bells only). */
-static void snd_hour_pattern(const clk_sound_t *t, uint32_t n, int pat,
-                             int64_t t0, int h12, int hour24, int minute)
-{
-    const clk_sound_t *stroke = snd_find(t, n, CLK_SND_STRIKE_HOUR);
-    switch (pat) {
-    case CLK_PAT_COUNT:
-        for (int i = 0; i < h12; i++) snd_at(stroke, t0 + (int64_t)i * 2000000);
-        break;
-    case CLK_PAT_SHIPS_BELLS: {
-        /* Four-hour watches: 00:30 is one bell, 04:00 eight, 04:30 one again. */
-        int bells = (hour24 % 4) * 2 + (minute >= 30 ? 1 : 0);
-        if (!bells) bells = 8;
-        for (int i = 0; i < bells; i++)
-            snd_at(stroke, t0 + (int64_t)(i / 2) * 1600000 + (i % 2) * 450000);
-        break; }
-    case CLK_PAT_MORSE: {
-        const clk_sound_t *dit = snd_find(t, n, CLK_SND_MORSE_DIT);
-        const clk_sound_t *dah = snd_find(t, n, CLK_SND_MORSE_DAH);
-        static const char *const DIGIT[10] = {
-            "-----", ".----", "..---", "...--", "....-",
-            ".....", "-....", "--...", "---..", "----.",
-        };
-        const int64_t unit = snd_us(dit);
-        char num[12];
-        snprintf(num, sizeof num, "%d", h12);
-        int64_t at = t0;
-        for (const char *d = num; *d; d++) {
-            for (const char *e = DIGIT[*d - '0']; *e; e++) {
-                const clk_sound_t *sym = *e == '.' ? dit : dah;
-                snd_at(sym, at);
-                at += snd_us(sym) + unit;              /* one unit between symbols */
-            }
-            at += 2 * unit;                            /* three between digits */
-        }
-        break; }
-    case CLK_PAT_REPEATER:
-        /* At the hour a repeater has no quarters and no minutes to sound. */
-        for (int i = 0; i < h12; i++) snd_at(stroke, t0 + (int64_t)i * 900000);
-        break;
-    default:
-        break;
-    }
-}
 
-static void sound_policy(const struct tm *ti, time_t t, double frac)
-{
-    if (!orb_sound_ready()) return;
-    if (!s_snd) {
-        s_snd = heap_caps_calloc(1, sizeof *s_snd, MALLOC_CAP_SPIRAM);
-        if (!s_snd) return;
-        s_snd->min = s_snd->hour = s_snd->mday = -1;
-
-    }
-    orb_sound_lease_renew();
-    if (!snd_granted()) {
-        if (s_snd->loop) { orb_sound_stop(s_snd->loop); s_snd->loop = 0; }
-        return;
-    }
-
-    uint32_t n = 0;
-    uint8_t theme_pat = CLK_PAT_NONE;
-    const clk_sound_t *tab = orb_theme_sounds(&n, &theme_pat);
-    orb_sound_cfg_t c;
-    orb_sound_cfg_get(&c);
-    const bool quiet = c.volume == 0 || orb_sound_quiet_at(ti->tm_hour);
-    const int64_t sec_us = esp_timer_get_time() - (int64_t)(frac * 1e6);   /* this second began */
-
-    /* The tick loop. */
-    const clk_sound_t *loop = snd_find(tab, n, CLK_SND_TICK_LOOP);
-    const bool want = loop && c.tick && !quiet;
-    if (s_snd->loop && (!want || !orb_sound_active(s_snd->loop))) {
-        orb_sound_stop(s_snd->loop);
-        s_snd->loop = 0;
-    }
-    if (want) {
-        /* Sample first_beat sounds on a wall second; the loop is a whole number of
-         * seconds long, so any second is the anchor. Re-anchor when the wall clock
-         * itself was re-anchored under the loop (orb_time_now's drift rule). */
-        const int64_t anchor = sec_us - (int64_t)loop->first_beat * 1000000 / CLK_SND_RATE;
-        if (!s_snd->loop) {
-            s_snd->loop = orb_sound_play_owned(s_lay_app,
-                                         (const int16_t *)(const void *)(blob() + loop->pcm_off),
-                                         loop->n, ORB_SOUND_GAIN_1,
-                                         ORB_SOUND_LOOP | ORB_SOUND_ANCHORED | ORB_SOUND_LEASED,
-                                         0, anchor);
-            if (s_snd->loop < 0) s_snd->loop = 0;
-            s_snd->loop_anchor = anchor;
-        } else {
-            int64_t d = (anchor - s_snd->loop_anchor) % 1000000;
-            if (d < 0) d += 1000000;
-            if (d > 2000 && d < 998000) {
-                orb_sound_reanchor(s_snd->loop, anchor);
-                s_snd->loop_anchor = anchor;
-            }
-        }
-    }
-
-    /* D41 G5: a jump slot is queued AHEAD of its step, for the step's own instant.
-     * Queueing wakes the engine, so the amp is up and settled long before the sound:
-     * started at the boundary instead, a dial with no tick loop woke the amp under
-     * the clunk's first 10 ms -- all of its energy -- and the owner heard nothing
-     * (orb-B, Station, 2026-11-01). The lead is 1.5 s; the instant is exact. */
-    if (!s_snd->steps_known) { snd_steps_scan(s_snd->steps); s_snd->steps_known = true; }
-    if (!quiet && n && c.jumps) {
-        const int64_t minute_us = sec_us - (int64_t)ti->tm_sec * 1000000;
-        const double into = ti->tm_sec + frac;
-        const int64_t next_min_us = minute_us + 60000000;
-        const int nmin = (ti->tm_min + 1) % 60;
-        /* A step is named by wall time, never by its microsecond instant: sec_us is
-         * re-read every tick, so an instant compared by value would queue anew on
-         * every frame. */
-        const int64_t wall_min = (int64_t)(t - ti->tm_sec);   /* this minute's epoch second */
-        const uint8_t mn = s_snd->steps[SND_STEP_MIN], hn = s_snd->steps[SND_STEP_HOUR];
-        if (mn) {
-            const int idx = (int)(into * mn / 60.0) + 1;          /* the next step, 1..mn */
-            const double at_s = idx * 60.0 / mn;
-            const int64_t at_us = minute_us + (int64_t)(at_s * 1e6);
-            const int64_t key = wall_min * 64 + idx;
-            if (at_s - into <= 1.5 && s_snd->queued[SND_STEP_MIN] != key) {
-                s_snd->queued[SND_STEP_MIN] = key;
-                snd_at(snd_find(tab, n, CLK_SND_JUMP_MINUTE), at_us);
-            }
-        }
-        if (into >= 58.5) {
-            if (hn && (nmin == 0 || (nmin * hn) / 60 != (ti->tm_min * hn) / 60) &&
-                s_snd->queued[SND_STEP_HOUR] != wall_min) {
-                s_snd->queued[SND_STEP_HOUR] = wall_min;
-                snd_at(snd_find(tab, n, CLK_SND_JUMP_HOUR), next_min_us);
-            }
-            if (s_snd->steps[SND_STEP_CAL] && ti->tm_hour == 23 && ti->tm_min == 59 &&
-                s_snd->queued[SND_STEP_CAL] != wall_min) {
-                s_snd->queued[SND_STEP_CAL] = wall_min;
-                snd_at(snd_find(tab, n, CLK_SND_JUMP_DATE), next_min_us);
-            }
-        }
-    }
-
-    /* Boundaries. The first reading after boot, and any reading that is not the
-     * very next minute, only records where the clock is. */
-    const bool first = s_snd->min < 0;
-    const bool next = !first && t - s_snd->last_t < 120 &&
-                      ti->tm_min == (s_snd->min + 1) % 60;
-    const bool changed = first || ti->tm_min != s_snd->min;
-    const int prev_hour = s_snd->hour, prev_mday = s_snd->mday;
-    s_snd->last_t = t;
-    if (!changed) return;
-    s_snd->min = ti->tm_min; s_snd->hour = ti->tm_hour; s_snd->mday = ti->tm_mday;
-    if (!next || ti->tm_sec > 2 || quiet || !n) return;
-
-    const int64_t at = sec_us - (int64_t)ti->tm_sec * 1000000;   /* the minute's instant */
-    /* The jump slots were queued ahead of this boundary (above). */
-    (void)prev_hour; (void)prev_mday;
-    const int pat = snd_pattern(tab, n, theme_pat);
-    const int h12 = ti->tm_hour % 12 ? ti->tm_hour % 12 : 12;
-    if (pat == CLK_PAT_SHIPS_BELLS) {
-        /* Ship's bells replace the quarters: every half hour, nothing between. */
-        if (c.strikes && (ti->tm_min == 0 || ti->tm_min == 30))
-            snd_hour_pattern(tab, n, pat, at, h12, ti->tm_hour, ti->tm_min);
-        return;
-    }
-    if (c.chimes) {
-        if (ti->tm_min == 15) snd_at(snd_find(tab, n, CLK_SND_CHIME_Q1), at);
-        if (ti->tm_min == 30) snd_at(snd_find(tab, n, CLK_SND_CHIME_HALF), at);
-        if (ti->tm_min == 45) snd_at(snd_find(tab, n, CLK_SND_CHIME_Q3), at);
-    }
-    if (ti->tm_min == 0) {
-        const clk_sound_t *ch = c.chimes ? snd_find(tab, n, CLK_SND_CHIME_HOUR) : NULL;
-        snd_at(ch, at);
-        /* The strokes follow the chime's own length and a breath. */
-        const int64_t t0 = at + (ch ? snd_us(ch) + 400000 : 0);
-        if (c.strikes) snd_hour_pattern(tab, n, pat, t0, h12, ti->tm_hour, 0);
-    }
-}
 
 static void compose_now(void)
 {
-    /* The wall reading is the OS's now: the two sources, the CLOCK_EPOCH
-     * baseline, the trust rule and the drift re-anchor live in main/app/
-     * orb_svc.c as orb_time_now() (plan §4.3, the P3 time commit), and the
-     * clock takes the same pair every app will. What stays in this file is
-     * the dial's own: the zone conversion below, the hands, the comps, the
-     * aux drives — D15's side of the line, app-side by ruling. */
+    /* The wall reading is the OS's now (orb_time_now, plan §4.3). */
     bool   synced_unused;
     time_t t;
     double frac;
     orb_time_now(&t, &frac, &synced_unused);
 
-    /* The zone is device config, not a constant in this file: orb_net owns TZ
-     * (NVS key `tz`, loaded at bring-up and settable from the config page or during
-     * provisioning) and applies it with setenv()+tzset(). That is why changing the
-     * zone needs no reboot and no call into this file — this localtime_r() is the
-     * only place the zone reaches the dial, and the next frame after a change is
-     * already in the new one. */
-    struct tm ti;
-    localtime_r(&t, &ti);
-
     /* Delta-bank cadence: the tick delivers exactly one bank frame per tick, so a
      * sweeping dial's beat rides the TICK COUNTER, not a wall-clock grid. The dial's
      * beat (tick_rate, derived from its seconds rows) becomes ticks-per-beat
      * (hand_beat_ticks): 4 bps on a 12 fps tick = sample every 3rd tick, always the
-     * 3rd — evenly spaced beats even though 250 ms is not a multiple of the ~83 ms
-     * the pipe delivers. On each beat the fraction is sampled from the wall clock,
-     * so the rows read true time (re-anchored at every second boundary); between
-     * beats it holds, the redraw gate skips the re-pose, and the tick's commit
-     * carries bank rows only. Every row reads the held fraction, so a sub-dial
-     * seconds hand beats with the main one. */
+     * 3rd. On each beat the fraction is sampled from the wall clock (re-anchored at
+     * every second boundary); between beats it holds, so the redraw gate skips the
+     * re-pose and the tick's commit carries bank rows only. This is the stage's
+     * knowledge of its own frames, so it stays here; the app reads the held fraction
+     * through stage_now and every row it poses beats together. */
     const double wall_frac = frac;
+    const int sec = (int)(t % 60);
     if (clk_theme.second_sweep && clk_theme.tick_rate > 0 && orb_bg_gif_mode()) {
         const uint32_t tpb = hand_beat_ticks();
         if (tpb > 1) {
-            if (ti.tm_sec != s_bt_sec) {        /* true seconds re-anchor the phase */
-                s_bt_sec = ti.tm_sec;
+            if (sec != s_bt_sec) {              /* true seconds re-anchor the phase */
+                s_bt_sec = sec;
                 s_bt_ctr = 0;
             }
             if ((s_bt_ctr % tpb) == 0) s_bt_frac = frac;
@@ -1884,18 +1324,18 @@ static void compose_now(void)
             frac = s_bt_frac;
         }
     }
+    s_now_t = t;
+    s_now_frac = frac;
+    s_now_wall = wall_frac;
 
-    /* Every moving row, off one reading: a date ring and the date window are two
-     * views of one tm_mday, and the tick that moved one has moved the other. */
-    rows_update(&ti, t, frac);
+    /* The app's frame: it poses every row and sets every complication off this one
+     * reading. Its voices are leased, so renewing here is what keeps them sounding
+     * exactly as long as the dial keeps ticking. */
+    if (orb_sound_ready()) orb_sound_lease_renew();
+    if (s_lay_app) orb_wasm_tick(s_lay_app, lv_tick_get());
 
-    /* The complication pass: every window re-reads its value from the SAME local
-     * minute the rows were sampled from, and only the comps whose selected frame
-     * actually changed dirty their rows. */
-    comps_update(&ti, t);
-
-    /* D39: the sounds, off the same reading the rows just took. */
-    sound_policy(&ti, t, wall_frac);
+    rows_update();
+    comps_update();
 }
 
 
@@ -1978,7 +1418,7 @@ static uint32_t s_lay_bank_off;
 
 /* The one stacking key both paint paths sort by (D42): the row's depth, and at a tie
  * a shadow twin goes under every row at that depth, so it falls beneath the row
- * casting it. Equal keys keep table order. clock_view_init's creation walk and
+ * casting it. Equal keys keep table order. stage_init's creation walk and
  * clock_layers_build's sort both call this, so a row LVGL renders and a row the L4
  * hook paints can never stack differently. */
 static uint16_t depth_key(uint8_t order, bool twin)
@@ -2051,7 +1491,7 @@ static void clock_layers_build(orb_app_t *self)
 
     const orb_bundle_sec_t *sec = NULL;
     uint32_t bank_off = 0;
-    if (!orb_theme_live_sec(ORB_CLOCK3_SLUG, &sec, &bank_off)) {
+    if (!orb_theme_live_sec(orb_theme_live_slug(), &sec, &bank_off)) {
         clock_layers_claim(0, 0);   /* no adopted bundle: no rows. The base face claims none. */
         return;
     }
@@ -2248,7 +1688,7 @@ static void clock_layers_refresh(void)
     }
 }
 
-esp_err_t clock_view_init(orb_app_t *self)
+esp_err_t stage_init(orb_app_t *self)
 {
     /* B1/B2, and the owner's rule that file management is the OS's: the clock does
      * not walk /sd itself and never will. It declares the one directory it reads
@@ -2292,27 +1732,17 @@ esp_err_t clock_view_init(orb_app_t *self)
                     && art_bank_bytes() >= orb_theme_geo()->blob_off
                                             + orb_theme_geo()->art_size;
 
-    s_scr = lv_obj_create(NULL);
+    s_lay_app = self;
+    s_scr = orb_ui_screen(self->flash_slot);
+    if (!s_scr) return ESP_ERR_NO_MEM;
+    for (int i = 0; i < CLK_ROW_MAX; i++) s_g_ang[i] = ROW_HIDDEN;
 
-    /* §26: the base render, the no-resident-art fallback. Placed before the themed
-     * leg because it needs no bank — it paints three labels — and because a board
-     * with no resident art has nothing to demand. It covers the screen black and runs
-     * its own readout, so the clock still tells the time on a shelf or after a theme
-     * is lost. The themed leg below then reads the same residency flag to know its
-     * mapping is real; s_art is never a wild pointer. */
+    /* §26: no resident art. The stage draws nothing and starts no frames; the page
+     * stays the black one orb_ui built, and the app puts its own face on it (D31:
+     * the app supplies the default, in primitives — a text readout). */
     if (!art_resident) {
-        lv_obj_set_style_bg_color(s_scr, lv_color_black(), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(s_scr, LV_OPA_COVER, LV_PART_MAIN);
-        clock_base_show(s_scr);
-        /* The readout keeps itself current: clock_base owns a one-second LVGL timer
-         * rather than borrowing the dial's scheduler, whose policy is a sprite view's
-         * — pose hands, advance a frame bank, mark layer boxes — and none of which a
-         * text face has. Installing that policy over three labels would be the sched-
-         * uler ticking a callback that marks nothing, at 12 fps, to redraw a string
-         * that changes once a minute. */
-        clock_base_run();
-        ESP_LOGW(TAG, "no resident art — base digital face (§26); the clock still "
-                      "tells the time");
+        s_base = true;
+        ESP_LOGW(TAG, "no resident art — the clock app shows its own face (§26)");
         return ESP_OK;
     }
 
@@ -2379,7 +1809,7 @@ esp_err_t clock_view_init(orb_app_t *self)
     const orb_theme_geo_t *geo = orb_theme_geo();
     const orb_bundle_sec_t *zsec = NULL;
     uint32_t zoff = 0;
-    if (orb_theme_live_sec(ORB_CLOCK3_SLUG, &zsec, &zoff)) {
+    if (orb_theme_live_sec(orb_theme_live_slug(), &zsec, &zoff)) {
         uint16_t zkey[CLK_LAYER_KEYS_MAX], zcls[CLK_LAYER_KEYS_MAX], zslot[CLK_LAYER_KEYS_MAX];
         int zn = 0;
         for (uint32_t i = 0; i < zsec->n_elem && zn < CLK_LAYER_KEYS_MAX; i++) {
@@ -2550,7 +1980,7 @@ esp_err_t clock_view_init(orb_app_t *self)
     return ESP_OK;
 }
 
-lv_obj_t *clock_view_screen(void)
+lv_obj_t *stage_screen(void)
 {
     return s_scr;
 }
@@ -2558,46 +1988,8 @@ lv_obj_t *clock_view_screen(void)
 /* When the dial last came onto the glass: the press that picked it from the
  * carousel also arms whatever lands (input_router's "press once, you are inside"),
  * and that press must not be read as a request for the repeater. */
-static int64_t s_shown_us;
-
-/* D39 §5.1's repeater, on demand: a press of the knob while the dial is on the glass
- * sounds the time — the hours on the low stroke, the quarters past as ting-tang
- * pairs, the minutes past the quarter on the high stroke — the way a minute
- * repeater does. The theme must carry all three strokes. It is the owner asking,
- * so quiet hours do not apply; the clock's own sound grant still does. */
-void clock_view_repeater(void)
+void stage_run(bool on)
 {
-    if (!orb_sound_ready() || !snd_granted()) return;
-    if (esp_timer_get_time() - s_shown_us < 800000) return;   /* the press that picked the dial */
-    uint32_t n = 0;
-    uint8_t pat = CLK_PAT_NONE;
-    const clk_sound_t *tab = orb_theme_sounds(&n, &pat);
-    const clk_sound_t *hr = snd_find(tab, n, CLK_SND_STRIKE_HOUR);
-    const clk_sound_t *qt = snd_find(tab, n, CLK_SND_STRIKE_QUARTER);
-    const clk_sound_t *mn = snd_find(tab, n, CLK_SND_STRIKE_MINUTE);
-    if (!hr || !qt || !mn) {
-        ESP_LOGI(TAG, "repeater: the theme lacks a stroke (hour %d, quarter %d, minute %d)",
-                 hr != NULL, qt != NULL, mn != NULL);
-        return;
-    }
-    time_t t; double frac; bool synced;
-    orb_time_now(&t, &frac, &synced);
-    struct tm ti;
-    localtime_r(&t, &ti);
-    const int h12 = ti.tm_hour % 12 ? ti.tm_hour % 12 : 12;
-    const int quarters = ti.tm_min / 15, minutes = ti.tm_min % 15;
-    int64_t at = esp_timer_get_time() + 150000;
-    for (int i = 0; i < h12; i++, at += 900000)       snd_at_flags(hr, at, ORB_SOUND_ASKED);
-    at += 600000;
-    for (int i = 0; i < quarters; i++, at += snd_us(qt) + 250000) snd_at_flags(qt, at, ORB_SOUND_ASKED);
-    if (quarters) at += 600000;
-    for (int i = 0; i < minutes; i++, at += 450000)   snd_at_flags(mn, at, ORB_SOUND_ASKED);
-    ESP_LOGI(TAG, "repeater: %d:%02d — %d, %d, %d strokes", h12, ti.tm_min, h12, quarters, minutes);
-}
-
-void clock_view_set_bounce(bool on)
-{
-    if (on) s_shown_us = esp_timer_get_time();
     /* Repurposed from the old digital label's bounce: this is the router's
      * "clock is the visible screen" gate. Park the tick timer when the clock is
      * not on the glass so a hidden dial burns no flush work; on re-show, repaint
@@ -2654,9 +2046,106 @@ void clock_view_set_bounce(bool on)
     }
 }
 
-bool clock_view_bounce(void)
+bool stage_running(void)
 {
     return orb_sched_running();
 }
 
 
+
+
+/* ---- §43: the stage's surface, bound as the dial_* imports (orb_app_wasm.c) ------- */
+
+esp_err_t stage_open(orb_app_t *app, bool *base)
+{
+    if (!s_opened) {
+        const esp_err_t e = stage_init(app);
+        if (e != ESP_OK) return e;
+        s_opened = true;
+    }
+    if (base) *base = s_base;
+    return ESP_OK;
+}
+
+void stage_info(uint16_t *n_rows, uint16_t *n_comps, uint8_t *car_row, uint8_t *tick_rate,
+               uint8_t *second_sweep, uint8_t *bg_mode, uint16_t *tourbillon_n)
+{
+    /* No resident theme: there is no geometry to read (orb_theme_geo() answers NULL
+     * with nothing adopted — orb-A, 2026-11-01, a LoadProhibited here on the first
+     * boot after the partition move emptied the slot). */
+    if (s_base) {
+        *n_rows = *n_comps = 0; *car_row = 0xFF; *tick_rate = *second_sweep = *bg_mode = 0;
+        *tourbillon_n = 0;
+        return;
+    }
+    const orb_theme_geo_t *g = orb_theme_geo();
+    *n_rows = s_base ? 0 : (g->n_rows < CLK_ROW_MAX ? g->n_rows : CLK_ROW_MAX);
+    *n_comps = s_base ? 0 : (g->n_comps < CLK_COMP_MAX ? g->n_comps : CLK_COMP_MAX);
+    *car_row = clk_theme.car_row;
+    *tick_rate = clk_theme.tick_rate;
+    *second_sweep = clk_theme.second_sweep;
+    *bg_mode = clk_theme.bg_mode;
+    *tourbillon_n = clk_theme.tourbillon_n;
+}
+
+const clk_row_t *stage_row(int i)
+{
+    if (s_base) return NULL;
+    const orb_theme_geo_t *g = orb_theme_geo();
+    return (i >= 0 && i < g->n_rows && i < CLK_ROW_MAX) ? &g->rows[i] : NULL;
+}
+
+const clk_comp_t *stage_comp(int i)
+{
+    if (s_base) return NULL;
+    const orb_theme_geo_t *g = orb_theme_geo();
+    return (i >= 0 && i < g->n_comps && i < CLK_COMP_MAX) ? &g->comps[i] : NULL;
+}
+
+const clk_sound_t *stage_sounds(uint32_t *n, uint8_t *pattern)
+{
+    if (s_base) { *n = 0; *pattern = CLK_PAT_NONE; return NULL; }
+    return orb_theme_sounds(n, pattern);
+}
+
+void stage_now(time_t *t, double *frac, double *wall)
+{
+    if (!s_now_t) {                    /* asked before the first frame (the repeater) */
+        bool synced;
+        orb_time_now(&s_now_t, &s_now_frac, &synced);
+        s_now_wall = s_now_frac;
+    }
+    *t = s_now_t; *frac = s_now_frac; *wall = s_now_wall;
+}
+
+void stage_pose(int i, int32_t ang_10, int32_t ox, int32_t oy)
+{
+    if (i < 0 || i >= CLK_ROW_MAX) return;
+    s_g_ang[i] = ang_10 == INT32_MIN ? ROW_HIDDEN : ((ang_10 % 3600) + 3600) % 3600;
+    s_g_ox[i] = (int16_t)ox;
+    s_g_oy[i] = (int16_t)oy;
+}
+
+void stage_comp_set(int i, int32_t value, bool live)
+{
+    if (i < 0 || i >= CLK_COMP_MAX) return;
+    s_g_cval[i] = value;
+    s_g_clive[i] = live;
+}
+
+/* The app's voices: its own theme's PCM, owned by its row (so the registry's suspend
+ * silences them) and leased (so a parked dial does too). The sound cap is read off the
+ * grant word, not the counting gate: a revoked cap is a state the app asks about every
+ * frame, not a stream of refusals. */
+int stage_snd_play(int i, uint32_t flags, int64_t at_us, int64_t anchor_us)
+{
+    if (!s_lay_app || !(orb_svc_grants(s_lay_app) & (1u << CAP_SOUND))) return -1;
+    uint32_t n = 0;
+    uint8_t pat;
+    const clk_sound_t *t = stage_sounds(&n, &pat);
+    if (!t || i < 0 || (uint32_t)i >= n) return -1;
+    const uint32_t f = ORB_SOUND_LEASED | (flags & (ORB_SOUND_LOOP | ORB_SOUND_ANCHORED |
+                                                    ORB_SOUND_ASKED));
+    return orb_sound_play_owned(s_lay_app, (const int16_t *)(const void *)(blob() + t[i].pcm_off),
+                                t[i].n, ORB_SOUND_GAIN_1, f, at_us, anchor_us);
+}

@@ -498,7 +498,6 @@ orb_app_t orb_app_usb_files_row = {
                                 * slot-keyed ledger words */
     .iface     = &s_usb_iface,
     .installed = true,
-    .enabled   = true,
 };
 
 #else  /* !CONFIG_ORB_USB_MTP ---------------------------------------------- */

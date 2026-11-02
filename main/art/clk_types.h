@@ -4,7 +4,7 @@
  * pair with it. These structs were generated into that header by
  * tools/bake_clock.py and are the runtime geometry every clock draws into —
  * FORMAT 3's reader (main/art/orb_clock3.c) projects a bundle's element table
- * straight into a clk_theme_t, and clock_view.c reads one. The types outlive the
+ * straight into a clk_theme_t, and orb_stage.c reads one. The types outlive the
  * FORMAT 2 pair that first defined them, so they now live here, hand-authored.
  *
  * No generated data lives here: no clk_theme instance, no pixel-plane arrays, no
@@ -117,7 +117,7 @@ typedef struct {
  * (main/art/orb_clock3.c) fills these from a bundle's BANK rows, and that file
  * compiles on a host with nothing but this header and orb_bundle.h. The types
  * are the dial's geometry like every struct above them; orb_theme.h includes
- * this one, so the FORMAT 2 loader and clock_view.c see the same declarations.
+ * this one, so the FORMAT 2 loader and orb_stage.c see the same declarations.
  *
  * A theme asks for a complication by shipping one of these per aperture, ring or
  * indicator, and the paint path interprets it. Every FORMAT 2 field is one u32
@@ -182,7 +182,7 @@ _Static_assert(CLK_SRC__MAX == 17, "SOURCES tuple of theme_schema.py grew; the "
  * runtime composite is the shipped policy. CLK_FLAG_UNDER_DIAL is the wire's
  * historical other case (an opaque tile the bake had composited against the
  * dial, w*h*2, no alpha plane): accepted by the reader so an older container
- * still parses, but no current bake emits it and clock_view.c declines to
+ * still parses, but no current bake emits it and orb_stage.c declines to
  * draw one — an opaque square would bury the bezel it is supposed to sit
  * under. Must agree with theme_schema.window_bytes(), which is what the bake
  * checked on the way out. */
@@ -197,7 +197,7 @@ _Static_assert(CLK_SRC__MAX == 17, "SOURCES tuple of theme_schema.py grew; the "
  * ever hosted a window, so an old container keeps drawing exactly as it did.
  * The kit's own drawOrder is what decides it — the perpetual-calendar kit lists
  * its moon between the dial and the c4 plate, and a moon drawn under the dial
- * is a moon that never reaches the glass. clock_view.c honours the bucket in
+ * is a moon that never reaches the glass. orb_stage.c honours the bucket in
  * comp_add_jobs, and the orb_theme.c bank-range guard covers only the kinds
  * that address the bank, so a bucket never reads as a sprite index.
  *
@@ -245,7 +245,7 @@ typedef struct {
 
 /* D42: one moving row — a hand, a pointer, a ring, a still layer, a shadow twin or
  * the carriage. Every one is an AUX row on the wire (docs/element-model-plan.md §8) and
- * one of these at runtime, drawn by one path in clock_view.c. Its art sits at P0 (the
+ * one of these at runtime, drawn by one path in orb_stage.c. Its art sits at P0 (the
  * row's own placement, turned to `zero`); across its domain it turns a further `span`
  * and its pivot travels (dx, dy) to P1, and `end` says what it does past the end. */
 typedef struct {

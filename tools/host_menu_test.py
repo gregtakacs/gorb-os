@@ -224,7 +224,7 @@ def lifts(src):
         'const orb_app_t *orb_app_current(void);',
         'static const char *g_sd_id;',
         'esp_err_t orb_app_activate(const orb_app_t *a);',
-        'esp_err_t orb_app_enable(const char *slug, bool on, char *why, size_t whysz);',
+        'esp_err_t orb_app_clear_faults(const char *slug, char *why, size_t whysz);',
         'esp_err_t orb_app_uninstall(const char *slug, char *why, size_t whysz);',
         'const char *orb_svc_fault_reason(const orb_app_t *a);',
         'static const host_app_desc_t *esp_app_get_description(void);',
@@ -656,9 +656,9 @@ esp_err_t orb_app_activate(const orb_app_t *a)
     g_act_calls++; g_act_slot = orb_app_index_of(a);
     return (esp_err_t)g_act_rc;
 }
-esp_err_t orb_app_enable(const char *slug, bool on, char *why, size_t whysz)
+esp_err_t orb_app_clear_faults(const char *slug, char *why, size_t whysz)
 {
-    g_en_calls++; g_en_on = on ? 1 : 0;
+    g_en_calls++; g_en_on = 1;
     g_en_slot = (slug && !strcmp(slug, g_fake_app.slug))  ? 0 :
                 (slug && !strcmp(slug, g_fake_app2.slug)) ? 1 :
                 (slug && !strcmp(slug, g_fake_shell.slug))? 2 : -1;
@@ -1339,29 +1339,29 @@ int main(void)
 
     /* ---- P5.3: APPS, its doors, and ABOUT ---------------------------------
      * The catalog is the registry's installed tier and nothing else: chrome
-     * stays out, disabled apps stay IN, and a failed app carries its reason.
-     * The two doors are the shipped orb_app_enable()/orb_app_uninstall(), so
+     * stays out, a faulted app stays IN with its reason (§43.3: no other state).
+     * The two doors are the shipped orb_app_clear_faults()/orb_app_uninstall(), so
      * what is checked here is which press posts which pack and what the line
      * says when the door refuses — not the flash write behind it. */
     s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 3; s_busy = false;
     g_posts = 0; g_act_calls = 0; g_en_calls = 0; g_un_calls = 0;
-    g_fake_app.enabled = false; g_fake_app.failed = false; g_fake_app.active = false;
-    g_fake_app2.enabled = true;  g_fake_app2.failed = false; g_fake_app2.active = false;
+    g_fake_app.failed = false; g_fake_app.active = false;
+    g_fake_app2.failed = false; g_fake_app2.active = false;
     g_current = NULL; g_fault_why = "";
     menu_view_apply_input(0, true);
     ck("the APPS row opens the catalog on its first app",
        s_pg == &s_pages[PG_APPS] && s_cur == 0);
     ck("the catalog is every installed app, the B5 count, then back",
-       page_rows() == 4 && !strcmp(rowline(0), "Clock  off") &&
-       !strcmp(rowline(1), "HSB  enabled") &&
+       page_rows() == 4 && !strcmp(rowline(0), "Clock  installed") &&
+       !strcmp(rowline(1), "HSB  installed") &&
        !strcmp(rowline(2), "2 of 8 slots used") &&
        !strcmp(rowline(3), "<- back"));
-    ck("a disabled installed app reads off, not absent",
-       strstr(rowline(0), "absent") == NULL);
+    ck("an installed app reads installed — there is no off (§43.3)",
+       strstr(rowline(0), "off") == NULL && strstr(rowline(0), "enabled") == NULL);
     ck("chrome keeps out of the catalog", strstr(rowline(0), "Menu") == NULL &&
        strstr(rowline(1), "Menu") == NULL);
     g_current = FAKE_APP2;
-    ck("the entry the glass is showing wins over its enable bit",
+    ck("the entry the glass is showing says so",
        !strcmp(rowline(1), "HSB  on the dial"));
     g_current = NULL;
     g_fake_app.failed = true; g_fault_why = "two faults in a row";
@@ -1378,12 +1378,10 @@ int main(void)
        s_pg == &s_pages[PG_TOP] && s_cur == 3);
 
     /* the doors page — D38: show, uninstall, remove from card. No enable
-     * switch: the row a dial offers for an app that is off or faulted is
-     * install, and the press posts the enable door with ON (the hub's answer
-     * for that state, one press, fault clear included). */
+     * switch and no off state (§43.3): a faulted app's first row is retry, and
+     * the press posts C2's fault clear. */
     s_pg = &s_pages[PG_APPS]; s_cur = 0; s_door_slot = -1; s_uninst_arm = -1;
     s_doormode = 0; s_card_sub = -1; s_cardrm_arm = -1;
-    g_fake_app.enabled = true;
     menu_view_apply_input(0, true);
     ck("an app row opens that app\u0027s doors, not a toggle",
        s_pg == &s_pages[PG_APPACT] && s_cur == 0 && s_door_slot == 0);
@@ -1414,27 +1412,26 @@ int main(void)
             "\"Clock\": code apps draw layers the dial cannot paint yet"));
     g_act_rc = 0;
 
-    /* D38: the off app leads with install, not a switch; the press is the
-     * enable door\u0027s ON — the same write the old switch made. */
-    g_fake_app.enabled = false;
-    ck("the off app\u0027s doors lead with install, not a switch",
-       !strcmp(rowline(0), "install") && !strcmp(rowline(1), "uninstall") &&
+    /* §43.3: a faulted app leads with retry; the press is C2's fault clear. */
+    g_fake_app.failed = true;
+    ck("the faulted app\u0027s doors lead with retry, not a switch",
+       !strcmp(rowline(0), "retry") && !strcmp(rowline(1), "uninstall") &&
        strstr(rowline(0), "switch") == NULL && strstr(rowline(1), "switch") == NULL);
     g_posts = 0; s_cur = 0; menu_view_apply_input(0, true);
-    ck("the install press posts the worker with the slot and ON",
-       g_posts == 1 && g_posted_fn == job_enable && g_posted_pack == ((0 << 2) | 1));
-    ck("the pack is still the slot-high wanted-state-low contract",
+    ck("the retry press posts the fault clear with the slot",
+       g_posts == 1 && g_posted_fn == job_clear && g_posted_pack == ((0 << 2) | 1));
+    ck("the pack is still the slot-high, one-bit-low contract",
        door_pack(FAKE_APP, 1) == ((0 << 2) | 1) &&
        door_pack(FAKE_APP2, 0) == ((1 << 2) | 0));
     g_en_rc = 0; g_publish_calls = 0; g_posted_fn(&g_posted_pack);
-    ck("the install answer names the app and says installed",
-       g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": installed") &&
-       g_en_calls == 1 && g_en_slot == 0 && g_en_on == 1);
-    g_en_rc = ESP_ERR_INVALID_STATE_; g_en_why = "it is on the dial";
+    ck("the retry answer names the app and clears that app\u0027s faults",
+       g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": fault cleared - it runs after the reboot") &&
+       g_en_calls == 1 && g_en_slot == 0);
+    g_en_rc = ESP_ERR_INVALID_STATE_; g_en_why = "a card job is running";
     g_posts = 0; g_publish_calls = 0; s_cur = 0; menu_view_apply_input(0, true);
     g_posted_fn(&g_posted_pack);
-    ck("a refused install prints the door\u0027s sentence, not the menu\u0027s",
-       g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": it is on the dial"));
+    ck("a refused retry prints the door\u0027s sentence, not the menu\u0027s",
+       g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": a card job is running"));
     g_en_rc = 0; g_en_why = "";
 
     /* the two-press uninstall (row 1 of the off app\u0027s doors), and the
@@ -1877,7 +1874,7 @@ def _code_only(src):
 
 BLOCKING = ("orb_theme_scan(", "orb_theme_install_bundle(")
 THEME_C = P("main","art","orb_theme.c")
-CT_C = P("main","clock","clock_themes.c")
+CT_C = P("main","menu","themes_page.c")   # §43: the Themes page is an OS row now
 JOBS_C = P("main","app","orb_jobs.c")
 WIDGET = r"lv_label_set_text\(|lv_obj_set_style_|lv_obj_invalidate\("
 
@@ -2100,11 +2097,11 @@ MUTATIONS = [
      'snprintf(out, outsz, "%d of %d slots used", n, ORB_APP_CAP);',
      'snprintf(out, outsz, "%d slots used", n);'),
     ("the doors page drops uninstall",
-     "static int rows_appact(void) { return 3 + 1; }",
-     "static int rows_appact(void) { return 2 + 1; }"),
+     "        ids[n++] = ACT_UNINSTALL;\n",
+     ""),
     ("a door page forgets which app it is about",
-     "static void open_appact(const orb_app_t *a)\n{\n    s_door_slot = orb_app_index_of(a);\n}",
-     "static void open_appact(const orb_app_t *a)\n{\n    (void)a;\n}"),
+     "static void open_appact(const orb_app_t *a)\n{\n    s_door_slot = orb_app_index_of(a);\n",
+     "static void open_appact(const orb_app_t *a)\n{\n    (void)a;\n"),
     ("back from the doors page lands on row 0 rather than its own app",
      "    return a ? perm_row_of(a) : 0;",
      "    return 0;"),
@@ -2114,21 +2111,21 @@ MUTATIONS = [
     ("the switch pack drops the slot, so one press writes another app",
      "    return (orb_app_index_of(a) << 2) | (on ? 1 : 0);",
      "    return (on ? 1 : 0);"),
-    ("the switch posts the state the row shows instead of the one wanted",
-     "job_post(job_enable, door_pack(a, a->enabled ? 0 : 1));",
-     "job_post(job_enable, door_pack(a, a->enabled ? 1 : 0));"),
+    ("the retry clears a different app's faults",
+     "const esp_err_t e = orb_app_clear_faults(a->slug, why, sizeof why);",
+     "const esp_err_t e = orb_app_clear_faults(\"menu\", why, sizeof why);"),
     ("the first uninstall press fires it",
-     "        if (s_uninst_arm != s_door_slot) {",
+     "        if (s_uninst_arm != door_subject()) {",
      "        if (0) {"),
     ("a detent leaves the uninstall armed",
-     "    unarm_uninstall();\n    s_cur = next;",
+     "    unarm_arms();\n    s_cur = next;",
      "    s_cur = next;"),
     ("leaving the catalog keeps the previous subject and its arms",
      "static void enter_apps(void)\n{\n    s_door_slot  = -1;\n    s_doormode   = 0;\n    s_card_sub   = -1;\n    unarm_arms();\n    job_post(job_scan, 0);\n}",
      "static void enter_apps(void)\n{\n}"),
-    ("the refused install gets the menu's words instead of the door's",
-     'e == ESP_OK ? (on ? "installed" : "off") : why);',
-     'e == ESP_OK ? (on ? "on" : "off") : "not changed");'),
+    ("the refused retry gets the menu's words instead of the door's",
+     'e == ESP_OK ? "fault cleared - it runs after the reboot" : why);',
+     'e == ESP_OK ? "fault cleared - it runs after the reboot" : "not changed");'),
     ("a removal stops saying the card copy survives",
      'e == ESP_OK ? "uninstalled, the card copy stays" : why);',
      'e == ESP_OK ? "uninstalled" : why);'),
@@ -2168,13 +2165,10 @@ MUTATIONS = [
     ("an item with no header above it disappears instead of being drawn",
      "    return (owner_group(rows, idx) < 0) ? OPT_ROW : OPT_ITEM;",
      "    return OPT_ITEM;"),
-    ("the cursor escapes an open group",
-     "            if (lo >= 0 && hi >= lo) {\n                if (next < lo) next = lo;\n"
-     "                if (next > hi) next = hi;\n            }",
-     "            if (0) { }"),
-    ("the long press skips an open group and takes the exit door instead",
-     "        if (s_group_open >= 0) {",
-     "        if (0) {"),
+    # "the cursor escapes an open group" retired 2026-11-01: input walks one row per
+    # event, so a step off an item lands on the header or the back row before the
+    # clamp in menu_view_apply_input can bind. The walk vectors above pin the
+    # behaviour; no input reaches the clamp, so no mutant of it can be caught.
     ("the shell steals the header press back from the app",
      'const int ar = vis_to_row(rows, row);\n    if (ar < 0) { go_back(); repaint(); return; }   /* unreachable: rows_app sized it */\n    orb_app_opt_sel(s_app, ar);',
      'const int ar = vis_to_row(rows, row);\n    if (ar < 0) { go_back(); repaint(); return; }   /* unreachable: rows_app sized it */\n    if (drawn_kind(rows, ar) == OPT_GROUP) { s_group_open = ar; repaint(); return; }\n    orb_app_opt_sel(s_app, ar);'),
@@ -2326,18 +2320,20 @@ MUTATIONS = [
     # armed uninstall row. Both halves are pinned: the literal, and the fold
     # that saves a borrowed sentence this file cannot rewrite.
     ("P5.4: an unrenderable codepoint goes back into a dial row",
-     's_uninst_arm == s_door_slot ? " - press again" : "");',
-     's_uninst_arm == s_door_slot ? " \u2014 press again" : "");'),
+     'armed_u ? " - press again" : "");',
+     'armed_u ? " \u2014 press again" : "");'),
     ("P5.4: the fold loses its em-dash mapping",
      '{ 0x2014, "-"  }, { 0x2015, "-"  }, { 0x2212, "-"  },',
      '{ 0x2015, "-"  }, { 0x2212, "-"  },'),
     # A cancel is two halves of one fact. Each mutant keeps the arm correct and
     # breaks only what the owner can see — the shape the bug shipped in.
     ("P5.3: a detent ends the arm and leaves its prompt on the glass",
-     "    unarm_uninstall();\n    s_cur = next;",
+     "    unarm_arms();\n    s_cur = next;",
      "    s_uninst_arm = -1;\n    s_cur = next;"),
     ("P5.3: a cancel wipes the status line whatever is on it",
-     'if (strstr(s_ui.status, "press uninstall again to confirm")) s_ui.status[0] = \'\\0\';',
+     'if (strstr(s_ui.status, "press uninstall again to confirm") ||\n'
+     '        strstr(s_ui.status, "press again to erase the card copy"))\n'
+     "        s_ui.status[0] = '\\0';",
      "s_ui.status[0] = '\\0';"),
 ]
 
@@ -2443,17 +2439,18 @@ def main():
     # any more, and the registry must name all three. The old form of this check
     # required menu_view_screen() to appear in input_router.c, which is precisely
     # the coupling docs/app-platform-plan.md §1 sets out to remove.
+    # §43: the only view the registry still names is the menu's; every app's page is
+    # the wasm shim's (orb_ui), reached through its one iface.
     check("the registry, not the router, names the views",
           all(n in app_src for n in ("menu_view_screen()", "menu_view_service()",
-                                     "color_picker_screen()", "clock_view_screen()"))
+                                     "orb_wasm_iface"))
           and not any(n in _code_only(router_src)
                       for n in ("menu_view_", "color_picker_", "clock_view_")))
     check("main.c builds the apps through the registry, not by name",
           "orb_app_init_all()" in open(P("main", "main.c")).read()
-          and "clock_view_init()" not in _code_only(open(P("main", "main.c")).read()))
-    check("picker gained the same two-level gate",
-          "bool color_picker_armed(void)" in open(P("main", "color", "color_picker.c")).read()
-          and "if (!s_armed) return;" in open(P("main", "color", "color_picker.c")).read())
+          and "stage_init()" not in _code_only(open(P("main", "main.c")).read()))
+    check("the picker app keeps the two-level gate (apps/color_picker)",
+          "if (!s_armed) return;" in open(P("apps", "color_picker", "main.c")).read())
 
     # ---- P5.2: the table's shape, read as text --------------------------------
     # The harness above proves the table DRIVES the real dispatcher; these prove
@@ -2512,7 +2509,7 @@ def main():
     check("ABOUT has no press hook at all", ".act" not in entry("ABOUT"))
     check("the door page reaches the machine through the two owner doors",
           ".open = open_appact" in entry("APPACT")
-          and "orb_app_enable" in tcode and "orb_app_uninstall" in tcode
+          and "orb_app_clear_faults" in tcode and "orb_app_uninstall" in tcode
           and "orb_app_activate" in tcode)
     # Structural half of the two-press rule; the behavioural half is the check
     # in the harness that presses the uninstall row twice, and once either side

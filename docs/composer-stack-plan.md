@@ -951,9 +951,10 @@ cutouts, or onto the face from below, moves under that face where it stood on th
 polar place recomputed about the new face); a face lifted among the hands refuses it. A cutout
 dropped on a wheel, or beside one of its cutouts, reveals that wheel.
 
-*Legibility.* `LEGIBLE`: a 1.6 mm cap height, which subtends 6 arcmin at 3 ft (a normal eye
-resolves 5') and 9' at 2 ft; at 0.0954 mm a px and digits ~0.7 em, `LEGIBLE_PX` = 24. No text
-the engine sets lands below it:
+*Legibility.* ~~`LEGIBLE`: a 1.6 mm cap height … `LEGIBLE_PX` = 24.~~ *Ruled by the owner
+(P5d.3d):* the floor is Modern's date window as it shipped before P5d.3c, its figure at 18 px:
+a 1.2 mm cap height (4.5 arcmin at 3 ft, 6.8' at 2 ft), so `LEGIBLE_PX` = 18. No text the
+engine sets lands below it:
 - sub-dial scales (round, fan, slider, every display style) are set at it at least, moved in by
   what they grew (an open face keeps its band), and each ring of labels thinned to every k-th,
   the smallest k of 1, 2, 3, 4, 6, 12 at which none collide (12, 3, 6, 9 on a small face), with
@@ -977,6 +978,31 @@ face 60, 40, 20; L4, 13 rows, 9 fps (the plate's keyframe bank sets that rate).
 *Owed.* A rolling barrel (the stage would draw a drum: a vertical remap of a slid strip). A
 resting turned row drawn from a cache of its pose. Designs saved by owners before today keep
 whatever text sizes they chose, raised to the floor wherever the engine sets them.
+
+**As built (P5d.3d, owner 2026-11-02).**
+
+- **The floor** is 18 px (above). Every preset and the 149 option combinations pass at it.
+- **The window retired for the wheel.** Canon converts every date, day or month window into
+  a ring and a cutout where the window was (`retireWindows`): about the window's own face
+  when its figures fit round the window's distance at the pitch rule (0.62 em a character
+  and 0.35 between), else a ring the size they need, centred on the line through the
+  window. Its disc and figure colours, typeface, frame, metal and round aperture carry over.
+  A classic moon disc becomes a moon wheel behind a moon cutout.
+- **Rendered displays.** What stays under the two old type names is what is not mechanical:
+  a line of text in any date format, and a moon redrawn per phase (sphere, graphic, neon).
+  The catalogue and Layers call them *Rendered display · text* and *· moon*; the text one
+  no longer offers Shows, and the moon one offers only the rendered moons. Stored names, the
+  baker and the device path are unchanged.
+- **The moon wheel sizes:** its outer diameter, its moons' size and how far out they ride;
+  its moon cutout takes its own width as the aperture.
+- **The stage's eye, part by part.** A hand, a sub-dial's pointer, a sub-dial face and a
+  wheel (or any disc) switch off on their own (`hidden.ids`); the crystal, the dial, the
+  train and the movement stay group switches. A face switched off (the dial, or one sub-dial)
+  shows the wheels under it whole: the disc, not the patch its cutouts frame. A view switch
+  only; the bake never passes one. Panel view still hides by group.
+- Tests: `headless-wheels` 64 (conversion, naming, moon sizing, the per-part eyes); the
+  window fixtures of the engine, stack and UI suites move to the rendered-text window, whose
+  aperture rules they test. Geometry gate unchanged from P5d.3c.
 
 ## 5. Preview: 1:1, and the panel
 

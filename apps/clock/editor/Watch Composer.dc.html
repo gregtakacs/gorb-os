@@ -1782,7 +1782,10 @@ class Component extends DCLogic {
     items.forEach((it) => {
       if (it.band !== band) { band = it.band; rows.push({ isHead: true, isRow: false, label: HEAD[band] }); }
       const up = it.movable ? S.move(inp, it.id, -1) : { ok: false, reason: '' }, dn = it.movable ? S.move(inp, it.id, 1) : { ok: false, reason: '' };
-      const hidden = !!s.hidden[it.hide], on = selId === it.id;
+      // D43 P5d.3d: a hand, a sub-dial face and a disc switch off on their own (hidden.ids); the
+      // crystal, the dial, the train and the movement stay the switches they always were
+      const own = it.ref != null && (it.kind === 'hand' || it.kind === 'pointer' || it.kind === 'subdial' || it.kind === 'disc');
+      const ids0 = s.hidden.ids || {}, hidden = own ? !!ids0[it.ref] || !!s.hidden[it.hide] : !!s.hidden[it.hide], on = selId === it.id;
       const ICON = { case: '◎', glass: '◌', dial: '◯', subdial: '◷', disc: '◐', flare: 'A', opening: '◇', comp: '▭', hand: '╱', pointer: '╱', geartrain: '⚙', movement: '▦' };
       rows.push({ id: it.id, parent: it.parent || null, isHead: false, isRow: true, label: it.label, warn: warnOf[it.id] ? ' ⚠' : '', icon: ICON[it.kind] || '•',
         cls: (on ? 'on' : '') + (it.parent ? ' child' : '') + (s.dragging === it.id ? ' dragging' : ''), indent: it.parent ? 14 : 0, tag: it.lifted ? 'still row' : '',
@@ -1801,8 +1804,12 @@ class Component extends DCLogic {
         dragEnd: () => this.stackDragEnd(),
         pick: () => this.stackPick(it),
         eye: hidden ? 'hidden' : 'shown', eyeIcon: hidden ? '○' : '◉', eyeFg: hidden ? '#5d6b78' : '#8b98a5',
-        eyeTip: 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)',
-        eyeToggle: (e) => { e.stopPropagation(); this.setState((st) => ({ hidden: { ...st.hidden, [it.hide]: !st.hidden[it.hide] } })); } });
+        eyeTip: own ? 'Show or hide ' + it.label + ' on the stage' + (it.kind === 'subdial' ? ' (its wheels then show whole)' : '') + ' \u2014 a view switch: the bake is not changed' : 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial (the wheels under it then show whole)', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)',
+        eyeToggle: (e) => { e.stopPropagation(); this.setState((st) => {
+          if (!own) return { hidden: { ...st.hidden, [it.hide]: !st.hidden[it.hide] } };
+          const ids = { ...(st.hidden.ids || {}) }; if (ids[it.ref]) delete ids[it.ref]; else ids[it.ref] = 1;
+          return { hidden: { ...st.hidden, ids } };
+        }); } });
     });
     // the row's explanation (its badge, what it costs, why it cannot move) is its tooltip
     rows.forEach((r) => { if (r.isRow) r.title = [r.label, r.note, r.tip].filter(Boolean).join(' · '); });
@@ -4109,8 +4116,8 @@ class Component extends DCLogic {
     if (ready) {
       const inp = this.stackInput(), rc = inp && window.OrbStack ? window.OrbStack.rowCount(inp) : { rows: 0, cap: 24 };
       const sel0 = (d.comps || []).find((c) => c.id === s.sel), sel = sel0 && sel0.type === 'hand' && sel0.host !== 'dial' ? (d.comps || []).find((c) => c.id === sel0.host) : sel0, onSub = sel && sel.type === 'subdial';
-      const BLURB = { wheel: 'A printed disc under the dial or a sub-dial, for any measure or one digit of it, read through its cutouts', cutout: 'Another window onto the selected wheel: a window, round, arc or slot, joinable into one frame', hand: 'A pointer on the dial or a sub-dial: hour, minute, seconds, 24-hour, GMT, day, date or month', subdial: 'A small dial of its own: seconds, hours, date, day or month', window: 'An aperture showing the date, day or month',
-        moon: 'The moon\u2019s phase on a disc behind an aperture', flare: 'Printed or applied text, a logo or a mark', opening: 'A cut through the dial that shows the movement' };
+      const BLURB = { wheel: 'A printed disc under the dial or a sub-dial, for any measure or one digit of it, read through its cutouts', cutout: 'Another window onto the selected wheel: a window, round, arc or slot, joinable into one frame', hand: 'A pointer on the dial or a sub-dial: hour, minute, seconds, 24-hour, GMT, day, date or month', subdial: 'A small dial of its own: seconds, hours, date, day or month', window: 'A line of text redrawn for each value, in any date format (ddd DD MMM) \u2014 a date, day or month that turns is a Wheel',
+        moon: 'The moon redrawn for each phase \u2014 a realistic sphere, a graphic or neon terminator. A turning moon disc is a Wheel (Shows: Moon phase)', flare: 'Printed or applied text, a logo or a mark', opening: 'A cut through the dial that shows the movement' };
       const LIVE = { window: 1, moon: 1, hand: 1, wheel: 1 };
       out.catOpts = [['hand', 'Hand']].concat(Object.entries(E.COMP_TYPES)).map(([t, label]) => {
         const why = LIVE[t] && rc.rows + 1 > rc.cap ? 'R6: one more live row would pass the dial\u2019s ' + rc.cap : '';
@@ -4323,7 +4330,8 @@ class Component extends DCLogic {
       if (!cut && sel.type !== 'wheel') R(sel.type === 'window' ? 'Text size' : sel.type === 'flare' ? (sel.bg && sel.bg !== 'none' ? 'Overall size' : 'Size') : 'Radius', 'size', sr[0], sr[1], sr[2], (v) => (sel.type === 'window' ? v.toFixed(2) + '×' : v + 'px'));
       if (sel.type === 'window') { R('Width', 'ww', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1); R('Height', 'wh', 0.5, 3, 0.05, (v) => v.toFixed(2) + '×', 1);
         if (sel.wshape === 'circle') selFields.push(Nt('', 'At equal Width and Height the round aperture takes the longer side as its diameter. Pull the two apart and the round opening becomes a true ellipse: half of each is a radius, so the aperture can stand taller than wide.')); }
-      if (!cut && sel.type !== 'wheel') Sx('Style', 'style', opt(E.COMP_STYLES[sel.type]));
+      // a rendered moon offers the moons that are drawn per phase; the turning disc is the moon wheel's
+      if (!cut && sel.type !== 'wheel') Sx('Style', 'style', sel.type === 'moon' ? opt(E.COMP_STYLES.moon).filter((o) => ['sphere', 'graphic', 'neon'].includes(o.v)) : opt(E.COMP_STYLES[sel.type]));
       /* D43 P5d.3: a wheel -- what it shows (or one digit of it), how it turns, how it looks */
       if (sel.type === 'wheel') {
         const sh = sel.shows || 'date', moon = sh === 'moon', numeric = ['date', 'month', 'hour', 'hours24', 'minute', 'second', 'year'].includes(sh);
@@ -4358,7 +4366,13 @@ class Component extends DCLogic {
             const pitch = (2 * Math.PI * fw.lr) / fw.spec.n, wide = fw.fs * (0.62 * fw.longest + 0.1);
             if (pitch < wide) selFields.push(Nt('', 'The figures overlap: ' + fw.spec.n + ' of them round a ' + Math.round(fw.lr) + ' px radius leave ' + pitch.toFixed(1) + ' px each, and one is ~' + Math.round(wide) + ' px wide. Move them out, grow the wheel, or read a digit instead.'));
           }
-        } else selFields.push(Sl('Sky', sel.mstyle || 'classic', [{ v: 'classic', label: 'Navy & gold' }, { v: 'silver', label: 'Silver night' }, { v: 'black', label: 'Black sky' }], set('mstyle')));
+        } else {
+          // the moon disc: its size, its moons' size and how far out they ride, its sky
+          R('Outer diameter', 'size', 10, 230, 0.5, (v) => (2 * v) + ' px' + mmOf(2 * v), 32);
+          R('Moon size', 'msize', 0.12, 0.48, 0.01, (v) => Math.round(v * 200) + '% of the disc', 0.33);
+          R('Moons at', 'mpos', 0.2, 0.8, 0.01, (v) => Math.round(v * 100) + '% out', 0.5);
+          selFields.push(Sl('Sky', sel.mstyle || 'classic', [{ v: 'classic', label: 'Navy & gold' }, { v: 'silver', label: 'Silver night' }, { v: 'black', label: 'Black sky' }], set('mstyle')));
+        }
         selFields.push(Object.assign(Nt('', ''), { label: 'Motion', isHead: true, isNote: false, isRow: false }));
         Cx('Direction', 'dir', [{ v: 'cw', label: 'Clockwise' }, { v: 'ccw', label: 'Anticlockwise' }], 'cw');
         Cx('Motion', 'cadence', [{ v: 'jump', label: 'Jumps' }, { v: 'smooth', label: 'Smooth' }], 'jump');
@@ -4459,8 +4473,8 @@ class Component extends DCLogic {
           Nt('', nh ? nh + ' hand' + (nh > 1 ? 's' : '') + ' on this sub-dial follow' + (nh > 1 ? '' : 's') + ' these unless set otherwise in the hand\u2019s own panel.' : 'No hand on it yet: add one from Parts while this sub-dial is selected.'));
       }
       if (sel.type === 'window') {
-        Sx('Shows', 'shows', opt(E.SHOWS));
-        if (sel.shows === 'custom') {
+        // D43 P5d.3d: a rendered display of text -- the date, day and month read on wheels now
+        {
           selFields.push(Tx('Format', sel.fmt == null ? 'ddd DD MMM' : sel.fmt, set('fmt')));
           Cx('Case', 'fcase', [{ v: 'upper', label: 'UPPER' }, { v: 'asis', label: 'As written' }, { v: 'lower', label: 'lower' }], 'upper');
           selFields.push(Nt('Preview', E.fmtDate(sel.fmt == null ? 'ddd DD MMM' : sel.fmt, this.now(), sel.fcase) || '—'));

@@ -49,7 +49,7 @@ const stepOf = (it) => it.stepNow()[0];
   const sd = nonHand().find((c) => c.type === 'subdial');
   ok(!!sd && handsOn(sd.id).length === 1 && handsOn(sd.id)[0].shows === E.SCALE_SHOWS[sd.scale], 'a new sub-dial comes with one hand reading its scale', JSON.stringify(handsOn(sd && sd.id)));
   it.setState({ sel: null, selKind: null });
-  V().catOpts.find((c) => /Window/.test(c.label)).go();
+  V().catOpts.find((c) => /Rendered display · text/.test(c.label)).go();
   ok(nonHand().length === 2, 'adding from the catalogue adds to the design', nonHand().map((c) => c.type).join());
   // the selected complication's fields are grouped by part
   it.setState({ tab: 'comps', sel: sd.id, selKind: 'comp' });

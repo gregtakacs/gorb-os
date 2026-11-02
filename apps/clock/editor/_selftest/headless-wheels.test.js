@@ -79,6 +79,41 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   const z = S.place({ comps, hands: [], order: [], E }, 'comp:k', 'comp:s', 'below');
   ok(!z.ok && /reveals a wheel/.test(z.reason), 'and onto anything but a wheel, says why', z.reason);
 }
+// ---- P5d.3d: the window retired for the wheel; what is rendered is named so ---------------------
+{
+  const c = E.canonDesign({ comps: [{ id: 'w', type: 'window', host: 'dial', angle: 90, dist: 150, size: 1, shows: 'date', disc: 'dark', style: 'plain' },
+    { id: 'd', type: 'window', host: 'dial', angle: 270, dist: 91, size: 1, shows: 'day', frameColor: 'steel' },
+    { id: 't', type: 'window', host: 'dial', angle: 0, dist: 120, size: 1, shows: 'custom', fmt: 'ddd DD' },
+    { id: 'm', type: 'moon', host: 'dial', angle: 180, dist: 100, size: 30, style: 'silver' }, { id: 'r', type: 'moon', host: 'dial', angle: 0, dist: 60, size: 40, style: 'sphere' }] }).comps;
+  const by = (id) => c.find((x) => x.id === id);
+  ok(by('w').type === 'wheel' && by('w').form === 'ring' && by('w').trad === 150 && by('w').read === 90 && by('w').wbg === '#1b1916' && by('wk').type === 'cutout' && by('wk').host === 'w' && by('wk').at === 90 && by('wk').style === 'plain',
+    'a date window becomes a ring about its face, reading where the window was, through a cutout in the window\u2019s place and style', JSON.stringify([by('w'), by('wk')]));
+  ok(by('d').type === 'wheel' && by('d').shows === 'day' && by('dk').frameColor === 'steel', 'a day window too, its frame metal carried');
+  ok(by('t').type === 'window' && by('r').type === 'moon', 'a line of rendered text and a rendered moon stay what they are');
+  ok(by('m').type === 'wheel' && by('m').shows === 'moon' && by('m').mstyle === 'silver' && by('mk').shape === 'moon', 'a classic moon disc becomes a moon wheel behind a moon cutout');
+  const f = face(c);
+  ok(f.lay.wheels.length === 3 && f.lay.dialHoles.some((h) => h.kind === 'moon'), 'and the dial draws them');
+  ok(!('Window' in {}) && E.COMP_TYPES.window === 'Rendered display \u00b7 text' && E.COMP_TYPES.moon === 'Rendered display \u00b7 moon', 'the catalogue names the rendered parts for what they are');
+  const mw = face([{ id: 'm', type: 'wheel', host: 'dial', size: 40, shows: 'moon', msize: 0.4, mpos: 0.45 }, { id: 'k', type: 'cutout', host: 'm', shape: 'moon', w: 70 }]).lay;
+  ok(mw.wheels[0].msize === 0.4 && mw.wheels[0].mpos === 0.45 && mw.dialHoles[0].a === 35, 'a moon wheel sizes its disc, its moons and their place, and its aperture its own width');
+}
+// ---- the stage's eye, part by part -----------------------------------------------------------------
+{
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  const it = new (global.COMP_CLASS(DCLogic))({});
+  it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
+  it.state.dial = 'skeleton'; it.state.playing = false; it.state.hidden = {};
+  it.state.designs = { skeleton: E.canonDesign({ print: 'roman', comps: [{ id: 'w', type: 'wheel', host: 'dial', size: 150, shows: 'date' }, { id: 'k', type: 'cutout', host: 'w' }, { id: 'h', type: 'hand', host: 'dial', shows: 'hour' }] }) };
+  const rows = () => it.renderVals().stackRows || it.renderVals().layers || [];
+  const row = (id) => rows().find((r) => r.id === id);
+  if (row('comp:w')) {
+    row('comp:w').eyeToggle({ stopPropagation() { } });
+    ok(it.state.hidden.ids && it.state.hidden.ids.w === 1 && !it.state.hidden.complications, 'a wheel\u2019s eye hides that wheel alone, not every disc');
+    row('hand:h').eyeToggle({ stopPropagation() { } });
+    ok(it.state.hidden.ids.h === 1 && !it.state.hidden.hands, 'and a hand\u2019s that hand alone');
+  } else ok(false, 'the layers list carries the wheel row', Object.keys(it.renderVals()).join(','));
+}
 // ---- canon ----------------------------------------------------------------------------------
 {
   const c = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', host: 'dial', shows: 'nope', digit: 'whole', dir: 'cw', cadence: 'jump', ease: 0, overhang: 'shown', wbg: 'auto', tsize: 1, blank0: true },

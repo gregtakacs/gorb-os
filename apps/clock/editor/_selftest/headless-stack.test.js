@@ -93,9 +93,9 @@ ok(presets >= 17, 'every preset was built', presets);
   const d = E.canonDesign(legacy3({ print: 'roman', centre: { hour: 1, minute: 1, second: 1 }, comps: [
     { id: 's1', type: 'subdial', angle: 180, dist: 100, size: 60, scale: 'seconds', style: 'guilloche' },
     { id: 's2', type: 'subdial', angle: 0, dist: 100, size: 60, scale: 'hours', style: 'guilloche' },
-    { id: 'w1', type: 'window', host: 'dial', angle: 90, dist: 120, size: 12, shows: 'date' },
-    { id: 'w2', type: 'window', host: 'dial', angle: 270, dist: 120, size: 12, shows: 'day' },
-    { id: 'w3', type: 'window', host: 's2', angle: 0, dist: 20, size: 8, shows: 'date' },
+    { id: 'w1', type: 'window', host: 'dial', angle: 90, dist: 120, size: 12, shows: 'custom' },
+    { id: 'w2', type: 'window', host: 'dial', angle: 270, dist: 120, size: 12, shows: 'custom' },
+    { id: 'w3', type: 'window', host: 's2', angle: 0, dist: 20, size: 8, shows: 'custom' },
     { id: 'f1', type: 'flare', host: 'dial', angle: 0, dist: 60, size: 10, style: 'print', icon: 'text', text: 'X' },
     { id: 'o1', type: 'opening', host: 'dial', angle: 45, dist: 80, size: 30 } ] }));
   const fc = E.face(Object.assign({}, OPTS, { design: d, train: 'classic' }));

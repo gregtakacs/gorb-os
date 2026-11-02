@@ -99,11 +99,12 @@
   const PANEL = { px: S, inch: 1.75, cssInch: 96 };
   const MM_PER_PX = (PANEL.inch * 25.4) / PANEL.px;
   const pxMm = (px) => px * MM_PER_PX;
-  /* Legibility (owner 2026-11-02: the dial is 1.75 in across and read from 2-3 ft). A
-   * figure's cap height of 1.6 mm subtends 6 arcmin at 3 ft -- just over the 5' a normal
-   * eye resolves -- and 9' at 2 ft. Digits stand ~0.7 em, so no text the dial prints is
-   * set below LEGIBLE_PX; where a scale cannot fit its labels at that size it prints fewer. */
-  const LEGIBLE = { capMm: 1.6, capEm: 0.7 };
+  /* Legibility (owner 2026-11-02: the dial is 1.75 in across and read from 2-3 ft). The
+   * owner's measure is Modern's date window as it shipped before P5d.3c: its figure set at
+   * 18 px, a cap height of 1.2 mm (4.5 arcmin at 3 ft, 6.8' at 2 ft). Digits stand ~0.7 em,
+   * so no text the dial prints is set below LEGIBLE_PX (18); where a scale cannot fit its
+   * labels at that size it prints fewer. */
+  const LEGIBLE = { capMm: 1.2, capEm: 0.7 };
   const LEGIBLE_PX = Math.ceil(LEGIBLE.capMm / MM_PER_PX / LEGIBLE.capEm);
   const legible = (px) => Math.max(LEGIBLE_PX, px);
   // CSS px the whole dial occupies at true size, and the zoom factor that means (1.0 = today's
@@ -214,7 +215,12 @@
     }
   }
   const SHAPES = { circle: 'Circle', square: 'Square', hex: 'Hexagon', oct: 'Octagon', slot: 'Slot', arch: 'Arch' };
-  const COMP_TYPES = { opening: 'Opening', subdial: 'Subdial', window: 'Window', moon: 'Moon phase', flare: 'Flare', wheel: 'Wheel', cutout: 'Cutout' };
+  /* D43 P5d.3d: the window is retired for the wheel (a date, day or month window is a wheel read
+   * through a cutout: canonDesign converts it), and the classic moon disc for the moon wheel.
+   * What stays under the two old type names is what is not mechanical: a line of text and a
+   * moon redrawn per value -- the Rendered displays. The names are only stored; the catalogue
+   * and Layers call them by what they are. */
+  const COMP_TYPES = { opening: 'Opening', subdial: 'Subdial', wheel: 'Wheel', cutout: 'Cutout', window: 'Rendered display · text', moon: 'Rendered display · moon', flare: 'Flare' };
   const FLARE_ICONS = { star: 'Star', spark: 'Spark', bolt: 'Bolt', crown: 'Crown', heart: 'Heart', shield: 'Shield', diamond: 'Diamond', cross: 'Cross', ring: 'Ring', chevron: 'Chevron', triangle: 'Triangle', flame: 'Flame', eye: 'Eye', chevL: 'Chevron left', chevR: 'Chevron right', plus: 'Plus (slim)', arrowL: 'Arrow left', arrowR: 'Arrow right', rect: 'Rectangle', pill: 'Pill', dot: 'Dot', datetext: 'Date (custom format)', text: 'Text logo', arctext: 'Curved text', image: 'Image (upload)' };
   const FLARE_SVG = {
     chevL: 'M20 2h-6.5L4 12l9.5 10H20l-9.5-10z', chevR: 'M4 2h6.5l9.5 10-9.5 10H4l9.5-10z', plus: 'M10.4 3h3.2v7.4H21v3.2h-7.4V21h-3.2v-7.4H3v-3.2h7.4z',
@@ -989,8 +995,8 @@
   const NEW_COMP = {
     opening: { angle: 0, dist: 120, rot: 0, size: 34, style: 'bevel', show: 'free', hour: 12 },
     subdial: { angle: 180, dist: 100, rot: 0, size: 52, style: 'enamel', scale: 'seconds', open: 0 },
-    window: { angle: 90, dist: 150, rot: 0, size: 1, style: 'frame', shows: 'date', disc: 'auto' },
-    moon: { angle: 180, dist: 110, rot: 0, size: 32, style: 'classic' },
+    window: { angle: 90, dist: 150, rot: 0, size: 1, style: 'frame', shows: 'custom', fmt: 'ddd DD', disc: 'auto' },
+    moon: { angle: 180, dist: 110, rot: 0, size: 48, style: 'sphere' },
     flare: { angle: 0, dist: 110, rot: 0, size: 16, style: 'print', icon: 'star', color: 'auto', opacity: 1, text: 'BRAND' },
     // D43 P5d.3: a wheel under a face, and the cutout it is read through (at: degrees clockwise from 12, about the wheel)
     wheel: { angle: 0, dist: 0, rot: 0, size: 192, form: 'ring', inner: 140, shows: 'date', read: 90 },   // a date ring under the dial: one legible figure per window
@@ -1146,7 +1152,8 @@
         style: WHEEL_STYLES[c.fstyle] ? c.fstyle : 'bold', edge: c.edge == null ? 0.15 : Math.max(0, Math.min(1, +c.edge)),
         len: form === 'barrel' ? Math.max(fs, c.len != null ? +c.len : fs * (0.62 * longest + 0.6)) : 0,
         dir: c.dir === 'ccw' ? -1 : 1, smooth: c.cadence === 'smooth', ease: +c.ease || 0,
-        overhang: onSub && c.overhang === 'shown', bg: c.wbg, ink: c.wink, font: c.wfont, mstyle: c.mstyle, seed: String(c.id).split('').reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) | 0, 7) & 0xffff, cut: [], holes: [] });
+        overhang: onSub && c.overhang === 'shown', bg: c.wbg, ink: c.wink, font: c.wfont, mstyle: c.mstyle,
+        msize: spec.moon ? Math.max(0.12, Math.min(0.48, c.msize != null ? +c.msize : 0.33)) : 0, mpos: spec.moon ? Math.max(0.2, Math.min(0.8, c.mpos != null ? +c.mpos : 0.5)) : 0, seed: String(c.id).split('').reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) | 0, 7) & 0xffff, cut: [], holes: [] });
       hits.push({ id: c.id, x: g.x, y: g.y, r: form === 'barrel' ? r : r * 0.35, z: (onSub ? subZ[onSub] : 0) - 0.5 });
     });
     const wheelOf = {}; wheels.forEach((w) => { wheelOf[w.id] = w; });
@@ -1166,7 +1173,8 @@
       if (w.form === 'ring') { const lim = Math.max(8, w.r - w.ri - 4); if (Math.abs(Math.sin(at)) > 0.5) { if (!+c.w) cw = Math.min(cw, lim); } else if (!+c.h) ch = Math.min(ch, lim); }
       // a moon cutout is the moonphase's aperture: a half circle over the wheel's own centre,
       // opening toward `at`, its two humps hiding the moon that is not in season
-      let hole = c.shape === 'moon' ? { kind: 'moon', x: w.x + (+c.dx || 0), y: w.y + (+c.dy || 0), a: w.r, rot: at }
+      // (its aperture's width is the author's, or the disc's own diameter)
+      let hole = c.shape === 'moon' ? { kind: 'moon', x: w.x + (+c.dx || 0), y: w.y + (+c.dy || 0), a: +c.w > 0 ? +c.w / 2 : w.r, rot: at }
         : c.shape === 'round' ? { kind: 'circle', x: cx, y: cy, r: Math.max(cw, ch) / 2 }
         : c.shape === 'slot' ? { kind: 'slot', x: cx, y: cy, w: cw * 1.4, h: ch * 0.8, rot: at + Math.PI / 2 + p.rot }
         : c.shape === 'arc' && w.form !== 'barrel' ? (() => { const half = Math.max(rad(4), Math.min(Math.PI, rad(+c.span || 36) / 2)), r0 = w.lr - ch / 2, r1 = w.lr + ch / 2;
@@ -2148,7 +2156,7 @@
     if (sp.moon) {
       // two moons on a sky, half a turn a lunation, read through a moon cutout's humps (the classic moonphase)
       ctx.save(); if (w.fill) { ctx.fillStyle = w.fill; ctx.beginPath(); ctx.arc(w.x, w.y, w.r, 0, TAU); ctx.fill(); }
-      else moonDisc(ctx, w.x, w.y, w.r, (w.dir * idx) / 30, pal || {}, w.seed, ref, w.mstyle || 'classic');
+      else moonDisc(ctx, w.x, w.y, w.r, (w.dir * idx) / 30, pal || {}, w.seed, ref, w.mstyle || 'classic', w.msize, w.mpos);
       ctx.restore(); return;
     }
     const bg = w.bg && w.bg !== 'auto' ? w.bg : dark ? '#1b1916' : '#f2ecdd', ink = w.ink && w.ink !== 'auto' ? w.ink : dark ? '#ecdfbf' : '#18120b';
@@ -2226,7 +2234,8 @@
     silver: () => ({ sky: ['#24365c', '#070b16'], star: '232,238,248', moon: ['#ffffff', '#c9cfd8', '#6d7582'], crater: 'rgba(40,46,58,.2)', stars: 60 }),
     black: (pal) => ({ sky: ['#232120', '#040404'], star: '255,236,190', moon: [pal.hi, pal.mid, pal.lo], crater: 'rgba(60,40,12,.25)', stars: 24 }),
   };
-  function moonDisc(ctx, x, y0, a, p, pal, seed, rot, style) {
+  // mk: the moons' radius as a fraction of the disc's (0.33 the classic); mr: how far out they ride (0.5)
+  function moonDisc(ctx, x, y0, a, p, pal, seed, rot, style, mk, mr) {
     const _ = L(), R = a * 0.98, rng = _.rng(seed * 13 + 5), lk = (MOON_LOOK[style] || MOON_LOOK.classic)(pal);
     ctx.save(); ctx.translate(x, y0); ctx.rotate((rot || 0) + p * Math.PI);
     let g = ctx.createRadialGradient(0, -a * 0.3, a * 0.1, 0, 0, R);
@@ -2239,9 +2248,9 @@
       for (let j = 0; j < 8; j++) { const rr = j % 2 ? sr * 0.35 : sr * 1.4, aa = (j / 8) * TAU; j ? ctx.lineTo(q[0] + Math.cos(aa) * rr, q[1] + Math.sin(aa) * rr) : ctx.moveTo(q[0] + rr, q[1]); }
       ctx.closePath(); ctx.fill();
     }
-    const m = a * 0.33;
+    const m = a * (mk || 0.33);
     [-Math.PI, 0].forEach((an, j) => {
-      const q = P(0, 0, a / 2, an);
+      const q = P(0, 0, a * (mr || 0.5), an);
       ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 2; ctx.shadowOffsetY = 1;
       g = ctx.createRadialGradient(q[0] - m * 0.35, q[1] - m * 0.35, m * 0.1, q[0], q[1], m);
       g.addColorStop(0, lk.moon[0]); g.addColorStop(0.6, lk.moon[1]); g.addColorStop(1, lk.moon[2]);
@@ -3794,11 +3803,15 @@
     let ck = null, cvals = null;
     // a wheel that reads the time of day re-draws with it; one that is smooth or eases, every frame
     const wheelTick = lay.wheels.some((w) => w.smooth || w.ease) ? 1 : lay.wheels.some((w) => w.spec.unit < 86400000) ? 1000 : 0;
-    F.comps = (date, only) => {
-      const key = (only ? 'only[' + (only.join(',') || '-') + ']' : '*') + '|' + date.toDateString() + (wheelTick ? '|' + Math.floor(date.getTime() / wheelTick) : '') + '|' + (F.wheelFill || '');
+    /* view (the stage's eye, D43 P5d.3d): { except: { id: 1 } } parts switched off one by one, and
+     * { whole: { dial | <sub id>: 1 } } faces switched off, whose wheels then show whole -- the
+     * disc itself, not the patch its cutouts frame. The bake never passes one. */
+    F.comps = (date, only, view) => {
+      const ex = (view && view.except) || {}, wh = (view && view.whole) || {};
+      const key = (only ? 'only[' + (only.join(',') || '-') + ']' : '*') + '|' + date.toDateString() + (wheelTick ? '|' + Math.floor(date.getTime() / wheelTick) : '') + '|' + (F.wheelFill || '') + '|' + (view ? JSON.stringify(view) : '');
       if (key === ck) return cvals;
       const a = cv(S), subs = {};
-      lay.comps.forEach((c, i) => { if (only && only.indexOf(c.id) < 0) return; const t = c.host === 'dial' ? a : subs[c.host] || (subs[c.host] = cv(S)); paint(t.getContext('2d'), c, date, i); });
+      lay.comps.forEach((c, i) => { if ((only && only.indexOf(c.id) < 0) || ex[c.id]) return; const t = c.host === 'dial' ? a : subs[c.host] || (subs[c.host] = cv(S)); paint(t.getContext('2d'), c, date, i); });
       /* D43 P5d.3: the wheels, under their faces, drawn the way the dial draws them: under
        * each face the discs stack largest first (a big date's units disc rides on its tens
        * ring), and the stack is seen only through the union of their cutouts, plus the whole
@@ -3807,7 +3820,7 @@
        * this preview and the glass agree wherever two discs overlap. A dial window is sealed
        * and composited, so the cutouts, not the face, are what stops a disc there. */
       const wheelsOf = {};
-      lay.wheels.forEach((w) => { if (!only || only.indexOf(w.id) >= 0) (wheelsOf[w.host] = wheelsOf[w.host] || []).push(w); });
+      lay.wheels.forEach((w) => { if ((!only || only.indexOf(w.id) >= 0) && !ex[w.id]) (wheelsOf[w.host] = wheelsOf[w.host] || []).push(w); });
       Object.keys(wheelsOf).forEach((host) => {
         const ws = wheelsOf[host].sort((p, q) => q.r - p.r), en1 = host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === host) || {}).en || en;
         const st = cv(S), sx = st.getContext('2d');
@@ -3818,7 +3831,7 @@
         // dial's edge, not the mask's, is the one the eye reads
         const mk = cv(S), mx = mk.getContext('2d'); mx.fillStyle = mx.strokeStyle = '#000'; mx.lineWidth = 2;
         ws.forEach((w) => { w.holes.forEach((q) => { mx.beginPath(); holePath(q)(mx); mx.fill(); mx.stroke(); }); if (w.overhang) { mx.beginPath(); mx.arc(w.x, w.y, w.r, 0, TAU); mx.fill(); } });
-        sx.globalCompositeOperation = 'destination-in'; sx.drawImage(mk, 0, 0); sx.globalCompositeOperation = 'source-over';
+        if (!wh[host]) { sx.globalCompositeOperation = 'destination-in'; sx.drawImage(mk, 0, 0); sx.globalCompositeOperation = 'source-over'; }
         (host === 'dial' ? a : subs[host] || (subs[host] = cv(S))).getContext('2d').drawImage(st, 0, 0);
       });
       ck = key; cvals = { dial: a, subs };
@@ -4087,7 +4100,12 @@
     // noCage copy); FORMAT 3 needs the flag because its walk composes the plate for real.
     if (!hidden.geartrain && gt) dz(() => { ctx.drawImage(gt, 0, 0); if (!hidden.cage) drawCage(ctx, base, gt, date); });
     if (base && !(hidden.movement && hidden.geartrain)) dz(() => { ctx.globalCompositeOperation = 'lighter'; ctx.drawImage(base.haze, 0, 0); ctx.globalCompositeOperation = 'source-over'; });
-    const cp = F.comps(date, compOnly), df = F.dateFlares ? F.dateFlares(date) : null;
+    // the stage's eye, part by part (hidden.ids), and a hidden face shows its wheels whole
+    const ids = hidden.ids || {};
+    if (Object.keys(ids).length) noHands = (noHands || []).concat(Object.keys(ids));
+    const whole = {}; if (hidden.dial) whole.dial = 1; F.subLayers.forEach((sl) => { if (hidden.subdials || ids[sl.id]) whole[sl.id] = 1; });
+    const view = Object.keys(ids).length || Object.keys(whole).length ? { except: ids, whole } : null;
+    const cp = F.comps(date, compOnly, view), df = F.dateFlares ? F.dateFlares(date) : null;
     if (!hidden.complications) dz(() => ctx.drawImage(cp.dial, 0, 0));
     // hidden.sealed: the dial as it ships under its value rows -- its date, moon and wheel
     // apertures uncut, because the device always composites a value over them. The bake's
@@ -4096,7 +4114,7 @@
     const lifted = {}; (F.liveSeq || []).forEach((e) => { if (e.kind === 'sub') lifted[e.id] = 1; });
     const subBlock = (sl) => {
       if (!hidden.complications && cp.subs[sl.id]) dz(() => ctx.drawImage(cp.subs[sl.id], 0, 0));
-      if (!hidden.subdials) { dz(() => ctx.drawImage(sl.canvas, 0, 0)); if (df && df.subs[sl.id]) dz(() => ctx.drawImage(df.subs[sl.id], 0, 0)); }
+      if (!hidden.subdials && !ids[sl.id]) { dz(() => ctx.drawImage(sl.canvas, 0, 0)); if (df && df.subs[sl.id]) dz(() => ctx.drawImage(df.subs[sl.id], 0, 0)); }
     };
     F.subLayers.forEach((sl) => { if (!lifted[sl.id]) subBlock(sl); });
     /* D43 P4b: the live band in stack order. With nothing lifted this is one drawHands
@@ -4171,6 +4189,41 @@
     flush();
     return { under, hands, top, live };
   }
+  /* D43 P5d.3d: a date, day or month window becomes the wheel it always stood for, read through
+   * a cutout where the window was: a ring about the window's own face when its figures fit round
+   * the window's distance, else a ring the size they need, centred on the line through the window.
+   * A classic moon disc becomes a moon wheel behind a moon cutout. Its look carries over: the
+   * disc and figure colours, the typeface, the frame and its metal, a round aperture. */
+  function retireWindows(comps) {
+    const ids = {}; comps.forEach((c) => { ids[c.id] = 1; });
+    const kid = (id) => { let k = id + 'k'; while (ids[k]) k += 'k'; ids[k] = 1; return k; };
+    const out = [];
+    comps.forEach((c) => {
+      if (c.type === 'window' && (!c.shows || c.shows === 'date' || c.shows === 'day' || c.shows === 'month')) {
+        const sh = c.shows || 'date', n = { date: 31, day: 7, month: 12 }[sh], len = sh === 'date' ? 2 : 3;
+        const fpx = legible((sh === 'date' ? 18 : 15) * (+c.size || 1)), need = Math.ceil((n * fpx * (0.62 * len + 0.35)) / TAU);
+        const th = +c.angle || 0, d0 = +c.dist || 0, conc = d0 >= need, lr = conc ? d0 : need, dd = d0 - lr;
+        const w = { id: c.id, type: 'wheel', host: c.host || 'dial', angle: conc ? 0 : dd < 0 ? (th + 180) % 360 : th, dist: conc ? 0 : Math.abs(dd), rot: 0,
+          size: Math.round((lr + fpx * 0.9) * 2) / 2, form: 'ring', inner: Math.round(Math.max(2, lr - fpx * 0.9) * 2) / 2, trad: lr, read: th, shows: sh === 'day' ? 'day' : sh, fpx };
+        const dark = c.disc === 'dark', light = c.disc === 'light';
+        if (c.discColor && c.discColor !== 'auto') w.wbg = c.discColor; else if (dark) w.wbg = '#1b1916'; else if (light) w.wbg = '#f2ecdd';
+        if (c.textColor && c.textColor !== 'auto') w.wink = c.textColor; else if (dark) w.wink = '#ecdfbf'; else if (light) w.wink = '#18120b';
+        if (c.wfont) w.wfont = c.wfont;
+        const k = { id: kid(c.id), type: 'cutout', host: c.id, at: th };
+        if (c.style && c.style !== 'frame') k.style = c.style;
+        if (c.frameColor) k.frameColor = c.frameColor;
+        if (c.wshape === 'circle') k.shape = 'round';
+        out.push(w, k); return;
+      }
+      if (c.type === 'moon' && !ROUND_MOON[c.style]) {
+        const w = { id: c.id, type: 'wheel', host: c.host || 'dial', angle: +c.angle || 0, dist: +c.dist || 0, rot: 0, size: +c.size || 32, shows: 'moon' };
+        if (c.style && c.style !== 'classic') w.mstyle = c.style;
+        out.push(w, { id: kid(c.id), type: 'cutout', host: c.id, at: +c.rot || 0, shape: 'moon' }); return;
+      }
+      out.push(c);
+    });
+    return out;
+  }
   function canonDesign(d) {
     if (!d.surface || d.surface === 'enamel') { delete d.surface; delete d.texture; }
     if (d.texture != null && +d.texture === 1) delete d.texture;
@@ -4234,6 +4287,7 @@
     if (d.surface !== 'carbon' && d.surface !== 'forged') delete d.weaveScale; else if (d.weaveScale != null && +d.weaveScale === 1) delete d.weaveScale;
     ['n12Font', 'nQFont'].forEach((k) => { if (!d[k] || d[k] === 'same') delete d[k]; });
     ['n12Color', 'nQColor'].forEach((k) => { if (!d[k] || d[k] === 'auto') delete d[k]; });
+    if (d.comps) d.comps = retireWindows(d.comps);
     (d.comps || []).forEach((c) => {
       if (c.type === 'hand') {
         // a hand has no placement of its own: it turns on its host's arbour
@@ -4280,6 +4334,9 @@
         if (c.fpx == null && c.tsize != null && c.shows !== 'moon') c.fpx = Math.round(wheelFontPx(c) * 2) / 2;
         delete c.tsize;
         if (c.shows === 'moon') ['fpx', 'form', 'face', 'trot', 'fstyle', 'trad', 'inner', 'len'].forEach((k) => delete c[k]);
+        else ['msize', 'mpos'].forEach((k) => delete c[k]);
+        if (c.msize != null && Math.abs(+c.msize - 0.33) < 1e-9) delete c.msize;
+        if (c.mpos != null && Math.abs(+c.mpos - 0.5) < 1e-9) delete c.mpos;
         if (!WHEEL_FORMS[c.form] || c.form === 'disc') delete c.form;
         if (c.form !== 'ring') delete c.inner;
         if (c.form !== 'barrel') delete c.len; else ['trad', 'face', 'read'].forEach((k) => delete c[k]);

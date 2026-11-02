@@ -56,7 +56,7 @@ ok(!!E.COMP_STYLES.subdial.transparent, 'COMP_STYLES.subdial carries the transpa
 const faceOf = (style, bgId) => {
   const d = E.canonDesign(legacy3({ print: 'roman',
     comps: [{ id: 'c1', type: 'subdial', angle: 30, dist: 100, size: 60, scale: 'seconds', style: style, open: 0.5 },
-      { id: 'c2', type: 'window', host: 'c1', angle: 0, dist: 0, size: 1, shows: 'date' }],
+      { id: 'c2', type: 'window', host: 'c1', angle: 0, dist: 0, size: 1, shows: 'custom' }],
     centre: { hour: 1, minute: 1 } }));
   return E.face(Object.assign({ design: d, finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }, bgId ? { bgArt: bgId, bgSize: 442 } : {}));
 };
@@ -344,12 +344,12 @@ setTimeout(() => {
       /* ---- a round window -----------------------------------------------------------
        * The shape has to reach the hole, or the device ships a square disc inside a
        * round punch and the four corners sit over the dial. */
-      const CW = legacy3({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [{ id: 'w9', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 30, wshape: 'circle' }] });
+      const CW = legacy3({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [{ id: 'w9', type: 'window', shows: 'custom', host: 'dial', angle: 0, dist: 120, size: 30, wshape: 'circle' }] });
       const fcw = E.face({ design: E.canonDesign(JSON.parse(JSON.stringify(CW))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
       const hole9 = fcw.lay.comps.find((c) => c.id === 'w9').hole;
       ok(hole9.kind === 'circle' && isFinite(hole9.r) && hole9.r > 0, 'a window asked for round is laid out round', JSON.stringify(hole9));
       const dRound = E.canonDesign(JSON.parse(JSON.stringify(CW)));
-      const dSquare = E.canonDesign(JSON.parse(JSON.stringify(Object.assign({}, CW, { comps: [{ id: 'w9', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 30 }] }))));
+      const dSquare = E.canonDesign(JSON.parse(JSON.stringify(Object.assign({}, CW, { comps: [{ id: 'w9', type: 'window', shows: 'custom', host: 'dial', angle: 0, dist: 120, size: 30 }] }))));
       ok(dRound.comps[0].wshape === 'circle' && !('wshape' in dSquare.comps[0]), 'round is authored; square is the identity and stays out of the Design ID');
       const dg = E.canonDesign({ comps: [{ id: 'x', type: 'subdial', wshape: 'circle' }] });
       ok(!('wshape' in dg.comps[0]), 'a shape on a complication that has no aperture is dropped');
@@ -383,7 +383,7 @@ setTimeout(() => {
       /* ---- the metal an aperture is framed in --------------------------------------
        * The ring used to be gilt by decree of the movement finish. The choice rides
        * to the cut as hole.fc; the default never enters the Design ID. */
-      const GF = (o) => E.face({ design: E.canonDesign(legacy3({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [Object.assign({ id: 'g1', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 30 }, o)] })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).lay.dialHoles.find((h) => !h.hidden);
+      const GF = (o) => E.face({ design: E.canonDesign(legacy3({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, comps: [Object.assign({ id: 'g1', type: 'window', shows: 'custom', host: 'dial', angle: 0, dist: 120, size: 30 }, o)] })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).lay.dialHoles.find((h) => !h.hidden);
       ok(GF({ style: 'frame', frameColor: 'steel' }).fc === 'steel', 'a window struck in steel carries its metal down to the cut');
       ok(!GF({ style: 'frame' }).fc, 'with no choice the frame is the movement metal and nothing rides along');
       ok(!GF({ style: 'frame', frameColor: 'gilt' }).fc, 'naming Gilt is that same no-choice, and the field stays out of the Design ID');
@@ -418,15 +418,17 @@ setTimeout(() => {
       ok(CAN({ bgArt: 'x-1', bgFinishBlend: 'multiply', bgFinishKey: '#ff0044', bgFinishKeyTol: 0 }).bgFinishKeyTol === 0, 'tolerance 0 is an authored choice and survives');
       ok(CAN({ bgArt: 'x-1', bgFinishBlend: 'multiply', bgFinishKey: '#ff0044', bgFinishKeyTol: 300 }).bgFinishKeyTol === undefined, 'a tolerance outside the slider is not shipped');
       ok(!('bgFinishKey' in CAN({ bgFinishBlend: 'multiply', bgFinishKey: '#ff0044' })), 'a key with no art reference vanishes with the art group');
-      const OW = (o) => E.face({ design: E.canonDesign(legacy3({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, aging: 0, stains: 0, dust: 0, comps: [Object.assign({ id: 'w1', type: 'window', shows: 'date', host: 'dial', angle: 0, dist: 120, size: 1 }, o)] })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
+      const OW = (o) => E.face({ design: E.canonDesign(legacy3({ print: 'none', numerals: 'none', centre: { hour: 1, minute: 1 }, aging: 0, stains: 0, dust: 0, comps: [Object.assign({ id: 'w1', type: 'window', shows: 'custom', host: 'dial', angle: 0, dist: 120, size: 1 }, o)] })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
       const oRound = OW({ wshape: 'circle' }).lay.dialHoles.find((h) => !h.hidden && h.kind === 'circle');
-      // P5d.3c: a size-1 date window lands its text on LEGIBLE_PX (18 px x kL), and its aperture grows with it
-      const kL = E.LEGIBLE_PX / 18, nr = (a, b) => Math.abs(a - b) < 1e-6;
-      ok(oRound.ry == null && nr(oRound.r, 15 * kL), 'an untouched round window is the long-side circle it always was, at the legible scale', oRound.r);
+      // P5d.3d: a date window is a wheel now; the aperture rules stay with the rendered text window.
+      // Round takes the square aperture's longer side as its diameter; Width and Height pull it apart
+      const sq = OW({}).lay.dialHoles.find((h) => !h.hidden && h.kind === 'rect'), nr = (a, b) => Math.abs(a - b) < 1e-6;
+      ok(oRound.ry == null && nr(oRound.r, Math.max(sq.w, sq.h) / 2), 'an untouched round window is the long-side circle it always was', oRound.r + ' vs ' + sq.w + 'x' + sq.h);
       const oOval = OW({ wshape: 'circle', ww: 2, wh: 1 });
       const oHole = oOval.lay.dialHoles.find((h) => !h.hidden && h.kind === 'circle');
-      ok(nr(oHole.r, 30 * kL) && nr(oHole.ry, 11 * kL), 'pulling Width away from Height turns the round aperture into a true ellipse', oHole.r + ',' + oHole.ry);
-      ok(oOval.dial.getContext('2d').geom.some((g) => g.op === 'ellipse' && Math.abs(g.a[2] - 30 * kL) < 1e-6 && Math.abs(g.a[3] - 11 * kL) < 1e-6), 'and the punch itself cuts the ellipse, not a circle that could only approximate it');
+      const sq2 = OW({ ww: 2, wh: 1 }).lay.dialHoles.find((h) => !h.hidden && h.kind === 'rect');
+      ok(nr(oHole.r, sq2.w / 2) && nr(oHole.ry, sq2.h / 2), 'pulling Width away from Height turns the round aperture into a true ellipse', oHole.r + ',' + oHole.ry);
+      ok(oOval.dial.getContext('2d').geom.some((g) => g.op === 'ellipse' && Math.abs(g.a[2] - oHole.r) < 1e-6 && Math.abs(g.a[3] - oHole.ry) < 1e-6), 'and the punch itself cuts the ellipse, not a circle that could only approximate it');
       const fo = (f) => { const x = new FakeCanvas().getContext('2d'); const drew = E.finishOver(x, f, 100); return { drew, mode: x.globalCompositeOperation, strokes: x.geom.filter((g) => g.op === 'stroke'), cells: x.geom.filter((g) => g.op === 'fillRect'), fills: x.geom.filter((g) => g.op === 'fill'), turns: x.geom.filter((g) => g.op === 'rotate'), }; };
       const fGu = fo({ style: 'guilloche', blend: 'multiply', color: '#223344' });
       ok(fGu.drew === true && fGu.strokes.length > 100 && fGu.mode === 'multiply', 'the sunburst texture is pressed over the art under multiply', fGu.strokes.length);

@@ -334,10 +334,10 @@ setTimeout(async () => {
   // D43 P5d.3 made the presets' date, day and month windows wheels; a window is still a part
   // (a custom text, a display), so one is added to test its panel on
   if (!(it.state.designs.calendar.comps || []).some((c) => c.type === 'window'))
-    it.state.designs.calendar.comps.push({ id: 'cw', type: 'window', host: 'dial', angle: 0, dist: 120, rot: 0, size: 1, style: 'frame', shows: 'date', disc: 'auto' });
+    it.state.designs.calendar.comps.push({ id: 'cw', type: 'window', host: 'dial', angle: 0, dist: 120, rot: 0, size: 1, style: 'frame', shows: 'custom', disc: 'auto' });
   const winC = (it.state.designs.calendar.comps || []).find((c) => c.type === 'window');
   ok(!!winC, 'the calendar preset has a window to test on');
-  if (winC) { winC.wshape = 'circle'; it.state.sel = winC.id; const cw = labels('comps'); ok(!!byLabel(cw, 'Aperture'), 'a window offers an aperture shape'); const ap = byLabel(cw, 'Aperture'); ok(ap && (ap.opts || []).some((o) => /Round/.test(o.label)), 'with round among its choices', JSON.stringify((ap || {}).opts || []).slice(0, 80)); winC.wshape = 'rect'; }
+  if (winC) { winC.wshape = 'circle'; it.state.sel = winC.id; it.state.more = Object.assign({}, it.state.more, { shape: true }); const cw = labels('comps'); ok(!!byLabel(cw, 'Aperture'), 'a window offers an aperture shape'); const ap = byLabel(cw, 'Aperture'); ok(ap && (ap.opts || []).some((o) => /Round/.test(o.label)), 'with round among its choices', JSON.stringify((ap || {}).opts || []).slice(0, 80)); winC.wshape = 'rect'; }
   /* ---- the gilt frame is a choice now, not a constant ------------------------------
    * A cutout framed in steel is a different watch; the metal row appears exactly
    * when a style actually strikes a raised ring, and the pick lands on the comp. */

@@ -26,9 +26,9 @@ The hub's `ThemeList` binding gains `CardCount`; the firmware already reports it
 
 ## 2. Install landed in an off state
 
-**Retired by D47 (app-platform-plan §43.3, 2026-11-01).** The bench saw an installed clock that
+**Retired by D52 (app-platform-plan §43.3, 2026-11-01).** The bench saw an installed clock that
 still needed a manual turn-on; the owner's ruling was that installed means on. The 2026-10-29 fix
-set the registry's on bit at both row-fill sites. D47 then deleted the on/off state outright: the
+set the registry's on bit at both row-fill sites. D52 then deleted the on/off state outright: the
 registry flag, the stored word, the door, the boot rung and the hub's turn-on step are gone, so this
 bug has no surface left to recur on. An app is installed or it is not.
 
@@ -434,7 +434,7 @@ bits and card-copy presence, and the card's own theme count — and `h_libraryIn
 on the automatic arm unless that verify is clean. A refusal leaves the slate mark armed, so the
 next announce retries the seed instead of leaving the board half-written and marked finished. Four
 tests (`seedverify_test.go`) pin the faceless-row, disabled-row, empty-theme refusals and the green
-board. (`TestBootRowLandsEnabled` pinned the on bit from #2 until D47 retired it.)
+board. (`TestBootRowLandsEnabled` pinned the on bit from #2 until D52 retired it.)
 
 *Open this orb* moved off the raw fleet scan and onto a new `GET /api/orb/where?mac=` that resolves
 a chip to its live address by MAC through the fleet store — the same answer, reached by the one
@@ -641,7 +641,7 @@ image no matter what the tree says.
 
 1. Bug 2's fix was never written — the same failure shape as bug 3, caught the same way, by
    reading the file instead of trusting the commit message. (The state it concerned is retired
-   by D47; see bug 2.)
+   by D52; see bug 2.)
 2. Bug 12's clean slate could not run on the lonely path. The page's join-time gate read the SD
    card, saw the previous orb life's leftovers, and never POSTed. A chip erase does not touch the
    card, so every lonely-erased board had leftovers. The gate moved into the hub behind the slate

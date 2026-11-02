@@ -225,7 +225,7 @@ def burst_lint():
     g = https[https.index("static esp_err_t get_once("):]
     try:
         a = g.index("if (handshake) orb_sched_bg_burst(true);")
-        o = g.index("esp_http_client_open(h->c, ")      # D46: the open now carries the body length
+        o = g.index("esp_http_client_open(h->c, ")      # D51: the open now carries the body length
         b = g.index("if (handshake) orb_sched_bg_burst(false);")
         if not a < o < b:
             fails.append("orb_https: the burst no longer brackets the open")

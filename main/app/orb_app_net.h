@@ -41,7 +41,7 @@ typedef struct {
 #define ORB_APP_NET_REQ_MAX  (16u * 1024u)    /* a request body */
 #define ORB_APP_JSON_BUF_MAX (16u * 1024u)    /* an app buffer handed to the reader */
 
-/** Queue a request for `slot` (D46): method ORB_HTTPS_* (orb_https.h), a full http://
+/** Queue a request for `slot` (D51): method ORB_HTTPS_* (orb_https.h), a full http://
  *  or https:// URL, optional "Name: value\n" header lines, an optional body, and
  *  optionally the id of one of the app's declared secrets (§43) to attach: refused
  *  (ESP_ERR_NOT_ALLOWED) unless the URL is https to the host the secret names, and
@@ -59,7 +59,7 @@ void      orb_app_net_free(int slot);
 /** Release everything the slot holds, the connection included. Idempotent. */
 void      orb_app_net_release(int slot);
 
-/* ---- JSON (D46): orb_json.c over the landed body (buf NULL) or a copied buffer ---- */
+/* ---- JSON (D51): orb_json.c over the landed body (buf NULL) or a copied buffer ---- */
 #include "orb_json.h"
 esp_err_t orb_app_json_begin(int slot, const void *buf, uint32_t len);
 int32_t   orb_app_json_next(int slot, orb_json_tok_t *t);

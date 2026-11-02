@@ -26,7 +26,7 @@ import os, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "apps", "flights", "model.c")
-INC = [os.path.join(ROOT, "apps", "flights"), os.path.join(ROOT, "main", "app")]   # readsb.h takes orb_json.h (D46)
+INC = [os.path.join(ROOT, "apps", "flights"), os.path.join(ROOT, "main", "app")]   # readsb.h takes orb_json.h (D51)
 
 DRIVER = r"""
 #include <math.h>
@@ -34,7 +34,7 @@ DRIVER = r"""
 #include <string.h>
 #include "model.h"
 
-/* D46: adsbdb's answer is read from the OS tokenizer's events; the vectors keep their
+/* D51: adsbdb's answer is read from the OS tokenizer's events; the vectors keep their
  * one-call shape through this harness-only helper over the host-compiled orb_json.c. */
 static bool fm_route_parse(const char *json, fm_route_t *out)
 {

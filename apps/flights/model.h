@@ -75,7 +75,7 @@ typedef struct {
  * to say so. */
 bool fm_route_callsign_ok(const char *cs);
 
-/* adsbdb's /v0/callsign/<cs> answer, read from the OS's JSON events (D46): begin,
+/* adsbdb's /v0/callsign/<cs> answer, read from the OS's JSON events (D51): begin,
  * take every event, end. end() is false when it names no route (an unknown callsign,
  * a missing airport or position). */
 typedef struct {

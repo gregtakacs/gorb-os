@@ -53,7 +53,7 @@ esp_err_t orb_https_get(orb_https_t *h, const char *path, orb_https_sink_fn sink
 esp_err_t    orb_https_set_header(orb_https_t *h, const char *name, const char *value);
 esp_err_t    orb_https_del_header(orb_https_t *h, const char *name);
 
-/* D46: any method, an optional request body, every status's body to the sink, and the
+/* D51: any method, an optional request body, every status's body to the sink, and the
  * response's headers kept ("name: value\n" lines, 768 B) until the next request.
  * The origin may be http:// as well as https://. orb_https_get is GET with no body. */
 typedef enum {

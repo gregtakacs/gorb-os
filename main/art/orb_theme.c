@@ -510,7 +510,7 @@ bool orb_theme_live_sec(const char *slug, const orb_bundle_sec_t **sec,
 
 const char *orb_theme_source(void)         { return s_source; }
 
-/* D45: the app the live theme belongs to (its one section's slug), "" when none. */
+/* D50: the app the live theme belongs to (its one section's slug), "" when none. */
 const char *orb_theme_live_slug(void)      { return s_live_sec ? s_live_sec->slug : ""; }
 /* The residency verdict the boot ladder reached: an adopted, drawable theme whose
  * geometry is published. Not the same question as art_bank_ready() — that answers
@@ -812,7 +812,7 @@ typedef struct {
 } chk_scratch_t;
 static chk_scratch_t *s_chk;
 
-/* D43: a bundle is one app's theme. Its one section is the theme, whatever app it is
+/* D48: a bundle is one app's theme. Its one section is the theme, whatever app it is
  * addressed to; the section's own slug says which app draws it. (The reader still
  * parses the N-section shape until the format reversion lands with its writer and
  * suite; until then the first section is the theme.) */
@@ -2289,7 +2289,7 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
     const char *dr = clock3_verdict3(fd, &b3, fsz3, sec0, &nsec);
     if (!dr && nsec != 1) {
         snprintf(e->why, sizeof e->why,
-                 "one app per theme file (D43); this one has %lu sections",
+                 "one app per theme file (D48); this one has %lu sections",
                  (unsigned long)nsec);
         dr = e->why;
     }

@@ -169,7 +169,7 @@ ORB_IMPORT("home_gen")   uint32_t orb_home_gen(void);
 ORB_IMPORT("power_request") int32_t orb_power_request(uint32_t timeout_s, int32_t hold);
 
 /* ---- network (cap "net") ------------------------------------------------------- *
- * The OS's HTTP and HTTPS client (D46): one request at a time per app, run off the UI
+ * The OS's HTTP and HTTPS client (D51): one request at a time per app, run off the UI
  * task behind the network gate. The body (any status's) lands in an OS buffer the app
  * reads in pieces — or tokenizes in place with orb_json_begin(NULL, 0). */
 
@@ -206,7 +206,7 @@ static inline int32_t orb_net_get(const char *url, const char *cred)
     return orb_net_request(ORB_GET, url, NULL, NULL, 0, cred);
 }
 
-/* ---- JSON (free): the OS's streaming tokenizer (D46) ----------------------------- *
+/* ---- JSON (free): the OS's streaming tokenizer (D51) ----------------------------- *
  * Begin over the landed network body (buf NULL) or a buffer of the app's own (copied,
  * up to 16 KB); each orb_json_next answers one event with the member key it sits
  * under ("" inside an array), its depth and its value. orb_json_skip jumps past the

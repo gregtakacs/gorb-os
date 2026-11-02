@@ -24,7 +24,7 @@ struct orb_https {
     uint32_t  opens;          /* HTTP_EVENT_ON_CONNECTED count */
     uint32_t  retry_after_s;  /* this response's Retry-After, 0 = none or a date */
     char      hdrs[768];      /* this response's headers, "name: value\n" each, cut
-                               * at the buffer's end (D46: apps read them) */
+                               * at the buffer's end (D51: apps read them) */
     size_t    hlen;
 };
 
@@ -72,7 +72,7 @@ orb_https_t *orb_https_new(const char *origin, const char *user_agent, bool keep
     snprintf(h->origin, sizeof h->origin, "%s", origin);
     h->keep_alive = keep_alive;
     char url[96];
-    snprintf(url, sizeof url, "%s/", origin);           /* http:// or https:// (D46) */
+    snprintf(url, sizeof url, "%s/", origin);           /* http:// or https:// (D51) */
     const esp_http_client_config_t cfg = {
         .url = url,
         .user_agent = user_agent,

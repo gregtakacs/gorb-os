@@ -116,7 +116,7 @@ bool fm_route_callsign_ok(const char *cs)
     return true;
 }
 
-/* adsbdb's answer, read from the OS's JSON events (D46): the two flat objects under
+/* adsbdb's answer, read from the OS's JSON events (D51): the two flat objects under
  * "flightroute", "origin" and "destination", each an airport code (IATA, else ICAO:
  * upper-case letters and digits, one to four) and a position. */
 void fm_route_begin(fm_route_rd_t *r)

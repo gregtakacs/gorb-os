@@ -121,7 +121,7 @@ and the OS copies them. The OS never hands out a pointer into its own memory.
   during the call.
 
 The app's own menu page holds settings only. Themes are picked in the OS Themes
-menu (D44).
+menu (D49).
 
 ### Secrets
 

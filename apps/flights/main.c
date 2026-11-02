@@ -259,7 +259,7 @@ typedef enum { REQ_NONE, REQ_POLL, REQ_ROUTE } req_t;
 static req_t    s_req;
 static int      s_req_src;
 static bool     s_parsing;           /* the body is landed and being tokenized */
-#define PARSE_SLICE 400              /* JSON events taken per service pass (D46: the OS
+#define PARSE_SLICE 400              /* JSON events taken per service pass (D51: the OS
                                       * lexes natively; this bounds the app's own work) */
 
 static void schedule_next(void)

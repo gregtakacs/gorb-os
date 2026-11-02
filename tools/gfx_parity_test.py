@@ -34,7 +34,7 @@ import re, subprocess, sys, pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 # The baselines are historical: at 786efcd and 3116942 the stage was still
-# main/clock/clock_view.c (D45 moved it to main/stage/orb_stage.c later), so the
+# main/clock/clock_view.c (D50 moved it to main/stage/orb_stage.c later), so the
 # path read at those refs is the old one, whatever the file is called today.
 REF = sys.argv[1] if len(sys.argv) > 1 else "786efcd"
 

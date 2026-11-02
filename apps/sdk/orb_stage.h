@@ -1,7 +1,7 @@
 /**
- * orb_stage.h — the stage: the OS's themed-element renderer (D45, plan §43), for any
+ * orb_stage.h — the stage: the OS's themed-element renderer (D50, plan §43), for any
  * app that ships a theme. It draws the live theme for the app that theme belongs to
- * (a theme is one app's, D43); any other app that opens it is told base = 1.
+ * (a theme is one app's, D48); any other app that opens it is told base = 1.
  *
  * The OS draws the app's themed face: the plate and its delta bank, every hand, pointer and
  * ring as a rotated sprite, the complication windows and strips, the glass, at the

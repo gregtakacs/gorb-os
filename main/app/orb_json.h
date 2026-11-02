@@ -1,6 +1,6 @@
 #pragma once
 /**
- * orb_json — the OS's streaming JSON tokenizer (D46, plan §43).
+ * orb_json — the OS's streaming JSON tokenizer (D51, plan §43).
  *
  * A pull reader over one contiguous buffer: each call answers the next event — a
  * container opening or closing, or a scalar — with the member key it sits under

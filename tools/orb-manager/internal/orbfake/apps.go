@@ -703,7 +703,7 @@ func (o *Orb) serveAppUninstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.Installed = false
-	// Uninstall is a full forget (D47): settings and secrets go with the row.
+	// Uninstall is a full forget (D52): settings and secrets go with the row.
 	a.Cfg = nil
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"uninstalled","slug":%q}`, jsonSafe(slug)))
 }

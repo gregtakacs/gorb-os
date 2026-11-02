@@ -203,7 +203,7 @@ orb_asset_ans_t orb_theme_preview_read(const char *handle,
 
 /** "slot" when the dial draws the slot's bundle, "none" for the base face. */
 const char *orb_theme_source(void);
-/** D45: the slug of the app the live theme belongs to, "" when no theme is live. */
+/** D50: the slug of the app the live theme belongs to, "" when no theme is live. */
 const char *orb_theme_live_slug(void);
 /** The owner name of the theme currently on the wall, "" for the base face. */
 const char *orb_theme_active_name(void);

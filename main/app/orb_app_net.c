@@ -311,7 +311,7 @@ int32_t orb_app_net_header(int slot, const char *name, char *out, uint32_t cap)
     return -1;
 }
 
-/* ---- JSON over a landed body or an app buffer (D46) ------------------------------ */
+/* ---- JSON over a landed body or an app buffer (D51) ------------------------------ */
 
 esp_err_t orb_app_json_begin(int slot, const void *buf, uint32_t len)
 {

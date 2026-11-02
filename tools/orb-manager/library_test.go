@@ -750,7 +750,7 @@ func TestAppUploadRidesTheBulkClient(t *testing.T) {
 
 // TestInstallOneAppSkipsAnInstalledRow pins the leg the library row's Install door takes
 // for a board whose app already sits in a slot with its card copy behind it. An installed
-// app is on the dial (D47): the run answers skipped and nothing else — no card write (the
+// app is on the dial (D52): the run answers skipped and nothing else — no card write (the
 // bulk client stays silent), no install queue, no reboot, and no call to the retired
 // enable door, which a current orb answers 404.
 func TestInstallOneAppSkipsAnInstalledRow(t *testing.T) {
@@ -1060,7 +1060,7 @@ func TestHollowRowSendsBytesInsteadOfSkipping(t *testing.T) {
 	})
 }
 
-// TestFirmwareHasNoOnOffState pins D47 from the hub's side: an app is installed or it is
+// TestFirmwareHasNoOnOffState pins D52 from the hub's side: an app is installed or it is
 // not. The 2026-10-29 batch (#2) once had to set an enable bit at both of the installer's
 // row-fill sites; the bit, its stored word and its door are gone, and a hub that still
 // called the door would be dialling a 404. Both halves are read off the firmware files.
@@ -1068,11 +1068,11 @@ func TestFirmwareHasNoOnOffState(t *testing.T) {
 	install := firmwareFile(t, "main/app/orb_app_install.c")
 	for _, fn := range []string{"install_ladder", "orb_app_install_resolve_boot"} {
 		if strings.Contains(cBody(t, install, fn), "row.enabled") {
-			t.Errorf("%s sets an enable bit again; D47 retired the state", fn)
+			t.Errorf("%s sets an enable bit again; D52 retired the state", fn)
 		}
 	}
 	if strings.Contains(firmwareFile(t, "main/net/orb_net.c"), `"/api/v1/apps/enable"`) {
-		t.Error("orb_net.c registers /api/v1/apps/enable again; D47 retired the door")
+		t.Error("orb_net.c registers /api/v1/apps/enable again; D52 retired the door")
 	}
 }
 

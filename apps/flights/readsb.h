@@ -2,7 +2,7 @@
 /* A streaming reader for the readsb aircraft JSON that adsb.lol and adsb.fi
  * answer with (docs/flight-tracker-design.md §3).
  *
- * D46: the OS tokenizes the body (orb_json, natively, over the bytes it holds); this
+ * D51: the OS tokenizes the body (orb_json, natively, over the bytes it holds); this
  * file is only the schema — which keys are an aircraft's and what they mean — fed one
  * token at a time, one aircraft's fields kept, emitted when that object closes.
  *
@@ -50,7 +50,7 @@ typedef struct {
 } orb_readsb_t;
 
 void orb_readsb_init(orb_readsb_t *r, orb_readsb_emit_fn emit, void *ctx);
-/* One event from the OS's JSON tokenizer (D46). Returns false once the input is known
+/* One event from the OS's JSON tokenizer (D51). Returns false once the input is known
  * malformed (r->error) — a tokenizer error included. */
 bool orb_readsb_token(orb_readsb_t *r, const orb_json_tok_t *t);
 /* True when the whole document closed cleanly and the aircraft array was seen. */

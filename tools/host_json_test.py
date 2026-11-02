@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host check for main/app/orb_json.c, the OS's streaming JSON tokenizer (D46).
+"""Host check for main/app/orb_json.c, the OS's streaming JSON tokenizer (D51).
 
     python3 tools/host_json_test.py              # vectors
     python3 tools/host_json_test.py --mutations  # do the vectors actually bite?

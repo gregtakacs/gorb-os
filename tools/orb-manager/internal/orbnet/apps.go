@@ -4,7 +4,7 @@ package orbnet
 // (h_apps_list), POST /api/v1/sd/app (h_app_upload — the raw-bytes twin of
 // ThemeUpload, named by the container's own header), POST /api/v1/apps/install?id=<stem>
 // (h_apps_install — queues the card-to-slot job and answers 202). An installed app is
-// on the dial; there is no toggle (D47).
+// on the dial; there is no toggle (D52).
 // D36's hub seed was their only hub-side caller; S5 deleted the seed route and
 // left these as the library surface for the same doors the Apps face's drop
 // zone already dials. One install path, unchanged — only the hub-side presser

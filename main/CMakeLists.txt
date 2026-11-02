@@ -20,7 +20,7 @@ idf_component_register(
         # and TLS discipline, with no idea what a flight is) and the per-app
         # credential store behind /api/v1/apps/cfg's secrets.
         "app/orb_app_net.c"
-        # D46: the streaming JSON tokenizer apps parse through, natively. Pure C,
+        # D51: the streaming JSON tokenizer apps parse through, natively. Pure C,
         # host-tested as shipped by tools/host_json_test.py.
         "app/orb_json.c"
         "app/orb_svc.c"

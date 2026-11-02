@@ -43,7 +43,7 @@
 #include "orb_svc.h"            /* orb_svc_table() — the imports forward to it */
 #include "orb_ui.h"             /* the widget and canvas service behind ui_* / cv_* */
 #include "orb_app_net.h"        /* the HTTPS service and credential store behind net_* */
-#include "orb_stage.h"         /* the stage behind stage_* (D45) */
+#include "orb_stage.h"         /* the stage behind stage_* (D50) */
 #include "orb_sound.h"          /* the owner's sound settings, the voices the stage leases */
 #include "orb_clock3.h"         /* clk_sound_t: the theme records the stage hands over */
 #include "orb_theme.h"          /* orb_theme_live_slug: whose theme the stage draws */
@@ -909,7 +909,7 @@ m3ApiRawFunction(imp_net_header)     /* i32 net_header(const char *name, char *b
     m3ApiReturn(orb_app_net_header(slot_index(s), name, buf, cap));
 }
 
-/* JSON (D46): free — the reader parses bytes the app already holds or fetched. The
+/* JSON (D51): free — the reader parses bytes the app already holds or fetched. The
  * token crosses verbatim (apps/sdk/orb.h's orb_json_tok_t, asserted the same size). */
 _Static_assert(sizeof(orb_json_tok_t) == 152, "orb_json_tok_t's layout is the guest ABI");
 
@@ -983,8 +983,8 @@ m3ApiRawFunction(imp_net_cred)       /* i32 net_cred(const char *id): 1 when tha
     m3ApiReturn(id && orb_app_cred_has(s->app, id) ? 1 : 0);
 }
 
-/* the stage (D45): it draws the live theme for the app that theme belongs to (a
- * theme is one app's, D43), and only that app may pose it; any other app that opens
+/* the stage (D50): it draws the live theme for the app that theme belongs to (a
+ * theme is one app's, D48), and only that app may pose it; any other app that opens
  * it is told it holds no theme and draws its own face (D31). The stage itself was built, and is run
  * and parked, by the hooks below on the task's own stack; these only read the
  * theme's records, take the frame's poses and play the app's own sounds. */
@@ -1354,7 +1354,7 @@ static esp_err_t wasm_init(orb_app_t *app)
     wasm_slot_t *s = slot_of_app(app);
     if (!s || !s->rt) return ESP_FAIL;          /* never loaded: nothing to build */
     if (!orb_ui_screen(slot_index(s))) return ESP_ERR_NO_MEM;
-    /* The app the live theme belongs to gets the stage (D45), built here on
+    /* The app the live theme belongs to gets the stage (D50), built here on
      * the task's own stack (it touches the bank, the scheduler and the layer table)
      * before its orb_init can ask what it holds. */
     s->stage = app->slug && !strcmp(app->slug, orb_theme_live_slug());

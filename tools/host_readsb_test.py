@@ -20,7 +20,7 @@ import glob, json, math, os, subprocess, sys, tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "apps", "flights", "readsb.c")
 INC = os.path.join(ROOT, "apps", "flights")
-# D46: the OS tokenizes; the app's readsb.c only maps tokens. The suite runs both.
+# D51: the OS tokenizes; the app's readsb.c only maps tokens. The suite runs both.
 JSON_C = os.path.join(ROOT, "main", "app", "orb_json.c")
 JSON_INC = os.path.join(ROOT, "main", "app")
 FIX = sorted(glob.glob(os.path.join(ROOT, "tests", "fixtures", "readsb", "*.json")))

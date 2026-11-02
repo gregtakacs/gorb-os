@@ -63,13 +63,63 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(!r.ok && /R4.*wheel/.test(r.reason), 'a cutout does not move on its own: it belongs to its wheel', r.reason);
   ok(S.rowCount({ comps, hands: [], order: [] }).rows === 1, 'R6: a wheel is one live row, its cutouts none');
 }
-// ---- the bake -----------------------------------------------------------------------------------
+// ---- the bake: a turning row per wheel, one cover over them -----------------------------------
 {
-  const p = B.compPlan3([{ id: 'w', type: 'wheel', shows: 'day' }, { id: 'k', type: 'cutout', host: 'w' }, { id: 'u', type: 'wheel', shows: 'date', digit: 'units' }]);
-  ok(p.rows.length === 2 && p.rows[0].src === 'weekday' && p.rows[0].count === 7 && p.rows[1].src === 'date' && p.rows[1].count === 31 && !p.refuses.length,
-    'a jumping wheel is one plate per value (a digit wheel over the whole domain); its cutouts are not rows', JSON.stringify(p.rows.map((r) => r.src + '/' + r.count)));
-  const q = B.compPlan3([{ id: 'w', type: 'wheel', shows: 'date', cadence: 'smooth' }]);
-  ok(!q.rows.length && /turns smoothly.*Jump/.test(q.refuses[0] || ''), 'a smooth wheel is refused by name', q.refuses[0]);
+  const P = B.wheelPlan3([{ id: 'w', type: 'wheel', shows: 'day', ease: 200 }, { id: 'k', type: 'cutout', host: 'w' }, { id: 'j', type: 'wheel', shows: 'date' },
+    { id: 'u', type: 'wheel', shows: 'date', digit: 'units', cadence: 'smooth' }, { id: 'y', type: 'wheel', shows: 'year', digit: 'thousands', ease: 300 },
+    { id: 'm', type: 'wheel', shows: 'moon', dir: 'ccw', cadence: 'smooth' }, { id: 's', type: 'wheel', shows: 'second', ease: 200 }]);
+  const by = (id) => P.rows.find((r) => r.id === id);
+  ok(P.rows.length === 5 && !P.rows.some((r) => r.id === 'j') && !P.refuses.length, 'every wheel that moves between figures (smooth, eased, a year) is one row; its cutouts are none', JSON.stringify(P.rows.map((r) => r.id)));
+  const cp = B.compPlan3([{ id: 'j', type: 'wheel', shows: 'date', digit: 'units' }, { id: 'k', type: 'cutout', host: 'j' }, { id: 'v', type: 'wheel', shows: 'moon' }, { id: 'e', type: 'wheel', shows: 'day', ease: 200 }, { id: 'y', type: 'wheel', shows: 'year', digit: 'units' }]);
+  ok(cp.rows.length === 2 && cp.rows[0].src === 'date' && cp.rows[0].count === 31 && cp.rows[1].src === 'moon_age' && cp.rows[1].count === 30 && !cp.refuses.length,
+    'a wheel that snaps is a window\u2019s plates, one per value (a digit ring over the whole domain); an eased one and a year are not', JSON.stringify(cp.rows.map((r) => r.id + '/' + r.src + '/' + r.count)));
+  ok(by('w').src === 'weekday' && by('w').vmin === 0 && by('w').vmax === 7 && by('w').span === -3600 && by('w').zero === Math.round(-3600 / 7) && by('w').cadence === 'jump' && by('w').ease === 200,
+    'a day ring turns back a figure a day, its Monday on the second figure of a Sunday-first ring', JSON.stringify(by('w')));
+  ok(by('u').digit === 'units' && by('u').vmin === 0 && by('u').vmax === 10 && by('u').cadence === 'roll', 'a smooth units ring rolls over ten figures');
+  ok(by('y').src === 'year' && by('y').digit === 'thousands' && by('y').vmax === 10 && by('y').ease === 300, 'a year ring reads its thousands, and eases its jump');
+  ok(by('m').src === 'moon_age' && by('m').vmax === 60 && by('m').span === -3600 && by('m').cadence === 'roll', 'a moon disc is sixty day-places a turn, turning the way its direction says');
+  ok(by('s').ease === 0, 'a seconds ring never eases: a settle every second is refused by the dial');
+  const bad = B.wheelPlan3([{ id: 'a', type: 'wheel', shows: 'day', digit: 'units', cadence: 'smooth' }, { id: 'b', type: 'wheel', shows: 'date', digit: 'hundreds', cadence: 'smooth' }]);
+  ok(!E.canonDesign({ comps: [{ id: 'a', type: 'wheel', shows: 'day', digit: 'units' }] }).comps[0].digit, 'a day of the week keeps no digit');
+  ok(bad.refuses.length === 2 && /day of the week/.test(bad.refuses[0]) && /never reaches/.test(bad.refuses[1]), 'a digit a measure does not have is refused by name', bad.refuses.join(' | '));
+  // the editor's ring and the dial's row count the same figures
+  const combos = []; Object.keys(E.WHEEL_SHOWS).forEach((sh) => ['whole', 'units', 'tens', 'hundreds', 'thousands'].forEach((dg) => combos.push([sh, dg])));
+  const odd = combos.filter(([sh, dg]) => {
+    const pr = B.wheelPlan3([{ id: 'x', type: 'wheel', shows: sh, digit: dg, cadence: 'smooth' }]); if (pr.refuses.length) return false;
+    const sp = E.wheelSpec(sh, dg); return !sp || sp.n !== pr.rows[0].n;
+  });
+  ok(!odd.length, 'every wheel the dial can turn carries the editor\u2019s figure count', JSON.stringify(odd));
+}
+// ---- the bake writes them as the dial reads them -------------------------------------------------
+{
+  const pl = (w, h, a) => { const r = new Uint8Array(w * h * 4); for (let i = 0; i < w * h; i++) { r[i * 4] = 9; r[i * 4 + 3] = a; } return r; };
+  const P = B.wheelPlan3([{ id: 't', type: 'wheel', shows: 'date', digit: 'tens', cadence: 'smooth' }, { id: 'u', type: 'wheel', shows: 'date', digit: 'units', ease: 250 }]);
+  const wheels = P.rows.map((r, i) => Object.assign({}, r, { x: 100 + i, y: 100, w: 60, h: 60, pivot_x: 30, pivot_y: 30, rgba: pl(60, 60, 255) }));
+  const bk = B.bakeClock3({ name: 'Wheels', plate: { rgba: pl(466, 466, 255), w: 466, h: 466 }, wheels, cover: { x: 90, y: 90, w: 80, h: 80, rgba: pl(80, 80, 200) } });
+  const el = B.verifyBundle3(bk.bytes).sections[0].blob.elements.filter((e) => e.class === B.classId('aux'));
+  ok(el.length === 3 && el.every((e) => e.order === 0) && el[0].cadence === 6 && el[0].digit === 2 && el[0].vmax === 4 && el[1].cadence === 3 && el[1].ease === 250 && el[1].digit === 1
+     && el[2].src === 0 && !el[2].cadence, 'two discs and the cover land at depth 0, discs first: a rolling tens ring, an easing units ring, a still cover', JSON.stringify(el.map((e) => [e.slot, e.order, e.src, e.digit, e.cadence, e.vmax, e.span, e.ease])));
+  let threw = ''; try { B.bakeClock3({ name: 'x', plate: { rgba: pl(466, 466, 255), w: 466, h: 466 }, wheels }); } catch (e) { threw = e.message; }
+  ok(/no cover/.test(threw), 'wheels with no cover are refused: every disc would show whole over the face', threw);
+  const many = Array.from({ length: 16 }, (_, i) => Object.assign({}, wheels[1], { id: 'w' + i }));
+  const past = B.bakeClock3({ name: 'x', plate: { rgba: pl(466, 466, 255), w: 466, h: 466 }, wheels: many, cover: { x: 90, y: 90, w: 80, h: 80, rgba: pl(80, 80, 200) } }).meter;
+  ok(past.layers === 17 && past.layerCap === 16 && bk.meter.layers === 3, 'the meter counts the layers the stage seats (17 past its 16, where the dial falls back the slow way)', JSON.stringify([past.layers, bk.meter.layers]));
+}
+// ---- the roll, as the dial's CLK_CAD_ROLL computes it (host_drive_test.py's vectors) -----------
+{
+  const t = E.wheelSpec('date', 'tens'), u = E.wheelSpec('date', 'units'), w = E.wheelSpec('date');
+  ok(near(t.at(new Date(2026, 9, 15, 18)), 1) && near(t.at(new Date(2026, 9, 19, 18)), 1.75) && near(t.at(new Date(2026, 9, 31, 12)), 3.5) && near(t.at(new Date(2026, 10, 30, 12)), 3.5),
+    'a tens ring holds, and rolls only through the day before it changes (the 31st, and a 30-day month\u2019s 30th)');
+  ok(near(u.at(new Date(2026, 1, 28, 12)), 9.5) && near(w.at(new Date(2026, 1, 28, 18)), 30), 'the 28th of a February rolls on to the 1st: three units figures, four on the whole ring');
+  const y = E.wheelSpec('year', 'thousands'), mo = E.wheelSpec('month', 'units'), h = E.wheelSpec('hour', 'tens');
+  ok(y.held(new Date(2026, 10, 2)) === 2 && E.wheelSpec('year', 'units').held(new Date(2026, 10, 2)) === 6 && mo.held(new Date(2026, 10, 2)) === 1 && h.held(new Date(2026, 10, 2, 12, 5)) === 1,
+    'a digit reads the number shown: 2026\u2019s 2 and 6, November\u2019s 1, noon\u2019s 12');
+}
+// ---- the moon wheel -----------------------------------------------------------------------------------
+{
+  const f = face([{ id: 'm', type: 'wheel', host: 'dial', angle: 180, dist: 110, size: 34, shows: 'moon', cadence: 'smooth' }, { id: 'mc', type: 'cutout', host: 'm', at: 0, shape: 'moon' }]);
+  const w = f.lay.wheels[0], hole = f.lay.dialHoles.find((q) => q.kind === 'moon');
+  ok(w.spec.moon && hole && near(hole.x, w.x) && near(hole.y, w.y) && hole.a === w.r && hole.seal, 'a moon cutout is the moonphase aperture over its wheel\u2019s own centre, sealed on the dial');
 }
 // ---- the panels and adding -------------------------------------------------------------------------
 {

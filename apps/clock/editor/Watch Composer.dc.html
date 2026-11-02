@@ -611,6 +611,31 @@ class Component extends DCLogic {
       && !(+x.open > 0.5)
       && (+x.dist || 0) + half(x) > 18 && (+x.dist || 0) - half(x) <= tip;
     const crossed = (D.comps || []).filter(hit);
+    /* D43 P5d.3: a wheel that turns as a row re-samples its disc under every tick that
+     * crosses its band, and a band round a centre the sweep circles (a date ring under the
+     * dial) is crossed on every one. A wheel that snaps is a window's plate and priced as one. */
+    const G3 = window.GorbBake, byId3 = {}; (D.comps || []).forEach((x) => { byId3[x.id] = x; });
+    // the design's own polar placements, host on host (the layout without building a face)
+    const at3 = (x) => { const h = x.host && x.host !== 'dial' && byId3[x.host] ? at3(byId3[x.host]) : [233, 233], a = ((+x.angle || 0) * Math.PI) / 180, d = +x.dist || 0;
+      return x.type === 'cutout' || x.type === 'hand' ? h : [h[0] + Math.sin(a) * d, h[1] - Math.cos(a) * d]; };
+    (D.comps || []).forEach((x) => {
+      if (x.type !== 'wheel' || !G3 || !G3.wheelTurns3) return;
+      const p = at3(x), r = Math.max(14, +x.size || 40);
+      if (!G3.wheelTurns3(x)) {
+        // a snapping wheel ships a window's plates at each cutout, and is priced as that window was
+        const fs = Math.max(6, Math.min(r * 0.42, (+x.tsize || 1) * Math.max(8, r * 0.2))), lr = r - fs * 0.85;
+        (D.comps || []).filter((k) => k.type === 'cutout' && k.host === x.id).forEach((k) => {
+          const a = ((+k.at || 0) * Math.PI) / 180, cx = p[0] + Math.sin(a) * lr - 233, cy = p[1] - Math.cos(a) * lr - 233, dk = Math.hypot(cx, cy);
+          if (dk + 6 > 18 && dk - 6 <= tip) crossed.push({ angle: (Math.atan2(cx, -cy) * 180) / Math.PI, dist: dk, size: 1, type: 'window' });
+        });
+        return;
+      }
+      // one that turns re-samples its disc under every tick that crosses it, and a disc round a
+      // centre the sweep circles (a date ring under the dial) is crossed on every one
+      const dc = Math.hypot(p[0] - 233, p[1] - 233);
+      if (dc - r > tip || dc + r < 18) return;
+      crossed.push(dc <= r ? { full: true } : { angle: (Math.atan2(p[0] - 233, 233 - p[1]) * 180) / Math.PI, dist: dc, size: r * 2 });
+    });
     const n = crossed.length;
     if (!n) { out.why = 'Still dial sweeps clear of every plate: the device holds the tier rate, as the aviator does.'; return out; }
     out.cross = n;
@@ -621,6 +646,7 @@ class Component extends DCLogic {
     const covOf = (list) => {
       const iv = [];
       for (const x of list) {
+        if (x.full) { iv.push([0, 360]); continue; }
         const w = (Math.asin(Math.min(1, half(x) / Math.max(1, +x.dist || 1))) * 180) / Math.PI;
         const a = +x.angle || 0, lo = (((a - w) % 360) + 360) % 360, hi = lo + 2 * w;
         if (hi <= 360) iv.push([lo, hi]); else iv.push([lo, 360], [0, hi - 360]);
@@ -2752,6 +2778,11 @@ class Component extends DCLogic {
     // D34: and which subdial hands the dial TURNS instead of plating — the pointer
     // table, planned beside the comp table so one refusal list stays honest.
     const pp = this.pointerRows3(D, plan);
+    // D43 P5d.3: and which wheels turn as rows under one cover -- never under a face lifted
+    // among the hands, whose still row would leave its wheel turning over the hands below
+    const wp = G.wheelPlan3(D.comps), lifted3 = {};
+    (D.order || []).forEach((e) => { if (String(e).indexOf('comp:') === 0) lifted3[String(e).slice(5)] = 1; });
+    wp.rows.forEach((r) => { if (lifted3[r.host]) wp.refuses.push('the wheel \u201c' + r.id + '\u201d turns under the face \u201c' + r.host + '\u201d, which is lifted among the hands \u2014 drop that face back on the dial, or its wheel would turn over the hands below it'); });
     // D34's authoring hint: a budget refusal over plates-driven hour or second rings is
     // this row wanting pointer drive — one hand plate, not a window row's tiles. The
     // hint rides the refusal sentence so the baker can see which lever moves.
@@ -2765,8 +2796,8 @@ class Component extends DCLogic {
       this.setState({ status: 'Not baked: "' + nm + '" is not a theme name — the header holds ' + (G.NAME_MAX - 1) + ' bytes of it and this one measures ' + G.nameBytes(nm) });
       return;
     }
-    if (plan.refuses.length || pp.refuses.length) {
-      this.setState({ status: 'Not baked: ' + (plan.refuses[0] || pp.refuses[0]) + ' — the .orbtheme note says this before you press.' });
+    if (plan.refuses.length || pp.refuses.length || wp.refuses.length) {
+      this.setState({ status: 'Not baked: ' + (plan.refuses[0] || pp.refuses[0] || wp.refuses[0]) + ' — the .orbtheme note says this before you press.' });
       return;
     }
     const s0 = this.settled3();
@@ -2787,7 +2818,7 @@ class Component extends DCLogic {
     // rides the plate frames; a planned row's own plates must not.
     const liveIds = plan.rows.map((r) => r.id);
     const onlyBase = (D.comps || []).filter((c) => liveIds.indexOf(String(c.id)) < 0 && c.type !== 'opening' && c.type !== 'hand'
-      && !(c.type === 'flare' && c.icon === 'datetext')).map((c) => String(c.id));
+      && c.type !== 'wheel' && c.type !== 'cutout' && !(c.type === 'flare' && c.icon === 'datetext')).map((c) => String(c.id));
     let compRows = [], compB = 0;
     if (plan.rows.length) {
       this.setState({ status: 'Rendering the comp table: ' + plan.rows.length + ' rows, ' +
@@ -2804,6 +2835,14 @@ class Component extends DCLogic {
       const ap = await this.auxPass3(pp, onlyBase);
       if (ap.refuse) { this.setState({ status: 'Not baked: ' + ap.refuse }); return; }
       auxRows = ap.rows; auxB = ap.auxB;
+    }
+    let wheelRows = [], cover = null;
+    if (wp.rows.length) {
+      this.setState({ status: 'Rendering the wheels: ' + wp.rows.length + ' disc' + (wp.rows.length > 1 ? 's' : '') + ' and their cover…' });
+      await new Promise((r) => setTimeout(r, 30));
+      const wr = this.wheelPass3(wp, onlyBase);
+      if (wr.refuse) { this.setState({ status: 'Not baked: ' + wr.refuse }); return; }
+      wheelRows = wr.rows; cover = wr.cover;
     }
     this.setState({ status: 'Measuring plate motion across the ' + B + '-frame loop' + (compRows.length ? ' with the comp rows off the plate' : '') + '…' });
     await new Promise((r) => setTimeout(r, 30));      // paint the status before the walk
@@ -2823,8 +2862,9 @@ class Component extends DCLogic {
      * carrier on every orbital dial — then shipped the carriage frozen into the bank.
      * The carriage's own box is measured off the cage planes and priced separately. */
     const m3 = { frames: B, fps, unionPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!M.cageAt, orbital: !!M.orbital };
-    // the plate ships under its value rows, so it is walked with the sealed dial (D43 P5d.3)
-    const pxs = this.measureFrames3((f) => this.frameCanvas(f, { hands: 1, glass: 1, outer: 1, cage: 1, sealed: compRows.length ? 1 : 0 }, null, compRows.length ? onlyBase : undefined), m3);
+    // the plate ships under its value rows and wheels, so it is walked with the sealed dial (D43 P5d.3)
+    const rowsOff = compRows.length || wheelRows.length;
+    const pxs = this.measureFrames3((f) => this.frameCanvas(f, { hands: 1, glass: 1, outer: 1, cage: 1, sealed: rowsOff ? 1 : 0 }, null, rowsOff ? onlyBase : undefined), m3);
     if (m3.hasCage) {
       const cb = this.measureCarriage3(gt, m3.frames);
       if (cb) { m3.carriageW = cb[0]; m3.carriageH = cb[1]; }
@@ -2833,7 +2873,17 @@ class Component extends DCLogic {
     // every animated dial — the walk's answer dropped on the floor, t3bake's tripwire
     // reporting it as "union 0 px", and every moving plate bake refused as stale.
     const un = m3.unionPx, bw = m3.bboxW, bh = m3.bboxH;
-    this._t3 = { pxs, un, bw, bh, compRows, compB, auxRows, auxB, onlyBase,
+    // the cover is still: a texel of it over a moving plate holds that motion frozen. Said, not refused
+    let frozen = 0;
+    if (cover && pxs && pxs.length > 1) {
+      for (let yy = 0; yy < cover.h; yy++) for (let xx = 0; xx < cover.w; xx++) {
+        if (!cover.rgba[(yy * cover.w + xx) * 4 + 3]) continue;
+        const pi = ((cover.y + yy) * 466 + cover.x + xx) * 4, p0 = pxs[0];
+        if (pxs.some((pf) => pf[pi] !== p0[pi] || pf[pi + 1] !== p0[pi + 1] || pf[pi + 2] !== p0[pi + 2])) frozen++;
+      }
+    }
+    this._wheelFrozen = frozen;
+    this._t3 = { pxs, un, bw, bh, compRows, compB, auxRows, auxB, onlyBase, wheelRows, cover,
                  orbital: !!m3.orbital, carW: m3.carriageW | 0, carH: m3.carriageH | 0 };
     await this.t3bake(nm, fc, M, gt, B, fps, opts.send);
   }
@@ -3071,6 +3121,8 @@ class Component extends DCLogic {
     for (const cp of (opts.comps || [])) for (const s of (cp.sprites || [])) crc(s.rgba);
     for (const a of (opts.aux || [])) { if (a.plane) crc(a.plane.rgba); if (a.shadow) crc(a.shadow.rgba); pos(a, 'aux' + (a.slot | 0)); }
     for (const p of (opts.plates || [])) crc(p.rgba);
+    for (const w of (opts.wheels || [])) { crc(w.rgba); pos(w, 'wheel:' + w.id + ':' + w.src + ':' + w.digit + ':' + w.cadence + ':' + w.span + ':' + w.zero + ':' + (w.ease | 0)); }
+    if (opts.cover) { crc(opts.cover.rgba); pos(opts.cover, 'cover'); }
     if (opts.preview) crc((opts.preview.plane || opts.preview).rgba);   // the picker's ID photo moves the witness too
     parts.push(te.encode('|sc:' + JSON.stringify(opts.scalars || null) +
       '|pf:' + (opts.plate && opts.plate.fps ? opts.plate.fps : 0) +
@@ -3086,7 +3138,7 @@ class Component extends DCLogic {
    * frame pixels in its locals and the bake should not also hold its stack. */
   async t3bake(nm, fc, M, gt, B, fps, send) {
     const G = window.GorbBake;
-    const { pxs, un, bw, bh, compRows, compB, auxRows, auxB, orbital, carW, carH, onlyBase } = this._t3; this._t3 = null;
+    const { pxs, un, bw, bh, compRows, compB, auxRows, auxB, orbital, carW, carH, onlyBase, wheelRows, cover } = this._t3; this._t3 = null;
     const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer);
     const ROLE = this.handSeats3(this.design());
     const hands = [], shadows = [];
@@ -3282,6 +3334,7 @@ class Component extends DCLogic {
     }
     if (compRows.length) opts.comps = compRows;
     if (auxRows.length) opts.aux = auxRows;
+    if (wheelRows && wheelRows.length) { opts.wheels = wheelRows; opts.cover = cover; }
     if (glassP) opts.plates = [glassP];
     /* The ONE depth list: the author's hand order, bottom to top — the same list the
      * preview draws by and the layer kit ships. The baker turns it into the element
@@ -3324,7 +3377,9 @@ class Component extends DCLogic {
       const stem0 = await this.cardStemFor(G, nm);
       const stem = (stem0 || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
       const bytes = r.bytes;
-      const meter = 'art ' + r.meter.artSize + '/' + r.meter.artCap + ' B (' + r.meter.artPct + '%)';
+      const meter = 'art ' + r.meter.artSize + '/' + r.meter.artCap + ' B (' + r.meter.artPct + '%)' +
+        (r.meter.layers > r.meter.layerCap ? ' · the dial draws ' + r.meter.layers + ' layers and the orb seats ' + r.meter.layerCap + ' at full speed: past them it draws the whole dial the slow way \u2014 make a wheel snap, or drop a part or a hand\u2019s shadow' : '') +
+        (this._wheelFrozen ? ' · the wheels\u2019 cover lies over ' + this._wheelFrozen + ' px of moving movement, which it holds still: move the wheel or its cutout off the opening' : '');
       if (send) { this._replaceArmed = null; await this.postTheme3ToOrb(bytes, nm, stem, pol, meter); return; }
       this.download(new Blob([bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
       this.setState({ status: 'Downloaded ' + stem + '.orbtheme — ' + pol.sentence + ' · ' + meter +
@@ -3698,6 +3753,69 @@ class Component extends DCLogic {
    * the hand sweeps UNDER the window, the same way a host tile in the plate table
    * punches under its row — and the twin is punched to the same holes, because the
    * ink the window hides cannot cast through it. */
+  /* D43 P5d.3: the wheels' rows. The cover first, read off two renders of the base with every
+   * wheel filled black and then white: where the two agree the face covers the discs (its
+   * own texel, opaque), where they differ by the whole step a cutout shows them (clear), and
+   * between, an antialiased edge, the exact coverage -- black's render is the face's
+   * premultiplied colour. Each disc is then lifted unclipped at figure 0 through the dial's
+   * lens (the pointer pass's inset x dynK about the centre), largest first as the engine
+   * stacks them, and kept only across the BAND its cutouts ever read: the radii at which a
+   * cutout shows it. A date ring is most of the dial across, and a whole disc under one
+   * cover would freeze every moving texel it lies over; a band freezes only what crosses
+   * it, and the cover spans only the bands. */
+  wheelPass3(wp, onlyBase) {
+    const W = 466, C = 233, F = this.face(), kP = (F.inset || 1) * (F.dynK || 1);
+    const pixOf = (c) => c.getContext('2d').getImageData(0, 0, W, W).data;
+    const byId = {}; (F.lay.wheels || []).forEach((w) => { byId[String(w.id)] = w; });
+    const miss = wp.rows.find((r) => !byId[String(r.id)]);
+    if (miss) return { refuse: 'the wheel \u201c' + miss.id + '\u201d has no place on this dial (no layout, or a host that is gone)' };
+    const ids = onlyBase.concat(wp.rows.map((r) => String(r.id))), hid = { hands: 1, glass: 1, outer: 1, cage: 1 }, now = this.now();
+    let A, B;
+    try { F.wheelFill = '#000'; A = pixOf(this.frameCanvas(0, hid, now, ids)); F.wheelFill = '#fff'; B = pixOf(this.frameCanvas(0, hid, now, ids)); }
+    finally { F.wheelFill = null; }
+    const seen = new Uint8Array(W * W);
+    for (let p = 0; p < W * W; p++) seen[p] = Math.max(B[p * 4] - A[p * 4], B[p * 4 + 1] - A[p * 4 + 1], B[p * 4 + 2] - A[p * 4 + 2], 0);
+    const order = wp.rows.slice().sort((a, b) => byId[String(b.id)].r - byId[String(a.id)].r);
+    const rows = [], bands = [];
+    for (const r of order) {
+      const w = byId[String(r.id)], gx0 = C + (w.x - C) * kP, gy0 = C + (w.y - C) * kP, R = w.r * kP;
+      // the band: every radius at which some cutout shows a wheel, inside this disc
+      let r0 = Infinity, r1 = -1;
+      for (let y = Math.max(0, Math.floor(gy0 - R)); y <= Math.min(W - 1, Math.ceil(gy0 + R)); y++)
+        for (let x = Math.max(0, Math.floor(gx0 - R)); x <= Math.min(W - 1, Math.ceil(gx0 + R)); x++) {
+          if (!seen[y * W + x]) continue;
+          const d = Math.hypot(x + 0.5 - gx0, y + 0.5 - gy0); if (d > R + 1) continue;
+          if (d < r0) r0 = d; if (d > r1) r1 = d;
+        }
+      if (r1 < 0) return { refuse: 'the wheel \u201c' + r.id + '\u201d is read through no cutout the dial shows \u2014 give it a cutout over its figures, or remove it' };
+      r0 = Math.max(0, r0 - 2); r1 = Math.min(R + 1, r1 + 2);
+      const c = document.createElement('canvas'); c.width = c.height = W;
+      const x = c.getContext('2d'); x.translate(C, C); x.scale(kP, kP); x.translate(-C, -C);
+      F.wheelDisc(x, r.id, 0);
+      const px = pixOf(c), gx = Math.round(gx0), gy = Math.round(gy0);
+      const bx = Math.max(0, Math.floor(gx0 - r1)), by = Math.max(0, Math.floor(gy0 - r1)), bx2 = Math.min(W - 1, Math.ceil(gx0 + r1)), by2 = Math.min(W - 1, Math.ceil(gy0 + r1));
+      const ww = Math.max(bx2, gx) - Math.min(bx, gx) + 1, hh = Math.max(by2, gy) - Math.min(by, gy) + 1, ox = Math.min(bx, gx), oy = Math.min(by, gy), rgba = new Uint8Array(ww * hh * 4);
+      for (let yy = 0; yy < hh; yy++) for (let xx = 0; xx < ww; xx++) {
+        const X = ox + xx, Y = oy + yy; if (X >= W || Y >= W) continue;
+        const d = Math.hypot(X + 0.5 - gx0, Y + 0.5 - gy0); if (d < r0 || d > r1) continue;
+        const si = (Y * W + X) * 4, di = (yy * ww + xx) * 4; rgba[di] = px[si]; rgba[di + 1] = px[si + 1]; rgba[di + 2] = px[si + 2]; rgba[di + 3] = px[si + 3];
+      }
+      rows.push(Object.assign({}, r, { x: ox, y: oy, w: ww, h: hh, pivot_x: gx - ox, pivot_y: gy - oy, rgba }));
+      bands.push({ x: gx0, y: gy0, r0, r1 });
+    }
+    let x0 = W, y0 = W, x1 = -1, y1 = -1;
+    bands.forEach((d) => { x0 = Math.min(x0, Math.floor(d.x - d.r1)); y0 = Math.min(y0, Math.floor(d.y - d.r1)); x1 = Math.max(x1, Math.ceil(d.x + d.r1)); y1 = Math.max(y1, Math.ceil(d.y + d.r1)); });
+    x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(W - 1, x1); y1 = Math.min(W - 1, y1);
+    const cw = x1 - x0 + 1, ch = y1 - y0 + 1, rgba = new Uint8Array(cw * ch * 4);
+    for (let yy = 0; yy < ch; yy++) for (let xx = 0; xx < cw; xx++) {
+      const X = x0 + xx + 0.5, Y = y0 + yy + 0.5;
+      if (!bands.some((d) => { const q = Math.hypot(X - d.x, Y - d.y); return q >= d.r0 - 1 && q <= d.r1 + 1; })) continue;
+      const si = ((y0 + yy) * W + x0 + xx) * 4, di = (yy * cw + xx) * 4, a = 255 - seen[(y0 + yy) * W + x0 + xx];
+      if (a <= 0) continue;
+      rgba[di] = Math.min(255, Math.round((A[si] * 255) / a)); rgba[di + 1] = Math.min(255, Math.round((A[si + 1] * 255) / a)); rgba[di + 2] = Math.min(255, Math.round((A[si + 2] * 255) / a)); rgba[di + 3] = a;
+    }
+    return { rows, cover: { x: x0, y: y0, w: cw, h: ch, rgba } };
+  }
   async auxPass3(pp, onlyBase) {
     const W = 466, PANEL = W * W;
     const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, W, W).data.slice().buffer);
@@ -4143,7 +4261,7 @@ class Component extends DCLogic {
         const wheels = D.comps.filter((c) => c.type === 'wheel'), mates = D.comps.filter((c) => c.type === 'cutout' && c.id !== sel.id);
         Sx('Wheel', 'host', wheels.map((c) => ({ v: c.id, label: '#' + num(c.id) + ' ' + compTitle(c) })));
         R('Reads at', 'at', 0, 359, 1, (v) => v + '\u00b0', 90);
-        Cx('Shape', 'shape', [{ v: 'window', label: 'Window' }, { v: 'round', label: 'Round' }, { v: 'arc', label: 'Arc' }, { v: 'slot', label: 'Slot' }], 'window');
+        Cx('Shape', 'shape', [{ v: 'window', label: 'Window' }, { v: 'round', label: 'Round' }, { v: 'arc', label: 'Arc' }, { v: 'slot', label: 'Slot' }, { v: 'moon', label: 'Moon' }], 'window');
         if (sel.shape === 'arc') R('Arc', 'span', 6, 180, 1, (v) => v + '\u00b0', 36);
         R('Width', 'w', 0, 120, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);
         R('Height', 'h', 0, 80, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);
@@ -4192,20 +4310,27 @@ class Component extends DCLogic {
       if (!cut && sel.type !== 'wheel') Sx('Style', 'style', opt(E.COMP_STYLES[sel.type]));
       /* D43 P5d.3: a wheel -- what it shows (or one digit of it), how it turns, how it looks */
       if (sel.type === 'wheel') {
-        const numeric = ['date', 'hour', 'hours24', 'minute', 'second'].includes(sel.shows || 'date');
+        const sh = sel.shows || 'date', moon = sh === 'moon', numeric = ['date', 'month', 'hour', 'hours24', 'minute', 'second', 'year'].includes(sh);
         Sx('Shows', 'shows', opt(E.WHEEL_SHOWS));
-        if (numeric) Cx('Digit', 'digit', [{ v: 'whole', label: 'Whole' }, { v: 'tens', label: 'Tens' }, { v: 'units', label: 'Units' }], 'whole');
+        // a year reads by digit (its four rings); the other numbers whole, or their tens or units
+        if (numeric) Cx('Digit', 'digit', (sh === 'year' ? [] : [{ v: 'whole', label: 'Whole' }]).concat(sh === 'year' ? [{ v: 'thousands', label: 'Thousands' }, { v: 'hundreds', label: 'Hundreds' }] : [])
+          .concat([{ v: 'tens', label: 'Tens' }, { v: 'units', label: 'Units' }]), sh === 'year' ? 'units' : 'whole');
         if (sel.digit === 'tens') Cx('Zero', 'blank0', [{ v: false, label: 'Print 0' }, { v: true, label: 'Leave blank' }], false);
         Cx('Direction', 'dir', [{ v: 'cw', label: 'Clockwise' }, { v: 'ccw', label: 'Anticlockwise' }], 'cw');
         Cx('Motion', 'cadence', [{ v: 'jump', label: 'Jumps' }, { v: 'smooth', label: 'Smooth' }], 'jump');
-        if (sel.cadence !== 'smooth') R('Ease', 'ease', 0, 1000, 10, (v) => (v ? v + ' ms' : 'snaps'), 0);
+        if (sel.cadence !== 'smooth' && sh !== 'second') R('Ease', 'ease', 0, 1000, 10, (v) => (v ? v + ' ms' : 'snaps'), 0);
         if (sel.host && sel.host !== 'dial') Cx('Overhang', 'overhang', [{ v: 'hidden', label: 'Hidden \u00b7 inside its face' }, { v: 'shown', label: 'Shown \u00b7 lies on the dial' }], 'hidden');
-        selFields.push(Co('Disc colour', sel.wbg, set('wbg'), 'Auto'), Co('Figures', sel.wink, set('wink'), 'Auto'),
-          Sl('Typeface', sel.wfont || 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], set('wfont')));
-        R('Figure size', 'tsize', 0.5, 2, 0.05, (v) => Math.round(v * 100) + '%', 1);
+        if (moon) selFields.push(Sl('Sky', sel.mstyle || 'classic', [{ v: 'classic', label: 'Navy & gold' }, { v: 'silver', label: 'Silver night' }, { v: 'black', label: 'Black sky' }], set('mstyle')));
+        else {
+          selFields.push(Co('Disc colour', sel.wbg, set('wbg'), 'Auto'), Co('Figures', sel.wink, set('wink'), 'Auto'),
+            Sl('Typeface', sel.wfont || 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], set('wfont')));
+          R('Figure size', 'tsize', 0.3, 2, 0.05, (v) => Math.round(v * 100) + '%', 1);
+        }
         const nc = D.comps.filter((c) => c.type === 'cutout' && c.host === sel.id).length;
         selFields.push(Nt('', (nc ? nc + ' cutout' + (nc > 1 ? 's read' : ' reads') + ' it' : 'No cutout reads it yet: add one from Parts while this wheel is selected') +
-          (sel.cadence === 'smooth' ? '. A smooth wheel turns as one row on the orb, which cannot yet be clipped to its cutouts: the bake refuses it until then \u2014 set it to Jump to send it.' : '.')));
+          '. ' + ((window.GorbBake && window.GorbBake.wheelTurns3 && window.GorbBake.wheelTurns3(sel))
+            ? 'Moving between figures, it turns on the orb as its own row under the face: every tick of a sweep across it repaints the disc turned, so each such wheel costs the dial frame rate.'
+            : 'Snapping, it ships a picture per figure at its cutouts, as a window did: no frame-rate cost.') + (moon ? ' Give it a Moon cutout to read the phase through the humps.' : '')));
       }
       // The raised ring only exists when the style draws it: the choice appears with the
       // style that uses it, and Gilt is the movement's own metal -- nothing was decided
@@ -4886,9 +5011,11 @@ class Component extends DCLogic {
         // ruling A) plates every live complication as one window row the dial
         // drives itself — the button note quotes the same compPlan3 the export
         // runs, and only names a refusal the element row truly cannot carry.
-        const plan3 = G.compPlan3(D.comps), pp3 = this.pointerRows3(D, plan3);
-        if (plan3.refuses.length || pp3.refuses.length) return 'FORMAT 3 · refuses: ' + (plan3.refuses[0] || pp3.refuses[0]);
+        const plan3 = G.compPlan3(D.comps), pp3 = this.pointerRows3(D, plan3), wp3 = G.wheelPlan3(D.comps);
+        if (plan3.refuses.length || pp3.refuses.length || wp3.refuses.length) return 'FORMAT 3 · refuses: ' + (plan3.refuses[0] || pp3.refuses[0] || wp3.refuses[0]);
         const cost = F * 466 * 466 * 2;
+        if (wp3.rows.length) return 'FORMAT 3 · ' + (plan3.rows.length ? plan3.rows.length + ' comp' + (plan3.rows.length > 1 ? 's' : '') + ' bake as ' + plan3.rows.reduce((q, r) => q + r.count, 0) + ' plates · ' : '') +
+          wp3.rows.length + (wp3.rows.length > 1 ? ' wheels turn' : ' wheel turns') + ' as rows under one cover' + (pp3.rows.length ? ' · ' + pp3.rows.length + ' pointer plate' + (pp3.rows.length > 1 ? 's' : '') : '') + ' · ' + F + '-frame train · measures on export';
         if (pp3.rows.length) return 'FORMAT 3 · ' + pp3.rows.length + ' hand' + (pp3.rows.length > 1 ? 's' : '') + ' beyond the three slots bake as one pointer plate each' + (plan3.rows.length ? ' · ' + plan3.rows.length + ' comp rows' : '') + ' · ' + F + '-frame train · measures on export';
         if (plan3.rows.length) return 'FORMAT 3 · ' + plan3.rows.length + ' comp' + (plan3.rows.length > 1 ? 's' : '') +
           ' bake as ' + plan3.rows.reduce((s, r) => s + r.count, 0) + ' plates · ' + F + '-frame train · measures on export';

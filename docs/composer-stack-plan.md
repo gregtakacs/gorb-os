@@ -595,7 +595,10 @@ it as the pointer.
   *Corrected as built:* a jumping digit wheel bakes without them, as one plate per value
   of the whole measure (a units wheel ships 31 date plates, each printing its digit). The
   firmware's digit sources would cut that to ten, so they remain a size win to take
-  after the merge, not a precondition.
+  after the merge, not a precondition. *Corrected again (owner, 2026-11-02):* "after the
+  merge" was stale when written: `feat/wasm-apps` merged at 2bfadb3, before P5d.3 began,
+  and the row drive already lives in the clock app (`apps/clock/main.c`). The firmware
+  half is built (P5d.3b below).
 - **P5d.4, the bench:** a Gold bake of each, including P5c's owed pointer sources.
 
 **As built (P5d.1, 2026-11-02).**
@@ -771,7 +774,8 @@ Escape cancels.
   joined frame.
 - `drawWheel` turns the wheel so its figure sits under the first cutout, upright there,
   with the ease on a jump. Wheels draw largest first, each clipped to its own cutouts
-  unless its overhang is shown.
+  unless its overhang is shown. *(Superseded by P5d.3b: the stack under a face is seen
+  through the union of its cutouts, as the dial draws it.)*
 
 *Editor.*
 - The catalogue offers Wheel and Cutout. A new wheel comes with a cutout and is
@@ -787,6 +791,7 @@ Escape cancels.
 - `compPlan3`: a jumping wheel is one window row over its measure's whole domain, cropped
   to its cutouts by the comp pass; a cutout is not a row. A smooth wheel is refused by
   name ("set it to Jump"): the dial cannot yet clip a turning row to its cutouts.
+  *(Superseded by P5d.3b: a smooth wheel turns as a row under a cover.)*
 - **Found and fixed on the bench:** the plate walk composed through the dial with its
   sealed holes open, so the train turning behind a dial cutout read as plate motion and
   the plate baked as a 15-frame bank (1,912 px changed). The walk now composes with
@@ -813,13 +818,101 @@ Escape cancels.
   backtrace as the known `stack overflow in task main` from the 6a65022 bundle's boot
   loop. It is not new.
 
-*Still owed.*
-- Today's date window and the moon as wheel + cutout, pending parity with custom-text
-  windows.
-- A smooth wheel on the device needs the dial to clip a row (a firmware change, to be
-  ruled).
-- The firmware digit sources (tens/units for every measure, the year's digits), after
-  the merge, to cut a digit wheel from a plate per value to ten.
+*Owed at P5d.3, all taken up by P5d.3b below:* the date and moon windows as wheels,
+smooth wheels on the device, and the firmware digit sources.
+
+**As built (P5d.3b, owner 2026-11-02: "do the firmware change to support smooth wheels
+with cutouts"; convert the date and moon windows).**
+
+*No clip in the firmware: a cover row.*
+- The device already draws AUX and BANK rows in one depth walk over the plate
+  (`depth_key`, table order at a tie), and a still AUX row exists (the lifted faces). So
+  a wheel that moves between figures ships as a **turning disc row** at depth 0, and the
+  faces over all such wheels as **one still cover row** after them, also at depth 0:
+  the plate's own texels with the cutouts cut out. That is the clip, for any cutout
+  shape (window, arc, moon, joined frames), for hidden or shown overhang, and over a
+  sub-dial, through paths the glass already runs. A firmware clip would need the same
+  mask plane, plus a new draw path in the stage.
+- The cover is read off two renders of the base with every turning wheel filled black
+  and then white: where they agree the face covers the discs (opaque), where they differ
+  by the whole step a cutout shows them (clear), with exact coverage on antialiased
+  edges, and black's render is the premultiplied colour (`wheelPass3`).
+- Each disc is lifted unclipped at figure 0 through the dial's lens, and kept only
+  across the **band** its cutouts read (the radii where the cutouts show it). A date
+  ring is most of the dial across, and a whole disc under the cover would freeze every
+  moving texel beneath it; the bake counts any moving texels the cover still lies over
+  and says so on the export line.
+- The editor draws wheels as the dial does: under each face the discs stack largest
+  first, and the stack is seen through the union of their cutouts (plus the whole disc
+  of a wheel whose overhang is shown). Preview and glass agree where discs overlap.
+
+*Which wheels turn.* `wheelTurns3`: a wheel that is smooth, eased, or reads a measure
+with no window domain (a year) turns as a row (`wheelPlan3`). One that snaps between
+figures keeps P5d.3's plates at its cutouts (`compPlan3`): what a window cost, and no
+frame rate lost.
+
+*The firmware vocabulary (the dial reader, the clock app, the schema, the baker).*
+- `CLK_SRC_YEAR` (17): the year itself, with a fraction of the year; no window domain.
+- `CLK_DIGIT_HUNDREDS` and `CLK_DIGIT_THOUSANDS`. A digit now reads the number the
+  dial shows: a 12-hour source's 0 is 12, a month's 0..11 is 1..12.
+- `CLK_CAD_ROLL` (6), a wheel's smooth: the figure holds, and in the last unit before
+  it changes it rolls on to the next, forward round the ring's `vmax - vmin` figures,
+  to the value the calendar really goes to (`comp_next`: the 28th of a February runs
+  on to the 1st, four figures on a whole ring, three on a units ring). D42's sweep is
+  unchanged: a tens digit's sweep still counts the units toward the next ten.
+- The moon's age gains a fraction within its day, so a moon disc can roll. Its disc has
+  two moons, a half turn a lunation: 60 figure places, and `comp_next` never wraps it
+  back to 0 (the next lunation's face is the other moon).
+- Reader: a roll takes no argument and no ease; the pins in `host_clock3_test.py` move to
+  digit 5 and cadence 7. `host_drive_test.py`: 72 vectors (year digits, the shown
+  number's digits, the roll through month ends, the moon's creep), 34/34 mutants.
+- **Found:** the clock app already applied `digit` in posing. The P5d.3 note that it was
+  "validated but not applied" was stale since the drive moved into the app (§43).
+
+*Wheels in the editor.* Shows gains Year (by digit only: thousands, hundreds, tens,
+units) and Moon phase (a moon disc with a Sky look, read through a new Moon cutout: the
+moonphase's half circle with its humps, over the wheel's own centre). Figures read
+through an arc run along the ring. A seconds wheel offers no ease (a settle every second
+is refused by the dial). The panel says what a wheel costs: snapping ships pictures,
+moving turns a row.
+
+*The presets converted.* The date, day and month windows of Modern, Broad arrow, Phase,
+Regulator and Triple calendar are now snapping wheels, each cutout exactly where its
+window was. A ring needs about one window's width per figure, so a date ring is ~150 px
+in figure radius: centred near the dial, or wherever its band misses every opening onto
+the movement (searched: Modern's reads at 105°, Triple calendar's month at 145°). The
+classic moons of Triple calendar and Perpetual are moon wheels with moon cutouts, also
+snapping. Luna, Neon and Phase keep their round moons: those are not discs but a phase
+redrawn per value (a terminator), which stays a display, the window path, as do custom
+text windows and anything digital or animated.
+
+*Tests.* `headless-wheels` 40 (the plan's rows and refusals, editor/baker figure counts
+pinned together, the roll against the firmware's vectors, the moon cutout, the bake
+writing the discs and cover at depth 0); pace prices a turning wheel's band under the
+sweep and a snapping wheel as the window it replaced; every suite, the geometry gate,
+the runtime and region suites and `go test` green.
+
+*Bench, on orb-B (Gold) at v1.2.0+c0a8f45-dirty, the clock app installed from its
+rebuilt container (code 17,766 B).*
+- **Found: the 16-layer table.** An 8-disc bench needed 18 layers; the OS table holds
+  16 per app (`ORB_LAYER_MAX`), so the stage fell back to the LVGL path. At 16 or fewer
+  the L4 painter seats them all (`l4=yes`).
+- At 15 layers (an eased year in tens and units, an eased day read through an arc, a
+  smooth moon disc, a snapping big date): the glass equals the editor's render, MON, the
+  moon in its humps, 2026's digits and the 2nd. 0 panic lines on every store.
+- **Cost:** 4 to 5 fps, as the bake estimated (flush ~150 ms). Every tick of the sweep
+  repaints, turned, each disc it crosses, though the discs rest between figures.
+  Snapping wheels do not pay it, which is why the presets snap.
+
+*Owed.*
+- **Built the same day:** the bake counts the layers the stage seats (every element but
+  the plate's canvas, the sounds and a hidden row; 18, 16 and 15 for the three benches,
+  as the stage logged) and names an overflow on the export line. It does not refuse:
+  a dial past the table still runs, the slow way, and whether any shipped preset is
+  already past it has not been counted.
+- A turning row at rest could be drawn from a cache of its current pose (re-turned only
+  when its angle changes), which would make a resting wheel cost a still blit. A stage
+  change, to be ruled.
 
 ## 5. Preview: 1:1, and the panel
 
@@ -1171,7 +1264,7 @@ long as an app in its library or on a known orb still names it.
 | **P5** ✔ | The build flow and layout (§4): step bar, Add catalogue with compatibility, properties grouped by D42 parts, diagnostics drawer, light moods | headless UI test walks Start → Render on a scratch build and on a preset; nothing removed from today's controls (a checklist of every current field and where it now lives) — **done 2026-11-02** (§4.1) |
 | **P5b** ✔ | The studio layout (§4.2): the editor fills the hub window as one three-pane studio — layers left on every step, the stage centre, the inspector right — in the hub's palette, with one title bar; Arrange folds into the layers panel; the hub page itself goes fluid | nothing removed (the P5 checklist, re-pointed at the new panes); the stage zoom stays inside its pane at every stop; no page scroll at 1280×720 and 1920×1080 (Chrome screenshots of both, inside the hub); `go test` and every app suite green — **built 2026-11-02** (§4.2); the owner's test on the hub is owed |
 | **P5c** ✔ | Hands are complications (§4.3): one Add catalogue, hands placed anywhere in any number, a selected hand's panel alone; the plate rows open Movement, and its backdrop and the plate art sit at the tab's foot | the presets render and bake pixel-identical in the new shape; ten hands on the dial within R6; every suite green — **built 2026-11-02** (§4.3 as built); the presets' hand geometry is identical across 22 designs; a bench bake of the new pointer sources and the owner's test are owed |
-| **P5d** ◐ | Faces, hands, wheels and cutouts (§4.4): face groups and a drag that shows where it lands, hands that inherit from their face, fan and slider sub-dials, wheels under cutouts | each slice keeps every preset rendering as before and every suite green; the bench bake of each new row kind — **P5d.1–P5d.3 built and benched 2026-11-02** (§4.4 as built); P5d.4's angled and lifted fan/slider still to see on glass |
+| **P5d** ◐ | Faces, hands, wheels and cutouts (§4.4): face groups and a drag that shows where it lands, hands that inherit from their face, fan and slider sub-dials, wheels under cutouts | each slice keeps every preset rendering as before and every suite green; the bench bake of each new row kind — **P5d.1–P5d.3b built and benched 2026-11-02** (§4.4 as built: smooth wheels as rows under a cover, year digits and the roll in the firmware, the presets' windows and classic moons as wheels); P5d.4's angled and lifted fan/slider still to see on glass |
 | **P6** | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here |
 | **P7** | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs |
 

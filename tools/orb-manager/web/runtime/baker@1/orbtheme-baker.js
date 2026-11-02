@@ -55,7 +55,7 @@
   var CLK_COMP_MAX = 16, CLK_AUX_MAX = 8, CLK_BANK_MAX = 256;
   var SOURCES = ['none', 'weekday', 'month', 'date', 'hour12', 'hour24', 'minute', 'second',
                  'moon_age', 'battery', 'power_reserve', 'text', 'ampm', 'week', 'day_of_year',
-                 'quarter', 'value'];
+                 'quarter', 'value', 'year'];
   var COMP_KINDS = ['window', 'strip', 'ring', 'flare'];
   /* D32 ruling B, mirrored from theme_schema.CLOCK_WINDOW_DOMAIN: a WINDOW whose
    * source has a fixed calendar domain carries exactly that many plates, and the
@@ -2071,9 +2071,10 @@
   var SHAPE_ARM = 0, SHAPE_RING = 1, SHAPE_TEXT = 2;
   var ENDS = ['wrap', 'flyback', 'hold'];
   var END_WRAP = 0, END_FLYBACK = 1, END_HOLD = 2;
-  var DIGITS = ['whole', 'units', 'tens'];
+  var DIGITS = ['whole', 'units', 'tens', 'hundreds', 'thousands'];   // D43 P5d.3: a year's four
   var TURN_10 = 3600, PANEL_PX = 466;
   var CLK_ROW_MAX = 24;                    // theme_schema.CLK_ROW_MAX
+  var ORB_LAYER_MAX3 = 16;                 // main/gfx/orb_layers.h ORB_LAYER_MAX: drawn rows per app
   // The composer's authoring motions (D34's names). The wire no longer carries them —
   // bakeClock3's v6Drive turns each into a row's two poses — but the composer still
   // speaks them until its rows are rebuilt (D42 E2).
@@ -2084,8 +2085,9 @@
   var ROW_FRAMES_MAX = 16;                 // clk_types.h CLK_TOURB_MAX
   // D41 §2.1 (theme_schema.CADENCES / clk_types.h CLK_CAD_*). D42 retired inherit: 0 is
   // none, a still row's cadence and nobody else's.
-  var CADENCES = ['none', 'sweep', 'step', 'jump', 'stop-to-go', 'drag'];
-  var CAD_NONE = 0, CAD_SWEEP = 1, CAD_STEP = 2, CAD_JUMP = 3, CAD_STOP_TO_GO = 4, CAD_DRAG = 5;
+  // D43 P5d.3's roll is a wheel's smooth: hold the figure, roll on in the unit before it changes.
+  var CADENCES = ['none', 'sweep', 'step', 'jump', 'stop-to-go', 'drag', 'roll'];
+  var CAD_NONE = 0, CAD_SWEEP = 1, CAD_STEP = 2, CAD_JUMP = 3, CAD_STOP_TO_GO = 4, CAD_DRAG = 5, CAD_ROLL = 6;
   var CAD_DRAG_SOURCES = ['date', 'weekday', 'month', 'day_of_year'];
   var SWEEP_FPS_MAX = 30;                  // theme_schema.SWEEP_FPS_MAX
   var MOTION_COLUMNS = ['span', 'zero', 'vmin', 'vmax', 'dx', 'dy', 'end', 'digit'];
@@ -2298,7 +2300,7 @@
       var cname = CADENCES[cad];
       if (cad === CAD_STEP && carg < 1)
         throw new Error(where + '.cad_arg: step 0 divides a unit into no steps — name how many per unit');
-      if ((cad === CAD_NONE || cad === CAD_JUMP) && carg)
+      if ((cad === CAD_NONE || cad === CAD_JUMP || cad === CAD_ROLL) && carg)
         throw new Error(where + '.cad_arg: ' + carg + ' on a ' + cname + ' row, which takes no argument');
       if (cad === CAD_SWEEP && carg > SWEEP_FPS_MAX)
         throw new Error(where + '.cad_arg: a sweep at ' + carg + ' frames a second — the panel draws ' +
@@ -3684,6 +3686,34 @@
         auxB += (av.w | 0) * (av.h | 0) * 3;
       }
     }
+    /* D43 P5d.3: the wheels. Each disc is a turning row standing at its figure 0, and the
+     * faces over them are ONE still cover row: the plate's own texels over the discs with
+     * the union of their cutouts cut out. All at depth 0 in this table order -- the discs
+     * largest first, then the cover -- so they land on the plate and under every window,
+     * pointer, carriage and hand (depth_key keeps table order at a tie). */
+    var wheels3 = o.wheels || [];
+    for (var kw = 0; kw < wheels3.length; kw++) {
+      var w3 = wheels3[kw];
+      if (!w3.rgba || !(w3.w > 0 && w3.h > 0) || w3.rgba.length !== w3.w * w3.h * 4)
+        throw new Error('the wheel ' + q(String(w3.id)) + ' carries no disc: a turning row ships its art');
+      if (SOURCES.indexOf(String(w3.src)) < 0 || DIGITS.indexOf(String(w3.digit || 'whole')) < 0 || CADENCES.indexOf(String(w3.cadence)) < 0)
+        throw new Error('the wheel ' + q(String(w3.id)) + ' reads ' + q(String(w3.src)) + '/' + q(String(w3.digit)) + ' by ' + q(String(w3.cadence)) + ': not the dial\u2019s vocabulary');
+      row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the wheel ' + q(String(w3.id))), kind: SHAPE_RING,
+            src: SOURCES.indexOf(String(w3.src)), digit: DIGITS.indexOf(String(w3.digit || 'whole')),
+            x: w3.x | 0, y: w3.y | 0, w: w3.w, h: w3.h, pivot_x: w3.pivot_x | 0, pivot_y: w3.pivot_y | 0,
+            order: 0, alpha: 255, n_frames: 1, span: w3.span | 0, zero: w3.zero | 0, vmin: w3.vmin | 0, vmax: w3.vmax | 0,
+            end: END_WRAP, cadence: CADENCES.indexOf(String(w3.cadence)), cad_arg: 0, ease: w3.ease | 0 }, w3, true, false);
+      auxB += w3.w * w3.h * 3;
+    }
+    if (o.cover) {
+      var cv3 = o.cover;
+      if (!wheels3.length) throw new Error('a wheel cover with no wheels under it');
+      if (!cv3.rgba || !(cv3.w > 0 && cv3.h > 0) || cv3.rgba.length !== cv3.w * cv3.h * 4)
+        throw new Error('the wheels\u2019 cover carries no pixels: a still row ships its art');
+      row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the wheels\u2019 cover'), kind: SHAPE_ARM, src: SOURCES.indexOf('none'),
+            x: cv3.x | 0, y: cv3.y | 0, w: cv3.w, h: cv3.h, order: 0, alpha: 255, n_frames: 1 }, cv3, true, true);
+      auxB += cv3.w * cv3.h * 3;
+    } else if (wheels3.length) throw new Error('wheels with no cover: every disc would show whole over the face');
     /* D43 P4b: a still row — a sub-dial face the author lifted among the hands. It never
      * moves (source none, no cadence, no travel), takes its depth from depthOrder's
      * 'comp:<id>' entry, and is a still, screen-locked plane, so it dithers. */
@@ -3783,6 +3813,16 @@
         ' — drop frames or shrink the art');
     }
 
+    /* D43 P5d.3b: the stage seats a clock's drawn rows in the OS layer table, which holds
+     * ORB_LAYER_MAX (16) per app (main/gfx/orb_layers.h); past it the stage refuses the
+     * rest and the whole dial falls back to the LVGL path -- measured on the bench, a
+     * fraction of the frame rate. Counted the stage's way (clock_layers_build): every
+     * element but the plate's canvas, the sounds and a hidden row. */
+    var drawn3 = elems.filter(function (e) {
+      return !(e['class'] === CLASS_PLATE && (e.slot | 0) === 0) && e['class'] !== classId('sound') && !((e.flags | 0) & EF_HIDDEN);
+    }).length;
+    // Said on the meter, not refused: a dial past the table still runs, the slow way.
+
     // D42: every clock section is v6.
     var secAbi = GEOM_ABI6;
     var pack = function () {
@@ -3822,6 +3862,7 @@
       if (smoothed) b = pack();
     }
     b.meter = budget3(b.bytes);
+    b.meter.layers = drawn3; b.meter.layerCap = ORB_LAYER_MAX3;
     b.n_elem = elems.length;
     b.est = est;
     b.est.granted = grant;
@@ -4160,8 +4201,50 @@
    * a pointer on one gets the window row, and this is the sentence that says so.
    * The scales that qualify are the ones the complaint was ever about. */
   var COMP3_RING_FULL = { second: 60, minute: 60, hour12: 12, hour24: 24 };
-  // D43 P5d.3: what each wheel measure reads on the dial (a digit wheel bakes over the whole domain)
-  var WHEEL3_SRC = { date: 'date', day: 'weekday', month: 'month', hour: 'hour12', hours24: 'hour24', minute: 'minute', second: 'second' };
+  /* D43 P5d.3: a wheel is a turning row -- its disc, standing at figure 0 -- and the faces
+   * over the wheels are one still cover row with their cutouts cut out of it, both just
+   * above the plate. What each measure reads, how many figures its ring carries (a digit
+   * ring: as many as that digit of the shown number ever reads), the value its first
+   * figure stands for, and the figure its value 0 lands on (the weekday's Monday is the
+   * second figure of a Sunday-first ring). The moon is a disc with two moons on it, so a
+   * whole turn is two lunations: 60 figure places of a day each. These counts are
+   * WatchEngine.wheelSpec's, and headless-wheels pins the two together. */
+  var WHEEL3 = {
+    date: { src: 'date', n: 31, vmin: 1, tens: 4 }, day: { src: 'weekday', n: 7, off: 1 },
+    month: { src: 'month', n: 12, tens: 2 }, year: { src: 'year', n: 0, tens: 10 },
+    hour: { src: 'hour12', n: 12, tens: 2 }, hours24: { src: 'hour24', n: 24, tens: 3 },
+    minute: { src: 'minute', n: 60, tens: 6 }, second: { src: 'second', n: 60, tens: 6 },
+    moon: { src: 'moon_age', n: 60, moon: true }
+  };
+  // the wheels that turn as rows: smooth, eased, or reading a measure no window can plate
+  function wheelTurns3(c) {
+    var wd = WHEEL3[(c && c.shows) || 'date'];
+    return !wd || c.cadence === 'smooth' || +c.ease > 0 || !CLOCK_WINDOW_DOMAIN[wd.src];
+  }
+  function wheelPlan3(comps) {
+    var rows = [], refuses = [];
+    (comps || []).forEach(function (c) {
+      if (!c || c.type !== 'wheel' || !wheelTurns3(c)) return;
+      var id = c.id === undefined ? '?' : String(c.id), wd = WHEEL3[c.shows || 'date'];
+      if (!wd) { refuses.push('the wheel \u201c' + id + '\u201d shows \u201c' + c.shows + '\u201d: no source on this dial reads that'); return; }
+      var dg = c.digit && c.digit !== 'whole' ? String(c.digit) : (c.shows === 'year' ? 'units' : 'whole');
+      if (DIGITS.indexOf(dg) < 0) { refuses.push('the wheel \u201c' + id + '\u201d reads digit \u201c' + dg + '\u201d: the dial knows ' + DIGITS.join('/')); return; }
+      if (dg !== 'whole' && (wd.moon || c.shows === 'day'))
+        { refuses.push('the wheel \u201c' + id + '\u201d reads a digit of the ' + (wd.moon ? 'moon' : 'day of the week') + ', which has none'); return; }
+      if ((dg === 'hundreds' || dg === 'thousands') && c.shows !== 'year')
+        { refuses.push('the wheel \u201c' + id + '\u201d reads the ' + dg + ' of ' + c.shows + ', which never reaches them'); return; }
+      var n = dg === 'whole' ? wd.n : dg === 'tens' ? wd.tens : 10;
+      var dir = c.dir === 'ccw' ? -1 : 1, smooth = c.cadence === 'smooth';
+      // the engine turns a ring back by a figure as its value goes up (the next figure comes
+      // round under the cutout), and the moon disc forward, as the classic moonphase does
+      var span = wd.moon ? dir * TURN_10 : -dir * TURN_10;
+      var vmin = dg === 'whole' ? (wd.vmin | 0) : 0;
+      rows.push({ id: id, type: 'wheel', host: c.host || 'dial', src: wd.src, digit: dg, n: n, vmin: vmin, vmax: vmin + n,
+                  span: span, zero: Math.round(span * (dg === 'whole' ? (wd.off | 0) : 0) / n), end: 'wrap',
+                  cadence: smooth ? 'roll' : 'jump', ease: smooth || wd.src === 'second' ? 0 : Math.max(0, Math.min(1000, +c.ease || 0)) });
+    });
+    return { rows: rows, refuses: refuses };
+  }
   function compPlan3(comps) {
     var rows = [], refuses = [];
     (comps || []).forEach(function (c) {
@@ -4170,17 +4253,12 @@
       if (c.type === 'hand') return;                                     // D43 P5c: a hand slot or a pointer row, never a window row
       if (c.type === 'cutout') return;                                   // D43 P5d.3: a wheel's window; its wheel is the row
       if (c.type === 'wheel') {
-        // a jumping wheel is one plate per value, cropped to its cutouts by the comp pass;
-        // a smooth one would be a turning row the dial cannot clip to them, so it would
-        // show the whole disc over the face -- refused by name until the dial can
-        if (c.cadence === 'smooth') {
-          refuses.push('the wheel \u201c' + id + '\u201d turns smoothly: the dial cannot yet clip a turning row to its cutouts, so it would show the whole disc over the face \u2014 set it to Jump');
-          return;
-        }
-        src = WHEEL3_SRC[c.shows || 'date'];
-        if (!src) { refuses.push('the wheel \u201c' + id + '\u201d shows \u201c' + c.shows + '\u201d: no source on this dial reads that'); return; }
-        var wdom = CLOCK_WINDOW_DOMAIN[src];
-        rows.push({ id: id, type: 'wheel', src: src, count: wdom[1], valueMin: wdom[0], host: c.host || 'dial' });
+        // a wheel that snaps between figures is one plate per value, cropped to its cutouts by
+        // the comp pass -- what a window cost, and the glass's own path; one that moves between
+        // them (smooth, eased) or reads a measure with no window domain turns as a row instead
+        if (wheelTurns3(c)) return;
+        var wsrc = WHEEL3[c.shows || 'date'].src, wdom = CLOCK_WINDOW_DOMAIN[wsrc];
+        rows.push({ id: id, type: 'wheel', src: wsrc, count: wdom[1], valueMin: wdom[0], host: c.host || 'dial' });
         return;
       }
       if (c.type === 'flare') {
@@ -4358,7 +4436,7 @@
     // reason the dial will print instead of a reason of its own.
     bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3, estimate3: estimate3,
     carriageRect3: carriageRect3, carriageStart3: carriageStart3,
-    liveComps3: liveComps3, compPlan3: compPlan3, pointerPlan3: pointerPlan3,
+    liveComps3: liveComps3, compPlan3: compPlan3, wheelPlan3: wheelPlan3, wheelTurns3: wheelTurns3, pointerPlan3: pointerPlan3,
     pointerDefault3: pointerDefault3,
     // D39: the sound vocabulary and the mirror of the dial's sound refusals.
     SOUND_SLOTS: SOUND_SLOTS, HOUR_PATTERNS: HOUR_PATTERNS, CLASS_SOUND: CLASS_SOUND,

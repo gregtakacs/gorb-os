@@ -331,6 +331,10 @@ setTimeout(async () => {
     'the opening note says what the option does, and promises no cut, no clip and no rescale', JSON.stringify(openNote).slice(0, 150));
   it.state.caseStyle = 'polished';
   ok(!byLabel(labels('case'), 'Opening radius'), 'a real case hides it again: its own rim owns that number');
+  // D43 P5d.3 made the presets' date, day and month windows wheels; a window is still a part
+  // (a custom text, a display), so one is added to test its panel on
+  if (!(it.state.designs.calendar.comps || []).some((c) => c.type === 'window'))
+    it.state.designs.calendar.comps.push({ id: 'cw', type: 'window', host: 'dial', angle: 0, dist: 120, rot: 0, size: 1, style: 'frame', shows: 'date', disc: 'auto' });
   const winC = (it.state.designs.calendar.comps || []).find((c) => c.type === 'window');
   ok(!!winC, 'the calendar preset has a window to test on');
   if (winC) { winC.wshape = 'circle'; it.state.sel = winC.id; const cw = labels('comps'); ok(!!byLabel(cw, 'Aperture'), 'a window offers an aperture shape'); const ap = byLabel(cw, 'Aperture'); ok(ap && (ap.opts || []).some((o) => /Round/.test(o.label)), 'with round among its choices', JSON.stringify((ap || {}).opts || []).slice(0, 80)); winC.wshape = 'rect'; }

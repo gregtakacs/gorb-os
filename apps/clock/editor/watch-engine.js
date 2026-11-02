@@ -726,33 +726,46 @@
    * its figures (n of them, label(i)) and where it stands at an instant: a continuous index
    * whose whole part is the figure under the reference cutout. A tens wheel of the date
    * runs 0..3, its units wheel 0..9 -- a big date is two of them behind joined cutouts. */
-  const WHEEL_SHOWS = { date: 'Date', day: 'Day of week', month: 'Month', hour: 'Hour', hours24: '24-hour', minute: 'Minute', second: 'Seconds' };
-  const WHEEL_DIGITS = { whole: 'Whole', tens: 'Tens', units: 'Units' };
-  const WHEEL_SRC = { date: 'date', day: 'weekday', month: 'month', hour: 'hour12', hours24: 'hour24', minute: 'minute', second: 'second' };
+  const WHEEL_SHOWS = { date: 'Date', day: 'Day of week', month: 'Month', year: 'Year', hour: 'Hour', hours24: '24-hour', minute: 'Minute', second: 'Seconds', moon: 'Moon phase' };
+  const WHEEL_DIGITS = { whole: 'Whole', thousands: 'Thousands', hundreds: 'Hundreds', tens: 'Tens', units: 'Units' };
+  const WHEEL_SRC = { date: 'date', day: 'weekday', month: 'month', year: 'year', hour: 'hour12', hours24: 'hour24', minute: 'minute', second: 'second', moon: 'moon_age' };
+  const SYNODIC = 29.530588853;
+  const dimOf = (t) => new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+  const yearLen = (t) => (new Date(t.getFullYear() + 1, 0, 1) - new Date(t.getFullYear(), 0, 1)) / 864e5;
+  const dayFrac = (t) => (t.getHours() * 3600 + t.getMinutes() * 60 + t.getSeconds() + t.getMilliseconds() / 1000) / 86400;
+  /* A wheel's figures and where it stands. `at(t)` is the figure index at t: it holds its
+   * figure and, in the last unit before the figure changes, rolls on to the next one (the
+   * dial's CLK_CAD_ROLL, apps/clock/main.c) -- forward round the wheel, to the value the
+   * calendar really goes to (the 28th of a February runs on to the 1st). `idx(v)` is a
+   * value's figure, `unit` the source's unit in ms. A digit reads the number the dial
+   * shows: a 12-hour wheel's 0 is 12, a month is 1..12. The moon is a disc with two moons,
+   * a half turn per lunation: 60 figure places, continuous. */
   function wheelSpec(shows, digit, blank0) {
-    const dg = digit === 'tens' || digit === 'units' ? digit : 'whole';
-    // the measure's whole value at t, continuous (its fraction is time into the unit), and its unit in ms
+    if (shows === 'moon') { const at = (t) => moonPhase(t) * SYNODIC; return { n: 60, dg: 'whole', unit: 864e5, moon: true, lab: () => '', at, held: (t) => Math.floor(at(t)), since: (t) => (at(t) % 1) * 864e5 }; }
+    let dg = WHEEL_DIGITS[digit] && digit !== 'whole' ? digit : 'whole';
+    if (shows === 'year' && dg === 'whole') dg = 'units';       // a year has no ring of its own: it reads by digit
+    // the measure's whole value at t (an integer), the fraction of its unit gone, and the next value
     const W = {
-      date: { n: 31, v: (t) => t.getDate() - 1 + (t.getHours() * 3600 + t.getMinutes() * 60 + t.getSeconds()) / 86400, lab: (i) => String(i + 1), unit: 86400000, off: 1 },
-      day: { n: 7, v: (t) => t.getDay() + (t.getHours() * 3600 + t.getMinutes() * 60 + t.getSeconds()) / 86400, lab: (i) => DAYS[i], unit: 86400000 },
-      month: { n: 12, v: (t) => t.getMonth() + (t.getDate() - 1) / 31, lab: (i) => MONTHS[i], unit: 86400000 * 31 },
-      hour: { n: 12, v: (t) => (t.getHours() % 12) + t.getMinutes() / 60 + t.getSeconds() / 3600, lab: (i) => String(i || 12), unit: 3600000, h12: true },
-      hours24: { n: 24, v: (t) => t.getHours() + t.getMinutes() / 60 + t.getSeconds() / 3600, lab: (i) => String(i), unit: 3600000 },
-      minute: { n: 60, v: (t) => t.getMinutes() + (t.getSeconds() + t.getMilliseconds() / 1000) / 60, lab: (i) => String(i).padStart(2, '0'), unit: 60000 },
-      second: { n: 60, v: (t) => t.getSeconds() + t.getMilliseconds() / 1000, lab: (i) => String(i).padStart(2, '0'), unit: 1000 },
+      date: { n: 31, v: (t) => t.getDate(), f: dayFrac, unit: 864e5, lab: (i) => String(i + 1), off: 1, next: (t, v) => (v >= dimOf(t) ? 1 : v + 1) },
+      day: { n: 7, v: (t) => t.getDay(), f: dayFrac, unit: 864e5, lab: (i) => DAYS[i] },
+      month: { n: 12, v: (t) => t.getMonth(), f: (t) => (t.getDate() - 1 + dayFrac(t)) / dimOf(t), unit: 864e5 * 31, lab: (i) => MONTHS[i], show1: true },
+      year: { n: 10000, v: (t) => t.getFullYear(), f: (t) => ((t - new Date(t.getFullYear(), 0, 1)) / 864e5) / yearLen(t), unit: 864e5 * 365, lab: String, next: (t, v) => v + 1 },
+      hour: { n: 12, v: (t) => t.getHours() % 12, f: (t) => (t.getMinutes() * 60 + t.getSeconds()) / 3600, unit: 36e5, lab: (i) => String(i || 12), h12: true },
+      hours24: { n: 24, v: (t) => t.getHours(), f: (t) => (t.getMinutes() * 60 + t.getSeconds()) / 3600, unit: 36e5, lab: (i) => String(i) },
+      minute: { n: 60, v: (t) => t.getMinutes(), f: (t) => (t.getSeconds() + t.getMilliseconds() / 1000) / 60, unit: 6e4, lab: (i) => String(i).padStart(2, '0') },
+      second: { n: 60, v: (t) => t.getSeconds(), f: (t) => t.getMilliseconds() / 1000, unit: 1e3, lab: (i) => String(i).padStart(2, '0') },
     }[shows] || null;
     if (!W) return null;
-    if (dg === 'whole') return { n: W.n, lab: W.lab, at: W.v, unit: W.unit, dg };
-    // a digit of the displayed number: the date shows 1..31, a 12-hour wheel 1..12
-    const shown = (i) => (W.h12 ? (i % 12) || 12 : i + (W.off || 0));
-    const tens = dg === 'tens', top = Math.floor(shown(W.n - 1 + (W.off ? 0 : 0)) / 10);
-    const n = tens ? Math.max(Math.floor(Math.max(...Array.from({ length: W.n }, (_, i) => shown(i))) / 10) + 1, 2) : 10;
-    void top;
-    return { n, dg, unit: W.unit, lab: (i) => (tens && i === 0 && blank0 ? '' : String(i)),
-      at: (t) => { const w = W.v(t), wi = Math.floor(w), f = w - wi, d = (x) => { const v = shown(((x % W.n) + W.n) % W.n); return tens ? Math.floor(v / 10) : v % 10; };
-        const a = d(wi), b = d(wi + 1);
-        // a digit only moves in the last unit before it changes: there it creeps to the next
-        return a === b ? a : a + (((b - a) % n + n) % n) * f; } };
+    const off = W.off || 0, next = W.next || ((t, v) => (v + 1) % W.n);
+    const place = { units: 1, tens: 10, hundreds: 100, thousands: 1000 }[dg];
+    const shown = (v) => (W.h12 ? v || 12 : W.show1 ? v + 1 : v);
+    const fig = dg === 'whole' ? (v) => v - off : (v) => Math.floor(shown(v) / place) % 10;
+    // a digit wheel carries as many figures as that digit of the shown number ever reads
+    const n = dg === 'whole' ? W.n : shows === 'year' || dg !== 'tens' ? 10
+      : Math.max(Math.floor(Math.max(...Array.from({ length: W.n }, (_, i) => shown(i + off))) / 10) + 1, 2);
+    const at = (t) => { const v = W.v(t), a = fig(v), b = fig(next(t, v)); return a + ((((b - a) % n) + n) % n) * W.f(t); };
+    // a jumping wheel stands on its figure; `since` is how long ago the unit turned, for its ease
+    return { n, dg, unit: W.unit, at, idx: fig, held: (t) => fig(W.v(t)), since: (t) => W.f(t) * W.unit, lab: dg === 'whole' ? W.lab : (i) => (dg === 'tens' && i === 0 && blank0 ? '' : String(i)) };
   }
   /* The metal an aperture's raised frame is struck in -- the 'frame' style on an
    * opening or a window. Gilt is the movement's own finish and stays the default;
@@ -795,7 +808,7 @@
   }
   const PRINTS = { roman: 'Roman', arabic: 'Breguet arabic', regulator: 'Regulator minutes', baton: 'Applied batons', minimal: 'Minimal batons', sans: 'Modern sans', railway: 'Railway', sector: 'Sector', diver: 'Lume plots', station: 'Station bars', pilot: 'Pilot · triangle & dots', none: 'Blank' };
   const REACH = { roman: 205, arabic: 200, regulator: 206, baton: 200, minimal: 205, sans: 205, railway: 202, sector: 205, diver: 200, station: 214, pilot: 204, none: 205 };
-  const SIZE_RANGE = { opening: [12, 200, 1], subdial: [26, 110, 0.5], window: [0.6, 1.8, 0.05], moon: [14, 110, 1], flare: [4, 120, 0.5], wheel: [14, 140, 0.5] };
+  const SIZE_RANGE = { opening: [12, 200, 1], subdial: [26, 110, 0.5], window: [0.6, 1.8, 0.05], moon: [14, 110, 1], flare: [4, 120, 0.5], wheel: [14, 230, 0.5] };
   const WIN_SIZE = { date: [30, 22], day: [52, 22], month: [52, 22], custom: [72, 22] };
   // Presets are just starting designs. angle: degrees clockwise from 12 · dist: px from the host's centre · rot: degrees.
   // Every hand is a comp of type 'hand' on its host's arbour, listed bottom to top (D43 P5c).
@@ -808,13 +821,16 @@
         { id: 'h2', type: 'hand', host: 'dial', shows: 'hour' },
         { id: 'h3', type: 'hand', host: 'dial', shows: 'minute' },
       ] } },
-    calendar: { name: 'Triple calendar', blurb: 'Open heart · day & month windows · pointer date + moon', hands: 'leaf', handFinish: 'gilt', design: {
+    calendar: { name: 'Triple calendar', blurb: 'Open heart · day & month wheels · pointer date + moon disc', hands: 'leaf', handFinish: 'gilt', design: {
       print: 'arabic', comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 349, dist: 138, rot: 0, size: 41, style: 'bevel', show: 'balance', hour: 12 },
-        { id: 'c2', type: 'window', host: 'dial', angle: 270, dist: 91, rot: 0, size: 1, style: 'frame', shows: 'day', disc: 'auto' },
-        { id: 'c3', type: 'window', host: 'dial', angle: 90, dist: 91, rot: 0, size: 1, style: 'frame', shows: 'month', disc: 'auto' },
+        { id: 'c2', type: 'wheel', host: 'dial', angle: 270, dist: 30, rot: 0, size: 74, shows: 'day', tsize: 1.02 },
+        { id: 'c2k', type: 'cutout', host: 'c2', at: 270, w: 52, h: 22 },
+        { id: 'c3', type: 'wheel', host: 'dial', angle: 20, dist: 91, rot: 0, size: 117, shows: 'month', tsize: 0.64 },
+        { id: 'c3k', type: 'cutout', host: 'c3', at: 145, w: 52, h: 22 },
         { id: 'c4', type: 'subdial', host: 'dial', angle: 180, dist: 102, rot: 0, size: 62, style: 'guilloche', scale: 'date', open: 0 },
-        { id: 'c5', type: 'moon', host: 'c4', angle: 0, dist: 2, rot: 0, size: 29, style: 'classic' },
+        { id: 'c5', type: 'wheel', host: 'c4', angle: 0, dist: 2, rot: 0, size: 29, shows: 'moon' },
+        { id: 'c5k', type: 'cutout', host: 'c5', at: 0, shape: 'moon' },
         { id: 'h1', type: 'hand', host: 'c4', shows: 'date' },
         { id: 'h2', type: 'hand', host: 'dial', shows: 'hour' },
         { id: 'h3', type: 'hand', host: 'dial', shows: 'minute' },
@@ -823,7 +839,8 @@
     modern: { name: 'Modern', blurb: 'Railway track · hex escapement window · date at 3', hands: 'dauphine', handFinish: 'steel', design: {
       print: 'railway', numerals: 'quarters', surface: 'guilloche', color: 'slate', aging: 0.3, stains: 0, dust: 0.4, comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 315, dist: 140, rot: 0, size: 42, shape: 'hex', style: 'bevel', show: 'balance', hour: 12 },
-        { id: 'c2', type: 'window', host: 'dial', angle: 90, dist: 150, rot: 0, size: 1, style: 'plain', shows: 'date', disc: 'dark' },
+        { id: 'c2', type: 'wheel', host: 'dial', angle: 356, dist: 41, rot: 0, size: 173.5, shows: 'date', tsize: 0.52, wbg: '#1b1916', wink: '#ecdfbf' },
+        { id: 'c2k', type: 'cutout', host: 'c2', at: 105, w: 30, h: 22, style: 'plain' },
         { id: 'c3', type: 'subdial', host: 'dial', angle: 180, dist: 104, rot: 0, size: 58, style: 'azure', scale: 'seconds', open: 0, color: 'black' },
         { id: 'h1', type: 'hand', host: 'c3', shows: 'second' },
         { id: 'h2', type: 'hand', host: 'dial', shows: 'hour' },
@@ -839,7 +856,8 @@
       ] } },
     diver: { name: 'Broad arrow', blurb: 'Black grained dial · lume plots · broad arrow hands', hands: 'broad', handFinish: 'steel', design: {
       print: 'diver', numerals: 'all', surface: 'matte', color: 'black', aging: 0.4, stains: 0, dust: 0.5, comps: [
-        { id: 'c1', type: 'window', host: 'dial', angle: 90, dist: 150, rot: 0, size: 1, style: 'plain', shows: 'date', disc: 'dark' },
+        { id: 'c1', type: 'wheel', host: 'dial', angle: 332, dist: 15.5, rot: 0, size: 173.5, shows: 'date', tsize: 0.52, wbg: '#1b1916', wink: '#ecdfbf' },
+        { id: 'c1k', type: 'cutout', host: 'c1', at: 95, w: 30, h: 22, style: 'plain' },
         { id: 'c2', type: 'opening', host: 'dial', angle: 0, dist: 0, rot: 0, size: 26, shape: 'slot', style: 'bevel', show: 'balance', hour: 12 },
         { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
         { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
@@ -902,7 +920,8 @@
       print: 'railway', numerals: 'all', font: 'jost', color: 'porcelain', aging: 0, stains: 0, dust: 0, comps: [
         { id: 'c1', type: 'subdial', host: 'dial', angle: 180, dist: 100, rot: 0, size: 56, style: 'azure', scale: 'none', open: 0, color: 'white' },
         { id: 'c2', type: 'moon', host: 'c1', angle: 0, dist: 0, rot: 0, size: 70, style: 'graphic' },
-        { id: 'c3', type: 'window', host: 'dial', angle: 90, dist: 150, rot: 0, size: 1, style: 'plain', shows: 'date', disc: 'light' },
+        { id: 'c3', type: 'wheel', host: 'dial', angle: 270, dist: 8, rot: 0, size: 173.5, shows: 'date', tsize: 0.52, wbg: '#f2ecdd', wink: '#18120b' },
+        { id: 'c3k', type: 'cutout', host: 'c3', at: 90, w: 30, h: 22, style: 'plain' },
         { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
         { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
         { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'red' },
@@ -911,7 +930,8 @@
       print: 'regulator', comps: [
         { id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 103, rot: 0, size: 64, style: 'azure', scale: 'hours', open: 0 },
         { id: 'c2', type: 'subdial', host: 'dial', angle: 180, dist: 103, rot: 0, size: 64, style: 'enamel', scale: 'seconds', open: 0.64 },
-        { id: 'c3', type: 'window', host: 'c1', angle: 180, dist: 32, rot: 0, size: 1, style: 'frame', shows: 'date', disc: 'auto' },
+        { id: 'c3', type: 'wheel', host: 'c1', angle: 0, dist: 126, rot: 0, size: 173.5, shows: 'date', tsize: 0.52 },
+        { id: 'c3k', type: 'cutout', host: 'c3', at: 180, w: 30, h: 22 },
         { id: 'h1', type: 'hand', host: 'c1', shows: 'hour' },
         { id: 'h2', type: 'hand', host: 'c2', shows: 'second' },
         { id: 'h3', type: 'hand', host: 'dial', shows: 'minute' },
@@ -942,7 +962,8 @@
         { id: 'c2', type: 'subdial', host: 'dial', angle: 90, dist: 102, rot: 0, size: 50, style: 'azure', scale: 'date', open: 0 },
         { id: 'c3', type: 'subdial', host: 'dial', angle: 270, dist: 102, rot: 0, size: 50, style: 'azure', scale: 'day', open: 0 },
         { id: 'c4', type: 'subdial', host: 'dial', angle: 180, dist: 102, rot: 0, size: 50, style: 'azure', scale: 'none', open: 0 },
-        { id: 'c5', type: 'moon', host: 'c4', angle: 180, dist: 8, rot: 0, size: 34, style: 'classic' },
+        { id: 'c5', type: 'wheel', host: 'c4', angle: 180, dist: 8, rot: 0, size: 34, shows: 'moon' },
+        { id: 'c5k', type: 'cutout', host: 'c5', at: 0, shape: 'moon' },
         { id: 'h1', type: 'hand', host: 'c1', shows: 'month' },
         { id: 'h2', type: 'hand', host: 'c2', shows: 'date' },
         { id: 'h3', type: 'hand', host: 'c3', shows: 'day' },
@@ -1097,7 +1118,7 @@
       const spec = wheelSpec(c.shows || 'date', c.digit, !!c.blank0); if (!spec) return;
       const fs = Math.max(6, Math.min(r * 0.42, (+c.tsize || 1) * Math.max(8, r * 0.2))), lr = r - fs * 0.85;
       wheels.push({ id: c.id, x: g.x, y: g.y, r, host: onSub || 'dial', spec, fs, lr, dir: c.dir === 'ccw' ? -1 : 1, smooth: c.cadence === 'smooth', ease: +c.ease || 0,
-        overhang: onSub && c.overhang === 'shown', bg: c.wbg, ink: c.wink, font: c.wfont, cut: [], holes: [] });
+        overhang: onSub && c.overhang === 'shown', bg: c.wbg, ink: c.wink, font: c.wfont, mstyle: c.mstyle, seed: String(c.id).split('').reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) | 0, 7) & 0xffff, cut: [], holes: [] });
       hits.push({ id: c.id, x: g.x, y: g.y, r: r * 0.35, z: (onSub ? subZ[onSub] : 0) - 0.5 });
     });
     const wheelOf = {}; wheels.forEach((w) => { wheelOf[w.id] = w; });
@@ -1106,7 +1127,10 @@
       if (taken[c.id]) return;
       const w = wheelOf[c.host], at = rad(+c.at || 0), cx = w.x + Math.sin(at) * w.lr, cy = w.y - Math.cos(at) * w.lr;
       const cw = Math.max(6, +c.w || w.fs * (w.spec.n > 12 || w.spec.dg !== 'whole' ? 1.6 : 2.6)), ch = Math.max(6, +c.h || w.fs * 1.5), style = c.style || 'frame';
-      let hole = c.shape === 'round' ? { kind: 'circle', x: cx, y: cy, r: Math.max(cw, ch) / 2 }
+      // a moon cutout is the moonphase's aperture: a half circle over the wheel's own centre,
+      // opening toward `at`, its two humps hiding the moon that is not in season
+      let hole = c.shape === 'moon' ? { kind: 'moon', x: w.x, y: w.y, a: w.r, rot: at }
+        : c.shape === 'round' ? { kind: 'circle', x: cx, y: cy, r: Math.max(cw, ch) / 2 }
         : c.shape === 'slot' ? { kind: 'slot', x: cx, y: cy, w: cw * 1.4, h: ch * 0.8, rot: at + Math.PI / 2 }
         : c.shape === 'arc' ? (() => { const half = Math.max(rad(4), Math.min(Math.PI, rad(+c.span || 36) / 2)), r0 = w.lr - ch / 2, r1 = w.lr + ch / 2;
           return { kind: 'arc', x: cx, y: cy, cx: w.x, cy: w.y, r0, r1, a0: at - half - Math.PI / 2, a1: at + half - Math.PI / 2 }; })()
@@ -1125,6 +1149,7 @@
       // a cutout on a dial-hosted wheel is sealed like a dial window: the value is composited, no hole ships
       if (w.host === 'dial') hole.seal = true;
       (w.host === 'dial' ? dialHoles : subHoles[w.host]).push(hole);
+      if (!w.cut.length && c.shape === 'arc') w.along = true;
       w.cut.push({ id: c.id, at }); w.holes.push(hole);
       const b = holeBox(hole);
       hits.push({ id: c.id, x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, r: Math.max(b[2] - b[0], b[3] - b[1]) / 2 + 2, z: w.host === 'dial' ? 0.002 : subZ[w.host] + 0.006 });
@@ -2012,16 +2037,26 @@
    * first cutout (the reference), each figure upright when it is there. Jump holds the
    * whole figure and, with an ease, rolls into the next one over that many ms; smooth
    * creeps through the unit. */
-  function drawWheel(ctx, w, date, en) {
+  function drawWheel(ctx, w, date, en, pal, idxAt) {
     const sp = w.spec, n = sp.n;
-    let idx = sp.at(date);
-    if (!w.smooth) {
-      const i0 = Math.floor(idx + 1e-9), since = sp.dg === 'whole' ? (idx - i0) * sp.unit : Infinity;
-      idx = w.ease > 0 && since < w.ease ? i0 - 1 + (() => { const q = since / w.ease; return q * q * (3 - 2 * q); })() : i0;
+    let idx = idxAt != null ? idxAt : sp.at(date);
+    if (idxAt == null && !w.smooth) {
+      // a jump stands on its figure, and with an ease rolls in from the last one over that many ms
+      const i0 = sp.held(date), since = sp.since(date);
+      if (w.ease > 0 && since < w.ease) { const prev = sp.held(new Date(date.getTime() - since - 1)), q = since / w.ease, d = (((i0 - prev) % n) + n) % n;
+        idx = prev + d * q * q * (3 - 2 * q); } else idx = i0;
     }
-    const ref = w.cut.length ? w.cut[0].at : 0, rot = ref - (w.dir * idx * TAU) / n, dark = w.bg ? false : !!en.dark;
+    const ref = w.cut.length ? w.cut[0].at : 0, dark = w.bg ? false : !!en.dark;
+    if (sp.moon) {
+      // two moons on a sky, half a turn a lunation, read through a moon cutout's humps (the classic moonphase)
+      ctx.save(); if (w.fill) { ctx.fillStyle = w.fill; ctx.beginPath(); ctx.arc(w.x, w.y, w.r, 0, TAU); ctx.fill(); }
+      else moonDisc(ctx, w.x, w.y, w.r, (w.dir * idx) / 30, pal || {}, w.seed, ref, w.mstyle || 'classic');
+      ctx.restore(); return;
+    }
+    const rot = ref - (w.dir * idx * TAU) / n;
     const bg = w.bg && w.bg !== 'auto' ? w.bg : dark ? '#1b1916' : '#f2ecdd', ink = w.ink && w.ink !== 'auto' ? w.ink : dark ? '#ecdfbf' : '#18120b';
     ctx.save(); ctx.translate(w.x, w.y);
+    if (w.fill) { ctx.fillStyle = w.fill; ctx.beginPath(); ctx.arc(0, 0, w.r, 0, TAU); ctx.fill(); ctx.restore(); return; }
     const g = ctx.createRadialGradient(0, 0, w.r * 0.2, 0, 0, w.r);
     g.addColorStop(0, bg); g.addColorStop(0.92, bg); g.addColorStop(1, 'rgba(0,0,0,.35)');
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, w.r, 0, TAU); ctx.fill();
@@ -2032,7 +2067,8 @@
     ctx.fillStyle = ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     for (let i = 0; i < n; i++) {
       const a = rot + (w.dir * i * TAU) / n, l = sp.lab(i); if (!l) continue;
-      ctx.save(); ctx.translate(Math.sin(a) * w.lr, -Math.cos(a) * w.lr); ctx.rotate(a - ref); ctx.fillText(l, 0, fs * 0.05); ctx.restore();
+      // figures stand upright where the first cutout reads them -- or, read through an arc, run along the ring
+      ctx.save(); ctx.translate(Math.sin(a) * w.lr, -Math.cos(a) * w.lr); ctx.rotate(w.along ? a : a - ref); ctx.fillText(l, 0, fs * 0.05); ctx.restore();
     }
     ctx.restore();
   }
@@ -3630,25 +3666,41 @@
     // a wheel that reads the time of day re-draws with it; one that is smooth or eases, every frame
     const wheelTick = lay.wheels.some((w) => w.smooth || w.ease) ? 1 : lay.wheels.some((w) => w.spec.unit < 86400000) ? 1000 : 0;
     F.comps = (date, only) => {
-      const key = (only ? 'only[' + (only.join(',') || '-') + ']' : '*') + '|' + date.toDateString() + (wheelTick ? '|' + Math.floor(date.getTime() / wheelTick) : '');
+      const key = (only ? 'only[' + (only.join(',') || '-') + ']' : '*') + '|' + date.toDateString() + (wheelTick ? '|' + Math.floor(date.getTime() / wheelTick) : '') + '|' + (F.wheelFill || '');
       if (key === ck) return cvals;
       const a = cv(S), subs = {};
       lay.comps.forEach((c, i) => { if (only && only.indexOf(c.id) < 0) return; const t = c.host === 'dial' ? a : subs[c.host] || (subs[c.host] = cv(S)); paint(t.getContext('2d'), c, date, i); });
-      // D43 P5d.3: the wheels, under their faces; hidden overhang stays inside the face that frames it
-      // the larger wheel first: a smaller disc on the same arbour rides on top of it (a big
-      // date's units disc inside its tens ring)
-      lay.wheels.slice().sort((p, q) => q.r - p.r).forEach((w) => {
-        if (only && only.indexOf(w.id) < 0) return;
-        const t = (w.host === 'dial' ? a : subs[w.host] || (subs[w.host] = cv(S))).getContext('2d'), h = w.host === 'dial' ? { x: C, y: C, r: DR } : lay.subs.find((q) => q.id === w.host);
-        // hidden overhang: the wheel is only ever seen through its own cutouts, so it is drawn
-        // through them -- whether or not the face above is cut (a dial window is sealed and
-        // composited, so nothing else would stop the whole disc landing on the dial)
-        t.save();
-        if (!w.overhang) { t.beginPath(); w.holes.forEach((q) => holePath(q)(t)); if (!w.holes.length) t.rect(0, 0, 0, 0); t.clip(); }
-        setFace(fontKey); drawWheel(t, w, date, w.host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === w.host) || {}).en || en); t.restore();
+      /* D43 P5d.3: the wheels, under their faces, drawn the way the dial draws them: under
+       * each face the discs stack largest first (a big date's units disc rides on its tens
+       * ring), and the stack is seen only through the union of their cutouts, plus the whole
+       * disc of a wheel whose overhang is shown. The dial does exactly this -- the discs as
+       * turning rows, then one still cover row of the face with that union cut out -- so
+       * this preview and the glass agree wherever two discs overlap. A dial window is sealed
+       * and composited, so the cutouts, not the face, are what stops a disc there. */
+      const wheelsOf = {};
+      lay.wheels.forEach((w) => { if (!only || only.indexOf(w.id) >= 0) (wheelsOf[w.host] = wheelsOf[w.host] || []).push(w); });
+      Object.keys(wheelsOf).forEach((host) => {
+        const ws = wheelsOf[host].sort((p, q) => q.r - p.r), en1 = host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === host) || {}).en || en;
+        const st = cv(S), sx = st.getContext('2d');
+        setFace(fontKey);
+        ws.forEach((w) => { w.fill = F.wheelFill || null; drawWheel(sx, w, date, en1, pal); w.fill = null; });
+        const t = (host === 'dial' ? a : subs[host] || (subs[host] = cv(S))).getContext('2d');
+        t.save(); t.beginPath();
+        ws.forEach((w) => { w.holes.forEach((q) => holePath(q)(t)); if (w.overhang) { t.moveTo(w.x + w.r, w.y); t.arc(w.x, w.y, w.r, 0, TAU); } });
+        t.rect(0, 0, 0, 0); t.clip(); t.drawImage(st, 0, 0); t.restore();
       });
       ck = key; cvals = { dial: a, subs };
       return cvals;
+    };
+    /* The bake's two hooks on the wheels (D43 P5d.3). wheelFill: draw every wheel as one flat
+     * colour instead of its art -- two renders in two colours say, per texel, how much of the
+     * face covers the discs, which is the cover row. wheelDisc: one wheel's whole disc,
+     * unclipped, standing at figure `idx` -- the row's art at P0. */
+    F.wheelFill = null;
+    F.wheelDisc = (ctx, id, idx) => {
+      const w = lay.wheels.find((q) => String(q.id) === String(id)); if (!w) return null;
+      setFace(fontKey); drawWheel(ctx, w, null, w.host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === w.host) || {}).en || en, pal, idx);
+      return w;
     };
     F.shadow = SH;
     // noSh renders the hands with every cast shadow alpha-zeroed and nothing else
@@ -4081,7 +4133,11 @@
       }
       if (c.type === 'wheel') {
         if (!WHEEL_SHOWS[c.shows]) c.shows = 'date';
-        if (c.digit !== 'tens' && c.digit !== 'units') delete c.digit;
+        if (!WHEEL_DIGITS[c.digit] || c.digit === 'whole' || c.shows === 'moon' || c.shows === 'day') delete c.digit;
+        if (c.shows === 'year' && !c.digit) c.digit = 'units';
+        if (c.digit === 'hundreds' || c.digit === 'thousands') { if (c.shows !== 'year') delete c.digit; }
+        if (c.shows !== 'moon' || !MOON_LOOK[c.mstyle] || c.mstyle === 'classic') delete c.mstyle;
+        if (c.shows === 'second') delete c.ease;      // a settle every second: the dial refuses it
         if (c.dir !== 'ccw') delete c.dir;
         if (c.cadence !== 'smooth') delete c.cadence;
         if (!(+c.ease > 0) || c.cadence === 'smooth') delete c.ease;

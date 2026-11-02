@@ -726,7 +726,28 @@ Escape cancels.
   - the composer refused to bake a dial with no hand on the centre arbour. A dial whose
     every hand is a pointer row is legitimate, so only a dial with no hand at all is
     refused now.
-- **Still owed:** the bench (P5d.4).
+- **The bench (P5d.4, for P5c and P5d.2), on Gold at v1.2.0+d241445, 2026-11-02.**
+  - **Method.** The real `.orbtheme` export was driven React-less in Chrome (the
+    export-test pattern) on two bench designs, stored with
+    `tools/bench/store_check.sh upload` (0 panic lines), and read back with
+    `tools/fbgrab.py`.
+  - **Bench 1** (16 rows, 0 refused) has every new row kind:
+    - the hour, minute and seconds slots;
+    - a 24-hour hand (an `hour24` pointer row);
+    - a date hand on a pointer-driven round sub-dial (`date` 1..32, the `vmin` fix);
+    - a day hand on a 240° fan (a retrograde `weekday` row);
+    - a seconds dot on a slider (a slide row).
+
+    At 12:58:38 on Monday the 2nd every indicator read right: the 24-hour hand just past
+    its half turn, the date hand on the 2nd, the fan's hand on MON, the slider's dot at
+    38 s. Three timed grabs read the dot at 30.1, 39.3 and 45.7 s, each about 1.6 s behind
+    the host's request time. That is clock skew, not drift: 9.2 s of travel in 9.3 s.
+  - **Bench 2** (10 rows, 0 refused): an anticlockwise dial with a 24-hour ring, and every
+    dial hand a reversed pointer row, with no slot hands. The glass showed the mirrored
+    chapter and ring with readable figures, and every hand reading the time anticlockwise.
+  - **Still not seen on glass:** an angled (non-horizontal) slider, and a slider or fan in
+    a lifted face. Both bench themes stay on the card as *P5d bench* and *P5d bench ccw*.
+    Gold is back on Modern.
 
 ## 5. Preview: 1:1, and the panel
 

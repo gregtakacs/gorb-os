@@ -131,6 +131,12 @@ APPS = (
     ("flights",      "Flights", KIND_FLIGHTS,    FLIGHTS_CAPS, FLIGHTS_SETTINGS, None),
 )
 
+# Built and checked with the rest, but kept off the hub's shelf until the owner
+# releases it (2026-11-01: the flight tracker is not ready). `--unreleased DIR`
+# writes these to DIR for a bench install; the shelf never carries them, and
+# --check fails if one turns up there.
+UNRELEASED = ("flights",)
+
 
 def editor_region(key):
     """The one place a factory container's editor region is built."""
@@ -171,8 +177,26 @@ def emit_files(apps):
 def main():
     apps = containers()
     files = emit_files(apps)
-    if "--check" in sys.argv[1:]:
+    held = {k: files.pop(k) for k in UNRELEASED}
+    args = sys.argv[1:]
+    if "--unreleased" in args:
+        i = args.index("--unreleased")
+        if i + 1 >= len(args):
+            sys.stderr.write("usage: make_factory_apps.py --unreleased DIR\n")
+            return 2
+        dest = args[i + 1]
+        os.makedirs(dest, exist_ok=True)
+        for slug, blob in held.items():
+            with open(os.path.join(dest, slug + ".orbapp"), "wb") as f:
+                f.write(blob)
+        print("wrote unreleased %s to %s" % (", ".join(held), dest))
+        return 0
+    if "--check" in args:
         rc = 0
+        for slug in held:
+            if os.path.exists(os.path.join(OUT_DIR, slug + ".orbapp")):
+                sys.stderr.write("%s.orbapp is unreleased and must not ship on the shelf\n" % slug)
+                rc = 1
         for slug, blob in files.items():
             path = os.path.join(OUT_DIR, slug + ".orbapp")
             have = open(path, "rb").read() if os.path.exists(path) else b""

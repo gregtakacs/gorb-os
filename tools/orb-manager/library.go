@@ -173,6 +173,9 @@ type LibraryPayload struct {
 	Apps         []LibraryFile    `json:"apps"`
 	Themes       []LibraryFile    `json:"themes"`
 	Refused      []LibraryRefusal `json:"refused"`
+	// Restorable is what the Apps face's "Restore bundled apps" press would put back:
+	// the compiled-in apps this library lacks or holds only at an older version (seed.go).
+	Restorable []RestorableApp `json:"restorable"`
 }
 
 // h_library answers GET /api/library. Read-only, and it re-reads the directory every
@@ -194,7 +197,32 @@ func (s *Server) h_library(r *http.Request) (any, error) {
 	if lib.ThemesDir != "" {
 		listThemeLibrary(lib.ThemesDir, out)
 	}
+	out.Restorable = restorableApps(shippedLib, out.Apps)
 	return out, nil
+}
+
+// h_libraryRestore answers POST /api/library/restore: every compiled-in app the library
+// lacks, or holds only at an older version, is filed back into it. Like every library door
+// it touches no dial and no card; the restored rows then offer their own Install.
+func (s *Server) h_libraryRestore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	lib := s.library()
+	ledgerRoot := ""
+	if cfg, err := os.UserConfigDir(); err == nil && cfg != "" {
+		root := filepath.Join(cfg, "orb-manager")
+		if lib.writableAppsDir() == filepath.Join(root, libAppsSubdir) {
+			ledgerRoot = root
+		}
+	}
+	restored, err := restoreShippedApps(shippedLib, lib, ledgerRoot)
+	if err != nil {
+		s.jsonErr(w, err.Error())
+		return
+	}
+	s.jsonOK(w, map[string]any{"restored": restored})
 }
 
 // listAppLibrary parses every .orbapp in dir into out, appending what loads and

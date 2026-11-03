@@ -2,8 +2,11 @@ package main
 
 import (
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -150,5 +153,111 @@ func TestSeedKindsFollowTheLadder(t *testing.T) {
 		if got := seedKinds(&Library{AppsSource: c.apps, ThemesSource: c.themes}); len(got) != c.want {
 			t.Errorf("%s/%s: seeded %v, want %d kinds", c.apps, c.themes, got, c.want)
 		}
+	}
+}
+
+// The Restore press offers a shipped app the library lacks or holds only older; a copy at
+// the same or a newer version, or one whose version cannot be compared, stays the owner's.
+func TestRestorableAppsOffersOnlyMissingOrOlder(t *testing.T) {
+	newer, _ := seedApps(t)
+	src := shelf(newer, nil)
+	for _, c := range []struct {
+		have []LibraryFile
+		want string // "" = not offered, "-" = offered as missing, else the Have version
+	}{
+		{nil, "-"},
+		{[]LibraryFile{{Slug: "clock", Version: "v1.0.0"}}, "v1.0.0"},
+		{[]LibraryFile{{Slug: "clock", Version: "v1.2.9"}}, ""},
+		{[]LibraryFile{{Slug: "clock", Version: "v9.0.0"}}, ""},
+		{[]LibraryFile{{Slug: "clock", Version: ""}}, ""},
+	} {
+		got := restorableApps(src, c.have)
+		switch {
+		case c.want == "" && len(got) != 0:
+			t.Errorf("have %v: offered %v, want nothing", c.have, got)
+		case c.want == "-" && (len(got) != 1 || got[0].Slug != "clock" || got[0].Have != ""):
+			t.Errorf("have nothing: offered %v, want the clock as missing", got)
+		case c.want != "" && c.want != "-" && (len(got) != 1 || got[0].Have != c.want):
+			t.Errorf("have %v: offered %v, want the clock over %s", c.have, got, c.want)
+		}
+	}
+}
+
+func TestRestoreShippedAppsRefilesAndRecords(t *testing.T) {
+	newer, _ := seedApps(t)
+	src := shelf(newer, []byte("skeleton"))
+	user := t.TempDir()
+	seedAll(t, src, user)
+	apps := filepath.Join(user, "apps")
+	lib := &Library{AppsDir: apps}
+
+	// deleted, then restored: the file is back and the ledger knows it is shipped again,
+	// so the next launch neither respawns-on-delete wrongly nor treats it as the owner's
+	os.Remove(filepath.Join(apps, "clock.orbapp"))
+	got, err := restoreShippedApps(src, lib, user)
+	if err != nil || len(got) != 1 || got[0] != "clock" {
+		t.Fatalf("restore = %v, %v; want [clock]", got, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(apps, "clock.orbapp")); string(b) != string(newer) {
+		t.Errorf("the restored file is not the shipped one")
+	}
+	led, _ := loadSeedLedger(user)
+	if led["apps/clock.orbapp"] != sha256Hex(newer) {
+		t.Errorf("the ledger does not record the restored copy as seeded: %q", led["apps/clock.orbapp"])
+	}
+	// nothing left to restore: a second press files nothing
+	if again, _ := restoreShippedApps(src, lib, user); len(again) != 0 {
+		t.Errorf("a second restore filed %v", again)
+	}
+	// a broken copy is replaced
+	os.WriteFile(filepath.Join(apps, "clock.orbapp"), []byte("not a container"), 0o644)
+	if got, _ := restoreShippedApps(src, lib, user); len(got) != 1 {
+		t.Errorf("a broken copy was not replaced: %v", got)
+	}
+	// the restored file is not touched by the next launch's seed
+	if lines := seedAll(t, src, user); len(lines) != 0 {
+		t.Errorf("the seed acted on a restored file: %v", lines)
+	}
+}
+
+func TestLibraryRestoreRouteIsWiredAndGated(t *testing.T) {
+	seedApps(t)
+	s := newHub()
+	dir := t.TempDir()
+	s.lib = &Library{AppsDir: dir}
+	mux := http.NewServeMux()
+	s.routes(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/library/restore", nil))
+	if rec.Code == http.StatusOK {
+		t.Error("GET restored something; the route is POST-only")
+	}
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/library/restore", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("a tokenless POST = %d, want 403 before the hub writes a file", rec.Code)
+	}
+	// the listing offers every shipped app to an empty library
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/library", nil))
+	if !strings.Contains(rec.Body.String(), `"restorable":[{"slug":"clock"`) {
+		t.Errorf("the listing does not offer the clock: %s", rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/library/restore", nil)
+	req.Header.Set(tokenHeader, s.token)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"clock"`) {
+		t.Fatalf("restore = %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "clock.orbapp")); err != nil {
+		t.Errorf("the clock was not filed: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/library", nil))
+	if !strings.Contains(rec.Body.String(), `"restorable":[]`) {
+		t.Errorf("after a restore the listing still offers: %s", rec.Body.String())
 	}
 }

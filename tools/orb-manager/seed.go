@@ -61,13 +61,9 @@ func sha256Hex(b []byte) string {
 // is still treated as the owner's.
 func seedUserLibrary(src fs.FS, userLib string, kinds []string) ([]string, error) {
 	var did []string
-	ledgerPath := filepath.Join(userLib, seedLedgerName)
-	led := seedLedger{}
-	if b, err := os.ReadFile(ledgerPath); err == nil {
-		if err := json.Unmarshal(b, &led); err != nil {
-			did = append(did, fmt.Sprintf("the seed ledger %s is unreadable (%v); starting a new one", ledgerPath, err))
-			led = seedLedger{}
-		}
+	led, lerr := loadSeedLedger(userLib)
+	if lerr != nil {
+		did = append(did, lerr.Error())
 	}
 	changed := false
 	for _, kind := range kinds {
@@ -126,12 +122,121 @@ func seedUserLibrary(src fs.FS, userLib string, kinds []string) ([]string, error
 		}
 	}
 	if changed {
-		b, _ := json.MarshalIndent(led, "", "  ")
-		if err := writeFileAtomic(ledgerPath, append(b, '\n')); err != nil {
-			return did, fmt.Errorf("the seed ledger %s cannot be written: %w", ledgerPath, err)
+		if err := led.save(userLib); err != nil {
+			return did, err
 		}
 	}
 	return did, nil
+}
+
+// loadSeedLedger reads userLib's ledger. A missing one is empty; an unreadable one is
+// empty too, with the error saying so.
+func loadSeedLedger(userLib string) (seedLedger, error) {
+	p := filepath.Join(userLib, seedLedgerName)
+	led := seedLedger{}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return led, nil
+	}
+	if err := json.Unmarshal(b, &led); err != nil {
+		return seedLedger{}, fmt.Errorf("the seed ledger %s is unreadable (%v); starting a new one", p, err)
+	}
+	return led, nil
+}
+
+func (led seedLedger) save(userLib string) error {
+	p := filepath.Join(userLib, seedLedgerName)
+	b, _ := json.MarshalIndent(led, "", "  ")
+	if err := writeFileAtomic(p, append(b, '\n')); err != nil {
+		return fmt.Errorf("the seed ledger %s cannot be written: %w", p, err)
+	}
+	return nil
+}
+
+// RestorableApp is a compiled-in app the library lacks, or holds only at an older
+// version: what the Apps face's "Restore bundled apps" press would put back. Have is the
+// library's version, "" when the app is not there at all.
+type RestorableApp struct {
+	Slug    string `json:"slug"`
+	Title   string `json:"title"`
+	Version string `json:"version"`
+	Have    string `json:"have,omitempty"`
+}
+
+// restorableApps compares the shipped apps in src with the library's parsed rows. A file
+// the library refused to parse counts as absent, so a restore replaces a broken copy. A
+// library copy at the same or a newer version, or one that cannot be compared, is the
+// owner's and is not offered.
+func restorableApps(src fs.FS, have []LibraryFile) []RestorableApp {
+	byslug := map[string]LibraryFile{}
+	for _, f := range have {
+		byslug[f.Slug] = f
+	}
+	out := []RestorableApp{}
+	ents, _ := fs.ReadDir(src, libAppsSubdir)
+	for _, e := range ents {
+		body, err := fs.ReadFile(src, path.Join(libAppsSubdir, e.Name()))
+		if err != nil {
+			continue
+		}
+		c, err := orbnet.ParseApp(body)
+		if err != nil {
+			continue
+		}
+		r := RestorableApp{Slug: c.Slug, Title: c.Title, Version: c.Version}
+		if f, ok := byslug[c.Slug]; ok {
+			if cmp, ok := orbnet.AppVersionCompare(c.Version, f.Version); !ok || cmp <= 0 {
+				continue
+			}
+			r.Have = f.Version
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// restoreShippedApps files every app restorableApps offers into the library's writable apps
+// dir, replacing a broken or older copy, and answers the slugs it filed. When that dir is
+// the seeded user library (ledgerRoot, "" otherwise), each restored file is recorded as
+// seeded again, so a later release keeps it current like any untouched shipped copy.
+func restoreShippedApps(src fs.FS, lib *Library, ledgerRoot string) ([]string, error) {
+	payload := &LibraryPayload{}
+	if lib.AppsDir != "" {
+		listAppLibrary(lib.AppsDir, payload)
+	}
+	want := map[string]bool{}
+	for _, r := range restorableApps(src, payload.Apps) {
+		want[r.Slug] = true
+	}
+	var led seedLedger
+	if ledgerRoot != "" {
+		led, _ = loadSeedLedger(ledgerRoot)
+	}
+	restored := []string{}
+	ents, _ := fs.ReadDir(src, libAppsSubdir)
+	for _, e := range ents {
+		body, err := fs.ReadFile(src, path.Join(libAppsSubdir, e.Name()))
+		if err != nil {
+			continue
+		}
+		c, err := orbnet.ParseApp(body)
+		if err != nil || !want[c.Slug] {
+			continue
+		}
+		if _, err := lib.KeepOver(c.Slug, body, true); err != nil {
+			return restored, err
+		}
+		restored = append(restored, c.Slug)
+		if led != nil {
+			led[path.Join(libAppsSubdir, c.Slug+".orbapp")] = sha256Hex(body)
+		}
+	}
+	if led != nil && len(restored) > 0 {
+		if err := led.save(ledgerRoot); err != nil {
+			return restored, err
+		}
+	}
+	return restored, nil
 }
 
 // appIsNewer answers whether container body carries a higher app version than have. An

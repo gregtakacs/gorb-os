@@ -991,6 +991,7 @@ async function renderLibrary() {
     row.textContent = "\u2717 " + r.file + " \u2014 " + r.why;
     list.appendChild(row);
   }
+  syncRestoreButton();
   if (refused.length) {
     state.hidden = false;
     state.textContent = refused.length + " file" + (refused.length === 1 ? "" : "s")
@@ -1057,6 +1058,69 @@ function libUpdateSuffix(a) {
   if (cmp < 0) return " \u00b7 update available (" + f.version + ")";
   if (cmp > 0) return " \u00b7 ahead of the hub library";
   return "";
+}
+
+// The Restore press (seed.go): the apps compiled into this hub, filed back into its library
+// where one is missing or only an older copy is there. /api/library names them, so the button
+// is live exactly when there is something to put back and says what that is. An app the
+// library holds at the same or a newer version is the owner's and is never offered.
+function syncRestoreButton() {
+  const btn = $("#lib-restore");
+  if (!btn) return;
+  const want = (libCache && libCache.restorable) || [];
+  btn.disabled = want.length === 0;
+  btn.title = want.length
+    ? "Put back into the hub library: " + want.map(restoreLabel).join(", ")
+      + ". Nothing on an orb or a card is touched."
+    : "Every app that ships with this hub is in its library.";
+}
+
+function restoreLabel(r) {
+  return (r.title || r.slug) + " " + r.version + (r.have ? " (the library has " + r.have + ")" : "");
+}
+
+function wireLibraryRestore() {
+  const btn = $("#lib-restore"), state = $("#lib-import-state");
+  if (!btn || !state) return;
+  btn.onclick = async () => {
+    const want = (libCache && libCache.restorable) || [];
+    if (!want.length) return;
+    if (!await askConfirm({
+      title: "Restore the bundled apps?",
+      body: want.map(restoreLabel).join(", ") + (want.length === 1 ? " goes" : " go")
+        + " back into the hub library.",
+      detail: "Only missing or older copies are replaced. No orb and no SD card is touched: "
+            + "use a row's Install to put an app on a board.",
+      yes: "Restore",
+      safe: true,
+    })) return;
+    btn.disabled = true;
+    state.textContent = "restoring\u2026";
+    let d = null, r;
+    try {
+      r = await hubFetch("/api/library/restore", { method: "POST" });
+      d = await r.json().catch(() => null);
+    } catch (e) {
+      state.textContent = "the hub did not answer: " + (e && e.message ? e.message : e);
+      syncRestoreButton();
+      return;
+    }
+    if (!d || !d.ok) {
+      state.textContent = "\u2717 the hub refused: " + ((d && d.error) || ("HTTP " + (r && r.status)));
+      syncRestoreButton();
+      return;
+    }
+    const got = (d.data && d.data.restored) || [];
+    const named = got.map((slug) => {
+      const w = want.find((x) => x.slug === slug);
+      return w ? (w.title || slug) + " " + w.version : slug;
+    });
+    state.textContent = got.length
+      ? "\u2713 restored " + named.join(", ") + " to the hub library"
+      : "nothing needed restoring";
+    await renderLibrary();
+    if (appList) await loadApps();
+  };
 }
 
 // The browser file door (S6 §4). One picked .orbapp, hub-parsed before anything moves,
@@ -1425,6 +1489,7 @@ function orbThemeListHidden() { $("#mn-themecard").hidden = true; }
 // at load rather than per render — a rebind on every render would stack handlers on the one
 // file input and install a picked file twice.
 wireLibraryImport();
+wireLibraryRestore();
 showTab("orb");
 
 

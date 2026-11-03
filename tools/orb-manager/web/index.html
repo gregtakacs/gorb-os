@@ -238,6 +238,10 @@
       <input type="file" id="lib-file" accept=".orbapp,application/octet-stream" hidden>
       <button id="lib-pick" class="ghost" type="button"
               title="Import an .orbapp from this computer into the hub's library. It lands on the shelf, not on the orb: use the row's Install to move it onto a board.">Import an app</button>
+      <!-- The way back from a library delete (seed.go): files the apps that ship inside
+           this hub into its library again, when one is missing or older there. Like
+           Import, it fills the shelf only; each row's Install still moves it onto a board. -->
+      <button id="lib-restore" class="ghost" type="button" disabled>Restore bundled apps</button>
       <span class="hint" id="lib-import-state"></span>
     </div>
     <pre id="lib-install-log" class="hint" hidden></pre>

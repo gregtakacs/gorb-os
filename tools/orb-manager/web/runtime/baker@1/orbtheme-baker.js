@@ -3702,7 +3702,7 @@
             src: SOURCES.indexOf(String(w3.src)), digit: DIGITS.indexOf(String(w3.digit || 'whole')),
             x: w3.x | 0, y: w3.y | 0, w: w3.w, h: w3.h, pivot_x: w3.pivot_x | 0, pivot_y: w3.pivot_y | 0,
             order: 0, alpha: 255, n_frames: 1, span: w3.span | 0, zero: w3.zero | 0, vmin: w3.vmin | 0, vmax: w3.vmax | 0,
-            end: END_WRAP, cadence: CADENCES.indexOf(String(w3.cadence)), cad_arg: 0, ease: w3.ease | 0 }, w3, true, false);
+            end: END_WRAP, cadence: CADENCES.indexOf(String(w3.cadence)), cad_arg: 0, ease: w3.ease | 0 }, w3, true, !!w3.dither);   // ruling 3: a ring or disc may ask
       auxB += w3.w * w3.h * 3;
     }
     if (o.cover) {
@@ -4244,6 +4244,16 @@
     // (an exposed ring is seen whole: a plate per value would be the whole ring, so it turns)
     return !wd || c.cadence === 'smooth' || +c.ease > 0 || c.exposed === true || !CLOCK_WINDOW_DOMAIN[wd.src];
   }
+  /* D43 §5.3, ruling 3 (P2's per-layer setting): a turning wheel row may be dithered. `on` and
+   * `off` are the author's; `auto` dithers a wheel whose face carries a gradient -- a gradient or
+   * sunray finish, or the moon's disc -- where truncation bands it, and leaves a flat one alone.
+   * The pattern is baked into the disc and turns with it; at a jump, or the moon's month, it does
+   * not crawl. A snapping wheel ships screen-locked plates, which dither as every still plane does. */
+  function wheelDither3(c) {
+    if (c.dither === 'on') return true;
+    if (c.dither === 'off') return false;
+    return c.shows === 'moon' || c.wfinish === 'gradient' || c.wfinish === 'sunray';
+  }
   function wheelPlan3(comps) {
     var rows = [], refuses = [];
     (comps || []).forEach(function (c) {
@@ -4267,7 +4277,7 @@
       var vmin = dg === 'whole' ? (wd.vmin | 0) : 0;
       rows.push({ id: id, type: 'wheel', host: c.host || 'dial', exposed: c.exposed === true, src: wd.src, digit: dg, n: n, vmin: vmin, vmax: vmin + n,
                   span: span, zero: Math.round(span * (dg === 'whole' ? (wd.off | 0) : 0) / n), end: 'wrap',
-                  cadence: smooth ? 'roll' : 'jump', ease: smooth || wd.src === 'second' ? 0 : Math.max(0, Math.min(1000, +c.ease || 0)) });
+                  cadence: smooth ? 'roll' : 'jump', ease: smooth || wd.src === 'second' ? 0 : Math.max(0, Math.min(1000, +c.ease || 0)), dither: wheelDither3(c) });
     });
     return { rows: rows, refuses: refuses };
   }
@@ -4462,7 +4472,7 @@
     // reason the dial will print instead of a reason of its own.
     bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3, estimate3: estimate3,
     carriageRect3: carriageRect3, carriageStart3: carriageStart3,
-    liveComps3: liveComps3, compPlan3: compPlan3, wheelPlan3: wheelPlan3, wheelTurns3: wheelTurns3, pointerPlan3: pointerPlan3,
+    liveComps3: liveComps3, compPlan3: compPlan3, wheelPlan3: wheelPlan3, wheelDither3: wheelDither3, wheelTurns3: wheelTurns3, pointerPlan3: pointerPlan3,
     pointerDefault3: pointerDefault3,
     // D39: the sound vocabulary and the mirror of the dial's sound refusals.
     SOUND_SLOTS: SOUND_SLOTS, HOUR_PATTERNS: HOUR_PATTERNS, CLASS_SOUND: CLASS_SOUND,

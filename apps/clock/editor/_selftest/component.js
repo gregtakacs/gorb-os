@@ -1398,7 +1398,10 @@ class Component extends DCLogic {
     const L = E.composeLayers(this.base, gt, fc, d, this.state.hidden), wb = +this.cfg().wb;
     if (wb !== 6500) [L.under, L.hands, L.top].concat((L.live || []).map((l) => l.canvas)).forEach((cv) => E.wb(cv, wb));
     const px = (cv) => cv.getContext('2d').getImageData(0, 0, 466, 466).data;
-    const codes = G.panelPlate(px(L.under), 466, 466, true);
+    const under = px(L.under), codes = G.panelPlate(under, 466, 466, true);
+    // P2: a turning wheel the bake leaves undithered shows truncated through its cutouts
+    const keep = this.plainWheelMask(fc, d);
+    if (keep) { const tr = G.panelPlate(under, 466, 466, false); for (let p = 0; p < keep.length; p++) if (keep[p]) codes[p] = tr[p]; }
     // the live band bottom first: hand runs as truncated sprites, lifted sub-dial
     // faces as still rows (dithered, as the bake ships them) — D43 P4b
     (L.live && L.live.length ? L.live : [{ canvas: L.hands, still: false }]).forEach((l) => G.panelLayer(codes, 466, px(l.canvas), 466, 466, { dither: !!l.still }));
@@ -1410,6 +1413,26 @@ class Component extends DCLogic {
       if (w > 0) x.putImageData(img, 0, 0, 0, 0, w, 466);
       x.save(); x.strokeStyle = 'rgba(88,166,255,.9)'; x.lineWidth = 1; x.beginPath(); x.moveTo(w + 0.5, 0); x.lineTo(w + 0.5, 466); x.stroke(); x.restore();
     } else x.putImageData(img, 0, 0);
+  }
+  /* P2: the panel texels an undithered turning wheel shows through (its cutouts, or the whole
+   * ring when exposed), as 1/0 per texel: those wheels flat-filled black then white, everything
+   * else as itself, and the difference. Where they show depends only on the design, so the map
+   * is kept until the design changes. */
+  plainWheelMask(fc, d) {
+    const G = window.GorbBake, D = this.design();
+    if (!G || !G.wheelPlan3 || !fc || !('wheelFill' in fc)) return null;
+    const ids = {}; G.wheelPlan3(D.comps || []).rows.forEach((r) => { if (!r.dither) ids[r.id] = 1; });
+    if (!Object.keys(ids).length) return null;
+    const key = JSON.stringify(D) + '|' + (fc.inset || 1) + '|' + (fc.dynK || 1);
+    if (this._pwm && this._pwm.key === key) return this._pwm.mask;
+    const hid = { hands: 1, glass: 1, outer: 1, cage: 1 }, pixOf = (c) => c.getContext('2d').getImageData(0, 0, 466, 466).data;
+    let A, B;
+    try { fc.wheelFillIds = ids; fc.wheelFill = '#000'; A = pixOf(this.frameCanvas(0, hid, d)); fc.wheelFill = '#fff'; B = pixOf(this.frameCanvas(0, hid, d)); }
+    finally { fc.wheelFill = null; fc.wheelFillIds = null; }
+    const mask = new Uint8Array(466 * 466);
+    for (let p = 0; p < mask.length; p++) mask[p] = B[p * 4] - A[p * 4] > 127 ? 1 : 0;
+    this._pwm = { key, mask };
+    return mask;
   }
   guideOn() {
     const s = this.state;
@@ -3952,6 +3975,16 @@ class Component extends DCLogic {
         const sh = sel.shows || 'date', moon = sh === 'moon', numeric = ['date', 'month', 'hour', 'hours24', 'minute', 'second', 'year'].includes(sh);
         const fw = ((fc && fc.lay && fc.lay.wheels) || []).find((q) => String(q.id) === String(sel.id));
         const mmOf = (px) => ' \u00b7 ' + E.pxMm(px).toFixed(1) + ' mm';
+        /* P2 (D43 §5.3, ruling 3): a turning wheel ships as a row, undithered unless it asks; auto
+         * asks for a gradient face (gradient or sunray finish, the moon). A snapping wheel ships
+         * still plates, dithered like the dial, so it has nothing to choose. */
+        const ditherRow = () => {
+          const G = window.GorbBake; if (!G || !G.wheelTurns3) return;
+          if (!G.wheelTurns3(sel)) { selFields.push(Nt('Dither', 'Snaps between figures, so it ships still plates: dithered like the dial, nothing to set.')); return; }
+          const auto = G.wheelDither3(Object.assign({}, sel, { dither: 'auto' }));
+          Cx('Dither', 'dither', [{ v: 'auto', label: 'Auto \u00b7 ' + (auto ? 'on' : 'off') }, { v: 'on', label: 'On' }, { v: 'off', label: 'Off' }], 'auto');
+          selFields.push(Nt('', 'It turns as a row: dithered, its gradients hold on the glass but the grain turns with it; plain, a gradient bands. Check it in Render \u2192 Panel.'));
+        };
         Sx('Shows', 'shows', opt(E.WHEEL_SHOWS));
         // a year reads by digit (its four rings); the other numbers whole, or their tens or units
         if (numeric) Cx('Digit', 'digit', (sh === 'year' ? [] : [{ v: 'whole', label: 'Whole' }]).concat(sh === 'year' ? [{ v: 'thousands', label: 'Thousands' }, { v: 'hundreds', label: 'Hundreds' }] : [])
@@ -4000,6 +4033,7 @@ class Component extends DCLogic {
             if (!ixs.length && across.length) selFields.push(Nt('', 'Already crossed by #' + num(across[0].id) + ', the index of another ring read here.'));
           }
           Cx('Finish', 'wfinish', opt(E.WHEEL_FINISHES), 'flat');
+          ditherRow();
           R('Label every', 'every', 1, 12, 1, (v) => (+v > 1 ? 'every ' + v + ' figures' : 'every figure'), 1);
           selFields.push(Co('Accent', sel.accent, set('accent'), 'Figures'));
           /* P5d.3n: the markers. Ticks at the figures and/or between them, from an edge (or both) or
@@ -4033,6 +4067,7 @@ class Component extends DCLogic {
             selFields.push(Nt('', pitch >= wide ? 'Figures clear each other: ' + pitch.toFixed(1) + ' px each round the ring.' : '\u26a0 The figures overlap: ' + fw.spec.n + ' of them round a ' + Math.round(fw.lr) + ' px radius leave ' + pitch.toFixed(1) + ' px each, and one is ~' + Math.round(wide) + ' px wide. Move them out, grow the wheel, or read a digit instead.'));
           }
         } else {
+          ditherRow();
           // the moon disc: its size, its moons' size and how far out they ride, its sky
           R('Outer diameter', 'size', 10, 230, 0.5, (v) => (2 * v) + ' px' + mmOf(2 * v), 32);
           R('Moon size', 'msize', 0.12, 0.48, 0.01, (v) => Math.round(v * 200) + '% of the disc', 0.33);

@@ -3981,7 +3981,7 @@
      * disc itself, not the patch its cutouts frame. The bake never passes one. */
     F.comps = (date, only, view) => {
       const ex = (view && view.except) || {}, wh = (view && view.whole) || {};
-      const key = (only ? 'only[' + (only.join(',') || '-') + ']' : '*') + '|' + date.toDateString() + (wheelTick ? '|' + Math.floor(date.getTime() / wheelTick) : '') + '|' + (F.wheelFill || '') + '|' + (view ? JSON.stringify(view) : '');
+      const key = (only ? 'only[' + (only.join(',') || '-') + ']' : '*') + '|' + date.toDateString() + (wheelTick ? '|' + Math.floor(date.getTime() / wheelTick) : '') + '|' + (F.wheelFill || '') + (F.wheelFill && F.wheelFillIds ? '[' + Object.keys(F.wheelFillIds).join(',') + ']' : '') + '|' + (view ? JSON.stringify(view) : '');
       if (key === ck) return cvals;
       const a = cv(S), subs = {};
       /* P5d.3h: everything under a face is drawn in the stack's own order (design.comps, bottom
@@ -4005,7 +4005,7 @@
         const en1 = host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === host) || {}).en || en;
         const st = cv(S), sx = st.getContext('2d');
         setFace(fontKey);
-        ws.forEach((w) => { w.fill = F.wheelFill || null; drawWheel(sx, w, date, en1, pal); w.fill = null; });
+        ws.forEach((w) => { w.fill = F.wheelFill && (!F.wheelFillIds || F.wheelFillIds[w.id]) ? F.wheelFill : null; drawWheel(sx, w, date, en1, pal); w.fill = null; });
         // seen through its cutouts as an antialiased mask (a path clip is hard-edged, and its
         // stair-step showed through the dial's own soft hole edge), widened a hair so the dial's
         // edge, not the mask's, is the one the eye reads
@@ -4029,7 +4029,9 @@
      * colour instead of its art -- two renders in two colours say, per texel, how much of the
      * face covers the discs, which is the cover row. wheelDisc: one wheel's whole disc,
      * unclipped, standing at figure `idx` -- the row's art at P0. */
-    F.wheelFill = null;
+    // wheelFillIds ({ id: 1 }), when set, limits the fill to those wheels (Panel view's map of the
+    // texels an undithered turning wheel shows through); the others draw as themselves
+    F.wheelFill = null; F.wheelFillIds = null;
     F.wheelDisc = (ctx, id, idx) => {
       const w = lay.wheels.find((q) => String(q.id) === String(id)); if (!w) return null;
       setFace(fontKey); drawWheel(ctx, w, null, w.host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === w.host) || {}).en || en, pal, idx);
@@ -4565,6 +4567,8 @@
         const numK = (k, on, def) => { if (!on || c[k] == null || !isFinite(+c[k]) || Math.abs(+c[k] - def) < 1e-9) delete c[k]; else c[k] = +c[k]; };
         numK('tlen', c.ticks, 0); numK('tw', c.ticks, 1.6); numK('tm', c.ticks, 1.5);
         numK('rw', c.rim, 1.2); numK('rm', c.rim, 0.2); numK('rgap', c.rim === 'double', 3);
+        // P2: the author's dither for a turning wheel's row; auto is no field
+        if (c.dither !== 'on' && c.dither !== 'off') delete c.dither;
         if (!WHEEL_FINISHES[c.wfinish] || c.wfinish === 'flat') delete c.wfinish;
         if (!(+c.every > 1)) delete c.every; else c.every = +c.every | 0;
         if (!c.accent || c.accent === 'auto') delete c.accent;

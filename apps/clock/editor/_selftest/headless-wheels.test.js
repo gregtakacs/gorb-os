@@ -280,6 +280,14 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(!thr, 'with no cover, since nothing covers it', thr);
   thr = ''; try { B.bakeClock3({ name: 'x', plate: { rgba: pl(466, 466, 255), w: 466, h: 466 }, wheels: [Object.assign({}, disc, { exposed: false })] }); } catch (e) { thr = e.message; }
   ok(/no cover/.test(thr), 'while a covered one still needs its cover');
+  // P2 (D43 §5.3, ruling 3): a turning wheel row dithers when it asks; auto asks for a gradient face
+  const wd = (o) => B.wheelDither3(Object.assign({ type: 'wheel', shows: 'minute' }, o));
+  ok(!wd({}) && wd({ wfinish: 'gradient' }) && wd({ wfinish: 'sunray' }) && wd({ shows: 'moon' }) && wd({ dither: 'on' }) && !wd({ wfinish: 'sunray', dither: 'off' }),
+    'auto dithers a gradient or sunray face and the moon, on and off are the author\u2019s');
+  ok(B.wheelPlan3([{ id: 'w', type: 'wheel', shows: 'minute', exposed: true, wfinish: 'sunray' }]).rows[0].dither === true, 'and the wheel row carries the verdict to the bake');
+  const pick = (dither) => { const b = B.bakeClock3({ name: 'x', plate: { rgba: pl(466, 466, 255), w: 466, h: 466 }, wheels: [Object.assign({}, disc, { dither })] }); return Array.from(b.bytes).join(','); };
+  ok(pick(true) !== pick(false), 'a dithered wheel row ships other texels than a plain one (9 is between two 565 levels)');
+  ok(E.canonDesign({ comps: [{ id: 'w', type: 'wheel', shows: 'date', dither: 'auto' }, { id: 'v', type: 'wheel', shows: 'date', dither: 'on' }] }).comps.map((c) => c.dither).join() === ',on', 'canon keeps on/off and drops auto');
   ok(E.canonDesign({ comps: [{ id: 'w', type: 'wheel', shows: 'date' }, { id: 'k', type: 'cutout', host: 'w', shape: 'moon' }] }).comps[1].shape === undefined, 'a moon shape on a wheel that is not the moon falls back to a window');
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p2) { Object.assign(this.state, typeof p2 === 'function' ? p2(this.state) : p2); };
@@ -334,6 +342,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   let fk = it.renderVals().fields; const lk = (l) => fk.find((f) => f.label === l);
   ok(lk('Ticks stand') && lk('Tick length') && lk('Tick thickness') && lk('Tick margin') && lk('Rim on') && lk('Rim thickness') && lk('Rim margin') && lk('Line spacing'), 'the Markers section places, sizes and spaces the ticks and rim lines', fk.map((f) => f.label).join('|'));
   ok(fk.some((f) => f.isNote && /Room for ticks|No room|run into/.test(f.note || '')), 'and says how much room the figures leave the ticks');
+  ok(lk('Dither') && lk('Dither').opts.map((o) => o.label).join() === 'Auto \u00b7 off,On,Off', 'a turning flat wheel offers its dither, auto resolving off', lk('Dither') && lk('Dither').opts.map((o) => o.label).join());
   const add = lk('Index').opts.find((o) => /Add an index/.test(o.label)); add.pick();
   const nx = it.design().comps.find((c) => c.type === 'index');
   ok(nx && nx.host === 'w' && it.state.sel === nx.id, 'Add an index puts one on the selected wheel and selects it', JSON.stringify(nx));

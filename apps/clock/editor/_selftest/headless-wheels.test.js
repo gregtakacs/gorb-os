@@ -220,6 +220,27 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(hs({ shRelief: 0 }) > 0 && hs({ shRelief: 0 }) === hs({}), 'relief off leaves the hands\u2019 cast shadows exactly as they were');
   ok(hs({ shMove: 0 }) === 0, 'and cast shadows off is their own switch');
 }
+// ---- P5d.3k: resets restore the stack; a disc dragged to another face lands there ---------------------
+{
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  const it = new (global.COMP_CLASS(DCLogic))({});
+  it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
+  it.state.dial = 'modern'; it.state.playing = false; it.state.hidden = {};
+  const rows = () => (it.renderVals().stackRows || []).filter((r) => r.isRow).map((r) => r.id);
+  const fresh = rows();
+  it.stackMove('hand:h4', 1); it.stackMove('comp:c3', -1);
+  ok(JSON.stringify(rows()) !== JSON.stringify(fresh), 'a reorder changes the stack');
+  it.state.tab = 'hands'; it.resetTab('hands');
+  ok(JSON.stringify(rows()) === JSON.stringify(fresh), 'the Hands tab\u2019s Reset puts the hands\u2019 depth back too', rows().join(' '));
+  it.stackMove('hand:h4', 1); it.state.hidden = { ids: { h2: 1 } };
+  it.renderVals().resetDesign();
+  ok(JSON.stringify(rows()) === JSON.stringify(fresh) && !Object.keys(it.state.hidden.ids || {}).length, 'Reset everything restores the stack and the stage\u2019s eyes');
+  const inp = it.stackInput(), pl = global.OrbStack.place(inp, 'comp:c2', 'comp:c3', 'below');
+  it.stackApply(pl);
+  const w = it.design().comps.find((c) => c.id === 'c2');
+  ok(pl.ok && w.host === 'c3' && w.dist === pl.comps.find((c) => c.id === 'c2').dist, 'a wheel dragged onto a sub-dial lands under it, at the place Layers worked out', JSON.stringify([pl.ok, w.host, w.angle, w.dist]));
+}
 // ---- canon ----------------------------------------------------------------------------------
 {
   const c = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', host: 'dial', shows: 'nope', digit: 'whole', dir: 'cw', cadence: 'jump', ease: 0, overhang: 'shown', wbg: 'auto', tsize: 1, blank0: true },

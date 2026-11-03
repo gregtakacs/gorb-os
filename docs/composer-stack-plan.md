@@ -1113,6 +1113,20 @@ not enough: the owner wanted any angle, with snaps, the tangent among them (the 
 - Tests: `headless-wheels` 94, `headless-component` 60, `headless-pace` (a 12/s tick on Modern
   needs 12 and holds 9; a 1/s tick fits).
 
+**As built (P5d.3k, owner 2026-11-02: "a reset of Modern does not reorder the layers").**
+- *Not reproduced for Reset everything:* reordering Modern by arrows and by drags (a hand to
+  the top, the seconds face lifted) and pressing it restored the preset's stack in the
+  headless component. Nothing persists designs (no storage, no hub copy).
+- *The likely path:* the inspector's own **Reset** is per tab, and the Hands tab's kept the
+  hands' depth (it was documented as Parts'). It now restores `design.order` from the preset
+  as well.
+- *Reset everything* also clears the stage's view of the dial: per-part eyes, selection, a
+  drag in flight.
+- **Found on the way:** `stackApply` re-used the old comp for anything but a hand, so a wheel
+  (or window, moon, cutout) dragged onto another face never took its new host or place.
+  It now does.
+- Tests: `headless-wheels` 98.
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views

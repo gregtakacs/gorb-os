@@ -1413,8 +1413,10 @@ budget says so on the layer at the moment it is dropped.
 - **`?orb=`** (an IPv4) is the address Send dials; `/api/orb/known` is asked only without it.
   **`?app=`** keys the browser storage per app.
 - Ruling 9 in practice: P6 changed the editor after v1.2.1 reached Gold, so it ships as
-  v1.2.2. The app stamp is `version.txt`, which also stamps the firmware, so every editor
-  release is a firmware rebuild, a bundle and a flash, even when no C changed.
+  v1.2.2. At the time the app stamp was the root `version.txt`, which also stamps the
+  firmware, so that release cost a firmware rebuild, a bundle and a flash with no C
+  changed. Ruling 11 ended that the same day: an editor release now moves only its app's
+  `version.txt` and its container.
 
 ## 8. The design travels in the `.orbtheme` (ruling 5)
 
@@ -1625,11 +1627,22 @@ its version carry what was built.
 9. **The blend rounds (2026-11-01).** `mix_16_16` and LVGL's RGB565 image blends round
    each field instead of truncating (§5.4). The clock app's version moves with the
    editor changes (v1.1.45), so a version stamp still names one set of bytes.
+   *Amended 2026-11-02 (ruling 11): the stamp is the app's own, and
+   `make_factory_apps.py` enforces the one-stamp-one-bytes rule.*
 
 10. **Hour and minute hands are always antialiased (2026-11-02).** The bake sets EF_SMOOTH on
    every hour and minute hand row and its shadow twin, whatever the dial's grant for its other
    rows; turning wheel rows are excluded. `estimate3` prices AA on any row that carries the bit,
    so the meter states the cost; a bench arm passing `smooth: false` still forces nearest.
+11. **Apps are versioned apart from the OS (2026-11-02).** An app is atomic and
+   self-contained, its version included: the clock's editor is bound to the clock app's
+   release, never to the hub's or the firmware's. Each app's stamp is
+   `apps/<slug>/version.txt`; the root `version.txt` stamps the firmware only.
+   `make_factory_apps.py` refuses a container whose bytes moved since HEAD under an
+   unmoved stamp (the gate is the hub's same-stamp rule for serving an editor from its
+   shelf). The hub and firmware already compared app versions only app to app; the tool
+   and its sentinel were the only coupling. All three apps start at v1.2.2, the last
+   shared stamp, and move apart from here.
 
 ## 12. Open questions (raised during execution)
 

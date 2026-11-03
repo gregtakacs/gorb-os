@@ -18,10 +18,12 @@ a silently-stale app.
 
 Deterministic by construction: the two containers carry no art, no code, and no
 timestamps beyond ``baked_ms`` — which is pinned to a constant so a rebuild of
-an unchanged spec re-emits identical bytes. The header serial is DERIVED from
-version.txt (§4.1), so the string an operator reads and the number the install
-ladder orders on are one fact; the same read makes a version bump dirty the
-committed pair, which the freshness gate below then refuses to leave stale.
+an unchanged spec re-emits identical bytes. Each app's header version and serial
+come from its own apps/<slug>/version.txt (owner 2026-11-02: apps are versioned apart
+from the OS), so the string an operator reads and the number the install ladder orders
+on are one fact; a bump dirties that app's committed container, which the freshness
+gate below then refuses to leave stale, and changed bytes under an unmoved stamp are
+refused outright.
 """
 import importlib.util
 import os
@@ -68,43 +70,63 @@ PICKER_CAPS = 0
 # so it declares net: an app that declared nothing never reaches the network.
 FLIGHTS_CAPS = orbapp.cap_bit("net") | orbapp.cap_bit("location")
 
-# S6 (§4.1): the release stamp both starter containers carry, and the serial derived
-# from it. The number is not typed here. It is read out of version.txt — the same file
-# root CMakeLists.txt stamps into the image through tools/orb_version.sh — because these
-# two containers are compiled from sources this repo tracks (the clock's behaviour
-# module is main/stage/, and the picker's editor is built by make_clock_region.py from
-# composer sources under version control), so the release they belong to IS the release
-# of the tree. A VERSIONS table typed beside the script would be a second source, and the
-# two would drift the first time a release bumped one and not the other.
+# Each app carries its own release (owner, 2026-11-02): an app is atomic and independent
+# of the OS, so its stamp is apps/<slug>/version.txt, read here and nowhere typed twice.
+# The tree's own version.txt stamps the firmware image and nothing else; an app moves
+# when its own bytes do, and an OS release leaves every app's stamp where it was.
 #
-# The consequence is deliberate and loud: bumping version.txt makes the committed
-# containers stale, and host_orbapp_install_test.py's --check re-run says so until
-# `make_factory_apps.py` is re-run and the new bytes committed. That is the same rule
-# D37's editor region already runs under, and orbpack's refusal already spells out
-# ("Write version.txt, reconfigure, rebuild").
+# One stamp names one set of bytes (D43 ruling 9, now per app). A container whose bytes
+# differ from the one committed at HEAD under the same stamp is refused, by name, until
+# that app's version.txt moves: the hub serves its shelf copy of an editor only to an orb
+# running the same stamp, so two different editors under one stamp would hand an author
+# the wrong one. Rebuilding unchanged sources re-emits identical bytes and passes.
 #
 # The serial rides at major*10000 + minor*100 + patch so the numeric word the install
-# ladder orders on and the string an operator reads are one fact stated once. It is not
-# 1 any more, and the sentinel that pinned 1 now recomputes it from version.txt rather
-# than trading one literal for another.
-def app_version():
-    """version.txt's stamp, verified against the one grammar the family uses."""
-    path = os.path.join(HERE, os.pardir, "version.txt")
+# ladder orders on and the string an operator reads are one fact stated once; the
+# sentinel (host_orbapp_install_test.py) recomputes it from the same file.
+def app_version(slug):
+    """apps/<slug>/version.txt's stamp, verified against the one grammar the family uses."""
+    path = os.path.join(HERE, os.pardir, "apps", slug, "version.txt")
     try:
         v = open(path).read().strip()
     except OSError:
-        raise SystemExit("make_factory_apps: no version.txt at %s — every container needs "
-                         "a release stamp, and this tool reads the tree's rather than "
-                         "typing a second one" % path)
+        raise SystemExit("make_factory_apps: no %s — every app carries its own release "
+                         "stamp beside its sources" % os.path.relpath(path, os.path.join(HERE, os.pardir)))
     if not orbapp.check_version(v):
-        raise SystemExit("make_factory_apps: version.txt holds %r, which is not a release "
-                         "stamp the format accepts (v<MAJOR>.<MINOR>.<PATCH>, each part 1 "
-                         "or 2 digits, no leading zero)" % v)
+        raise SystemExit("make_factory_apps: %s holds %r, which is not a release stamp the "
+                         "format accepts (v<MAJOR>.<MINOR>.<PATCH>, each part 1 or 2 digits, "
+                         "no leading zero)" % (os.path.relpath(path, os.path.join(HERE, os.pardir)), v))
     return v
 
 
-VERSION = app_version()
-SERIAL = orbapp.serial_of_version(VERSION)
+def committed(slug):
+    """The container committed at HEAD for slug, or None (no git, or not committed yet)."""
+    import subprocess
+    rel = "tools/orb-manager/apps/%s.orbapp" % slug
+    try:
+        r = subprocess.run(["git", "-C", os.path.join(HERE, os.pardir), "show", "HEAD:" + rel],
+                           capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def stale_stamps(files):
+    """Apps whose bytes moved since HEAD while their stamp did not: [(slug, version)]."""
+    out = []
+    for slug, blob in files.items():
+        old = committed(slug)
+        if old is None or old == blob:
+            continue
+        try:
+            same = orbapp.parse_header(old)["version"] == orbapp.parse_header(blob)["version"]
+        except ValueError:
+            same = False
+        if same:
+            out.append((slug, orbapp.parse_header(blob)["version"]))
+    return out
+
+
 BAKED_MS = 0        # pinned constant: the file is content, not a build event
 
 # The picker's three state numbers, declared so they persist inside the row's
@@ -175,9 +197,9 @@ def containers():
                 code, _imports, mem = build_apps.build(slug)
             orbapp.write_container(
                 os.path.join(td, slug + ".orbapp"), slug, title, caps=caps,
-                settings=settings, behaviour_kind=kind, serial=SERIAL,
+                settings=settings, behaviour_kind=kind, serial=orbapp.serial_of_version(app_version(slug)),
                 period_ms=PERIOD_MS.get(slug, 0),
-                baked_ms=BAKED_MS, editor=editor_region(editor), version=VERSION,
+                baked_ms=BAKED_MS, editor=editor_region(editor), version=app_version(slug),
                 code=code, wasm_mem_max=mem)
             with open(os.path.join(td, slug + ".orbapp"), "rb") as f:
                 blob = f.read()
@@ -210,8 +232,12 @@ def main():
                 f.write(blob)
         print("wrote unreleased %s to %s" % (", ".join(held), dest))
         return 0
+    stale = stale_stamps(files)
+    for slug, v in stale:
+        sys.stderr.write("%s.orbapp's bytes changed since HEAD but apps/%s/version.txt still says %s: "
+                         "bump it, so one stamp names one set of bytes\n" % (slug, slug, v))
     if "--check" in args:
-        rc = 0
+        rc = 1 if stale else 0
         for slug in held:
             if os.path.exists(os.path.join(OUT_DIR, slug + ".orbapp")):
                 sys.stderr.write("%s.orbapp is unreleased and must not ship on the shelf\n" % slug)
@@ -226,13 +252,15 @@ def main():
             print("seed containers fresh (%d containers: %s)"
                   % (len(files), ", ".join("%s %d B" % (k, len(v)) for k, v in files.items())))
         return rc
+    if stale:
+        return 1
     os.makedirs(OUT_DIR, exist_ok=True)
     for slug, blob in files.items():
         with open(os.path.join(OUT_DIR, slug + ".orbapp"), "wb") as f:
             f.write(blob)
-    print("wrote %s: %s, version %s (serial %u)"
+    print("wrote %s: %s"
           % (os.path.relpath(OUT_DIR, os.path.join(HERE, os.pardir)),
-             ", ".join("%s %d B" % (k, len(v)) for k, v in files.items()), VERSION, SERIAL))
+             ", ".join("%s %s %d B" % (k, app_version(k), len(v)) for k, v in files.items())))
     return 0
 
 

@@ -6074,3 +6074,24 @@ Fix (`display.h` `DISPLAY_LCD_CORE = 1`):
 - DIRAM is unchanged at 206,683 B against the build without the helper.
 
 Core 1 keeps the panel off the radio's core (Wi-Fi is pinned to 0). The proof is a night without a freeze on orb-B.
+
+## 45 — Apps carry their own version — 2026-11-02
+
+Owner ruling: every app carries its own version; apps are atomic and independent from the
+OS, modular and self-contained, version included, so an app's theme editor is bound to the
+app and not to the hub or the firmware.
+
+- Each app's stamp is `apps/<slug>/version.txt` (clock, color_picker and flights all start at
+  v1.2.2, the last shared stamp). `tools/make_factory_apps.py` reads it per app for the header
+  version and serial; the root `version.txt` stamps the firmware image only. §4.1/S6's
+  "the release they belong to IS the release of the tree" is superseded: an app's release is
+  its own.
+- One stamp names one set of bytes, per app (D43 ruling 9): the tool refuses, by name, a
+  container whose bytes differ from the one committed at HEAD under the same stamp. Proved by
+  hand: an editor-only edit with no bump is refused in both write and `--check`; after
+  bumping the clock alone, only the clock's container moves.
+- Nothing on the device or the hub changed: install ordering, the Apps face's update offer,
+  the editor's same-stamp shelf gate and the "orb's app is older" page already compare one
+  app's version with that app's version. `host_orbapp_install_test.py` recomputes each
+  starter's version and serial from its own file.
+

@@ -67,8 +67,15 @@ python3 tools/make_factory_apps.py --unreleased D  # held apps, to D, for a benc
 python3 tools/orbapp.py --inspect <file.orbapp>    # read one back
 ```
 
-The header serial comes from `version.txt`, so a version bump makes every
-committed container stale until you re-run the tool.
+Each app carries its own release in `apps/<slug>/version.txt`
+(`v<MAJOR>.<MINOR>.<PATCH>`). The header's version and serial both come from it.
+The tree's root `version.txt` stamps the firmware only: an OS release leaves every
+app's stamp alone, and an app release needs no firmware build. One stamp names one
+set of bytes: if an app's container comes out different from the one committed at
+HEAD while its version did not move, the tool refuses and names the file to bump.
+Bump the app's `version.txt`, re-run the tool, and commit both. The hub serves an
+app's editor from its shelf only to an orb running the same stamp, so this is what
+keeps the editor you open the one the orb runs.
 
 ## Install
 

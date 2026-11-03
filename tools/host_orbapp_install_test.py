@@ -895,17 +895,20 @@ def seed_check():
     orbapp = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(orbapp)
     seed_dir = os.path.join(HERE, os.pardir, "tools", "orb-manager", "apps")
-    # S6 (§4.1): the starter pair's version and serial come from version.txt, the one
-    # source tools/make_factory_apps.py reads. Recomputed rather than typed, so this pin
-    # goes red when the header's string and the tree's release disagree — and not on a
-    # release that moved both together, which is the case a literal would confuse.
-    want_version = open(os.path.join(HERE, os.pardir, "version.txt")).read().strip()
-    want_serial = orbapp.serial_of_version(want_version)
+    # Each app's version and serial come from its own apps/<slug>/version.txt (owner
+    # 2026-11-02: an app is versioned apart from the OS), the one source
+    # tools/make_factory_apps.py reads. Recomputed rather than typed, so this pin goes red
+    # when the header's string and the app's stamp disagree — and not on a release that
+    # moved both together, which is the case a literal would confuse.
+    def want_of(slug):
+        v = open(os.path.join(HERE, os.pardir, "apps", slug, "version.txt")).read().strip()
+        return v, orbapp.serial_of_version(v)
     # §43: both are wasm apps (kind 2) carrying their own code; the clock names only
     # sound now that the theme picker is the OS's Themes page.
     want = [("clock", "Clock", 2, "sound"),   # sound: D39
             ("color_picker", "HSB", 2, "")]
     for slug, title, kind, capnames in want:
+        want_version, want_serial = want_of(slug)
         path = os.path.join(seed_dir, slug + ".orbapp")
         try:
             blob = open(path, "rb").read()
@@ -917,7 +920,7 @@ def seed_check():
         names = list(orbapp.CAP_FREE) + list(orbapp.CAP_OWNER)
         got_caps = set(names[b] for b in range(len(names)) if h["caps"] >> b & 1)
         want_caps = set(capnames.split("|")) if capnames else set()
-        # S6 (§4.1): the serial is version.txt's number, recomputed here rather than
+        # S6 (§4.1): the serial is the app's version.txt number, recomputed here rather than
         # matched against a literal. The starter pair's stamp rides at 1 no more, and a
         # pin that traded 1 for 10127 would go red on the next release for the right
         # reason and the wrong cause; this one goes red only when the two sources of the

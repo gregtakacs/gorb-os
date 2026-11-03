@@ -1226,6 +1226,17 @@ rolls ships at last, as a new row shape, `CLK_SHAPE_DRUM` (3):
   The estimate prices a drum as its window repainted each tick (it had priced the seconds drums
   as sweeping their whole strips); it says 9 fps for Speedster against 13 measured, the rest of
   the gap being the long sweeping needle.
+- **Owner's findings, 2026-11-03.** (1) The flyback snapped back on the orb: a sweeping hand's
+  target creeps forward every frame, and the clock app's `ease_pose` read that creep as "not a
+  flyback" and cancelled the fly on its first frame (Flux's eased hands jump or step, so it never
+  showed). A fly now keeps its start and clock while the target creeps on and lands where the
+  sweep has got to (clock v1.2.9; `host_drive_test`, which compiles the app's own source, plays a
+  sweeping needle through the wrap). The editor also hid the Ease (flyback) field for a hand that
+  takes its retrograde from a fan or slider face; it is offered now. (2) The orb showed 10..60
+  where the editor showed 20, 40, 60: the bake driver (`bank3-drive.html`) never loaded the
+  editor's web fonts, so every bench bake drew its text in the fallback face. It now loads all 35
+  and says so; the bench themes and the hub default were re-baked. Speedster sets its scale in
+  Barlow Condensed, so all six labels fit in the face the editor really draws.
 - **Speedster** (preset): a retrograde seconds needle over a 240-degree fan sub-dial printed as a
   speedometer, and an odometer of six drums on the fan's face: hours and minutes jump with a
   400 ms ease, the seconds tens rolls on the carry and the seconds units rolls continuously.

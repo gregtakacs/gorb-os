@@ -1,0 +1,259 @@
+# Orb Manager release: the hub for Linux, Windows and macOS, signed where the secrets
+# are set, published as a draft GitHub release for a person to read over and publish.
+#
+# Push a tag named after the OS version (git tag v1.2.6 && git push origin v1.2.6;
+# the tag must equal version.txt, or carry a -N suffix for a hub-only rebuild of the same
+# OS, v1.2.6-2) to cut a release. Run it by hand (Actions > release >
+# Run workflow) to build and sign the same artifacts without publishing anything: they
+# land on the run page.
+#
+# Signing is per platform and optional: with no Azure secrets the Windows exes ship
+# unsigned, with no Apple secrets the Mac app is ad-hoc signed and not notarized, and the
+# release notes say which. RELEASING.md lists every secret and where it comes from.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+    working-directory: tools/orb-manager
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # git describe needs the tags
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: tools/orb-manager/go.mod
+          cache-dependency-path: tools/orb-manager/go.sum
+      - id: v
+        name: Version
+        run: |
+          v=$(git describe --always --dirty)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            os=$(cat ../../version.txt)
+            case $GITHUB_REF_NAME in
+              "$os" | "$os"-[0-9]*) ;;
+              *) echo "::error::tag $GITHUB_REF_NAME is not the OS version in version.txt ($os), nor $os-N"; exit 1 ;;
+            esac
+            [ "$v" = "$GITHUB_REF_NAME" ] || { echo "::error::git describe says $v, not $GITHUB_REF_NAME"; exit 1; }
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Test
+        run: make test vet crosscheck vendor-check
+      - name: Windows icon and version resource
+        run: |
+          w=$(echo '${{ steps.v.outputs.version }}' | sed -n 's/^v\([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p')
+          make winres WINVER="${w:-0.0.0}"
+      - name: Build
+        run: make release VERSION='${{ steps.v.outputs.version }}'
+      - name: Package Linux
+        run: |
+          packaging/dist.sh stage linux bin/release '${{ steps.v.outputs.version }}' bin/dist
+          packaging/dist.sh pack linux '${{ steps.v.outputs.version }}' bin/dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-binaries
+          path: tools/orb-manager/bin/release
+          retention-days: 3
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-linux
+          path: tools/orb-manager/bin/dist/*.tar.gz
+
+  windows:
+    needs: build
+    runs-on: windows-latest
+    outputs:
+      signed: ${{ steps.flag.outputs.signed }}
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      HAS_AZURE: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-binaries
+          path: tools/orb-manager/bin/release
+      - name: Stage
+        run: packaging/dist.sh stage windows bin/release "$VERSION" bin/dist
+      - name: Sign (Azure Artifact Signing)
+        if: env.HAS_AZURE == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files: |
+            ${{ github.workspace }}\tools\orb-manager\bin\dist\stage\orb-manager-${{ needs.build.outputs.version }}-windows-amd64\orb-manager.exe
+            ${{ github.workspace }}\tools\orb-manager\bin\dist\stage\orb-manager-${{ needs.build.outputs.version }}-windows-amd64\orbflash.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Orb Manager
+          exclude-environment-credential: false
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: true
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+      - id: flag
+        name: Check signatures
+        shell: pwsh
+        run: |
+          $d = "bin/dist/stage/orb-manager-$env:VERSION-windows-amd64"
+          $signed = 'true'
+          foreach ($f in 'orb-manager.exe', 'orbflash.exe') {
+            $s = Get-AuthenticodeSignature "$d/$f"
+            Write-Output "$f : $($s.Status) $($s.SignerCertificate.Subject)"
+            if ($s.Status -ne 'Valid') { $signed = 'false' }
+          }
+          if ($env:HAS_AZURE -eq 'true' -and $signed -ne 'true') { Write-Error 'signing ran but a signature does not verify'; exit 1 }
+          "signed=$signed" >> $env:GITHUB_OUTPUT
+      - name: Package
+        run: packaging/dist.sh pack windows "$VERSION" bin/dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-windows
+          path: tools/orb-manager/bin/dist/*.zip
+
+  macos:
+    needs: build
+    runs-on: macos-latest
+    outputs:
+      signed: ${{ steps.flag.outputs.signed }}
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      HAS_APPLE: ${{ secrets.MACOS_CERT_P12 != '' && secrets.APPLE_API_KEY_P8 != '' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-binaries
+          path: tools/orb-manager/bin/release
+      - name: Stage
+        run: packaging/dist.sh stage macos bin/release "$VERSION" bin/dist
+      - name: Import the Developer ID certificate
+        if: env.HAS_APPLE == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          kc="$RUNNER_TEMP/sign.keychain-db"
+          kp=$(uuidgen)
+          security create-keychain -p "$kp" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kp" "$kc"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$kc"
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$kp" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+      - id: flag
+        name: Sign the app
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          app="bin/dist/stage/orb-manager-$VERSION-macos/Orb Manager.app"
+          if [ "$HAS_APPLE" = true ]; then
+            id="$MACOS_SIGN_IDENTITY"; opts="--options runtime --timestamp"; signed=true
+          else
+            id=-; opts=; signed=false   # ad hoc: runs after the user approves it once
+          fi
+          # Inside out: the nested orbflash first, then the bundle (whose main executable
+          # is signed with it). No --deep: it signs nested code with the wrong options.
+          codesign --force $opts --sign "$id" "$app/Contents/MacOS/orbflash"
+          codesign --force $opts --sign "$id" "$app"
+          codesign --verify --strict --verbose=2 "$app"
+          echo "signed=$signed" >> "$GITHUB_OUTPUT"
+      - name: Package
+        run: packaging/dist.sh pack macos "$VERSION" bin/dist
+      - name: Notarize
+        if: env.HAS_APPLE == 'true'
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          dmg="bin/dist/orb-manager-$VERSION-macos.dmg"
+          codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$dmg"
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          xcrun notarytool submit "$dmg" --key "$RUNNER_TEMP/AuthKey.p8" \
+            --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" --wait --timeout 30m \
+            --output-format json | tee "$RUNNER_TEMP/notary.json"
+          rm -f "$RUNNER_TEMP/AuthKey.p8"
+          grep -q '"status" *: *"Accepted"' "$RUNNER_TEMP/notary.json" || { echo "::error::notarization was not accepted"; exit 1; }
+          xcrun stapler staple "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-macos
+          path: tools/orb-manager/bin/dist/*.dmg
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [build, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      WIN_SIGNED: ${{ needs.windows.outputs.signed }}
+      MAC_SIGNED: ${{ needs.macos.outputs.signed }}
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        run: cd dist && sha256sum -- * > sha256sums.txt && cat sha256sums.txt
+      - name: Release notes
+        run: |
+          {
+            echo "Orb Manager $VERSION, with gorb-os $(cat version.txt) firmware built in."
+            echo
+            echo "Apps included:"
+            for f in tools/orb-manager/apps/*.orbapp; do
+              s=$(basename "$f" .orbapp)
+              echo "- $s $(cat "apps/$s/version.txt")"
+            done
+            echo
+            echo "| Download | For |"
+            echo "|---|---|"
+            echo "| orb-manager-$VERSION-windows-amd64.zip | Windows 10/11, 64-bit |"
+            echo "| orb-manager-$VERSION-macos.dmg | macOS 12 or later (Apple silicon and Intel) |"
+            echo "| orb-manager-$VERSION-linux-amd64.tar.gz | Linux x86-64 |"
+            echo
+            echo "Each needs Chrome, Edge, Brave or Chromium installed; Orb Manager opens its window with it."
+            [ "$WIN_SIGNED" = true ] || { echo; echo "The Windows build is not code-signed: SmartScreen will warn. Choose More info, then Run anyway."; }
+            [ "$MAC_SIGNED" = true ] || { echo; echo "The macOS build is not notarized: right-click Orb Manager, choose Open, then Open again."; }
+          } > notes.md
+          cat notes.md
+      - name: Draft the release
+        run: gh release create "$VERSION" dist/* --draft --verify-tag --title "Orb Manager $VERSION" --notes-file notes.md

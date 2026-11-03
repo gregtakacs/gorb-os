@@ -580,6 +580,17 @@ func main() {
 		// and the rung it cannot offer is simply missing from the ladder.
 		userCfg = ""
 	}
+	// A macOS app bundle's library is seed stock for the user's own (bundle.go): copied in
+	// before the ladder resolves, so the user-config rung is the one that answers.
+	if res := bundleResources(exeDir); res != "" && userCfg != "" {
+		lines, err := seedFromBundle(res, filepath.Join(userCfg, "orb-manager"))
+		for _, l := range lines {
+			log.Printf("orb-manager: %s", l)
+		}
+		if err != nil {
+			log.Printf("orb-manager: %v", err)
+		}
+	}
 	s.lib = resolveLibrary(strings.TrimSpace(libPath), strings.TrimSpace(libApps),
 		strings.TrimSpace(libThemes), exeDir, userCfg, repoDir)
 	s.noAutoInstall = noAutoInstall || noAutoSeedAlias

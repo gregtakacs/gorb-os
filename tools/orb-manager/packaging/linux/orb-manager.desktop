@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Orb Manager
+Comment=Flash, set up and theme your orbs
+Exec=orb-manager
+Icon=orb-manager
+Terminal=false
+Categories=Utility;

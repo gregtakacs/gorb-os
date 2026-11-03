@@ -18,3 +18,6 @@ bin/
 # purpose, so `make build` works with no ESP-IDF and a downloaded .exe flashes an orb
 # and opens an app's editor with no clone on disk. Refresh them with `make firmware` /
 # `make vendor-runtime`.
+
+# make winres output: the Windows icon/version resource, regenerated in CI.
+/rsrc_windows_*.syso

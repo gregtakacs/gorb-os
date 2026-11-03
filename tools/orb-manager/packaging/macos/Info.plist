@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Orb Manager.app. dist.sh replaces @VERSION@ (x.y.z, trimmed from the tag) when it builds
+     the bundle. LSUIElement keeps the hub process out of the Dock: what the user sees is the
+     Chromium app window it opens, and closing that window quits the hub (window.go). -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Orb Manager</string>
+	<key>CFBundleDisplayName</key>
+	<string>Orb Manager</string>
+	<key>CFBundleIdentifier</key>
+	<string>net.takacs.orbmanager</string>
+	<key>CFBundleExecutable</key>
+	<string>orb-manager</string>
+	<key>CFBundleIconFile</key>
+	<string>orb-manager</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © Greg Takacs. MIT licence.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Orb Manager finds and talks to your orbs on the local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_orb._tcp</string>
+	</array>
+</dict>
+</plist>

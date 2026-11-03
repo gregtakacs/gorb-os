@@ -29,7 +29,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build manager orbflash library test vet fmt check run desktop cdp reload flash windows win-test crosscheck clean firmware vendor-runtime vendor-check release usb-doc-test
+.PHONY: all build manager orbflash library test vet fmt check run desktop cdp reload flash windows win-test crosscheck clean firmware vendor-runtime vendor-check release dist winres usb-doc-test
 
 all: test build
 
@@ -210,6 +210,33 @@ release:
 	@echo "release $(VERSION):"
 	@cat $(RELEASE_DIR)/sha256sums.txt
 
+## dist: the downloadable archives, from a fresh `make release`, into bin/dist/:
+## orb-manager-<tag>-linux-amd64.tar.gz and -windows-amd64.zip anywhere, plus
+## -macos.dmg ("Orb Manager.app", universal) when run on a Mac, which has the lipo and
+## hdiutil the bundle needs. Nothing here signs: CI signs the staged Windows exes and
+## Mac app between packaging/dist.sh's stage and pack steps (.github/workflows/release.yml,
+## RELEASING.md). A local dist is an unsigned build for trying the packaging out.
+DIST_DIR ?= $(BIN_DIR)/dist
+DIST_PLATFORMS ?= linux windows $(if $(filter Darwin,$(shell uname -s)),macos,)
+dist: release
+	@rm -rf $(DIST_DIR)
+	@for p in $(DIST_PLATFORMS); do \
+	  packaging/dist.sh stage $$p $(RELEASE_DIR) $(VERSION) $(DIST_DIR) && \
+	  packaging/dist.sh pack $$p $(VERSION) $(DIST_DIR) || exit 1; \
+	done
+
+## winres: the Windows exe's icon and version resource, as rsrc_windows_amd64.syso in this
+## dir, which the next GOOS=windows build of the hub links in. Fetches go-winres, so it is
+## a separate, opt-in step: CI runs it before `make release`; a plain build skips it and
+## ships an exe with the default icon. WINVER sets the version (x.y.z).
+WINRES ?= github.com/tc-hib/go-winres@v0.3.3
+winres:
+	$(GO) run $(WINRES) simply --arch amd64 --manifest none \
+	  --icon packaging/windows/orb-manager.ico --product-name "Orb Manager" \
+	  --file-description "Orb Manager" --copyright "Copyright (c) Greg Takacs" \
+	  --original-filename orb-manager.exe \
+	  $(if $(WINVER),--file-version $(WINVER).0 --product-version $(WINVER).0,)
+
 ## windows: cross-compile the Windows binaries from this Linux/WSL host.
 ## Nothing here needs a Windows machine or a Windows toolchain: the hub is
 ## CGO_ENABLED=0, so the Go compiler just emits PE files. Copy the result to the
@@ -291,4 +318,4 @@ usb-doc-test:
 	python3 -m unittest discover -s scripts -p '*_test.py'
 
 clean:
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) rsrc_windows_*.syso

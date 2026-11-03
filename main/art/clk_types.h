@@ -84,6 +84,8 @@ enum {
     CLK_SHAPE_ARM  = 0,
     CLK_SHAPE_RING = 1,
     CLK_SHAPE_TEXT = 2,    /* glyphs from the string table: E4, refused until then */
+    CLK_SHAPE_DRUM = 3,    /* D43: a barrel seen side on: a strip of figures the OS rolls
+                            * through a window 2 x radius tall, foreshortened line by line */
     CLK_SHAPE__MAX
 };
 
@@ -109,6 +111,10 @@ typedef struct {
   uint16_t tourbillon_fps;  /* derived: 1000 / its frame time */
   clk_sprite_t tourbillon[CLK_TOURB_MAX];  /* the animated row's frames, one geometry */
   uint8_t  car_row;         /* the animated row's index in the row table; 0xFF none */
+  /* D43: a drum row's radius in px (0 = not a drum), by row index. Here and not in
+   * clk_row_t: the row record is copied whole into the clock app's memory (the app
+   * ABI), and only the OS draws a drum, so the app never needs it. */
+  uint16_t drum_r[CLK_ROW_MAX];
 } clk_theme_t;
 
 typedef struct {

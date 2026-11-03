@@ -264,7 +264,8 @@ bool orb_layers_touch(orb_layer_tab_t *t, int h)
     int idx;
     if (!t || !h_resolve(t, h, &idx)) { if (t) t->refuses++; return false; }
     lv_area_t box;
-    gfx_swept_box(&t->spr[idx], t->row[idx].ang_10, &box);
+    if (t->row[idx].drum) gfx_drum_box(&t->spr[idx], t->row[idx].drum_r, &box);   /* the window, not the strip */
+    else gfx_swept_box(&t->spr[idx], t->row[idx].ang_10, &box);
     gfx_mark_rows(box.y1, box.y2, box.x1, box.x2, false);
     return true;
 }
@@ -321,9 +322,12 @@ int orb_layers_jobs(const orb_layer_tab_t *t, const uint8_t *theme_base,
                                                   * mapped is a dial with no
                                                   * theme: draw nothing, and
                                                   * nothing is what it draws.  */
-        if (gfx_paint_ctx_init(&jc[n], &t->spr[i], base, t->row[i].ang_10,
+        if (gfx_paint_ctx_init(&jc[n], &t->spr[i], base, t->row[i].drum ? 0 : t->row[i].ang_10,
                                t->row[i].role)) {
             jc[n].smooth = t->row[i].smooth != 0;
+            /* D43: a drum's job is its window, the strip rolled by its phase */
+            if (t->row[i].drum && !gfx_paint_ctx_drum(&jc[n], &t->spr[i], t->row[i].drum_r,
+                                                     t->row[i].drum_phase)) continue;
             n++;                                  /* undrawable is skipped, never
                                                   * guessed at: the job list is
                                                   * the frame's contract.       */

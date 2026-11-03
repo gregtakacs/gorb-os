@@ -221,7 +221,7 @@ static const char *cadence_check(const orb_bundle_elem_t *e)
 static const char *row_check(const orb_bundle_elem_t *e, uint16_t slot)
 {
     if (e->kind >= CLK_SHAPE__MAX)
-        return reject("row %u is shape %u: the dial knows %u (arm, ring, text)",
+        return reject("row %u is shape %u: the dial knows %u (arm, ring, text, drum)",
                       (unsigned)slot, (unsigned)e->kind, (unsigned)CLK_SHAPE__MAX);
     if (e->kind == CLK_SHAPE_TEXT)
         return reject("row %u is a text row: the string table it reads lands with "
@@ -266,7 +266,7 @@ static const char *row_check(const orb_bundle_elem_t *e, uint16_t slot)
         /* D42 ruling 5: a wrap starts the next unit at P0 with no visible jump, which
          * only a whole turn with no travel can do. Refused here as well as at design
          * time, so a theme made by any other means meets the same door. */
-        if (e->end == CLK_END_WRAP &&
+        if (e->end == CLK_END_WRAP && e->kind != CLK_SHAPE_DRUM &&
             ((e->span != TURN_10 && e->span != -TURN_10) || e->dx || e->dy))
             return reject("row %u wraps after turning %d and travelling (%d,%d): a wrap "
                           "needs a whole turn and no travel", (unsigned)slot,
@@ -283,6 +283,29 @@ static const char *row_check(const orb_bundle_elem_t *e, uint16_t slot)
     if (e->n_frames > 1u && !e->delay)
         return reject("row %u animates %u frames and names no frame time",
                       (unsigned)slot, (unsigned)e->n_frames);
+    /* D43: a drum rolls its strip through a window 2 x radius tall; one turn of the drum
+     * is its whole strip, so the travel is the strip's height, either way round, and a
+     * wrap starts the next unit on the same figure the last one ended on. */
+    if (e->kind == CLK_SHAPE_DRUM) {
+        if (e->src == CLK_SRC_NONE)
+            return reject("row %u is a drum that never rolls: a still drum is plate art",
+                          (unsigned)slot);
+        if (e->span || e->zero || e->dx)
+            return reject("row %u is a drum that turns or travels across: a drum only rolls",
+                          (unsigned)slot);
+        if (e->radius < 2 || 2u * e->radius > PANEL_PX)
+            return reject("row %u is a drum of radius %u: it needs 2..%u px", (unsigned)slot,
+                          (unsigned)e->radius, (unsigned)(PANEL_PX / 2));
+        if (e->dy != (int16_t)e->h && e->dy != -(int16_t)e->h)
+            return reject("row %u rolls %d px over a strip %u tall: one turn of a drum is "
+                          "its whole strip", (unsigned)slot, (int)e->dy, (unsigned)e->h);
+        if (e->end != CLK_END_WRAP)
+            return reject("row %u is a drum that does not wrap: a drum turns on past its "
+                          "last figure to its first", (unsigned)slot);
+        if (e->n_frames != 1u || (e->flags & AUX_F_SHADOW))
+            return reject("row %u is a drum with frames or a shadow: a drum is one strip",
+                          (unsigned)slot);
+    }
     if ((e->flags & AUX_F_SHADOW) && (e->n_frames != 1u || e->src || e->cadence))
         return reject("row %u is a shadow twin with a motion of its own: a twin takes "
                       "its hand's whole pose", (unsigned)slot);
@@ -1014,6 +1037,12 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         r->flags     = (e.flags & AUX_F_SHADOW) ? CLK_FLAG_AUX_SHADOW : 0u;
         r->delay_ms  = e.delay;
         r->parent_row = row_par[at_aux[slot]];   /* an element index + 1 until below */
+        if (e.kind == CLK_SHAPE_DRUM) {
+            if (r->parent_row)
+                return reject("a drum at slot %u rides another row: a drum rolls on its own "
+                              "axle", (unsigned)slot);
+            t->drum_r[ri] = e.radius;            /* the OS's: the app never draws a drum */
+        }
         row_of_elem[at_aux[slot]] = (uint8_t)(ri + 1u);
         if (e.n_frames > 1u) {
             /* The carriage: every plane of the row's frame window is one frame of the

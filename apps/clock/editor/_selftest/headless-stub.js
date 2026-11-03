@@ -61,7 +61,7 @@ function stubCtx() {
     strokeText(t) { if (this.ops.length < 400) this.ops.push({ op: 'fillText', text: String(t) }); this._audit(t); },
     // the legibility audit (text-audit.js): every glyph run the engine sets, at the size it lands
     _audit(t) {
-      if (!global.__TEXT_AUDIT || !String(t).trim()) return;
+      if (!global.__TEXT_AUDIT || !String(t).trim() || this._glimpse) return;   // a drum's off-front figures are glimpses, not readings
       const px = parseFloat((String(this.font).match(/([\d.]+)px/) || [])[1] || 0), k = Math.sqrt(Math.abs(m.a * m.d - m.b * m.c));
       const at = (new Error().stack.split('\n').slice(2).find((l) => /watch-engine|dial-renderer/.test(l)) || '').trim();
       global.__TEXT_AUDIT.push({ text: String(t), px: px * k, at });

@@ -1164,6 +1164,8 @@ static const clk_sprite_t *row_spr(uint16_t i)
 /* The box a row covers at a pose. */
 static void row_mark_box(uint16_t i, int32_t ang_10, int16_t ox, int16_t oy, lv_area_t *out)
 {
+    /* D43: a drum stays in its window whatever it shows; its travel is the strip's roll */
+    if (i < CLK_ROW_MAX && clk_theme.drum_r[i]) { gfx_drum_box(row_spr(i), clk_theme.drum_r[i], out); return; }
     clk_sprite_t p;
     pose_spr(row_spr(i), ox, oy, &p);
     gfx_swept_box(&p, ang_10, out);
@@ -1237,6 +1239,9 @@ static void rows_update(void)
         st->ang_10 = a;
         st->ox = ox[i]; st->oy = oy[i];
         if (a != ROW_HIDDEN) pose_spr(&g->rows[i].spr, ox[i], oy[i], &st->pose);
+        /* D43: only the compositor draws a drum (the classic widget would slide the
+         * strip, not roll it); a theme with one is refused past the layer cap at bake */
+        if (clk_theme.drum_r[i]) { if (st->obj) lv_obj_set_hidden(st->obj, true); continue; }
         if (!st->obj) continue;
         /* One pose, two setters, with LVGL's own invalidation off: a rotation setter
          * invalidates the FULL transformed box of both poses (the 36-48 ms a rotating
@@ -1655,13 +1660,21 @@ static void clock_layers_refresh(void)
                 /* A travelled pose reaches the compositor as the plate at its placed
                  * origin moved by the update pass's own figure — the number the marks
                  * and the widget read — and turned about its moved pivot. */
-                if (st->ox || st->oy) {
+                const uint16_t drum_r = r->gidx < CLK_ROW_MAX ? clk_theme.drum_r[r->gidx] : 0;
+                if (drum_r) {
+                    /* D43: a drum stays where it is placed and rolls its strip by the
+                     * travel the app posed, the same number its marks read */
+                    d.x = 0; d.y = 0;
+                    d.drum = 1; d.drum_r = (int16_t)drum_r; d.drum_phase = st->oy;
+                } else if (st->ox || st->oy) {
                     d.x = (int16_t)(r->x + st->ox);
                     d.y = (int16_t)(r->y + st->oy);
+                    d.drum = 0;
                 } else {
                     d.x = 0; d.y = 0;   /* the resolver's own placement */
+                    d.drum = 0;
                 }
-                d.ang_10 = (int16_t)st->ang_10;
+                d.ang_10 = drum_r ? 0 : (int16_t)st->ang_10;
                 if (r->gidx == clk_theme.car_row && clk_theme.tourbillon_n) {
                     /* The carriage, at the frame the wall clock just picked — the
                      * frame tourbillon_advance marks against. */

@@ -80,7 +80,13 @@ typedef struct orb_layer_desc {
                               * bake's EF_SMOOTH verdict). Was the first pad byte,
                               * so the layout holds and an older caller's zero reads
                               * as nearest. */
-    uint8_t     pad2[2];
+    uint8_t     drum;        /* D43: 1 = a drum row: the art is a strip of figures
+                              * rolled through a window art.w x 2*drum_r at the row's
+                              * placement (pivot = the window's centre), scrolled by
+                              * drum_phase px and foreshortened line by line */
+    uint8_t     pad2;
+    int16_t     drum_r;      /* the drum's radius, px                          */
+    int16_t     drum_phase;  /* the strip row under the window's centre, px    */
 } orb_layer_desc_t;
 
 /* Rows per app. Sixteen, since Migration 2 commit 3. Eight was "a hand, a ring,

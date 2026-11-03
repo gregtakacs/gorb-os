@@ -767,8 +767,8 @@ CLASS_SOUND = 10
 # The shape says nothing about motion: an arm and a ring move by the same two poses. A
 # text row draws glyphs from the string table, which lands with E4; until then the
 # reader refuses it rather than draw a row it cannot.
-SHAPES = ("arm", "ring", "text")
-SHAPE_ARM, SHAPE_RING, SHAPE_TEXT = 0, 1, 2
+SHAPES = ("arm", "ring", "text", "drum")
+SHAPE_ARM, SHAPE_RING, SHAPE_TEXT, SHAPE_DRUM = 0, 1, 2, 3   # D43: drum, a barrel the OS rolls
 # D42 §3: what a row does past the end of its domain (clk_types.h CLK_END_*). A wrap
 # starts the next unit at P0 with no visible jump, so it is legal only where P1 looks
 # like P0: a whole turn (±3600 tenths) and no travel. A flyback returns to P0 when the
@@ -975,10 +975,27 @@ def check_element(rec, where="elem"):
             if abs(dx) > PANEL_PX or abs(dy) > PANEL_PX:
                 raise ValueError("%s: a travel of (%d,%d) px cannot stay on a %d px panel"
                                  % (where, dx, dy, PANEL_PX))
-            if end == END_WRAP and (abs(span) != TURN_10 or dx or dy):
+            if end == END_WRAP and kind != SHAPE_DRUM and (abs(span) != TURN_10 or dx or dy):
                 raise ValueError("%s.end: a wrap starts the next unit at P0, so P1 must "
                                  "look like P0 — a whole turn (±%d) and no travel, not "
                                  "span %d and (%d,%d)" % (where, TURN_10, span, dx, dy))
+        if kind == SHAPE_DRUM:
+            # D43: orb_clock3.c's row_check, rule for rule: a drum rolls its strip (one turn
+            # of the drum) through a window 2 x radius tall, and wraps onto its first figure
+            radius, h = int(rec.get("radius", 0)), int(rec["h"])
+            if SOURCES[src] == "none":
+                raise ValueError("%s: a drum that never rolls is plate art" % where)
+            if span or zero or dx:
+                raise ValueError("%s: a drum only rolls; it neither turns nor travels across" % where)
+            if not 2 <= radius <= PANEL_PX // 2:
+                raise ValueError("%s.radius: a drum of radius %d needs 2..%d px" % (where, radius, PANEL_PX // 2))
+            if abs(dy) != h:
+                raise ValueError("%s.dy: a drum rolls %d px over a strip %d tall; one turn is the "
+                                 "whole strip" % (where, dy, h))
+            if end != END_WRAP:
+                raise ValueError("%s.end: a drum turns on past its last figure to its first (wrap)" % where)
+            if int(rec["n_frames"]) != 1 or int(rec.get("flags", 0)) & 16:
+                raise ValueError("%s: a drum is one strip, with no frames and no shadow" % where)
         if int(rec["w"]) and int(rec["h"]):
             px, py = int(rec["pivot_x"]), int(rec["pivot_y"])
             w, h = int(rec["w"]), int(rec["h"])
@@ -1471,7 +1488,7 @@ if __name__ == "__main__":
     assert [n for n, _t in ELEMENT_FIELDS[25:]] == \
         ["cadence", "cad_arg", "ease", "dx", "dy", "end", "digit", "str"], "D41/D42's append moved"
     assert len(CLASS_NAMES) == 11, "class vocabulary moved; orb_assets.h's bound must agree"
-    assert (len(SHAPES), len(ENDS), len(DIGITS), len(CADENCES)) == (3, 3, 5, 7), \
+    assert (len(SHAPES), len(ENDS), len(DIGITS), len(CADENCES)) == (4, 3, 5, 7), \
         "the moving row's vocabulary moved; clk_types.h must agree"
     assert class_id("hand") == CLASS_HAND and class_id("nope") is None
     assert class_id("aux") == CLASS_AUX == 8, "D34's class must append at 8, never move"
@@ -1506,7 +1523,7 @@ if __name__ == "__main__":
         assert check_element(_ok, "sentinel-ok") == _ok
     assert check_table([_e, _ax])
     for _bad, _why in (
-        (dict(_ax, kind=3), "not a row's shape"),
+        (dict(_ax, kind=4), "not a row's shape"),
         (dict(_ax, kind=SHAPE_TEXT), "string table"),
         (dict(_ax, src=SOURCES.index("text")), "no input"),
         (dict(_ax, cadence=0, cad_arg=0), "names when it moves"),

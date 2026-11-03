@@ -62,8 +62,11 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   const bar = face([{ id: 'b', type: 'wheel', host: 'dial', angle: 90, dist: 120, size: 22, form: 'barrel', shows: 'date', digit: 'units' }, { id: 'bk', type: 'cutout', host: 'b' }]).lay;
   ok(bar.wheels[0].form === 'barrel' && near(bar.dialHoles[0].x, bar.wheels[0].x) && near(bar.dialHoles[0].y, bar.wheels[0].y), 'a barrel reads at its front, where its cutout stands');
   ok(face([Object.assign({}, base, { form: 'barrel' })]).comps(new Date(2026, 10, 2), null).dial, 'and draws');
+  // D43: a rolling barrel is a drum row the OS rolls; turned or seen whole it is refused by name
   const rb = B.wheelPlan3([{ id: 'b', type: 'wheel', form: 'barrel', shows: 'date', cadence: 'smooth' }]);
-  ok(!rb.rows.length && /barrel/.test(rb.refuses[0]), 'a rolling barrel is refused by name; a snapping one plates', rb.refuses[0]);
+  ok(rb.rows.length === 1 && rb.rows[0].drum && rb.rows[0].span === 0 && rb.rows[0].zero === 0 && rb.rows[0].cadence === 'roll' && rb.rows[0].foff === 0, 'a rolling barrel plans a drum row', JSON.stringify(rb.rows[0]));
+  const rbt = B.wheelPlan3([{ id: 'b', type: 'wheel', form: 'barrel', shows: 'date', cadence: 'smooth', trot: 30 }, { id: 'c', type: 'wheel', form: 'barrel', shows: 'date', exposed: true }]);
+  ok(!rbt.rows.length && /level axle/.test(rbt.refuses[0]) && /cutout/.test(rbt.refuses[1]), 'a turned drum and a drum seen whole are refused by name', rbt.refuses.join(' | '));
 }
 // ---- Layers: a disc to another face, a cutout to another wheel ----------------------------------
 {

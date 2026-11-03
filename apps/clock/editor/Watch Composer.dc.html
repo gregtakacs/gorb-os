@@ -3751,6 +3751,18 @@ class Component extends DCLogic {
     const rows = [], bands = [];
     for (const r of order) {
       const w = byId[String(r.id)], gx0 = C + (w.x - C) * kP, gy0 = C + (w.y - C) * kP, R = w.r * kP;
+      if (r.drum) {
+        /* D43: a drum ships its strip; its window (strip wide, 2r tall) is centred where the
+         * barrel stands, the pivot on the window's centre, and the cover over it carries its
+         * shading (drawWheel's fill path draws it). */
+        const st = F.wheelStrip(r.id, kP, r.foff);
+        if (!st) return { refuse: 'the drum \u201c' + r.id + '\u201d has no strip to roll' };
+        const sx = st.canvas.getContext('2d').getImageData(0, 0, st.w, st.h).data;
+        const x0 = Math.round(gx0 - st.w / 2), y0 = Math.round(gy0) - st.r;
+        rows.push(Object.assign({}, r, { x: x0, y: y0, w: st.w, h: st.h, pivot_x: Math.floor(st.w / 2), pivot_y: st.r, radius: st.r, rgba: new Uint8Array(sx.buffer.slice(0)) }));
+        bands.push({ x: gx0, y: gy0, r0: 0, r1: Math.hypot(st.w / 2, st.r) + 2 });
+        continue;
+      }
       // the band: every radius at which some cutout shows a wheel, inside this disc
       let r0 = Infinity, r1 = -1;
       for (let y = Math.max(0, Math.floor(gy0 - R)); y <= Math.min(W - 1, Math.ceil(gy0 + R)); y++)
@@ -4458,7 +4470,7 @@ class Component extends DCLogic {
         const nc = D.comps.filter((c) => c.type === 'cutout' && c.host === sel.id).length;
         selFields.push(Nt('', (nc ? nc + ' cutout' + (nc > 1 ? 's read' : ' reads') + ' it' : 'No cutout reads it yet: add one from Parts while this wheel is selected') +
           '. ' + ((sel.form === 'barrel' && window.GorbBake && window.GorbBake.wheelTurns3 && window.GorbBake.wheelTurns3(sel))
-            ? 'A barrel that rolls cannot ship yet: the orb would need to draw a drum. Let it snap, and it ships a true picture per figure.'
+            ? 'Rolling, it ships as a drum: one strip of its figures the orb rolls through the window, foreshortened line by line, with the shading on the face above it. Each roll repaints only the window, so a drum is cheap. Keep its Drum turn at 0 and give it a cutout.'
             : (window.GorbBake && window.GorbBake.wheelTurns3 && window.GorbBake.wheelTurns3(sel))
             ? 'Moving between figures, it turns on the orb as its own row under the face: every tick of a sweep across it repaints the disc turned, so each such wheel costs the dial frame rate.'
             : 'Snapping, it ships a picture per figure at its cutouts, as a window did: no frame-rate cost.') + (moon ? ' Give it a Moon cutout to read the phase through the humps.' : '')));

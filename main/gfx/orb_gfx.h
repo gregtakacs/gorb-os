@@ -64,7 +64,17 @@ typedef struct gfx_paint_ctx {
     uint8_t  role;                    /* paint bucket for the fps line */
     bool     rot;                     /* false == identity (ang == 0) path */
     bool     smooth;                  /* rotated path samples 2x2 bilinear (EF_SMOOTH) */
+    bool     drum;                    /* D43: a drum row (gfx_paint_ctx_drum)           */
+    int32_t  drum_cy, drum_r, drum_phase;   /* window centre row, radius, strip scroll px */
+    float    drum_c;                  /* strip px per radian of the drum: h / 2pi       */
 } gfx_paint_ctx_t;
+
+/* D43: turn an initialised (unrotated) ctx into a drum's: the strip rolls through the
+ * window spr.w x 2r centred on the sprite's centre, the strip row `phase` under the
+ * window's middle line. False when the drum cannot be drawn (no radius). */
+bool gfx_paint_ctx_drum(gfx_paint_ctx_t *pc, const clk_sprite_t *spr, int32_t r, int32_t phase);
+/* The screen box a drum's window covers (for marks). */
+void gfx_drum_box(const clk_sprite_t *spr, int32_t r, lv_area_t *out);
 
 /* The per-tick row mark set. The commit loop reads these directly through the
  * returned view (no call in its per-row loops); only marking and clearing go

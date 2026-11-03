@@ -49,7 +49,10 @@ const VECTORS = [
   // ---- 2. the shipped Skeleton, priced against its own glass ----
   ['Skeleton: rung 4 from its 4 fps bank and 4 bps sweep', (G) => skel(G).rung === 4],
   ['Skeleton: est 4 fps, as measured', (G) => skel(G).est_fps === 4],
-  ['Skeleton: flush within 15% of the measured 95 ms', (G) => Math.abs(skel(G).flush_ms - 95) <= 95 * 0.15],
+  // re-measured 2026-11-03 on orb-B: the default re-baked with its design and the hour/minute
+  // always smoothed (ruling 10) flushes at 125 ms (store_check quiet, the per-second fps line;
+  // the pre-ruling bake was 95 ms), against an estimate of ~115
+  ['Skeleton: flush within 15% of the measured 125 ms', (G) => Math.abs(skel(G).flush_ms - 125) <= 125 * 0.15],
   ['Skeleton: priced as a delta bank', (G) => skel(G).carrier === 'delta bank'],
   ['Skeleton: rung 4 can never take smoothing', (G) => skel(G).smooth === false],
   // ---- 3. synthetic still dials: the cap, the price, the grant ----

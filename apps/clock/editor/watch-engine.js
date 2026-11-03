@@ -997,6 +997,30 @@
         // P5d.3n: the laser lens they are read at, a part of its own on the crystal (across all three rings)
         { id: 'x1', type: 'index', host: 'w1', istyle: 'lens', color: '#ff2bd6' },
       ] } },
+    // D43: a car's instrument. A retrograde seconds needle sweeps a 240-degree speedometer fan,
+    // and an odometer of six drums below it rolls the time: the seconds units continuously, the
+    // seconds tens on the carry (an odometer's roll), minutes and hours jumping with a short ease
+    speedster: { name: 'Speedster', blurb: 'Speedometer seconds needle over an odometer of rolling hour, minute and second drums', hands: 'baton', handFinish: 'red', caseMetal: 'gunmetal', design: {
+      print: 'none', numerals: 'none', font: 'michroma', surface: 'carbon', color: 'black', aging: 0, stains: 0, dust: 0, comps: [
+        { id: 's1', type: 'subdial', host: 'dial', angle: 0, dist: 0, rot: 0, size: 190, style: 'carbon', scale: 'seconds', open: 0, form: 'fan', fanStart: 240, fanSpan: 240, tstyle: 'bold', tcolor: '#f2f2f2', tfont: 'michroma' },
+        { id: 'h1', type: 'hand', host: 's1', shows: 'second', finish: 'red', wid: 2, motion: { cadence: 'sweep' } },
+        { id: 'd1', type: 'wheel', host: 's1', angle: 217.9, dist: 139.3, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'hours24', digit: 'tens', ease: 400, wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
+        { id: 'd1k', type: 'cutout', host: 'd1', w: 24, h: 34, style: 'plain' },
+        { id: 'd2', type: 'wheel', host: 's1', angle: 207.2, dist: 123.7, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'hours24', digit: 'units', ease: 400, wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
+        { id: 'd2k', type: 'cutout', host: 'd2', w: 24, h: 34, style: 'plain' },
+        { id: 'd3', type: 'wheel', host: 's1', angle: 187.5, dist: 111.0, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'minute', digit: 'tens', ease: 400, wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
+        { id: 'd3k', type: 'cutout', host: 'd3', w: 24, h: 34, style: 'plain' },
+        { id: 'd4', type: 'wheel', host: 's1', angle: 172.5, dist: 111.0, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'minute', digit: 'units', ease: 400, wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
+        { id: 'd4k', type: 'cutout', host: 'd4', w: 24, h: 34, style: 'plain' },
+        { id: 'd5', type: 'wheel', host: 's1', angle: 152.8, dist: 123.7, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'second', digit: 'tens', cadence: 'smooth', wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
+        { id: 'd5k', type: 'cutout', host: 'd5', w: 24, h: 34, style: 'plain' },
+        { id: 'd6', type: 'wheel', host: 's1', angle: 142.1, dist: 139.3, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'second', digit: 'units', cadence: 'smooth', wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
+        { id: 'd6k', type: 'cutout', host: 'd6', w: 24, h: 34, style: 'plain' },
+        { id: 'f1', type: 'flare', host: 's1', angle: 197.9, dist: 115.6, rot: 0, size: 10, style: 'print', icon: 'text', text: ':', font: 'michroma', weight: 'bold', color: '#f2f2f2' },
+        { id: 'f2', type: 'flare', host: 's1', angle: 162.1, dist: 115.6, rot: 0, size: 10, style: 'print', icon: 'text', text: ':', font: 'michroma', weight: 'bold', color: '#f2f2f2' },
+        { id: 'f3', type: 'flare', host: 's1', angle: 0, dist: 58, rot: 0, size: 7, style: 'print', icon: 'text', text: 'SPEEDSTER', font: 'michroma', weight: 'bold', spacing: 0.4, color: '#ff3b30' },
+        { id: 'f4', type: 'flare', host: 's1', angle: 180, dist: 162, rot: 0, size: 5, style: 'print', icon: 'text', text: 'HRS   MIN   SEC', font: 'michroma', weight: 'bold', spacing: 0.3, color: '#8c8c8c' },
+      ] } },
     perpetual: { name: 'Perpetual calendar', blurb: 'Day · date · month subdials · moon at 6', hands: 'baton', handFinish: 'gilt', design: {
       print: 'baton', comps: [
         { id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 106, rot: 0, size: 58, style: 'azure', scale: 'month', open: 0 },
@@ -2283,7 +2307,15 @@
       // a drum seen side on, its axis across: the figure at the front reads flat, the ones
       // rolling over the top and under the bottom shrink by the cosine and fall into shadow
       const R = w.r, L = w.len; ctx.rotate(w.trot);
-      if (w.fill) { ctx.fillStyle = w.fill; ctx.fillRect(-L / 2, -R, L, 2 * R); ctx.restore(); return; }
+      // the shading over the curve: drawn over the flat fill too, so the bake's two fill renders
+      // fold it into the still cover above a drum (the orb rolls the figures, the cover shades them)
+      const shade = () => {
+        const k = 0.25 + 0.6 * w.edge, g = ctx.createLinearGradient(0, -R, 0, R);
+        g.addColorStop(0, 'rgba(0,0,0,' + k + ')'); g.addColorStop(0.3, 'rgba(0,0,0,0)'); g.addColorStop(0.5, 'rgba(255,255,255,' + (0.08 * w.edge) + ')');
+        g.addColorStop(0.7, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,' + k + ')');
+        ctx.fillStyle = g; ctx.fillRect(-L / 2, -R, L, 2 * R);
+      };
+      if (w.fill) { ctx.fillStyle = w.fill; ctx.fillRect(-L / 2, -R, L, 2 * R); shade(); ctx.restore(); return; }
       ctx.fillStyle = bg; ctx.fillRect(-L / 2, -R, L, 2 * R);
       ctx.font = wheelFontOf(w, w.fs); ctx.fillStyle = ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.save(); ctx.beginPath(); ctx.rect(-L / 2, -R, L, 2 * R); ctx.clip();
@@ -2291,13 +2323,12 @@
         let ph = ((i - idx) * TAU) / n; ph = ((ph + Math.PI) % TAU + TAU) % TAU - Math.PI;
         if (Math.abs(ph) >= Math.PI / 2) continue;
         const l = sp.lab(i); if (!l) continue;
-        ctx.save(); ctx.translate(0, w.dir * R * Math.sin(ph)); ctx.scale(1, Math.max(0.02, Math.cos(ph))); ctx.fillText(l, 0, w.fs * 0.05); ctx.restore();
+        // a figure off the front is a glimpse of the drum rolling, not a reading: the legibility
+        // audit (the selftest's context stub) reads _glimpse and holds only the front one to the floor
+        ctx.save(); ctx._glimpse = Math.abs(ph) > Math.PI / n; ctx.translate(0, w.dir * R * Math.sin(ph)); ctx.scale(1, Math.max(0.02, Math.cos(ph))); ctx.fillText(l, 0, w.fs * 0.05); ctx._glimpse = false; ctx.restore();
       }
       ctx.restore();
-      const k = 0.25 + 0.6 * w.edge, g = ctx.createLinearGradient(0, -R, 0, R);
-      g.addColorStop(0, 'rgba(0,0,0,' + k + ')'); g.addColorStop(0.3, 'rgba(0,0,0,0)'); g.addColorStop(0.5, 'rgba(255,255,255,' + (0.08 * w.edge) + ')');
-      g.addColorStop(0.7, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,' + k + ')');
-      ctx.fillStyle = g; ctx.fillRect(-L / 2, -R, L, 2 * R);
+      shade();
       ctx.restore(); return;
     }
     const ring = w.form === 'ring' ? w.ri : 0, rot = ref - (w.dir * idx * TAU) / n;
@@ -4031,6 +4062,25 @@
       const w = lay.wheels.find((q) => String(q.id) === String(id)); if (!w) return null;
       setFace(fontKey); drawWheel(ctx, w, null, w.host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === w.host) || {}).en || en, pal, idx);
       return w;
+    };
+    /* D43: a drum's art, the barrel's figures laid flat on one strip a whole turn tall (2 pi r
+     * at scale k), slot s holding figure (dir * s + foff) mod n centred on row s * pitch and
+     * wrapping at the ends. The orb shows strip row phase + (h / 2 pi) asin(y / r) on each
+     * line of the window, which is the barrel drawWheel draws: same figures, same squash. */
+    F.wheelStrip = (id, k, foff) => {
+      const w = lay.wheels.find((q) => String(q.id) === String(id)); if (!w || w.form !== 'barrel') return null;
+      const sp = w.spec, n = sp.n, R = Math.max(2, Math.round(w.r * k)), W = Math.max(1, Math.round(w.len * k)), H = Math.round(TAU * R), pitch = H / n;
+      const dark = w.bg ? false : !!(w.host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === w.host) || {}).en || en).dark;
+      const bg = w.bg && w.bg !== 'auto' ? w.bg : dark ? '#1b1916' : '#f2ecdd', ink = w.ink && w.ink !== 'auto' ? w.ink : dark ? '#ecdfbf' : '#18120b';
+      const c = cv(W, H), x = c.getContext('2d');
+      setFace(fontKey);
+      x.fillStyle = bg; x.fillRect(0, 0, W, H);
+      x.font = wheelFontOf(w, w.fs * k); x.fillStyle = ink; x.textAlign = 'center'; x.textBaseline = 'middle';
+      for (let s2 = 0; s2 < n; s2++) {
+        const l = sp.lab((((w.dir * s2 + (foff | 0)) % n) + n) % n); if (!l) continue;
+        for (const dy of [-H, 0, H]) x.fillText(l, W / 2, s2 * pitch + dy + w.fs * k * 0.05);
+      }
+      return { canvas: c, w: W, h: H, r: R };
     };
     F.shadow = SH;
     // noSh renders the hands with every cast shadow alpha-zeroed and nothing else

@@ -278,6 +278,7 @@ bool gfx_paint_ctx_init(gfx_paint_ctx_t *pc, const clk_sprite_t *spr,
     if (!gfx_sprite_drawable(spr)) return false;
     pc->role = role;
     pc->smooth = false;               /* nearest unless the job builder says the row smooths */
+    pc->drum = false;                 /* a drum only when the job builder makes it one */
 
     pc->col = (const uint16_t *)(base + spr->color_off);
     pc->alp = base + spr->color_off
@@ -319,6 +320,62 @@ bool gfx_paint_ctx_init(gfx_paint_ctx_t *pc, const clk_sprite_t *spr,
     return true;
 }
 
+/* D43: a drum. The strip (spr.w x spr.h, one turn of the drum) rolls past a window
+ * spr.w x 2r whose middle line sits on the sprite's centre. A screen line yy from that
+ * middle sees the drum's surface at angle asin(yy / r), so it shows the strip row
+ * phase + (h / 2pi) * asin(yy / r), wrapped: the figure under the middle reads flat and
+ * the ones rolling over the top and under the bottom foreshorten exactly as a barrel
+ * does. The shading over the curve is not here: it is screen-locked, so the bake folds
+ * it into the still cover above the drum, and the drum itself costs one copy per pixel. */
+void gfx_drum_box(const clk_sprite_t *spr, int32_t r, lv_area_t *out)
+{
+    out->x1 = (int32_t)spr->centerx - (int32_t)spr->pivotx;
+    out->x2 = out->x1 + (int32_t)spr->w - 1;
+    out->y1 = (int32_t)spr->centery - r;
+    out->y2 = (int32_t)spr->centery + r - 1;
+}
+
+bool gfx_paint_ctx_drum(gfx_paint_ctx_t *pc, const clk_sprite_t *spr, int32_t r, int32_t phase)
+{
+    if (r < 2 || !pc->h) return false;
+    lv_area_t box;
+    gfx_drum_box(spr, r, &box);
+    pc->drum = true;
+    pc->rot = false;
+    pc->smooth = false;
+    pc->drum_cy = (int32_t)spr->centery;
+    pc->drum_r = r;
+    pc->drum_phase = phase;
+    pc->drum_c = (float)pc->h / 6.28318531f;
+    pc->posx = box.x1;
+    pc->xa_lim = box.x2;
+    pc->bx1 = box.x1; pc->by1 = box.y1;
+    pc->bx2 = box.x2; pc->by2 = box.y2;
+    return true;
+}
+
+static void paint_drum_row(const gfx_paint_ctx_t *pc, int32_t y, int32_t xa, int32_t xb,
+                           uint16_t *row)
+{
+    const float yy = ((float)(y - pc->drum_cy) + 0.5f) / (float)pc->drum_r;
+    if (yy <= -1.0f || yy >= 1.0f) return;
+    const int32_t h = (int32_t)pc->h;
+    int32_t sy = pc->drum_phase + (int32_t)floorf(pc->drum_c * asinf(yy) + 0.5f);
+    sy %= h;
+    if (sy < 0) sy += h;
+    if (xa < pc->posx) xa = pc->posx;
+    if (xb > pc->xa_lim) xb = pc->xa_lim;
+    if (xa > xb) return;
+    uint32_t n = 0, si = (uint32_t)sy * pc->w + (uint32_t)(xa - pc->posx);
+    for (int32_t x = xa; x <= xb; x++, si++) {
+        const uint8_t a = pc->alp[si];
+        if (!a) continue;
+        blend_px(&row[x], pc->col[si], a, pc->bmode);
+        n++;
+    }
+    if (pc->role < CLK_PAINT_ROLES) s_hk_role_blend[pc->role] += n;
+}
+
 /* Composite one layer into ONE already-staged device row, over the caller's
  * [xa..xb] intersected with the layer's swept box (never outside it: those
  * pixels already hold a correct composite and re-blending them would
@@ -335,6 +392,7 @@ void gfx_paint_row_ctx(const gfx_paint_ctx_t *pc, int32_t y,
     if (xa < pc->bx1) xa = pc->bx1;
     if (xb > pc->bx2) xb = pc->bx2;
     if (xa > xb) return;
+    if (pc->drum) { paint_drum_row(pc, y, xa, xb, row); return; }
 
     if (!pc->rot) {
         /* ---- static path (ang == 0): dial, glass, hub ----

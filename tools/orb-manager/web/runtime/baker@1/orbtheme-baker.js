@@ -2076,8 +2076,8 @@
   // D42 (theme_schema.SHAPES / ENDS / DIGITS, clk_types.h CLK_SHAPE_* / CLK_END_* /
   // CLK_DIGIT_*): what an AUX row's art is, what it does past its domain, and which
   // digit of its source it reads.
-  var SHAPES = ['arm', 'ring', 'text'];
-  var SHAPE_ARM = 0, SHAPE_RING = 1, SHAPE_TEXT = 2;
+  var SHAPES = ['arm', 'ring', 'text', 'drum'];
+  var SHAPE_ARM = 0, SHAPE_RING = 1, SHAPE_TEXT = 2, SHAPE_DRUM = 3;   // D43: drum, a barrel the OS rolls
   var ENDS = ['wrap', 'flyback', 'hold'];
   var END_WRAP = 0, END_FLYBACK = 1, END_HOLD = 2;
   var DIGITS = ['whole', 'units', 'tens', 'hundreds', 'thousands'];   // D43 P5d.3: a year's four
@@ -2279,10 +2279,20 @@
         if (Math.abs(dx) > PANEL_PX || Math.abs(dy) > PANEL_PX)
           throw new Error(where + ': a travel of (' + dx + ',' + dy + ') px cannot stay on a ' +
             PANEL_PX + ' px panel');
-        if (end === END_WRAP && (Math.abs(span) !== TURN_10 || dx || dy))
+        if (end === END_WRAP && kind !== SHAPE_DRUM && (Math.abs(span) !== TURN_10 || dx || dy))
           throw new Error(where + '.end: a wrap starts the next unit at P0, so P1 must look like P0 ' +
             '— a whole turn (±' + TURN_10 + ') and no travel, not span ' + span + ' and (' +
             dx + ',' + dy + ')');
+      }
+      if (kind === SHAPE_DRUM) {
+        // D43: theme_schema.check_element's drum, rule for rule (and orb_clock3.c row_check's)
+        var radius = Math.trunc(rec.radius | 0), sh = Math.trunc(rec.h | 0);
+        if (SOURCES[src] === 'none') throw new Error(where + ': a drum that never rolls is plate art');
+        if (span || zero || dx) throw new Error(where + ': a drum only rolls; it neither turns nor travels across');
+        if (!(radius >= 2 && radius <= PANEL_PX / 2)) throw new Error(where + '.radius: a drum of radius ' + radius + ' needs 2..' + (PANEL_PX / 2) + ' px');
+        if (Math.abs(dy) !== sh) throw new Error(where + '.dy: a drum rolls ' + dy + ' px over a strip ' + sh + ' tall; one turn is the whole strip');
+        if (end !== END_WRAP) throw new Error(where + '.end: a drum turns on past its last figure to its first (wrap)');
+        if (nf !== 1 || (flags & AUX_F_SHADOW3)) throw new Error(where + ': a drum is one strip, with no frames and no shadow');
       }
       var pw = Math.trunc(rec.w | 0), ph = Math.trunc(rec.h | 0);
       var ppx = Math.trunc(rec.pivot_x | 0), ppy = Math.trunc(rec.pivot_y | 0);
@@ -3727,9 +3737,14 @@
         throw new Error('the wheel ' + q(String(w3.id)) + ' carries no disc: a turning row ships its art');
       if (SOURCES.indexOf(String(w3.src)) < 0 || DIGITS.indexOf(String(w3.digit || 'whole')) < 0 || CADENCES.indexOf(String(w3.cadence)) < 0)
         throw new Error('the wheel ' + q(String(w3.id)) + ' reads ' + q(String(w3.src)) + '/' + q(String(w3.digit)) + ' by ' + q(String(w3.cadence)) + ': not the dial\u2019s vocabulary');
-      row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the wheel ' + q(String(w3.id))), kind: SHAPE_RING,
+      // D43: a drum's art is its strip (one turn, w3.h tall), placed with its window's top-left at
+      // x,y and the window's centre as its pivot; it rolls one strip in its direction per turn
+      if (w3.drum && !((w3.radius | 0) >= 2 && (w3.pivot_y | 0) === (w3.radius | 0) && w3.h > w3.radius))
+        throw new Error('the drum ' + q(String(w3.id)) + ' carries no radius its strip can roll through');
+      row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the wheel ' + q(String(w3.id))), kind: w3.drum ? SHAPE_DRUM : SHAPE_RING,
             src: SOURCES.indexOf(String(w3.src)), digit: DIGITS.indexOf(String(w3.digit || 'whole')),
             x: w3.x | 0, y: w3.y | 0, w: w3.w, h: w3.h, pivot_x: w3.pivot_x | 0, pivot_y: w3.pivot_y | 0,
+            radius: w3.drum ? (w3.radius | 0) : 0, dy: w3.drum ? (w3.dir < 0 ? -w3.h : w3.h) : 0,
             order: 0, alpha: 255, n_frames: 1, span: w3.span | 0, zero: w3.zero | 0, vmin: w3.vmin | 0, vmax: w3.vmax | 0,
             end: END_WRAP, cadence: CADENCES.indexOf(String(w3.cadence)), cad_arg: 0, ease: w3.ease | 0 }, w3, true, !!w3.dither);   // ruling 3: a ring or disc may ask
       auxB += w3.w * w3.h * 3;
@@ -3851,7 +3866,11 @@
     var drawn3 = elems.filter(function (e) {
       return !(e['class'] === CLASS_PLATE && (e.slot | 0) === 0) && e['class'] !== classId('sound') && !((e.flags | 0) & EF_HIDDEN);
     }).length;
-    // Said on the meter, not refused: a dial past the table still runs, the slow way.
+    // Said on the meter, not refused: a dial past the table still runs, the slow way. Except a
+    // drum: only the compositor rolls one (the slow way would slide its strip), so a dial with a
+    // drum past the table is refused
+    if (drawn3 > ORB_LAYER_MAX3 && elems.some(function (e) { return e['class'] === CLASS_AUX && e.kind === SHAPE_DRUM; }))
+      throw new Error('the dial draws ' + drawn3 + ' layers and the orb seats ' + ORB_LAYER_MAX3 + ' at full speed; a drum rolls only there \u2014 drop a part, a shadow, or make a wheel snap');
 
     // D42: every clock section is v6.
     var secAbi = GEOM_ABI6;
@@ -4296,9 +4315,13 @@
         { refuses.push('the wheel \u201c' + id + '\u201d reads a digit of the ' + (wd.moon ? 'moon' : 'day of the week') + ', which has none'); return; }
       if ((dg === 'hundreds' || dg === 'thousands') && c.shows !== 'year')
         { refuses.push('the wheel \u201c' + id + '\u201d reads the ' + dg + ' of ' + c.shows + ', which never reaches them'); return; }
-      // D43 P5d.3c: a barrel's figures foreshorten as it rolls, which a turned or slid plate cannot
-      // draw; until the stage can draw a drum, a barrel ships only by snapping (true plates)
-      if (c.form === 'barrel') { refuses.push('the barrel \u201c' + id + '\u201d rolls between figures: the orb cannot draw a drum turning yet \u2014 set it to Jump with no ease, and it ships a true picture per figure'); return; }
+      // D43: a barrel that rolls is a drum row: its figures on one flat strip the OS rolls through
+      // the window and foreshortens line by line; its shading over the curve rides the cover above
+      // it, so a barrel with no face over it (exposed) has nowhere to carry it, and the OS rolls a
+      // drum about a level axle only
+      var barrel = c.form === 'barrel';
+      if (barrel && c.exposed === true) { refuses.push('the barrel \u201c' + id + '\u201d is seen whole: a drum is read through cutouts, whose face carries its shading \u2014 give it a cutout'); return; }
+      if (barrel && Math.round(+c.trot || 0) % 360) { refuses.push('the barrel \u201c' + id + '\u201d is turned ' + Math.round(+c.trot) + '\u00b0: the orb rolls a drum about a level axle \u2014 set its Drum turn to 0'); return; }
       var n = dg === 'whole' ? wd.n : dg === 'tens' ? wd.tens : 10;
       var dir = c.dir === 'ccw' ? -1 : 1, smooth = c.cadence === 'smooth';
       // the engine turns a ring back by a figure as its value goes up (the next figure comes
@@ -4306,7 +4329,10 @@
       var span = wd.moon ? dir * TURN_10 : -dir * TURN_10;
       var vmin = dg === 'whole' ? (wd.vmin | 0) : 0;
       rows.push({ id: id, type: 'wheel', host: c.host || 'dial', exposed: c.exposed === true, src: wd.src, digit: dg, n: n, vmin: vmin, vmax: vmin + n,
-                  span: span, zero: Math.round(span * (dg === 'whole' ? (wd.off | 0) : 0) / n), end: 'wrap',
+                  // a drum neither turns nor starts at an angle: its strip is laid out from the
+                  // figure the value's start shows (foff), in its direction (dir), and rolls dir x strip
+                  drum: barrel, dir: dir, foff: dg === 'whole' ? (wd.off | 0) : 0,
+                  span: barrel ? 0 : span, zero: barrel ? 0 : Math.round(span * (dg === 'whole' ? (wd.off | 0) : 0) / n), end: 'wrap',
                   cadence: smooth ? 'roll' : 'jump', ease: smooth || wd.src === 'second' ? 0 : Math.max(0, Math.min(1000, +c.ease || 0)), dither: wheelDither3(c) });
     });
     return { rows: rows, refuses: refuses };

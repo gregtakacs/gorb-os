@@ -1645,15 +1645,15 @@ static bool lease_watch_should_drop(bool associated, bool sta_up, bool ap_idle);
 
 /* Serial-door mailbox (bench 2026-10-27). The reader task's stack lives in PSRAM
  * — it must, or the spawn dies in the post-wifi_start internal heap and the whole
- * wired door is gone — and the reader was also RUNNING the verbs. Four of them
- * (NAME, MODE, RESET, PROV-with-tz) reach nvs_commit, flash operations disable the
+ * wired door is gone — and the reader was also RUNNING the verbs. Three of them
+ * (NAME, MODE, RESET; PROV carried a timezone then) reach nvs_commit, flash operations disable the
  * cache, and IDF asserts exactly there: esp_task_stack_is_sane_cache_disabled.
  * Every PROV with a timezone therefore aborted the board between its
  * "prov: received" line and its PROV-ACK — the hub saw "no ack", and each 2 s
  * re-push bought one more reboot. The door now reads only: the line lands in this
  * one-slot mailbox and the radio task runs it. That task already commits NVS for
- * the join (NET_CMD_STORE_CREDS), which is the same small-write class NAME, MODE
- * and PROV's timezone are; RESET ALL's heavy erase defers to the next boot-top
+ * the join (NET_CMD_STORE_CREDS), which is the same small-write class NAME and
+ * MODE are; RESET ALL's heavy erase defers to the next boot-top
  * (see orb_net_apply_pending_factory_reset). A line arriving while one is in
  * flight is refused with a warning, never swallowed: the hub re-pushes on its
  * 2 s cadence. */
@@ -3380,12 +3380,13 @@ typedef struct { char ssid[NET_SSID_MAX + 1]; int rssi; uint8_t ch; bool open; }
  * read side (host byte -> fgets(stdin) in the running app) was proven on the
  * bench 2026-10-12 before this landed. Runs ONLY while s_provisioning at boot.
  *
- * One line, \n-terminated:   PROV <hex-ssid> <hex-pass> <hex-tz>
- * Each field is hex of the raw bytes; "-" means empty/skip. Hex carries any
- * byte without a delimiter collision, so a credential is never truncated by an
- * unexpected character. Apply is h_wifi_join()'s own sequence (persist, then
- * net_tz_set, then reset back-off, then post the join) so the doors cannot
- * drift; it touches only ssid/pass/tz, never the rest of the shared partition.
+ * One line, \n-terminated:   PROV <hex-ssid> <hex-pass>
+ * Each field is hex of the raw bytes; "-" means empty. Hex carries any byte
+ * without a delimiter collision, so a credential is never truncated by an
+ * unexpected character. The line carries the network and nothing else: the
+ * clock's zone comes from the home location, which the hub sets over the LAN
+ * once the orb has joined (POST /api/v1/home). A third field is refused, so a
+ * hub that still sends a zone hears a NAK instead of a silent drop.
  * ------------------------------------------------------------------------ */
 static int hexnib(int c)
 {
@@ -3535,10 +3536,8 @@ static bool dispatch_serial_cmd(char *line, size_t vlen)
     }
 
     if (vlen == 4 && !memcmp(line, "PROV", 4)) {
-        /* The verb lives here now, not in the reader loop: PROV applies the
-         * timezone, which writes NVS, and the reader must never touch flash
-         * (see s_serial_line). Everything below is the block the reader ran
-         * inline since the door opened — moved, not rewritten. */
+        /* The verb runs on the radio task, not in the reader loop, like every
+         * serial verb: the reader must never touch flash (see s_serial_line). */
         size_t n = strlen(line);
         if (n < 5 || memcmp(line, "PROV ", 5) != 0) return true;   /* not our token */
         if (orb_net_ap_isolated()) {                              /* refuse a silent no-op */
@@ -3549,36 +3548,31 @@ static bool dispatch_serial_cmd(char *line, size_t vlen)
         char *save = NULL;
         char *f_ssid = strtok_r(line + 5, " ", &save);
         char *f_pass = strtok_r(NULL, " ", &save);
-        char *f_tz   = strtok_r(NULL, " ", &save);
         if (!f_ssid) return true;
+        if (strtok_r(NULL, " ", &save)) {
+            /* The zone field is gone: the home location sets the zone. */
+            ESP_LOGW(TAG, "prov: rejected (a third field; PROV is <ssid> <pass>)");
+            ESP_LOGI(TAG, "PROV-NAK fields");
+            return true;
+        }
 
         char ssid[NET_SSID_MAX + 1];
         char pass[NET_PASS_MAX + 1];
-        char tz[NET_TZ_MAX + 1];
         if (prov_hex(f_ssid, strlen(f_ssid), ssid, sizeof(ssid)) <= 0) {
             ESP_LOGW(TAG, "prov: rejected (bad/empty ssid)"); return true;
         }
         const char *p_raw = f_pass ? f_pass : "-";
-        const char *z_raw = f_tz   ? f_tz   : "-";
-        if (prov_hex(p_raw, strlen(p_raw), pass, sizeof(pass)) < 0 ||
-            prov_hex(z_raw, strlen(z_raw), tz,   sizeof(tz))   < 0) {
-            ESP_LOGW(TAG, "prov: rejected (bad pass/tz)"); return true;
+        if (prov_hex(p_raw, strlen(p_raw), pass, sizeof(pass)) < 0) {
+            ESP_LOGW(TAG, "prov: rejected (bad pass)"); return true;
         }
 
-        ESP_LOGI(TAG, "prov: received ssid=\"%s\" pass=%s%s", ssid,
-                 pass[0] ? "(set)" : "(none)", tz[0] ? " +tz" : "");
+        ESP_LOGI(TAG, "prov: received ssid=\"%s\" pass=%s", ssid, pass[0] ? "(set)" : "(none)");
 
         /* NOT persisted here. The pair waits in the radio task's pending buffer
          * (see s_pend_ssid) until a lease proves it, and only then reaches NVS —
          * h_wifi_join() does the same. The previous behaviour, writing here, is how
          * one mistyped passphrase on a working device took the device off its own
-         * network. The zone is a different case and still applies immediately: it
-         * is fully validated above, cannot lock anyone out, and a wrong one is
-         * fixable from the LAN. */
-        if (tz[0]) {
-            const char *why = net_tz_set(tz);
-            if (why) ESP_LOGW(TAG, "prov: tz \"%s\" not applied (%s)", tz, why);
-        }
+         * network. */
         s_assoc_fails = 0;   /* a human just chose this network: reset the ladder */
 
         ESP_LOGI(TAG, "PROV-ACK");   /* the hub's round-trip confirmation token */
@@ -3658,9 +3652,9 @@ static void prov_reader_task(void *arg)
          * rescan, flip AP<->station, or factory-reset a board it cannot reach over the
          * LAN. The task parks in select() until a line arrives, so an untouched console
          * costs nothing. The reader runs NO verb itself: this task's stack lives in
-         * PSRAM, and NAME, MODE, RESET and PROV's timezone all reach nvs_commit —
-         * any flash op on a PSRAM stack asserts and reboots the board mid-command
-         * (bench 2026-10-27: every PROV that carried a timezone, and every NAME).
+         * PSRAM, and NAME, MODE and RESET reach nvs_commit — any flash op on a
+         * PSRAM stack asserts and reboots the board mid-command (bench 2026-10-27:
+         * every NAME, and every PROV while it still carried a timezone).
          * The line rides to the radio task through s_serial_line instead; a
          * refused post is warned, never swallowed — the hub's 2 s re-push brings
          * it back. A mistyped verb is logged there and the door stays alive — the
@@ -8118,7 +8112,7 @@ esp_err_t orb_net_start(void)
      * booted into provisioning, a device off its LAN) becomes unrecoverable without a
      * reflash. The task only does select()/fgets on the console fd and hands the
      * line to the radio task (see s_serial_line): since 2026-10-27 it runs no
-     * verb itself, because NAME, MODE, RESET and PROV's timezone all write NVS,
+     * verb itself, because NAME, MODE and RESET write NVS,
      * and a flash op on a PSRAM stack is the esp_task_stack_is_sane_cache_disabled
      * abort, not a slow command. With the handoff the original claim holds again:
      * nothing here runs with the cache disabled, so a PSRAM stack is safe, and

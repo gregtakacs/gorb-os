@@ -395,9 +395,12 @@ no Forget; that verdict is the hub's, not the card's guess.
   that phase was the dead form this replaced; Later is live the whole wait. The
   network list is the orb's own scan read over the cable, **Rescan** re-drives
   the firmware's serial `SCAN` verb at any point (the boot window can close
-  before a slow scan finishes, and radios change), the time zone picker is the
-  device's own table served by `/api/tz` with **Use my location** beside it,
-  and every passphrase field carries a show/hide.
+  before a slow scan finishes, and radios change), **Where is this orb?** takes a
+  city from `web/cities.json`, typed coordinates, or the browser's location (there
+  is no zone picker: the home location sets the zone), and every passphrase field
+  carries a show/hide. Connect refuses without a location. Once the orb answers on
+  the LAN, the page posts that point to `/api/v1/home` (`setJoinHome`) before the
+  seed, so the seed's reboot brings the clock up on its own zone.
 
 - **Add by IP…** — for the orb whose broadcasts the network swallows. The dialog
   dials the typed address once; only an orb answering `/api/v1/status` earns a
@@ -968,14 +971,15 @@ persist-then-join path, and neither erases the shared `storage` partition, so th
    a scan and logs each result as a `PROVSCAN` console line (surfaced through the
    boot verdict → `/api/watch` → the UI's picker), then blocks on the
    USB-Serial-JTAG console's stdin for one line:
-   `PROV <hex-ssid> <hex-pass> <hex-tz>` (`-` = empty/skip; fields are hex so an
-   SSID with spaces or punctuation can never be truncated). The line MUST end in
+   `PROV <hex-ssid> <hex-pass>` (`-` = empty; fields are hex so an SSID with
+   spaces or punctuation can never be truncated; a third field is refused with
+   `PROV-NAK fields`, because the zone follows the home location). The line MUST end in
    CRLF, not a bare `\n` — the USB-Serial-JTAG console's cooked-mode `fgets` only
    returns a line on a CR, which is why a terminal's Enter works but an
    LF-only writer silently never gets a `PROV-ACK`. The firmware decodes
-   it and writes its **own** `ssid`/`pass`/`tz` NVS keys, then joins — so the
+   it and writes its **own** `ssid`/`pass` NVS keys once a lease proves them, then joins — so the
    flasher and the ROM are never involved in the credential write. The UI's
-   "Provision over USB" button calls `POST /api/provision {"port","ssid","pass","tz"}`,
+   "Provision over USB" button calls `POST /api/provision {"port","ssid","pass"}`,
    which reboots the orb into its app on the held port, reads the scan, writes the
    PROV line, and confirms the firmware's `PROV-ACK`. It then keeps the console
    open for a few more seconds to catch the firmware's post-DHCP banner
@@ -994,7 +998,7 @@ accepts six verbs, each replying with an `-ACK`/`-NAK` line the hub can key on:
 
 | verb | what it does |
 |---|---|
-| `PROV <hex-ssid> <hex-pass> <hex-tz>` | join a network — the first-boot credential line, and now also the reconfigure line for a station orb (refused while AP-isolated) |
+| `PROV <hex-ssid> <hex-pass>` | join a network — the first-boot credential line, and now also the reconfigure line for a station orb (refused while AP-isolated) |
 | `NAME <hex-name>` | set the orb's own name, through the same validating door `POST /api/v1/name` uses |
 | `SCAN` | arm a scan and mirror the results to the console as `PROVSCAN` lines — the network list, without joining the orb's AP. It posts the firmware's **armed** scan (`NET_CMD_SCAN_BOOT`), not the bare one: `scan_collect()` frees the driver's AP list and prints nothing unless the state is `SCAN_SCANNING`, and `scan_begin()` does not set that state — it expects its caller to have armed it. A `SCAN` that posted the bare command therefore ran a real radio scan, discarded every result at the done event, and never printed the `PROVSCAN-END` the hub waits for; the hub re-pushed for its whole budget and reported no ack. `scancmd_test.go` pins the post, because the wrong call reads as the tidier one |
 | `MODE <hex-ap\|hex-sta>` | switch the persistent reachability mode and reboot: `ap` = isolated (own AP + page only, never associates), `sta` = rejoin Wi-Fi. `POST /api/v1/wifi/mode {"mode":"ap\|"sta"}` is the same door over HTTP, and the page's only exit from an isolation the page can also enter — an isolated orb is reachable at exactly one address, its own `192.168.4.1`, so a one-way mode would be a trap |
@@ -1087,7 +1091,6 @@ diskcache.go         bytes an orb already paid to send (previews), kept on disk
 instance.go          one hub per operator: a second launch hands off to the first
 launchprobe.go       telling an orb from a board that used to be one, at launch
 orbcmd.go            one serial-command round trip, budgeted
-zones.go             the orb's time zone list (internal/orbzones, generated from orb_net.c)
 log_gui_windows.go   the windowsgui build's log redirect to %TEMP%\orb-manager.log
 packaging/           per-OS release packaging: dist.sh stage/pack, the .app bundle, the Linux
                      installer and udev rule, per-OS README.txt, THIRD_PARTY_NOTICES (notices.py)

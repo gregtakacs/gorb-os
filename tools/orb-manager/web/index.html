@@ -513,14 +513,20 @@
             <button id="sp-pass-show" class="ghost pw-toggle" type="button" aria-label="Show the passphrase">show</button>
           </span>
         </label>
-        <label id="sp-tzrow" hidden>Time zone
-          <span class="tzline">
-            <select id="sp-tz"><option value="UTC">UTC</option></select>
-            <button id="sp-geo" class="ghost" type="button" title="Ask the browser where you are, and pick the closest zone from the orb's own list.">Use my location</button>
+        <!-- Where the orb lives: its home location, which sets the clock's zone and
+             every app that needs a position. There is no zone picker (owner ruling
+             2026-11-01): the hub sets the home over the LAN once the orb has joined
+             (setJoinHome), before the seed, and the zone comes with it. -->
+        <label id="sp-whererow" hidden>Where is this orb?
+          <span class="whereline">
+            <input id="sp-where" placeholder="a city, or 33.4484, -112.074" autocomplete="off"
+                   aria-label="Find a city, or type coordinates" aria-controls="sp-hits">
+            <button id="sp-loc" class="ghost" type="button" title="Ask this browser where it is">Use my location</button>
           </span>
         </label>
       </div>
-      <div class="row"><span id="sp-tzstate" class="hint"></span></div>
+      <div id="sp-hits" class="tzlist" role="listbox" hidden></div>
+      <div class="row"><span id="sp-wherestate" class="hint">The clock's time zone comes from this.</span></div>
       <p class="hint" id="wj-apmsg" hidden></p>
       <pre id="sp-log" class="log" hidden aria-live="polite"></pre>
       <div class="row">

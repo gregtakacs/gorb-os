@@ -61,23 +61,23 @@ func TestParsePROVSCAN(t *testing.T) {
 }
 
 func TestProvLine(t *testing.T) {
-	// Open network (empty pass), empty tz -> both encode as "-" so the firmware
-	// reader can distinguish "empty" from absent.
-	if got, want := ProvLine("MyNet", "", ""), "PROV "+hex.EncodeToString([]byte("MyNet"))+" - -\r\n"; got != want {
+	// Open network: the empty pass encodes as "-" so the firmware reader can
+	// distinguish "empty" from absent. Two fields, never a third: the zone follows
+	// the home location now, and the firmware refuses a third field.
+	if got, want := ProvLine("MyNet", ""), "PROV "+hex.EncodeToString([]byte("MyNet"))+" -\r\n"; got != want {
 		t.Errorf("open net: got %q want %q", got, want)
 	}
 	// Passphrase and SSID with spaces/punct round-trip through hex with no
 	// delimiter collision — the whole reason for hex on the wire.
-	got := ProvLine("a b:c#d", "p@ss word\"x\\y", "UTC0")
+	got := ProvLine("a b:c#d", "p@ss word\"x\\y")
 	want := "PROV " +
 		hex.EncodeToString([]byte("a b:c#d")) + " " +
-		hex.EncodeToString([]byte("p@ss word\"x\\y")) + " " +
-		hex.EncodeToString([]byte("UTC0")) + "\r\n"
+		hex.EncodeToString([]byte("p@ss word\"x\\y")) + "\r\n"
 	if got != want {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}
 	// Every field is space-free, so the firmware's strtok split is unambiguous.
-	for _, f := range []string{"a b:c#d", "p@ss word", "UTC0"} {
+	for _, f := range []string{"a b:c#d", "p@ss word"} {
 		if h := ProvField(f); containsSpace(h) {
 			t.Errorf("ProvField(%q)=%q contains a space", f, h)
 		}

@@ -52,8 +52,9 @@ to check one.
 2. A **New orb** button appears in the **Orbs** list. Press it, give the orb a name and
    start the flash. The bar shows the whole flash, which takes about a minute.
 3. When the orb reboots, the **Bring it onto Wi-Fi** dialog opens. Pick your network
-   from the list (the orb scanned it itself), type the password, and check the time
-   zone. **Use my location** fills it in for you.
+   from the list (the orb scanned it itself), type the password, and say where the orb
+   is: type a city, or press **Use my location**. The orb takes its time zone from that
+   place, so there is no time zone to pick.
 4. The orb joins the network and shows up in the **Orbs** list. From then on Orb
    Manager reaches it over Wi-Fi, and you can unplug the cable.
 
@@ -89,7 +90,7 @@ Click an orb in the **Orbs** list to open its card. The tabs are:
 
 | Tab | What it does |
 |---|---|
-| **Orb** | the orb's name, and its home location (apps that need a place, such as weather, read it from here) |
+| **Orb** | the orb's name, and its home location: the clock's time zone comes from it, and apps that need a place read it |
 | **Wi-Fi** | move the orb to another network |
 | **Apps** | the apps on this orb and in your library: **Install**, **Uninstall**, **Import an app** (an `.orbapp` file), **Restore bundled apps**, and **App keys** for apps that need an API key |
 | **Themes** | the clock faces on this orb: pick one, **Import a theme** (an `.orbtheme` file), or open the **Theme Editor** to design your own |

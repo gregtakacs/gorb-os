@@ -1057,7 +1057,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// through the device's own upload. It mutates a board, so it takes the token.
 	mux.Handle("/api/apps/import", s.requireControl(http.HandlerFunc(s.h_appsImport)))
 	mux.HandleFunc("/api/ports", s.handlePorts) // cached identity rides along, never a probe
-	mux.HandleFunc("/api/tz", s.handleZones)    // the device's zone table, for the join dialog's picker
 	mux.HandleFunc("/api/build", s.json(s.describeFirmware))
 	mux.HandleFunc("/api/ops", s.handleOps)
 	mux.Handle("/api/orb/allow", s.requireControl(http.HandlerFunc(s.handleAllowIP)))

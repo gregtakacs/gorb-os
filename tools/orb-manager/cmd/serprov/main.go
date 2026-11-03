@@ -21,7 +21,6 @@ import (
 func main() {
 	ssid := flag.String("ssid", "", "network to provision (required)")
 	pass := flag.String("pass", "", "passphrase (empty = open network)")
-	tz := flag.String("tz", "", "optional POSIX TZ rule")
 	portFlag := flag.String("port", "", "serial port to provision (/dev/ttyACMx or a /dev/serial/by-id path; required)")
 	verbose := flag.Bool("v", true, "echo every console line as it arrives")
 	scan := flag.Duration("scan", 22*time.Second, "budget to catch PROVSCAN-END")
@@ -67,7 +66,7 @@ func main() {
 	// Cancel button does: the port is released rather than held to the deadline.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	res, err := esprom.ProvisionOn(ctx, pt, *ssid, *pass, *tz, *scan, *ack, *ipw, onLine)
+	res, err := esprom.ProvisionOn(ctx, pt, *ssid, *pass, *scan, *ack, *ipw, onLine)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "serprov:", err)
 		os.Exit(1)

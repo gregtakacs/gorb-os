@@ -73,17 +73,18 @@ func ProvField(s string) string {
 
 // ProvLine formats the single down-line the firmware reader expects:
 //
-//	PROV <hex-ssid> <hex-pass> <hex-tz>
+//	PROV <hex-ssid> <hex-pass>
 //
 // terminated by CRLF, not a bare LF. The ESP32-S3 USB-Serial-JTAG console hands
 // a line to fgets() on its cooked-mode line boundary, which a terminal's Enter
 // (\r\n) satisfies and a lone \n does not — the reason the read side looked
 // "proven" from a human typing yet an automated \n-only writer never got a
 // PROV-ACK. The firmware strips both \r and \n, so the terminator never reaches
-// the parser. An empty tz encodes as "-" (leave the stored zone alone), matching
-// the firmware's parser.
-func ProvLine(ssid, pass, tz string) string {
-	return fmt.Sprintf("PROV %s %s %s\r\n", ProvField(ssid), ProvField(pass), ProvField(tz))
+// the parser. The line carries the network only: the clock's zone follows the home
+// location, which the hub sets over the LAN once the orb has joined (setJoinHome in
+// web/app.js), and the firmware refuses a third field.
+func ProvLine(ssid, pass string) string {
+	return fmt.Sprintf("PROV %s %s\r\n", ProvField(ssid), ProvField(pass))
 }
 
 // ProvResult is the outcome of one wired-provisioning round-trip.
@@ -144,7 +145,7 @@ func ParseOrbIP(line string) (string, bool) { return parseOrbIP(line) }
 // ctx aborts the exchange between console reads. Cancelling after the PROV line
 // went down is safe: the firmware's reader is idempotent on the line, and an
 // accepted join completes on the orb whether or not the hub is still watching.
-func ProvisionOn(ctx context.Context, pt *Port, ssid, pass, tz string, scanBudget, ackBudget, ipBudget time.Duration, onLine func(string)) (*ProvResult, error) {
+func ProvisionOn(ctx context.Context, pt *Port, ssid, pass string, scanBudget, ackBudget, ipBudget time.Duration, onLine func(string)) (*ProvResult, error) {
 	res := &ProvResult{Networks: []ScanNet{}}
 	if err := ctxErr(ctx); err != nil {
 		return res, err
@@ -252,7 +253,7 @@ func ProvisionOn(ctx context.Context, pt *Port, ssid, pass, tz string, scanBudge
 	if err := watch(scanBudget, true, nil); err != nil {
 		return res, err
 	}
-	prov := ProvLine(ssid, pass, tz)
+	prov := ProvLine(ssid, pass)
 	if _, err := p.Write([]byte(prov)); err != nil {
 		return res, fmt.Errorf("esprom: prov write: %w", err)
 	}

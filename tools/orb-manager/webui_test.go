@@ -56,10 +56,26 @@ func TestJoinDialogBootPhaseIsWired(t *testing.T) {
 		`async function serialRescan(`,
 		`#sp-pass-show`,
 		`#j-pass-show`,
-		`d.data.zones`, // the {ok,data} envelope, not a bare .zones
+		// The join asks where the orb is, and the hub sets that home on the LAN before
+		// the seed; Connect refuses without one (owner ruling 2026-11-01: the location
+		// drives the zone).
+		`async function setJoinHome(`,
+		`"/api/v1/home"`,
+		`setJoinHome(ip).then(`,
+		`if (!joinHome) {`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("app.js lost %q — the boot-locked join form depends on it", want)
+		}
+	}
+	// No zone picker, no zone on the wire: the zone comes from the home.
+	page, err := os.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatalf("index.html: %v", err)
+	}
+	for _, gone := range []string{`/api/tz`, `sp-tz`, `pass: $("#sp-pass").value, tz`} {
+		if strings.Contains(src, gone) || strings.Contains(string(page), gone) {
+			t.Errorf("the join form carries %q again; the zone follows the home location", gone)
 		}
 	}
 }

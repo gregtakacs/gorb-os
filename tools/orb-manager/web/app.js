@@ -1393,7 +1393,9 @@ let gLastRefusal = "";
 // the honest lag note. The join headline quotes it rather than asserting the glass itself:
 // the page cannot see the dial, the verify read can (bench, 2026-10-29, Bronze).
 let gLastVerifyNote = "";
-let zoneList = null;
+// Where the orb lives, as the join dialog proposed it: {lat, lon, place}. It survives the
+// dialog closing, so the next orb set up from this page starts from the same place.
+let joinHome = null;
 // Watch is a read stream, so a closed dialog may drop its events but never the
 // hub's view of the port: a generation counter, not an aborted fetch (the one
 // abort allowed in this file belongs to the discovery watchdog). Stale events
@@ -1442,11 +1444,11 @@ function openJoinDialog(port, mac, skipAp) {
   $("#ob-done").hidden = true;
   $("#sp-log").textContent = "";
   $("#sp-log").hidden = true;
-  showTzRow(false);
+  showWhereRow(false);
   joinLock(true);
   $("#wj-lock-msg").textContent = lockIntro;
   $("#wj-mask").hidden = false;
-  loadZones();
+  joinWhereShow();
   streamWatch(gen, port, mac, skipAp, "");
 }
 
@@ -1458,7 +1460,7 @@ function openJoinDialog(port, mac, skipAp) {
 function joinLock(on, msg) {
   $("#wj-lock").hidden = !on;
   $("#ob-join").hidden = on;
-  if (!on) showTzRow(true);
+  if (!on) showWhereRow(true);
   if (on && msg) $("#wj-lock-msg").textContent = msg;
 }
 
@@ -1585,8 +1587,7 @@ function joinDone(ip, st) {
   // its next reboot (owner report, 2026-10-29 PM: the bounce off the orb page).
   if (!provMac && st && st.mac) provMac = String(st.mac).replace(/[^0-9a-fA-F]/g, "").toLowerCase();
   $("#ob-done-msg").textContent =
-    "connected at " + ip + " — " + (st.rssi || "?") + " dBm, fw " + (st.fw || "?") +
-    (st.tz ? ", " + st.tz : "") + ".";
+    "connected at " + ip + " — " + (st.rssi || "?") + " dBm, fw " + (st.fw || "?") + ".";
   $("#ob-join").hidden = true;
   $("#ob-done").hidden = false;
   // The panel's headline says "Bring it onto Wi-Fi" right up until the moment the orb is
@@ -1603,8 +1604,13 @@ function joinDone(ip, st) {
   $("#ob-watch").textContent = "connected — seeding the clock and its face, keep this window open\u2026";
   // S6 restores the join-time install S5 deleted, narrowed to the clock. The hub holds the real
   // gate (firmware floor, mounted card, port claim, and now the post-write verify); this call is
-  // the moment, not the decision.
-  autoInstall(ip);
+  // the moment, not the decision. The home goes first, so the seed's reboot brings the
+  // clock up on the orb's own zone.
+  $("#ob-watch").textContent = "connected — setting its home\u2026";
+  setJoinHome(ip).then((line) => {
+    $("#ob-done-msg").textContent += " " + line[0].toUpperCase() + line.slice(1) + ".";
+    autoInstall(ip);
+  });
   pullFound();
 }
 
@@ -1971,79 +1977,95 @@ function applySsidChoice() {
 }
 $("#sp-ssid").onchange = applySsidChoice;
 
-// ---- the time zone the join form writes ---------------------------------------
-// The list is the firmware's OWN table, served by /api/tz from the same source
-// the parity test pins: an orb that knows every name it can be given cannot be
-// told a name it will reject. Each row arrives as {name, posix, iana, label};
-// the picker shows the city, posts the device key, and hands the IANA name to
-// the browser when it is asked where it is. UTC is not a guess at home; the
-// browser may know better, and when it does the form says so in one line.
-async function loadZones() {
-  const sel = $("#sp-tz");
-  const keep = sel.value;
-  try {
-    const r = await hubFetch("/api/tz");
-    const d = await readDeviceJSON(r);
-    const rows = (d && d.ok && d.data && d.data.zones) || [];
-    if (!rows.length) throw new Error("empty zone table");
-    zoneList = rows;
-    sel.innerHTML = "";
-    for (const z of zoneList) {
-      const o = document.createElement("option");
-      o.value = z.name;
-      o.textContent = (z.label && z.label !== z.name) ? z.label + "  (" + z.name + ")" : z.name;
-      sel.appendChild(o);
+// ---- where the orb lives: the join form's home -----------------------------------
+// The orb takes its zone from its home location (owner ruling 2026-11-01), so the join
+// asks where the orb is, never which zone. Two sources only propose a point: a city
+// from the same web/cities.json the Orb face's Home search reads (homeCityList and
+// homeFind, tabs.js), or this browser's location; typed coordinates work too. Nothing
+// is previewed here, because the orb is not on the LAN yet: setJoinHome posts the
+// point once it is, and the orb names the place and the zone itself.
+function joinWhereShow(msg) {
+  $("#sp-where").value = joinHome ? (joinHome.place || joinHome.lat + ", " + joinHome.lon) : "";
+  $("#sp-wherestate").textContent = msg || (joinHome
+    ? "Home: " + (joinHome.place || "these coordinates") + ". The orb takes its time zone from it."
+    : "The clock's time zone comes from this.");
+}
+
+function joinWhereHits(list) {
+  const box = $("#sp-hits");
+  box.innerHTML = "";
+  box.hidden = !list.length;
+  for (const c of list) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "tzrow";
+    b.setAttribute("role", "option");
+    b.textContent = c[0] + ", " + c[1];
+    b.onclick = () => { joinHome = { lat: c[2], lon: c[3], place: c[0] + ", " + c[1] }; joinWhereHits([]); joinWhereShow(); };
+    box.appendChild(b);
+  }
+}
+
+$("#sp-where").addEventListener("input", async function () {
+  joinHome = null;                                   // an edit unsets the old pick
+  const v = this.value.trim();
+  if (v.length < 2 || /^[-+\d.,\s]+$/.test(v)) { joinWhereHits([]); return; }
+  try { await homeCityList(); } catch (e) { $("#sp-wherestate").textContent = e.message; return; }
+  if (this.value.trim() === v) joinWhereHits(homeFind(v));
+});
+
+$("#sp-where").addEventListener("keydown", function (ev) {
+  if (ev.key === "Escape") { joinWhereHits([]); return; }
+  if (ev.key !== "Enter") return;
+  ev.preventDefault();
+  const m = this.value.trim().match(HOME_COORDS);
+  if (m && Math.abs(+m[1]) <= 90 && Math.abs(+m[2]) <= 180) {
+    joinHome = { lat: +m[1], lon: +m[2], place: "" };
+    joinWhereHits([]);
+    joinWhereShow();
+    return;
+  }
+  const first = $("#sp-hits").firstChild;
+  if (first) first.click();
+  else $("#sp-wherestate").textContent = "no city by that name in the orb's list — try a bigger one nearby, or type coordinates";
+});
+
+$("#sp-loc").onclick = () => {
+  if (!navigator.geolocation || !window.isSecureContext) {
+    joinWhereShow("this browser will only share its location with a page on localhost or https — search for a city instead");
+    return;
+  }
+  $("#sp-wherestate").textContent = "asking this browser where it is…";
+  navigator.geolocation.getCurrentPosition((p) => {
+    joinHome = { lat: +p.coords.latitude.toFixed(4), lon: +p.coords.longitude.toFixed(4), place: "" };
+    joinWhereShow("Home: this browser's location (" + joinHome.lat + ", " + joinHome.lon + "). The orb takes its time zone from it.");
+  }, (e) => {
+    joinWhereShow("the browser did not say (" + (e.message || "denied") + ") — search for a city instead");
+  }, { enableHighAccuracy: false, timeout: 15000, maximumAge: 600000 });
+};
+
+// setJoinHome stores the join's home on the orb the moment it answers on the LAN, before
+// the seed: the seed reboots the board, and the clock should come up on its own zone. The
+// orb places the point itself (its own city list names it and picks the zone), so only
+// the point travels. A refusal is reported and the seed still runs; the Orb face's Home
+// sets it later. Answers the sentence the done panel shows.
+async function setJoinHome(ip) {
+  if (!joinHome) return "no home set — the clock runs on UTC until you set one on the Orb face";
+  let last = null;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const d = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(ip) + "/api/v1/home", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lat: joinHome.lat, lon: joinHome.lon }),
+      }));
+      if (!d || !d.home || !d.home.set) throw new Error("the orb did not store it");
+      return "home " + d.home.place + ", clock on " + (d.zone_label || d.tz);
+    } catch (e) {
+      last = e;
+      await new Promise((r) => setTimeout(r, 2000));
     }
-    sel.value = zoneList.some((z) => z.name === keep) ? keep : "UTC";
-    $("#sp-tzstate").textContent = "";
-  } catch (e) {
-    zoneList = null;
-    sel.innerHTML = "<option>UTC</option>";
-    $("#sp-tzstate").textContent = "the orb's own zone list did not load — UTC and a typed name are all this form trusts";
   }
-}
-
-// zoneOffsetMin asks the browser's own IANA data what a zone's UTC offset is,
-// in minutes, at the given instant (default now). longOffset gives
-// "GMT+05:30"; plain "GMT" is zero.
-function zoneOffsetMin(iana, at) {
-  try {
-    const part = new Intl.DateTimeFormat("en-US", { timeZone: iana, timeZoneName: "longOffset" })
-      .formatToParts(at || new Date()).find((p) => p.type === "timeZoneName");
-    if (!part) return null;
-    const m = /^GMT(?:([+-])(\d{2})(?::(\d{2}))?)?$/.exec(part.value);
-    if (!m) return null;
-    if (!m[1]) return 0;
-    return (m[1] === "-" ? -1 : 1) * (parseInt(m[2], 10) * 60 + (m[3] ? parseInt(m[3], 10) : 0));
-  } catch (e) {
-    return null; // a browser without that zone (rare; these are all real ones)
-  }
-}
-
-// zoneFromLocation names the orb-table row that best covers a longitude. The
-// target is the solar offset (longitude over 15, snapped to the 15-minute
-// grid); a row's score is the smaller of its distance at the January offset
-// and at the July offset — the browser's own IANA data, read in both
-// hemispheres' calm, so a daylight line and its winter twin compete on the
-// zone's own rule and not on the accident of today's date. Within 90 minutes
-// it is a match; beyond that the form would be naming a stranger's clock, and
-// it says so instead.
-function zoneFromLocation(longitude) {
-  if (!zoneList) return null;
-  const solarMin = Math.round(longitude / 3.75) * 15; // minutes east of UTC, on the 15-minute grid
-  const jan = new Date(Date.UTC(2026, 0, 15));
-  const jul = new Date(Date.UTC(2026, 6, 15));
-  let best = null, bestD = 91;
-  for (const z of zoneList) {
-    if (!z.iana) continue;
-    const oJan = zoneOffsetMin(z.iana, jan);
-    const oJul = zoneOffsetMin(z.iana, jul);
-    if (oJan === null && oJul === null) continue;
-    const ds = [oJan, oJul].filter((o) => o !== null)
-      .map((o) => Math.abs(o - solarMin)).sort((a, b) => a - b);
-    if (ds[0] < bestD) { bestD = ds[0]; best = z; }
-  }
-  return best;
+  return "the orb did not take its home (" + (last && last.message) + ") — set it on the Orb face";
 }
 
 // The join dialog's own doors, wired here rather than inline: Cancel abandons
@@ -2068,10 +2090,10 @@ function seedGuard() {
   return true;
 }
 
-// showTzRow is one lever, pulled by joinLock. The zone row is a join field
+// showWhereRow is one lever, pulled by joinLock. The home row is a join field
 // like the other two: a row that hid itself whenever the scan came back empty
 // is how this form once read as "the picker is dead".
-function showTzRow(on) { $("#sp-tzrow").hidden = !on; }
+function showWhereRow(on) { $("#sp-whererow").hidden = !on; }
 
 $("#sp-go").onclick = async () => {
   const jlog = $("#sp-log");
@@ -2081,12 +2103,16 @@ $("#sp-go").onclick = async () => {
   const ssid = (picked === "__manual__" ? $("#sp-manual").value.trim() : picked).trim();
   if (!ssid) { jlog.textContent = "pick a network or type its name first"; return; }
   if (!provPort) { jlog.textContent = "no bound serial port — flash first"; return; }
-  const tz = $("#sp-tz").value.trim() || "UTC";
+  if (!joinHome) {
+    jlog.textContent = "say where the orb lives first — the clock's time zone comes from it";
+    $("#sp-where").focus();
+    return;
+  }
   const go = $("#sp-go");
   go.disabled = true;
   jlog.textContent = "";
   try {
-    await streamPost("/api/provision", { port: provPort, ssid, pass: $("#sp-pass").value, tz }, (ev) => {
+    await streamPost("/api/provision", { port: provPort, ssid, pass: $("#sp-pass").value }, (ev) => {
       if (ev.log) watchLog(ev.log);
       else if (ev.error) jlog.textContent += "error: " + ev.error + "\n";
       else if (ev.result) {
@@ -2105,23 +2131,6 @@ $("#sp-go").onclick = async () => {
   } finally {
     go.disabled = false;
   }
-};
-
-$("#sp-geo").onclick = () => {
-  const state = $("#sp-tzstate");
-  if (!navigator.geolocation) { state.textContent = "this browser does not do location — pick the zone"; return; }
-  state.textContent = "asking the browser for your location…";
-  navigator.geolocation.getCurrentPosition((p) => {
-    const z = zoneFromLocation(p.coords.longitude);
-    if (z) {
-      $("#sp-tz").value = z.name;
-      state.textContent = "location says " + (z.label || z.name) + " (" + z.name + ") — fix it if that is wrong";
-    } else {
-      state.textContent = "no zone in the orb's own list covers that position — pick one";
-    }
-  }, (e) => {
-    state.textContent = "no location (" + (e.code === 1 ? "not allowed" : "no fix") + ") — pick the zone";
-  }, { timeout: 8000, maximumAge: 600000 });
 };
 
 // ---- passphrase reveal ---------------------------------------------------------

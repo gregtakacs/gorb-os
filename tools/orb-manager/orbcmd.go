@@ -29,7 +29,6 @@ type orbCmdRequest struct {
 	Command string `json:"command"` // name|scan|mode|reset|ping|prov
 	SSID    string `json:"ssid,omitempty"`
 	Pass    string `json:"pass,omitempty"`
-	TZ      string `json:"tz,omitempty"`
 	Operand string `json:"operand,omitempty"` // name text, or mode "ap"/"sta"
 }
 
@@ -73,7 +72,7 @@ func serialCmd(req orbCmdRequest) (line string, ack string, err error) {
 		if strings.TrimSpace(req.SSID) == "" {
 			return "", "", errorString("prov requires an ssid")
 		}
-		return esprom.ProvLine(req.SSID, req.Pass, req.TZ), "PROV-ACK", nil
+		return esprom.ProvLine(req.SSID, req.Pass), "PROV-ACK", nil
 	default:
 		return "", "", errorString("unknown serial command")
 	}

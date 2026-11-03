@@ -580,19 +580,24 @@ func main() {
 		// and the rung it cannot offer is simply missing from the ladder.
 		userCfg = ""
 	}
-	// A macOS app bundle's library is seed stock for the user's own (bundle.go): copied in
-	// before the ladder resolves, so the user-config rung is the one that answers.
-	if res := bundleResources(exeDir); res != "" && userCfg != "" {
-		lines, err := seedFromBundle(res, filepath.Join(userCfg, "orb-manager"))
+	resolve := func() *Library {
+		return resolveLibrary(strings.TrimSpace(libPath), strings.TrimSpace(libApps),
+			strings.TrimSpace(libThemes), exeDir, userCfg, repoDir)
+	}
+	s.lib = resolve()
+	// The compiled-in shelf seeds the user's own library (seed.go) for each kind no flag,
+	// executable-side library or clone answers, and the ladder resolves again so that rung,
+	// now present, is the one the hub reads.
+	if kinds := seedKinds(s.lib); len(kinds) > 0 && userCfg != "" {
+		lines, err := seedUserLibrary(shippedLib, filepath.Join(userCfg, "orb-manager"), kinds)
 		for _, l := range lines {
 			log.Printf("orb-manager: %s", l)
 		}
 		if err != nil {
 			log.Printf("orb-manager: %v", err)
 		}
+		s.lib = resolve()
 	}
-	s.lib = resolveLibrary(strings.TrimSpace(libPath), strings.TrimSpace(libApps),
-		strings.TrimSpace(libThemes), exeDir, userCfg, repoDir)
 	s.noAutoInstall = noAutoInstall || noAutoSeedAlias
 	for _, l := range s.lib.LibStatusLines() {
 		log.Printf("orb-manager: %s", l)

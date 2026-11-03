@@ -3,7 +3,13 @@ Orb Manager @VERSION@ for Linux (x86-64)
 
 Quick start, no install:
     ./orb-manager
-It opens its own window; close the window to quit.
+It opens its own window; close the window to quit. It is the whole program.
+
+Your library (the apps and themes Orb Manager puts on an orb, and anything you
+import) lives in ~/.config/orb-manager. The first run fills it with the apps and
+the default theme that come with this release. Delete something there and it
+stays deleted; a later release only updates files you have not changed. To get
+the shipped set back, delete that folder.
 
 Install for your user (menu entry, icon, orb-manager in ~/.local/bin):
     ./install.sh            or    ./install.sh --udev   (also the USB rule, needs sudo)

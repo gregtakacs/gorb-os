@@ -50,13 +50,12 @@ firmware:
 	ORB_BUILD_DIR=$(BUILD_DIR) $(GO) test ./internal/firmware/ -run BuiltInBundle
 	@echo "embedded firmware refreshed from $(BUILD_DIR) into $(BUNDLE)"
 
-## library: mirror the two shelf kinds beside one built executable. The hub's own
-## resolution ladder names this rung "beside the executable" (library.go:libLadder), and
-## it is the rung a downloaded hub lands on: run the binary where no gorb-os clone is
-## reachable and every other rung answers nothing, so /api/library reports
-## appsSource "none found" and the Apps and Themes faces draw an empty shelf. `release`
-## has always copied both dirs for exactly this reason; the dev builds did not, which is
-## why a `make manager` binary saw an empty library while the same tree's clone did not.
+## library: mirror the two shelf kinds beside one built executable, the ladder rung
+## library.go:libLadder names "beside the executable". This is the dev layout: a `make
+## manager` binary reads the tree's apps/ and themes/ fresh after every build, which is how
+## a re-baked app (make_factory_apps.py) reaches the hub. A release ships no such folders:
+## the same files are compiled in and seed the user's own library on first run (seed.go),
+## so the download is the executable alone.
 ##
 ## Merged with `cp -R src/. dst/` rather than wiped, so a rebuild refreshes every shipped
 ## file and an app the operator imported beside the binary survives it. The source of truth
@@ -198,7 +197,6 @@ release:
 	  printf 'GOOS=%-8s GOARCH=%-7s' $$os $$arch; \
 	  if CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "$$ld" -o $$d/$(RELEASE_NAME)$$sfx .; then \
 	    echo ' ok'; \
-	    cp -R $(CURDIR)/apps $(CURDIR)/themes $$d/; \
 	  else \
 	    echo ' FAIL'; rm -rf $(RELEASE_DIR); exit 1; \
 	  fi; \

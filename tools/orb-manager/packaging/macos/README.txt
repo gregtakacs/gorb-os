@@ -11,9 +11,11 @@ The first time it runs, macOS asks whether Orb Manager may find devices on your
 local network. Allow it: that is how it finds your orbs on your Wi-Fi. (Changed
 your mind? System Settings > Privacy & Security > Local Network.)
 
-Your apps and themes live in ~/Library/Application Support/orb-manager. The
-copies inside the app are only the starting set; an update adds newer apps
-there and never touches your themes.
+Your library (the apps and themes Orb Manager puts on an orb, and anything you
+import) lives in ~/Library/Application Support/orb-manager. The first run fills
+it with the apps and the default theme that come with this release. Delete
+something there and it stays deleted; a later release only updates files you
+have not changed. To get the shipped set back, delete that folder.
 
 Plug an orb in with a USB-C data cable to flash or set it up. No driver is
 needed.

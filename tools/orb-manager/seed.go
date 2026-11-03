@@ -1,0 +1,175 @@
+package main
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"embed"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
+
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
+)
+
+// A released hub is one executable. The shipped shelf (the first-party apps and the default
+// theme a new orb wears) is compiled in as seed stock, and at launch it is copied into the
+// user's own library, <user config>/orb-manager/{apps,themes}, which the hub then reads and
+// writes like any other library directory. The directory stays the library (library.go):
+// what the Library pane lists is what an install sends, and an operator who drops a file in
+// has changed what the hub installs with no rebuild.
+//
+// Seeding only ever feeds that one rung. A -library flag, a library beside the executable
+// (make manager's dev layout) or a clone's tree wins the ladder as before, and nothing is
+// written to the user config dir on their behalf.
+//
+// The ledger, .seeded.json beside apps/ and themes/, is what makes the seed polite. It
+// records each file the hub placed and the sha256 of the bytes it wrote, so a later launch
+// can tell three cases apart that the directory alone cannot:
+//
+//   - a file the hub placed and the owner deleted: never put back. Deleting from the
+//     library is the owner's decision, and a respawn would overrule it every launch.
+//   - a file the hub placed and nobody touched: a newer release may replace it (an app
+//     only at a higher version, so a release never downgrades; a theme whenever its bytes
+//     moved, since a theme carries no version to compare).
+//   - a file the owner changed, or had before the hub ever seeded: theirs, never touched.
+//
+// Deleting the whole user library, ledger included, is the way back to the shipped shelf.
+
+//go:embed apps/*.orbapp themes/*.orbtheme
+var shippedLib embed.FS
+
+// seedLedgerName is the ledger's file name inside the user library root.
+const seedLedgerName = ".seeded.json"
+
+// seedLedger maps "apps/clock.orbapp" to the sha256 of the bytes the hub last wrote there.
+// An empty hash marks a name the owner held before the hub seeded it: theirs for good.
+type seedLedger map[string]string
+
+func sha256Hex(b []byte) string {
+	s := sha256.Sum256(b)
+	return hex.EncodeToString(s[:])
+}
+
+// seedUserLibrary copies the shipped shelf (src, laid out as apps/ and themes/) into
+// userLib for the kinds named, under the ledger's rules, and answers one line per file it
+// wrote. An unreadable ledger is reported and read as empty, which costs at most one
+// respawn of a deleted file, never an overwrite: an existing file the ledger does not know
+// is still treated as the owner's.
+func seedUserLibrary(src fs.FS, userLib string, kinds []string) ([]string, error) {
+	var did []string
+	ledgerPath := filepath.Join(userLib, seedLedgerName)
+	led := seedLedger{}
+	if b, err := os.ReadFile(ledgerPath); err == nil {
+		if err := json.Unmarshal(b, &led); err != nil {
+			did = append(did, fmt.Sprintf("the seed ledger %s is unreadable (%v); starting a new one", ledgerPath, err))
+			led = seedLedger{}
+		}
+	}
+	changed := false
+	for _, kind := range kinds {
+		ents, err := fs.ReadDir(src, kind)
+		if err != nil {
+			continue
+		}
+		dst := filepath.Join(userLib, kind)
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return did, fmt.Errorf("the user library %s cannot be made: %w", dst, err)
+		}
+		for _, e := range ents {
+			if e.IsDir() {
+				continue
+			}
+			key := path.Join(kind, e.Name())
+			body, err := fs.ReadFile(src, key)
+			if err != nil {
+				did = append(did, fmt.Sprintf("skipped %s: %v", key, err))
+				continue
+			}
+			to := filepath.Join(dst, e.Name())
+			have, herr := os.ReadFile(to)
+			exists := herr == nil
+			rec, known := led[key]
+			write := false
+			switch {
+			case !known && !exists:
+				write = true
+			case !known && bytes.Equal(have, body):
+				led[key], changed = sha256Hex(body), true
+			case !known:
+				// There before the ledger: an older shipped app is still upgraded, anything
+				// else is the owner's from now on.
+				if kind == libAppsSubdir && appIsNewer(body, have) {
+					write = true
+				} else {
+					led[key], changed = "", true
+				}
+			case !exists, rec == "", sha256Hex(have) != rec, bytes.Equal(have, body):
+				// deleted, the owner's, changed by the owner, or already current
+			case kind == libAppsSubdir:
+				write = appIsNewer(body, have)
+			default:
+				write = true
+			}
+			if !write {
+				continue
+			}
+			if err := writeFileAtomic(to, body); err != nil {
+				did = append(did, fmt.Sprintf("skipped %s: %v", key, err))
+				continue
+			}
+			led[key], changed = sha256Hex(body), true
+			did = append(did, fmt.Sprintf("seeded %s into %s", key, userLib))
+		}
+	}
+	if changed {
+		b, _ := json.MarshalIndent(led, "", "  ")
+		if err := writeFileAtomic(ledgerPath, append(b, '\n')); err != nil {
+			return did, fmt.Errorf("the seed ledger %s cannot be written: %w", ledgerPath, err)
+		}
+	}
+	return did, nil
+}
+
+// appIsNewer answers whether container body carries a higher app version than have. An
+// unparsable side or an incomparable pair is "no": the seed never replaces on a guess.
+func appIsNewer(body, have []byte) bool {
+	nb, e1 := orbnet.ParseApp(body)
+	ob, e2 := orbnet.ParseApp(have)
+	if e1 != nil || e2 != nil {
+		return false
+	}
+	c, ok := orbnet.AppVersionCompare(nb.Version, ob.Version)
+	return ok && c > 0
+}
+
+func writeFileAtomic(to string, body []byte) error {
+	tmp := to + ".seed"
+	if err := os.WriteFile(tmp, body, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, to); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// seedKinds names the kinds the user library should be seeded for: those the ladder,
+// resolved without any seeding, would answer from the user config dir or from nowhere.
+// A flag, a library beside the executable or a clone keeps its kind unseeded.
+func seedKinds(lib *Library) []string {
+	var kinds []string
+	for _, k := range []struct{ kind, source string }{
+		{libAppsSubdir, lib.AppsSource},
+		{libThemesSubdir, lib.ThemesSource},
+	} {
+		if k.source == "the user config dir" || k.source == "none found" {
+			kinds = append(kinds, k.kind)
+		}
+	}
+	return kinds
+}

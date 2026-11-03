@@ -70,9 +70,6 @@ stage)
 		mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 		lipo -create -output "$app/Contents/MacOS/orb-manager" "$a/orb-manager" "$i/orb-manager"
 		chmod 755 "$app/Contents/MacOS/orb-manager"
-		# The library rides as seed stock: bundle.go copies it into the user's config
-		# dir on launch, because a signed bundle must never be written to.
-		cp -R "$a/apps" "$a/themes" "$app/Contents/Resources/"
 		cp "$here/macos/orb-manager.icns" "$app/Contents/Resources/"
 		# CFBundle*Version must be plain x.y.z: v1.2.6-2 and a describe string both trim to it.
 		num=$(echo "${ver#v}" | sed 's/[^0-9.].*//')

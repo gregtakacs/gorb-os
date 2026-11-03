@@ -1,7 +1,7 @@
 # Releasing Orb Manager
 
-A release is the hub for three platforms, with the current firmware and the shelf apps
-built in:
+A release is the hub for three platforms as a single executable, with the current
+firmware, the shelf apps and the default theme built in:
 
 | File | For | Signed with |
 |---|---|---|
@@ -146,13 +146,15 @@ step ran, before you push a tag.
 
 ## What is in the box
 
-- **Hub binary.** It has the web UI, the editor runtime (React, Babel, 36 fonts) and the
-  firmware bundle compiled in, so it needs no network to flash or edit.
-- **apps/ and themes/.** The shelf: every app in `tools/orb-manager/apps` and the
-  default theme. On macOS these are seed stock inside the bundle. On launch,
-  `bundle.go` copies them into `~/Library/Application Support/orb-manager`: it adds
-  newer apps and never overwrites a user's theme, because a signed bundle must never be
-  written to.
+- **The executable, and nothing else to run.** It has the web UI, the editor runtime
+  (React, Babel, 36 fonts), the firmware bundle and the shelf compiled in, so it needs
+  no network to flash or edit. The shelf is every app in `tools/orb-manager/apps` plus
+  the default theme in `themes/`. On first run `seed.go` copies it into the user's
+  library: `%AppData%\orb-manager` on Windows, `~/Library/Application Support/orb-manager`
+  on macOS, `~/.config/orb-manager` on Linux. A ledger there (`.seeded.json`) makes the
+  rules hold: a file the owner deleted is never put back; a later release replaces only
+  a copy nobody changed (apps only at a higher version); a file the owner had or edited
+  is never touched. Deleting the folder brings the shipped set back.
 - **README.txt.** First-run notes per OS (`tools/orb-manager/packaging/<os>/README.txt`).
 - **LICENSE.txt and THIRD_PARTY_NOTICES.txt.** The second covers everything the
   release redistributes: Go modules, React/ReactDOM/Babel, the fonts (all OFL-1.1),

@@ -3106,7 +3106,7 @@ class Component extends DCLogic {
       else crc(pl.rgba);
       pos(pl, 'plate');
     }
-    for (const h of (opts.hands || [])) { crc(h.rgba); pos(h, 'hand' + h.slot); }
+    for (const h of (opts.hands || [])) { crc(h.rgba); pos(h, 'hand' + h.slot + (h.id ? ':' + h.id : '')); }   // the id seats the hand's depth
     for (const s of (opts.shadows || [])) { crc(s.rgba); pos(s, 'sh' + s.slot); }
     if (opts.carriage) {
       const c = opts.carriage;
@@ -3153,7 +3153,9 @@ class Component extends DCLogic {
       if (K === 1) c.getContext('2d').drawImage(h.sp.c, 0, 0);
       else { const cx = c.getContext('2d'); cx.imageSmoothingQuality = 'high'; cx.drawImage(h.sp.c, 0, 0, w, hh); }
       oth += w * hh * 3;
-      const hrow = { slot: ROLE[h.id], rgba: pixOf(c), w, h: hh, x: Math.round(lens(h.x)) - px, y: Math.round(lens(h.y)) - py, pivot_x: px, pivot_y: py };
+      /* The id is the hand's name in depthOrder: without it the baker could not find a slot
+       * hand in the author's stack, and Skeleton's hour rode its seconds pointer's rung. */
+      const hrow = { id: h.id, slot: ROLE[h.id], rgba: pixOf(c), w, h: hh, x: Math.round(lens(h.x)) - px, y: Math.round(lens(h.y)) - py, pivot_x: px, pivot_y: py };
       /* D41: the hand's own drive. A rotation that only changes its cadence keeps the
        * slot's mapping (no source named); a fan or a disc names its source and path. The
        * standing turn rides every path: an uploaded hand's facing (artRot), which the

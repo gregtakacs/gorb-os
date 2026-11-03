@@ -15,6 +15,7 @@ if (process.argv.includes('--mutations')) {
     ['the still row names a source', "src: SOURCES.indexOf('none'), x: st.x | 0", "src: SOURCES.indexOf('second'), x: st.x | 0"],
     ['a lifted face\u2019s window keeps depth 0', "var bankOrd = c4.id !== undefined && rung3['bank:' + c4.id] !== undefined", "var bankOrd = false"],
     ['a still row without a place is accepted', "if (rung3[stKey] === undefined)\n        throw", "if (false)\n        throw"],
+    ['an unlisted row may share a listed rung', "if (dOrder3.length && listedRung3[r] !== undefined)", "if (false)"],
   ];
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stmut.'));
   let caught = 0;
@@ -78,6 +79,25 @@ ok(!B.verifyBundle3(plain.bytes).sections[0].blob.elements.some((e) => e.class =
 
 refuses(() => B.bakeClock3(base({ depthOrder: ['centre-hour', 'centre-minute'] })), /no place in depthOrder/, 'a still row with no place in the stack is refused');
 refuses(() => B.bakeClock3(base({ stills: [Object.assign({}, face, { rgba: new Uint8Array(4) })] })), /no pixels/, 'a still row with no art is refused');
+
+// Skeleton's stack, bottom first: the sub-dial seconds pointer, then the hour, then the minute
+// (design.order, the order the preview draws). The composer once shipped its slot hands
+// with no id, so the list could not find them; they fell to the natural ladder, the hour
+// landed on the pointer's rung, and the glass drew the seconds over the hour (bench,
+// 2026-11-03). Named, they stack as listed; unnamed, the clash is refused, not shipped.
+const ptr = { id: 'h1', src: 'second', motion: 'rotate', span: 3600, zero: 0, vmin: 0, vmax: 60,
+              x: 286, y: 220, w: 8, h: 89, pivot_x: 4, pivot_y: 70, plane: plane(8, 89, () => [60, 80, 200, 255]) };
+const skel = (named) => base({ stills: [], aux: [ptr], depthOrder: ['h1', 'h2', 'h3'],
+  hands: [Object.assign(hand(0, 120), named ? { id: 'h2' } : {}), Object.assign(hand(1, 180), named ? { id: 'h3' } : {})] });
+const els3 = B.verifyBundle3(B.bakeClock3(skel(true)).bytes).sections[0].blob.elements;
+const sec3 = els3.find((e) => e.class === B.CLASS_AUX && B.SOURCES[e.src] === 'second' && e.w === 8);
+const hr3 = els3.find((e) => e.class === B.CLASS_AUX && B.SOURCES[e.src] === 'hour12' && e.w === 9);
+const mn3 = els3.find((e) => e.class === B.CLASS_AUX && B.SOURCES[e.src] === 'minute' && e.w === 9);
+ok(sec3 && hr3 && mn3 && sec3.order < hr3.order && hr3.order < mn3.order,
+   'a sub-dial seconds pointer listed under the hour stays under it on the glass',
+   [sec3 && sec3.order, hr3 && hr3.order, mn3 && mn3.order].join(' < '));
+refuses(() => B.bakeClock3(skel(false)), /has no place in depthOrder, and its natural rung 2 is the one depthOrder gave h1/,
+        'a hand the list cannot name, on a rung the list gave another row, is refused');
 
 console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');
 process.exit(fails ? 1 : 0);

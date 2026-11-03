@@ -3386,6 +3386,18 @@
       var id3 = String(dOrder3[q3]);
       if (rung3[id3] === undefined) rung3[id3] = r3++;
     }
+    /* A row the list omits rides its natural rung, and that rung must not be one the list
+     * gave another row: the device breaks a tie by table order, not by the stack the
+     * preview drew. A composer that shipped its slot hands without their ids put Skeleton's
+     * hour hand on its sub-dial seconds pointer's rung, and the glass drew the seconds
+     * over the hour (bench, 2026-11-03). */
+    var listedRung3 = {};
+    for (var lid3 in rung3) listedRung3[rung3[lid3]] = lid3;
+    function unlistedRung3(what, id, r) {
+      if (dOrder3.length && listedRung3[r] !== undefined)
+        throw new Error(what + ' (' + id + ') has no place in depthOrder, and its natural rung ' + r +
+          ' is the one depthOrder gave ' + listedRung3[r] + ': the two would stack by table order, not as the preview draws them');
+    }
     /* The natural fallback ladder: sub-dial pointers in table order, then the
      * centre stack hour, minute, second — exactly handSlots' order, so a bake
      * with no depthOrder list ships the depth the preview already shows. */
@@ -3600,6 +3612,7 @@
       handOrd[h.slot] = Math.max(1, Math.min(63, dOrder3.indexOf(hid3) >= 0 ? rung3[hid3]
                                      : (h.order | 0) >= 1 ? (h.order | 0)
                                      : SUBDIAL_RUNG + ((o.aux || []).length) + k));
+      if (dOrder3.indexOf(hid3) < 0 && !((h.order | 0) >= 1)) unlistedRung3('a hand at slot ' + h.slot, hid3, handOrd[h.slot]);
       var hd5 = h.drive || {}, sd = SLOT_DRIVE[h.slot];
       var hrow = { n: nid++, 'class': CLASS_AUX, slot: nextSlot('the hand at slot ' + h.slot),
                    kind: SHAPE_ARM, x: h.x, y: h.y, w: h.w, h: h.h,
@@ -3697,6 +3710,7 @@
       var aid5 = a5.id ? String(a5.id) : null;
       var or5 = a5.order === undefined ? (aid5 && dOrder3.indexOf(aid5) >= 0 ? rung3[aid5]
                             : (aid5 ? SUBDIAL_RUNG + nat3.indexOf(aid5) : ord)) : a5.order;
+      if (a5.order === undefined && !(aid5 && dOrder3.indexOf(aid5) >= 0)) unlistedRung3('a pointer driven by ' + q(s4), aid5 || '(no id)', or5);
       // A slide carries no pivot to turn about; its centre is the origin the row places.
       row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('a pointer driven by ' + q(s4)), kind: SHAPE_ARM,
             src: SOURCES.indexOf(s4), x: av5.x, y: av5.y, w: a5.w | 0, h: a5.h | 0,

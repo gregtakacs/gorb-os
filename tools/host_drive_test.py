@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host bench for the row drive (docs/element-model-plan.md §3-§4, D42 E1).
+"""Host bench for the row drive (docs/history/element-model-plan.md §3-§4, D42 E1).
 
 Every moving row on the dial — hand, pointer, ring, carriage — is posed by one drive:
 its source (or one digit of it), as much of the next finer field as its cadence shows,

@@ -45,9 +45,9 @@ typedef struct {
  * --from-bundle) refuse a longer bank with this number. */
 #define CLK_BG_MAX    16
 
-/* D41: when a driven row moves (docs/hand-motion-plan.md §2.1). D42 retired
+/* D41: when a driven row moves (docs/history/hand-motion-plan.md §2.1). D42 retired
  * INHERIT with the old dialects it inherited from: 0 is NONE, the cadence of a still
- * row and of nothing else (docs/element-model-plan.md §4). */
+ * row and of nothing else (docs/history/element-model-plan.md §4). */
 enum {
     CLK_CAD_NONE       = 0,   /* a still row: it never moves                         */
     CLK_CAD_SWEEP      = 1,   /* the whole fraction                                  */
@@ -257,7 +257,7 @@ typedef struct {
 } clk_comp_t;
 
 /* D42: one moving row — a hand, a pointer, a ring, a still layer, a shadow twin or
- * the carriage. Every one is an AUX row on the wire (docs/element-model-plan.md §8) and
+ * the carriage. Every one is an AUX row on the wire (docs/history/element-model-plan.md §8) and
  * one of these at runtime, drawn by one path in orb_stage.c. Its art sits at P0 (the
  * row's own placement, turned to `zero`); across its domain it turns a further `span`
  * and its pivot travels (dx, dy) to P1, and `end` says what it does past the end. */

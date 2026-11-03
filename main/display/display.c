@@ -1134,7 +1134,7 @@ static uint32_t lvgl_tick_cb(void)
 }
 
 /* ---- Public API ---- */
-/* Two-half bring-up, per docs/theme-delta-mmap-plan.md §6.2/§6.4: the panel
+/* Two-half bring-up, per docs/history/theme-delta-mmap-plan.md §6.2/§6.4: the panel
  * half runs EARLY, before the theme resolves, so a theme load that takes
  * seconds is spent in front of a live overlay instead of a dark dial. The
  * LVGL half is display_init() below: two calls that wire the flush path, which

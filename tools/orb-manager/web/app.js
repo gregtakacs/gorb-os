@@ -2875,7 +2875,7 @@ async function themePost(path, payload, timeoutMs) {
 // The Theme card's preview unpack, mirroring the themes page on the orb itself:
 // one GET per row, and the row answers itself by drawing or staying out of the
 // way. The body is the device's own wire shape — [u16 w LE][u16 h LE][RGB565 LE]
-// — which the hub relays without touching (docs/theme-preview-plan.md §4). A
+// — which the hub relays without touching (docs/history/theme-preview-plan.md §4). A
 // theme that carries NO plane (the device's own 404) keeps the design's quiet
 // answer. Everything else — timeout, mid-body stall, refusal, unreachable orb —
 // is a FAILED READ, and the row now says so with a "?" chip whose title names
@@ -3477,7 +3477,7 @@ function themeRow(t, state, list) {
   const li = document.createElement("li");
   // The ID photo the bake carried: the device unpacks nothing — it streams the
   // plane and this canvas does the work (themePreviewPlane). An absent preview is
-  // the design's quiet answer (docs/theme-preview-plan.md §1): the canvas unhooks
+  // the design's quiet answer (docs/history/theme-preview-plan.md §1): the canvas unhooks
   // itself and the row reads exactly as it did before planes existed.
   const pv = document.createElement("canvas");
   pv.className = "pv";

@@ -1185,7 +1185,7 @@ func (s *Server) waitForStore(ctx context.Context, ip, id string, beats ...waitB
 // that binds every process on the bench. A second hub instance tore a store on
 // 23 Oct for exactly the reason the slot could not give it: the first hub's ledger
 // said held, the second hub's probe checked only its own empty ledger and the port's
-// flock, found that free, and paid the reset (docs/theme-delta-mmap-plan.md 32.4).
+// flock, found that free, and paid the reset (docs/history/theme-delta-mmap-plan.md 32.4).
 //
 // It resolves the address the way the hub resolves every other one: the MAC the grant was
 // committed for, falling back to the address book, then the MAC the USB sweep attributes

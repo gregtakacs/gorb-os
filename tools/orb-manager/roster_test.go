@@ -361,9 +361,9 @@ func TestRosterIsDocumentedAndBadged(t *testing.T) {
 			t.Errorf("README no longer explains the merged list (%q missing)", want)
 		}
 	}
-	plan := readUpFile(t, "..", "..", "docs", "orb-manager-plan.md")
+	plan := readUpFile(t, "..", "..", "docs", "history", "orb-manager-plan.md")
 	if !strings.Contains(plan, "one list, both doors") {
-		t.Error(`docs/orb-manager-plan.md lost its "one list, both doors" spec`)
+		t.Error(`docs/history/orb-manager-plan.md lost its "one list, both doors" spec`)
 	}
 	page := readWebFile(t, "index.html")
 	if !strings.Contains(page, "<h3>Orbs</h3>") {

@@ -46,7 +46,7 @@ idf_component_register(
         "input/input_router.c"
         "imu/imu.c"
         # D39: the sound engine (I2S + ES8311 + NS4150B and the mixer) and its codec.
-        # docs/sound-plan.md §4; the clock schedules, this plays.
+        # docs/history/sound-plan.md §4; the clock schedules, this plays.
         "audio/orb_es8311.c"
         "audio/orb_sound.c"
         "audio/orb_sound_app.c"      # the svc entries' half: an app's theme sounds by slot
@@ -77,16 +77,16 @@ idf_component_register(
         "net/orb_geo.c"
         "net/orb_cities.c"
         "net/orb_tls_mem.c"   # mbedTLS allocator: PSRAM for the task that asks
-        "net/orb_mdns.c"      # _orb._tcp advertiser (docs/orb-manager-plan.md §5 item 4)
+        "net/orb_mdns.c"      # _orb._tcp advertiser (docs/history/orb-manager-plan.md §5 item 4)
         "sd/orb_sd.c"
         "sd/orb_files.c"
         # D38: the MTP file-share mode, in its own file because the SD layer it
         # borrows the card from is not its owner. MSC is out of the tree, not out
-        # of the menu — see docs/usb-sd-msc-plan.md §13.1.
+        # of the menu — see docs/history/usb-sd-msc-plan.md §13.1.
         "usb/orb_usb_mtp.c"
         "usb/orb_usb_msc.c"
         # The RAM log ring: /api/v1/log's source, and the only witness that survives
-        # the file-share window taking the console (docs/usb-sd-msc-plan.md §13.3).
+        # the file-share window taking the console (docs/history/usb-sd-msc-plan.md §13.3).
         "util/orb_log.c"
         # The last panic, recorded in RTC memory by a wrap of esp_panic_handler (below)
         # and reported by /api/v1/status after the reset (2026-10-31).

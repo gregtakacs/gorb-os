@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// D39's generator and the bake that carries it (docs/sound-plan.md §6, §7).
+// D39's generator and the bake that carries it (docs/history/sound-plan.md §6, §7).
 //
 // The JS port is the authority for the defaults, so §6's three measurements run on ITS
 // output: every tick loop at every rate is seamless (the circular second difference at

@@ -230,7 +230,7 @@ CONFIG_LV_MEM_SIZE=24576
 
 # ---------------------------------------------------------------------------
 # microSD (theme import). See main/sd/orb_sd.h for what the socket is and is
-# not for, and docs/usb-sd-msc-plan.md §2 for the wiring this is built on.
+# not for, and docs/history/usb-sd-msc-plan.md §2 for the wiring this is built on.
 # ---------------------------------------------------------------------------
 CONFIG_ORB_SD_ENABLE=y
 CONFIG_ORB_SD_SPI_MAX_KHZ=20000
@@ -253,7 +253,7 @@ CONFIG_FATFS_CODEPAGE_437=y
 # handler silently compiles out with a binary that barely grows.
 CONFIG_ORB_DEBUG_HTTP=y
 
-# ---- USB file sharing (D37, docs/usb-sd-msc-plan.md §12) -----------------------
+# ---- USB file sharing (D37, docs/history/usb-sd-msc-plan.md §12) -----------------------
 #
 # The mode is compiled in, and that is all this enables. Nothing is armed at
 # runtime by it: the port comes up as the USB-Serial-JTAG console and the flash
@@ -266,7 +266,7 @@ CONFIG_ORB_DEBUG_HTTP=y
 # two independent booleans, and this is the only line that decides which one a
 # build gets. It reads MSC because MTP never worked: the first command of any
 # session stalls the bulk pair on a Windows host and a Linux one alike, and the
-# vendor class has no path back from a stall (docs/usb-sd-msc-plan.md §14). The
+# vendor class has no path back from a stall (docs/history/usb-sd-msc-plan.md §14). The
 # choice is what keeps a composite binary — a raw LUN beside an MTP device writing
 # the same volume through FatFs, two owners of one filesystem — unbuildable rather
 # than merely unwanted. Setting both symbols is a Kconfig error, not a config.

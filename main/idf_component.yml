@@ -3,7 +3,7 @@ dependencies:
     version: "^9.2.0"
   espressif/esp_lcd_co5300:
     version: "^2.2.0"
-  # The MTP file-share mode (docs/usb-sd-msc-plan.md §12), whose storage backend is
+  # The MTP file-share mode (docs/history/usb-sd-msc-plan.md §12), whose storage backend is
   # esp_tinyusb's MTP class over an already-mounted VFS path. The component's own
   # floor is idf >=5.3, so the box's IDF v5.4 is inside range, and 3.0.0 is what
   # dependencies.lock resolves. It arrives for every target — `targets:` in the

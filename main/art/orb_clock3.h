@@ -46,7 +46,7 @@ extern "C" {
 
 /* D39: the clock's sound slots (theme_schema.CLOCK_SOUND_SLOTS, mirrored and pinned
  * by the suite). One slot per event, so any of them can be an owner's upload; an
- * empty slot is silence for its event. docs/sound-plan.md §3.1. */
+ * empty slot is silence for its event. docs/history/sound-plan.md §3.1. */
 enum {
     CLK_SND_TICK_LOOP = 0,   /* the tick loop, anchored to the wall second   */
     CLK_SND_CHIME_Q1,        /* :15                                          */

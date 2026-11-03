@@ -313,7 +313,7 @@ func TestFirmwarePingAnswerCarriesTheStampTheHubParses(t *testing.T) {
 }
 
 // TestThemeDoorsAnswerWithoutTheClocksBoot is the firmware-side pin for the join-time
-// theme death (bench, Bronze, 2026-10-29; docs/bugfix-batch-2026-10-29.md #19). The hub
+// theme death (bench, Bronze, 2026-10-29; docs/history/bugfix-batch-2026-10-29.md #19). The hub
 // installs and enables the clock over the wire on a board that booted without one, then
 // pushes the theme seconds later. The upload door used to resolve its directory through
 // the table clock_view_init fills — NULL on that boot — and answered the whole situation

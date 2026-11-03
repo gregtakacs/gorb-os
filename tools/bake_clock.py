@@ -385,7 +385,7 @@ def matte_plan(live, mode):
 # glass stay LIVE layers that the commit hook paints back over every row it
 # rebuilds. So a texel one of those covers at alpha 255 can never reach the
 # panel, and pushing it buys nothing while charging ~0.2 ms for every row it is
-# alone in (docs/rows-capacity-2026-10-10.md). A closed dial with one small
+# alone in (docs/history/rows-capacity-2026-10-10.md). A closed dial with one small
 # escapement opening was still paying for the whole train.
 #
 # Only a NON-ROTATING, NORMAL-blend layer may occlude: a hand, a shadow or the

@@ -224,11 +224,11 @@ ACCEPTED = {'fill_sprite_dsc', 'paint_ctx_init',   # the threaded art-bank base
             # pricing) without moving this pin, so the parity line has read red
             # since. The extraction promise held; the report has since grown the
             # LVGL render-window residual (render ms/s, px/s, us/kpx) that
-            # docs/render-cost-findings-2026-10-30.md §1 measures with. Additive
+            # docs/history/render-cost-findings-2026-10-30.md §1 measures with. Additive
             # prints only: the counters, the snapshot and the reset are untouched.
             'report_fps_if_due',
             # Post-extraction behaviour change, the unified render path's slice 1
-            # (docs/unified-render-path-design-2026-10-30.md §4.1, §4.3). The gate
+            # (docs/history/unified-render-path-design-2026-10-30.md §4.1, §4.3). The gate
             # stops naming a storage format: it asks for a plane to restore from
             # (orb_sched_restore_src — the canvas for a delta bank, the XIP plate
             # for a still) and a layer table claimed with no refusal. The canvas

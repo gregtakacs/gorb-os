@@ -1,7 +1,7 @@
 #pragma once
 /**
  * Boot / install overlay — the one thing that can paint while the theme may be
- * the thing that failed (docs/theme-delta-mmap-plan.md §6.2).
+ * the thing that failed (docs/history/theme-delta-mmap-plan.md §6.2).
  *
  * Deliberately built on esp_lcd_panel_draw_bitmap, not LVGL: it must work with
  * LVGL down (boot, before display_init's buffers exist) and with LVGL parked

@@ -1,7 +1,7 @@
 # D43: the composer as a layer stack, with an honest panel preview
 
 **Status: RULED (owner, 2026-11-01, §11). P0, P3–P5c and P7 built; P1, P2, P5d, P6 partly (§10).** This file is D42's slice
-E2 (`docs/element-model-plan.md` §10) widened from "one list of rows" into the
+E2 (`docs/history/element-model-plan.md` §10) widened from "one list of rows" into the
 composer's whole authoring model, plus an RGB565 panel preview, a bake-time dither,
 the design carried inside the `.orbtheme`, and the retirement of the hub's
 `/composer/` route.
@@ -1467,13 +1467,18 @@ reached the row (v1.2.10); a narrowed case opening shipped the seated hands full
 6000 K) reached only the tourbillon carriage, so a balanced dial shipped its plate, hands
 and crystal unbalanced; every export reader now balances what it reads (`wbPix`), and the
 Panel view balances pixels rather than round-tripping a translucent canvas (v1.2.11).
-**Open:** the Perpetual calendar preset does not bake ("the complication c1 renders nothing
-across its 12 values"), so it cannot be sent to an orb.
+The Perpetual calendar preset did not bake ("the complication c1 renders nothing across
+its 12 values"). The cause was general: a plated sub-dial whose hand reads a month, date or
+weekday ships that hand inside its tiles, and since hands became their own parts the tile
+pass drew no hand (`compPass3` now adds the hand comps a row hosts). Perpetual, whose month
+dial has nothing else that changes, was refused; Triple calendar's date dial still baked
+because its moon changes, and shipped with no date hand. Fixed in v1.2.12, seen on orb-B's
+glass; theme-check now bakes all 18 presets and requires each plated hand's tiles to differ.
 
 ## 6. Cost stays visible
 
 The stack shows, per layer: live or baked in (R5), and its share of the per-flush
-estimate (`estimate3`, `docs/unified-render-path-design-2026-10-30.md` §5, which D42
+estimate (`estimate3`, `docs/history/unified-render-path-design-2026-10-30.md` §5, which D42
 §9 extends to every row). The Render step shows the total against the budget with a
 pass/fail badge. A layer whose promotion to a live row (R5, R7) pushes the dial over
 budget says so on the layer at the moment it is dropped.
@@ -1733,7 +1738,7 @@ long as an app in its library or on a known orb still names it.
   (`TestEmbeddedComposerMatchesSource` and the parts of `composer_test.go` and
   `composer_offline_test.go` about the document). The offline and vendor checks move
   with the runtime.
-- `docs/watch-composer-plan.md` is marked superseded by this file. It evaluated the
+- `docs/history/watch-composer-plan.md` is marked superseded by this file. It evaluated the
   standalone tool before D37.
 
 ### 9.3 Where things live after P3

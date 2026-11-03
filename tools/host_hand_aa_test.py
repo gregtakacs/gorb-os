@@ -25,7 +25,7 @@ gif_frames, tourbillon_n, second_sweep), so no new bit and no re-bake: every
 still theme on a card turns the filter on by itself, and every animated theme
 keeps yesterday's pixels.
 
-Slice 1 of the unified render path (docs/unified-render-path-design-2026-10-30.md
+Slice 1 of the unified render path (docs/history/unified-render-path-design-2026-10-30.md
 §8) moved the still dials with it: a dial whose restore source is non-NULL is
 painted by the L4 painter, which samples nearest, while its LVGL widgets stay
 live as the fallback. A grant left standing there lets any LVGL-initiated repaint

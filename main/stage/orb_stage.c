@@ -107,7 +107,7 @@ static lv_obj_t *s_scr;
 static lv_obj_t *s_overlay;
 static lv_image_dsc_t s_overlay_dsc;
 
-/* ---- D42: the moving rows (clk_row_t, docs/element-model-plan.md) ----------
+/* ---- D42: the moving rows (clk_row_t, docs/history/element-model-plan.md) ----------
  * Every hand, pointer, ring, still layer, shadow twin and the carriage is one row,
  * and this is each row's tick state: its widget for the classic path, the pose it
  * shows now (an angle in tenths and the pivot's travel in px), the sprite at that
@@ -159,7 +159,7 @@ static double           s_bt_frac = 0.0;
  * differ, so the per-tick re-mark is that rotated diff box — not the
  * carriage's full swept box, which would re-composite ~40% of the page every
  * tick and re-create the full-page plateau the static re-mark was retired
- * over (docs/rows-capacity-2026-10-10.md). */
+ * over (docs/history/rows-capacity-2026-10-10.md). */
 static int32_t        s_tourb_shown = -1;   /* frame composited now, -1 = never */
 static uint32_t       s_tourb_t0;           /* lv_tick ms the frame clock started */
 static lv_image_dsc_t s_tourb_dsc[CLK_TOURB_MAX];
@@ -661,7 +661,7 @@ static void clock_tick_policy(lv_timer_t *timer)
 
 #if DISPLAY_BENCH
 /* ---- Synthetic live layer, to price a blended pixel --------------------------
- * docs/fps-budget-benchmark-plan.md Phase 2. DISPLAY_BENCH_PX solid 60x60
+ * docs/history/fps-budget-benchmark-plan.md Phase 2. DISPLAY_BENCH_PX solid 60x60
  * blocks (3600 px each, so 18/36/72/112 add the planned 65k/130k/259k/403k
  * px/tick) are painted through the very gfx_blend_px() the real layers use, with
  * the colour plane in PSRAM like a real sprite. Positions are chosen at tick
@@ -675,7 +675,7 @@ static void clock_tick_policy(lv_timer_t *timer)
  * union is NOT what sets that — the carriage's rotating diff box forces ~255
  * on its own. Pinning rows therefore means keeping the ink inside that band,
  * and DISPLAY_BENCH_SPREAD=1 is the deliberate way out, used to price the row
- * term alone. Measured numbers: docs/fps-budget-findings-2026-10-10.md. */
+ * term alone. Measured numbers: docs/history/fps-budget-findings-2026-10-10.md. */
 #define BENCH_BLK        60
 #define BENCH_MAX_BLK    128
 #define BENCH_BAND_Y0    128
@@ -1115,7 +1115,7 @@ static void complications_reset(void)
 
 /* ---- D42: the moving rows -------------------------------------------------------
  *
- * One clk_row_t is a sprite plus how it moves (docs/element-model-plan.md §3): its
+ * One clk_row_t is a sprite plus how it moves (docs/history/element-model-plan.md §3): its
  * art sits at P0 — the row's own placement, turned to `zero` — and across its domain
  * it turns a further `span` and its pivot travels (dx, dy) to P1. The value comes
  * from comp_value(), so a date ring and the date WINDOW can never disagree about
@@ -1273,7 +1273,7 @@ static void rows_update(void)
     }
 }
 
-/* ---- D39: the clock's sound policy (docs/sound-plan.md §5) --------------------
+/* ---- D39: the clock's sound policy (docs/history/sound-plan.md §5) --------------------
  *
  * The theme carries the sounds (orb_theme_sounds), the OS plays them (orb_sound),
  * and this is the part that is the clock's own: which sound, and when. It runs off
@@ -1295,7 +1295,7 @@ static void rows_update(void)
  * State lives in PSRAM behind one pointer: this board has no internal RAM to spare
  * (orb_sound.c's header has the measurement). */
 
-/* D41 G5: a jump slot is the sound of a row stepping (docs/sound-plan.md §3.1), so it
+/* D41 G5: a jump slot is the sound of a row stepping (docs/history/sound-plan.md §3.1), so it
  * plays only on a dial where some row reading that source steps, and on the instant
  * it does. Three classes, one per slot: minute, hour, calendar. */
 

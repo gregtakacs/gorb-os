@@ -32,7 +32,7 @@
  * to the renderer's flush spin would lift the face late exactly when the dial is
  * busy. Priority bounds the *decision's* latency; it sleeps in ulTaskNotifyTake
  * the rest of the time, so the frame budget documented in
- * docs/fps-budget-findings-2026-10-10.md still is not its to spend. See
+ * docs/history/fps-budget-findings-2026-10-10.md still is not its to spend. See
  * IDLE_DIM_TASK_PRIO in the .c for the full argument.
  *
  * It does NOT, however, put the brightness write on that high-priority task. The

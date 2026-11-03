@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""D39: put sounds into a clock theme (docs/sound-plan.md §3).
+"""D39: put sounds into a clock theme (docs/history/sound-plan.md §3).
 
 A clock sound is a SOUND element row (theme_schema.CLASS_SOUND) naming one catalogue
 row whose plane is bare 16-bit mono PCM at 22,050 Hz: w samples, h 1, two bytes each.

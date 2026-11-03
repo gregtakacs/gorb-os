@@ -1106,7 +1106,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// each passes the same learned-address gate the proxy uses, and each names a
 	// route main/net/orb_net.c actually registers. They are separate endpoints rather
 	// than /orb/ forwards so the theme name is checked before a byte leaves the box,
-	// and so the orb `id` that docs/theme-identity-plan.md adds later has exactly one
+	// and so the orb `id` that docs/history/theme-identity-plan.md adds later has exactly one
 	// module to land in (internal/orbnet/themes.go).
 	mux.Handle("/api/theme/list", s.requireControl(http.HandlerFunc(s.handleThemeList)))
 	// D37: the Themes face's app chooser. A read, so it takes ?ip= like its

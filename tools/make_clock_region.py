@@ -64,7 +64,7 @@ MEMBER_ENTRY = "index.html"
 MEMBER_ENGINE = "watch-engine.js"
 MEMBER_RENDERER = "dial-renderer.js"
 # D39: the clock's default sounds ship as this generator, never as WAVs
-# (docs/sound-plan.md §6). App-owned like the engine, so it is a member, relative.
+# (docs/history/sound-plan.md §6). App-owned like the engine, so it is a member, relative.
 MEMBER_SOUND = "sound-engine.js"
 # D43 P4: the layer stack and its rules, app-owned like the engine.
 MEMBER_STACK = "stack.js"

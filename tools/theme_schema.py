@@ -87,7 +87,7 @@ SOURCES = (
     "week",          # ISO week number, 1..53
     "day_of_year",   # 1..366
     "quarter",       # 1..4 — tm_mon/3+1; the firmware's comp_value is the
-                     # authority (docs/behaviour-vocabulary.md G2; the
+                     # authority (docs/history/behaviour-vocabulary.md G2; the
                      # earlier "0..3" comment was wrong, no bake reached it)
     "value",         # raw: index == the comp's own value, for bake-decided art
     "year",          # D43 P5d.3: the year itself (2026); no window domain, so a row
@@ -510,14 +510,14 @@ ELEMENT_FIELDS = (
     ("parent",   "u16"),   # row `n` of the drawing row this one hangs on;
                            # 0xFFFF = none. 0 is the plate's tag and a refusal.
     ("delay",    "u16"),   # per-frame ms for this row's animation; 0 = default
-    # D41's motion columns (docs/hand-motion-plan.md §4), appended exactly as C4's
+    # D41's motion columns (docs/history/hand-motion-plan.md §4), appended exactly as C4's
     # pair was. They mean nothing below the v5 clock stamp: a v4 pack refuses a
     # non-default one, and a narrower row reads each as 0 — inherit, no argument,
     # no ease — which is every row's pre-D41 motion.
     ("cadence",  "u8"),    # AUX/BANK: CADENCES id, when the row moves
     ("cad_arg",  "u16"),   # step N, stop-to-go P (tenths of a second), drag window (min)
     ("ease",     "u16"),   # settle on a step/jump, flyback on a flyback row, in ms
-    # D42's motion columns (docs/element-model-plan.md §8), the clock's v6 row. An AUX
+    # D42's motion columns (docs/history/element-model-plan.md §8), the clock's v6 row. An AUX
     # row moves from P0 (its own placement, turned to `zero`) to P1 (turned a further
     # `span`, its pivot moved by dx/dy) across its domain, and `end` says what happens
     # past the end. Zero on every other class.
@@ -660,7 +660,7 @@ CLOCK_SLOTS = (
     ("ptr21",         "aux",    21,   "row 21: one plate (or a carriage's frames), moved by its own drive"),
     ("ptr22",         "aux",    22,   "row 22: one plate (or a carriage's frames), moved by its own drive"),
     ("ptr23",         "aux",    23,   "row 23: one plate (or a carriage's frames), moved by its own drive"),
-    # D39: the sound slots, one per event (docs/sound-plan.md §3.1). The order IS the
+    # D39: the sound slots, one per event (docs/history/sound-plan.md §3.1). The order IS the
     # slot number main/art/orb_clock3.h's CLK_SND_* enum reads, and the suite pins it.
     # Played by the clock's sound policy, never drawn, so none is in CLOCK_SLOTS_DRAWN.
     ("tick_loop",     "sound",  0,    "the tick loop, anchored to the wall second"),

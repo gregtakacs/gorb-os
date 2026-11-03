@@ -98,7 +98,7 @@ typedef enum {
      * at its own bound, and D26 makes that a refusal at the door. */
     ORB_ASSET_PREVIEW,      /* one static plate: the theme's own preview            */
     /* D39's append. A sound: 16-bit mono PCM at 22,050 Hz behind a 20-byte header
-     * (docs/sound-plan.md §3.2), one per event slot an app names. It is theme
+     * (docs/history/sound-plan.md §3.2), one per event slot an app names. It is theme
      * content for the reason art is — the app supplies the policy, the theme the
      * bytes — and its own class because no pixel class can be priced or checked as
      * a waveform. Its catalogue row carries the payload as w 16-bit words and h 1,

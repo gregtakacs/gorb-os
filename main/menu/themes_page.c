@@ -78,7 +78,7 @@ static volatile bool s_dirty;
 static volatile bool s_walk;      /* a list walk is posted and unreaped     */
 static bool    s_armed;
 
-/* ---- the preview plane (docs/theme-preview-plan.md §2) --------------------
+/* ---- the preview plane (docs/history/theme-preview-plan.md §2) --------------------
  *
  * The picker draws one theme's `preview` plane when the cursor lands on its
  * row, and the card walk that reads it cannot run on the LVGL task: holding

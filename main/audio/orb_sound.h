@@ -1,6 +1,6 @@
 #pragma once
 /**
- * orb_sound — the OS's clock-agnostic sound engine (docs/sound-plan.md §4, D39).
+ * orb_sound — the OS's clock-agnostic sound engine (docs/history/sound-plan.md §4, D39).
  *
  * It plays 16-bit mono PCM at 22,050 Hz that the caller owns: the clock hands it
  * pointers into its mapped theme, and the engine never copies, decodes or keeps a

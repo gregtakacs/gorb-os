@@ -1,5 +1,5 @@
 /* orb_sound.c — the sound engine: I2S + ES8311 + NS4150B, a compiled mixer, and the
- * owner's settings. See orb_sound.h for the contract and docs/sound-plan.md §4. */
+ * owner's settings. See orb_sound.h for the contract and docs/history/sound-plan.md §4. */
 #include "orb_sound.h"
 
 #include <math.h>

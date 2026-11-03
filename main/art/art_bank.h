@@ -23,7 +23,7 @@
  * screen. One release exists and it is ordered, not opportunistic:
  * art_bank_unmap() runs between the store door's park and its erase, and the
  * reboot the store always asks for re-establishes the map from the bytes on
- * the flash (docs/theme-delta-mmap-plan.md §5.3). The theme's residency is
+ * the flash (docs/history/theme-delta-mmap-plan.md §5.3). The theme's residency is
  * mechanism A at the CALL — orb_theme.c calls art_bank_map() directly — so
  * ORB_ART_MECH_B governs app banks only.
  */
@@ -103,7 +103,7 @@ void art_bank_lat_probe(void);
  * would be a second residency table the host mirror cannot pin.
  *
  * D30 (docs/app-platform-plan.md §20.4) lit it for themes too; the theme move
- * to mmap (docs/theme-delta-mmap-plan.md §5.3, C3) took it back off. An
+ * to mmap (docs/history/theme-delta-mmap-plan.md §5.3, C3) took it back off. An
  * installed theme's pixels are MAPPED from boot onward — one art_bank_map()
  * through orb_theme's slot-A door, which verifies the FORMAT 3 header before
  * mapping and can refuse. The define stays 1 because app banks keep the arena

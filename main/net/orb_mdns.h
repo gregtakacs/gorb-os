@@ -3,7 +3,7 @@
  *
  * Why it exists
  * -------------
- * The hub's whole discovery story (docs/orb-manager-plan.md §5, ladder items 4
+ * The hub's whole discovery story (docs/history/orb-manager-plan.md §5, ladder items 4
  * and 5) is "browse _orb._tcp, list candidates, dial only the one you picked".
  * That promise has a precondition this file supplies: somebody has to answer
  * the browse. Nothing here is authoritative — an mDNS reply proves only that

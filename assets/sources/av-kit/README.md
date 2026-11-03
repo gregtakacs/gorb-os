@@ -41,7 +41,7 @@ pixels come from Chrome's `canvas.toBlob('image/png')` in `exportKit()`
 reproducible as the browser build that made them. The Python half — `prep_watch_kit.py`
 then `bake_clock.py` — is deterministic: the same inputs baked twice give byte-identical
 output. A headless export hook (`window.__composerExport`, planned as P2 in
-`docs/watch-composer-plan.md:97`) would close the remaining gap.
+`docs/history/watch-composer-plan.md:97`) would close the remaining gap.
 
 Baking from a *different* kit is how the old claim in `.clinerules` went unnoticed:
 the kit3 recipe yields 3,858,874 B, not this file. Do not re-bake the shipped bank

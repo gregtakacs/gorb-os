@@ -76,7 +76,7 @@ extern "C" {
 /* ORB_THEME_SLOT_CAP — the ceiling one theme's art must fit under: the 8 MB
  * `assets` slot less its 64 KB header block. It is defined exactly once, here,
  * because every reader and tool that gates on it and re-declared it got it
- * wrong: docs/theme-delta-mmap-plan.md §7.4 found four sites still carrying the
+ * wrong: docs/history/theme-delta-mmap-plan.md §7.4 found four sites still carrying the
  * retired 4 MB A/B pair's figure after Migration 1 made the slot whole.
  * orb_theme.c's private SLOT_CAP and SLOT_ART_OFF produce this number, and a
  * _Static_assert there binds the layout to the export; tools/theme_schema.py,

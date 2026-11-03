@@ -6,7 +6,7 @@
  * config page at /themes); the device installs one into the `assets` partition
  * — see main/art/orb_theme.h. Art is NEVER streamed from here at render time:
  * the bus is 1-bit SPI at ~1.5 MB/s, which caps a 434 KB frame at ~3.4 fps, and
- * docs/usb-sd-msc-plan.md §9 already settled that flash is the only place a
+ * docs/history/usb-sd-msc-plan.md §9 already settled that flash is the only place a
  * full frame bank lives. Do not add a per-frame read here.
  *
  * Hardware constraints that shape this API (verified against the Waveshare

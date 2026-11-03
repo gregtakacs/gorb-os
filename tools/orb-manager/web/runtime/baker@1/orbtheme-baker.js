@@ -2027,12 +2027,12 @@
     // defaults — parent NONE, delay 0 — the same append-only answer the drive four got.
     ['parent', 'u16'],    // row n of the drawing row this one hangs on; 0xFFFF = none
     ['delay', 'u16'],     // per-frame ms for this row's animation; 0 = the dial's default
-    // D41's motion columns (docs/hand-motion-plan.md §4), appended the same way. They
+    // D41's motion columns (docs/history/hand-motion-plan.md §4), appended the same way. They
     // mean nothing below the v5 clock stamp; a narrower row reads 0 — inherit.
     ['cadence', 'u8'],    // AUX/BANK: CADENCES id, when the row moves
     ['cad_arg', 'u16'],   // step N, stop-to-go P (0.1 s), drag window (min), sweep fps
     ['ease', 'u16'],      // settle/flyback ms
-    // D42's five (docs/element-model-plan.md §8): the clock's v6 row.
+    // D42's five (docs/history/element-model-plan.md §8): the clock's v6 row.
     ['dx', 'i16'], ['dy', 'i16'],   // AUX: the pivot's travel from P0 to P1, px
     ['end', 'u8'],        // AUX: ENDS id — wrap, flyback, hold
     ['digit', 'u8'],      // AUX: DIGITS id — whole, units, tens
@@ -3273,7 +3273,7 @@
       // fork that kept a caged plate a keyframe bank cited §5.2's one-gif_io rule, a
       // FORMAT 2 note: under FORMAT 3 the carriage's frames ride its own row's sprite
       // window (orb_clock3.c's tourbillon fill) and only the plate uses the bg table,
-      // so the two never contend (docs/unified-render-path-design-2026-10-30.md §3).
+      // so the two never contend (docs/history/unified-render-path-design-2026-10-30.md §3).
       // The delta bank is the shape the device can restore from its canvas; a
       // keyframe bank has no restore plane and draws every advance through LVGL.
       deltaBank = 1;
@@ -3931,7 +3931,7 @@
     return b;
   }
 
-  /* The commit's price, at bake time (docs/unified-render-path-design-2026-10-30.md
+  /* The commit's price, at bake time (docs/history/unified-render-path-design-2026-10-30.md
    * §5): what one flush costs the dial the device will draw, and the rate that buys.
    *
    *   flush_ms = box_kpx x (RESTORE + STATIC x glass) + ink_kpx x (INK + AA) + FIXED

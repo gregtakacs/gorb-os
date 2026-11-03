@@ -22,7 +22,7 @@
  *     open on a volume the dial is using is what this mode refuses to be.
  *   - The console. GPIO 19/20 feed one FSLS PHY that USB_WRAP multiplexes, so
  *     becoming a device ends the console by hardware and only a boot gives it back
- *     (docs/usb-sd-msc-plan.md §6.1). The mode therefore costs a reboot to enter.
+ *     (docs/history/usb-sd-msc-plan.md §6.1). The mode therefore costs a reboot to enter.
  *   - File operations run on the TinyUSB task, so a walk of a big directory is slow
  *     SPI work on the task that answers the host.
  *

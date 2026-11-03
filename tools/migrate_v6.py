@@ -2,7 +2,7 @@
 """migrate_v6.py — rewrite an old clock theme's geometry as D42's v6 rows.
 
 D42 ruled out legacy: the firmware, the hub and the baker read v6 clock sections and
-refuse every older stamp (docs/element-model-plan.md §8.1). Themes are rebuilt in the
+refuse every older stamp (docs/history/element-model-plan.md §8.1). Themes are rebuilt in the
 composer going forward. This tool exists for the bundles already committed to the repo
 — test fixtures, measured bench themes, the hub's default — so each does not need a
 browser re-bake to keep its pixels. It is a host-side one-way converter, never on a

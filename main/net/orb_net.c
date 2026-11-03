@@ -355,7 +355,7 @@ static bool json_str(const char *body, size_t len, const char *key, char *out, s
 }
 
 /* (The numeric-argument helper lands with the option-registry endpoint
- * `POST /api/v1/menu` (docs/orb-manager-plan.md §5.3 item 8), which drives the
+ * `POST /api/v1/menu` (docs/history/orb-manager-plan.md §5.3 item 8), which drives the
  * same opt_* rows the dial renders; carrying it unused would only trip
  * -Wunused-function. The older note here pointed at "PATCH /api/v1/settings in
  * Phase 4", and that numbering was the onboarding plan's own, not
@@ -3066,7 +3066,7 @@ static esp_err_t h_home_post(httpd_req_t *req)
 }
 
 /* --------------------------------------------------------------------------
- * Sound — D39's owner settings and the bench door (docs/sound-plan.md §5).
+ * Sound — D39's owner settings and the bench door (docs/history/sound-plan.md §5).
  *
  * GET /api/v1/sound answers the settings plus the engine's own counters, so a bench
  * can read whether the codec came up, whether the amp is on, and how hard the loop
@@ -5341,7 +5341,7 @@ static esp_err_t h_theme_del(httpd_req_t *req)
  * flight is refused 503 rather than queued: the card is mid-copy and the file
  * this call would read may be half its bytes — the h_fb one-at-a-time rule.
  *
- * Absent preview is the design's quiet answer (docs/theme-preview-plan.md §1):
+ * Absent preview is the design's quiet answer (docs/history/theme-preview-plan.md §1):
  * 404 with no plane, not an error worth a retry. A row that exists but will
  * not draw answers 422 with the reader's own sentence, the h_sd rule that a
  * refusal the owner can act on stays honest rather than reading as empty. */

@@ -3,7 +3,7 @@
 
 Why this file exists
 --------------------
-Item 4 of docs/orb-manager-plan.md §5.3 hands discovery to mDNS, and a browse is
+Item 4 of docs/history/orb-manager-plan.md §5.3 hands discovery to mDNS, and a browse is
 the one thing on this bench that cannot be watched: the answer is judged by a
 browser somewhere else, on bytes nobody here can see go wrong. A malformed RDLENGTH
 or a mis-set cache-flush bit does not crash the orb — it produces an orb that is

@@ -1,7 +1,7 @@
 """Watch Composer export-fps loop check.
 
 The composer picks the export fps from the rows the animated geartrain changes
-per tick (docs/rows-capacity-2026-10-10.md). That measurement is taken inside
+per tick (docs/history/rows-capacity-2026-10-10.md). That measurement is taken inside
 the movement build, and the build is gated on mvKey() -- a key that carries
 frames: this.F through opts(). Pre-patch, budgetStats was keyed on that same
 _mk, so the measurement invalidated itself on every pass: build publishes stats

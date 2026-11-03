@@ -77,7 +77,7 @@ const txt = (s) => ({ name: 'x', _url: 'data:text/plain;base64,' + Buffer.from(s
   eq(iS.opts(null, true).shRelief, 1, 'opts carries the relief gate to the engine');
   eq(iS.opts(null, true).shMove, 1, 'opts carries the moving gate, so the preview and the bake see it');
   ok(iS.mvKey(true).shMove === undefined, 'the moving gate is no reason to resample the bank');
-  // ---- the baked preview plane (docs/theme-preview-plan.md) ------------------
+  // ---- the baked preview plane (docs/history/theme-preview-plan.md) ------------------
   // Every bake carries an ID photo: the dial at the design pose, nearest halved
   // to 232². The picker page, the glass, and the hub all paint this one plane, so
   // the plane's shape, pose, matte, determinism, and serial fold are pinned here.

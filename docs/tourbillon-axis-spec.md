@@ -275,7 +275,7 @@ It now diffs against `s_fps_te0` like every other field.
 - The carriage's reach: its ink must stay inside the dial opening and pass under
   the tachymetre ring, or `bake_clock.py`'s `_zero_under`/fold gate refuses.
 
-## Per-frame budget (measured — docs/fps-budget-findings-2026-10-10.md)
+## Per-frame budget (measured — docs/history/fps-budget-findings-2026-10-10.md)
 
 Swept on device over 19 points, two independent driver sweeps plus four art
 variants. Fitted and reported by `tools/bench/fit.py`:
@@ -384,7 +384,7 @@ Written before any flush model existed, from the kit geometry alone:
 > thinner carriage is the cheap lever if the commit passes its budget; the
 > expensive one is staging the carriage's texel rows in internal RAM.
 
-What the 2026-10-10 sweep (`docs/fps-budget-findings-2026-10-10.md`) did to it:
+What the 2026-10-10 sweep (`docs/history/fps-budget-findings-2026-10-10.md`) did to it:
 
 - **Kept: the carriage is the lever, and the ns/blend is about right.** The
   carriage measures 652 ns/blend against the prior's 687, and its 40.8 ms/frame

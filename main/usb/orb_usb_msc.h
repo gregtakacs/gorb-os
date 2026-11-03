@@ -5,7 +5,7 @@
  * MTP keeps /sd mounted and answers the host with paths, which is the nicer
  * design and the one that never worked: the first command of any session stalls
  * the bulk pair on both a Windows and a Linux host, and the vendor class has no
- * path that recovers from a stall (docs/usb-sd-msc-plan.md §14). MSC answers BOT
+ * path that recovers from a stall (docs/history/usb-sd-msc-plan.md §14). MSC answers BOT
  * with read(2)/write(2) against a block device, so nothing depends on that
  * response path at all, and the host gets a drive letter.
  *

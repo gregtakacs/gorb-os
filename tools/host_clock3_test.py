@@ -4,7 +4,7 @@
 §25.5(2) put the clock section's projection on the device: main/art/orb_clock3.c
 turns an element table, a sprite catalogue and 26 carried scalars into the clk_theme_t
 and the row table orb_stage.c draws. D42 made that table v6 and nothing older: every
-hand, shadow, pointer and the carriage is one AUX row (docs/element-model-plan.md),
+hand, shadow, pointer and the carriage is one AUX row (docs/history/element-model-plan.md),
 and the tempo the scheduler keeps is derived from the rows. This file checks the
 projection the way the suite beside it checks everything — host gcc, the shipped C,
 the writer's own bytes, no board, no card, no partition.

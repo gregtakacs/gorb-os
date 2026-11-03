@@ -1,6 +1,6 @@
 /* sound-engine.js — D39's default clock sounds, generated rather than shipped.
  *
- * docs/sound-plan.md §6: the clock's editor region carries this file instead of WAVs.
+ * docs/history/sound-plan.md §6: the clock's editor region carries this file instead of WAVs.
  * It is the JS port of the three Python prototypes the owner auditioned, and the only
  * generator since they retired on 2026-11-01 (git history keeps them, as
  * tools/sound_{synth,pack,ticks}_proto.py). The seam/RMS/floor checks of §6 run on THIS

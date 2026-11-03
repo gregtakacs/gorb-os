@@ -16,7 +16,7 @@ add_compile_definitions(LV_INV_BUF_SIZE=96)
 include_directories("${CMAKE_CURRENT_LIST_DIR}/main/lvhook")
 
 # ---------------------------------------------------------------------------
-# Firmware version stamp: docs/firmware-versioning-plan.md.
+# Firmware version stamp: docs/history/firmware-versioning-plan.md.
 #
 # version.txt declares v<MAJOR>.<MINOR>.<PATCH>. The metadata appended here lets a
 # board name the exact bytes it runs, and the whole string lands in

@@ -3837,7 +3837,7 @@
     /* Backdrop slot one, the plate: under the geartrain, so the art reads through an
      * openwork dial and the apertures. Free because the plate is one of the two static
      * base frames -- the art is a one-time store into the bank, not a per-tick blend
-     * (docs/fps-budget-findings-2026-10-10.md: the live dial pass runs 447 ns/blend).
+     * (docs/history/fps-budget-findings-2026-10-10.md: the live dial pass runs 447 ns/blend).
      * Slot two, the dial face, is in buildDial and costs nothing for the same kind of
      * reason: that canvas is already blended every tick with or without the art. Under
      * "no case" the backdrop is NOT baked here at all — the face carries it as F.bgL and

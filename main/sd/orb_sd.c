@@ -288,7 +288,7 @@ bool orb_sd_share_held(void)  { return s_share_held; }
  * above. MTP needs /sd mounted and refuses only an unmount; MSC needs /sd GONE,
  * because a LUN is raw sectors of the same blocks FatFs keeps its FAT in, and two
  * owners of one filesystem is the failure this mode exists to avoid
- * (docs/usb-sd-msc-plan.md §8). So while the host owns the card, mount_now()
+ * (docs/history/usb-sd-msc-plan.md §8). So while the host owns the card, mount_now()
  * refuses — on a flag set BEFORE the ladder runs, because a boot that consumed the
  * one-shot must not mount the volume it is about to hand away.
  *

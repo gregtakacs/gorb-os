@@ -5,8 +5,8 @@ import (
 	"fmt"
 )
 
-// The hub-side preview plane. docs/theme-preview-plan.md §4 and §6, and
-// docs/bugfix-batch-2026-10-29.md #6.
+// The hub-side preview plane. docs/history/theme-preview-plan.md §4 and §6, and
+// docs/history/bugfix-batch-2026-10-29.md #6.
 //
 // A theme's preview is a baked region inside its own .orbtheme container — one opaque
 // RGB565 plate at class ORB_ASSET_PREVIEW (9), slot 0, frame 0 — not a side file. On

@@ -1,7 +1,7 @@
 // Package orbfleet is the hub's memory of which orb is which.
 //
 // The key is the chip's BASE MAC, never the address (§5.3 of
-// docs/orb-manager-plan.md). An address is something an orb has at a moment; a MAC
+// docs/history/orb-manager-plan.md). An address is something an orb has at a moment; a MAC
 // is something an orb is. Keying on the address would orphan a named orb the moment
 // its DHCP lease moved, and would hand the old name to whatever board came next —
 // which is how a fleet list ends up pointing a credential at the wrong device.

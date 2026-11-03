@@ -1,6 +1,6 @@
 #pragma once
 /**
- * orb_es8311 — the board's ES8311 codec, playback only (docs/sound-plan.md §2, S4).
+ * orb_es8311 — the board's ES8311 codec, playback only (docs/history/sound-plan.md §2, S4).
  *
  * The register sequence is Espressif's own (esp-adf components/esp_codec_dev
  * device/es8311/es8311.c: es8311_open, es8311_set_fs, es8311_start), cut down to the

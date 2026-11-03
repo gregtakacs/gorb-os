@@ -130,7 +130,7 @@ menu "Orb networking"
             credentials stored, rebooting returns to the same provisioning
             branch, so the timer stays disarmed and the AP stays open
             indefinitely exactly as it does today. See the guard on
-            sojourn_arms() and D4 in docs/orb-manager-plan.md.
+            sojourn_arms() and D4 in docs/history/orb-manager-plan.md.
 
             600 s is long enough to fumble a passphrase twice from a phone and
             short enough that an orb nobody is tending rejoins its own network
@@ -146,7 +146,7 @@ menu "Orb networking"
         help
             The hub finds orbs by browsing for the _orb._tcp service instead of
             sweeping the subnet or being told an address (see
-            docs/orb-manager-plan.md section 5). This answers PTR/SRV/TXT/A for
+            docs/history/orb-manager-plan.md section 5). This answers PTR/SRV/TXT/A for
             one instance named from the chip's BASE MAC, on the STA interface
             and, while the SoftAP is open, on that one too — which is the only
             way a factory-reset orb with no lease can be found at all.
@@ -215,7 +215,7 @@ menu "Orb microSD (theme storage)"
             SPI3_HOST (GPIO 1/2/3, CS 41) with FATFS, and creates /sd/themes.
             This is the theme import path; the dial NEVER reads art from here
             while running (1-bit SPI caps at ~1.5 MB/s — see
-            docs/usb-sd-msc-plan.md §9 and main/sd/orb_sd.h).
+            docs/history/usb-sd-msc-plan.md §9 and main/sd/orb_sd.h).
 
             Off means the socket is not probed at all and esp_vfs_fat, sdmmc
             and esp_driver_sdspi drop out of the image, which is what makes it
@@ -313,7 +313,7 @@ menu "Orb idle dim"
             rather than a stopwatch -- idle.since_s climbs to idle.timeout_s on
             /api/v1/status (the EFFECTIVE value, not this one) and idle.dimmed
             flips when it lands, and
-            tools/idle_watch.py does exactly that, injecting the wake detent for
+            tools/bench/idle_watch.py does exactly that, injecting the wake detent for
             the half no log line can speak for. Set low only for the bench -- at
             60 s the dim becomes the visible state and a long screenshot looks
             like a broken display. The DISPLAY picker's 1 min entry usually
@@ -453,7 +453,7 @@ menu "Orb USB file access"
             a drive letter, the firmware answers BOT with the component's own
             MSC class, and nothing depends on the MTP response path — which is
             the class that shipped first and never enumerated a store on either
-            a Windows host or a Linux one (docs/usb-sd-msc-plan.md §14).
+            a Windows host or a Linux one (docs/history/usb-sd-msc-plan.md §14).
 
     config ORB_USB_MODE_MSC
         bool "Disk mode — hand the whole card to the host as a USB stick"
@@ -483,7 +483,7 @@ menu "Orb USB file access"
         select TINYUSB_MTP_ENABLED
         help
             The TF socket and both side buttons sit INSIDE the sealed shell
-            (docs/usb-sd-msc-plan.md §1), so the USB-C port is the only opening
+            (docs/history/usb-sd-msc-plan.md §1), so the USB-C port is the only opening
             an owner has at the wall. This option decides what that port can
             become for one boot.
 

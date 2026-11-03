@@ -24,7 +24,7 @@ import (
 var ErrTornPreview = errors.New("torn preview plane")
 
 // The device-side THEME API, in one place: what main/net/orb_net.c registers, and
-// nothing invented. FORMAT 2 (docs/theme-identity-plan.md) settled what identifies a
+// nothing invented. FORMAT 2 (docs/history/theme-identity-plan.md) settled what identifies a
 // theme, and FORMAT 3 carries those two halves unchanged:
 //
 //   - the NAME is the theme's one identifier. It lives inside the container's
@@ -363,7 +363,7 @@ func (c *Client) ThemeDesign(ip, id string) ([]byte, int, error) {
 // GET /api/v1/sd/preview?id=<stem> with [u16 w LE][u16 h LE][w*h*2 B RGB565 LE] at
 // 200, or with a small JSON refusal. The bytes pass through unexamined — the rule of
 // this whole module — and the status rides back with them, because an absent preview
-// is the design's quiet 404 (docs/theme-preview-plan.md §1): not an error to dress
+// is the design's quiet 404 (docs/history/theme-preview-plan.md §1): not an error to dress
 // up, and a caller that draws pictures simply draws nothing. A non-nil error means
 // the dial itself failed, which the caller does report.
 func (c *Client) ThemePreview(ip, id string) ([]byte, int, error) {

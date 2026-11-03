@@ -1075,7 +1075,7 @@ static const char *region_from_card3(int fd, const orb_bundle3_hdr_t *h,
  * probe: verify, report the extent, copy nothing, return OK. Answers map to the
  * registry's vocabulary so a caller branches on the enum, not a sentence: NO_SLOT
  * and EMPTY both mean the theme chose not to carry the row, and NO_CONTENT is
- * exactly what the preview's absence rule (docs/theme-preview-plan.md §1) names. */
+ * exactly what the preview's absence rule (docs/history/theme-preview-plan.md §1) names. */
 static orb_asset_ans_t read_one_plane(int fd, const orb_bundle_sec_t *sec,
                                        uint16_t cls, uint16_t slot, uint32_t frame,
                                        uint8_t *buf, size_t cap,

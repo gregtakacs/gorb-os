@@ -534,7 +534,7 @@ class Component extends DCLogic {
    * not the bank depth. COUNT frames with this; PACE them with F. budgetStats.f
    * stays F: the row price is per tick, and the ladder compares per-tick prices. */
   get B() { return window.DialRenderer.bankFrames(this.F); }
-  /* Device rows budget (docs/rows-capacity-2026-10-10.md, batch-6 numbers
+  /* Device rows budget (docs/history/rows-capacity-2026-10-10.md, batch-6 numbers
    * under CLOCK_L4_MARK_STATIC_BOXES=0 -- now the shipped marking): the tick
    * that flushes the whole clock must fit 1000/fps minus ~17 ms of idle+TE,
    * and flush grows ~0.2 ms per DMA'd background row. buildMovement() measures
@@ -549,7 +549,7 @@ class Component extends DCLogic {
    * needle's 15 cap is the measured sweeping-needle frontier instead: the tick
    * held 15.5 fps on a static bg (54.5 ms) and missed at a 96-row band (72.8 ms,
    * 13.1 fps), so ~64 rows is the largest band a needle still sweeps at 15 fps
-   * (docs/rows-capacity-2026-10-10.md). It clears a closed dial's sliver while an
+   * (docs/history/rows-capacity-2026-10-10.md). It clears a closed dial's sliver while an
    * open skeleton (300 rows) and a busy needle band (96) still fall to 4 and 12.
    *
    * Three things keep this from fighting the renderer. (1) A measurement is
@@ -1377,7 +1377,7 @@ class Component extends DCLogic {
   }
   roll(k) { this.setState((s) => ({ seeds: { ...s.seeds, [k]: Math.floor(Math.random() * 1e6) } })); }
 
-  /* ---- D39: the Sound tab (docs/sound-plan.md §7) ------------------------------------
+  /* ---- D39: the Sound tab (docs/history/sound-plan.md §7) ------------------------------------
    * A dial's sound design is { tick, pattern, slots: {slot: catalog id}, up: {slot:
    * {name, pcm}}, seed }. tick is a SoundEngine voice, 'upload' or null; a slot holds a
    * catalog id or 'upload'. The default is the preset's §7.2 mapping. Nothing here

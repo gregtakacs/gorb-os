@@ -71,7 +71,7 @@
  * BOXES=0, and the layer-table commit welds every mark the real mark sites —
  * apply_angles, gif_apply_frame, tourbillon_advance, the comp/aux update
  * passes — leave behind. The rows-capacity lesson it carried stays written
- * down in docs/rows-capacity-2026-10-10.md.) */
+ * down in docs/history/rows-capacity-2026-10-10.md.) */
 typedef struct {
     /* read the wall clock, pose the hands, advance the tourbillon frame bank,
      * and re-pose this dial's rows in the app layer table */

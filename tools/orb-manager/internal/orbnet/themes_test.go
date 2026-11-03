@@ -346,7 +346,7 @@ func TestThemePreviewQuietFourOhFourIsStillNotATornPlane(t *testing.T) {
 	}
 }
 
-// The design's quiet answer (docs/theme-preview-plan.md §1): a theme with no
+// The design's quiet answer (docs/history/theme-preview-plan.md §1): a theme with no
 // preview row is not a failed dial, and a caller that branches on the code must
 // be able to. Turning the 404 into an error is how an optional plane becomes a
 // red line on a card.

@@ -9,7 +9,7 @@ import (
 
 // TestShelfPreviewReadsTheShippedDefault drives ThemePreviewPlane against the file a
 // wiped board seeds from — themes/skeleton.orbtheme — and requires the class-9 plane to
-// come back in the device's wire shape. Bug 6 (#6, docs/bugfix-batch-2026-10-29.md) is
+// come back in the device's wire shape. Bug 6 (#6, docs/history/bugfix-batch-2026-10-29.md) is
 // the Themes face drawing no face for a shelf theme; the root cause was that no hub route
 // read a container's own plane, so the shelf row had nothing to show. The shipped
 // skeleton already carries a 232x232 opaque plane (the default was re-exported through the

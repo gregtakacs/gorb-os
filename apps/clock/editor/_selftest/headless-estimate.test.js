@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* headless-estimate.test.js — the bake's commit price (GorbBake.estimate3), pinned and mutated.
  *
- * docs/unified-render-path-design-2026-10-30.md §5/§7: bakeClock3 prices the flush the
+ * docs/history/unified-render-path-design-2026-10-30.md §5/§7: bakeClock3 prices the flush the
  * device will pay for the bytes it just wrote, and splitPolicy3's sentence carries the
  * rate. Three claims are pinned here, each against a mutant that must break it:
  *   1. the rung is orb_sched_pick_rung's, line for line (the vectors are §6's table and

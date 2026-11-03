@@ -3,7 +3,6 @@ build_*/
 managed_components/
 sdkconfig
 sdkconfig.old
-dependencies.lock
 .cache/
 .vscode/
 __pycache__/

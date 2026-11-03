@@ -91,14 +91,14 @@ jobs:
             build/bootloader/bootloader.bin
             build/partition_table/partition-table.bin
             build/flasher_args.json
-      - name: Host toolchain (gcc, clang 21, Pillow, NumPy)
+      - name: Host toolchain (gcc, zlib, clang 21, Pillow, NumPy, tzdata)
         shell: bash
         run: |
-          apt-get update && apt-get install -y gcc wget lsb-release software-properties-common gnupg
+          apt-get update && apt-get install -y gcc zlib1g-dev wget lsb-release software-properties-common gnupg
           wget -qO- https://apt.llvm.org/llvm.sh | bash -s -- 21
           apt-get install -y lld-21
           . "$IDF_PATH/export.sh"
-          python3 -m pip install pillow numpy
+          python3 -m pip install pillow numpy tzdata==2026.5   # tzdata: make_cities.py's pinned release
       - name: Host suites
         shell: bash
         env:

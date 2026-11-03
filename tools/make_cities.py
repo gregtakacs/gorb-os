@@ -50,6 +50,7 @@ import json
 import os
 import sys
 import time
+import zoneinfo
 from zoneinfo import ZoneInfo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -68,6 +69,32 @@ YEARS = (2026, 2027, 2028)
 # orb's business, and tzdata 2026e put BC, Alberta and Manitoba on permanent
 # daylight time from March 2026, which a 2025 probe would call a broken rule.
 DERIVE_YEAR = 2027
+
+# The rules are derived from the tz database, so the table is only as reproducible as
+# the database it was baked from: a host on an older release bakes different bytes and
+# --check calls the committed table stale (CI, 2026-11-03: the IDF container's tzdata).
+# One release is pinned. The pip package (`pip install tzdata==2026.5`) is used when it
+# is that release, the system database when it is, and anything else refuses.
+TZDATA = "2026e"
+
+
+def pin_tzdata():
+    try:
+        import tzdata
+        if tzdata.IANA_VERSION == TZDATA:
+            zoneinfo.reset_tzpath(to=[])          # read the package, not /usr/share
+            return "tzdata package " + TZDATA
+    except ImportError:
+        pass
+    for d in zoneinfo.TZPATH:
+        try:
+            with open(os.path.join(d, "tzdata.zi")) as f:
+                if f.readline().strip() == "# version " + TZDATA:
+                    return "system " + d + " " + TZDATA
+        except OSError:
+            continue
+    sys.exit("make_cities: the zone rules are baked from tz database %s, and this host has "
+             "no copy of it: pip install tzdata==2026.5 (or move TZDATA and re-bake)" % TZDATA)
 VERIFY_FROM = int(dt.datetime(2026, 11, 1, tzinfo=dt.timezone.utc).timestamp())
 
 
@@ -308,6 +335,7 @@ def main():
     ap.add_argument("--import", dest="imp", metavar="cities15000.txt")
     ap.add_argument("--check", action="store_true")
     a = ap.parse_args()
+    pin_tzdata()
     if a.imp:
         do_import(a.imp)
     text, inexact, nrules = bake()

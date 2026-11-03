@@ -1383,9 +1383,9 @@ int main(void)
     s_pg = &s_pages[PG_APPS]; s_cur = 0; s_door_slot = -1; s_uninst_arm = -1;
     s_doormode = 0; s_card_sub = -1; s_cardrm_arm = -1;
     menu_view_apply_input(0, true);
-    ck("an app row opens that app\u0027s doors, not a toggle",
+    ck("an app row opens that app's doors, not a toggle",
        s_pg == &s_pages[PG_APPACT] && s_cur == 0 && s_door_slot == 0);
-    ck("the doors page carries the app\u0027s name, not the shell\u0027s",
+    ck("the doors page carries the app's name, not the shell's",
        !strcmp(page_title(), "Clock APP"));
     ck("three doors and a back row: show, uninstall, remove from card",
        page_rows() == 4 && !strcmp(rowline(0), "show on the dial") &&
@@ -1396,7 +1396,7 @@ int main(void)
        strstr(page_hint(), "two presses") != NULL);
     g_act_rc = 0; g_posts = 0;
     s_cur = 0; menu_view_apply_input(0, true);
-    ck("activate runs the registry\u0027s own door, not a local copy",
+    ck("activate runs the registry's own door, not a local copy",
        g_act_calls == 1 && g_act_slot == 0 && g_posts == 0);
     ck("a successful activate says so on the line and stays on the page",
        !strcmp(s_ui.status, "\"Clock\": on the dial") &&
@@ -1414,7 +1414,7 @@ int main(void)
 
     /* §43.3: a faulted app leads with retry; the press is C2's fault clear. */
     g_fake_app.failed = true;
-    ck("the faulted app\u0027s doors lead with retry, not a switch",
+    ck("the faulted app's doors lead with retry, not a switch",
        !strcmp(rowline(0), "retry") && !strcmp(rowline(1), "uninstall") &&
        strstr(rowline(0), "switch") == NULL && strstr(rowline(1), "switch") == NULL);
     g_posts = 0; s_cur = 0; menu_view_apply_input(0, true);
@@ -1424,18 +1424,18 @@ int main(void)
        door_pack(FAKE_APP, 1) == ((0 << 2) | 1) &&
        door_pack(FAKE_APP2, 0) == ((1 << 2) | 0));
     g_en_rc = 0; g_publish_calls = 0; g_posted_fn(&g_posted_pack);
-    ck("the retry answer names the app and clears that app\u0027s faults",
+    ck("the retry answer names the app and clears that app's faults",
        g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": fault cleared - it runs after the reboot") &&
        g_en_calls == 1 && g_en_slot == 0);
     g_en_rc = ESP_ERR_INVALID_STATE_; g_en_why = "a card job is running";
     g_posts = 0; g_publish_calls = 0; s_cur = 0; menu_view_apply_input(0, true);
     g_posted_fn(&g_posted_pack);
-    ck("a refused retry prints the door\u0027s sentence, not the menu\u0027s",
+    ck("a refused retry prints the door's sentence, not the menu's",
        g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": a card job is running"));
     g_en_rc = 0; g_en_why = "";
 
-    /* the two-press uninstall (row 1 of the off app\u0027s doors), and the
-     * detent that cancels it — arm, prompt, cancel, and the worker\u0027s
+    /* the two-press uninstall (row 1 of the off app's doors), and the
+     * detent that cancels it — arm, prompt, cancel, and the worker's
      * refusal that must survive a cancel (bench, orb-B 2026-10-24). */
     g_posts = 0; s_cur = 1; menu_view_apply_input(0, true);
     ck("the first uninstall press arms and posts nothing",
@@ -1445,7 +1445,7 @@ int main(void)
        !strcmp(rowline(1), "uninstall - press again"));
     turn_up(1);
     ck("a detent ends the arm", s_uninst_arm == -1);
-    ck("and takes the confirmation\u0027s line off the status row",
+    ck("and takes the confirmation's line off the status row",
        s_ui.status[0] == '\0');
     g_posts = 0; s_cur = 1; menu_view_apply_input(0, true);
     ck("the next press arms again rather than erasing",
@@ -1472,12 +1472,12 @@ int main(void)
     g_posts = 0; g_publish_calls = 0; s_cur = 1; menu_view_apply_input(0, true);
     s_cur = 1; menu_view_apply_input(0, true);
     g_posted_fn(&g_posted_pack);
-    ck("a refused removal prints the door\u0027s reason",
+    ck("a refused removal prints the door's reason",
        g_publish_calls == 1 && !strcmp(g_pub_line, "\"Clock\": the dial would not leave the app"));
     g_un_rc = 0; g_un_why = "";
 
-    /* D38: remove from card — the row\u0027s own two arms, uninstall first,
-     * and the file\u0027s own path to the file-manager door. */
+    /* D38: remove from card — the row's own two arms, uninstall first,
+     * and the file's own path to the file-manager door. */
     g_posts = 0; g_rm_calls = 0; g_un_calls = 0;
     s_cur = 2; menu_view_apply_input(0, true);
     ck("the first card-removal press arms its own row, not the uninstall",
@@ -1497,7 +1497,7 @@ int main(void)
     ck("the second press posts the card removal",
        g_posts == 1 && g_posted_fn == job_cardrm && s_cardrm_arm == -1);
     g_posted_fn(&g_posted_pack);
-    ck("the removal uninstalls first, then erases the card\u0027s own path",
+    ck("the removal uninstalls first, then erases the card's own path",
        g_un_calls == 1 && g_rm_calls == 1 && !strcmp(g_rm_rel, "apps/clock.orbapp") &&
        !strcmp(g_pub_line, "\"Clock\": gone from the dial and the card"));
     g_scan_n = 0; g_un_calls = 0; g_rm_calls = 0; g_publish_calls = 0;
@@ -1518,7 +1518,7 @@ int main(void)
        g_rm_calls == 1 && !strcmp(g_pub_line, "\"Clock\": the card refused the delete"));
     g_rm_rc = 0; g_scan_n = 0;
 
-    /* D38: the catalog\u0027s card tier and the card file\u0027s doors. The
+    /* D38: the catalog's card tier and the card file's doors. The
      * snapshot lands through the shipped path: entering APPS posts the walk,
      * and the worker runs it — here, by hand, on the fake card. */
     g_scan_n = 1;
@@ -1532,25 +1532,25 @@ int main(void)
        !strcmp(rowline(3), "2 of 8 slots used"));
     s_cur = 2; g_posts = 0;
     menu_view_apply_input(0, true);
-    ck("a card file\u0027s doors: install, remove from card, back",
+    ck("a card file's doors: install, remove from card, back",
        s_pg == &s_pages[PG_APPACT] && s_doormode == 1 && page_rows() == 3 &&
        !strcmp(rowline(0), "install") &&
        !strcmp(rowline(1), "remove from card") &&
        !strcmp(rowline(2), "<- back"));
-    ck("a card file\u0027s title heads its doors page",
+    ck("a card file's title heads its doors page",
        !strcmp(page_title(), "Thermo APP"));
     g_install_rc = 0; g_install_calls = 0; g_en_calls = 0; g_posts = 0; g_publish_calls = 0;
     s_cur = 0; menu_view_apply_input(0, true);
     ck("the card install posts its own job, not the enable job",
        g_posts == 1 && g_posted_fn == job_install_card);
     g_posted_fn(&g_posted_pack);
-    ck("the install runs the sync door on the file\u0027s own stem",
+    ck("the install runs the sync door on the file's own stem",
        g_install_calls == 1 && !strcmp(g_install_stem, "thermo") &&
        !strcmp(g_pub_line, "\"Thermo\": installed"));
     g_install_rc = ESP_FAIL; g_install_calls = 0; g_posts = 0; g_publish_calls = 0;
     s_cur = 0; menu_view_apply_input(0, true);
     g_posted_fn(&g_posted_pack);
-    ck("a refused install prints the install door\u0027s sentence",
+    ck("a refused install prints the install door's sentence",
        g_install_calls == 1 && !strcmp(g_pub_line, "\"Thermo\": install refused"));
     g_install_rc = 0;
     g_scan[0].err = (esp_err_t)-2; strcpy(g_scan[0].why, "bad header");

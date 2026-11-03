@@ -37,8 +37,11 @@ The first time it starts:
 - **Windows:** the firewall asks whether Orb Manager may use private networks. Allow
   it, because that is how it finds your orbs. If the build is unsigned, SmartScreen
   warns first: choose **More info**, then **Run anyway**.
-- **macOS:** if the release notes say the build is not notarized, right-click
-  Orb Manager, choose **Open**, then **Open** again.
+- **macOS:** if the release notes say the build is not notarized, macOS says it could
+  not verify Orb Manager. Choose **Done**, open **System Settings → Privacy & Security**,
+  press **Open Anyway** beside Orb Manager, then open it again and choose **Open Anyway**.
+  On macOS 14 and earlier, right-click Orb Manager, choose **Open**, then **Open** again.
+  macOS then asks whether Orb Manager may find devices on your local network. Allow it.
 - **Linux:** to use the USB cable, your user needs access to the serial port. Run
   `./install.sh --udev` once (it needs sudo), or join the `dialout` group with
   `sudo usermod -aG dialout "$USER"` and log in again.

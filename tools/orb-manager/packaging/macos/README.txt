@@ -4,6 +4,11 @@ Orb Manager @VERSION@ for macOS
 1. Drag "Orb Manager" into Applications.
 2. Open it. It opens its own window; close the window to quit.
 
+If macOS says it could not verify Orb Manager (a build that is not notarized):
+choose Done, open System Settings > Privacy & Security, press Open Anyway beside
+Orb Manager, then open it again. On macOS 14 and earlier, right-click Orb Manager,
+choose Open, then Open again. You do this once.
+
 Needs: macOS 12 or later, and Google Chrome, Microsoft Edge, Brave or Chromium.
 Orb Manager draws its window with that browser; it does not install one.
 

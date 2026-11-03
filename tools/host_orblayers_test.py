@@ -179,6 +179,26 @@ bool gfx_paint_ctx_init(gfx_paint_ctx_t *pc, const clk_sprite_t *spr,
     return true;
 }
 
+/* Mirrors gfx_drum_box and gfx_paint_ctx_drum's box arithmetic: a drum's job is its
+ * window (centery +/- r over the strip's width), never the rotated strip. */
+void gfx_drum_box(const clk_sprite_t *spr, int32_t r, lv_area_t *out)
+{
+    out->x1 = (int32_t)spr->centerx - (int32_t)spr->pivotx;
+    out->x2 = out->x1 + (int32_t)spr->w - 1;
+    out->y1 = (int32_t)spr->centery - r;
+    out->y2 = (int32_t)spr->centery + r - 1;
+}
+bool gfx_paint_ctx_drum(gfx_paint_ctx_t *pc, const clk_sprite_t *spr, int32_t r, int32_t phase)
+{
+    if (r < 2 || !pc->h) return false;
+    lv_area_t box; gfx_drum_box(spr, r, &box);
+    pc->drum = true; pc->rot = false; pc->smooth = false;
+    pc->drum_cy = (int32_t)spr->centery; pc->drum_r = r; pc->drum_phase = phase;
+    pc->posx = box.x1; pc->xa_lim = box.x2;
+    pc->bx1 = box.x1; pc->by1 = box.y1; pc->bx2 = box.x2; pc->by2 = box.y2;
+    return true;
+}
+
 /* ---- the recorded commit, and the hook it records -------------------------
  * Migration 2 (P8, Commits 2-4): orb_sched_commit_layers() lives in a TU the
  * host cannot compile (lvgl.h, display.h, esp_timer.h), so the shipped body is

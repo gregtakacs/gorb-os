@@ -12,7 +12,7 @@ the clock_*.png layer art — and produces two artefacts for the IDF firmware:
                             at boot by main/art/art_bank.c. NO runtime JSON
                             parser needed on the device.
 
-Why offline: same reasoning as bake_gif.py. Decoding PNG (zlib) and reading the
+Why offline: the device never decodes PNG or GIF. Decoding PNG (zlib) and reading the
 theme JSON on-device would put both in the boot path and fight the single busy
 LVGL core; we bake finished RGB565 planes and read them as flash-resident
 rodata (target_add_binary_data) that LVGL samples with the CPU.
@@ -46,7 +46,7 @@ Usage:
       [--bin assets/clock_assets.bin] [--header assets/clock_assets.h] \
       [--pad 2] [--preview-dir assets/preview]
 
-  --bg-gif assets/orb_bg.gif   replaces the theme's plate/bgAnim background
+  --bg-gif background.gif      replaces the theme's plate/bgAnim background
       with a GIF frame bank stored as DELTA RECTS: frame 0 is baked as one
       full keyframe, every later frame only its perceptibly-changed rects
       (vs the previous frame, threshold --diff-thresh). The device keeps a
@@ -67,7 +67,7 @@ Usage:
       quantisation, so re-baking it re-quantises lossy data, cannot be
       dithered differently, has no alpha, and carries no size/fps/byte-order
       metadata at all. GIF stays supported because it is what existing assets
-      (assets/orb_bg.gif) and other people's exports arrive as.
+      (an animated GIF) and other people's exports arrive as.
 
   <theme_dir> e.g. ~/docker/Projects/orb-os/themes/unpacked/steam-punk-t2is
 """
@@ -857,7 +857,7 @@ def snap_pivot_to_hub(img, px, py, cx, cy, win_y=10, win_x=5, min_gain=1.0):
 # ---------------------------------------------------------------------------
 # GIF background bank (delta-rect mode)
 # ---------------------------------------------------------------------------
-# Frames are composited exactly like tools/bake_gif.py (GIF89a disposal
+# Frames are composited per GIF89a (disposal
 # honoured, cover-scale to the panel) so the clock shows the same pixels the
 # bench page does — then stored as a keyframe + per-frame changed rects.
 

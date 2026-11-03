@@ -298,7 +298,7 @@ ORBTHEM_VEC=/tmp/orbtheme_vectors ~/.local/share/nodeenv-gorb/bin/node headless-
 ```
 
 Its real-kit section caches the bench bake in `/tmp/orbtheme_e2e` and reuses it until
-`assets/sources/av-kit/watch-aviator-kit.zip` is newer than the cache, so deleting that
+`tests/fixtures/av-kit/watch-aviator-kit.zip` is newer than the cache, so deleting that
 directory is how you force a fresh bench run. It bakes with `--bg-fps 15 --tick-rate 15`,
 matching the cadence the JS side derives from that kit's manifest.
 

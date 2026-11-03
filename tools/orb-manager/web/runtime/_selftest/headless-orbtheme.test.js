@@ -318,7 +318,7 @@ import json; sys.stdout.write(json.dumps(out))
 // only bytes allowed to differ, and both sides' CRC is verified over its own header.
 // The bench run costs tens of seconds, so its output is cached and reused while the zip is newer.
 (function realKit() {
-  const KIT = path.join(ROOT, 'assets/sources/av-kit/watch-aviator-kit.zip');
+  const KIT = path.join(ROOT, 'tests/fixtures/av-kit/watch-aviator-kit.zip');
   if (!fs.existsSync(KIT)) { ok(false, 'the shipped kit is present to bake', KIT); return; }
   const OUTF = '/tmp/orbtheme_e2e';
   const REF = OUTF + '/ref.orbtheme', STAMP = OUTF + '/.baked';

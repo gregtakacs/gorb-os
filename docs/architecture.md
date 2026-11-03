@@ -201,8 +201,7 @@ Art is baked on the bench; the device never decodes PNG or JSON.
   records, self-describing blobs, art banks sector-aligned at the end. One
   file holds N per-app sections addressed by slug.
 - A device slot is laid out DIFFERENTLY from a card bundle. The installer
-  rebases at run time (`orb_bundle_rebase()`); `tools/mk_slot_image.py` does
-  the same move offline to produce a flashable default.
+  rebases at run time (`orb_bundle_rebase()`).
   `tools/rebake_bundle.py` is the FORMAT 2→3 reverse path.
 - **Nothing is flashed into `assets`.** D36 made the firmware flash bare: the partition
   stays in the table because that is where the store door installs a theme, but no image
@@ -212,12 +211,11 @@ Art is baked on the bench; the device never decodes PNG or JSON.
   directory holds, and that directory ships one file — `skeleton.orbtheme`, the Composer
   bake of the `Skeleton` preset that D37 made the default. The bake carries a class 9
   preview plane, which is the property the previous default lacked: the seed derived from
-  `assets/orb_default.img` by the retired `tools/make_seed_theme.py` had no preview row, so
+  the old flashed slot image by the retired `tools/make_seed_theme.py` had no preview row, so
   `/api/v1/sd/preview` answered 404 for the one theme a fresh board is guaranteed to hold
   and the Themes card drew an empty frame beside its name. `tools/make_default_theme.py`
   now owns that file: it verifies a bake before it installs it, and `--check` re-verifies
-  the committed copy without a browser. `assets/orb_default.img` stays in the tree as the
-  provenance of the compiled-in bank only.
+  the committed copy without a browser.
 - **A theme's identity is its name, never its filename.** The device files a card
   bundle under `theme_stem(slug, name)` = `<slug>-<token>-<12 hex>` (`orb_theme.c:277`),
   where the hex is `sha256(slug + "/" + name)[:12]` and the token is the lowercased,

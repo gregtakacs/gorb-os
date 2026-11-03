@@ -75,7 +75,6 @@ project(gorb-os)
 # (tools/orb-manager/apps/ + themes/, POST /api/v1/sd/theme + /api/v1/sd/bundle). The
 # default's first face ships as a Composer bake instead: the hub's own default theme,
 # `tools/orb-manager/themes/skeleton.orbtheme`, verified by tools/make_default_theme.py.
-# `assets/orb_default.img` stays as the provenance of the compiled-in bank, no longer as a
-# seed source — the seed it produced (themes/aviator.orbtheme) carried no preview plane and
-# retired with it.
+# The slot image that used to be flashed here (assets/orb_default.img) and the seed lifted
+# from it carried no preview plane; both are gone, in git history.
 # ---------------------------------------------------------------------------

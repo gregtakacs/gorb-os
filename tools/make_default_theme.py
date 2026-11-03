@@ -3,7 +3,7 @@
 
 The default theme is what `installTheme` sends onto a board with no face, so it is the
 first theme an owner ever sees and the one row the Themes face must picture. The Aviator
-seed it replaces was lifted out of `assets/orb_default.img` by `make_seed_theme.py`, and
+seed it replaces was lifted out of the old flashed slot image (assets/orb_default.img, since deleted) by `make_seed_theme.py`, and
 that image carries no preview plane: the shipped default answered
 `/api/v1/sd/preview` with a 404 and the Themes card showed an empty frame beside the name.
 A default that cannot picture itself reads as a broken product, not a smaller theme.

@@ -53,10 +53,9 @@ tools/orb-manager/    Orb Manager, the Go desktop hub, with the firmware, apps a
                       default theme it carries
 tools/                format writers and readers, bakers, the host test suites, bench tools
 components/           vendored wasm3 (PROVENANCE.md)
-assets/               the flashed default theme slot and source art
 docs/                 architecture, the user guide, the living design ledgers; finished
                       plans in docs/history/
-tests/                fixtures shared by the host suites
+tests/                fixtures shared by the host suites and the editor (a real composer kit in tests/fixtures/av-kit/)
 ```
 
 ## Quick build

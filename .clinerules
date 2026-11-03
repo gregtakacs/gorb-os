@@ -476,7 +476,7 @@ block are tested. Do not claim a radio-dependent behavior is verified.
 `tools/bake_clock.py` takes a layered watch kit: base gear frames, hands/,
 layers/{dial,glass,outer}, an optional tourbillon/, and a manifest.json carrying
 every pivot/centre. The only kit the repo still ships is
-`assets/sources/av-kit/watch-aviator-kit.zip`, the source of the embedded bank;
+`tests/fixtures/av-kit/watch-aviator-kit.zip`, the source of the embedded bank;
 it has no tourbillon. Do NOT trust the manifest's tourbillon `centre`: it is the
 renderer's own claim and was found wrong by half a texel on both axes (kit2:
 declared [233,233], measured centroid (232.5,232.5) — a texel corner no integer
@@ -523,7 +523,7 @@ and this changes nothing about it.
 
 The SHIPPED compiled-in bank is **av-kit** (composer preset `Aviator`, 15 base
 frames at 15 fps, no tourbillon), not kit3. Its source kit is committed at
-`assets/sources/av-kit/` with its `DESIGN_ID`; read that folder's README before
+`tests/fixtures/av-kit/` with its `DESIGN_ID`; read that folder's README before
 re-baking. It reproduces exactly on the geometry half and to within 59 bytes
 (0.005%, one 1-px antialiasing fringe at 932 B stride) on pixels — measured
 2026-10-12 by running the recipe below against the committed zip. Verify rather
@@ -532,7 +532,7 @@ records the input dir path, so compare the `.bin` by md5 and the `.h` by ignorin
 line 4. `assets/clock_assets.h:3` names the source theme; if it disagrees with the
 kit you just baked, you baked the wrong kit.
 
-    /tmp/bakevenv/bin/python tools/prep_watch_kit.py assets/sources/av-kit/watch-aviator-kit.zip /tmp/p1/av-kit
+    /tmp/bakevenv/bin/python tools/prep_watch_kit.py tests/fixtures/av-kit/watch-aviator-kit.zip /tmp/p1/av-kit
     /tmp/bakevenv/bin/python tools/bake_clock.py /tmp/p1/av-kit/theme \
         --bg-frames /tmp/p1/av-kit/frames --bg-fps 15 --tick-rate 15 --force-sweep
 
@@ -1839,7 +1839,7 @@ correct.
   figure that mattered.
 - **Why the Aviator swept and the Station did not.** Not the preset. The Aviator on the
   glass was the FACTORY bundle (`assets/orb_default.img`, header name `Aviator`), baked
-  by `tools/bake_clock.py --tick-rate 15 --force-sweep` per `assets/sources/av-kit/
+  by `tools/bake_clock.py --tick-rate 15 --force-sweep` per `tests/fixtures/av-kit/
   README.md`: its scalars read `second_sweep 1, tick_rate 15, bg_mode 1, gif_frames 15`,
   and GIF mode drives the whole dial off the bank's own 67 ms delays. A composer FORMAT 3
   bake of the SAME Aviator preset ships `tick_rate` 1 and ticks too. Any dial whose bake

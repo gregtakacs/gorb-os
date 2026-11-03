@@ -9,7 +9,7 @@ bake_clock run against byte formats the composer actually emits.
 
 The kit must be a composer kit that HAS a sub-dial and a tourbillon: this script
 strips the sub-dial and re-measures the tourbillon. The bank the clock boots with
-(assets/sources/av-kit/watch-aviator-kit.zip) has neither, so it is not a valid
+(tests/fixtures/av-kit/watch-aviator-kit.zip) has neither, so it is not a valid
 input here. The repo ships no such kit any more; the orbital kits that did were
 removed on 2026-10-12, so supply one exported from the composer.
 

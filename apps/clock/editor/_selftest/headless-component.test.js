@@ -70,9 +70,11 @@ const txt = (s) => ({ name: 'x', _url: 'data:text/plain;base64,' + Buffer.from(s
   eq(iS.cfg().shMove, 1, 'and back on restores the twins without disturbing anything else');
   iS.setCfg('shOp', 0.5);
   iS.staticShadowsOn(false);
-  eq(iS.cfg().shOp, 0, 'Plate relief off zeroes the art gate');
+  // P5d.3j: relief has its own gate; it no longer zeroes the opacity the cast shadows share
+  eq([iS.cfg().shRelief, iS.cfg().shOp, iS.cfg().shMove], [0, 0.5, 1], 'Plate relief off closes its own gate and leaves the cast shadows on');
   iS.staticShadowsOn(true);
-  eq(iS.cfg().shOp, 0.5, 'and the strength the author left comes straight back');
+  eq([iS.cfg().shRelief, iS.cfg().shOp], [1, 0.5], 'and back on, the strength the author left is untouched');
+  eq(iS.opts(null, true).shRelief, 1, 'opts carries the relief gate to the engine');
   eq(iS.opts(null, true).shMove, 1, 'opts carries the moving gate, so the preview and the bake see it');
   ok(iS.mvKey(true).shMove === undefined, 'the moving gate is no reason to resample the bank');
   // ---- the baked preview plane (docs/theme-preview-plan.md) ------------------

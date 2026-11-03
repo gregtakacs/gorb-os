@@ -1089,6 +1089,30 @@ not enough: the owner wanted any angle, with snaps, the tangent among them (the 
   layout drew as a moon opening but canon read as a window and dropped its `ap`. Canon now
   makes every cutout of a moon wheel a moon cutout. `headless-wheels` 92.
 
+**As built (P5d.3j, owner 2026-11-02).**
+- **The moon aperture is the disc**, locked at 100% (owner): no Aperture control; canon drops
+  `ap`.
+- **Plate relief has its own gate** (`shRelief`). It had written the shared opacity `shOp` to 0,
+  which the cast shadows also read, so hand shadows could not be had without relief. Relief
+  now gates only the baked drops (the sub-dial drop reads `op × rel`); the hands' casts read
+  `op` and their own moving gate. Opacity still scales both.
+- **Relief's cost, stated honestly.** The note said relief "costs nothing per tick". True of a
+  face in the plate; not of a face lifted above the hands, whose drop is part of its still
+  row and is repainted with it whenever a hand moves under it. The pace estimate now prices a
+  lifted face grown by the drop's reach when relief is on (ESTIMATED: offset and blur at
+  scale, not a panel measurement), and the note says so.
+- **A tick is priced like a sweep.** `_devPace` returned before any pricing for a ticked second
+  hand, so Modern read 9 fps on sweep and a green 12/s on a 12 tick. A tick repaints the same
+  wedge a sweep frame does; it is priced the same way, against its own rate (`need`: 12 ticks
+  a second need 12 repaints, one tick a second needs one). The 2026-10 "exempt" ruling, that
+  a tick holds between beats, is withdrawn: it holds, but each beat pays the same crossings.
+- **Antialiasing, answered.** Hands are not always smoothed: the bake grants `EF_SMOOTH` to
+  every hand, shadow and pointer row but the seconds only when its own estimate holds 12 fps
+  with the AA term, else every row ships nearest (the wheel benches logged `nearest=flag`
+  on all three hands). Unchanged here; the owner's call.
+- Tests: `headless-wheels` 94, `headless-component` 60, `headless-pace` (a 12/s tick on Modern
+  needs 12 and holds 9; a 1/s tick fits).
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views

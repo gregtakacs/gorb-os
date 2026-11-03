@@ -1205,7 +1205,7 @@
       // (its aperture's width is the author's, or the disc's own diameter)
       // a moon wheel's cutout is locked to its disc: on its centre, facing where the wheel reads, its
       // aperture a share of the disc (ap); the wheel's own size and Opening faces move it
-      let hole = c.shape === 'moon' || w.spec.moon ? { kind: 'moon', x: w.x, y: w.y, a: w.r * Math.max(0.5, Math.min(1.2, c.ap != null ? +c.ap : 1)), rot: w.read }
+      let hole = c.shape === 'moon' || w.spec.moon ? { kind: 'moon', x: w.x, y: w.y, a: w.r, rot: w.read }   // the aperture is the disc (owner: locked at 100%)
         : c.shape === 'round' ? { kind: 'circle', x: cx, y: cy, r: Math.max(cw, ch) / 2 }
         : c.shape === 'slot' ? { kind: 'slot', x: cx, y: cy, w: cw * 1.4, h: ch * 0.8, rot: at + Math.PI / 2 + p.rot }
         : c.shape === 'arc' && w.form !== 'barrel' ? (() => { const half = Math.max(rad(4), Math.min(Math.PI, rad(+c.span || 36) / 2)), r0 = w.lr - ch / 2, r1 = w.lr + ch / 2;
@@ -2136,7 +2136,8 @@
         const m = cx.getTransform(); cx.translate(x, y); cx.rotate(sl.ang); cx.roundRect(-sl.hl - g, -sl.hh - g, 2 * (sl.hl + g), 2 * (sl.hh + g), sl.rad + g); cx.setTransform(m);
       };
       const band = (cx) => { cx.beginPath(); outline(cx, 2.5); if (s.open) { cx.moveTo(x + s.open - 2.5, y); cx.arc(x, y, s.open - 2.5, 0, TAU, true); } };
-      const ht = s.height, dir = SH ? SH.dir : away(1), dm = SH ? SH.dist : 1, bm = SH ? SH.blur : 1, om = SH ? SH.op : 1;
+      // the drop is plate relief: the static gate (shRelief) and the shared opacity, never the moving gate
+      const ht = s.height, dir = SH ? SH.dir : away(1), dm = SH ? SH.dist : 1, bm = SH ? SH.blur : 1, om = SH ? SH.op * (SH.rel == null ? 1 : SH.rel) : 1;
       if (ht > 0) [[2, 3, 4, 0.8], [8, 13, 20, 0.7], [14, 22, 34, 0.5]].forEach(([ox, oy, b, a]) => {
         const d = Math.hypot(ox, oy) * k * ht * dm;
         ctx.save(); ctx.shadowColor = 'rgba(0,0,0,' + Math.min(1, a * om * Math.min(1, 0.4 + ht * 0.6)) + ')'; ctx.shadowBlur = b * k * Math.max(0.3, ht) * bm; ctx.shadowOffsetX = dir[0] * d; ctx.shadowOffsetY = dir[1] * d;
@@ -3240,7 +3241,7 @@
    * choice, not the same one. */
   function shadowCfg(o, Lt) {
     const auto = !(+o.shAngle >= 0), a = auto ? Lt.outer + Math.PI : rad(+o.shAngle - 90);
-    return { dir: [Math.cos(a), Math.sin(a)], deg: Math.round((((a * 180) / Math.PI + 90) % 360 + 360) % 360), auto, dist: o.shDist == null ? 1 : +o.shDist, blur: o.shBlur == null ? 1 : +o.shBlur, op: o.shOp == null ? 1 : +o.shOp, mv: o.shMove == null ? 1 : +o.shMove, kk: Math.min(1.5, Lt.outerK) };
+    return { dir: [Math.cos(a), Math.sin(a)], deg: Math.round((((a * 180) / Math.PI + 90) % 360 + 360) % 360), auto, dist: o.shDist == null ? 1 : +o.shDist, blur: o.shBlur == null ? 1 : +o.shBlur, op: o.shOp == null ? 1 : +o.shOp, rel: o.shRelief == null ? 1 : +o.shRelief, mv: o.shMove == null ? 1 : +o.shMove, kk: Math.min(1.5, Lt.outerK) };
   }
   /* Canvas casts shadows in DEVICE space: shadowOffsetX/Y and shadowBlur ignore the CTM.
    * compose eases the "no case" opening through one scale about the centre and the chapter
@@ -4434,7 +4435,8 @@
         ['dx', 'dy', 'rot'].forEach((k) => { if (!(+c[k])) delete c[k]; });
         if (!CUT_LIES[c.lie] || c.lie === 'auto') delete c.lie;
         // P5d.3h: a moon cutout keeps only its aperture share and its frame; the moon wheel places it
-        if (c.shape === 'moon') { ['dx', 'dy', 'rot', 'lie', 'at', 'w', 'h', 'join', 'bar', 'span'].forEach((k) => delete c[k]); if (c.ap == null || Math.abs(+c.ap - 1) < 1e-9) delete c.ap; } else delete c.ap;
+        if (c.shape === 'moon') ['dx', 'dy', 'rot', 'lie', 'at', 'w', 'h', 'join', 'bar', 'span'].forEach((k) => delete c[k]);
+        delete c.ap;   // P5d.3j: a moon aperture is the disc, always
         if (!c.shape || c.shape === 'window') delete c.shape;
         if (!c.style || c.style === 'frame') delete c.style;
         if (c.shape !== 'arc') delete c.span;

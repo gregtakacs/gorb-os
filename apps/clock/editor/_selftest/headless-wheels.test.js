@@ -96,7 +96,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(f.lay.wheels.length === 3 && f.lay.dialHoles.some((h) => h.kind === 'moon'), 'and the dial draws them');
   ok(!('Window' in {}) && E.COMP_TYPES.window === 'Rendered display \u00b7 text' && E.COMP_TYPES.moon === 'Rendered display \u00b7 moon', 'the catalogue names the rendered parts for what they are');
   const mw = face([{ id: 'm', type: 'wheel', host: 'dial', size: 40, shows: 'moon', msize: 0.4, mpos: 0.45 }, { id: 'k', type: 'cutout', host: 'm', shape: 'moon', ap: 0.875 }]).lay;
-  ok(mw.wheels[0].msize === 0.4 && mw.wheels[0].mpos === 0.45 && near(mw.dialHoles[0].a, 35), 'a moon wheel sizes its disc, its moons and their place, and its aperture a share of the disc');
+  ok(mw.wheels[0].msize === 0.4 && mw.wheels[0].mpos === 0.45 && near(mw.dialHoles[0].a, 40), 'a moon wheel sizes its disc, its moons and their place; its aperture is the disc, locked');
 }
 // ---- the stage's eye, part by part -----------------------------------------------------------------
 {
@@ -197,7 +197,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   const cm = E.canonDesign({ comps: [{ id: 'm', type: 'wheel', shows: 'moon' }, { id: 'k', type: 'cutout', host: 'm', shape: 'moon', dx: 3, at: 10, w: 50, rot: 9 }] }).comps[1];
   ok(['dx', 'at', 'w', 'rot'].every((k) => !(k in cm)), 'it keeps no placement of its own', JSON.stringify(cm));
   const sw = E.canonDesign({ comps: [{ id: 'm', type: 'wheel', shows: 'moon' }, { id: 'k', type: 'cutout', host: 'm', at: 90, ap: 0.7 }] }).comps[1];
-  ok(sw.shape === 'moon' && sw.ap === 0.7, 'a wheel switched to the moon after its cutout came keeps that cutout\u2019s Aperture', JSON.stringify(sw));
+  ok(sw.shape === 'moon' && !('ap' in sw), 'a wheel switched to the moon after its cutout came makes it a moon cutout, its aperture the disc', JSON.stringify(sw));
   const rm = face([{ id: 'r', type: 'moon', host: 'dial', angle: 0, dist: 80, size: 40, style: 'sphere', rot: 30 }]).lay.comps[0];
   ok(near(rm.rrot, Math.PI / 6) && E.canonDesign({ comps: [{ id: 'r', type: 'moon', style: 'sphere', rot: 30 }] }).comps[0].rot === 30, 'a rendered moon keeps its rotation and turns its terminator by it');
   const st = S.build({ comps: [{ id: 'w', type: 'wheel', host: 'dial', shows: 'date' }, { id: 'k', type: 'cutout', host: 'w' }, { id: 'r', type: 'moon', host: 'dial', style: 'sphere' }], hands: [], order: [], E });
@@ -213,6 +213,12 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   if (kr) { kr.eyeToggle({ stopPropagation() { } }); ok(it.state.hidden.ids && it.state.hidden.ids.k === 1 && !it.state.hidden.complications, 'a cutout\u2019s eye switches off that cutout alone'); }
   else ok(false, 'the cutout row is listed');
   ok(kr && rows().find((r) => r.id === 'comp:k').indent > rows().find((r) => r.id === 'comp:w').indent && rows().find((r) => r.id === 'comp:w').indent > 0, 'and a cutout indents under its wheel, the wheel under the dial');
+}
+// ---- P5d.3j: plate relief and cast shadows are separate gates ---------------------------------------
+{
+  const hs = (o) => { const f = E.face(Object.assign({ design: E.canonDesign({ print: 'roman', comps: [{ id: 'h', type: 'hand', host: 'dial', shows: 'hour' }] }) }, O, o)); return f.handShadow(f.hands[0]).alpha; };
+  ok(hs({ shRelief: 0 }) > 0 && hs({ shRelief: 0 }) === hs({}), 'relief off leaves the hands\u2019 cast shadows exactly as they were');
+  ok(hs({ shMove: 0 }) === 0, 'and cast shadows off is their own switch');
 }
 // ---- canon ----------------------------------------------------------------------------------
 {

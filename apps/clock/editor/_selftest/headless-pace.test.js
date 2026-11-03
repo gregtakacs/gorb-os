@@ -70,12 +70,15 @@ ok(onSh.pace < offSh.pace,
 ok(onSh.pace >= 4 && offSh.pace <= 15 && onSh.pace % 1 === 0 && offSh.pace % 1 === 0,
   'both static-plate paces are whole integers inside the floor and ceiling', onSh.pace + ',' + offSh.pace);
 
-// ---- ticked tempos pay only on the beat: no crossed-plate tax ------------------------
-const iT = mount('modern');
-iT.setCfg('tick', '4');
-const tPace = iT._devPace({ fps: 15, measured: true, car: false });
-eq(tPace.pace, 15, 'a ticked second hand is exempt from the sweep tax (it holds between beats)');
-eq(tPace.cross, 0, 'and the tick path charges no crossed plate');
+// ---- P5d.3j: a tick repaints the same wedge a sweep frame does, at its own rate ----------------
+// (owner: Modern read 9 fps on sweep and a green 12/s on a 12 tick; the old exemption is withdrawn)
+const sweepM = mount('modern')._devPace({ fps: 12, measured: true, car: false });
+const iT = mount('modern'); iT.setCfg('tick', '12');
+const t12 = iT._devPace({ fps: 12, measured: true, car: false });
+ok(t12.need === 12 && t12.pace === sweepM.pace && t12.pace < t12.need && t12.cross > 0, 'twelve ticks a second need twelve repaints, priced as a 12 fps sweep: Modern cannot hold them', JSON.stringify([t12.need, t12.pace, sweepM.pace]));
+iT.setCfg('tick', '1');
+const t1 = iT._devPace({ fps: 12, measured: true, car: false });
+ok(t1.need === 1 && t1.pace >= t1.need, 'one tick a second needs one repaint, which every dial holds', JSON.stringify([t1.need, t1.pace]));
 
 console.log('\n' + (fails ? fails + ' FAILED' : 'all green (' + checked + ' checks)'));
 process.exit(fails ? 1 : 0);

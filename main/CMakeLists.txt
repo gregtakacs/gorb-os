@@ -114,7 +114,6 @@ idf_component_register(
         "sd"
         "usb"
         "util"
-        "../assets"
     REQUIRES
         wasm3                    # P7.2: the vendored interpreter behind the wasm tier
         esp_driver_spi
@@ -147,17 +146,8 @@ idf_component_register(
         espressif__esp_tinyusb  # D38: the MTP gadget behind `orb usb files` (MSC is gone from the tree)
 )
 
-# The baked analog-clock art (assets/clock_assets.bin, produced by
-# tools/bake_clock.py from an orb-os theme folder) is NOT embedded in the app
-# image any more. It used to arrive here via target_add_binary_data(), which put
-# ~1.85 MB of pixels into .rodata and made every OTA payload carry art that
-# never changed between themes.
-#
-# It now lives in the `assets` data partition (partitions.csv), is flashed by
-# the esptool_py_flash_target_image() rule in the top-level CMakeLists.txt, and
-# is mapped once at boot by main/art/art_bank.c; orb_stage.c's blob() returns
-# the mapped base, so sprite reads are unchanged. Geometry parsed offline from
-# the theme's clock_style.json still lives in assets/clock_assets.h.
+# No art is compiled in or flashed: every face is a FORMAT 3 theme the store door
+# installs into the `assets` partition, which main/art/art_bank.c maps once at boot.
 
 # orb_panic.c records every panic before ESP-IDF's handler prints and resets: the
 # wrap is the only hook that sees faults, abort() and both watchdogs alike.

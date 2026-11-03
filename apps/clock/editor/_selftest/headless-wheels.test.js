@@ -196,6 +196,8 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(near(h1.a, 60) && near(h1.rot, Math.PI / 4), 'and grows and turns with the moon wheel');
   const cm = E.canonDesign({ comps: [{ id: 'm', type: 'wheel', shows: 'moon' }, { id: 'k', type: 'cutout', host: 'm', shape: 'moon', dx: 3, at: 10, w: 50, rot: 9 }] }).comps[1];
   ok(['dx', 'at', 'w', 'rot'].every((k) => !(k in cm)), 'it keeps no placement of its own', JSON.stringify(cm));
+  const sw = E.canonDesign({ comps: [{ id: 'm', type: 'wheel', shows: 'moon' }, { id: 'k', type: 'cutout', host: 'm', at: 90, ap: 0.7 }] }).comps[1];
+  ok(sw.shape === 'moon' && sw.ap === 0.7, 'a wheel switched to the moon after its cutout came keeps that cutout\u2019s Aperture', JSON.stringify(sw));
   const rm = face([{ id: 'r', type: 'moon', host: 'dial', angle: 0, dist: 80, size: 40, style: 'sphere', rot: 30 }]).lay.comps[0];
   ok(near(rm.rrot, Math.PI / 6) && E.canonDesign({ comps: [{ id: 'r', type: 'moon', style: 'sphere', rot: 30 }] }).comps[0].rot === 30, 'a rendered moon keeps its rotation and turns its terminator by it');
   const st = S.build({ comps: [{ id: 'w', type: 'wheel', host: 'dial', shows: 'date' }, { id: 'k', type: 'cutout', host: 'w' }, { id: 'r', type: 'moon', host: 'dial', style: 'sphere' }], hands: [], order: [], E });

@@ -4361,6 +4361,10 @@
     ['n12Font', 'nQFont'].forEach((k) => { if (!d[k] || d[k] === 'same') delete d[k]; });
     ['n12Color', 'nQColor'].forEach((k) => { if (!d[k] || d[k] === 'auto') delete d[k]; });
     if (d.comps) d.comps = retireWindows(d.comps);
+    // P5d.3i: a moon wheel's cutouts are moon cutouts, however they were added (a wheel switched to
+    // the moon after its cutout came with it kept a window's shape, and canon then dropped its Aperture)
+    if (d.comps) { const moons = {}; d.comps.forEach((c) => { if (c.type === 'wheel' && c.shows === 'moon') moons[c.id] = 1; });
+      d.comps.forEach((c) => { if (c.type === 'cutout' && moons[c.host]) c.shape = 'moon'; }); }
     (d.comps || []).forEach((c) => {
       if (c.type === 'hand') {
         // a hand has no placement of its own: it turns on its host's arbour

@@ -1084,6 +1084,10 @@ not enough: the owner wanted any angle, with snaps, the tangent among them (the 
   `h`), and its panel offers only Aperture and Frame. Size, moons and orientation are set on
   the wheel; the cutout follows.
 - Tests: `headless-wheels` 91.
+- **Found by the owner (P5d.3i):** the Aperture slider would not move off 100% on a wheel
+  switched to Moon phase after its cutout was added: that cutout kept a window's shape, which
+  layout drew as a moon opening but canon read as a window and dropped its `ap`. Canon now
+  makes every cutout of a moon wheel a moon cutout. `headless-wheels` 92.
 
 ## 5. Preview: 1:1, and the panel
 

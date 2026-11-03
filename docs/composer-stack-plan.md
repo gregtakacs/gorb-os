@@ -1531,8 +1531,8 @@ warns when uploaded art is missing from this browser, since the theme and its de
 ship without it. `export-test.html` went with the layer kit it read; its pixel checks are
 listed in `_selftest/README.md` as coverage not yet re-homed.
 
-**Compatibility (PROPOSED 2026-11-02, awaiting the owner's ruling).** Two contracts, each
-with one owner:
+**Compatibility (RULED 2026-11-02, option b; see ruling 12).** Two contracts, each with one
+owner:
 
 - *The baked dial* (the OS's: FORMAT, the ABI stamps, the element and blob layouts). The
   firmware reads exactly what it understands and refuses the rest with "re-bake it" (D42
@@ -1544,9 +1544,11 @@ with one owner:
   type. An older editor would drop such fields on save, so it refuses any design whose
   `appVersion` is newer than its own (built), and the hub's "this orb's app is older" page is
   the fix. Breaking, schema bump: removing or renaming a field, changing a field's meaning or
-  units, restructuring. Open question for the owner: on a bump, either (a) designs of the
-  old schema are refused (no legacy; the themes still run but cannot be reopened), or (b) one
-  pure migration function per bump, `migrate[n](doc) -> doc of schema n+1`, kept in one file.
+  units, restructuring. On a bump the editor gains one pure step, `DESIGN_MIGRATE[n](doc)`
+  to schema n+1, and opens an older design by walking every step forward (the owner chose
+  this over refusing old designs, so every theme ever baked stays editable). A missing step
+  is refused by name. Built with an empty table (schema 1 needs none); tested with a pretend
+  schema 2.
 - *Clean slate:* `canonDesign` still carries migrations from before schema 1 (windows into
   wheels, the wheel's index field, the old faces, `tsize`). No design file or theme carries
   a pre-schema-1 design (every pre-P7 theme has none), so they can go once autosave and My
@@ -1745,6 +1747,13 @@ its version carry what was built.
    shelf). The hub and firmware already compared app versions only app to app; the tool
    and its sentinel were the only coupling. All three apps start at v1.2.2, the last
    shared stamp, and move apart from here.
+
+12. **Old designs stay editable (2026-11-02).** A breaking change to the clock's design
+   document bumps its schema and ships one pure migration step to the next schema; steps are
+   kept, never edited or removed, so any theme ever baked can be opened by any later editor.
+   Non-breaking changes need no step. An editor refuses a design from a newer app release
+   (it would drop that release's fields on save). The dial format stays no-legacy: a theme
+   the firmware no longer reads is re-baked through Edit and Send.
 
 ## 12. Open questions (raised during execution)
 

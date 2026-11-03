@@ -14,7 +14,9 @@
      `B64:` carries the whole download blob; the status names the carrier and art meter. -->
 <script src="../dial-renderer.js"></script>
 <script src="../watch-engine.js"></script>
-<script>window.React = { createRef: () => ({ current: null }) };</script>
+<script>window.React = { createRef: () => ({ current: null }) };
+// ?appv=vX.Y.Z stamps the designs this bake writes as the packaged clock would (make_clock_region's window.__ORB_APP)
+(function () { const v = new URLSearchParams(location.search).get('appv'); if (v) window.__ORB_APP = { slug: 'clock', version: v }; })();</script>
 <script src="../orbtheme-baker.js"></script>
 <script src="component.js"></script>
 <script>

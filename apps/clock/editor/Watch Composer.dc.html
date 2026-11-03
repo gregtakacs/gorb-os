@@ -3911,6 +3911,23 @@ class Component extends DCLogic {
    * leaves it out or the file would pass the orb's upload cap, when it goes without and
    * says so. The OS keeps the bytes and never reads them. */
   DESIGN_SCHEMA = 1;
+  /* Compatibility (owner ruling, 2026-11-02, option b): a breaking change to the design
+   * document bumps DESIGN_SCHEMA and adds ONE pure step here, DESIGN_MIGRATE[n](doc) -> the
+   * same watch as schema n+1, so every theme ever baked stays editable. Steps are never
+   * edited once shipped and never removed; a non-breaking change (a new field whose absence
+   * means the old behaviour, a new value, a new part) needs no step. Empty while schema 1 is
+   * the only schema. */
+  DESIGN_MIGRATE = {};
+  // a design of an older schema, walked forward one step at a time; null with why when a step is missing
+  migrateDesign(o) {
+    let d = o, n = +o.schema;
+    while (n < this.DESIGN_SCHEMA) {
+      const step = this.DESIGN_MIGRATE[n];
+      if (typeof step !== 'function') return { doc: null, why: 'that design is schema ' + o.schema + ' and this editor has no step from schema ' + n + ' to ' + (n + 1) };
+      d = Object.assign(step(JSON.parse(JSON.stringify(d))), { schema: n + 1 }); n++;
+    }
+    return { doc: d, why: null };
+  }
   appVersion() { const a = typeof window !== 'undefined' && window.__ORB_APP; return (a && a.version) || 'dev'; }
   async designDoc(withArt) {
     const D = this.design(), s = this.state;
@@ -3949,6 +3966,7 @@ class Component extends DCLogic {
     const E = window.WatchEngine;
     if (!o || o.format !== 'wc-design') return 'that design is not one this editor wrote';
     if (o.app && o.app !== this.appSlug()) return 'that design is the ' + o.app + ' app\u2019s, not ' + this.appSlug() + '\u2019s';
+    if (o.schema >= 1 && o.schema < this.DESIGN_SCHEMA) { const m = this.migrateDesign(o); if (!m.doc) return m.why; o = m.doc; }
     if (!(o.schema >= 1) || o.schema > this.DESIGN_SCHEMA) return 'that design was made by ' + (o.app || 'clock') + ' ' + (o.appVersion || '?') + ' (design schema ' + o.schema + '); this editor (' + this.appVersion() + ') reads schema ' + this.DESIGN_SCHEMA + ' \u2014 update the app on this orb';
     // a newer clock may have added fields this editor would silently drop on the next save: refuse, naming the release
     const ver = (v) => { const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(String(v || '')); return m ? [+m[1], +m[2], +m[3]] : null; };

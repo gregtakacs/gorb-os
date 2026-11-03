@@ -45,6 +45,13 @@ const mk = () => {
   const newer = mk().applyDesignDoc(Object.assign({}, back, { schema: 2, appVersion: 'v1.3.0' }));
   ok(/clock v1\.3\.0/.test(newer || '') && /reads schema 1/.test(newer || '') && /update the app/.test(newer || ''), 'a newer schema names the version that made it and the fix', newer);
   ok(/not one this editor wrote/.test(mk().applyDesignDoc({ format: 'wckit' }) || ''), 'a foreign document is refused');
+  // option b: an older schema walks forward through one pure step per bump (here a pretend schema 2 that renamed themeName)
+  const m2 = mk(); m2.DESIGN_SCHEMA = 2; m2.DESIGN_MIGRATE = { 1: (d) => Object.assign(d, { title: d.themeName, themeName: undefined }) };
+  const mig = m2.migrateDesign(back);
+  ok(mig.doc && mig.doc.schema === 2 && mig.doc.title === 'Field test' && back.schema === 1 && back.themeName === 'Field test', 'an older design is migrated one step per bump, leaving the original untouched', JSON.stringify(mig.doc && [mig.doc.schema, mig.doc.title]));
+  const m3 = mk(); m3.DESIGN_SCHEMA = 3; m3.DESIGN_MIGRATE = { 1: (d) => d };
+  ok(/no step from schema 2 to 3/.test(m3.applyDesignDoc(back) || ''), 'and a missing step is refused by name, never guessed');
+  ok(Object.keys(mk().DESIGN_MIGRATE).length === 0, 'schema 1 needs no step');
   const later = mk().applyDesignDoc(Object.assign({}, back, { appVersion: 'v1.10.0' }));
   ok(/clock v1\.10\.0, newer than this editor \(v1\.2\.2\)/.test(later || ''), 'a design from a newer clock is refused by version, so no field it added is dropped on save', later);
   ok(mk().applyDesignDoc(Object.assign({}, back, { appVersion: 'v1.2.1' })) === null, 'while one from an older clock opens');

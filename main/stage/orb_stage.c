@@ -1198,6 +1198,20 @@ static void rows_update(void)
     for (uint16_t i = 0; i < n; i++) {
         row_state_t *st = &s_row[i];
         const int32_t a = ang[i], prev = st->ang_10;
+        /* D43: a drum is drawn by the compositor alone (its classic widget would slide the
+         * strip), so an LVGL render of its rows (the boot's first frame, a bounce) leaves
+         * the plate there and nothing re-marks a drum standing still. It re-marks its small
+         * window every tick, as a moving hand does; the flush gate sends only changed rows. */
+        if (clk_theme.drum_r[i] && a != ROW_HIDDEN && prev != ROW_HIDDEN
+#if CLK_BG_DIRECT_PUSH
+            && orb_sched_l4_active()
+#endif
+            ) {
+            lv_area_t w;
+            gfx_drum_box(row_spr(i), clk_theme.drum_r[i], &w);
+            gfx_mark_rows(w.y1 < 0 ? 0 : w.y1, w.y2 > CLK_SCR_H - 1 ? CLK_SCR_H - 1 : w.y2,
+                          w.x1 < 0 ? 0 : w.x1, w.x2 > CLK_SCR_W - 1 ? CLK_SCR_W - 1 : w.x2, false);
+        }
         if (a == prev && ox[i] == st->ox && oy[i] == st->oy) continue;
         if (a != ROW_HIDDEN && prev != ROW_HIDDEN && ox[i] == st->ox && oy[i] == st->oy) {
             int32_t d = a - prev;

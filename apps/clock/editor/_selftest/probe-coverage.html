@@ -1,0 +1,195 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>probe-coverage</title>
+<body><pre id="out">booting…</pre>
+<!-- D43 P6, the live-blend coverage measurement (§5.3's last bullet): what the device's
+     32-step coverage (mix_16_16's (a + 4) >> 3) costs on the rows it blends live, measured
+     on the bytes each preset actually bakes. A probe: it prints, it asserts nothing.
+
+     Every preset is baked through the real exportTheme3 and read back. Each live row with
+     partial coverage -- a hand's antialiased edge, its shadow twin, a lifted face or a
+     still row, a value row, the crystal overlay -- is blended over the stored plate (its
+     value rows in) three ways, at every texel where its alpha is strictly between 0 and 255:
+
+       dev   the device: GorbBake.blendPx, the JS mirror headless-panel holds to orb_gfx.c
+       a8    the same blend at 256 coverage steps, rounded to RGB565 the same way: the best
+             a firmware change to the coverage could ever give, since the panel is RGB565
+       ideal the float composite of the same decoded colours, no quantization at all
+
+     and scored against `ideal` with §5.4's metric: luma error, low-passed at sigma 1.5,
+     minus its sigma-12 blur ("band"; slow offsets drop out, contour-sized error remains),
+     over the row's footprint only (normalized convolution, so the zero outside it cannot
+     bias the edge). "contour" is the share of the footprint whose band error exceeds 1/255.
+     dev minus a8 is what the 32-step coverage costs; a8 itself is the RGB565 floor.
+
+     Rows are placed at their stored rest pose (a hand at 12), unrotated: the falloff a
+     coverage step quantizes is the same at any angle. ?dials=a,b,c limits the presets. -->
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,600;0,700;1,600&family=Bodoni+Moda:ital,wght@0,500;0,700;1,600&family=Jost:ital,wght@0,500;0,600;0,700;1,600&family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;1,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,600&display=swap" rel="stylesheet">
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<script>window.React = { createRef: () => ({ current: null }) };</script>
+<script src="../orbtheme-baker.js"></script>
+<script src="component.js"></script>
+<script>
+(function () {
+  const out = document.getElementById('out'), L = [];
+  const say = (s) => { L.push(s); out.textContent = L.join('\n'); };
+  const E = window.WatchEngine, G = window.GorbBake;
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const S = 466, SHADOW = 16, HIDDEN = 8;
+
+  const IT = new (window.COMP_CLASS(DCLogic))({});
+  IT.forceUpdate = () => { };
+  IT.state.playing = true; IT.state.hidden = {}; IT.state.tab = 'export';
+  let tick = 0;
+  const pump = () => { clearInterval(tick); tick = setInterval(() => IT.componentDidUpdate(), 40); };
+  const stopPump = () => clearInterval(tick);
+  const settle = async () => {
+    for (let i = 0; i < 400; i++) {
+      IT.componentDidUpdate();
+      if (!IT.rendering && IT._mk === IT.mvKey() && IT.gt.length === IT.B && IT.gt[0]) return true;
+      await wait(40);
+    }
+    return false;
+  };
+  async function bake(dial) {
+    const P = E.PRESETS[dial];
+    IT.state.dial = dial; IT.faces = {}; IT.base = null; IT.gt = []; IT.buildId = (IT.buildId || 0) + 1;
+    IT.state.designs = {}; IT.state.designs[dial] = E.canonDesign(JSON.parse(JSON.stringify(P.design)));
+    IT.state.hands = 'auto'; IT.state.handFinish = 'auto';
+    IT.state.cfg = { ...(P.cfg || {}) }; IT.state.train = P.train || 'classic';
+    IT.state.caseStyle = P.caseStyle || 'polished'; IT.state.caseMetal = P.caseMetal || 'auto'; IT.state.caseOpen = 221.5;
+    IT.state.glassStyle = 'domed'; IT.state.themeName = 'Probe ' + dial;
+    pump(); IT.buildMovement();
+    if (!await settle()) throw new Error(dial + ' never settled');
+    let blob = null; IT.download = (b) => { blob = b; };
+    await wait(300);
+    for (let a = 0; a < 5 && !blob; a++) {
+      await IT.exportTheme3();
+      if (!/not settled|rebuilt itself/.test(String(IT.state.status || ''))) break;
+      await wait(300);
+    }
+    stopPump();
+    if (!blob) throw new Error(dial + ': nothing baked: ' + String(IT.state.status).slice(0, 140));
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+
+  function decode(bytes) {
+    const s = G.verifyBundle3(bytes).sections.find((x) => x.blob.slug === 'clock');
+    const els = s.blob.elements, spr = s.blob.sprites, art = s.art;
+    const cls = (e) => (e.cls !== undefined ? e.cls : e['class']);
+    const sprite = (k) => {
+      const sp = spr[k], n = sp.w * sp.h, b = art.subarray(sp.off, sp.off + sp.size), hasA = sp.size === n * 3;
+      const codes = new Uint16Array(n);
+      for (let i = 0; i < n; i++) codes[i] = b[2 * i] | (b[2 * i + 1] << 8);
+      return { w: sp.w, h: sp.h, codes, alpha: hasA ? b.subarray(2 * n, 3 * n) : null };
+    };
+    return { els, cls, sprite };
+  }
+
+  // ---- the three blends, field by field -------------------------------------------------
+  const dec = (v) => [((v >> 11) << 3) | (v >> 13), (((v >> 5) & 63) << 2) | (((v >> 5) & 63) >> 4), ((v & 31) << 3) | ((v & 31) >> 2)];
+  const luma = (c) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+  const a8 = (bg, fg, a) => {
+    const f = (sh, m) => { const B = (bg >> sh) & m, F = (fg >> sh) & m; return Math.round(B + (F - B) * a / 255) & m; };
+    return (f(11, 31) << 11) | (f(5, 63) << 5) | f(0, 31);
+  };
+  const ideal = (bg, fg, a) => { const B = dec(bg), F = dec(fg), t = a / 255; return luma([B[0] + (F[0] - B[0]) * t, B[1] + (F[1] - B[1]) * t, B[2] + (F[2] - B[2]) * t]); };
+
+  // ---- §5.4's band metric over a footprint, by normalized convolution --------------------
+  function gauss1d(sig) { const r = Math.ceil(sig * 3), k = []; let s = 0; for (let i = -r; i <= r; i++) { const v = Math.exp(-(i * i) / (2 * sig * sig)); k.push(v); s += v; } return k.map((v) => v / s); }
+  function blur(src, w, h, sig) {
+    const k = gauss1d(sig), r = (k.length - 1) >> 1, tmp = new Float32Array(w * h), dst = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let s = 0; for (let j = -r; j <= r; j++) { const X = x + j; if (X >= 0 && X < w) s += src[y * w + X] * k[j + r]; } tmp[y * w + x] = s; }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let s = 0; for (let j = -r; j <= r; j++) { const Y = y + j; if (Y >= 0 && Y < h) s += tmp[Y * w + x] * k[j + r]; } dst[y * w + x] = s; }
+    return dst;
+  }
+  function score(err, mask, w, h) {
+    const em = new Float32Array(w * h); let n = 0, sum = 0, sq = 0;
+    for (let i = 0; i < em.length; i++) if (mask[i]) { em[i] = err[i]; n++; sum += err[i]; sq += err[i] * err[i]; }
+    const M = Float32Array.from(mask), nb = (sig) => { const a = blur(em, w, h, sig), b = blur(M, w, h, sig); return a.map((v, i) => (b[i] > 1e-6 ? v / b[i] : 0)); };
+    const lo = nb(1.5), slow = nb(12);
+    let bsq = 0, cont = 0;
+    for (let i = 0; i < em.length; i++) if (mask[i]) { const b = lo[i] - slow[i]; bsq += b * b; if (Math.abs(b) > 1) cont++; }
+    return { n, mean: sum / n, rms: Math.sqrt(sq / n), band: Math.sqrt(bsq / n), contour: (100 * cont) / n };
+  }
+
+  // one row over a background plate, cropped to the row's box: dev, a8, ideal, scored
+  function rowScore(bg, e, r) {
+    const w = r.w, h = r.h, eD = new Float32Array(w * h), eA = new Float32Array(w * h), mask = new Uint8Array(w * h);
+    let lumaSpan = 0, steps = new Set();
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const X = e.x + x, Y = e.y + y, i = y * w + x, a = r.alpha ? r.alpha[i] : 255;
+      if (X < 0 || Y < 0 || X >= S || Y >= S || a === 0 || a === 255) continue;
+      const b = bg[Y * S + X], c = r.codes[i], id = ideal(b, c, a);
+      eD[i] = luma(dec(G.blendPx(b, c, a, 0))) - id; eA[i] = luma(dec(a8(b, c, a))) - id; mask[i] = 1;
+      lumaSpan = Math.max(lumaSpan, Math.abs(luma(dec(b)) - luma(dec(c))));
+      steps.add((a + 4) >> 3);
+    }
+    if (!mask.some(Boolean)) return null;
+    return { dev: score(eD, mask, w, h), a8: score(eA, mask, w, h), span: lumaSpan, levels: steps.size };
+  }
+
+  // the plate a live row lands on: the stored plate with every visible value row blended in
+  function shownPlate(D) {
+    const plateEl = D.els.find((e) => D.cls(e) === 3 && !(e.slot & 0xffff)), out = D.sprite(plateEl.frame0).codes.slice();
+    const day = IT.now().getDate();
+    D.els.forEach((e) => {
+      if (D.cls(e) !== 5 || (e.flags & HIDDEN)) return;
+      const r = D.sprite((e.frame0 | 0) + ((e.n_frames | 0) === 31 ? day - 1 : 0));
+      for (let y = 0; y < r.h; y++) for (let x = 0; x < r.w; x++) {
+        const X = e.x + x, Y = e.y + y, i = y * r.w + x, a = r.alpha ? r.alpha[i] : 255;
+        if (X >= 0 && Y >= 0 && X < S && Y < S && a) out[Y * S + X] = G.blendPx(out[Y * S + X], r.codes[i], a, 0);
+      }
+    });
+    return out;
+  }
+  const kindOf = (D, e, i) => {
+    const c = D.cls(e);
+    if (c === 3) return 'overlay';
+    if (c === 5) return 'value row';
+    if (c !== 8) return null;
+    if (e.flags & SHADOW) return 'shadow';
+    return e.src ? 'hand' : 'still row';
+  };
+  const f1 = (v) => v.toFixed(2), pc = (v) => v.toFixed(1) + '%';
+
+  async function main() {
+    const fams = Array.from(new Set(Object.values(E.FONTS || {}).map((f) => (String(f[1] || '').match(/"([^"]+)"/) || [])[1]).filter(Boolean)));
+    await Promise.race([Promise.all(fams.map((f) => document.fonts.load('700 32px "' + f + '"').catch(() => null))), wait(15000)]);
+    await IT.componentDidMount();
+    const want = (new URLSearchParams(location.search).get('dials') || '').split(',').filter(Boolean);
+    const dials = want.length ? want : Object.keys(E.PRESETS);
+    say('row kind     | px     | luma span | cov levels | band rms dev / a8 | contour dev / a8 | mean dev / a8');
+    const tot = {};
+    for (const dial of dials) {
+      let D;
+      try { D = decode(await bake(dial)); } catch (e) { say(dial + ': ' + e.message); continue; }
+      const bg = shownPlate(D), per = {};
+      D.els.forEach((e, i) => {
+        const k = kindOf(D, e, i); if (!k || (e.flags & HIDDEN) || (k === 'value row')) return;
+        const r = D.sprite(e.frame0 | 0); if (!r.alpha) return;
+        const s = rowScore(bg, e, r); if (!s) return;
+        (per[k] = per[k] || []).push(s); (tot[k] = tot[k] || []).push(s);
+      });
+      say('--- ' + dial);
+      for (const k of Object.keys(per)) say(line(k, per[k]));
+    }
+    say('=== all presets');
+    for (const k of Object.keys(tot)) say(line(k, tot[k]));
+    say('DONE');
+    document.title = 'DONE';
+  }
+  // footprint-weighted means over a set of rows
+  function line(k, rows) {
+    const n = rows.reduce((s, r) => s + r.dev.n, 0), w = (f) => rows.reduce((s, r) => s + f(r) * r.dev.n, 0) / n;
+    const mx = (f) => rows.reduce((m, r) => Math.max(m, f(r)), 0);
+    return (k + '            ').slice(0, 12) + ' | ' + String(n).padEnd(7) + ' | ' + (mx((r) => r.span).toFixed(0) + '        ').slice(0, 9) +
+      ' | ' + (mx((r) => r.levels) + '          ').slice(0, 10) + ' | ' + f1(w((r) => r.dev.band)) + ' / ' + f1(w((r) => r.a8.band)) +
+      '       | ' + pc(w((r) => r.dev.contour)) + ' / ' + pc(w((r) => r.a8.contour)) + '    | ' + f1(w((r) => r.dev.mean)) + ' / ' + f1(w((r) => r.a8.mean));
+  }
+  main().catch((e) => { stopPump(); say('FAILED: ' + (e && e.message)); say(String((e && e.stack) || '').split('\n').slice(0, 6).join('\n')); document.title = 'FAILED'; });
+})();
+</script>

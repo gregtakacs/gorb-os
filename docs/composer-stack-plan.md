@@ -1347,6 +1347,8 @@ origins. (Corrected 2026-11-01; the first draft named `rgb565_le` as the twin.)
 - **Not addressed here:** the device's 5-bit coverage on live blends (§1.3). Fixing
   it means work in `blend_px`, the per-pixel hot path. Panel view will show it
   honestly, and P6 measures whether it matters before anything is proposed.
+  **Measured 2026-11-03 (§5.5):** it matters only on light dials, for hand shadows and
+  edges; dark dials and the crystal show no cost.
 
 **Every baked byte changes** once rounding replaces truncation, so every preset and
 bench theme is rebaked. D42 ruling 6 already requires a v6 rebuild of every theme, so
@@ -1419,6 +1421,54 @@ overlay row, the `mix_16_16` model).
   | Dithered bake (P2) | 0.52 | 6.9 % | −2.6 |
 
   The remaining −2.6 is the blend's truncation, §12 Q1.
+
+### 5.5 P6 and P1 on the glass (2026-11-03, Gold, OS v1.2.6, clock v1.2.10)
+
+**Coverage (P6).** `_selftest/probe-coverage.html` bakes every preset through the real
+export and blends each live row with partial alpha over its stored plate three ways: the
+device (`blendPx`, held to `orb_gfx.c`), the same blend at 256 coverage steps rounded to
+RGB565 (the most a firmware change to the coverage could buy, since the panel is RGB565),
+and an unquantized ideal. Scored with §5.4's band metric over each row's footprint:
+
+| Live row (17 presets) | Band rms, device / 256-step | Contour, device / 256-step | Worst |
+|---|---|---|---|
+| Crystal overlay | 0.35 / 0.35 | 0.8 % / 0.9 % | none: P2 already dithers its alpha onto the 32-step lattice |
+| Hand shadows | 0.47 / 0.39 | 5.0 % / 2.2 % | Station 18.5 % / 5.2 %, Phase 12.1 % / 0.9 % |
+| Hand edges | 0.46 / 0.38 | 4.9 % / 1.5 % | Station 12.7 % / 8.9 %, Regulator 11.0 % / 2.2 % |
+
+On the glass, Station (white dial, the worst case) was installed on Gold and three frames
+read with `fbgrab`. Every live texel was tested against the device model (up to two live
+rows stacked, each a colour the theme's rows carry at one of the 33 coverage steps, then
+the crystal): 98.5 % are explained; of the 1.5 % left, 3–4 texels a frame would fit a
+256-step blend instead. So the glass is the model, and the table above is what the orb
+shows. One coverage step on Station's white is 7.4 luma (RGB565's own steps there are
+about 8 for red and blue, 4 for green). Magnified crops of the falloff show the steps only
+when contrast-stretched. **Nothing proposed**: 8-bit coverage does not fit `mix_16_16`'s
+packed fields (a field times 255 needs 8 bits of headroom; the gaps hold 5 and 6), so it
+would cost a per-channel blend on every shadow texel; a shadow row rotates, so the overlay's
+bake-time dither cannot be borrowed. Revisit if an owner sees it on a light dial.
+
+**Panel against the glass (P1).** `_selftest/probe-panel.html` renders the Panel view at
+a sweep of times, keeps the one that best matches each `fbgrab` frame, and splits the
+disagreement by region. The first run (Skeleton) found the static dial off on 62 % of
+texels, almost all one step dark in a ring at r 142–209: the bake folded the crystal case
+first and glass over it, while the editor (compose, composeLayers) draws the glass first and
+the case over it, and two partial layers do not commute. Fixed in clock v1.2.11: one engine
+function, `topLayer`, now draws the crystal for the Panel view and the bake alike. After a
+re-bake the static dial equals the glass on 99.7–100 % of texels. Hands agree in body and
+differ along their edges: of the hand texels that differ, 66–84 % match a Panel texel within
+1 px and one RGB565 step, 78–93 % within 2 px, the rest being the sweeping small seconds
+(the fit is to a frame, the pointer moves between them). That is the canvas's smoothed
+rotation against the device's sampler, as P1 expected; it is not proposed for change.
+
+**Found and fixed on the way** (theme-check.html, §8): a seated art hand's facing never
+reached the row (v1.2.10); a narrowed case opening shipped the seated hands full size
+(v1.2.10); the crystal fold above (v1.2.11); and the dial's white balance (the Night mood's
+6000 K) reached only the tourbillon carriage, so a balanced dial shipped its plate, hands
+and crystal unbalanced; every export reader now balances what it reads (`wbPix`), and the
+Panel view balances pixels rather than round-tripping a translucent canvas (v1.2.11).
+**Open:** the Perpetual calendar preset does not bake ("the complication c1 renders nothing
+across its 12 values"), so it cannot be sent to an orb.
 
 ## 6. Cost stays visible
 
@@ -1758,7 +1808,7 @@ long as an app in its library or on a known orb still names it.
 | Slice | Content | Gate |
 |---|---|---|
 | **P0** ✔ | Measure the banding: bake presets with gradients, `fbgrab` them, and record where the glass bands (plate vs live rows) | **done 2026-11-01 (§5.4)**: host and glass agree; the overlay's live blend dominates |
-| **P1** ◐ | Panel view and Compare (§5.1–5.2): the JS mirror of `blend_px` (all three modes), the device quantization of each stage layer, crystal overlay | **built 2026-11-01**: `GorbBake.mix1616/blendPx/panelPlate/panelLayer/panelRGBA`, `WatchEngine.composeLayers`, the Render row (Design · Panel · Compare with a wipe). `headless-panel.test.js`: `blendPx` equals the C lifted from `orb_gfx.c` on 300,000 random texels, the panel plate and overlay equal the bake's stored codes, 8/8 mutants caught. Glass: the device model equals `fbgrab` outside the hands (§5.4). **Owed:** hands are rotated by the canvas (smoothed), the device samples nearest, so a hand's edge can differ by a texel — not yet measured against `bench_preview_parity.py`'s tolerance; sub-dial pointers are drawn in the under-hands layer, so Panel dithers them while the device ships them truncated |
+| **P1** ✔ | Panel view and Compare (§5.1–5.2): the JS mirror of `blend_px` (all three modes), the device quantization of each stage layer, crystal overlay | **built 2026-11-01**: `GorbBake.mix1616/blendPx/panelPlate/panelLayer/panelRGBA`, `WatchEngine.composeLayers`, the Render row (Design · Panel · Compare with a wipe). `headless-panel.test.js`: `blendPx` equals the C lifted from `orb_gfx.c` on 300,000 random texels, the panel plate and overlay equal the bake's stored codes, 8/8 mutants caught. Glass: the device model equals `fbgrab` outside the hands (§5.4). **Measured on the glass 2026-11-03 (§5.5):** after the crystal-fold fix the static dial equals `fbgrab` on 99.7–100 % of texels; hands agree in body and differ at their edges, 66–84 % of the differing hand texels matching a Panel texel within 1 px and one RGB565 step (78–93 % within 2 px); the sub-dial pointer note was stale (since P4b, `compose` holds every hand out of the plate layer, so Panel blends pointers plain, as rows ship) |
 | **P2** ◐ | Bake-time blue-noise dither (§5.3, §5.4) of every still, screen-locked plane, colour and alpha: the plate, its bank, folded layers, the crystal overlay (alpha on the 32-step lattice). The table and its generator (`tools/make_bluenoise.py`), JS and Python twins, the per-layer `dither` setting with `on` allowed for rings and discs, every preset rebaked | both table copies pinned to one hash; vectors equal in both twins, with mutants caught (table transposed, frac comparison flipped, truncation restored); exact 565 colours unchanged at every pixel; delta row band and bank bytes for every animated preset recorded before and after; §5.4's band metric re-run on the new bakes; the glass no longer bands where P0 recorded it — **built 2026-11-01**: `tools/make_bluenoise.py`, `tools/orbdither.py`, the baker's still-row dither; `headless-dither.test.js` 24 checks, 11/11 mutants; bank bytes and delta texels unchanged on Skeleton, Luna and Neon moon; glass contour 17.9 % → 6.9 % on orb-B (§5.4). the hub default (`tools/orb-manager/themes/skeleton.orbtheme`) rebaked and installed through `make_default_theme.py`. The composer's per-layer setting **built 2026-11-02** (§5.3, "As built, the per-layer setting") |
 | **P3** ✔ | The OS theme runtime and the end of `/composer/` (§9): the runtime's source moved into the hub tree and served under versioned `/runtime/` paths; `editor.json`'s `runtime` list validated, with a refusal that names the missing version; the clock app's sources moved to their own home and the region built from there, pointed at `/runtime/`; every reader of `tools/watch-composer/` repointed; then the route, `composer.go`, the embedded document copy, their tests and `tools/watch-composer/` deleted | the clock editor loads in the Themes pane with no `/composer/` route present; an editor naming a runtime version the hub lacks is refused with its reason; the baker's headless suites pass from their new home; `make_factory_apps.py --check` and `go test ./...` green; no reference to `/composer/` or `watch-composer` left in `tools/` (grep) — **done 2026-11-01** (§9.4) |
 | **P4** ✔ | The stack model and panel (§2, §3), D42 E2's composer half: one list, parenting, shadows as properties, the three bands, R1–R7 enforced on drop, R8 warnings behind the Mechanical switch, style inheritance (§2.3). Every preset expressed as a stack | headless tests per rule (each illegal drop refused with its reason, each R8 warning raised only with the switch on); each preset's stack bakes to the same v6 rows `v6Drive` produces today, or the difference is explained; D42 E2's own gate: preview-versus-reader pose check, each preset installed on orb-B — **done 2026-11-01** (§3.1); still-row promotion split out as **P4b** |
@@ -1767,7 +1817,7 @@ long as an app in its library or on a known orb still names it.
 | **P5b** ✔ | The studio layout (§4.2): the editor fills the hub window as one three-pane studio — layers left on every step, the stage centre, the inspector right — in the hub's palette, with one title bar; Arrange folds into the layers panel; the hub page itself goes fluid | nothing removed (the P5 checklist, re-pointed at the new panes); the stage zoom stays inside its pane at every stop; no page scroll at 1280×720 and 1920×1080 (Chrome screenshots of both, inside the hub); `go test` and every app suite green — **built 2026-11-02** (§4.2); the owner's test on the hub is owed |
 | **P5c** ✔ | Hands are complications (§4.3): one Add catalogue, hands placed anywhere in any number, a selected hand's panel alone; the plate rows open Movement, and its backdrop and the plate art sit at the tab's foot | the presets render and bake pixel-identical in the new shape; ten hands on the dial within R6; every suite green — **built 2026-11-02** (§4.3 as built); the presets' hand geometry is identical across 22 designs; a bench bake of the new pointer sources and the owner's test are owed |
 | **P5d** ◐ | Faces, hands, wheels and cutouts (§4.4): face groups and a drag that shows where it lands, hands that inherit from their face, fan and slider sub-dials, wheels under cutouts | each slice keeps every preset rendering as before and every suite green; the bench bake of each new row kind — **P5d.1–P5d.3b built and benched 2026-11-02** (§4.4 as built: smooth wheels as rows under a cover, year digits and the roll in the firmware, the presets' windows and classic moons as wheels); P5d.4's angled and lifted fan/slider still to see on glass — **shelved by the owner 2026-11-02** (known issues, to be looked at later) |
-| **P6** ◐ | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here — **§7 built 2026-11-02** (§7, as built; `headless-session` 35 checks, 3/3 mutants); the coverage measurement is still owed |
+| **P6** ✔ | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here — **§7 built 2026-11-02** (§7, as built; `headless-session` 35 checks, 3/3 mutants); the coverage measurement **done 2026-11-03 (§5.5)**: the glass is on the 32-step lattice; it costs nothing on dark dials and on the crystal, and only shadow falloffs and hand edges on light dials (Station, Phase) contour measurably more than a 256-step blend would. Nothing proposed yet |
 | **P7** ✔ | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs — **built and benched 2026-11-02** (§8, as built); the hub's Edit door tested by the owner in the live window, 2026-11-03 |
 
 P0 comes first because it is cheap and decides how much of P2 and P6 is needed. P1

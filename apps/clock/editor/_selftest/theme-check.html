@@ -195,17 +195,29 @@
     // ---- 1. parity on the Broad arrow preset, and the design round trip ------------------
     say('--- Broad arrow (diver), as shipped ---');
     const base = await bake('base', 'diver');
-    {
-      const fc = base.fc, Lc = E.composeLayers(IT.base, IT.gt[0], fc, IT.now(), IT.state.hidden);
-      const under = Lc.under.getContext('2d').getImageData(0, 0, S, S).data;
+    // the plate and the crystal against the Panel view, which balances each layer (drawPanel)
+    const panelParity = (b, tag) => {
+      const fc = b.fc, Lc = E.composeLayers(IT.base, IT.gt[0], fc, IT.now(), IT.state.hidden);
+      const under = IT.wbPix(Lc.under.getContext('2d').getImageData(0, 0, S, S).data);
       const want = G.panelPlate(under, S, S, true);
-      const keep = IT.plainWheelMask(fc, IT.state.designs.diver);
+      const keep = IT.plainWheelMask(fc, IT.state.designs[IT.state.dial]);
       if (keep) { const tr = G.panelPlate(under, S, S, false); for (let p = 0; p < keep.length; p++) if (keep[p]) want[p] = tr[p]; }
       // the device paints the dial's value rows (the date wheel through its cutout) over the
       // plate, and the Panel's plate already holds them: blend each in at today's figure first
-      const got = shownPlate(base, IT.now());
+      const got = shownPlate(b, IT.now());
       const off = diffN(got, want);
-      ok('the stored plate is the Panel view’s plate, code for code', off === 0, off + ' of ' + want.length + ' texels differ' + (off ? ' ' + where(got, want) : ''));
+      ok(tag + 'the stored plate is the Panel view’s plate, code for code', off === 0, off + ' of ' + want.length + ' texels differ' + (off ? ' ' + where(got, want) : ''));
+      // the crystal row is the Panel's top layer, colour and coverage dithered as still rows are
+      const ov = b.overlay[0], top = IT.wbPix(Lc.top.getContext('2d').getImageData(0, 0, S, S).data);
+      if (!ov) { ok(tag + 'the crystal ships as a row', false); return; }
+      const col = G.rgb565Plane(top, S, S, { x: 0, y: 0 }), al = G.alphaPlane(top, S, S, { x: 0, y: 0 });
+      let bad = 0;
+      for (let i = 0; i < S * S; i++) if (ov.alpha[i] !== al[i] || (al[i] && ov.codes[i] !== (col[2 * i] | (col[2 * i + 1] << 8)))) bad++;
+      ok(tag + 'the stored crystal is the Panel view’s, case over glass', bad === 0, bad + ' texels differ');
+    };
+    panelParity(base, '');
+    {
+      const fc = base.fc;
       // each hand row is the editor's own sprite, truncated to RGB565 + A8 as rows ship
       for (const h of fc.hands || []) {
         const role = h.kind; if (!['hour', 'minute', 'second'].includes(role) || !h.sp) continue;
@@ -254,6 +266,10 @@
         ok('and the same motion columns on every row', JSON.stringify(base.els.map(motionCols)) === JSON.stringify(again.els.map(motionCols)));
       }
     }
+    // the Night light mood balances the dial to 6000 K: what ships is the balanced dial
+    const night = await bake('night', 'diver', null, { cfg: { wb: 6000 } });
+    panelParity(night, 'at 6000 K, ');
+    ok('the Night balance changes the stored plate at all', diffN(night.plate.codes, base.plate.codes) > 10000, diffN(night.plate.codes, base.plate.codes) + ' texels');
 
     // ---- 2. custom art: the plate backdrop and the dial surface ----------------------------
     say('--- custom art ---');

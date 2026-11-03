@@ -9,10 +9,12 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
-// Two shipped containers stand in for two releases of one app: clock v1.2.9 is newer than
-// the picker's v1.2.2, and the seed compares only their version stamps.
+// Two shipped containers stand in for two releases of one app: the clock's stamp is newer
+// than the picker's, and the seed compares only their version stamps.
 func seedApps(t *testing.T) (newer, older []byte) {
 	t.Helper()
 	newer, err1 := os.ReadFile(filepath.Join("apps", "clock.orbapp"))
@@ -161,13 +163,17 @@ func TestSeedKindsFollowTheLadder(t *testing.T) {
 func TestRestorableAppsOffersOnlyMissingOrOlder(t *testing.T) {
 	newer, _ := seedApps(t)
 	src := shelf(newer, nil)
+	c0, err := orbnet.ParseApp(newer)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []struct {
 		have []LibraryFile
 		want string // "" = not offered, "-" = offered as missing, else the Have version
 	}{
 		{nil, "-"},
 		{[]LibraryFile{{Slug: "clock", Version: "v1.0.0"}}, "v1.0.0"},
-		{[]LibraryFile{{Slug: "clock", Version: "v1.2.9"}}, ""},
+		{[]LibraryFile{{Slug: "clock", Version: c0.Version}}, ""},
 		{[]LibraryFile{{Slug: "clock", Version: "v9.0.0"}}, ""},
 		{[]LibraryFile{{Slug: "clock", Version: ""}}, ""},
 	} {

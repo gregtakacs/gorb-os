@@ -1463,9 +1463,10 @@ class Component extends DCLogic {
   drawPanel(c, x, gt, fc, d) {
     const E = window.WatchEngine, G = window.GorbBake;
     if (!E || !E.composeLayers || !G || !G.panelPlate) return;
-    const L = E.composeLayers(this.base, gt, fc, d, this.state.hidden), wb = +this.cfg().wb;
-    if (wb !== 6500) [L.under, L.hands, L.top].concat((L.live || []).map((l) => l.canvas)).forEach((cv) => E.wb(cv, wb));
-    const px = (cv) => cv.getContext('2d').getImageData(0, 0, 466, 466).data;
+    const L = E.composeLayers(this.base, gt, fc, d, this.state.hidden);
+    // balanced on the pixels read, as the bake balances them (wbPix): a canvas round trip
+    // would premultiply a translucent layer and shift its colour by a step
+    const px = (cv) => this.wbPix(cv.getContext('2d').getImageData(0, 0, 466, 466).data);
     const under = px(L.under), codes = G.panelPlate(under, 466, 466, true);
     // P2: a turning wheel the bake leaves undithered shows truncated through its cutouts
     const keep = this.plainWheelMask(fc, d);
@@ -2022,9 +2023,13 @@ class Component extends DCLogic {
    * design's one figure, the size every picker buffers it at. The matte is the
    * exact divide — the baker quantizes to 565 steps right after this, and an
    * off-by-one here would be the one visible kind. */
+  /* The dial's white balance on pixels the bake reads. The stage and the Panel view balance
+   * every layer they show (drawPanel); the bake once balanced only the carriage, so a Night
+   * dial (wb 6000) shipped its plate, hands and crystal unbalanced. 6500 changes nothing. */
+  wbPix(px) { return WatchEngine.wbData(px, +((this.cfg && this.cfg().wb) || 6500)); }
   previewPlane3() {
     const P = 232, c = this.frameCanvas(0, {}, WatchEngine.previewDate());
-    const src = c.getContext('2d').getImageData(0, 0, 466, 466).data;
+    const src = this.wbPix(c.getContext('2d').getImageData(0, 0, 466, 466).data);
     const out = new Uint8Array(P * P * 4);
     for (let y = 0; y < P; y++) {
       for (let x = 0; x < P; x++) {
@@ -2370,7 +2375,7 @@ class Component extends DCLogic {
    * and every keyframe is one of them. */
   measureFrames3(plateAt, m) {
     const PANEL = 466 * 466;
-    const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, 466, 466).data.slice().buffer);
+    const pixOf = (c) => this.wbPix(new Uint8Array(c.getContext('2d').getImageData(0, 0, 466, 466).data.slice().buffer));
     const pxs = [];
     for (let f = 0; f < m.frames; f++) pxs.push(pixOf(plateAt(f)));   // plateAt hands back a canvas
     const mask = new Uint8Array(PANEL);
@@ -2410,12 +2415,11 @@ class Component extends DCLogic {
     if (!M || !M.cageFrame || !M.cageAt || !fc || !(B > 0)) return null;
     const K = (fc.inset || 1) * (fc.dynK || 1), Mp = (v) => 233 + (v - 233) * K;
     const want = M.cageAt.map(Mp), T = want.map((v) => Math.round(v));
-    const WB = +((this.cfg && this.cfg().wb) || 6500);
     const out = [];
     for (let f = 0; f < B; f++) {
-      let c = M.cageFrame(f, { k: K, dx: T[0] + 0.5 - want[0], dy: T[1] + 0.5 - want[1] });
+      // unbalanced here: t3bake's reader balances every plane it ships, the carriage's too
+      const c = M.cageFrame(f, { k: K, dx: T[0] + 0.5 - want[0], dy: T[1] + 0.5 - want[1] });
       if (!c) return null;
-      if (WB !== 6500) c = E.wb(c, WB);
       out.push(c);
     }
     return { planes: out, pivot: T, k: K };
@@ -2617,7 +2621,7 @@ class Component extends DCLogic {
   async t3bake(nm, fc, M, gt, B, fps, send) {
     const G = window.GorbBake;
     const { pxs, un, bw, bh, compRows, compB, auxRows, auxB, orbital, carW, carH, onlyBase, wheelRows, cover } = this._t3; this._t3 = null;
-    const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer);
+    const pixOf = (c) => this.wbPix(new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer));
     const ROLE = this.handSeats3(this.design());
     const hands = [], shadows = [];
     let oth = 0, sdx = 0, sdy = 0;
@@ -2678,18 +2682,14 @@ class Component extends DCLogic {
     if (!hands.length && !auxRows.length && !(wheelRows && wheelRows.length)) { this.setState({ status: 'Not baked: this dial has no hand at all — add one under Parts' }); return; }
     /* The crystal comes home as a row. The FORMAT 3 element table never carried
      * the case or the glass, so every baked dial lost the bezel ring and the
-     * reflections the preview draws above the hands. One masked plate: outer
-     * first, glass above it — the same fold the FORMAT 2 overlay packs (1405's
-     * glass-over-case) — and the dial's GLASS role paints it over every live
-     * row. Both layers empty ships no plane. Its bytes join the policy price
-     * so a dial at the cap hears the truth BEFORE the bake, not at pack. */
+     * reflections the preview draws above the hands. One masked plate, the engine's
+     * topLayer: the glass through the face's lens, the case over it, the order the
+     * editor draws and the Panel view shows. The dial's GLASS role paints it over
+     * every live row. Both layers empty ships no plane. Its bytes join the policy
+     * price so a dial at the cap hears the truth BEFORE the bake, not at pack. */
     let glassP = null, glassB = 0;
     if (fc.outer || fc.glass) {
-      const gc = document.createElement('canvas'); gc.width = gc.height = 466;
-      const gx = gc.getContext('2d');
-      if (fc.outer) gx.drawImage(fc.outer, 0, 0);
-      if (fc.glass) gx.drawImage(fc.glass, 0, 0);
-      const gp = pixOf(gc);
+      const gp = pixOf(window.WatchEngine.topLayer(fc));
       for (let p = 3; p < gp.length; p += 4096) if (gp[p] > 2) { glassB = 466 * 466 * 3; break; }
       if (glassB) glassP = { x: 0, y: 0, w: 466, h: 466, rgba: gp };
     }
@@ -3169,7 +3169,7 @@ class Component extends DCLogic {
    * the value did not change enters transparent — see diff-alpha below. */
   async compPass3(plan, onlyBase, ptrIds) {
     const PANEL = 466 * 466, W = 466;
-    const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, 466, 466).data.slice().buffer);
+    const pixOf = (c) => this.wbPix(new Uint8Array(c.getContext('2d').getImageData(0, 0, 466, 466).data.slice().buffer));
     const DATE3 = {
       date: (v) => new Date(2026, 0, v + 1),          // frame 0 is day 1: the window's value_min is 1 (D32 ruling B)
       weekday: (v) => new Date(2026, 0, 5 + v),        // 2026-01-05 is a Monday: frame 0, Monday first
@@ -3259,7 +3259,7 @@ class Component extends DCLogic {
    * it, and the cover spans only the bands. */
   wheelPass3(wp, onlyBase) {
     const W = 466, C = 233, F = this.face(), kP = (F.inset || 1) * (F.dynK || 1);
-    const pixOf = (c) => c.getContext('2d').getImageData(0, 0, W, W).data;
+    const pixOf = (c) => this.wbPix(c.getContext('2d').getImageData(0, 0, W, W).data);
     const byId = {}; (F.lay.wheels || []).forEach((w) => { byId[String(w.id)] = w; });
     const miss = wp.rows.find((r) => !byId[String(r.id)]);
     if (miss) return { refuse: 'the wheel \u201c' + miss.id + '\u201d has no place on this dial (no layout, or a host that is gone)' };
@@ -3326,7 +3326,7 @@ class Component extends DCLogic {
   }
   async auxPass3(pp, onlyBase) {
     const W = 466, PANEL = W * W;
-    const pixOf = (c) => new Uint8Array(c.getContext('2d').getImageData(0, 0, W, W).data.slice().buffer);
+    const pixOf = (c) => this.wbPix(new Uint8Array(c.getContext('2d').getImageData(0, 0, W, W).data.slice().buffer));
     const kids = {};
     (this.design().comps || []).forEach((c) => { if (c.host && c.host !== 'dial') (kids[String(c.host)] = kids[String(c.host)] || []).push(String(c.id)); });
     const scratch = document.createElement('canvas'); scratch.width = scratch.height = W;

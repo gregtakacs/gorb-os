@@ -3619,12 +3619,24 @@
     }
     return T;
   };
+  // the white balance's channel gains at K kelvin, luma-neutral; null at 6500 (nothing to do)
+  function wbGains(K) {
+    K = +K || 6500; if (Math.abs(K - 6500) < 1) return null;
+    const _ = L(), a = _.kelvin(6500), b = _.kelvin(K); const g = a.map((v, i) => v / b[i]);
+    const n = 0.299 * g[0] + 0.587 * g[1] + 0.114 * g[2]; return g.map((v) => v / n);
+  }
+  // the white balance on RGBA pixels in place, clamped and rounded as a canvas's own bytes are,
+  // so a plane the bake reads is balanced exactly as the stage balances what it shows
+  function wbData(p, K) {
+    const g = wbGains(K); if (!g) return p;
+    const q = p instanceof Uint8ClampedArray ? p : new Uint8ClampedArray(p.buffer, p.byteOffset, p.length);
+    for (let i = 0; i < q.length; i += 4) { q[i] *= g[0]; q[i + 1] *= g[1]; q[i + 2] *= g[2]; }
+    return p;
+  }
   function whiteBalance(c, K) {
-    K = +K || 6500; if (Math.abs(K - 6500) < 1) return c;
-    const _ = L(), a = _.kelvin(6500), b = _.kelvin(K); let g = a.map((v, i) => v / b[i]);
-    const n = 0.299 * g[0] + 0.587 * g[1] + 0.114 * g[2]; g = g.map((v) => v / n);
-    const x = c.getContext('2d'), d = x.getImageData(0, 0, c.width, c.height), p = d.data;
-    for (let i = 0; i < p.length; i += 4) { p[i] *= g[0]; p[i + 1] *= g[1]; p[i + 2] *= g[2]; }
+    if (!wbGains(K)) return c;
+    const x = c.getContext('2d'), d = x.getImageData(0, 0, c.width, c.height);
+    wbData(d.data, K);
     x.putImageData(d, 0, 0); return c;
   }
   function drawPlate(ctx, style, G, lr, o) {
@@ -4386,21 +4398,33 @@
    * (the live rows); `top` is the glass and the case alone on transparency (the crystal
    * overlay). Every transform compose() applies — the zoom (dynK) and the case inset —
    * is applied the same way, so the three layers stack back to the design pixels. */
+  // compose()'s lens onto a layer: the opening's zoom (dynK) inside the case inset (k), both
+  // about the centre, exactly as compose() draws through them
+  function lensDraw(dst, F, fn) {
+    const k = F.inset || 1, dk = F.dynK || 1, o = dst.getContext('2d');
+    let ctx = o, tmp = null;
+    if (k < 1) { tmp = cv(S); ctx = tmp.getContext('2d'); }
+    if (dk === 1) fn(ctx); else { ctx.save(); ctx.translate(C, C); ctx.scale(dk, dk); ctx.translate(-C, -C); fn(ctx); ctx.restore(); }
+    if (tmp) { o.save(); o.translate(C, C); o.scale(k, k); o.translate(-C, -C); o.drawImage(tmp, 0, 0); o.restore(); }
+  }
+  /* The crystal as the device stacks it, alone on transparency: the glass through the lens,
+   * the case over it, in compose()'s order. One function for the Panel view's top layer and
+   * the bake's overlay row, so the orb's crystal is the one the editor draws (the bake once
+   * folded them the other way round, case under glass, and the glass's reflections came out a
+   * step darker wherever both are partial). */
+  function topLayer(F, hidden) {
+    hidden = hidden || {};
+    const top = cv(S);
+    if (!hidden.glass) lensDraw(top, F, (ctx) => ctx.drawImage(F.glass, 0, 0));
+    if (!hidden.outer) top.getContext('2d').drawImage(F.outer, 0, 0);
+    return top;
+  }
   function composeLayers(base, gt, F, date, hidden, compOnly) {
     hidden = hidden || {};
-    const under = cv(S), hands = cv(S), top = cv(S);
+    const under = cv(S), hands = cv(S), top = topLayer(F, hidden);
     compose(under.getContext('2d'), base, gt, F, date, Object.assign({}, hidden, { hands: 1, glass: 1, outer: 1 }));
-    const k = F.inset || 1, dk = F.dynK || 1;
-    const inset = (dst, fn) => {
-      const o = dst.getContext('2d');
-      let ctx = o, tmp = null;
-      if (k < 1) { tmp = cv(S); ctx = tmp.getContext('2d'); }
-      if (dk === 1) fn(ctx); else { ctx.save(); ctx.translate(C, C); ctx.scale(dk, dk); ctx.translate(-C, -C); fn(ctx); ctx.restore(); }
-      if (tmp) { o.save(); o.translate(C, C); o.scale(k, k); o.translate(-C, -C); o.drawImage(tmp, 0, 0); o.restore(); }
-    };
+    const inset = (dst, fn) => lensDraw(dst, F, fn);
     if (!hidden.hands) inset(hands, (ctx) => F.drawHands(ctx, date));
-    if (!hidden.glass) inset(top, (ctx) => ctx.drawImage(F.glass, 0, 0));
-    if (!hidden.outer) top.getContext('2d').drawImage(F.outer, 0, 0);
     /* D43 P4b: the live band as the device stacks it, bottom first — runs of hands
      * (sprites, shipped truncated) and lifted sub-dial faces (still rows, shipped
      * dithered like any still plane). `hands` stays the whole set for callers that
@@ -4633,7 +4657,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

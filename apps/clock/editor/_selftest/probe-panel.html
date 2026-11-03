@@ -1,0 +1,133 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>probe-panel</title>
+<body><pre id="out">booting…</pre>
+<!-- D43 P1's owed check: the Panel view against frames read off the glass (tools/fbgrab.py
+     --fmt raw565). A probe: it prints, it asserts nothing.
+
+       ?dial=skeleton&frames=a.bin,b.bin&from=<unix s>&to=<unix s>
+
+     For each frame (raw RGB565, 466x466, beside this page) the editor's clock is swept
+     across [from, to] (the orb's time, so correct a drifting host clock before passing it):
+     0.25 s steps, then 0.02 s around the best, and the Panel view is rendered as drawPanel
+     renders it. The time whose Panel matches the glass on the most texels is the frame's
+     time. At that time the disagreement is split by region:
+       static     the disc outside every hand and outside the plate's animated texels
+       <hand id>  that hand's own footprint, its shadow included (drawHands for it alone)
+       animated   texels the plate's own loop changes (the train), where the glass shows a
+                  frame of the loop the Panel cannot know
+     per region: texels, share that differ, mean |luma| over the differing ones, and the
+     share that differ by more than one RGB565 step in any channel.
+
+     Needs Chrome started with --allow-file-access-from-files, to read the frames. -->
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,600;0,700;1,600&family=Bodoni+Moda:ital,wght@0,500;0,700;1,600&family=Jost:ital,wght@0,500;0,600;0,700;1,600&family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;1,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,600&display=swap" rel="stylesheet">
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<script>window.React = { createRef: () => ({ current: null }) };</script>
+<script src="../orbtheme-baker.js"></script>
+<script src="component.js"></script>
+<script>
+(function () {
+  const out = document.getElementById('out'), L = [];
+  const say = (s) => { L.push(s); out.textContent = L.join('\n'); };
+  const E = window.WatchEngine, G = window.GorbBake;
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const S = 466, C = 233;
+  const q = new URLSearchParams(location.search);
+  const DIAL = q.get('dial') || 'skeleton', FRAMES = (q.get('frames') || '').split(',').filter(Boolean);
+  const FROM = +q.get('from'), TO = +q.get('to');
+
+  const IT = new (window.COMP_CLASS(DCLogic))({});
+  IT.forceUpdate = () => { };
+  IT.state.playing = false; IT.state.hidden = {}; IT.state.tab = 'export'; IT.state.render = 'panel';
+  const settle = async () => {
+    for (let i = 0; i < 400; i++) {
+      IT.componentDidUpdate();
+      if (!IT.rendering && IT._mk === IT.mvKey() && IT.gt.length === IT.B && IT.gt[0]) return true;
+      await wait(40);
+    }
+    return false;
+  };
+  async function mount() {
+    const P = E.PRESETS[DIAL];
+    IT.state.dial = DIAL; IT.faces = {}; IT.base = null; IT.gt = []; IT.buildId = 1;
+    IT.state.designs = {}; IT.state.designs[DIAL] = E.canonDesign(JSON.parse(JSON.stringify(P.design)));
+    IT.state.hands = 'auto'; IT.state.handFinish = 'auto';
+    IT.state.cfg = { ...(P.cfg || {}) }; IT.state.train = P.train || 'classic';
+    IT.state.caseStyle = P.caseStyle || 'polished'; IT.state.caseMetal = P.caseMetal || 'auto'; IT.state.caseOpen = 221.5;
+    IT.state.glassStyle = 'domed';
+    const tick = setInterval(() => IT.componentDidUpdate(), 40);
+    IT.buildMovement();
+    const ok = await settle(); clearInterval(tick);
+    if (!ok) throw new Error(DIAL + ' never settled');
+  }
+  // the Panel view at time t, as RGB565 codes: drawPanel itself, onto a scratch canvas
+  const cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const cx = cv.getContext('2d');
+  function panelAt(t, f) {
+    const d = new Date(t * 1000), fc = IT.face();
+    IT.now = () => new Date(d.getTime());
+    cx.clearRect(0, 0, S, S);
+    IT.drawPanel(cv, cx, IT.gt[f || 0], fc, d);
+    const px = cx.getImageData(0, 0, S, S).data, codes = new Uint16Array(S * S);
+    for (let i = 0; i < codes.length; i++) codes[i] = ((px[i * 4] & 0xf8) << 8) | ((px[i * 4 + 1] & 0xfc) << 3) | (px[i * 4 + 2] >> 3);
+    return codes;
+  }
+  const disc = new Uint8Array(S * S);
+  for (let p = 0; p < disc.length; p++) { const x = p % S, y = (p / S) | 0; disc[p] = (x - C) * (x - C) + (y - C) * (y - C) <= 215 * 215 ? 1 : 0; }
+  const mismatch = (A, B, mask) => { let n = 0; for (let p = 0; p < A.length; p++) if (disc[p] && (!mask || mask[p]) && A[p] !== B[p]) n++; return n; };
+  const lum = (v) => { const r = v >> 11, g = (v >> 5) & 63, b = v & 31; return 0.299 * ((r << 3) | (r >> 2)) + 0.587 * ((g << 2) | (g >> 4)) + 0.114 * ((b << 3) | (b >> 2)); };
+  const stat = (A, B, mask) => {
+    let n = 0, d = 0, sum = 0, big = 0;
+    for (let p = 0; p < A.length; p++) {
+      if (!disc[p] || !mask[p]) continue; n++;
+      if (A[p] === B[p]) continue; d++; sum += Math.abs(lum(A[p]) - lum(B[p]));
+      const dr = Math.abs((A[p] >> 11) - (B[p] >> 11)), dg = Math.abs(((A[p] >> 5) & 63) - ((B[p] >> 5) & 63)), db = Math.abs((A[p] & 31) - (B[p] & 31));
+      if (dr > 1 || dg > 1 || db > 1) big++;
+    }
+    return n ? (n + ' px, ' + (100 * d / n).toFixed(1) + '% differ, mean |dL| ' + (d ? (sum / d).toFixed(1) : '0') + ', ' + (100 * big / n).toFixed(1) + '% by more than one step') : 'empty';
+  };
+  // one hand's footprint at time t: drawHands for that id alone, shadow and all
+  function handMask(id, t) {
+    const c = document.createElement('canvas'); c.width = c.height = S; const x = c.getContext('2d'), fc = IT.face();
+    const k = fc.inset || 1, dk = fc.dynK || 1;
+    x.save(); x.translate(C, C); x.scale(k * dk, k * dk); x.translate(-C, -C);
+    fc.drawHands(x, new Date(t * 1000), [id]); x.restore();
+    const a = x.getImageData(0, 0, S, S).data, m = new Uint8Array(S * S);
+    for (let p = 0; p < m.length; p++) m[p] = a[p * 4 + 3] > 0 ? 1 : 0;
+    return m;
+  }
+
+  async function main() {
+    const fams = Array.from(new Set(Object.values(E.FONTS || {}).map((f) => (String(f[1] || '').match(/"([^"]+)"/) || [])[1]).filter(Boolean)));
+    await Promise.race([Promise.all(fams.map((f) => document.fonts.load('700 32px "' + f + '"').catch(() => null))), wait(15000)]);
+    await IT.componentDidMount();
+    await mount();
+    // the plate's animated texels: where its own loop changes it, hands aside
+    const anim = new Uint8Array(S * S);
+    { const f0 = panelAt(FROM, 0); for (let f = 1; f < IT.B; f += Math.max(1, (IT.B / 8) | 0)) { const g = panelAt(FROM, f); for (let p = 0; p < anim.length; p++) if (g[p] !== f0[p]) anim[p] = 1; } }
+    say('dial ' + DIAL + ', plate loop ' + IT.B + ' frames, ' + anim.reduce((s, v) => s + v, 0) + ' animated texels; hands ' + (IT.face().hands || []).map((h) => h.id + ':' + h.kind).join(' '));
+    for (const name of FRAMES) {
+      const buf = await (await fetch(name)).arrayBuffer(), glass = new Uint16Array(buf);
+      let best = { n: Infinity };
+      const fit = (t) => { const n = mismatch(panelAt(t), glass, null); if (n < best.n) best = { n, t }; };
+      for (let t = FROM; t <= TO; t += 0.25) fit(t);
+      const c0 = best.t; for (let t = c0 - 0.3; t <= c0 + 0.3; t += 0.02) fit(t);
+      const P = panelAt(best.t), hands = (IT.face().hands || []).filter((h) => h.sp);
+      const masks = hands.map((h) => ({ id: h.id + ' (' + h.kind + ')', m: handMask(h.id, best.t) }));
+      const stat0 = new Uint8Array(S * S);
+      for (let p = 0; p < stat0.length; p++) stat0[p] = anim[p] || masks.some((h) => h.m[p]) ? 0 : 1;
+      say('--- ' + name + ' at ' + new Date(best.t * 1000).toISOString().slice(11, 23) + 'Z (' + best.n + ' texels differ on the disc)');
+      say('  static     ' + stat(P, glass, stat0));
+      for (const h of masks) say('  ' + (h.id + '            ').slice(0, 22) + stat(P, glass, h.m.map((v, p) => (v && !anim[p] ? 1 : 0))));
+      say('  animated   ' + stat(P, glass, anim));
+      let bin = ''; const u8 = new Uint8Array(P.buffer); for (let i = 0; i < u8.length; i += 8192) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+      say('PANEL64 ' + name + ' ' + btoa(bin));
+    }
+    say('DONE'); document.title = 'DONE';
+  }
+  main().catch((e) => { say('FAILED: ' + (e && e.message)); say(String((e && e.stack) || '').split('\n').slice(0, 6).join('\n')); document.title = 'FAILED'; });
+})();
+</script>

@@ -41,7 +41,7 @@ jobs:
       - id: v
         name: Version
         run: |
-          v=$(git describe --always --dirty)
+          v=$(git describe --tags --match 'v[0-9]*' --always --dirty)   # --tags: a plain `git tag` is lightweight
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             os=$(cat ../../version.txt)
             case $GITHUB_REF_NAME in

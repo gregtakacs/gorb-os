@@ -26,7 +26,7 @@ MODULE    := github.com/gregtakacs/gorb-os/tools/orb-manager
 # Tag the binary with the tree's git describe, the same stamp serflash.sh and
 # the on-device app_descriptor use, so an orb-manager you picked up off disk
 # tells you exactly which tree it was built from.
-VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
+VERSION ?= $(shell git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .PHONY: all build manager orbflash library test vet fmt check run desktop cdp reload flash windows win-test crosscheck clean firmware vendor-runtime vendor-check release dist winres usb-doc-test

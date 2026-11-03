@@ -1139,6 +1139,9 @@ $("#rt-go").onclick = async () => {
       if (ok) {
         await refreshPorts();
         pullFound();
+        // The progress panel closes with the modal, as every other flash door's does on
+        // success; a refused erase never reaches here, so its reason stays on screen.
+        fpClose();
         $("#rt-mask").hidden = true;
         show("manage"); location.hash = "";
         // The row is gone and the picker calls the lead blank, which is the whole

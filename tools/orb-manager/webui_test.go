@@ -224,3 +224,26 @@ func TestACableAnswerIsLabelledAsWhatItCost(t *testing.T) {
 		t.Error("portLabel prints a firmware stamp for a chip that was only ever pinged")
 	}
 }
+
+// Reset → Firmware borrows the flash progress panel, and the panel must close with the
+// reset modal on success like every other flash door's (owner report, 2026-11-03: the
+// erase finished and the dialog stayed up until closed by hand).
+func TestResetEraseClosesItsProgressPanel(t *testing.T) {
+	js, err := os.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatalf("app.js: %v", err)
+	}
+	src := string(js)
+	i := strings.Index(src, `$("#rt-go").onclick`)
+	if i < 0 {
+		t.Fatal("the reset modal's press is gone")
+	}
+	body := src[i:]
+	if j := strings.Index(body, "\n};"); j > 0 {
+		body = body[:j]
+	}
+	ok := strings.Index(body, "if (ok) {")
+	if ok < 0 || !strings.Contains(body[ok:], "fpClose()") {
+		t.Error("the firmware erase's success branch no longer closes the progress panel")
+	}
+}

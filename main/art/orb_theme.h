@@ -195,6 +195,12 @@ bool orb_theme_live_sec(const char *slug, const orb_bundle_sec_t **sec,
  *  A transient read: opens the card, mmaps the region into a PSRAM scratch,
  *  parses, copies the plane into `buf`, and returns. Nothing here stays resident
  *  between cursor moves, and no lock outlives the call. */
+/* D43 P7: a card theme's app design, streamed: begin(size, crc) then chunks. NO_CONTENT
+ * (with why) when the theme carries none or its pointer is outside the file. */
+orb_asset_ans_t orb_theme_design_stream(const char *handle,
+                                        esp_err_t (*begin)(void *arg, uint32_t size, uint32_t crc),
+                                        esp_err_t (*chunk)(void *arg, const uint8_t *p, size_t n),
+                                        void *arg, char *why, size_t whysz);
 orb_asset_ans_t orb_theme_preview_read(const char *handle,
                                        uint8_t *buf, size_t cap,
                                        uint16_t *w, uint16_t *h,
@@ -300,6 +306,8 @@ typedef struct {
                                    * picker, and never active until it is the one
                                    * theme in the slot. */
     uint32_t  n_sections;         /* fmt 3 only: the index's app count; 0 for v2 */
+    uint32_t  design_size;        /* D43 P7: the app design after the banks; 0 = none
+                                   * (the theme installs but cannot be reopened) */
     esp_err_t err;              /* ESP_OK = loadable */
     bool      active;           /* this file is what the dial is drawing */
     bool      changed;          /* the installed copy of this name has different bytes */

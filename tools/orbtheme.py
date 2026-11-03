@@ -90,7 +90,8 @@ W_BAKED_MS  = 12
 W_ART_OFF   = 13
 W_NAME      = 14                                  # NAME_MAX bytes (words 14..27)
 W_HDR_CRC   = W_NAME + ((NAME_MAX + 3) // 4)      # crc32 over the whole header == 28
-HDR_WORDS   = W_HDR_CRC + 4                       # +4 words spare for the next format
+W_DESIGN_OFF, W_DESIGN_SIZE, W_DESIGN_CRC = W_HDR_CRC + 1, W_HDR_CRC + 2, W_HDR_CRC + 3   # D43 P7: an app's design, after the banks
+HDR_WORDS   = W_HDR_CRC + 4                       # +4: the crc word, then the design pointer (29..31)
 
 
 # clk_theme_t's scalars in orb_stage.c's declaration order, as (name, type).

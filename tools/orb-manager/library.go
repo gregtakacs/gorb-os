@@ -143,6 +143,8 @@ type LibraryFile struct {
 	Themes    bool     `json:"themes"`
 	HasEditor bool     `json:"has_editor"`
 	Bytes     int      `json:"bytes"`
+	// Design is a theme file's app design size (D43 P7): non-zero offers Edit on its row.
+	Design uint32 `json:"design,omitempty"`
 	// App names the app a THEME themes, read out of the container's own section index.
 	// FORMAT 3 files carry exactly one section, so this is a fact the file states rather
 	// than an opinion the hub formed. It is what lets the Library row and the Themes face
@@ -281,7 +283,7 @@ func listThemeLibrary(dir string, out *LibraryPayload) {
 			app = c.Sections[0]
 		}
 		found = append(found, LibraryFile{File: e.Name(), Slug: c.ID, Title: c.Name,
-			Bytes: len(body), App: app})
+			Bytes: len(body), App: app, Design: c.DesignSize})
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].Slug < found[j].Slug })
 	out.Themes = append(out.Themes, found...)

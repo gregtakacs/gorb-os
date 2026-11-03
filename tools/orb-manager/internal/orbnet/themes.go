@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -74,6 +76,9 @@ type ThemeEntry struct {
 	// it the second press: one press of store IS the theme change, and this bool is
 	// what tells the caller the copy landed — the door acks the queue, not the write.
 	Stored bool `json:"stored"`
+	// Design is the app design's size in bytes after the banks (D43 P7): non-zero means
+	// the theme can be reopened in its editor; 0 on a design-less theme or an older orb.
+	Design uint32 `json:"design"`
 }
 
 // ThemeList is the part of h_sd's reply the card needs. Active is the installed
@@ -307,6 +312,51 @@ func (c *Client) ThemeDelete(ip, id string) (json.RawMessage, error) {
 		return nil, err
 	}
 	return c.devicePost(ip, "/api/v1/sd/delete?id="+url.QueryEscape(id), nil, "")
+}
+
+// ThemeDesign fetches the app design a card theme carries after its banks (D43 P7):
+// GET /api/v1/sd/design?id=<stem>. The device sends the header's size and CRC ahead of
+// the chunked bytes (X-Design-Size, X-Design-Crc), so a torn or damaged read is named
+// here rather than handed to the editor. A refusal comes back with the device's own
+// sentence and its status (404: the theme carries none).
+func (c *Client) ThemeDesign(ip, id string) ([]byte, int, error) {
+	if err := CheckThemeID(id); err != nil {
+		return nil, 0, err
+	}
+	req, err := http.NewRequest(http.MethodGet, c.url(ip, "/api/v1/sd/design?id="+url.QueryEscape(id)), nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	resp, err := c.h.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("orbnet: %s unreachable: %w", ip, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxThemeUpload+1))
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("orbnet: reading the design from %s: %w", ip, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		var e struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &e) == nil && e.Error != "" {
+			return nil, resp.StatusCode, errors.New(e.Error)
+		}
+		return nil, resp.StatusCode, fmt.Errorf("orbnet: %s answered %d for the design", ip, resp.StatusCode)
+	}
+	want, err1 := strconv.ParseUint(resp.Header.Get("X-Design-Size"), 10, 32)
+	sum, err2 := strconv.ParseUint(resp.Header.Get("X-Design-Crc"), 16, 32)
+	if err1 != nil || err2 != nil {
+		return nil, resp.StatusCode, fmt.Errorf("orbnet: %s sent a design without its size and checksum", ip)
+	}
+	if uint64(len(body)) != want {
+		return nil, resp.StatusCode, fmt.Errorf("orbnet: %s sent %d B of a %d B design — the read was cut short, try again", ip, len(body), want)
+	}
+	if uint64(crc32.ChecksumIEEE(body)) != sum {
+		return nil, resp.StatusCode, fmt.Errorf("orbnet: this theme's design is damaged — it cannot be reopened")
+	}
+	return body, resp.StatusCode, nil
 }
 
 // ThemePreview fetches one theme's preview plane from the card. The device answers

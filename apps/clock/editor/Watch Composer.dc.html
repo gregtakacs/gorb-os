@@ -459,6 +459,7 @@ html,body{height:100%;overflow:hidden}
           <button class="wc-big ui-primary" onClick="{{ sendToOrb }}" title="{{ sendTip }}"><b>Send to orb</b><span>{{ sendNote }}</span></button>
         </sc-if>
         <button class="wc-big" onClick="{{ exportTheme }}" title="The same .orbtheme Send to orb bakes, downloaded. Import it on any orb's Themes tab."><b>Download .orbtheme</b><span>{{ themeNote }}</span></button>
+        <div class="wc-row wide"><label title="So the theme can be opened again from the card or the hub with Edit">Keep the design</label><div class="ui-chips"><sc-for list="{{ designShipOpts }}" as="o" hint-placeholder-count="3"><button onClick="{{ o.pick }}" title="{{ o.tip }}" style="background:{{ o.bg }};border-color:{{ o.bd }};color:{{ o.fg }}">{{ o.label }}</button></sc-for></div></div>
         <button class="ui-ghost wc-sm" onClick="{{ toggleMoreExport }}" style="align-self:flex-start">{{ moreExportLabel }}</button>
         <sc-if value="{{ moreExportOpen }}" hint-placeholder-val="{{ false }}">
           <button class="wc-big" onClick="{{ exportKit }}" title="A .zip of the layers: base frames, static layers as transparent PNGs, carriage frames, complication sprites and hand sprites with pivots, plus manifest.json with draw order and positions"><b>Layer kit</b><span>{{ kitNote }}</span></button>
@@ -1594,6 +1595,7 @@ class Component extends DCLogic {
     try { await Promise.race([Promise.all(fams.map((f) => document.fonts.load(f))), new Promise((r) => setTimeout(r, 4000))]); } catch (e) {}
     this.ready = true;
     this.loadSession();
+    await this.openThemeParam();   // D43 P7: the hub's Edit door names a theme; its design wins over the autosave
     // Under a hub, learn the loaded orb once so the Send note names it before the
     // first press. Guarded and swallowed: off-hub there is no hub to ask, and a
     // headless run has no fetch — either way the button's press-time read still works.
@@ -3348,6 +3350,7 @@ class Component extends DCLogic {
     for (const w of (opts.wheels || [])) { crc(w.rgba); pos(w, 'wheel:' + w.id + ':' + w.src + ':' + w.digit + ':' + w.cadence + ':' + w.span + ':' + w.zero + ':' + (w.ease | 0)); }
     if (opts.cover) { crc(opts.cover.rgba); pos(opts.cover, 'cover'); }
     if (opts.preview) crc((opts.preview.plane || opts.preview).rgba);   // the picker's ID photo moves the witness too
+    if (opts.design) { parts.push(te.encode('|design:')); crc(opts.design); }   // P7: a design-only change is a new theme to the card
     parts.push(te.encode('|sc:' + JSON.stringify(opts.scalars || null) +
       '|pf:' + (opts.plate && opts.plate.fps ? opts.plate.fps : 0) +
       '|cf:' + (opts.carriage && opts.carriage.fps ? opts.carriage.fps : 0) +
@@ -3591,10 +3594,24 @@ class Component extends DCLogic {
     // above all — moves it, and the hub's ?precheck=1 leg answers the duplicate
     // question honestly BEFORE bytes cross the room. bakeClock3 is deterministic,
     // so an unchanged dial re-bakes to the same serial and stays a no-op on the card.
+    // D43 P7: the design rides in the file (unless the author keeps it out), with its art when it fits
+    const dmode = this.state.designShip || 'art', enc = (o) => new TextEncoder().encode(JSON.stringify(o));
+    let designNote = dmode === 'none' ? 'no design: this theme cannot be reopened' : '';
+    opts.design = dmode === 'none' ? null : enc(await this.designDoc(dmode === 'art'));
     opts.serial = this.serialContent3(G, nm, B, fps, pol, opts);
     this.setState({ status: 'Baking "' + nm + '" as a FORMAT 3 ' + pol.carrier + (pol.carriage ? ' with a ' + pol.carriage.keyframes + '-frame carriage bank @ ' + pol.carriage.fps + ' fps' : '') + (compRows.length ? ' with a ' + compRows.length + '-row comp table' : '') + (auxRows.length ? ' and ' + auxRows.length + ' pointer' + (auxRows.length > 1 ? 's' : '') : '') + '…' });
     try {
-      const r = G.bakeClock3(opts);
+      let r;
+      try { r = G.bakeClock3(opts); }
+      catch (e) {
+        // the dial and its art-laden design would pass the orb's upload cap: ship the design without the art
+        if (!(opts.design && dmode === 'art' && /more than the/.test(String(e && e.message)))) throw e;
+        opts.design = enc(await this.designDoc(false)); opts.serial = this.serialContent3(G, nm, B, fps, pol, opts);
+        designNote = 'design without its art: with it the file would pass what an orb accepts';
+        r = G.bakeClock3(opts);
+      }
+      if (opts.design && !designNote) designNote = 'design ' + Math.max(1, Math.round(opts.design.length / 1024)) + ' KB' + (dmode === 'art' ? '' : ', without art') + ': reopenable';
+      this._designNote = designNote;
       /* The commit's price is a fact of the bytes, so it is asked of the bake, and the
        * policy is asked again with it: the same pure answer, now carrying est_fps and
        * the rung, so the sentence names the rate before the file leaves the room. */
@@ -3602,7 +3619,7 @@ class Component extends DCLogic {
       const stem0 = await this.cardStemFor(G, nm);
       const stem = (stem0 || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
       const bytes = r.bytes;
-      const meter = 'art ' + r.meter.artSize + '/' + r.meter.artCap + ' B (' + r.meter.artPct + '%)' +
+      const meter = 'art ' + r.meter.artSize + '/' + r.meter.artCap + ' B (' + r.meter.artPct + '%)' + (designNote ? ' \u00b7 ' + designNote : '') +
         (r.meter.layers > r.meter.layerCap ? ' · the dial draws ' + r.meter.layers + ' layers and the orb seats ' + r.meter.layerCap + ' at full speed: past them it draws the whole dial the slow way \u2014 make a wheel snap, or drop a part or a hand\u2019s shadow' : '') +
         (this._wheelFrozen ? ' · the wheels\u2019 cover lies over ' + this._wheelFrozen + ' px of moving movement, which it holds still: move the wheel or its cutout off the opening' : '');
       if (send) { this._replaceArmed = null; await this.postTheme3ToOrb(bytes, nm, stem, pol, meter); return; }
@@ -4219,6 +4236,61 @@ class Component extends DCLogic {
     const body = { format: 'wckit', version: 1, size: 466, made: new Date().toISOString(), designId: this.designId(), dial: this.state.dial, design: D, assets, cfg: this.cfg(), caseStyle: this.state.caseStyle, caseMetal: this.state.caseMetal, glassStyle: this.state.glassStyle, train: this.state.train, hands: this.state.hands, handFinish: this.state.handFinish };
     this.download(new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' }), 'watch-' + this.state.dial + '-' + (assets.length ? assets.length + 'art-' : 'noart-') + '.wckit');
     this.setState({ status: 'Downloaded watch-' + this.state.dial + '.wckit (' + assets.length + ' art asset' + (assets.length === 1 ? '' : 's') + ', ' + Math.round(JSON.stringify(body).length / 1024) + ' KB)' });
+  }
+  /* ------------------------------ the design in the theme (D43 P7, §8) ---------------
+   * Every theme this editor bakes carries its design after the banks, so it can be opened
+   * again from the card or the shelf. The document is the whole watch, as P6's snapshot and
+   * a .wckit hold it, stamped with the app and its version (the region build writes
+   * window.__ORB_APP) and a schema this editor reads. Art rides along unless the author
+   * leaves it out or the file would pass the orb's upload cap, when it goes without and
+   * says so. The OS keeps the bytes and never reads them. */
+  DESIGN_SCHEMA = 1;
+  appVersion() { const a = typeof window !== 'undefined' && window.__ORB_APP; return (a && a.version) || 'dev'; }
+  async designDoc(withArt) {
+    const D = this.design(), s = this.state;
+    const assets = withArt ? (await this.kitAssets(null, D)).filter((a) => !a.missing) : [];
+    const snd = this.sndDesign();
+    return { format: 'wc-design', schema: this.DESIGN_SCHEMA, app: this.appSlug(), appVersion: this.appVersion(), made: new Date().toISOString(),
+      dial: s.dial, design: D, cfg: this.cfg(), seeds: s.seeds, hands: s.hands, handFinish: s.handFinish, caseStyle: s.caseStyle, caseMetal: s.caseMetal,
+      glassStyle: s.glassStyle, train: s.train, caseOpen: s.caseOpen, themeName: s.themeName,
+      sounds: withArt ? snd : Object.assign({}, snd, { up: {} }), art: withArt, assets };
+  }
+  // a theme's design back into the editor: refused by name when it is another app's, or a schema this build does not know
+  applyDesignDoc(o, from) {
+    const E = window.WatchEngine;
+    if (!o || o.format !== 'wc-design') return 'that design is not one this editor wrote';
+    if (o.app && o.app !== this.appSlug()) return 'that design is the ' + o.app + ' app\u2019s, not ' + this.appSlug() + '\u2019s';
+    if (!(o.schema >= 1) || o.schema > this.DESIGN_SCHEMA) return 'that design was made by ' + (o.app || 'clock') + ' ' + (o.appVersion || '?') + ' (design schema ' + o.schema + '); this editor (' + this.appVersion() + ') reads schema ' + this.DESIGN_SCHEMA + ' \u2014 update the app on this orb';
+    if (!o.design || !Array.isArray(o.design.comps) || !E.PRESETS[o.dial]) return 'that design has no watch in it';
+    const r = E.assetRestore(o.assets || []); this.saveArt();
+    const refs = this.artRefs(o.design), miss = refs.filter((x) => !E.assetKnown(x.id));
+    this.setState((st) => ({
+      dial: o.dial, designs: { ...st.designs, [o.dial]: E.canonDesign(JSON.parse(JSON.stringify(o.design))) },
+      ...(o.cfg ? { cfg: o.cfg } : {}), ...(o.seeds ? { seeds: o.seeds } : {}), ...(o.train ? { train: o.train } : {}),
+      ...(o.caseStyle ? { caseStyle: o.caseStyle } : {}), ...(o.caseMetal ? { caseMetal: o.caseMetal } : {}), ...(o.glassStyle ? { glassStyle: o.glassStyle } : {}),
+      ...(o.hands ? { hands: o.hands } : {}), ...(o.handFinish ? { handFinish: o.handFinish } : {}), ...(o.caseOpen ? { caseOpen: o.caseOpen } : {}),
+      ...(o.sounds ? { sounds: { ...st.sounds, [o.dial]: o.sounds } } : {}), themeName: o.themeName || st.themeName,
+      sel: null, selKind: null, step: 'parts', tab: 'comps',
+      status: 'Reopened \u201c' + (o.themeName || E.PRESETS[o.dial].name) + '\u201d' + (from ? ' from ' + from : '') + (o.art === false ? ' (it was saved without its art' + (refs.length ? ': ' + refs.length + ' image' + (refs.length > 1 ? 's' : '') + ' to load again' : '') + ')' : r.added ? ' with ' + r.added + ' art asset' + (r.added === 1 ? '' : 's') : '') + (miss.length && o.art !== false ? ' \u2014 ' + miss.length + ' missing' : '') + '. Send replaces it on the card.',
+    }));
+    this.faces = {}; if (this.buildMovement) this.buildMovement();
+    return null;
+  }
+  // ?theme=<card stem> (the hub's Edit door): the design comes through the hub, off the shelf copy or the card
+  async openThemeParam() {
+    let q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
+    const id = q && q.get('theme'); if (!id || !/^[A-Za-z0-9_.-]{1,64}$/.test(id)) return false;
+    const ip = q.get('orb') || '', src = q.get('src') === 'shelf' ? 'shelf' : 'card';
+    this.setState({ status: 'Opening the theme\u2019s design from the ' + (src === 'shelf' ? 'hub\u2019s shelf' : 'card') + '\u2026' });
+    try {
+      const r = await fetch('/api/theme/design?' + (src === 'shelf' ? 'name=' + encodeURIComponent(id) : 'ip=' + encodeURIComponent(ip) + '&id=' + encodeURIComponent(id)));
+      if (!r.ok) { let why = ''; try { why = (await r.json()).error || ''; } catch (e) { why = ''; } this.setState({ status: 'Could not reopen that theme: ' + (why || 'the hub answered ' + r.status) }); return false; }
+      const o = JSON.parse(new TextDecoder().decode(new Uint8Array(await r.arrayBuffer())));
+      const why = this.applyDesignDoc(o, src === 'shelf' ? 'the hub\u2019s shelf' : 'the card');
+      if (why) { this.setState({ status: 'Could not reopen that theme: ' + why }); return false; }
+      this._snap = null; this._undo = []; this._redo = [];   // the reopened theme is where this session's history starts
+      return true;
+    } catch (e) { this.setState({ status: 'Could not reopen that theme: ' + (e && e.message ? e.message : String(e)) }); return false; }
   }
   importBundle(file) {
     const E = window.WatchEngine;
@@ -5204,6 +5276,9 @@ class Component extends DCLogic {
         return { name: m.name, meta: ((E.PRESETS[m.dial] || {}).name || '') + ' \u00b7 ' + new Date(+m.at || 0).toLocaleDateString(), load: () => { this.loadId(m.id); this.setState({ themeName: m.name }); },
           delLabel: armed ? 'Press again' : 'Delete', delTip: 'Remove it from My designs (asks twice)', del: () => (armed ? (this.delMine(m.name), this.setState({ mineDel: null })) : this.setState({ mineDel: m.name, mineDelAt: Date.now() })) }; }),
       mineEmpty: !(this._mine || this.mineList()).length,
+      designShipOpts: [['art', 'With art', 'The theme carries its design and every image you uploaded: Edit reopens it exactly. Dropped to without-art if the file would pass what an orb accepts.'],
+        ['bare', 'Without art', 'The design only (a few KB): Edit reopens it, and uploaded images have to be loaded again'], ['none', 'Don\u2019t keep', 'The dial alone: it installs and draws, but cannot be reopened']]
+        .map(([v, label, tip]) => ({ ...on((s.designShip || 'art') === v), label, tip, pick: () => this.setState({ designShip: v }) })),
       resetAllLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset everything',
       undo: () => this.undo(), redo: () => this.redo(), undoOp: this._undo.length ? 1 : 0.4, redoOp: this._redo.length ? 1 : 0.4,
       undoTip: this._undo.length ? 'Undo (Ctrl+Z) \u00b7 ' + this._undo.length + ' step' + (this._undo.length > 1 ? 's' : '') + ' back' : 'Nothing to undo', redoTip: this._redo.length ? 'Redo (Ctrl+Shift+Z)' : 'Nothing to redo',

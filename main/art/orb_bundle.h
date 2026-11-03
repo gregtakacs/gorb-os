@@ -118,6 +118,10 @@ typedef struct {
     uint32_t geom_off, geom_size, geom_crc;
     uint32_t art_off,  art_size,  art_crc;
     uint32_t serial;
+    /* D43 P7 (§8): an app's design after the banks, words 29..31 (0 when there is none).
+     * Carried for the card's read-back route alone: the store, the slot and the dial
+     * never read it, and the slot header is built without it. */
+    uint32_t design_off, design_size, design_crc;
 } orb_bundle3_hdr_t;
 
 typedef struct {

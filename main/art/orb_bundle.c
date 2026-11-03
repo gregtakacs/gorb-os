@@ -31,7 +31,7 @@ enum {
     W_MAGIC = 0, W_FORMAT, W_GEOM_ABI, W_HDR_SIZE,
     W_GEOM_OFF, W_GEOM_SIZE, W_GEOM_CRC, W_ART_SIZE, W_ART_CRC,
     W_SCR_W, W_SCR_H, W_SERIAL, W_BAKED_MS, W_ART_OFF,
-    W_NAME = 14, W_HDR_CRC = 28, W_WORDS = 32
+    W_NAME = 14, W_HDR_CRC = 28, W_DESIGN_OFF = 29, W_DESIGN_SIZE = 30, W_DESIGN_CRC = 31, W_WORDS = 32
 };
 #define B3_MAGIC  0x474F5254u     /* 'T','R','O','G' — THEME_MAGIC itself */
 #define B3_SECTOR 4096u
@@ -212,6 +212,8 @@ const char *orb_bundle3_hdr_parse(const uint32_t *w, orb_bundle3_hdr_t *o)
     o->art_off  = w[W_ART_OFF];    o->art_size  = w[W_ART_SIZE];
     o->art_crc  = w[W_ART_CRC];
     o->serial   = w[W_SERIAL];
+    o->design_off = w[W_DESIGN_OFF]; o->design_size = w[W_DESIGN_SIZE];   /* P7: carried, never checked here */
+    o->design_crc = w[W_DESIGN_CRC];
     o->geom_abi = w[W_GEOM_ABI];       /* carried: the store stamps the slot's
                                         * header with the bundle's own dialect
                                         * (C4), and only v3/v6 got here. */

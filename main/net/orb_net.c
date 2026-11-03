@@ -5110,7 +5110,7 @@ static void json_put(char *dst, size_t dsz, const char *src)
 /* The listing ceiling is orb_theme.h's one number, shared with the walk's source
  * cap, the glass picker and the service family; h_sd's json[] scales with it. */
 #define THEME_LIST_MAX ORB_THEME_LIST_MAX
-#define SD_JSON_ROW_B  640
+#define SD_JSON_ROW_B  672
 #define SD_JSON_BASE_B 1024
 
 static esp_err_t send_paced(httpd_req_t *req, const void *buf, size_t len,
@@ -5132,7 +5132,7 @@ static esp_err_t h_sd(httpd_req_t *req)
     /* Worst-case row, from the format strings below: ~104 B of fixed row text and
      * digits + 113 (name, JSON-escaped at ORB_THEME_NAME_MAX) + 113 (id, at the
      * compound stem's ceiling) + 115 (why) + 49 (app) + ~34 B of the fmt/sects and
-     * stored pairs = ~628 B, budgeted at SD_JSON_ROW_B. The base fields — the
+     * stored pairs + 21 B of the design pair (D43 P7) = ~649 B, budgeted at SD_JSON_ROW_B. The base fields — the
      * refused-install, staged and bundle pairs at full width and the job witness —
      * come to ~955 B, budgeted at SD_JSON_BASE_B. The bound is the point: a
      * truncated body would read as "no card", so an overflow is an error string,
@@ -5210,9 +5210,9 @@ static esp_err_t h_sd(httpd_req_t *req)
          * never this flag. */
         off += snprintf(json + off, sizeof json - (size_t)off,
             "%s{\"name\":\"%s\",\"id\":\"%s\",\"app\":\"%s\",\"why\":\"%s\",\"bytes\":%u,\"serial\":%u,"
-            "\"ok\":%s,\"active\":%s,\"changed\":%s,\"fmt\":%u,\"sects\":%u,\"stored\":%s}",
+            "\"design\":%u,\"ok\":%s,\"active\":%s,\"changed\":%s,\"fmt\":%u,\"sects\":%u,\"stored\":%s}",
             i ? "," : "", e_name, e_id, e_app, e_why,
-            (unsigned)ent[i].art_size, (unsigned)ent[i].serial,
+            (unsigned)ent[i].art_size, (unsigned)ent[i].serial, (unsigned)ent[i].design_size,
             ent[i].err == ESP_OK ? "true" : "false",
             ent[i].active ? "true" : "false",
             ent[i].changed ? "true" : "false",
@@ -5394,6 +5394,62 @@ static esp_err_t send_paced(httpd_req_t *req, const void *buf, size_t len,
     *left_out = left;
     *budgeted_out = budgeted;
     return r;
+}
+
+/* GET /api/v1/sd/design?id=<stem> (D43 P7, §8): a card theme's app design, the bytes its
+ * editor wrote after the banks, so the hub's Edit door can reopen the theme. The OS never
+ * reads them: X-Design-Size and X-Design-Crc carry the header's figures ahead of the
+ * chunked body, and the hub checks the bytes against them. 404 when the theme carries
+ * none, with the sentence the hub shows. */
+typedef struct { httpd_req_t *req; bool begun; } design_tx_t;
+static esp_err_t design_begin(void *arg, uint32_t size, uint32_t crc)
+{
+    design_tx_t *tx = (design_tx_t *)arg;
+    httpd_req_t *req = tx->req;
+    tx->begun = true;
+    static char sz[12], cr[12];   /* the one httpd task: headers must outlive the first send */
+    snprintf(sz, sizeof sz, "%lu", (unsigned long)size);
+    snprintf(cr, sizeof cr, "%08lx", (unsigned long)crc);
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(req, "X-Design-Size", sz);
+    httpd_resp_set_hdr(req, "X-Design-Crc", cr);
+    return ESP_OK;
+}
+static esp_err_t design_chunk(void *arg, const uint8_t *p, size_t n)
+{
+    return httpd_resp_send_chunk(((design_tx_t *)arg)->req, (const char *)p, (ssize_t)n);
+}
+static esp_err_t h_sd_design(httpd_req_t *req)
+{
+    char id[ORB_THEME_HANDLE_MAX + 1] = "";
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    if (!q_param(req, "id", id, sizeof id) || !orb_theme_id_ok(id)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id is missing or not a theme id\"}");
+    }
+    if (!orb_sd_mounted()) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "{\"error\":\"no theme on the card answers that id\"}");
+    }
+    if (orb_theme_upload_busy() || scan_on_air() || orb_jobs_busy()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"the card is busy\",\"retry\":\"later\"}");
+    }
+    char why[128] = "";
+    design_tx_t tx = { .req = req, .begun = false };
+    const orb_asset_ans_t a = orb_theme_design_stream(id, design_begin, design_chunk, &tx, why, sizeof why);
+    if (a == ORB_ASSET_OK) return httpd_resp_send_chunk(req, NULL, 0);
+    /* a failure mid-stream has already sent its status: drop the connection, and the hub's
+     * size and CRC check names the short body */
+    if (tx.begun) return ESP_FAIL;
+    {
+        char body[200];
+        snprintf(body, sizeof body, "{\"error\":\"%s\"}", why[0] ? why : "the design could not be read");
+        httpd_resp_set_status(req, a == ORB_ASSET_NO_CONTENT ? "404 Not Found" : "422 Unprocessable Entity");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, body);
+    }
 }
 
 static esp_err_t h_sd_preview(httpd_req_t *req)
@@ -7537,7 +7593,8 @@ static esp_err_t net_start_httpd(void)
      * (D36) deleted /api/v1/apps/factory with the factory tier: textual count 40,
      * gated-off 37; the ceiling stays 48. The flight tracker adds the debug
      * door's GET/POST pair (/api/v1/debug/flights) and /api/v1/apps/cfg, the
-     * hub's settings write: textual 49, so the ceiling moves to 56. */
+     * hub's settings write: textual 49, so the ceiling moves to 56. D43 P7 adds
+     * /api/v1/sd/design, the card's design read-back: textual 50, the ceiling stays 56. */
     cfg.max_uri_handlers  = 56;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
@@ -7713,6 +7770,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/sd/bundle",   .method = HTTP_POST, .handler = h_bundle_install },
         { .uri = "/api/v1/sd/delete",   .method = HTTP_POST, .handler = h_theme_del },
         { .uri = "/api/v1/sd/preview",  .method = HTTP_GET,  .handler = h_sd_preview },
+        { .uri = "/api/v1/sd/design",   .method = HTTP_GET,  .handler = h_sd_design },
         { .uri = "/api/v1/sd/rescan",   .method = HTTP_POST, .handler = h_sd_rescan },
         /* Android + iOS/macOS captive-portal probes (see h_captive). The last two
          * are Firefox's network-check and the old-Chromium/Kindle endpoint: a phone

@@ -176,6 +176,12 @@ BRIDGE_SHIM = r"""
 """
 
 
+def _app_version():
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
+                           "apps", "clock", "version.txt")) as f:
+        return f.read().strip()
+
+
 def _manifest():
     return json.dumps({"editor": 1, "entry": MEMBER_ENTRY, "runtime": RUNTIME,
                        "baker": 3},
@@ -194,6 +200,10 @@ def _rewrite(text):
     """
     resources = "<script>window.__resources=window.__resources||{};%s</script>" % "".join(
         "window.__resources[%s]=%s;" % (json.dumps(u), json.dumps(l)) for u, l in CDN_LOCAL)
+    # D43 P7: the editor names the app and the release it belongs to in every design it
+    # writes into a theme, so a design knows which editor made it (apps/clock/version.txt)
+    resources += "<script>window.__ORB_APP=%s;</script>" % json.dumps(
+        {"slug": "clock", "version": _app_version()}, sort_keys=True)
     pairs = (
         ('<script src="./support.js"></script>',
          resources + '\n<script src="/runtime/support@1/support.js"></script>'),

@@ -3304,7 +3304,21 @@ function renderThemeEditRow(sub, shownThemes) {
 // hub learned — so the bridge needs no MessageChannel and no transferable port:
 // both documents are this hub's, and same-origin is already the strongest claim
 // the bridge could ask an unknown child to make.
-function openThemeEditor(row) {
+// D43 P7 (§8): Edit reopens a theme whose file carries its design. The app's editor opens
+// with ?theme=<card stem> (or the shelf file's stem and src=shelf) and fetches the design
+// through /api/theme/design itself; a theme without one offers no Edit at all.
+function themeReopenButton(slug, theme) {
+  const row = themeAppsRows.find((a) => a.slug === (slug || "clock"));
+  if (!row || !row.has_editor || !row.editor_url) return null;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "ghost";
+  btn.textContent = "Edit";
+  btn.title = "Open this theme again in the " + themeAppTitle(row.slug) + " editor, from the design it carries. Send then replaces it on the card.";
+  btn.onclick = () => openThemeEditor(row, theme);
+  return btn;
+}
+function openThemeEditor(row, theme) {
   const pane = $("#mn-theme-editor"), frame = $("#mn-theme-editor-frame");
   const title = $("#mn-theme-editor-title"), state = $("#mn-theme-editor-state");
   if (!pane || !frame || !row.editor_url) return;
@@ -3327,7 +3341,8 @@ function openThemeEditor(row) {
   // it is handed the name the hub shows (label) beside the address it dials (orb).
   const orbName = current.name || (current.row && current.row.instance) || "";
   frame.src = base + "?orb=" + encodeURIComponent(themeIP) + "&app=" + encodeURIComponent(row.slug) +
-    (orbName ? "&label=" + encodeURIComponent(orbName) : "");
+    (orbName ? "&label=" + encodeURIComponent(orbName) : "") +
+    (theme && theme.id ? "&theme=" + encodeURIComponent(theme.id) + (theme.src === "shelf" ? "&src=shelf" : "") : "");
   title.textContent = themeAppTitle(row.slug) + " theme editor";
   state.textContent = "";
   themeEditorApp = row.slug;
@@ -3574,6 +3589,11 @@ function themeRow(t, state, list) {
     use.disabled = false;
   };
   li.appendChild(use);
+  // D43 P7: a card theme that carries its design reopens in its app's editor
+  if (t.design) {
+    const ed = themeReopenButton(t.app, { id: t.id });
+    if (ed) li.appendChild(ed);
+  }
   // The hover overlay (owner, 2026-10-26): this row is one page of the wheel,
   // and the store button is exactly what a click on the overlay presses.
   const ovEntry = { t, canvas: pv, chip: pvq, save: use };
@@ -3684,6 +3704,10 @@ function themeShelfRows(scope, deviceRows, state, shelf) {
     size.className = "tag";
     size.textContent = Math.round((f.bytes || 0) / 1024) + " KB";
     li.appendChild(size);
+    if (f.design) {
+      const ed = themeReopenButton(app, { id: String(f.file).replace(/\.orbtheme$/i, ""), src: "shelf" });
+      if (ed) li.appendChild(ed);
+    }
     const inst = document.createElement("button");
     inst.className = "ghost";
     inst.textContent = "Install";

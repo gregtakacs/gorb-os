@@ -372,6 +372,7 @@ var deviceRoutes = map[string][]string{
 	// beside it that writes. The Theme card's thumbnails dial it through
 	// /api/theme/preview, which is the only place the hub learns of it.
 	"/api/v1/sd/preview": {http.MethodGet},
+	"/api/v1/sd/design":  {http.MethodGet}, // D43 P7: a card theme's app design, for its editor
 	"/api/v1/sd/delete":  {http.MethodPost},
 	"/api/v1/sd/theme":   {http.MethodPost},
 	// Migration 1's store door: the one press that puts a card theme on the glass.

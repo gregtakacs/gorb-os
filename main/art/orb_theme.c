@@ -83,6 +83,7 @@ enum {
     W_SCR_W, W_SCR_H, W_SERIAL, W_BAKED_MS, W_ART_OFF,
     W_NAME = 14,        /* NAME_MAX bytes -> words 14..27 */
     W_HDR_CRC = 28,     /* crc32 of all 128 B with THIS word zeroed */
+    W_DESIGN_OFF = 29, W_DESIGN_SIZE = 30, W_DESIGN_CRC = 31,   /* D43 P7: an app's design */
     W_WORDS = 32
 };
 _Static_assert(W_HDR_CRC == W_NAME + (56 + 3) / 4,
@@ -1185,6 +1186,57 @@ orb_asset_ans_t orb_theme_preview_read(const char *handle,
     return ans;
 }
 
+/* D43 P7 (§8): a card theme's app design, streamed back for its editor. The OS never reads
+ * the bytes: it checks the pointer against the file (after the banks, inside the file) and
+ * hands the header's size and CRC to `begin` before the first byte, so the receiver can
+ * verify what arrives. NO_CONTENT when the theme carries none. Holds the card for the
+ * stream, as the preview read does. */
+orb_asset_ans_t orb_theme_design_stream(const char *handle,
+                                        esp_err_t (*begin)(void *arg, uint32_t size, uint32_t crc),
+                                        esp_err_t (*chunk)(void *arg, const uint8_t *p, size_t n),
+                                        void *arg, char *why, size_t whysz)
+{
+    if (why && whysz) why[0] = '\0';
+    char slug[ORB_BUNDLE_SLUG_MAX + 1], hex[THEME_ID_HEX + 1];
+    if (!theme_stem_split(handle, slug, sizeof slug, hex, sizeof hex)) {
+        if (why && whysz) strlcpy(why, "that theme id is not one this device issued", whysz);
+        return ORB_ASSET_NO_SLOT;
+    }
+    orb_bundle3_hdr_t h3;
+    uint32_t fsz = 0;
+    const char *card_why = NULL;
+    const int fd = card_open_verified_slug3(slug, handle, &h3, &fsz, &card_why);
+    if (fd < 0) {
+        if (why && whysz && card_why) strlcpy(why, card_why, whysz);
+        return ORB_ASSET_NO_SLOT;
+    }
+    if (!h3.design_size) {
+        card_close(fd);
+        if (why && whysz) strlcpy(why, "this theme carries no design, so it cannot be reopened", whysz);
+        return ORB_ASSET_NO_CONTENT;
+    }
+    if ((uint64_t)h3.design_off < (uint64_t)h3.art_off + h3.art_size ||
+        (uint64_t)h3.design_off + h3.design_size > fsz) {
+        card_close(fd);
+        if (why && whysz) strlcpy(why, "this theme's design runs past the end of the file - it cannot be reopened", whysz);
+        return ORB_ASSET_NO_CONTENT;
+    }
+    uint8_t *buf = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) { card_close(fd); if (why && whysz) strlcpy(why, "no room for the read buffer", whysz); return ORB_ASSET_NO_SLOT; }
+    orb_asset_ans_t ans = ORB_ASSET_OK;
+    if (begin(arg, h3.design_size, h3.design_crc) != ESP_OK) ans = ORB_ASSET_NO_SLOT;
+    size_t pos = h3.design_off, left = h3.design_size;
+    while (ans == ORB_ASSET_OK && left) {
+        const size_t n = left < 4096 ? left : 4096;
+        if (rd_at(fd, &pos, buf, n) != (ssize_t)n) { ans = ORB_ASSET_NO_SLOT; if (why && whysz) strlcpy(why, "the card could not be read", whysz); break; }
+        if (chunk(arg, buf, n) != ESP_OK) { ans = ORB_ASSET_NO_SLOT; break; }
+        left -= n;
+    }
+    heap_caps_free(buf);
+    card_close(fd);
+    return ans;
+}
+
 /* ---- the store's ordering, C3 (§5.3 + §6.3) ---------------------------------
  *
  * Two rules come with the theme's move to mechanism A, and both are ordering,
@@ -2229,7 +2281,7 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
     strlcpy(e->app, mine ? slug : "", sizeof e->app);
     e->why[0] = '\0';
     e->active = false; e->changed = false; e->stored = false;
-    e->art_size = 0; e->serial = 0;
+    e->art_size = 0; e->serial = 0; e->design_size = 0;
     e->fmt = 0; e->n_sections = 0;
 
     if (!mine) {
@@ -2270,6 +2322,7 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
     e->n_sections = b3.n_sections;
     e->art_size = b3.art_size;
     e->serial = b3.serial;
+    e->design_size = b3.design_size;
     if (strcmp(bid, id) != 0) {
         strlcpy(e->why, "the file is not named for its own theme name — re-upload it",
                 sizeof(e->why));

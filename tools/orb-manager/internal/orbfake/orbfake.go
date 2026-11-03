@@ -21,6 +21,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +53,10 @@ type Theme struct {
 	// Empty means the theme carries no preview row, and servePreview answers the
 	// design's quiet 404 for it.
 	Preview []byte
+	// Design is the app design the theme's file carries after its banks (D43 P7):
+	// h_sd reports its size and GET /api/v1/sd/design streams it with its size and CRC
+	// headers. Empty means the theme carries none (404, the device's sentence).
+	Design []byte
 }
 
 // Orb is the fake. The zero value is not useful; build one with New.
@@ -206,6 +211,18 @@ func (o *Orb) SetPreview(id string, plane []byte) {
 	}
 }
 
+// SetDesign gives a card theme the app design its file carries (D43 P7).
+func (o *Orb) SetDesign(id string, d []byte) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, t := range o.themes {
+		if t.ID == id {
+			t.Design = d
+			return
+		}
+	}
+}
+
 // Themes snapshots the card.
 func (o *Orb) Themes() []Theme {
 	o.mu.Lock()
@@ -301,6 +318,8 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveDelete(w, r)
 	case r.URL.Path == "/api/v1/sd/preview" && r.Method == http.MethodGet:
 		o.servePreview(w, r)
+	case r.URL.Path == "/api/v1/sd/design" && r.Method == http.MethodGet:
+		o.serveDesign(w, r)
 	case r.URL.Path == "/api/v1/sd/theme" && r.Method == http.MethodPost:
 		o.serveUpload(w, r)
 	case r.URL.Path == "/api/v1/sd/bundle" && r.Method == http.MethodPost:
@@ -364,8 +383,8 @@ func (o *Orb) serveSD(w http.ResponseWriter, r *http.Request) {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		fmt.Fprintf(&b, `{"name":%q,"id":%q,"app":%q,"why":%q,"bytes":%d,"serial":%d,"ok":%t,"active":%t,"changed":%t,"stored":%t}`,
-			t.Name, t.ID, t.App, t.Why, t.Bytes, t.Serial, t.OK, t.Active, t.Changed, t.Stored)
+		fmt.Fprintf(&b, `{"name":%q,"id":%q,"app":%q,"why":%q,"bytes":%d,"serial":%d,"design":%d,"ok":%t,"active":%t,"changed":%t,"stored":%t}`,
+			t.Name, t.ID, t.App, t.Why, t.Bytes, t.Serial, len(t.Design), t.OK, t.Active, t.Changed, t.Stored)
 	}
 	b.WriteString("]}")
 	writeJSON(w, 200, b.String())
@@ -465,6 +484,40 @@ func (o *Orb) serveDelete(w http.ResponseWriter, r *http.Request) {
 // [u16 w][u16 h][RGB565 LE] bytes. A made-up id answers 400 like the firmware's,
 // never the double's generic 404 — the route-exists pin in device_contract_test
 // reads that difference.
+// serveDesign is h_sd_design's double (D43 P7): the theme's design with its size and CRC
+// ahead of the bytes, or the device's 404 sentence when the theme carries none.
+func (o *Orb) serveDesign(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if !idOK(id) {
+		writeJSON(w, 400, `{"error":"id is missing or not a theme id"}`)
+		return
+	}
+	o.mu.Lock()
+	var d []byte
+	found := false
+	for _, t := range o.themes {
+		if t.ID == id {
+			found, d = true, t.Design
+			break
+		}
+	}
+	o.mu.Unlock()
+	if !found {
+		writeJSON(w, 404, `{"error":"no theme on the card answers that id"}`)
+		return
+	}
+	if len(d) == 0 {
+		writeJSON(w, 404, `{"error":"this theme carries no design, so it cannot be reopened"}`)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Design-Size", strconv.Itoa(len(d)))
+	w.Header().Set("X-Design-Crc", fmt.Sprintf("%08x", crc32.ChecksumIEEE(d)))
+	w.WriteHeader(200)
+	_, _ = w.Write(d)
+}
+
 func (o *Orb) servePreview(w http.ResponseWriter, r *http.Request) {
 	if d := o.PreviewWait; d > 0 {
 		select {

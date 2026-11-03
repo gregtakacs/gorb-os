@@ -65,7 +65,7 @@ SLOT_ART_CAP = _ts.ORB_THEME_SLOT_CAP   # orb_bundle.h ORB_THEME_SLOT_CAP: banks
 # the device reported 8 MB, and the sentence below quoted the wrong budget to the bench.
 # D43 P7 (§8): the header's three spare words point at an app's design, carried after the
 # banks and never installed: design_off, design_size, design_crc (all 0 when there is none).
-W_DESIGN_OFF, W_DESIGN_SIZE, W_DESIGN_CRC = _ot.W_HDR_CRC + 1, _ot.W_HDR_CRC + 2, _ot.W_HDR_CRC + 3
+W_DESIGN_OFF, W_DESIGN_SIZE, W_DESIGN_CRC = _ot.W_DESIGN_OFF, _ot.W_DESIGN_SIZE, _ot.W_DESIGN_CRC
 THEME_UPLOAD_MAX = 0x00800000 + 0x20000   # orb_theme.h ORB_THEME_UPLOAD_MAX: the file's cap at both doors
 SLUG_MAX     = 23                   # ORBAPP_SLUG_MAX - 1: the NUL's room
 _SLUG_OK     = frozenset(b"abcdefghijklmnopqrstuvwxyz0123456789_")

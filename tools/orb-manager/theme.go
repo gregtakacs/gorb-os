@@ -718,6 +718,52 @@ func (s *Server) handleThemePreview(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(hit.body)
 }
 
+// handleThemeDesign answers GET /api/theme/design (D43 P7, §8): the app design a theme
+// carries after its banks, for the editor the Edit door opened. ?ip=&id= reads a card
+// theme through the orb's /api/v1/sd/design, checked against the size and CRC the orb
+// sends ahead of the bytes; ?name= reads a shelf file on the hub's own disk. The bytes are
+// the app's, passed through unexamined; a theme with none, or a damaged one, is a refusal
+// in the reader's own sentence, which the editor shows as is.
+func (s *Server) handleThemeDesign(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	q := r.URL.Query()
+	var body []byte
+	if stem := strings.TrimSpace(q.Get("name")); stem != "" {
+		f, err := s.library().namedTheme(stem)
+		if err != nil {
+			s.jsonErr(w, err.Error())
+			return
+		}
+		if body, err = orbnet.ContainerDesign(f.blob); err != nil {
+			s.jsonErr(w, strings.TrimPrefix(err.Error(), "orbnet: "))
+			return
+		}
+	} else {
+		t, ok := s.checkedTarget(w, strings.TrimSpace(q.Get("ip")), strings.TrimSpace(q.Get("id")), true)
+		if !ok {
+			return
+		}
+		// the page asked for it, so it rides the page's preempting client; a design with
+		// its art can be megabytes off a 20 MHz card, so the stream gets minutes, not seconds
+		d, _, err := s.preview.WithTimeout(designTimeout).ThemeDesign(t.IP, t.ID)
+		if err != nil {
+			s.jsonErr(w, strings.TrimPrefix(err.Error(), "orbnet: "))
+			return
+		}
+		body = d
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(body)
+}
+
+// designTimeout bounds one design read off a card (D43 P7): the whole file's ceiling at
+// the slowest card read the bench has seen, with room.
+const designTimeout = 3 * time.Minute
+
 // handleThemeShelfPreview answers GET /api/theme/shelf-preview?name=<stem> with one
 // shelf theme's baked preview plane, in the device's wire shape — [u16 w][u16 h][RGB565
 // LE] — exactly as /api/theme/preview relays a plane off the card. The difference is

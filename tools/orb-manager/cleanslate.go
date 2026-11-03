@@ -26,16 +26,37 @@ package main
 // leftover row that did need refilling without a wipe. A destructive step gated on
 // memory that outlived a restart by an accident of timing is the worse failure.
 
-import "sync"
+import (
+	"strings"
+	"sync"
+
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbmdns"
+)
 
 // cleanSlateSet holds the chips this hub has just written its first gorb-os into.
-// Keyed by canonical MAC, because the flash speaks MAC and the install dials IP.
+// Keyed by canonical MAC, because the flash speaks MAC and the install dials IP — and
+// the two speak it differently: the flash and the lonely write hand in the ROM's
+// "44:bd:8d:78:26:18", the install's slateForIP answers the fleet's "44bd8d782618".
+// Every method canonicalizes its argument (slateKey), so no caller can miss its own mark.
+// Before that, every adoption missed: the mark was filed under the colon form and asked
+// for under the bare one, the wipe never ran, a board's card leftovers read as the
+// owner's shelf, and a new orb finished on the menu (bench, 2026-11-03).
 type cleanSlateSet struct {
 	mu   sync.Mutex
 	pend map[string]bool
 }
 
 func newCleanSlate() *cleanSlateSet { return &cleanSlateSet{pend: map[string]bool{}} }
+
+// slateKey is the one spelling the set files under: the fleet's canonical 12-hex MAC,
+// or, for a string that is not a MAC at all, the string itself lowercased (so a garbled
+// caller still finds its own mark, and never someone else's).
+func slateKey(mac string) string {
+	if c, why := orbmdns.CanonicalMAC(mac); why == "" {
+		return c
+	}
+	return strings.ToLower(strings.TrimSpace(mac))
+}
 
 // mark says this flash was an adoption: the chip carried no prior proof on this hub.
 func (c *cleanSlateSet) mark(mac string) {
@@ -47,7 +68,7 @@ func (c *cleanSlateSet) mark(mac string) {
 	if c.pend == nil {
 		c.pend = map[string]bool{}
 	}
-	c.pend[mac] = true
+	c.pend[slateKey(mac)] = true
 }
 
 // pending asks whether a chip is owed a clean slate, without consuming the mark: a
@@ -59,7 +80,7 @@ func (c *cleanSlateSet) pending(mac string) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.pend[mac]
+	return c.pend[slateKey(mac)]
 }
 
 // clear consumes the mark. It runs only after the wipe and the baseline install both
@@ -70,5 +91,5 @@ func (c *cleanSlateSet) clear(mac string) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.pend, mac)
+	delete(c.pend, slateKey(mac))
 }

@@ -695,12 +695,23 @@ func (s *Server) slateForIP(ip string) string {
 		return ""
 	}
 	rows := s.fleet.ClaimedBy(ip)
-	if len(rows) != 1 {
+	switch len(rows) {
+	case 1:
+		return rows[0].MAC
+	case 0:
+		// No live row yet: the lonely write forgot the chip's row, and a board seconds
+		// out of its join may not have re-earned one when the page asks for the seed.
+		// The board at the address names itself, and a mark only ever exists for a chip
+		// this hub just flashed, so its own word is enough to find that mark.
+		if st, err := s.device.Status(ip); err == nil && st != nil {
+			return st.MAC
+		}
+		return ""
+	default:
 		// Two boards on one address is a contention the fleet already reports, and the
 		// hub will not wipe on behalf of an address it cannot attribute.
 		return ""
 	}
-	return rows[0].MAC
 }
 
 // shelfHoldsOwnersContent is the hub's copy of the D38 gate: did the owner put anything on

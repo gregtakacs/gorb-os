@@ -67,6 +67,14 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(rb.rows.length === 1 && rb.rows[0].drum && rb.rows[0].span === 0 && rb.rows[0].zero === 0 && rb.rows[0].cadence === 'roll' && rb.rows[0].foff === 0, 'a rolling barrel plans a drum row', JSON.stringify(rb.rows[0]));
   const rbt = B.wheelPlan3([{ id: 'b', type: 'wheel', form: 'barrel', shows: 'date', cadence: 'smooth', trot: 30 }, { id: 'c', type: 'wheel', form: 'barrel', shows: 'date', exposed: true }]);
   ok(!rbt.rows.length && /level axle/.test(rbt.refuses[0]) && /cutout/.test(rbt.refuses[1]), 'a turned drum and a drum seen whole are refused by name', rbt.refuses.join(' | '));
+  // the drum's strip: one whole turn (2 pi r) tall, the barrel's length wide, its figures in order
+  const df = face([{ id: 'b', type: 'wheel', host: 'dial', angle: 180, dist: 110, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'second', digit: 'units', cadence: 'smooth' }, { id: 'bk', type: 'cutout', host: 'b' }]);
+  const st = df.wheelStrip('b', 1, 0);
+  ok(st && st.r === 34 && st.h === Math.round(2 * Math.PI * 34) && st.w === 26, 'a drum ships a strip one turn tall at its radius', JSON.stringify(st && [st.w, st.h, st.r]));
+  const order = (dir, foff) => { const d2 = face([{ id: 'b', type: 'wheel', host: 'dial', angle: 180, dist: 110, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'second', digit: 'units', cadence: 'smooth', dir }, { id: 'bk', type: 'cutout', host: 'b' }]);
+    global.__TEXT_AUDIT = []; d2.wheelStrip('b', 1, foff); const t = global.__TEXT_AUDIT.map((r) => r.text); global.__TEXT_AUDIT = null; return t.filter((x, i) => i % 3 === 1).join(''); };
+  ok(order('cw', 0) === '0123456789' && order('ccw', 0) === '0987654321' && order('cw', 3) === '3456789012', 'its slots hold the figures in its direction, from the figure its start shows', [order('cw', 0), order('ccw', 0), order('cw', 3)].join(' '));
+  ok(df.wheelStrip('nope', 1, 0) === null && face([{ id: 'r', type: 'wheel', host: 'dial', form: 'ring', size: 120, inner: 90, shows: 'date' }]).wheelStrip('r', 1, 0) === null, 'only a barrel has a strip');
 }
 // ---- Layers: a disc to another face, a cutout to another wheel ----------------------------------
 {

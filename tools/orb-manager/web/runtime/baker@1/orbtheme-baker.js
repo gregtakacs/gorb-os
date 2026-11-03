@@ -4061,6 +4061,9 @@
       if (e.n_frames > 1) {                                          // the carriage: chord-marked
         carInk = inkOf3(art, spr[e.frame0], e).n / 1000; box += 2 * carInk; continue;
       }
+      // D43: a drum repaints its window every tick (the stage re-marks it, orb_stage.c) and
+      // never turns: its whole window is restored and inked each flush, unsmoothed
+      if (e.kind === SHAPE_DRUM) { var win = (e.w * 2 * (e.radius | 0)) / 1000; box += win; mover += win; continue; }
       var ink = inkOf3(art, spr[e.frame0], e);
       // A seconds row re-poses every tick; its twin rides it. The hot-tick seconds of a
       // sweeping dial stays nearest.

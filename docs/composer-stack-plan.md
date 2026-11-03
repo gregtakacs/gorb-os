@@ -1197,6 +1197,42 @@ not enough: the owner wanted any angle, with snaps, the tangent among them (the 
 - Not benched on the orb: the index is crystal-overlay paint and the markers are wheel texture,
   both on paths P5d.3m benched. Tests: `headless-wheels` 132, `headless-motion` 44.
 
+**As built (P5d.3o, the drum row, owner 2026-11-03; OS v1.2.6, clock v1.2.7).** A barrel that
+rolls ships at last, as a new row shape, `CLK_SHAPE_DRUM` (3):
+- **On the orb.** The row's art is a strip of the barrel's figures, one whole turn tall (2 pi r)
+  and the barrel's length wide; it sits with its window (strip-wide, 2r tall) centred where the
+  barrel stands. The app poses it like any travelling row (its travel is the strip's scroll,
+  `dy` = one strip either way, `end` wrap), so every cadence works unchanged: the odometer roll,
+  jump with an ease, smooth. The OS draws it: each line of the window shows strip row
+  `phase + (h / 2 pi) asin(y / r)`, which foreshortens the figures exactly as the editor's
+  barrel does, at one copy per pixel (`gfx_paint_ctx_drum`, `paint_drum_row`). The shading over
+  the curve is screen-locked, so it rides the still cover above the drum: the editor's barrel
+  draws it over its flat fill too, and the bake's two fill renders fold it into the cover. The
+  radius lives in an OS-side table (`clk_theme_t.drum_r`), not in `clk_row_t`, which is copied
+  whole into the clock app's memory (the app ABI the per-app versions depend on).
+- **Rules** (orb_clock3.c `row_check`, theme_schema `check_element` and the baker, mirrored): a
+  drum moves, neither turns nor travels across, has a radius of 2..233 px, travels exactly its
+  strip's height, wraps, and is one strip with no shadow and no parent. Its starting figure and
+  direction are laid into the strip (slot k holds figure `(dir k + off) mod n`), not into an
+  angle. The baker refuses a rolling barrel seen whole (no face to carry its shading) or turned
+  off level, and a dial with a drum past the 16-layer table (only the compositor rolls one).
+- **A bench find:** a drum standing still was blank after a reboot until a large repaint covered
+  it. Its classic LVGL widget is hidden (it would slide the strip), so the boot's LVGL render
+  left the plate there and nothing re-marked it. A drum now re-marks its window every tick, as
+  a moving hand does; the flush gate sends only changed rows.
+- **Bench, orb-B, 2026-11-03:** Speedster (below) runs on the fast path, 11 layers, none refused,
+  at 13 fps with 42-57 ms flushes (15 fps before the per-tick re-mark), no panic; frames off the
+  glass show the seconds drums mid-roll and every drum reading the time straight after a reboot.
+  The estimate prices a drum as its window repainted each tick (it had priced the seconds drums
+  as sweeping their whole strips); it says 9 fps for Speedster against 13 measured, the rest of
+  the gap being the long sweeping needle.
+- **Speedster** (preset): a retrograde seconds needle over a 240-degree fan sub-dial printed as a
+  speedometer, and an odometer of six drums on the fan's face: hours and minutes jump with a
+  400 ms ease, the seconds tens rolls on the carry and the seconds units rolls continuously.
+- The legibility audit holds a drum's front figure to the floor and lets the figures rolling over
+  the top and bottom be glimpses (`ctx._glimpse`). Tests: `headless-wheels` 138, `host_clock3_test`
+  388 (drum refusals and acceptance) with 30 mutants (two new), `headless-estimate` 55.
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views

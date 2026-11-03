@@ -3713,7 +3713,8 @@
       row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the wheels\u2019 cover'), kind: SHAPE_ARM, src: SOURCES.indexOf('none'),
             x: cv3.x | 0, y: cv3.y | 0, w: cv3.w, h: cv3.h, order: 0, alpha: 255, n_frames: 1 }, cv3, true, true);
       auxB += cv3.w * cv3.h * 3;
-    } else if (wheels3.length) throw new Error('wheels with no cover: every disc would show whole over the face');
+    } else if (wheels3.some(function (w) { return !w.exposed; }))
+      throw new Error('wheels with no cover: every disc would show whole over the face');   // exposed rings need none
     /* D43 P4b: a still row — a sub-dial face the author lifted among the hands. It never
      * moves (source none, no cadence, no travel), takes its depth from depthOrder's
      * 'comp:<id>' entry, and is a still, screen-locked plane, so it dithers. */
@@ -4219,7 +4220,8 @@
   // the wheels that turn as rows: smooth, eased, or reading a measure no window can plate
   function wheelTurns3(c) {
     var wd = WHEEL3[(c && c.shows) || 'date'];
-    return !wd || c.cadence === 'smooth' || +c.ease > 0 || !CLOCK_WINDOW_DOMAIN[wd.src];
+    // (an exposed ring is seen whole: a plate per value would be the whole ring, so it turns)
+    return !wd || c.cadence === 'smooth' || +c.ease > 0 || c.exposed === true || !CLOCK_WINDOW_DOMAIN[wd.src];
   }
   function wheelPlan3(comps) {
     var rows = [], refuses = [];
@@ -4242,7 +4244,7 @@
       // round under the cutout), and the moon disc forward, as the classic moonphase does
       var span = wd.moon ? dir * TURN_10 : -dir * TURN_10;
       var vmin = dg === 'whole' ? (wd.vmin | 0) : 0;
-      rows.push({ id: id, type: 'wheel', host: c.host || 'dial', src: wd.src, digit: dg, n: n, vmin: vmin, vmax: vmin + n,
+      rows.push({ id: id, type: 'wheel', host: c.host || 'dial', exposed: c.exposed === true, src: wd.src, digit: dg, n: n, vmin: vmin, vmax: vmin + n,
                   span: span, zero: Math.round(span * (dg === 'whole' ? (wd.off | 0) : 0) / n), end: 'wrap',
                   cadence: smooth ? 'roll' : 'jump', ease: smooth || wd.src === 'second' ? 0 : Math.max(0, Math.min(1000, +c.ease || 0)) });
     });

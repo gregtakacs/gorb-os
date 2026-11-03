@@ -25,7 +25,7 @@
    left, the stage, the inspector on the right. Only the two side lists and a magnified
    stage scroll. Colours are ui@1's tokens: the hub's own. */
 html,body{height:100%;overflow:hidden}
-.wc{height:100vh;display:grid;grid-template-rows:48px minmax(0,1fr);grid-template-columns:264px minmax(0,1fr) 320px}
+.wc{height:100vh;display:grid;grid-template-rows:48px minmax(0,1fr);grid-template-columns:296px minmax(0,1fr) 384px}
 .wc-top{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 12px;border-bottom:1px solid var(--line);background:var(--card);min-width:0}
 .wc-crumb{display:flex;align-items:center;gap:7px;min-width:0;flex:0 1 auto}
 .wc-crumb>span{white-space:nowrap}
@@ -117,6 +117,8 @@ html,body{height:100%;overflow:hidden}
    value on a line of its own under it, so a longer colour name never resizes the column
    and reflows the swatches, and is never cut short. */
 .wc-row.wide{grid-template-columns:96px minmax(0,1fr)}
+.wc-rng{display:flex;align-items:center;gap:6px}.wc-rng>input[type=range]{flex:1;min-width:0}
+.wc-num{width:58px;flex:none;font:11px var(--mono);padding:2px 4px;background:var(--well);color:inherit;border:1px solid var(--line);border-radius:4px}
 .wc-row.wide>.wc-val{display:none}
 .wc-cname{font-size:11px;color:var(--mut);margin-top:4px;overflow-wrap:anywhere}
 .wc-row:not(.wide) .wc-cname,.wc-cname:empty{display:none}
@@ -414,7 +416,7 @@ html,body{height:100%;overflow:hidden}
             <div class="wc-row {{ f.rowCls }}" data-a="{{ f.anchor }}">
               <label title="{{ f.label }}">{{ f.label }}<sc-if value="{{ f.hasLink }}" hint-placeholder-val="{{ false }}"><span onClick="{{ f.relink }}" title="{{ f.linkTip }}" style="color:{{ f.linkFg }};cursor:{{ f.linkCursor }}">{{ f.linkText }}</span></sc-if></label>
               <div style="min-width:0">
-                <sc-if value="{{ f.isRange }}" hint-placeholder-val="{{ true }}"><input type="range" min="{{ f.min }}" max="{{ f.max }}" step="{{ f.step }}" value="{{ f.value }}" onChange="{{ f.on }}"></sc-if>
+                <sc-if value="{{ f.isRange }}" hint-placeholder-val="{{ true }}"><div class="wc-rng"><input type="range" min="{{ f.min }}" max="{{ f.max }}" step="{{ f.step }}" value="{{ f.value }}" onChange="{{ f.on }}"><input class="wc-num" type="number" min="{{ f.min }}" max="{{ f.max }}" step="{{ f.step }}" value="{{ f.value }}" onChange="{{ f.onNum }}" title="Type an exact value"></div></sc-if>
                 <sc-if value="{{ f.isSelect }}" hint-placeholder-val="{{ false }}"><select onChange="{{ f.on }}"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="3"><option value="{{ o.v }}" selected="{{ o.sel }}">{{ o.label }}</option></sc-for></select></sc-if>
                 <sc-if value="{{ f.isChips }}" hint-placeholder-val="{{ false }}"><div class="ui-chips"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="3"><button onClick="{{ o.pick }}" style="background:{{ o.bg }};border-color:{{ o.bd }};color:{{ o.fg }}">{{ o.label }}</button></sc-for></div></sc-if>
                 <sc-if value="{{ f.isSwatch }}" hint-placeholder-val="{{ false }}"><div class="ui-chips"><sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="6"><button class="wc-sw" onClick="{{ o.pick }}" title="{{ o.label }}" style="background:{{ o.bg }};border-color:{{ o.bd }}">{{ o.text }}</button></sc-for></div></sc-if>
@@ -3240,7 +3242,8 @@ class Component extends DCLogic {
     }
     // D43 P5d.2: a dial whose every hand rides a fan, a slider or a sub-dial ships them all as
     // pointer rows; it is only a dial with no hand at all that has nothing to show the time
-    if (!hands.length && !auxRows.length) { this.setState({ status: 'Not baked: this dial has no hand at all — add one under Parts' }); return; }
+    // (an exposed ring read at its index tells the time without a hand: Orbit)
+    if (!hands.length && !auxRows.length && !(wheelRows && wheelRows.length)) { this.setState({ status: 'Not baked: this dial has no hand at all — add one under Parts' }); return; }
     /* The crystal comes home as a row. The FORMAT 3 element table never carried
      * the case or the glass, so every baked dial lost the bezel ring and the
      * reflections the preview draws above the hands. One masked plate: outer
@@ -3385,7 +3388,7 @@ class Component extends DCLogic {
     }
     if (compRows.length) opts.comps = compRows;
     if (auxRows.length) opts.aux = auxRows;
-    if (wheelRows && wheelRows.length) { opts.wheels = wheelRows; opts.cover = cover; }
+    if (wheelRows && wheelRows.length) { opts.wheels = wheelRows; if (cover) opts.cover = cover; }
     if (glassP) opts.plates = [glassP];
     /* The ONE depth list: the author's hand order, bottom to top — the same list the
      * preview draws by and the layer kit ships. The baker turns it into the element
@@ -3865,6 +3868,8 @@ class Component extends DCLogic {
       if (a <= 0) continue;
       rgba[di] = Math.min(255, Math.round((A[si] * 255) / a)); rgba[di + 1] = Math.min(255, Math.round((A[si + 1] * 255) / a)); rgba[di + 2] = Math.min(255, Math.round((A[si + 2] * 255) / a)); rgba[di + 3] = a;
     }
+    // exposed rings are seen whole: with nothing but them, there is no face over them to ship
+    if (wp.rows.every((r) => r.exposed)) return { rows, cover: null };
     return { rows, cover: { x: x0, y: y0, w: cw, h: ch, rgba } };
   }
   async auxPass3(pp, onlyBase) {
@@ -4277,7 +4282,15 @@ class Component extends DCLogic {
      * optional second argument, because only a handful of sections are ever aimed at --
      * a label alone would leave the field objects carrying names nothing reads. */
     const H = (label, anchor) => mk({ label, isHead: true, isRow: false, anchor });
-    const Rg = (label, value, min, max, step, onv, valText) => mk({ label, isRange: true, min, max, step, value, on: (e) => onv(+e.target.value), valText });
+    /* P5d.3m: a slider snaps to 0 within 1.5% of its span and, on a fine one, to a whole number
+     * within 0.6%, so exact values are easy to land on; the box beside it takes a typed value as is */
+    const snapV = (v, min, max, step) => { const sp = Math.abs(max - min) || 1;
+      if (min <= 0 && max >= 0 && Math.abs(v) <= sp * 0.015) return 0;
+      if (step < 1 && sp > 2 && Math.abs(v - Math.round(v)) <= sp * 0.006) return Math.round(v);
+      return v; };
+    const Rg = (label, value, min, max, step, onv, valText) => mk({ label, isRange: true, min, max, step, value, valText,
+      on: (e) => onv(snapV(+e.target.value, min, max, step)),
+      onNum: (e) => { const v = e.target.value; if (v === '' || !isFinite(+v)) return; onv(Math.max(min, Math.min(max, +v))); } });
     const Sl = (label, value, opts, onv) => mk({ label, isSelect: true, value, opts: mark(opts, value), on: (e) => onv(e.target.value), ...linkOf(opts, value, onv) });
     const Ch = (label, value, opts, onv) => mk({ label, isChips: true, opts: opts.map((o) => ({ ...on(String(o.v) === String(value)), label: o.label, pick: () => onv(o.v) })) });
     const Nt = (label, note) => mk({ label, isNote: true, note });
@@ -4322,7 +4335,7 @@ class Component extends DCLogic {
         const hw = D.comps.find((c) => c.id === sel.host) || {};
         /* P5d.3h: a moon wheel's cutout is locked to its disc -- the wheel's size, its moons and its
          * Opening faces place and turn it -- so it offers only how wide it opens and its frame */
-        if (hw.shows === 'moon' || sel.shape === 'moon') {
+        if (hw.shows === 'moon') {
           Sx('Frame', 'style', opt(E.COMP_STYLES.cutout));
           selFields.push(Nt('', 'Locked to its moon disc, its opening the disc itself: size the disc and its moons, and turn where it opens, on the moon wheel.'));
         } else {
@@ -4334,12 +4347,14 @@ class Component extends DCLogic {
         // P5d.3e: a cutout the wheel does not back all the way round opens onto the movement
         const lw = ((fc && fc.lay && fc.lay.wheels) || []).find((q) => String(q.id) === String(sel.host));
         const lh = lw ? lw.holes[lw.cut.findIndex((q) => String(q.id) === String(sel.id))] : null;
-        if (lh && lh.uncovered) selFields.push(Nt('', 'This cutout runs past its ' + (lw.form === 'ring' ? 'ring\u2019s band' : 'disc') + ': the movement shows through the part the wheel does not cover. Shrink it, move it back onto the figures, or grow the wheel.'));
+        // always a row, so a warning arriving mid-drag never moves the slider out from under the pointer
+        if (lh) selFields.push(Nt('', lh.uncovered ? '\u26a0 This cutout runs past its ' + (lw.form === 'ring' ? 'ring\u2019s band' : 'disc') + ': the movement shows through the part the wheel does not cover. Shrink it, move it back onto the figures, or grow the wheel.' : 'Backed by its wheel all the way round.'));
         const aligned = (sel.at == null || +sel.at === (hw.read != null ? +hw.read : 90)) && !(+sel.dx) && !(+sel.dy) && !(+sel.rot) && (!sel.lie || sel.lie === 'auto');
         selFields.push(Ch('Align', aligned ? 'on' : '', [{ v: 'on', label: aligned ? 'On the figures' : 'Align to the figures' }], () => this.setComp(sel.id, { at: hw.read != null ? +hw.read : 90, dx: 0, dy: 0, rot: 0, lie: 'auto' })));
-        Cx('Shape', 'shape', [{ v: 'window', label: 'Window' }, { v: 'round', label: 'Round' }, { v: 'arc', label: 'Arc' }, { v: 'slot', label: 'Slot' }, { v: 'moon', label: 'Moon' }], 'window');
+        // the moon shape is a moon wheel's, given automatically; a window, round, arc or slot here
+        Cx('Shape', 'shape', [{ v: 'window', label: 'Window' }, { v: 'round', label: 'Round' }, { v: 'arc', label: 'Arc' }, { v: 'slot', label: 'Slot' }], 'window');
         if (sel.shape === 'arc') R('Arc', 'span', 6, 180, 1, (v) => v + '\u00b0', 36);
-        R('Width', 'w', 0, 120, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);
+        else R('Width', 'w', 0, 120, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);   // an arc's width is its sweep
         R('Height', 'h', 0, 80, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);
         Sx('Frame', 'style', opt(E.COMP_STYLES.cutout));
         selFields.push(Sl('Join with', sel.join || '', [{ v: '', label: 'Nothing \u00b7 its own frame' }].concat(mates.map((c) => ({ v: c.id, label: '#' + num(c.id) + ' on ' + compTitle(D.comps.find((q) => q.id === c.host) || {}) }))), (v) => this.setComp(sel.id, { join: v || undefined })));
@@ -4428,10 +4443,17 @@ class Component extends DCLogic {
             selFields.push(Ch('Snap to', level ? 'Level' : named(cur), snaps.map(([l]) => ({ v: l, label: l })), (l) => { const sn = snaps.find(([x]) => x === l); put(sn[1], sn[2]); }));
           } else R('Drum turn', 'trot', -180, 180, 1, (v) => v + '\u00b0', 0);
           selFields.push(Co('Disc colour', sel.wbg, set('wbg'), 'Auto'), Co('Figures', sel.wink, set('wink'), 'Auto'));
+          selFields.push(Object.assign(Nt('', ''), { label: 'Look', isHead: true, isNote: false, isRow: false }));
+          Cx('Seen', 'exposed', [{ v: false, label: 'Through its cutouts' }, { v: true, label: 'Whole, over its face' }], false);
+          if (sel.exposed === true) Cx('Index', 'index', opt(E.WHEEL_INDEX), 'none');
+          Cx('Finish', 'wfinish', opt(E.WHEEL_FINISHES), 'flat');
+          if (form !== 'barrel') { Cx('Ticks', 'ticks', opt(E.WHEEL_TICKS), 'none'); Cx('Rim', 'rim', opt(E.WHEEL_RIMS), 'none'); }
+          R('Label every', 'every', 1, 12, 1, (v) => (+v > 1 ? 'every ' + v + ' figures' : 'every figure'), 1);
+          selFields.push(Co('Accent', sel.accent, set('accent'), 'Figures'));
           // the figures must not run into each other round the ring
           if (fw && form !== 'barrel') {
             const pitch = (2 * Math.PI * fw.lr) / fw.spec.n, wide = fw.fs * (0.62 * fw.longest + 0.1);
-            if (pitch < wide) selFields.push(Nt('', 'The figures overlap: ' + fw.spec.n + ' of them round a ' + Math.round(fw.lr) + ' px radius leave ' + pitch.toFixed(1) + ' px each, and one is ~' + Math.round(wide) + ' px wide. Move them out, grow the wheel, or read a digit instead.'));
+            selFields.push(Nt('', pitch >= wide ? 'Figures clear each other: ' + pitch.toFixed(1) + ' px each round the ring.' : '\u26a0 The figures overlap: ' + fw.spec.n + ' of them round a ' + Math.round(fw.lr) + ' px radius leave ' + pitch.toFixed(1) + ' px each, and one is ~' + Math.round(wide) + ' px wide. Move them out, grow the wheel, or read a digit instead.'));
           }
         } else {
           // the moon disc: its size, its moons' size and how far out they ride, its sky

@@ -55,9 +55,11 @@ const fs = fh(flux, 'h3'), xy0 = E.handXY(fs, at(1, 0, 1)), xy30 = E.handXY(fs, 
 ok(near(xy30[0] - xy0[0], 75) && near(xy30[1], xy0[1]), 'Flux: the seconds travels half its 150 px track in half a minute', JSON.stringify([xy0, xy30]));
 ok(E.handXY(fs, at(1, 0, 0, 200))[0] > E.handXY(fs, at(1, 0, 0, 300))[0] && E.handXY(fs, at(1, 0, 0, 300))[0] > xy0[0], 'Flux: at :00 the bar flies back along its track');
 ok(near(Math.abs(((deg(E.handAngle(fh(flux, 'h1'), at(6, 59, 0))) + 180) % 360) - 180), 0), 'Flux: the jumping hour reads 6 at 06:59, the middle of its 240\u00b0 fan from 240\u00b0');
-ok(['centre-hour', 'centre-minute', 'centre-second'].every((id) => fh(orbit, id).disc && fh(orbit, id).noShadow), 'Orbit: three discs, none casting');
-const od = fh(orbit, 'centre-minute');
-ok(near(deg(E.handAngle(od, at(3, 15, 59))) % 360, 0), 'Orbit: the jumping minute disc holds 15 under the 3 o’clock index');
+// D43 P5d.3m: Orbit's turning-disc hands are exposed rings now, read at a laser index at 3 o'clock
+const ow = orbit.lay.wheels;
+ok(ow.length === 3 && ow.every((w) => w.exposed && w.form === 'ring' && near(w.read, Math.PI / 2)) && !orbit.hands.length, 'Orbit: three exposed rings, read at 3 o\u2019clock, no hands', ow.map((w) => w.spec.n).join(','));
+ok(ow.find((w) => w.spec.n === 60 && w.ease > 0).spec.held(at(3, 15, 59)) === 15, 'Orbit: the jumping minute ring holds 15 under the 3 o\u2019clock index');
+ok(ow.some((w) => w.index === 'laser'), 'Orbit: its laser index rides the crystal over them');
 
 // ---- the bake's encoding and the Hands tab ----
 const DCLogic = function () { };

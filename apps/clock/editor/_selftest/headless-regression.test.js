@@ -16,7 +16,7 @@ names.forEach((k) => {
   try { fc = E.face(Object.assign({}, OPTS, { design: d, train: P.train || 'classic', hands: P.hands, handFinish: P.handFinish })); }
   catch (e) { fails++; console.log('FAIL ' + k + ' threw ' + e.message + '\n' + String(e.stack).split('\n').slice(1, 3).join('\n')); return; }
   ok(!!fc.dial && !!fc.glass && !!fc.outer, k + ': a layer failed to build');
-  ok(Array.isArray(fc.hands) && fc.hands.length > 0, k + ': no hands built');
+  ok(Array.isArray(fc.hands) && (fc.hands.length > 0 || fc.lay.wheels.some((w) => w.exposed)), k + ': nothing tells the time (no hands, no exposed ring)');
   ok(fc.hands.every((h) => h.sp && h.sp.c && isFinite(h.sp.px) && isFinite(h.sp.py)), k + ': a procedural sprite lost its {c,px,py} contract');
   ok(fc.hands.every((h) => typeof h.art !== 'string' || E.assetReady(h.art)), k + ': a hand claims art that is not there');
   fc.subLayers.forEach((l) => ok(!!l.canvas, k + ': subdial layer ' + l.id + ' has no canvas'));

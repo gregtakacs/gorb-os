@@ -1141,6 +1141,33 @@ not enough: the owner wanted any angle, with snaps, the tangent among them (the 
   (a jump row).
 - Tests: `headless-wheels` 103.
 
+**As built (P5d.3m, owner 2026-11-02).**
+- **Orbit is three exposed rings.** Its hands had been a special case, the turning-disc path
+  (`discSprite`, shipped as pointer rows), read at a laser index on the crystal. A wheel can
+  now be **exposed** (`exposed`): seen whole, over its face, with no cutout; it always turns
+  as a row (a plate per value would be the whole ring), and needs no cover (the bake ships
+  none when every turning wheel is exposed). Its **index** (`index`: line, or the laser lens)
+  rides the crystal, spanning every exposed ring sharing its centre and reading point. Orbit:
+  hour (smooth), minute (jump, eased 160 ms), seconds (jump) rings at the old disc bands, read
+  at 3 o'clock. A dial whose time is told by exposed rings bakes with no hand at all. Bench on
+  orb-B: the glass reads the hour ring past 8, the minute on 30 and the seconds at the index
+  at 20:30, L4 with 5 layers and no cover row, 1 fps (the seconds tick), a ~270 ms flush.
+  Geometry gate: Orbit alone moves (its hands are gone).
+- **The wheel's look**: `ticks` (at labelled figures, or every one), `every` (label every n-th
+  figure), `rim` (a line or two at the edges), `accent` (ticks, rim, index), `wfinish` (flat,
+  gradient, sunray turned with the wheel).
+- **Cutout pane.** Moon is a moon wheel's shape, given automatically; it is no longer offered,
+  and canon clears it from a cutout whose wheel is not the moon (once picked it could not be
+  undone). An arc has no Width (its sweep is its width). The coverage line is always present,
+  stating it is backed or that it runs past, so a warning arriving mid-drag no longer reflows
+  the panel and loses the slider.
+- **An arc's inner shade** scaled with its bounding box, which grows with its sweep, so a
+  longer arc read darker; it now scales with the arc's band across.
+- **Panels** widen: layers 264 → 296 px, inspector 320 → 384 px.
+- **Sliders** snap to 0 within 1.5% of their span and, on a fine one, to a whole number within
+  0.6%; a number box beside each takes an exact value.
+- Tests: `headless-wheels` 113, `headless-motion` 44.
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views

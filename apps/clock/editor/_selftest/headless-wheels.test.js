@@ -261,6 +261,37 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(pr && pr.cadence === 3, 'and the sub-dial\u2019s hand ships ticking (a jump row) beside the sweeping centre hand', JSON.stringify(pr && pr.cadence));
   ok(it.renderVals().isEdited, 'which makes it an edited Modern, with its reset in the title bar');
 }
+// ---- P5d.3m: exposed rings, the wheel's look, the cutout pane, sliders ------------------------------------
+{
+  const cw = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', shows: 'date', exposed: true, index: 'laser', ticks: 'all', rim: 'double', wfinish: 'sunray', every: 5, accent: '#ff0000' },
+    { id: 'v', type: 'wheel', shows: 'date', exposed: false, index: 'laser', ticks: 'none', rim: 'none', wfinish: 'flat', every: 1, accent: 'auto' }] }).comps;
+  ok(cw[0].exposed === true && cw[0].index === 'laser' && cw[0].ticks === 'all' && cw[0].rim === 'double' && cw[0].wfinish === 'sunray' && cw[0].every === 5 && cw[0].accent === '#ff0000', 'the wheel\u2019s look is kept', JSON.stringify(cw[0]));
+  ok(['exposed', 'index', 'ticks', 'rim', 'wfinish', 'every', 'accent'].every((k) => !(k in cw[1])), 'and its defaults drop out (no index without exposure)', JSON.stringify(cw[1]));
+  const ex = face([{ id: 'w', type: 'wheel', host: 'dial', size: 150, form: 'ring', inner: 110, shows: 'minute', exposed: true, index: 'line', every: 5, ticks: 'all' }]);
+  ok(ex.lay.wheels[0].exposed && ex.lay.wheels[0].every === 5 && ex.comps(new Date(2026, 10, 2), null).tops.dial, 'an exposed ring needs no cutout, and draws over its face');
+  const P = B.wheelPlan3([{ id: 'w', type: 'wheel', shows: 'minute', exposed: true }]);
+  ok(P.rows.length === 1 && P.rows[0].exposed && P.rows[0].cadence === 'jump', 'and turns as a row (a plate per value would be the whole ring)');
+  const pl = (w, h, a) => { const r = new Uint8Array(w * h * 4); for (let i = 0; i < w * h; i++) { r[i * 4] = 9; r[i * 4 + 3] = a; } return r; };
+  const disc = Object.assign({}, P.rows[0], { x: 30, y: 30, w: 60, h: 60, pivot_x: 30, pivot_y: 30, rgba: pl(60, 60, 255) });
+  let thr = ''; try { B.bakeClock3({ name: 'x', plate: { rgba: pl(466, 466, 255), w: 466, h: 466 }, wheels: [disc] }); } catch (e) { thr = e.message; }
+  ok(!thr, 'with no cover, since nothing covers it', thr);
+  thr = ''; try { B.bakeClock3({ name: 'x', plate: { rgba: pl(466, 466, 255), w: 466, h: 466 }, wheels: [Object.assign({}, disc, { exposed: false })] }); } catch (e) { thr = e.message; }
+  ok(/no cover/.test(thr), 'while a covered one still needs its cover');
+  ok(E.canonDesign({ comps: [{ id: 'w', type: 'wheel', shows: 'date' }, { id: 'k', type: 'cutout', host: 'w', shape: 'moon' }] }).comps[1].shape === undefined, 'a moon shape on a wheel that is not the moon falls back to a window');
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p2) { Object.assign(this.state, typeof p2 === 'function' ? p2(this.state) : p2); };
+  const it = new (global.COMP_CLASS(DCLogic))({});
+  it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
+  it.state.dial = 'skeleton'; it.state.playing = false; it.state.hidden = {};
+  it.state.designs = { skeleton: E.canonDesign({ print: 'roman', comps: [{ id: 'w', type: 'wheel', host: 'dial', size: 150, form: 'ring', inner: 110, shows: 'date' }, { id: 'k', type: 'cutout', host: 'w', shape: 'arc' }] }) };
+  it.setState({ sel: 'k', selKind: 'comp', step: 'parts', tab: 'comps' });
+  const fk = it.renderVals().fields, lk = (l) => fk.find((f) => f.label === l);
+  ok(!lk('Shape').opts.some((o) => /Moon/.test(o.label)) && lk('Arc') && !lk('Width') && lk('Height'), 'the cutout pane never offers Moon, and an arc has no Width', lk('Shape').opts.map((o) => o.label).join(','));
+  ok(fk.some((f) => f.isNote && /Backed by its wheel|runs past/.test(f.note || '')), 'its coverage line is always there, so a warning cannot move the slider under the pointer');
+  const h = lk('Height'); h.on({ target: { value: 0.4 } }); const h0 = it.design().comps.find((c) => c.id === 'k').h;
+  h.onNum({ target: { value: '17.5' } }); const h1 = it.design().comps.find((c) => c.id === 'k').h;
+  ok(!h0 && h1 === 17.5, 'a slider snaps to 0 near it, and its box takes an exact value', JSON.stringify([h0, h1]));
+}
 // ---- canon ----------------------------------------------------------------------------------
 {
   const c = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', host: 'dial', shows: 'nope', digit: 'whole', dir: 'cw', cadence: 'jump', ease: 0, overhang: 'shown', wbg: 'auto', tsize: 1, blank0: true },

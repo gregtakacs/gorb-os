@@ -749,6 +749,12 @@
    * or level where the wheel reads (face 'up', the default), which follows Reads at. The older
    * 'out' and 'in' are fang 0 and 180, and canon writes them so. */
   const WHEEL_FACES = { up: 'Level where it reads', ring: 'At an angle to the ring', out: 'Along the ring · tops out', in: 'Along the ring · tops in' };
+  // D43 P5d.3m: a wheel's look beyond its colours -- ticks at its figures, which figures carry a label,
+  // a rim line in an accent colour, how its face is finished, and (exposed) the index it is read at
+  const WHEEL_TICKS = { none: 'None', major: 'At labelled figures', all: 'At every figure' };
+  const WHEEL_RIMS = { none: 'None', line: 'Line', double: 'Double line' };
+  const WHEEL_FINISHES = { flat: 'Flat', gradient: 'Gradient', sunray: 'Sunray' };
+  const WHEEL_INDEX = { none: 'None', line: 'Line', laser: 'Laser lens' };
   const FACE_SNAPS = [['Tops out', 0], ['Tangent ↻', 90], ['Tops in', 180], ['Tangent ↺', -90]];
   const normDeg = (d) => { d = ((+d % 360) + 540) % 360 - 180; return d === -180 ? 180 : d; };
   // D43 P5d.3f: how a cutout lies -- with its wheel's figures (level where they are level, along the
@@ -978,12 +984,13 @@
         { id: 'h2', type: 'hand', host: 's2', shows: 'minute', finish: 'white', motion: { cadence: 'sweep', ease: 700 } },
         { id: 'h3', type: 'hand', host: 's3', shows: 'second', finish: 'red', len: 0.7, wid: 3, motion: { cadence: 'step', steps: 1, ease: 400 } },
       ] } },
-    orbit: { name: 'Orbit', blurb: 'Three turning discs · wandering hour, jumping minute, stepping seconds · laser index', hands: 'baton', handFinish: 'magenta', caseMetal: 'gunmetal', design: {
+    orbit: { name: 'Orbit', blurb: 'Three exposed rings · wandering hour, jumping minute, ticking seconds · laser index', hands: 'baton', handFinish: 'magenta', caseMetal: 'gunmetal', design: {
       print: 'none', numerals: 'none', font: 'orbitron', surface: 'guilloche', color: '#140a24', aging: 0, stains: 0, dust: 0, comps: [
         { id: 'c1', type: 'flare', host: 'dial', angle: 0, dist: 0, rot: 0, size: 9, style: 'print', icon: 'text', text: 'ORBIT', font: 'orbitron', weight: 'bold', spacing: 0.5, color: '#ff2bd6' },
-        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', motion: { path: 'disc', start: 90, cadence: 'sweep', discBg: '#1c0d33', discInk: '#ffffff', accent: '#ff2bd6' } },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', motion: { path: 'disc', start: 90, cadence: 'jump', ease: 160, discBg: '#120f1c', discInk: '#e9e4ff', accent: '#ff2bd6' } },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', motion: { path: 'disc', start: 90, cadence: 'step', steps: 1, discBg: '#0a0910', discInk: '#bdb6d6', accent: '#ff2bd6' } },
+        // D43 P5d.3m: three exposed rings read at a laser index at 3 o'clock (the turning-disc hands they were)
+        { id: 'w1', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 142, form: 'ring', inner: 104, read: 90, shows: 'hour', cadence: 'smooth', exposed: true, index: 'laser', wbg: '#1c0d33', wink: '#ffffff', accent: '#ff2bd6', ticks: 'all', rim: 'line' },
+        { id: 'w2', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 182, form: 'ring', inner: 146, read: 90, shows: 'minute', ease: 160, exposed: true, wbg: '#120f1c', wink: '#e9e4ff', accent: '#ff2bd6', ticks: 'all', every: 5, rim: 'line' },
+        { id: 'w3', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 218, form: 'ring', inner: 186, read: 90, shows: 'second', exposed: true, wbg: '#0a0910', wink: '#bdb6d6', accent: '#ff2bd6', ticks: 'all', every: 5, rim: 'line' },
       ] } },
     perpetual: { name: 'Perpetual calendar', blurb: 'Day · date · month subdials · moon at 6', hands: 'baton', handFinish: 'gilt', design: {
       print: 'baton', comps: [
@@ -1179,6 +1186,9 @@
         len: form === 'barrel' ? Math.max(fs, c.len != null ? +c.len : fs * (0.62 * longest + 0.6)) : 0,
         dir: c.dir === 'ccw' ? -1 : 1, smooth: c.cadence === 'smooth', ease: +c.ease || 0,
         overhang: onSub && c.overhang === 'shown', bg: c.wbg, ink: c.wink, font: c.wfont, mstyle: c.mstyle,
+        exposed: !spec.moon && c.exposed === true, ticks: WHEEL_TICKS[c.ticks] ? c.ticks : 'none', every: Math.max(1, +c.every | 0 || 1),
+        rim: WHEEL_RIMS[c.rim] ? c.rim : 'none', accent: c.accent && c.accent !== 'auto' ? c.accent : null, finish: WHEEL_FINISHES[c.wfinish] ? c.wfinish : 'flat',
+        index: c.exposed === true && WHEEL_INDEX[c.index] ? c.index : 'none',
         msize: spec.moon ? Math.max(0.12, Math.min(0.48, c.msize != null ? +c.msize : 0.33)) : 0, mpos: spec.moon ? Math.max(0.2, Math.min(0.8, c.mpos != null ? +c.mpos : 0.5)) : 0, seed: String(c.id).split('').reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) | 0, 7) & 0xffff, cut: [], holes: [] });
       hits.push({ id: c.id, x: g.x, y: g.y, r: form === 'barrel' ? r : r * 0.35, z: (onSub ? subZ[onSub] : 0) - 0.5 });
     });
@@ -1321,7 +1331,9 @@
     const SL = cv(S), sl = SL.getContext('2d'), BL = cv(S), bl = BL.getContext('2d');
     const erase = (x, list) => { if (!list.length) return; x.save(); x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'destination-out'; x.filter = 'none'; x.fillStyle = '#000'; list.forEach((o) => { x.beginPath(); holePath(o)(x); x.fill(); }); x.restore(); };
     vis.forEach((h, i) => {
-      const p = holePath(h), b = bx[i], k = Math.max(0.25, Math.min(1, (b[3] - b[1]) / 320)), ak = 0.45 + 0.55 * k;
+      // the inner shade scales with the opening's depth across: a box's height, an arc's band (its box
+      // grows with its sweep, which had darkened a longer arc for no reason)
+      const p = holePath(h), b = bx[i], k = Math.max(0.25, Math.min(1, (h.kind === 'arc' ? h.r1 - h.r0 : b[3] - b[1]) / 320)), ak = 0.45 + 0.55 * k;
       const near = vis.filter((o, j) => j !== i && ov(i, j)), before = vis.filter((o, j) => j < i && ov(i, j));
       sl.clearRect(0, 0, S, S);
       [[5, 8, 0.85], [-5, 8, 0.85], [16, 28, 0.75], [-16, 28, 0.75], [30, 50, 0.5], [-30, 50, 0.5], [0, 6, 0.5]].forEach(([oy, blr, al]) => {
@@ -2231,10 +2243,31 @@
     const body = (x) => { x.beginPath(); x.arc(0, 0, w.r, 0, TAU); if (ring) x.arc(0, 0, ring, TAU, 0, true); };
     if (w.fill) { ctx.fillStyle = w.fill; body(ctx); ctx.fill('evenodd'); ctx.restore(); return; }
     ctx.fillStyle = bg; body(ctx); ctx.fill('evenodd');
+    // the face's finish: a soft radial gradient, or sunray lines turned with the wheel
+    if (w.finish === 'gradient') { const g = ctx.createRadialGradient(0, 0, ring, 0, 0, w.r); g.addColorStop(0, 'rgba(255,255,255,.14)'); g.addColorStop(1, 'rgba(0,0,0,.18)'); ctx.fillStyle = g; body(ctx); ctx.fill('evenodd'); }
+    if (w.finish === 'sunray') { ctx.save(); body(ctx); ctx.clip('evenodd'); ctx.lineWidth = 0.6; for (let i = 0; i < 180; i++) { const a = rot + (i * TAU) / 180; ctx.strokeStyle = i % 2 ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.07)'; ctx.beginPath(); ctx.moveTo(Math.sin(a) * ring, -Math.cos(a) * ring); ctx.lineTo(Math.sin(a) * w.r, -Math.cos(a) * w.r); ctx.stroke(); } ctx.restore(); }
     wheelEdge(ctx, ring, w.r, w.edge, false); if (ring) wheelEdge(ctx, ring, w.r, w.edge, true);
+    const acc = w.accent || ink;
+    // ticks at the figures (every one, or the labelled ones), from the rim inward
+    if (w.ticks !== 'none') {
+      const tl = Math.max(3, (w.r - Math.max(ring, w.lr + w.fs * 0.6)) * 0.8);
+      for (let i = 0; i < n; i++) {
+        const lab = i % w.every === 0; if (w.ticks === 'major' && !lab) continue;
+        const a = rot + (w.dir * i * TAU) / n;
+        ctx.strokeStyle = lab ? acc : ink; ctx.globalAlpha = lab ? 1 : 0.55; ctx.lineWidth = lab ? 1.6 : 0.8;
+        ctx.beginPath(); ctx.moveTo(Math.sin(a) * (w.r - 1.5), -Math.cos(a) * (w.r - 1.5)); ctx.lineTo(Math.sin(a) * (w.r - 1.5 - (lab ? tl : tl * 0.55)), -Math.cos(a) * (w.r - 1.5 - (lab ? tl : tl * 0.55))); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+    // a rim line (or two) at the edges, in the accent
+    if (w.rim !== 'none') {
+      ctx.strokeStyle = acc; ctx.lineWidth = 1.2;
+      const lines = (r) => { ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.stroke(); if (w.rim === 'double') { ctx.lineWidth = 0.6; ctx.beginPath(); ctx.arc(0, 0, r + (r > (ring || 0) + 1 && r >= w.r - 2 ? -3 : 3), 0, TAU); ctx.stroke(); ctx.lineWidth = 1.2; } };
+      lines(w.r - 0.8); if (ring) lines(ring + 0.8);
+    }
     ctx.font = wheelFontOf(w, w.fs); ctx.fillStyle = ink; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     for (let i = 0; i < n; i++) {
-      const a = rot + (w.dir * i * TAU) / n, l = sp.lab(i); if (!l) continue;
+      const a = rot + (w.dir * i * TAU) / n, l = i % w.every === 0 ? sp.lab(i) : ''; if (!l) continue;
       // upright where the wheel reads, or along the ring (tops to the rim or to the centre); then the author's turn
       const turn = (w.fang != null ? a + w.fang : a - ref) + w.trot;
       ctx.save(); ctx.translate(Math.sin(a) * w.lr, -Math.cos(a) * w.lr); ctx.rotate(turn); ctx.fillText(l, 0, w.fs * 0.05); ctx.restore();
@@ -3065,12 +3098,14 @@
       const r0 = Math.min(...g.map((h) => h.disc.ri)) - 4, r1 = Math.max(...g.map((h) => h.disc.ro)) + 4;
       const ux = Math.cos(a), uy = Math.sin(a), nx = -uy, ny = ux, hw = Math.max(10, (r1 - r0) * 0.07);
       x.save();
-      // a smoked lens across the bands, then the laser line and its two pips
-      x.fillStyle = 'rgba(255,255,255,0.07)'; x.strokeStyle = 'rgba(255,255,255,0.35)'; x.lineWidth = 1;
-      x.beginPath();
-      x.moveTo(h0.x + ux * r0 + nx * hw, h0.y + uy * r0 + ny * hw); x.lineTo(h0.x + ux * r1 + nx * hw, h0.y + uy * r1 + ny * hw);
-      x.lineTo(h0.x + ux * r1 - nx * hw, h0.y + uy * r1 - ny * hw); x.lineTo(h0.x + ux * r0 - nx * hw, h0.y + uy * r0 - ny * hw); x.closePath();
-      x.fill(); x.stroke();
+      // a smoked lens across the bands (not for a plain line index), then the laser line and its two pips
+      if (!h0.lineOnly) {
+        x.fillStyle = 'rgba(255,255,255,0.07)'; x.strokeStyle = 'rgba(255,255,255,0.35)'; x.lineWidth = 1;
+        x.beginPath();
+        x.moveTo(h0.x + ux * r0 + nx * hw, h0.y + uy * r0 + ny * hw); x.lineTo(h0.x + ux * r1 + nx * hw, h0.y + uy * r1 + ny * hw);
+        x.lineTo(h0.x + ux * r1 - nx * hw, h0.y + uy * r1 - ny * hw); x.lineTo(h0.x + ux * r0 - nx * hw, h0.y + uy * r0 - ny * hw); x.closePath();
+        x.fill(); x.stroke();
+      }
       x.shadowColor = acc; x.shadowBlur = 8; x.strokeStyle = acc; x.lineWidth = 2;
       x.beginPath(); x.moveTo(h0.x + ux * r0, h0.y + uy * r0); x.lineTo(h0.x + ux * r1, h0.y + uy * r1); x.stroke();
       x.fillStyle = acc;
@@ -3858,6 +3893,14 @@
     // the device already stack above the hands. Lower arbours' caps stay in the hand stack.
     drawCaps(F.glass.getContext('2d'), F.hands, SH);
     paintDiscIndex(F.glass.getContext('2d'), F.hands);
+    // an exposed wheel's index, on the crystal over the turning rings (as a disc hand's always was)
+    // the lens spans every exposed ring that shares the indexed one's centre and reading point
+    {
+      const ex = lay.wheels.filter((w) => w.exposed), key = (w) => Math.round((w.read * 180) / Math.PI) + '@' + w.x.toFixed(1) + ',' + w.y.toFixed(1);
+      const idx = {}; ex.forEach((w) => { if (w.index !== 'none' && !idx[key(w)]) idx[key(w)] = w; });
+      const asHand = (w, lead) => ({ x: w.x, y: w.y, disc: { ri: w.form === 'ring' ? w.ri : Math.max(0, w.lr - w.fs), ro: w.r }, motion: { start: (w.read * 180) / Math.PI, accent: lead.accent || '#ff2d55' }, lineOnly: lead.index === 'line' });
+      paintDiscIndex(F.glass.getContext('2d'), Object.keys(idx).flatMap((k) => [asHand(idx[k], idx[k])].concat(ex.filter((w) => w !== idx[k] && key(w) === k).map((w) => asHand(w, idx[k])))));
+    }
     _.setTemp(o.temp || 2200, o.hue, o.hueSat);
     const hostOf = (c) => (c.host === 'dial' ? { x: C, y: C, r: DR } : lay.subs.find((s) => s.id === c.host));
     const enOf = (c) => (c.host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === c.host) || {}).en || en);
@@ -3888,8 +3931,9 @@
        * a face switched off shows its wheels whole. */
       const wheelsOf = {};
       lay.wheels.forEach((w) => { if ((!only || only.indexOf(w.id) >= 0) && !ex[w.id]) (wheelsOf[w.host] = wheelsOf[w.host] || []).push(w); });
-      const turns = (w) => w.smooth || w.ease > 0 || w.spec.unit === 864e5 * 365;   // orbtheme-baker.js wheelTurns3: smooth, eased, or a year
-      const stack = (host, ws) => (t) => {
+      const turns = (w) => w.smooth || w.ease > 0 || w.spec.unit === 864e5 * 365 || w.exposed;   // orbtheme-baker.js wheelTurns3: smooth, eased, a year, or exposed
+      const tops = {};
+      const stack = (host, ws, bare) => (t) => {
         const en1 = host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === host) || {}).en || en;
         const st = cv(S), sx = st.getContext('2d');
         setFace(fontKey);
@@ -3899,16 +3943,18 @@
         // edge, not the mask's, is the one the eye reads
         const mk = cv(S), mx = mk.getContext('2d'); mx.fillStyle = mx.strokeStyle = '#000'; mx.lineWidth = 2;
         ws.forEach((w) => { w.holes.forEach((q, j) => { if (w.cut[j] && ex[w.cut[j].id]) return; mx.beginPath(); holePath(q)(mx); mx.fill(); mx.stroke(); }); if (w.overhang) { mx.beginPath(); mx.arc(w.x, w.y, w.r, 0, TAU); mx.fill(); } });
-        if (!wh[host]) { sx.globalCompositeOperation = 'destination-in'; sx.drawImage(mk, 0, 0); sx.globalCompositeOperation = 'source-over'; }
+        if (!wh[host] && !bare) { sx.globalCompositeOperation = 'destination-in'; sx.drawImage(mk, 0, 0); sx.globalCompositeOperation = 'source-over'; }
         t.drawImage(st, 0, 0);
       };
       Object.keys(wheelsOf).forEach((host) => {
-        const all = wheelsOf[host].sort((p, q) => q.r - p.r), tw = all.filter(turns);
+        // an exposed wheel is seen whole, on top of its face (a ring the time is read off at an index)
+        wheelsOf[host].filter((w) => w.exposed).forEach((w) => items.push({ host, at: ord[w.id] == null ? 0 : ord[w.id], top: true, draw: stack(host, [w], true) }));
+        const all = wheelsOf[host].filter((w) => !w.exposed).sort((p, q) => q.r - p.r), tw = all.filter(turns);
         if (tw.length) items.push({ host, at: -1, draw: stack(host, tw) });
         all.filter((w) => !turns(w)).forEach((w) => items.push({ host, at: ord[w.id] == null ? 0 : ord[w.id], draw: stack(host, [w]) }));
       });
-      items.sort((p, q) => p.at - q.at).forEach((it) => it.draw((it.host === 'dial' ? a : subs[it.host] || (subs[it.host] = cv(S))).getContext('2d')));
-      ck = key; cvals = { dial: a, subs };
+      items.sort((p, q) => p.at - q.at).forEach((it) => it.draw((it.top ? tops[it.host] || (tops[it.host] = cv(S)) : it.host === 'dial' ? a : subs[it.host] || (subs[it.host] = cv(S))).getContext('2d')));
+      ck = key; cvals = { dial: a, subs, tops };
       return cvals;
     };
     /* The bake's two hooks on the wheels (D43 P5d.3). wheelFill: draw every wheel as one flat
@@ -4185,10 +4231,12 @@
     // apertures uncut, because the device always composites a value over them. The bake's
     // plate walk asks for it, or the train turning behind a sealed aperture reads as plate motion.
     if (!hidden.dial) { ctx.drawImage(hidden.sealed && F.dialSealed ? F.dialSealed : F.dial, 0, 0); if (df) dz(() => ctx.drawImage(df.dial, 0, 0)); }
+    if (!hidden.complications && cp.tops && cp.tops.dial) dz(() => ctx.drawImage(cp.tops.dial, 0, 0));   // exposed wheels ride over the dial
     const lifted = {}; (F.liveSeq || []).forEach((e) => { if (e.kind === 'sub') lifted[e.id] = 1; });
     const subBlock = (sl) => {
       if (!hidden.complications && cp.subs[sl.id]) dz(() => ctx.drawImage(cp.subs[sl.id], 0, 0));
       if (!hidden.subdials && !ids[sl.id]) { dz(() => ctx.drawImage(sl.canvas, 0, 0)); if (df && df.subs[sl.id]) dz(() => ctx.drawImage(df.subs[sl.id], 0, 0)); }
+      if (!hidden.complications && cp.tops && cp.tops[sl.id]) dz(() => ctx.drawImage(cp.tops[sl.id], 0, 0));
     };
     F.subLayers.forEach((sl) => { if (!lifted[sl.id]) subBlock(sl); });
     /* D43 P4b: the live band in stack order. With nothing lifted this is one drawHands
@@ -4365,7 +4413,7 @@
     // P5d.3i: a moon wheel's cutouts are moon cutouts, however they were added (a wheel switched to
     // the moon after its cutout came with it kept a window's shape, and canon then dropped its Aperture)
     if (d.comps) { const moons = {}; d.comps.forEach((c) => { if (c.type === 'wheel' && c.shows === 'moon') moons[c.id] = 1; });
-      d.comps.forEach((c) => { if (c.type === 'cutout' && moons[c.host]) c.shape = 'moon'; }); }
+      d.comps.forEach((c) => { if (c.type === 'cutout' && moons[c.host]) c.shape = 'moon'; else if (c.type === 'cutout' && c.shape === 'moon') delete c.shape; }); }
     (d.comps || []).forEach((c) => {
       if (c.type === 'hand') {
         // a hand has no placement of its own: it turns on its host's arbour
@@ -4427,6 +4475,13 @@
         if (!WHEEL_STYLES[c.fstyle] || c.fstyle === 'bold') delete c.fstyle;
         if (!(+c.trot)) delete c.trot;
         if (c.edge == null || Math.abs(+c.edge - 0.15) < 1e-9) delete c.edge;
+        if (c.exposed !== true || c.shows === 'moon') { delete c.exposed; delete c.index; }
+        if (!WHEEL_INDEX[c.index] || c.index === 'none') delete c.index;
+        if (!WHEEL_TICKS[c.ticks] || c.ticks === 'none') delete c.ticks;
+        if (!WHEEL_RIMS[c.rim] || c.rim === 'none') delete c.rim;
+        if (!WHEEL_FINISHES[c.wfinish] || c.wfinish === 'flat') delete c.wfinish;
+        if (!(+c.every > 1)) delete c.every; else c.every = +c.every | 0;
+        if (!c.accent || c.accent === 'auto') delete c.accent;
         ['fpx', 'trad', 'inner', 'len', 'read'].forEach((k) => { if (c[k] == null || !isFinite(+c[k])) delete c[k]; });
         return;
       }
@@ -4436,6 +4491,7 @@
         if (!CUT_LIES[c.lie] || c.lie === 'auto') delete c.lie;
         // P5d.3h: a moon cutout keeps only its aperture share and its frame; the moon wheel places it
         if (c.shape === 'moon') ['dx', 'dy', 'rot', 'lie', 'at', 'w', 'h', 'join', 'bar', 'span'].forEach((k) => delete c[k]);
+        if (c.shape === 'arc') delete c.w;   // an arc's width is its sweep
         delete c.ap;   // P5d.3j: a moon aperture is the disc, always
         if (!c.shape || c.shape === 'window') delete c.shape;
         if (!c.style || c.style === 'frame') delete c.style;
@@ -4487,7 +4543,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, WHEEL_RIMS, WHEEL_FINISHES, WHEEL_INDEX, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

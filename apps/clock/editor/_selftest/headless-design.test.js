@@ -45,6 +45,12 @@ const mk = () => {
   const newer = mk().applyDesignDoc(Object.assign({}, back, { schema: 2, appVersion: 'v1.3.0' }));
   ok(/clock v1\.3\.0/.test(newer || '') && /reads schema 1/.test(newer || '') && /update the app/.test(newer || ''), 'a newer schema names the version that made it and the fix', newer);
   ok(/not one this editor wrote/.test(mk().applyDesignDoc({ format: 'wckit' }) || ''), 'a foreign document is refused');
+  const later = mk().applyDesignDoc(Object.assign({}, back, { appVersion: 'v1.10.0' }));
+  ok(/clock v1\.10\.0, newer than this editor \(v1\.2\.2\)/.test(later || ''), 'a design from a newer clock is refused by version, so no field it added is dropped on save', later);
+  ok(mk().applyDesignDoc(Object.assign({}, back, { appVersion: 'v1.2.1' })) === null, 'while one from an older clock opens');
+  window.__ORB_APP = { slug: 'clock', version: 'dev' };
+  ok(mk().applyDesignDoc(Object.assign({}, back, { appVersion: 'v9.0.0' })) === null, 'an unpackaged (dev) editor opens anything');
+  window.__ORB_APP = { slug: 'clock', version: 'v1.2.2' };
   ok(/no watch/.test(mk().applyDesignDoc(Object.assign({}, back, { dial: 'nope' })) || ''), 'a design naming no preset this editor has is refused');
 
   // the serial folds the design: same dial, different design, a different theme to the card
@@ -55,11 +61,9 @@ const mk = () => {
   const s2b = a.serialContent3(G, 'X', 1, 1, pol, Object.assign({}, opts, { design: new TextEncoder().encode('{"a":2}') }));
   ok(s0 !== s1 && s1 !== s2 && s2 === s2b, 'the content serial moves with the design and only with it', [s0, s1, s2].join(','));
 
-  // the Render step's choice
-  const c = mk(); let rv = c.renderVals();
-  ok(rv.designShipOpts.map((o) => o.label).join() === 'With art,Without art,Don’t keep' && rv.designShipOpts[0].cls === 'on', 'Render offers with art (the default), without, or none');
-  rv.designShipOpts[2].pick();
-  ok(c.state.designShip === 'none' && c.renderVals().designShipOpts[2].cls === 'on', 'and remembers the pick');
+  // the Render step: no choice to make, every theme carries its whole design
+  const c = mk(); const rv = c.renderVals();
+  ok(!('designShipOpts' in rv) && typeof rv.exportDesign === 'function', 'the design always rides, with its art: there is nothing to choose');
 
   // the Edit door: ?theme= through the hub, card by default, the shelf on request
   const seen = [];

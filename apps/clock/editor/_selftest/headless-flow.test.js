@@ -95,9 +95,9 @@ const stepOf = (it) => it.stepNow()[0];
   ok(stepOf(it) === 'render' && v7.isExport, 'Render shows the export');
   ok(/Fits the orb/.test(v7.badgeText) && /live rows/.test(v7.badgeNote), 'the badge says whether it fits, with the pace and the rows', v7.badgeText + ' · ' + v7.badgeNote);
   ok(/^Fits/.test(v7.fitShort) && v7.fitDot === '#3fb950', 'the top bar carries the same verdict in two words', v7.fitShort);
-  ok(!v7.moreExportOpen && /More export options/.test(v7.moreExportLabel), 'the other exports wait under More export options');
-  v7.toggleMoreExport();
-  ok(V().moreExportOpen, 'and open on a press');
+  // D43 P7: two files and nothing else, the baked theme and the design it carries
+  ok(typeof v7.exportTheme === 'function' && typeof v7.exportDesign === 'function' && /\.orbdesign/.test(v7.designFileNote)
+    && !['exportKit', 'exportFrames', 'exportBundle', 'designId', 'toggleMoreExport', 'designShipOpts'].some((k) => k in v7), 'Render offers the .orbtheme and the design file, and nothing else', v7.designFileNote);
   ok(!V().diagOpen && /Diagnostics/.test(V().diagLabel), 'the diagnostics drawer is closed by default');
   V().toggleDiag();
   ok(V().diagOpen, 'and opens on a press');
@@ -162,6 +162,9 @@ const stepOf = (it) => it.stepNow()[0];
 
   // every binding the pre-P5 template used is still bound (two renamed on purpose)
   const PRE = 'addOpts artNote bundleNote calDown calMax calMin calStep calText calUp calVal caseOpts clearLabel clearOp clearSel compRows copyId cursor dateKitNote designId dials dupCancel dupNm dupNote dupOpen dupReplace dupStem dupStop exportBundle exportFrames exportKit exportTheme fields frameLabel glassOpts handOpts handRows hasSelHead hasTabReset hasZoom idInput isCase isCompare isComps isDial isExport isHands isHub isMove kitNote loadBundle loadDesign mainRef mech metaLabel next noSel onDown onIdInput onMove onUp paneRef pickGuide playLabel prev renderOpts resetCal resetDesign resetHands rulerPx rulerTicks seamText selTitle selectAll sendNote sendToOrb setCal setWipe showRuler slowLabel solve stackCap stackCapFg stackRows stackWarns stageCv stageDown stageFlow stageRing stageRing2 stageRound stageWin status tabReset tabResetLabel tabs themeNameIn themeNameLen themeNamePh themeNameVal themeNote timeOpts toggle toggleMech toggleSlow trainOpts viewOpts viewText wipeVal zipNote zoomOpts'.split(' ');
+  // D43 P7 retired the layer kit, the flattened frames, the .wckit and the Design ID: the
+  // .orbtheme and the design file it carries are the only two files the editor writes
+  const RETIRED = new Set(['bundleNote', 'copyId', 'dateKitNote', 'designId', 'exportBundle', 'exportFrames', 'exportKit', 'idInput', 'kitNote', 'loadBundle', 'loadDesign', 'onIdInput', 'selectAll', 'zipNote']);
   const RENAMED = { tabs: 'stepOpts', isDial: 'isStart',
     // P5b (§4.2): the layers panel arranges and the inspector removes, so the old
     // complication list (and its hidden add row) went; the stage box became the pane
@@ -171,7 +174,7 @@ const stepOf = (it) => it.stepNow()[0];
   const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
   const tpl = html.slice(html.indexOf('<x-dc>'), html.indexOf('</x-dc>'));
   const bound = new Set((tpl.match(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)/g) || []).map((m) => m.replace(/\{\{\s*/, '')));
-  const lost = PRE.filter((k) => !bound.has(RENAMED[k] || k));
+  const lost = PRE.filter((k) => !RETIRED.has(k) && !bound.has(RENAMED[k] || k));
   ok(lost.length === 0, 'every binding of the pre-P5 template is still in the page', lost.join(','));
   const v = it.renderVals();
   const unbound = [...bound].filter((k) => !['a', 'c', 'd', 'f', 'g', 'h', 'o', 'r', 't', 'w', 'true', 'false'].includes(k) && v[k] === undefined);

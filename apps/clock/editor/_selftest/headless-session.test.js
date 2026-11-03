@@ -28,7 +28,7 @@ global.clearTimeout = () => {};
 const flush = () => { while (timers.length) timers.shift()(); };
 const comps = (it) => JSON.stringify(it.design().comps);
 
-{
+(async () => {
   window.localStorage.removeItem('wc.session.clock');
   const it = mk();
   it.trackHistory();                      // the baseline
@@ -88,36 +88,28 @@ const comps = (it) => JSON.stringify(it.design().comps);
   it3.undo();
   ok(it3.design().comps.find((c) => c.id === sid).size === 30, 'and Ctrl+Z brings the edited watch back');
 
-  // My designs: save, list, export/import, open, delete
+  // My designs: save, list, open, delete (named design documents in this browser; a design
+  // file is what carries one elsewhere)
   window.localStorage.removeItem('wc.mine.clock');
   const it4 = mk(); it4.trackHistory(); it4.setComp(sid, { size: 77 });
-  it4.saveMine('Big sub');
+  await it4.saveMine('Big sub');
   const l = it4.mineList();
-  ok(l.length === 1 && l[0].name === 'Big sub' && /^WCD5-/.test(l[0].id) && l[0].dial === 'modern', 'Save current keeps a named Design ID', JSON.stringify(l[0] && l[0].name));
-  it4.saveMine('Big sub');
+  ok(l.length === 1 && l[0].name === 'Big sub' && l[0].doc && l[0].doc.format === 'wc-design' && l[0].doc.art === false && l[0].dial === 'modern', 'Save current keeps a named design document, without the image bytes', JSON.stringify(l[0] && [l[0].name, l[0].doc && l[0].doc.format]));
+  await it4.saveMine('Big sub');
   ok(it4.mineList().length === 1, 'saving under the same name replaces it');
-  let blob = null; global.URL = { createObjectURL: (b) => { blob = b; return 'blob:x'; }, revokeObjectURL() {} }; global.Blob = function (parts) { this.text = parts.join(''); };
-  const doc = global.document; const clicks = []; doc.createElement = ((orig) => (t) => { const el = orig ? orig.call(doc, t) : {}; if (t === 'a') { el.click = () => clicks.push(el.download); el.remove = () => {}; } return el; })(doc.createElement);
-  doc.body = doc.body || {}; doc.body.appendChild = doc.body.appendChild || (() => {});
-  it4.exportMine();
-  ok(clicks[0] === 'clock-designs.json' && blob && JSON.parse(blob.text).designs.length === 1, 'Export all downloads one JSON file', clicks.join());
-  const text = blob.text;
-  window.localStorage.removeItem('wc.mine.clock');
-  const it5 = mk(); it5.importMine(text);
-  ok(it5.mineList().length === 1 && it5.mineList()[0].name === 'Big sub', 'Import brings them into another browser', it5.state.status);
-  it5.importMine(text);
-  ok(it5.mineList().length === 1 && /already here/.test(it5.state.status), 'and does not duplicate what is there');
-  it5.importMine('{"format":"nope"}');
-  ok(/not a My designs export/.test(it5.state.status), 'a foreign file is refused by name');
+  window.localStorage.setItem('wc.mine.clock', JSON.stringify(it4.mineList().concat([{ name: 'Old', id: 'WCD5-abc', dial: 'modern' }])));
+  it4._mine = null;
+  ok(it4.mineList().length === 1, 'an entry from before (a Design ID, no document) is not listed: no legacy reader');
+  const it5 = mk(); it5.buildMovement = () => {};
   const rv = it5.renderVals();
-  ok(rv.mine.length === 1 && !rv.mineEmpty, 'the Start sheet lists them');
+  ok(rv.mine.length === 1 && !rv.mineEmpty && typeof rv.openFile === 'function' && !('exportMine' in rv) && !('importMine' in rv), 'the Start sheet lists them beside Open a file, with no list export of its own');
   rv.mine[0].load();
-  ok(it5.state.dial === 'modern' && it5.design().comps.find((c) => c.id === sid).size === 77 && it5.state.themeName === 'Big sub', 'Open loads the watch and its name');
+  ok(it5.state.dial === 'modern' && it5.design().comps.find((c) => c.id === sid).size === 77 && it5.state.themeName === 'Big sub', 'Open loads the watch and its name', it5.state.status);
   it5.renderVals().mine[0].del();
   ok(it5.mineList().length === 1, 'Delete asks first');
   it5.renderVals().mine[0].del();
   ok(it5.mineList().length === 0 && it5.renderVals().mineEmpty, 'and removes it on the second press');
-}
+})().then(() => {
 
 // ?orb= names the orb; ?app= keys the browser storage
 {
@@ -134,3 +126,4 @@ const comps = (it) => JSON.stringify(it.design().comps);
     process.exit(fails ? 1 : 0);
   });
 }
+});

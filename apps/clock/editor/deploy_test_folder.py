@@ -73,27 +73,10 @@ def main():
     # Chrome on Windows takes forward slashes in a file: URL; a raw space does not
     # survive the address bar reliably, so encode it
     win = "file:///" + target.replace("/mnt/c/", "C:/").rstrip("/") + "/"
-    for rel in ["Watch Composer.dc.html", os.path.join(SELFTEST_DIR, "export-test.html")]:
+    for rel in ["Watch Composer.dc.html"]:
         print("  " + win + rel.replace(" ", "%20"))
-    print("\nselftest verdict: the page title must read PASS and the last report line")
-    print("must be 'RESULT: PASS'. Thirteen report lines are the evidence for the authoring")
-    print("features; a missing line means that block never ran, which is a fail, not a pass:")
-    print("  'custom art: backdrop in the plate pixels'               <- the plate slot")
-    print("  'dial surface art: N art px ... print still reads'       <- the dial face, under the print")
-    print("  'round aperture: r=N fills 0.785 ...'                    <- a circular window")
-    print("  'round window exports a kit: strip NxN ...'              <- the same window through exportKit: a circle names radii, not sides, and the text-kit crop has to size itself off them")
-    print("  'oval window: NxN aperture paints above its circle radius' <- an independent vertical radius reaches the disc clip AND the kit strip")
-    print("  'no case: the case layer paints 0 px ...'                <- the case-free style draws no metal; art stays put and the drawn pieces fit the opening")
-    print("  'hand casts stay pinned at opening N ...'                <- the projected hand shadows shrink with the hands, not off them")
-    print("  'motion round trip on Broad arrow stayed live ...'       <- 4/s -> sweep -> 4/s keeps the gear train beating")
-    print("  'seconds row: the seconds list reshapes that hand ...'   <- the seconds row offers the list that actually shapes it")
-    print("  'alignment reference: N of 53 grid points ...'           <- the guide is pinned to the watch, not the art")
-    print("  'zoom 1->2: ... facing turned the ink N -> N deg'        <- art zoom + hand facing")
-    print("  'sprite length + frames: ... red-minus-blue fell ...'   <- uploads normalise to the drawn hand's reach at 100%; the aperture frame is struck in the author's metal")
-    print("Run one block alone with ?ONLY=feat if the suite stops printing with no verdict:")
-    print("that is a CPU-bound block outrunning --virtual-time-budget, not necessarily a bug.")
-    print("localStorage is shared across every file:// page in Chrome, so assets uploaded")
-    print("from the repo copy appear here too.");
+    print("\nThe headless suites under _selftest/ run with node; bank3-drive.html and")
+    print("bake3-test.html bake through the real editor under --headless Chrome.")
 
 
 if __name__ == "__main__":

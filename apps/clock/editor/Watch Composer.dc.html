@@ -224,10 +224,9 @@ html,body{height:100%;overflow:hidden}
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
             <input type="text" value="{{ mineName }}" onChange="{{ onMineName }}" placeholder="{{ minePh }}" style="flex:1 1 180px;max-width:280px">
             <button class="ui-primary" onClick="{{ saveMine }}" title="Keep this watch, as it stands now, under that name in this browser">Save current</button>
-            <button class="ui-ghost" onClick="{{ exportMine }}" title="Every design below, as one .json file you can import in another browser">Export all</button>
-            <label class="ui-ghost wc-sm" style="cursor:pointer" title="Add the designs from an exported .json file">Import…<input type="file" accept=".json,application/json" onChange="{{ importMine }}" style="display:none"></label>
+            <label class="ui-ghost wc-sm" style="cursor:pointer" title="Open a theme (.orbtheme) or a design file (.orbdesign) in the editor">Open a file…<input type="file" accept=".orbtheme,.orbdesign" onChange="{{ openFile }}" style="display:none"></label>
           </div>
-          <sc-if value="{{ mineEmpty }}" hint-placeholder-val="{{ false }}"><div class="ui-mut" style="font-size:12px">Nothing saved yet. Your work also saves itself as you go and comes back when you reopen the editor; these are the versions you name.</div></sc-if>
+          <sc-if value="{{ mineEmpty }}" hint-placeholder-val="{{ false }}"><div class="ui-mut" style="font-size:12px">Nothing saved yet. Your work also saves itself as you go and comes back when you reopen the editor; these are the versions you name, kept in this browser. To take one elsewhere, download its design file on the Render step.</div></sc-if>
           <sc-for list="{{ mine }}" as="r" hint-placeholder-count="2">
             <div style="display:flex;gap:8px;align-items:center;padding:4px 0;border-top:1px solid var(--line)">
               <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">{{ r.name }}</b>
@@ -458,20 +457,9 @@ html,body{height:100%;overflow:hidden}
         <sc-if value="{{ isHub }}" hint-placeholder-val="{{ false }}">
           <button class="wc-big ui-primary" onClick="{{ sendToOrb }}" title="{{ sendTip }}"><b>Send to orb</b><span>{{ sendNote }}</span></button>
         </sc-if>
-        <button class="wc-big" onClick="{{ exportTheme }}" title="The same .orbtheme Send to orb bakes, downloaded. Import it on any orb's Themes tab."><b>Download .orbtheme</b><span>{{ themeNote }}</span></button>
-        <div class="wc-row wide"><label title="So the theme can be opened again from the card or the hub with Edit">Keep the design</label><div class="ui-chips"><sc-for list="{{ designShipOpts }}" as="o" hint-placeholder-count="3"><button onClick="{{ o.pick }}" title="{{ o.tip }}" style="background:{{ o.bg }};border-color:{{ o.bd }};color:{{ o.fg }}">{{ o.label }}</button></sc-for></div></div>
-        <button class="ui-ghost wc-sm" onClick="{{ toggleMoreExport }}" style="align-self:flex-start">{{ moreExportLabel }}</button>
-        <sc-if value="{{ moreExportOpen }}" hint-placeholder-val="{{ false }}">
-          <button class="wc-big" onClick="{{ exportKit }}" title="A .zip of the layers: base frames, static layers as transparent PNGs, carriage frames, complication sprites and hand sprites with pivots, plus manifest.json with draw order and positions"><b>Layer kit</b><span>{{ kitNote }}</span></button>
-          <button class="wc-big" onClick="{{ exportFrames }}" title="The looping frames, flattened, with a preview posed at 10:09:36"><b>Flattened frames</b><span>{{ zipNote }}</span></button>
-          <div class="wc-hint ui-mono" style="font-size:11px;color:var(--warn)">{{ dateKitNote }}</div>
-          <button class="wc-big" onClick="{{ exportBundle }}" title="One JSON file: the design, the movement and case settings, and every uploaded asset inside it. This is what carries your art to another browser."><b>Design file (.wckit)</b><span>{{ bundleNote }}</span></button>
-          <div class="wc-hint ui-mono" style="font-size:11px;color:var(--warn)">{{ artNote }}</div>
-          <div class="wc-sec">Design ID</div>
-          <div style="display:flex;gap:6px"><input type="text" readonly value="{{ designId }}" onFocus="{{ selectAll }}" style="font-family:var(--mono)"><button onClick="{{ copyId }}">Copy</button></div>
-          <div style="display:flex;gap:6px"><input type="text" value="{{ idInput }}" onChange="{{ onIdInput }}" placeholder="Paste a design ID…" title="A design ID carries a reference to your art, never the bytes: the art arrives only if this browser still holds it" style="font-family:var(--mono)"><button onClick="{{ loadDesign }}">Load</button></div>
-          <div class="wc-row" style="grid-template-columns:96px minmax(0,1fr)"><label>Open a .wckit</label><input type="file" accept=".wckit,application/json" onChange="{{ loadBundle }}"></div>
-        </sc-if>
+        <button class="wc-big" onClick="{{ exportTheme }}" title="The same .orbtheme Send to orb bakes, downloaded: the baked dial, ready for any orb's Themes tab, with its design inside so the editor can open it again."><b>Download .orbtheme</b><span>{{ themeNote }}</span></button>
+        <button class="wc-big" onClick="{{ exportDesign }}" title="The watch as the editor holds it: every part, the light, case and movement, the sounds and every image you uploaded. The same design every .orbtheme carries, without the baked dial. Open it here in any browser."><b>Download design file</b><span>{{ designFileNote }}</span></button>
+        <div class="wc-hint ui-mono" style="font-size:11px;color:var(--warn)">{{ artNote }}</div>
       </sc-if>
     </div>
     <sc-if value="{{ hasDel }}" hint-placeholder-val="{{ false }}">
@@ -500,7 +488,7 @@ html,body{height:100%;overflow:hidden}
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1, shRelief: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', idInput: '', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, moreExport: false, more: {} };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {} };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
@@ -1227,7 +1215,7 @@ class Component extends DCLogic {
     this.restoreSnap(next, 'Redone');
   }
   // what autosave and My designs keep: the snapshot, less the uploaded sounds' bytes (art and
-  // sound bytes have their own store and the .wckit; a design keeps references, as a Design ID does)
+  // sound bytes have their own store and travel in the design file and the theme; autosave keeps references)
   sessionBody(snap) {
     const sounds = {}; Object.keys(snap.sounds || {}).forEach((k) => { const d = snap.sounds[k]; sounds[k] = d ? Object.assign({}, d, { up: {} }) : d; });
     return Object.assign({ v: 1, at: Date.now() }, snap, { sounds });
@@ -1253,71 +1241,27 @@ class Component extends DCLogic {
     this.setState(Object.assign(snap, { status: 'Picked up where you left off (saved ' + when.toLocaleString() + '). Reset everything starts that watch over; Ctrl+Z steps back.' }));
     return true;
   }
-  /* My designs: named Design IDs in this browser, exported and imported as one JSON file. A
-   * Design ID is the whole watch by reference (art stays in the asset store and the .wckit). */
+  /* My designs: named design documents in this browser (designDoc without the art's bytes: the
+   * images stay in this browser's asset store). To move one, download its design file. */
   // read once and kept (the Start sheet renders every frame); every write goes through mineWrite
   _mine = null;
   mineList() {
     if (this._mine) return this._mine.slice();
     let l = []; try { l = JSON.parse(window.localStorage.getItem(this.mineKey()) || '[]'); } catch (e) { l = []; }
-    this._mine = Array.isArray(l) ? l.filter((x) => x && x.id && x.name) : [];
+    this._mine = Array.isArray(l) ? l.filter((x) => x && x.name && x.doc) : [];
     return this._mine.slice();
   }
   mineWrite(l) { try { window.localStorage.setItem(this.mineKey(), JSON.stringify(l)); this._mine = l.slice(); return true; } catch (e) { this.setState({ status: 'Not saved: this browser refused to store it (' + (e && e.name || 'storage') + ')' }); return false; } }
-  saveMine(name) {
+  async saveMine(name) {
     const nm = String(name || '').trim() || this.state.themeName || this.preset().name;
     const l = this.mineList().filter((x) => x.name !== nm);
-    l.unshift({ name: nm, id: this.designId(), dial: this.state.dial, at: Date.now() });
+    l.unshift({ name: nm, doc: Object.assign(await this.designDoc(false), { themeName: nm }), dial: this.state.dial, at: Date.now() });
     if (this.mineWrite(l)) this.setState({ mineName: '', status: 'Saved \u201c' + nm + '\u201d to My designs' });
   }
   delMine(nm) { const l = this.mineList(); if (this.mineWrite(l.filter((x) => x.name !== nm))) this.setState({ status: 'Removed \u201c' + nm + '\u201d from My designs' }); }
-  exportMine() {
-    const body = JSON.stringify({ format: 'wc-designs', version: 1, app: this.appSlug(), designs: this.mineList() }, null, 1);
-    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([body], { type: 'application/json' })); a.download = this.appSlug() + '-designs.json';
-    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  }
-  importMine(text) {
-    let j = null; try { j = JSON.parse(text); } catch (e) { j = null; }
-    const inc = j && j.format === 'wc-designs' && Array.isArray(j.designs) ? j.designs.filter((x) => x && typeof x.name === 'string' && /^WCD5-/.test(String(x.id))) : null;
-    if (!inc) { this.setState({ status: 'That file is not a My designs export' }); return; }
-    const l = this.mineList(), have = {}; l.forEach((x) => { have[x.name + '\u0000' + x.id] = 1; });
-    let n = 0; inc.forEach((x) => { if (have[x.name + '\u0000' + x.id]) return; let nm = x.name; while (l.some((y) => y.name === nm)) nm += ' (imported)'; l.push({ name: nm, id: x.id, dial: x.dial, at: +x.at || Date.now() }); n++; });
-    if (this.mineWrite(l)) this.setState({ status: n ? 'Imported ' + n + ' design' + (n > 1 ? 's' : '') + ' into My designs' : 'Every design in that file is already here' });
-  }
-  designId() {
-    const c = this.cfg(), s = this.state, E = window.WatchEngine, P = this.ready ? this.preset() : null;
-    if (this.ready && this.train().by) c.trainAngle = 0;
-    const seeds = this.RND.map((k) => (c[k] === 'random' ? s.seeds[k] : 0));
-    const hands = P && s.hands === P.hands ? 'auto' : s.hands, hfin = P && s.handFinish === P.handFinish ? 'auto' : s.handFinish;
-    const metal = this.ready && s.caseMetal !== 'auto' && s.caseMetal === E.caseMetalOf({ ...this.opts(), caseMetal: 'auto' }) ? 'auto' : s.caseMetal;
-    // The case opening joins the ID vector only when it is the one thing the author
-    // set by hand. Under "no case" the opening radius IS the design, so two watches
-    // with different ones must not collide; under every other style the value is
-    // derived from the style, and appending it unconditionally would renumber every
-    // Design ID ever shared for a parameter nobody changed.
-    const copen = this.ready && s.caseStyle === 'none' && E.caseOpenR ? E.caseOpenR({ caseStyle: 'none', caseOpen: s.caseOpen }) : null;
-    const v = [this.KEYS.map((k) => c[k]), seeds, s.dial, hands, hfin, this.ready ? this.design() : null, s.caseStyle, metal, s.glassStyle, s.train, ...(copen != null ? [copen] : [])];
-    return 'WCD5-' + btoa(unescape(encodeURIComponent(JSON.stringify(v)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  }
-  loadId(str) {
-    try {
-      const m = String(str).trim().match(/^WCD5-([A-Za-z0-9_-]+)$/); if (!m) throw 0;
-      let b = m[1].replace(/-/g, '+').replace(/_/g, '/'); while (b.length % 4) b += '=';
-      const [vals, seeds, dial, hands, handFinish, design, caseStyle, caseMetal, glassStyle, train, caseOpen] = JSON.parse(decodeURIComponent(escape(atob(b))));
-      const cfg = {}; this.KEYS.forEach((k, i) => { if (vals[i] !== undefined) cfg[k] = vals[i]; });
-      const sd = {}; this.RND.forEach((k, i) => (sd[k] = seeds[i]));
-      // A bare Design ID carries references, not bytes. Say up front which art this
-      // browser cannot draw, so an author never mistakes a missing sprite for a bug
-      // in the bake -- the .wckit is the only thing that transports the art itself.
-      const refs = design ? this.artRefs(WatchEngine.canonDesign(JSON.parse(JSON.stringify(design)))) : [];
-      const miss = refs.filter((r) => !WatchEngine.assetKnown(r.id));
-      this.setState((st) => ({ cfg, seeds: sd, dial, hands, handFinish, designs: design ? { ...st.designs, [dial]: design } : st.designs, caseStyle, caseMetal, glassStyle, train: train || 'classic', caseOpen: +caseOpen > 0 ? +caseOpen : st.caseOpen, sel: null, selKind: null, idInput: '',
-        status: miss.length ? 'Loaded design — ' + miss.length + ' of ' + refs.length + ' art asset' + (refs.length > 1 ? 's' : '') + ' missing from this browser (' + miss.map((m) => m.usedBy).join(', ') + '). Load the .wckit bundle to get them back.' : 'Loaded design' }));
-    } catch (e) { this.setState({ status: 'That design ID could not be read' }); }
-  }
   /* ------------------------------ uploaded art ------------------------------------
    * The bytes live in the engine registry; a design carries only REFERENCES to them, so
-   * a Design ID stays short and shareable and the .wckit bundle is what carries art
+   * autosave and My designs stay small, and the design file and the theme carry the art
    * between browsers. localStorage can throw -- file://, private mode, quota -- so every
    * touch is guarded, and the readout says whether art really persisted rather than
    * claiming a save that never happened. */
@@ -1348,7 +1292,7 @@ class Component extends DCLogic {
     const held = ids.length - missing.length;
     const base = held + '/' + ids.length + ' art ' + (ids.length === 1 ? 'asset' : 'assets') + ' held (' + kb + ' KB' + (this.artSaved === false ? ', this session only — storage is blocked' : this.artSaved ? ', saved in this browser' : '') + ')';
     if (!missing.length) return base;
-    return base + ' · MISSING ' + missing.map((m) => m.usedBy + ' (' + m.id + ')').join(', ') + ' — the .wckit bundle carries them; a bare Design ID does not';
+    return base + ' · MISSING ' + missing.map((m) => m.usedBy + ' (' + m.id + ')').join(', ') + ' — open the design file or the theme that carries them';
   }
   saveArt() {
     const E = window.WatchEngine;
@@ -1368,7 +1312,7 @@ class Component extends DCLogic {
       if (!raw) { this.artSaved = false; return; }
       const r = E.assetRestore(JSON.parse(raw)) || { added: 0, needBytes: 0 };
       this.artSaved = true;
-      if (r.needBytes) this.setState({ status: r.needBytes + ' referenced art asset(s) had no bytes stored — re-upload or load the .wckit' });
+      if (r.needBytes) this.setState({ status: r.needBytes + ' referenced art asset(s) had no bytes stored — re-upload them, or open the design file or theme that carries them' });
     } catch (e) { this.artSaved = false; /* no storage: art is session-only, artNote says so */ }
   }
   /* An upload decodes off the main thread, so the render that asked for it is already
@@ -2550,33 +2494,6 @@ class Component extends DCLogic {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   }
-  png(c, raw) {
-    const K = +this.cfg().wb;
-    if (!raw && K !== 6500) { const o = document.createElement('canvas'); o.width = c.width; o.height = c.height; o.getContext('2d').drawImage(c, 0, 0); c = WatchEngine.wb(o, K); }
-    return new Promise((r) => c.toBlob(async (b) => r(new Uint8Array(await b.arrayBuffer())), 'image/png')); }
-  zip(files) {
-    const T = new Uint32Array(256);
-    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; T[n] = c >>> 0; }
-    const crc = (u) => { let c = 0xffffffff; for (let i = 0; i < u.length; i++) c = T[(c ^ u[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
-    const parts = [], cen = []; let off = 0;
-    for (const f of files) {
-      if (!(f.data instanceof Uint8Array)) f.data = typeof f.data === 'string' ? new TextEncoder().encode(f.data) : new Uint8Array(f.data);
-      const nm = new TextEncoder().encode(f.name), cr = crc(f.data), sz = f.data.length;
-      const h = new DataView(new ArrayBuffer(30));
-      h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint32(14, cr, true);
-      h.setUint32(18, sz, true); h.setUint32(22, sz, true); h.setUint16(26, nm.length, true);
-      parts.push(new Uint8Array(h.buffer), nm, f.data);
-      const c = new DataView(new ArrayBuffer(46));
-      c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint32(16, cr, true);
-      c.setUint32(20, sz, true); c.setUint32(24, sz, true); c.setUint16(28, nm.length, true); c.setUint32(42, off, true);
-      cen.push(new Uint8Array(c.buffer), nm);
-      off += 30 + nm.length + sz;
-    }
-    const cs = cen.reduce((s, u) => s + u.length, 0), e = new DataView(new ArrayBuffer(22));
-    e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true);
-    e.setUint32(12, cs, true); e.setUint32(16, off, true);
-    return new Blob([...parts, ...cen, new Uint8Array(e.buffer)], { type: 'application/zip' });
-  }
   busy() { if (!this.gt.length || this.rendering) { this.setState({ status: 'Still rendering — try again in a moment' }); return true; } return false; }
   frameCanvas(f, hidden, date, compOnly, noHands, noSh) { const c = document.createElement('canvas'); c.width = c.height = 466; WatchEngine.compose(c.getContext('2d'), this.base, this.gt[f], this.face(), date || this.now(), hidden, compOnly, noHands, noSh); return c; }
   // The kit zip's preview.png is the theme's ID photo, so it never inherits the transport:
@@ -2652,13 +2569,13 @@ class Component extends DCLogic {
    * warn about missing art. `placed` records how the design used it, so the zip can be
    * re-baked or audited without the composer; sha256 is the browser's own digest when it
    * has one, and the recorded reason when it does not (file:// has no SubtleCrypto). */
-  async kitAssets(files, D) {
+  async kitAssets(D) {
     const E = window.WatchEngine, by = {};
     this.artRefs(D).forEach((r) => { (by[r.id] = by[r.id] || []).push(r.usedBy); });
     const out = [];
     for (const id of Object.keys(by)) {
       const a = E.assetGet(id);
-      if (!a) { out.push({ id, usedBy: by[id], missing: true, note: 'no bytes in the authoring browser; load the .wckit bundle that carries them' }); continue; }
+      if (!a) { out.push({ id, usedBy: by[id], missing: true, note: 'no bytes in this browser; open the design file or theme that carries them' }); continue; }
       // an asset can fill both backdrop slots at once; price it in each and report the
       // worst verdict, so sharing one image between plate and dial cannot hide an upscale
       const cands = [];
@@ -2672,191 +2589,10 @@ class Component extends DCLogic {
         sha32: a.sha, naturalSize: [a.w, a.h], drawnSize: [Math.round(box[0]), Math.round(box[1])], placed: true, bytes: Math.round(a.dataUrl.length * 3 / 4),
         resampled: fit.vector ? 'vector: rasterized at draw size' : (fit.upscale ? 'UPSAMPLED — see warning' : 'downsampled or 1:1'),
         ...(fit.ok ? {} : { warning: fit.why }) };
-      // the zip carries the bytes as a file; the bundle carries them inline
-      if (files) { rec.file = 'sources/' + id.replace(/[^\w.-]+/g, '-') + '.' + (a.kind === 'svg' ? 'svg' : 'png'); files.push({ name: rec.file, data: new TextEncoder().encode(a.dataUrl) }); }
-      else rec.dataUrl = a.dataUrl;
+      rec.dataUrl = a.dataUrl;   // the design carries the bytes inline
       out.push(rec);
     }
     return out;
-  }
-  async exportKit(asTheme) {
-    if (this.busy()) return;
-    const fc = this.face(), F = this.F, B = this.B, pad = (n) => String(n).padStart(2, '0'), files = [], slug = this.state.dial, s0 = this.state;
-    this.setState({ status: 'Packing layer kit…' });
-    const baseOnly = { complications: 1, dial: 1, subdials: 1, hands: 1, glass: 1, outer: 1 };
-    for (let f = 0; f < B; f++) {
-      const c = document.createElement('canvas'); c.width = c.height = 466;
-      const g = this.gt[f], noCage = g && g.cage ? Object.assign(document.createElement('canvas'), { width: 466, height: 466 }) : g;
-      if (g && g.cage) noCage.getContext('2d').drawImage(g, 0, 0);
-      WatchEngine.compose(c.getContext('2d'), this.base, noCage, this.face(), this.now(), baseOnly);
-      files.push({ name: 'base/frame_' + pad(f + 1) + '.png', data: await this.png(c) });
-    }
-    // Under "no case" the drawn content ships eased in by the opening (dynScale) and the
-    // author's art ships exactly as authored: the dial layer is already final (its art was
-    // merged untransformed at bake time), so only the plate-frame pass and the procedural
-    // layers take the dynamic scale -- and the dial.png bake must not rescale it again.
-    const K = (fc.inset || 1) * (fc.dynK || 1), M = (v) => 233 + (v - 233) * K;
-    const bake = (c, s) => { const q = s == null ? K : s; if (q === 1) return c; const o = document.createElement('canvas'); o.width = o.height = 466; const x = o.getContext('2d'); x.translate(233, 233); x.scale(q, q); x.translate(-233, -233); x.drawImage(c, 0, 0); return o; };
-    // custom-format windows are assembled on device from a text kit, so the static dial/subdial layers are built without their holes.
-    // The day-of-month field is NOT filtered out even though it now assembles the same way: its aperture is sealed (layout's hole.seal),
-    // so the shipped dial carries no hole there already, and dropping the comp would also stop printMain avoiding numerals under it.
-    const D0 = this.design(), hasCustom = D0.comps.some((c) => c.type === 'window' && c.shows === 'custom'), hd0 = this.handDef(this.state.dial);
-    const lf = hasCustom ? WatchEngine.face({ ...this.opts(), design: { ...D0, comps: D0.comps.filter((c) => !(c.type === 'window' && c.shows === 'custom')) }, hands: hd0.style, handFinish: hd0.finish }) : fc;
-    // layers/dial.png is the baked static layer the device paints over the bank: ship it
-    // SEALED, with the date/moon apertures left solid. The complication value is a separate
-    // per-day sprite composited on top at frame build (updates once a day, jitter accepted),
-    // so the geartrain under an aperture is never DMA'd -- and prep_watch_kit's fold and
-    // bake_clock.py's --bg-occlude (opaque static1) already cull those rows. A holed dial
-    // here would make the bank push a train the sealed disc plainly hides.
-    files.push({ name: 'layers/dial.png', data: await this.png(bake(lf.dialSealed, fc.inset || 1)) });
-    files.push({ name: 'layers/glass.png', data: await this.png(bake(fc.glass)) });
-    files.push({ name: 'layers/outer.png', data: await this.png(fc.outer) });
-    const subFiles = [];
-    // A transparent subdial has no plate to ship: an empty canvas written out would be
-    // a fully transparent PNG the device blends for nothing every tick, and prep would
-    // count it as a live static2 layer. Drop the file AND its drawOrder entry, which is
-    // the same "no subdial in this kit" shape prep already handles (show2 = false).
-    const realSubs = lf.subLayers.filter((l) => !l.transparent);
-    const ghostSubs = {}; lf.subLayers.forEach((l) => { if (l.transparent) ghostSubs[l.id] = 1; });
-    for (const [i, l] of realSubs.entries()) { const name = 'layers/subdial_' + pad(i + 1) + '_' + l.id + '.png'; subFiles.push({ id: l.id, file: name }); files.push({ name, data: await this.png(bake(l.canvas)) }); }
-    let cage = null;
-    if (this.base.cageAt && this.base.cageFrame && this.gt[0] && this.gt[0].cage) {
-      /* The baker holds the carriage bank at CLK_TOURB_MAX = 16 frames, so a
-       * deeper one ships a zip prep_watch_kit.py cannot bake. budget()'s MAXBANK
-       * guard already keeps a carriage kit off any tier whose bank exceeds 16 --
-       * the only such tier is 12 fps (bank 24) -- so this catches a bank that
-       * outran the guard, and a half-written kit is worse than none. */
-      if (B > 16) { this.setState({ status: 'Carriage bank is ' + B + ' frames but the baker holds at 16 (CLK_TOURB_MAX). This tempo should have been skipped by the budget.' }); return; }
-      // put the staff axis on a texel centre: art centre at T + 0.5 in canvas space == pixel index T
-      const want = this.base.cageAt.map((v) => M(v)), T = want.map((v) => Math.round(v)), WB = +this.cfg().wb, bank = [];
-      for (let f = 0; f < B; f++) {
-        let c = this.base.cageFrame(f, { k: K, dx: T[0] + 0.5 - want[0], dy: T[1] + 0.5 - want[1] });
-        if (WB !== 6500) c = WatchEngine.wb(c, WB);
-        bank.push(c); files.push({ name: 'tourbillon/frame_' + pad(f + 1) + '.png', data: await this.png(c, true) });
-      }
-      const chk = this.kitCheck(bank, T);
-      files.push({ name: 'kit_check.txt', data: new TextEncoder().encode(chk.report) });
-      if (!chk.pass) this.setState({ status: 'Tourbillon geometry check FAILED — see kit_check.txt in the zip' });
-      cage = { files: 'tourbillon/frame_01…' + pad(B) + '.png', centre: T, pivot: T.slice(), size: chk.size, hubJewel: { bbox: chk.bbox, centroid: chk.centroid }, zeroRotationDeg: +(-(this.base.cageOff || 0) * 180 / Math.PI).toFixed(2), note: (this.base.orbital ? 'orbital carriage = seconds hand; ' : '') + 'full-size layers; rotate about centre by seconds/60 × 360° + zeroRotationDeg and draw over the base frame' };
-    }
-    const comps = [];
-    const textKits = [];
-    for (const kt of fc.textKits ? fc.textKits(K) : []) {
-      const dir = 'text/' + kt.id + '_' + kt.kind + '/', piece = async (nm, p) => { if (!p) return null; files.push({ name: dir + nm, data: await this.png(p.canvas) }); return { file: dir + nm, w: p.w, h: p.h }; };
-      const capL = await piece('cap_l.png', kt.capL), capR = await piece('cap_r.png', kt.capR), slice = await piece('slice.png', kt.slice), shade = await piece('shade.png', kt.shade), glyphs = {};
-      for (const g of kt.glyphs) { const nm = 'glyph_' + g.ch.codePointAt(0).toString(16).padStart(4, '0') + '.png'; files.push({ name: dir + nm, data: await this.png(g.canvas) }); glyphs[g.ch] = { file: dir + nm, w: g.w, h: g.h, advance: g.adv, offsetX: g.ox }; }
-      const shadeNote = shade ? ' Finally draw shade.png centred on the strip at x = (W − shade.w)/2, y = 0 (before the rotation): it is the window ring, its drop shadow and the aperture inner shade, which depend on where a pixel sits in the WINDOW and not on the string being drawn, so it must go on LAST — ink left on top of it reads brighter than the same watch in the dial preview.' : '';
-      textKits.push({ id: kt.id, kind: kt.kind, host: kt.host, centre: kt.centre, rotationDeg: kt.rotDeg, height: kt.height, opaque: kt.opaque, format: kt.format, case: kt.fcase,
-        capL, capR, slice, shade, padX: kt.padX, currentWidth: kt.fitWidth, widestRun: kt.widest, glyphs,
-        ...(kt.kind === 'date' ? { byDay: kt.byDate } : { byDate: kt.byDate }),
-        assemble: (kt.capL && kt.kind !== 'date'
-          ? 'text = byDate[YYYY-MM-DD] (or format it yourself). textW = Σ glyphs[ch].advance. W = capL.w + padX + textW + padX + capR.w; for a strip the dial was cut to fit, use currentWidth, which is never narrower than any string this format can render. Build an unrotated W×height strip: capL at x=0, repeat slice from capL.w to W−capR.w, capR at W−capR.w, then glyph tiles from x = (W − textW)/2, each advancing by its advance (tiles already include the background). Rotate the strip by rotationDeg and centre it on centre, over its host layer.'
-          : kt.kind === 'date'
-            ? 'Day of month, assembled from ten digit tiles: byDay[<day, 2 digits>] gives the string to draw (a bare 1…9 for the first nine days — no leading zero). Use W = currentWidth, the width the dial was cut for; it is the same box every day of the month. textW = Σ glyphs[ch].advance (at most widestRun). Build an unrotated W×height strip: capL at x=0, repeat slice from capL.w to W−capR.w, capR at W−capR.w, then the glyph tiles from x = (W − textW)/2, each advancing by its advance — the run is drawn last, over the plate, and may cross the cap zone because the tiles carry the disc behind their ink. Rotate the strip by rotationDeg and centre it on centre, over its host layer.'
-            : 'text = byDate[YYYY-MM-DD]. textW = Σ advance = widestRun at most (currentWidth). Pen starts at centre.x − textW/2; draw each glyph tile at pen − offsetX, vertically centred on centre.y (tiles are transparent and may overlap), pen += advance. Rotate the run by rotationDeg about centre.') + shadeNote });
-    }
-    for (const s0 of fc.compSprites()) {
-      let s = s0;
-      if (K !== 1) {
-        const full = document.createElement('canvas'); full.width = full.height = 466; full.getContext('2d').drawImage(s0.canvas, s0.x, s0.y);
-        const b = bake(full), x = Math.floor(M(s0.x)), y = Math.floor(M(s0.y)), w = Math.ceil(s0.w * K) + 2, hh = Math.ceil(s0.h * K) + 2, cc = document.createElement('canvas');
-        cc.width = w; cc.height = hh; cc.getContext('2d').drawImage(b, -x, -y); s = { ...s0, x, y, w, h: hh, canvas: cc };
-      }
-      const name = 'complications/' + s.id + '_' + s.type + '/' + s.value + '.png';
-      files.push({ name, data: await this.png(s.canvas) });
-      let e = comps.find((c) => c.id === s.id);
-      if (!e) comps.push((e = { id: s.id, type: s.type, host: s.host, x: s.x, y: s.y, w: s.w, h: s.h, ...(s.type === 'custom' || s.type === 'flare-date' ? { format: s.format, case: s.fcase, texts: s.texts, byDate: s.index } : {}), files: [] }));
-      e.files.push(name);
-    }
-    const hands = [];
-    // A calendar hand on the dial's centre is studio-only in this kit: prep_watch_kit.py and
-    // bake_clock.py accept hour/minute/second alone, so the firmware never sees them. Ship the angle each
-    // one needs anyway, in the same value x 360 form the hands layer note already uses, so
-    // wiring them up on the device is a loader change and not a reverse-engineering job.
-    const CAL_DRIVE = {
-      hours24: 'value = (H24 + min/60 + sec/3600) / 24 — one turn per 24 hours of local time, read against the 24-hour ring',
-      gmt: 'value = (((H24 + offset) mod 24) + min/60 + sec/3600) / 24 — a second hour hand on a whole-hour zone offset (the hand\'s own offset), read against the same 24-hour ring',
-      day: 'value = weekday / 7 — 0 = Sunday lands at 12 o\'clock, read against the day ring',
-      date: 'value = (dayOfMonth - 1) / 31 — 1 lands at 12 o\'clock, read against the date ring',
-    };
-    // The drive formula the kit ships has to agree with where the ring's labels were printed, so
-    // a ring that sets its labels between the division lines moves the hands reading it by half
-    // a division too.
-    const pg = WatchEngine.perimGeom ? WatchEngine.perimGeom(D0) : null;
-    const readsRing = (h) => !h.sub && pg && WatchEngine.HAND_RING[h.kind] === D0.perim;
-    const offTurn = pg ? pg.offTurn : 0;
-    const offWhy = pg ? [pg.between ? 'the labels print between the division lines (half a division)' : '', pg.rot ? 'the ring is turned ' + pg.rot.toFixed(2) + '° clockwise from 12 o\'clock' : ''].filter(Boolean).join(' and ') : '';
-    for (const [z, h] of fc.hands.entries()) {
-      const name = 'hands/' + pad(z + 1) + '_' + h.id + '.png';
-      let sp = h.sp.c;
-      if (K !== 1) { sp = document.createElement('canvas'); sp.width = Math.ceil(h.sp.c.width * K); sp.height = Math.ceil(h.sp.c.height * K); sp.getContext('2d').drawImage(h.sp.c, 0, 0, sp.width, sp.height); }
-      files.push({ name, data: await this.png(sp) });
-      /* A twin at zero alpha is not a transparent shadow, it is no shadow: write no
-       * file and ship no shadow record, so prep_watch_kit leaves the hand's shadow
-       * absent and the device builds no second object to blend each tick. The
-       * engine zeroes this alpha from the moving gate, so the kit a person opens in
-       * the bench pipeline matches the dial they see here. */
-      const sh = fc.handShadow(h), bl = sh.blur * K, pd = Math.ceil(bl * 1.5 + 2), mc = document.createElement('canvas'), sil = document.createElement('canvas');
-      let shadow = null;
-      if (sh.alpha > 0.01) {
-        sil.width = sp.width; sil.height = sp.height; const sx = sil.getContext('2d'); sx.drawImage(sp, 0, 0); sx.globalCompositeOperation = 'source-in'; sx.fillStyle = '#000'; sx.fillRect(0, 0, sp.width, sp.height);
-        mc.width = sp.width + 2 * pd; mc.height = sp.height + 2 * pd; const mx = mc.getContext('2d'); mx.globalAlpha = sh.alpha; if (bl > 0.1) mx.filter = 'blur(' + (bl / 2).toFixed(2) + 'px)'; mx.drawImage(sil, pd, pd);
-        const shName = 'hands/' + pad(z + 1) + '_' + h.id + '_shadow.png';
-        files.push({ name: shName, data: await this.png(mc, true) });
-        shadow = { file: shName, size: [mc.width, mc.height], pivot: [+(h.sp.px * K + pd).toFixed(2), +(h.sp.py * K + pd).toFixed(2)], offsetPx: [+(sh.dx * K).toFixed(2), +(sh.dy * K).toFixed(2)], directionDeg: fc.shadow.deg, distancePx: +(Math.hypot(sh.dx, sh.dy) * K).toFixed(2), blurPx: +bl.toFixed(2), opacity: +sh.alpha.toFixed(3), baked: 'blur + opacity baked into the mask' };
-      }
-      // mount names the arbour (prep and the baker read 'centre…' as the dial's own, and a
-      // sub-dial's id as its tag); id is the unique key, since a dial can carry any number of hands
-      hands.push({ shadow, z: z + 1, file: name, id: h.id, mount: h.sub ? h.host : 'centre', kind: h.kind, centre: [+M(h.x).toFixed(2), +M(h.y).toFixed(2)], zeroRotationDeg: WatchEngine.handZeroDeg ? WatchEngine.handZeroDeg(h) : +((h.rot * 180) / Math.PI).toFixed(2), pivot: [+(h.sp.px * K).toFixed(2), +(h.sp.py * K).toFixed(2)], size: [sp.width, sp.height], cap: h.cap ? +(h.cap * K).toFixed(1) : 0, tick: h.kind === 'second' ? this.cfg().tick : undefined, ...(CAL_DRIVE[h.kind] && !h.sub ? { drive: CAL_DRIVE[h.kind] + (offTurn && readsRing(h) ? ' — add ' + offTurn.toFixed(4) + ' for ' + offWhy : ''), deviceReady: false } : {}) });
-    }
-    const perimeter = !pg ? undefined : {
-      scale: D0.perim, splits: pg.spec.n, outerPx: +M(pg.out + 1.6).toFixed(2), innerPx: +M(pg.inr - 1.6).toFixed(2),
-      tickPx: [+M(pg.tick1).toFixed(2), +M(pg.tick0).toFixed(2)], labelPx: +M(pg.lab).toFixed(2), fontSizePx: +M(pg.fs).toFixed(2),
-      clockwise: true, index0Deg: pg ? pg.rot : 0, chapterScale: +pg.k.toFixed(3),
-      rotationDeg: +pg.rot.toFixed(2),
-      labelPlacement: pg.between ? 'between the division lines' : 'on the division lines',
-      labelOffsetDeg: pg.between ? +(360 / pg.spec.n / 2).toFixed(3) : 0,
-      orientation: D0.perimOrient === 'radial' ? 'radial (each label turned to face out)' : 'upright (every label bottom-aligned)',
-      typeface: WatchEngine.FONT_NAME(D0.perimFont) || WatchEngine.FONT_NAME(D0.font) || 'dial default',
-      fontSizeMm: +(WatchEngine.pxMm(pg.fs)).toFixed(3),
-      colour: D0.perimColor || (D0.numColor && D0.numColor !== 'auto' ? D0.numColor : 'dial ink'),
-      labels: Array.from({ length: pg.spec.n }, (_, i) => pg.spec.lab(i)),
-      emphasised: Array.from({ length: pg.spec.n }, (_, i) => i).filter((i) => pg.spec.maj(i)),
-      note: 'printed into layers/dial.png — nothing to draw at runtime; the scale runs clockwise and index 0 sits at index0Deg degrees clockwise from 12 o\'clock, which is what the drive formula on each calendar hand assumes',
-    };
-    const manifest = {
-      size: 466, fps: F, frames: B, secondHand: this.cfg().tick === 'sweep' ? 'sweep' : this.cfg().tick + ' ticks per second', innerScale: K, preset: this.preset().name, movement: s0.train, designId: this.designId(), layout: this.design(),
-      drawOrder: [
-        { layer: 'base', files: 'base/frame_01…' + pad(B) + '.png', note: 'static plate + geartrain, lit by the inner light, opaque, one ' + B + '-frame loop played at ' + F + ' fps (' + (B / F).toFixed(B % F ? 2 : 0) + ' s)' },
-        ...(cage ? [{ layer: 'tourbillon', ...cage }] : []),
-        { layer: 'complications', where: 'under dial', items: comps.filter((c) => this.compHost(fc, c) === 'dial' && c.type !== 'flare-date').map((c) => c.id) },
-        { layer: 'dial', file: 'layers/dial.png' },
-        ...(textKits.some((t) => this.compHost(fc, t) === 'dial') ? [{ layer: 'text', where: 'over dial', items: textKits.filter((t) => this.compHost(fc, t) === 'dial').map((t) => t.id), note: 'assemble from textKits' }] : []),
-        ...subFiles.flatMap((sf) => [{ layer: 'complications', where: 'under subdial ' + sf.id, items: comps.filter((c) => c.host === sf.id && c.type !== 'flare-date').map((c) => c.id) }, { layer: 'subdial', id: sf.id, file: sf.file },
-          ...(textKits.some((t) => t.host === sf.id) ? [{ layer: 'text', where: 'over subdial ' + sf.id, items: textKits.filter((t) => t.host === sf.id).map((t) => t.id), note: 'assemble from textKits' }] : [])]),
-        { layer: 'hands', note: 'draw in z order (1 = lowest); for each hand first draw its shadow mask rotated by the same angle about shadow.pivot, with the pivot placed at centre + shadow.offsetPx (offset stays fixed in screen space), then the hand sprite rotated about its pivot by value×360° + zeroRotationDeg with the pivot on centre; id is the unique key and mount the arbour (\'centre\' or a sub-dial id) — kind repeats whenever two hands show the same data, so never name a file by kind alone' },
-        { layer: 'glass', file: 'layers/glass.png' },
-        { layer: 'outer', file: 'layers/outer.png' },
-      ],
-      complications: comps.map((c) => ({ ...c, values: c.type === 'moon' ? '00…29 = moon age / 29.53 × 30' : c.type === 'custom' || c.type === 'flare-date' ? 'one PNG per distinct rendered string; look up today in byDate (YYYY-MM-DD → file stem), covers this year and next' : c.type })),
-      hands,
-      ...(perimeter ? { perimeter } : {}),
-      textKits,
-      handShadow: { directionDeg: fc.shadow.deg, followsLight: fc.shadow.auto, distance: fc.shadow.dist, softness: fc.shadow.blur, opacity: fc.shadow.op, moving: fc.shadow.mv, note: 'per-hand offsets grow with stack height; see hands[].shadow. opacity 0 or moving 0 ships no shadow file at all — moving is the runtime gate (the twin turns with the hand, so it costs a re-blit each tick), opacity is the art gate (the drop baked into the plate and the subdial relief, which costs nothing per tick)' },
-      assets: await this.kitAssets(files, D0),
-      backgroundArt: D0.bgArt ? { asset: D0.bgArt, fit: D0.bgFit || 'cover', offsetPx: [+D0.bgX || 0, +D0.bgY || 0], sizePx: D0.bgSize == null ? 442 : +D0.bgSize, rotDeg: Math.round(+D0.bgRot || 0), opacity: D0.bgOpacity == null ? 1 : +D0.bgOpacity, finishBlend: D0.bgFinishBlend || undefined, finishBlendColor: D0.bgFinishBlend ? (D0.bgFinishColor || (D0.bgFinishBlend === 'screen' ? '#fffaf0' : '#3a2a14')) : undefined, finishBlendKey: D0.bgFinishBlend && /^#[0-9a-f]{6}$/i.test(D0.bgFinishKey || '') ? D0.bgFinishKey : undefined, finishBlendKeyTolerance: D0.bgFinishBlend && /^#[0-9a-f]{6}$/i.test(D0.bgFinishKey || '') ? (D0.bgFinishKeyTol == null ? WatchEngine.KEY_TOL_DEF : +D0.bgFinishKeyTol) : undefined, bakedInto: 'base/frame_*.png (the plate slot, under the geartrain)', note: 'stored into the bank with the plate, so it costs nothing per tick; it is not a layer to draw' } : undefined,
-      // on the dial face, so it ships inside dial.png rather than as its own layer:
-      // print, numerals and markers were drawn over it, apertures cut through it
-      surfaceArt: D0.sfArt ? { asset: D0.sfArt, fit: D0.sfFit || 'cover', offsetPx: [+D0.sfX || 0, +D0.sfY || 0], sizePx: D0.sfSize == null ? 442 : +D0.sfSize, rotDeg: Math.round(+D0.sfRot || 0), opacity: D0.sfOpacity == null ? 1 : +D0.sfOpacity, finishBlend: D0.sfFinishBlend || undefined, finishBlendColor: D0.sfFinishBlend ? (D0.sfFinishColor || (D0.sfFinishBlend === 'screen' ? '#fffaf0' : '#3a2a14')) : undefined, finishBlendKey: D0.sfFinishBlend && /^#[0-9a-f]{6}$/i.test(D0.sfFinishKey || '') ? D0.sfFinishKey : undefined, finishBlendKeyTolerance: D0.sfFinishBlend && /^#[0-9a-f]{6}$/i.test(D0.sfFinishKey || '') ? (D0.sfFinishKeyTol == null ? WatchEngine.KEY_TOL_DEF : +D0.sfFinishKeyTol) : undefined, bakedInto: 'layers/dial.png (the dial face, under the chapter print)', note: 'the dial is already one blended layer per tick, so art inside it costs nothing; there is no separate art plane to composite' } : undefined,
-      transparentSubdials: Object.keys(ghostSubs),
-      whiteBalanceK: +this.cfg().wb, whiteBalanceNote: +this.cfg().wb === 6500 ? 'neutral' : 'baked into every colour PNG (not into shadow masks)',
-    };
-    files.push({ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) });
-    if (asTheme) return this.finishTheme(files, manifest, this.themeName());
-    files.push({ name: 'preview.png', data: await this.png(this.previewCanvas()) });
-    this.download(this.zip(files), 'watch-' + slug + '-kit.zip');
-    const artN = manifest.assets ? manifest.assets.length : 0;
-    this.setState({ status: 'Downloaded watch-' + slug + '-kit.zip (' + files.length + ' files' + (textKits.length ? ', ' + textKits.length + ' date-sprite kit' + (textKits.length > 1 ? 's' : '') : '') + (artN ? ', ' + artN + ' art source' + (artN > 1 ? 's' : '') + ' in sources/' : '') + (Object.keys(ghostSubs).length ? ', ' + Object.keys(ghostSubs).length + ' transparent sub-dial shipped as no layer' : '') + ', preview at 10:09)' });
   }
   /* FORMAT 2 made the name the whole identity the owner sees: the card prints it in the
    * theme picker and files the upload under sha256(name)[:12]. Until someone types over
@@ -2879,8 +2615,7 @@ class Component extends DCLogic {
    * (thinned to what the slot holds) for whole-panel motion, and an honest
    * refusal with the byte it tripped on when neither fits. The comp table
    * plans and renders first (compPass3), and its tiles bill against the bank
-   * inside the same policy. FORMAT 2's kit route is untouched beside this:
-   * exportKit(true) still answers the old loader. */
+   * inside the same policy. */
   /* One settle predicate, asked twice per bake: on press, and again right
    * before the motion walk with the comp/aux awaits behind it. buildMovement
    * sets gt.length to B the moment frame 0 lands and fills the rest across
@@ -2995,7 +2730,7 @@ class Component extends DCLogic {
   async _export3Body(opts) {
     opts = opts || {};
     const G = window.GorbBake;
-    if (!G || !G.bakeClock3) { this.setState({ status: 'The theme baker (orbtheme-baker.js) did not load — the layer kit is unaffected' }); return; }
+    if (!G || !G.bakeClock3) { this.setState({ status: 'The theme baker (orbtheme-baker.js) did not load — nothing can be baked or opened until it does' }); return; }
     const D = this.design();
     // §31's comp table: the baker's own plan says which comps become window rows
     // and which the element row cannot carry. The button note quotes this same
@@ -3145,7 +2880,7 @@ class Component extends DCLogic {
     return pxs;
   }
   /* The carriage bank in DEVICE space — the kit's transform, and the only version of
-   * these planes that may be priced or baked. exportKit draws every carriage frame
+   * these planes that may be priced or baked. carriagePlanes3 draws every carriage frame
    * through cageFrame(f, {k, dx, dy}): scaled by the opening (inset x dynK) about the
    * canvas centre, then nudged so the staff axis lands on a texel centre. gt[f].cage is
    * the raw ENGINE-space canvas — the carriage at full 466 scale. Shipping it against a
@@ -3532,7 +3267,7 @@ class Component extends DCLogic {
     const cpol = pol.carriage;
     if (cpol) {
       /* The planes come from carriagePlanes3 — the kit's own device-space draw, the
-       * same one exportKit writes tourbillon/frame_NN.png from. Until now this fed the
+       * one this bake prices and ships. Until now this fed the
        * bake gt[k].cage, the carriage at raw engine scale, against a plate that had
        * already been inset-scaled: the row drew 1/K oversized across the geartrain it
        * sits inside, and its box was priced off art nobody ships. The staff is the
@@ -3594,24 +3329,14 @@ class Component extends DCLogic {
     // above all — moves it, and the hub's ?precheck=1 leg answers the duplicate
     // question honestly BEFORE bytes cross the room. bakeClock3 is deterministic,
     // so an unchanged dial re-bakes to the same serial and stays a no-op on the card.
-    // D43 P7: the design rides in the file (unless the author keeps it out), with its art when it fits
-    const dmode = this.state.designShip || 'art', enc = (o) => new TextEncoder().encode(JSON.stringify(o));
-    let designNote = dmode === 'none' ? 'no design: this theme cannot be reopened' : '';
-    opts.design = dmode === 'none' ? null : enc(await this.designDoc(dmode === 'art'));
+    // D43 P7: every theme carries its whole design, art included, so it can always be opened again
+    opts.design = new TextEncoder().encode(JSON.stringify(await this.designDoc(true)));
     opts.serial = this.serialContent3(G, nm, B, fps, pol, opts);
-    this.setState({ status: 'Baking "' + nm + '" as a FORMAT 3 ' + pol.carrier + (pol.carriage ? ' with a ' + pol.carriage.keyframes + '-frame carriage bank @ ' + pol.carriage.fps + ' fps' : '') + (compRows.length ? ' with a ' + compRows.length + '-row comp table' : '') + (auxRows.length ? ' and ' + auxRows.length + ' pointer' + (auxRows.length > 1 ? 's' : '') : '') + '…' });
+    this.setState({ status: 'Baking "' + nm + '" as a FORMAT 3 ' + pol.carrier + (pol.carriage ? ' with a ' + pol.carriage.keyframes + '-frame carriage bank @ ' + pol.carriage.fps + ' fps' : '') + (compRows.length ? ' with a ' + compRows.length + '-row comp table' : '') + (auxRows.length ? ' and ' + auxRows.length + ' pointer' + (auxRows.length > 1 ? 's' : '') : '') + '\u2026' });
     try {
-      let r;
-      try { r = G.bakeClock3(opts); }
-      catch (e) {
-        // the dial and its art-laden design would pass the orb's upload cap: ship the design without the art
-        if (!(opts.design && dmode === 'art' && /more than the/.test(String(e && e.message)))) throw e;
-        opts.design = enc(await this.designDoc(false)); opts.serial = this.serialContent3(G, nm, B, fps, pol, opts);
-        designNote = 'design without its art: with it the file would pass what an orb accepts';
-        r = G.bakeClock3(opts);
-      }
-      if (opts.design && !designNote) designNote = 'design ' + Math.max(1, Math.round(opts.design.length / 1024)) + ' KB' + (dmode === 'art' ? '' : ', without art') + ': reopenable';
-      this._designNote = designNote;
+      // a dial whose design and art would pass what an orb accepts is refused by the writer, in its words
+      const r = G.bakeClock3(opts);
+      const designNote = 'design ' + Math.max(1, Math.round(opts.design.length / 1024)) + ' KB';
       /* The commit's price is a fact of the bytes, so it is asked of the bake, and the
        * policy is asked again with it: the same pure answer, now carrying est_fps and
        * the rung, so the sentence names the rate before the file leaves the room. */
@@ -4178,69 +3903,10 @@ class Component extends DCLogic {
     }
     return { rows: out, auxB: auxB };
   }
-  /* The device theme, baked here rather than on the bench. It starts from the exact PNG
-   * bytes the layer kit would have shipped (white balance included, shadows raw), so the
-   * only difference from what tools/bake_clock.py produces is what that script folds:
-   * the browser path runs no static fold and no occlusion cull, and says so in its note.
-   * A container is refused, not written, when the dial exceeds a device table or the
-   * name will not fit the header's one name field -- both are the baker's own checks,
-   * and the field above measures that limit in the same bytes the baker counts. */
-  async finishTheme(files, manifest, themeName) {
-    const G = window.GorbBake;
-    if (!G) { this.setState({ status: 'The theme baker (orbtheme-baker.js) did not load — the layer kit is unaffected' }); return; }
-    // FORMAT 2 made the name the whole identity: it travels inside the container, the
-    // device files the theme under sha256(name)[:12], and the upload filename carries
-    // nothing. So this is free text now — spaces, capitals, an em dash — and the one
-    // rule left is the field's own size, which the baker measures in UTF-8 bytes.
-    const nm = String(themeName || 'watch').replace(/\u0000/g, '').trim();
-    if (!G.nameOk(nm)) {
-      this.setState({ status: 'Not baked: "' + nm + '" is not a theme name — the header holds ' +
-        (G.NAME_MAX - 1) + ' bytes of it and this one measures ' + G.nameBytes(nm) +
-        (G.nameBytes(nm) === 0 ? ' (a theme needs a name the owner can read)' : ' (shorten it)') });
-      return;
-    }
-    this.setState({ status: 'Baking "' + nm + '"…' });
-    try {
-      const t0 = performance.now();
-      const planes = {};
-      // sources/ holds the art as data-URL text, not PNG bytes, and the kit's non-images are
-      // text: bakeKit only ever looks a plane up by the name the manifest uses.
-      for (const f of files) if (/[.]png$/i.test(f.name) && f.name.indexOf('sources/') !== 0) planes[f.name] = await G.decodePngAsync(f.data);
-      const r = G.bakeKit({ manifest, planes, name: nm, serial: G.crc32(new TextEncoder().encode(JSON.stringify(manifest))), bakedMs: Math.round(performance.now() - t0) });
-      // Name the download for the id the card will hold it under, so the file in the
-      // owner's Downloads folder and the file on the card are the same thing to look at.
-      // sha256 comes from the browser's own crypto (subtle is async, and the baker stays
-      // DOM-free and sync); a context without it — an old file:// open — keeps the old
-      // name and says so, because a wrong-looking filename beats a wrong filename.
-      const stem0 = await this.cardStemFor(G, nm);
-      const stem = (stem0 || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
-      this.download(new Blob([r.bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
-      const c = r.report.counts;
-      this.setState({ status: 'Downloaded ' + stem + '.orbtheme — "' + nm + '"' + (stem0 ? '' : ' (id unavailable here: upload it and the page will name it)') +
-        ' (' + (r.bytes.length / 1048576).toFixed(2) + ' MB · bank ' + c.rects + ' rects · ' + (c.tourbillon || 0) + ' carriage frames · ' + c.comps + ' complications · ' + c.aux + ' pointer' + (c.aux === 1 ? '' : 's') + ') · ' + r.report.notes.join(' · ') });
-    } catch (e) {
-      // The caps and the fold proof throw here: the device would silently drop or misdraw
-      // anything past them, so the bake stops instead of shipping a theme that lies.
-      this.setState({ status: 'Not baked: ' + (e && e.message ? e.message : String(e)) });
-    }
-  }
-  /* The bundle is the half a Design ID cannot carry: the bytes. Format is named and
-   * versioned because a design that silently loads against a different shape is worse
-   * than one that refuses -- the loader checks both before it touches state. */
-  async exportBundle() {
-    if (!this.ready) return;
-    const D = this.design();
-    const assets = await this.kitAssets(null, D);
-    const missing = assets.filter((a) => a.missing);
-    if (missing.length) { this.setState({ status: 'Not bundled: ' + missing.length + ' referenced asset(s) have no bytes in this browser — re-upload them or import the .wckit that has them' }); return; }
-    const body = { format: 'wckit', version: 1, size: 466, made: new Date().toISOString(), designId: this.designId(), dial: this.state.dial, design: D, assets, cfg: this.cfg(), caseStyle: this.state.caseStyle, caseMetal: this.state.caseMetal, glassStyle: this.state.glassStyle, train: this.state.train, hands: this.state.hands, handFinish: this.state.handFinish };
-    this.download(new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' }), 'watch-' + this.state.dial + '-' + (assets.length ? assets.length + 'art-' : 'noart-') + '.wckit');
-    this.setState({ status: 'Downloaded watch-' + this.state.dial + '.wckit (' + assets.length + ' art asset' + (assets.length === 1 ? '' : 's') + ', ' + Math.round(JSON.stringify(body).length / 1024) + ' KB)' });
-  }
   /* ------------------------------ the design in the theme (D43 P7, §8) ---------------
    * Every theme this editor bakes carries its design after the banks, so it can be opened
    * again from the card or the shelf. The document is the whole watch, as P6's snapshot and
-   * a .wckit hold it, stamped with the app and its version (the region build writes
+   * a design file hold it, stamped with the app and its version (the region build writes
    * window.__ORB_APP) and a schema this editor reads. Art rides along unless the author
    * leaves it out or the file would pass the orb's upload cap, when it goes without and
    * says so. The OS keeps the bytes and never reads them. */
@@ -4248,12 +3914,35 @@ class Component extends DCLogic {
   appVersion() { const a = typeof window !== 'undefined' && window.__ORB_APP; return (a && a.version) || 'dev'; }
   async designDoc(withArt) {
     const D = this.design(), s = this.state;
-    const assets = withArt ? (await this.kitAssets(null, D)).filter((a) => !a.missing) : [];
+    const assets = withArt ? (await this.kitAssets(D)).filter((a) => !a.missing) : [];
     const snd = this.sndDesign();
     return { format: 'wc-design', schema: this.DESIGN_SCHEMA, app: this.appSlug(), appVersion: this.appVersion(), made: new Date().toISOString(),
       dial: s.dial, design: D, cfg: this.cfg(), seeds: s.seeds, hands: s.hands, handFinish: s.handFinish, caseStyle: s.caseStyle, caseMetal: s.caseMetal,
       glassStyle: s.glassStyle, train: s.train, caseOpen: s.caseOpen, themeName: s.themeName,
       sounds: withArt ? snd : Object.assign({}, snd, { up: {} }), art: withArt, assets };
+  }
+  // the design file: exactly the design a baked theme carries, on its own
+  async exportDesign() {
+    if (!this.ready) return;
+    const doc = await this.designDoc(true), nm = (this.state.themeName || (this.preset() || {}).name || 'watch').replace(/[^\w .-]+/g, '-').trim() || 'watch';
+    const body = JSON.stringify(doc);
+    this.download(new Blob([body], { type: 'application/json' }), nm + '.orbdesign');
+    this.setState({ status: 'Downloaded ' + nm + '.orbdesign (' + Math.max(1, Math.round(body.length / 1024)) + ' KB' + (doc.assets.length ? ', ' + doc.assets.length + ' image' + (doc.assets.length > 1 ? 's' : '') : '') + ')' });
+  }
+  // Open a file: a baked .orbtheme (its design is read out of it) or a design file
+  async openFile(file) {
+    const G = window.GorbBake;
+    let bytes; try { bytes = new Uint8Array(await file.arrayBuffer()); } catch (e) { this.setState({ status: 'That file could not be read' }); return; }
+    let text = null;
+    if (bytes.length >= 4 && bytes[0] === 0x54 && bytes[1] === 0x52 && bytes[2] === 0x4f && bytes[3] === 0x47) {   // 'TROG': an .orbtheme
+      let rd; try { rd = G.readDesign3(bytes); } catch (e) { this.setState({ status: 'Not opened: ' + (e && e.message ? e.message : String(e)) }); return; }
+      if (!rd.design) { this.setState({ status: 'Not opened: ' + rd.why }); return; }
+      text = new TextDecoder().decode(rd.design);
+    } else text = new TextDecoder().decode(bytes);
+    let o = null; try { o = JSON.parse(text); } catch (e) { this.setState({ status: 'Not opened: that is neither an .orbtheme nor a design file' }); return; }
+    const why = this.applyDesignDoc(o, file.name);
+    if (why) { this.setState({ status: 'Not opened: ' + why }); return; }
+    this._snap = null; this._undo = []; this._redo = [];
   }
   // a theme's design back into the editor: refused by name when it is another app's, or a schema this build does not know
   applyDesignDoc(o, from) {
@@ -4261,6 +3950,11 @@ class Component extends DCLogic {
     if (!o || o.format !== 'wc-design') return 'that design is not one this editor wrote';
     if (o.app && o.app !== this.appSlug()) return 'that design is the ' + o.app + ' app\u2019s, not ' + this.appSlug() + '\u2019s';
     if (!(o.schema >= 1) || o.schema > this.DESIGN_SCHEMA) return 'that design was made by ' + (o.app || 'clock') + ' ' + (o.appVersion || '?') + ' (design schema ' + o.schema + '); this editor (' + this.appVersion() + ') reads schema ' + this.DESIGN_SCHEMA + ' \u2014 update the app on this orb';
+    // a newer clock may have added fields this editor would silently drop on the next save: refuse, naming the release
+    const ver = (v) => { const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(String(v || '')); return m ? [+m[1], +m[2], +m[3]] : null; };
+    const theirs = ver(o.appVersion), mine = ver(this.appVersion());
+    if (theirs && mine && (theirs[0] - mine[0] || theirs[1] - mine[1] || theirs[2] - mine[2]) > 0)
+      return 'that design was made by ' + (o.app || 'clock') + ' ' + o.appVersion + ', newer than this editor (' + this.appVersion() + ') \u2014 update the app on this orb, then open it';
     if (!o.design || !Array.isArray(o.design.comps) || !E.PRESETS[o.dial]) return 'that design has no watch in it';
     const r = E.assetRestore(o.assets || []); this.saveArt();
     const refs = this.artRefs(o.design), miss = refs.filter((x) => !E.assetKnown(x.id));
@@ -4291,33 +3985,6 @@ class Component extends DCLogic {
       this._snap = null; this._undo = []; this._redo = [];   // the reopened theme is where this session's history starts
       return true;
     } catch (e) { this.setState({ status: 'Could not reopen that theme: ' + (e && e.message ? e.message : String(e)) }); return false; }
-  }
-  importBundle(file) {
-    const E = window.WatchEngine;
-    if (!file) return;
-    const rd = new FileReader();
-    rd.onerror = () => this.setState({ status: 'That file could not be read' });
-    rd.onload = () => {
-      let o = null;
-      try { o = JSON.parse(String(rd.result)); } catch (e) { this.setState({ status: 'Not a .wckit: the file is not JSON' }); return; }
-      if (!o || o.format !== 'wckit') { this.setState({ status: 'Not a .wckit: no "format": "wckit" header' }); return; }
-      if (o.version > 1) { this.setState({ status: 'That .wckit is format version ' + o.version + '; this build reads 1' }); return; }
-      if (!o.design || !Array.isArray(o.design.comps)) { this.setState({ status: 'That .wckit has no design in it' }); return; }
-      const r = E.assetRestore(o.assets || []);
-      this.saveArt();
-      const refs = this.artRefs(o.design), miss = refs.filter((x) => !E.assetKnown(x.id));
-      const id = o.dial || this.state.dial;
-      this.setState((st) => ({
-        designs: { ...st.designs, [id]: E.canonDesign(JSON.parse(JSON.stringify(o.design))) },
-        dial: id, sel: null,
-        ...(o.cfg ? { cfg: o.cfg } : {}), ...(o.train ? { train: o.train } : {}),
-        ...(o.caseStyle ? { caseStyle: o.caseStyle } : {}), ...(o.caseMetal ? { caseMetal: o.caseMetal } : {}), ...(o.glassStyle ? { glassStyle: o.glassStyle } : {}),
-        ...(o.hands ? { hands: o.hands } : {}), ...(o.handFinish ? { handFinish: o.handFinish } : {}),
-        status: 'Loaded ' + (o.design.name || id) + ' with ' + r.added + ' art asset' + (r.added === 1 ? '' : 's') + (miss.length ? ' — ' + miss.length + ' still missing (' + miss.map((m) => m.usedBy).join(', ') + ')' : ''),
-      }));
-      this.faces = {}; this.buildMovement();
-    };
-    rd.readAsText(file);
   }
   /* D43 P5: the build flow. Steps over the existing views: each step shows one or more
    * of the tabs every field builder already answers to, so nothing a tab offered is
@@ -4397,8 +4064,6 @@ class Component extends DCLogic {
       startGo: () => this.goStep('movement'), dialName: ready ? ((E.PRESETS[s.dial] || {}).name || '') : '',
       fitShort: '', fitDot: '#5d6b78',
       fromScratch: () => this.fromScratch(),
-      moreExportOpen: !!s.moreExport, moreExportLabel: s.moreExport ? 'Fewer export options' : 'More export options · layer kit, frames, design file, design ID',
-      toggleMoreExport: () => this.setState((x) => ({ moreExport: !x.moreExport })),
     };
     const short = (t, n) => String(t || '').split(/ · |[.;:\u2014]/).slice(0, n).join(' · ').trim();
     out.dials = (v.dials || []).map((d) => Object.assign({}, d, { short: short(d.blurb, 2) }));
@@ -4500,7 +4165,7 @@ class Component extends DCLogic {
     const E = window.WatchEngine, ready = !!(this.ready && E);
     const PR = ready ? this.preset() : null, D = ready ? this.design() : { comps: [], centre: {} };
     const on = (b) => ({ cls: b ? 'on' : '', bg: b ? '#1f3a5f' : '#1c2330', bd: b ? '#58a6ff' : '#2b3540', fg: b ? '#e6edf3' : '#e6edf3' });
-    const did = this.designId(), fc = ready ? this.face() : null, tr = ready ? this.train() : { deg: 0, by: null };
+    const fc = ready ? this.face() : null, tr = ready ? this.train() : { deg: 0, by: null };
     const cap = (t) => t[0].toUpperCase() + t.slice(1);
     const subs = D.comps.filter((c) => c.type === 'subdial');
     const num = (cid) => D.comps.findIndex((c) => c.id === cid) + 1;
@@ -4649,8 +4314,8 @@ class Component extends DCLogic {
           // the line states what actually governs: the asset store, and the bundle
           selFields.push(Nt('', fa
             ? fa.name + ' · ' + fa.kind + ' · ' + fa.w + '×' + fa.h + ' source · ' + Math.round(fa.dataUrl.length / 1024) + ' KB · held in this browser and shipped in sources/ with the kit'
-            : sel.img ? 'That reference has no bytes in this browser — load the .wckit bundle that carries it.'
-              : 'PNG or SVG. Colour Auto keeps the image’s own colours. The reference travels in the Design ID; the bytes travel in the .wckit bundle and in the kit’s sources/. The device reads a PNG rotated without antialiasing, so author it at final size.'));
+            : sel.img ? 'That reference has no bytes in this browser — open the design file or theme that carries it.'
+              : 'PNG or SVG. Colour Auto keeps the image’s own colours. The image travels in the design file and inside every theme baked from this watch. The device reads a PNG rotated without antialiasing, so author it at final size.'));
           if (fa) selFields.push(mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'x', label: 'Remove image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: () => this.setComp(sel.id, { img: undefined }) }] }));
         }
       }
@@ -4781,7 +4446,7 @@ class Component extends DCLogic {
       }
       // The raised ring only exists when the style draws it: the choice appears with the
       // style that uses it, and Gilt is the movement's own metal -- nothing was decided
-      // until a different one is picked, so the Design ID of an untouched dial is unchanged.
+      // until a different one is picked, so the design of an untouched dial is unchanged.
       if ((sel.type === 'window' && (!sel.style || sel.style === 'frame')) || (sel.type === 'opening' && (sel.style === 'frame' || sel.style === 'lip')))
         Cx('Frame colour', 'frameColor', opt(E.FRAME_COLORS), 'gilt');
       if (sel.type === 'moon' && (sel.style === 'graphic' || sel.style === 'neon')) {
@@ -4953,7 +4618,7 @@ class Component extends DCLogic {
             : 'Optional. Pick a colour off the art to confine the texture to that region; leave it on None to blend the whole image.'));
         if (isHexColor(D[p + 'FinishKey'])) out.push(Rg('Key tolerance', tv, 0, 128, 1, ud(p + 'FinishKeyTol'), tv + ' / 128'));
       }
-      const line = !E.assetReady(id) ? 'No bytes for ' + id + ' in this browser — the reference is in the Design ID, the .wckit bundle carries the art.'
+      const line = !E.assetReady(id) ? 'No bytes for ' + id + ' in this browser — open the design file or theme that carries the art.'
         : fits && fits.ok ? price : fits.why;
       out.push(Nt('', a ? a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' source into a ' + Math.round(box * zm) + '×' + Math.round(box * zm) + ' box' + (zm !== 1 ? ' at ' + zm.toFixed(2) + ' zoom' : '') + ' · ' + Math.round(a.dataUrl.length / 1024) + ' KB · ' + line : line),
         mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'drag', label: (this.state.artSlot === p ? 'Dragging the dial pans THIS slot' : 'Drag the dial to pan this slot'), bg: this.state.artSlot === p ? '#1c2330' : '#1c2330', bd: this.state.artSlot === p ? '#58a6ff' : '#2b3540', fg: '#e6edf3', pick: () => this.setState({ artSlot: p, guide: 'on' }) }, { v: 'x', label: 'Remove this image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: drop }] }));
@@ -5270,15 +4935,11 @@ class Component extends DCLogic {
         this.setState((st) => { const d = { ...st.designs }; delete d[st.dial]; const P = E.PRESETS[st.dial]; this._dragRow = null; return { resetArm: 0, designs: d, sel: null, selKind: null, dropAt: null, dragging: null, hidden: { ...st.hidden, ids: {} }, hands: 'auto', handFinish: 'auto', cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed', status: 'Reset ' + P.name + ' to its preset \u2014 Ctrl+Z brings your version back' }; }); },
       isEdited: !!(s.designs && s.designs[s.dial]), resetPresetLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset ' + ((E.PRESETS[s.dial] || {}).name || 'to preset'),
       mineName: s.mineName || '', onMineName: (e) => this.setState({ mineName: e.target.value }), minePh: 'Name (default: ' + (s.themeName || (E.PRESETS[s.dial] || {}).name || 'this watch') + ')',
-      saveMine: () => this.saveMine(s.mineName), exportMine: () => this.exportMine(),
-      importMine: (e) => { const f = e.target.files && e.target.files[0]; if (!f) return; f.text().then((t) => this.importMine(t)); e.target.value = ''; },
+      saveMine: () => this.saveMine(s.mineName),
       mine: this.mineList().map((m) => { const armed = s.mineDel === m.name && Date.now() - (s.mineDelAt || 0) < 4000;
-        return { name: m.name, meta: ((E.PRESETS[m.dial] || {}).name || '') + ' \u00b7 ' + new Date(+m.at || 0).toLocaleDateString(), load: () => { this.loadId(m.id); this.setState({ themeName: m.name }); },
+        return { name: m.name, meta: ((E.PRESETS[m.dial] || {}).name || '') + ' \u00b7 ' + new Date(+m.at || 0).toLocaleDateString(), load: () => { const why = this.applyDesignDoc(m.doc, 'My designs'); if (why) this.setState({ status: 'Could not open \u201c' + m.name + '\u201d: ' + why }); },
           delLabel: armed ? 'Press again' : 'Delete', delTip: 'Remove it from My designs (asks twice)', del: () => (armed ? (this.delMine(m.name), this.setState({ mineDel: null })) : this.setState({ mineDel: m.name, mineDelAt: Date.now() })) }; }),
       mineEmpty: !(this._mine || this.mineList()).length,
-      designShipOpts: [['art', 'With art', 'The theme carries its design and every image you uploaded: Edit reopens it exactly. Dropped to without-art if the file would pass what an orb accepts.'],
-        ['bare', 'Without art', 'The design only (a few KB): Edit reopens it, and uploaded images have to be loaded again'], ['none', 'Don\u2019t keep', 'The dial alone: it installs and draws, but cannot be reopened']]
-        .map(([v, label, tip]) => ({ ...on((s.designShip || 'art') === v), label, tip, pick: () => this.setState({ designShip: v }) })),
       resetAllLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset everything',
       undo: () => this.undo(), redo: () => this.redo(), undoOp: this._undo.length ? 1 : 0.4, redoOp: this._redo.length ? 1 : 0.4,
       undoTip: this._undo.length ? 'Undo (Ctrl+Z) \u00b7 ' + this._undo.length + ' step' + (this._undo.length > 1 ? 's' : '') + ' back' : 'Nothing to undo', redoTip: this._redo.length ? 'Redo (Ctrl+Shift+Z)' : 'Nothing to redo',
@@ -5378,7 +5039,7 @@ class Component extends DCLogic {
           onFacingReset: () => this.setHand(id, { rot0: null }),
           artNote: (() => {
             if (!hc.art) return 'PNG or SVG, any size: at Length 100% the art is scaled so the farthest ink along its point lands where this hand would reach drawn, and the slider scales from there. Upload art that points anywhere you like and set Facing to the clockwise angle it points at — the guide ray stands at the time the clock shows, and turning the facing swings the art under it. The device rotates hand sprites with antialiasing off (clock_view.c lv_image_set_antialias), so an enlarged or resampled source shows its loss plainly at every angle.';
-            const a = E.assetGet(hc.art); if (!a) return 'That reference has no bytes in this browser — load the .wckit bundle that carries it.';
+            const a = E.assetGet(hc.art); if (!a) return 'That reference has no bytes in this browser — open the design file or theme that carries it.';
             // The engine length-fits the sprite: it measures the ink's reach from the
             // arbour and scales that -- in either direction -- so the upload's own
             // resolution never decides how long the hand is. k is that fit times the
@@ -5427,20 +5088,8 @@ class Component extends DCLogic {
         eye: s.hidden[id] ? 'hidden' : 'shown', eyeFg: s.hidden[id] ? '#8b98a5' : '#58a6ff', op: s.hidden[id] ? 0.45 : 1,
         toggle: () => this.setState((st) => ({ hidden: { ...st.hidden, [id]: !st.hidden[id] } })),
       })),
-      kitNote: F + ' base frames + layers + sprites · .zip',
-      dateKitNote: (() => {
-        const cs = D.comps.filter((c) => (c.type === 'window' && (c.shows === 'custom' || c.shows === 'date')) || (c.type === 'flare' && c.icon === 'datetext'));
-        if (!cs.length) return '';
-        return 'Date sprite kits in this kit: ' + cs.map((c) => c.id + ' (' + (c.type === 'window' ? (c.shows === 'date' ? 'day-of-month' : 'window') : 'flare') + ' · "' + (c.type === 'window' && c.shows === 'date' ? 'D' : c.type === 'flare' && c.fmt == null ? 'ddd DD MMM' : c.fmt) + '" · ' + hostName(c.host) + ')').join(', ') + '. Each ships caps + a 1px tileable slice + one tile per glyph its field can ever produce, plus one shared shade.png for the window (the ring and its shadow depend on where a pixel sits in the window, not on the string, so it is drawn last over the finished strip) — the day-of-month field gets ten digit tiles instead of 31 whole-value PNGs, so one string is assembled on device instead of a sprite per value. manifest.json declares currentWidth per kit: the width the dial was cut for, never narrower than what the assemble rule builds.';
-      })(),
-      zipNote: F + ' × .png, hands at shown time · .zip',
-      exportKit: () => this.exportKit(),
-      // the theme bakes from the kit's own PNG bytes, so it rides the same render pass:
-      // exportKit(true) collects the files and hands them to finishTheme instead of zipping
-      // §31: the FORMAT 3 bake, measured and split in the click path itself.
-      // The FORMAT 2 kit route (exportKit(true) -> finishTheme) stays for the
-      // FORMAT 2 loader the old firmware still carries; this is the device theme
-      // for every watch that takes the store door.
+      // §31: the FORMAT 3 bake, measured and split in the click path itself; the device
+      // theme, with its design inside (D43 P7) so it can be opened again
       exportTheme: () => this.exportTheme3(),
       // §31's send-to-orb round: the same bake, pushed through the hub's upload door.
       // The button renders only under a hub (same-origin http/https); opened from the
@@ -5502,23 +5151,11 @@ class Component extends DCLogic {
           ' bake as ' + plan3.rows.reduce((s, r) => s + r.count, 0) + ' plates · ' + F + '-frame train · measures on export';
         return 'FORMAT 3 · ' + F + '-frame train · ≤' + (cost / 1048576).toFixed(1) + ' MB bank · measures on export';
       })(),
-      exportBundle: () => this.exportBundle(),
-      loadBundle: (e) => this.importBundle(e.target.files && e.target.files[0]),
-      bundleNote: (() => { const n = new Set(this.artRefs(D).map((r) => r.id)).size; return n ? n + ' art asset' + (n > 1 ? 's' : '') + ' + design · .wckit' : 'design, no art · .wckit'; })(),
-      artNote: this.artNote(this.artRefs(D)),
-      exportFrames: async () => {
-        if (this.busy()) return;
-        this.setState({ status: 'Packing frames…' });
-        const files = [];
-        for (let f = 0; f < B; f++) files.push({ name: 'frame_' + pad(f + 1) + '.png', data: await this.png(this.frameCanvas(f, s.hidden)) });
-        this.download(this.zip(files), 'watch-' + s.dial + '-frames.zip');
-        this.setState({ status: 'Downloaded watch-' + s.dial + '-frames.zip' });
-      },
-      designId: did, idInput: s.idInput || '',
-      onIdInput: (e) => this.setState({ idInput: e.target.value }),
-      loadDesign: () => this.loadId(s.idInput || ''),
-      copyId: () => { const done = () => this.setState({ status: 'Design ID copied' }), fail = () => this.setState({ status: 'Select the ID and copy it manually' }); navigator.clipboard ? navigator.clipboard.writeText(did).then(done, fail) : fail(); },
-      selectAll: (e) => e.target.select(),
+      // D43 P7: the design alone, as the theme carries it; and one Open for either file
+      exportDesign: () => this.exportDesign(),
+      designFileNote: (() => { const n = new Set(this.artRefs(D).map((r) => r.id)).size; return 'the design' + (n ? ' and ' + n + ' uploaded image' + (n > 1 ? 's' : '') : '') + ' · .orbdesign'; })(),
+      artNote: this.artNote(this.artRefs(D)),   // missing art would leave the theme and the design incomplete
+      openFile: (e) => { const f = e.target.files && e.target.files[0]; if (f) this.openFile(f); e.target.value = ''; },
     };
   }
 }

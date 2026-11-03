@@ -1,5 +1,17 @@
 # clock editor selftests (apps/clock/editor/_selftest)
 
+> **2026-11-02, D43 P7:** the editor now writes two files only, the baked `.orbtheme` (with
+> its design inside) and the `.orbdesign` design file, and opens either. The layer kit, the
+> flattened frames, the `.wckit`, the Design ID and FORMAT 2's `finishTheme` bake are gone,
+> and with them `export-test.html`, which read its pixels out of the layer kit's zip. Every
+> later mention of `export-test.html` below describes that retired page. **Coverage lost
+> with it, not yet re-homed:** custom art in the plate and dial-face pixels, round and oval
+> aperture fills, the no-case layer, hand casts at a narrow opening, the motion round trip on
+> Broad arrow, the seconds-row reshape, the alignment guide's grid, art zoom and hand facing
+> in pixels, sprite length and frame metal, and the 31-day date assembly. The headless
+> suites still cover their decisions; the pixel checks need a Chrome page that reads the
+> baked theme instead.
+
 Two headless tests and three probes. The tests print a line report into
 `<pre id="out">` and set `<title>` to PASS or FAIL, so CI can grep the title
 from a dumped DOM. The probes print measurements, or draw pictures, for a
@@ -8,7 +20,7 @@ human to read; they assert nothing.
 | File | Covers |
 |---|---|
 | `selftest.html` | engine level: `WatchEngine.textKits()` caps/slice/glyph/byDate output, plus the posed preview frame (`previewDate`, `PREVIEW_MOON`) against new/full controls |
-| `export-test.html` | end to end: drives the real `Component.exportKit()` and inspects the bytes of the zip it builds (manifest, `text/<id>_<kind>/` sprites, `preview.png` moon pose, calendar-hand + perimeter blocks), and bakes the same files through the real `Component.finishTheme()` to re-read the `.orbtheme` container Chrome's own PNG encoder produced (`themeCheck`, below) |
+| `export-test.html` | **retired 2026-11-02** (D43 P7: the layer kit it drove is gone; see the gap below). Was: end to end: drives the real `Component.exportKit()` and inspects the bytes of the zip it builds (manifest, `text/<id>_<kind>/` sprites, `preview.png` moon pose, calendar-hand + perimeter blocks), and bakes the same files through the real `Component.finishTheme()` to re-read the `.orbtheme` container Chrome's own PNG encoder produced (`themeCheck`, below) |
 | `bake3-test.html` | FORMAT 3 in real pixels: mounts the real `Component`, composes every preset's plate at frame 0 and at the end of its loop and reports the motion verdict and each preset's `compPlan3` row set (§31: every live comp becomes one window row; only glyph work refuses), then bakes the mounted dial — plate, hands and the real `compPass3` tiles — through `GorbBake.bakeClock3` and prints the bundle base64 on a `B64:` line so `tools/verify_js_bake.py` can hand it to the shipped `orb_clock3.c`. Add the row that prints `RESULT: PASS` |
 | `bank3-drive.html` | full-format bake driver: mounts `?dial=` (default skeleton) and runs the real `exportTheme3()` with the ticker live, so `splitPolicy3` picks the carrier itself; intercepts the download and prints it on a `B64:` line. Use it to bake an animated dial for the card — bake3-test only bakes stills |
 

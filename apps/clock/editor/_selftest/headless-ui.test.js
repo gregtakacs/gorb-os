@@ -182,8 +182,8 @@ setTimeout(async () => {
   const cs = labels('comps');
   ok(!!it.design().comps.find((c) => c.style === 'transparent'), 'the layout accepts a transparent subdial style');
   const ex = (it.state.tab = 'export', it.renderVals());
-  ok(/art asset/.test(ex.bundleNote), 'the bundle button counts the art it will carry', ex.bundleNote);
-  ok(/MISSING/.test(ex.artNote), 'the export tab warns before a kit ships without its art', ex.artNote);
+  ok(/uploaded image/.test(ex.designFileNote), 'the design file button counts the images it will carry', ex.designFileNote);
+  ok(/MISSING/.test(ex.artNote), 'the Render step warns before a theme ships without its art', ex.artNote);
   // ---- selecting on the stage: the pane must follow what was grabbed -----------------
   global.requestAnimationFrame = () => 1;                                  // onMove defers; the test flushes by hand
   it.forceUpdate = () => { };
@@ -479,7 +479,7 @@ setTimeout(async () => {
   const r3 = panel('centre-hour');
   for (const k of ['onPivotX', 'onPivotY', 'onPivotCentre', 'onPivotHub', 'onArtFile', 'onArtClear', 'artRef', 'artLabel', 'artNote', 'onArtDown', 'onArtMove', 'hasArt'])
     ok(r3[k] !== undefined, 'handRows exposes ' + k);
-  for (const k of ['exportKit', 'exportTheme', 'themeNote', 'exportBundle', 'exportFrames', 'loadBundle', 'bundleNote', 'artNote', 'kitNote', 'designId', 'loadDesign', 'copyId', 'onIdInput', 'selectAll',
+  for (const k of ['exportTheme', 'themeNote', 'exportDesign', 'designFileNote', 'openFile', 'artNote',
     // FORMAT 2's theme-name field: the input, its live byte count and its placeholder
     'themeNameVal', 'themeNameIn', 'themeNamePh', 'themeNameLen',
     // §31's send-to-orb round: the hub-gated push button and its three bindings
@@ -541,41 +541,32 @@ setTimeout(async () => {
      'and it names the comp table it will bake for a dial with live complications',
      JSON.stringify(rv.themeNote));
   await (async () => {
-    const name = { got: null }, threw = { err: null };
+    // the bake's own refusals, before a pixel is rendered: they land as sentences, never throws
+    const name = { got: null };
     it.download = (b, n) => { name.got = n; };
     try {
-      // a dial whose layers cannot be found must land as a sentence, not an exception
-      try { await it.finishTheme([], { size: 466, frames: 8, fps: 8, hands: [], drawOrder: [] }, 'cal'); }
-      catch (e) { threw.err = e; }
-      ok(!threw.err, 'an unusable kit throws nothing at the button', threw.err && threw.err.message);
-      ok(/^Not baked: /.test(it.state.status) && name.got === null,
-         'and it is refused with the reason, without a download', it.state.status.slice(0, 72));
-      // FORMAT 2 took the card charset out of the name entirely: the file on the card is
-      // sha256(name)[:12], so an awkward name bakes verbatim instead of being sanitised.
-      await it.finishTheme([], { size: 466, frames: 8, fps: 8, hands: [], drawOrder: [] }, '.Hidden Name!');
-      ok(!/not a theme name/.test(it.state.status), 'an awkward name is a name now, not a refusal', it.state.status.slice(0, 40));
-      ok(!/[\/\\]/.test(String(name.got)), 'and however odd the name, the download it produced carries no path', String(name.got));
+      let threw = null;
+      it.state.themeName = 'x'.repeat(global.window.GorbBake.NAME_MAX);
+      try { await it._export3Body(); } catch (e) { threw = e; }
+      ok(!threw && /Not baked/.test(it.state.status) && /measures 56/.test(it.state.status) && name.got === null,
+         'a name one byte past the header field is refused, says which byte it measured, and downloads nothing', it.state.status.slice(0, 80));
       let checked31 = null;
       const origOk = global.window.GorbBake.nameOk;
-      global.window.GorbBake.nameOk = (s) => { checked31 = s; return origOk(s); };
-      await it.finishTheme([], { size: 466, frames: 8, fps: 8, hands: [], drawOrder: [] }, 'a'.repeat(30));
-      ok(checked31 === 'a'.repeat(30) && global.window.GorbBake.nameBytes(checked31) <= global.window.GorbBake.NAME_MAX - 1,
-         'the name handed to the baker is what was typed, and inside the header field', JSON.stringify(checked31));
+      global.window.GorbBake.nameOk = (s) => { checked31 = s; return false; };
+      it.state.themeName = '  ' + 'a'.repeat(30) + '  ';
+      await it._export3Body();
+      ok(checked31 === 'a'.repeat(30), 'the name handed to the baker is what was typed, trimmed', JSON.stringify(checked31));
       global.window.GorbBake.nameOk = origOk;
-      // the one name rule the header still enforces, checked as a refusal this time
-      await it.finishTheme([], { size: 466, frames: 8, fps: 8, hands: [], drawOrder: [] }, 'x'.repeat(global.window.GorbBake.NAME_MAX));
-      ok(/Not baked/.test(it.state.status) && /measures 56/.test(it.state.status),
-         'a name one byte past the field is refused, and says which byte it measured', it.state.status.slice(0, 72));
       global.window.GorbBake = null;
-      await it.finishTheme([], { size: 466 }, 'ok');
+      await it._export3Body();
       ok(/did not load/.test(it.state.status), 'a missing baker names the file that is gone', it.state.status.slice(0, 56));
     } finally {
       global.window.GorbBake = require(require('./runtime-paths.js').BAKER);
+      it.state.themeName = '';
       delete it.download;
-      const n = checked; if (n < 1) fails++;
     }
   })();
-  ok(rv.bundleNote === ex2.bundleNote, 'the bundle label is stable across renders');
+  ok(rv.designFileNote === ex2.designFileNote, 'the design file label is stable across renders');
   // ---- the build-gate seatbelt: a tempo flip must always be able to rebuild ----------
   // tick is absent from the art signature. Counting every rebuild against the art alone
   // let a 4/s -> sweep -> 4/s round trip on a Broad arrow spend the budget, so the last

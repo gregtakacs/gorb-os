@@ -1493,10 +1493,11 @@ still installs and draws.
   and the whole watch: design, light, seeds, hands, case, opening, glass, movement, sounds
   and name, with the uploaded art and sound bytes unless left out. `appVersion` is the
   clock's own release, written into the editor at region build (`window.__ORB_APP`,
-  `make_clock_region.py`). The Render step's **Keep the design**: with art (default; it
-  falls back to without art when the file would pass the cap, and says so), without art, or
-  not at all. The content serial folds the design's CRC, so a design-only change is a new
-  theme to the card and the hub's precheck (check 3 above).
+  `make_clock_region.py`). Every theme carries its whole design, art included (a "Keep the
+  design" choice shipped first and was withdrawn the same day, see below); a dial whose file
+  and design would pass the cap is refused by the writer. The content serial folds the
+  design's CRC, so a design-only change is a new theme to the card and the hub's precheck
+  (check 3 above).
 - **The read-back** (OS): `GET /api/v1/sd/design?id=<stem>` streams the design in 4 KB
   chunks with `X-Design-Size` and `X-Design-Crc` ahead of the body (404 with the sentence
   when there is none; busy while an upload, scan or job holds the card), and each card row
@@ -1516,6 +1517,40 @@ still installs and draws.
   editor's, CRC `77d1e203` on both sides; a pre-P7 theme answers 404 "carries no design".
 - Tests: `headless-design` 18, `headless-bundle3` 236, `host_orb_bundle_c_test` 339,
   Go (`themedesign_test`, `theme_design_test`, the contract tests).
+
+**Two files, nothing else (owner, 2026-11-02).** The editor writes a baked `.orbtheme`
+(ready for an orb, its design inside) or a **design file**, `.orbdesign`: the same
+`wc-design` document the theme carries, on its own. **Open a file…** (the Start sheet) takes
+either; a theme's design is read out of it (`readDesign3`). Retired with no reader left
+behind: the layer kit and FORMAT 2's `finishTheme` bake (the firmware lost the FORMAT 2
+loader long before), the flattened frames, the `.wckit`, the Design ID, and the "Keep the
+design" choice. My designs keeps named design documents (without the images' bytes, which
+stay in the browser's asset store); an entry from before, a Design ID, is not listed. Its
+list export and import went: a design file is how a design moves. The Render step still
+warns when uploaded art is missing from this browser, since the theme and its design would
+ship without it. `export-test.html` went with the layer kit it read; its pixel checks are
+listed in `_selftest/README.md` as coverage not yet re-homed.
+
+**Compatibility (PROPOSED 2026-11-02, awaiting the owner's ruling).** Two contracts, each
+with one owner:
+
+- *The baked dial* (the OS's: FORMAT, the ABI stamps, the element and blob layouts). The
+  firmware reads exactly what it understands and refuses the rest with "re-bake it" (D42
+  ruling 6); no legacy reader. With P7 a re-bake is Edit then Send, so the OS may change the
+  dial format whenever it needs to, at the cost of re-sending each theme. A theme without a
+  design (every one baked before P7) cannot be re-baked that way and has to be rebuilt.
+- *The design document* (the app's: `schema` and `appVersion`). Non-breaking, no schema
+  bump: a new field whose absence means the old behaviour, a new enum value, a new part
+  type. An older editor would drop such fields on save, so it refuses any design whose
+  `appVersion` is newer than its own (built), and the hub's "this orb's app is older" page is
+  the fix. Breaking, schema bump: removing or renaming a field, changing a field's meaning or
+  units, restructuring. Open question for the owner: on a bump, either (a) designs of the
+  old schema are refused (no legacy; the themes still run but cannot be reopened), or (b) one
+  pure migration function per bump, `migrate[n](doc) -> doc of schema n+1`, kept in one file.
+- *Clean slate:* `canonDesign` still carries migrations from before schema 1 (windows into
+  wheels, the wheel's index field, the old faces, `tsize`). No design file or theme carries
+  a pre-schema-1 design (every pre-P7 theme has none), so they can go once autosave and My
+  designs are cleared of old shapes.
 
 **Opening a theme for editing.** The Themes pane offers **Edit** on any shelf or card
 theme whose file carries a design region. The hub opens the app's editor (by the

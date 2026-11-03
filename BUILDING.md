@@ -46,7 +46,8 @@ make check
 
 This runs every check that needs no board: the host suites, the app/SDK checks, the
 hub's Go suite (with vet and a type-check of every release platform), and the editor's
-node suites. CI runs the same targets on every pull request. Each piece runs on its own
+node suites. Two host suites read a configured firmware tree, so run `idf.py build` once
+first. CI runs the same targets on every pull request. Each piece runs on its own
 too: `make check-host`, `check-apps`, `check-hub`, `check-editor`.
 
 ## The hub
@@ -131,18 +132,19 @@ Two workflows live in `.github/workflows/`:
 
 | Workflow | Runs on | Does |
 |---|---|---|
-| `ci.yml` | every pull request and push to `main` | the five jobs below; a red one blocks the merge |
+| `ci.yml` | every pull request and push to `main` | the four jobs below; a red one blocks the merge |
 | `release.yml` | a pushed tag `v*`, or by hand | builds, signs and packages the hub for Windows, macOS and Linux, plus the app SDK, as a **draft** release |
 
 `ci.yml`'s jobs:
 
-- **host suites**: `make check-host`
 - **apps and SDK**: `make check-apps` with clang 21, then the SDK tarball is unpacked
   and used to build a fresh app from the template outside the tree
 - **orb-manager**: `make check-hub`
 - **theme editor**: `make check-editor`
-- **firmware build**: `idf.py build` in the `espressif/idf:v5.4` container. The image
-  is kept as a run artifact.
+- **firmware build and host suites**: `idf.py build` in the `espressif/idf:v5.4`
+  container, then `make check-host` in the same tree. The suites need what a configured
+  firmware tree has: `build/config/sdkconfig.h` and ESP-IDF's NVS generator. The image is
+  kept as a run artifact.
 
 ## Cutting a release
 

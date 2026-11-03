@@ -23,7 +23,8 @@ check: check-host check-apps check-hub check-editor
 check-host:
 	@fail=0; for t in tools/host_*_test.py; do \
 	  if $(PYTHON) $$t >/tmp/gorb-host-$$$$.log 2>&1; then echo "ok   $$t"; \
-	  else echo "FAIL $$t"; tail -20 /tmp/gorb-host-$$$$.log; fail=1; fi; \
+	  else echo "FAIL $$t"; grep -E 'FAIL|FAILED|COMPILE|rror' /tmp/gorb-host-$$$$.log | head -40; \
+	    tail -5 /tmp/gorb-host-$$$$.log; fail=1; fi; \
 	done; rm -f /tmp/gorb-host-$$$$.log; exit $$fail
 	tools/orb_version.sh --self-test
 

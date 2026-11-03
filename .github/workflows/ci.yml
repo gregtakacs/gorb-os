@@ -1,6 +1,6 @@
 # Every check that needs no board, on every pull request and every push to main. The
-# same targets run locally: `make check` at the repo root runs the first four jobs, and
-# `idf.py build` is the fifth (BUILDING.md).
+# same targets run locally: `make check` at the repo root runs them all after an
+# `idf.py build` (BUILDING.md).
 name: ci
 
 on:
@@ -17,17 +17,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  host:
-    name: host suites
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0          # orb_version.sh's self-test builds stamps from git
-      - name: Toolchain
-        run: sudo apt-get update && sudo apt-get install -y gcc python3-pil python3-numpy
-      - run: make check-host
-
   apps:
     name: apps and SDK
     runs-on: ubuntu-24.04
@@ -75,8 +64,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y python3-pil python3-numpy
       - run: make check-editor
 
+  # The firmware build and the host suites share one job, because the suites need what
+  # only a configured firmware tree has: build/config/sdkconfig.h (host_idle_dim pins the
+  # shipped ceiling from it) and ESP-IDF's own NVS generator (host_layout_carry checks the
+  # carry against the real format). host_orbapp_install re-runs the shelf check, so it
+  # needs the shelf's clang, as the apps job does.
   firmware:
-    name: firmware build
+    name: firmware build and host suites
     runs-on: ubuntu-24.04
     container: espressif/idf:v5.4
     steps:
@@ -97,3 +91,18 @@ jobs:
             build/bootloader/bootloader.bin
             build/partition_table/partition-table.bin
             build/flasher_args.json
+      - name: Host toolchain (gcc, clang 21, Pillow, NumPy)
+        shell: bash
+        run: |
+          apt-get update && apt-get install -y gcc wget lsb-release software-properties-common gnupg
+          wget -qO- https://apt.llvm.org/llvm.sh | bash -s -- 21
+          apt-get install -y lld-21
+          . "$IDF_PATH/export.sh"
+          python3 -m pip install pillow numpy
+      - name: Host suites
+        shell: bash
+        env:
+          ORB_CLANG: /usr/lib/llvm-21/bin/clang
+        run: |
+          . "$IDF_PATH/export.sh"
+          make check-host

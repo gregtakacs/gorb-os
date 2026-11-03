@@ -2492,7 +2492,8 @@ class Component extends DCLogic {
       pathOpts: mark(paths, path), cadOpts: mark(cads, cad),
       onPath: (e) => { if (!fromFace) this.setMotion(id, { path: e.target.value }); },
       onCad: (e) => this.setMotion(id, { cadence: e.target.value }),
-      showMotionNums: retro || slide || disc || cad === 'step' || cad === 'jump',
+      // a hand on a fan or slider face flies back too, so its flyback ease is offered (it was hidden)
+      showMotionNums: retro || slide || disc || fromFace || cad === 'step' || cad === 'jump',
       aLabel: slide ? 'From' : 'Start', aVal: slide ? Math.round(g[0]) : (+m.start || 0),
       aTip: slide ? 'Where the travel starts, px from the arbour along the slide' : retro ? 'Where the fan starts, degrees clockwise from 12' : disc ? 'The fixed index the disc is read against, degrees clockwise from 12' : 'Only a fan, a disc or a slide places a start',
       onA: num(slide ? 'from' : 'start'),
@@ -2503,7 +2504,7 @@ class Component extends DCLogic {
       // D41 ease: a settle needs a jump or a step slower than the second; a flyback a fan or a slide
       easeOff: !(((cad === 'jump' || cad === 'step') && kind !== 'second') || retro || slide || fromFace),
       ease: +m.ease || 0,
-      easeTip: retro || slide ? 'Flyback: how long the hand takes to travel back to its start, ms (0 snaps)' : 'Settle: the small overshoot after each jump, ms (0 lands dead). Not offered on a step every second: it would cost a burst of frames each second',
+      easeTip: retro || slide || fromFace ? 'Flyback: how long the hand takes to travel back to its start, ms (0 snaps)' : 'Settle: the small overshoot after each jump, ms (0 lands dead). Not offered on a step every second: it would cost a burst of frames each second',
       onEase: (e) => this.setMotion(id, { ease: Math.max(0, Math.min(1000, +e.target.value | 0)) }),
     };
   }

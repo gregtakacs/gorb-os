@@ -94,6 +94,9 @@ ok(pp.rows.length === 3 && pr('hour').motion === 'retrograde' && pr('minute').mo
 const panel = (k) => { it.setState({ sel: hid(k), selKind: 'hand', step: 'parts', tab: 'hands' }); return it.renderVals().handRows[0]; };
 const hrRow = panel('hour');
 ok(hrRow && hrRow.canMove && hrRow.pathOpts.length === 1 && /from its fan/.test(hrRow.pathOpts[0].label), 'a fan\u2019s hand shows its path as the fan\u2019s', hrRow && hrRow.pathOpts.map((o) => o.label).join('|'));
+// a hand on a fan flies back, and its flyback time is offered even when it sweeps (it was hidden)
+const mnRow = panel('minute');
+ok(mnRow && mnRow.showMotionNums && !mnRow.easeOff && /Flyback/.test(mnRow.easeTip) && mnRow.ease === 700, 'a fan\u2019s sweeping hand offers its flyback ease', mnRow && JSON.stringify([mnRow.showMotionNums, mnRow.easeOff, mnRow.ease]));
 ok(hrRow.cadOpts.some((o) => o.v === 'jump' && o.sel) && !hrRow.cadOpts.some((o) => o.v === 'stop-to-go'), 'and the cadence; stop-to-go only on a seconds hand');
 hrRow.onPath({ target: { value: 'disc' } });
 ok(!(global.hand3(it.design(), hid('hour')).motion || {}).path && global.hand3(it.design(), hid('hour')).motion.cadence === 'jump', 'a face-driven hand cannot be given a path of its own; its cadence stays');

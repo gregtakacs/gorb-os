@@ -1002,8 +1002,8 @@
     // seconds tens on the carry (an odometer's roll), minutes and hours jumping with a short ease
     speedster: { name: 'Speedster', blurb: 'Speedometer seconds needle over an odometer of rolling hour, minute and second drums', hands: 'baton', handFinish: 'red', caseMetal: 'gunmetal', design: {
       print: 'none', numerals: 'none', font: 'michroma', surface: 'carbon', color: 'black', aging: 0, stains: 0, dust: 0, comps: [
-        { id: 's1', type: 'subdial', host: 'dial', angle: 0, dist: 0, rot: 0, size: 190, style: 'carbon', scale: 'seconds', open: 0, form: 'fan', fanStart: 240, fanSpan: 240, tstyle: 'bold', tcolor: '#f2f2f2', tfont: 'michroma' },
-        { id: 'h1', type: 'hand', host: 's1', shows: 'second', finish: 'red', wid: 2, motion: { cadence: 'sweep' } },
+        { id: 's1', type: 'subdial', host: 'dial', angle: 0, dist: 0, rot: 0, size: 190, style: 'carbon', scale: 'seconds', open: 0, form: 'fan', fanStart: 240, fanSpan: 240, tstyle: 'bold', tcolor: '#f2f2f2', tfont: 'barlow' },
+        { id: 'h1', type: 'hand', host: 's1', shows: 'second', finish: 'red', wid: 2, motion: { cadence: 'sweep', ease: 600 } },   // flies back over 0.6 s
         { id: 'd1', type: 'wheel', host: 's1', angle: 217.9, dist: 139.3, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'hours24', digit: 'tens', ease: 400, wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
         { id: 'd1k', type: 'cutout', host: 'd1', w: 24, h: 34, style: 'plain' },
         { id: 'd2', type: 'wheel', host: 's1', angle: 207.2, dist: 123.7, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'hours24', digit: 'units', ease: 400, wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
@@ -1018,8 +1018,8 @@
         { id: 'd6k', type: 'cutout', host: 'd6', w: 24, h: 34, style: 'plain' },
         { id: 'f1', type: 'flare', host: 's1', angle: 197.9, dist: 115.6, rot: 0, size: 10, style: 'print', icon: 'text', text: ':', font: 'michroma', weight: 'bold', color: '#f2f2f2' },
         { id: 'f2', type: 'flare', host: 's1', angle: 162.1, dist: 115.6, rot: 0, size: 10, style: 'print', icon: 'text', text: ':', font: 'michroma', weight: 'bold', color: '#f2f2f2' },
-        { id: 'f3', type: 'flare', host: 's1', angle: 0, dist: 58, rot: 0, size: 7, style: 'print', icon: 'text', text: 'SPEEDSTER', font: 'michroma', weight: 'bold', spacing: 0.4, color: '#ff3b30' },
-        { id: 'f4', type: 'flare', host: 's1', angle: 180, dist: 162, rot: 0, size: 5, style: 'print', icon: 'text', text: 'HRS   MIN   SEC', font: 'michroma', weight: 'bold', spacing: 0.3, color: '#8c8c8c' },
+        { id: 'f3', type: 'flare', host: 's1', angle: 0, dist: 58, rot: 0, size: 8, style: 'print', icon: 'text', text: 'SPEEDSTER', font: 'barlow', weight: 'bold', spacing: 0.4, color: '#ff3b30' },
+        { id: 'f4', type: 'flare', host: 's1', angle: 180, dist: 162, rot: 0, size: 6, style: 'print', icon: 'text', text: 'HRS   MIN   SEC', font: 'barlow', weight: 'bold', spacing: 0.3, color: '#8c8c8c' },
       ] } },
     perpetual: { name: 'Perpetual calendar', blurb: 'Day · date · month subdials · moon at 6', hands: 'baton', handFinish: 'gilt', design: {
       print: 'baton', comps: [
@@ -4633,7 +4633,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

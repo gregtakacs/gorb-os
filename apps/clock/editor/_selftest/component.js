@@ -4274,6 +4274,20 @@ class Component extends DCLogic {
       fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: F + ' fps · ' + B + ' frames' + (DEV < F ? ' · device ~' + DEV : '') + ' · ships ' + beat
           // The last bake's own price: carrier class, estimate, and the rung the pick lands on.
           + (this._est3 ? ' · last bake ' + this._est3.carrier + ', est ' + this._est3.est_fps + ' fps at rung ' + this._est3.rung : '') }),
+        /* P5d.3l: each seconds hand's own rhythm, here where the dial's is set. It writes the hand's
+         * own cadence (its panel's Motion), which the preview, the bake and the dial honour per row:
+         * one may sweep while another ticks. Stepping hands share one rate on the dial. */
+        ...(() => {
+          const secs = (D.comps || []).filter((c) => c.type === 'hand' && c.shows === 'second');
+          if (secs.length < 2) return [];
+          const val = (c) => { const m = c.motion || {}, cd = m.cadence || 'inherit'; return cd === 'step' ? 's' + (+m.steps || 1) : cd === 'jump' ? 's1' : cd; };
+          const put = (c) => (v) => this.setMotion(c.id, v === 'inherit' ? { cadence: 'inherit', steps: undefined } : v === 'sweep' ? { cadence: 'sweep', steps: undefined }
+            : v === 's1' ? { cadence: 'jump', steps: undefined } : { cadence: 'step', steps: +v.slice(1) });
+          const rows = secs.map((c) => Ch('#' + num(c.id) + (c.host && c.host !== 'dial' ? ' on ' + compTitle((D.comps || []).find((q) => q.id === c.host) || {}) : ' · centre'), val(c),
+            [{ v: 'inherit', label: 'Dial' }, { v: 'sweep', label: 'Sweep' }, { v: 's1', label: '1/s' }, { v: 's2', label: '2/s' }, { v: 's4', label: '4/s' }, { v: 's8', label: '8/s' }], put(c)));
+          const rates = secs.map(val).filter((v) => /^s[2-9]/.test(v));
+          return [H('Each seconds hand')].concat(rows, new Set(rates).size > 1 ? [Nt('', 'Two seconds hands step at different rates: the dial keeps one stepping rate, so the bake refuses this. Let one sweep, tick once a second, or step at the other\u2019s rate.')] : []);
+        })(),
         Nt('', HB.dev.why || 'Available frame rates depend on how much of the dial opening is visible. The Motion choice ships on the wire as that beat, whatever the dial is: an animated plate or carriage tempo binds a sweep to its own fastest frame rate, and a tick that outruns the delivered tempo is re-quantised to it on the glass.'),
         H('Drop shadow · hand twins and plate relief'),
         Ch('Cast shadows', (+c0.shMove > 0.01 && +c0.shOp > 0.01) ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.castShadowsOn(v === 'on')),
@@ -4451,6 +4465,7 @@ class Component extends DCLogic {
       // everything: the design (its parts and their depth), movement, case and light, and the stage's
       // own view of it -- per-part eyes, selection, a drag in flight
       resetDesign: () => this.setState((st) => { const d = { ...st.designs }; delete d[st.dial]; const P = E.PRESETS[st.dial]; this._dragRow = null; return { designs: d, sel: null, selKind: null, dropAt: null, dragging: null, hidden: { ...st.hidden, ids: {} }, hands: 'auto', handFinish: 'auto', cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed', status: 'Reset ' + P.name + ' to its preset' }; }),
+      isEdited: !!(s.designs && s.designs[s.dial]), resetPresetLabel: 'Reset ' + ((E.PRESETS[s.dial] || {}).name || 'to preset'),
       tabReset: () => this.resetTab(s.tab), hasTabReset: s.tab !== 'export', tabResetLabel: 'Reset ' + (this.TABS.find((t) => t[0] === s.tab) || ['', ''])[1].toLowerCase(),
       resetComps: () => { const P = E.PRESETS[s.dial]; this.upd((d) => { d.comps = JSON.parse(JSON.stringify(P.design.comps || [])); }); this.setState({ sel: null, status: 'Complications reset to ' + P.name }); },
       trainOpts: ready ? Object.entries(E.TRAINS).map(([id, t]) => ({ ...on(id === s.train), name: t.name, blurb: t.blurb, pick: () => this.setState({ train: id }) })) : [],

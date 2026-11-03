@@ -1127,6 +1127,20 @@ not enough: the owner wanted any angle, with snaps, the tangent among them (the 
   It now does.
 - Tests: `headless-wheels` 98.
 
+**As built (P5d.3l, owner 2026-11-02).**
+- **Reset <preset> in the title bar.** *Reset everything* lived only on the start sheet; the
+  title bar now carries *Reset Modern* (the selected preset's name) whenever the watch is
+  edited, with the same reset.
+- **Each seconds hand its own rhythm.** It was already possible: the hand's own panel (Motion
+  → cadence) is honoured per row by the preview, the bake (a centre hand sets the dial's
+  tempo scalars, a sub-dial hand its own row) and the dial (sweep and step rows pose by their
+  own cadence; only stepping seconds rows must share one rate). It was not findable. With
+  two or more seconds hands, the Hands tab now lists each under the dial's Motion: Dial,
+  Sweep, 1/s, 2/s, 4/s, 8/s, writing the hand's own cadence, and warns when two would step
+  at different rates. Modern: the centre hand sweeps, the sub-dial's ticks once a second
+  (a jump row).
+- Tests: `headless-wheels` 103.
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views

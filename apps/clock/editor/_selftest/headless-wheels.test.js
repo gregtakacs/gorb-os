@@ -241,6 +241,26 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   const w = it.design().comps.find((c) => c.id === 'c2');
   ok(pl.ok && w.host === 'c3' && w.dist === pl.comps.find((c) => c.id === 'c2').dist, 'a wheel dragged onto a sub-dial lands under it, at the place Layers worked out', JSON.stringify([pl.ok, w.host, w.angle, w.dist]));
 }
+// ---- P5d.3l: each seconds hand its own rhythm, set where the dial's is; Reset <preset> in the title ----
+{
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  const it = new (global.COMP_CLASS(DCLogic))({});
+  it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '', need: 8 } });
+  it.state.dial = 'modern'; it.state.playing = false; it.state.hidden = {};
+  it.setState({ sel: null, selKind: null, step: 'hands', tab: 'hands' });
+  const v0 = it.renderVals();
+  ok(!v0.isEdited && v0.resetPresetLabel === 'Reset Modern', 'the title bar names the preset it resets to, once edited');
+  const fl = () => it.renderVals().fields, row = (re) => fl().find((f) => re.test(f.label || ''));
+  const cen = row(/· centre/), sub = row(/ on /);
+  ok(!!row(/^Each seconds hand$/) && cen && sub, 'with two seconds hands, each gets its own rhythm under the dial\u2019s', fl().map((f) => f.label).join('|'));
+  cen.opts.find((o) => o.label === 'Sweep').pick(); row(/ on /).opts.find((o) => o.label === '1/s').pick();
+  const h = (id) => it.design().comps.find((c) => c.id === id).motion || {};
+  ok(h('h4').cadence === 'sweep' && h('h1').cadence === 'jump', 'one sweeps while the other ticks', JSON.stringify([h('h4'), h('h1')]));
+  const pr = it.pointerRows3(it.design(), B.compPlan3(it.design().comps)).rows.find((r) => r.id === 'h1');
+  ok(pr && pr.cadence === 3, 'and the sub-dial\u2019s hand ships ticking (a jump row) beside the sweeping centre hand', JSON.stringify(pr && pr.cadence));
+  ok(it.renderVals().isEdited, 'which makes it an edited Modern, with its reset in the title bar');
+}
 // ---- canon ----------------------------------------------------------------------------------
 {
   const c = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', host: 'dial', shows: 'nope', digit: 'whole', dir: 'cw', cadence: 'jump', ease: 0, overhang: 'shown', wbg: 'auto', tsize: 1, blank0: true },

@@ -154,7 +154,8 @@ class Component extends DCLogic {
       const p = at3(x), r = Math.max(14, +x.size || 40);
       if (!G3.wheelTurns3(x)) {
         // a snapping wheel ships a window's plates at each cutout, and is priced as that window was
-        const fs = Math.max(6, Math.min(r * 0.42, (+x.tsize || 1) * Math.max(8, r * 0.2))), lr = r - fs * 0.85;
+        // the author's figure size (never below the legible floor) at the author's radius, or the layout's default reach
+        const LP = window.WatchEngine.LEGIBLE_PX, fs = Math.max(LP, +x.fpx || LP), lr = x.trad != null ? +x.trad : r - fs * 0.85;
         (D.comps || []).filter((k) => k.type === 'cutout' && k.host === x.id).forEach((k) => {
           const a = ((+k.at || 0) * Math.PI) / 180, cx = p[0] + Math.sin(a) * lr - 233, cy = p[1] - Math.cos(a) * lr - 233, dk = Math.hypot(cx, cy);
           if (dk + 6 > 18 && dk - 6 <= tip) crossed.push({ angle: (Math.atan2(cx, -cy) * 180) / Math.PI, dist: dk, size: 1, type: 'window' });

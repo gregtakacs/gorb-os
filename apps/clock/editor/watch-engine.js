@@ -748,7 +748,7 @@
    * (0 tops to the rim, 90 and -90 along the tangent, 180 tops to the centre) with face 'ring' --
    * or level where the wheel reads (face 'up', the default), which follows Reads at. The older
    * 'out' and 'in' are fang 0 and 180, and canon writes them so. */
-  const WHEEL_FACES = { up: 'Level where it reads', ring: 'At an angle to the ring', out: 'Along the ring · tops out', in: 'Along the ring · tops in' };
+  const WHEEL_FACES = { up: 'Level where it reads', ring: 'At an angle to the ring' };
   // D43 P5d.3m: a wheel's look beyond its colours -- ticks at its figures, which figures carry a label,
   // a rim line in an accent colour, how its face is finished, and (exposed) the index it is read at
   const WHEEL_TICKS = { none: 'None', major: 'At labelled figures', all: 'At every figure', between: 'Between figures', both: 'At and between' };
@@ -762,17 +762,12 @@
   const INDEX_STYLES = { line: 'Line', laser: 'Laser', lens: 'Laser lens', pips: 'Pips', frame: 'Frame' };
   const INDEX_SPANS = { all: 'Every ring it crosses', own: 'Its own wheel' };
   const WHEEL_FINISHES = { flat: 'Flat', gradient: 'Gradient', sunray: 'Sunray' };
-  const WHEEL_INDEX = { none: 'None', line: 'Line', laser: 'Laser lens' };
   const FACE_SNAPS = [['Tops out', 0], ['Tangent ↻', 90], ['Tops in', 180], ['Tangent ↺', -90]];
   const normDeg = (d) => { d = ((+d % 360) + 540) % 360 - 180; return d === -180 ? 180 : d; };
   // D43 P5d.3f: how a cutout lies -- with its wheel's figures (level where they are level, along the
   // ring where they follow it, and turned with their turn), or level, or along the ring, whatever they do
   const CUT_LIES = { auto: 'With the figures', level: 'Level', ring: 'Along the ring' };
   const WHEEL_STYLES = { bold: 'Bold', regular: 'Regular', italic: 'Italic', bolditalic: 'Bold italic' };
-  // a wheel's figure size: the author's px, or (a design from before P5d.3c) the old relative
-  // size it was drawn at -- never below what the dial can be read by
-  const wheelFontPx = (c) => legible(c.fpx != null ? +c.fpx
-    : Math.max(6, Math.min(Math.max(14, +c.size || 40) * 0.42, (+c.tsize || 1) * Math.max(8, Math.max(14, +c.size || 40) * 0.2))));
   const dimOf = (t) => new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
   const yearLen = (t) => (new Date(t.getFullYear() + 1, 0, 1) - new Date(t.getFullYear(), 0, 1)) / 864e5;
   const dayFrac = (t) => (t.getHours() * 3600 + t.getMinutes() * 60 + t.getSeconds() + t.getMilliseconds() / 1000) / 86400;
@@ -1184,23 +1179,23 @@
       const form = spec.moon ? 'disc' : WHEEL_FORMS[c.form] ? c.form : 'disc';
       const ri = form === 'ring' ? Math.max(2, Math.min(r - 4, c.inner != null ? +c.inner : r * 0.62)) : 0;
       // a wheel the author has given no figure size takes the largest its figures fit round it without
-      // touching (never below the legible floor); an old relative size keeps the px it drew at
+      // touching (never below the legible floor)
       const len0 = Math.max(1, ...Array.from({ length: Math.min(spec.n, 60) }, (_, i) => String(spec.lab(i)).length));
       const r0 = form === 'ring' ? (c.trad != null ? +c.trad : (r + ri) / 2) : c.trad != null ? +c.trad : r * 0.86;
       /* P5d.3n: how far a figure reaches across the band, per px of figure size. The figures keep
        * one angle to the radius all the way round (level ones turn with the wheel's reading), so a
        * level figure read at 3 o'clock lays its width across the band, one tangent to it its height. */
-      const fangR = c.face === 'ring' ? rad(+c.fang || 0) : c.face === 'out' ? 0 : c.face === 'in' ? Math.PI : null;
+      const fangR = c.face === 'ring' ? rad(+c.fang || 0) : null;
       const across = Math.abs(fangR != null ? Math.sin(fangR + rad(+c.trot || 0)) : Math.sin(rad(c.read != null ? +c.read : firstAt[c.id] != null ? firstAt[c.id] : 90) - rad(+c.trot || 0)));
       const reach = across * (0.62 * len0 + 0.1) + Math.sqrt(Math.max(0, 1 - across * across)) * 0.8;
       // a ring's own figures fit across its band as well as round it
       const fsFit = Math.min(r * 0.3, form === 'barrel' ? r * 0.9 : (TAU * r0) / spec.n / (0.62 * len0 + 0.35), form === 'ring' ? Math.max(1, r - ri - 4) / reach : Infinity);
-      const fs = c.fpx == null && c.tsize == null ? legible(fsFit) : wheelFontPx(c);
+      const fs = legible(c.fpx != null ? +c.fpx : fsFit);   // the author's px, or the largest that fits, never below the floor
       const lr = form === 'barrel' ? 0 : Math.max(ri + 1, Math.min(r - 1, c.trad != null ? +c.trad : form === 'ring' ? (r + ri) / 2 : r - fs * 0.85));
       const longest = Math.max(1, ...Array.from({ length: Math.min(spec.n, 60) }, (_, i) => String(spec.lab(i)).length));
       wheels.push({ id: c.id, x: g.x, y: g.y, r, ri, form, host: onSub || 'dial', spec, fs, lr, longest,
         read: rad(c.read != null ? +c.read : firstAt[c.id] != null ? firstAt[c.id] : 90), face: WHEEL_FACES[c.face] ? c.face : 'up', trot: rad(+c.trot || 0),
-        fang: c.face === 'ring' ? rad(+c.fang || 0) : c.face === 'out' ? 0 : c.face === 'in' ? Math.PI : null,
+        fang: fangR,
         style: WHEEL_STYLES[c.fstyle] ? c.fstyle : 'bold', edge: c.edge == null ? 0.15 : Math.max(0, Math.min(1, +c.edge)),
         len: form === 'barrel' ? Math.max(fs, c.len != null ? +c.len : fs * (0.62 * longest + 0.6)) : 0,
         dir: c.dir === 'ccw' ? -1 : 1, smooth: c.cadence === 'smooth', ease: +c.ease || 0,
@@ -4381,41 +4376,6 @@
     flush();
     return { under, hands, top, live };
   }
-  /* D43 P5d.3d: a date, day or month window becomes the wheel it always stood for, read through
-   * a cutout where the window was: a ring about the window's own face when its figures fit round
-   * the window's distance, else a ring the size they need, centred on the line through the window.
-   * A classic moon disc becomes a moon wheel behind a moon cutout. Its look carries over: the
-   * disc and figure colours, the typeface, the frame and its metal, a round aperture. */
-  function retireWindows(comps) {
-    const ids = {}; comps.forEach((c) => { ids[c.id] = 1; });
-    const kid = (id) => { let k = id + 'k'; while (ids[k]) k += 'k'; ids[k] = 1; return k; };
-    const out = [];
-    comps.forEach((c) => {
-      if (c.type === 'window' && (!c.shows || c.shows === 'date' || c.shows === 'day' || c.shows === 'month')) {
-        const sh = c.shows || 'date', n = { date: 31, day: 7, month: 12 }[sh], len = sh === 'date' ? 2 : 3;
-        const fpx = legible((sh === 'date' ? 18 : 15) * (+c.size || 1)), need = Math.ceil((n * fpx * (0.62 * len + 0.35)) / TAU);
-        const th = +c.angle || 0, d0 = +c.dist || 0, conc = d0 >= need, lr = conc ? d0 : need, dd = d0 - lr;
-        const w = { id: c.id, type: 'wheel', host: c.host || 'dial', angle: conc ? 0 : dd < 0 ? (th + 180) % 360 : th, dist: conc ? 0 : Math.abs(dd), rot: 0,
-          size: Math.round((lr + fpx * 0.9) * 2) / 2, form: 'ring', inner: Math.round(Math.max(2, lr - fpx * 0.9) * 2) / 2, trad: lr, read: th, shows: sh === 'day' ? 'day' : sh, fpx };
-        const dark = c.disc === 'dark', light = c.disc === 'light';
-        if (c.discColor && c.discColor !== 'auto') w.wbg = c.discColor; else if (dark) w.wbg = '#1b1916'; else if (light) w.wbg = '#f2ecdd';
-        if (c.textColor && c.textColor !== 'auto') w.wink = c.textColor; else if (dark) w.wink = '#ecdfbf'; else if (light) w.wink = '#18120b';
-        if (c.wfont) w.wfont = c.wfont;
-        const k = { id: kid(c.id), type: 'cutout', host: c.id, at: th };
-        if (c.style && c.style !== 'frame') k.style = c.style;
-        if (c.frameColor) k.frameColor = c.frameColor;
-        if (c.wshape === 'circle') k.shape = 'round';
-        out.push(w, k); return;
-      }
-      if (c.type === 'moon' && !ROUND_MOON[c.style]) {
-        const w = { id: c.id, type: 'wheel', host: c.host || 'dial', angle: +c.angle || 0, dist: +c.dist || 0, rot: 0, size: +c.size || 32, shows: 'moon', read: +c.rot || 0 };
-        if (c.style && c.style !== 'classic') w.mstyle = c.style;
-        out.push(w, { id: kid(c.id), type: 'cutout', host: c.id, shape: 'moon' }); return;
-      }
-      out.push(c);
-    });
-    return out;
-  }
   function canonDesign(d) {
     if (!d.surface || d.surface === 'enamel') { delete d.surface; delete d.texture; }
     if (d.texture != null && +d.texture === 1) delete d.texture;
@@ -4443,13 +4403,10 @@
       if (d.perimRot != null && perimRotDeg(d) === 0) delete d.perimRot;
     }
     if (d.dir !== 'ccw') delete d.dir;   // the dial's direction: clockwise is no field at all
-    // the pre-P5c hand fields: every hand is a comps entry now
-    ['centre', 'extra', 'hands', 'gmtOffset'].forEach((k) => delete d[k]);
     /* Uploaded art is REFERENCED here, never embedded: a design carries the asset id
-     * (and the placed geometry), the bytes live in the browser's asset store, and a
-     * .wckit bundle is what ships them. Every default is deleted on purpose -- a
-     * design with no art must serialise to exactly the JSON it produced before this
-     * feature existed, or every design id already in the field would change. */
+     * (and the placed geometry), the bytes live in the browser's asset store, and the
+     * design document (in a theme or a design file) carries them. Every default is
+     * deleted on purpose, so an untouched watch serialises to the same design. */
     const blank = (v) => v == null || v === '';
     const stripArt = (p, defSize) => {
       const keys = [p + 'Art', p + 'Fit', p + 'X', p + 'Y', p + 'Size', p + 'Opacity', p + 'Rot', p + 'FinishBlend', p + 'FinishColor', p + 'FinishKey', p + 'FinishKeyTol'];
@@ -4479,19 +4436,6 @@
     if (d.surface !== 'carbon' && d.surface !== 'forged') delete d.weaveScale; else if (d.weaveScale != null && +d.weaveScale === 1) delete d.weaveScale;
     ['n12Font', 'nQFont'].forEach((k) => { if (!d[k] || d[k] === 'same') delete d[k]; });
     ['n12Color', 'nQColor'].forEach((k) => { if (!d[k] || d[k] === 'auto') delete d[k]; });
-    if (d.comps) d.comps = retireWindows(d.comps);
-    /* P5d.3n: an exposed wheel's index was a field of the wheel; it is a part of its own now, the
-     * old line its laser and the old laser its lens */
-    if (d.comps && d.comps.some((c) => c.type === 'wheel' && c.index)) {
-      const ids = {}; d.comps.forEach((c) => { ids[c.id] = 1; });
-      d.comps = d.comps.flatMap((c) => {
-        if (c.type !== 'wheel' || !c.index) return [c];
-        const ix = c.exposed === true && c.shows !== 'moon' && WHEEL_INDEX[c.index] && c.index !== 'none' ? c.index : null; delete c.index;
-        if (!ix) return [c];
-        let k = c.id + 'x'; while (ids[k]) k += 'x'; ids[k] = 1;
-        return [c, Object.assign({ id: k, type: 'index', host: c.id, istyle: ix === 'line' ? 'laser' : 'lens' }, c.accent && c.accent !== 'auto' ? { color: c.accent } : {})];
-      });
-    }
     // P5d.3i: a moon wheel's cutouts are moon cutouts, however they were added (a wheel switched to
     // the moon after its cutout came with it kept a window's shape, and canon then dropped its Aperture)
     if (d.comps) { const moons = {}; d.comps.forEach((c) => { if (c.type === 'wheel' && c.shows === 'moon') moons[c.id] = 1; });
@@ -4538,9 +4482,6 @@
         if (c.overhang !== 'shown' || !c.host || c.host === 'dial') delete c.overhang;
         if (c.digit !== 'tens' || !c.blank0) delete c.blank0;
         ['wbg', 'wink', 'wfont'].forEach((k) => { if (!c[k] || c[k] === 'auto' || c[k] === 'dial') delete c[k]; });
-        // P5d.3c: the figures are sized in px, and an old relative size becomes the px it drew at
-        if (c.fpx == null && c.tsize != null && c.shows !== 'moon') c.fpx = Math.round(wheelFontPx(c) * 2) / 2;
-        delete c.tsize;
         if (c.shows === 'moon') ['fpx', 'form', 'face', 'trot', 'fstyle', 'trad', 'inner', 'len'].forEach((k) => delete c[k]);
         else ['msize', 'mpos'].forEach((k) => delete c[k]);
         if (c.msize != null && Math.abs(+c.msize - 0.33) < 1e-9) delete c.msize;
@@ -4548,9 +4489,8 @@
         if (!WHEEL_FORMS[c.form] || c.form === 'disc') delete c.form;
         if (c.form !== 'ring') delete c.inner;
         if (c.form !== 'barrel') delete c.len; else ['trad', 'face', 'read'].forEach((k) => delete c[k]);
-        // P5d.3g: one angle to the ring; the old faces and a turn on a ring-following face fold into it
-        if (c.face === 'out' || c.face === 'in') { c.fang = (c.face === 'in' ? 180 : 0) + (+c.trot || 0); c.face = 'ring'; delete c.trot; }
-        else if (c.face === 'ring') { c.fang = (+c.fang || 0) + (+c.trot || 0); delete c.trot; }
+        // P5d.3g: one angle to the ring; a turn on a ring-following face folds into it
+        if (c.face === 'ring') { c.fang = (+c.fang || 0) + (+c.trot || 0); delete c.trot; }
         if (c.face === 'ring') c.fang = normDeg(c.fang); else delete c.fang;
         if (c.face === 'ring' && !c.fang) delete c.fang;
         if (!WHEEL_FACES[c.face] || c.face === 'up') delete c.face;
@@ -4643,7 +4583,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, WHEEL_INDEX, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

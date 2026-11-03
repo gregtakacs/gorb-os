@@ -62,8 +62,6 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   const bar = face([{ id: 'b', type: 'wheel', host: 'dial', angle: 90, dist: 120, size: 22, form: 'barrel', shows: 'date', digit: 'units' }, { id: 'bk', type: 'cutout', host: 'b' }]).lay;
   ok(bar.wheels[0].form === 'barrel' && near(bar.dialHoles[0].x, bar.wheels[0].x) && near(bar.dialHoles[0].y, bar.wheels[0].y), 'a barrel reads at its front, where its cutout stands');
   ok(face([Object.assign({}, base, { form: 'barrel' })]).comps(new Date(2026, 10, 2), null).dial, 'and draws');
-  const mig = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', size: 165, shows: 'date', tsize: 0.52 }] }).comps[0];
-  ok(mig.fpx >= E.LEGIBLE_PX && !('tsize' in mig), 'an old relative figure size becomes px, raised to the legible floor', JSON.stringify(mig));
   const rb = B.wheelPlan3([{ id: 'b', type: 'wheel', form: 'barrel', shows: 'date', cadence: 'smooth' }]);
   ok(!rb.rows.length && /barrel/.test(rb.refuses[0]), 'a rolling barrel is refused by name; a snapping one plates', rb.refuses[0]);
 }
@@ -82,18 +80,11 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
 }
 // ---- P5d.3d: the window retired for the wheel; what is rendered is named so ---------------------
 {
-  const c = E.canonDesign({ comps: [{ id: 'w', type: 'window', host: 'dial', angle: 90, dist: 150, size: 1, shows: 'date', disc: 'dark', style: 'plain' },
-    { id: 'd', type: 'window', host: 'dial', angle: 270, dist: 91, size: 1, shows: 'day', frameColor: 'steel' },
-    { id: 't', type: 'window', host: 'dial', angle: 0, dist: 120, size: 1, shows: 'custom', fmt: 'ddd DD' },
-    { id: 'm', type: 'moon', host: 'dial', angle: 180, dist: 100, size: 30, style: 'silver' }, { id: 'r', type: 'moon', host: 'dial', angle: 0, dist: 60, size: 40, style: 'sphere' }] }).comps;
+  // the conversions from before the design format (windows and classic moons into wheels) are gone (2026-11-02)
+  const c = E.canonDesign({ comps: [{ id: 't', type: 'window', host: 'dial', angle: 0, dist: 120, size: 1, shows: 'custom', fmt: 'ddd DD' },
+    { id: 'r', type: 'moon', host: 'dial', angle: 0, dist: 60, size: 40, style: 'sphere' }] }).comps;
   const by = (id) => c.find((x) => x.id === id);
-  ok(by('w').type === 'wheel' && by('w').form === 'ring' && by('w').trad === 150 && by('w').read === 90 && by('w').wbg === '#1b1916' && by('wk').type === 'cutout' && by('wk').host === 'w' && by('wk').at === 90 && by('wk').style === 'plain',
-    'a date window becomes a ring about its face, reading where the window was, through a cutout in the window\u2019s place and style', JSON.stringify([by('w'), by('wk')]));
-  ok(by('d').type === 'wheel' && by('d').shows === 'day' && by('dk').frameColor === 'steel', 'a day window too, its frame metal carried');
   ok(by('t').type === 'window' && by('r').type === 'moon', 'a line of rendered text and a rendered moon stay what they are');
-  ok(by('m').type === 'wheel' && by('m').shows === 'moon' && by('m').mstyle === 'silver' && by('mk').shape === 'moon', 'a classic moon disc becomes a moon wheel behind a moon cutout');
-  const f = face(c);
-  ok(f.lay.wheels.length === 3 && f.lay.dialHoles.some((h) => h.kind === 'moon'), 'and the dial draws them');
   ok(!('Window' in {}) && E.COMP_TYPES.window === 'Rendered display \u00b7 text' && E.COMP_TYPES.moon === 'Rendered display \u00b7 moon', 'the catalogue names the rendered parts for what they are');
   const mw = face([{ id: 'm', type: 'wheel', host: 'dial', size: 40, shows: 'moon', msize: 0.4, mpos: 0.45 }, { id: 'k', type: 'cutout', host: 'm', shape: 'moon', ap: 0.875 }]).lay;
   ok(mw.wheels[0].msize === 0.4 && mw.wheels[0].mpos === 0.45 && near(mw.dialHoles[0].a, 40), 'a moon wheel sizes its disc, its moons and their place; its aperture is the disc, locked');
@@ -147,17 +138,18 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
 }
 // ---- P5d.3f: a date at 2 o'clock in a window tilted with the ring ---------------------------------
 {
-  const ring = (face2, cut) => face([{ id: 'w', type: 'wheel', host: 'dial', size: 175, form: 'ring', inner: 130, trad: 152, read: 60, shows: 'date', face: face2 },
+  const OUT = { face: 'ring', fang: 0 }, IN = { face: 'ring', fang: 180 };   // tops out, tops in
+  const ring = (face2, cut) => face([Object.assign({ id: 'w', type: 'wheel', host: 'dial', size: 175, form: 'ring', inner: 130, trad: 152, read: 60, shows: 'date' }, typeof face2 === 'string' ? { face: face2 } : face2),
     Object.assign({ id: 'k', type: 'cutout', host: 'w' }, cut || {})]).lay.dialHoles.find((h) => h.kind === 'rect');
   const r60 = Math.PI / 3;
-  ok(near(ring('out').rot, r60) && near(((ring('in').rot % Math.PI) + Math.PI) % Math.PI, r60),   // a window turned half round is the same window
+  ok(near(ring(OUT).rot, r60) && near(((ring(IN).rot % Math.PI) + Math.PI) % Math.PI, r60),   // a window turned half round is the same window
      'figures along the ring at 2 o\u2019clock: the window tilts with them, 60\u00b0, by itself');
   ok(near(ring('up').rot, 0), 'level figures, a level window');
-  ok(near(ring('up', { lie: 'ring' }).rot, r60) && near(ring('out', { lie: 'level' }).rot, 0), 'and either can be told otherwise');
+  ok(near(ring('up', { lie: 'ring' }).rot, r60) && near(ring(OUT, { lie: 'level' }).rot, 0), 'and either can be told otherwise');
   const nw = face([Object.assign({ id: 'n', type: 'wheel', host: 'dial' }, E.NEW_COMP.wheel)]).lay.wheels[0], pitch = (2 * Math.PI * nw.lr) / nw.spec.n;
   ok(nw.fs >= E.LEGIBLE_PX && pitch >= nw.fs * (0.62 * 2 + 0.35) - 1e-6, 'a new wheel\u2019s figures fit round it without touching, at a legible size', nw.fs.toFixed(1) + ' px, pitch ' + pitch.toFixed(1));
-  ok(near(ring('out', { rot: 5 }).rot, r60 + Math.PI / 36), 'Turn adds to how it lies');
-  const h = ring('out'), d = Math.hypot(h.x - 233, h.y - 233);
+  ok(near(ring(OUT, { rot: 5 }).rot, r60 + Math.PI / 36), 'Turn adds to how it lies');
+  const h = ring(OUT), d = Math.hypot(h.x - 233, h.y - 233);
   ok(near(d, 152) && near(Math.atan2(h.x - 233, 233 - h.y), r60), 'and it stands on the figures where the wheel reads');
 }
 // ---- P5d.3g: figures at any angle to the ring, snapping to level, tops out/in and the tangents --------
@@ -166,8 +158,8 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   const d2r = Math.PI / 180, rect = (l) => l.dialHoles.find((h) => h.kind === 'rect');
   ok(near(rect(L({ face: 'ring', fang: 90 })).rot, 150 * d2r) && near(rect(L({ face: 'ring', fang: 37 })).rot, 97 * d2r), 'any angle to the ring, the tangent too: the window lies with the figure where it reads (60 + 90, 60 + 37)');
   ok(near(rect(L({ face: 'ring', fang: -90 })).rot, -30 * d2r), 'and the other tangent');
-  const cn = E.canonDesign({ comps: [{ id: 'a', type: 'wheel', shows: 'date', face: 'in', trot: 10 }, { id: 'b', type: 'wheel', shows: 'date', face: 'out' }, { id: 'c', type: 'wheel', shows: 'date', face: 'ring', fang: 270 }] }).comps;
-  ok(cn[0].face === 'ring' && cn[0].fang === -170 && cn[1].face === 'ring' && !('fang' in cn[1]) && cn[2].fang === -90 && !('trot' in cn[0]), 'the old faces fold into one angle to the ring', JSON.stringify(cn));
+  const cn = E.canonDesign({ comps: [{ id: 'a', type: 'wheel', shows: 'date', face: 'ring', fang: 270, trot: 10 }, { id: 'b', type: 'wheel', shows: 'date', face: 'ring', fang: 0 }, { id: 'c', type: 'wheel', shows: 'date', face: 'sideways' }] }).comps;
+  ok(cn[0].face === 'ring' && cn[0].fang === -80 && !('trot' in cn[0]) && cn[1].face === 'ring' && !('fang' in cn[1]) && !('face' in cn[2]), 'one angle to the ring, a turn folded into it; a face this editor does not know reads level', JSON.stringify(cn));
   const DCLogic = function () { };
   DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
   const it = new (global.COMP_CLASS(DCLogic))({});
@@ -266,14 +258,11 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
 }
 // ---- P5d.3m: exposed rings, the wheel's look, the cutout pane, sliders ------------------------------------
 {
-  const cw = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', shows: 'date', exposed: true, index: 'laser', ticks: 'all', rim: 'double', wfinish: 'sunray', every: 5, accent: '#ff0000' },
-    { id: 'v', type: 'wheel', shows: 'date', exposed: false, index: 'laser', ticks: 'none', rim: 'none', wfinish: 'flat', every: 1, accent: 'auto' }] }).comps;
+  const cw = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', shows: 'date', exposed: true, ticks: 'all', rim: 'double', wfinish: 'sunray', every: 5, accent: '#ff0000' },
+    { id: 'v', type: 'wheel', shows: 'date', exposed: false, ticks: 'none', rim: 'none', wfinish: 'flat', every: 1, accent: 'auto' }] }).comps;
   ok(cw[0].exposed === true && cw[0].ticks === 'all' && cw[0].rim === 'double' && cw[0].wfinish === 'sunray' && cw[0].every === 5 && cw[0].accent === '#ff0000', 'the wheel\u2019s look is kept', JSON.stringify(cw[0]));
-  // P5d.3n: the old index field becomes an index part (old laser = lens, in the wheel's accent); none without exposure
-  const cix = cw.filter((c) => c.type === 'index');
-  ok(!('index' in cw[0]) && cix.length === 1 && cix[0].host === 'w' && cix[0].istyle === 'lens' && cix[0].color === '#ff0000', 'an exposed wheel\u2019s index field becomes an index part', JSON.stringify(cix));
-  ok(['exposed', 'index', 'ticks', 'rim', 'wfinish', 'every', 'accent'].every((k) => !(k in cw[1])), 'and its defaults drop out (no index without exposure)', JSON.stringify(cw[1]));
-  const ex = face([{ id: 'w', type: 'wheel', host: 'dial', size: 150, form: 'ring', inner: 110, shows: 'minute', exposed: true, index: 'line', every: 5, ticks: 'all' }]);
+  ok(['exposed', 'ticks', 'rim', 'wfinish', 'every', 'accent'].every((k) => !(k in cw[1])), 'and its defaults drop out', JSON.stringify(cw[1]));
+  const ex = face([{ id: 'w', type: 'wheel', host: 'dial', size: 150, form: 'ring', inner: 110, shows: 'minute', exposed: true, every: 5, ticks: 'all' }]);
   ok(ex.lay.wheels[0].exposed && ex.lay.wheels[0].every === 5 && ex.comps(new Date(2026, 10, 2), null).tops.dial, 'an exposed ring needs no cutout, and draws over its face');
   const P = B.wheelPlan3([{ id: 'w', type: 'wheel', shows: 'minute', exposed: true }]);
   ok(P.rows.length === 1 && P.rows[0].exposed && P.rows[0].cadence === 'jump', 'and turns as a row (a plate per value would be the whole ring)');
@@ -366,9 +355,9 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
 }
 // ---- canon ----------------------------------------------------------------------------------
 {
-  const c = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', host: 'dial', shows: 'nope', digit: 'whole', dir: 'cw', cadence: 'jump', ease: 0, overhang: 'shown', wbg: 'auto', tsize: 1, blank0: true },
+  const c = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', host: 'dial', shows: 'nope', digit: 'whole', dir: 'cw', cadence: 'jump', ease: 0, overhang: 'shown', wbg: 'auto', blank0: true },
     { id: 'k', type: 'cutout', host: 'w', at: 90, angle: 3, dist: 4, shape: 'window', style: 'frame', span: 30, bar: true, w: 0, frameColor: 'gilt' }] }).comps;
-  ok(c[0].shows === 'date' && ['digit', 'dir', 'cadence', 'ease', 'overhang', 'wbg', 'tsize', 'blank0'].every((k) => !(k in c[0])), 'a wheel keeps no default and no field its state cannot use', JSON.stringify(c[0]));
+  ok(c[0].shows === 'date' && ['digit', 'dir', 'cadence', 'ease', 'overhang', 'wbg', 'blank0'].every((k) => !(k in c[0])), 'a wheel keeps no default and no field its state cannot use', JSON.stringify(c[0]));
   ok(['angle', 'dist', 'shape', 'style', 'span', 'bar', 'w', 'frameColor'].every((k) => !(k in c[1])) && c[1].at === 90, 'a cutout keeps only where it reads', JSON.stringify(c[1]));
 }
 // ---- Layers ----------------------------------------------------------------------------------

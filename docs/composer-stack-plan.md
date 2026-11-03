@@ -1549,10 +1549,15 @@ owner:
   this over refusing old designs, so every theme ever baked stays editable). A missing step
   is refused by name. Built with an empty table (schema 1 needs none); tested with a pretend
   schema 2.
-- *Clean slate:* `canonDesign` still carries migrations from before schema 1 (windows into
-  wheels, the wheel's index field, the old faces, `tsize`). No design file or theme carries
-  a pre-schema-1 design (every pre-P7 theme has none), so they can go once autosave and My
-  designs are cleared of old shapes.
+- *Clean slate (done 2026-11-02, clock v1.2.6):* the conversions from before schema 1 are
+  gone: `retireWindows` (date, day and month windows into wheels, classic moons into moon
+  wheels), the wheel's `index` field lifted into an index part (`WHEEL_INDEX`), the wheel's
+  relative `tsize` (the layout sizes figures from `fpx` or the fit alone), the `out`/`in`
+  faces (`WHEEL_FACES` is level or an angle), and the pre-P5c design fields. Nothing that
+  carries a design predates schema 1, autosave and My designs hold canonised designs, and no
+  preset uses an old shape (checked). The pace estimate priced snapping wheels with the old
+  `tsize` formula; it reads `fpx` now. Schema 1 is the baseline every later migration step
+  starts from.
 
 **Gold's card, re-baked (2026-11-02, clock v1.2.5, OS v1.2.3).** The owner had every old
 theme deleted from orb-B's card (28 files, none carrying a design) and a handful re-baked by

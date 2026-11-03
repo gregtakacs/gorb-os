@@ -37,6 +37,7 @@ while the art CRC, the geometry CRC, the serial and the name all match exactly. 
 would go red on every re-bake for a reason nobody should care about, and would hide the
 one change that matters: a default that lost its preview row.
 """
+import json
 import os
 import shutil
 import sys
@@ -143,14 +144,29 @@ def check(path):
         return _fail("the preview row is not the bank's last extent, so it displaced a row "
                      "authored before it"), ""
 
+    # D43 P7: a theme the editor cannot reopen is not one the hub may ship as its first face
+    # (owner, 2026-11-02): the default carries its design, of the app it themes
+    d, why = ob.read_design(open(path, "rb").read())
+    if d is None:
+        return _fail("the default theme carries no design", why +
+                     " — bake it with the current clock editor, which puts the design in every theme"), ""
+    try:
+        doc = json.loads(d.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as e:
+        return _fail("the default theme's design is not a design document", str(e)), ""
+    if doc.get("format") != "wc-design" or doc.get("app") != THEME_SECTION:
+        return _fail("the default theme's design is %r of app %r, not a clock design"
+                     % (doc.get("format"), doc.get("app"))), ""
+
     shelf = os.path.splitext(os.path.basename(path))[0]
     if shelf.lower() != h["name"].lower():
         return _fail("the shelf file is %r and the theme is named %r" % (shelf, h["name"]),
                      "the card stem is %s, and the Themes face lines the row up on the name"
                      % _ot.card_stem(blobs[0]["slug"], h["name"])), ""
-    return 0, ("%s: FORMAT %d abi %d, %d elements, preview %dx%d %d B, art %d B, serial %d"
+    return 0, ("%s: FORMAT %d abi %d, %d elements, preview %dx%d %d B, art %d B, serial %d, "
+               "design %d B (clock %s, schema %s)"
                % (shelf, h["fmt"], h["abi"], len(els), p["w"], p["h"], spr["size"],
-                  h["art_size"], h["serial"]))
+                  h["art_size"], h["serial"], len(d), doc.get("appVersion"), doc.get("schema")))
 
 
 def main():

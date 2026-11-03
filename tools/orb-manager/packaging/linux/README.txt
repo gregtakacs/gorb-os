@@ -26,4 +26,7 @@ group and log in again:
 Firewall: orbs are found on the local network by mDNS (UDP 5353); allow it if
 your firewall blocks it.
 
+Using it, step by step: https://github.com/gregtakacs/gorb-os/blob/main/docs/user-guide.md
+Problems and ideas: https://github.com/gregtakacs/gorb-os/issues
+
 Licences: LICENSE.txt (Orb Manager) and THIRD_PARTY_NOTICES.txt.

@@ -1,5 +1,9 @@
 # Releasing Orb Manager
 
+This page covers the release workflow and its signing setup. The build steps that come
+before a tag (firmware bundle, shelf apps, `make check`) are in
+[BUILDING.md § Cutting a release](BUILDING.md#cutting-a-release).
+
 A release is the hub for three platforms as a single executable, with the current
 firmware, the shelf apps and the default theme built in:
 
@@ -8,6 +12,7 @@ firmware, the shelf apps and the default theme built in:
 | `orb-manager-<tag>-windows-amd64.zip` | Windows 10/11, x64 | Azure Artifact Signing |
 | `orb-manager-<tag>-macos.dmg` | macOS 12+, Apple silicon and Intel (universal) | Developer ID, notarized and stapled |
 | `orb-manager-<tag>-linux-amd64.tar.gz` | Linux x86-64 | none (the sha256sums cover it) |
+| `orb-sdk-<os version>.tar.gz` | app developers ([apps/README.md](apps/README.md)) | none |
 
 `.github/workflows/release.yml` builds and signs all three on GitHub Actions. It does
 the signing only when the secrets below exist. Without them it still ships: the

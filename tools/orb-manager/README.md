@@ -1075,6 +1075,22 @@ discover.go          the mDNS listener: candidate list, GET /api/orbs (merged by
                      internal/orbmdns cannot import an HTTP client to make it otherwise
 runtime.go           the OS theme runtime at /runtime/<id>/ (dc-runtime, theme builder,
                      vendored React/Babel/fonts) and the editor-runtime check (D43 §9)
+library.go           the app and theme library (S6): the directory ladder, GET /api/library,
+                     import, and POST /api/library/restore
+seed.go              the compiled-in shelf: seeds the user library on first run, with a
+                     ledger so a deleted file never respawns and an edited one is never touched
+installflow.go       the library install: shelf apps and the default theme pushed onto a dial
+editor.go            an app's editor served same-origin out of its container (D37 §5.3)
+seedverify.go        the end of a provisioning run: did the join land, did the seed install
+cleanslate.go        the first-flash clean slate (factory NVS)
+diskcache.go         bytes an orb already paid to send (previews), kept on disk
+instance.go          one hub per operator: a second launch hands off to the first
+launchprobe.go       telling an orb from a board that used to be one, at launch
+orbcmd.go            one serial-command round trip, budgeted
+zones.go             the orb's time zone list (internal/orbzones, generated from orb_net.c)
+log_gui_windows.go   the windowsgui build's log redirect to %TEMP%\orb-manager.log
+packaging/           per-OS release packaging: dist.sh stage/pack, the .app bundle, the Linux
+                     installer and udev rule, per-OS README.txt, THIRD_PARTY_NOTICES (notices.py)
 cmd/orbflash/        headless face of the same flasher
 cmd/orbvendor/       one-time fetcher: CDN scripts + font subsets -> web/runtime/vendor/
                      with a sha256/SRI MANIFEST; -verify checks the committed tree
@@ -1133,9 +1149,11 @@ executable**, then the OS config dir where an import files what the operator cho
 then the `tools/orb-manager/` tree of a reachable clone. `GET /api/library` answers both
 resolved paths and says which rung won, in `appsSource`/`themesSource`.
 
-The exe-dir rung is the one a downloaded hub stands on, so every build target mirrors both
-directories beside the binary it produces — `make manager`, `windows`, `windows-gui`,
-`release`, and `make library` on its own. The copy merges (`cp -R src/. dst/`) rather than
+A downloaded hub carries no folders: the shelf is compiled in (`seed.go`) and seeds the
+user config dir rung on first run, so that is the rung a release stands on. The exe-dir
+rung is the dev layout: `make manager`, `windows`, `windows-gui` and `make library` mirror
+both directories beside the binary they produce, so a re-baked app reaches the hub with
+no reinstall. The copy merges (`cp -R src/. dst/`) rather than
 wipes, so a rebuild refreshes every shipped file and an app you imported beside the binary
 survives it. What lands there is build output: `clean` removes it, and the tracked `apps/`
 and `themes/` in this package are the source of truth. Before this, only `release` copied
@@ -1185,9 +1203,10 @@ make windows    # cross-compile bin/windows-amd64/{orb-manager,orbflash}.exe (co
 make windows-gui # the one-window hub exe (PE subsystem 2: double-click shows only the app window)
 make win-test   # run the Windows test binaries natively, through WSL interop
 make crosscheck # go vet every supported GOOS/GOARCH, tests included
-make release    # cross-compile the darwin/linux/windows artifact set into
+make release    # cross-compile the darwin/linux/windows hub into
                 # bin/release/<name>-<os>-<arch>/ + sha256sums.txt, no network needed;
-                # the Windows hub ships windows-gui, the flasher stays console
+                # the Windows hub is the windows-gui build. orbflash does not ship
+make dist       # the downloadable archives (unsigned) from that, into bin/dist/
 ```
 
 ### What the client cannot be checked with here
@@ -1364,41 +1383,24 @@ sustains itself. This is the same behaviour Linux and macOS have. If a live orb 
 does not appear after this, the next suspect is the access point converting or
 dropping multicast over Wi-Fi, which is on the network, not the hub.
 
-### Ship path for a non-technical Windows user (not yet built)
+### Ship path for a non-technical Windows user
 
-A bench run and a first-day user run differ in three places, all measured here. The
-`windows-gui` build already fixes the first: double-clicking the release `.exe` opens
-one app window, no console, no PowerShell. Two remain, and neither is a code change —
-both are distribution artifacts this repo does not yet produce.
+The release is one `windowsgui` `.exe` in a zip, signed with Azure Artifact Signing when
+the secrets are set (`.github/workflows/release.yml`, `RELEASING.md`). Double-clicking it
+opens one app window, with no console.
 
-1. **The manual firewall step.** Inbound UDP 5353 is unavoidable: the orb's
-   self-refresh announce is unsolicited inbound, and Windows Defender Firewall drops it
-   for a program with no allow rule. A first `bind(5353)` pops the OS "Allow access"
-   dialog, which creates the right rule scoped to the current profile — so the *manual*
-   `New-NetFirewallRule` above is a bench shortcut, not a user step. It only fails on a
-   Public profile or an unsigned `.exe` the OS declines to prompt cleanly for. The
-   install-time fix: the installer adds the rule as an elevated custom action running as
-   SYSTEM, so the user sees no firewall UI at all. Verify the true first-run prompt on a
-   fresh profile; this box has rules already and no clean VM to clear them on.
-2. **SmartScreen.** "Windows protected your PC" fires because the downloaded `.exe` is
-   unsigned and carries Mark-of-the-Web. Authenticode signing clears it, and the
-   installer wraps the single signed binary so there is one artifact to sign:
-   - **Azure Trusted Signing** — about \$10/month, cloud cert signed through `signtool`
-     after a one-time org identity check. The cheap modern path; the intended default.
-   - **OV or EV cert** (DigiCert, SSL.com, GlobalSign) — \$100–\$400/year. EV clears the
-     SmartScreen reputation gap immediately; an OV or brand-new Trusted Signing cert
-     still trips SmartScreen until clean downloads accrue. Tell the first users once.
-   - Self-signed is free and useless here: it is trusted only where the root is installed.
-   Installer choice: **Inno Setup** (one signed `setup.exe`, simplest) or **WiX** (signed
-   `.msi`, the format enterprises and SmartScreen favor). Install to `Program Files` for
-   a stable path, add a Start Menu shortcut, and add the firewall rule as the SYSTEM
-   custom action above. Then the shipped experience is: download one signed installer,
-   run it elevated, double-click one shortcut — no terminal, no firewall prompt, no
-   "More info → Run anyway".
-
-Until an installer exists, `make release` ships the loose `.exe` and the user does the
-Unblock-File and Allow-access steps by hand. That is the gap the signing task closes;
-nothing in this repo blocks it.
+- **Firewall.** Inbound UDP 5353 is unavoidable, because the orb's self-refresh announce
+  is unsolicited inbound. The first `bind(5353)` pops Windows' "Allow access" dialog,
+  which creates the right rule for the current profile. The manual `New-NetFirewallRule`
+  above is a bench shortcut. On a Public profile the dialog does not appear, and the
+  user must allow the program by hand.
+- **SmartScreen.** A signed exe clears the "unknown publisher" warning. A new signing
+  identity still trips SmartScreen's reputation check until downloads accrue, and an
+  unsigned build always does: the release notes then tell the user to choose More info,
+  then Run anyway.
+- **No installer.** An Inno Setup or WiX installer could add the firewall rule as a
+  SYSTEM custom action and a Start Menu shortcut. It is not built. The loose exe is the
+  whole program.
 
 Give Windows the cable first. A port attached to WSL is invisible to Windows, and the
 picker has nothing to list — it says `(no serial ports found)`, correctly. Release it

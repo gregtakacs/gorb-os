@@ -2,9 +2,11 @@
 
 The reference for what is in the tree, what each subsystem's contract is, and
 where to add things. `README.md` is the front page; this file is the map.
-Every claim here is dated against commit `7590feb` (v1.1.0, 2026-10-22). When
-this file and a `docs/*-plan.md` disagree, the plan doc wins — plans carry the
-owner's numbered rulings; this file only describes what those rulings built.
+Last refreshed 2026-11-03 at firmware v1.2.6. When this file and a plan doc
+disagree, the plan doc wins — plans carry the owner's numbered rulings; this file
+only describes what those rulings built. The living plans are
+`docs/app-platform-plan.md` and `docs/composer-stack-plan.md`; finished ones are in
+`docs/history/`.
 
 ## What the device is
 
@@ -55,17 +57,20 @@ Order is load-bearing; the comments in `main.c` carry the why for each rung.
 |---|---|
 | `display/` | SPI2 QSPI bring-up + LVGL. Panel driver is the managed `espressif__esp_lcd_co5300`. TE pin (GPIO13) read; QSPI stays at the vendor 40 MHz — 80 MHz shears rows on this board. `DISPLAY_BENCH` compile flag gates frame timing. |
 | `gfx/` | The compositor. `orb_sched` decides frame cadence; `orb_layers` is the app layer table (LVGL-free header, host-compiled as shipped); `orb_gfx` the drawing primitives. |
-| `clock/` | `clock_view` the themed dial; `clock_base` the face shown when no theme is resident (§26 slice 1 — separate TU so the two cannot share state); `clock_themes` the theme registry glue. |
+| `stage/` | `orb_stage` — the dial stage a themed app draws through (`apps/sdk/orb_stage.h`): the theme's rows, posed and committed by the OS. The clock is a wasm app that drives it; no clock code lives in the firmware. |
+| `menu/` | `menu_view` the OS menu (ABOUT, DISPLAY, PERMISSIONS, APPS, then each app's options page) and `themes_page` the theme picker. |
+| `audio/` | ES8311 codec + NS4150B amp over I2S; `orb_sound` plays the theme's tick and chime sounds (D39) for apps holding the `sound` cap. |
+| `usb/` | `orb_usb_msc` shares the SD card with the host as a USB disk (the default `ORB_USB_MODE_MSC`); `orb_usb_mtp` is the retired MTP mode, compiled to a stub. |
+| `util/` | `orb_panic` the last-crash record in `/api/v1/status`; `orb_io_window` marks a large transfer (card upload, theme store, OTA) so wasm time budgets are extended rather than blamed; `orb_layout_carry` moves `storage` NVS across the Layout B → C table change (§43); `orb_log`. |
 | `art/` | The FORMAT 3 theme stack. `art_bank` mmaps the `assets` partition once at boot and never unmaps (LVGL descriptors cache pointers into it). `orb_theme` the store: boot resolution, staged installs, single-slot flip (Migration 1). `orb_bundle` the FORMAT 3 reader — the parse mirror of `tools/orbbundle.py`. `orb_clock3` the clock section's projection. `orb_elems` the (class, slot, frame)→pixels seam every themed app reads through. Zero-copy by design: parse and refuse, never clamp. |
 | `assets/` (in `main/`) | `orb_assets.c` — the asset registry, the one file that knows what a slot IS. Compiles without LVGL so host suites can link it directly. |
 | `app/` | The platform: registry, manifest reader, install catalog, SD scan, wasm tier, broker, jobs, carousel. Detail below. |
-| `net/` | `orb_net.c` — everything HTTP and WiFi in one TU: STA + provisioning SoftAP (with captive-portal probes + DNS responder), SNTP on lease (2 servers, `LWIP_SNTP_MAX_SERVERS=3`), timezone + name as NVS device config, LAN OTA into the A/B slots, the whole `/api/v1` surface, and the pre-gzipped PWA config shell served from the `www` partition. Request bodies are parsed by a hand-rolled bounded scanner (`json_find`) — deliberately not cJSON; it is the host-tested seam. `orb_mdns` advertises `_orb._tcp`. |
+| `net/` | `orb_https` the TLS client apps reach through `orb_net_request` (`net` cap); `orb_home`/`orb_geo`/`orb_cities` the home location and the zone it implies. `orb_net.c` — everything HTTP and WiFi in one TU: STA + provisioning SoftAP (with captive-portal probes + DNS responder), SNTP on lease (2 servers, `LWIP_SNTP_MAX_SERVERS=3`), timezone + name as NVS device config, LAN OTA into the A/B slots, the whole `/api/v1` surface, and the pre-gzipped PWA config shell served from the `www` partition. Request bodies are parsed by a hand-rolled bounded scanner (`json_find`) — deliberately not cJSON; it is the host-tested seam. `orb_mdns` advertises `_orb._tcp`. |
 | `sd/` | `orb_sd` the SDSPI FAT mount (retries on demand via `POST /api/v1/sd/rescan` — no hot-plug sense); `orb_files` the file helpers. |
 | `knob/` | KY-040 quadrature + press, GPIO edge ISRs. |
 | `input/` | `input_router` — the one place that decides which screen gets a knob event. Turn swaps apps, push opens, hold returns to the menu. |
 | `imu/` | QMI8658 on the shared I2C bus (probes both strap addresses). Used for motion wake. |
 | `power/` | `idle_dim` — dimming decisions at its own priority; the issued brightness write is drained and applied by the LVGL task (boot ladder step 8). |
-| `color/` | The HSB picker — a compiled-in app, and the model for what an app iface looks like. |
 
 ## The app platform (`main/app/`)
 
@@ -74,11 +79,13 @@ Order is load-bearing; the comments in `main.c` carry the why for each rung.
   tagged `ORB_APP_KIND_SHELL`. The image ships no apps (D36): the clock and the
   HSB editor are ordinary card apps the hub seeds onto the card and installs
   through the ordinary doors, so a row that can be removed is a row the owner
-  owns. `tools/make_factory_apps.py` writes those two hub-side seed containers.
+  owns. Each app is a directory under `apps/` with an `app.json` manifest;
+  `tools/make_factory_apps.py` builds them through `apps/sdk/orbsdk.py` and writes
+  the shelf containers the hub compiles in.
 - **Manifest** (`orb_app_manifest.c`): the `.orbapp` reader. Carries slug,
   entry point, `period_ms` floor, declared settings, and the declared grant
-  list. `behaviour_kind` picks the iface: `ORB_BEHAVIOUR_COLOR_PICKER`,
-  `ORB_BEHAVIOUR_WASM`, … (append-only enum).
+  list. `behaviour_kind` is `ORB_BEHAVIOUR_WASM` for every app; kinds 1, 3 and 4
+  (the compiled picker, clock and flights) are retired and never reused.
 - **Install** (`orb_app_install.c`): the `apps` partition catalog — manifest
   copies + geometry + wasm code, survives a card pull. Grant and fault words
   in NVS; secrets in the credential store.
@@ -105,8 +112,8 @@ Order is load-bearing; the comments in `main.c` carry the why for each rung.
   the config entries may block on NVS, so apps must reach them through
   `job_post`.
 - **Caps** (`orb_svc.h`): `TIME CONFIG UI ART` are free and always on —
-  enforced by not being revocable. The owner-granted four: `POWER NET
-  SD_READ THEMES`. Declare-at-install is the answer (ruling D19); the dial's
+  enforced by not being revocable. The owner-granted six: `POWER NET
+  SD_READ THEMES SOUND LOCATION`. Declare-at-install is the answer (ruling D19); the dial's
   ladder is the door that closes them again. Enum numbers are the NVS grant
   word layout: append, never reorder.
 - **Settings quota**: 2 KB per app (`ORB_CFG_QUOTA_BYTES`) against the 24 KB
@@ -116,8 +123,8 @@ Order is load-bearing; the comments in `main.c` carry the why for each rung.
 - **wasm tier** (`orb_app_wasm.c` + `components/wasm3/`, vendored with
   `PROVENANCE.md`): one generic behaviour module, N guest instances. A guest
   gets its entry points CALLED by the registry and calls the broker BACK
-  through imports bound from its granted caps — the same contract a compiled
-  app meets, at the same line. There is no per-app C code for a wasm app.
+  through the `orb.*` imports in `s_binds` (mirrored as `apps/sdk/binds.json`),
+  each gated on its cap. There is no per-app C code in the firmware.
 - **SD drop zone** (`orb_app_scan.c`): `/sd/apps/` is scanned beside the card;
   installs cross into the `apps` partition from there.
 - **Carousel** (`orb_carousel.c`): the knob-driven app switcher chrome (name
@@ -186,9 +193,9 @@ Art is baked on the bench; the device never decodes PNG or JSON.
   re-quantises to 256 colours before the bake sees it (~68/255 per-channel
   loss vs ≤7 from PNG); a baked bank is final RGB565 output and is never a
   re-bake input.
-- `tools/bake_clock.py <theme_dir>` produces the FORMAT 2 clock bank;
-  `tools/watch-composer/` is the browser dial composer whose export is a
-  FORMAT 3 `.orbtheme`.
+- The Theme Editor (`apps/clock/editor/`, shipped inside `clock.orbapp` and served
+  by the hub) bakes a FORMAT 3 `.orbtheme` in the browser. `tools/bake_clock.py`
+  is the bench baker for layered kits.
 - A `.orbtheme` bundle (`tools/orbbundle.py` writes it, `main/art/orb_bundle.c`
   reads it): 128-byte header, geometry at +128, N fixed 40-byte section
   records, self-describing blobs, art banks sector-aligned at the end. One
@@ -242,8 +249,8 @@ idf.py, seconds per suite. Start with:
     python3 tools/host_orbapp_test.py         # manifest format
     python3 tools/orb_version.sh --self-test  # the version composer
 
-The bench suites (`tools/bench_*.sh`) run on hardware and follow the detached
-launch rule in `.clinerules`.
+`make check-host` runs every suite. The bench scripts (`tools/bench/`) run on
+hardware and follow the detached launch rule in `.clinerules`.
 
 ## Tooling
 
@@ -289,7 +296,8 @@ launch rule in `.clinerules`.
   writing, a flock refuses a second writer, the version stamp in the built
   `.bin` is audited against the working tree, and the last two images per orb
   are kept in `/tmp`.
-- **`tools/watch-composer/`** — browser dial composer; exports FORMAT 3.
+- **`apps/sdk/orbsdk.py`** — the app SDK's one tool: build, pack, install,
+  scaffold, and (in a clone) the bind-table check and the SDK tarball.
 - **`tools/orbapp.py`** — `--inspect` / `--disclose` a `.orbapp` container.
 - Versioning: `tools/orb_version.sh` is the single composer of the
   `esp_app_desc_t.version` stamp (`v<MA>.<MI>.<PA>[-pre]+<sha>[-dirty]`,
@@ -330,14 +338,13 @@ NOT materialize into an existing local `sdkconfig` — track the value in
    Keep any body parsing a pure bounded scanner like `json_find` so a host
    suite can lift it, and pin the negative cases there (escaped quotes,
    control bytes, overlong values, decoy keys).
-4. **New app:** author a `.orbapp` (manifest declares settings, grants,
-   `period_ms` floor). A wasm guest needs no per-app C code —
-   `orb_app_wasm.c` is one iface for N instances. A compiled-in app follows
-   `color/` and registers through `orb_app.c`'s table; since D36 the only
-   compiled row is the shell, and every other app — the clock and the picker
-   included — arrives as a container through the hub's library.
-5. **New theme/dial:** never hand-write art bytes — compose in
-   `tools/watch-composer/` or bake with `tools/bake_clock.py`, then install
+4. **New app:** a directory under `apps/` (or its own repo) with `app.json`,
+   `version.txt` and C sources, built with `apps/sdk/orbsdk.py`
+   ([apps/README.md](../apps/README.md)). A wasm guest needs no per-app C code —
+   `orb_app_wasm.c` is one iface for N instances. A new OS call is a row in
+   `s_binds`, a declaration in `apps/sdk/orb.h`, and `orbsdk.py binds --write`.
+5. **New theme/dial:** never hand-write art bytes — compose in the Theme Editor
+   or bake with `tools/bake_clock.py`, then install
    through `/themes`, the hub, or the SD drop zone. Touch a format's writer,
    reader, and parity suite in one commit (three-way rule).
 6. **Validate before flashing:** the relevant `tools/host_*.py` suites, then

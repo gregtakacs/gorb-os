@@ -1,0 +1,59 @@
+name: Bug report
+description: Something on the orb, in Orb Manager, or in the Theme Editor does not work
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. One bug per issue, please. For questions, use
+        [Discussions](https://github.com/gregtakacs/gorb-os/discussions).
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where is the problem?
+      options:
+        - On the orb (firmware, dial, knob, menu)
+        - Orb Manager (the desktop program)
+        - Theme Editor
+        - An app (say which below)
+        - Building from source
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      placeholder: I pressed Install on the Apps tab and the orb rebooted, but the app never appeared…
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+  - type: input
+    id: hub
+    attributes:
+      label: Orb Manager version
+      description: It is in the name of the file you downloaded, e.g. v1.2.6.
+  - type: input
+    id: fw
+    attributes:
+      label: Firmware version on the orb
+      description: The orb's Firmware tab in Orb Manager, or ABOUT on the orb's menu.
+  - type: dropdown
+    id: os
+    attributes:
+      label: Your computer
+      options: [Windows, macOS, Linux, Not relevant]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: |
+        Windows: %TEMP%\orb-manager.log. macOS/Linux: start orb-manager from a terminal and copy what it prints.
+        A photo of the dial helps for anything you can see.
+      render: text

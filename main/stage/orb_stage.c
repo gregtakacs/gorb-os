@@ -1693,7 +1693,10 @@ static void clock_layers_refresh(void)
         }
         d.show = show;
         if (memcmp(&d, &r->d, sizeof d) == 0) continue;
-        const bool wake = !r->d.show && show;
+        /* A row's first box: no mark site knew it. A drum also wakes the first time it is
+         * described as one (D43): its classic widget stays hidden, so the boot's LVGL render
+         * never drew it, and a drum standing still never marks its own window. */
+        const bool wake = (!r->d.show && show) || (d.drum && !r->d.drum);
         svc->layer_set(s_lay_app, s_lay_handle[i], &d);
         r->d = d;
         if (wake)                     /* the row's first box: no mark site knew */

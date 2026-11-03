@@ -175,6 +175,16 @@ step ran, before you push a tag.
   file, and `60-orb.rules`, which grants the logged-in user USB serial access without
   needing the dialout group.
 
+## Tested releases
+
+The owner downloads each published package on a real machine and runs it before
+the release is announced.
+
+| Release | Package | Tested | Notes |
+|---|---|---|---|
+| v1.2.7 | Windows zip | 2026-11-03 | Unsigned. Ran from the browser download; the only prompt was the firewall (private networks, allowed). SmartScreen did not warn on this machine, which is not a promise for others. |
+| v1.2.7 | macOS dmg | 2026-11-03 | Not notarized. macOS showed "could not verify"; System Settings › Privacy & Security › Open Anyway let it run. The release notes' right-click → Open no longer works on macOS 15 and later; fixed for v1.2.7-2. |
+
 Not done yet: auto-update, Windows ARM64 and Linux ARM64 builds, a Windows installer
 (.msi), and Linux distro packages (.deb, Flatpak). The archive layout is the same on
 every OS, so adding any of these later is a packaging change, not a hub change.

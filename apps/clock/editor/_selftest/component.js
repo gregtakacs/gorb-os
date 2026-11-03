@@ -2622,22 +2622,29 @@ class Component extends DCLogic {
     const hands = [], shadows = [];
     let oth = 0, sdx = 0, sdy = 0;
     const Dm = this.design();
+    /* The opening's lens: composeLayers draws every hand through inset x dynK about the centre
+     * (a narrowed case opening shrinks the whole face), so a seated hand ships through it too,
+     * sprite, pivot, place and shadow. At 1 the row is the sprite as it stands. */
+    const K = (fc.inset || 1) * (fc.dynK || 1), lens = (v) => 233 + (v - 233) * K;
     for (const h of (fc.hands || [])) {
       if (ROLE[h.id] === undefined || !h.sp) continue;
       const mo = (this.handComp(h.id, Dm) || {}).motion;
       if (mo && (mo.path === 'slide-x' || mo.path === 'slide-y')) continue;   // a slide rides the pointer table
-      const w = Math.round(h.sp.c.width), hh = Math.round(h.sp.c.height), px = Math.round(h.sp.px), py = Math.round(h.sp.py);
+      const w = Math.max(1, Math.round(h.sp.c.width * K)), hh = Math.max(1, Math.round(h.sp.c.height * K)), px = Math.round(h.sp.px * K), py = Math.round(h.sp.py * K);
       const c = document.createElement('canvas'); c.width = w; c.height = hh;
-      c.getContext('2d').drawImage(h.sp.c, 0, 0);
+      if (K === 1) c.getContext('2d').drawImage(h.sp.c, 0, 0);
+      else { const cx = c.getContext('2d'); cx.imageSmoothingQuality = 'high'; cx.drawImage(h.sp.c, 0, 0, w, hh); }
       oth += w * hh * 3;
-      const hrow = { slot: ROLE[h.id], rgba: pixOf(c), w, h: hh, x: Math.round(h.x) - px, y: Math.round(h.y) - py, pivot_x: px, pivot_y: py };
+      const hrow = { slot: ROLE[h.id], rgba: pixOf(c), w, h: hh, x: Math.round(lens(h.x)) - px, y: Math.round(lens(h.y)) - py, pivot_x: px, pivot_y: py };
       /* D41: the hand's own drive. A rotation that only changes its cadence keeps the
-       * slot's mapping (no source named); a fan or a disc names its source and path. */
-      const dc = this.driveCols3(h.kind, mo);
+       * slot's mapping (no source named); a fan or a disc names its source and path. The
+       * standing turn rides every path: an uploaded hand's facing (artRot), which the
+       * editor adds to the time angle (E.handZeroDeg) and the sprite does not carry. */
+      const dc = this.driveCols3(h.kind, mo), z10 = Math.round(window.WatchEngine.handZeroDeg(h) * 10);
       if (dc) {
-        hrow.drive = dc.path === 'rotate' ? { cadence: dc.cadence, cad_arg: dc.cad_arg, ease: dc.ease }
-          : { src: dc.src, motion: dc.motion, span: dc.span, zero: dc.zero, vmin: dc.vmin, vmax: dc.vmax, cadence: dc.cadence, cad_arg: dc.cad_arg, ease: dc.ease };
-      }
+        hrow.drive = dc.path === 'rotate' ? { cadence: dc.cadence, cad_arg: dc.cad_arg, ease: dc.ease, zero: z10 }
+          : { src: dc.src, motion: dc.motion, span: dc.span, zero: (dc.zero | 0) + z10, vmin: dc.vmin, vmax: dc.vmax, cadence: dc.cadence, cad_arg: dc.cad_arg, ease: dc.ease };
+      } else if (z10) hrow.drive = { zero: z10 };
       hands.push(hrow);
       if (h.noShadow) continue;   // a disc casts nothing the device could turn with it
       /* Every seated hand casts, shadowed and unshadowed bakes being two looks
@@ -2648,18 +2655,18 @@ class Component extends DCLogic {
        * offset rides the PIVOT COLUMN — centre = x + column lands the shadow's
        * centre on hand centre + (dx,dy), screen-fixed while it turns with the
        * hand, exactly what the FORMAT 2 .h record carries. */
-      const sh = fc.handShadow(h), bl = sh.blur, pd = Math.ceil(bl * 1.5 + 2);
-      const dx = Math.round(sh.dx), dy = Math.round(sh.dy);
+      const sh = fc.handShadow(h), bl = sh.blur * K, pd = Math.ceil(bl * 1.5 + 2);
+      const dx = Math.round(sh.dx * K), dy = Math.round(sh.dy * K);
       if (sh.alpha > 0.01) {
         const sil = document.createElement('canvas'); sil.width = w; sil.height = hh;
-        const sx = sil.getContext('2d'); sx.drawImage(h.sp.c, 0, 0);
+        const sx = sil.getContext('2d'); sx.drawImage(c, 0, 0);
         sx.globalCompositeOperation = 'source-in'; sx.fillStyle = '#000'; sx.fillRect(0, 0, w, hh);
         const mc = document.createElement('canvas'); mc.width = w + 2 * pd; mc.height = hh + 2 * pd;
         const mx = mc.getContext('2d'); mx.globalAlpha = sh.alpha;
         if (bl > 0.1) mx.filter = 'blur(' + (bl / 2).toFixed(2) + 'px)';
         mx.drawImage(sil, pd, pd);
         shadows.push({ slot: ROLE[h.id], rgba: pixOf(mc), w: mc.width, h: mc.height,
-                       x: Math.round(h.x) - px - pd, y: Math.round(h.y) - py - pd,
+                       x: Math.round(lens(h.x)) - px - pd, y: Math.round(lens(h.y)) - py - pd,
                        pivot_x: px + pd + dx, pivot_y: py + pd + dy });
         oth += mc.width * mc.height * 3;
         if (ROLE[h.id] === 0) { sdx = dx; sdy = dy; }   // theme-wide light = the hour hand's

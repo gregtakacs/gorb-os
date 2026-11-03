@@ -3608,8 +3608,10 @@
                    flags: h.flags || 0, scale16: h.scale16 || 0 };
       var hsrc = hd5.src ? String(hd5.src) : (sd ? sd.src : null);
       if (hsrc) {
+        // a slot hand without a source of its own keeps the slot's turn, from the standing
+        // angle the composer names (an uploaded hand's facing); 0 when it names none
         var hv = v6Drive(hd5.src ? hd5.motion : 'rotate',
-                         hd5.src ? hd5 : { span: TURN_10, zero: 0, vmax: sd.vmax }, h.x, h.y);
+                         hd5.src ? hd5 : { span: TURN_10, zero: hd5.zero | 0, vmax: sd.vmax }, h.x, h.y);
         var hc = v6Cadence(hd5.cadence, hd5.cad_arg,
                            hsrc === 'second' ? secCad : { cadence: CAD_SWEEP, cad_arg: 0 });
         if (hv.jump && hc.cadence === CAD_SWEEP) hc = { cadence: CAD_JUMP, cad_arg: 0 };

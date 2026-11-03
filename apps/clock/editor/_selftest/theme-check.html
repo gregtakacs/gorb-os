@@ -1,0 +1,384 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>theme-check</title>
+<body><pre id="out">booting…</pre>
+<!-- The pixel checks export-test.html took with it (README, "coverage lost"), re-homed on the
+     one artifact that ships: the baked .orbtheme. Every case below bakes a design through the
+     real exportTheme3 (the Send/Save path, ticker live), reads the file back with the
+     baker's own verifyBundle3, decodes the stored plate and hand rows to pixels, and asks the
+     question on those pixels. A feature is proven only when it reaches the bytes the orb
+     draws; the editor's canvases are the input, never the evidence.
+
+     Two kinds of check:
+       parity   the stored plate equals the Panel view's plate, code for code, and each hand
+                row equals the editor's hand sprite, texel for texel. The Panel view is what
+                the editor shows as "the orb", so this is the editor/orb contract itself.
+       feature  bake A and B that differ in one setting; the change must land where it
+                belongs in the stored pixels and nowhere it does not.
+
+     Run it the way bank3-drive runs (deploy_test_folder.py, then):
+       chrome --headless=new --disable-gpu --no-sandbox --virtual-time-budget=1800000 \
+         --dump-dom 'file://<abs-path>/_selftest/theme-check.html' > /tmp/theme_check.html
+     <title> is PASS or FAIL; the report is the <pre>. -->
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,600;0,700;1,600&family=Bodoni+Moda:ital,wght@0,500;0,700;1,600&family=Jost:ital,wght@0,500;0,600;0,700;1,600&family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;1,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,600&display=swap" rel="stylesheet">
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<script>window.React = { createRef: () => ({ current: null }) };</script>
+<script src="../orbtheme-baker.js"></script>
+<script src="component.js"></script>
+<script>
+(function () {
+  const out = document.getElementById('out'), L = [];
+  const say = (s) => { L.push(s); out.textContent = L.join('\n'); };
+  const E = window.WatchEngine, G = window.GorbBake;
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  let fails = 0, checks = 0;
+  const ok = (n, c, x) => { checks++; say((c ? 'PASS ' : 'FAIL ') + n + (x !== undefined ? '  [' + x + ']' : '')); if (!c) fails++; };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const S = 466, C = 233;
+  const SRC = { hour: G.SOURCES.indexOf('hour12'), minute: G.SOURCES.indexOf('minute'), second: G.SOURCES.indexOf('second'), date: G.SOURCES.indexOf('date') };
+  const SHADOW = 16;
+
+  // ---- the editor instance and the real export ---------------------------------------
+  const IT = new (window.COMP_CLASS(DCLogic))({});
+  IT.forceUpdate = () => { };
+  IT.state.playing = true; IT.state.hidden = {}; IT.state.tab = 'export';
+  let tick = 0;
+  const pump = () => { clearInterval(tick); tick = setInterval(() => IT.componentDidUpdate(), 40); };
+  const stopPump = () => clearInterval(tick);
+  const settle = async () => {
+    for (let i = 0; i < 400; i++) {
+      IT.componentDidUpdate();
+      if (!IT.rendering && IT._mk === IT.mvKey() && IT.gt.length === IT.B && IT.gt[0]) return true;
+      await wait(40);
+    }
+    return false;
+  };
+  // A case is a preset, a patch to its design, and the case/guide state the editor holds
+  // beside the design. Reset to the preset first, exactly as bank3-drive's mount does.
+  async function mount(dial, patch, st) {
+    const P = E.PRESETS[dial];
+    const d = JSON.parse(JSON.stringify(P.design));
+    if (patch) patch(d);
+    IT.state.dial = dial; IT.faces = {}; IT.base = null; IT.gt = []; IT.buildId = (IT.buildId || 0) + 1;
+    IT.state.designs = {}; IT.state.designs[dial] = E.canonDesign(d);
+    IT.state.hands = 'auto'; IT.state.handFinish = 'auto';
+    IT.state.cfg = { ...(P.cfg || {}) }; IT.state.train = P.train || 'classic';
+    IT.state.caseStyle = P.caseStyle || 'polished'; IT.state.caseMetal = P.caseMetal || 'auto'; IT.state.caseOpen = 221.5;
+    IT.state.glassStyle = 'domed'; IT.state.guide = 'auto';
+    Object.assign(IT.state, st || {});
+    pump();
+    IT.buildMovement();
+    if (!await settle()) throw new Error(dial + ' never settled');
+  }
+  async function bake(label, dial, patch, st) {
+    await mount(dial, patch, st);
+    return bakeMounted(label);
+  }
+  // bake whatever the instance holds now: the round trip reopens a design and bakes that
+  async function bakeMounted(label) {
+    let blob = null;
+    IT.download = (b) => { blob = b; };
+    IT.state.themeName = 'Check ' + label;
+    pump(); await wait(300);
+    for (let a = 0; a < 5 && !blob; a++) {
+      await IT.exportTheme3();
+      if (!/not settled|rebuilt itself/.test(String(IT.state.status || ''))) break;
+      await wait(300);
+    }
+    stopPump();
+    if (!blob) throw new Error(label + ': the bake downloaded nothing: ' + String(IT.state.status).slice(0, 160));
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    return Object.assign(decode(bytes), { label, bytes, fc: IT.face() });
+  }
+
+  // ---- reading the theme back ----------------------------------------------------------
+  function decode(bytes) {
+    const w = G.verifyBundle3(bytes), s = w.sections.find((x) => x.blob.slug === 'clock');
+    const els = s.blob.elements, spr = s.blob.sprites, art = s.art;
+    const cls = (e) => (e.cls !== undefined ? e.cls : e['class']);
+    // one sprite: RGB565 LE colour, then an A8 plane when the size says it has one
+    const sprite = (k) => {
+      const sp = spr[k], n = sp.w * sp.h, b = art.subarray(sp.off, sp.off + sp.size), hasA = sp.size === n * 3;
+      const codes = new Uint16Array(n), rgba = new Uint8ClampedArray(n * 4);
+      for (let i = 0; i < n; i++) {
+        const v = b[2 * i] | (b[2 * i + 1] << 8); codes[i] = v;
+        const r = v >> 11, g = (v >> 5) & 63, bl = v & 31;
+        rgba[i * 4] = (r << 3) | (r >> 2); rgba[i * 4 + 1] = (g << 2) | (g >> 4); rgba[i * 4 + 2] = (bl << 3) | (bl >> 2);
+        rgba[i * 4 + 3] = hasA ? b[2 * n + i] : 255;
+      }
+      return { w: sp.w, h: sp.h, codes, rgba, alpha: hasA ? b.subarray(2 * n, 3 * n) : null };
+    };
+    const plateEl = els.find((e) => cls(e) === 3 && !(e.slot & 0xffff));
+    const plate = sprite(plateEl.frame0);
+    // a hand is an AUX row named by its source; its shadow twin is source 0 with the shadow
+    // flag, and rides the very next row (the baker's pairing, checkTable's rule)
+    const hands = {};
+    els.forEach((e, i) => {
+      if (cls(e) !== 8) return;
+      const of = (e.flags & SHADOW) ? els[i - 1] : e;
+      if (!of || !of.src) return;
+      const role = Object.keys(SRC).find((k) => SRC[k] === of.src) || ('src' + of.src);
+      const key = role + ((e.flags & SHADOW) ? '.shadow' : '');
+      if (!hands[key]) hands[key] = Object.assign({ el: e }, sprite(e.frame0));
+    });
+    const overlay = els.filter((e) => cls(e) === 3 && (e.slot & 0xffff)).map((e) => Object.assign({ el: e }, sprite(e.frame0)));
+    return { els, spr, art, plate, plateEl, hands, overlay, cls, sprite, header: w.header };
+  }
+
+  // ---- pixel helpers --------------------------------------------------------------------
+  const inDisc = (p, r) => { const x = p % S, y = (p / S) | 0, dx = x - C, dy = y - C; return dx * dx + dy * dy <= r * r; };
+  const count = (img, pred) => { let n = 0; for (let p = 0, i = 0; i < img.length; i += 4, p++) if (pred(img, i, p)) n++; return n; };
+  // the fixture art's colour after RGB565: #ff0044 stores as (255, 0, 66)
+  const isRed = (X, i) => X[i] > 220 && X[i + 1] < 40 && X[i + 2] > 40 && X[i + 2] < 100;
+  const diffN = (A, B, pred) => { let n = 0; for (let p = 0; p < A.length; p++) if (A[p] !== B[p] && (!pred || pred(p))) n++; return n; };
+  // the ink of a sprite as a centroid angle about its pivot, and its reach
+  const inkGeom = (h) => {
+    let n = 0, sx = 0, sy = 0, far = 0;
+    for (let y = 0; y < h.h; y++) for (let x = 0; x < h.w; x++) {
+      const a = h.rgba[(y * h.w + x) * 4 + 3]; if (a < 128) continue;
+      const dx = x - h.el.pivot_x, dy = y - h.el.pivot_y; n++; sx += dx; sy += dy; far = Math.max(far, Math.hypot(dx, dy));
+    }
+    return { n, ang: Math.atan2(sy / Math.max(1, n), sx / Math.max(1, n)) * 180 / Math.PI, far };
+  };
+  // the stored plate with every visible value row (class 5) blended over it at date d, as the
+  // device's first paint does: a 31-plate date row shows plate date-1
+  const shownPlate = (b, d) => {
+    const out = b.plate.codes.slice();
+    b.els.forEach((e) => {
+      if (b.cls(e) !== 5 || (e.flags & 8)) return;
+      const n = e.n_frames | 0, f = e.src === SRC.date && n === 31 ? d.getDate() - 1 : 0;
+      const r = b.sprite((e.frame0 | 0) + f);
+      for (let y = 0; y < r.h; y++) for (let x = 0; x < r.w; x++) {
+        const X = e.x + x, Y = e.y + y, i = y * r.w + x, a = r.alpha ? r.alpha[i] : 255;
+        if (X < 0 || Y < 0 || X >= S || Y >= S || !a) continue;
+        out[Y * S + X] = G.blendPx(out[Y * S + X], r.codes[i], a, 0);
+      }
+    });
+    return out;
+  };
+  // where two code planes differ: bounding box, radius band, and the largest channel step
+  const where = (A, B) => {
+    let x0 = S, y0 = S, x1 = -1, y1 = -1, r0 = 999, r1 = 0, step = 0;
+    for (let p = 0; p < A.length; p++) {
+      if (A[p] === B[p]) continue;
+      const x = p % S, y = (p / S) | 0, r = Math.hypot(x - C, y - C);
+      x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); r0 = Math.min(r0, r); r1 = Math.max(r1, r);
+      step = Math.max(step, Math.abs((A[p] >> 11) - (B[p] >> 11)), Math.abs(((A[p] >> 5) & 63) - ((B[p] >> 5) & 63)) >> 1, Math.abs((A[p] & 31) - (B[p] & 31)));
+    }
+    return 'box ' + x0 + ',' + y0 + '..' + x1 + ',' + y1 + ' r ' + r0.toFixed(0) + '..' + r1.toFixed(0) + ' max step ' + step;
+  };
+  const dAng = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
+
+  // ---- fixture art -----------------------------------------------------------------------
+  function fixtures() {
+    const mk = (w, h, draw) => { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d')); return c.toDataURL('image/png'); };
+    // a colour no preset wears, solid; and one green bar drawn tight and buried in padding
+    E.assetRestore([
+      { id: 'tc-red', name: 'red.png', kind: 'png', dataUrl: mk(60, 60, (g) => { g.fillStyle = '#ff0044'; g.fillRect(0, 0, 60, 60); }) },
+      { id: 'tc-tight', name: 'tight.png', kind: 'png', dataUrl: mk(12, 194, (g) => { g.fillStyle = '#3fbf6f'; g.fillRect(3, 0, 6, 194); }) },
+      { id: 'tc-padded', name: 'padded.png', kind: 'png', dataUrl: mk(400, 414, (g) => { g.fillStyle = '#3fbf6f'; g.fillRect(195, 10, 10, 394); }) },
+    ]);
+  }
+  const handOf = (d, shows) => d.comps.find((c) => c.type === 'hand' && c.shows === shows && c.host === 'dial');
+
+  async function main() {
+    if (!E || !E.PRESETS || !G || !G.verifyBundle3) throw new Error('the engine or the baker did not load beside the page');
+    const fams = Array.from(new Set(Object.values(E.FONTS || {}).map((f) => (String(f[1] || '').match(/"([^"]+)"/) || [])[1]).filter(Boolean)));
+    await Promise.race([Promise.all(fams.map((f) => document.fonts.load('700 32px "' + f + '"').catch(() => null))), wait(15000)]);
+    fixtures();
+    await wait(100);
+    ok('the fixture art decoded', ['tc-red', 'tc-tight', 'tc-padded'].every((id) => E.assetReady(id)));
+    await IT.componentDidMount();
+
+    // ---- 1. parity on the Broad arrow preset, and the design round trip ------------------
+    say('--- Broad arrow (diver), as shipped ---');
+    const base = await bake('base', 'diver');
+    {
+      const fc = base.fc, Lc = E.composeLayers(IT.base, IT.gt[0], fc, IT.now(), IT.state.hidden);
+      const under = Lc.under.getContext('2d').getImageData(0, 0, S, S).data;
+      const want = G.panelPlate(under, S, S, true);
+      const keep = IT.plainWheelMask(fc, IT.state.designs.diver);
+      if (keep) { const tr = G.panelPlate(under, S, S, false); for (let p = 0; p < keep.length; p++) if (keep[p]) want[p] = tr[p]; }
+      // the device paints the dial's value rows (the date wheel through its cutout) over the
+      // plate, and the Panel's plate already holds them: blend each in at today's figure first
+      const got = shownPlate(base, IT.now());
+      const off = diffN(got, want);
+      ok('the stored plate is the Panel view’s plate, code for code', off === 0, off + ' of ' + want.length + ' texels differ' + (off ? ' ' + where(got, want) : ''));
+      // each hand row is the editor's own sprite, truncated to RGB565 + A8 as rows ship
+      for (const h of fc.hands || []) {
+        const role = h.kind; if (!['hour', 'minute', 'second'].includes(role) || !h.sp) continue;
+        const row = base.hands[role];
+        if (!row) { ok('the ' + role + ' hand has a row', false); continue; }
+        const c = document.createElement('canvas'); c.width = Math.round(h.sp.c.width); c.height = Math.round(h.sp.c.height);
+        c.getContext('2d').drawImage(h.sp.c, 0, 0);
+        const px = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+        const col = G.rgb565Plane(px, c.width, c.height, null), al = G.alphaPlane(px, c.width, c.height, null);
+        let bad = row.w === c.width && row.h === c.height ? 0 : -1;
+        if (!bad) for (let i = 0; i < row.codes.length; i++) if (row.codes[i] !== (col[2 * i] | (col[2 * i + 1] << 8)) || row.alpha[i] !== al[i]) bad++;
+        ok('the ' + role + ' row is the editor’s ' + role + ' sprite', bad === 0, bad < 0 ? 'size ' + row.w + 'x' + row.h + ' vs ' + c.width + 'x' + c.height : bad + ' texels differ');
+        ok('the ' + role + ' row pivots where the editor’s sprite does', row.el.pivot_x === Math.round(h.sp.px) && row.el.pivot_y === Math.round(h.sp.py),
+          row.el.pivot_x + ',' + row.el.pivot_y + ' vs ' + Math.round(h.sp.px) + ',' + Math.round(h.sp.py));
+        ok('the ' + role + ' hand casts a shadow row', !!base.hands[role + '.shadow']);
+      }
+      // the 31-day date: the date wheel ships one row whose figures are the whole month
+      const dateRows = base.els.filter((e) => e.src === SRC.date && !(e.flags & SHADOW));
+      const strip = dateRows.map((e) => base.spr[e.frame0]).find(Boolean);
+      say('  date rows: ' + dateRows.map((e) => 'class ' + base.cls(e) + ' ' + e.w + 'x' + e.h + ' frames ' + e.n_frames + ' vmin..vmax ' + e.vmin + '..' + e.vmax).join('; '));
+      ok('the date wheel ships a row driven by the date', dateRows.length >= 1);
+      ok('the date row spans the whole month, 1..31', dateRows.some((e) => e.vmin === 1 && e.vmax === 31) || dateRows.some((e) => e.n_frames === 31),
+        dateRows.map((e) => e.vmin + '..' + e.vmax + '/' + e.n_frames).join(' '));
+      ok('the date row carries art', !!strip && strip.size > 0);
+    }
+    // the round trip: the design read out of the file reopens and re-bakes to the same dial
+    {
+      const r0 = G.readDesign3(base.bytes), r = { why: r0.why, design: r0.design ? JSON.parse(new TextDecoder().decode(r0.design)) : null };
+      ok('the theme carries its design', !!r.design, r.why || '');
+      const again = await (async () => {
+        await mount('skeleton');
+        const why = IT.applyDesignDoc(r.design, 'the check');
+        if (why) throw new Error('the design did not reopen: ' + why);
+        if (IT.state.dial !== 'diver') throw new Error('the reopened design is ' + IT.state.dial + ', not the Broad arrow');
+        IT.faces = {}; IT.base = null; IT.gt = []; IT.buildId++;
+        pump(); IT.buildMovement();
+        if (!await settle()) throw new Error('the reopened design never settled');
+        return bakeMounted('reopened');
+      })().catch((e) => ({ err: e }));
+      if (again.err) ok('a reopened Broad arrow re-bakes', false, again.err.message);
+      else {
+        const pd = diffN(base.plate.codes, again.plate.codes);
+        ok('the reopened design bakes the same plate', pd === 0, pd + ' texels differ');
+        const hd = ['hour', 'minute', 'second'].filter((k) => !base.hands[k] || !again.hands[k] || diffN(base.hands[k].codes, again.hands[k].codes) || base.hands[k].w !== again.hands[k].w);
+        ok('and the same hand rows', hd.length === 0, hd.join(','));
+        ok('and the same motion columns on every row', JSON.stringify(base.els.map(motionCols)) === JSON.stringify(again.els.map(motionCols)));
+      }
+    }
+
+    // ---- 2. custom art: the plate backdrop and the dial surface ----------------------------
+    say('--- custom art ---');
+    // the backdrop sits under the movement, so it is asked on the Triple calendar (open
+    // heart, the dial export-test asked it on). The haze and the train sit over it, so the art
+    // colour is not kept: the question is whether the plate changed, and never past the dial's
+    // clip, where a drawn case owns the pixels
+    const cal = await bake('calendar', 'calendar');
+    const bg = await bake('backdrop', 'calendar', (d) => { d.bgArt = 'tc-red'; d.bgSize = 466; d.bgFit = 'cover'; });
+    const bgClip = E.artClipR(IT.opts());
+    let bgFar = 0; for (let p = 0; p < S * S; p++) if (cal.plate.codes[p] !== bg.plate.codes[p]) bgFar = Math.max(bgFar, Math.hypot(p % S - C, ((p / S) | 0) - C));
+    const bgMoved = diffN(cal.plate.codes, bg.plate.codes);
+    ok('the plate backdrop reaches the stored plate', bgMoved > 2000, bgMoved + ' px moved');
+    ok('and stops at the dial clip', bgFar <= bgClip + 1.5, 'reaches r ' + bgFar.toFixed(1) + ', clip r ' + bgClip);
+    const sf1 = await bake('surface z1', 'diver', (d) => { d.sfArt = 'tc-red'; d.sfSize = 120; d.sfZoom = 1; d.print = 'none'; d.numerals = 'none'; });
+    const sf2 = await bake('surface z2', 'diver', (d) => { d.sfArt = 'tc-red'; d.sfSize = 120; d.sfZoom = 2; d.print = 'none'; d.numerals = 'none'; });
+    const r1 = count(sf1.plate.rgba, isRed), r2 = count(sf2.plate.rgba, isRed);
+    ok('the dial-surface art reaches the stored plate', r1 > 400, r1 + ' art px');
+    ok('art zoom 2 stores more art than zoom 1', r2 > r1 * 2.5, r1 + ' -> ' + r2);
+    const sfBig = await bake('surface z4', 'diver', (d) => { d.sfArt = 'tc-red'; d.sfSize = 900; d.sfZoom = 4; });
+    const clipR = E.artClipR(IT.opts());
+    let farRed = 0; for (let p = 0; p < S * S; p++) if (isRed(sfBig.plate.rgba, p * 4)) farRed = Math.max(farRed, Math.hypot(p % S - C, ((p / S) | 0) - C));
+    ok('zoomed surface art stays inside the dial circle', farRed <= clipR + 1, 'art reaches r ' + farRed.toFixed(1) + ', the dial clip is r ' + clipR);
+    // the print sits on top of the art: with the art under it, the print still changes the dial
+    const pOn = await bake('art+print', 'diver', (d) => { d.sfArt = 'tc-red'; d.sfSize = 442; d.sfFit = 'cover'; });
+    const pOff = await bake('art-print', 'diver', (d) => { d.sfArt = 'tc-red'; d.sfSize = 442; d.sfFit = 'cover'; d.print = 'none'; d.numerals = 'none'; });
+    const printPx = diffN(pOn.plate.codes, pOff.plate.codes);
+    const buried = count(pOn.plate.rgba, isRed), plain = count(pOff.plate.rgba, isRed);
+    ok('the chapter print still prints over the surface art', printPx > 2000, printPx + ' stored px moved by the print');
+    ok('and takes its own colour, not the art’s', plain - buried > printPx * 0.5, (plain - buried) + ' art px covered of ' + printPx);
+
+    // ---- 3. the case: none, metal, and a narrow opening ------------------------------------
+    say('--- case ---');
+    const rim = (p) => !inDisc(p, 221) && inDisc(p, 233);
+    const steel = await bake('steel', 'diver', null, { caseMetal: 'steel' });
+    const brass = await bake('brass', 'diver', null, { caseMetal: 'brass' });
+    // the case and the crystal ship as the overlay row above everything, not in the plate
+    const ovS = steel.overlay[0], ovB = brass.overlay[0];
+    say('  overlay rows: ' + steel.overlay.map((o) => 'slot ' + o.el.slot + ' ' + o.w + 'x' + o.h + ' at ' + o.el.x + ',' + o.el.y).join('; '));
+    ok('the case ships as an overlay row', !!ovS && !!ovB);
+    if (ovS && ovB) {
+      const mv = ovS.w === ovB.w && ovS.h === ovB.h ? diffN(ovS.codes, ovB.codes) : -1;
+      ok('the case metal changes the stored case', mv > 3000, mv + ' overlay px');
+      ok('and leaves the plate alone', diffN(steel.plate.codes, brass.plate.codes) === 0, diffN(steel.plate.codes, brass.plate.codes) + ' plate px');
+    }
+    const none = await bake('no case', 'diver', (d) => { d.bgArt = 'tc-red'; d.bgSize = 466; d.bgFit = 'cover'; }, { caseStyle: 'none', caseMetal: 'steel' });
+    const noneB = await bake('no case brass', 'diver', (d) => { d.bgArt = 'tc-red'; d.bgSize = 466; d.bgFit = 'cover'; }, { caseStyle: 'none', caseMetal: 'brass' });
+    const ovMoved = (a, b) => a.overlay.length !== b.overlay.length ? -1 : a.overlay.reduce((n, o, i) => n + diffN(o.codes, b.overlay[i].codes), 0);
+    ok('with no case, the metal choice paints nothing', diffN(none.plate.codes, noneB.plate.codes) === 0 && ovMoved(none, noneB) === 0,
+      diffN(none.plate.codes, noneB.plate.codes) + ' plate px, ' + ovMoved(none, noneB) + ' overlay px');
+    const rimArt = count(none.plate.rgba, (X, i, p) => rim(p) && isRed(X, i));
+    ok('with no case, the author’s backdrop owns the rim', rimArt > 4000, rimArt + ' art px in the rim band');
+    // the opening is the no-case setting: the dial shrinks into the author's own metal
+    const narrow0 = await bake('no case 221', 'diver', null, { caseStyle: 'none', caseOpen: 221.5 });
+    const narrow = await bake('opening 150', 'diver', null, { caseStyle: 'none', caseOpen: 150 });
+    {
+      const kC = 150 / 221.5;
+      for (const k of ['hour', 'minute']) {
+        const w0 = inkGeom(narrow0.hands[k]), w1 = inkGeom(narrow.hands[k]);
+        ok('at opening 150 the ' + k + ' hand shrinks with the dial', Math.abs(w1.far - kC * w0.far) < Math.max(3, w0.far * 0.06), w0.far.toFixed(1) + ' -> ' + w1.far.toFixed(1) + ' (x' + kC.toFixed(3) + ' = ' + (kC * w0.far).toFixed(1) + ')');
+        const s0 = narrow.hands[k + '.shadow'];
+        ok('and still casts its shadow', !!s0 && count(s0.rgba, (X, i) => X[i + 3] > 8) > 200, s0 ? count(s0.rgba, (X, i) => X[i + 3] > 8) + ' shadow px' : 'no row');
+      }
+    }
+
+    // ---- 4. hands: art facing, art length, the seconds row --------------------------------
+    say('--- hands ---');
+    const face0 = await bake('art 0', 'diver', (d) => Object.assign(handOf(d, 'hour'), { art: 'tc-tight', rot0: 0 }));
+    const face90 = await bake('art 90', 'diver', (d) => Object.assign(handOf(d, 'hour'), { art: 'tc-tight', rot0: 90 }));
+    const a0 = inkGeom(face0.hands.hour), a90 = inkGeom(face90.hands.hour);
+    const e0 = face0.hands.hour.el, e90 = face90.hands.hour.el;
+    say('  hour row at facing 0: zero ' + e0.zero + ' span ' + e0.span + ' degrees ' + e0.degrees + ' ink ' + a0.ang.toFixed(1) + '°; at facing 90: zero ' + e90.zero + ' span ' + e90.span + ' degrees ' + e90.degrees + ' ink ' + a90.ang.toFixed(1) + '°');
+    // the device draws the sprite turned by the row's standing angle (zero, tenths of a
+    // degree) plus the time: ink angle + zero is what the glass shows at the same time
+    const shown = (a, e) => a + (e.zero | 0) / 10;
+    ok('a 90° facing turns the hand the orb draws a quarter round', Math.abs(dAng(shown(a0.ang, e0), shown(a90.ang, e90)) - 90) < 5,
+      shown(a0.ang, e0).toFixed(1) + ' -> ' + shown(a90.ang, e90).toFixed(1));
+    const padded = await bake('art padded', 'diver', (d) => Object.assign(handOf(d, 'hour'), { art: 'tc-padded', rot0: 0 }));
+    const lp = inkGeom(padded.hands.hour);
+    ok('art drawn tight or buried in padding stores the same length', Math.abs(lp.far - a0.far) < 4, a0.far.toFixed(1) + ' vs ' + lp.far.toFixed(1));
+    const fcLen = (face0.fc.hands || []).find((h) => h.kind === 'hour');
+    ok('and reaches the hour hand’s length', fcLen && Math.abs(a0.far - fcLen.len) < 6, a0.far.toFixed(1) + ' vs len ' + (fcLen && fcLen.len.toFixed(1)));
+    const lolly = await bake('sec lollipop', 'diver', (d) => { d.secStyle = 'lollipop'; });
+    const leaf = await bake('hands leaf', 'diver', null, { hands: 'leaf' });
+    const sB = base.hands.second, sL = lolly.hands.second, sF = leaf.hands.second;
+    const inkN = (h) => count(h.rgba, (X, i) => X[i + 3] > 128);
+    ok('the seconds style reshapes the stored seconds row', inkN(sL) !== inkN(sB) || sL.w !== sB.w || sL.h !== sB.h, inkN(sB) + ' -> ' + inkN(sL) + ' px');
+    ok('a hand style leaves the seconds row alone', sF.w === sB.w && sF.h === sB.h && diffN(sF.codes, sB.codes) === 0, sF.w === sB.w && sF.h === sB.h ? diffN(sF.codes, sB.codes) + ' texels' : 'size changed');
+    ok('while it does reshape the hour row', leaf.hands.hour.w !== base.hands.hour.w || leaf.hands.hour.h !== base.hands.hour.h || diffN(leaf.hands.hour.codes, base.hands.hour.codes) > 50);
+
+    // ---- 5. what must never ship: the alignment guide ---------------------------------------
+    say('--- the guide ---');
+    const gOn = await bake('guide on', 'diver', (d) => { d.sfArt = 'tc-red'; d.sfSize = 140; }, { guide: 'on' });
+    const gOff = await bake('guide off', 'diver', (d) => { d.sfArt = 'tc-red'; d.sfSize = 140; }, { guide: 'off' });
+    ok('the alignment guide never reaches the stored plate', diffN(gOn.plate.codes, gOff.plate.codes) === 0, diffN(gOn.plate.codes, gOff.plate.codes) + ' px');
+
+    // ---- 6. apertures: a round and an oval window, and the metal they are framed in ---------
+    say('--- windows ---');
+    const win = (extra) => (d) => { d.comps.push(Object.assign({ id: 'tw', type: 'window', shows: 'date', host: 'dial', angle: 270, dist: 110, rot: 0, size: 2.2, style: 'frame', disc: 'light' }, extra)); };
+    const wSq = await bake('win rect', 'diver', win({}));
+    const wCi = await bake('win round', 'diver', win({ wshape: 'circle' }));
+    const wOv = await bake('win oval', 'diver', win({ wshape: 'circle', ww: 0.8, wh: 1.6 }));
+    const wGilt = wSq, wSteel = await bake('win steel', 'diver', win({ frameColor: 'steel' }));
+    // the window's own row: the date, at the window's place (left of centre)
+    const winRow = (b) => b.els.filter((e) => e.src === SRC.date && e.x + e.w / 2 < C - 40).map((e) => Object.assign({ el: e }, b.sprite(e.frame0)))[0];
+    const fillOf = (r) => (r && r.alpha ? count(r.rgba, (X, i) => X[i + 3] > 128) / (r.w * r.h) : 0);
+    const rs = winRow(wSq), rc = winRow(wCi), ro = winRow(wOv);
+    say('  window rows: rect ' + (rs ? rs.w + 'x' + rs.h : '-') + ' round ' + (rc ? rc.w + 'x' + rc.h : '-') + ' oval ' + (ro ? ro.w + 'x' + ro.h : '-'));
+    ok('a window ships its own date row', !!rs && !!rc && !!ro);
+    if (rs && rc && ro) {
+      ok('a round window’s row is round', Math.abs(fillOf(rc) - Math.PI / 4) < 0.08 && fillOf(rs) > 0.9, 'fill ' + fillOf(rs).toFixed(3) + ' rect, ' + fillOf(rc).toFixed(3) + ' round (pi/4 = 0.785)');
+      ok('an oval window’s row is taller than wide', ro.h > ro.w * 1.4 && Math.abs(fillOf(ro) - Math.PI / 4) < 0.1, ro.w + 'x' + ro.h + ' fill ' + fillOf(ro).toFixed(3));
+    }
+    const rg = winRow(wGilt), rst = winRow(wSteel);
+    const plateMoved = diffN(wGilt.plate.codes, wSteel.plate.codes);
+    const rowMoved = rg && rst && rg.w === rst.w && rg.h === rst.h ? diffN(rg.codes, rst.codes) : -1;
+    const far = diffN(wGilt.plate.codes, wSteel.plate.codes, (p) => Math.hypot(p % S - (C - 110), ((p / S) | 0) - C) > 60);
+    ok('the frame metal changes what ships around the window', plateMoved + Math.max(0, rowMoved) > 50, plateMoved + ' plate px, ' + rowMoved + ' window-row px');
+    ok('and nothing away from it', far === 0, far + ' plate px more than 60 px from the window');
+
+    say('');
+    say(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checks + ' checks' : 'RESULT: PASS (' + checks + ' checks)');
+    document.title = fails ? 'FAIL' : 'PASS';
+  }
+  const motionCols = (e) => [e.cls !== undefined ? e.cls : e['class'], e.slot, e.src, e.kind, e.span, e.zero, e.vmin, e.vmax, e.cadence, e.cad_arg, e.ease, e.dx, e.dy, e.end, e.digit].join(',');
+  main().catch((e) => { stopPump(); say('RESULT: FAIL — ' + (e && e.message)); say(String((e && e.stack) || '').split('\n').slice(0, 7).join('\n')); document.title = 'FAIL'; });
+})();
+</script>

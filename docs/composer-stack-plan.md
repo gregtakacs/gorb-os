@@ -1576,7 +1576,13 @@ stay in the browser's asset store); an entry from before, a Design ID, is not li
 list export and import went: a design file is how a design moves. The Render step still
 warns when uploaded art is missing from this browser, since the theme and its design would
 ship without it. `export-test.html` went with the layer kit it read; its pixel checks are
-listed in `_selftest/README.md` as coverage not yet re-homed.
+re-homed in `_selftest/theme-check.html` (2026-11-03), on the baked `.orbtheme` itself.
+That page found two export bugs the moment it ran, both fixed in clock v1.2.10: a seated
+hand's art facing (`rot0`) never reached the row's standing angle, so an uploaded hand
+pointed wherever it was drawn; and a narrowed case opening shrank the dial but not the three
+seated hands or their shadows, which `t3bake` shipped at full size. The pointer pass already
+lifted both through the opening's lens; the seated hands now take the same lens and their
+facing as `zero` (the baker's default rotate drive reads it, 0 when unnamed).
 
 **Compatibility (RULED 2026-11-02, option b; see ruling 12).** Two contracts, each with one
 owner:

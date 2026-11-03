@@ -4223,6 +4223,7 @@
   function liveComps3(comps) {
     return (comps || []).filter(function (c) {
       if (c.type === 'opening') return false;
+      if (c.type === 'index') return false;                  // D43 P5d.3n: crystal paint, still
       if (c.type === 'window') return c.shows !== 'custom';
       if (c.type === 'flare') return c.icon === 'datetext';
       if (c.type === 'subdial') return c.scale !== 'none';   // an engraved dial with no hand is plate art
@@ -4317,6 +4318,7 @@
       if (c.type === 'opening') return;                                  // a hole in the plate
       if (c.type === 'hand') return;                                     // D43 P5c: a hand slot or a pointer row, never a window row
       if (c.type === 'cutout') return;                                   // D43 P5d.3: a wheel's window; its wheel is the row
+      if (c.type === 'index') return;                                    // D43 P5d.3n: painted into the crystal overlay, no row
       if (c.type === 'wheel') {
         // a wheel that snaps between figures is one plate per value, cropped to its cutouts by
         // the comp pass -- what a window cost, and the glass's own path; one that moves between

@@ -314,6 +314,14 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(ix && ix.style === 'frame' && ix.r0 === 110 && ix.r1 === 190 && ix.glow === 0, 'an index spans every exposed ring read at its point, edge to edge with no overrun', JSON.stringify(ix && [ix.r0, ix.r1, ix.glow]));
   const f2 = face([base, { id: 'v', type: 'wheel', host: 'dial', size: 190, form: 'ring', inner: 155, shows: 'minute', exposed: true, read: 90 }, { id: 'x', type: 'index', host: 'w', span: 'own' }]);
   ok(f2.lay.indexes[0].r1 === 154, 'or only its own wheel', String(f2.lay.indexes[0].r1));
+  // the bake: an index is crystal paint, so it plans no row and is not live (Orbit failed to bake before this was said)
+  const ip = B.compPlan3(E.PRESETS.orbit.design.comps);
+  ok(!ip.refuses.length && !ip.rows.some((r) => r.id === 'x1') && !B.liveComps3(E.PRESETS.orbit.design.comps).some((c) => c.type === 'index'),
+    'an index plans no comp row and is not live, and Orbit\u2019s plan refuses nothing', JSON.stringify(ip.refuses));
+  // and every preset passes the bake's planners: the gate that would have caught Orbit
+  const planRefuses = Object.keys(E.PRESETS).map((k) => { const cs = E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS[k].design))).comps || [];
+    const r = B.compPlan3(cs).refuses.concat(B.wheelPlan3(cs).refuses); return r.length ? k + ': ' + r[0] : null; }).filter(Boolean);
+  ok(!planRefuses.length, 'every preset plans its comps and wheels without a refusal', planRefuses.join(' | '));
   const ci = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', shows: 'hour' }, { id: 'x', type: 'index', host: 'w', istyle: 'line', span: 'all', thick: 2, over: 4, glow: 0, iw: 9, color: 'auto', angle: 5 }] }).comps[1];
   ok(JSON.stringify(ci) === JSON.stringify({ id: 'x', type: 'index', host: 'w', istyle: 'line' }), 'an index keeps no default (a line has no width, and no glow by default)', JSON.stringify(ci));
   // a level two-digit figure read at 3 o'clock lays its width across a 40 px band: the auto size fits it

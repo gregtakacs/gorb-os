@@ -62,10 +62,17 @@ def tabs(dpp):
 
 
 def find_tab(dpp, hub_port):
-    for t in tabs(dpp):
-        if t.get("type") == "page" and f":{hub_port}" in t.get("url", ""):
-            return t
-    raise SystemExit(f"no Orb Manager window on port {hub_port}")
+    # A window left over from an earlier hub launch on the same port still matches, and its
+    # stale token gets every control call refused. ORB_CDP_TAB (an id prefix) picks one.
+    want = os.environ.get("ORB_CDP_TAB", "")
+    hits = [t for t in tabs(dpp) if t.get("type") == "page" and f":{hub_port}" in t.get("url", "")
+            and t.get("id", "").startswith(want)]
+    if not hits:
+        raise SystemExit(f"no Orb Manager window on port {hub_port}")
+    if len(hits) > 1:
+        sys.stderr.write("orb_cdp: %d windows on port %s (%s); using %s - set ORB_CDP_TAB to choose\n"
+                         % (len(hits), hub_port, ", ".join(t["id"][:8] for t in hits), hits[0]["id"][:8]))
+    return hits[0]
 
 
 def connect(dpp, hub_port):

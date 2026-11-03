@@ -261,3 +261,25 @@ func TestResetEraseClosesItsProgressPanel(t *testing.T) {
 		t.Error("the firmware erase's success branch no longer closes the progress panel")
 	}
 }
+
+// A join dialog opens only after a flash, and a flash starts a new life for the board, so
+// the once-per-address install memo must not outlive it. Bench, 2026-11-03: Gold erased and
+// flashed again in one page load came back on the same lease, the memo answered "already
+// seeded", and the clean slate the hub was holding never ran.
+func TestAJoinAfterAFlashIsNotAnsweredByTheLastSeed(t *testing.T) {
+	src := readAppJS(t)
+	i := strings.Index(src, "function openJoinDialog(")
+	if i < 0 {
+		t.Fatal("openJoinDialog is gone")
+	}
+	body := src[i:]
+	if j := strings.Index(body, "\n}\n"); j > 0 {
+		body = body[:j]
+	}
+	if !strings.Contains(body, "installTried.clear()") {
+		t.Error("openJoinDialog keeps the install memo, so a re-flashed orb on the same lease is never seeded")
+	}
+	if n := strings.Count(src, "openJoinDialog("); n != 3 { // the definition and the two flash endings
+		t.Errorf("openJoinDialog has %d mentions, want 3: a caller that is not a flash ending would now clear the memo", n)
+	}
+}

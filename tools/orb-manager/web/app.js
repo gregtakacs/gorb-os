@@ -1373,6 +1373,12 @@ function openJoinDialog(port, mac, skipAp) {
   seedBusy = false;
   seedVerdict = "";
   seedGateButtons(false);
+  // This dialog opens only after a flash, and a flash ends whatever the last seed on that
+  // board was: an orb erased and flashed again in the same page load comes back on the
+  // same lease, and the memo below used to answer its join "already seeded" over a card the
+  // hub's clean slate was waiting to wipe (bench, 2026-11-03: the second Gold run seeded
+  // nothing and left the menu on the glass). The hub's own gate still guards owner content.
+  installTried.clear();
   $("#sp-manual").value = "";
   $("#wj-apmsg").hidden = true;
   $("#ob-done").hidden = true;

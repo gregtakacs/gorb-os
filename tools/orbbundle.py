@@ -63,6 +63,10 @@ GEOM_CAP     = 0xF000               # orb_theme.c SLOT_GEOM_CAP: 60 KB of tables
 SLOT_ART_CAP = _ts.ORB_THEME_SLOT_CAP   # orb_bundle.h ORB_THEME_SLOT_CAP: banks' room.
 # Imported, never restated (§7.4): this line held the retired 4 MB pair's 0x3F0000 while
 # the device reported 8 MB, and the sentence below quoted the wrong budget to the bench.
+# D43 P7 (§8): the header's three spare words point at an app's design, carried after the
+# banks and never installed: design_off, design_size, design_crc (all 0 when there is none).
+W_DESIGN_OFF, W_DESIGN_SIZE, W_DESIGN_CRC = _ot.W_HDR_CRC + 1, _ot.W_HDR_CRC + 2, _ot.W_HDR_CRC + 3
+THEME_UPLOAD_MAX = 0x00800000 + 0x20000   # orb_theme.h ORB_THEME_UPLOAD_MAX: the file's cap at both doors
 SLUG_MAX     = 23                   # ORBAPP_SLUG_MAX - 1: the NUL's room
 _SLUG_OK     = frozenset(b"abcdefghijklmnopqrstuvwxyz0123456789_")
                                     # check_slug's charset, on bytes: read_bundle
@@ -179,7 +183,9 @@ def parse_header3(raw):
             "geom_off": hdr[4], "geom_size": hdr[5], "geom_crc": hdr[6],
             "art_size": hdr[7], "art_crc": hdr[8], "n_sections": hdr[9],
             "serial": hdr[_ot.W_SERIAL], "baked_ms": hdr[_ot.W_BAKED_MS],
-            "art_off": hdr[_ot.W_ART_OFF], "name": name}
+            "art_off": hdr[_ot.W_ART_OFF], "name": name,
+            "design_off": hdr[W_DESIGN_OFF], "design_size": hdr[W_DESIGN_SIZE],
+            "design_crc": hdr[W_DESIGN_CRC]}
 
 
 def pack_blob(slug, elements, scalars=None, sprites=(), abi=GEOM_ABI3):
@@ -373,7 +379,7 @@ def unpack_index(region):
 
 
 def pack_header3(name, n_sections, geom_size, geom_crc, art_off, art_size,
-                 art_crc, serial=0, baked_ms=0, abi=GEOM_ABI3):
+                 art_crc, serial=0, baked_ms=0, abi=GEOM_ABI3, design=None):
     """FORMAT 2's header, stamped FORMAT 3 (see the module docstring for the swapped
     meaning of words 9/10). `abi` (C4) is the container dialect word: a v4 clock
     section raises it to 4, and a reader that stops at 3 refuses the file at this
@@ -387,11 +393,13 @@ def pack_header3(name, n_sections, geom_size, geom_crc, art_off, art_size,
     hdr[9], hdr[10] = _ot._u(n_sections), _ot._u(0)
     hdr[11], hdr[12], hdr[13] = _ot._u(serial), _ot._u(baked_ms), _ot._u(art_off)
     _ot._setword(hdr, _ot.W_NAME, name, _ot.NAME_MAX)
+    if design:   # (off, size, crc)
+        hdr[W_DESIGN_OFF], hdr[W_DESIGN_SIZE], hdr[W_DESIGN_CRC] = (_ot._u(v) for v in design)
     hdr[_ot.W_HDR_CRC] = _ot._hdr_crc(hdr)
     return b"".join(struct.pack("<I", v) for v in hdr)
 
 
-def write_bundle(path, name, sections, serial=0, baked_ms=0, one_section=True):
+def write_bundle(path, name, sections, serial=0, baked_ms=0, one_section=True, design=b""):
     """one_section=False is the REJECTION-VECTOR bypass: it lets the fixture generator
     still build the multi-section file the door must refuse. Nothing that handles a
     theme uses it, and a caller that reaches for it owes a comment saying why."""
@@ -482,10 +490,16 @@ def write_bundle(path, name, sections, serial=0, baked_ms=0, one_section=True):
     for b in blobs:
         region += b
     geom_crc = zlib.crc32(bytes(region)) & 0xFFFFFFFF
+    end = art_off + art_size
+    if design and end + len(design) > THEME_UPLOAD_MAX:
+        raise ValueError("the dial (%d B) and its design (%d B) come to more than the %d B an "
+                         "orb accepts — ship the design without its art, or none"
+                         % (end, len(design), THEME_UPLOAD_MAX))
     hdr = pack_header3(name, len(sections), len(region), geom_crc, art_off,
                        art_size, art_crc_all, serial, baked_ms,
                        abi=GEOM_ABI6 if any(s.get("abi_max", GEOM_ABI3) == GEOM_ABI6
-                                            for s in sections) else GEOM_ABI3)
+                                            for s in sections) else GEOM_ABI3,
+                       design=(end, len(design), zlib.crc32(design) & 0xFFFFFFFF) if design else None)
     out = bytearray(hdr)
     out += region
     out += b"\0" * (art_off - len(out))
@@ -494,6 +508,8 @@ def write_bundle(path, name, sections, serial=0, baked_ms=0, one_section=True):
         if len(a):
             out += b"\0" * ((-len(a)) % _ot.SECTOR)
     out = bytes(out[:art_off + art_size])  # trim the last bank's alignment pad
+    if design:
+        out += bytes(design)
     with open(path, "wb") as f:
         f.write(out)
     return len(out)
@@ -592,6 +608,21 @@ def read_bundle(path, theme=True):
         raise ValueError("a theme file carries exactly one section — this one carries %d"
                          % n)
     return h, out
+
+
+def read_design(raw):
+    """P7: (design bytes, None) or (None, why). The dial is good whatever its design says, so
+    the design's own faults are a sentence, never a refusal of the theme (readDesign3's twin)."""
+    h = parse_header3(raw)
+    if not h["design_size"]:
+        return None, "this theme carries no design, so it cannot be reopened"
+    if (h["design_off"] < h["art_off"] + h["art_size"]
+            or h["design_off"] + h["design_size"] > len(raw)):
+        return None, "this theme\u2019s design runs past the end of the file \u2014 it cannot be reopened"
+    d = raw[h["design_off"]:h["design_off"] + h["design_size"]]
+    if zlib.crc32(d) & 0xFFFFFFFF != h["design_crc"]:
+        return None, "this theme\u2019s design is damaged \u2014 it cannot be reopened"
+    return d, None
 
 
 def find_section(sections, slug):

@@ -914,6 +914,17 @@ VECTORS += [
      "stream", None, None),
 ]
 
+# D43 P7 (§8): an app's design rides after the banks, pointed at by the header's spare words
+# 29..31 (covered by the header crc). The device never reads it: the file is accepted and
+# laid out exactly as without it, by the C reader and the authority alike.
+_DESIGN = b'{"format":"wc-design","schema":1}'
+_dbase = build(specs=[SOLO])
+DESIGN_RAW = build(specs=[SOLO], hdr_words={29: len(_dbase), 30: len(_DESIGN),
+                                            31: zlib.crc32(_DESIGN) & 0xFFFFFFFF}) + _DESIGN
+VECTORS += [
+    (88, F_LAYOUT | F_FIND, 0, ["solo"], DESIGN_RAW, "ok", None, None),
+]
+
 # ---------------------------------------------------------------------------
 # run: one compile, one batch, then compare every case against the oracle
 # ---------------------------------------------------------------------------

@@ -38,6 +38,15 @@
   var W_NAME = 14,
       W_HDR_CRC = W_NAME + ((NAME_MAX + 3) / 4 | 0);
   var HDR_WORDS = W_HDR_CRC + 4;
+  /* D43 P7 (§8): an app's design rides after the banks, pointed at by the header's three
+   * spare words (all zero when a file carries none). The OS never reads it: it is the app's
+   * bytes, opaque here, kept by the card and the shelf and never written into the slot.
+   * The header CRC covers the pointer; the region carries its own CRC, so a damaged design
+   * is refused as a design while the dial still installs and draws. */
+  var W_DESIGN_OFF = W_HDR_CRC + 1, W_DESIGN_SIZE = W_HDR_CRC + 2, W_DESIGN_CRC = W_HDR_CRC + 3;
+  // orb_theme.h ORB_THEME_UPLOAD_MAX and the hub's orbnet.MaxThemeUpload: the whole file's
+  // ceiling at both doors, so a design never pushes a dial past what an orb will take
+  var THEME_UPLOAD_MAX = 0x00800000 + 0x20000;
   var THEME_FIELDS = [
     ['bg', 'u32'], ['plate_follow', 'u8'], ['shadow_on', 'u8'],
     ['shadow_dx', 'i8'], ['shadow_dy', 'i8'],
@@ -2819,6 +2828,7 @@
     hdr[12] = (o.bakedMs >>> 0);
     hdr[13] = (o.artOff >>> 0);
     setWord(hdr, W_NAME, o.name, NAME_MAX);
+    if (o.designSize) { hdr[W_DESIGN_OFF] = o.designOff >>> 0; hdr[W_DESIGN_SIZE] = o.designSize >>> 0; hdr[W_DESIGN_CRC] = o.designCrc >>> 0; }
     hdr[W_HDR_CRC] = hdrCrc(hdr);
     return wordsToBytes(hdr);
   }
@@ -2914,10 +2924,18 @@
     var hdrAbi = GEOM_ABI3;
     for (i = 0; i < sections.length; i++)
       if (sections[i].abi_max === GEOM_ABI6) hdrAbi = GEOM_ABI6;
+    // the design (P7) follows the last bank's last byte; the whole file stays under the doors' cap
+    var design = o.design && o.design.length ? o.design : null, end = artOff + artSize;
+    if (design && end + design.length > THEME_UPLOAD_MAX) {
+      throw new Error('the dial (' + end + ' B) and its design (' + design.length + ' B) come to more than the ' +
+        THEME_UPLOAD_MAX + ' B an orb accepts \u2014 ship the design without its art, or none');
+    }
     var hdr = packHeader3({ geomSize: region.length, geomCrc: crc32(region), artOff: artOff,
                            artSize: artSize, artCrc: artCrcAll, nSections: sections.length,
-                           serial: o.serial || 0, bakedMs: o.bakedMs || 0, name: o.name, abi: hdrAbi });
-    var out = new Uint8Array(artOff + artSize), p = HDR_WORDS * 4;
+                           serial: o.serial || 0, bakedMs: o.bakedMs || 0, name: o.name, abi: hdrAbi,
+                           designOff: design ? end : 0, designSize: design ? design.length : 0, designCrc: design ? crc32(design) : 0 });
+    var out = new Uint8Array(end + (design ? design.length : 0)), p = HDR_WORDS * 4;
+    if (design) out.set(design, end);
     out.set(hdr, 0);
     out.set(region, p); p += region.length;
     for (i = 0; i < arts.length; i++) out.set(arts[i], recs[i].art_off);
@@ -2961,7 +2979,18 @@
     if (!name) throw new Error('theme has no name in its header — re-bake it');
     return { fmt: w[1], abi: w[2], hdrSize: w[3], geomOff: w[4], geomSize: w[5], geomCrc: w[6],
              artSize: w[7], artCrc: w[8], nSections: w[9], serial: w[11], bakedMs: w[12],
-             artOff: w[13], name: name };
+             artOff: w[13], name: name, designOff: w[W_DESIGN_OFF], designSize: w[W_DESIGN_SIZE], designCrc: w[W_DESIGN_CRC] };
+  }
+  /* P7: a theme's design, or why there is none to reopen. Never throws for the design's own
+   * faults: the dial is good whatever its design says, so a damaged one is a sentence. */
+  function readDesign3(raw) {
+    var h = parseBundle3(raw);
+    if (!h.designSize) return { design: null, why: 'this theme carries no design, so it cannot be reopened' };
+    if (h.designOff < h.artOff + h.artSize || h.designOff + h.designSize > raw.length)
+      return { design: null, why: 'this theme\u2019s design runs past the end of the file \u2014 it cannot be reopened' };
+    var d = raw.subarray(h.designOff, h.designOff + h.designSize);
+    if (crc32(d) !== h.designCrc) return { design: null, why: 'this theme\u2019s design is damaged \u2014 it cannot be reopened' };
+    return { design: d, why: null };
   }
 
   /* The full walk: read_bundle's promises, in read_bundle's order — region bounds, region
@@ -3827,7 +3856,7 @@
     // D42: every clock section is v6.
     var secAbi = GEOM_ABI6;
     var pack = function () {
-      return writeBundle3({ name: o.name, serial: o.serial || 0, bakedMs: o.bakedMs || 0,
+      return writeBundle3({ name: o.name, serial: o.serial || 0, bakedMs: o.bakedMs || 0, design: o.design || null,
         sections: [{ slug: 'clock', scr_w: scrW, scr_h: scrH, elements: elems, scalars: sc,
                      sprites: bank.sprites, art: bank.art,
                      abi_min: secAbi, abi_max: secAbi }] });
@@ -4472,7 +4501,7 @@
     // reason the dial will print instead of a reason of its own.
     bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3, estimate3: estimate3,
     carriageRect3: carriageRect3, carriageStart3: carriageStart3,
-    liveComps3: liveComps3, compPlan3: compPlan3, wheelPlan3: wheelPlan3, wheelDither3: wheelDither3, wheelTurns3: wheelTurns3, pointerPlan3: pointerPlan3,
+    liveComps3: liveComps3, compPlan3: compPlan3, wheelPlan3: wheelPlan3, wheelDither3: wheelDither3, readDesign3: readDesign3, THEME_UPLOAD_MAX: THEME_UPLOAD_MAX, wheelTurns3: wheelTurns3, pointerPlan3: pointerPlan3,
     pointerDefault3: pointerDefault3,
     // D39: the sound vocabulary and the mirror of the dial's sound refusals.
     SOUND_SLOTS: SOUND_SLOTS, HOUR_PATTERNS: HOUR_PATTERNS, CLASS_SOUND: CLASS_SOUND,

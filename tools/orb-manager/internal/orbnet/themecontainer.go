@@ -2,6 +2,7 @@ package orbnet
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
 )
@@ -45,10 +46,15 @@ const (
 	wArtOff       = 13
 	wName         = 14
 	wHdrCRC       = 28
-	themeMagic    = 0x474F5254 // 'T','R','O','G' little-endian on the wire
-	themeFormat3  = 3          // ORB_BUNDLE3_FORMAT
-	themeABI3     = 3          // ORB_BUNDLE3_ABI: a bundle of app sections alone
-	themeABI6     = 6          // ORB_BUNDLE3_ABI6: D42's clock dialect, the only one the
+	// D43 P7 (§8): the three spare words point at an app's design, carried after the
+	// banks on the card and the shelf and never installed (0, 0, 0 when there is none)
+	wDesignOff   = 29
+	wDesignSize  = 30
+	wDesignCRC   = 31
+	themeMagic   = 0x474F5254 // 'T','R','O','G' little-endian on the wire
+	themeFormat3 = 3          // ORB_BUNDLE3_FORMAT
+	themeABI3    = 3          // ORB_BUNDLE3_ABI: a bundle of app sections alone
+	themeABI6    = 6          // ORB_BUNDLE3_ABI6: D42's clock dialect, the only one the
 	// device reads. 4 and 5 were the clock's older dialects; D42 keeps no legacy, so
 	// the hub refuses a container stamped either, as the device door does.
 	themeNameBytes = 56 // ORB_THEME_NAME_MAX: 55 usable + the NUL
@@ -83,7 +89,36 @@ type ThemeContainer struct {
 	Serial    uint32
 	NSections uint32
 	Sections  []string // the slugs the index names, in index order; nil if unreadable
+	// DesignSize is the app design's length in bytes, 0 when the file carries none (P7)
+	DesignSize uint32
 }
+
+// ContainerDesign returns the app design a .orbtheme carries after its banks (D43 P7),
+// checked against the header's pointer and the design's own CRC. The bytes are the app's
+// and opaque here. A theme with no design, or a damaged one, is an error naming why; the
+// dial itself is unaffected either way, so no caller refuses the theme for it.
+func ContainerDesign(body []byte) ([]byte, error) {
+	if _, err := ParseContainer(body); err != nil {
+		return nil, err
+	}
+	w := func(i int) uint32 { return binary.LittleEndian.Uint32(body[i*4:]) }
+	off, size := uint64(w(wDesignOff)), uint64(w(wDesignSize))
+	if size == 0 {
+		return nil, ErrNoDesign
+	}
+	if off < uint64(w(wArtOff))+uint64(w(wArtSize)) || off+size > uint64(len(body)) {
+		return nil, fmt.Errorf("orbnet: this theme's design runs past the end of the file — it cannot be reopened")
+	}
+	d := body[off : off+size]
+	if crc32.ChecksumIEEE(d) != w(wDesignCRC) {
+		return nil, fmt.Errorf("orbnet: this theme's design is damaged — it cannot be reopened")
+	}
+	return d, nil
+}
+
+// ErrNoDesign: the theme was baked without a design (before P7, or by a tool that writes
+// none), so it can be installed and drawn but not reopened in its editor.
+var ErrNoDesign = errors.New("orbnet: this theme carries no design, so it cannot be reopened")
 
 // ContainerName reads the identity and the two budgets out of a .orbtheme payload, and
 // reports the slugs its index names. It refuses an under-length or wrongly-magic file,
@@ -164,7 +199,7 @@ func parseContainer(body []byte, head bool) (*ThemeContainer, error) {
 	}
 	c := &ThemeContainer{Name: name, Format: f, ABI: w(wGeomABI),
 		Bytes: len(body), GeomSize: geomSize, ArtSize: artSize,
-		Serial: w(wSerial), NSections: w(wNSections)}
+		Serial: w(wSerial), NSections: w(wNSections), DesignSize: w(wDesignSize)}
 	// Per-app theming made the index load part of the IDENTITY, not a courtesy: the
 	// card stem hashes the OWNING app's slug with the name, and the slug lives here
 	// and nowhere else in the header. A container this reader cannot walk the index

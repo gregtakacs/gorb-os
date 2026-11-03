@@ -1080,5 +1080,33 @@ if (!hasGcc) {
      (pr.stdout || pr.stderr).trim().split('\n')[0]);
 }
 
+// ---- P7 (D43 §8): an app's design rides after the banks, pointed at by words 29..31 -----
+{
+  const D = new TextEncoder().encode(JSON.stringify({ format: 'wc-design', schema: 1, note: 'caf\u00e9 \u2014 round trip' }));
+  const jd = B.writeBundle3(Object.assign({}, model, { design: D })).bytes;
+  const dPath = path.join(OUT, 'from_js_design.orbtheme'), pyPath = path.join(OUT, 'from_py_design.orbtheme');
+  fs.mkdirSync(OUT, { recursive: true }); fs.writeFileSync(dPath, jd);
+  const pyw = spawnSync(PY, ['-c',
+    'import sys; sys.path.insert(0, sys.argv[1]); import orbbundle as ob, make_bundle_fixture as m; ' +
+    'ob.write_bundle(sys.argv[2], m.NAME, m.SECTIONS, serial=m.SERIAL, baked_ms=m.BAKED_MS, design=bytes.fromhex(sys.argv[3])); ' +
+    'raw = open(sys.argv[4], "rb").read(); ob.read_bundle(sys.argv[4]); d, why = ob.read_design(raw); print(d.hex() if d is not None else "NONE " + why)',
+    path.join(ROOT, 'tools'), pyPath, Buffer.from(D).toString('hex'), dPath], { encoding: 'utf8', maxBuffer: 1 << 26 });
+  ok(pyw.status === 0, 'the authority writes and reads a design', String(pyw.stderr).trim().split('\n').pop());
+  const py = pyw.status === 0 ? new Uint8Array(fs.readFileSync(pyPath)) : new Uint8Array(0);
+  ok(py.length === jd.length && firstDiff(py, jd) === -1, 'browser and authority write a design byte for byte alike', 'first diff ' + firstDiff(py, jd));
+  ok(String(pyw.stdout).trim() === Buffer.from(D).toString('hex'), 'the authority reads the browser\u2019s design back exactly');
+  ok(jd.length === js.length + D.length && firstDiff(jd.subarray(128, js.length), js.subarray(128)) === -1, 'the design only appends: region and banks are the design-less file\u2019s');
+  const rd = B.readDesign3(jd);
+  ok(rd.design && hex(rd.design) === hex(D) && B.verifyBundle3(jd).header.designSize === D.length, 'the browser reads it back, and still verifies the dial');
+  ok(B.readDesign3(js).design === null && /carries no design/.test(B.readDesign3(js).why), 'a file without one says it cannot be reopened');
+  const bad = jd.slice(); bad[bad.length - 1] ^= 0xff;
+  let dialOk = true; try { B.verifyBundle3(bad); } catch (e) { dialOk = false; }
+  ok(dialOk && /damaged/.test(B.readDesign3(bad).why), 'a damaged design is refused as a design while the dial still verifies');
+  ok(/past the end/.test(B.readDesign3(jd.subarray(0, jd.length - 3)).why), 'a torn one names that');
+  refuses(() => B.writeBundle3(Object.assign({}, model, { design: new Uint8Array(B.THEME_UPLOAD_MAX) })), 'more than the', 'a design that would push the file past the upload cap is refused at the writer');
+  const capC = fs.readFileSync(path.join(ROOT, 'main', 'art', 'orb_theme.h'), 'utf8').match(/#define ORB_THEME_UPLOAD_MAX\s+\(0x([0-9a-f]+)u \+ 0x([0-9a-f]+)u\)/i);
+  ok(capC && parseInt(capC[1], 16) + parseInt(capC[2], 16) === B.THEME_UPLOAD_MAX, 'the browser\u2019s cap is the firmware\u2019s ORB_THEME_UPLOAD_MAX', capC && capC[0]);
+}
+
 console.log(fails ? fails + ' FAILED of ' + checked : 'RESULT: PASS  ' + checked + ' checks');
 process.exit(fails ? 1 : 0);

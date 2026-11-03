@@ -262,6 +262,17 @@ C_BODY = r"""
         checks++; if (fabsf(p - 0.0f) > 1e-3f) { fails++; printf("FAIL ease: half way back is the fan's middle, through 12 (%f)\n", p); }
         p = ease_pose(&f, 300.5f, 900, 400, false, true, 1, 360.0f, 1.5f, &busy);
         checks++; if (p != 300.5f || busy) { fails++; printf("FAIL ease: forward travel after the flyback is plain (%f)\n", p); }
+        /* a SWEEPING hand's target creeps forward every frame of its flyback: the creep must
+         * not cancel the fly (it did, and a speedometer needle snapped back in one frame) */
+        ease_t s = { 0 };
+        ease_pose(&s, 60.0f, 0, 400, false, true, 1, 360.0f, 1.5f, &busy);
+        ease_pose(&s, 300.0f, 100, 400, false, true, 1, 360.0f, 1.5f, &busy);   /* the wrap: fly starts */
+        p = ease_pose(&s, 300.2f, 160, 400, false, true, 1, 360.0f, 1.5f, &busy);
+        checks++; if (s.kind != EASE_FLY || busy != 340 || fabsf(p - 300.2f) < 1.0f) { fails++; printf("FAIL ease: a sweeping hand's creep keeps its flyback flying (%f, %u)\n", p, busy); }
+        p = ease_pose(&s, 300.6f, 300, 400, false, true, 1, 360.0f, 1.5f, &busy);
+        checks++; if (fabsf(p - 0.3f) > 0.05f) { fails++; printf("FAIL ease: half way back it is half way to the moving target (%f)\n", p); }
+        p = ease_pose(&s, 300.8f, 500, 400, false, true, 1, 360.0f, 1.5f, &busy);
+        checks++; if (p != 300.8f || busy || s.kind != EASE_NONE) { fails++; printf("FAIL ease: the fly lands on where the sweep has got to (%f)\n", p); }
         ease_t g = { 0 };
         ease_pose(&g, 10.0f, 0, 0, true, false, 1, 360.0f, 1.5f, &busy);
         p = ease_pose(&g, 16.0f, 10, 0, true, false, 1, 360.0f, 1.5f, &busy);

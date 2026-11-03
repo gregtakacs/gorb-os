@@ -122,10 +122,14 @@ static float ease_pose(ease_t *e, float target, uint32_t now_ms, uint16_t ms, bo
     if (target != e->to) {
         const float d = ease_wrap(target - e->to, turn);
         const bool back = retro && (span_sign >= 0 ? d < 0.0f : d > 0.0f);
-        if (back) { e->kind = EASE_FLY; e->from = e->shown; }
-        else if (stepping) { e->kind = EASE_SETTLE; e->amp = d > 0.0f ? amp : -amp; }
-        else e->kind = EASE_NONE;
-        e->t0 = now_ms; e->to = target;
+        if (back) { e->kind = EASE_FLY; e->from = e->shown; e->t0 = now_ms; }
+        else if (e->kind == EASE_FLY && now_ms - e->t0 < ms) {
+            /* a sweeping hand's target creeps on every frame of its flyback: the fly keeps
+             * its start and clock and lands on wherever the sweep has got to */
+        }
+        else if (stepping) { e->kind = EASE_SETTLE; e->amp = d > 0.0f ? amp : -amp; e->t0 = now_ms; }
+        else { e->kind = EASE_NONE; e->t0 = now_ms; }
+        e->to = target;
     }
     if (e->kind == EASE_NONE) { e->shown = target; return target; }
     const uint32_t gone = now_ms - e->t0;

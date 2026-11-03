@@ -177,10 +177,15 @@ func TestALonelyEndingLeavesNoStoryOnTheFleetCard(t *testing.T) {
 			t.Errorf("app.js is telling the lonely story on the card again: %q", gone)
 		}
 	}
+	tabs := readTabsJS(t)
 	for _, marker := range []string{`$("#rt-go").onclick`, `$("#fj-lonely").onclick`} {
+		src := src
+		if marker == `$("#rt-go").onclick` {
+			src = tabs // the reset press is bound in tabs.js
+		}
 		i := strings.Index(src, marker)
 		if i < 0 {
-			t.Fatalf("app.js has no %s — the lonely door's press handler was renamed", marker)
+			t.Fatalf("the web UI has no %s — the lonely door's press handler was renamed", marker)
 		}
 		// The handler, not the handler and everything after it: these are assigned
 		// arrow functions ending in "};" rather than a block-closing "}", so the
@@ -227,17 +232,26 @@ func TestACableAnswerIsLabelledAsWhatItCost(t *testing.T) {
 
 // Reset → Firmware borrows the flash progress panel, and the panel must close with the
 // reset modal on success like every other flash door's (owner report, 2026-11-03: the
-// erase finished and the dialog stayed up until closed by hand).
+// erase finished and the dialog stayed up until closed by hand). The press is bound
+// once, in tabs.js: the first fix went into a second binding in app.js that tabs.js
+// replaced, so it never ran, and this test read that dead copy.
 func TestResetEraseClosesItsProgressPanel(t *testing.T) {
-	js, err := os.ReadFile("web/app.js")
+	app, err := os.ReadFile("web/app.js")
 	if err != nil {
 		t.Fatalf("app.js: %v", err)
 	}
-	src := string(js)
-	i := strings.Index(src, `$("#rt-go").onclick`)
-	if i < 0 {
-		t.Fatal("the reset modal's press is gone")
+	if strings.Contains(string(app), `$("#rt-go").onclick`) {
+		t.Error("app.js binds the reset press again; tabs.js's binding replaces it, so it is dead code")
 	}
+	js, err := os.ReadFile("web/tabs.js")
+	if err != nil {
+		t.Fatalf("tabs.js: %v", err)
+	}
+	src := string(js)
+	if strings.Count(src, `$("#rt-go").onclick`) != 1 {
+		t.Fatal("tabs.js should bind the reset modal's press exactly once")
+	}
+	i := strings.Index(src, `$("#rt-go").onclick`)
 	body := src[i:]
 	if j := strings.Index(body, "\n};"); j > 0 {
 		body = body[:j]

@@ -149,12 +149,17 @@ func TestResetModalOwnsTheEraseVerb(t *testing.T) {
 		}
 	}
 	app := readAppJS(t)
-	if !strings.Contains(app, `"/api/lonely"`) || !strings.Contains(app, `confirm: "LONELY"`) {
-		t.Error(`app.js never posts /api/lonely with confirm: "LONELY"`)
+	tabs := readTabsJS(t)
+	if !strings.Contains(tabs, `"/api/lonely"`) || !strings.Contains(tabs, `confirm: "LONELY"`) {
+		t.Error(`tabs.js never posts /api/lonely with confirm: "LONELY"`)
 	}
 	// Firmware erase is the checkbox that reaches the handler, and it implies the
-	// settings scope rather than sitting beside it independently.
-	go2 := blockContaining(t, app, `$("#rt-go").onclick`)
+	// settings scope rather than sitting beside it independently. tabs.js binds the
+	// press; app.js keeps only the modal's dismissals.
+	go2 := tabs[strings.Index(tabs, `$("#rt-go").onclick`)+1:]
+	if j := strings.Index(go2, "\n};"); j >= 0 {
+		go2 = go2[:j] // an assigned arrow function; its LAN arm's "{}" body defeats the brace counter
+	}
 	if !strings.Contains(go2, `$("#rt-firmware").checked`) {
 		t.Error("the reset modal never reads the firmware checkbox, so the erase verb is unreachable")
 	}

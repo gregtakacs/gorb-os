@@ -1094,79 +1094,10 @@ $("#ob-go").onclick = async () => {
 // old card only offered the destructive one. Settings alone keeps the firmware and
 // returns the board to its provisioning AP; firmware alone also happens to clear
 // settings, because the base image is what re-provisions, so the two boxes are not
-// four states and the modal says so rather than pretending they are.
-function openResetModal() {
-  const port = current.port;
-  $("#rt-sub").textContent = port ? "on cable " + port : "not on a cable of this computer";
-  $("#rt-choices").hidden = !port;
-  $("#rt-settings").checked = true;
-  $("#rt-firmware").checked = false;
-  $("#rt-state").textContent = "";
-  rtGate();
-  $("#rt-mask").hidden = false;
-}
-
-function rtGate() {
-  const go = $("#rt-go");
-  go.disabled = $("#rt-choices").hidden ||
-    (!$("#rt-settings").checked && !$("#rt-firmware").checked);
-}
-
-$("#mn-resetbtn").onclick = openResetModal;
+// four states and the modal says so rather than pretending they are. tabs.js owns the
+// opener, the gate and the press (it adds the LAN arm); only the dismissals live here.
 $("#rt-cancel").onclick = () => { $("#rt-mask").hidden = true; };
 $("#rt-mask").addEventListener("click", (e) => { if (e.target === $("#rt-mask")) $("#rt-mask").hidden = true; });
-$("#rt-settings").onchange = () => {
-  // Erasing the firmware takes the settings with it, so the settings box is implied
-  // rather than independently uncheckable while firmware is selected.
-  if ($("#rt-firmware").checked) $("#rt-settings").checked = true;
-  $("#rt-settings").disabled = $("#rt-firmware").checked;
-  rtGate();
-};
-$("#rt-firmware").onchange = () => {
-  if ($("#rt-firmware").checked) $("#rt-settings").checked = true;
-  $("#rt-settings").disabled = $("#rt-firmware").checked;
-  rtGate();
-};
-
-$("#rt-go").onclick = async () => {
-  const port = current.port, state = $("#rt-state"), go = $("#rt-go");
-  if (!port || go.disabled) return;
-  go.disabled = true;
-  try {
-    if ($("#rt-firmware").checked) {
-      fpOpen();
-      const { ok } = await streamFlash("/api/lonely", { port, confirm: "LONELY" }, fpUI());
-      if (ok) {
-        await refreshPorts();
-        pullFound();
-        // The progress panel closes with the modal, as every other flash door's does on
-        // success; a refused erase never reaches here, so its reason stays on screen.
-        fpClose();
-        $("#rt-mask").hidden = true;
-        show("manage"); location.hash = "";
-        // The row is gone and the picker calls the lead blank, which is the whole
-        // true answer. The card re-rendered itself, so the note is cleared rather
-        // than left holding the previous action's words.
-        $("#mn-find-note").textContent = "";
-      }
-    } else {
-      state.textContent = "clearing settings\u2026";
-      const r = await hubFetch("/api/orb/cmd", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ port, mac: current.mac, command: "reset", operand: "ALL" }),
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
-      state.textContent = "settings cleared — the orb is ready to set up again";
-      pullFound();
-    }
-  } catch (e) {
-    state.textContent = e.message;
-  } finally {
-    go.disabled = false;
-    rtGate();
-  }
-};
 
 
 

@@ -1373,13 +1373,12 @@ $("#fm-file").addEventListener("change", async () => {
 });
 
 // ---- the Firmware face's reset button, LAN arm included ------------------------
-// app.js's modal is cable-only: RESET ALL needs a lead. A v1.1.18 board answers
-// the same wipe at /api/v1/factory, so the dialog gains a second reach — and a
+// The reset modal's opener, gate and press, all of them: app.js keeps only the
+// dismissals. RESET ALL over a lead is the cable arm. A v1.1.18 board answers
+// the same wipe at /api/v1/factory, so the dialog has a second reach — and a
 // typed ALL, because this is the one LAN verb that can make the orb this page
 // is open disappear into its own provisioning AP. The firmware erase stays
 // cable-only: lonely is a whole reflash decision no network door should hold.
-// These handlers REBIND app.js's (assigned earlier in load order, replaced by
-// the later script — the reset modal's cable arms below are carried over as is).
 function tabFwAtLeast(major, minor, patch) {
   const m = /v(\d+)\.(\d+)\.(\d+)/.exec(fwStamp || "");
   if (!m) return false;   // an unreadable stamp gates the door closed, as everywhere else
@@ -1447,6 +1446,9 @@ $("#rt-go").onclick = async () => {
       if (ok) {
         await refreshPorts();
         pullFound();
+        // The progress panel closes with the modal, as every other flash door's does on
+        // success; a refused erase never reaches here, so its reason stays on screen.
+        fpClose();
         $("#rt-mask").hidden = true;
         show("manage");
         location.hash = "";

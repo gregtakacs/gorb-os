@@ -164,6 +164,16 @@ func readAppJS(t *testing.T) string {
 	return string(raw)
 }
 
+// readTabsJS is tabs.js, the later script: a handler it assigns replaces app.js's.
+func readTabsJS(t *testing.T) string {
+	t.Helper()
+	raw, err := webFS.ReadFile("web/tabs.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
 // clientFields returns the payload fields app.js reads for one endpoint: the
 // text from the `const <v> = await getJSON("<path>")` assignment through the end
 // of its try block, filtered for <v>.<field> accesses. The name list is what

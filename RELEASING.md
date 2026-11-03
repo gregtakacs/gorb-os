@@ -71,7 +71,7 @@ Secrets:
 | `APPLE_API_ISSUER` | Issuer ID |
 
 The workflow signs only if both `MACOS_CERT_P12` and `APPLE_API_KEY_P8` are set. It
-signs orbflash, then the bundle (hardened runtime, secure timestamp), then the .dmg. It
+signs the bundle (hardened runtime, secure timestamp), then the .dmg. It
 notarizes the .dmg, staples the ticket, and fails the run if Gatekeeper rejects the
 result.
 
@@ -118,8 +118,8 @@ Secrets:
 | `AZURE_SIGNING_ACCOUNT` | account name |
 | `AZURE_CERT_PROFILE` | certificate profile name |
 
-The workflow signs only if `AZURE_CLIENT_SECRET` is set. It then checks both
-signatures on the runner and fails the run if either does not verify.
+The workflow signs only if `AZURE_CLIENT_SECRET` is set. It then checks the
+signature on the runner and fails the run if it does not verify.
 
 The client secret expires, after 24 months at most. Put a renewal date in your
 calendar. When it lapses, the Windows job fails loudly; it does not ship unsigned.
@@ -153,7 +153,6 @@ step ran, before you push a tag.
   `bundle.go` copies them into `~/Library/Application Support/orb-manager`: it adds
   newer apps and never overwrites a user's theme, because a signed bundle must never be
   written to.
-- **orbflash.** The headless flasher.
 - **README.txt.** First-run notes per OS (`tools/orb-manager/packaging/<os>/README.txt`).
 - **LICENSE.txt and THIRD_PARTY_NOTICES.txt.** The second covers everything the
   release redistributes: Go modules, React/ReactDOM/Babel, the fonts (all OFL-1.1),

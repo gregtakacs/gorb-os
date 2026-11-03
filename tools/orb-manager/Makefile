@@ -177,7 +177,7 @@ flash: orbflash
 ## name the hub itself reports at /api/status.
 ## The Windows hub ships -H windowsgui (PE subsystem 2): a double-click opens the
 ## app window and nothing else, with the log redirected per log_gui_windows.go;
-## orbflash stays a console binary because its whole output is the flash log.
+## The release is the hub alone: orbflash is a bench tool (make orbflash) and does not ship.
 ## The flag rides in a make variable chosen per platform, never in a shell
 ## variable inside the quoted arg list: the go tool parses $ as command
 ## substitution inside -ldflags, so '$$guilf' there silently ate the flags.
@@ -196,8 +196,7 @@ release:
 	  d=$(RELEASE_DIR)/$(RELEASE_NAME)-$$os-$$arch; \
 	  mkdir -p $$d; \
 	  printf 'GOOS=%-8s GOARCH=%-7s' $$os $$arch; \
-	  if CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "$$ld" -o $$d/$(RELEASE_NAME)$$sfx . \
-	     && CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $$d/orbflash$$sfx ./cmd/orbflash; then \
+	  if CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "$$ld" -o $$d/$(RELEASE_NAME)$$sfx .; then \
 	    echo ' ok'; \
 	    cp -R $(CURDIR)/apps $(CURDIR)/themes $$d/; \
 	  else \

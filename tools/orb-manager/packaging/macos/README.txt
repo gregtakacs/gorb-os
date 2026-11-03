@@ -18,7 +18,4 @@ there and never touches your themes.
 Plug an orb in with a USB-C data cable to flash or set it up. No driver is
 needed.
 
-orbflash (inside the app, Contents/MacOS/orbflash) is a command-line flasher for
-scripting; most people never need it.
-
 Licences: LICENSE.txt (Orb Manager) and THIRD_PARTY_NOTICES.txt.

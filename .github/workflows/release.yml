@@ -99,9 +99,7 @@ jobs:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
-          files: |
-            ${{ github.workspace }}\tools\orb-manager\bin\dist\stage\orb-manager-${{ needs.build.outputs.version }}-windows-amd64\orb-manager.exe
-            ${{ github.workspace }}\tools\orb-manager\bin\dist\stage\orb-manager-${{ needs.build.outputs.version }}-windows-amd64\orbflash.exe
+          files: ${{ github.workspace }}\tools\orb-manager\bin\dist\stage\orb-manager-${{ needs.build.outputs.version }}-windows-amd64\orb-manager.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -121,13 +119,10 @@ jobs:
         shell: pwsh
         run: |
           $d = "bin/dist/stage/orb-manager-$env:VERSION-windows-amd64"
-          $signed = 'true'
-          foreach ($f in 'orb-manager.exe', 'orbflash.exe') {
-            $s = Get-AuthenticodeSignature "$d/$f"
-            Write-Output "$f : $($s.Status) $($s.SignerCertificate.Subject)"
-            if ($s.Status -ne 'Valid') { $signed = 'false' }
-          }
-          if ($env:HAS_AZURE -eq 'true' -and $signed -ne 'true') { Write-Error 'signing ran but a signature does not verify'; exit 1 }
+          $s = Get-AuthenticodeSignature "$d/orb-manager.exe"
+          Write-Output "orb-manager.exe : $($s.Status) $($s.SignerCertificate.Subject)"
+          $signed = if ($s.Status -eq 'Valid') { 'true' } else { 'false' }
+          if ($env:HAS_AZURE -eq 'true' -and $signed -ne 'true') { Write-Error 'signing ran but the signature does not verify'; exit 1 }
           "signed=$signed" >> $env:GITHUB_OUTPUT
       - name: Package
         run: packaging/dist.sh pack windows "$VERSION" bin/dist
@@ -179,9 +174,6 @@ jobs:
           else
             id=-; opts=; signed=false   # ad hoc: runs after the user approves it once
           fi
-          # Inside out: the nested orbflash first, then the bundle (whose main executable
-          # is signed with it). No --deep: it signs nested code with the wrong options.
-          codesign --force $opts --sign "$id" "$app/Contents/MacOS/orbflash"
           codesign --force $opts --sign "$id" "$app"
           codesign --verify --strict --verbose=2 "$app"
           echo "signed=$signed" >> "$GITHUB_OUTPUT"

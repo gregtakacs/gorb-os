@@ -5,7 +5,7 @@ Quick start, no install:
     ./orb-manager
 It opens its own window; close the window to quit.
 
-Install for your user (menu entry, icon, commands in ~/.local/bin):
+Install for your user (menu entry, icon, orb-manager in ~/.local/bin):
     ./install.sh            or    ./install.sh --udev   (also the USB rule, needs sudo)
 
 Needs: Google Chrome, Chromium, Microsoft Edge or Brave. Orb Manager draws its
@@ -19,7 +19,5 @@ group and log in again:
 
 Firewall: orbs are found on the local network by mDNS (UDP 5353); allow it if
 your firewall blocks it.
-
-orbflash is a command-line flasher for scripting; most people never need it.
 
 Licences: LICENSE.txt (Orb Manager) and THIRD_PARTY_NOTICES.txt.

@@ -68,10 +68,8 @@ stage)
 		[ -f "$a/orb-manager" ] && [ -f "$i/orb-manager" ] || die "no darwin binaries in $rel — run make release first"
 		app="$d/Orb Manager.app"
 		mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-		for b in orb-manager orbflash; do
-			lipo -create -output "$app/Contents/MacOS/$b" "$a/$b" "$i/$b"
-			chmod 755 "$app/Contents/MacOS/$b"
-		done
+		lipo -create -output "$app/Contents/MacOS/orb-manager" "$a/orb-manager" "$i/orb-manager"
+		chmod 755 "$app/Contents/MacOS/orb-manager"
 		# The library rides as seed stock: bundle.go copies it into the user's config
 		# dir on launch, because a signed bundle must never be written to.
 		cp -R "$a/apps" "$a/themes" "$app/Contents/Resources/"

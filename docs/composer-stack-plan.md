@@ -1569,6 +1569,11 @@ planner knew no `index` part (P5d.3n) and refused Orbit; fixed in `compPlan3` an
 `liveComps3`, and `headless-wheels` now runs every preset through the bake planners (a
 mutant restoring the bug fails it).
 
+**The hub's default re-baked (2026-11-03).** `tools/orb-manager/themes/skeleton.orbtheme` is
+Skeleton baked by the cleaned editor with its design (1,337 B, clock v1.2.6, schema 1), and
+`make_default_theme.py` now refuses a default that carries no clock design. Gold runs clock
+v1.2.6 on OS v1.2.3.
+
 **Opening a theme for editing.** The Themes pane offers **Edit** on any shelf or card
 theme whose file carries a design region. The hub opens the app's editor (by the
 version gate in §1.2) with `?theme=<id>`. The editor fetches the design region

@@ -50,6 +50,11 @@ func fakeOrbHub(t *testing.T) (*Server, string, func() orbCall, *orbfake.Orb) {
 // proxy, same already-learned address, same client wiring.
 func fakeOrbHubWith(t *testing.T, f *orbfake.Orb) (*Server, string, func() orbCall, *orbfake.Orb) {
 	t.Helper()
+	// A store is followed through its reboot (followStore), and the fake never reboots,
+	// so do not spend the live grace waiting for a silence that will not come.
+	qg := cycleQuietGrace
+	cycleQuietGrace = 30 * time.Millisecond
+	t.Cleanup(func() { cycleQuietGrace = qg })
 	last := new(orbCall)
 	var lastWrite orbCall
 	var lmu sync.Mutex // the hub's read-ahead pass dials concurrently with the page's own fetches
@@ -91,6 +96,9 @@ func fakeOrbHubWith(t *testing.T, f *orbfake.Orb) (*Server, string, func() orbCa
 	s.ota.DevicePort = port
 	s.preview = orbnet.NewClient(2 * time.Second)
 	s.preview.DevicePort = port
+	// The wait behind a caused reboot reads status through s.orb, as the shipped hub does.
+	s.orb = orbnet.NewClient(2 * time.Second)
+	s.orb.DevicePort = port
 	// The test hub builds the same gate and background client the shipped hub
 	// does, pointed at the recording fake, so the interrupt path is the real
 	// one here and not a seam a test forgot to wire.
@@ -781,6 +789,14 @@ func TestAPushRetiresTheCardTheHubRemembers(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"action":"done"`) {
 		t.Fatalf("the push never reported a done step: %s", rec.Body)
+	}
+	// Done comes after the store and the reboot, not at the end of the card upload: the
+	// page reads the theme list the moment it sees done, and a done sent mid-copy had it
+	// read an orb that was about to reboot, and time out (owner report, 2026-11-03).
+	body := rec.Body.String()
+	st, rb, dn := strings.Index(body, `"action":"storing"`), strings.Index(body, `"action":"rebooting"`), strings.Index(body, `"action":"done"`)
+	if st < 0 || rb < st || dn < rb {
+		t.Errorf("the push said done before following the store and the reboot (storing@%d rebooting@%d done@%d): %s", st, rb, dn, body)
 	}
 
 	// The read after the push is the one the page makes when its reboot watch lands.

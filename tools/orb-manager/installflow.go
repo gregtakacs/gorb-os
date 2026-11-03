@@ -978,19 +978,29 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 			Note: fmt.Sprintf("writing %s to the card: %s", body.name, plainDeviceErr(uerr, int(sentLast)))})
 		return
 	}
-	// The upload door queued the store itself and the board reboots to draw it, so the
-	// door that took the file is gone by the time it lands. Report the promise here and
-	// let the face follow the outcome the way the install run's theme step does.
-	//
-	// Following it honestly needs the whole card memory retired, not just the ID photos.
-	// This door writes the card and leaves the store to the device, so the list the hub
-	// remembered from before the push still answers /api/theme/list for two minutes and
-	// the page's re-read after its reboot watch paints the shelf row it already showed:
-	// the theme looks like it never installed, and with no card row it carries no ID
-	// photo either. h_theme_delete retires the same memory for the same reason; a card
-	// that gained a file is no different from one that lost it.
+	// Retire the whole card memory, not just the ID photos: the list the hub remembered
+	// from before the push would answer /api/theme/list for two minutes and paint the
+	// shelf row it already showed. h_theme_delete does the same for the same reason.
 	s.dropThemeCache(ip)
-	send(installStep{Step: c.ID, Action: "done", Note: "stored; the board reboots onto it"})
+	// The upload door queued the store itself (h_theme_upload's post_bundle tail): the
+	// orb now copies the file from card to flash and reboots onto it. The push follows
+	// that to the end, as the install run's theme step does, and holds the lead through
+	// it. It used to answer `done` here, and the page then read the theme list while
+	// the orb was mid-copy and mid-reboot, and timed out (owner report, 2026-11-03).
+	send(installStep{Step: c.ID, Action: "storing", Note: "the orb is copying it from the card to its flash"})
+	outcome, note, back := s.followStore(r.Context(), ip, c.ID, func() {
+		send(installStep{Step: c.ID, Action: "rebooting", Note: "stored; the orb reboots onto it"})
+	}, beatFor(send, c.ID, "waiting for the orb to store the theme and come back"))
+	if outcome != "stored" {
+		send(installStep{Step: c.ID, Action: "refused", Note: "the store did not land: " + note})
+		return
+	}
+	if !back {
+		send(installStep{Step: c.ID, Action: "refused",
+			Note: fmt.Sprintf("the orb stored the theme but has not answered again within %s", installRebootWait)})
+		return
+	}
+	send(installStep{Step: c.ID, Action: "done", Note: "stored, and the orb is back drawing it"})
 }
 
 // beatFor turns one silent round of a patient wait into a step the screen can show. The

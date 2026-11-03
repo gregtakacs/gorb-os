@@ -960,17 +960,39 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 	// outcome, so the response this route finally sends names what landed in the slot,
 	// and the board cannot be reset by this hub's own probe while the copy runs.
 	s.setSend(ip, func(st *themeSend) { st.Phase = "queued" })
-	outcome, note := s.waitForStore(r.Context(), ip, c.ID)
+	outcome, note, back := s.followStore(r.Context(), ip, c.ID, func() {
+		s.setSend(ip, func(st *themeSend) { st.Phase = "rebooting" })
+	})
 	s.setSend(ip, func(st *themeSend) { st.Phase, st.Note = outcome, note })
-	// The card now holds the bytes this ship wrote, and the store above may have
-	// flipped the slot with them. Whatever the hub remembered about the rows,
-	// the preview, and the slot belongs to the card that existed a minute ago.
-	s.dropThemeCache(ip)
 	payload["store"] = outcome
+	payload["back"] = back
 	if note != "" {
 		payload["store_note"] = note
 	}
 	s.jsonOK(w, payload)
+}
+
+// followStore waits out a store the device queued, and then the reboot that draws it,
+// and only then lets the caller answer. A reply at "stored" came while the orb was about
+// to reboot: every page that re-read the theme list on that reply (the Themes face, the
+// editor's pane on close, the shelf's Install) dialed an orb mid-reboot and timed out
+// (owner report, 2026-11-03). back is false when the orb stored the theme and has not
+// answered again within installRebootWait; a store that did not land returns its outcome
+// with back false and no wait. The card memory is retired either way: the card holds
+// the bytes this ship wrote, and the reboot's gap could have refilled the memory with
+// the card as it was before. rebooting, when given, runs once the store has landed.
+func (s *Server) followStore(ctx context.Context, ip, id string, rebooting func(), beats ...waitBeat) (string, string, bool) {
+	outcome, note := s.waitForStore(ctx, ip, id, beats...)
+	s.dropThemeCache(ip)
+	if outcome != "stored" {
+		return outcome, note, false
+	}
+	if rebooting != nil {
+		rebooting()
+	}
+	live, back := s.installWaitBack(ip, beats...)
+	s.dropThemeCache(live)
+	return outcome, note, back
 }
 
 // themeStoreBudget is the wait for one queued store to report an outcome while
@@ -1040,8 +1062,17 @@ func (s *Server) handleThemeCommit(w http.ResponseWriter, r *http.Request) {
 	raw, err := s.device.ThemeCommit(t.IP, q.Commit)
 	if err == nil {
 		// The staged copy landed and its store was queued: same retirement as
-		// any other write to the card.
+		// any other write to the card, and the same follow-through as an upload, so
+		// the reply comes once the orb is back drawing it rather than mid-reboot.
 		s.dropThemeCache(t.IP)
+		var ack struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &ack) == nil && ack.ID != "" {
+			outcome, note, back := s.followStore(r.Context(), t.IP, ack.ID, nil)
+			raw = withStoreOutcome(raw, outcome, note)
+			raw = withField(raw, "back", back)
+		}
 	}
 	s.themeReply(w, raw, err)
 }
@@ -2411,6 +2442,21 @@ func withStoreOutcome(raw json.RawMessage, outcome, note string) json.RawMessage
 	if note != "" {
 		m["store_note"] = note
 	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// withField sets one more key on a device reply, the way withStoreOutcome does; a reply
+// that is not a JSON object passes through unchanged.
+func withField(raw json.RawMessage, key string, v any) json.RawMessage {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw
+	}
+	m[key] = v
 	out, err := json.Marshal(m)
 	if err != nil {
 		return raw

@@ -297,3 +297,33 @@ func TestThePreviewRelayPassesQuietlyThenCaches(t *testing.T) {
 		t.Errorf("the dropped relay did not re-dial the orb")
 	}
 }
+
+// A landed store is answered once the orb is back from the reboot that draws it, not at
+// the stored witness: every page that re-read the theme list on a "stored" reply dialed
+// an orb mid-reboot and timed out (owner report, 2026-11-03). The reply carries back, and
+// the hub's last word to the orb before answering is a status read behind the store polls.
+func TestAStoredThemeIsAnsweredOnceTheOrbIsBack(t *testing.T) {
+	s, ip, _, f := fakeOrbHub(t)
+	file := orbfake.Container("back-dial")
+	mux := http.NewServeMux()
+	s.routes(mux)
+	rec := postThemeRaw(t, s, mux, "/api/theme/upload?ip="+ip, file)
+	env := decodeEnv(t, rec)
+	data, _ := env["data"].(map[string]any)
+	if env["ok"] != true || data["store"] != "stored" || data["back"] != true {
+		t.Fatalf("reply = %v, want stored and back: %s", env["data"], rec.Body.String())
+	}
+	calls := f.Calls()
+	lastSd, lastStatus := -1, -1
+	for i, c := range calls {
+		switch {
+		case strings.HasPrefix(c, "GET /api/v1/sd") && !strings.HasPrefix(c, "GET /api/v1/sd/"):
+			lastSd = i
+		case strings.HasPrefix(c, "GET /api/v1/status"):
+			lastStatus = i
+		}
+	}
+	if lastSd < 0 || lastStatus < lastSd {
+		t.Errorf("no status read after the store polls (last sd list @%d, last status @%d): the reply did not wait for the reboot", lastSd, lastStatus)
+	}
+}

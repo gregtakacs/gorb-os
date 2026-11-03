@@ -708,7 +708,7 @@ setTimeout(async () => {
     ok(/&overwrite=1/.test(xhrUrl || ''), 'the second press sends the held bytes with the firmware flag', xhrUrl);
     ok(xhrBody === bytes, 'and it is the SAME bake, byte-identical, not a re-bake');
     ok(xhrBody && xhrBody.length === 300, '§32.7: the real send ships the full bake once — the precheck was the only short body', xhrBody && xhrBody.length);
-    ok(/rebooting onto it/.test(it.state.status), 'the settled line quotes the store verdict', it.state.status);
+    ok(/the orb is back drawing it/.test(it.state.status), 'the settled line quotes the store verdict, given once the orb is back', it.state.status);
     scen.dup = true;
     it._replaceArmed = null; it.state.dup = null;
     await it.postTheme3ToOrb(bytes, 'orbital-arrow', 'stem', { sentence: 'p' }, 'm', false);

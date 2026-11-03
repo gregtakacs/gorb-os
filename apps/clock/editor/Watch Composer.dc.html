@@ -467,6 +467,18 @@ html,body{height:100%;overflow:hidden}
     </sc-if>
   </aside>
 
+  <sc-if value="{{ sendOpen }}" hint-placeholder-val="{{ false }}">
+    <div class="wc-modal" style="z-index:60">
+      <div>
+        <div style="font-size:15px;font-weight:600">Sending to the orb</div>
+        <div style="font-size:13px;line-height:1.6;color:var(--mut);margin-top:10px">{{ sendLine }}</div>
+        <div class="wc-hint" style="margin-top:10px">{{ sendHint }}</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">
+          <button onClick="{{ sendCancel }}" disabled="{{ sendNoCancel }}">{{ sendCancelLabel }}</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
   <sc-if value="{{ dupOpen }}" hint-placeholder-val="{{ false }}">
     <div class="wc-modal" onClick="{{ dupCancel }}">
       <div onClick="{{ dupStop }}">
@@ -488,7 +500,7 @@ html,body{height:100%;overflow:hidden}
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1, shRelief: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {} };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {}, sending: null };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
@@ -2692,7 +2704,55 @@ class Component extends DCLogic {
    * own — the hub-to-orb leg and the store the door armed. The button appears only
    * when a hub served the page (see hubSend3): from the filesystem there is no door
    * to dial, so only the download shows. */
+  /* A send is one modal act (owner ruling, 2026-11-03): from the press until the
+   * verdict, the page shows the send over everything and nothing else can be pressed,
+   * the editor will not close, and the hub is told so it will not close the pane. The
+   * owner may cancel only while the bytes are still this page's: through the bake, the
+   * precheck and the crossing to the hub. The hub reads the whole file before it dials
+   * the orb, so a cancel there leaves the orb untouched; once the hub holds the file the
+   * orb's store is under way and cannot be stopped, and the modal says so and waits. */
+  _beginSend3() {
+    this._cancel3 = false;
+    this.setState({ sending: { canCancel: true, cancelling: false } });
+    this._busy3(true);
+  }
+  _endSend3() {
+    this._xhr3 = null;
+    this.setState({ sending: null });
+    this._busy3(false);
+  }
+  _busy3(on) {
+    try { window.parent.postMessage({ type: 'theme.busy', on: !!on }, location.origin); } catch (e) { /* standalone */ }
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+    if (on && !this._unload3) {
+      this._unload3 = (e) => { e.preventDefault(); e.returnValue = ''; };
+      window.addEventListener('beforeunload', this._unload3);
+    } else if (!on && this._unload3) {
+      window.removeEventListener('beforeunload', this._unload3);
+      this._unload3 = null;
+    }
+  }
+  // past this point the orb holds the job: no cancel, only the wait
+  _sendCommitted3() { if (this.state.sending) this.setState({ sending: { canCancel: false, cancelling: false } }); }
+  cancelSend3() {
+    const sd = this.state.sending;
+    if (!sd || !sd.canCancel || sd.cancelling) return;
+    this._cancel3 = true;
+    this.setState({ sending: { canCancel: false, cancelling: true } });
+    if (this._xhr3) this._xhr3.abort();
+  }
+  // the cancel checkpoints: a cancel pressed mid-bake lands here, before anything leaves
+  _cancelled3() {
+    if (!this._cancel3) return false;
+    this.setState({ status: 'Send cancelled — nothing was sent to the orb.' });
+    return true;
+  }
   async sendTheme3ToOrb() {
+    if (this.state.sending) return;
+    this._beginSend3();
+    try { await this._sendTheme3ToOrb(); } finally { this._endSend3(); }
+  }
+  async _sendTheme3ToOrb() {
     // §32's second press: when the last send stopped at a duplicate, the bake is
     // held in _replaceArmed and this press ships THOSE bytes — no re-bake, so the
     // replace is byte-for-byte the dial the owner was asked about. Editing the dial
@@ -2713,9 +2773,10 @@ class Component extends DCLogic {
   async replaceArmed3() {
     const a = this._replaceArmed;
     this.setState({ dup: null });
-    if (!a) return;
+    if (!a || this.state.sending) return;
     this._replaceArmed = null;
-    await this._shipHeldReplace(a);
+    this._beginSend3();
+    try { await this._shipHeldReplace(a); } finally { this._endSend3(); }
   }
   /* The held bake's two roads to the same file on the glass. When the refusal armed
    * the hold it may have handed back a commit token: the device verified these bytes
@@ -2730,6 +2791,7 @@ class Component extends DCLogic {
     if (a.commit) {
       const ip = await this.hubOrbIp();
       if (ip) {
+        this._sendCommitted3();
         this.setState({ status: 'Replacing "' + a.nm + '" on ' + ip + ' from the copy already on the card — no second upload' });
         try {
           const r = await fetch('/api/theme/commit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip: ip, commit: a.commit }) });
@@ -3437,6 +3499,7 @@ class Component extends DCLogic {
    * assumption: a stored dial reboots the orb onto itself; a torn one boots the
    * base face until one re-store — said plainly. */
   async postTheme3ToOrb(bytes, nm, stem, pol, meter, overwrite) {
+    if (this._cancelled3()) return;
     const ip = await this.hubOrbIp();
     if (!ip) {
       this.setState({ status: 'Not sent: this hub is not talking to an orb — load one on the Manage card first, then press again. (The download still ships without a hub.)' });
@@ -3578,6 +3641,7 @@ class Component extends DCLogic {
         return;
       }
     }
+    if (this._cancelled3()) return;
     const say = (s) => this.setState({ status: s });
     say('Sending "' + nm + '" to ' + ip + (overwrite ? ' (replacing)' : '') + ' — 0%');
     const watch = this._watchSend3(ip, say, nm);
@@ -3588,6 +3652,7 @@ class Component extends DCLogic {
       code = up.status; j = up.j;
     } catch (e) {
       watch.stop();
+      if (this._cancelled3()) return;
       this.setState({ status: 'Send failed: ' + (e && e.message ? e.message : String(e)) });
       return;
     }
@@ -3613,7 +3678,8 @@ class Component extends DCLogic {
     }
     const d = (j && j.data) || {};
     const storeLine = {
-      stored: 'stored into the one slot — the orb is rebooting onto it',
+      stored: d.back === false ? 'stored into the one slot, and the orb has not answered since its reboot — check the Manage card'
+        : 'stored into the one slot, and the orb is back drawing it',
       torn: 'the copy tore before its header: the base face boots until one re-store' + (d.store_note ? ' (' + d.store_note + ')' : ''),
       refused: 'the store refused: ' + (d.store_note || 'no reason from the orb'),
       lost: 'filed on the card, and the store outcome stayed unreported past the wait — check the Manage card'
@@ -3628,6 +3694,7 @@ class Component extends DCLogic {
   _push3(url, bytes, onProgress) {
     return new Promise((resolve, reject) => {
       const x = new XMLHttpRequest();
+      this._xhr3 = x;
       x.open('POST', url);
       x.setRequestHeader('Content-Type', 'application/octet-stream');
       let lastPaint = 0;
@@ -3636,6 +3703,8 @@ class Component extends DCLogic {
         if (now - lastPaint < 120 && e.loaded < e.total) return;
         lastPaint = now;
         onProgress(e.loaded, e.total);
+        // every byte is the hub's now, and the hub dials the orb with it: no cancel past here
+        if (e.loaded >= e.total) this._sendCommitted3();
       };
       x.onload = () => {
         let j = {};
@@ -3643,6 +3712,7 @@ class Component extends DCLogic {
         resolve({ status: x.status, j });
       };
       x.onerror = () => reject(new Error('the hub closed the connection mid-send'));
+      x.onabort = () => reject(new Error('cancelled'));
       x.send(bytes);
     });
   }
@@ -3657,6 +3727,7 @@ class Component extends DCLogic {
         Math.floor((st.sent || 0) * 100 / ((st.total || 1))) + '% of ' + (st.total || 0) + ' B',
       queued: () => '"' + nm + '" is on the orb, the store is armed — the copy comes next',
       storing: () => '"' + nm + '" is storing into the slot — progress rides the orb glass; the orb reboots itself when the copy lands',
+      rebooting: () => '"' + nm + '" is stored — the orb is rebooting onto it; waiting for it to come back',
       duplicate: () => 'the card holds a different "' + nm + '" — press Send to orb again to replace it',
       exact: () => '"' + nm + '" is already on the card, byte for byte — nothing was sent',
       rejected: (st) => 'the orb refused the upload' + (st.note ? ': ' + st.note : '')
@@ -4093,7 +4164,7 @@ class Component extends DCLogic {
   goStep(id) { const st = this.STEPS.find((x) => x[0] === id); if (st) this.setState({ step: id, tab: st[2][0] }); }
   /* D43 §4.2: under the hub the editor fills the window, and its back arrow is the way out. */
   inFrame() { try { return typeof window !== 'undefined' && !!window.parent && window.parent !== window; } catch (e) { return false; } }
-  closeEditor() { try { window.parent.postMessage({ type: 'theme.close' }, location.origin); } catch (e) { /* standalone: nowhere to go back to */ } }
+  closeEditor() { if (this.state.sending) return; try { window.parent.postMessage({ type: 'theme.close' }, location.origin); } catch (e) { /* standalone: nowhere to go back to */ } }
   crumbLabel() {
     let q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
     return ((q && (q.get('label') || q.get('orb'))) || 'Clock') + (q && (q.get('label') || q.get('orb')) ? ' · Clock' : ' theme');
@@ -5188,6 +5259,14 @@ class Component extends DCLogic {
        * Replace ships THOSE held bytes with the overwrite flag; Cancel dismisses the
        * arm so the next press is a fresh bake. The modal rides s.dup, so it disappears
        * on the first setState that clears it. */
+      sendOpen: !!s.sending,
+      sendLine: s.status || 'Building the theme…',
+      sendHint: !s.sending ? '' : s.sending.cancelling ? 'Cancelling: the send stops before anything reaches the orb.'
+        : s.sending.canCancel ? 'Nothing has reached the orb yet, so Cancel stops it cleanly.'
+        : 'The orb is storing it and rebooting onto it. That cannot be stopped part way, so this waits until the orb is back.',
+      sendNoCancel: !(s.sending && s.sending.canCancel),
+      sendCancelLabel: s.sending && s.sending.cancelling ? 'Cancelling…' : 'Cancel',
+      sendCancel: () => this.cancelSend3(),
       dupOpen: !!s.dup,
       dupNm: s.dup ? s.dup.nm : '',
       dupStem: s.dup ? s.dup.stem : '',

@@ -3313,6 +3313,7 @@ function openThemeEditor(row, theme) {
     let doc = null;
     try { doc = frame.contentDocument; } catch (e) { return; }   // cross-origin: not ours
     if (!doc || !doc.body || !doc.body.hasChildNodes()) return;  // about:blank stray
+    themeEditorBusy = false;   // a document that just loaded has no send under way
     if (pane) pane.classList.remove("loading");
     if (state && pane && !pane.hidden) state.textContent = "";
   });
@@ -3322,10 +3323,22 @@ function openThemeEditor(row, theme) {
 // that has since been replaced cannot file a theme under the previous app.
 let themeEditorApp = "";
 let themeSayTimer = 0;
+// themeEditorBusy is the editor's own word (theme.busy) that a send is under way. The
+// send is modal (owner ruling, 2026-11-03): until it answers, no door closes the pane,
+// whether the editor asks, a board change resets the face, or the window is closed,
+// because blanking the frame mid-send drops the upload wherever it had got to.
+let themeEditorBusy = false;
+window.addEventListener("beforeunload", (e) => {
+  if (!themeEditorBusy) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
 
 function closeThemeEditor() {
   const pane = $("#mn-theme-editor"), frame = $("#mn-theme-editor-frame");
   if (!pane) return;
+  if (themeEditorBusy) return;
+  const wasOpen = !pane.hidden;
   pane.hidden = true;
   pane.classList.remove("loading");
   document.body.classList.remove("editing");
@@ -3333,6 +3346,11 @@ function closeThemeEditor() {
   if (state) state.textContent = "";
   if (frame) frame.src = "about:blank";
   themeEditorApp = "";
+  // The editor writes the card behind this page's back (its sends dial the hub
+  // directly), so the list under the pane is whatever it was before the editor opened.
+  // Closing re-reads it, so a theme sent from the editor is on the list the owner returns
+  // to (owner report, 2026-11-03).
+  if (wasOpen && themeIP) loadThemes(themeIP);
 }
 
 // themeBridge is the hub page's half of the editor contract (§7.1). It is eight
@@ -3363,6 +3381,7 @@ async function themeBridge(ev) {
   };
   if (m.type === "theme.ready") { back({ state: "ok" }); return; }
   if (m.type === "theme.close") { closeThemeEditor(); return; }
+  if (m.type === "theme.busy") { themeEditorBusy = !!m.on; return; }
   // D43: the editor's refusal page found the orb running an older release of this app
   // than the hub's shelf carries and offers the fix. It is the Apps face's own Update
   // (the same streamed, forced install), run for the one app this pane opened, with its
@@ -3687,7 +3706,9 @@ function themeShelfRows(scope, deviceRows, state, shelf) {
         return;
       }
       try {
-        state.textContent = "installing " + (f.title || f.file) + " \u2014 stored; the board is rebooting onto it";
+        // The push answers done only once the orb has stored the theme and come back from
+        // its reboot, so this wait is a belt: it returns on the first answer.
+        state.textContent = (f.title || f.file) + " is stored and the orb is back \u2014 re-reading the card";
         await themeWaitBack(state, f.title || f.file);
         fpClose();
         await loadThemes(themeIP);

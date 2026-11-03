@@ -283,3 +283,31 @@ func TestAJoinAfterAFlashIsNotAnsweredByTheLastSeed(t *testing.T) {
 		t.Errorf("openJoinDialog has %d mentions, want 3: a caller that is not a flash ending would now clear the memo", n)
 	}
 }
+
+// The editor's send is modal and the pane honours it (owner report, 2026-11-03: a send
+// could be walked away from mid-upload, and the list under the pane stayed stale after
+// one landed). The bridge takes the editor's busy word, closing the pane refuses while
+// it stands, a real close re-reads the card, and a freshly loaded frame clears the word.
+func TestTheEditorPaneHoldsASendAndRereadsTheCardOnClose(t *testing.T) {
+	src := readAppJS(t)
+	if !strings.Contains(src, `if (m.type === "theme.busy") { themeEditorBusy = !!m.on; return; }`) {
+		t.Error("the bridge ignores the editor's theme.busy word, so the pane cannot know a send is under way")
+	}
+	i := strings.Index(src, "function closeThemeEditor() {")
+	if i < 0 {
+		t.Fatal("closeThemeEditor is gone")
+	}
+	body := src[i:]
+	if j := strings.Index(body, "\n}\n"); j > 0 {
+		body = body[:j]
+	}
+	if !strings.Contains(body, "if (themeEditorBusy) return;") {
+		t.Error("closeThemeEditor closes mid-send; blanking the frame drops the upload wherever it had got to")
+	}
+	if !strings.Contains(body, "if (wasOpen && themeIP) loadThemes(themeIP);") {
+		t.Error("closing the editor does not re-read the card, so a theme it sent is missing from the list")
+	}
+	if !strings.Contains(src, "themeEditorBusy = false;   // a document that just loaded has no send under way") {
+		t.Error("a frame that reloads mid-send would leave the pane unclosable")
+	}
+}

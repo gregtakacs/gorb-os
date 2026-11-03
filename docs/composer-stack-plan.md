@@ -1547,7 +1547,7 @@ long as an app in its library or on a known orb still names it.
 | **P5** ✔ | The build flow and layout (§4): step bar, Add catalogue with compatibility, properties grouped by D42 parts, diagnostics drawer, light moods | headless UI test walks Start → Render on a scratch build and on a preset; nothing removed from today's controls (a checklist of every current field and where it now lives) — **done 2026-11-02** (§4.1) |
 | **P5b** ✔ | The studio layout (§4.2): the editor fills the hub window as one three-pane studio — layers left on every step, the stage centre, the inspector right — in the hub's palette, with one title bar; Arrange folds into the layers panel; the hub page itself goes fluid | nothing removed (the P5 checklist, re-pointed at the new panes); the stage zoom stays inside its pane at every stop; no page scroll at 1280×720 and 1920×1080 (Chrome screenshots of both, inside the hub); `go test` and every app suite green — **built 2026-11-02** (§4.2); the owner's test on the hub is owed |
 | **P5c** ✔ | Hands are complications (§4.3): one Add catalogue, hands placed anywhere in any number, a selected hand's panel alone; the plate rows open Movement, and its backdrop and the plate art sit at the tab's foot | the presets render and bake pixel-identical in the new shape; ten hands on the dial within R6; every suite green — **built 2026-11-02** (§4.3 as built); the presets' hand geometry is identical across 22 designs; a bench bake of the new pointer sources and the owner's test are owed |
-| **P5d** ◐ | Faces, hands, wheels and cutouts (§4.4): face groups and a drag that shows where it lands, hands that inherit from their face, fan and slider sub-dials, wheels under cutouts | each slice keeps every preset rendering as before and every suite green; the bench bake of each new row kind — **P5d.1–P5d.3b built and benched 2026-11-02** (§4.4 as built: smooth wheels as rows under a cover, year digits and the roll in the firmware, the presets' windows and classic moons as wheels); P5d.4's angled and lifted fan/slider still to see on glass |
+| **P5d** ◐ | Faces, hands, wheels and cutouts (§4.4): face groups and a drag that shows where it lands, hands that inherit from their face, fan and slider sub-dials, wheels under cutouts | each slice keeps every preset rendering as before and every suite green; the bench bake of each new row kind — **P5d.1–P5d.3b built and benched 2026-11-02** (§4.4 as built: smooth wheels as rows under a cover, year digits and the roll in the firmware, the presets' windows and classic moons as wheels); P5d.4's angled and lifted fan/slider still to see on glass — **shelved by the owner 2026-11-02** (known issues, to be looked at later) |
 | **P6** | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here |
 | **P7** | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs |
 
@@ -1585,6 +1585,11 @@ its version carry what was built.
 9. **The blend rounds (2026-11-01).** `mix_16_16` and LVGL's RGB565 image blends round
    each field instead of truncating (§5.4). The clock app's version moves with the
    editor changes (v1.1.45), so a version stamp still names one set of bytes.
+
+10. **Hour and minute hands are always antialiased (2026-11-02).** The bake sets EF_SMOOTH on
+   every hour and minute hand row and its shadow twin, whatever the dial's grant for its other
+   rows; turning wheel rows are excluded. `estimate3` prices AA on any row that carries the bit,
+   so the meter states the cost; a bench arm passing `smooth: false` still forces nearest.
 
 ## 12. Open questions (raised during execution)
 

@@ -34,6 +34,11 @@ tell users how to get past the warning.
    and notes listing the bundled app versions.
 4. Read the draft over, then press Publish. Nothing is public until you do.
 
+To rebuild a draft after more commits, move the tag and push it again
+(`git tag -f v1.2.6 && git push -f origin v1.2.6`). The run replaces the old draft.
+It refuses a release that is already published; a fix after publishing takes a new
+tag, such as `v1.2.6-2` for a hub-only rebuild.
+
 To build and sign without releasing, use Actions → release → Run workflow. The files
 land on the run's page.
 

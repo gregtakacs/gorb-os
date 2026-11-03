@@ -257,5 +257,17 @@ jobs:
             [ "$MAC_SIGNED" = true ] || { echo; echo "The macOS build is not notarized, so macOS says it could not verify Orb Manager. Choose Done, open System Settings > Privacy & Security, press Open Anyway beside Orb Manager, then open it again. (macOS 14 and earlier: right-click Orb Manager, choose Open, then Open.)"; }
           } > notes.md
           cat notes.md
+      # A tag moved and pushed again re-deploys: the draft it made last time is replaced.
+      # A published release is never replaced; a fix after publishing takes a new tag
+      # (v1.2.6-2 for a hub-only rebuild of the same OS).
       - name: Draft the release
-        run: gh release create "$VERSION" dist/* --draft --verify-tag --title "Orb Manager $VERSION" --notes-file notes.md
+        run: |
+          if draft=$(gh release view "$VERSION" --json isDraft -q .isDraft 2>/dev/null); then
+            if [ "$draft" != true ]; then
+              echo "::error::$VERSION is already published; tag the fix as $VERSION-2 (or the next version) instead"
+              exit 1
+            fi
+            echo "replacing the earlier draft of $VERSION"
+            gh release delete "$VERSION" --yes
+          fi
+          gh release create "$VERSION" dist/* --draft --verify-tag --title "Orb Manager $VERSION" --notes-file notes.md

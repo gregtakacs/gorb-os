@@ -1,6 +1,6 @@
 # D43: the composer as a layer stack, with an honest panel preview
 
-**Status: RULED (owner, 2026-11-01, §11). P0, P3–P5c built; P1, P2, P5d, P6 partly (§10); P7 not started.** This file is D42's slice
+**Status: RULED (owner, 2026-11-01, §11). P0, P3–P5c and P7 built; P1, P2, P5d, P6 partly (§10).** This file is D42's slice
 E2 (`docs/element-model-plan.md` §10) widened from "one list of rows" into the
 composer's whole authoring model, plus an RGB565 panel preview, a bake-time dither,
 the design carried inside the `.orbtheme`, and the retirement of the hub's
@@ -1480,6 +1480,43 @@ still installs and draws.
    `GET /api/v1/sd/design?id=<stem>`, returning the design region of a card theme, and the
    card's theme rows report `design` (its size) so the pane knows whom to offer Edit.
 
+**As built (P7, 2026-11-02; clock v1.2.3, OS v1.2.3).**
+- **The format** (OS): words 29–31 point at the design after the last bank's last byte.
+  The baker (`writeBundle3`, `readDesign3`), `orbbundle.py` (`write_bundle(design=)`,
+  `read_design`) and the hub (`orbnet.ContainerDesign`, `ThemeContainer.DesignSize`) write
+  and read it; JS and Python write it byte for byte alike; the device's C reader is proven to
+  accept and lay out such a file exactly as without it (`host_orb_bundle_c_test` vector 88).
+  Every writer refuses a file plus design over `ORB_THEME_UPLOAD_MAX`, the browser's copy
+  of the cap pinned to `orb_theme.h`. The word maps in `orbtheme.py`, `orb_bundle.c` and
+  `orb_theme.c` all name the three words (`host_sd_test` holds the two C maps equal).
+- **The document** (the clock app's): `{format: "wc-design", schema: 1, app, appVersion}`
+  and the whole watch: design, light, seeds, hands, case, opening, glass, movement, sounds
+  and name, with the uploaded art and sound bytes unless left out. `appVersion` is the
+  clock's own release, written into the editor at region build (`window.__ORB_APP`,
+  `make_clock_region.py`). The Render step's **Keep the design**: with art (default; it
+  falls back to without art when the file would pass the cap, and says so), without art, or
+  not at all. The content serial folds the design's CRC, so a design-only change is a new
+  theme to the card and the hub's precheck (check 3 above).
+- **The read-back** (OS): `GET /api/v1/sd/design?id=<stem>` streams the design in 4 KB
+  chunks with `X-Design-Size` and `X-Design-Crc` ahead of the body (404 with the sentence
+  when there is none; busy while an upload, scan or job holds the card), and each card row
+  in `/api/v1/sd` reports `design` (its size). The row budget moved 640 → 672 B.
+- **The hub**: `GET /api/theme/design?ip=&id=` relays a card design and checks its size and
+  CRC; `?name=` reads a shelf file. The Themes face shows **Edit** on every card or shelf row
+  whose theme carries a design; it opens the app's editor with `&theme=<stem>` (and
+  `&src=shelf`). The allowlist, the fake orb and the row contract know the new route and
+  field.
+- **The editor**: `?theme=` fetches the design through the hub and restores it, ahead of the
+  autosave; the reopened theme starts the session's history and keeps its name, so Send
+  replaces it on the card. Another app's design, a newer schema (naming the app version that
+  made it) and a damaged or missing design are refused in words.
+- **Bench, orb-B (Gold), 2026-11-02:** Modern baked by the real editor in Chrome (2,041,738 B,
+  a 1,768 B design), uploaded and stored in 11.4 s with no panic; it draws. The card row
+  reports `design: 1768`; `/api/v1/sd/design` returned the 1,768 bytes identical to the
+  editor's, CRC `77d1e203` on both sides; a pre-P7 theme answers 404 "carries no design".
+- Tests: `headless-design` 18, `headless-bundle3` 236, `host_orb_bundle_c_test` 339,
+  Go (`themedesign_test`, `theme_design_test`, the contract tests).
+
 **Opening a theme for editing.** The Themes pane offers **Edit** on any shelf or card
 theme whose file carries a design region. The hub opens the app's editor (by the
 version gate in §1.2) with `?theme=<id>`. The editor fetches the design region
@@ -1621,7 +1658,7 @@ long as an app in its library or on a known orb still names it.
 | **P5c** ✔ | Hands are complications (§4.3): one Add catalogue, hands placed anywhere in any number, a selected hand's panel alone; the plate rows open Movement, and its backdrop and the plate art sit at the tab's foot | the presets render and bake pixel-identical in the new shape; ten hands on the dial within R6; every suite green — **built 2026-11-02** (§4.3 as built); the presets' hand geometry is identical across 22 designs; a bench bake of the new pointer sources and the owner's test are owed |
 | **P5d** ◐ | Faces, hands, wheels and cutouts (§4.4): face groups and a drag that shows where it lands, hands that inherit from their face, fan and slider sub-dials, wheels under cutouts | each slice keeps every preset rendering as before and every suite green; the bench bake of each new row kind — **P5d.1–P5d.3b built and benched 2026-11-02** (§4.4 as built: smooth wheels as rows under a cover, year digits and the roll in the firmware, the presets' windows and classic moons as wheels); P5d.4's angled and lifted fan/slider still to see on glass — **shelved by the owner 2026-11-02** (known issues, to be looked at later) |
 | **P6** ◐ | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here — **§7 built 2026-11-02** (§7, as built; `headless-session` 35 checks, 3/3 mutants); the coverage measurement is still owed |
-| **P7** | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs |
+| **P7** ✔ | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs — **built and benched 2026-11-02** (§8, as built); the hub's Edit button awaits the owner's test in the live window |
 
 P0 comes first because it is cheap and decides how much of P2 and P6 is needed. P1
 and P2 are independent of the rest, so the posterization fix does not wait for the

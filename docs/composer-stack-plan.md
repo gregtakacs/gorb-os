@@ -1066,6 +1066,25 @@ not enough: the owner wanted any angle, with snaps, the tangent among them (the 
   the angle.
 - Tests: `headless-wheels` 84.
 
+**As built (P5d.3h, owner 2026-11-02).**
+- **A rendered moon's Rotation** was reset to 0 by canon and never drawn; it is kept and turns
+  the moon's terminator about its centre (`rrot`).
+- **Depth.** The engine drew every rendered disc under a face, then every wheel, whatever the
+  stack said, so with the dial hidden a moon added above a date ring rendered under it. Under
+  each face the parts now draw in the stack's own order (design.comps, bottom first, which is
+  also the order the bake's table rows run); the turning wheels' stack goes first, under all
+  of it, as its rows and cover lie under every plate on the device. Layers nests the dial's
+  discs under the dial (they had no parent, so they did not indent) and indents every row by
+  its depth: a dial's wheel one step, its cutout two.
+- **A cutout's eye** was wired to the group switch for every disc; it now switches off that
+  cutout alone (its wheel is no longer seen through it).
+- **The moon cutout is locked to its moon wheel:** on the disc's centre, opening where the
+  wheel faces (*Opening faces*, the wheel's `read`), its aperture a share of the disc (`ap`,
+  50-120%). It keeps no placement of its own (canon drops `dx`, `dy`, `at`, `rot`, `lie`, `w`,
+  `h`), and its panel offers only Aperture and Frame. Size, moons and orientation are set on
+  the wheel; the cutout follows.
+- Tests: `headless-wheels` 91.
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views

@@ -145,7 +145,7 @@
     var dDiscs = comps.filter(function (c) { return isDisc(c) && hostOf(c) === 'dial'; });
     for (var k = dDiscs.length - 1; k >= 0; k--) {
       var dc = dDiscs[k];
-      push({ id: 'comp:' + dc.id, ref: dc.id, kind: 'disc', group: 'discs:dial', band: 'rows', label: compTitle(dc, E) + ' · under the dial',
+      push({ id: 'comp:' + dc.id, ref: dc.id, kind: 'disc', group: 'discs:dial', band: 'rows', label: compTitle(dc, E), parent: 'dial',
              host: 'dial', hide: 'complications', sel: { kind: 'comp', id: dc.id }, badge: 'live · value plate', movable: true });
       if (dc.type === 'wheel') cutoutsOf(dc, 'dial');
     }

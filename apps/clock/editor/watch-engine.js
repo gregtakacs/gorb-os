@@ -1203,7 +1203,9 @@
       // a moon cutout is the moonphase's aperture: a half circle over the wheel's own centre,
       // opening toward `at`, its two humps hiding the moon that is not in season
       // (its aperture's width is the author's, or the disc's own diameter)
-      let hole = c.shape === 'moon' ? { kind: 'moon', x: w.x + (+c.dx || 0), y: w.y + (+c.dy || 0), a: +c.w > 0 ? +c.w / 2 : w.r, rot: at }
+      // a moon wheel's cutout is locked to its disc: on its centre, facing where the wheel reads, its
+      // aperture a share of the disc (ap); the wheel's own size and Opening faces move it
+      let hole = c.shape === 'moon' || w.spec.moon ? { kind: 'moon', x: w.x, y: w.y, a: w.r * Math.max(0.5, Math.min(1.2, c.ap != null ? +c.ap : 1)), rot: w.read }
         : c.shape === 'round' ? { kind: 'circle', x: cx, y: cy, r: Math.max(cw, ch) / 2 }
         : c.shape === 'slot' ? { kind: 'slot', x: cx, y: cy, w: cw * 1.4, h: ch * 0.8, rot: at + Math.PI / 2 + p.rot }
         : c.shape === 'arc' && w.form !== 'barrel' ? (() => { const half = Math.max(rad(4), Math.min(Math.PI, rad(+c.span || 36) / 2)), r0 = w.lr - ch / 2, r1 = w.lr + ch / 2;
@@ -1297,7 +1299,7 @@
       // punch stays to show the disc, and the geartrain under it is culled by the
       // subdial itself. Skeleton openings ('opening', below) keep their holes.
       if (!onSub || thost) hole.seal = true;
-      comps.push({ id: c.id, type: c.type === 'moon' ? 'moon' : c.shows || 'date', fmt: c.fmt || 'ddd DD MMM', fcase: c.fcase, style: c.style, disc: c.disc || 'auto', dc: c.discColor, tc: c.textColor, wf: c.wfont, mc: c.moonColor, mc2: c.moonColor2, mbg: c.moonBg, host: onSub || 'dial', hole, k: sz });
+      comps.push({ id: c.id, rrot: c.type === 'moon' && ROUND_MOON[c.style] ? rad(+c.rot || 0) : 0, type: c.type === 'moon' ? 'moon' : c.shows || 'date', fmt: c.fmt || 'ddd DD MMM', fcase: c.fcase, style: c.style, disc: c.disc || 'auto', dc: c.discColor, tc: c.textColor, wf: c.wfont, mc: c.moonColor, mc2: c.moonColor2, mbg: c.moonBg, host: onSub || 'dial', hole, k: sz });
       (onSub && !thost ? subHoles[onSub] : dialHoles).push(hole);
       const b = holeBox(hole);
       hits.push({ id: c.id, x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, r: Math.max(b[2] - b[0], b[3] - b[1]) / 2 + 2, z: onSub ? subZ[onSub] + 0.005 : 0 });
@@ -2247,7 +2249,13 @@
   }
   function drawComp(ctx, c, date, en, pal, seed, ph) {
     const h = c.hole;
-    if (c.type === 'moon') { const p = ph == null ? moonPhase(date) : ph; return ROUND_MOON[c.style] ? moonRound(ctx, h.x, h.y, h.r, p, c.style, en, seed, c) : moonDisc(ctx, h.x, h.y, h.a, p, pal, seed, h.rot, c.style); }
+    if (c.type === 'moon') {
+      const p = ph == null ? moonPhase(date) : ph;
+      if (!ROUND_MOON[c.style]) return moonDisc(ctx, h.x, h.y, h.a, p, pal, seed, h.rot, c.style);
+      // a rendered moon turns its terminator by its Rotation (the lit limb faces where the author sets it)
+      if (!c.rrot) return moonRound(ctx, h.x, h.y, h.r, p, c.style, en, seed, c);
+      ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(c.rrot); ctx.translate(-h.x, -h.y); moonRound(ctx, h.x, h.y, h.r, p, c.style, en, seed, c); ctx.restore(); return;
+    }
     const v = c.blank ? '' : c.type === 'custom' ? fmtDate(c.fmt, date, c.fcase) : c.type === 'date' ? String(date.getDate()) : c.type === 'day' ? DAYS[date.getDay()] : MONTHS[date.getMonth()];
     const k = c.k || 1, round = h.kind === 'circle';
     /* One measure for the aperture, shared with the kit's textKits crop: a rect states
@@ -3864,40 +3872,41 @@
       const key = (only ? 'only[' + (only.join(',') || '-') + ']' : '*') + '|' + date.toDateString() + (wheelTick ? '|' + Math.floor(date.getTime() / wheelTick) : '') + '|' + (F.wheelFill || '') + '|' + (view ? JSON.stringify(view) : '');
       if (key === ck) return cvals;
       const a = cv(S), subs = {};
-      lay.comps.forEach((c, i) => { if ((only && only.indexOf(c.id) < 0) || ex[c.id]) return; const t = c.host === 'dial' ? a : subs[c.host] || (subs[c.host] = cv(S)); paint(t.getContext('2d'), c, date, i); });
-      /* D43 P5d.3: the wheels, under their faces, drawn the way the dial draws them: under
-       * each face the discs stack largest first (a big date's units disc rides on its tens
-       * ring), and the stack is seen only through the union of their cutouts, plus the whole
-       * disc of a wheel whose overhang is shown. The dial does exactly this -- the discs as
-       * turning rows, then one still cover row of the face with that union cut out -- so
-       * this preview and the glass agree wherever two discs overlap. A dial window is sealed
-       * and composited, so the cutouts, not the face, are what stops a disc there. */
+      /* P5d.3h: everything under a face is drawn in the stack's own order (design.comps, bottom
+       * first, as Layers lists it and the bake's table rows run): a rendered moon above a date
+       * ring stays above it when the dial is hidden. The turning wheels' stack goes first, under
+       * all of it, as its rows and cover lie under every plate on the device. */
+      const ord = {}; (design.comps || []).forEach((c, i) => { ord[c.id] = i; });
+      const items = [];
+      lay.comps.forEach((c, i) => { if ((only && only.indexOf(c.id) < 0) || ex[c.id]) return; items.push({ host: c.host, at: ord[c.id] == null ? i : ord[c.id], draw: (t) => paint(t, c, date, i) }); });
+      /* D43 P5d.3: the wheels, under their faces, drawn the way the dial draws them. A wheel that
+       * snaps ships as its own plates at its own cutouts, so it is seen through those alone; the
+       * wheels that turn ship as one stack under one cover, so they are seen through the union of
+       * theirs (largest first: a big date's units disc rides on its tens ring), plus the whole disc
+       * of one whose overhang is shown. A cutout switched off on the stage drops out of the view;
+       * a face switched off shows its wheels whole. */
       const wheelsOf = {};
       lay.wheels.forEach((w) => { if ((!only || only.indexOf(w.id) >= 0) && !ex[w.id]) (wheelsOf[w.host] = wheelsOf[w.host] || []).push(w); });
-      /* P5d.3e: a wheel that snaps ships as its own plates at its own cutouts, so it is seen
-       * through those alone (two rings at one radius, each read through its own window, never
-       * show each other); the wheels that turn ship as one stack under one cover, so they are
-       * seen through the union of theirs. The turning stack lies under the snapping plates. */
       const turns = (w) => w.smooth || w.ease > 0 || w.spec.unit === 864e5 * 365;   // orbtheme-baker.js wheelTurns3: smooth, eased, or a year
-      const groups = [];
-      Object.keys(wheelsOf).forEach((host) => {
-        const all = wheelsOf[host].sort((p, q) => q.r - p.r), tw = all.filter(turns);
-        if (tw.length) groups.push([host, tw]);
-        all.filter((w) => !turns(w)).forEach((w) => groups.push([host, [w]]));
-      });
-      groups.forEach(([host, ws]) => {
+      const stack = (host, ws) => (t) => {
         const en1 = host === 'dial' ? F.dialEn : (F.subLayers.find((q) => q.id === host) || {}).en || en;
         const st = cv(S), sx = st.getContext('2d');
         setFace(fontKey);
         ws.forEach((w) => { w.fill = F.wheelFill || null; drawWheel(sx, w, date, en1, pal); w.fill = null; });
-        // seen through the union of the cutouts as an antialiased mask (a path clip is hard-edged,
-        // and its stair-step showed through the dial's own soft hole edge), widened a hair so the
-        // dial's edge, not the mask's, is the one the eye reads
+        // seen through its cutouts as an antialiased mask (a path clip is hard-edged, and its
+        // stair-step showed through the dial's own soft hole edge), widened a hair so the dial's
+        // edge, not the mask's, is the one the eye reads
         const mk = cv(S), mx = mk.getContext('2d'); mx.fillStyle = mx.strokeStyle = '#000'; mx.lineWidth = 2;
-        ws.forEach((w) => { w.holes.forEach((q) => { mx.beginPath(); holePath(q)(mx); mx.fill(); mx.stroke(); }); if (w.overhang) { mx.beginPath(); mx.arc(w.x, w.y, w.r, 0, TAU); mx.fill(); } });
+        ws.forEach((w) => { w.holes.forEach((q, j) => { if (w.cut[j] && ex[w.cut[j].id]) return; mx.beginPath(); holePath(q)(mx); mx.fill(); mx.stroke(); }); if (w.overhang) { mx.beginPath(); mx.arc(w.x, w.y, w.r, 0, TAU); mx.fill(); } });
         if (!wh[host]) { sx.globalCompositeOperation = 'destination-in'; sx.drawImage(mk, 0, 0); sx.globalCompositeOperation = 'source-over'; }
-        (host === 'dial' ? a : subs[host] || (subs[host] = cv(S))).getContext('2d').drawImage(st, 0, 0);
+        t.drawImage(st, 0, 0);
+      };
+      Object.keys(wheelsOf).forEach((host) => {
+        const all = wheelsOf[host].sort((p, q) => q.r - p.r), tw = all.filter(turns);
+        if (tw.length) items.push({ host, at: -1, draw: stack(host, tw) });
+        all.filter((w) => !turns(w)).forEach((w) => items.push({ host, at: ord[w.id] == null ? 0 : ord[w.id], draw: stack(host, [w]) }));
       });
+      items.sort((p, q) => p.at - q.at).forEach((it) => it.draw((it.host === 'dial' ? a : subs[it.host] || (subs[it.host] = cv(S))).getContext('2d')));
       ck = key; cvals = { dial: a, subs };
       return cvals;
     };
@@ -4280,9 +4289,9 @@
         out.push(w, k); return;
       }
       if (c.type === 'moon' && !ROUND_MOON[c.style]) {
-        const w = { id: c.id, type: 'wheel', host: c.host || 'dial', angle: +c.angle || 0, dist: +c.dist || 0, rot: 0, size: +c.size || 32, shows: 'moon' };
+        const w = { id: c.id, type: 'wheel', host: c.host || 'dial', angle: +c.angle || 0, dist: +c.dist || 0, rot: 0, size: +c.size || 32, shows: 'moon', read: +c.rot || 0 };
         if (c.style && c.style !== 'classic') w.mstyle = c.style;
-        out.push(w, { id: kid(c.id), type: 'cutout', host: c.id, at: +c.rot || 0, shape: 'moon' }); return;
+        out.push(w, { id: kid(c.id), type: 'cutout', host: c.id, shape: 'moon' }); return;
       }
       out.push(c);
     });
@@ -4420,6 +4429,8 @@
         ['angle', 'dist', 'size'].forEach((k) => delete c[k]);
         ['dx', 'dy', 'rot'].forEach((k) => { if (!(+c[k])) delete c[k]; });
         if (!CUT_LIES[c.lie] || c.lie === 'auto') delete c.lie;
+        // P5d.3h: a moon cutout keeps only its aperture share and its frame; the moon wheel places it
+        if (c.shape === 'moon') { ['dx', 'dy', 'rot', 'lie', 'at', 'w', 'h', 'join', 'bar', 'span'].forEach((k) => delete c[k]); if (c.ap == null || Math.abs(+c.ap - 1) < 1e-9) delete c.ap; } else delete c.ap;
         if (!c.shape || c.shape === 'window') delete c.shape;
         if (!c.style || c.style === 'frame') delete c.style;
         if (c.shape !== 'arc') delete c.span;
@@ -4429,7 +4440,6 @@
         return;
       }
       if (c.type === 'opening' && (!c.shape || c.shape === 'circle')) { c.rot = 0; delete c.shape; }
-      if (c.type === 'moon' && ROUND_MOON[c.style]) c.rot = 0;
       if (c.type === 'moon') ['moonColor', 'moonColor2', 'moonBg'].forEach((k) => { if (!c[k] || c[k] === 'auto' || !['graphic', 'neon'].includes(c.style)) delete c[k]; });
       if (c.type === 'subdial') {
         if (c.tfont === 'dial') delete c.tfont; if (c.tstyle === 'classic') delete c.tstyle; if (!c.tcolor || c.tcolor === 'auto') delete c.tcolor; if (c.torient === 'upright') delete c.torient; if (c.tdir === 'cw') delete c.tdir; if (c.tweight === 'bold') delete c.tweight; if (c.tsize != null && +c.tsize === 1) delete c.tsize;

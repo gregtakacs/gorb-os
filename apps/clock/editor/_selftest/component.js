@@ -1305,21 +1305,24 @@ class Component extends DCLogic {
     const HEAD = { crystal: 'Crystal · pinned on top', rows: 'Layers', plate: 'Plate · pinned at the bottom' };
     const rows = []; let band = null;
     const selId = s.selKind === 'hand' ? 'hand:' + s.sel : s.selKind === 'comp' ? 'comp:' + s.sel : s.selKind === 'dial' ? 'dial' : s.selKind === 'move' ? s.sel : null;
+    // P5d.3h: a row indents by its depth under its host (a dial's wheel one step, its cutout two)
+    const byRow = {}; items.forEach((x) => { byRow[x.id] = x; });
+    const depthOf = (x) => { let n = 0; for (let p = x.parent; p && byRow[p] && n < 6; p = byRow[p].parent) n++; return n; };
     items.forEach((it) => {
       if (it.band !== band) { band = it.band; rows.push({ isHead: true, isRow: false, label: HEAD[band] }); }
       const up = it.movable ? S.move(inp, it.id, -1) : { ok: false, reason: '' }, dn = it.movable ? S.move(inp, it.id, 1) : { ok: false, reason: '' };
       // D43 P5d.3d: a hand, a sub-dial face and a disc switch off on their own (hidden.ids); the
       // crystal, the dial, the train and the movement stay the switches they always were
-      const own = it.ref != null && (it.kind === 'hand' || it.kind === 'pointer' || it.kind === 'subdial' || it.kind === 'disc');
+      const own = it.ref != null && (it.kind === 'hand' || it.kind === 'pointer' || it.kind === 'subdial' || it.kind === 'disc' || it.kind === 'cutout');
       const ids0 = s.hidden.ids || {}, hidden = own ? !!ids0[it.ref] || !!s.hidden[it.hide] : !!s.hidden[it.hide], on = selId === it.id;
       const ICON = { case: '◎', glass: '◌', dial: '◯', subdial: '◷', disc: '◐', flare: 'A', opening: '◇', comp: '▭', hand: '╱', pointer: '╱', geartrain: '⚙', movement: '▦' };
       rows.push({ id: it.id, parent: it.parent || null, isHead: false, isRow: true, label: it.label, warn: warnOf[it.id] ? ' ⚠' : '', icon: ICON[it.kind] || '•',
-        cls: (on ? 'on' : '') + (it.parent ? ' child' : '') + (s.dragging === it.id ? ' dragging' : ''), indent: it.parent ? 14 : 0, tag: it.lifted ? 'still row' : '',
+        cls: (on ? 'on' : '') + (it.parent ? ' child' : '') + (s.dragging === it.id ? ' dragging' : ''), indent: 14 * depthOf(it), tag: it.lifted ? 'still row' : '',
         note: it.badge + (it.kind === 'hand' || it.kind === 'pointer' ? (it.shadow ? ' · casts a shadow' : '') : '')
           + (it.lifted && liftCov ? (liftCov[it.ref] ? ' · repainted on ~' + Math.round(liftCov[it.ref] * 100) + '% of sweep ticks' : ' · clear of the sweep') : '')
           + (warnOf[it.id] ? ' · ' + warnOf[it.id] : ''),
         tip: it.movable ? 'Drag onto another layer, or use the arrows' : (S.move(inp, it.id, 1).reason || ''),
-        pad: it.parent ? 22 : 6, weight: 400, op: hidden ? 0.45 : 1, bg: on ? '#1f3a5f' : 'transparent', edge: on ? '#58a6ff' : 'transparent',
+        pad: 6 + 16 * depthOf(it), weight: 400, op: hidden ? 0.45 : 1, bg: on ? '#1f3a5f' : 'transparent', edge: on ? '#58a6ff' : 'transparent',
         arrows: it.movable ? 'visible' : 'hidden',
         upOp: up.ok ? 1 : 0.35, downOp: dn.ok ? 1 : 0.35, upTip: up.ok ? 'Up one' : up.reason, downTip: dn.ok ? 'Down one' : dn.reason,
         up: (e) => { e.stopPropagation(); this.stackMove(it.id, -1); }, down: (e) => { e.stopPropagation(); this.stackMove(it.id, 1); },
@@ -1330,7 +1333,7 @@ class Component extends DCLogic {
         dragEnd: () => this.stackDragEnd(),
         pick: () => this.stackPick(it),
         eye: hidden ? 'hidden' : 'shown', eyeIcon: hidden ? '○' : '◉', eyeFg: hidden ? '#5d6b78' : '#8b98a5',
-        eyeTip: own ? 'Show or hide ' + it.label + ' on the stage' + (it.kind === 'subdial' ? ' (its wheels then show whole)' : '') + ' \u2014 a view switch: the bake is not changed' : 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial (the wheels under it then show whole)', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)',
+        eyeTip: own ? 'Show or hide ' + it.label + ' on the stage' + (it.kind === 'subdial' ? ' (its wheels then show whole)' : it.kind === 'cutout' ? ' (its wheel is no longer seen through it)' : '') + ' \u2014 a view switch: the bake is not changed' : 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial (the wheels under it then show whole)', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)',
         eyeToggle: (e) => { e.stopPropagation(); this.setState((st) => {
           if (!own) return { hidden: { ...st.hidden, [it.hide]: !st.hidden[it.hide] } };
           const ids = { ...(st.hidden.ids || {}) }; if (ids[it.ref]) delete ids[it.ref]; else ids[it.ref] = 1;
@@ -3828,6 +3831,13 @@ class Component extends DCLogic {
         const wheels = D.comps.filter((c) => c.type === 'wheel'), mates = D.comps.filter((c) => c.type === 'cutout' && c.id !== sel.id);
         Sx('Wheel', 'host', wheels.map((c) => ({ v: c.id, label: '#' + num(c.id) + ' ' + compTitle(c) })));
         const hw = D.comps.find((c) => c.id === sel.host) || {};
+        /* P5d.3h: a moon wheel's cutout is locked to its disc -- the wheel's size, its moons and its
+         * Opening faces place and turn it -- so it offers only how wide it opens and its frame */
+        if (hw.shows === 'moon' || sel.shape === 'moon') {
+          R('Aperture', 'ap', 0.5, 1.2, 0.01, (v) => Math.round(v * 100) + '% of the disc', 1);
+          Sx('Frame', 'style', opt(E.COMP_STYLES.cutout));
+          selFields.push(Nt('', 'Locked to its moon disc: size the disc and its moons, and turn where it opens, on the moon wheel.'));
+        } else {
         if (hw.form !== 'barrel') R('Along the figures at', 'at', 0, 359, 1, (v) => v + '\u00b0', hw.read != null ? +hw.read : 90);
         R('Move across', 'dx', -120, 120, 0.5, (v) => v + ' px', 0);
         R('Move down', 'dy', -120, 120, 0.5, (v) => v + ' px', 0);
@@ -3846,6 +3856,7 @@ class Component extends DCLogic {
         Sx('Frame', 'style', opt(E.COMP_STYLES.cutout));
         selFields.push(Sl('Join with', sel.join || '', [{ v: '', label: 'Nothing \u00b7 its own frame' }].concat(mates.map((c) => ({ v: c.id, label: '#' + num(c.id) + ' on ' + compTitle(D.comps.find((q) => q.id === c.host) || {}) }))), (v) => this.setComp(sel.id, { join: v || undefined })));
         if (sel.join) Cx('Centre bar', 'bar', [{ v: true, label: 'Bar between' }, { v: false, label: 'No bar' }], true);
+        }
       }
       if (sel.type !== 'subdial' && !follow && !cut) Sx('Host', 'host', [{ v: 'dial', label: 'Main dial' }, ...(sel.type === 'flare' ? [{ v: 'plate', label: 'Movement plate · seen through openings' }] : []), ...subs.map((q) => ({ v: q.id, label: '#' + num(q.id) + ' ' + compTitle(q) }))]);
       if (follow && tr.by && tr.by !== sel.id) selFields.push(Nt('Angle', 'Riding on the balance — the train is aimed by #' + num(tr.by)));
@@ -3939,6 +3950,7 @@ class Component extends DCLogic {
           R('Outer diameter', 'size', 10, 230, 0.5, (v) => (2 * v) + ' px' + mmOf(2 * v), 32);
           R('Moon size', 'msize', 0.12, 0.48, 0.01, (v) => Math.round(v * 200) + '% of the disc', 0.33);
           R('Moons at', 'mpos', 0.2, 0.8, 0.01, (v) => Math.round(v * 100) + '% out', 0.5);
+          R('Opening faces', 'read', 0, 359, 1, (v) => v + '\u00b0 (its cutout turns with it)', 0);
           selFields.push(Sl('Sky', sel.mstyle || 'classic', [{ v: 'classic', label: 'Navy & gold' }, { v: 'silver', label: 'Silver night' }, { v: 'black', label: 'Black sky' }], set('mstyle')));
         }
         selFields.push(Object.assign(Nt('', ''), { label: 'Motion', isHead: true, isNote: false, isRow: false }));

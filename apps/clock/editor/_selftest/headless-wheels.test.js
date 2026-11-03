@@ -95,8 +95,8 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   const f = face(c);
   ok(f.lay.wheels.length === 3 && f.lay.dialHoles.some((h) => h.kind === 'moon'), 'and the dial draws them');
   ok(!('Window' in {}) && E.COMP_TYPES.window === 'Rendered display \u00b7 text' && E.COMP_TYPES.moon === 'Rendered display \u00b7 moon', 'the catalogue names the rendered parts for what they are');
-  const mw = face([{ id: 'm', type: 'wheel', host: 'dial', size: 40, shows: 'moon', msize: 0.4, mpos: 0.45 }, { id: 'k', type: 'cutout', host: 'm', shape: 'moon', w: 70 }]).lay;
-  ok(mw.wheels[0].msize === 0.4 && mw.wheels[0].mpos === 0.45 && mw.dialHoles[0].a === 35, 'a moon wheel sizes its disc, its moons and their place, and its aperture its own width');
+  const mw = face([{ id: 'm', type: 'wheel', host: 'dial', size: 40, shows: 'moon', msize: 0.4, mpos: 0.45 }, { id: 'k', type: 'cutout', host: 'm', shape: 'moon', ap: 0.875 }]).lay;
+  ok(mw.wheels[0].msize === 0.4 && mw.wheels[0].mpos === 0.45 && near(mw.dialHoles[0].a, 35), 'a moon wheel sizes its disc, its moons and their place, and its aperture a share of the disc');
 }
 // ---- the stage's eye, part by part -----------------------------------------------------------------
 {
@@ -186,6 +186,31 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(wc().face === 'ring' && wc().fang === 180, 'the chips jump straight to each', JSON.stringify(wc()));
   fld('Snap to').opts.find((o) => o.label === 'Level').pick(); it.setComp('w', { read: 30 });
   ok(!wc().face && wc().read === 30, 'and level stays level when the reading point moves');
+}
+// ---- P5d.3h: the moon cutout locked to its disc; a rendered moon turns; Layers depth and eyes ----------
+{
+  const mv = (w, k) => face([Object.assign({ id: 'm', type: 'wheel', host: 'dial', angle: 180, dist: 100, size: 40, shows: 'moon' }, w), Object.assign({ id: 'k', type: 'cutout', host: 'm', shape: 'moon' }, k || {})]).lay;
+  const a = mv({}, { dx: 30, dy: -20, at: 77, rot: 40 }), w0 = a.wheels[0], h0 = a.dialHoles[0];
+  ok(near(h0.x, w0.x) && near(h0.y, w0.y) && near(h0.rot, w0.read), 'a moon cutout sits on its disc\u2019s centre and opens where the wheel faces, whatever offsets it carries');
+  const b = mv({ size: 60, read: 45 }), h1 = b.dialHoles[0];
+  ok(near(h1.a, 60) && near(h1.rot, Math.PI / 4), 'and grows and turns with the moon wheel');
+  const cm = E.canonDesign({ comps: [{ id: 'm', type: 'wheel', shows: 'moon' }, { id: 'k', type: 'cutout', host: 'm', shape: 'moon', dx: 3, at: 10, w: 50, rot: 9 }] }).comps[1];
+  ok(['dx', 'at', 'w', 'rot'].every((k) => !(k in cm)), 'it keeps no placement of its own', JSON.stringify(cm));
+  const rm = face([{ id: 'r', type: 'moon', host: 'dial', angle: 0, dist: 80, size: 40, style: 'sphere', rot: 30 }]).lay.comps[0];
+  ok(near(rm.rrot, Math.PI / 6) && E.canonDesign({ comps: [{ id: 'r', type: 'moon', style: 'sphere', rot: 30 }] }).comps[0].rot === 30, 'a rendered moon keeps its rotation and turns its terminator by it');
+  const st = S.build({ comps: [{ id: 'w', type: 'wheel', host: 'dial', shows: 'date' }, { id: 'k', type: 'cutout', host: 'w' }, { id: 'r', type: 'moon', host: 'dial', style: 'sphere' }], hands: [], order: [], E });
+  ok(st.find((x) => x.id === 'comp:w').parent === 'dial' && st.find((x) => x.id === 'comp:r').parent === 'dial' && st.find((x) => x.id === 'comp:k').parent === 'comp:w', 'Layers nests the dial\u2019s discs under the dial, and a cutout under its wheel');
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  const it = new (global.COMP_CLASS(DCLogic))({});
+  it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
+  it.state.dial = 'skeleton'; it.state.playing = false; it.state.hidden = {};
+  it.state.designs = { skeleton: E.canonDesign({ print: 'roman', comps: [{ id: 'w', type: 'wheel', host: 'dial', size: 150, shows: 'date' }, { id: 'k', type: 'cutout', host: 'w' }, { id: 'v', type: 'wheel', host: 'dial', size: 80, shows: 'day' }, { id: 'vk', type: 'cutout', host: 'v' }] }) };
+  const rows = () => it.renderVals().stackRows || it.renderVals().layers || [];
+  const kr = rows().find((r) => r.id === 'comp:k');
+  if (kr) { kr.eyeToggle({ stopPropagation() { } }); ok(it.state.hidden.ids && it.state.hidden.ids.k === 1 && !it.state.hidden.complications, 'a cutout\u2019s eye switches off that cutout alone'); }
+  else ok(false, 'the cutout row is listed');
+  ok(kr && rows().find((r) => r.id === 'comp:k').indent > rows().find((r) => r.id === 'comp:w').indent && rows().find((r) => r.id === 'comp:w').indent > 0, 'and a cutout indents under its wheel, the wheel under the dial');
 }
 // ---- canon ----------------------------------------------------------------------------------
 {

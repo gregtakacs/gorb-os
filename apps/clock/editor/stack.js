@@ -48,6 +48,7 @@
   function compTitle(c, E) {
     if (c.type === 'wheel') return ((E && E.WHEEL_SHOWS && E.WHEEL_SHOWS[c.shows]) || 'Date') + (c.digit === 'tens' ? ' tens' : c.digit === 'units' ? ' units' : '') + ' wheel';
     if (c.type === 'cutout') return 'Cutout' + (c.shape && c.shape !== 'window' ? ' · ' + c.shape : '');
+    if (c.type === 'index') return 'Index · ' + ((E && E.INDEX_STYLES && E.INDEX_STYLES[c.istyle]) || 'Laser');
     if (c.type === 'subdial') return 'Sub-dial' + (c.scale && c.scale !== 'none' && E && E.SCALES && E.SCALES[c.scale] ? ' · ' + E.SCALES[c.scale] : '');
     if (c.type === 'window') return ((E && E.SHOWS && E.SHOWS[c.shows]) || 'Date') + ' window';
     if (c.type === 'moon') return 'Moon phase';
@@ -87,6 +88,12 @@
 
     push({ id: 'outer', kind: 'case', label: 'Case & outer shine', band: 'crystal', hide: 'outer', badge: 'crystal overlay', movable: false });
     push({ id: 'glass', kind: 'glass', label: 'Glass', band: 'crystal', hide: 'glass', badge: 'crystal overlay', movable: false });
+    // P5d.3n: an index is painted on the crystal, over the wheel it reads
+    comps.forEach(function (c) {
+      if (c.type !== 'index' || !byId[c.host]) return;
+      push({ id: 'comp:' + c.id, ref: c.id, kind: 'index', band: 'crystal', label: compTitle(c, E) + ' · reads ' + compTitle(byId[c.host], E).toLowerCase(), parent: 'glass',
+             hide: 'glass', sel: { kind: 'comp', id: c.id }, badge: 'on the glass', movable: false });
+    });
 
     var order = liveKeys(input);
     var drawnHand = {}; hands.forEach(function (h) { drawnHand[h.id] = h; });

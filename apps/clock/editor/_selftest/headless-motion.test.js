@@ -59,7 +59,9 @@ ok(near(Math.abs(((deg(E.handAngle(fh(flux, 'h1'), at(6, 59, 0))) + 180) % 360) 
 const ow = orbit.lay.wheels;
 ok(ow.length === 3 && ow.every((w) => w.exposed && w.form === 'ring' && near(w.read, Math.PI / 2)) && !orbit.hands.length, 'Orbit: three exposed rings, read at 3 o\u2019clock, no hands', ow.map((w) => w.spec.n).join(','));
 ok(ow.find((w) => w.spec.n === 60 && w.ease > 0).spec.held(at(3, 15, 59)) === 15, 'Orbit: the jumping minute ring holds 15 under the 3 o\u2019clock index');
-ok(ow.some((w) => w.index === 'laser'), 'Orbit: its laser index rides the crystal over them');
+// P5d.3n: the index is a part of its own, spanning all three rings from inside the hour ring to past the seconds
+const oi = orbit.lay.indexes;
+ok(oi.length === 1 && oi[0].style === 'lens' && near(oi[0].a, Math.PI / 2) && oi[0].r0 < Math.min(...ow.map((w) => w.ri)) && oi[0].r1 > Math.max(...ow.map((w) => w.r)), 'Orbit: its laser lens is an index part on the crystal, across all three rings', JSON.stringify(oi[0] && [oi[0].r0, oi[0].r1]));
 
 // ---- the bake's encoding and the Hands tab ----
 const DCLogic = function () { };

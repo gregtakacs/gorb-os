@@ -1146,8 +1146,9 @@ not enough: the owner wanted any angle, with snaps, the tangent among them (the 
   (`discSprite`, shipped as pointer rows), read at a laser index on the crystal. A wheel can
   now be **exposed** (`exposed`): seen whole, over its face, with no cutout; it always turns
   as a row (a plate per value would be the whole ring), and needs no cover (the bake ships
-  none when every turning wheel is exposed). Its **index** (`index`: line, or the laser lens)
-  rides the crystal, spanning every exposed ring sharing its centre and reading point. Orbit:
+  none when every turning wheel is exposed). Its **index** rides the crystal, spanning every
+  exposed ring sharing its centre and reading point (built here as a wheel field, `index`;
+  P5d.3n made it a part of its own). Orbit:
   hour (smooth), minute (jump, eased 160 ms), seconds (jump) rings at the old disc bands, read
   at 3 o'clock. A dial whose time is told by exposed rings bakes with no hand at all. Bench on
   orb-B: the glass reads the hour ring past 8, the minute on 30 and the seconds at the index
@@ -1167,6 +1168,34 @@ not enough: the owner wanted any angle, with snaps, the tangent among them (the 
 - **Sliders** snap to 0 within 1.5% of their span and, on a fine one, to a whole number within
   0.6%; a number box beside each takes an exact value.
 - Tests: `headless-wheels` 113, `headless-motion` 44.
+
+**As built (P5d.3n, owner 2026-11-02).**
+- **The index is a part.** The owner's rule: no shipped dial may carry anything a user cannot
+  recreate from scratch, and Orbit's laser lens was a hidden field on its hour wheel. It is now
+  an `index` comp hosted by a wheel (Add → Index, or the wheel's Look → Index chip), listed on the
+  glass in the layer list and painted into the crystal overlay, so it costs no row. Fields:
+  `istyle` (line, laser = glowing line and two pips, lens = laser under a smoked lens, pips,
+  frame), `span` (every disc or ring wheel read at the same centre and point that is exposed or
+  has no cutouts, or its own wheel only), `color` (default the wheel's accent), `thick`, `glow`,
+  `iw` (lens or frame half-width), `over` (overrun past the rings). It stands where its wheel
+  reads and moves with the wheel's Reads at; the stage drag ignores it. Canon turns an old
+  `index` field into a part (line → laser, laser → lens, carrying the accent). One painter,
+  `paintIndex`, draws it; the legacy disc-hand index goes through it unchanged.
+- **Markers.** Ticks gain `between` and `both` (at and between figures), a stand (`tpos`: outer
+  edge, inner edge, both edges, or centred on the figures' radius), `tlen` (0 fits them to the
+  room the figures leave), `tw` and `tm` (margin from the edge). Rim lines gain `rpos` (outer,
+  inner, both), `rw`, `rm` and `rgap` (a double's spacing). A disc has no inner edge. Defaults
+  draw what P5d.3m drew. The pane states how much room the figures leave the ticks and warns
+  when they meet, so moving the figures (Figures at radius) shows its effect on the ticks.
+- **Figures fit the band.** A ring's auto figure size fitted only the pitch round the ring. A
+  figure keeps one angle to the radius all the way round, so a level one read at 3 o'clock lays
+  its width across the band; Orbit's hour figures overflowed their 38 px band. The auto size now
+  also fits `reach` (width and height projected across the band) inside the band less 4 px, and
+  `fe`, half that reach, is what the ticks' room is measured against.
+- **Slider box.** ui.css's `input[type=number]{width:100%}` outranked `.wc-num`, so the number box
+  took the row and covered its slider; the rule is now `.wc-rng>input.wc-num`, 52 px, no spinners.
+- Not benched on the orb: the index is crystal-overlay paint and the markers are wheel texture,
+  both on paths P5d.3m benched. Tests: `headless-wheels` 132, `headless-motion` 44.
 
 ## 5. Preview: 1:1, and the panel
 

@@ -265,7 +265,10 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
 {
   const cw = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', shows: 'date', exposed: true, index: 'laser', ticks: 'all', rim: 'double', wfinish: 'sunray', every: 5, accent: '#ff0000' },
     { id: 'v', type: 'wheel', shows: 'date', exposed: false, index: 'laser', ticks: 'none', rim: 'none', wfinish: 'flat', every: 1, accent: 'auto' }] }).comps;
-  ok(cw[0].exposed === true && cw[0].index === 'laser' && cw[0].ticks === 'all' && cw[0].rim === 'double' && cw[0].wfinish === 'sunray' && cw[0].every === 5 && cw[0].accent === '#ff0000', 'the wheel\u2019s look is kept', JSON.stringify(cw[0]));
+  ok(cw[0].exposed === true && cw[0].ticks === 'all' && cw[0].rim === 'double' && cw[0].wfinish === 'sunray' && cw[0].every === 5 && cw[0].accent === '#ff0000', 'the wheel\u2019s look is kept', JSON.stringify(cw[0]));
+  // P5d.3n: the old index field becomes an index part (old laser = lens, in the wheel's accent); none without exposure
+  const cix = cw.filter((c) => c.type === 'index');
+  ok(!('index' in cw[0]) && cix.length === 1 && cix[0].host === 'w' && cix[0].istyle === 'lens' && cix[0].color === '#ff0000', 'an exposed wheel\u2019s index field becomes an index part', JSON.stringify(cix));
   ok(['exposed', 'index', 'ticks', 'rim', 'wfinish', 'every', 'accent'].every((k) => !(k in cw[1])), 'and its defaults drop out (no index without exposure)', JSON.stringify(cw[1]));
   const ex = face([{ id: 'w', type: 'wheel', host: 'dial', size: 150, form: 'ring', inner: 110, shows: 'minute', exposed: true, index: 'line', every: 5, ticks: 'all' }]);
   ok(ex.lay.wheels[0].exposed && ex.lay.wheels[0].every === 5 && ex.comps(new Date(2026, 10, 2), null).tops.dial, 'an exposed ring needs no cutout, and draws over its face');
@@ -291,6 +294,55 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   const h = lk('Height'); h.on({ target: { value: 0.4 } }); const h0 = it.design().comps.find((c) => c.id === 'k').h;
   h.onNum({ target: { value: '17.5' } }); const h1 = it.design().comps.find((c) => c.id === 'k').h;
   ok(!h0 && h1 === 17.5, 'a slider snaps to 0 near it, and its box takes an exact value', JSON.stringify([h0, h1]));
+}
+// ---- P5d.3n: the index part, the markers, a band-fitting figure ----------------------------------
+{
+  const base = { id: 'w', type: 'wheel', host: 'dial', size: 150, form: 'ring', inner: 110, shows: 'hour', exposed: true, read: 90 };
+  const f1 = face([base, { id: 'v', type: 'wheel', host: 'dial', size: 190, form: 'ring', inner: 155, shows: 'minute', exposed: true, read: 90 }, { id: 'x', type: 'index', host: 'w', istyle: 'frame', over: 0 }]);
+  const ix = f1.lay.indexes[0];
+  ok(ix && ix.style === 'frame' && ix.r0 === 110 && ix.r1 === 190 && ix.glow === 0, 'an index spans every exposed ring read at its point, edge to edge with no overrun', JSON.stringify(ix && [ix.r0, ix.r1, ix.glow]));
+  const f2 = face([base, { id: 'v', type: 'wheel', host: 'dial', size: 190, form: 'ring', inner: 155, shows: 'minute', exposed: true, read: 90 }, { id: 'x', type: 'index', host: 'w', span: 'own' }]);
+  ok(f2.lay.indexes[0].r1 === 154, 'or only its own wheel', String(f2.lay.indexes[0].r1));
+  const ci = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', shows: 'hour' }, { id: 'x', type: 'index', host: 'w', istyle: 'line', span: 'all', thick: 2, over: 4, glow: 0, iw: 9, color: 'auto', angle: 5 }] }).comps[1];
+  ok(JSON.stringify(ci) === JSON.stringify({ id: 'x', type: 'index', host: 'w', istyle: 'line' }), 'an index keeps no default (a line has no width, and no glow by default)', JSON.stringify(ci));
+  // a level two-digit figure read at 3 o'clock lays its width across a 40 px band: the auto size fits it
+  const fw = face([base]).lay.wheels[0];
+  ok(fw.fs * (0.62 * 2 + 0.1) <= 40 - 4 + 1e-6 && fw.fe * 2 <= 36 + 1e-6, 'an auto-sized ring figure fits across its band as well as round it', fw.fs.toFixed(1));
+  ok(face([Object.assign({}, base, { face: 'ring', fang: 0 })]).lay.wheels[0].fs > fw.fs, 'and one tangent to the ring, standing its height across, may be larger');
+  // ticks fit to the room the figures leave, from either edge; between figures sit half a step on
+  const tw = (o) => E.wheelTicks(face([Object.assign({}, base, { ticks: 'all', trad: 120 }, o)]).lay.wheels[0]);
+  const tOut = tw({}), tIn = tw({ tpos: 'inner' }), tBoth = tw({ tpos: 'both' }), tBtw = tw({ ticks: 'between' }), tMix = tw({ ticks: 'both' });
+  ok(tOut.length === 12 && tOut[0].spans.length === 1 && tOut[0].spans[0][0] === 148.5, 'outer ticks start a margin in from the rim', JSON.stringify(tOut[0].spans));
+  ok(tIn[0].spans[0][0] === 111.5 && tBoth[0].spans.length === 2, 'inner ticks from the inner edge, and both edges draw two', JSON.stringify([tIn[0].spans, tBoth[0].spans]));
+  ok(tBtw.length === 12 && tBtw[0].i === 0.5 && tBtw[0].major && tMix.length === 24 && !tMix[1].major, 'between figures half a step on; at-and-between makes the between ones minor');
+  const near0 = tw({ trad: 140 });
+  ok(near0.room < 3, 'figures moved out to the rim leave the outer ticks no room, which the panel warns of', near0.room.toFixed(1));
+  const rims = (o) => E.wheelRims(face([Object.assign({}, base, { rim: 'double' }, o)]).lay.wheels[0]);
+  ok(rims({}).length === 4 && rims({ rpos: 'outer' }).length === 2 && rims({ rpos: 'outer', rm: 3, rw: 2 })[0][0] === 150 - 3 - 1 && rims({ rpos: 'outer', rgap: 5 })[1][0] === rims({ rpos: 'outer' })[0][0] - 5, 'rim lines by edge, margin, thickness and spacing');
+  const cm = E.canonDesign({ comps: [Object.assign({}, base, { ticks: 'all', tpos: 'outer', tlen: 0, tw: 1.6, tm: 1.5, rim: 'line', rpos: 'both', rw: 1.2, rm: 0.2, rgap: 4 })] }).comps[0];
+  ok(['tpos', 'tlen', 'tw', 'tm', 'rpos', 'rw', 'rm', 'rgap'].every((k) => !(k in cm)), 'marker defaults drop out (and a single rim has no spacing)', JSON.stringify(cm));
+  const cd = E.canonDesign({ comps: [{ id: 'w', type: 'wheel', shows: 'date', tpos: 'inner', tw: 3, rim: 'line', rpos: 'inner' }] }).comps[0];
+  ok(!('tpos' in cd) && !('tw' in cd) && !('rpos' in cd), 'a disc has no inner edge, and no tick fields without ticks', JSON.stringify(cd));
+  // the panel: a wheel offers to add its index, the index has its own pane, the markers theirs
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p2) { Object.assign(this.state, typeof p2 === 'function' ? p2(this.state) : p2); };
+  const it = new (global.COMP_CLASS(DCLogic))({});
+  it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
+  it.state.dial = 'skeleton'; it.state.playing = false; it.state.hidden = {};
+  it.state.designs = { skeleton: E.canonDesign({ print: 'roman', comps: [Object.assign({}, base, { ticks: 'all', rim: 'double' })] }) };
+  it.setState({ sel: 'w', selKind: 'comp', step: 'parts', tab: 'comps' });
+  let fk = it.renderVals().fields; const lk = (l) => fk.find((f) => f.label === l);
+  ok(lk('Ticks stand') && lk('Tick length') && lk('Tick thickness') && lk('Tick margin') && lk('Rim on') && lk('Rim thickness') && lk('Rim margin') && lk('Line spacing'), 'the Markers section places, sizes and spaces the ticks and rim lines', fk.map((f) => f.label).join('|'));
+  ok(fk.some((f) => f.isNote && /Room for ticks|No room|run into/.test(f.note || '')), 'and says how much room the figures leave the ticks');
+  const add = lk('Index').opts.find((o) => /Add an index/.test(o.label)); add.pick();
+  const nx = it.design().comps.find((c) => c.type === 'index');
+  ok(nx && nx.host === 'w' && it.state.sel === nx.id, 'Add an index puts one on the selected wheel and selects it', JSON.stringify(nx));
+  fk = it.renderVals().fields;
+  ok(lk('Style') && lk('Spans') && lk('Colour') && lk('Thickness') && lk('Glow') && lk('Overrun') && !lk('Angle') && !lk('Distance') && fk.some((f) => f.isNote && /Reads at/.test(f.note || '')), 'the index pane: style, span, colour, thickness, glow, overrun, and where it stands', fk.map((f) => f.label).join('|'));
+  lk('Style').opts.find((o) => o.label === 'Laser lens').pick(); fk = it.renderVals().fields;
+  ok(lk('Width'), 'a lens (or frame) has a width');
+  const items = global.OrbStack.build(it.stackInput());
+  ok(items.some((q) => q.kind === 'index' && q.band === 'crystal' && q.ref === nx.id), 'and the index is a layer on the glass');
 }
 // ---- canon ----------------------------------------------------------------------------------
 {

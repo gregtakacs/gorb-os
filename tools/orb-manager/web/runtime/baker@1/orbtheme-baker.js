@@ -3846,6 +3846,17 @@
      * the firmware used to apply itself). o.smooth true/false forces the verdict for a
      * bench arm; the composer never passes it, and the estimate it reports is still the
      * honest one for the bytes. */
+    // the hour and minute hands and their twins smooth on every dial (owner 2026-11-02), so the
+    // estimate below prices them from the bytes; a bench arm forcing nearest keeps them nearest
+    var forced = 0, hmPrev = false;
+    for (k = 0; k < elems.length; k++) {
+      var eh = elems[k];
+      if (eh['class'] !== CLASS_AUX) continue;
+      var hm = (eh.flags & AUX_F_SHADOW3) ? hmPrev : isHM3(eh);
+      if (!(eh.flags & AUX_F_SHADOW3)) hmPrev = hm;
+      if (hm && o.smooth !== false) { eh.flags = (eh.flags | 0) | EF_SMOOTH; forced++; }
+    }
+    if (forced) b = pack();
     var est = estimate3(verifyBundle3(b.bytes).sections[0]);
     var grant = o.smooth === true ? true : (o.smooth === false ? false : est.smooth);
     if (grant) {
@@ -3966,6 +3977,13 @@
     }
     return sum / N / 1000;
   }
+  /* Owner 2026-11-02: an hour or minute row is always smoothed (EF_SMOOTH), whatever the
+   * dial's verdict for its other rows: those hands re-pose rarely and read best antialiased. */
+  function isHM3(e) {
+    // a hand or pointer, not a turning wheel (a ring row's whole disc is too much ink to filter)
+    return !(e.n_frames > 1) && e.kind !== SHAPE_RING &&
+      (e.src === SOURCES.indexOf('hour12') || e.src === SOURCES.indexOf('hour24') || e.src === SOURCES.indexOf('minute'));
+  }
   function estimate3(sec) {
     var els = sec.blob.elements, spr = sec.blob.sprites, art = sec.art;
     /* D42: the tempo and the carriage are the rows', so the figures the scheduler reads
@@ -3988,7 +4006,7 @@
     }
     var r = rateOf3(sc, plate ? plate.delay : 0), R = r.rate;
     var step = sc.second_sweep ? 6 / Math.max(1, R) : 6 / Math.max(1, sc.tick_rate || 1);
-    var box = 0, mover = 0, still = 0, aaMover = 0, aaStill = 0, carInk = 0, secHot = false;
+    var box = 0, mover = 0, still = 0, aaMover = 0, aaStill = 0, carInk = 0, secHot = false, aaAlways = 0;
     for (i = 0; i < els.length; i++) {
       var e = els[i], c = e['class'];
       if (c !== CLASS_AUX || (e.flags & EF_HIDDEN)) continue;
@@ -4001,6 +4019,9 @@
       var twin = !!(e.flags & AUX_F_SHADOW3);
       var sweeps = twin ? secHot : e.src === SOURCES.indexOf('second');
       if (!twin) secHot = sweeps;
+      // a row already carrying EF_SMOOTH (the hour and minute hands and their twins, on every
+      // dial since 2026-11-02) pays its AA whatever the verdict on the rest
+      if (e.flags & EF_SMOOTH) aaAlways += ink.n / 1000;
       var paysAA = !(sweeps && sc.second_sweep);
       if (sweeps) { box += sweptKpx3(ink.pts, step, 0, 0); mover += ink.n / 1000; if (paysAA) aaMover += ink.n / 1000; }
       else { still += ink.n / 1000; if (paysAA) aaStill += ink.n / 1000; }
@@ -4020,7 +4041,7 @@
       flushNear = flushAA = (redraw * EST3.LVGL_PLATE + (inkK + carInk) * EST3.LVGL_INK) / 1000 + EST3.FIXED_MS;
     } else {
       var base = box * (EST3.RESTORE + EST3.STATIC * glassCov) + inkK * EST3.INK + carInk * EST3.CAR;
-      flushNear = base / 1000 + EST3.FIXED_MS;
+      flushNear = (base + aaAlways * EST3.AA) / 1000 + EST3.FIXED_MS;
       flushAA = (base + aaK * EST3.AA) / 1000 + EST3.FIXED_MS;
     }
     var fpsOf = function (ms) { return Math.max(1, Math.min(R, Math.round(1000 / ms))); };

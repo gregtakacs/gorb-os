@@ -58,7 +58,14 @@ const VECTORS = [
   ['a ticking still dial rides its own beat', (G) => still(G, 4, 0).rung === 4 && still(G, 4, 0).asks === 'hand beat'],
   ['a cheap still dial at rung 15 is granted smoothing', (G) => still(G, 15, 1).smooth === true],
   ['a granted dial is priced WITH the AA term', (G) => { const e = still(G, 15, 1); return e.est_fps === e.aa_fps && /AA priced at the Station bench rate/.test(e.sentence); }],
-  ['a dial the filter slows but still grants ships the slower, smoothed estimate', (G) => { const e = medium(G); return e.smooth && e.near_fps === 15 && e.aa_fps === 13 && e.est_fps === 13; }],
+  // its filtered ink is all hour and minute, which smooth on every dial since 2026-11-02, so nearest lands 13 too
+  ['a dial the filter slows but still grants ships the slower, smoothed estimate', (G) => { const e = medium(G); return e.smooth && e.near_fps === 13 && e.aa_fps === 13 && e.est_fps === 13; }],
+  // a granted dial whose filtered ink is mostly a ticking seconds: smoothing it costs a rung, and the estimate says so
+  ['a granted dial with more than hour and minute to filter ships the smoothed estimate', (G) => { const e = G.bakeClock3({ name: 'Est', serial: 1, bakedMs: 1, plate: PL,
+    hands: [hand(0, 2, 90, 80), hand(1, 2, 90, 80), hand(2, 60, 250, 200)], order: [0, 1, 2], scalars: { second_sweep: 0, tick_rate: 15 } }).est;
+    return e.smooth && e.est_fps === e.aa_fps && e.aa_fps < e.near_fps; }],
+  ['its hour and minute pay the AA term even forced nearest elsewhere: only the bench arm gets 15', (G) => G.bakeClock3({ name: 'Est', serial: 1, bakedMs: 1, plate: PL, smooth: false,
+    hands: [hand(0, 30, 250, 200), hand(1, 30, 250, 200), hand(2, 2, 90, 80)], order: [0, 1, 2], scalars: { second_sweep: 1, tick_rate: 15 } }).est.near_fps === 15],
   ['a keyframe bank under a 15 sweep rides the panel floor rung 4', (G) => G.estimate3(fake({ bg_mode: 0, bg_frames: 7, bg_fps: 4, bg_loop: 1, gif_frames: 0 }, 0, [sweepRow(15)])).rung === 4],
   ['a keyframe bank is priced on the classic path', (G) => /keyframe bank \(LVGL\)/.test(G.estimate3(fake({ bg_mode: 0, bg_frames: 7, bg_fps: 4, bg_loop: 1, gif_frames: 0 }, 0, [sweepRow(15)])).carrier)],
   ['a costly still dial (wide hands, glass) is refused smoothing', (G) => heavy(G).smooth === false && heavy(G).est_fps === heavy(G).near_fps],
@@ -75,7 +82,10 @@ const VECTORS = [
   ['a granted dial bakes EF_SMOOTH on its hour and minute rows', (G) => { const f = flags(G, stillOpts(15, 1)); return !!(f.h0 & 128) && !!(f.h1 & 128); }],
   ['but never on the sweeping seconds, the hot tick', (G) => !(flags(G, stillOpts(15, 1)).h2 & 128)],
   ['a ticking dial\'s seconds may smooth (it does not re-pose every tick)', (G) => { const f = flags(G, Object.assign(stillOpts(15, 0), { smooth: true })); return !!(f.h2 & 128); }],
-  ['a refused dial bakes no bit anywhere', (G) => { const f = flags(G, stillOpts(15, 1, true)); return !(f.any & 128); }],
+  // owner 2026-11-02: hour and minute hands smooth on every dial; a refused dial smooths nothing else
+  ['a refused dial still smooths its hour and minute, and nothing else', (G) => { const f = flags(G, stillOpts(15, 1, true)); return !!(f.h0 & 128) && !!(f.h1 & 128) && !(f.h2 & 128); }],
+  ['a bench arm forcing nearest bakes no bit anywhere', (G) => { const f = flags(G, Object.assign(stillOpts(15, 1, true), { smooth: false })); return !(f.any & 128); }],
+  ['the estimate prices the hour and minute AA on a refused dial', (G) => { const e = G.bakeClock3(stillOpts(15, 1, true)).est, n = G.bakeClock3(Object.assign(stillOpts(15, 1, true), { smooth: false })).est; return !e.granted && e.flush_ms > n.flush_ms - 1e-9; }],
   ['smooth:false forces nearest on a dial that would be granted', (G) => !(flags(G, Object.assign(stillOpts(15, 1), { smooth: false })).any & 128)],
   ['smooth:true forces the bit on a dial the price refused (the bench arm)', (G) => !!(flags(G, Object.assign(stillOpts(15, 1, true), { smooth: true })).h0 & 128)],
   ['and the report still names the honest verdict for those bytes', (G) => G.bakeClock3(Object.assign(stillOpts(15, 1, true), { smooth: true })).est.smooth === false],

@@ -4387,8 +4387,21 @@ class Component extends DCLogic {
           R('Figure size', 'fpx', E.LEGIBLE_PX, 72, 0.5, (v) => v + ' px \u00b7 ' + E.pxMm(v * E.LEGIBLE.capEm).toFixed(2) + ' mm tall', fw ? fw.fs : E.LEGIBLE_PX);
           selFields.push(Sl('Typeface', sel.wfont || 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], set('wfont')));
           Cx('Style', 'fstyle', opt(E.WHEEL_STYLES), 'bold');
-          if (form !== 'barrel') Cx('Figures face', 'face', opt(E.WHEEL_FACES), 'up');   // its cutouts lie with them unless told otherwise
-          R(form === 'barrel' ? 'Drum turn' : 'Figure turn', 'trot', -180, 180, 1, (v) => v + '\u00b0', 0);
+          if (form !== 'barrel') {
+            /* P5d.3g: one angle to the ring, any value, snapping (within 4 deg) to level where the wheel
+             * reads, tops out, the two tangents and tops in; the chips jump straight to each. Its cutouts
+             * lie with the figures unless told otherwise. */
+            const rd = sel.read != null ? +sel.read : 90, lvl = E.normDeg(-rd), level = sel.face !== 'ring' && sel.face !== 'out' && sel.face !== 'in';
+            const cur = level ? lvl : E.normDeg(sel.face === 'in' ? 180 : sel.face === 'out' ? 0 : +sel.fang || 0);
+            const snaps = [['Level', lvl, true]].concat(E.FACE_SNAPS.map(([l, v]) => [l, v, false]));
+            const put = (v, isLevel) => this.setComp(sel.id, isLevel ? { face: 'up', fang: undefined, trot: undefined } : { face: 'ring', fang: E.normDeg(v), trot: undefined });
+            const named = (v) => { const hit = snaps.find(([, sv]) => Math.abs(E.normDeg(v - sv)) < 0.5); return hit ? hit[0] : ''; };
+            selFields.push(Rg('Figures face', cur, -180, 180, 1, (raw) => {
+              const v = +raw, near = snaps.find(([, sv]) => Math.abs(E.normDeg(v - sv)) <= 4);
+              if (near) put(near[1], near[2]); else put(v, false);
+            }, (level ? 'Level where it reads' : (named(cur) || cur + '\u00b0') + ' to the ring')));
+            selFields.push(Ch('Snap to', level ? 'Level' : named(cur), snaps.map(([l]) => ({ v: l, label: l })), (l) => { const sn = snaps.find(([x]) => x === l); put(sn[1], sn[2]); }));
+          } else R('Drum turn', 'trot', -180, 180, 1, (v) => v + '\u00b0', 0);
           selFields.push(Co('Disc colour', sel.wbg, set('wbg'), 'Auto'), Co('Figures', sel.wink, set('wink'), 'Auto'));
           // the figures must not run into each other round the ring
           if (fw && form !== 'barrel') {

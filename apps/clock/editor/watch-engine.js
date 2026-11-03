@@ -744,7 +744,13 @@
   const WHEEL_SRC = { date: 'date', day: 'weekday', month: 'month', year: 'year', hour: 'hour12', hours24: 'hour24', minute: 'minute', second: 'second', moon: 'moon_age' };
   const SYNODIC = 29.530588853;
   const WHEEL_FORMS = { disc: 'Disc', ring: 'Ring', barrel: 'Barrel' };
-  const WHEEL_FACES = { up: 'Level where it reads', out: 'Along the ring · tops out', in: 'Along the ring · tops in' };
+  /* D43 P5d.3g: a wheel's figures stand at any angle to its ring -- `fang` degrees from tops-out
+   * (0 tops to the rim, 90 and -90 along the tangent, 180 tops to the centre) with face 'ring' --
+   * or level where the wheel reads (face 'up', the default), which follows Reads at. The older
+   * 'out' and 'in' are fang 0 and 180, and canon writes them so. */
+  const WHEEL_FACES = { up: 'Level where it reads', ring: 'At an angle to the ring', out: 'Along the ring · tops out', in: 'Along the ring · tops in' };
+  const FACE_SNAPS = [['Tops out', 0], ['Tangent ↻', 90], ['Tops in', 180], ['Tangent ↺', -90]];
+  const normDeg = (d) => { d = ((+d % 360) + 540) % 360 - 180; return d === -180 ? 180 : d; };
   // D43 P5d.3f: how a cutout lies -- with its wheel's figures (level where they are level, along the
   // ring where they follow it, and turned with their turn), or level, or along the ring, whatever they do
   const CUT_LIES = { auto: 'With the figures', level: 'Level', ring: 'Along the ring' };
@@ -1168,6 +1174,7 @@
       const longest = Math.max(1, ...Array.from({ length: Math.min(spec.n, 60) }, (_, i) => String(spec.lab(i)).length));
       wheels.push({ id: c.id, x: g.x, y: g.y, r, ri, form, host: onSub || 'dial', spec, fs, lr, longest,
         read: rad(c.read != null ? +c.read : firstAt[c.id] != null ? firstAt[c.id] : 90), face: WHEEL_FACES[c.face] ? c.face : 'up', trot: rad(+c.trot || 0),
+        fang: c.face === 'ring' ? rad(+c.fang || 0) : c.face === 'out' ? 0 : c.face === 'in' ? Math.PI : null,
         style: WHEEL_STYLES[c.fstyle] ? c.fstyle : 'bold', edge: c.edge == null ? 0.15 : Math.max(0, Math.min(1, +c.edge)),
         len: form === 'barrel' ? Math.max(fs, c.len != null ? +c.len : fs * (0.62 * longest + 0.6)) : 0,
         dir: c.dir === 'ccw' ? -1 : 1, smooth: c.cadence === 'smooth', ease: +c.ease || 0,
@@ -1179,8 +1186,9 @@
     // where a cutout stands: along the wheel's figures at `at` (its reading point by default), then moved
     const cutAt = (w, c) => {
       const at = c.at != null ? rad(+c.at) : w.read, bx = w.form === 'barrel' ? w.x : w.x + Math.sin(at) * w.lr, by = w.form === 'barrel' ? w.y : w.y - Math.cos(at) * w.lr;
-      const lie = CUT_LIES[c.lie] ? c.lie : 'auto', along = lie === 'ring' || (lie === 'auto' && w.face !== 'up');
-      const tilt = w.form === 'barrel' ? w.trot : (along ? at : 0) + (lie === 'auto' ? w.trot : 0);
+      // with the figures: the turn a figure has where this cutout stands on the ring
+      const lie = CUT_LIES[c.lie] ? c.lie : 'auto';
+      const tilt = w.form === 'barrel' ? w.trot : lie === 'ring' ? at : lie === 'level' ? 0 : (w.fang != null ? at + w.fang : 0) + w.trot;
       return { at, x: bx + (+c.dx || 0), y: by + (+c.dy || 0), rot: rad(+c.rot || 0) + tilt };
     };
     // a cutout's size when the author has not set one: the widest figure and a margin, at the figure size
@@ -2225,7 +2233,7 @@
     for (let i = 0; i < n; i++) {
       const a = rot + (w.dir * i * TAU) / n, l = sp.lab(i); if (!l) continue;
       // upright where the wheel reads, or along the ring (tops to the rim or to the centre); then the author's turn
-      const turn = (w.face === 'out' ? a : w.face === 'in' ? a + Math.PI : a - ref) + w.trot;
+      const turn = (w.fang != null ? a + w.fang : a - ref) + w.trot;
       ctx.save(); ctx.translate(Math.sin(a) * w.lr, -Math.cos(a) * w.lr); ctx.rotate(turn); ctx.fillText(l, 0, w.fs * 0.05); ctx.restore();
     }
     ctx.restore();
@@ -4396,6 +4404,11 @@
         if (!WHEEL_FORMS[c.form] || c.form === 'disc') delete c.form;
         if (c.form !== 'ring') delete c.inner;
         if (c.form !== 'barrel') delete c.len; else ['trad', 'face', 'read'].forEach((k) => delete c[k]);
+        // P5d.3g: one angle to the ring; the old faces and a turn on a ring-following face fold into it
+        if (c.face === 'out' || c.face === 'in') { c.fang = (c.face === 'in' ? 180 : 0) + (+c.trot || 0); c.face = 'ring'; delete c.trot; }
+        else if (c.face === 'ring') { c.fang = (+c.fang || 0) + (+c.trot || 0); delete c.trot; }
+        if (c.face === 'ring') c.fang = normDeg(c.fang); else delete c.fang;
+        if (c.face === 'ring' && !c.fang) delete c.fang;
         if (!WHEEL_FACES[c.face] || c.face === 'up') delete c.face;
         if (!WHEEL_STYLES[c.fstyle] || c.fstyle === 'bold') delete c.fstyle;
         if (!(+c.trot)) delete c.trot;
@@ -4458,7 +4471,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, FONT_NAME, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

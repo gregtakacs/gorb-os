@@ -150,7 +150,8 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   const ring = (face2, cut) => face([{ id: 'w', type: 'wheel', host: 'dial', size: 175, form: 'ring', inner: 130, trad: 152, read: 60, shows: 'date', face: face2 },
     Object.assign({ id: 'k', type: 'cutout', host: 'w' }, cut || {})]).lay.dialHoles.find((h) => h.kind === 'rect');
   const r60 = Math.PI / 3;
-  ok(near(ring('out').rot, r60) && near(ring('in').rot, r60), 'figures along the ring at 2 o\u2019clock: the window tilts with them, 60\u00b0, by itself');
+  ok(near(ring('out').rot, r60) && near(((ring('in').rot % Math.PI) + Math.PI) % Math.PI, r60),   // a window turned half round is the same window
+     'figures along the ring at 2 o\u2019clock: the window tilts with them, 60\u00b0, by itself');
   ok(near(ring('up').rot, 0), 'level figures, a level window');
   ok(near(ring('up', { lie: 'ring' }).rot, r60) && near(ring('out', { lie: 'level' }).rot, 0), 'and either can be told otherwise');
   const nw = face([Object.assign({ id: 'n', type: 'wheel', host: 'dial' }, E.NEW_COMP.wheel)]).lay.wheels[0], pitch = (2 * Math.PI * nw.lr) / nw.spec.n;
@@ -158,6 +159,33 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(near(ring('out', { rot: 5 }).rot, r60 + Math.PI / 36), 'Turn adds to how it lies');
   const h = ring('out'), d = Math.hypot(h.x - 233, h.y - 233);
   ok(near(d, 152) && near(Math.atan2(h.x - 233, 233 - h.y), r60), 'and it stands on the figures where the wheel reads');
+}
+// ---- P5d.3g: figures at any angle to the ring, snapping to level, tops out/in and the tangents --------
+{
+  const L = (w, k) => face([Object.assign({ id: 'w', type: 'wheel', host: 'dial', size: 175, form: 'ring', inner: 130, trad: 152, read: 60, shows: 'date' }, w), Object.assign({ id: 'k', type: 'cutout', host: 'w' }, k || {})]).lay;
+  const d2r = Math.PI / 180, rect = (l) => l.dialHoles.find((h) => h.kind === 'rect');
+  ok(near(rect(L({ face: 'ring', fang: 90 })).rot, 150 * d2r) && near(rect(L({ face: 'ring', fang: 37 })).rot, 97 * d2r), 'any angle to the ring, the tangent too: the window lies with the figure where it reads (60 + 90, 60 + 37)');
+  ok(near(rect(L({ face: 'ring', fang: -90 })).rot, -30 * d2r), 'and the other tangent');
+  const cn = E.canonDesign({ comps: [{ id: 'a', type: 'wheel', shows: 'date', face: 'in', trot: 10 }, { id: 'b', type: 'wheel', shows: 'date', face: 'out' }, { id: 'c', type: 'wheel', shows: 'date', face: 'ring', fang: 270 }] }).comps;
+  ok(cn[0].face === 'ring' && cn[0].fang === -170 && cn[1].face === 'ring' && !('fang' in cn[1]) && cn[2].fang === -90 && !('trot' in cn[0]), 'the old faces fold into one angle to the ring', JSON.stringify(cn));
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  const it = new (global.COMP_CLASS(DCLogic))({});
+  it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '' } });
+  it.state.dial = 'skeleton'; it.state.playing = false; it.state.hidden = {};
+  it.state.designs = { skeleton: E.canonDesign({ print: 'roman', comps: [{ id: 'w', type: 'wheel', host: 'dial', size: 175, form: 'ring', inner: 130, trad: 152, read: 90, shows: 'date' }] }) };
+  it.setState({ sel: 'w', selKind: 'comp', step: 'parts', tab: 'comps' });
+  const fld = (l) => it.renderVals().fields.find((x) => x.label === l), wc = () => it.design().comps.find((c) => c.id === 'w');
+  fld('Figures face').on({ target: { value: 62 } });
+  ok(wc().face === 'ring' && wc().fang === 62, 'the slider sets any angle', JSON.stringify(wc()));
+  fld('Figures face').on({ target: { value: 87 } });
+  ok(wc().fang === 90, 'and snaps within 4\u00b0 to the tangent', JSON.stringify(wc()));
+  fld('Figures face').on({ target: { value: -88 } });
+  ok(!wc().face && !('fang' in wc()), 'and to level where it reads (here at -90, the reading point at 90)', JSON.stringify(wc()));
+  fld('Snap to').opts.find((o) => o.label === 'Tops in').pick();
+  ok(wc().face === 'ring' && wc().fang === 180, 'the chips jump straight to each', JSON.stringify(wc()));
+  fld('Snap to').opts.find((o) => o.label === 'Level').pick(); it.setComp('w', { read: 30 });
+  ok(!wc().face && wc().read === 30, 'and level stays level when the reading point moves');
 }
 // ---- canon ----------------------------------------------------------------------------------
 {
@@ -252,7 +280,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(ks.length === 2 && ks[1].host === w.id && ks[1].at !== ks[0].at, 'another cutout goes on the selected wheel, at a free place', JSON.stringify(ks));
   it.setState({ sel: w.id, selKind: 'comp', step: 'parts', tab: 'comps' });
   const fl = it.renderVals().fields, lab = (l) => fl.find((x) => x.label === l);
-  ok(['Shows', 'Digit', 'Form', 'Outer diameter', 'Figures at radius', 'Reads at', 'Edge curvature', 'Figure size', 'Typeface', 'Style', 'Figures face', 'Figure turn', 'Disc colour', 'Direction', 'Motion', 'Ease'].every(lab) && !lab('Rotation') && !lab('Radius'),
+  ok(['Shows', 'Digit', 'Form', 'Outer diameter', 'Figures at radius', 'Reads at', 'Edge curvature', 'Figure size', 'Typeface', 'Style', 'Figures face', 'Snap to', 'Disc colour', 'Direction', 'Motion', 'Ease'].every(lab) && !lab('Rotation') && !lab('Radius'),
     'a wheel’s panel: what it shows, its form and sizes, where its figures sit and read, their size, type, face and turn, its edge, and its motion', fl.map((f) => f.label).join('|'));
   ok(/px · \d+\.\d mm/.test(lab('Outer diameter').valText || ''), 'its sizes read in px and in mm on the 1.75 in dial', lab('Outer diameter').valText);
   it.setState({ sel: ks[1].id, selKind: 'comp' });

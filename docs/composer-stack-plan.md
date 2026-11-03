@@ -1052,6 +1052,20 @@ but named obscurely, and the window never followed it, so it took a hand-worked 
 - Tests: `headless-wheels` 76 (the 2 o'clock window tilting by itself, the overrides, Turn,
   a new wheel's figures fitting).
 
+**As built (P5d.3g, owner 2026-11-02): figures at any angle to the ring.** Three faces were
+not enough: the owner wanted any angle, with snaps, the tangent among them (the figure turned
+90° from tops-out, as if the whole wheel were read at 90° and turned to 60°).
+- `face: 'ring'` with `fang`, degrees from tops-out (0 tops to the rim, ±90 the tangents,
+  180 tops to the centre); `face` absent is level where it reads, and follows Reads at. The
+  old `out`, `in` and a ring-face turn fold into `fang` (canon); `trot` stays only as a level
+  face's extra turn and a barrel's drum turn.
+- The panel's *Figures face* is one slider (-180..180) snapping within 4° to Level (which
+  for that reading point is at -Reads at), Tops out, Tangent ↻, Tops in, Tangent ↺, with
+  *Snap to* chips jumping to each.
+- A cutout lying *with the figures* takes the figure's own turn where it stands, whatever
+  the angle.
+- Tests: `headless-wheels` 84.
+
 ## 5. Preview: 1:1, and the panel
 
 ### 5.1 Views

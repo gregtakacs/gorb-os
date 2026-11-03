@@ -1450,6 +1450,36 @@ still installs and draws.
   shows its size, and the source assets are included by default with an option to
   leave them out ("not reopenable with the original art").
 
+**The owed checks, answered (P7, 2026-11-02, read in code at `9acac94`):**
+
+1. *Bytes after the last bank.* Every reader refuses a range that runs **past** the file's
+   end and none checks the file ends where the art does: the device (`orb_bundle.c`
+   `parse_core`, `orb_theme.c` `card_check3`), the hub (`themecontainer.go`, whose strict
+   parse checks `art_off + art_size <= len`), `orbbundle.py` `read_bundle` and the baker's
+   `verifyBundle3`. Trailing bytes are ignored everywhere. The store copies only the region
+   and the banks into the slot and builds the slot header fresh (`build_slot_hdr3`, words
+   29–31 zero), so a design never reaches the slot.
+2. *The header CRC.* Word 28 is a CRC-32 over all 32 words with itself zeroed (C, Python
+   and Go alike), and words 29–31 are spare and checked by no reader. They hold the design's
+   pointer: **29 `design_off`, 30 `design_size`, 31 `design_crc`**, all zero when the file
+   carries none. The header CRC covers them, so a torn pointer is a torn header.
+3. *Identity and duplicates.* The card stem is `sha256(name)`; the device's "unchanged"
+   test is name + `geom_crc` + `art_crc` + serial, and the hub's precheck compares serials.
+   None reads the trailing bytes, so the same dial with an edited design would be "unchanged —
+   kept as is" and the card would keep the old design. The fix is the composer's: the
+   content serial (§32.6) folds the design's CRC, so a design-only change is a new serial,
+   which both checks already treat as a different theme of the same name.
+4. *The upload cost.* Both doors cap the whole file at `ORB_THEME_UPLOAD_MAX` (8 MiB + 128
+   KiB, hub and device pinned equal), and a dial's banks may use nearly all of it. The
+   writer keeps file + design under that cap and, when the art would not fit, ships the
+   design without its uploaded art and says so ("not reopenable with the original art").
+   The design without art is a few KB.
+5. *A gap the plan did not list.* Nothing reads a card file back: the orb has no route that
+   returns a theme's bytes, and the hub keeps no shelf copy of a theme it sent (its shelf
+   holds only files the operator placed). Edit from the card therefore needs one OS route,
+   `GET /api/v1/sd/design?id=<stem>`, returning the design region of a card theme, and the
+   card's theme rows report `design` (its size) so the pane knows whom to offer Edit.
+
 **Opening a theme for editing.** The Themes pane offers **Edit** on any shelf or card
 theme whose file carries a design region. The hub opens the app's editor (by the
 version gate in §1.2) with `?theme=<id>`. The editor fetches the design region

@@ -22,3 +22,5 @@ keyframe.png
 # Go build artifact from tools/orb-manager — the hub embeds its web assets at
 # build time, so the binary is never an input and never committed.
 tools/orb-manager/orb-manager
+# orbsdk.py build output, beside each app
+apps/*/build/

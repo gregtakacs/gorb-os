@@ -1,0 +1,11 @@
+{
+  "slug": "color_picker",
+  "title": "HSB",
+  "caps": [],
+  "settings": [
+    {"id": "hue", "type": "int", "min": 0, "max": 359, "default": 210},
+    {"id": "sat", "type": "int", "min": 0, "max": 100, "default": 80},
+    {"id": "bri", "type": "int", "min": 0, "max": 100, "default": 90}
+  ],
+  "shelf": true
+}

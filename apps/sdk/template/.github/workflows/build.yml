@@ -1,0 +1,30 @@
+# Builds the app on every push and pull request. A tag v* also publishes a release with
+# the .orbapp attached, ready for anyone to import into Orb Manager.
+name: build
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+      - name: Build
+        run: make pack
+      - uses: actions/upload-artifact@v7
+        with:
+          name: orbapp
+          path: build/*.orbapp
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(cat version.txt)" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != version.txt $(cat version.txt)"; exit 1; }
+          gh release create "${GITHUB_REF_NAME}" build/*.orbapp --generate-notes

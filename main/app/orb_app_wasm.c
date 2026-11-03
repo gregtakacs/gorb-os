@@ -1020,7 +1020,7 @@ m3ApiRawFunction(imp_stage_open)              /* i32 stage_open(orb_stage_info_t
 }
 
 /* A theme record, copied verbatim: the guest's apps/sdk/clk_types.h is a byte copy
- * of the OS's (tools/build_apps.py refuses a drift), and both sides are ILP32 LE. */
+ * of the OS's (apps/sdk/orbsdk.py refuses a drift), and both sides are ILP32 LE. */
 #define STAGE_COPY(fn, type, getter)                                                \
     m3ApiRawFunction(fn) {                                                         \
         m3ApiReturnType(int32_t);                                                  \

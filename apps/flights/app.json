@@ -1,0 +1,15 @@
+{
+  "slug": "flights",
+  "title": "Flights",
+  "caps": ["net", "location"],
+  "period_ms": 1000,
+  "settings": [
+    {"id": "range",  "type": "enum",   "min": 0, "max": 3, "default": 2},
+    {"id": "source", "type": "enum",   "min": 0, "max": 1, "default": 1},
+    {"id": "bg",     "type": "enum",   "min": 0, "max": 3, "default": 2},
+    {"id": "boost",  "type": "toggle", "default": 0},
+    {"id": "ground", "type": "toggle", "default": 1},
+    {"id": "key",    "type": "secret", "host": "api.adsb.lol"}
+  ],
+  "shelf": false
+}

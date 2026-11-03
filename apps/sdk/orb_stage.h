@@ -12,7 +12,7 @@
  * with orb_stage_pose, sets every complication with orb_stage_comp_set, and returns.
  *
  * The records the theme carries are handed over verbatim, in the layouts of
- * clk_types.h (a byte copy of main/art/clk_types.h, which tools/build_apps.py keeps
+ * clk_types.h (a byte copy of main/art/clk_types.h, which apps/sdk/orbsdk.py keeps
  * identical) and the clk_sound_t below, so the app reads its theme exactly as the
  * theme format defines it.
  */

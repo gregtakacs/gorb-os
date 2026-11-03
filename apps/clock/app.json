@@ -1,0 +1,9 @@
+{
+  "slug": "clock",
+  "title": "Clock",
+  "caps": ["sound"],
+  "period_ms": 1000,
+  "settings": [],
+  "editor": "clock",
+  "shelf": true
+}

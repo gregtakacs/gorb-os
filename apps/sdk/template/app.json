@@ -1,0 +1,9 @@
+{
+  "slug": "@SLUG@",
+  "title": "@TITLE@",
+  "caps": [],
+  "period_ms": 1000,
+  "settings": [
+    {"id": "count", "type": "int", "min": 0, "max": 9999, "default": 0}
+  ]
+}

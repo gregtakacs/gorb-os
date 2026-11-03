@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""make_factory_apps.py — bake the hub-seeded .orbapp containers (D36).
+"""make_factory_apps.py — bake the hub's shelf .orbapp containers (D36).
 
-The clock and the HSB editor ship on the hub, not in the firmware (plan §0.11):
-this tool is the one author of those two containers, and it lays each one down
-through the SAME writer a card file uses (``orbapp.write_container``) into
-``tools/orb-manager/starter/``, where they wait as committed artifacts an
-operator copies to a card (S5 deleted the hub's embedded copy and its seed
-route; the files outlived the route). Run it and commit the result whenever a
-starter container changes:
+Apps ship on the hub, not in the firmware (plan §0.11). Every directory under apps/
+with an app.json is an app; the ones whose manifest says "shelf": true are written
+into ``tools/orb-manager/apps/``, which the hub compiles in and seeds every user's
+library from. Each container goes through apps/sdk/orbsdk.py, the same build and the
+same writer (``orbapp.write_container``) an app outside this tree uses, so folding an
+app in is copying its directory into apps/. Run it and commit the result whenever a
+shelf container changes:
 
     python3 tools/make_factory_apps.py
 
@@ -44,31 +44,21 @@ clock_region = importlib.util.module_from_spec(_cr)
 _cr.loader.exec_module(clock_region)
 
 # §43: an app's code is a wasm module built from apps/<slug>/ against apps/sdk and
-# nothing else. build_apps is the one compiler of those modules; this file packs them.
-_ba = importlib.util.spec_from_file_location("build_apps", os.path.join(HERE, "build_apps.py"))
-build_apps = importlib.util.module_from_spec(_ba)
-_ba.loader.exec_module(build_apps)
+# nothing else. orbsdk is the one compiler and packer of those modules; this file picks
+# which apps ship and adds the editor regions only this tree can build.
+_sdk = importlib.util.spec_from_file_location(
+    "orbsdk", os.path.join(HERE, os.pardir, "apps", "sdk", "orbsdk.py"))
+orbsdk = importlib.util.module_from_spec(_sdk)
+_sdk.loader.exec_module(orbsdk)
 
+APPS_DIR = os.path.normpath(os.path.join(HERE, os.pardir, "apps"))
 
 OUT_DIR = os.path.join(HERE, "..", "tools", "orb-manager", "apps")
 
-# Behaviour kind ids must match main/app/orb_app.h's enum (C6 append-only).
-KIND_COLOR_PICKER = 1      # retired: the picker is a wasm app now (§43)
-KIND_WASM = 2
-KIND_CLOCK = 3             # retired: the clock is a wasm app now (§43)
-KIND_FLIGHTS = 4           # retired: the flight tracker is a wasm app now (§43)
-
-# The one owned caps each factory app declares (D19: the declaration is the
-# consent). The clock ticks and chimes (D39), so it names sound — revocable on the
-# dial like the other two. It no longer names sd_read or themes: the theme picker it
-# used to carry is the OS's Themes page since §43, and a wasm clock never walks the
-# card. The picker owns nothing — its three settings ride the free config cap, which
-# is not declarable (CAP_FREE).
-CLOCK_CAPS = orbapp.cap_bit("sound")
-PICKER_CAPS = 0
-# The flight tracker opens sockets (the OS feed, docs/flight-tracker-design.md),
-# so it declares net: an app that declared nothing never reaches the network.
-FLIGHTS_CAPS = orbapp.cap_bit("net") | orbapp.cap_bit("location")
+# The caps each app declares (D19: the declaration is the consent) are its own
+# app.json's "caps". The clock ticks and chimes (D39), so it names sound; the picker owns
+# nothing (its settings ride the free config cap); the flight tracker opens sockets and
+# reads the home location, so it declares net and location.
 
 # Each app carries its own release (owner, 2026-11-02): an app is atomic and independent
 # of the OS, so its stamp is apps/<slug>/version.txt, read here and nowhere typed twice.
@@ -86,17 +76,7 @@ FLIGHTS_CAPS = orbapp.cap_bit("net") | orbapp.cap_bit("location")
 # sentinel (host_orbapp_install_test.py) recomputes it from the same file.
 def app_version(slug):
     """apps/<slug>/version.txt's stamp, verified against the one grammar the family uses."""
-    path = os.path.join(HERE, os.pardir, "apps", slug, "version.txt")
-    try:
-        v = open(path).read().strip()
-    except OSError:
-        raise SystemExit("make_factory_apps: no %s — every app carries its own release "
-                         "stamp beside its sources" % os.path.relpath(path, os.path.join(HERE, os.pardir)))
-    if not orbapp.check_version(v):
-        raise SystemExit("make_factory_apps: %s holds %r, which is not a release stamp the "
-                         "format accepts (v<MAJOR>.<MINOR>.<PATCH>, each part 1 or 2 digits, "
-                         "no leading zero)" % (os.path.relpath(path, os.path.join(HERE, os.pardir)), v))
-    return v
+    return orbsdk.version(os.path.join(APPS_DIR, slug))
 
 
 def committed(slug):
@@ -127,98 +107,46 @@ def stale_stamps(files):
     return out
 
 
-BAKED_MS = 0        # pinned constant: the file is content, not a build event
+def app_dirs():
+    """slug -> manifest for every app in the tree. The directory name is the slug."""
+    out = {}
+    for d in sorted(os.listdir(APPS_DIR)):
+        if not os.path.isfile(os.path.join(APPS_DIR, d, "app.json")):
+            continue
+        m = orbsdk.manifest(os.path.join(APPS_DIR, d))
+        if m["slug"] != d:
+            raise SystemExit("make_factory_apps: apps/%s/app.json names slug %r; an in-tree "
+                             "app lives in the directory of its slug" % (d, m["slug"]))
+        out[d] = m
+    return out
 
-# The picker's three state numbers, declared so they persist inside the row's
-# own NVS namespace exactly like any card app's config (C10). The defaults are
-# the values color_picker.c's statics carried before D35 — the seed the "mover"
-# needs, and the reason there is no migration code.
-PICKER_SETTINGS = (
-    {"id": "hue", "type": "int", "min": 0, "max": 359, "default": 210},
-    {"id": "sat", "type": "int", "min": 0, "max": 100, "default": 80},
-    {"id": "bri", "type": "int", "min": 0, "max": 100, "default": 90},
-)
 
-# The tracker's settings (design §6.3). Home is not among them: it is the OS
-# home location (§6.4), read through the location cap. Enums are indices the
-# view names: range 10/20/40/80 nm, source adsb.lol/adsb.fi, bg off/1/2/5 min.
-# The defaults are the light ones (2026-11-01, after api.adsb.lol banned the
-# owner's IP): adsb.fi first, background every 2 min, boost off. On the glass
-# the poll is 15 s whatever these say.
-FLIGHTS_SETTINGS = (
-    {"id": "range",  "type": "enum",   "min": 0, "max": 3, "default": 2},
-    {"id": "source", "type": "enum",   "min": 0, "max": 1, "default": 1},
-    {"id": "bg",     "type": "enum",   "min": 0, "max": 3, "default": 2},
-    {"id": "boost",  "type": "toggle", "default": 0},
-    {"id": "ground", "type": "toggle", "default": 1},
-    # §43: the owner's adsb.lol API key. A secret: the app never reads it, the OS sends
-    # it only to this host, and the hub edits it like any other option.
-    {"id": "key",    "type": "secret", "host": "api.adsb.lol"},
-)
-
-APPS = (
-    # slug, title, kind, caps, settings, editor-region bytes (b"()" when none)
-    ("clock",        "Clock", KIND_WASM,         CLOCK_CAPS,  (), "_clock_editor"),
-    ("color_picker", "HSB",   KIND_WASM,         PICKER_CAPS, PICKER_SETTINGS, None),
-    ("flights",      "Flights", KIND_WASM,       FLIGHTS_CAPS, FLIGHTS_SETTINGS, None),
-)
-
-# The fastest beat each app may ask for (D16): set_beat may only slow from here, and
-# an app absent from this table never ticks.
-PERIOD_MS = {"flights": 1000, "clock": 1000}
-
-# Built and checked with the rest, but kept off the hub's shelf until the owner
-# releases it (2026-11-01: the flight tracker is not ready). `--unreleased DIR`
-# writes these to DIR for a bench install; the shelf never carries them, and
-# --check fails if one turns up there.
-UNRELEASED = ("flights",)
-
+# An app whose manifest says "shelf": false is built and checked with the rest, but kept
+# off the hub's shelf until the owner releases it (2026-11-01: the flight tracker is not
+# ready). `--unreleased DIR` writes those to DIR for a bench install; the shelf never
+# carries them, and --check fails if one turns up there.
 
 def editor_region(key):
-    """The one place a factory container's editor region is built."""
-    if key == "_clock_editor":
+    """The one place a factory container's editor region is built: app.json's "editor"
+    names a builder this tree owns."""
+    if key == "clock":
         return clock_region.make_region()
+    if key:
+        raise SystemExit("make_factory_apps: no editor builder named %r" % key)
     return b""
 
 
 def containers():
-    """Build each container's bytes with the writer's full ladder of checks.
-
-    write_container derives the filename from the header's slug and insists the
-    stem match, so the bytes are authored into a temp dir under the slug's own
-    name and read back — the exact card-path artifact, minus the card.
-    """
-    import tempfile
-    out = []
-    with tempfile.TemporaryDirectory() as td:
-        for slug, title, kind, caps, settings, editor in APPS:
-            code, mem = b"", 0
-            if kind == KIND_WASM:
-                code, _imports, mem = build_apps.build(slug)
-            orbapp.write_container(
-                os.path.join(td, slug + ".orbapp"), slug, title, caps=caps,
-                settings=settings, behaviour_kind=kind, serial=orbapp.serial_of_version(app_version(slug)),
-                period_ms=PERIOD_MS.get(slug, 0),
-                baked_ms=BAKED_MS, editor=editor_region(editor), version=app_version(slug),
-                code=code, wasm_mem_max=mem)
-            with open(os.path.join(td, slug + ".orbapp"), "rb") as f:
-                blob = f.read()
-            out.append((slug, title, kind, caps, blob))
-    return out
-
-
-
-def emit_files(apps):
-    lines = {}
-    for slug, title, kind, caps, blob in apps:
-        lines[slug] = blob
-    return lines
+    """Every app's container bytes, through orbsdk's build and the writer's checks."""
+    return [(slug, m, orbsdk.container(os.path.join(APPS_DIR, slug),
+                                       editor=editor_region(m.get("editor"))))
+            for slug, m in app_dirs().items()]
 
 
 def main():
     apps = containers()
-    files = emit_files(apps)
-    held = {k: files.pop(k) for k in UNRELEASED}
+    files = {slug: blob for slug, _m, blob in apps}
+    held = {slug: files.pop(slug) for slug, m, _b in apps if not m.get("shelf")}
     args = sys.argv[1:]
     if "--unreleased" in args:
         i = args.index("--unreleased")

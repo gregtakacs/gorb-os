@@ -44,7 +44,7 @@ enum { SRC_LOL = 0, SRC_FI = 1 };
 
 static int64_t now_ms(void) { return orb_uptime_us() / 1000; }
 
-/* ---- settings (declared in the container; tools/make_factory_apps.py) ------------ */
+/* ---- settings (declared in the container; app.json) ------------------------------ */
 
 typedef struct {
     double  latd, lond;          /* the OS home (cap location), not a setting */

@@ -678,6 +678,114 @@ class Component extends DCLogic {
         + ' Ticks, labels and the hand that reads them all turn together, and the kit\'s drive formula carries the same turn.'),
     ];
   }
+  /* ------------------------------ the session (D43 P6, §7) --------------------------
+   * A watch is the state these keys hold: the per-dial designs, the movement and case, the
+   * light, the hands, the sounds, the name. One snapshot is those values by reference: every
+   * edit replaces the value it touches (upd, setCfg, sndUpd), so a snapshot costs nothing and a
+   * changed key is one !==. Undo walks snapshots; autosave writes the newest to this browser,
+   * and a reload picks it up. A burst of edits (a slider drag, a typed number) is one step. */
+  SNAP_KEYS = ['dial', 'designs', 'cfg', 'seeds', 'hands', 'handFinish', 'caseStyle', 'caseMetal', 'glassStyle', 'train', 'caseOpen', 'sounds', 'themeName'];
+  UNDO_MAX = 100;
+  BURST_MS = 600;
+  _undo = []; _redo = []; _snap = null; _snapAt = 0; _restoring = false; _saveT = null;
+  appSlug() {
+    let q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
+    const a = q && q.get('app');
+    return a && /^[a-z0-9_-]{1,32}$/i.test(a) ? a : 'clock';
+  }
+  sessionKey() { return 'wc.session.' + this.appSlug(); }
+  mineKey() { return 'wc.mine.' + this.appSlug(); }
+  snapOf(st) { const o = {}; this.SNAP_KEYS.forEach((k) => { o[k] = st[k]; }); return o; }
+  snapSame(a, b) { return !!a && !!b && this.SNAP_KEYS.every((k) => a[k] === b[k]); }
+  // called on every update: a changed watch is an undo step (or joins the burst it is part of)
+  trackHistory() {
+    if (!this.ready) return;
+    const cur = this.snapOf(this.state);
+    if (!this._snap) { this._snap = cur; return; }
+    if (this.snapSame(cur, this._snap)) return;
+    const now = Date.now();
+    if (this._restoring) this._restoring = false;
+    else {
+      if (now - this._snapAt > this.BURST_MS || !this._undo.length) { this._undo.push(this._snap); if (this._undo.length > this.UNDO_MAX) this._undo.shift(); }
+      this._redo = [];
+    }
+    this._snap = cur; this._snapAt = now;
+    this.saveSession();
+  }
+  restoreSnap(snap, status) {
+    const D = snap.designs && snap.designs[snap.dial], sel = this.state.sel;
+    const keepSel = sel != null && D && (D.comps || []).some((c) => c.id === sel);
+    this._restoring = true; this._snapAt = 0;
+    this.setState(Object.assign({}, snap, keepSel ? {} : { sel: null, selKind: null }, { status }));
+  }
+  undo() {
+    if (!this._undo.length) { this.setState({ status: 'Nothing to undo' }); return; }
+    const prev = this._undo.pop(); this._redo.push(this._snap || this.snapOf(this.state));
+    this.restoreSnap(prev, 'Undone' + (this._undo.length ? '' : ' \u2014 back to where this session started'));
+  }
+  redo() {
+    if (!this._redo.length) { this.setState({ status: 'Nothing to redo' }); return; }
+    const next = this._redo.pop(); this._undo.push(this._snap || this.snapOf(this.state));
+    this.restoreSnap(next, 'Redone');
+  }
+  // what autosave and My designs keep: the snapshot, less the uploaded sounds' bytes (art and
+  // sound bytes have their own store and the .wckit; a design keeps references, as a Design ID does)
+  sessionBody(snap) {
+    const sounds = {}; Object.keys(snap.sounds || {}).forEach((k) => { const d = snap.sounds[k]; sounds[k] = d ? Object.assign({}, d, { up: {} }) : d; });
+    return Object.assign({ v: 1, at: Date.now() }, snap, { sounds });
+  }
+  saveSession() {
+    if (this._saveT) clearTimeout(this._saveT);
+    this._saveT = setTimeout(() => {
+      this._saveT = null;
+      try { window.localStorage.setItem(this.sessionKey(), JSON.stringify(this.sessionBody(this._snap || this.snapOf(this.state)))); this.sessionSaved = true; }
+      catch (e) { this.sessionSaved = false; }
+    }, 700);
+  }
+  // on load: the last session in this browser, if there is one, with every design re-canonised
+  loadSession() {
+    let b = null;
+    try { b = JSON.parse(window.localStorage.getItem(this.sessionKey()) || 'null'); } catch (e) { b = null; }
+    if (!b || b.v !== 1 || !b.dial || !WatchEngine.PRESETS[b.dial]) return false;
+    const designs = {}; Object.keys(b.designs || {}).forEach((k) => { if (WatchEngine.PRESETS[k] && b.designs[k]) designs[k] = WatchEngine.canonDesign(b.designs[k]); });
+    const snap = {}; this.SNAP_KEYS.forEach((k) => { if (b[k] !== undefined) snap[k] = b[k]; }); snap.designs = designs;
+    const when = new Date(+b.at || Date.now());
+    // the restored watch is where this session's history starts (the first update adopts it)
+    this._snap = null; this._undo = []; this._redo = [];
+    this.setState(Object.assign(snap, { status: 'Picked up where you left off (saved ' + when.toLocaleString() + '). Reset everything starts that watch over; Ctrl+Z steps back.' }));
+    return true;
+  }
+  /* My designs: named Design IDs in this browser, exported and imported as one JSON file. A
+   * Design ID is the whole watch by reference (art stays in the asset store and the .wckit). */
+  // read once and kept (the Start sheet renders every frame); every write goes through mineWrite
+  _mine = null;
+  mineList() {
+    if (this._mine) return this._mine.slice();
+    let l = []; try { l = JSON.parse(window.localStorage.getItem(this.mineKey()) || '[]'); } catch (e) { l = []; }
+    this._mine = Array.isArray(l) ? l.filter((x) => x && x.id && x.name) : [];
+    return this._mine.slice();
+  }
+  mineWrite(l) { try { window.localStorage.setItem(this.mineKey(), JSON.stringify(l)); this._mine = l.slice(); return true; } catch (e) { this.setState({ status: 'Not saved: this browser refused to store it (' + (e && e.name || 'storage') + ')' }); return false; } }
+  saveMine(name) {
+    const nm = String(name || '').trim() || this.state.themeName || this.preset().name;
+    const l = this.mineList().filter((x) => x.name !== nm);
+    l.unshift({ name: nm, id: this.designId(), dial: this.state.dial, at: Date.now() });
+    if (this.mineWrite(l)) this.setState({ mineName: '', status: 'Saved \u201c' + nm + '\u201d to My designs' });
+  }
+  delMine(nm) { const l = this.mineList(); if (this.mineWrite(l.filter((x) => x.name !== nm))) this.setState({ status: 'Removed \u201c' + nm + '\u201d from My designs' }); }
+  exportMine() {
+    const body = JSON.stringify({ format: 'wc-designs', version: 1, app: this.appSlug(), designs: this.mineList() }, null, 1);
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([body], { type: 'application/json' })); a.download = this.appSlug() + '-designs.json';
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+  importMine(text) {
+    let j = null; try { j = JSON.parse(text); } catch (e) { j = null; }
+    const inc = j && j.format === 'wc-designs' && Array.isArray(j.designs) ? j.designs.filter((x) => x && typeof x.name === 'string' && /^WCD5-/.test(String(x.id))) : null;
+    if (!inc) { this.setState({ status: 'That file is not a My designs export' }); return; }
+    const l = this.mineList(), have = {}; l.forEach((x) => { have[x.name + '\u0000' + x.id] = 1; });
+    let n = 0; inc.forEach((x) => { if (have[x.name + '\u0000' + x.id]) return; let nm = x.name; while (l.some((y) => y.name === nm)) nm += ' (imported)'; l.push({ name: nm, id: x.id, dial: x.dial, at: +x.at || Date.now() }); n++; });
+    if (this.mineWrite(l)) this.setState({ status: n ? 'Imported ' + n + ' design' + (n > 1 ? 's' : '') + ' into My designs' : 'Every design in that file is already here' });
+  }
   designId() {
     const c = this.cfg(), s = this.state, E = window.WatchEngine, P = this.ready ? this.preset() : null;
     if (this.ready && this.train().by) c.trainAngle = 0;
@@ -988,6 +1096,7 @@ class Component extends DCLogic {
     const fams = ['700 31px "Cormorant Garamond"', 'italic 600 30px "Cormorant Garamond"', '600 40px "IBM Plex Sans"', '500 21px "IBM Plex Sans"', 'italic 600 30px "IBM Plex Sans"', '700 31px "Jost"', '500 21px "Jost"', 'italic 600 30px "Jost"', '700 31px "Barlow Condensed"', '500 21px "Barlow Condensed"', 'italic 600 30px "Barlow Condensed"', '700 31px "Bodoni Moda"', '500 21px "Bodoni Moda"', 'italic 600 30px "Bodoni Moda"'];
     try { await Promise.race([Promise.all(fams.map((f) => document.fonts.load(f))), new Promise((r) => setTimeout(r, 4000))]); } catch (e) {}
     this.ready = true;
+    this.loadSession();
     // Under a hub, learn the loaded orb once so the Send note names it before the
     // first press. Guarded and swallowed: off-hub there is no hub to ask, and a
     // headless run has no fetch — either way the button's press-time read still works.
@@ -1009,6 +1118,7 @@ class Component extends DCLogic {
     if (Math.abs(px - (+this.state.fitPx || 0)) >= 2) this.setState({ fitPx: px });
   }
   componentDidUpdate() {
+    this.trackHistory();
     if (!this._ro && this.stageRef && this.stageRef.current && typeof ResizeObserver === 'function') {
       this._ro = new ResizeObserver(() => this.measureStage()); this._ro.observe(this.stageRef.current); this.measureStage();
     }
@@ -1449,6 +1559,14 @@ class Component extends DCLogic {
    * for the author who wants to place by eye first and check the numbers after. */
   clearSel() { this.drag = null; this._clickAt = null; this._pend = this._pendArt = this._pendHand = null; this.setState({ sel: null, selKind: null }); }
   onKey(e) {
+    // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y: the watch's undo, except in a text box, whose own undo it is
+    if (e && (e.ctrlKey || e.metaKey) && !e.altKey && /^[zy]$/i.test(e.key || '')) {
+      const t = e.target || {}, tag = String(t.tagName || '').toLowerCase(), ty = String(t.type || '').toLowerCase();
+      if (tag === 'textarea' || (tag === 'input' && ty !== 'range' && ty !== 'checkbox' && ty !== 'radio' && ty !== 'color')) return false;
+      if (e.preventDefault) e.preventDefault();
+      if (/y/i.test(e.key) || e.shiftKey) this.redo(); else this.undo();
+      return true;
+    }
     if (!e || e.key !== 'Escape') return false;
     const t = e.target || {}, tag = String(t.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'select' || tag === 'textarea') return false;   // Escape in a field is the field's business
@@ -3016,6 +3134,10 @@ class Component extends DCLogic {
    * hub on every paint; a null is a real answer (no orb loaded yet). */
   async hubOrbIp() {
     if (this.state.hubCheck && this.state.hubIp != null) return this.state.hubIp;
+    // D43 P6: the hub opens this editor for one orb and names it (?orb=); that is the address
+    let q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
+    const named = q && q.get('orb');
+    if (named && /^(\d{1,3}\.){3}\d{1,3}$/.test(named)) { this.setState({ hubIp: named, hubCheck: true }); return named; }
     let ip = null;
     try {
       const r = await fetch('/api/orb/known');
@@ -4573,8 +4695,21 @@ class Component extends DCLogic {
       })),
       // everything: the design (its parts and their depth), movement, case and light, and the stage's
       // own view of it -- per-part eyes, selection, a drag in flight
-      resetDesign: () => this.setState((st) => { const d = { ...st.designs }; delete d[st.dial]; const P = E.PRESETS[st.dial]; this._dragRow = null; return { designs: d, sel: null, selKind: null, dropAt: null, dragging: null, hidden: { ...st.hidden, ids: {} }, hands: 'auto', handFinish: 'auto', cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed', status: 'Reset ' + P.name + ' to its preset' }; }),
-      isEdited: !!(s.designs && s.designs[s.dial]), resetPresetLabel: 'Reset ' + ((E.PRESETS[s.dial] || {}).name || 'to preset'),
+      resetDesign: () => {
+        // D43 P6: a reset asks twice (the second press within 4 s), and Ctrl+Z still brings it back
+        if (!(this.state.resetArm && Date.now() - this.state.resetArm < 4000)) { this.setState({ resetArm: Date.now(), status: 'Press Reset again to put ' + ((E.PRESETS[s.dial] || {}).name || 'this watch') + ' back to its preset (Ctrl+Z undoes it)' }); return; }
+        this.setState((st) => { const d = { ...st.designs }; delete d[st.dial]; const P = E.PRESETS[st.dial]; this._dragRow = null; return { resetArm: 0, designs: d, sel: null, selKind: null, dropAt: null, dragging: null, hidden: { ...st.hidden, ids: {} }, hands: 'auto', handFinish: 'auto', cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed', status: 'Reset ' + P.name + ' to its preset \u2014 Ctrl+Z brings your version back' }; }); },
+      isEdited: !!(s.designs && s.designs[s.dial]), resetPresetLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset ' + ((E.PRESETS[s.dial] || {}).name || 'to preset'),
+      mineName: s.mineName || '', onMineName: (e) => this.setState({ mineName: e.target.value }), minePh: 'Name (default: ' + (s.themeName || (E.PRESETS[s.dial] || {}).name || 'this watch') + ')',
+      saveMine: () => this.saveMine(s.mineName), exportMine: () => this.exportMine(),
+      importMine: (e) => { const f = e.target.files && e.target.files[0]; if (!f) return; f.text().then((t) => this.importMine(t)); e.target.value = ''; },
+      mine: this.mineList().map((m) => { const armed = s.mineDel === m.name && Date.now() - (s.mineDelAt || 0) < 4000;
+        return { name: m.name, meta: ((E.PRESETS[m.dial] || {}).name || '') + ' \u00b7 ' + new Date(+m.at || 0).toLocaleDateString(), load: () => { this.loadId(m.id); this.setState({ themeName: m.name }); },
+          delLabel: armed ? 'Press again' : 'Delete', delTip: 'Remove it from My designs (asks twice)', del: () => (armed ? (this.delMine(m.name), this.setState({ mineDel: null })) : this.setState({ mineDel: m.name, mineDelAt: Date.now() })) }; }),
+      mineEmpty: !(this._mine || this.mineList()).length,
+      resetAllLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset everything',
+      undo: () => this.undo(), redo: () => this.redo(), undoOp: this._undo.length ? 1 : 0.4, redoOp: this._redo.length ? 1 : 0.4,
+      undoTip: this._undo.length ? 'Undo (Ctrl+Z) \u00b7 ' + this._undo.length + ' step' + (this._undo.length > 1 ? 's' : '') + ' back' : 'Nothing to undo', redoTip: this._redo.length ? 'Redo (Ctrl+Shift+Z)' : 'Nothing to redo',
       tabReset: () => this.resetTab(s.tab), hasTabReset: s.tab !== 'export', tabResetLabel: 'Reset ' + (this.TABS.find((t) => t[0] === s.tab) || ['', ''])[1].toLowerCase(),
       resetComps: () => { const P = E.PRESETS[s.dial]; this.upd((d) => { d.comps = JSON.parse(JSON.stringify(P.design.comps || [])); }); this.setState({ sel: null, status: 'Complications reset to ' + P.name }); },
       trainOpts: ready ? Object.entries(E.TRAINS).map(([id, t]) => ({ ...on(id === s.train), name: t.name, blurb: t.blurb, pick: () => this.setState({ train: id }) })) : [],

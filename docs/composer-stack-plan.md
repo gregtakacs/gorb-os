@@ -1,6 +1,6 @@
 # D43: the composer as a layer stack, with an honest panel preview
 
-**Status: RULED (owner, 2026-11-01, §11). Nothing built.** This file is D42's slice
+**Status: RULED (owner, 2026-11-01, §11). P0, P3–P5c built; P1, P2, P5d, P6 partly (§10); P7 not started.** This file is D42's slice
 E2 (`docs/element-model-plan.md` §10) widened from "one list of rows" into the
 composer's whole authoring model, plus an RGB565 panel preview, a bake-time dither,
 the design carried inside the `.orbtheme`, and the retirement of the hub's
@@ -1392,6 +1392,30 @@ budget says so on the layer at the moment it is dropped.
 - **Plain language.** The prose stays, moved to the drawer or to hover help. The main
   surface states what a control does in one line.
 
+**As built (P6, 2026-11-02).**
+- **One snapshot is the watch**: the per-dial designs, movement, case, glass, light (`cfg`),
+  seeds, hands, sounds and the theme's name, held by reference. Every edit already replaces
+  the value it touches, so a changed key is one `!==` and `trackHistory` (run on every
+  update) costs nothing while the watch is still.
+- **Undo/redo**: the title bar's ↶ ↷ and Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y, 100 steps. Edits
+  within 600 ms of the last are one step, so a slider drag undoes as one. A text box keeps its
+  own Ctrl+Z; a focused slider hands it to the watch. A selection survives an undo when its
+  part still exists.
+- **Autosave**: the newest snapshot, 700 ms after the last edit, to `localStorage`
+  `wc.session.<app>`, less uploaded sound bytes (art and sound bytes travel in the asset store
+  and the `.wckit`, as with a Design ID). A reload restores it, re-canonising every design, says
+  so in the status line, and starts its history there. A damaged entry is ignored.
+- **My designs** (the Start sheet): Save current (named; the theme name or preset by default;
+  the same name replaces), Open, Delete (asks twice), Export all (one `<app>-designs.json`,
+  `format: wc-designs`) and Import (skips what is already there, renames a clash). Entries are
+  Design IDs, so art is by reference.
+- **Reset** (title bar and Start sheet) asks twice within 4 s, and is an undo step.
+- **`?orb=`** (an IPv4) is the address Send dials; `/api/orb/known` is asked only without it.
+  **`?app=`** keys the browser storage per app.
+- Ruling 9 in practice: P6 changed the editor after v1.2.1 reached Gold, so it ships as
+  v1.2.2. The app stamp is `version.txt`, which also stamps the firmware, so every editor
+  release is a firmware rebuild, a bundle and a flash, even when no C changed.
+
 ## 8. The design travels in the `.orbtheme` (ruling 5)
 
 Today a `.orbtheme` carries the baked dial and nothing the composer can reopen. The
@@ -1564,7 +1588,7 @@ long as an app in its library or on a known orb still names it.
 | **P5b** ✔ | The studio layout (§4.2): the editor fills the hub window as one three-pane studio — layers left on every step, the stage centre, the inspector right — in the hub's palette, with one title bar; Arrange folds into the layers panel; the hub page itself goes fluid | nothing removed (the P5 checklist, re-pointed at the new panes); the stage zoom stays inside its pane at every stop; no page scroll at 1280×720 and 1920×1080 (Chrome screenshots of both, inside the hub); `go test` and every app suite green — **built 2026-11-02** (§4.2); the owner's test on the hub is owed |
 | **P5c** ✔ | Hands are complications (§4.3): one Add catalogue, hands placed anywhere in any number, a selected hand's panel alone; the plate rows open Movement, and its backdrop and the plate art sit at the tab's foot | the presets render and bake pixel-identical in the new shape; ten hands on the dial within R6; every suite green — **built 2026-11-02** (§4.3 as built); the presets' hand geometry is identical across 22 designs; a bench bake of the new pointer sources and the owner's test are owed |
 | **P5d** ◐ | Faces, hands, wheels and cutouts (§4.4): face groups and a drag that shows where it lands, hands that inherit from their face, fan and slider sub-dials, wheels under cutouts | each slice keeps every preset rendering as before and every suite green; the bench bake of each new row kind — **P5d.1–P5d.3b built and benched 2026-11-02** (§4.4 as built: smooth wheels as rows under a cover, year digits and the roll in the firmware, the presets' windows and classic moons as wheels); P5d.4's angled and lifted fan/slider still to see on glass — **shelved by the owner 2026-11-02** (known issues, to be looked at later) |
-| **P6** | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here |
+| **P6** ◐ | §7: autosave, My designs, undo, reset confirmation, `?orb=`/`?app=`. Then the live-blend coverage measurement (§5.3, last bullet) | headless tests: reload restores, undo restores the previous bake input exactly; coverage figures recorded here — **§7 built 2026-11-02** (§7, as built; `headless-session` 35 checks, 3/3 mutants); the coverage measurement is still owed |
 | **P7** | The design region (§8): the owed checks first, then the writer in JS and Python, the readers' tolerance, the hub's **Edit** door and `?theme=` | a theme baked, installed, then reopened from the card and from the shelf restores a design equal to the one exported; a design region with a broken CRC is refused as a design while the dial installs and draws; a design stamped newer is refused with the version it needs |
 
 P0 comes first because it is cheap and decides how much of P2 and P6 is needed. P1

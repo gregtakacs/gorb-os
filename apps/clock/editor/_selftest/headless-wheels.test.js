@@ -234,6 +234,9 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   it.state.tab = 'hands'; it.resetTab('hands');
   ok(JSON.stringify(rows()) === JSON.stringify(fresh), 'the Hands tab\u2019s Reset puts the hands\u2019 depth back too', rows().join(' '));
   it.stackMove('hand:h4', 1); it.state.hidden = { ids: { h2: 1 } };
+  // D43 P6: Reset asks twice; the first press only arms it
+  it.renderVals().resetDesign();
+  ok(JSON.stringify(rows()) !== JSON.stringify(fresh) && /Press Reset again/.test(it.state.status) && it.renderVals().resetAllLabel === 'Press again to reset', 'the first Reset press only asks', it.state.status);
   it.renderVals().resetDesign();
   ok(JSON.stringify(rows()) === JSON.stringify(fresh) && !Object.keys(it.state.hidden.ids || {}).length, 'Reset everything restores the stack and the stage\u2019s eyes');
   const inp = it.stackInput(), pl = global.OrbStack.place(inp, 'comp:c2', 'comp:c3', 'below');

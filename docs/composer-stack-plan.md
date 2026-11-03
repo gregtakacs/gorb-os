@@ -1554,6 +1554,16 @@ owner:
   a pre-schema-1 design (every pre-P7 theme has none), so they can go once autosave and My
   designs are cleared of old shapes.
 
+**Gold's card, re-baked (2026-11-02, clock v1.2.5, OS v1.2.3).** The owner had every old
+theme deleted from orb-B's card (28 files, none carrying a design) and a handful re-baked by
+the current editor and delivered: Skeleton, Luna, Orbit, Triple calendar, Station and Modern,
+each through `store_check.sh upload` (stored in 8.7–15.5 s, no panic, no staged tear), Modern
+last and active. Every row reports its design (1.3–2.0 KB) and `/api/v1/sd/design` returned
+each byte-identical to the bake. The re-bake found a bug the suites had not: the baker's comp
+planner knew no `index` part (P5d.3n) and refused Orbit; fixed in `compPlan3` and
+`liveComps3`, and `headless-wheels` now runs every preset through the bake planners (a
+mutant restoring the bug fails it).
+
 **Opening a theme for editing.** The Themes pane offers **Edit** on any shelf or card
 theme whose file carries a design region. The hub opens the app's editor (by the
 version gate in §1.2) with `?theme=<id>`. The editor fetches the design region

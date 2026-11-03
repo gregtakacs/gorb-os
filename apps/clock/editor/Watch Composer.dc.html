@@ -859,6 +859,34 @@ class Component extends DCLogic {
     }
     return this.faces[k];
   }
+  /* The stage's eye, made real (D43 P5d.3d). A part switched off one by one is drawn as if it
+   * were not there, which for what is painted into a face at build time means a face built
+   * without it: a hidden flare leaves its face printed without it; a hidden cutout closes, its
+   * hole never punched; a hidden hand takes its arbour cap with it (the crown cap is painted
+   * into the crystal for the hand on top, so the next hand down wears it); a hidden wheel's
+   * cutouts stay open onto what lies under them, with no shadow falling into the empty hole.
+   * The stage alone draws this face: the Layers list, the bake and every export read face(). */
+  viewDesign(id) {
+    const d = this.design(id), ids = (this.state.hidden && this.state.hidden.ids) || {};
+    if (!d || !Object.keys(ids).length) return d;
+    const gone = (c) => ids[c.id] && (c.type === 'flare' || c.type === 'cutout' || c.type === 'hand');
+    const bare = {}; (d.comps || []).forEach((c) => { if (ids[c.id] && c.type === 'wheel') bare[c.id] = 1; });
+    if (!(d.comps || []).some((c) => gone(c) || bare[c.id])) return d;
+    return { ...d, comps: (d.comps || []).filter((c) => !gone(c)).map((c) => (c.type === 'cutout' && bare[c.host] ? { ...c, viewBare: true } : c)) };
+  }
+  viewFace(id) {
+    if (!this.ready) return null;
+    id = id || this.state.dial;
+    const vd = this.viewDesign(id);
+    if (vd === this.design(id)) return this.face(id);
+    const k = 'view|' + JSON.stringify([this.opts(id), id, this.handDef(id), vd]);
+    if (!this.faces[k]) {
+      const keys = Object.keys(this.faces); if (keys.length > 12) delete this.faces[keys[0]];
+      const hd = this.handDef(id);
+      this.faces[k] = WatchEngine.face({ ...this.opts(id), design: vd, hands: hd.style, handFinish: hd.finish });
+    }
+    return this.faces[k];
+  }
   now() {
     const d = new Date();
     if (this.state.timeMode === 'pose') d.setHours(10, 9, 36, 0);
@@ -1855,7 +1883,7 @@ class Component extends DCLogic {
     } catch (e) { return false; }
   }
   drawMain() {
-    const c = this.mainRef.current, fc = this.face(); if (!c || !fc) return;
+    const c = this.mainRef.current, fc = this.viewFace(); if (!c || !fc) return;
     const f = this.state.frame, gt = this.gt[f] || this.gt.find(Boolean), d = this.now(), x = c.getContext('2d');
     WatchEngine.compose(x, this.base, gt, fc, d, this.state.hidden);
     if (+this.cfg().wb !== 6500) WatchEngine.wb(c, +this.cfg().wb);
@@ -1890,7 +1918,7 @@ class Component extends DCLogic {
       const up = it.movable ? S.move(inp, it.id, -1) : { ok: false, reason: '' }, dn = it.movable ? S.move(inp, it.id, 1) : { ok: false, reason: '' };
       // D43 P5d.3d: a hand, a sub-dial face and a disc switch off on their own (hidden.ids); the
       // crystal, the dial, the train and the movement stay the switches they always were
-      const own = it.ref != null && (it.kind === 'hand' || it.kind === 'pointer' || it.kind === 'subdial' || it.kind === 'disc' || it.kind === 'cutout');
+      const own = it.ref != null && (it.kind === 'hand' || it.kind === 'pointer' || it.kind === 'subdial' || it.kind === 'disc' || it.kind === 'cutout' || it.kind === 'flare');
       const ids0 = s.hidden.ids || {}, hidden = own ? !!ids0[it.ref] || !!s.hidden[it.hide] : !!s.hidden[it.hide], on = selId === it.id;
       const ICON = { case: '◎', glass: '◌', dial: '◯', subdial: '◷', disc: '◐', flare: 'A', opening: '◇', comp: '▭', hand: '╱', pointer: '╱', geartrain: '⚙', movement: '▦' };
       rows.push({ id: it.id, parent: it.parent || null, isHead: false, isRow: true, label: it.label, warn: warnOf[it.id] ? ' ⚠' : '', icon: ICON[it.kind] || '•',
@@ -1910,7 +1938,7 @@ class Component extends DCLogic {
         dragEnd: () => this.stackDragEnd(),
         pick: () => this.stackPick(it),
         eye: hidden ? 'hidden' : 'shown', eyeIcon: hidden ? '○' : '◉', eyeFg: hidden ? '#5d6b78' : '#8b98a5',
-        eyeTip: own ? 'Show or hide ' + it.label + ' on the stage' + (it.kind === 'subdial' ? ' (its wheels then show whole)' : it.kind === 'cutout' ? ' (its wheel is no longer seen through it)' : '') + ' \u2014 a view switch: the bake is not changed' : 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial (the wheels under it then show whole)', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)',
+        eyeTip: own ? 'Show or hide ' + it.label + ' on the stage' + (it.kind === 'subdial' ? ' (its wheels then show whole)' : it.kind === 'cutout' ? ' (the hole closes)' : it.kind === 'disc' ? ' (its cutouts open onto what lies under it)' : it.kind === 'hand' || it.kind === 'pointer' ? ' (with its arbour cap)' : '') + ' \u2014 a view switch: the bake is not changed' : 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial (the wheels under it then show whole)', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)',
         eyeToggle: (e) => { e.stopPropagation(); this.setState((st) => {
           if (!own) return { hidden: { ...st.hidden, [it.hide]: !st.hidden[it.hide] } };
           const ids = { ...(st.hidden.ids || {}) }; if (ids[it.ref]) delete ids[it.ref]; else ids[it.ref] = 1;
@@ -3669,12 +3697,19 @@ class Component extends DCLogic {
     const base = pixOf(this.frameCanvas(0, { hands: 1, glass: 1, outer: 1 }, null, onlyBase));
     const kids = {};
     plan.rows.forEach((r) => { if (r.hosted) (kids[r.hosted] = kids[r.hosted] || []).push(r.id); });
+    // a sub-dial driven as plates carries the hands it hosts in its tiles (pointerRows3 leaves
+    // them to it). compose's compOnly names what a tile draws, hands by their own id, so they
+    // are named here: since D43 P5c a hand is a comp of its own, no longer the sub-dial's id,
+    // and a month dial's tiles had come out bare (nothing to plate: Perpetual calendar) or
+    // showing only their wheels (Triple calendar's date hand, missing on the orb)
+    const ptr = {}; (ptrIds || []).forEach((id) => { ptr[String(id)] = 1; });
+    const handsOf = {}; (this.design().comps || []).forEach((c) => { if (c.type === 'hand' && c.host && !ptr[String(c.id)]) (handsOf[c.host] = handsOf[c.host] || []).push(String(c.id)); });
     const scratch = document.createElement('canvas'); scratch.width = scratch.height = W;
     const sx = scratch.getContext('2d');
     const out = []; let compB = 0;
     for (let ri = 0; ri < plan.rows.length; ri++) {
       const r = plan.rows[ri];
-      const only = onlyBase.concat(r.hosted ? [r.id] : [r.id].concat(kids[r.id] || []));
+      const only = onlyBase.concat(r.hosted ? [r.id] : [r.id].concat(kids[r.id] || [], handsOf[r.id] || []));
       let bx = W, by = W, bx2 = -1, by2 = -1;
       const rends = [];
       for (let v = 0; v < r.count; v++) {

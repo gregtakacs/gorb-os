@@ -1288,6 +1288,9 @@
         if (off(hole)) hole.uncovered = true;
       }
       hole.style = style === 'lip' ? 'frame' : style; if (hole.style === 'frame' && c.frameColor && c.frameColor !== 'gilt') hole.fc = c.frameColor;
+      // the stage's eye with the wheel switched off (viewBare, never in a saved design): the hole
+      // stays open onto what lies under it, without the face's shadow falling into it
+      if (c.viewBare) hole.bare = true;
       // a cutout on a dial-hosted wheel is sealed like a dial window: the value is composited, no hole ships
       if (w.host === 'dial') hole.seal = true;
       (w.host === 'dial' ? dialHoles : subHoles[w.host]).push(hole);
@@ -1395,7 +1398,7 @@
       const p = holePath(h), b = bx[i], k = Math.max(0.25, Math.min(1, (h.kind === 'arc' ? h.r1 - h.r0 : b[3] - b[1]) / 320)), ak = 0.45 + 0.55 * k;
       const near = vis.filter((o, j) => j !== i && ov(i, j)), before = vis.filter((o, j) => j < i && ov(i, j));
       sl.clearRect(0, 0, S, S);
-      [[5, 8, 0.85], [-5, 8, 0.85], [16, 28, 0.75], [-16, 28, 0.75], [30, 50, 0.5], [-30, 50, 0.5], [0, 6, 0.5]].forEach(([oy, blr, al]) => {
+      if (!h.bare) [[5, 8, 0.85], [-5, 8, 0.85], [16, 28, 0.75], [-16, 28, 0.75], [30, 50, 0.5], [-30, 50, 0.5], [0, 6, 0.5]].forEach(([oy, blr, al]) => {
         sl.save(); sl.beginPath(); p(sl); sl.clip();
         sl.shadowColor = 'rgba(0,0,0,' + al * ak + ')'; sl.shadowBlur = blr * k; sl.shadowOffsetY = oy * k;
         sl.drawImage(solid, 0, 0); sl.restore();

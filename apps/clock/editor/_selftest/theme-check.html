@@ -390,6 +390,24 @@
     ok('the frame metal changes what ships around the window', plateMoved + Math.max(0, rowMoved) > 50, plateMoved + ' plate px, ' + rowMoved + ' window-row px');
     ok('and nothing away from it', far === 0, far + ' plate px more than 60 px from the window');
 
+    // ---- 7. every preset bakes, and a plated sub-dial ships its own hand -------------------
+    say('--- every preset ---');
+    for (const id of Object.keys(E.PRESETS)) {
+      try { const b = await bake('preset ' + id, id); ok(E.PRESETS[id].name + ' bakes and reads back', true, b.bytes.length + ' B, ' + b.els.length + ' rows'); }
+      catch (e) { ok(E.PRESETS[id].name + ' bakes and reads back', false, String(e.message).slice(0, 160)); }
+    }
+    // the tiles of a value row: how many of its planes differ from one another
+    const distinct = (b, e) => { const s = new Set(); for (let k = 0; k < (e.n_frames | 0); k++) { const r = b.sprite((e.frame0 | 0) + k); s.add(r.codes.join(',') + '|' + (r.alpha ? r.alpha.join(',') : '')); } return s.size; };
+    const per = await bake('perpetual', 'perpetual').catch(() => ({ els: [], cls: () => -1 }));
+    for (const [src, n] of [['month', 12], ['date', 31], ['weekday', 7]]) {
+      const e = per.els.find((x) => per.cls(x) === 5 && x.src === G.SOURCES.indexOf(src) && (x.n_frames | 0) === n);
+      ok('Perpetual\u2019s ' + src + ' sub-dial ships its hand: every tile differs', !!e && distinct(per, e) === n, e ? distinct(per, e) + ' of ' + n + ' tiles distinct' : 'no ' + n + '-tile ' + src + ' row');
+    }
+    // the Triple calendar's date sub-dial without its moon: only the date hand can move its tiles
+    const calHand = await bake('calendar hand', 'calendar', (d) => { d.comps = d.comps.filter((c) => c.id !== 'c5' && c.id !== 'c5k'); });
+    const ce = calHand.els.find((x) => calHand.cls(x) === 5 && x.src === SRC.date && (x.n_frames | 0) === 31);
+    ok('the Triple calendar\u2019s date hand ships in its sub-dial\u2019s tiles', !!ce && distinct(calHand, ce) === 31, ce ? distinct(calHand, ce) + ' of 31 tiles distinct' : 'no 31-tile date row');
+
     say('');
     say(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checks + ' checks' : 'RESULT: PASS (' + checks + ' checks)');
     document.title = fails ? 'FAIL' : 'PASS';

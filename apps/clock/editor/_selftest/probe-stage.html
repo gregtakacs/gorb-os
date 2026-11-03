@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>probe-stage</title>
+<body><pre id="out">booting…</pre>
+<!-- Visual probe: the stage as the editor draws it (drawMain's compose with state.hidden),
+     for a preset and a list of eye states, each printed as a PNG on a `PNG <label> <b64>`
+     line. A probe: it prints, it asserts nothing.
+
+       ?dial=speedster&views=[{"label":"all"},{"label":"no d1","ids":["d1"]}]
+
+     A view is { label, ids: [part ids the eye hides], flags: { hands: 1, ... } }, exactly
+     what the layers panel writes into state.hidden. The clock is posed (10:09:36). -->
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;1,600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="../dial-renderer.js"></script>
+<script src="../watch-engine.js"></script>
+<script>window.React = { createRef: () => ({ current: null }) };</script>
+<script src="../orbtheme-baker.js"></script>
+<script src="component.js"></script>
+<script>
+(function () {
+  const out = document.getElementById('out'), L = [];
+  const say = (s) => { L.push(s); out.textContent = L.join('\n'); };
+  const E = window.WatchEngine;
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const q = new URLSearchParams(location.search);
+  const DIAL = q.get('dial') || 'speedster', VIEWS = JSON.parse(q.get('views') || '[{"label":"all"}]');
+  const IT = new (window.COMP_CLASS(DCLogic))({});
+  IT.forceUpdate = () => { };
+  IT.state.playing = false; IT.state.hidden = {}; IT.state.tab = 'export'; IT.state.timeMode = 'pose';
+  async function main() {
+    const fams = Array.from(new Set(Object.values(E.FONTS || {}).map((f) => (String(f[1] || '').match(/"([^"]+)"/) || [])[1]).filter(Boolean)));
+    await Promise.race([Promise.all(fams.map((f) => document.fonts.load('700 32px "' + f + '"').catch(() => null))), wait(15000)]);
+    await IT.componentDidMount();
+    const P = E.PRESETS[DIAL];
+    IT.state.dial = DIAL; IT.faces = {}; IT.state.designs = {}; IT.state.designs[DIAL] = E.canonDesign(JSON.parse(JSON.stringify(P.design)));
+    IT.state.cfg = { ...(P.cfg || {}) }; IT.state.train = P.train || 'classic';
+    IT.state.caseStyle = P.caseStyle || 'polished'; IT.state.caseMetal = P.caseMetal || 'auto';
+    const tick = setInterval(() => IT.componentDidUpdate(), 40);
+    IT.buildMovement();
+    for (let i = 0; i < 400 && !(IT.gt.length === IT.B && IT.gt[0] && !IT.rendering); i++) { IT.componentDidUpdate(); await wait(40); }
+    clearInterval(tick);
+    say('comps: ' + (IT.design().comps || []).map((c) => c.id + ':' + c.type + (c.host && c.host !== 'dial' ? '@' + c.host : '')).join(' '));
+    say('hands: ' + (IT.face().hands || []).map((h) => h.id + ':' + h.kind).join(' '));
+    for (const v of VIEWS) {
+      const ids = {}; (v.ids || []).forEach((id) => { ids[id] = 1; });
+      IT.state.hidden = Object.assign({}, v.flags || {}, { ids });
+      const c = document.createElement('canvas'); c.width = c.height = 466;
+      IT.mainRef = { current: c };
+      IT.drawMain ? IT.drawMain() : E.compose(c.getContext('2d'), IT.base, IT.gt[0], IT.face(), IT.now(), IT.state.hidden);
+      say('PNG ' + v.label.replace(/\s/g, '_') + ' ' + c.toDataURL('image/png').split(',')[1]);
+    }
+    say('DONE'); document.title = 'DONE';
+  }
+  main().catch((e) => { say('FAILED: ' + (e && e.message)); say(String((e && e.stack) || '').split('\n').slice(0, 6).join('\n')); document.title = 'FAILED'; });
+})();
+</script>

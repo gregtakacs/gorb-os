@@ -2379,8 +2379,12 @@ static void clear_job(void *arg)
     char gone[ORB_POOL_SLUG_MAX];
     strlcpy(gone, app, sizeof gone);
     const esp_partition_t *p = art_bank_partition();
-    const int r = (p && s_pool && pool_io(p))
-                ? orb_pool_remove(&s_pool_io, s_pool, &s_pool_which, gone) : ORB_POOL_ERR_ARG;
+    int r = ORB_POOL_ERR_ARG;
+    if (p && s_pool && pool_io(p)) {
+        s_pool_io.progress = room_progress;     /* the apps after it move down */
+        r = orb_pool_remove(&s_pool_io, s_pool, &s_pool_which, gone);
+        s_pool_io.progress = NULL;
+    }
     if (r) {
         orb_boot_overlay("could not clear the theme slot", 0, 0, 0);
         ESP_LOGE(TAG, "deactivate: the pool would not let %s's theme go (%d) — "
@@ -2390,8 +2394,12 @@ static void clear_job(void *arg)
     if (!strcmp(gone, orb_theme_live_slug()))
         s_active_valid = false;              /* nothing is on the wall now */
     orb_boot_overlay("theme removed, rebooting", 0, 0, 0);
-    ESP_LOGI(TAG, "deactivated: the theme's card file was deleted and %s's entry left "
-                  "the pool — the base face draws on the next boot", gone);
+    if (!strcmp(gone, orb_theme_live_slug()))
+        ESP_LOGI(TAG, "deactivated: the theme's card file was deleted and %s's entry left "
+                      "the pool — the base face draws on the next boot", gone);
+    else
+        ESP_LOGI(TAG, "%s's stored theme left the pool with its card file — %s draws its "
+                      "base face, and the dial keeps its own", gone, gone);
     if (orb_jobs_reboot_soon("theme: the active theme was deleted") != ESP_OK)
         ESP_LOGE(TAG, "deactivated but the reboot could not be armed — "
                       "a manual reboot lands the base face");
@@ -2464,8 +2472,11 @@ esp_err_t orb_theme_delete(const char *id, bool *deactivating)
     const int k = (s_pool && theme_stem_split(id, dslug, sizeof dslug, dhex, sizeof dhex))
                 ? orb_pool_find(s_pool, dslug) : -1;
     const bool was_active = k >= 0 && strcmp(b3.name, s_pool->e[k].name) == 0;
-    ESP_LOGI(TAG, "deleted \"%s\" (%s) from the card%s", b3.name, id,
-             was_active ? " — it was the face on the wall, so the slot goes too" : "");
+    ESP_LOGI(TAG, "deleted \"%s\" (%s) from the card%s%s", b3.name, id,
+             was_active ? " — it was " : "",
+             !was_active ? "" : !strcmp(dslug, orb_theme_live_slug())
+                              ? "the face on the wall, so the slot goes too"
+                              : "its app's stored theme, so it leaves the pool");
     if (was_active && deactivating)
         *deactivating = (post_clear_app(dslug) == ESP_OK);
     return ESP_OK;

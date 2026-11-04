@@ -229,5 +229,16 @@ cap there is a refusal, so it cannot emit a theme this firmware rejects.
     found mid-move and a pool found unpacked.
   - **Cleanup**: the bench file deleted (not stored at that moment, so no reboot), and
     Speedster restored (9,835 ms). Bronze ends as it began, on this build.
-- **Owed**: a repair that moves megabytes holds the boot dark for seconds with nothing on
-  the glass. The boot overlay could say so; a P4-or-later nicety, not a correctness gap.
+- **The two notes, taken care of (2026-11-04, benched on Bronze, `v1.2.7+281fa3e`).**
+  The boot was not dark: the overlay stood on "mapping" while the repair ran, which says
+  nothing. The pool's io now takes an optional progress hook, called per sector moved;
+  boot shows **"repairing themes"** with the bar, a store's compaction **"making room"**,
+  and a clear's compaction "making room" too. Boot also logs a theme found mid-move and a
+  pool found unpacked. On Bronze: a cut mid-move logged `clock's theme was mid-move when
+  the power went; reading it back`, showed "repairing themes" for the 23.5 s repair, and
+  kept Skeleton. The first cut of the bar repainted per sector and cost a 2.8 MB move about
+  ten seconds (a store 42.8 s became 52.1 s; "making room" 37.2 s); one paint per percent
+  brought the move to 28.8 s. A delete of the flights theme while the clock was on the
+  glass let flights' entry go and moved Speedster down to 0, the clock's face untouched;
+  its log said the base face would draw, which was the clock-era sentence, and now names
+  which app's theme left.

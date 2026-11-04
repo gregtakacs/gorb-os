@@ -450,16 +450,21 @@ static int32_t s_cv, s_head, s_foot, s_card;
 static float   s_ring_cos[48], s_ring_sin[48];
 
 /* flight-tracker-design §11, theme-pool-plan P4: a theme of this app's in the pool puts the
- * scope on the stage. Its rows (apps/flights/art/bake_theme.py): slot 0 the arm, slots 1..16
- * the plane pool, each naming one bank of 7 shapes x 7 bands. With no theme, the canvas. */
+ * scope on the stage. Its rows (apps/flights/art/bake_theme.py): slot 0 the arm, slots 1..15
+ * the plane pool, each naming one bank of 7 shapes x 7 bands, and the selection and emergency
+ * rings at SEL_SLOT and EM_SLOT. The range rings and home dot are the plate's
+ * (theme-text-plan §0). With no theme, the canvas. */
 #define SWEEP_MS    4000             /* one turn of the arm */
-#define PLANE_SLOTS 16
+#define PLANE_SLOTS 15
+#define STALE_OPA   128              /* a contact past its fresh window, as dim() halves it */
+#define SEL_SLOT    16
+#define EM_SLOT     17
 static orb_stage_info_t s_stage;
 static bool    s_themed;
 static int32_t s_arm = -1;
 static int32_t s_planes[PLANE_SLOTS];
 static int     s_nplanes;
-static int32_t s_ring[2], s_home, s_selbox, s_embox, s_rng;
+static int32_t s_sel_row = -1, s_em_row = -1, s_rng;
 
 /* Set a label's text and colour only when they change: with a theme the stage ticks the
  * app every frame, and a re-set label is a repaint. */
@@ -472,6 +477,12 @@ static void put_label(int32_t h, int slot, const char *s, uint32_t col)
         orb_ui_text(h, s);
     }
     if (lastc[slot] != col) { lastc[slot] = col; orb_ui_set(h, ORB_P_TEXT_COLOR, (int32_t)col); }
+}
+
+/* Put a marker row on a contact, or hide it. */
+static void marker(int32_t row, bool on, int x, int y)
+{
+    if (row >= 0) orb_stage_pose(row, on ? 0 : ORB_STAGE_HIDDEN, x - CX, y - CY);
 }
 
 static void set_hidden(int32_t h, bool hide, bool *was)
@@ -589,7 +600,6 @@ static void draw_stage(void)
     fm_project(&s_m, range_km, orb_uptime_us(), CX, CY, RING_R);
     if (s_arm >= 0)
         orb_stage_pose(s_arm, (int32_t)((now_ms() % SWEEP_MS) * 3600 / SWEEP_MS), 0, 0);
-    static bool sel_hidden = true, em_hidden = true;
     bool sel_on = false, em_on = false;
     int k = 0;
     for (int o = 0; o < s_m.norder && k < s_nplanes; o++) {
@@ -599,18 +609,19 @@ static void draw_stage(void)
         orb_stage_frame(row, shape_of(&t->ac) * 7 + band_of(&t->ac));
         const int32_t ang = isnan(t->ac.track) || t->ac.on_ground ? 0 : (int32_t)lroundf(t->ac.track * 10.0f);
         orb_stage_pose(row, ang, x - CX, y - CY);
+        orb_stage_opacity(row, t->live ? 255 : STALE_OPA);
         if (!sel_on && s_sel[0] && !strcmp(t->ac.hex, s_sel)) {
-            orb_ui_align(s_selbox, ORB_AL_CENTER, x - CX, y - CY);
+            marker(s_sel_row, true, x, y);
             sel_on = true;
         }
         if (!em_on && emergency(&t->ac)) {
-            orb_ui_align(s_embox, ORB_AL_CENTER, x - CX, y - CY);
+            marker(s_em_row, true, x, y);
             em_on = true;
         }
     }
     for (; k < s_nplanes; k++) orb_stage_pose(s_planes[k], ORB_STAGE_HIDDEN, 0, 0);
-    set_hidden(s_selbox, !sel_on, &sel_hidden);
-    set_hidden(s_embox, !em_on, &em_hidden);
+    if (!sel_on) marker(s_sel_row, false, CX, CY);
+    if (!em_on) marker(s_em_row, false, CX, CY);
     char rng[12];
     snprintf(rng, sizeof rng, "%u nm", (unsigned)RANGES_NM[s_set.range]);
     put_label(s_rng, 3, rng, 0x8A9A90);
@@ -692,28 +703,17 @@ static int32_t text(int32_t font, uint32_t rgb, int32_t align, int32_t y)
 
 /* ---- entry points ---------------------------------------------------------------- */
 
-/* A circle outline as a box widget: the rings the canvas drew, over a theme. */
-static int32_t ring_box(int r, int w, uint32_t col)
-{
-    const int32_t h = orb_ui_create(ORB_UI_BOX, 0);
-    orb_ui_set(h, ORB_P_W, 2 * r);
-    orb_ui_set(h, ORB_P_H, 2 * r);
-    orb_ui_set(h, ORB_P_RADIUS, ORB_RADIUS_CIRCLE);
-    orb_ui_set(h, ORB_P_BG_OPA, 0);
-    orb_ui_set(h, ORB_P_BORDER_W, w);
-    orb_ui_set(h, ORB_P_BORDER_COLOR, (int32_t)col);
-    orb_ui_align(h, ORB_AL_CENTER, 0, 0);
-    return h;
-}
-
-/* The theme's rows, by slot: the arm at 0, the planes after it. */
+/* The theme's rows, by slot: the arm at 0, the planes after it, then the marker rings. */
 static void stage_rows(void)
 {
     s_nplanes = 0;
+    s_sel_row = s_em_row = -1;
     for (int32_t i = 0; i < (int32_t)s_stage.n_rows; i++) {
         clk_row_t r;
         if (orb_stage_row(i, &r) != ORB_OK) continue;
         if (r.tag == 0) s_arm = i;
+        else if (r.tag == SEL_SLOT) s_sel_row = i;
+        else if (r.tag == EM_SLOT) s_em_row = i;
         else if (r.tag <= PLANE_SLOTS && s_nplanes < PLANE_SLOTS && orb_stage_frame(i, -1) >= 49)
             s_planes[s_nplanes++] = i;
     }
@@ -724,17 +724,11 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
     s_themed = orb_stage_open(&s_stage) == ORB_OK && !s_stage.base;
     if (s_themed) {
         stage_rows();
-        s_ring[0] = ring_box(RING_R, 1, 0x7A8A80);
-        s_ring[1] = ring_box(RING_R / 2, 1, 0x5A6A60);
-        s_home = ring_box(3, 3, 0xE0E6E2);
-        s_selbox = ring_box(28, 2, 0xFFFFFF);
-        s_embox = ring_box(32, 2, 0xFF2020);
-        orb_ui_set(s_selbox, ORB_P_HIDDEN, 1);
-        orb_ui_set(s_embox, ORB_P_HIDDEN, 1);
         s_rng = orb_ui_create(ORB_UI_LABEL, 0);
         orb_ui_set(s_rng, ORB_P_FONT, ORB_FONT_14);
         orb_ui_align(s_rng, ORB_AL_CENTER, 140, 140);
-        orb_logf("flight tracker on its theme: arm row %d, %d plane rows", (int)s_arm, s_nplanes);
+        orb_logf("flight tracker on its theme: arm row %d, %d plane rows, markers %d/%d", (int)s_arm,
+                 s_nplanes, (int)s_sel_row, (int)s_em_row);
     } else {
         s_cv = orb_cv_create(0, W, H);
         if (!s_cv) return ORB_ERR_NO_MEM;

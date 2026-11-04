@@ -16,7 +16,10 @@ What a tracker theme holds, and what apps/flights/main.c expects of it:
     row at SWEEP_FPS so the scheduler runs the stage at that rate; the app poses it itself;
   - rows 1..PLANE_ROWS (slots 1..15): the plane pool, one bank of 49 frames every row names,
     each row's pivot on the glass centre; the app moves a row by its pose's offset, turns it
-    by the track, and picks its frame: shape * 7 + band, in SHAPES and make_art.BANDS order.
+    by the track, and picks its frame: shape * 7 + band, in SHAPES and make_art.BANDS order;
+  - slots SEL_SLOT and EM_SLOT: the selection and emergency rings, centred on the glass
+    centre, which the app moves onto a contact (theme-text-plan §0 ruling 3).
+The range rings and the home dot never move, so they are the plate's (ruling 2).
 """
 import argparse
 import io
@@ -41,6 +44,9 @@ PLANE_ROWS = 15               # the contacts drawn at once: with the arm, the 16
                               # layer table holds (ORB_LAYER_MAX), so the direct compositor draws it
 SWEEP_FPS = 15                # the arm's declared sweep: the stage's frame rate
 GROUND_OPA = 0.45             # colour off: ground traffic recedes (§11.1 ruling 8)
+SEL_SLOT, EM_SLOT = 16, 17    # apps/flights/main.c: the marker rings' slots
+SEL_R, EM_R = 28, 32          # their radii, px: a ring clears a 38 px plane
+EMERGENCY = "#FF2020"
 SS = 4                        # supersampling for the raster-built outlines
 
 
@@ -83,6 +89,25 @@ def _blueprint_detail(p, band):
     return ('<g fill="none" stroke="%s" stroke-width="1.6" stroke-opacity="0.85" stroke-linecap="round">%s</g>'
             '<line x1="50" y1="12" x2="50" y2="88" stroke="%s" stroke-width="1.2" stroke-dasharray="4 3" '
             'stroke-opacity="0.7"/>' % (band, j(p["engines"], p["lines"], p["canopy"]), band))
+
+
+def plate(bg_name):
+    """The background with the range rings (full range and half) and the home dot drawn in,
+    in the background's own ring and home colours."""
+    _t, _d, fn, look = A.BACKGROUNDS[bg_name]
+    rings = "".join('<circle cx="%d" cy="%d" r="%d" fill="none" stroke="%s" stroke-opacity="%s" '
+                    'stroke-width="1.5"/>' % (A.CX, A.CX, r, look["ring"], look["ring_opa"])
+                    for r in (A.RING_R, A.RING_R // 2))
+    home = '<circle cx="%d" cy="%d" r="3" fill="%s"/>' % (A.CX, A.CX, look["home"])
+    svg = A.bg_svg(fn)
+    return rast(svg.replace("</svg>", rings + home + "</svg>"), A.GLASS)
+
+
+def marker(r, colour):
+    """A marker ring, 2 px, on a box 2r across: what the app's ring widget drew."""
+    d = 2 * r
+    return rast('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d"><circle cx="%d" cy="%d" '
+                'r="%d" fill="none" stroke="%s" stroke-width="2"/></svg>' % (d, d, r, r, r - 1, colour), d)
 
 
 def frames(fam, form, colour, px):
@@ -137,6 +162,10 @@ S.row({ n: S.id(), class: AUX, slot: 0, x: m.cx - m.arm.px, y: m.cx - m.arm.py, 
 const planes = m.frames.map((f) => rd(f, m.px, m.px));
 const rows = Array.from({ length: m.rows }, (_, i) => ({ slot: 1 + i, x: m.cx - (m.px >> 1), y: m.cx - (m.px >> 1), order: 2 }));
 S.pool({ class: AUX, w: m.px, h: m.px, pivot_x: m.px >> 1, pivot_y: m.px >> 1, alpha: 255 }, planes, rows, true, true);
+for (const k of m.markers)
+  S.row({ n: S.id(), class: AUX, slot: k.slot, x: m.cx - (k.d >> 1), y: m.cx - (k.d >> 1), w: k.d, h: k.d,
+          pivot_x: k.d >> 1, pivot_y: k.d >> 1, order: 3, alpha: 255, n_frames: 1 },
+        rd(k.file, k.d, k.d), true, true);
 S.preview({ plane: rd(m.preview, 232, 232), x: 0, y: 0, order: 3 });
 const b = S.finish({ name: m.name, slug: 'flights', serial: m.serial, abi: B.GEOM_ABI6 });
 fs.writeFileSync(m.out, Buffer.from(b.bytes));
@@ -153,13 +182,16 @@ def bake(fam, form, colour, trail, outdir, node):
     tmp = tempfile.mkdtemp(prefix="flights-bake.")
     raw = lambda img, n: (img.save(os.path.join(tmp, n + ".png")),
                           open(os.path.join(tmp, n), "wb").write(img.tobytes()), os.path.join(tmp, n))[2]
-    bg = rast(A.bg_svg(A.BACKGROUNDS[bg_name][2]), A.GLASS)
+    bg = plate(bg_name)
+    sel = A.BACKGROUNDS[bg_name][3]["sel"]
     arm_img, piv = arm(arm_name, trail)
     fr = frames(fam, form, colour, px)
     m = {"glass": A.GLASS, "cx": A.CX, "px": px, "rows": PLANE_ROWS, "fps": SWEEP_FPS,
          "bg": raw(bg, "bg"), "arm": {"file": raw(arm_img, "arm"), "w": arm_img.width, "h": arm_img.height,
                                        "px": piv[0], "py": piv[1]},
          "frames": [raw(f, "f%02d" % i) for i, f in enumerate(fr)],
+         "markers": [{"slot": SEL_SLOT, "d": 2 * SEL_R, "file": raw(marker(SEL_R, sel), "sel")},
+                     {"slot": EM_SLOT, "d": 2 * EM_R, "file": raw(marker(EM_R, EMERGENCY), "em")}],
          "preview": raw(preview(bg, arm_img, piv, fr, px), "preview"),
          "name": name, "serial": 1,
          "out": os.path.join(outdir, "%s.orbtheme" % name.lower().replace(" ", "-"))}

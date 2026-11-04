@@ -590,7 +590,7 @@ static bool pool_io(const esp_partition_t *p)
     if (!s_pool_buf) s_pool_buf = heap_caps_malloc(ORB_POOL_SECTOR, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_pool || !s_pool_buf || !p) return false;
     s_pool_io = (orb_pool_io_t){ (void *)p, pool_read, pool_erase, pool_write,
-                                 s_pool_buf, ORB_POOL_SECTOR };
+                                 s_pool_buf, ORB_POOL_SECTOR, NULL };
     return true;
 }
 
@@ -1424,6 +1424,21 @@ static void store_progress(void *arg, uint32_t done, uint32_t total)
     orb_boot_overlay("storing", done, total, 0);
 }
 
+/* The pool's moves on the glass: a compaction carries megabytes (Bronze, 2026-11-04:
+ * 2.8 MB in about 20 s), so a store making room and a boot repairing a cut say so with
+ * the overlay's bar rather than standing on a word that has stopped meaning anything. */
+static void room_progress(void *ctx, uint32_t done, uint32_t total)
+{
+    (void)ctx;
+    orb_boot_overlay("making room", done, total, 0);
+}
+
+static void repair_progress(void *ctx, uint32_t done, uint32_t total)
+{
+    (void)ctx;
+    orb_boot_overlay("repairing themes", done, total, 0);
+}
+
 bool orb_theme_store_torn(void)
 {
     return s_slot_torn;
@@ -1731,7 +1746,9 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
      * where the packed run ends. Every SLOT_* offset below is relative to it. */
     staged_mark(id);
     uint32_t tgt = 0;
+    s_pool_io.progress = room_progress;
     const int pr = orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, entry_size, &tgt);
+    s_pool_io.progress = NULL;
     uint32_t art_crc = 0;
     esp_err_t e = pr ? ESP_FAIL : ESP_OK;
     if (pr) w = "the theme area would not make room";
@@ -2164,7 +2181,11 @@ esp_err_t orb_theme_boot(void)
                      s_pool->e[k].slug);
     if (!pr && !orb_pool_packed(s_pool))
         ESP_LOGW(TAG, "pool: a store or removal was cut; packing the pool before the dial draws");
-    if (!pr) pr = orb_pool_repair(&s_pool_io, s_pool, &s_pool_which);
+    if (!pr) {
+        s_pool_io.progress = repair_progress;
+        pr = orb_pool_repair(&s_pool_io, s_pool, &s_pool_which);
+        s_pool_io.progress = NULL;
+    }
     const int live = pr ? -1 : pool_live_entry();
     if (pr)
         ESP_LOGE(TAG, "the theme pool would not load (%d) — base digital face", pr);

@@ -203,6 +203,7 @@ static int move_entry(const orb_pool_io_t *io, orb_pool_t *p, int *which, uint32
             (r = io->erase(io->ctx, dst + o, ORB_POOL_SECTOR)) ||
             (r = io->write(io->ctx, dst + o, io->buf, ORB_POOL_SECTOR)))
             return r;
+        if (io->progress) io->progress(io->ctx, o + ORB_POOL_SECTOR, e->size);
     }
     uint32_t gc, ac;
     if ((r = orb_pool_crc(io, dst, e->geom_size, &gc)) ||

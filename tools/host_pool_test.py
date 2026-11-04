@@ -83,7 +83,14 @@ static int f_write(void *c, uint32_t off, const void *src, uint32_t n)
 }
 
 static uint8_t g_buf[ORB_POOL_SECTOR];
-static const orb_pool_io_t IO = { NULL, f_read, f_erase, f_write, g_buf, sizeof g_buf };
+static long g_prog_calls;
+static uint32_t g_prog_done, g_prog_total;
+static void f_progress(void *c, uint32_t done, uint32_t total)
+{
+    (void)c;
+    g_prog_calls++; g_prog_done = done; g_prog_total = total;
+}
+static const orb_pool_io_t IO = { NULL, f_read, f_erase, f_write, g_buf, sizeof g_buf, f_progress };
 
 static void power(long cut) { g_ops = 0; g_cut = cut; g_dead = 0; g_flip = -1; }
 
@@ -246,8 +253,12 @@ static void basic(void)
     orb_pool_t r; int rw;
     CK(orb_pool_load(&IO, &r, &rw) == 0 && r.n == 3 && r.serial == p.serial, "what is on flash is what was written");
 
+    g_prog_calls = 0;
     CK(orb_pool_remove(&IO, &p, &w, "clock") == 0 && p.n == 2 && p.e[0].off == ORB_POOL_FIRST,
        "removing the clock moves the rest down to the start");
+    CK(g_prog_calls == (long)((p.e[0].size + p.e[1].size) / ORB_POOL_SECTOR) &&
+       g_prog_done == g_prog_total && g_prog_total == p.e[1].size,
+       "a move reports every sector, and its last report is the whole entry (%ld calls)", g_prog_calls);
     sound(&p, "after removing the clock");
     CK(orb_pool_remove(&IO, &p, &w, "nobody") == 0 && p.n == 2, "removing an absent app is no failure");
 

@@ -64,6 +64,9 @@ typedef struct {
     int    (*write)(void *ctx, uint32_t off, const void *src, uint32_t n);
     uint8_t *buf;
     uint32_t buf_bytes;
+    /* Optional: called after each sector a move copies, with the bytes of the entry
+     * moved so far and its size, so a long compaction can show it is moving. */
+    void   (*progress)(void *ctx, uint32_t done, uint32_t total);
 } orb_pool_io_t;
 
 /* Failures, beside the io's own negatives. */

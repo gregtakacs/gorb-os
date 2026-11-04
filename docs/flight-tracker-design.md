@@ -689,8 +689,11 @@ only app work: four of these need the OS to change.
    today's full-screen canvas covers the scope. With a theme the app drops
    the canvas: labels stay `ORB_UI_LABEL` widgets, and range rings become
    `ORB_UI_BOX` widgets with `ORB_RADIUS_CIRCLE`, a border and no fill.
-   How the stage's direct compositor (L4) treats a widget above its rows
-   is not traced yet.
+   **Measured on Bronze (theme-pool-plan §4, P4):** the direct compositor
+   (L4) paints the theme's pixels into the panel mirror for every box it
+   redraws, whatever LVGL's stacking says, so the canvas must go, and the
+   card and header labels over the theme have to be checked against L4's
+   boxes when the tracker moves onto the stage.
 
 **The wedge.** It is the largest sprite the stage would turn every frame
 (~120 × 184 px at a 40° trail; a clock hand is long but thin), and the

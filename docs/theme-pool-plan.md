@@ -141,7 +141,7 @@ count, and shows frame `f` when `f` is in range (`f < 0` only asks).
 | **P1** | `CLK_ROW_MAX` 32; app-picked frames: schema, reader, stage, import, SDK | host suites green; mutants for the new refusals |
 | **P2** | the pool table and its compaction as pure C (`main/art/orb_pool.c`), every flash access through an io | `tools/host_pool_test.py` over a simulated NOR flash: 13 malformed tables refused by name; a cut at every step of a replacement (504), a removal (264) and an overlapping move (1,526), each with a second cut in the repair, losing no other theme except the one an overlapping move tore; 8 of 8 mutants caught — **built 2026-11-03** |
 | **P3** | store and delete through the pool; the one-slot carry | host suites; bench: two apps' themes stored, one removed, the other intact — **built and benched on Bronze 2026-11-04** (§4); two apps' themes at once waits on P5 |
-| **P4** | boot adoption of every entry, per-app geometry, the stage bound to the app on the glass | bench: the clock and flights each on their own theme, switching between them |
+| **P4** | boot adoption of every entry, per-app geometry, the stage bound to the app on the glass | bench: the clock and flights each on their own theme, switching between them — **built and benched on Bronze 2026-11-04** (§4) |
 | **P5** | per-app scan, verify, delete, router, status | host suites; the hub's lists still parse — **built and benched on Bronze 2026-11-04** (§4) |
 
 The JS baker (`baker@1`, gorb-os-2's lane) keeps its 24-row cap until it needs more: a
@@ -242,3 +242,34 @@ cap there is a refusal, so it cannot emit a theme this firmware rejects.
   glass let flights' entry go and moved Speedster down to 0, the clock's face untouched;
   its log said the base face would draw, which was the clock-era sentence, and now names
   which app's theme left.
+
+### P4 — each app wears its own theme (2026-11-04)
+
+- **Built.** One stage, bound to whichever theme-aware app is building or on the glass
+  (`stage_bind`). A bind releases what the stage built for the last app (its layer-table
+  rows through the broker, its widgets, the plate and the 434 KB delta canvas, its voices),
+  binds the new app's pool entry (`orb_theme_bind`: projected into the dial's tables, its
+  banks mapped in place of the old) and builds on the new app's page, beneath the app's own
+  widgets. The scheduler keeps one frame timer across rebuilds. The wasm host gives the
+  stage to any app with a pool entry, binds it on init, activate and resume, and gates every
+  stage import on the binding, so an app ticking in the background answers as the base face.
+  Boot still adopts the clock's entry first; each themed app's init binds its own, and the
+  app the router resumes binds last.
+- **Benched on Bronze, `v1.2.7+564bd27`.** With the clock alone themed, boot is unchanged
+  (`stage bound to clock`, 11 layers). With the bench flights theme stored: boot bound the
+  clock, then flights' init released it and bound "Pool Bench" (8 layers), and the router
+  resumed flights. Switching by `/api/v1/screen?to=` moved the theme with the glass every
+  time (`stage released flights`, `bound clock's theme "Speedster"`): **20 round trips**,
+  the layers always clock 11 / flights 0 or the reverse, no faults, no reboot; PSRAM flat
+  from cycle 5 to 20 on both sides (6,498,672 / 6,056,556 B), LVGL's pool flat, internal RAM
+  4 KB lower after the first cycles and flat after. `/api/v1/fb` grabs show Speedster drawn
+  right before and after a trip through flights. `wasm_slips` went 3 → 4 over the run: one
+  guest call overran its budget somewhere; not traced.
+- **Found on the glass: the direct compositor paints over the app's widgets.** On flights'
+  page a rectangle of the bench theme's art lay over the flights app's own canvas. L4
+  writes the theme's pixels into the panel mirror for the boxes it redraws, whatever
+  LVGL's stacking says, so an app's opaque canvas does not hide its theme there. The bench
+  theme is a clock face flights never poses, and flights still paints its v1 canvas, so
+  this is the item-5 rule, now measured: an app that wears a theme drops the canvas, and
+  its own widgets over the theme (the card, the header) need checking against L4's boxes.
+- **Cleanup**: the bench theme deleted (its entry left the pool); Bronze ends on Speedster.

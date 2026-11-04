@@ -96,6 +96,15 @@ enum {
  * moving row with frames and no frame time). The tracker's planes: 7 shapes x 7 bands. */
 #define CLK_PICK_MAX  64   /* theme_schema.CLK_PICK_MAX */
 
+/* theme-text-plan §2.1-2.2: a font is a TEXT row whose frames are its glyphs, in the
+ * charset's order (printable ASCII, then the arrows and the degree sign); a label is an
+ * AUX row of shape and source text, its fonts a nibble a tone in its `str`. */
+#define CLK_FONT_SLOTS    15   /* theme_schema.FONT_SLOTS */
+#define CLK_FONT_ASCII    95   /* len(theme_schema.FONT_ASCII): every font carries it */
+#define CLK_FONT_GLYPHS  100   /* len(theme_schema.FONT_CHARSET) */
+#define CLK_FONT_NONE    0xF   /* theme_schema.FONT_NONE: a tone that falls to tone 0 */
+#define CLK_LABEL_PAD_MAX 32   /* theme_schema.LABEL_PAD_MAX */
+
 /* The dial's section-wide geometry. D42 moved every hand, shadow and carriage into
  * clk_row_t (below); what stays here is the plate, the glass and the background's
  * animation, plus the tempo and carriage figures the reader DERIVES from the rows

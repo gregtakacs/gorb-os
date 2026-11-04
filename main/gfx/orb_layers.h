@@ -87,6 +87,11 @@ typedef struct orb_layer_desc {
     uint8_t     pad2;
     int16_t     drum_r;      /* the drum's radius, px                          */
     int16_t     drum_phase;  /* the strip row under the window's centre, px    */
+    /* theme-text-plan §2.3: a theme row whose pixels the OS composes (a label), not
+     * the bundle's. The art's offset indexes this plane instead of the theme base;
+     * the stage owns it, so the table never frees it. NULL for every other row. An
+     * OS-side field: no app builds a descriptor (the stage is the one caller). */
+    const uint8_t *plane;
 } orb_layer_desc_t;
 
 /* Rows per app. Sixteen, since Migration 2 commit 3. Eight was "a hand, a ring,
@@ -97,8 +102,12 @@ typedef struct orb_layer_desc {
  * is a bake the table holds whole. Sixteen covers the shipped dial with room
  * for a third-party plate, ring, card and status line too. The table is PSRAM
  * heap, allocated on the first add this app actually claims, so the raised
- * ceiling costs nothing on a row that never bakes and never adds. */
-#define ORB_LAYER_MAX 16
+ * ceiling costs nothing on a row that never bakes and never adds.
+ * Thirty-two since theme-text-plan T3 (2026-11-04): the tracker's arm, 15 plane
+ * rows, two marker rings and four labels are 22, and a theme's moving rows cap at
+ * CLK_ROW_MAX (32) already. The cost is the commit's job array (orb_sched.c), one
+ * gfx_paint_ctx_t per row of internal .bss. */
+#define ORB_LAYER_MAX 32
 
 /* The job-array ceiling a commit pass sizes itself to. `orb_layers_jobs()` emits
  * at most one job per row (a row is skipped or emitted, never expanded), and the

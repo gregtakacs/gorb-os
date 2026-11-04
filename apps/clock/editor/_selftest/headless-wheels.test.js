@@ -432,7 +432,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   ok(/no cover/.test(threw), 'wheels with no cover are refused: every disc would show whole over the face', threw);
   const many = Array.from({ length: 16 }, (_, i) => Object.assign({}, wheels[1], { id: 'w' + i }));
   const past = B.bakeClock3({ name: 'x', plate: { rgba: pl(466, 466, 255), w: 466, h: 466 }, wheels: many, cover: { x: 90, y: 90, w: 80, h: 80, rgba: pl(80, 80, 200) } }).meter;
-  ok(past.layers === 17 && past.layerCap === 16 && bk.meter.layers === 3, 'the meter counts the layers the stage seats (17 past its 16, where the dial falls back the slow way)', JSON.stringify([past.layers, bk.meter.layers]));
+  ok(past.layers === 17 && past.layerCap === 32 && bk.meter.layers === 3, 'the meter counts the layers the stage seats (17 of its 32, theme-text T3)', JSON.stringify([past.layers, past.layerCap, bk.meter.layers]));
 }
 // ---- the roll, as the dial's CLK_CAD_ROLL computes it (host_drive_test.py's vectors) -----------
 {

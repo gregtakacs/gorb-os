@@ -21,6 +21,7 @@ typedef struct {
     char     hex[8];        /* ICAO 24-bit id, "~" prefix kept (a TIS-B track) */
     char     flight[9];     /* callsign, trailing spaces trimmed; "" if absent */
     char     type[5];       /* ICAO type designator ("B738"); "" if absent     */
+    char     category[3];   /* ADS-B emitter category ("A3"); "" if absent      */
     double   lat, lon;
     int32_t  alt_ft;        /* barometric; 0 when on_ground                     */
     bool     on_ground;     /* alt_baro was the string "ground"                 */

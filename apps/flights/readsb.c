@@ -46,6 +46,8 @@ static void take_field(orb_readsb_t *r, const orb_json_tok_t *t)
         if (str) copy_str(a->flight, sizeof a->flight, t->str);
     } else if (!strcmp(k, "t")) {
         if (str) copy_str(a->type, sizeof a->type, t->str);
+    } else if (!strcmp(k, "category")) {
+        if (str) copy_str(a->category, sizeof a->category, t->str);
     } else if (!strcmp(k, "lat")) {
         if (num) { a->lat = v; r->have_lat = true; }
     } else if (!strcmp(k, "lon")) {

@@ -586,7 +586,8 @@ int main(void)
     /* 15 — Migration 2, Commit 3: the raised ceiling and the inert table. The
      * shipped clock's bake claims every composite element it names — nine on
      * the analog bake the board carries (measured at boot) — so the table must
-     * reach 16 and the hook must carry all of them in one commit. And the
+     * reach its ceiling (32 since theme-text-plan T3) and the hook must carry
+     * all of them in one commit. And the
      * build enters every row HIDDEN: Commit 4's tick pass wakes them from the
      * wall state, so hidden rows are the build instant, a suspend wipe's
      * aftermath, and every pose the gates refuse (an unposed hand, a comp with
@@ -604,10 +605,10 @@ int main(void)
     }
     ck("cap: the whole table is live", orb_layers_count(&K) == ORB_LAYER_MAX,
        orb_layers_count(&K));
-    ck("cap: the job ceiling is the table", ORB_LAYER_JOB_MAX == 16, ORB_LAYER_JOB_MAX);
+    ck("cap: the job ceiling is the table", ORB_LAYER_JOB_MAX == 32, ORB_LAYER_JOB_MAX);
     g_commit_calls = 0;
     int nk = hook_mirror(&K, THEME, CANVAS);
-    ck("cap: one commit carries all sixteen rows",
+    ck("cap: one commit carries every row",
        nk == ORB_LAYER_MAX && g_commit_calls == 1, nk);
     orb_layer_desc_t over = mk(ORB_ASSET_SPRITE, ORB_ASSET_OK, 0, 0, 8, 8);
     over.art.off = 0x30;
@@ -759,8 +760,8 @@ def lint(tmp, out):
             "that spends an app's PSRAM table — Commit 2's whole no-create rule")
     sc = open(P("gfx", "orb_sched.c"), encoding="utf-8").read()
     pin("static gfx_paint_ctx_t s_lay_jc[ORB_LAYER_JOB_MAX];" in sc,
-        "the commit hook's job array left file scope — at ORB_LAYER_JOB_MAX (16) "
-        "deep it is a kilobyte of the LVGL task's stack per flush, which is the "
+        "the commit hook's job array left file scope — at ORB_LAYER_JOB_MAX (32) "
+        "deep it is three kilobytes of the LVGL task's stack per flush, which is the "
         "one thing orb_stage.c's retired hook never spent")
     hm = re.search(r"void orb_sched_commit_layers\(const orb_app_t \*active\)\n"
                    r"\{(.*?)\n\}", sc, re.S)

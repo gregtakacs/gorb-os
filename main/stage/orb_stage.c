@@ -67,6 +67,7 @@
  */
 
 #include "orb_stage.h"
+#include "orb_label.h"   /* theme-text-plan §2.3: a label's pixels */
 #include "board_config.h"
 
 #include <stdio.h>
@@ -125,7 +126,11 @@ typedef struct {
     clk_sprite_t   pose;       /* the row's sprite moved by (ox, oy)              */
     bool           logged;     /* "no input" printed for this row                 */
     int16_t        frame;      /* the picked frame shown (theme-pool-plan §2.6)   */
+    uint8_t        opa;        /* the opacity shown (theme-text-plan T2)          */
     clk_sprite_t   fspr;       /* a picked row's sprite at that frame             */
+    uint8_t       *tplane;     /* a label's composed plane (theme-text-plan §2.3),
+                                * PSRAM: its panel with the app's string over it  */
+    uint32_t       tseq;       /* the string it shows: s_text->seq at compose     */
 } row_state_t;
 static row_state_t *s_row;
 #define ROW_HIDDEN INT32_MIN
@@ -135,6 +140,30 @@ static row_state_t *s_row;
 static int32_t s_g_ang[CLK_ROW_MAX];
 static int16_t s_g_ox[CLK_ROW_MAX], s_g_oy[CLK_ROW_MAX];
 static int16_t s_g_frame[CLK_ROW_MAX];   /* the frame the app picked (stage_frame) */
+static uint8_t s_g_opa[CLK_ROW_MAX];     /* the opacity the app gave (stage_opacity) */
+
+/* ---- theme-text-plan §2.3: fonts and labels --------------------------------------------
+ * A font is a TEXT row of glyph cells in the charset's order; a label is a text row whose
+ * plane the stage composes from its panel and the app's string. The fonts, each label's
+ * fonts and padding, and the app's pending strings live here, PSRAM, once: a label is
+ * read when its string changes, not every frame. */
+#define LABEL_TEXT_MAX 192
+/* A label's pixels start this far into its plane: a sprite at offset 0 reads as unset
+ * (gfx_sprite_drawable), the rule the layer table's own bakes keep with their 4-byte lead
+ * (ORB_LAYER_PLANE_MAX). */
+#define LABEL_PLANE_OFF 4u
+typedef struct {
+    orb_font_t font[CLK_FONT_SLOTS];     /* glyphs found on first use (orb_label.h) */
+    uint32_t frame0[CLK_FONT_SLOTS];     /* each font's first glyph, catalogue row  */
+    bool     present[CLK_FONT_SLOTS];
+    uint8_t  tone_font[CLK_ROW_MAX][4];  /* a label's fonts by tone; CLK_FONT_NONE  */
+    uint8_t  pad[CLK_ROW_MAX];
+    char     text[CLK_ROW_MAX][LABEL_TEXT_MAX];   /* the app's string, pending     */
+    uint8_t  tone[CLK_ROW_MAX];
+    volatile uint32_t seq[CLK_ROW_MAX];  /* bumped after each new string lands    */
+} text_state_t;
+static text_state_t *s_text;
+static const orb_bundle_sec_t *s_text_sec;   /* the section the fonts' rows index */
 static int32_t s_g_cval[CLK_COMP_MAX];
 static uint8_t s_g_clive[CLK_COMP_MAX];
 static time_t  s_now_t;
@@ -142,6 +171,7 @@ static double  s_now_frac, s_now_wall;
 static bool    s_base;            /* no resident theme: the stage draws nothing */
 static bool    s_opened;          /* built for s_lay_app (theme-pool-plan P4: one app at a time) */
 static lv_obj_t *s_plate_obj;     /* the plate widget, so a release can take it down */
+static uint32_t s_stage_objs;     /* how many of the page's children the stage built */
 
 /* CLK_BG_DIRECT_PUSH, the L3/L4 switch the block below and the scheduler's delta
  * push both key on, lives in orb_sched.h: one number, both TUs, so the push and
@@ -304,12 +334,12 @@ static bool row_aa(const clk_theme_t *t, const clk_row_t *r, const char **src)
  * re-composite could not carry it. The bake's motion words now say which
  * dials can, per layer. A layer that never rotates (the overlay) takes
  * nearest for free: LVGL skips the transform outright at angle 0. */
-static lv_obj_t *make_layer(const clk_sprite_t *spr, lv_image_dsc_t *dsc,
-                            bool aa)
+static lv_obj_t *make_layer_at(const clk_sprite_t *spr, lv_image_dsc_t *dsc,
+                               bool aa, const uint8_t *base)
 {
     if (!gfx_sprite_drawable(spr)) return NULL;
 
-    gfx_fill_sprite_dsc(dsc, spr, blob());
+    gfx_fill_sprite_dsc(dsc, spr, base);
 
     lv_obj_t *o = lv_image_create(s_scr);
     lv_obj_set_size(o, spr->w, spr->h);
@@ -321,6 +351,11 @@ static lv_obj_t *make_layer(const clk_sprite_t *spr, lv_image_dsc_t *dsc,
     lv_image_set_blend_mode(o, map_blend(spr->blend));
     lv_image_set_antialias(o, aa);
     return o;
+}
+
+static lv_obj_t *make_layer(const clk_sprite_t *spr, lv_image_dsc_t *dsc, bool aa)
+{
+    return make_layer_at(spr, dsc, aa, blob());
 }
 
 /* Ticks per hand beat in GIF mode: theme tickRate (beats/s) against the
@@ -1194,6 +1229,76 @@ static void row_mark_box(uint16_t i, int32_t ang_10, int16_t ox, int16_t oy, lv_
 
 #define ROW_REDRAW_EPS_10 2
 
+/* ---- theme-text-plan §2.3: composing a label ------------------------------------------ */
+
+/* The fonts and every label's own columns, read from the bound section. */
+static void text_scan(void)
+{
+    s_text_sec = NULL;
+    if (!s_text)
+        s_text = heap_caps_calloc(1, sizeof *s_text, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_text) return;
+    memset(s_text, 0, sizeof *s_text);
+    memset(s_text->tone_font, CLK_FONT_NONE, sizeof s_text->tone_font);
+    const orb_bundle_sec_t *sec = NULL;
+    uint32_t off = 0;
+    if (s_base || !orb_theme_live_sec(orb_theme_live_slug(), &sec, &off)) return;
+    const orb_theme_geo_t *g = orb_theme_geo();
+    for (uint32_t k = 0; k < sec->n_elem; k++) {
+        orb_bundle_elem_t e;
+        orb_bundle_elem_at(sec, k, &e);
+        if (e.cls == ORB_ASSET_TEXT && e.slot < CLK_FONT_SLOTS) {
+            orb_font_t *f = &s_text->font[e.slot];
+            f->w = e.w; f->h = e.h; f->n = e.n_frames;
+            f->space = (uint8_t)e.pivot_x; f->track = (uint8_t)e.pivot_y;
+            s_text->frame0[e.slot] = e.frame0;
+            s_text->present[e.slot] = true;
+        } else if (e.cls == ORB_ASSET_AUX && e.kind == CLK_SHAPE_TEXT) {
+            for (uint16_t i = 0; i < g->n_rows && i < CLK_ROW_MAX; i++)
+                if (g->rows[i].tag == e.slot) {
+                    for (int t = 0; t < 4; t++)
+                        s_text->tone_font[i][t] = (uint8_t)((e.str >> (4 * t)) & 0xFu);
+                    s_text->pad[i] = (uint8_t)e.radius;
+                    break;
+                }
+        }
+    }
+    s_text_sec = sec;
+    int nf = 0, nl = 0;
+    for (int k = 0; k < CLK_FONT_SLOTS; k++) nf += s_text->present[k];
+    for (int k = 0; k < CLK_ROW_MAX; k++) nl += s_text->tone_font[k][0] != CLK_FONT_NONE;
+    if (nf || nl) ESP_LOGI(TAG, "text: %d font%s, %d label%s", nf, nf == 1 ? "" : "s", nl, nl == 1 ? "" : "s");
+}
+
+/* Compose row i's label: its panel, then the app's string in its tone's font (tone 0's
+ * when the theme gives the tone none), aligned by the row's digit and end. */
+static void label_compose(uint16_t i)
+{
+    row_state_t *st = &s_row[i];
+    const clk_row_t *r = &orb_theme_geo()->rows[i];
+    const uint8_t *panel = blob() + r->spr.color_off;
+    if (!s_text || !s_text_sec) {
+        orb_label_compose(st->tplane + LABEL_PLANE_OFF, r->spr.w, r->spr.h, panel, NULL, NULL,
+                          0, 0, 0);
+        return;
+    }
+    char buf[LABEL_TEXT_MAX];
+    const uint32_t seq = s_text->seq[i];
+    memcpy(buf, s_text->text[i], sizeof buf);
+    buf[sizeof buf - 1] = 0;
+    st->tseq = seq;              /* a string that lands mid-copy bumps seq: next frame */
+    uint8_t fi = s_text->tone_font[i][s_text->tone[i] & 3u];
+    if (fi >= CLK_FONT_SLOTS || !s_text->present[fi]) fi = s_text->tone_font[i][0];
+    orb_font_t *f = fi < CLK_FONT_SLOTS && s_text->present[fi] ? &s_text->font[fi] : NULL;
+    if (f && !f->glyphs) {
+        orb_bundle_spr_t sp;
+        orb_bundle_spr_at(s_text_sec, s_text->frame0[fi], &sp);
+        f->glyphs = blob() + sp.off;
+    }
+    orb_label_compose(st->tplane + LABEL_PLANE_OFF, r->spr.w, r->spr.h, panel, f, buf,
+                      s_text->pad[i], r->digit, r->end);
+}
+
 /* The per-tick pass. Every row's own pose first, then the poses it rides (a parent's,
  * two links at most — the projection refused deeper), then each twin takes its row's,
  * then each row that moved marks the box it vacates and the one it takes, and its
@@ -1235,8 +1340,11 @@ static void rows_update(void)
         }
         /* A new picked frame redraws the row's box even where the pose stands still. */
         const bool fchg = row_picks(i) && s_g_frame[i] != st->frame;
-        if (!fchg && a == prev && ox[i] == st->ox && oy[i] == st->oy) continue;
-        if (!fchg && a != ROW_HIDDEN && prev != ROW_HIDDEN && ox[i] == st->ox && oy[i] == st->oy) {
+        /* So does a new opacity, and a label's new string: the same box, other pixels. */
+        const bool ochg = s_g_opa[i] != st->opa;
+        const bool tchg = st->tplane && s_text && s_text->seq[i] != st->tseq;
+        if (!fchg && !ochg && !tchg && a == prev && ox[i] == st->ox && oy[i] == st->oy) continue;
+        if (!fchg && !ochg && !tchg && a != ROW_HIDDEN && prev != ROW_HIDDEN && ox[i] == st->ox && oy[i] == st->oy) {
             int32_t d = a - prev;
             if (d > 1800) d -= 3600;
             if (d < -1800) d += 3600;
@@ -1285,6 +1393,18 @@ static void rows_update(void)
                 gfx_fill_sprite_dsc(&st->dsc, &st->fspr, blob());
                 lv_display_enable_invalidation(disp, false);
                 lv_image_set_src(st->obj, &st->dsc);
+                lv_display_enable_invalidation(disp, true);
+            }
+        }
+        if (tchg)                    /* in place: LVGL keeps no image cache here
+                                      * (CONFIG_LV_CACHE_DEF_SIZE 0), so the box the
+                                      * marks above cover redraws the new pixels */
+            label_compose(i);
+        if (ochg) {
+            st->opa = s_g_opa[i];
+            if (st->obj) {
+                lv_display_enable_invalidation(disp, false);
+                lv_obj_set_style_image_opa(st->obj, st->opa, LV_PART_MAIN);
                 lv_display_enable_invalidation(disp, true);
             }
         }
@@ -1584,6 +1704,11 @@ static void clock_layers_build(orb_app_t *self)
         orb_bundle_elem_at(sec, i, &e);
         if (e.cls == ORB_ASSET_PLATE && e.slot == 0u) continue;   /* the canvas */
         if (e.cls == ORB_ASSET_SOUND) continue;   /* D39: played by sound_policy, never drawn */
+        if (e.cls == ORB_ASSET_PREVIEW) continue; /* the picker's picture, never on the glass:
+                                                   * claimed, it cost a row of an app's 16 */
+        if (e.cls == ORB_ASSET_TEXT) continue;    /* a font: its glyphs reach the glass in
+                                                   * a label's plane, never where it stands
+                                                   * (theme-text-plan §2.1) */
         if (e.flags & CLK_EF_HIDDEN) { hidden++; continue; }
         pick_cls[n] = e.cls; pick_slot[n] = e.slot;
         pick_ord[n] = e.cls == ORB_ASSET_PLATE ? 0xFFFFu
@@ -1640,6 +1765,10 @@ static void clock_layers_build(orb_app_t *self)
         orb_layer_desc_t d;
         memset(&d, 0, sizeof d);
         clk_row_desc(&el, bank_off, role, &d);
+        if (gidx != 0xFFu && pick_cls[k] == ORB_ASSET_AUX && s_row && s_row[gidx].tplane) {
+            d.plane = s_row[gidx].tplane;      /* a label: the plane the stage composes */
+            d.art.off = LABEL_PLANE_OFF;
+        }
         const int h = svc->layer_add(self, &d);
         if (h < 0) { refused++; continue; }   /* full, malformed, or no heap: the
                                                * table counted it; the walk moves on */
@@ -1726,6 +1855,7 @@ static void clock_layers_refresh(void)
                     d.drum = 0;
                 }
                 d.ang_10 = drum_r ? 0 : (int16_t)st->ang_10;
+                d.alpha = st->opa;
                 if (row_picks(r->gidx) && st->frame > 0 && (uint32_t)st->frame < r->n_frames) {
                     /* A picked row, at the frame the app picked: the plane the widget
                      * shows (theme-pool-plan §2.6). */
@@ -1810,7 +1940,9 @@ esp_err_t stage_init(orb_app_t *self)
     s_lay_app = self;
     s_scr = orb_ui_screen(self->flash_slot);
     if (!s_scr) return ESP_ERR_NO_MEM;
-    for (int i = 0; i < CLK_ROW_MAX; i++) { s_g_ang[i] = ROW_HIDDEN; s_g_frame[i] = 0; }
+    for (int i = 0; i < CLK_ROW_MAX; i++) {
+        s_g_ang[i] = ROW_HIDDEN; s_g_frame[i] = 0; s_g_opa[i] = LV_OPA_COVER;
+    }
 
     /* §26: no resident art. The stage draws nothing and starts no frames; the page
      * stays the black one orb_ui built, and the app puts its own face on it (D31:
@@ -1868,12 +2000,15 @@ esp_err_t stage_init(orb_app_t *self)
                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_row)
         for (int i = 0; i < CLK_ROW_MAX; i++) {
+            if (s_row[i].tplane) heap_caps_free(s_row[i].tplane);
             memset(&s_row[i], 0, sizeof s_row[i]);
             s_row[i].ang_10 = ROW_HIDDEN;
+            s_row[i].opa = LV_OPA_COVER;
             if (row_picks((uint16_t)i)) pick_sprite((uint16_t)i, 0, &s_row[i].fspr);
         }
     else
         ESP_LOGE(TAG, "row state: PSRAM alloc failed — the dial draws its plate only");
+    text_scan();                     /* theme-text-plan §2.3: the fonts, the labels' columns */
 
     /* The stack, by one key (D42): every moving row and every complication window
      * in depth order, a twin under the rows at its depth, table order at a tie —
@@ -1918,8 +2053,30 @@ esp_err_t stage_init(orb_app_t *self)
                  * an unfiltered shadow; the carriage's frames never take the filter. */
                 const clk_row_t *ar = ((r->flags & CLK_FLAG_AUX_SHADOW) && i > 0)
                                     ? &geo->rows[i - 1] : r;
+                if (r->shape == CLK_SHAPE_TEXT) {
+                    /* theme-text-plan §2.3: a label draws its own plane, the panel
+                     * until the app gives it a string. */
+                    const size_t pb = (size_t)r->spr.w * r->spr.h * 3u;
+                    s_row[i].tplane = heap_caps_malloc(LABEL_PLANE_OFF + pb,
+                                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                    if (!s_row[i].tplane) {
+                        ESP_LOGE(TAG, "label at slot %u: no PSRAM for its plane", (unsigned)r->tag);
+                        break;
+                    }
+                    memcpy(s_row[i].tplane + LABEL_PLANE_OFF, blob() + r->spr.color_off, pb);
+                    s_row[i].tseq = 0;
+                    clk_sprite_t ts = r->spr;
+                    ts.color_off = LABEL_PLANE_OFF;
+                    s_row[i].obj = make_layer_at(&ts, &s_row[i].dsc, false, s_row[i].tplane);
+                } else
                 s_row[i].obj = make_layer(sp, &s_row[i].dsc,
                                           !car && row_aa(&clk_theme, ar, NULL));
+                /* Hidden until its first pose, as its state already says (ROW_HIDDEN):
+                 * a row the app hides before it ever shows would otherwise stand at P0
+                 * on the LVGL path (Bronze, 2026-11-04: a plane at the scope's centre
+                 * with no aircraft in range). L4 never drew it; its descriptor starts
+                 * hidden. */
+                if (s_row[i].obj) lv_obj_set_hidden(s_row[i].obj, true);
                 break;
             }
         }
@@ -2109,6 +2266,19 @@ void stage_run(bool on)
          * (Migration 2, commit 3.) */
         if (s_lay_app && orb_svc_layers_live(s_lay_app) == 0)
             clock_layers_build(s_lay_app);
+        /* An app with widgets of its own over its theme (a label, a ring) renders
+         * through LVGL: L4 writes the theme into the panel mirror over whatever LVGL
+         * drew in the boxes it redraws, and LVGL is what stacks the app's widgets on
+         * top. The app built them in its init, after the stage, so they are counted
+         * here, on the way onto the glass. */
+        const bool own = s_scr && lv_obj_get_child_count(s_scr) > s_stage_objs;
+        orb_sched_set_l4_veto(own);
+        static const orb_app_t *s_vetoed_logged;
+        if (own && s_vetoed_logged != s_lay_app) {
+            s_vetoed_logged = s_lay_app;
+            ESP_LOGI(TAG, "render path: %s has widgets over its theme — LVGL stacks them (l4 off)",
+                     s_lay_app && s_lay_app->slug ? s_lay_app->slug : "?");
+        }
         lv_obj_invalidate(s_scr);
         if (!orb_bg_gif_mode()) orb_bg_show_plate_frame(orb_bg_frame_now());
         compose_now();
@@ -2155,8 +2325,11 @@ static void stage_release(void)
         s_lay_sec = NULL;
         s_lay_bank_off = 0;
         orb_sched_set_layer_claim(0, 0);
-        for (int i = 0; s_row && i < CLK_ROW_MAX; i++)
+        for (int i = 0; s_row && i < CLK_ROW_MAX; i++) {
             if (s_row[i].obj) { lv_obj_delete(s_row[i].obj); s_row[i].obj = NULL; }
+            if (s_row[i].tplane) { heap_caps_free(s_row[i].tplane); s_row[i].tplane = NULL; }
+        }
+        s_text_sec = NULL;
         for (int i = 0; i < CLK_COMP_MAX; i++)
             for (int p = 0; p < CLK_COMP_SLOTS; p++)
                 if (s_comp_obj[i][p]) { lv_obj_delete(s_comp_obj[i][p]); s_comp_obj[i][p] = NULL; }
@@ -2191,9 +2364,9 @@ esp_err_t stage_bind(orb_app_t *app)
     const uint32_t before = page ? lv_obj_get_child_count(page) : 0;
     const esp_err_t e = stage_init(app);
     if (e != ESP_OK) return e;
+    s_stage_objs = page ? lv_obj_get_child_count(page) - before : 0;
     if (page && before) {
-        const uint32_t built = lv_obj_get_child_count(page) - before;
-        for (uint32_t i = 0; i < built; i++)
+        for (uint32_t i = 0; i < s_stage_objs; i++)
             lv_obj_move_to_index(lv_obj_get_child(page, (int32_t)(before + i)), (int32_t)i);
     }
     s_opened = true;
@@ -2276,6 +2449,29 @@ int stage_frame(int i, int32_t f)
     const int n = row_picks((uint16_t)i) ? (int)clk_theme.pick_n[i] : 1;
     if (f >= 0 && f < n && row_picks((uint16_t)i)) s_g_frame[i] = (int16_t)f;
     return n;
+}
+
+/* theme-text-plan §2.3: a label's string and tone, composed on the next frame. 1 for a
+ * label, 0 for any other row; the same string and tone again costs nothing. */
+int stage_text(int i, const char *str, int32_t tone)
+{
+    if (s_base || !s_text || !s_row || i < 0 || i >= CLK_ROW_MAX || !s_row[i].tplane) return 0;
+    if (tone < 0 || tone > 3) tone = 0;
+    if (!str) str = "";
+    if (s_text->tone[i] == (uint8_t)tone &&
+        strncmp(s_text->text[i], str, LABEL_TEXT_MAX - 1) == 0) return 1;
+    snprintf(s_text->text[i], LABEL_TEXT_MAX, "%s", str);
+    s_text->tone[i] = (uint8_t)tone;
+    __sync_synchronize();        /* the string lands before the frame sees its number */
+    s_text->seq[i]++;
+    return 1;
+}
+
+/* theme-text-plan T2: a row's opacity over its art, 0..255, from the next frame on. */
+void stage_opacity(int i, int32_t opa)
+{
+    if (i < 0 || i >= CLK_ROW_MAX) return;
+    s_g_opa[i] = (uint8_t)(opa < 0 ? 0 : opa > 255 ? 255 : opa);
 }
 
 void stage_comp_set(int i, int32_t value, bool live)

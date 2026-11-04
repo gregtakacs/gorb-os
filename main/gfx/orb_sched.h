@@ -127,6 +127,11 @@ void     orb_sched_set_layer_claim(int rows, int refused);
  * table that claimed every row. The one test every mark site asks before it
  * marks. */
 bool     orb_sched_l4_active(void);
+/* The stage's word that its app put widgets of its own on the page: L4 paints the theme
+ * straight into the panel mirror over whatever LVGL drew there, so a page with an app's
+ * labels and rings over its theme renders through LVGL, which stacks them (Bronze,
+ * 2026-11-04: the tracker's header, rings and footer painted over by its sweep). */
+void     orb_sched_set_l4_veto(bool veto);
 
 /* Which plate frame the bgAnim beat is on, and the act of putting one up.
  * Both no-op when the background is not live; frame 0 is the still. */

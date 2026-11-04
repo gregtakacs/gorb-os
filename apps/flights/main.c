@@ -16,6 +16,7 @@
  * A body is parsed a slice per pass, so a 70 KB answer never holds the dial.
  */
 #include "orb.h"
+#include "orb_stage.h"
 
 #include "model.h"
 #include "readsb.h"
@@ -29,9 +30,9 @@
 #define BOOST_MS 20000               /* background poll while something is worth watching */
 #define TICK_MS  1000                /* redraw while on the glass (the manifest floor) */
 
-#define SYM_UP    "\xEF\x81\xB7"
-#define SYM_DOWN  "\xEF\x81\xB8"
-#define SYM_RIGHT "\xEF\x81\x94"
+/* The arrows: LVGL's symbol font for the widgets, Unicode for a theme's fonts, which carry
+ * the arrows themselves (theme-text-plan §2.1). Picked at init. */
+static const char *SYM_UP = "\xEF\x81\xB7", *SYM_DOWN = "\xEF\x81\xB8", *SYM_RIGHT = "\xEF\x81\x94";
 
 static const uint16_t RANGES_NM[] = { 10, 20, 40, 80 };
 static const uint32_t BG_MS[]     = { 0, 60000, 120000, 300000 };
@@ -448,6 +449,79 @@ static void merge(void)
 static int32_t s_cv, s_head, s_foot, s_card;
 static float   s_ring_cos[48], s_ring_sin[48];
 
+/* flight-tracker-design §11, theme-pool-plan P4: a theme of this app's in the pool puts the
+ * scope on the stage. Its rows (apps/flights/art/bake_theme.py): slot 0 the arm, slots 1..15
+ * the plane pool, each naming one bank of 7 shapes x 7 bands, and the selection and emergency
+ * rings at SEL_SLOT and EM_SLOT. The range rings and home dot are the plate's
+ * (theme-text-plan §0). With no theme, the canvas. */
+#define SWEEP_MS    4000             /* one turn of the arm */
+#define PLANE_SLOTS 15
+#define STALE_OPA   128              /* a contact past its fresh window, as dim() halves it */
+/* The theme's labels (theme-text-plan §2.2), by slot: the header, the footer, the info card
+ * and the range figure. With all four, the app makes no widget and the stage draws every
+ * pixel; without them (an older bake), the widgets. */
+enum { LAB_HEAD, LAB_FOOT, LAB_CARD, LAB_RNG, LAB_N };
+#define LAB_SLOT0   20
+#define SEL_SLOT    16
+#define EM_SLOT     17
+static orb_stage_info_t s_stage;
+static bool    s_themed;
+static int32_t s_arm = -1;
+static int32_t s_planes[PLANE_SLOTS];
+static int     s_nplanes;
+static int32_t s_sel_row = -1, s_em_row = -1, s_rng;
+static int32_t s_lab[LAB_N] = { -1, -1, -1, -1 };
+static bool    s_labels;                 /* all four labels: the theme writes the words */
+
+/* Set a label's text and colour only when they change: with a theme the stage ticks the
+ * app every frame, and a re-set label is a repaint. */
+static void put_label(int32_t h, int slot, const char *s, uint32_t col);
+static void set_hidden(int32_t h, bool hide, bool *was);
+
+/* Say `s` on label `which`: the theme's label in `tone`, or the widget in `col`. */
+static void say(int which, const char *s, int32_t tone, uint32_t col)
+{
+    static const int32_t *const widget[LAB_N] = { &s_head, &s_foot, &s_card, &s_rng };
+    if (s_labels) {
+        orb_stage_text(s_lab[which], s, tone);
+        orb_stage_pose(s_lab[which], 0, 0, 0);
+    } else {
+        put_label(*widget[which], which, s, col);
+    }
+}
+
+/* Show or hide label `which`. */
+static void show(int which, bool on, bool *was)
+{
+    static const int32_t *const widget[LAB_N] = { &s_head, &s_foot, &s_card, &s_rng };
+    if (s_labels) orb_stage_pose(s_lab[which], on ? 0 : ORB_STAGE_HIDDEN, 0, 0);
+    else set_hidden(*widget[which], !on, was);
+}
+
+static void put_label(int32_t h, int slot, const char *s, uint32_t col)
+{
+    static char     last[4][192];
+    static uint32_t lastc[4] = { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };
+    if (strcmp(last[slot], s) != 0) {
+        snprintf(last[slot], sizeof last[slot], "%s", s);
+        orb_ui_text(h, s);
+    }
+    if (lastc[slot] != col) { lastc[slot] = col; orb_ui_set(h, ORB_P_TEXT_COLOR, (int32_t)col); }
+}
+
+/* Put a marker row on a contact, or hide it. */
+static void marker(int32_t row, bool on, int x, int y)
+{
+    if (row >= 0) orb_stage_pose(row, on ? 0 : ORB_STAGE_HIDDEN, x - CX, y - CY);
+}
+
+static void set_hidden(int32_t h, bool hide, bool *was)
+{
+    if (*was == hide) return;
+    *was = hide;
+    orb_ui_set(h, ORB_P_HIDDEN, hide);
+}
+
 static uint32_t dim(uint32_t rgb) { return (rgb >> 1) & 0x7F7F7F; }
 
 static void ring_at(int cx, int cy, int r, uint32_t c)
@@ -471,6 +545,49 @@ static uint32_t alt_rgb(const orb_ac_t *a)
 static bool emergency(const orb_ac_t *a)
 {
     return a->squawk == 7500 || a->squawk == 7600 || a->squawk == 7700;
+}
+
+/* The bank's band index, in alt_rgb's order (make_art.BANDS). */
+static int band_of(const orb_ac_t *a)
+{
+    if (a->on_ground)       return 0;
+    if (!a->has_alt)        return 1;
+    if (a->alt_ft < 3000)   return 2;
+    if (a->alt_ft < 10000)  return 3;
+    if (a->alt_ft < 20000)  return 4;
+    if (a->alt_ft < 30000)  return 5;
+    return 6;
+}
+
+/* Turboprops by ICAO type prefix: the emitter category calls them and business jets alike
+ * "small" (A2), so the type tells them apart. */
+static bool turboprop(const char *t)
+{
+    static const char *const P[] = { "AT4", "AT7", "DH8", "SF34", "E120", "B190", "C208", "PC12",
+                                     "BE20", "BE9", "JS3", "D328", "F50", "SW4", "C212", "DHC6",
+                                     "PC6", "AN2", "BE30", "C441" };
+    for (unsigned i = 0; t[0] && i < sizeof P / sizeof P[0]; i++)
+        if (!strncmp(t, P[i], strlen(P[i]))) return true;
+    return false;
+}
+
+/* The bank's shape index, in bake_theme.SHAPES order: light, turboprop, bizjet, airliner,
+ * heavy, helicopter, generic. From the ADS-B emitter category, the type where it must. */
+static int shape_of(const orb_ac_t *a)
+{
+    const char *c = a->category;
+    if (c[0] == 'A') switch (c[1]) {
+        case '1': return 0;
+        case '2': return turboprop(a->type) ? 1 : 2;
+        case '3': case '4': return 3;
+        case '5': return 4;
+        case '6': return 2;
+        case '7': return 5;
+        default:  break;
+    }
+    if (c[0] == 'B' && (c[1] == '1' || c[1] == '4')) return 0;   /* glider, ultralight */
+    if (!c[0] && turboprop(a->type)) return 1;
+    return 6;
 }
 
 static void draw_frame(void)
@@ -504,6 +621,42 @@ static void draw_frame(void)
     orb_cv_flush(s_cv);
 }
 
+/* The themed frame: the arm turned, every drawn contact on its row — the frame its shape
+ * and band pick, turned to its track, moved to where it is — and the rows past the drawn
+ * ones hidden. The selection and an emergency ride as rings over their contacts. */
+static void draw_stage(void)
+{
+    const float range_km = RANGES_NM[s_set.range] * 1.852f;
+    fm_project(&s_m, range_km, orb_uptime_us(), CX, CY, RING_R);
+    if (s_arm >= 0)
+        orb_stage_pose(s_arm, (int32_t)((now_ms() % SWEEP_MS) * 3600 / SWEEP_MS), 0, 0);
+    bool sel_on = false, em_on = false;
+    int k = 0;
+    for (int o = 0; o < s_m.norder && k < s_nplanes; o++) {
+        const fm_trk_t *t = &s_m.t[s_m.order[o]];
+        const int32_t row = s_planes[k++];
+        const int x = (int)lroundf(t->x), y = (int)lroundf(t->y);
+        orb_stage_frame(row, shape_of(&t->ac) * 7 + band_of(&t->ac));
+        const int32_t ang = isnan(t->ac.track) || t->ac.on_ground ? 0 : (int32_t)lroundf(t->ac.track * 10.0f);
+        orb_stage_pose(row, ang, x - CX, y - CY);
+        orb_stage_opacity(row, t->live ? 255 : STALE_OPA);
+        if (!sel_on && s_sel[0] && !strcmp(t->ac.hex, s_sel)) {
+            marker(s_sel_row, true, x, y);
+            sel_on = true;
+        }
+        if (!em_on && emergency(&t->ac)) {
+            marker(s_em_row, true, x, y);
+            em_on = true;
+        }
+    }
+    for (; k < s_nplanes; k++) orb_stage_pose(s_planes[k], ORB_STAGE_HIDDEN, 0, 0);
+    if (!sel_on) marker(s_sel_row, false, CX, CY);
+    if (!em_on) marker(s_em_row, false, CX, CY);
+    char rng[12];
+    snprintf(rng, sizeof rng, "%u nm", (unsigned)RANGES_NM[s_set.range]);
+    say(LAB_RNG, rng, ORB_TONE_NORMAL, 0x8A9A90);
+}
+
 static void draw_text(void)
 {
     char b[64];
@@ -519,8 +672,8 @@ static void draw_text(void)
         snprintf(b, sizeof b, "no aircraft in range");
     else
         snprintf(b, sizeof b, "%d aircraft", s_m.norder);
-    orb_ui_text(s_head, b);
-    orb_ui_set(s_head, ORB_P_TEXT_COLOR, s_mode == MODE_ROAM ? 0xD0D0D0 : 0x39FF14);
+    say(LAB_HEAD, b, s_mode == MODE_ROAM ? ORB_TONE_NORMAL : ORB_TONE_ACCENT,
+        s_mode == MODE_ROAM ? 0xD0D0D0 : 0x39FF14);
 
     const int64_t age = F.pub_ms ? now_ms() - F.pub_ms : -1;
     uint32_t col = 0x909090;
@@ -529,11 +682,11 @@ static void draw_text(void)
     else if (age < 20000)       snprintf(b, sizeof b, "live  %s", SRC_TXT[F.last_src & 1]);
     else if (age < 3 * VIS_MS)  snprintf(b, sizeof b, "%u s ago", (unsigned)(age / 1000));
     else { snprintf(b, sizeof b, "feed down %u min", (unsigned)(age / 60000 + 1)); col = 0xFFB23C; }
-    orb_ui_text(s_foot, b);
-    orb_ui_set(s_foot, ORB_P_TEXT_COLOR, (int32_t)col);
+    say(LAB_FOOT, b, col == 0xFFB23C ? ORB_TONE_WARNING : ORB_TONE_NORMAL, col);
 
+    static bool card_hidden = true;
     const int si = fm_find(&s_m, s_sel);
-    if (si < 0) { s_sel[0] = 0; orb_ui_set(s_card, ORB_P_HIDDEN, 1); return; }
+    if (si < 0) { s_sel[0] = 0; show(LAB_CARD, false, &card_hidden); return; }
     const fm_trk_t *t = &s_m.t[s_m.order[si]];
     char alt[16], vs[24], spd[24];
     if (t->ac.on_ground) snprintf(alt, sizeof alt, "on ground");
@@ -544,8 +697,6 @@ static void draw_text(void)
                   abs((int)t->ac.baro_rate));
     if (isnan(t->ac.gs)) snprintf(spd, sizeof spd, "--- kt");
     else snprintf(spd, sizeof spd, "%d kt", (int)t->ac.gs);
-    float brg = atan2f(t->x - CX, CY - t->y) * 180.0f / (float)M_PI;
-    if (brg < 0) brg += 360.0f;
     /* The route line, when adsbdb knows the callsign and the aircraft is plausibly
      * flying it (§6.6). Asking queues the lookup; the line appears on a later tick,
      * and a stale schedule never does. */
@@ -553,21 +704,22 @@ static void draw_text(void)
     fm_route_t rt;
     if (route_state(t->ac.flight, &rt) == ROUTE_FOUND &&
         fm_route_plausible(&rt, t->ac.lat, t->ac.lon, t->ac.on_ground ? NAN : t->ac.track, t->ac.baro_rate))
-        snprintf(route, sizeof route, "%s " SYM_RIGHT " %s\n", rt.from, rt.to);
+        snprintf(route, sizeof route, "%s %s %s\n", rt.from, SYM_RIGHT, rt.to);
+    /* Distance and bearing are not on the card: the scope already shows both (owner,
+     * flight-tracker-design §11.5). */
     char card[192];
-    snprintf(card, sizeof card, "%s  %s\n%s%s%s\n%s  trk %d\n%.1f nm  brg %d",
+    snprintf(card, sizeof card, "%s  %s\n%s%s%s\n%s  trk %d",
              t->ac.flight[0] ? t->ac.flight : t->ac.hex, t->ac.type[0] ? t->ac.type : "",
-             route, alt, vs, spd, isnan(t->ac.track) ? 0 : (int)t->ac.track,
-             (double)(t->d_km / 1.852f), (int)brg);
-    orb_ui_text(s_card, card);
-    orb_ui_set(s_card, ORB_P_HIDDEN, 0);
+             route, alt, vs, spd, isnan(t->ac.track) ? 0 : (int)t->ac.track);
+    say(LAB_CARD, card, ORB_TONE_NORMAL, 0xFFFFFF);
+    show(LAB_CARD, true, &card_hidden);
 }
 
 static void redraw(void)
 {
     if (!s_visible) return;
     if (F.seq != s_seq_seen) { s_seq_seen = F.seq; merge(); }
-    draw_frame();
+    if (s_themed) draw_stage(); else draw_frame();
     draw_text();
 }
 
@@ -582,19 +734,57 @@ static int32_t text(int32_t font, uint32_t rgb, int32_t align, int32_t y)
 
 /* ---- entry points ---------------------------------------------------------------- */
 
+/* The theme's rows, by slot: the arm at 0, the planes after it, then the marker rings. */
+static void stage_rows(void)
+{
+    s_nplanes = 0;
+    s_sel_row = s_em_row = -1;
+    for (int k = 0; k < LAB_N; k++) s_lab[k] = -1;
+    for (int32_t i = 0; i < (int32_t)s_stage.n_rows; i++) {
+        clk_row_t r;
+        if (orb_stage_row(i, &r) != ORB_OK) continue;
+        if (r.tag == 0) s_arm = i;
+        else if (r.tag == SEL_SLOT) s_sel_row = i;
+        else if (r.tag == EM_SLOT) s_em_row = i;
+        else if (r.shape == CLK_SHAPE_TEXT && r.tag >= LAB_SLOT0 && r.tag < LAB_SLOT0 + LAB_N)
+            s_lab[r.tag - LAB_SLOT0] = i;
+        else if (r.tag <= PLANE_SLOTS && s_nplanes < PLANE_SLOTS && orb_stage_frame(i, -1) >= 49)
+            s_planes[s_nplanes++] = i;
+    }
+}
+
 ORB_EXPORT("orb_init") int32_t orb_init(void)
 {
-    s_cv = orb_cv_create(0, W, H);
-    if (!s_cv) return ORB_ERR_NO_MEM;
-    s_head = text(ORB_FONT_16, 0xD0D0D0, ORB_AL_TOP_MID, 16);
-    s_foot = text(ORB_FONT_14, 0x909090, ORB_AL_BOTTOM_MID, -14);
-    s_card = text(ORB_FONT_16, 0xFFFFFF, ORB_AL_BOTTOM_MID, -40);
-    orb_ui_set(s_card, ORB_P_TEXT_ALIGN, 1);
-    orb_ui_set(s_card, ORB_P_BG, 0x101820);
-    orb_ui_set(s_card, ORB_P_BG_OPA, 204);
-    orb_ui_set(s_card, ORB_P_PAD, 8);
-    orb_ui_set(s_card, ORB_P_RADIUS, 10);
-    orb_ui_set(s_card, ORB_P_HIDDEN, 1);
+    s_themed = orb_stage_open(&s_stage) == ORB_OK && !s_stage.base;
+    if (s_themed) {
+        stage_rows();
+        s_labels = s_lab[LAB_HEAD] >= 0 && s_lab[LAB_FOOT] >= 0 && s_lab[LAB_CARD] >= 0 &&
+                   s_lab[LAB_RNG] >= 0;
+        if (s_labels) {
+            SYM_UP = "\xE2\x86\x91"; SYM_DOWN = "\xE2\x86\x93"; SYM_RIGHT = "\xE2\x86\x92";
+        } else {
+            s_rng = orb_ui_create(ORB_UI_LABEL, 0);
+            orb_ui_set(s_rng, ORB_P_FONT, ORB_FONT_14);
+            orb_ui_align(s_rng, ORB_AL_CENTER, 140, 140);
+        }
+        orb_logf("flight tracker on its theme: arm row %d, %d plane rows, markers %d/%d, %s",
+                 (int)s_arm, s_nplanes, (int)s_sel_row, (int)s_em_row,
+                 s_labels ? "the theme's labels" : "widgets for the words");
+    } else {
+        s_cv = orb_cv_create(0, W, H);
+        if (!s_cv) return ORB_ERR_NO_MEM;
+    }
+    if (!s_labels) {                 /* a theme's labels draw the words: no widget at all */
+        s_head = text(ORB_FONT_16, 0xD0D0D0, ORB_AL_TOP_MID, 16);
+        s_foot = text(ORB_FONT_14, 0x909090, ORB_AL_BOTTOM_MID, -14);
+        s_card = text(ORB_FONT_16, 0xFFFFFF, ORB_AL_BOTTOM_MID, -40);
+        orb_ui_set(s_card, ORB_P_TEXT_ALIGN, 1);
+        orb_ui_set(s_card, ORB_P_BG, 0x101820);
+        orb_ui_set(s_card, ORB_P_BG_OPA, 204);
+        orb_ui_set(s_card, ORB_P_PAD, 8);
+        orb_ui_set(s_card, ORB_P_RADIUS, 10);
+        orb_ui_set(s_card, ORB_P_HIDDEN, 1);
+    }
     for (int a = 0; a < 48; a++) {
         const double t = a * M_PI / 24.0;
         s_ring_cos[a] = (float)cos(t);
@@ -612,7 +802,7 @@ static void set_visible(bool v)
 {
     if (s_visible == v) return;
     s_visible = v;
-    orb_set_beat(v ? TICK_MS : 0);
+    orb_set_beat(v && !s_themed ? TICK_MS : 0);   /* a theme's stage ticks it every frame */
     /* On the glass: a fresh picture now, unless the one in hand (or the one being
      * fetched) is already fresh — a background poll that just ran is not repeated. */
     if (v) F.kick = s_req != REQ_POLL && (!F.pub_ms || now_ms() - F.pub_ms > 5000);

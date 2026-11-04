@@ -32,8 +32,8 @@ DRIVER = r"""
 #include "readsb.h"
 static void emit(const orb_ac_t *a, void *ctx) {
     (void)ctx;
-    printf("AC %s|%s|%s|%.5f|%.5f|%d|%d|%d|%.2f|%.1f|%.0f|%d|%.1f|%d\n", a->hex, a->flight,
-           a->type, a->lat, a->lon, a->alt_ft, a->on_ground, a->has_alt, a->track,
+    printf("AC %s|%s|%s|%s|%.5f|%.5f|%d|%d|%d|%.2f|%.1f|%.0f|%d|%.1f|%d\n", a->hex, a->flight,
+           a->type, a->category, a->lat, a->lon, a->alt_ft, a->on_ground, a->has_alt, a->track,
            a->gs, a->baro_rate, a->squawk, a->seen_pos, a->military);
 }
 int main(int argc, char **argv) {
@@ -84,8 +84,9 @@ def expect(path):
         sq = a.get("squawk")
         sq = int(sq) if isinstance(sq, str) and sq else (-1 if sq is None else int(sq))
         f = lambda v: float("nan") if v is None else float(v)
-        lines.append("AC %s|%s|%s|%.5f|%.5f|%d|%d|%d|%.2f|%.1f|%.0f|%d|%.1f|%d" % (
+        lines.append("AC %s|%s|%s|%s|%.5f|%.5f|%d|%d|%d|%.2f|%.1f|%.0f|%d|%.1f|%d" % (
             a["hex"][:7], (a.get("flight") or "")[:8].rstrip(" "), (a.get("t") or "")[:4],
+            (a.get("category") or "")[:2],
             a["lat"], a["lon"], 0 if ground or not has_alt else int(alt), int(ground),
             int(has_alt), f(trk), f(a.get("gs")), f(a.get("baro_rate")), sq,
             f(a.get("seen_pos", 0)), int(a.get("dbFlags", 0)) & 1))

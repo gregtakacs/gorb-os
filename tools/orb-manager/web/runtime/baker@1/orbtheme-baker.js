@@ -2045,7 +2045,7 @@
   // The pre-D32 width, the floor a derived row stride is refused below
   // (theme_schema.ELEMENT_WORDS_MIN; orb_bundle.c's ORB_BUNDLE_ELEM_WORDS_MIN).
   var ELEMENT_WORDS_MIN = 17;
-  var ELEM_MAX = 64, ELEM_ORDER_N = 64, ELEM_FRAMES_MAX = 360;
+  var ELEM_MAX = 64, ELEM_ORDER_N = 64, ELEM_FRAMES_MAX = 1024;   // theme_schema.ELEM_FRAMES_MAX
   var EF_ALPHA = 1, EF_LOOP = 2, EF_OS_ADV = 4, EF_HIDDEN = 8;
   // §37: a looping delta plate carries ONE sprite past its own frame window — the rect
   // that returns the finished canvas to the keyframe — and claims it with this bit. The
@@ -2083,7 +2083,55 @@
   var DIGITS = ['whole', 'units', 'tens', 'hundreds', 'thousands'];   // D43 P5d.3: a year's four
   var TURN_10 = 3600, PANEL_PX = 466;
   var CLK_ROW_MAX = 32;                    // theme_schema.CLK_ROW_MAX (theme-pool-plan: 24 until the plane pool)
-  var ORB_LAYER_MAX3 = 16;                 // main/gfx/orb_layers.h ORB_LAYER_MAX: drawn rows per app
+  var ORB_LAYER_MAX3 = 32;                 // main/gfx/orb_layers.h ORB_LAYER_MAX: drawn rows per app (theme-text T3)
+  // theme-text-plan §2.1-2.2 (theme_schema.FONT_* / check_label / check_fonts): a font is a
+  // TEXT row of glyph frames; a label an AUX text row naming its fonts a nibble a tone.
+  var FONT_ASCII_N = 95, FONT_GLYPHS = 100, FONT_SLOTS = 15, FONT_NONE = 0xF, LABEL_PAD_MAX = 32;
+  var TONES = ['normal', 'accent', 'warning', 'quiet'], ALIGNS = ['start', 'centre', 'end'];
+  var LABEL_STILL_COLUMNS = ['span', 'zero', 'vmin', 'vmax', 'dx', 'dy', 'cadence', 'cad_arg', 'ease'];
+  function labelFonts(str) { return [0, 1, 2, 3].map(function (k) { return ((str | 0) >> (4 * k)) & 0xF; }); }
+  function checkLabel(rec, where) {
+    var src = rec.src | 0;
+    if (SOURCES[src] !== 'text')
+      throw new Error(where + '.src: a text row draws the app\u2019s string, so it reads source text, not ' + q(SOURCES[src]));
+    LABEL_STILL_COLUMNS.forEach(function (c) {
+      if (Math.trunc(rec[c] | 0))
+        throw new Error(where + '.' + c + ': ' + rec[c] + ' on a text row \u2014 the app places a label, so it names no motion');
+    });
+    var dg = rec.digit | 0, en = rec.end | 0;
+    if (!(dg >= 0 && dg < ALIGNS.length) || !(en >= 0 && en < ALIGNS.length))
+      throw new Error(where + ': a text row aligns by digit ' + dg + ' and end ' + en + ', each one of ' + ALIGNS.join('/'));
+    if (labelFonts(rec.str)[0] === FONT_NONE)
+      throw new Error(where + '.str: a text row names no font for tone 0 (normal), which every other tone falls back to');
+    if ((rec.n_frames | 0) !== 1 || ((rec.flags | 0) & AUX_F_SHADOW3))
+      throw new Error(where + ': a text row\u2019s art is its one panel, with no frames and no shadow');
+    var pad = rec.radius | 0, w = rec.w | 0, h = rec.h | 0;
+    if (pad > LABEL_PAD_MAX || 2 * pad >= w || 2 * pad >= h)
+      throw new Error(where + '.radius: a padding of ' + pad + ' leaves no room in a ' + w + 'x' + h + ' panel (at most ' + LABEL_PAD_MAX + ')');
+  }
+  function checkFonts(recs) {
+    var fonts = {};
+    recs.forEach(function (r) {
+      if ((r['class'] | 0) !== CLASS_TEXT) return;
+      var slot = r.slot | 0, where = 'font' + slot, nf = r.n_frames | 0, w = r.w | 0;
+      if (slot >= FONT_SLOTS)
+        throw new Error(where + ': a stage seats ' + FONT_SLOTS + ' fonts (font0..font' + (FONT_SLOTS - 1) + ')');
+      if (nf < FONT_ASCII_N || nf > FONT_GLYPHS)
+        throw new Error(where + ': a font carries printable ASCII whole (' + FONT_ASCII_N + ' glyphs) and at most ' + FONT_GLYPHS + ', not ' + nf);
+      if ((r.x | 0) || (r.y | 0))
+        throw new Error(where + ': a font is never drawn where it stands, so it sits at 0,0');
+      if (!((r.pivot_x | 0) > 0 && (r.pivot_x | 0) <= w && (r.pivot_y | 0) >= 0 && (r.pivot_y | 0) <= w))
+        throw new Error(where + ': a space of ' + (r.pivot_x | 0) + ' px and tracking of ' + (r.pivot_y | 0) + ' px in a ' + w + ' px cell');
+      fonts[slot] = r;
+    });
+    recs.forEach(function (r) {
+      if ((r['class'] | 0) !== CLASS_AUX || (r.kind | 0) !== SHAPE_TEXT) return;
+      labelFonts(r.str).forEach(function (f, tone) {
+        if (f !== FONT_NONE && !fonts[f])
+          throw new Error('ptr' + (r.slot | 0) + ': tone ' + tone + ' (' + TONES[tone] + ') names font' + f + ', which this theme does not carry');
+      });
+    });
+  }
   // The composer's authoring motions (D34's names). The wire no longer carries them —
   // bakeClock3's v6Drive turns each into a row's two poses — but the composer still
   // speaks them until its rows are rebuilt (D42 E2).
@@ -2246,19 +2294,20 @@
       var end = Math.trunc(rec.end | 0), digit = Math.trunc(rec.digit | 0);
       if (!(kind >= 0 && kind < SHAPES.length))
         throw new Error(where + '.kind: ' + kind + ' is not a row’s shape (' + SHAPES.join('/') + ')');
-      if (kind === SHAPE_TEXT)
-        throw new Error(where + '.kind: a text row waits for the string table (D42 E4)');
-      if (Math.trunc(rec.str | 0))
-        throw new Error(where + '.str: ' + rec.str + ' — only a text row points into the string table');
+      if (kind === SHAPE_TEXT) checkLabel(rec, where);
+      else if (Math.trunc(rec.str | 0))
+        throw new Error(where + '.str: ' + rec.str + ' — only a text row names fonts');
       if (!(src >= 0 && src < SOURCES.length))
         throw new Error(where + '.src: ' + src + ' is not a value this dial can read (0..' +
           (SOURCES.length - 1) + ')');
-      if (SOURCES[src] === 'text' || SOURCES[src] === 'value')
+      if ((SOURCES[src] === 'text' || SOURCES[src] === 'value') && kind !== SHAPE_TEXT)
         throw new Error(where + '.src: ' + q(SOURCES[src]) + ' is no input of this dial, and a row ' +
           'that moves by it would never move');
       if (Math.trunc(rec.degrees | 0))
         throw new Error(where + '.degrees: ' + rec.degrees + ' — a row’s angle at rest is its `zero`');
-      if (SOURCES[src] === 'none') {
+      if (kind === SHAPE_TEXT) {
+        // checkLabel said it all
+      } else if (SOURCES[src] === 'none') {
         MOTION_COLUMNS.concat(['cadence', 'cad_arg', 'ease']).forEach(function (c) {
           if (Math.trunc(rec[c] | 0))
             throw new Error(where + '.' + c + ': ' + rec[c] + ' on a still row — a row with no source ' +
@@ -2498,6 +2547,7 @@
   }
   /* D42's whole-table rules (theme_schema.check_clock_rows, orb_clock3.c). */
   function checkClockRows(recs, scalars) {
+    checkFonts(recs);
     var aux = {}, byN = {}, i, r;
     for (i = 0; i < recs.length; i++) {
       byN[recs[i].n | 0] = recs[i];
@@ -4616,7 +4666,8 @@
     // device door applies, so an element a theme cannot name never reaches a card.
     FORMAT3: FORMAT3, GEOM_ABI3: GEOM_ABI3, SECT_MAX: SECT_MAX, IDX_WORDS: IDX_WORDS,
     GEOM_ABI6: GEOM_ABI6, DELTA_TOL: DELTA_TOL,   // the delta floor, so a suite asserts against the codec's number, not a literal
-    CADENCES: CADENCES, SHAPES: SHAPES, ENDS: ENDS, DIGITS: DIGITS, CLK_ROW_MAX: CLK_ROW_MAX, CLK_PICK_MAX: CLK_PICK_MAX, ROW_FRAMES_MAX: ROW_FRAMES_MAX,
+    CADENCES: CADENCES, SHAPES: SHAPES, ENDS: ENDS, DIGITS: DIGITS, CLK_ROW_MAX: CLK_ROW_MAX, CLK_PICK_MAX: CLK_PICK_MAX,
+    FONT_ASCII_N: FONT_ASCII_N, FONT_GLYPHS: FONT_GLYPHS, FONT_SLOTS: FONT_SLOTS, FONT_NONE: FONT_NONE, ROW_FRAMES_MAX: ROW_FRAMES_MAX,
     checkClockRows: checkClockRows, clockTempo: clockTempo, v6Drive: v6Drive,
     SCALARS_N: SCALARS_N, ELEMENT_WORDS: ELEMENT_WORDS, ELEMENT_FIELDS: ELEMENT_FIELDS,
     CLASS_NAMES: CLASS_NAMES, CLASS_APP_ADV: CLASS_APP_ADV, CLASS_NO_ANIM: CLASS_NO_ANIM,

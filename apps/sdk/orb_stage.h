@@ -73,6 +73,16 @@ ORB_IMPORT("stage_pose")     void    orb_stage_pose(int32_t i, int32_t ang_10, i
  *  image, 0 for no such row. f in range shows frame f from the next frame on; f < 0
  *  only asks. */
 ORB_IMPORT("stage_frame")    int32_t orb_stage_frame(int32_t i, int32_t f);
+/** A row's opacity over its art, 0 (gone) to 255 (as baked), from the next frame on. */
+ORB_IMPORT("stage_opacity")  void    orb_stage_opacity(int32_t i, int32_t opa);
+/** A label's string, in a tone (theme-text-plan §2.2): a row of shape CLK_SHAPE_TEXT draws
+ *  it in the theme's font for that tone, lines split at '\n', from the next frame on.
+ *  Answers 1 for a label, 0 for any other row. Pose the row to show it. */
+#define ORB_TONE_NORMAL  0
+#define ORB_TONE_ACCENT  1
+#define ORB_TONE_WARNING 2
+#define ORB_TONE_QUIET   3
+ORB_IMPORT("stage_text")     int32_t orb_stage_text(int32_t i, const char *s, int32_t tone);
 ORB_IMPORT("stage_comp_set") void    orb_stage_comp_set(int32_t i, int32_t value, int32_t live);
 
 /* Sound (cap "sound"): the app's own theme sounds, by index into its sound table,

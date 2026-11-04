@@ -261,9 +261,13 @@ static bool orb_sched_layer_claimed(void)
  * fully claimed table to weld over them; otherwise (a keyframe bank, a delta bank
  * whose canvas failed, a table that refused a row or claimed none) the classic
  * all-through-LVGL path stays in charge. */
+static bool s_l4_veto;
+
+void orb_sched_set_l4_veto(bool veto) { s_l4_veto = veto; }
+
 bool orb_sched_l4_active(void)
 {
-    return CLK_BG_DIRECT_PUSH && orb_sched_restore_src() != NULL
+    return CLK_BG_DIRECT_PUSH && !s_l4_veto && orb_sched_restore_src() != NULL
            && orb_sched_layer_claimed();
 }
 
@@ -838,7 +842,7 @@ void orb_sched_ink_px_add(uint32_t n)
 }
 
 /* The commit hook's job array. Static rather than per-call stack: with the
- * table's ceiling at ORB_LAYER_MAX (16) it is ~1 KB of the LVGL task's stack
+ * table's ceiling at ORB_LAYER_MAX (32) it is ~3 KB of the LVGL task's stack
  * per flush, and that stack is not ours to spend — the same reasoning
  * orb_stage.c's retired hook gave its own list. One caller (the flush hook
  * below), on one task (the LVGL one), exactly as that retired hook ran. */

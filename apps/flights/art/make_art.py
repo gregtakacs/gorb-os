@@ -685,6 +685,39 @@ def main():
                                       'size': [GLASS, GLASS], **look}
     write('art.json', json.dumps(manifest, indent=1))
     write('review.html', review(arm_markup, bg_markup))
+    art_pack(arm_markup, bg_markup)
+
+
+# ---- the editor's art (flight-tracker-design §12.2) ---------------------------------
+
+def art_pack(arm_markup, bg_markup):
+    """apps/flights/editor/flights-art.js: the art as data for the editor's preview and
+    bake. A plane is the inside of its 100 x 100 SVG with "{{B}}" where its band colour
+    goes (the review's var(--b)); a family whose colour-off planes are untinted metal
+    carries those as "plain". The wedge is the editor's own port of arm_wedge, so its
+    trail and colours can move; the other arms and the backgrounds ride whole."""
+    fams = {}
+    for fam, (title, band_on, _shapes, _, neutral, grads) in FAMILIES.items():
+        f = {'title': title, 'band': band_on, 'single': SINGLES[fam][0], 'neutral': neutral,
+             'pair': list(PAIRS[fam]), 'gradients': list(grads), 'shapes': {}, 'plain': {}}
+        for n in keys(fam):
+            p, fn = _pick(fam, n)
+            f['shapes'][n] = fn(p, '{{B}}', 'm-%s-%s' % (fam, n))
+            if neutral is None:
+                f['plain'][n] = fn(p, None, 'm-%s-%s' % (fam, n))
+        fams[fam] = f
+    arms = {}
+    for n, (svg, (px, py), (w, h)) in arm_markup.items():
+        arms[n] = {'title': ARMS[n][0], 'what': ARMS[n][1], 'svg': svg, 'pivot': [px, py], 'size': [w, h]}
+    bgs = {n: {'title': BACKGROUNDS[n][0], 'what': BACKGROUNDS[n][1], 'svg': svg, 'look': BACKGROUNDS[n][3]}
+           for n, svg in bg_markup.items()}
+    data = {'glass': GLASS, 'cx': CX, 'ring_r': RING_R, 'plane_px': PLANE_PX, 'bands': BANDS,
+            'gradients': gradient_defs(GRADIENTS), 'families': fams, 'arms': arms, 'backgrounds': bgs}
+    out = os.path.join(HERE, '..', 'editor', 'flights-art.js')
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, 'w', encoding='utf-8') as f:
+        f.write('/* flights-art.js: written by apps/flights/art/make_art.py; do not edit. */\n'
+                'window.FlightsArt = ' + json.dumps(data, separators=(',', ':')) + ';\n')
 
 
 # ---- review page ------------------------------------------------------------------

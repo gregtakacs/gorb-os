@@ -6094,6 +6094,8 @@ app and not to the hub or the firmware.
   the editor's same-stamp shelf gate and the "orb's app is older" page already compare one
   app's version with that app's version. `host_orbapp_install_test.py` recomputes each
   starter's version and serial from its own file.
+- *Superseded in part by §47 (2026-11-03): the stamp now carries the container's content
+  hash, so the HEAD refusal above is gone; one stamp still names one set of bytes.*
 
 
 ## 46 — The owed list, closed by ruling — 2026-11-03
@@ -6120,3 +6122,31 @@ Closed by ruling, not by evidence: no item below gained a bench result or a test
   Revisit if one becomes needed.
 - **§43.6's tick-loop nudges** and `composer-stack-plan.md` §5.5's light-dial contouring:
   inaudible and invisible as measured. Revisit on a report.
+
+## 47 — An app's stamp names its bytes: the content hash — 2026-11-03
+
+Owner ruling: app versions move once per push, not per commit, and an app carries a hash
+the way the firmware does (`v1.2.7+238c503`), so every build is unique.
+
+- **The stamp.** `orbsdk.container` writes `version.txt` plus `+` and the first 7 hex of
+  sha256 of the same container under the bare stamp (`clock v1.2.16+9ec5595`). It is a
+  content hash, not a git SHA: the container is committed in the commit it would have to
+  name. Same sources give the same bytes and the same stamp; any byte change gives a new
+  one. The serial still comes from `version.txt`, so install order is unchanged, and the
+  C reader, the writer and the hub already accepted a `+build` tail (S6's grammar).
+- **The HEAD gate is gone.** `make_factory_apps.py`'s refusal of changed bytes under an
+  unmoved stamp (§45) is now true by construction, so it and CI's `fetch-depth: 2` are
+  removed. The freshness gate (`--check`) stays.
+- **`+build` never orders (semver).** `orbnet.AppVersionCompare` and the Apps face's
+  `verCompare` strip it before ordering. One build equals itself; two builds of one
+  release are not equal and not ordered (`false` / `null`). That keeps the editor shelf
+  gate exact (an orb on another build reads its own region), and seed and restore never
+  replace one build with another. `AppSameRelease` / `sameRelease` name the pair, and
+  the Apps face offers **Update** for it ("the hub library has another build"), which
+  is how a rebuild between releases reaches a dial. The clock editor's newer-design
+  check reads past the hash.
+- **Suites.** `host_orbapp_install_test.py` recomputes each starter's hash by writing the
+  bare stamp back into the header (a mutant hashing the code alone fails both starters);
+  orbnet pins equal, prerelease-under-release, release-over-hash, two-builds-refuse and
+  `AppSameRelease`; `ui_test.go` pins Update for another build ahead of the ordering
+  refusals; `headless-design` orders hashed stamps by release.

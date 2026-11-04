@@ -1875,6 +1875,9 @@ its version carry what was built.
    shelf). The hub and firmware already compared app versions only app to app; the tool
    and its sentinel were the only coupling. All three apps start at v1.2.2, the last
    shared stamp, and move apart from here.
+   *Amended 2026-11-03 (app-platform-plan §47): the stamp carries the container's content
+   hash (`v1.2.16+9ec5595`), so one stamp names one set of bytes by construction; the
+   HEAD refusal is gone and `version.txt` moves once per push.*
 
 12. **Old designs stay editable (2026-11-02).** A breaking change to the clock's design
    document bumps its schema and ships one pure migration step to the next schema; steps are

@@ -124,11 +124,14 @@ bench install.
 
 Each app carries its own release in `version.txt`. The tree's root `version.txt`
 stamps the firmware only: an OS release leaves every app's stamp alone, and an app
-release needs no firmware build. One stamp names one set of bytes: if an app's container
-comes out different from the one committed at HEAD while its version did not move, the
-tool refuses and names the file to bump. The hub serves an app's editor from its shelf
-only to an orb running the same stamp, so this is what keeps the editor you open the
-one the orb runs.
+release needs no firmware build. One stamp names one set of bytes, by construction: the
+header's stamp is `version.txt` plus the container's own content hash
+(`v1.2.16+9ec5595`), the build tail the firmware fills with its git SHA. Any byte change
+is a new stamp, and a rebuild of unchanged sources is the same one. Move `version.txt`
+for a release (once per push), not for every commit. The `+hash` never orders: two
+builds of one release are neither older nor newer, so the hub serves an app's editor
+from its shelf only to an orb running that exact build, and the Apps face offers
+Update when the shelf holds another build of the orb's release.
 
 ## Install
 

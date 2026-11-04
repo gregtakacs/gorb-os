@@ -567,6 +567,31 @@ func TestAppVersionCompareRefusesSilenceBeforeItOrders(t *testing.T) {
 	if got, ok := AppVersionCompare("v1.2.0-rc.1", "v1.2.0"); !ok || got >= 0 {
 		t.Errorf("Compare(v1.2.0-rc.1, v1.2.0) = %d/%v, want negative", got, ok)
 	}
+	// A +build tail is the content hash and never orders (semver): the same build is equal,
+	// a prerelease still sits under its release whatever the builds, and two builds of one
+	// release refuse — so neither the editor gate nor a seed mistakes one for the other.
+	if got, ok := AppVersionCompare("v1.2.16+6a5c661", "v1.2.16+6a5c661"); !ok || got != 0 {
+		t.Errorf("Compare of one build with itself = %d/%v, want 0/true", got, ok)
+	}
+	if got, ok := AppVersionCompare("v1.2.0-rc.1+fff0000", "v1.2.0+0000000"); !ok || got >= 0 {
+		t.Errorf("Compare(v1.2.0-rc.1+fff0000, v1.2.0+0000000) = %d/%v, want negative", got, ok)
+	}
+	if got, ok := AppVersionCompare("v1.2.17+0000000", "v1.2.16+fffffff"); !ok || got <= 0 {
+		t.Errorf("Compare(v1.2.17+…, v1.2.16+…) = %d/%v, want positive: the release orders, not the hash", got, ok)
+	}
+	for _, pair := range [][2]string{{"v1.2.16+6a5c661", "v1.2.16+3f9a1c2"}, {"v1.2.16+6a5c661", "v1.2.16"}, {"v1.2.16", "v1.2.16+6a5c661"}} {
+		if got, ok := AppVersionCompare(pair[0], pair[1]); ok {
+			t.Errorf("Compare(%q,%q) = %d/ok; two builds of one release are neither equal nor ordered", pair[0], pair[1], got)
+		}
+		if !AppSameRelease(pair[0], pair[1]) {
+			t.Errorf("AppSameRelease(%q,%q) = false, want true", pair[0], pair[1])
+		}
+	}
+	for _, pair := range [][2]string{{"v1.2.16+6a5c661", "v1.2.16+6a5c661"}, {"v1.2.16+6a5c661", "v1.2.17+6a5c661"}, {"", "v1.2.16"}, {"v1.2.16-rc.1+a", "v1.2.16+a"}} {
+		if AppSameRelease(pair[0], pair[1]) {
+			t.Errorf("AppSameRelease(%q,%q) = true, want false", pair[0], pair[1])
+		}
+	}
 	for _, pair := range [][2]string{
 		{"", "v1.0.0"}, {"v1.0.0", ""}, {"", ""},
 		{"unstamped", "v1.0.0"}, {"v1.0", "v1.0.0"}, {"v1.0.0.1", "v1.0.0"},

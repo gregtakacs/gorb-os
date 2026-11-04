@@ -903,6 +903,18 @@ def seed_check():
     def want_of(slug):
         v = open(os.path.join(HERE, os.pardir, "apps", slug, "version.txt")).read().strip()
         return v, orbapp.serial_of_version(v)
+    # The header's stamp is version.txt plus the container's content hash (orbsdk,
+    # 2026-11-03): sha256 of the same container under the bare stamp, recomputed here by
+    # writing the bare stamp back into the header, so the tail is proven to name the bytes.
+    def content_stamp(blob, bare):
+        import hashlib
+        hdr = orbapp._words(blob[:orbapp.HDR_BYTES])
+        for i in range(orbapp.VERSION_BYTES // 4):
+            hdr[orbapp.W_VERSION + i] = 0
+        orbapp._putstr(hdr, orbapp.W_VERSION, bare, orbapp.VERSION_BYTES, "version")
+        hdr[orbapp.W_HDR_CRC] = orbapp._hdr_crc(hdr)
+        raw = b"".join(w.to_bytes(4, "little") for w in hdr) + blob[orbapp.HDR_BYTES:]
+        return bare + "+" + hashlib.sha256(raw).hexdigest()[:7]
     # §43: both are wasm apps (kind 2) carrying their own code; the clock names only
     # sound now that the theme picker is the OS's Themes page.
     want = [("clock", "Clock", 2, "sound"),   # sound: D39
@@ -930,7 +942,7 @@ def seed_check():
               and h["serial"] == want_serial and h["code_size"] > 0
               and h["wasm_mem_max"] > 0
               and h["art_size"] == 0
-              and h["version"] == want_version)
+              and h["version"] == content_stamp(blob, want_version))
         check("starter %s.orbapp is the %s row the ruling names" % (slug, title), ok,
               "slug=%r kind=%d caps=%s serial=%d version=%r" % (
                   h["slug"], h["behaviour_kind"], sorted(got_caps), h["serial"],

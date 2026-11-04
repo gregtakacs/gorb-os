@@ -29,6 +29,7 @@ freestanding; override it with ORB_CLANG. Builds are deterministic: no timestamp
 paths in the module, so unchanged sources rebuild byte-identical.
 """
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -289,16 +290,24 @@ def container(appdir, editor=b""):
              "(inside a gorb-os clone)" % m["slug"])
     code, _imp, mem = build(appdir)
     v = version(appdir)
-    with tempfile.TemporaryDirectory() as td:
-        # write_container files a container under its own slug and checks the stem
-        path = os.path.join(td, m["slug"] + ".orbapp")
-        orbapp.write_container(
-            path, m["slug"], m["title"], caps=caps_word(m),
-            settings=tuple(m["settings"]), behaviour_kind=KIND_WASM,
-            serial=orbapp.serial_of_version(v), period_ms=m["period_ms"],
-            baked_ms=BAKED_MS, editor=editor, version=v, code=code, wasm_mem_max=mem)
-        with open(path, "rb") as f:
-            return f.read()
+
+    def write(stamp):
+        with tempfile.TemporaryDirectory() as td:
+            # write_container files a container under its own slug and checks the stem
+            path = os.path.join(td, m["slug"] + ".orbapp")
+            orbapp.write_container(
+                path, m["slug"], m["title"], caps=caps_word(m),
+                settings=tuple(m["settings"]), behaviour_kind=KIND_WASM,
+                serial=orbapp.serial_of_version(v), period_ms=m["period_ms"],
+                baked_ms=BAKED_MS, editor=editor, version=stamp, code=code, wasm_mem_max=mem)
+            with open(path, "rb") as f:
+                return f.read()
+    # The stamp is version.txt plus the container's own content hash (v1.2.16+3f9a1c2),
+    # the build tail the firmware's +<sha> fills: every set of bytes names itself, so a
+    # rebuild between releases never wears another build's stamp, and version.txt moves
+    # only for a release. The hash is of the container under the bare stamp, since it
+    # cannot include itself; the serial stays version.txt's, so install order is unchanged.
+    return write(v + "+" + hashlib.sha256(write(v)).hexdigest()[:7])
 
 
 # ---- the orb ------------------------------------------------------------------------

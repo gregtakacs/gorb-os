@@ -22,8 +22,6 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 2          # make_factory_apps compares the shelf against HEAD
       # The shelf check is byte-for-byte, and a different clang emits a different module,
       # so CI builds with the clang the shelf was baked with (BUILDING.md: clang 21).
       - name: Toolchain (clang 21)

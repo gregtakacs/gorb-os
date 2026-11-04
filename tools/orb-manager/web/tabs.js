@@ -668,6 +668,10 @@ function renderAppsTab() {
 function updateGate(e) {
   if (!e.lib || !e.lib.version) return false;
   if (!e.card && !e.installed) return false;
+  // Another build of the same release (the +hash tail differs): neither is newer, but the
+  // shelf's bytes are not the dial's, and between releases that is how a rebuild reaches it.
+  const have = e.installed ? e.installed.version : e.card && e.card.version;
+  if (sameRelease(have, e.lib.version)) return true;
   if (e.card && e.card.version && verCompare(e.card.version, e.lib.version) >= 0) return false;
   if (e.installed && e.installed.version && verCompare(e.installed.version, e.lib.version) >= 0) return false;
   return true;
@@ -690,7 +694,11 @@ function appStateSentence(e) {
     ? " \u00b7 on the card" + (c.version ? " at " + c.version : "")
     : " \u00b7 the card refuses it: " + (c.why || "no reason given");
   if (f) t += " \u00b7 in the hub library at " + (f.version || "no stamp");
-  if (updateGate(e)) t += " \u00b7 update available (" + f.version + ")";
+  if (updateGate(e)) {
+    // an installed row's own line already names another build (libUpdateSuffix)
+    if (!sameRelease(a ? a.version : c && c.version, f.version)) t += " \u00b7 update available (" + f.version + ")";
+    else if (!a) t += " \u00b7 the hub library has another build (" + f.version + ")";
+  }
   return t;
 }
 
@@ -1030,19 +1038,28 @@ function libEntry(slug) {
 // here and by AppVersionOK, rather than being quietly accepted on one side. A prerelease
 // tail is OLDER than the release it leads to, which is the clause a raw string compare
 // gets backwards.
+// The +build tail is the container's content hash and never orders (semver; orbnet's
+// AppVersionCompare): one build is equal to itself, and two builds of one release answer
+// null — not equal, not ordered — which sameRelease names.
 function verCompare(a, b) {
   const parse = (s) => {
-    const m = /^v(\d+)\.(\d+)\.(\d+)(?:[-+](.*))?$/.exec(s || "");
+    const m = /^v(\d+)\.(\d+)\.(\d+)(?:-([^+]*))?(?:\+(.*))?$/.exec(s || "");
     if (!m) return null;
-    return { n: (+m[1]) * 10000 + (+m[2]) * 100 + (+m[3]), tail: m[4] || "" };
+    return { n: (+m[1]) * 10000 + (+m[2]) * 100 + (+m[3]), tail: m[4] || "", build: m[5] || "" };
   };
   const pa = parse(a), pb = parse(b);
   if (!pa || !pb) return null;
   if (pa.n !== pb.n) return pa.n - pb.n;
-  if (pa.tail === pb.tail) return 0;
+  if (pa.tail === pb.tail) return pa.build === pb.build ? 0 : null;
   if (pa.tail === "") return 1;
   if (pb.tail === "") return -1;
   return pa.tail < pb.tail ? -1 : 1;
+}
+
+// sameRelease: two stamps of one release in different builds (the +hash differs).
+function sameRelease(a, b) {
+  if (!a || !b || a === b || verCompare(a, a) !== 0 || verCompare(b, b) !== 0) return false;
+  return a.split("+")[0] === b.split("+")[0];
 }
 
 // libUpdateSuffix is the shelf's verdict on a dial row's version line. Note the
@@ -1053,6 +1070,7 @@ function verCompare(a, b) {
 function libUpdateSuffix(a) {
   const f = libEntry(a.slug);
   if (!f) return "";
+  if (sameRelease(a.version, f.version)) return " \u00b7 the hub library has another build (" + f.version + ")";
   const cmp = verCompare(a.version, f.version);
   if (cmp === null) return "";
   if (cmp < 0) return " \u00b7 update available (" + f.version + ")";

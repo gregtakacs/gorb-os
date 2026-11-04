@@ -469,7 +469,7 @@ func AppVersionOrdinal(s string) (uint32, bool) {
 }
 
 // AppVersionCompare orders two release stamps: -1 when a is older, 0 when the two name
-// the same release, +1 when a is newer, and false when either side is unstamped or outside
+// the same build, +1 when a is newer, and false when either side is unstamped or outside
 // the grammar. A false answer is NOT "equal" — an unstamped file is a file with no
 // opinion, and a caller that reads the refusal as agreement would ship an upgrade onto a
 // dial it cannot prove is behind.
@@ -478,6 +478,12 @@ func AppVersionOrdinal(s string) (uint32, bool) {
 // (AppVersionOrdinal's own comment), so v1.2.0-rc.1 and v1.2.0 share a number while
 // naming two different builds. Equality therefore takes the strings, and only the
 // strings, after the ordinals agree.
+//
+// The +build tail is the container's content hash (orbsdk, 2026-11-03) and, as semver
+// rules, never orders: v1.2.16+6a5c661 is neither older nor newer than v1.2.16+3f9a1c2.
+// Two builds of one release are therefore also false — not equal, so the hub never serves
+// one build's editor to an orb running the other, and not ordered, so no seed or restore
+// replaces one with the other on a guess. AppSameRelease answers that pair.
 func AppVersionCompare(a, b string) (int, bool) {
 	oa, oka := AppVersionOrdinal(a)
 	ob, okb := AppVersionOrdinal(b)
@@ -490,20 +496,25 @@ func AppVersionCompare(a, b string) (int, bool) {
 		}
 		return 1, true
 	}
-	// Same number, so the tail decides. Semver's rule, and the one a string compare gets
-	// backwards: a prerelease is OLDER than the release it leads to, because '-' sorts
-	// above end-of-string. Comparing the raw strings would call v1.2.0-rc.1 newer than
-	// v1.2.0 and offer an Upgrade that is a downgrade.
-	tail := func(s string) string {
-		if i := strings.IndexAny(s, "-+"); i >= 0 {
+	// Same number, so the prerelease tail decides. Semver's rule, and the one a string
+	// compare gets backwards: a prerelease is OLDER than the release it leads to, because
+	// '-' sorts above end-of-string. Comparing the raw strings would call v1.2.0-rc.1
+	// newer than v1.2.0 and offer an Upgrade that is a downgrade.
+	ra, rb := appRelease(a), appRelease(b)
+	if ra == rb {
+		if a == b {
+			return 0, true
+		}
+		return 0, false // one release, two builds: different, and unordered
+	}
+	pre := func(s string) string {
+		if i := strings.IndexByte(s, '-'); i >= 0 {
 			return s[i+1:]
 		}
 		return ""
 	}
-	ta, tb := tail(a), tail(b)
+	ta, tb := pre(ra), pre(rb)
 	switch {
-	case ta == tb:
-		return 0, true
 	case ta == "":
 		return 1, true // a is the release; b is a prerelease of it
 	case tb == "":
@@ -513,6 +524,24 @@ func AppVersionCompare(a, b string) (int, bool) {
 	default:
 		return 1, true
 	}
+}
+
+// AppSameRelease answers two stamps that name one release in different builds: the same
+// version and prerelease, a different +build tail (or one side without one). It is the
+// case AppVersionCompare refuses to order, named so a caller can offer to replace one
+// build with the other rather than read the refusal as silence.
+func AppSameRelease(a, b string) bool {
+	_, oka := AppVersionOrdinal(a)
+	_, okb := AppVersionOrdinal(b)
+	return oka && okb && a != b && appRelease(a) == appRelease(b)
+}
+
+// appRelease is a stamp without its +build tail.
+func appRelease(s string) string {
+	if i := strings.IndexByte(s, '+'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // appHdrCRC is orbapp._hdr_crc: crc32/IEEE over the header words with the checksum word

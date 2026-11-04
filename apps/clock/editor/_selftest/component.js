@@ -3603,7 +3603,7 @@ class Component extends DCLogic {
     if (o.schema >= 1 && o.schema < this.DESIGN_SCHEMA) { const m = this.migrateDesign(o); if (!m.doc) return m.why; o = m.doc; }
     if (!(o.schema >= 1) || o.schema > this.DESIGN_SCHEMA) return 'that design was made by ' + (o.app || 'clock') + ' ' + (o.appVersion || '?') + ' (design schema ' + o.schema + '); this editor (' + this.appVersion() + ') reads schema ' + this.DESIGN_SCHEMA + ' \u2014 update the app on this orb';
     // a newer clock may have added fields this editor would silently drop on the next save: refuse, naming the release
-    const ver = (v) => { const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(String(v || '')); return m ? [+m[1], +m[2], +m[3]] : null; };
+    const ver = (v) => { const m = /^v(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?$/.exec(String(v || '')); return m ? [+m[1], +m[2], +m[3]] : null; };   // the +build (content hash) never orders
     const theirs = ver(o.appVersion), mine = ver(this.appVersion());
     if (theirs && mine && (theirs[0] - mine[0] || theirs[1] - mine[1] || theirs[2] - mine[2]) > 0)
       return 'that design was made by ' + (o.app || 'clock') + ' ' + o.appVersion + ', newer than this editor (' + this.appVersion() + ') \u2014 update the app on this orb, then open it';

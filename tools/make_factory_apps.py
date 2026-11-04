@@ -21,9 +21,9 @@ timestamps beyond ``baked_ms`` — which is pinned to a constant so a rebuild of
 an unchanged spec re-emits identical bytes. Each app's header version and serial
 come from its own apps/<slug>/version.txt (owner 2026-11-02: apps are versioned apart
 from the OS), so the string an operator reads and the number the install ladder orders
-on are one fact; a bump dirties that app's committed container, which the freshness
-gate below then refuses to leave stale, and changed bytes under an unmoved stamp are
-refused outright.
+on are one fact; the header's stamp also carries the container's content hash, so a
+changed byte is a changed stamp, and the freshness gate below holds the committed
+containers to their sources.
 """
 import importlib.util
 import os
@@ -61,52 +61,20 @@ OUT_DIR = os.path.join(HERE, "..", "tools", "orb-manager", "apps")
 # reads the home location, so it declares net and location.
 
 # Each app carries its own release (owner, 2026-11-02): an app is atomic and independent
-# of the OS, so its stamp is apps/<slug>/version.txt, read here and nowhere typed twice.
+# of the OS, so its stamp is apps/<slug>/version.txt, read by orbsdk.container and nowhere typed twice.
 # The tree's own version.txt stamps the firmware image and nothing else; an app moves
 # when its own bytes do, and an OS release leaves every app's stamp where it was.
 #
-# One stamp names one set of bytes (D43 ruling 9, now per app). A container whose bytes
-# differ from the one committed at HEAD under the same stamp is refused, by name, until
-# that app's version.txt moves: the hub serves its shelf copy of an editor only to an orb
-# running the same stamp, so two different editors under one stamp would hand an author
-# the wrong one. Rebuilding unchanged sources re-emits identical bytes and passes.
+# One stamp names one set of bytes (D43 ruling 9, now per app). Since 2026-11-03 the SDK
+# makes that true by construction: the header's stamp is version.txt plus the container's
+# own content hash (orbsdk.container), so a changed byte is a changed stamp and the hub's
+# same-stamp shelf gate can never hand an author another build's editor. version.txt
+# moves once per release (a push), not once per commit. Rebuilding unchanged sources
+# re-emits identical bytes, hash included.
 #
 # The serial rides at major*10000 + minor*100 + patch so the numeric word the install
 # ladder orders on and the string an operator reads are one fact stated once; the
 # sentinel (host_orbapp_install_test.py) recomputes it from the same file.
-def app_version(slug):
-    """apps/<slug>/version.txt's stamp, verified against the one grammar the family uses."""
-    return orbsdk.version(os.path.join(APPS_DIR, slug))
-
-
-def committed(slug):
-    """The container committed at HEAD for slug, or None (no git, or not committed yet)."""
-    import subprocess
-    rel = "tools/orb-manager/apps/%s.orbapp" % slug
-    try:
-        r = subprocess.run(["git", "-C", os.path.join(HERE, os.pardir), "show", "HEAD:" + rel],
-                           capture_output=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return r.stdout if r.returncode == 0 else None
-
-
-def stale_stamps(files):
-    """Apps whose bytes moved since HEAD while their stamp did not: [(slug, version)]."""
-    out = []
-    for slug, blob in files.items():
-        old = committed(slug)
-        if old is None or old == blob:
-            continue
-        try:
-            same = orbapp.parse_header(old)["version"] == orbapp.parse_header(blob)["version"]
-        except ValueError:
-            same = False
-        if same:
-            out.append((slug, orbapp.parse_header(blob)["version"]))
-    return out
-
-
 def app_dirs():
     """slug -> manifest for every app in the tree. The directory name is the slug."""
     out = {}
@@ -160,12 +128,8 @@ def main():
                 f.write(blob)
         print("wrote unreleased %s to %s" % (", ".join(held), dest))
         return 0
-    stale = stale_stamps(files)
-    for slug, v in stale:
-        sys.stderr.write("%s.orbapp's bytes changed since HEAD but apps/%s/version.txt still says %s: "
-                         "bump it, so one stamp names one set of bytes\n" % (slug, slug, v))
     if "--check" in args:
-        rc = 1 if stale else 0
+        rc = 0
         for slug in held:
             if os.path.exists(os.path.join(OUT_DIR, slug + ".orbapp")):
                 sys.stderr.write("%s.orbapp is unreleased and must not ship on the shelf\n" % slug)
@@ -180,15 +144,13 @@ def main():
             print("seed containers fresh (%d containers: %s)"
                   % (len(files), ", ".join("%s %d B" % (k, len(v)) for k, v in files.items())))
         return rc
-    if stale:
-        return 1
     os.makedirs(OUT_DIR, exist_ok=True)
     for slug, blob in files.items():
         with open(os.path.join(OUT_DIR, slug + ".orbapp"), "wb") as f:
             f.write(blob)
     print("wrote %s: %s"
           % (os.path.relpath(OUT_DIR, os.path.join(HERE, os.pardir)),
-             ", ".join("%s %s %d B" % (k, app_version(k), len(v)) for k, v in files.items())))
+             ", ".join("%s %s %d B" % (k, orbapp.parse_header(v)["version"], len(v)) for k, v in files.items())))
     return 0
 
 

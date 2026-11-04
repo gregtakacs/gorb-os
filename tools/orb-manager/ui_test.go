@@ -1571,6 +1571,11 @@ func TestLibraryRowYieldsToWhatTheDialAlreadyRuns(t *testing.T) {
 		!strings.Contains(ug, "verCompare(e.installed.version, e.lib.version) >= 0") {
 		t.Error("updateGate does not refuse same-or-newer stamps; an unstamped or current pair would read as an update")
 	}
+	// Another build of the same release (the +hash differs) is how a rebuild between
+	// releases reaches the dial: Update is offered for it, before the ordering refusals.
+	if i, j := strings.Index(ug, "if (sameRelease(have, e.lib.version)) return true;"), strings.Index(ug, "verCompare(e.card.version"); i < 0 || i > j {
+		t.Error("updateGate does not offer another build of the same release ahead of the ordering refusals")
+	}
 	if !strings.Contains(ug, "if (!e.card && !e.installed) return false") {
 		t.Error("updateGate offers an Update for an app that is nowhere — that row's verb is Install")
 	}

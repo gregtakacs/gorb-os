@@ -63,5 +63,6 @@ void stage_now(time_t *t, double *frac, double *wall);
 void stage_pose(int i, int32_t ang_10, int32_t ox, int32_t oy);
 int  stage_frame(int i, int32_t f);
 void stage_opacity(int i, int32_t opa);
+int  stage_text(int i, const char *str, int32_t tone);
 void stage_comp_set(int i, int32_t value, bool live);
 int  stage_snd_play(int i, uint32_t flags, int64_t at_us, int64_t anchor_us);

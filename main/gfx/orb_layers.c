@@ -111,7 +111,7 @@ static bool desc_ok(const orb_layer_desc_t *d)
         if (!s_alloc) return false;               /* no heap wired: no bakes    */
         if (orb_asset_prim_bytes((uint32_t)d->art.w, (uint32_t)d->art.h)
             > ORB_LAYER_PLANE_MAX) return false;  /* over-cap box               */
-    } else if (d->art.off == 0) {
+    } else if (d->art.off == 0 && !d->plane) {
         return false;                             /* color_off 0 is the unset
                                                   * signature: a theme row with
                                                   * it would draw nothing and
@@ -208,8 +208,10 @@ int orb_layers_add(orb_layer_tab_t *t, const orb_layer_desc_t *d)
     t->row[idx]  = *d;
     t->spr[idx]  = spr;
     t->plane[idx] = plane;
-    t->base[idx] = (const uint8_t *)plane;        /* NULL for a theme row: the
-                                                  * commit's payload answers   */
+    t->base[idx] = plane ? (const uint8_t *)plane : d->plane;
+                                                  /* NULL for a theme row: the
+                                                  * commit's payload answers;
+                                                  * a composed row's own plane */
     t->used[idx] = 1;
     t->n_live++;
     if (++t->gen[idx] == 0) t->gen[idx] = 1;      /* a wrap must not revive a
@@ -247,7 +249,7 @@ bool orb_layers_set(orb_layer_tab_t *t, int h, const orb_layer_desc_t *d)
     t->row[idx]   = *d;
     t->spr[idx]   = spr;
     t->plane[idx] = plane;
-    t->base[idx]  = (const uint8_t *)plane;
+    t->base[idx]  = plane ? (const uint8_t *)plane : d->plane;
     return true;
 }
 

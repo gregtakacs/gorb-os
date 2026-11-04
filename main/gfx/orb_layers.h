@@ -87,6 +87,11 @@ typedef struct orb_layer_desc {
     uint8_t     pad2;
     int16_t     drum_r;      /* the drum's radius, px                          */
     int16_t     drum_phase;  /* the strip row under the window's centre, px    */
+    /* theme-text-plan §2.3: a theme row whose pixels the OS composes (a label), not
+     * the bundle's. The art's offset indexes this plane instead of the theme base;
+     * the stage owns it, so the table never frees it. NULL for every other row. An
+     * OS-side field: no app builds a descriptor (the stage is the one caller). */
+    const uint8_t *plane;
 } orb_layer_desc_t;
 
 /* Rows per app. Sixteen, since Migration 2 commit 3. Eight was "a hand, a ring,

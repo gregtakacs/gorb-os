@@ -39,6 +39,7 @@ idf_component_register(
         # gate-to-table path is honest.
         "gfx/orb_layers.c"
         "stage/orb_stage.c"
+        "stage/orb_label.c"
         "knob/knob.c"
         "menu/menu_view.c"
         # §43: the Themes page, an OS menu row (it was the clock app's options page).

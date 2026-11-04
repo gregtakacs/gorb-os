@@ -118,18 +118,20 @@
               </div>
             </sc-for>
           </div>
-          <h2 style="margin-top:18px">My designs</h2>
+          <h2 style="margin-top:18px">Library</h2>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
             <input type="text" value="{{ mineName }}" onChange="{{ onMineName }}" placeholder="{{ minePh }}" style="flex:1 1 180px;max-width:280px">
-            <button class="ui-primary" onClick="{{ saveMine }}" title="Keep this watch, as it stands now, under that name in this browser">Save current</button>
+            <button class="ui-primary" onClick="{{ saveMine }}" title="Keep this watch, as it stands now and with its art, in the hub's library under that name. Under a theme's name it is that theme's unsent changes until Send to orb bakes them in.">Save current</button>
             <label class="ui-ghost wc-sm" style="cursor:pointer" title="Open a theme (.orbtheme) or a design file (.orbdesign) in the editor">Open a file…<input type="file" accept=".orbtheme,.orbdesign" onChange="{{ openFile }}" style="display:none"></label>
           </div>
-          <sc-if value="{{ mineEmpty }}" hint-placeholder-val="{{ false }}"><div class="ui-mut" style="font-size:12px">Nothing saved yet. Your work also saves itself as you go and comes back when you reopen the editor; these are the versions you name, kept in this browser. To take one elsewhere, download its design file on the Render step.</div></sc-if>
+          <sc-if value="{{ mineEmpty }}" hint-placeholder-val="{{ false }}"><div class="ui-mut" style="font-size:12px">Nothing in the library yet. A watch you save here is kept on the hub as a draft, art included; Send to orb bakes it into a theme under the same name. Work you have not saved or sent is not kept across a reload. To take a theme elsewhere, download its .orbtheme on the Render step.</div></sc-if>
           <sc-for list="{{ mine }}" as="r" hint-placeholder-count="2">
             <div style="display:flex;gap:8px;align-items:center;padding:4px 0;border-top:1px solid var(--line)">
               <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">{{ r.name }}</b>
+              <span class="ui-mut" style="font-size:11px" title="{{ r.tagTip }}">{{ r.tag }}</span>
               <span class="ui-mut ui-mono" style="font-size:11px">{{ r.meta }}</span>
-              <button class="ui-ghost wc-sm" onClick="{{ r.load }}">Open</button>
+              <button class="ui-ghost wc-sm" onClick="{{ r.load }}" title="{{ r.loadTip }}">Open</button>
+              <sc-if value="{{ r.changed }}" hint-placeholder-val="{{ false }}"><button class="ui-ghost wc-sm" onClick="{{ r.discard }}" title="Drop the unsent changes and keep the theme as it was baked">Discard changes</button></sc-if>
               <button class="ui-ghost wc-sm" onClick="{{ r.del }}" title="{{ r.delTip }}">{{ r.delLabel }}</button>
             </div>
           </sc-for>
@@ -917,7 +919,7 @@ class Component extends DCLogic {
     const S = window.OrbTheme.screen, c = S.fromRuler(this.cal(), mm);
     if (c == null) { this.setState({ status: 'Type what the ruler really measures, in mm — between 5 and 300' }); return; }
     this.setCal(c);
-    this.setState({ status: 'Ruler matched at ' + (+mm) + ' mm · true size now draws the dial ' + (S.PANEL.inch * 25.4).toFixed(1) + ' mm across on this screen' });
+    this.setState({ status: 'Ruler matched at ' + (+mm) + ' mm · true size now draws the dial ' + S.PANEL_MM + ' mm across on this screen' });
   }
   // the bank card instrument: how wide the drawn outline really measures solves the factor
   solveCard(mm) {
@@ -925,7 +927,7 @@ class Component extends DCLogic {
     const S = window.OrbTheme.screen, c = S.fromCard(this.cal(), mm);
     if (c == null) { this.setState({ status: 'Type how wide the card outline really measures, in mm — between 20 and 400' }); return; }
     this.setCal(c);
-    this.setState({ status: 'Card matched at ' + (+mm) + ' mm · true size now draws the dial ' + (S.PANEL.inch * 25.4).toFixed(1) + ' mm across on this screen' });
+    this.setState({ status: 'Card matched at ' + (+mm) + ' mm · true size now draws the dial ' + S.PANEL_MM + ' mm across on this screen' });
   }
   viewK() { const s = this.state; return window.OrbTheme.viewK({ view: s.view, zoom: s.zoom, fitPx: s.fitPx, cal: this.cal() }); }
   setView(v) { this.setState((st) => ({ view: v, ...(v === 'zoom' && !(+st.zoom >= 1) ? { zoom: 2 } : {}) })); }
@@ -973,7 +975,7 @@ class Component extends DCLogic {
   }
   /* ------------------------------ the session (D43 P6, §7) --------------------------
    * The session is the OS's (theme@1/session, theme-editor-kit-plan K2): undo and redo with
-   * bursts merged, autosave, My designs, the design document's envelope, and opening. The
+   * bursts merged, the hub library (K10), the design document's envelope, and opening. The
    * clock says what a watch is (the state these keys hold: the per-dial designs, the
    * movement and case, the light, the hands, the sounds, the name), how to check one
    * restored from this browser, and what its design document holds. Every edit replaces the
@@ -994,12 +996,10 @@ class Component extends DCLogic {
         restore: (snap, text) => this.restoreSnap(snap, text),
         burstMs: () => this.BURST_MS,
         undoMax: () => this.UNDO_MAX,
-        compact: (snap) => this.compactSnap(snap),
-        adopt: (b) => this.adoptSession(b),
-        resumeHint: 'Reset everything starts that watch over; Ctrl+Z steps back.',
         schema: () => this.DESIGN_SCHEMA,
         migrate: () => this.DESIGN_MIGRATE,
         content: (withArt) => this.designContent(withArt),
+        bake: () => this.bakeBytes(),
         apply: (o, from) => this.applyDesignContent(o, from),
         download: (b, n) => this.download(b, n),
       });
@@ -1025,37 +1025,33 @@ class Component extends DCLogic {
   }
   undo() { this.session.undo(); }
   redo() { this.session.redo(); }
-  // what autosave keeps: the snapshot, less the uploaded sounds' bytes (art and sound bytes
-  // have their own store and travel in the design file and the theme; autosave keeps references)
-  compactSnap(snap) {
-    const sounds = {}; Object.keys(snap.sounds || {}).forEach((k) => { const d = snap.sounds[k]; sounds[k] = d ? Object.assign({}, d, { up: {} }) : d; });
-    return Object.assign({}, snap, { sounds });
-  }
-  saveSession() { this.session.save(); }
-  loadSession() { return this.session.load(); }
-  // a session from this browser, accepted when its dial still exists, with every design re-canonised
-  adoptSession(b) {
-    if (!b.dial || !WatchEngine.PRESETS[b.dial]) return null;
-    const designs = {}; Object.keys(b.designs || {}).forEach((k) => { if (WatchEngine.PRESETS[k] && b.designs[k]) designs[k] = WatchEngine.canonDesign(b.designs[k]); });
-    const snap = {}; this.SNAP_KEYS.forEach((k) => { if (b[k] !== undefined) snap[k] = b[k]; }); snap.designs = designs;
-    return snap;
-  }
-  /* My designs keep designDoc without the art's bytes: the images stay in this browser's
-   * asset store. To move one, download its design file. */
-  mineList() { return this.session.mineList(); }
-  async saveMine(name) {
+  /* The library (K10): the clock's entries on the hub, one per name. Save current files a
+   * draft with its art (the same document a theme carries); Send to orb bakes it into the
+   * theme of that name. The dial rides along so the list can name the watch unopened. */
+  library() { return this.session.library(); }
+  async saveDraft(name) {
     const nm = String(name || '').trim() || this.state.themeName || this.preset().name;
-    if (this.session.mineSave({ name: nm, doc: Object.assign(await this.designDoc(false), { themeName: nm }), dial: this.state.dial })) this.setState({ mineName: '' });
+    if (await this.session.saveDraft({ name: nm, doc: Object.assign(await this.designDoc(true), { themeName: nm }), dial: this.state.dial })) this.setState({ mineName: '' });
   }
-  delMine(nm) { this.session.mineDelete(nm); }
+  forgetEntry(nm, what) { return this.session.forgetEntry(nm, what); }
+  openEntry(nm) { return this.session.openEntry(nm); }
+  /* Rebake all's bake: the open design to .orbtheme bytes, through the same walk Send runs.
+   * The design was opened a moment ago, so its movement is still being built: wait for the
+   * loop to settle (the gate a Send press meets with the dial already running), up to
+   * REBAKE_SETTLE_MS, and let the bake's own refusal speak if it never does. */
+  REBAKE_SETTLE_MS = 120000;
+  async bakeBytes() {
+    this._bakedBytes = null;
+    for (const t0 = Date.now(); !this.settled3() && Date.now() - t0 < this.REBAKE_SETTLE_MS;) await new Promise((r) => setTimeout(r, 250));
+    await this.exportTheme3({ send: 'bytes' });
+    const b = this._bakedBytes; this._bakedBytes = null;
+    return b;
+  }
   /* ------------------------------ uploaded art ------------------------------------
-   * The bytes live in the engine registry; a design carries only REFERENCES to them, so
-   * autosave and My designs stay small, and the design file and the theme carry the art
-   * between browsers. localStorage can throw -- file://, private mode, quota -- so every
-   * touch is guarded, and the readout says whether art really persisted rather than
-   * claiming a save that never happened. */
-  ART_KEY = 'wc.assets';
-  artSaved = null;                                    // null = not attempted, else true/false
+   * The bytes live in the engine registry for this session only; the design carries
+   * REFERENCES to them, and a library draft and the theme carry the art itself.
+   * The browser keeps no copy (removed 2026-11-04): a reload before any of those loses the
+   * upload, by the owner's ruling. */
   /* Every asset this design points at, and what for: the manifest and the missing-art
    * warning are built from this one walk, so they cannot disagree about what is used. */
   artRefs(D) {
@@ -1066,9 +1062,8 @@ class Component extends DCLogic {
     (d.comps || []).forEach((c) => { if (c.icon === 'image' && c.img) out.push({ id: c.img, usedBy: c.type + ' #' + c.id, slot: 'comp:' + c.id }); });
     return out;
   }
-  /* One line, stating what is held, what is missing, and whether it persisted. Naming
-   * the count and the byte figure is the point: "saved" tells the author nothing about
-   * whether the next reload will still have the art. */
+  /* One line, stating what is held, what is missing, and that it lasts this session only.
+   * Naming the count and the byte figure is the point. */
   artNote(refs) {
     const E = window.WatchEngine, list = refs || this.artRefs();
     if (!list.length) return '';
@@ -1079,37 +1074,16 @@ class Component extends DCLogic {
       .map((id) => ({ id, usedBy: list.filter((r) => r.id === id).map((r) => r.usedBy).join(' + ') }));
     const kb = Math.round(E.assetBytes() / 1024);
     const held = ids.length - missing.length;
-    const base = held + '/' + ids.length + ' art ' + (ids.length === 1 ? 'asset' : 'assets') + ' held (' + kb + ' KB' + (this.artSaved === false ? ', this session only — storage is blocked' : this.artSaved ? ', saved in this browser' : '') + ')';
+    const base = held + '/' + ids.length + ' art ' + (ids.length === 1 ? 'asset' : 'assets') + ' held (' + kb + ' KB, this session only — save it to the library, or send or download the theme, to keep it)';
     if (!missing.length) return base;
-    return base + ' · MISSING ' + missing.map((m) => m.usedBy + ' (' + m.id + ')').join(', ') + ' — open the design file or the theme that carries them';
-  }
-  saveArt() {
-    const E = window.WatchEngine;
-    try {
-      window.localStorage.setItem(this.ART_KEY, JSON.stringify(E.assetDump(true)));
-      this.artSaved = true;
-      if (E.assetBytes() > E.ASSET_TOTAL_BYTES) this.setState({ status: 'Art store is ' + Math.round(E.assetBytes() / 1024) + ' KB — above the ' + (E.ASSET_TOTAL_BYTES / 1e6).toFixed(1) + ' MB comfort line for this browser' });
-    } catch (e) {
-      this.artSaved = false;                                    // quota, private mode, file://
-      this.setState({ status: 'Art will not survive a reload here: this browser refused to store it (' + (e && e.name ? e.name : 'storage error') + ')' });
-    }
-  }
-  loadArt() {
-    const E = window.WatchEngine;
-    try {
-      const raw = window.localStorage.getItem(this.ART_KEY);
-      if (!raw) { this.artSaved = false; return; }
-      const r = E.assetRestore(JSON.parse(raw)) || { added: 0, needBytes: 0 };
-      this.artSaved = true;
-      if (r.needBytes) this.setState({ status: r.needBytes + ' referenced art asset(s) had no bytes stored — re-upload them, or open the design file or theme that carries them' });
-    } catch (e) { this.artSaved = false; /* no storage: art is session-only, artNote says so */ }
+    return base + ' · MISSING ' + missing.map((m) => m.usedBy + ' (' + m.id + ')').join(', ') + ' — open the library entry or the theme that carries them';
   }
   /* An upload decodes off the main thread, so the render that asked for it is already
    * drawn without it. Drop the two caches that hold those pixels and let the normal
    * build path redraw: rebuilding the movement also re-prices the fps budget, whose
    * occlusion mask the new art changes. */
   artDirty() { this.faces = {}; this.base = null; this.gt = []; this.buildMovement(); this.forceUpdate(); }
-  /* The one upload path for every slot: gate the file, register it, persist it, and
+  /* The one upload path for every slot: gate the file, register it, and
    * write the reference into the design. The status line carries the measured reason
    * when the engine refuses it. */
   pickArt(file, slot, apply) {
@@ -1117,9 +1091,8 @@ class Component extends DCLogic {
     if (!file) return;
     E.assetFromFile(file).then((a) => {
       if (!a || a.error) { this.setState({ status: a && a.error ? a.error : 'That file was not usable' }); return; }
-      this.saveArt();
       apply(a.id);
-      this.setState({ status: a.name + ' → ' + slot + ' (' + a.kind + ', ' + (a.dataUrl.length / 1024).toFixed(0) + ' KB) · ' + (this.artSaved ? 'saved' : 'session only') });
+      this.setState({ status: a.name + ' → ' + slot + ' (' + a.kind + ', ' + (a.dataUrl.length / 1024).toFixed(0) + ' KB) · this session only until exported' });
     });
   }
   resetTab(tab) {
@@ -1323,12 +1296,13 @@ class Component extends DCLogic {
     this._vis = () => { if (document.hidden && this.rendering) this.setState({ status: 'Movement render paused: this window is hidden — bring it back and it continues' }); };
     document.addEventListener('visibilitychange', this._vis);
     while (!window.WatchEngine || !window.DialRenderer || !window.DialRenderer._) await new Promise((r) => setTimeout(r, 50));
-    this.loadArt();                                       // needs the engine's registry, so after the wait
+    // the art store this browser kept before 2026-11-04: dropped, so its megabytes stop eating the autosave's room
+    try { window.localStorage.removeItem('wc.assets'); } catch (e) { /* no storage: nothing to drop */ }
     const fams = ['700 31px "Cormorant Garamond"', 'italic 600 30px "Cormorant Garamond"', '600 40px "IBM Plex Sans"', '500 21px "IBM Plex Sans"', 'italic 600 30px "IBM Plex Sans"', '700 31px "Jost"', '500 21px "Jost"', 'italic 600 30px "Jost"', '700 31px "Barlow Condensed"', '500 21px "Barlow Condensed"', 'italic 600 30px "Barlow Condensed"', '700 31px "Bodoni Moda"', '500 21px "Bodoni Moda"', 'italic 600 30px "Bodoni Moda"'];
     try { await Promise.race([Promise.all(fams.map((f) => document.fonts.load(f))), new Promise((r) => setTimeout(r, 4000))]); } catch (e) {}
     this.ready = true;
-    this.loadSession();
-    await this.openThemeParam();   // D43 P7: the hub's Edit door names a theme; its design wins over the autosave
+    await this.session.boot();     // K9/K10: the library off the hub, whether this editor is newer than the orb's app, ?entry= and ?rebake=1
+    await this.openThemeParam();   // D43 P7: the hub's Edit door names a theme, and its design is what opens
     // Under a hub, learn the loaded orb once so the Send note names it before the
     // first press. Guarded and swallowed: off-hub there is no hub to ask, and a
     // headless run has no fetch — either way the button's press-time read still works.
@@ -2348,7 +2322,7 @@ class Component extends DCLogic {
     const out = [];
     for (const id of Object.keys(by)) {
       const a = E.assetGet(id);
-      if (!a) { out.push({ id, usedBy: by[id], missing: true, note: 'no bytes in this browser; open the design file or theme that carries them' }); continue; }
+      if (!a) { out.push({ id, usedBy: by[id], missing: true, note: 'no bytes in this browser; open the library entry or theme that carries them' }); continue; }
       // an asset can fill both backdrop slots at once; price it in each and report the
       // worst verdict, so sharing one image between plate and dial cannot hide an upscale
       const cands = [];
@@ -3074,6 +3048,7 @@ class Component extends DCLogic {
       const meter = 'art ' + r.meter.artSize + '/' + r.meter.artCap + ' B (' + r.meter.artPct + '%)' + (designNote ? ' \u00b7 ' + designNote : '') +
         (r.meter.layers > r.meter.layerCap ? ' · the dial draws ' + r.meter.layers + ' layers and the orb seats ' + r.meter.layerCap + ' at full speed: past them it draws the whole dial the slow way \u2014 make a wheel snap, or drop a part or a hand\u2019s shadow' : '') +
         (this._wheelFrozen ? ' · the wheels\u2019 cover lies over ' + this._wheelFrozen + ' px of moving movement, which it holds still: move the wheel or its cutout off the opening' : '');
+      if (send === 'bytes') { this._bakedBytes = bytes; this.setState({ status: 'Baked "' + nm + '" \u2014 ' + pol.sentence + ' \u00b7 ' + meter }); return; }
       if (send) { this._replaceArmed = null; await this.postTheme3ToOrb(bytes, nm, stem, pol, meter); return; }
       this.download(new Blob([bytes], { type: 'application/octet-stream' }), stem + '.orbtheme');
       this.setState({ status: 'Downloaded ' + stem + '.orbtheme — ' + pol.sentence + ' · ' + meter +
@@ -3408,11 +3383,6 @@ class Component extends DCLogic {
       glassStyle: s.glassStyle, train: s.train, caseOpen: s.caseOpen, themeName: s.themeName,
       sounds: withArt ? snd : Object.assign({}, snd, { up: {} }), art: withArt, assets };
   }
-  // the design file: exactly the design a baked theme carries, on its own
-  async exportDesign() {
-    if (!this.ready) return;
-    await this.session.exportDoc((this.state.themeName || (this.preset() || {}).name || 'watch').replace(/[^\w .-]+/g, '-').trim() || 'watch');
-  }
   // Open a file: a baked .orbtheme (its design is read out of it) or a design file
   openFile(file) { return this.session.openFile(file); }
   // a design back into the editor: the session's envelope refusals, then the watch's own
@@ -3420,7 +3390,7 @@ class Component extends DCLogic {
   applyDesignContent(o, from) {
     const E = window.WatchEngine;
     if (!o.design || !Array.isArray(o.design.comps) || !E.PRESETS[o.dial]) return 'that design has no watch in it';
-    const r = E.assetRestore(o.assets || []); this.saveArt();
+    const r = E.assetRestore(o.assets || []);
     const refs = this.artRefs(o.design), miss = refs.filter((x) => !E.assetKnown(x.id));
     this.setState((st) => ({
       dial: o.dial, designs: { ...st.designs, [o.dial]: E.canonDesign(JSON.parse(JSON.stringify(o.design))) },
@@ -3636,7 +3606,6 @@ class Component extends DCLogic {
         send: R.isHub ? { note: R.sendNote, tip: R.sendTip, on: R.sendToOrb } : null,
         downloads: [
           { label: 'Download .orbtheme', note: R.themeNote, on: R.exportTheme, title: 'The same .orbtheme Send to orb bakes, downloaded: the baked dial, ready for any orb\u2019s Themes tab, with its design inside so the editor can open it again.' },
-          { label: 'Download design file', note: R.designFileNote, on: R.exportDesign, title: 'The watch as the editor holds it: every part, the light, case and movement, the sounds and every image you uploaded. The same design every .orbtheme carries, without the baked dial. Open it here in any browser.' },
         ],
         note: R.artNote,
       },
@@ -3759,8 +3728,8 @@ class Component extends DCLogic {
           // the line states what actually governs: the asset store, and the bundle
           selFields.push(Nt('', fa
             ? fa.name + ' · ' + fa.kind + ' · ' + fa.w + '×' + fa.h + ' source · ' + Math.round(fa.dataUrl.length / 1024) + ' KB · held in this browser and shipped in sources/ with the kit'
-            : sel.img ? 'That reference has no bytes in this browser — open the design file or theme that carries it.'
-              : 'PNG or SVG. Colour Auto keeps the image’s own colours. The image travels in the design file and inside every theme baked from this watch. The device reads a PNG rotated without antialiasing, so author it at final size.'));
+            : sel.img ? 'That reference has no bytes in this browser — open the library entry or theme that carries it.'
+              : 'PNG or SVG. Colour Auto keeps the image’s own colours. The image travels in the library entry and inside every theme baked from this watch. The device reads a PNG rotated without antialiasing, so author it at final size.'));
           if (fa) selFields.push(mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'x', label: 'Remove image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: () => this.setComp(sel.id, { img: undefined }) }] }));
         }
       }
@@ -4063,7 +4032,7 @@ class Component extends DCLogic {
             : 'Optional. Pick a colour off the art to confine the texture to that region; leave it on None to blend the whole image.'));
         if (isHexColor(D[p + 'FinishKey'])) out.push(Rg('Key tolerance', tv, 0, 128, 1, ud(p + 'FinishKeyTol'), tv + ' / 128'));
       }
-      const line = !E.assetReady(id) ? 'No bytes for ' + id + ' in this browser — open the design file or theme that carries the art.'
+      const line = !E.assetReady(id) ? 'No bytes for ' + id + ' in this browser — open the library entry or theme that carries the art.'
         : fits && fits.ok ? price : fits.why;
       out.push(Nt('', a ? a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' source into a ' + Math.round(box * zm) + '×' + Math.round(box * zm) + ' box' + (zm !== 1 ? ' at ' + zm.toFixed(2) + ' zoom' : '') + ' · ' + Math.round(a.dataUrl.length / 1024) + ' KB · ' + line : line),
         mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'drag', label: (this.state.artSlot === p ? 'Dragging the dial pans THIS slot' : 'Drag the dial to pan this slot'), bg: this.state.artSlot === p ? '#1c2330' : '#1c2330', bd: this.state.artSlot === p ? '#58a6ff' : '#2b3540', fg: '#e6edf3', pick: () => this.setState({ artSlot: p, guide: 'on' }) }, { v: 'x', label: 'Remove this image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: drop }] }));
@@ -4380,11 +4349,17 @@ class Component extends DCLogic {
         this.setState((st) => { const d = { ...st.designs }; delete d[st.dial]; const P = E.PRESETS[st.dial]; this._dragRow = null; return { resetArm: 0, designs: d, sel: null, selKind: null, dropAt: null, dragging: null, hidden: { ...st.hidden, ids: {} }, hands: 'auto', handFinish: 'auto', cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed', status: 'Reset ' + P.name + ' to its preset \u2014 Ctrl+Z brings your version back' }; }); },
       isEdited: !!(s.designs && s.designs[s.dial]), resetPresetLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset ' + ((E.PRESETS[s.dial] || {}).name || 'to preset'),
       mineName: s.mineName || '', onMineName: (e) => this.setState({ mineName: e.target.value }), minePh: 'Name (default: ' + (s.themeName || (E.PRESETS[s.dial] || {}).name || 'this watch') + ')',
-      saveMine: () => this.saveMine(s.mineName),
-      mine: this.mineList().map((m) => { const armed = s.mineDel === m.name && Date.now() - (s.mineDelAt || 0) < 4000;
-        return { name: m.name, meta: ((E.PRESETS[m.dial] || {}).name || '') + ' \u00b7 ' + new Date(+m.at || 0).toLocaleDateString(), load: () => { const why = this.applyDesignDoc(m.doc, 'My designs'); if (why) this.setState({ status: 'Could not open \u201c' + m.name + '\u201d: ' + why }); },
-          delLabel: armed ? 'Press again' : 'Delete', delTip: 'Remove it from My designs (asks twice)', del: () => (armed ? (this.delMine(m.name), this.setState({ mineDel: null })) : this.setState({ mineDel: m.name, mineDelAt: Date.now() })) }; }),
-      mineEmpty: !this.mineList().length,
+      saveMine: () => this.saveDraft(s.mineName),
+      mine: this.library().map((m) => { const armed = s.mineDel === m.name && Date.now() - (s.mineDelAt || 0) < 4000;
+        const th = m.theme || {}, older = th.made_with && this.session.version() !== 'dev' && th.made_with.split('+')[0] !== this.session.version().split('+')[0] ? th.made_with : '';
+        const tag = th.stale ? 'theme \u00b7 needs a rebake' : m.state === 'changed' ? 'theme \u00b7 unsent changes' : m.state === 'theme' ? 'theme' : 'draft';
+        return { name: m.name, tag: tag + (older ? ' \u00b7 made with ' + older : ''),
+          tagTip: th.stale ? 'An orb on the current firmware would refuse this bake (' + th.stale + '). Rebake all on the Themes tab rebakes it from its design.' : m.state === 'draft' ? 'Saved, never baked: Send to orb makes it a theme' : m.state === 'changed' ? 'A baked theme with changes saved beside it: Open shows the changes, Send to orb bakes them in' : 'Baked: on the hub shelf, ready to install',
+          meta: ((E.PRESETS[m.dial] || {}).name ? (E.PRESETS[m.dial] || {}).name + ' \u00b7 ' : '') + new Date(+m.at || 0).toLocaleDateString(),
+          load: () => this.openEntry(m.name), loadTip: m.state === 'changed' ? 'Open it with its unsent changes' : 'Open it in the editor',
+          changed: m.state === 'changed', discard: () => this.forgetEntry(m.name, 'draft'),
+          delLabel: armed ? 'Press again' : 'Delete', delTip: 'Take it out of the hub\u2019s library, baked theme and all (asks twice). No orb is touched.', del: () => (armed ? (this.setState({ mineDel: null }), this.forgetEntry(m.name, 'all')) : this.setState({ mineDel: m.name, mineDelAt: Date.now() })) }; }),
+      mineEmpty: !this.library().length,
       resetAllLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset everything',
       undo: () => this.undo(), redo: () => this.redo(), undoOp: this._undo.length ? 1 : 0.4, redoOp: this._redo.length ? 1 : 0.4,
       undoTip: this._undo.length ? 'Undo (Ctrl+Z) \u00b7 ' + this._undo.length + ' step' + (this._undo.length > 1 ? 's' : '') + ' back' : 'Nothing to undo', redoTip: this._redo.length ? 'Redo (Ctrl+Shift+Z)' : 'Nothing to redo',
@@ -4484,7 +4459,7 @@ class Component extends DCLogic {
           onFacingReset: () => this.setHand(id, { rot0: null }),
           artNote: (() => {
             if (!hc.art) return 'PNG or SVG, any size: at Length 100% the art is scaled so the farthest ink along its point lands where this hand would reach drawn, and the slider scales from there. Upload art that points anywhere you like and set Facing to the clockwise angle it points at — the guide ray stands at the time the clock shows, and turning the facing swings the art under it. The device rotates hand sprites with antialiasing off (clock_view.c lv_image_set_antialias), so an enlarged or resampled source shows its loss plainly at every angle.';
-            const a = E.assetGet(hc.art); if (!a) return 'That reference has no bytes in this browser — open the design file or theme that carries it.';
+            const a = E.assetGet(hc.art); if (!a) return 'That reference has no bytes in this browser — open the library entry or theme that carries it.';
             // The engine length-fits the sprite: it measures the ink's reach from the
             // arbour and scales that -- in either direction -- so the upload's own
             // resolution never decides how long the hand is. k is that fit times the
@@ -4548,7 +4523,8 @@ class Component extends DCLogic {
         if (this._replaceArmed && this._replaceArmed.nm === this.themeName()) return s.dup ? 'awaiting your choice' : 'press again to replace';
         const tn = this.themeName();
         if (!G.nameOk(tn)) return 'name ' + G.nameBytes(tn) + ' B; header holds ' + (G.NAME_MAX - 1);
-        return this.state.hubIp ? 'pushes to ' + this.state.hubIp : 'pushes to the orb this hub has loaded';
+        const to = this.state.hubIp ? 'pushes to ' + this.state.hubIp : 'pushes to the orb this hub has loaded';
+        return this.session.orbNote ? to + ' · ' + this.session.orbNote : to;
       })(),
       /* §32.6: the duplicate modal. When the send stopped at a duplicate — whether the
        * precheck caught it (s.dup.pre) or the device refused late (a same-serial,
@@ -4605,8 +4581,6 @@ class Component extends DCLogic {
         return 'FORMAT 3 · ' + F + '-frame train · ≤' + (cost / 1048576).toFixed(1) + ' MB bank · measures on export';
       })(),
       // D43 P7: the design alone, as the theme carries it; and one Open for either file
-      exportDesign: () => this.exportDesign(),
-      designFileNote: (() => { const n = new Set(this.artRefs(D).map((r) => r.id)).size; return 'the design' + (n ? ' and ' + n + ' uploaded image' + (n > 1 ? 's' : '') : '') + ' · .orbdesign'; })(),
       artNote: this.artNote(this.artRefs(D)),   // missing art would leave the theme and the design incomplete
       openFile: (e) => { const f = e.target.files && e.target.files[0]; if (f) this.openFile(f); e.target.value = ''; },
     };

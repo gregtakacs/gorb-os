@@ -33,6 +33,9 @@
     LEGACY: ['wc.viewCal'],                 // the clock editor's key before K3: read once, carried over
   };
   screen.MM_PER_PX = (screen.PANEL.inch * 25.4) / screen.PANEL.px;
+  // the panel's width as captions print it: 1.75 in is 44.45 mm, and toFixed(1) on the
+  // float (44.4499…) would say 44.4
+  screen.PANEL_MM = String(+(screen.PANEL.inch * 25.4).toFixed(2));
   screen.REAL_CSS = Math.round(screen.PANEL.inch * screen.PANEL.cssInch);
   screen.REAL_Z = screen.REAL_CSS / screen.PANEL.px;
   var ok = function (v) { return v >= screen.MIN && v <= screen.MAX; };
@@ -103,7 +106,7 @@
     var css = v === 'true' ? screen.realCss(cal) : Math.max(60, Math.round(W * k)), inch = screen.screenInch(css, cal);
     var zoomed = v === 'zoom' || css > W;
     var ring = Math.max(3, Math.min(12, Math.round((12 * css) / W)));
-    var mm = screen.RULER_MM, mmPanel = (screen.PANEL.inch * 25.4).toFixed(1), ticks = [];
+    var mm = screen.RULER_MM, mmPanel = screen.PANEL_MM, ticks = [];
     for (var i = 0; i <= mm; i++) ticks.push({ left: (i / mm) * 100, h: i % 10 === 0 ? 14 : i % 5 === 0 ? 10 : 6, op: i % 5 === 0 ? '0.9' : '0.45', lab: i % 10 === 0 ? String(i) : '' });
     return {
       k: k, css: css, win: zoomed ? W : css, zoomed: zoomed, ring: ring, flow: zoomed ? 'auto' : 'hidden', inch: inch,

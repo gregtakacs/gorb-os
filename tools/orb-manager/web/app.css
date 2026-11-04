@@ -82,6 +82,12 @@ button.danger:disabled{opacity:.45;cursor:not-allowed}
 .themelist li b{font-weight:600}
 .themelist .tag{font-size:11px;padding:2px 7px;border-radius:5px;border:1px solid #6fbf73;color:#9adc9e}
 .themelist .tag.err{border-color:#c9525a;color:#f2a0a6}
+/* K10: the face's two lists, each under a heading row; a draft or a detail reads quieter
+   than a theme, and a theme that needs attention (unsent changes, a rebake) in the warn hue */
+.themelist li.sec{border:none;padding:10px 2px 0;justify-content:space-between}
+.themelist li.sec b{font-size:13px;opacity:.85}
+.themelist .tag.mut{border-color:var(--line);color:inherit;opacity:.8}
+.themelist .tag.warn{border-color:var(--warn);color:var(--warn)}
 /* The baked preview plane on each row: the ID photo the bake shipped, matted on
    black like the glass draws it. Hidden until the bytes actually unpack, so a
    theme with no preview reads as a text row and not as a broken picture. */

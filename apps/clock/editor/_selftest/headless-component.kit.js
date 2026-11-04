@@ -17,26 +17,23 @@ const { ok, eq, wait, mk, E, txt, i1, d, fails, checked } = global.__T;
   i4.state.designs.t.bgArt = 'nowhere-5';
   const dang = await i4.kitAssets(i4.state.designs.t);
   eq(dang.length, 1, 'one reference listed');
-  ok(dang[0].missing === true && /design file or theme/.test(dang[0].note || ''), 'an unheld reference ships as missing with the fix named', dang[0].note);
+  ok(dang[0].missing === true && /library entry or theme/.test(dang[0].note || ''), 'an unheld reference ships as missing with the fix named', dang[0].note);
   const fc = { subLayers: [{ id: 'c1', transparent: true }, { id: 'c2' }] };
   eq(i4.compHost(fc, { host: 'c1' }), 'dial', 'compHost: a plate that does not ship hands its comps to the dial');
   eq(i4.compHost(fc, { host: 'c2' }), 'c2', 'compHost: a real plate keeps its own comps');
   eq(i4.compHost(fc, { host: 'dial' }), 'dial', 'compHost: the dial is untouched');
 
-  // ---- the design file round trip (D43 P7: the .orbtheme's design, on its own) --------
+  // ---- the design round trip (D43 P7; K10: what a library draft and a theme carry) -----
   // this suite's dial 't' is no shipped preset; Open accepts only a design naming one, so it is given one here
   E.PRESETS.t = E.PRESETS.t || { name: 'Test dial', design: { comps: [] } };
   const fileOf = (name, data) => ({ name, arrayBuffer: async () => { const u = typeof data === 'string' ? new TextEncoder().encode(data) : data; return u.buffer.slice(u.byteOffset, u.byteOffset + u.length); } });
   const i5 = mk();
   i5.state.designs.t = JSON.parse(JSON.stringify(d));
-  let captured = null;
-  i5.download = (blob, name) => { captured = { blob, name }; };
-  await i5.exportDesign();
-  ok(!!captured && /\.orbdesign$/.test(captured.name), 'Download design file saves an .orbdesign', captured && captured.name);
-  const body = JSON.parse(await captured.blob.text());
-  eq(body.format + ':' + body.schema, 'wc-design:1', 'the design file is named and stamped with its schema');
-  ok(body.assets.length === 4 && body.assets.every((a) => a.dataUrl), 'the design file carries every uploaded image\u2019s bytes');
-  ok(body.design.bgArt === 'bg-1' && body.design.sfArt === 'sf-1' && global.hand3(body.design, 'centre-minute').art === 'hand-1', 'the design file carries the design with every reference, both backdrop slots included');
+  ok(!('exportDesign' in i5), 'K10: there is no design-file download; a draft and a theme carry the design');
+  const body = JSON.parse(JSON.stringify(await i5.designDoc(true)));
+  eq(body.format + ':' + body.schema, 'wc-design:1', 'the design is named and stamped with its schema');
+  ok(body.assets.length === 4 && body.assets.every((a) => a.dataUrl), 'the design carries every uploaded image\u2019s bytes');
+  ok(body.design.bgArt === 'bg-1' && body.design.sfArt === 'sf-1' && global.hand3(body.design, 'centre-minute').art === 'hand-1', 'the design carries every reference, both backdrop slots included');
   ok(assets.find((a) => a.id === 'sf-1').usedBy.join() === 'dial surface', 'the surface asset is attributed to the dial face, not the plate');
   E.assetClear();
   ok(!E.assetKnown('bg-1'), 'memory wiped: this is the second browser');
@@ -69,12 +66,9 @@ const { ok, eq, wait, mk, E, txt, i1, d, fails, checked } = global.__T;
   const i7 = mk();
   i7.state.designs.t = { print: 'roman', comps: global.hands3({ shows: 'hour', id: 'centre-hour' }, { shows: 'minute', id: 'centre-minute', art: 'hand-1', pivotX: -18, pivotY: 44, rot0: 90, zoom: 1.5 }, { shows: 'second', id: 'centre-second', art: 'hand-1', rot0: 45 }) };
   i7.state.designs.t.bgArt = 'bg-1';
-  let cap7 = null;
-  i7.download = (blob, name) => { cap7 = { blob, name }; };
-  await i7.exportDesign();
-  const b7 = JSON.parse(await cap7.blob.text());
+  const b7 = JSON.parse(JSON.stringify(await i7.designDoc(true)));
   const hm = global.hand3(b7.design, 'centre-minute');
-  ok(hm.pivotX === -18 && hm.pivotY === 44, 'a negative pivot, i.e. an arbour off the visible ink, is written into the design file', JSON.stringify([hm.pivotX, hm.pivotY]));
+  ok(hm.pivotX === -18 && hm.pivotY === 44, 'a negative pivot, i.e. an arbour off the visible ink, is written into the design', JSON.stringify([hm.pivotX, hm.pivotY]));
   ok(hm.rot0 === 90, 'the facing goes with it, which is the only thing that makes non-north art read right', String(hm.rot0));
   ok(hm.zoom === 1.5, 'and so does the hand zoom', String(hm.zoom));
   ok(global.hand3(b7.design, 'centre-second').rot0 === 45, 'each hand carries its own facing independently');

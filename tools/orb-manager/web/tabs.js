@@ -1235,6 +1235,8 @@ function wireLibraryImport() {
   file.onchange = async () => {
     const f = file.files && file.files[0];
     if (!f) return;
+    const bad = pickedAs(f, [".orbapp"], "an app");
+    if (bad) { state.textContent = bad; file.value = ""; return; }
     pick.disabled = true;
     state.textContent = "reading " + f.name + "\u2026";
     let body;

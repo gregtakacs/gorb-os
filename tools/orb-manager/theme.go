@@ -933,6 +933,7 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 		s.setSend(ip, func(st *themeSend) {
 			st.Phase, st.Note = "duplicate", "a different theme with that name is already on the card"
 		})
+		s.holdForShelf(de.CommitToken(), body)
 		s.jsonErrFields(w, de.Error()+" — send it again with overwrite to replace it", map[string]any{
 			"duplicate": true, "commit": de.CommitToken(),
 		})
@@ -964,6 +965,9 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 		s.setSend(ip, func(st *themeSend) { st.Phase = "rebooting" })
 	})
 	s.setSend(ip, func(st *themeSend) { st.Phase, st.Note = outcome, note })
+	if outcome == "stored" {
+		s.keepOnShelf(body)
+	}
 	payload["store"] = outcome
 	payload["back"] = back
 	if note != "" {
@@ -1070,6 +1074,9 @@ func (s *Server) handleThemeCommit(w http.ResponseWriter, r *http.Request) {
 		}
 		if json.Unmarshal(raw, &ack) == nil && ack.ID != "" {
 			outcome, note, back := s.followStore(r.Context(), t.IP, ack.ID, nil)
+			if body := s.takeForShelf(q.Commit); body != nil && outcome == "stored" {
+				s.keepOnShelf(body)
+			}
 			raw = withStoreOutcome(raw, outcome, note)
 			raw = withField(raw, "back", back)
 		}

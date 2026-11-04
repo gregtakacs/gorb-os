@@ -132,7 +132,7 @@
       <span id="ob-idstate" class="hint">the hub reboots this board to read what it runs, about 10 seconds, and asks again on its own</span>
     </div>
     <div id="ob-idcard" class="idcard" hidden></div>
-    <input type="file" id="ob-fwfile" accept=".zip,.bin,application/zip,application/octet-stream" hidden>
+    <input type="file" id="ob-fwfile" accept=".zip,.bin" hidden>
     <span id="ob-fwstate" class="hint" hidden></span>
   </article>
 
@@ -256,7 +256,7 @@
          One less fork in the flow means one less state where an operator has to remember
          which box they ticked. -->
     <div class="row">
-      <input type="file" id="lib-file" accept=".orbapp,application/octet-stream" hidden>
+      <input type="file" id="lib-file" accept=".orbapp" hidden>
       <button id="lib-pick" class="ghost" type="button"
               title="Import an .orbapp from this computer into the hub's library. It lands on the shelf, not on the orb: use the row's Install to move it onto a board.">Import an app</button>
       <!-- The way back from a library delete (seed.go): files the apps that ship inside
@@ -300,7 +300,7 @@
       <span id="mn-theme-editrow"></span>
     </div>
     <div class="row">
-      <input type="file" id="mn-fw-file" accept=".orbtheme,application/octet-stream" hidden>
+      <input type="file" id="mn-fw-file" accept=".orbtheme" hidden>
       <button id="mn-up-btn" class="ghost" title="Choose a .orbtheme and put it on this orb's card, with the hub keeping a copy on its shelf. The theme's name is baked inside the file by the Theme Editor; the orb files it under that name and no other.">Import a theme</button>
       <span id="mn-up-state" class="hint"></span>
     </div>

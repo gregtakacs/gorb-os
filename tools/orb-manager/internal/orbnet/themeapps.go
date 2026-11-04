@@ -26,6 +26,14 @@ type ThemeApp struct {
 	Count  int    `json:"count"`
 	Active bool   `json:"active"`
 	Failed bool   `json:"failed"`
+	// OnGlass is the dial's own answer that this app is the face it shows now (the
+	// installed row's on_glass); the Themes page opens on that app's tab (H1).
+	OnGlass bool `json:"on_glass,omitempty"`
+	// Wearing names the theme this app wears: under the theme pool every app keeps its own
+	// stored theme (theme-pool-plan P4/P5), and the card row whose `stored` witness is set
+	// under this app is it. Empty when the app has none stored. The page says it per app
+	// rather than reading one OS-wide `active` name, which is whichever app bound last.
+	Wearing string `json:"wearing,omitempty"`
 	// HasEditor reports whether an editor opens for this app. A device that reports an
 	// editor region decides it — D37's premise is that the payload travels inside the
 	// container. Where none is reported the hub falls back to any editor it hosts for the
@@ -103,8 +111,9 @@ func (c *Client) ThemeAppsFrom(ip string, apps *AppList, appErr error, list *The
 	// not list — an orphan. Those themes are real bytes on the card, and a face that
 	// only showed ledger apps would hide them with nowhere to delete them from.
 	type appGroup struct {
-		count  int
-		active bool
+		count   int
+		active  bool
+		wearing string
 	}
 	groups := map[string]*appGroup{}
 	if list != nil {
@@ -128,6 +137,9 @@ func (c *Client) ThemeAppsFrom(ip string, apps *AppList, appErr error, list *The
 			if t.Active {
 				g.active = true
 			}
+			if t.Stored && g.wearing == "" {
+				g.wearing = t.Name
+			}
 		}
 	}
 
@@ -142,10 +154,10 @@ func (c *Client) ThemeAppsFrom(ip string, apps *AppList, appErr error, list *The
 			}
 			g := groups[a.Slug]
 			ta := ThemeApp{
-				Slug: a.Slug, Title: a.Title, Caps: a.Caps, Failed: a.Failed,
+				Slug: a.Slug, Title: a.Title, Caps: a.Caps, Failed: a.Failed, OnGlass: a.OnGlass,
 			}
 			if g != nil {
-				ta.Count, ta.Active = g.count, g.active
+				ta.Count, ta.Active, ta.Wearing = g.count, g.active, g.wearing
 				delete(groups, a.Slug)
 			}
 			ta.HasEditor, ta.EditorURL = editorAvailability(a.Slug)
@@ -179,7 +191,7 @@ func (c *Client) ThemeAppsFrom(ip string, apps *AppList, appErr error, list *The
 	// Whatever is left is a card group with no ledger row. Show it, uneditable,
 	// so the themes are reachable and deletable.
 	for slug, g := range groups {
-		out.Apps = append(out.Apps, ThemeApp{Slug: slug, Title: slug, Count: g.count, Active: g.active})
+		out.Apps = append(out.Apps, ThemeApp{Slug: slug, Title: slug, Count: g.count, Active: g.active, Wearing: g.wearing})
 	}
 	sort.Slice(out.Apps, func(i, j int) bool { return out.Apps[i].Slug < out.Apps[j].Slug })
 	return out, nil

@@ -182,7 +182,7 @@ setTimeout(async () => {
   const cs = labels('comps');
   ok(!!it.design().comps.find((c) => c.style === 'transparent'), 'the layout accepts a transparent subdial style');
   const ex = (it.state.tab = 'export', it.renderVals());
-  ok(/uploaded image/.test(ex.designFileNote), 'the design file button counts the images it will carry', ex.designFileNote);
+  ok(!('designFileNote' in ex) && !('exportDesign' in ex), 'K10: no design-file download on Render');
   ok(/MISSING/.test(ex.artNote), 'the Render step warns before a theme ships without its art', ex.artNote);
   // ---- selecting on the stage: the pane must follow what was grabbed -----------------
   global.requestAnimationFrame = () => 1;                                  // onMove defers; the test flushes by hand
@@ -479,7 +479,7 @@ setTimeout(async () => {
   const r3 = panel('centre-hour');
   for (const k of ['onPivotX', 'onPivotY', 'onPivotCentre', 'onPivotHub', 'onArtFile', 'onArtClear', 'artRef', 'artLabel', 'artNote', 'onArtDown', 'onArtMove', 'hasArt'])
     ok(r3[k] !== undefined, 'handRows exposes ' + k);
-  for (const k of ['exportTheme', 'themeNote', 'exportDesign', 'designFileNote', 'openFile', 'artNote',
+  for (const k of ['exportTheme', 'themeNote', 'openFile', 'artNote',
     // FORMAT 2's theme-name field: the input, its live byte count and its placeholder
     'themeNameVal', 'themeNameIn', 'themeNamePh', 'themeNameLen',
     // §31's send-to-orb round: the hub-gated push button and its three bindings
@@ -566,7 +566,7 @@ setTimeout(async () => {
       delete it.download;
     }
   })();
-  ok(rv.designFileNote === ex2.designFileNote, 'the design file label is stable across renders');
+  ok(rv.themeNote === ex2.themeNote, 'the theme download label is stable across renders');
   // ---- the build-gate seatbelt: a tempo flip must always be able to rebuild ----------
   // tick is absent from the art signature. Counting every rebuild against the art alone
   // let a 4/s -> sweep -> 4/s round trip on a Broad arrow spend the budget, so the last
@@ -812,6 +812,10 @@ setTimeout(async () => {
      'choosing Morse names the two symbols it still needs');
   it.resetTab('sound');
   ok(!it.state.sounds[it.state.dial], 'Reset sound returns the dial to its preset\u2019s sounds');
+
+  // the calibration status names the panel's real width: 1.75 in is 44.45 mm, not the float's 44.4
+  it.solveCal(40); const st1 = it.state.status; it.solveCard(85.6); const st2 = it.state.status;
+  ok(/draws the dial 44\.45 mm across/.test(st1) && /draws the dial 44\.45 mm across/.test(st2), 'the ruler and card status say the dial is 44.45 mm across', st1);
 
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);

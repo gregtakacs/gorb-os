@@ -418,6 +418,9 @@ func (s *Server) h_appsImport(w http.ResponseWriter, r *http.Request) {
 		} else {
 			out["kept"] = dest
 			out["overwrote"] = existed == nil
+			// K9: the hub serves its library's editor, so a new copy retires every
+			// remembered region rather than leaving the old editor up for ten minutes
+			editorInvalidate()
 		}
 	}
 	if install {

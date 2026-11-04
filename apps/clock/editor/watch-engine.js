@@ -243,7 +243,7 @@
   const ASSETS = new Map();
   const IMAGES = {};
   const INVISIBLE_ALPHA = 6;        // == prep_watch_kit.py INVISIBLE: one rule for "no ink"
-  const MAX_ASSET_BYTES = 1.5e6;    // localStorage is per-origin and small; refuse big files at ingest
+  const MAX_ASSET_BYTES = 1.5e6;    // one upload stays well inside what a design file and a theme carry; refuse big files at ingest
   const ASSET_TOTAL_BYTES = 4e6;    // warn past this much art held in the browser
   // FNV-1a-32 over the bytes: an identity for dedupe and for spotting a stale
   // cache, NOT a security claim. The kit manifest asks for a real sha256 too

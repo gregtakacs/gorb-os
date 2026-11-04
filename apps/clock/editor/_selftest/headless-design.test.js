@@ -84,7 +84,7 @@ const mk = () => {
 
   // the Render step: no choice to make, every theme carries its whole design
   const c = mk(); const rv = c.renderVals();
-  ok(!('designShipOpts' in rv) && typeof rv.exportDesign === 'function', 'the design always rides, with its art: there is nothing to choose');
+  ok(!('designShipOpts' in rv) && !('exportDesign' in rv), 'the design always rides, with its art: there is nothing to choose, and no design file to download (K10)');
 
   // the Edit door: ?theme= through the hub, card by default, the shelf on request
   const seen = [];

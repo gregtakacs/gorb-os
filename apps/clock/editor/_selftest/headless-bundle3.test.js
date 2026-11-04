@@ -121,7 +121,10 @@ refuses(() => B.packElements([E({ class: SPRITE, flags: B.AUX_F_SHADOW3 })]), 'r
         'the pointer shadow twin means nothing on another class, and the door says whose bit it is');
 refuses(() => B.packElements([E({ class: SPRITE, order: 64 })]), 'depth rungs', 'an order past the rungs is refused');
 refuses(() => B.packElements([E({ class: SPRITE, n_frames: 0 })]), 'n_frames: 0 draws nothing', 'a zero-frame row is refused');
-refuses(() => B.packElements([E({ class: SPRITE, frame0: 350, n_frames: 11 })]), 'run past the art region', 'a frame window past the bound is refused');
+// the window ends one frame past the baker's own bound (theme_schema.ELEM_FRAMES_MAX), so the
+// check follows the bound when it moves (T6 took it from 360 to 1024 and left 350+11 inside)
+refuses(() => B.packElements([E({ class: SPRITE, frame0: B.ELEM_FRAMES_MAX - 10, n_frames: 11 })]), 'run past the art region', 'a frame window past the bound is refused');
+{ let why = ''; try { B.packElements([E({ class: SPRITE, frame0: B.ELEM_FRAMES_MAX - 11, n_frames: 11 })]); } catch (e) { why = e.message; } ok(!why, 'and a window that ends on the bound is not', why); }
 refuses(() => B.packElements([E({ class: SPRITE, degrees: 36000 })]), 'is not a direction', 'a direction of 36000 is refused');
 refuses(() => B.packElements([E({ class: LAYER, n_frames: 4 })]), 'composited, not animated', 'an animated LAYER row is refused (§29)');
 refuses(() => B.packElements([E({ class: STATUS, n_frames: 4 })]), 'composited, not animated', 'an animated STATUS row is refused (§29)');

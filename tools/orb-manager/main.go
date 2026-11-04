@@ -213,6 +213,9 @@ type Server struct {
 	// stretch produced. See theme.go.
 	sendMu sync.Mutex
 	tsend  map[string]*themeSend
+	// shelfPending holds a duplicate refusal's bytes under its commit token, so the
+	// zero-byte commit that follows can still keep the theme on the shelf (K9).
+	shelfPending map[string][]byte
 	// kickMu guards lastPlug: the orb MACs the previous cable sweep attributed, which
 	// is what lets kickLostCables (liveness.go) tell an unplug from a steady bench and
 	// re-dial the unplugged board's remembered address the second the lead goes quiet.
@@ -1182,6 +1185,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.routesRuntime(mux)
 	// D37: an installed app's own editor, served out of its container region.
 	s.routesEditor(mux)
+	s.routesDesigns(mux)
+	s.routesLibraryEntries(mux)
 }
 
 // indexMarker is the QUOTED placeholder in web/index.html that receives the launch

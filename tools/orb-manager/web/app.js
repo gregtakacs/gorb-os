@@ -3149,21 +3149,24 @@ async function loadThemes(ip) {
            : ", drawing \"" + (d.active || "?") + "\"")
     + (d.free_mb ? ", " + d.free_mb + " MB free" : "")
     + (themeAppsErr ? " (" + themeAppsErr + ")" : "");
-  state.textContent += (libThemeCount ? " \u00b7 " + libThemeCount + " theme"
-    + (libThemeCount === 1 ? "" : "s") + " on the hub shelf" : "");
+  // K10: the face is two lists, what this orb's card holds and what the hub's library holds
+  if (shown.length) list.appendChild(themeSection("On " + (current.name || ip), null));
   for (const t of shown) list.appendChild(themeRow(t, state, d));
-  // D38: the hub's own shelf rides the same list. A theme in the folder and not
-  // on the card is a row like any other, and its button says Install — which,
-  // for a theme, means the whole way onto the dial: the device's upload door
-  // queues the store the moment the file verifies, so the board reboots onto
-  // it. There is no theme half-step onto a card, and the face does not pretend
-  // there is one.
-  let shelf = [];
-  try { const p = await getJSON("/api/library"); shelf = Array.isArray(p.themes) ? p.themes : []; }
-  catch (e) { /* the shelf rows just do not appear; the orb's own rows stand */ }
-  if (gen !== themeLoadGen) return;   // the newer read draws its own shelf rows
-  libThemeCount = shelf.length;
-  const shelfN = themeShelfRows(scope, rows, state, shelf);
+  // K10: the app's library on the hub — every draft and every shelf theme, one entry per
+  // name — is the face's second list. A theme in it and not on the card offers Install,
+  // which for a theme means the whole way onto the dial: the device's upload door queues
+  // the store the moment the file verifies, so the board reboots onto it.
+  let lib = [];
+  const libApp = scope || (themeAppsRows.length === 1 ? themeAppsRows[0].slug : "");
+  if (libApp) {
+    try { const r = await hubFetch("/api/library/entries?app=" + encodeURIComponent(libApp)); const j = await r.json(); if (j && j.ok && Array.isArray(j.data)) lib = j.data; }
+    catch (e) { /* the library rows just do not appear; the orb's own rows stand */ }
+  }
+  if (gen !== themeLoadGen) return;   // the newer read draws its own library rows
+  libThemeCount = lib.length;
+  // the count joins the line once this read has it (it used to print the last read's)
+  if (libThemeCount) state.textContent += " \u00b7 " + libThemeCount + " in the hub library";
+  const shelfN = themeLibraryRows(libApp, rows, state, lib);
   if (!shown.length && !shelfN) themeEmptyPane(list, scope);
   renderThemeEditRow(scope, shown.length > 0);
   if (d.mounted) warmOrbCard(ip);   // the face is painted; the hub can read the rest ahead
@@ -3318,7 +3321,8 @@ function openThemeEditor(row, theme) {
   const orbName = current.name || (current.row && current.row.instance) || "";
   frame.src = base + "?orb=" + encodeURIComponent(themeIP) + "&app=" + encodeURIComponent(row.slug) +
     (orbName ? "&label=" + encodeURIComponent(orbName) : "") +
-    (theme && theme.id ? "&theme=" + encodeURIComponent(theme.id) + (theme.src === "shelf" ? "&src=shelf" : "") : "");
+    (theme && theme.id ? "&theme=" + encodeURIComponent(theme.id) + (theme.src === "shelf" ? "&src=shelf" : "") : "") +
+    (theme && theme.entry ? "&entry=" + encodeURIComponent(theme.entry) : "") + (theme && theme.rebake ? "&rebake=1" : "");
   title.textContent = themeAppTitle(row.slug) + " theme editor";
   state.textContent = "";
   themeEditorApp = row.slug;
@@ -3643,134 +3647,168 @@ function themeRow(t, state, list) {
   return li;
 }
 
-// themeShelfRows draws the hub's themes that the card does not carry, in the
-// current app's scope, beside the orb's own rows — one list, every theme the
-// hub can see (D38). A shelf theme is matched to a card row by the NAME inside
-// its own container (the hub read it when it listed the shelf; the device reads
-// it when it lists the card), not by the file's stem on either side: a theme
-// that travelled by the drop zone keeps its baked name wherever its file lands.
+// themeLibraryRows draws the app's library on the hub (K10): one row per name, a draft, a
+// theme, or a theme with unsent changes, read from /api/library/entries — the same list
+// the editor's Start step shows. A theme row matches a card row by the NAME inside its
+// container, so a theme the card already holds says so instead of offering Install.
 // Returns the number of rows drawn.
 //
-// A shelf row carries no ID photo, and that is the design rather than an omission. The
-// plane is a region inside the container, and the device is the only thing that unpacks
-// it: GET /api/v1/sd/preview answers from the row the card holds, and a theme the card
-// does not hold has no row to name. So the hub can show a shelf theme's name, its size
-// and where it came from, and cannot show its face until Install puts it on a card. An
-// install that landed therefore replaces this row with a card row that has the canvas.
+// A theme row's ID photo is the plane inside the hub's own copy, read off disk
+// (shelfPreviewPlane), so no orb is dialed for it; a draft has no bake and so no photo.
 let libThemeCount = 0;   // the state line's count, set by loadThemes with each read
 
-function themeShelfRows(scope, deviceRows, state, shelf) {
-  shelf = Array.isArray(shelf) ? shelf : [];
+function themeSection(title, extra) {
+  const li = document.createElement("li");
+  li.className = "sec";
+  const h = document.createElement("b");
+  h.textContent = title;
+  li.appendChild(h);
+  if (extra) li.appendChild(extra);
+  return li;
+}
+
+function themeLibraryRows(app, deviceRows, state, entries) {
+  entries = Array.isArray(entries) ? entries : [];
   const list = $("#mn-themes");
-  if (!shelf.length || !list) return 0;
+  if (!entries.length || !list || !app) return 0;
   const onCard = {};
-  for (const t of deviceRows) onCard[String(t.name || "").toLowerCase()] = true;
-  let n = 0;
-  for (const f of shelf) {
-    const app = f.app || "clock";
-    if (scope && app !== scope) continue;
-    if (onCard[String(f.title || "").toLowerCase()]) continue;
-    n++;
-    const li = document.createElement("li");
-    // The same ID photo a card row gets, drawn from the hub's own copy. A shelf theme
-    // carries its preview inside its container, so the hub reads that plane off disk
-    // (shelfPreviewPlane -> /api/theme/shelf-preview) and no orb is dialed for it. A
-    // bake with no plane, like the factory Aviator's FORMAT 3 image, answers the quiet
-    // 404 and the row reads exactly as it did before planes existed.
-    const pv = document.createElement("canvas");
-    pv.className = "pv";
-    pv.width = 44;
-    pv.height = 44;
-    pv.hidden = true;
-    li.appendChild(pv);
-    const pvq = document.createElement("span");
-    pvq.className = "pvq";
-    pvq.hidden = true;
-    li.appendChild(pvq);
-    shelfPreviewPlane(pv, pvq, String(f.file).replace(/\.orbtheme$/i, ""));
-    const label = document.createElement("b");
-    label.textContent = f.title || f.file;
-    li.appendChild(label);
-    const tag = document.createElement("span");
-    tag.className = "tag";
-    tag.textContent = "in the hub library";
-    li.appendChild(tag);
-    const size = document.createElement("span");
-    size.className = "tag";
-    size.textContent = Math.round((f.bytes || 0) / 1024) + " KB";
-    li.appendChild(size);
-    if (f.design) {
-      const ed = themeReopenButton(app, { id: String(f.file).replace(/\.orbtheme$/i, ""), src: "shelf" });
-      if (ed) li.appendChild(ed);
+  for (const t of deviceRows) if ((t.app || "clock") === app) onCard[String(t.name || "").toLowerCase()] = true;
+  const edRow = themeAppsRows.find((a) => a.slug === app);
+  const canEdit = !!(edRow && edRow.has_editor && edRow.editor_url);
+  const stale = entries.filter((e) => e.theme && e.theme.stale);
+  let rb = null;
+  if (stale.length && canEdit) {
+    rb = document.createElement("button");
+    rb.className = "ghost";
+    rb.textContent = "Rebake all (" + stale.length + ")";
+    rb.title = "Open the " + themeAppTitle(app) + " editor and rebake every theme an orb on the current firmware would refuse, from the design each carries. The new bakes replace the old ones in the hub library; nothing is sent to an orb.";
+    rb.onclick = () => openThemeEditor(edRow, { rebake: true });
+  }
+  list.appendChild(themeSection("In the hub library", rb));
+  const forget = async (e, what, btn) => {
+    btn.disabled = true;
+    try {
+      const r = await hubFetch("/api/library/forget?app=" + encodeURIComponent(app) + "&name=" + encodeURIComponent(e.name) + "&what=" + what, { method: "POST" });
+      const d = await r.json().catch(() => null);
+      if (!d || !d.ok) throw new Error((d && d.error) || ("HTTP " + r.status));
+      state.textContent = what === "draft" ? "discarded the unsent changes to " + e.name : e.name + " \u00b7 removed from the hub library";
+      loadThemes(themeIP);
+    } catch (x) {
+      state.textContent = "the hub refused it: " + x.message;
+      btn.disabled = false;
     }
-    const inst = document.createElement("button");
-    inst.className = "ghost";
-    inst.textContent = "Install";
-    inst.title = "Send this theme to the orb in hand. The device's theme door stores the file the moment it verifies, and the board reboots onto it.";
-    inst.onclick = async () => {
-      if (!themeIP) { state.textContent = "no orb in hand \u2014 connect one first."; return; }
-      if (typeof askConfirm === "function" && !await askConfirm({
-        title: "Install this theme?",
-        body: (f.title || f.file) + " goes to " + themeIP + ": the device files the card copy and stores it in the same door, so the board reboots onto the new face.",
-        detail: "The hub's copy stays on the shelf. Remove from card later clears the orb's copy, and taking the wall's theme off clears the face too.",
-        yes: "Install",
-      })) return;
-      inst.disabled = true;
-      fpOpen();
-      const ui = fpUI();
-      ui.doing.textContent = "installing " + (f.title || f.file) + " on " + themeIP;
-      ui.log.textContent = ""; ui.bar.style.width = "0%"; ui.bar.title = "";
-      ui.op.textContent = "pushing"; ui.live.textContent = "";
-      state.textContent = "installing " + (f.title || f.file) + " \u2014 the file is crossing";
-      // The push streams its steps exactly like an app install: the bar moves
-      // with the bytes, and the panel is the single place a refusal is read.
-      const okPush = await streamSteps("/api/library/push?kind=theme&name="
-        + encodeURIComponent(String(f.file).replace(/\.orbtheme$/i, ""))
-        + "&ip=" + encodeURIComponent(themeIP), ui, themeIP);
-      if (!okPush) {
-        state.textContent = "install refused \u2014 read the progress panel";
-        inst.disabled = false;
-        return;
-      }
-      try {
-        // The push answers done only once the orb has stored the theme and come back from
-        // its reboot, so this wait is a belt: it returns on the first answer.
-        state.textContent = (f.title || f.file) + " is stored and the orb is back \u2014 re-reading the card";
-        await themeWaitBack(state, f.title || f.file);
-        fpClose();
-        await loadThemes(themeIP);
-      } catch (e) {
-        ui.doing.textContent = "theme install refused";
-        ui.log.textContent = "\u2717 " + e.message;   // the panel stays open with its reason
-        state.textContent = "install refused: " + e.message;
-        inst.disabled = false;
-      }
+  };
+  let n = 0;
+  for (const e of entries) {
+    n++;
+    const th = e.theme || null;
+    const f = th ? { file: th.file || th.stem + ".orbtheme", title: e.name, bytes: th.bytes } : null;
+    const li = document.createElement("li");
+    if (th) {
+      const pv = document.createElement("canvas");
+      pv.className = "pv";
+      pv.width = 44;
+      pv.height = 44;
+      pv.hidden = true;
+      li.appendChild(pv);
+      const pvq = document.createElement("span");
+      pvq.className = "pvq";
+      pvq.hidden = true;
+      li.appendChild(pvq);
+      shelfPreviewPlane(pv, pvq, th.stem);
+    }
+    const label = document.createElement("b");
+    label.textContent = e.name;
+    li.appendChild(label);
+    const tag = (text, cls, tip) => {
+      const t = document.createElement("span");
+      t.className = "tag" + (cls ? " " + cls : "");
+      t.textContent = text;
+      if (tip) t.title = tip;
+      li.appendChild(t);
     };
-    li.appendChild(inst);
+    if (!th) tag("draft", "mut", "Saved in the editor, never baked: Edit opens it, and Send to orb there bakes it into a theme");
+    else if (th.stale) tag("needs a rebake", "warn", "An orb on the current firmware would refuse this bake: " + th.stale);
+    else tag(e.state === "changed" ? "theme \u00b7 unsent changes" : "theme", e.state === "changed" ? "warn" : "",
+      e.state === "changed" ? "Changes saved in the editor that have not been baked: Edit opens them, Send to orb there bakes them in" : "Baked, in the hub library");
+    if (th && th.made_with) tag("made with " + th.made_with, "mut", "The editor release that made this design; opening it in a newer editor updates it when saved or sent");
+    if (th && onCard[e.name.toLowerCase()]) tag("on " + (current.name || themeIP || "this orb"), "mut", "This orb's card holds a theme by this name");
+    if (th) tag(Math.round((th.bytes || 0) / 1024) + " KB", "mut");
+    if (canEdit && (e.draft || (th && th.can_reopen))) {
+      const ed = document.createElement("button");
+      ed.type = "button";
+      ed.className = "ghost";
+      ed.textContent = "Edit";
+      ed.title = "Open it in the " + themeAppTitle(app) + " editor" + (e.state === "changed" ? ", with its unsent changes" : "") + ". Send to orb there bakes it under the same name.";
+      ed.onclick = () => openThemeEditor(edRow, { entry: e.name });
+      li.appendChild(ed);
+    }
+    if (th && !th.stale && !onCard[e.name.toLowerCase()]) {
+      const inst = document.createElement("button");
+      inst.className = "ghost";
+      inst.textContent = "Install";
+      inst.title = "Send this theme to the orb in hand. The device's theme door stores the file the moment it verifies, and the board reboots onto it.";
+      inst.onclick = async () => {
+        if (!themeIP) { state.textContent = "no orb in hand \u2014 connect one first."; return; }
+        if (typeof askConfirm === "function" && !await askConfirm({
+          title: "Install this theme?",
+          body: (f.title || f.file) + " goes to " + themeIP + ": the device files the card copy and stores it in the same door, so the board reboots onto the new face.",
+          detail: "The hub's copy stays on the shelf. Remove from card later clears the orb's copy, and taking the wall's theme off clears the face too.",
+          yes: "Install",
+        })) return;
+        inst.disabled = true;
+        fpOpen();
+        const ui = fpUI();
+        ui.doing.textContent = "installing " + (f.title || f.file) + " on " + themeIP;
+        ui.log.textContent = ""; ui.bar.style.width = "0%"; ui.bar.title = "";
+        ui.op.textContent = "pushing"; ui.live.textContent = "";
+        state.textContent = "installing " + (f.title || f.file) + " \u2014 the file is crossing";
+        // The push streams its steps exactly like an app install: the bar moves
+        // with the bytes, and the panel is the single place a refusal is read.
+        const okPush = await streamSteps("/api/library/push?kind=theme&name="
+          + encodeURIComponent(String(f.file).replace(/\.orbtheme$/i, ""))
+          + "&ip=" + encodeURIComponent(themeIP), ui, themeIP);
+        if (!okPush) {
+          state.textContent = "install refused \u2014 read the progress panel";
+          inst.disabled = false;
+          return;
+        }
+        try {
+          // The push answers done only once the orb has stored the theme and come back from
+          // its reboot, so this wait is a belt: it returns on the first answer.
+          state.textContent = (f.title || f.file) + " is stored and the orb is back \u2014 re-reading the card";
+          await themeWaitBack(state, f.title || f.file);
+          fpClose();
+          await loadThemes(themeIP);
+        } catch (e) {
+          ui.doing.textContent = "theme install refused";
+          ui.log.textContent = "\u2717 " + e.message;   // the panel stays open with its reason
+          state.textContent = "install refused: " + e.message;
+          inst.disabled = false;
+        }
+      };
+      li.appendChild(inst);
+    }
+    if (e.state === "changed") {
+      const dc = document.createElement("button");
+      dc.className = "ghost";
+      dc.textContent = "Discard changes";
+      dc.title = "Drop the unsent changes and keep the theme as it was baked";
+      dc.onclick = () => forget(e, "draft", dc);
+      li.appendChild(dc);
+    }
     const rm = document.createElement("button");
     rm.className = "ghost";
     rm.textContent = "Remove from hub library";
-    rm.title = "Delete " + f.file + " from this hub's library. No orb and no SD card is touched.";
+    rm.title = "Take " + e.name + " out of this hub's library" + (th ? ", baked theme and all" : "") + ". No orb and no SD card is touched.";
     rm.onclick = async () => {
       if (typeof askConfirm === "function" && !await askConfirm({
-        title: "Delete it from the hub library?",
-        body: (f.title || f.file) + " is removed from the hub\u0027s theme folder.",
+        title: "Remove it from the hub library?",
+        body: e.name + (th ? " and its baked theme are" : " is") + " removed from the hub.",
         detail: "An orb already drawing it keeps drawing it. This removes only the hub's copy.",
-        yes: "Delete from library",
+        yes: "Remove from library",
       })) return;
-      rm.disabled = true;
-      state.textContent = "removing " + (f.title || f.file) + " from the hub library\u2026";
-      try {
-        const r = await hubFetch("/api/library/rm?kind=theme&name="
-          + encodeURIComponent(String(f.file).replace(/\.orbtheme$/i, "")), { method: "POST" });
-        const d = await r.json().catch(() => null);
-        if (!d || !d.ok) throw new Error((d && d.error) || ("HTTP " + r.status));
-        state.textContent = (f.title || f.file) + " \u00b7 removed from the hub library";
-        loadThemes(themeIP);   // the re-read brings the shelf too; the row is simply not there
-      } catch (e) {
-        state.textContent = "the hub refused it: " + e.message;
-        rm.disabled = false;
-      }
+      forget(e, "all", rm);
     };
     li.appendChild(rm);
     list.appendChild(li);

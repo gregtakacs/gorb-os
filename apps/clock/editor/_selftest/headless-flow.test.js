@@ -96,8 +96,8 @@ const stepOf = (it) => it.stepNow()[0];
   ok(/Fits the orb/.test(v7.badgeText) && /live rows/.test(v7.badgeNote), 'the badge says whether it fits, with the pace and the rows', v7.badgeText + ' · ' + v7.badgeNote);
   ok(/^Fits/.test(v7.fitShort) && v7.fitDot === '#3fb950', 'the top bar carries the same verdict in two words', v7.fitShort);
   // D43 P7: two files and nothing else, the baked theme and the design it carries
-  ok(typeof v7.exportTheme === 'function' && typeof v7.exportDesign === 'function' && /\.orbdesign/.test(v7.designFileNote)
-    && !['exportKit', 'exportFrames', 'exportBundle', 'designId', 'toggleMoreExport', 'designShipOpts'].some((k) => k in v7), 'Render offers the .orbtheme and the design file, and nothing else', v7.designFileNote);
+  ok(typeof v7.exportTheme === 'function'
+    && !['exportDesign', 'designFileNote', 'exportKit', 'exportFrames', 'exportBundle', 'designId', 'toggleMoreExport', 'designShipOpts'].some((k) => k in v7), 'Render offers the .orbtheme and nothing else (K10: the theme is the one file that leaves the hub)');
   ok(!V().diagOpen && /Diagnostics/.test(V().diagLabel), 'the diagnostics drawer is closed by default');
   V().toggleDiag();
   ok(V().diagOpen, 'and opens on a press');
@@ -163,7 +163,7 @@ const stepOf = (it) => it.stepNow()[0];
   // every binding the pre-P5 template used is still bound (two renamed on purpose)
   const PRE = 'addOpts artNote bundleNote calDown calMax calMin calStep calText calUp calVal caseOpts clearLabel clearOp clearSel compRows copyId cursor dateKitNote designId dials dupCancel dupNm dupNote dupOpen dupReplace dupStem dupStop exportBundle exportFrames exportKit exportTheme fields frameLabel glassOpts handOpts handRows hasSelHead hasTabReset hasZoom idInput isCase isCompare isComps isDial isExport isHands isHub isMove kitNote loadBundle loadDesign mainRef mech metaLabel next noSel onDown onIdInput onMove onUp paneRef pickGuide playLabel prev renderOpts resetCal resetDesign resetHands rulerPx rulerTicks seamText selTitle selectAll sendNote sendToOrb setCal setWipe showRuler slowLabel solve stackCap stackCapFg stackRows stackWarns stageCv stageDown stageFlow stageRing stageRing2 stageRound stageWin status tabReset tabResetLabel tabs themeNameIn themeNameLen themeNamePh themeNameVal themeNote timeOpts toggle toggleMech toggleSlow trainOpts viewOpts viewText wipeVal zipNote zoomOpts'.split(' ');
   // D43 P7 retired the layer kit, the flattened frames, the .wckit and the Design ID: the
-  // .orbtheme and the design file it carries are the only two files the editor writes
+  // .orbtheme is the one file the editor writes (K10 retired the design-file download too)
   const RETIRED = new Set(['bundleNote', 'copyId', 'dateKitNote', 'designId', 'exportBundle', 'exportFrames', 'exportKit', 'idInput', 'kitNote', 'loadBundle', 'loadDesign', 'onIdInput', 'selectAll', 'zipNote']);
   const RENAMED = { tabs: 'stepOpts', isDial: 'isStart',
     // P5b (§4.2): the layers panel arranges and the inspector removes, so the old
@@ -215,7 +215,7 @@ const stepOf = (it) => it.stepNow()[0];
        'the shell’s send modal and the clock’s send lines agree: ' + JSON.stringify(sd), R.studioSend.hint + ' | ' + R.sendHint);
   });
   it.setState({ sending: null, status: '' });
-  { const R = V(); ok(R.studioTop.steps === R.stepOpts && R.studioTop.primary.label === 'Download .orbtheme' && R.studioGlass.size === R.stageCv && R.studioTool.view === R.viewOpts && R.studioRender.downloads.length === 2, 'the top bar, glass, toolbar and Render panel carry the clock’s own values'); }
+  { const R = V(); ok(R.studioTop.steps === R.stepOpts && R.studioTop.primary.label === 'Download .orbtheme' && R.studioGlass.size === R.stageCv && R.studioTool.view === R.viewOpts && R.studioRender.downloads.length === 1, 'the top bar, glass, toolbar and Render panel carry the clock’s own values'); }
   // K6: the one title bar is the shell's TopBar; the clock's page draws none of its own
   const studioJs = fs.readFileSync(require('./runtime-paths.js').STUDIO, 'utf8');
   ok(html.indexOf('Watch composer') < 0 && !(html.match(/<header/g) || []).length && (studioJs.match(/h\('header'/g) || []).length === 1 && html.includes('OrbStudio.TopBar'),

@@ -50,20 +50,23 @@ func (s *Server) takeForShelf(token string) []byte {
 }
 
 func (s *Server) keepOnShelf(body []byte) {
-	if dest, err := s.library().keepTheme(body); err != nil {
+	if dest, err := s.library().keepTheme(body, true); err != nil {
 		log.Printf("theme shelf: not kept: %v", err)
 	} else {
 		log.Printf("theme shelf: kept %s", dest)
 	}
 }
 
-// keepTheme files one theme on the shelf by (app, name) and returns the path written.
-func (l *Library) keepTheme(body []byte) (string, error) {
+// keepTheme files one theme on the shelf by (app, name) and returns the path written. A
+// shelf file already holding that app and name, in any format, is the one overwritten, so
+// a rebake replaces its stale copy. K10: the theme carries its design, so the app's draft
+// under that name is folded away once the theme is on the shelf.
+func (l *Library) keepTheme(body []byte, fold bool) (string, error) {
 	c, err := orbnet.ContainerName(body)
 	if err != nil {
 		return "", err
 	}
-	app := ""
+	app := "clock"
 	if len(c.Sections) > 0 {
 		app = c.Sections[0]
 	}
@@ -75,35 +78,21 @@ func (l *Library) keepTheme(body []byte) (string, error) {
 		return "", err
 	}
 	dest := ""
-	if entries, err := os.ReadDir(dir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".orbtheme") {
-				continue
-			}
-			have, err := os.ReadFile(filepath.Join(dir, e.Name()))
-			if err != nil {
-				continue
-			}
-			hc, err := orbnet.ContainerName(have)
-			if err != nil {
-				continue
-			}
-			happ := ""
-			if len(hc.Sections) > 0 {
-				happ = hc.Sections[0]
-			}
-			if happ == app && hc.Name == c.Name {
-				dest = filepath.Join(dir, e.Name())
-				break
-			}
+	shelfThemes(dir, func(p string, _ os.FileInfo, t *orbnet.ShelfThemeInfo) {
+		if dest == "" && shelfApp(t) == app && t.Name == c.Name {
+			dest = p
 		}
-	}
+	})
 	if dest == "" {
-		stem := strings.TrimSuffix(designFile(c.Name), ".orbdesign")
-		if app != "" {
-			stem = app + "-" + stem
-		}
-		dest = filepath.Join(dir, stem+".orbtheme")
+		dest = filepath.Join(dir, app+"-"+strings.TrimSuffix(designFile(c.Name), ".orbdesign")+".orbtheme")
 	}
-	return dest, writeFileAtomic(dest, body)
+	if err := writeFileAtomic(dest, body); err != nil {
+		return "", err
+	}
+	if dd := l.designsDir(app); fold && dd != "" {
+		if err := os.Remove(filepath.Join(dd, designFile(c.Name))); err == nil {
+			log.Printf("theme shelf: %q's draft folded into its theme", c.Name)
+		}
+	}
+	return dest, nil
 }

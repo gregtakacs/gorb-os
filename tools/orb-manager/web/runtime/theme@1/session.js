@@ -1,19 +1,21 @@
-/* theme@1/session — an editor's session: history, My designs, and the design file
- * (theme-editor-kit-plan K2, K9).
+/* theme@1/session — an editor's session: history, the app's library on the hub, and the
+ * design document (theme-editor-kit-plan K2, K9, K10).
  *
  * Any app's editor gets, without carrying it:
  *   - undo and redo over snapshots of the keys the app names, with a burst of edits (a
  *     slider drag, a typed number) merged into one step;
- *   - My designs: named designs kept as files on the hub, art included (K9: the hub's
- *     disk is the store, so nothing an editor keeps depends on this browser; there is
- *     no autosave, and a reload starts from a preset, a saved design or a theme);
+ *   - the library (K10): the app's entries on the hub, one per name — a draft, a theme,
+ *     or a theme with unsent changes — saved, opened at their newest design, discarded or
+ *     forgotten, and Rebake all for themes baked in a format the orb no longer reads. The
+ *     hub's disk is the store (K9): nothing depends on this browser, there is no autosave,
+ *     and a reload starts from a preset or a library entry;
  *   - what the hub serves: whether this editor is newer than the app on the orb, said
  *     before a send, and a note when a design opened was made by an older editor;
  *   - the design document's envelope (format, schema, app, app version, made), the
  *     migration walk (composer-stack-plan ruling 12), and its refusals: another app's
  *     design, a schema with no step, a design from a newer release of the app;
- *   - opening a design from a file (an .orbtheme's design region, or a design file) or
- *     from the hub's Edit door (?theme=, the card or the hub's shelf), and downloads.
+ *   - opening a design from a file (an .orbtheme's design region, or a design file), a
+ *     library entry (?entry=) or a card theme (?theme=), and the theme download.
  *
  * Everything is per app (?app=, else the host's slug), so two apps' editors never read
  * each other's designs. Plain JS, no React. The app keeps what only it knows:
@@ -31,6 +33,8 @@
  *     content(withArt),            // async: the design's own fields, merged into the envelope
  *     apply(doc, from),            // put a checked design into the editor: null, or why not
  *     download(blob, name),        // optional: the page's download (default OrbTheme.download)
+ *     bake(),                      // optional, async: the open design baked to .orbtheme bytes, or
+ *                                  // null (the app's status says why); Rebake all needs it
  *   });
  */
 (function (root) {
@@ -51,7 +55,7 @@
       orbNote: '',                 // set by boot() when this editor is newer than the orb's app
       lastMade: null,              // the older release a design just opened was made by, else null
     };
-    var mine = [];
+    var lib = [];
     var say = function (s) { host.say(s); };
     var keys = function () { return host.keys(); };
     var burstMs = function () { return host.burstMs ? host.burstMs() : 600; };
@@ -113,57 +117,105 @@
       restore(next, 'Redone');
     };
 
-    /* ---- My designs: design documents filed on the hub by name (K9), art included. The
-     * list is fetched and kept (a sheet that lists them renders every frame); off the hub
-     * there is nowhere to keep one, and the design file is the way to take it along. */
-    var q = function (nm, name) { return '/api/design/' + nm + '?app=' + encodeURIComponent(api.slug()) + (name != null ? '&name=' + encodeURIComponent(name) : ''); };
-    var offHub = 'My designs are kept on the hub: open this editor from the hub, or download the design file';
+    /* ---- the library (K10): the app's entries on the hub, one per name. The list is fetched
+     * and kept (a sheet that lists it renders every frame). An entry is
+     *   {name, state: 'draft'|'theme'|'changed', at, draft: {at, appVersion, extra}|null,
+     *    theme: {stem, made_with, can_reopen, stale}|null, ...draft.extra}
+     * Off the hub there is no library, and the theme download is the way to take one along. */
+    var app = function () { return '?app=' + encodeURIComponent(api.slug()); };
+    var offHub = 'the library is kept on the hub: open this editor from the hub, or download the .orbtheme';
     var err = function (e) { return e && e.message ? e.message : String(e); };
     var extrasOf = function (x) { var o = {}; Object.keys(x).forEach(function (k) { if (k !== 'name' && k !== 'doc' && k !== 'at') o[k] = x[k]; }); return o; };
-    var post = function (nm, name, doc) {
-      return hubJson(q(nm, name), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: doc ? JSON.stringify(doc) : '' });
+    var saveDraft = function (name, doc, extra) {
+      return hubJson('/api/design/save' + app() + '&name=' + encodeURIComponent(name),
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({}, doc, { saved: { extra: extra || {} } })) });
     };
-    api.mineList = function () { return mine.slice(); };
-    api.mineRefresh = async function () {
-      if (!api.hubOrb()) { mine = []; return false; }
+    api.library = function () { return lib.slice(); };
+    api.libraryEntry = function (nm) { return lib.find(function (e) { return e.name === nm; }) || null; };
+    api.libraryRefresh = async function () {
+      if (!api.hubOrb()) { lib = []; return false; }
       try {
-        var l = await hubJson(q('list'));
-        mine = (Array.isArray(l) ? l : []).map(function (x) { return Object.assign({}, x.extra || {}, { name: x.name, at: x.at, appVersion: x.appVersion, bytes: x.bytes }); });
-      } catch (e) { say('My designs could not be read from the hub: ' + err(e)); return false; }
+        var l = await hubJson('/api/library/entries' + app());
+        lib = (Array.isArray(l) ? l : []).map(function (e) { return Object.assign({}, (e.draft && e.draft.extra) || {}, e); });
+      } catch (e) { say('The library could not be read from the hub: ' + err(e)); return false; }
       host.set({});
       return true;
     };
-    // entry: {name, doc, ...anything the app lists by}; a save under a held name replaces it
-    api.mineSave = async function (entry) {
+    // entry: {name, doc, ...anything the app lists by}. A draft under a theme's name sits beside
+    // it as that theme's unsent changes; under a draft's name it replaces it.
+    api.saveDraft = async function (entry) {
       if (!api.hubOrb()) { say('Not saved: ' + offHub); return false; }
-      try { await post('save', entry.name, Object.assign({}, entry.doc, { saved: { extra: extrasOf(entry) } })); }
+      try { await saveDraft(entry.name, entry.doc, extrasOf(entry)); }
       catch (e) { say('Not saved: ' + err(e)); return false; }
-      await api.mineRefresh();
-      say('Saved “' + entry.name + '” to My designs on the hub');
+      await api.libraryRefresh();
+      var e = api.libraryEntry(entry.name);
+      say('Saved “' + entry.name + '” to the library' + (e && e.state === 'changed' ? ' as unsent changes to its theme — Send to orb bakes them in' : ' as a draft'));
       return true;
     };
-    api.mineOpen = async function (nm) {
+    // an entry's newest design (its draft, else its theme's), or its theme's with from='theme'
+    var designOf = async function (nm, from) {
+      var r = await fetch('/api/library/design' + app() + '&name=' + encodeURIComponent(nm) + (from ? '&from=' + from : ''));
+      var o = null; try { o = await r.json(); } catch (e) { o = null; }
+      if (!r.ok || !o || o.format !== 'wc-design') throw new Error((o && o.error) || 'the hub has no design for “' + nm + '”');
+      return o;
+    };
+    api.openEntry = async function (nm) {
       if (!api.hubOrb()) { say(offHub); return false; }
-      var o = null;
-      try { var r = await fetch(q('get', nm)); o = r.ok ? await r.json() : null; } catch (e) { o = null; }
-      if (!o || o.format !== 'wc-design') { say('Could not open “' + nm + '”: the hub has no design by that name'); return false; }
-      var why = api.apply(o, 'My designs');
+      var o; try { o = await designOf(nm); } catch (e) { say('Could not open “' + nm + '”: ' + err(e)); return false; }
+      var why = api.apply(o, 'the library');
       if (why) { say('Could not open “' + nm + '”: ' + why); return false; }
       api.restart();
+      if (!api.lastMade) say('Opened “' + nm + '” from the library');
       api.sayOpened('“' + nm + '”');
       return true;
     };
-    api.mineDelete = async function (nm) {
+    // what: 'draft' discards a theme's unsent changes; 'all' takes the entry out of the library
+    api.forgetEntry = async function (nm, what) {
       if (!api.hubOrb()) { say(offHub); return false; }
-      try { await post('delete', nm); } catch (e) { say('Not removed: ' + err(e)); return false; }
-      await api.mineRefresh();
-      say('Removed “' + nm + '” from My designs');
+      try { await hubJson('/api/library/forget' + app() + '&name=' + encodeURIComponent(nm) + '&what=' + (what === 'draft' ? 'draft' : 'all'), { method: 'POST' }); }
+      catch (e) { say('Not removed: ' + err(e)); return false; }
+      await api.libraryRefresh();
+      say(what === 'draft' ? 'Discarded the unsent changes to “' + nm + '”' : 'Removed “' + nm + '” from the library');
       return true;
+    };
+    /* Rebake all: every theme baked in a format the orb no longer reads, rebaked from the
+     * design it carries (the theme's, never unsent changes beside it) and kept on the shelf in
+     * its place, without sending. One at a time, said as it goes; nothing rebakes on its own. */
+    api.rebakeAll = async function () {
+      if (!api.hubOrb()) { say(offHub); return null; }
+      if (!host.bake) { say('This editor cannot rebake its themes'); return null; }
+      await api.libraryRefresh();
+      var todo = lib.filter(function (e) { return e.theme && e.theme.stale; });
+      if (!todo.length) { say('Nothing in the library needs a rebake'); return { done: [], failed: [] }; }
+      var done = [], failed = [];
+      for (var i = 0; i < todo.length; i++) {
+        var e = todo[i], tag = (i + 1) + ' of ' + todo.length + ' — “' + e.name + '”';
+        if (!e.theme.can_reopen) { failed.push(e.name + ' (it carries no design to rebake from)'); continue; }
+        say('Rebaking ' + tag + '…');
+        try {
+          var o = await designOf(e.name, 'theme');
+          var why = api.apply(o, 'the library');
+          if (why) throw new Error(why);
+          api.restart();
+          var bytes = await host.bake();
+          if (!bytes) throw new Error(String(host.state().status || 'the bake did not finish'));
+          var kept = await hubJson('/api/library/keep' + app() + '&fold=0', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes });
+          // the bake names itself from the design; one that came out under another name is a
+          // second entry, and the stale one still stands
+          if (kept && kept.name && kept.name !== e.name) throw new Error('it baked as “' + kept.name + '”, so the stale “' + e.name + '” is still in the library');
+          done.push(e.name);
+        } catch (x) { failed.push(e.name + ' (' + err(x) + ')'); }
+      }
+      await api.libraryRefresh();
+      say('Rebaked ' + done.length + ' of ' + todo.length + (done.length ? ': ' + done.join(', ') : '') +
+        (failed.length ? ' · not rebaked: ' + failed.join('; ') : '') + (done.length ? ' — Install puts a rebaked theme on an orb' : ''));
+      return { done: done, failed: failed };
     };
 
     /* ---- boot: drop the browser's old autosave; under the hub, move any My designs this
-     * browser still holds from before K9 (references only: they never held their art), read
-     * the hub's list, and ask the hub what the orb runs. Off the hub there is nothing to read. */
+     * browser still holds from before K9 into the library as drafts (references only: they
+     * never held their art), read the library, ask the hub what the orb runs, then do what
+     * the page was opened for: ?entry=<name> opens that entry, ?rebake=1 runs Rebake all. */
     api.boot = async function () {
       try { root.localStorage.removeItem(api.sessionKey()); } catch (e) { /* no storage */ }
       var hub = api.hubOrb();
@@ -172,18 +224,22 @@
       if (Array.isArray(old)) {
         var left = old.filter(function (x) { return x && x.name && x.doc; }), moved = 0;
         for (var i = 0; i < left.length; i++) {
-          try { await post('save', left[i].name, Object.assign({}, left[i].doc, { saved: { extra: extrasOf(left[i]) } })); moved++; }
+          try { await saveDraft(left[i].name, left[i].doc, extrasOf(left[i])); moved++; }
           catch (e) { /* kept in the browser for the next boot */ }
         }
         if (moved === left.length) { try { root.localStorage.removeItem(api.mineKey()); } catch (e) { /* no storage */ } }
       }
-      await api.mineRefresh();
+      await api.libraryRefresh();
       try {
         var src = await hubJson('/api/editor/source?ip=' + encodeURIComponent(hub.ip) + '&slug=' + encodeURIComponent(hub.slug));
         api.orbNote = src && src.relation === 'newer' && src.orb_version
           ? 'this editor is ' + api.version() + '; the orb runs ' + api.slug() + ' ' + src.orb_version + ' — update the app on the orb before sending' : '';
       } catch (e) { api.orbNote = ''; }
       if (api.orbNote) say('Heads up: ' + api.orbNote);
+      var q = null; try { q = new URLSearchParams(root.location.search); } catch (e) { q = null; }
+      var entry = q && q.get('entry');
+      if (entry) await api.openEntry(entry);
+      else if (q && q.get('rebake') === '1') await api.rebakeAll();
       return true;
     };
 
@@ -232,13 +288,6 @@
     // after an open: when an older release made the design, say that saving or sending updates it
     api.sayOpened = function (what) {
       if (api.lastMade) say('Opened ' + what + ' — made with ' + api.slug() + ' ' + api.lastMade + '; saving or sending it updates it to ' + api.version());
-    };
-    // the design file: the design a baked theme carries, on its own
-    api.exportDoc = async function (name) {
-      var doc = await api.doc(true), nm = String(name || 'design').replace(/[^\w .-]+/g, '-').trim() || 'design';
-      var body = JSON.stringify(doc), n = Array.isArray(doc.assets) ? doc.assets.length : 0;
-      download(new Blob([body], { type: 'application/json' }), nm + '.orbdesign');
-      say('Downloaded ' + nm + '.orbdesign (' + Math.max(1, Math.round(body.length / 1024)) + ' KB' + (n ? ', ' + n + ' image' + (n > 1 ? 's' : '') : '') + ')');
     };
     // open a file: a baked .orbtheme (its design read out of it) or a design file
     api.openFile = async function (file) {

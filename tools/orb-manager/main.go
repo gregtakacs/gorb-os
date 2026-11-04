@@ -1186,6 +1186,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// D37: an installed app's own editor, served out of its container region.
 	s.routesEditor(mux)
 	s.routesDesigns(mux)
+	s.routesLibraryEntries(mux)
 }
 
 // indexMarker is the QUOTED placeholder in web/index.html that receives the launch

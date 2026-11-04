@@ -853,7 +853,7 @@ func TestThemeListRetiresASupersededRead(t *testing.T) {
 	}
 	// A guard only counts when it sits between the await it follows and the appends it
 	// protects, so check the last guard ahead of each append rather than any guard.
-	for _, site := range []string{"appendChild(themeRow", "themeShelfRows(scope"} {
+	for _, site := range []string{"appendChild(themeRow", "themeLibraryRows(libApp"} {
 		at := strings.Index(body, site)
 		if at < 0 {
 			t.Fatalf("loadThemes no longer appends at %q", site)

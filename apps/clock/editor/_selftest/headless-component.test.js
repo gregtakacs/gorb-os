@@ -45,10 +45,10 @@ const txt = (s) => ({ name: 'x', _url: 'data:text/plain;base64,' + Buffer.from(s
   ok(/MISSING.*flare #c9/.test(i1.artNote(r2)), 'artNote names the slot whose bytes are not here', i1.artNote(r2));
   d.comps.find((c) => c.id === 'c9').img = 'flare-1';
 
-  // the browser keeps no copy of the art (owner ruling 2026-11-04): the design file and the
+  // the browser keeps no copy of the art (owner ruling 2026-11-04): a library draft and the
   // theme carry it, and the readout says it lasts this session only
   ok(typeof i1.saveArt === 'undefined' && typeof i1.loadArt === 'undefined', 'the editor has no art store to save to or load from');
-  ok(/this session only — save it to My designs, or export the design file or the theme, to keep it/.test(i1.artNote(refs)), 'artNote says the art lasts this session only', i1.artNote(refs));
+  ok(/this session only — save it to the library, or send or download the theme, to keep it/.test(i1.artNote(refs)), 'artNote says the art lasts this session only', i1.artNote(refs));
   global.localStorage.removeItem('wc.assets');
   const r0 = i1.applyDesignContent({ dial: 'skeleton', design: E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.skeleton.design))),
     assets: [{ id: 'bg-9', name: 'bg9.png', kind: 'png', dataUrl: U_BG }] }, 'x.orbdesign');

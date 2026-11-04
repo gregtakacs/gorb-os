@@ -722,7 +722,7 @@ func TestThemesFaceFollowsTheAppsPattern(t *testing.T) {
 			t.Errorf("the orb theme row has no %s; the row's verbs are activate and remove-from-card", want)
 		}
 	}
-	shelf := blockOf(t, app, "function themeShelfRows")
+	shelf := blockOf(t, app, "function themeLibraryRows")
 	for _, want := range []string{`inst.textContent = "Install"`, "Remove from hub library", "/api/library/push?kind=theme"} {
 		if !strings.Contains(shelf, want) {
 			t.Errorf("the shelf theme row has no %s; a hub-folder theme must be installable from this face", want)
@@ -1177,7 +1177,7 @@ func TestLibraryInstallOpensTheSharedProgressPanel(t *testing.T) {
 		// one body: the label arrives as the `name` parameter, so the probe is the parameter
 		// assignment rather than a literal that no longer appears.
 		{"the app row's Install press", "btn.textContent = name;"},
-		// D38: a theme's Install press is the shelf row in app.js's themeShelfRows,
+		// D38: a theme's Install press is the library row in app.js's themeLibraryRows,
 		// and its progress is one bar that fills while the push streams — the push
 		// route speaks the install ladder's own NDJSON dialect, so the bar moves
 		// with real bytes.
@@ -1674,5 +1674,34 @@ func TestImportPickersOfferOnlyTheirOwnFiles(t *testing.T) {
 	}
 	if !strings.Contains(app, `pickedAs(f, [".zip", ".bin"], "a firmware image")`) {
 		t.Errorf("want the firmware picker to check the picked name")
+	}
+}
+
+// K10: the Themes face is two lists, the orb's card and the app's library on the hub, and
+// the library rows are the entries: drafts, themes, unsent changes, stale bakes, each opening
+// in the editor by name, and Rebake all opening the editor to rebake.
+func TestThemesFaceListsTheLibraryByEntry(t *testing.T) {
+	app := readAppJS(t)
+	load := blockOf(t, app, "async function loadThemes(ip)")
+	for _, want := range []string{`themeSection("On "`, `/api/library/entries?app=`} {
+		if !strings.Contains(load, want) {
+			t.Errorf("loadThemes has no %s", want)
+		}
+	}
+	if strings.Contains(load, `getJSON("/api/library")`) {
+		t.Error("loadThemes still reads the shelf listing; the library rows come from the entries")
+	}
+	rows := blockOf(t, app, "function themeLibraryRows")
+	for _, want := range []string{`themeSection("In the hub library"`, `"Rebake all (`, `{ rebake: true }`, `{ entry: e.name }`,
+		`"Discard changes"`, `forget(e, "draft"`, `forget(e, "all"`, `"needs a rebake"`, "\"theme \\u00b7 unsent changes\"", `"made with "`, `tag("draft"`} {
+		if !strings.Contains(rows, want) {
+			t.Errorf("the library rows have no %s", want)
+		}
+	}
+	door := blockOf(t, app, "function openThemeEditor")
+	for _, want := range []string{`"&entry="`, `"&rebake=1"`} {
+		if !strings.Contains(door, want) {
+			t.Errorf("the editor door does not pass %s", want)
+		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"strings"
 )
 
 // Reading a .orbtheme container's identity and its two budgets, so the hub ingests the
@@ -101,6 +102,12 @@ func ContainerDesign(body []byte) ([]byte, error) {
 	if _, err := ParseContainer(body); err != nil {
 		return nil, err
 	}
+	return designAt(body)
+}
+
+// designAt reads the design the header points at, checked against its CRC, on a body
+// whose header has already been read.
+func designAt(body []byte) ([]byte, error) {
 	w := func(i int) uint32 { return binary.LittleEndian.Uint32(body[i*4:]) }
 	off, size := uint64(w(wDesignOff)), uint64(w(wDesignSize))
 	if size == 0 {
@@ -130,7 +137,7 @@ var ErrNoDesign = errors.New("orbnet: this theme carries no design, so it cannot
 // index of 1..8 sections (orb_bundle.c's parse_core keeps that width, and a two-section
 // file stays a valid REJECTION vector worth parsing far enough to name). A caller that
 // wants the door's verdict wants ContainerName.
-func ParseContainer(body []byte) (*ThemeContainer, error) { return parseContainer(body, false) }
+func ParseContainer(body []byte) (*ThemeContainer, error) { return parseContainer(body, false, false) }
 
 // ContainerHead answers the precheck's identity question off the front of the file: the
 // 128-byte header plus the geometry region it names, and none of the art tail. Per-app
@@ -143,7 +150,7 @@ func ParseContainer(body []byte) (*ThemeContainer, error) { return parseContaine
 // slice, the index walk refused every real bake for its own tail, and every first Send
 // press answered "could not get a clean read" — systematic, not a race.
 func ContainerHead(body []byte) (*ThemeContainer, error) {
-	c, err := parseContainer(body, true)
+	c, err := parseContainer(body, true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +160,9 @@ func ContainerHead(body []byte) (*ThemeContainer, error) {
 	return c, nil
 }
 
-func parseContainer(body []byte, head bool) (*ThemeContainer, error) {
+// staleABI skips the geometry ABI check and nothing else: ShelfTheme's read of a theme
+// baked for a dialect the firmware no longer speaks, for its name, app and design only.
+func parseContainer(body []byte, head, staleABI bool) (*ThemeContainer, error) {
 	if len(body) < themeHdrBytes {
 		return nil, fmt.Errorf("orbnet: that file is %d B, shorter than the %d B header a .orbtheme starts with", len(body), themeHdrBytes)
 	}
@@ -165,7 +174,7 @@ func parseContainer(body []byte, head bool) (*ThemeContainer, error) {
 	if f != themeFormat3 {
 		return nil, fmt.Errorf("orbnet: that is a FORMAT %d theme container and the orb reads FORMAT 3 only — the FORMAT 2 reader is out of the firmware, so re-export it from the Theme Editor", f)
 	}
-	if w(wGeomABI) != themeABI3 && w(wGeomABI) != themeABI6 {
+	if !staleABI && w(wGeomABI) != themeABI3 && w(wGeomABI) != themeABI6 {
 		return nil, fmt.Errorf("orbnet: bundle geometry v%d; this build reads v%d (apps) and v%d (a clock) — re-bake it", w(wGeomABI), themeABI3, themeABI6)
 	}
 	// The header's own checksum, over the header's SHAPE: the same 128 bytes with word 28
@@ -338,3 +347,54 @@ func checkSlug(b []byte) error {
 	}
 	return nil
 }
+
+// ShelfTheme reads a theme on the hub's shelf for the library (theme-editor-kit-plan K10):
+// its identity and its design when it is one the orb reads, and, when it is not, what it
+// is called, which app it themes and its design when those can still be read, with Stale
+// naming why the orb would refuse it. A FORMAT 3 file baked for another geometry ABI
+// keeps the header shape, the index and the design pointer, so all three are read; an
+// older FORMAT gives only the name. err is set only for a file that is not a theme at all
+// (short, wrong magic, damaged header, no name).
+type ShelfThemeInfo struct {
+	*ThemeContainer
+	Design []byte // nil when the theme carries none or it cannot be read
+	Stale  string // why the orb would refuse this container; "" when it reads it
+}
+
+func ShelfTheme(body []byte) (*ShelfThemeInfo, error) {
+	c, err := ContainerName(body)
+	if err == nil {
+		d, _ := designAt(body)
+		return &ShelfThemeInfo{ThemeContainer: c, Design: d}, nil
+	}
+	if len(body) < themeHdrBytes || binary.LittleEndian.Uint32(body[wMagic*4:]) != themeMagic {
+		return nil, err
+	}
+	stale := strings.TrimPrefix(err.Error(), "orbnet: ")
+	w := func(i int) uint32 { return binary.LittleEndian.Uint32(body[i*4:]) }
+	switch {
+	case w(wFormat) == themeFormat3 && w(wGeomABI) != themeABI3 && w(wGeomABI) != themeABI6:
+		c, perr := parseContainer(body, false, true)
+		if perr != nil {
+			return nil, perr
+		}
+		d, _ := designAt(body)
+		return &ShelfThemeInfo{ThemeContainer: c, Design: d, Stale: stale}, nil
+	case w(wFormat) != themeFormat3:
+		field := body[wName*4 : wName*4+themeNameBytes]
+		end := len(field)
+		for i, b := range field {
+			if b == 0 {
+				end = i
+				break
+			}
+		}
+		name := string(field[:end])
+		if CheckThemeName(name) != nil {
+			return nil, err
+		}
+		return &ShelfThemeInfo{ThemeContainer: &ThemeContainer{Name: name, Format: w(wFormat), Bytes: len(body)}, Stale: stale}, nil
+	}
+	return nil, err
+}
+

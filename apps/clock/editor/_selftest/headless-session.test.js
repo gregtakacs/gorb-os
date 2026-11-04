@@ -79,7 +79,7 @@ const comps = (it) => JSON.stringify(it.design().comps);
   it3.undo();
   ok(it3.design().comps.find((c) => c.id === sid).size === 30, 'and Ctrl+Z brings the edited watch back');
 
-  // My designs, on the hub (K9): save with art, list, open, delete
+  // the library, on the hub (K10): save a draft with art, list, reopen with art, discard, delete
   const fh = require('../../../../tools/orb-manager/web/runtime/_selftest/fake-hub.js')();
   const keepLoc = global.location, keepFetch = global.fetch;
   global.location = { pathname: '/editor/192.0.2.7/clock/', search: '', protocol: 'http:' };
@@ -87,22 +87,33 @@ const comps = (it) => JSON.stringify(it.design().comps);
   const it4 = mk(); it4.trackHistory(); it4.setComp(sid, { size: 77 });
   E.assetRestore([{ id: 'k9-art', name: 'bg.png', kind: 'png', dataUrl: 'data:image/png;base64,azk=' }]);
   it4.state.designs = Object.assign({}, it4.state.designs, { modern: Object.assign(it4.design(), { bgArt: 'k9-art' }) });
-  await it4.saveMine('Big sub');
-  const l = it4.mineList(), held = fh.designs.get('clock').get('Big sub');
-  ok(l.length === 1 && l[0].name === 'Big sub' && l[0].dial === 'modern' && /Saved “Big sub” to My designs on the hub/.test(it4.state.status), 'Save current files the watch on the hub under its name', it4.state.status);
+  await it4.saveDraft('Big sub');
+  const l = it4.library(), held = fh.drafts.get('clock').get('Big sub');
+  ok(l.length === 1 && l[0].name === 'Big sub' && l[0].state === 'draft' && l[0].dial === 'modern' && /Saved “Big sub” to the library as a draft/.test(it4.state.status), 'Save current files the watch in the library as a draft', it4.state.status);
   ok(held && held.format === 'wc-design' && held.art === true && (held.assets || []).some((a) => a.id === 'k9-art'), 'with its art inside', held && JSON.stringify(held.assets || []).slice(0, 80));
-  await it4.saveMine('Big sub');
-  ok(it4.mineList().length === 1, 'saving under the same name replaces it');
-  ok(/save it to My designs, or export the design file or the theme, to keep it/.test(it4.artNote()), 'the art line names My designs as a way to keep it', it4.artNote());
+  await it4.saveDraft('Big sub');
+  ok(it4.library().length === 1, 'saving under the same name replaces it');
+  ok(/save it to the library, or send or download the theme, to keep it/.test(it4.artNote()), 'the art line names the library as a way to keep it', it4.artNote());
+  // a theme on the shelf with unsent changes beside it, and a stale one
+  fh.themes.get('clock').set('Skeleton', { design: Object.assign({}, held, { themeName: 'Skeleton', appVersion: 'v1.2.0' }), at: 1 });
+  fh.themes.get('clock').set('Old face', { design: null, stale: 'bundle geometry v5', at: 2 });
+  await it4.saveDraft('Skeleton');
+  window.__ORB_APP = { slug: 'clock', version: 'v1.2.16' };   // the region build's stamp: 'dev' names no release
   const it5 = mk(); it5.buildMovement = () => {}; await it5.session.boot();
-  const rv = it5.renderVals();
-  ok(rv.mine.length === 1 && !rv.mineEmpty && typeof rv.openFile === 'function', 'another page lists it beside Open a file');
-  await rv.mine[0].load();
+  const rv = it5.renderVals(), row = (n) => it5.renderVals().mine.find((r) => r.name === n);
+  ok(rv.mine.length === 3 && !rv.mineEmpty && typeof rv.openFile === 'function', 'another page lists every entry beside Open a file', rv.mine.map((r) => r.name).join());
+  ok(row('Big sub').tag === 'draft' && !row('Big sub').changed, 'a draft is tagged a draft', row('Big sub').tag);
+  ok(/^theme · unsent changes · made with v1\.2\.0/.test(row('Skeleton').tag) && row('Skeleton').changed, 'a theme with a draft beside it says so, and which release made it', row('Skeleton').tag);
+  ok(/^theme · needs a rebake/.test(row('Old face').tag) && /Rebake all/.test(row('Old face').tagTip), 'a stale theme says it needs a rebake, and where to do it', row('Old face').tag);
+  await row('Big sub').load();
   ok(it5.state.dial === 'modern' && it5.design().comps.find((c) => c.id === sid).size === 77 && it5.state.themeName === 'Big sub' && E.assetKnown('k9-art'), 'Open loads the watch, its name and its art', it5.state.status);
-  it5.renderVals().mine[0].del();
-  ok(it5.mineList().length === 1, 'Delete asks first');
-  await it5.renderVals().mine[0].del();
-  ok(it5.mineList().length === 0 && it5.renderVals().mineEmpty, 'and removes it on the second press');
+  await row('Skeleton').discard();
+  ok(row('Skeleton').tag.indexOf('theme') === 0 && !row('Skeleton').changed, 'Discard changes leaves the theme', row('Skeleton').tag);
+  row('Big sub').del();
+  ok(it5.library().length === 3, 'Delete asks first');
+  await row('Big sub').del();
+  ok(it5.library().length === 2 && !row('Big sub'), 'and takes the entry out on the second press');
+  delete window.__ORB_APP;
   global.location = keepLoc; global.fetch = keepFetch;
 })().then(() => {
 

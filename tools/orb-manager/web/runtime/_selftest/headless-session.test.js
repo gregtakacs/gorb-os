@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // theme@1/session (theme-editor-kit-plan K2, K9): the OS's session, driven by a small made-up
 // app ("tint": a colour and a size) rather than the clock, so nothing clock-shaped can hide in
-// it. History with bursts, no autosave, per-app slugs, My designs on the hub (fake-hub.js),
-// the move of a browser's old designs, the hub's word on the orb's release, the design
-// envelope with its migrations and refusals, the older-design note, opening a design file, an
-// .orbtheme's design and the hub's Edit door, and the design-file download.
+// it. History with bursts, no autosave, per-app slugs, the app's library on the hub (K10,
+// fake-hub.js: drafts, themes, unsent changes, opening at the newest design, discarding,
+// forgetting, ?entry=, Rebake all), the move of a browser's old designs, the hub's word on
+// the orb's release, the design envelope with its migrations and refusals, the older-design
+// note, opening a design file, an .orbtheme's design and the hub's Edit door.
 //
 //   node headless-session.test.js
 'use strict';
@@ -101,56 +102,86 @@ const edit = (app, p) => { app.set(p); app.ses.track(); };
     location.search = '';
   }
 
-  // ---- My designs, on the hub (K9)
+  // ---- the library, on the hub (K10)
   {
     store.clear();
+    const G = require(path.join(__dirname, '..', 'baker@1', 'orbtheme-baker.js'));
+    const bake = (name, design) => G.writeBundle3({ name, design: design ? new TextEncoder().encode(JSON.stringify(design)) : undefined,
+      sections: [{ slug: 'tint', elements: [], scalars: {}, sprites: [], art: new Uint8Array(16) }] }).bytes;
     const off = mk();
-    ok(!(await off.ses.mineSave({ name: 'One', doc: { format: 'wc-design' } })) && /Not saved: My designs are kept on the hub/.test(off.state.status), 'off the hub a save says where designs live', off.state.status);
-    ok(!(await off.ses.boot()) && !off.ses.mineList().length, 'and boot reads nothing');
+    ok(!(await off.ses.saveDraft({ name: 'One', doc: { format: 'wc-design' } })) && /Not saved: the library is kept on the hub/.test(off.state.status), 'off the hub a save says where the library lives', off.state.status);
+    ok(!(await off.ses.boot()) && !off.ses.library().length, 'and boot reads nothing');
     location.pathname = ON_HUB;
-    const doc = (color) => ({ format: 'wc-design', schema: 1, app: 'tint', appVersion: 'v1.3.0', color, size: 5, assets: [{ id: 'a1', dataUrl: 'data:,x' }] });
+    const doc = (color, ver) => ({ format: 'wc-design', schema: 1, app: 'tint', appVersion: ver || 'v1.3.0', color, size: 5, assets: [{ id: 'a1', dataUrl: 'data:,x' }] });
     const a = mk();
-    ok(await a.ses.mineSave({ name: 'One', doc: doc('teal'), dial: 'round' }) && /Saved “One” to My designs on the hub/.test(a.state.status), 'a design is saved to the hub by name', a.state.status);
-    await a.ses.mineSave({ name: 'Two', doc: doc('plum') });
-    await a.ses.mineSave({ name: 'One', doc: doc('gold'), dial: 'square' });
-    const l = a.ses.mineList();
-    ok(l.length === 2 && l[0].name === 'One' && l[0].dial === 'square' && typeof l[0].at === 'number', 'a save under a held name replaces it, newest first, with the app’s listing extras', JSON.stringify(l));
-    ok(fh.designs.get('tint').get('One').assets[0].dataUrl === 'data:,x', 'the hub holds the design with its art');
+    ok(await a.ses.saveDraft({ name: 'One', doc: doc('teal'), dial: 'round' }) && /Saved “One” to the library as a draft/.test(a.state.status), 'a design is saved to the library as a draft', a.state.status);
+    await a.ses.saveDraft({ name: 'Two', doc: doc('plum') });
+    await a.ses.saveDraft({ name: 'One', doc: doc('gold'), dial: 'square' });
+    const l = a.ses.library();
+    ok(l.length === 2 && l[0].name === 'One' && l[0].state === 'draft' && l[0].dial === 'square', 'a save under a draft’s name replaces it, newest first, with the app’s listing extras', JSON.stringify(l.map((e) => [e.name, e.state, e.dial])));
+    ok(fh.drafts.get('tint').get('One').assets[0].dataUrl === 'data:,x', 'the hub holds the draft with its art');
+    // a theme on the shelf, and a draft saved under its name: one entry, with unsent changes
+    fh.themes.get('tint').set('Reef', { design: doc('coral', 'v1.2.0+1111111'), at: 5 });
+    await a.ses.saveDraft({ name: 'Reef', doc: doc('navy') });
+    const reef = a.ses.libraryEntry('Reef');
+    ok(reef && reef.state === 'changed' && /as unsent changes to its theme/.test(a.state.status), 'a draft under a theme’s name is that theme’s unsent changes', a.state.status);
     const b = mk(); await b.ses.boot();
-    ok(b.ses.mineList().length === 2, 'another page of the same app sees them');
+    ok(b.ses.library().length === 3, 'another page of the same app sees the same library');
     b.ses.track(); edit(b, { size: 6 }); edit(b, { size: 7 });
-    ok(await b.ses.mineOpen('One') && b.state.color === 'gold' && b.applied[0] === 'My designs' && !b.ses.undoStack.length && b.ses.snap === null, 'a saved design opens from the hub, and its history starts there', b.state.color);
-    ok(!(await b.ses.mineOpen('Nope')) && /the hub has no design by that name/.test(b.state.status), 'a name the hub does not hold says so', b.state.status);
-    await a.ses.mineDelete('Two');
-    ok(a.ses.mineList().length === 1 && /Removed “Two”/.test(a.state.status), 'a design is removed by name');
+    ok(await b.ses.openEntry('Reef') && b.state.color === 'navy' && b.applied[0] === 'the library' && !b.ses.undoStack.length && b.ses.snap === null, 'an entry opens at its newest design, its unsent changes, and its history starts there', b.state.color);
+    ok(await b.ses.forgetEntry('Reef', 'draft') && b.ses.libraryEntry('Reef').state === 'theme' && /Discarded the unsent changes to “Reef”/.test(b.state.status), 'Discard changes leaves the theme as it was baked', b.state.status);
+    window.__ORB_APP = { slug: 'tint', version: 'v1.3.0+6a5c661' };
+    ok(await b.ses.openEntry('Reef') && b.state.color === 'coral' && /made with tint v1\.2\.0\+1111111; saving or sending it updates it to v1\.3\.0\+6a5c661/.test(b.state.status), 'a theme an older editor made opens with the update note', b.state.status);
+    ok(await b.ses.openEntry('One') && /Opened “One” from the library/.test(b.state.status), 'and one this release made just says it opened', b.state.status);
+    ok(!(await b.ses.openEntry('Nope')) && /no “Nope” in the tint library/.test(b.state.status), 'a name the hub does not hold says so', b.state.status);
+    await a.ses.forgetEntry('Two', 'all');
+    ok(!a.ses.libraryEntry('Two') && /Removed “Two” from the library/.test(a.state.status), 'Delete takes the entry out of the library');
     fh.refuse = 'the hub has no writable library directory to keep designs in';
-    ok(!(await a.ses.mineSave({ name: 'Three', doc: doc('red') })) && /Not saved: the hub has no writable library directory/.test(a.state.status), 'a refused save says so in the hub’s words', a.state.status);
+    ok(!(await a.ses.saveDraft({ name: 'Three', doc: doc('red') })) && /Not saved: the hub has no writable library directory/.test(a.state.status), 'a refused save says so in the hub’s words', a.state.status);
     fh.refuse = null;
-    // a browser's designs from before K9 move to the hub once, then the key goes
+    // ?entry= opens that entry once the library is read
+    location.search = '?entry=One';
+    const e = mk(); await e.ses.boot();
+    ok(e.state.color === 'gold' && e.applied[0] === 'the library', '?entry= opens the entry the Themes tab pressed Edit on', e.state.color);
+    location.search = '';
+    // a browser's designs from before K9 move into the library as drafts, then the key goes
     store.set('wc.mine.tint', JSON.stringify([{ name: 'Old', at: 5, doc: doc('olive'), dial: 'round' }, { name: 'Legacy id', id: 'WCD5-abc' }]));
     const m = mk(); await m.ses.boot();
-    ok(m.ses.mineList().some((x) => x.name === 'Old' && x.dial === 'round') && !store.has('wc.mine.tint'), 'boot moves the browser’s old designs to the hub and drops the key', JSON.stringify(m.ses.mineList().map((x) => x.name)));
-    ok(!m.ses.mineList().some((x) => x.name === 'Legacy id'), 'an entry with no document is not moved');
+    ok(m.ses.library().some((x) => x.name === 'Old' && x.state === 'draft' && x.dial === 'round') && !store.has('wc.mine.tint'), 'boot moves the browser’s old designs into the library and drops the key', JSON.stringify(m.ses.library().map((x) => x.name)));
+    ok(!m.ses.library().some((x) => x.name === 'Legacy id'), 'an entry with no document is not moved');
     fh.refuse = 'disk full';
     store.set('wc.mine.tint', JSON.stringify([{ name: 'Kept', doc: doc('rust') }]));
     await mk().ses.boot();
     ok(store.has('wc.mine.tint'), 'a move the hub refuses leaves the browser’s copy for the next boot');
     fh.refuse = null; store.clear();
     // the hub's word on the orb's release
-    window.__ORB_APP = { slug: 'tint', version: 'v1.3.0+6a5c661' };
     fh.source = { source: 'library', relation: 'newer', hub_version: 'v1.3.0+6a5c661', orb_version: 'v1.2.9+0000000' };
     const n = mk(); await n.ses.boot();
     ok(/this editor is v1\.3\.0\+6a5c661; the orb runs tint v1\.2\.9\+0000000 — update the app on the orb before sending/.test(n.ses.orbNote) && /^Heads up: /.test(n.state.status), 'an editor newer than the orb’s app says so', n.ses.orbNote);
     fh.source = { source: 'library', relation: 'same', hub_version: 'v1.3.0+6a5c661', orb_version: 'v1.3.0+6a5c661' };
     const sm = mk(); await sm.ses.boot();
     ok(sm.ses.orbNote === '', 'and the same release says nothing');
-    // a design an older release made opens, with the note that saving or sending updates it
-    const o = mk(); await o.ses.boot();
-    fh.designs.get('tint').get('One').appVersion = 'v1.2.0+1111111';
-    ok(await o.ses.mineOpen('One') && /made with tint v1\.2\.0\+1111111; saving or sending it updates it to v1\.3\.0\+6a5c661/.test(o.state.status), 'an older design opens with the update note', o.state.status);
-    fh.designs.get('tint').get('One').appVersion = 'v1.3.0+2222222';
-    o.state.status = '';
-    ok(await o.ses.mineOpen('One') && o.state.status === '', 'another build of this release opens with no note', o.state.status);
+    // Rebake all: each stale theme, from its own design (never the unsent changes beside it),
+    // kept on the shelf in its place with its changes left standing; one without a design is named
+    fh.themes.get('tint').set('Stale A', { design: doc('amber', 'v1.1.0'), stale: 'bundle geometry v5', at: 6 });
+    fh.themes.get('tint').set('Stale B', { design: null, stale: 'bundle geometry v5', at: 7 });
+    fh.themes.get('tint').set('Fine', { design: doc('lime'), at: 8 });
+    await a.ses.saveDraft({ name: 'Stale A', doc: doc('unsent') });
+    const baked = [];
+    const r = mk({ bake: async () => { baked.push(r.state.color); return bake(r.state.name || 'Stale A', doc(r.state.color)); } });
+    r.set = (p) => Object.assign(r.state, p);
+    const out = await r.ses.rebakeAll();
+    ok(out && out.done.join() === 'Stale A' && baked.join() === 'amber', 'Rebake all rebakes each stale theme from the design it carries, not its unsent changes', JSON.stringify([out, baked]));
+    ok(out.failed.length === 1 && /Stale B \(it carries no design to rebake from\)/.test(out.failed[0]), 'and names the one it cannot', out.failed[0]);
+    const sa = r.ses.libraryEntry('Stale A');
+    ok(sa && sa.state === 'changed' && !sa.theme.stale && fh.drafts.get('tint').get('Stale A').color === 'unsent', 'the rebaked theme replaces the stale one and its unsent changes stand', JSON.stringify(sa && sa.theme));
+    ok(/Rebaked 1 of 2: Stale A · not rebaked: Stale B/.test(r.state.status), 'and the status says what happened', r.state.status);
+    ok((await r.ses.rebakeAll()).done.length === 0 && /not rebaked: Stale B/.test(r.state.status), 'a second press finds only what it cannot rebake', r.state.status);
+    const nb = mk(); ok((await nb.ses.rebakeAll()) === null && /cannot rebake/.test(nb.state.status), 'an editor with no bake says it cannot rebake');
+    fh.themes.get('tint').set('Stale C', { design: doc('cyan', 'v1.1.0'), stale: 'bundle geometry v5', at: 9 });
+    const w = mk({ bake: async () => bake('Another name', doc('cyan')) });
+    const wo = await w.ses.rebakeAll();
+    ok(wo.failed.some((f) => /Stale C \(it baked as “Another name”, so the stale “Stale C” is still in the library\)/.test(f)), 'a bake that names itself differently is reported, not counted as done', JSON.stringify(wo));
     location.pathname = '/';
     delete window.__ORB_APP;
   }
@@ -182,15 +213,13 @@ const edit = (app, p) => { app.set(p); app.ses.track(); };
     ok(/no step from schema 2 to 3/.test(m.ses.apply(Object.assign({}, doc)) || ''), 'a missing step is refused by name');
   }
 
-  // ---- opening, and the design file
+  // ---- opening a file: an .orbdesign someone already has (K10 retired the download), an .orbtheme
   {
     const a = mk(); a.set({ color: 'navy', name: 'Deep sea' });
-    await a.ses.exportDoc('Deep sea/1');
-    const dl = a.downloads[0];
-    ok(dl && dl.name === 'Deep sea-1.orbdesign' && /Downloaded Deep sea-1\.orbdesign \(1 KB, 1 image\)/.test(a.state.status), 'the design file downloads under a safe name and says what it holds', a.state.status);
+    ok(!('exportDoc' in a.ses), 'K10: there is no design-file download; the theme is the one file that leaves the hub');
     const fileOf = async (bytes, name) => ({ name, arrayBuffer: async () => bytes.buffer });
     const enc = new TextEncoder();
-    const body = new Uint8Array(await dl.blob.arrayBuffer());
+    const body = enc.encode(JSON.stringify(await a.ses.doc(true)));
     const b = mk();
     b.ses.track(); edit(b, { size: 5 });
     ok(await b.ses.openFile(await fileOf(body, 'Deep sea-1.orbdesign')) && b.state.color === 'navy' && b.applied[0] === 'Deep sea-1.orbdesign', 'a design file opens');

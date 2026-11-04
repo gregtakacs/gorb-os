@@ -119,10 +119,8 @@ type designHead struct {
 }
 
 func (s *Server) routesDesigns(mux *http.ServeMux) {
-	mux.Handle("/api/design/list", s.requireControl(http.HandlerFunc(s.handleDesignList)))
-	mux.Handle("/api/design/get", s.requireControl(http.HandlerFunc(s.handleDesignGet)))
+	// K10: listing, reading and removing are the library's (libentries.go); a draft is saved here
 	mux.Handle("/api/design/save", s.requireControl(http.HandlerFunc(s.handleDesignSave)))
-	mux.Handle("/api/design/delete", s.requireControl(http.HandlerFunc(s.handleDesignDelete)))
 }
 
 // designApp reads ?app= and the folder it names, or answers the refusal itself.
@@ -138,19 +136,6 @@ func (s *Server) designApp(w http.ResponseWriter, r *http.Request) (string, stri
 		return "", "", false
 	}
 	return app, dir, true
-}
-
-func (s *Server) handleDesignList(w http.ResponseWriter, r *http.Request) {
-	_, dir, ok := s.designApp(w, r)
-	if !ok {
-		return
-	}
-	rows, err := listDesigns(dir)
-	if err != nil {
-		s.jsonErr(w, err.Error())
-		return
-	}
-	s.jsonOK(w, rows)
 }
 
 func listDesigns(dir string) ([]DesignRow, error) {
@@ -179,25 +164,6 @@ func listDesigns(dir string) ([]DesignRow, error) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].At > rows[j].At })
 	return rows, nil
-}
-
-func (s *Server) handleDesignGet(w http.ResponseWriter, r *http.Request) {
-	_, dir, ok := s.designApp(w, r)
-	if !ok {
-		return
-	}
-	name, err := designName(r.URL.Query().Get("name"))
-	if err != nil {
-		s.jsonErr(w, err.Error())
-		return
-	}
-	body, err := os.ReadFile(filepath.Join(dir, designFile(name)))
-	if err != nil {
-		s.jsonErr(w, "no design named “"+name+"” on this hub")
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(body)
 }
 
 // handleDesignSave answers POST /api/design/save?app=&name= with the design document as
@@ -260,25 +226,4 @@ func (s *Server) handleDesignSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.jsonOK(w, DesignRow{Name: name, At: saved.At, Bytes: len(out), AppVersion: h.AppVersion, Made: h.Made, Extra: saved.Extra})
-}
-
-func (s *Server) handleDesignDelete(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	_, dir, ok := s.designApp(w, r)
-	if !ok {
-		return
-	}
-	name, err := designName(r.URL.Query().Get("name"))
-	if err != nil {
-		s.jsonErr(w, err.Error())
-		return
-	}
-	if err := os.Remove(filepath.Join(dir, designFile(name))); err != nil && !errors.Is(err, os.ErrNotExist) {
-		s.jsonErr(w, "the design could not be removed: "+err.Error())
-		return
-	}
-	s.jsonOK(w, map[string]any{"name": name})
 }

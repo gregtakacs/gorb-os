@@ -282,9 +282,78 @@ def build(appdir, out_dir=None):
     return wasm, [n for _, n, _ in imp], have * WASM_PAGE
 
 
+# ---- the editor region (flight-tracker-design §12.2) ---------------------------------
+# An app whose app.json names a directory of its own as "editor" ships that directory as
+# its editor region: the hub opens it from the Themes page. The recipe is the clock's
+# (tools/make_clock_region.py): a flat STORE ZIP, editor.json first and canonical, then
+# the directory's top-level files in name order, the fixed date and mode, read back
+# before it ships. Subdirectories (an editor's _selftest/) and dotfiles stay home.
+EDITOR_KEYS = {"baker", "editor", "entry", "runtime"}
+RUNTIME_ID = re.compile(r"^[a-z][a-z0-9_-]*@[0-9][0-9.]*$")
+ZIP_DATE = (1980, 1, 1, 0, 0, 0)
+
+
+def editor_dir(appdir, m):
+    """The app's editor directory when app.json names one, else None."""
+    e = m.get("editor")
+    if not isinstance(e, str) or not e or "/" in e or e.startswith("."):
+        return None
+    d = os.path.join(appdir, e)
+    return d if os.path.isdir(d) else None
+
+
+def editor_region(appdir, m):
+    """The region bytes for the editor directory app.json names."""
+    import io
+    import zipfile
+    import zlib
+    d = editor_dir(appdir, m)
+    if not d:
+        fail("%s names editor %r, which is no directory of the app" % (m["slug"], m.get("editor")))
+    try:
+        with open(os.path.join(d, "editor.json"), encoding="utf-8") as f:
+            ej = json.load(f)
+    except (OSError, ValueError) as e:
+        fail("%s's editor has no readable editor.json (%s)" % (m["slug"], e))
+    if not isinstance(ej, dict) or set(ej) - EDITOR_KEYS:
+        fail("editor.json carries %s; it names entry, runtime, editor and baker"
+             % ", ".join(sorted(set(ej) - EDITOR_KEYS)) if isinstance(ej, dict) else "editor.json is not an object")
+    entry = ej.get("entry")
+    if not isinstance(entry, str) or "/" in entry or not entry.endswith((".html", ".htm")):
+        fail("editor.json's entry must be a plain .html file of the editor, not %r" % (entry,))
+    runtime = ej.get("runtime", [])
+    if not isinstance(runtime, list) or not all(isinstance(r, str) and RUNTIME_ID.match(r) for r in runtime):
+        fail("editor.json's runtime lists ids like theme@1, not %r" % (runtime,))
+    files = sorted(n for n in os.listdir(d)
+                   if not n.startswith(".") and n != "editor.json" and os.path.isfile(os.path.join(d, n)))
+    if entry not in files:
+        fail("editor.json's entry %s is not in %s" % (entry, d))
+    members = [("editor.json", json.dumps(ej, sort_keys=True, separators=(",", ":")).encode())]
+    for n in files:
+        with open(os.path.join(d, n), "rb") as f:
+            members.append((n, f.read()))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in members:
+            info = zipfile.ZipInfo(name, date_time=ZIP_DATE)
+            info.external_attr = 0o644 << 16
+            zf.writestr(info, data, compress_type=zipfile.ZIP_STORED)
+    region = buf.getvalue()
+    zf = zipfile.ZipFile(io.BytesIO(region))
+    for info, (name, data) in zip(zf.infolist(), members):
+        if info.filename != name or info.compress_type != zipfile.ZIP_STORED or \
+                zf.read(name) != data or zlib.crc32(data) & 0xFFFFFFFF != info.CRC:
+            fail("%s's editor region does not read back at %s" % (m["slug"], name))
+    if len(region) > orbapp.EDITOR_MAX:
+        fail("%s's editor is %d B; a region holds %d" % (m["slug"], len(region), orbapp.EDITOR_MAX))
+    return region
+
+
 def container(appdir, editor=b""):
     """The app's .orbapp bytes, through the one container writer and its checks."""
     m = manifest(appdir)
+    if not editor and editor_dir(appdir, m):
+        editor = editor_region(appdir, m)
     if m.get("editor") and not editor:
         fail("%s declares an editor, which only tools/make_factory_apps.py builds "
              "(inside a gorb-os clone)" % m["slug"])

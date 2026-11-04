@@ -2121,12 +2121,40 @@ static void pool_carry(const esp_partition_t *p)
              e.slug, e.name, (unsigned)e.size);
 }
 
-/* The entry this boot draws. P3 keeps the one-theme dial: the clock's, else the first.
- * P4 binds each app to its own. */
+/* The entry boot adopts before any app runs: the clock's, else the first. Each app's
+ * own is bound when it builds and when it takes the glass (orb_theme_bind, P4). */
 static int pool_live_entry(void)
 {
     const int k = orb_pool_find(s_pool, "clock");
     return k >= 0 ? k : (s_pool->n ? 0 : -1);
+}
+
+bool orb_theme_has(const char *slug)
+{
+    return slug && s_pool && orb_pool_find(s_pool, slug) >= 0;
+}
+
+/* theme-pool-plan P4: make `slug`'s theme the one the paint path reads — its entry
+ * projected into the dial's tables and its banks mapped — for the stage that is about to
+ * build on that app's page. The stage releases the previous app's layers first, so no
+ * widget, row or voice is reading the map this replaces. Already bound: nothing to do. */
+esp_err_t orb_theme_bind(const char *slug)
+{
+    const esp_partition_t *p = art_bank_partition();
+    const int k = (p && s_pool) ? orb_pool_find(s_pool, slug) : -1;
+    if (k < 0) return ESP_ERR_NOT_FOUND;
+    if (s_active_valid && s_live_base == s_pool->e[k].off && s_live_sec &&
+        !strcmp(s_live_sec->slug, slug))
+        return ESP_OK;
+    const esp_err_t e = adopt_default_bundle(p, s_pool->e[k].off);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "bind: %s's theme would not load (%s)", slug, esp_err_to_name(e));
+        use_no_art();
+        return e;
+    }
+    s_live_base = s_pool->e[k].off;
+    ESP_LOGI(TAG, "bound %s's theme \"%s\"", slug, s_active_name);
+    return ESP_OK;
 }
 
 /* Resolve the owner's choice and verify the slot it names. Called from app_main

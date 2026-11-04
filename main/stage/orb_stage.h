@@ -50,6 +50,10 @@ bool stage_running(void);
 #include "orb_clock3.h"   /* clk_sound_t */
 struct orb_app;
 esp_err_t stage_open(struct orb_app *app, bool *base);
+/* theme-pool-plan P4: the stage draws one app at a time. Bind releases what it built for
+ * the last app and builds this app's theme on this app's page; bound says whose it is. */
+esp_err_t stage_bind(struct orb_app *app);
+bool      stage_bound(const struct orb_app *app);
 void stage_info(uint16_t *n_rows, uint16_t *n_comps, uint8_t *car_row, uint8_t *tick_rate,
                uint8_t *second_sweep, uint8_t *bg_mode, uint16_t *tourbillon_n);
 const clk_row_t   *stage_row(int i);

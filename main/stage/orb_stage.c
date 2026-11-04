@@ -140,7 +140,8 @@ static uint8_t s_g_clive[CLK_COMP_MAX];
 static time_t  s_now_t;
 static double  s_now_frac, s_now_wall;
 static bool    s_base;            /* no resident theme: the stage draws nothing */
-static bool    s_opened;
+static bool    s_opened;          /* built for s_lay_app (theme-pool-plan P4: one app at a time) */
+static lv_obj_t *s_plate_obj;     /* the plate widget, so a release can take it down */
 
 /* CLK_BG_DIRECT_PUSH, the L3/L4 switch the block below and the scheduler's delta
  * push both key on, lives in orb_sched.h: one number, both TUs, so the push and
@@ -1851,6 +1852,7 @@ esp_err_t stage_init(orb_app_t *self)
         plate_src = orb_bg_plate_dsc();
     }
     lv_obj_t *plate = lv_image_create(s_scr);
+    s_plate_obj = plate;
     lv_obj_set_size(plate, CLK_SCR_W, CLK_SCR_H);
     lv_obj_set_pos(plate, 0, 0);
     lv_obj_set_scrollable(plate, false);
@@ -2131,15 +2133,79 @@ bool stage_running(void)
 
 /* ---- §43: the stage's surface, bound as the dial_* imports (orb_app_wasm.c) ------- */
 
+/* ---- theme-pool-plan P4: the stage is the app's on the glass ---------------------------
+ *
+ * Each theme-aware app wears its own theme from the pool, and one stage draws whichever
+ * app is building or on the glass. Binding to another app releases everything the stage
+ * built for the last one — its layer-table rows, its widgets on that app's page, the
+ * plate and the delta canvas, its voices — then binds the new app's theme (its tables
+ * projected, its banks mapped in place of the old) and builds on the new app's page. The
+ * release comes first because every widget and row it deletes reads the map the bind
+ * replaces. */
+static void stage_release(void)
+{
+    if (!s_opened) return;
+    stage_run(false);                              /* frames and voices parked */
+    orb_sound_stop_all();
+    if (!s_base) {
+        const orb_svc_t *svc = orb_svc_table();
+        if (s_lay_app && orb_svc_layers_live(s_lay_app) > 0)
+            for (int i = 0; i < s_lay_n; i++) svc->layer_del(s_lay_app, s_lay_handle[i]);
+        s_lay_n = 0;
+        s_lay_sec = NULL;
+        s_lay_bank_off = 0;
+        orb_sched_set_layer_claim(0, 0);
+        for (int i = 0; s_row && i < CLK_ROW_MAX; i++)
+            if (s_row[i].obj) { lv_obj_delete(s_row[i].obj); s_row[i].obj = NULL; }
+        for (int i = 0; i < CLK_COMP_MAX; i++)
+            for (int p = 0; p < CLK_COMP_SLOTS; p++)
+                if (s_comp_obj[i][p]) { lv_obj_delete(s_comp_obj[i][p]); s_comp_obj[i][p] = NULL; }
+        complications_reset();
+        if (s_overlay) { lv_obj_delete(s_overlay); s_overlay = NULL; }
+        if (s_plate_obj) { lv_obj_delete(s_plate_obj); s_plate_obj = NULL; }
+        orb_bg_release();
+    }
+    ESP_LOGI(TAG, "stage released %s", s_lay_app && s_lay_app->slug ? s_lay_app->slug : "?");
+    s_opened = false;
+    s_base = false;
+    s_art = NULL;
+    s_lay_app = NULL;
+}
+
+bool stage_bound(const orb_app_t *app)
+{
+    return s_opened && app && s_lay_app == app;
+}
+
+esp_err_t stage_bind(orb_app_t *app)
+{
+    if (stage_bound(app)) return ESP_OK;
+    stage_release();
+    /* A theme that will not bind leaves the tables empty, and stage_init finds no
+     * resident art and draws nothing: the app's base face, the D31 fallback. */
+    (void)orb_theme_bind(app->slug);
+    /* The app's own widgets (a label, a card) may already be on its page: a rebind
+     * builds after them. The stage's objects go beneath them, in their own order —
+     * the plate lowest — so a rebuilt dial never covers what the app drew. */
+    lv_obj_t *page = orb_ui_screen(app->flash_slot);
+    const uint32_t before = page ? lv_obj_get_child_count(page) : 0;
+    const esp_err_t e = stage_init(app);
+    if (e != ESP_OK) return e;
+    if (page && before) {
+        const uint32_t built = lv_obj_get_child_count(page) - before;
+        for (uint32_t i = 0; i < built; i++)
+            lv_obj_move_to_index(lv_obj_get_child(page, (int32_t)(before + i)), (int32_t)i);
+    }
+    s_opened = true;
+    ESP_LOGI(TAG, "stage bound to %s%s", app->slug, s_base ? " (base face: no theme)" : "");
+    return ESP_OK;
+}
+
 esp_err_t stage_open(orb_app_t *app, bool *base)
 {
-    if (!s_opened) {
-        const esp_err_t e = stage_init(app);
-        if (e != ESP_OK) return e;
-        s_opened = true;
-    }
+    const esp_err_t e = stage_bind(app);
     if (base) *base = s_base;
-    return ESP_OK;
+    return e;
 }
 
 void stage_info(uint16_t *n_rows, uint16_t *n_comps, uint8_t *car_row, uint8_t *tick_rate,

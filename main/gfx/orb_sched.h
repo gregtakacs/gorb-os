@@ -85,6 +85,9 @@ typedef struct {
  * not learn about art_bank, so stage_init() hands its own blob() value to
  * orb_bg_init() and this TU never maps the assets partition itself. */
 void orb_bg_init(const uint8_t *base);
+/* theme-pool-plan P4: forget the plate, the delta canvas and the frame bookkeeping, before
+ * the stage builds for another app's theme. */
+void orb_bg_release(void);
 
 /* Allocate + seed the GIF-mode canvas from the keyframe and return the plate
  * source it produces, or NULL when there is no canvas (alloc failed, or the

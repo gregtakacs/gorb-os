@@ -14,7 +14,7 @@ What a tracker theme holds, and what apps/flights/main.c expects of it:
   - the plate: the background, the whole glass;
   - row 0 (slot 0): the radar arm, pivot on the glass centre. Declared a sweeping seconds
     row at SWEEP_FPS so the scheduler runs the stage at that rate; the app poses it itself;
-  - rows 1..PLANE_ROWS (slots 1..16): the plane pool, one bank of 49 frames every row names,
+  - rows 1..PLANE_ROWS (slots 1..15): the plane pool, one bank of 49 frames every row names,
     each row's pivot on the glass centre; the app moves a row by its pose's offset, turns it
     by the track, and picks its frame: shape * 7 + band, in SHAPES and make_art.BANDS order.
 """
@@ -37,7 +37,8 @@ from PIL import Image, ImageChops   # noqa: E402
 
 BAKER = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime", "baker@1", "orbtheme-baker.js")
 SHAPES = ("light", "turboprop", "bizjet", "airliner", "heavy", "helicopter", "generic")
-PLANE_ROWS = 16               # the contacts drawn at once (the model keeps 32)
+PLANE_ROWS = 15               # the contacts drawn at once: with the arm, the 16 rows an app's
+                              # layer table holds (ORB_LAYER_MAX), so the direct compositor draws it
 SWEEP_FPS = 15                # the arm's declared sweep: the stage's frame rate
 GROUND_OPA = 0.45             # colour off: ground traffic recedes (§11.1 ruling 8)
 SS = 4                        # supersampling for the raster-built outlines

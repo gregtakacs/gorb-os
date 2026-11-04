@@ -1584,6 +1584,8 @@ static void clock_layers_build(orb_app_t *self)
         orb_bundle_elem_at(sec, i, &e);
         if (e.cls == ORB_ASSET_PLATE && e.slot == 0u) continue;   /* the canvas */
         if (e.cls == ORB_ASSET_SOUND) continue;   /* D39: played by sound_policy, never drawn */
+        if (e.cls == ORB_ASSET_PREVIEW) continue; /* the picker's picture, never on the glass:
+                                                   * claimed, it cost a row of an app's 16 */
         if (e.flags & CLK_EF_HIDDEN) { hidden++; continue; }
         pick_cls[n] = e.cls; pick_slot[n] = e.slot;
         pick_ord[n] = e.cls == ORB_ASSET_PLATE ? 0xFFFFu

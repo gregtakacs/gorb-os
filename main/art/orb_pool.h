@@ -5,8 +5,9 @@
  * The `assets` partition holds several apps' themes, packed from ORB_POOL_FIRST with no
  * holes, and two copies of a table saying what is where in its last two sectors. This
  * file is the table's format and the only code that moves an entry. It knows nothing of
- * a theme's insides: an entry is an extent with an index region at its start and a run
- * of banks after it, each with a CRC. Every flash access goes through orb_pool_io_t, so
+ * a theme's insides: an entry is an extent with a head at its start (the slot header's
+ * sector and the bundle's index, as the one slot laid them out) and a run of banks
+ * after it, each with a CRC. Every flash access goes through orb_pool_io_t, so
  * tools/host_pool_test.py drives this exact file over a simulated flash that loses
  * power at every step, and the device drives it over esp_partition.
  *
@@ -21,12 +22,12 @@
 
 #define ORB_POOL_SECTOR      0x1000u                       /* the erase unit */
 #define ORB_POOL_PART_BYTES  0x800000u                     /* partitions.csv `assets` */
-#define ORB_POOL_FIRST       0x1000u                       /* sector 0 is retired */
+#define ORB_POOL_FIRST       0x0u                          /* the one slot is entry 0 */
 #define ORB_POOL_TABLE_A     (ORB_POOL_PART_BYTES - 2u * ORB_POOL_SECTOR)
 #define ORB_POOL_TABLE_B     (ORB_POOL_PART_BYTES - 1u * ORB_POOL_SECTOR)
 #define ORB_POOL_END         ORB_POOL_TABLE_A              /* entries stop here */
 #define ORB_POOL_ENTRIES     8u                            /* B5: one per app */
-#define ORB_POOL_SLUG_MAX    16u                           /* with its NUL */
+#define ORB_POOL_SLUG_MAX    24u                           /* the 23-byte slug rule + NUL */
 #define ORB_POOL_NAME_MAX    56u                           /* the slot header's name */
 #define ORB_POOL_MAGIC       0x4C4F4F50u                   /* "POOL", little-endian */
 #define ORB_POOL_FORMAT      1u
@@ -35,9 +36,10 @@
 
 enum { ORB_POOL_LIVE = 1, ORB_POOL_MOVING = 2 };
 
-/* One app's theme in the pool. Its index region is [off, off + geom_size); its banks
- * are [off + art_off, off + art_off + art_size). The index records bank offsets as they
- * were when the entry stood at `base`, so a bank is at record - base + off. */
+/* One app's theme in the pool. Its head (header sector and index) is [off, off +
+ * geom_size); its banks are [off + art_off, off + art_off + art_size). The index records
+ * bank offsets as they were when the entry stood at `base`, so a bank is at record -
+ * base + off. */
 typedef struct {
     char     slug[ORB_POOL_SLUG_MAX];
     char     name[ORB_POOL_NAME_MAX];
@@ -89,6 +91,11 @@ uint32_t orb_pool_used_end(const orb_pool_t *p);
 
 /* The entry for `slug`, or -1. */
 int orb_pool_find(const orb_pool_t *p, const char *slug);
+
+/* Whether `slug`'s theme of `size` bytes fits once `slug`'s old entry is gone: 0, or
+ * ORB_POOL_ERR_FULL (no room), or ORB_POOL_ERR_TABLE (a ninth app). Pure: a store asks
+ * it before it parks the dial, and orb_pool_reserve asks it again. */
+int orb_pool_fits(const orb_pool_t *p, const char *slug, uint32_t size);
 
 /* A sector-rounded size. */
 uint32_t orb_pool_round(uint32_t n);

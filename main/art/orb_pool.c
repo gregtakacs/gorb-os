@@ -23,6 +23,7 @@ static uint32_t get32(const uint8_t *p)
 /* The head's words, and an entry's after its two strings. */
 enum { H_MAGIC, H_FORMAT, H_SERIAL, H_N, H_ENTRY_BYTES, H_CRC };
 #define E_WORDS_AT (ORB_POOL_SLUG_MAX + ORB_POOL_NAME_MAX)
+_Static_assert(E_WORDS_AT + 12 * 4 <= ORB_POOL_ENTRY_BYTES, "an entry's words must fit its record");
 
 static uint32_t *entry_word(orb_pool_entry_t *e, int k)
 {
@@ -269,16 +270,23 @@ int orb_pool_remove(const orb_pool_io_t *io, orb_pool_t *p, int *which, const ch
     return orb_pool_compact(io, p, which);
 }
 
-int orb_pool_reserve(const orb_pool_io_t *io, orb_pool_t *p, int *which,
-                     const char *slug, uint32_t size, uint32_t *at)
+int orb_pool_fits(const orb_pool_t *p, const char *slug, uint32_t size)
 {
-    if (!size) return ORB_POOL_ERR_ARG;
     const int k = orb_pool_find(p, slug);
     uint64_t total = orb_pool_round(size);
     for (uint32_t i = 0; i < p->n; i++)
         if ((int)i != k) total += p->e[i].size;
     if (total > ORB_POOL_END - ORB_POOL_FIRST) return ORB_POOL_ERR_FULL;
     if (k < 0 && p->n >= ORB_POOL_ENTRIES) return ORB_POOL_ERR_TABLE;
+    return 0;
+}
+
+int orb_pool_reserve(const orb_pool_io_t *io, orb_pool_t *p, int *which,
+                     const char *slug, uint32_t size, uint32_t *at)
+{
+    if (!size) return ORB_POOL_ERR_ARG;
+    const int f = orb_pool_fits(p, slug, size);
+    if (f) return f;
     const int r = orb_pool_remove(io, p, which, slug);
     if (r) return r;
     *at = orb_pool_used_end(p);

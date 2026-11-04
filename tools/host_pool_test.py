@@ -371,6 +371,7 @@ MUTANTS = (
      "e->state = ORB_POOL_LIVE;"),
     ("the read-back", "if (gc != e->geom_crc || ac != e->art_crc) return ORB_POOL_ERR_VERIFY;", ""),
     ("the fit", "if (total > ORB_POOL_END - ORB_POOL_FIRST) return ORB_POOL_ERR_FULL;", ""),
+    ("the ninth app", "if (k < 0 && p->n >= ORB_POOL_ENTRIES) return ORB_POOL_ERR_TABLE;", ""),
     ("the order check", "if (e->off < end) return", "if (0) return"),
     ("the newer copy", "get32(io->buf + H_SERIAL * 4) > a_serial", "get32(io->buf + H_SERIAL * 4) < a_serial"),
     ("the ascending copy", "for (uint32_t o = 0; o < e->size; o += ORB_POOL_SECTOR) {",

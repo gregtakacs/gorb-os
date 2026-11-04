@@ -60,10 +60,13 @@ is already a pool entry and the carry moves no bytes (§2.3). Each entry:
 | file_crc, serial | the card file's identity, the store counter |
 | state | LIVE, or MOVING while a compaction rewrites it |
 
-Entries are kept **in pool order, contiguous from 0x1000**, each a whole number of
+Entries are kept **in pool order, contiguous from offset 0**, each a whole number of
 4 KB sectors (the erase unit). The pool's free space is always one run at the end, up to
-the tables. Sector 0 is retired: it held the one slot's header, and the carry erases it,
-so an older firmware finds no slot and draws its base face rather than misreading a pool.
+the tables. **An entry is laid out as the one slot was**: its 128 B slot header in its
+first sector, the bundle's index from +0x1000, its banks after the index (from
++0x1000 plus the index rounded to sectors; a carried slot keeps its 0x10000). The table
+calls everything before the banks the entry's head, CRC'd as one; the store, the staged
+witness and the identity words go on reading a slot header, now one per entry.
 
 **Moving an entry rewrites nothing in it.** Its index records bank offsets as they were
 at rebase, when the entry stood at `base`; where the entry stands now is `off`, so a bank
@@ -95,12 +98,13 @@ and project it into that app's own geometry (rows, comps, rects, sounds in PSRAM
 entry that fails is dropped, its app on its base face. A bank's address is the map base
 plus `record - base + off`.
 
-**Migration from the one slot.** A board with no valid table and the old 128 B slot
-header in sector 0 gets one carry at boot: the header becomes entry 0 (slug from its
-section, off and base 0x1000: the old index is at 0x1000 and its banks were rebased
-slot-relative, which is pool-relative with the slot at 0), written as table A; then
-sector 0 is erased. No pixel moves. A cut before the table lands leaves the old slot to
-carry on the next boot; a cut after it leaves a valid table.
+**Migration from the one slot.** A board with no valid table and a slot header at
+offset 0 gets one carry at boot: the slot becomes entry 0 (slug from its section, off and
+base 0, its banks already rebased slot-relative, which is pool-relative with the slot at
+0), written as table A. Nothing moves and nothing is erased. A cut before the table
+lands leaves the slot to carry on the next boot. An older firmware still finds entry 0's
+header at offset 0 and draws it if it is a clock theme; a downgrade with another app's
+theme first is the one case it would misread.
 
 ### 2.4 The stage
 
@@ -134,9 +138,40 @@ count, and shows frame `f` when `f` is in range (`f < 0` only asks).
 |---|---|---|
 | **P1** | `CLK_ROW_MAX` 32; app-picked frames: schema, reader, stage, import, SDK | host suites green; mutants for the new refusals |
 | **P2** | the pool table and its compaction as pure C (`main/art/orb_pool.c`), every flash access through an io | `tools/host_pool_test.py` over a simulated NOR flash: 13 malformed tables refused by name; a cut at every step of a replacement (504), a removal (264) and an overlapping move (1,526), each with a second cut in the repair, losing no other theme except the one an overlapping move tore; 8 of 8 mutants caught — **built 2026-11-03** |
-| **P3** | store and delete through the pool; the one-slot carry | host suites; bench: two apps' themes stored, one removed, the other intact |
+| **P3** | store and delete through the pool; the one-slot carry | host suites; bench: two apps' themes stored, one removed, the other intact — **built 2026-11-04, host-gated; bench owed** (§4) |
 | **P4** | boot adoption of every entry, per-app geometry, the stage bound to the app on the glass | bench: the clock and flights each on their own theme, switching between them |
 | **P5** | per-app scan, verify, delete, router, status | host suites; the hub's lists still parse |
 
 The JS baker (`baker@1`, gorb-os-2's lane) keeps its 24-row cap until it needs more: a
 cap there is a refusal, so it cannot emit a theme this firmware rejects.
+
+## 4. As built
+
+### P3 — the store and boot through the pool (2026-11-04)
+
+- **An entry is a slot at its offset.** Every one-slot function already took a slot base
+  (the A/B pair's legacy), so the store, boot, the carry and the scan pass an entry's
+  offset where they passed 0, and a theme's bank records stay entry-relative, rebased to
+  `SLOT_ART_OFF` as before. So `blob_off`, `live_sec` and the lines
+  `host_orblayers_test.py` pins are unchanged: a bound theme maps from its entry plus
+  `SLOT_ART_OFF`. The table's `base` is 0 for every entry. The cost is the slot's 64 KB
+  head per entry, of which an index uses a few KB: up to about 56 KB a theme.
+- **Store**: the fit is asked before the dial parks (`orb_pool_fits`, the room in KB in
+  the refusal); after the unmap the pool removes the app's old theme and compacts the
+  rest, the bundle is copied to the packed run's end, its header written, and the table
+  names it last. The serial counts up over the app's own last header.
+- **Boot**: load the table, carry the one slot if there is none, repair, then draw one
+  theme as before: the clock's, else the first entry. A pool that will not load is the
+  base face. An empty pool with a store's witness left keeps the witness up.
+- **Clear** (deleting the worn theme): the pool removes the worn app's entry and compacts.
+- **Still the clock's alone**: the card verifier, the scan and the router still bind
+  `"clock"` (P5), and the stage still draws one theme per boot (P4). With one app storing,
+  the pool holds one entry, carried or stored, and every path above runs.
+- **Mapping**: an entry is sector-aligned, not page-aligned; `esp_partition_mmap` rounds
+  the map down to its page and offsets the pointer (`partition_target.c:170-175`), so an
+  unaligned entry maps right. art_bank's page bill can then be one page short.
+- **Gates**: every host suite; `host_sd_test.py`'s store lint now pins the pool's rules
+  (the target is `orb_pool_reserve`'s answer alone, the fit before the park, the table
+  after the header), with three mutants for them, caught. Firmware builds clean.
+- **Owed on the bench**: the carry on a board with a stored theme (the log's "carried the
+  one slot"), a store and a delete through the pool, and a reboot cut mid-store.

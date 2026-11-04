@@ -986,10 +986,26 @@ def install_lint():
     if "SLOT_A_HDR" in body or "SLOT_A_ART" in body or "SLOT_B_HDR" in body or "SLOT_B_ART" in body:
         print("FAIL orb_theme_install_bundle(): names a retired A/B slot constant — Migration 1 "
               "leaves one slot, so the target is SLOT_HDR and nothing else"); rc = 1
-    elif "tgt = SLOT_HDR;" not in body:
-        print("FAIL orb_theme_install_bundle(): does not latch the target to SLOT_HDR — the "
-              "single slot is the only thing a store may write, and a target that drifts off "
-              "it (SLOT_HDR + something) is a theme that boot will refuse to draw"); rc = 1
+    else:
+        # theme-pool-plan §2.2: the pool says where a theme goes. The target is the
+        # pool's answer and nothing else, the fit is asked before the dial parks, and
+        # the table names the entry only after its header is written.
+        import re as _re
+        rsv = body.find("orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, entry_size, &tgt);")
+        sets = _re.findall(r"\btgt\s*[-+]?=[^=]", body)
+        if rsv < 0 or len(sets) != 1:
+            print("FAIL orb_theme_install_bundle(): the target is not the pool's answer alone "
+                  "(%s, %d assignments) — a theme written where the table does not say is "
+                  "free space the next store writes over" % ("reserved" if rsv >= 0 else
+                  "no orb_pool_reserve", len(sets))); rc = 1
+        fit, park = body.find("orb_pool_fits("), body.find("store_park_dial(")
+        if fit < 0 or park < 0 or fit > park:
+            print("FAIL orb_theme_install_bundle(): the fit is not asked before the dial parks "
+                  "— a theme that cannot fit would cost the owner the glass and a reboot"); rc = 1
+        hw, cm = body.find("build_slot_hdr3("), body.find("orb_pool_commit(")
+        if hw < 0 or cm < 0 or cm < hw:
+            print("FAIL orb_theme_install_bundle(): the table names the entry before its header "
+                  "is written — a cut there is an entry boot cannot read"); rc = 1
     mk, cl = body.find("staged_mark("), body.find("staged_clear(")
     if mk < 0 or cl < 0:
         print("FAIL orb_theme_install_bundle(): does not bracket the copy with "
@@ -1330,11 +1346,15 @@ MUTATIONS = [
      "        ESP_LOGE(TAG, \"bundle stored but the reboot could not be armed\");",
      "    (void)0;"),
     ("the store commits without copying through the streaming writer", "th",
-     "    esp_err_t e = copy_bundle3(fd, &b, region, file_art_base, p, tgt,",
-     "    esp_err_t e = ESP_OK; (void)file_art_base;"),
-    ("the store drifts off the single slot", "th",
-     "    const uint32_t tgt = SLOT_HDR;",
-     "    const uint32_t tgt = SLOT_HDR + THEME_SECTOR;"),
+     "        e = copy_bundle3(fd, &b, region, file_art_base, p, tgt,\n"
+     "                         &art_crc, &w, store_progress, NULL);",
+     "        (void)file_art_base;"),
+    ("the store writes where the pool did not say", "th",
+     "slug, entry_size, &tgt);",
+     "slug, entry_size, &tgt); tgt += THEME_SECTOR;"),
+    ("the store parks before it asks the pool", "th",
+     "orb_pool_fits(s_pool, slug, entry_size)",
+     "0"),
     ("the upload door accepts a bundle without the region check", "th",
      "    if (!r) r = verify_bundle3(fd, &b3, fsz, sec0, &nsec);",
      "    if (!r) { (void)verify_bundle3; }"),

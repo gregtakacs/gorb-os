@@ -3227,182 +3227,34 @@
     }
     return out;
   }
-  function bakeClock3(o) {
+  /* theme-editor-kit-plan K5: the stage bake. What any app the stage draws needs to turn
+   * its rows into a FORMAT 3 section, with nothing of any one app in it: the art bank
+   * (raw bytes such as PCM first, then encoded planes, in the order they enter), one
+   * element per row from blankElement(), a still row, a keyframe row, a delta row with its
+   * closing rect and its round-trip check, the preview plane, the slot's art cap, and the
+   * section packed through writeBundle3 with its meter and estimate. The app decides what
+   * each row is (class, slot, kind, source, depth, flags); bakeClock3 is the clock's
+   * translation on top of it.
+   *
+   *   var B = GorbBake.stage3({ scr_w, scr_h, dither });   // dither: false truncates every plane
+   *   B.put(bytes, w, h) -> sprite index · B.row(e, plane, masked, dith) · B.rowFrames(e, planes, masked, dith)
+   *   B.rowDelta(e, planes, delayMs, masked, dith) -> rec · B.preview({plane, x, y, order}) -> bytes
+   *   B.id() -> the next element n · B.element(e) -> a pushed blankElement with e's fields
+   *   B.pack({name, serial, bakedMs, design, slug, scalars, abi}) -> writeBundle3's answer
+   *   B.finish(meta) -> pack, the delta round trip, the cap, meter and est (an app with no
+   *                     bake passes of its own calls this alone)
+   * B.bank and B.elements are the live bank and table: a translation may read them. */
+  function stage3(opts) {
+    var o = opts || {};
     var scrW = o.scr_w || SCREEN_W, scrH = o.scr_h || SCREEN_H;
-    var hands = o.hands || [], shadows = o.shadows || [], plates = o.plates || [];
-    var sc = {}, k, deltaBank = 0, prevB = 0;
-    for (k in (o.scalars || {})) sc[k] = o.scalars[k];
-    if (!o.plate) throw new Error('a clock section needs a plate: the compiled dial takes its blank-layer centre from the plate’s own middle, so with no plate it has no centre');
-    var pl = o.plate;
-    if (pl.w !== scrW || pl.h !== scrH || pl.x || pl.y) {
-      throw new Error('a plate at extent (' + (pl.x || 0) + ',' + (pl.y || 0) + ',' + pl.w + ',' + pl.h +
-        ') of a ' + scrW + 'x' + scrH + ' panel: the compiled clock draws its background full-screen, so a plate that is not the whole panel is not a plate');
-    }
-    var frames = pl.frames;
-    if (frames !== undefined) {
-      if (!(frames.length >= 2)) {
-        throw new Error('a plate bank of ' + (frames ? frames.length : 0) + ' frames: one keyframe is a still plate, and zero frames draw nothing — pass two or more planes or none');
-      }
-      if (frames.length > BG3_FRAMES_MAX) {
-        throw new Error('a plate animation of ' + frames.length + ' frames: the dial holds ' + BG3_FRAMES_MAX + ', and the rest is a bank it has no room for');
-      }
-      if (sc.bg_frames !== undefined && sc.bg_frames !== frames.length - 1) {
-        throw new Error('a plate row naming ' + frames.length + ' frames while the scalars name ' + sc.bg_frames + ' extra: the row’s planes are the animation’s length');
-      }
-      if (sc.gif_frames) {
-        throw new Error('an animated plate naming ' + sc.gif_frames + ' gif frames: a keyframe bank carries whole planes and no delta rects');
-      }
-      // A bank with no stated tempo is a loop — what every FORMAT 2 bgAnim kit
-      // was. A one-shot must be asked for (loop: 0) and must then name its fps.
-      var fps = sc.bg_fps || pl.fps || 0;
-      var loop = sc.bg_loop !== undefined ? sc.bg_loop
-                                          : (pl.loop !== undefined ? pl.loop : 1);
-      if (!loop && fps < 1) {
-        throw new Error('a one-shot plate bank at bg_fps ' + fps + ': an animation with no tempo is a frame that never arrives');
-      }
-      for (k = 0; k < frames.length; k++) {
-        var fp = frames[k];
-        if (!fp || fp.w !== scrW || fp.h !== scrH) {
-          throw new Error('keyframe ' + k + ' of a plate bank is ' + (fp ? fp.w + 'x' + fp.h : 'nothing') + ': every frame of a keyframe bank is the whole panel, the frame the consumer paints at rest included');
-        }
-      }
-      sc.bg_frames = frames.length - 1; sc.bg_fps = fps; sc.bg_loop = loop ? 1 : 0;
-      if (!sc.bg_every) sc.bg_every = pl.every || 1;
-      sc.bg_mode = 0; sc.gif_frames = 0;
-      // Every moving plate bakes as C5's delta bank, a carriage over it included. The
-      // fork that kept a caged plate a keyframe bank cited §5.2's one-gif_io rule, a
-      // FORMAT 2 note: under FORMAT 3 the carriage's frames ride its own row's sprite
-      // window (orb_clock3.c's tourbillon fill) and only the plate uses the bg table,
-      // so the two never contend (docs/history/unified-render-path-design-2026-10-30.md §3).
-      // The delta bank is the shape the device can restore from its canvas; a
-      // keyframe bank has no restore plane and draws every advance through LVGL.
-      deltaBank = 1;
-    } else if (sc.bg_frames) {
-      throw new Error('bg_frames = ' + sc.bg_frames + ' with a still plate: the scalars and the table disagree, and the pair would name a bank the art does not hold');
-    }
-    /* §31's sprite-region carrier: a carriage bank — the tourbillon row at hand
-     * slot 5 that d32 proved on glass. The dial fans its frames by the seconds
-     * angle plus the row's start orientation, so the bake hands it the motion's
-     * bounding box as the row's extent and the loop's fps as the scalar. */
-    var car = o.carriage;
-    if (car) {
-      if (!(car.frames && car.frames.length >= 2)) throw new Error('a carriage bank of ' + (car.frames ? car.frames.length : 0) + ' frames: a carriage is an animation, and one frame is a static hand this bake seats elsewhere');
-      if (car.frames.length > TOURB_MAX) throw new Error('a carriage bank of ' + car.frames.length + ' frames: the dial holds ' + TOURB_MAX + ' tourbillon records');
-      if (!(car.fps >= 1)) throw new Error('a carriage bank at ' + (car.fps || 0) + ' fps: the row animates at its own tempo, and a loop with no tempo is a frame that never arrives');
-      var cw = car.w, chh = car.h;
-      for (k = 0; k < car.frames.length; k++) {
-        var cf = car.frames[k];
-        if (!cf || cf.w !== cw || cf.h !== chh) throw new Error('carriage frame ' + k + ' is ' + (cf ? cf.w + 'x' + cf.h : 'nothing') + ' against a ' + cw + 'x' + chh + ' row: every frame of one bank is one extent, the same box the dial invalidates');
-      }
-    }
-    /* §31's comp table, D32's ruling A: a window row per live complication, its
-     * plates contiguous and masked. Every check below is orb_clock3.c's
-     * bank-row projection rule for rule — the bake refuses the shapes the
-     * projection would refuse, in the dial's own words where it has them, so
-     * an author never spends an upload learning what the host already knew. */
-    var compRows = o.comps || [], compB = 0, k3, j3;
-    for (k3 = 0; k3 < compRows.length; k3++) {
-      var cr = compRows[k3], slot3 = cr.slot;
-      if (!(slot3 >= 0 && slot3 < CLK_COMP_MAX))
-        throw new Error('a complication at slot ' + slot3 + ': the clock declares ' + CLK_COMP_MAX +
-          ' complication slots and the manifest of any app may not invent one');
-      var src3 = String(cr.src), srcId3 = SOURCES.indexOf(src3);
-      if (srcId3 < 0)
-        throw new Error('a bank at slot ' + slot3 + ' driven by ' + q(String(cr.src)) + ': this dial reads ' +
-          SOURCES.length + ' values and none of them is that');
-      if (src3 === 'battery' || src3 === 'power_reserve' || src3 === 'text' || src3 === 'value')
-        throw new Error('a bank at slot ' + slot3 + ' driven by source ' + q(src3) +
-          ': this dial has no such input, and D32\u2019s ruling refuses the flip rather than ship a comp that would draw nothing');
-      var want3 = src3 === 'none' ? 1 : CLOCK_WINDOW_DOMAIN[src3][1];
-      var pl3 = cr.planes;
-      if (!pl3 || pl3.length !== want3)
-        throw new Error('a window at slot ' + slot3 + ' driven by ' + q(src3) + ' indexes ' + want3 +
-          ' plates, and the bake was handed ' + (pl3 ? pl3.length : 0));
-      var cwr = cr.w | 0, chr = cr.h | 0;
-      if (!(cwr > 0 && chr > 0))
-        throw new Error('a window at slot ' + slot3 + ' is ' + cwr + 'x' + chr + ': a plate with no extent carries no pixels');
-      if ((cr.x | 0) < 0 || (cr.y | 0) < 0 || (cr.x | 0) + cwr > scrW || (cr.y | 0) + chr > scrH)
-        throw new Error('a window at slot ' + slot3 + ' places its ' + cwr + 'x' + chr + ' box at (' +
-          (cr.x | 0) + ',' + (cr.y | 0) + ') of a ' + scrW + 'x' + scrH + ' panel: the runtime would draw it off the glass');
-      var ordr = cr.order | 0;
-      if (ordr < 0 || ordr >= ELEM_ORDER_N)
-        throw new Error('a bank row at slot ' + slot3 + ' at depth ' + ordr +
-          ': the dial has ' + ELEM_ORDER_N + ' rungs');
-      for (j3 = 0; j3 < pl3.length; j3++) {
-        var pp3 = pl3[j3];
-        if (!pp3 || pp3.w !== cwr || pp3.h !== chr)
-          throw new Error('complication ' + slot3 + ' frame ' + j3 + ' is ' + (pp3 ? pp3.w + 'x' + pp3.h : 'nothing') +
-            ' against the row\u2019s ' + cwr + 'x' + chr + ': one bank, one extent');
-      }
-      compB += cwr * chr * 3 * want3;
-    }
-    sc.plate_off = 0;
-    if (frames === undefined) { sc.bg_frames = 0; sc.gif_frames = 0; }
-
-    // Every row starts from blankElement(): packElements refuses a missing field rather
-    // than defaulting it, because a default applied at pack time is a value nobody wrote.
-    // The bank builds empty and every plane enters through row() or rowFrames(), so no
-    // plane is ever counted twice and the plate's rows keep the colour-only cost the
-    // projection reads them at.
     var bank = { art: new Uint8Array(0), sprites: [], size: 0 };
-    /* D39: the theme's sounds enter FIRST, so every one sits at an even offset (the
-     * dial refuses an odd one: a 16-bit load from the mapped bank would fault) and
-     * every pixel plane after them moves by the same even amount. plate_off and, on
-     * a delta plate, bg_key_off follow the plate past them — orb_sched seeds the
-     * canvas from blob() + bg_key_off, so a zero left there would paint PCM.
-     * o.sounds: [{slot: name, pcm: Int16Array, beat_chz, first_beat}], o.soundPattern. */
-    var sounds3 = (o.sounds || []).slice().sort(function (a, b) {
-      return SOUND_SLOTS.indexOf(a.slot) - SOUND_SLOTS.indexOf(b.slot); });
-    var soundB = 0;
-    for (var si = 0; si < sounds3.length; si++) {
-      var sn = sounds3[si];
-      if (SOUND_SLOTS.indexOf(sn.slot) < 0) throw new Error('a sound for slot ' + q(String(sn.slot)) + ': the clock declares ' + SOUND_SLOTS.join(', '));
-      var pcm = sn.pcm;
-      if (!pcm || !(pcm.length >= 2)) throw new Error('the ' + sn.slot + ' sound carries no samples');
-      var pb8 = new Uint8Array(pcm.length * 2), pdv = new DataView(pb8.buffer);
-      for (var pi = 0; pi < pcm.length; pi++) pdv.setInt16(pi * 2, pcm[pi], true);
-      bank.art = concat([bank.art, pb8]);
-      bank.sprites.push({ off: bank.size, size: pb8.length, w: pcm.length, h: 1 });
-      bank.size += pb8.length;
+    var elems = [], nid = 1, deltas = [];
+    function put(bytes, w, h) {
+      bank.art = concat([bank.art, bytes]);
+      bank.sprites.push({ off: bank.size, size: bytes.length, w: w, h: h });
+      bank.size += bytes.length;
+      return bank.sprites.length - 1;
     }
-    soundB = bank.size;
-    sc.plate_off = soundB;
-    /* §32.6 (D32 ruling C reversed): a theme that ships a carriage reserves order 1 —
-     * one rung above the plate's 0, below every hand — so both the classic LVGL path
-     * (which creates s_car before the hand loop) and the L4 tile painter (whose
-     * insertion sort paints ascending order, lowest deepest) composite the cage at
-     * geartrain depth under the hands, exactly as the preview draws it.
-     * The sub-dial pointers ride the rung just above that (below the hands — the
-     * preview's natural draw order, handSlots: subdial hands first), and the hands
-     * walk up from the rung above them. o.depthOrder — the author's ONE hands list
-     * from the composer, bottom to top — overrides the natural rungs: the same list
-     * the preview turns and the FORMAT 2 kit ships, so the preview, the wire and the
-     * glass agree from one control. Rows the list omits ride their natural rung.
-     * A dial with no carriage starts the same ladder one rung lower. */
-    var SUBDIAL_RUNG = (o.carriage ? 2 : 1);
-    var elems = [], nid = 1, ord = SUBDIAL_RUNG + 1, handSlot = {}, handOrd = {};
-    var dOrder3 = o.depthOrder || [], rung3 = {};
-    for (var q3 = 0, r3 = 2; q3 < dOrder3.length; q3++) {
-      var id3 = String(dOrder3[q3]);
-      if (rung3[id3] === undefined) rung3[id3] = r3++;
-    }
-    /* A row the list omits rides its natural rung, and that rung must not be one the list
-     * gave another row: the device breaks a tie by table order, not by the stack the
-     * preview drew. A composer that shipped its slot hands without their ids put Skeleton's
-     * hour hand on its sub-dial seconds pointer's rung, and the glass drew the seconds
-     * over the hour (bench, 2026-11-03). */
-    var listedRung3 = {};
-    for (var lid3 in rung3) listedRung3[rung3[lid3]] = lid3;
-    function unlistedRung3(what, id, r) {
-      if (dOrder3.length && listedRung3[r] !== undefined)
-        throw new Error(what + ' (' + id + ') has no place in depthOrder, and its natural rung ' + r +
-          ' is the one depthOrder gave ' + listedRung3[r] + ': the two would stack by table order, not as the preview draws them');
-    }
-    /* The natural fallback ladder: sub-dial pointers in table order, then the
-     * centre stack hour, minute, second — exactly handSlots' order, so a bake
-     * with no depthOrder list ships the depth the preview already shows. */
-    var nat3 = (o.aux || []).map(function (a) { return a.id ? String(a.id) : null; })
-                  .concat(['centre-hour', 'centre-minute', 'centre-second']);
     /* D43 §5.3: `dith` is true for a still, screen-locked plane (the plate, its bank, the
      * crystal overlay, a window's plates, the preview). It dithers at the row's own x/y,
      * unless the whole bake asked for truncation (o.dither === false). */
@@ -3416,6 +3268,7 @@
       for (var f in e) rec[f] = e[f];
       rec.frame0 = bank.sprites.length - 1;
       elems.push(rec);
+      return rec;
     }
     // §31: one row, N planes. The keyframes enter contiguously, in bank order,
     // colour-only like the plate — the projection seats the row against exactly
@@ -3431,6 +3284,7 @@
         bank.size += b.sprites[0].size;
       }
       elems.push(rec);
+      return rec;
     }
     // C5's delta plate (§4.2, §7.2) plus §37's closing rect: frame 0 is the whole-panel
     // base plane, every frame after it a rect cropped to the run of texels it changes,
@@ -3554,23 +3408,262 @@
       }
       return true;
     }
+    function preview(pv) {
+      var pp = pv.plane || pv;
+      if (!pp || !pp.rgba || !(pp.w > 0) || !(pp.h > 0))
+        throw new Error('a preview row with no plane, or a plane with no extent: the picker reads pixels, not a nameplate');
+      if (pp.rgba.length !== pp.w * pp.h * 4)
+        throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ' carries ' + pp.rgba.length +
+          ' B of RGBA, not the ' + (pp.w * pp.h * 4) + ' B its extent calls for');
+      if (pp.w !== pp.h)
+        throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ': a preview is a square, so the OS card slot is a square — ' +
+          'a non-square plane reads as a wrong bake, not a wrong panel');
+      if (pp.w > (scrW >> 1) || pp.h > (scrH >> 1))
+        throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ' on a ' + scrW + 'x' + scrH + ' panel: the shell reads a preview ' +
+          'into one buffer sized for the half-res of the glass, and a plane past it cannot be held');
+      var pb = bank3([pp], { alpha: false, dither: o.dither === false ? null : { x: 0, y: 0 } });   // RGB565 only: w*h*2 B, the exception orb_asset_slot_bytes names
+      bank.art = concat([bank.art, pb.art]);
+      bank.sprites.push({ off: bank.size, size: pb.sprites[0].size, w: pp.w, h: pp.h });
+      bank.size += pb.sprites[0].size;
+      var prev = blankElement();
+      prev.n = nid++; prev['class'] = CLASS_PREVIEW; prev.slot = 0;
+      prev.order = pv.order | 0;
+      prev.x = pv.x | 0; prev.y = pv.y | 0;
+      prev.w = pp.w; prev.h = pp.h;
+      prev.frame0 = bank.sprites.length - 1;
+      prev.n_frames = 1;
+      prev.alpha = 255;
+      elems.push(prev);
+      return pb.sprites[0].size;
+    }
+    function element(e) {
+      var rec = blankElement();
+      for (var f in e) rec[f] = e[f];
+      elems.push(rec);
+      return rec;
+    }
+    function pack(m) {
+      return writeBundle3({ name: m.name, serial: m.serial || 0, bakedMs: m.bakedMs || 0, design: m.design || null,
+        sections: [{ slug: m.slug, scr_w: scrW, scr_h: scrH, elements: elems, scalars: m.scalars || {},
+                     sprites: bank.sprites, art: bank.art,
+                     abi_min: m.abi, abi_max: m.abi }] });
+    }
+    function capCheck() {
+      if (bank.size > SLOT_ART_CAP3)
+        throw new Error('the bake\'s art bank is ' + bank.size + ' B against the ' + SLOT_ART_CAP3 + ' B the slot leaves for banks — drop frames or shrink the art');
+    }
+    function finish(m) {
+      capCheck();
+      var b = pack(m);
+      deltas.forEach(function (d) {
+        if (!selfVerify3(d.planes, bank.sprites, d.rec.frame0 | 0, !!(d.rec.flags & EF_DELTA_WRAP)))
+          throw new Error('the baked delta bank does not composite back to the frames it was handed: the round trip drifted, and a drifting chain corrupts every later frame — refused, not shipped');
+      });
+      b.meter = budget3(b.bytes);
+      b.n_elem = elems.length;
+      b.est = estimate3(verifyBundle3(b.bytes).sections[0]);
+      return b;
+    }
+    return { bank: bank, elements: elems, scrW: scrW, scrH: scrH,
+             id: function () { return nid++; }, put: put, ditherAt: ditherAt,
+             row: row, rowFrames: rowFrames,
+             rowDelta: function (e, planes, delay, masked, dith) { var r = rowDelta(e, planes, delay, masked, dith); deltas.push({ rec: r, planes: planes }); return r; },
+             verifyDelta: selfVerify3, preview: preview, element: element,
+             pack: pack, capCheck: capCheck, finish: finish };
+  }
+  function bakeClock3(o) {
+    var scrW = o.scr_w || SCREEN_W, scrH = o.scr_h || SCREEN_H;
+    var hands = o.hands || [], shadows = o.shadows || [], plates = o.plates || [];
+    var sc = {}, k, deltaBank = 0, prevB = 0;
+    for (k in (o.scalars || {})) sc[k] = o.scalars[k];
+    if (!o.plate) throw new Error('a clock section needs a plate: the compiled dial takes its blank-layer centre from the plate’s own middle, so with no plate it has no centre');
+    var pl = o.plate;
+    if (pl.w !== scrW || pl.h !== scrH || pl.x || pl.y) {
+      throw new Error('a plate at extent (' + (pl.x || 0) + ',' + (pl.y || 0) + ',' + pl.w + ',' + pl.h +
+        ') of a ' + scrW + 'x' + scrH + ' panel: the compiled clock draws its background full-screen, so a plate that is not the whole panel is not a plate');
+    }
+    var frames = pl.frames;
+    if (frames !== undefined) {
+      if (!(frames.length >= 2)) {
+        throw new Error('a plate bank of ' + (frames ? frames.length : 0) + ' frames: one keyframe is a still plate, and zero frames draw nothing — pass two or more planes or none');
+      }
+      if (frames.length > BG3_FRAMES_MAX) {
+        throw new Error('a plate animation of ' + frames.length + ' frames: the dial holds ' + BG3_FRAMES_MAX + ', and the rest is a bank it has no room for');
+      }
+      if (sc.bg_frames !== undefined && sc.bg_frames !== frames.length - 1) {
+        throw new Error('a plate row naming ' + frames.length + ' frames while the scalars name ' + sc.bg_frames + ' extra: the row’s planes are the animation’s length');
+      }
+      if (sc.gif_frames) {
+        throw new Error('an animated plate naming ' + sc.gif_frames + ' gif frames: a keyframe bank carries whole planes and no delta rects');
+      }
+      // A bank with no stated tempo is a loop — what every FORMAT 2 bgAnim kit
+      // was. A one-shot must be asked for (loop: 0) and must then name its fps.
+      var fps = sc.bg_fps || pl.fps || 0;
+      var loop = sc.bg_loop !== undefined ? sc.bg_loop
+                                          : (pl.loop !== undefined ? pl.loop : 1);
+      if (!loop && fps < 1) {
+        throw new Error('a one-shot plate bank at bg_fps ' + fps + ': an animation with no tempo is a frame that never arrives');
+      }
+      for (k = 0; k < frames.length; k++) {
+        var fp = frames[k];
+        if (!fp || fp.w !== scrW || fp.h !== scrH) {
+          throw new Error('keyframe ' + k + ' of a plate bank is ' + (fp ? fp.w + 'x' + fp.h : 'nothing') + ': every frame of a keyframe bank is the whole panel, the frame the consumer paints at rest included');
+        }
+      }
+      sc.bg_frames = frames.length - 1; sc.bg_fps = fps; sc.bg_loop = loop ? 1 : 0;
+      if (!sc.bg_every) sc.bg_every = pl.every || 1;
+      sc.bg_mode = 0; sc.gif_frames = 0;
+      // Every moving plate bakes as C5's delta bank, a carriage over it included. The
+      // fork that kept a caged plate a keyframe bank cited §5.2's one-gif_io rule, a
+      // FORMAT 2 note: under FORMAT 3 the carriage's frames ride its own row's sprite
+      // window (orb_clock3.c's tourbillon fill) and only the plate uses the bg table,
+      // so the two never contend (docs/history/unified-render-path-design-2026-10-30.md §3).
+      // The delta bank is the shape the device can restore from its canvas; a
+      // keyframe bank has no restore plane and draws every advance through LVGL.
+      deltaBank = 1;
+    } else if (sc.bg_frames) {
+      throw new Error('bg_frames = ' + sc.bg_frames + ' with a still plate: the scalars and the table disagree, and the pair would name a bank the art does not hold');
+    }
+    /* §31's sprite-region carrier: a carriage bank — the tourbillon row at hand
+     * slot 5 that d32 proved on glass. The dial fans its frames by the seconds
+     * angle plus the row's start orientation, so the bake hands it the motion's
+     * bounding box as the row's extent and the loop's fps as the scalar. */
+    var car = o.carriage;
+    if (car) {
+      if (!(car.frames && car.frames.length >= 2)) throw new Error('a carriage bank of ' + (car.frames ? car.frames.length : 0) + ' frames: a carriage is an animation, and one frame is a static hand this bake seats elsewhere');
+      if (car.frames.length > TOURB_MAX) throw new Error('a carriage bank of ' + car.frames.length + ' frames: the dial holds ' + TOURB_MAX + ' tourbillon records');
+      if (!(car.fps >= 1)) throw new Error('a carriage bank at ' + (car.fps || 0) + ' fps: the row animates at its own tempo, and a loop with no tempo is a frame that never arrives');
+      var cw = car.w, chh = car.h;
+      for (k = 0; k < car.frames.length; k++) {
+        var cf = car.frames[k];
+        if (!cf || cf.w !== cw || cf.h !== chh) throw new Error('carriage frame ' + k + ' is ' + (cf ? cf.w + 'x' + cf.h : 'nothing') + ' against a ' + cw + 'x' + chh + ' row: every frame of one bank is one extent, the same box the dial invalidates');
+      }
+    }
+    /* §31's comp table, D32's ruling A: a window row per live complication, its
+     * plates contiguous and masked. Every check below is orb_clock3.c's
+     * bank-row projection rule for rule — the bake refuses the shapes the
+     * projection would refuse, in the dial's own words where it has them, so
+     * an author never spends an upload learning what the host already knew. */
+    var compRows = o.comps || [], compB = 0, k3, j3;
+    for (k3 = 0; k3 < compRows.length; k3++) {
+      var cr = compRows[k3], slot3 = cr.slot;
+      if (!(slot3 >= 0 && slot3 < CLK_COMP_MAX))
+        throw new Error('a complication at slot ' + slot3 + ': the clock declares ' + CLK_COMP_MAX +
+          ' complication slots and the manifest of any app may not invent one');
+      var src3 = String(cr.src), srcId3 = SOURCES.indexOf(src3);
+      if (srcId3 < 0)
+        throw new Error('a bank at slot ' + slot3 + ' driven by ' + q(String(cr.src)) + ': this dial reads ' +
+          SOURCES.length + ' values and none of them is that');
+      if (src3 === 'battery' || src3 === 'power_reserve' || src3 === 'text' || src3 === 'value')
+        throw new Error('a bank at slot ' + slot3 + ' driven by source ' + q(src3) +
+          ': this dial has no such input, and D32\u2019s ruling refuses the flip rather than ship a comp that would draw nothing');
+      var want3 = src3 === 'none' ? 1 : CLOCK_WINDOW_DOMAIN[src3][1];
+      var pl3 = cr.planes;
+      if (!pl3 || pl3.length !== want3)
+        throw new Error('a window at slot ' + slot3 + ' driven by ' + q(src3) + ' indexes ' + want3 +
+          ' plates, and the bake was handed ' + (pl3 ? pl3.length : 0));
+      var cwr = cr.w | 0, chr = cr.h | 0;
+      if (!(cwr > 0 && chr > 0))
+        throw new Error('a window at slot ' + slot3 + ' is ' + cwr + 'x' + chr + ': a plate with no extent carries no pixels');
+      if ((cr.x | 0) < 0 || (cr.y | 0) < 0 || (cr.x | 0) + cwr > scrW || (cr.y | 0) + chr > scrH)
+        throw new Error('a window at slot ' + slot3 + ' places its ' + cwr + 'x' + chr + ' box at (' +
+          (cr.x | 0) + ',' + (cr.y | 0) + ') of a ' + scrW + 'x' + scrH + ' panel: the runtime would draw it off the glass');
+      var ordr = cr.order | 0;
+      if (ordr < 0 || ordr >= ELEM_ORDER_N)
+        throw new Error('a bank row at slot ' + slot3 + ' at depth ' + ordr +
+          ': the dial has ' + ELEM_ORDER_N + ' rungs');
+      for (j3 = 0; j3 < pl3.length; j3++) {
+        var pp3 = pl3[j3];
+        if (!pp3 || pp3.w !== cwr || pp3.h !== chr)
+          throw new Error('complication ' + slot3 + ' frame ' + j3 + ' is ' + (pp3 ? pp3.w + 'x' + pp3.h : 'nothing') +
+            ' against the row\u2019s ' + cwr + 'x' + chr + ': one bank, one extent');
+      }
+      compB += cwr * chr * 3 * want3;
+    }
+    sc.plate_off = 0;
+    if (frames === undefined) { sc.bg_frames = 0; sc.gif_frames = 0; }
+
+    // Every row starts from blankElement(): packElements refuses a missing field rather
+    // than defaulting it, because a default applied at pack time is a value nobody wrote.
+    // The bank builds empty and every plane enters through row() or rowFrames(), so no
+    // plane is ever counted twice and the plate's rows keep the colour-only cost the
+    // projection reads them at.
+    var B = stage3({ scr_w: scrW, scr_h: scrH, dither: o.dither }), bank = B.bank;
+    /* D39: the theme's sounds enter FIRST, so every one sits at an even offset (the
+     * dial refuses an odd one: a 16-bit load from the mapped bank would fault) and
+     * every pixel plane after them moves by the same even amount. plate_off and, on
+     * a delta plate, bg_key_off follow the plate past them — orb_sched seeds the
+     * canvas from blob() + bg_key_off, so a zero left there would paint PCM.
+     * o.sounds: [{slot: name, pcm: Int16Array, beat_chz, first_beat}], o.soundPattern. */
+    var sounds3 = (o.sounds || []).slice().sort(function (a, b) {
+      return SOUND_SLOTS.indexOf(a.slot) - SOUND_SLOTS.indexOf(b.slot); });
+    var soundB = 0;
+    for (var si = 0; si < sounds3.length; si++) {
+      var sn = sounds3[si];
+      if (SOUND_SLOTS.indexOf(sn.slot) < 0) throw new Error('a sound for slot ' + q(String(sn.slot)) + ': the clock declares ' + SOUND_SLOTS.join(', '));
+      var pcm = sn.pcm;
+      if (!pcm || !(pcm.length >= 2)) throw new Error('the ' + sn.slot + ' sound carries no samples');
+      var pb8 = new Uint8Array(pcm.length * 2), pdv = new DataView(pb8.buffer);
+      for (var pi = 0; pi < pcm.length; pi++) pdv.setInt16(pi * 2, pcm[pi], true);
+      B.put(pb8, pcm.length, 1);
+    }
+    soundB = bank.size;
+    sc.plate_off = soundB;
+    /* §32.6 (D32 ruling C reversed): a theme that ships a carriage reserves order 1 —
+     * one rung above the plate's 0, below every hand — so both the classic LVGL path
+     * (which creates s_car before the hand loop) and the L4 tile painter (whose
+     * insertion sort paints ascending order, lowest deepest) composite the cage at
+     * geartrain depth under the hands, exactly as the preview draws it.
+     * The sub-dial pointers ride the rung just above that (below the hands — the
+     * preview's natural draw order, handSlots: subdial hands first), and the hands
+     * walk up from the rung above them. o.depthOrder — the author's ONE hands list
+     * from the composer, bottom to top — overrides the natural rungs: the same list
+     * the preview turns and the FORMAT 2 kit ships, so the preview, the wire and the
+     * glass agree from one control. Rows the list omits ride their natural rung.
+     * A dial with no carriage starts the same ladder one rung lower. */
+    var SUBDIAL_RUNG = (o.carriage ? 2 : 1);
+    var elems = B.elements, ord = SUBDIAL_RUNG + 1, handSlot = {}, handOrd = {};
+    var dOrder3 = o.depthOrder || [], rung3 = {};
+    for (var q3 = 0, r3 = 2; q3 < dOrder3.length; q3++) {
+      var id3 = String(dOrder3[q3]);
+      if (rung3[id3] === undefined) rung3[id3] = r3++;
+    }
+    /* A row the list omits rides its natural rung, and that rung must not be one the list
+     * gave another row: the device breaks a tie by table order, not by the stack the
+     * preview drew. A composer that shipped its slot hands without their ids put Skeleton's
+     * hour hand on its sub-dial seconds pointer's rung, and the glass drew the seconds
+     * over the hour (bench, 2026-11-03). */
+    var listedRung3 = {};
+    for (var lid3 in rung3) listedRung3[rung3[lid3]] = lid3;
+    function unlistedRung3(what, id, r) {
+      if (dOrder3.length && listedRung3[r] !== undefined)
+        throw new Error(what + ' (' + id + ') has no place in depthOrder, and its natural rung ' + r +
+          ' is the one depthOrder gave ' + listedRung3[r] + ': the two would stack by table order, not as the preview draws them');
+    }
+    /* The natural fallback ladder: sub-dial pointers in table order, then the
+     * centre stack hour, minute, second — exactly handSlots' order, so a bake
+     * with no depthOrder list ships the depth the preview already shows. */
+    var nat3 = (o.aux || []).map(function (a) { return a.id ? String(a.id) : null; })
+                  .concat(['centre-hour', 'centre-minute', 'centre-second']);
+    // the stage bake's rows (stage3): the clock decides what each row is, the builder lays it in the bank
+    var ditherAt = B.ditherAt, row = B.row, rowFrames = B.rowFrames, rowDelta = B.rowDelta, selfVerify3 = B.verifyDelta;
     if (frames) {
       if (deltaBank) {
         // Per-frame delta tempo: the row's own bg_fps, or the dial's default figure
         // the shipped banks printed (15 Hz, the §5.1 default delay_ms) when none named.
         var dms = fps >= 1 ? Math.round(1000 / fps) : 67;
-        rowDelta({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
+        rowDelta({ n: B.id(), 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
                    order: 0, alpha: 255 }, frames, dms, false, true);
         // bg_mode 1: the row is the delta dialect. gif_frames is the whole loop, the
         // row's own plane count (orb_clock3.c:539), and bg_frames is zero — the base
         // plane is frame 0 of that loop, not an extra keyed frame beside it.
         sc.bg_mode = 1; sc.gif_frames = frames.length; sc.bg_frames = 0;
       } else {
-        rowFrames({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
+        rowFrames({ n: B.id(), 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
                     order: 0, alpha: 255, n_frames: frames.length }, frames, false, true);
       }
     } else {
-      row({ n: nid++, 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
+      row({ n: B.id(), 'class': classId('plate'), slot: 0, x: 0, y: 0, w: scrW, h: scrH,
             order: 0, alpha: 255, n_frames: 1 }, pl, false, true);
     }
     /* D42: every hand, shadow, carriage and pointer is one AUX row, claimed in slot
@@ -3614,7 +3707,7 @@
                                      : SUBDIAL_RUNG + ((o.aux || []).length) + k));
       if (dOrder3.indexOf(hid3) < 0 && !((h.order | 0) >= 1)) unlistedRung3('a hand at slot ' + h.slot, hid3, handOrd[h.slot]);
       var hd5 = h.drive || {}, sd = SLOT_DRIVE[h.slot];
-      var hrow = { n: nid++, 'class': CLASS_AUX, slot: nextSlot('the hand at slot ' + h.slot),
+      var hrow = { n: B.id(), 'class': CLASS_AUX, slot: nextSlot('the hand at slot ' + h.slot),
                    kind: SHAPE_ARM, x: h.x, y: h.y, w: h.w, h: h.h,
                    pivot_x: h.pivot_x, pivot_y: h.pivot_y, order: handOrd[h.slot],
                    alpha: h.alpha === undefined ? 255 : h.alpha, n_frames: 1,
@@ -3645,7 +3738,7 @@
         var hcx = (h.x | 0) + (h.pivot_x | 0), hcy = (h.y | 0) + (h.pivot_y | 0);
         var scx = (s.x | 0) + (s.pivot_x | 0), scy = (s.y | 0) + (s.pivot_y | 0);
         var tpx = hcx - (s.x | 0), tpy = hcy - (s.y | 0);
-        row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the shadow of the hand at slot ' + h.slot),
+        row({ n: B.id(), 'class': CLASS_AUX, slot: nextSlot('the shadow of the hand at slot ' + h.slot),
               kind: SHAPE_ARM, x: scx - tpx + hrow.x - (h.x | 0), y: scy - tpy + hrow.y - (h.y | 0),
               w: s.w, h: s.h, pivot_x: tpx, pivot_y: tpy, order: handOrd[h.slot],
               alpha: s.alpha === undefined ? 255 : s.alpha, n_frames: 1,
@@ -3657,7 +3750,7 @@
         throw new Error('a shadow at slot ' + shadows[k].slot + ' with no hand there: a shadow twin takes its hand’s pose, and there is no hand to take it from');
     }
     for (k = 0; k < plates.length; k++) {
-      row({ n: nid++, 'class': classId('plate'), slot: 1, x: plates[k].x, y: plates[k].y,
+      row({ n: B.id(), 'class': classId('plate'), slot: 1, x: plates[k].x, y: plates[k].y,
             w: plates[k].w, h: plates[k].h, order: 63 - (plates.length - 1 - k), flags: plates[k].flags || 0,
             alpha: plates[k].alpha === undefined ? 255 : plates[k].alpha, n_frames: 1 }, plates[k], true, true);
     }
@@ -3683,7 +3776,7 @@
        * row of its own, at the seconds hand's cadence, animated at its frame time. */
       var carCad = elemOfHand[2] && SOURCES[elemOfHand[2].src] === 'second'
                  ? { cadence: elemOfHand[2].cadence, cad_arg: elemOfHand[2].cad_arg } : secCad;
-      rowFrames({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the carriage'), kind: SHAPE_ARM,
+      rowFrames({ n: B.id(), 'class': CLASS_AUX, slot: nextSlot('the carriage'), kind: SHAPE_ARM,
                   x: cx3, y: cy3, w: cw, h: chh, pivot_x: cpx, pivot_y: cpy,
                   order: 1, alpha: 255, n_frames: car.frames.length,
                   delay: Math.max(1, Math.round(1000 / car.fps)),
@@ -3712,7 +3805,7 @@
                             : (aid5 ? SUBDIAL_RUNG + nat3.indexOf(aid5) : ord)) : a5.order;
       if (a5.order === undefined && !(aid5 && dOrder3.indexOf(aid5) >= 0)) unlistedRung3('a pointer driven by ' + q(s4), aid5 || '(no id)', or5);
       // A slide carries no pivot to turn about; its centre is the origin the row places.
-      row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('a pointer driven by ' + q(s4)), kind: SHAPE_ARM,
+      row({ n: B.id(), 'class': CLASS_AUX, slot: nextSlot('a pointer driven by ' + q(s4)), kind: SHAPE_ARM,
             src: SOURCES.indexOf(s4), x: av5.x, y: av5.y, w: a5.w | 0, h: a5.h | 0,
             pivot_x: av5.slide ? ((a5.w | 0) >> 1) : (a5.pivot_x | 0),
             pivot_y: av5.slide ? ((a5.h | 0) >> 1) : (a5.pivot_y | 0),
@@ -3731,7 +3824,7 @@
         if (!(av.w > 0 && av.h > 0) || av.rgba.length !== (av.w | 0) * (av.h | 0) * 4)
           throw new Error('the shadow of a pointer driven by ' + q(s4) + ' is ' + (av.w | 0) + 'x' + (av.h | 0)
             + ' against ' + av.rgba.length + ' bytes: one row, one extent');
-        row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the shadow of a pointer'), kind: SHAPE_ARM,
+        row({ n: B.id(), 'class': CLASS_AUX, slot: nextSlot('the shadow of a pointer'), kind: SHAPE_ARM,
               x: (av.x | 0) + av5.x - (a5.x | 0), y: (av.y | 0) + av5.y - (a5.y | 0),
               w: av.w | 0, h: av.h | 0,
               pivot_x: av5.slide ? ((av.w | 0) >> 1) : (av.pivot_x | 0),
@@ -3757,7 +3850,7 @@
       // x,y and the window's centre as its pivot; it rolls one strip in its direction per turn
       if (w3.drum && !((w3.radius | 0) >= 2 && (w3.pivot_y | 0) === (w3.radius | 0) && w3.h > w3.radius))
         throw new Error('the drum ' + q(String(w3.id)) + ' carries no radius its strip can roll through');
-      row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the wheel ' + q(String(w3.id))), kind: w3.drum ? SHAPE_DRUM : SHAPE_RING,
+      row({ n: B.id(), 'class': CLASS_AUX, slot: nextSlot('the wheel ' + q(String(w3.id))), kind: w3.drum ? SHAPE_DRUM : SHAPE_RING,
             src: SOURCES.indexOf(String(w3.src)), digit: DIGITS.indexOf(String(w3.digit || 'whole')),
             x: w3.x | 0, y: w3.y | 0, w: w3.w, h: w3.h, pivot_x: w3.pivot_x | 0, pivot_y: w3.pivot_y | 0,
             radius: w3.drum ? (w3.radius | 0) : 0, dy: w3.drum ? (w3.dir < 0 ? -w3.h : w3.h) : 0,
@@ -3770,7 +3863,7 @@
       if (!wheels3.length) throw new Error('a wheel cover with no wheels under it');
       if (!cv3.rgba || !(cv3.w > 0 && cv3.h > 0) || cv3.rgba.length !== cv3.w * cv3.h * 4)
         throw new Error('the wheels\u2019 cover carries no pixels: a still row ships its art');
-      row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the wheels\u2019 cover'), kind: SHAPE_ARM, src: SOURCES.indexOf('none'),
+      row({ n: B.id(), 'class': CLASS_AUX, slot: nextSlot('the wheels\u2019 cover'), kind: SHAPE_ARM, src: SOURCES.indexOf('none'),
             x: cv3.x | 0, y: cv3.y | 0, w: cv3.w, h: cv3.h, order: 0, alpha: 255, n_frames: 1 }, cv3, true, true);
       auxB += cv3.w * cv3.h * 3;
     } else if (wheels3.some(function (w) { return !w.exposed; }))
@@ -3785,7 +3878,7 @@
         throw new Error('a lifted face (' + st.id + ') with no place in depthOrder: a still row takes its depth from the stack, and this one has none');
       if (!(st.w > 0 && st.h > 0) || !st.rgba || st.rgba.length !== st.w * st.h * 4)
         throw new Error('a lifted face (' + st.id + ') with no pixels: a still row ships its art or it is not a row');
-      row({ n: nid++, 'class': CLASS_AUX, slot: nextSlot('the lifted face ' + q(String(st.id))), kind: SHAPE_ARM,
+      row({ n: B.id(), 'class': CLASS_AUX, slot: nextSlot('the lifted face ' + q(String(st.id))), kind: SHAPE_ARM,
             src: SOURCES.indexOf('none'), x: st.x | 0, y: st.y | 0, w: st.w, h: st.h,
             order: Math.max(1, Math.min(63, rung3[stKey])), alpha: 255, n_frames: 1 }, st, true, true);
       auxB += st.w * st.h * 3;
@@ -3794,7 +3887,7 @@
       var c4 = compRows[k3];
       // a window a lifted face frames rides just under that face (depthOrder 'bank:<id>')
       var bankOrd = c4.id !== undefined && rung3['bank:' + c4.id] !== undefined ? Math.min(63, rung3['bank:' + c4.id]) : (c4.order | 0);
-      rowFrames({ n: nid++, 'class': classId('bank'), slot: c4.slot, kind: 0, src: SOURCES.indexOf(String(c4.src)),
+      rowFrames({ n: B.id(), 'class': classId('bank'), slot: c4.slot, kind: 0, src: SOURCES.indexOf(String(c4.src)),
                   x: c4.x | 0, y: c4.y | 0, w: c4.w, h: c4.h, order: bankOrd, alpha: 255,
                   n_frames: c4.planes.length, scale16: c4.scale16 | 0,
                   flags: c4.hidden ? EF_HIDDEN : 0 }, c4.planes, true, true);
@@ -3811,34 +3904,7 @@
      * checkTable's class:slot uniqueness, not this block. A row's x/y is the caller's
      * picker-slot placement; the shell may scale and place the pixels wherever its
      * card wants, so the pair is authoring metadata the compiled dial ignores. */
-    if (o.preview) {
-      var pv = o.preview, pp = pv.plane || pv;
-      if (!pp || !pp.rgba || !(pp.w > 0) || !(pp.h > 0))
-        throw new Error('a preview row with no plane, or a plane with no extent: the picker reads pixels, not a nameplate');
-      if (pp.rgba.length !== pp.w * pp.h * 4)
-        throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ' carries ' + pp.rgba.length +
-          ' B of RGBA, not the ' + (pp.w * pp.h * 4) + ' B its extent calls for');
-      if (pp.w !== pp.h)
-        throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ': a preview is a square, so the OS card slot is a square — ' +
-          'a non-square plane reads as a wrong bake, not a wrong panel');
-      if (pp.w > (scrW >> 1) || pp.h > (scrH >> 1))
-        throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ' on a ' + scrW + 'x' + scrH + ' panel: the shell reads a preview ' +
-          'into one buffer sized for the half-res of the glass, and a plane past it cannot be held');
-      var pb = bank3([pp], { alpha: false, dither: o.dither === false ? null : { x: 0, y: 0 } });   // RGB565 only: w*h*2 B, the exception orb_asset_slot_bytes names
-      bank.art = concat([bank.art, pb.art]);
-      bank.sprites.push({ off: bank.size, size: pb.sprites[0].size, w: pp.w, h: pp.h });
-      bank.size += pb.sprites[0].size;
-      var prev = blankElement();
-      prev.n = nid++; prev['class'] = CLASS_PREVIEW; prev.slot = 0;
-      prev.order = pv.order | 0;
-      prev.x = pv.x | 0; prev.y = pv.y | 0;
-      prev.w = pp.w; prev.h = pp.h;
-      prev.frame0 = bank.sprites.length - 1;
-      prev.n_frames = 1;
-      prev.alpha = 255;
-      elems.push(prev);
-      prevB = pb.sprites[0].size;
-    }
+    if (o.preview) prevB = B.preview(o.preview);
 
     /* D39: the sound rows, last in the table (elems[0] stays the plate the delta
      * self-verify reads), each naming its plane at the head of the bank. */
@@ -3847,7 +3913,7 @@
       if (patIx < 0) throw new Error('hour pattern ' + q(String(o.soundPattern)) + ': the clock knows ' + HOUR_PATTERNS.join(', '));
       for (si = 0; si < sounds3.length; si++) {
         var srec = blankElement(), sslot = SOUND_SLOTS.indexOf(sounds3[si].slot), stick = sslot === 0;
-        srec.n = nid++; srec['class'] = CLASS_SOUND; srec.slot = sslot;
+        srec.n = B.id(); srec['class'] = CLASS_SOUND; srec.slot = sslot;
         srec.frame0 = si; srec.n_frames = 1; srec.kind = patIx; srec.src = 0;
         srec.flags = stick ? EF_LOOP : 0;
         srec.vmax = stick ? (sounds3[si].beat_chz | 0) : 0;
@@ -3891,10 +3957,7 @@
     // D42: every clock section is v6.
     var secAbi = GEOM_ABI6;
     var pack = function () {
-      return writeBundle3({ name: o.name, serial: o.serial || 0, bakedMs: o.bakedMs || 0, design: o.design || null,
-        sections: [{ slug: 'clock', scr_w: scrW, scr_h: scrH, elements: elems, scalars: sc,
-                     sprites: bank.sprites, art: bank.art,
-                     abi_min: secAbi, abi_max: secAbi }] });
+      return B.pack({ name: o.name, serial: o.serial, bakedMs: o.bakedMs, design: o.design, slug: 'clock', scalars: sc, abi: secAbi });
     };
     var b = pack();
     if (deltaBank && !selfVerify3(frames, bank.sprites, (elems[0].frame0 | 0),
@@ -4546,7 +4609,7 @@
     // a clock section the compiled dial projects, and the D29 sums read back off finished
     // bytes. bakeClock3 refuses with orb_clock3.c's own sentences, so the editor names the
     // reason the dial will print instead of a reason of its own.
-    bank3: bank3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3, estimate3: estimate3,
+    bank3: bank3, stage3: stage3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3, estimate3: estimate3,
     carriageRect3: carriageRect3, carriageStart3: carriageStart3,
     liveComps3: liveComps3, compPlan3: compPlan3, wheelPlan3: wheelPlan3, wheelDither3: wheelDither3, readDesign3: readDesign3, THEME_UPLOAD_MAX: THEME_UPLOAD_MAX, wheelTurns3: wheelTurns3, pointerPlan3: pointerPlan3,
     pointerDefault3: pointerDefault3,

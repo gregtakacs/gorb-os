@@ -114,7 +114,7 @@ send to Gold where the slice touches the glass. A suite moves with the code it t
 | **K2** | `theme@1/session` | `headless-session` and the session half of `headless-design` move and pass; a design saved before the move opens after it — **built and benched on Gold 2026-11-03** (§7) |
 | **K3** | `theme@1/preview`, including true size | the clock's stage, Panel and Compare equal before and after (`headless-panel`, a screenshot pair); true size matches `review.html`'s calibration — **built and benched on Gold 2026-11-03** (§7) |
 | **K4** | `theme@1/measure`, the pace hook | `headless-pace` and `headless-estimate` green with `_devPace` as the clock's override; an app with no hook gets the estimate — **built 2026-11-04**, benched in real Chrome (§7) |
-| **K5** | a generic stage bake in `baker@1` (a plate, rows, sprites, row pools, scalars) for any app the stage draws; `bakeClock3` becomes the clock's translation on top of it | the clock's bundles are byte-identical before and after (`headless-bundle3`). Flights' interim themes are built into firmware (§0.1 ruling 5), so this does not wait on flights; its format is checked against flights' when the editor starts |
+| **K5** | a generic stage bake in `baker@1` (a plate, rows, sprites, row pools, scalars) for any app the stage draws; `bakeClock3` becomes the clock's translation on top of it | the clock's bundles are byte-identical before and after (`headless-bundle3`). Flights' interim themes are built into firmware (§0.1 ruling 5), so this does not wait on flights; its format is checked against flights' when the editor starts — **built 2026-11-04** (§7) |
 | **K6** | `studio@1`: frame, title and step bar, status, send modal, the Render step, slots | the clock's P5 checklist (nothing lost), no page scroll at 1280×720 and 1920×1080 inside the hub |
 | **K7** | `studio@1`: the layers panel and the field builders, driven by what the app declares | the clock's layers and inspector behave as before (`headless-stack-ui`, `headless-forms`, `headless-ui`); the clock's own rules (`stack.js`) stay the clock's |
 | **H1** | the Themes page per app: a sub-tab for each theme-aware app, with its themes and a link to its editor, all hub code (§0.1 ruling 4) | Go and UI suites green; on Gold, the clock's tab lists the card's themes and opens the editor; an app with no themes or no editor gets a tab that says so |
@@ -301,3 +301,40 @@ runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
   commits, so they predate the kit: every preset refused for "no centre hour/minute/second
   hand" with "the bake has hands to seat [0]", and six stills carrying 48 dirty rows. The
   page has not kept up with hands becoming parts (D43 P5c); it is owed its own repair.
+
+### K5 — `GorbBake.stage3`, the stage bake (2026-11-04)
+
+- **The builder.** `stage3({scr_w, scr_h, dither})` in `baker@1`, exported beside
+  `bakeClock3`. It holds the art bank and the element table and offers `put` (raw bytes,
+  such as PCM, at the head of the bank), `row` (a still plane), `rowFrames` (a keyframe
+  row), `rowDelta` (a delta row, its closing rect, and its round-trip check), `preview`
+  (the picker's plane, with its square and half-panel checks), `element` (a row on a
+  sprite already in the bank, which is how a pool of rows shares one sprite), `id`,
+  `pack`, `capCheck` and `finish`. `finish` is one call for an app with no bake passes of
+  its own: the cap, the pack, every delta row's round trip, the meter and the estimate.
+  The code is `bakeClock3`'s own, moved: the bank appends, `ditherAt`, the three row
+  kinds with `diffRect` and `paintRect`, `selfVerify3` (now `verifyDelta`), the preview
+  block, and the pack through `writeBundle3`. `row` and `rowFrames` now return the
+  record they pushed.
+- **`bakeClock3` is the clock's translation on it.** It keeps everything that is a clock
+  decision: the depth ladder and `depthOrder`, the hands, shadows and pointers, the
+  carriage, the wheels and comp tiles, the sound slots and hour patterns, the plate's
+  carrier choice, its own wording of the art-cap refusal, the drum and layer-table rule,
+  the smoothing passes and their re-packs, and the delta check after its first pack. Its
+  bank, element table and ids are the builder's, so nothing it reads moved.
+- **Byte identity, measured.** A preload wrapped `bakeClock3` and recorded the sha256,
+  size, estimate and layer count of every bundle it returned, and every refusal's
+  message, across the six suites that bake (`headless-bundle3`, `sound`, `wheels`,
+  `still`, `dither`, `panel`): 81 bakes, identical line for line before and after.
+- **Suites.** `web/runtime/_selftest/headless-stage.test.js`, 19 checks, driven by a
+  made-up radar app (slug `radar`, not the clock): a plate, a turning arm, a pool of plane
+  rows on one sprite, a preview, raw bytes first, dither on and off, a delta-animated
+  scope with its closing rect, a loop that needs none, a drifting chain refused, and the
+  preview and art-cap refusals. Each section is read back through `verifyBundle3`. Six
+  mutants are caught (no delta check in `finish`, `put` not advancing the bank, no cap,
+  dither ignoring the bake's choice, a non-square preview accepted, `rowDelta` unwatched).
+- **Not checked on a device.** A non-clock section has no reader on the orb yet: the stage
+  firmware reads the clock's record dialect (§5), and flights' interim themes are built
+  into firmware (§0.1 ruling 5). The radar sections are checked against the browser's
+  own reader, the one that guards the card; the flights editor's first bake is where a
+  device reads one.

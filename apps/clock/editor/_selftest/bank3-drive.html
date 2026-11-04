@@ -25,6 +25,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400..900&display=swap" rel="stylesheet">
 <script src="../dial-renderer.js"></script>
 <script src="../watch-engine.js"></script>
+<!-- the dial's sounds ride the bake (D39 sndBake); without the engine it bakes silence, which
+     is how every shipped Skeleton up to clock v1.2.16 left its classic tick and chimes behind -->
+<script src="../sound-engine.js"></script>
 <script>window.React = { createRef: () => ({ current: null }) };
 // ?appv=vX.Y.Z stamps the designs this bake writes as the packaged clock would (make_clock_region's window.__ORB_APP)
 (function () { const v = new URLSearchParams(location.search).get('appv'); if (v) window.__ORB_APP = { slug: 'clock', version: v }; })();</script>

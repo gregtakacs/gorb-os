@@ -148,6 +148,10 @@ static uint8_t s_g_opa[CLK_ROW_MAX];     /* the opacity the app gave (stage_opac
  * fonts and padding, and the app's pending strings live here, PSRAM, once: a label is
  * read when its string changes, not every frame. */
 #define LABEL_TEXT_MAX 192
+/* A label's pixels start this far into its plane: a sprite at offset 0 reads as unset
+ * (gfx_sprite_drawable), the rule the layer table's own bakes keep with their 4-byte lead
+ * (ORB_LAYER_PLANE_MAX). */
+#define LABEL_PLANE_OFF 4u
 typedef struct {
     orb_font_t font[CLK_FONT_SLOTS];     /* glyphs found on first use (orb_label.h) */
     uint32_t frame0[CLK_FONT_SLOTS];     /* each font's first glyph, catalogue row  */
@@ -1260,6 +1264,10 @@ static void text_scan(void)
         }
     }
     s_text_sec = sec;
+    int nf = 0, nl = 0;
+    for (int k = 0; k < CLK_FONT_SLOTS; k++) nf += s_text->present[k];
+    for (int k = 0; k < CLK_ROW_MAX; k++) nl += s_text->tone_font[k][0] != CLK_FONT_NONE;
+    if (nf || nl) ESP_LOGI(TAG, "text: %d font%s, %d label%s", nf, nf == 1 ? "" : "s", nl, nl == 1 ? "" : "s");
 }
 
 /* Compose row i's label: its panel, then the app's string in its tone's font (tone 0's
@@ -1270,7 +1278,8 @@ static void label_compose(uint16_t i)
     const clk_row_t *r = &orb_theme_geo()->rows[i];
     const uint8_t *panel = blob() + r->spr.color_off;
     if (!s_text || !s_text_sec) {
-        orb_label_compose(st->tplane, r->spr.w, r->spr.h, panel, NULL, NULL, 0, 0, 0);
+        orb_label_compose(st->tplane + LABEL_PLANE_OFF, r->spr.w, r->spr.h, panel, NULL, NULL,
+                          0, 0, 0);
         return;
     }
     char buf[LABEL_TEXT_MAX];
@@ -1286,8 +1295,8 @@ static void label_compose(uint16_t i)
         orb_bundle_spr_at(s_text_sec, s_text->frame0[fi], &sp);
         f->glyphs = blob() + sp.off;
     }
-    orb_label_compose(st->tplane, r->spr.w, r->spr.h, panel, f, buf, s_text->pad[i],
-                      r->digit, r->end);
+    orb_label_compose(st->tplane + LABEL_PLANE_OFF, r->spr.w, r->spr.h, panel, f, buf,
+                      s_text->pad[i], r->digit, r->end);
 }
 
 /* The per-tick pass. Every row's own pose first, then the poses it rides (a parent's,
@@ -1697,6 +1706,9 @@ static void clock_layers_build(orb_app_t *self)
         if (e.cls == ORB_ASSET_SOUND) continue;   /* D39: played by sound_policy, never drawn */
         if (e.cls == ORB_ASSET_PREVIEW) continue; /* the picker's picture, never on the glass:
                                                    * claimed, it cost a row of an app's 16 */
+        if (e.cls == ORB_ASSET_TEXT) continue;    /* a font: its glyphs reach the glass in
+                                                   * a label's plane, never where it stands
+                                                   * (theme-text-plan §2.1) */
         if (e.flags & CLK_EF_HIDDEN) { hidden++; continue; }
         pick_cls[n] = e.cls; pick_slot[n] = e.slot;
         pick_ord[n] = e.cls == ORB_ASSET_PLATE ? 0xFFFFu
@@ -1755,7 +1767,7 @@ static void clock_layers_build(orb_app_t *self)
         clk_row_desc(&el, bank_off, role, &d);
         if (gidx != 0xFFu && pick_cls[k] == ORB_ASSET_AUX && s_row && s_row[gidx].tplane) {
             d.plane = s_row[gidx].tplane;      /* a label: the plane the stage composes */
-            d.art.off = 0;
+            d.art.off = LABEL_PLANE_OFF;
         }
         const int h = svc->layer_add(self, &d);
         if (h < 0) { refused++; continue; }   /* full, malformed, or no heap: the
@@ -2045,15 +2057,16 @@ esp_err_t stage_init(orb_app_t *self)
                     /* theme-text-plan §2.3: a label draws its own plane, the panel
                      * until the app gives it a string. */
                     const size_t pb = (size_t)r->spr.w * r->spr.h * 3u;
-                    s_row[i].tplane = heap_caps_malloc(pb, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                    s_row[i].tplane = heap_caps_malloc(LABEL_PLANE_OFF + pb,
+                                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
                     if (!s_row[i].tplane) {
                         ESP_LOGE(TAG, "label at slot %u: no PSRAM for its plane", (unsigned)r->tag);
                         break;
                     }
-                    memcpy(s_row[i].tplane, blob() + r->spr.color_off, pb);
+                    memcpy(s_row[i].tplane + LABEL_PLANE_OFF, blob() + r->spr.color_off, pb);
                     s_row[i].tseq = 0;
                     clk_sprite_t ts = r->spr;
-                    ts.color_off = 0;
+                    ts.color_off = LABEL_PLANE_OFF;
                     s_row[i].obj = make_layer_at(&ts, &s_row[i].dsc, false, s_row[i].tplane);
                 } else
                 s_row[i].obj = make_layer(sp, &s_row[i].dsc,

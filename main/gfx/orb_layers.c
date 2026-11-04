@@ -111,7 +111,7 @@ static bool desc_ok(const orb_layer_desc_t *d)
         if (!s_alloc) return false;               /* no heap wired: no bakes    */
         if (orb_asset_prim_bytes((uint32_t)d->art.w, (uint32_t)d->art.h)
             > ORB_LAYER_PLANE_MAX) return false;  /* over-cap box               */
-    } else if (d->art.off == 0 && !d->plane) {
+    } else if (d->art.off == 0) {
         return false;                             /* color_off 0 is the unset
                                                   * signature: a theme row with
                                                   * it would draw nothing and

@@ -524,4 +524,6 @@ moving-row format; `tools/theme_schema.py` and `main/art/orb_clock3.c` are the r
   glass wearing "Skeleton"; the face drew "Clock themes (1)" and `1 theme for Clock — the only
   theme-capable app on this orb on SD32G…, Clock wears "Skeleton"`, its row marked active. The
   two-app tabs need the pool firmware and a second app's theme on the card, which Gold has
-  neither of; the fake orb and the node run stand for them.
+  neither of; the fake orb and the node run stand for them. Bronze (orb-A, the sibling
+  clone's bench orb) has both: the owner looked at its Themes face in the hub on 2026-11-04
+  and it read right.

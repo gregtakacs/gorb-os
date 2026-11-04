@@ -22,9 +22,14 @@ still can.
 4. **The Themes page is per app.** Under Themes, each app has its own tab with its themes
    and a link to its editor. The engine behind the page is all hub code (H1). This is
    D49's page layer, reopened from §46.
-5. **Flights' interim themes are hard-coded in firmware.** Until its editor exists, the
-   tracker's look on the stage comes from temporary built-in themes, not from an editor.
-   So nothing in flights steps 1–2 waits on this kit, and K5 does not wait on flights.
+5. **Flights ships a baked theme before it has an editor** (corrected by the owner,
+   2026-11-04; this ruling first read "hard-coded in firmware", which was wrong). The
+   tracker's first theme is a real baked `.orbtheme` that the stage reads like any other,
+   but it is not made in a theme editor, because that waits on the editor being universal,
+   which is this kit. So nothing in flights steps 1–2 waits on the kit, and the kit does
+   not wait on flights. Its consequences: a non-clock section reaches a device before the
+   flights editor exists (K5's builder is the OS's way to bake one, §7), and a second app's
+   theme is resident beside the clock's from that first bake (D49, H1, §5).
 
 Rulings already in force that this plan builds on:
 
@@ -114,7 +119,7 @@ send to Gold where the slice touches the glass. A suite moves with the code it t
 | **K2** | `theme@1/session` | `headless-session` and the session half of `headless-design` move and pass; a design saved before the move opens after it — **built and benched on Gold 2026-11-03** (§7) |
 | **K3** | `theme@1/preview`, including true size | the clock's stage, Panel and Compare equal before and after (`headless-panel`, a screenshot pair); true size matches `review.html`'s calibration — **built and benched on Gold 2026-11-03** (§7) |
 | **K4** | `theme@1/measure`, the pace hook | `headless-pace` and `headless-estimate` green with `_devPace` as the clock's override; an app with no hook gets the estimate — **built 2026-11-04**, benched in real Chrome (§7) |
-| **K5** | a generic stage bake in `baker@1` (a plate, rows, sprites, row pools, scalars) for any app the stage draws; `bakeClock3` becomes the clock's translation on top of it | the clock's bundles are byte-identical before and after (`headless-bundle3`). Flights' interim themes are built into firmware (§0.1 ruling 5), so this does not wait on flights; its format is checked against flights' when the editor starts — **built 2026-11-04** (§7) |
+| **K5** | a generic stage bake in `baker@1` (a plate, rows, sprites, row pools, scalars) for any app the stage draws; `bakeClock3` becomes the clock's translation on top of it | the clock's bundles are byte-identical before and after (`headless-bundle3`). Flights' first theme is baked without an editor (§0.1 ruling 5), so this does not wait on flights; its format is checked against flights' when that first theme reads on a device — **built 2026-11-04** (§7) |
 | **K6** | `studio@1`: frame, title and step bar, status, send modal, the Render step, slots | the clock's P5 checklist (nothing lost), no page scroll at 1280×720 and 1920×1080 inside the hub |
 | **K7** | `studio@1`: the layers panel and the field builders, driven by what the app declares | the clock's layers and inspector behave as before (`headless-stack-ui`, `headless-forms`, `headless-ui`); the clock's own rules (`stack.js`) stay the clock's |
 | **H1** | the Themes page per app: a sub-tab for each theme-aware app, with its themes and a link to its editor, all hub code (§0.1 ruling 4) | Go and UI suites green; on Gold, the clock's tab lists the card's themes and opens the editor; an app with no themes or no editor gets a tab that says so |
@@ -137,9 +142,19 @@ in parallel with any of them.
   - **The stage still reads the clock's record dialect** (§43 owed 5). Flights step 2
     puts planes and an arm on the stage, so this is firmware work flights hits first.
 
-  The first is H1 here (the page), plus the firmware's room for several apps' themes when
-  a second app ships one. The second is flights firmware work; with interim themes built
-  in (§0.1 ruling 5) it is the tracker's own business until its editor ships themes.
+- **The pool is being built in the other clone.** `../gorb-os` builds D49's firmware half on
+  `feat/stage-app-themes` (`docs/theme-pool-plan.md`, ruled 2026-11-03, P3 benched on
+  Bronze): one packed, defragmented pool of every app's themes in `assets`, no app ever
+  embedding a theme (its ruling 2, the same correction as §0.1 ruling 5 here), 32 moving
+  rows instead of 24, and a row that carries frames the app picks. It merges to `main`
+  for this clone to take. When it does, `baker@1` mirrors its format changes
+  (`CLK_ROW_MAX` 24 → 32 in the baker's checks and `stage3`'s tables, the per-row frame
+  pick), and H1's page reads the pool's table rather than one slot.
+
+  The first is H1 here (the page), plus the firmware's room for several apps' themes:
+  flights' first baked theme (§0.1 ruling 5) is resident beside the clock's, so that room
+  is needed from flights step 2, not from its editor. The second is flights firmware
+  work: the stage has to read the tracker's rows for that first theme to draw.
 
 ## 6. Open decisions
 
@@ -334,7 +349,8 @@ runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
   mutants are caught (no delta check in `finish`, `put` not advancing the bank, no cap,
   dither ignoring the bake's choice, a non-square preview accepted, `rowDelta` unwatched).
 - **Not checked on a device.** A non-clock section has no reader on the orb yet: the stage
-  firmware reads the clock's record dialect (§5), and flights' interim themes are built
-  into firmware (§0.1 ruling 5). The radar sections are checked against the browser's
-  own reader, the one that guards the card; the flights editor's first bake is where a
-  device reads one.
+  firmware reads the clock's record dialect (§5). The radar sections are checked against
+  the browser's own reader, the one that guards the card. Flights' first theme is baked
+  without an editor (§0.1 ruling 5, corrected 2026-11-04), so its bake is where a device
+  first reads a non-clock section, and `stage3` (or `orbbundle.write_bundle`, its Python
+  twin) is what that bake can be built on.

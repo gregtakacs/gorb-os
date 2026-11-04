@@ -94,11 +94,15 @@ def app_dirs():
 # ready). `--unreleased DIR` writes those to DIR for a bench install; the shelf never
 # carries them, and --check fails if one turns up there.
 
-def editor_region(key):
+def editor_region(slug, m):
     """The one place a factory container's editor region is built: app.json's "editor"
-    names a builder this tree owns."""
+    names a builder this tree owns, or a directory of the app, which orbsdk packs
+    (flight-tracker-design §12.2)."""
+    key = m.get("editor")
     if key == "clock":
         return clock_region.make_region()
+    if key and orbsdk.editor_dir(os.path.join(APPS_DIR, slug), m):
+        return b""                      # orbsdk.container packs the directory
     if key:
         raise SystemExit("make_factory_apps: no editor builder named %r" % key)
     return b""
@@ -107,7 +111,7 @@ def editor_region(key):
 def containers():
     """Every app's container bytes, through orbsdk's build and the writer's checks."""
     return [(slug, m, orbsdk.container(os.path.join(APPS_DIR, slug),
-                                       editor=editor_region(m.get("editor"))))
+                                       editor=editor_region(slug, m)))
             for slug, m in app_dirs().items()]
 
 

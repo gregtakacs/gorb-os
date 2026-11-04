@@ -261,9 +261,13 @@ static bool orb_sched_layer_claimed(void)
  * fully claimed table to weld over them; otherwise (a keyframe bank, a delta bank
  * whose canvas failed, a table that refused a row or claimed none) the classic
  * all-through-LVGL path stays in charge. */
+static bool s_l4_veto;
+
+void orb_sched_set_l4_veto(bool veto) { s_l4_veto = veto; }
+
 bool orb_sched_l4_active(void)
 {
-    return CLK_BG_DIRECT_PUSH && orb_sched_restore_src() != NULL
+    return CLK_BG_DIRECT_PUSH && !s_l4_veto && orb_sched_restore_src() != NULL
            && orb_sched_layer_claimed();
 }
 

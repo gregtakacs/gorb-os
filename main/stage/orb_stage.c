@@ -142,6 +142,7 @@ static double  s_now_frac, s_now_wall;
 static bool    s_base;            /* no resident theme: the stage draws nothing */
 static bool    s_opened;          /* built for s_lay_app (theme-pool-plan P4: one app at a time) */
 static lv_obj_t *s_plate_obj;     /* the plate widget, so a release can take it down */
+static uint32_t s_stage_objs;     /* how many of the page's children the stage built */
 
 /* CLK_BG_DIRECT_PUSH, the L3/L4 switch the block below and the scheduler's delta
  * push both key on, lives in orb_sched.h: one number, both TUs, so the push and
@@ -2111,6 +2112,19 @@ void stage_run(bool on)
          * (Migration 2, commit 3.) */
         if (s_lay_app && orb_svc_layers_live(s_lay_app) == 0)
             clock_layers_build(s_lay_app);
+        /* An app with widgets of its own over its theme (a label, a ring) renders
+         * through LVGL: L4 writes the theme into the panel mirror over whatever LVGL
+         * drew in the boxes it redraws, and LVGL is what stacks the app's widgets on
+         * top. The app built them in its init, after the stage, so they are counted
+         * here, on the way onto the glass. */
+        const bool own = s_scr && lv_obj_get_child_count(s_scr) > s_stage_objs;
+        orb_sched_set_l4_veto(own);
+        static const orb_app_t *s_vetoed_logged;
+        if (own && s_vetoed_logged != s_lay_app) {
+            s_vetoed_logged = s_lay_app;
+            ESP_LOGI(TAG, "render path: %s has widgets over its theme — LVGL stacks them (l4 off)",
+                     s_lay_app && s_lay_app->slug ? s_lay_app->slug : "?");
+        }
         lv_obj_invalidate(s_scr);
         if (!orb_bg_gif_mode()) orb_bg_show_plate_frame(orb_bg_frame_now());
         compose_now();
@@ -2193,9 +2207,9 @@ esp_err_t stage_bind(orb_app_t *app)
     const uint32_t before = page ? lv_obj_get_child_count(page) : 0;
     const esp_err_t e = stage_init(app);
     if (e != ESP_OK) return e;
+    s_stage_objs = page ? lv_obj_get_child_count(page) - before : 0;
     if (page && before) {
-        const uint32_t built = lv_obj_get_child_count(page) - before;
-        for (uint32_t i = 0; i < built; i++)
+        for (uint32_t i = 0; i < s_stage_objs; i++)
             lv_obj_move_to_index(lv_obj_get_child(page, (int32_t)(before + i)), (int32_t)i);
     }
     s_opened = true;

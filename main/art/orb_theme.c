@@ -1023,6 +1023,8 @@ static bool resolve3_entry(void *arg, const orb_file_rec_t *rec, int fd)
     return r->verified;
 }
 
+static const orb_file_src_t s_any_themes_src;   /* every app's themes: below */
+
 /* The slug-aware twin. `card_open_verified_id3` below is this body with "clock"
  * bound, and every picker-side read (the preview first, and any per-app service
  * that follows it) calls this with whatever slug the handle names — so a weather
@@ -1046,8 +1048,12 @@ static int card_open_verified_slug3(const char *app_slug, const char *stem,
         *why = "that theme belongs to a different app";
         return -1;
     }
+    /* theme-pool-plan P5: any installed app's theme, through the app's own source if
+     * it declared one, else the OS's shared one; an app that is not installed has
+     * nowhere to wear a theme. */
+    if (!orb_app_find_slug(app_slug)) { *why = "no installed app wears that theme"; return -1; }
     const orb_file_src_t *src = orb_files_src(app_slug, "themes");
-    if (!src) { *why = "no \"themes\" file source declared"; return -1; }
+    if (!src) src = &s_any_themes_src;
     if (orb_sd_ensure_mounted() != ESP_OK) { *why = "no card in the socket"; return -1; }
 
     resolve3_t r = { .want = stem, .found = false, .verified = false };
@@ -1077,10 +1083,17 @@ static int card_open_verified_slug3(const char *app_slug, const char *stem,
     return fd;
 }
 
+/* A store's and a delete's door: the app is the one the stem names (theme-pool-plan
+ * P5; it was the clock alone while the device held one theme). */
 static int card_open_verified_id3(const char *stem, orb_bundle3_hdr_t *o, uint32_t *file_size,
                                   const char **why)
 {
-    return card_open_verified_slug3("clock", stem, o, file_size, why);
+    char slug[ORB_BUNDLE_SLUG_MAX + 1], id[THEME_ID_HEX + 1];
+    if (!theme_id_ok(stem) || !theme_stem_split(stem, slug, sizeof slug, id, sizeof id)) {
+        *why = "that theme id is not one this device issued";
+        return -1;
+    }
+    return card_open_verified_slug3(slug, stem, o, file_size, why);
 }
 
 /* Transient read of one bundle's geometry region from an OPEN card file. The store
@@ -1644,6 +1657,18 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
                      (unsigned)need, (unsigned)free_pages);
             heap_caps_free(region); card_close(fd);
             return install_failed(re, sent, why, whysz);
+        }
+    }
+
+    /* The file is filed under one app and must theme that app: the card's id hashes
+     * the stem's slug, and the pool files the theme under its section's. */
+    {
+        char stem_slug[ORB_BUNDLE_SLUG_MAX + 1], stem_id[THEME_ID_HEX + 1];
+        if (!theme_stem_split(id, stem_slug, sizeof stem_slug, stem_id, sizeof stem_id) ||
+            strcmp(stem_slug, b.sec[0].slug) != 0) {
+            heap_caps_free(region); card_close(fd);
+            return install_failed(ESP_ERR_INVALID_ARG, "this file themes another app than "
+                                  "its name says", why, whysz);
         }
     }
 
@@ -2263,7 +2288,9 @@ static void bundle_job(void *arg)
      * the face the store just replaced: the reboot this job arms should answer the
      * owner's upload with their new dial, not the menu. If the clock row refuses or
      * vanished, resume_last falls back home exactly as an unremembering boot does. */
-    input_router_remember_slug("clock");
+    char slug[ORB_BUNDLE_SLUG_MAX + 1], hex[THEME_ID_HEX + 1];
+    input_router_remember_slug(theme_stem_split(r->id, slug, sizeof slug, hex, sizeof hex)
+                               ? slug : "clock");
     if (orb_jobs_reboot_soon("theme: the store") != ESP_OK)
         ESP_LOGE(TAG, "bundle stored but the reboot could not be armed");
 }
@@ -2293,7 +2320,7 @@ esp_err_t orb_theme_post_bundle(const char *id)
  * tail, armed the same way a failed store arms itself. */
 static void clear_job(void *arg)
 {
-    (void)arg;
+    const char *app = arg && ((const char *)arg)[0] ? (const char *)arg : orb_theme_live_slug();
     const orb_app_t *was = input_router_current();
     if (!store_park_dial(was, 0, "removing")) {
         orb_boot_overlay_release();        /* the overlay's band goes back with the glass */
@@ -2306,7 +2333,7 @@ static void clear_job(void *arg)
     /* The pool lets this app's theme go and packs every other app's down over it
      * (docs/theme-pool-plan.md §2.2); the map is down, so nothing reads what moves. */
     char gone[ORB_POOL_SLUG_MAX];
-    strlcpy(gone, orb_theme_live_slug(), sizeof gone);
+    strlcpy(gone, app, sizeof gone);
     const esp_partition_t *p = art_bank_partition();
     const int r = (p && s_pool && pool_io(p))
                 ? orb_pool_remove(&s_pool_io, s_pool, &s_pool_which, gone) : ORB_POOL_ERR_ARG;
@@ -2316,7 +2343,8 @@ static void clear_job(void *arg)
                       "the dial stands on the parked glass", gone, r);
         return;                                /* s_slot_torn stands: reboot recovers */
     }
-    s_active_valid = false;                  /* nothing is on the wall now */
+    if (!strcmp(gone, orb_theme_live_slug()))
+        s_active_valid = false;              /* nothing is on the wall now */
     orb_boot_overlay("theme removed, rebooting", 0, 0, 0);
     ESP_LOGI(TAG, "deactivated: the theme's card file was deleted and %s's entry left "
                   "the pool — the base face draws on the next boot", gone);
@@ -2328,6 +2356,14 @@ static void clear_job(void *arg)
 esp_err_t orb_theme_post_clear(void)
 {
     return orb_jobs_post(clear_job, NULL, 0);
+}
+
+/* theme-pool-plan P5: let one app's stored theme go, whichever app is on the glass. */
+static esp_err_t post_clear_app(const char *slug)
+{
+    char a[ORB_POOL_SLUG_MAX];
+    strlcpy(a, slug, sizeof a);
+    return orb_jobs_post(clear_job, a, sizeof a);
 }
 
 esp_err_t orb_theme_deactivate(void)
@@ -2378,11 +2414,16 @@ esp_err_t orb_theme_delete(const char *id, bool *deactivating)
         ESP_LOGW(TAG, "delete \"%s\": %s", id, strerror(err));
         return err == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
     }
-    const bool was_active = s_active_valid && strcmp(b3.name, s_active_name) == 0;
+    /* Worn means stored for its app: the pool's entry for the stem's app carries this
+     * file's name (theme-pool-plan P5). */
+    char dslug[ORB_BUNDLE_SLUG_MAX + 1], dhex[THEME_ID_HEX + 1];
+    const int k = (s_pool && theme_stem_split(id, dslug, sizeof dslug, dhex, sizeof dhex))
+                ? orb_pool_find(s_pool, dslug) : -1;
+    const bool was_active = k >= 0 && strcmp(b3.name, s_pool->e[k].name) == 0;
     ESP_LOGI(TAG, "deleted \"%s\" (%s) from the card%s", b3.name, id,
              was_active ? " — it was the face on the wall, so the slot goes too" : "");
     if (was_active && deactivating)
-        *deactivating = (orb_theme_post_clear() == ESP_OK);
+        *deactivating = (post_clear_app(dslug) == ESP_OK);
     return ESP_OK;
 }
 
@@ -2415,16 +2456,17 @@ typedef struct {
     int                n;
     int                counted;         /* the walk's extension-total, cap and
                                          * prefix included — the page's "8 of 19" */
-    const char        *app;             /* which app's rows this listing carries;
-                                         * another app's file is not a refusal,
-                                         * it is not this source's row at all */
-    /* Migration 1: the OWNER NAME the ONE slot header carried when this walk
-     * started, probed LIVE rather than remembered from boot — a store lands and
-     * reboots, and the row must show as stored for the theme that is in the slot
-     * right now. The slot stores the theme, not the filename, so a row's stored
-     * test re-derives the stem id from this name under the row's own slug.
-     * Empty string = nothing drawable in the slot. */
-    char               slot_name[THEME_NAME_MAX + 1];
+    const char        *app;             /* which app's rows this listing carries,
+                                         * NULL for every app's; another app's file
+                                         * is not a refusal, it is not this
+                                         * listing's row at all */
+    /* theme-pool-plan P5: what each app has stored, as the pool's table said when
+     * this walk started — a store on the worker cannot rewrite it under the walk. The
+     * pool stores the theme, not the filename, so a row's stored test re-derives the
+     * stem id from its app's entry name under the row's own slug. */
+    uint32_t           n_stored;
+    struct { char slug[ORB_POOL_SLUG_MAX]; char name[ORB_POOL_NAME_MAX]; uint32_t file_crc; }
+                       stored[ORB_POOL_ENTRIES];
 } scan_ctx_t;
 
 /* The app's half of the walk. The OS found a <slug>-<token>-<id>.orbtheme, checked
@@ -2446,7 +2488,7 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
     char slug[ORB_BUNDLE_SLUG_MAX + 1], id[THEME_ID_HEX + 1];
     const bool mine = theme_stem_split(rec->name, slug, sizeof slug,
                                        id, sizeof id) != false;
-    if (mine && strcmp(slug, c->app) != 0) return false;
+    if (mine && c->app && strcmp(slug, c->app) != 0) return false;
 
     orb_theme_entry_t *e = &c->out[c->n];
     ESP_LOGI(TAG, "checking \"%s\" on the card", rec->name);
@@ -2543,18 +2585,29 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
      * carries the theme, not the filename: the test re-derives this row's id from
      * the slot's name under this row's own slug — the identity the store hashed on
      * its way in. */
-    if (c->slot_name[0]) {
+    for (uint32_t k = 0; k < c->n_stored; k++) {
+        if (strcmp(c->stored[k].slug, slug) != 0) continue;
         char sid[THEME_ID_HEX + 1];
-        theme_id(slug, c->slot_name, sid);
-        if (strcmp(sid, id) == 0) e->stored = true;
+        theme_id(slug, c->stored[k].name, sid);
+        if (strcmp(sid, id) == 0) {
+            e->stored = true;
+            /* The theme the dial drew at boot answers through theme_state(), as it
+             * always has; another app's stored theme against the card file's region
+             * checksum, which its pool entry keeps (theme-pool-plan P5). */
+            if (s_active_valid && !strcmp(slug, orb_theme_live_slug())) {
+                orb_thdr_t as;      /* the identity theme_state() reads */
+                memset(&as, 0, sizeof as);
+                strlcpy(as.name, b3.name, sizeof as.name);
+                as.geom_crc = s_bundle_file_geom;
+                as.art_crc = s_bundle_file_geom;   /* adopt_bundle3's one-figure rule */
+                as.fmt = 3;
+                theme_state(&as, &e->active, &e->changed);
+            } else {
+                e->active  = c->stored[k].file_crc == b3.geom_crc;
+                e->changed = !e->active;
+            }
+        }
     }
-    orb_thdr_t as;      /* the identity theme_state() reads: name + the two figures */
-    memset(&as, 0, sizeof as);
-    strlcpy(as.name, b3.name, sizeof as.name);
-    as.geom_crc = s_bundle_file_geom;
-    as.art_crc = s_bundle_file_geom;   /* adopt_bundle3's one-figure rule */
-    as.fmt = 3;
-    theme_state(&as, &e->active, &e->changed);
     c->n++;
     return true;
 }
@@ -2587,6 +2640,16 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
  * walk — the law orb_files.h writes the whole registration API under.
  * =========================================================================== */
 _Static_assert(ORB_THEME_LIST_MAX <= 255, "orb_file_src_t.max_entries is a uint8_t");
+/* theme-pool-plan P5: every app's themes, the OS's own read of the shared directory.
+ * No prefix: a row's app is its stem's slug, which the doors split and check. A static
+ * const, never registered, so any task may read it (orb_files.h's threading rule). */
+static const orb_file_src_t s_any_themes_src = {
+    .id          = "themes",
+    .dir         = ORB_SD_THEME_DIR,
+    .ext         = ORB_THEME_EXT,
+    .max_entries = ORB_THEME_LIST_MAX,
+    .name_prefix = "",
+};
 static const orb_file_src_t s_clock_themes_src = {
     .id          = "themes",
     .dir         = ORB_SD_THEME_DIR,
@@ -2619,6 +2682,11 @@ static const orb_file_src_t *theme_src(void)
 
 int orb_theme_scan(orb_theme_entry_t *out, int cap)
 {
+    return orb_theme_scan_app(NULL, out, cap);
+}
+
+int orb_theme_scan_app(const char *app, orb_theme_entry_t *out, int cap)
+{
     if (!out || cap <= 0) return -1;
     /* While an upload owns the card, do not open a second file on it: FatFs is
      * reentrant per volume, but this walk plus a 3.7 MB write on the same
@@ -2635,23 +2703,22 @@ int orb_theme_scan(orb_theme_entry_t *out, int cap)
      * constant here: the OS owns the walk, so this layer asks where its themes
      * live rather than assuming — through theme_src(), which can ask that
      * question on a boot whose clock app never built. */
-    const orb_file_src_t *src = theme_src();
+    const orb_file_src_t *src = &s_any_themes_src;
 
-    scan_ctx_t c = { .out = out, .cap = cap, .n = 0, .app = "clock" };
-    /* Probe the one slot for this walk's answer. The partition outliving the card is
-     * the point: a stored bundle stays listed as stored with no card in the socket at
-     * all, and this probe only decides what the page MARKS — the store door re-reads
-     * the same header on the worker before it writes anything. The probe answers with
-     * the slot's OWNER NAME; the stem a row is stored under is re-derived per row,
-     * because the slot holds a theme and the name is a filing decision. */
-    const esp_partition_t *sp = art_bank_partition();
-    if (sp) {
-        orb_bundle3_hdr_t sh;
-        uint32_t sraw[W_WORDS];
-        bool claims;
-        const int k = s_pool ? orb_pool_find(s_pool, c.app) : -1;
-        if (k >= 0 && slot_probe3(sp, s_pool->e[k].off + SLOT_HDR, &sh, sraw, &claims))
-            strlcpy(c.slot_name, sh.name, sizeof c.slot_name);
+    /* Most of a kilobyte with the snapshot: PSRAM per walk, not the door task's 4 KB
+     * stack, and not a static that two door tasks listing at once would share. */
+    scan_ctx_t *c = heap_caps_calloc(1, sizeof *c, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!c) return -1;
+    c->out = out; c->cap = cap; c->app = app;
+    /* What each app has stored, from the pool's table. The partition outliving the card
+     * is the point: a stored theme stays listed as stored with no card in the socket at
+     * all, and this only decides what the page MARKS — the store door re-reads the
+     * card's header on the worker before it writes anything. */
+    for (uint32_t k = 0; s_pool && k < s_pool->n && k < ORB_POOL_ENTRIES; k++) {
+        strlcpy(c->stored[c->n_stored].slug, s_pool->e[k].slug, sizeof c->stored[0].slug);
+        strlcpy(c->stored[c->n_stored].name, s_pool->e[k].name, sizeof c->stored[0].name);
+        c->stored[c->n_stored].file_crc = s_pool->e[k].file_crc;
+        c->n_stored++;
     }
     /* Both ends logged, with the wait: a scan that never comes back is the one card
      * failure that looks like a dead web server from outside (the dial keeps drawing
@@ -2659,12 +2726,16 @@ int orb_theme_scan(orb_theme_entry_t *out, int cap)
      * worker is waiting on the mutex or inside FatFs. */
     const int64_t t_scan = esp_timer_get_time();
     ESP_LOGI(TAG, "listing %s", src->dir);
-    if (orb_files_walk(src, scan_entry, &c, &c.counted) < 0) return -1;
-    s_scan_counted = c.counted;
-    ESP_LOGI(TAG, "%d of %d entr%slisted in %lld ms", c.n, c.counted,
-             c.n == 1 ? "y " : "ies ",
-             (long long)((esp_timer_get_time() - t_scan) / 1000));
-    return c.n;
+    const int w = orb_files_walk(src, scan_entry, c, &c->counted);
+    const int n = c->n;
+    if (w >= 0) {
+        s_scan_counted = c->counted;
+        ESP_LOGI(TAG, "%d of %d entr%slisted in %lld ms", n, c->counted,
+                 n == 1 ? "y " : "ies ",
+                 (long long)((esp_timer_get_time() - t_scan) / 1000));
+    }
+    heap_caps_free(c);
+    return w < 0 ? -1 : n;
 }
 
 /* ------------------------------------------------------------------------- *

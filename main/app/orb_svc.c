@@ -650,7 +650,7 @@ static int svc_theme_count(orb_app_t *a)
     if (!orb_grant_ok(a, CAP_THEMES)) return -1;  /* the int cannot carry a
                                                    * code; the counted denial
                                                    * does */
-    const int n = orb_theme_scan(s_te, SVC_THEME_MAX);
+    const int n = orb_theme_scan_app(a->slug, s_te, SVC_THEME_MAX);   /* its own themes */
     s_te_n = n;
     return n;
 }

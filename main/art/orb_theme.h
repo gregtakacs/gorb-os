@@ -325,6 +325,8 @@ typedef struct {
  * page has to be able to tell the owner which one they have.
  */
 int orb_theme_scan(orb_theme_entry_t *out, int cap);
+/* theme-pool-plan P5: one app's themes alone (orb_theme_scan lists every app's). */
+int orb_theme_scan_app(const char *app, orb_theme_entry_t *out, int cap);
 
 /** How many files the last scan's walk saw carrying the theme extension at all,
  *  the listing cap and other apps' files included: the "shown of on the card"

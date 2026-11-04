@@ -142,7 +142,7 @@ count, and shows frame `f` when `f` is in range (`f < 0` only asks).
 | **P2** | the pool table and its compaction as pure C (`main/art/orb_pool.c`), every flash access through an io | `tools/host_pool_test.py` over a simulated NOR flash: 13 malformed tables refused by name; a cut at every step of a replacement (504), a removal (264) and an overlapping move (1,526), each with a second cut in the repair, losing no other theme except the one an overlapping move tore; 8 of 8 mutants caught — **built 2026-11-03** |
 | **P3** | store and delete through the pool; the one-slot carry | host suites; bench: two apps' themes stored, one removed, the other intact — **built and benched on Bronze 2026-11-04** (§4); two apps' themes at once waits on P5 |
 | **P4** | boot adoption of every entry, per-app geometry, the stage bound to the app on the glass | bench: the clock and flights each on their own theme, switching between them |
-| **P5** | per-app scan, verify, delete, router, status | host suites; the hub's lists still parse |
+| **P5** | per-app scan, verify, delete, router, status | host suites; the hub's lists still parse — **built and benched on Bronze 2026-11-04** (§4) |
 
 The JS baker (`baker@1`, gorb-os-2's lane) keeps its 24-row cap until it needs more: a
 cap there is a refusal, so it cannot emit a theme this firmware rejects.
@@ -200,3 +200,34 @@ cap there is a refusal, so it cannot emit a theme this firmware rejects.
   - **Not reached on the bench**: a compaction that moves another app's theme, and a cut
     during one. With the clock the only app that can store (P5), the pool never holds
     two entries on a board; `host_pool_test.py` carries that proof until P5.
+
+### P5 — any installed app's theme (2026-11-04)
+
+- **Built.** The card doors take the app from the stem and refuse an app that is not
+  installed or a file that themes another app than its name says; one OS-wide themes
+  source walks the shared directory; `orb_theme_scan` lists every app's themes and
+  `orb_theme_scan_app` one app's (an app's own service asks for its own); a row's stored
+  mark reads its app's pool entry; a delete lets its app's entry go; the store's reboot
+  remembers the storing app. The stage still draws one theme per boot, the clock's (P4).
+- **Benched on Bronze, `v1.2.7+856cd15`.** The flights theme was Skeleton's art re-filed
+  under `flights` with `orbbundle.write_bundle` ("Pool Bench"); the first try dropped the
+  record's panel fields and the orb refused it by name ("a clock section made for a
+  different panel"), which is the door doing its job.
+  - **Two apps' themes at once**: the upload stored it in 17,047 ms; the reboot read
+    `pool: 2 themes, 4272128 B` (Speedster's 1,474,560 and the bench's 2,797,568), the clock
+    still drew Speedster, and the listing marked both stored.
+  - **A compaction that moves another app's theme**, overlapping: Skeleton stored for
+    the clock let Speedster's entry at 0 go and slid the flights theme down by less than
+    its own size, every byte read back against its CRCs; 42,778 ms in all; the reboot
+    read `pool: 2 themes, 5595136 B`, packed, Skeleton drawn, the flights theme still
+    stored.
+  - **A cut during a compaction**: re-storing the flights theme let its entry at 0 go
+    and moved the clock's Skeleton down; the board was reset 10 s in. The boot read
+    `pool: 1 theme` 24.4 s in instead of 1.2 s — the repair redid the 2.8 MB move before
+    the display came up — and drew Skeleton; the flights store's witness stood. Which
+    side of the move the cut landed on the log could not say, so boot now names a theme
+    found mid-move and a pool found unpacked.
+  - **Cleanup**: the bench file deleted (not stored at that moment, so no reboot), and
+    Speedster restored (9,835 ms). Bronze ends as it began, on this build.
+- **Owed**: a repair that moves megabytes holds the boot dark for seconds with nothing on
+  the glass. The boot overlay could say so; a P4-or-later nicety, not a correctness gap.

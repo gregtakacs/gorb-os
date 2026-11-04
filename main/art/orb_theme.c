@@ -2154,6 +2154,16 @@ esp_err_t orb_theme_boot(void)
     s_live_base = 0;
     int pr = pool_io(p) ? orb_pool_load(&s_pool_io, s_pool, &s_pool_which) : ORB_POOL_ERR_ARG;
     if (!pr && !s_pool_which) pool_carry(p);
+    /* A cut store or compaction leaves a theme mid-move, or a hole: the repair reads
+     * the moving one back and packs the pool before anything draws. Said here, because
+     * a repair that moves megabytes holds the boot dark for seconds (Bronze, 2026-11-04:
+     * 23 s for a 2.8 MB theme). */
+    for (uint32_t k = 0; !pr && k < s_pool->n; k++)
+        if (s_pool->e[k].state != ORB_POOL_LIVE)
+            ESP_LOGW(TAG, "pool: %s's theme was mid-move when the power went; reading it back",
+                     s_pool->e[k].slug);
+    if (!pr && !orb_pool_packed(s_pool))
+        ESP_LOGW(TAG, "pool: a store or removal was cut; packing the pool before the dial draws");
     if (!pr) pr = orb_pool_repair(&s_pool_io, s_pool, &s_pool_which);
     const int live = pr ? -1 : pool_live_entry();
     if (pr)

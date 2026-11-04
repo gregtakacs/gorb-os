@@ -60,7 +60,11 @@ function showTab(name) {
   else if (name === "themes") lazyTab("themes", themeOpen);
   else if (name === "files") lazyTab("files", fmOpen);
   else if (name === "wifi") lazyTab("wifi", wifiOpen);
-  else if (name === "orb") lazyTab("home", () => { loadSecrets().catch(() => {}); return loadHome(); });
+  else if (name === "orb") lazyTab("home", () => {
+    loadSecrets().catch(() => {});
+    loadSound().catch(() => {});
+    return loadHome();
+  });
 }
 
 // wifiOpen is the Wi-Fi face's first request, and it asks for the cached table
@@ -168,6 +172,84 @@ $("#mn-name-go").onclick = async () => {
     pullFound();
   } catch (e) {
     note.textContent = "the board refused it: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+// ---- face: Orb — sound: the level and quiet hours (docs/knob-edit-plan.md) ----
+// The orb's /api/v1/sound, through the hub's allowlisted door. Quiet hours off is
+// quiet_on false; the hours then show the ones they come back with (quiet_last_*),
+// and the pickers are disabled so Save cannot pretend to set them.
+const soundURL = () => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/sound";
+const hh = (h) => String("0" + h).slice(-2) + ":00";
+
+(function soundPickers() {
+  for (const id of ["#snd-qfrom", "#snd-qto"]) {
+    const sel = $(id);
+    for (let h = 0; h < 24; h++) sel.add(new Option(hh(h), String(h)));
+  }
+})();
+
+function soundLine(d) {
+  if (!d.ready) return "this board has no speaker";
+  const lvl = d.volume ? "volume " + d.volume : "volume off";
+  return lvl + " · " + (d.quiet_on ? "quiet " + hh(d.quiet_from) + "–" + hh(d.quiet_to)
+                                   : "quiet hours off (" + hh(d.quiet_last_from) + "–" + hh(d.quiet_last_to) + " when on)");
+}
+
+function soundShow(d) {
+  $("#snd-cur").textContent = soundLine(d);
+  $("#snd-vol").value = String(d.volume);
+  $("#snd-volv").textContent = d.volume ? String(d.volume) : "off";
+  $("#snd-quiet").checked = !!d.quiet_on;
+  $("#snd-qfrom").value = String(d.quiet_on ? d.quiet_from : d.quiet_last_from);
+  $("#snd-qto").value = String(d.quiet_on ? d.quiet_to : d.quiet_last_to);
+  soundPickersOn();
+}
+
+function soundPickersOn() {
+  const on = $("#snd-quiet").checked;
+  $("#snd-qfrom").disabled = !on;
+  $("#snd-qto").disabled = !on;
+}
+
+async function loadSound() {
+  if (!current.ip) return;
+  try {
+    soundShow(await readDeviceJSON(await hubFetch(soundURL())));
+  } catch (e) {
+    $("#snd-cur").textContent = "sound did not load: " + (e && e.message ? e.message : String(e));
+    throw e;
+  }
+}
+
+$("#snd-vol").oninput = () => {
+  const v = +$("#snd-vol").value;
+  $("#snd-volv").textContent = v ? String(v) : "off";
+};
+$("#snd-quiet").onchange = soundPickersOn;
+
+$("#snd-go").onclick = async () => {
+  const msg = $("#snd-msg"), btn = $("#snd-go");
+  if (!current.ip) { msg.textContent = "no address to write to"; return; }
+  const on = $("#snd-quiet").checked;
+  const from = +$("#snd-qfrom").value, to = +$("#snd-qto").value;
+  if (on && from === to) { msg.textContent = "quiet hours need two different hours"; return; }
+  const body = { volume: +$("#snd-vol").value, quiet_on: on };
+  if (on) { body.quiet_from = from; body.quiet_to = to; }
+  btn.disabled = true;
+  msg.textContent = "writing to the board\u2026";
+  try {
+    const r = await hubFetch(soundURL(), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const d = await readDeviceJSON(r);
+    if (!r.ok || d.error) throw new Error(d.error || ("HTTP " + r.status));
+    soundShow(d);
+    msg.textContent = "saved";
+  } catch (e) {
+    msg.textContent = "the board refused it: " + e.message;
   } finally {
     btn.disabled = false;
   }

@@ -145,6 +145,27 @@
     </div>
   </article>
 
+  <article class="card tabpane" data-tab="orb">
+    <h3>Sound</h3>
+    <!-- The owner's level and quiet hours (docs/knob-edit-plan.md): device config,
+         like the home, applied by the OS to every app's sound. The orb's Sound page
+         sets the same values with the knob; both write /api/v1/sound. While quiet
+         hours are off the hours show the ones they come back with, and Save keeps
+         them. -->
+    <div class="row"><span class="hint" id="snd-cur">sound loads with this tab</span></div>
+    <div class="row">
+      <label class="inline">Volume <input id="snd-vol" type="range" min="0" max="100" step="1"
+             aria-describedby="snd-volv"> <span id="snd-volv"></span></label>
+    </div>
+    <div class="row">
+      <label class="check inline"><input id="snd-quiet" type="checkbox"> Quiet hours</label>
+      <label class="inline">from <select id="snd-qfrom"></select></label>
+      <label class="inline">until <select id="snd-qto"></select></label>
+      <button id="snd-go" class="ghost" type="button" title="Write the level and quiet hours to the board">Save sound</button>
+    </div>
+    <div class="row"><span class="hint" id="snd-msg"></span></div>
+  </article>
+
   <article class="card tabpane" data-tab="wifi" id="mn-wificard">
     <h3>Wi-Fi</h3>
     <!-- Its first read lands when this face is first opened, and it is the

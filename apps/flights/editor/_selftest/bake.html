@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Flights bake check</title>
+<!-- Staged by bake_check.py beside the runtime's baker and fonts: bakes every preset (and
+     the variants named in VARIANTS) through flights-bake.js and prints each theme as one
+     "B64 <name> <base64>" line in #out for the driver to check. -->
+<link rel="stylesheet" href="fonts.css">
+<script src="orbtheme-baker.js"></script>
+<script src="flights-art.js"></script>
+<script src="flights-bake.js"></script>
+<pre id="out"></pre>
+<script>
+(async function () {
+  const out = document.getElementById('out'), B = window.FlightsBake;
+  const say = (s) => { out.textContent += s + '\n'; };
+  const b64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+  const VARIANTS = {
+    'single-off': (d) => { d.planes.form = 'single'; d.planes.colour = false; return d; },
+    'colour-image-none': (d) => { d.scope.bg = 'colour'; d.scope.rings = 4; d.arm.kind = 'none'; d.words.plaques = true; return d; },
+    'wedge-90': (d) => { d.arm.kind = 'wedge'; d.arm.trail = 90; d.planes.size = 48; d.words.face = 'Orbitron'; return d; },
+  };
+  const jobs = B.PRESETS.map((f) => [f, B.preset(f)]);
+  for (const k in VARIANTS) jobs.push([k, VARIANTS[k](B.preset('modern'))]);
+  for (const [name, d] of jobs) {
+    try {
+      const t0 = performance.now();
+      const doc = new TextEncoder().encode(JSON.stringify({ format: 'wc-design', schema: 1, app: 'flights', design: d }));
+      const r = await B.bake(d, { design: doc });
+      say('B64 ' + name + ' ' + Math.round(performance.now() - t0) + ' ' + b64(r.bytes));
+    } catch (e) {
+      say('ERR ' + name + ' ' + (e && e.message ? e.message : e));
+    }
+  }
+  say('DONE');
+})();
+</script>

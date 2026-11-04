@@ -125,6 +125,7 @@ typedef struct {
     clk_sprite_t   pose;       /* the row's sprite moved by (ox, oy)              */
     bool           logged;     /* "no input" printed for this row                 */
     int16_t        frame;      /* the picked frame shown (theme-pool-plan §2.6)   */
+    uint8_t        opa;        /* the opacity shown (theme-text-plan T2)          */
     clk_sprite_t   fspr;       /* a picked row's sprite at that frame             */
 } row_state_t;
 static row_state_t *s_row;
@@ -135,6 +136,7 @@ static row_state_t *s_row;
 static int32_t s_g_ang[CLK_ROW_MAX];
 static int16_t s_g_ox[CLK_ROW_MAX], s_g_oy[CLK_ROW_MAX];
 static int16_t s_g_frame[CLK_ROW_MAX];   /* the frame the app picked (stage_frame) */
+static uint8_t s_g_opa[CLK_ROW_MAX];     /* the opacity the app gave (stage_opacity) */
 static int32_t s_g_cval[CLK_COMP_MAX];
 static uint8_t s_g_clive[CLK_COMP_MAX];
 static time_t  s_now_t;
@@ -1236,8 +1238,10 @@ static void rows_update(void)
         }
         /* A new picked frame redraws the row's box even where the pose stands still. */
         const bool fchg = row_picks(i) && s_g_frame[i] != st->frame;
-        if (!fchg && a == prev && ox[i] == st->ox && oy[i] == st->oy) continue;
-        if (!fchg && a != ROW_HIDDEN && prev != ROW_HIDDEN && ox[i] == st->ox && oy[i] == st->oy) {
+        /* So does a new opacity: the same box, other pixels. */
+        const bool ochg = s_g_opa[i] != st->opa;
+        if (!fchg && !ochg && a == prev && ox[i] == st->ox && oy[i] == st->oy) continue;
+        if (!fchg && !ochg && a != ROW_HIDDEN && prev != ROW_HIDDEN && ox[i] == st->ox && oy[i] == st->oy) {
             int32_t d = a - prev;
             if (d > 1800) d -= 3600;
             if (d < -1800) d += 3600;
@@ -1286,6 +1290,14 @@ static void rows_update(void)
                 gfx_fill_sprite_dsc(&st->dsc, &st->fspr, blob());
                 lv_display_enable_invalidation(disp, false);
                 lv_image_set_src(st->obj, &st->dsc);
+                lv_display_enable_invalidation(disp, true);
+            }
+        }
+        if (ochg) {
+            st->opa = s_g_opa[i];
+            if (st->obj) {
+                lv_display_enable_invalidation(disp, false);
+                lv_obj_set_style_image_opa(st->obj, st->opa, LV_PART_MAIN);
                 lv_display_enable_invalidation(disp, true);
             }
         }
@@ -1729,6 +1741,7 @@ static void clock_layers_refresh(void)
                     d.drum = 0;
                 }
                 d.ang_10 = drum_r ? 0 : (int16_t)st->ang_10;
+                d.alpha = st->opa;
                 if (row_picks(r->gidx) && st->frame > 0 && (uint32_t)st->frame < r->n_frames) {
                     /* A picked row, at the frame the app picked: the plane the widget
                      * shows (theme-pool-plan §2.6). */
@@ -1813,7 +1826,9 @@ esp_err_t stage_init(orb_app_t *self)
     s_lay_app = self;
     s_scr = orb_ui_screen(self->flash_slot);
     if (!s_scr) return ESP_ERR_NO_MEM;
-    for (int i = 0; i < CLK_ROW_MAX; i++) { s_g_ang[i] = ROW_HIDDEN; s_g_frame[i] = 0; }
+    for (int i = 0; i < CLK_ROW_MAX; i++) {
+        s_g_ang[i] = ROW_HIDDEN; s_g_frame[i] = 0; s_g_opa[i] = LV_OPA_COVER;
+    }
 
     /* §26: no resident art. The stage draws nothing and starts no frames; the page
      * stays the black one orb_ui built, and the app puts its own face on it (D31:
@@ -1873,6 +1888,7 @@ esp_err_t stage_init(orb_app_t *self)
         for (int i = 0; i < CLK_ROW_MAX; i++) {
             memset(&s_row[i], 0, sizeof s_row[i]);
             s_row[i].ang_10 = ROW_HIDDEN;
+            s_row[i].opa = LV_OPA_COVER;
             if (row_picks((uint16_t)i)) pick_sprite((uint16_t)i, 0, &s_row[i].fspr);
         }
     else
@@ -2298,6 +2314,13 @@ int stage_frame(int i, int32_t f)
     const int n = row_picks((uint16_t)i) ? (int)clk_theme.pick_n[i] : 1;
     if (f >= 0 && f < n && row_picks((uint16_t)i)) s_g_frame[i] = (int16_t)f;
     return n;
+}
+
+/* theme-text-plan T2: a row's opacity over its art, 0..255, from the next frame on. */
+void stage_opacity(int i, int32_t opa)
+{
+    if (i < 0 || i >= CLK_ROW_MAX) return;
+    s_g_opa[i] = (uint8_t)(opa < 0 ? 0 : opa > 255 ? 255 : opa);
 }
 
 void stage_comp_set(int i, int32_t value, bool live)

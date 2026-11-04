@@ -73,6 +73,8 @@ ORB_IMPORT("stage_pose")     void    orb_stage_pose(int32_t i, int32_t ang_10, i
  *  image, 0 for no such row. f in range shows frame f from the next frame on; f < 0
  *  only asks. */
 ORB_IMPORT("stage_frame")    int32_t orb_stage_frame(int32_t i, int32_t f);
+/** A row's opacity over its art, 0 (gone) to 255 (as baked), from the next frame on. */
+ORB_IMPORT("stage_opacity")  void    orb_stage_opacity(int32_t i, int32_t opa);
 ORB_IMPORT("stage_comp_set") void    orb_stage_comp_set(int32_t i, int32_t value, int32_t live);
 
 /* Sound (cap "sound"): the app's own theme sounds, by index into its sound table,

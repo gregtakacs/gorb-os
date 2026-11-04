@@ -61,6 +61,9 @@ typedef struct gfx_paint_ctx {
     int32_t  xa_lim;                  /* static path: posx + w - 1 */
     uint32_t w, h;
     uint8_t  bmode;
+    uint8_t  opa;                     /* the row's opacity over its art's own alpha:
+                                       * LVGL's image opa, LV_OPA_MIX2 and all (theme-
+                                       * text-plan T2); >= LV_OPA_MAX is the art as is */
     uint8_t  role;                    /* paint bucket for the fps line */
     bool     rot;                     /* false == identity (ang == 0) path */
     bool     smooth;                  /* rotated path samples 2x2 bilinear (EF_SMOOTH) */

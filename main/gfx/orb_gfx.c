@@ -242,6 +242,14 @@ static inline uint16_t mix_16_16(uint16_t c1, uint16_t c2, uint8_t mix)
 
 /* Blend one sampled texel onto the mirror. Shared by the rotated and the
  * static loop in paint_row so the two can never drift apart. */
+/* A row's opacity over a texel's coverage, as LVGL's image blend takes it
+ * (orb_lv_blend.c's mix_mask_opa: LV_OPA_MIX2(mask, opa)); an opacity at or above
+ * LV_OPA_MAX is LVGL's cover, the texel as it is. */
+static inline uint8_t opa_mix(uint8_t a, uint8_t opa)
+{
+    return opa >= LV_OPA_MAX ? a : (uint8_t)(((uint32_t)a * opa) >> 8);
+}
+
 static inline void blend_px(uint16_t *d, uint16_t c, uint8_t a, int bmode)
 {
     const uint16_t dest = __builtin_bswap16(*d);
@@ -277,6 +285,7 @@ bool gfx_paint_ctx_init(gfx_paint_ctx_t *pc, const clk_sprite_t *spr,
 {
     if (!gfx_sprite_drawable(spr)) return false;
     pc->role = role;
+    pc->opa = LV_OPA_COVER;           /* the art as it is unless the job builder dims it */
     pc->smooth = false;               /* nearest unless the job builder says the row smooths */
     pc->drum = false;                 /* a drum only when the job builder makes it one */
 
@@ -368,7 +377,7 @@ static void paint_drum_row(const gfx_paint_ctx_t *pc, int32_t y, int32_t xa, int
     if (xa > xb) return;
     uint32_t n = 0, si = (uint32_t)sy * pc->w + (uint32_t)(xa - pc->posx);
     for (int32_t x = xa; x <= xb; x++, si++) {
-        const uint8_t a = pc->alp[si];
+        const uint8_t a = opa_mix(pc->alp[si], pc->opa);
         if (!a) continue;
         blend_px(&row[x], pc->col[si], a, pc->bmode);
         n++;
@@ -415,7 +424,7 @@ void gfx_paint_row_ctx(const gfx_paint_ctx_t *pc, int32_t y,
         const uint8_t *alp = pc->alp;
         uint32_t si = (uint32_t)sy * pc->w + (uint32_t)(xa - pc->posx);
         for (int32_t x = xa; x <= xb; x++, si++) {
-            const uint8_t a = alp[si];
+            const uint8_t a = opa_mix(alp[si], pc->opa);
             if (!a) continue;
             blend_px(&row[x], col[si], a, pc->bmode);
             n++;
@@ -463,7 +472,7 @@ void gfx_paint_row_ctx(const gfx_paint_ctx_t *pc, int32_t y,
                 gs += (aw >> 8) * ((c >> 5) & 0x3Fu);
                 bs += (aw >> 8) * (c & 0x1Fu);
             }
-            const uint8_t a = (uint8_t)((asum + 32768u) >> 16);
+            const uint8_t a = opa_mix((uint8_t)((asum + 32768u) >> 16), pc->opa);
             if (!a) continue;
             const uint32_t d = asum >> 8;
             const uint16_t c = (uint16_t)(((rs / d) << 11) | ((gs / d) << 5) | (bs / d));
@@ -482,7 +491,7 @@ void gfx_paint_row_ctx(const gfx_paint_ctx_t *pc, int32_t y,
             ys_int < 0 || ys_int >= (int32_t)pc->h) continue;
 
         const uint32_t sidx = (uint32_t)ys_int * pc->w + (uint32_t)xs_int;
-        const uint8_t a = alp[sidx];
+        const uint8_t a = opa_mix(alp[sidx], pc->opa);
         if (!a) {
             continue;                   /* 3/4 of the box: skip  */
         }

@@ -1089,6 +1089,15 @@ m3ApiRawFunction(imp_stage_frame)             /* i32 stage_frame(i, f) */
     m3ApiReturn(STAGE_ON(s) ? stage_frame(i, f) : 0);
 }
 
+m3ApiRawFunction(imp_stage_opacity)           /* void stage_opacity(i, opa) */
+{
+    CALLER();
+    m3ApiGetArg(int32_t, i);
+    m3ApiGetArg(int32_t, opa);
+    if (STAGE_ON(s)) stage_opacity(i, opa);
+    m3ApiSuccess();
+}
+
 m3ApiRawFunction(imp_stage_comp_set)          /* void stage_comp_set(i, value, live) */
 {
     CALLER();
@@ -1261,6 +1270,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "stage_now",      "v(iii)",    imp_stage_now },
     { "orb", "stage_pose",     "v(iiii)",   imp_stage_pose },
     { "orb", "stage_frame",    "i(ii)",     imp_stage_frame },
+    { "orb", "stage_opacity",  "v(ii)",     imp_stage_opacity },
     { "orb", "stage_comp_set", "v(iii)",    imp_stage_comp_set },
     { "orb", "stage_snd_ready",    "i()",      imp_stage_snd_ready },
     { "orb", "stage_snd_cfg",      "v(i)",     imp_stage_snd_cfg },

@@ -67,10 +67,10 @@ def run(sdk):
     many = {"%s.js" % c: c.encode() for c in "qzsxwrvtuy"}       # scrambled: listdir's order is not name order
     many.update({"index.html": b"<!doctype html><p>hi</p>", "b.js": b"b()", "a.js": b"a()"})
     d, m = app(many)
-    r = sdk.editor_region(d, m)
+    r = sdk.editor_region(d, m, "v9.9.9")
     zf = zipfile.ZipFile(io.BytesIO(r))
     names = [i.filename for i in zf.infolist()]
-    ck(names == ["editor.json"] + sorted(many),
+    ck(names == ["editor.json"] + sorted(list(many) + ["orb-app.js"]),
        "members: editor.json first, then the files in name order (%s)" % names)
     ck(all(i.compress_type == zipfile.ZIP_STORED for i in zf.infolist()), "every member is STORE")
     ck(all(i.date_time == (1980, 1, 1, 0, 0, 0) for i in zf.infolist()), "every member carries the fixed date")
@@ -78,7 +78,9 @@ def run(sdk):
     ck(zf.read("editor.json") == b'{"editor":1,"entry":"index.html","runtime":["theme@1","react@18.3.1"]}',
        "editor.json is canonical: sorted keys, no spaces (%r)" % zf.read("editor.json"))
     ck(zf.read("a.js") == b"a()", "a member's bytes are the file's")
-    ck(sdk.editor_region(d, m) == r, "a rebuild is byte-identical")
+    ck(zf.read("orb-app.js") == b'window.__ORB_APP = {"slug": "radar", "version": "v9.9.9"};\n',
+       "orb-app.js names the app and its release (%r)" % zf.read("orb-app.js"))
+    ck(sdk.editor_region(d, m, "v9.9.9") == r, "a rebuild is byte-identical")
     ck("_selftest" not in "".join(names) and ".DS_Store" not in names, "subdirectories and dotfiles stay home")
     # the clock's key names no directory of the app: the SDK leaves it to make_factory_apps
     ck(sdk.editor_dir(d, {"slug": "clock", "editor": "clock"}) is None, "a key that names no directory is not a region")
@@ -86,22 +88,24 @@ def run(sdk):
     ck(sdk.editor_dir(d, {"slug": "radar", "editor": ".."}) is None, "an editor path out of the app is not one")
     # refusals
     d2, m2 = app({"index.html": b"x"}, ej={"entry": "index.html", "runtime": [], "colour": 1})
-    ck(refused(lambda: sdk.editor_region(d2, m2), "carries colour"), "an unknown editor.json key is refused")
+    ck(refused(lambda: sdk.editor_region(d2, m2, "v9.9.9"), "carries colour"), "an unknown editor.json key is refused")
     d3, m3 = app({"index.html": b"x"}, ej={"entry": "sub/index.html", "runtime": []})
-    ck(refused(lambda: sdk.editor_region(d3, m3), "plain .html"), "an entry in a subdirectory is refused")
+    ck(refused(lambda: sdk.editor_region(d3, m3, "v9.9.9"), "plain .html"), "an entry in a subdirectory is refused")
     d4, m4 = app({"index.html": b"x"}, ej={"entry": "main.html", "runtime": []})
-    ck(refused(lambda: sdk.editor_region(d4, m4), "is not in"), "an entry the directory lacks is refused")
+    ck(refused(lambda: sdk.editor_region(d4, m4, "v9.9.9"), "is not in"), "an entry the directory lacks is refused")
     d5, m5 = app({"index.html": b"x"}, ej={"entry": "index.html", "runtime": ["theme"]})
-    ck(refused(lambda: sdk.editor_region(d5, m5), "runtime lists"), "a runtime id with no version is refused")
+    ck(refused(lambda: sdk.editor_region(d5, m5, "v9.9.9"), "runtime lists"), "a runtime id with no version is refused")
     d6, m6 = app({"index.html": b"x", "big.bin": b"\0" * (sdk.orbapp.EDITOR_MAX + 1)})
-    ck(refused(lambda: sdk.editor_region(d6, m6), "a region holds"), "a region past the cap is refused")
+    ck(refused(lambda: sdk.editor_region(d6, m6, "v9.9.9"), "a region holds"), "a region past the cap is refused")
+    d7, m7 = app({"index.html": b"x", "orb-app.js": b"mine"})
+    ck(refused(lambda: sdk.editor_region(d7, m7, "v9.9.9"), "which the SDK writes"), "an editor's own orb-app.js is refused")
     return fails
 
 
 MUTANTS = (
     ("editor.json not first", 'members = [("editor.json", json.dumps(ej, sort_keys=True, separators=(",", ":")).encode())]',
      'members = []'),
-    ("files unsorted", "files = sorted(n for n in os.listdir(d)", "files = list(n for n in os.listdir(d)"),
+    ("files unsorted", 'for n in sorted(files + ["orb-app.js"]):', 'for n in ["orb-app.js"] + list(reversed(files)):'),
     ("no canonical json", 'json.dumps(ej, sort_keys=True, separators=(",", ":"))', 'json.dumps(ej)'),
     ("deflated members", "zf.writestr(info, data, compress_type=zipfile.ZIP_STORED)", "zf.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED)"),
     ("today's date", "info = zipfile.ZipInfo(name, date_time=ZIP_DATE)", "info = zipfile.ZipInfo(name, date_time=(2026, 11, 4, 12, 0, 0))"),
@@ -109,6 +113,7 @@ MUTANTS = (
     ("unknown keys pass", "if not isinstance(ej, dict) or set(ej) - EDITOR_KEYS:", "if not isinstance(ej, dict):"),
     ("no entry check", "if entry not in files:", "if 0:"),
     ("no cap", "if len(region) > orbapp.EDITOR_MAX:", "if 0:"),
+    ("no release stamp", 'json.dumps({"slug": m["slug"], "version": release}, sort_keys=True)', 'json.dumps({"slug": m["slug"]})'),
     ("an escaping editor path", 'if not isinstance(e, str) or not e or "/" in e or e.startswith("."):',
      'if not isinstance(e, str) or not e:'),
 )

@@ -287,7 +287,9 @@ def build(appdir, out_dir=None):
 # its editor region: the hub opens it from the Themes page. The recipe is the clock's
 # (tools/make_clock_region.py): a flat STORE ZIP, editor.json first and canonical, then
 # the directory's top-level files in name order, the fixed date and mode, read back
-# before it ships. Subdirectories (an editor's _selftest/) and dotfiles stay home.
+# before it ships. Subdirectories (an editor's _selftest/) and dotfiles stay home. One member
+# is written here: orb-app.js, `window.__ORB_APP = {slug, version}`, the release the
+# theme@1 session stamps into every design (the clock's region sets the same).
 EDITOR_KEYS = {"baker", "editor", "entry", "runtime"}
 RUNTIME_ID = re.compile(r"^[a-z][a-z0-9_-]*@[0-9][0-9.]*$")
 ZIP_DATE = (1980, 1, 1, 0, 0, 0)
@@ -302,8 +304,8 @@ def editor_dir(appdir, m):
     return d if os.path.isdir(d) else None
 
 
-def editor_region(appdir, m):
-    """The region bytes for the editor directory app.json names."""
+def editor_region(appdir, m, release):
+    """The region bytes for the editor directory app.json names, for `release` (version.txt)."""
     import io
     import zipfile
     import zlib
@@ -328,8 +330,14 @@ def editor_region(appdir, m):
                    if not n.startswith(".") and n != "editor.json" and os.path.isfile(os.path.join(d, n)))
     if entry not in files:
         fail("editor.json's entry %s is not in %s" % (entry, d))
+    if "orb-app.js" in files:
+        fail("%s's editor carries orb-app.js, which the SDK writes" % m["slug"])
     members = [("editor.json", json.dumps(ej, sort_keys=True, separators=(",", ":")).encode())]
-    for n in files:
+    stamp = ("window.__ORB_APP = %s;\n" % json.dumps({"slug": m["slug"], "version": release}, sort_keys=True)).encode()
+    for n in sorted(files + ["orb-app.js"]):
+        if n == "orb-app.js":
+            members.append((n, stamp))
+            continue
         with open(os.path.join(d, n), "rb") as f:
             members.append((n, f.read()))
     buf = io.BytesIO()
@@ -353,7 +361,7 @@ def container(appdir, editor=b""):
     """The app's .orbapp bytes, through the one container writer and its checks."""
     m = manifest(appdir)
     if not editor and editor_dir(appdir, m):
-        editor = editor_region(appdir, m)
+        editor = editor_region(appdir, m, version(appdir))
     if m.get("editor") and not editor:
         fail("%s declares an editor, which only tools/make_factory_apps.py builds "
              "(inside a gorb-os clone)" % m["slug"])

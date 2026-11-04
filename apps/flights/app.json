@@ -11,5 +11,6 @@
     {"id": "ground", "type": "toggle", "default": 1},
     {"id": "key",    "type": "secret", "host": "api.adsb.lol"}
   ],
-  "shelf": false
+  "shelf": false,
+  "editor": "editor"
 }

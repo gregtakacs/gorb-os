@@ -907,3 +907,42 @@ says; Design, Panel and Split and true size come from `theme@1/preview`.
 | **E3** | the bake in the browser | in headless Chrome, each preset bakes; the theme reads back through `verifyBundle3`, `theme_schema` and the shipped `orb_clock3.c`, with the rows and fonts the app finds |
 | **E4** | the page: steps, fields, preview, library, Send | a headless run with the hub stubbed (`fake-hub.js`); no reference to `apps/clock/`; a line count against the Watch Composer's |
 | **E5** | on Bronze | flights with its editor installed; the Themes tab opens it; a theme made in it sent and drawn on the glass |
+
+### 12.4 As built (2026-11-04)
+
+- **E1.** `orbsdk.py` packs `apps/<slug>/editor/` when `app.json` names it (`"editor":
+  "editor"`; the clock's `"clock"` names no directory and keeps its own builder). It also
+  writes `orb-app.js` (`window.__ORB_APP`, the slug and `version.txt`'s release), which
+  the session stamps into every design. `tools/host_sdk_editor_test.py`: 11 of 11 mutants.
+- **E2.** `make_art.py` writes `editor/flights-art.js`, 143 KB.
+- **E3.** `flights-bake.js` (258 lines): design schema 1, the five presets, and the bake on
+  canvases and `stage3`. The fonts are `fonts@1` faces (IBM Plex Sans on the scope and
+  chart, Cormorant Garamond on brass, IBM Plex Mono on blueprint); the browser draws the
+  blueprint's mask itself. `_selftest/bake_check.py` runs it in headless Chrome: the five
+  presets and three variants (detailed planes with colours off; a flat colour, four
+  rings, no arm and plaques; a 90° wedge at 48 px in Orbitron) read back through
+  `orbbundle`, `theme_schema` and the shipped `orb_clock3.c`, with the rows the app finds
+  and the design region carried.
+- **E4.** `index.html` and `flights-editor.js` (40 + 373 lines; the Watch Composer is
+  4,591), plain React on the runtime:
+  - the shell's frame, top bar (the six steps, undo and redo, the fit dot, Send), the
+    Layers panel as the parts list (a pick opens the part's step, the eye hides it in the
+    preview), the fields, the glass, the toolbar, the calibration and the Render step;
+  - the session's library, drafts, files, the hub's Edit door and Rebake all (the bake is
+    its `bake()`);
+  - the sender with its two modals;
+  - the preview: the dozen made-up contacts moving along their tracks under the turning
+    arm, the selection ring and the card (the Card button), and Design, Panel and Split
+    through the panel mirror.
+
+  `?step=`, `?view=` and `?render=` open it where a link wants. Seen in headless Chrome at
+  1280×720 on every step. No reference to `apps/clock/`.
+- **E5, on Bronze.**
+  - flights v1.2.4 installed through the SDK carries the region, and the orb serves it at
+    `/api/v1/apps/editor?id=flights` (188,083 B; `editor.json` first).
+  - The editor-baked "Flights Vintage brass" stored through the upload door and drew on
+    L4: the brass arm and planes, and the words in Cormorant Garamond on plaques
+    (`text: 4 fonts, 4 labels`, 22 rows, none refused).
+  - Not benched: opening it from the hub's Themes tab and a Send from inside it. The
+    owner's running hub holds the launch token, so that walk is the owner's; the hub
+    serves the region from the orb, since its library has no flights container.

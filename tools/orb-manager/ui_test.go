@@ -1428,6 +1428,38 @@ func TestThemesFaceNamesItsAppEvenWithOnlyOne(t *testing.T) {
 	}
 }
 
+// H1 (owner, 2026-11-03): under Themes each app has its own tab with its own themes and its
+// own editor. Since the theme pool every app wears its own theme, so there is no pane of
+// everyone's rows, the face opens on the app on the glass, and the state line says what the
+// app in view wears, not the one OS-wide name.
+func TestThemesFaceIsOneTabPerApp(t *testing.T) {
+	app := readWebFile(t, "app.js")
+	at := strings.Index(app, "function renderThemeTabs(")
+	if at < 0 {
+		t.Fatal("renderThemeTabs is gone from app.js")
+	}
+	tabs := app[at:]
+	if n := strings.Index(tabs, "\n}\n"); n > 0 {
+		tabs = tabs[:n]
+	}
+	if strings.Contains(tabs, `"All"`) {
+		t.Error("the Themes face offers an All tab again: a pane of every app's rows has no one answer to what it wears")
+	}
+	if !strings.Contains(tabs, "a.on_glass") {
+		t.Error("the tabs no longer mark the app on the glass")
+	}
+	sc := app[strings.Index(app, "function themeFaceScope("):]
+	if n := strings.Index(sc, "\n}\n"); n > 0 {
+		sc = sc[:n]
+	}
+	if !strings.Contains(sc, "a.on_glass") {
+		t.Error("with no tab pressed the face no longer opens on the app on the glass")
+	}
+	if !strings.Contains(app, "scopeRow.wearing") || !strings.Contains(app, `" wears \""`) {
+		t.Error("the Themes state line no longer says what the app in view wears")
+	}
+}
+
 // The join-time seed is supposed to leave a shelf the owner emptied alone. It read the
 // count off /api/fleet, and the store became an address book that carries no such field,
 // so the guard became `if (undefined) return` and every rejoin refilled the board. The

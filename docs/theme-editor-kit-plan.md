@@ -122,7 +122,7 @@ send to Gold where the slice touches the glass. A suite moves with the code it t
 | **K5** | a generic stage bake in `baker@1` (a plate, rows, sprites, row pools, scalars) for any app the stage draws; `bakeClock3` becomes the clock's translation on top of it | the clock's bundles are byte-identical before and after (`headless-bundle3`). Flights' first theme is baked without an editor (§0.1 ruling 5), so this does not wait on flights; its format is checked against flights' when that first theme reads on a device — **built 2026-11-04** (§7) |
 | **K6** | `studio@1`: frame, title and step bar, status, send modal, the Render step, slots | the clock's P5 checklist (nothing lost), no page scroll at 1280×720 and 1920×1080 inside the hub — **built and benched on Gold 2026-11-04** (§7) |
 | **K7** | `studio@1`: the layers panel and the field builders, driven by what the app declares | the clock's layers and inspector behave as before (`headless-stack-ui`, `headless-forms`, `headless-ui`); the clock's own rules (`stack.js`) stay the clock's — **built and benched on Gold 2026-11-04** (§7) |
-| **H1** | the Themes page per app: a sub-tab for each theme-aware app, with its themes and a link to its editor, all hub code (§0.1 ruling 4) | Go and UI suites green; on Gold, the clock's tab lists the card's themes and opens the editor; an app with no themes or no editor gets a tab that says so |
+| **H1** | the Themes page per app: a sub-tab for each theme-aware app, with its themes and a link to its editor, all hub code (§0.1 ruling 4) | Go and UI suites green; on Gold, the clock's tab lists the card's themes and opens the editor; an app with no themes or no editor gets a tab that says so — **built 2026-11-04** (§7) |
 | **K8** | the flights editor on the kit (flights step 3, in its own clone) | no reference to `apps/clock/`; a line count recorded here against the Watch Composer's |
 
 K1–K4 come first: they are pure moves, they suit both editors as they are, and they can
@@ -492,3 +492,34 @@ moving-row format; `tools/theme_schema.py` and `main/art/orb_clock3.c` are the r
   identical before and after; the 81st is a bake that used to be refused for needing a
   25th row and now bakes. `headless-bundle3`'s three checks that pinned 24 rows pin 32
   (ptr31 seats, ptr32 refuses; a hand and 32 pointers; 16 shadowed pointers fill the rows).
+
+### H1 — the Themes page, one tab per app (2026-11-04)
+
+- **Most of it was there.** D37 had already made the Themes face per app: its tabs are the
+  orb's own enumeration of theme-aware apps (`/api/theme/apps`: the `themes` cap, an editor
+  region, or themes on the card), each pane lists that app's themes, an app with none says
+  so, and each app's "Compose new theme" opens its own editor. What the theme pool changed,
+  and H1 fixes: every app now wears its own theme, so a pane of everyone's rows and one
+  OS-wide "drawing" name were the clock-era shape.
+- **The hub.** Each app in `/api/theme/apps` now carries `on_glass` (the installed row's own
+  answer) and `wearing` (the name of its card row with the `stored` witness: the theme its
+  pool entry holds). An orphan group keeps its `wearing` too.
+- **The face.** No "All" tab: with several theme-aware apps there is one tab per app, the app
+  on the glass marked, and with none pressed the face opens on the app on the glass (else
+  the first tab by slug); one app keeps its label. The state line names the app and what it
+  wears (`Clock wears "Skeleton"`, or `wears no theme yet`); the listing's single `active`
+  name is the fallback only when no app could be enumerated.
+- **Not changed here.** Flights gets its tab once its first theme is on the card: it declares
+  no `themes` cap and ships no editor yet, and adding the cap is the app's manifest, not
+  the hub's.
+- **Suites.** `themeapps_test.go`: two apps, each wearing its own stored theme, the flights app
+  on the glass; and an app with a theme on the card and none stored, wearing nothing (two
+  mutants caught). `ui_test.go`: no All tab, the tabs and the scope read `on_glass`, the
+  state line says what the app wears. The chooser's behaviour was also driven in node out of
+  `app.js` (two apps, two tabs, opening on the glass, a press switching, the first tab with
+  none on the glass, the one-app label).
+- **Benched on Gold** (pre-pool firmware, one theme-aware app): the hub reported the clock on the
+  glass wearing "Skeleton"; the face drew "Clock themes (1)" and `1 theme for Clock — the only
+  theme-capable app on this orb on SD32G…, Clock wears "Skeleton"`, its row marked active. The
+  two-app tabs need the pool firmware and a second app's theme on the card, which Gold has
+  neither of; the fake orb and the node run stand for them.

@@ -38,6 +38,8 @@ type themeAppsRow struct {
 	EditorURL  string   `json:"editor_url"`
 	Drift      []string `json:"drift"`
 	Comparable bool     `json:"comparable"`
+	OnGlass    bool     `json:"on_glass"`
+	Wearing    string   `json:"wearing"`
 }
 
 type themeAppsOut struct {
@@ -110,6 +112,53 @@ func TestThemeAppsListsThemeCapableAppWithZeroThemes(t *testing.T) {
 	}
 	if row.HasEditor {
 		t.Error("an app the hub has no editor for reported has_editor, so the face would draw a dead button")
+	}
+}
+
+// H1, under the theme pool: every app wears its own theme, so each app's row names the
+// theme IT wears (its card row with the stored witness), and the app on the glass says so,
+// which is the tab the Themes page opens on. One OS-wide `active` name cannot answer for two.
+func TestThemeAppsNamesWhatEachAppWearsAndWhichIsOnTheGlass(t *testing.T) {
+	orb := orbfake.New(
+		orbfake.Theme{Name: "Skeleton", App: "clock", Bytes: 99, Serial: 1, OK: true, Active: true, Stored: true},
+		orbfake.Theme{Name: "Aviator", App: "clock", Bytes: 99, Serial: 2, OK: true},
+		orbfake.Theme{Name: "Scope", App: "flights", Bytes: 99, Serial: 3, OK: true, Active: true, Stored: true},
+		orbfake.Theme{Name: "Chart", App: "flights", Bytes: 99, Serial: 4, OK: true},
+	).WithCardApps(
+		orbfake.CardApp{Stem: "clock", Slug: "clock", Title: "Clock", Caps: capThemes, Installed: true},
+		orbfake.CardApp{Stem: "flights", Slug: "flights", Title: "Flights", Caps: capThemes, Installed: true, OnGlass: true},
+	)
+	s, ip, _, _ := fakeOrbHubWith(t, orb)
+	code, got := getThemeApps(t, s, ip)
+	if code != http.StatusOK || !got.OK {
+		t.Fatalf("route refused a valid enumeration: %d %s", code, got.Error)
+	}
+	c, f := appRow(got.Apps, "clock"), appRow(got.Apps, "flights")
+	if c == nil || f == nil {
+		t.Fatalf("both theme-aware apps should be listed: %+v", got.Apps)
+	}
+	if c.Wearing != "Skeleton" || f.Wearing != "Scope" {
+		t.Errorf("wearing = %q / %q, want each app's own stored theme Skeleton / Scope", c.Wearing, f.Wearing)
+	}
+	if c.Count != 2 || f.Count != 2 {
+		t.Errorf("counts = %d / %d, want each app's own two", c.Count, f.Count)
+	}
+	if !f.OnGlass || c.OnGlass {
+		t.Errorf("on_glass = clock %v, flights %v; want flights alone, the dial's own answer", c.OnGlass, f.OnGlass)
+	}
+}
+
+// An app with themes on the card and none stored wears nothing, and says so by omission.
+func TestThemeAppsWearsNothingWhenNoneIsStored(t *testing.T) {
+	orb := orbfake.New(
+		orbfake.Theme{Name: "Chart", App: "flights", Bytes: 99, Serial: 4, OK: true},
+	).WithCardApps(
+		orbfake.CardApp{Stem: "flights", Slug: "flights", Title: "Flights", Caps: capThemes, Installed: true},
+	)
+	s, ip, _, _ := fakeOrbHubWith(t, orb)
+	_, got := getThemeApps(t, s, ip)
+	if f := appRow(got.Apps, "flights"); f == nil || f.Wearing != "" || f.Count != 1 {
+		t.Errorf("an app with a theme on the card and none stored should list it and wear nothing: %+v", f)
 	}
 }
 

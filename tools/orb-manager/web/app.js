@@ -2661,7 +2661,8 @@ let themeIP = "";
 // LEDGER's answer, not the listing's: an app that can take themes gets a pane the
 // moment it is installed and enabled, whether or not the card holds one yet.
 // themeAppsRows carries that enumeration; themeRowsAll carries the rows currently
-// on the card. themeSub "" draws every row; tabs.js resets the face through
+// on the card. themeSub is the tab the operator pressed, "" until they press one
+// (themeFaceScope then answers for them). tabs.js resets the face through
 // themeFaceReset so a tab opened for the next board never paints the last board's
 // choice of app.
 let themeSub = "";
@@ -2781,11 +2782,14 @@ function renderThemeTabs() {
     nav.appendChild(lab);
     return;
   }
-  const mk2 = (slug, label) => mk(slug, label, themeSub === slug);
-  mk2("", "All");
+  // H1 (owner, 2026-11-03): under Themes, each app has its own tab with its own themes and
+  // its own editor. There is no tab that mixes them: since the theme pool every app wears
+  // its own theme, so a pane of everyone's rows has no one answer to "what is it wearing".
+  // The app on the glass is marked, and the face opens on it (themeFaceScope).
+  const scope = themeFaceScope();
   for (const a of apps) {
     const n = a.count | 0;
-    mk2(a.slug, themeAppTitle(a.slug) + (n ? " (" + n + ")" : " (none)"));
+    mk(a.slug, themeAppTitle(a.slug) + (n ? " (" + n + ")" : " (none)") + (a.on_glass ? " \u00b7 on the glass" : ""), scope === a.slug);
   }
 }
 
@@ -2798,7 +2802,12 @@ function renderThemeTabs() {
 function themeFaceScope() {
   if (themeSub) return themeSub;
   if (themeAppsRows.length === 1) return themeAppsRows[0].slug;
-  return "";
+  // H1: no pressed tab and several apps opens on the app on the glass, else the first tab;
+  // "" is left for an orb whose app enumeration failed, where the rows are all there is
+  const glass = themeAppsRows.find((a) => a.on_glass);
+  if (glass) return glass.slug;
+  const first = themeAppsRows.slice().sort((x, y) => (x.slug < y.slug ? -1 : 1))[0];
+  return first ? first.slug : "";
 }
 
 
@@ -3116,11 +3125,18 @@ async function loadThemes(ip) {
   // right answer for "whose themes are these", and every line below has to agree on it.
   const scope = themeFaceScope();
   const shown = scope ? rows.filter((t) => (t.app || "clock") === scope) : rows;
+  // H1: under the theme pool every app wears its own theme, so the line names the app and
+  // what IT wears (its row with the stored witness, which the hub reports as `wearing`);
+  // the listing's one OS-wide `active` name is only the fallback for a face with no app
+  const scopeRow = scope ? themeAppsRows.find((a) => a.slug === scope) : null;
+  const wears = scopeRow ? (scopeRow.wearing || (shown.find((t) => t.stored) || {}).name || "") : "";
   state.textContent = shown.length + " theme" + (shown.length === 1 ? "" : "s")
-    + (scope ? " for " + themeAppTitle(scope) + " \u2014 the only theme-capable app on this orb"
+    + (scope ? " for " + themeAppTitle(scope) + (themeAppsRows.length === 1 ? " \u2014 the only theme-capable app on this orb" : "")
              : (themeAppsRows.length > 1 ? " for any app on this orb" : ""))
     + " on " + (d.card || "the card") +
-    ", drawing \"" + (d.active || "?") + "\"" + (d.free_mb ? ", " + d.free_mb + " MB free" : "")
+    (scope ? (wears ? ", " + themeAppTitle(scope) + " wears \"" + wears + "\"" : ", " + themeAppTitle(scope) + " wears no theme yet")
+           : ", drawing \"" + (d.active || "?") + "\"")
+    + (d.free_mb ? ", " + d.free_mb + " MB free" : "")
     + (themeAppsErr ? " (" + themeAppsErr + ")" : "");
   state.textContent += (libThemeCount ? " \u00b7 " + libThemeCount + " theme"
     + (libThemeCount === 1 ? "" : "s") + " on the hub shelf" : "");

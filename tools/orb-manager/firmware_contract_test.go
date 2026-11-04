@@ -340,11 +340,26 @@ func TestThemeDoorsAnswerWithoutTheClocksBoot(t *testing.T) {
 
 	// Every door reads through the fallback helper, not the raw table.
 	for _, fn := range []string{"esp_err_t orb_theme_upload_begin(orb_theme_up_t **out)",
-		"esp_err_t orb_theme_upload_recommit(const char *token,", "int orb_theme_scan(orb_theme_entry_t *out, int cap)"} {
+		"esp_err_t orb_theme_upload_recommit(const char *token,"} {
 		body := cBodyAt(t, src, fn)
 		if !strings.Contains(body, "theme_src()") {
 			t.Errorf("%s resolves its source without theme_src(): the join-time 503 is back", fn)
 		}
+	}
+
+	// theme-pool-plan P5: the listing walks every app's themes through the OS's own
+	// shared declaration — a static const, never registered, so it answers on a boot
+	// whose clock never built exactly as the fallback does — with no prefix.
+	anyDecl := cUntil(t, src, "s_any_themes_src = {", "\n};")
+	for _, want := range []string{`.id          = "themes"`, ".dir         = ORB_SD_THEME_DIR",
+		".ext         = ORB_THEME_EXT", `.name_prefix = ""`} {
+		if !strings.Contains(anyDecl, want) {
+			t.Errorf("the shared themes declaration lost %q: the listing would miss an app's themes", want)
+		}
+	}
+	scan := cBodyAt(t, src, "int orb_theme_scan_app(const char *app, orb_theme_entry_t *out, int cap)")
+	if !strings.Contains(scan, "&s_any_themes_src") {
+		t.Error("orb_theme_scan_app resolves its source some other way: the join-time 503 can come back")
 	}
 
 	// Boot registers it, so the ordinary path is the table and not the fallback.
@@ -367,14 +382,15 @@ func TestThemeDoorsAnswerWithoutTheClocksBoot(t *testing.T) {
 		t.Error("recommit's missing-source branch blames the socket: an unregistered source is not a missing card")
 	}
 
-	// And the clock's own init re-declares through the same call, so the values
-	// exist in one place in the tree.
-	cv := firmwareFile(t, filepath.Join("main", "clock", "clock_view.c"))
+	// And the stage's init re-declares through the same call, so the values exist in
+	// one place in the tree. (D50 moved main/clock/clock_view.c to main/stage/orb_stage.c;
+	// the old path skipped this half of the test from then until theme-pool P5.)
+	cv := firmwareFile(t, filepath.Join("main", "stage", "orb_stage.c"))
 	if !strings.Contains(cv, "orb_theme_src_register()") {
-		t.Error("clock_view_init no longer registers through orb_theme_src_register: the declaration has a second copy again")
+		t.Error("stage_init no longer registers through orb_theme_src_register: the declaration has a second copy again")
 	}
 	if strings.Contains(cv, `.name_prefix = "clock-"`) {
-		t.Error("clock_view.c restates the themes declaration: two copies of one rule drift")
+		t.Error("orb_stage.c restates the themes declaration: two copies of one rule drift")
 	}
 }
 

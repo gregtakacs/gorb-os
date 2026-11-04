@@ -855,3 +855,55 @@ judged the first set there.
   plate's, the marker rings and the words are theme rows, a stale contact is drawn at half
   opacity, and the tracker makes no widget over a theme that carries its labels: **L4,
   14–16 fps** on Bronze (theme-text-plan §4).
+
+## 12. The editor (step 3; theme-editor-kit K8), planned 2026-11-04
+
+The kit landed (theme-editor-kit-plan K1–K10): the services (`theme@1`), the shell
+(`studio@1`), the stage bake (`GorbBake.stage3`) and the hub's library. The tracker's
+editor is built on them in `apps/flights/editor/`, ships in `flights.orbapp`, and knows
+nothing of the clock's (§11.1 ruling 1). It is small (ruling 2).
+
+### 12.1 What it edits (one design document, schema 1)
+
+| Step | Fields |
+|---|---|
+| **Start** | the library (the app's drafts and themes, K10), and five presets: the five hand-baked families |
+| **Scope** | background: one of the four, a flat colour, or an uploaded image cut to the glass; range rings: count 0–4 (even fractions of the full range), colour, opacity; the home dot's colour |
+| **Arm** | wedge, needle, pointer, drafting or none; the wedge's trail (5–90°, its area is its cost), colour and lead colour |
+| **Planes** | family, form (a plane per category, or one detailed plane), size (30–48 px, §11.5), which drawn shape each of the seven categories wears, altitude colours on or off (ruling 8), the seven band colours, the ground's opacity with colours off; the selection and emergency rings' colours |
+| **Words** | typeface (from the runtime's `fonts@1`), the four tone colours (body, accent, quiet, warning; accent may be a two-colour gradient), the card's fill, opacity and edge, plaques for the small labels |
+| **Render** | the fit badge, Send, the theme download (the shell's Render step) |
+
+The preview runs simulated traffic (`review.html`'s, a dozen contacts at mixed tracks,
+altitudes and categories) under the turning arm, with the four labels saying what the app
+says; Design, Panel and Split and true size come from `theme@1/preview`.
+
+### 12.2 How it is built
+
+- **The art travels as data.** `make_art.py` also writes `editor/flights-art.js`: every
+  plane as an SVG body coloured through a band placeholder, the gradients, the arms
+  (the wedge as a function of its trail and colours, ported), the backgrounds and their
+  looks. About 110 KB.
+- **The bake is the browser's port of `bake_theme.py`** (`editor/flights-bake.js`): the
+  design rasterised on canvases (the blueprint's mask works in a browser), the fonts drawn
+  from `fonts@1` faces, the theme assembled by `stage3` exactly as the Python bake does, and
+  the design carried in the theme's design region so Edit reopens it. `bake_theme.py` stays
+  as the command-line bake until the editor's themes have replaced its five.
+- **The page** is plain React on the runtime (`react@18.3.1`, `studio@1`, `theme@1`,
+  `baker@1`, `ui@1`, `fonts@1`): no dc document and no bridge shim, since the services talk
+  to the hub's routes themselves.
+- **The SDK packs it.** `orbsdk.py` builds an editor region from `apps/<slug>/editor/` for
+  any app whose `app.json` names one, by `make_clock_region.py`'s recipe (flat STORE ZIP,
+  `editor.json` first, fixed date, read back), so `orbsdk.py install` ships the editor with
+  the app and the hub serves it from the orb. A region is what gives the app its Themes tab
+  and Compose button.
+
+### 12.3 Slices
+
+| Slice | Content | Gate |
+|---|---|---|
+| **E1** | the SDK's editor region | host suite: deterministic, read back, the hub's rules (flat names, `editor.json` first, runtime ids it serves) |
+| **E2** | the art pack | `make_art.py` writes it; a node check that every family has its seven shapes and every SVG parses |
+| **E3** | the bake in the browser | in headless Chrome, each preset bakes; the theme reads back through `verifyBundle3`, `theme_schema` and the shipped `orb_clock3.c`, with the rows and fonts the app finds |
+| **E4** | the page: steps, fields, preview, library, Send | a headless run with the hub stubbed (`fake-hub.js`); no reference to `apps/clock/`; a line count against the Watch Composer's |
+| **E5** | on Bronze | flights with its editor installed; the Themes tab opens it; a theme made in it sent and drawn on the glass |

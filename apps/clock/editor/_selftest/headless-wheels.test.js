@@ -216,6 +216,17 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   if (kr) { kr.eyeToggle({ stopPropagation() { } }); ok(it.state.hidden.ids && it.state.hidden.ids.k === 1 && !it.state.hidden.complications, 'a cutout\u2019s eye switches off that cutout alone'); }
   else ok(false, 'the cutout row is listed');
   ok(kr && rows().find((r) => r.id === 'comp:k').indent > rows().find((r) => r.id === 'comp:w').indent && rows().find((r) => r.id === 'comp:w').indent > 0, 'and a cutout indents under its wheel, the wheel under the dial');
+  // an opening is cut through the dial: its eye closes that hole and leaves the dial's switch alone
+  const pid = Object.keys(E.PRESETS).find((k) => (E.PRESETS[k].design.comps || []).some((c) => c.type === 'opening' && c.show === 'balance'));
+  it.state.designs = {}; it.state.dial = pid; it.state.hidden = {}; it.faces = {};
+  const er = rows().find((r) => r.isRow && r.label === 'Escapement opening');
+  if (er) {
+    const eid = er.id.slice(5);
+    er.eyeToggle({ stopPropagation() { } });
+    ok(!it.state.hidden.dial && it.state.hidden.ids && it.state.hidden.ids[eid] === 1, 'an escapement opening’s eye hides that opening, not the dial', JSON.stringify(it.state.hidden));
+    ok(!it.viewDesign().comps.some((c) => c.id === eid) && it.design().comps.some((c) => c.id === eid), 'the stage draws the dial with that hole closed, and the design keeps it');
+    ok(rows().find((r) => r.id === er.id).eye === 'hidden' && rows().find((r) => r.id === 'dial').eye === 'shown', 'and the Layers panel marks the opening hidden, the dial shown');
+  } else ok(false, 'the ' + pid + ' preset lists its escapement opening', rows().map((r) => r.label).join(' | '));
 }
 // ---- P5d.3j: plate relief and cast shadows are separate gates ---------------------------------------
 {

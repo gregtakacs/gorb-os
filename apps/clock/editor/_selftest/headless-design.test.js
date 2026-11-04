@@ -41,6 +41,15 @@ const mk = () => {
     && b.state.themeName === 'Field test' && b.state.train === 'orbital' && b.state.glassStyle === 'flat',
     'the whole watch comes back: parts, case, opening, movement, glass and name', JSON.stringify([b.state.dial, b.state.caseStyle, b.state.train]));
   ok(/Reopened “Field test” from the card/.test(b.state.status) && /Send replaces it/.test(b.state.status), 'and says where it came from and what Send does', b.state.status);
+  // a name typed in another session (autosaved) never rides onto a new source
+  const nameless = Object.assign({}, back); delete nameless.themeName;
+  const st = mk(); st.setState({ themeName: 'Bench Send' });
+  ok(st.applyDesignDoc(nameless, 'the card') === null && st.state.themeName === '' && st.themeName() === E.PRESETS.modern.name,
+    'a reopened design without a name shows its dial’s name, not the one left in the field', JSON.stringify(st.state.themeName));
+  const pk = mk(); pk.setState({ themeName: 'Bench Send' }); pk.renderVals().dials.find((x) => /Luna|Skeleton/.test(x.name)).pick();
+  ok(pk.state.themeName === '' && pk.themeName() === E.PRESETS[pk.state.dial].name, 'picking a preset shows the preset’s name', JSON.stringify([pk.state.dial, pk.state.themeName]));
+  const fs = mk(); fs.setState({ themeName: 'Bench Send' }); fs.fromScratch();
+  ok(fs.state.themeName === '', 'and so does starting from scratch', JSON.stringify(fs.state.themeName));
   ok(/an?other|not clock/.test(mk().applyDesignDoc(Object.assign({}, back, { app: 'hsb' })) || '') || /hsb app/.test(mk().applyDesignDoc(Object.assign({}, back, { app: 'hsb' })) || ''), 'another app’s design is refused by name');
   const newer = mk().applyDesignDoc(Object.assign({}, back, { schema: 2, appVersion: 'v1.3.0' }));
   ok(/clock v1\.3\.0/.test(newer || '') && /reads schema 1/.test(newer || '') && /update the app/.test(newer || ''), 'a newer schema names the version that made it and the fix', newer);

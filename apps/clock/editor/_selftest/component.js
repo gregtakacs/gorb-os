@@ -375,7 +375,7 @@ class Component extends DCLogic {
   }
   /* The stage's eye, made real (D43 P5d.3d). A part switched off one by one is drawn as if it
    * were not there, which for what is painted into a face at build time means a face built
-   * without it: a hidden flare leaves its face printed without it; a hidden cutout closes, its
+   * without it: a hidden flare leaves its face printed without it; a hidden cutout or opening closes, its
    * hole never punched; a hidden hand takes its arbour cap with it (the crown cap is painted
    * into the crystal for the hand on top, so the next hand down wears it); a hidden wheel's
    * cutouts stay open onto what lies under them, with no shadow falling into the empty hole.
@@ -383,7 +383,7 @@ class Component extends DCLogic {
   viewDesign(id) {
     const d = this.design(id), ids = (this.state.hidden && this.state.hidden.ids) || {};
     if (!d || !Object.keys(ids).length) return d;
-    const gone = (c) => ids[c.id] && (c.type === 'flare' || c.type === 'cutout' || c.type === 'hand');
+    const gone = (c) => ids[c.id] && (c.type === 'flare' || c.type === 'cutout' || c.type === 'opening' || c.type === 'hand');
     const bare = {}; (d.comps || []).forEach((c) => { if (ids[c.id] && c.type === 'wheel') bare[c.id] = 1; });
     if (!(d.comps || []).some((c) => gone(c) || bare[c.id])) return d;
     return { ...d, comps: (d.comps || []).filter((c) => !gone(c)).map((c) => (c.type === 'cutout' && bare[c.host] ? { ...c, viewBare: true } : c)) };
@@ -1431,8 +1431,9 @@ class Component extends DCLogic {
       if (it.band !== band) { band = it.band; rows.push({ isHead: true, isRow: false, label: HEAD[band] }); }
       const up = it.movable ? S.move(inp, it.id, -1) : { ok: false, reason: '' }, dn = it.movable ? S.move(inp, it.id, 1) : { ok: false, reason: '' };
       // D43 P5d.3d: a hand, a sub-dial face and a disc switch off on their own (hidden.ids); the
-      // crystal, the dial, the train and the movement stay the switches they always were
-      const own = it.ref != null && (it.kind === 'hand' || it.kind === 'pointer' || it.kind === 'subdial' || it.kind === 'disc' || it.kind === 'cutout' || it.kind === 'flare');
+      // crystal, the dial, the train and the movement stay the switches they always were. An
+      // opening is cut through the dial, so its eye closes that hole, never the dial's switch.
+      const own = it.ref != null && (it.kind === 'hand' || it.kind === 'pointer' || it.kind === 'subdial' || it.kind === 'disc' || it.kind === 'cutout' || it.kind === 'opening' || it.kind === 'flare');
       const ids0 = s.hidden.ids || {}, hidden = own ? !!ids0[it.ref] || !!s.hidden[it.hide] : !!s.hidden[it.hide], on = selId === it.id;
       const ICON = { case: '◎', glass: '◌', dial: '◯', subdial: '◷', disc: '◐', flare: 'A', opening: '◇', comp: '▭', hand: '╱', pointer: '╱', geartrain: '⚙', movement: '▦' };
       rows.push({ id: it.id, parent: it.parent || null, isHead: false, isRow: true, label: it.label, warn: warnOf[it.id] ? ' ⚠' : '', icon: ICON[it.kind] || '•',
@@ -1452,7 +1453,7 @@ class Component extends DCLogic {
         dragEnd: () => this.stackDragEnd(),
         pick: () => this.stackPick(it),
         eye: hidden ? 'hidden' : 'shown', eyeIcon: hidden ? '○' : '◉', eyeFg: hidden ? '#5d6b78' : '#8b98a5',
-        eyeTip: own ? 'Show or hide ' + it.label + ' on the stage' + (it.kind === 'subdial' ? ' (its wheels then show whole)' : it.kind === 'cutout' ? ' (the hole closes)' : it.kind === 'disc' ? ' (its cutouts open onto what lies under it)' : it.kind === 'hand' || it.kind === 'pointer' ? ' (with its arbour cap)' : '') + ' \u2014 a view switch: the bake is not changed' : 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial (the wheels under it then show whole)', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)',
+        eyeTip: own ? 'Show or hide ' + it.label + ' on the stage' + (it.kind === 'subdial' ? ' (its wheels then show whole)' : it.kind === 'cutout' || it.kind === 'opening' ? ' (the hole closes)' : it.kind === 'disc' ? ' (its cutouts open onto what lies under it)' : it.kind === 'hand' || it.kind === 'pointer' ? ' (with its arbour cap)' : '') + ' \u2014 a view switch: the bake is not changed' : 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial (the wheels under it then show whole)', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)',
         eyeToggle: (e) => { e.stopPropagation(); this.setState((st) => {
           if (!own) return { hidden: { ...st.hidden, [it.hide]: !st.hidden[it.hide] } };
           const ids = { ...(st.hidden.ids || {}) }; if (ids[it.ref]) delete ids[it.ref]; else ids[it.ref] = 1;
@@ -2145,7 +2146,9 @@ class Component extends DCLogic {
   /* FORMAT 2 made the name the whole identity the owner sees: the card prints it in the
    * theme picker and files the upload under sha256(name)[:12]. Until someone types over
    * the field, the dial's own preset title stands in, so a first bake is never blank and
-   * never a path the card would have to rescue -- there is nothing left to rescue. */
+   * never a path the card would have to rescue -- there is nothing left to rescue. A new
+   * source (a preset pick, From scratch, a reopened theme) clears what was typed, so an
+   * autosaved name from another session never rides onto it. */
   themeName() {
     const typed = this.state.themeName;
     if (typeof typed === 'string' && typed.trim()) return typed.trim();
@@ -3612,7 +3615,7 @@ class Component extends DCLogic {
       ...(o.cfg ? { cfg: o.cfg } : {}), ...(o.seeds ? { seeds: o.seeds } : {}), ...(o.train ? { train: o.train } : {}),
       ...(o.caseStyle ? { caseStyle: o.caseStyle } : {}), ...(o.caseMetal ? { caseMetal: o.caseMetal } : {}), ...(o.glassStyle ? { glassStyle: o.glassStyle } : {}),
       ...(o.hands ? { hands: o.hands } : {}), ...(o.handFinish ? { handFinish: o.handFinish } : {}), ...(o.caseOpen ? { caseOpen: o.caseOpen } : {}),
-      ...(o.sounds ? { sounds: { ...st.sounds, [o.dial]: o.sounds } } : {}), themeName: o.themeName || st.themeName,
+      ...(o.sounds ? { sounds: { ...st.sounds, [o.dial]: o.sounds } } : {}), themeName: o.themeName || '',
       sel: null, selKind: null, step: 'parts', tab: 'comps',
       status: 'Reopened \u201c' + (o.themeName || E.PRESETS[o.dial].name) + '\u201d' + (from ? ' from ' + from : '') + (o.art === false ? ' (it was saved without its art' + (refs.length ? ': ' + refs.length + ' image' + (refs.length > 1 ? 's' : '') + ' to load again' : '') + ')' : r.added ? ' with ' + r.added + ' art asset' + (r.added === 1 ? '' : 's') : '') + (miss.length && o.art !== false ? ' \u2014 ' + miss.length + ' missing' : '') + '. Send replaces it on the card.',
     }));
@@ -3674,7 +3677,7 @@ class Component extends DCLogic {
   fromScratch() {
     const E = window.WatchEngine, d = E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.skeleton.design)));
     d.comps = ['hour', 'minute', 'second'].map((k, i) => ({ id: 'h' + (i + 1), type: 'hand', host: 'dial', shows: k })); delete d.order; delete d.openwork; ['perim', 'perimShrink', 'perimColor', 'perimFont', 'perimOrient', 'perimSize', 'perimPos', 'perimRot'].forEach((k) => delete d[k]);
-    this.setState((st) => ({ dial: 'skeleton', designs: { ...st.designs, skeleton: E.canonDesign(d) }, sel: null, selKind: null, step: 'movement', tab: 'move',
+    this.setState((st) => ({ dial: 'skeleton', designs: { ...st.designs, skeleton: E.canonDesign(d) }, sel: null, selKind: null, themeName: '', step: 'movement', tab: 'move',
       status: 'A plain dial with three hands: choose the movement, then the dial, then add what it shows' }));
   }
   setMood(vals) {
@@ -4574,7 +4577,7 @@ class Component extends DCLogic {
       dials: (ready ? Object.keys(E.PRESETS) : []).map((id) => ({
         ...on(id === s.dial), ref: this.cb('dialEls', id, (i) => this.drawDialThumb(i)),
         name: E.PRESETS[id].name + (s.designs[id] ? ' · edited' : ''), blurb: E.PRESETS[id].blurb,
-        pick: () => this.setState((st) => ({ dial: id, sel: null, cfg: E.PRESETS[id].cfg ? { ...st.cfg, ...E.PRESETS[id].cfg } : E.PRESETS[st.dial].cfg ? Object.fromEntries(Object.entries(st.cfg).filter(([k]) => !(k in E.PRESETS[st.dial].cfg))) : st.cfg, train: E.PRESETS[id].train || (E.PRESETS[st.dial].train ? 'classic' : st.train), caseMetal: E.PRESETS[id].caseMetal || (E.PRESETS[st.dial].caseMetal ? 'auto' : st.caseMetal), caseStyle: E.PRESETS[id].caseStyle || (E.PRESETS[st.dial].caseStyle ? 'polished' : st.caseStyle) })),
+        pick: () => this.setState((st) => ({ dial: id, sel: null, themeName: '', cfg: E.PRESETS[id].cfg ? { ...st.cfg, ...E.PRESETS[id].cfg } : E.PRESETS[st.dial].cfg ? Object.fromEntries(Object.entries(st.cfg).filter(([k]) => !(k in E.PRESETS[st.dial].cfg))) : st.cfg, train: E.PRESETS[id].train || (E.PRESETS[st.dial].train ? 'classic' : st.train), caseMetal: E.PRESETS[id].caseMetal || (E.PRESETS[st.dial].caseMetal ? 'auto' : st.caseMetal), caseStyle: E.PRESETS[id].caseStyle || (E.PRESETS[st.dial].caseStyle ? 'polished' : st.caseStyle) })),
       })),
       // everything: the design (its parts and their depth), movement, case and light, and the stage's
       // own view of it -- per-part eyes, selection, a drag in flight

@@ -90,7 +90,11 @@ enum {
 };
 
 /* D42: the clock's moving rows, and the most frames the one animated row carries. */
-#define CLK_ROW_MAX   24   /* theme_schema.CLK_ROW_MAX */
+#define CLK_ROW_MAX   32   /* theme_schema.CLK_ROW_MAX */
+
+/* theme-pool-plan §2.6: the most frames a row whose frames the app picks may carry (a
+ * moving row with frames and no frame time). The tracker's planes: 7 shapes x 7 bands. */
+#define CLK_PICK_MAX  64   /* theme_schema.CLK_PICK_MAX */
 
 /* The dial's section-wide geometry. D42 moved every hand, shadow and carriage into
  * clk_row_t (below); what stays here is the plate, the glass and the background's
@@ -115,6 +119,10 @@ typedef struct {
    * clk_row_t: the row record is copied whole into the clock app's memory (the app
    * ABI), and only the OS draws a drum, so the app never needs it. */
   uint16_t drum_r[CLK_ROW_MAX];
+  /* theme-pool-plan §2.6: how many frames the app may pick on a row (0 or 1 = a row
+   * of one image), by row index. Here for drum_r's reason: clk_row_t's size is the app
+   * ABI, so the app asks orb_stage_frame for the count instead. */
+  uint16_t pick_n[CLK_ROW_MAX];
 } clk_theme_t;
 
 typedef struct {

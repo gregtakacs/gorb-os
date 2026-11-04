@@ -44,6 +44,7 @@
   "sound_stop": "v(i)",
   "stage_comp": "i(ii)",
   "stage_comp_set": "v(iii)",
+  "stage_frame": "i(ii)",
   "stage_now": "v(iii)",
   "stage_open": "i(i)",
   "stage_pose": "v(iiii)",

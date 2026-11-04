@@ -57,7 +57,7 @@ static const char *const CLASS_NAMES[CLASS_N] = {
 #define PARENT_NONE 0xFFFFu     /* C4's element-row parent column, none */
 
 /* C4's row table is bounded by the clock's own slot vocabulary — two plates, the
- * twenty-four moving rows (D42), sixteen complications, a preview, the sound slots —
+ * thirty-two moving rows (D42), sixteen complications, a preview, the sound slots —
  * and a table that outgrows it died in the walk above for naming a slot twice or a
  * class the dial has no field for. The parent pass reserves one slot per row it
  * accepted, so this bound is the walk's, not a new cap: a row count past it cannot
@@ -277,12 +277,14 @@ static const char *row_check(const orb_bundle_elem_t *e, uint16_t slot)
         return reject("row %u turns about (%d,%d), outside its own %ux%u plate",
                       (unsigned)slot, (int)e->pivot_x, (int)e->pivot_y,
                       (unsigned)e->w, (unsigned)e->h);
-    if (e->n_frames > CLK_TOURB_MAX)
+    /* Frames and a frame time: the carriage, which the OS animates. Frames and no frame
+     * time: a row whose frames the app picks (theme-pool-plan §2.6). */
+    if (e->n_frames > 1u && e->delay && e->n_frames > CLK_TOURB_MAX)
         return reject("row %u animates %u frames: the dial holds %u",
                       (unsigned)slot, (unsigned)e->n_frames, (unsigned)CLK_TOURB_MAX);
-    if (e->n_frames > 1u && !e->delay)
-        return reject("row %u animates %u frames and names no frame time",
-                      (unsigned)slot, (unsigned)e->n_frames);
+    if (e->n_frames > 1u && !e->delay && e->n_frames > CLK_PICK_MAX)
+        return reject("row %u offers the app %u frames to pick from: a row holds %u",
+                      (unsigned)slot, (unsigned)e->n_frames, (unsigned)CLK_PICK_MAX);
     /* D43: a drum rolls its strip through a window 2 x radius tall; one turn of the drum
      * is its whole strip, so the travel is the strip's height, either way round, and a
      * wrap starts the next unit on the same figure the last one ended on. */
@@ -1012,6 +1014,10 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
             if (pe.flags & AUX_F_SHADOW)
                 return reject("a shadow twin at slot %u under another twin: a twin "
                               "darkens a row, not a shadow", (unsigned)slot);
+            if (pe.n_frames > 1u && !pe.delay)
+                return reject("a shadow twin at slot %u under a row whose frames the app "
+                              "picks: the twin would shade one frame of many",
+                              (unsigned)slot);
         }
         const uint32_t ri = io->out_n_rows++;
         orb_bundle_spr_t sp;
@@ -1044,7 +1050,13 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
             t->drum_r[ri] = e.radius;            /* the OS's: the app never draws a drum */
         }
         row_of_elem[at_aux[slot]] = (uint8_t)(ri + 1u);
-        if (e.n_frames > 1u) {
+        if (e.n_frames > 1u && !e.delay) {
+            /* Frames the app picks (theme-pool-plan §2.6): consecutive catalogue planes,
+             * each the row's own size (the frame-window check above refused any other),
+             * so frame f is the row's plane moved f planes on, turned about the one
+             * pivot, dirtying the one box. */
+            t->pick_n[ri] = e.n_frames;
+        } else if (e.n_frames > 1u) {
             /* The carriage: every plane of the row's frame window is one frame of the
              * bank, sharing the row's geometry, so the dial turns any frame about one
              * pivot and dirties one box. The frame time is the row's own. */

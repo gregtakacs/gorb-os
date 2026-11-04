@@ -1715,8 +1715,8 @@ static clk_bg_rect_t s_b3_rects[ORB_CLOCK3_N_RECTS];
 static uint32_t  s_b3_bgf[ORB_CLOCK3_N_BGF];
 /* D42: the dial's moving rows — every hand, pointer, ring, still layer, twin and the
  * carriage — the table a bundle's AUX elements project into, read by clock_view for the
- * life of the theme. PSRAM, allocated once at the first adoption: 24 rows would add
- * ~1.6 kB to .bss on a board whose internal heap boundary is what httpd_start needs
+ * life of the theme. PSRAM, allocated once at the first adoption: 32 rows would add
+ * ~2.1 kB to .bss on a board whose internal heap boundary is what httpd_start needs
  * (the 2026-10-24 lesson orb_stage.c's layer keys record), and the dial reads each row
  * a handful of times a frame. */
 static clk_row_t *s_b3_rows;

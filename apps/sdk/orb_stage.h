@@ -68,6 +68,11 @@ ORB_IMPORT("stage_sound")    int32_t orb_stage_sound(int32_t i, clk_sound_t *out
  *  between beats on a delta-bank dial), and the true wall fraction. Nanoseconds. */
 ORB_IMPORT("stage_now")      void    orb_stage_now(int64_t *t, int32_t *frac_ns, int32_t *wall_ns);
 ORB_IMPORT("stage_pose")     void    orb_stage_pose(int32_t i, int32_t ang_10, int32_t ox, int32_t oy);
+/** Pick the frame a row shows, for a row whose frames the app picks (a moving row
+ *  with frames and no frame time). Answers the row's frame count: 1 for a row of one
+ *  image, 0 for no such row. f in range shows frame f from the next frame on; f < 0
+ *  only asks. */
+ORB_IMPORT("stage_frame")    int32_t orb_stage_frame(int32_t i, int32_t f);
 ORB_IMPORT("stage_comp_set") void    orb_stage_comp_set(int32_t i, int32_t value, int32_t live);
 
 /* Sound (cap "sound"): the app's own theme sounds, by index into its sound table,

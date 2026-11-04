@@ -1075,6 +1075,15 @@ m3ApiRawFunction(imp_stage_pose)              /* void stage_pose(i, ang_10, ox, 
     m3ApiSuccess();
 }
 
+m3ApiRawFunction(imp_stage_frame)             /* i32 stage_frame(i, f) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, i);
+    m3ApiGetArg(int32_t, f);
+    m3ApiReturn(s->stage ? stage_frame(i, f) : 0);
+}
+
 m3ApiRawFunction(imp_stage_comp_set)          /* void stage_comp_set(i, value, live) */
 {
     CALLER();
@@ -1246,6 +1255,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "stage_sound",    "i(ii)",     imp_stage_sound },
     { "orb", "stage_now",      "v(iii)",    imp_stage_now },
     { "orb", "stage_pose",     "v(iiii)",   imp_stage_pose },
+    { "orb", "stage_frame",    "i(ii)",     imp_stage_frame },
     { "orb", "stage_comp_set", "v(iii)",    imp_stage_comp_set },
     { "orb", "stage_snd_ready",    "i()",      imp_stage_snd_ready },
     { "orb", "stage_snd_cfg",      "v(i)",     imp_stage_snd_cfg },

@@ -42,7 +42,8 @@ call sites:
 # ---------------------------------------------------------------------------
 CLK_COMP_MAX   = 16    # complications: windows, strips, rings, flares
 CLK_AUX_MAX    = 8     # FORMAT 2's pointer table (retired with the dialect)
-CLK_ROW_MAX    = 24    # D42: the clock's AUX rows, every hand and pointer (orb_clock3.c)
+CLK_ROW_MAX    = 32    # D42: the AUX rows, every hand and pointer (orb_clock3.c); 24 until the
+                       # tracker's plane pool (flight-tracker-design §11.2)
 CLK_BANK_MAX   = 256   # shared RGBA sprites: ring slots, strip glyphs, flares
 CLK_STRIP_GLYPHS = 8   # glyph image objects created per strip
 CLK_COMP_WORDS = 26    # == len(COMP_FIELDS); the C mirror and the size check use it
@@ -633,7 +634,7 @@ CLOCK_SLOTS = (
     ("comp15",        "bank",   15,   "complication 15: one plate per value"),
     # D34's pointer slots, widened by D42 into the clock's one moving-row vocabulary:
     # every hand, pointer, ring, still layer and carriage is an AUX row, claimed by
-    # ordinal. Names are `ptr0..ptr23` and NOT `hour` or `subdial_seconds`: the clock
+    # ordinal. Names are `ptr0..ptr31` and NOT `hour` or `subdial_seconds`: the clock
     # does not know what a row indicates, only how its own drive moves it, and a name
     # that claimed the role would be a second source of truth about the art.
     ("ptr0",          "aux",    0,    "row 0: one plate (or a carriage's frames), moved by its own drive"),
@@ -660,6 +661,14 @@ CLOCK_SLOTS = (
     ("ptr21",         "aux",    21,   "row 21: one plate (or a carriage's frames), moved by its own drive"),
     ("ptr22",         "aux",    22,   "row 22: one plate (or a carriage's frames), moved by its own drive"),
     ("ptr23",         "aux",    23,   "row 23: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr24",         "aux",    24,   "row 24: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr25",         "aux",    25,   "row 25: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr26",         "aux",    26,   "row 26: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr27",         "aux",    27,   "row 27: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr28",         "aux",    28,   "row 28: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr29",         "aux",    29,   "row 29: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr30",         "aux",    30,   "row 30: one plate (or a carriage's frames), moved by its own drive"),
+    ("ptr31",         "aux",    31,   "row 31: one plate (or a carriage's frames), moved by its own drive"),
     # D39: the sound slots, one per event (docs/history/sound-plan.md §3.1). The order IS the
     # slot number main/art/orb_clock3.h's CLK_SND_* enum reads, and the suite pins it.
     # Played by the clock's sound policy, never drawn, so none is in CLOCK_SLOTS_DRAWN.
@@ -702,7 +711,7 @@ CLOCK_WINDOW_DOMAIN = {
 
 # The slots the shipped dial draws, and the only ones a bundle may fill and boot.
 # Ruling D32-E put every class the vocabulary names into scope; the dial draws all
-# of them now — plate, the twenty-four moving rows (hands, shadows, the carriage),
+# of them now — plate, the thirty-two moving rows (hands, shadows, the carriage),
 # and the sixteen complication slots — so the refusal a row can still meet is the projection's own
 # (a class this app's manifest does not offer, a plate whose art the bundle does
 # not hold), and ruling D32-F makes any of those refusals fall the whole flip to
@@ -805,6 +814,9 @@ MOTION_COLUMNS = ("span", "zero", "vmin", "vmax", "dx", "dy", "end", "digit")
 D42_COLUMNS = ("dx", "dy", "end", "digit", "str")
 # The most frames an animated row (the carriage) carries: clk_types.h CLK_TOURB_MAX.
 ROW_FRAMES_MAX = 16
+# theme-pool-plan §2.6: a row with frames and no frame time is one whose frames the app
+# picks (the tracker's plane pool), up to clk_types.h CLK_PICK_MAX of them.
+CLK_PICK_MAX = 64
 
 # Classes whose frame is app state, not a clock (R6). A BANK is indexed "one plate
 # per value", so OS advancement would march a date wheel on a tick nobody asked for.
@@ -1004,12 +1016,12 @@ def check_element(rec, where="elem"):
                                  "plate, so it would turn about a point off the glass"
                                  % (where, px, py, w, h))
         nf = int(rec["n_frames"])
-        if nf > ROW_FRAMES_MAX:
+        if nf > 1 and int(rec.get("delay", 0)) and nf > ROW_FRAMES_MAX:
             raise ValueError("%s: an animated row carries at most %d frames, not %d"
                              % (where, ROW_FRAMES_MAX, nf))
-        if nf > 1 and not int(rec.get("delay", 0)):
-            raise ValueError("%s.delay: an animated row of %d frames names its frame time"
-                             % (where, nf))
+        if nf > 1 and not int(rec.get("delay", 0)) and nf > CLK_PICK_MAX:
+            raise ValueError("%s: a row offers the app at most %d frames to pick from, "
+                             "not %d" % (where, CLK_PICK_MAX, nf))
         if flags & EF_AUX_SHADOW and (nf != 1 or src or cad):
             raise ValueError("%s: a shadow twin takes its hand's whole pose — one plate, "
                              "no source, no cadence" % where)
@@ -1337,7 +1349,8 @@ def check_clock_rows(recs, scalars=None):
     than one row to state. Returns clock_tempo(recs). Mirrors orb_clock3.c:
       - stop-to-go rests until a jumping minute row releases it;
       - every stepping seconds row steps at one rate, the dial's beat;
-      - at most one row is animated (the carriage);
+      - at most one row is animated (the carriage, frames and a frame time); a row with
+        frames and no frame time is one whose frames the app picks, and any number may;
       - a shadow twin follows a moving or still row, never another twin, in slot order;
       - a parent is a moving row, and a parent that turns shares its child's centre."""
     aux = {int(r["slot"]): r for r in recs if int(r["class"]) == CLASS_AUX}
@@ -1357,7 +1370,7 @@ def check_clock_rows(recs, scalars=None):
                              "minute row jumps" % where)
         if SOURCES[int(r["src"])] == "second" and cad == CAD_STEP and not int(r.get("digit", 0)):
             steps.add(int(r["cad_arg"]))
-        if int(r["n_frames"]) > 1:
+        if int(r["n_frames"]) > 1 and int(r.get("delay", 0)):
             animated.append(where)
         if int(r["flags"]) & EF_AUX_SHADOW:
             prev = aux.get(slot - 1)
@@ -1367,6 +1380,9 @@ def check_clock_rows(recs, scalars=None):
             if int(prev["flags"]) & EF_AUX_SHADOW:
                 raise ValueError("%s: a shadow twin under another twin — a twin darkens "
                                  "a row, not a shadow" % where)
+            if int(prev["n_frames"]) > 1 and not int(prev.get("delay", 0)):
+                raise ValueError("%s: a shadow twin under a row whose frames the app "
+                                 "picks — the twin would shade one frame of many" % where)
         par = int(r.get("parent", PARENT_NONE))
         if par != PARENT_NONE:
             p = by_n.get(par)
@@ -1540,7 +1556,7 @@ if __name__ == "__main__":
         (dict(_still, cadence=CAD_JUMP), "still row"),
         (dict(_ax, pivot_x=44), "outside its own"),
         (dict(_ax, n_frames=17, delay=60), "at most 16"),
-        (dict(_ax, n_frames=4), "frame time"),
+        (dict(_ax, n_frames=65), "to pick from"),
         (dict(_twin, src=SOURCES.index("second"), cadence=CAD_SWEEP, span=3600, vmax=60),
          "whole pose"),
         (dict(_ax, cadence=CAD_STOP_TO_GO, cad_arg=0, src=SOURCES.index("minute")), "seconds hand"),
@@ -1569,7 +1585,7 @@ if __name__ == "__main__":
                              dict(_still, slot=9, n=20, n_frames=4, delay=100)]) == (1, 10)
     assert check_clock_rows([_ax, _twin]) == (0, 1)
     for _rows, _why in (([_stg], "releases"),
-                        ([dict(_ax, slot=24)], "seats 24 moving rows"),
+                        ([dict(_ax, slot=32)], "seats 32 moving rows"),
                         ([_ax, dict(_ax, slot=7, n=13, cad_arg=2)], "one beat"),
                         ([dict(_ax, n_frames=4, delay=60),
                           dict(_ax, slot=7, n=13, n_frames=4, delay=60)], "one animated"),
@@ -1655,6 +1671,6 @@ if __name__ == "__main__":
     # A slot the dial draws with must be one the shipped reader can seat, or the
     # vocabulary is promising a picture the projection refuses.
     assert clock_slot("bg") == ("plate", 0) and clock_slot("glass") == ("plate", 1)
-    assert clock_slot("ptr23") == ("aux", 23) and clock_slot("carriage") is None
+    assert clock_slot("ptr31") == ("aux", 31) and clock_slot("carriage") is None
     print("             %d clock slots, %d drawn, names within %d chars"
           % (len(CLOCK_SLOTS), len(CLOCK_SLOTS_DRAWN), 11))

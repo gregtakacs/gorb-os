@@ -401,12 +401,8 @@ class Component extends DCLogic {
     }
     return this.faces[k];
   }
-  now() {
-    const d = new Date();
-    if (this.state.timeMode === 'pose') d.setHours(10, 9, 36, 0);
-    if (this.state.timeMode === 'cycle') return WatchEngine.cycleDate(d, Math.floor(performance.now() / 450));
-    return d;
-  }
+  // the preview's time (theme@1/preview): live, the 10:09 pose, or the clock's own date cycle
+  now() { return window.OrbTheme.previewTime(this.state.timeMode, { cycle: (d) => WatchEngine.cycleDate(d, Math.floor(performance.now() / 450)) }); }
   scr() { if (!this._scr) { this._scr = document.createElement('canvas'); this._scr.width = this._scr.height = 466; } return this._scr; }
   cb(group, id, draw) {
     const k = group + ':' + id;
@@ -576,12 +572,14 @@ class Component extends DCLogic {
       return { v: k, label: E.PERIMS[k] + ' · ' + (g ? g.spec.n : '?') + ' divisions on the rim' };
     });
   }
-  /* Screen calibration lives with the browser, not with the dial: it describes the monitor the
-   * studio is open on, so it must survive a reload and must never reach a design id, a kit, or
-   * the artwork. localStorage can throw (file://, private mode), so every touch is guarded, and
-   * "the user has calibrated" is tracked on the instance rather than re-read from storage, so a
-   * blocked storage never makes an honest caption lie about itself. */
-  CAL_KEY = 'wc.viewCal';
+  /* True size and the stage's views are the OS's (theme@1/preview, theme-editor-kit-plan K3):
+   * the panel's physical facts, the calibration (one per browser, shared by every app's
+   * editor, and carried over from the clock's old wc.viewCal key), and one function from the
+   * view to the stage box, the ruler and the captions. True size is the clock's default view:
+   * the panel is 466 px across 1.75 in, so a preview drawn 1:1 prints under a millimetre of
+   * type that still looks fine on the monitor, which is how dials got authored too small.
+   * "Calibrated" is tracked here, not re-read from storage, so blocked storage never makes
+   * the caption lie about itself. */
   CAL_MIN = 0.5;
   CAL_MAX = 3;
   _calSet = false;
@@ -590,105 +588,49 @@ class Component extends DCLogic {
     return c >= this.CAL_MIN && c <= this.CAL_MAX ? c : 1;
   }
   calibrated() { return !!this._calSet; }
-  /* A 0.005 step moves the true-size dial about 0.8 css px once past 2×, finer than the stage can
-   * show, so the steps widen there. One definition feeds the slider step and the −/+ buttons. */
-  calStep() { return this.cal() > 2 ? 0.01 : 0.005; }
+  calStep() { return window.OrbTheme.screen.step(this.cal()); }
   loadCal() {
-    try {
-      const v = +window.localStorage.getItem(this.CAL_KEY);
-      if (v >= this.CAL_MIN && v <= this.CAL_MAX) { this._calSet = true; this.setState({ viewCal: v }); }
-    } catch (e) { /* no storage: calibrate per session */ }
+    const r = window.OrbTheme.screen.load();
+    if (r.set) { this._calSet = true; this.setState({ viewCal: r.cal }); }
   }
   setCal(v) {
-    const c = Math.min(this.CAL_MAX, Math.max(this.CAL_MIN, +v || 1));
     this._calSet = true;
-    this.setState({ viewCal: +c.toFixed(4) });
-    try { window.localStorage.setItem(this.CAL_KEY, String(c)); } catch (e) { /* ignore */ }
+    this.setState({ viewCal: window.OrbTheme.screen.save(v) });
   }
-  /* The measured millimetres the user reads off a real ruler against the on-screen bar solve the
-   * factor outright, which beats hunting with a slider: the bar is nominal RULER_MM, so whatever
-   * it really measures says how many CSS px make a millimetre here. */
+  // what a real ruler measures against the on-screen bar solves the factor outright
   solveCal(mm) {
     if (mm == null || String(mm).trim() === '') return;
-    const m = +mm;
-    if (!(m >= 5 && m <= 300)) { this.setState({ status: 'Type what the ruler really measures, in mm — between 5 and 300' }); return; }
-    this.setCal(this.cal() * (window.WatchEngine.RULER_MM / m));
-    this.setState({ status: 'Ruler matched at ' + m + ' mm · true size now draws the dial ' + (window.WatchEngine.PANEL.inch * 25.4).toFixed(1) + ' mm across on this screen' });
+    const S = window.OrbTheme.screen, c = S.fromRuler(this.cal(), mm);
+    if (c == null) { this.setState({ status: 'Type what the ruler really measures, in mm — between 5 and 300' }); return; }
+    this.setCal(c);
+    this.setState({ status: 'Ruler matched at ' + (+mm) + ' mm · true size now draws the dial ' + (S.PANEL.inch * 25.4).toFixed(1) + ' mm across on this screen' });
   }
-  /* The stage is the studio's only claim about how big the dial will be, and the artwork's own
-   * 466 px is a misleading claim: the panel is 466 px across 1.75 in, so a preview drawn 1:1
-   * prints under a millimetre of type that still looks fine on the monitor, which is how dials
-   * got authored too small. True size is the default because it is the only honest preview, and
-   * it is the only view that needs the ruler: the page cannot know the screen's dpi, so the user
-   * sets the factor against a real ruler. Full keeps the old 1:1 view and Magnify scrolls a
-   * bigger frame through the stage for precision work. */
-  viewK() {
-    const s = this.state, E = window.WatchEngine;
-    if (s.view === 'fit') return (+s.fitPx || 466) / 466;
-    if (s.view === 'full') return 1;
-    if (s.view === 'zoom') return Math.min(4, Math.max(1, +s.zoom || 2));
-    return ((E && E.REAL_Z) || 168 / 466) * this.cal();
-  }
+  viewK() { const s = this.state; return window.OrbTheme.viewK({ view: s.view, zoom: s.zoom, fitPx: s.fitPx, cal: this.cal() }); }
   setView(v) { this.setState((st) => ({ view: v, ...(v === 'zoom' && !(+st.zoom >= 1) ? { zoom: 2 } : {}) })); }
   setZoom(z) { const k = Math.min(4, Math.max(1, +z || 1)); this.setState({ view: 'zoom', zoom: k }); }
-  /* Everything the stage row needs, derived from one number so the caption cannot disagree with
-   * the box the canvas sits in. Past 1.00x the box stops growing and the frame scrolls through it:
-   * every layer is baked at 466 px, so magnifying enlarges the artwork without inventing detail. */
+  // everything the stage row needs, from the one view the OS works out
   viewVals() {
-    const E = window.WatchEngine, cal = this.cal(), k = this.viewK(), v = this.state.view;
+    const T = window.OrbTheme, s = this.state, cal = this.cal(), v = s.view;
+    const V = T.view({ view: v, zoom: s.zoom, fitPx: s.fitPx, cal, calibrated: this.calibrated() }), k = V.k;
     const sel = (b) => ({ cls: b ? 'on' : '', bg: b ? '#1f3a5f' : '#1c2330', bd: b ? '#58a6ff' : '#2b3540', fg: b ? '#e6edf3' : '#e6edf3' });
-    // one source for each size: the engine owns what true size and the ruler mean
-    const css = v === 'true' ? E.realCss(cal) : Math.max(60, Math.round(466 * k)), inch = E.screenInch(css, cal);
-    // D43 §4.2: the stage pane scrolls a dial bigger than itself, so every stop keeps
-    // the round glass and nothing steps out of the pane
-    // the stage box holds 466 px: the canvas only scrolls through it once it is physically
-    // bigger than that, whether the user picked Magnify or just calibrated a dense screen
-    const zoomed = v === 'zoom' || css > 466;
-    const bez = Math.max(3, Math.min(12, Math.round((12 * css) / 466)));
-    const mm = E.RULER_MM, mmPanel = (E.PANEL.inch * 25.4).toFixed(1);
-    const ticks = [];
-    for (let i = 0; i <= mm; i++) ticks.push({ left: (i / mm) * 100, h: i % 10 === 0 ? 14 : i % 5 === 0 ? 10 : 6, op: i % 5 === 0 ? '0.9' : '0.45', lab: i % 10 === 0 ? String(i) : '' });
     const nudge = (d) => this.setCal(this.cal() + d * this.calStep());
     return {
-      stageCv: css, stageWin: zoomed ? 466 : css, stageRing: bez, stageRing2: bez + 1,
-      stageFlow: zoomed ? 'auto' : 'hidden', stageRound: '50%', stageRef: this.stageRef,
-      hasZoom: v === 'zoom',
-      zoomTag: v === 'fit' ? 'Fit · ' + k.toFixed(2) + '×' : v === 'full' ? '1:1 · 466 px' : v === 'true' ? 'True size · ' + inch.toFixed(2) + ' in' : k + '× · scroll to pan',
-      // the ruler belongs to true size only: Full and Magnify are magnifications of the artwork,
-      // and a physical claim drawn there would be a claim about the zoom, not the watch
-      showRuler: v === 'true', rulerPx: E.rulerPx(cal), rulerMm: mm, rulerTicks: ticks,
-      calText: cal.toFixed(3) + '× · ' + Math.round(E.PANEL.cssInch * cal) + ' css px per screen in',
-      calVal: cal, calMin: this.CAL_MIN, calMax: this.CAL_MAX, calStep: this.calStep(),
+      stageCv: V.css, stageWin: V.win, stageRing: V.ring, stageRing2: V.ring + 1,
+      stageFlow: V.flow, stageRound: '50%', stageRef: this.stageRef,
+      hasZoom: v === 'zoom', zoomTag: V.tag,
+      showRuler: V.showRuler, rulerPx: V.rulerPx, rulerMm: V.rulerMm, rulerTicks: V.rulerTicks,
+      calText: V.calText, calVal: cal, calMin: this.CAL_MIN, calMax: this.CAL_MAX, calStep: this.calStep(),
       setCal: (e) => this.setCal(e.target.value),
       calUp: () => nudge(1), calDown: () => nudge(-1),
       solve: (e) => this.solveCal(e.target.value),
       resetCal: () => { this.setCal(1); this.setState({ status: 'Screen calibration reset to the 96 px/in standard' }); },
-      viewOpts: [['fit', 'Fit', 'The whole dial as large as the stage holds it.'],
-                 ['full', '1:1', 'The artwork at its own 466 px: one canvas pixel per screen pixel.'],
-                 ['true', 'True size', 'The dial at the size the panel is on the wrist: the only preview that tells you how print will read. Calibrate the ruler once under ⚙.'],
-                 ['zoom', 'Magnify', 'Scroll a bigger frame through the stage to inspect the print. The layers are baked at 466 px, so this enlarges them; it does not add detail.']]
-        .map(([id, label, tip]) => ({ label, tip, pick: () => this.setView(id), ...sel(v === id) })),
-      zoomOpts: [1.5, 2, 3, 4].map((z) => ({ label: z + '×', pick: () => this.setZoom(z), ...sel(k === z) })),
-      // D43 §5.1: what the pixels are, independent of how big they are drawn. Panel is the
-      // glass: RGB565, the bake's dither, the device's 32-step blend (GorbBake.panel*).
-      renderOpts: [['design', 'Design', 'The artwork as the composer draws it: 8 bits a channel, smooth blending.'],
-                   ['panel', 'Panel', 'RGB565, what the orb will show: the plate as the bake stores it (RGB565, dithered), the hands and the glass blended the way the device blends them. Banding and the slight darkening the glass adds show here.'],
-                   ['compare', 'Split', 'Panel on the left of the split, Design on the right. Move the split with the slider.']]
-        .map(([id, label, tip]) => ({ label, tip, pick: () => this.setState({ render: id }), ...sel((this.state.render || 'design') === id) })),
+      viewOpts: T.VIEWS.map(([id, label, tip]) => ({ label, tip, pick: () => this.setView(id), ...sel(v === id) })),
+      zoomOpts: T.ZOOMS.map((z) => ({ label: z + '×', pick: () => this.setZoom(z), ...sel(k === z) })),
+      // D43 §5.1: what the pixels are, independent of how big they are drawn
+      renderOpts: T.RENDERS.map(([id, label, tip]) => ({ label, tip, pick: () => this.setState({ render: id }), ...sel((this.state.render || 'design') === id) })),
       isCompare: this.state.render === 'compare', wipeVal: this.state.wipe,
       setWipe: (e) => this.setState({ wipe: Math.max(0, Math.min(466, +e.target.value || 0)) }),
-      viewText: (v === 'fit'
-        ? 'Fitted to the stage: ' + k.toFixed(2) + '× the artwork, ' + inch.toFixed(2) + ' in across on this screen'
-        : v === 'full'
-        ? 'Shown at the artwork\'s own scale: ' + inch.toFixed(2) + ' in across on this screen, ' + (inch / E.PANEL.inch).toFixed(1) + '× the 1.75 in panel'
-        : v === 'zoom'
-          ? 'Magnified ' + k.toFixed(2) + '× — the frame is baked at 466 px, so this enlarges it without adding detail'
-          : this.calibrated()
-            ? 'True size: ' + inch.toFixed(2) + ' in on this screen, the 1.75 in panel at ' + mmPanel + ' mm'
-            // a page cannot measure its own screen, so an uncalibrated 168 px is only an
-            // assumption — say so, and point at the instrument that fixes it once
-            : 'True size drawn at the 96 px/in standard, so the 1.75 in panel is ' + inch.toFixed(2) + ' in on this screen — on a denser monitor that is smaller than the watch; match the ruler below to a real one once and it is exact')
-        + ' · 1 dial px = ' + ((E && E.MM_PER_PX) || 0.0954).toFixed(4) + ' mm on the watch',
+      viewText: V.text,
     };
   }
 
@@ -1071,7 +1013,7 @@ class Component extends DCLogic {
     if (this.hubSend3()) { try { await this.hubOrbIp(); } catch (e) {} }
     this.buildMovement(); this.startTimer(); this.forceUpdate();
   }
-  componentWillUnmount() { if (this._ro) this._ro.disconnect(); clearInterval(this.timer); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
+  componentWillUnmount() { if (this._ro) this._ro.disconnect(); if (this._tick) this._tick.stop(); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
   ensureFont(k) {
     this._fl = this._fl || {}; if (!k || this._fl[k]) return; this._fl[k] = 1;
     const n = WatchEngine.FONT_NAME(k); if (!n) return;
@@ -1141,17 +1083,17 @@ class Component extends DCLogic {
     this.drawMain();
   }
   startTimer() {
-    clearInterval(this.timer);
+    if (this._tick) this._tick.stop();
     this._lastSlow = this.state.slow; this._lastF = this.devFps();
     /* Pace the preview at what the glass will hold, not at the tier the bank
      * can pay: a sweep over live sealed plates ships still and re-composites
      * its hands at the device pace, and a preview that floats at 15 sells a
-     * motion the orb never shows. Banked and clear dials keep the tier. */
-    const F = this._lastF;
-    this.timer = setInterval(() => {
+     * motion the orb never shows. Banked and clear dials keep the tier. The
+     * frame clock is the OS's (theme@1/preview). */
+    this._tick = window.OrbTheme.ticker(this._lastF, this.state.slow, () => {
       if (this.state.playing && !this.rendering && this.gt.length === this.B) this.setState((s) => ({ frame: (s.frame + 1) % this.B }));
       else this.drawMain();
-    }, this.state.slow ? 1000 / Math.max(1, F / 5) : 1000 / F);
+    });
   }
   /* Alpha of the layers that sit ABOVE the bg delta bank and never change during
    * a tick: the dial (SEALED over the date/moon apertures), the glass, the outer
@@ -1467,32 +1409,25 @@ class Component extends DCLogic {
       mech: d.mechanical ? { bg: '#1f3a5f', bd: '#58a6ff', fg: '#e6edf3' } : off.mech, toggleMech: off.toggleMech };
   }
   /* D43 §5.2: the Panel view. The stage is split the way the device stacks it (the plate
-   * under the hands, the hands, the glass and case over them), each layer is taken to
-   * RGB565 the way the bake stores it, and they are blended with the device's own
-   * mix_16_16 — GorbBake's panel functions, held to orb_gfx.c by headless-panel. In
-   * Compare the design pixels already on the canvas keep the right of the split. */
+   * under the hands, the hands, the glass and case over them) and handed to the OS's panel
+   * (theme@1/preview), which takes each layer to RGB565 the way the bake stores it and
+   * blends them with the device's own mix_16_16. In Split the design pixels already on the
+   * canvas keep the right of the wipe. */
   drawPanel(c, x, gt, fc, d) {
-    const E = window.WatchEngine, G = window.GorbBake;
-    if (!E || !E.composeLayers || !G || !G.panelPlate) return;
+    const E = window.WatchEngine;
+    if (!E || !E.composeLayers || !window.GorbBake || !window.GorbBake.panelPlate) return;
     const L = E.composeLayers(this.base, gt, fc, d, this.state.hidden);
     // balanced on the pixels read, as the bake balances them (wbPix): a canvas round trip
     // would premultiply a translucent layer and shift its colour by a step
     const px = (cv) => this.wbPix(cv.getContext('2d').getImageData(0, 0, 466, 466).data);
-    const under = px(L.under), codes = G.panelPlate(under, 466, 466, true);
-    // P2: a turning wheel the bake leaves undithered shows truncated through its cutouts
-    const keep = this.plainWheelMask(fc, d);
-    if (keep) { const tr = G.panelPlate(under, 466, 466, false); for (let p = 0; p < keep.length; p++) if (keep[p]) codes[p] = tr[p]; }
-    // the live band bottom first: hand runs as truncated sprites, lifted sub-dial
-    // faces as still rows (dithered, as the bake ships them) — D43 P4b
-    (L.live && L.live.length ? L.live : [{ canvas: L.hands, still: false }]).forEach((l) => G.panelLayer(codes, 466, px(l.canvas), 466, 466, { dither: !!l.still }));
-    G.panelLayer(codes, 466, px(L.top), 466, 466, { dither: true });
-    const img = x.createImageData(466, 466);
-    G.panelRGBA(codes, img.data);
-    if (this.state.render === 'compare') {
-      const w = Math.max(0, Math.min(466, this.state.wipe | 0));
-      if (w > 0) x.putImageData(img, 0, 0, 0, 0, w, 466);
-      x.save(); x.strokeStyle = 'rgba(88,166,255,.9)'; x.lineWidth = 1; x.beginPath(); x.moveTo(w + 0.5, 0); x.lineTo(w + 0.5, 466); x.stroke(); x.restore();
-    } else x.putImageData(img, 0, 0);
+    // the live band bottom first: hand runs as truncated sprites, lifted sub-dial faces as
+    // still rows (dithered, as the bake ships them) — D43 P4b; a turning wheel the bake
+    // leaves undithered shows truncated through its cutouts (P2)
+    window.OrbTheme.panel(x, {
+      under: px(L.under), keep: this.plainWheelMask(fc, d),
+      live: (L.live && L.live.length ? L.live : [{ canvas: L.hands, still: false }]).map((l) => ({ px: px(l.canvas), still: !!l.still })),
+      top: px(L.top),
+    }, { mode: this.state.render, wipe: this.state.wipe });
   }
   /* P2: the panel texels an undithered turning wheel shows through (its cutouts, or the whole
    * ring when exposed), as 1/0 per texel: those wheels flat-filled black then white, everything

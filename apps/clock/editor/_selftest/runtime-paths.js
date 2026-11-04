@@ -12,4 +12,5 @@ module.exports = {
   SUPPORT: path.join(RUNTIME, 'support@1', 'support.js'),
   SEND: path.join(RUNTIME, 'theme@1', 'send.js'),
   SESSION: path.join(RUNTIME, 'theme@1', 'session.js'),
+  PREVIEW: path.join(RUNTIME, 'theme@1', 'preview.js'),
 };

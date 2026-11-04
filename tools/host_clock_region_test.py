@@ -94,6 +94,8 @@ check("the send resolves to the runtime's theme@1 service (theme-editor-kit-plan
       '<script src="/runtime/theme@1/send.js"></script>' in entry and 'src="send.js"' not in entry)
 check("the session resolves to the runtime's theme@1 service (theme-editor-kit-plan K2)",
       '<script src="/runtime/theme@1/session.js"></script>' in entry and 'src="session.js"' not in entry)
+check("the preview resolves to the runtime's theme@1 service (theme-editor-kit-plan K3)",
+      '<script src="/runtime/theme@1/preview.js"></script>' in entry and 'src="preview.js"' not in entry)
 check("the hub's look resolves to the runtime's ui@1 sheet",
       '<link href="/runtime/ui@1/ui.css" rel="stylesheet">' in entry and 'href="ui.css"' not in entry)
 check("nothing names the retired /composer/ route", "/composer/" not in entry)

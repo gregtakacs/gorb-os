@@ -112,7 +112,7 @@ send to Gold where the slice touches the glass. A suite moves with the code it t
 |---|---|---|
 | **K1** | `theme@1/send`, and the clock calls it | `headless-send` moves to `web/runtime/_selftest/` and passes; clock suites green; a send, a duplicate Replace and a cancel benched on Gold — **built and benched on Gold 2026-11-03** (§7) |
 | **K2** | `theme@1/session` | `headless-session` and the session half of `headless-design` move and pass; a design saved before the move opens after it — **built and benched on Gold 2026-11-03** (§7) |
-| **K3** | `theme@1/preview`, including true size | the clock's stage, Panel and Compare equal before and after (`headless-panel`, a screenshot pair); true size matches `review.html`'s calibration |
+| **K3** | `theme@1/preview`, including true size | the clock's stage, Panel and Compare equal before and after (`headless-panel`, a screenshot pair); true size matches `review.html`'s calibration — **built and benched on Gold 2026-11-03** (§7) |
 | **K4** | `theme@1/measure`, the pace hook | `headless-pace` and `headless-estimate` green with `_devPace` as the clock's override; an app with no hook gets the estimate |
 | **K5** | a generic stage bake in `baker@1` (a plate, rows, sprites, row pools, scalars) for any app the stage draws; `bakeClock3` becomes the clock's translation on top of it | the clock's bundles are byte-identical before and after (`headless-bundle3`). Flights' interim themes are built into firmware (§0.1 ruling 5), so this does not wait on flights; its format is checked against flights' when the editor starts |
 | **K6** | `studio@1`: frame, title and step bar, status, send modal, the Render step, slots | the clock's P5 checklist (nothing lost), no page scroll at 1280×720 and 1920×1080 inside the hub |
@@ -225,3 +225,43 @@ runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
   a design an earlier editor wrote; and with no `?theme=`, the editor picked up the
   session the previous build had autosaved in that browser at 21:25. Both editors loaded
   `/runtime/theme@1/send.js` and `session.js` with no errors.
+
+### K3 — `theme@1/preview` (2026-11-03)
+
+- **The service.** `web/runtime/theme@1/preview.js`:
+  - `OrbTheme.screen`: the panel's facts (466 px, 1.75 in, 0.0954 mm a pixel), the true-size
+    calibration as one per-browser factor under `orb.screen.cal` for every app (§0.1
+    ruling 2), with the clock's old `wc.viewCal` read once and carried over, and both
+    instruments: `fromRuler` (what a real ruler reads against the 40 mm bar, the clock's)
+    and `fromCard` (how wide the drawn ID-1 card outline really measures, `review.html`'s
+    method). `review.html` is an art tool with its own dpi key (`flights-art-dpi`); the
+    flights editor will use this one.
+  - `OrbTheme.view` / `viewK`: Fit, 1:1, True size and Magnify, giving the stage box, the
+    scroll, the bezel ring, the ruler and its ticks, the card outline, and the captions
+    from one scale.
+  - `OrbTheme.panel`: Panel and Split from the app's layers as pixels (`under`, `live`,
+    `top`, an optional `keep` mask of undithered texels) through GorbBake's panel mirror.
+  - `OrbTheme.ticker` and `OrbTheme.previewTime`: the frame clock with the slow mode, and
+    live / the 10:09:36 pose / an app's own time mode.
+- **The clock keeps** its layers (`composeLayers`, the white balance, `plainWheelMask`), its
+  date cycle as its own time mode, and its template's field names; `viewVals`,
+  `drawPanel`, `startTimer`, `now` and the calibration methods are now calls into the
+  service. Captions say "face" and "on the glass" where they said "dial" and "on the
+  watch". Not changed: the calibrated caption prints 1.75 in as 44.4 mm (44.45 rounds
+  down in floating point), as before. `clock.orbapp`: 939,960 B → 934,446 B.
+- **Suites.** `web/runtime/_selftest/headless-preview.test.js`, 37 checks, with no app: the
+  screen's facts, load/save/clamp, the legacy carry-over, blocked storage, both
+  instruments, every view and caption, the ticker and the time, and Panel and Split held
+  byte for byte to the pre-K3 algorithm run straight on GorbBake over random layers with
+  a keep mask. Eight mutants are caught (no keep mask, every live row dithered, the glass
+  undithered, a whole-canvas Split, no legacy key, the ruler inverted, True size without
+  the calibration, slow at full speed). The clock's 18 suites: green, unchanged.
+- **Benched on Gold (clock `v1.2.16+f6b1a10`), 2026-11-03,** in the hub's window: on a real
+  canvas, `OrbTheme.panel` and the pre-K3 algorithm agree on all 868,624 bytes. In the
+  editor, frozen at 10:09 and paused: two Design grabs and two Panel grabs are each
+  identical, Panel differs from Design on 215,390 of 217,156 pixels, and Split equals
+  Panel left of the wipe (0 of 108,578 differ) and Design right of it (0 of 108,112).
+  The browser's clock calibration (1.35) carried over to `orb.screen.cal`, and True size
+  drew 227 css px ("True size · 1.75 in"). No errors. A first attempt clicked a "Pause"
+  label that is only the button's tooltip, so the frame kept moving and Split looked off
+  by motion; the frozen rerun is the result.

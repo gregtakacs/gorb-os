@@ -156,6 +156,7 @@ require(path.join(DIR, 'watch-engine.js'));
 require(require('./runtime-paths.js').BAKER);
 require(require('./runtime-paths.js').SEND);
 require(require('./runtime-paths.js').SESSION);
+require(require('./runtime-paths.js').PREVIEW);
 // D39: the Sound tab renders from the generator the region ships beside the engine
 require(path.join(DIR, 'sound-engine.js'));
 require(path.join(DIR, 'stack.js'));

@@ -214,6 +214,8 @@ def _rewrite(text):
          '<script src="/runtime/theme@1/send.js"></script>'),
         ('<script src="session.js"></script>',
          '<script src="/runtime/theme@1/session.js"></script>'),
+        ('<script src="preview.js"></script>',
+         '<script src="/runtime/theme@1/preview.js"></script>'),
         # D43 §4.2: the hub's look, the runtime's ui@1 sheet
         ('<link href="ui.css" rel="stylesheet">',
          '<link href="/runtime/ui@1/ui.css" rel="stylesheet">'),

@@ -97,8 +97,12 @@ typedef struct orb_layer_desc {
  * is a bake the table holds whole. Sixteen covers the shipped dial with room
  * for a third-party plate, ring, card and status line too. The table is PSRAM
  * heap, allocated on the first add this app actually claims, so the raised
- * ceiling costs nothing on a row that never bakes and never adds. */
-#define ORB_LAYER_MAX 16
+ * ceiling costs nothing on a row that never bakes and never adds.
+ * Thirty-two since theme-text-plan T3 (2026-11-04): the tracker's arm, 15 plane
+ * rows, two marker rings and four labels are 22, and a theme's moving rows cap at
+ * CLK_ROW_MAX (32) already. The cost is the commit's job array (orb_sched.c), one
+ * gfx_paint_ctx_t per row of internal .bss. */
+#define ORB_LAYER_MAX 32
 
 /* The job-array ceiling a commit pass sizes itself to. `orb_layers_jobs()` emits
  * at most one job per row (a row is skipped or emitted, never expanded), and the

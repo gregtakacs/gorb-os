@@ -842,7 +842,7 @@ void orb_sched_ink_px_add(uint32_t n)
 }
 
 /* The commit hook's job array. Static rather than per-call stack: with the
- * table's ceiling at ORB_LAYER_MAX (16) it is ~1 KB of the LVGL task's stack
+ * table's ceiling at ORB_LAYER_MAX (32) it is ~3 KB of the LVGL task's stack
  * per flush, and that stack is not ours to spend — the same reasoning
  * orb_stage.c's retired hook gave its own list. One caller (the flush hook
  * below), on one task (the LVGL one), exactly as that retired hook ran. */

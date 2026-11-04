@@ -138,7 +138,7 @@ count, and shows frame `f` when `f` is in range (`f < 0` only asks).
 |---|---|---|
 | **P1** | `CLK_ROW_MAX` 32; app-picked frames: schema, reader, stage, import, SDK | host suites green; mutants for the new refusals |
 | **P2** | the pool table and its compaction as pure C (`main/art/orb_pool.c`), every flash access through an io | `tools/host_pool_test.py` over a simulated NOR flash: 13 malformed tables refused by name; a cut at every step of a replacement (504), a removal (264) and an overlapping move (1,526), each with a second cut in the repair, losing no other theme except the one an overlapping move tore; 8 of 8 mutants caught — **built 2026-11-03** |
-| **P3** | store and delete through the pool; the one-slot carry | host suites; bench: two apps' themes stored, one removed, the other intact — **built 2026-11-04, host-gated; bench owed** (§4) |
+| **P3** | store and delete through the pool; the one-slot carry | host suites; bench: two apps' themes stored, one removed, the other intact — **built and benched on Bronze 2026-11-04** (§4); two apps' themes at once waits on P5 |
 | **P4** | boot adoption of every entry, per-app geometry, the stage bound to the app on the glass | bench: the clock and flights each on their own theme, switching between them |
 | **P5** | per-app scan, verify, delete, router, status | host suites; the hub's lists still parse |
 
@@ -173,5 +173,28 @@ cap there is a refusal, so it cannot emit a theme this firmware rejects.
 - **Gates**: every host suite; `host_sd_test.py`'s store lint now pins the pool's rules
   (the target is `orb_pool_reserve`'s answer alone, the fit before the park, the table
   after the header), with three mutants for them, caught. Firmware builds clean.
-- **Owed on the bench**: the carry on a board with a stored theme (the log's "carried the
-  one slot"), a store and a delete through the pool, and a reboot cut mid-store.
+- **Benched on Bronze (orb-A), `v1.2.7+c47644e`, 2026-11-04.** Bronze came in on
+  `v1.2.7+238c503` wearing Speedster (stored), Skeleton on the card.
+  - **The carry.** First boot on the pool firmware kept Speedster on the glass (11
+    layers, 1,409,024 B mapped, no faults) and the scan marked it stored, which now reads
+    the clock's pool entry. That boot's log was not captured (the flash rebooted it before
+    a capture opened); the next boot read `pool: 1 theme, 1474560 of 8380416 B used`
+    (the 64 KB head and Speedster's banks exactly) with no carry line, so the table the
+    first boot wrote was found and the carry did not repeat.
+  - **A store through the pool** (`store_check.sh quiet`, Skeleton over Speedster): 18,380
+    ms, no panic, no witness; the reboot read `pool: 1 theme, 2797568 B` and drew
+    Skeleton (42 MMU pages).
+  - **A cut mid-store** (Speedster's store, the board reset 8 s in by opening the capture
+    port): the boot read `pool: 0 themes` and drew the base face, no panic, and the
+    witness said `last store did not finish - press again to complete it`. The store had
+    already let Skeleton go when it made room; the new theme was never named. A cut costs
+    the storing app its theme, as the one slot did, and nothing else.
+  - **The upload door** (`store_check.sh upload`, a renamed Skeleton "Bench Pool" sent as
+    the hub sends): stored into an empty pool in 18,872 ms; the successful store retired
+    the cut's witness.
+  - **A delete of the worn theme** (Bench Pool): the card file deleted, `clock's entry
+    left the pool`, the reboot read `pool: 0 themes`, base face, no panic.
+  - **Restored**: Speedster stored again (9,946 ms), worn, no faults, no witness.
+  - **Not reached on the bench**: a compaction that moves another app's theme, and a cut
+    during one. With the clock the only app that can store (P5), the pool never holds
+    two entries on a board; `host_pool_test.py` carries that proof until P5.

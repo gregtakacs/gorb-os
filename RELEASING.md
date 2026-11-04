@@ -32,7 +32,8 @@ tell users how to get past the warning.
 3. Wait for the run under Actions → release. Notarization is usually the slowest
    step. It ends with a **draft** release that has the three downloads, `sha256sums.txt`,
    and notes listing the bundled app versions.
-4. Read the draft over, then press Publish. Nothing is public until you do.
+4. Read the draft over. To publish it, open the draft under Releases, choose Edit, and press
+   **Publish release** at the bottom of the edit page. Nothing is public until you do.
 
 To rebuild a draft after more commits, move the tag and push it again
 (`git tag -f v1.2.6 && git push -f origin v1.2.6`). The run replaces the old draft.

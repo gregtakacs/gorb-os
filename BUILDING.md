@@ -158,7 +158,8 @@ apps and the default theme built in, plus `orb-sdk-<version>.tar.gz` for app dev
 3. **Check.** Run `make check`, and make sure CI is green on `main`.
 4. **Tag.** `git tag v1.2.6 && git push origin v1.2.6`. The tag must equal `version.txt`.
    A hub-only rebuild of the same OS takes a suffix (`v1.2.6-2`).
-5. **Publish.** When the run finishes, read the draft under Releases and press Publish.
+5. **Publish.** When the run finishes, open the draft under Releases, choose Edit, and press
+   **Publish release** at the bottom of the edit page.
 
 [RELEASING.md](RELEASING.md) covers signing (Apple Developer ID and notarization, Azure
 Artifact Signing), the secrets each needs, and the unsigned fallback. `make dist` builds

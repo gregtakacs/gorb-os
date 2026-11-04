@@ -3091,6 +3091,7 @@ static bool json_int(const char *body, size_t len, const char *key, long *out)
     return true;
 }
 
+#define SOUND_JSON_MAX 640   /* the GET body: settings, remembered hours, stats */
 static esp_err_t sound_reply(httpd_req_t *req)
 {
     orb_sound_cfg_t c;
@@ -3099,25 +3100,27 @@ static esp_err_t sound_reply(httpd_req_t *req)
     orb_sound_stats(&st);
     /* PSRAM, per request: this file's static buffers are internal RAM, and the
      * board has none to spare (orb_sound.c's header comment has the measurement). */
-    char *json = heap_caps_malloc(512, MALLOC_CAP_SPIRAM);
+    char *json = heap_caps_malloc(SOUND_JSON_MAX, MALLOC_CAP_SPIRAM);
     if (!json) {
         httpd_resp_set_status(req, "503 Service Unavailable");
         return httpd_resp_sendstr(req, "{\"error\":\"no memory\"}");
     }
-    const int n = snprintf(json, 512,
+    const int n = snprintf(json, SOUND_JSON_MAX,
         "{\"ready\":%s,\"volume\":%u,\"tick\":%s,\"chimes\":%s,\"strikes\":%s,"
-        "\"jumps\":%s,\"quiet_from\":%d,\"quiet_to\":%d,\"offset_ms\":%d,\"pattern\":%d,"
+        "\"jumps\":%s,\"quiet_from\":%d,\"quiet_to\":%d,\"quiet_on\":%s,"
+        "\"quiet_last_from\":%d,\"quiet_last_to\":%d,\"offset_ms\":%d,\"pattern\":%d,"
         "\"stats\":{\"blocks\":%lu,\"sent\":%lu,\"voices\":%lu,\"started\":%lu,"
         "\"nudges\":%lu,\"snaps\":%lu,\"loop_err\":%ld,\"pa\":%s,\"running\":%s}}",
         orb_sound_ready() ? "true" : "false", (unsigned)c.volume,
         c.tick ? "true" : "false", c.chimes ? "true" : "false",
         c.strikes ? "true" : "false", c.jumps ? "true" : "false",
-        c.quiet_from, c.quiet_to, c.offset_ms, c.pattern,
+        c.quiet_from, c.quiet_to, c.quiet_from >= 0 ? "true" : "false",
+        c.quiet_last_from, c.quiet_last_to, c.offset_ms, c.pattern,
         (unsigned long)st.blocks, (unsigned long)st.sent, (unsigned long)st.voices,
         (unsigned long)st.started, (unsigned long)st.nudges, (unsigned long)st.snaps,
         (long)st.loop_err, st.pa_on ? "true" : "false", st.running ? "true" : "false");
     esp_err_t r;
-    if (n < 0 || n >= 512) {
+    if (n < 0 || n >= SOUND_JSON_MAX) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         r = httpd_resp_sendstr(req, "{\"error\":\"sound body too large\"}");
     } else {
@@ -3190,6 +3193,13 @@ static esp_err_t h_sound_post(httpd_req_t *req)
     if (json_int(body, (size_t)len, "quiet_to", &v))   { c.quiet_to = (int8_t)(v < -1 || v > 23 ? 99 : v); named++; }
     if (json_int(body, (size_t)len, "offset_ms", &v))  { c.offset_ms = (int16_t)(v < 0 || v > 500 ? -1 : v); named++; }
     if (json_int(body, (size_t)len, "pattern", &v))    { c.pattern = (int8_t)(v < -1 || v > 4 ? 99 : v); named++; }
+    /* docs/knob-edit-plan.md §1.3: on restores the last hours set, off keeps them; hours
+     * named beside it win, so {"quiet_on":1,"quiet_from":21,"quiet_to":6} is one write. */
+    if (json_int(body, (size_t)len, "quiet_on", &v)) {
+        named++;
+        if (!v) { c.quiet_from = -1; c.quiet_to = -1; }
+        else if (c.quiet_from < 0) { c.quiet_from = c.quiet_last_from; c.quiet_to = c.quiet_last_to; }
+    }
     heap_caps_free(body);
     const char *why = named ? orb_sound_cfg_set(&c) : "no sound setting in body";
     if (why) {

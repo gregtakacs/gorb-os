@@ -61,6 +61,7 @@ static bool              s_ready;
 static orb_sound_cfg_t   s_cfg = {
     .volume = 60, .tick = true, .chimes = true, .strikes = true, .jumps = true,
     .quiet_from = 22, .quiet_to = 7, .offset_ms = 90, .pattern = -1,
+    .quiet_last_from = 22, .quiet_last_to = 7,
 };
 
 /* The hardware's playback clock: the instant the last DMA buffer finished, and how
@@ -392,13 +393,30 @@ static void cfg_load(void)
     if (nvs_get_i8(h, "qto", &i8) == ESP_OK)    s_cfg.quiet_to = i8;
     if (nvs_get_i16(h, "offms", &i16) == ESP_OK) s_cfg.offset_ms = i16;
     if (nvs_get_i8(h, "pat", &i8) == ESP_OK)    s_cfg.pattern = i8;
+    if (nvs_get_i8(h, "qlf", &i8) == ESP_OK && i8 >= 0 && i8 <= 23) s_cfg.quiet_last_from = i8;
+    if (nvs_get_i8(h, "qlt", &i8) == ESP_OK && i8 >= 0 && i8 <= 23) s_cfg.quiet_last_to = i8;
+    if (s_cfg.quiet_from >= 0) {                       /* hours in force are the last set */
+        s_cfg.quiet_last_from = s_cfg.quiet_from;
+        s_cfg.quiet_last_to = s_cfg.quiet_to;
+    }
     nvs_close(h);
 }
 
 void orb_sound_cfg_get(orb_sound_cfg_t *out) { *out = s_cfg; }
 
-const char *orb_sound_cfg_set(const orb_sound_cfg_t *in)
+const char *orb_sound_cfg_set(const orb_sound_cfg_t *in_)
 {
+    orb_sound_cfg_t c = *in_, *in = &c;
+    /* The last hours set ride along: hours in force are them, and with quiet hours off
+     * the caller's own last pair stands when it is an hour, else the ones kept. */
+    if (c.quiet_from >= 0 && c.quiet_from <= 23 && c.quiet_to >= 0 && c.quiet_to <= 23) {
+        c.quiet_last_from = c.quiet_from;
+        c.quiet_last_to = c.quiet_to;
+    } else if (c.quiet_last_from < 0 || c.quiet_last_from > 23 ||
+               c.quiet_last_to < 0 || c.quiet_last_to > 23) {
+        c.quiet_last_from = s_cfg.quiet_last_from;
+        c.quiet_last_to = s_cfg.quiet_last_to;
+    }
     if (in->volume > 100) return "volume runs 0..100";
     if (in->quiet_from < -1 || in->quiet_from > 23 || in->quiet_to < -1 || in->quiet_to > 23)
         return "quiet hours are an hour 0..23, or -1 for none";
@@ -418,6 +436,8 @@ const char *orb_sound_cfg_set(const orb_sound_cfg_t *in)
     e |= nvs_set_i8(h, "qto", in->quiet_to);
     e |= nvs_set_i16(h, "offms", in->offset_ms);
     e |= nvs_set_i8(h, "pat", in->pattern);
+    e |= nvs_set_i8(h, "qlf", in->quiet_last_from);
+    e |= nvs_set_i8(h, "qlt", in->quiet_last_to);
     if (e == ESP_OK) e = nvs_commit(h);
     nvs_close(h);
     if (e != ESP_OK) return "settings could not be saved";

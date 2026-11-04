@@ -112,6 +112,9 @@ typedef struct {
     int8_t  quiet_to;      /* hour 0..23 quiet hours end (exclusive) */
     int16_t offset_ms;     /* audio delay so a sound lands with the glass (M-S2) */
     int8_t  pattern;       /* hour pattern override, -1 = the theme's own */
+    int8_t  quiet_last_from;   /* the last quiet hours set, kept while they are off, so */
+    int8_t  quiet_last_to;     /* turning them on restores them (docs/knob-edit-plan.md
+                                * §1.3). Written by orb_sound_cfg_set, never refused. */
 } orb_sound_cfg_t;
 
 void      orb_sound_cfg_get(orb_sound_cfg_t *out);

@@ -1923,6 +1923,12 @@ esp_err_t stage_init(orb_app_t *self)
                                     ? &geo->rows[i - 1] : r;
                 s_row[i].obj = make_layer(sp, &s_row[i].dsc,
                                           !car && row_aa(&clk_theme, ar, NULL));
+                /* Hidden until its first pose, as its state already says (ROW_HIDDEN):
+                 * a row the app hides before it ever shows would otherwise stand at P0
+                 * on the LVGL path (Bronze, 2026-11-04: a plane at the scope's centre
+                 * with no aircraft in range). L4 never drew it; its descriptor starts
+                 * hidden. */
+                if (s_row[i].obj) lv_obj_set_hidden(s_row[i].obj, true);
                 break;
             }
         }

@@ -765,7 +765,8 @@ simulated traffic that draws at the orb's true size (§11.5).
    theme resident per theme-aware app, so the clock keeps its own; a frame
    index per row, so a plane row switches image by category and band.
    Then the app side: the plane pool and arm row, the category parse, rings
-   as box widgets in place of the canvas, the card's fourth line gone
+   as box widgets in place of the canvas (since theme-text T1, plate art and
+   theme rows; the words theme labels, T6), the card's fourth line gone
    (§11.5). Bench-checked on orb-A with hand-placed assets before any
    editor exists, the wedge's frame time measured at the editor's cap.
 3. **The editor** in `apps/flights/editor/`, once the format step 2 reads is

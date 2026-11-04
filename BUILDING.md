@@ -121,10 +121,12 @@ stale bundle cannot slip past `make check` on a machine that has built the firmw
 ## The default theme
 
 The theme every new orb receives is `tools/orb-manager/themes/skeleton.orbtheme`, baked
-by the editor's own export path. To change it, bake with
-`apps/clock/editor/_selftest/bank3-drive.html?dial=skeleton` in Chrome, then install it
-with `python3 tools/make_default_theme.py <file>`. `--check` re-verifies the committed
-copy, and `make check-apps` runs it.
+by the editor's own export path, with the preset's sounds (the classic tick, Westminster
+quarters and the hour bell). To change it, bake with
+`apps/clock/editor/_selftest/bank3-drive.html?dial=skeleton&name=Skeleton&appv=<clock version>`
+in Chrome, save the result as `skeleton.orbtheme`, then install it with
+`python3 tools/make_default_theme.py <file>`. `--check` re-verifies the committed copy, and
+refuses one that carries no sound; `make check-apps` runs it.
 
 ## Automated builds on GitHub
 

@@ -18,10 +18,11 @@ as the firmware bundle under `internal/firmware/bundle/` is.
     '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe' \\
       --headless=new --disable-gpu --no-sandbox --user-data-dir='C:\\Temp\\wc' \\
       --virtual-time-budget=600000 --dump-dom \\
-      'file:///C:/Users/greg/Downloads/test/_selftest/bank3-drive.html?dial=skeleton&name=Skeleton' \\
+      'file:///C:/Users/greg/Downloads/test/_selftest/bank3-drive.html?dial=skeleton&name=Skeleton&appv=v1.2.17' \\
       >/tmp/bake.out 2>&1 &
     # lift the B64: line out of the dumped <pre id="out"> into one file, then:
-    python3 tools/make_default_theme.py /tmp/skeleton.orbtheme   # verify, then install
+    python3 tools/make_default_theme.py /tmp/skeleton.orbtheme   # verify, then install (the file's
+                                                                 # stem must be the theme's name)
     python3 tools/make_default_theme.py --check                  # verify the committed copy
 
 Each check is a promise the shelf depends on: FORMAT 3 with one `clock` section, the
@@ -158,15 +159,35 @@ def check(path):
         return _fail("the default theme's design is %r of app %r, not a clock design"
                      % (doc.get("format"), doc.get("app"))), ""
 
+    # The dial's sounds ride the bake (D39): one SOUND row for the tick loop and one per
+    # chime or strike slot its design names. A default whose design names sounds and whose
+    # bank carries none was baked by a page with no sound engine loaded, which is how every
+    # shipped Skeleton up to clock v1.2.16 went out silent (owner, 2026-11-04).
+    snd = doc.get("sounds") or {}
+    want_snd = (1 if snd.get("tick") else 0) + len(snd.get("slots") or {})
+    have_snd = sum(1 for e in els if e["class"] == ts.CLASS_SOUND)
+    # and a page with no engine also writes a design naming no sounds, so the two agreeing is
+    # not enough: the shipped default is Skeleton, whose preset ticks and chimes
+    if not have_snd:
+        return _fail("the shipped default carries no sound",
+                     "Skeleton's preset has a tick and chimes; bake it from a page that loads "
+                     "sound-engine.js (bank3-drive.html does)"), ""
+    if have_snd < want_snd:
+        return _fail("the default's design names %d sound%s and its bank carries %d"
+                     % (want_snd, "" if want_snd == 1 else "s", have_snd),
+                     "bake it from a page that loads sound-engine.js (bank3-drive.html does), "
+                     "or the dial ships without its tick and chimes"), ""
+
     shelf = os.path.splitext(os.path.basename(path))[0]
     if shelf.lower() != h["name"].lower():
         return _fail("the shelf file is %r and the theme is named %r" % (shelf, h["name"]),
                      "the card stem is %s, and the Themes face lines the row up on the name"
                      % _ot.card_stem(blobs[0]["slug"], h["name"])), ""
     return 0, ("%s: FORMAT %d abi %d, %d elements, preview %dx%d %d B, art %d B, serial %d, "
-               "design %d B (clock %s, schema %s)"
+               "%d sound%s, design %d B (clock %s, schema %s)"
                % (shelf, h["fmt"], h["abi"], len(els), p["w"], p["h"], spr["size"],
-                  h["art_size"], h["serial"], len(d), doc.get("appVersion"), doc.get("schema")))
+                  h["art_size"], h["serial"], have_snd, "" if have_snd == 1 else "s",
+                  len(d), doc.get("appVersion"), doc.get("schema")))
 
 
 def main():

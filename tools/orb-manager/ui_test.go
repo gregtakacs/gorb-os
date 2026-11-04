@@ -1647,3 +1647,32 @@ func TestImportImportsAndNeverInstalls(t *testing.T) {
 		t.Error("the import sends install=1; it files into the library and stops there")
 	}
 }
+
+// An import picker names its own extension and nothing else: a MIME type such as
+// application/octet-stream makes the dialog offer every binary (.exe, .zip), and the
+// handler checks the picked name too, since the dialog's "All files" escapes the list.
+func TestImportPickersOfferOnlyTheirOwnFiles(t *testing.T) {
+	page := readWebFile(t, "index.html")
+	app := readWebFile(t, "app.js")
+	tabs := readWebFile(t, "tabs.js")
+	for id, accept := range map[string]string{"mn-fw-file": ".orbtheme", "lib-file": ".orbapp", "ob-fwfile": ".zip,.bin"} {
+		want := `id="` + id + `" accept="` + accept + `"`
+		if !strings.Contains(page, want) {
+			t.Errorf("index.html: want %s", want)
+		}
+	}
+	if strings.Contains(page, "application/octet-stream") {
+		t.Errorf("index.html: an accept list names application/octet-stream, which offers every binary")
+	}
+	for src, want := range map[string]string{
+		app:  `pickedAs(f, [".orbtheme"], "a theme")`,
+		tabs: `pickedAs(f, [".orbapp"], "an app")`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("want the handler to check the picked name: %s", want)
+		}
+	}
+	if !strings.Contains(app, `pickedAs(f, [".zip", ".bin"], "a firmware image")`) {
+		t.Errorf("want the firmware picker to check the picked name")
+	}
+}

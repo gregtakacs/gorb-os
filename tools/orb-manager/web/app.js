@@ -24,6 +24,15 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const ORB_TOKEN = (window.__ORB_TOKEN__ === "__ORB_TOKEN__" || !window.__ORB_TOKEN__)
   ? "" : String(window.__ORB_TOKEN__);
 
+// A picker's accept list is a hint the dialog's "All files" escapes, so every import
+// checks the chosen name too: null when it ends in one of exts, else the sentence to show.
+// (No MIME types in those lists: application/octet-stream offers every binary, .exe included.)
+function pickedAs(f, exts, what) {
+  const n = String((f && f.name) || "").toLowerCase();
+  if (exts.some((x) => n.endsWith(x))) return null;
+  return "\u201c" + ((f && f.name) || "that file") + "\u201d is not " + what + " \u2014 pick a " + exts.join(" or ") + " file";
+}
+
 // hubFetch is fetch() with the launch token attached, for every call that can alter
 // something — a flash, a provision, a device route. GETs of /api/ports and the like
 // use plain fetch, so a read never carries the credential it does not need.
@@ -482,6 +491,8 @@ $("#ob-fwfile").onchange = async (e) => {
   const f = e.target.files && e.target.files[0];
   e.target.value = "";            // let the same file be picked again
   if (!f) return;
+  const bad = pickedAs(f, [".zip", ".bin"], "a firmware image");
+  if (bad) { ffPicked = null; $("#ff-file").textContent = ""; $("#ff-state").textContent = bad; ffNote(); ffGate(); return; }
   $("#ff-file").textContent = "reading " + f.name + "\u2026";
   const r = await ffProbe(f);
   if (r.error) {
@@ -4006,6 +4017,8 @@ $("#mn-fw-file").onchange = async (e) => {
   const st = $("#mn-up-state");
   e.target.value = "";
   if (!f) return;
+  const bad = pickedAs(f, [".orbtheme"], "a theme");
+  if (bad) { st.textContent = bad; return; }
   if (!themeIP) { st.textContent = "load an orb first"; return; }
   pendingReplace = null;
   st.textContent = "asking the orb about \u201c" + f.name + "\u201d\u2026";

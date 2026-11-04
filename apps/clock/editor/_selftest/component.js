@@ -726,22 +726,22 @@ class Component extends DCLogic {
     const snap = {}; this.SNAP_KEYS.forEach((k) => { if (b[k] !== undefined) snap[k] = b[k]; }); snap.designs = designs;
     return snap;
   }
-  /* My designs keep designDoc without the art's bytes: the images stay in this browser's
-   * asset store. To move one, download its design file. */
+  /* My designs keep designDoc without the art's bytes, and nothing else keeps them across a
+   * reload (owner ruling 2026-11-04: the design file and the theme hold a design's art, and
+   * an unexported upload is lost on reload). A saved design with uploaded art says so. */
   mineList() { return this.session.mineList(); }
   async saveMine(name) {
     const nm = String(name || '').trim() || this.state.themeName || this.preset().name;
-    if (this.session.mineSave({ name: nm, doc: Object.assign(await this.designDoc(false), { themeName: nm }), dial: this.state.dial })) this.setState({ mineName: '' });
+    if (!this.session.mineSave({ name: nm, doc: Object.assign(await this.designDoc(false), { themeName: nm }), dial: this.state.dial })) return;
+    this.setState({ mineName: '' });
+    if (this.artRefs(this.design()).length) this.setState({ status: 'Saved “' + nm + '” to My designs — its uploaded art is not kept there: download the design file to keep it' });
   }
   delMine(nm) { this.session.mineDelete(nm); }
   /* ------------------------------ uploaded art ------------------------------------
-   * The bytes live in the engine registry; a design carries only REFERENCES to them, so
-   * autosave and My designs stay small, and the design file and the theme carry the art
-   * between browsers. localStorage can throw -- file://, private mode, quota -- so every
-   * touch is guarded, and the readout says whether art really persisted rather than
-   * claiming a save that never happened. */
-  ART_KEY = 'wc.assets';
-  artSaved = null;                                    // null = not attempted, else true/false
+   * The bytes live in the engine registry for this session only; a design carries only
+   * REFERENCES to them, so autosave and My designs stay small, and the design file and the
+   * theme are what carry the art. The browser keeps no copy (removed 2026-11-04): a reload
+   * before an export loses the upload, by the owner's ruling. */
   /* Every asset this design points at, and what for: the manifest and the missing-art
    * warning are built from this one walk, so they cannot disagree about what is used. */
   artRefs(D) {
@@ -752,9 +752,8 @@ class Component extends DCLogic {
     (d.comps || []).forEach((c) => { if (c.icon === 'image' && c.img) out.push({ id: c.img, usedBy: c.type + ' #' + c.id, slot: 'comp:' + c.id }); });
     return out;
   }
-  /* One line, stating what is held, what is missing, and whether it persisted. Naming
-   * the count and the byte figure is the point: "saved" tells the author nothing about
-   * whether the next reload will still have the art. */
+  /* One line, stating what is held, what is missing, and that it lasts this session only.
+   * Naming the count and the byte figure is the point. */
   artNote(refs) {
     const E = window.WatchEngine, list = refs || this.artRefs();
     if (!list.length) return '';
@@ -765,37 +764,16 @@ class Component extends DCLogic {
       .map((id) => ({ id, usedBy: list.filter((r) => r.id === id).map((r) => r.usedBy).join(' + ') }));
     const kb = Math.round(E.assetBytes() / 1024);
     const held = ids.length - missing.length;
-    const base = held + '/' + ids.length + ' art ' + (ids.length === 1 ? 'asset' : 'assets') + ' held (' + kb + ' KB' + (this.artSaved === false ? ', this session only — storage is blocked' : this.artSaved ? ', saved in this browser' : '') + ')';
+    const base = held + '/' + ids.length + ' art ' + (ids.length === 1 ? 'asset' : 'assets') + ' held (' + kb + ' KB, this session only — export the design file or the theme to keep it)';
     if (!missing.length) return base;
     return base + ' · MISSING ' + missing.map((m) => m.usedBy + ' (' + m.id + ')').join(', ') + ' — open the design file or the theme that carries them';
-  }
-  saveArt() {
-    const E = window.WatchEngine;
-    try {
-      window.localStorage.setItem(this.ART_KEY, JSON.stringify(E.assetDump(true)));
-      this.artSaved = true;
-      if (E.assetBytes() > E.ASSET_TOTAL_BYTES) this.setState({ status: 'Art store is ' + Math.round(E.assetBytes() / 1024) + ' KB — above the ' + (E.ASSET_TOTAL_BYTES / 1e6).toFixed(1) + ' MB comfort line for this browser' });
-    } catch (e) {
-      this.artSaved = false;                                    // quota, private mode, file://
-      this.setState({ status: 'Art will not survive a reload here: this browser refused to store it (' + (e && e.name ? e.name : 'storage error') + ')' });
-    }
-  }
-  loadArt() {
-    const E = window.WatchEngine;
-    try {
-      const raw = window.localStorage.getItem(this.ART_KEY);
-      if (!raw) { this.artSaved = false; return; }
-      const r = E.assetRestore(JSON.parse(raw)) || { added: 0, needBytes: 0 };
-      this.artSaved = true;
-      if (r.needBytes) this.setState({ status: r.needBytes + ' referenced art asset(s) had no bytes stored — re-upload them, or open the design file or theme that carries them' });
-    } catch (e) { this.artSaved = false; /* no storage: art is session-only, artNote says so */ }
   }
   /* An upload decodes off the main thread, so the render that asked for it is already
    * drawn without it. Drop the two caches that hold those pixels and let the normal
    * build path redraw: rebuilding the movement also re-prices the fps budget, whose
    * occlusion mask the new art changes. */
   artDirty() { this.faces = {}; this.base = null; this.gt = []; this.buildMovement(); this.forceUpdate(); }
-  /* The one upload path for every slot: gate the file, register it, persist it, and
+  /* The one upload path for every slot: gate the file, register it, and
    * write the reference into the design. The status line carries the measured reason
    * when the engine refuses it. */
   pickArt(file, slot, apply) {
@@ -803,9 +781,8 @@ class Component extends DCLogic {
     if (!file) return;
     E.assetFromFile(file).then((a) => {
       if (!a || a.error) { this.setState({ status: a && a.error ? a.error : 'That file was not usable' }); return; }
-      this.saveArt();
       apply(a.id);
-      this.setState({ status: a.name + ' → ' + slot + ' (' + a.kind + ', ' + (a.dataUrl.length / 1024).toFixed(0) + ' KB) · ' + (this.artSaved ? 'saved' : 'session only') });
+      this.setState({ status: a.name + ' → ' + slot + ' (' + a.kind + ', ' + (a.dataUrl.length / 1024).toFixed(0) + ' KB) · this session only until exported' });
     });
   }
   resetTab(tab) {
@@ -1009,7 +986,8 @@ class Component extends DCLogic {
     this._vis = () => { if (document.hidden && this.rendering) this.setState({ status: 'Movement render paused: this window is hidden — bring it back and it continues' }); };
     document.addEventListener('visibilitychange', this._vis);
     while (!window.WatchEngine || !window.DialRenderer || !window.DialRenderer._) await new Promise((r) => setTimeout(r, 50));
-    this.loadArt();                                       // needs the engine's registry, so after the wait
+    // the art store this browser kept before 2026-11-04: dropped, so its megabytes stop eating the autosave's room
+    try { window.localStorage.removeItem('wc.assets'); } catch (e) { /* no storage: nothing to drop */ }
     const fams = ['700 31px "Cormorant Garamond"', 'italic 600 30px "Cormorant Garamond"', '600 40px "IBM Plex Sans"', '500 21px "IBM Plex Sans"', 'italic 600 30px "IBM Plex Sans"', '700 31px "Jost"', '500 21px "Jost"', 'italic 600 30px "Jost"', '700 31px "Barlow Condensed"', '500 21px "Barlow Condensed"', 'italic 600 30px "Barlow Condensed"', '700 31px "Bodoni Moda"', '500 21px "Bodoni Moda"', 'italic 600 30px "Bodoni Moda"'];
     try { await Promise.race([Promise.all(fams.map((f) => document.fonts.load(f))), new Promise((r) => setTimeout(r, 4000))]); } catch (e) {}
     this.ready = true;
@@ -3106,7 +3084,7 @@ class Component extends DCLogic {
   applyDesignContent(o, from) {
     const E = window.WatchEngine;
     if (!o.design || !Array.isArray(o.design.comps) || !E.PRESETS[o.dial]) return 'that design has no watch in it';
-    const r = E.assetRestore(o.assets || []); this.saveArt();
+    const r = E.assetRestore(o.assets || []);
     const refs = this.artRefs(o.design), miss = refs.filter((x) => !E.assetKnown(x.id));
     this.setState((st) => ({
       dial: o.dial, designs: { ...st.designs, [o.dial]: E.canonDesign(JSON.parse(JSON.stringify(o.design))) },

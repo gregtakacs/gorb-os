@@ -45,23 +45,14 @@ const txt = (s) => ({ name: 'x', _url: 'data:text/plain;base64,' + Buffer.from(s
   ok(/MISSING.*flare #c9/.test(i1.artNote(r2)), 'artNote names the slot whose bytes are not here', i1.artNote(r2));
   d.comps.find((c) => c.id === 'c9').img = 'flare-1';
 
-  i1.saveArt();
-  ok(i1.artSaved === true, 'saveArt reports it stored');
-  const raw = global.localStorage.getItem('wc.assets');
-  ok(!!raw && raw.indexOf('bg-1') >= 0 && raw.indexOf('dataUrl') > 0, 'the store holds the records with their bytes');
-  const i2 = mk();
-  i2.loadArt();
-  ok(E.assetKnown('bg-1') && E.assetKnown('hand-1') && E.assetKnown('flare-1'), 'loadArt brings every reference back from the store');
-  await wait(20);
-  ok(E.assetReady('bg-1'), 'restored assets come back decoded, not merely registered');
-
-  // blocked storage must be admitted, not promised
-  const i3 = mk();
-  global.localStorage.setItem = () => { const e = new Error('quota'); e.name = 'QuotaExceededError'; throw e; };
-  i3.saveArt();
-  ok(i3.artSaved === false, 'a refused store is recorded as refused');
-  ok(/will not survive a reload/.test(i3.state.status), 'and the status says so in the same words', i3.state.status);
-  ok(/session only/.test(i3.artNote(refs)), 'artNote stops claiming it saved', i3.artNote(refs));
+  // the browser keeps no copy of the art (owner ruling 2026-11-04): the design file and the
+  // theme carry it, and the readout says it lasts this session only
+  ok(typeof i1.saveArt === 'undefined' && typeof i1.loadArt === 'undefined', 'the editor has no art store to save to or load from');
+  ok(/this session only — export the design file or the theme to keep it/.test(i1.artNote(refs)), 'artNote says the art lasts this session only', i1.artNote(refs));
+  global.localStorage.removeItem('wc.assets');
+  const r0 = i1.applyDesignContent({ dial: 'skeleton', design: E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.skeleton.design))),
+    assets: [{ id: 'bg-9', name: 'bg9.png', kind: 'png', dataUrl: U_BG }] }, 'x.orbdesign');
+  ok(E.assetKnown('bg-9') && global.localStorage.getItem('wc.assets') === null, 'opening a design takes its art into the session and writes none of it to the browser', String(r0));
   // ---- the two shadow switches, and which one the pace readout answers to --------
   const iS = mk();
   iS.castShadowsOn(false);

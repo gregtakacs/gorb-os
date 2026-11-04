@@ -227,9 +227,14 @@ runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
   `_snapAt` as accessors and `BURST_MS`, `UNDO_MAX`, `DESIGN_SCHEMA`, `DESIGN_MIGRATE` and
   `download` read through the host on every call, so the clock's suites ran unchanged.
   `clock.orbapp` went from 946,412 B to 939,960 B.
-- **Not moved: art persistence.** `saveArt`, `loadArt` and `artNote` stay in the clock.
-  They store the watch engine's own asset registry, so a shared version needs that
-  registry's interface first. A later slice, once flights shows what its art store needs.
+- **Not moved: art persistence.** `saveArt`, `loadArt` and `artNote` stayed in the clock.
+  They stored the watch engine's own asset registry, so a shared version needed that
+  registry's interface first. **Removed instead, 2026-11-04** (owner ruling): the design file
+  and the theme carry a design's art, and that is all that is needed; an upload never exported
+  is lost on reload. The clock dropped `saveArt`, `loadArt` and its `wc.assets` key (deleted
+  once on mount, so the old copy stops taking the autosave's room); `artNote` says the art
+  lasts this session only, and saving to My designs (references, no bytes) says when the
+  design's uploaded art will not be kept there. Nothing is owed to the session service.
 - **Suites.** `web/runtime/_selftest/headless-session.test.js` drives the service with a
   made-up two-field app, not the clock: 46 checks. Seven mutants (no burst merge, a restart
   that keeps the undo stack, no app refusal, no newer-release refusal, keys not per app,

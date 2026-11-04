@@ -2,24 +2,18 @@
  *
  * Level and quiet hours are the owner's, and the OS applies them to every app's
  * sound (orb_sound.c's mixer and play gate), so they live on an OS page beside USB
- * Files rather than on any app's. The menu's rows are press-only (the shell never
- * calls opt_inc), so each setting is a short ring a press steps around; the choice
- * is saved at once, the way /api/v1/sound saves it — both doors write the one
- * orb_sound_cfg_set(). What an app does with sound (the clock's tick and chimes)
- * stays that app's. */
+ * Files rather than on any app's. The volume and the quiet hours' ends are edited with
+ * the knob (docs/knob-edit-plan.md): a press enters the shell's edit mode, a turn
+ * adjusts, a press saves. Quiet hours' own row is a press that turns them on or off,
+ * and on restores the last hours set. Every save goes through orb_sound_cfg_set(), the
+ * one door /api/v1/sound writes too. What an app does with sound (the clock's tick and
+ * chimes) stays that app's. */
 #include <stdio.h>
 
 #include "orb_app.h"
 #include "orb_sound.h"
 
-enum { ROW_VOLUME, ROW_QUIET, ROW_TEST, ROW_N };
-
-/* The level ring: off, then quiet to full. 60 is the default the owner settled on. */
-static const uint8_t VOLS[] = { 0, 20, 40, 60, 80, 100 };
-/* The quiet-hours ring, as (from, to): off first, then the nights most people keep. */
-static const int8_t QUIET[][2] = { { -1, -1 }, { 22, 7 }, { 23, 7 }, { 21, 7 }, { 22, 6 } };
-#define N_VOLS  (sizeof VOLS / sizeof VOLS[0])
-#define N_QUIET (sizeof QUIET / sizeof QUIET[0])
+enum { ROW_VOLUME, ROW_QUIET, ROW_FROM, ROW_UNTIL, ROW_TEST, ROW_N };
 
 static char s_val[24];
 
@@ -31,50 +25,95 @@ static const char *snd_opt_label(orb_app_t *app, int idx)
     switch (idx) {
     case ROW_VOLUME: return "Volume";
     case ROW_QUIET:  return "Quiet hours";
+    case ROW_FROM:   return "Quiet from";
+    case ROW_UNTIL:  return "Quiet until";
     case ROW_TEST:   return "Play a test sound";
     default:         return "";
     }
 }
 
-static const char *snd_opt_value(orb_app_t *app, int idx)
+/* A value as its row shows it, saved or not. */
+static const char *snd_opt_fmt(orb_app_t *app, int idx, int32_t v)
 {
     (void)app;
-    orb_sound_cfg_t c;
-    orb_sound_cfg_get(&c);
-    if (!orb_sound_ready()) return idx == ROW_TEST ? "no speaker" : "";
     switch (idx) {
     case ROW_VOLUME:
-        if (!c.volume) return "off";
-        snprintf(s_val, sizeof s_val, "%u", (unsigned)c.volume);
+        if (!v) return "off";
+        snprintf(s_val, sizeof s_val, "%ld", (long)v);
         return s_val;
-    case ROW_QUIET:
-        if (c.quiet_from < 0) return "off";
-        snprintf(s_val, sizeof s_val, "%02d:00-%02d:00", c.quiet_from, c.quiet_to);
+    case ROW_FROM:
+    case ROW_UNTIL:
+        snprintf(s_val, sizeof s_val, "%02ld:00", (long)v);
         return s_val;
     default:
         return "";
     }
 }
 
-/* The next stop on a ring after the current setting; a setting that is not on the
- * ring (set over /api/v1/sound) steps to the ring's first stop above it, or wraps. */
-static void snd_opt_sel(orb_app_t *app, int idx)
+static const char *snd_opt_value(orb_app_t *app, int idx)
+{
+    orb_sound_cfg_t c;
+    orb_sound_cfg_get(&c);
+    if (!orb_sound_ready()) return idx == ROW_TEST ? "no speaker" : "";
+    switch (idx) {
+    case ROW_VOLUME: return snd_opt_fmt(app, idx, c.volume);
+    case ROW_QUIET:  return c.quiet_from < 0 ? "off" : "on";
+    /* The ends read the hours in force, or the last set while quiet hours are off. */
+    case ROW_FROM:   return snd_opt_fmt(app, idx, c.quiet_from >= 0 ? c.quiet_from : c.quiet_last_from);
+    case ROW_UNTIL:  return snd_opt_fmt(app, idx, c.quiet_from >= 0 ? c.quiet_to : c.quiet_last_to);
+    default:         return "";
+    }
+}
+
+static bool snd_opt_edit(orb_app_t *app, int idx, orb_opt_edit_t *e)
+{
+    (void)app;
+    if (!orb_sound_ready()) return false;
+    orb_sound_cfg_t c;
+    orb_sound_cfg_get(&c);
+    switch (idx) {
+    case ROW_VOLUME:
+        *e = (orb_opt_edit_t){ .min = 0, .max = 100, .value = c.volume, .step_max = 5 };
+        return true;
+    case ROW_FROM:
+    case ROW_UNTIL: {
+        const bool on = c.quiet_from >= 0;
+        const int v = idx == ROW_FROM ? (on ? c.quiet_from : c.quiet_last_from)
+                                      : (on ? c.quiet_to : c.quiet_last_to);
+        *e = (orb_opt_edit_t){ .min = 0, .max = 23, .value = v, .step_max = 3, .wrap = true };
+        return true; }
+    default:
+        return false;
+    }
+}
+
+/* Saving an end of quiet hours while they are off keeps them off and sets the hours
+ * they come back with. */
+static void snd_opt_set(orb_app_t *app, int idx, int32_t v)
 {
     (void)app;
     orb_sound_cfg_t c;
     orb_sound_cfg_get(&c);
     if (idx == ROW_VOLUME) {
-        size_t i = 0;
-        while (i < N_VOLS && VOLS[i] <= c.volume) i++;
-        c.volume = VOLS[i < N_VOLS ? i : 0];
-        (void)orb_sound_cfg_set(&c);
-    } else if (idx == ROW_QUIET) {
-        size_t i = 0;
-        for (size_t k = 0; k < N_QUIET; k++)
-            if (QUIET[k][0] == c.quiet_from && QUIET[k][1] == c.quiet_to) { i = k + 1; break; }
-        if (i >= N_QUIET) i = 0;
-        c.quiet_from = QUIET[i][0];
-        c.quiet_to   = QUIET[i][1];
+        c.volume = (uint8_t)v;
+    } else if (idx == ROW_FROM || idx == ROW_UNTIL) {
+        int8_t *end = c.quiet_from >= 0 ? (idx == ROW_FROM ? &c.quiet_from : &c.quiet_to)
+                                        : (idx == ROW_FROM ? &c.quiet_last_from : &c.quiet_last_to);
+        *end = (int8_t)v;
+    } else {
+        return;
+    }
+    (void)orb_sound_cfg_set(&c);
+}
+
+static void snd_opt_sel(orb_app_t *app, int idx)
+{
+    (void)app;
+    orb_sound_cfg_t c;
+    orb_sound_cfg_get(&c);
+    if (idx == ROW_QUIET) {
+        if (c.quiet_from >= 0) { c.quiet_from = -1; c.quiet_to = -1; }
+        else { c.quiet_from = c.quiet_last_from; c.quiet_to = c.quiet_last_to; }
         (void)orb_sound_cfg_set(&c);
     } else if (idx == ROW_TEST) {
         (void)orb_sound_test("ding");
@@ -94,6 +133,9 @@ static const orb_app_iface_t s_sound_iface = {
     .opt_value = snd_opt_value,
     .opt_sel   = snd_opt_sel,
     .opt_arm   = snd_opt_arm,
+    .opt_edit  = snd_opt_edit,
+    .opt_fmt   = snd_opt_fmt,
+    .opt_set   = snd_opt_set,
 };
 
 orb_app_t orb_app_sound_row = {

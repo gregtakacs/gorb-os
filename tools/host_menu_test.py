@@ -98,13 +98,10 @@ def lifts(src):
     # declaration and test a function no longer wired to anything.
     protos = lift(src, r"static int  rows_top\(void\);[\s\S]*?"
                        r"static void activate\(void\);", MENU_C)
-    # The DISPLAY submenu's data, lifted rather than restated: which timeouts
-    # the picker offers IS the setting the owner chooses, so a hand-typed copy
-    # of the table would keep this suite green while the shipped menu offered
-    # something else. timeout_label is the same story one level up.
-    presets = lift(src, r"typedef struct \{ uint32_t s; const char \*lbl; \} to_preset_t;\n"
-                       r"static const to_preset_t s_to_preset\[\][\s\S]*?\n\};\n"
-                       r"#define TO_PRESET_N[^\n]*", MENU_C)
+    # The DISPLAY submenu's timeout ceiling, lifted rather than restated: the range
+    # the knob edits IS the setting the owner chooses (docs/knob-edit-plan.md).
+    # timeout_label is the same story one level up.
+    presets = lift(src, r"#define TO_MIN_MAX[^\n]*", MENU_C)
     f_timeout = lift(src, r"static void timeout_label\(char \*out, size_t outsz\)\n\{[\s\S]*?\n\}", MENU_C)
     funcs = [
         lift(src, r"static int app_rows\(void\)\n\{[\s\S]*?\n\}", MENU_C),
@@ -328,6 +325,14 @@ for _p in (KNOB_C, KNOB_H):
                  " the knob layer, so the lift below has no fallback and must not"
                  " invent one")
 knob_src = open(KNOB_C).read()
+# docs/knob-edit-plan.md: the edit mode's step maths, compiled in whole (the header's
+# types and the shipped .c), ahead of the model that names knob_range_t.
+KE_H = P("main", "menu", "knob_edit.h")
+KE_C = P("main", "menu", "knob_edit.c")
+KNOB_EDIT = (open(KE_H).read().replace("#pragma once", "")
+             + open(KE_C).read().replace('#include "knob_edit.h"', "")
+             + "\nstatic int64_t g_now_us = 1, g_tick_us = 500000;"
+             + "\nstatic int64_t esp_timer_get_time(void) { return g_now_us += g_tick_us; }\n")
 KNOB_HELPERS = (
     lift(open(KNOB_H).read(), r"#define KNOB_DIR_DOWN_IS_CW\s+\d+[^\n]*", KNOB_H) + "\n"
     + lift(knob_src, r"int knob_row_step\(int32_t delta\)\n\{[\s\S]*?\n\}", KNOB_C) + "\n"
@@ -545,6 +550,21 @@ const char *orb_app_opt_label(const orb_app_t *a, int i)
 const char *orb_app_opt_value(const orb_app_t *a, int i)
 { (void)a; return (i == 0) ? g_opt_val0 : g_opt_val1; }
 void orb_app_opt_sel(const orb_app_t *a, int i) { (void)a; g_activations++; g_last_opt_sel = i; }
+/* docs/knob-edit-plan.md: row 0 of the fake app is knob-edited when g_opt_editable is
+ * set (0..100 from 40, fast in fives), row 1 never is; the save is recorded. */
+static bool g_opt_editable;
+static int g_opt_set_i = -1;
+static int32_t g_opt_set_v = -999;
+bool orb_app_opt_edit(const orb_app_t *a, int i, orb_opt_edit_t *e)
+{
+    (void)a;
+    if (!g_opt_editable || i != 0) return false;
+    *e = (orb_opt_edit_t){ .min = 0, .max = 100, .value = 40, .step_max = 5 };
+    return true;
+}
+const char *orb_app_opt_fmt(const orb_app_t *a, int i, int32_t v)
+{ static char b[16]; (void)a; (void)i; snprintf(b, sizeof b, "%ld", (long)v); return b; }
+void orb_app_opt_set(const orb_app_t *a, int i, int32_t v) { (void)a; g_opt_set_i = i; g_opt_set_v = v; }
 void orb_app_opt_arm(const orb_app_t *a, bool on) { (void)a; g_arms += on ? 1 : -1; }
 /* The page's own first refusal, pinned closed: every lifted long-press test here
  * exercises the shell's group rule, which is the fall-through path the real
@@ -877,12 +897,11 @@ int main(void)
        s_pg == &s_pages[PG_DISPLAY] && s_cur == 0);
     s_cur = 1; g_dim_to = 600;
     menu_view_apply_input(0, true);
-    ck("the timeout row opens the picker ON the preset in force",
-       s_pg == &s_pages[PG_TO] && s_cur == 3);
-    s_cur = 4;
+    ck("the timeout row enters the knob edit on the value in force, on its own page",
+       s_edit.on && s_pg == &s_pages[PG_DISPLAY] && s_cur == 1 && s_edit.e.v == 10);
     menu_view_apply_input(0, true);
-    ck("choosing a preset posts the write and closes the picker",
-       g_posts == 1 && g_posted_fn == job_dim_to &&
+    ck("a second press saves the value through the job and ends the edit",
+       !s_edit.on && g_posts == 1 && g_posted_fn == job_dim_to && g_posted_pack == 10 &&
        s_pg == &s_pages[PG_DISPLAY] && s_cur == 1);
     g_posts = 0;
     s_pg = &s_pages[PG_TOP]; s_cur = 2;
@@ -1255,14 +1274,15 @@ int main(void)
     g_opt_n = 2;
 
     /* ---- a running job freezes the list ---- */
-    /* Tested on PG_TO, not PG_THEME: page_rows() already returns 0 while busy on
+    /* Tested on PG_CAPS, not PG_THEME: page_rows() already returns 0 while busy on
      * the theme page, so a cursor check there would pass even with apply_input's
-     * own s_busy guard deleted. The preset picker ignores s_busy, which leaves
-     * that guard as the only thing holding the cursor — the only place it can be
-     * seen. (The zone list carried this check until it left the dial.) */
-    s_pg = &s_pages[PG_TO]; s_cur = 0; s_busy = true;
+     * own s_busy guard deleted. The caps page ignores s_busy, which leaves that
+     * guard as the only thing holding the cursor — the only place it can be seen.
+     * (The zone list, then the timeout presets, carried this check until each left
+     * the dial.) */
+    s_pg = &s_pages[PG_CAPS]; s_perm_slot = 0; s_cur = 0; s_busy = true;
     turn_down(1);
-    ck("cursor frozen on the preset page while a job runs", s_cur == 0);
+    ck("cursor frozen on the caps page while a job runs", s_cur == 0);
     g_posts = 0;
     menu_view_apply_input(0, true);
     ck("press frozen too", g_posts == 0);
@@ -1291,26 +1311,71 @@ int main(void)
     ck("back from display returns to the DISPLAY row",
        (s_pg = &s_pages[PG_DISPLAY], go_back(), s_pg == &s_pages[PG_TOP] && s_cur == 1 /* s_top[1] */));
 
-    s_pg = &s_pages[PG_TO]; s_cur = 0;
-    ck("the picker offers every preset plus back", page_rows() == TO_PRESET_N + 1);
-    /* Rows that are not the current one, so the label is compared bare: the row in
-     * force carries the "  *" mark and is pinned on its own below. */
-    ck("the picker rows carry the preset labels",
-       !strcmp(rowline(1), "2 min") && !strcmp(rowline(6), "1 hour"));
-    ck("the preset in force is marked",
-       (g_dim_to = 600, !strcmp(rowline(3), "10 min  *")));
-    ck("a preset that is not in force is not marked", !strcmp(rowline(0), "1 min"));
-    ck("a timeout no preset covers marks nothing",
-       (g_dim_to = 45, !strcmp(rowline(3), "10 min")));
-    g_dim_to = 600;
-    ck("the picker ends with back", !strcmp(rowline(TO_PRESET_N), "<- back"));
-    ck("the picker page says what rotate and push do",
-       (s_pg = &s_pages[PG_TO], !strcmp(page_hint(), "rotate: choose   push: set")));
-    s_cur = TO_PRESET_N;
-    turn_down(1);
-    ck("the picker clamps at its back row", s_cur == TO_PRESET_N);
-    ck("back from the picker lands on the timeout row, not the top page",
-       (s_pg = &s_pages[PG_TO], go_back(), s_pg == &s_pages[PG_DISPLAY] && s_cur == 1));
+    /* ---- docs/knob-edit-plan.md: the knob edit mode ----
+     * The value's sense is the knob layer's: "more" is the column step's +1, the
+     * same physical turn as "up" (knob.h), derived here and never assumed. The
+     * clock advances 500 ms a call unless a check makes the turns fast. */
+    const int32_t vup = knob_col_step(1) == 1 ? 1 : -1;
+    s_pg = &s_pages[PG_DISPLAY]; s_cur = 1; g_dim_to = 600; g_posts = 0; s_busy = false;
+    g_tick_us = 500000;
+    menu_view_apply_input(0, true);
+    ck("a press on the timeout enters the edit at its minutes", s_edit.on && s_edit.e.v == 10);
+    ck("the edit's hint says how to save and how to leave",
+       !strcmp(page_hint(), "rotate: adjust   push: save   hold: cancel"));
+    menu_view_apply_input(vup, false);
+    ck("a slow turn up moves the value by one, and the row reads it",
+       s_edit.e.v == 11 && !strcmp(rowline(1), "timeout:  11 min"));
+    ck("a turn in the edit leaves the cursor where it is", s_cur == 1);
+    menu_view_apply_input(-vup, false);
+    menu_view_apply_input(-vup, false);
+    ck("a slow turn down moves it by one each", s_edit.e.v == 9);
+    g_tick_us = 10000;                       /* a hundred detents a second */
+    for (int k = 0; k < 12; k++) menu_view_apply_input(vup, false);
+    ck("a fast run takes the large step and rests on its multiples",
+       s_edit.e.v > 30 && s_edit.e.v % 5 == 0);
+    g_tick_us = 500000;
+    ck("a hold cancels the edit, and nothing is saved",
+       menu_view_opt_long() && !s_edit.on && g_posts == 0);
+    ck("after a cancel the row reads the value in force", !strcmp(rowline(1), "timeout:  10 min"));
+    g_dim_to = 120;
+    menu_view_apply_input(0, true);
+    for (int k = 0; k < 4; k++) menu_view_apply_input(-vup, false);
+    ck("the edit clamps at its floor of one minute", s_edit.e.v == 1);
+    menu_view_apply_input(0, true);
+    ck("and saves it", g_posts == 1 && g_posted_pack == 1);
+    g_posts = 0; g_dim_to = 600;
+    s_cur = 0;
+    menu_view_apply_input(0, true);
+    ck("the dim switch is still a press, never an edit",
+       !s_edit.on && g_posts == 1 && g_posted_fn == job_dim_en);
+    g_posts = 0; s_cur = 1;
+    menu_view_apply_input(0, true);
+    go_back();
+    ck("leaving the page ends the edit", !s_edit.on);
+    s_pg = &s_pages[PG_DISPLAY]; s_cur = 1;
+    menu_view_apply_input(0, true);
+    menu_view_set_armed(false);
+    ck("disarming ends the edit", !s_edit.on);
+    s_armed = true;
+    /* An app's row: the app says whether the knob edits it. */
+    s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; g_opt_n = 2; g_kind_hook = false;
+    g_opt_editable = true; g_activations = 0; g_opt_set_v = -999; s_cur = 0;
+    snprintf(g_opt_label0, sizeof g_opt_label0, "Level");
+    menu_view_apply_input(0, true);
+    ck("an app row the app edits enters the edit at its value", s_edit.on && s_edit.e.v == 40);
+    menu_view_apply_input(vup, false);
+    ck("the app row reads the value being set", !strcmp(rowline(0), "Level  (41)"));
+    menu_view_apply_input(0, true);
+    ck("the press saves through opt_set, never opt_sel",
+       !s_edit.on && g_opt_set_i == 0 && g_opt_set_v == 41 && g_activations == 0);
+    s_cur = 1;
+    menu_view_apply_input(0, true);
+    ck("an app row the app does not edit is still its press", !s_edit.on && g_activations == 1);
+    g_opt_editable = false;
+    s_cur = 0;
+    menu_view_apply_input(0, true);
+    ck("an app that edits nothing keeps every row a press", !s_edit.on && g_activations == 2);
+    s_app = NULL;
 
     /* ---- a worker result landing while disarmed must NOT paint a list ---- */
     s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0;
@@ -1618,25 +1683,22 @@ int main(void)
      * these checks pin the boundary in both directions and the count's
      * dependence on the cursor rather than on the page id. */
     static char hb[64];
-    s_armed = true; s_busy = false; s_pg = &s_pages[PG_TO]; s_cur = 0;
+    s_armed = true; s_busy = false; s_pg = &s_pages[PG_CAPS]; s_perm_slot = 0; s_cur = 0;
     title_line(hb, sizeof hb);
     ck("a scrolled page names the row and the total",
-       !strcmp(hb, "DIM TIMEOUT  1/8"));
-    s_cur = 7; title_line(hb, sizeof hb);
+       !strcmp(hb, "Clock PERMISSIONS  1/7"));
+    s_cur = 6; title_line(hb, sizeof hb);
     ck("the readout reaches the last row, the back row included",
-       !strcmp(hb, "DIM TIMEOUT  8/8"));
-    s_cur = 4; turn_down(1); title_line(hb, sizeof hb);
-    ck("the count moves with the cursor", !strcmp(hb, "DIM TIMEOUT  6/8"));
+       !strcmp(hb, "Clock PERMISSIONS  7/7"));
+    s_cur = 3; turn_down(1); title_line(hb, sizeof hb);
+    ck("the count moves with the cursor", !strcmp(hb, "Clock PERMISSIONS  5/7"));
     s_cur = 0; turn_up(1); title_line(hb, sizeof hb);
-    ck("and does not move past the clamp", !strcmp(hb, "DIM TIMEOUT  1/8"));
+    ck("and does not move past the clamp", !strcmp(hb, "Clock PERMISSIONS  1/7"));
     s_pg = &s_pages[PG_DISPLAY]; title_line(hb, sizeof hb);
     ck("a page that draws every row says no digits", !strcmp(hb, "DISPLAY"));
     s_pg = &s_pages[PG_CAPS]; s_perm_slot = 0; s_cur = 0; title_line(hb, sizeof hb);
     ck("seven rows overflow the five-row window, so the cap page counts",
        page_rows() == 7 && !strcmp(hb, "Clock PERMISSIONS  1/7"));
-    s_pg = &s_pages[PG_TO]; s_cur = 0; title_line(hb, sizeof hb);
-    ck("the preset picker scrolls, so it counts",
-       page_rows() == 8 && !strcmp(hb, "DIM TIMEOUT  1/8"));
     /* The gate is the count crossing the glass, not a per-page flag: the same
      * page function gains the readout at 6 rows and has none at 5, which is the
      * only shape of this rule that survives a page nobody thought to annotate.
@@ -1718,19 +1780,14 @@ int main(void)
         ck("re-arming opens on the page and row the last visit left",
            s_pg == &s_pages[PG_TOP] && s_cur == 3);
 
-        /* The enter() hook wins: a remembered preset page re-derives its cursor
-         * from the timeout in force, not from the row the owner had scrolled to. */
+        /* The retired preset page (docs/knob-edit-plan.md): a store an older build
+         * made of it opens the top page, never a page with no rows. */
         nvs_reset(); s_pos_loaded = false; s_pos_pg = PG_TOP; s_pos_cur = 0;
-        g_dim_to = 600;                      /* the preset on row 3 */
-        s_armed = true; s_pg = &s_pages[PG_TO]; s_cur = 6;
-        menu_view_set_armed(false);          /* stores TO @ 6 */
-        ck("leaving the preset picker stores the preset page",
-           g_nvs_written && g_nvs_pg == PG_TO && g_nvs_cur == 6);
-        g_nvs_cur = 30;                      /* a stale row the hook must override */
-        s_pos_loaded = false;
+        g_nvs_written = true; g_nvs_pg = PG_TO_RETIRED; g_nvs_cur = 6;
+        s_armed = false;
         menu_view_set_armed(true);
-        ck("a remembered page with an enter() hook places the cursor from the value in force",
-           s_pg == &s_pages[PG_TO] && s_cur == 3);
+        ck("a remembered retired page opens the top page",
+           s_pg == &s_pages[PG_TOP] && s_cur == 0);
 
         /* The stale-row clamp: a stored row past a page that shrank (an app
          * uninstalled since) is pulled back onto the glass, never left off it. */
@@ -1803,7 +1860,7 @@ def assembled(src):
     consts, funcs = lifts(src)
     body = "\n".join(consts[:2] + [ENTRY_DEFS, ENTRY_T] + consts[2:])
     return (HARNESS
-            .replace("__CONSTS__", body + "\n" + KNOB_HELPERS)
+            .replace("__CONSTS__", KNOB_EDIT + "\n" + body + "\n" + KNOB_HELPERS)
             .replace("__FUNCS__", "\n".join(funcs))
             .replace("__SLUGDEF__", SLUGDEF)
             .replace("__UNUSED_OK__", ""))
@@ -2053,7 +2110,7 @@ MUTATIONS = [
     ("unarmed menu starts accepting input",
      "if (!s_armed) return;                    /* the router owns the knob here */", ""),
     ("a running job no longer freezes the cursor",
-     "    if (orb_jobs_busy()) return;\n\n    if (pressed", "    if (0) return;\n\n    if (pressed)"),
+     "    if (orb_jobs_busy()) return;\n\n    if (s_edit.on)", "    if (0) return;\n\n    if (s_edit.on)"),
     # The bug that made a theme page unreachable-but-not-obvious: the app's scan
     # lands with the menu's own worker idle, so a service() that repaints only on
     # s_dirty opens the page empty. Forcing that back must red the new check.
@@ -2179,8 +2236,8 @@ MUTATIONS = [
     # from the row that used it, these are one initializer each — and each of
     # these mutations says the old switch was right to fear.
     ("back from DISPLAY opens the top page on the wrong row",
-     ".back_to = PG_TOP, .back_cur = 1 },",
-     ".back_to = PG_TOP, .back_cur = 0 },"),
+     ".back_to = PG_TOP, .back_cur = 1, .edit = edit_display },",
+     ".back_to = PG_TOP, .back_cur = 0, .edit = edit_display },"),
     ("back from the app list opens the top page on the wrong row",
      ".act = act_perms, .back_to = PG_TOP, .back_cur = 2 },",
      ".act = act_perms, .back_to = PG_TOP, .back_cur = 0 },"),
@@ -2191,8 +2248,8 @@ MUTATIONS = [
      ".hint = hint_caps, .act = act_caps, .ordinal = ord_caps,",
      ".hint = hint_caps, .act = act_caps,"),
     ("the app page is left with its app armed",
-     ".leave = leave_app, .back_to = PG_TOP, .back_cur = 0 },",
-     ".back_to = PG_TOP, .back_cur = 0 },"),
+     ".leave = leave_app, .back_to = PG_TOP, .back_cur = 0, .edit = edit_app },",
+     ".back_to = PG_TOP, .back_cur = 0, .edit = edit_app },"),
     # Item 3: the menu's "where was I". Each is one way the restore can rot into a
     # lie while every pre-restore check stays green.
     ("item 3: disarming stops storing where the owner was",
@@ -2204,8 +2261,8 @@ MUTATIONS = [
      "        cursor_fit(page_rows());",
      "        ;"),
     ("item 3: the app page becomes restorable onto a pointer that may be gone",
-     "                      | (1u << PG_TO)  | (1u << PG_PERMS) | (1u << PG_ABOUT);",
-     "                      | (1u << PG_TO)  | (1u << PG_PERMS) | (1u << PG_ABOUT)\n"
+     "                      | (1u << PG_PERMS) | (1u << PG_ABOUT);",
+     "                      | (1u << PG_PERMS) | (1u << PG_ABOUT)\n"
      "                      | (1u << PG_APP);"),
     ("item 3: re-arming ignores the stored page and always opens at the top",
      "        s_pg  = P(s_pos_pg);",
@@ -2213,9 +2270,40 @@ MUTATIONS = [
     ("the top page's last row stops being exit",
      ".act = act_top, .back_to = MENU_GO_EXIT },",
      ".act = act_top, .back_to = MENU_GO_NONE },"),
-    ("the timeout row forgets the preset it opened on",
-     "        if (s_to_preset[i].s == cur) { s_cur = i; return; }",
-     "        if (s_to_preset[i].s == cur) { return; }"),
+    # docs/knob-edit-plan.md: the knob edit mode, one guard each.
+    ("the timeout edit opens on a value other than the one in force",
+     "    e->v = (int32_t)((s + 30u) / 60u);",
+     "    e->v = (int32_t)((s + 30u) / 6u);"),
+    ("a press on a knob-edited row runs its press instead",
+     "    if (edit_begin(s_cur)) return;      /* a knob-edited row: the press enters the edit */",
+     "    (void)edit_begin;"),
+    ("the edit's save forgets the value",
+     "        s_edit.e.commit(s_edit.row, s_edit.e.v);",
+     "        s_edit.e.commit(s_edit.row, 0);"),
+    ("a hold during an edit leaves the menu instead of cancelling",
+     "    if (s_edit.on) { edit_end(); repaint(); return true; }",
+     "    if (0) { edit_end(); repaint(); return true; }"),
+    ("an edit outlives the page it was made on",
+     "    edit_end();                          /* an edit never outlives its page */",
+     "    (void)0;"),
+    ("an edit outlives the disarm",
+     "    if (!armed) edit_end();",
+     "    (void)0;"),
+    ("a turn in the edit moves the cursor too",
+     "    if (s_edit.on) { edit_input(delta, pressed); return; }",
+     "    if (s_edit.on && pressed) { edit_input(delta, pressed); return; }"),
+    ("the edit turns the value the wrong way",
+     "knob_col_step(delta) * n, step, &s_edit.e.r);",
+     "-knob_col_step(delta) * n, step, &s_edit.e.r);"),
+    ("the edit ignores the turn's speed",
+     "knob_speed_step(&s_edit.sp, n, esp_timer_get_time(), s_edit.e.r.step_max);",
+     "1; (void)esp_timer_get_time;"),
+    ("the edited row reads the saved value, not the one being set",
+     "    if (s_edit.on && s_edit.pg == s_pg && row == s_edit.row) {   /* the value being edited */",
+     "    if (0) {"),
+    ("an app row the app edits is saved through its press",
+     "    orb_app_opt_set(s_app, vis_to_row(orb_app_opt_count(s_app), row), v);",
+     "    orb_app_opt_sel(s_app, vis_to_row(orb_app_opt_count(s_app), row));"),
     ("the cap page loses LOCATION to a second back row",
      "    if (row >= N_OWNER_CAPS) { snprintf(out, outsz, \"<- back\"); return; }",
      "    if (row >= 5) { snprintf(out, outsz, \"<- back\"); return; }"),
@@ -2241,20 +2329,9 @@ MUTATIONS = [
      "static int rows_display(void) { return 2; }"),
     ("the dim row stops reading the switch it is showing",
      'idle_dim_enabled() ? "on" : "off"', 'true ? "on" : "off"'),
-    ("the timeout preset in force stops being marked",
-     "const bool cur = (s_to_preset[row].s == idle_dim_timeout_s());",
-     "const bool cur = false;"),
     ("an off-preset timeout reads the nearest preset instead of the truth",
      'snprintf(out, outsz, "%lu s", (unsigned long)cur);',
-     'snprintf(out, outsz, "%s", s_to_preset[0].lbl);'),
-    ("the timeout picker loses its back row",
-     "static int rows_to(void)      { return TO_PRESET_N + 1; }",
-     "static int rows_to(void)      { return TO_PRESET_N; }"),
-    ("back from the picker loses its place in the parent",
-     ".act = act_to, .enter = enter_to, .back_to = PG_DISPLAY, .back_cur = 1 },",
-     ".act = act_to, .enter = enter_to, .back_to = PG_DISPLAY, .back_cur = 0 },"),
-    ("a preset label drifts from what ships",
-     '{   600, "10 min" },', '{   600, "10 minutes" },'),
+     'snprintf(out, outsz, "%lu min", (unsigned long)(cur / 60u));'),
     ("D19: the app list loses its back row",
      "static int rows_perms(void)   { return perm_rows() + 1; }",
      "static int rows_perms(void)   { return perm_rows(); }"),
@@ -2468,9 +2545,15 @@ def main():
     # past the table would leave PG_N counting one more than exists.
     check("the table rows name every page id exactly once",
           sorted(entry_ids) == sorted(["LANDING", "TOP", "APP", "DISPLAY",
-                                       "TO", "PERMS", "CAPS", "APPS", "APPACT",
+                                       "PERMS", "CAPS", "APPS", "APPACT",
                                        "ABOUT", "SHARE"])
-          and len(entry_ids) == 11, ",".join(entry_ids))
+          and len(entry_ids) == 10, ",".join(entry_ids))
+    # docs/knob-edit-plan.md: the timeout presets' id stays in the enum, so a stored
+    # menu position keeps its page numbers, and is neither a page nor restorable.
+    check("the retired timeout page keeps its number and nothing else",
+          re.search(r"PG_DISPLAY,[^\n]*\n\s*PG_TO_RETIRED,", tcode) is not None
+          and "PG_TO_RETIRED" not in tcode[tcode.index("s_pages[PG_N] = {"):]
+          and "1u << PG_TO_RETIRED" not in tcode)
     _tparts = re.split(r"\[PG_(\w+)\]\s*=\s*\{",
                        tcode[tcode.index("s_pages[PG_N] = {") + len("s_pages[PG_N] = {"):])
     entries = dict(zip(_tparts[1::2], _tparts[2::2]))

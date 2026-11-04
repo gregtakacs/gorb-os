@@ -25,6 +25,8 @@
 #include "menu_view.h"
 #include "board_config.h"
 #include "knob.h"
+#include "knob_edit.h"     /* the edit mode's step maths (docs/knob-edit-plan.md) */
+#include "esp_timer.h"     /* the edit mode's turn speed */
 
 #include <stdio.h>
 #include <string.h>
@@ -79,7 +81,9 @@ typedef enum {
     PG_TOP,           /* s_top, then one row per app with options, exit */
     PG_APP,           /* one app's own options (its opt_* answers, B1) */
     PG_DISPLAY,       /* the two idle-dim settings                    */
-    PG_TO,            /* the timeout presets                          */
+    PG_TO_RETIRED,    /* was the timeout presets; the timeout is knob-edited now
+                       * (docs/knob-edit-plan.md). Kept so the saved menu position's
+                       * page numbers keep their meaning; never restored or entered */
     PG_PERMS,         /* one row per installed app: what it may do    */
     PG_CAPS,          /* the selected app's owner caps, togglable */
     PG_APPS,          /* the catalog: every installed app, its state, its doors (B3/B4) */
@@ -103,6 +107,15 @@ typedef struct {
     void (*act)(void);       /* runs before the navigation      */
 } menu_row_t;
 
+/* docs/knob-edit-plan.md §1.1: a row the knob edits. The page answers its range and
+ * value; fmt renders the row as it will read with a value not yet saved; commit saves. */
+typedef struct {
+    knob_range_t r;
+    int32_t      v;
+    void (*fmt)(int row, int32_t v, char *out, size_t outsz);
+    void (*commit)(int row, int32_t v);
+} menu_edit_t;
+
 typedef struct menu_page_s menu_page_t;
 struct menu_page_s {
     int  (*rows)(void);                 /* rows on the glass, back row incl.  */
@@ -124,6 +137,9 @@ struct menu_page_s {
     void (*leave)(void);                /* side effects when the page is left */
     int  back_to;                       /* menu_go_t: NONE = the page has no back row */
     int  back_cur;                      /* cursor there, literal              */
+    /** A row the knob edits: true and its range, value, row text and save. A press on
+     *  such a row enters the edit mode instead of act(). NULL: a press-only page. */
+    bool (*edit)(int row, menu_edit_t *e);
 };
 
 /* The page table ships below the functions it names (C has no forward into an
@@ -149,9 +165,8 @@ static int  ord_app(void);       static void leave_app(void);
 static int  rows_display(void);  static void label_display(int, char *, size_t, bool *);
 static const char *title_display(void);
 static void act_display(int);
-static int  rows_to(void);       static void label_to(int, char *, size_t, bool *);
-static const char *title_to(void);
-static void act_to(int);         static void enter_to(void);
+static bool edit_display(int row, menu_edit_t *e);
+static bool edit_app(int row, menu_edit_t *e);
 static int  rows_perms(void);    static void label_perms(int, char *, size_t, bool *);
 static const char *title_perms(void);
 static void act_perms(int);      static int  ord_caps(void);
@@ -182,6 +197,7 @@ static void row_text(int, char *, size_t, bool *);
 static const char *page_title(void);
 static void title_line(char *, size_t);
 static const char *page_hint(void);
+static void edit_end(void);      /* the knob edit mode, docs/knob-edit-plan.md */
 static void go_back(void);       static void activate(void);
 static void repaint(void);       static void job_post(orb_job_fn fn, int idx);
 
@@ -221,34 +237,18 @@ static const orb_app_t *app_row(int i)
     return NULL;
 }
 
-/* The timeout choices on the DISPLAY sub-menu, seconds. Presets rather than a
- * spinner: the setting is a wall-clock decision ("how long before a clock on
- * the wall goes dark"), not a tuning knob, and six detent-turns to a number
- * invite the kind of value — 7 m 23 s — that nobody can justify. 1 min exists
- * for the bench (the Kconfig help's measurement procedure wants a short timer),
- * 10 min is the owner's number, and 1 h covers a reading chair. */
-typedef struct { uint32_t s; const char *lbl; } to_preset_t;
-static const to_preset_t s_to_preset[] = {
-    {    60, "1 min"  },
-    {   120, "2 min"  },
-    {   300, "5 min"  },
-    {   600, "10 min" },
-    {   900, "15 min" },
-    {  1800, "30 min" },
-    {  3600, "1 hour" },
-};
-#define TO_PRESET_N ((int)(sizeof(s_to_preset) / sizeof(s_to_preset[0])))
+/* The dim timeout, edited with the knob in minutes (docs/knob-edit-plan.md §1.2: 1 to
+ * 120, fast turns in fives). It replaced a list of seven presets, whose ruling ("a
+ * wall-clock decision, not a tuning knob") the owner superseded on 2026-11-04. */
+#define TO_MIN_MAX 120
 
-/* Row label for the timeout actually in force. A device flashed with a
- * different Kconfig default can hold a value no preset covers, and the row
- * must then read the truth ("45 s") rather than the nearest preset, which
- * would be claiming a setting the dial does not have. */
+/* Row label for the timeout actually in force: whole minutes, else the truth in
+ * seconds ("45 s"), which a device flashed with another Kconfig default can hold. */
 static void timeout_label(char *out, size_t outsz)
 {
     const uint32_t cur = idle_dim_timeout_s();
-    for (int i = 0; i < TO_PRESET_N; i++)
-        if (s_to_preset[i].s == cur) { snprintf(out, outsz, "%s", s_to_preset[i].lbl); return; }
-    snprintf(out, outsz, "%lu s", (unsigned long)cur);
+    if (cur && cur % 60u == 0) snprintf(out, outsz, "%lu min", (unsigned long)(cur / 60u));
+    else snprintf(out, outsz, "%lu s", (unsigned long)cur);
 }
 
 /* Which app PG_APP is showing. Set on entry from the registry and cleared on
@@ -379,14 +379,13 @@ static void job_dim_en(void *arg)
 
 static void job_dim_to(void *arg)
 {
-    const int idx = *(const int *)arg;
+    const int min = *(const int *)arg;
     ui_t out; memset(&out, 0, sizeof out);
-    const to_preset_t *p = &s_to_preset[idx];
-    const esp_err_t er = idle_dim_set_timeout_s(p->s);
+    const esp_err_t er = idle_dim_set_timeout_s((uint32_t)min * 60u);
     if (er == ESP_ERR_NOT_SUPPORTED)
         snprintf(out.status, sizeof(out.status), "the dim is not in this build");
     else
-        snprintf(out.status, sizeof(out.status), "timeout: %s%s", p->lbl,
+        snprintf(out.status, sizeof(out.status), "timeout: %d min%s", min,
                  (er == ESP_OK) ? "" : " (until reboot, nvs refused)");
     worker_publish(&out);
 }
@@ -545,7 +544,6 @@ static const menu_row_t s_top[] = {
 
 static int rows_top(void)     { return TOP_OS_N + app_rows() + 1; }   /* +1: exit */
 static int rows_display(void) { return 3; }                     /* dim, timeout, back */
-static int rows_to(void)      { return TO_PRESET_N + 1; }       /* last row is back */
 static int rows_perms(void)   { return perm_rows() + 1; }
 static int rows_caps(void)    { return N_OWNER_CAPS + 1; }
 
@@ -729,15 +727,6 @@ static void label_display(int row, char *out, size_t outsz, bool *sel_hi)
     }
 }
 
-static void label_to(int row, char *out, size_t outsz, bool *sel_hi)
-{
-    if (row >= TO_PRESET_N) { snprintf(out, outsz, "<- back"); return; }
-    /* Same current-value mark as the zone list: the picker must answer
-     * "which one am I on?" before anybody starts scrolling. */
-    const bool cur = (s_to_preset[row].s == idle_dim_timeout_s());
-    if (sel_hi) *sel_hi = cur;
-    snprintf(out, outsz, "%s%s", s_to_preset[row].lbl, cur ? "  *" : "");
-}
 
 /* The headers. The app page answers with the app's own title, and the caps
  * page with that title qualified — a page about one app must never be read as
@@ -746,7 +735,6 @@ static void label_to(int row, char *out, size_t outsz, bool *sel_hi)
 static const char *title_top(void)  { return "MENU"; }
 static const char *title_app(void)  { return (s_app && s_app->title) ? s_app->title : "OPTIONS"; }
 static const char *title_display(void) { return "DISPLAY"; }
-static const char *title_to(void)   { return "DIM TIMEOUT"; }
 static const char *title_perms(void){ return "PERMISSIONS"; }
 static const char *title_caps(void)
 {
@@ -764,7 +752,6 @@ static const char *title_caps(void)
  * card nobody presses. The app page's own hint lost its second string on
  * 2026-10-26: back is a row and the group header is inert, so the plain
  * sentence is true again. */
-static const char *hint_to(void) { return "rotate: choose   push: set"; }
 static const char *hint_caps(void) { return "rotate: choose   push: toggle"; }
 static const char *hint_app(void)
 {
@@ -780,21 +767,8 @@ static const char *hint_display(void) { return "rotate: choose   push: change"; 
  * the dim setter nvs_commits, and the grant writes the broker's word. */
 static void act_display(int row)
 {
-    if (row == 0) { job_post(job_dim_en, 0); repaint(); return; }
-    /* Timeout row: open the picker. enter_to() starts it on the row that
-     * matches the value in force, so this arm says nothing about the cursor. */
-    go_to(PG_TO, 0);
-    repaint();
-}
-static void act_to(int row)
-{
-    job_post(job_dim_to, row);
-    /* Choosing IS leaving: back to DISPLAY, parked on the timeout row, rather
-     * than leaving the picker up showing "working...". The row repaints from
-     * the getter when the worker's write lands, so the value the user just
-     * picked is already right when they arrive. */
-    go_back();
-    repaint();
+    /* The timeout row never lands here: it is knob-edited (edit_display). */
+    if (row == 0) { job_post(job_dim_en, 0); repaint(); }
 }
 static void act_perms(int row)
 {
@@ -821,12 +795,6 @@ static void act_caps(int row)
      * instead of two that can disagree. */
     job_post(job_grant, cap_pack(a, row));
     repaint();                                          /* shows "working..." */
-}
-static void enter_to(void)
-{
-    const uint32_t cur = idle_dim_timeout_s();
-    for (int i = 0; i < TO_PRESET_N; i++)
-        if (s_to_preset[i].s == cur) { s_cur = i; return; }
 }
 
 /* ---- P5.3: APPS, its doors, and ABOUT (plan §7 items 2 and 4) --------------
@@ -2121,7 +2089,7 @@ static bool s_pos_loaded;         /* the record has been read once this boot */
 static bool pos_restorable(int pg)
 {
     const unsigned ok = (1u << PG_TOP) | (1u << PG_DISPLAY)
-                      | (1u << PG_TO)  | (1u << PG_PERMS) | (1u << PG_ABOUT);
+                      | (1u << PG_PERMS) | (1u << PG_ABOUT);
     return pg >= 0 && pg < PG_N && ((ok >> pg) & 1u) != 0;
 }
 
@@ -2177,6 +2145,7 @@ void menu_view_set_armed(bool armed)
     if (!armed && s_armed && pos_restorable((int)(s_pg - s_pages)))
         pos_save((int)(s_pg - s_pages), s_cur);
 
+    if (!armed) edit_end();
     s_armed = armed;
     if (armed) {
         /* Re-enter on the remembered page, letting the page's own enter() hook
@@ -2294,6 +2263,7 @@ static void go_to(int to, int cur)
      * ruling, 2026-10-25); input_router_menu_exit disarms on the way, and that
      * disarm is the item-3 edge that stores where in the list they stopped. */
     if (to == MENU_GO_EXIT) { input_router_menu_exit(); return; }
+    edit_end();                          /* an edit never outlives its page */
     if (s_pg->leave) s_pg->leave();
     s_pg  = P(to);
     s_cur = cur;
@@ -2311,12 +2281,10 @@ const menu_page_t s_pages[PG_N] = {
                      .act = act_top, .back_to = MENU_GO_EXIT },
     [PG_APP]     = { .rows = rows_app, .label = label_app, .title = title_app, .hint = hint_app,
                      .act = act_app, .open = open_app, .ordinal = ord_app,
-                     .leave = leave_app, .back_to = PG_TOP, .back_cur = 0 },
+                     .leave = leave_app, .back_to = PG_TOP, .back_cur = 0, .edit = edit_app },
     [PG_DISPLAY] = { .rows = rows_display, .label = label_display, .title = title_display,
                      .hint = hint_display, .act = act_display,
-                     .back_to = PG_TOP, .back_cur = 1 },
-    [PG_TO]      = { .rows = rows_to, .label = label_to, .title = title_to, .hint = hint_to,
-                     .act = act_to, .enter = enter_to, .back_to = PG_DISPLAY, .back_cur = 1 },
+                     .back_to = PG_TOP, .back_cur = 1, .edit = edit_display },
     [PG_PERMS]   = { .rows = rows_perms, .label = label_perms, .title = title_perms,
                      .act = act_perms, .back_to = PG_TOP, .back_cur = 2 },
     [PG_CAPS]    = { .rows = rows_caps, .label = label_caps, .title = title_caps,
@@ -2343,6 +2311,105 @@ const menu_page_t s_pages[PG_N] = {
                      .hint = hint_share, .back_to = MENU_GO_NONE, .back_cur = 0 },
 };
 
+/* ---- docs/knob-edit-plan.md §1.1: the edit mode --------------------------------------
+ * A press on a row the page says the knob edits enters it: the row reads the value it
+ * will save, each detent moves it by a step its turn's speed picks (knob_edit.c), a
+ * press saves through the row's commit, and a hold cancels. Leaving the page or the menu
+ * cancels too, so no edit outlives the glass it was made on. */
+static struct {
+    bool         on;
+    int          row;
+    const menu_page_t *pg;
+    menu_edit_t  e;
+    knob_speed_t sp;
+} s_edit;
+
+static void edit_end(void) { s_edit.on = false; }
+
+static bool edit_begin(int row)
+{
+    menu_edit_t e;
+    memset(&e, 0, sizeof e);
+    if (!s_pg->edit || !s_pg->edit(row, &e)) return false;
+    if (e.v < e.r.min) e.v = e.r.min;
+    if (e.v > e.r.max) e.v = e.r.max;
+    s_edit.on = true;
+    s_edit.row = row;
+    s_edit.pg = s_pg;
+    s_edit.e = e;
+    knob_speed_reset(&s_edit.sp);
+    repaint();
+    return true;
+}
+
+static void edit_input(int32_t delta, bool pressed)
+{
+    if (s_edit.pg != s_pg) { edit_end(); return; }          /* the page moved under it */
+    char row[48];
+    if (pressed) {
+        s_edit.e.commit(s_edit.row, s_edit.e.v);
+        s_edit.e.fmt(s_edit.row, s_edit.e.v, row, sizeof row);
+        ESP_LOGI(TAG, "edit %s row %d saved: %s", page_title(), s_edit.row, row);
+        edit_end();
+        repaint();
+        return;
+    }
+    if (!delta) return;
+    const int32_t n = delta < 0 ? -delta : delta;
+    const int32_t step = knob_speed_step(&s_edit.sp, n, esp_timer_get_time(), s_edit.e.r.step_max);
+    /* Up the value is up the list (knob.h): col_step is the sense for "more". */
+    s_edit.e.v = knob_edit_move(s_edit.e.v, knob_col_step(delta) * n, step, &s_edit.e.r);
+    repaint();
+}
+
+/* The app page's rows: the app says which it edits, and the row reads as label_app
+ * draws it, with the value not yet saved. */
+static void fmt_app(int row, int32_t v, char *out, size_t outsz)
+{
+    const int ar = vis_to_row(orb_app_opt_count(s_app), row);
+    const orb_opt_kind_t k = drawn_kind(orb_app_opt_count(s_app), ar);
+    snprintf(out, outsz, "%s%s  (%s)", k == OPT_ITEM ? "  " : "",
+             orb_app_opt_label(s_app, ar), orb_app_opt_fmt(s_app, ar, v));
+}
+static void commit_app(int row, int32_t v)
+{
+    orb_app_opt_set(s_app, vis_to_row(orb_app_opt_count(s_app), row), v);
+}
+static bool edit_app(int row, menu_edit_t *e)
+{
+    if (!s_app) return false;
+    const int ar = vis_to_row(orb_app_opt_count(s_app), row);
+    orb_opt_edit_t oe;
+    if (ar < 0 || !orb_app_opt_edit(s_app, ar, &oe)) return false;
+    e->r = (knob_range_t){ oe.min, oe.max, oe.wrap, oe.step_max };
+    e->v = oe.value;
+    e->fmt = fmt_app;
+    e->commit = commit_app;
+    return true;
+}
+
+/* The display page's timeout, in minutes. */
+static void fmt_display(int row, int32_t v, char *out, size_t outsz)
+{
+    (void)row;
+    snprintf(out, outsz, "timeout:  %ld min", (long)v);
+}
+static void commit_display(int row, int32_t v)
+{
+    (void)row;
+    job_post(job_dim_to, (int)v);
+}
+static bool edit_display(int row, menu_edit_t *e)
+{
+    if (row != 1) return false;
+    const uint32_t s = idle_dim_timeout_s();
+    e->r = (knob_range_t){ 1, TO_MIN_MAX, false, 5 };
+    e->v = (int32_t)((s + 30u) / 60u);
+    e->fmt = fmt_display;
+    e->commit = commit_display;
+    return true;
+}
+
 /* The press, table-driven. The two answers every page shares are decided
  * here: the last row is the page's exit — "<- back" where there is a parent,
  * "exit" where the table says MENU_GO_EXIT — and every press routes through
@@ -2354,6 +2421,7 @@ static void activate(void)
     const int rows = s_pg->rows ? s_pg->rows() : 0;
     if (rows <= 0 || s_cur >= rows) return;
     if (s_cur == rows - 1 && s_pg->back_to != MENU_GO_NONE) { go_back(); repaint(); return; }
+    if (edit_begin(s_cur)) return;      /* a knob-edited row: the press enters the edit */
     if (s_pg->act) s_pg->act(s_cur);
 }
 
@@ -2368,6 +2436,11 @@ static void row_text(int row, char *out, size_t outsz, bool *sel_hi)
 {
     out[0] = '\0';
     if (sel_hi) *sel_hi = false;
+    if (s_edit.on && s_edit.pg == s_pg && row == s_edit.row) {   /* the value being edited */
+        s_edit.e.fmt(row, s_edit.e.v, out, outsz);
+        if (sel_hi) *sel_hi = true;
+        return;
+    }
     if (s_pg->label) s_pg->label(row, out, outsz, sel_hi);
 }
 
@@ -2397,6 +2470,7 @@ static void title_line(char *out, size_t outsz)
 static const char *page_hint(void)
 {
     if (orb_jobs_busy()) return "working...";
+    if (s_edit.on) return "rotate: adjust   push: save   hold: cancel";
     return s_pg->hint ? s_pg->hint() : "rotate: choose   push: open";
 }
 
@@ -2412,6 +2486,7 @@ void menu_view_apply_input(int32_t delta, bool pressed)
      * "working..." (page_hint) until the result lands. */
     if (orb_jobs_busy()) return;
 
+    if (s_edit.on) { edit_input(delta, pressed); return; }
     if (pressed) { activate(); return; }
     if (delta == 0) return;
 
@@ -2476,6 +2551,9 @@ void menu_view_apply_input(int32_t delta, bool pressed)
 bool menu_view_opt_long(void)
 {
     if (!s_armed) return false;                    /* the router owns the knob */
+
+    /* A hold during an edit cancels it, and only it: the value stays as saved. */
+    if (s_edit.on) { edit_end(); repaint(); return true; }
 
     /* A page's own long hook has first refusal (D12). Below it the app page
      * answers exactly like every other page: the hold exits the menu. It used

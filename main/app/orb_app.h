@@ -55,6 +55,14 @@ typedef enum {
     OPT_ITEM        /* a row inside the nearest preceding OPT_GROUP */
 } orb_opt_kind_t;
 
+/** A row whose value the knob edits (docs/knob-edit-plan.md §1.1): its range, whether
+ *  it wraps (an hour), the largest step a fast turn takes, and the value now. */
+typedef struct {
+    int32_t min, max, value;
+    int32_t step_max;       /* 1 = never faster */
+    bool    wrap;
+} orb_opt_edit_t;
+
 /** The hooks the shell calls, all on the LVGL task. A hook an app does not
  *  need is NULL and the shell skips it.
  *
@@ -133,6 +141,13 @@ typedef struct {
      *  every row. */
     const void *(*opt_preview)(orb_app_t *app, int idx, uint16_t *w,
                                uint16_t *h, uint32_t *stamp);
+    /** docs/knob-edit-plan.md: a row the knob edits. opt_edit answers true and the
+     *  range for such a row (a press then enters the shell's edit mode instead of
+     *  opt_sel); opt_fmt renders a value the edit has not saved yet, as opt_value
+     *  would; opt_set saves it. NULL, the ABI before them, is a press-only page. */
+    bool         (*opt_edit)(orb_app_t *app, int idx, orb_opt_edit_t *e);
+    const char *(*opt_fmt)(orb_app_t *app, int idx, int32_t v);
+    void         (*opt_set)(orb_app_t *app, int idx, int32_t v);
 } orb_app_iface_t;
 
 /** How a table entry participates in the knob's carousel. */
@@ -474,6 +489,11 @@ const char *orb_app_opt_value(const orb_app_t *app, int idx);
  *  the three kinds is OPT_ROW too: an app that returns garbage gets a plain row,
  *  not a page that hides rows the owner cannot reach. */
 orb_opt_kind_t orb_app_opt_kind(const orb_app_t *app, int idx);
+/** docs/knob-edit-plan.md: whether row idx is knob-edited (and its range), a value
+ *  rendered as the row would show it, and the save. A NULL hook: not edited, "", none. */
+bool orb_app_opt_edit(const orb_app_t *app, int idx, orb_opt_edit_t *e);
+const char *orb_app_opt_fmt(const orb_app_t *app, int idx, int32_t v);
+void orb_app_opt_set(const orb_app_t *app, int idx, int32_t v);
 /** Rotate `steps` detents on row idx, and press it. */
 void orb_app_opt_inc(const orb_app_t *app, int idx, int32_t steps);
 void orb_app_opt_sel(const orb_app_t *app, int idx);

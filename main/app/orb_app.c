@@ -1030,6 +1030,28 @@ const char *orb_app_opt_value(const orb_app_t *app, int idx)
     return s ? s : "";
 }
 
+bool orb_app_opt_edit(const orb_app_t *app, int idx, orb_opt_edit_t *e)
+{
+    if (!app || !app->iface || !app->iface->opt_edit || !e) return false;
+    if (idx < 0 || idx >= orb_app_opt_count(app)) return false;
+    return app->iface->opt_edit((orb_app_t *)app, idx, e) && e->min <= e->max;
+}
+
+const char *orb_app_opt_fmt(const orb_app_t *app, int idx, int32_t v)
+{
+    if (!app || !app->iface || !app->iface->opt_fmt) return "";
+    if (idx < 0 || idx >= orb_app_opt_count(app)) return "";
+    const char *s = app->iface->opt_fmt((orb_app_t *)app, idx, v);
+    return s ? s : "";
+}
+
+void orb_app_opt_set(const orb_app_t *app, int idx, int32_t v)
+{
+    if (!app || !app->iface || !app->iface->opt_set) return;
+    if (idx < 0 || idx >= orb_app_opt_count(app)) return;
+    app->iface->opt_set((orb_app_t *)app, idx, v);
+}
+
 void orb_app_opt_inc(const orb_app_t *app, int idx, int32_t steps)
 {
     if (!app || !app->iface || !app->iface->opt_inc) return;

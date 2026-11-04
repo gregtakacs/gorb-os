@@ -42,6 +42,7 @@ idf_component_register(
         "stage/orb_label.c"
         "knob/knob.c"
         "menu/menu_view.c"
+        "menu/knob_edit.c"
         # §43: the Themes page, an OS menu row (it was the clock app's options page).
         "menu/themes_page.c"
         "input/input_router.c"

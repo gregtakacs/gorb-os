@@ -30,7 +30,8 @@ APP_FILES = [(os.path.join(HERE, f), f) for f in
              ("Watch Composer.dc.html", "dial-renderer.js", "watch-engine.js", "sound-engine.js", "stack.js")] + [
              (os.path.join(RUNTIME, "support@1", "support.js"), "support.js"),
              (os.path.join(RUNTIME, "baker@1", "orbtheme-baker.js"), "orbtheme-baker.js"),
-             (os.path.join(RUNTIME, "ui@1", "ui.css"), "ui.css")]
+             (os.path.join(RUNTIME, "ui@1", "ui.css"), "ui.css"),
+             (os.path.join(RUNTIME, "theme@1", "send.js"), "send.js")]
 SELFTEST_DIR = "_selftest"
 
 

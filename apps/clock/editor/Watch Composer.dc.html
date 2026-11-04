@@ -151,6 +151,7 @@ html,body{height:100%;overflow:hidden}
 <script src="stack.js"></script>
 <script src="sound-engine.js"></script>
 <script src="orbtheme-baker.js"></script>
+<script src="send.js"></script>
 </helmet>
 <div class="wc">
   <header class="wc-top">
@@ -2707,124 +2708,39 @@ class Component extends DCLogic {
    * own — the hub-to-orb leg and the store the door armed. The button appears only
    * when a hub served the page (see hubSend3): from the filesystem there is no door
    * to dial, so only the download shows. */
-  /* A send is one modal act (owner ruling, 2026-11-03): from the press until the
-   * verdict, the page shows the send over everything and nothing else can be pressed,
-   * the editor will not close, and the hub is told so it will not close the pane. The
-   * owner may cancel only while the bytes are still this page's: through the bake, the
-   * precheck and the crossing to the hub. The hub reads the whole file before it dials
-   * the orb, so a cancel there leaves the orb untouched; once the hub holds the file the
-   * orb's store is under way and cannot be stopped, and the modal says so and waits. */
-  _beginSend3() {
-    this._cancel3 = false;
-    this.setState({ sending: { canCancel: true, cancelling: false } });
-    this._busy3(true);
-  }
-  _endSend3() {
-    this._xhr3 = null;
-    this.setState({ sending: null });
-    this._busy3(false);
-  }
-  _busy3(on) {
-    try { window.parent.postMessage({ type: 'theme.busy', on: !!on }, location.origin); } catch (e) { /* standalone */ }
-    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
-    if (on && !this._unload3) {
-      this._unload3 = (e) => { e.preventDefault(); e.returnValue = ''; };
-      window.addEventListener('beforeunload', this._unload3);
-    } else if (!on && this._unload3) {
-      window.removeEventListener('beforeunload', this._unload3);
-      this._unload3 = null;
+  /* The send is the OS's (theme@1/send, theme-editor-kit-plan K1): the precheck, the
+   * duplicate question and its held bake, the upload and the hub's witness, and the one
+   * modal act around it all. The clock hands it the bytes and draws its state. These
+   * names stay so the bake and the panes call one door. */
+  get sender() {
+    if (!this._sender) {
+      this._sender = window.OrbTheme.sender({
+        say: (s) => this.setState({ status: s }),
+        ask: (d) => this.setState({ dup: d }),
+        sending: (st) => this.setState({ sending: st }),
+        orb: (ip) => this.setState({ hubIp: ip, hubCheck: true }),
+        orbIp: () => this.hubOrbIp(),
+      });
     }
+    return this._sender;
   }
-  // past this point the orb holds the job: no cancel, only the wait
-  _sendCommitted3() { if (this.state.sending) this.setState({ sending: { canCancel: false, cancelling: false } }); }
-  cancelSend3() {
-    const sd = this.state.sending;
-    if (!sd || !sd.canCancel || sd.cancelling) return;
-    this._cancel3 = true;
-    this.setState({ sending: { canCancel: false, cancelling: true } });
-    if (this._xhr3) this._xhr3.abort();
+  get _replaceArmed() { return this.sender.held; }
+  set _replaceArmed(v) { this.sender.held = v; }
+  get _cancel3() { return this.sender.cancelRequested; }
+  cancelSend3() { this.sender.cancel(); }
+  _cancelled3() { return this.sender.cancelled(); }
+  sendTheme3ToOrb() { return this.sender.send(this.themeName(), () => this.exportTheme3({ send: true })); }
+  replaceArmed3() { return this.sender.replace(); }
+  dismissDup3() { this.sender.dismiss(); }
+  // the clock keeps the found address in its state (the Render step's label reads it), so
+  // that is its cache, as before; a miss asks the hub afresh
+  async hubOrbIp() {
+    if (this.state.hubCheck && this.state.hubIp != null) return this.state.hubIp;
+    return this.sender.findOrb(true);
   }
-  // the cancel checkpoints: a cancel pressed mid-bake lands here, before anything leaves
-  _cancelled3() {
-    if (!this._cancel3) return false;
-    this.setState({ status: 'Send cancelled — nothing was sent to the orb.' });
-    return true;
-  }
-  async sendTheme3ToOrb() {
-    if (this.state.sending) return;
-    this._beginSend3();
-    try { await this._sendTheme3ToOrb(); } finally { this._endSend3(); }
-  }
-  async _sendTheme3ToOrb() {
-    // §32's second press: when the last send stopped at a duplicate, the bake is
-    // held in _replaceArmed and this press ships THOSE bytes — no re-bake, so the
-    // replace is byte-for-byte the dial the owner was asked about. Editing the dial
-    // name (or any new bake) clears the arm and the next press is a fresh send.
-    const a = this._replaceArmed;
-    if (a && a.nm === this.themeName()) {
-      this._replaceArmed = null;
-      await this._shipHeldReplace(a);
-      return;
-    }
-    this._replaceArmed = null;
-    await this.exportTheme3({ send: true });
-  }
-  /* §32.6: the modal's Replace. Ships the held bake — no re-bake, so the replace is
-   * byte-for-byte the dial the precheck refused — and closes the modal. If the arm was
-   * already consumed (a racing press, or the name changed under the modal) the overlay
-   * just clears; there is nothing held to send. */
-  async replaceArmed3() {
-    const a = this._replaceArmed;
-    this.setState({ dup: null });
-    if (!a || this.state.sending) return;
-    this._replaceArmed = null;
-    this._beginSend3();
-    try { await this._shipHeldReplace(a); } finally { this._endSend3(); }
-  }
-  /* The held bake's two roads to the same file on the glass. When the refusal armed
-   * the hold it may have handed back a commit token: the device verified these bytes
-   * once, liked them, and kept the copy on its card, so Replace spends the token on
-   * an empty POST and the megabytes cross the room zero times instead of two. A
-   * refused or lost commit (410: stale, card swapped, reboot between) says so on the
-   * status line and the bytes ship the old way — the confirm was for the theme, not
-   * for a particular road, and the re-upload must never die with the token. No
-   * token, no try: a precheck-armed hold never sent bytes, so an upload is the only
-   * honest crossing. */
-  async _shipHeldReplace(a) {
-    if (a.commit) {
-      const ip = await this.hubOrbIp();
-      if (ip) {
-        this._sendCommitted3();
-        this.setState({ status: 'Replacing "' + a.nm + '" on ' + ip + ' from the copy already on the card — no second upload' });
-        try {
-          const r = await fetch('/api/theme/commit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip: ip, commit: a.commit }) });
-          const j = await r.json().catch(() => null);
-          if (r.status === 200 && j && j.ok) {
-            // The commit renamed THIS upload's staged scratch over the old file and
-            // queued the store (the device's own reply: state=stored, reboot=automatic).
-            // Until now the line read "replaced from the copy already on the card", which
-            // sounded like a no-op — and on a tempo-only edit (identical art, different
-            // seconds cadence) it looked like nothing copied at all. Say plainly that the
-            // new build landed and the orb is rebooting onto it.
-            const st = (j.data && j.data.state) || 'stored';
-            const rebo = (j.data && j.data.reboot === 'automatic');
-            this.setState({ status: 'Sent to ' + ip + ' as "' + a.nm + '" (' + (a.stem) + ') — the new build replaced the old copy on its card · ' + st + (rebo ? ' — rebooting onto it' : '') });
-            return;
-          }
-          this.setState({ status: 'The staged copy was refused (' + ((j && j.error) || ('HTTP ' + r.status)) + ') — sending the file itself' });
-        } catch (e) {
-          this.setState({ status: 'The commit could not be sent (' + (e && e.message ? e.message : String(e)) + ') — sending the file itself' });
-        }
-      }
-    }
-    await this.postTheme3ToOrb(a.bytes, a.nm, a.stem, a.pol, a.meter, true);
-  }
-  /* The modal's Cancel: drop the arm so the next Send is a fresh bake, and say so on
-   * the status line. The held bytes are discarded, not deferred — a Cancel is the
-   * owner declining to clobber the card, so the next press must not re-ship them. */
-  dismissDup3() {
-    this._replaceArmed = null;
-    this.setState({ dup: null, status: 'Send cancelled — the card keeps its current "' + (this.state.dup && this.state.dup.nm || 'theme') + '"' });
+  // the bake's own account (its policy sentence and the art meter) rides the verdict line
+  postTheme3ToOrb(bytes, nm, stem, pol, meter, overwrite) {
+    return this.sender.post(bytes, { name: nm, stem: stem, summary: pol.sentence + ' \u00b7 ' + meter }, overwrite);
   }
   async _export3Body(opts) {
     opts = opts || {};
@@ -3469,283 +3385,6 @@ class Component extends DCLogic {
    * at the press. */
   hubSend3() {
     return typeof location !== 'undefined' && /^https?:$/.test(location.protocol);
-  }
-  /* The learned orb address, read off the hub. /api/orb/known answers the same
-   * question the Manage card pre-fills from; the composer does not keep an orb IP of
-   * its own, so a board unplugged and re-plugged under a new lease cannot leave the
-   * Send button dialing the old one. Caches the answer so a dial does not re-ask the
-   * hub on every paint; a null is a real answer (no orb loaded yet). */
-  async hubOrbIp() {
-    if (this.state.hubCheck && this.state.hubIp != null) return this.state.hubIp;
-    // D43 P6: the hub opens this editor for one orb and names it (?orb=); that is the address
-    let q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
-    const named = q && q.get('orb');
-    if (named && /^(\d{1,3}\.){3}\d{1,3}$/.test(named)) { this.setState({ hubIp: named, hubCheck: true }); return named; }
-    let ip = null;
-    try {
-      const r = await fetch('/api/orb/known');
-      const j = await r.json();
-      if (j && j.ok && j.data && j.data.ip) ip = j.data.ip;
-    } catch (e) { ip = null; }
-    this.setState({ hubIp: ip, hubCheck: true });
-    return ip;
-  }
-  /* Push the baked bytes to the orb through the hub's upload door, watched end to
-   * end. The order is the §32 fix for the two live failures: a duplicate is asked
-   * about BEFORE megabytes cross the room (the hub's ?precheck=1 leg — header and
-   * one list call, no bytes dialed; a duplicate arms an inline second press, no
-   * browser dialog, no re-bake), and once bytes move, _push3 reports the browser-
-   * to-hub leg live while _watchSend3 relays the hub's own witness of the legs this
-   * page cannot see. A late device 409 (same name, same serial, different payload —
-   * the hole a serial-only precheck cannot see) arms the same inline replace. The
-   * store verdict in the final line is the hub's waitForStore witness, not an
-   * assumption: a stored dial reboots the orb onto itself; a torn one boots the
-   * base face until one re-store — said plainly. */
-  async postTheme3ToOrb(bytes, nm, stem, pol, meter, overwrite) {
-    if (this._cancelled3()) return;
-    const ip = await this.hubOrbIp();
-    if (!ip) {
-      this.setState({ status: 'Not sent: this hub is not talking to an orb — load one on the Manage card first, then press again. (The download still ships without a hub.)' });
-      return;
-    }
-    const door = '/api/theme/upload?ip=' + encodeURIComponent(ip);
-    if (!overwrite) {
-      this.setState({ status: 'Asking ' + ip + ' whether "' + nm + '" is already on the card…' });
-      let pre = null;
-      let preErr = '';
-      try {
-        // §32.7: the precheck is a question about the container's IDENTITY, so only the
-        // bytes that carry identity cross the room, not the megabytes. The header's own
-        // words (magic, header CRC, serial at word 11, name at bytes 56..112) are NOT
-        // the whole identity: per-app theming derives the card stem from the OWNING
-        // APP'S SLUG, and the slug lives in the index inside the geometry region that
-        // sits right behind the header, its size in the header's word 5 (byte 20). So
-        // the precheck sends the header plus that region and nothing else — a few
-        // hundred bytes for a clock bake, 61,440 B at the format's absolute cap. The
-        // hub's ContainerHead answers the duplicate off those bytes, and refuses a
-        // slice that stops short of the region with the exact count it needs. The
-        // device's door re-checks the whole file on the upload that follows. Before
-        // this the precheck POSTed the WHOLE bake, so the question itself cost the full
-        // file; the first §32.7 shipped only the 128-byte header, and the index walk
-        // refused every real bake for the tail a header slice can never carry — so
-        // EVERY first Send press answered "could not get a clean read", systematically.
-        // The double-send the operator named was a separate cut — see the exact branch
-        // below, which is what actually stops it.
-        let gsz = 0;
-        try { gsz = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(20, true); } catch (e) { gsz = 0; }
-        const head = bytes.slice(0, Math.min(bytes.byteLength, 128 + Math.min(gsz, 0xF000)));
-        const ask = async (body) => {
-          const pr = await fetch(door + '&precheck=1', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: body });
-          const txt = await pr.text();
-          let j = null;
-          try { j = JSON.parse(txt); } catch (e) { j = null; }
-          if (!j) {
-            // A body that is not the hub's JSON is still an ANSWER, and it used to be
-            // reported as "the hub never answered" — the same words a dead connection
-            // gets. That conflation is why a refusal this page could have named in one
-            // clause took a day to find: an HTML error page, a plain-text 405, an empty
-            // 200 and a dropped socket all printed one sentence. Say which it was.
-            const snip = (txt || "").replace(/\s+/g, " ").trim().slice(0, 160);
-            return { ok: false, status: pr.status,
-              error: "the hub answered HTTP " + pr.status + " with something that was not its JSON"
-                + (snip ? ": " + snip : " (an empty body)") };
-          }
-          j.status = pr.status;
-          return j;
-        };
-        // The head slice is the ONLY precheck body. On 2026-10-28 a fallback
-        // re-asked a failed question with the WHOLE bake — but a failed precheck
-        // is a lane/transport problem, and replaying it with a megabyte body
-        // held the orb's one lane LONGER per press and starved the theme list,
-        // the scan, and the wifi check behind it. A refusal costs the reason
-        // (printed below) and a press to ship anyway; it never costs a re-upload.
-        //
-        // ONE exception, and it is the hub's own instruction. When the refusal names
-        // the byte count the index needs ("the precheck carried 128 B; this bake's
-        // index lives at 128..976 — send the first 976 B of the file"), the slice was
-        // simply cut short, and the answer is to send the number it asked for. That is
-        // the geometry region and nothing else: bounded by the format's own cap, not by
-        // the file, so it is not the megabyte replay the rule above forbids. It is one
-        // retry, only on that exact refusal, and the second answer is the one reported.
-        const needOf = (m) => {
-          const g = /send the first (\d+) B of the file/.exec(m || "");
-          return g ? (+g[1]) : 0;
-        };
-        let pre1 = null, pre1Err = "";
-        try { pre1 = await ask(head); } catch (e) { pre1Err = (e && e.message) ? String(e.message) : String(e); }
-        if (pre1 && !pre1.ok) {
-          const need = needOf(pre1.error);
-          if (need > head.byteLength && need <= bytes.byteLength) {
-            try { pre = await ask(bytes.slice(0, need)); }
-            catch (e) { preErr = (e && e.message) ? String(e.message) : String(e); }
-          }
-        }
-        // The short-slice answer stands; anything else is answered by the first reply.
-        // `pre` is set only by the retry, so this never clobbers a good second answer.
-        if (!pre && pre1) pre = pre1;
-        // A fetch that threw is a transport fact, and it used to be DISCARDED here: the
-        // inner catch set pre = null and kept no message, so every real cause — the hub
-        // closed the connection, the page navigated, DNS failed — printed the same
-        // "the hub never answered" as an empty body. The one sentence the operator could
-        // act on was the one this branch threw away. Keep it; the reason below prints it.
-        if (!pre && !preErr && pre1) preErr = pre1.error || ("the hub answered HTTP " + pre1.status);
-        else if (!pre && !preErr && pre1Err) preErr = pre1Err;
-      } catch (e) { pre = null; preErr = (e && e.message) ? String(e.message) : String(e); }
-      if (pre && pre.ok && pre.data && pre.data.exact) {
-        // §32.9: the card already holds this EXACT bake — same name, same content serial.
-        // Until now the hub answered this "clear", so a plain re-send of an installed theme
-        // moved all the bytes over the air again AND the device's door re-armed an
-        // idempotent store: a reboot onto the face it is already drawing, with a second
-        // progress paint racing the first down the glass (the two green bars the operator
-        // watched). Stop BEFORE the upload. Nothing to replace — the bytes already match —
-        // so there is no modal to arm and no held bake; the next press is a fresh bake.
-        // To actually re-store or switch to the installed copy, use its store button on the
-        // Manage card: that lands the file already on the card for an id, not a re-upload.
-        this._replaceArmed = null;
-        this.setState({ status: '"' + nm + '" is already on the card, byte for byte — nothing sent. To reboot onto it or re-store it, use its store button on the Manage card.' });
-        return;
-      }
-      if (pre && pre.ok && pre.data && pre.data.duplicate) {
-        this._replaceArmed = { bytes, nm, stem, pol, meter };
-        // §32.6: the duplicate is asked about in a real modal, not a status-line
-        // sentence and never a window.confirm. The bake stays held in _replaceArmed;
-        // the modal's Replace ships THOSE bytes with overwrite, Cancel dismisses.
-        this.setState({ dup: { nm, stem, note: (pre.data.note || 'the card holds a different build of this name'), pre: true } });
-        return;
-      }
-      // Bug B follow-up: the precheck only protects the upload when it got a real
-      // answer. A fetch that died (pre null), an HTTP error, or a verdict of "clear"
-      // that carries a note — the hub's own spelling for "I could not ask the orb, so
-      // I cannot promise there is no collision" (theme.go's themeDuplicate) — are all
-      // one situation: the card state is UNKNOWN. Falling through shipped the bytes
-      // blind, the precheck's whole point evaporated, and a tempo-only re-send of a
-      // banked dial (the shipped serial moves, but the precheck never saw it) hit the
-      // device's late 409 instead — the modal appeared AFTER the megabytes crossed,
-      // the exact symptom the §32 precheck exists to forbid. Stop BEFORE upload; hold
-      // the bake so the next press forces the replace over the unknown, which is the
-      // operator's call to make, not this page's silent default.
-      if (!pre || !pre.ok || !pre.data || pre.data.note) {
-        this._replaceArmed = { bytes, nm, stem, pol, meter };
-        // The hub's own refusal sentence rides the status line whenever it has one.
-        // On 2026-10-27 the operator met this branch on EVERY first Send press with no
-        // reason attached — the generic sentence hid whether the hub refused the head
-        // slice (pre.error), answered an unasked card (data.note), or the fetch itself
-        // died (the caught message). Guessing at a failure that names itself is how a
-        // deterministic bug gets debugged as a race for a day; print what was said.
-        // The hub's OWN sentence rides the line whenever it has one. The generic
-        // "could not get a clean read" hid four different situations behind one
-        // sentence, and a deterministic bug got debugged as a race because of it.
-        const why = (pre && pre.error) || (pre && pre.data && pre.data.note)
-          || (pre && pre.status && pre.status !== 200 ? 'the hub answered HTTP ' + pre.status : '')
-          || preErr || (pre ? '' : 'the hub never answered');
-        this.setState({ status: 'Nothing sent: the hub could not get a clean read of "' + nm + '" on ' + ip +
-          (why ? ' — ' + why : '') +
-          ' — so it will not ship over a card it cannot check. Press Send again to replace it anyway.' });
-        return;
-      }
-    }
-    if (this._cancelled3()) return;
-    const say = (s) => this.setState({ status: s });
-    say('Sending "' + nm + '" to ' + ip + (overwrite ? ' (replacing)' : '') + ' — 0%');
-    const watch = this._watchSend3(ip, say, nm);
-    let code = 0, j = {};
-    try {
-      const up = await this._push3(door + (overwrite ? '&overwrite=1' : ''), bytes,
-        (sent, total) => say('Sending "' + nm + '" to ' + ip + ' — ' + Math.floor(sent * 100 / (total || 1)) + '% of ' + total + ' B to the hub'));
-      code = up.status; j = up.j;
-    } catch (e) {
-      watch.stop();
-      if (this._cancelled3()) return;
-      this.setState({ status: 'Send failed: ' + (e && e.message ? e.message : String(e)) });
-      return;
-    }
-    watch.stop();
-    if (code !== 200 || j.ok === false) {
-      const why = (j && j.error) || ('HTTP ' + code);
-      if (!overwrite && String(why).indexOf('already on the card') >= 0) {
-        // The safety net: same serial, different payload CRCs — the one cut the
-        // content-aware serial still cannot capture before the device checks it. The
-        // same modal arms here, so the operator's second act is a press, not a
-        // re-bake. The device kept the bytes it just verified and named the keep with
-        // a commit token: the hold carries it, and _shipHeldReplace spends it, so
-        // this act costs an empty POST. An old firmware that deleted the scratch
-        // sends no token and the hold falls back to the re-upload it always was.
-        this._replaceArmed = { bytes, nm, stem, pol, meter, commit: String(j.commit || '') };
-        // The modal's wording follows the road the hold can take: with a token the
-        // replace names the copy already on the card; without one it says it ships.
-        this.setState({ dup: { nm, stem, note: String(why) + (j.commit ? ' — the orb kept this upload; Replace files the copy already on its card.' : ''), pre: false } });
-        return;
-      }
-      this.setState({ status: 'Not sent: ' + why });
-      return;
-    }
-    const d = (j && j.data) || {};
-    const storeLine = {
-      stored: d.back === false ? 'stored into the one slot, and the orb has not answered since its reboot — check the Manage card'
-        : 'stored into the one slot, and the orb is back drawing it',
-      torn: 'the copy tore before its header: the base face boots until one re-store' + (d.store_note ? ' (' + d.store_note + ')' : ''),
-      refused: 'the store refused: ' + (d.store_note || 'no reason from the orb'),
-      lost: 'filed on the card, and the store outcome stayed unreported past the wait — check the Manage card'
-    }[d.store] || 'stored on the card';
-    this.setState({ status: 'Sent to ' + ip + ' as "' + (d.name || nm) + '" (' + (d.id || stem) + ') — ' +
-      pol.sentence + ' · ' + meter + ' · ' + storeLine });
-  }
-  /* XHR for the one thing fetch will not tell a page: how many body bytes the
-   * browser has handed the transport. Resolves {status, j} on any HTTP answer —
-   * the hub's verdict is an answer — and rejects only when the request itself
-   * dies, which is the one case the caller must word as a failed send. */
-  _push3(url, bytes, onProgress) {
-    return new Promise((resolve, reject) => {
-      const x = new XMLHttpRequest();
-      this._xhr3 = x;
-      x.open('POST', url);
-      x.setRequestHeader('Content-Type', 'application/octet-stream');
-      let lastPaint = 0;
-      x.upload.onprogress = (e) => {
-        const now = Date.now();
-        if (now - lastPaint < 120 && e.loaded < e.total) return;
-        lastPaint = now;
-        onProgress(e.loaded, e.total);
-        // every byte is the hub's now, and the hub dials the orb with it: no cancel past here
-        if (e.loaded >= e.total) this._sendCommitted3();
-      };
-      x.onload = () => {
-        let j = {};
-        try { j = JSON.parse(x.responseText); } catch (e) { /* not JSON: the status line carries the code */ }
-        resolve({ status: x.status, j });
-      };
-      x.onerror = () => reject(new Error('the hub closed the connection mid-send'));
-      x.onabort = () => reject(new Error('cancelled'));
-      x.send(bytes);
-    });
-  }
-  /* The hub's own witness, polled while the POST is blocked at the hub — the
-   * hub-to-orb byte count and the store phases this page cannot see. The device's
-   * card-write progress rides the glass (the boot overlay draws it at chunk
-   * boundaries, beside the board), so this page relays the hub's phase words
-   * verbatim instead of inventing a percent for bytes it never touches. */
-  _watchSend3(ip, say, nm) {
-    const words = {
-      uploading: (st) => 'Sending "' + nm + '" — the hub is dialing the orb: ' +
-        Math.floor((st.sent || 0) * 100 / ((st.total || 1))) + '% of ' + (st.total || 0) + ' B',
-      queued: () => '"' + nm + '" is on the orb, the store is armed — the copy comes next',
-      storing: () => '"' + nm + '" is storing into the slot — progress rides the orb glass; the orb reboots itself when the copy lands',
-      rebooting: () => '"' + nm + '" is stored — the orb is rebooting onto it; waiting for it to come back',
-      duplicate: () => 'the card holds a different "' + nm + '" — press Send to orb again to replace it',
-      exact: () => '"' + nm + '" is already on the card, byte for byte — nothing was sent',
-      rejected: (st) => 'the orb refused the upload' + (st.note ? ': ' + st.note : '')
-    };
-    let dead = false;
-    const timer = setInterval(async () => {
-      if (dead) return;
-      try {
-        const r = await fetch('/api/theme/upload-status?ip=' + encodeURIComponent(ip));
-        const j = await r.json().catch(() => null);
-        const st = j && j.ok && j.data;
-        if (st && words[st.phase]) say(words[st.phase](st));
-      } catch (e) { /* a lost poll is noise; the POST's own answer settles everything */ }
-    }, 700);
-    return { stop() { dead = true; clearInterval(timer); } };
   }
   /* §31's comp-table pass: render every domain value of every planned row as one
    * RGBA plate, cropped to the footprint it actually changed against the plate it

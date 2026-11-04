@@ -69,7 +69,7 @@ check("editor.json: baker 3 (the hub's writer is FORMAT 3 only)", man.get("baker
 # an editor naming one it does not carry (editorRuntimeMissing), and an unversioned
 # entry is an editor from before the runtime existed.
 check("editor.json: the runtime is the hub's versioned ids",
-      man.get("runtime") == ["support@1", "baker@1", "ui@1", "react@18.3.1", "babel@7.29.0", "fonts@1"],
+      man.get("runtime") == ["support@1", "baker@1", "ui@1", "theme@1", "react@18.3.1", "babel@7.29.0", "fonts@1"],
       str(man.get("runtime")))
 cat = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "orb-manager", "runtime.go")).read()
 check("every declared id is in the hub's runtime catalog",
@@ -90,6 +90,8 @@ check("the CDN map sends React, ReactDOM and Babel to the hub's runtime",
 check("orbtheme-baker.js resolves to the hub's theme builder",
       '<script src="/runtime/baker@1/orbtheme-baker.js"></script>' in entry
       and '<script src="orbtheme-baker.js">' not in entry)
+check("the send resolves to the runtime's theme@1 service (theme-editor-kit-plan K1)",
+      '<script src="/runtime/theme@1/send.js"></script>' in entry and 'src="send.js"' not in entry)
 check("the hub's look resolves to the runtime's ui@1 sheet",
       '<link href="/runtime/ui@1/ui.css" rel="stylesheet">' in entry and 'href="ui.css"' not in entry)
 check("nothing names the retired /composer/ route", "/composer/" not in entry)

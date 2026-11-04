@@ -31,6 +31,7 @@ func TestRuntimeServesEveryCatalogID(t *testing.T) {
 		"support@1/support.js":                     "web/runtime/support@1/support.js",
 		"baker@1/orbtheme-baker.js":                "web/runtime/baker@1/orbtheme-baker.js",
 		"ui@1/ui.css":                              "web/runtime/ui@1/ui.css",
+		"theme@1/send.js":                          "web/runtime/theme@1/send.js",
 		"react@18.3.1/react.production.min.js":     "web/runtime/vendor/react.production.min.js",
 		"react@18.3.1/react-dom.production.min.js": "web/runtime/vendor/react-dom.production.min.js",
 		"babel@7.29.0/babel.min.js":                "web/runtime/vendor/babel.min.js",

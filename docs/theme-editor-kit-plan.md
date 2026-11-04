@@ -110,7 +110,7 @@ send to Gold where the slice touches the glass. A suite moves with the code it t
 
 | Slice | Content | Gate |
 |---|---|---|
-| **K1** | `theme@1/send`, and the clock calls it | `headless-send` moves to `web/runtime/_selftest/` and passes; clock suites green; a send, a duplicate Replace and a cancel benched on Gold |
+| **K1** | `theme@1/send`, and the clock calls it | `headless-send` moves to `web/runtime/_selftest/` and passes; clock suites green; a send, a duplicate Replace and a cancel benched on Gold — **built and benched on Gold 2026-11-03** (§7) |
 | **K2** | `theme@1/session` | `headless-session` and the session half of `headless-design` move and pass; a design saved before the move opens after it |
 | **K3** | `theme@1/preview`, including true size | the clock's stage, Panel and Compare equal before and after (`headless-panel`, a screenshot pair); true size matches `review.html`'s calibration |
 | **K4** | `theme@1/measure`, the pace hook | `headless-pace` and `headless-estimate` green with `_devPace` as the clock's override; an app with no hook gets the estimate |
@@ -145,3 +145,50 @@ in parallel with any of them.
 
 None open. The three raised here (how much the shell owns, where calibration lives, the
 runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
+
+## 7. As built
+
+### K1 — `theme@1/send` (2026-11-03)
+
+- **The service.** `web/runtime/theme@1/send.js`: `OrbTheme.sender(host)` with `send`,
+  `post`, `replace`, `dismiss`, `cancel`, `cancelled`, `findOrb(fresh)`, `held`, `active`.
+  Ported from the clock unchanged in behaviour: the head-slice precheck and its one
+  retry, the duplicate hold, the exact stop, the fail-closed unknown, the late 409 with
+  its commit token, the upload-status witness, the store verdicts, and the modal act
+  (busy to the hub, the window guard, the cancel that locks once the hub holds the
+  bytes). The host gets `say`, `ask`, `sending` and `orb`; the bake's own account of
+  itself rides the verdict line as `meta.summary`.
+- **The clock.** About 300 lines of send code leave the document. What stays is a `sender`
+  getter and pass-throughs under the old names (`sendTheme3ToOrb`, `postTheme3ToOrb`,
+  `replaceArmed3`, `dismissDup3`, `cancelSend3`, `hubOrbIp`, and `_replaceArmed` /
+  `_cancel3` as accessors), so the bake and the panes call one door and the clock's
+  suites ran unchanged as the regression gate. `hubOrbIp` keeps the clock's state as
+  its address cache, as before, and asks the service fresh on a miss. `clock.orbapp`
+  went from 969,080 B to 946,412 B.
+- **Wiring.** The catalog serves `theme@1`; `make_clock_region.py` lists it in
+  `editor.json` and points `send.js` at `/runtime/theme@1/send.js`; the deployer,
+  `headless-stub.js` and `runtime-paths.js` load it; `runtime_test.go` and
+  `host_clock_region_test.py` pin it.
+- **Suites.** `web/runtime/_selftest/headless-send.test.js` drives the service through a
+  fake host and hub, with no app: 31 checks, including the commit-token road the clock's
+  suites never reached. Five mutants (no cancel lock, the whole bake as the precheck, no
+  commit token, an unknown card read as clear, a held bake shipped under another name)
+  are all caught; a watchdog turns a send waiting on an answer that never comes into a
+  failure rather than a hang. The clock's suites: all 18 green, unchanged.
+- **Benched on Gold (orb-B, clock `v1.2.16+2677ad9`), 2026-11-03.** The service ran in the
+  hub's own window (real Chrome, the hub's cookie, real fetch and XHR) against the hub
+  and Gold, with bench themes made from the shelf's Skeleton under new names:
+  - a new theme landed in 60 s: precheck, upload, the hub dialing the orb, the store and
+    the reboot each reported, and the verdict said the orb was back; the modal went
+    cancellable → locked → closed;
+  - the same name with another serial was asked about in 128 ms from the precheck alone,
+    the bake held; Replace shipped it once with overwrite (no second precheck) and the
+    card's copy took the new serial;
+  - a cancel at 20 % of the crossing (upload throttled to 200 KB/s over DevTools, since
+    loopback crosses 2.7 MB before the first progress event) aborted the upload, said
+    nothing reached the orb, and left Gold's card and slot untouched.
+
+  The clock editor booted in the same window with `/runtime/theme@1/send.js` loaded and
+  no errors. Cleanup found a trap: deleting the live bench theme right after the store
+  that replaced it answered "stored" (before the reboot) wiped the slot; Skeleton was
+  re-stored, and Gold ended as it began (Skeleton the one theme, clock 0 faults).

@@ -10,4 +10,5 @@ module.exports = {
   RUNTIME,
   BAKER: path.join(RUNTIME, 'baker@1', 'orbtheme-baker.js'),
   SUPPORT: path.join(RUNTIME, 'support@1', 'support.js'),
+  SEND: path.join(RUNTIME, 'theme@1', 'send.js'),
 };

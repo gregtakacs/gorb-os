@@ -154,6 +154,7 @@ require(path.join(DIR, 'watch-engine.js'));
 // the composer's theme export needs the baker the page loads, so the UI suite exercises
 // the real themeNote path rather than the "baker not loaded" fallback
 require(require('./runtime-paths.js').BAKER);
+require(require('./runtime-paths.js').SEND);
 // D39: the Sound tab renders from the generator the region ships beside the engine
 require(path.join(DIR, 'sound-engine.js'));
 require(path.join(DIR, 'stack.js'));

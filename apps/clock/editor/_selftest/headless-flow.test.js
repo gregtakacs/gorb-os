@@ -174,6 +174,15 @@ const stepOf = (it) => it.stepNow()[0];
   const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
   const tpl = html.slice(html.indexOf('<x-dc>'), html.indexOf('</x-dc>'));
   const bound = new Set((tpl.match(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)/g) || []).map((m) => m.replace(/\{\{\s*/, '')));
+  // K6: the chrome is the OS's shell (studio@1). A value the clock hands it through
+  // studioVals (R.<name>) is still bound; the duplicate question and the true-size caption
+  // and ruler the shell builds from the services' own answers, so they ride the studio
+  // object that carries them, which the template must bind.
+  const sv = html.slice(html.indexOf('  studioVals(R) {'), html.indexOf('\n  }\n', html.indexOf('  studioVals(R) {')));
+  (sv.match(/\bR\.([A-Za-z_][A-Za-z0-9_]*)/g) || []).forEach((m) => bound.add(m.slice(2)));
+  const SHELL = { dupOpen: 'studioDup', dupNm: 'studioDup', dupNote: 'studioDup', dupStem: 'studioDup', dupStop: 'studioDup',
+    viewText: 'studioCal', showRuler: 'studioCal', rulerPx: 'studioCal', rulerTicks: 'studioCal', calText: 'studioCal' };
+  Object.keys(SHELL).forEach((k) => { if (bound.has(SHELL[k])) bound.add(k); });
   const lost = PRE.filter((k) => !RETIRED.has(k) && !bound.has(RENAMED[k] || k));
   ok(lost.length === 0, 'every binding of the pre-P5 template is still in the page', lost.join(','));
   const v = it.renderVals();
@@ -197,7 +206,20 @@ const stepOf = (it) => it.stepNow()[0];
   ok(V().viewOpts.map((o) => o.label).join() === 'Fit,1:1,True size,Magnify', 'the four view stops', V().viewOpts.map((o) => o.label).join());
   ok(V().inFrame === false && V().notHub === true && /Clock/.test(V().crumbLabel), 'standalone: no back arrow, the download in the top bar', V().crumbLabel);
   const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
-  ok(html.indexOf('Watch composer') < 0 && (html.match(/<header/g) || []).length === 1, 'one title bar: the studio\u2019s own, no second heading');
+  // K6: the shell's parts carry the clock's own values: the send modal says what the clock's
+  // send lines say in every state, and the top bar holds the clock's steps and primary action
+  [null, { canCancel: true, cancelling: false }, { canCancel: false, cancelling: false }, { canCancel: false, cancelling: true }].forEach((sd) => {
+    it.setState({ sending: sd, status: sd ? 'Sending' : '' });
+    const R = V();
+    ok(R.studioSend.open === R.sendOpen && R.studioSend.hint === R.sendHint && R.studioSend.cancelLabel === R.sendCancelLabel && R.studioSend.noCancel === R.sendNoCancel && R.studioSend.line === R.sendLine,
+       'the shell’s send modal and the clock’s send lines agree: ' + JSON.stringify(sd), R.studioSend.hint + ' | ' + R.sendHint);
+  });
+  it.setState({ sending: null, status: '' });
+  { const R = V(); ok(R.studioTop.steps === R.stepOpts && R.studioTop.primary.label === 'Download .orbtheme' && R.studioGlass.size === R.stageCv && R.studioTool.view === R.viewOpts && R.studioRender.downloads.length === 2, 'the top bar, glass, toolbar and Render panel carry the clock’s own values'); }
+  // K6: the one title bar is the shell's TopBar; the clock's page draws none of its own
+  const studioJs = fs.readFileSync(require('./runtime-paths.js').STUDIO, 'utf8');
+  ok(html.indexOf('Watch composer') < 0 && !(html.match(/<header/g) || []).length && (studioJs.match(/h\('header'/g) || []).length === 1 && html.includes('OrbStudio.TopBar'),
+     'one title bar: the studio\u2019s own, no second heading');
   ok(/<link href="ui.css" rel="stylesheet">/.test(html), 'the look is the runtime\u2019s ui@1 sheet');
   ok(!/#c9a25a|#f0d79a|#2a2316/.test(html.slice(html.indexOf('<x-dc>'), html.indexOf('</x-dc>'))), 'no gold left in the studio\u2019s chrome');
 }

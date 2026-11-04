@@ -71,7 +71,7 @@ MEMBER_STACK = "stack.js"
 
 # The OS runtime ids this editor resolves against on the hub (D43 §9.1). The hub
 # serves each at /runtime/<id>/ and refuses an editor naming one it does not carry.
-RUNTIME = ["support@1", "baker@1", "ui@1", "theme@1", "react@18.3.1", "babel@7.29.0", "fonts@1"]
+RUNTIME = ["support@1", "baker@1", "ui@1", "theme@1", "studio@1", "react@18.3.1", "babel@7.29.0", "fonts@1"]
 # The exact CDN URLs support.js compares against (its cdnScriptFor), and where the
 # hub's runtime serves each. support.js consults window.__resources first.
 CDN_LOCAL = (
@@ -218,6 +218,11 @@ def _rewrite(text):
          '<script src="/runtime/theme@1/preview.js"></script>'),
         ('<script src="measure.js"></script>',
          '<script src="/runtime/theme@1/measure.js"></script>'),
+        # theme-editor-kit-plan K6: the shell is the OS's
+        ('<script src="studio.js"></script>',
+         '<script src="/runtime/studio@1/studio.js"></script>'),
+        ('<link href="studio.css" rel="stylesheet">',
+         '<link href="/runtime/studio@1/studio.css" rel="stylesheet">'),
         # D43 §4.2: the hub's look, the runtime's ui@1 sheet
         ('<link href="ui.css" rel="stylesheet">',
          '<link href="/runtime/ui@1/ui.css" rel="stylesheet">'),

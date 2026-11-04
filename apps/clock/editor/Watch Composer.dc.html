@@ -20,26 +20,11 @@
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400..800&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400..900&display=swap" rel="stylesheet">
 <link href="ui.css" rel="stylesheet">
+<link href="studio.css" rel="stylesheet">
 <style>
-/* D43 §4.2: the studio. The editor owns the whole hub window: one top bar, layers on the
-   left, the stage, the inspector on the right. Only the two side lists and a magnified
-   stage scroll. Colours are ui@1's tokens: the hub's own. */
-html,body{height:100%;overflow:hidden}
-.wc{height:100vh;display:grid;grid-template-rows:48px minmax(0,1fr);grid-template-columns:296px minmax(0,1fr) 384px}
-.wc-top{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 12px;border-bottom:1px solid var(--line);background:var(--card);min-width:0}
-.wc-crumb{display:flex;align-items:center;gap:7px;min-width:0;flex:0 1 auto}
-.wc-crumb>span{white-space:nowrap}
-.wc-name{font:600 14px var(--sans)!important;width:180px!important;background:none!important;border-color:transparent!important;padding:3px 6px!important}
-.wc-name:hover,.wc-name:focus{border-color:var(--line)!important;background:var(--well)!important}
-.wc-steps{display:flex;margin:0 auto;align-self:stretch}
-.wc-steps>button{border:0;border-radius:0;background:none;color:var(--mut);padding:0 11px;border-bottom:2px solid transparent;height:100%}
-.wc-steps>button:hover{color:var(--fg)}
-.wc-steps>button.on{color:var(--fg);border-bottom-color:var(--focus)}
-.wc-fit{display:flex;align-items:center;gap:6px;color:var(--mut);font-size:12px;white-space:nowrap;cursor:default}
-.wc-dot{width:8px;height:8px;border-radius:50%;flex:none}
-.wc-side{background:var(--card);display:flex;flex-direction:column;min-height:0;min-width:0}
-.wc-layers{border-right:1px solid var(--line)}
-.wc-insp{border-left:1px solid var(--line)}
+/* D43 §4.2: the studio's frame, top bar, panes, stage, toolbar, modals and Render panel are the
+   OS's shell (studio@1/studio.css, theme-editor-kit-plan K6). What stays here is the clock's
+   own content inside them: the layers list, the inspector's rows, the Start sheet. */
 .wc-ph{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 4px}
 .wc-list{flex:1;overflow-y:auto;padding:0 6px 10px;min-height:0}
 .wc-band{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);padding:9px 8px 3px}
@@ -75,17 +60,6 @@ html,body{height:100%;overflow:hidden}
 .wc-switch.on{color:var(--fg)}
 .wc-switch.on i{background:var(--prim)}
 .wc-switch.on i::after{left:14px;background:#fff}
-.wc-stage{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;background:radial-gradient(circle at 50% 45%,#141a22 0,#0b0e13 70%)}
-/* the stage scrolls inside itself: a magnified dial never steps out of its pane, and
-   margin:auto centres it while it fits without pushing it off the top-left once it does */
-.wc-scroll{flex:1;min-height:0;overflow:auto;display:flex}
-.wc-glass{margin:auto;flex:none;background:#000;box-shadow:0 0 0 5px #10151c,0 0 0 6px #2a333e,0 24px 70px rgba(0,0,0,.6);overflow:hidden}
-.wc-glass canvas{display:block;touch-action:none}
-.wc-ztag{position:absolute;top:10px;left:12px;color:var(--dim);font:11px var(--mono);pointer-events:none}
-.wc-toast{position:absolute;top:10px;left:50%;transform:translateX(-50%);max-width:min(80%,640px);background:rgba(28,35,48,.94);border:1px solid var(--line);padding:5px 12px;border-radius:6px;color:var(--mut);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
-.wc-tool{display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 10px 10px;flex-wrap:wrap}
-.wc-play{width:30px;height:30px;padding:0;border-radius:50%;font-size:11px}
-.wc-tool .on.ui-ghost{border-color:var(--focus);color:var(--focus)}
 .wc-sheet{position:absolute;inset:0;background:var(--bg);display:flex;flex-direction:column;z-index:4}
 .wc-sheet-in{flex:1;overflow-y:auto;padding:24px 32px}
 .wc-sheet h2{margin:0 0 14px;font-size:17px;font-weight:600}
@@ -137,14 +111,6 @@ html,body{height:100%;overflow:hidden}
 .wc-hand-h{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .wc-grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px}
 .wc-num4{display:grid;grid-template-columns:44px minmax(0,1fr) 44px minmax(0,1fr);gap:6px;align-items:center;font-size:12px;color:var(--mut)}
-.wc-badge{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 11px;border-radius:7px;border:1px solid;margin-top:6px}
-.wc-badge span{font:11px var(--mono);color:var(--mut)}
-.wc-big{display:flex;justify-content:space-between;gap:10px;text-align:left;padding:10px 12px;white-space:normal}
-.wc-big span{font:11px var(--mono);opacity:.75}
-.wc-modal{position:fixed;inset:0;background:rgba(5,8,12,.72);display:flex;align-items:center;justify-content:center;z-index:50}
-.wc-modal>div{width:440px;max-width:92vw;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 30px 80px rgba(0,0,0,.6);padding:20px 22px}
-@media (max-width:1360px){.wc-tool .wc-lab{display:none}.ui-seg>button{padding:4px 7px}.wc-steps>button{padding:0 8px}}
-@media (max-width:1100px){.wc{grid-template-columns:200px minmax(0,1fr) 300px}.wc-name{width:120px!important}}
 </style>
 <script src="dial-renderer.js"></script>
 <script src="watch-engine.js"></script>
@@ -155,28 +121,12 @@ html,body{height:100%;overflow:hidden}
 <script src="session.js"></script>
 <script src="preview.js"></script>
 <script src="measure.js"></script>
+<script src="studio.js"></script>
 </helmet>
-<div class="wc">
-  <header class="wc-top">
-    <div class="wc-crumb">
-      <sc-if value="{{ inFrame }}" hint-placeholder-val="{{ false }}"><button class="ui-ghost" onClick="{{ closeEditor }}" title="Back to this orb's themes">←</button></sc-if>
-      <span class="ui-mut">{{ crumbLabel }}</span><span class="ui-mut">/</span>
-      <input class="wc-name" type="text" value="{{ themeNameVal }}" onChange="{{ themeNameIn }}" placeholder="{{ themeNamePh }}" title="{{ themeNameTip }}">
-    </div>
-    <nav class="wc-steps">
-      <sc-for list="{{ stepOpts }}" as="t" hint-placeholder-count="6">
-        <button class="{{ t.cls }}" onClick="{{ t.pick }}" title="{{ t.tip }}">{{ t.label }}</button>
-      </sc-for>
-    </nav>
-    <button class="ui-ghost wc-sm" onClick="{{ undo }}" title="{{ undoTip }}" style="opacity:{{ undoOp }}">↶</button>
-    <button class="ui-ghost wc-sm" onClick="{{ redo }}" title="{{ redoTip }}" style="opacity:{{ redoOp }}">↷</button>
-    <sc-if value="{{ isEdited }}" hint-placeholder-val="{{ false }}"><button class="ui-ghost wc-sm" onClick="{{ resetDesign }}" title="Put this watch back to its preset: its parts and their order, movement, case and light">{{ resetPresetLabel }}</button></sc-if>
-    <div class="wc-fit" title="{{ badgeTip }}"><span class="wc-dot" style="background:{{ fitDot }}"></span>{{ fitShort }}</div>
-    <sc-if value="{{ isHub }}" hint-placeholder-val="{{ false }}"><button class="ui-primary" onClick="{{ sendToOrb }}" title="{{ sendTip }}">Send to orb</button></sc-if>
-    <sc-if value="{{ notHub }}" hint-placeholder-val="{{ true }}"><button class="ui-primary" onClick="{{ exportTheme }}" title="{{ themeNote }}">Download .orbtheme</button></sc-if>
-  </header>
+<x-import component-from-global-scope="OrbStudio.Frame">
+  <x-import component-from-global-scope="OrbStudio.TopBar" dc-props="{{ studioTop }}"></x-import>
 
-  <aside class="wc-side wc-layers">
+  <x-import component-from-global-scope="OrbStudio.Pane" side="left">
     <div class="wc-ph"><span class="ui-label">Layers</span><span class="ui-mono" style="font-size:11px;color:{{ stackCapFg }}" title="R6: the live rows the bake ships (hands and their shadow twins, the discs' value rows, the carriage) against the dial's cap">{{ stackCapShort }}</span></div>
     <div class="wc-list">
       <sc-for list="{{ stackRows }}" as="r" hint-placeholder-count="10">
@@ -201,16 +151,12 @@ html,body{height:100%;overflow:hidden}
       <button class="wc-switch {{ mechCls }}" onClick="{{ toggleMech }}" title="Mechanical: warn when the stack could not be built as a real movement (R8). Warnings never block a move or a bake."><i></i>Mechanical</button>
       <span class="wc-warn">{{ warnCount }}</span>
     </div>
-  </aside>
+  </x-import>
 
-  <main class="wc-stage">
-    <div class="wc-scroll" ref="{{ stageRef }}" onPointerDown="{{ stageDown }}">
-      <div class="wc-glass" style="width:{{ stageCv }}px;height:{{ stageCv }}px;border-radius:{{ stageRound }}">
+  <x-import component-from-global-scope="OrbStudio.Stage">
+    <x-import component-from-global-scope="OrbStudio.Glass" dc-props="{{ studioGlass }}">
         <canvas ref="{{ mainRef }}" width="466" height="466" onPointerDown="{{ onDown }}" onPointerMove="{{ onMove }}" onPointerUp="{{ onUp }}" onPointerCancel="{{ onUp }}" style="width:{{ stageCv }}px;height:{{ stageCv }}px;cursor:{{ cursor }}"></canvas>
-      </div>
-    </div>
-    <div class="wc-ztag">{{ zoomTag }}</div>
-    <sc-if value="{{ hasStatus }}" hint-placeholder-val="{{ false }}"><div class="wc-toast" title="{{ status }}">{{ status }}</div></sc-if>
+    </x-import>
     <sc-if value="{{ isStart }}" hint-placeholder-val="{{ true }}">
       <div class="wc-sheet">
         <div class="wc-sheet-in">
@@ -255,46 +201,17 @@ html,body{height:100%;overflow:hidden}
           <button onClick="{{ next }}" title="Next bank frame">→</button>
           <button onClick="{{ toggleSlow }}" title="Play at a fifth of the pace">{{ slowLabel }}</button>
         </div>
-        <div class="ui-mono ui-mut" style="font-size:11px;text-align:center">{{ viewText }}</div>
-        <sc-if value="{{ showRuler }}" hint-placeholder-val="{{ false }}">
-          <div style="display:flex;flex-direction:column;gap:7px;align-items:center;width:100%">
-            <div style="position:relative;box-sizing:content-box;width:{{ rulerPx }}px;height:24px;border-bottom:1px solid var(--mut)">
-              <sc-for list="{{ rulerTicks }}" as="t" hint-placeholder-count="41"><div style="position:absolute;bottom:0;left:{{ t.left }}%;width:1px;background:var(--focus);opacity:{{ t.op }};height:{{ t.h }}px"></div></sc-for>
-              <sc-for list="{{ rulerTicks }}" as="t" hint-placeholder-count="41"><div style="position:absolute;bottom:15px;left:{{ t.left }}%;transform:translateX(-50%);font:9px var(--mono);color:var(--mut)">{{ t.lab }}</div></sc-for>
-            </div>
-            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:center">
-              <span class="ui-mut" title="Hold a real ruler against the bar: True size is only true once this matches">Screen ruler</span>
-              <button onClick="{{ calDown }}" title="Nudge the calibration down">−</button>
-              <input type="range" min="{{ calMin }}" max="{{ calMax }}" step="{{ calStep }}" value="{{ calVal }}" onChange="{{ setCal }}" style="width:150px">
-              <button onClick="{{ calUp }}" title="Nudge the calibration up">+</button>
-              <span class="ui-mono">{{ calText }}</span>
-            </div>
-            <div style="display:flex;gap:6px;align-items:center">
-              <span class="ui-mut">It measures</span>
-              <input type="text" onChange="{{ solve }}" placeholder="mm" title="Read the bar against a real ruler and type what it measures: this solves the calibration outright" style="width:56px;text-align:right">
-              <span class="ui-mut">mm</span>
-              <button onClick="{{ resetCal }}" title="Back to the 96 px/in standard">Reset</button>
-            </div>
-          </div>
-        </sc-if>
+        <x-import component-from-global-scope="OrbStudio.Calibrate" dc-props="{{ studioCal }}"></x-import>
         <div class="ui-mono ui-mut" style="font-size:11px;text-align:center">{{ seamText }}</div>
       </div>
     </sc-if>
-    <div class="wc-tool">
-      <button class="wc-play" onClick="{{ toggle }}" title="{{ playLabel }}">{{ playIcon }}</button>
-      <div class="ui-seg"><sc-for list="{{ timeOpts }}" as="c" hint-placeholder-count="3"><button class="{{ c.cls }}" onClick="{{ c.pick }}" title="{{ c.tip }}">{{ c.label }}</button></sc-for></div>
-      <span class="ui-mut wc-lab">View</span>
-      <div class="ui-seg"><sc-for list="{{ viewOpts }}" as="c" hint-placeholder-count="4"><button class="{{ c.cls }}" onClick="{{ c.pick }}" title="{{ c.tip }}">{{ c.label }}</button></sc-for></div>
-      <sc-if value="{{ hasZoom }}" hint-placeholder-val="{{ false }}"><div class="ui-seg"><sc-for list="{{ zoomOpts }}" as="c" hint-placeholder-count="4"><button class="{{ c.cls }}" onClick="{{ c.pick }}" title="Magnify the 466 px frame: it enlarges the artwork, it adds no detail">{{ c.label }}</button></sc-for></div></sc-if>
-      <span class="ui-mut wc-lab">Render</span>
-      <div class="ui-seg"><sc-for list="{{ renderOpts }}" as="c" hint-placeholder-count="3"><button class="{{ c.cls }}" onClick="{{ c.pick }}" title="{{ c.tip }}">{{ c.label }}</button></sc-for></div>
-      <sc-if value="{{ isCompare }}" hint-placeholder-val="{{ false }}"><input type="range" min="0" max="466" step="1" value="{{ wipeVal }}" onChange="{{ setWipe }}" title="Where the split sits: Panel on the left, Design on the right" style="width:120px"></sc-if>
+    <x-import component-from-global-scope="OrbStudio.Toolbar" dc-props="{{ studioTool }}">
       <button class="ui-ghost {{ g.cls }}" onClick="{{ pickGuide }}" title="{{ g.label }}: the alignment guide. Auto shows it while a dial or hand is selected and during a drag; press to cycle on, off, auto">⌖</button>
-      <button class="ui-ghost {{ diagCls }}" onClick="{{ toggleDiag }}" title="Diagnostics: frame stepping, the screen ruler, the seam check and the bank">⚙</button>
-    </div>
-  </main>
+      <button class="ui-ghost {{ diagCls }}" onClick="{{ toggleDiag }}" title="Diagnostics: frame stepping, the screen ruler and bank card, the seam check and the bank">⚙</button>
+    </x-import>
+  </x-import>
 
-  <aside class="wc-side wc-insp">
+  <x-import component-from-global-scope="OrbStudio.Pane" side="right">
     <div class="wc-ihead">
       <div class="ui-label">{{ inspKind }}</div>
       <div class="wc-ititle">
@@ -457,49 +374,17 @@ html,body{height:100%;overflow:hidden}
 
 
       <sc-if value="{{ isExport }}" hint-placeholder-val="{{ false }}">
-        <div class="wc-badge" title="{{ badgeTip }}" style="border-color:{{ badgeBd }};background:{{ badgeBg }}"><b style="color:{{ badgeFg }}">{{ badgeText }}</b><span>{{ badgeNote }}</span></div>
-        <sc-if value="{{ isHub }}" hint-placeholder-val="{{ false }}">
-          <button class="wc-big ui-primary" onClick="{{ sendToOrb }}" title="{{ sendTip }}"><b>Send to orb</b><span>{{ sendNote }}</span></button>
-        </sc-if>
-        <button class="wc-big" onClick="{{ exportTheme }}" title="The same .orbtheme Send to orb bakes, downloaded: the baked dial, ready for any orb's Themes tab, with its design inside so the editor can open it again."><b>Download .orbtheme</b><span>{{ themeNote }}</span></button>
-        <button class="wc-big" onClick="{{ exportDesign }}" title="The watch as the editor holds it: every part, the light, case and movement, the sounds and every image you uploaded. The same design every .orbtheme carries, without the baked dial. Open it here in any browser."><b>Download design file</b><span>{{ designFileNote }}</span></button>
-        <div class="wc-hint ui-mono" style="font-size:11px;color:var(--warn)">{{ artNote }}</div>
+        <x-import component-from-global-scope="OrbStudio.RenderPanel" dc-props="{{ studioRender }}"></x-import>
       </sc-if>
     </div>
     <sc-if value="{{ hasDel }}" hint-placeholder-val="{{ false }}">
       <div class="wc-ifoot"><button class="ui-danger" onClick="{{ delSel }}">Remove {{ delLabel }}</button></div>
     </sc-if>
-  </aside>
+  </x-import>
 
-  <sc-if value="{{ sendOpen }}" hint-placeholder-val="{{ false }}">
-    <div class="wc-modal" style="z-index:60">
-      <div>
-        <div style="font-size:15px;font-weight:600">Sending to the orb</div>
-        <div style="font-size:13px;line-height:1.6;color:var(--mut);margin-top:10px">{{ sendLine }}</div>
-        <div class="wc-hint" style="margin-top:10px">{{ sendHint }}</div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">
-          <button onClick="{{ sendCancel }}" disabled="{{ sendNoCancel }}">{{ sendCancelLabel }}</button>
-        </div>
-      </div>
-    </div>
-  </sc-if>
-  <sc-if value="{{ dupOpen }}" hint-placeholder-val="{{ false }}">
-    <div class="wc-modal" onClick="{{ dupCancel }}">
-      <div onClick="{{ dupStop }}">
-        <div style="font-size:15px;font-weight:600">That name is already on the card</div>
-        <div style="font-size:13px;line-height:1.6;color:var(--mut);margin-top:10px">
-          A different dial already lives under <span class="ui-mono" style="color:var(--fg)">{{ dupNm }}</span>
-          <span class="ui-mono"> ({{ dupStem }})</span>. {{ dupNote }}
-        </div>
-        <div class="wc-hint" style="margin-top:10px">Replace overwrites that dial with this bake: these exact bytes, no re-bake.</div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">
-          <button onClick="{{ dupCancel }}">Cancel</button>
-          <button class="ui-primary" onClick="{{ dupReplace }}">Replace on the card</button>
-        </div>
-      </div>
-    </div>
-  </sc-if>
-</div>
+  <x-import component-from-global-scope="OrbStudio.SendModal" dc-props="{{ studioSend }}"></x-import>
+  <x-import component-from-global-scope="OrbStudio.DupModal" dc-props="{{ studioDup }}"></x-import>
+</x-import>
 </x-dc>
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
@@ -1107,6 +992,14 @@ class Component extends DCLogic {
     this.setCal(c);
     this.setState({ status: 'Ruler matched at ' + (+mm) + ' mm · true size now draws the dial ' + (S.PANEL.inch * 25.4).toFixed(1) + ' mm across on this screen' });
   }
+  // the bank card instrument: how wide the drawn outline really measures solves the factor
+  solveCard(mm) {
+    if (mm == null || String(mm).trim() === '') return;
+    const S = window.OrbTheme.screen, c = S.fromCard(this.cal(), mm);
+    if (c == null) { this.setState({ status: 'Type how wide the card outline really measures, in mm — between 20 and 400' }); return; }
+    this.setCal(c);
+    this.setState({ status: 'Card matched at ' + (+mm) + ' mm · true size now draws the dial ' + (S.PANEL.inch * 25.4).toFixed(1) + ' mm across on this screen' });
+  }
   viewK() { const s = this.state; return window.OrbTheme.viewK({ view: s.view, zoom: s.zoom, fitPx: s.fitPx, cal: this.cal() }); }
   setView(v) { this.setState((st) => ({ view: v, ...(v === 'zoom' && !(+st.zoom >= 1) ? { zoom: 2 } : {}) })); }
   setZoom(z) { const k = Math.min(4, Math.max(1, +z || 1)); this.setState({ view: 'zoom', zoom: k }); }
@@ -1515,25 +1408,17 @@ class Component extends DCLogic {
     if (this.hubSend3()) { try { await this.hubOrbIp(); } catch (e) {} }
     this.buildMovement(); this.startTimer(); this.forceUpdate();
   }
-  componentWillUnmount() { if (this._ro) this._ro.disconnect(); if (this._tick) this._tick.stop(); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
+  componentWillUnmount() { if (this._tick) this._tick.stop(); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
   ensureFont(k) {
     this._fl = this._fl || {}; if (!k || this._fl[k]) return; this._fl[k] = 1;
     const n = WatchEngine.FONT_NAME(k); if (!n) return;
     Promise.race([Promise.all(['700 31px', '500 21px', 'italic 600 30px', '600 40px'].map((f) => document.fonts.load(f + ' "' + n + '"'))), new Promise((r) => setTimeout(r, 5000))])
       .catch(() => {}).then(() => { this.faces = {}; this._fk = null; this._tk = null; this.forceUpdate(); });
   }
-  /* D43 §4.2: Fit is the stage pane's own size, less a margin for the case ring. */
-  measureStage() {
-    const el = this.stageRef && this.stageRef.current;
-    if (!el || typeof el.getBoundingClientRect !== 'function') return;
-    const r = el.getBoundingClientRect(), px = Math.max(160, Math.floor(Math.min(r.width, r.height) - 40));
-    if (Math.abs(px - (+this.state.fitPx || 0)) >= 2) this.setState({ fitPx: px });
-  }
   componentDidUpdate() {
     this.trackHistory();
-    if (!this._ro && this.stageRef && this.stageRef.current && typeof ResizeObserver === 'function') {
-      this._ro = new ResizeObserver(() => this.measureStage()); this._ro.observe(this.stageRef.current); this.measureStage();
-    }
+    // D43 §4.2: Fit is the stage pane's own size, less a margin for the case ring; the shell's
+    // glass measures it after every render and reports it (studioGlass.onFit, K6)
     const vz = this.state.view + ':' + this.state.zoom + ':' + this.state.fitPx, sc = this.stageRef && this.stageRef.current;
     if (vz !== this._vz && sc && typeof sc.scrollTo === 'function') {
       this._vz = vz; const cx = (sc.scrollWidth - sc.clientWidth) / 2, cy = (sc.scrollHeight - sc.clientHeight) / 2;
@@ -3793,7 +3678,44 @@ class Component extends DCLogic {
     out.delLabel = selComp ? ((E.COMP_TYPES && E.COMP_TYPES[selComp.type]) || 'part').toLowerCase() : selHand ? 'hand' : '';
     out.delSel = () => { if (selComp) this.delComp(selComp.id); else if (selHand) this.delComp(s.sel); };
     out.fields = fields.map((f) => (f && f.isRow ? Object.assign({}, f, { rowCls: f.isRange ? '' : 'wide' }) : f));
-    return Object.assign(v, out);
+    const R = Object.assign(v, out);
+    return Object.assign(R, this.studioVals(R));
+  }
+  /* theme-editor-kit-plan K6: the shell's parts (studio@1) are the OS's; what the clock hands
+   * them is these props, made from the values above, so every value the page showed before is
+   * still the clock's and only the markup that shows it moved. */
+  studioVals(R) {
+    const T = window.OrbStudio, O = window.OrbTheme, s = this.state;
+    if (!T || !O) return {};
+    return {
+      studioTop: {
+        back: R.inFrame ? R.closeEditor : null, backTip: 'Back to this orb\u2019s themes', crumb: R.crumbLabel,
+        name: { value: R.themeNameVal, placeholder: R.themeNamePh, title: R.themeNameTip, onChange: R.themeNameIn },
+        steps: R.stepOpts,
+        undo: { on: R.undo, tip: R.undoTip, op: R.undoOp }, redo: { on: R.redo, tip: R.redoTip, op: R.redoOp },
+        extra: R.isEdited ? [{ label: R.resetPresetLabel, title: 'Put this watch back to its preset: its parts and their order, movement, case and light', on: R.resetDesign }] : [],
+        fit: { dot: R.fitDot, text: R.fitShort, tip: R.badgeTip },
+        primary: R.isHub ? { label: 'Send to orb', title: R.sendTip, on: R.sendToOrb } : { label: 'Download .orbtheme', title: R.themeNote, on: R.exportTheme },
+      },
+      studioGlass: { size: R.stageCv, round: R.stageRound, scrollRef: R.stageRef, onPointerDown: R.stageDown, zoomTag: R.zoomTag, status: R.hasStatus ? R.status : '',
+        onFit: (px) => { if (Math.abs(px - (+this.state.fitPx || 0)) >= 2) this.setState({ fitPx: px }); } },
+      studioTool: { play: { icon: R.playIcon, label: R.playLabel, on: R.toggle }, time: R.timeOpts, view: R.viewOpts, zoom: R.hasZoom ? R.zoomOpts : null,
+        render: R.renderOpts, wipe: R.isCompare ? { value: R.wipeVal, on: R.setWipe } : null },
+      studioCal: T.calProps(O.view({ view: s.view, zoom: s.zoom, fitPx: s.fitPx, cal: this.cal(), calibrated: this.calibrated() }),
+        { min: R.calMin, max: R.calMax, step: R.calStep, value: R.calVal, onChange: R.setCal, up: R.calUp, down: R.calDown, solve: R.solve, reset: R.resetCal,
+          solveCard: (e) => this.solveCard(e.target.value) }),
+      studioSend: T.sendProps(s.sending, s.status, R.sendCancel),
+      studioDup: T.dupProps(s.dup, R.dupReplace, R.dupCancel),
+      studioRender: {
+        badge: { text: R.badgeText, note: R.badgeNote, tip: R.badgeTip, color: R.badgeFg, border: R.badgeBd, background: R.badgeBg },
+        send: R.isHub ? { note: R.sendNote, tip: R.sendTip, on: R.sendToOrb } : null,
+        downloads: [
+          { label: 'Download .orbtheme', note: R.themeNote, on: R.exportTheme, title: 'The same .orbtheme Send to orb bakes, downloaded: the baked dial, ready for any orb\u2019s Themes tab, with its design inside so the editor can open it again.' },
+          { label: 'Download design file', note: R.designFileNote, on: R.exportDesign, title: 'The watch as the editor holds it: every part, the light, case and movement, the sounds and every image you uploaded. The same design every .orbtheme carries, without the baked dial. Open it here in any browser.' },
+        ],
+        note: R.artNote,
+      },
+    };
   }
   renderVals0() {
     /* HB.fps is the BANK rate: the sampler's own tempo, and what a banked

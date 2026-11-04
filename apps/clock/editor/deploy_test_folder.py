@@ -34,7 +34,9 @@ APP_FILES = [(os.path.join(HERE, f), f) for f in
              (os.path.join(RUNTIME, "theme@1", "send.js"), "send.js"),
              (os.path.join(RUNTIME, "theme@1", "session.js"), "session.js"),
              (os.path.join(RUNTIME, "theme@1", "preview.js"), "preview.js"),
-             (os.path.join(RUNTIME, "theme@1", "measure.js"), "measure.js")]
+             (os.path.join(RUNTIME, "theme@1", "measure.js"), "measure.js"),
+             (os.path.join(RUNTIME, "studio@1", "studio.js"), "studio.js"),
+             (os.path.join(RUNTIME, "studio@1", "studio.css"), "studio.css")]
 SELFTEST_DIR = "_selftest"
 
 

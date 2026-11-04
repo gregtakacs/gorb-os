@@ -605,6 +605,14 @@ class Component extends DCLogic {
     this.setCal(c);
     this.setState({ status: 'Ruler matched at ' + (+mm) + ' mm · true size now draws the dial ' + (S.PANEL.inch * 25.4).toFixed(1) + ' mm across on this screen' });
   }
+  // the bank card instrument: how wide the drawn outline really measures solves the factor
+  solveCard(mm) {
+    if (mm == null || String(mm).trim() === '') return;
+    const S = window.OrbTheme.screen, c = S.fromCard(this.cal(), mm);
+    if (c == null) { this.setState({ status: 'Type how wide the card outline really measures, in mm — between 20 and 400' }); return; }
+    this.setCal(c);
+    this.setState({ status: 'Card matched at ' + (+mm) + ' mm · true size now draws the dial ' + (S.PANEL.inch * 25.4).toFixed(1) + ' mm across on this screen' });
+  }
   viewK() { const s = this.state; return window.OrbTheme.viewK({ view: s.view, zoom: s.zoom, fitPx: s.fitPx, cal: this.cal() }); }
   setView(v) { this.setState((st) => ({ view: v, ...(v === 'zoom' && !(+st.zoom >= 1) ? { zoom: 2 } : {}) })); }
   setZoom(z) { const k = Math.min(4, Math.max(1, +z || 1)); this.setState({ view: 'zoom', zoom: k }); }
@@ -1013,25 +1021,17 @@ class Component extends DCLogic {
     if (this.hubSend3()) { try { await this.hubOrbIp(); } catch (e) {} }
     this.buildMovement(); this.startTimer(); this.forceUpdate();
   }
-  componentWillUnmount() { if (this._ro) this._ro.disconnect(); if (this._tick) this._tick.stop(); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
+  componentWillUnmount() { if (this._tick) this._tick.stop(); if (this._rmTimer) clearTimeout(this._rmTimer); if (this._onKey) window.removeEventListener('keydown', this._onKey); if (this._vis) document.removeEventListener('visibilitychange', this._vis); this.buildId = -1; }
   ensureFont(k) {
     this._fl = this._fl || {}; if (!k || this._fl[k]) return; this._fl[k] = 1;
     const n = WatchEngine.FONT_NAME(k); if (!n) return;
     Promise.race([Promise.all(['700 31px', '500 21px', 'italic 600 30px', '600 40px'].map((f) => document.fonts.load(f + ' "' + n + '"'))), new Promise((r) => setTimeout(r, 5000))])
       .catch(() => {}).then(() => { this.faces = {}; this._fk = null; this._tk = null; this.forceUpdate(); });
   }
-  /* D43 §4.2: Fit is the stage pane's own size, less a margin for the case ring. */
-  measureStage() {
-    const el = this.stageRef && this.stageRef.current;
-    if (!el || typeof el.getBoundingClientRect !== 'function') return;
-    const r = el.getBoundingClientRect(), px = Math.max(160, Math.floor(Math.min(r.width, r.height) - 40));
-    if (Math.abs(px - (+this.state.fitPx || 0)) >= 2) this.setState({ fitPx: px });
-  }
   componentDidUpdate() {
     this.trackHistory();
-    if (!this._ro && this.stageRef && this.stageRef.current && typeof ResizeObserver === 'function') {
-      this._ro = new ResizeObserver(() => this.measureStage()); this._ro.observe(this.stageRef.current); this.measureStage();
-    }
+    // D43 §4.2: Fit is the stage pane's own size, less a margin for the case ring; the shell's
+    // glass measures it after every render and reports it (studioGlass.onFit, K6)
     const vz = this.state.view + ':' + this.state.zoom + ':' + this.state.fitPx, sc = this.stageRef && this.stageRef.current;
     if (vz !== this._vz && sc && typeof sc.scrollTo === 'function') {
       this._vz = vz; const cx = (sc.scrollWidth - sc.clientWidth) / 2, cy = (sc.scrollHeight - sc.clientHeight) / 2;
@@ -3291,7 +3291,44 @@ class Component extends DCLogic {
     out.delLabel = selComp ? ((E.COMP_TYPES && E.COMP_TYPES[selComp.type]) || 'part').toLowerCase() : selHand ? 'hand' : '';
     out.delSel = () => { if (selComp) this.delComp(selComp.id); else if (selHand) this.delComp(s.sel); };
     out.fields = fields.map((f) => (f && f.isRow ? Object.assign({}, f, { rowCls: f.isRange ? '' : 'wide' }) : f));
-    return Object.assign(v, out);
+    const R = Object.assign(v, out);
+    return Object.assign(R, this.studioVals(R));
+  }
+  /* theme-editor-kit-plan K6: the shell's parts (studio@1) are the OS's; what the clock hands
+   * them is these props, made from the values above, so every value the page showed before is
+   * still the clock's and only the markup that shows it moved. */
+  studioVals(R) {
+    const T = window.OrbStudio, O = window.OrbTheme, s = this.state;
+    if (!T || !O) return {};
+    return {
+      studioTop: {
+        back: R.inFrame ? R.closeEditor : null, backTip: 'Back to this orb\u2019s themes', crumb: R.crumbLabel,
+        name: { value: R.themeNameVal, placeholder: R.themeNamePh, title: R.themeNameTip, onChange: R.themeNameIn },
+        steps: R.stepOpts,
+        undo: { on: R.undo, tip: R.undoTip, op: R.undoOp }, redo: { on: R.redo, tip: R.redoTip, op: R.redoOp },
+        extra: R.isEdited ? [{ label: R.resetPresetLabel, title: 'Put this watch back to its preset: its parts and their order, movement, case and light', on: R.resetDesign }] : [],
+        fit: { dot: R.fitDot, text: R.fitShort, tip: R.badgeTip },
+        primary: R.isHub ? { label: 'Send to orb', title: R.sendTip, on: R.sendToOrb } : { label: 'Download .orbtheme', title: R.themeNote, on: R.exportTheme },
+      },
+      studioGlass: { size: R.stageCv, round: R.stageRound, scrollRef: R.stageRef, onPointerDown: R.stageDown, zoomTag: R.zoomTag, status: R.hasStatus ? R.status : '',
+        onFit: (px) => { if (Math.abs(px - (+this.state.fitPx || 0)) >= 2) this.setState({ fitPx: px }); } },
+      studioTool: { play: { icon: R.playIcon, label: R.playLabel, on: R.toggle }, time: R.timeOpts, view: R.viewOpts, zoom: R.hasZoom ? R.zoomOpts : null,
+        render: R.renderOpts, wipe: R.isCompare ? { value: R.wipeVal, on: R.setWipe } : null },
+      studioCal: T.calProps(O.view({ view: s.view, zoom: s.zoom, fitPx: s.fitPx, cal: this.cal(), calibrated: this.calibrated() }),
+        { min: R.calMin, max: R.calMax, step: R.calStep, value: R.calVal, onChange: R.setCal, up: R.calUp, down: R.calDown, solve: R.solve, reset: R.resetCal,
+          solveCard: (e) => this.solveCard(e.target.value) }),
+      studioSend: T.sendProps(s.sending, s.status, R.sendCancel),
+      studioDup: T.dupProps(s.dup, R.dupReplace, R.dupCancel),
+      studioRender: {
+        badge: { text: R.badgeText, note: R.badgeNote, tip: R.badgeTip, color: R.badgeFg, border: R.badgeBd, background: R.badgeBg },
+        send: R.isHub ? { note: R.sendNote, tip: R.sendTip, on: R.sendToOrb } : null,
+        downloads: [
+          { label: 'Download .orbtheme', note: R.themeNote, on: R.exportTheme, title: 'The same .orbtheme Send to orb bakes, downloaded: the baked dial, ready for any orb\u2019s Themes tab, with its design inside so the editor can open it again.' },
+          { label: 'Download design file', note: R.designFileNote, on: R.exportDesign, title: 'The watch as the editor holds it: every part, the light, case and movement, the sounds and every image you uploaded. The same design every .orbtheme carries, without the baked dial. Open it here in any browser.' },
+        ],
+        note: R.artNote,
+      },
+    };
   }
   renderVals0() {
     /* HB.fps is the BANK rate: the sampler's own tempo, and what a banked

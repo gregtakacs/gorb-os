@@ -1,0 +1,55 @@
+/* studio@1 — the editor shell's layout (theme-editor-kit-plan K6). The studio owns the whole
+   hub window: one top bar, a list on the left, the stage, the inspector on the right. Only
+   the two side lists and a magnified stage scroll. Colours are ui@1's tokens: the hub's own.
+   The classes were the clock editor's (D43 §4.2) before K6 moved them here. */
+html,body{height:100%;overflow:hidden}
+.st{height:100vh;display:grid;grid-template-rows:48px minmax(0,1fr);grid-template-columns:296px minmax(0,1fr) 384px}
+.st-top{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 12px;border-bottom:1px solid var(--line);background:var(--card);min-width:0}
+.st-crumb{display:flex;align-items:center;gap:7px;min-width:0;flex:0 1 auto}
+.st-crumb>span{white-space:nowrap}
+.st-name{font:600 14px var(--sans)!important;width:180px!important;background:none!important;border-color:transparent!important;padding:3px 6px!important}
+.st-name:hover,.st-name:focus{border-color:var(--line)!important;background:var(--well)!important}
+.st-steps{display:flex;margin:0 auto;align-self:stretch}
+.st-steps>button{border:0;border-radius:0;background:none;color:var(--mut);padding:0 11px;border-bottom:2px solid transparent;height:100%}
+.st-steps>button:hover{color:var(--fg)}
+.st-steps>button.on{color:var(--fg);border-bottom-color:var(--focus)}
+.st-fit{display:flex;align-items:center;gap:6px;color:var(--mut);font-size:12px;white-space:nowrap;cursor:default}
+.st-dot{width:8px;height:8px;border-radius:50%;flex:none}
+.st-sm{padding:3px 8px;font-size:12px}
+.st-side{background:var(--card);display:flex;flex-direction:column;min-height:0;min-width:0}
+.st-left{border-right:1px solid var(--line)}
+.st-right{border-left:1px solid var(--line)}
+.st-stage{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;background:radial-gradient(circle at 50% 45%,#141a22 0,#0b0e13 70%)}
+/* the stage scrolls inside itself: a magnified face never steps out of its pane, and
+   margin:auto centres it while it fits without pushing it off the top-left once it does */
+.st-scroll{flex:1;min-height:0;overflow:auto;display:flex}
+.st-glass{margin:auto;flex:none;background:#000;box-shadow:0 0 0 5px #10151c,0 0 0 6px #2a333e,0 24px 70px rgba(0,0,0,.6);overflow:hidden}
+.st-glass canvas{display:block;touch-action:none}
+.st-ztag{position:absolute;top:10px;left:12px;color:var(--dim);font:11px var(--mono);pointer-events:none}
+.st-toast{position:absolute;top:10px;left:50%;transform:translateX(-50%);max-width:min(80%,640px);background:rgba(28,35,48,.94);border:1px solid var(--line);padding:5px 12px;border-radius:6px;color:var(--mut);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.st-tool{display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 10px 10px;flex-wrap:wrap}
+.st-play{width:30px;height:30px;padding:0;border-radius:50%;font-size:11px}
+.st-tool .on.ui-ghost{border-color:var(--focus);color:var(--focus)}
+/* true size's instruments */
+.st-cal{display:flex;flex-direction:column;gap:7px;align-items:center;width:100%}
+.st-cap{font-size:11px;text-align:center}
+.st-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:center}
+.st-ruler{position:relative;box-sizing:content-box;height:24px;border-bottom:1px solid var(--mut)}
+.st-tick{position:absolute;bottom:0;width:1px;background:var(--focus)}
+.st-tlab{position:absolute;bottom:15px;transform:translateX(-50%);font:9px var(--mono);color:var(--mut)}
+.st-card{border:1.5px dashed var(--mut);display:grid;place-items:center;color:var(--dim);font-size:11px;box-sizing:border-box;flex:none}
+/* the Render panel */
+.st-badge{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 11px;border-radius:7px;border:1px solid;margin-top:6px}
+.st-badge span{font:11px var(--mono);color:var(--mut)}
+.st-big{display:flex;justify-content:space-between;gap:10px;text-align:left;padding:10px 12px;white-space:normal}
+.st-big span{font:11px var(--mono);opacity:.75}
+.st-hint{font-size:12px;color:var(--mut);margin-top:10px}
+.st-warn{font-size:11px;color:var(--warn)}
+/* modals */
+.st-modal{position:fixed;inset:0;background:rgba(5,8,12,.72);display:flex;align-items:center;justify-content:center;z-index:50}
+.st-modal>div{width:440px;max-width:92vw;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 30px 80px rgba(0,0,0,.6);padding:20px 22px}
+.st-mtitle{font-size:15px;font-weight:600}
+.st-mbody{font-size:13px;line-height:1.6;color:var(--mut);margin-top:10px}
+.st-mfoot{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
+@media (max-width:1360px){.st-tool .st-lab{display:none}.ui-seg>button{padding:4px 7px}.st-steps>button{padding:0 8px}}
+@media (max-width:1100px){.st{grid-template-columns:200px minmax(0,1fr) 300px}.st-name{width:120px!important}}

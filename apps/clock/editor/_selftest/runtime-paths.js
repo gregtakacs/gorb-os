@@ -14,4 +14,5 @@ module.exports = {
   SESSION: path.join(RUNTIME, 'theme@1', 'session.js'),
   PREVIEW: path.join(RUNTIME, 'theme@1', 'preview.js'),
   MEASURE: path.join(RUNTIME, 'theme@1', 'measure.js'),
+  STUDIO: path.join(RUNTIME, 'studio@1', 'studio.js'),
 };

@@ -120,7 +120,7 @@ send to Gold where the slice touches the glass. A suite moves with the code it t
 | **K3** | `theme@1/preview`, including true size | the clock's stage, Panel and Compare equal before and after (`headless-panel`, a screenshot pair); true size matches `review.html`'s calibration — **built and benched on Gold 2026-11-03** (§7) |
 | **K4** | `theme@1/measure`, the pace hook | `headless-pace` and `headless-estimate` green with `_devPace` as the clock's override; an app with no hook gets the estimate — **built 2026-11-04**, benched in real Chrome (§7) |
 | **K5** | a generic stage bake in `baker@1` (a plate, rows, sprites, row pools, scalars) for any app the stage draws; `bakeClock3` becomes the clock's translation on top of it | the clock's bundles are byte-identical before and after (`headless-bundle3`). Flights' first theme is baked without an editor (§0.1 ruling 5), so this does not wait on flights; its format is checked against flights' when that first theme reads on a device — **built 2026-11-04** (§7) |
-| **K6** | `studio@1`: frame, title and step bar, status, send modal, the Render step, slots | the clock's P5 checklist (nothing lost), no page scroll at 1280×720 and 1920×1080 inside the hub |
+| **K6** | `studio@1`: frame, title and step bar, status, send modal, the Render step, slots | the clock's P5 checklist (nothing lost), no page scroll at 1280×720 and 1920×1080 inside the hub — **built and benched on Gold 2026-11-04** (§7) |
 | **K7** | `studio@1`: the layers panel and the field builders, driven by what the app declares | the clock's layers and inspector behave as before (`headless-stack-ui`, `headless-forms`, `headless-ui`); the clock's own rules (`stack.js`) stay the clock's |
 | **H1** | the Themes page per app: a sub-tab for each theme-aware app, with its themes and a link to its editor, all hub code (§0.1 ruling 4) | Go and UI suites green; on Gold, the clock's tab lists the card's themes and opens the editor; an app with no themes or no editor gets a tab that says so |
 | **K8** | the flights editor on the kit (flights step 3, in its own clone) | no reference to `apps/clock/`; a line count recorded here against the Watch Composer's |
@@ -354,3 +354,60 @@ runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
   without an editor (§0.1 ruling 5, corrected 2026-11-04), so its bake is where a device
   first reads a non-clock section, and `stage3` (or `orbbundle.write_bundle`, its Python
   twin) is what that bake can be built on.
+
+### K6 — `studio@1`, the shell (2026-11-04)
+
+- **How the shell reaches an app.** The dc runtime renders a React component found on
+  `window` from `<x-import component-from-global-scope="…">`, passing the tag's
+  attributes as props (`dc-props="{{ obj }}"` spreads an object) and the tag's template
+  children as `children`, bindings and all. So the shell is OS code, served and versioned
+  like the services, not markup each app copies: `web/runtime/studio@1/studio.js` (React
+  components on `window.OrbStudio`, plain `createElement`, no JSX) and `studio.css` (the
+  layout, `st-*` classes in `ui@1`'s tokens).
+- **What it owns.** `Frame` (the grid), `TopBar` (back, crumb, name, steps, undo and redo,
+  the app's extra buttons, the fit dot, the primary action), `Pane` (left and right),
+  `Stage`, `Glass` (the scroll and the round glass around the app's canvas, the zoom tag,
+  the status toast, and Fit: it measures its own pane after every render and reports
+  `onFit(px)`, the smaller side less a 40 px ring margin, never under 160), `Toolbar`
+  (play, time, view, zoom while magnifying, render, the split's wipe, then the app's own
+  tools), `Calibrate` (the view's caption, the ruler, its slider and reading, and the
+  bank-card outline with its reading, the instrument K3 built and nothing showed), the
+  send and duplicate modals, and `RenderPanel` (the fit badge, Send, the downloads, a
+  warning line). Builders turn the services' answers into props: `sendProps` (the
+  sender's state, in the clock's own words), `dupProps`, `fitProps`/`badgeProps`
+  (`OrbTheme.fit`), `calProps` (`OrbTheme.view`), `fitOf`.
+- **The clock.** Its template places the shell's parts and fills the slots with its own
+  content: the layers list, the inspector, the Start sheet, the diagnostics' frame
+  stepping, the guide and diagnostics buttons. Its `renderVals` keeps every value it had
+  and adds `studioVals(R)`: the props each part gets, built from those values. Its frame
+  CSS, `measureStage` and its `ResizeObserver` are gone; it adds `solveCard`. The values
+  the clock still computes for its old send lines are held to the modal's in every send
+  state by `headless-flow`. `clock.orbapp`: 933,496 B → 925,914 B.
+- **Fit, a fix found on the bench.** The clock measured Fit once and then relied on a
+  `ResizeObserver`. With the frame's CSS inline that first measure saw the finished
+  layout; with `studio.css` a separate sheet, it can run before the sheet lands, and in a
+  window Chrome is not painting (an occluded hub window) the observer never fires, so the
+  glass stayed at 426 px. `Glass` re-measuring after every render fixes both, and it now
+  measures the finished pane: at 1280×720 the toolbar wraps to two rows (87 px), leaving
+  585 px, so Fit is 544 px, where the old clock's one early measure had 552.
+- **Suites.** `web/runtime/_selftest/headless-studio.test.js`, 42 checks, renders each part
+  through a recording stand-in for React and holds the builders to the services' answers:
+  the top bar's order, the glass, its Fit report and threshold, the toolbar, both
+  instruments in True size and none outside it, both modals in every state, and the
+  Render panel. Nine mutants are caught. `headless-flow`'s two template checks follow the
+  move: a value handed to the shell through `studioVals` counts as bound, the shell-built
+  ones ride their `studio*` object, and the one `<header>` is the shell's `TopBar`.
+- **Benched on Gold, 2026-11-04,** in the hub's window, against the pre-K6 clock measured the
+  same way first. At 1280×720 and 1920×1080 the top bar, both panes and the stage sit at
+  the same pixels, the toolbar is the same height, the same steps, top-bar buttons and 13
+  stage buttons are there, nothing scrolls and nothing throws; the screenshots match. Fit
+  differs only as above. True size drew 227 px at the browser's 1.35, the ruler 204 px with
+  41 ticks and the card 437×275 px; a card reading of 64.2 mm set 1.8 and redrew 302 px
+  (the calibration was put back). The Render step shows the badge, Send and both
+  downloads. In a 720 px window the diagnostics panel scrolls to reach the card's
+  reading: a card at true size is that big.
+- **A bench trap, written down.** An app installed straight to an orb (not through the
+  hub) leaves the hub's editor memo serving the old region for up to ten minutes; the
+  hub's own install and a rescan clear it (`dropThemeCache`). The first K6 measurement
+  read the cached pre-K6 editor and looked identical for that reason; it was re-run after
+  a rescan.

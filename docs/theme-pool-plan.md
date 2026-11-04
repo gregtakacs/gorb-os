@@ -42,23 +42,32 @@ is done, so gorb-os-2 (the theme editor kit, the per-app Themes page) can merge 
 
 ### 2.1 The table
 
-Sector 0 of `assets` and sector 1 hold two copies of the **pool table**, A and B, each
-4 KB: a head (magic, format, serial, entry count, CRC) and up to **8 entries**, one per
-theme-aware app (B5's app cap). The live table is the valid copy with the higher serial;
-a write goes to the other copy, so a table write is atomic. Each entry:
+The **last two sectors** of `assets` (0x7FE000 and 0x7FF000) hold two copies of the
+**pool table**, A and B, each 4 KB: a head (magic, format, serial, entry count, CRC) and
+up to **8 entries**, one per theme-aware app (B5's app cap). The live table is the valid
+copy with the higher serial; a write goes to the other copy, so a table write is atomic.
+At the end, not the start, so the one slot's layout (index at 0x1000, banks at 0x10000)
+is already a pool entry and the carry moves no bytes (§2.3). Each entry:
 
 | field | meaning |
 |---|---|
 | slug | the app the theme belongs to (16 B, the section's own slug) |
 | name | the theme's name (56 B, as the slot header carries it) |
 | off, size | the entry's extent in the pool: its index region, then its banks |
+| base | the offset the entry stood at when its index was rebased |
 | geom_size, geom_crc | the index region and its CRC (post-rebase) |
 | art_off, art_size, art_crc | the banks, entry-relative, and the read-back CRC |
 | file_crc, serial | the card file's identity, the store counter |
 | state | LIVE, or MOVING while a compaction rewrites it |
 
-Entries are kept **in pool order, contiguous from 0x10000** (64 KB aligned, so a map
-wastes no MMU page). The pool's free space is always one run at the end.
+Entries are kept **in pool order, contiguous from 0x1000**, each a whole number of
+4 KB sectors (the erase unit). The pool's free space is always one run at the end, up to
+the tables. Sector 0 is retired: it held the one slot's header, and the carry erases it,
+so an older firmware finds no slot and draws its base face rather than misreading a pool.
+
+**Moving an entry rewrites nothing in it.** Its index records bank offsets as they were
+at rebase, when the entry stood at `base`; where the entry stands now is `off`, so a bank
+is at `record - base + off`. A compaction is a byte copy, and every CRC stays true.
 
 ### 2.2 Store, remove, compact
 
@@ -69,25 +78,29 @@ wastes no MMU page). The pool's free space is always one run at the end.
   downward never erases a sector it has not copied yet.
 - **Power loss**: before an entry moves, the table marks it MOVING; after its last
   sector is copied and read back, the table records its new offset as LIVE. A cut leaves
-  at most one entry MOVING, which boot treats as absent: that app falls to its base face
-  and its theme is still on the card to store again. Every other app's theme survives.
-  The torn-store promise D30 already gives the clock, kept per app.
+  at most one entry MOVING. Boot's repair reads that entry back where the table says it
+  was: a move to a place clear of itself never touched those bytes, so the entry is LIVE
+  again and the compaction moves it anew. Only a move by less than the entry's own size
+  overwrites its first sectors; then the entry is dropped, that app falls to its base
+  face, and its theme is still on the card to store again. The torn-store promise D30
+  already gives the clock, kept per app, and narrower: most cuts lose nothing.
 - **Reboot after a store**, as today: the map, the projections and the stage are built
   at boot from the table.
 
 ### 2.3 Boot
 
-Read the live table; map the packed run once (8 MB is 128 of the 234 MMU pages); for
-each LIVE entry parse its index, check its section's slug is the entry's, and project it
-into that app's own geometry (rows, comps, rects, sounds in PSRAM). An entry that fails
-is dropped, its app on its base face. The art base an app's sprites read from is the map
-base plus the entry's offset.
+Read the live table; map the packed run once, from offset 0 (8 MB is 128 of the 234 MMU
+pages); for each LIVE entry parse its index, check its section's slug is the entry's,
+and project it into that app's own geometry (rows, comps, rects, sounds in PSRAM). An
+entry that fails is dropped, its app on its base face. A bank's address is the map base
+plus `record - base + off`.
 
-**Migration from the one slot.** A board whose sector 0 holds the old 128 B slot header
-gets one carry at boot: the header becomes entry 0 (slug from its section, off 0, its
-index at 0x1000 and banks at 0x10000 already in place), written as table A. Sector 0 is
-the old header, so the carry rewrites it; a cut there leaves no table and the base face,
-with the theme on the card.
+**Migration from the one slot.** A board with no valid table and the old 128 B slot
+header in sector 0 gets one carry at boot: the header becomes entry 0 (slug from its
+section, off and base 0x1000: the old index is at 0x1000 and its banks were rebased
+slot-relative, which is pool-relative with the slot at 0), written as table A; then
+sector 0 is erased. No pixel moves. A cut before the table lands leaves the old slot to
+carry on the next boot; a cut after it leaves a valid table.
 
 ### 2.4 The stage
 
@@ -120,7 +133,7 @@ count, and shows frame `f` when `f` is in range (`f < 0` only asks).
 | Slice | Content | Gate |
 |---|---|---|
 | **P1** | `CLK_ROW_MAX` 32; app-picked frames: schema, reader, stage, import, SDK | host suites green; mutants for the new refusals |
-| **P2** | the pool table and its placement and compaction plan as pure C (`main/art/orb_pool.c`) with a Python model | a host suite drives encode/decode, append, remove, compaction moves and a cut at every step against the model |
+| **P2** | the pool table and its compaction as pure C (`main/art/orb_pool.c`), every flash access through an io | `tools/host_pool_test.py` over a simulated NOR flash: 13 malformed tables refused by name; a cut at every step of a replacement (504), a removal (264) and an overlapping move (1,526), each with a second cut in the repair, losing no other theme except the one an overlapping move tore; 8 of 8 mutants caught — **built 2026-11-03** |
 | **P3** | store and delete through the pool; the one-slot carry | host suites; bench: two apps' themes stored, one removed, the other intact |
 | **P4** | boot adoption of every entry, per-app geometry, the stage bound to the app on the glass | bench: the clock and flights each on their own theme, switching between them |
 | **P5** | per-app scan, verify, delete, router, status | host suites; the hub's lists still parse |

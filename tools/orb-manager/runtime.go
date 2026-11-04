@@ -48,7 +48,7 @@ var runtimeCatalog = map[string]runtimeEntry{
 	"support@1":    {dir: "support@1"},
 	"baker@1":      {dir: "baker@1"},
 	"ui@1":         {dir: "ui@1"},    // the hub's look for an editor (D43 §4.2)
-	"theme@1":      {dir: "theme@1"}, // the editor services: send, session, preview (theme-editor-kit-plan K1–K3)
+	"theme@1":      {dir: "theme@1"}, // the editor services: send, session, preview, measure (theme-editor-kit-plan K1–K4)
 	"react@18.3.1": {dir: "vendor", files: []string{"react.production.min.js", "react-dom.production.min.js"}, vendor: true},
 	"babel@7.29.0": {dir: "vendor", files: []string{"babel.min.js"}, vendor: true},
 	"fonts@1":      {dir: "vendor", files: []string{"fonts.css"}, prefix: "fonts/", vendor: true},

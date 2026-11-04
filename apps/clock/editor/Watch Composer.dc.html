@@ -154,6 +154,7 @@ html,body{height:100%;overflow:hidden}
 <script src="send.js"></script>
 <script src="session.js"></script>
 <script src="preview.js"></script>
+<script src="measure.js"></script>
 </helmet>
 <div class="wc">
   <header class="wc-top">
@@ -2780,34 +2781,16 @@ class Component extends DCLogic {
     await this.t3bake(nm, fc, M, gt, B, fps, opts.send);
   }
   /* §31's motion walk, apart from the export so the sweep page runs the same
-   * code: compose the plate at every frame, diff consecutive frames cyclically,
-   * and settle unionPx, bboxW, bboxH and the moved count onto m in place.
-   * Returns the frame pixels: the bake needs frame 0 whatever the split decides,
-   * and every keyframe is one of them. */
+   * code: compose the plate at every frame (white-balanced, as the bake reads it),
+   * and let the OS diff them (theme@1/measure: OrbTheme.motion), settling unionPx,
+   * bboxW, bboxH and the moved count onto m in place. Returns the frame pixels: the
+   * bake needs frame 0 whatever the split decides, and every keyframe is one of them. */
   measureFrames3(plateAt, m) {
-    const PANEL = 466 * 466;
     const pixOf = (c) => this.wbPix(new Uint8Array(c.getContext('2d').getImageData(0, 0, 466, 466).data.slice().buffer));
     const pxs = [];
     for (let f = 0; f < m.frames; f++) pxs.push(pixOf(plateAt(f)));   // plateAt hands back a canvas
-    const mask = new Uint8Array(PANEL);
-    let bx = PANEL, by = PANEL, bx2 = -1, by2 = -1, moved = 0;
-    for (let f = 0; f < m.frames; f++) {
-      const a = pxs[f], b = pxs[(f + 1) % m.frames];
-      for (let p = 0, i = 0; p < PANEL; p++, i += 4) {
-        if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) {
-          moved++;
-          if (!mask[p]) {
-            mask[p] = 1;
-            const x = p % 466, y = (p / 466) | 0;
-            if (x < bx) bx = x; if (x > bx2) bx2 = x;
-            if (y < by) by = y; if (y > by2) by2 = y;
-          }
-        }
-      }
-    }
-    let un = 0; for (let p = 0; p < PANEL; p++) if (mask[p]) un++;
-    m.unionPx = un; m.movedPx = moved;
-    m.bboxW = moved ? bx2 - bx + 1 : 0; m.bboxH = moved ? by2 - by + 1 : 0;
+    const r = window.OrbTheme.motion(pxs);
+    m.unionPx = r.unionPx; m.movedPx = r.movedPx; m.bboxW = r.bboxW; m.bboxH = r.bboxH;
     return pxs;
   }
   /* The carriage bank in DEVICE space — the kit's transform, and the only version of
@@ -3742,16 +3725,16 @@ class Component extends DCLogic {
         return { label: '+ ' + label + (onSub && t !== 'subdial' && t !== 'opening' ? ' on this sub-dial' : ''), blurb: why || BLURB[t] || '', tip: why || BLURB[t] || '',
           op: why ? 0.45 : 1, cursor: why ? 'not-allowed' : 'pointer', go: why ? () => this.setState({ status: why }) : () => this.addComp(t) };
       });
-      // Render: does it fit the orb
+      // Render: does it fit the orb (the verdict is the OS's, theme@1/measure; the pace is
+      // the clock's own device-pace model, _devPace, which prices a seconds sweep across plates)
       const b = this.budget ? this.budget() : null, want = b ? (b.dev && b.dev.need) || b.fps : 0, pace = b && b.dev && b.dev.pace ? b.dev.pace : want;
-      const fits = !rc.over, full = pace >= want, near = pace >= want * 0.75;
-      out.badgeText = !fits ? '\u2715 Too many live layers for the orb' : full ? '\u2713 Fits the orb'
-        : near ? '\u2713 Fits — runs a little slower than designed' : '\u2713 Fits — the orb paints it slower than designed';
-      out.badgeNote = '~' + pace + ' of ' + want + ' fps · ' + rc.rows + ' of ' + rc.cap + ' live rows';
+      const V = window.OrbTheme.fit({ rows: rc.rows, cap: rc.cap, want, pace });
+      out.badgeText = V.text;
+      out.badgeNote = V.note;
       out.badgeTip = 'The device-pace model\u2019s estimate for this design (the frame rate the orb can paint it at) and the live rows it ships against the dial\u2019s cap. A lifted layer or a large sweeping disc costs pace.';
-      out.fitShort = !fits ? 'Over · ' + rc.rows + ' / ' + rc.cap + ' rows' : (full ? 'Fits' : 'Fits, slower') + ' · ' + pace + ' fps';
-      out.fitDot = !fits ? '#f85149' : full ? '#3fb950' : '#d29922';
-      out.badgeFg = !fits ? '#f85149' : full ? '#3fb950' : '#d29922'; out.badgeBd = !fits ? '#5c2326' : full ? '#23502c' : '#5a4614'; out.badgeBg = !fits ? '#2a1416' : full ? '#12241a' : '#241d0e';
+      out.fitShort = V.short;
+      out.fitDot = V.color;
+      out.badgeFg = V.color; out.badgeBd = V.border; out.badgeBg = V.background;
     }
     // Finish · Light: moods first, the sliders behind More
     if (ready && s.tab === 'light' && fields.length) {

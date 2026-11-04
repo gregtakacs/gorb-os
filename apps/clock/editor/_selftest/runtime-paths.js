@@ -13,4 +13,5 @@ module.exports = {
   SEND: path.join(RUNTIME, 'theme@1', 'send.js'),
   SESSION: path.join(RUNTIME, 'theme@1', 'session.js'),
   PREVIEW: path.join(RUNTIME, 'theme@1', 'preview.js'),
+  MEASURE: path.join(RUNTIME, 'theme@1', 'measure.js'),
 };

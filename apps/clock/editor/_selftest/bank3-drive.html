@@ -29,6 +29,10 @@
 // ?appv=vX.Y.Z stamps the designs this bake writes as the packaged clock would (make_clock_region's window.__ORB_APP)
 (function () { const v = new URLSearchParams(location.search).get('appv'); if (v) window.__ORB_APP = { slug: 'clock', version: v }; })();</script>
 <script src="../orbtheme-baker.js"></script>
+<script src="../send.js"></script>
+<script src="../session.js"></script>
+<script src="../preview.js"></script>
+<script src="../measure.js"></script>
 <script src="component.js"></script>
 <script>
 (function () {

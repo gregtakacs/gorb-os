@@ -113,7 +113,7 @@ send to Gold where the slice touches the glass. A suite moves with the code it t
 | **K1** | `theme@1/send`, and the clock calls it | `headless-send` moves to `web/runtime/_selftest/` and passes; clock suites green; a send, a duplicate Replace and a cancel benched on Gold — **built and benched on Gold 2026-11-03** (§7) |
 | **K2** | `theme@1/session` | `headless-session` and the session half of `headless-design` move and pass; a design saved before the move opens after it — **built and benched on Gold 2026-11-03** (§7) |
 | **K3** | `theme@1/preview`, including true size | the clock's stage, Panel and Compare equal before and after (`headless-panel`, a screenshot pair); true size matches `review.html`'s calibration — **built and benched on Gold 2026-11-03** (§7) |
-| **K4** | `theme@1/measure`, the pace hook | `headless-pace` and `headless-estimate` green with `_devPace` as the clock's override; an app with no hook gets the estimate |
+| **K4** | `theme@1/measure`, the pace hook | `headless-pace` and `headless-estimate` green with `_devPace` as the clock's override; an app with no hook gets the estimate — **built 2026-11-04**, benched in real Chrome (§7) |
 | **K5** | a generic stage bake in `baker@1` (a plate, rows, sprites, row pools, scalars) for any app the stage draws; `bakeClock3` becomes the clock's translation on top of it | the clock's bundles are byte-identical before and after (`headless-bundle3`). Flights' interim themes are built into firmware (§0.1 ruling 5), so this does not wait on flights; its format is checked against flights' when the editor starts |
 | **K6** | `studio@1`: frame, title and step bar, status, send modal, the Render step, slots | the clock's P5 checklist (nothing lost), no page scroll at 1280×720 and 1920×1080 inside the hub |
 | **K7** | `studio@1`: the layers panel and the field builders, driven by what the app declares | the clock's layers and inspector behave as before (`headless-stack-ui`, `headless-forms`, `headless-ui`); the clock's own rules (`stack.js`) stay the clock's |
@@ -265,3 +265,39 @@ runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
   drew 227 css px ("True size · 1.75 in"). No errors. A first attempt clicked a "Pause"
   label that is only the button's tooltip, so the frame kept moving and Split looked off
   by motion; the frozen rerun is the result.
+
+### K4 — `theme@1/measure` (2026-11-04)
+
+- **The service.** `web/runtime/theme@1/measure.js`: `OrbTheme.motion(frames)` (the cyclic
+  frame diff: union mask, moved count and bounds, the measurement `splitPolicy3` decides
+  a carrier from), `OrbTheme.estimate(bytes)` (`GorbBake.estimate3` on a baked bundle's
+  one section), and `OrbTheme.fit({rows, cap, want, pace, est})` (the verdict: fits or
+  over, at its rate or slower, its badge sentence, short form and colours).
+- **The pace hook.** `fit` takes the app's own pace when it has a model, else the bundle's
+  estimate, else claims no rate. The clock passes its `_devPace`, which stays the
+  clock's: it is a seconds-sweep model across the clock's plates, as planned.
+- **Smaller than the plan said.** The plan listed `measureCarriage3`, `remeasureSoon`,
+  `_budget` and `devFps` under measure. They stay in the clock: they price its own
+  carriage, its row caps and tiers, and its re-render gating, which are the clock's
+  physics, not a measurement every app makes. The walk, the estimate and the verdict are
+  what carry over.
+- **A gap from K1–K3, closed.** The nine browser test pages under the clock's `_selftest/`
+  that mount the component loaded none of the `theme@1` services, so since K3 they
+  mounted a component calling `OrbTheme` with no `OrbTheme` loaded. Each now loads all
+  four before the component, and `headless-pages.test.js` (19 checks) holds the editor
+  document, the deployer and every such page to the runtime's list of services.
+- **Suites.** `web/runtime/_selftest/headless-measure.test.js`, 20 checks: the walk held to
+  the pre-K4 walk on walking, scattered and alpha-only changes, the estimate off the
+  hub's shipped Skeleton bundle, and every verdict. Six mutants are caught (no loop-back
+  diff, alpha read as colour, an off-by-one bound, the cap refused at the cap, the
+  estimate over the model, the three-quarter line moved). The clock's 19 suites: green,
+  unchanged. `clock.orbapp`: 934,446 B → 933,496 B.
+- **Benched in real Chrome, 2026-11-04.** `bake3-test.html` (which drives the real
+  component's `measureFrames3` and bakes through `GorbBake.bakeClock3`), deployed and run
+  headless at K4 and at `7cc1221` (before K1): the two reports are line for line identical
+  (Skeleton's walk: 8 frames, 326,050 texels moved, a 48,770-texel union in a 402×351 box,
+  the bank policy's 8-of-8 at 4 fps), and the baked bundles are byte for byte the same
+  (438,408 B, sha256 `19d444d7a4e55d98…`). The page's two failures are the same at both
+  commits, so they predate the kit: every preset refused for "no centre hour/minute/second
+  hand" with "the bake has hands to seat [0]", and six stills carrying 48 dirty rows. The
+  page has not kept up with hands becoming parts (D43 P5c); it is owed its own repair.

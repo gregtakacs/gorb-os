@@ -16,7 +16,7 @@ orb-A; §6.5 records what was verified there.
   `301 → https` (checked 2026-10-31), so the HTTP path is gone.
 - No hub dependency for flight data. The hub is only on during maintenance.
 - v1 draws with OS primitives: text, dots and direction markers. Sprites,
-  themes and a theme editor matching the clock's come later (§7).
+  themes and the tracker's own theme editor come later (§11).
 
 ## 1. What orb-os learned (and what carries over)
 
@@ -430,11 +430,8 @@ consent rule applies.
 
 ## 7. Later in the design chain
 
-- **Theming:** blip sprites per altitude band, a ring/plate background,
-  label fonts, declared as asset classes (D23) so a theme can carry a tracker
-  look. The theme editor gains a tracker page matching the clock's. Nothing
-  in v1 blocks this: the view's colours and sizes come from one table that a
-  resolved theme can later fill.
+- **Theming:** planned in §11. Nothing in v1 blocks it: the view's colours
+  and sizes come from one table that a resolved theme can later fill.
 - **Alerts over the clock:** an emergency squawk or a low overflight could
   raise a complication on the clock face. The feed already runs during the
   clock. That needs a policy ruling first.
@@ -594,3 +591,211 @@ its shipped rate, and reboots in between, to catch it with a log.
 3. **Cadence:** a lower background rate with a boost for close passes, plus
    4xx backoff and failover (§5).
 4. **Home location** replaces the zone pick and feeds the tracker (§6.4).
+
+## 11. Theming plan (2026-11-03)
+
+The tracker gets themes: drawn planes, a radar arm and a background, set in
+an editor of its own. This section is the plan. Nothing in it is built yet.
+
+### 11.1 Owner rulings, 2026-11-03
+
+1. **Apps are atomic.** An app knows nothing of any other app, so that someone
+   can write a new app without entanglement with the existing ones. The
+   tracker's editor is **not** a tab in the clock's Watch Composer. It lives
+   in `apps/flights/editor/` and ships inside `flights.orbapp`, the way the
+   clock's ships in `clock.orbapp` (`"editor"` in `app.json`, built by
+   `tools/make_factory_apps.py`). Anything the two editors share comes from
+   the OS or the SDK, never from one app reaching into the other.
+2. **The editor is small.** A handful of elements and little variance, so it
+   is a fraction of the Watch Composer, not a copy of it.
+3. **The order is art, then firmware, then editor** (§11.4).
+4. **Altitude colour is baked: one plane copy per band.** The sprites are
+   small and cheap to bake (7 shapes × 7 bands at ~40 × 40 px is under
+   250 KB a family against D29's 4 MB), so the stage needs no tint.
+5. **The wedge's trail is baked into the arm sprite.** Baking costs the
+   editor nothing: it renders the trail at whatever length, spread and
+   colour the author set, and the bake freezes that. `make_art.py`'s
+   `arm_wedge()` takes them as parameters for the same reason.
+6. **Two of three: shape, colour or detail.** A plane at 37–42 px carries two
+   of them, never all three; all three is busy and illegible. Each family
+   says which two it carries (§11.3).
+7. **No coloured rims.** A band-coloured rim round the metal planes was tried
+   and rejected: round an icon this small it is a blur. The metal families
+   take the band as a light tint instead, at 30% (approved: "the perfect
+   hint/hue change").
+8. **Altitude colour can be turned off.** Then every plane is drawn in its
+   family's own colour (the metals untinted) and ground traffic is drawn at
+   45% opacity so it recedes; with the app's Ground setting off there is no
+   ground traffic to dim. It is a theme option, set in the editor, since it
+   changes what is baked: two copies per shape (airborne, ground) instead of
+   one per band.
+9. **Every family has two forms.** A plane per category, which carries
+   shape, or one detailed plane for every category, which gives up shape and
+   spends the budget on detail (shading, a soft shadow, flap and elevator
+   lines, intakes, a lit edge). Paper's two forms came first: the paper
+   fleet and the shaded paper dart. A shape per aircraft model under each
+   category (an A380 apart from a 737) is an option for later, not part of
+   either form.
+
+### 11.2 What the firmware has to offer
+
+- The app SDK canvas (`orb.h`) draws fill, pixel, ring, disc, line and text.
+  It has no image call, which is why v1 is dots and heading lines.
+- The stage (`orb_stage.h`, plan D50) is the OS's renderer for any app that
+  ships a theme: a full-screen plate plus rows drawn as rotated sprites, each
+  posed per frame with `orb_stage_pose(i, ang_10, ox, oy)`. The tracker maps
+  onto it as: background → plate; radar arm → one rotating row; planes → a
+  pool of rows, each posed at a contact's position and track. The model keeps
+  32 contacts (`FM_MAX_TRK`); the pool is likely 12–16.
+- The parser keeps the ICAO type designator (`orb_ac_t.type`) but not the
+  ADS-B emitter category (`category`, A1 light … A5 heavy, A7 rotorcraft).
+  Picking a silhouette per aircraft wants the category parsed: one short
+  field, against a type-designator lookup table.
+
+**What the code answers (read 2026-11-03).** Step 2 is firmware work, not
+only app work: four of these need the OS to change.
+
+1. **One live theme on the device.** The store keeps a single slot with a
+   single section (`orb_theme.c`: "single-slot boot", `sole_sec()`), and
+   `orb_app_wasm.c` gives the stage only to the app whose slug matches
+   `orb_theme_live_slug()`. Any other app's `stage_open` answers `base = 1`.
+   So installing a flights theme today would take the clock's theme off
+   the glass. D49 (themes picked per app) and D50 (the stage opens the
+   calling app's own theme) say each theme-aware app has its own; the
+   residency does not do that yet. Step 2 needs a theme resident per
+   theme-aware app, or the tracker cannot have a theme while the clock
+   keeps one.
+2. **A row is one fixed image.** `clk_row_t` carries one `clk_sprite_t`,
+   and `stage_pose(i, ang_10, ox, oy)` sets only angle and offset. Only the
+   carriage row (`car_row`, `CLK_TOURB_MAX` frames) animates through
+   frames, and it is the one row of its kind. With baked band copies (7
+   shapes × 7 bands), a plane row has to switch image as its contact
+   changes category or band. That needs a new call, a frame index per
+   row (`stage_frame(i, f)` or a frame argument on `stage_pose`), over a
+   bank of frames like the carriage's.
+3. **Rows can share pixels.** A row names its image by `frame0`, an index
+   into the section's sprite catalogue (`orb_clock3.c`, `fill_sprite`).
+   The reader checks the catalogue is contiguous and every row's plane is
+   inside it; nothing read refuses two rows naming the same plane. So a
+   pool of plane rows can share one bank of images, and the bake stores
+   each image once.
+4. **24 rows in all.** `CLK_ROW_MAX` is 24 (a `theme_schema` constant, so
+   an ABI number). Arm plus plane pool fits: 1 + up to 16, with room left.
+   Raising it is not needed.
+5. **The app's canvas would hide the stage.** The stage builds its layers
+   on the app's own screen (`s_scr = orb_ui_screen(...)`) in `wasm_init`,
+   before `orb_init` runs, so the app's widgets are created after them and
+   sit above. The SDK canvas is opaque RGB565 (`orb_ui_cv_create`), so
+   today's full-screen canvas covers the scope. With a theme the app drops
+   the canvas: labels stay `ORB_UI_LABEL` widgets, and range rings become
+   `ORB_UI_BOX` widgets with `ORB_RADIUS_CIRCLE`, a border and no fill.
+   How the stage's direct compositor (L4) treats a widget above its rows
+   is not traced yet.
+
+**The wedge.** It is the largest sprite the stage would turn every frame
+(~120 × 184 px at a 40° trail; a clock hand is long but thin), and the
+owner has seen a large rotating sweep slow the frame before. Rotation cost
+follows the sprite's area, so the trail's spread is the lever: the editor
+caps it, and the bench measures frame time at the cap before any theme
+ships it. `arm_wedge()` already takes the spread as a parameter.
+
+### 11.3 The art
+
+Original SVGs, drawn for gorb-os. The orb-os public theme library (snapshot
+2026-11-03, 48 plane images, 7 image arms) is reference for style only;
+nothing is traced from it, and many of its themes carry no licence.
+
+- **Planes**, one family per style, each with: light single, turboprop,
+  business jet, airliner, heavy, helicopter, and a generic fallback. They
+  draw at 37–42 px on the 466 px glass (§11.5), so: bold silhouettes, a firm
+  outline, no fine panel lines. Nose up, centred, pivot at the centre.
+- **Radar arms**: a phosphor wedge with a fading trail, a needle with its
+  arbor, a brass pointer, a drafting line. Each records its pivot. A trail
+  is baked into its arm (§11.1 ruling 5).
+- **Backgrounds**: phosphor scope, aviation chart with compass rose, brass
+  instrument face, blueprint grid. Range rings are not baked in: their
+  spacing follows the Range setting, so they stay drawn live.
+
+**Families** (owner's picks, 2026-11-03: modern, modern silver, vintage
+brass, blueprint wireframe, paper). A plane is drawn from named parts
+(body, tail, engines, props, canopy, markings); a family is a shape set
+plus a renderer, and under ruling 6 each renderer carries two of shape,
+colour and detail. Each family has a pairing, a background and arm it is
+shown with first:
+
+| Family | Carries | Shapes | Band colour | Pairs with |
+|---|---|---|---|---|
+| Modern | shape, colour | modern | a flat silhouette in the band | scope, wedge |
+| Modern silver | shape, material | modern | a 30% tint over polished metal | scope, needle |
+| Vintage brass | shape, material | vintage: elliptical-wing fighter, twin radial transport, twin-boom early jet, four-engine propliner, four-engine bomber, autogyro, compass pointer | a 30% tint over polished brass | brass, pointer |
+| Blueprint | shape, colour | modern | a wireframe outline; the background shows through | blueprint, drafting |
+| Paper | shape, colour | paper planes: broad glider, square-wing, slim dart with winglets, classic dart, wide notched delta, whirligig, folded chevron | the paper itself, flat, one faint crease | chart, needle |
+
+Each family's second form, one detailed plane for every category (ruling 9):
+
+| Family | Carries | The one plane |
+|---|---|---|
+| Modern | colour, detail | a shaded airliner in the band colour |
+| Modern silver | material, detail | a polished four-engine jet, 30% tint |
+| Vintage brass | material, detail | a twin radial transport, props spinning, cowls ringed, 30% tint |
+| Blueprint | colour, detail | the airliner as a full technical outline in the band colour |
+| Paper | colour, detail | the paper dart: a soft shadow, far wing and folds in shade, the near edge lit |
+
+How the band was carried changed twice on review at true size. Tail,
+engine and roundel markings alone could not be read; a rim round the
+whole plane was a blur (ruling 7). Set one's grey engines and canopy went
+too: modern is now a flat silhouette. The canopy and markings geometry is
+still in `make_art.py` for a family that trades colour for detail.
+
+Sources live in `apps/flights/art/`: `make_art.py` holds the geometry and
+writes the SVGs, `art.json` (sizes, pivots) and `review.html`, a scope with
+simulated traffic that draws at the orb's true size (§11.5).
+
+### 11.4 Order
+
+1. **The art.** One plane family, two arms, two backgrounds first, to settle
+   the look before it is multiplied; then the rest of §11.3. **Done,
+   approved by the owner 2026-11-03:** five families in two forms, four
+   arms, four backgrounds, in `apps/flights/art/`.
+2. **Firmware.** The tracker on the stage. The OS side first (§11.2): a
+   theme resident per theme-aware app, so the clock keeps its own; a frame
+   index per row, so a plane row switches image by category and band.
+   Then the app side: the plane pool and arm row, the category parse, rings
+   as box widgets in place of the canvas, the card's fourth line gone
+   (§11.5). Bench-checked on orb-A with hand-placed assets before any
+   editor exists, the wedge's frame time measured at the editor's cap.
+3. **The editor** in `apps/flights/editor/`, once the format step 2 reads is
+   fixed (D28: the firmware's resolver is the source of truth). Panels:
+   background (image or colour; ring count, colour, opacity), radar arm
+   (image, pivot, speed, trail), planes (family, form: per category or one
+   detailed plane, size, category → shape),
+   altitude colours (on or off, ruling 8; the band table `main.c` holds
+   today), labels (card font
+   and colours). The preview runs **simulated traffic**, a dozen contacts at
+   mixed tracks, altitudes and categories crossing the scope under a turning
+   arm, so every shape and band is seen without waiting for real traffic.
+
+### 11.5 Legibility at true size (owner, 2026-11-03)
+
+The panel is a 1.75 in round, 466 px across: about 266 ppi. `review.html`
+draws the face at that physical size on a monitor (its dpi set from a
+bank-card outline; the browser's pixel ratio is divided out), and the owner
+judged the first set there.
+
+- **Planes: 3.5–4.0 mm, 37–42 px.** The review's default is 38 px. At
+  30 px light and turboprop were too close to tell apart.
+- **14 px is the smallest text**: the footer's size. The app's text is "as
+  small as we'd ever want to go". Baked numerals were 11 px, a speck at
+  true size; they are 15 px bold now.
+- **The info card drops its last line** (distance and bearing): the map
+  already shows both. It is four lines in the review. `main.c` still
+  prints five; that change goes in with step 2.
+- **Text colour belongs to the theme.** The card's white is unreadable on
+  the paper chart, so header, card, footer and selection-ring colours are
+  theme properties per background, not constants in `main.c`.
+- **Nothing baked sits where the card draws.** The card covers the bottom of
+  the range ring in info mode, so neither background puts a numeral at
+  south. Planes still pass under the card; where the card sits, and
+  whether it gets a backing, is a step-2 layout question.
+- The look of set one is approved: the modern family, the two arms, the two
+  backgrounds.

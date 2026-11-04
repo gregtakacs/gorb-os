@@ -55,6 +55,10 @@ idf_component_register(
         "art/art_bank.c"
         "art/orb_theme.c"
         "art/orb_bundle.c"
+        # theme-pool-plan §2: the pool's table and its compaction, every flash access
+        # through an io the caller supplies. tools/host_pool_test.py drives this exact
+        # file over a simulated flash that loses power at every step.
+        "art/orb_pool.c"
         # P6.5 §25.5(2): the FORMAT 3 clock section's projection. Separate from
         # orb_bundle.c on purpose — that file is the format mirror of
         # tools/orbbundle.py and carries no dialect knowledge; this one is the clock's

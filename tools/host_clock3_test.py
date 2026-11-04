@@ -248,6 +248,9 @@ int main(int argc, char **argv)
     printf("scalar tourbillon_n %u\n", th.tourbillon_n);
     printf("scalar tourbillon_fps %u\n", th.tourbillon_fps);
     printf("scalar car_row %u\n", th.car_row);
+    printf("scalar pick_n");
+    for (int i = 0; i < CLK_ROW_MAX; i++) printf(" %u", th.pick_n[i]);
+    printf("\n");
     dump_sprite("overlay", 0, &th.overlay);
     for (int i = 0; i < CLK_TOURB_MAX; i++) dump_sprite("tourbillon", i, &th.tourbillon[i]);
     printf("n_comps %u\n", io.out_n_comps);
@@ -659,6 +662,16 @@ def add_row(els, spr, art, slot, w=28, h=64, x=300, y=120, **kw):
     return r
 
 
+def add_pick_row(els, spr, art, slot, n, sizes=None, w=28, h=64, **kw):
+    """A row whose n frames the app picks (theme-pool-plan §2.6): n planes appended to
+    the catalogue, no frame time. `sizes` gives each frame its own (w, h)."""
+    f0 = len(spr)
+    for i in range(n):
+        fw, fh = sizes[i] if sizes else (w, h)
+        add_plane(spr, art, fw, fh)
+    return add_row(els, spr, art, slot, w=w, h=h, frame0=f0, n_frames=n, delay=0, **kw)
+
+
 def next_slot(els):
     return max([int(e["slot"]) for e in rows_of(els)] + [-1]) + 1
 from orbtheme import W_GEOM_OFF, W_GEOM_SIZE, W_GEOM_CRC, W_HDR_CRC
@@ -788,8 +801,8 @@ REFUSALS = (
                                                           "vmax": 0, "cadence": 0,
                                                           "end": 0}),
      "every hand, shadow and carriage", None),
-    ("a row at slot 24", lambda e, s, p, a: add_row(e, p, a, 24), "moving rows",
-     "seats 24 moving rows"),
+    ("a row at slot 32", lambda e, s, p, a: add_row(e, p, a, 32), "moving rows",
+     "seats 32 moving rows"),
     ("a plate at slot 2", lambda e, s, p, a: _glass(e).update({"slot": 2}),
      "one plate and one overlay", None),
     ("no plate row", lambda e, s, p, a: e.remove(_plate(e)), "nothing to restore from", None),
@@ -847,11 +860,17 @@ REFUSALS = (
      "P1 must look like P0"),
     ("a pivot off the plate", _set_row(hour_row, pivot_x=999), "outside its own",
      "outside its own"),
-    ("an animated row with no frame time",
-     lambda e, s, p, a: (hour_row(e).update({"n_frames": 2}),
-                         p.insert(int(hour_row(e)["frame0"]) + 1,
-                                  dict(p[int(hour_row(e)["frame0"])]))),
-     "names no frame time", "frame time"),
+    ("a picked row past its frames",
+     lambda e, s, p, a: add_pick_row(e, p, a, next_slot(e), 65, **SWEEP_SEC),
+     "a row holds", "to pick from"),
+    ("a picked frame of another size",
+     lambda e, s, p, a: add_pick_row(e, p, a, next_slot(e), 2, sizes=[(28, 64), (30, 64)],
+                                     **SWEEP_SEC),
+     "describe different layers", None),
+    ("a twin under a picked row",
+     lambda e, s, p, a: (add_pick_row(e, p, a, next_slot(e), 2, **SWEEP_SEC),
+                         add_row(e, p, a, next_slot(e), flags=ts.EF_AUX_SHADOW)),
+     "the twin would shade", "shade one frame"),
     ("a twin with a motion of its own",
      _new_row(flags=ts.EF_AUX_SHADOW, **SWEEP_SEC), "a twin takes", "whole pose"),
     ("a step of 0", _set_row(sec_row, cadence=ts.CAD_STEP, cad_arg=0), "steps 0 times",
@@ -911,8 +930,7 @@ def refusals(exe, base):
         def mutate(els, sc, spr, art, mut=mut):
             n0 = len(spr)
             mut(els, sc, spr, art)
-            if len(spr) > n0 and what in ("an animated row with no frame time",
-                                          "two animated rows"):
+            if len(spr) > n0 and what in ("two animated rows",):
                 _respread(els, spr, art)
         path, verdict = forge(base, mutate, raw=True)
         rc, out, err = run(exe, "--refuse", path)
@@ -1657,7 +1675,7 @@ MUTANTS = (
     ("the plate's existence", "if (at_plate[0] < 0)", "if (0 && at_plate[0] < 0)", "no plate row"),
     ("the hand class's refusal", "            case CLS_HAND:\n            case CLS_SPRITE:\n",
      "            case CLS_SPRITE:\n", "a hand row"),
-    ("the row cap", "if (e.slot >= CLK_ROW_MAX)", "if (0)", "a row at slot 24"),
+    ("the row cap", "if (e.slot >= CLK_ROW_MAX)", "if (0)", "a row at slot 32"),
     ("the retired scalars", "if (U(sec, RETIRED_W[k]))", "if (0)", "a retired tick_rate"),
     ("the shape bound", "if (e->kind >= CLK_SHAPE__MAX)", "if (0)", "a shape past the vocabulary"),
     ("the drum's strip rule", "if (e->dy != (int16_t)e->h && e->dy != -(int16_t)e->h)", "if (0)", "a drum rolling less than its strip"),
@@ -1672,8 +1690,10 @@ MUTANTS = (
     ("the wrap rule", "if (e->end == CLK_END_WRAP &&", "if (0 &&", "a wrap that travels"),
     ("the travel bound", 'return reject("row %u travels (%d,%d)',
      'if (0) return reject("row %u travels (%d,%d)', "a travel off the panel"),
-    ("the frame time", "if (e->n_frames > 1u && !e->delay)", "if (0)",
-     "an animated row with no frame time"),
+    ("the pick cap", "e->n_frames > CLK_PICK_MAX)", "e->n_frames > 9999u)",
+     "a picked row past its frames"),
+    ("the twin under a pick", "if (pe.n_frames > 1u && !pe.delay)", "if (0)",
+     "a twin under a picked row"),
     ("the twin's silence", "if ((e->flags & AUX_F_SHADOW) && (e->n_frames != 1u || e->src || e->cadence))",
      "if (0)", "a twin with a motion of its own"),
     ("the ease's bound", "if (e->ease > 1000u)", "if (0)", "an ease past a second"),
@@ -1698,6 +1718,34 @@ MUTANTS = (
 )
 
 
+def pick_battery(exe, base):
+    """theme-pool-plan §2.6, the accept side: a row whose frames the app picks lands
+    as one row, its frame count in pick_n and nowhere else, beside a carriage that
+    keeps its own meaning."""
+    seat = {}
+
+    def picks(els, sc, spr, art):
+        seat["slot"] = next_slot(els)
+        add_pick_row(els, spr, art, seat["slot"], 49, **SWEEP_SEC)
+    path, verdict = forge(base, picks)
+    ck(verdict is None, "pick: the writer refused a 49-frame picked row: %s" % verdict)
+    rc, out, err = run(exe, "--dump3f", path)
+    ck(rc == 0, "pick: the picked row was refused: %s" % out[:300])
+    if rc:
+        return
+    p = parsed(out)
+    pick = p["sc"]["pick_n"]
+    at = [i for i, n in enumerate(pick) if n]
+    ck(len(pick) == ts.CLK_ROW_MAX and len(at) == 1 and pick[at[0]] == 49,
+       "pick: pick_n is %s, not one row of 49" % pick)
+    ck(at and p["rows"][at[0]]["tag"] == seat["slot"],
+       "pick: the 49 sit on row %s, not the row at slot %d" % (at, seat["slot"]))
+    ck(p["sc"]["car_row"] == [255] and p["sc"]["tourbillon_n"] == [0],
+       "pick: a picked row made a carriage (car_row %s, %s frames)"
+       % (p["sc"]["car_row"], p["sc"]["tourbillon_n"]))
+    print("  pick: a 49-frame picked row lands in pick_n, no carriage")
+
+
 def mutants(exe, base):
     by_name = {v[0]: v[1] for v in REFUSALS}
     for what, old, new, tag in MUTANTS:
@@ -1706,8 +1754,7 @@ def mutants(exe, base):
         def mutate(els, sc, spr, art, mut=mut, tag=tag):
             n0 = len(spr)
             mut(els, sc, spr, art)
-            if len(spr) > n0 and tag in ("an animated row with no frame time",
-                                         "two animated rows"):
+            if len(spr) > n0 and tag in ("two animated rows",):
                 _respread(els, spr, art)
         path, _v = forge(base, mutate, raw=True)
         hrc, hout, _ = run(exe, "--refuse", path)
@@ -1727,6 +1774,7 @@ if __name__ == "__main__":
     d32_battery(EXE, PAIR)
     s31_battery(EXE, PAIR)
     c4_battery(EXE, PAIR)
+    pick_battery(EXE, PAIR)
     FULL = d39_battery(EXE, PAIR)
     if "--mutations" in sys.argv:
         mutants(EXE, PAIR)

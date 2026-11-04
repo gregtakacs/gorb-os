@@ -374,14 +374,17 @@ void idle_dim_app_release(const char *slug)
 
 /* ---- the theme leaves: the shipped package manager, scripted ---------------- */
 int g_tscan_calls;
+static char g_tscan_app[32];           /* whose themes the last scan asked for */
 static orb_theme_entry_t g_te[2];
-int orb_theme_scan(orb_theme_entry_t *out, int cap)
+int orb_theme_scan_app(const char *app, orb_theme_entry_t *out, int cap)
 {
     g_tscan_calls++;
+    snprintf(g_tscan_app, sizeof g_tscan_app, "%s", app ? app : "(every app)");
     const int n = cap < 2 ? cap : 2;
     for (int i = 0; i < n; i++) out[i] = g_te[i];
     return n;
 }
+int orb_theme_scan(orb_theme_entry_t *out, int cap) { return orb_theme_scan_app(NULL, out, cap); }
 /* Mirror of orb_theme.c's theme_id_ok() over the compound card stem
  * "<slug>-<token>-<hex12>" that 2d27e35 installed. The old double checked a bare
  * 12-hex word, which the shipped gate now refuses: a stem is a filename, not a
@@ -734,6 +737,8 @@ int main(int argc, char **argv)
        S->theme_count(A) == -1 && g_tscan_calls == 0 &&
        orb_svc_denials(A) == den0 + 1);
     CK("granted count walks the card", S->theme_count(B) == 2 && g_tscan_calls == 1);
+    CK("an app lists its own themes, not every app's (theme-pool P5)",
+       !strcmp(g_tscan_app, "beta"));
     char tid[ORB_THEME_HANDLE_MAX + 1];
     CK("id hands back the scan's, not a path",
        S->theme_id(B, 0, tid, sizeof tid) == ESP_OK &&

@@ -989,7 +989,12 @@ m3ApiRawFunction(imp_net_cred)       /* i32 net_cred(const char *id): 1 when tha
  * and parked, by the hooks below on the task's own stack; these only read the
  * theme's records, take the frame's poses and play the app's own sounds. */
 
-#define STAGE_GATE(fail) if (!s->stage) m3ApiReturn(fail)
+/* theme-pool-plan P4: an app with a theme in the pool holds the stage only while it is
+ * bound to it — while the app builds, and while it is on the glass. Unbound, every import
+ * answers as the base face does, so an app ticking in the background can neither read
+ * nor pose another app's rows. */
+#define STAGE_ON(s) ((s)->stage && stage_bound((s)->app))
+#define STAGE_GATE(fail) if (!STAGE_ON(s)) m3ApiReturn(fail)
 
 m3ApiRawFunction(imp_stage_open)              /* i32 stage_open(orb_stage_info_t *out) — 20 B */
 {
@@ -998,7 +1003,7 @@ m3ApiRawFunction(imp_stage_open)              /* i32 stage_open(orb_stage_info_t
     m3ApiGetArgMem(uint8_t *, out);
     m3ApiCheckMem(out, 20);
     bool base = true;
-    if (!s->stage) {                 /* no theme of this app's is live: it draws its own */
+    if (!STAGE_ON(s)) {              /* no theme of this app's is bound: it draws its own */
         memset(out, 0, 20);
         out[6] = CLK_PAT_NONE; out[7] = 1; out[8] = 0xFF;
         m3ApiReturn(ESP_OK);
@@ -1055,7 +1060,7 @@ m3ApiRawFunction(imp_stage_now)               /* void stage_now(i64 *t, i32 *fra
     m3ApiCheckMem(pt, 8);
     m3ApiCheckMem(pf, 4);
     m3ApiCheckMem(pw, 4);
-    if (!s->stage) m3ApiSuccess();
+    if (!STAGE_ON(s)) m3ApiSuccess();
     time_t t; double f, w;
     stage_now(&t, &f, &w);
     m3ApiWriteMem64(pt, (int64_t)t);
@@ -1071,8 +1076,17 @@ m3ApiRawFunction(imp_stage_pose)              /* void stage_pose(i, ang_10, ox, 
     m3ApiGetArg(int32_t, a);
     m3ApiGetArg(int32_t, ox);
     m3ApiGetArg(int32_t, oy);
-    if (s->stage) stage_pose(i, a, ox, oy);
+    if (STAGE_ON(s)) stage_pose(i, a, ox, oy);
     m3ApiSuccess();
+}
+
+m3ApiRawFunction(imp_stage_frame)             /* i32 stage_frame(i, f) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, i);
+    m3ApiGetArg(int32_t, f);
+    m3ApiReturn(STAGE_ON(s) ? stage_frame(i, f) : 0);
 }
 
 m3ApiRawFunction(imp_stage_comp_set)          /* void stage_comp_set(i, value, live) */
@@ -1081,7 +1095,7 @@ m3ApiRawFunction(imp_stage_comp_set)          /* void stage_comp_set(i, value, l
     m3ApiGetArg(int32_t, i);
     m3ApiGetArg(int32_t, v);
     m3ApiGetArg(int32_t, live);
-    if (s->stage) stage_comp_set(i, v, live != 0);
+    if (STAGE_ON(s)) stage_comp_set(i, v, live != 0);
     m3ApiSuccess();
 }
 
@@ -1089,7 +1103,7 @@ m3ApiRawFunction(imp_stage_snd_ready)
 {
     m3ApiReturnType(int32_t);
     CALLER();
-    m3ApiReturn(s->stage && orb_sound_ready() &&
+    m3ApiReturn(STAGE_ON(s) && orb_sound_ready() &&
                 (orb_svc_grants(s->app) & (1u << CAP_SOUND)) ? 1 : 0);
 }
 
@@ -1122,14 +1136,14 @@ m3ApiRawFunction(imp_stage_snd_play)          /* i32 stage_snd_play(i, flags, i6
     m3ApiGetArg(uint32_t, flags);
     m3ApiGetArg(int64_t, at);
     m3ApiGetArg(int64_t, anchor);
-    m3ApiReturn(s->stage ? stage_snd_play(i, flags, at, anchor) : -1);
+    m3ApiReturn(STAGE_ON(s) ? stage_snd_play(i, flags, at, anchor) : -1);
 }
 
 m3ApiRawFunction(imp_stage_snd_stop)
 {
     CALLER();
     m3ApiGetArg(int32_t, h);
-    if (s->stage && h > 0) orb_sound_stop(h);
+    if (STAGE_ON(s) && h > 0) orb_sound_stop(h);
     m3ApiSuccess();
 }
 
@@ -1138,7 +1152,7 @@ m3ApiRawFunction(imp_stage_snd_active)
     m3ApiReturnType(int32_t);
     CALLER();
     m3ApiGetArg(int32_t, h);
-    m3ApiReturn(s->stage && h > 0 && orb_sound_active(h) ? 1 : 0);
+    m3ApiReturn(STAGE_ON(s) && h > 0 && orb_sound_active(h) ? 1 : 0);
 }
 
 m3ApiRawFunction(imp_stage_snd_reanchor)
@@ -1146,7 +1160,7 @@ m3ApiRawFunction(imp_stage_snd_reanchor)
     CALLER();
     m3ApiGetArg(int32_t, h);
     m3ApiGetArg(int64_t, anchor);
-    if (s->stage && h > 0) orb_sound_reanchor(h, anchor);
+    if (STAGE_ON(s) && h > 0) orb_sound_reanchor(h, anchor);
     m3ApiSuccess();
 }
 
@@ -1246,6 +1260,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "stage_sound",    "i(ii)",     imp_stage_sound },
     { "orb", "stage_now",      "v(iii)",    imp_stage_now },
     { "orb", "stage_pose",     "v(iiii)",   imp_stage_pose },
+    { "orb", "stage_frame",    "i(ii)",     imp_stage_frame },
     { "orb", "stage_comp_set", "v(iii)",    imp_stage_comp_set },
     { "orb", "stage_snd_ready",    "i()",      imp_stage_snd_ready },
     { "orb", "stage_snd_cfg",      "v(i)",     imp_stage_snd_cfg },
@@ -1357,7 +1372,7 @@ static esp_err_t wasm_init(orb_app_t *app)
     /* The app the live theme belongs to gets the stage (D50), built here on
      * the task's own stack (it touches the bank, the scheduler and the layer table)
      * before its orb_init can ask what it holds. */
-    s->stage = app->slug && !strcmp(app->slug, orb_theme_live_slug());
+    s->stage = app->slug && orb_theme_has(app->slug);   /* theme-pool-plan P4: its own */
     if (s->stage) {
         bool base = true;
         if (stage_open(app, &base) != ESP_OK) s->stage = false;
@@ -1378,7 +1393,8 @@ static esp_err_t wasm_activate(orb_app_t *app)
     s->on_glass = true;
     if (!wasm_call(s, W_ACTIVATE, NULL, 0)) return ESP_FAIL;
     if (s->rt) beat_apply(s);
-    if (s->stage) stage_run(true);   /* the stage's frames, which call orb_tick */
+    if (s->stage && stage_bind(app) == ESP_OK)   /* its own theme on its own page */
+        stage_run(true);                          /* the stage's frames, which call orb_tick */
     return ESP_OK;
 }
 
@@ -1394,7 +1410,7 @@ static void wasm_suspend(orb_app_t *app)
     if (!s) return;
     s->on_glass = false;
     beat_apply(s);
-    if (s->stage) stage_run(false);
+    if (s->stage && stage_bound(app)) stage_run(false);
     if (s->rt) (void)wasm_call(s, W_SUSPEND, NULL, 0);
 }
 
@@ -1405,7 +1421,7 @@ static void wasm_resume(orb_app_t *app)
     s->on_glass = true;
     (void)wasm_call(s, W_RESUME, NULL, 0);
     if (s->rt) beat_apply(s);
-    if (s->stage) stage_run(true);
+    if (s->stage && stage_bind(app) == ESP_OK) stage_run(true);
 }
 
 static void wasm_show(orb_app_t *app)

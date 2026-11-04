@@ -36,6 +36,7 @@
 
 #include "orb_theme.h"
 #include "orb_bundle.h"
+#include "orb_pool.h"
 #include "orb_elems.h"      /* orb_elems_at(), and the answers read_one_plane maps onto the registry's */
 #include "orb_clock3.h"          /* the FORMAT 3 clock section's projection (P6.5) */
 #include "orb_sound.h"           /* D39: silence the old bank's voices before a remap */
@@ -552,6 +553,47 @@ static const char *slot_name(uint32_t hdr_base)
     return "slot";
 }
 
+/* ---- the theme pool (docs/theme-pool-plan.md) --------------------------------------
+ *
+ * Several apps' themes, packed from offset 0, with orb_pool.c's table in the area's last
+ * two sectors. Each entry is laid out as the one slot was, so every SLOT_* offset in
+ * this file is relative to an entry: its header at the entry's offset, its index at
+ * +SLOT_GEOM_OFF, its banks at +SLOT_ART_OFF. The one slot of Migration 1 IS entry 0,
+ * which is why boot can carry it into the pool without moving a byte. s_live_base is
+ * the entry this boot adopted; the stage still draws one theme per boot (P4 binds one
+ * per app). */
+static orb_pool_t    *s_pool;          /* PSRAM: the table as last read or written */
+static int            s_pool_which;    /* the live copy, orb_pool_load's answer */
+static uint8_t       *s_pool_buf;      /* PSRAM: one sector, the pool's scratch */
+static orb_pool_io_t  s_pool_io;
+static uint32_t       s_live_base;     /* the adopted entry's offset in the area */
+
+static int pool_read(void *c, uint32_t off, void *d, uint32_t n)
+{
+    return esp_partition_read((const esp_partition_t *)c, off, d, n) == ESP_OK ? 0 : -1;
+}
+
+static int pool_erase(void *c, uint32_t off, uint32_t n)
+{
+    return esp_partition_erase_range((const esp_partition_t *)c, off, n) == ESP_OK ? 0 : -1;
+}
+
+static int pool_write(void *c, uint32_t off, const void *s, uint32_t n)
+{
+    return esp_partition_write((const esp_partition_t *)c, off, s, n) == ESP_OK ? 0 : -1;
+}
+
+/* The io over the partition, and the table's two PSRAM buffers, made once. */
+static bool pool_io(const esp_partition_t *p)
+{
+    if (!s_pool) s_pool = heap_caps_calloc(1, sizeof *s_pool, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_pool_buf) s_pool_buf = heap_caps_malloc(ORB_POOL_SECTOR, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_pool || !s_pool_buf || !p) return false;
+    s_pool_io = (orb_pool_io_t){ (void *)p, pool_read, pool_erase, pool_write,
+                                 s_pool_buf, ORB_POOL_SECTOR, NULL };
+    return true;
+}
+
 
 /* ------------------------------------------------------------------------- *
  * Reading a container off the card.
@@ -981,6 +1023,8 @@ static bool resolve3_entry(void *arg, const orb_file_rec_t *rec, int fd)
     return r->verified;
 }
 
+static const orb_file_src_t s_any_themes_src;   /* every app's themes: below */
+
 /* The slug-aware twin. `card_open_verified_id3` below is this body with "clock"
  * bound, and every picker-side read (the preview first, and any per-app service
  * that follows it) calls this with whatever slug the handle names — so a weather
@@ -1004,8 +1048,12 @@ static int card_open_verified_slug3(const char *app_slug, const char *stem,
         *why = "that theme belongs to a different app";
         return -1;
     }
+    /* theme-pool-plan P5: any installed app's theme, through the app's own source if
+     * it declared one, else the OS's shared one; an app that is not installed has
+     * nowhere to wear a theme. */
+    if (!orb_app_find_slug(app_slug)) { *why = "no installed app wears that theme"; return -1; }
     const orb_file_src_t *src = orb_files_src(app_slug, "themes");
-    if (!src) { *why = "no \"themes\" file source declared"; return -1; }
+    if (!src) src = &s_any_themes_src;
     if (orb_sd_ensure_mounted() != ESP_OK) { *why = "no card in the socket"; return -1; }
 
     resolve3_t r = { .want = stem, .found = false, .verified = false };
@@ -1035,10 +1083,17 @@ static int card_open_verified_slug3(const char *app_slug, const char *stem,
     return fd;
 }
 
+/* A store's and a delete's door: the app is the one the stem names (theme-pool-plan
+ * P5; it was the clock alone while the device held one theme). */
 static int card_open_verified_id3(const char *stem, orb_bundle3_hdr_t *o, uint32_t *file_size,
                                   const char **why)
 {
-    return card_open_verified_slug3("clock", stem, o, file_size, why);
+    char slug[ORB_BUNDLE_SLUG_MAX + 1], id[THEME_ID_HEX + 1];
+    if (!theme_id_ok(stem) || !theme_stem_split(stem, slug, sizeof slug, id, sizeof id)) {
+        *why = "that theme id is not one this device issued";
+        return -1;
+    }
+    return card_open_verified_slug3(slug, stem, o, file_size, why);
 }
 
 /* Transient read of one bundle's geometry region from an OPEN card file. The store
@@ -1369,6 +1424,34 @@ static void store_progress(void *arg, uint32_t done, uint32_t total)
     orb_boot_overlay("storing", done, total, 0);
 }
 
+/* The pool's moves on the glass: a compaction carries megabytes (Bronze, 2026-11-04:
+ * 2.8 MB in about 20 s), so a store making room and a boot repairing a cut say so with
+ * the overlay's bar rather than standing on a word that has stopped meaning anything. */
+static void pool_progress(const char *stage, uint32_t done, uint32_t total)
+{
+    /* The overlay repaints at once on any new byte count, and a move reports every
+     * sector; a paint per sector cost a 2.8 MB move about ten seconds (Bronze,
+     * 2026-11-04: a store 42.8 s without the bar, 52.1 s with it). One paint per
+     * percent, and always the last. */
+    static uint32_t last_pct = 101;
+    const uint32_t pct = total ? (uint32_t)((uint64_t)done * 100u / total) : 100u;
+    if (pct == last_pct && done != total) return;
+    last_pct = done == total ? 101 : pct;
+    orb_boot_overlay(stage, done, total, 0);
+}
+
+static void room_progress(void *ctx, uint32_t done, uint32_t total)
+{
+    (void)ctx;
+    pool_progress("making room", done, total);
+}
+
+static void repair_progress(void *ctx, uint32_t done, uint32_t total)
+{
+    (void)ctx;
+    pool_progress("repairing themes", done, total);
+}
+
 bool orb_theme_store_torn(void)
 {
     return s_slot_torn;
@@ -1584,13 +1667,14 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
      * that ignored it would spend pages another app was promised. The sentence
      * names both figures, because "install failed" without a count is the same
      * dead button §24.8 buried at the identity door. */
+    uint32_t art_span = 0;
     {
         uint32_t art_end = SLOT_ART_OFF;
         for (uint32_t i = 0; i < b.n_sections; i++) {
             const uint32_t end = b.sec[i].art_off + b.sec[i].art_size;
             if (end > art_end) art_end = end;
         }
-        const uint32_t art_span = (art_end - SLOT_ART_OFF + THEME_SECTOR - 1) & ~(THEME_SECTOR - 1);
+        art_span = (art_end - SLOT_ART_OFF + THEME_SECTOR - 1) & ~(THEME_SECTOR - 1);
         const size_t need = art_bank_pages_for(art_span);
         const size_t free_pages = art_bank_pages_free();
         const esp_err_t re = art_bank_reserve_span(art_span);
@@ -1601,6 +1685,43 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
                      (unsigned)need, (unsigned)free_pages);
             heap_caps_free(region); card_close(fd);
             return install_failed(re, sent, why, whysz);
+        }
+    }
+
+    /* The file is filed under one app and must theme that app: the card's id hashes
+     * the stem's slug, and the pool files the theme under its section's. */
+    {
+        char stem_slug[ORB_BUNDLE_SLUG_MAX + 1], stem_id[THEME_ID_HEX + 1];
+        if (!theme_stem_split(id, stem_slug, sizeof stem_slug, stem_id, sizeof stem_id) ||
+            strcmp(stem_slug, b.sec[0].slug) != 0) {
+            heap_caps_free(region); card_close(fd);
+            return install_failed(ESP_ERR_INVALID_ARG, "this file themes another app than "
+                                  "its name says", why, whysz);
+        }
+    }
+
+    /* The pool's answer, before anything is parked: whether this app's theme fits
+     * once its old one is gone (docs/theme-pool-plan.md §2.2). The entry is laid out as
+     * the slot was, so its size is the slot's head and its banks. */
+    const char *slug = b.sec[0].slug;
+    const uint32_t entry_size = SLOT_ART_OFF + art_span;
+    {
+        const int f = (s_pool && pool_io(p)) ? orb_pool_fits(s_pool, slug, entry_size)
+                                             : ORB_POOL_ERR_ARG;
+        if (f) {
+            char sent[96];
+            if (f == ORB_POOL_ERR_FULL)
+                snprintf(sent, sizeof sent, "this theme needs %u KB and the theme area has "
+                         "%u KB free", (unsigned)(entry_size / 1024),
+                         (unsigned)((ORB_POOL_END - ORB_POOL_FIRST - orb_pool_used_end(s_pool) +
+                                     (orb_pool_find(s_pool, slug) >= 0
+                                      ? s_pool->e[orb_pool_find(s_pool, slug)].size : 0)) / 1024));
+            else
+                snprintf(sent, sizeof sent, f == ORB_POOL_ERR_TABLE
+                         ? "the theme area holds eight apps' themes already"
+                         : "the theme area's table is not loaded");
+            heap_caps_free(region); card_close(fd);
+            return install_failed(ESP_ERR_NO_MEM, sent, why, whysz);
         }
     }
 
@@ -1620,25 +1741,33 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     art_bank_unmap();
     s_slot_torn = true;                    /* from here the reboot is the only way back */
 
-    /* One target for the whole store: the single slot at offset 0. Migration 1 retired
-     * the ping-pong, so the target is a constant and the serial probe, the copy, the
-     * header erase and the header write all aim at it.
-     *
-     * The serial counts up over whatever the slot already held; a header that cannot be
-     * read restarts the count at 1. A torn store leaves it headerless, so the next store
-     * that lands re-bases from 1 — the count is a staleness guard, not a version line. */
-    const uint32_t tgt = SLOT_HDR;
+    /* The serial counts up over this app's last theme; none, or a header that cannot be
+     * read, restarts the count at 1 — the count is a staleness guard, not a version
+     * line. Read before the pool lets that theme go. */
     uint32_t raw[W_WORDS];
     uint32_t serial = 1;
-    if (esp_partition_read(p, tgt, raw, sizeof raw) == ESP_OK) {
-        orb_bundle3_hdr_t o3;
-        if (orb_bundle3_hdr_parse(raw, &o3) == NULL)   serial = o3.serial + 1;
+    {
+        const int old = orb_pool_find(s_pool, slug);
+        if (old >= 0 && esp_partition_read(p, s_pool->e[old].off + SLOT_HDR, raw, sizeof raw) == ESP_OK) {
+            orb_bundle3_hdr_t o3;
+            if (orb_bundle3_hdr_parse(raw, &o3) == NULL)   serial = o3.serial + 1;
+        }
     }
 
+    /* The target: the pool takes this app's old theme out, packs every other app's down
+     * over the gap (the map is down, so nothing reads a byte it moves), and answers
+     * where the packed run ends. Every SLOT_* offset below is relative to it. */
     staged_mark(id);
+    uint32_t tgt = 0;
+    s_pool_io.progress = room_progress;
+    const int pr = orb_pool_reserve(&s_pool_io, s_pool, &s_pool_which, slug, entry_size, &tgt);
+    s_pool_io.progress = NULL;
     uint32_t art_crc = 0;
-    esp_err_t e = copy_bundle3(fd, &b, region, file_art_base, p, tgt,
-                               &art_crc, &w, store_progress, NULL);
+    esp_err_t e = pr ? ESP_FAIL : ESP_OK;
+    if (pr) w = "the theme area would not make room";
+    if (e == ESP_OK)
+        e = copy_bundle3(fd, &b, region, file_art_base, p, tgt,
+                         &art_crc, &w, store_progress, NULL);
     card_close(fd);
     heap_caps_free(region);
     if (e != ESP_OK) {
@@ -1663,6 +1792,28 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
     } else {
         e = ee;
         w = "could not clear the old slot header";
+    }
+    /* The table last: until it names the entry, the bytes just written are free space
+     * and a cut leaves this app on its base face, every other app's theme whole. */
+    if (e == ESP_OK) {
+        orb_pool_entry_t pe;
+        memset(&pe, 0, sizeof pe);
+        strlcpy(pe.slug, slug, sizeof pe.slug);
+        strlcpy(pe.name, h.name, sizeof pe.name);
+        pe.off = tgt;
+        pe.size = entry_size;
+        pe.geom_size = SLOT_GEOM_OFF + h.geom_size;
+        pe.art_off = SLOT_ART_OFF;
+        pe.art_size = art_span;
+        pe.art_crc = art_crc;
+        pe.file_crc = file_geom_crc;
+        pe.serial = serial;
+        pe.abi = h.geom_abi;
+        if (orb_pool_crc(&s_pool_io, tgt, pe.geom_size, &pe.geom_crc) ||
+            orb_pool_commit(&s_pool_io, s_pool, &s_pool_which, &pe)) {
+            e = ESP_FAIL;
+            w = "the theme area's table would not take the new theme";
+        }
     }
     if (e != ESP_OK) {
         staged_clear();
@@ -1715,8 +1866,8 @@ static clk_bg_rect_t s_b3_rects[ORB_CLOCK3_N_RECTS];
 static uint32_t  s_b3_bgf[ORB_CLOCK3_N_BGF];
 /* D42: the dial's moving rows — every hand, pointer, ring, still layer, twin and the
  * carriage — the table a bundle's AUX elements project into, read by clock_view for the
- * life of the theme. PSRAM, allocated once at the first adoption: 24 rows would add
- * ~1.6 kB to .bss on a board whose internal heap boundary is what httpd_start needs
+ * life of the theme. PSRAM, allocated once at the first adoption: 32 rows would add
+ * ~2.1 kB to .bss on a board whose internal heap boundary is what httpd_start needs
  * (the 2026-10-24 lesson orb_stage.c's layer keys record), and the dial reads each row
  * a handful of times a frame. */
 static clk_row_t *s_b3_rows;
@@ -1897,17 +2048,17 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
  * — returns non-OK and the caller falls to the base face. This is the only read that
  * turns the slot's pixels into a dial; it installs and erases nothing, so the
  * no-write-in-the-fallback rule that outlived the A/B pair holds. */
-static esp_err_t adopt_default_bundle(const esp_partition_t *p)
+static esp_err_t adopt_default_bundle(const esp_partition_t *p, uint32_t base)
 {
     uint32_t raw[W_WORDS];
-    if (esp_partition_read(p, SLOT_HDR, raw, sizeof raw) != ESP_OK)
+    if (esp_partition_read(p, base + SLOT_HDR, raw, sizeof raw) != ESP_OK)
         return ESP_FAIL;
     if (raw[W_MAGIC] != THEME_MAGIC || raw[W_FORMAT] != ORB_BUNDLE3_FORMAT)
         return ESP_ERR_NOT_FOUND;           /* not a bundle: erased, or a FORMAT 2 blob */
     orb_bundle3_hdr_t h;
     if (orb_bundle3_hdr_parse(raw, &h) != NULL)
         return ESP_ERR_INVALID_CRC;         /* claims 3, header will not check */
-    return adopt_bundle3(p, &h, raw, "slot", SLOT_HDR);
+    return adopt_bundle3(p, &h, raw, "slot", base + SLOT_HDR);
 }
 
 /* One slot's header, read and classified. Returns whether the slot holds a parseable
@@ -1923,6 +2074,87 @@ static bool slot_probe3(const esp_partition_t *p, uint32_t base, orb_bundle3_hdr
     if (raw[W_MAGIC] != THEME_MAGIC || raw[W_FORMAT] != ORB_BUNDLE3_FORMAT) return false;
     *claims3 = true;
     return orb_bundle3_hdr_parse(raw, b3) == NULL;
+}
+
+/* The one slot of Migration 1, carried into the pool on the first boot that finds no
+ * table (docs/theme-pool-plan.md §2.3). The slot at offset 0 already IS an entry, laid
+ * out as every entry is, so the carry reads its header and index for the slug and the
+ * extents, takes the CRCs off flash, and writes a table naming it. Nothing moves and
+ * nothing is erased: a cut before the table lands leaves the slot to carry again. */
+static void pool_carry(const esp_partition_t *p)
+{
+    orb_bundle3_hdr_t h;
+    uint32_t raw[W_WORDS];
+    bool claims;
+    if (!slot_probe3(p, SLOT_HDR, &h, raw, &claims)) return;   /* an empty pool */
+    uint8_t *region = heap_caps_malloc(h.geom_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!region) { ESP_LOGE(TAG, "pool carry: no memory for the slot's index"); return; }
+    orb_bundle_t b;
+    const char *why = esp_partition_read(p, SLOT_GEOM_OFF, region, h.geom_size) != ESP_OK
+                    ? "the slot's index would not read"
+                    : orb_bundle_parse_region(&h, region, h.geom_size, SLOT_CAP, &b);
+    if (!why && b.n_sections < 1) why = "the slot carries no section";
+    orb_pool_entry_t e;
+    memset(&e, 0, sizeof e);
+    if (!why) {
+        strlcpy(e.slug, b.sec[0].slug, sizeof e.slug);
+        strlcpy(e.name, h.name, sizeof e.name);
+        uint32_t end = SLOT_ART_OFF;
+        for (uint32_t i = 0; i < b.n_sections; i++)
+            if (b.sec[i].art_off + b.sec[i].art_size > end) end = b.sec[i].art_off + b.sec[i].art_size;
+        e.geom_size = SLOT_GEOM_OFF + h.geom_size;
+        e.art_off   = SLOT_ART_OFF;
+        e.art_size  = orb_pool_round(end - SLOT_ART_OFF);
+        e.size      = SLOT_ART_OFF + e.art_size;
+        e.file_crc  = raw[W_SCR_H];
+        e.serial    = h.serial;
+        e.abi       = h.geom_abi;
+        if (orb_pool_crc(&s_pool_io, 0, e.geom_size, &e.geom_crc) ||
+            orb_pool_crc(&s_pool_io, e.art_off, e.art_size, &e.art_crc))
+            why = "the slot would not read back";
+    }
+    heap_caps_free(region);
+    if (!why && orb_pool_commit(&s_pool_io, s_pool, &s_pool_which, &e) != 0)
+        why = "the pool's table would not write";
+    if (why) { ESP_LOGE(TAG, "pool carry: %s — the slot stays as it is", why); return; }
+    ESP_LOGI(TAG, "pool: carried the one slot into the pool as %s's theme \"%s\" (%u B)",
+             e.slug, e.name, (unsigned)e.size);
+}
+
+/* The entry boot adopts before any app runs: the clock's, else the first. Each app's
+ * own is bound when it builds and when it takes the glass (orb_theme_bind, P4). */
+static int pool_live_entry(void)
+{
+    const int k = orb_pool_find(s_pool, "clock");
+    return k >= 0 ? k : (s_pool->n ? 0 : -1);
+}
+
+bool orb_theme_has(const char *slug)
+{
+    return slug && s_pool && orb_pool_find(s_pool, slug) >= 0;
+}
+
+/* theme-pool-plan P4: make `slug`'s theme the one the paint path reads — its entry
+ * projected into the dial's tables and its banks mapped — for the stage that is about to
+ * build on that app's page. The stage releases the previous app's layers first, so no
+ * widget, row or voice is reading the map this replaces. Already bound: nothing to do. */
+esp_err_t orb_theme_bind(const char *slug)
+{
+    const esp_partition_t *p = art_bank_partition();
+    const int k = (p && s_pool) ? orb_pool_find(s_pool, slug) : -1;
+    if (k < 0) return ESP_ERR_NOT_FOUND;
+    if (s_active_valid && s_live_base == s_pool->e[k].off && s_live_sec &&
+        !strcmp(s_live_sec->slug, slug))
+        return ESP_OK;
+    const esp_err_t e = adopt_default_bundle(p, s_pool->e[k].off);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "bind: %s's theme would not load (%s)", slug, esp_err_to_name(e));
+        use_no_art();
+        return e;
+    }
+    s_live_base = s_pool->e[k].off;
+    ESP_LOGI(TAG, "bound %s's theme \"%s\"", slug, s_active_name);
+    return ESP_OK;
 }
 
 /* Resolve the owner's choice and verify the slot it names. Called from app_main
@@ -1974,10 +2206,49 @@ esp_err_t orb_theme_boot(void)
         ESP_LOGE(TAG, "the projection verdict scratch refused — stores and "
                       "listings will name that and refuse");
 
+    /* The pool (docs/theme-pool-plan.md): its table, the one slot carried into it on
+     * the first boot that finds none, a cut store's or compaction's repair, then the
+     * entry this boot draws. No pool, no theme: the base face, as an empty slot was. */
+    s_live_base = 0;
+    int pr = pool_io(p) ? orb_pool_load(&s_pool_io, s_pool, &s_pool_which) : ORB_POOL_ERR_ARG;
+    if (!pr && !s_pool_which) pool_carry(p);
+    /* A cut store or compaction leaves a theme mid-move, or a hole: the repair reads
+     * the moving one back and packs the pool before anything draws. Said here, because
+     * a repair that moves megabytes holds the boot dark for seconds (Bronze, 2026-11-04:
+     * 23 s for a 2.8 MB theme). */
+    for (uint32_t k = 0; !pr && k < s_pool->n; k++)
+        if (s_pool->e[k].state != ORB_POOL_LIVE)
+            ESP_LOGW(TAG, "pool: %s's theme was mid-move when the power went; reading it back",
+                     s_pool->e[k].slug);
+    if (!pr && !orb_pool_packed(s_pool))
+        ESP_LOGW(TAG, "pool: a store or removal was cut; packing the pool before the dial draws");
+    if (!pr) {
+        s_pool_io.progress = repair_progress;
+        pr = orb_pool_repair(&s_pool_io, s_pool, &s_pool_which);
+        s_pool_io.progress = NULL;
+    }
+    const int live = pr ? -1 : pool_live_entry();
+    if (pr)
+        ESP_LOGE(TAG, "the theme pool would not load (%d) — base digital face", pr);
+    else
+        ESP_LOGI(TAG, "pool: %u theme%s, %u of %u B used", (unsigned)s_pool->n,
+                 s_pool->n == 1 ? "" : "s", (unsigned)orb_pool_used_end(s_pool),
+                 (unsigned)ORB_POOL_END);
+    if (live < 0) {
+        /* Nothing to draw. A store's witness that outlived it says which store did
+         * not land: no entry can answer it, so it stays up for the row to read. */
+        char staged[ORB_THEME_HANDLE_MAX + 1];
+        if (nvs_get(THEME_NVS_STAGED, staged, sizeof staged) && theme_id_ok(staged))
+            strlcpy(s_staged_id, staged, sizeof s_staged_id);
+        use_no_art();
+        return ESP_OK;
+    }
+    s_live_base = s_pool->e[live].off;
+
     orb_bundle3_hdr_t b3;
     uint32_t raw3[W_WORDS];
     bool claims3 = false;
-    const bool slot_is_bundle = slot_probe3(p, SLOT_HDR, &b3, raw3, &claims3);
+    const bool slot_is_bundle = slot_probe3(p, s_live_base + SLOT_HDR, &b3, raw3, &claims3);
 
     /* The witness is the card STEM the store was asked for. Its slug is the one
      * the install hashed with, so the landing test re-derives the id from the
@@ -2002,7 +2273,7 @@ esp_err_t orb_theme_boot(void)
      * bundle with no clock section — is the base digital face, with the reason on the
      * serial log for whoever reflashes. There is no second slot to reach across to and
      * no factory copy to fall back on: a torn store answers one re-store. */
-    const esp_err_t de = adopt_default_bundle(p);
+    const esp_err_t de = adopt_default_bundle(p, s_live_base);
     if (de == ESP_OK) {
         /* The C3 pass-line line: a stored theme boots MAPPED, with the page count
          * the §9 budget speaks of, and art_bank's refill line is absent. */
@@ -2089,7 +2360,9 @@ static void bundle_job(void *arg)
      * the face the store just replaced: the reboot this job arms should answer the
      * owner's upload with their new dial, not the menu. If the clock row refuses or
      * vanished, resume_last falls back home exactly as an unremembering boot does. */
-    input_router_remember_slug("clock");
+    char slug[ORB_BUNDLE_SLUG_MAX + 1], hex[THEME_ID_HEX + 1];
+    input_router_remember_slug(theme_stem_split(r->id, slug, sizeof slug, hex, sizeof hex)
+                               ? slug : "clock");
     if (orb_jobs_reboot_soon("theme: the store") != ESP_OK)
         ESP_LOGE(TAG, "bundle stored but the reboot could not be armed");
 }
@@ -2119,7 +2392,7 @@ esp_err_t orb_theme_post_bundle(const char *id)
  * tail, armed the same way a failed store arms itself. */
 static void clear_job(void *arg)
 {
-    (void)arg;
+    const char *app = arg && ((const char *)arg)[0] ? (const char *)arg : orb_theme_live_slug();
     const orb_app_t *was = input_router_current();
     if (!store_park_dial(was, 0, "removing")) {
         orb_boot_overlay_release();        /* the overlay's band goes back with the glass */
@@ -2129,19 +2402,32 @@ static void clear_job(void *arg)
     }
     art_bank_unmap();
     s_slot_torn = true;                    /* from here the reboot is the only way back */
+    /* The pool lets this app's theme go and packs every other app's down over it
+     * (docs/theme-pool-plan.md §2.2); the map is down, so nothing reads what moves. */
+    char gone[ORB_POOL_SLUG_MAX];
+    strlcpy(gone, app, sizeof gone);
     const esp_partition_t *p = art_bank_partition();
-    const esp_err_t e = p ? esp_partition_erase_range(p, SLOT_HDR, THEME_SECTOR)
-                          : ESP_ERR_NOT_FOUND;
-    if (e != ESP_OK) {
+    int r = ORB_POOL_ERR_ARG;
+    if (p && s_pool && pool_io(p)) {
+        s_pool_io.progress = room_progress;     /* the apps after it move down */
+        r = orb_pool_remove(&s_pool_io, s_pool, &s_pool_which, gone);
+        s_pool_io.progress = NULL;
+    }
+    if (r) {
         orb_boot_overlay("could not clear the theme slot", 0, 0, 0);
-        ESP_LOGE(TAG, "deactivate: the slot header would not erase (%s) — "
-                      "the dial stands on the parked glass", esp_err_to_name(e));
+        ESP_LOGE(TAG, "deactivate: the pool would not let %s's theme go (%d) — "
+                      "the dial stands on the parked glass", gone, r);
         return;                                /* s_slot_torn stands: reboot recovers */
     }
-    s_active_valid = false;                  /* nothing is on the wall now */
+    if (!strcmp(gone, orb_theme_live_slug()))
+        s_active_valid = false;              /* nothing is on the wall now */
     orb_boot_overlay("theme removed, rebooting", 0, 0, 0);
-    ESP_LOGI(TAG, "deactivated: the theme's card file was deleted and the slot "
-                  "header erased — the base face draws on the next boot");
+    if (!strcmp(gone, orb_theme_live_slug()))
+        ESP_LOGI(TAG, "deactivated: the theme's card file was deleted and %s's entry left "
+                      "the pool — the base face draws on the next boot", gone);
+    else
+        ESP_LOGI(TAG, "%s's stored theme left the pool with its card file — %s draws its "
+                      "base face, and the dial keeps its own", gone, gone);
     if (orb_jobs_reboot_soon("theme: the active theme was deleted") != ESP_OK)
         ESP_LOGE(TAG, "deactivated but the reboot could not be armed — "
                       "a manual reboot lands the base face");
@@ -2150,6 +2436,14 @@ static void clear_job(void *arg)
 esp_err_t orb_theme_post_clear(void)
 {
     return orb_jobs_post(clear_job, NULL, 0);
+}
+
+/* theme-pool-plan P5: let one app's stored theme go, whichever app is on the glass. */
+static esp_err_t post_clear_app(const char *slug)
+{
+    char a[ORB_POOL_SLUG_MAX];
+    strlcpy(a, slug, sizeof a);
+    return orb_jobs_post(clear_job, a, sizeof a);
 }
 
 esp_err_t orb_theme_deactivate(void)
@@ -2200,11 +2494,19 @@ esp_err_t orb_theme_delete(const char *id, bool *deactivating)
         ESP_LOGW(TAG, "delete \"%s\": %s", id, strerror(err));
         return err == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
     }
-    const bool was_active = s_active_valid && strcmp(b3.name, s_active_name) == 0;
-    ESP_LOGI(TAG, "deleted \"%s\" (%s) from the card%s", b3.name, id,
-             was_active ? " — it was the face on the wall, so the slot goes too" : "");
+    /* Worn means stored for its app: the pool's entry for the stem's app carries this
+     * file's name (theme-pool-plan P5). */
+    char dslug[ORB_BUNDLE_SLUG_MAX + 1], dhex[THEME_ID_HEX + 1];
+    const int k = (s_pool && theme_stem_split(id, dslug, sizeof dslug, dhex, sizeof dhex))
+                ? orb_pool_find(s_pool, dslug) : -1;
+    const bool was_active = k >= 0 && strcmp(b3.name, s_pool->e[k].name) == 0;
+    ESP_LOGI(TAG, "deleted \"%s\" (%s) from the card%s%s", b3.name, id,
+             was_active ? " — it was " : "",
+             !was_active ? "" : !strcmp(dslug, orb_theme_live_slug())
+                              ? "the face on the wall, so the slot goes too"
+                              : "its app's stored theme, so it leaves the pool");
     if (was_active && deactivating)
-        *deactivating = (orb_theme_post_clear() == ESP_OK);
+        *deactivating = (post_clear_app(dslug) == ESP_OK);
     return ESP_OK;
 }
 
@@ -2237,16 +2539,17 @@ typedef struct {
     int                n;
     int                counted;         /* the walk's extension-total, cap and
                                          * prefix included — the page's "8 of 19" */
-    const char        *app;             /* which app's rows this listing carries;
-                                         * another app's file is not a refusal,
-                                         * it is not this source's row at all */
-    /* Migration 1: the OWNER NAME the ONE slot header carried when this walk
-     * started, probed LIVE rather than remembered from boot — a store lands and
-     * reboots, and the row must show as stored for the theme that is in the slot
-     * right now. The slot stores the theme, not the filename, so a row's stored
-     * test re-derives the stem id from this name under the row's own slug.
-     * Empty string = nothing drawable in the slot. */
-    char               slot_name[THEME_NAME_MAX + 1];
+    const char        *app;             /* which app's rows this listing carries,
+                                         * NULL for every app's; another app's file
+                                         * is not a refusal, it is not this
+                                         * listing's row at all */
+    /* theme-pool-plan P5: what each app has stored, as the pool's table said when
+     * this walk started — a store on the worker cannot rewrite it under the walk. The
+     * pool stores the theme, not the filename, so a row's stored test re-derives the
+     * stem id from its app's entry name under the row's own slug. */
+    uint32_t           n_stored;
+    struct { char slug[ORB_POOL_SLUG_MAX]; char name[ORB_POOL_NAME_MAX]; uint32_t file_crc; }
+                       stored[ORB_POOL_ENTRIES];
 } scan_ctx_t;
 
 /* The app's half of the walk. The OS found a <slug>-<token>-<id>.orbtheme, checked
@@ -2268,7 +2571,7 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
     char slug[ORB_BUNDLE_SLUG_MAX + 1], id[THEME_ID_HEX + 1];
     const bool mine = theme_stem_split(rec->name, slug, sizeof slug,
                                        id, sizeof id) != false;
-    if (mine && strcmp(slug, c->app) != 0) return false;
+    if (mine && c->app && strcmp(slug, c->app) != 0) return false;
 
     orb_theme_entry_t *e = &c->out[c->n];
     ESP_LOGI(TAG, "checking \"%s\" on the card", rec->name);
@@ -2365,18 +2668,29 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
      * carries the theme, not the filename: the test re-derives this row's id from
      * the slot's name under this row's own slug — the identity the store hashed on
      * its way in. */
-    if (c->slot_name[0]) {
+    for (uint32_t k = 0; k < c->n_stored; k++) {
+        if (strcmp(c->stored[k].slug, slug) != 0) continue;
         char sid[THEME_ID_HEX + 1];
-        theme_id(slug, c->slot_name, sid);
-        if (strcmp(sid, id) == 0) e->stored = true;
+        theme_id(slug, c->stored[k].name, sid);
+        if (strcmp(sid, id) == 0) {
+            e->stored = true;
+            /* The theme the dial drew at boot answers through theme_state(), as it
+             * always has; another app's stored theme against the card file's region
+             * checksum, which its pool entry keeps (theme-pool-plan P5). */
+            if (s_active_valid && !strcmp(slug, orb_theme_live_slug())) {
+                orb_thdr_t as;      /* the identity theme_state() reads */
+                memset(&as, 0, sizeof as);
+                strlcpy(as.name, b3.name, sizeof as.name);
+                as.geom_crc = s_bundle_file_geom;
+                as.art_crc = s_bundle_file_geom;   /* adopt_bundle3's one-figure rule */
+                as.fmt = 3;
+                theme_state(&as, &e->active, &e->changed);
+            } else {
+                e->active  = c->stored[k].file_crc == b3.geom_crc;
+                e->changed = !e->active;
+            }
+        }
     }
-    orb_thdr_t as;      /* the identity theme_state() reads: name + the two figures */
-    memset(&as, 0, sizeof as);
-    strlcpy(as.name, b3.name, sizeof as.name);
-    as.geom_crc = s_bundle_file_geom;
-    as.art_crc = s_bundle_file_geom;   /* adopt_bundle3's one-figure rule */
-    as.fmt = 3;
-    theme_state(&as, &e->active, &e->changed);
     c->n++;
     return true;
 }
@@ -2409,6 +2723,16 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
  * walk — the law orb_files.h writes the whole registration API under.
  * =========================================================================== */
 _Static_assert(ORB_THEME_LIST_MAX <= 255, "orb_file_src_t.max_entries is a uint8_t");
+/* theme-pool-plan P5: every app's themes, the OS's own read of the shared directory.
+ * No prefix: a row's app is its stem's slug, which the doors split and check. A static
+ * const, never registered, so any task may read it (orb_files.h's threading rule). */
+static const orb_file_src_t s_any_themes_src = {
+    .id          = "themes",
+    .dir         = ORB_SD_THEME_DIR,
+    .ext         = ORB_THEME_EXT,
+    .max_entries = ORB_THEME_LIST_MAX,
+    .name_prefix = "",
+};
 static const orb_file_src_t s_clock_themes_src = {
     .id          = "themes",
     .dir         = ORB_SD_THEME_DIR,
@@ -2441,6 +2765,11 @@ static const orb_file_src_t *theme_src(void)
 
 int orb_theme_scan(orb_theme_entry_t *out, int cap)
 {
+    return orb_theme_scan_app(NULL, out, cap);
+}
+
+int orb_theme_scan_app(const char *app, orb_theme_entry_t *out, int cap)
+{
     if (!out || cap <= 0) return -1;
     /* While an upload owns the card, do not open a second file on it: FatFs is
      * reentrant per volume, but this walk plus a 3.7 MB write on the same
@@ -2457,22 +2786,22 @@ int orb_theme_scan(orb_theme_entry_t *out, int cap)
      * constant here: the OS owns the walk, so this layer asks where its themes
      * live rather than assuming — through theme_src(), which can ask that
      * question on a boot whose clock app never built. */
-    const orb_file_src_t *src = theme_src();
+    const orb_file_src_t *src = &s_any_themes_src;
 
-    scan_ctx_t c = { .out = out, .cap = cap, .n = 0, .app = "clock" };
-    /* Probe the one slot for this walk's answer. The partition outliving the card is
-     * the point: a stored bundle stays listed as stored with no card in the socket at
-     * all, and this probe only decides what the page MARKS — the store door re-reads
-     * the same header on the worker before it writes anything. The probe answers with
-     * the slot's OWNER NAME; the stem a row is stored under is re-derived per row,
-     * because the slot holds a theme and the name is a filing decision. */
-    const esp_partition_t *sp = art_bank_partition();
-    if (sp) {
-        orb_bundle3_hdr_t sh;
-        uint32_t sraw[W_WORDS];
-        bool claims;
-        if (slot_probe3(sp, SLOT_HDR, &sh, sraw, &claims))
-            strlcpy(c.slot_name, sh.name, sizeof c.slot_name);
+    /* Most of a kilobyte with the snapshot: PSRAM per walk, not the door task's 4 KB
+     * stack, and not a static that two door tasks listing at once would share. */
+    scan_ctx_t *c = heap_caps_calloc(1, sizeof *c, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!c) return -1;
+    c->out = out; c->cap = cap; c->app = app;
+    /* What each app has stored, from the pool's table. The partition outliving the card
+     * is the point: a stored theme stays listed as stored with no card in the socket at
+     * all, and this only decides what the page MARKS — the store door re-reads the
+     * card's header on the worker before it writes anything. */
+    for (uint32_t k = 0; s_pool && k < s_pool->n && k < ORB_POOL_ENTRIES; k++) {
+        strlcpy(c->stored[c->n_stored].slug, s_pool->e[k].slug, sizeof c->stored[0].slug);
+        strlcpy(c->stored[c->n_stored].name, s_pool->e[k].name, sizeof c->stored[0].name);
+        c->stored[c->n_stored].file_crc = s_pool->e[k].file_crc;
+        c->n_stored++;
     }
     /* Both ends logged, with the wait: a scan that never comes back is the one card
      * failure that looks like a dead web server from outside (the dial keeps drawing
@@ -2480,12 +2809,16 @@ int orb_theme_scan(orb_theme_entry_t *out, int cap)
      * worker is waiting on the mutex or inside FatFs. */
     const int64_t t_scan = esp_timer_get_time();
     ESP_LOGI(TAG, "listing %s", src->dir);
-    if (orb_files_walk(src, scan_entry, &c, &c.counted) < 0) return -1;
-    s_scan_counted = c.counted;
-    ESP_LOGI(TAG, "%d of %d entr%slisted in %lld ms", c.n, c.counted,
-             c.n == 1 ? "y " : "ies ",
-             (long long)((esp_timer_get_time() - t_scan) / 1000));
-    return c.n;
+    const int w = orb_files_walk(src, scan_entry, c, &c->counted);
+    const int n = c->n;
+    if (w >= 0) {
+        s_scan_counted = c->counted;
+        ESP_LOGI(TAG, "%d of %d entr%slisted in %lld ms", n, c->counted,
+                 n == 1 ? "y " : "ies ",
+                 (long long)((esp_timer_get_time() - t_scan) / 1000));
+    }
+    heap_caps_free(c);
+    return w < 0 ? -1 : n;
 }
 
 /* ------------------------------------------------------------------------- *

@@ -1,0 +1,738 @@
+{
+ "glass": 466,
+ "ring_r": 184,
+ "plane_px": 38,
+ "min_text_px": 14,
+ "bands": [
+  [
+   "ground",
+   "#888888"
+  ],
+  [
+   "no alt",
+   "#C0C0C0"
+  ],
+  [
+   "< 3k ft",
+   "#FF5A3C"
+  ],
+  [
+   "< 10k",
+   "#FFB23C"
+  ],
+  [
+   "< 20k",
+   "#C8FF3C"
+  ],
+  [
+   "< 30k",
+   "#39FF14"
+  ],
+  [
+   "30k +",
+   "#3CE0FF"
+  ]
+ ],
+ "families": {
+  "modern": {
+   "title": "Modern",
+   "band": "Shape and colour: a flat silhouette in the band colour.",
+   "single": "Colour and detail: one shaded airliner for every category, in the band colour.",
+   "file_band": "#EEF2F5",
+   "background": "scope",
+   "arm": "wedge"
+  },
+  "silver": {
+   "title": "Modern silver",
+   "band": "Shape and material: polished metal with a hint of the band colour.",
+   "single": "Material and detail: one polished four-engine jet for every category, with a hint of the band colour.",
+   "file_band": null,
+   "background": "scope",
+   "arm": "needle"
+  },
+  "brass": {
+   "title": "Vintage brass",
+   "band": "Shape and material: older aircraft in polished brass, with a hint of the band colour.",
+   "single": "Material and detail: one brass twin radial transport for every category, props spinning, with a hint of the band colour.",
+   "file_band": null,
+   "background": "brass",
+   "arm": "pointer"
+  },
+  "blueprint": {
+   "title": "Blueprint",
+   "band": "Shape and colour: a wireframe outline in the band colour; the grid shows through.",
+   "single": "Colour and detail: one airliner drawn as a full technical outline in the band colour.",
+   "file_band": "#EAF3FF",
+   "background": "blueprint",
+   "arm": "drafting"
+  },
+  "paper": {
+   "title": "Paper",
+   "band": "Shape and colour: a different flat paper plane for each category.",
+   "single": "Colour and detail: one shaded paper dart for every category, folded from paper in the band colour.",
+   "file_band": "#F2F0EA",
+   "background": "chart",
+   "arm": "needle"
+  }
+ },
+ "planes": {
+  "modern": {
+   "light": {
+    "file": "planes/modern-light.svg",
+    "what": "Light single (A1): high wing, nose prop",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "turboprop": {
+    "file": "planes/modern-turboprop.svg",
+    "what": "Turboprop (A2): straight wing, two props",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "bizjet": {
+    "file": "planes/modern-bizjet.svg",
+    "what": "Business jet (A2/A3): tail engines, T-tail",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "airliner": {
+    "file": "planes/modern-airliner.svg",
+    "what": "Airliner (A3): swept wing, two engines",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "heavy": {
+    "file": "planes/modern-heavy.svg",
+    "what": "Heavy (A5): wide body, four engines",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "helicopter": {
+    "file": "planes/modern-helicopter.svg",
+    "what": "Rotorcraft (A7): rotor disc, tail boom",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "generic": {
+    "file": "planes/modern-generic.svg",
+    "what": "Unknown category: a plain arrowhead",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "single": {
+    "file": "planes/modern-single.svg",
+    "what": "One airliner for every category: shaded, flaps and elevators lined",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   }
+  },
+  "silver": {
+   "light": {
+    "file": "planes/silver-light.svg",
+    "what": "Light single (A1): high wing, nose prop",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "turboprop": {
+    "file": "planes/silver-turboprop.svg",
+    "what": "Turboprop (A2): straight wing, two props",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "bizjet": {
+    "file": "planes/silver-bizjet.svg",
+    "what": "Business jet (A2/A3): tail engines, T-tail",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "airliner": {
+    "file": "planes/silver-airliner.svg",
+    "what": "Airliner (A3): swept wing, two engines",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "heavy": {
+    "file": "planes/silver-heavy.svg",
+    "what": "Heavy (A5): wide body, four engines",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "helicopter": {
+    "file": "planes/silver-helicopter.svg",
+    "what": "Rotorcraft (A7): rotor disc, tail boom",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "generic": {
+    "file": "planes/silver-generic.svg",
+    "what": "Unknown category: a plain arrowhead",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "single": {
+    "file": "planes/silver-single.svg",
+    "what": "One four-engine jet for every category: polished, shaded, flaps and elevators lined",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   }
+  },
+  "brass": {
+   "light": {
+    "file": "planes/brass-light.svg",
+    "what": "Light single (A1): elliptical-wing fighter",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "turboprop": {
+    "file": "planes/brass-turboprop.svg",
+    "what": "Turboprop (A2): twin radial transport",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "bizjet": {
+    "file": "planes/brass-bizjet.svg",
+    "what": "Business jet (A2/A3): twin-boom early jet",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "airliner": {
+    "file": "planes/brass-airliner.svg",
+    "what": "Airliner (A3): four-engine propliner, triple tail",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "heavy": {
+    "file": "planes/brass-heavy.svg",
+    "what": "Heavy (A5): four-engine bomber",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "helicopter": {
+    "file": "planes/brass-helicopter.svg",
+    "what": "Rotorcraft (A7): autogyro, nose prop and free rotor",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "generic": {
+    "file": "planes/brass-generic.svg",
+    "what": "Unknown category: a compass pointer",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "single": {
+    "file": "planes/brass-single.svg",
+    "what": "One twin radial transport for every category: polished, props spinning, cowls ringed",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   }
+  },
+  "blueprint": {
+   "light": {
+    "file": "planes/blueprint-light.svg",
+    "what": "Light single (A1): high wing, nose prop",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "turboprop": {
+    "file": "planes/blueprint-turboprop.svg",
+    "what": "Turboprop (A2): straight wing, two props",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "bizjet": {
+    "file": "planes/blueprint-bizjet.svg",
+    "what": "Business jet (A2/A3): tail engines, T-tail",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "airliner": {
+    "file": "planes/blueprint-airliner.svg",
+    "what": "Airliner (A3): swept wing, two engines",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "heavy": {
+    "file": "planes/blueprint-heavy.svg",
+    "what": "Heavy (A5): wide body, four engines",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "helicopter": {
+    "file": "planes/blueprint-helicopter.svg",
+    "what": "Rotorcraft (A7): rotor disc, tail boom",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "generic": {
+    "file": "planes/blueprint-generic.svg",
+    "what": "Unknown category: a plain arrowhead",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "single": {
+    "file": "planes/blueprint-single.svg",
+    "what": "One airliner for every category: shaded, flaps and elevators lined",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   }
+  },
+  "paper": {
+   "light": {
+    "file": "planes/paper-light.svg",
+    "what": "Light single (A1): broad glider, blunt nose",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "turboprop": {
+    "file": "planes/paper-turboprop.svg",
+    "what": "Turboprop (A2): square-wing plane",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "bizjet": {
+    "file": "planes/paper-bizjet.svg",
+    "what": "Business jet (A2/A3): slim swept dart with winglets",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "airliner": {
+    "file": "planes/paper-airliner.svg",
+    "what": "Airliner (A3): the classic dart",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "heavy": {
+    "file": "planes/paper-heavy.svg",
+    "what": "Heavy (A5): wide delta, notched trailing edge",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "helicopter": {
+    "file": "planes/paper-helicopter.svg",
+    "what": "Rotorcraft (A7): paper whirligig, blades folded opposite ways",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "generic": {
+    "file": "planes/paper-generic.svg",
+    "what": "Unknown category: a folded chevron",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "single": {
+    "file": "planes/paper-single.svg",
+    "what": "One paper dart for every category",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   }
+  }
+ },
+ "arms": {
+  "wedge": {
+   "file": "arms/wedge.svg",
+   "title": "Phosphor wedge",
+   "what": "Lead line with a glow and a fading trail; blend screen over the scope.",
+   "size": [
+    128,
+    194
+   ],
+   "pivot": [
+    122,
+    188
+   ],
+   "length": 184
+  },
+  "needle": {
+   "file": "arms/needle.svg",
+   "title": "Instrument needle",
+   "what": "White blade, orange tip, counterweight and arbor; blend normal.",
+   "size": [
+    28,
+    226
+   ],
+   "pivot": [
+    14,
+    184
+   ],
+   "length": 184
+  },
+  "pointer": {
+   "file": "arms/pointer.svg",
+   "title": "Brass pointer",
+   "what": "Tapered brass blade, moon ring near the tip, ringed counterweight, slotted arbor.",
+   "size": [
+    28,
+    224
+   ],
+   "pivot": [
+    14,
+    184
+   ],
+   "length": 184
+  },
+  "drafting": {
+   "file": "arms/drafting.svg",
+   "title": "Drafting line",
+   "what": "Ruled white arm with an arrowhead and range ticks; compass-point hub.",
+   "size": [
+    18,
+    208
+   ],
+   "pivot": [
+    9,
+    188
+   ],
+   "length": 184
+  }
+ },
+ "backgrounds": {
+  "scope": {
+   "file": "backgrounds/scope.svg",
+   "title": "Phosphor scope",
+   "what": "Live rings in dim green; any band colour reads on it.",
+   "size": [
+    466,
+    466
+   ],
+   "ring": "#2A6A44",
+   "ring_opa": 0.8,
+   "home": "#FFFFFF",
+   "blipbg": "#06160D",
+   "head": "#39FF14",
+   "card": "#FFFFFF",
+   "foot": "#909090",
+   "sel": "#FFFFFF"
+  },
+  "chart": {
+   "file": "backgrounds/chart.svg",
+   "title": "Aviation chart",
+   "what": "Live rings in chart blue; the dark outline carries planes on paper.",
+   "size": [
+    466,
+    466
+   ],
+   "ring": "#2F5C8C",
+   "ring_opa": 0.55,
+   "home": "#2F5C8C",
+   "blipbg": "#EAE3CF",
+   "head": "#1E6B2E",
+   "card": "#14202C",
+   "foot": "#5B5240",
+   "sel": "#14202C"
+  },
+  "brass": {
+   "file": "backgrounds/brass.svg",
+   "title": "Brass instrument",
+   "what": "Black enamel in a brass bezel; cream engraving, brass text.",
+   "size": [
+    466,
+    466
+   ],
+   "ring": "#C9A24E",
+   "ring_opa": 0.45,
+   "home": "#E8C46A",
+   "blipbg": "#161815",
+   "head": "#E8C46A",
+   "card": "#F2E6C8",
+   "foot": "#A8946A",
+   "sel": "#E8C46A"
+  },
+  "blueprint": {
+   "file": "backgrounds/blueprint.svg",
+   "title": "Blueprint",
+   "what": "Drafting blue with a fine grid; live rings and text in white.",
+   "size": [
+    466,
+    466
+   ],
+   "ring": "#DCE9F8",
+   "ring_opa": 0.45,
+   "home": "#FFFFFF",
+   "blipbg": "#1C4A84",
+   "head": "#FFFFFF",
+   "card": "#FFFFFF",
+   "foot": "#B8CCE6",
+   "sel": "#FFFFFF"
+  }
+ }
+}

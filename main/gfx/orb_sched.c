@@ -126,6 +126,25 @@ void orb_bg_init(const uint8_t *base)
     s_art = base;
 }
 
+/* theme-pool-plan P4: the stage lets its app go before it builds for another, whose
+ * theme maps other banks. Everything here read the old bank or drew on the old page:
+ * the plate widget (the stage deletes it), the delta canvas (434 KB of PSRAM, freed so
+ * a rebind never holds two), and the frame bookkeeping. */
+void orb_bg_release(void)
+{
+    s_plate = NULL;
+    if (s_canvas) { heap_caps_free(s_canvas); s_canvas = NULL; }
+    memset(&s_canvas_dsc, 0, sizeof s_canvas_dsc);
+    s_gif_shown = 0;
+    s_gif_due = 0;
+    s_bg_tick = 0;
+    s_bg_every = 1;
+    s_bg_shown = -1;
+    s_bg_play_start = 0;
+    s_bg_last_play = 0;
+    s_art = NULL;
+}
+
 /* Every pixel of the dial comes from here: the bank lives in the `assets` flash
  * partition and is mapped once at boot by art_bank_init(), so this stays a bare
  * pointer return and sprite reads cost what they always did. */
@@ -990,6 +1009,13 @@ static void tick_timer_cb(lv_timer_t *timer)
 void orb_sched_start(uint32_t period_ms, const orb_sched_policy_t *policy)
 {
     if (policy) s_policy = *policy;
+    /* theme-pool-plan P4: a stage that rebuilds for another app starts again; there is
+     * one frame timer, re-paced and parked, never a second. */
+    if (s_tick_timer) {
+        lv_timer_set_period(s_tick_timer, period_ms);
+        lv_timer_pause(s_tick_timer);
+        return;
+    }
 #if CLK_BG_DIRECT_PUSH
     /* Migration 2, Commit 4: the app layer table's weld point. Display calls
      * the hook at every commit, and the gate inside it — not a registration

@@ -211,6 +211,10 @@ orb_asset_ans_t orb_theme_preview_read(const char *handle,
 const char *orb_theme_source(void);
 /** D50: the slug of the app the live theme belongs to, "" when no theme is live. */
 const char *orb_theme_live_slug(void);
+/* theme-pool-plan P4: whether `slug` has a theme in the pool, and making it the one the
+ * paint path reads (its tables projected, its banks mapped) for the stage to build on. */
+bool        orb_theme_has(const char *slug);
+esp_err_t   orb_theme_bind(const char *slug);
 /** The owner name of the theme currently on the wall, "" for the base face. */
 const char *orb_theme_active_name(void);
 
@@ -325,6 +329,8 @@ typedef struct {
  * page has to be able to tell the owner which one they have.
  */
 int orb_theme_scan(orb_theme_entry_t *out, int cap);
+/* theme-pool-plan P5: one app's themes alone (orb_theme_scan lists every app's). */
+int orb_theme_scan_app(const char *app, orb_theme_entry_t *out, int cap);
 
 /** How many files the last scan's walk saw carrying the theme extension at all,
  *  the listing cap and other apps' files included: the "shown of on the card"

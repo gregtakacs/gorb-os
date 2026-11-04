@@ -112,7 +112,7 @@ static lv_image_dsc_t s_overlay_dsc;
  * and this is each row's tick state: its widget for the classic path, the pose it
  * shows now (an angle in tenths and the pivot's travel in px), the sprite at that
  * travel, and its ease. The L4 hook paints from the poses, the classic path from
- * the widgets, and both read ONE truth per tick. PSRAM, once: 24 rows of widget
+ * the widgets, and both read ONE truth per tick. PSRAM, once: 32 rows of widget
  * descriptors and poses would sit on the internal heap boundary httpd_start needs
  * (the 2026-10-24 lesson the layer keys below record), and a row is read a handful
  * of times a frame. ROW_HIDDEN is the nothing-drawn mark; no pose reaches it. */
@@ -124,6 +124,8 @@ typedef struct {
     int16_t        ox, oy;     /* the pivot's travel shown, px                    */
     clk_sprite_t   pose;       /* the row's sprite moved by (ox, oy)              */
     bool           logged;     /* "no input" printed for this row                 */
+    int16_t        frame;      /* the picked frame shown (theme-pool-plan §2.6)   */
+    clk_sprite_t   fspr;       /* a picked row's sprite at that frame             */
 } row_state_t;
 static row_state_t *s_row;
 #define ROW_HIDDEN INT32_MIN
@@ -132,12 +134,14 @@ static row_state_t *s_row;
  * posted it from (stage_now). A row the app never posed stays hidden. */
 static int32_t s_g_ang[CLK_ROW_MAX];
 static int16_t s_g_ox[CLK_ROW_MAX], s_g_oy[CLK_ROW_MAX];
+static int16_t s_g_frame[CLK_ROW_MAX];   /* the frame the app picked (stage_frame) */
 static int32_t s_g_cval[CLK_COMP_MAX];
 static uint8_t s_g_clive[CLK_COMP_MAX];
 static time_t  s_now_t;
 static double  s_now_frac, s_now_wall;
 static bool    s_base;            /* no resident theme: the stage draws nothing */
-static bool    s_opened;
+static bool    s_opened;          /* built for s_lay_app (theme-pool-plan P4: one app at a time) */
+static lv_obj_t *s_plate_obj;     /* the plate widget, so a release can take it down */
 
 /* CLK_BG_DIRECT_PUSH, the L3/L4 switch the block below and the scheduler's delta
  * push both key on, lives in orb_sched.h: one number, both TUs, so the push and
@@ -1152,12 +1156,29 @@ static uint8_t row_role(const clk_row_t *r)
     }
 }
 
-/* The sprite a row draws: the carriage's shown frame, or the row's own plate. */
+/* A row whose frames the app picks (theme-pool-plan §2.6): its frames are consecutive
+ * catalogue planes of the row's own size (the projection refused any other), each a
+ * colour plane and its alpha plane, so frame f sits f planes past the row's own. */
+static bool row_picks(uint16_t i)
+{
+    return i < CLK_ROW_MAX && clk_theme.pick_n[i] > 1u;
+}
+
+static void pick_sprite(uint16_t i, int16_t f, clk_sprite_t *out)
+{
+    *out = orb_theme_geo()->rows[i].spr;
+    out->color_off += (uint32_t)f * ((uint32_t)out->w * out->h * 3u);
+}
+
+/* The sprite a row draws: the carriage's shown frame, a picked row's frame, or the
+ * row's own plate. */
 static const clk_sprite_t *row_spr(uint16_t i)
 {
     const clk_row_t *r = &orb_theme_geo()->rows[i];
     if (i == clk_theme.car_row && clk_theme.tourbillon_n)
         return &clk_theme.tourbillon[s_tourb_shown >= 0 ? s_tourb_shown : 0];
+    if (row_picks(i) && s_row)
+        return &s_row[i].fspr;
     return &r->spr;
 }
 
@@ -1212,8 +1233,10 @@ static void rows_update(void)
             gfx_mark_rows(w.y1 < 0 ? 0 : w.y1, w.y2 > CLK_SCR_H - 1 ? CLK_SCR_H - 1 : w.y2,
                           w.x1 < 0 ? 0 : w.x1, w.x2 > CLK_SCR_W - 1 ? CLK_SCR_W - 1 : w.x2, false);
         }
-        if (a == prev && ox[i] == st->ox && oy[i] == st->oy) continue;
-        if (a != ROW_HIDDEN && prev != ROW_HIDDEN && ox[i] == st->ox && oy[i] == st->oy) {
+        /* A new picked frame redraws the row's box even where the pose stands still. */
+        const bool fchg = row_picks(i) && s_g_frame[i] != st->frame;
+        if (!fchg && a == prev && ox[i] == st->ox && oy[i] == st->oy) continue;
+        if (!fchg && a != ROW_HIDDEN && prev != ROW_HIDDEN && ox[i] == st->ox && oy[i] == st->oy) {
             int32_t d = a - prev;
             if (d > 1800) d -= 3600;
             if (d < -1800) d += 3600;
@@ -1252,7 +1275,21 @@ static void rows_update(void)
          * paint reading another is the ghost the swept-box contract exists to prevent. */
         st->ang_10 = a;
         st->ox = ox[i]; st->oy = oy[i];
-        if (a != ROW_HIDDEN) pose_spr(&g->rows[i].spr, ox[i], oy[i], &st->pose);
+        if (fchg) {
+            /* The frames share the row's geometry, so the boxes marked above are the
+             * new frame's too; only the pixels change. The src setter's own invalidation
+             * is off for the carriage's reason (tourbillon_advance). */
+            st->frame = s_g_frame[i];
+            pick_sprite(i, st->frame, &st->fspr);
+            if (st->obj) {
+                gfx_fill_sprite_dsc(&st->dsc, &st->fspr, blob());
+                lv_display_enable_invalidation(disp, false);
+                lv_image_set_src(st->obj, &st->dsc);
+                lv_display_enable_invalidation(disp, true);
+            }
+        }
+        if (a != ROW_HIDDEN)
+            pose_spr(row_picks(i) ? &st->fspr : &g->rows[i].spr, ox[i], oy[i], &st->pose);
         /* D43: only the compositor draws a drum (the classic widget would slide the
          * strip, not roll it); a theme with one is refused past the layer cap at bake */
         if (clk_theme.drum_r[i]) { if (st->obj) lv_obj_set_hidden(st->obj, true); continue; }
@@ -1689,6 +1726,14 @@ static void clock_layers_refresh(void)
                     d.drum = 0;
                 }
                 d.ang_10 = drum_r ? 0 : (int16_t)st->ang_10;
+                if (row_picks(r->gidx) && st->frame > 0 && (uint32_t)st->frame < r->n_frames) {
+                    /* A picked row, at the frame the app picked: the plane the widget
+                     * shows (theme-pool-plan §2.6). */
+                    orb_bundle_spr_t sp;
+                    orb_bundle_spr_at(s_lay_sec, (uint32_t)(r->frame0 + st->frame), &sp);
+                    d.art.off = s_lay_bank_off + sp.off;
+                    d.art.bytes = sp.size;
+                }
                 if (r->gidx == clk_theme.car_row && clk_theme.tourbillon_n) {
                     /* The carriage, at the frame the wall clock just picked — the
                      * frame tourbillon_advance marks against. */
@@ -1765,7 +1810,7 @@ esp_err_t stage_init(orb_app_t *self)
     s_lay_app = self;
     s_scr = orb_ui_screen(self->flash_slot);
     if (!s_scr) return ESP_ERR_NO_MEM;
-    for (int i = 0; i < CLK_ROW_MAX; i++) s_g_ang[i] = ROW_HIDDEN;
+    for (int i = 0; i < CLK_ROW_MAX; i++) { s_g_ang[i] = ROW_HIDDEN; s_g_frame[i] = 0; }
 
     /* §26: no resident art. The stage draws nothing and starts no frames; the page
      * stays the black one orb_ui built, and the app puts its own face on it (D31:
@@ -1807,6 +1852,7 @@ esp_err_t stage_init(orb_app_t *self)
         plate_src = orb_bg_plate_dsc();
     }
     lv_obj_t *plate = lv_image_create(s_scr);
+    s_plate_obj = plate;
     lv_obj_set_size(plate, CLK_SCR_W, CLK_SCR_H);
     lv_obj_set_pos(plate, 0, 0);
     lv_obj_set_scrollable(plate, false);
@@ -1824,6 +1870,7 @@ esp_err_t stage_init(orb_app_t *self)
         for (int i = 0; i < CLK_ROW_MAX; i++) {
             memset(&s_row[i], 0, sizeof s_row[i]);
             s_row[i].ang_10 = ROW_HIDDEN;
+            if (row_picks((uint16_t)i)) pick_sprite((uint16_t)i, 0, &s_row[i].fspr);
         }
     else
         ESP_LOGE(TAG, "row state: PSRAM alloc failed — the dial draws its plate only");
@@ -2086,15 +2133,79 @@ bool stage_running(void)
 
 /* ---- §43: the stage's surface, bound as the dial_* imports (orb_app_wasm.c) ------- */
 
+/* ---- theme-pool-plan P4: the stage is the app's on the glass ---------------------------
+ *
+ * Each theme-aware app wears its own theme from the pool, and one stage draws whichever
+ * app is building or on the glass. Binding to another app releases everything the stage
+ * built for the last one — its layer-table rows, its widgets on that app's page, the
+ * plate and the delta canvas, its voices — then binds the new app's theme (its tables
+ * projected, its banks mapped in place of the old) and builds on the new app's page. The
+ * release comes first because every widget and row it deletes reads the map the bind
+ * replaces. */
+static void stage_release(void)
+{
+    if (!s_opened) return;
+    stage_run(false);                              /* frames and voices parked */
+    orb_sound_stop_all();
+    if (!s_base) {
+        const orb_svc_t *svc = orb_svc_table();
+        if (s_lay_app && orb_svc_layers_live(s_lay_app) > 0)
+            for (int i = 0; i < s_lay_n; i++) svc->layer_del(s_lay_app, s_lay_handle[i]);
+        s_lay_n = 0;
+        s_lay_sec = NULL;
+        s_lay_bank_off = 0;
+        orb_sched_set_layer_claim(0, 0);
+        for (int i = 0; s_row && i < CLK_ROW_MAX; i++)
+            if (s_row[i].obj) { lv_obj_delete(s_row[i].obj); s_row[i].obj = NULL; }
+        for (int i = 0; i < CLK_COMP_MAX; i++)
+            for (int p = 0; p < CLK_COMP_SLOTS; p++)
+                if (s_comp_obj[i][p]) { lv_obj_delete(s_comp_obj[i][p]); s_comp_obj[i][p] = NULL; }
+        complications_reset();
+        if (s_overlay) { lv_obj_delete(s_overlay); s_overlay = NULL; }
+        if (s_plate_obj) { lv_obj_delete(s_plate_obj); s_plate_obj = NULL; }
+        orb_bg_release();
+    }
+    ESP_LOGI(TAG, "stage released %s", s_lay_app && s_lay_app->slug ? s_lay_app->slug : "?");
+    s_opened = false;
+    s_base = false;
+    s_art = NULL;
+    s_lay_app = NULL;
+}
+
+bool stage_bound(const orb_app_t *app)
+{
+    return s_opened && app && s_lay_app == app;
+}
+
+esp_err_t stage_bind(orb_app_t *app)
+{
+    if (stage_bound(app)) return ESP_OK;
+    stage_release();
+    /* A theme that will not bind leaves the tables empty, and stage_init finds no
+     * resident art and draws nothing: the app's base face, the D31 fallback. */
+    (void)orb_theme_bind(app->slug);
+    /* The app's own widgets (a label, a card) may already be on its page: a rebind
+     * builds after them. The stage's objects go beneath them, in their own order —
+     * the plate lowest — so a rebuilt dial never covers what the app drew. */
+    lv_obj_t *page = orb_ui_screen(app->flash_slot);
+    const uint32_t before = page ? lv_obj_get_child_count(page) : 0;
+    const esp_err_t e = stage_init(app);
+    if (e != ESP_OK) return e;
+    if (page && before) {
+        const uint32_t built = lv_obj_get_child_count(page) - before;
+        for (uint32_t i = 0; i < built; i++)
+            lv_obj_move_to_index(lv_obj_get_child(page, (int32_t)(before + i)), (int32_t)i);
+    }
+    s_opened = true;
+    ESP_LOGI(TAG, "stage bound to %s%s", app->slug, s_base ? " (base face: no theme)" : "");
+    return ESP_OK;
+}
+
 esp_err_t stage_open(orb_app_t *app, bool *base)
 {
-    if (!s_opened) {
-        const esp_err_t e = stage_init(app);
-        if (e != ESP_OK) return e;
-        s_opened = true;
-    }
+    const esp_err_t e = stage_bind(app);
     if (base) *base = s_base;
-    return ESP_OK;
+    return e;
 }
 
 void stage_info(uint16_t *n_rows, uint16_t *n_comps, uint8_t *car_row, uint8_t *tick_rate,
@@ -2154,6 +2265,17 @@ void stage_pose(int i, int32_t ang_10, int32_t ox, int32_t oy)
     s_g_ang[i] = ang_10 == INT32_MIN ? ROW_HIDDEN : ((ang_10 % 3600) + 3600) % 3600;
     s_g_ox[i] = (int16_t)ox;
     s_g_oy[i] = (int16_t)oy;
+}
+
+/* theme-pool-plan §2.6: the app picks a row's frame. The answer is the row's frame
+ * count (1 for a row of one image, 0 for no such row); f in range shows frame f from
+ * the next frame on, and f < 0 only asks. */
+int stage_frame(int i, int32_t f)
+{
+    if (s_base || i < 0 || i >= CLK_ROW_MAX || i >= (int)orb_theme_geo()->n_rows) return 0;
+    const int n = row_picks((uint16_t)i) ? (int)clk_theme.pick_n[i] : 1;
+    if (f >= 0 && f < n && row_picks((uint16_t)i)) s_g_frame[i] = (int16_t)f;
+    return n;
 }
 
 void stage_comp_set(int i, int32_t value, bool live)

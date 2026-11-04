@@ -8,6 +8,13 @@ what the projection settled on: every moving row (D42), the carriage, the compli
 windows and the plate bank. Exit 0 means the dial's own code accepted the bake.
 
     python3 tools/verify_js_bake.py /tmp/bench_bake.orbtheme
+
+--rows holds the browser baker's moving-row rules to theme_schema's and to the dial
+(theme-pool-plan: 32 rows, rows whose frames the app picks). Every case below is judged by
+the JS checks (in node) and by theme_schema; both must accept, or both refuse for the
+same reason. Then GorbBake.stage3 bakes a plane pool (one bank of frames, many rows naming
+it), which orbbundle.read_bundle must read and the shipped orb_clock3.c must project:
+    python3 tools/verify_js_bake.py --rows
 """
 import os
 import sys
@@ -18,7 +25,124 @@ import host_clock3_test as H3
 from theme_schema import SOURCES, SHAPES, ENDS, CADENCES
 
 
+# --rows: each case is a list of rows (the AUX table) and the reason both sides must give,
+# or None when both must accept. A row is a jumping minute hand unless it says otherwise;
+# "pick": n frames and no frame time; "car": n frames with one; "twin": a shadow twin.
+ROW_CASES = [
+    ("the 32nd seat, ptr31",                  [{"slot": 31}], None),
+    ("a 33rd seat, ptr32",                    [{"slot": 32}], "seats 32 moving rows"),
+    ("a picked row of 2 frames",              [{"slot": 0, "pick": 2}], None),
+    ("a picked row of 64 frames",             [{"slot": 0, "pick": 64}], None),
+    ("a picked row of 65 frames",             [{"slot": 0, "pick": 65}], "frames to pick from"),
+    ("a carriage of 16 frames",               [{"slot": 0, "car": 16}], None),
+    ("a carriage of 17 frames",               [{"slot": 0, "car": 17}], "at most 16 frames"),
+    ("a twin under a single plate",           [{"slot": 0}, {"slot": 1, "twin": 1}], None),
+    ("a twin under a picked row",             [{"slot": 0, "pick": 7}, {"slot": 1, "twin": 1}], "shade one frame of many"),
+    ("sixteen picked rows",                   [{"slot": i, "pick": 49} for i in range(16)], None),
+    ("two carriages",                         [{"slot": 0, "car": 4}, {"slot": 1, "car": 4}], "all animated"),
+    ("a carriage beside picked rows",         [{"slot": 0, "car": 4}, {"slot": 1, "pick": 9}, {"slot": 2, "pick": 9}], None),
+]
+
+ROWS_JS = r"""
+const B = require(process.argv[1]), cases = JSON.parse(process.argv[2]), out = { verdicts: [] };
+const AUX = B.classId('aux'), MIN = B.SOURCES.indexOf('minute');
+const row = (c, n) => Object.assign(B.blankElement(), { n: n, class: AUX, slot: c.slot, w: 8, h: 90, pivot_x: 4, pivot_y: 80, n_frames: 1,
+  src: c.twin ? 0 : MIN, span: c.twin ? 0 : 3600, vmax: c.twin ? 0 : 60, cadence: c.twin ? 0 : 3, end: 0, flags: c.twin ? 16 : 0 },
+  c.pick ? { n_frames: c.pick, delay: 0 } : c.car ? { n_frames: c.car, delay: 250 } : {});
+for (const [name, rows] of cases) {
+  const recs = rows.map((c, i) => row(c, i + 1));
+  let why = null;
+  try { recs.forEach((r, i) => B.checkElement(r, 'elem[' + i + ']')); B.checkClockRows(recs); } catch (e) { why = String(e.message); }
+  out.verdicts.push({ name, why, recs });
+}
+// a plane pool from GorbBake.stage3: 7 shapes x 7 bands = 49 frames, 16 rows naming them
+const S = B.stage3({}), W = 466, plate = { w: W, h: W, rgba: new Uint8Array(W * W * 4).fill(30) };
+for (let i = 3; i < plate.rgba.length; i += 4) plate.rgba[i] = 255;
+S.row({ n: S.id(), class: B.classId('plate'), slot: 0, x: 0, y: 0, w: W, h: W, order: 0, alpha: 255, n_frames: 1 }, plate, false, true);
+const frames = [];
+for (let f = 0; f < 49; f++) { const p = { w: 38, h: 38, rgba: new Uint8Array(38 * 38 * 4) };
+  for (let y = 4; y < 34; y++) for (let x = 4 + (f % 7); x < 34 - (f % 7); x++) p.rgba.set([40 + 30 * Math.floor(f / 7), 200, 90, 255], (y * 38 + x) * 4);
+  frames.push(p); }
+const rows = Array.from({ length: 16 }, (_, i) => ({ slot: i, x: 40 + (i % 4) * 100, y: 40 + Math.floor(i / 4) * 100, order: 2 + i }));
+const recs = S.pool({ class: AUX, w: 38, h: 38, pivot_x: 19, pivot_y: 19, alpha: 255 }, frames, rows, true, false);
+let refusedOne = null;
+try { S.rowPick({ n: S.id(), class: AUX, slot: 20, w: 38, h: 38, pivot_x: 19, pivot_y: 19 }, frames.concat(frames.slice(0, 16)), true, false); } catch (e) { refusedOne = e.message; }
+let refusedSize = null;
+try { S.rowPick({ n: S.id(), class: AUX, slot: 21, w: 38, h: 38, pivot_x: 19, pivot_y: 19 }, [frames[0], { w: 40, h: 38, rgba: new Uint8Array(40 * 38 * 4) }], true, false); } catch (e) { refusedSize = e.message; }
+const b = S.finish({ name: 'Plane pool', slug: 'flights', abi: B.GEOM_ABI6 });
+require('fs').writeFileSync(process.argv[3], Buffer.from(b.bytes));
+out.pool = { frame0s: recs.map((r) => r.frame0), n_frames: recs.map((r) => r.n_frames), delays: recs.map((r) => r.delay), bytes: b.bytes.length, refusedOne, refusedSize };
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+def rows_mode():
+    """--rows: the JS row rules against theme_schema's, and a stage3 pool through both readers."""
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+    import orbbundle as ob
+    import theme_schema as ts
+    node = shutil.which("node") or os.path.expanduser("~/.local/share/nodeenv-gorb/bin/node")
+    baker = os.path.join(TOOLS, "orb-manager", "web", "runtime", "baker@1", "orbtheme-baker.js")
+    pool = os.path.join(tempfile.mkdtemp(prefix="rows."), "pool.orbtheme")
+    js = subprocess.run([node, "-e", ROWS_JS, baker, json.dumps([[n, r] for n, r, _w in ROW_CASES]), pool],
+                        capture_output=True, text=True, timeout=300)
+    if js.returncode:
+        sys.exit("the JS side threw:\n" + (js.stderr or js.stdout)[:2000])
+    got = json.loads(js.stdout)
+    bad = 0
+    for (name, _rows, want), v in zip(ROW_CASES, got["verdicts"]):
+        recs = v["recs"]
+        try:
+            for i, r in enumerate(recs):
+                ts.check_element(r, "elem[%d]" % i)
+            ts.check_clock_rows(recs)
+            pywhy = None
+        except ValueError as e:
+            pywhy = str(e)
+        jsw = v["why"]
+        agree = (jsw is None) == (pywhy is None) and (want is None or (want in (jsw or "") and want in (pywhy or "")))
+        bad += not agree
+        print("%s %-34s JS %s | schema %s" % ("ok  " if agree else "FAIL", name,
+              "accepts" if jsw is None else "refuses: " + jsw[:70], "accepts" if pywhy is None else "refuses: " + pywhy[:70]))
+    p = got["pool"]
+    one = p["refusedOne"] and "frames to pick from" in p["refusedOne"]
+    size = p["refusedSize"] and "frames of one size" in p["refusedSize"]
+    print("%s stage3 refuses a 65-frame bank and a frame of another size at the bake" % ("ok  " if one and size else "FAIL"))
+    bad += not (one and size)
+    shared = len(set(p["frame0s"])) == 1 and set(p["n_frames"]) == {49} and set(p["delays"]) == {0}
+    print("%s stage3 pool: 16 rows naming one bank of 49 frames, no frame time (%d B)" % ("ok  " if shared else "FAIL", p["bytes"]))
+    bad += not shared
+    try:
+        hdr, secs = ob.read_bundle(pool)
+        els = secs[0]["blob"]["elements"]
+        aux = [e for e in els if int(e["class"]) == ts.CLASS_AUX]
+        read_ok = secs[0]["blob"]["slug"] == "flights" and len(aux) == 16 and all(int(e["n_frames"]) == 49 and not int(e["delay"]) for e in aux)
+        ts.check_clock_rows(els)
+    except ValueError as e:
+        read_ok = False
+        print("     orbbundle / theme_schema refused it: %s" % e)
+    print("%s orbbundle.read_bundle reads the pool back, and theme_schema seats its rows" % ("ok  " if read_ok else "FAIL"))
+    bad += not read_ok
+    exe = H3.build()
+    rc, out, err = H3.run(exe, "--dump3f", pool, "flights")
+    picks = []
+    if rc == 0:
+        for line in out.splitlines():
+            if line.startswith("scalar pick_n"):
+                picks = [int(x) for x in line.split()[2:]]
+    c_ok = rc == 0 and picks[:16] == [49] * 16 and not any(picks[16:])
+    print("%s orb_clock3.c projects it: pick_n %s" % ("ok  " if c_ok else "FAIL", picks[:17] if rc == 0 else (out or err).strip()[:300]))
+    bad += not c_ok
+    print("%d of %d checks %s" % (bad, len(ROW_CASES) + 4, "FAILED" if bad else "disagree: none"))
+    return 1 if bad else 0
+
+
 def main():
+    if sys.argv[1:2] == ["--rows"]:
+        return rows_mode()
     if len(sys.argv) < 2:
         sys.exit("usage: verify_js_bake.py BUNDLE [EXTRA BUNDLE ...]")
     exe = H3.build()

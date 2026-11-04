@@ -2082,7 +2082,7 @@
   var END_WRAP = 0, END_FLYBACK = 1, END_HOLD = 2;
   var DIGITS = ['whole', 'units', 'tens', 'hundreds', 'thousands'];   // D43 P5d.3: a year's four
   var TURN_10 = 3600, PANEL_PX = 466;
-  var CLK_ROW_MAX = 24;                    // theme_schema.CLK_ROW_MAX
+  var CLK_ROW_MAX = 32;                    // theme_schema.CLK_ROW_MAX (theme-pool-plan: 24 until the plane pool)
   var ORB_LAYER_MAX3 = 16;                 // main/gfx/orb_layers.h ORB_LAYER_MAX: drawn rows per app
   // The composer's authoring motions (D34's names). The wire no longer carries them —
   // bakeClock3's v6Drive turns each into a row's two poses — but the composer still
@@ -2091,7 +2091,12 @@
   var MOTION_ROTATE = 0, MOTION_RETROGRADE = 1, MOTION_INDEXED = 2,
       MOTION_SLIDE_X = 3, MOTION_SLIDE_Y = 4;
   function motionIsSlide(k) { return k === MOTION_SLIDE_X || k === MOTION_SLIDE_Y; }
-  var ROW_FRAMES_MAX = 16;                 // clk_types.h CLK_TOURB_MAX
+  var ROW_FRAMES_MAX = 16;                 // clk_types.h CLK_TOURB_MAX: the carriage's frames
+  /* theme-pool-plan §2.6: a moving row with frames and no frame time is one whose frame the
+   * app picks at runtime (orb_stage_frame), the tracker's plane pool: up to clk_types.h
+   * CLK_PICK_MAX frames, consecutive catalogue planes each the row's own size, no shadow
+   * twin under it, any number of such rows. Frames WITH a frame time stay the carriage. */
+  var CLK_PICK_MAX = 64;                   // theme_schema.CLK_PICK_MAX
   // D41 §2.1 (theme_schema.CADENCES / clk_types.h CLK_CAD_*). D42 retired inherit: 0 is
   // none, a still row's cadence and nobody else's.
   // D43 P5d.3's roll is a wheel's smooth: hold the figure, roll on in the unit before it changes.
@@ -2299,10 +2304,10 @@
       if (pw && ph && !(ppx >= 0 && ppx < pw && ppy >= 0 && ppy < ph))
         throw new Error(where + ': a row’s pivot (' + ppx + ',' + ppy + ') sits outside its own ' +
           pw + 'x' + ph + ' plate, so it would turn about a point off the glass');
-      if (nf > ROW_FRAMES_MAX)
+      if (nf > 1 && Math.trunc(rec.delay | 0) && nf > ROW_FRAMES_MAX)
         throw new Error(where + ': an animated row carries at most ' + ROW_FRAMES_MAX + ' frames, not ' + nf);
-      if (nf > 1 && !Math.trunc(rec.delay | 0))
-        throw new Error(where + '.delay: an animated row of ' + nf + ' frames names its frame time');
+      if (nf > 1 && !Math.trunc(rec.delay | 0) && nf > CLK_PICK_MAX)
+        throw new Error(where + ': a row offers the app at most ' + CLK_PICK_MAX + ' frames to pick from, not ' + nf);
       if ((flags & AUX_F_SHADOW3) && (nf !== 1 || src || cad))
         throw new Error(where + ': a shadow twin takes its hand’s whole pose — one plate, ' +
           'no source, no cadence');
@@ -2515,13 +2520,16 @@
       if (SOURCES[r.src | 0] === 'second' && cad === CAD_STEP && !(r.digit | 0) && !steps[r.cad_arg | 0]) {
         steps[r.cad_arg | 0] = 1; nSteps++;
       }
-      if ((r.n_frames | 0) > 1) animated.push(where);
+      // frames and a frame time: the carriage; frames and none: the app picks, and any number may
+      if ((r.n_frames | 0) > 1 && (r.delay | 0)) animated.push(where);
       if ((r.flags | 0) & AUX_F_SHADOW3) {
         var prev = aux[slot - 1];
         if (!prev)
           throw new Error(where + ': a shadow twin with no row before it — the twin takes its pose from the row in the slot under it');
         if ((prev.flags | 0) & AUX_F_SHADOW3)
           throw new Error(where + ': a shadow twin under another twin — a twin darkens a row, not a shadow');
+        if ((prev.n_frames | 0) > 1 && !(prev.delay | 0))
+          throw new Error(where + ': a shadow twin under a row whose frames the app picks — the twin would shade one frame of many');
       }
       var par = (r.parent === undefined || r.parent === null) ? PARENT_NONE : r.parent;
       if (par !== PARENT_NONE) {
@@ -3240,6 +3248,10 @@
    *   B.put(bytes, w, h) -> sprite index · B.row(e, plane, masked, dith) · B.rowFrames(e, planes, masked, dith)
    *   B.rowDelta(e, planes, delayMs, masked, dith) -> rec · B.preview({plane, x, y, order}) -> bytes
    *   B.id() -> the next element n · B.element(e) -> a pushed blankElement with e's fields
+   *   B.rowPick(e, planes, masked, dith) -> rec: a row whose frame the app picks at runtime
+   *     (theme-pool-plan §2.6: frames and no frame time, at most CLK_PICK_MAX, each plane the
+   *     row's own w x h) · B.pool(e, planes, rows, masked, dith) -> recs: one picked bank and a
+   *     row per entry of rows ({slot, x, y, ...}), every one naming the same frames
    *   B.pack({name, serial, bakedMs, design, slug, scalars, abi}) -> writeBundle3's answer
    *   B.finish(meta) -> pack, the delta round trip, the cap, meter and est (an app with no
    *                     bake passes of its own calls this alone)
@@ -3442,6 +3454,31 @@
       elems.push(rec);
       return rec;
     }
+    // frames the app picks: refused here, at the bake, for what the dial would refuse at load
+    function pickPlanes(e, planes) {
+      var w = e.w | 0, h = e.h | 0;
+      if (!planes || planes.length < 2)
+        throw new Error('a picked row needs two frames or more to pick between; one frame is a still row');
+      if (planes.length > CLK_PICK_MAX)
+        throw new Error('a row offers the app at most ' + CLK_PICK_MAX + ' frames to pick from, not ' + planes.length);
+      for (var i = 0; i < planes.length; i++) {
+        if (planes[i].w !== w || planes[i].h !== h)
+          throw new Error('frame ' + i + ' of a picked row is ' + planes[i].w + 'x' + planes[i].h + ' and the row is ' + w + 'x' + h +
+            ': the app picks among frames of one size, turned about one pivot');
+      }
+    }
+    function rowPick(e, planes, masked, dith) {
+      pickPlanes(e, planes);
+      return rowFrames(Object.assign({}, e, { n_frames: planes.length, delay: 0 }), planes, masked, dith);
+    }
+    // one bank of frames and a row per entry of rows, each naming it: rows[0] lays the bank
+    function pool(e, planes, rows, masked, dith) {
+      if (!rows || !rows.length) throw new Error('a pool needs at least one row');
+      var first = rowPick(Object.assign({}, e, rows[0], { n: nid++ }), planes, masked, dith), out = [first];
+      for (var i = 1; i < rows.length; i++)
+        out.push(element(Object.assign({}, e, rows[i], { n: nid++, frame0: first.frame0, n_frames: planes.length, delay: 0 })));
+      return out;
+    }
     function pack(m) {
       return writeBundle3({ name: m.name, serial: m.serial || 0, bakedMs: m.bakedMs || 0, design: m.design || null,
         sections: [{ slug: m.slug, scr_w: scrW, scr_h: scrH, elements: elems, scalars: m.scalars || {},
@@ -3468,7 +3505,7 @@
              id: function () { return nid++; }, put: put, ditherAt: ditherAt,
              row: row, rowFrames: rowFrames,
              rowDelta: function (e, planes, delay, masked, dith) { var r = rowDelta(e, planes, delay, masked, dith); deltas.push({ rec: r, planes: planes }); return r; },
-             verifyDelta: selfVerify3, preview: preview, element: element,
+             verifyDelta: selfVerify3, preview: preview, element: element, rowPick: rowPick, pool: pool,
              pack: pack, capCheck: capCheck, finish: finish };
   }
   function bakeClock3(o) {
@@ -4137,7 +4174,7 @@
     for (i = 0; i < els.length; i++) {
       var e = els[i], c = e['class'];
       if (c !== CLASS_AUX || (e.flags & EF_HIDDEN)) continue;
-      if (e.n_frames > 1) {                                          // the carriage: chord-marked
+      if (e.n_frames > 1 && e.delay) {                               // the carriage: chord-marked
         carInk = inkOf3(art, spr[e.frame0], e).n / 1000; box += 2 * carInk; continue;
       }
       // D43: a drum repaints its window every tick (the stage re-marks it, orb_stage.c) and
@@ -4579,7 +4616,7 @@
     // device door applies, so an element a theme cannot name never reaches a card.
     FORMAT3: FORMAT3, GEOM_ABI3: GEOM_ABI3, SECT_MAX: SECT_MAX, IDX_WORDS: IDX_WORDS,
     GEOM_ABI6: GEOM_ABI6, DELTA_TOL: DELTA_TOL,   // the delta floor, so a suite asserts against the codec's number, not a literal
-    CADENCES: CADENCES, SHAPES: SHAPES, ENDS: ENDS, DIGITS: DIGITS, CLK_ROW_MAX: CLK_ROW_MAX,
+    CADENCES: CADENCES, SHAPES: SHAPES, ENDS: ENDS, DIGITS: DIGITS, CLK_ROW_MAX: CLK_ROW_MAX, CLK_PICK_MAX: CLK_PICK_MAX, ROW_FRAMES_MAX: ROW_FRAMES_MAX,
     checkClockRows: checkClockRows, clockTempo: clockTempo, v6Drive: v6Drive,
     SCALARS_N: SCALARS_N, ELEMENT_WORDS: ELEMENT_WORDS, ELEMENT_FIELDS: ELEMENT_FIELDS,
     CLASS_NAMES: CLASS_NAMES, CLASS_APP_ADV: CLASS_APP_ADV, CLASS_NO_ANIM: CLASS_NO_ANIM,

@@ -460,3 +460,35 @@ runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
   with its cap and footer; toggling Glass's eye dimmed it (1 → 0.45, ○) and back. The Dial
   step drew 27 field rows (6 sliders, 9 selects, 76 swatches, the "⛓ the dial" links); a
   select changed the design and gave one undo step, which was then undone. No errors.
+
+### `baker@1` follows the theme pool's row format (2026-11-04, after the merge at `1ca82a3`)
+
+The theme-pool work (`docs/theme-pool-plan.md`, merged from the sibling clone) changed the
+moving-row format; `tools/theme_schema.py` and `main/art/orb_clock3.c` are the reference.
+
+- **32 rows.** `CLK_ROW_MAX` 24 → 32; the two refusals that cite it read the constant. The
+  baker has no slot-name list of its own that stopped at `ptr23`.
+- **Frames the app picks** (theme-pool-plan §2.6). A moving row with frames and no frame time
+  is one whose frame the app picks at runtime (`orb_stage_frame`): `checkElement` allows up
+  to `CLK_PICK_MAX` = 64 such frames (the carriage, frames *with* a frame time, keeps
+  `ROW_FRAMES_MAX` = 16), `checkClockRows` counts only the carriage as animated and refuses a
+  shadow twin under a picked row, and `estimate3` prices a picked row as a moving plate,
+  not as the carriage. The wording is the schema's, word for word.
+- **`stage3` bakes them.** `rowPick(e, planes, masked, dith)` lays a bank of frames as one
+  picked row; `pool(e, planes, rows, masked, dith)` lays the bank once and a row per entry
+  of `rows`, every one naming the same `frame0`: the tracker's plane pool. Both refuse at the
+  bake what the dial would refuse at load: past 64 frames, a frame of another size than
+  the row (the C reader's frame-window rule; theme_schema has none), a bank of one.
+- **Parity.** `tools/verify_js_bake.py --rows` (in `make check-editor`) judges twelve row
+  tables with the JS checks and with theme_schema and requires the same verdict and the
+  same reason (the 32nd and 33rd seats, 2, 64 and 65 picked frames, 16 and 17 carriage
+  frames, a twin under a plate and under a picked row, sixteen picked rows, two carriages, a
+  carriage beside picked rows); then bakes a 16-row pool over 7 × 7 = 49 frames with
+  `stage3`, reads it back through `orbbundle.read_bundle` and `check_clock_rows`, and runs
+  the shipped `orb_clock3.c` over it under the `flights` slug: every row projects with
+  `pick_n` 49. Four baker mutants (the cap at 24, no twin rule, a picked row counted as
+  animated, no pick limit) each fail it. `headless-stage` gains the pool's checks (27).
+- **The clock's bundles.** 80 of the 81 clock bakes across the six baking suites are byte-
+  identical before and after; the 81st is a bake that used to be refused for needing a
+  25th row and now bakes. `headless-bundle3`'s three checks that pinned 24 rows pin 32
+  (ptr31 seats, ptr32 refuses; a hand and 32 pointers; 16 shadowed pointers fill the rows).

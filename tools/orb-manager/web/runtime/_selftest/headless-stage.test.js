@@ -76,6 +76,29 @@ const readBack = (b) => { const v = G.verifyBundle3(b.bytes); return { v, sec: v
   ok(!(r3.flags & 64), 'a loop that ends on its keyframe ships no closing rect');
 }
 
+// ---- frames the app picks (theme-pool-plan §2.6): a picked row, and a pool of rows sharing its bank
+{
+  const B = G.stage3({});
+  B.row(plateRow(B), plane(W, W, [6, 22, 13]), false, true);
+  const shapes = Array.from({ length: 7 }, (_, i) => plane(38, 38, [40 * i, 200, 90], 230));
+  const one = B.rowPick({ n: B.id(), 'class': AUX, slot: 0, x: 60, y: 60, w: 38, h: 38, pivot_x: 19, pivot_y: 19, order: 2, alpha: 255 }, shapes, true, false);
+  ok(one.n_frames === 7 && one.delay === 0 && one.frame0 === 1 && B.bank.sprites.length === 8, 'a picked row lays its frames contiguously, with no frame time');
+  const recs = B.pool({ 'class': AUX, w: 38, h: 38, pivot_x: 19, pivot_y: 19, alpha: 255 }, shapes,
+    [{ slot: 1, x: 100, y: 100, order: 3 }, { slot: 2, x: 200, y: 100, order: 4 }, { slot: 3, x: 300, y: 100, order: 5 }], true, false);
+  ok(recs.length === 3 && recs.every((r) => r.frame0 === 8 && r.n_frames === 7 && r.delay === 0) && B.bank.sprites.length === 15, 'a pool: one bank, every row naming it', JSON.stringify(recs.map((r) => r.frame0)));
+  ok(new Set(B.elements.map((e) => e.n)).size === B.elements.length && recs.map((r) => r.slot).join() === '1,2,3', 'each row its own id and slot');
+  const b = B.finish({ name: 'Pool', slug: 'radar', abi: 6 });
+  const blob = readBack(b).sec.blob;
+  ok(blob.elements.filter((e) => e['class'] === AUX).length === 4 && blob.elements.filter((e) => e['class'] === AUX && e.n_frames === 7 && !e.delay).length === 4, 'the bundle reads back with four picked rows');
+  ok(b.est && b.est.carrier !== 'sprite (carriage over a still)', 'picked rows are not priced as the carriage', b.est && b.est.carrier);
+  let e1 = null; try { B.rowPick({ n: B.id(), 'class': AUX, slot: 9, w: 38, h: 38, pivot_x: 19, pivot_y: 19 }, Array.from({ length: 65 }, () => shapes[0]), true, false); } catch (e) { e1 = e.message; }
+  ok(/at most 64 frames to pick from, not 65/.test(e1 || ''), 'more than 64 frames is refused at the bake', e1);
+  let e2 = null; try { B.rowPick({ n: B.id(), 'class': AUX, slot: 9, w: 38, h: 38, pivot_x: 19, pivot_y: 19 }, [shapes[0], plane(40, 38, [0, 0, 0])], true, false); } catch (e) { e2 = e.message; }
+  ok(/frames of one size/.test(e2 || ''), 'and a frame of another size', e2);
+  let e3 = null; try { B.rowPick({ n: B.id(), 'class': AUX, slot: 9, w: 38, h: 38 }, [shapes[0]], true, false); } catch (e) { e3 = e.message; }
+  ok(/one frame is a still row/.test(e3 || ''), 'and a bank of one', e3);
+}
+
 // ---- refusals
 {
   const B = G.stage3({});

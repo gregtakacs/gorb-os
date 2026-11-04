@@ -44,6 +44,8 @@ check-editor:
 	cd apps/clock/editor/_selftest && $(NODE) headless-test.js
 	@# the .orbtheme suite runs the Python baker as its reference: any python3 with pillow + numpy
 	cd tools/orb-manager/web/runtime/_selftest && PY=$${PY:-$$(command -v $(PYTHON))} $(NODE) headless-test.js
+	@# the browser baker's moving-row rules against theme_schema's and the shipped orb_clock3.c (32 rows, picked frames)
+	$(PYTHON) tools/verify_js_bake.py --rows
 
 firmware:
 	idf.py build

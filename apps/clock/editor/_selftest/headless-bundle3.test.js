@@ -176,7 +176,8 @@ refuses(() => B.packElements(tooMany), 'past the bound of 64', '65 rows are refu
           'one beat', 'D42: seconds rows agree on one beat');
   ok(JSON.stringify(B.checkClockRows([R({ src: SEC, cadence: 2, cad_arg: 4 })])) === '[0,4]',
      'D42: a stepping seconds row is the dial’s beat');
-  refuses(() => B.checkClockRows([R({ slot: 24 })]), 'seats 24', 'D42: the row cap is 24');
+  refuses(() => B.checkClockRows([R({ slot: 32 })]), 'seats 32', 'D42: the row cap is 32 (theme-pool-plan: 24 until the plane pool)');
+  ok((() => { try { B.checkClockRows([R({ slot: 31 })]); return true; } catch (e) { return false; } })(), 'and ptr31 is a seat');
   refuses(() => B.checkClockRows([R({ slot: 1, src: 0, span: 0, vmax: 0, cadence: 0, flags: B.AUX_F_SHADOW3 })]),
           'no row before it', 'D42: a twin follows its row');
 }
@@ -974,8 +975,8 @@ refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxSe
 refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxBar, { span: 900 })] }),
         'px panel', 'a slide longer than the glass refuses in the panel\u2019s own pixels');
 refuses(() => B.bakeClock3({ name: 'x', plate: PL, hands: [HK],
-          aux: Array.from({ length: 24 }, (_, i) => Object.assign({}, auxSec, { slot: i })) }),
-        'moving rows', 'D42: a hand and 24 pointers are past the dial\u2019s 24 rows');
+          aux: Array.from({ length: 32 }, (_, i) => Object.assign({}, auxSec, { slot: i })) }),
+        'moving rows', 'D42: a hand and 32 pointers are past the dial\u2019s 32 rows');
 refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxSec, { motion: 'spin' })] }),
         'names none of them', 'a motion the vocabulary has no word for refuses by name');
 // §26 slice 4: the pointer's shadow twin. The row that darkens a sub-dial hand is a
@@ -1007,8 +1008,8 @@ refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxTw
         'one row, one extent', 'a twin plate that lies about its size refuses at the bake');
 refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: [Object.assign({}, auxTwin, { shadow: Object.assign({}, auxTwin.shadow, { pivot_x: 400 }) })] }),
         'outside its own', 'a twin turning about a point off its own plate refuses at the bake');
-refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: Array.from({ length: 13 }, (_, i) => Object.assign({}, auxTwin, { slot: i })) }),
-        'twins counted', 'twelve shadowed pointers fill the 24 rows; the thirteenth refuses before any art is drawn');
+refuses(() => B.bakeClock3({ name: 'x', plate: PL, aux: Array.from({ length: 17 }, (_, i) => Object.assign({}, auxTwin, { slot: i })) }),
+        'twins counted', 'sixteen shadowed pointers fill the 32 rows; the seventeenth refuses before any art is drawn');
 const bkTwin = '/tmp/js_bake_twin.orbtheme';
 const bkBoth = '/tmp/js_bake_bank_and_carriage.orbtheme';
 const bkCrop = '/tmp/js_bake_row_crop.orbtheme';

@@ -13,10 +13,12 @@ is done, so gorb-os-2 (the theme editor kit, the per-app Themes page) can merge 
    told where it is. Adding and removing a theme leaves no holes: the pool is always
    packed from the start.
 2. **No app embeds its own theme, ever.** A theme is always pool content, installed
-   through the store. This replaces gorb-os-2's theme-editor-kit-plan §0.1 ruling 5
-   ("flights' interim themes are hard-coded in firmware"); that file needs the same
-   correction in its own clone. Flights' first themes are baked from
-   `apps/flights/art/` and installed like any other.
+   through the store. Clarified by the owner the same day: "the tracker carries its own
+   theme" meant that the hub has no editor for it yet, so its themes are baked by hand
+   into `.orbtheme` files (from `apps/flights/art/`) and stored like any other, never
+   compiled into the app or the firmware. gorb-os-2's theme-editor-kit-plan §0.1 ruling 5
+   ("flights' interim themes are hard-coded in firmware") read it the other way and
+   needs the same correction in its own clone.
 3. **32 moving rows** (`CLK_ROW_MAX`, was 24), for the tracker's plane pool.
 4. **A row may carry frames the app picks** (flight-tracker-design §11.2 item 2), so one
    plane row shows any category and band.

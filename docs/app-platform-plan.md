@@ -6073,7 +6073,7 @@ Fix (`display.h` `DISPLAY_LCD_CORE = 1`):
 - The request is a pointer passed in a task notification, so the hop adds no queue. The helper uses `ulTaskNotifyTake`, which is already linked, rather than `xTaskNotifyWait`, which measured +236 B of kernel IRAM.
 - DIRAM is unchanged at 206,683 B against the build without the helper.
 
-Core 1 keeps the panel off the radio's core (Wi-Fi is pinned to 0). The proof is a night without a freeze on orb-B.
+Core 1 keeps the panel off the radio's core (Wi-Fi is pinned to 0). The proof is a night without a freeze on orb-B. *(Never recorded; closed by ruling in §46, 2026-11-03. Revisit if orb-B freezes again.)*
 
 ## 45 — Apps carry their own version — 2026-11-02
 
@@ -6095,3 +6095,28 @@ app and not to the hub or the firmware.
   app's version with that app's version. `host_orbapp_install_test.py` recomputes each
   starter's version and serial from its own file.
 
+
+## 46 — The owed list, closed by ruling — 2026-11-03
+
+Owner ruling, on reading the open items gathered from this file, `composer-stack-plan.md`
+and `flight-tracker-design.md`: none of them is pressing. Each one is closed as done, not
+important, or *revisit if it comes up again*. Nothing here is owed until one recurs.
+Closed by ruling, not by evidence: no item below gained a bench result or a test.
+
+- **§44's freeze proof.** No night without a freeze on orb-B (Gold) was ever recorded. The
+  core-1 fix stands as the fix. Revisit if Gold freezes again (JTAG procedure in §44).
+- **Composer P5b and P5c owner tests, the P5c pointer bench bake, and P5d.4's angled and
+  lifted fan/slider on glass** (`composer-stack-plan.md` §10): closed. P5d.4 stays shelved.
+- **D49, the Themes page's per-app layer and the `assets` packing table** (§43.1), and with it
+  the stage's clock-record dialect (§43 owed 5): not started. Revisit when a second
+  theme-aware app needs a resident theme.
+- **The registry suite held for the hub work** (§43.3): released, not owed.
+- **Flights**: a new key waits out adsb.lol's rest (§43 owed 3) and stays that way; the
+  secret's wire check (`flight-tracker-design.md` §6) stays unseen. Never probe adsb.lol by
+  hand for it. The flights themes and editor (§7 there) and the unreproduced degraded stress
+  run are revisit items.
+- **§32's held debts**: D30's progress bar and lazy swap (item 3), the commit-hook caller
+  (item 1), and M6(2)'s at-cap refill (item 4). Also §31's P8 fps-ladder consolidation.
+  Revisit if one becomes needed.
+- **§43.6's tick-loop nudges** and `composer-stack-plan.md` §5.5's light-dial contouring:
+  inaudible and invisible as measured. Revisit on a report.

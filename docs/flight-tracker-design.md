@@ -760,7 +760,8 @@ simulated traffic that draws at the orb's true size (§11.5).
    the look before it is multiplied; then the rest of §11.3. **Done,
    approved by the owner 2026-11-03:** five families in two forms, four
    arms, four backgrounds, in `apps/flights/art/`.
-2. **Firmware.** The tracker on the stage. The OS side first (§11.2): a
+2. **Firmware.** **Done 2026-11-04** (the OS side in theme-pool-plan P1–P5; the app and
+   the bake in §11.6). The tracker on the stage. The OS side first (§11.2): a
    theme resident per theme-aware app, so the clock keeps its own; a frame
    index per row, so a plane row switches image by category and band.
    Then the app side: the plane pool and arm row, the category parse, rings
@@ -802,3 +803,51 @@ judged the first set there.
   whether it gets a backing, is a step-2 layout question.
 - The look of set one is approved: the modern family, the two arms, the two
   backgrounds.
+
+### 11.6 The tracker on its theme, as built (2026-11-04)
+
+- **The bake** (`apps/flights/art/bake_theme.py`). The art is rasterised with cairosvg from
+  `make_art.py`'s renderers; blueprint's outline is built from rasters (the silhouette
+  stroked wide less the silhouette), because cairo ignores SVG masks. Each theme is
+  assembled by the OS's own stage bake (baker@1's `GorbBake.stage3`, under node):
+  - the plate;
+  - the arm: slot 0, declared a 15 fps sweeping seconds row, so the stage runs at that
+    rate; the app poses it itself;
+  - a pool of **15** plane rows (slots 1–15) naming one bank of 49 frames, 7 shapes × 7
+    bands, in `make_art.BANDS` order (`--colour off` gives the family's own colour, with
+    the ground at 45%);
+  - a 232 px preview.
+
+  It bakes one theme per family with its pairing (`--form single`, `--trail` too) into
+  `apps/flights/build/themes/`, about 0.8 MB each.
+- **The app** (flights v1.2.3). With a theme of its own, the tracker draws through the
+  stage and opens no canvas:
+  - the arm turns once in 4 s;
+  - the nearest 15 contacts ride the pool, each row's frame its shape × 7 + band, turned
+    to its track and offset to its position; unused rows are hidden;
+  - rings, the home dot, the selection and emergency rings and the range figure are
+    box and label widgets;
+  - the stage ticks it every frame, so it sets no beat, and labels change only when
+    their text does.
+
+  The shape comes from the ADS-B emitter category, now parsed: A1 light, A2 turboprop by
+  ICAO type else business jet, A3/A4 airliner, A5 heavy, A6 business jet, A7 rotorcraft,
+  B1/B4 light, else generic. The card lost distance and bearing (§11.5). With no theme,
+  the canvas as before.
+- **Fifteen planes, not sixteen.** An app's layer table holds 16 rows (`ORB_LAYER_MAX`).
+  Raising it would cost the internal heap the commit's job array. The claim also stopped
+  counting the preview, which every theme carried into it and which is never drawn.
+- **L4 and the app's widgets.** L4 writes the theme into the panel mirror over whatever
+  LVGL drew in the boxes it redraws. The sweep marks a large box every frame, and on
+  Bronze the header, rings and footer were painted over. An app with widgets of its own
+  over its theme now renders through LVGL, which stacks them (`orb_sched_set_l4_veto`,
+  set by the stage on the way onto the glass); the clock keeps L4. On the LVGL path a
+  row's widget must start hidden, or a row the app never showed stands at its P0.
+- **Benched on Bronze, `v1.2.7+f9e12db`, Flights Modern stored through the hub's send.**
+  At 80 nm: 11–12 live aircraft drawn with their shapes and bands, turned to their tracks,
+  under the sweeping wedge, with the header, rings, range figure and footer on top;
+  **12–14 fps** through LVGL with the 30° wedge, no panic, no fault. The owner's range
+  (10 nm) and the clock on the glass were put back after.
+- **Owed.** The text and ring colours are the app's fixed ones, not the theme's (§11.5);
+  a stale contact is not dimmed on the theme path (frames cannot dim); and L4 for a themed
+  tracker would need the app's widgets drawn into the L4 composite.

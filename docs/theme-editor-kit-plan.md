@@ -315,7 +315,9 @@ runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
   (438,408 B, sha256 `19d444d7a4e55d98…`). The page's two failures are the same at both
   commits, so they predate the kit: every preset refused for "no centre hour/minute/second
   hand" with "the bake has hands to seat [0]", and six stills carrying 48 dirty rows. The
-  page has not kept up with hands becoming parts (D43 P5c); it is owed its own repair.
+  page had not kept up with hands becoming parts (D43 P5c) or the 2026-10-24 tripwire swap;
+  repaired 2026-11-04 (`40ecee8`): it seats hands by `handSeats3` and checks the blank-plate
+  floor, and passes in Chrome with 17 of 18 presets bakeable.
 
 ### K5 — `GorbBake.stage3`, the stage bake (2026-11-04)
 

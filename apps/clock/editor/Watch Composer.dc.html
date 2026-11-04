@@ -152,6 +152,7 @@ html,body{height:100%;overflow:hidden}
 <script src="sound-engine.js"></script>
 <script src="orbtheme-baker.js"></script>
 <script src="send.js"></script>
+<script src="session.js"></script>
 </helmet>
 <div class="wc">
   <header class="wc-top">
@@ -1207,100 +1208,82 @@ class Component extends DCLogic {
     ];
   }
   /* ------------------------------ the session (D43 P6, §7) --------------------------
-   * A watch is the state these keys hold: the per-dial designs, the movement and case, the
-   * light, the hands, the sounds, the name. One snapshot is those values by reference: every
-   * edit replaces the value it touches (upd, setCfg, sndUpd), so a snapshot costs nothing and a
-   * changed key is one !==. Undo walks snapshots; autosave writes the newest to this browser,
-   * and a reload picks it up. A burst of edits (a slider drag, a typed number) is one step. */
+   * The session is the OS's (theme@1/session, theme-editor-kit-plan K2): undo and redo with
+   * bursts merged, autosave, My designs, the design document's envelope, and opening. The
+   * clock says what a watch is (the state these keys hold: the per-dial designs, the
+   * movement and case, the light, the hands, the sounds, the name), how to check one
+   * restored from this browser, and what its design document holds. Every edit replaces the
+   * value it touches (upd, setCfg, sndUpd), so a snapshot costs nothing and a changed key is
+   * one !==. These names stay so the panes and the bake call one door. */
   SNAP_KEYS = ['dial', 'designs', 'cfg', 'seeds', 'hands', 'handFinish', 'caseStyle', 'caseMetal', 'glassStyle', 'train', 'caseOpen', 'sounds', 'themeName'];
   UNDO_MAX = 100;
   BURST_MS = 600;
-  _undo = []; _redo = []; _snap = null; _snapAt = 0; _restoring = false; _saveT = null;
-  appSlug() {
-    let q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
-    const a = q && q.get('app');
-    return a && /^[a-z0-9_-]{1,32}$/i.test(a) ? a : 'clock';
-  }
-  sessionKey() { return 'wc.session.' + this.appSlug(); }
-  mineKey() { return 'wc.mine.' + this.appSlug(); }
-  snapOf(st) { const o = {}; this.SNAP_KEYS.forEach((k) => { o[k] = st[k]; }); return o; }
-  snapSame(a, b) { return !!a && !!b && this.SNAP_KEYS.every((k) => a[k] === b[k]); }
-  // called on every update: a changed watch is an undo step (or joins the burst it is part of)
-  trackHistory() {
-    if (!this.ready) return;
-    const cur = this.snapOf(this.state);
-    if (!this._snap) { this._snap = cur; return; }
-    if (this.snapSame(cur, this._snap)) return;
-    const now = Date.now();
-    if (this._restoring) this._restoring = false;
-    else {
-      if (now - this._snapAt > this.BURST_MS || !this._undo.length) { this._undo.push(this._snap); if (this._undo.length > this.UNDO_MAX) this._undo.shift(); }
-      this._redo = [];
+  get session() {
+    if (!this._session) {
+      this._session = window.OrbTheme.session({
+        slug: 'clock',
+        keys: () => this.SNAP_KEYS,
+        state: () => this.state,
+        set: (p) => this.setState(p),
+        ready: () => !!this.ready,
+        say: (s) => this.setState({ status: s }),
+        restore: (snap, text) => this.restoreSnap(snap, text),
+        burstMs: () => this.BURST_MS,
+        undoMax: () => this.UNDO_MAX,
+        compact: (snap) => this.compactSnap(snap),
+        adopt: (b) => this.adoptSession(b),
+        resumeHint: 'Reset everything starts that watch over; Ctrl+Z steps back.',
+        schema: () => this.DESIGN_SCHEMA,
+        migrate: () => this.DESIGN_MIGRATE,
+        content: (withArt) => this.designContent(withArt),
+        apply: (o, from) => this.applyDesignContent(o, from),
+        download: (b, n) => this.download(b, n),
+      });
     }
-    this._snap = cur; this._snapAt = now;
-    this.saveSession();
+    return this._session;
   }
+  get _undo() { return this.session.undoStack; }
+  get _redo() { return this.session.redoStack; }
+  get _snap() { return this.session.snap; }
+  set _snap(v) { this.session.snap = v; }
+  get _snapAt() { return this.session.snapAt; }
+  set _snapAt(v) { this.session.snapAt = v; }
+  appSlug() { return this.session.slug(); }
+  sessionKey() { return this.session.sessionKey(); }
+  mineKey() { return this.session.mineKey(); }
+  snapOf(st) { return this.session.snapOf(st); }
+  trackHistory() { this.session.track(); }
+  // undo and redo keep the selection when the part is still there
   restoreSnap(snap, status) {
     const D = snap.designs && snap.designs[snap.dial], sel = this.state.sel;
     const keepSel = sel != null && D && (D.comps || []).some((c) => c.id === sel);
-    this._restoring = true; this._snapAt = 0;
     this.setState(Object.assign({}, snap, keepSel ? {} : { sel: null, selKind: null }, { status }));
   }
-  undo() {
-    if (!this._undo.length) { this.setState({ status: 'Nothing to undo' }); return; }
-    const prev = this._undo.pop(); this._redo.push(this._snap || this.snapOf(this.state));
-    this.restoreSnap(prev, 'Undone' + (this._undo.length ? '' : ' \u2014 back to where this session started'));
-  }
-  redo() {
-    if (!this._redo.length) { this.setState({ status: 'Nothing to redo' }); return; }
-    const next = this._redo.pop(); this._undo.push(this._snap || this.snapOf(this.state));
-    this.restoreSnap(next, 'Redone');
-  }
-  // what autosave and My designs keep: the snapshot, less the uploaded sounds' bytes (art and
-  // sound bytes have their own store and travel in the design file and the theme; autosave keeps references)
-  sessionBody(snap) {
+  undo() { this.session.undo(); }
+  redo() { this.session.redo(); }
+  // what autosave keeps: the snapshot, less the uploaded sounds' bytes (art and sound bytes
+  // have their own store and travel in the design file and the theme; autosave keeps references)
+  compactSnap(snap) {
     const sounds = {}; Object.keys(snap.sounds || {}).forEach((k) => { const d = snap.sounds[k]; sounds[k] = d ? Object.assign({}, d, { up: {} }) : d; });
-    return Object.assign({ v: 1, at: Date.now() }, snap, { sounds });
+    return Object.assign({}, snap, { sounds });
   }
-  saveSession() {
-    if (this._saveT) clearTimeout(this._saveT);
-    this._saveT = setTimeout(() => {
-      this._saveT = null;
-      try { window.localStorage.setItem(this.sessionKey(), JSON.stringify(this.sessionBody(this._snap || this.snapOf(this.state)))); this.sessionSaved = true; }
-      catch (e) { this.sessionSaved = false; }
-    }, 700);
-  }
-  // on load: the last session in this browser, if there is one, with every design re-canonised
-  loadSession() {
-    let b = null;
-    try { b = JSON.parse(window.localStorage.getItem(this.sessionKey()) || 'null'); } catch (e) { b = null; }
-    if (!b || b.v !== 1 || !b.dial || !WatchEngine.PRESETS[b.dial]) return false;
+  saveSession() { this.session.save(); }
+  loadSession() { return this.session.load(); }
+  // a session from this browser, accepted when its dial still exists, with every design re-canonised
+  adoptSession(b) {
+    if (!b.dial || !WatchEngine.PRESETS[b.dial]) return null;
     const designs = {}; Object.keys(b.designs || {}).forEach((k) => { if (WatchEngine.PRESETS[k] && b.designs[k]) designs[k] = WatchEngine.canonDesign(b.designs[k]); });
     const snap = {}; this.SNAP_KEYS.forEach((k) => { if (b[k] !== undefined) snap[k] = b[k]; }); snap.designs = designs;
-    const when = new Date(+b.at || Date.now());
-    // the restored watch is where this session's history starts (the first update adopts it)
-    this._snap = null; this._undo = []; this._redo = [];
-    this.setState(Object.assign(snap, { status: 'Picked up where you left off (saved ' + when.toLocaleString() + '). Reset everything starts that watch over; Ctrl+Z steps back.' }));
-    return true;
+    return snap;
   }
-  /* My designs: named design documents in this browser (designDoc without the art's bytes: the
-   * images stay in this browser's asset store). To move one, download its design file. */
-  // read once and kept (the Start sheet renders every frame); every write goes through mineWrite
-  _mine = null;
-  mineList() {
-    if (this._mine) return this._mine.slice();
-    let l = []; try { l = JSON.parse(window.localStorage.getItem(this.mineKey()) || '[]'); } catch (e) { l = []; }
-    this._mine = Array.isArray(l) ? l.filter((x) => x && x.name && x.doc) : [];
-    return this._mine.slice();
-  }
-  mineWrite(l) { try { window.localStorage.setItem(this.mineKey(), JSON.stringify(l)); this._mine = l.slice(); return true; } catch (e) { this.setState({ status: 'Not saved: this browser refused to store it (' + (e && e.name || 'storage') + ')' }); return false; } }
+  /* My designs keep designDoc without the art's bytes: the images stay in this browser's
+   * asset store. To move one, download its design file. */
+  mineList() { return this.session.mineList(); }
   async saveMine(name) {
     const nm = String(name || '').trim() || this.state.themeName || this.preset().name;
-    const l = this.mineList().filter((x) => x.name !== nm);
-    l.unshift({ name: nm, doc: Object.assign(await this.designDoc(false), { themeName: nm }), dial: this.state.dial, at: Date.now() });
-    if (this.mineWrite(l)) this.setState({ mineName: '', status: 'Saved \u201c' + nm + '\u201d to My designs' });
+    if (this.session.mineSave({ name: nm, doc: Object.assign(await this.designDoc(false), { themeName: nm }), dial: this.state.dial })) this.setState({ mineName: '' });
   }
-  delMine(nm) { const l = this.mineList(); if (this.mineWrite(l.filter((x) => x.name !== nm))) this.setState({ status: 'Removed \u201c' + nm + '\u201d from My designs' }); }
+  delMine(nm) { this.session.mineDelete(nm); }
   /* ------------------------------ uploaded art ------------------------------------
    * The bytes live in the engine registry; a design carries only REFERENCES to them, so
    * autosave and My designs stay small, and the design file and the theme carry the art
@@ -2534,10 +2517,7 @@ class Component extends DCLogic {
     }
     return null;
   }
-  download(blob, name) {
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
-    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-  }
+  download(blob, name) { window.OrbTheme.download(blob, name); }
   busy() { if (!this.gt.length || this.rendering) { this.setState({ status: 'Still rendering — try again in a moment' }); return true; } return false; }
   frameCanvas(f, hidden, date, compOnly, noHands, noSh) { const c = document.createElement('canvas'); c.width = c.height = 466; WatchEngine.compose(c.getContext('2d'), this.base, this.gt[f], this.face(), date || this.now(), hidden, compOnly, noHands, noSh); return c; }
   // The kit zip's preview.png is the theme's ID photo, so it never inherits the transport:
@@ -3687,63 +3667,31 @@ class Component extends DCLogic {
    * same watch as schema n+1, so every theme ever baked stays editable. Steps are never
    * edited once shipped and never removed; a non-breaking change (a new field whose absence
    * means the old behaviour, a new value, a new part) needs no step. Empty while schema 1 is
-   * the only schema. */
+   * the only schema. The session (theme@1) walks them and refuses what it cannot. */
   DESIGN_MIGRATE = {};
-  // a design of an older schema, walked forward one step at a time; null with why when a step is missing
-  migrateDesign(o) {
-    let d = o, n = +o.schema;
-    while (n < this.DESIGN_SCHEMA) {
-      const step = this.DESIGN_MIGRATE[n];
-      if (typeof step !== 'function') return { doc: null, why: 'that design is schema ' + o.schema + ' and this editor has no step from schema ' + n + ' to ' + (n + 1) };
-      d = Object.assign(step(JSON.parse(JSON.stringify(d))), { schema: n + 1 }); n++;
-    }
-    return { doc: d, why: null };
-  }
-  appVersion() { const a = typeof window !== 'undefined' && window.__ORB_APP; return (a && a.version) || 'dev'; }
-  async designDoc(withArt) {
+  migrateDesign(o) { return this.session.migrate(o); }
+  appVersion() { return this.session.version(); }
+  designDoc(withArt) { return this.session.doc(withArt); }
+  // the watch's part of the document; the session puts the envelope round it
+  async designContent(withArt) {
     const D = this.design(), s = this.state;
     const assets = withArt ? (await this.kitAssets(D)).filter((a) => !a.missing) : [];
     const snd = this.sndDesign();
-    return { format: 'wc-design', schema: this.DESIGN_SCHEMA, app: this.appSlug(), appVersion: this.appVersion(), made: new Date().toISOString(),
-      dial: s.dial, design: D, cfg: this.cfg(), seeds: s.seeds, hands: s.hands, handFinish: s.handFinish, caseStyle: s.caseStyle, caseMetal: s.caseMetal,
+    return { dial: s.dial, design: D, cfg: this.cfg(), seeds: s.seeds, hands: s.hands, handFinish: s.handFinish, caseStyle: s.caseStyle, caseMetal: s.caseMetal,
       glassStyle: s.glassStyle, train: s.train, caseOpen: s.caseOpen, themeName: s.themeName,
       sounds: withArt ? snd : Object.assign({}, snd, { up: {} }), art: withArt, assets };
   }
   // the design file: exactly the design a baked theme carries, on its own
   async exportDesign() {
     if (!this.ready) return;
-    const doc = await this.designDoc(true), nm = (this.state.themeName || (this.preset() || {}).name || 'watch').replace(/[^\w .-]+/g, '-').trim() || 'watch';
-    const body = JSON.stringify(doc);
-    this.download(new Blob([body], { type: 'application/json' }), nm + '.orbdesign');
-    this.setState({ status: 'Downloaded ' + nm + '.orbdesign (' + Math.max(1, Math.round(body.length / 1024)) + ' KB' + (doc.assets.length ? ', ' + doc.assets.length + ' image' + (doc.assets.length > 1 ? 's' : '') : '') + ')' });
+    await this.session.exportDoc((this.state.themeName || (this.preset() || {}).name || 'watch').replace(/[^\w .-]+/g, '-').trim() || 'watch');
   }
   // Open a file: a baked .orbtheme (its design is read out of it) or a design file
-  async openFile(file) {
-    const G = window.GorbBake;
-    let bytes; try { bytes = new Uint8Array(await file.arrayBuffer()); } catch (e) { this.setState({ status: 'That file could not be read' }); return; }
-    let text = null;
-    if (bytes.length >= 4 && bytes[0] === 0x54 && bytes[1] === 0x52 && bytes[2] === 0x4f && bytes[3] === 0x47) {   // 'TROG': an .orbtheme
-      let rd; try { rd = G.readDesign3(bytes); } catch (e) { this.setState({ status: 'Not opened: ' + (e && e.message ? e.message : String(e)) }); return; }
-      if (!rd.design) { this.setState({ status: 'Not opened: ' + rd.why }); return; }
-      text = new TextDecoder().decode(rd.design);
-    } else text = new TextDecoder().decode(bytes);
-    let o = null; try { o = JSON.parse(text); } catch (e) { this.setState({ status: 'Not opened: that is neither an .orbtheme nor a design file' }); return; }
-    const why = this.applyDesignDoc(o, file.name);
-    if (why) { this.setState({ status: 'Not opened: ' + why }); return; }
-    this._snap = null; this._undo = []; this._redo = [];
-  }
-  // a theme's design back into the editor: refused by name when it is another app's, or a schema this build does not know
-  applyDesignDoc(o, from) {
+  openFile(file) { return this.session.openFile(file); }
+  // a design back into the editor: the session's envelope refusals, then the watch's own
+  applyDesignDoc(o, from) { return this.session.apply(o, from); }
+  applyDesignContent(o, from) {
     const E = window.WatchEngine;
-    if (!o || o.format !== 'wc-design') return 'that design is not one this editor wrote';
-    if (o.app && o.app !== this.appSlug()) return 'that design is the ' + o.app + ' app\u2019s, not ' + this.appSlug() + '\u2019s';
-    if (o.schema >= 1 && o.schema < this.DESIGN_SCHEMA) { const m = this.migrateDesign(o); if (!m.doc) return m.why; o = m.doc; }
-    if (!(o.schema >= 1) || o.schema > this.DESIGN_SCHEMA) return 'that design was made by ' + (o.app || 'clock') + ' ' + (o.appVersion || '?') + ' (design schema ' + o.schema + '); this editor (' + this.appVersion() + ') reads schema ' + this.DESIGN_SCHEMA + ' \u2014 update the app on this orb';
-    // a newer clock may have added fields this editor would silently drop on the next save: refuse, naming the release
-    const ver = (v) => { const m = /^v(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?$/.exec(String(v || '')); return m ? [+m[1], +m[2], +m[3]] : null; };   // the +build (content hash) never orders
-    const theirs = ver(o.appVersion), mine = ver(this.appVersion());
-    if (theirs && mine && (theirs[0] - mine[0] || theirs[1] - mine[1] || theirs[2] - mine[2]) > 0)
-      return 'that design was made by ' + (o.app || 'clock') + ' ' + o.appVersion + ', newer than this editor (' + this.appVersion() + ') \u2014 update the app on this orb, then open it';
     if (!o.design || !Array.isArray(o.design.comps) || !E.PRESETS[o.dial]) return 'that design has no watch in it';
     const r = E.assetRestore(o.assets || []); this.saveArt();
     const refs = this.artRefs(o.design), miss = refs.filter((x) => !E.assetKnown(x.id));
@@ -3760,21 +3708,7 @@ class Component extends DCLogic {
     return null;
   }
   // ?theme=<card stem> (the hub's Edit door): the design comes through the hub, off the shelf copy or the card
-  async openThemeParam() {
-    let q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
-    const id = q && q.get('theme'); if (!id || !/^[A-Za-z0-9_.-]{1,64}$/.test(id)) return false;
-    const ip = q.get('orb') || '', src = q.get('src') === 'shelf' ? 'shelf' : 'card';
-    this.setState({ status: 'Opening the theme\u2019s design from the ' + (src === 'shelf' ? 'hub\u2019s shelf' : 'card') + '\u2026' });
-    try {
-      const r = await fetch('/api/theme/design?' + (src === 'shelf' ? 'name=' + encodeURIComponent(id) : 'ip=' + encodeURIComponent(ip) + '&id=' + encodeURIComponent(id)));
-      if (!r.ok) { let why = ''; try { why = (await r.json()).error || ''; } catch (e) { why = ''; } this.setState({ status: 'Could not reopen that theme: ' + (why || 'the hub answered ' + r.status) }); return false; }
-      const o = JSON.parse(new TextDecoder().decode(new Uint8Array(await r.arrayBuffer())));
-      const why = this.applyDesignDoc(o, src === 'shelf' ? 'the hub\u2019s shelf' : 'the card');
-      if (why) { this.setState({ status: 'Could not reopen that theme: ' + why }); return false; }
-      this._snap = null; this._undo = []; this._redo = [];   // the reopened theme is where this session's history starts
-      return true;
-    } catch (e) { this.setState({ status: 'Could not reopen that theme: ' + (e && e.message ? e.message : String(e)) }); return false; }
-  }
+  openThemeParam() { return this.session.openTheme(); }
   /* D43 P5: the build flow. Steps over the existing views: each step shows one or more
    * of the tabs every field builder already answers to, so nothing a tab offered is
    * lost — the steps choose, order and explain. A selection that lands on a tab the
@@ -4728,7 +4662,7 @@ class Component extends DCLogic {
       mine: this.mineList().map((m) => { const armed = s.mineDel === m.name && Date.now() - (s.mineDelAt || 0) < 4000;
         return { name: m.name, meta: ((E.PRESETS[m.dial] || {}).name || '') + ' \u00b7 ' + new Date(+m.at || 0).toLocaleDateString(), load: () => { const why = this.applyDesignDoc(m.doc, 'My designs'); if (why) this.setState({ status: 'Could not open \u201c' + m.name + '\u201d: ' + why }); },
           delLabel: armed ? 'Press again' : 'Delete', delTip: 'Remove it from My designs (asks twice)', del: () => (armed ? (this.delMine(m.name), this.setState({ mineDel: null })) : this.setState({ mineDel: m.name, mineDelAt: Date.now() })) }; }),
-      mineEmpty: !(this._mine || this.mineList()).length,
+      mineEmpty: !this.mineList().length,
       resetAllLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset everything',
       undo: () => this.undo(), redo: () => this.redo(), undoOp: this._undo.length ? 1 : 0.4, redoOp: this._redo.length ? 1 : 0.4,
       undoTip: this._undo.length ? 'Undo (Ctrl+Z) \u00b7 ' + this._undo.length + ' step' + (this._undo.length > 1 ? 's' : '') + ' back' : 'Nothing to undo', redoTip: this._redo.length ? 'Redo (Ctrl+Shift+Z)' : 'Nothing to redo',

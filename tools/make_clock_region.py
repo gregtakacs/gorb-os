@@ -212,6 +212,8 @@ def _rewrite(text):
         # theme-editor-kit-plan K1: the send is an OS service
         ('<script src="send.js"></script>',
          '<script src="/runtime/theme@1/send.js"></script>'),
+        ('<script src="session.js"></script>',
+         '<script src="/runtime/theme@1/session.js"></script>'),
         # D43 §4.2: the hub's look, the runtime's ui@1 sheet
         ('<link href="ui.css" rel="stylesheet">',
          '<link href="/runtime/ui@1/ui.css" rel="stylesheet">'),

@@ -111,7 +111,7 @@ send to Gold where the slice touches the glass. A suite moves with the code it t
 | Slice | Content | Gate |
 |---|---|---|
 | **K1** | `theme@1/send`, and the clock calls it | `headless-send` moves to `web/runtime/_selftest/` and passes; clock suites green; a send, a duplicate Replace and a cancel benched on Gold — **built and benched on Gold 2026-11-03** (§7) |
-| **K2** | `theme@1/session` | `headless-session` and the session half of `headless-design` move and pass; a design saved before the move opens after it |
+| **K2** | `theme@1/session` | `headless-session` and the session half of `headless-design` move and pass; a design saved before the move opens after it — **built and benched on Gold 2026-11-03** (§7) |
 | **K3** | `theme@1/preview`, including true size | the clock's stage, Panel and Compare equal before and after (`headless-panel`, a screenshot pair); true size matches `review.html`'s calibration |
 | **K4** | `theme@1/measure`, the pace hook | `headless-pace` and `headless-estimate` green with `_devPace` as the clock's override; an app with no hook gets the estimate |
 | **K5** | a generic stage bake in `baker@1` (a plate, rows, sprites, row pools, scalars) for any app the stage draws; `bakeClock3` becomes the clock's translation on top of it | the clock's bundles are byte-identical before and after (`headless-bundle3`). Flights' interim themes are built into firmware (§0.1 ruling 5), so this does not wait on flights; its format is checked against flights' when the editor starts |
@@ -192,3 +192,36 @@ runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
   no errors. Cleanup found a trap: deleting the live bench theme right after the store
   that replaced it answered "stored" (before the reboot) wiped the slot; Skeleton was
   re-stored, and Gold ended as it began (Skeleton the one theme, clock 0 faults).
+
+### K2 — `theme@1/session` (2026-11-03)
+
+- **The service.** `web/runtime/theme@1/session.js`: `OrbTheme.session(host)` and
+  `OrbTheme.download`. History over the keys the app names (bursts merged, a bounded depth,
+  undo and redo with the app's own restore), autosave and pick-up, My designs, the design
+  envelope (`format`, `schema`, `app`, `appVersion`, `made`, then the app's content, in that
+  order, so the bytes a theme carries are unchanged), the migration walk, the envelope's
+  refusals (a foreign document, another app's design, a missing step, a newer schema, a
+  newer release, with the `+build` hash never ordering), opening a design file or an
+  `.orbtheme`'s design region, the hub's Edit door, and the `.orbdesign` download. Keys are
+  per app (`?app=`, else the host's slug).
+- **The clock keeps** what only it knows: `SNAP_KEYS`, checking and re-canonising a stored
+  session (`adoptSession`), dropping sound bytes from the autosave (`compactSnap`), the
+  watch's part of the document (`designContent`), putting a design back
+  (`applyDesignContent`), keeping the selection on undo (`restoreSnap`), and the export's
+  file name. The old names stay as pass-throughs, with `_undo`, `_redo`, `_snap` and
+  `_snapAt` as accessors and `BURST_MS`, `UNDO_MAX`, `DESIGN_SCHEMA`, `DESIGN_MIGRATE` and
+  `download` read through the host on every call, so the clock's suites ran unchanged.
+  `clock.orbapp` went from 946,412 B to 939,960 B.
+- **Not moved: art persistence.** `saveArt`, `loadArt` and `artNote` stay in the clock.
+  They store the watch engine's own asset registry, so a shared version needs that
+  registry's interface first. A later slice, once flights shows what its art store needs.
+- **Suites.** `web/runtime/_selftest/headless-session.test.js` drives the service with a
+  made-up two-field app, not the clock: 46 checks. Seven mutants (no burst merge, a restart
+  that keeps the undo stack, no app refusal, no newer-release refusal, keys not per app,
+  history that stops early, a release check that cannot read a `+build`) are all caught.
+  The clock's 18 suites: green, unchanged.
+- **Benched on Gold (clock `v1.2.16+56321ff`), 2026-11-03,** in the hub's window: the Edit
+  door reopened Skeleton's design from Gold's card ("Reopened “Skeleton” from the card"),
+  a design an earlier editor wrote; and with no `?theme=`, the editor picked up the
+  session the previous build had autosaved in that browser at 21:25. Both editors loaded
+  `/runtime/theme@1/send.js` and `session.js` with no errors.

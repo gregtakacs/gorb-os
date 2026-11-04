@@ -1,19 +1,22 @@
-/* theme@1/session — an editor's session: history, autosave, My designs, and the design file
- * (theme-editor-kit-plan K2).
+/* theme@1/session — an editor's session: history, My designs, and the design file
+ * (theme-editor-kit-plan K2, K9).
  *
  * Any app's editor gets, without carrying it:
  *   - undo and redo over snapshots of the keys the app names, with a burst of edits (a
  *     slider drag, a typed number) merged into one step;
- *   - autosave to this browser, and picking the last session up on load;
- *   - My designs: named designs kept in this browser;
+ *   - My designs: named designs kept as files on the hub, art included (K9: the hub's
+ *     disk is the store, so nothing an editor keeps depends on this browser; there is
+ *     no autosave, and a reload starts from a preset, a saved design or a theme);
+ *   - what the hub serves: whether this editor is newer than the app on the orb, said
+ *     before a send, and a note when a design opened was made by an older editor;
  *   - the design document's envelope (format, schema, app, app version, made), the
  *     migration walk (composer-stack-plan ruling 12), and its refusals: another app's
  *     design, a schema with no step, a design from a newer release of the app;
  *   - opening a design from a file (an .orbtheme's design region, or a design file) or
  *     from the hub's Edit door (?theme=, the card or the hub's shelf), and downloads.
  *
- * Every key is per app (?app=, else the host's slug), so two apps' editors in one browser
- * never read each other's sessions. Plain JS, no React. The app keeps what only it knows:
+ * Everything is per app (?app=, else the host's slug), so two apps' editors never read
+ * each other's designs. Plain JS, no React. The app keeps what only it knows:
  * which state is the design, how to check a restored one, and what the design holds.
  *
  *   const ses = OrbTheme.session({
@@ -24,9 +27,6 @@
  *     say(text),                   // the status line
  *     restore(snap, text),         // put a snapshot back (undo/redo); the app keeps its selection rules
  *     burstMs(), undoMax(),        // optional: the burst window (600 ms) and the depth (100)
- *     compact(snap),               // optional: a snapshot as autosave keeps it (drop heavy bytes)
- *     adopt(body),                 // a stored session back as a snapshot, or null to ignore it
- *     resumeHint,                  // optional: a sentence after "Picked up where you left off"
  *     schema(), migrate(),         // the design schema this editor reads, and its steps {n: fn}
  *     content(withArt),            // async: the design's own fields, merged into the envelope
  *     apply(doc, from),            // put a checked design into the editor: null, or why not
@@ -48,9 +48,10 @@
       undoStack: [], redoStack: [],
       snap: null, snapAt: 0,       // the newest snapshot, and when the burst it belongs to began
       restoring: false,
-      saved: null,                 // autosave: null = not attempted, else whether the browser kept it
+      orbNote: '',                 // set by boot() when this editor is newer than the orb's app
+      lastMade: null,              // the older release a design just opened was made by, else null
     };
-    var saveT = null, mine = null;
+    var mine = [];
     var say = function (s) { host.say(s); };
     var keys = function () { return host.keys(); };
     var burstMs = function () { return host.burstMs ? host.burstMs() : 600; };
@@ -64,8 +65,21 @@
     };
     // the release the region build stamped (window.__ORB_APP), or 'dev' for an unpackaged editor
     api.version = function () { var a = typeof root !== 'undefined' && root.__ORB_APP; return (a && a.version) || 'dev'; };
+    // the keys this browser held before K9: read once to move My designs, then dropped
     api.sessionKey = function () { return 'wc.session.' + api.slug(); };
     api.mineKey = function () { return 'wc.mine.' + api.slug(); };
+    // the orb this page was served for: /editor/<ip>/<slug>/…, or null off the hub
+    api.hubOrb = function () {
+      var m = /^\/editor\/(\d{1,3}(?:\.\d{1,3}){3})\/([a-z0-9_-]{1,32})\//i.exec(String((root.location && root.location.pathname) || ''));
+      return m ? { ip: m[1], slug: m[2] } : null;
+    };
+    // a hub route's {ok, data} answer, or a throw carrying the hub's own sentence
+    var hubJson = async function (path, opts) {
+      var r = await fetch(path, opts), j = null;
+      try { j = await r.json(); } catch (e) { j = null; }
+      if (!r.ok || !j || j.ok === false) throw new Error((j && j.error) || ('the hub answered ' + r.status));
+      return j.data;
+    };
 
     /* ---- history. A snapshot is the named keys' values by reference: an editor that
      * replaces the value an edit touches makes a snapshot free and a changed key one !==. */
@@ -84,7 +98,6 @@
         api.redoStack = [];
       }
       api.snap = cur; api.snapAt = now;
-      api.save();
     };
     // a design opened or picked up is where the session's history starts (the first update adopts it)
     api.restart = function () { api.snap = null; api.undoStack = []; api.redoStack = []; };
@@ -100,52 +113,78 @@
       restore(next, 'Redone');
     };
 
-    /* ---- autosave: the newest snapshot, written to this browser a moment after the edits stop */
-    api.body = function (snap) {
-      return Object.assign({ v: 1, at: Date.now() }, host.compact ? host.compact(snap) : snap);
+    /* ---- My designs: design documents filed on the hub by name (K9), art included. The
+     * list is fetched and kept (a sheet that lists them renders every frame); off the hub
+     * there is nowhere to keep one, and the design file is the way to take it along. */
+    var q = function (nm, name) { return '/api/design/' + nm + '?app=' + encodeURIComponent(api.slug()) + (name != null ? '&name=' + encodeURIComponent(name) : ''); };
+    var offHub = 'My designs are kept on the hub: open this editor from the hub, or download the design file';
+    var err = function (e) { return e && e.message ? e.message : String(e); };
+    var extrasOf = function (x) { var o = {}; Object.keys(x).forEach(function (k) { if (k !== 'name' && k !== 'doc' && k !== 'at') o[k] = x[k]; }); return o; };
+    var post = function (nm, name, doc) {
+      return hubJson(q(nm, name), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: doc ? JSON.stringify(doc) : '' });
     };
-    api.save = function () {
-      if (saveT) clearTimeout(saveT);
-      saveT = setTimeout(function () {
-        saveT = null;
-        try { root.localStorage.setItem(api.sessionKey(), JSON.stringify(api.body(api.snap || api.snapOf(host.state())))); api.saved = true; }
-        catch (e) { api.saved = false; }
-      }, 700);
+    api.mineList = function () { return mine.slice(); };
+    api.mineRefresh = async function () {
+      if (!api.hubOrb()) { mine = []; return false; }
+      try {
+        var l = await hubJson(q('list'));
+        mine = (Array.isArray(l) ? l : []).map(function (x) { return Object.assign({}, x.extra || {}, { name: x.name, at: x.at, appVersion: x.appVersion, bytes: x.bytes }); });
+      } catch (e) { say('My designs could not be read from the hub: ' + err(e)); return false; }
+      host.set({});
+      return true;
     };
-    // on load: the last session in this browser, if the app accepts it
-    api.load = function () {
-      var b = null;
-      try { b = JSON.parse(root.localStorage.getItem(api.sessionKey()) || 'null'); } catch (e) { b = null; }
-      if (!b || b.v !== 1) return false;
-      var snap = host.adopt(b);
-      if (!snap) return false;
-      var when = new Date(+b.at || Date.now());
+    // entry: {name, doc, ...anything the app lists by}; a save under a held name replaces it
+    api.mineSave = async function (entry) {
+      if (!api.hubOrb()) { say('Not saved: ' + offHub); return false; }
+      try { await post('save', entry.name, Object.assign({}, entry.doc, { saved: { extra: extrasOf(entry) } })); }
+      catch (e) { say('Not saved: ' + err(e)); return false; }
+      await api.mineRefresh();
+      say('Saved “' + entry.name + '” to My designs on the hub');
+      return true;
+    };
+    api.mineOpen = async function (nm) {
+      if (!api.hubOrb()) { say(offHub); return false; }
+      var o = null;
+      try { var r = await fetch(q('get', nm)); o = r.ok ? await r.json() : null; } catch (e) { o = null; }
+      if (!o || o.format !== 'wc-design') { say('Could not open “' + nm + '”: the hub has no design by that name'); return false; }
+      var why = api.apply(o, 'My designs');
+      if (why) { say('Could not open “' + nm + '”: ' + why); return false; }
       api.restart();
-      host.set(Object.assign(snap, { status: 'Picked up where you left off (saved ' + when.toLocaleString() + ').' + (host.resumeHint ? ' ' + host.resumeHint : '') }));
+      api.sayOpened('“' + nm + '”');
+      return true;
+    };
+    api.mineDelete = async function (nm) {
+      if (!api.hubOrb()) { say(offHub); return false; }
+      try { await post('delete', nm); } catch (e) { say('Not removed: ' + err(e)); return false; }
+      await api.mineRefresh();
+      say('Removed “' + nm + '” from My designs');
       return true;
     };
 
-    /* ---- My designs: named design documents in this browser. Read once and kept (a sheet
-     * that lists them renders every frame); every write goes through mineWrite. */
-    api.mineList = function () {
-      if (mine) return mine.slice();
-      var l = []; try { l = JSON.parse(root.localStorage.getItem(api.mineKey()) || '[]'); } catch (e) { l = []; }
-      mine = Array.isArray(l) ? l.filter(function (x) { return x && x.name && x.doc; }) : [];
-      return mine.slice();
-    };
-    api.mineWrite = function (l) {
-      try { root.localStorage.setItem(api.mineKey(), JSON.stringify(l)); mine = l.slice(); return true; }
-      catch (e) { say('Not saved: this browser refused to store it (' + (e && e.name || 'storage') + ')'); return false; }
-    };
-    // entry: {name, doc, ...anything the app lists by}; a save under a held name replaces it
-    api.mineSave = function (entry) {
-      var l = api.mineList().filter(function (x) { return x.name !== entry.name; });
-      l.unshift(Object.assign({ at: Date.now() }, entry));
-      if (api.mineWrite(l)) { say('Saved “' + entry.name + '” to My designs'); return true; }
-      return false;
-    };
-    api.mineDelete = function (nm) {
-      if (api.mineWrite(api.mineList().filter(function (x) { return x.name !== nm; }))) say('Removed “' + nm + '” from My designs');
+    /* ---- boot: drop the browser's old autosave; under the hub, move any My designs this
+     * browser still holds from before K9 (references only: they never held their art), read
+     * the hub's list, and ask the hub what the orb runs. Off the hub there is nothing to read. */
+    api.boot = async function () {
+      try { root.localStorage.removeItem(api.sessionKey()); } catch (e) { /* no storage */ }
+      var hub = api.hubOrb();
+      if (!hub) return false;
+      var old = null; try { old = JSON.parse(root.localStorage.getItem(api.mineKey()) || 'null'); } catch (e) { old = null; }
+      if (Array.isArray(old)) {
+        var left = old.filter(function (x) { return x && x.name && x.doc; }), moved = 0;
+        for (var i = 0; i < left.length; i++) {
+          try { await post('save', left[i].name, Object.assign({}, left[i].doc, { saved: { extra: extrasOf(left[i]) } })); moved++; }
+          catch (e) { /* kept in the browser for the next boot */ }
+        }
+        if (moved === left.length) { try { root.localStorage.removeItem(api.mineKey()); } catch (e) { /* no storage */ } }
+      }
+      await api.mineRefresh();
+      try {
+        var src = await hubJson('/api/editor/source?ip=' + encodeURIComponent(hub.ip) + '&slug=' + encodeURIComponent(hub.slug));
+        api.orbNote = src && src.relation === 'newer' && src.orb_version
+          ? 'this editor is ' + api.version() + '; the orb runs ' + api.slug() + ' ' + src.orb_version + ' — update the app on the orb before sending' : '';
+      } catch (e) { api.orbNote = ''; }
+      if (api.orbNote) say('Heads up: ' + api.orbNote);
+      return true;
     };
 
     /* ---- the design document. Every theme an editor bakes carries its design after the
@@ -180,10 +219,19 @@
         return { why: 'that design was made by ' + (o.app || me) + ' ' + o.appVersion + ', newer than this editor (' + api.version() + ') — update the app on this orb, then open it' };
       return { doc: o };
     };
-    // a design back into the editor: the envelope's refusals, then the app's own
+    // a design back into the editor: the envelope's refusals, then the app's own. A design an
+    // older release made opens, and lastMade keeps that release so the opener can say so
+    var relOf = function (v) { var g = /^v(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?$/.exec(String(v || '')); return g ? [+g[1], +g[2], +g[3]] : null; };
     api.apply = function (o, from) {
       var c = api.check(o);
-      return c.why || host.apply(c.doc, from);
+      var why = c.why || host.apply(c.doc, from);
+      var a = relOf(o && o.appVersion), b = relOf(api.version());
+      api.lastMade = !why && a && b && (a[0] - b[0] || a[1] - b[1] || a[2] - b[2]) < 0 ? o.appVersion : null;
+      return why;
+    };
+    // after an open: when an older release made the design, say that saving or sending updates it
+    api.sayOpened = function (what) {
+      if (api.lastMade) say('Opened ' + what + ' — made with ' + api.slug() + ' ' + api.lastMade + '; saving or sending it updates it to ' + api.version());
     };
     // the design file: the design a baked theme carries, on its own
     api.exportDoc = async function (name) {
@@ -205,6 +253,7 @@
       var why = api.apply(o, file.name);
       if (why) { say('Not opened: ' + why); return false; }
       api.restart();
+      api.sayOpened(file.name);
       return true;
     };
     // ?theme=<card stem> (the hub's Edit door): the design comes through the hub, off the card or the shelf
@@ -220,6 +269,7 @@
         var why = api.apply(o, src === 'shelf' ? 'the hub’s shelf' : 'the card');
         if (why) { say('Could not reopen that theme: ' + why); return false; }
         api.restart();
+        api.sayOpened('the theme from the ' + (src === 'shelf' ? 'hub’s shelf' : 'card'));
         return true;
       } catch (e) { say('Could not reopen that theme: ' + (e && e.message ? e.message : String(e))); return false; }
     };

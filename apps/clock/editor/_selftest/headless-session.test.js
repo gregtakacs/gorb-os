@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
-// D43 P6 (§7): the session. Undo and redo walk the watch's snapshots (a burst of edits is one
-// step), autosave writes the newest to this browser and a reload restores it, My designs keeps
-// named Design IDs with a JSON export and import, Reset asks twice, and the hub's ?orb= is the
+// D43 P6 (§7), K9: the session. Undo and redo walk the watch's snapshots (a burst of edits is
+// one step), nothing is autosaved to this browser, My designs are files on the hub (art and
+// all, through runtime/_selftest/fake-hub.js), Reset asks twice, and the hub's ?orb= is the
 // address the editor sends to.
 require('./headless-stub.js');
 const E = global.WatchEngine;
@@ -21,7 +21,7 @@ const mk = () => {
   it.BURST_MS = -1;   // every edit its own step, unless a check says otherwise
   return it;
 };
-// timers: autosave waits 700 ms; run them on demand
+// timers: run them on demand
 const timers = [];
 global.setTimeout = (fn) => { timers.push(fn); return timers.length; };
 global.clearTimeout = () => {};
@@ -65,19 +65,10 @@ const comps = (it) => JSON.stringify(it.design().comps);
   it.undo();
   ok(it.state.caseStyle !== 'none', 'the case is part of the watch: undone like a part');
 
-  // autosave, and a reload that restores it
+  // no autosave (K9): an edit writes nothing to this browser
+  window.localStorage.removeItem('wc.session.clock');
   it.setComp(sid, { size: 66 }); it.setState({ themeName: 'Mine' }); flush();
-  const saved = JSON.parse(window.localStorage.getItem('wc.session.clock') || 'null');
-  ok(saved && saved.v === 1 && saved.dial === 'modern' && saved.themeName === 'Mine', 'autosave writes the watch to this browser', saved && Object.keys(saved).join(','));
-  const it2 = mk(); it2.state.dial = 'skeleton';
-  ok(it2.loadSession() && it2.state.dial === 'modern' && it2.design().comps.find((c) => c.id === sid).size === 66 && it2.state.themeName === 'Mine', 'a reload picks it up', it2.state.status);
-  ok(/Picked up where you left off/.test(it2.state.status), 'and says so');
-  it2.trackHistory();
-  ok(!it2._undo.length, 'the restored watch is where the new session’s history starts');
-  it2.setComp(sid, { size: 70 });
-  ok(it2._undo.length === 1, 'and the first edit after it is undoable');
-  window.localStorage.setItem('wc.session.clock', '{not json');
-  ok(!mk().loadSession(), 'a damaged session is ignored, not thrown');
+  ok(window.localStorage.getItem('wc.session.clock') === null && !('loadSession' in it) && !('saveSession' in it), 'an edit autosaves nothing, and there is no session to pick up');
 
   // Reset asks twice, and is undoable
   const it3 = mk(); it3.trackHistory(); it3.setComp(sid, { size: 30 });
@@ -88,32 +79,31 @@ const comps = (it) => JSON.stringify(it.design().comps);
   it3.undo();
   ok(it3.design().comps.find((c) => c.id === sid).size === 30, 'and Ctrl+Z brings the edited watch back');
 
-  // My designs: save, list, open, delete (named design documents in this browser; a design
-  // file is what carries one elsewhere)
-  window.localStorage.removeItem('wc.mine.clock');
+  // My designs, on the hub (K9): save with art, list, open, delete
+  const fh = require('../../../../tools/orb-manager/web/runtime/_selftest/fake-hub.js')();
+  const keepLoc = global.location, keepFetch = global.fetch;
+  global.location = { pathname: '/editor/192.0.2.7/clock/', search: '', protocol: 'http:' };
+  global.fetch = (url, o) => fh.fetch(url, o);
   const it4 = mk(); it4.trackHistory(); it4.setComp(sid, { size: 77 });
+  E.assetRestore([{ id: 'k9-art', name: 'bg.png', kind: 'png', dataUrl: 'data:image/png;base64,azk=' }]);
+  it4.state.designs = Object.assign({}, it4.state.designs, { modern: Object.assign(it4.design(), { bgArt: 'k9-art' }) });
   await it4.saveMine('Big sub');
-  const l = it4.mineList();
-  ok(l.length === 1 && l[0].name === 'Big sub' && l[0].doc && l[0].doc.format === 'wc-design' && l[0].doc.art === false && l[0].dial === 'modern', 'Save current keeps a named design document, without the image bytes', JSON.stringify(l[0] && [l[0].name, l[0].doc && l[0].doc.format]));
+  const l = it4.mineList(), held = fh.designs.get('clock').get('Big sub');
+  ok(l.length === 1 && l[0].name === 'Big sub' && l[0].dial === 'modern' && /Saved “Big sub” to My designs on the hub/.test(it4.state.status), 'Save current files the watch on the hub under its name', it4.state.status);
+  ok(held && held.format === 'wc-design' && held.art === true && (held.assets || []).some((a) => a.id === 'k9-art'), 'with its art inside', held && JSON.stringify(held.assets || []).slice(0, 80));
   await it4.saveMine('Big sub');
   ok(it4.mineList().length === 1, 'saving under the same name replaces it');
-  ok(it4.state.status === 'Saved “Big sub” to My designs', 'a design with no uploaded art saves without a warning', it4.state.status);
-  it4.state.designs = Object.assign({}, it4.state.designs, { [it4.state.dial]: Object.assign(it4.design(), { bgArt: 'any-art' }) });
-  await it4.saveMine('Big sub');
-  ok(/its uploaded art is not kept there: download the design file to keep it/.test(it4.state.status), 'a design with uploaded art says My designs will not keep it', it4.state.status);
-  delete it4.state.designs[it4.state.dial].bgArt;
-  window.localStorage.setItem('wc.mine.clock', JSON.stringify(it4.mineList().concat([{ name: 'Old', id: 'WCD5-abc', dial: 'modern' }])));
-  it4._mine = null;
-  ok(it4.mineList().length === 1, 'an entry from before (a Design ID, no document) is not listed: no legacy reader');
-  const it5 = mk(); it5.buildMovement = () => {};
+  ok(/save it to My designs, or export the design file or the theme, to keep it/.test(it4.artNote()), 'the art line names My designs as a way to keep it', it4.artNote());
+  const it5 = mk(); it5.buildMovement = () => {}; await it5.session.boot();
   const rv = it5.renderVals();
-  ok(rv.mine.length === 1 && !rv.mineEmpty && typeof rv.openFile === 'function' && !('exportMine' in rv) && !('importMine' in rv), 'the Start sheet lists them beside Open a file, with no list export of its own');
-  rv.mine[0].load();
-  ok(it5.state.dial === 'modern' && it5.design().comps.find((c) => c.id === sid).size === 77 && it5.state.themeName === 'Big sub', 'Open loads the watch and its name', it5.state.status);
+  ok(rv.mine.length === 1 && !rv.mineEmpty && typeof rv.openFile === 'function', 'another page lists it beside Open a file');
+  await rv.mine[0].load();
+  ok(it5.state.dial === 'modern' && it5.design().comps.find((c) => c.id === sid).size === 77 && it5.state.themeName === 'Big sub' && E.assetKnown('k9-art'), 'Open loads the watch, its name and its art', it5.state.status);
   it5.renderVals().mine[0].del();
   ok(it5.mineList().length === 1, 'Delete asks first');
-  it5.renderVals().mine[0].del();
+  await it5.renderVals().mine[0].del();
   ok(it5.mineList().length === 0 && it5.renderVals().mineEmpty, 'and removes it on the second press');
+  global.location = keepLoc; global.fetch = keepFetch;
 })().then(() => {
 
 // ?orb= names the orb; ?app= keys the browser storage
@@ -124,9 +114,9 @@ const comps = (it) => JSON.stringify(it.design().comps);
   it.hubOrbIp().then((ip) => {
     ok(ip === '192.168.2.34' && !asked, 'the hub’s ?orb= is the address, without asking /api/orb/known', ip);
     global.location = { search: '?app=hsb', protocol: 'http:' };
-    ok(it.sessionKey() === 'wc.session.hsb' && it.mineKey() === 'wc.mine.hsb', '?app= keys the session and My designs per app');
+    ok(it.session.slug() === 'hsb' && it.mineKey() === 'wc.mine.hsb', '?app= names the app My designs are filed under');
     global.location = { search: '?app=../x', protocol: 'http:' };
-    ok(it.sessionKey() === 'wc.session.clock', 'a slug that is not one falls back to the clock’s');
+    ok(it.session.slug() === 'clock', 'a slug that is not one falls back to the clock’s');
     console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');
     process.exit(fails ? 1 : 0);
   });

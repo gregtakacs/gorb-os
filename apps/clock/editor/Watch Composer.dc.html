@@ -121,10 +121,10 @@
           <h2 style="margin-top:18px">My designs</h2>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
             <input type="text" value="{{ mineName }}" onChange="{{ onMineName }}" placeholder="{{ minePh }}" style="flex:1 1 180px;max-width:280px">
-            <button class="ui-primary" onClick="{{ saveMine }}" title="Keep this watch, as it stands now, under that name in this browser">Save current</button>
+            <button class="ui-primary" onClick="{{ saveMine }}" title="Keep this watch, as it stands now and with its art, under that name on the hub">Save current</button>
             <label class="ui-ghost wc-sm" style="cursor:pointer" title="Open a theme (.orbtheme) or a design file (.orbdesign) in the editor">Open a file…<input type="file" accept=".orbtheme,.orbdesign" onChange="{{ openFile }}" style="display:none"></label>
           </div>
-          <sc-if value="{{ mineEmpty }}" hint-placeholder-val="{{ false }}"><div class="ui-mut" style="font-size:12px">Nothing saved yet. Your work also saves itself as you go and comes back when you reopen the editor; these are the versions you name, kept in this browser. To take one elsewhere, download its design file on the Render step.</div></sc-if>
+          <sc-if value="{{ mineEmpty }}" hint-placeholder-val="{{ false }}"><div class="ui-mut" style="font-size:12px">Nothing saved yet. Designs you name here are kept on the hub, art included, and open again after a reload; work you have not saved, sent or exported is not kept. To take one elsewhere, download its design file on the Render step.</div></sc-if>
           <sc-for list="{{ mine }}" as="r" hint-placeholder-count="2">
             <div style="display:flex;gap:8px;align-items:center;padding:4px 0;border-top:1px solid var(--line)">
               <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">{{ r.name }}</b>
@@ -994,9 +994,6 @@ class Component extends DCLogic {
         restore: (snap, text) => this.restoreSnap(snap, text),
         burstMs: () => this.BURST_MS,
         undoMax: () => this.UNDO_MAX,
-        compact: (snap) => this.compactSnap(snap),
-        adopt: (b) => this.adoptSession(b),
-        resumeHint: 'Reset everything starts that watch over; Ctrl+Z steps back.',
         schema: () => this.DESIGN_SCHEMA,
         migrate: () => this.DESIGN_MIGRATE,
         content: (withArt) => this.designContent(withArt),
@@ -1025,37 +1022,21 @@ class Component extends DCLogic {
   }
   undo() { this.session.undo(); }
   redo() { this.session.redo(); }
-  // what autosave keeps: the snapshot, less the uploaded sounds' bytes (art and sound bytes
-  // have their own store and travel in the design file and the theme; autosave keeps references)
-  compactSnap(snap) {
-    const sounds = {}; Object.keys(snap.sounds || {}).forEach((k) => { const d = snap.sounds[k]; sounds[k] = d ? Object.assign({}, d, { up: {} }) : d; });
-    return Object.assign({}, snap, { sounds });
-  }
-  saveSession() { this.session.save(); }
-  loadSession() { return this.session.load(); }
-  // a session from this browser, accepted when its dial still exists, with every design re-canonised
-  adoptSession(b) {
-    if (!b.dial || !WatchEngine.PRESETS[b.dial]) return null;
-    const designs = {}; Object.keys(b.designs || {}).forEach((k) => { if (WatchEngine.PRESETS[k] && b.designs[k]) designs[k] = WatchEngine.canonDesign(b.designs[k]); });
-    const snap = {}; this.SNAP_KEYS.forEach((k) => { if (b[k] !== undefined) snap[k] = b[k]; }); snap.designs = designs;
-    return snap;
-  }
-  /* My designs keep designDoc without the art's bytes, and nothing else keeps them across a
-   * reload (owner ruling 2026-11-04: the design file and the theme hold a design's art, and
-   * an unexported upload is lost on reload). A saved design with uploaded art says so. */
+  /* My designs are files on the hub (K9), saved with their art: the same document the
+   * design file carries, under the name the author gives it. The dial rides along so the
+   * list can name the watch without opening the file. */
   mineList() { return this.session.mineList(); }
   async saveMine(name) {
     const nm = String(name || '').trim() || this.state.themeName || this.preset().name;
-    if (!this.session.mineSave({ name: nm, doc: Object.assign(await this.designDoc(false), { themeName: nm }), dial: this.state.dial })) return;
-    this.setState({ mineName: '' });
-    if (this.artRefs(this.design()).length) this.setState({ status: 'Saved “' + nm + '” to My designs — its uploaded art is not kept there: download the design file to keep it' });
+    if (await this.session.mineSave({ name: nm, doc: Object.assign(await this.designDoc(true), { themeName: nm }), dial: this.state.dial })) this.setState({ mineName: '' });
   }
-  delMine(nm) { this.session.mineDelete(nm); }
+  delMine(nm) { return this.session.mineDelete(nm); }
+  openMine(nm) { return this.session.mineOpen(nm); }
   /* ------------------------------ uploaded art ------------------------------------
-   * The bytes live in the engine registry for this session only; a design carries only
-   * REFERENCES to them, so autosave and My designs stay small, and the design file and the
-   * theme are what carry the art. The browser keeps no copy (removed 2026-11-04): a reload
-   * before an export loses the upload, by the owner's ruling. */
+   * The bytes live in the engine registry for this session only; the design carries
+   * REFERENCES to them, and My designs, the design file and the theme carry the art itself.
+   * The browser keeps no copy (removed 2026-11-04): a reload before any of those loses the
+   * upload, by the owner's ruling. */
   /* Every asset this design points at, and what for: the manifest and the missing-art
    * warning are built from this one walk, so they cannot disagree about what is used. */
   artRefs(D) {
@@ -1078,7 +1059,7 @@ class Component extends DCLogic {
       .map((id) => ({ id, usedBy: list.filter((r) => r.id === id).map((r) => r.usedBy).join(' + ') }));
     const kb = Math.round(E.assetBytes() / 1024);
     const held = ids.length - missing.length;
-    const base = held + '/' + ids.length + ' art ' + (ids.length === 1 ? 'asset' : 'assets') + ' held (' + kb + ' KB, this session only — export the design file or the theme to keep it)';
+    const base = held + '/' + ids.length + ' art ' + (ids.length === 1 ? 'asset' : 'assets') + ' held (' + kb + ' KB, this session only — save it to My designs, or export the design file or the theme, to keep it)';
     if (!missing.length) return base;
     return base + ' · MISSING ' + missing.map((m) => m.usedBy + ' (' + m.id + ')').join(', ') + ' — open the design file or the theme that carries them';
   }
@@ -1305,8 +1286,8 @@ class Component extends DCLogic {
     const fams = ['700 31px "Cormorant Garamond"', 'italic 600 30px "Cormorant Garamond"', '600 40px "IBM Plex Sans"', '500 21px "IBM Plex Sans"', 'italic 600 30px "IBM Plex Sans"', '700 31px "Jost"', '500 21px "Jost"', 'italic 600 30px "Jost"', '700 31px "Barlow Condensed"', '500 21px "Barlow Condensed"', 'italic 600 30px "Barlow Condensed"', '700 31px "Bodoni Moda"', '500 21px "Bodoni Moda"', 'italic 600 30px "Bodoni Moda"'];
     try { await Promise.race([Promise.all(fams.map((f) => document.fonts.load(f))), new Promise((r) => setTimeout(r, 4000))]); } catch (e) {}
     this.ready = true;
-    this.loadSession();
-    await this.openThemeParam();   // D43 P7: the hub's Edit door names a theme; its design wins over the autosave
+    await this.session.boot();     // K9: My designs off the hub, and whether this editor is newer than the orb's app
+    await this.openThemeParam();   // D43 P7: the hub's Edit door names a theme, and its design is what opens
     // Under a hub, learn the loaded orb once so the Send note names it before the
     // first press. Guarded and swallowed: off-hub there is no hub to ask, and a
     // headless run has no fetch — either way the button's press-time read still works.
@@ -4360,8 +4341,8 @@ class Component extends DCLogic {
       mineName: s.mineName || '', onMineName: (e) => this.setState({ mineName: e.target.value }), minePh: 'Name (default: ' + (s.themeName || (E.PRESETS[s.dial] || {}).name || 'this watch') + ')',
       saveMine: () => this.saveMine(s.mineName),
       mine: this.mineList().map((m) => { const armed = s.mineDel === m.name && Date.now() - (s.mineDelAt || 0) < 4000;
-        return { name: m.name, meta: ((E.PRESETS[m.dial] || {}).name || '') + ' \u00b7 ' + new Date(+m.at || 0).toLocaleDateString(), load: () => { const why = this.applyDesignDoc(m.doc, 'My designs'); if (why) this.setState({ status: 'Could not open \u201c' + m.name + '\u201d: ' + why }); },
-          delLabel: armed ? 'Press again' : 'Delete', delTip: 'Remove it from My designs (asks twice)', del: () => (armed ? (this.delMine(m.name), this.setState({ mineDel: null })) : this.setState({ mineDel: m.name, mineDelAt: Date.now() })) }; }),
+        return { name: m.name, meta: ((E.PRESETS[m.dial] || {}).name || '') + ' \u00b7 ' + new Date(+m.at || 0).toLocaleDateString(), load: () => this.openMine(m.name),
+          delLabel: armed ? 'Press again' : 'Delete', delTip: 'Remove it from My designs (asks twice)', del: () => (armed ? (this.setState({ mineDel: null }), this.delMine(m.name)) : this.setState({ mineDel: m.name, mineDelAt: Date.now() })) }; }),
       mineEmpty: !this.mineList().length,
       resetAllLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset everything',
       undo: () => this.undo(), redo: () => this.redo(), undoOp: this._undo.length ? 1 : 0.4, redoOp: this._redo.length ? 1 : 0.4,
@@ -4526,7 +4507,8 @@ class Component extends DCLogic {
         if (this._replaceArmed && this._replaceArmed.nm === this.themeName()) return s.dup ? 'awaiting your choice' : 'press again to replace';
         const tn = this.themeName();
         if (!G.nameOk(tn)) return 'name ' + G.nameBytes(tn) + ' B; header holds ' + (G.NAME_MAX - 1);
-        return this.state.hubIp ? 'pushes to ' + this.state.hubIp : 'pushes to the orb this hub has loaded';
+        const to = this.state.hubIp ? 'pushes to ' + this.state.hubIp : 'pushes to the orb this hub has loaded';
+        return this.session.orbNote ? to + ' · ' + this.session.orbNote : to;
       })(),
       /* §32.6: the duplicate modal. When the send stopped at a duplicate — whether the
        * precheck caught it (s.dup.pre) or the device refused late (a same-serial,

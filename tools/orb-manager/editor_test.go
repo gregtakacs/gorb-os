@@ -10,6 +10,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -361,7 +362,8 @@ func TestEditorTransportFailureMemoExpiresFast(t *testing.T) {
 // scarcest resource on the network: every asset a composer session pulls afterwards is a
 // dial the board does not answer. The gate is the version stamp alone, so the test's whole
 // value is in the pair of cases — agree, and the dial never rings; disagree, and it rings.
-func TestEditorIsServedFromTheLibraryOnlyWhenTheVersionsAgree(t *testing.T) {
+// K9 (owner, 2026-11-04): the hub's editor when the shelf holds the orb's release or newer.
+func TestEditorIsServedFromTheLibraryWhenItIsTheOrbsReleaseOrNewer(t *testing.T) {
 	const stamp = "v1.4.2-rc.1+build.7" // the sentinel fixture's own header stamp
 	editorInvalidate()
 	t.Cleanup(editorInvalidate)
@@ -401,13 +403,35 @@ func TestEditorIsServedFromTheLibraryOnlyWhenTheVersionsAgree(t *testing.T) {
 			t.Errorf("editor door dialed = %v, want %v (dial stamp %q against shelf %q)",
 				dialed, wantDialed, dialStamp, stamp)
 		}
+		// and the source route says the same thing the door just did, with both releases
+		var env struct {
+			Data map[string]any `json:"data"`
+		}
+		src := editorGet(t, s, "/api/editor/source?ip="+ip+"&slug=sentinel", true)
+		if err := json.Unmarshal(src.Body.Bytes(), &env); err != nil {
+			t.Fatalf("source: %s", src.Body)
+		}
+		wantSrc := "library"
+		if wantDialed {
+			wantSrc = "orb"
+		}
+		if env.Data["source"] != wantSrc || env.Data["hub_version"] != stamp || (dialStamp != "" && env.Data["orb_version"] != dialStamp) {
+			t.Errorf("source = %v, want %s with hub %s and orb %q", env.Data, wantSrc, stamp, dialStamp)
+		}
 	}
 
 	// Same stamp, both sides. The hub answers from disk.
 	run(t, stamp, false)
-	// The dial is behind, so the hub's copy is a different program and the board answers.
+	// The dial is behind: the hub's newer editor answers, and /api/editor/source says so.
 	editorInvalidate()
-	run(t, "v1.0.0", true)
+	run(t, "v1.0.0", false)
+	// Another build of the shelf's release: still the hub's.
+	editorInvalidate()
+	run(t, "v1.4.2-rc.1+other", false)
+	// The dial is AHEAD of the shelf: the hub's older editor would drop what the orb's
+	// release added, so the board answers.
+	editorInvalidate()
+	run(t, "v9.0.0", true)
 	// The dial reports nothing. An unstamped row is a row that stated no version, and
 	// serving hub bytes against a silence is how an operator edits the wrong editor.
 	editorInvalidate()

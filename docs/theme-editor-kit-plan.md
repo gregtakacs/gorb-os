@@ -123,6 +123,7 @@ send to Gold where the slice touches the glass. A suite moves with the code it t
 | **K6** | `studio@1`: frame, title and step bar, status, send modal, the Render step, slots | the clock's P5 checklist (nothing lost), no page scroll at 1280×720 and 1920×1080 inside the hub — **built and benched on Gold 2026-11-04** (§7) |
 | **K7** | `studio@1`: the layers panel and the field builders, driven by what the app declares | the clock's layers and inspector behave as before (`headless-stack-ui`, `headless-forms`, `headless-ui`); the clock's own rules (`stack.js`) stay the clock's — **built and benched on Gold 2026-11-04** (§7) |
 | **H1** | the Themes page per app: a sub-tab for each theme-aware app, with its themes and a link to its editor, all hub code (§0.1 ruling 4) | Go and UI suites green; on Gold, the clock's tab lists the card's themes and opens the editor; an app with no themes or no editor gets a tab that says so — **built 2026-11-04** (§7) |
+| **K9** | the hub's disk is the editor's store, and the hub's library is its editor (owner, 2026-11-04): My designs are files on the hub, autosave is gone, every theme sent or imported is kept on the shelf by app and name, and the hub serves its own editor when it is the orb's release or newer, saying when it is newer than the orb and when a design it opens was made by an older editor | Go suites for the store, the shelf copy and the region choice; the session suites with the hub stubbed; on Gold, a design saved and reopened after a reload, a send that lands on the shelf and replaces itself under its name |
 | **K8** | the flights editor on the kit (flights step 3, in its own clone) | no reference to `apps/clock/`; a line count recorded here against the Watch Composer's |
 
 K1–K4 come first: they are pure moves, they suit both editors as they are, and they can
@@ -532,3 +533,63 @@ moving-row format; `tools/theme_schema.py` and `main/art/orb_clock3.c` are the r
   neither of; the fake orb and the node run stand for them. Bronze (orb-A, the sibling
   clone's bench orb) has both: the owner looked at its Themes face in the hub on 2026-11-04
   and it read right.
+
+### K9 — the hub's disk is the store, the hub's library is the editor (ruled 2026-11-04)
+
+Owner ruling, 2026-11-04: browser storage is not something an editor should depend on. The
+hub already reads themes off its disk for the Themes tab; designs come from the same place,
+and the editor the hub serves is the hub's own copy.
+
+- **My designs are files on the hub.** `<library root>/designs/<app>/`, one `.orbdesign` per
+  name, art included (a disk has no 5 MB quota), so a saved design reopens whole after a
+  reload and opens with "Open a file" too. A save under a held name replaces it. Routes:
+  `GET /api/design/list?app=`, `GET /api/design/get?app=&name=`, `POST /api/design/save?app=&name=`,
+  `POST /api/design/delete?app=&name=`. The session service's My designs calls them; an
+  editor not served by the hub says My designs need the hub. Designs a browser still holds
+  under `wc.mine.<app>` move to the hub once, then the key is dropped.
+- **Autosave is gone.** The ruling that an unexported upload is lost on reload (§7 K2) applies
+  to the whole session: a reload starts from the preset, a saved design, or a theme.
+  Calibration stays per browser (§0.1 ruling 2).
+- **The shelf keeps what was sent.** A theme the hub stores on an orb (Send from an editor,
+  Import a theme) is written to the shelf, filed by its app and its baked name: a theme
+  under a name the shelf already holds for that app replaces that file, so the shelf holds
+  one copy per name. (Before K9 the Import button's tooltip promised this and nothing did it.)
+- **The hub's editor.** The hub serves its library's editor when the library's release is the
+  orb's or newer, and dials the orb only when it holds none. `GET /api/editor/source?ip=&slug=`
+  names where the editor came from and what the orb runs; when the editor is newer, the
+  editor says so ("this editor is v1.2.17; Gold runs clock v1.2.16 — update the app on Gold
+  before sending"). A design made by an older editor opens with a note that saving or sending
+  it updates it to this release; one made by a newer editor is still refused (K2).
+- **As built (2026-11-04).** Hub: `designs.go` (the store, `<library root>/designs/<app>/`,
+  file name a readable stem plus a hash of the exact name, so one name is one file and two
+  names that fold alike are two), `shelfkeep.go` (the shelf copy on a landed upload and on a
+  landed commit, which finds the bytes the duplicate refusal held under its token; a theme
+  already on the shelf under that app and name is overwritten in place, whatever its file is
+  called), `editor.go` (`libraryEditorRegion` takes the library's copy unless the orb's
+  release is newer or a stamp will not parse; `editorRelation`; `/api/editor/source`); an app
+  import retires the remembered regions. `theme@1/session`: `mineList/mineRefresh/mineSave/
+  mineOpen/mineDelete` through the hub, `boot()` (drops `wc.session.<app>`, moves
+  `wc.mine.<app>` entries that hold a document, keeps the key if the hub refuses one, reads the
+  list and the source), `orbNote`, `lastMade` and `sayOpened`; autosave, `compact`, `adopt`
+  and `resumeHint` are gone. The clock saves My designs with their art, says so in the art
+  line, puts `orbNote` in the Send note, and returns the delete's promise from the second press.
+- **Suites.** Go: `TestDesignsAreFilesOnTheHubOnePerName`, `TestStoredThemesAreKeptOnTheShelfOnePerName`
+  (an upload, and a duplicate committed over a hand-named shelf file), the region test now
+  `…WhenItIsTheOrbsReleaseOrNewer` with an older shelf, another build and a newer orb, and the
+  source route checked beside each. `web/runtime/_selftest/fake-hub.js` stands in for the
+  routes in node; the runtime session suite has 53 checks, and seven mutants (no key drop, a
+  note on any relation, a note on the same release, extras dropped, no refresh after a save,
+  the autosave key kept, no history restart on open) are all caught, two after their checks
+  were tightened. The clock's session suite drives save with art, list, reopen with art, and
+  delete through the same fake hub.
+- **Benched on Gold, 2026-11-04** (clock `v1.2.16+a2407a4` on the orb, `v1.2.16+9826cc8` in the
+  library): `/api/editor/source` answered `build` and `library`, and the editor came from the
+  hub; only the calibration keys were left in the browser; "Save current" filed
+  `bin/designs/clock/k9-bench-63966c24.orbdesign`, which listed and reopened after a reload;
+  Send to orb stored "K9 bench" and the hub kept `bin/themes/clock-k9-bench-63966c24.orbtheme`.
+  A replacing send was not benched on the card (the Go test drives the commit path). Gold's
+  firmware reboots onto a stored theme, so the bench left Gold wearing "K9 bench".
+- **Known edge.** `make manager` copies the checked-in `themes/` over `bin/themes/`, so in a dev
+  tree a kept theme whose file is a seed's name (`skeleton.orbtheme`) is overwritten by the
+  seed at the next build. An installed hub's library is not rebuilt, so this is a dev-tree edge.
+

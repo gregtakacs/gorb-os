@@ -77,6 +77,7 @@ func (s *Server) routesEditor(mux *http.ServeMux) {
 	// theme-surface GET that dials a device is guarded the same way for the same
 	// reason — the token is what says the requester is a page this hub served.
 	mux.Handle("/editor/", s.requireControl(http.HandlerFunc(s.serveEditor)))
+	mux.Handle("/api/editor/source", s.requireControl(http.HandlerFunc(s.handleEditorSource)))
 }
 
 // editorKey is one board's one app. The ip is part of it because two orbs can carry
@@ -277,20 +278,14 @@ func editorInvalidate() {
 	regions.slots = map[editorKey]*editorSlot{}
 }
 
-// libraryEditorRegion answers §2 of the Apps face: when the dial and the hub hold the
-// SAME release of an app, the hub's own file is a better source for its editor than the
-// board is. The region is what the dial would stream, byte for byte, and the orb's one
-// HTTP lane is the scarcest thing on the network — every asset the composer pulls after
-// this one is a dial the board does not have to answer.
-//
-// The gate is the version and nothing looser. Equality of the two stamps is the only
-// evidence available that the bytes match, and it is real evidence: the stamp is written
-// into the container's header by the same release process that writes the editor region
-// beside it, so two files agreeing on `v1.2.3` agree on what they are. A dial reporting no
-// stamp, a library file reporting no stamp, and a pair that will not parse are all
-// refused — an unstamped file states nothing, and serving hub bytes on the strength of a
-// silence is how an operator edits an editor that is not the one their dial runs. The face
-// falls back to the device read, which is always correct and merely slower.
+// libraryEditorRegion answers which editor an orb's app is edited with. Since K9 (owner,
+// 2026-11-04) it is the hub's own: the library's copy whenever its release is the orb's
+// or newer, another build of the orb's release included, and the orb's region only when
+// the hub holds no copy, an older one, or one whose stamp will not parse. The hub's file
+// costs the board nothing to read, and the hub's editor is the one the owner keeps
+// current; when it is newer than the orb, /api/editor/source says so and the editor
+// tells the author before a send. (Before K9 the gate was stamp equality, so an orb one
+// release behind the hub was edited with its own older editor off the card.)
 func (s *Server) libraryEditorRegion(installed *orbnet.AppInstalledRow, slug string) (*zip.Reader, error) {
 	if installed == nil || installed.Compiled {
 		return nil, orbnet.ErrNoEditor
@@ -303,11 +298,14 @@ func (s *Server) libraryEditorRegion(installed *orbnet.AppInstalledRow, slug str
 	if err != nil {
 		return nil, err
 	}
+	if body == nil {
+		return nil, orbnet.ErrNoEditor
+	}
 	c, err := orbnet.ParseApp(body)
 	if err != nil {
 		return nil, err
 	}
-	if cmp, ok := orbnet.AppVersionCompare(c.Version, installed.Version); !ok || cmp != 0 {
+	if rel := editorRelation(c.Version, installed.Version); rel == "older" || rel == "" {
 		return nil, orbnet.ErrNoEditor
 	}
 	region, err := orbnet.AppEditorRegion(body)
@@ -319,6 +317,53 @@ func (s *Server) libraryEditorRegion(installed *orbnet.AppInstalledRow, slug str
 		return nil, fmt.Errorf("the library editor region for %s is not a ZIP archive: %w", slug, err)
 	}
 	return zr, nil
+}
+
+// editorRelation places the hub's copy against the orb's: "same" (one stamp), "build"
+// (one release, another build), "newer", "older", or "" when either stamp will not parse.
+func editorRelation(hub, orb string) string {
+	if cmp, ok := orbnet.AppVersionCompare(hub, orb); ok {
+		switch {
+		case cmp > 0:
+			return "newer"
+		case cmp < 0:
+			return "older"
+		}
+		return "same"
+	}
+	if orbnet.AppSameRelease(hub, orb) {
+		return "build"
+	}
+	return ""
+}
+
+// handleEditorSource answers GET /api/editor/source?ip=&slug=: where the editor for this
+// orb's app comes from, and the two releases, so the editor can say when it is newer than
+// the app the orb runs. A read off the hub's library and the orb's remembered app list.
+func (s *Server) handleEditorSource(w http.ResponseWriter, r *http.Request) {
+	ip, slug := strings.TrimSpace(r.URL.Query().Get("ip")), r.URL.Query().Get("slug")
+	if !isIPv4(ip) || !designAppRe.MatchString(slug) {
+		s.jsonErr(w, "expected ?ip=<ipv4>&slug=<app>")
+		return
+	}
+	out := map[string]any{"source": "orb"}
+	row := s.installedRow(ip, slug)
+	if row != nil {
+		out["orb_version"] = row.Version
+	}
+	if body, _ := s.library().Container(slug); body != nil {
+		if c, err := orbnet.ParseApp(body); err == nil {
+			out["hub_version"] = c.Version
+			if row != nil && !row.Compiled {
+				rel := editorRelation(c.Version, row.Version)
+				out["relation"] = rel
+				if rel == "same" || rel == "build" || rel == "newer" {
+					out["source"] = "library"
+				}
+			}
+		}
+	}
+	s.jsonOK(w, out)
 }
 
 // serveEditor answers GET /editor/<ip>/<slug>/<file>. A request naming no file

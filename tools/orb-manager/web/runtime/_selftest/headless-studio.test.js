@@ -133,5 +133,78 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(by(render(S.RenderPanel, { downloads: [] }), 'button').length === 0, 'off a hub there is no Send');
 }
 
+// ---- K7: the field kit, the fields, the layers panel
+{
+  const drafts = {}; let redraws = 0, got = null;
+  const K = S.fieldKit({ drafts, refresh: () => redraws++, scope: () => 'arm', inherit: [{ re: /^Same as scope/, src: 'the scope' }, { re: /^Default\b/, src: 'the defaults' }] });
+  const set = (v) => { got = v; };
+  const r = K.Rg('Trail', 0.5, -10, 10, 0.1, set, '0.5');
+  ok(r.isRange && r.isRow && !r.isHead && r.min === -10 && r.valText === '0.5', 'a slider row');
+  r.on({ target: { value: '0.2' } }); ok(got === 0, 'it snaps to 0 within 1.5% of its span', got);
+  r.on({ target: { value: '3.05' } }); ok(got === 3, 'and to a whole number within 0.6% on a fine one', got);
+  r.onNum({ target: { value: '99' } }); ok(got === 10, 'a typed value is clamped to the range', got);
+  r.onNum({ target: { value: '' } }); ok(got === 10, 'and an empty box changes nothing');
+  const sl = K.Sl('Ring colour', 'inherit', [{ v: 'inherit', label: 'Same as scope' }, { v: 'red', label: 'Red' }], set);
+  ok(sl.isSelect && sl.opts[0].sel && sl.hasLink && /the scope/.test(sl.linkText) && sl.linkCursor === 'default', 'a select that follows its source says so');
+  const sl2 = K.Sl('Ring colour', 'red', [{ v: 'inherit', label: 'Same as scope' }, { v: 'red', label: 'Red' }], set);
+  ok(sl2.linkText === '↺ re-link' && (sl2.relink(), got === 'inherit'), 'set here, one click re-links it', got);
+  ok(!K.Sl('Band', 'a', [{ v: 'a', label: 'Match movement' }], set).hasLink, 'a choice no inherit rule names is a plain choice');
+  const dflt = K.Sl('Length', 'def', [{ v: 'def', label: 'Default (the arm’s)' }, { v: 'long', label: 'Long' }], set);
+  ok(dflt.hasLink && /the defaults/.test(dflt.linkText), 'a later rule applies when the first names no option', dflt.linkText);
+  const swIn = K.Sw('Band', 'inherit', [{ k: 'b1', label: 'Green', bg: '#0f0' }], set, [{ label: 'Same as scope', text: '=' }], () => 'inherit');
+  ok(swIn.hasLink && /the scope/.test(swIn.linkText), 'an extra option stands for the value vOf names, so following reads as linked', swIn.linkText);
+  const ch = K.Ch('Arm', 'wedge', [{ v: 'wedge', label: 'Wedge' }, { v: 'needle', label: 'Needle' }], set);
+  ok(ch.isChips && ch.opts[0].cls === 'on' && ch.opts[1].cls === '' && (ch.opts[1].pick(), got === 'needle'), 'chips mark the choice and pick');
+  const sw = K.Sw('Band', 'b2', [{ k: 'b1', label: 'Green', bg: '#0f0' }, { k: 'b2', label: 'Amber', bg: '#fa0' }], set, [{ label: 'Same as scope', text: '=', bg: '#1c2330', bd: '#2b3540', pick: () => set('inherit') }], (o) => 'inherit');
+  ok(sw.isSwatch && sw.valText === 'Amber' && sw.opts.length === 3 && sw.opts[2].bd === '#e6edf3' && sw.hasLink && !('v' in sw.opts[0]), 'swatches name the chosen one; an extra option stays as given', JSON.stringify(sw.opts[0]));
+  const co = K.Co('Ink', '#112233', set);
+  ok(co.isColor && co.value === '#112233' && co.hexTitle === 'rgb 17, 34, 51' && co.opts.length === 1 + S.INKS.length, 'a colour: Auto, the inks, and the picker');
+  co.onHex({ target: { value: '#12' } });
+  ok(drafts['arm:Ink'] === '#12' && redraws === 1 && K.Co('Ink', '#112233', set).hexText === '#12', 'a half-typed hex is kept as a draft under its scope and redrawn');
+  co.onHex({ target: { value: '10, 20, 30' } });
+  ok(got === '#0a141e' && !('arm:Ink' in drafts), 'r, g, b is read as a colour and clears the draft', got);
+  ok(S.parseColor('#abc') === '#aabbcc' && S.parseColor('rgb(300,0,0)') === null && S.parseColor('nope') === null, 'colour parsing');
+  ok(K.Co('Ink', 'none', set, 'Auto', 'x', { none: true }).valText === 'None' && K.Co('Ink', '', set, 'Auto', 'x', { noAuto: true }).opts.length === S.INKS.length, 'None and no-Auto');
+  const rows = [1, 2, 3, 4, 5, 6, 7].map((i) => K.Nt('n' + i, 'x'));
+  let opened = 0;
+  const f5 = K.fold(rows, 5, false, () => opened++);
+  ok(f5.length === 6 && /More \(2\)/.test(f5[5].opts[0].label) && (f5[5].opts[0].pick(), opened === 1), 'a long run folds to its first rows and a More chip');
+  ok(K.fold(rows, 5, true, () => {}).length === 8 && K.fold(rows.slice(0, 3), 5, false, () => {}).length === 3, 'open shows all with Less; a short run is not folded');
+  // the component
+  const F = render(S.Fields, { fields: [K.H('Arm'), r, sl, co, K.Tx('Name', 'Scope', set), K.Fi('Image', set), K.Nt('', 'a note')] });
+  ok(by(F, 'div', 'st-sec').length === 1 && by(F, 'div', 'st-row').length === 6, 'one head, six rows');
+  const rowsF = by(F, 'div', 'st-row');
+  ok(rowsF[0].props.className === 'st-row' && rowsF[1].props.className === 'st-row wide', 'only a slider keeps the value column');
+  ok(by(rowsF[0], 'input').length === 2 && by(rowsF[1], 'select')[0].props.value === 'inherit' && by(rowsF[1], 'span').some((x) => /the scope/.test(text(x))), 'a slider with its number box; a select with its link');
+  ok(by(rowsF[2], 'button', 'st-sw').length === co.opts.length && by(rowsF[2], 'input').length === 2, 'a colour: its swatches, a picker and a hex box');
+  ok(by(rowsF[5], 'div', 'st-note').length === 1, 'a note');
+}
+{
+  // layerRows: bands, depth, selection, arrows, eye, tooltip; a made-up radar stack
+  const items = [{ id: 'glass', band: 'top', label: 'Glass', movable: false }, { id: 'arm', band: 'live', label: 'Arm', movable: true },
+    { id: 'jet', band: 'live', label: 'Jet', parent: 'arm', movable: true }, { id: 'tag', band: 'live', label: 'Tag', parent: 'jet', movable: false }, { id: 'plate', band: 'base', label: 'Scope', movable: false }];
+  const moved = [], picked = [], eyes = [];
+  const rows = S.layerRows(items, { sel: 'jet', heads: { top: 'On top', live: 'Moving', base: 'Plate' }, icon: (it) => it.id[0], note: (it) => (it.id === 'arm' ? 'turns' : ''), tag: () => '',
+    warn: (it) => (it.id === 'tag' ? 'too small' : ''), hidden: (it) => it.id === 'glass', move: (id, d) => ({ ok: !(id === 'arm' && d < 0), reason: 'R2: the arm stays under the glass' }),
+    onMove: (id, d) => moved.push(id + d), pick: (it) => picked.push(it.id), eyeTip: (it) => 'eye ' + it.id, toggleEye: (it) => eyes.push(it.id),
+    dragging: 'tag', drag: { start: () => {}, over: () => {}, drop: () => {}, end: () => {} } });
+  ok(rows.filter((x) => x.isHead).map((x) => x.label).join() === 'On top,Moving,Plate' && rows.length === 8, 'a head per band', rows.filter((x) => x.isHead).map((x) => x.label).join());
+  const R = (id) => rows.find((x) => x.id === id);
+  ok(R('arm').indent === 0 && R('jet').indent === 14 && R('tag').indent === 28 && R('tag').pad === 38, 'a row indents by its depth under its parent');
+  ok(R('jet').cls === 'on child' && R('jet').bg === '#1f3a5f' && R('tag').cls === ' child dragging', 'the selection and the dragged row are marked');
+  ok(R('glass').op === 0.45 && R('glass').eye === 'hidden' && R('glass').eyeIcon === '○' && R('arm').eye === 'shown', 'a hidden layer is dimmed and its eye closed');
+  ok(R('arm').upOp === 0.35 && R('arm').upTip === 'R2: the arm stays under the glass' && R('arm').downTip === 'Down one' && R('glass').arrows === 'hidden', 'arrows say why they cannot move');
+  ok(R('tag').warn === ' ⚠' && R('arm').title === 'Arm · turns · Drag onto another layer, or use the arrows' && R('glass').title === 'Glass · R2: the arm stays under the glass', 'warnings flag the row; the explanation is the tooltip', R('glass').title);
+  const ev = { stopPropagation() { }, preventDefault() { } };
+  R('arm').down(ev); R('jet').pick(); R('glass').eyeToggle(ev);
+  ok(moved.join() === 'arm1' && picked.join() === 'jet' && eyes.join() === 'glass', 'the arrows, the pick and the eye call the app');
+  const gap = S.layerGap({ ok: false, indent: 14, label: '⊘ R1', drop: () => picked.push('gap') });
+  ok(gap.isGap && gap.cls === 'no' && (gap.drop(ev), picked.includes('gap')), 'a refused drop gap');
+  const L = render(S.Layers, { title: 'Layers', cap: { text: '3 / 32', color: '#8b98a5', tip: 'live rows' }, rows: rows.concat([gap]), warnings: [{ text: 'R8: no' }], add: { label: '+ Add', on: () => {} }, children: { type: 'button', props: { className: 'mine' }, kids: ['Switch'] } });
+  ok(by(L, 'div', 'st-lr').length === 5 && by(L, 'div', 'st-band').length === 3 && by(L, 'div', 'st-gap').length === 1 && by(L, 'div', 'st-warnrow').length === 1, 'the panel: rows, bands, the gap, the warnings');
+  ok(by(L, 'button', 'st-add').length === 1 && by(by(L, 'div', 'st-foot')[0], 'button', 'mine').length === 1 && /3 \/ 32/.test(text(L)), 'the add button, the app’s footer and the cap');
+  ok(by(by(L, 'div', 'st-lr')[1], 'button').length === 3, 'each row: up, down and the eye');
+}
+
 console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');
 process.exit(fails ? 1 : 0);

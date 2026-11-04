@@ -1346,46 +1346,42 @@ class Component extends DCLogic {
     if (items.some((x) => x.lifted)) { try { const b = this.budget(); liftCov = (b && b.dev && b.dev.liftCov) || null; } catch (e) { liftCov = null; } }
     const warnOf = {}; warns.forEach((w) => { warnOf[w.id] = (warnOf[w.id] ? warnOf[w.id] + ' · ' : '') + w.text; });
     const HEAD = { crystal: 'Crystal · pinned on top', rows: 'Layers', plate: 'Plate · pinned at the bottom' };
-    const rows = []; let band = null;
     const selId = s.selKind === 'hand' ? 'hand:' + s.sel : s.selKind === 'comp' ? 'comp:' + s.sel : s.selKind === 'dial' ? 'dial' : s.selKind === 'move' ? s.sel : null;
-    // P5d.3h: a row indents by its depth under its host (a dial's wheel one step, its cutout two)
-    const byRow = {}; items.forEach((x) => { byRow[x.id] = x; });
-    const depthOf = (x) => { let n = 0; for (let p = x.parent; p && byRow[p] && n < 6; p = byRow[p].parent) n++; return n; };
-    items.forEach((it) => {
-      if (it.band !== band) { band = it.band; rows.push({ isHead: true, isRow: false, label: HEAD[band] }); }
-      const up = it.movable ? S.move(inp, it.id, -1) : { ok: false, reason: '' }, dn = it.movable ? S.move(inp, it.id, 1) : { ok: false, reason: '' };
-      // D43 P5d.3d: a hand, a sub-dial face and a disc switch off on their own (hidden.ids); the
-      // crystal, the dial, the train and the movement stay the switches they always were. An
-      // opening is cut through the dial, so its eye closes that hole, never the dial's switch.
-      const own = it.ref != null && (it.kind === 'hand' || it.kind === 'pointer' || it.kind === 'subdial' || it.kind === 'disc' || it.kind === 'cutout' || it.kind === 'opening' || it.kind === 'flare');
-      const ids0 = s.hidden.ids || {}, hidden = own ? !!ids0[it.ref] || !!s.hidden[it.hide] : !!s.hidden[it.hide], on = selId === it.id;
-      const ICON = { case: '◎', glass: '◌', dial: '◯', subdial: '◷', disc: '◐', flare: 'A', opening: '◇', comp: '▭', hand: '╱', pointer: '╱', geartrain: '⚙', movement: '▦' };
-      rows.push({ id: it.id, parent: it.parent || null, isHead: false, isRow: true, label: it.label, warn: warnOf[it.id] ? ' ⚠' : '', icon: ICON[it.kind] || '•',
-        cls: (on ? 'on' : '') + (it.parent ? ' child' : '') + (s.dragging === it.id ? ' dragging' : ''), indent: 14 * depthOf(it), tag: it.lifted ? 'still row' : '',
-        note: it.badge + (it.kind === 'hand' || it.kind === 'pointer' ? (it.shadow ? ' · casts a shadow' : '') : '')
-          + (it.lifted && liftCov ? (liftCov[it.ref] ? ' · repainted on ~' + Math.round(liftCov[it.ref] * 100) + '% of sweep ticks' : ' · clear of the sweep') : '')
-          + (warnOf[it.id] ? ' · ' + warnOf[it.id] : ''),
-        tip: it.movable ? 'Drag onto another layer, or use the arrows' : (S.move(inp, it.id, 1).reason || ''),
-        pad: 6 + 16 * depthOf(it), weight: 400, op: hidden ? 0.45 : 1, bg: on ? '#1f3a5f' : 'transparent', edge: on ? '#58a6ff' : 'transparent',
-        arrows: it.movable ? 'visible' : 'hidden',
-        upOp: up.ok ? 1 : 0.35, downOp: dn.ok ? 1 : 0.35, upTip: up.ok ? 'Up one' : up.reason, downTip: dn.ok ? 'Down one' : dn.reason,
-        up: (e) => { e.stopPropagation(); this.stackMove(it.id, -1); }, down: (e) => { e.stopPropagation(); this.stackMove(it.id, 1); },
-        drag: it.movable ? 'true' : 'false',
-        dragStart: (e) => { this._dragRow = it.id; try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', it.id); } catch (err) { /* headless */ } this.setState({ dragging: it.id }); },
-        dragOver: (e) => this.stackHover(e, it),
-        drop: (e) => { e.preventDefault(); this.stackDrop(it.id); },
-        dragEnd: () => this.stackDragEnd(),
-        pick: () => this.stackPick(it),
-        eye: hidden ? 'hidden' : 'shown', eyeIcon: hidden ? '○' : '◉', eyeFg: hidden ? '#5d6b78' : '#8b98a5',
-        eyeTip: own ? 'Show or hide ' + it.label + ' on the stage' + (it.kind === 'subdial' ? ' (its wheels then show whole)' : it.kind === 'cutout' || it.kind === 'opening' ? ' (the hole closes)' : it.kind === 'disc' ? ' (its cutouts open onto what lies under it)' : it.kind === 'hand' || it.kind === 'pointer' ? ' (with its arbour cap)' : '') + ' \u2014 a view switch: the bake is not changed' : 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial (the wheels under it then show whole)', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)',
-        eyeToggle: (e) => { e.stopPropagation(); this.setState((st) => {
-          if (!own) return { hidden: { ...st.hidden, [it.hide]: !st.hidden[it.hide] } };
-          const ids = { ...(st.hidden.ids || {}) }; if (ids[it.ref]) delete ids[it.ref]; else ids[it.ref] = 1;
-          return { hidden: { ...st.hidden, ids } };
-        }); } });
+    /* The rows are laid out by the OS's layers panel (studio@1 layerRows, theme-editor-kit-plan
+     * K7): bands, the indent under a host, the selection, the arrows, the eye, the tooltip. What
+     * each layer is stays the clock's: its icon and note, which eye it has (a hand, a sub-dial
+     * face, a disc, a cutout, an opening and a flare switch off on their own, hidden.ids; the
+     * crystal, the dial, the train and the movement stay the switches they always were, D43
+     * P5d.3d; an opening is cut through the dial, so its eye closes that hole, never the dial's
+     * switch), and how it may move (stack.js's rules). */
+    const ICON = { case: '◎', glass: '◌', dial: '◯', subdial: '◷', disc: '◐', flare: 'A', opening: '◇', comp: '▭', hand: '╱', pointer: '╱', geartrain: '⚙', movement: '▦' };
+    const own = (it) => it.ref != null && (it.kind === 'hand' || it.kind === 'pointer' || it.kind === 'subdial' || it.kind === 'disc' || it.kind === 'cutout' || it.kind === 'opening' || it.kind === 'flare');
+    const ids0 = s.hidden.ids || {};
+    const rows = window.OrbStudio.layerRows(items, {
+      sel: selId, dragging: s.dragging, heads: HEAD,
+      icon: (it) => ICON[it.kind] || '•',
+      tag: (it) => (it.lifted ? 'still row' : ''),
+      warn: (it) => warnOf[it.id] || '',
+      note: (it) => it.badge + (it.kind === 'hand' || it.kind === 'pointer' ? (it.shadow ? ' · casts a shadow' : '') : '')
+        + (it.lifted && liftCov ? (liftCov[it.ref] ? ' · repainted on ~' + Math.round(liftCov[it.ref] * 100) + '% of sweep ticks' : ' · clear of the sweep') : '')
+        + (warnOf[it.id] ? ' · ' + warnOf[it.id] : ''),
+      hidden: (it) => (own(it) ? !!ids0[it.ref] || !!s.hidden[it.hide] : !!s.hidden[it.hide]),
+      move: (id, dir) => S.move(inp, id, dir),
+      onMove: (id, dir) => this.stackMove(id, dir),
+      pick: (it) => this.stackPick(it),
+      eyeTip: (it) => (own(it) ? 'Show or hide ' + it.label + ' on the stage' + (it.kind === 'subdial' ? ' (its wheels then show whole)' : it.kind === 'cutout' || it.kind === 'opening' ? ' (the hole closes)' : it.kind === 'disc' ? ' (its cutouts open onto what lies under it)' : it.kind === 'hand' || it.kind === 'pointer' ? ' (with its arbour cap)' : '') + ' \u2014 a view switch: the bake is not changed' : 'Show or hide ' + ({ hands: 'every hand', subdials: 'every sub-dial', complications: 'every disc', dial: 'the dial (the wheels under it then show whole)', geartrain: 'the geartrain', movement: 'the movement', glass: 'the glass', outer: 'the case' }[it.hide] || 'this layer') + ' on the stage (a view switch: the bake is not changed)'),
+      toggleEye: (it) => this.setState((st) => {
+        if (!own(it)) return { hidden: { ...st.hidden, [it.hide]: !st.hidden[it.hide] } };
+        const ids = { ...(st.hidden.ids || {}) }; if (ids[it.ref]) delete ids[it.ref]; else ids[it.ref] = 1;
+        return { hidden: { ...st.hidden, ids } };
+      }),
+      drag: {
+        start: (it, e) => { this._dragRow = it.id; try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', it.id); } catch (err) { /* headless */ } this.setState({ dragging: it.id }); },
+        over: (e, it) => this.stackHover(e, it),
+        drop: (it) => this.stackDrop(it.id),
+        end: () => this.stackDragEnd(),
+      },
     });
-    // the row's explanation (its badge, what it costs, why it cannot move) is its tooltip
-    rows.forEach((r) => { if (r.isRow) r.title = [r.label, r.note, r.tip].filter(Boolean).join(' · '); });
     // D43 P5d: the drop gap -- where the dragged layer lands, or the rule that refuses it
     const at = s.dropAt;
     if (at && !at.same && this._dragRow) {
@@ -1398,9 +1394,9 @@ class Component extends DCLogic {
         if (at.where === 'below' && tgt.kind === 'subdial' && dk !== 'hand' && dk !== 'pointer')
           while (ri + 1 < rows.length && rows[ri + 1].isRow && rows[ri + 1].parent === at.target) ri++;
         const into = at.where === 'below' && tgt.kind === 'subdial' && (dk === 'hand' || dk === 'pointer');
-        const gap = { isGap: true, isRow: false, isHead: false, cls: at.ok ? '' : 'no', indent: (tgt.parent || into) ? 14 : 0,
+        const gap = window.OrbStudio.layerGap({ ok: at.ok, indent: (tgt.parent || into) ? 14 : 0,
           label: at.ok ? (into || tgt.kind === 'pointer' ? 'Drop here · on ' + (into ? tgt.label : (items.find((x) => x.id === tgt.parent) || {}).label || 'this face') : 'Drop here') : '⊘ ' + at.reason,
-          dragOver: (e) => { if (e && e.preventDefault) e.preventDefault(); }, drop: (e) => { if (e && e.preventDefault) e.preventDefault(); this.stackDrop(at.target); } };
+          drop: () => this.stackDrop(at.target) });
         if (ri >= 0) rows.splice(at.where === 'below' ? ri + 1 : ri, 0, gap);
       }
     }
@@ -3173,13 +3169,11 @@ class Component extends DCLogic {
     ['glow', 'temp', 'hue', 'hueSat', 'outerLight', 'outerTemp', 'outerHue', 'outerSat', 'wb'].forEach((k) => this.setCfg(k, vals[k] !== undefined ? vals[k] : def[k]));
   }
   /* Fold a run of rows: the first `keep` show, the rest behind one More chip. */
-  foldRows(rows, key, keep, Ch) {
-    if (rows.length <= keep) return rows;
-    const open = !!(this.state.more || {})[key], hid = rows.length - keep;
-    const chip = Object.assign({}, rows[0], { label: '', valText: '', isHead: false, isRow: true, anchor: null, isRange: false, isSelect: false, isSwatch: false, isColor: false, isText: false, isFile: false, isNote: false, hasLink: false, isChips: true,
-      opts: [{ label: open ? 'Less' : 'More (' + hid + ')', bg: '#1c2330', bd: '#2b3540', fg: '#8b98a5', pick: () => this.setState((st) => ({ more: { ...(st.more || {}), [key]: !open } })) }] });
-    return (open ? rows : rows.slice(0, keep)).concat([chip]);
+  foldRows(rows, key, keep) {
+    const open = !!(this.state.more || {})[key];
+    return window.OrbStudio.fieldKit().fold(rows, keep, open, () => this.setState((st) => ({ more: { ...(st.more || {}), [key]: !open } })));
   }
+
   renderVals() {
     const v = this.renderVals0(), s = this.state, E = window.WatchEngine, st = this.stepNow(), step = st[0];
     const tabs = st[2], ready = !!(this.ready && E), d = ready ? (this.design() || {}) : {};
@@ -3317,6 +3311,10 @@ class Component extends DCLogic {
       studioCal: T.calProps(O.view({ view: s.view, zoom: s.zoom, fitPx: s.fitPx, cal: this.cal(), calibrated: this.calibrated() }),
         { min: R.calMin, max: R.calMax, step: R.calStep, value: R.calVal, onChange: R.setCal, up: R.calUp, down: R.calDown, solve: R.solve, reset: R.resetCal,
           solveCard: (e) => this.solveCard(e.target.value) }),
+      studioLayers: { title: 'Layers', rows: R.stackRows, warnings: R.stackWarns,
+        cap: { text: R.stackCapShort, color: R.stackCapFg, tip: 'R6: the live rows the bake ships (hands and their shadow twins, the discs\u2019 value rows, the carriage) against the dial\u2019s cap' },
+        add: { label: R.addLabel, on: R.toggleAdd, tip: 'Open the parts catalogue on the right: hands, sub-dials, windows, a moon, openings, flares' } },
+      studioFields: { fields: R.fields },
       studioSend: T.sendProps(s.sending, s.status, R.sendCancel),
       studioDup: T.dupProps(s.dup, R.dupReplace, R.dupCancel),
       studioRender: {
@@ -3352,62 +3350,18 @@ class Component extends DCLogic {
     const sel = s.selKind !== 'hand' && s.selKind !== 'dial' && s.selKind !== 'move' ? D.comps.find((c) => c.id === s.sel && c.type !== 'hand') : null;
     const feats = ready ? E.features(s.train) : [];
     const opt = (obj) => Object.entries(obj).map(([v, label]) => ({ v, label }));
-    const mark = (list, v) => list.map((o) => ({ ...o, sel: String(o.v) === String(v) }));
-    const mk = (o) => ({ label: '', isHead: false, isRow: true, isRange: false, isSelect: false, isChips: false, isNote: false, isColor: false, isText: false, isFile: false, min: 0, max: 1, step: 1, value: '', on: null, opts: [], valText: '', note: '', anchor: null,
-      hasLink: false, linkText: '', linkTip: '', linkFg: '', linkCursor: 'default', relink: null, ...o });
-    /* D43 §2.3: a property that can follow a source (the dial's style, or the hand
-     * defaults) says which it is doing. Linked: it follows, and changing it here
-     * unlinks it. Overridden: one click re-links it. Read off the control's own inherit
-     * option, so every control that offers "Same as dial" or a "Default" gets it. */
-    const linkOf = (opts, value, onv) => {
-      const inh = opts.find((o) => /^(Same as dial|Match dial)/.test(String(o.label || ''))) || opts.find((o) => /^Default\b/.test(String(o.label || '')));
-      if (!inh) return {};
-      const src = /dial/i.test(inh.label) ? 'the dial' : 'the defaults', linked = String(value) === String(inh.v);
-      return { hasLink: true, linkText: linked ? '\u26d3 ' + src : '\u21ba re-link', linkFg: linked ? '#8b98a5' : '#58a6ff', linkCursor: linked ? 'default' : 'pointer',
-        linkTip: linked ? 'Follows ' + src + '; choose another value to set it here' : 'Set here, not from ' + src + ' — click to follow ' + src + ' again',
-        relink: linked ? () => {} : () => onv(inh.v) };
-    };
-    /* anchor: the pane's scroll destination for a selection (see scrollTargetFor). An
-     * optional second argument, because only a handful of sections are ever aimed at --
-     * a label alone would leave the field objects carrying names nothing reads. */
-    const H = (label, anchor) => mk({ label, isHead: true, isRow: false, anchor });
-    /* P5d.3m: a slider snaps to 0 within 1.5% of its span and, on a fine one, to a whole number
-     * within 0.6%, so exact values are easy to land on; the box beside it takes a typed value as is */
-    const snapV = (v, min, max, step) => { const sp = Math.abs(max - min) || 1;
-      if (min <= 0 && max >= 0 && Math.abs(v) <= sp * 0.015) return 0;
-      if (step < 1 && sp > 2 && Math.abs(v - Math.round(v)) <= sp * 0.006) return Math.round(v);
-      return v; };
-    const Rg = (label, value, min, max, step, onv, valText) => mk({ label, isRange: true, min, max, step, value, valText,
-      on: (e) => onv(snapV(+e.target.value, min, max, step)),
-      onNum: (e) => { const v = e.target.value; if (v === '' || !isFinite(+v)) return; onv(Math.max(min, Math.min(max, +v))); } });
-    const Sl = (label, value, opts, onv) => mk({ label, isSelect: true, value, opts: mark(opts, value), on: (e) => onv(e.target.value), ...linkOf(opts, value, onv) });
-    const Ch = (label, value, opts, onv) => mk({ label, isChips: true, opts: opts.map((o) => ({ ...on(String(o.v) === String(value)), label: o.label, pick: () => onv(o.v) })) });
-    const Nt = (label, note) => mk({ label, isNote: true, note });
-    const sw = (k) => 'linear-gradient(135deg,' + E.DIAL_COLORS[k][0] + ',' + E.DIAL_COLORS[k][1] + ')';
-    const Sw = (label, value, keys, onv, extra) => mk({ label, isSwatch: true, valText: keys.includes(value) ? E.COLOR_NAMES[value] : '', opts: [...(extra || []), ...keys.map((k) => ({ label: E.COLOR_NAMES[k], text: '', bg: sw(k), bd: k === value ? '#e6edf3' : '#232c36', pick: () => onv(k) }))], ...linkOf((extra || []).map((o) => ({ v: /Match dial/.test(o.label) ? 'match' : o.label, label: o.label })), value, onv) });
-    const INKS = [['#f6f3ec', 'White'], ['#1a140c', 'Black'], ['#c9a25a', 'Gold'], ['#d7dbe0', 'Silver'], ['#cfe8b0', 'Lume green'], ['#9fd8ff', 'Lume blue'], ['#c8322a', 'Red'], ['#ff7a1a', 'Orange'], ['#2b59c3', 'Blue'], ['#ff2bd6', 'Magenta'], ['#22e6ff', 'Cyan'], ['#b6ff2e', 'Acid']];
-    const parseCol = (t) => {
-      t = String(t || '').trim().toLowerCase(); let m;
-      if ((m = t.match(/^#?([0-9a-f]{6})$/))) return '#' + m[1];
-      if ((m = t.match(/^#?([0-9a-f])([0-9a-f])([0-9a-f])$/))) return '#' + m[1] + m[1] + m[2] + m[2] + m[3] + m[3];
-      if ((m = t.match(/^(?:rgb\s*\()?\s*(\d{1,3})[\s,]+(\d{1,3})[\s,]+(\d{1,3})\s*\)?$/))) { const v = [m[1], m[2], m[3]].map(Number); if (v.every((x) => x <= 255)) return '#' + v.map((x) => x.toString(16).padStart(2, '0')).join(''); }
-      return null;
-    };
+    /* The inspector's field builders are the OS's (studio@1 fieldKit, theme-editor-kit-plan K7).
+     * The clock says where a half-typed colour is kept (per selection), how to redraw, and which
+     * choice of a select means "follow the source": "Same as dial" / "Match dial" follow the
+     * dial, "Default…" the hand defaults. Its swatches are its own dial colours. */
     this._drafts = this._drafts || {};
+    const K = window.OrbStudio.fieldKit({ drafts: this._drafts, refresh: () => this.forceUpdate(), scope: () => s.sel || 'dial',
+      inherit: [{ re: /^(Same as dial|Match dial)/, src: 'the dial' }, { re: /^Default\b/, src: 'the defaults' }] });
+    const { mark, mk, linkOf, H, Rg, Sl, Ch, Nt, Co, Tx, Fi } = K;
     const isHexColor = (v) => /^#[0-9a-f]{6}$/i.test(String(v || ''));
-    const hexRGB = (v) => { const n = parseInt(v.slice(1), 16); return (n >> 16) + ', ' + ((n >> 8) & 255) + ', ' + (n & 255); };
-    const Co = (label, value, onv, autoText, scope, X) => {
-      X = X || {};
-      const key = (scope || (s.sel || 'dial')) + ':' + label, hex = value && /^#[0-9a-f]{6}$/i.test(value) ? value : null, dr = this._drafts[key];
-      return mk({ label, isColor: true, value: hex || '#ffffff', on: (e) => { delete this._drafts[key]; onv(e.target.value); },
-        hexText: dr != null ? dr : hex || '', hexTitle: hex ? 'rgb ' + hexRGB(hex) : 'Type a hex code or r, g, b',
-        onHex: (e) => { const v = e.target.value, p = parseCol(v); if (p) { delete this._drafts[key]; onv(p); } else { this._drafts[key] = v; this.forceUpdate(); } },
-        onHexBlur: () => { if (this._drafts[key] != null) { delete this._drafts[key]; this.forceUpdate(); } },
-        valText: value === 'none' ? 'None' : !value || value === 'auto' ? (X.noAuto ? 'None' : autoText || 'Auto') : value, valText: value === 'none' ? 'None' : !value || value === 'auto' ? (X.noAuto ? 'None' : autoText || 'Auto') : value,
-      opts: [...(X.none ? [{ label: 'None', text: '∅', bg: '#1c2330', bd: value === 'none' ? '#e6edf3' : '#2b3540', pick: () => onv('none') }] : []),
-        ...(X.noAuto ? [] : [{ label: autoText || 'Auto', text: 'A', bg: '#1c2330', bd: !value || value === 'auto' ? '#e6edf3' : '#2b3540', pick: () => onv('auto') }]), ...INKS.map(([c, n]) => ({ label: n, text: '', bg: c, bd: c === value ? '#e6edf3' : '#232c36', pick: () => onv(c) }))] }); };
-    const Tx = (label, value, onv) => mk({ label, isText: true, value: value == null ? '' : String(value), on: (e) => onv(e.target.value) });
-    const Fi = (label, onv, valText, accept) => mk({ label, isFile: true, on: onv, valText: valText || '', accept: accept || 'image/png,image/svg+xml,image/jpeg,image/webp' });
+    const Sw = (label, value, keys, onv, extra) => K.Sw(label, value,
+      keys.map((k) => ({ k, label: E.COLOR_NAMES[k], bg: 'linear-gradient(135deg,' + E.DIAL_COLORS[k][0] + ',' + E.DIAL_COLORS[k][1] + ')' })), onv,
+      extra, (o) => (/Match dial/.test(o.label) ? 'match' : o.label));
     const T = ready ? E.TRAINS[s.train] : null;
 
     const selFields = [];

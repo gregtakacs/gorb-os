@@ -121,7 +121,7 @@ send to Gold where the slice touches the glass. A suite moves with the code it t
 | **K4** | `theme@1/measure`, the pace hook | `headless-pace` and `headless-estimate` green with `_devPace` as the clock's override; an app with no hook gets the estimate — **built 2026-11-04**, benched in real Chrome (§7) |
 | **K5** | a generic stage bake in `baker@1` (a plate, rows, sprites, row pools, scalars) for any app the stage draws; `bakeClock3` becomes the clock's translation on top of it | the clock's bundles are byte-identical before and after (`headless-bundle3`). Flights' first theme is baked without an editor (§0.1 ruling 5), so this does not wait on flights; its format is checked against flights' when that first theme reads on a device — **built 2026-11-04** (§7) |
 | **K6** | `studio@1`: frame, title and step bar, status, send modal, the Render step, slots | the clock's P5 checklist (nothing lost), no page scroll at 1280×720 and 1920×1080 inside the hub — **built and benched on Gold 2026-11-04** (§7) |
-| **K7** | `studio@1`: the layers panel and the field builders, driven by what the app declares | the clock's layers and inspector behave as before (`headless-stack-ui`, `headless-forms`, `headless-ui`); the clock's own rules (`stack.js`) stay the clock's |
+| **K7** | `studio@1`: the layers panel and the field builders, driven by what the app declares | the clock's layers and inspector behave as before (`headless-stack-ui`, `headless-forms`, `headless-ui`); the clock's own rules (`stack.js`) stay the clock's — **built and benched on Gold 2026-11-04** (§7) |
 | **H1** | the Themes page per app: a sub-tab for each theme-aware app, with its themes and a link to its editor, all hub code (§0.1 ruling 4) | Go and UI suites green; on Gold, the clock's tab lists the card's themes and opens the editor; an app with no themes or no editor gets a tab that says so |
 | **K8** | the flights editor on the kit (flights step 3, in its own clone) | no reference to `apps/clock/`; a line count recorded here against the Watch Composer's |
 
@@ -411,3 +411,52 @@ runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
   hub's own install and a rescan clear it (`dropThemeCache`). The first K6 measurement
   read the cached pre-K6 editor and looked identical for that reason; it was re-run after
   a rescan.
+
+### K7 — the layers panel and the fields, in `studio@1` (2026-11-04)
+
+- **The field kit.** `OrbStudio.fieldKit({drafts, refresh, scope, inherit})` returns the
+  inspector's row builders, the clock's own moved: `mk` (a field's defaults), `H`, `Rg` (a
+  slider that snaps to 0 and to whole numbers, with its clamped number box), `Sl` (a select
+  with its inherit link), `Ch`, `Nt`, `Sw` (swatches the app supplies as `{k, label, bg}`),
+  `Co` (Auto, the ink palette, a picker and a hex box whose half-typed draft survives a
+  render, `OrbStudio.parseColor`), `Tx`, `Fi`, `linkOf`, `mark`, `on`, and `fold` (a run
+  folded to its first rows behind More). What was the clock's became options: where a
+  draft is kept (`scope`) and which option means "follow the source" (`inherit`: rules
+  of a pattern and the source it names, first rule first). A generic "Match …" rule was
+  not taken: the clock has "Match movement" and "Match wheels (darkened)" as plain
+  choices, so it passes its own two rules (`Same as dial` / `Match dial` follow the dial,
+  `Default…` the defaults). `OrbStudio.Fields` draws the rows.
+- **The layers panel.** `OrbStudio.layerRows(items, o)` lays the rows out: a head per band,
+  the indent under a parent, the selection and the dragged row, the arrows with the
+  reason they cannot move, the eye, and the explanation as the tooltip. The app answers
+  what each layer is (`icon`, `note`, `tag`, `warn`, `hidden`), how it may move (`move`,
+  `onMove`), and what its eye and pick do. `OrbStudio.layerGap` is a drop gap the app
+  places; where a dragged layer lands is the clock's rule and stays in `stackVals`.
+  `OrbStudio.Layers` draws the panel, the cap, the warnings and the add button, with the
+  app's footer as its children (the clock's Mechanical switch).
+- **The clock.** `renderVals0`'s builders are one `fieldKit` call (its `Sw` maps its dial
+  colours to swatches); `foldRows` uses the kit's fold; `stackVals` hands `layerRows` the
+  clock's icons, notes, eyes and `stack.js`'s moves; the template places `Layers` and
+  `Fields` (`studioLayers`, `studioFields`). 31 CSS rules for the layers and the fields
+  left the clock (the hand panel keeps the row classes it still draws).
+  `clock.orbapp`: 925,914 B → 910,789 B.
+- **Same answers, measured.** A harness ran the pre-K7 clock (`3410a2b`'s extract) and the K7
+  clock side by side on every preset, every step and tab, every part, hand, dial and
+  movement selection, with folds open, eyes off, drags in flight over each row both
+  ways, and Mechanical on, comparing `fields` and `stackRows`; then pressed one handler of
+  every field kind and every row's eye, arrows and pick on both and compared the state
+  left: 5,735 comparisons and 844 presses, identical. Its first run found one
+  difference, a `v` the clock's `Sw` wrapper added to the "Match dial" option; the kit
+  takes `vOf(option)` instead so the options pass through untouched.
+- **Suites.** `headless-studio.test.js` grows to 77 checks with a made-up app's fields and
+  stack: the kit's snapping, clamping, links (the first rule and a later one), swatches,
+  the colour draft and parsing, the fold; `Fields`' rows and widths; `layerRows`' bands,
+  depth, marks, arrows, eye and tooltip; the gap; the panel. Eight mutants are caught,
+  two of them after adding the checks their escape showed were missing (a later inherit
+  rule, `vOf`). The clock's 19 suites, `headless-stack-ui`, `headless-forms` and
+  `headless-ui` among them: green, unchanged.
+- **Benched on Gold, 2026-11-04,** in the hub's window: the layout at 1280×720 and 1920×1080
+  is K6's to the pixel. The layers panel showed 17 rows under the clock's three bands
+  with its cap and footer; toggling Glass's eye dimmed it (1 → 0.45, ○) and back. The Dial
+  step drew 27 field rows (6 sliders, 9 selects, 76 swatches, the "⛓ the dial" links); a
+  select changed the design and gave one undo step, which was then undone. No errors.

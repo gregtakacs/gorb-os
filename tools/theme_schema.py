@@ -738,7 +738,9 @@ def clock_slot_name(cls, slot):
     return None
 
 ELEM_MAX        = 64   # rows one app's table may carry (the clock: 2 + 24 + 16 + 1 + 13)
-ELEM_FRAMES_MAX = 360  # bound on frame0+n_frames (av-kit's busiest bank uses 208)
+ELEM_FRAMES_MAX = 1024  # bound on frame0+n_frames (av-kit's busiest bank uses 208; a stage
+                        # with four fonts of 100 glyphs and a 49-frame plane pool ~460,
+                        # theme-text-plan T6). The device bounds rows by the catalogue.
 
 # Mirrors orb_asset_class_t in main/assets/orb_assets.h, in that enum's order. A
 # lint reads the header and compares, because a hand-maintained copy of an enum is

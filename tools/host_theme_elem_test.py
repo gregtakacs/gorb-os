@@ -155,7 +155,7 @@ SENT = (
     ("order past the rungs", lambda: ts.check_element(row(order=ts.ELEM_ORDER_N)), "order"),
     ("order far past", lambda: ts.check_element(row(order=999)), "order"),
     ("zero frames", lambda: ts.check_element(row(n_frames=0)), "n_frames"),
-    ("frames past the art bound", lambda: ts.check_element(row(frame0=359, n_frames=2)), "frames"),
+    ("frames past the art bound", lambda: ts.check_element(row(frame0=ts.ELEM_FRAMES_MAX - 1, n_frames=2)), "frames"),
     ("degrees past a turn", lambda: ts.check_element(row(degrees=36000)), "degrees"),
     ("OS-advanced bank", lambda: ts.check_element(row(**{"class": ts.CLASS_BANK, "flags": ts.EF_OS_ADV, "n_frames": 4, "frame0": 0, "pivot_x": 0, "pivot_y": 0})), "state"),
     ("OS-advanced text", lambda: ts.check_element(row(**{"class": ts.CLASS_TEXT, "slot": 1, "radius": 0})), "state"),

@@ -2045,7 +2045,7 @@
   // The pre-D32 width, the floor a derived row stride is refused below
   // (theme_schema.ELEMENT_WORDS_MIN; orb_bundle.c's ORB_BUNDLE_ELEM_WORDS_MIN).
   var ELEMENT_WORDS_MIN = 17;
-  var ELEM_MAX = 64, ELEM_ORDER_N = 64, ELEM_FRAMES_MAX = 360;
+  var ELEM_MAX = 64, ELEM_ORDER_N = 64, ELEM_FRAMES_MAX = 1024;   // theme_schema.ELEM_FRAMES_MAX
   var EF_ALPHA = 1, EF_LOOP = 2, EF_OS_ADV = 4, EF_HIDDEN = 8;
   // §37: a looping delta plate carries ONE sprite past its own frame window — the rect
   // that returns the finished canvas to the keyframe — and claims it with this bit. The

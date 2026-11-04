@@ -848,6 +848,9 @@ judged the first set there.
   under the sweeping wedge, with the header, rings, range figure and footer on top;
   **12–14 fps** through LVGL with the 30° wedge, no panic, no fault. The owner's range
   (10 nm) and the clock on the glass were put back after.
-- **Owed.** The text and ring colours are the app's fixed ones, not the theme's (§11.5);
-  a stale contact is not dimmed on the theme path (frames cannot dim); and L4 for a themed
-  tracker would need the app's widgets drawn into the L4 composite.
+- **Owed, then paid the same day (docs/theme-text-plan.md).** The text and ring colours
+  were the app's fixed ones, a stale contact was not dimmed on the theme path, and the
+  app's widgets kept it off L4. As of theme-text T1–T6 the rings and home dot are the
+  plate's, the marker rings and the words are theme rows, a stale contact is drawn at half
+  opacity, and the tracker makes no widget over a theme that carries its labels: **L4,
+  14–16 fps** on Bronze (theme-text-plan §4).

@@ -1,6 +1,7 @@
 # Theme text: fonts and labels a theme carries, so an app's words ride L4
 
-Status: **ruled 2026-11-04 (owner, §0). Building on `main`.** This is the E4 readout
+Status: **ruled 2026-11-04 (owner, §0); T1–T6 built and benched on Bronze the same day
+(§4).** This is the E4 readout
 (docs/history/element-model-plan.md §6, §10) generalised to every theme-aware app, and the
 way the flight tracker gets back onto L4 (flight-tracker-design §11.6, "still owed").
 
@@ -99,3 +100,45 @@ that `str` would then point at; the `text` source keeps `str` for its fonts.
 | **T4** | Fonts and labels on the wire: schema, baker, C reader, host suites | every new refusal has a mutant that bites |
 | **T5** | The stage composes labels; `orb_stage_text`; SDK | host composition test; a label on Bronze |
 | **T6** | The tracker's fonts and labels baked per family; the app's last widgets go; L4 | `render path` log silent, L4 fps on Bronze with live traffic |
+
+## 4. As built and benched (2026-11-04)
+
+- **T1.** `bake_theme.py` draws the range rings (full and half range, the background's ring
+  colour and opacity) and the home dot into each plate, and bakes the selection and
+  emergency rings as rows at slots 16 and 17. The app's five ring widgets are gone; it poses
+  the marker rows onto a contact or hides them.
+- **T2.** A row's opacity is its layer descriptor's `alpha`, which theme rows always carried
+  at 255. The painter scales each texel's coverage by it exactly as LVGL's image blend does
+  (`LV_OPA_MIX2`, cover at `LV_OPA_MAX`), on every path: still, rotated, smooth and drum.
+  `orb_stage_opacity(row, opa)`; the tracker draws a stale contact at 128.
+- **T3.** `ORB_LAYER_MAX` 32. The commit's job array grew by 16 paint contexts of internal
+  `.bss`; Bronze's internal heap read 45.6 KB free, 18.4 KB largest block, with the tracker
+  on the glass before and after.
+- **T4.** As §2.1–2.2, in `theme_schema.py`, the baker and `orb_clock3.c`, with the fonts
+  checked against the table after the walk. `host_clock3_test.py` carries 9 new forgeries,
+  3 rewritten, and 12 new mutants (43 guards, all caught; the T4 commit message says 13); `verify_js_bake.py --rows` holds the three to
+  each other on 9 new cases and a font and a label baked through `stage3` and projected by
+  the shipped reader. `ELEM_FRAMES_MAX` is 1024 (was 360): four fonts of 100 glyphs and a
+  49-frame pool reach about 460 catalogue rows; the device bounds rows by the catalogue.
+- **T5.** `main/stage/orb_label.c` draws a label: pure C over byte planes, so
+  `tools/host_label_test.py` compiles it on the host (23 checks, 12 of 12 mutants). The
+  stage finds the fonts and each label's columns when it binds (`text: 4 fonts, 4 labels`),
+  gives each label a PSRAM plane with a 4-byte lead (a sprite at offset 0 reads as unset,
+  the rule the layer table's own bakes keep), composes it when the string or tone changes,
+  and hands the plane to both paths: the LVGL image, and the layer row's `plane`. The
+  claim skips fonts, which are never drawn where they stand. `orb_stage_text(row, s, tone)`.
+- **T6.** Each family bakes four fonts in its background's typeface (DejaVu Sans on the
+  scope and chart, Serif on brass, Sans Mono on blueprint): body and accent at 16 px, quiet
+  and warning at 14, brass's accent a gradient. The four labels are the header (normal,
+  accent), the footer (quiet, warning), the info card on a rounded panel in the
+  background's edge colour, and the range figure; brass puts the small three on enamel
+  plaques, since its bezel is engraved to the rim. A theme is about 1.25 MB (fonts add
+  about 450 KB). `apps/flights/art/label_proof.py` draws a baked theme's labels through
+  the shipped C, the card included.
+- **Benched on Bronze**, Flights Modern stored through the hub's send, at 80 nm with 24–30
+  live aircraft: `render path: l4=yes rows=22 refused=0`, no veto, the words in the theme's
+  font; **14–16 fps** on L4, against 9–12 through LVGL on the same build before the labels,
+  dipping to 10–11 while the app parses a feed poll (about 140 KB of JSON). No panic, no
+  fault; the owner's 10 nm range and the clock on the glass were put back after.
+- **Not built.** The clock's readout (a label whose source is a clock value, with a format)
+  stays E4's; the `text` source keeps `str` for its fonts.

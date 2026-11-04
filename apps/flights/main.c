@@ -30,9 +30,9 @@
 #define BOOST_MS 20000               /* background poll while something is worth watching */
 #define TICK_MS  1000                /* redraw while on the glass (the manifest floor) */
 
-#define SYM_UP    "\xEF\x81\xB7"
-#define SYM_DOWN  "\xEF\x81\xB8"
-#define SYM_RIGHT "\xEF\x81\x94"
+/* The arrows: LVGL's symbol font for the widgets, Unicode for a theme's fonts, which carry
+ * the arrows themselves (theme-text-plan §2.1). Picked at init. */
+static const char *SYM_UP = "\xEF\x81\xB7", *SYM_DOWN = "\xEF\x81\xB8", *SYM_RIGHT = "\xEF\x81\x94";
 
 static const uint16_t RANGES_NM[] = { 10, 20, 40, 80 };
 static const uint32_t BG_MS[]     = { 0, 60000, 120000, 300000 };
@@ -457,6 +457,11 @@ static float   s_ring_cos[48], s_ring_sin[48];
 #define SWEEP_MS    4000             /* one turn of the arm */
 #define PLANE_SLOTS 15
 #define STALE_OPA   128              /* a contact past its fresh window, as dim() halves it */
+/* The theme's labels (theme-text-plan §2.2), by slot: the header, the footer, the info card
+ * and the range figure. With all four, the app makes no widget and the stage draws every
+ * pixel; without them (an older bake), the widgets. */
+enum { LAB_HEAD, LAB_FOOT, LAB_CARD, LAB_RNG, LAB_N };
+#define LAB_SLOT0   20
 #define SEL_SLOT    16
 #define EM_SLOT     17
 static orb_stage_info_t s_stage;
@@ -465,9 +470,34 @@ static int32_t s_arm = -1;
 static int32_t s_planes[PLANE_SLOTS];
 static int     s_nplanes;
 static int32_t s_sel_row = -1, s_em_row = -1, s_rng;
+static int32_t s_lab[LAB_N] = { -1, -1, -1, -1 };
+static bool    s_labels;                 /* all four labels: the theme writes the words */
 
 /* Set a label's text and colour only when they change: with a theme the stage ticks the
  * app every frame, and a re-set label is a repaint. */
+static void put_label(int32_t h, int slot, const char *s, uint32_t col);
+static void set_hidden(int32_t h, bool hide, bool *was);
+
+/* Say `s` on label `which`: the theme's label in `tone`, or the widget in `col`. */
+static void say(int which, const char *s, int32_t tone, uint32_t col)
+{
+    static const int32_t *const widget[LAB_N] = { &s_head, &s_foot, &s_card, &s_rng };
+    if (s_labels) {
+        orb_stage_text(s_lab[which], s, tone);
+        orb_stage_pose(s_lab[which], 0, 0, 0);
+    } else {
+        put_label(*widget[which], which, s, col);
+    }
+}
+
+/* Show or hide label `which`. */
+static void show(int which, bool on, bool *was)
+{
+    static const int32_t *const widget[LAB_N] = { &s_head, &s_foot, &s_card, &s_rng };
+    if (s_labels) orb_stage_pose(s_lab[which], on ? 0 : ORB_STAGE_HIDDEN, 0, 0);
+    else set_hidden(*widget[which], !on, was);
+}
+
 static void put_label(int32_t h, int slot, const char *s, uint32_t col)
 {
     static char     last[4][192];
@@ -624,7 +654,7 @@ static void draw_stage(void)
     if (!em_on) marker(s_em_row, false, CX, CY);
     char rng[12];
     snprintf(rng, sizeof rng, "%u nm", (unsigned)RANGES_NM[s_set.range]);
-    put_label(s_rng, 3, rng, 0x8A9A90);
+    say(LAB_RNG, rng, ORB_TONE_NORMAL, 0x8A9A90);
 }
 
 static void draw_text(void)
@@ -642,7 +672,8 @@ static void draw_text(void)
         snprintf(b, sizeof b, "no aircraft in range");
     else
         snprintf(b, sizeof b, "%d aircraft", s_m.norder);
-    put_label(s_head, 0, b, s_mode == MODE_ROAM ? 0xD0D0D0 : 0x39FF14);
+    say(LAB_HEAD, b, s_mode == MODE_ROAM ? ORB_TONE_NORMAL : ORB_TONE_ACCENT,
+        s_mode == MODE_ROAM ? 0xD0D0D0 : 0x39FF14);
 
     const int64_t age = F.pub_ms ? now_ms() - F.pub_ms : -1;
     uint32_t col = 0x909090;
@@ -651,11 +682,11 @@ static void draw_text(void)
     else if (age < 20000)       snprintf(b, sizeof b, "live  %s", SRC_TXT[F.last_src & 1]);
     else if (age < 3 * VIS_MS)  snprintf(b, sizeof b, "%u s ago", (unsigned)(age / 1000));
     else { snprintf(b, sizeof b, "feed down %u min", (unsigned)(age / 60000 + 1)); col = 0xFFB23C; }
-    put_label(s_foot, 1, b, col);
+    say(LAB_FOOT, b, col == 0xFFB23C ? ORB_TONE_WARNING : ORB_TONE_NORMAL, col);
 
     static bool card_hidden = true;
     const int si = fm_find(&s_m, s_sel);
-    if (si < 0) { s_sel[0] = 0; set_hidden(s_card, true, &card_hidden); return; }
+    if (si < 0) { s_sel[0] = 0; show(LAB_CARD, false, &card_hidden); return; }
     const fm_trk_t *t = &s_m.t[s_m.order[si]];
     char alt[16], vs[24], spd[24];
     if (t->ac.on_ground) snprintf(alt, sizeof alt, "on ground");
@@ -673,15 +704,15 @@ static void draw_text(void)
     fm_route_t rt;
     if (route_state(t->ac.flight, &rt) == ROUTE_FOUND &&
         fm_route_plausible(&rt, t->ac.lat, t->ac.lon, t->ac.on_ground ? NAN : t->ac.track, t->ac.baro_rate))
-        snprintf(route, sizeof route, "%s " SYM_RIGHT " %s\n", rt.from, rt.to);
+        snprintf(route, sizeof route, "%s %s %s\n", rt.from, SYM_RIGHT, rt.to);
     /* Distance and bearing are not on the card: the scope already shows both (owner,
      * flight-tracker-design §11.5). */
     char card[192];
     snprintf(card, sizeof card, "%s  %s\n%s%s%s\n%s  trk %d",
              t->ac.flight[0] ? t->ac.flight : t->ac.hex, t->ac.type[0] ? t->ac.type : "",
              route, alt, vs, spd, isnan(t->ac.track) ? 0 : (int)t->ac.track);
-    put_label(s_card, 2, card, 0xFFFFFF);
-    set_hidden(s_card, false, &card_hidden);
+    say(LAB_CARD, card, ORB_TONE_NORMAL, 0xFFFFFF);
+    show(LAB_CARD, true, &card_hidden);
 }
 
 static void redraw(void)
@@ -708,12 +739,15 @@ static void stage_rows(void)
 {
     s_nplanes = 0;
     s_sel_row = s_em_row = -1;
+    for (int k = 0; k < LAB_N; k++) s_lab[k] = -1;
     for (int32_t i = 0; i < (int32_t)s_stage.n_rows; i++) {
         clk_row_t r;
         if (orb_stage_row(i, &r) != ORB_OK) continue;
         if (r.tag == 0) s_arm = i;
         else if (r.tag == SEL_SLOT) s_sel_row = i;
         else if (r.tag == EM_SLOT) s_em_row = i;
+        else if (r.shape == CLK_SHAPE_TEXT && r.tag >= LAB_SLOT0 && r.tag < LAB_SLOT0 + LAB_N)
+            s_lab[r.tag - LAB_SLOT0] = i;
         else if (r.tag <= PLANE_SLOTS && s_nplanes < PLANE_SLOTS && orb_stage_frame(i, -1) >= 49)
             s_planes[s_nplanes++] = i;
     }
@@ -724,24 +758,33 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
     s_themed = orb_stage_open(&s_stage) == ORB_OK && !s_stage.base;
     if (s_themed) {
         stage_rows();
-        s_rng = orb_ui_create(ORB_UI_LABEL, 0);
-        orb_ui_set(s_rng, ORB_P_FONT, ORB_FONT_14);
-        orb_ui_align(s_rng, ORB_AL_CENTER, 140, 140);
-        orb_logf("flight tracker on its theme: arm row %d, %d plane rows, markers %d/%d", (int)s_arm,
-                 s_nplanes, (int)s_sel_row, (int)s_em_row);
+        s_labels = s_lab[LAB_HEAD] >= 0 && s_lab[LAB_FOOT] >= 0 && s_lab[LAB_CARD] >= 0 &&
+                   s_lab[LAB_RNG] >= 0;
+        if (s_labels) {
+            SYM_UP = "\xE2\x86\x91"; SYM_DOWN = "\xE2\x86\x93"; SYM_RIGHT = "\xE2\x86\x92";
+        } else {
+            s_rng = orb_ui_create(ORB_UI_LABEL, 0);
+            orb_ui_set(s_rng, ORB_P_FONT, ORB_FONT_14);
+            orb_ui_align(s_rng, ORB_AL_CENTER, 140, 140);
+        }
+        orb_logf("flight tracker on its theme: arm row %d, %d plane rows, markers %d/%d, %s",
+                 (int)s_arm, s_nplanes, (int)s_sel_row, (int)s_em_row,
+                 s_labels ? "the theme's labels" : "widgets for the words");
     } else {
         s_cv = orb_cv_create(0, W, H);
         if (!s_cv) return ORB_ERR_NO_MEM;
     }
-    s_head = text(ORB_FONT_16, 0xD0D0D0, ORB_AL_TOP_MID, 16);
-    s_foot = text(ORB_FONT_14, 0x909090, ORB_AL_BOTTOM_MID, -14);
-    s_card = text(ORB_FONT_16, 0xFFFFFF, ORB_AL_BOTTOM_MID, -40);
-    orb_ui_set(s_card, ORB_P_TEXT_ALIGN, 1);
-    orb_ui_set(s_card, ORB_P_BG, 0x101820);
-    orb_ui_set(s_card, ORB_P_BG_OPA, 204);
-    orb_ui_set(s_card, ORB_P_PAD, 8);
-    orb_ui_set(s_card, ORB_P_RADIUS, 10);
-    orb_ui_set(s_card, ORB_P_HIDDEN, 1);
+    if (!s_labels) {                 /* a theme's labels draw the words: no widget at all */
+        s_head = text(ORB_FONT_16, 0xD0D0D0, ORB_AL_TOP_MID, 16);
+        s_foot = text(ORB_FONT_14, 0x909090, ORB_AL_BOTTOM_MID, -14);
+        s_card = text(ORB_FONT_16, 0xFFFFFF, ORB_AL_BOTTOM_MID, -40);
+        orb_ui_set(s_card, ORB_P_TEXT_ALIGN, 1);
+        orb_ui_set(s_card, ORB_P_BG, 0x101820);
+        orb_ui_set(s_card, ORB_P_BG_OPA, 204);
+        orb_ui_set(s_card, ORB_P_PAD, 8);
+        orb_ui_set(s_card, ORB_P_RADIUS, 10);
+        orb_ui_set(s_card, ORB_P_HIDDEN, 1);
+    }
     for (int a = 0; a < 48; a++) {
         const double t = a * M_PI / 24.0;
         s_ring_cos[a] = (float)cos(t);

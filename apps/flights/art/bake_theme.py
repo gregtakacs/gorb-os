@@ -18,7 +18,11 @@ What a tracker theme holds, and what apps/flights/main.c expects of it:
     each row's pivot on the glass centre; the app moves a row by its pose's offset, turns it
     by the track, and picks its frame: shape * 7 + band, in SHAPES and make_art.BANDS order;
   - slots SEL_SLOT and EM_SLOT: the selection and emergency rings, centred on the glass
-    centre, which the app moves onto a contact (theme-text-plan §0 ruling 3).
+    centre, which the app moves onto a contact (theme-text-plan §0 ruling 3);
+  - four fonts (theme-text-plan §2.1) in the background's own typeface, colours and finish:
+    body, accent, quiet and warning;
+  - four labels (§2.2) at LABELS' slots, each a panel and its fonts by tone: the header, the
+    footer, the info card and the range figure. The app writes their strings.
 The range rings and the home dot never move, so they are the plate's (ruling 2).
 """
 import argparse
@@ -47,6 +51,37 @@ GROUND_OPA = 0.45             # colour off: ground traffic recedes (§11.1 rulin
 SEL_SLOT, EM_SLOT = 16, 17    # apps/flights/main.c: the marker rings' slots
 SEL_R, EM_R = 28, 32          # their radii, px: a ring clears a 38 px plane
 EMERGENCY = "#FF2020"
+
+# theme-text-plan §2: the tracker's words. Each background names its typeface, its tones'
+# colours (a pair is a vertical gradient: the brass engraving's finish) and the card's panel.
+FONT_DIR = "/usr/share/fonts/truetype/dejavu/"
+TEXT_LOOKS = {
+    "scope": dict(face="DejaVuSans.ttf", body="#E6F0EA", accent="#39FF14", quiet="#8A9A90",
+                  warning="#FFB23C", card=("#101820", 0.82), edge="#2A6A44"),
+    "chart": dict(face="DejaVuSans.ttf", body="#14202C", accent="#1E6B2E", quiet="#5B5240",
+                  warning="#B85C00", card=("#F4EEDC", 0.94), edge="#2F5C8C"),
+    "brass": dict(face="DejaVuSerif.ttf", body="#F2E6C8", accent=("#F8E7A8", "#B8892E"),
+                  quiet="#A8946A", warning="#FF9A3C", card=("#161815", 0.88), edge="#C9A24E",
+                  # the bezel is engraved to the rim, so the small words ride enamel plaques
+                  plaque=True, boxes={"header": (163, 12, 140, 24), "footer": (163, 430, 140, 24),
+                                      "range": (340, 364, 62, 20)}),
+    "blueprint": dict(face="DejaVuSansMono.ttf", body="#FFFFFF", accent="#9FE3FF",
+                      quiet="#B8CCE6", warning="#FFD27A", card=("#1C4A84", 0.88), edge="#DCE9F8"),
+}
+# The fonts by slot: (tone colour, px). Body and accent at 16 px, quiet and warning at 14
+# (flight-tracker-design §11.5: 14 px is the smallest the glass reads).
+FONTS = (("body", 16), ("accent", 16), ("quiet", 14), ("warning", 14))
+CHARSET = tuple(chr(c) for c in range(0x20, 0x7F)) + ("\u2191", "\u2193", "\u2192", "\u2190", "\u00b0")
+NONE = 0xF
+# The labels, by slot (apps/flights/main.c): box, padding, alignment (digit across, end
+# down), fonts by tone (normal, accent, warning, quiet), and whether the box is a panel.
+LABELS = (
+    dict(slot=20, name="header", box=(113, 10, 240, 26), pad=2, digit=1, end=1, tones=(0, 1, NONE, NONE)),
+    dict(slot=21, name="footer", box=(113, 428, 240, 24), pad=2, digit=1, end=1, tones=(2, NONE, 3, NONE)),
+    dict(slot=22, name="card", box=(103, 326, 260, 96), pad=8, digit=1, end=1, tones=(0, NONE, NONE, NONE),
+         panel=True),
+    dict(slot=23, name="range", box=(333, 362, 80, 22), pad=2, digit=1, end=1, tones=(2, NONE, NONE, NONE)),
+)
 SS = 4                        # supersampling for the raster-built outlines
 
 
@@ -110,6 +145,60 @@ def marker(r, colour):
                 'r="%d" fill="none" stroke="%s" stroke-width="2"/></svg>' % (d, d, r, r, r - 1, colour), d)
 
 
+def tone_str(tones):
+    """A label's `str`: its fonts by tone, a nibble each, tone 0 lowest."""
+    return sum(f << (4 * k) for k, f in enumerate(tones))
+
+
+def font(face, px, colour):
+    """One font: every CHARSET glyph in a cell of one size, its ink from the cell's left
+    edge on a shared baseline, in `colour` (a pair is a top-to-bottom gradient). Returns
+    (cell w, cell h, glyphs, space advance, tracking)."""
+    from PIL import ImageDraw, ImageFont
+    f = ImageFont.truetype(FONT_DIR + face, px)
+    boxes = {c: f.getbbox(c) for c in CHARSET}
+    top = min(b[1] for b in boxes.values() if b[2] > b[0])
+    bottom = max(b[3] for b in boxes.values() if b[2] > b[0])
+    asc, desc = f.getmetrics()
+    top, bottom = min(top, 0), max(bottom, asc + desc)
+    w = max(b[2] - b[0] for b in boxes.values())
+    h = bottom - top
+    glyphs = []
+    for c in CHARSET:
+        mask = Image.new("L", (w, h), 0)
+        l, _t, r, _b = boxes[c]
+        if r > l:
+            ImageDraw.Draw(mask).text((-l, -top), c, font=f, fill=255)
+        if isinstance(colour, tuple):
+            ink = Image.linear_gradient("L").resize((w, h))
+            a, b = Image.new("RGB", (w, h), colour[0]), Image.new("RGB", (w, h), colour[1])
+            img = Image.composite(b, a, ink).convert("RGBA")
+        else:
+            img = Image.new("RGBA", (w, h), colour)
+        img.putalpha(mask)
+        glyphs.append(img)
+    space = max(1, round(f.getlength(" ")))
+    return w, h, glyphs, space, 1
+
+
+def label_box(lab, look):
+    """A label's box: the background's own placement where it names one."""
+    return look.get("boxes", {}).get(lab["name"], lab["box"])
+
+
+def label_panel(lab, look):
+    """A label's panel: the card a rounded fill with the background's edge colour, and on a
+    background with plaques every label one; otherwise clear, the text alone on the glass."""
+    x, y, w, h = label_box(lab, look)
+    if not (lab.get("panel") or look.get("plaque")):
+        return Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    fill, opa = look["card"]
+    rx = 10 if lab.get("panel") else 6
+    return rast('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d"><rect x="0.75" y="0.75" '
+                'width="%.1f" height="%.1f" rx="%d" fill="%s" fill-opacity="%s" stroke="%s" '
+                'stroke-width="1.5"/></svg>' % (w, h, w - 1.5, h - 1.5, rx, fill, opa, look["edge"]), w, h)
+
+
 def frames(fam, form, colour, px):
     """The bank: 7 shapes x 7 bands, shape-major. Colour off: every band the family's own
     colour, the ground's frames at GROUND_OPA."""
@@ -166,6 +255,14 @@ for (const k of m.markers)
   S.row({ n: S.id(), class: AUX, slot: k.slot, x: m.cx - (k.d >> 1), y: m.cx - (k.d >> 1), w: k.d, h: k.d,
           pivot_x: k.d >> 1, pivot_y: k.d >> 1, order: 3, alpha: 255, n_frames: 1 },
         rd(k.file, k.d, k.d), true, true);
+for (const f of m.fonts)
+  S.rowFrames({ n: S.id(), class: B.classId('text'), slot: f.slot, x: 0, y: 0, w: f.w, h: f.h, order: 0,
+                n_frames: f.files.length, pivot_x: f.space, pivot_y: f.track },
+              f.files.map((g) => rd(g, f.w, f.h)), true, false);
+for (const l of m.labels)
+  S.row({ n: S.id(), class: AUX, slot: l.slot, kind: 2, src: B.SOURCES.indexOf('text'), x: l.x, y: l.y,
+          w: l.w, h: l.h, pivot_x: l.w >> 1, pivot_y: l.h >> 1, order: 4, alpha: 255, n_frames: 1,
+          str: l.str, radius: l.pad, digit: l.digit, end: l.end }, rd(l.file, l.w, l.h), true, false);
 S.preview({ plane: rd(m.preview, 232, 232), x: 0, y: 0, order: 3 });
 const b = S.finish({ name: m.name, slug: 'flights', serial: m.serial, abi: B.GEOM_ABI6 });
 fs.writeFileSync(m.out, Buffer.from(b.bytes));
@@ -186,12 +283,25 @@ def bake(fam, form, colour, trail, outdir, node):
     sel = A.BACKGROUNDS[bg_name][3]["sel"]
     arm_img, piv = arm(arm_name, trail)
     fr = frames(fam, form, colour, px)
+    look = TEXT_LOOKS[bg_name]
+    fonts = []
+    for slot, (tone, size) in enumerate(FONTS):
+        w, h, glyphs, space, track = font(look["face"], size, look[tone])
+        fonts.append({"slot": slot, "w": w, "h": h, "space": space, "track": track,
+                      "files": [raw(g, "font%d_%03d" % (slot, i)) for i, g in enumerate(glyphs)]})
+    labels = []
+    for lab in LABELS:
+        x, y, w, h = label_box(lab, look)
+        labels.append({"slot": lab["slot"], "x": x, "y": y, "w": w, "h": h, "pad": lab["pad"],
+                       "digit": lab["digit"], "end": lab["end"], "str": tone_str(lab["tones"]),
+                       "file": raw(label_panel(lab, look), "label_" + lab["name"])})
     m = {"glass": A.GLASS, "cx": A.CX, "px": px, "rows": PLANE_ROWS, "fps": SWEEP_FPS,
          "bg": raw(bg, "bg"), "arm": {"file": raw(arm_img, "arm"), "w": arm_img.width, "h": arm_img.height,
                                        "px": piv[0], "py": piv[1]},
          "frames": [raw(f, "f%02d" % i) for i, f in enumerate(fr)],
          "markers": [{"slot": SEL_SLOT, "d": 2 * SEL_R, "file": raw(marker(SEL_R, sel), "sel")},
                      {"slot": EM_SLOT, "d": 2 * EM_R, "file": raw(marker(EM_R, EMERGENCY), "em")}],
+         "fonts": fonts, "labels": labels,
          "preview": raw(preview(bg, arm_img, piv, fr, px), "preview"),
          "name": name, "serial": 1,
          "out": os.path.join(outdir, "%s.orbtheme" % name.lower().replace(" ", "-"))}

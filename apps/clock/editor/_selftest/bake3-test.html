@@ -45,19 +45,23 @@
   // texel opaque because compose() grounds it in black. Read off a live canvas, so the
   // bytes are the ones a bake would spend rather than a stand-in for them.
   const platePlane = (c) => { const p = pix(c); return { rgba: p, w: c.width, h: c.height, x: 0, y: 0 }; };
-  const ROLE = { 'centre-hour': 0, 'centre-minute': 1, 'centre-second': 2 };
-  // A hand sprite at rest. clk_sprite_t carries no rotation-offset field and clock_view
-  // pushes ang[0..2] from hand_angles() measured at 12 o'clock, so a sprite whose art does
-  // not ALREADY point up cannot enter a FORMAT 3 clock section at all: the .h's
-  // zeroRotationDeg has no column to ride. Such a design is refused, not baked flat.
+  // D43 P5c: hands are parts, so which ones take the baker's hour/minute/second slots is
+  // the export's own answer (handSeats3), not a fixed id table.
+  const seatsOf = (d) => IT.handSeats3(d);
+  // A hand sprite at rest. Art not drawn at 12 (an uploaded hand's artRot) is no refusal
+  // any more: t3bake carries the standing turn as the row's drive zero, and so does this.
   const handPlane = (h, slot) => {
     const sp = h.sp, c = cv(sp.c.width, sp.c.height);
     c.getContext('2d').drawImage(sp.c, 0, 0);
     const px = Math.round(sp.px), py = Math.round(sp.py), p = platePlane(c);
     p.x = Math.round(h.x) - px; p.y = Math.round(h.y) - py;
-    p.pivot_x = px; p.pivot_y = py; p.slot = slot;
+    p.pivot_x = px; p.pivot_y = py; p.slot = slot; p.id = h.id;
+    const z10 = Math.round(window.WatchEngine.handZeroDeg(h) * 10);
+    if (z10) p.drive = { zero: z10 };
     return p;
   };
+  // t3bake's own ink count: full-alpha texels, every 10th sampled
+  const inkOf = (p) => { let n = 0; if (p) for (let i = 3; i < p.length; i += 40) if (p[i] === 255) n++; return n; };
   const still = (M, gt, F, only) => { const c = cv(466); E.compose(c.getContext('2d'), M, gt, F, E.previewDate(), { hands: 1, glass: 1, outer: 1 }, only); return c; };
   // The export's own filter: static comps ride the plate, planned rows do not.
   const onlyBaseOf = (d) => {
@@ -111,7 +115,7 @@
      * THIS dial's plate moves. It is measured the only way that means anything: compose
      * the plate at frame 0 and again at the end of the loop, and compare the pixels. */
     say('--- what a FORMAT 3 clock bake may take, preset by preset ---');
-    const canBake = [], stillTrips = [];
+    const canBake = [], blankTrips = [];
     for (const id of ids) {
       const P = E.PRESETS[id];
       const V = await mount(id), F = V.F, M = V.M, B = V.B, d = V.d;
@@ -119,17 +123,17 @@
       // Measure what the export would carry: the engine's own split, live comps
       // off the plate, their motion carried by window rows instead.
       const meas = { frames: V.B, fps: IT.F, unionPx: 0, bboxW: 0, bboxH: 0, otherB: 0, hasCage: !!M.cageAt, orbital: !!M.orbital };
-      IT.measureFrames3((f) => IT.frameCanvas(f, { hands: 1, glass: 1, outer: 1, cage: 1 }, undefined, onlyBaseOf(d)), meas);
+      const pxs = IT.measureFrames3((f) => IT.frameCanvas(f, { hands: 1, glass: 1, outer: 1, cage: 1 }, undefined, onlyBaseOf(d)), meas);
       if (meas.hasCage) { const cb = IT.measureCarriage3(V.gt, V.B); if (cb) { meas.carriageW = cb[0]; meas.carriageH = cb[1]; } }
       const pol = G.splitPolicy3(meas);
       if (pol.carrier === 'refuse') why.push(pol.sentence.slice(0, 150));
-      /* The export pane's silent-still tripwire refuses a "still" verdict when the
-       * movement prices dirty rows — the two readings cannot both be true of one
-       * honest walk. Here every walk IS honest, so any preset that trips it is the
-       * tripwire false-refusing a legitimate bake. Rows come from the build's own
-       * rowPrice pass, so this costs no extra rendering. -1 means unpriced. */
-      const bs = IT.budgetStats, rows = bs && bs.mv === IT.mvKey(1) ? bs.rows : -1;
-      if (pol.carrier === 'still' && !pol.carriage && rows >= 16) stillTrips.push(id + ' (' + rows + ' rows)');
+      /* t3bake's blank-plate tripwire refuses a walk whose first plate carries under
+       * 1000 opaque texels (every 10th sampled). Here every walk IS honest, so any
+       * preset that trips it is the tripwire false-refusing a legitimate bake. (It
+       * replaced a dirty-rows guard on 2026-10-24: that price charges the geartrain
+       * even where the dial hides it, so this page's old check refused six stills.) */
+      const ink = inkOf(pxs && pxs[0]);
+      if (ink < 1000) blankTrips.push(id + ' (' + ink + ' opaque)');
       // §31's comp table closed the last blocker: a live comp plans a window row.
       // Only what no element row can carry (a datetext flare, an unknown type) refuses.
       let cnote = '';
@@ -138,22 +142,20 @@
         if (pl.refuses.length || ptp.refuses.length) why.push(pl.refuses[0] || ptp.refuses[0]);
         else if (pl.rows.length || ptp.rows.length) cnote = ' · ' + pl.rows.length + ' comp row(s) + ' + ptp.rows.length + ' pointer row(s) bake';
       }
-      const ch = (F.hands || []).filter((h) => ROLE[h.id] !== undefined);
-      if (!ch.length) why.push('no centre hour/minute/second hand');
-      const off = ch.filter((h) => Math.abs(E.handZeroDeg(h)) > 0.01);
-      if (off.length) why.push(off.length + ' hand art not drawn at 12');
+      // a dial with no slot hand still bakes (its hands ride the pointer table); the count is reported
+      const seat = seatsOf(d), ch = (F.hands || []).filter((h) => seat[h.id] !== undefined);
       if (!why.length) canBake.push(id);
-      say('  ' + id.padEnd(11) + (why.length ? 'refuses: ' + why.join(', ') : 'MAY BAKE') + cnote + ' · union ' + meas.unionPx + ' px · ' + rows + ' dirty rows');
+      say('  ' + id.padEnd(11) + (why.length ? 'refuses: ' + why.join(', ') : 'MAY BAKE') + cnote + ' · ' + ch.length + ' slot hand(s) · union ' + meas.unionPx + ' px · ink ' + ink);
     }
     say('  ' + canBake.length + ' of ' + ids.length + ' presets a FORMAT 3 clock bake may take today');
     // Reported, not asserted: which presets qualify is a fact about the engine, and the
     // suite's promise is that the button states it instead of baking a frozen train and
     // calling it a theme. The check below is the one that holds either way round.
     ok('every preset got a verdict above', ids.length === canBake.length + ids.length - canBake.length, canBake.length + ' of ' + ids.length + ' may bake');
-    /* The tripwire's premise, tested not assumed: on an honest walk a preset the
-     * policy calls still must carry no dirty rows. One that does means the guard
-     * would refuse a bake this dial is entitled to, and the threshold is wrong. */
-    ok('no honest still carries dirty rows, so the tripwire cannot false-refuse', stillTrips.length === 0, stillTrips.join(', ') || 'no still preset priced dirty rows');
+    /* The tripwire's premise, tested not assumed: an honest walk paints the opaque base
+     * disc, so no preset may read as blank. One that does means the guard would refuse
+     * a bake this dial is entitled to, and the floor is wrong. */
+    ok('no honest walk reads as blank, so the tripwire cannot false-refuse', blankTrips.length === 0, blankTrips.join(', ') || 'every preset clears the 1000-texel floor');
 
     /* ---- 1.9 motion walk, real pixels (D34 bench: a Skeleton bake shipped bg_frames 0) ----
      * Same call shape as the composer's own bake pass (line 1935): plate at every gt frame,
@@ -175,7 +177,9 @@
      * the build's own row count has to clear the threshold the guard checks. If it
      * does not, the guard can never catch the hub's failure and the threshold is
      * the thing to fix. */
-    ok('so the hub tripwire would arm on a Skeleton that measured zero', srows >= 16, srows + ' dirty rows vs the guard threshold 16');
+    // and the guard must ARM on what D34 actually shipped: a walk of blank canvases
+    const blank = inkOf(pix(cv(466)));
+    ok('so the blank-plate tripwire arms on a walk that never painted', blank < 1000, blank + ' opaque vs the floor 1000');
 
     /* ---- 2. the bake that IS honest: a still, hands seated ----
      * The refusal above protects a product promise (freeze the train and the watch stops
@@ -196,7 +200,8 @@
     }
     ok('and it carries a real picture, not a flat fill', Object.keys(col).length > 64, Object.keys(col).length + ' distinct colours');
 
-    let ch = F.hands.filter((h) => ROLE[h.id] !== undefined).map((h) => handPlane(h, ROLE[h.id]));
+    const seat1 = seatsOf(V.d);
+    let ch = F.hands.filter((h) => seat1[h.id] !== undefined).map((h) => handPlane(h, seat1[h.id]));
     ok('the bake has hands to seat', ch.length >= 2, ch.length);
     // §31's comp table through Chrome's own pixels: the mounted dial's live comps
     // render at every domain value through the component's real compPass3, and the
@@ -228,7 +233,8 @@
       const only2 = onlyBaseOf(V2.d);
       cpR = await IT.compPass3(plan2, only2);
       ok('the phase comp-table pass plated ' + plan2.rows.length + ' row(s) without refusal', !cpR.refuse, cpR.refuse || '');
-      const ch2 = F2.hands.filter((h) => ROLE[h.id] !== undefined).map((h) => handPlane(h, ROLE[h.id]));
+      const seat2 = seatsOf(V2.d);
+      const ch2 = F2.hands.filter((h) => seat2[h.id] !== undefined).map((h) => handPlane(h, seat2[h.id]));
       try {
         r = G.bakeClock3({ name: 'Chrome Pixel Bake', serial: 20261020, bakedMs: 1234,
                            plate: platePlane(still(M2, V2.gt[0], F2, only2)), hands: ch2,

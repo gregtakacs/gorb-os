@@ -262,8 +262,8 @@ runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
   date cycle as its own time mode, and its template's field names; `viewVals`,
   `drawPanel`, `startTimer`, `now` and the calibration methods are now calls into the
   service. Captions say "face" and "on the glass" where they said "dial" and "on the
-  watch". Not changed: the calibrated caption prints 1.75 in as 44.4 mm (44.45 rounds
-  down in floating point), as before. `clock.orbapp`: 939,960 B → 934,446 B.
+  watch". The calibrated caption then printed 1.75 in as 44.4 mm (44.45 rounds down in
+  floating point); since 2026-11-04 every caption reads `screen.PANEL_MM`, "44.45". `clock.orbapp`: 939,960 B → 934,446 B.
 - **Suites.** `web/runtime/_selftest/headless-preview.test.js`, 37 checks, with no app: the
   screen's facts, load/save/clamp, the legacy carry-over, blocked storage, both
   instruments, every view and caption, the ticker and the time, and Panel and Split held

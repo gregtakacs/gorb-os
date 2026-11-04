@@ -917,7 +917,7 @@ class Component extends DCLogic {
     const S = window.OrbTheme.screen, c = S.fromRuler(this.cal(), mm);
     if (c == null) { this.setState({ status: 'Type what the ruler really measures, in mm — between 5 and 300' }); return; }
     this.setCal(c);
-    this.setState({ status: 'Ruler matched at ' + (+mm) + ' mm · true size now draws the dial ' + (S.PANEL.inch * 25.4).toFixed(1) + ' mm across on this screen' });
+    this.setState({ status: 'Ruler matched at ' + (+mm) + ' mm · true size now draws the dial ' + S.PANEL_MM + ' mm across on this screen' });
   }
   // the bank card instrument: how wide the drawn outline really measures solves the factor
   solveCard(mm) {
@@ -925,7 +925,7 @@ class Component extends DCLogic {
     const S = window.OrbTheme.screen, c = S.fromCard(this.cal(), mm);
     if (c == null) { this.setState({ status: 'Type how wide the card outline really measures, in mm — between 20 and 400' }); return; }
     this.setCal(c);
-    this.setState({ status: 'Card matched at ' + (+mm) + ' mm · true size now draws the dial ' + (S.PANEL.inch * 25.4).toFixed(1) + ' mm across on this screen' });
+    this.setState({ status: 'Card matched at ' + (+mm) + ' mm · true size now draws the dial ' + S.PANEL_MM + ' mm across on this screen' });
   }
   viewK() { const s = this.state; return window.OrbTheme.viewK({ view: s.view, zoom: s.zoom, fitPx: s.fitPx, cal: this.cal() }); }
   setView(v) { this.setState((st) => ({ view: v, ...(v === 'zoom' && !(+st.zoom >= 1) ? { zoom: 2 } : {}) })); }

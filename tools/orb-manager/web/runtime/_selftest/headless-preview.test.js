@@ -26,6 +26,7 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 1e-9);
 (async () => {
   // ---- the screen
   ok(S.PANEL.px === 466 && S.PANEL.inch === 1.75 && near(S.MM_PER_PX, 0.0953862, 1e-6), 'the panel is 466 px across 1.75 in', S.MM_PER_PX);
+  ok(S.PANEL_MM === '44.45', 'captions print the panel as 44.45 mm, not the float’s 44.4', S.PANEL_MM);
   ok(S.REAL_CSS === 168 && S.realCss(1) === 168 && S.realCss(2) === 336, 'true size is 168 css px at the 96 px/in standard, scaled by the factor');
   ok(S.rulerPx(1) === 151 && S.screenInch(168, 1) === 1.75, 'the 40 mm ruler and the inch read back at the standard', S.rulerPx(1));
   const card = S.cardCss(1);
@@ -60,7 +61,7 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 1e-9);
   v = V({ view: 'true', cal: 1.25 });
   ok(v.css === 210 && v.showRuler && v.rulerPx === 189 && /True size · 1\.75 in/.test(v.tag), 'True size draws 1.75 screen inches and the ruler', v.tag);
   ok(/96 px\/in standard/.test(v.text) && /ruler or a bank card/.test(V({ view: 'true' }).text), 'uncalibrated, it says it is assuming the standard');
-  ok(/True size: 1\.75 in on this screen, the 1\.75 in panel at 44\.\d mm/.test(V({ view: 'true', calibrated: true }).text), 'calibrated, it states the panel’s size');
+  ok(/True size: 1\.75 in on this screen, the 1\.75 in panel at 44\.45 mm/.test(V({ view: 'true', calibrated: true }).text), 'calibrated, it states the panel’s size');
   ok(!V({}).showRuler && !V({ view: 'zoom' }).showRuler, 'the ruler belongs to true size only');
   ok(near(T.viewK({ view: 'true', cal: 2 }), (168 / 466) * 2) && near(V({ view: 'true', cal: 2 }).k, (168 / 466) * 2), 'True size’s scale carries the calibration');
   ok(V({}).ring === 12 && V({ view: 'true' }).ring === 4 && V({ fitPx: 100 }).ring === 3, 'the bezel ring follows the size, within 3–12');

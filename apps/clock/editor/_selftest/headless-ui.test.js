@@ -813,6 +813,10 @@ setTimeout(async () => {
   it.resetTab('sound');
   ok(!it.state.sounds[it.state.dial], 'Reset sound returns the dial to its preset\u2019s sounds');
 
+  // the calibration status names the panel's real width: 1.75 in is 44.45 mm, not the float's 44.4
+  it.solveCal(40); const st1 = it.state.status; it.solveCard(85.6); const st2 = it.state.status;
+  ok(/draws the dial 44\.45 mm across/.test(st1) && /draws the dial 44\.45 mm across/.test(st2), 'the ruler and card status say the dial is 44.45 mm across', st1);
+
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);
 }, 15);

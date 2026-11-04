@@ -1427,16 +1427,29 @@ static void store_progress(void *arg, uint32_t done, uint32_t total)
 /* The pool's moves on the glass: a compaction carries megabytes (Bronze, 2026-11-04:
  * 2.8 MB in about 20 s), so a store making room and a boot repairing a cut say so with
  * the overlay's bar rather than standing on a word that has stopped meaning anything. */
+static void pool_progress(const char *stage, uint32_t done, uint32_t total)
+{
+    /* The overlay repaints at once on any new byte count, and a move reports every
+     * sector; a paint per sector cost a 2.8 MB move about ten seconds (Bronze,
+     * 2026-11-04: a store 42.8 s without the bar, 52.1 s with it). One paint per
+     * percent, and always the last. */
+    static uint32_t last_pct = 101;
+    const uint32_t pct = total ? (uint32_t)((uint64_t)done * 100u / total) : 100u;
+    if (pct == last_pct && done != total) return;
+    last_pct = done == total ? 101 : pct;
+    orb_boot_overlay(stage, done, total, 0);
+}
+
 static void room_progress(void *ctx, uint32_t done, uint32_t total)
 {
     (void)ctx;
-    orb_boot_overlay("making room", done, total, 0);
+    pool_progress("making room", done, total);
 }
 
 static void repair_progress(void *ctx, uint32_t done, uint32_t total)
 {
     (void)ctx;
-    orb_boot_overlay("repairing themes", done, total, 0);
+    pool_progress("repairing themes", done, total);
 }
 
 bool orb_theme_store_torn(void)

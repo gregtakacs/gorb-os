@@ -41,6 +41,16 @@ ROW_CASES = [
     ("sixteen picked rows",                   [{"slot": i, "pick": 49} for i in range(16)], None),
     ("two carriages",                         [{"slot": 0, "car": 4}, {"slot": 1, "car": 4}], "all animated"),
     ("a carriage beside picked rows",         [{"slot": 0, "car": 4}, {"slot": 1, "pick": 9}, {"slot": 2, "pick": 9}], None),
+    # theme-text-plan §2: fonts ("font": slot, with overrides) and labels ("label": its columns)
+    ("a font and a label reading it",         [{"font": 0}, {"slot": 0, "label": {}}], None),
+    ("a label naming tones 0 and 1",          [{"font": 0}, {"font": 1, "n_frames": 95}, {"slot": 0, "label": {"str": 0xFF10}}], None),
+    ("a label naming an absent font",         [{"font": 0}, {"slot": 0, "label": {"str": 0xFF20}}], "does not carry"),
+    ("a label with no tone 0",                [{"font": 0}, {"slot": 0, "label": {"str": 0xFFFF}}], "no font for tone 0"),
+    ("a label that moves",                    [{"font": 0}, {"slot": 0, "label": {"dx": 4}}], "names no motion"),
+    ("a label padded shut",                   [{"font": 0}, {"slot": 0, "label": {"radius": 12}}], "leaves no room"),
+    ("a font of 94 glyphs",                   [{"font": 0, "n_frames": 94}], "ASCII whole"),
+    ("a font at slot 15",                     [{"font": 15}], "seats 15 fonts"),
+    ("a font off the origin",                 [{"font": 0, "x": 2}], "sits at 0,0"),
 ]
 
 ROWS_JS = r"""
@@ -49,8 +59,13 @@ const AUX = B.classId('aux'), MIN = B.SOURCES.indexOf('minute');
 const row = (c, n) => Object.assign(B.blankElement(), { n: n, class: AUX, slot: c.slot, w: 8, h: 90, pivot_x: 4, pivot_y: 80, n_frames: 1,
   src: c.twin ? 0 : MIN, span: c.twin ? 0 : 3600, vmax: c.twin ? 0 : 60, cadence: c.twin ? 0 : 3, end: 0, flags: c.twin ? 16 : 0 },
   c.pick ? { n_frames: c.pick, delay: 0 } : c.car ? { n_frames: c.car, delay: 250 } : {});
+const TEXT = B.classId('text'), TSRC = B.SOURCES.indexOf('text');
+const font = (c, n) => Object.assign(B.blankElement(), { n: n, class: TEXT, slot: c.font, w: 8, h: 14, n_frames: 100,
+  pivot_x: 3, pivot_y: 1 }, Object.fromEntries(Object.entries(c).filter(([k]) => k !== 'font')));
+const label = (c, n) => Object.assign(B.blankElement(), { n: n, class: AUX, slot: c.slot, x: 100, y: 20, w: 120, h: 24,
+  pivot_x: 60, pivot_y: 12, n_frames: 1, kind: 2, src: TSRC, str: 0xFFF0, radius: 4, digit: 1, end: 1 }, c.label);
 for (const [name, rows] of cases) {
-  const recs = rows.map((c, i) => row(c, i + 1));
+  const recs = rows.map((c, i) => 'font' in c ? font(c, i + 1) : c.label ? label(c, i + 1) : row(c, i + 1));
   let why = null;
   try { recs.forEach((r, i) => B.checkElement(r, 'elem[' + i + ']')); B.checkClockRows(recs); } catch (e) { why = String(e.message); }
   out.verdicts.push({ name, why, recs });
@@ -69,6 +84,14 @@ let refusedOne = null;
 try { S.rowPick({ n: S.id(), class: AUX, slot: 20, w: 38, h: 38, pivot_x: 19, pivot_y: 19 }, frames.concat(frames.slice(0, 16)), true, false); } catch (e) { refusedOne = e.message; }
 let refusedSize = null;
 try { S.rowPick({ n: S.id(), class: AUX, slot: 21, w: 38, h: 38, pivot_x: 19, pivot_y: 19 }, [frames[0], { w: 40, h: 38, rgba: new Uint8Array(40 * 38 * 4) }], true, false); } catch (e) { refusedSize = e.message; }
+// a font of 100 glyph cells and a label naming it (theme-text-plan §2), through the same bake
+const glyphs = Array.from({ length: 100 }, (_, g) => { const p = { w: 8, h: 14, rgba: new Uint8Array(8 * 14 * 4) };
+  for (let y = 2; y < 12; y++) for (let x = 0; x < 1 + (g % 7); x++) p.rgba.set([230, 230, 230, 255], (y * 8 + x) * 4);
+  return p; });
+S.rowFrames({ n: S.id(), class: TEXT, slot: 0, w: 8, h: 14, n_frames: 100, pivot_x: 3, pivot_y: 1 }, glyphs, true, false);
+const panel = { w: 120, h: 24, rgba: new Uint8Array(120 * 24 * 4).fill(60) };
+S.row({ n: S.id(), class: AUX, slot: 30, kind: 2, src: TSRC, x: 100, y: 20, w: 120, h: 24, pivot_x: 60, pivot_y: 12,
+        n_frames: 1, order: 30, alpha: 255, str: 0xFFF0, radius: 4, digit: 1, end: 1 }, panel, true, false);
 const b = S.finish({ name: 'Plane pool', slug: 'flights', abi: B.GEOM_ABI6 });
 require('fs').writeFileSync(process.argv[3], Buffer.from(b.bytes));
 out.pool = { frame0s: recs.map((r) => r.frame0), n_frames: recs.map((r) => r.n_frames), delays: recs.map((r) => r.delay), bytes: b.bytes.length, refusedOne, refusedSize };
@@ -113,13 +136,16 @@ def rows_mode():
     print("%s stage3 refuses a 65-frame bank and a frame of another size at the bake" % ("ok  " if one and size else "FAIL"))
     bad += not (one and size)
     shared = len(set(p["frame0s"])) == 1 and set(p["n_frames"]) == {49} and set(p["delays"]) == {0}
-    print("%s stage3 pool: 16 rows naming one bank of 49 frames, no frame time (%d B)" % ("ok  " if shared else "FAIL", p["bytes"]))
+    print("%s stage3 pool: 16 rows naming one bank of 49 frames, no frame time, a font and a label (%d B)" % ("ok  " if shared else "FAIL", p["bytes"]))
     bad += not shared
     try:
         hdr, secs = ob.read_bundle(pool)
         els = secs[0]["blob"]["elements"]
         aux = [e for e in els if int(e["class"]) == ts.CLASS_AUX]
-        read_ok = secs[0]["blob"]["slug"] == "flights" and len(aux) == 16 and all(int(e["n_frames"]) == 49 and not int(e["delay"]) for e in aux)
+        planes = [e for e in aux if int(e["kind"]) != ts.SHAPE_TEXT]
+        fonts = [e for e in els if int(e["class"]) == ts.CLASS_TEXT]
+        read_ok = (secs[0]["blob"]["slug"] == "flights" and len(planes) == 16 and len(fonts) == 1
+                   and len(aux) == 17 and all(int(e["n_frames"]) == 49 and not int(e["delay"]) for e in planes))
         ts.check_clock_rows(els)
     except ValueError as e:
         read_ok = False
@@ -134,6 +160,8 @@ def rows_mode():
             if line.startswith("scalar pick_n"):
                 picks = [int(x) for x in line.split()[2:]]
     c_ok = rc == 0 and picks[:16] == [49] * 16 and not any(picks[16:])
+    if rc == 0:
+        c_ok = c_ok and int(H3.parsed(out)["rows"][-1]["shape"]) == ts.SHAPE_TEXT
     print("%s orb_clock3.c projects it: pick_n %s" % ("ok  " if c_ok else "FAIL", picks[:17] if rc == 0 else (out or err).strip()[:300]))
     bad += not c_ok
     print("%d of %d checks %s" % (bad, len(ROW_CASES) + 4, "FAILED" if bad else "disagree: none"))

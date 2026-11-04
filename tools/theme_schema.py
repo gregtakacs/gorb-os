@@ -526,7 +526,7 @@ ELEMENT_FIELDS = (
     ("dy",       "i16"),
     ("end",      "u8"),    # AUX: ENDS id — wrap, flyback, hold
     ("digit",    "u8"),    # AUX: DIGITS id — the whole value, its units, its tens
-    ("str",      "u16"),   # AUX text row: offset into the string table (D42 E4); 0
+    ("str",      "u16"),   # AUX text row: its fonts by tone, a nibble each (theme-text §2.2); 0
 )
 ELEMENT_WORDS = len(ELEMENT_FIELDS)          # 33 words, 132 bytes per row
 # Every app row but the clock's is the 23-word v3 row, whatever the container's stamp.
@@ -774,10 +774,89 @@ CLASS_SOUND = 10
 
 # D42: what an AUX row's art is, read from its `kind` column (clk_types.h CLK_SHAPE_*).
 # The shape says nothing about motion: an arm and a ring move by the same two poses. A
-# text row draws glyphs from the string table, which lands with E4; until then the
-# reader refuses it rather than draw a row it cannot.
+# text row is a label: the app's string in the theme's fonts (theme-text-plan §2.2).
 SHAPES = ("arm", "ring", "text", "drum")
 SHAPE_ARM, SHAPE_RING, SHAPE_TEXT, SHAPE_DRUM = 0, 1, 2, 3   # D43: drum, a barrel the OS rolls
+# theme-text-plan §2.1: a FONT is a TEXT row in a stage section. Its frames are its glyphs,
+# one cell each, in FONT_CHARSET order: printable ASCII, then the arrows and the degree sign.
+# A font carries ASCII whole and any prefix of the extras. `pivot_x` is the space's advance
+# and `pivot_y` the tracking between one glyph's ink and the next; a glyph's advance is its
+# ink, measured by the OS. Fonts sit at slots 0..FONT_SLOTS-1.
+FONT_ASCII = tuple(chr(c) for c in range(0x20, 0x7F))
+FONT_EXTRAS = ("\u2191", "\u2193", "\u2192", "\u2190", "\u00b0")
+FONT_CHARSET = FONT_ASCII + FONT_EXTRAS
+FONT_SLOTS = 15
+# §2.2: a LABEL is an AUX row of shape text and source text. Its one frame is its panel;
+# `str` names its fonts by tone, a nibble each, tone 0 lowest, FONT_NONE for a tone the
+# theme leaves to tone 0; `radius` is its padding; `digit` and `end` align the text.
+TONES = ("normal", "accent", "warning", "quiet")
+FONT_NONE = 0xF
+ALIGNS = ("start", "centre", "end")
+LABEL_PAD_MAX = 32
+LABEL_STILL_COLUMNS = ("span", "zero", "vmin", "vmax", "dx", "dy", "cadence", "cad_arg", "ease")
+
+
+def label_fonts(str_col):
+    """A label's fonts by tone: the four nibbles of its `str`, tone 0 first."""
+    return [(int(str_col) >> (4 * k)) & 0xF for k in range(len(TONES))]
+
+
+def check_label(rec, where):
+    """theme-text-plan §2.2's row-local rules for a label. Mirrored by orb_clock3.c's
+    row_check and the baker's checkElement."""
+    if SOURCES[int(rec["src"])] != "text":
+        raise ValueError("%s.src: a text row draws the app's string, so it reads source "
+                         "text, not %r" % (where, SOURCES[int(rec["src"])]))
+    for c in LABEL_STILL_COLUMNS:
+        if int(rec.get(c, 0)):
+            raise ValueError("%s.%s: %d on a text row — the app places a label, so it "
+                             "names no motion" % (where, c, int(rec[c])))
+    if not 0 <= int(rec.get("digit", 0)) < len(ALIGNS) or not 0 <= int(rec.get("end", 0)) < len(ALIGNS):
+        raise ValueError("%s: a text row aligns by digit %d and end %d, each one of %s"
+                         % (where, int(rec.get("digit", 0)), int(rec.get("end", 0)), "/".join(ALIGNS)))
+    if label_fonts(rec.get("str", 0))[0] == FONT_NONE:
+        raise ValueError("%s.str: a text row names no font for tone 0 (normal), which "
+                         "every other tone falls back to" % where)
+    if int(rec["n_frames"]) != 1 or int(rec["flags"]) & EF_AUX_SHADOW:
+        raise ValueError("%s: a text row's art is its one panel, with no frames and no "
+                         "shadow" % where)
+    pad, w, h = int(rec.get("radius", 0)), int(rec["w"]), int(rec["h"])
+    if pad > LABEL_PAD_MAX or 2 * pad >= w or 2 * pad >= h:
+        raise ValueError("%s.radius: a padding of %d leaves no room in a %dx%d panel "
+                         "(at most %d)" % (where, pad, w, h, LABEL_PAD_MAX))
+
+
+def check_fonts(recs):
+    """§2.1-2.2's table rules: each font row, and every font a label names present.
+    Mirrored by orb_clock3.c and the baker's checkClockRows."""
+    fonts = {}
+    for r in recs:
+        if int(r["class"]) != CLASS_TEXT:
+            continue
+        slot, where = int(r["slot"]), "font%d" % int(r["slot"])
+        if slot >= FONT_SLOTS:
+            raise ValueError("%s: a stage seats %d fonts (font0..font%d)"
+                             % (where, FONT_SLOTS, FONT_SLOTS - 1))
+        nf, w = int(r["n_frames"]), int(r["w"])
+        if not len(FONT_ASCII) <= nf <= len(FONT_CHARSET):
+            raise ValueError("%s: a font carries printable ASCII whole (%d glyphs) and at "
+                             "most %d, not %d" % (where, len(FONT_ASCII), len(FONT_CHARSET), nf))
+        if int(r["x"]) or int(r["y"]):
+            raise ValueError("%s: a font is never drawn where it stands, so it sits at 0,0"
+                             % where)
+        if not (0 < int(r["pivot_x"]) <= w and 0 <= int(r["pivot_y"]) <= w):
+            raise ValueError("%s: a space of %d px and tracking of %d px in a %d px cell"
+                             % (where, int(r["pivot_x"]), int(r["pivot_y"]), w))
+        fonts[slot] = r
+    for r in recs:
+        if int(r["class"]) != CLASS_AUX or int(r["kind"]) != SHAPE_TEXT:
+            continue
+        for tone, f in enumerate(label_fonts(r.get("str", 0))):
+            if f != FONT_NONE and f not in fonts:
+                raise ValueError("ptr%d: tone %d (%s) names font%d, which this theme does "
+                                 "not carry" % (int(r["slot"]), tone, TONES[tone], f))
+
+
 # D42 §3: what a row does past the end of its domain (clk_types.h CLK_END_*). A wrap
 # starts the next unit at P0 with no visible jump, so it is legal only where P1 looks
 # like P0: a whole turn (±3600 tenths) and no travel. A flyback returns to P0 when the
@@ -941,14 +1020,14 @@ def check_element(rec, where="elem"):
             raise ValueError("%s.kind: %d is not a row's shape (%s, 0..%d)"
                              % (where, kind, "/".join(SHAPES), len(SHAPES) - 1))
         if kind == SHAPE_TEXT:
-            raise ValueError("%s.kind: a text row waits for the string table (D42 E4)" % where)
-        if int(rec.get("str", 0)):
-            raise ValueError("%s.str: %d — only a text row points into the string table"
+            check_label(rec, where)
+        elif int(rec.get("str", 0)):
+            raise ValueError("%s.str: %d — only a text row names fonts"
                              % (where, int(rec["str"])))
         if not 0 <= src < len(SOURCES):
             raise ValueError("%s.src: %d is not a value this dial can read (0..%d)"
                              % (where, src, len(SOURCES) - 1))
-        if SOURCES[src] in UNDRIVABLE_SOURCES:
+        if SOURCES[src] in UNDRIVABLE_SOURCES and kind != SHAPE_TEXT:
             raise ValueError("%s.src: %r is no input of this dial, and a row that moves by "
                              "it would never move" % (where, SOURCES[src]))
         span, zero, vmin, vmax = (int(rec["span"]), int(rec["zero"]),
@@ -958,7 +1037,9 @@ def check_element(rec, where="elem"):
         if int(rec["degrees"]):
             raise ValueError("%s.degrees: %d — a row's angle at rest is its `zero`"
                              % (where, int(rec["degrees"])))
-        if SOURCES[src] == "none":
+        if kind == SHAPE_TEXT:
+            pass                                  # check_label said it all
+        elif SOURCES[src] == "none":
             for c in MOTION_COLUMNS + ("cadence", "cad_arg", "ease"):
                 if int(rec.get(c, 0)):
                     raise ValueError("%s.%s: %d on a still row — a row with no source "
@@ -1352,7 +1433,9 @@ def check_clock_rows(recs, scalars=None):
       - at most one row is animated (the carriage, frames and a frame time); a row with
         frames and no frame time is one whose frames the app picks, and any number may;
       - a shadow twin follows a moving or still row, never another twin, in slot order;
-      - a parent is a moving row, and a parent that turns shares its child's centre."""
+      - a parent is a moving row, and a parent that turns shares its child's centre;
+      - fonts and the fonts labels name (check_fonts)."""
+    check_fonts(recs)
     aux = {int(r["slot"]): r for r in recs if int(r["class"]) == CLASS_AUX}
     by_n = {int(r["n"]): r for r in recs}
     minute_jumps = any(SOURCES[int(r["src"])] == "minute" and not int(r.get("digit", 0))
@@ -1535,12 +1618,36 @@ if __name__ == "__main__":
                   digit=DIGIT_UNITS, vmin=0, vmax=10, span=-3600, cadence=CAD_JUMP,
                   cad_arg=0)
     _twin = dict(_still, slot=1, n=10, flags=EF_AUX_SHADOW)
-    for _ok in (_fan, _bar, _still, _units, _twin):
+    _label = dict(_still, slot=5, n=11, kind=SHAPE_TEXT, src=SOURCES.index("text"), w=120,
+                  h=24, pivot_x=60, pivot_y=12, str=0xFF10, radius=4, digit=1, end=1)
+    _font = dict(blank_element(), **{"n": 12, "class": CLASS_TEXT, "slot": 0, "w": 10, "h": 18,
+                                     "n_frames": len(FONT_CHARSET), "pivot_x": 4, "pivot_y": 1})
+    for _ok in (_fan, _bar, _still, _units, _twin, _label, _font):
         assert check_element(_ok, "sentinel-ok") == _ok
+    check_fonts([_label, _font, dict(_font, n=13, slot=1, n_frames=len(FONT_ASCII))])
+    for _bad, _why in (
+        ([_label, _font], "names font1"),
+        ([dict(_font, slot=FONT_SLOTS)], "seats 15 fonts"),
+        ([dict(_font, n_frames=40)], "ASCII whole"),
+        ([dict(_font, x=3)], "sits at 0,0"),
+        ([dict(_font, pivot_x=0)], "a space of 0"),
+    ):
+        try:
+            check_fonts(_bad)
+            raise AssertionError("check_fonts accepted: %s" % _why)
+        except ValueError as e:
+            assert _why in str(e), (str(e), _why)
     assert check_table([_e, _ax])
     for _bad, _why in (
         (dict(_ax, kind=4), "not a row's shape"),
-        (dict(_ax, kind=SHAPE_TEXT), "string table"),
+        (dict(_ax, kind=SHAPE_TEXT), "reads source text"),
+        (dict(_label, cadence=CAD_JUMP), "names no motion"),
+        (dict(_label, dx=3), "names no motion"),
+        (dict(_label, digit=3), "aligns by"),
+        (dict(_label, str=0xFFFF), "no font for tone 0"),
+        (dict(_label, n_frames=2), "one panel"),
+        (dict(_label, radius=12), "leaves no room"),
+        (dict(_ax, str=1), "only a text row names fonts"),
         (dict(_ax, src=SOURCES.index("text")), "no input"),
         (dict(_ax, cadence=0, cad_arg=0), "names when it moves"),
         (dict(_ax, vmax=0), "not above vmin"),

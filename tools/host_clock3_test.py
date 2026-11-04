@@ -672,6 +672,36 @@ def add_pick_row(els, spr, art, slot, n, sizes=None, w=28, h=64, **kw):
     return add_row(els, spr, art, slot, w=w, h=h, frame0=f0, n_frames=n, delay=0, **kw)
 
 
+def add_font(els, spr, art, slot, w=8, h=14, n=len(ts.FONT_CHARSET), **kw):
+    """A font (theme-text-plan §2.1): a TEXT row whose n frames are its glyph cells."""
+    f0 = len(spr)
+    for _ in range(n):
+        add_plane(spr, art, w, h)
+    r = dict(ts.blank_element(), **{
+        "n": max(int(e["n"]) for e in els) + 1, "class": ts.CLASS_TEXT, "slot": slot,
+        "frame0": f0, "n_frames": n, "w": w, "h": h, "pivot_x": 3, "pivot_y": 1})
+    r.update(kw)
+    els.append(r)
+    return r
+
+
+def add_label(els, spr, art, slot, **kw):
+    """A label (§2.2): a text row reading the app's string in font 0."""
+    cols = dict(w=120, h=24, x=100, y=20, pivot_x=60, pivot_y=12, kind=ts.SHAPE_TEXT,
+                src=ts.SOURCES.index("text"), str=0xFF10, radius=4, digit=1, end=1)
+    cols.update(kw)
+    return add_row(els, spr, art, slot, **cols)
+
+
+def _fonted(**label):
+    """Two fonts and a label at the next free slot, the label's columns overridden."""
+    def m(els, sc, spr, art):
+        add_font(els, spr, art, 0)
+        add_font(els, spr, art, 1, n=len(ts.FONT_ASCII))
+        add_label(els, spr, art, next_slot(els), **label)
+    return m
+
+
 def next_slot(els):
     return max([int(e["slot"]) for e in rows_of(els)] + [-1]) + 1
 from orbtheme import W_GEOM_OFF, W_GEOM_SIZE, W_GEOM_CRC, W_HDR_CRC
@@ -794,8 +824,8 @@ SWEEP_SEC = dict(src=ts.SOURCES.index("second"), span=3600, vmax=60,
                  cadence=ts.CAD_SWEEP, end=ts.END_WRAP)
 REFUSALS = (
     # (what, mutate, the C's needle, the writer's needle or None = the device's alone)
-    ("a text row", lambda e, s, p, a: e[0].update({"class": ts.CLASS_TEXT, "n_frames": 1}),
-     "complication mapping", None),
+    ("a font of one glyph", lambda e, s, p, a: e[0].update({"class": ts.CLASS_TEXT, "n_frames": 1}),
+     "carries 1 glyphs", "ASCII whole"),
     ("a hand row", lambda e, s, p, a: hour_row(e).update({"class": ts.CLASS_HAND,
                                                           "src": 0, "kind": 0, "span": 0,
                                                           "vmax": 0, "cadence": 0,
@@ -832,8 +862,22 @@ REFUSALS = (
     ("a drum that does not wrap", lambda e, s, p, a: hour_row(e).update({"kind": ts.SHAPE_DRUM, "span": 0, "zero": 0,
         "dx": 0, "dy": hour_row(e)["h"], "radius": 20, "end": ts.ENDS.index("hold")}),
      "does not wrap", "wrap"),
-    ("a text shape", _set_row(hour_row, kind=ts.SHAPE_TEXT), "string table", "string table"),
-    ("a string offset", _set_row(hour_row, str=4), "string table", "string table"),
+    ("a text shape", _set_row(hour_row, kind=ts.SHAPE_TEXT), "so it reads source text",
+     "so it reads source text"),
+    ("a string offset", _set_row(hour_row, str=4), "only a text row reads them",
+     "only a text row names fonts"),
+    ("a label that moves", _fonted(dx=6), "names a motion", "names no motion"),
+    ("a label aligned past end", _fonted(digit=3), "aligns by", "aligns by"),
+    ("a label with no tone 0", _fonted(str=0xFFFF), "no font for tone 0", "no font for tone 0"),
+    ("a label naming an absent font", _fonted(str=0xFF20), "does not carry", "does not carry"),
+    ("a label of two panels", _fonted(n_frames=2), "one panel", "one panel"),
+    ("a label padded shut", _fonted(radius=12), "leaves no room", "leaves no room"),
+    ("a font past the slots", lambda e, s, p, a: add_font(e, p, a, ts.FONT_SLOTS),
+     "seats 15 fonts", "seats 15 fonts"),
+    ("a font off the origin", lambda e, s, p, a: add_font(e, p, a, 0, x=5),
+     "sits at 0,0", "sits at 0,0"),
+    ("a font with no space", lambda e, s, p, a: add_font(e, p, a, 0, pivot_x=0),
+     "a space of 0", "a space of 0"),
     ("a source the dial cannot read", _set_row(hour_row, src=ts.SOURCES.index("text")),
      "no such input", "no input of this dial"),
     ("degrees on a row", _set_row(hour_row, degrees=900), "angle at rest", "angle at rest"),
@@ -1027,8 +1071,17 @@ def rows_battery(exe, base):
                           (lambda e, s, p, a: add_row(e, p, a, 23)))
     rc, out, err = run(exe, "--dump3f", path)
     ck(rc == 0, "a row at the last legal slot was refused: %r" % out[:200])
+    # theme-text-plan §2: two fonts and a label reading them, projected as a text row
+    path, verdict = forge(base, _fonted())
+    ck(verdict is None, "fonts accept: the writer refused an honest table: %s" % verdict)
+    rc, out, err = run(exe, "--dump3f", path)
+    ck(rc == 0, "fonts accept: the device refused it: %r" % out[:300])
+    if rc == 0:
+        lab = parsed(out)["rows"][-1]
+        ck((lab["shape"], lab["src"], lab["digit"], lab["end"]) ==
+           (ts.SHAPE_TEXT, ts.SOURCES.index("text"), 1, 1), "fonts: the label projected as %s" % lab)
     print("  rows: a fan, a slide, a digit ring, a still bridge and its twin; the tempo "
-          "the rows ask for")
+          "the rows ask for; two fonts and a label")
 
 
 # ---------------------------------------------------------------------------
@@ -1681,6 +1734,28 @@ MUTANTS = (
     ("the drum's strip rule", "if (e->dy != (int16_t)e->h && e->dy != -(int16_t)e->h)", "if (0)", "a drum rolling less than its strip"),
     ("the drum's radius rule", "if (e->radius < 2 || 2u * e->radius > PANEL_PX)", "if (0)", "a drum with no radius"),
     ("the text shape", "if (e->kind == CLK_SHAPE_TEXT)", "if (0)", "a text shape"),
+    ("the label's source", "if (e->src != CLK_SRC_TEXT)", "if (0)", "a text shape"),
+    ("the label's stillness", "if (e->span || e->zero || e->vmin || e->vmax || e->dx || e->dy || e->cadence ||",
+     "if (0 && (e->span || e->zero || e->vmin || e->vmax || e->dx || e->dy || e->cadence) ||",
+     "a label that moves"),
+    ("the label's alignment", "if (e->digit > 2u || e->end > 2u)", "if (0)", "a label aligned past end"),
+    ("the label's tone 0", "if ((e->str & 0xFu) == CLK_FONT_NONE)", "if (0)", "a label with no tone 0"),
+    ("the label's one panel", "if (e->n_frames != 1u || (e->flags & AUX_F_SHADOW))\n        return reject(\"row %u is a text row",
+     "if (0)\n        return reject(\"row %u is a text row", "a label of two panels"),
+    ("the label's padding",
+     "if (e->radius > CLK_LABEL_PAD_MAX || 2u * e->radius >= e->w || 2u * e->radius >= e->h)",
+     "if (0)", "a label padded shut"),
+    ("the label's fonts present", "if (f != CLK_FONT_NONE && (f >= CLK_FONT_SLOTS || at_font[f] < 0))",
+     "if (0)", "a label naming an absent font"),
+    ("the font slot bound", "if (e.slot >= CLK_FONT_SLOTS)", "if (0)", "a font past the slots"),
+    ("the font's glyph count", "if (e.n_frames < CLK_FONT_ASCII || e.n_frames > CLK_FONT_GLYPHS)",
+     "if (0)", "a font of one glyph"),
+    ("the font's origin", "if (e.x || e.y)\n                    return reject(\"font",
+     "if (0)\n                    return reject(\"font", "a font off the origin"),
+    ("the font's space", "if (e.pivot_x <= 0 || (int32_t)e.pivot_x > (int32_t)e.w ||",
+     "if (0 && (int32_t)e.pivot_x > (int32_t)e.w ||", "a font with no space"),
+    ("the str refusal", "if (e->str)\n        return reject(\"row %u names fonts",
+     "if (0)\n        return reject(\"row %u names fonts", "a string offset"),
     ("the still row's silence", 'return reject("row %u is still (source none)',
      'if (0) return reject("row %u is still (source none)', "a still row with a motion"),
     ("the moving row's cadence", "        if (!e->cadence)\n", "        if (0)\n",

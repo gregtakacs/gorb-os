@@ -31,6 +31,7 @@ static const char *const CLASS_NAMES[CLASS_N] = {
     "preview", "sound"
 };
 
+#define CLS_TEXT      0   /* theme-text-plan §2.1: a font */
 #define CLS_SPRITE    1
 #define CLS_HAND      2
 #define CLS_PLATE     3
@@ -62,7 +63,7 @@ static const char *const CLASS_NAMES[CLASS_N] = {
  * class the dial has no field for. The parent pass reserves one slot per row it
  * accepted, so this bound is the walk's, not a new cap: a row count past it cannot
  * arrive here at all, and the assert below is the check that says so. */
-#define CLOCK_ROWS_MAX (2 + CLK_ROW_MAX + CLK_COMP_MAX + 1 + CLK_SND_SLOTS)
+#define CLOCK_ROWS_MAX (2 + CLK_ROW_MAX + CLK_COMP_MAX + 1 + CLK_SND_SLOTS + CLK_FONT_SLOTS)
 #define ELEM_ORDER_N   64       /* theme_schema.ELEM_ORDER_N: the depth rungs */
 #define CLK_SWEEP_TIER 15       /* theme_schema.SWEEP_TIER: a sweep that names no rate */
 #define CLK_SWEEP_FPS_MAX 30    /* theme_schema.SWEEP_FPS_MAX: the panel's ceiling */
@@ -218,17 +219,51 @@ static const char *cadence_check(const orb_bundle_elem_t *e)
  * block, rule for rule. A still row (source none) names nothing about motion; a
  * moving row names a cadence, a domain wide enough to divide and somewhere to go,
  * within one turn and on the panel; a wrap only where P1 looks like P0. */
+/* theme-text-plan §2.2: a label. The app places it and says what it reads, so it names
+ * no motion; its art is one panel; its fonts are checked against the table after the
+ * walk. Mirrors theme_schema.check_label rule for rule. */
+static const char *label_check(const orb_bundle_elem_t *e, uint16_t slot)
+{
+    if (e->src != CLK_SRC_TEXT)
+        return reject("row %u is a text row reading source %u: a text row draws the app's "
+                      "string, so it reads source text", (unsigned)slot, (unsigned)e->src);
+    if (e->span || e->zero || e->vmin || e->vmax || e->dx || e->dy || e->cadence ||
+        e->cad_arg || e->ease)
+        return reject("row %u is a text row that names a motion: the app places a label",
+                      (unsigned)slot);
+    if (e->degrees)
+        return reject("row %u carries degrees %u: a row's angle at rest is its zero",
+                      (unsigned)slot, (unsigned)e->degrees);
+    if (e->digit > 2u || e->end > 2u)
+        return reject("row %u aligns by digit %u and end %u: a text row aligns start, "
+                      "centre or end", (unsigned)slot, (unsigned)e->digit, (unsigned)e->end);
+    if ((e->str & 0xFu) == CLK_FONT_NONE)
+        return reject("row %u names no font for tone 0, which every other tone falls "
+                      "back to", (unsigned)slot);
+    if (e->n_frames != 1u || (e->flags & AUX_F_SHADOW))
+        return reject("row %u is a text row with frames or a shadow: its art is one panel",
+                      (unsigned)slot);
+    if (e->radius > CLK_LABEL_PAD_MAX || 2u * e->radius >= e->w || 2u * e->radius >= e->h)
+        return reject("row %u pads %u px in a %ux%u panel: the padding leaves no room",
+                      (unsigned)slot, (unsigned)e->radius, (unsigned)e->w, (unsigned)e->h);
+    if (!(e->pivot_x >= 0 && (int32_t)e->pivot_x < (int32_t)e->w &&
+          e->pivot_y >= 0 && (int32_t)e->pivot_y < (int32_t)e->h))
+        return reject("row %u turns about (%d,%d), outside its own %ux%u plate",
+                      (unsigned)slot, (int)e->pivot_x, (int)e->pivot_y,
+                      (unsigned)e->w, (unsigned)e->h);
+    return NULL;
+}
+
 static const char *row_check(const orb_bundle_elem_t *e, uint16_t slot)
 {
     if (e->kind >= CLK_SHAPE__MAX)
         return reject("row %u is shape %u: the dial knows %u (arm, ring, text, drum)",
                       (unsigned)slot, (unsigned)e->kind, (unsigned)CLK_SHAPE__MAX);
     if (e->kind == CLK_SHAPE_TEXT)
-        return reject("row %u is a text row: the string table it reads lands with "
-                      "D42's E4", (unsigned)slot);
+        return label_check(e, slot);
     if (e->str)
-        return reject("row %u points into the string table at %u: only a text row "
-                      "reads it", (unsigned)slot, (unsigned)e->str);
+        return reject("row %u names fonts (%u): only a text row reads them",
+                      (unsigned)slot, (unsigned)e->str);
     if (e->src >= CLK_SRC__MAX || e->src == CLK_SRC_TEXT || e->src == CLK_SRC_VALUE)
         return reject("row %u driven by source %u: this dial has no such input, and a "
                       "row moving by it would never move", (unsigned)slot, (unsigned)e->src);
@@ -385,6 +420,8 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                                       -1,-1,-1,-1,-1,-1,-1,-1 };
     int16_t at_sound[CLK_SND_SLOTS];
     for (int i = 0; i < CLK_SND_SLOTS; i++) at_sound[i] = -1;
+    int16_t at_font[CLK_FONT_SLOTS];
+    for (int i = 0; i < CLK_FONT_SLOTS; i++) at_font[i] = -1;
     /* C4's parent bookkeeping: one slot per row the walk accepts, so the bound
      * is the walk's own (the gate refused any table that could outgrow it). */
     uint16_t row_tag[CLOCK_ROWS_MAX];
@@ -456,6 +493,29 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                                   "waveform", (unsigned)e.slot, (unsigned)e.n_frames);
                 cell = &at_sound[e.slot];
                 break;
+            case CLS_TEXT:
+                /* theme-text-plan §2.1: a font. Its glyphs are its frames, one cell
+                 * each, and the OS reads them when a label draws; it is never drawn
+                 * where it stands. */
+                if (e.slot >= CLK_FONT_SLOTS)
+                    return reject("a font at slot %u: a stage seats %u fonts",
+                                  (unsigned)e.slot, (unsigned)CLK_FONT_SLOTS);
+                if (e.n_frames < CLK_FONT_ASCII || e.n_frames > CLK_FONT_GLYPHS)
+                    return reject("font %u carries %u glyphs: a font carries printable "
+                                  "ASCII whole (%u) and at most %u", (unsigned)e.slot,
+                                  (unsigned)e.n_frames, (unsigned)CLK_FONT_ASCII,
+                                  (unsigned)CLK_FONT_GLYPHS);
+                if (e.x || e.y)
+                    return reject("font %u stands at (%d,%d): a font is never drawn where "
+                                  "it stands, so it sits at 0,0", (unsigned)e.slot,
+                                  (int)e.x, (int)e.y);
+                if (e.pivot_x <= 0 || (int32_t)e.pivot_x > (int32_t)e.w ||
+                    e.pivot_y < 0 || (int32_t)e.pivot_y > (int32_t)e.w)
+                    return reject("font %u: a space of %d px and tracking of %d px in a "
+                                  "%u px cell", (unsigned)e.slot, (int)e.pivot_x,
+                                  (int)e.pivot_y, (unsigned)e.w);
+                cell = &at_font[e.slot];
+                break;
             case CLS_HAND:
             case CLS_SPRITE:
                 /* D42: the five hand slots and their shadow sprites are gone. Every
@@ -519,6 +579,20 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                           "tempo on a row that never advances is a bake that lost "
                           "its animation", (unsigned)e.n, (unsigned)e.delay);
         nrows++;
+    }
+
+    /* ---- theme-text-plan §2.2: every font a label names is one this table carries ---- */
+    for (int slot = 0; slot < CLK_ROW_MAX; slot++) {
+        if (at_aux[slot] < 0) continue;
+        orb_bundle_elem_t e;
+        orb_bundle_elem_at(sec, (uint32_t)at_aux[slot], &e);
+        if (e.kind != CLK_SHAPE_TEXT) continue;
+        for (unsigned tone = 0; tone < 4u; tone++) {
+            const unsigned f = (e.str >> (4u * tone)) & 0xFu;
+            if (f != CLK_FONT_NONE && (f >= CLK_FONT_SLOTS || at_font[f] < 0))
+                return reject("row %u's tone %u names font %u, which this theme does not "
+                              "carry", (unsigned)slot, tone, f);
+        }
     }
 
     /* ---- C4: the parent pass. Tags resolve, chains stop at two links, and a

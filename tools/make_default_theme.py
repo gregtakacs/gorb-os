@@ -8,6 +8,9 @@ that image carries no preview plane: the shipped default answered
 `/api/v1/sd/preview` with a 404 and the Themes card showed an empty frame beside the name.
 A default that cannot picture itself reads as a broken product, not a smaller theme.
 
+`python3 tools/rebake_shelf.py` does all of the below in one step, and re-bakes the
+default whenever the clock's version.txt moves past the release its design names.
+
 So the default ships as a Composer bake named `Skeleton`. The bake runs in real Chrome,
 because the plane is composed pixels and `bake_clock.py` refuses class 9 by design ("the
 compiled pair has no field for a thumbnail"). `--check` never re-runs it, so the sentinel

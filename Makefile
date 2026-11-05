@@ -33,6 +33,7 @@ check-apps:
 	$(PYTHON) apps/sdk/orbsdk.py binds
 	$(PYTHON) tools/make_factory_apps.py --check
 	$(PYTHON) tools/make_default_theme.py --check
+	$(PYTHON) tools/rebake_shelf.py --check
 
 ## check-hub: the hub's Go suite, vet, every release platform, the vendored runtime
 check-hub:

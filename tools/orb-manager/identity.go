@@ -606,6 +606,7 @@ func (s *Server) handlePorts(w http.ResponseWriter, r *http.Request) {
 		s.jsonErr(w, err.Error())
 		return
 	}
+	ports = s.scopedPorts(ports)
 	if ports == nil {
 		ports = []string{}
 	}

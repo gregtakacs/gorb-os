@@ -627,3 +627,19 @@ func TestNilCallbackLeavesTheBrowserWhole(t *testing.T) {
 		t.Fatalf("a browser built without OnChange listed %d rows", len(got))
 	}
 }
+
+// -only-orb: a board the hub was told to leave alone is neither a row nor a refusal,
+// and the board it was told to keep still lists.
+func TestAdmitDropsOtherBoardsSilently(t *testing.T) {
+	now := time.Unix(1760000000, 0)
+	b := NewBrowser(Config{Now: func() time.Time { return now }, Admit: func(mac string) bool { return mac == goodMAC }})
+	b.Ingest(answerBytes(1, goodInst, goodMAC, goodFW, "normal", goodIP, 120, 80), from(goodIP))
+	b.Ingest(answerBytes(2, otherInst, otherMAC, goodFW, "normal", otherIP, 120, 80), from(otherIP))
+	got := b.Candidates()
+	if len(got) != 1 || got[0].MAC != goodMAC {
+		t.Fatalf("candidates %+v, want only %s", got, goodMAC)
+	}
+	if r := b.Refusals(); len(r) != 0 {
+		t.Errorf("an unadmitted board was reported as refused: %+v", r)
+	}
+}

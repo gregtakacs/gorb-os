@@ -120,6 +120,11 @@ type Config struct {
 	// Nil is the default and is complete: Candidates stays the source of truth, and
 	// a hub built without a callback simply re-reads on its own clock.
 	OnChange func()
+	// Admit, when set, is asked about every MAC that passed the checks above it, and a
+	// no drops the instance without a row or a refusal: it is not a stranger, only a
+	// board this hub was told to leave to another one (the hub's -only-orb). Nil, the
+	// production answer, admits every orb.
+	Admit func(mac string) bool
 }
 
 const (
@@ -152,6 +157,7 @@ type Browser struct {
 	// wakes nobody, and a check-in that carries all four records wakes the card once.
 	rev     uint64
 	onEvent func()
+	admit   func(string) bool
 }
 
 // NewBrowser returns an empty browser. A browser with no sockets still answers
@@ -177,6 +183,7 @@ func NewBrowser(cfg Config) *Browser {
 		logf:    cfg.Logf,
 		grace:   cfg.Grace,
 		onEvent: cfg.OnChange,
+		admit:   cfg.Admit,
 	}
 }
 
@@ -466,6 +473,10 @@ func (b *Browser) promote(instance string) {
 	}
 	if err := ExpectInstance(instance, mac); err != nil {
 		b.rejectLocked(instance, p, err.Error())
+		return
+	}
+	if b.admit != nil && !b.admit(mac) {
+		delete(b.pending, instance)
 		return
 	}
 	if p.srv.SRVPort == 0 {

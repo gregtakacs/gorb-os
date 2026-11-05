@@ -133,20 +133,37 @@ check: test vet crosscheck vendor-check
 fmt:
 	$(GO) fmt ./...
 
-## run: start the hub on 127.0.0.1:3779, flashing the built-in firmware.
+## run: start the hub on 127.0.0.1:$(HUB_PORT), flashing the built-in firmware.
 ## Opens the app window by default; pass extra flags with ARGS, e.g.
 ##   make run ARGS=--no-window        (headless: print the URL, launch nothing)
 ##   make run ARGS="--browser=/usr/bin/firefox"   (an explicit Chromium-family path)
+##
+## A second clone runs its own hub by naming a port in its .orb-target:
+##   ORB_HUB_PORT=3780
+## A port other than 3779 also moves the hub's config dir (hub.lock, state.json, cache,
+## library seed, Linux browser profile) to <clone>/.hub-config, because the one-hub lock
+## lives there and two hubs sharing it is the second launch refused. ORB_HUB_CONFIG
+## names a different dir. A clone with neither runs exactly as before: :3779 and the
+## user config dir.
+##
+## A clone with an ORB_BASE_MAC also runs a development hub for that one orb
+## (-only-orb, onlyorb.go): the other clone's board is never listed, dialed or reset.
+## HUB_ONLY_ORB= (empty) runs it for every orb, the way a release binary always does.
+ORB_TARGET := $(REPO)/.orb-target
+orb_target_value = $(shell sed -n 's/^$(1)=//p' $(ORB_TARGET) 2>/dev/null | tail -1 | tr -d '"')
+HUB_PORT     ?= $(or $(call orb_target_value,ORB_HUB_PORT),3779)
+HUB_CONFIG   ?= $(or $(call orb_target_value,ORB_HUB_CONFIG),$(if $(filter-out 3779,$(HUB_PORT)),$(REPO)/.hub-config))
+HUB_ONLY_ORB ?= $(call orb_target_value,ORB_BASE_MAC)
 run: manager
-	$(BIN_DIR)/orb-manager -addr 127.0.0.1:3779 $(ARGS)
+	$(if $(HUB_CONFIG),XDG_CONFIG_HOME=$(HUB_CONFIG)) $(BIN_DIR)/orb-manager -addr 127.0.0.1:$(HUB_PORT) $(if $(HUB_ONLY_ORB),-only-orb $(HUB_ONLY_ORB)) $(ARGS)
 
 ## desktop: alias for run, spelled for the app-window use case.
 desktop: run
 
 ## cdp: evaluate JS inside the live app window, as the page. The control token is an
 ## HttpOnly cookie inlined into the served HTML, so no curl can carry it and a screenshot
-## cannot prove a handler ran — this does. Pass EXPR, optionally HUB_PORT (default: the
-## single hub listening on loopback).
+## cannot prove a handler ran — this does. Pass EXPR, optionally HUB_PORT (default: this
+## clone's, the port `make run` uses).
 ##   make cdp EXPR="document.title"
 ##   make cdp EXPR="ORB_TOKEN" HUB_PORT=44671
 cdp:

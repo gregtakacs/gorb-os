@@ -45,6 +45,10 @@ func (s *Server) mayDial(ip string) (bool, string) {
 		return false, "the hub will not dial " + ip +
 			": it is not an orb address this hub learned over USB or was given. Enter the orb's address in the Manage card first."
 	}
+	if mac := s.grants.bound(ip); !s.admitsMAC(mac) {
+		return false, "the hub will not dial " + ip + ": it belongs to " + mac +
+			", and this development hub runs for " + s.onlyOrb + " only (-only-orb)."
+	}
 	if s.fleet == nil {
 		return true, ""
 	}

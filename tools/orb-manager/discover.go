@@ -487,6 +487,7 @@ func (s *Server) newBrowser() *orbmdns.Browser {
 	return orbmdns.NewBrowser(orbmdns.Config{
 		Logf:     func(f string, a ...any) { log.Printf("orb-manager: "+f, a...) },
 		OnChange: s.wakeOrbs,
+		Admit:    s.mdnsAdmit(),
 	})
 }
 

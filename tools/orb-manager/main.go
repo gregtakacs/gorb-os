@@ -33,6 +33,7 @@ import (
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/firmware"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbmdns"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
@@ -141,6 +142,9 @@ type Server struct {
 	// noAutoInstall turns the join-time install off and leaves every press intact (-no-autoseed),
 	// for a bench run that must not touch a board it is about to instrument.
 	noAutoInstall bool
+	// onlyOrb is -only-orb's canonical MAC: a development hub sees, lists and dials that
+	// one board and no other. Empty — every release launch — is every orb. See onlyorb.go.
+	onlyOrb string
 	// fetchEditor is D37's seam onto one app's editor region. nil means "dial the
 	// device", which is what every hub built by main does; a test sets it to stand a
 	// board in for the network. See fetchEditor and editorFetchFn in editor.go.
@@ -400,7 +404,7 @@ func (s *Server) bootFor(mac string) *bootVerdict {
 }
 
 func main() {
-	var addr, browser, repo, fwPath, orbPort string
+	var addr, browser, repo, fwPath, orbPort, onlyOrb string
 	var libPath, libApps, libThemes string
 	var noAutoInstall bool
 	var noWindow, allowRemote, allowForeignFirmware, probeCablesOnLaunch, traceOrb bool
@@ -417,6 +421,7 @@ func main() {
 	flag.BoolVar(&traceOrb, "trace-orb", false, "log one line per request the hub sends an orb (path, lane class, status, bytes, timing); a bench diagnostic for matching the orb's serial log to the hub's traffic")
 	flag.BoolVar(&allowRemote, "allow-remote", false, "permit -addr to bind somewhere other than loopback; every control route still needs this launch's token")
 	flag.StringVar(&orbPort, "orb-port", "80", "TCP port the hub dials on an orb; the device's httpd listens on 80, and only a bench run against cmd/orbfake has a reason to change it")
+	flag.StringVar(&onlyOrb, "only-orb", "", "development: see, list and dial only the orb with this base MAC, leaving every other board to the hub that owns it (make run passes the clone's .orb-target ORB_BASE_MAC); empty is every orb")
 	flag.BoolVar(&noAutoInstall, "no-autoinstall", false, "do not install the library clock onto a freshly joined orb; the Library card Install press still works")
 	// The flag shipped its first cut named -no-autoseed; the verb the operator reads is
 	// Install now, and a shortcut built against the old spelling keeps working.
@@ -602,6 +607,14 @@ func main() {
 		s.lib = resolve()
 	}
 	s.noAutoInstall = noAutoInstall || noAutoSeedAlias
+	if onlyOrb = strings.TrimSpace(onlyOrb); onlyOrb != "" {
+		mac, why := orbmdns.CanonicalMAC(onlyOrb)
+		if why != "" {
+			log.Fatalf("orb-manager: -only-orb %q is not a MAC: %s", onlyOrb, why)
+		}
+		s.onlyOrb = mac
+		log.Printf("orb-manager: development hub for %s only; every other orb is left to its own hub", mac)
+	}
 	for _, l := range s.lib.LibStatusLines() {
 		log.Printf("orb-manager: %s", l)
 	}
@@ -643,7 +656,7 @@ func main() {
 	// the suite never pays for a sysfs read, and watched on the same shutdown as
 	// discovery: a plug-in reaches an open stream inside half the sweep TTL instead of
 	// waiting for an mDNS packet that a cable-only board will never send.
-	s.enableCables(hostCableSweep, s.wakeOrbs)
+	s.enableCables(s.scopedSweep(hostCableSweep), s.wakeOrbs)
 	// The free cable read rides the same sweep and the same shutdown: a board on a
 	// lead becomes a card here rather than by waiting for a packet it will never send
 	// or paying for a reboot it does not need. cableproof.go is the whole argument.

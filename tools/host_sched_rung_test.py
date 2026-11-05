@@ -14,7 +14,7 @@ pick reads the MEASURED floor (never an ask). Each element asks with a mode:
 FREE rides whatever the working cap allows and contributes no constraint;
 FLUID asks a continuous motion capped at its rate (a ceiling, not a divisor);
 DISTINCT names a fixed beat it must not alias (a divisor). The working cap is
-the measured floor clamped to [4..15], tightened lower by every fluid ask. The
+the measured floor clamped to [4..20] (the ceiling moved from 15, 2026-11-04), tightened lower by every fluid ask. The
 answer is the highest LADDER RUNG {12,8,4,2,1} at or under the cap that every
 distinct ask divides into, so no constrained element aliases (a 4 fps hand at a
 15 fps flush advances 3.75 frames a tick and jitters). A distinct ask is a
@@ -34,7 +34,7 @@ SRC = os.path.join(HERE, "..", "main", "gfx", "orb_sched.c")
 # ---- the mirror (an exec-able string, so mutants patch text, not this file) --
 MIRROR_SRC = '''
 def pick_rung(asks, floor_fps):
-    CEIL = 15
+    CEIL = 20
     FLOOR = 4
     LADDER = (12, 8, 4, 2, 1)
     def clamp(f):
@@ -142,7 +142,10 @@ VECTORS = [
     ([(5, 'free')], 15, 15),           # a nonzero FREE ask still rides the cap
     # FLUID is a ceiling, not a divisor: it only tightens the working cap.
     ([(8, 'fluid')], 15, 8),           # continuous motion capped at 8
-    ([(20, 'fluid')], 15, 15),         # a fluid ask above the ceiling no-ops
+    ([(20, 'fluid')], 15, 15),         # a fluid ask above the measured floor rides the floor
+    ([(20, 'fluid')], 20, 20),         # flights' 20 fps sweep at a 20 floor (2026-11-04)
+    ([(30, 'fluid')], 20, 20),         # a fluid ask above the ceiling no-ops
+    ([(4, 'distinct')], 20, 12),       # the ladder still tops out at 12: a clock GIF does not move
     ([(2, 'fluid')], 15, 4),           # a fluid ask below the band clamps to the floor
     ([(8, 'fluid'), (4, 'distinct')], 15, 8),   # fluid binds cap, distinct divides rung
     # DISTINCT is a divisor of the rung, so a slow ask need not slow the tick.
@@ -155,7 +158,7 @@ VECTORS = [
     # A distinct ask the ladder cannot serve under the cap falls back to the
     # set's own floor (the slowest ask), clamped.
     ([(5, 'distinct')], 15, 5),        # no rung <=15 is a multiple of 5 -> floor 5
-    ([(60, 'distinct')], 15, 15),      # ask above the ceiling: clamp to the band
+    ([(60, 'distinct')], 15, 20),      # ask above the ceiling: clamp to the band (its top is 20)
     ([(4, 'distinct')], 3, 4),         # floor below the band clamps the cap up to 4
     # Two distinct asks: the rung must divide into BOTH (their LCM).
     ([(4, 'distinct'), (6, 'distinct')], 15, 12),   # lcm 12
@@ -165,7 +168,7 @@ VECTORS = [
     ([(6, 'distinct'), (4, 'distinct')], 11, 4),    # first ask 6 is not the min (4)
     # The LCM overflow guard is separate from the (small) band: a huge LCM sets
     # over and skips the ladder, falling back to the clamped set floor.
-    ([(40, 'distinct'), (27, 'distinct')], 15, 15), # lcm 1080 > 1000 -> over -> clamp(27)=15
+    ([(40, 'distinct'), (27, 'distinct')], 15, 20), # lcm 1080 > 1000 -> over -> clamp(27)=20
 ]
 
 

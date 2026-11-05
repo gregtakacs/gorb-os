@@ -28,6 +28,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "display.h"
+#include "orb_app_wasm.h"     /* orb_wasm_bench_us: the app's share of the report second */
 #include "orb_gfx.h"          /* CLK_SCR_W/H, the row marks, the commit band's counters */
 #include "orb_layers.h"       /* orb_layer_tab_t, ORB_LAYER_JOB_MAX, orb_layers_jobs  */
 #include "orb_svc.h"          /* orb_svc_layer_table: the broker's read door          */
@@ -558,6 +559,8 @@ static uint32_t        s_jank_prev_ms;                            /* 0 = no prev
 static uint32_t        s_rung_period  = 66;                     /* 1000/rung, ms    */
 static uint32_t        s_demote_run, s_promote_run;
 static uint32_t        s_last_demote_ms;
+static uint32_t        s_last_probe_ms;                             /* 0: none since the reset */
+static uint32_t        s_probe_wait_ms = ORB_SCHED_PROBE_WAIT_MS;   /* doubles on a failed probe */
 static bool            s_floor_seeded;
 
 static void sched_fill_asks(void);
@@ -656,9 +659,9 @@ static void sched_rung_move(uint32_t from_fps)
 
 /* The report-second hysteresis (§40, signed as drafted): demote after
  * ORB_SCHED_HYST_DEMOTE_SEC report-seconds delivering under the pick, rate-
- * limited to one move per ORB_SCHED_HYST_DEMOTE_MS; promote after
- * ORB_SCHED_HYST_PROMOTE_SEC stable seconds carrying ORB_SCHED_HYST_SLACK_PCT%
- * headroom. A distinct GIF/carriage pin moves the floor but not the rung, so no
+ * limited to one move per ORB_SCHED_HYST_DEMOTE_MS; probe the top after
+ * ORB_SCHED_HYST_PROMOTE_SEC seconds delivering the whole pick and the probe wait
+ * since the last demote (orb_sched.h). A distinct GIF/carriage pin moves the floor but not the rung, so no
  * line prints — a rung that cannot fire is not claimed to have fired. */
 static volatile int      s_burst_depth;
 static volatile uint32_t s_burst_end_ms;
@@ -702,21 +705,26 @@ static void sched_hysteresis(uint32_t measured)
             if (s_floor_fps < ORB_SCHED_PANEL_FLOOR) s_floor_fps = ORB_SCHED_PANEL_FLOOR;
             s_demote_run = 0;
             s_last_demote_ms = now;
+            /* A probe this dial could not hold: wait longer before the next one. */
+            if (s_last_probe_ms && (uint32_t)(now - s_last_probe_ms) < s_probe_wait_ms) {
+                s_probe_wait_ms *= 2u;
+                if (s_probe_wait_ms > ORB_SCHED_PROBE_WAIT_MAX) s_probe_wait_ms = ORB_SCHED_PROBE_WAIT_MAX;
+            }
             sched_rung_move(from);
         }
         return;
     }
     s_demote_run = 0;
-    if (measured >= (uint32_t)((s_rung_fps * (100 + ORB_SCHED_HYST_SLACK_PCT)) / 100)) {
-        if (++s_promote_run >= ORB_SCHED_HYST_PROMOTE_SEC &&
-            s_floor_fps < ORB_SCHED_FPS_CEILING) {
-            const uint32_t from = s_rung_fps;
-            s_floor_fps = ORB_SCHED_FPS_CEILING;   /* the pick re-clamps it down */
-            s_promote_run = 0;
-            sched_rung_move(from);
-        }
-    } else {
-        s_promote_run = 0;                       /* steady, but no promote slack */
+    /* Delivering the whole pick (it cannot measure above it: the pick paces the
+     * tick) for long enough, and long enough after the last demote: probe the top. */
+    if (s_floor_fps < ORB_SCHED_FPS_CEILING &&
+        ++s_promote_run >= ORB_SCHED_HYST_PROMOTE_SEC &&
+        (uint32_t)(now - s_last_demote_ms) >= s_probe_wait_ms) {
+        const uint32_t from = s_rung_fps;
+        s_floor_fps = ORB_SCHED_FPS_CEILING;   /* the pick re-clamps it down */
+        s_promote_run = 0;
+        s_last_probe_ms = now;
+        sched_rung_move(from);
     }
 }
 
@@ -724,6 +732,14 @@ static void sched_hysteresis(uint32_t measured)
 /* Per-second throughput report while the clock is live: how many composited
  * ticks we actually got, and what the flush path booked for the flushes they
  * produced (display_bench_snapshot counts every last-chunk DMA completion). */
+/* Where the display task's second goes outside the flush (flights fps bench,
+ * 2026-11-04): the tick's own work, the widest gap between two ticks, and the
+ * running totals the report diffs. */
+static uint64_t s_tick_work_us, s_tw0;
+static uint32_t s_gap_max_ms, s_gap_prev_ms;
+static uint64_t s_wt0, s_ws0, s_wo0, s_lh0, s_la0, s_ls0;
+static uint32_t s_ov0, s_wf0, s_lt0, s_tt0;
+
 static void report_fps_if_due(void)
 {
     const uint32_t now = lv_tick_get();
@@ -799,6 +815,42 @@ static void report_fps_if_due(void)
              (unsigned)drb[5], (unsigned long long)(dru[5] / 1000),
              (unsigned)drb[6], (unsigned long long)(dru[6] / 1000),
              (unsigned)drb[7], (unsigned long long)(dru[7] / 1000));
+    {
+        /* The rest of the display task's second, named: the tick's own work (the
+         * app's frame inside it), the app's service pass, every other guest entry,
+         * lv_timer_handler's whole time, the sleep the loop asked for against the
+         * sleep it got (a gap is a higher-priority task holding the core), the
+         * widest gap between ticks, and the panel writes that a scan overtook. */
+        uint64_t wt, ws, wo, lh, la, ls;
+        uint32_t wmax, ov, wf, scan;
+        orb_wasm_bench_us(&wt, &ws, &wo);
+        display_bench_loop(&lh, &la, &ls);
+        display_bench_wire(&wmax, &ov, &wf, &scan);
+        ESP_LOGI(TAG, "  task ms/s: tick %llu (app %llu) svc %llu guest-other %llu | lvgl %llu sleep %llu/%llu asked | gap max %u ms",
+                 (unsigned long long)((s_tick_work_us - s_tw0) / 1000),
+                 (unsigned long long)((wt - s_wt0) / 1000),
+                 (unsigned long long)((ws - s_ws0) / 1000),
+                 (unsigned long long)((wo - s_wo0) / 1000),
+                 (unsigned long long)((lh - s_lh0) / 1000),
+                 (unsigned long long)((ls - s_ls0) / 1000),
+                 (unsigned long long)((la - s_la0) / 1000),
+                 (unsigned)s_gap_max_ms);
+        int32_t lag; uint32_t lrow, lt, tt, teh, tel;
+        display_bench_scan(&lag, &lrow, &lt, &tt, &teh, &tel);
+        {
+            char top[256];
+            orb_wasm_bench_top(top, sizeof top);
+            ESP_LOGI(TAG, "  guests: %s", top);
+        }
+        ESP_LOGI(TAG, "  wire: max %u us vs scan %u us (TE hi %u lo %u) | over-scan %u of %u frames | tile lag max %ld us at row %u, %u of %u tiles behind",
+                 (unsigned)wmax, (unsigned)scan, (unsigned)teh, (unsigned)tel,
+                 (unsigned)(ov - s_ov0), (unsigned)(wf - s_wf0),
+                 (long)lag, (unsigned)lrow, (unsigned)(lt - s_lt0), (unsigned)(tt - s_tt0));
+        s_lt0 = lt; s_tt0 = tt;
+        s_tw0 = s_tick_work_us; s_wt0 = wt; s_ws0 = ws; s_wo0 = wo;
+        s_lh0 = lh; s_la0 = la; s_ls0 = ls; s_ov0 = ov; s_wf0 = wf;
+        s_gap_max_ms = 0;
+    }
 #if DISPLAY_BENCH
     /* Proof the synthetic ink is really on the glass: ink px/s must read
      * blocks x 3600 x fps, and the CAD bands/px fields must not collapse. */
@@ -935,10 +987,14 @@ void orb_sched_jank_snapshot(orb_sched_jank_t *out)
 static void tick_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
-    if (!s_running) { s_jank_prev_ms = 0; return; }   /* parked: clock not on the glass */
+    if (!s_running) { s_jank_prev_ms = 0; s_gap_prev_ms = 0; return; }   /* parked: clock not on the glass */
     s_fps_ticks++;
     const uint32_t t_start_ms = lv_tick_get();
     jank_book(t_start_ms);
+    if (s_gap_prev_ms && t_start_ms - s_gap_prev_ms > s_gap_max_ms)
+        s_gap_max_ms = t_start_ms - s_gap_prev_ms;
+    s_gap_prev_ms = t_start_ms;
+    const int64_t t_work = esp_timer_get_time();
     if (orb_bg_gif_mode()) {
         /* Pace the GIF by its OWN delays: the tick rides the baked GIF delay
          * (orb_bg_gif_tick_ms), so the background advances exactly one frame per tick
@@ -962,6 +1018,7 @@ static void tick_timer_cb(lv_timer_t *timer)
         orb_bg_show_plate_frame(orb_bg_frame_now());
     }
     if (s_policy.tick) s_policy.tick(timer);
+    s_tick_work_us += (uint64_t)(esp_timer_get_time() - t_work);
 #if CLK_BG_DIRECT_PUSH
 #if DISPLAY_BENCH
     if (orb_sched_l4_active() && s_policy.bench) s_policy.bench();   /* walks the blocks + marks their rows */
@@ -1066,6 +1123,8 @@ void orb_sched_reset_fps(void)
     s_fps_t0 = lv_tick_get();
     s_fps_ticks = 0;
     s_floor_seeded = false;         /* the theme's bank class may have changed: re-seed */
+    s_probe_wait_ms = ORB_SCHED_PROBE_WAIT_MS;   /* a new dial earns its own backoff */
+    s_last_probe_ms = 0;
     s_demote_run = 0;
     s_promote_run = 0;
     uint32_t bf; uint64_t bt; uint32_t bm;

@@ -50,6 +50,7 @@
 #include "orb_sched.h"          /* orb_sched_burst, behind orb.burst */
 #include "orb_home.h"           /* orb_home_gen, behind orb.home_gen */
 #include "esp_timer.h"
+#include <setjmp.h>
 #include "esp_expression_with_stack.h"   /* the guest's own native stack, below */
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -228,9 +229,15 @@ static struct {
     M3Result     r;
 } s_xcall;
 
+/* The wrapper's stages, timed (flights fps bench): the sync before, the call on the
+ * guest stack, and the whole guest_call around it. */
+static uint64_t s_ovh_sync_us, s_ovh_m3_us, s_ovh_gc_us;
+
 static void xcall_fn(void)
 {
+    const int64_t t0 = esp_timer_get_time();
     s_xcall.r = m3_Call(s_xcall.f, s_xcall.argc, s_xcall.argv);
+    s_ovh_m3_us += (uint64_t)(esp_timer_get_time() - t0);
 }
 
 /* ---- the time budget (§43.4) ----------------------------------------------------
@@ -296,6 +303,47 @@ M3Result m3_Yield(void)
     return s_overrun ? s_overrun_trap : m3Err_none;
 }
 
+/* The switch onto the guest stack, without the refill. ESP-IDF's
+ * esp_execute_shared_stack_function() memsets the whole borrowed stack to 0xa5 on
+ * every call, inside a critical section: 64 KB of PSRAM written ~70 times a second with
+ * the core's interrupts off, ~1.8 ms a call, measured as 125 of the 165 ms a second the
+ * guests cost the display task (flights fps bench, 2026-11-04). This is the same switch
+ * through the same trampoline (expression_with_stack_asm.S reads the four globals
+ * below), with the fill done once at allocation: the FreeRTOS canary reads only the
+ * stack's base, which a guest reaches only by overflowing it, and
+ * orb_wasm_stack_peak() becomes the high-water since boot its comment already claims.
+ * This file is the trampoline's only caller in the image. */
+extern StackType_t *xtensa_shared_stack;
+extern shared_stack_function xtensa_shared_stack_callback;
+extern jmp_buf xtensa_shared_stack_env;
+extern bool xtensa_shared_stack_function_done;
+extern void esp_shared_stack_invoke_function(void);
+
+static portMUX_TYPE s_xmux = portMUX_INITIALIZER_UNLOCKED;
+static void        *s_own_stack;            /* the task's pxStack while the guest runs */
+
+static void xstack_run(shared_stack_function fn)
+{
+    xSemaphoreTake(s_xlock, portMAX_DELAY);
+    portENTER_CRITICAL(&s_xmux);
+    xtensa_shared_stack_function_done = false;
+    StaticTask_t *cur = (StaticTask_t *)xTaskGetCurrentTaskHandle();
+    s_own_stack = cur->pxDummy6;
+    cur->pxDummy6 = (void *)s_xstack;        /* the canary is read from here */
+    xtensa_shared_stack = (StackType_t *)(((uintptr_t)(s_xstack + ORB_WASM_NATIVE_STACK) - 16u)
+                                          & ~(uintptr_t)0xfu);
+    xtensa_shared_stack_callback = fn;
+    portEXIT_CRITICAL(&s_xmux);
+
+    setjmp(xtensa_shared_stack_env);
+    if (!xtensa_shared_stack_function_done) esp_shared_stack_invoke_function();
+
+    portENTER_CRITICAL(&s_xmux);
+    ((StaticTask_t *)xTaskGetCurrentTaskHandle())->pxDummy6 = s_own_stack;
+    portEXIT_CRITICAL(&s_xmux);
+    xSemaphoreGive(s_xlock);
+}
+
 static M3Result guest_call(IM3Function f, uint32_t argc, const void *argv[])
 {
     if (s_on_xstack) return m3_Call(f, argc, argv);   /* nested: already on it */
@@ -317,7 +365,7 @@ static M3Result guest_call(IM3Function f, uint32_t argc, const void *argv[])
     s_call_gen = orb_io_heavy_gen();
     if (s_budget) esp_timer_start_once(s_budget, (uint64_t)s_budget_ms * 1000u);
     s_on_xstack = true;
-    esp_execute_shared_stack_function(s_xlock, s_xstack, ORB_WASM_NATIVE_STACK, xcall_fn);
+    xstack_run(xcall_fn);
     s_on_xstack = false;
     if (s_budget) esp_timer_stop(s_budget);
     s_overrun = false;
@@ -1350,12 +1398,72 @@ static wasm_slot_t *slot_of_app(const orb_app_t *app)
  * here, so a module that would trap on every beat cannot bill an NVS write per beat:
  * the strikes stay the two the owner consented to, and the next boot's init_all
  * refuses the row (C2's boot-into-clock rule, which needs no wasm-specific path). */
+/* Wall time inside the guest, by entry: the frame report's split of the display
+ * task's second between the app's frame (orb_tick) and its service pass. */
+static uint64_t s_entry_us[3];                 /* tick, service, every other entry */
+/* The same time by slot and entry, with call counts: which guest owns the rest. */
+static uint32_t s_se_us[WASM_N_SLOTS][W_COUNT], s_se_n[WASM_N_SLOTS][W_COUNT];
+static uint32_t s_se_max[WASM_N_SLOTS][W_COUNT], s_se_small[WASM_N_SLOTS][W_COUNT];   /* slowest call; calls under 300 us */
+
+/* The heaviest (slot, entry) since the last call, into `out`; the table restarts. */
+void orb_wasm_bench_top(char *out, size_t cap)
+{
+    int bs = -1, be = -1;
+    uint32_t bu = 0;
+    size_t used = 0;
+    out[0] = 0;
+    for (int k = 0; k < 3; k++) {
+        bs = be = -1; bu = 0;
+        for (int i = 0; i < WASM_N_SLOTS; i++)
+            for (int e = 0; e < W_COUNT; e++)
+                if (s_se_us[i][e] > bu) { bu = s_se_us[i][e]; bs = i; be = e; }
+        if (bs < 0) break;
+        const wasm_slot_t *s = &s_slot[bs];
+        used += (size_t)snprintf(out + used, used < cap ? cap - used : 0, "%s%s.%s %ums/%u (max %uus, %u<300us)",
+                                 k ? ", " : "", s->app && s->app->slug ? s->app->slug : "?",
+                                 s_entries[be].export_name + 4, (unsigned)(bu / 1000),
+                                 (unsigned)s_se_n[bs][be], (unsigned)s_se_max[bs][be],
+                                 (unsigned)s_se_small[bs][be]);
+        s_se_us[bs][be] = 0;      /* taken: the next pass finds the runner-up */
+    }
+    memset(s_se_us, 0, sizeof s_se_us);
+    memset(s_se_n, 0, sizeof s_se_n);
+    used += (size_t)snprintf(out + used, used < cap ? cap - used : 0,
+                             " | sync %ums guest_call %ums m3_Call %ums",
+                             (unsigned)(s_ovh_sync_us / 1000), (unsigned)(s_ovh_gc_us / 1000),
+                             (unsigned)(s_ovh_m3_us / 1000));
+    s_ovh_sync_us = s_ovh_gc_us = s_ovh_m3_us = 0;
+    memset(s_se_max, 0, sizeof s_se_max);
+    memset(s_se_small, 0, sizeof s_se_small);
+}
+
+void orb_wasm_bench_us(uint64_t *tick, uint64_t *service, uint64_t *other)
+{
+    if (tick) *tick = s_entry_us[0];
+    if (service) *service = s_entry_us[1];
+    if (other) *other = s_entry_us[2];
+}
+
 static bool wasm_call(wasm_slot_t *s, int entry, const void *argv[], uint32_t argc)
 {
     IM3Function f = s->fn[entry];
     if (!f) return true;
+    const int64_t ts = esp_timer_get_time();
     mirror_sync(s);                            /* flash reads happen here, not on the guest stack */
+    const int64_t t0 = esp_timer_get_time();
+    s_ovh_sync_us += (uint64_t)(t0 - ts);
     M3Result r = guest_call(f, argc, argv);
+    s_ovh_gc_us += (uint64_t)(esp_timer_get_time() - t0);
+    const uint32_t dt = (uint32_t)(esp_timer_get_time() - t0);
+    s_entry_us[entry == W_TICK ? 0 : entry == W_SERVICE ? 1 : 2] += dt;
+    {
+        const int si = (int)(s - s_slot);
+        if (si >= 0 && si < WASM_N_SLOTS) {
+            s_se_us[si][entry] += dt; s_se_n[si][entry]++;
+            if (dt > s_se_max[si][entry]) s_se_max[si][entry] = dt;
+            if (dt < 300) s_se_small[si][entry]++;
+        }
+    }
     if (r) {
         M3ErrorInfo info;
         m3_GetErrorInfo(s->rt, &info);

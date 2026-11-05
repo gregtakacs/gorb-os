@@ -109,6 +109,12 @@ uint32_t orb_wasm_budget_slips(void);
  *  unloaded slot (no-op). The registry's tick path drives this on the LVGL task. */
 void orb_wasm_tick(orb_app_t *app, uint32_t now_ms);
 
+/* Running wall-time totals inside the guest, in us: orb_tick, orb_service, and every
+ * other entry. Any out-param may be NULL; read as deltas. */
+void orb_wasm_bench_us(uint64_t *tick, uint64_t *service, uint64_t *other);
+/* The three heaviest app.entry pairs since the last call ("flights.tick 69ms/16, ..."). */
+void orb_wasm_bench_top(char *out, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

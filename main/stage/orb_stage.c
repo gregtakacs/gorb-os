@@ -2248,10 +2248,15 @@ void stage_run(bool on)
              * frame; resetting the counter would desync canvas vs deltas. */
             orb_sched_reanchor_gif();
             s_bt_ctr = 0;                   /* first tick back is a beat */
-            orb_sched_reset_fps();
         } else {
             orb_bg_reset_play();
         }
+        /* Every dial re-seeds its rung on the way onto the glass, not only a GIF one:
+         * the rung is the scheduler's, not the theme's, and a dial that came back to
+         * the last one's demoted rung stayed there, because the promote gate measures
+         * against a tick the rung itself paces (owner, 2026-11-04: flights held at
+         * 5 fps after a trip to the clock). */
+        orb_sched_reset_fps();
         /* Tourbillon: force a whole first draw and restart the frame clock,
          * same discipline as the angle reset — nothing was composited while
          * parked, so whatever s_tourb_shown claims is stale. */

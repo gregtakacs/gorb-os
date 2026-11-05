@@ -80,8 +80,12 @@
 #define LCD_ROW_OFFSET  0
 
 // ---------- SPI QSPI speed ----------
-// Vendor CO5300 QSPI default is 40 MHz. 80 MHz works on some boards but
-// causes intermittent shear (rows "go slanted") and green smear on the
-// trailing edge / right side from QSPI sampling-timing errors. Stay at the
-// vendor-validated 40 MHz for reliable pixels.
-#define LCD_SPI_CLOCK_HZ (40 * 1000 * 1000)  // 40 MHz QSPI clock (vendor-validated)
+// 80 MHz, back from 40 on 2026-11-04 (owner, Bronze bench). 26a7c8c dropped to the
+// vendor's 40 MHz in the same commit that fixed the shear (odd-column windows) and the
+// green right edge (the GRAM column offset); the clock was never the cause of either,
+// and 80 MHz shows neither. At 40 MHz a full-width row (932 B) took ~47 us on the wire
+// against the panel's ~36 us scan line, so a tall dirty region fell behind the scan-out
+// and tore (a sweeping arm cut in half): the worst tile landed ~1.75 ms (median second)
+// behind a scan leaving row 0 at the TE edge, and 40 of 57 seconds tore. At 80 MHz the
+// median is ~0.26 ms, inside the 0.62 ms TE pulse, and 1 of 55 seconds crossed it.
+#define LCD_SPI_CLOCK_HZ (80 * 1000 * 1000)  // 80 MHz QSPI clock

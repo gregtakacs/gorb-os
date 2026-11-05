@@ -95,6 +95,25 @@ void display_bench_phases_us(uint64_t *mirror, uint64_t *hook,
  *  Read as deltas, like display_bench_phases_us(). */
 void display_bench_render_us_px(uint64_t *us, uint64_t *px);
 
+/** The panel-write witness: the longest TE-edge-to-last-band-done since the last
+ *  read (reset by the read), the running count of frames whose write outlasted one
+ *  panel scan, the running count of frames timed, and the scan length measured at
+ *  init (0 when TE is off). Any out-param may be NULL. */
+void display_bench_wire(uint32_t *max_us, uint32_t *overscan, uint32_t *frames,
+                        uint32_t *scan_us);
+
+/** lvgl_task's own loop: time inside lv_timer_handler, the sleep it asked for and
+ *  the sleep it got. Running totals; read as deltas. */
+/** The tile-vs-scan witness: the worst landing lag behind a scan that left row 0 at
+ *  the TE edge since the last read (reset by it) and the row it was at, the running
+ *  counts of tiles that lagged and tiles timed, and the TE pulse's high and low
+ *  lengths measured at init. */
+void display_bench_scan(int32_t *lag_max_us, uint32_t *lag_row, uint32_t *late_tiles,
+                        uint32_t *tiles, uint32_t *te_high_us, uint32_t *te_low_us);
+
+void display_bench_loop_add(uint32_t handler_us, uint32_t asked_ms, uint32_t slept_us);
+void display_bench_loop(uint64_t *handler_us, uint64_t *asked_us, uint64_t *slept_us);
+
 /* ---- Cadence probe (temporary instrumentation; set to 0 after capture) ----
  * The 7-vs-8 fps question is flush-cadence variance, and second-averages
  * cannot answer it: one 200 ms frame and five 132 ms frames read identically

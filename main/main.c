@@ -16,6 +16,7 @@
 
 #include "board_config.h"
 #include "display.h"
+#include "esp_timer.h"
 #include "orb_boot_overlay.h"
 #include "orb_app.h"
 #include "orb_app_scan.h"   /* the /sd/apps drop zone registers beside the card */
@@ -54,11 +55,15 @@ static void lvgl_task(void *arg)
          * idle task cannot guarantee at its own priority. No-op when it posted
          * nothing; its decision latency does not depend on this running. */
         idle_dim_render_drain();
+        const int64_t t_h = esp_timer_get_time();
         uint32_t sleep_ms = lv_timer_handler();
+        const int64_t t_s = esp_timer_get_time();
         display_lvgl_pass_mark();      /* a store waits on this before it unmaps */
         if (sleep_ms > 50) sleep_ms = 50;
         if (sleep_ms < 5) sleep_ms = 5;
         vTaskDelay(pdMS_TO_TICKS(sleep_ms));
+        display_bench_loop_add((uint32_t)(t_s - t_h), sleep_ms,
+                               (uint32_t)(esp_timer_get_time() - t_s));
     }
 }
 

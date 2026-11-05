@@ -327,10 +327,19 @@ def lint(text):
                      "app freezes the dial")
     # The call-site arm, spelled with its guard: budget_fire re-arms the same timer for
     # an I/O slip (orb_io_window.h), and that re-arm is not the call's own deadline.
-    order(r"if \(s_budget\) esp_timer_start_once\(s_budget", r"esp_execute_shared_stack_function\(",
+    order(r"if \(s_budget\) esp_timer_start_once\(s_budget", r"xstack_run\(xcall_fn\)",
           "budget armed", "the guest call", "the deadline must run while the guest does")
-    order(r"esp_execute_shared_stack_function\(", r"esp_timer_stop\(s_budget\)",
+    order(r"xstack_run\(xcall_fn\)", r"esp_timer_stop\(s_budget\)",
           "the guest call", "budget stopped", "a finished call must not trip the next one")
+    # The stack switch fills the guest stack once, at allocation. ESP-IDF's own switch
+    # refilled all 64 KB of it on every call with interrupts off, ~1.8 ms a call and
+    # three quarters of what the guests cost the display task (2026-11-04).
+    m = re.search(r"static void xstack_run\([^)]*\)\s*\{(.*?)\n\}", text, re.S)
+    if not m:
+        fails.append("  device lint: xstack_run is gone — the guest stack switch moved")
+    elif "memset" in m.group(1) or "esp_execute_shared_stack_function" in text.split("static void xstack_run", 1)[1]:
+        fails.append("  device lint: the guest stack is refilled per call again — 64 KB of PSRAM "
+                     "with interrupts off on every guest entry")
     order(r"orb_svc_faulted\s*\(", r"orb_wasm_unload\s*\(",
           "orb_svc_faulted check", "orb_wasm_unload",
           "the engine is released only at the second strike, not the first")

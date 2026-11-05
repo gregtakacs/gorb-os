@@ -94,6 +94,26 @@ static volatile bool     s_te_live   = false;   /* pin proven to toggle at init 
 static volatile bool     s_te_enable = true;    /* runtime gate (A/B toggle) */
 static volatile uint32_t s_te_wait_us = 0;      /* cumulative us spent waiting, for /health */
 #endif
+/* The panel-write witness (flights fps bench, 2026-11-04): when the last wait
+ * returned (the blanking edge this frame's bands chase), and one scan's length,
+ * measured at init. A frame whose bands are still on the wire a whole scan after
+ * the edge was overtaken by the panel's own scan-out: new pixels above the line,
+ * old below. */
+static volatile int64_t  s_te_edge_us;
+static uint32_t          s_te_period_us;
+static volatile uint32_t s_bench_wire_max_us;
+static volatile uint32_t s_bench_overscan;
+static volatile uint32_t s_bench_wired;
+/* Each tile's last row, by its index this commit, and how far its landing trailed a
+ * scan that left row 0 at the TE edge: (done - edge) - (row_end + 1) * scan / H.
+ * Positive means a scan starting at the edge passed the tile's rows first. The TE
+ * high and low lengths say which phase the edge opens. */
+static volatile uint16_t s_tile_rend[64];
+static volatile int32_t  s_bench_lag_max_us = INT32_MIN;
+static volatile uint16_t s_bench_lag_row;
+static volatile uint32_t s_bench_lag_tiles, s_bench_tiles_timed;
+static uint32_t          s_te_high_us, s_te_low_us;
+static uint64_t          s_loop_handler_us, s_loop_asked_us, s_loop_slept_us;
 
 /* Block until the panel finishes a TE pulse (i.e. we are inside/just after
  * vertical blanking), so the queued QSPI write lands between scans. Ported from
@@ -110,7 +130,8 @@ static void wait_for_te(void)
     const int64_t deadline = t0 + 25000;                    /* 25 ms ceiling */
     while (gpio_get_level(PIN_LCD_TE) == 1 && esp_timer_get_time() < deadline) { }
     while (gpio_get_level(PIN_LCD_TE) == 0 && esp_timer_get_time() < deadline) { }
-    s_te_wait_us += (uint32_t)(esp_timer_get_time() - t0);
+    s_te_edge_us = esp_timer_get_time();
+    s_te_wait_us += (uint32_t)(s_te_edge_us - t0);
 #endif
 }
 
@@ -373,7 +394,17 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
      * committed overlay band are each one bus transaction). §32.5 hoisted this
      * line out of the coalesce branch, where it had left every other submitter
      * uncalled. */
-    if (s_band_inflight > 0) { s_band_inflight--; s_tile_done++; }
+    if (s_band_inflight > 0) {
+        if (s_te_edge_us && s_te_period_us && s_coalesce_mode) {
+            const uint32_t rend = s_tile_rend[s_tile_done & 63u];
+            const int32_t lag = (int32_t)(esp_timer_get_time() - s_te_edge_us) -
+                                (int32_t)((rend + 1u) * s_te_period_us / SCREEN_HEIGHT);
+            if (lag > s_bench_lag_max_us) { s_bench_lag_max_us = lag; s_bench_lag_row = (uint16_t)rend; }
+            if (lag > 0) s_bench_lag_tiles++;
+            s_bench_tiles_timed++;
+        }
+        s_band_inflight--; s_tile_done++;
+    }
     if (s_coalesce_mode) {
         /* The only DMA that reaches here is the coalesced last-chunk band push.
          * Release the LVGL buffer (which LVGL re-arms for the NEXT frame) only
@@ -386,6 +417,12 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
             s_bench_frames++;
             s_bench_frame_us_total += dur;
             if (dur > s_bench_frame_us_max) s_bench_frame_us_max = dur;
+            if (s_te_edge_us) {
+                const uint32_t wire = (uint32_t)(esp_timer_get_time() - s_te_edge_us);
+                if (wire > s_bench_wire_max_us) s_bench_wire_max_us = wire;
+                if (s_te_period_us && wire > s_te_period_us) s_bench_overscan++;
+                s_bench_wired++;
+            }
 #if DISPLAY_CADENCE_PROBE
             {
                 const int64_t done = esp_timer_get_time();
@@ -889,6 +926,7 @@ static int dma_dirty_bands_locked(lv_display_t *disp)
 #endif
                 s_bench_pix    += (uint64_t)tw * (uint32_t)rows;
                 s_bench_chunks++;
+                s_tile_rend[ti & 63u] = (uint16_t)(row + rows - 1);
                 const esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, tx0, row,
                                                               tx0 + tw,
                                                               row + rows, tb);
@@ -996,7 +1034,10 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
      * previous flush_cb exit and here was LVGL drawing, with no help from the
      * mirror/TE/DMA phases. Disarmed at frame start so the inter-frame idle
      * (the LVGL task handler's own sleep) is never billed as render. */
-    if (s_render_t0) {
+    /* Only a window that opened inside this frame is LVGL drawing: the one the
+     * previous frame's last chunk armed spans the idle between frames, and billing
+     * it read a 4 fps second as ~1000 ms of render (2026-11-04). */
+    if (s_render_t0 && s_flush_in_flight) {
         s_bench_render_us += (uint64_t)(t_entry - s_render_t0);
         s_bench_render_px += (uint64_t)w * (uint64_t)h;
     }
@@ -1341,9 +1382,29 @@ esp_err_t display_panel_early(void)
             if (gpio_get_level(PIN_LCD_TE) != first) { moved = true; break; }
         }
         s_te_live = moved;
-        ESP_LOGI(TAG, "LCD_TE on GPIO%d: %s -> TE sync %s", PIN_LCD_TE,
+        if (moved) {                        /* one scan: rising edge to rising edge */
+            int64_t e[2] = { 0, 0 };
+            const int64_t t1 = esp_timer_get_time();
+            for (int k = 0; k < 2 && esp_timer_get_time() - t1 < 100000; k++) {
+                while (gpio_get_level(PIN_LCD_TE) == 1 && esp_timer_get_time() - t1 < 100000) { }
+                while (gpio_get_level(PIN_LCD_TE) == 0 && esp_timer_get_time() - t1 < 100000) { }
+                e[k] = esp_timer_get_time();
+            }
+            if (e[0] && e[1] > e[0]) s_te_period_us = (uint32_t)(e[1] - e[0]);
+            /* the high after an edge, then the low before the next */
+            const int64_t t2 = esp_timer_get_time();
+            while (gpio_get_level(PIN_LCD_TE) == 1 && esp_timer_get_time() - t2 < 100000) { }
+            while (gpio_get_level(PIN_LCD_TE) == 0 && esp_timer_get_time() - t2 < 100000) { }
+            const int64_t r0 = esp_timer_get_time();
+            while (gpio_get_level(PIN_LCD_TE) == 1 && esp_timer_get_time() - r0 < 100000) { }
+            const int64_t f0 = esp_timer_get_time();
+            while (gpio_get_level(PIN_LCD_TE) == 0 && esp_timer_get_time() - f0 < 100000) { }
+            s_te_high_us = (uint32_t)(f0 - r0);
+            s_te_low_us  = (uint32_t)(esp_timer_get_time() - f0);
+        }
+        ESP_LOGI(TAG, "LCD_TE on GPIO%d: %s -> TE sync %s, scan %u us", PIN_LCD_TE,
                  moved ? "toggling" : "STUCK (no pulse in 50 ms)",
-                 moved ? "ON" : "OFF");
+                 moved ? "ON" : "OFF", (unsigned)s_te_period_us);
     }
 #endif
 
@@ -1451,6 +1512,42 @@ void display_bench_phases_us(uint64_t *mirror, uint64_t *hook,
 /* Separate getter rather than two more out-params on the one above: that
  * signature is a published contract (display.h:73) and every caller would have
  * to change for a probe. */
+void display_bench_wire(uint32_t *max_us, uint32_t *overscan, uint32_t *frames,
+                        uint32_t *scan_us)
+{
+    if (max_us) *max_us = s_bench_wire_max_us;
+    s_bench_wire_max_us = 0;              /* a per-report maximum */
+    if (overscan) *overscan = s_bench_overscan;
+    if (frames) *frames = s_bench_wired;
+    if (scan_us) *scan_us = s_te_period_us;
+}
+
+void display_bench_scan(int32_t *lag_max_us, uint32_t *lag_row, uint32_t *late_tiles,
+                        uint32_t *tiles, uint32_t *te_high_us, uint32_t *te_low_us)
+{
+    *lag_max_us = s_bench_lag_max_us == INT32_MIN ? 0 : s_bench_lag_max_us;
+    *lag_row = s_bench_lag_row;
+    s_bench_lag_max_us = INT32_MIN;      /* a per-report maximum */
+    *late_tiles = s_bench_lag_tiles;
+    *tiles = s_bench_tiles_timed;
+    *te_high_us = s_te_high_us;
+    *te_low_us = s_te_low_us;
+}
+
+void display_bench_loop_add(uint32_t handler_us, uint32_t asked_ms, uint32_t slept_us)
+{
+    s_loop_handler_us += handler_us;
+    s_loop_asked_us   += (uint64_t)asked_ms * 1000u;
+    s_loop_slept_us   += slept_us;
+}
+
+void display_bench_loop(uint64_t *handler_us, uint64_t *asked_us, uint64_t *slept_us)
+{
+    if (handler_us) *handler_us = s_loop_handler_us;
+    if (asked_us) *asked_us = s_loop_asked_us;
+    if (slept_us) *slept_us = s_loop_slept_us;
+}
+
 void display_bench_render_us_px(uint64_t *us, uint64_t *px)
 {
     if (us) *us = s_bench_render_us;

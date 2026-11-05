@@ -236,19 +236,31 @@ uint32_t orb_sched_bg_bursts_ignored(void);   /* demote-seconds forgiven, for th
 /* The two hardware constants the owner signed 2026-10-22 (§40): the ANIMATED
  * ceiling (no animated stack beat 15 in any §33 run) and the animated full-panel
  * floor (a whole-panel repaint measured 5 sustained; the floor sits under the
- * measurement, D9's discipline). Static screens are not scheduled by the pick. */
-#define ORB_SCHED_FPS_CEILING 15
+ * measurement, D9's discipline). Static screens are not scheduled by the pick.
+ *
+ * The ceiling moved to 20 on 2026-11-04 (owner): the §33 runs were at a 40 MHz
+ * panel clock with each guest call refilling a 64 KB PSRAM stack; at 80 MHz and
+ * without the refill, flights with fifteen plane rows costs ~33 ms a frame. 20 is
+ * three panel scans. The ladder below stays {12,8,4,2,1}, so a dial with authored
+ * frames picks what it always did; only a sweep that asks for more than 15 moves. */
+#define ORB_SCHED_FPS_CEILING 20
 #define ORB_SCHED_PANEL_FLOOR  4
 
 /* Hysteresis, signed by the owner as drafted (2026-10-22, §40). A run demotes
- * after two report-seconds delivering under the pick; it promotes after ten
- * stable seconds carrying at least 25% model slack; demotes are rate-limited to
+ * after two report-seconds delivering under the pick; demotes are rate-limited to
  * one per 30 s. They land as named constants so the bench can re-tune them and
- * the number moves in exactly one place. */
+ * the number moves in exactly one place.
+ *
+ * The promote changed 2026-11-04 (owner). It asked for 25% more than the pick
+ * delivered, but the pick paces the tick, so a demoted rung could never measure
+ * above itself and never came back. A promote now probes: ten seconds delivering
+ * the whole pick, and the probe wait since the last demote; a probe the dial
+ * cannot hold demotes inside the wait and doubles it, up to the cap. */
 #define ORB_SCHED_HYST_DEMOTE_SEC  2    /* report-seconds under pick before a demote */
-#define ORB_SCHED_HYST_PROMOTE_SEC 10   /* stable seconds of slack before a promote   */
-#define ORB_SCHED_HYST_SLACK_PCT   25   /* model slack % that licenses a promote      */
+#define ORB_SCHED_HYST_PROMOTE_SEC 10   /* seconds delivering the whole pick before a probe */
 #define ORB_SCHED_HYST_DEMOTE_MS   30000 /* minimum ms between two demotes            */
+#define ORB_SCHED_PROBE_WAIT_MS    30000 /* ms after a demote before the first probe  */
+#define ORB_SCHED_PROBE_WAIT_MAX   300000 /* the doubled wait's cap                   */
 
 typedef enum {
     ORB_SCHED_FREE     = 0,   /* no fixed beat: rides the working cap      */

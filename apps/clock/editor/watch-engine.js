@@ -221,9 +221,12 @@
    * moon redrawn per value -- the Rendered displays. The names are only stored; the catalogue
    * and Layers call them by what they are. */
   const COMP_TYPES = { opening: 'Opening', subdial: 'Subdial', wheel: 'Wheel', cutout: 'Cutout', index: 'Index', window: 'Rendered display · text', moon: 'Rendered display · moon', flare: 'Flare' };
-  const FLARE_ICONS = { star: 'Star', spark: 'Spark', bolt: 'Bolt', crown: 'Crown', heart: 'Heart', shield: 'Shield', diamond: 'Diamond', cross: 'Cross', ring: 'Ring', chevron: 'Chevron', triangle: 'Triangle', flame: 'Flame', eye: 'Eye', chevL: 'Chevron left', chevR: 'Chevron right', plus: 'Plus (slim)', arrowL: 'Arrow left', arrowR: 'Arrow right', rect: 'Rectangle', pill: 'Pill', dot: 'Dot', datetext: 'Date (custom format)', text: 'Text logo', arctext: 'Curved text', image: 'Image (upload)' };
+  const FLARE_ICONS = { star: 'Star', spark: 'Spark', bolt: 'Bolt', crown: 'Crown', heart: 'Heart', shield: 'Shield', diamond: 'Diamond', cross: 'Cross', ring: 'Ring', chevron: 'Chevron', triangle: 'Triangle', flame: 'Flame', eye: 'Eye', chevL: 'Chevron left', chevR: 'Chevron right', plus: 'Plus (slim)', swiss: 'Swiss cross', arrowL: 'Arrow left', arrowR: 'Arrow right', rect: 'Rectangle', pill: 'Pill', dot: 'Dot', datetext: 'Date (custom format)', text: 'Text logo', arctext: 'Curved text', image: 'Image (upload)' };
   const FLARE_SVG = {
     chevL: 'M20 2h-6.5L4 12l9.5 10H20l-9.5-10z', chevR: 'M4 2h6.5l9.5 10-9.5 10H4l9.5-10z', plus: 'M10.4 3h3.2v7.4H21v3.2h-7.4V21h-3.2v-7.4H3v-3.2h7.4z',
+    // the Swiss flag's cross: arms 6 wide, each a sixth longer than wide, 20 across (federal
+    // proportions); on a square plate of bgW = bgH = 4/3 the flag is the official 32 to its 20
+    swiss: 'M9 2h6v7h7v6h-7v7H9v-7H2V9h7z',
     arrowL: 'M22 9.8H9.5V4.5L2 12l7.5 7.5v-5.3H22z', arrowR: 'M2 9.8h12.5V4.5L22 12l-7.5 7.5v-5.3H2z', rect: 'M1 6.5h22v11H1z', pill: 'M7.5 6.5h9a5.5 5.5 0 0 1 0 11h-9a5.5 5.5 0 0 1 0-11z', dot: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z',
     star: 'M12 2l2.9 6.6 7.1.6-5.4 4.7 1.6 7L12 17.3 5.8 20.9l1.6-7L2 9.2l7.1-.6z', spark: 'M12 1c1 6 5 10 11 11-6 1-10 5-11 11-1-6-5-10-11-11 6-1 10-5 11-11z',
     bolt: 'M13.5 1L4 13.5h6.5L9 23l10-13h-6.5z', crown: 'M3 19h18l1.2-12-5.7 4.5L12 3.5l-4.5 8L1.8 7z', heart: 'M12 21.5s-9-5.6-9-12a5 5 0 0 1 9-3 5 5 0 0 1 9 3c0 6.4-9 12-9 12z',
@@ -933,7 +936,7 @@
       ] } },
     station: { name: 'Station', blurb: 'Railway-clock style · jumping minute · stop-to-go red disc seconds', hands: 'station', handFinish: 'black', caseStyle: 'polished', caseMetal: 'steel', design: {
       print: 'station', numerals: 'all', numColor: '#111111', handShade: 'flat', color: 'white', aging: 0, stains: 0, dust: 0, secStyle: 'station', comps: [
-        { id: 'c1', type: 'flare', host: 'dial', angle: 0, dist: 108, rot: 0, size: 9, style: 'print', icon: 'plus', color: '#ffffff', bg: '#e3000f', bgShape: 'rect', bgW: 2.4, bgH: 1.05 },
+        { id: 'c1', type: 'flare', host: 'dial', angle: 0, dist: 108, rot: 0, size: 11, style: 'print', icon: 'swiss', color: '#ffffff', bg: '#e3000f', bgShape: 'rect', bgW: 4 / 3, bgH: 4 / 3 },
         { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
         // D41: the station clock's own rhythm -- the minute jumps on the boundary and the
         // red seconds disc runs round in 58.5 s, then waits at 12 for the minute to release it

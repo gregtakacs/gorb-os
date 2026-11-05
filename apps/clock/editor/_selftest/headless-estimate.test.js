@@ -83,10 +83,17 @@ const VECTORS = [
   // ---- 5. slice 5: the grant is baked as EF_SMOOTH (bit 7) on the turned rows ----
   ['EF_SMOOTH is bit 7', (G) => G.EF_SMOOTH === 128],
   ['a granted dial bakes EF_SMOOTH on its hour and minute rows', (G) => { const f = flags(G, stillOpts(15, 1)); return !!(f.h0 & 128) && !!(f.h1 & 128); }],
-  ['but never on the sweeping seconds, the hot tick', (G) => !(flags(G, stillOpts(15, 1)).h2 & 128)],
-  ['a ticking dial\'s seconds may smooth (it does not re-pose every tick)', (G) => { const f = flags(G, Object.assign(stillOpts(15, 0), { smooth: true })); return !!(f.h2 & 128); }],
+  // owner 2026-11-05 (§49.15): the seconds hand smooths too, sweeping or not; its shadow only on the switch
+  ['the sweeping seconds smooths too', (G) => !!(flags(G, stillOpts(15, 1)).h2 & 128)],
+  // a seconds row the size of a disc or ring (Orbit's) smooths too: smoothing is a must
+  ['a disc-sized sweeping seconds row smooths', (G) => { const f = flags(G, Object.assign(stillOpts(15, 1), { hands: [hand(0, 6, 60, 50), hand(1, 4, 80, 70), hand(2, 300, 300, 150)] })); return !!(f.h2 & 128) && !!(f.h0 & 128); }],
+  ['a disc-sized seconds row ticking once a second smooths', (G) => !!(flags(G, Object.assign(stillOpts(1, 0), { hands: [hand(0, 6, 60, 50), hand(1, 4, 80, 70), hand(2, 300, 300, 150)] })).h2 & 128)],
+  ['its shadow stays nearest by default', (G) => { const f = flags(G, stillOpts(15, 1, true)); return 'h2s' in f && !(f.h2s & 128); }],
+  ['the Smooth seconds shadow switch smooths it', (G) => !!(flags(G, Object.assign(stillOpts(15, 1, true), { secShadowSmooth: true })).h2s & 128)],
+  ['the hour and minute shadows smooth as before', (G) => { const f = flags(G, stillOpts(15, 1, true)); return !!(f.h0s & 128) && !!(f.h1s & 128); }],
+  ['a ticking dial\'s seconds smooths too', (G) => !!(flags(G, stillOpts(15, 0)).h2 & 128)],
   // owner 2026-11-02: hour and minute hands smooth on every dial; a refused dial smooths nothing else
-  ['a refused dial still smooths its hour and minute, and nothing else', (G) => { const f = flags(G, stillOpts(15, 1, true)); return !!(f.h0 & 128) && !!(f.h1 & 128) && !(f.h2 & 128); }],
+  ['a refused dial still smooths its hour, minute and seconds, and not the seconds shadow', (G) => { const f = flags(G, stillOpts(15, 1, true)); return !!(f.h0 & 128) && !!(f.h1 & 128) && !!(f.h2 & 128) && !(f.h2s & 128); }],
   ['a bench arm forcing nearest bakes no bit anywhere', (G) => { const f = flags(G, Object.assign(stillOpts(15, 1, true), { smooth: false })); return !(f.any & 128); }],
   ['the estimate prices the hour and minute AA on a refused dial', (G) => { const e = G.bakeClock3(stillOpts(15, 1, true)).est, n = G.bakeClock3(Object.assign(stillOpts(15, 1, true), { smooth: false })).est; return !e.granted && e.flush_ms > n.flush_ms - 1e-9; }],
   ['smooth:false forces nearest on a dial that would be granted', (G) => !(flags(G, Object.assign(stillOpts(15, 1), { smooth: false })).any & 128)],
@@ -95,13 +102,16 @@ const VECTORS = [
   ['the bit off a turned row is refused at the writer', (G) => { try { G.checkElement(Object.assign(G.blankElement(), { 'class': 3, slot: 0, flags: 128, w: 466, h: 466, n_frames: 1 }), 'e'); return false; } catch (e) { return /smoothing/.test(e.message); } }],
 ];
 /* Each moving row's flags after a bake, by the hand it is (D42: hands are rows):
- * h0 the hour, h1 the minute, h2 the seconds; any = OR of every row. */
+ * h0 the hour, h1 the minute, h2 the seconds, h0s..h2s their shadow twins; any = OR of every row. */
 function flags(G, opts) {
   const els = G.verifyBundle3(G.bakeClock3(opts).bytes).sections[0].blob.elements;
   const f = { any: 0 }, SRC = { hour12: 'h0', minute: 'h1', second: 'h2' };
+  let parent = null;
   for (const e of els) {
     f.any |= e.flags;
-    if (e['class'] === 8 && !(e.flags & 16) && SRC[G.SOURCES[e.src]]) f[SRC[G.SOURCES[e.src]]] = e.flags;
+    if (e['class'] !== 8) continue;
+    if (!(e.flags & 16)) { parent = SRC[G.SOURCES[e.src]] || null; if (parent) f[parent] = e.flags; }
+    else if (parent) f[parent + 's'] = e.flags;   // a shadow twin rides the row before it: h0s, h1s, h2s
   }
   return f;
 }
@@ -164,9 +174,10 @@ const MUTANTS = [
   ['the policy drops the estimate', "r.sentence = r.sentence + '; ' + m.est.sentence;", ''],
   ['the ticking still rides the pick', "if (!anim) return { rate:", "if (false) return { rate:"],
   ['the delta bank seeds the still floor', 'var floor = gif ? 12 : (live ? 4 : 15);', 'var floor = 15;'],
-  ['the grant never reaches the rows', 'if (!hot && !((er.n_frames | 0) > 1)) { er.flags', 'if (false) { er.flags'],
-  ['the hot-tick seconds smooths too', ": !!tempo3[0] && er.src === SOURCES.indexOf('second');", ': false;'],
-  ['the bench force ignored', "var grant = o.smooth === true ? true : (o.smooth === false ? false : est.smooth);", 'var grant = est.smooth;'],
+  ['the seconds hand left nearest', 'var on = secRow ? (!twin3 || !!o.secShadowSmooth)', 'var on = secRow ? (twin3 && !!o.secShadowSmooth)'],
+  ['the seconds shadow smooths without the switch', '(!twin3 || !!o.secShadowSmooth)', '(true)'],
+  // retired (§49.15): the grant now governs only rows other than the hands (pointers), and this
+  // suite's fixtures carry none, so forcing it has nothing left to show here
   ['EF_SMOOTH legal on any class', "if ((flags & EF_SMOOTH) && cls !== CLASS_HAND && cls !== CLASS_SPRITE && cls !== CLASS_AUX) {", 'if (false) {'],
 ];
 

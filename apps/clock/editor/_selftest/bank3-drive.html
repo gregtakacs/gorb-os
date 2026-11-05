@@ -98,6 +98,22 @@
     say('fonts: ' + (fams.length - missing.length) + ' of ' + fams.length + ' loaded' + (missing.length ? ' \u2014 missing ' + missing.join(', ') : ''));
     await IT.componentDidMount();
     await mount(DIAL);
+    // ?favour=sweep|balanced|gears, ?plan=G/H (§49.15): the Hands tab's two plan controls, set
+    // the way the composer writes them. ?tempo=N pins the gear tempo outright (the emulator's
+    // forceWant), so a bench can bake a plan the frontier does not offer and watch it fail.
+    const QP = new URLSearchParams(location.search);
+    IT._liveDebug = QP.get('livedebug') === '1';
+    if (QP.get('favour')) IT.state.cfg.favour = QP.get('favour');
+    if (QP.get('plan')) IT.state.cfg.plan = QP.get('plan');
+    const FT = +QP.get('tempo') || 0;
+    if (FT) {
+      const b0 = IT.budget.bind(IT);
+      IT.budget = (fw) => Object.assign(b0(fw), { fps: FT, plan: null });   // the tempo outright: no ladder, no plan
+      G.pickPlan4 = () => null;                                              // and no re-time to the calculator's pick
+      IT.buildMovement();
+      if (!await settle()) throw new Error('did not settle at the pinned tempo ' + FT);
+      say('tempo pinned at ' + FT + ' fps: bank ' + IT.B + ' frames');
+    }
     // ?lift=<comp id> (D43 P4b): lift that sub-dial face to the top of the live band —
     // over every hand — the way the stack panel writes it, before the real export runs.
     const LIFT = new URLSearchParams(location.search).get('lift');
@@ -127,6 +143,15 @@
         return real(noDither ? Object.assign({}, o, { dither: false }) : o);
       };
     }
+    // §49.15: the live price, before any bake — the plans the Hands tab shows while editing
+    // until the live price settles: priced, and priced again at the tempo its own plan picked
+    for (let i = 0, k = null; i < 900; i++) {
+      IT.componentDidUpdate(); await wait(100);
+      if (IT._plan4 && IT._plan4.live && IT._liveKey === IT.live4Key() && !IT._liveBusy && !IT._livePending) { if (k === IT._liveKey) break; k = IT._liveKey; }
+    }
+    say('LIVEHIST ' + JSON.stringify(IT._liveHist || []));
+    const why4 = (e) => e.policy.filter((x) => !x.ok && x.gears && /fit|leave|landing/.test(x.why)).slice(0, 3).map((x) => G.planKey4(x) + ': ' + x.why + (x.terms ? ' ' + JSON.stringify(x.terms) : ''));
+    say('LIVE4 ' + (IT._plan4 && IT._plan4.live ? JSON.stringify({ plans: IT._plan4.est.plans.map(G.planKey4), tempo: IT.F, rect_kpx: IT._plan4.est.rect_kpx, movers: IT._plan4.est.movers, why: why4(IT._plan4.est) }) : 'none' + (IT._plan4Err ? ' — ' + String(IT._plan4Err).split('\n')[0] : '')));
     say('--- baking ' + DIAL + ' (theme name "' + NAME + '") through exportTheme3 ---');
     pump();
     await wait(400);   // let the ticker fill the loop before the first settle check
@@ -138,6 +163,20 @@
       await wait(300);
     }
     const st = String(IT.state.status || '');
+    if (IT._plan4 && !/^Downloaded/.test(st)) {
+      const b = IT.budget(), k = IT.artKey(IT.mvKey(1));
+      say('PLAN4DBG key ' + (IT._plan4.ak === k ? 'matches' : 'MOVED') + ' tick ' + IT._plan4.tick + '/' + IT.cfg().tick + ' fps ' + b.fps + ' plan ' + (b.plan ? G.planKey4(b.plan) : '-') +
+          ' B ' + IT.B + ' gt ' + IT.gt.length + ' rendering ' + !!IT.rendering + ' mk ' + (IT._mk === IT.mvKey() ? 'ok' : 'stale') +
+          ' bp ' + IT._bp + ' bk ' + (IT._bk === IT.artKey() + '|' + IT.cfg().tick + (b.plan ? '|' + G.planKey4(b.plan) : '') ? 'same' : 'other') + ' buildId ' + IT.buildId);
+      if (IT._plan4.ak !== k) { const a = IT._plan4.ak, n = Math.min(a.length, k.length); let i = 0; while (i < n && a[i] === k[i]) i++; say('PLAN4DBG differs at ' + i + ': ' + a.slice(Math.max(0, i - 60), i + 80) + '  vs  ' + k.slice(Math.max(0, i - 60), i + 80)); }
+    }
+    if (IT._plan4Err) say('PLAN4ERR ' + String(IT._plan4Err).replace(/\n/g, ' | ').slice(0, 400));
+    if (IT._plan4 && G.planKey4) {
+      const e4 = IT._plan4.est;
+      say('PLAN4WHY ' + JSON.stringify({ rect_kpx: e4.rect_kpx, movers: e4.movers, why: e4.policy.filter((x) => !x.ok && x.gears && /fit|leave|landing/.test(x.why)).slice(0, 3).map((x) => G.planKey4(x) + ': ' + x.why + (x.terms ? ' ' + JSON.stringify(x.terms) : '')) }));
+      say('PLAN4 ' + JSON.stringify({ mode: e4.hand_mode, plans: e4.plans.map(G.planKey4), picks: e4.picks && Object.fromEntries(Object.entries(e4.picks).map(([k, v]) => [k, G.planKey4(v)])),
+        shipped: IT._plan4Shipped ? G.planKey4(IT._plan4Shipped) : null, tempo: IT.F, bank: IT.B }));
+    }
     stopPump();
     say('status: ' + st.slice(0, 200));
     ok('the bake downloaded a file', !!blob && !!fname, fname || st.slice(0, 120));

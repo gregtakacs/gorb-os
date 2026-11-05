@@ -125,9 +125,10 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
     const P = E.PRESETS[k]; if (!P.design.comps.some((c) => c.type === 'wheel')) return;
     const f = face(JSON.parse(JSON.stringify(P.design.comps)));
     f.lay.wheels.forEach((w) => w.holes.forEach((h) => { if (h.kind !== 'moon' && !h.uncovered && !backed(w, h)) odd.push(k + '/' + w.id); if (h.uncovered) odd.push(k + '/' + w.id + ' flagged'); }));
-    f.lay.wheels.filter((w) => w.form === 'ring').forEach((w) => { if (Math.hypot(w.x - 233, w.y - 233) > 0.5) odd.push(k + '/' + w.id + ' off-centre'); });
+    // a ring read through cutouts shares the dial's centre; an exposed ring may be a sub-dial of its own (Rink)
+    f.lay.wheels.filter((w) => w.form === 'ring' && !w.exposed).forEach((w) => { if (Math.hypot(w.x - 233, w.y - 233) > 0.5) odd.push(k + '/' + w.id + ' off-centre'); });
   });
-  ok(!odd.length, 'every preset\u2019s wheels are concentric rings, each backing its cutouts all the way round', odd.join(' '));
+  ok(!odd.length, 'every preset\u2019s wheels back their cutouts all the way round, and a ring read through cutouts is concentric', odd.join(' '));
   const un = face([{ id: 'w', type: 'wheel', host: 'dial', size: 120, form: 'ring', inner: 100, trad: 110, read: 90, shows: 'day' }, { id: 'k', type: 'cutout', host: 'w' }]).lay;
   ok(backed(un.wheels[0], un.dialHoles[0]) && !un.dialHoles[0].uncovered, 'a cutout the author has not sized shrinks onto a narrow ring');
   const au = face([{ id: 'w', type: 'wheel', host: 'dial', size: 120, form: 'ring', inner: 100, trad: 110, read: 90, shows: 'day' }, { id: 'k', type: 'cutout', host: 'w', w: 60, h: 40 }]).lay;

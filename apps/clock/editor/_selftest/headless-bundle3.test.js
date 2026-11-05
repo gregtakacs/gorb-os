@@ -523,8 +523,8 @@ refuses(() => B.bakeClock3({ name: 'x', plate: { rgba: kf(1), w: 466, h: 466, lo
           frames: [{ rgba: kf(1), w: 466, h: 466 }, { rgba: kf(9), w: 466, h: 466 }] } }),
         'no tempo', 'a one-shot bank with no fps is refused, not frozen');
 refuses(() => B.bakeClock3({ name: 'x', plate: { rgba: kf(1), w: 466, h: 466,
-          frames: Array.from({ length: 17 }, () => ({ rgba: kf(1), w: 466, h: 466 })) } }),
-        'no room for', 'a seventeen-frame bank is refused before a byte is encoded');
+          frames: Array.from({ length: 21 }, () => ({ rgba: kf(1), w: 466, h: 466 })) } }),
+        'no room for', 'a twenty-one-frame bank (past CLK_BG_MAX, 20) is refused before a byte is encoded');
 // ---- 7c. §31's other carrier: the carriage bank, the motion's bbox ----
 const CARF = (a) => ({ rgba: mkPlane(64, 64, a), w: 64, h: 64 });
 // Bank AND carriage in one bundle — the answer splitPolicy3 now gives an orbital dial
@@ -649,9 +649,15 @@ const pBlind = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, o
 ok(pBlind.carrier === 'refuse' && /was not measured/.test(pBlind.sentence),
    'a caged dial with no measured carriage box refuses: the plate would ship without its tourbillon',
    pBlind.sentence);
-const pThin = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 4251754, hasCage: false });
+// §49.15: a frame past the keyframe costs its delta rect, so the thin bites a WHOLE-PANEL motion
+const pThin = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 466, bboxH: 466, otherB: 4251754, hasCage: false });
 ok(pThin.carrier === 'bank' && pThin.keyframes === 7 && pThin.decim === 2,
-   'a 15-frame loop thins to what fits rather than refusing: 7 keyframes by step 2', pThin.sentence);
+   'a whole-panel 15-frame loop thins to what fits rather than refusing: 7 keyframes by step 2', pThin.sentence);
+const pSmall = sp({ frames: 20, fps: 20, unionPx: 1402, bboxW: 120, bboxH: 120, otherB: 4251754, hasCage: false });
+ok(pSmall.carrier === 'bank' && pSmall.keyframes === 20 && pSmall.decim === 1,
+   'a small cutout keeps all 20 frames: a keyframe and twenty small rects, fps x cutout', pSmall.sentence);
+const pSmall0 = sp({ frames: 20, fps: 20, unionPx: 1402, bboxW: 466, bboxH: 466, otherB: 4251754, hasCage: false });
+ok(pSmall0.decim > 1, 'the same 20 frames over the whole panel do not fit and thin', pSmall0.sentence);
 // The carriage row and the plate carrier are two decisions now. A caged dial whose
 // ONLY motion is the cage measures under the shimmer band un-caged, and the plate
 // rides the still while the row carries the loop at full length.
@@ -661,11 +667,11 @@ ok(pSp.carrier === 'sprite' && pSp.carriage && pSp.carriage.keyframes === 15 && 
    'a cage that is the only motion rides the carriage at full length over a still plate', pSp.sentence);
 // Bank AND carriage: a caged dial whose train moves too. The row is billed FIRST, so
 // the plate thins against the room left rather than stealing bytes the row needs.
-const pBoth = sp({ frames: 15, fps: 15, unionPx: 5000, bboxW: 200, bboxH: 200, otherB: 4251754,
+const pBoth = sp({ frames: 15, fps: 15, unionPx: 5000, bboxW: 466, bboxH: 466, otherB: 4251754,
                    hasCage: true, carriageW: 146, carriageH: 146 });
 ok(pBoth.carrier === 'bank' && pBoth.carriage && pBoth.carriage.keyframes === 15 && pBoth.keyframes === 5,
    'a moving train on a caged dial bakes the bank thin and keeps the carriage whole', pBoth.sentence);
-const pNoCar = sp({ frames: 15, fps: 15, unionPx: 5000, bboxW: 200, bboxH: 200, otherB: 4251754, hasCage: false });
+const pNoCar = sp({ frames: 15, fps: 15, unionPx: 5000, bboxW: 466, bboxH: 466, otherB: 4251754, hasCage: false });
 ok(pBoth.keyframes < pNoCar.keyframes,
    'the carriage bills the bank budget before the thin: the same dial without a row keeps more keyframes',
    'bank ' + pNoCar.keyframes + ' vs ' + pBoth.keyframes + ' with the row');
@@ -772,7 +778,7 @@ ok(pNoCage.carrier === 'bank' && !pNoCage.carriage,
 const pRef = sp({ frames: 15, fps: 15, unionPx: 40000, bboxW: 466, bboxH: 466, otherB: 8194304, hasCage: false });
 ok(pRef.carrier === 'refuse' && /exceed/.test(pRef.sentence),
    'a bake with no room left names the byte it tripped on', pRef.sentence);
-const pAux = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 4251754, auxB: 3 * 466 * 466 * 2, hasCage: false });
+const pAux = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 466, bboxH: 466, otherB: 4251754, auxB: 3 * 466 * 466 * 2, hasCage: false });
 ok(pAux.carrier === 'bank' && pAux.keyframes < pThin.keyframes,
    'pointer plates bill the bank budget before the thin: three whole-panel plates take three keyframes away',
    pThin.sentence + ' | ' + pAux.sentence);
@@ -919,7 +925,7 @@ const pCompR = sp({ frames: 8, fps: 4, unionPx: 49312, bboxW: 402, bboxH: 359, o
                     compB: 4000000, hasCage: true, carriageW: 146, carriageH: 146 });
 ok(pCompR.carrier === 'refuse' && /4000000 B of complication tiles/.test(pCompR.sentence),
    'a comp table that eats the bank forces the refusal, and the sentence names its cost', pCompR.sentence);
-const pCompT = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 231, bboxH: 71, otherB: 4251754,
+const pCompT = sp({ frames: 15, fps: 15, unionPx: 1402, bboxW: 466, bboxH: 466, otherB: 4251754,
                     compB: 1300000, hasCage: false });
 ok(pCompT.carrier === 'bank' && pCompT.keyframes === 5 && pCompT.decim === 3,
    'the same bank thins for the tile bill first: 15 frames to 5 by step 3', pCompT.sentence);

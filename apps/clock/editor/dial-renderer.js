@@ -24,20 +24,24 @@
 // the direction, so a bank or a K that breaks either one fails the suite.
 (function () {
   const S = 466, C = 233, WIN = 160, K = 7, TAU = Math.PI * 2;
-  const TEMPOS = [4, 8, 12, 15];
+  const TEMPOS = [4, 5, 6, 8, 10, 12, 15, 20];   // the gear rates a plan may bake (7.5 bakes as 8)
   // Bank depth per tempo, authored as a LOOP LENGTH first: one authored loop is
   // two seconds of motion at the calm tiers and one second at the fast ones.
   // The device advances the background bank exactly one frame per tick
   // (clock_view.c: gif_tick_ms() = clk_gif_delays[0] = 1000/the bank's own fps),
   // so bank = fps x seconds gives the authored speed on the glass with no
   // re-timing anywhere: the preview ticks at the same delivered rate and shows
-  // the same frames the device will ship. Every bank here is 16 frames or
+  // the same frames the device will ship. Every bank here is 20 frames or
   // fewer, the FORMAT 3 plate keyframe cap (orb_clock3.c, CLK_BG_MAX), so no
   // tier can be thinned and no tier can be skipped for depth: a dial that
   // measures into the 12 tier SHIPS 12 fps. The 12/15 one-second banks trade
   // the half-speed reading of the old 16/24-frame banks for that honesty.
-  const BANKS = { 4: 8, 8: 16, 12: 12, 15: 15 };
-  const bankFrames = (fps) => BANKS[fps] || fps;
+  // Owner, 2026-11-05: a loop is never under 8 frames, and never longer than the tempo needs:
+  // 4 fps gets its 8 frames over two seconds, every faster tempo exactly one second (8 at 8,
+  // 12 at 12, 15 at 15, 20 at 20). The movement keeps its detail at the calm tempo, and the
+  // fast tempos stay one second deep, which keeps fps x cutout the currency the slot pays.
+  const BANKS = { 4: 8, 5: 8, 6: 8, 8: 8, 10: 10, 12: 12, 15: 15, 20: 20 };
+  const bankFrames = (fps) => BANKS[fps] || Math.max(8, fps | 0);
   // A rim that repeats every `period` pitches reads its motion honestly only
   // while one tick steps at most half a period. Past that the frames are
   // pixel-identical to a step of (step - period) running the other way, and the
@@ -46,6 +50,7 @@
   // DISTINCT, which is not the same as UNAMBIGUOUS.
   const aliases = (loopTeeth, frames) => Math.abs(loopTeeth / (frames || 1)) > 0.5;
   let BANKF = 15;                                        // frames in the bank being rendered
+  let LOOP_S = 1;                                        // seconds that bank plays in on the glass
   // The index tooth: every K-th tooth is filed short and narrow. The mark may
   // only move INWARD -- a meshing pair leaves just 0.25 * m of tip-to-root
   // clearance, so a taller marked tooth would overlap the wheel it drives.
@@ -440,8 +445,17 @@
     ctx.restore();
   }
 
+  /* The balance swings BEATS times a SECOND, whatever the loop: a two-second loop at 4 fps
+   * swings twice as often per loop as a one-second one, so the wheel keeps its pace on the
+   * glass (owner, 2026-11-05). A bank too shallow for the swing is capped at a tick-tock (two
+   * frames a swing), phased onto the extremes so no frame lands the wheel dead centre. */
+  function balanceSwings() {
+    const n = BEATS * LOOP_S, cap = Math.floor(BANKF / 2);
+    return Math.max(1, Math.min(Math.round(n), cap));
+  }
   function drawBalance(ctx, t, pal, gold) {
-    const { x, y, r } = BAL, osc = 0.95 * ({ 1: 1, 2: 2 / 3, 4: 1 / 3 })[BEATS] * Math.sin(TAU * t * BEATS), beta = BAL.rot + osc;
+    const sw = balanceSwings(), ph = BANKF / sw <= 2.5 ? TAU / 4 : 0;
+    const { x, y, r } = BAL, osc = 0.95 * ({ 1: 1, 2: 2 / 3, 4: 1 / 3 })[BEATS] * Math.sin(TAU * t * sw + ph), beta = BAL.rot + osc;
     const turns = 7, r0 = 6, r1 = 25, tot = turns * TAU;
     const spring = (dx, dy) => {
       ctx.beginPath();
@@ -739,6 +753,8 @@
     // The bank being rendered decides whether a rim can alias, so the mark
     // decision has to see it. A zeroed/absent count falls back to the top tier.
     BANKF = +o.frames > 0 ? +o.frames : 15;
+    // the loop's length on the glass, for anything timed per second (the balance)
+    LOOP_S = +o.tempo > 0 ? BANKF / +o.tempo : 1;
     GLOW = +o.glow; setRot(+o.trainRot || 0);
     setTemp(o.temp, o.hue, o.hueSat);
     const SD = o.seeds || {};
@@ -788,6 +804,6 @@
     };
   }
   window.DialRenderer = { create, SIZE: S, TEETH_PER_LOOP: K,
-    TEMPOS, BANKS, bankFrames, aliases, markPeriod,
+    TEMPOS, BANKS, bankFrames, aliases, markPeriod, balanceSwings,
     _: { configure, setTemp, kelvin, setTrain, FRONT0, REAR0, BAL0, rng, P, canvas, FRONT, REAR, BAL, tint, grad, shadow, jewel, screw, castShadow, sideShadows, sideWash, sheen, solid, drawGear, post, bridge, drawBalance, specular, wear, enamelFill, FIN, BACK, STEEL, ENAMEL } };
 })();

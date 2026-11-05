@@ -221,13 +221,19 @@
    * moon redrawn per value -- the Rendered displays. The names are only stored; the catalogue
    * and Layers call them by what they are. */
   const COMP_TYPES = { opening: 'Opening', subdial: 'Subdial', wheel: 'Wheel', cutout: 'Cutout', index: 'Index', window: 'Rendered display · text', moon: 'Rendered display · moon', flare: 'Flare' };
-  const FLARE_ICONS = { star: 'Star', spark: 'Spark', bolt: 'Bolt', crown: 'Crown', heart: 'Heart', shield: 'Shield', diamond: 'Diamond', cross: 'Cross', ring: 'Ring', chevron: 'Chevron', triangle: 'Triangle', flame: 'Flame', eye: 'Eye', chevL: 'Chevron left', chevR: 'Chevron right', plus: 'Plus (slim)', swiss: 'Swiss cross', arrowL: 'Arrow left', arrowR: 'Arrow right', rect: 'Rectangle', pill: 'Pill', dot: 'Dot', datetext: 'Date (custom format)', text: 'Text logo', arctext: 'Curved text', image: 'Image (upload)' };
+  const FLARE_ICONS = { star: 'Star', spark: 'Spark', bolt: 'Bolt', crown: 'Crown', heart: 'Heart', shield: 'Shield', diamond: 'Diamond', cross: 'Cross', ring: 'Ring', chevron: 'Chevron', triangle: 'Triangle', flame: 'Flame', eye: 'Eye', chevL: 'Chevron left', chevR: 'Chevron right', plus: 'Plus (slim)', swiss: 'Swiss cross', arrowL: 'Arrow left', arrowR: 'Arrow right', rect: 'Rectangle', pill: 'Pill', dot: 'Dot', stick: 'Hockey stick', puck: 'Puck', helmet: 'Helmet', datetext: 'Date (custom format)', text: 'Text logo', arctext: 'Curved text', image: 'Image (upload)' };
   const FLARE_SVG = {
     chevL: 'M20 2h-6.5L4 12l9.5 10H20l-9.5-10z', chevR: 'M4 2h6.5l9.5 10-9.5 10H4l9.5-10z', plus: 'M10.4 3h3.2v7.4H21v3.2h-7.4V21h-3.2v-7.4H3v-3.2h7.4z',
     // the Swiss flag's cross: arms 6 wide, each a sixth longer than wide, 20 across (federal
     // proportions); on a square plate of bgW = bgH = 4/3 the flag is the official 32 to its 20
     swiss: 'M9 2h6v7h7v6h-7v7H9v-7H2V9h7z',
     arrowL: 'M22 9.8H9.5V4.5L2 12l7.5 7.5v-5.3H22z', arrowR: 'M2 9.8h12.5V4.5L22 12l-7.5 7.5v-5.3H2z', rect: 'M1 6.5h22v11H1z', pill: 'M7.5 6.5h9a5.5 5.5 0 0 1 0 11h-9a5.5 5.5 0 0 1 0-11z', dot: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z',
+    // a hockey stick: a thin shaft leaning right, its blade curving along the ice to a rounded toe
+    stick: 'M18.2 1.4L20.1 2.3 12.7 18.9Q12.1 22.3 9.6 22.3 6 22.3 3.2 21.6 1.4 21.1 1.8 19.6 2.2 18.3 3.8 18.6 6.6 19.1 10 19Z',
+    // a puck seen from a little above: its top face and the band of its edge
+    puck: 'M12 5C7 5 3 6.6 3 8.7v6.6C3 17.4 7 19 12 19s9-1.6 9-3.7V8.7C21 6.6 17 5 12 5zm0 1.8c4 0 7 1.1 7 1.9S16 10.6 12 10.6 5 9.5 5 8.7s3-1.9 7-1.9z',
+    // a hockey helmet in profile, facing right: the shell, its ear hole, and the cage over the face
+    helmet: 'M2.8 13.6C2.8 7.9 7.1 3.6 12.6 3.6 17.4 3.6 20.6 6.8 21.1 10.9H15.2V18.6H13V20.6H5.1C3.8 20.6 2.8 19.6 2.8 18.3ZM7.6 11.6a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 1 0 0-3.2ZM16.2 12.1H22V13.1H16.2ZM16.2 14.9H21.6V15.9H16.2ZM16.2 17.7H20.6V18.7H16.2ZM18.1 12.1H19.1V20.2H18.1ZM20.4 12.1H21.4V18.4H20.4Z',
     star: 'M12 2l2.9 6.6 7.1.6-5.4 4.7 1.6 7L12 17.3 5.8 20.9l1.6-7L2 9.2l7.1-.6z', spark: 'M12 1c1 6 5 10 11 11-6 1-10 5-11 11-1-6-5-10-11-11 6-1 10-5 11-11z',
     bolt: 'M13.5 1L4 13.5h6.5L9 23l10-13h-6.5z', crown: 'M3 19h18l1.2-12-5.7 4.5L12 3.5l-4.5 8L1.8 7z', heart: 'M12 21.5s-9-5.6-9-12a5 5 0 0 1 9-3 5 5 0 0 1 9 3c0 6.4-9 12-9 12z',
     shield: 'M12 1.5l9 3.4v6.4c0 5.5-3.9 9.8-9 11.7-5.1-1.9-9-6.2-9-11.7V4.9z', diamond: 'M12 1.5l8.5 10.5L12 22.5 3.5 12z', cross: 'M9.5 2h5v7.5H22v5h-7.5V22h-5v-7.5H2v-5h7.5z',
@@ -1113,6 +1119,27 @@
         { id: 'w3', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 218, form: 'ring', inner: 186, read: 90, shows: 'second', exposed: true, wbg: '#0a0910', wink: '#bdb6d6', accent: '#ff2bd6', ticks: 'all', every: 5, rim: 'line' },
         // P5d.3n: the laser lens they are read at, a part of its own on the crystal (across all three rings)
         { id: 'x1', type: 'index', host: 'w1', istyle: 'lens', color: '#ff2bd6' },
+      ] } },
+    // §49.15 bench dial: three ring sub-dials, hour at 10, minute at 2, seconds at 6, each read
+    // at its own top under a short index, with a stick, a puck and a helmet at their hearts. The
+    // seconds ring is a sub-dial's ring, not the whole face, so it prices against Orbit's.
+    rink: { name: 'Rink', blurb: 'Three ring sub-dials in victory green on forged carbon · woven hearts with a stick, a puck and a helmet', hands: 'baton', handFinish: 'silver', caseMetal: 'gunmetal',
+      cfg: { finish: 'rhodium' },   // the sub-dials' raised band is the movement metal: silver, not the default brass
+      design: {
+      print: 'none', numerals: 'none', font: 'barlow', surface: 'forged', color: '#04140d', aging: 0, stains: 0, dust: 0, comps: [
+        // each ring's heart: an engraved woven-carbon sub-dial (no scale, no hand: plate art, nothing moves)
+        { id: 's1', type: 'subdial', host: 'dial', angle: 300, dist: 112, rot: 0, size: 55, style: 'carbon', scale: 'none', open: 0 },
+        { id: 's2', type: 'subdial', host: 'dial', angle: 60, dist: 112, rot: 0, size: 55, style: 'carbon', scale: 'none', open: 0 },
+        { id: 's3', type: 'subdial', host: 'dial', angle: 180, dist: 112, rot: 0, size: 55, style: 'carbon', scale: 'none', open: 0 },
+        { id: 'r1', type: 'wheel', host: 'dial', angle: 300, dist: 112, rot: 0, size: 74, form: 'ring', inner: 52, read: 0, shows: 'hour', cadence: 'smooth', exposed: true, wbg: '#00341f', wink: '#ffffff', accent: '#a7b0b5', ticks: 'all', rim: 'line' },
+        { id: 'r2', type: 'wheel', host: 'dial', angle: 60, dist: 112, rot: 0, size: 74, form: 'ring', inner: 52, read: 0, shows: 'minute', ease: 160, exposed: true, wbg: '#00341f', wink: '#ffffff', accent: '#a7b0b5', ticks: 'all', every: 5, rim: 'line' },
+        { id: 'r3', type: 'wheel', host: 'dial', angle: 180, dist: 112, rot: 0, size: 74, form: 'ring', inner: 52, read: 0, shows: 'second', exposed: true, wbg: '#006847', wink: '#ffffff', accent: '#c8ced2', ticks: 'all', every: 5, rim: 'line' },
+        { id: 'x1', type: 'index', host: 'r1', istyle: 'laser', span: 'own', color: '#2fd18a' },
+        { id: 'x2', type: 'index', host: 'r2', istyle: 'laser', span: 'own', color: '#2fd18a' },
+        { id: 'x3', type: 'index', host: 'r3', istyle: 'laser', span: 'own', color: '#2fd18a' },
+        { id: 'f1', type: 'flare', host: 's1', angle: 0, dist: 0, rot: 0, size: 27, style: 'print', icon: 'stick', color: '#c8ced2' },
+        { id: 'f2', type: 'flare', host: 's2', angle: 0, dist: 0, rot: 0, size: 23, style: 'print', icon: 'puck', color: '#c8ced2' },
+        { id: 'f3', type: 'flare', host: 's3', angle: 0, dist: 0, rot: 0, size: 26, style: 'print', icon: 'helmet', color: '#c8ced2' },
       ] } },
     // D43: a car's instrument. A retrograde seconds needle sweeps a 240-degree speedometer fan,
     // and an odometer of six drums below it rolls the time: the seconds units continuously, the
@@ -4962,7 +4989,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), LENSES, DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), gearTempo: (g) => (Math.abs(g - 7.5) < 0.01 ? 8 : Math.round(g)), LENSES, DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

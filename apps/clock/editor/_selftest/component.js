@@ -1,8 +1,8 @@
 window.COMP_CLASS = function (DCLogic) {
 
 class Component extends DCLogic {
-  DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1, shRelief: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {}, sending: null };
+  DEF = { tick: 'sweep', favour: 'sweep', plan: '', shSmooth: 0, balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1, shRelief: 1 };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: null, pickKey: null, guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {}, sending: null };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
@@ -16,7 +16,7 @@ class Component extends DCLogic {
     ['geartrain', '2', 'Geartrain', 'Every moving part, inner light'],
     ['movement', '1', 'Clock insides', 'Static plate, inner light'],
   ];
-  base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _ftierOcc = null; _rpDiag = null; _occCover = -1; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null; _occ = null; _occKey = null; _bi = null; _biKey = null; _hbFps = 0; _rmTimer = 0; _rmAt = 0; _shLast = 0; _opLast = 0;
+  base = null; gt = []; faces = {}; budgetStats = null; _artKey = null; _ftier = 15; _ftierKey = null; _ftierOcc = null; _rpDiag = null; _occCover = -1; _bk = null; _bp = 0; _Lk = null; _L = null; _mbc = null; _occ = null; _occKey = null; _bi = null; _biKey = null; _hbFps = 0; _rmTimer = 0; _rmAt = 0; _shLast = 0; _opLast = 0; _liveKey = null; _livePending = null; _liveTimer = 0; _liveBusy = false; _plan4 = null;
   dialEls = {}; handEls = {}; layerEls = {}; caseEls = {}; glassEls = {}; artEls = {}; cbs = {};
   mainRef = React.createRef();
   stageRef = React.createRef();
@@ -275,7 +275,11 @@ class Component extends DCLogic {
     const car = !!(T && (T.cage || T.orbital));
     const c = this.cfg(), D = this.design();
     const needle = (D.comps || []).some((x) => x.type === 'hand' && x.shows === 'second');
-    const want = forceWant || (c.tick === 'sweep' ? 15 : 12);
+    /* The gear tempo the seconds hand asks (owner, 2026-11-05): a sweep keeps the gears at
+     * 4 so the sweep gets the frame budget (4 lands on a 12 or 20 fps grid); 8 ticks a second
+     * asks 8 (7.5 on the glass); 1, 2, 4 or 12 a second ask 12, which every one of those beats
+     * divides. The ladder below still falls to what the measured rows allow. */
+    const want = forceWant || (c.tick === 'sweep' ? 4 : +c.tick === 8 ? 8 : 12);
     /* CAPS are rows-per-TICK, measured on the panel with a 1:1 bank (one frame
    * per tick), which is the largest step any tier can be asked to make. The
    * bank is now deeper than the tempo below 15 fps, so each tick turns a
@@ -299,9 +303,20 @@ class Component extends DCLogic {
    * like every other mover: an exposed carriage still costs rows (and falls to
    * 4 fps) while one sealed behind an opaque dial costs none and earns the full
    * 15 fps a closed dial gets. */
-  const MAXBANK = 16;
+  const MAXBANK = car ? 16 : 20;   // CLK_TOURB_MAX for a carriage, CLK_BG_MAX (20, §49.15) for a plate bank
     const mvk = this.mvKey(1), ak = this.artKey(mvk);
     const s = this.budgetStats && this.budgetStats.mv === mvk ? this.budgetStats : null;
+    /* §49.15: once this art has been baked, its bytes priced every plan on the 60 Hz grid
+     * (GorbBake.estimate4: fps x cutout area against the frame time, the slot and the bank
+     * cap), and the plan the Favour picks names the gear tempo. That price is of the shipped
+     * bytes, so it outranks the row caps below; the rows still answer before the first bake. */
+    const P4 = this._plan4, pk = P4 && P4.ak === ak && P4.tick === c.tick && P4.shs === (+c.shSmooth === 1 ? 1 : 0) && window.GorbBake && GorbBake.pickPlan4
+      ? this.planOf4(P4, c) : null;
+    if (pk && pk.gears && !forceWant) {
+      const fps = WatchEngine.gearTempo(pk.gears);
+      this._hbFps = fps;
+      return { fps, want: fps, car, needle, rows: s ? s.rows : 0, cap: CAPS[want], measured: !!s, measuredAt: s ? s.f : 0, why: '', plan: pk, plans: P4.est.plans };
+    }
     /* Three cases. (1) Nothing measured for this movement: quote the wanted rate
      * so the build renders and measures something -- the _bp seatbelt bounds it.
      * (2) Measured, and it is THIS art that was priced: compute the tier.
@@ -355,7 +370,7 @@ class Component extends DCLogic {
     // the finish blended onto the plate-slot art is the DIAL's, so the surface that owns
     // the texture has to travel with it: changing Surface re-bakes these base frames
     if (bg.bgFinishBlend && bg.bgFinishBlend !== 'off') { bg.bgSurface = dsg.surface || 'enamel'; if (dsg.texture != null) bg.bgTexture = dsg.texture; if (dsg.weaveAngle != null) bg.bgWeaveAngle = dsg.weaveAngle; if (dsg.weaveScale != null) bg.bgWeaveScale = dsg.weaveScale; }
-    return Object.assign({ finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, shMove: +c.shMove, shRelief: c.shRelief == null ? 1 : +c.shRelief, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, caseOpen: +s.caseOpen, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: noframes ? 0 : this.B }, bg);
+    return Object.assign({ finish: c.finish, plate: c.plate, tick: c.tick, glow: +c.glow, beats: +c.balance, spokes: c.spokes, etching: c.etching, pinion: c.pinion, center: c.center, temp: +c.temp, innerAngle: +c.innerAngle, outerLight: +c.outerLight, outerAngle: +c.outerAngle, outerTemp: +c.outerTemp, hue: +c.hue, hueSat: +c.hueSat, outerHue: +c.outerHue, outerSat: +c.outerSat, plateAngle: +c.plateAngle, plateScale: +c.plateScale, orbD: +c.orbD, orbTip: +c.orbTip, cageD: +c.cageD, rearFinish: c.rearFinish, shAngle: +c.shAngle, shDist: +c.shDist, shBlur: +c.shBlur, shOp: +c.shOp, shMove: +c.shMove, shRelief: c.shRelief == null ? 1 : +c.shRelief, trainAngle: this.ready ? this.train(id).deg : 0, caseStyle: s.caseStyle, caseMetal: s.caseMetal, caseOpen: +s.caseOpen, glassStyle: s.glassStyle, train: s.train, seeds: s.seeds, frames: noframes ? 0 : this.B, tempo: noframes ? 0 : this.F }, bg);
   }
   mvKey(noframes) { const o = this.opts(null, noframes); ['tick', 'outerLight', 'outerAngle', 'outerTemp', 'outerHue', 'outerSat', 'shAngle', 'shDist', 'shBlur', 'shOp', 'shMove', 'caseStyle', 'caseMetal', 'caseOpen', 'glassStyle'].forEach((k) => delete o[k]); // under "no case" the plate-slot backdrop is built by the FACE, not baked into these frames -- the opening must be able to move without resampling it -- so the bank depends on which side of that option it was priced for
     o.noCase = this.state.caseStyle === 'none' ? 1 : 0; if (noframes) delete o.frames; return JSON.stringify(o); }
@@ -582,40 +597,29 @@ class Component extends DCLogic {
    * the caption lie about itself. */
   CAL_MIN = 0.5;
   CAL_MAX = 3;
-  _calSet = false;
-  cal() {
-    const c = +this.state.viewCal;
-    return c >= this.CAL_MIN && c <= this.CAL_MAX ? c : 1;
+  // the screen controller every editor shares (studio@1 S.viewer): this editor keeps the
+  // numbers in its own state (viewCal, diag) and the controller owns what they mean
+  get vw() {
+    if (!this._vw) this._vw = window.OrbStudio.viewer({
+      get: () => ({ view: this.state.view, zoom: this.state.zoom, fitPx: this.state.fitPx, cal: this.state.viewCal, open: this.state.diag }),
+      set: (p) => { const o = { ...p }; if ('cal' in o) { o.viewCal = o.cal; delete o.cal; } if ('open' in o) { o.diag = o.open; delete o.open; } this.setState(o); },
+      say: (t) => this.setState({ status: t }),
+    });
+    return this._vw;
   }
-  calibrated() { return !!this._calSet; }
+  cal() { return this.vw.cal(); }
+  calibrated() { return this.vw.calibrated(); }
   calStep() { return window.OrbTheme.screen.step(this.cal()); }
   loadCal() {
     const r = window.OrbTheme.screen.load();
-    if (r.set) { this._calSet = true; this.setState({ viewCal: r.cal }); }
+    if (r.set) this.setState({ viewCal: r.cal });
   }
-  setCal(v) {
-    this._calSet = true;
-    this.setState({ viewCal: window.OrbTheme.screen.save(v) });
-  }
-  // what a real ruler measures against the on-screen bar solves the factor outright
-  solveCal(mm) {
-    if (mm == null || String(mm).trim() === '') return;
-    const S = window.OrbTheme.screen, c = S.fromRuler(this.cal(), mm);
-    if (c == null) { this.setState({ status: 'Type what the ruler really measures, in mm — between 5 and 300' }); return; }
-    this.setCal(c);
-    this.setState({ status: 'Ruler matched at ' + (+mm) + ' mm · true size now draws the dial ' + S.PANEL_MM + ' mm across on this screen' });
-  }
-  // the bank card instrument: how wide the drawn outline really measures solves the factor
-  solveCard(mm) {
-    if (mm == null || String(mm).trim() === '') return;
-    const S = window.OrbTheme.screen, c = S.fromCard(this.cal(), mm);
-    if (c == null) { this.setState({ status: 'Type how wide the card outline really measures, in mm — between 20 and 400' }); return; }
-    this.setCal(c);
-    this.setState({ status: 'Card matched at ' + (+mm) + ' mm · true size now draws the dial ' + S.PANEL_MM + ' mm across on this screen' });
-  }
-  viewK() { const s = this.state; return window.OrbTheme.viewK({ view: s.view, zoom: s.zoom, fitPx: s.fitPx, cal: this.cal() }); }
-  setView(v) { this.setState((st) => ({ view: v, ...(v === 'zoom' && !(+st.zoom >= 1) ? { zoom: 2 } : {}) })); }
-  setZoom(z) { const k = Math.min(4, Math.max(1, +z || 1)); this.setState({ view: 'zoom', zoom: k }); }
+  setCal(v) { this.vw.setCal(v); }
+  solveCal(mm) { this.vw.solveRuler(mm); }
+  solveCard(mm) { this.vw.solveCard(mm); }
+  viewK() { return this.vw.view().k; }
+  setView(v) { this.vw.setView(v); }
+  setZoom(z) { this.vw.setZoom(z); }
   // everything the stage row needs, from the one view the OS works out
   viewVals() {
     const T = window.OrbTheme, s = this.state, cal = this.cal(), v = s.view;
@@ -713,9 +717,23 @@ class Component extends DCLogic {
    * draft with its art (the same document a theme carries); Send to orb bakes it into the
    * theme of that name. The dial rides along so the list can name the watch unopened. */
   library() { return this.session.library(); }
-  async saveDraft(name) {
-    const nm = String(name || '').trim() || this.state.themeName || this.preset().name;
-    if (await this.session.saveDraft({ name: nm, doc: Object.assign(await this.designDoc(true), { themeName: nm }), dial: this.state.dial })) this.setState({ mineName: '' });
+  // under the theme's name, from the Render step; quiet is Send to orb's first step. The
+  // draft carries a small picture of the watch at 10:09:36, as a dial tile is drawn, so the
+  // hub's lists show it before it is ever baked.
+  async saveDraft(quiet) {
+    const nm = this.themeName();
+    return this.session.saveDraft({ name: nm, doc: Object.assign(await this.designDoc(true), { themeName: nm }), dial: this.state.dial, thumb: this.draftThumb() }, quiet);
+  }
+  draftThumb() {
+    try {
+      const E = WatchEngine, o = this.opts(), hd = this.handDef(), d = new Date(); d.setHours(10, 9, 36, 0);
+      const mv = E.movement(o), gt = mv.render(0).gt, fc = E.face({ ...o, design: this.design(), hands: hd.style, handFinish: hd.finish });
+      const sc = document.createElement('canvas'); sc.width = sc.height = 466;
+      E.compose(sc.getContext('2d'), mv, gt, fc, d, {});
+      const t = document.createElement('canvas'); t.width = t.height = 96;
+      const x = t.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, 96, 96); x.drawImage(sc, 0, 0, 96, 96);
+      return t.toDataURL('image/jpeg', 0.82);
+    } catch (e) { return null; }
   }
   forgetEntry(nm, what) { return this.session.forgetEntry(nm, what); }
   openEntry(nm) { return this.session.openEntry(nm); }
@@ -741,7 +759,9 @@ class Component extends DCLogic {
   artRefs(D) {
     const d = D || (this.ready ? this.design() : { comps: [], hands: {} }), out = [];
     if (d.bgArt) out.push({ id: d.bgArt, usedBy: 'plate backdrop', slot: 'bg' });
-    if (d.sfArt) out.push({ id: d.sfArt, usedBy: 'dial surface', slot: 'sf' });
+    if (d.sfArt) out.push({ id: d.sfArt, usedBy: 'painted surface', slot: 'sf' });
+    if (d.mkArt) out.push({ id: d.mkArt, usedBy: 'dial markings', slot: 'mk' });
+    if (d.wdArt) out.push({ id: d.wdArt, usedBy: 'whole dial', slot: 'wd' });
     (d.comps || []).forEach((h) => { if (h.type === 'hand' && h.art) out.push({ id: h.art, usedBy: 'hand ' + h.id, slot: 'hand:' + h.id }); });
     (d.comps || []).forEach((c) => { if (c.icon === 'image' && c.img) out.push({ id: c.img, usedBy: c.type + ' #' + c.id, slot: 'comp:' + c.id }); });
     return out;
@@ -770,6 +790,31 @@ class Component extends DCLogic {
   /* The one upload path for every slot: gate the file, register it, and
    * write the reference into the design. The status line carries the measured reason
    * when the engine refuses it. */
+  /* Snap an art slot so its visible paint (after its see-through colour) spans the dial,
+   * centred: E.artSnap does the measuring, this lands Size and the offsets in one edit. */
+  snapArt(p) {
+    const E = window.WatchEngine, D = this.design() || {};
+    const r = D[p + 'Art'] && E.artSnap(D[p + 'Art'], D[p + 'Fit'] || 'cover', { color: D[p + 'Key'], tol: D[p + 'KeyTol'], edge: D[p + 'KeyEdge'] }, D[p + 'Rot']);
+    if (!r) { this.setState({ status: 'Nothing to snap: the image has no visible paint in this browser' }); return; }
+    this.upd((d) => { d[p + 'Size'] = r.size; d[p + 'X'] = r.x; d[p + 'Y'] = r.y; });
+    this.setState({ status: 'Snapped: the visible paint now spans the dial (Size ' + r.size + ' px' + (r.x || r.y ? ', offset ' + r.x + ', ' + r.y : '') + ')' });
+  }
+  /* The see-through colour picked off the dial: the slot's OWN image at the clicked point,
+   * drawn alone and unkeyed where the dial draws it, so the colour is the art's and not the
+   * finish, the print or the wear laid over it on the stage. */
+  pickSeeColour(p, x, y) {
+    const E = window.WatchEngine, D = this.design() || {}, id = D[p + 'Art'];
+    this.setState({ pickKey: null });
+    if (!id || !E.assetReady(id)) return;
+    const c = document.createElement('canvas'); c.width = c.height = 466;
+    const cx = c.getContext('2d');
+    E.artInDial(cx, id, { x: D[p + 'X'], y: D[p + 'Y'], size: D[p + 'Size'], fit: D[p + 'Fit'], clipR: 0, rot: +D[p + 'Rot'] ? +D[p + 'Rot'] * Math.PI / 180 : 0 });
+    let px = null; try { px = cx.getImageData(Math.max(0, Math.min(465, Math.round(x))), Math.max(0, Math.min(465, Math.round(y))), 1, 1).data; } catch (e) { px = null; }
+    if (!px || px[3] < 8) { this.setState({ status: 'Nothing of that image under that point \u2014 press Pick from the dial and click on its paint' }); return; }
+    const hex = '#' + [px[0], px[1], px[2]].map((v) => v.toString(16).padStart(2, '0')).join('');
+    this.upd((d) => { d[p + 'Key'] = hex; });
+    this.setState({ status: 'See-through colour ' + hex + ', picked off the image' });
+  }
   pickArt(file, slot, apply) {
     const E = window.WatchEngine;
     if (!file) return;
@@ -1038,6 +1083,7 @@ class Component extends DCLogic {
        * this on landing, in its own commit. */
       else if (st === 'priced' && this._mk !== this.mvKey()) this.buildGate();
     }
+    this.liveSoon();   // §49.15: the plans, priced live once the dial settles
     /* The escapement cannot beat 4 times a second at a tempo that paints fewer
      * than 12 frames a second -- it just aliases. The chips hide the option, and
      * this drops a selection made while the dial was tighter. Reading this.F here
@@ -1120,9 +1166,11 @@ class Component extends DCLogic {
    * so a 4/s -> sweep -> 4/s round trip asks three or four legitimate rebuilds of
    * one unchanged art signature -- counted against a per-art budget of three, the
    * last flip never builds, gt.length no longer equals the bank B, and the frame
-   * timer's guard freezes the movement on screen forever. */
+   * timer's guard freezes the movement on screen forever. A baked plan (§49.15) is a wanted
+   * rate too: its re-time is one more legitimate rebuild, and it opens its own window. */
   buildGate() {
-    const ak = this.artKey() + '|' + this.cfg().tick;
+    const pl = this.budget().plan;
+    const ak = this.artKey() + '|' + this.cfg().tick + (pl && window.GorbBake ? '|' + GorbBake.planKey4(pl) : '');
     if (ak !== this._bk) { this._bk = ak; this._bp = 0; }
     if (this._bp < 5) { this._bp++; this.buildMovement(); }
   }
@@ -1558,13 +1606,13 @@ class Component extends DCLogic {
   ptK(e, k) { const r = e.currentTarget.getBoundingClientRect(); const x = ((e.clientX - r.left) / r.width) * 466, y = ((e.clientY - r.top) / r.height) * 466; return [233 + (x - 233) / k, 233 + (y - 233) / k]; }
   pt(e) { const fc = this.face(); return this.ptK(e, ((fc && fc.inset) || 1) * ((fc && fc.dynK) || 1)); }
   ptArt(e) { const fc = this.face(); return this.ptK(e, (fc && fc.inset) || 1); }
-  /* Which of the two art slots a dial drag pans. Asked outright rather than guessed:
-   * both can hold art at once, and quietly moving the wrong one wastes more of the
-   * author's time than one chip does. */
+  /* The art slot a drag on the dial pans: only the one the author switched on with its
+   * "Drag the dial to pan this image" chip. Falling back to any slot that held art made
+   * every click on an art dial a pan and every selection a jump to the art controls, so
+   * the dial's other tools read as gone (owner, 2026-11-05). */
   artSlot() {
-    const D = this.design() || {}, s = this.state.artSlot, has = (p) => !!D[p + 'Art'];
-    if (has(s)) return s;
-    return has('sf') ? 'sf' : has('bg') ? 'bg' : null;
+    const D = this.design() || {}, s = this.state.artSlot;
+    return s && D[s + 'Art'] ? s : null;
   }
   /* Selecting is not only a highlight: the Editing Pane jumps to the pane that can
    * change what was grabbed, because a selected hand under the Dial tab is a tool that
@@ -1581,7 +1629,7 @@ class Component extends DCLogic {
     const D = this.design() || {};
     if (t.kind === 'hand' || t.kind === 'comp') return t.id ? t.kind + '-' + t.id : null;
     // the plate backdrop's controls live on the Movement tab, so only the dial's own slot is a dial target
-    if (t.kind === 'dial') { const p = this.artSlot(); return p === 'sf' && D.sfArt ? 'art-sf' : '#'; }
+    if (t.kind === 'dial') { const p = this.artSlot(); return p && p !== 'bg' ? 'art-' + p : '#'; }
     // the geartrain opens at the top of the Movement tab, the clock insides at its Backdrop
     if (t.kind === 'move') return t.id === 'movement' ? 'move-backdrop' : '#';
     return null;
@@ -1652,6 +1700,7 @@ class Component extends DCLogic {
     const fc = this.face(); if (!fc) return;
     const d = this.now(), [x, y] = this.pt(e);
     if (this.state.calib) { this.calibPoint(x, y); return; }
+    if (this.state.pickKey) { const [ax, ay] = this.ptArt(e); this.pickSeeColour(this.state.pickKey, ax, ay); return; }
     /* Where several things overlap, a second click on the same spot steps down the
      * stack -- the layer picker every design tool has. Without it a 12 o'clock date
      * window is unreachable for the whole life of the seconds hand that sweeps it,
@@ -2010,7 +2059,7 @@ class Component extends DCLogic {
       // an asset can fill both backdrop slots at once; price it in each and report the
       // worst verdict, so sharing one image between plate and dial cannot hide an upscale
       const cands = [];
-      ['bg', 'sf'].forEach((p) => { if (D && id === D[p + 'Art']) { const s = D[p + 'Size'] == null ? 442 : +D[p + 'Size']; cands.push({ box: [s, s], fit: E.assetFits(id, s, s, D[p + 'Fit'] || 'cover') }); } });
+      ['bg', 'sf', 'mk', 'wd'].forEach((p) => { if (D && id === D[p + 'Art']) { const s = D[p + 'Size'] == null ? 442 : +D[p + 'Size']; cands.push({ box: [s, s], fit: E.assetFits(id, s, s, D[p + 'Fit'] || 'cover') }); } });
       if (!cands.length) cands.push({ box: [a.w, a.h], fit: E.assetFits(id, a.w, a.h, 'contain') });
       const pick = cands.filter((q) => !q.fit.ok)[0] || cands[0];
       const box = pick.box, fit = pick.fit;
@@ -2062,6 +2111,13 @@ class Component extends DCLogic {
         || this._mk !== this.mvKey()) return null;
     return { M, gt, B, fps, fc };
   }
+  /* §49.15: the sweep's beat a banked dial ships — its plan's hand grid (7.5 names 8), once a
+   * bake has priced the plans. A carriage keeps Oct 23's rule: its own beat binds the sweep. */
+  sweepBeat3(pol) {
+    if (this.cfg().tick !== 'sweep' || (pol && pol.carriage)) return 0;
+    const b = this.budget();
+    return b.plan && b.plan.fps ? WatchEngine.gearTempo(b.plan.fps) : 0;
+  }
   /* An error thrown anywhere inside the bake must surface on the status line.
    * The hub window has no console, and before this a throw past t3bake's own
    * try left the status frozen mid-sentence with no explanation at all. */
@@ -2112,7 +2168,8 @@ class Component extends DCLogic {
   get _cancel3() { return this.sender.cancelRequested; }
   cancelSend3() { this.sender.cancel(); }
   _cancelled3() { return this.sender.cancelled(); }
-  sendTheme3ToOrb() { return this.sender.send(this.themeName(), () => this.exportTheme3({ send: true })); }
+  // the library keeps it first: a send the orb refuses still leaves the watch on the hub
+  sendTheme3ToOrb() { return this.sender.send(this.themeName(), async () => { await this.saveDraft(true); return this.exportTheme3({ send: true }); }); }
   replaceArmed3() { return this.sender.replace(); }
   dismissDup3() { this.sender.dismiss(); }
   // the clock keeps the found address in its state (the Render step's label reads it), so
@@ -2469,19 +2526,16 @@ class Component extends DCLogic {
     parts.push(te.encode('|sc:' + JSON.stringify(opts.scalars || null) +
       '|pf:' + (opts.plate && opts.plate.fps ? opts.plate.fps : 0) +
       '|cf:' + (opts.carriage && opts.carriage.fps ? opts.carriage.fps : 0) +
-      '|dp:' + (opts.depthOrder ? opts.depthOrder.join(',') : '')));
+      '|dp:' + (opts.depthOrder ? opts.depthOrder.join(',') : '') +
+      '|ss:' + (opts.secShadowSmooth ? 1 : 0)));   // the switch moves only row flags, so it is named here
     let len = 0; for (const p of parts) len += p.length;
     const buf = new Uint8Array(len); let at = 0; for (const p of parts) { buf.set(p, at); at += p.length; }
     return G.crc32(buf) >>> 0;
   }
-  /* The split's other half: decide carriers off the measurement, assemble the
-   * planes the bake wants, and download under the id the card will file it by.
-   * A second method only because the first one holds the walk's ~8 MB of
-   * frame pixels in its locals and the bake should not also hold its stack. */
-  async t3bake(nm, fc, M, gt, B, fps, send) {
-    const G = window.GorbBake;
-    const { pxs, un, bw, bh, compRows, compB, auxRows, auxB, orbital, carW, carH, onlyBase, wheelRows, cover } = this._t3; this._t3 = null;
-    const pixOf = (c) => this.wbPix(new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer));
+  /* The seated hands and their cast shadows as bake rows (sprite, pivot, place, drive), through
+   * the face's lens. One builder for the export (t3bake) and the live plan price (livePlan4), so
+   * the price is of the rows the bake ships. */
+  handRows3(fc, pixOf) {
     const ROLE = this.handSeats3(this.design());
     const hands = [], shadows = [];
     let oth = 0, sdx = 0, sdy = 0;
@@ -2538,6 +2592,158 @@ class Component extends DCLogic {
         if (ROLE[h.id] === 0) { sdx = dx; sdy = dy; }   // theme-wide light = the hour hand's
       }
     }
+    return { hands, shadows, oth, sdx, sdy };
+  }
+  /* §49.15: the plans priced live, without baking the bank. The bank is priced the way the bake
+   * would see it: the plate walked frame by frame exactly as the export's motion walk composes it
+   * (frameCanvas, the same layers hidden), each frame's changed box taken at the encoder's own
+   * floor (DELTA_TOL, summed |dRGBA|) — and the rows that move go through the baker as the export
+   * builds them (handRows3, the pointer pass, the carriage) on a blank plate, a fraction of a
+   * second. estimate4 reads that section with the measured bank in place of a baked one. The walk
+   * yields between frames so the editor stays live, and gives up (null) when the dial changes
+   * under it. Comps and wheels are left out: still or slow rows, whose bytes the bake still checks. */
+  async livePlan4(key) {
+    const G = window.GorbBake;
+    if (!G || !G.estimate4 || !G.bakeClock3) return null;
+    const st = this.settled3();
+    if (!st) return null;
+    const c = this.cfg(), D = this.design(), fc = st.fc, M = st.M, B = st.B;
+    const stale = () => this.live4Key() !== key || !this.settled3();
+    const pixOf = (cv) => this.wbPix(new Uint8Array(cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data.slice().buffer));
+    const yieldNow = () => new Promise((r) => setTimeout(r, 0));
+    try {
+      const plan = G.compPlan3(D.comps), pp = this.pointerRows3(D, plan), wp = G.wheelPlan3(D.comps);
+      const liveIds = plan.rows.map((r) => r.id);
+      const onlyBase = (D.comps || []).filter((x) => liveIds.indexOf(String(x.id)) < 0 && x.type !== 'opening' && x.type !== 'hand'
+        && x.type !== 'wheel' && x.type !== 'cutout' && !(x.type === 'flare' && x.icon === 'datetext')).map((x) => String(x.id));
+      const rowsOff = plan.rows.length || wp.rows.length;
+      // the bank: frames as the walk composes them, each diffed as the encoder diffs it — against
+      // the picture the deltas so far rebuild (rowDelta's running canvas), at its floor, so a slow
+      // drift under the floor in any one step still lands once it has added up
+      const T = G.DELTA_TOL || 16, rects = [];
+      let canvas = null, first = null;
+      for (let f = 0; f <= B; f++) {
+        const cur = f < B ? pixOf(this.frameCanvas(f, { hands: 1, glass: 1, outer: 1, cage: 1, sealed: rowsOff ? 1 : 0 }, null, rowsOff ? onlyBase : undefined)) : first;
+        if (!first) { first = cur; canvas = cur.slice(); }
+        else {
+          let x0 = 466, y0 = 466, x1 = -1, y1 = -1;
+          for (let p = 0, i = 0; p < 466 * 466; p++, i += 4) {
+            if (Math.abs(cur[i] - canvas[i]) + Math.abs(cur[i + 1] - canvas[i + 1]) + Math.abs(cur[i + 2] - canvas[i + 2]) + Math.abs(cur[i + 3] - canvas[i + 3]) <= T) continue;
+            const x = p % 466, y = (p / 466) | 0;
+            if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+          }
+          if (x1 < 0) rects.push({ w: 0, h: 0, diffx: 0, diffy: 0 });
+          else {
+            rects.push({ w: x1 - x0 + 1, h: y1 - y0 + 1, diffx: x0, diffy: y0 });
+            for (let y = y0; y <= y1; y++) { const o = (y * 466 + x0) * 4; canvas.set(cur.subarray(o, o + (x1 - x0 + 1) * 4), o); }
+          }
+        }
+        await yieldNow();
+        if (stale()) return null;
+      }
+      const hr = this.handRows3(fc, pixOf);
+      let auxRows = [];
+      if (pp.rows.length) { const ap = await this.auxPass3(pp, onlyBase); if (ap.refuse) return null; auxRows = ap.rows; }
+      if (stale() || (!hr.hands.length && !auxRows.length)) return null;
+      const blank = new Uint8Array(466 * 466 * 4);
+      for (let i = 3; i < blank.length; i += 4) blank[i] = 255;
+      const opts = { name: 'live', serial: 0, bakedMs: 0, plate: { rgba: blank, w: 466, h: 466 }, hands: hr.hands,
+                     order: hr.hands.map((h) => h.slot), secShadowSmooth: +c.shSmooth === 1 };
+      if (hr.shadows.length) { opts.shadows = hr.shadows; opts.scalars = { shadow_on: 1, shadow_dx: hr.sdx, shadow_dy: hr.sdy }; }
+      if (auxRows.length) opts.aux = auxRows;
+      if (c.tick && c.tick !== 'sweep') opts.scalars = Object.assign(opts.scalars || {}, { second_sweep: 0, tick_rate: Math.max(1, Math.min(255, +c.tick | 0)) });
+      if (M.cageAt) {
+        const cp = this.carriagePlanes3(fc, B);
+        if (cp && cp.planes.length > 1) {
+          const cf = cp.planes.map((im) => { const cv = document.createElement('canvas'); cv.width = im.width; cv.height = im.height; cv.getContext('2d').drawImage(im, 0, 0); return { rgba: pixOf(cv), w: im.width, h: im.height }; });
+          if (cf.every((q) => q.w === cf[0].w && q.h === cf[0].h))
+            opts.carriage = { x: 0, y: 0, w: cf[0].w, h: cf[0].h, pivot_x: cp.pivot[0], pivot_y: cp.pivot[1],
+                              degrees: G.carriageStart3(M.cageOff), fps: st.fps, frames: cf };
+        }
+      }
+      const r = G.bakeClock3(opts);
+      return G.estimate4(G.verifyBundle3(r.bytes).sections[0], { bank: rects.some((q) => q.w) ? rects : null, bankFps: st.fps, favour: c.favour || 'sweep' });
+    } catch (e) { this._plan4Err = (e && e.stack) || String(e); return null; }
+  }
+  /* The plan a priced record names: once live has verified its plans (each on a bank at its own
+   * tempo), the exact Plan or the Favour's best among them, so a Favour change lands at once;
+   * while it is still exploring a tempo, or for a bake's own record, the estimate's pick. */
+  planOf4(P4, c) {
+    const G4 = window.GorbBake;
+    if (P4.live && !P4.explore) return (c.plan && P4.est.plans.find((x) => G4.planKey4(x) === c.plan)) || G4.bestPlan4(P4.est.plans, c.favour || 'sweep');
+    return G4.pickPlan4(P4.est, c.favour || 'sweep', c.plan || P4.key || '');
+  }
+  /* What the live price depends on: the priced art, the tempo and depth its bank was drawn at
+   * (the plan it picks redraws the bank: Regulator's balance throws its widest rects at 5 fps,
+   * not at 4), the seconds hand's mode and the shadow switch. */
+  live4Key() {
+    const c = this.cfg();
+    // the Favour and the Plan are in it too: a new one may want a tempo not yet priced
+    return this.artKey(this.mvKey(1)) + '|' + this.F + '@' + this.B + '|' + c.tick + '|' + (+c.shSmooth === 1 ? 1 : 0) + '|' + (c.favour || 'sweep') + '|' + (c.plan || '');
+  }
+  /* Re-price once the dial settles after an edit: a quarter second of quiet first, so a slider
+   * drag prices once at the end, not on every step. One walk at a time. */
+  liveSoon() {
+    if (!this.settled3()) return;
+    const k = this.live4Key();
+    if (k === this._liveKey || k === this._livePending) return;
+    if (this._liveTimer) clearTimeout(this._liveTimer);
+    this._livePending = k;
+    this._liveTimer = setTimeout(async () => {
+      this._liveTimer = 0;
+      if (this._liveBusy) { this._livePending = null; return; }
+      this._liveBusy = true;
+      let e = null;
+      try { e = await this.livePlan4(k); } finally { this._liveBusy = false; this._livePending = null; }
+      if (this.live4Key() !== k) return;            // the dial moved on: the next update re-prices
+      this._liveKey = k;
+      if (!e) return;
+      const c = this.cfg(), G4 = window.GorbBake, ak = this.artKey(this.mvKey(1)), shs = +c.shSmooth === 1 ? 1 : 0;
+      /* A plan's gears redraw the bank, and the bank's rects are its price: a plan is only
+       * verified by an estimate priced on a bank drawn at its own tempo (§49.15: Sector at 8 fps
+       * fits only 15/15, at 15 fps only 7.5/15 — chasing each estimate's own pick flips forever).
+       * Every tempo this design has been priced at is kept; a pick at a tempo not yet priced is
+       * explored, and once none is left the favour chooses among the verified plans. */
+      const sk = ak + '|' + c.tick + '|' + shs;
+      if (!this._liveBy || this._liveBy.key !== sk) this._liveBy = { key: sk, at: {} };
+      const at = this._liveBy.at, T = WatchEngine.gearTempo, K = G4.planKey4;
+      at[this.F] = e;
+      // every plan that fits on any bank priced so far; verified where it was priced at its own tempo
+      const fitsAt = (t, x) => at[t] && at[t].policy.some((y) => y.ok && y.fps === x.fps && y.gears === x.gears);
+      const seen = {}, cand = [];
+      Object.keys(at).forEach((t) => at[t].policy.forEach((x) => { if (x.ok && !seen[K(x)]) { seen[K(x)] = 1; cand.push(x); } }));
+      const verified = cand.filter((x) => !x.gears || fitsAt(T(x.gears), x));
+      let est = e, key = '', explore = false;
+      for (let left = c.plan ? cand.filter((x) => K(x) === c.plan).concat(cand) : cand.slice(); left.length; ) {
+        const best = c.plan && K(left[0]) === c.plan ? left[0] : G4.bestPlan4(left, c.favour || 'sweep');
+        const tt = best.gears ? T(best.gears) : this.F;
+        if (!at[tt]) { key = K(best); explore = true; break; }                          // price its own tempo next
+        if (!best.gears || fitsAt(tt, best)) { key = K(best); break; }                  // verified
+        left = left.filter((x) => K(x) !== K(best));                                    // fails at its own tempo
+      }
+      if (!explore) {
+        const vf = verified.filter((x) => !verified.some((y) => y !== x && y.fps >= x.fps && y.gears >= x.gears && (y.fps > x.fps || y.gears > x.gears)));
+        const chosen = vf.find((x) => K(x) === key) || verified.find((x) => K(x) === key);
+        est = Object.assign({}, chosen && chosen.gears ? at[T(chosen.gears)] : e, { plans: vf.sort((p, q) => q.fps - p.fps || q.gears - p.gears) });
+      }
+      (this._liveHist = this._liveHist || []).push(this.F + ':' + key);
+      if (this._liveDebug) console.log('LIVE ' + this._liveHist.slice(-1)[0] + ' plans ' + e.plans.map(G4.planKey4).join(' ') + ' B ' + this.B);
+      this._plan4 = { ak, tick: c.tick, shs, est, key, explore, live: true };
+      this.forceUpdate();
+    }, 250);
+  }
+  /* The split's other half: decide carriers off the measurement, assemble the
+   * planes the bake wants, and download under the id the card will file it by.
+   * A second method only because the first one holds the walk's ~8 MB of
+   * frame pixels in its locals and the bake should not also hold its stack. */
+  async t3bake(nm, fc, M, gt, B, fps, send) {
+    const G = window.GorbBake;
+    const { pxs, un, bw, bh, compRows, compB, auxRows, auxB, orbital, carW, carH, onlyBase, wheelRows, cover } = this._t3; this._t3 = null;
+    const pixOf = (c) => this.wbPix(new Uint8Array(c.getContext('2d').getImageData(0, 0, c.width, c.height).data.slice().buffer));
+    const ROLE = this.handSeats3(this.design()), Dm = this.design();
+    const hr3 = this.handRows3(fc, pixOf), hands = hr3.hands, shadows = hr3.shadows;
+    let oth = hr3.oth;
+    const sdx = hr3.sdx, sdy = hr3.sdy;
     // D43 P5d.2: a dial whose every hand rides a fan, a slider or a sub-dial ships them all as
     // pointer rows; it is only a dial with no hand at all that has nothing to show the time
     // (an exposed ring read at its index tells the time without a hand: Orbit)
@@ -2618,7 +2824,9 @@ class Component extends DCLogic {
     const opts = { name: nm, serial: 0,
                    // clock_view draws order[i] VERBATIM as the hand-slot id (no +1:
                    // that was FORMAT 2's show-table dialect; bake_clock.py writes raw ids too).
-                   bakedMs: Date.now(), plate, hands, order: hands.map((h) => h.slot) };
+                   bakedMs: Date.now(), bakedS: Math.floor(Date.now() / 1000), plate, hands, order: hands.map((h) => h.slot),
+                   // §49.15: the seconds hand always smooths; its turning shadow only on the switch
+                   secShadowSmooth: +this.cfg().shSmooth === 1 };
     if (shadows.length) { opts.shadows = shadows; opts.scalars = Object.assign(opts.scalars || {}, { shadow_on: 1, shadow_dx: sdx, shadow_dy: sdy }); }
     // The Motion dropdown's verdict, worn on the wire.
     // A TICK names both scalars — second_sweep 0 and its own beat — so the dial
@@ -2643,12 +2851,14 @@ class Component extends DCLogic {
     const _sd = this.driveCols3('second', (Object.keys(ROLE).filter((id) => ROLE[id] === 2).map((id) => this.handComp(id, Dm))[0] || {}).motion);
     if (_sd && _sd.cadence) {
       opts.scalars = Object.assign(opts.scalars || {}, _sd.cadence === 1 || _sd.cadence === 4
-        ? { second_sweep: 1, tick_rate: Math.max(2, Math.min(255, this.devFps() | 0)) }
+        ? { second_sweep: 1, tick_rate: Math.max(2, Math.min(255, (this.sweepBeat3(pol) || this.devFps()) | 0)) }
         : { second_sweep: 0, tick_rate: _sd.cadence === 2 ? _sd.cad_arg : 1 });
     } else if (_mo && _mo !== 'sweep')
       opts.scalars = Object.assign(opts.scalars || {}, { second_sweep: 0, tick_rate: Math.max(1, Math.min(255, +_mo | 0)) });
     else if (pol.carrier === 'still' && !pol.carriage)
       opts.scalars = Object.assign(opts.scalars || {}, { second_sweep: 1, tick_rate: Math.max(1, Math.min(255, this.devFps() | 0)) });
+    else if (this.sweepBeat3(pol))
+      opts.scalars = Object.assign(opts.scalars || {}, { second_sweep: 1, tick_rate: Math.round(this.sweepBeat3(pol)) });
     const cpol = pol.carriage;
     if (cpol) {
       /* The planes come from carriagePlanes3 — the kit's own device-space draw, the
@@ -2726,6 +2936,36 @@ class Component extends DCLogic {
        * policy is asked again with it: the same pure answer, now carrying est_fps and
        * the rung, so the sentence names the rate before the file leaves the room. */
       if (r.est) { pol = G.splitPolicy3(Object.assign({}, m3p, { est: r.est })); this._est3 = r.est; }
+      /* §49.15: the bytes price every plan on the 60 Hz grid. The Favour (or an exact plan)
+       * picks one; when its gear tempo is not the one this bake drew, the bank is redrawn at
+       * it and baked once more. The art key does not read the tempo, so the plan holds
+       * across the redraw and the second bake ships as it stands. */
+      if (G.estimate4) {
+        const c4 = this.cfg();
+        let e4 = null;
+        try { e4 = G.estimate4(G.verifyBundle3(r.bytes).sections[0], { favour: c4.favour || 'sweep' }); this._plan4Err = null; } catch (e) { e4 = null; this._plan4Err = (e && e.stack) || String(e); }
+        const ak4 = this.artKey(this.mvKey(1)), shs4 = +c4.shSmooth === 1 ? 1 : 0, L4 = this._plan4;
+        /* a settled live plan for this design (each plan priced at its own tempo) is the answer:
+         * the bake ships it as drawn and does not re-time to the one estimate its bytes give */
+        if (e4 && L4 && L4.live && !L4.explore && L4.ak === ak4 && L4.tick === c4.tick && L4.shs === shs4) {
+          this._plan4Shipped = this.planOf4(L4, c4);
+        } else if (e4) {
+          this._plan4 = { ak: ak4, tick: c4.tick, shs: shs4, est: e4 };
+          const pk = G.pickPlan4(e4, c4.favour || 'sweep', c4.plan || '');
+          const want4 = pk && pk.gears ? WatchEngine.gearTempo(pk.gears) : 0;
+          /* a sweep names the plan's hand grid as its beat (tick_rate), so a plan the first bake
+           * learned also re-bakes when the beat it shipped is not the plan's */
+          const beat4 = opts.scalars && opts.scalars.second_sweep ? opts.scalars.tick_rate : 0;
+          const wantBeat = pk && this.sweepBeat3(pol) ? pk.fps : 0;
+          if (want4 && (want4 !== fps || (wantBeat && Math.round(wantBeat) !== beat4)) && !opts._retimed) {
+            this.setState({ status: 'Re-timing the gears to ' + pk.gears + ' fps for the ' + pk.fps + ' fps hands (' + G.planKey4(pk) + ')\u2026' });
+            for (const t0 = Date.now(); Date.now() - t0 < 1500 && this.settled3();) await new Promise((rs) => setTimeout(rs, 100));
+            for (const t0 = Date.now(); !this.settled3() && Date.now() - t0 < this.REBAKE_SETTLE_MS;) await new Promise((rs) => setTimeout(rs, 250));
+            return this._export3Body(Object.assign({}, opts, { _retimed: 1 }));
+          }
+          this._plan4Shipped = pk;
+        }
+      }
       const stem0 = await this.cardStemFor(G, nm);
       const stem = (stem0 || nm.replace(/[^\w.-]+/g, '-').slice(0, G.NAME_MAX - 1));
       const bytes = r.bytes;
@@ -3283,11 +3523,13 @@ class Component extends DCLogic {
         cap: { text: R.stackCapShort, color: R.stackCapFg, tip: 'R6: the live rows the bake ships (hands and their shadow twins, the discs\u2019 value rows, the carriage) against the dial\u2019s cap' },
         add: { label: R.addLabel, on: R.toggleAdd, tip: 'Open the parts catalogue on the right: hands, sub-dials, windows, a moon, openings, flares' } },
       studioFields: { fields: R.fields },
+      studioOpening: { line: this.session.opening },
       studioSend: T.sendProps(s.sending, s.status, R.sendCancel),
       studioDup: T.dupProps(s.dup, R.dupReplace, R.dupCancel),
       studioRender: {
         badge: { text: R.badgeText, note: R.badgeNote, tip: R.badgeTip, color: R.badgeFg, border: R.badgeBd, background: R.badgeBg },
         send: R.isHub ? { note: R.sendNote, tip: R.sendTip, on: R.sendToOrb } : null,
+        save: R.isHub ? { note: 'keep \u201c' + this.themeName() + '\u201d on the hub as a draft, art included', on: () => this.saveDraft(), tip: 'Keep this watch in the hub library under its name, without baking or sending it. Under a theme\u2019s name it is that theme\u2019s unsent changes until Send to orb bakes them in. Send to orb saves it too.' } : null,
         downloads: [
           { label: 'Download .orbtheme', note: R.themeNote, on: R.exportTheme, title: 'The same .orbtheme Send to orb bakes, downloaded: the baked dial, ready for any orb\u2019s Themes tab, with its design inside so the editor can open it again.' },
         ],
@@ -3380,6 +3622,7 @@ class Component extends DCLogic {
         else R('Width', 'w', 0, 120, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);   // an arc's width is its sweep
         R('Height', 'h', 0, 80, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);
         Sx('Frame', 'style', opt(E.COMP_STYLES.cutout));
+        if (!sel.shape || sel.shape === 'window' || sel.shape === 'round') Cx('Magnifier', 'lens', opt(E.LENSES), 'none');
         selFields.push(Sl('Join with', sel.join || '', [{ v: '', label: 'Nothing \u00b7 its own frame' }].concat(mates.map((c) => ({ v: c.id, label: '#' + num(c.id) + ' on ' + compTitle(D.comps.find((q) => q.id === c.host) || {}) }))), (v) => this.setComp(sel.id, { join: v || undefined })));
         if (sel.join) Cx('Centre bar', 'bar', [{ v: true, label: 'Bar between' }, { v: false, label: 'No bar' }], true);
         }
@@ -3663,33 +3906,49 @@ class Component extends DCLogic {
       const surf = D.surface || 'enamel', ud = (k) => (v) => this.upd((d) => { d[k] = v; });
       const id = D[p + 'Art'] || null, a = id && E.assetGet(id);
       const box = D[p + 'Size'] == null ? 442 : +D[p + 'Size'];
-      const zm = D[p + 'Zoom'] == null ? 1 : +D[p + 'Zoom'];
       const rot = Math.round(+D[p + 'Rot'] || 0);
       const bm = D[p + 'FinishBlend'] || 'off';
-      const fits = id ? E.assetFits(id, box, box, D[p + 'Fit'] || 'cover', zm) : null;
-      const drop = () => this.upd((d) => { [p + 'Art', p + 'Fit', p + 'Zoom', p + 'X', p + 'Y', p + 'Size', p + 'Opacity', p + 'Rot', p + 'FinishBlend', p + 'FinishColor', p + 'FinishKey', p + 'FinishKeyTol'].forEach((k) => delete d[k]); });
+      const fits = id ? E.assetFits(id, box, box, D[p + 'Fit'] || 'cover', 1) : null;
+      const drop = () => { this.upd((d) => { [p + 'Art', p + 'Fit', p + 'Zoom', p + 'X', p + 'Y', p + 'Size', p + 'Opacity', p + 'Rot', p + 'FinishBlend', p + 'FinishColor', p + 'FinishKey', p + 'FinishKeyTol', p + 'Key', p + 'KeyTol', p + 'KeyEdge'].forEach((k) => delete d[k]); }); if (this.state.artSlot === p || this.state.pickKey === p) this.setState({ artSlot: null, pickKey: null }); };
       const out = [H(title, 'art-' + p),
         Fi('Image', (e) => {
           const file = e.target.files && e.target.files[0]; if (!file) return;
-          this.pickArt(file, title.split(' · ')[0].toLowerCase(), (aid) => this.upd((d) => { d[p + 'Art'] = aid; }));
+          // an image whose paint sits inside transparent margins (an SVG on a bigger canvas)
+          // snaps to the dial as it lands; a full-bleed picture keeps the cover fit
+          this.pickArt(file, title.split(' · ')[0].toLowerCase(), (aid) => this.upd((d) => {
+            d[p + 'Art'] = aid;
+            const r = E.artSnap(aid, d[p + 'Fit'] || 'cover', null, d[p + 'Rot']);
+            if (r && r.margin) { d[p + 'Size'] = r.size; d[p + 'X'] = r.x; d[p + 'Y'] = r.y; }
+          }));
         }, id ? (E.assetReady(id) ? 'loaded' : 'missing') : 'none yet')];
       if (!id) { out.push(Nt('', blurb)); return out; }
       out.push(Sl('Fit', D[p + 'Fit'] || 'cover', [{ v: 'cover', label: 'Cover · fill the dial, crop the overflow' }, { v: 'contain', label: 'Contain · whole image inside the dial' }, { v: 'stretch', label: 'Stretch · ignore the aspect' }], ud(p + 'Fit')),
         Rg('Offset X', +D[p + 'X'] || 0, -220, 220, 1, ud(p + 'X'), (+D[p + 'X'] || 0) + 'px'),
         Rg('Offset Y', +D[p + 'Y'] || 0, -220, 220, 1, ud(p + 'Y'), (+D[p + 'Y'] || 0) + 'px'),
-        Rg('Size', box, 60, 940, 1, ud(p + 'Size'), box + 'px'),
-        // Zoom is separate from Size because Size is the box the FIT works in: at
-        // cover, enlarging Size enlarges the crop window and the visible content
-        // together, while Zoom keeps the framing and resamples the art about the
-        // centre. The dial clip is applied after both, so a zoomed image still
-        // cannot cross the rehaut.
-        Rg('Zoom', zm, 0.2, 4, 0.01, ud(p + 'Zoom'), zm.toFixed(2) + '\u00d7'),
+        // one scale: the box the Fit works in. A separate Zoom multiplied into the same box and
+        // did nothing Size could not (owner, 2026-11-05); canonDesign folds an old one in here
+        Rg('Size', box, 60, 1880, 1, ud(p + 'Size'), box + 'px'),
         // Rotation turns the picture about its own centre, the same point the pan
         // offsets carry: aim an artwork that was scanned crooked without touching
         // Size or Offset, and the guide's dashed frame turns with it.
         Rg('Rotate', rot, 0, 359, 1, ud(p + 'Rot'), rot + '\u00b0'),
         Rg('Opacity', D[p + 'Opacity'] == null ? 1 : +D[p + 'Opacity'], 0, 1, 0.01, ud(p + 'Opacity'), Math.round((D[p + 'Opacity'] == null ? 1 : +D[p + 'Opacity']) * 100) + '%'));
-      if (rot) out.push(Nt('', 'A rotated cover image can bring its edge inside the dial: raise Size or Zoom until the corners are covered again.'));
+      if (rot) out.push(Nt('', 'A rotated cover image can bring its edge inside the dial: raise Size until the corners are covered again.'));
+      /* The see-through colour: the art's pixels near it go clear, so a markings image on a
+       * white sheet lets the dial show through, or a whole dial opens onto the movement. Two
+       * absolute distances from the colour, neither moving the other: Clear within is the
+       * background, Solid beyond is ink, and between them the engine reads an antialiased
+       * mix -- part-clear, with the key colour taken back out of it (E.seeThrough). */
+      if (p !== 'bg') {
+        const kt = D[p + 'KeyTol'] == null ? E.SEE_TOL_DEF : +D[p + 'KeyTol'], ke = D[p + 'KeyEdge'] == null ? E.SEE_EDGE_DEF : +D[p + 'KeyEdge'];
+        const picking = this.state.pickKey === p;
+        out.push(Co('See-through colour', D[p + 'Key'], (v) => this.upd((d) => { d[p + 'Key'] = /^#[0-9a-f]{6}$/i.test(v) ? v : 'none'; }), null, p + 'see', { none: true, noAuto: true }),
+          mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'pick', label: picking ? 'Click the image on the dial \u00b7 press to cancel' : 'Pick from the dial', bg: '#1c2330', bd: picking ? '#58a6ff' : '#2b3540', fg: '#e6edf3', pick: () => this.setState({ pickKey: picking ? null : p }) }] }),
+          Nt('', isHexColor(D[p + 'Key'])
+            ? 'Within ' + kt + ' of ' + D[p + 'Key'] + ' is clear, from ' + ke + ' out is solid, and between them the edge is antialiased, so ' + (p === 'wd' ? 'the movement shows through.' : p === 'mk' ? 'the dial under the markings shows through.' : 'the dial\u2019s own surface shows through.')
+            : 'Optional. Pick the colour of the image\u2019s background (white for a printed sheet) off the dial, or set it here, to make it see-through.'));
+        if (isHexColor(D[p + 'Key'])) out.push(Rg('Clear within', kt, 0, 255, 1, ud(p + 'KeyTol'), kt + ' / 255'), Rg('Solid beyond', ke, 0, 255, 1, ud(p + 'KeyEdge'), ke <= kt ? ke + ' / 255 \u00b7 hard edge' : ke + ' / 255'));
+      }
       /* The surface finish the dial would wear with no art (Surface, under Colour) is
        * drawn UNDER the picture, so an opaque image buries it. This lays the texture
        * back over the art in one composite pass, tinted to the author's target colour:
@@ -3697,7 +3956,7 @@ class Component extends DCLogic {
        * texture at all, so the control appears for the six finishes that have one --
        * the four engine-turned ones and both carbons, whose weave/flake relief and
        * sheen are replayed as the mask instead of their own greyscale. */
-      if (['guilloche', 'azure', 'metal', 'matte', 'carbon', 'forged'].indexOf(surf) >= 0) {
+      if ((p === 'sf' || p === 'bg') && ['guilloche', 'azure', 'metal', 'matte', 'carbon', 'forged'].indexOf(surf) >= 0) {
         out.push(Ch('Finish blend', bm, [{ v: 'off', label: 'Off \u00b7 art lies flat' }, { v: 'multiply', label: 'Multiply \u00b7 texture pressed in' }, { v: 'screen', label: 'Screen \u00b7 texture brushed on' }, { v: 'overlay', label: 'Overlay \u00b7 both' }], ud(p + 'FinishBlend')));
         // the number the engine itself falls back to, read off the engine, so the
         // slider label and the render cannot drift apart
@@ -3718,13 +3977,15 @@ class Component extends DCLogic {
       }
       const line = !E.assetReady(id) ? 'No bytes for ' + id + ' in this browser — open the library entry or theme that carries the art.'
         : fits && fits.ok ? price : fits.why;
-      out.push(Nt('', a ? a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' source into a ' + Math.round(box * zm) + '×' + Math.round(box * zm) + ' box' + (zm !== 1 ? ' at ' + zm.toFixed(2) + ' zoom' : '') + ' · ' + Math.round(a.dataUrl.length / 1024) + ' KB · ' + line : line),
-        mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'drag', label: (this.state.artSlot === p ? 'Dragging the dial pans THIS slot' : 'Drag the dial to pan this slot'), bg: this.state.artSlot === p ? '#1c2330' : '#1c2330', bd: this.state.artSlot === p ? '#58a6ff' : '#2b3540', fg: '#e6edf3', pick: () => this.setState({ artSlot: p, guide: 'on' }) }, { v: 'x', label: 'Remove this image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: drop }] }));
+      out.push(Nt('', a ? a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' source into a ' + box + '×' + box + ' box · ' + Math.round(a.dataUrl.length / 1024) + ' KB · ' + line : line),
+        mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'snap', label: 'Snap to dial', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: () => this.snapArt(p) }, { v: 'drag', label: (this.state.artSlot === p ? 'Dragging the dial pans this image \u00b7 press to stop' : 'Drag the dial to pan this image'), bg: '#1c2330', bd: this.state.artSlot === p ? '#58a6ff' : '#2b3540', fg: '#e6edf3', pick: () => this.setState(this.state.artSlot === p ? { artSlot: null } : { artSlot: p, guide: 'on' }) }, { v: 'x', label: 'Remove this image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: drop }] }));
       return out;
     };
     if (ready && s.tab === 'dial') {
       const ud = (k) => (v) => this.upd((d) => { d[k] = v; });
       const pr = D.print || 'roman', col = D.color || 'cream', surf = D.surface || 'enamel';
+      // the whole-dial slot draws the face itself, so say so above the controls it overrides
+      if (D.wdArt && E.assetReady(D.wdArt)) fields.push(Nt('', 'A whole-dial image is on (Whole dial, below): the colour, surface, print, numerals, markers and the painted surface and markings slots are not drawn while it is; wear still lies over it. Remove that image to bring them back.'));
       fields.push(H('Face'),
         // D43 P5d.2: the dial's own direction -- its chapter and ring print mirrored, its hands following
         Ch('Direction', D.dir === 'ccw' ? 'ccw' : 'cw', [{ v: 'cw', label: 'Clockwise' }, { v: 'ccw', label: 'Anticlockwise' }], (v) => this.upd((d) => { if (v === 'ccw') d.dir = 'ccw'; else delete d.dir; })),
@@ -3733,9 +3994,11 @@ class Component extends DCLogic {
       if (E.HAS_NUMS.includes(pr) && D.numerals !== 'none') fields.push(Ch('Orientation', D.numOrient || (pr === 'roman' ? 'radial' : 'upright'), [{ v: 'upright', label: 'Bottom aligned' }, { v: 'radial', label: 'Circular' }], ud('numOrient')));
       fields.push(Sl('Typeface', D.font || E.RING_FONT(pr), opt(E.TYPEFACES), ud('font')));
       if (pr !== 'none' && D.numerals !== 'none') {
-        if (pr !== 'baton') fields.push(Co(pr === 'diver' ? 'Plot colour' : 'Numeral colour', D.numColor, ud('numColor'), pr === 'diver' ? 'Lume' : 'Auto · ' + (fc && fc.dialEn && fc.dialEn.dark ? 'light' : 'dark')));
+        const plots = pr === 'diver' || pr === 'framed';
+        if (pr !== 'baton') fields.push(Co(plots ? 'Plot colour' : 'Numeral colour', D.numColor, ud('numColor'), plots ? 'Lume' : 'Auto · ' + (fc && fc.dialEn && fc.dialEn.dark ? 'light' : 'dark')));
+        if (plots) fields.push(Co('Plot rim', D.plotRim, ud('plotRim'), 'Silver'));
         const ns = D.numScale == null ? 1 : +D.numScale;
-        fields.push(Rg(pr === 'diver' ? 'Plot size' : pr === 'baton' || pr === 'minimal' ? 'Baton size' : 'Numeral size', ns, 0.5, 2, 0.05, ud('numScale'), ns.toFixed(2) + '×'));
+        fields.push(Rg(plots ? 'Plot size' : pr === 'baton' || pr === 'minimal' ? 'Baton size' : 'Numeral size', ns, 0.5, 2, 0.05, ud('numScale'), ns.toFixed(2) + '×'));
         if (pr !== 'baton') fields.push(Sl('Finish', D.numStyle || 'print', opt(E.COMP_STYLES.flare), ud('numStyle')));
         const sz = (k) => (D[k] == null ? 1 : +D[k]);
         fields.push(H('The 12 · and 3, 6, 9'));
@@ -3798,9 +4061,23 @@ class Component extends DCLogic {
        * the one static1 layer compose() draws every frame -- so the art changes pixels
        * in an existing layer instead of adding a live plane (217,156 blends at the
        * measured 447 ns would be 97 ms of a 125 ms tick). */
-      fields.push.apply(fields, artBlock('sf', 'Dial surface art · on the dial, under the print',
-        'No dial art: the procedural surface is drawn. A PNG or SVG prints on the dial face, over the surface material and under the chapter ring, numerals and applied markers, which you can still set yourself on this tab. Openwork and the apertures cut through it.',
-        'Baked into the dial sprite: that layer is already blended every tick, so the art is free.'));
+      /* Three dial slots, bottom to top, each with its own image (owner, 2026-11-05):
+       *   sf -- Painted surface: the dial's material, over the surface and under everything,
+       *         with the surface finish blendable back over it (a shiny disc from a picture).
+       *   mk -- Markings: a print over the painted surface and under the dial's own print,
+       *         usually on a sheet whose colour goes see-through.
+       *   wd -- Whole dial: the finished face. The dial draws nothing of its own under it.
+       * All three bake into the one dial sprite the device already blends every tick. */
+      const free = 'Baked into the dial sprite: that layer is already blended every tick, so the art is free.';
+      fields.push.apply(fields, artBlock('sf', 'Painted surface · the dial\u2019s material, under everything',
+        'No painted surface: the procedural surface is drawn. A PNG or SVG becomes the dial\u2019s material, under the markings, the chapter ring, numerals and applied markers. With a textured Surface (sunburst, metal, carbon\u2026) its finish can be blended back over the picture.',
+        free));
+      fields.push.apply(fields, artBlock('mk', 'Markings · printed over the surface, under the dial\u2019s own print',
+        'No markings image. A PNG or SVG of ticks, numerals or a logo prints over the surface (and any painted surface). Pick its background colour as the See-through colour to let the dial show through. Set Print to None on this tab to use your markings alone, or keep both.',
+        free));
+      fields.push.apply(fields, artBlock('wd', 'Whole dial · the finished face',
+        'No whole-dial image. A finished dial face replaces everything the dial draws itself: the surface and the two slots above, the chapter print, numerals, applied markers and the perimeter ring. Wear still lies over it, and openings, sub-dials, windows, flares and hands still go on top, and a See-through colour opens the dial onto the movement.',
+        free));
       const W = { aging: D.aging == null ? 1 : +D.aging, stains: D.stains == null ? 1 : +D.stains, dust: D.dust == null ? 1 : +D.dust };
       const wp = { New: [0, 0, 0], Light: [0.3, 0.15, 0.4], Vintage: [1, 1, 1], Relic: [1.5, 1.5, 1.5] };
       const cur = Object.keys(wp).find((k) => wp[k][0] === W.aging && wp[k][1] === W.stains && wp[k][2] === W.dust) || '';
@@ -3837,6 +4114,19 @@ class Component extends DCLogic {
       fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: F + ' fps · ' + B + ' frames' + (DEV < F ? ' · device ~' + DEV : '') + ' · ships ' + beat
           // The last bake's own price: carrier class, estimate, and the rung the pick lands on.
           + (this._est3 ? ' · last bake ' + this._est3.carrier + ', est ' + this._est3.est_fps + ' fps at rung ' + this._est3.rung : '') }),
+        /* §49.15: the plans the last bake's bytes can hold (gears on hands, none beaten on both),
+         * and the Favour that picks one. A ticking hand moves on its beats whatever the grid,
+         * so there the fastest gears are the one plan and nothing is offered. */
+        ...(() => {
+          const P = HB.plans, G4 = window.GorbBake, nm = (x) => (x.gears ? x.gears + ' fps gears · ' : '') + x.fps + ' fps hands' + (x.prepaint ? ' · pre-painted' : '');
+          if (c0.tick !== 'sweep' || !G4 || !G4.planKey4) return [];
+          if (!P) return [Nt('Plan', 'Pricing every gears-and-sweep plan the orb can hold for this dial\u2026 (once the movement settles)')];
+          if (P.length < 2) return [Nt('Plan', nm(P[0] || HB.plan) + ' — the only plan this dial fits, so there is nothing to favour.')];
+          const auto = this.planOf4(this._plan4, Object.assign({}, c0, { plan: '' }));
+          return [Ch('Favour', c0.favour || 'sweep', [{ v: 'sweep', label: 'Smooth sweep' }, { v: 'balanced', label: 'Balanced' }, { v: 'gears', label: 'Smooth gears' }], cf('favour')),
+            Sl('Plan', c0.plan && P.some((x) => G4.planKey4(x) === c0.plan) ? c0.plan : '', [{ v: '', label: 'By favour · ' + nm(auto) }].concat(P.map((x) => ({ v: G4.planKey4(x), label: nm(x) }))), cf('plan')),
+            Nt('', 'Every plan here fits the orb. Smooth sweep runs the seconds hand as fast as it can and the gears on every Nth frame; smooth gears runs the movement as fast as it can; balanced takes the plan nearest the best of both. The gear loop is baked at the plan\u2019s rate, so a change re-bakes on the next send.')];
+        })(),
         /* P5d.3l: each seconds hand's own rhythm, here where the dial's is set. It writes the hand's
          * own cadence (its panel's Motion), which the preview, the bake and the dial honour per row:
          * one may sweep while another ticks. Stepping hands share one rate on the dial. */
@@ -3854,6 +4144,10 @@ class Component extends DCLogic {
         Nt('', HB.dev.why || 'Available frame rates depend on how much of the dial opening is visible. The Motion choice ships on the wire as that beat, whatever the dial is: an animated plate or carriage tempo binds a sweep to its own fastest frame rate, and a tick that outruns the delivered tempo is re-quantised to it on the glass.'),
         H('Drop shadow · hand twins and plate relief'),
         Ch('Cast shadows', (+c0.shMove > 0.01 && +c0.shOp > 0.01) ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.castShadowsOn(v === 'on')),
+        /* §49.15: the seconds hand is always smoothed on the glass; its shadow turns every frame
+         * too, and filtering it is the dearest smoothing on the dial (Station: ~12 ms a frame), so
+         * it is the author's choice and the plan list prices it */
+        ...((+c0.shMove > 0.01 && +c0.shOp > 0.01) ? [Ch('Smooth seconds shadow', +c0.shSmooth === 1 ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.setCfg('shSmooth', v === 'on' ? 1 : 0))] : []),
         Ch('Plate relief', +c0.shRelief === 0 ? 'off' : 'on', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.staticShadowsOn(v === 'on')),
         Nt('', 'Cast shadows are the dark twins that turn with the hands: the watch repaints them every tick a hand moves, so switching them off buys pace. Plate relief is a sub-dial\u2019s own drop, baked into the art: it adds no row, and on a face in the plate it costs nothing per tick. A face lifted above the hands carries its drop in its own still row, so the device repaints that halo with it whenever a hand moves under it, and the pace estimate prices it. The two switches are independent; Opacity below scales both.'),
         Ch('Direction', +c0.shAngle >= 0 ? 'fixed' : 'auto', [{ v: 'auto', label: 'Follow outer light' }, { v: 'fixed', label: 'Set angle' }], (v) => this.setCfg('shAngle', v === 'auto' ? -1 : fc ? fc.shadow.deg : 135)),
@@ -3975,6 +4269,8 @@ class Component extends DCLogic {
     }
     if (ready && s.tab === 'case') {
       fields.push(H('Case metal'), Ch('Metal', s.caseMetal, ['auto', 'brass', 'copper', 'gunmetal', 'steel', 'rose'].map((id) => ({ v: id, label: id === 'auto' ? 'Match movement' : cap(id) })), (v) => this.setState({ caseMetal: v })));
+      // every bezel and the enamel insert take an insert colour; black unless the design says
+      if (E.BEZEL[s.caseStyle] || s.caseStyle === 'insert') { const D2 = this.design() || {}; fields.push(H('Bezel insert'), Co('Insert colour', D2.bezelInk, (v) => this.upd((d) => { d.bezelInk = v; }), 'Black')); }
       /* The opening is only authorable under "no case": every other style owns its own rim
        * geometry, and a slider that changed nothing (or fought the bezel) would be a lie.
        * Under "none" it is a measurement the author declares about the hardware, and it
@@ -3997,7 +4293,7 @@ class Component extends DCLogic {
     return {
       metaLabel: '466 × 466 · ' + (DEV < F ? '~' + DEV + ' fps (bank ' + F + ')' : F + ' fps') + ' · ' + B + '-frame bank · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
       ...this.viewVals(),
-      mainRef: this.mainRef, paneRef: this.paneRef, cursor: this.drag ? 'grabbing' : 'pointer',
+      mainRef: this.mainRef, paneRef: this.paneRef, cursor: this.state.pickKey ? 'crosshair' : this.drag ? 'grabbing' : 'pointer',
       onDown: (e) => this.onDown(e), onMove: (e) => this.onMove(e), onUp: () => this.onUp(), stageDown: (e) => this.stageDown(e),
       /* The two ways out of selection noise: a button because Escape is invisible, and a
        * guide toggle because "off means off" has to be the author's, not the component's
@@ -4032,12 +4328,10 @@ class Component extends DCLogic {
         if (!(this.state.resetArm && Date.now() - this.state.resetArm < 4000)) { this.setState({ resetArm: Date.now(), status: 'Press Reset again to put ' + ((E.PRESETS[s.dial] || {}).name || 'this watch') + ' back to its preset (Ctrl+Z undoes it)' }); return; }
         this.setState((st) => { const d = { ...st.designs }; delete d[st.dial]; const P = E.PRESETS[st.dial]; this._dragRow = null; return { resetArm: 0, designs: d, sel: null, selKind: null, dropAt: null, dragging: null, hidden: { ...st.hidden, ids: {} }, hands: 'auto', handFinish: 'auto', cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed', status: 'Reset ' + P.name + ' to its preset \u2014 Ctrl+Z brings your version back' }; }); },
       isEdited: !!(s.designs && s.designs[s.dial]), resetPresetLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset ' + ((E.PRESETS[s.dial] || {}).name || 'to preset'),
-      mineName: s.mineName || '', onMineName: (e) => this.setState({ mineName: e.target.value }), minePh: 'Name (default: ' + (s.themeName || (E.PRESETS[s.dial] || {}).name || 'this watch') + ')',
-      saveMine: () => this.saveDraft(s.mineName),
       mine: this.library().map((m) => { const armed = s.mineDel === m.name && Date.now() - (s.mineDelAt || 0) < 4000;
         const th = m.theme || {}, older = th.made_with && this.session.version() !== 'dev' && th.made_with.split('+')[0] !== this.session.version().split('+')[0] ? th.made_with : '';
         const tag = th.stale ? 'theme \u00b7 needs a rebake' : m.state === 'changed' ? 'theme \u00b7 unsent changes' : m.state === 'theme' ? 'theme' : 'draft';
-        return { name: m.name, tag: tag + (older ? ' \u00b7 made with ' + older : ''),
+        return { name: m.name, thumb: typeof m.thumb === 'string' && /^data:image\/(jpeg|png);base64,/.test(m.thumb) ? m.thumb : '', tag: tag + (older ? ' \u00b7 made with ' + older : ''),
           tagTip: th.stale ? 'An orb on the current firmware would refuse this bake (' + th.stale + '). Rebake all on the Themes tab rebakes it from its design.' : m.state === 'draft' ? 'Saved, never baked: Send to orb makes it a theme' : m.state === 'changed' ? 'A baked theme with changes saved beside it: Open shows the changes, Send to orb bakes them in' : 'Baked: on the hub shelf, ready to install',
           meta: ((E.PRESETS[m.dial] || {}).name ? (E.PRESETS[m.dial] || {}).name + ' \u00b7 ' : '') + new Date(+m.at || 0).toLocaleDateString(),
           load: () => this.openEntry(m.name), loadTip: m.state === 'changed' ? 'Open it with its unsent changes' : 'Open it in the editor',

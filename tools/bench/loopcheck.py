@@ -81,7 +81,7 @@ DIALS = {'openwork': 1.0, 'sector': 0.40, 'crescent': 0.20, 'closed': 0.05}
 
 
 class Base:
-    def __init__(s, needle=False, tick='sweep', rows=MONO, dial='openwork', car=False):
+    def __init__(s, needle=False, tick='1', rows=MONO, dial='openwork', car=False):
         s.needle, s.tick, s.rows_map, s.dial, s.car = needle, tick, rows, dial, car
         s._mk, s.stats, s.builds, s.seq = None, None, 0, []
         # `rendered` is how many PNGs the bank holds; `rendered_fps` is the TEMPO
@@ -106,8 +106,10 @@ class Base:
         return repr(s.art())
 
     def mvKey(s, noframes=0):
-        # frames: this.B in opts() -- the bank, not the tempo
-        return repr(s.mvart() if noframes else (s.mvart(), ('frames', s.B())))
+        # frames: this.B in opts(), and tempo: this.F beside it -- since 2026-11-05 the
+        # balance swings per SECOND, so two tempos with one bank depth (4 and 8 fps, both
+        # 8 frames) are different movements
+        return repr(s.mvart() if noframes else (s.mvart(), ('frames', s.B()), ('tempo', s.F())))
 
     def B(s):
         # Mirrors `get B()` in the component: the bank depth for the delivered tempo.
@@ -207,7 +209,9 @@ class PostPatch(Base):
         return s._artKey
 
     def _budget(s, forceWant=None):
-        want = forceWant or (15 if s.tick == 'sweep' else 12)
+        # the gear policy (owner, 2026-11-05): a sweep keeps the gears at 4, 8 ticks ask 8,
+        # every slower tick (and 12) asks 12
+        want = forceWant or (4 if s.tick == 'sweep' else 8 if s.tick == '8' else 12)
         # Valid while the MOVEMENT signature holds (JS budgetStats.mv).
         mvk, ak = s.mvKey(1), s.artKey()
         st = s.stats if (s.stats and s.stats['mv'] == mvk) else None
@@ -439,7 +443,7 @@ def gear_marking_check(renderer=None, engine=None):
         print('  SKIP: needs numpy, and MK_DEEP/MK_TIP/MK_BASE in dial-renderer.js')
         return []
     TAU = 2 * pi
-    TEMPOS = (4, 8, 12, 15)
+    TEMPOS = (4, 5, 6, 8, 10, 12, 15, 20)   # dial-renderer.js TEMPOS: every gear rate a plan bakes
     NEUTRAL = (0.0, 0.13, 0.3)
 
     def fold(x, period):
@@ -842,8 +846,9 @@ def main():
     # (first commit, settled rate). The dial case ends FAST on purpose: holding is
     # about not lying mid-flight, and once the honest rows land the closed dial
     # earns its tempo back. A hold that leaked across the gear edit would end
-    # pinned at 4 instead, since _ftier cannot walk back up.
-    for edit, first_exp, end_exp in (('dial', 4, 15), ('gear', 15, 15)):
+    # pinned at 4 instead, since _ftier cannot walk back up. The top gear tier a
+    # ticking hand asks is 12 (the gear policy, 2026-11-05).
+    for edit, first_exp, end_exp in (('dial', 4, 12), ('gear', 12, 12)):
         g = PostPatch(rows=WIDE)
         g.build()
         for _ in range(30):
@@ -871,7 +876,7 @@ def main():
     # must not outlive that measurement: a closed dial behind a needle is a 0-row
     # art, so if the session's first price saw the whole train live (occluder mask
     # cold, dial canvas mid-rebuild) an unbreakable pin would hold that kit at 8 fps
-    # -- min(15, 8) is 8 every time -- while the re-priced rows plainly say 15.
+    # -- min(12, 8) is 8 every time -- while the re-priced rows plainly say 12.
     print('=== a stale first price releases when better evidence lands ===')
 
     class StaleFirst(PostPatch):
@@ -882,7 +887,7 @@ def main():
 
     
 
-    g = StaleFirst(rows=MONO, needle=True, tick='sweep', dial='closed')
+    g = StaleFirst(rows=MONO, needle=True, tick='1', dial='closed')
     g.build()
     for _ in range(20):
         g.upd()
@@ -893,67 +898,54 @@ def main():
     for _ in range(20):
         g.upd()
     end = g.budget()
-    ok = (pinned == 8 and end['fps'] == 15 and end['rows'] == 0
-          and g.rendered == 15 and len(set(g.seq[-6:])) == 1)
+    ok = (pinned == 8 and end['fps'] == 12 and end['rows'] == 0
+          and g.rendered == bank_frames(12) and len(set(g.seq[-6:])) == 1)
     print('  needle + closed dial: stale price caps at %d fps, honest 0-row '
           're-price settles at %2d fps bank=%s %s'
           % (pinned, end['fps'], g.rendered, 'ok' if ok else 'FAIL'))
     if not ok:
         fails.append('stale first price pins the tempo')
 
-    # ---- sweep is always selectable; it clamps to the top tier the art fits -----
-    # Sweep is a look, not a budget decision: the Hands tab no longer vetoes it.
-    # Whichever art is in hand, picking sweep asks for 15 fps and budget() silently
-    # delivers the highest tier the rows actually fit. The two cases below prove
-    # the choice is never refused -- a light art sweeps at its own tier, a heavy
-    # one still sweeps, just slower -- and that the settled rate is the tier.
-    print('=== sweep always selectable, clamped to the fitted tier ===')
+    # ---- the gear tempo the seconds hand asks ---------------------------------------
+    print('=== a sweep pins the gears at 4; a ticking hand clamps the ladder ===')
+    # Owner, 2026-11-05: a sweep keeps the gear bank at 4 fps so the sweep itself takes the
+    # frame budget on the device's 60 Hz grid (4 lands on 12 and 20), whatever the rows. A
+    # ticking hand asks 12 (1/2/4 a second divide it) and the rows clamp it down the ladder.
     # openwork dials scale by 1.0, so the rows priced are the rows written here.
-    # The needle 15-fps cap is the sweeping-needle frontier (CAPS[15]=64), NOT a
-    # binary 0: a closed Aviator/railway dial prices a ~48-row geartrain sliver
-    # that rowPrice()'s upper bound cannot fold away, and it must earn 15 fps,
-    # not fall to 12. The three cases below pin both edges of that cap.
-    FLAT48 = {15: 48, 12: 48, 8: 48, 4: 48}        # closed needle dial -> 15
-    FLAT80 = {15: 80, 12: 80, 8: 80, 4: 80}        # past the frontier -> still 12
+    FLAT48 = {15: 48, 12: 48, 8: 48, 4: 48}        # closed needle dial
+    FLAT80 = {15: 80, 12: 80, 8: 80, 4: 80}
     FLAT300 = {15: 300, 12: 300, 8: 300, 4: 300}   # genuinely too heavy
-    for name, rows_map, exp_fps in (('48 rows', FLAT48, 15), ('80 rows', FLAT80, 12),
-                                    ('300 rows', FLAT300, 4)):
-        g = PostPatch(rows=rows_map, needle=True, tick='sweep', dial='openwork')
-        g.build()
-        for _ in range(30):
-            g.upd()
-        # want is 15 (sweep). 48 rows <= CAPS[15]=64 -> 15; 80 clears only
-        # CAPS[12]=96 -> 12; 300 clears only CAPS[8]=240 -> 4.
-        b = g.budget()
-        ok = (b['fps'] == exp_fps and g.tick == 'sweep'
-              and g.rendered == bank_frames(b['fps'])
-              and len(set(g.seq[-6:])) == 1)
-        print('  needle + sweep, %-9s -> settled %2d fps (want 15), bank=%s %s'
-              % (name, b['fps'], g.rendered, 'ok' if ok else 'FAIL (want %d)' % exp_fps))
-        if not ok:
-            fails.append('sweep clamp wrong at ' + name)
+    for tick, cases in (('sweep', (('48 rows', FLAT48, 4), ('80 rows', FLAT80, 4), ('300 rows', FLAT300, 4))),
+                        ('1', (('48 rows', FLAT48, 12), ('80 rows', FLAT80, 12), ('300 rows', FLAT300, 4)))):
+        for name, rows_map, exp_fps in cases:
+            g = PostPatch(rows=rows_map, needle=True, tick=tick, dial='openwork')
+            g.build()
+            for _ in range(30):
+                g.upd()
+            b = g.budget()
+            ok = (b['fps'] == exp_fps and g.rendered == bank_frames(b['fps'])
+                  and len(set(g.seq[-6:])) == 1)
+            print('  needle, tick %-5s %-9s -> settled %2d fps, bank=%s %s'
+                  % (tick, name, b['fps'], g.rendered, 'ok' if ok else 'FAIL (want %d)' % exp_fps))
+            if not ok:
+                fails.append('gear tempo wrong: tick %s at %s' % (tick, name))
 
-    # ---- the shipped regression: a closed needle dial must reach 15, not 12 ------
-    # Aviator (matte black, comps: []) and the railway prints seal the whole
-    # train behind an opaque disc, so the only rows left are the needle's own
-    # swept sliver (~48 through rowPrice's upper bound). With the old binary
-    # CAPS[15]=0 gate that sliver stranded them on the 12 tier; the measured
-    # sweeping-needle frontier (CAPS[15]=64) lets them earn 15 fps on sweep.
-    print('=== closed dial + centre-second needle sweeps at 15 fps ===')
+    # ---- a closed needle dial: ticking earns the top gear tier, sweeping holds 4 ------
+    print('=== closed dial + centre-second needle: ticking earns 12, sweeping holds 4 ===')
     for name, rows_map, dial in (('aviator (48)', FLAT48, 'openwork'),
                                  ('railway (closed)', MONO, 'closed'),
                                  ('pilot (closed)', NEEDLE, 'closed')):
-        g = PostPatch(rows=rows_map, needle=True, tick='sweep', dial=dial)
-        g.build()
-        for _ in range(30):
-            g.upd()
-        b = g.budget()
-        ok = (b['fps'] == 15 and g.tick == 'sweep'
-              and g.rendered == bank_frames(15) and len(set(g.seq[-6:])) == 1)
-        print('  needle, %-16s -> settled %2d fps rows=%3d bank=%s %s'
-              % (name, b['fps'], b['rows'], g.rendered, 'ok' if ok else 'FAIL'))
-        if not ok:
-            fails.append('closed needle dial stranded off 15 fps: ' + name)
+        for tick, exp in (('1', 12), ('sweep', 4)):
+            g = PostPatch(rows=rows_map, needle=True, tick=tick, dial=dial)
+            g.build()
+            for _ in range(30):
+                g.upd()
+            b = g.budget()
+            ok = (b['fps'] == exp and g.rendered == bank_frames(exp) and len(set(g.seq[-6:])) == 1)
+            print('  needle, %-16s tick %-5s -> settled %2d fps rows=%3d bank=%s %s'
+                  % (name, tick, b['fps'], b['rows'], g.rendered, 'ok' if ok else 'FAIL'))
+            if not ok:
+                fails.append('closed needle dial off its tier: %s tick %s' % (name, tick))
 
     # ---- the carriage is priced, not locked --------------------------------------
     # Removing the hard 4 fps tourbillon pin is the point: an exposed carriage
@@ -964,14 +956,14 @@ def main():
     print('=== carriage priced by opening area, capped by the bank ===')
     # A carriage on a fully closed dial: the cull drops its whole swept box, so a
     # sweep hand there is a 0-row art and tiers to the top rate the baker can hold.
-    gc = PostPatch(rows=MONO, tick='sweep', dial='closed', car=True)
+    gc = PostPatch(rows=MONO, tick='1', dial='closed', car=True)
     gc.build()
     for _ in range(30):
         gc.upd()
     bc = gc.budget()
-    ok = (bc['fps'] == 15 and gc.rendered == bank_frames(15) <= CLK_TOURB_MAX
+    ok = (bc['fps'] == 12 and gc.rendered == bank_frames(12) <= CLK_TOURB_MAX
           and len(set(gc.seq[-6:])) == 1)
-    print('  carriage, closed dial, sweep -> %2d fps bank=%s %s'
+    print('  carriage, closed dial, tick 1 -> %2d fps bank=%s %s'
           % (bc['fps'], gc.rendered, 'ok' if ok else 'FAIL'))
     if not ok:
         fails.append('carriage locked on a closed dial')
@@ -979,7 +971,7 @@ def main():
     # 12 (bank 24 > CLK_TOURB_MAX) to the next affordable tier, not export 12 fps
     # and trip the baker. NEEDLE rows sit inside CAPS[12]=160 so the guard is the
     # only thing keeping it off 12; it lands at 8 (bank 16, fits).
-    gw = PostPatch(rows={15: 130, 12: 130, 8: 130, 4: 130}, needle=True, tick='sweep',
+    gw = PostPatch(rows={15: 130, 12: 130, 8: 130, 4: 130}, needle=True, tick='1',
                    dial='openwork', car=True)
     gw.build()
     for _ in range(30):
@@ -987,7 +979,7 @@ def main():
     bw = gw.budget()
     ok = (bw['fps'] == 8 and gw.rendered == bank_frames(8) and bank_frames(8) <= CLK_TOURB_MAX
           and len(set(gw.seq[-6:])) == 1)
-    print('  carriage, 130 rows (12 fps band) -> %2d fps bank=%s (skips 12) %s'
+    print('  carriage, 130 rows (past the 12 fps band) -> %2d fps bank=%s %s'
           % (bw['fps'], gw.rendered, 'ok' if ok else 'FAIL'))
     if not ok:
         fails.append('carriage sat on the 12 fps tier the baker cannot bake')
@@ -1039,9 +1031,9 @@ def main():
               % (mid[-6:], o.rendered, b['rows'], want_rows))
         fails.append('slider drag throttle')
 
-    capped = [('wide openings', dict(rows=WIDE), 4, True),
-              ('jittery boundary', dict(rows=JITTER), 8, True),
-              ('needle + geartrain', dict(rows=NEEDLE, needle=True), 8, True),
+    capped = [('wide openings', dict(rows=WIDE, tick='1'), 4, True),
+              ('jittery boundary', dict(rows=JITTER, tick='1'), 8, True),
+              ('needle + geartrain', dict(rows=NEEDLE, needle=True, tick='1'), 8, True),
               ('tick 4, mid band', dict(rows=TICKY, tick='4'), 12, False)]
     print('=== pre-patch: does the build render the rate it publishes? ===')
     for name, kw, _, needs_cap in capped:
@@ -1079,8 +1071,12 @@ def main():
         print('%-18s builds=%d fps=%2d(want %2d) rows=%3d bank=%s stable=%s jumps=%d rises=%d %s'
               % (name, r['builds'], r['fps'], expect, r['rows'], r['rendered'],
                  r['stable'], len(swings), len(rises), 'ok' if ok else 'FAIL'))
-    for name, kw, expect in [('narrow band, sweep', dict(rows=MONO), 15),
-                             ('frozen dial, sweep', dict(rows=FROZEN), 15)]:
+    # a sweep holds the gears at 4 however light the art (owner, 2026-11-05); a ticking hand
+    # on the same art earns the top gear tier its rows allow
+    for name, kw, expect in [('narrow band, sweep', dict(rows=MONO, tick='sweep'), 4),
+                             ('frozen dial, sweep', dict(rows=FROZEN, tick='sweep'), 4),
+                             ('narrow band, tick 1', dict(rows=MONO, tick='1'), 12),
+                             ('frozen dial, tick 1', dict(rows=FROZEN, tick='1'), 12)]:
         r = settle(PostPatch, **kw)
         ok = (r['fps'] == expect and r['builds'] == 1
               and r['rendered_fps'] == r['fps']

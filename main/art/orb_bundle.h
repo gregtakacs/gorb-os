@@ -118,6 +118,11 @@ typedef struct {
     uint32_t geom_off, geom_size, geom_crc;
     uint32_t art_off,  art_size,  art_crc;
     uint32_t serial;
+    /* Word 10, which FORMAT 2 spent on scr_h and FORMAT 3 left zero: when the bake ran,
+     * in whole seconds since the Unix epoch (0 = the baker did not say). Carried for the
+     * card list alone, so the hub can tell an older library copy from a newer one; the
+     * word 12 stamp wraps every 49.7 days and cannot order two bakes. */
+    uint32_t baked_s;
     /* D43 P7 (§8): an app's design after the banks, words 29..31 (0 when there is none).
      * Carried for the card's read-back route alone: the store, the slot and the dial
      * never read it, and the slot header is built without it. */

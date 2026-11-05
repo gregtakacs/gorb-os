@@ -5149,7 +5149,8 @@ static esp_err_t h_sd(httpd_req_t *req)
     /* Worst-case row, from the format strings below: ~104 B of fixed row text and
      * digits + 113 (name, JSON-escaped at ORB_THEME_NAME_MAX) + 113 (id, at the
      * compound stem's ceiling) + 115 (why) + 49 (app) + ~34 B of the fmt/sects and
-     * stored pairs + 21 B of the design pair (D43 P7) = ~649 B, budgeted at SD_JSON_ROW_B. The base fields — the
+     * stored pairs + 21 B of the design pair (D43 P7) + 19 B of the baked pair = ~668 B,
+     * budgeted at SD_JSON_ROW_B. The base fields — the
      * refused-install, staged and bundle pairs at full width and the job witness —
      * come to ~955 B, budgeted at SD_JSON_BASE_B. The bound is the point: a
      * truncated body would read as "no card", so an overflow is an error string,
@@ -5227,9 +5228,10 @@ static esp_err_t h_sd(httpd_req_t *req)
          * never this flag. */
         off += snprintf(json + off, sizeof json - (size_t)off,
             "%s{\"name\":\"%s\",\"id\":\"%s\",\"app\":\"%s\",\"why\":\"%s\",\"bytes\":%u,\"serial\":%u,"
-            "\"design\":%u,\"ok\":%s,\"active\":%s,\"changed\":%s,\"fmt\":%u,\"sects\":%u,\"stored\":%s}",
+            "\"design\":%u,\"baked\":%u,\"ok\":%s,\"active\":%s,\"changed\":%s,\"fmt\":%u,\"sects\":%u,\"stored\":%s}",
             i ? "," : "", e_name, e_id, e_app, e_why,
             (unsigned)ent[i].art_size, (unsigned)ent[i].serial, (unsigned)ent[i].design_size,
+            (unsigned)ent[i].baked_s,
             ent[i].err == ESP_OK ? "true" : "false",
             ent[i].active ? "true" : "false",
             ent[i].changed ? "true" : "false",

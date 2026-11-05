@@ -42,7 +42,8 @@ const (
 	wGeomOff      = 4
 	wGeomSize     = 5
 	wArtSize      = 7
-	wNSections    = 9 // FORMAT 2 read this word as scr_w; FORMAT 3 counts sections here
+	wNSections    = 9  // FORMAT 2 read this word as scr_w; FORMAT 3 counts sections here
+	wBakedS       = 10 // FORMAT 2's scr_h: when the bake ran, Unix seconds; 0 = unstated
 	wSerial       = 11
 	wArtOff       = 13
 	wName         = 14
@@ -80,14 +81,17 @@ const (
 
 // ThemeContainer is what the hub needs to know about a file before it pushes it.
 type ThemeContainer struct {
-	Name      string // the embedded identity, exactly as the device will read it
-	ID        string // theme_id(name) — the card stem these bytes will be filed under
-	Format    uint32
-	ABI       uint32
-	Bytes     int
-	GeomSize  uint32
-	ArtSize   uint32
-	Serial    uint32
+	Name     string // the embedded identity, exactly as the device will read it
+	ID       string // theme_id(name) — the card stem these bytes will be filed under
+	Format   uint32
+	ABI      uint32
+	Bytes    int
+	GeomSize uint32
+	ArtSize  uint32
+	Serial   uint32
+	// BakedS is when the bake ran, in Unix seconds, 0 when the baker did not say (word 10).
+	// It orders two bakes of one theme; the serial only says whether they differ.
+	BakedS    uint32
 	NSections uint32
 	Sections  []string // the slugs the index names, in index order; nil if unreadable
 	// DesignSize is the app design's length in bytes, 0 when the file carries none (P7)
@@ -208,7 +212,7 @@ func parseContainer(body []byte, head, staleABI bool) (*ThemeContainer, error) {
 	}
 	c := &ThemeContainer{Name: name, Format: f, ABI: w(wGeomABI),
 		Bytes: len(body), GeomSize: geomSize, ArtSize: artSize,
-		Serial: w(wSerial), NSections: w(wNSections), DesignSize: w(wDesignSize)}
+		Serial: w(wSerial), BakedS: w(wBakedS), NSections: w(wNSections), DesignSize: w(wDesignSize)}
 	// Per-app theming made the index load part of the IDENTITY, not a courtesy: the
 	// card stem hashes the OWNING app's slug with the name, and the slug lives here
 	// and nowhere else in the header. A container this reader cannot walk the index
@@ -397,4 +401,3 @@ func ShelfTheme(body []byte) (*ShelfThemeInfo, error) {
 	}
 	return nil, err
 }
-

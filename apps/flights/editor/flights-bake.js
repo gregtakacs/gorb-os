@@ -777,7 +777,10 @@
         digit: 1, end: 1 }, plane(await panelCanvas(d, lab.name)), true, false);
     }
     S.preview({ plane: plane(await picture(plateC, armC, ar.pivot, frames, px, 232)), x: 0, y: 0, order: 3 });
-    var out = S.finish({ name: d.name || 'Flights', slug: 'flights', serial: o.serial || serialOf(d, o.design), abi: GB.GEOM_ABI6, design: o.design || null });
+    // the bake time rides the header (word 10) so the hub can tell a newer copy from an older one;
+    // it is not content, so the serial above stays the design's own
+    var out = S.finish({ name: d.name || 'Flights', slug: 'flights', serial: o.serial || serialOf(d, o.design), abi: GB.GEOM_ABI6, design: o.design || null,
+                         bakedS: o.bakedS != null ? o.bakedS : Math.floor(Date.now() / 1000) });
     return { bytes: out.bytes, meter: out.meter, est: out.est, rows: S.elements.length };
   }
 

@@ -3711,8 +3711,8 @@ function themeLibraryRows(app, deviceRows, state, entries) {
   entries = Array.isArray(entries) ? entries : [];
   const list = $("#mn-themes");
   if (!entries.length || !list || !app) return 0;
-  const onCard = {};   // name -> the card copy's bake serial, which is how a newer shelf bake shows
-  for (const t of deviceRows) if ((t.app || "clock") === app) onCard[String(t.name || "").toLowerCase()] = t.serial || -1;
+  const onCard = {};   // name -> the card copy's bake serial and bake time
+  for (const t of deviceRows) if ((t.app || "clock") === app) onCard[String(t.name || "").toLowerCase()] = { serial: t.serial || -1, baked: t.baked || 0 };
   const edRow = themeAppsRows.find((a) => a.slug === app);
   const canEdit = !!(edRow && edRow.has_editor && edRow.editor_url);
   const stale = entries.filter((e) => e.theme && e.theme.stale);
@@ -3782,16 +3782,26 @@ function themeLibraryRows(app, deviceRows, state, entries) {
     else tag(e.state === "changed" ? "theme \u00b7 unsent changes" : "theme", e.state === "changed" ? "warn" : "",
       e.state === "changed" ? "Changes saved in the editor that have not been baked: Edit opens them, Send to orb there bakes them in" : "Baked, in the hub library");
     if (th && th.made_with) tag("made with " + th.made_with, "mut", "The editor release that made this design; opening it in a newer editor updates it when saved or sent");
-    const cardSerial = onCard[e.name.toLowerCase()];
-    // a different serial is a different bake: the shelf's is the one the editor last made. Not
-    // the size: the card counts a bake's bytes differently from the file, so a size compare
-    // offered Update again straight after one landed (owner report, 2026-11-04)
-    const newer = !!(th && !th.stale && cardSerial && cardSerial > 0 && th.serial && th.serial !== cardSerial);
+    const card = onCard[e.name.toLowerCase()], cardSerial = card ? card.serial : 0;
+    const orbLabel = current.name || themeIP || "this orb";
+    // A different serial is a different bake, not a newer one: a flights serial is its
+    // content's hash. Which bake is newer is the header's bake time (word 10), which the orb
+    // reports on each card row; Update is offered only when both carry one and the library's
+    // is later. An older library copy says so and offers nothing (owner report, 2026-11-05:
+    // the shelf's v1.2.4 Modern offered itself as an Update over the card's v1.2.6). When
+    // either side has no bake time the hub cannot order them, and says only that they differ.
+    const differs = !!(th && !th.stale && cardSerial > 0 && th.serial && th.serial !== cardSerial);
+    const timed = differs && th.baked > 0 && card.baked > 0 && th.baked !== card.baked;
+    const newer = timed && th.baked > card.baked;
+    const older = timed && th.baked < card.baked;
+    const unsure = differs && !timed;
     // Update belongs to the card's row (owner, 2026-11-04): that is the copy being updated,
     // from this one. The library row only says it is the newer of the two.
-    const cardLi = newer ? list.querySelector('li.trow[data-name="' + CSS.escape(e.name.toLowerCase()) + '"]') : null;
-    if (newer) {
-      tag("newer than " + (current.name || themeIP || "this orb") + "'s copy", "mut", "This orb's card holds an older bake of this theme; its row above has Update");
+    const cardLi = newer || unsure ? list.querySelector('li.trow[data-name="' + CSS.escape(e.name.toLowerCase()) + '"]') : null;
+    if (older) tag("older than " + orbLabel + "'s copy", "mut", "This orb's card holds a later bake of this theme than the hub library does");
+    else if (unsure) tag("differs from " + orbLabel + "'s copy", "mut", "The two are different bakes, and one carries no bake time, so the hub cannot say which is newer; the card row above can replace the orb's copy with this one");
+    else if (newer) {
+      tag("newer than " + orbLabel + "'s copy", "mut", "This orb's card holds an older bake of this theme; its row above has Update");
       if (cardLi) {
         const u = document.createElement("span");
         u.className = "tag upd";
@@ -3812,21 +3822,24 @@ function themeLibraryRows(app, deviceRows, state, entries) {
       li.appendChild(ed);
     }
     let inst = null;
-    if (th && !th.stale && (!cardSerial || newer)) {
+    if (th && !th.stale && (!cardSerial || newer || unsure)) {
+      const over = newer || unsure;   // both send over the card's copy
       inst = document.createElement("button");
       inst.className = newer ? "upd" : "ghost";
-      inst.textContent = newer ? "Update" : "Install";
+      inst.textContent = newer ? "Update" : unsure ? "Replace" : "Install";
       inst.title = newer ? "Replace this orb's copy with the hub library's newer bake. The orb stores it and reboots onto it."
+        : unsure ? "Send the hub library's bake over this orb's copy. One of the two carries no bake time, so the hub cannot tell which is newer. The orb stores it and reboots onto it."
         : "Send this theme to the orb in hand. The device's theme door stores the file the moment it verifies, and the board reboots onto it.";
       inst.onclick = async () => {
         if (!themeIP) { state.textContent = "no orb in hand \u2014 connect one first."; return; }
         const orbName = current.name || themeIP;
         if (typeof askConfirm === "function" && !await askConfirm({
-          title: (newer ? "Update " : "Install ") + (f.title || f.file) + "?",
+          title: (newer ? "Update " : unsure ? "Replace " : "Install ") + (f.title || f.file) + "?",
           body: newer ? orbName + " gets the newer " + (f.title || f.file) + " and restarts to show it."
+            : unsure ? orbName + "'s copy of " + (f.title || f.file) + " is replaced with the hub's, and it restarts to show it."
             : orbName + " gets " + (f.title || f.file) + " and restarts to show it.",
           detail: "This takes a minute or two.",
-          yes: newer ? "Update" : "Install",
+          yes: newer ? "Update" : unsure ? "Replace" : "Install",
         })) return;
         inst.disabled = true;
         fpOpen();
@@ -3839,7 +3852,7 @@ function themeLibraryRows(app, deviceRows, state, entries) {
         // with the bytes, and the panel is the single place a refusal is read.
         const okPush = await streamSteps("/api/library/push?kind=theme&name="
           + encodeURIComponent(String(f.file).replace(/\.orbtheme$/i, ""))
-          + "&ip=" + encodeURIComponent(themeIP) + (newer ? "&overwrite=1" : ""), ui, themeIP);
+          + "&ip=" + encodeURIComponent(themeIP) + (over ? "&overwrite=1" : ""), ui, themeIP);
         if (!okPush) {
           state.textContent = "install refused \u2014 read the progress panel";
           inst.disabled = false;
@@ -3860,7 +3873,7 @@ function themeLibraryRows(app, deviceRows, state, entries) {
         }
       };
       const cardActs = cardLi && cardLi.querySelector(".acts");
-      if (newer && cardActs && cardActs.children[2]) {
+      if (over && cardActs && cardActs.children[2]) {
         cardActs.replaceChild(inst, cardActs.children[2]);   // the card row's empty third column
         inst = null;
       } else li.appendChild(inst);

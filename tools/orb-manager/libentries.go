@@ -30,6 +30,7 @@ type LibTheme struct {
 	Stem      string `json:"stem"`
 	Bytes     int    `json:"bytes"`
 	Serial    uint32 `json:"serial"` // the bake's serial, the word the card's row carries too
+	Baked     uint32 `json:"baked"`  // when it was baked, Unix seconds; 0 = the baker did not say
 	At        int64  `json:"at"`
 	MadeWith  string `json:"made_with,omitempty"` // the design's appVersion
 	CanReopen bool   `json:"can_reopen"`          // it carries a design the editor can read
@@ -111,7 +112,7 @@ func (l *Library) entries(app string) ([]LibEntry, error) {
 				return // two files under one name: the first listed stands; keepTheme writes one
 			}
 			th := &LibTheme{File: filepath.Base(p), Stem: strings.TrimSuffix(filepath.Base(p), filepath.Ext(p)),
-				Bytes: t.Bytes, Serial: t.Serial, CanReopen: t.Design != nil, Stale: t.Stale}
+				Bytes: t.Bytes, Serial: t.Serial, Baked: t.BakedS, CanReopen: t.Design != nil, Stale: t.Stale}
 			if info != nil {
 				th.At = info.ModTime().UnixMilli()
 			}

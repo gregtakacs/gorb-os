@@ -182,7 +182,7 @@ def parse_header3(raw):
     return {"fmt": hdr[1], "abi": hdr[2], "hdr_size": hdr[3],
             "geom_off": hdr[4], "geom_size": hdr[5], "geom_crc": hdr[6],
             "art_size": hdr[7], "art_crc": hdr[8], "n_sections": hdr[9],
-            "serial": hdr[_ot.W_SERIAL], "baked_ms": hdr[_ot.W_BAKED_MS],
+            "serial": hdr[_ot.W_SERIAL], "baked_ms": hdr[_ot.W_BAKED_MS], "baked_s": hdr[10],
             "art_off": hdr[_ot.W_ART_OFF], "name": name,
             "design_off": hdr[W_DESIGN_OFF], "design_size": hdr[W_DESIGN_SIZE],
             "design_crc": hdr[W_DESIGN_CRC]}
@@ -379,7 +379,7 @@ def unpack_index(region):
 
 
 def pack_header3(name, n_sections, geom_size, geom_crc, art_off, art_size,
-                 art_crc, serial=0, baked_ms=0, abi=GEOM_ABI3, design=None):
+                 art_crc, serial=0, baked_ms=0, abi=GEOM_ABI3, design=None, baked_s=0):
     """FORMAT 2's header, stamped FORMAT 3 (see the module docstring for the swapped
     meaning of words 9/10). `abi` (C4) is the container dialect word: a v4 clock
     section raises it to 4, and a reader that stops at 3 refuses the file at this
@@ -390,7 +390,9 @@ def pack_header3(name, n_sections, geom_size, geom_crc, art_off, art_size,
     hdr[4] = _ot._u(_ot.HDR_WORDS * 4)      # the geometry region follows the header
     hdr[5], hdr[6] = _ot._u(geom_size), _ot._u(geom_crc)
     hdr[7], hdr[8] = _ot._u(art_size), _ot._u(art_crc)
-    hdr[9], hdr[10] = _ot._u(n_sections), _ot._u(0)
+    # word 10 (FORMAT 2's scr_h): the bake time in Unix seconds, 0 = unstated. Word 12's
+    # millisecond stamp wraps every 49.7 days, so it cannot say which of two bakes is newer.
+    hdr[9], hdr[10] = _ot._u(n_sections), _ot._u(baked_s)
     hdr[11], hdr[12], hdr[13] = _ot._u(serial), _ot._u(baked_ms), _ot._u(art_off)
     _ot._setword(hdr, _ot.W_NAME, name, _ot.NAME_MAX)
     if design:   # (off, size, crc)
@@ -399,7 +401,7 @@ def pack_header3(name, n_sections, geom_size, geom_crc, art_off, art_size,
     return b"".join(struct.pack("<I", v) for v in hdr)
 
 
-def write_bundle(path, name, sections, serial=0, baked_ms=0, one_section=True, design=b""):
+def write_bundle(path, name, sections, serial=0, baked_ms=0, one_section=True, design=b"", baked_s=0):
     """one_section=False is the REJECTION-VECTOR bypass: it lets the fixture generator
     still build the multi-section file the door must refuse. Nothing that handles a
     theme uses it, and a caller that reaches for it owes a comment saying why."""
@@ -499,7 +501,8 @@ def write_bundle(path, name, sections, serial=0, baked_ms=0, one_section=True, d
                        art_size, art_crc_all, serial, baked_ms,
                        abi=GEOM_ABI6 if any(s.get("abi_max", GEOM_ABI3) == GEOM_ABI6
                                             for s in sections) else GEOM_ABI3,
-                       design=(end, len(design), zlib.crc32(design) & 0xFFFFFFFF) if design else None)
+                       design=(end, len(design), zlib.crc32(design) & 0xFFFFFFFF) if design else None,
+                       baked_s=baked_s)
     out = bytearray(hdr)
     out += region
     out += b"\0" * (art_off - len(out))

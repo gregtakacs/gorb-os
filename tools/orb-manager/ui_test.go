@@ -723,7 +723,7 @@ func TestThemesFaceFollowsTheAppsPattern(t *testing.T) {
 		}
 	}
 	shelf := blockOf(t, app, "function themeLibraryRows")
-	for _, want := range []string{`newer ? "Update" : "Install"`, "Remove from hub library", "/api/library/push?kind=theme"} {
+	for _, want := range []string{`newer ? "Update" : unsure ? "Replace" : "Install"`, "Remove from hub library", "/api/library/push?kind=theme"} {
 		if !strings.Contains(shelf, want) {
 			t.Errorf("the shelf theme row has no %s; a hub-folder theme must be installable from this face", want)
 		}
@@ -1181,7 +1181,7 @@ func TestLibraryInstallOpensTheSharedProgressPanel(t *testing.T) {
 		// and its progress is one bar that fills while the push streams — the push
 		// route speaks the install ladder's own NDJSON dialect, so the bar moves
 		// with real bytes.
-		{"the theme row's Install press", `inst.textContent = newer ? "Update" : "Install";`},
+		{"the theme row's Install press", `inst.textContent = newer ? "Update" : unsure ? "Replace" : "Install";`},
 	} {
 		src := tabs
 		if probe.label == "the theme row's Install press" {
@@ -1307,7 +1307,7 @@ func TestLibraryInstallRefetchesTheLedgerItJustChanged(t *testing.T) {
 		{"the app row's Install press", "tabs", "btn.textContent = name;", "loadApps()", "libVerdict"},
 		// D38: the shelf theme's Install re-reads through loadThemes, and its own
 		// refusal line is the survivor sentence — the push has no row verdict to keep.
-		{"the theme row's Install press", "app", `inst.textContent = newer ? "Update" : "Install";`, "loadThemes(themeIP)", "install refused"},
+		{"the theme row's Install press", "app", `inst.textContent = newer ? "Update" : unsure ? "Replace" : "Install";`, "loadThemes(themeIP)", "install refused"},
 	} {
 		src := tabs
 		if probe.file == "app" {

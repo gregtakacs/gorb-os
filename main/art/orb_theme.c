@@ -2584,7 +2584,7 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
     strlcpy(e->app, mine ? slug : "", sizeof e->app);
     e->why[0] = '\0';
     e->active = false; e->changed = false; e->stored = false;
-    e->art_size = 0; e->serial = 0; e->design_size = 0;
+    e->art_size = 0; e->serial = 0; e->design_size = 0; e->baked_s = 0;
     e->fmt = 0; e->n_sections = 0;
 
     if (!mine) {
@@ -2626,6 +2626,7 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
     e->art_size = b3.art_size;
     e->serial = b3.serial;
     e->design_size = b3.design_size;
+    e->baked_s = b3.baked_s;
     if (strcmp(bid, id) != 0) {
         strlcpy(e->why, "the file is not named for its own theme name — re-upload it",
                 sizeof(e->why));

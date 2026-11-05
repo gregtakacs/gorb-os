@@ -133,9 +133,9 @@ int main(int argc, char **argv)
             printf("case%u refuse %s\n", id, why);
         } else {
             printf("case%u ok name %s\n", id, h.name);
-            printf("case%u ok hdr %u %u %u %u %u %u %u %u\n", id,
+            printf("case%u ok hdr %u %u %u %u %u %u %u %u %u\n", id,
                    b.n_sections, h.geom_off, h.geom_size, h.geom_crc,
-                   h.art_off, h.art_size, h.art_crc, h.serial);
+                   h.art_off, h.art_size, h.art_crc, h.serial, h.baked_s);
             for (uint32_t i = 0; i < b.n_sections; i++) {
                 const orb_bundle_sec_t *s = &b.sec[i];
                 printf("case%u ok sec %u %s %u %u %u %u %u %u %u %u %u %u\n",
@@ -465,7 +465,7 @@ ALPHA = {"slug": "alpha", "elements": [elem(2, 0, w=2, h=2)], "scalars": {},
 
 GOLDEN = build(name="Bundle Two Apps",
                specs=[dict(SOLO, slug="chrono"), dict(BETA, slug="paint")],
-               serial=3)
+               serial=3, hdr_words={10: 1793000000})   # a bake time: word 10, Unix seconds
 SOLO_RAW = build(specs=[SOLO])
 
 
@@ -1009,7 +1009,8 @@ def check_case(cid, flags, row, queries, raw, kind, expect, rule, cl):
     f_ = [l for l in cl if l.startswith("ok hdr")][0].split()[2:]
     check(int(f_[0]) == h["n_sections"] and int(f_[1]) == h["geom_off"]
           and int(f_[2]) == h["geom_size"] and int(f_[3]) == h["geom_crc"]
-          and int(f_[4]) == h["art_off"] and int(f_[5]) == h["art_size"],
+          and int(f_[4]) == h["art_off"] and int(f_[5]) == h["art_size"]
+          and int(f_[7]) == h["serial"] and int(f_[8]) == h["baked_s"],
           "case %d: header fields disagree: %s vs %r" % (cid, f_, h))
     secs = [l.split()[3:] for l in cl if l.startswith("ok sec")]
     check(len(secs) == len(out), "case %d: C dumped %d sections, oracle read %d"

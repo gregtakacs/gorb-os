@@ -212,6 +212,7 @@ const char *orb_bundle3_hdr_parse(const uint32_t *w, orb_bundle3_hdr_t *o)
     o->art_off  = w[W_ART_OFF];    o->art_size  = w[W_ART_SIZE];
     o->art_crc  = w[W_ART_CRC];
     o->serial   = w[W_SERIAL];
+    o->baked_s  = w[W_SCR_H];      /* FORMAT 3's bake time, seconds; 0 = unstated */
     o->design_off = w[W_DESIGN_OFF]; o->design_size = w[W_DESIGN_SIZE];   /* P7: carried, never checked here */
     o->design_crc = w[W_DESIGN_CRC];
     o->geom_abi = w[W_GEOM_ABI];       /* carried: the store stamps the slot's

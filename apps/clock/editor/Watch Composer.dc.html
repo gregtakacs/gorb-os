@@ -2925,7 +2925,7 @@ class Component extends DCLogic {
     const opts = { name: nm, serial: 0,
                    // clock_view draws order[i] VERBATIM as the hand-slot id (no +1:
                    // that was FORMAT 2's show-table dialect; bake_clock.py writes raw ids too).
-                   bakedMs: Date.now(), plate, hands, order: hands.map((h) => h.slot) };
+                   bakedMs: Date.now(), bakedS: Math.floor(Date.now() / 1000), plate, hands, order: hands.map((h) => h.slot) };
     if (shadows.length) { opts.shadows = shadows; opts.scalars = Object.assign(opts.scalars || {}, { shadow_on: 1, shadow_dx: sdx, shadow_dy: sdy }); }
     // The Motion dropdown's verdict, worn on the wire.
     // A TICK names both scalars — second_sweep 0 and its own beat — so the dial

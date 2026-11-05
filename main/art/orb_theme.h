@@ -312,6 +312,7 @@ typedef struct {
     uint32_t  n_sections;         /* fmt 3 only: the index's app count; 0 for v2 */
     uint32_t  design_size;        /* D43 P7: the app design after the banks; 0 = none
                                    * (the theme installs but cannot be reopened) */
+    uint32_t  baked_s;            /* fmt 3: when it was baked, Unix seconds; 0 = unstated */
     esp_err_t err;              /* ESP_OK = loadable */
     bool      active;           /* this file is what the dial is drawing */
     bool      changed;          /* the installed copy of this name has different bytes */

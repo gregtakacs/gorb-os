@@ -2891,7 +2891,9 @@
     // must wrap here exactly as it does in Python, so this masks rather than refusing.
     hdr[5] = (o.geomSize >>> 0); hdr[6] = (o.geomCrc >>> 0);
     hdr[7] = (o.artSize >>> 0);  hdr[8] = (o.artCrc >>> 0);
-    hdr[9] = (o.nSections >>> 0); hdr[10] = 0;
+    // word 10 (FORMAT 2's scr_h) is the bake time in Unix seconds, 0 when the caller gives
+    // none: word 12's millisecond stamp wraps every 49.7 days and cannot order two bakes
+    hdr[9] = (o.nSections >>> 0); hdr[10] = (o.bakedS >>> 0);
     hdr[11] = (o.serial >>> 0);
     hdr[12] = (o.bakedMs >>> 0);
     hdr[13] = (o.artOff >>> 0);
@@ -3000,7 +3002,7 @@
     }
     var hdr = packHeader3({ geomSize: region.length, geomCrc: crc32(region), artOff: artOff,
                            artSize: artSize, artCrc: artCrcAll, nSections: sections.length,
-                           serial: o.serial || 0, bakedMs: o.bakedMs || 0, name: o.name, abi: hdrAbi,
+                           serial: o.serial || 0, bakedMs: o.bakedMs || 0, bakedS: o.bakedS || 0, name: o.name, abi: hdrAbi,
                            designOff: design ? end : 0, designSize: design ? design.length : 0, designCrc: design ? crc32(design) : 0 });
     var out = new Uint8Array(end + (design ? design.length : 0)), p = HDR_WORDS * 4;
     if (design) out.set(design, end);
@@ -3046,7 +3048,7 @@
     var name = new TextDecoder('utf-8', { fatal: true }).decode(bytes);   // D28: invalid UTF-8 is damage
     if (!name) throw new Error('theme has no name in its header — re-bake it');
     return { fmt: w[1], abi: w[2], hdrSize: w[3], geomOff: w[4], geomSize: w[5], geomCrc: w[6],
-             artSize: w[7], artCrc: w[8], nSections: w[9], serial: w[11], bakedMs: w[12],
+             artSize: w[7], artCrc: w[8], nSections: w[9], bakedS: w[10], serial: w[11], bakedMs: w[12],
              artOff: w[13], name: name, designOff: w[W_DESIGN_OFF], designSize: w[W_DESIGN_SIZE], designCrc: w[W_DESIGN_CRC] };
   }
   /* P7: a theme's design, or why there is none to reopen. Never throws for the design's own
@@ -3530,7 +3532,7 @@
       return out;
     }
     function pack(m) {
-      return writeBundle3({ name: m.name, serial: m.serial || 0, bakedMs: m.bakedMs || 0, design: m.design || null,
+      return writeBundle3({ name: m.name, serial: m.serial || 0, bakedMs: m.bakedMs || 0, bakedS: m.bakedS || 0, design: m.design || null,
         sections: [{ slug: m.slug, scr_w: scrW, scr_h: scrH, elements: elems, scalars: m.scalars || {},
                      sprites: bank.sprites, art: bank.art,
                      abi_min: m.abi, abi_max: m.abi }] });
@@ -4044,7 +4046,7 @@
     // D42: every clock section is v6.
     var secAbi = GEOM_ABI6;
     var pack = function () {
-      return B.pack({ name: o.name, serial: o.serial, bakedMs: o.bakedMs, design: o.design, slug: 'clock', scalars: sc, abi: secAbi });
+      return B.pack({ name: o.name, serial: o.serial, bakedMs: o.bakedMs, bakedS: o.bakedS, design: o.design, slug: 'clock', scalars: sc, abi: secAbi });
     };
     var b = pack();
     if (deltaBank && !selfVerify3(frames, bank.sprites, (elems[0].frame0 | 0),

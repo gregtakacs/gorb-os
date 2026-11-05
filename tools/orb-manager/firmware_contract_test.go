@@ -251,8 +251,8 @@ func themeRowJSONTags(t *testing.T) []string {
 	// the owning app of every row, which the hub groups and dials by. The firmware
 	// row also carries fmt and sects, which the card does not decode and this test
 	// therefore does not check.
-	if len(tags) != 11 {
-		t.Fatalf("ThemeEntry has %d JSON fields (%v); h_sd's decoded row is eleven (D43 P7 added design), and this test only checks the ones the struct declares", len(tags), tags)
+	if len(tags) != 12 {
+		t.Fatalf("ThemeEntry has %d JSON fields (%v); h_sd's decoded row is twelve (D43 P7 added design, and baked the bake time), and this test only checks the ones the struct declares", len(tags), tags)
 	}
 	return tags
 }

@@ -64,10 +64,13 @@ type ThemeEntry struct {
 	// App is the stem's first token — the owning app — even on a row whose header
 	// never got read. It is what the hub's card groups by, and what the device's
 	// own picker filters on. "" only on a device too old to answer it.
-	App     string `json:"app"`
-	Why     string `json:"why"`
-	Bytes   uint32 `json:"bytes"`
-	Serial  uint32 `json:"serial"`
+	App    string `json:"app"`
+	Why    string `json:"why"`
+	Bytes  uint32 `json:"bytes"`
+	Serial uint32 `json:"serial"`
+	// Baked is when the card file was baked, in Unix seconds, from its header's word 10;
+	// 0 for a file whose baker did not stamp it, or from firmware that does not report it.
+	Baked   uint32 `json:"baked"`
 	OK      bool   `json:"ok"`
 	Active  bool   `json:"active"`
 	Changed bool   `json:"changed"`

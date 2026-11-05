@@ -387,3 +387,21 @@ func TestContainerHeadRefusalsSayTheCostNotDamage(t *testing.T) {
 		t.Errorf("two-section head err = %v, want the door's one-section sentence", err)
 	}
 }
+
+// Word 10 is the bake time in Unix seconds: the hub orders two bakes of one theme by it,
+// because a serial only says they differ. A file whose baker did not stamp it reads 0.
+func TestContainerReadsTheBakeTime(t *testing.T) {
+	body := fixture(t, "format3-pair.orbtheme")
+	if c, err := ContainerName(body); err != nil || c.BakedS != 0 {
+		t.Fatalf("an unstamped bundle reads baked %d (err %v), want 0", c.BakedS, err)
+	}
+	putWord(body, wBakedS, 1793000000)
+	putWord(body, wHdrCRC, crc32.ChecksumIEEE(headerForCRC(body)))
+	c, err := ContainerName(body)
+	if err != nil {
+		t.Fatalf("a stamped bundle was refused: %v", err)
+	}
+	if c.BakedS != 1793000000 {
+		t.Errorf("baked is %d, want 1793000000 from word 10", c.BakedS)
+	}
+}

@@ -3711,8 +3711,8 @@ function themeLibraryRows(app, deviceRows, state, entries) {
   entries = Array.isArray(entries) ? entries : [];
   const list = $("#mn-themes");
   if (!entries.length || !list || !app) return 0;
-  const onCard = {};   // name -> the card copy's size, which is how a newer shelf bake shows
-  for (const t of deviceRows) if ((t.app || "clock") === app) onCard[String(t.name || "").toLowerCase()] = t.bytes || -1;
+  const onCard = {};   // name -> the card copy's bake serial, which is how a newer shelf bake shows
+  for (const t of deviceRows) if ((t.app || "clock") === app) onCard[String(t.name || "").toLowerCase()] = t.serial || -1;
   const edRow = themeAppsRows.find((a) => a.slug === app);
   const canEdit = !!(edRow && edRow.has_editor && edRow.editor_url);
   const stale = entries.filter((e) => e.theme && e.theme.stale);
@@ -3782,9 +3782,11 @@ function themeLibraryRows(app, deviceRows, state, entries) {
     else tag(e.state === "changed" ? "theme \u00b7 unsent changes" : "theme", e.state === "changed" ? "warn" : "",
       e.state === "changed" ? "Changes saved in the editor that have not been baked: Edit opens them, Send to orb there bakes them in" : "Baked, in the hub library");
     if (th && th.made_with) tag("made with " + th.made_with, "mut", "The editor release that made this design; opening it in a newer editor updates it when saved or sent");
-    const cardBytes = onCard[e.name.toLowerCase()];
-    // a different size is a different bake: the shelf's is the one the editor last made
-    const newer = !!(th && !th.stale && cardBytes && cardBytes > 0 && th.bytes && th.bytes !== cardBytes);
+    const cardSerial = onCard[e.name.toLowerCase()];
+    // a different serial is a different bake: the shelf's is the one the editor last made. Not
+    // the size: the card counts a bake's bytes differently from the file, so a size compare
+    // offered Update again straight after one landed (owner report, 2026-11-04)
+    const newer = !!(th && !th.stale && cardSerial && cardSerial > 0 && th.serial && th.serial !== cardSerial);
     // Update belongs to the card's row (owner, 2026-11-04): that is the copy being updated,
     // from this one. The library row only says it is the newer of the two.
     const cardLi = newer ? list.querySelector('li.trow[data-name="' + CSS.escape(e.name.toLowerCase()) + '"]') : null;
@@ -3797,7 +3799,7 @@ function themeLibraryRows(app, deviceRows, state, entries) {
         u.title = "The hub library holds a newer bake of this theme: Update sends it over this copy";
         cardLi.querySelector(".ttags").appendChild(u);
       }
-    } else if (th && cardBytes) tag("on " + (current.name || themeIP || "this orb"), "mut", "This orb's card holds a theme by this name");
+    } else if (th && cardSerial) tag("on " + (current.name || themeIP || "this orb"), "mut", "This orb's card holds a theme by this name");
     if (th) tag(Math.round((th.bytes || 0) / 1024) + " KB", "mut");
     let ed = null, dc = null;
     if (canEdit && (e.draft || (th && th.can_reopen))) {
@@ -3810,7 +3812,7 @@ function themeLibraryRows(app, deviceRows, state, entries) {
       li.appendChild(ed);
     }
     let inst = null;
-    if (th && !th.stale && (!cardBytes || newer)) {
+    if (th && !th.stale && (!cardSerial || newer)) {
       inst = document.createElement("button");
       inst.className = newer ? "upd" : "ghost";
       inst.textContent = newer ? "Update" : "Install";
@@ -3818,11 +3820,12 @@ function themeLibraryRows(app, deviceRows, state, entries) {
         : "Send this theme to the orb in hand. The device's theme door stores the file the moment it verifies, and the board reboots onto it.";
       inst.onclick = async () => {
         if (!themeIP) { state.textContent = "no orb in hand \u2014 connect one first."; return; }
+        const orbName = current.name || themeIP;
         if (typeof askConfirm === "function" && !await askConfirm({
-          title: newer ? "Update this theme?" : "Install this theme?",
-          body: (f.title || f.file) + " goes to " + themeIP + ": the device files the card copy and stores it in the same door, so the board reboots onto the new face.",
-          detail: (newer ? "It replaces the older bake of the same name on the card. " : "")
-            + "The hub's copy stays on the shelf. Remove from card later clears the orb's copy, and taking the wall's theme off clears the face too.",
+          title: (newer ? "Update " : "Install ") + (f.title || f.file) + "?",
+          body: newer ? orbName + " gets the newer " + (f.title || f.file) + " and restarts to show it."
+            : orbName + " gets " + (f.title || f.file) + " and restarts to show it.",
+          detail: "This takes a minute or two.",
           yes: newer ? "Update" : "Install",
         })) return;
         inst.disabled = true;

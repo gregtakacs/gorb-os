@@ -1008,9 +1008,9 @@ async function wifiUpdate() {
       // waiting to happen. The hub named the verdict, so the button changes and
       // says what the extra press costs; the rollback flag in the bootloader is
       // what makes the press recoverable rather than hopeful.
-      if (j.overridable && j.verdict === "downgrade" && !ffForced) {
+      if (j.overridable && (j.verdict === "downgrade" || j.verdict === "same-version") && !ffForced) {
         ffForced = true;
-        go.textContent = "Flash anyway over Wi-Fi";
+        go.textContent = j.verdict === "downgrade" ? "Flash anyway over Wi-Fi" : "Flash this hub's build over Wi-Fi";
         go.disabled = false;
         $("#ff-bar").hidden = true;
         state.textContent = j.error + " The bootloader rolls back if the new image never boots.";

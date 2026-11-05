@@ -196,6 +196,21 @@ func (s *Server) handleOrbUpdate(w http.ResponseWriter, r *http.Request) {
 				"from": st.FW, "to": b.Version,
 			})
 			return
+		case firmware.VerdictSameVersion:
+			if st.FW == b.Version {
+				s.jsonErrFields(w, ip+" already runs this firmware ("+st.FW+")", map[string]any{
+					"verdict": string(verdict),
+				})
+				return
+			}
+			// Another build of the same release (a dev image on a bench orb, then the
+			// release itself): not the same bytes, so a second press may push the hub's.
+			s.jsonErrFields(w, ip+" runs another build of this release ("+st.FW+"); this hub carries "+
+				b.Version, map[string]any{
+				"verdict": string(verdict), "overridable": true,
+				"from": st.FW, "to": b.Version,
+			})
+			return
 		default:
 			s.jsonErrFields(w, ip+" already runs this firmware ("+st.FW+")", map[string]any{
 				"verdict": string(verdict),

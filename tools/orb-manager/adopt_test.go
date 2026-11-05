@@ -152,6 +152,14 @@ func TestOrbUpdateGatesThenStagesAndReboots(t *testing.T) {
 	if env["ok"] == true || !strings.Contains(fmt.Sprint(env["error"]), "already runs") {
 		t.Errorf("a same-version update was not refused as a no-op: %v", env["error"])
 	}
+	// Another build of the same release (a dev image, then the release) is not a no-op:
+	// the bytes differ, so it refuses once with the second press offered.
+	o.SetFirmware("v1.0.13+ccccccc-dirty")
+	_, env = postJSONHandler(t, s.handleOrbUpdate, fmt.Sprintf(`{"ip":%q}`, ip))
+	if env["ok"] == true || env["overridable"] != true || env["verdict"] != "same-version" ||
+		!strings.Contains(fmt.Sprint(env["error"]), "another build of this release") {
+		t.Errorf("another build of the release was not offered a second press: %v", env)
+	}
 	o.SetFirmware("v1.0.0+aaaaaaa")
 	o.SetOTANextFW("v1.0.13+aaaaaaa")
 

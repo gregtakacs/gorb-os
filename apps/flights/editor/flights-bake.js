@@ -19,7 +19,7 @@
 
   var SHAPES = ['light', 'turboprop', 'bizjet', 'airliner', 'heavy', 'helicopter', 'generic'];
   var SHAPE_TITLES = ['Light', 'Turboprop', 'Business jet', 'Airliner', 'Heavy', 'Helicopter', 'Other'];
-  var PLANE_ROWS = 15, SWEEP_FPS = 15, SEL_SLOT = 16, EM_SLOT = 17, SEL_R = 28, EM_R = 32;
+  var PLANE_ROWS = 15, SWEEP_FPS = 20, SEL_SLOT = 16, EM_SLOT = 17, SEL_R = 28, EM_R = 32;
   var CARD_SLOT = 22, CARD_CLEAR_SLOT = 24, NONE = 0xF, G = 466, CX = 233;
   var PERIOD_MIN = 2, PERIOD_MAX = 30;            // main.c SWEEP_S_MIN/MAX: one turn, seconds
   var CHARSET = (function () {

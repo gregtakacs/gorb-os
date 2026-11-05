@@ -260,8 +260,11 @@ typedef enum { REQ_NONE, REQ_POLL, REQ_ROUTE } req_t;
 static req_t    s_req;
 static int      s_req_src;
 static bool     s_parsing;           /* the body is landed and being tokenized */
-#define PARSE_SLICE 400              /* JSON events taken per service pass (D51: the OS
-                                      * lexes natively; this bounds the app's own work) */
+#define PARSE_SLICE 100              /* JSON events taken per service pass (D51: the OS
+                                      * lexes natively; this bounds the app's own work).
+                                      * 400 held one pass for 34 ms over a 21 KB body at
+                                      * 80 nm, a dropped frame per poll (2026-11-04); 100
+                                      * keeps a pass near a quarter of that */
 
 static void schedule_next(void)
 {

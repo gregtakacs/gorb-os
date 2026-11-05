@@ -274,7 +274,7 @@
 
     /* the preview: the frame clock, Design, Panel and Split */
     R.useEffect(function () {
-      var tk = playing ? T.ticker(15, false, function () { tRef.current += 1000 / 15; draw(); }) : null;
+      var tk = playing ? T.ticker(B.SWEEP_FPS, false, function () { tRef.current += 1000 / B.SWEEP_FPS; draw(); }) : null;
       draw();
       return function () { if (tk) tk.stop(); };
     });

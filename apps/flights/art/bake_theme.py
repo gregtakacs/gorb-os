@@ -46,7 +46,8 @@ BAKER = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime", "baker@1", 
 SHAPES = ("light", "turboprop", "bizjet", "airliner", "heavy", "helicopter", "generic")
 PLANE_ROWS = 15               # the contacts drawn at once: with the arm, the 16 rows an app's
                               # layer table holds (ORB_LAYER_MAX), so the direct compositor draws it
-SWEEP_FPS = 15                # the arm's declared sweep: the stage's frame rate
+SWEEP_FPS = 20                # the arm's declared sweep: the stage's frame rate (15 until
+                              # 2026-11-04; an OS before the 20 ceiling clamps it to 15)
 GROUND_OPA = 0.45             # colour off: ground traffic recedes (§11.1 ruling 8)
 SEL_SLOT, EM_SLOT = 16, 17    # apps/flights/main.c: the marker rings' slots
 SEL_R, EM_R = 28, 32          # their radii, px: a ring clears a 38 px plane

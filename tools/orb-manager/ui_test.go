@@ -1430,8 +1430,9 @@ func TestThemesFaceNamesItsAppEvenWithOnlyOne(t *testing.T) {
 
 // H1 (owner, 2026-11-03): under Themes each app has its own tab with its own themes and its
 // own editor. Since the theme pool every app wears its own theme, so there is no pane of
-// everyone's rows, the face opens on the app on the glass, and the state line says what the
-// app in view wears, not the one OS-wide name.
+// everyone's rows, and the state line says what the app in view wears, not the one OS-wide
+// name. Which app is on the glass is not shown and does not pick the tab (owner, 2026-11-05):
+// a theme does not depend on it, and the mark went stale as soon as the orb changed app.
 func TestThemesFaceIsOneTabPerApp(t *testing.T) {
 	app := readWebFile(t, "app.js")
 	at := strings.Index(app, "function renderThemeTabs(")
@@ -1445,15 +1446,15 @@ func TestThemesFaceIsOneTabPerApp(t *testing.T) {
 	if strings.Contains(tabs, `"All"`) {
 		t.Error("the Themes face offers an All tab again: a pane of every app's rows has no one answer to what it wears")
 	}
-	if !strings.Contains(tabs, "a.on_glass") {
-		t.Error("the tabs no longer mark the app on the glass")
+	if strings.Contains(tabs, "on_glass") || strings.Contains(tabs, "on the glass") {
+		t.Error("the Themes tabs mark the app on the glass again: it goes stale when the orb changes app")
 	}
 	sc := app[strings.Index(app, "function themeFaceScope("):]
 	if n := strings.Index(sc, "\n}\n"); n > 0 {
 		sc = sc[:n]
 	}
-	if !strings.Contains(sc, "a.on_glass") {
-		t.Error("with no tab pressed the face no longer opens on the app on the glass")
+	if strings.Contains(sc, "on_glass") {
+		t.Error("with no tab pressed the face opens on the app on the glass again, not the first tab")
 	}
 	if !strings.Contains(app, "scopeRow.wearing") || !strings.Contains(app, `" wears \""`) {
 		t.Error("the Themes state line no longer says what the app in view wears")

@@ -2771,8 +2771,7 @@ function renderThemeTabs() {
   const apps = themeAppsRows.slice();
   if (head) {
     const sc = apps.length ? themeFaceScope() : "";
-    const on = sc && apps.find((a) => a.slug === sc);
-    head.textContent = sc ? themeAppTitle(sc) + " themes" + (on && on.on_glass ? " \u00b7 on the glass now" : "") : "";
+    head.textContent = sc ? themeAppTitle(sc) + " themes" : "";
   }
   if (!apps.length) return;
   apps.sort((x, y) => (x.slug < y.slug ? -1 : 1));
@@ -2809,11 +2808,12 @@ function renderThemeTabs() {
   // H1 (owner, 2026-11-03): under Themes, each app has its own tab with its own themes and
   // its own editor. There is no tab that mixes them: since the theme pool every app wears
   // its own theme, so a pane of everyone's rows has no one answer to "what is it wearing".
-  // The app on the glass is marked, and the face opens on it (themeFaceScope).
+  // Which app the orb is showing is not marked (owner, 2026-11-05): a theme's app does not
+  // depend on it, and the mark went stale the moment the orb changed app.
   const scope = themeFaceScope();
   for (const a of apps) {
     const n = a.count | 0;
-    mk(a.slug, themeAppTitle(a.slug) + (n ? " (" + n + ")" : " (none)") + (a.on_glass ? " \u00b7 on the glass" : ""), scope === a.slug);
+    mk(a.slug, themeAppTitle(a.slug) + (n ? " (" + n + ")" : " (none)"), scope === a.slug);
   }
 }
 
@@ -2826,10 +2826,9 @@ function renderThemeTabs() {
 function themeFaceScope() {
   if (themeSub) return themeSub;
   if (themeAppsRows.length === 1) return themeAppsRows[0].slug;
-  // H1: no pressed tab and several apps opens on the app on the glass, else the first tab;
-  // "" is left for an orb whose app enumeration failed, where the rows are all there is
-  const glass = themeAppsRows.find((a) => a.on_glass);
-  if (glass) return glass.slug;
+  // H1: no pressed tab and several apps opens on the first tab, in the tabs' own order and not
+  // on whichever app the orb showed when the list was read (owner, 2026-11-05); "" is left for
+  // an orb whose app enumeration failed, where the rows are all there is
   const first = themeAppsRows.slice().sort((x, y) => (x.slug < y.slug ? -1 : 1))[0];
   return first ? first.slug : "";
 }

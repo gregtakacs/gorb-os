@@ -45,6 +45,10 @@
     'custom-trail-shadow': (d) => { d.planes.family = 'custom'; d.planes.form = 'single'; d.planes.custom.image = PLANE; d.planes.heading.style = 'trail'; d.planes.heading.length = 1; d.planes.shadow.on = true; return d; },
     'saved-before-fields': () => { const d = B.preset('paper'); delete d.planes.shadow; delete d.planes.selStyle; delete d.planes.emWidth; delete d.arm.shadow; delete d.scope.gridWidth; delete d.frames.corner; delete d.planes.heading; delete d.planes.groundGrey; return B.complete(d); },
   };
+  // the far-contact dots: one colour, none, and a design saved before the field existed
+  VARIANTS['dots-plain'] = (d) => { d.planes.dots = { show: 'plain', colour: '#FFFFFF', size: 8 }; return d; };
+  VARIANTS['dots-off'] = (d) => { d.planes.dots.show = 'off'; return d; };
+  VARIANTS['dots-saved-before'] = (d) => { delete d.planes.dots; return B.complete(d); };
   VARIANTS['blank'] = () => B.preset('blank');
   VARIANTS['blank-arm-over'] = () => { const d = B.preset('blank'); d.arm.layer = 'over'; d.planes.colour = true; return d; };
   VARIANTS['blank-saved-before-fields'] = () => { const d = B.preset('blank'); delete d.arm.layer; delete d.planes.heading; return B.complete(d); };

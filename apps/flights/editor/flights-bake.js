@@ -20,6 +20,10 @@
   var SHAPES = ['light', 'turboprop', 'bizjet', 'airliner', 'heavy', 'helicopter', 'generic'];
   var SHAPE_TITLES = ['Light', 'Turboprop', 'Business jet', 'Airliner', 'Heavy', 'Helicopter', 'Other'];
   var PLANE_ROWS = 15, SWEEP_FPS = 20, SEL_SLOT = 16, EM_SLOT = 17, SEL_R = 28, EM_R = 32;
+  // the far-contact dots (apps/flights/main.c DOT_SLOTS): the nine slots an app's rows leave
+  // free under 32, one per tracked aircraft past the PLANE_ROWS nearest
+  var DOT_SLOTS = [18, 19, 25, 26, 27, 28, 29, 30, 31];
+  var DOTS = [['bands', 'Dots by altitude'], ['plain', 'Dots, one colour'], ['off', 'Not shown']];
   var CARD_SLOT = 22, CARD_CLEAR_SLOT = 24, NONE = 0xF, G = 466, CX = 233;
   var PERIOD_MIN = 2, PERIOD_MAX = 30;            // main.c SWEEP_S_MIN/MAX: one turn, seconds
   var CHARSET = (function () {
@@ -128,6 +132,7 @@
     d.arm = Object.assign(armOf('line', 8), { colour: '#BDBDBD', tailColour: '#BDBDBD', lead: '#FFFFFF', tail: 0, halo: 0,
       shadow: { on: false, opacity: 0.6, blur: 2.5 }, layer: 'under' });
     Object.assign(d.planes, { family: 'modern', form: 'types', colour: false, ground: 0.5, groundGrey: true, sel: '#FFFFFF', em: '#FF3B30',
+      dots: { show: 'plain', colour: '#D0D0D0', size: 6 },
       heading: { style: 'none', length: 1, colour: '#FFFFFF' } });
     d.words = { face: 'IBM Plex Sans', size: 16, body: '#E6E6E6', accent: '#FFFFFF', accent2: null, quiet: '#8F8F8F', warning: '#E0A040' };
     d.frames = { style: 'rounded', edge: 1, pad: 8, fill: '#1A1A1A', opacity: 0.85, line: '#4A4A4A', image: null, corner: 10,
@@ -143,7 +148,8 @@
       arm: armOf(f.pair[1], 8),
       planes: { family: fam, form: 'types', size: a.plane_px, colour: true, bands: a.bands.map(function (b) { return b[1]; }),
         ground: 0.6, groundGrey: false, heading: { style: X.heading || 'none', length: 1, colour: '#E8E4FF' }, sel: look.sel, em: '#FF2020', custom: { image: null },
-        selStyle: 'ring', selWidth: 2, emStyle: 'ring', emWidth: 2.5, shadow: { on: false, opacity: 0.6, blur: 2.5 } },
+        selStyle: 'ring', selWidth: 2, emStyle: 'ring', emWidth: 2.5, shadow: { on: false, opacity: 0.6, blur: 2.5 },
+        dots: { show: 'bands', colour: '#D0D0D0', size: 6 } },
       words: clone(WORDS[bg]),
       frames: Object.assign(clone(FRAMES[bg]), { image: null, corner: 10, card: { width: 240, place: 'auto' },
         shadow: { on: true, blur: 4, opacity: 0.55, drop: 3 } }),
@@ -491,6 +497,22 @@
   // and room for its shadow round it
   function planeShadow(d) { var s = d.planes.shadow; return s && s.on ? Math.max(0.5, Math.min(5, +s.blur || 2.5)) : 0; }
   function planeBox(d) { return planePx(d) + 2 * Math.ceil(planeShadow(d) * 2.5); }
+  // a far contact's dot: its box (the dot and a 1 px dark rim) and its frames, the 7 altitude
+  // bands or one colour; none when the design shows no far aircraft
+  function dotPx(d) { var t = d.planes.dots || {}; return Math.max(4, Math.min(10, t.size | 0 || 6)); }
+  function dotBox(d) { return dotPx(d) + 2; }
+  function dotFrames(d) {
+    var t = d.planes.dots || {}, show = t.show || 'off';
+    if (show === 'off') return [];
+    var cols = show === 'bands' ? d.planes.bands.slice(0, 7) : [t.colour || '#D0D0D0'];
+    return cols.map(function (col) {
+      var b = dotBox(d), c = canvas(b, b), x = c.getContext('2d'), r = dotPx(d) / 2;
+      x.beginPath(); x.arc(b / 2, b / 2, r, 0, 2 * Math.PI);
+      x.fillStyle = col; x.fill();
+      x.lineWidth = 1; x.strokeStyle = 'rgba(0,0,0,0.55)'; x.stroke();
+      return c;
+    });
+  }
   // a plane drawn in its frame, its shadow under it
   function shadowed(c, d) {
     var sh = planeShadow(d);
@@ -759,6 +781,17 @@
     var rows = [];
     for (var i = 0; i < PLANE_ROWS; i++) rows.push({ slot: 1 + i, x: a.cx - (px >> 1), y: a.cx - (px >> 1), order: 2 });
     S.pool({ class: AUX, w: px, h: px, pivot_x: px >> 1, pivot_y: px >> 1, alpha: 255 }, frames.map(plane), rows, true, true);
+    var dots = dotFrames(d);
+    if (dots.length) {
+      // by altitude: one pool of the 7 band frames the app picks from; one colour: nine still
+      // rows of the one dot (a picked row needs two frames to pick between)
+      var db = dotBox(d), dslots = DOT_SLOTS.map(function (slot) { return { slot: slot, x: a.cx - (db >> 1), y: a.cx - (db >> 1), order: 2 }; });
+      if (dots.length > 1)
+        S.pool({ class: AUX, w: db, h: db, pivot_x: db >> 1, pivot_y: db >> 1, alpha: 255 }, dots.map(plane), dslots, true, true);
+      else for (var ds of dslots)
+        S.row({ n: S.id(), class: AUX, slot: ds.slot, x: ds.x, y: ds.y, w: db, h: db, pivot_x: db >> 1, pivot_y: db >> 1,
+          order: 2, alpha: 255, n_frames: 1 }, plane(dots[0]), true, true);
+    }
     for (var mk of markers(d)) {
       var md = 2 * mk[1];
       S.row({ n: S.id(), class: AUX, slot: mk[0], x: a.cx - mk[1], y: a.cx - mk[1], w: md, h: md, pivot_x: mk[1], pivot_y: mk[1],
@@ -801,6 +834,7 @@
     SCHEMA: SCHEMA, SHAPES: SHAPES, SHAPE_TITLES: SHAPE_TITLES, LABELS: LABELS, FACES: FACES, PRESETS: PRESETS, GROUNDS: GROUNDS,
     GROUND_TITLES: GROUND_TITLES, ARMS: ARMS, SCOPES: SCOPES, ARM_LOOKS: ARM_LOOKS, PERIOD_MIN: PERIOD_MIN, PERIOD_MAX: PERIOD_MAX,
     PLANE_ROWS: PLANE_ROWS, SWEEP_FPS: SWEEP_FPS, CARD_SLOT: CARD_SLOT, CARD_CLEAR_SLOT: CARD_CLEAR_SLOT,
+    DOT_SLOTS: DOT_SLOTS, DOTS: DOTS, dotFrames: dotFrames, dotBox: dotBox,
     FRAME_STYLES: FRAME_STYLES, MARKS: MARKS, HEADINGS: HEADINGS, serialOf: serialOf, GRID_W: GRID_W,
     preset: preset, upgrade1: upgrade1, complete: complete, pictureFit: pictureFit, panelCanvas: panelCanvas, planeBox: planeBox, markers: markers, scopeOf: scopeOf, armOf: armOf, bake: bake, thumb: thumb, period: period,
     // the preview draws from the same parts

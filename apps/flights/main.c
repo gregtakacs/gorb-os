@@ -477,6 +477,16 @@ static orb_stage_info_t s_stage;
 static bool    s_themed;
 static int32_t s_arm = -1;
 static int32_t s_planes[PLANE_SLOTS];
+/* Far contacts as dots, the theme's choice: the tracked aircraft past the PLANE_SLOTS
+ * nearest each take a dot row of their own. A theme with no dot rows shows only the nearest
+ * PLANE_SLOTS; dot rows carrying 7 frames colour a dot by its altitude band (band_of), one
+ * frame draws every dot alike. The slots are the nine an app's rows leave free under 32
+ * (CLK_ROW_MAX): with FLIGHTS_MAX tracked, every one of them is on the glass. */
+static const uint8_t DOT_SLOTS[] = { 18, 19, 25, 26, 27, 28, 29, 30, 31 };
+#define DOT_MAX ((int)(sizeof DOT_SLOTS / sizeof DOT_SLOTS[0]))
+static int32_t s_dots[DOT_MAX];
+static int     s_ndots;
+static bool    s_dot_bands;
 static int     s_nplanes;
 static int32_t s_sel_row = -1, s_em_row = -1, s_rng;
 static int32_t s_lab[LAB_N] = { -1, -1, -1, -1 };
@@ -649,6 +659,27 @@ static void draw_stage(void)
     int idx[PLANE_SLOTS];
     const int n = fm_stack(&s_m, s_nplanes, idx);
     bool sel_on = false, em_on = false;
+    /* The far ones: the tracked order past the n the plane rows took, nearest first. */
+    int d = 0;
+    for (int o = n; o < s_m.norder && d < s_ndots; o++, d++) {
+        const fm_trk_t *t = &s_m.t[s_m.order[o]];
+        const int32_t row = s_dots[d];
+        const int x = (int)lroundf(t->x), y = (int)lroundf(t->y);
+        if (s_dot_bands) orb_stage_frame(row, band_of(&t->ac));
+        orb_stage_pose(row, 0, x - CX, y - CY);
+        orb_stage_opacity(row, t->live ? 255 : STALE_OPA);
+        if (!sel_on && s_sel[0] && !strcmp(t->ac.hex, s_sel)) {
+            marker(s_sel_row, true, x, y);
+            sel_on = true;
+            if (s_card_clear)
+                s_card_dy = fm_card_dy(s_card_cx, s_card_cy, s_card_hw, s_card_hh, CY, x, y, s_card_dy, CARD_MARGIN);
+        }
+        if (!em_on && emergency(&t->ac)) {
+            marker(s_em_row, true, x, y);
+            em_on = true;
+        }
+    }
+    for (; d < s_ndots; d++) orb_stage_pose(s_dots[d], ORB_STAGE_HIDDEN, 0, 0);
     int k = 0;
     for (; k < n; k++) {
         const fm_trk_t *t = &s_m.t[idx[k]];
@@ -690,8 +721,13 @@ static void draw_text(void)
         snprintf(b, sizeof b, "%d of %d", fm_find(&s_m, s_sel) + 1, s_m.norder);
     else if (s_mode == MODE_INFO)
         snprintf(b, sizeof b, "no aircraft in range");
-    else
-        snprintf(b, sizeof b, "%d aircraft", s_m.norder);
+    else {
+        /* What the glass can show: the plane rows, and the dots when the theme has them. A
+         * count past it says how many are drawn, so the header never promises more. */
+        const int shown = s_themed ? s_nplanes + s_ndots : s_m.norder;
+        if (s_m.norder > shown) snprintf(b, sizeof b, "%d aircraft, %d shown", s_m.norder, shown);
+        else snprintf(b, sizeof b, "%d aircraft", s_m.norder);
+    }
     say(LAB_HEAD, b, s_mode == MODE_ROAM ? ORB_TONE_NORMAL : ORB_TONE_ACCENT,
         s_mode == MODE_ROAM ? 0xD0D0D0 : 0x39FF14);
 
@@ -754,10 +790,19 @@ static int32_t text(int32_t font, uint32_t rgb, int32_t align, int32_t y)
 
 /* ---- entry points ---------------------------------------------------------------- */
 
-/* The theme's rows, by slot: the arm at 0, the planes after it, then the marker rings. */
+static bool is_dot_slot(uint16_t tag)
+{
+    for (int k = 0; k < DOT_MAX; k++) if (DOT_SLOTS[k] == tag) return true;
+    return false;
+}
+
+/* The theme's rows, by slot: the arm at 0, the planes after it, the marker rings, and the
+ * far-contact dots when the theme carries them. */
 static void stage_rows(void)
 {
     s_nplanes = 0;
+    s_ndots = 0;
+    s_dot_bands = false;
     s_sel_row = s_em_row = -1;
     s_card_clear = false; s_card_dy = 0;
     for (int k = 0; k < LAB_N; k++) s_lab[k] = -1;
@@ -770,6 +815,10 @@ static void stage_rows(void)
         }
         else if (r.tag == SEL_SLOT) s_sel_row = i;
         else if (r.tag == EM_SLOT) s_em_row = i;
+        else if (r.shape != CLK_SHAPE_TEXT && is_dot_slot(r.tag) && s_ndots < DOT_MAX) {
+            if (!s_ndots) s_dot_bands = orb_stage_frame(i, -1) >= 7;
+            s_dots[s_ndots++] = i;
+        }
         else if (r.shape == CLK_SHAPE_TEXT && r.tag >= LAB_SLOT0 && r.tag < LAB_SLOT0 + LAB_N)
             s_lab[r.tag - LAB_SLOT0] = i;
         else if (r.shape == CLK_SHAPE_TEXT && r.tag == CARD_CLEAR) {
@@ -797,8 +846,9 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
             orb_ui_set(s_rng, ORB_P_FONT, ORB_FONT_14);
             orb_ui_align(s_rng, ORB_AL_CENTER, 140, 140);
         }
-        orb_logf("flight tracker on its theme: arm row %d, %d plane rows, markers %d/%d, %s",
-                 (int)s_arm, s_nplanes, (int)s_sel_row, (int)s_em_row,
+        orb_logf("flight tracker on its theme: arm row %d, %d plane rows, %d dot rows%s, markers %d/%d, %s",
+                 (int)s_arm, s_nplanes, s_ndots, s_ndots ? (s_dot_bands ? " by altitude" : " plain") : "",
+                 (int)s_sel_row, (int)s_em_row,
                  s_labels ? "the theme's labels" : "widgets for the words");
     } else {
         s_cv = orb_cv_create(0, W, H);

@@ -1166,3 +1166,28 @@ Apps menu, `/api/v1/status` and the ledger (now with a `reason` on card rows) al
 orb.<name>, which this firmware lacks: update the firmware". Benched on Bronze with the
 template app's `ui_refresh` import renamed to one no firmware binds.
 
+
+## 13. Far aircraft as dots (flights v1.2.7, 2026-11-05)
+
+**Owner, 2026-11-05:** the tracked aircraft past the nearest 15 show as dots, coloured or
+plain as the theme chooses, and a theme can turn them off.
+
+- **The cap was never 15 aircraft. It was 15 plane rows.** The feed keeps the nearest 24
+  (`FLIGHTS_MAX`), `fm_stack` gives the nearest 15 their plane rows, and until v1.2.6 the
+  rest were simply not drawn while the header counted them all.
+- **The theme carries the choice as rows.** A dot pool sits at slots 18, 19 and 25..31, the
+  nine an app's rows leave free under 32 (`CLK_ROW_MAX`), one for each tracked aircraft past
+  the planes. Seven frames = a dot in its altitude band's colour (`band_of`, the same bands
+  as the planes). Nine still rows of one frame = all alike (a picked row needs two frames).
+  No dot rows = off. `stage_rows` binds whatever is there; the app logs
+  "N dot rows by altitude|plain".
+- **Editor:** Planes → Far aircraft: Dots by altitude / Dots, one colour (with Colour) / Not
+  shown, plus Size 4-10 px. The preset default is by altitude (a blank design: one colour),
+  and a design saved before the field takes its preset's. **Shelf baker:**
+  `bake_theme.py --dots auto|bands|plain|off` (auto follows `--colour`).
+- **Header:** "N aircraft" while the glass shows all N. "N aircraft, M shown" when the theme
+  has fewer rows than the tracked count (no dots, or more than 24).
+- **Checked:** `editor/_selftest/bake_check.py` 30/30, including dots-plain, dots-off and a
+  design saved before the field. Seen on Gold at Heathrow, 20 nm (home moved there for the
+  capture with `tz=keep`, then restored): 17 aircraft, 15 planes and 2 dots in their band
+  colour.

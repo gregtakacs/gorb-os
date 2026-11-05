@@ -19,6 +19,9 @@ What a tracker theme holds, and what apps/flights/main.c expects of it:
     by the track, and picks its frame: shape * 7 + band, in SHAPES and make_art.BANDS order;
   - slots SEL_SLOT and EM_SLOT: the selection and emergency rings, centred on the glass
     centre, which the app moves onto a contact (theme-text-plan §0 ruling 3);
+  - slots DOT_SLOTS (optional, --dots): the far-contact dots, one per tracked aircraft past the
+    PLANE_ROWS nearest; 7 frames colour a dot by altitude band, 1 frame draws them all alike, and
+    a theme without them shows only the nearest PLANE_ROWS;
   - four fonts (theme-text-plan §2.1) in the background's own typeface, colours and finish:
     body, accent, quiet and warning;
   - four labels (§2.2) at LABELS' slots, each a panel and its fonts by tone: the header, the
@@ -50,6 +53,9 @@ SWEEP_FPS = 20                # the arm's declared sweep: the stage's frame rate
                               # 2026-11-04; an OS before the 20 ceiling clamps it to 15)
 GROUND_OPA = 0.45             # colour off: ground traffic recedes (§11.1 ruling 8)
 SEL_SLOT, EM_SLOT = 16, 17    # apps/flights/main.c: the marker rings' slots
+DOT_SLOTS = (18, 19, 25, 26, 27, 28, 29, 30, 31)   # main.c's far-contact dots: the free slots under 32
+DOT_PX = 6                    # a dot's diameter; its box adds a 1 px dark rim
+DOT_PLAIN = "#D0D0D0"
 SEL_R, EM_R = 28, 32          # their radii, px: a ring clears a 38 px plane
 EMERGENCY = "#FF2020"
 
@@ -229,6 +235,22 @@ def arm(name, trail):
     return img, (-x, -y)
 
 
+def dots(mode):
+    """The far-contact dot frames: the 7 altitude bands, one plain colour, or none."""
+    if mode == "off":
+        return []
+    from PIL import ImageDraw
+    cols = [c for _, c in A.BANDS] if mode == "bands" else [DOT_PLAIN]
+    box, k = DOT_PX + 2, 4                         # drawn 4x and reduced: an antialiased edge
+    out = []
+    for col in cols:
+        big = Image.new("RGBA", (box * k, box * k), (0, 0, 0, 0))
+        g = ImageDraw.Draw(big)
+        g.ellipse((k, k, (box - 1) * k - 1, (box - 1) * k - 1), fill=col, outline=(0, 0, 0, 140), width=k)
+        out.append(big.resize((box, box), Image.LANCZOS))
+    return out
+
+
 def preview(bg, arm_img, piv, frames_, px):
     """The picker's picture: the scope with its arm and a few contacts, at 232 px."""
     g = bg.copy()
@@ -254,6 +276,16 @@ S.row({ n: S.id(), class: AUX, slot: 0, x: m.cx - m.arm.px, y: m.cx - m.arm.py, 
 const planes = m.frames.map((f) => rd(f, m.px, m.px));
 const rows = Array.from({ length: m.rows }, (_, i) => ({ slot: 1 + i, x: m.cx - (m.px >> 1), y: m.cx - (m.px >> 1), order: 2 }));
 S.pool({ class: AUX, w: m.px, h: m.px, pivot_x: m.px >> 1, pivot_y: m.px >> 1, alpha: 255 }, planes, rows, true, true);
+// the far-contact dots: a pool of the 7 band frames, or nine still rows of one (a picked row
+// needs two frames to pick between)
+if (m.dots) {
+  const dd = m.dots.d, ds = m.dots.slots.map((slot) => ({ slot, x: m.cx - (dd >> 1), y: m.cx - (dd >> 1), order: 2 }));
+  const df = m.dots.files.map((f) => rd(f, dd, dd));
+  if (df.length > 1) S.pool({ class: AUX, w: dd, h: dd, pivot_x: dd >> 1, pivot_y: dd >> 1, alpha: 255 }, df, ds, true, true);
+  else for (const r of ds)
+    S.row({ n: S.id(), class: AUX, slot: r.slot, x: r.x, y: r.y, w: dd, h: dd, pivot_x: dd >> 1, pivot_y: dd >> 1,
+            order: 2, alpha: 255, n_frames: 1 }, df[0], true, true);
+}
 for (const k of m.markers)
   S.row({ n: S.id(), class: AUX, slot: k.slot, x: m.cx - (k.d >> 1), y: m.cx - (k.d >> 1), w: k.d, h: k.d,
           pivot_x: k.d >> 1, pivot_y: k.d >> 1, order: 3, alpha: 255, n_frames: 1 },
@@ -273,7 +305,7 @@ process.stdout.write(JSON.stringify({ bytes: b.bytes.length, meter: b.meter || n
 """
 
 
-def bake(fam, form, colour, trail, outdir, node):
+def bake(fam, form, colour, trail, outdir, node, dot_mode="auto"):
     bg_name, arm_name = A.PAIRS[fam]
     title = A.FAMILIES[fam][0]
     name = "Flights %s%s%s" % (title, " detailed" if form == "single" else "",
@@ -304,10 +336,17 @@ def bake(fam, form, colour, trail, outdir, node):
          "frames": [raw(f, "f%02d" % i) for i, f in enumerate(fr)],
          "markers": [{"slot": SEL_SLOT, "d": 2 * SEL_R, "file": raw(marker(SEL_R, sel), "sel")},
                      {"slot": EM_SLOT, "d": 2 * EM_R, "file": raw(marker(EM_R, EMERGENCY), "em")}],
+         "dots": None,
          "fonts": fonts, "labels": labels,
          "preview": raw(preview(bg, arm_img, piv, fr, px), "preview"),
          "name": name, "serial": 1,
          "out": os.path.join(outdir, "%s.orbtheme" % name.lower().replace(" ", "-"))}
+    if dot_mode == "auto":
+        dot_mode = "bands" if colour == "bands" else "plain"
+    dfr = dots(dot_mode)
+    if dfr:
+        m["dots"] = {"slots": list(DOT_SLOTS), "d": DOT_PX + 2,
+                     "files": [raw(f, "dot%d" % i) for i, f in enumerate(dfr)]}
     mf = os.path.join(tmp, "m.json")
     json.dump(m, open(mf, "w"))
     r = subprocess.run([node, "-e", STAGE_JS, BAKER, mf], capture_output=True, text=True, timeout=600)
@@ -325,12 +364,15 @@ def main():
     ap.add_argument("--form", choices=("types", "single"), default="types")
     ap.add_argument("--colour", choices=("bands", "off"), default="bands")
     ap.add_argument("--trail", type=int, default=30, help="the wedge's trail in degrees (its area is its cost)")
+    ap.add_argument("--dots", choices=("auto", "bands", "plain", "off"), default="auto",
+                    help="far aircraft past the nearest %d: dots by altitude, one colour, or none "
+                         "(auto: by altitude when --colour bands, else plain)" % PLANE_ROWS)
     ap.add_argument("--out", default=os.path.join(ROOT, "apps", "flights", "build", "themes"))
     a = ap.parse_args()
     node = shutil.which("node") or os.path.expanduser("~/.local/share/nodeenv-gorb/bin/node")
     os.makedirs(a.out, exist_ok=True)
     for fam in a.family or list(A.FAMILIES):
-        bake(fam, a.form, a.colour, a.trail, a.out, node)
+        bake(fam, a.form, a.colour, a.trail, a.out, node, a.dots)
 
 
 if __name__ == "__main__":

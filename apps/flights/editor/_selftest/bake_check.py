@@ -8,7 +8,8 @@ folder Windows Chrome can read, runs it headless, and checks every theme it prin
 reads back through orbbundle and theme_schema, the shipped orb_clock3.c projects it under
 the flights slug, and its rows are the ones apps/flights/main.c finds (the arm at slot 0,
 fifteen planes of 49 picked frames, the marker rings at 16 and 17, four fonts, the header,
-footer and range at 20, 21 and 23 and the card at 22 or, keeping clear, at 24, the preview),
+footer and range at 20, 21 and 23 and the card at 22 or, keeping clear, at 24, the far-contact
+dots at 18, 19 and 25..31 when the design shows them, the preview),
 the arm's vmax its turn in seconds (§12.5), with the design region carried.
 """
 import base64
@@ -76,6 +77,12 @@ def check(name, raw, exe, card, period):
         bad.append("the plane pool is not fifteen rows of 49 picked frames")
     if 16 not in aux or 17 not in aux:
         bad.append("a marker ring is missing")
+    # the far-contact dots (main.c DOT_SLOTS): all nine or none, 7 band frames or 1, picked
+    dot_slots = (18, 19, 25, 26, 27, 28, 29, 30, 31)
+    dots = [aux.get(s) for s in dot_slots]
+    if any(dots) and not all(d is not None and int(d["n_frames"]) in (1, 7) and not int(d["delay"])
+                             and int(d["n_frames"]) == int(dots[0]["n_frames"]) for d in dots):
+        bad.append("the dot pool is not nine rows of 1 or 7 picked frames")
     if len(fonts) != 4 or sorted(int(f["slot"]) for f in fonts) != [0, 1, 2, 3]:
         bad.append("fonts: %s" % [int(f["slot"]) for f in fonts])
     labels = [aux.get(s) for s in (20, 21, 23, card)]

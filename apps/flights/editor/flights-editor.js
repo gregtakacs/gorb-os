@@ -439,6 +439,15 @@
         fields.push(num('Opacity', 'planes.ground', 0.1, 1, 0.05, pct));
         fields.push(onOff('Colour', 'planes.groundGrey', 'Greyscale', 'As in the air'));
       }
+      fields.push(K.H('Far aircraft'));
+      var dt = p.dots || { show: 'off' };
+      fields.push(pick('Past the nearest ' + B.PLANE_ROWS, 'planes.dots.show', B.DOTS));
+      if (dt.show === 'plain') fields.push(C('Colour', 'planes.dots.colour'));
+      if (dt.show !== 'off') fields.push(num('Size', 'planes.dots.size', 4, 10, 1, function (v) { return v + ' px'; }));
+      fields.push(K.Nt('', dt.show === 'off'
+        ? 'Only the nearest ' + B.PLANE_ROWS + ' are drawn, and the header says how many more are tracked.'
+        : 'The tracked aircraft past the nearest ' + B.PLANE_ROWS + ' show as dots, up to ' + B.DOT_SLOTS.length +
+          (dt.show === 'bands' ? ', in their altitude colour.' : ', all one colour.')));
       fields.push(K.H('Shadow'));
       fields.push(onOff('Shadow', 'planes.shadow.on', 'Under each', 'None'));
       if (p.shadow && p.shadow.on) {

@@ -12,6 +12,42 @@ and runs small installable apps.
   puts it on Wi-Fi, installs apps and themes, and updates the firmware. There is nothing
   else to install.
 
+<p align="center"><img src="docs/img/gallery/skeleton.gif" width="300" alt="The Skeleton dial with its geartrain turning behind the hands"></p>
+
+## What it looks like
+
+Every face below is a preset in the Theme Editor, drawn by the editor at 10:09:36. Open one,
+change anything, and send it to the orb.
+
+**Steampunk classics.** Exposed geartrains, tourbillon carriages that sweep the seconds, a
+regulator with its hours on a sub-dial.
+
+<table><tr>
+<td align="center"><img src="docs/img/gallery/skeleton.png" width="190" alt="Skeleton"><br>Skeleton</td>
+<td align="center"><img src="docs/img/gallery/kitetour.png" width="190" alt="Kite tourbillon"><br>Kite tourbillon</td>
+<td align="center"><img src="docs/img/gallery/orbital.png" width="190" alt="Orbital arrow"><br>Orbital arrow</td>
+<td align="center"><img src="docs/img/gallery/regulator.png" width="190" alt="Regulator"><br>Regulator</td>
+</tr></table>
+
+**Contemporary and wild.** Forged carbon, neon, exposed rings and rolling drums.
+
+<table><tr>
+<td align="center"><img src="docs/img/gallery/neon.png" width="190" alt="Neon moon"><br>Neon moon</td>
+<td align="center"><img src="docs/img/gallery/orbit.png" width="190" alt="Orbit"><br>Orbit: wandering hour, jumping minute</td>
+<td align="center"><img src="docs/img/gallery/speedster.png" width="190" alt="Speedster"><br>Speedster: odometer drums</td>
+<td align="center"><img src="docs/img/gallery/opentour.png" width="190" alt="Open tourbillon"><br>Open tourbillon</td>
+</tr></table>
+
+**Retrograde, jumping and moon.** Hands that fly back, a railway clock's stop-to-go seconds, a
+moon that follows the real one.
+
+<table><tr>
+<td align="center"><img src="docs/img/gallery/flux.png" width="190" alt="Flux"><br>Flux: retrograde fans, sliding seconds</td>
+<td align="center"><img src="docs/img/gallery/station.png" width="190" alt="Station"><br>Station: stop-to-go seconds</td>
+<td align="center"><img src="docs/img/gallery/luna.png" width="190" alt="Luna"><br>Luna</td>
+<td align="center"><img src="docs/img/gallery/sector.png" width="190" alt="Sector"><br>Sector</td>
+</tr></table>
+
 ## Start here
 
 | You want to | Read |

@@ -42,8 +42,9 @@ typedef struct {
  * full-panel plane is 434,312 B against a 4,128,768 B bank budget, so the
  * longest legal bake is 9 planes and 16 is the array bound that is never the
  * wall. The projection (orb_clock3.c) and the pair mirror (bake_clock.py
- * --from-bundle) refuse a longer bank with this number. */
-#define CLK_BG_MAX    16
+ * --from-bundle) refuse a longer bank with this number. 20 since plan §49.15:
+ * a delta bank is one second of gears, and a small cutout's gears run at 20. */
+#define CLK_BG_MAX    20
 
 /* D41: when a driven row moves (docs/history/hand-motion-plan.md §2.1). D42 retired
  * INHERIT with the old dialects it inherited from: 0 is NONE, the cadence of a still

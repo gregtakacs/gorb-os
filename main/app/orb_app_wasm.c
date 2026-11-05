@@ -1437,6 +1437,17 @@ void orb_wasm_bench_top(char *out, size_t cap)
     memset(s_se_small, 0, sizeof s_se_small);
 }
 
+/* The longest single guest call outside the dial's own tick since the last read: a parked
+ * app's service pass runs on the display core between frames (orb_app_service_all), so one
+ * long pass is a late frame however small the average (plan §49.15). */
+static volatile uint32_t s_bg_max_us;
+uint32_t orb_wasm_bench_bg_max_us(bool reset)
+{
+    const uint32_t v = s_bg_max_us;
+    if (reset) s_bg_max_us = 0;
+    return v;
+}
+
 void orb_wasm_bench_us(uint64_t *tick, uint64_t *service, uint64_t *other)
 {
     if (tick) *tick = s_entry_us[0];
@@ -1456,6 +1467,7 @@ static bool wasm_call(wasm_slot_t *s, int entry, const void *argv[], uint32_t ar
     s_ovh_gc_us += (uint64_t)(esp_timer_get_time() - t0);
     const uint32_t dt = (uint32_t)(esp_timer_get_time() - t0);
     s_entry_us[entry == W_TICK ? 0 : entry == W_SERVICE ? 1 : 2] += dt;
+    if (entry != W_TICK && dt > s_bg_max_us) s_bg_max_us = dt;
     {
         const int si = (int)(s - s_slot);
         if (si >= 0 && si < WASM_N_SLOTS) {

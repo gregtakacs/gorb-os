@@ -13,6 +13,7 @@
 #include "idle_dim.h"
 #include "orb_app.h"
 #include "orb_carousel.h"   /* the peek: a turn names the next stop, it does not switch */
+#include "orb_fx.h"         /* the transition bench's run, served from this poll */
 #include "nvs.h"            /* the boot-page memory: last shown page, one string key  */
 #include <stdio.h>
 #include <string.h>
@@ -374,6 +375,13 @@ static void poll_timer_cb(lv_timer_t *timer)
      * a frozen-but-honest card is not a lost event. The registry, not this
      * file, knows whose view the card is (C6). */
     if (orb_app_share_gate(pressed || lpress)) return;
+
+#if CONFIG_ORB_DEBUG_HTTP
+    /* The transition bench (/api/v1/debug/fx) borrows the glass for one run and
+     * hands it back verbatim; it runs here because the frames must come from
+     * the LVGL task, between flushes. */
+    orb_fx_service();
+#endif
 
     /* A screen requested over HTTP is applied here, on the LVGL task, before any
      * knob event is considered: lv_screen_load() off this task is the widget

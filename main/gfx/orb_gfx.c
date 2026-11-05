@@ -18,6 +18,7 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "display.h"
 
 /* The rotation pair SHARED by paint_row's inverse map and the orbit chord
@@ -167,6 +168,52 @@ void gfx_area_union(lv_area_t *a, const lv_area_t *b)
 static gfx_rows_t rowstate;
 static bool      s_commit;      /* something marked rows since last tick  */
 
+/* §49.15: one row's covered set is [*x0, *x1] less the gap [*h0, *h1] (h0 > h1: none). Add
+ * [a, b]: merge the pieces, keep the widest gap that is left, and cover any other (a mark may
+ * only over-cover). A ring's two sides, or two hands apart on one row, keep their gap. */
+static inline void seg_add(int16_t *x0, int16_t *x1, int16_t *h0, int16_t *h1, int32_t a, int32_t b)
+{
+    int32_t lo[3], hi[3], n = 0;
+    if (*h0 <= *h1) { lo[n] = *x0; hi[n++] = *h0 - 1; lo[n] = *h1 + 1; hi[n++] = *x1; }
+    else            { lo[n] = *x0; hi[n++] = *x1; }
+    int32_t ins = n;                                   /* keep the pieces sorted by lo */
+    while (ins > 0 && lo[ins - 1] > a) { lo[ins] = lo[ins - 1]; hi[ins] = hi[ins - 1]; ins--; }
+    lo[ins] = a; hi[ins] = b; n++;
+    int32_t m = 0;
+    for (int32_t i = 1; i < n; i++) {
+        if (lo[i] <= hi[m] + 1) { if (hi[i] > hi[m]) hi[m] = hi[i]; }
+        else { m++; lo[m] = lo[i]; hi[m] = hi[i]; }
+    }
+    *x0 = (int16_t)lo[0]; *x1 = (int16_t)hi[m];
+    int32_t g0 = 1, g1 = 0;
+    for (int32_t i = 0; i < m; i++)
+        if (lo[i + 1] - hi[i] - 1 > g1 - g0 + 1) { g0 = hi[i] + 1; g1 = lo[i + 1] - 1; }
+    *h0 = (int16_t)g0; *h1 = (int16_t)g1;
+}
+
+/* The pieces of a row's marked extent: one, or two either side of its gap. */
+static inline int row_segs(int32_t y, int32_t *sa, int32_t *sb)
+{
+    sa[0] = rowstate.x0[y];
+    if (rowstate.h0[y] <= rowstate.h1[y]) {
+        sb[0] = rowstate.h0[y] - 1; sa[1] = rowstate.h1[y] + 1; sb[1] = rowstate.x1[y];
+        return 2;
+    }
+    sb[0] = rowstate.x1[y];
+    return 1;
+}
+
+static inline void row_add(int32_t y, int32_t a, int32_t b)
+{
+    if (!rowstate.need[y]) {
+        rowstate.need[y] = 1;
+        rowstate.x0[y] = (int16_t)a; rowstate.x1[y] = (int16_t)b;
+        rowstate.h0[y] = 1; rowstate.h1[y] = 0;
+        return;
+    }
+    seg_add(&rowstate.x0[y], &rowstate.x1[y], &rowstate.h0[y], &rowstate.h1[y], a, b);
+}
+
 void gfx_mark_rows(int32_t y0, int32_t y1, int32_t x0, int32_t x1,
                              bool force)
 {
@@ -178,14 +225,7 @@ void gfx_mark_rows(int32_t y0, int32_t y1, int32_t x0, int32_t x1,
 
     bool any = false;
     for (int32_t y = y0; y <= y1; y++) {
-        if (!rowstate.need[y]) {
-            rowstate.need[y] = 1;
-            rowstate.x0[y] = x0;
-            rowstate.x1[y] = x1;
-        } else {
-            if (x0 < rowstate.x0[y]) rowstate.x0[y] = x0;
-            if (x1 > rowstate.x1[y]) rowstate.x1[y] = x1;
-        }
+        row_add(y, x0, x1);
         if (force) rowstate.force[y] = 1;
         any = true;
     }
@@ -305,6 +345,9 @@ bool gfx_paint_ctx_init(gfx_paint_ctx_t *pc, const clk_sprite_t *spr,
     pc->bx1 = box.x1; pc->by1 = box.y1;
     pc->bx2 = box.x2; pc->by2 = box.y2;
 
+    pc->ang_10 = ang_10;
+    pc->pvx = spr->pivotx;
+    pc->pvy = spr->pivoty;
     pc->rot = (ang_10 % 3600 != 0);
     pc->sxx = pc->sxy = pc->syx = pc->syy = 0;
     pc->x0_ups = pc->y0_ups = 0;
@@ -606,6 +649,662 @@ void gfx_blend_px(uint16_t *d, uint16_t c, uint8_t a, int bmode)
     blend_px(d, c, a, bmode);
 }
 
+
+#if CONFIG_ORB_DEBUG_HTTP
+/* ---- the ink-span bench (orb_gfx.h) ----------------------------------------
+ *
+ * Two caches, both PSRAM, both keyed by the alpha plane's address (one plane
+ * per sprite frame, and the bank is mapped for the dial's whole life):
+ *   ink   the sprite's alpha plane reduced to [umin, umax] per 8-row strip, read
+ *         once per sprite (the hands here are <= 56 x 272: ~15 KB of alpha);
+ *   pose  the screen spans of one (plane, angle, placement), so a gear frame that
+ *         re-composites under a hand standing still never recomputes them. */
+#define INK_STRIP   8
+#define INK_STRIPS  64                  /* h <= 512 */
+#define INK_N       16
+#define SPC_N       12
+
+typedef struct {
+    const uint8_t *alp;
+    uint32_t w, h;
+    int16_t  umin[INK_STRIPS], umax[INK_STRIPS];
+    int16_t  gmin[INK_STRIPS], gmax[INK_STRIPS];   /* §49.15: the strip's widest inkless gap (gmin > gmax: none) */
+} ink_t;
+/* A gap narrower than this keeps the strip one quad: each side's quad grows by the pad and a
+ * pixel, so a thin gap would only buy two quads that overlap again. */
+#define INK_GAP_MIN 24
+typedef struct {
+    const uint8_t *alp;
+    int32_t  ang, posx, posy;
+    bool     smooth;
+    uint32_t stamp;
+    gfx_spans_t sp;
+} spc_t;
+
+static volatile int  s_bx_mode;
+static volatile bool s_bx_noglass;
+static ink_t   *s_ink;
+static spc_t   *s_spc;
+static uint32_t s_ink_next, s_spc_clock;
+static uint64_t s_bx_commits, s_bx_restored, s_bx_iter_box, s_bx_iter_span,
+                s_bx_escape, s_bx_span_us;
+
+static volatile bool s_bx_nearest;
+static volatile int  s_bx_aa_sec;      /* §49.15: 1 the seconds row smoothed (the bake keeps a hot one nearest), 2 every shadow too */
+static uint64_t s_bx_hist[6];
+static uint32_t s_bx_max_us;
+
+void gfx_bench_set(int spans_mode, bool no_glass, bool nearest_shadow, int aa_seconds)
+{
+    s_bx_mode = spans_mode < 0 ? 0 : (spans_mode > 2 ? 2 : spans_mode);
+    s_bx_noglass = no_glass;
+    s_bx_nearest = nearest_shadow;
+    s_bx_aa_sec = aa_seconds;
+}
+int gfx_bench_spans(void) { return s_bx_mode; }
+
+void gfx_bench_totals(gfx_bench_totals_t *o)
+{
+    o->commits = s_bx_commits;   o->restored_px = s_bx_restored;
+    o->iter_box_px = s_bx_iter_box; o->iter_span_px = s_bx_iter_span;
+    o->escapes = s_bx_escape;    o->span_us = s_bx_span_us;
+    o->rest_us = s_hk_rest_us;   o->paint_us = s_hk_paint_us; o->cmp_us = s_hk_cmp_us;
+    for (int i = 0; i < CLK_PAINT_ROLES; i++) {
+        o->role_blend[i] = s_hk_role_blend[i];
+        o->role_us[i]    = s_hk_role_us[i];
+    }
+    memcpy(o->hist, s_bx_hist, sizeof o->hist);
+    o->max_us = s_bx_max_us;
+    s_bx_max_us = 0;
+}
+
+static bool bx_alloc(void)
+{
+    if (s_ink && s_spc) return true;
+    if (!s_ink) s_ink = heap_caps_calloc(INK_N, sizeof *s_ink, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_spc) s_spc = heap_caps_calloc(SPC_N, sizeof *s_spc, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return s_ink && s_spc;
+}
+
+static const ink_t *ink_of(const gfx_paint_ctx_t *pc)
+{
+    for (int i = 0; i < INK_N; i++)
+        if (s_ink[i].alp == pc->alp && s_ink[i].w == pc->w && s_ink[i].h == pc->h) return &s_ink[i];
+    if (pc->h > INK_STRIP * INK_STRIPS) return NULL;
+    ink_t *k = &s_ink[s_ink_next++ % INK_N];
+    k->alp = pc->alp; k->w = pc->w; k->h = pc->h;
+    const uint32_t ns = (pc->h + INK_STRIP - 1) / INK_STRIP;
+    static uint8_t col[512];                          /* one strip's inked columns (w <= 512) */
+    for (uint32_t st = 0; st < ns; st++) {
+        int16_t lo = INT16_MAX, hi = -1;
+        const uint32_t cw = pc->w < sizeof col ? pc->w : sizeof col;
+        memset(col, 0, cw);
+        for (uint32_t v = st * INK_STRIP; v < (st + 1) * INK_STRIP && v < pc->h; v++) {
+            const uint8_t *a = pc->alp + (size_t)v * pc->w;
+            for (uint32_t u = 0; u < pc->w; u++)
+                if (a[u]) { if ((int16_t)u < lo) lo = (int16_t)u; if ((int16_t)u > hi) hi = (int16_t)u; if (u < cw) col[u] = 1; }
+        }
+        k->umin[st] = lo; k->umax[st] = hi;
+        /* the widest run of inkless columns strictly inside [lo, hi]: a ring's hollow */
+        int16_t g0 = 1, g1 = 0;
+        if (hi >= lo && pc->w <= sizeof col) {
+            for (int32_t u = lo + 1; u < hi; ) {
+                if (col[u]) { u++; continue; }
+                int32_t e = u;
+                while (e + 1 < hi && !col[e + 1]) e++;
+                if (e - u > g1 - g0) { g0 = (int16_t)u; g1 = (int16_t)e; }
+                u = e + 1;
+            }
+        }
+        if (g1 - g0 + 1 < INK_GAP_MIN) { g0 = 1; g1 = 0; }
+        k->gmin[st] = g0; k->gmax[st] = g1;
+    }
+    return k;
+}
+
+/* One convex quad, cut into screen rows: for each row band [y, y+1) the x-range
+ * the quad covers, taken from where its edges cross the band. Grows `o`. */
+static inline float fmn(float a, float b) { return a < b ? a : b; }
+static inline float fmx(float a, float b) { return a > b ? a : b; }
+static inline int   flo(float v) { const int i = (int)v; return (v < (float)i) ? i - 1 : i; }
+
+static void quad_rows(const float qx[4], const float qy[4], gfx_spans_t *o)
+{
+    /* Each edge once: its y-range and dx/dy, so a row costs multiplies only (the
+     * S3's FPU has no divide, and a divide per edge per row was the whole cost). */
+    float elo[4], ehi[4], ex0[4], ey0[4], ek[4];
+    float ymn = qy[0], ymx = qy[0];
+    for (int e = 0; e < 4; e++) {
+        const int q = (e + 1) & 3;
+        elo[e] = fmn(qy[e], qy[q]); ehi[e] = fmx(qy[e], qy[q]);
+        ex0[e] = qx[e]; ey0[e] = qy[e];
+        const float dy = qy[q] - qy[e];
+        ek[e] = (dy > 1e-4f || dy < -1e-4f) ? (qx[q] - qx[e]) / dy : 0.0f;
+        if (qy[e] < ymn) ymn = qy[e];
+        if (qy[e] > ymx) ymx = qy[e];
+    }
+    int ya = flo(ymn), yb = flo(ymx);
+    if (ya < 0) ya = 0;
+    if (yb > CLK_SCR_H - 1) yb = CLK_SCR_H - 1;
+    for (int y = ya; y <= yb; y++) {
+        const float b0 = (float)y, b1 = (float)y + 1.0f;
+        float mn = 1e9f, mx = -1e9f;
+        for (int e = 0; e < 4; e++) {
+            const float lo = fmx(elo[e], b0), hi = fmn(ehi[e], b1);
+            if (lo > hi) continue;
+            const float xa = ex0[e] + (lo - ey0[e]) * ek[e];
+            const float xb = ex0[e] + (hi - ey0[e]) * ek[e];
+            mn = fmn(mn, fmn(xa, xb));
+            mx = fmx(mx, fmx(xa, xb));
+        }
+        if (mn > mx) continue;
+        int ix0 = flo(mn) - 1, ix1 = flo(mx) + 2;
+        if (ix0 < 0) ix0 = 0;
+        if (ix1 > CLK_SCR_W - 1) ix1 = CLK_SCR_W - 1;
+        if (ix0 > ix1) continue;
+        if (o->y0 > o->y1) {                          /* first row of ink */
+            o->y0 = o->y1 = (int16_t)y;
+            o->x0[y] = (int16_t)ix0; o->x1[y] = (int16_t)ix1; o->h0[y] = 1; o->h1[y] = 0;
+            continue;
+        }
+        if (y < o->y0) { for (int r = y; r < o->y0; r++) { o->x0[r] = INT16_MAX; o->x1[r] = -1; o->h0[r] = 1; o->h1[r] = 0; } o->y0 = (int16_t)y; }
+        if (y > o->y1) { for (int r = o->y1 + 1; r <= y; r++) { o->x0[r] = INT16_MAX; o->x1[r] = -1; o->h0[r] = 1; o->h1[r] = 0; } o->y1 = (int16_t)y; }
+        if (o->x0[y] > o->x1[y]) { o->x0[y] = (int16_t)ix0; o->x1[y] = (int16_t)ix1; o->h0[y] = 1; o->h1[y] = 0; }
+        else seg_add(&o->x0[y], &o->x1[y], &o->h0[y], &o->h1[y], ix0, ix1);
+    }
+}
+
+bool gfx_spans_of(const gfx_paint_ctx_t *pc, const gfx_spans_t **out)
+{
+    if (!pc->rot || pc->drum || !bx_alloc()) return false;
+    s_spc_clock++;
+    for (int i = 0; i < SPC_N; i++) {
+        spc_t *c = &s_spc[i];
+        if (c->alp == pc->alp && c->ang == pc->ang_10 && c->posx == pc->posx &&
+            c->posy == pc->posy) {
+            c->stamp = s_spc_clock;
+            *out = &c->sp;
+            return true;
+        }
+    }
+    const int64_t t0 = esp_timer_get_time();
+    const ink_t *k = ink_of(pc);
+    if (!k) return false;
+    spc_t *c = &s_spc[0];                             /* least recently used */
+    for (int i = 1; i < SPC_N; i++) if (s_spc[i].stamp < c->stamp) c = &s_spc[i];
+    c->alp = pc->alp; c->ang = pc->ang_10; c->posx = pc->posx; c->posy = pc->posy;
+    c->smooth = pc->smooth; c->stamp = s_spc_clock;
+    c->sp.y0 = 1; c->sp.y1 = 0;
+
+    int32_t sinma, cosma;
+    gfx_rot_sin_cos(pc->ang_10, &sinma, &cosma);
+    const float cs = (float)cosma / 1024.0f, sn = (float)sinma / 1024.0f;
+    const float cx = (float)(pc->posx + pc->pvx), cy = (float)(pc->posy + pc->pvy);
+    const float pad = 3.0f;           /* covers bilinear too: one entry serves mark and paint */
+    const uint32_t ns = (pc->h + INK_STRIP - 1) / INK_STRIP;
+    for (uint32_t st = 0; st < ns; st++) {
+        if (k->umin[st] > k->umax[st]) continue;
+        const uint32_t ve = (st + 1) * INK_STRIP < pc->h ? (st + 1) * INK_STRIP : pc->h;
+        const float v0 = (float)(st * INK_STRIP) - pad - pc->pvy, v1 = (float)ve + pad - pc->pvy;
+        /* §49.15: a strip with an inkless gap is two quads, so a ring's hollow is no ink */
+        const bool gap = k->gmin[st] <= k->gmax[st];
+        const int16_t r0[2] = { k->umin[st], gap ? (int16_t)(k->gmax[st] + 1) : 0 };
+        const int16_t r1[2] = { gap ? (int16_t)(k->gmin[st] - 1) : k->umax[st], k->umax[st] };
+        for (int run = 0; run < (gap ? 2 : 1); run++) {
+            const float u0 = r0[run] - pad - pc->pvx, u1 = r1[run] + 1 + pad - pc->pvx;
+            const float us[4] = { u0, u1, u1, u0 }, vs[4] = { v0, v0, v1, v1 };
+            float qx[4], qy[4];
+            for (int q = 0; q < 4; q++) {             /* the painter's inverse, inverted */
+                qx[q] = cx + cs * us[q] + sn * vs[q];
+                qy[q] = cy - sn * us[q] + cs * vs[q];
+            }
+            quad_rows(qx, qy, &c->sp);
+        }
+    }
+    s_bx_span_us += (uint64_t)(esp_timer_get_time() - t0);
+    *out = &c->sp;
+    return true;
+}
+
+bool gfx_mark_spans(const gfx_paint_ctx_t *pc)
+{
+    const gfx_spans_t *sp;
+    if (!s_bx_mode || !gfx_spans_of(pc, &sp)) return false;
+    for (int y = sp->y0; y <= sp->y1; y++) {
+        if (sp->x0[y] > sp->x1[y]) continue;
+        if (sp->h0[y] <= sp->h1[y]) {
+            gfx_mark_rows(y, y, sp->x0[y], sp->h0[y] - 1, false);
+            gfx_mark_rows(y, y, sp->h1[y] + 1, sp->x1[y], false);
+        } else gfx_mark_rows(y, y, sp->x0[y], sp->x1[y], false);
+    }
+    return true;
+}
+
+/* A rotated job's row, painted only where its ink can be. Mode 2 paints the rest
+ * too and counts what blended there: the proof the spans lose nothing. */
+static void paint_spanned(const gfx_paint_ctx_t *pc, int32_t y, int32_t xa, int32_t xb,
+                          uint16_t *row, const gfx_spans_t *sp)
+{
+    if (y >= pc->by1 && y <= pc->by2) {
+        const int32_t a = xa > pc->bx1 ? xa : pc->bx1, b = xb < pc->bx2 ? xb : pc->bx2;
+        if (b >= a) s_bx_iter_box += (uint64_t)(b - a + 1);
+    }
+    /* the job's ink on this row: one piece, or two either side of its gap (§49.15) */
+    int32_t ja[2], jb[2], jn = 0;
+    if (y >= sp->y0 && y <= sp->y1 && sp->x0[y] <= sp->x1[y]) {
+        if (sp->h0[y] <= sp->h1[y]) { ja[0] = sp->x0[y]; jb[0] = sp->h0[y] - 1; ja[1] = sp->h1[y] + 1; jb[1] = sp->x1[y]; jn = 2; }
+        else { ja[0] = sp->x0[y]; jb[0] = sp->x1[y]; jn = 1; }
+    }
+    int32_t ca[2], cb[2], cn = 0;
+    for (int i = 0; i < jn; i++) {
+        const int32_t a = xa > ja[i] ? xa : ja[i], b = xb < jb[i] ? xb : jb[i];
+        if (a <= b) { ca[cn] = a; cb[cn] = b; cn++; }
+    }
+    for (int i = 0; i < cn; i++) {
+        s_bx_iter_span += (uint64_t)(cb[i] - ca[i] + 1);
+        gfx_paint_row_ctx(pc, y, ca[i], cb[i], row);
+    }
+    if (s_bx_mode == 2 && pc->role < CLK_PAINT_ROLES) {
+        /* the check arm paints the rest of [xa, xb] too, and counts any blend that lands there */
+        const uint32_t before = s_hk_role_blend[pc->role];
+        int32_t at = xa;
+        for (int i = 0; i < cn; i++) { if (at < ca[i]) gfx_paint_row_ctx(pc, y, at, ca[i] - 1, row); at = cb[i] + 1; }
+        if (at <= xb) gfx_paint_row_ctx(pc, y, at, xb, row);
+        s_bx_escape += s_hk_role_blend[pc->role] - before;
+    }
+}
+#endif /* CONFIG_ORB_DEBUG_HTTP */
+
+
+#if CONFIG_ORB_DEBUG_HTTP
+/* ---- pre-paint (orb_gfx.h, plan §49.8) ------------------------------------- */
+#define PP_JOBS 32
+#define PP_RECTS 8
+typedef struct {
+    const uint8_t *alp;
+    int32_t ang, posx, posy, bx1, by1, bx2, by2;
+    uint32_t w, h;
+    uint8_t opa, smooth, bmode, rot;
+} ppkey_t;
+
+static volatile int s_pp_mode;
+static uint16_t *s_pf, *s_pb, *s_pfn, *s_pbn;       /* wire order, stride CLK_SCR_W */
+static bool      s_pp_valid;
+static uint32_t  s_pp_gen;                            /* bumps on every invalidation  */
+static ppkey_t   s_pp_key[PP_JOBS];
+static int       s_pp_nj = -1;
+static bool      s_pp_fast[PP_JOBS];
+static int       s_pp_low;
+static const gfx_paint_ctx_t *s_pp_jc;                /* the last commit's job list    */
+static int       s_pp_jn;
+static const uint16_t *s_pp_canvas;
+static uint16_t  s_pp_row[CLK_SCR_W];
+/* the frame being built ahead */
+static gfx_prep_rect_t s_pp_nx[PP_RECTS];
+static int       s_pp_nnx, s_pp_nx_frame = -1, s_pp_prep_y;
+static bool      s_pp_prep_done;
+static uint32_t  s_pp_prep_gen;
+/* the frame that landed, to swap or rebuild at the next commit */
+static gfx_prep_rect_t s_pp_land[PP_RECTS];
+static int       s_pp_nland;
+static bool      s_pp_land_ready, s_pp_land_pending;
+static gfx_prep_stats_t s_pps;
+/* Stale rows: where a slow job moved, PF/PB are wrong until rebuilt. Such a row segment is
+ * composited the shipped way (canvas + every job) and rebuilt in the present's slack, so a
+ * slow move never stalls a tick. s_ps0/1 keep what went stale since the build-ahead began:
+ * those rows of a frame built ahead were built against the old pose, and stay stale after
+ * the swap. One interval per row, as the marks keep it; empty when x0 > x1. */
+static int16_t   s_st0[CLK_SCR_H], s_st1[CLK_SCR_H], s_ps0[CLK_SCR_H], s_ps1[CLK_SCR_H];
+static int       s_st_rows;                           /* rows with a stale segment     */
+/* Back-sourced rows: a frame built ahead lands by reading its rows straight from the back
+ * planes; the copy into the front planes runs in the slack (gfx_prep_idle), before any
+ * stale rebuild or the next build-ahead may touch either plane. */
+static int16_t   s_bk0[CLK_SCR_H], s_bk1[CLK_SCR_H];
+static int       s_bk_rows;
+
+static void pp_stale_clear_all(void)
+{
+    for (int y = 0; y < CLK_SCR_H; y++) {
+        s_st0[y] = s_ps0[y] = s_bk0[y] = INT16_MAX;
+        s_st1[y] = s_ps1[y] = s_bk1[y] = -1;
+    }
+    s_st_rows = s_bk_rows = 0;
+}
+/* Settle one back-sourced row into the front planes. */
+static void pp_bk_settle(int32_t y)
+{
+    if (s_bk0[y] > s_bk1[y]) return;
+    const size_t off = (size_t)y * CLK_SCR_W + s_bk0[y], n = (size_t)(s_bk1[y] - s_bk0[y] + 1) * 2;
+    memcpy(s_pf + off, s_pfn + off, n);
+    memcpy(s_pb + off, s_pbn + off, n);
+    s_bk0[y] = INT16_MAX; s_bk1[y] = -1; s_bk_rows--;
+}
+/* A plane row segment [a, b] into dst: front, except where the row is back-sourced. */
+static void pp_row_src(uint16_t *dst, const uint16_t *front, const uint16_t *back, int32_t y, int32_t a, int32_t b)
+{
+    const size_t row = (size_t)y * CLK_SCR_W;
+    const int32_t k0 = s_bk0[y], k1 = s_bk1[y];
+    if (k0 > k1 || k1 < a || k0 > b) { memcpy(dst + a, front + row + a, (size_t)(b - a + 1) * 2); return; }
+    const int32_t m0 = k0 > a ? k0 : a, m1 = k1 < b ? k1 : b;
+    if (a < m0) memcpy(dst + a, front + row + a, (size_t)(m0 - a) * 2);
+    memcpy(dst + m0, back + row + m0, (size_t)(m1 - m0 + 1) * 2);
+    if (m1 < b) memcpy(dst + m1 + 1, front + row + m1 + 1, (size_t)(b - m1) * 2);
+}
+static void pp_bk_settle(int32_t y);
+static void pp_stale_add(int32_t y, int32_t a, int32_t b)
+{
+    if (y < 0 || y >= CLK_SCR_H) return;
+    pp_bk_settle(y);
+    if (a < 0) a = 0;
+    if (b > CLK_SCR_W - 1) b = CLK_SCR_W - 1;
+    if (a > b) return;
+    if (s_st0[y] > s_st1[y]) s_st_rows++;
+    if (a < s_st0[y]) s_st0[y] = (int16_t)a;
+    if (b > s_st1[y]) s_st1[y] = (int16_t)b;
+    if (a < s_ps0[y]) s_ps0[y] = (int16_t)a;
+    if (b > s_ps1[y]) s_ps1[y] = (int16_t)b;
+    /* and repaint it this tick: the mirror holds the old pose there */
+    row_add(y, a, b);
+    display_mark_rows_clocked(y, y);
+}
+/* A job's footprint at a pose: its spans when it has them, else its box. */
+static void pp_stale_pose(const gfx_paint_ctx_t *pc)
+{
+    const gfx_spans_t *sp;
+    if (pc->rot && gfx_spans_of(pc, &sp)) {
+        for (int32_t y = sp->y0; y <= sp->y1; y++) if (sp->x0[y] <= sp->x1[y]) pp_stale_add(y, sp->x0[y], sp->x1[y]);
+        return;
+    }
+    for (int32_t y = pc->by1; y <= pc->by2; y++) pp_stale_add(y, pc->bx1, pc->bx2);
+}
+
+void gfx_prep_mode(int mode)
+{
+    s_pp_mode = mode < 0 ? 0 : (mode > 2 ? 2 : mode);
+    s_pp_valid = false;
+    s_pp_nj = -1;
+    s_pp_nx_frame = -1;
+    s_pp_land_pending = false;
+    memset(&s_pps, 0, sizeof s_pps);
+    pp_stale_clear_all();
+    if (s_pp_mode && !s_pf) {
+        const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H * 2;
+        s_pf  = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_pb  = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_pfn = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_pbn = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_pf || !s_pb || !s_pfn || !s_pbn) { s_pp_mode = 0; ESP_LOGE("gfx", "pre-paint: no PSRAM for the planes"); }
+    }
+}
+int gfx_prep_on(void) { return s_pp_mode; }
+void gfx_prep_stats(gfx_prep_stats_t *o) { *o = s_pps; }
+
+static void pp_key_of(const gfx_paint_ctx_t *pc, ppkey_t *k)
+{
+    k->alp = pc->alp; k->ang = pc->ang_10; k->posx = pc->posx; k->posy = pc->posy;
+    k->bx1 = pc->bx1; k->by1 = pc->by1; k->bx2 = pc->bx2; k->by2 = pc->by2;
+    k->w = pc->w; k->h = pc->h; k->opa = pc->opa; k->smooth = pc->smooth; k->bmode = pc->bmode; k->rot = pc->rot;
+}
+static bool pp_key_eq(const ppkey_t *a, const ppkey_t *b)
+{
+    return a->alp == b->alp && a->ang == b->ang && a->posx == b->posx && a->posy == b->posy &&
+           a->w == b->w && a->h == b->h && a->opa == b->opa && a->smooth == b->smooth && a->bmode == b->bmode;
+}
+
+/* The fast jobs: the seconds row(s) and the shadow twin that sits just under each, turned
+ * the same way. Everything else is slow and lives in the planes. */
+static void pp_classify(int nj, const gfx_paint_ctx_t *jc)
+{
+    s_pp_low = nj;
+    for (int i = 0; i < nj; i++) s_pp_fast[i] = jc[i].role == 2;
+    for (int i = 0; i < nj; i++) {
+        if (jc[i].role != 3 || !jc[i].rot) continue;
+        for (int k = i + 1; k < nj && k <= i + 2; k++)
+            if (jc[k].role == 2 && jc[k].ang_10 == jc[i].ang_10) { s_pp_fast[i] = true; break; }
+    }
+    for (int i = 0; i < nj; i++) if (s_pp_fast[i]) { s_pp_low = i; break; }
+}
+
+/* A job's paint over [a, b] of row y, clipped to its spans when it has them. */
+static void pp_paint(const gfx_paint_ctx_t *pc, int32_t y, int32_t a, int32_t b, uint16_t *row)
+{
+    const gfx_spans_t *sp;
+    if (pc->rot && gfx_spans_of(pc, &sp)) {
+        if (y < sp->y0 || y > sp->y1) return;
+        if (a < sp->x0[y]) a = sp->x0[y];
+        if (b > sp->x1[y]) b = sp->x1[y];
+        if (a > b) return;
+    }
+    gfx_paint_row_ctx(pc, y, a, b, row);
+}
+
+/* Build PB and PF over [a, b] of row y into (pb, pf), from the canvas with `ov` rects laid
+ * over it (the frame to come), or the canvas alone. */
+static void pp_build_row(int32_t y, int32_t a, int32_t b, uint16_t *pb, uint16_t *pf,
+                         const gfx_prep_rect_t *ov, int nov)
+{
+    const uint16_t *cv = s_pp_canvas + (size_t)y * CLK_SCR_W;
+    for (int32_t x = a; x <= b; x++) { const uint16_t v = cv[x]; s_pp_row[x] = (uint16_t)((v >> 8) | (v << 8)); }
+    for (int r = 0; r < nov; r++) {
+        const gfx_prep_rect_t *o = &ov[r];
+        if (y < o->y || y >= o->y + o->h) continue;
+        int32_t xa = a > o->x ? a : o->x, xb = b < o->x + o->w - 1 ? b : o->x + o->w - 1;
+        const uint16_t *src = o->src + (size_t)(y - o->y) * o->w - o->x;
+        for (int32_t x = xa; x <= xb; x++) { const uint16_t v = src[x]; s_pp_row[x] = (uint16_t)((v >> 8) | (v << 8)); }
+    }
+    for (int i = 0; i < s_pp_low; i++) pp_paint(&s_pp_jc[i], y, a, b, s_pp_row);
+    memcpy(pb + (size_t)y * CLK_SCR_W + a, &s_pp_row[a], (size_t)(b - a + 1) * 2);
+    for (int i = s_pp_low; i < s_pp_jn; i++) if (!s_pp_fast[i]) pp_paint(&s_pp_jc[i], y, a, b, s_pp_row);
+    memcpy(pf + (size_t)y * CLK_SCR_W + a, &s_pp_row[a], (size_t)(b - a + 1) * 2);
+}
+
+static void pp_rebuild_box(int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+{
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > CLK_SCR_W - 1) x1 = CLK_SCR_W - 1;
+    if (y1 > CLK_SCR_H - 1) y1 = CLK_SCR_H - 1;
+    for (int32_t y = y0; y <= y1; y++) pp_build_row(y, x0, x1, s_pb, s_pf, NULL, 0);
+    if (y1 >= y0) s_pps.rows_sync += (uint64_t)(y1 - y0 + 1);
+}
+
+void gfx_prep_landed(int frame, const gfx_prep_rect_t *cur, int ncur,
+                     int next, const gfx_prep_rect_t *nxt, int nnext)
+{
+    if (!s_pp_mode) return;
+    if (ncur > PP_RECTS) ncur = PP_RECTS;
+    if (nnext > PP_RECTS) nnext = PP_RECTS;
+    memcpy(s_pp_land, cur, (size_t)ncur * sizeof *cur);
+    s_pp_nland = ncur;
+    s_pp_land_ready = s_pp_nx_frame == frame && s_pp_prep_done && s_pp_prep_gen == s_pp_gen;
+    s_pp_land_pending = true;
+    memcpy(s_pp_nx, nxt, (size_t)nnext * sizeof *nxt);
+    s_pp_nnx = nnext;
+    s_pp_nx_frame = next;
+    s_pp_prep_y = 0;
+    s_pp_prep_done = false;
+    s_pp_prep_gen = s_pp_gen;
+    /* what went stale before this build-ahead began is the swap's to carry (pp_commit reads
+     * it before the next landed() can run, since every landing is followed by a commit) */
+}
+
+/* Build ahead: the next frame's rect rows into the back planes, a row at a time, until
+ * the deadline. Called from the present's own wait, so it spends the slack the paced
+ * frame would otherwise sleep through. */
+bool gfx_prep_idle(int64_t deadline_us)
+{
+    if (!s_pp_mode || !s_pp_valid || !s_pp_jc) return false;
+    /* Back-sourced rows first: the stale rebuild and the next build-ahead write planes those
+     * rows still read from. Then the stale rows: until rebuilt, every tick composites them
+     * the long way. */
+    for (int32_t y = 0; y < CLK_SCR_H && s_bk_rows; y++) {
+        if (s_bk0[y] > s_bk1[y]) continue;
+        if (esp_timer_get_time() >= deadline_us) return true;
+        pp_bk_settle(y);
+    }
+    for (int32_t y = 0; y < CLK_SCR_H && s_st_rows; y++) {
+        if (s_st0[y] > s_st1[y]) continue;
+        if (esp_timer_get_time() >= deadline_us) return true;
+        pp_build_row(y, s_st0[y], s_st1[y], s_pb, s_pf, NULL, 0);
+        s_st0[y] = INT16_MAX; s_st1[y] = -1; s_st_rows--;
+        s_pps.rows_sync++;
+    }
+    if (s_pp_nx_frame < 0 || s_pp_prep_done) return false;
+    if (s_pp_prep_gen != s_pp_gen) { s_pp_prep_y = 0; s_pp_prep_gen = s_pp_gen; }
+    while (s_pp_prep_y < CLK_SCR_H) {
+        if (esp_timer_get_time() >= deadline_us) return true;
+        const int32_t y = s_pp_prep_y++;
+        int32_t a = CLK_SCR_W, b = -1;
+        for (int r = 0; r < s_pp_nnx; r++) {
+            const gfx_prep_rect_t *o = &s_pp_nx[r];
+            if (y < o->y || y >= o->y + o->h) continue;
+            if (o->x < a) a = o->x;
+            if (o->x + o->w - 1 > b) b = o->x + o->w - 1;
+        }
+        if (a > b) continue;
+        pp_build_row(y, a, b, s_pbn, s_pfn, s_pp_nx, s_pp_nnx);
+        s_pps.rows_ahead++;
+    }
+    s_pp_prep_done = true;
+    return false;
+}
+
+/* The pre-paint commit: the shipped commit's row walk, with PF standing in for the canvas
+ * and every layer outside the fast spans, and the flush gate unchanged. */
+static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas, uint16_t *fb,
+                      const gfx_spans_t *const *bsp)
+{
+    s_pp_jc = jc; s_pp_jn = nj; s_pp_canvas = canvas;
+    pp_classify(nj, jc);
+    /* Slow jobs that moved, appeared or vanished: their old and new boxes are rebuilt now,
+     * and anything built ahead against the old poses is void. */
+    bool changed = !s_pp_valid || nj != s_pp_nj;
+    if (!changed) {
+        for (int i = 0; i < nj; i++) {
+            if (s_pp_fast[i]) continue;
+            ppkey_t k; pp_key_of(&jc[i], &k);
+            if (!pp_key_eq(&k, &s_pp_key[i])) {
+                static int64_t s_pp_said;
+                if (esp_timer_get_time() - s_pp_said > 2000000) {
+                    s_pp_said = esp_timer_get_time();
+                    ESP_LOGI("gfx", "pre-paint: job %d role %u moved: ang %ld->%ld pos %ld,%ld->%ld,%ld opa %u->%u alp %s",
+                             i, jc[i].role, (long)s_pp_key[i].ang, (long)k.ang, (long)s_pp_key[i].posx,
+                             (long)s_pp_key[i].posy, (long)k.posx, (long)k.posy, s_pp_key[i].opa, k.opa,
+                             s_pp_key[i].alp == k.alp ? "same" : "new");
+                }
+                /* The old pose and the new go stale, and this tick repaints them the long
+                 * way; the rebuild runs in the slack (gfx_prep_idle). */
+                gfx_paint_ctx_t was = jc[i];
+                was.ang_10 = s_pp_key[i].ang; was.posx = s_pp_key[i].posx; was.posy = s_pp_key[i].posy;
+                was.bx1 = s_pp_key[i].bx1; was.by1 = s_pp_key[i].by1; was.bx2 = s_pp_key[i].bx2; was.by2 = s_pp_key[i].by2;
+                was.rot = s_pp_key[i].rot;
+                if (s_pp_key[i].alp == k.alp) pp_stale_pose(&was);
+                else for (int32_t yy = was.by1; yy <= was.by2; yy++) pp_stale_add(yy, was.bx1, was.bx2);
+                pp_stale_pose(&jc[i]);
+                s_pps.rebuilds++;
+            }
+        }
+    } else {
+        pp_stale_clear_all();
+        pp_rebuild_box(0, 0, CLK_SCR_W - 1, CLK_SCR_H - 1);
+        s_pp_valid = true;
+        s_pp_gen++; s_pps.rebuilds++;
+        s_pp_land_pending = false;
+    }
+    s_pp_nj = nj;
+    for (int i = 0; i < nj; i++) pp_key_of(&jc[i], &s_pp_key[i]);
+    /* The frame that landed on the canvas this tick: swap in its rows if they were built
+     * ahead against these same slow poses, or build them now. */
+    if (s_pp_land_pending) {
+        /* the slack never caught up with the last swap: settle it before this one */
+        for (int32_t y = 0; y < CLK_SCR_H && s_bk_rows; y++) pp_bk_settle(y);
+        const bool ready = s_pp_land_ready && s_pp_prep_gen == s_pp_gen;
+        for (int r = 0; r < s_pp_nland; r++) {
+            const gfx_prep_rect_t *o = &s_pp_land[r];
+            for (int y = o->y; y < o->y + o->h && y < CLK_SCR_H; y++) {
+                const size_t off = (size_t)y * CLK_SCR_W + o->x;
+                if (ready) {
+                    /* read from the back planes until the slack copies them over */
+                    (void)off;
+                    if (s_bk0[y] > s_bk1[y]) s_bk_rows++;
+                    if (o->x < s_bk0[y]) s_bk0[y] = o->x;
+                    if (o->x + o->w - 1 > s_bk1[y]) s_bk1[y] = (int16_t)(o->x + o->w - 1);
+                } else {
+                    pp_build_row(y, o->x, o->x + o->w - 1, s_pb, s_pf, NULL, 0);
+                    s_pps.rows_sync++;
+                }
+            }
+        }
+        if (ready) {
+            /* rows built ahead before a slow move are the old pose's: they stay stale */
+            for (int r = 0; r < s_pp_nland; r++) {
+                const gfx_prep_rect_t *o = &s_pp_land[r];
+                for (int y = o->y; y < o->y + o->h && y < CLK_SCR_H; y++) {
+                    int32_t a = s_ps0[y] > o->x ? s_ps0[y] : o->x, b = s_ps1[y] < o->x + o->w - 1 ? s_ps1[y] : o->x + o->w - 1;
+                    if (a <= b) pp_stale_add(y, a, b);
+                }
+            }
+        }
+        for (int y = 0; y < CLK_SCR_H; y++) { s_ps0[y] = INT16_MAX; s_ps1[y] = -1; }
+        if (ready) s_pps.swaps_ready++; else s_pps.swaps_late++;
+        s_pp_land_pending = false;
+    }
+
+    for (int32_t y = 0; y < CLK_SCR_H; y++) {
+        if (!rowstate.need[y]) continue;
+        const int32_t xa = rowstate.x0[y], xb = rowstate.x1[y];
+        uint16_t *band = s_band[0];
+        pp_row_src(band, s_pf, s_pfn, y, xa, xb);
+        s_pps.copy_px += (uint64_t)(xb - xa + 1);
+        /* The fast spans on this row, inside the restored extent: live from PB upward. */
+        int32_t f0 = CLK_SCR_W, f1 = -1;
+        for (int i = s_pp_low; i < nj; i++) {
+            if (!s_pp_fast[i]) continue;
+            const gfx_spans_t *sp = (i < 32) ? bsp[i] : NULL;
+            int32_t a, b;
+            if (sp) { if (y < sp->y0 || y > sp->y1) continue; a = sp->x0[y]; b = sp->x1[y]; }
+            else { if (y < jc[i].by1 || y > jc[i].by2) continue; a = jc[i].bx1; b = jc[i].bx2; }
+            if (a < f0) f0 = a;
+            if (b > f1) f1 = b;
+        }
+        if (f0 < xa) f0 = xa;
+        if (f1 > xb) f1 = xb;
+        if (f0 <= f1) {
+            pp_row_src(band, s_pb, s_pbn, y, f0, f1);
+            for (int i = s_pp_low; i < nj; i++) pp_paint(&jc[i], y, f0, f1, band);
+            s_pps.live_px += (uint64_t)(f1 - f0 + 1);
+        }
+        if (s_st0[y] <= s_st1[y]) {
+            /* a stale segment: canvas and every job, as the shipped commit composes it */
+            int32_t a = s_st0[y] > xa ? s_st0[y] : xa, b = s_st1[y] < xb ? s_st1[y] : xb;
+            if (a <= b) {
+                const uint16_t *src = &canvas[(size_t)y * CLK_SCR_W];
+                for (int32_t x = a; x <= b; x++) { const uint16_t v = src[x]; band[x] = (uint16_t)((v >> 8) | (v << 8)); }
+                for (int i = 0; i < nj; i++) pp_paint(&jc[i], y, a, b, band);
+                s_pps.live_px += (uint64_t)(b - a + 1);
+            }
+        }
+        if (s_pp_mode == 2) {
+            /* The shipped composite of the same row, for the exactness count. */
+            const uint16_t *src = &canvas[(size_t)y * CLK_SCR_W];
+            for (int32_t x = xa; x <= xb; x++) { const uint16_t v = src[x]; s_pp_row[x] = (uint16_t)((v >> 8) | (v << 8)); }
+            for (int i = 0; i < nj; i++) pp_paint(&jc[i], y, xa, xb, s_pp_row);
+            for (int32_t x = xa; x <= xb; x++) if (s_pp_row[x] != band[x]) s_pps.mismatch_px++;
+            s_pps.checked_px += (uint64_t)(xb - xa + 1);
+        }
+        uint16_t *fbrow = fb + (size_t)y * CLK_SCR_W;
+        bool send = rowstate.force[y] != 0;
+        for (int32_t x = xa; x <= xb; x++) {
+            const uint16_t v = band[x];
+            if (fbrow[x] != v) { fbrow[x] = v; send = true; }
+        }
+        display_commit_row(y, send);
+    }
+    memset(rowstate.need, 0, sizeof(rowstate.need));
+    memset(rowstate.force, 0, sizeof(rowstate.force));
+}
+#endif /* CONFIG_ORB_DEBUG_HTTP */
+
 /* Rebuild the rows the app dirtied, from the ground up: background out of the
  * caller's canvas, then every layer it listed, in the order it listed them.
  *
@@ -628,6 +1327,33 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
 {
     uint16_t *fb = display_fb_mirror();
     if (!fb) return;
+#if CONFIG_ORB_DEBUG_HTTP
+    /* The span bench: each rotated job's spans, resolved once per commit. */
+    const gfx_spans_t *bsp[32] = { 0 };
+    const int bmode = s_bx_mode;
+    const int64_t bx_t0 = esp_timer_get_time();
+    static gfx_paint_ctx_t jl[32];          /* the nearest-shadow and AA arms' own job copy */
+    if ((s_bx_nearest || s_bx_aa_sec) && nj <= 32) {
+        memcpy(jl, jc, (size_t)nj * sizeof *jc);
+        for (int i = 0; i < nj; i++) {
+            if (s_bx_nearest && jl[i].role == 3) jl[i].smooth = false;
+            if (s_bx_aa_sec && jl[i].role == 2 && jl[i].rot) jl[i].smooth = true;
+            if (s_bx_aa_sec >= 2 && jl[i].role == 3 && jl[i].rot) jl[i].smooth = true;
+        }
+        jc = jl;
+    }
+    if (bmode) for (int i = 0; i < nj && i < 32; i++) if (!gfx_spans_of(&jc[i], &bsp[i])) bsp[i] = NULL;
+    s_bx_commits++;
+    if (s_pp_mode && bmode && !s_ko_on && nj <= PP_JOBS) {
+        pp_commit(nj, jc, canvas, fb, bsp);
+        const uint32_t us = (uint32_t)(esp_timer_get_time() - bx_t0);
+        const int b = us < 10000 ? 0 : us < 20000 ? 1 : us < 40000 ? 2 : us < 60000 ? 3 : us < 90000 ? 4 : 5;
+        s_bx_hist[b]++;
+        if (us > s_bx_max_us) s_bx_max_us = us;
+        s_hk_paint_us += us;
+        return;
+    }
+#endif
         /* Walk the marked rows in bands (see s_band). Runs of marked rows are the
          * normal case — a GIF rect or a hand's swept box marks a contiguous range —
          * so the band costs nothing over the one-row walk and it is what lets the
@@ -655,12 +1381,19 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
             int64_t t0 = esp_timer_get_time();
             for (int r = 0; r < nr; r++) {
                 const int32_t y = y0 + r;
-                const int32_t xa = rowstate.x0[y], xb = rowstate.x1[y];
-                const uint16_t *src = &canvas[(size_t)y * CLK_SCR_W + xa];
-                uint16_t *d = s_band[r] + xa;
-                for (int32_t x = xa; x <= xb; x++) {
-                    const uint16_t v = *src++;
-                    *d++ = (uint16_t)((v >> 8) | (v << 8));
+                int32_t sa[2], sb[2];
+                const int ns = row_segs(y, sa, sb);      /* §49.15: skip the row's gap */
+                for (int g = 0; g < ns; g++) {
+                    const int32_t xa = sa[g], xb = sb[g];
+#if CONFIG_ORB_DEBUG_HTTP
+                    s_bx_restored += (uint64_t)(xb - xa + 1);
+#endif
+                    const uint16_t *src = &canvas[(size_t)y * CLK_SCR_W + xa];
+                    uint16_t *d = s_band[r] + xa;
+                    for (int32_t x = xa; x <= xb; x++) {
+                        const uint16_t v = *src++;
+                        *d++ = (uint16_t)((v >> 8) | (v << 8));
+                    }
                 }
             }
             s_hk_rest_us += (uint64_t)(esp_timer_get_time() - t0);
@@ -671,13 +1404,18 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
                  * per-layer split is what found the carriage, and at ~1500 calls
                  * per commit esp_timer_get_time() itself was starting to cost the
                  * ~0.2 ms being measured. */
+#if CONFIG_ORB_DEBUG_HTTP
+                if (s_bx_noglass && jc[i].role == CLK_ROLE_GLASS) continue;
+#endif
                 const int64_t tr = esp_timer_get_time();
                 if (!jc[i].rot) {
                     /* Static (identity) layer: texels are read straight across the
                      * row, so one call per row is already the cheapest order. */
                     for (int r = 0; r < nr; r++) {
                         const int32_t y = y0 + r;
-                        gfx_paint_row_ctx(&jc[i], y, rowstate.x0[y], rowstate.x1[y], s_band[r]);
+                        int32_t sa[2], sb[2];
+                        const int ns = row_segs(y, sa, sb);
+                        for (int g = 0; g < ns; g++) gfx_paint_row_ctx(&jc[i], y, sa[g], sb[g], s_band[r]);
                     }
                 } else {
                     /* Rotated layer: column tiles, rows innermost. The rows of a
@@ -689,11 +1427,21 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
                         const int32_t te = tx + CLK_PAINT_TILE - 1;
                         for (int r = 0; r < nr; r++) {
                             const int32_t y = y0 + r;
-                            int32_t xa = rowstate.x0[y], xb = rowstate.x1[y];
-                            if (xb < tx || xa > te) continue;
-                            if (xa < tx) xa = tx;
-                            if (xb > te) xb = te;
-                            gfx_paint_row_ctx(&jc[i], y, xa, xb, s_band[r]);
+                            int32_t sa[2], sb[2];
+                            const int ns = row_segs(y, sa, sb);
+                            for (int g = 0; g < ns; g++) {
+                                int32_t xa = sa[g], xb = sb[g];
+                                if (xb < tx || xa > te) continue;
+                                if (xa < tx) xa = tx;
+                                if (xb > te) xb = te;
+#if CONFIG_ORB_DEBUG_HTTP
+                                if (i < 32 && bsp[i]) {
+                                    paint_spanned(&jc[i], y, xa, xb, s_band[r], bsp[i]);
+                                    continue;
+                                }
+#endif
+                                gfx_paint_row_ctx(&jc[i], y, xa, xb, s_band[r]);
+                            }
                         }
                     }
                 }
@@ -715,9 +1463,12 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
             t0 = esp_timer_get_time();
             for (int r = 0; r < nr; r++) {
                 const int32_t y = y0 + r;
-                int32_t xa = rowstate.x0[y], xb = rowstate.x1[y];
                 uint16_t *fbrow = fb + (size_t)y * CLK_SCR_W;
                 bool send = rowstate.force[y] != 0;
+                int32_t sa[2], sb[2];
+                const int ns = row_segs(y, sa, sb);
+                for (int g = 0; g < ns; g++) {
+                const int32_t xa = sa[g], xb = sb[g];
                 /* The keep-out cut, in the one place it has to live: the staged
                  * row still holds the dial's pixels for the rect's span, but
                  * they never reach the mirror while the chrome stands, so the
@@ -742,6 +1493,7 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
                         if (fbrow[x] != v) { fbrow[x] = v; send = true; }
                     }
                 }
+                }
                 display_commit_row(y, send);
             }
             s_hk_cmp_us += (uint64_t)(esp_timer_get_time() - t0);
@@ -751,4 +1503,12 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
 
         memset(rowstate.need, 0, sizeof(rowstate.need));
         memset(rowstate.force, 0, sizeof(rowstate.force));
+#if CONFIG_ORB_DEBUG_HTTP
+        {
+            const uint32_t us = (uint32_t)(esp_timer_get_time() - bx_t0);
+            const int b = us < 10000 ? 0 : us < 20000 ? 1 : us < 40000 ? 2 : us < 60000 ? 3 : us < 90000 ? 4 : 5;
+            s_bx_hist[b]++;
+            if (us > s_bx_max_us) s_bx_max_us = us;
+        }
+#endif
 }

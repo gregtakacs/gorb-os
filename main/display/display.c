@@ -20,6 +20,7 @@
  */
 
 #include "display.h"
+#include "esp_attr.h"           /* EXT_RAM_BSS_ATTR: the bench hold log */
 #include "board_config.h"
 
 #include <stdlib.h>
@@ -134,6 +135,34 @@ static void wait_for_te(void)
     s_te_wait_us += (uint32_t)(s_te_edge_us - t0);
 #endif
 }
+
+/* ---- Paced presentation and the hold log (the grid bench, plan §49.7) ----------
+ *
+ * A frame appears on the refresh edge its band DMA starts at (the wait below), so the
+ * number of panel refreshes a frame stays up is the edge distance to the next one. At 60 Hz
+ * only a rate that divides 60 holds every frame the same number of refreshes; anything else
+ * wobbles. pace (tenths of a refresh) presents each frame exactly k refreshes after the last:
+ * an early frame waits out the extra edges, a late one takes the next edge and the log
+ * books it long. 75 alternates 7 and 8, the steadiest 8 fps a 60 Hz panel can show. The log
+ * keeps every presented edge and a tag (bit 0: the frame carried a gear frame). */
+#if CONFIG_ORB_DEBUG_HTTP
+/* A minute at 20 fps is 1200 edges, and a verdict over less than the whole minute samples
+ * only part of the seconds hand's turn (§49.15: 512 held the first ~25 s). In PSRAM: the
+ * log is written once a frame and read once a run. */
+#define HOLD_N 1536
+static volatile int      s_pace10;
+static int64_t           s_pace_last_edge;
+static int               s_pace_acc;
+static volatile uint8_t  s_tag_next;
+static volatile bool     s_hold_rec;
+EXT_RAM_BSS_ATTR static int64_t s_hold_t[HOLD_N];
+EXT_RAM_BSS_ATTR static uint8_t s_hold_tag[HOLD_N];
+static volatile uint32_t s_hold_n;
+static bool (*volatile s_idle_hook)(int64_t deadline_us);
+void display_set_idle_hook(bool (*fn)(int64_t deadline_us)) { s_idle_hook = fn; }
+#endif
+static void wait_for_te(void);
+static void present_wait(void);
 
 /* ---- Full-page refresh telemetry (benchmark) ----
  * One LVGL frame in PARTIAL mode is a burst of row-chunks: s_flush_in_flight goes
@@ -1110,7 +1139,7 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
              * race. Deliberately AFTER the hook for that reason. */
             capture_maybe_copy();
             const int64_t t_te = esp_timer_get_time();
-            wait_for_te();
+            present_wait();
             s_bench_te_us += (uint64_t)(esp_timer_get_time() - t_te);
             const int64_t t_dma = esp_timer_get_time();
             int bands = dma_dirty_bands(disp);
@@ -1873,3 +1902,145 @@ void display_bench_reset(void)
     s_bench_te_us          = 0;
     s_bench_dma_us         = 0;
 }
+
+#if CONFIG_ORB_DEBUG_HTTP
+/* ---- whole-frame push for the transition bench (display.h) ----------------
+ *
+ * The tile path of dma_dirty_bands_locked() with the source swapped: instead of
+ * memcpy out of s_fb, each slab is composed straight into the ring buffer it
+ * ships from, so the cost read back is compose + wire with no LVGL render and no
+ * mirror write. Same write-guard (a buffer is reused only once s_tile_done has
+ * counted past the tile it last carried), same FIFO proof. s_last_pending stays
+ * false for the whole frame, so the trans-done ISR never mistakes a bench slab
+ * for the last band of an LVGL frame and calls flush_ready on nobody's behalf. */
+esp_err_t display_fx_frame(display_fx_compose_t compose, void *ctx, bool te,
+                           display_fx_stats_t *st)
+{
+    if (!s_panel || !compose || !st) return ESP_ERR_INVALID_ARG;
+    memset(st, 0, sizeof *st);
+    /* A card read just before the run (the preview) lends the ring and the flush
+     * path only re-funds it after the network's window. Wait that window out and
+     * re-fund here, as the flush path would: this is the LVGL task too. */
+    for (int64_t w0 = esp_timer_get_time(); s_ring_parked && esp_timer_get_time() - w0 < 3000000; ) {
+        if (s_ring_loan == 0 && ring_refund_due()) {
+            if (s_ring_mux) xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+            if (s_ring_parked && s_ring_loan == 0 && ring_refund() == ESP_OK) s_ring_returned_us = 0;
+            if (s_ring_mux) xSemaphoreGive(s_ring_mux);
+        }
+        if (s_ring_parked) vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (s_ring_mux) xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+    esp_err_t e = ESP_OK;
+    if (!s_tiles_ok || s_ring_parked || s_tiles_n < 1) {
+        e = ESP_ERR_INVALID_STATE;
+        goto out;
+    }
+    /* A quiet bus first: the LVGL frame before this call may still be reading
+     * its last bands out of the ring. */
+    int64_t t0 = esp_timer_get_time();
+    while ((s_band_inflight > 0 || s_last_pending) &&
+           esp_timer_get_time() - t0 < 500000) vTaskDelay(1);
+    if (s_band_inflight > 0 || s_last_pending) { e = ESP_ERR_TIMEOUT; goto out; }
+
+    if (te) {
+        const int64_t tw = esp_timer_get_time();
+        wait_for_te();          /* a no-op where the pin never proved live */
+        st->te_us = (uint32_t)(esp_timer_get_time() - tw);
+    }
+    const int nbuf  = s_tiles_n;
+    const int tiles = (SCREEN_HEIGHT + TILE_ROWS - 1) / TILE_ROWS;
+    st->tiles = nbuf;
+    s_tile_done     = 0;
+    s_band_inflight = tiles;
+    const int64_t f0 = esp_timer_get_time();
+    int last_ok[TILE_BUFS];
+    for (int b = 0; b < TILE_BUFS; b++) last_ok[b] = -1;
+    unsigned ti = 0;
+    for (int row = 0; row < SCREEN_HEIGHT; row += TILE_ROWS) {
+        const int rows = (SCREEN_HEIGHT - row) < TILE_ROWS ? (SCREEN_HEIGHT - row) : TILE_ROWS;
+        const int b = (int)(ti % (unsigned)nbuf);
+        if (last_ok[b] >= 0) {
+            const int64_t w0 = esp_timer_get_time();
+            while (s_tile_done <= (uint32_t)last_ok[b] &&
+                   esp_timer_get_time() - w0 < 100000) { }
+        }
+        const int64_t c0 = esp_timer_get_time();
+        compose(row, rows, s_tile[b], ctx);
+        st->compose_us += (uint32_t)(esp_timer_get_time() - c0);
+        s_bench_pix += (uint64_t)SCREEN_WIDTH * (uint32_t)rows;
+        s_bench_chunks++;
+        if (esp_lcd_panel_draw_bitmap(s_panel, 0, row, SCREEN_WIDTH, row + rows,
+                                      s_tile[b]) != ESP_OK) {
+            if (s_band_inflight > 0) s_band_inflight--;
+            e = ESP_FAIL;
+        } else {
+            last_ok[b] = (int)ti;
+        }
+        ti++;
+    }
+    /* Retire everything before returning: the caller's next frame composes
+     * into these same buffers. */
+    t0 = esp_timer_get_time();
+    while (s_band_inflight > 0 && esp_timer_get_time() - t0 < 200000) { }
+    st->frame_us = (uint32_t)(esp_timer_get_time() - f0);
+    if (s_band_inflight > 0) e = ESP_ERR_TIMEOUT;
+out:
+    if (s_ring_mux) xSemaphoreGive(s_ring_mux);
+    return e;
+}
+#endif /* CONFIG_ORB_DEBUG_HTTP */
+
+/* Defined after wait_for_te and the TE witness state (s_te_edge_us, s_te_period_us). */
+static void present_wait(void)
+{
+#if CONFIG_ORB_DEBUG_HTTP && defined(PIN_LCD_TE) && (PIN_LCD_TE >= 0)
+    if (s_pace10 && s_te_live && s_te_enable && s_te_period_us && s_pace_last_edge) {
+        s_pace_acc += s_pace10;
+        const int k = s_pace_acc / 10;
+        s_pace_acc -= k * 10;
+        const int64_t target = s_pace_last_edge + (int64_t)k * s_te_period_us;
+        /* The slack before the target edge is the pre-paint's to spend (plan §49.8): it
+         * stops 2.5 ms short so the wait below still catches the target's own edge. */
+        if (s_idle_hook) s_idle_hook(target - 2500);
+        for (int guard = 0; guard < 16; guard++) {
+            wait_for_te();
+            if (s_te_edge_us >= target - (int64_t)(s_te_period_us / 2)) break;
+        }
+    } else {
+        if (s_idle_hook) s_idle_hook(esp_timer_get_time() + 3000);
+        wait_for_te();
+    }
+    s_pace_last_edge = s_te_edge_us;
+    if (s_hold_rec) {
+        const uint32_t i = s_hold_n;
+        if (i < HOLD_N) { s_hold_t[i] = s_te_edge_us; s_hold_tag[i] = s_tag_next; s_hold_n = i + 1; }
+    }
+    s_tag_next = 0;
+#else
+    wait_for_te();
+#endif
+}
+
+#if CONFIG_ORB_DEBUG_HTTP
+void display_bench_pace(int pace10)
+{
+    s_pace10 = pace10 < 0 ? 0 : (pace10 > 200 ? 200 : pace10);
+    s_pace_acc = 0;
+}
+void display_bench_tag(uint8_t tag) { s_tag_next |= tag; }
+void display_bench_holds_start(void) { s_hold_rec = false; s_hold_n = 0; s_hold_rec = true; }
+uint32_t display_bench_holds_stop(const int64_t **t, const uint8_t **tag, uint32_t *period_us)
+{
+    s_hold_rec = false;
+    *t = s_hold_t; *tag = s_hold_tag;
+#if defined(PIN_LCD_TE) && (PIN_LCD_TE >= 0)
+    *period_us = s_te_period_us;
+#else
+    *period_us = 0;
+#endif
+    return s_hold_n;
+}
+#endif
+#if CONFIG_ORB_DEBUG_HTTP
+uint32_t display_te_period_us(void) { return s_te_period_us; }
+#endif

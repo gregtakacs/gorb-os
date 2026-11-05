@@ -345,6 +345,27 @@ static void gif_apply_frame(int tgt)
     request_commit();
 #endif
     s_gif_shown = tgt;
+#if CONFIG_ORB_DEBUG_HTTP
+    if (gfx_prep_on()) {
+        /* Pre-paint (plan §49.8): the rects that just landed, and the next frame's, so
+         * its rows can be built in the slack before it is due. */
+        gfx_prep_rect_t cur[8], nxt[8];
+        int nc = 0, nn = 0;
+        const int nf = (int)clk_theme.gif_frames;
+        const int nx = (tgt + 1) % (nf ? nf : 1);
+        for (uint16_t r = lo; r < hi && nc < 8; r++) {
+            const clk_bg_rect_t *rc = &clk_bg_rects[r];
+            if (!rc->w || !rc->h) continue;
+            cur[nc++] = (gfx_prep_rect_t){ rc->x, rc->y, rc->w, rc->h, (const uint16_t *)(base + rc->off) };
+        }
+        for (uint16_t r = clk_bg_rect_first[nx]; r < clk_bg_rect_first[nx + 1] && nn < 8; r++) {
+            const clk_bg_rect_t *rc = &clk_bg_rects[r];
+            if (!rc->w || !rc->h) continue;
+            nxt[nn++] = (gfx_prep_rect_t){ rc->x, rc->y, rc->w, rc->h, (const uint16_t *)(base + rc->off) };
+        }
+        gfx_prep_landed(tgt, cur, nc, nx, nxt, nn);
+    }
+#endif
 }
 
 
@@ -609,8 +630,44 @@ static void sched_fill_asks(void)
  * that just started speeds the beat this tick, as the retired per-tick gate did. */
 static uint32_t s_burst_until;   /* lv_tick ms the ease burst runs to; 0 = none (D41) */
 
+#if CONFIG_ORB_DEBUG_HTTP
+/* The span bench (/api/v1/debug/dial): a forced beat, so the dial runs as fast as
+ * its commit lets it, and a frozen background, so the GIF's frames stop and only
+ * the hands move — a static plate on the same compositor. */
+static volatile uint32_t s_bench_rate_fps;
+static volatile bool     s_bench_freeze;
+static volatile uint32_t s_bench_gif_x = 1;   /* the gear bank played this many times faster */
+static volatile uint32_t s_bench_gif_applied;  /* GIF frames that reached the canvas */
+static volatile uint32_t s_bench_gif_every;    /* >0: a gear frame on every Nth tick, not its delay */
+static volatile int      s_bench_pace10;       /* >0: the beat is pace10/10 panel refreshes */
+static uint32_t          s_bench_tickc;
+void orb_sched_bench_grid(int pace10, uint32_t gif_every)
+{
+    s_bench_pace10 = pace10 < 0 ? 0 : pace10;
+    s_bench_gif_every = gif_every;
+    s_bench_tickc = 0;
+    display_bench_pace(s_bench_pace10);
+}
+uint32_t orb_sched_bench_gif_frames(void) { return s_bench_gif_applied; }
+void orb_sched_bench(uint32_t rate_fps, bool freeze, uint32_t gif_x)
+{
+    s_bench_rate_fps = rate_fps > 60 ? 60 : rate_fps;
+    s_bench_freeze = freeze;
+    s_bench_gif_x = gif_x < 1 ? 1 : (gif_x > 8 ? 8 : gif_x);
+}
+#endif
+
 static uint32_t sched_tick_period_ms(void)
 {
+#if CONFIG_ORB_DEBUG_HTTP
+    /* A paced beat asks a hair under its frame time: the present waits for the exact
+     * edge, so a tick that lands early costs nothing and one that lands late is a miss. */
+    if (s_bench_pace10 && display_te_period_us()) {
+        const uint32_t ms = (uint32_t)((uint64_t)s_bench_pace10 * display_te_period_us() / 10000u);
+        return ms > 2 ? ms - 1 : 1;
+    }
+    if (s_bench_rate_fps) return 1000u / s_bench_rate_fps;
+#endif
     const bool anim = orb_bg_gif_mode()
                    || (orb_bg_bg_live() && (clk_theme.bg_loop || s_bg_play_start != 0))
                    || clk_theme.tourbillon_n
@@ -1003,9 +1060,22 @@ static void tick_timer_cb(lv_timer_t *timer)
          * from the wall clock, just stepped at the GIF's rate). */
         const uint32_t now  = lv_tick_get();
         const int      next = (s_gif_shown + 1) % (int)clk_theme.gif_frames;
-        if ((int32_t)(now - s_gif_due) >= 0) {
+        bool gif_go = (int32_t)(now - s_gif_due) >= 0;
+#if CONFIG_ORB_DEBUG_HTTP
+        if (s_bench_gif_every) gif_go = (s_bench_tickc++ % s_bench_gif_every) == 0;
+        if (s_bench_freeze) gif_go = false;
+#endif
+        if (gif_go) {
             gif_apply_frame(next);
-            const uint32_t d = (uint32_t)clk_gif_delays[next] * CLK_GIF_THROTTLE;
+#if CONFIG_ORB_DEBUG_HTTP
+            s_bench_gif_applied++;
+            display_bench_tag(1);             /* the frame this tick commits carries gears */
+#endif
+            uint32_t d = (uint32_t)clk_gif_delays[next] * CLK_GIF_THROTTLE;
+#if CONFIG_ORB_DEBUG_HTTP
+            d /= s_bench_gif_x;
+            if (!d) d = 1;
+#endif
             /* Anchor to the previous deadline so tick jitter cannot inflate
              * the tempo; if we fell more than a frame behind, drop missed
              * deadlines (no burst-catch-up: deltas are chained per frame). */

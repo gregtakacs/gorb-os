@@ -40,6 +40,9 @@
 #include <stdint.h>
 
 #include "lvgl.h"
+#if __has_include("sdkconfig.h")
+#include "sdkconfig.h"   /* CONFIG_ORB_DEBUG_HTTP: the span bench */
+#endif
 
 /* L3/L4: rather than invalidating the plate through LVGL whenever a GIF delta
  * rect or a hand rotation dirties it — the software image blit measured
@@ -160,6 +163,17 @@ void orb_sched_set_running(bool on);
 void orb_sched_burst(uint32_t ms);
 void orb_sched_resume(void);
 void orb_sched_pause(void);
+#if CONFIG_ORB_DEBUG_HTTP
+/* The span bench's beat: rate_fps > 0 forces the tick period (1..60), freeze stops
+ * the GIF background so only the hands move, and gif_x (1..8) plays the GIF that many
+ * times faster than its baked delays. 0/false/1 = the shipped beat. */
+void orb_sched_bench(uint32_t rate_fps, bool freeze, uint32_t gif_x);
+uint32_t orb_sched_bench_gif_frames(void);   /* running count of GIF frames applied */
+/* The grid bench (plan §49.7): pace10 > 0 runs the beat at pace10/10 panel refreshes and
+ * presents each frame on that exact edge; gif_every > 0 lands a gear frame on every Nth
+ * tick instead of at its baked delay. 0/0 = the shipped beat. */
+void orb_sched_bench_grid(int pace10, uint32_t gif_every);
+#endif
 /* Re-anchor the gif due clock and the beat ladder to now after a park; re-zero
  * the per-second report's baselines. Two calls, in the shipped order, so the
  * lv_tick_get() reads stay paired the way the old bounce paired them. */

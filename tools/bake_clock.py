@@ -2352,8 +2352,8 @@ def _bundle_clock_state(section, hdr, src_path):
     if sc["bg_frames"] and sc["bg_mode"] == 1:
         refuse("%d distinct plate frames: those planes ride the gif table a FORMAT 3 "
                "clock section does not carry" % sc["bg_frames"])
-    if sc["bg_frames"] >= 16:                      # CLK_BG_MAX, the one bound
-        refuse("a plate animation of %d frames: the dial holds 16, and the rest is "
+    if sc["bg_frames"] >= 20:                      # CLK_BG_MAX, the one bound
+        refuse("a plate animation of %d frames: the dial holds 20, and the rest is "
                "a bank it has no room for" % (sc["bg_frames"] + 1))
 
     plate = by.get((ts.CLASS_PLATE, 0))

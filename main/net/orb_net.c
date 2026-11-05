@@ -68,6 +68,10 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "art_bank.h"
 #include "orb_io_window.h"  /* h_ota brackets itself for the wasm time budget */
 #include "display.h"        /* h_fb: the one-shot frame capture over the panel mirror */
+#include "orb_fx.h"         /* h_debug_fx: the shell-transition bench */
+#include "orb_gfx.h"        /* h_debug_dial: the ink-span bench */
+#include "orb_sched.h"
+#include "orb_stage.h"
 #include "board_config.h"   /* h_fb: SCREEN_WIDTH/HEIGHT, the row scratch's size */
 #include "orb_sd.h"
 #include "orb_theme.h"
@@ -5559,6 +5563,250 @@ static esp_err_t h_sd_preview(httpd_req_t *req)
     return r;
 }
 
+#if CONFIG_ORB_DEBUG_HTTP
+/* GET /api/v1/debug/fx?fx=slide|iris|fade|disc|drum&id=<theme stem>
+ *                     [&ms=300][&hold=600][&te=1][&dir=1]
+ *
+ * The shell-transition bench (main/display/orb_fx.h): animate the glass as it
+ * stands into one theme's preview plane, painted outside LVGL straight into the
+ * tile ring, hold, and put the glass back from the mirror. Answers the run's
+ * per-frame figures as JSON. Measurement only, under the same gate as /screen
+ * and /fb: it borrows the panel for under ten seconds and changes nothing a
+ * reboot or the next frame would not. Refused while anything else owns the card
+ * or the glass, by the h_sd_preview rules plus the store's glass hold. */
+static esp_err_t h_debug_fx(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char fx[12] = "", id[ORB_THEME_HANDLE_MAX + 1] = "", v[12];
+    orb_fx_req_t r = { .kind = ORB_FX_SLIDE, .ms = 300, .hold_ms = 600, .te = true, .dir = 1 };
+    if (q_param(req, "fx", fx, sizeof fx)) {
+        const int k = orb_fx_find(fx);
+        if (k < 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req,
+                "{\"error\":\"unknown fx\",\"known\":[\"slide\",\"iris\",\"fade\",\"disc\",\"drum\"]}");
+        }
+        r.kind = (orb_fx_kind_t)k;
+    }
+    if (q_param(req, "ms", v, sizeof v))   r.ms = (uint32_t)atoi(v);
+    if (q_param(req, "hold", v, sizeof v)) r.hold_ms = (uint32_t)atoi(v);
+    if (q_param(req, "te", v, sizeof v))   r.te = v[0] != '0';
+    if (q_param(req, "dir", v, sizeof v))  r.dir = atoi(v) < 0 ? -1 : 1;
+    if (r.ms < 1 || r.ms > 3000 || r.hold_ms > 5000) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"ms must be 1-3000 and hold 0-5000\"}");
+    }
+    if (!q_param(req, "id", id, sizeof id) || !orb_theme_id_ok(id)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id is missing or not a theme id\"}");
+    }
+    if (!orb_sd_mounted() || orb_theme_upload_busy() || scan_on_air() || orb_jobs_busy() ||
+        orb_theme_glass_held() || display_dma_lent()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"the card or the glass is busy\",\"retry\":\"later\"}");
+    }
+    char why[128] = "";
+    uint16_t w = 0, h = 0;
+    orb_asset_ans_t a = orb_theme_preview_read(id, NULL, 0, &w, &h, why, sizeof why);
+    if (a != ORB_ASSET_OK || !w || !h) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "{\"error\":\"this theme carries no readable preview\"}");
+    }
+    const size_t bytes = (size_t)w * h * 2u;
+    uint16_t *px = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!px) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"no room for the plane\"}");
+    }
+    const int64_t rd0 = esp_timer_get_time();
+    a = orb_theme_preview_read(id, (uint8_t *)px, bytes, &w, &h, why, sizeof why);
+    const uint32_t read_ms = (uint32_t)((esp_timer_get_time() - rd0) / 1000);
+    if (a != ORB_ASSET_OK) {
+        heap_caps_free(px);
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "{\"error\":\"the preview vanished\"}");
+    }
+    orb_fx_report_t rep;
+    const esp_err_t e = orb_fx_run(&r, px, w, h, r.ms + r.hold_ms + 4000, &rep);   /* px is the run's now */
+    if (e != ESP_OK) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        char body[96];
+        snprintf(body, sizeof body, "{\"error\":\"%s\"}", esp_err_to_name(e));
+        return httpd_resp_sendstr(req, body);
+    }
+    char body[512];
+    const float fps = rep.anim_us ? rep.frames * 1e6f / (float)rep.anim_us : 0.0f;
+    snprintf(body, sizeof body,
+             "{\"fx\":\"%s\",\"ms\":%u,\"te\":%s,\"dir\":%d,\"plane\":[%u,%u],\"read_ms\":%u,"
+             "\"err\":\"%s\",\"frames\":%d,\"anim_us\":%u,\"fps\":%.1f,"
+             "\"frame_avg_us\":%u,\"frame_max_us\":%u,\"compose_avg_us\":%u,\"compose_max_us\":%u,"
+             "\"te_avg_us\":%u,\"restore_us\":%u,\"restore_compose_us\":%u,\"ring\":%d}",
+             orb_fx_name(r.kind), (unsigned)r.ms, r.te ? "true" : "false", r.dir,
+             (unsigned)w, (unsigned)h, (unsigned)read_ms, esp_err_to_name(rep.err),
+             rep.frames, (unsigned)rep.anim_us, (double)fps,
+             (unsigned)rep.frame_avg_us, (unsigned)rep.frame_max_us,
+             (unsigned)rep.compose_avg_us, (unsigned)rep.compose_max_us,
+             (unsigned)rep.te_avg_us, (unsigned)rep.restore_us,
+             (unsigned)rep.restore_compose_us, rep.tiles);
+    return httpd_resp_sendstr(req, body);
+}
+#endif /* CONFIG_ORB_DEBUG_HTTP */
+
+#if CONFIG_ORB_DEBUG_HTTP
+/* GET /api/v1/debug/dial?spans=0|1|2&spin=<deg/s>&rate=<fps>&freeze=0|1&glass=0|1
+ *                       [&settle=1500][&ms=4000]
+ *
+ * The ink-span bench (orb_gfx.h). Sets the knobs — they stay set until the next
+ * call or a reboot, `reset=1` clears them — lets the dial settle, then measures
+ * `ms` of commits and answers per-frame figures: what the L4 compositor restored,
+ * how many pixels its rotated jobs walked (box vs span), what each paint role cost,
+ * and, in spans=2, how many blends fell outside the spans (must be 0). ms=0 sets
+ * and answers at once. The clock must be on the glass with L4 live for the numbers
+ * to mean anything; `l4` in the answer says whether it was. */
+static esp_err_t h_debug_dial(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    static int spans, spin, rate, freeze, noglass, nearest, sweep, gifx = 1, osc, aa;   /* the one httpd task */
+    char v[12];
+    if (q_param(req, "reset", v, sizeof v) && v[0] == '1') {
+        spans = spin = rate = freeze = noglass = nearest = sweep = osc = aa = 0;
+        gifx = 1;
+    }
+    static int pace10, gevery, prep;
+    if (q_param(req, "reset", v, sizeof v) && v[0] == '1') pace10 = gevery = prep = 0;
+    if (q_param(req, "prep", v, sizeof v))   prep = atoi(v);
+    if (q_param(req, "pace", v, sizeof v))   pace10 = atoi(v);
+    if (q_param(req, "gif_every", v, sizeof v)) gevery = atoi(v);
+    if (q_param(req, "gif", v, sizeof v))    gifx = atoi(v);
+    if (q_param(req, "osc", v, sizeof v))    osc = atoi(v);
+    if (q_param(req, "shadow", v, sizeof v)) nearest = strcmp(v, "nearest") == 0;
+    if (q_param(req, "sweep", v, sizeof v))  sweep = v[0] == '1';
+    if (q_param(req, "spans", v, sizeof v))  spans = atoi(v);
+    if (q_param(req, "spin", v, sizeof v))   spin = atoi(v);
+    if (q_param(req, "rate", v, sizeof v))   rate = atoi(v);
+    if (q_param(req, "freeze", v, sizeof v)) freeze = v[0] == '1';
+    if (q_param(req, "glass", v, sizeof v))  noglass = v[0] == '0';
+    if (q_param(req, "aa", v, sizeof v))     aa = atoi(v);
+    uint32_t settle = 1500, ms = 4000;
+    if (q_param(req, "settle", v, sizeof v)) settle = (uint32_t)atoi(v);
+    if (q_param(req, "ms", v, sizeof v))     ms = (uint32_t)atoi(v);
+    if (settle > 10000) settle = 10000;
+    if (ms > 300000) ms = 300000;              /* a minute or five: the seconds hand's whole turn */
+    gfx_bench_set(spans, noglass != 0, nearest != 0, aa);
+    stage_bench_spin(spin, sweep != 0, osc);
+    orb_sched_bench(rate < 0 ? 0 : (uint32_t)rate, freeze != 0, gifx < 1 ? 1u : (uint32_t)gifx);
+    orb_sched_bench_grid(pace10, gevery < 0 ? 0u : (uint32_t)gevery);
+    if (prep != gfx_prep_on()) gfx_prep_mode(prep);
+    display_set_idle_hook(prep ? gfx_prep_idle : NULL);
+    if (settle) vTaskDelay(pdMS_TO_TICKS(settle));
+    gfx_prep_stats_t pa, pb;
+    gfx_prep_stats(&pa);
+    display_bench_holds_start();
+
+    gfx_bench_totals_t a, b;
+    uint32_t fa = 0, fb = 0, mx;
+    uint64_t ta = 0, tb = 0;
+    uint64_t ma, ha, tea, da, mb, hb, teb, db, ra, rpa, rb, rpb;
+    orb_sched_jank_t ja, jb;
+    const uint32_t ga = orb_sched_bench_gif_frames();
+    gfx_bench_totals(&a);
+    orb_sched_jank_snapshot(&ja);
+    display_bench_snapshot(&fa, &ta, &mx);
+    display_bench_phases_us(&ma, &ha, &tea, &da);
+    display_bench_render_us_px(&ra, &rpa);
+    uint64_t wta, wsa, woa, wtb, wsb, wob;
+    orb_wasm_bench_us(&wta, &wsa, &woa);
+    (void)orb_wasm_bench_bg_max_us(true);
+    const int64_t t0 = esp_timer_get_time();
+    if (ms) vTaskDelay(pdMS_TO_TICKS(ms));
+    double sec = (double)(esp_timer_get_time() - t0) / 1e6;
+    if (sec < 1e-3) sec = 1e-3;                  /* ms=0: a set, not a measurement — no nan */
+    gfx_bench_totals(&b);
+    gfx_prep_stats(&pb);
+    orb_wasm_bench_us(&wtb, &wsb, &wob);
+    const uint32_t wbg_max = orb_wasm_bench_bg_max_us(false);
+    const uint32_t gb = orb_sched_bench_gif_frames();
+    /* The hold log: how many panel refreshes each presented frame stayed up, for every
+     * frame and between consecutive gear frames, against the refresh measured at init. */
+    const int64_t *ht; const uint8_t *htag; uint32_t hper = 0;
+    const uint32_t hn = display_bench_holds_stop(&ht, &htag, &hper);
+    uint32_t hold[13] = { 0 }, ghold[25] = { 0 };
+    double hsum = 0, hsq = 0;
+    int64_t glast = 0;
+    for (uint32_t i = 1; i < hn && hper; i++) {
+        const double dt = (double)(ht[i] - ht[i - 1]);
+        int k = (int)(dt / hper + 0.5);
+        hold[k < 0 ? 0 : (k > 12 ? 12 : k)]++;
+        hsum += dt; hsq += dt * dt;
+    }
+    for (uint32_t i = 0; i < hn && hper; i++) {
+        if (!(htag[i] & 1)) continue;
+        if (glast) { int k = (int)((double)(ht[i] - glast) / hper + 0.5); ghold[k < 0 ? 0 : (k > 24 ? 24 : k)]++; }
+        glast = ht[i];
+    }
+    const double hm = hn > 1 ? hsum / (hn - 1) : 0, hsd = hn > 2 ? sqrt(hsq / (hn - 1) - hm * hm) : 0;
+    orb_sched_jank_snapshot(&jb);
+    display_bench_snapshot(&fb, &tb, &mx);
+    display_bench_phases_us(&mb, &hb, &teb, &db);
+    display_bench_render_us_px(&rb, &rpb);
+
+    const uint64_t n = b.commits - a.commits;
+    const double per = n ? 1.0 / (double)n : 0.0;
+    static char body[2800];   /* the one httpd task; off its 8 kB stack */
+    int k = snprintf(body, sizeof body,
+        "{\"aa\":%d,\"apps_ms_per_s\":{\"tick\":%.1f,\"service\":%.1f,\"other\":%.1f,\"bg_max_ms\":%.1f},"
+        "\"gif_fps\":%.2f,\"gif_x\":%d,\"osc\":%d,\"shadow\":\"%s\",\"sweep\":%d,\"max_commit_us\":%u,"
+        "\"commit_ms_hist\":{\"lt10\":%llu,\"lt20\":%llu,\"lt40\":%llu,\"lt60\":%llu,\"lt90\":%llu,\"ge90\":%llu},"
+        "\"tick_gap_x_period\":{\"period_ms\":%u,\"le125\":%u,\"le150\":%u,\"le200\":%u,\"le300\":%u,\"gt300\":%u},"
+        "\"spans\":%d,\"spin\":%d,\"rate\":%d,\"freeze\":%d,\"glass\":%d,\"l4\":%s,\"sec\":%.2f,"
+        "\"commits\":%llu,\"commit_fps\":%.2f,\"flush_fps\":%.2f,"
+        "\"per_commit\":{\"restored_px\":%.0f,\"rot_iter_box_px\":%.0f,\"rot_iter_span_px\":%.0f,"
+        "\"escapes\":%llu,\"span_us\":%.0f,\"rest_us\":%.0f,\"paint_us\":%.0f,\"cmp_us\":%.0f,"
+        "\"hook_us\":%.0f,\"dma_us\":%.0f,\"te_us\":%.0f,\"render_us\":%.0f},\"roles\":{",
+        aa, (wtb - wta) / 1000.0 / sec, (wsb - wsa) / 1000.0 / sec, (wob - woa) / 1000.0 / sec, wbg_max / 1000.0,
+        (gb - ga) / sec, gifx, osc, nearest ? "nearest" : "baked", sweep, (unsigned)b.max_us,
+        (unsigned long long)(b.hist[0] - a.hist[0]), (unsigned long long)(b.hist[1] - a.hist[1]),
+        (unsigned long long)(b.hist[2] - a.hist[2]), (unsigned long long)(b.hist[3] - a.hist[3]),
+        (unsigned long long)(b.hist[4] - a.hist[4]), (unsigned long long)(b.hist[5] - a.hist[5]),
+        (unsigned)jb.period_ms, (unsigned)(jb.le125 - ja.le125), (unsigned)(jb.le150 - ja.le150),
+        (unsigned)(jb.le200 - ja.le200), (unsigned)(jb.le300 - ja.le300), (unsigned)(jb.gt300 - ja.gt300),
+        spans, spin, rate, freeze, noglass ? 0 : 1, orb_sched_l4_active() ? "true" : "false", sec,
+        (unsigned long long)n, n / sec, (fb - fa) / sec,
+        (b.restored_px - a.restored_px) * per, (b.iter_box_px - a.iter_box_px) * per,
+        (b.iter_span_px - a.iter_span_px) * per, (unsigned long long)(b.escapes - a.escapes),
+        (b.span_us - a.span_us) * per, (b.rest_us - a.rest_us) * per,
+        (b.paint_us - a.paint_us) * per, (b.cmp_us - a.cmp_us) * per,
+        (hb - ha) * per, (db - da) * per, (teb - tea) * per, (rb - ra) * per);
+    static const char *const rn[CLK_PAINT_ROLES] = { "hour", "minute", "second", "shadow_still",
+                                                      "cw", "glass", "comp", "aux" };
+    for (int i = 0; i < CLK_PAINT_ROLES && k > 0 && k < (int)sizeof body - 80; i++)
+        k += snprintf(body + k, sizeof body - k, "%s\"%s\":[%.0f,%.0f]", i ? "," : "", rn[i],
+                      (b.role_blend[i] - a.role_blend[i]) * per, (b.role_us[i] - a.role_us[i]) * per);
+    if (k > 0 && k < (int)sizeof body - 80) k += snprintf(body + k, sizeof body - k,
+        "},\"pace10\":%d,\"gif_every\":%d,\"refresh_us\":%u,\"presented\":%u,"
+        "\"interval_ms\":[%.2f,%.2f],\"hold\":[", pace10, gevery, (unsigned)hper, (unsigned)hn,
+        hm / 1000.0, hsd / 1000.0);
+    for (int i = 1; i <= 12 && k > 0 && k < (int)sizeof body - 16; i++)
+        k += snprintf(body + k, sizeof body - k, "%s%u", i > 1 ? "," : "", (unsigned)hold[i]);
+    if (k > 0 && k < (int)sizeof body - 16) k += snprintf(body + k, sizeof body - k, "],\"gear_hold\":[");
+    for (int i = 1; i <= 24 && k > 0 && k < (int)sizeof body - 16; i++)
+        k += snprintf(body + k, sizeof body - k, "%s%u", i > 1 ? "," : "", (unsigned)ghold[i]);
+    if (k > 0 && k < (int)sizeof body - 300) k += snprintf(body + k, sizeof body - k,
+        "],\"prep\":{\"mode\":%d,\"rows_ahead\":%llu,\"rows_sync\":%llu,\"swaps_ready\":%llu,"
+        "\"swaps_late\":%llu,\"rebuilds\":%llu,\"mismatch_px\":%llu,\"checked_px\":%llu,"
+        "\"live_px\":%llu,\"copy_px\":%llu", prep,
+        (unsigned long long)(pb.rows_ahead - pa.rows_ahead), (unsigned long long)(pb.rows_sync - pa.rows_sync),
+        (unsigned long long)(pb.swaps_ready - pa.swaps_ready), (unsigned long long)(pb.swaps_late - pa.swaps_late),
+        (unsigned long long)(pb.rebuilds - pa.rebuilds), (unsigned long long)(pb.mismatch_px - pa.mismatch_px),
+        (unsigned long long)(pb.checked_px - pa.checked_px), (unsigned long long)(pb.live_px - pa.live_px),
+        (unsigned long long)(pb.copy_px - pa.copy_px));
+    if (k > 0 && k < (int)sizeof body - 4) snprintf(body + k, sizeof body - k, "}}");
+    return httpd_resp_sendstr(req, body);
+}
+#endif /* CONFIG_ORB_DEBUG_HTTP */
+
 /* POST /api/v1/sd/rescan — the card-detect replacement. With no detect line wired,
  * this is the only way a card inserted after boot becomes visible without opening the
  * case or rebooting. */
@@ -7774,6 +8022,8 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/fb",         .method = HTTP_GET,  .handler = h_fb },
         { .uri = "/api/v1/log",        .method = HTTP_GET,  .handler = h_log },
         { .uri = "/api/v1/debug/panic", .method = HTTP_POST, .handler = h_debug_panic },
+        { .uri = "/api/v1/debug/fx",   .method = HTTP_GET,  .handler = h_debug_fx },
+        { .uri = "/api/v1/debug/dial", .method = HTTP_GET,  .handler = h_debug_dial },
 #endif
         /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
          * backing calls. Migration 1 deleted the flip and default doors: under the

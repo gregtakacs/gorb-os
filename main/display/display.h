@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "esp_lcd_types.h"
+#include "sdkconfig.h"   /* CONFIG_ORB_DEBUG_HTTP gates the fx bench seam */
 
 #ifdef __cplusplus
 extern "C" {
@@ -254,6 +255,45 @@ esp_err_t display_dma_return(void);
 bool    display_dma_lent(void);
 
 void display_bench_reset(void);
+
+#if CONFIG_ORB_DEBUG_HTTP
+/* ---- whole-frame push outside LVGL (the transition bench, main/display/orb_fx.c)
+ *
+ * The question the bench answers is what a shell transition costs when LVGL is
+ * not in the frame at all: a painter fills each TILE_ROWS slab of the page
+ * straight into the internal-DMA tile ring, and the slab goes out while the
+ * next one is composed. compose(y, rows, dst, ctx) must write `rows` full-width
+ * rows in WIRE order (byte-swapped RGB565, stride SCREEN_WIDTH) and nothing
+ * else. s_fb is NOT written: the glass and the mirror disagree until the caller
+ * pushes the mirror back (compose = copy out of display_fb_mirror()).
+ *
+ * LVGL task only, between flushes. Refused with ESP_ERR_INVALID_STATE while the
+ * ring is lent or unfunded. te waits one blanking edge before the first slab. */
+typedef void (*display_fx_compose_t)(int y, int rows, uint16_t *dst, void *ctx);
+typedef struct {
+    uint32_t te_us;        /* blanking wait before the first slab   */
+    uint32_t compose_us;   /* inside compose(), summed over slabs   */
+    uint32_t frame_us;     /* first slab start to last retire      */
+    int      tiles;        /* ring depth this frame ran on          */
+} display_fx_stats_t;
+esp_err_t display_fx_frame(display_fx_compose_t compose, void *ctx, bool te,
+                           display_fx_stats_t *st);
+
+/* ---- the grid bench (plan §49.7): paced presentation and the hold log ----
+ * pace10 > 0 presents each LVGL frame pace10/10 panel refreshes after the last (75
+ * alternates 7 and 8); 0 = the shipped next-edge present. tag ORs bits into the next
+ * presented frame's record (bit 0 = it carried a gear frame). holds_start clears and arms
+ * the log; holds_stop disarms it and lends its arrays (edge times in us, tags) and the
+ * measured refresh period. LVGL-task writers; read the arrays only after stop. */
+void     display_bench_pace(int pace10);
+void     display_bench_tag(uint8_t tag);
+void     display_bench_holds_start(void);
+uint32_t display_bench_holds_stop(const int64_t **t, const uint8_t **tag, uint32_t *period_us);
+uint32_t display_te_period_us(void);
+/* Work the present may run in the slack before its edge (pre-paint, plan §49.8): called
+ * with the instant it must return by; NULL detaches. */
+void     display_set_idle_hook(bool (*fn)(int64_t deadline_us));
+#endif
 
 /** LVGL passes completed: lvgl_task marks one after every lv_timer_handler()
  *  returns. A task that must not race a render in progress (the theme store,

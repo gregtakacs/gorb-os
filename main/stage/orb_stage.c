@@ -1229,6 +1229,35 @@ static void row_mark_box(uint16_t i, int32_t ang_10, int16_t ox, int16_t oy, lv_
 
 #define ROW_REDRAW_EPS_10 2
 
+#if CONFIG_ORB_DEBUG_HTTP
+/* The span bench (/api/v1/debug/dial, orb_gfx.h): mark a rotated row by its ink
+ * per screen row instead of its swept box. False = the caller marks the box. */
+static bool row_mark_spans(uint16_t i, int32_t ang_10, int16_t ox, int16_t oy)
+{
+    if (!gfx_bench_spans() || !orb_sched_l4_active()) return false;
+    if (i < CLK_ROW_MAX && clk_theme.drum_r[i]) return false;
+    clk_sprite_t p;
+    pose_spr(row_spr(i), ox, oy, &p);
+    gfx_paint_ctx_t pc;
+    if (!gfx_paint_ctx_init(&pc, &p, blob(), ang_10, 0)) return false;
+    pc.smooth = true;                 /* the wider pad: a mark may only over-cover */
+    return gfx_mark_spans(&pc);
+}
+
+/* The bench's forced sweep: the minute row and its shadow twin turn at this many
+ * degrees a second on top of the app's own pose. 0 = the app's pose alone. */
+static volatile int32_t s_bench_spin_dps;
+static volatile bool    s_bench_sweep;      /* the second hand sweeps between its steps */
+static volatile int32_t s_bench_osc_deg;    /* the hour row rocks +-this, a balance-wheel proxy */
+void stage_bench_spin(int32_t dps, bool sweep, int32_t osc_deg)
+{
+    s_bench_spin_dps = dps; s_bench_sweep = sweep; s_bench_osc_deg = osc_deg;
+}
+#define ROW_MARK_SPANS(i, a, ox, oy) row_mark_spans((i), (a), (ox), (oy))
+#else
+#define ROW_MARK_SPANS(i, a, ox, oy) false
+#endif
+
 /* ---- theme-text-plan §2.3: composing a label ------------------------------------------ */
 
 /* The fonts and every label's own columns, read from the bound section. */
@@ -1319,6 +1348,57 @@ static void rows_update(void)
      * stage's is everything below: the marks, the staged pose, the widget. */
     const int32_t *ang = s_g_ang;
     const int16_t *ox = s_g_ox, *oy = s_g_oy;
+#if CONFIG_ORB_DEBUG_HTTP
+    static int32_t s_spin_ang[CLK_ROW_MAX];
+    if (s_bench_spin_dps || s_bench_sweep || s_bench_osc_deg) {
+        memcpy(s_spin_ang, s_g_ang, sizeof s_spin_ang);
+        /* The escapement proxy: the hour row and its shadow rock +-osc degrees, one
+         * swing per 400 ms (a 2.5 Hz balance), so every tick moves an escapement-sized
+         * sprite (40 x 181, shadow 58 x 199) by a different amount. */
+        int hr = -1;
+        if (s_bench_osc_deg)
+            for (uint16_t j = 0; j < n; j++)
+                if (g->rows[j].src == CLK_SRC_HOUR12 || g->rows[j].src == CLK_SRC_HOUR24) { hr = j; break; }
+        if (hr >= 0 && s_g_ang[hr] != ROW_HIDDEN) {
+            const double ph = (double)(esp_timer_get_time() % 400000) / 400000.0 * 2.0 * M_PI;
+            const int32_t add = (int32_t)(sin(ph) * s_bench_osc_deg * 10.0);
+            const int32_t base = s_g_ang[hr];
+            for (uint16_t j = 0; j < n; j++)
+                if (j == hr || ((g->rows[j].flags & CLK_FLAG_AUX_SHADOW) && s_g_ang[j] == base))
+                    s_spin_ang[j] = ((base + add) % 3600 + 3600) % 3600;
+        }
+        /* A true sweep of the seconds row: the app steps it on the wall second, so
+         * the fraction of that second times one step's turn lands each frame where a
+         * sweeping hand would be, and meets the next step exactly. */
+        int sr = -1;
+        if (s_bench_sweep)
+            for (uint16_t j = 0; j < n; j++) if (g->rows[j].src == CLK_SRC_SECOND) { sr = j; break; }
+        /* A row that already sweeps on its own cadence carries the fraction in its pose; adding
+         * it again doubles the turn within each second and snaps the hand back a whole step on
+         * the wrap — the retrograde the owner saw on Skeleton 5/20 (plan §49.15). */
+        if (sr >= 0 && (g->rows[sr].cadence == CLK_CAD_SWEEP || g->rows[sr].cadence == CLK_CAD_STOP_TO_GO)) sr = -1;
+        if (sr >= 0 && s_g_ang[sr] != ROW_HIDDEN && g->rows[sr].value_max > g->rows[sr].value_min) {
+            const clk_row_t *R = &g->rows[sr];
+            const double step = (double)R->span / (double)(R->value_max - R->value_min);
+            const int32_t base = s_g_ang[sr];
+            const int32_t add = (int32_t)(s_now_frac * step);
+            for (uint16_t j = 0; j < n; j++)
+                if (j == sr || ((g->rows[j].flags & CLK_FLAG_AUX_SHADOW) && s_g_ang[j] == base))
+                    s_spin_ang[j] = ((base + add) % 3600 + 3600) % 3600;
+        }
+        int m = -1;
+        for (uint16_t j = 0; j < n; j++) if (g->rows[j].src == CLK_SRC_MINUTE) { m = j; break; }
+        if (s_bench_spin_dps && m >= 0 && s_g_ang[m] != ROW_HIDDEN) {
+            const int64_t ms = esp_timer_get_time() / 1000;
+            const int32_t add = (int32_t)((ms * s_bench_spin_dps / 100) % 3600);
+            const int32_t base = s_g_ang[m];
+            for (uint16_t j = 0; j < n; j++)
+                if (j == m || ((g->rows[j].flags & CLK_FLAG_AUX_SHADOW) && s_g_ang[j] == base))
+                    s_spin_ang[j] = (base + add) % 3600;
+        }
+        ang = s_spin_ang;
+    }
+#endif
 
     lv_display_t *disp = lv_obj_get_display(s_scr);
     for (uint16_t i = 0; i < n; i++) {
@@ -1360,8 +1440,10 @@ static void rows_update(void)
                            !ox[i] && !oy[i] && !st->ox && !st->oy &&
                            tourbillon_ink_mark((int)s_tourb_shown, prev, a);
         if (!inked) {
-            if (prev != ROW_HIDDEN) { row_mark_box(i, prev, st->ox, st->oy, &u); have = true; }
-            if (a != ROW_HIDDEN) {
+            if (prev != ROW_HIDDEN && !ROW_MARK_SPANS(i, prev, st->ox, st->oy)) {
+                row_mark_box(i, prev, st->ox, st->oy, &u); have = true;
+            }
+            if (a != ROW_HIDDEN && !ROW_MARK_SPANS(i, a, ox[i], oy[i])) {
                 lv_area_t nn;
                 row_mark_box(i, a, ox[i], oy[i], &nn);
                 if (have) gfx_area_union(&u, &nn); else { u = nn; have = true; }

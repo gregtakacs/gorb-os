@@ -15,6 +15,9 @@
 #include <stdint.h>
 #include <time.h>
 #include "esp_err.h"
+#if __has_include("sdkconfig.h")
+#include "sdkconfig.h"   /* CONFIG_ORB_DEBUG_HTTP: the span bench */
+#endif
 
 /* The broker's handle, forward-typed the way orb_svc.h itself carries it: the
  * clock claims its layer rows through the broker, and the registry's header
@@ -40,6 +43,14 @@ void stage_run(bool on);
 
 /** Query current tick state. */
 bool stage_running(void);
+
+#if CONFIG_ORB_DEBUG_HTTP
+/** The span bench's forced motion: the minute row and its shadow turn `dps`
+ *  degrees a second over the app's pose (0 = off), and `sweep` makes the seconds
+ *  row and its shadow sweep between the app's steps, and `osc_deg` rocks the hour
+ *  row and its shadow +-that many degrees at 2.5 Hz (an escapement-sized proxy). */
+void stage_bench_spin(int32_t dps, bool sweep, int32_t osc_deg);
+#endif
 
 #ifdef __cplusplus
 }

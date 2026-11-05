@@ -112,6 +112,7 @@ void orb_wasm_tick(orb_app_t *app, uint32_t now_ms);
 /* Running wall-time totals inside the guest, in us: orb_tick, orb_service, and every
  * other entry. Any out-param may be NULL; read as deltas. */
 void orb_wasm_bench_us(uint64_t *tick, uint64_t *service, uint64_t *other);
+uint32_t orb_wasm_bench_bg_max_us(bool reset);   /* longest non-tick guest call since the last reset */
 /* The three heaviest app.entry pairs since the last call ("flights.tick 69ms/16, ..."). */
 void orb_wasm_bench_top(char *out, size_t cap);
 

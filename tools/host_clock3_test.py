@@ -23,6 +23,7 @@ same table: two ends of one mapping that refuse differently are two mappings.
     python3 tools/host_clock3_test.py              # golden, batteries, refusals
     python3 tools/host_clock3_test.py --mutations   # and the C mutants
 """
+import atexit
 import os
 import re
 import shutil
@@ -304,9 +305,17 @@ int main(int argc, char **argv)
 """
 
 
+def scratch(prefix):
+    """A temp dir removed at exit: each run writes ~170 MB of bundles under clock3f., and
+    leaving them behind filled the 32 GB /tmp tmpfs (339 runs, 2026-11-05)."""
+    d = tempfile.mkdtemp(prefix=prefix)
+    atexit.register(shutil.rmtree, d, True)
+    return d
+
+
 def build(mut=None, exe=None):
     """Compile the shipped projection (or one mutated copy) into the harness."""
-    d = tempfile.mkdtemp(prefix="clock3.")
+    d = scratch("clock3.")
     src = READER_C if mut is None else None
     if mut is not None:
         text = open(READER_C).read()
@@ -512,7 +521,7 @@ def geom_blob(art):
 
 def main():
     exe = build()
-    d = tempfile.mkdtemp(prefix="clock3f.")
+    d = scratch("clock3f.")
     pair = pair_bundle(os.path.join(d, "pair.orbtheme"))
     golden = [("pair-forged bundle", pair)]
     if os.path.exists(REBAKED):
@@ -1343,11 +1352,12 @@ def c4_mk_wrap_on_hand(els, sc, art, spr):
 
 
 def c4_mk_delta_wide(els, sc, art, spr):
-    """A 20-frame delta bank: inside the gif table's own cap, past the dial's
-    invalid-area table — the materialization would drop rects and repaint stale
-    texels, so the loader refuses the bank to a wider dial."""
+    """A 21-frame delta bank: inside the gif table's own cap, past the dial's
+    invalid-area table (CLK_BG_MAX, 20: one second of the fastest gears) — the
+    materialization would drop rects and repaint stale texels, so the loader
+    refuses the bank to a wider dial."""
     c4_build_delta_bank(els, sc, art, spr,
-                        [(4, 4, 8, 8)] * 19 + [(8, 8, 8, 8)], 50)
+                        [(4, 4, 8, 8)] * 20 + [(8, 8, 8, 8)], 50)
 
 
 def c4_mk_delta_still(els, sc, art, spr):
@@ -1488,7 +1498,7 @@ def c4_battery(exe, base):
             ("a closing rect overhanging its plate", c4_mk_wrap_outside,
              "must sit inside the plate"),
             ("a delta loop wider than the dial's rect table", c4_mk_delta_wide,
-             "invalid-area table holds 16"),
+             "invalid-area table holds 20"),
             ("the closing bit on a moving row", c4_mk_wrap_on_hand, "closing-delta bit")):
         rc, out, err = run(exe, "--refuse", forge(base, c4(mut), raw=True)[0])
         ck(rc == 0 and needle in out, "%s was not refused in its own words (%r): %r"

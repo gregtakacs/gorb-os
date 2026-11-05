@@ -28,6 +28,8 @@ idf_component_register(
         # C2 (theme-delta plan §6.2): the boot/install overlay — the one painter
         # that runs with LVGL unarmed, on esp_lcd_panel_draw_bitmap alone.
         "display/orb_boot_overlay.c"
+        # The shell-transition bench (/api/v1/debug/fx): effects painted outside LVGL.
+        "display/orb_fx.c"
         "gfx/orb_gfx.c"
         "gfx/orb_sched.c"
         # D43 §5.4: LVGL's RGB565 image blends with mix_16_16's rounding (the

@@ -749,6 +749,7 @@
     modern:    { tick: 'wrist', pattern: 'none', slots: { chime_hour: 'glass_dingdong' } },
     sector:    { tick: 'woodblock', pattern: 'none', slots: { chime_q1: 'marimba_q2', chime_half: 'marimba_q2', chime_q3: 'marimba_q2', chime_hour: 'marimba_hour' } },
     diver:     { tick: 'wrist', pattern: 'ships_bells', slots: { strike_hour: 'ships_bell_single' } },
+    wave:      { tick: 'wrist', pattern: 'ships_bells', slots: { strike_hour: 'ships_bell_single' } },
     orbital:   { tick: 'tourbillon', pattern: 'none', slots: { chime_hour: 'orbit_arp' } },
     aviator:   { tick: 'wrist', pattern: 'none', slots: { chime_half: 'cabin_hilo', chime_hour: 'cabin_3tone' } },
     opentour:  { tick: 'tourbillon', pattern: 'none', slots: { chime_half: 'pit_radio_blip', chime_hour: 'race_start' } },

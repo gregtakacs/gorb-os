@@ -3718,6 +3718,7 @@ class Component extends DCLogic {
         else R('Width', 'w', 0, 120, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);   // an arc's width is its sweep
         R('Height', 'h', 0, 80, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);
         Sx('Frame', 'style', opt(E.COMP_STYLES.cutout));
+        if (!sel.shape || sel.shape === 'window' || sel.shape === 'round') Cx('Magnifier', 'lens', opt(E.LENSES), 'none');
         selFields.push(Sl('Join with', sel.join || '', [{ v: '', label: 'Nothing \u00b7 its own frame' }].concat(mates.map((c) => ({ v: c.id, label: '#' + num(c.id) + ' on ' + compTitle(D.comps.find((q) => q.id === c.host) || {}) }))), (v) => this.setComp(sel.id, { join: v || undefined })));
         if (sel.join) Cx('Centre bar', 'bar', [{ v: true, label: 'Bar between' }, { v: false, label: 'No bar' }], true);
         }
@@ -4089,9 +4090,11 @@ class Component extends DCLogic {
       if (E.HAS_NUMS.includes(pr) && D.numerals !== 'none') fields.push(Ch('Orientation', D.numOrient || (pr === 'roman' ? 'radial' : 'upright'), [{ v: 'upright', label: 'Bottom aligned' }, { v: 'radial', label: 'Circular' }], ud('numOrient')));
       fields.push(Sl('Typeface', D.font || E.RING_FONT(pr), opt(E.TYPEFACES), ud('font')));
       if (pr !== 'none' && D.numerals !== 'none') {
-        if (pr !== 'baton') fields.push(Co(pr === 'diver' ? 'Plot colour' : 'Numeral colour', D.numColor, ud('numColor'), pr === 'diver' ? 'Lume' : 'Auto · ' + (fc && fc.dialEn && fc.dialEn.dark ? 'light' : 'dark')));
+        const plots = pr === 'diver' || pr === 'framed';
+        if (pr !== 'baton') fields.push(Co(plots ? 'Plot colour' : 'Numeral colour', D.numColor, ud('numColor'), plots ? 'Lume' : 'Auto · ' + (fc && fc.dialEn && fc.dialEn.dark ? 'light' : 'dark')));
+        if (plots) fields.push(Co('Plot rim', D.plotRim, ud('plotRim'), 'Silver'));
         const ns = D.numScale == null ? 1 : +D.numScale;
-        fields.push(Rg(pr === 'diver' ? 'Plot size' : pr === 'baton' || pr === 'minimal' ? 'Baton size' : 'Numeral size', ns, 0.5, 2, 0.05, ud('numScale'), ns.toFixed(2) + '×'));
+        fields.push(Rg(plots ? 'Plot size' : pr === 'baton' || pr === 'minimal' ? 'Baton size' : 'Numeral size', ns, 0.5, 2, 0.05, ud('numScale'), ns.toFixed(2) + '×'));
         if (pr !== 'baton') fields.push(Sl('Finish', D.numStyle || 'print', opt(E.COMP_STYLES.flare), ud('numStyle')));
         const sz = (k) => (D[k] == null ? 1 : +D[k]);
         fields.push(H('The 12 · and 3, 6, 9'));
@@ -4345,6 +4348,8 @@ class Component extends DCLogic {
     }
     if (ready && s.tab === 'case') {
       fields.push(H('Case metal'), Ch('Metal', s.caseMetal, ['auto', 'brass', 'copper', 'gunmetal', 'steel', 'rose'].map((id) => ({ v: id, label: id === 'auto' ? 'Match movement' : cap(id) })), (v) => this.setState({ caseMetal: v })));
+      // every bezel and the enamel insert take an insert colour; black unless the design says
+      if (E.BEZEL[s.caseStyle] || s.caseStyle === 'insert') { const D2 = this.design() || {}; fields.push(H('Bezel insert'), Co('Insert colour', D2.bezelInk, (v) => this.upd((d) => { d.bezelInk = v; }), 'Black')); }
       /* The opening is only authorable under "no case": every other style owns its own rim
        * geometry, and a slider that changed nothing (or fought the bezel) would be a lie.
        * Under "none" it is a measurement the author declares about the hardware, and it

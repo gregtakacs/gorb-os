@@ -140,13 +140,13 @@
     return idx.map((i) => ({ v: +perimRotAt(spec, i, between).toFixed(2), label: spec.lab(i) + ' at 12' }));
   }
 
-  const SEC_STYLES = { classic: 'Classic counterweight', lollipop: 'Lollipop', ring: 'Open ring', arrowtip: 'Arrow tip', paddle: 'Lume paddle', bolt: 'Lightning', crescent: 'Crescent tail', star: 'Star tail', needle: 'Long needle', station: 'Station · disc at tip', flieger: 'Flieger · three lume discs' };
-  const HAND_STYLES = { station: 'Station bar', aviator: 'Aviator sword', cathedral: 'Cathedral', poire: 'Poire', fleur: 'Fleur-de-lis', serpentine: 'Serpentine', louis: 'Louis XV', breguet: 'Breguet', spade: 'Spade', leaf: 'Leaf', baton: 'Baton', sword: 'Sword', dauphine: 'Dauphine', pencil: 'Pencil', skeleton: 'Skeleton', arrow: 'Arrow', broad: 'Broad arrow', crescent: 'Crescent tip', diamond: 'Diamond tip', sunburst: 'Sunburst tip', pierced: 'Pierced ring', pennant: 'Pennant' };
-  const HAND_FINISHES = { blued: 'Blued', gilt: 'Gilt', black: 'Black', steel: 'Steel', white: 'White', orange: 'Orange', red: 'Red', magenta: 'Magenta', yellow: 'Yellow', lime: 'Lime', mint: 'Mint', cyan: 'Cyan', violet: 'Violet' };
+  const SEC_STYLES = { classic: 'Classic counterweight', lollipop: 'Lollipop', ring: 'Open ring', arrowtip: 'Arrow tip', paddle: 'Lume paddle', bolt: 'Lightning', crescent: 'Crescent tail', star: 'Star tail', needle: 'Long needle', station: 'Station · disc at tip', flieger: 'Flieger · three lume discs', disc: 'Lume disc · paddle tail' };
+  const HAND_STYLES = { station: 'Station bar', aviator: 'Aviator sword', cathedral: 'Cathedral', poire: 'Poire', fleur: 'Fleur-de-lis', serpentine: 'Serpentine', louis: 'Louis XV', breguet: 'Breguet', spade: 'Spade', leaf: 'Leaf', baton: 'Baton', sword: 'Sword', dauphine: 'Dauphine', pencil: 'Pencil', skeleton: 'Skeleton', framed: 'Framed lume', rails: 'Twin rail', arrow: 'Arrow', broad: 'Broad arrow', crescent: 'Crescent tip', diamond: 'Diamond tip', sunburst: 'Sunburst tip', pierced: 'Pierced ring', pennant: 'Pennant' };
+  const HAND_FINISHES = { blued: 'Blued', gilt: 'Gilt', black: 'Black', steel: 'Steel', white: 'White', orange: 'Orange', red: 'Red', magenta: 'Magenta', yellow: 'Yellow', lime: 'Lime', mint: 'Mint', cyan: 'Cyan', violet: 'Violet', royal: 'Royal blue' };
   const DENSITY = { all: () => true, even: (h) => h % 2 === 0, quarters: (h) => h % 3 === 0, twelve: (h) => h === 0, none: () => false };
   const NUMERALS = { all: 'All twelve', even: 'Even hours', quarters: 'Quarters', twelve: '12 only', none: 'None' };
   const OPENWORK = { none: 'Solid dial', x: 'X bridges', xarch: 'X bridges + arch', cross: 'Cross', star: 'Six spokes', ring: 'Chapter ring only' };
-  const SURFACES = { enamel: 'Enamel', guilloche: 'Sunburst', azure: 'Azurage', matte: 'Grained', metal: 'Silvered metal', carbon: 'Carbon · woven', forged: 'Carbon · forged' };
+  const SURFACES = { enamel: 'Enamel', guilloche: 'Sunburst', azure: 'Azurage', matte: 'Grained', metal: 'Silvered metal', carbon: 'Carbon · woven', forged: 'Carbon · forged', wave: 'Waves' };
   const DIAL_COLORS = {
     cream: ['#efe5cb', '#c9b388'], porcelain: ['#f8f4ea', '#e0d9c8'], ivory: ['#f3ead6', '#d8c9a6'], white: ['#fbfaf7', '#e2e0da'], salmon: ['#efc2a4', '#c98b6a'], sky: ['#c9dcea', '#8eaac2'],
     slate: ['#5a636d', '#2b3036'], navy: ['#2a3f66', '#0f1a2e'], forest: ['#2f5243', '#122219'], burgundy: ['#6b2430', '#2c0b11'], charcoal: ['#2c2823', '#0f0d0a'], black: ['#26241f', '#0c0b09'],
@@ -167,7 +167,7 @@
   }
   const RING_FONT = (print) => (['roman', 'arabic', 'regulator'].includes(print) ? 'garamond' : 'plex');
   const HAS_NUMS = ['roman', 'arabic', 'regulator', 'sans', 'railway', 'sector', 'pilot'];
-  const BEZEL = { mariner: 1, tachy: 1 }, BEZEL_IN = 193.5;
+  const BEZEL = { mariner: 1, tachy: 1, scallop: 1 }, BEZEL_IN = 193.5;
   const ROUND_MOON = { sphere: 1, graphic: 1, neon: 1 };
   const PLATES = { train: 'Movement default', classic: 'Warm gilt', anthracite: 'Anthracite graining', stripes: 'Geneva stripes', sandblast: 'Sandblasted', carbon: 'Carbon · woven', forged: 'Carbon · forged' };
   const tickTurn = (n) => (!n ? TURN.second : (t) => Math.floor((t.getSeconds() + t.getMilliseconds() / 1000) * n) / n / 60);
@@ -563,6 +563,8 @@
       for (let i = 0; i < n2; i++) { const a = R() * TAU, d = Math.sqrt(R()) * r, up = R() < 0.5;
         if (mode === 'screen' && !up) continue; if (mode === 'multiply' && up) continue;
         ctx.fillStyle = ink(R() * (up ? 0.14 : 0.18) * T); ctx.fillRect(x + Math.cos(a) * d, y + Math.sin(a) * d, 1, 1); }
+    } else if (style === 'wave') {
+      waveGrooves(ctx, x, y, r, (lw, a) => { ctx.lineWidth = lw; ctx.strokeStyle = ink(a * T); }, mode === 'screen' ? 0 : 0.5, mode === 'multiply' ? 0 : 0.3);
     } else if (style === 'carbon' || style === 'forged') {
       /* The two carbon finishes build their look from a greyscale palette, so there is no
        * light/dark pair to copy -- the value field carbon() computes IS the mask. Same
@@ -885,6 +887,44 @@
     gunmetal: { hi: '#d4d7db', mid: '#7f858c', lo: '#2c3034' },
     black: { hi: '#6a6a68', mid: '#232120', lo: '#080706' },
   };
+  /* A date magnifier on the crystal over a cutout. The wheel turns under its window on the
+   * orb, so nothing can resample the pixels below: the figures are cut larger instead (mag)
+   * and the window kept to one figure, and the glass is drawn on the crystal plane above
+   * the hands, where a cyclops sits. */
+  const LENSES = { none: 'None', cyclops: 'Cyclops · 2.5× style', bubble: 'Bubble' };
+  const LENS_MAG = { cyclops: 1.5, bubble: 1.35 };
+  function drawLens(ctx, hole) {
+    const b = holeBox(hole), cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2, la = LIGHT.outer, lx = Math.cos(la), ly = Math.sin(la);
+    ctx.save(); ctx.translate(cx, cy);
+    const path = hole.lens === 'bubble'
+      ? (() => { const r = Math.max(b[2] - b[0], b[3] - b[1]) * 0.75 + 4; return { r, f: (x) => { x.beginPath(); x.arc(0, 0, r, 0, TAU); } }; })()
+      : (() => { const w = (b[2] - b[0]) * 1.3 + 8, h = (b[3] - b[1]) * 1.3 + 8, rr = Math.min(w, h) * 0.3, r = Math.max(w, h) / 2;
+        return { r, f: (x) => { x.beginPath(); x.roundRect(-w / 2, -h / 2, w, h, rr); } }; })();
+    const r = path.r;
+    // the lens's shadow on the crystal's underside, away from the light
+    ctx.save(); ctx.translate(-lx * 2, -ly * 2); path.f(ctx); ctx.strokeStyle = 'rgba(0,0,0,.28)'; ctx.lineWidth = 2.4; ctx.stroke(); ctx.restore();
+    // the body: clear in the middle, darkening into the refracting edge
+    path.f(ctx); ctx.save(); ctx.clip();
+    let g = ctx.createRadialGradient(0, 0, r * 0.35, 0, 0, r * 1.05);
+    g.addColorStop(0, 'rgba(255,255,255,0.04)'); g.addColorStop(0.62, 'rgba(210,225,240,0.08)'); g.addColorStop(0.86, 'rgba(10,20,30,0.42)'); g.addColorStop(1, 'rgba(5,10,16,0.7)');
+    ctx.fillStyle = g; ctx.fillRect(-r * 2, -r * 2, r * 4, r * 4);
+    // the refracting band just inside the edge, where the dial below is bent out of sight
+    ctx.save(); path.f(ctx); ctx.lineWidth = Math.max(3, r * 0.16); ctx.strokeStyle = 'rgba(8,14,22,0.45)'; ctx.stroke(); ctx.restore();
+    // the long specular toward the light, and the caustic thrown to the far side
+    g = ctx.createRadialGradient(lx * r * 0.5, ly * r * 0.5, 0, lx * r * 0.5, ly * r * 0.5, r * 0.62);
+    g.addColorStop(0, 'rgba(255,255,255,0.7)'); g.addColorStop(0.3, 'rgba(255,255,255,0.22)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(-r * 2, -r * 2, r * 4, r * 4);
+    g = ctx.createRadialGradient(-lx * r * 0.62, -ly * r * 0.62, 0, -lx * r * 0.62, -ly * r * 0.62, r * 0.4);
+    g.addColorStop(0, 'rgba(255,250,235,0.3)'); g.addColorStop(1, 'rgba(255,250,235,0)');
+    ctx.fillStyle = g; ctx.fillRect(-r * 2, -r * 2, r * 4, r * 4);
+    ctx.restore();
+    // the rim: a bright line where the light catches it, dark where it turns away
+    path.f(ctx);
+    g = ctx.createLinearGradient(lx * r, ly * r, -lx * r, -ly * r);
+    g.addColorStop(0, 'rgba(255,255,255,0.85)'); g.addColorStop(0.5, 'rgba(255,255,255,0.18)'); g.addColorStop(1, 'rgba(0,0,0,0.45)');
+    ctx.strokeStyle = g; ctx.lineWidth = 1.6; ctx.stroke();
+    ctx.restore();
+  }
   const SUB_DISPLAYS = { classic: 'Classic track', railway: 'Railway', dots: 'Dots', minimal: 'Ticks only', bold: 'Bold numerals', numerals: 'Numerals only', sector: 'Sector' };
   const SCALES = { seconds: 'Seconds', date: 'Date 1–31', day: 'Day of week', month: 'Month', hours: 'Hours', none: 'No scale' };
   // D34: the drives a subdial hand can take at bake. `plates` is §31's window row
@@ -912,8 +952,8 @@
     const parts = out.split(/(\u0000[^\u0001]*\u0001)/);
     return parts.map((p) => (p[0] === '\u0000' ? p.slice(1, -1) : cs === 'lower' ? p.toLowerCase() : cs === 'asis' ? p : p.toUpperCase())).join('');
   }
-  const PRINTS = { roman: 'Roman', arabic: 'Breguet arabic', regulator: 'Regulator minutes', baton: 'Applied batons', minimal: 'Minimal batons', sans: 'Modern sans', railway: 'Railway', sector: 'Sector', diver: 'Lume plots', station: 'Station bars', pilot: 'Pilot · triangle & dots', none: 'Blank' };
-  const REACH = { roman: 205, arabic: 200, regulator: 206, baton: 200, minimal: 205, sans: 205, railway: 202, sector: 205, diver: 200, station: 214, pilot: 204, none: 205 };
+  const PRINTS = { roman: 'Roman', arabic: 'Breguet arabic', regulator: 'Regulator minutes', baton: 'Applied batons', minimal: 'Minimal batons', sans: 'Modern sans', railway: 'Railway', sector: 'Sector', diver: 'Lume plots', station: 'Station bars', pilot: 'Pilot · triangle & dots', framed: 'Bracket track · framed plots', none: 'Blank' };
+  const REACH = { roman: 205, arabic: 200, regulator: 206, baton: 200, minimal: 205, sans: 205, railway: 202, sector: 205, diver: 200, station: 214, pilot: 204, framed: 204, none: 205 };
   const SIZE_RANGE = { opening: [12, 200, 1], subdial: [26, 110, 0.5], window: [0.6, 1.8, 0.05], moon: [14, 110, 1], flare: [4, 120, 0.5], wheel: [14, 230, 0.5] };
   const WIN_SIZE = { date: [30, 22], day: [52, 22], month: [52, 22], custom: [72, 22] };
   // Presets are just starting designs. angle: degrees clockwise from 12 · dist: px from the host's centre · rot: degrees.
@@ -965,6 +1005,15 @@
         { id: 'c1', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 170, form: 'ring', inner: 130, trad: 150, read: 90, shows: 'date', fpx: 18, wbg: '#1b1916', wink: '#ecdfbf' },
         { id: 'c1k', type: 'cutout', host: 'c1', at: 90, style: 'plain' },
         { id: 'c2', type: 'opening', host: 'dial', angle: 0, dist: 0, rot: 0, size: 26, shape: 'slot', style: 'bevel', show: 'balance', hour: 12 },
+        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'second' },
+      ] } },
+    wave: { name: 'Wave', blurb: 'Navy wave-groove dial · bracket track · blue-framed lume plots · date at 3', hands: 'rails', handFinish: 'royal', caseStyle: 'scallop', caseMetal: 'steel', design: {
+      bezelInk: '#1c3a63', print: 'framed', numerals: 'all', font: 'grotesk', numColor: '#e4eaec', plotRim: '#1f45e0', surface: 'wave', color: 'navy', aging: 0, stains: 0, dust: 0.15, handLume: '#e4eaec', secStyle: 'disc', comps: [
+        { id: 'c1', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 186, form: 'ring', inner: 146, trad: 166, read: 90, shows: 'date', fpx: 18, wbg: '#f2f0ea', wink: '#16140f' },
+        { id: 'c1k', type: 'cutout', host: 'c1', at: 90, style: 'frame', frameColor: 'rhodium' },
+        { id: 'c2', type: 'flare', host: 'dial', angle: 180, dist: 88, rot: 0, size: 6.5, style: 'print', icon: 'text', text: 'AUTOMATIC', font: 'grotesk', weight: 'bold', spacing: 0.12, color: '#ecebe6' },
         { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
         { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
         { id: 'h3', type: 'hand', host: 'dial', shows: 'second' },
@@ -1282,7 +1331,9 @@
       const reach = across * (0.62 * len0 + 0.1) + Math.sqrt(Math.max(0, 1 - across * across)) * 0.8;
       // a ring's own figures fit across its band as well as round it
       const fsFit = Math.min(r * 0.3, form === 'barrel' ? r * 0.9 : (TAU * r0) / spec.n / (0.62 * len0 + 0.35), form === 'ring' ? Math.max(1, r - ri - 4) / reach : Infinity);
-      const fs = legible(c.fpx != null ? +c.fpx : fsFit);   // the author's px, or the largest that fits, never below the floor
+      // under a magnifier the figures are cut larger, as the lens would show them
+      const mag = Math.max(1, ...list.filter((q) => q.type === 'cutout' && q.host === c.id && LENS_MAG[q.lens]).map((q) => LENS_MAG[q.lens]));
+      const fs = legible((c.fpx != null ? +c.fpx : fsFit) * mag);   // the author's px, or the largest that fits, never below the floor
       const lr = form === 'barrel' ? 0 : Math.max(ri + 1, Math.min(r - 1, c.trad != null ? +c.trad : form === 'ring' ? (r + ri) / 2 : r - fs * 0.85));
       const longest = Math.max(1, ...Array.from({ length: Math.min(spec.n, 60) }, (_, i) => String(spec.lab(i)).length));
       wheels.push({ id: c.id, x: g.x, y: g.y, r, ri, form, host: onSub || 'dial', spec, fs, lr, longest,
@@ -1321,6 +1372,8 @@
       let cw = Math.max(6, +c.w || cutW(w)), ch = Math.max(6, +c.h || cutH(w)); const style = c.style || 'frame';
       // on a ring, a cutout the author has not sized stays inside the band across its radius
       if (w.form === 'ring') { const lim = Math.max(8, w.r - w.ri - 4); if (Math.abs(Math.sin(at)) > 0.5) { if (!+c.w) cw = Math.min(cw, lim); } else if (!+c.h) ch = Math.min(ch, lim); }
+      // a magnified window shows one figure: no wider round the wheel than a figure's pitch
+      if (LENS_MAG[c.lens] && w.form !== 'barrel' && !w.spec.moon) { const pitch = Math.max(8, (TAU * w.lr) / w.spec.n - 2); if (Math.abs(Math.sin(at)) > 0.5) { if (!+c.h) ch = Math.min(ch, pitch); } else if (!+c.w) cw = Math.min(cw, pitch); }
       // a moon cutout is the moonphase's aperture: a half circle over the wheel's own centre,
       // opening toward `at`, its two humps hiding the moon that is not in season
       // (its aperture's width is the author's, or the disc's own diameter)
@@ -1359,6 +1412,7 @@
       // the stage's eye with the wheel switched off (viewBare, never in a saved design): the hole
       // stays open onto what lies under it, without the face's shadow falling into it
       if (c.viewBare) hole.bare = true;
+      if (LENS_MAG[c.lens]) hole.lens = c.lens;
       // a cutout on a dial-hosted wheel is sealed like a dial window: the value is composited, no hole ships
       if (w.host === 'dial') hole.seal = true;
       (w.host === 'dial' ? dialHoles : subHoles[w.host]).push(hole);
@@ -1638,6 +1692,29 @@
         if (!NX) { X.lineWidth = 1.4 / hs; X.strokeStyle = 'rgba(190,190,190,.9)'; X.stroke(); }
         X.restore();
       }
+    } else if (P_ === 'framed') {
+      // a bracket track: each five minutes a frame holding its four minutes, the hour a bar in
+      // the gap between two frames; inside it lume plots framed in the rim colour -- a pair of
+      // bars at 12, a bar at 3, 6 and 9, a disc at the other hours
+      const fr = (a0, a1) => { const m = P(C, C, 213, (a0 + a1) / 2); if (blocked(m[0], m[1], holes, 2)) return; ctx.beginPath(); ctx.arc(C, C, 213, a0, a1); ctx.stroke(); tick(a0, 205, 213, 1.9); tick(a1, 205, 213, 1.9); };
+      for (let h = 0; h < 12; h++) {
+        ctx.lineWidth = 1.9; fr(A(h * 5 + 0.85, 60), A(h * 5 + 4.15, 60));
+        for (let m = 1; m < 5; m++) tick(A(h * 5 + m, 60), 208.5, 213, 1.1);
+        tick(A(h * 5, 60), 204, 217, 2.8);
+      }
+      const rim = okc(D.plotRim) ? D.plotRim : 'rgba(190,190,190,.9)';
+      for (let h = 0; h < 12; h++) {
+        if (!show(h)) continue;
+        const hs = hS(h), a = A(h, 12), q = P(C, C, 192 - 20 * hs, a); if (blocked(q[0], q[1], holes, 4 * hs)) continue;
+        X.save(); X.translate(q[0], q[1]); X.rotate(a + Math.PI / 2); X.scale(hs, hs); X.globalAlpha = 1; X.beginPath();
+        if (h === 0) { X.rect(-12, -17, 9.5, 34); X.rect(2.5, -17, 9.5, 34); }
+        else if (h % 3 === 0) X.rect(-6.5, -17, 13, 34);
+        else { X.moveTo(13.5, 0); X.arc(0, 0, 13.5, 0, TAU); }
+        if (!NX) { X.shadowColor = 'rgba(0,0,0,.6)'; const sk = devS(X); X.shadowBlur = 2 * sk; X.shadowOffsetY = 1.2 * sk; }
+        X.fillStyle = hC(h, okc(D.numColor) ? D.numColor : '#e4eaec'); X.fill(); X.shadowColor = 'transparent';
+        if (!NX) { X.lineWidth = 3.2 / hs; X.lineJoin = 'round'; X.strokeStyle = rim; X.stroke(); }
+        X.restore();
+      }
     } else if (P_ === 'station') {
       for (let i = 0; i < 60; i++) {
         const hr = i % 5 === 0, h = i / 5, big = hr && show(h), hs = big ? hS(h) : 1;
@@ -1907,6 +1984,18 @@
     ctx.fillStyle = g; ctx.fillRect(x - r, y - r, 2 * r, 2 * r);
     ctx.restore();
   }
+  /* The wave dial's grooves: rows of one gentle swell across the face, their phase drifting
+   * row by row so the field rolls. `pen(lw, alpha, lip)` sets the stroke; each row is drawn
+   * as its trough, then (lipA > 0) the lit lip just below it. */
+  function waveGrooves(ctx, x, y, r, pen, troughA, lipA) {
+    const gap = Math.max(6, r * 0.062), amp = r * 0.05, wl = r * 0.95;
+    const row = (y0, dy) => { ctx.beginPath(); for (let px = x - r - 4; px <= x + r + 4; px += 3) { const py = y0 + dy + amp * Math.sin(((px - x) / wl) * TAU + ((y0 - y) / r) * 1.1); px === x - r - 4 ? ctx.moveTo(px, py) : ctx.lineTo(px, py); } ctx.stroke(); };
+    ctx.lineCap = 'round';
+    for (let y0 = y - r - gap; y0 < y + r + gap; y0 += gap) {
+      if (troughA > 0) { pen(Math.max(1.2, gap * 0.3), troughA, 0); row(y0, 0); }
+      if (lipA > 0) { pen(Math.max(0.7, gap * 0.1), lipA, 1); row(y0, gap * 0.26); }
+    }
+  }
   // shared by the main dial and every subdial: base colour, finish texture, then light
   function surface(ctx, s, en, seed, recess) {
     const _ = L(), { x, y, r } = s, T = s.tex == null ? 1 : +s.tex;
@@ -1938,6 +2027,12 @@
     } else if (s.style === 'matte') {
       const R = _.rng(seed * 7 + 3), n = Math.round(r * r * 0.5);
       for (let i = 0; i < n; i++) { const a = R() * TAU, d = Math.sqrt(R()) * r; ctx.fillStyle = R() < 0.5 ? 'rgba(0,0,0,' + R() * 0.12 * T + ')' : 'rgba(255,255,255,' + R() * 0.1 * T + ')'; ctx.fillRect(x + Math.cos(a) * d, y + Math.sin(a) * d, 1, 1); }
+    } else if (s.style === 'wave') {
+      // brushed across, then the grooves: a shadowed trough under a lit lip, light from above
+      const bs = ctx.createLinearGradient(x - r, y, x + r, y);
+      [[0, 0], [0.22, 0.12], [0.4, 0], [0.62, 0.1], [0.8, 0], [1, 0.06]].forEach(([p, a]) => bs.addColorStop(p, 'rgba(255,250,235,' + Math.min(0.5, a * T) + ')'));
+      ctx.fillStyle = bs; ctx.fillRect(x - r, y - r, 2 * r, 2 * r);
+      waveGrooves(ctx, x, y, r, (lw, a, dy) => { ctx.lineWidth = lw; ctx.strokeStyle = (dy ? 'rgba(255,250,235,' : 'rgba(0,0,0,') + Math.min(0.85, a * T) + ')'; }, en.dark ? 0.7 : 0.45, lite * 1.8);
     }
     surfaceShade(ctx, x, y, r);
     if (recess) {
@@ -2592,7 +2687,7 @@
     steel: ['#202326', '#8b9198', '#f4f6f8', '#6c7178', '#0c0d0e'],
     rose: ['#2a1410', '#a8705e', '#f6cbb6', '#8a5444', '#140806'],
   };
-  const CASE_STYLES = { polished: 'Polished', stepped: 'Stepped', coin: 'Coin edge', riveted: 'Riveted', insert: 'Enamel insert', mariner: 'Mariner bezel', tachy: 'Tachymetre', none: 'None' };
+  const CASE_STYLES = { polished: 'Polished', stepped: 'Stepped', coin: 'Coin edge', riveted: 'Riveted', insert: 'Enamel insert', mariner: 'Mariner bezel', scallop: 'Diver bezel · scalloped', tachy: 'Tachymetre', none: 'None' };
   /* The radius the case leaves open, in dial px, and the one place it is worked out.
    * A bezel style owns a fixed opening; "none" hands the number to the author, because
    * the metal that would have defined it is already baked into the device and only its
@@ -2733,7 +2828,9 @@
     ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
     ctx.restore();
   }
-  function buildOuter(glow, style, metal, openR) {
+  // a bezel insert's colour: the author's hex or black, as a shaded band
+  const insertStops = (ink) => (isHex(ink) ? [shade(ink, 0.38), ink, shade(ink, 0.45)] : ['#050506', '#17181c', '#060607']);
+  function buildOuter(glow, style, metal, openR, ink) {
     const _ = L(), c = cv(S), ctx = c.getContext('2d'), st = CASE_METALS[metal] || CASE_METALS.brass;
     // No case: this layer draws NOTHING at all, and that is the whole meaning of the
     // option. The device owns its own metal and the author's own image is what carries it,
@@ -2761,11 +2858,11 @@
     const spec = [];
     const groove = (r) => { ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(C, C, r, 0, TAU); ctx.stroke(); ctx.strokeStyle = 'rgba(255,240,205,.25)'; ctx.lineWidth = 0.6; ctx.beginPath(); ctx.arc(C, C, r + 0.9, 0, TAU); ctx.stroke(); };
     if (BEZEL[style]) {
-      const i0 = 196, i1 = style === 'mariner' ? 224.5 : 227.5;
+      const i0 = 196, i1 = style === 'mariner' || style === 'scallop' ? 224.5 : 227.5;
       metalRing(ctx, BEZEL_IN, i0, st, 71, 0.8);
       ctx.save(); ctx.beginPath(); ctx.arc(C, C, i1, 0, TAU); ctx.arc(C, C, i0, 0, TAU, true);
       g = ctx.createRadialGradient(C, C, i0, C, C, i1);
-      g.addColorStop(0, '#050506'); g.addColorStop(0.5, '#17181c'); g.addColorStop(1, '#060607');
+      insertStops(ink).forEach((c2, i) => g.addColorStop(i / 2, c2));
       ctx.fillStyle = g; ctx.fill(); ctx.clip('evenodd');
       g = ctx.createLinearGradient(80, 80, 390, 390);
       g.addColorStop(0, 'rgba(255,245,230,.16)'); g.addColorStop(0.5, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.3)');
@@ -2781,8 +2878,25 @@
         }
         ctx.restore();
       }
+      if (style === 'scallop') {
+        // twelve scallops cut into the grip, each lobe two flat faces the light picks out
+        const NL = 12, lobe = (a) => 228 + 5 * Math.abs(Math.cos((a * NL) / 2));
+        ctx.save(); ctx.beginPath(); ctx.arc(C, C, 234, 0, TAU);
+        for (let k = 0; k <= 360; k++) { const a = (k / 360) * TAU, q = P(C, C, lobe(a), a); k ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }
+        ctx.closePath(); ctx.fillStyle = '#060606'; ctx.fill('evenodd'); ctx.restore();
+        ctx.save(); ctx.beginPath();
+        for (let k = 0; k <= 360; k++) { const a = (k / 360) * TAU, q = P(C, C, lobe(a), a); k ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }
+        ctx.arc(C, C, i1, 0, TAU, true); ctx.clip('evenodd');
+        for (let k = 0; k < NL * 2; k++) {
+          const a0 = (k / (NL * 2)) * TAU, a1 = ((k + 1) / (NL * 2)) * TAU, nrm = (a0 + a1) / 2 + (k % 2 ? -0.5 : 0.5), lit = Math.cos(nrm - OUTER0);
+          const p0 = P(C, C, i1, a0), p1 = P(C, C, 240, a0), p2 = P(C, C, 240, a1), p3 = P(C, C, i1, a1);
+          ctx.fillStyle = lit > 0 ? 'rgba(255,245,225,' + 0.22 * lit + ')' : 'rgba(0,0,0,' + -0.3 * lit + ')';
+          ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.lineTo(p3[0], p3[1]); ctx.closePath(); ctx.fill();
+        }
+        ctx.restore();
+      }
       groove(i1); groove(i0 - 0.5);
-      spec.push([230, 3, 0.8], [194.8, 1.2, 0.5]);
+      spec.push([style === 'scallop' ? 227 : 230, 3, 0.8], [194.8, 1.2, 0.5]);
     } else if (style === 'stepped') {
       metalRing(ctx, 221.5, 226.5, st.map((x, i) => st[Math.min(4, i + 1)]), 71, 0.7);
       metalRing(ctx, 226.5, 233, st, 77);
@@ -2791,7 +2905,7 @@
     } else if (style === 'insert') {
       ctx.save(); ctx.beginPath(); ctx.arc(C, C, 228.5, 0, TAU); ctx.arc(C, C, 221.5, 0, TAU, true);
       g = ctx.createRadialGradient(C, C, 221.5, C, C, 228.5);
-      g.addColorStop(0, '#060504'); g.addColorStop(0.5, '#1b1815'); g.addColorStop(1, '#070605');
+      (isHex(ink) ? insertStops(ink) : ['#060504', '#1b1815', '#070605']).forEach((c2, i) => g.addColorStop(i / 2, c2));
       ctx.fillStyle = g; ctx.fill(); ctx.clip('evenodd');
       ctx.strokeStyle = st[2]; ctx.globalAlpha = 0.85;
       for (let i = 0; i < 60; i++) {
@@ -2863,6 +2977,22 @@
       const t1 = P(C, C, 202, A(0)), t2 = P(C, C, 222, A(-0.022)), t3 = P(C, C, 222, A(0.022));
       ctx.beginPath(); ctx.moveTo(t1[0], t1[1]); ctx.lineTo(t2[0], t2[1]); ctx.lineTo(t3[0], t3[1]); ctx.closePath(); ctx.fill();
       ctx.fillStyle = '#e9f5d8'; ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(C, C - 215, 3.2, 0, TAU); ctx.fill(); ctx.stroke();
+    } else if (style === 'scallop') {
+      // a diver's insert: the first quarter counted minute by minute in bars, the rest in
+      // dots with a bar every five and the tens figured; a lume pip in the silver triangle
+      const mk2 = '#e6e5e1';
+      ctx.fillStyle = ctx.strokeStyle = mk2;
+      for (let i = 1; i < 60; i++) {
+        const a = A(i / 60);
+        if (i % 10 === 0 && i >= 20) word(String(i), a, 210, '700 ' + Math.max(LEGIBLE_PX, 25) + 'px ' + SANS0);
+        else if (i % 5 === 0) { ctx.save(); ctx.translate(C, C); ctx.rotate(a + Math.PI / 2); ctx.fillRect(-1.6, -221, 3.2, 17); ctx.restore(); }
+        else if (i < 15) { ctx.save(); ctx.translate(C, C); ctx.rotate(a + Math.PI / 2); ctx.fillRect(-1.3, -220.5, 2.6, 10); ctx.restore(); }
+        else { const q = P(C, C, 214, a); ctx.beginPath(); ctx.arc(q[0], q[1], 1.7, 0, TAU); ctx.fill(); }
+      }
+      const t1 = P(C, C, 199, A(0)), t2 = P(C, C, 223.5, A(-0.024)), t3 = P(C, C, 223.5, A(0.024));
+      const tg = ctx.createLinearGradient(t2[0], t2[1], t3[0], t3[1]); tg.addColorStop(0, '#f2f2f0'); tg.addColorStop(0.55, '#b9bbbe'); tg.addColorStop(1, '#8a8d92');
+      ctx.fillStyle = tg; ctx.beginPath(); ctx.moveTo(t1[0], t1[1]); ctx.lineTo(t2[0], t2[1]); ctx.lineTo(t3[0], t3[1]); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#d5e88e'; ctx.strokeStyle = '#4c5a2a'; ctx.lineWidth = 0.9; ctx.beginPath(); ctx.arc(C, C - 216, 3.6, 0, TAU); ctx.fill(); ctx.stroke();
     } else {
       const big = [500, 400, 300, 250, 200, 180, 160, 150, 140, 130, 120, 110, 100, 90, 80, 70, 60], minor = [450, 350, 225, 190, 170, 95, 85, 75, 65];
       // legibility: the figures at LEGIBLE_PX, so not all fit -- the round speeds first, each kept only
@@ -2888,7 +3018,7 @@
   }
   const caseMetal = (o) => { if (o.caseMetal && o.caseMetal !== 'auto') return o.caseMetal; const f = resolve(o).finish; return f === 'rhodium' ? 'steel' : CASE_METALS[f] ? f : 'brass'; };
   // standalone builders for picker previews
-  function caseLayer(o) { const _ = L(); _.configure(o); setLights(o); _.setTemp(o.outerTemp || 2200, o.outerHue, o.outerSat); const c = buildOuter(LIGHT.outerK, o.caseStyle, caseMetal(o), caseOpenR(o)); _.setTemp(o.temp || 2200, o.hue, o.hueSat); return c; }
+  function caseLayer(o) { const _ = L(); _.configure(o); setLights(o); _.setTemp(o.outerTemp || 2200, o.outerHue, o.outerSat); const c = buildOuter(LIGHT.outerK, o.caseStyle, caseMetal(o), caseOpenR(o), o.design && o.design.bezelInk); _.setTemp(o.temp || 2200, o.hue, o.hueSat); return c; }
   function glassLayer(o) { const _ = L(); _.configure(o); setLights(o); _.setTemp(o.outerTemp || 2200, o.outerHue, o.outerSat); return buildGlass(LIGHT.outerK, o.glassStyle); }
 
   // ---------- hands: sprites pointing at 12, pivot known — exactly what firmware rotates
@@ -2936,11 +3066,12 @@
       mint: { a: '#1e7a5a', m: '#6ff0c0', b: '#ddfff2', edge: 'rgba(0,24,16,.8)' },
       cyan: { a: '#05616e', m: '#19d6ec', b: '#c4f8ff', edge: 'rgba(0,20,26,.8)' },
       violet: { a: '#2a0f73', m: '#8b46ff', b: '#d6c2ff', edge: 'rgba(12,0,34,.8)' },
+      royal: { a: '#0a1c86', m: '#1f45e0', b: '#9db2ff', edge: 'rgba(2,6,32,.85)' },
     })[k] || { a: '#0d1d48', m: '#24499a', b: '#7aa4ec', edge: 'rgba(4,8,22,.85)' };
   }
   function handParts(style, kind, len, w, tail, sec) {
     const Pp = [], cut = [];
-    let span = Math.max(w * 1.6, 3.4), lumeFrom = null, lumeOnly = null;
+    let span = Math.max(w * 1.6, 3.4), lumeFrom = null, lumeOnly = null, lumeIns = null;
     const poly = (pts) => (x) => { pts.forEach(([a, b], i) => (i ? x.lineTo(a, b) : x.moveTo(a, b))); x.closePath(); };
     const circ = (cx, cy, r) => (x) => { x.moveTo(cx + r, cy); x.arc(cx, cy, r, 0, TAU); };
     const thick = (pts, hwf) => (x) => {
@@ -2973,6 +3104,13 @@
         Pp.push(poly([[-rw, tail * 0.8], [-rw, -len + rw], [rw, -len + rw], [rw, tail * 0.8]])); Pp.push(circ(0, -len + rw, rw));
         [[-len * 0.85, 1], [0, 0.95], [tail * 0.8, 0.9]].forEach(([y, k]) => Pp.push(circ(0, y, r * k)));
         lumeOnly = [[-len * 0.85, 1], [0, 0.95], [tail * 0.8, 0.9]].map(([y, k]) => circ(0, y, r * k * 0.72));
+        span = Math.max(span, r + 1.5);
+      }
+      else if (ss === 'disc') {
+        // a lume disc in a ring two thirds out, and a paddle for the counterweight
+        const r = Math.max(w * 2.6, len * 0.052), yc = -len * 0.67, pw = Math.max(w * 0.75, len * 0.016);
+        shaft(-len, w * 0.3, w * 0.16); Pp.push(circ(0, yc, r)); Pp.push(poly([[-pw, tail * 0.42], [-pw, tail], [pw, tail], [pw, tail * 0.42]]));
+        lumeOnly = [circ(0, yc, r - Math.max(1.2, r * 0.2))];
         span = Math.max(span, r + 1.5);
       }
       else if (ss === 'needle') { shaft(-len, w * 0.22, w * 0.07); Pp.push(circ(0, cy, cr * 1.3)); cut.push(circ(0, cy, cr * 0.6)); span = Math.max(span, cr * 1.3 + 1.5); }
@@ -3045,6 +3183,53 @@
     else if (style === 'skeleton') {
       Pp.push(poly([[-w / 2, tail], [-w * 0.42, -len + w * 0.35], [0, -len], [w * 0.42, -len + w * 0.35], [w / 2, tail]]));
       cut.push(poly([[-w * 0.2, -len * 0.16], [-w * 0.15, -len + w * 1.3], [w * 0.15, -len + w * 1.3], [w * 0.2, -len * 0.16]]));
+    } else if (style === 'framed') {
+      /* An open frame: the hand is its outline, the dial shows through, and a lume strip
+       * floats in each opening -- the body's slot and the head's window (a hexagon on the
+       * hour, an arrowhead on the minute). Each part is a convex outline; the frame is the
+       * whole hand with each part's inset cut out, the strip that inset again. */
+      const area = (q) => q.reduce((s2, p, i) => { const n = q[(i + 1) % q.length]; return s2 + p[0] * n[1] - n[0] * p[1]; }, 0);
+      const inset = (q, d) => {
+        const k = area(q) > 0 ? 1 : -1, L2 = q.map((p, i) => { const n = q[(i + 1) % q.length], dx = n[0] - p[0], dy = n[1] - p[1], m = Math.hypot(dx, dy) || 1, nx = (-dy / m) * k, ny = (dx / m) * k; return [p[0] + nx * d, p[1] + ny * d, dx, dy]; });
+        return L2.map((a, i) => { const b = L2[(i + L2.length - 1) % L2.length], den = b[2] * a[3] - b[3] * a[2]; if (Math.abs(den) < 1e-9) return [a[0], a[1]]; const u = ((a[0] - b[0]) * a[3] - (a[1] - b[1]) * a[2]) / den; return [b[0] + b[2] * u, b[1] + b[3] * u]; });
+      };
+      const hr = kind !== 'minute', a = w * (hr ? 0.56 : 0.66), b = w * (hr ? 1.28 : 1.9), y0 = -len * 0.1;
+      const yn = -len * (hr ? 0.6 : 0.78), t = Math.max(1.4, w * 0.17), g = Math.max(1.5, w * 0.21);
+      const head = hr ? [[-a, yn], [-b, -len * 0.67], [-b, -len * 0.88], [0, -len], [b, -len * 0.88], [b, -len * 0.67], [a, yn]]
+        : [[-a, yn], [-b, -len * 0.81], [0, -len], [b, -len * 0.81], [a, yn]];
+      const parts = [[[-a, y0], [-a, yn], [a, yn], [a, y0]], head], outer = [[-a, tail * 0.5], [-a, yn]].concat(head.slice(1, -1), [[a, yn], [a, tail * 0.5]]);
+      const ring = (q, rev) => (x) => { const o = rev === area(q) > 0 ? q.slice().reverse() : q; o.forEach(([px, py], i) => (i ? x.lineTo(px, py) : x.moveTo(px, py))); x.closePath(); };
+      // the holes wind against the outline, so the one nonzero fill leaves them open
+      Pp.push((x) => { ring(outer, false)(x); parts.forEach((q) => ring(inset(q, t), true)(x)); });
+      lumeOnly = parts.map((q) => ring(inset(q, t + g), false));
+      lumeOnly.forEach((p) => Pp.push(p));
+      lumeIns = 0.35; span = Math.max(span, b + 1.5);
+    } else if (style === 'rails') {
+      /* Twin rail: an open trapezoid widening from the arbour, its two long sides lumed
+       * with the dial showing between them, and a triangle on its wide end. The hour's
+       * triangle holds a lume disc; the minute's is lume to a blue frame. */
+      const area = (q) => q.reduce((s2, p, i) => { const n = q[(i + 1) % q.length]; return s2 + p[0] * n[1] - n[0] * p[1]; }, 0);
+      const inset = (q, d) => {
+        const k = area(q) > 0 ? 1 : -1, L2 = q.map((p, i) => { const n = q[(i + 1) % q.length], dx = n[0] - p[0], dy = n[1] - p[1], m = Math.hypot(dx, dy) || 1, nx = (-dy / m) * k, ny = (dx / m) * k; return [p[0] + nx * d, p[1] + ny * d, dx, dy]; });
+        return L2.map((a, i) => { const b = L2[(i + L2.length - 1) % L2.length], den = b[2] * a[3] - b[3] * a[2]; if (Math.abs(den) < 1e-9) return [a[0], a[1]]; const u = ((a[0] - b[0]) * a[3] - (a[1] - b[1]) * a[2]) / den; return [b[0] + b[2] * u, b[1] + b[3] * u]; });
+      };
+      const ring = (q, rev) => (x) => { const o = rev === area(q) > 0 ? q.slice().reverse() : q; o.forEach(([px, py], i) => (i ? x.lineTo(px, py) : x.moveTo(px, py))); x.closePath(); };
+      // sized off the hand's length too: the photo's proportions, so a thin width still opens
+      const hr = kind !== 'minute', n = Math.max(w * 0.85, len * (hr ? 0.056 : 0.031)), B = Math.max(w * (hr ? 2.1 : 1.8), len * (hr ? 0.17 : 0.068)), t = Math.max(1.2, n * 0.18), lt = 0.6;
+      const y0 = -len * 0.1, yh = -len * (hr ? 0.68 : 0.8);
+      const trap = [[-n, y0], [-B, yh], [B, yh], [n, y0]], tri = [[-B, yh], [0, -len], [B, yh]], hole = inset(trap, t);
+      // the lume rails run up the opening's two long sides, as wide as its narrow end allows
+      const sw = Math.max(1.5, (hole[3][0] - hole[0][0]) / 2 - 0.6);
+      const side = (sd) => { const b0 = hole[sd < 0 ? 0 : 3], b1 = hole[sd < 0 ? 1 : 2]; return [b0, b1, [b1[0] - sd * sw, b1[1]], [b0[0] - sd * sw, b0[1]]]; };
+      Pp.push(poly([[-n * 0.8, tail * 0.4], [-n, y0 + 0.5], [n, y0 + 0.5], [n * 0.8, tail * 0.4]]));
+      // the trapezoid's frame: its outline with the opening wound against it
+      Pp.push((x) => { ring(trap, false)(x); ring(hole, true)(x); });
+      [-1, 1].forEach((sd) => Pp.push(ring(side(sd), false)));
+      Pp.push(ring(tri, false));
+      lumeOnly = [-1, 1].map((sd) => ring(inset(side(sd), lt), false));
+      if (hr) { const a2 = Math.hypot(B, len + yh), rr = (B * (len + yh)) / (B + a2); lumeOnly.push(circ(0, -len + a2 * rr / B * 1, rr * 0.86)); }
+      else lumeOnly.push(ring(inset(tri, t), false));
+      lumeIns = 0.35; span = Math.max(span, B + 1.5);
     } else if (style === 'arrow') {
       Pp.push(poly([[-w * 0.18, tail], [-w * 0.14, -len * 0.74], [w * 0.14, -len * 0.74], [w * 0.18, tail]]));
       Pp.push(poly([[-w * 0.9, -len * 0.7], [0, -len], [w * 0.9, -len * 0.7], [0, -len * 0.78]]));
@@ -3097,11 +3282,11 @@
       Pp.push(poly([[-w * 0.24, cy - Ro * 0.85], [0, -len], [w * 0.24, cy - Ro * 0.85]]));
     }
     Pp.push(circ(0, 0, w * 0.95));
-    return { Pp, cut, span, lumeFrom, lumeOnly };
+    return { Pp, cut, span, lumeFrom, lumeOnly, lumeIns };
   }
   function handSprite(style, kind, len, w, fin, sec, lume, flat) {
     const tail = kind === 'second' ? len * 0.26 : kind === 'sub' ? len * 0.2 : len * 0.16;
-    const { Pp, cut, span, lumeFrom, lumeOnly } = handParts(style, kind, len, w, tail, sec);
+    const { Pp, cut, span, lumeFrom, lumeOnly, lumeIns } = handParts(style, kind, len, w, tail, sec);
     const xt = style === 'station' && kind !== 'sub' ? len * 0.24 - tail : kind === 'second' && sec === 'station' ? len * 0.33 - tail : 0;
     const hw = Math.ceil(span + 3), top = 3, c = cv(hw * 2, Math.ceil(top + len + tail + Math.max(0, xt) + span + 4)), x = c.getContext('2d');
     const px = hw, py = top + len;
@@ -3121,7 +3306,7 @@
       x.fillStyle = g; x.fillRect(-hw, -py, hw * 2, c.height);
     }
     if (lume && lume !== 'none' && lume !== 'auto') {
-      const lc = cv(c.width, c.height), lx = lc.getContext('2d'), ins = kind === 'second' ? 0.6 : Math.max(0.7, w * 0.2);
+      const lc = cv(c.width, c.height), lx = lc.getContext('2d'), ins = lumeIns != null ? lumeIns : kind === 'second' ? 0.6 : Math.max(0.7, w * 0.2);
       lx.translate(px, py); lx.fillStyle = '#fff'; Pp.forEach((p) => { lx.beginPath(); p(lx); lx.fill(); });
       lx.globalCompositeOperation = 'destination-out'; lx.lineWidth = ins * 2; lx.lineJoin = 'round'; lx.strokeStyle = '#000'; lx.fillStyle = '#000';
       Pp.forEach((p) => { lx.beginPath(); p(lx); lx.stroke(); });
@@ -4102,11 +4287,12 @@
     if (pf.length) { F.plateFlares = cv(S); const px = F.plateFlares.getContext('2d'); px.save(); px.beginPath(); px.arc(C, C, DR, 0, TAU); px.clip(); drawFlares(px, pf, { ink: '#e6dfcf', dark: 1 }, pal); px.restore(); }
     const OK = LIGHT.outerK;
     _.setTemp(o.outerTemp || o.temp || 2200, o.outerHue, o.outerSat);
-    F.glass = buildGlass(OK, o.glassStyle); F.outer = buildOuter(OK, o.caseStyle, caseMetal(o), caseOpenR(o));
+    F.glass = buildGlass(OK, o.glassStyle); F.outer = buildOuter(OK, o.caseStyle, caseMetal(o), caseOpenR(o), design.bezelInk);
     // The dial's crown cap is baked into the crystal here rather than trailed after its
     // hand at draw time — see drawCaps. One paint, on the one plane every export path and
     // the device already stack above the hands. Lower arbours' caps stay in the hand stack.
     drawCaps(F.glass.getContext('2d'), F.hands, SH);
+    lay.dialHoles.concat(...Object.values(lay.subHoles)).forEach((h) => { if (h.lens && !h.hidden) drawLens(F.glass.getContext('2d'), h); });
     paintDiscIndex(F.glass.getContext('2d'), F.hands);
     // P5d.3n: the indexes, on the crystal over the turning rings (as a disc hand's always was)
     lay.indexes.forEach((ix) => paintIndex(F.glass.getContext('2d'), ix));
@@ -4561,6 +4747,8 @@
     if (!HAS_NUMS.includes(d.print) || d.numerals === 'none' || d.numOrient === (d.print === 'roman' ? 'radial' : 'upright')) delete d.numOrient;
     if (!d.font || d.font === 'auto' || d.font === RING_FONT(d.print)) delete d.font;
     if (!d.numColor || d.numColor === 'auto') delete d.numColor;
+    if (!isHex(d.plotRim)) delete d.plotRim;
+    if (!isHex(d.bezelInk)) delete d.bezelInk;
     ['numScale', 'n12Scale', 'nQScale'].forEach((k) => { if (d[k] != null && +d[k] === 1) delete d[k]; });
     if (!d.numStyle || d.numStyle === 'print') delete d.numStyle;
     if (!d.openwork || d.openwork === 'none') ['openwork', 'owBar', 'owRing', 'owHub', 'owRim', 'owInlay', 'owDepth'].forEach((k) => delete d[k]);
@@ -4729,6 +4917,7 @@
         if (!c.join) { delete c.join; delete c.bar; } else if (c.bar !== false) delete c.bar;
         ['w', 'h'].forEach((k) => { if (!(+c[k] > 0)) delete c[k]; });
         if (!c.frameColor || c.frameColor === 'gilt') delete c.frameColor;
+        if (!LENS_MAG[c.lens]) delete c.lens;
         return;
       }
       if (c.type === 'opening' && (!c.shape || c.shape === 'circle')) { c.rot = 0; delete c.shape; }
@@ -4773,7 +4962,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), LENSES, DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

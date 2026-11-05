@@ -118,8 +118,8 @@ for (const [preset, m] of Object.entries(S.PRESETS)) {
   }
   if ((m.pattern === 'count' || m.pattern === 'ships_bells') && !m.slots.strike_hour) mapBad.push(preset + ': strikes with no stroke');
 }
-ok(!mapBad.length, 'all 15 presets map to sounds that exist and fit their slots', mapBad.join('; ') || Object.keys(S.PRESETS).length + ' presets');
-ok(Object.keys(S.PRESETS).length === 15, 'the mapping covers the composer’s fifteen presets');
+ok(!mapBad.length, 'all 16 presets map to sounds that exist and fit their slots', mapBad.join('; ') || Object.keys(S.PRESETS).length + ' presets');
+ok(Object.keys(S.PRESETS).length === 16, 'the mapping covers sixteen of the composer’s presets');
 
 // ---- an uploaded tick, made into a loop at each rate ----
 const clickT = S.renderSound('sine_blip');

@@ -12,7 +12,8 @@ pieces fall, and a reader that only works on a whole body is a reader that works
 on the bench and not in the air.
 
 Fixtures are real answers captured 2026-10-31 (tests/fixtures/readsb/): adsb.lol
-uses "ac", adsb.fi uses "aircraft", and both carry nested arrays (mlat, tisb,
+uses "ac", adsb.fi's v2 used "aircraft" (its v3, which the app now asks, answers
+"ac" too: adsbfi-v3-phx-10nm.json, captured 2026-11-04), and both carry nested arrays (mlat, tisb,
 nav_modes) that must be skipped, "ground" as an altitude, and null squawks.
 """
 import glob, json, math, os, subprocess, sys, tempfile

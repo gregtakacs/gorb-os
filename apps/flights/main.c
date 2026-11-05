@@ -285,7 +285,7 @@ static bool start_poll(void)
     char url[128];
     const unsigned nm = RANGES_NM[s_set.range];
     if (src == SRC_FI)
-        snprintf(url, sizeof url, "https://opendata.adsb.fi/api/v2/lat/%.4f/lon/%.4f/dist/%u",
+        snprintf(url, sizeof url, "https://opendata.adsb.fi/api/v3/lat/%.4f/lon/%.4f/dist/%u",
                  s_set.latd, s_set.lond, nm);
     else
         snprintf(url, sizeof url, "https://api.adsb.lol/v2/point/%.4f/%.4f/%u",

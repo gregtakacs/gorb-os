@@ -82,7 +82,8 @@ bool orb_readsb_token(orb_readsb_t *r, const orb_json_tok_t *t)
         r->error = true;
         return false;
     case ORB_JSON_ARR:
-        /* The array under "ac" (adsb.lol) or "aircraft" (adsb.fi) in the top object. */
+        /* The array under "ac" (adsb.lol, adsb.fi v3) or "aircraft" (adsb.fi's retired v2)
+         * in the top object. */
         if (t->depth == 1 && r->list_depth < 0 &&
             (!strcmp(t->key, "ac") || !strcmp(t->key, "aircraft")))
             r->list_depth = t->depth;

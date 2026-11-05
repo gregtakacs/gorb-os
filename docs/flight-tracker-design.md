@@ -38,7 +38,7 @@ feed fails on an ESP32-S3. The lessons, with what this design does about them:
 | Provider | URL | Format | Notes (2026-10-31) |
 |---|---|---|---|
 | adsb.lol | `https://api.adsb.lol/v2/point/{lat}/{lon}/{nm}` | readsb, list under `"ac"` | HTTP is 301. Let's Encrypt ECDSA P-256 chain. |
-| adsb.fi | `https://opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{nm}` | readsb, list under `"aircraft"` | Google Trust ECDSA chain. Faster TLS from here. |
+| adsb.fi | `https://opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{nm}` (v2 deprecated upstream; moved in flights v1.2.5) | readsb, list under `"ac"` (v2 used `"aircraft"`) | Google Trust ECDSA chain. Faster TLS from here. |
 | airplanes.live | — | — | 403 to every request; asks you to email them first. |
 
 Body sizes over Phoenix: 10 nm 9.8 KB, 20 nm 13 KB, 40 nm 16 KB, 80 nm 24 KB.

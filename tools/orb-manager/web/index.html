@@ -199,37 +199,48 @@
   </article>
 
   <article class="card tabpane" data-tab="orb">
-    <h3>Home</h3>
+    <h3>Location</h3>
     <!-- The OS home location (flight-tracker-design §6.4): where the orb is. It
          sets the time zone and every app that needs a position reads it. Two
          steps (owner ruling 2026-11-01): any source — a city from the orb's own
          list, this browser's location, a map pin, coordinates or a plus code —
          only proposes a point, which the orb previews (place, zone) and the map
-         shows; Set home stores it, and the zone comes with it. There is no
-         separate zone picker: the location drives the zone. -->
-    <div class="row"><span class="hint" id="home-cur">the home loads with this tab</span></div>
-    <div class="row">
-      <input id="home-q" size="34" placeholder="a city, 33.4484, -112.074, or 8559CWXG+9C" autocomplete="off"
-             aria-label="Find a city, or type coordinates or a full plus code" aria-controls="home-hits">
-      <button id="home-loc" class="ghost" type="button" title="Ask this browser where it is">Use this browser's location</button>
+         shows; Set location stores it, and the zone comes with it. There is no
+         separate zone picker: the location drives the zone. The controls sit
+         beside the map, not over a page-wide one (owner, 2026-11-04). -->
+    <div class="locgrid">
+      <div class="locside">
+        <div class="hint" id="home-cur">the location loads with this tab</div>
+        <input id="home-q" placeholder="a city, 33.4484, -112.074, or 8559CWXG+9C" autocomplete="off"
+               aria-label="Find a city, or type coordinates or a full plus code" aria-controls="home-hits">
+        <div id="home-hits" class="tzlist" role="listbox" hidden></div>
+        <div class="locbtns">
+          <button id="home-loc" class="ghost" type="button" title="Ask this browser where it is">Use this browser's location</button>
+          <button id="home-clear" class="ghost" type="button" title="Forget the location; the clock keeps its zone">Forget location</button>
+        </div>
+        <div class="locnext" id="home-next" hidden>
+          <span id="home-pend"></span>
+          <button id="home-set" class="primary" type="button">Set location</button>
+        </div>
+        <div class="hint" id="home-msg"></div>
+        <p class="hint">Search, use this browser, or click the map: the orb previews the place and its
+          time zone, and Set location stores both.</p>
+      </div>
+      <div id="home-map" class="homemap"></div>
     </div>
-    <div id="home-hits" class="tzlist" role="listbox" hidden></div>
-    <div id="home-map" class="homemap"></div>
-    <div class="row" id="home-next" hidden>
-      <span id="home-pend"></span>
-      <button id="home-set" class="primary" type="button">Set home</button>
-    </div>
-    <div class="row">
-      <span class="hint" id="home-msg"></span>
-      <button id="home-clear" class="ghost" type="button" title="Forget the home; the clock keeps its zone">Forget home</button>
-    </div>
-    <h3>App keys</h3>
-    <!-- One write-only field per secret setting an installed app declares (§43):
-         the orb keeps the value beside the Wi-Fi password, never hands it to the
-         app, and sends it only over https to the one host the app declared. Never
-         read back: each line shows set or not, the header and the last four
-         characters. -->
-    <div id="secrets"><div class="row"><span class="hint">the keys load with this tab</span></div></div>
+  </article>
+
+  <article class="card tabpane" data-tab="orb">
+    <h3>App settings</h3>
+    <!-- One page per installed app (owner, 2026-11-04). Today the settings here are the
+         secret ones an app declares (§43): one write-only field each; the orb keeps the
+         value beside the Wi-Fi password, never hands it to the app, and sends it only
+         over https to the one host the app declared. Never read back: each line shows set
+         or not, the header and the last four characters. An app's editor region may carry
+         settings.json with a label, help and a link per setting; the page reads it from
+         there, so the hub knows nothing about any one app. -->
+    <nav class="subtabs appswitch" id="aps-tabs"></nav>
+    <div id="secrets"><div class="row"><span class="hint">app settings load with this tab</span></div></div>
   </article>
 
 
@@ -270,8 +281,22 @@
 
   <article class="card tabpane" data-tab="themes" id="mn-themecard" hidden>
     <h3>Themes on this orb</h3>
-    <p class="hint" id="mn-themestate">Themes load when this tab first opens.</p>
-    <nav class="subtabs" id="mn-themes-tabs"></nav>
+    <!-- The app whose themes these are is the pane's headline (owner, 2026-11-04): a big
+         switch with the chosen app filled, its name over the list, and the pane's three
+         presses in one toolbar above the rows rather than trailing under them. -->
+    <nav class="subtabs appswitch" id="mn-themes-tabs"></nav>
+    <div class="apphead"><span class="appname" id="mn-themes-app"></span>
+      <span class="hint" id="mn-themestate">Themes load when this tab first opens.</span></div>
+    <div class="row toolbar">
+      <button id="mn-rescan" class="ghost" title="Ask the orb to re-read its SD card and repaint this pane. Nothing reboots and nothing is written.">Refresh from Orb</button>
+      <!-- D37 §6.2: the editor is app-specific, so its door lives in the Themes
+           pane beside the app it edits, never as a global control. loadThemes fills
+           this slot with the authoring door when the app in context ships an editor. -->
+      <span id="mn-theme-editrow"></span>
+      <input type="file" id="mn-fw-file" accept=".orbtheme" hidden>
+      <button id="mn-up-btn" class="ghost" title="Choose a .orbtheme and put it on this orb's card, with the hub keeping a copy on its shelf. The theme's name is baked inside the file by the Theme Editor; the orb files it under that name and no other.">Import a theme</button>
+      <span id="mn-up-state" class="hint"></span>
+    </div>
     <!-- D37 §6.2: one app's editor opens from this card rather than in a new tab the
          operator has to find again; since D43 §4.2 it fills the whole window, over the
          page, with the editor's own bar as the only one (app.css #mn-theme-editor).
@@ -292,18 +317,6 @@
       <p class="hint" id="mn-theme-editor-state"></p>
     </section>
     <ul id="mn-themes" class="themelist"></ul>
-    <div class="row">
-      <button id="mn-rescan" class="ghost" title="Ask the orb to re-read its SD card and repaint this pane. Nothing reboots and nothing is written.">Refresh from Orb</button>
-      <!-- D37 §6.2: the editor is app-specific, so its door lives in the Themes
-           pane beside the app it edits, never as a global control. loadThemes fills
-           this row with the authoring door when the app in context ships an editor. -->
-      <span id="mn-theme-editrow"></span>
-    </div>
-    <div class="row">
-      <input type="file" id="mn-fw-file" accept=".orbtheme" hidden>
-      <button id="mn-up-btn" class="ghost" title="Choose a .orbtheme and put it on this orb's card, with the hub keeping a copy on its shelf. The theme's name is baked inside the file by the Theme Editor; the orb files it under that name and no other.">Import a theme</button>
-      <span id="mn-up-state" class="hint"></span>
-    </div>
     <p class="hint">A theme's name lives inside its file, and the orb files it under that name. The card filename is the hash of it, which is what these buttons send.</p>
   </article>
 

@@ -395,6 +395,8 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 	if card && only == "" {
 		return fmt.Errorf("a card-only install names exactly one slug")
 	}
+	fwv, _ := firmware.ParseVersion(st.FW)
+	rebooted := false
 	for _, slug := range slugs {
 		var blob []byte
 		if !card {
@@ -402,14 +404,29 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 			if err != nil {
 				return fmt.Errorf("reading %s from the library: %w", slug, err)
 			}
+			// The app's own floor (app.json os_min): an older OS loads it as a failed row
+			// with no reason (Gold, 2026-11-04), so the hub says it before a byte moves.
+			if need := appOSMin(b); need != "" {
+				if nv, ok := firmware.ParseVersion(need); ok && fwv.Compare(nv) < 0 {
+					return fmt.Errorf("%s needs firmware %s or newer, and this orb runs %s: update its firmware on the Firmware tab first", slug, need, st.FW)
+				}
+			}
 			if len(b) == 0 {
 				return fmt.Errorf("%s is not in the library at %s", slug, lib.AppsDir)
 			}
 			blob = b
 		}
-		if err := s.installOneApp(ctx, ip, slug, blob, force && only != "", send); err != nil {
+		landed := false // an install that wrote a slot reboots the orb; a skip does not
+		sendOne := func(st installStep) {
+			if st.Step == slug && st.Action == "installed" {
+				landed = true
+			}
+			send(st)
+		}
+		if err := s.installOneApp(ctx, ip, slug, blob, force && only != "", sendOne); err != nil {
 			return err
 		}
+		rebooted = rebooted || landed
 	}
 	// The theme rides the CLOCK, not the full-library run. The join-time install
 	// asks for exactly one slug (`only=clock`), and a clock with no theme on the
@@ -421,8 +438,33 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 	// actually on, so a lone color_picker press still seeds nothing. installTheme
 	// skips on its own whenever the card already carries themes, so riding every
 	// clock run cannot tread on an owner's shelf.
-	if (only == "" || only == "clock") && s.installClockLive(ip) {
-		if err := s.installTheme(ctx, ip, send); err != nil {
+	//
+	// Every themed app, not the clock alone (owner, 2026-11-04: flights installed on Gold
+	// with no theme): each app this run installed that has a default in the library gets it
+	// when the card holds no theme of its own, and only once the app is live on the dial.
+	waited := !rebooted // nothing landed, so nothing reboots and there is no cycle to wait out
+	for _, slug := range slugs {
+		// the clock always asks (a clock with no face draws nothing, and a library with no
+		// theme is an error worth saying); another app only when the library has one for it
+		if slug != "clock" && !lib.hasAppTheme(slug) {
+			continue
+		}
+		// An install ends with the orb rebooting to load the app, and a ledger read in that
+		// gap answers nothing; the seed waits the boot out and asks again rather than read
+		// silence as "not installed" (Gold, 2026-11-04: flights landed and got no theme).
+		// The orb also answers for a beat while it goes down, so the wait is the cycle-shaped
+		// one, once per run, before the first seed's question.
+		if !waited {
+			waited = true
+			if back, ok := s.waitOrbCycle(ctx, ip, installRebootWait,
+				beatFor(send, "theme", "waiting for the orb to come back before its theme")); ok {
+				ip = back
+			}
+		}
+		if !s.installAppLive(ip, slug) {
+			continue
+		}
+		if err := s.installTheme(ctx, ip, slug, send); err != nil {
 			return err
 		}
 	}
@@ -745,13 +787,13 @@ func (s *Server) shelfHoldsOwnersContent(ip string) (bool, error) {
 
 // installClockLive asks the ledger the one question the theme gate needs, at the moment it
 // needs it: is a clock row on the dial right now.
-func (s *Server) installClockLive(ip string) bool {
+func (s *Server) installAppLive(ip, slug string) bool {
 	list, err := s.device.AppsList(ip)
 	if err != nil {
 		return false
 	}
 	for _, row := range list.Installed {
-		if row.Slug == "clock" && !row.Failed {
+		if row.Slug == slug && !row.Failed {
 			return true
 		}
 	}
@@ -768,7 +810,7 @@ func (s *Server) installClockLive(ip string) bool {
 // resolved themes/ directory holds. There is no built-in theme any more, and that is the
 // point — a hub whose library has no theme says so instead of quietly sending the one a
 // build embedded.
-func (s *Server) installTheme(ctx context.Context, ip string, send func(installStep)) error {
+func (s *Server) installTheme(ctx context.Context, ip, slug string, send func(installStep)) error {
 	// The card walk gets the page's ride, not a bare 8 s control dial: a board that
 	// has just rebuilt an app re-walks a cold card, and an orb short on internal RAM
 	// answered /api/v1/sd in 16 s idle (bench, 2026-10-31). And an unanswered list
@@ -798,12 +840,21 @@ func (s *Server) installTheme(ctx context.Context, ip string, send func(installS
 	// board the seed exists for (bench, owner, 2026-10-29: first flash drew the
 	// Aviator, not the skeleton). An owner's card copy is the fact that stands;
 	// the factory slot is not a choice anybody made.
-	if tl.CardCount > 0 {
+	// Per app since the theme pool: each app wears its own theme, so the question is
+	// whether the card carries one of THIS app's (a row with no app is an old clock row).
+	// A count with no rows is a card the answer did not list: the owner's, left alone.
+	if len(tl.Themes) == 0 && tl.CardCount > 0 {
 		send(installStep{Step: "theme", Action: "skipped", Note: "the card already carries themes"})
 		return nil
 	}
+	for _, t := range tl.Themes {
+		if app := t.App; app == slug || (app == "" && slug == "clock") {
+			send(installStep{Step: "theme", Action: "skipped", Note: "the card already carries themes for " + slug})
+			return nil
+		}
+	}
 	lib := s.library()
-	name, blob, err := lib.firstTheme()
+	name, blob, err := lib.appTheme(slug)
 	if err != nil {
 		return err
 	}
@@ -963,7 +1014,10 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 	}
 	total := len(body.blob)
 	last, sentLast := 0, int64(0)
-	_, uerr := s.ota.ThemeUploadProgress(ip, body.blob, false, func(sent int64) {
+	// overwrite=1 is the Themes face's Update: the card holds an older bake under this
+	// name, and the shelf's copy replaces it (the device refuses a same-name file without it)
+	overwrite := r.URL.Query().Get("overwrite") == "1"
+	_, uerr := s.ota.ThemeUploadProgress(ip, body.blob, overwrite, func(sent int64) {
 		sentLast = sent
 		pct := int(sent * 100 / int64(total))
 		if pct-last < 10 && int(sent) != total {

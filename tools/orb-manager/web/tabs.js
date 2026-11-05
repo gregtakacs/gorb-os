@@ -182,20 +182,23 @@ $("#mn-name-go").onclick = async () => {
 // quiet_on false; the hours then show the ones they come back with (quiet_last_*),
 // and the pickers are disabled so Save cannot pretend to set them.
 const soundURL = () => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/sound";
-const hh = (h) => String("0" + h).slice(-2) + ":00";
+// Times in half-hour steps (owner, 2026-11-04): a picker's value is the minute of the day,
+// and the orb takes the hour and its half (quiet_from + quiet_from_m). A board older than
+// the half hours reads only the hour, and the line after a save shows what it kept.
+const hh = (h, m) => String("0" + h).slice(-2) + ":" + (m >= 30 ? "30" : "00");
 
 (function soundPickers() {
   for (const id of ["#snd-qfrom", "#snd-qto"]) {
     const sel = $(id);
-    for (let h = 0; h < 24; h++) sel.add(new Option(hh(h), String(h)));
+    for (let t = 0; t < 1440; t += 30) sel.add(new Option(hh(t / 60 | 0, t % 60), String(t)));
   }
 })();
 
 function soundLine(d) {
   if (!d.ready) return "this board has no speaker";
   const lvl = d.volume ? "volume " + d.volume : "volume off";
-  return lvl + " · " + (d.quiet_on ? "quiet " + hh(d.quiet_from) + "–" + hh(d.quiet_to)
-                                   : "quiet hours off (" + hh(d.quiet_last_from) + "–" + hh(d.quiet_last_to) + " when on)");
+  return lvl + " · " + (d.quiet_on ? "quiet " + hh(d.quiet_from, d.quiet_from_m) + "–" + hh(d.quiet_to, d.quiet_to_m)
+                                   : "quiet hours off (" + hh(d.quiet_last_from, d.quiet_last_from_m) + "–" + hh(d.quiet_last_to, d.quiet_last_to_m) + " when on)");
 }
 
 function soundShow(d) {
@@ -203,8 +206,9 @@ function soundShow(d) {
   $("#snd-vol").value = String(d.volume);
   $("#snd-volv").textContent = d.volume ? String(d.volume) : "off";
   $("#snd-quiet").checked = !!d.quiet_on;
-  $("#snd-qfrom").value = String(d.quiet_on ? d.quiet_from : d.quiet_last_from);
-  $("#snd-qto").value = String(d.quiet_on ? d.quiet_to : d.quiet_last_to);
+  const at = (h, m) => String(h * 60 + (m >= 30 ? 30 : 0));
+  $("#snd-qfrom").value = d.quiet_on ? at(d.quiet_from, d.quiet_from_m) : at(d.quiet_last_from, d.quiet_last_from_m);
+  $("#snd-qto").value = d.quiet_on ? at(d.quiet_to, d.quiet_to_m) : at(d.quiet_last_to, d.quiet_last_to_m);
   soundPickersOn();
 }
 
@@ -235,9 +239,12 @@ $("#snd-go").onclick = async () => {
   if (!current.ip) { msg.textContent = "no address to write to"; return; }
   const on = $("#snd-quiet").checked;
   const from = +$("#snd-qfrom").value, to = +$("#snd-qto").value;
-  if (on && from === to) { msg.textContent = "quiet hours need two different hours"; return; }
+  if (on && from === to) { msg.textContent = "quiet hours need two different times"; return; }
   const body = { volume: +$("#snd-vol").value, quiet_on: on };
-  if (on) { body.quiet_from = from; body.quiet_to = to; }
+  if (on) {
+    body.quiet_from = from / 60 | 0; body.quiet_from_m = from % 60;
+    body.quiet_to = to / 60 | 0; body.quiet_to_m = to % 60;
+  }
   btn.disabled = true;
   msg.textContent = "writing to the board\u2026";
   try {
@@ -308,9 +315,9 @@ const homeAt = (lat, lon) => (+lat).toFixed(6) + ", " + (+lon).toFixed(6);
 
 function homeLine(d) {
   const h = d && d.home;
-  if (!h || !h.set) return "No home set. The clock shows " + homeZone(d && d.zone_label || "UTC", d && d.tz_offset);
-  return "Home: " + h.place + " · " + homeAt(h.lat, h.lon) + " · " + homeZone(d.zone_label || d.tz, d.tz_offset) +
-    (h.follows ? "" : " — set apart from the home; Set home again to make it follow");
+  if (!h || !h.set) return "No location set. The clock shows " + homeZone(d && d.zone_label || "UTC", d && d.tz_offset);
+  return h.place + " · " + homeAt(h.lat, h.lon) + " · " + homeZone(d.zone_label || d.tz, d.tz_offset) +
+    (h.follows ? "" : " — set apart from the location; Set location again to make it follow");
 }
 
 // The home read can die the way every slow read of a booting board dies: the
@@ -344,7 +351,7 @@ async function loadHome(retry) {
   } catch (e) {
     // Name the failure, re-dial on the boot's clock, and re-throw so lazyTab
     // drops its mark and a press works even mid-ladder.
-    cur.textContent = "the home did not load: " + (e && e.message ? e.message : String(e)) +
+    cur.textContent = "the location did not load: " + (e && e.message ? e.message : String(e)) +
       " — the orb may be mid-boot; re-reading it every 5 s";
     const tok = current.mac || current.ip;
     if (tok !== homeWakeTok) { homeWakeTok = tok; homeWakeN = 0; }   // a different card resets the wait
@@ -353,7 +360,7 @@ async function loadHome(retry) {
         homeWakeTmr = 0;
         if ((current.mac || current.ip) !== homeWakeTok) return;     // a different card is open now
         if (++homeWakeN > HOME_WAKE_MAX) {
-          cur.textContent = "the home stopped re-reading — press the Orb face when the board answers";
+          cur.textContent = "the location stopped re-reading — press the Orb face when the board answers";
           return;
         }
         loadHome(true).catch(() => {});
@@ -459,7 +466,7 @@ $("#home-set").onclick = async () => {
     homeClearPend();
     $("#home-cur").textContent = homeLine(d);
     homeShow(d);
-    msg.textContent = "home set: " + d.home.place + ", clock on " + homeZone(d.zone_label || d.tz, d.tz_offset);
+    msg.textContent = "location set: " + d.home.place + ", clock on " + homeZone(d.zone_label || d.tz, d.tz_offset);
     pullFound();
   } catch (e) {
     msg.textContent = "the orb refused it: " + e.message;
@@ -475,7 +482,7 @@ $("#home-clear").onclick = async () => {
     homeClearPend();
     $("#home-cur").textContent = homeLine(d);
     homeShow(d);
-    msg.textContent = "home forgotten; the clock keeps its zone";
+    msg.textContent = "location forgotten; the clock keeps its zone";
   } catch (e) {
     msg.textContent = "the orb refused it: " + e.message;
   }
@@ -496,45 +503,69 @@ $("#home-loc").onclick = () => {
     { enableHighAccuracy: false, timeout: 15000, maximumAge: 600000 });
 };
 
-// ---- app secrets (§43): one write-only field per declared secret setting ----
-// GET /api/v1/apps names each installed app's secret ids; GET /api/v1/apps/cfg answers
-// a secret's host, whether it is set, its header and its last four characters, and
-// never its value. POST writes {"value","header"}; an empty value clears it.
+// ---- app settings: one page per installed app (owner, 2026-11-04) --------------
+// Today a page holds the app's secret settings (§43): GET /api/v1/apps names each
+// installed app's secret ids; GET /api/v1/apps/cfg answers a secret's host, whether it is
+// set, its header and its last four characters, and never its value. POST writes
+// {"value","header"}; an empty value clears it. What a setting is called, how to get one
+// and where, is the APP's to say: its editor region may carry settings.json
+// ({id: {label, help, links: [{href, text}], header}}), read through the hub's editor
+// door, so this page names no app and no service itself.
 const cfgURL = (slug, id) => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/apps/cfg?id=" +
   encodeURIComponent(slug) + "&key=" + encodeURIComponent(id);
+let apsApps = [];     // the installed apps, in title order
+let apsSub = "";      // the app whose page is open
+const apsHelp = {};   // slug -> its settings.json, {} when it ships none
 function secretLine(d) {
-  return d && d.set ? "set (…" + d.tail + ", sent as " + d.header + " to " + d.host + ")"
+  return d && d.set ? "set (\u2026" + d.tail + ", sent as " + d.header + " to " + d.host + ")"
                     : "not set: sent only to " + (d && d.host ? d.host : "the host the app declared");
 }
-function secretRow(app, id) {
+function secretRow(app, id, help) {
   const box = document.createElement("div");
+  box.className = "apsset";
   const cur = document.createElement("span"), msg = document.createElement("span");
   cur.className = msg.className = "hint";
-  const head = document.createElement("div");
-  head.className = "row";
   const name = document.createElement("strong");
-  name.textContent = (app.title || app.slug) + " · " + id + ": ";
+  name.textContent = help.label || id;
+  const head = document.createElement("div");
+  head.className = "apshead";
   head.append(name, cur);
+  box.appendChild(head);
+  if (help.help) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = help.help;
+    box.appendChild(p);
+  }
+  const links = Array.isArray(help.links) ? help.links.filter((l) => l && /^https:\/\//.test(l.href || "")) : [];
+  if (links.length) {
+    const p = document.createElement("p");
+    p.className = "apslinks";
+    for (const l of links) {
+      const a = document.createElement("a");
+      a.href = l.href; a.target = "_blank"; a.rel = "noopener noreferrer";
+      a.textContent = (l.text || l.href) + " \u2197";
+      p.appendChild(a);
+    }
+    box.appendChild(p);
+  }
   const form = document.createElement("div");
   form.className = "row";
   const key = document.createElement("input"), hdr = document.createElement("input");
-  key.type = "password"; key.size = 34; key.autocomplete = "off"; key.placeholder = id;
-  key.setAttribute("aria-label", (app.title || app.slug) + " " + id);
-  hdr.size = 14; hdr.autocomplete = "off"; hdr.placeholder = "x-api-key";
+  key.type = "password"; key.size = 34; key.autocomplete = "off"; key.placeholder = "paste the " + (help.label || id);
+  key.setAttribute("aria-label", (app.title || app.slug) + " " + (help.label || id));
+  hdr.size = 14; hdr.autocomplete = "off"; hdr.placeholder = help.header || "x-api-key";
   hdr.setAttribute("aria-label", "Header the value is sent in");
-  hdr.title = "The HTTP header the service wants the value in. Leave empty for x-api-key.";
+  hdr.title = "The HTTP header the service wants the value in. Leave empty for " + (help.header || "x-api-key") + ".";
   const set = document.createElement("button"), clr = document.createElement("button");
-  set.className = clr.className = "ghost";
+  set.className = "primary"; clr.className = "ghost";
   set.type = clr.type = "button";
   set.textContent = "Save"; clr.textContent = "Remove";
-  form.append(key, hdr, set, clr);
-  const foot = document.createElement("div");
-  foot.className = "row";
-  foot.append(msg);
-  box.append(head, form, foot);
+  form.append(key, hdr, set, clr, msg);
+  box.appendChild(form);
   const url = cfgURL(app.slug, id);
   const post = async (body, what) => {
-    msg.textContent = what + "…";
+    msg.textContent = what + "\u2026";
     try {
       await readDeviceJSON(await hubFetch(url, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -548,7 +579,7 @@ function secretRow(app, id) {
     }
   };
   set.onclick = () => {
-    const v = key.value.trim(), h = hdr.value.trim();
+    const v = key.value.trim(), h = hdr.value.trim() || help.header || "";
     if (!v) { msg.textContent = "paste the value first"; return; }
     post(h ? { value: v, header: h } : { value: v }, "saving");
   };
@@ -557,19 +588,59 @@ function secretRow(app, id) {
     .catch((e) => { cur.textContent = "unreadable: " + e.message; });
   return box;
 }
+async function apsHelpOf(slug) {
+  if (apsHelp[slug]) return apsHelp[slug];
+  let h = {};
+  try {
+    const r = await hubFetch("/editor/" + encodeURIComponent(current.ip) + "/" + encodeURIComponent(slug) + "/settings.json");
+    if (r.ok) { const j = await r.json(); if (j && typeof j === "object" && !Array.isArray(j)) h = j; }
+  } catch (e) { /* no help: the setting shows by its id */ }
+  apsHelp[slug] = h;
+  return h;
+}
+function apsTabs() {
+  const nav = $("#aps-tabs");
+  nav.innerHTML = "";
+  for (const a of apsApps) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "tab sub" + (a.slug === apsSub ? " on" : "");
+    b.textContent = a.title || a.slug;
+    b.onclick = () => { apsSub = a.slug; apsTabs(); apsPage().catch(() => {}); };
+    nav.appendChild(b);
+  }
+}
+async function apsPage() {
+  const box = $("#secrets"), app = apsApps.find((a) => a.slug === apsSub);
+  box.innerHTML = "";
+  if (!app) return;
+  const ids = app.secrets || [];
+  if (!ids.length) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = (app.title || app.slug) + " has no settings to change here. Its other choices live on the orb's own menu.";
+    box.appendChild(p);
+    return;
+  }
+  const help = ids.length ? await apsHelpOf(app.slug) : {};
+  if (app.slug !== apsSub) return;   // another tab was pressed while the help was read
+  box.innerHTML = "";
+  for (const id of ids) box.appendChild(secretRow(app, id, help[id] || {}));
+}
 async function loadSecrets() {
   if (!current.ip) return;
-  const box = $("#secrets");
   const d = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/apps"));
-  box.innerHTML = "";
-  for (const app of d.installed || [])
-    for (const id of app.secrets || []) box.appendChild(secretRow(app, id));
-  if (!box.children.length) {
-    const r = document.createElement("div");
-    r.className = "row";
-    r.innerHTML = '<span class="hint">no installed app declares a key</span>';
-    box.appendChild(r);
+  apsApps = (d.installed || []).filter((a) => !a.compiled)
+    .map((a) => Object.assign({}, a, { title: a.title || APP_TITLES[a.slug] || a.slug }))
+    .sort((x, y) => String(x.title).localeCompare(String(y.title)));
+  if (!apsApps.some((a) => a.slug === apsSub))
+    apsSub = (apsApps.find((a) => (a.secrets || []).length) || apsApps[0] || {}).slug || "";
+  apsTabs();
+  if (!apsApps.length) {
+    $("#secrets").innerHTML = '<p class="hint">no apps installed on this orb</p>';
+    return;
   }
+  await apsPage();
 }
 
 // ---- the search box: a city, coordinates, or a full plus code ----
@@ -736,9 +807,38 @@ function renderAppsTab() {
     body.appendChild(p);
   }
   for (const e of rows) body.appendChild(appRow(e));
+  const ups = rows.filter((e) => updateGate(e)).length;
+  tabBadge("apps", ups, ups + " app update" + (ups === 1 ? "" : "s") + " in the hub library");
+  const st = $("#mn-appstate");
+  if (st && ups) {
+    const u = document.createElement("span");
+    u.className = "tag upd";
+    u.style.marginLeft = "8px";
+    u.textContent = ups + " update" + (ups === 1 ? "" : "s") + " available";
+    st.appendChild(u);
+  }
   // Refused shelf files and the resolved directory lines print under the list:
   // they are the hub's own inventory report, not an app the operator can act on.
   renderLibrary();
+}
+
+// fwBelow: this orb's firmware is older than release v (vX.Y.Z); false when either is unread
+function fwBelow(v) {
+  const p = (x) => { const m = /v(\d+)\.(\d+)\.(\d+)/.exec(x || ""); return m ? (+m[1]) * 1e6 + (+m[2]) * 1e3 + (+m[3]) : null; };
+  const have = p(fwStamp), need = p(v);
+  return have != null && need != null && have < need;
+}
+
+// tabBadge puts a count on a face's tab (owner, 2026-11-04: updates are seen without
+// opening the face): n > 0 shows it, 0 takes it away.
+function tabBadge(tab, n, tip) {
+  const t = document.querySelector('#orb-tabs .tab[data-tab="' + tab + '"]');
+  if (!t) return;
+  let b = t.querySelector(".badge");
+  if (!n) { if (b) b.remove(); return; }
+  if (!b) { b = document.createElement("span"); b.className = "badge"; t.appendChild(b); }
+  b.textContent = String(n);
+  b.title = tip || "";
 }
 
 // updateGate is D38's Update test, and it is strict by rule: the press is owed
@@ -764,7 +864,7 @@ function appStateSentence(e) {
   let t = (e.title || e.slug) + " \u00b7 " + e.slug;
   if (a) {
     if (a.compiled) t += a.failed ? " \u00b7 built in, quarantined at boot" : " \u00b7 built into the firmware";
-    else if (a.failed) t += " \u00b7 failed: " + (a.status || "the dial did not say why");
+    else if (a.failed) t += " \u00b7 failed: " + (a.reason || a.status || "the dial did not say why");
     // A slot the dial holds is an INSTALLED app — on the rolodex, pressable.
     // The ledger's enabled word is the dial's own switch and not a hub state:
     // this face stopped offering a switch in D38, so nothing here turns a row
@@ -786,13 +886,56 @@ function appStateSentence(e) {
 
 function appRow(e) {
   const a = e.installed, c = e.card, f = e.lib;
+  // The row is the face's table (owner, 2026-11-04): the name over its chips, then the
+  // presses in fixed columns, the same verb in the same column on every row. An update is
+  // a filled chip and a filled button, not a clause inside a sentence; the whole sentence
+  // stays on hover.
   const row = document.createElement("div");
-  row.className = "row";
-  const txt = document.createElement("span");
+  row.className = "arow";
+  const info = document.createElement("div");
+  info.className = "tinfo";
+  info.title = appStateSentence(e);
+  const name = document.createElement("b");
+  name.textContent = e.title || e.slug;
+  const slug = document.createElement("span");
+  slug.className = "hint";
+  slug.textContent = " " + e.slug;
+  const chips = document.createElement("div");
+  chips.className = "ttags";
+  const chip = (text, cls, tip) => {
+    const t = document.createElement("span");
+    t.className = "tag" + (cls ? " " + cls : "");
+    t.textContent = text;
+    if (tip) t.title = tip;
+    chips.appendChild(t);
+  };
+  if (a) {
+    if (a.compiled) chip(a.failed ? "built in \u00b7 quarantined at boot" : "built in", a.failed ? "err" : "mut");
+    else if (a.failed) chip("failed: " + (a.reason || a.status || "the dial did not say why"), "err");
+    else chip("installed " + (a.version || "(unstamped)"), "on");
+  }
+  if (updateGate(e)) {
+    const have = a ? a.version : c && c.version;
+    chip(sameRelease(have, f.version) ? "another build in the hub library" : "update available \u2192 " + f.version, "upd",
+      "The hub library holds " + f.version + "; Update puts it on this orb");
+  } else if (a && !a.compiled && f && verCompare(a.version, f.version) > 0) chip("ahead of the hub library", "mut");
+  if (c) chip(c.ok ? "on the card" + (c.version && !a ? " " + c.version : "") : "the card refuses it: " + (c.why || "no reason given"), c.ok ? "mut" : "err");
+  if (f) chip("in the hub library" + (a || c ? "" : " " + (f.version || "")), "mut");
+  if (a && !a.compiled && a.caps) chip("uses " + a.caps, "mut");
+  // the app's own floor (app.json os_min): an older OS loads it as a failed row, so say so
+  const tooOld = !!(f && f.os_min && fwBelow(f.os_min));
+  if (tooOld) chip("needs firmware " + f.os_min + " \u2014 this orb runs " + (fwStamp.split("+")[0] || "older"), "err",
+    "Update this orb's firmware on the Firmware tab first; the hub refuses the install until then");
+  const txt = document.createElement("div");
   txt.className = "hint";
-  txt.textContent = appStateSentence(e);
-  row.appendChild(txt);
-  const named = e.title || e.slug;
+  const line = document.createElement("div");
+  line.append(name, slug);
+  info.append(line, chips, txt);
+  row.appendChild(info);
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  const slots = [null, null, null, null];
+  let extra = null;
   // The button set IS the state, and Install and Uninstall are mutually
   // exclusive BY CONSTRUCTION: the dial holds a slot or it does not.
   //   Install          no slot, and the shelf or a readable card file can make one
@@ -805,23 +948,38 @@ function appRow(e) {
   //   Remove from hub library the shelf holds it; no dial or card is touched
   // When the Update gate is true the row already offers to bring this app onto
   // the dial with the shelf's newer bytes, so Install stands down: one verb
-  // per fact, never two buttons for one question.
+  // per fact, never two buttons for one question. Columns: [Install | Update |
+  // Clear fault] [Uninstall] [Add to card | Remove from card] [Remove from hub library].
   if (!a && (f || (c && c.ok)) && !updateGate(e))
-    row.appendChild(installButton(e, txt, "Install", false));
-  if (updateGate(e))
-    row.appendChild(installButton(e, txt, "Update", true));
+    slots[0] = installButton(e, txt, "Install", false);
+  if (updateGate(e)) {
+    slots[0] = installButton(e, txt, "Update", true);
+    slots[0].className = "upd";
+  }
+  if (tooOld && slots[0]) slots[0].disabled = true;
   if (a && !a.compiled)
-    row.appendChild(uninstallButton(e, txt));
-  if (a && a.failed)
-    row.appendChild(clearFaultButton(e, txt));
+    slots[1] = uninstallButton(e, txt);
+  if (a && a.failed) {
+    const cf = clearFaultButton(e, txt);
+    if (!slots[0]) slots[0] = cf; else extra = cf;
+  }
   if (f && !c)
-    row.appendChild(addToCardButton(e, txt));
+    slots[2] = addToCardButton(e, txt);
   if (c)
-    row.appendChild(eraseCardButton(e, txt));
+    slots[2] = eraseCardButton(e, txt);
   if (f)
-    row.appendChild(removeFromLibraryButton(f, txt));
+    slots[3] = removeFromLibraryButton(f, txt);
+  for (const b of slots) {
+    if (b) { acts.appendChild(b); continue; }
+    const sp = document.createElement("span");
+    sp.className = "slot";
+    acts.appendChild(sp);
+  }
+  if (extra) acts.appendChild(extra);
+  row.appendChild(acts);
   return row;
 }
+
 
 // installButton is the run that puts bytes on the dial: the shared progress
 // panel opens BEFORE the first byte leaves, the hub streams NDJSON into it, and

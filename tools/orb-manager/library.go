@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -152,6 +155,39 @@ type LibraryFile struct {
 	// operator remembers which app it belongs to. Empty on an app row, where Slug already
 	// is the app.
 	App string `json:"app,omitempty"`
+	// OSMin is the oldest OS release the app runs on, from the stamp in its editor region
+	// (app.json's os_min); empty when the app names none.
+	OSMin string `json:"os_min,omitempty"`
+}
+
+var osMinRe = regexp.MustCompile(`"os_min":\s*"(v\d{1,2}\.\d{1,2}\.\d{1,2})"`)
+
+// appOSMin reads os_min out of an app container's editor region stamp (orb-app.js, which
+// the SDK writes); "" when the app has no editor, no stamp, or names no floor.
+func appOSMin(body []byte) string {
+	region, err := orbnet.AppEditorRegion(body)
+	if err != nil || len(region) == 0 {
+		return ""
+	}
+	zr, err := zip.NewReader(bytes.NewReader(region), int64(len(region)))
+	if err != nil {
+		return ""
+	}
+	for _, f := range zr.File {
+		if f.Name != "orb-app.js" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return ""
+		}
+		b, _ := io.ReadAll(io.LimitReader(rc, 4096))
+		rc.Close()
+		if m := osMinRe.FindSubmatch(b); m != nil {
+			return string(m[1])
+		}
+	}
+	return ""
 }
 
 // LibraryRefusal is a file in the library that will not load. It is a listing entry and
@@ -267,7 +303,7 @@ func listAppLibrary(dir string, out *LibraryPayload) {
 		}
 		found = append(found, LibraryFile{File: e.Name(), Slug: c.Slug, Title: c.Title,
 			Version: c.Version, Caps: c.CapNames(), Themes: c.HasThemes(),
-			HasEditor: c.HasEditor(), Bytes: len(body)})
+			HasEditor: c.HasEditor(), Bytes: len(body), OSMin: appOSMin(body)})
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].Slug < found[j].Slug })
 	out.Apps = append(out.Apps, found...)
@@ -635,16 +671,31 @@ func dirWritable(dir string) bool {
 // the seed's job is to clothe a bare dial, and a broken file sitting beside a good one is
 // not a reason to leave the board naked. The Library pane names the refusal, so the skip
 // is never the only place the truth could be found.
-func (l *Library) firstTheme() (string, []byte, error) {
+// appTheme is the theme an install seeds for one app: the first shelf theme, by file name,
+// whose container belongs to that app and that an orb on this firmware reads. The clock's is
+// skeleton.orbtheme, the flight tracker's flights-modern.orbtheme.
+func (l *Library) appTheme(slug string) (string, []byte, error) {
 	if l == nil || l.ThemesDir == "" {
 		return "", nil, fmt.Errorf("no theme library is resolved, so there is nothing to seed")
 	}
-	body, err := l.namedTheme("")
+	name, path := "", ""
+	shelfThemes(l.ThemesDir, func(p string, _ os.FileInfo, t *orbnet.ShelfThemeInfo) {
+		if path == "" && t.Stale == "" && shelfApp(t) == slug {
+			name, path = t.Name, p
+		}
+	})
+	if path == "" {
+		return "", nil, fmt.Errorf("the theme library at %s holds no theme for %s", l.ThemesDir, slug)
+	}
+	blob, err := os.ReadFile(path)
 	if err != nil {
 		return "", nil, err
 	}
-	return body.name, body.blob, nil
+	return name, blob, nil
 }
+
+// hasAppTheme answers whether the shelf can seed a theme for the app.
+func (l *Library) hasAppTheme(slug string) bool { _, _, err := l.appTheme(slug); return err == nil }
 
 // themeBlob is one shelf theme's bytes, addressed by the shelf's file stem (""
 // asks the first by name order, which is what firstTheme seeds). D38: the

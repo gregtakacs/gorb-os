@@ -2767,7 +2767,13 @@ function renderThemeTabs() {
   const nav = $("#mn-themes-tabs");
   if (!nav) return;
   nav.innerHTML = "";
+  const head = $("#mn-themes-app");
   const apps = themeAppsRows.slice();
+  if (head) {
+    const sc = apps.length ? themeFaceScope() : "";
+    const on = sc && apps.find((a) => a.slug === sc);
+    head.textContent = sc ? themeAppTitle(sc) + " themes" + (on && on.on_glass ? " \u00b7 on the glass now" : "") : "";
+  }
   if (!apps.length) return;
   apps.sort((x, y) => (x.slug < y.slug ? -1 : 1));
   const mk = (slug, label, on) => {
@@ -2775,7 +2781,14 @@ function renderThemeTabs() {
     b.type = "button";
     b.className = "tab sub" + (on ? " on" : "");
     b.textContent = label;
-    b.onclick = () => { themeSub = slug; loadThemes(themeIP); };
+    // the list keeps its height while the other app's rows load, so the page does not
+    // shrink, scroll to the top and pull the pill out from under the pointer (owner, 2026-11-04)
+    b.onclick = () => {
+      const L = $("#mn-themes");
+      if (L) L.style.minHeight = L.offsetHeight + "px";
+      themeSub = slug;
+      Promise.resolve(loadThemes(themeIP)).finally(() => { if (L) L.style.minHeight = ""; });
+    };
     nav.appendChild(b);
   };
   // One themeable app: the pane needs its name and not a press. This branch drew a
@@ -3101,7 +3114,7 @@ async function loadThemes(ip) {
   state.textContent = "reading which apps on this orb can take themes\u2026";
   state.classList.add("spin-wait");
   list.innerHTML = "";
-  renderThemeEditRow("", false);   // a stale door from the last read edits the last card
+  renderThemeEditRow("");   // a stale door from the last read edits the last card
   clearPreviewQueue();
   hideOverlay();
   ovRows.length = 0;
@@ -3167,8 +3180,12 @@ async function loadThemes(ip) {
   // the count joins the line once this read has it (it used to print the last read's)
   if (libThemeCount) state.textContent += " \u00b7 " + libThemeCount + " in the hub library";
   const shelfN = themeLibraryRows(libApp, rows, state, lib);
+  // updates: card rows with a newer shelf bake, or a card copy newer than the drawing
+  const ups = Array.from(list.querySelectorAll("li.trow[data-name]")).filter((r) => r.querySelector(".tag.upd")).length;
+  if (typeof tabBadge === "function") tabBadge("themes", ups, ups + " theme update" + (ups === 1 ? "" : "s") + " for this orb");
+  if (ups) state.textContent += " \u00b7 " + ups + " update" + (ups === 1 ? "" : "s") + " in the hub library";
   if (!shown.length && !shelfN) themeEmptyPane(list, scope);
-  renderThemeEditRow(scope, shown.length > 0);
+  renderThemeEditRow(scope);
   if (d.mounted) warmOrbCard(ip);   // the face is painted; the hub can read the rest ahead
 }
 
@@ -3234,12 +3251,10 @@ function themeEmptyPane(list, sub) {
   // which app it is standing on.
   li.textContent = row
     ? themeAppTitle(slug) + " takes themes and this orb has none for it yet."
-      + (row.has_editor ? " Use Compose new theme below to draw the first one."
+      + (row.has_editor ? " Use Compose new theme above to draw the first one."
                         : " Its container ships no editor, so themes for it arrive as .orbtheme files.")
     : (slug ? "the card holds no themes for " + slug + " yet" : "the card holds no themes yet");
   list.appendChild(li);
-  const btn = themeEditButton(slug);
-  if (btn) list.appendChild(btn);
 }
 
 // themeEditButton builds the pane's per-app authoring door, or returns nothing when
@@ -3268,14 +3283,14 @@ function themeEditButton(sub) {
 }
 
 // renderThemeEditRow keeps the toolbar door honest about what "no editor here"
-// means: no slot content at all, not a dead button. An app WITH themes still
-// edits — the empty pane is where a first theme gets authored, not the only
-// place editing happens.
-function renderThemeEditRow(sub, shownThemes) {
+// means: no slot content at all, not a dead button. The toolbar sits over the list
+// (owner, 2026-11-04), so the door is there whether the app has themes or not: an
+// empty pane points up at it rather than drawing a second one.
+function renderThemeEditRow(sub) {
   const slot = $("#mn-theme-editrow");
   if (!slot) return;
   slot.innerHTML = "";
-  if (shownThemes) slot.appendChild(themeEditButton(sub) || document.createTextNode(""));
+  if (sub) slot.appendChild(themeEditButton(sub) || document.createTextNode(""));
 }
 
 // openThemeEditor shows one app's editor inside the Themes face (D37 §6.2). The
@@ -3492,17 +3507,18 @@ function themeRow(t, state, list) {
   pvq.hidden = true;
   li.appendChild(pvq);
   queuePreview(pv, t, pvq);
+  li.dataset.name = String(t.name || "").toLowerCase();
   const label = document.createElement("b");
   label.textContent = t.name;
   li.appendChild(label);
   const id = document.createElement("span");
-  id.className = "tag";
+  id.className = "tag id";
   id.textContent = t.id;
   id.title = "the orb files this theme under sha256(name)[:12]; install and delete name it this way";
   li.appendChild(id);
   if (t.active) {
     const tag = document.createElement("span");
-    tag.className = "tag";
+    tag.className = "tag on";
     tag.textContent = "active";
     li.appendChild(tag);
   }
@@ -3511,8 +3527,8 @@ function themeRow(t, state, list) {
   // between an operator who re-installs and one who waits for a face that never comes.
   if (t.changed) {
     const stale = document.createElement("span");
-    stale.className = "tag warn";
-    stale.textContent = "card is newer than what it is drawing";
+    stale.className = "tag upd";
+    stale.textContent = "update ready \u2014 Activate to draw the card's newer copy";
     stale.title = "the installed slot holds an older copy of this theme; use it again to draw this one";
     li.appendChild(stale);
   }
@@ -3552,7 +3568,8 @@ function themeRow(t, state, list) {
   // it — but the row is answering "put this on the wall", which is what
   // activate says and Store, beside an Install button, did not.
   use.textContent = "Activate";
-  use.disabled = !t.ok || t.active;
+  use.disabled = !t.ok || (t.active && !t.changed);   // a changed active row redraws on a press
+  if (t.changed && t.ok) use.className = "upd";
   // Migration 1 made this the ONE press: the door answers once the copy is queued and
   // the orb reboots onto the new face when it verifies, so the press is not over when
   // the POST returns. watchThemeJob follows the row to its witness and the state line
@@ -3589,10 +3606,8 @@ function themeRow(t, state, list) {
   };
   li.appendChild(use);
   // D43 P7: a card theme that carries its design reopens in its app's editor
-  if (t.design) {
-    const ed = themeReopenButton(t.app, { id: t.id });
-    if (ed) li.appendChild(ed);
-  }
+  const ed = t.design ? themeReopenButton(t.app, { id: t.id }) : null;
+  if (ed) li.appendChild(ed);
   // The hover overlay (owner, 2026-10-26): this row is one page of the wheel,
   // and the store button is exactly what a click on the overlay presses.
   const ovEntry = { t, canvas: pv, chip: pvq, save: use };
@@ -3644,6 +3659,7 @@ function themeRow(t, state, list) {
     } catch (e) { state.textContent = "remove refused: " + e.message; del.disabled = false; }
   };
   li.appendChild(del);
+  tidyRow(li, [use, ed, null, del]);
   return li;
 }
 
@@ -3656,6 +3672,30 @@ function themeRow(t, state, list) {
 // A theme row's ID photo is the plane inside the hub's own copy, read off disk
 // (shelfPreviewPlane), so no orb is dialed for it; a draft has no bake and so no photo.
 let libThemeCount = 0;   // the state line's count, set by loadThemes with each read
+
+// tidyRow lays a theme row out as the face's table (owner, 2026-11-04): the picture, the
+// name over its tags, then the presses in fixed columns, the same verb in the same column
+// on every row and an empty cell where a row has no such press. Card rows and library rows
+// share the columns: [Activate | Install] [Edit] [Update | Discard changes] [Remove ...];
+// a card row's Update is filled in by the library pass, which knows the newer bake.
+const ROW_SLOTS = 4;
+function tidyRow(li, slots) {
+  li.classList.add("trow");
+  const info = document.createElement("div"), tags = document.createElement("div"), acts = document.createElement("div");
+  info.className = "tinfo"; tags.className = "ttags"; acts.className = "acts";
+  for (const el of Array.from(li.children)) {
+    if (el.tagName === "B") info.appendChild(el);
+    else if (el.tagName === "SPAN" && el.classList.contains("tag")) tags.appendChild(el);
+  }
+  info.appendChild(tags);
+  for (let i = 0; i < ROW_SLOTS; i++) {
+    const b = slots[i];
+    if (b) acts.appendChild(b);
+    else { const e = document.createElement("span"); e.className = "slot"; acts.appendChild(e); }
+  }
+  for (const el of Array.from(li.children)) if (el.tagName === "BUTTON") acts.appendChild(el);   // any press no slot names
+  li.append(info, acts);
+}
 
 function themeSection(title, extra) {
   const li = document.createElement("li");
@@ -3671,8 +3711,8 @@ function themeLibraryRows(app, deviceRows, state, entries) {
   entries = Array.isArray(entries) ? entries : [];
   const list = $("#mn-themes");
   if (!entries.length || !list || !app) return 0;
-  const onCard = {};
-  for (const t of deviceRows) if ((t.app || "clock") === app) onCard[String(t.name || "").toLowerCase()] = true;
+  const onCard = {};   // name -> the card copy's size, which is how a newer shelf bake shows
+  for (const t of deviceRows) if ((t.app || "clock") === app) onCard[String(t.name || "").toLowerCase()] = t.bytes || -1;
   const edRow = themeAppsRows.find((a) => a.slug === app);
   const canEdit = !!(edRow && edRow.has_editor && edRow.editor_url);
   const stale = entries.filter((e) => e.theme && e.theme.stale);
@@ -3716,6 +3756,16 @@ function themeLibraryRows(app, deviceRows, state, entries) {
       pvq.hidden = true;
       li.appendChild(pvq);
       shelfPreviewPlane(pv, pvq, th.stem);
+    } else {
+      // a draft has no bake to read a plane from; its editor saved a picture beside it
+      const tb = e.draft && e.draft.extra && e.draft.extra.thumb;
+      if (typeof tb === "string" && /^data:image\/(jpeg|png);base64,/.test(tb)) {
+        const im = document.createElement("img");
+        im.className = "pv";
+        im.src = tb;
+        im.alt = "";
+        li.appendChild(im);
+      }
     }
     const label = document.createElement("b");
     label.textContent = e.name;
@@ -3732,10 +3782,26 @@ function themeLibraryRows(app, deviceRows, state, entries) {
     else tag(e.state === "changed" ? "theme \u00b7 unsent changes" : "theme", e.state === "changed" ? "warn" : "",
       e.state === "changed" ? "Changes saved in the editor that have not been baked: Edit opens them, Send to orb there bakes them in" : "Baked, in the hub library");
     if (th && th.made_with) tag("made with " + th.made_with, "mut", "The editor release that made this design; opening it in a newer editor updates it when saved or sent");
-    if (th && onCard[e.name.toLowerCase()]) tag("on " + (current.name || themeIP || "this orb"), "mut", "This orb's card holds a theme by this name");
+    const cardBytes = onCard[e.name.toLowerCase()];
+    // a different size is a different bake: the shelf's is the one the editor last made
+    const newer = !!(th && !th.stale && cardBytes && cardBytes > 0 && th.bytes && th.bytes !== cardBytes);
+    // Update belongs to the card's row (owner, 2026-11-04): that is the copy being updated,
+    // from this one. The library row only says it is the newer of the two.
+    const cardLi = newer ? list.querySelector('li.trow[data-name="' + CSS.escape(e.name.toLowerCase()) + '"]') : null;
+    if (newer) {
+      tag("newer than " + (current.name || themeIP || "this orb") + "'s copy", "mut", "This orb's card holds an older bake of this theme; its row above has Update");
+      if (cardLi) {
+        const u = document.createElement("span");
+        u.className = "tag upd";
+        u.textContent = "update available";
+        u.title = "The hub library holds a newer bake of this theme: Update sends it over this copy";
+        cardLi.querySelector(".ttags").appendChild(u);
+      }
+    } else if (th && cardBytes) tag("on " + (current.name || themeIP || "this orb"), "mut", "This orb's card holds a theme by this name");
     if (th) tag(Math.round((th.bytes || 0) / 1024) + " KB", "mut");
+    let ed = null, dc = null;
     if (canEdit && (e.draft || (th && th.can_reopen))) {
-      const ed = document.createElement("button");
+      ed = document.createElement("button");
       ed.type = "button";
       ed.className = "ghost";
       ed.textContent = "Edit";
@@ -3743,18 +3809,21 @@ function themeLibraryRows(app, deviceRows, state, entries) {
       ed.onclick = () => openThemeEditor(edRow, { entry: e.name });
       li.appendChild(ed);
     }
-    if (th && !th.stale && !onCard[e.name.toLowerCase()]) {
-      const inst = document.createElement("button");
-      inst.className = "ghost";
-      inst.textContent = "Install";
-      inst.title = "Send this theme to the orb in hand. The device's theme door stores the file the moment it verifies, and the board reboots onto it.";
+    let inst = null;
+    if (th && !th.stale && (!cardBytes || newer)) {
+      inst = document.createElement("button");
+      inst.className = newer ? "upd" : "ghost";
+      inst.textContent = newer ? "Update" : "Install";
+      inst.title = newer ? "Replace this orb's copy with the hub library's newer bake. The orb stores it and reboots onto it."
+        : "Send this theme to the orb in hand. The device's theme door stores the file the moment it verifies, and the board reboots onto it.";
       inst.onclick = async () => {
         if (!themeIP) { state.textContent = "no orb in hand \u2014 connect one first."; return; }
         if (typeof askConfirm === "function" && !await askConfirm({
-          title: "Install this theme?",
+          title: newer ? "Update this theme?" : "Install this theme?",
           body: (f.title || f.file) + " goes to " + themeIP + ": the device files the card copy and stores it in the same door, so the board reboots onto the new face.",
-          detail: "The hub's copy stays on the shelf. Remove from card later clears the orb's copy, and taking the wall's theme off clears the face too.",
-          yes: "Install",
+          detail: (newer ? "It replaces the older bake of the same name on the card. " : "")
+            + "The hub's copy stays on the shelf. Remove from card later clears the orb's copy, and taking the wall's theme off clears the face too.",
+          yes: newer ? "Update" : "Install",
         })) return;
         inst.disabled = true;
         fpOpen();
@@ -3767,7 +3836,7 @@ function themeLibraryRows(app, deviceRows, state, entries) {
         // with the bytes, and the panel is the single place a refusal is read.
         const okPush = await streamSteps("/api/library/push?kind=theme&name="
           + encodeURIComponent(String(f.file).replace(/\.orbtheme$/i, ""))
-          + "&ip=" + encodeURIComponent(themeIP), ui, themeIP);
+          + "&ip=" + encodeURIComponent(themeIP) + (newer ? "&overwrite=1" : ""), ui, themeIP);
         if (!okPush) {
           state.textContent = "install refused \u2014 read the progress panel";
           inst.disabled = false;
@@ -3787,10 +3856,14 @@ function themeLibraryRows(app, deviceRows, state, entries) {
           inst.disabled = false;
         }
       };
-      li.appendChild(inst);
+      const cardActs = cardLi && cardLi.querySelector(".acts");
+      if (newer && cardActs && cardActs.children[2]) {
+        cardActs.replaceChild(inst, cardActs.children[2]);   // the card row's empty third column
+        inst = null;
+      } else li.appendChild(inst);
     }
     if (e.state === "changed") {
-      const dc = document.createElement("button");
+      dc = document.createElement("button");
       dc.className = "ghost";
       dc.textContent = "Discard changes";
       dc.title = "Drop the unsent changes and keep the theme as it was baked";
@@ -3811,6 +3884,7 @@ function themeLibraryRows(app, deviceRows, state, entries) {
       forget(e, "all", rm);
     };
     li.appendChild(rm);
+    tidyRow(li, [inst, ed, dc, rm]);
     list.appendChild(li);
   }
   return n;

@@ -334,7 +334,7 @@ func TestThemeEditorIsAppOwnedNotAGlobalLink(t *testing.T) {
 	}
 	// The argument is the resolved scope, not the raw pressed tab: a one-app dial has no
 	// pressed tab and still has one right app to open the editor for.
-	if !strings.Contains(app, "renderThemeEditRow(scope, shown.length > 0)") {
+	if !strings.Contains(app, "renderThemeEditRow(scope)") {
 		t.Error("loadThemes never fills the toolbar Edit slot, so the door is only real on an empty card")
 	}
 }
@@ -359,7 +359,7 @@ func TestThemeEditorIsAppOwnedNotAGlobalLink(t *testing.T) {
 func TestZoneFaceTellsTheTruthAndFacesRearmOnReturn(t *testing.T) {
 	tabs := readWebFile(t, "tabs.js")
 	app := readAppJS(t)
-	if !strings.Contains(tabs, "the home did not load: ") {
+	if !strings.Contains(tabs, "the location did not load: ") {
 		t.Error("loadHome is back to leaving the card parked on its loading line when the fetch dies")
 	}
 	if !strings.Contains(tabs, "throw e;") {
@@ -677,7 +677,7 @@ func TestThemeCardCaptionsSayWhatTheyDo(t *testing.T) {
 	if !strings.Contains(edit, "themeAppTitle(") {
 		t.Error("the authoring door no longer says which app's editor it opens")
 	}
-	if !strings.Contains(app, "Use Compose new theme below") {
+	if !strings.Contains(app, "Use Compose new theme above") {
 		t.Error("the empty pane tells the operator to use a door with a different name")
 	}
 	for _, c := range []struct{ id, want, why string }{
@@ -723,7 +723,7 @@ func TestThemesFaceFollowsTheAppsPattern(t *testing.T) {
 		}
 	}
 	shelf := blockOf(t, app, "function themeLibraryRows")
-	for _, want := range []string{`inst.textContent = "Install"`, "Remove from hub library", "/api/library/push?kind=theme"} {
+	for _, want := range []string{`newer ? "Update" : "Install"`, "Remove from hub library", "/api/library/push?kind=theme"} {
 		if !strings.Contains(shelf, want) {
 			t.Errorf("the shelf theme row has no %s; a hub-folder theme must be installable from this face", want)
 		}
@@ -1181,7 +1181,7 @@ func TestLibraryInstallOpensTheSharedProgressPanel(t *testing.T) {
 		// and its progress is one bar that fills while the push streams — the push
 		// route speaks the install ladder's own NDJSON dialect, so the bar moves
 		// with real bytes.
-		{"the theme row's Install press", `inst.textContent = "Install";`},
+		{"the theme row's Install press", `inst.textContent = newer ? "Update" : "Install";`},
 	} {
 		src := tabs
 		if probe.label == "the theme row's Install press" {
@@ -1307,7 +1307,7 @@ func TestLibraryInstallRefetchesTheLedgerItJustChanged(t *testing.T) {
 		{"the app row's Install press", "tabs", "btn.textContent = name;", "loadApps()", "libVerdict"},
 		// D38: the shelf theme's Install re-reads through loadThemes, and its own
 		// refusal line is the survivor sentence — the push has no row verdict to keep.
-		{"the theme row's Install press", "app", `inst.textContent = "Install";`, "loadThemes(themeIP)", "install refused"},
+		{"the theme row's Install press", "app", `inst.textContent = newer ? "Update" : "Install";`, "loadThemes(themeIP)", "install refused"},
 	} {
 		src := tabs
 		if probe.file == "app" {

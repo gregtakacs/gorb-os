@@ -267,6 +267,7 @@ header nav{display:flex;gap:10px;align-items:baseline}
   padding:7px 14px;cursor:pointer;font:inherit;border-radius:6px 6px 0 0;opacity:.7}
 .tabs .tab.on{background:var(--card);border-color:var(--line);opacity:1;font-weight:600}
 .tabs .tab:hover{opacity:1}
+.tabs .tab .badge{display:inline-block;margin-left:6px;min-width:18px;padding:0 5px;border-radius:9px;background:var(--warn);color:#1a1300;font-size:11px;font-weight:700;line-height:18px;text-align:center}
 .subtabs{display:flex;gap:2px;margin:6px 0}
 .tab.sub{font-size:.95em;padding:4px 10px}
 /* The Themes pane's single-app heading is a label and not a tab. One theme-capable
@@ -274,11 +275,71 @@ header nav{display:flex;gap:10px;align-items:baseline}
    authors: a button that re-reads the list already on screen reads as a door. */
 .subtabs .tablabel{align-self:center;padding:4px 10px;font-size:.95em;font-weight:600;opacity:.65}
 .tzlist{display:flex;flex-direction:column;gap:2px;max-height:16em;overflow:auto;margin:6px 0}
+.tzlist[hidden]{display:none}
 .tzrow{display:block;text-align:left;background:none;border:1px solid var(--line);color:var(--fg);
   padding:6px 10px;border-radius:6px;cursor:pointer;font:inherit}
 .tzrow:hover{border-color:var(--acc)}
 .tzrow.cur{border-color:var(--acc);font-weight:600}
-.homemap{height:360px;margin:6px 0;border:1px solid var(--line);border-radius:6px}
+/* Location (owner, 2026-11-04): the controls beside a map sized to what it shows, not a
+   page-wide strip under them. Below 820 px the map drops under the controls. */
+.locgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,440px);gap:16px;align-items:start;margin-top:8px}
+.locside{display:flex;flex-direction:column;gap:10px;min-width:0}
+.locside input{width:100%}
+.locbtns{display:flex;gap:8px;flex-wrap:wrap}
+.locnext{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--focus);border-radius:8px}
+.locnext[hidden]{display:none}
+.homemap{height:300px;border:1px solid var(--line);border-radius:8px}
+@media (max-width:820px){.locgrid{grid-template-columns:minmax(0,1fr)}}
+/* App settings: one page per app, each setting a block with its own help and links */
+.apsset{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
+.apsset p{margin:6px 0;max-width:72ch}
+.apshead{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.apslinks{display:flex;gap:16px;flex-wrap:wrap}
+.apslinks a{color:var(--focus);font-size:13px;text-decoration:none}
+.apslinks a:hover{text-decoration:underline}
+.apsset .row{flex-wrap:wrap;margin:8px 0 0}
+/* The Themes pane's app switch (owner, 2026-11-04): which app's themes these are is the
+   first thing read. Bigger pills, the chosen one filled; its name heads the list. */
+.subtabs.appswitch{gap:8px;margin:4px 0 12px;flex-wrap:wrap}
+.appswitch .tab.sub{font-size:15px;padding:8px 16px;border:1px solid var(--line);border-radius:999px;background:none;color:var(--fg);opacity:.8}
+.appswitch .tab.sub.on{background:#1f6feb;border-color:#1f6feb;color:#fff;opacity:1;font-weight:600}
+.appswitch .tablabel{font-size:15px;opacity:1;padding:8px 16px;border-radius:999px;background:#1f6feb;color:#fff}
+.apphead{display:flex;flex-direction:column;gap:2px;margin:0 0 6px}
+.apphead .appname{font-size:20px;font-weight:700}
+.apphead .appname:empty{display:none}
+.row.toolbar{flex-wrap:wrap;margin:10px 0;padding:8px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+/* A theme or app row is a table row: picture, name over its tags, then the presses in
+   fixed columns so the same verb lines up down the list; an empty cell keeps its place. */
+.themelist li.trow{display:grid;grid-template-columns:44px minmax(0,1fr) auto;column-gap:12px;align-items:center}
+.themelist li.trow>canvas.pv,.themelist li.trow>span.pvq,.themelist li.trow>img.pv{grid-column:1;grid-row:1}
+.themelist img.pv{width:44px;height:44px;border-radius:8px;background:#000;object-fit:cover}
+.themelist li.trow>.tinfo{grid-column:2;grid-row:1}
+.themelist li.trow>.acts{grid-column:3;grid-row:1}
+.tinfo{min-width:0;display:flex;flex-direction:column;gap:4px}
+.tinfo>b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ttags{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.acts{display:grid;grid-template-columns:repeat(4,10.5em);gap:6px;justify-content:end}
+.acts>button{width:100%;padding:7px 8px;font-size:13px;white-space:nowrap}
+.acts>.slot{display:block}
+.arow{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;align-items:center;
+  padding:9px 12px;border:1px solid var(--line);border-radius:8px;margin:6px 0}
+.arow .tag{font-size:11px;padding:2px 7px;border-radius:5px;border:1px solid var(--line)}
+.arow .tag.on,.themelist .tag.on{border-color:#6fbf73;color:#9adc9e}
+.arow .tag.mut{opacity:.8}
+.arow .tag.err{border-color:#c9525a;color:#f2a0a6}
+.themelist .tag.id{border:none;padding:0;color:var(--mut);font-family:ui-monospace,monospace}
+/* An update is the loudest thing on a row: a filled amber chip and a filled amber press. */
+.tag.upd{background:var(--warn);border-color:var(--warn)!important;color:#1a1300!important;font-weight:700}
+button.upd{background:var(--warn);border-color:var(--warn);color:#1a1300;font-weight:700}
+button.upd:hover{border-color:#fff}
+@media (max-width:1100px){
+  .themelist li.trow,.arow{grid-template-columns:44px minmax(0,1fr)}
+  .arow{grid-template-columns:minmax(0,1fr)}
+  .themelist li.trow>.acts{grid-column:1/-1;grid-row:2;margin-top:8px}
+  .arow>.acts{margin-top:8px}
+  .acts{grid-template-columns:repeat(auto-fill,minmax(10em,1fr));justify-content:stretch}
+  .acts>.slot{display:none}
+}
 .filelist{list-style:none;padding:0;margin:6px 0;display:flex;flex-direction:column;gap:2px}
 .filerow{display:flex;gap:10px;align-items:baseline;border:1px solid var(--line);border-radius:6px;padding:5px 10px}
 .filerow.dir{background:rgba(125,125,125,.07)}

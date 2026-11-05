@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -129,7 +130,7 @@ func TestThemeStepStandsDownWithoutDialingTheDoor(t *testing.T) {
 	s.ota.DevicePort = portOf(srv.URL)
 
 	step, note := "", ""
-	if err := s.installTheme(context.Background(), "127.0.0.1",
+	if err := s.installTheme(context.Background(), "127.0.0.1", "clock",
 		func(st installStep) { step, note = st.Action, st.Note }); err != nil {
 		t.Fatalf("the theme step refused a card holding its owner's themes: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestThemeStepRidesOutASlowCardWalk(t *testing.T) {
 	s.device.DevicePort = portOf(srv.URL)
 
 	step := ""
-	if err := s.installTheme(context.Background(), "127.0.0.1",
+	if err := s.installTheme(context.Background(), "127.0.0.1", "clock",
 		func(st installStep) { step = st.Action }); err != nil {
 		t.Fatalf("a slow card walk refused the run: %v", err)
 	}
@@ -193,7 +194,7 @@ func TestThemeStepUnreadCardIsNotARefusal(t *testing.T) {
 	s.ota.DevicePort = portOf(srv.URL)
 
 	step := ""
-	if err := s.installTheme(context.Background(), "127.0.0.1",
+	if err := s.installTheme(context.Background(), "127.0.0.1", "clock",
 		func(st installStep) { step = st.Action }); err != nil {
 		t.Fatalf("an unread theme list refused the run: %v", err)
 	}
@@ -228,7 +229,7 @@ func TestThemeStepDoesNotSeedABusyCard(t *testing.T) {
 		s.ota = orbnet.NewClient(otaTimeout)
 		s.ota.DevicePort = portOf(srv.URL)
 		step := ""
-		if err := s.installTheme(context.Background(), "127.0.0.1",
+		if err := s.installTheme(context.Background(), "127.0.0.1", "clock",
 			func(st installStep) { step = st.Action }); err != nil {
 			t.Fatalf("%s: a busy card refused the run: %v", busy, err)
 		}
@@ -241,5 +242,54 @@ func TestThemeStepDoesNotSeedABusyCard(t *testing.T) {
 			}
 		}
 		srv.Close()
+	}
+}
+
+// The seed is per app (owner, 2026-11-04: flights installed on Gold beside the clock's
+// Skeleton and got no theme). A card holding only clock themes does not stand the flight
+// tracker's step down; it goes on to the library for a flights theme. One of the app's own
+// does stand it down.
+func TestThemeStepIsPerApp(t *testing.T) {
+	cards := map[string]string{
+		"clock only":  `{"mounted":true,"card_count":1,"themes":[{"name":"Skeleton","app":"clock"}]}`,
+		"flights too": `{"mounted":true,"card_count":2,"themes":[{"name":"Skeleton","app":"clock"},{"name":"Modern","app":"flights"}]}`,
+	}
+	for label, body := range cards {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Path == "/api/v1/sd" {
+				w.Write([]byte(body))
+				return
+			}
+			w.Write([]byte(`{}`))
+		}))
+		s := newHub()
+		s.lib = &Library{ThemesDir: t.TempDir()} // an empty shelf: seeding must say so
+		s.device = orbnet.NewClient(deviceTimeout)
+		s.device.DevicePort = portOf(srv.URL)
+		step := ""
+		err := s.installTheme(context.Background(), "127.0.0.1", "flights", func(st installStep) { step = st.Action })
+		srv.Close()
+		if label == "clock only" && (err == nil || !strings.Contains(err.Error(), "no theme for flights")) {
+			t.Errorf("%s: the flights seed stood down (step %q, err %v); the clock's themes are not flights'", label, step, err)
+		}
+		if label == "flights too" && (err != nil || step != "skipped") {
+			t.Errorf("%s: a card with a flights theme still went on to seed (step %q, err %v)", label, step, err)
+		}
+	}
+}
+
+// The flight tracker names its OS floor (app.json os_min), carried in its editor region's
+// stamp, and the install run reads it from there: the shipped container must say v1.2.8,
+// and the clock, which runs on older releases, names none.
+func TestShelfAppsCarryTheirOSFloor(t *testing.T) {
+	for slug, want := range map[string]string{"flights": "v1.2.8", "clock": ""} {
+		body, err := os.ReadFile(filepath.Join("apps", slug+".orbapp"))
+		if err != nil {
+			t.Fatalf("%s: %v", slug, err)
+		}
+		if got := appOSMin(body); got != want {
+			t.Errorf("%s.orbapp names os_min %q; want %q", slug, got, want)
+		}
 	}
 }

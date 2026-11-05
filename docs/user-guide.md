@@ -93,10 +93,10 @@ Click an orb in the **Orbs** list to open its card. The tabs are:
 
 | Tab | What it does |
 |---|---|
-| **Orb** | the orb's name, and its home location: the clock's time zone comes from it, and apps that need a place read it |
+| **Orb** | the orb's name; its sound, with quiet hours in half-hour steps; its **Location**, set by search, this browser, or a click on the map beside it (the clock's time zone comes from it, and apps that need a place read it); and **App settings**, a page per installed app (today: the Flights app's adsb.lol API key, with where to get one) |
 | **Wi-Fi** | move the orb to another network |
-| **Apps** | the apps on this orb and in your library: **Install**, **Uninstall**, **Import an app** (an `.orbapp` file), **Restore bundled apps**, and **App keys** for apps that need an API key |
-| **Themes** | the clock faces on this orb: pick one, **Import a theme** (an `.orbtheme` file), or open the **Theme Editor** to design your own |
+| **Apps** | the apps on this orb and in your library, one row each with its presses in fixed columns: **Install** or **Update** (amber when the library holds a newer build; the tab shows the count), **Uninstall**, the card copy, the library copy; **Import an app** (an `.orbapp` file) and **Restore bundled apps** |
+| **Themes** | each app's themes under its own tab, the app named over the list; **Refresh from Orb**, **Compose new theme** and **Import a theme** (an `.orbtheme` file) above it. A theme the library holds a newer bake of shows an amber **Update** |
 | **Files** | the files on the orb's microSD card |
 | **Firmware** | the version the orb runs; **Update firmware** lights up when Orb Manager carries a newer one |
 
@@ -106,9 +106,10 @@ an app also erases its settings and keys, so installing it again starts it fresh
 ### The Theme Editor
 
 The Theme Editor designs clock faces. Start from a preset, change the dial, hands,
-complications, case and colours, and **Send** the result straight to the orb. **Save**
-keeps an `.orbtheme` file (the theme, with its design inside) that you can open again or
-share. Anything a theme can do, the editor can rebuild, so there is no "restore bundled
+complications, case and colours, and **Send to orb** on the Render step: it saves the design
+to the library first, then bakes and sends it. **Save to library**, beside it, keeps the
+design without sending; the start page only opens things. **Download .orbtheme** keeps a
+file (the theme, with its design inside) that you can open again or share. Anything a theme can do, the editor can rebuild, so there is no "restore bundled
 themes" button.
 
 ## Your library

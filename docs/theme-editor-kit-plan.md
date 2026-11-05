@@ -123,7 +123,7 @@ send to Gold where the slice touches the glass. A suite moves with the code it t
 | **K6** | `studio@1`: frame, title and step bar, status, send modal, the Render step, slots | the clock's P5 checklist (nothing lost), no page scroll at 1280×720 and 1920×1080 inside the hub — **built and benched on Gold 2026-11-04** (§7) |
 | **K7** | `studio@1`: the layers panel and the field builders, driven by what the app declares | the clock's layers and inspector behave as before (`headless-stack-ui`, `headless-forms`, `headless-ui`); the clock's own rules (`stack.js`) stay the clock's — **built and benched on Gold 2026-11-04** (§7) |
 | **H1** | the Themes page per app: a sub-tab for each theme-aware app, with its themes and a link to its editor, all hub code (§0.1 ruling 4) | Go and UI suites green; on Gold, the clock's tab lists the card's themes and opens the editor; an app with no themes or no editor gets a tab that says so — **built 2026-11-04** (§7) |
-| **K9** | the hub's disk is the editor's store, and the hub's library is its editor (owner, 2026-11-04): My designs are files on the hub, autosave is gone, every theme sent or imported is kept on the shelf by app and name, and the hub serves its own editor when it is the orb's release or newer, saying when it is newer than the orb and when a design it opens was made by an older editor | Go suites for the store, the shelf copy and the region choice; the session suites with the hub stubbed; on Gold, a design saved and reopened after a reload, a send that lands on the shelf and replaces itself under its name |
+| **K9** | the hub's disk is the editor's store, and the hub's library is its editor (owner, 2026-11-04): My designs are files on the hub, autosave is gone, every theme sent or imported is kept on the shelf by app and name, and the hub serves its own editor when it is the orb's release (corrected 2026-11-05: an orb behind the hub is edited with its own editor, which says the hub has a newer one), and says when a design it opens was made by an older editor | Go suites for the store, the shelf copy and the region choice; the session suites with the hub stubbed; on Gold, a design saved and reopened after a reload, a send that lands on the shelf and replaces itself under its name |
 | **K10** | one library per app, one entry per name (owner, 2026-11-04): an entry is a draft, a theme, or a theme with unsent changes; the same list on the app's Themes tab and the editor's Start step; sending folds the draft into the theme; `.orbtheme` is the one file that leaves the hub; "made with" and "needs a rebake" labels, and Rebake all | Go suites for the entries, the fold, the stale-format read and the routes; the session suites with the hub stubbed; on Gold, a draft, a send that folds it, the Themes tab's two sections, an Edit from each |
 | **K8** | the flights editor on the kit (flights step 3, in its own clone) | no reference to `apps/clock/`; a line count recorded here against the Watch Composer's |
 
@@ -555,11 +555,15 @@ and the editor the hub serves is the hub's own copy.
   Import a theme) is written to the shelf, filed by its app and its baked name: a theme
   under a name the shelf already holds for that app replaces that file, so the shelf holds
   one copy per name. (Before K9 the Import button's tooltip promised this and nothing did it.)
-- **The hub's editor.** The hub serves its library's editor when the library's release is the
-  orb's or newer, and dials the orb only when it holds none. `GET /api/editor/source?ip=&slug=`
-  names where the editor came from and what the orb runs; when the editor is newer, the
-  editor says so ("this editor is v1.2.17; Gold runs clock v1.2.16 — update the app on Gold
-  before sending"). A design made by an older editor opens with a note that saving or sending
+- **The hub's editor.** The hub serves its library's editor when the library holds the orb's
+  release (another build of it included), and reads the orb's own off the card otherwise.
+  Corrected 2026-11-05 (owner): as ruled on 11-04 the hub's editor also served an orb a
+  release behind it, with a warning to update before sending; now an orb not yet updated is
+  edited with its own editor, whose bakes the app it runs reads (`editorFromLibrary`).
+  `GET /api/editor/source?ip=&slug=` names where the editor came from and both releases; when
+  the orb is behind, the editor says so ("this is the orb's own clock v1.2.22 editor; the hub
+  has v1.2.23 — update the app on the orb to edit with it"), and the hub's loading veil names
+  the copy it is reading and why. A design made by an older editor opens with a note that saving or sending
   it updates it to this release; one made by a newer editor is still refused (K2).
 - **As built (2026-11-04).** Hub: `designs.go` (the store, `<library root>/designs/<app>/`,
   file name a readable stem plus a hash of the exact name, so one name is one file and two
@@ -595,6 +599,13 @@ and the editor the hub serves is the hub's own copy.
   seed at the next build. An installed hub's library is not rebuilt, so this is a dev-tree edge.
 
 ### K10 — one library per app (ruled 2026-11-04)
+
+Addendum, 2026-11-05 (owner: flag themes that need a rebake after a firmware update): a card
+row the orb refuses with its "— re-bake it" sentence (format, geometry version, dialect) reads
+"needs a rebake", and the Themes tab's badge counts it. Such a row carries no name, so the
+library pass matches it by card stem (`LibEntry.id`, `ThemeIDOf`): when the library's bake of
+that name loads on this firmware the card row offers Update; when it needs a rebake too, the
+card row offers Rebake, which opens the editor on the library's design.
 
 The owner asked for a consistent model after K9 left two lists (the editor's My designs,
 the Themes tab's shelf rows) that each showed half of what the hub holds. Agreed model:

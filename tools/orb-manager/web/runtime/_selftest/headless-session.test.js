@@ -155,9 +155,9 @@ const edit = (app, p) => { app.set(p); app.ses.track(); };
     ok(store.has('wc.mine.tint'), 'a move the hub refuses leaves the browser’s copy for the next boot');
     fh.refuse = null; store.clear();
     // the hub's word on the orb's release
-    fh.source = { source: 'library', relation: 'newer', hub_version: 'v1.3.0+6a5c661', orb_version: 'v1.2.9+0000000' };
+    fh.source = { source: 'orb', relation: 'newer', hub_version: 'v1.3.0+6a5c661', orb_version: 'v1.2.9+0000000' };
     const n = mk(); await n.ses.boot();
-    ok(/this editor is v1\.3\.0\+6a5c661; the orb runs tint v1\.2\.9\+0000000 — update the app on the orb before sending/.test(n.ses.orbNote) && /^Heads up: /.test(n.state.status), 'an editor newer than the orb’s app says so', n.ses.orbNote);
+    ok(/this is the orb’s own tint v1\.2\.9\+0000000 editor; the hub has v1\.3\.0\+6a5c661 — update the app on the orb to edit with it/.test(n.ses.orbNote) && /^Heads up: /.test(n.state.status), 'an orb behind the hub is edited with its own editor, and says the hub has a newer one', n.ses.orbNote);
     fh.source = { source: 'library', relation: 'same', hub_version: 'v1.3.0+6a5c661', orb_version: 'v1.3.0+6a5c661' };
     const sm = mk(); await sm.ses.boot();
     ok(sm.ses.orbNote === '', 'and the same release says nothing');

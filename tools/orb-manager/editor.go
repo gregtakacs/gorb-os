@@ -278,14 +278,15 @@ func editorInvalidate() {
 	regions.slots = map[editorKey]*editorSlot{}
 }
 
-// libraryEditorRegion answers which editor an orb's app is edited with. Since K9 (owner,
-// 2026-11-04) it is the hub's own: the library's copy whenever its release is the orb's
-// or newer, another build of the orb's release included, and the orb's region only when
-// the hub holds no copy, an older one, or one whose stamp will not parse. The hub's file
-// costs the board nothing to read, and the hub's editor is the one the owner keeps
-// current; when it is newer than the orb, /api/editor/source says so and the editor
-// tells the author before a send. (Before K9 the gate was stamp equality, so an orb one
-// release behind the hub was edited with its own older editor off the card.)
+// libraryEditorRegion answers which editor an orb's app is edited with: the hub's own copy
+// whenever it is the orb's release (another build of it included), because the hub's file
+// costs the board nothing to read; the orb's region otherwise. An orb not yet updated to
+// the hub's release is edited with its own editor (owner, 2026-11-05, superseding K9's
+// "the hub's when newer"): a theme baked by a newer editor than the app that wears it can
+// carry what that app cannot draw, so until the app is updated the orb's editor is the
+// one whose bakes it reads. /api/editor/source names the newer release, and the editor
+// says to update the app to edit with it. A hub copy that is older, or a stamp that will
+// not parse, also leaves the orb's region.
 func (s *Server) libraryEditorRegion(installed *orbnet.AppInstalledRow, slug string) (*zip.Reader, error) {
 	if installed == nil || installed.Compiled {
 		return nil, orbnet.ErrNoEditor
@@ -305,7 +306,7 @@ func (s *Server) libraryEditorRegion(installed *orbnet.AppInstalledRow, slug str
 	if err != nil {
 		return nil, err
 	}
-	if rel := editorRelation(c.Version, installed.Version); rel == "older" || rel == "" {
+	if rel := editorRelation(c.Version, installed.Version); !editorFromLibrary(rel) {
 		return nil, orbnet.ErrNoEditor
 	}
 	region, err := orbnet.AppEditorRegion(body)
@@ -318,6 +319,10 @@ func (s *Server) libraryEditorRegion(installed *orbnet.AppInstalledRow, slug str
 	}
 	return zr, nil
 }
+
+// editorFromLibrary is the one rule both the door and /api/editor/source answer by: the
+// hub's copy edits an orb running the same release; anything else is the orb's own.
+func editorFromLibrary(rel string) bool { return rel == "same" || rel == "build" }
 
 // editorRelation places the hub's copy against the orb's: "same" (one stamp), "build"
 // (one release, another build), "newer", "older", or "" when either stamp will not parse.
@@ -357,7 +362,7 @@ func (s *Server) handleEditorSource(w http.ResponseWriter, r *http.Request) {
 			if row != nil && !row.Compiled {
 				rel := editorRelation(c.Version, row.Version)
 				out["relation"] = rel
-				if rel == "same" || rel == "build" || rel == "newer" {
+				if editorFromLibrary(rel) {
 					out["source"] = "library"
 				}
 			}

@@ -110,9 +110,9 @@ button.danger:disabled{opacity:.45;cursor:not-allowed}
 #mn-theme-editor .edwrap{position:absolute;inset:0}
 #mn-theme-editor iframe{display:block;width:100%;height:100%;border:0;background:var(--bg)}
 body.editing{overflow:hidden}
-/* The source of an edited theme streams off the card over Wi-Fi — measured 6 s cold,
-   8.7 s warm — and a bare frame spends that whole read as a blank that reads as a broken
-   editor. The sheet carries a loading veil while the document is in flight; the frame's
+/* An editor read off the card streams over Wi-Fi — measured 6 s cold, 8.7 s warm — and
+   one from the hub's own copy still takes a moment; a bare frame spends either as a blank
+   that reads as a broken editor. The veil names which copy is loading (editorVeilSource). The sheet carries a loading veil while the document is in flight; the frame's
    own load event lifts it, which covers both the archive and the hub's retry page (each
    is a document that loads), and a dial that dies with no answer leaves the veil
    standing, which is the truth. */

@@ -3180,9 +3180,13 @@ async function loadThemes(ip) {
   if (libThemeCount) state.textContent += " \u00b7 " + libThemeCount + " in the hub library";
   const shelfN = themeLibraryRows(libApp, rows, state, lib);
   // updates: card rows with a newer shelf bake, or a card copy newer than the drawing
-  const ups = Array.from(list.querySelectorAll("li.trow[data-name]")).filter((r) => r.querySelector(".tag.upd")).length;
-  if (typeof tabBadge === "function") tabBadge("themes", ups, ups + " theme update" + (ups === 1 ? "" : "s") + " for this orb");
+  const ups = Array.from(list.querySelectorAll("li.trow[data-name]:not([data-rebake])")).filter((r) => r.querySelector(".tag.upd")).length;
+  // card themes this orb's firmware refuses for their bake: each needs a rebake (or the
+  // library's newer bake), so the tab says so the way it says an update is waiting
+  const rebakes = list.querySelectorAll("li.trow[data-rebake]").length;
+  if (typeof tabBadge === "function") tabBadge("themes", ups + rebakes, [ups ? ups + " theme update" + (ups === 1 ? "" : "s") : "", rebakes ? rebakes + " theme" + (rebakes === 1 ? "" : "s") + " needing a rebake" : ""].filter(Boolean).join(", ") + " for this orb");
   if (ups) state.textContent += " \u00b7 " + ups + " update" + (ups === 1 ? "" : "s") + " in the hub library";
+  if (rebakes) state.textContent += " \u00b7 " + rebakes + " need" + (rebakes === 1 ? "s" : "") + " a rebake for this firmware";
   if (!shown.length && !shelfN) themeEmptyPane(list, scope);
   renderThemeEditRow(scope);
   if (d.mounted) warmOrbCard(ip);   // the face is painted; the hub can read the rest ahead
@@ -3329,6 +3333,7 @@ function openThemeEditor(row, theme) {
   // archive and the hub's retry page are documents that load, so one listener covers
   // every answer, including the refusal.
   pane.classList.add("loading");
+  editorVeilSource(row.slug);
   const base = row.editor_url.replace(/\/$/, "") + "/";
   // D43 §4.2: the editor fills the window and names the orb in its own breadcrumb, so
   // it is handed the name the hub shows (label) beside the address it dials (orb).
@@ -3343,6 +3348,30 @@ function openThemeEditor(row, theme) {
   pane.hidden = false;
   document.body.classList.add("editing");
 }
+// editorVeilSource says on the veil which editor is loading and why. The hub serves its own
+// copy for the orb's release and reads the orb's off the card otherwise (editor.go,
+// editorFromLibrary); /api/editor/source is the same rule's answer, so the sentence is the
+// door's own. Until it answers the veil names only the app.
+let editorVeilGen = 0;
+async function editorVeilSource(slug) {
+  const veil = $("#mn-theme-editor .edveil");
+  if (!veil) return;
+  const gen = ++editorVeilGen, app = themeAppTitle(slug), orb = current.name || themeIP || "the orb";
+  veil.textContent = "Opening the " + app + " editor\u2026";
+  let d = null;
+  try {
+    const r = await hubFetch("/api/editor/source?ip=" + encodeURIComponent(themeIP) + "&slug=" + encodeURIComponent(slug));
+    const j = await r.json();
+    if (j && j.ok) d = j.data;
+  } catch (e) { /* the plain sentence stands */ }
+  if (gen !== editorVeilGen || !d) return;
+  if (d.source === "library") veil.textContent = "Opening the " + app + " editor " + (d.hub_version || "") + " from the hub\u2026";
+  else if (d.relation === "newer" && d.orb_version && d.hub_version)
+    veil.textContent = "Reading the " + app + " editor off " + orb + "'s card. It runs " + d.orb_version + " and the hub has " + d.hub_version +
+      ", so its own editor opens until the app is updated on it. This takes a few seconds over Wi-Fi.";
+  else veil.textContent = "Reading the " + app + " editor off " + orb + "'s card" + (d.orb_version ? " (" + d.orb_version + ")" : "") + ". This takes a few seconds over Wi-Fi.";
+}
+
 // The veil's one release. A load event means a document arrived — but which one:
 // closing sets src to about:blank, and that old document can fire its load AFTER a
 // fresh open already set a new src, so frame.src at load time names the NEW editor,
@@ -3507,8 +3536,9 @@ function themeRow(t, state, list) {
   li.appendChild(pvq);
   queuePreview(pv, t, pvq);
   li.dataset.name = String(t.name || "").toLowerCase();
+  li.dataset.id = t.id || "";
   const label = document.createElement("b");
-  label.textContent = t.name;
+  label.textContent = t.name || t.id;
   li.appendChild(label);
   const id = document.createElement("span");
   id.className = "tag id";
@@ -3532,9 +3562,19 @@ function themeRow(t, state, list) {
     li.appendChild(stale);
   }
   if (!t.ok) {
+    // The firmware ends the sentence with "re-bake it" when the bake is what it refuses —
+    // its format, geometry version or dialect, the usual aftermath of a firmware update.
+    // That row is flagged as needing a rebake; the library pass below finds its copy by
+    // stem (the refused row has no name) and puts the fix in the row: Update when the
+    // library's bake loads here, Rebake when it needs one too.
+    const rebake = /re-bake/i.test(t.why || "");
     const bad = document.createElement("span");
-    bad.className = "tag err";
-    bad.textContent = "not loadable: " + (t.why || "unknown");
+    bad.className = "tag " + (rebake ? "warn" : "err");
+    bad.textContent = rebake ? "needs a rebake" : "not loadable: " + (t.why || "unknown");
+    if (rebake) {
+      bad.title = "This orb's firmware refuses this bake: " + t.why + ". Rebake it from the hub library's copy, or make it again in the editor.";
+      li.dataset.rebake = "1";
+    }
     li.appendChild(bad);
   }
   // The orb remembers the last install it refused and the copy boot could not load,
@@ -3789,15 +3829,19 @@ function themeLibraryRows(app, deviceRows, state, entries) {
     // is later. An older library copy says so and offers nothing (owner report, 2026-11-05:
     // the shelf's v1.2.4 Modern offered itself as an Update over the card's v1.2.6). When
     // either side has no bake time the hub cannot order them, and says only that they differ.
+    // the card's copy of this entry when the orb refuses it for its bake (themeRow flags it)
+    const refusedLi = e.id ? list.querySelector('li.trow[data-rebake][data-id="' + CSS.escape(e.id) + '"]') : null;
+    const fixes = !!(refusedLi && th && !th.stale);   // this bake loads where the card's is refused
     const differs = !!(th && !th.stale && cardSerial > 0 && th.serial && th.serial !== cardSerial);
     const timed = differs && th.baked > 0 && card.baked > 0 && th.baked !== card.baked;
-    const newer = timed && th.baked > card.baked;
+    const newer = (timed && th.baked > card.baked) || fixes;
     const older = timed && th.baked < card.baked;
     const unsure = differs && !timed;
     // Update belongs to the card's row (owner, 2026-11-04): that is the copy being updated,
     // from this one. The library row only says it is the newer of the two.
-    const cardLi = newer || unsure ? list.querySelector('li.trow[data-name="' + CSS.escape(e.name.toLowerCase()) + '"]') : null;
-    if (older) tag("older than " + orbLabel + "'s copy", "mut", "This orb's card holds a later bake of this theme than the hub library does");
+    const cardLi = refusedLi || (newer || unsure ? list.querySelector('li.trow[data-name="' + CSS.escape(e.name.toLowerCase()) + '"]') : null);
+    if (refusedLi && !fixes) tag("needs a rebake for " + orbLabel, "warn", "This orb's firmware refuses its copy, and this bake too would be refused: Rebake on the card's row bakes it again from its design");
+    else if (older) tag("older than " + orbLabel + "'s copy", "mut", "This orb's card holds a later bake of this theme than the hub library does");
     else if (unsure) tag("differs from " + orbLabel + "'s copy", "mut", "The two are different bakes, and one carries no bake time, so the hub cannot say which is newer; the card row above can replace the orb's copy with this one");
     else if (newer) {
       tag("newer than " + orbLabel + "'s copy", "mut", "This orb's card holds an older bake of this theme; its row above has Update");
@@ -3819,6 +3863,17 @@ function themeLibraryRows(app, deviceRows, state, entries) {
       ed.title = "Open it in the " + themeAppTitle(app) + " editor" + (e.state === "changed" ? ", with its unsent changes" : "") + ". Send to orb there bakes it under the same name.";
       ed.onclick = () => openThemeEditor(edRow, { entry: e.name });
       li.appendChild(ed);
+      // the refused card copy's own fix when this bake will not do: bake it again in the editor
+      const cardActs = refusedLi && !fixes && refusedLi.querySelector(".acts");
+      if (cardActs && cardActs.children[1] && cardActs.children[1].classList.contains("slot")) {
+        const rb2 = document.createElement("button");
+        rb2.type = "button";
+        rb2.className = "upd";
+        rb2.textContent = "Rebake";
+        rb2.title = "Open it in the " + themeAppTitle(app) + " editor from the hub library's design. Send to orb there bakes it for this firmware and replaces the refused copy.";
+        rb2.onclick = () => openThemeEditor(edRow, { entry: e.name });
+        cardActs.replaceChild(rb2, cardActs.children[1]);
+      }
     }
     let inst = null;
     if (th && !th.stale && (!cardSerial || newer || unsure)) {

@@ -52,7 +52,7 @@
       undoStack: [], redoStack: [],
       snap: null, snapAt: 0,       // the newest snapshot, and when the burst it belongs to began
       restoring: false,
-      orbNote: '',                 // set by boot() when this editor is newer than the orb's app
+      orbNote: '',                 // set by boot() when the orb's app is behind the hub's
       lastMade: null,              // the older release a design just opened was made by, else null
       opening: null,               // while a design is on its way in, the line saying so; else null
     };
@@ -255,8 +255,9 @@
       await api.libraryRefresh();
       try {
         var src = await hubJson('/api/editor/source?ip=' + encodeURIComponent(hub.ip) + '&slug=' + encodeURIComponent(hub.slug));
-        api.orbNote = src && src.relation === 'newer' && src.orb_version
-          ? 'this editor is ' + api.version() + '; the orb runs ' + api.slug() + ' ' + src.orb_version + ' — update the app on the orb before sending' : '';
+        // an orb behind the hub keeps its own editor, so its bakes are ones its app reads
+        api.orbNote = src && src.relation === 'newer' && src.orb_version && src.hub_version
+          ? 'this is the orb’s own ' + api.slug() + ' ' + src.orb_version + ' editor; the hub has ' + src.hub_version + ' — update the app on the orb to edit with it' : '';
       } catch (e) { api.orbNote = ''; }
       if (api.orbNote) say('Heads up: ' + api.orbNote);
       var q = null; try { q = new URLSearchParams(root.location.search); } catch (e) { q = null; }

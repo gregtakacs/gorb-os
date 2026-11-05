@@ -362,8 +362,9 @@ func TestEditorTransportFailureMemoExpiresFast(t *testing.T) {
 // scarcest resource on the network: every asset a composer session pulls afterwards is a
 // dial the board does not answer. The gate is the version stamp alone, so the test's whole
 // value is in the pair of cases — agree, and the dial never rings; disagree, and it rings.
-// K9 (owner, 2026-11-04): the hub's editor when the shelf holds the orb's release or newer.
-func TestEditorIsServedFromTheLibraryWhenItIsTheOrbsReleaseOrNewer(t *testing.T) {
+// Owner, 2026-11-05: the hub's editor for the orb's own release; an orb behind the shelf
+// keeps its own editor until its app is updated.
+func TestEditorIsServedFromTheLibraryWhenItIsTheOrbsRelease(t *testing.T) {
 	const stamp = "v1.4.2-rc.1+build.7" // the sentinel fixture's own header stamp
 	editorInvalidate()
 	t.Cleanup(editorInvalidate)
@@ -422,9 +423,10 @@ func TestEditorIsServedFromTheLibraryWhenItIsTheOrbsReleaseOrNewer(t *testing.T)
 
 	// Same stamp, both sides. The hub answers from disk.
 	run(t, stamp, false)
-	// The dial is behind: the hub's newer editor answers, and /api/editor/source says so.
+	// The dial is behind: its own editor answers, whose bakes the app it runs can read;
+	// /api/editor/source still names the hub's newer release.
 	editorInvalidate()
-	run(t, "v1.0.0", false)
+	run(t, "v1.0.0", true)
 	// Another build of the shelf's release: still the hub's.
 	editorInvalidate()
 	run(t, "v1.4.2-rc.1+other", false)

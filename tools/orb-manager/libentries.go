@@ -40,8 +40,9 @@ type LibTheme struct {
 // LibEntry is one name in an app's library.
 type LibEntry struct {
 	Name  string     `json:"name"`
-	State string     `json:"state"` // draft | theme | changed (a theme with unsent changes)
-	At    int64      `json:"at"`    // the newest of the two halves, for ordering
+	ID    string     `json:"id,omitempty"` // the card stem the orb files it under, to match a card row by
+	State string     `json:"state"`        // draft | theme | changed (a theme with unsent changes)
+	At    int64      `json:"at"`           // the newest of the two halves, for ordering
 	Draft *DesignRow `json:"draft,omitempty"`
 	Theme *LibTheme  `json:"theme,omitempty"`
 	path  string     // the shelf file, for forget
@@ -135,6 +136,9 @@ func (l *Library) entries(app string) ([]LibEntry, error) {
 	}
 	out := make([]LibEntry, 0, len(byName))
 	for _, e := range byName {
+		// a card row the orb refuses carries no name, only its stem: the stem is how the
+		// face finds this entry's card copy to offer the fix (a rebake, or this bake)
+		e.ID, _ = orbnet.ThemeIDOf(app, e.Name)
 		switch {
 		case e.Theme != nil && e.Draft != nil:
 			e.State = "changed"

@@ -408,10 +408,6 @@ static theme_sounds_t *s_snd;
  * reports active=false and changed=true. */
 static char          s_active_name[ORB_THEME_NAME_MAX + 1];
 static uint32_t      s_active_geom_crc, s_active_art_crc;
-/* The stored bundle's CONTAINER region checksum, read off its slot header at
- * boot: the figure the store page matches a card file against, where
- * s_active_geom_crc holds the rebase's. Both name the same bytes. */
-static uint32_t      s_bundle_file_geom;
 static bool          s_active_valid;
 static const char   *s_source = "none";
 
@@ -2024,7 +2020,10 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
 
     strlcpy(s_geo.name, h->name, sizeof(s_geo.name));
     strlcpy(s_active_name, h->name, sizeof(s_active_name));
-    s_active_geom_crc = s_bundle_file_geom = raw[W_BAKED_MS];
+    /* The CARD file's region checksum, which build_slot_hdr3() keeps in word 10: the
+     * slot's own geom_crc is the rebase's and never equals a file's. Word 12 is zero
+     * in every slot, so reading it matched nothing to anything (2026-11-05). */
+    s_active_geom_crc = raw[W_SCR_H];
     /* FORMAT 3's identity is that ONE figure. The region holds every index record and
      * and every record carries its bank's checksum, so the container's region checksum
      * already pins the pixels. Hashing art again would add no coverage and cost a
@@ -2682,8 +2681,11 @@ static bool scan_entry(void *arg, const orb_file_rec_t *rec, int fd)
                 orb_thdr_t as;      /* the identity theme_state() reads */
                 memset(&as, 0, sizeof as);
                 strlcpy(as.name, b3.name, sizeof as.name);
-                as.geom_crc = s_bundle_file_geom;
-                as.art_crc = s_bundle_file_geom;   /* adopt_bundle3's one-figure rule */
+                /* The card file's own figure against the one boot adopted. This
+                 * read boot's figure here too, so the row compared it with itself
+                 * and the live theme could never read changed (2026-11-05). */
+                as.geom_crc = b3.geom_crc;
+                as.art_crc = b3.geom_crc;   /* adopt_bundle3's one-figure rule */
                 as.fmt = 3;
                 theme_state(&as, &e->active, &e->changed);
             } else {

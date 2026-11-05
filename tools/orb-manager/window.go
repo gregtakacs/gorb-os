@@ -213,19 +213,43 @@ func appArgs(url, profileDir string) []string {
 // \\wsl.localhost path makes Chrome treat the profile as a network share and
 // refuse it. Asking the Windows side for its own %LOCALAPPDATA% is the reliable
 // answer, so the profile sits beside the user's real Chrome data.
+//
+// A one-orb dev hub (-only-orb) gets a profile of its own, suffixed with that MAC.
+// Two dev hubs sharing one profile is the hand-off case above by construction: the
+// second hub's launcher passes its URL to the first hub's browser and exits, so the
+// second hub never owns its window and closing it left that hub serving (owner
+// report, 2026-11-04: bronze's hub outlived its window beside gorb-os-2's). The
+// %LOCALAPPDATA% path ignores XDG_CONFIG_HOME, so a separate hub config dir did not
+// keep them apart.
 func profileDirFor(browser string) (string, error) {
 	if strings.EqualFold(filepath.Ext(browser), ".exe") {
-		return winProfileDir()
+		dir, err := winProfileDir()
+		if err != nil {
+			return "", err
+		}
+		return dir + profileSuffix(), nil
 	}
 	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(base, filepath.FromSlash(browserProfileRel))
+	dir := filepath.Join(base, filepath.FromSlash(browserProfileRel)+profileSuffix())
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return dir, err
 	}
 	return dir, nil
+}
+
+// browserProfileOrb is -only-orb's canonical MAC, set by main before any window opens;
+// empty for a hub that serves every orb, which keeps the one shared profile.
+var browserProfileOrb string
+
+// profileSuffix is what keeps a dev hub's profile apart from every other hub's.
+func profileSuffix() string {
+	if browserProfileOrb == "" {
+		return ""
+	}
+	return "-" + browserProfileOrb
 }
 
 // winProfileDir asks the Windows shell for %LOCALAPPDATA% and appends our

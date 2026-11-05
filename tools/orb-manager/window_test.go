@@ -68,6 +68,30 @@ func TestProfileDirForNonExeCreatesLinuxDir(t *testing.T) {
 	}
 }
 
+func TestProfileDirForOneOrbHubIsItsOwn(t *testing.T) {
+	// Two dev hubs on one profile hand the second one's window to the first one's
+	// browser, and the second hub then outlives its window (2026-11-04).
+	if runtime.GOOS == "windows" {
+		t.Skip("the config-dir behaviour under test is the Unix one")
+	}
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	prev := browserProfileOrb
+	t.Cleanup(func() { browserProfileOrb = prev })
+	browserProfileOrb = "44bd8d608088"
+	got, err := profileDirFor("/usr/bin/chromium")
+	if err != nil {
+		t.Fatalf("profileDirFor: %v", err)
+	}
+	if want := filepath.Join(cfg, "orb-manager", "browser-profile-44bd8d608088"); got != want {
+		t.Errorf("profile dir = %q, want %q", got, want)
+	}
+	browserProfileOrb = ""
+	if got, _ := profileDirFor("/usr/bin/chromium"); got != filepath.Join(cfg, "orb-manager", "browser-profile") {
+		t.Errorf("an every-orb hub moved off the shared profile: %q", got)
+	}
+}
+
 func TestProfileDirForExeUsesWindowsShell(t *testing.T) {
 	// chrome.exe from WSL cannot open a Linux path, so the profile must come
 	// from the Windows shell's %LOCALAPPDATA%, not from os.UserConfigDir().

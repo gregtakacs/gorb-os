@@ -468,6 +468,11 @@ func main() {
 	if ierr != nil {
 		log.Fatalf("orb-manager: cannot place the one-hub lock: %v", ierr)
 	}
+	// The window's profile is chosen before the lock's refusal path can open one: a
+	// second launch for this orb opens the running hub's page in that hub's profile.
+	if mac, why := orbmdns.CanonicalMAC(strings.TrimSpace(onlyOrb)); onlyOrb != "" && why == "" {
+		browserProfileOrb = mac
+	}
 	claim, other, held, ierr := claimInstance(idir)
 	if ierr != nil {
 		log.Fatalf("orb-manager: cannot take the one-hub lock in %s: %v", idir, ierr)

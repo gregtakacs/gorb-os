@@ -97,6 +97,7 @@ func (s *Server) saveState() {
 	if s.fleet != nil {
 		st.Fleet = s.fleet.Snapshot()
 	}
+	s.held.writeBack(&st)
 	if s.lonely != nil {
 		st.Lonely = s.lonely.list()
 	}
@@ -141,6 +142,7 @@ func (s *Server) loadState() int {
 		s.stateErr = err
 		return 0
 	}
+	s.holdOthers(&st)
 	n := 0
 	for ip := range st.Grants {
 		if isV4Literal(ip) {

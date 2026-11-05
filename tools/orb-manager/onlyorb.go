@@ -1,7 +1,10 @@
 package main
 
 import (
+	"time"
+
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/esprom"
+	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbfleet"
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbmdns"
 )
 
@@ -84,5 +87,71 @@ func (s *Server) scopedSweep(list func() ([]cableSighting, error)) func() ([]cab
 			}
 		}
 		return out, err
+	}
+}
+
+// heldState is the other orbs' share of the state file. A development hub on :3779
+// shares its config dir with every release launch, so it must not forget a board
+// just because it was told not to look at it.
+type heldState struct {
+	fleet  []orbfleet.Orb
+	grants map[string]string // ip -> the MAC it belongs to
+}
+
+// holdOthers takes every other orb's remembered row and grant out of st before the
+// hub loads it. A grant goes with its MAC, and an unbound one (a v1 file's) goes when
+// its address is a held row's: otherwise the card comes back from the file and the
+// address stays dialable, which is how the other clone's orb reached this hub's page.
+func (s *Server) holdOthers(st *hubState) {
+	if s.onlyOrb == "" {
+		return
+	}
+	heldIP := map[string]string{}
+	keep := st.Fleet[:0:0]
+	for _, r := range st.Fleet {
+		if s.admitsMAC(r.MAC) {
+			keep = append(keep, r)
+			continue
+		}
+		s.held.fleet = append(s.held.fleet, r)
+		if r.IP != "" {
+			heldIP[r.IP] = r.MAC
+		}
+	}
+	st.Fleet = keep
+	for ip := range st.Grants {
+		mac := st.MACs[ip]
+		if mac == "" {
+			mac = heldIP[ip]
+		}
+		if mac == "" || s.admitsMAC(mac) {
+			continue
+		}
+		if s.held.grants == nil {
+			s.held.grants = map[string]string{}
+		}
+		s.held.grants[ip] = mac
+		delete(st.Grants, ip)
+		delete(st.MACs, ip)
+	}
+}
+
+// writeBack returns the held share to a file about to be saved. This hub's own rows
+// win an address both claim.
+func (h heldState) writeBack(st *hubState) {
+	ips := map[string]bool{}
+	for _, r := range st.Fleet {
+		ips[r.IP] = true
+	}
+	for _, r := range h.fleet {
+		if !ips[r.IP] {
+			st.Fleet = append(st.Fleet, r)
+		}
+	}
+	for ip, mac := range h.grants {
+		if _, ok := st.Grants[ip]; !ok {
+			st.Grants[ip] = int(time.Now().Unix())
+			st.MACs[ip] = mac
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -57,5 +58,40 @@ func TestOnlyOrbRefusesAGrantForAnotherBoard(t *testing.T) {
 	}
 	if ok, why := s.mayDial("192.168.2.34"); !ok {
 		t.Errorf("mayDial(this board) refused: %q", why)
+	}
+}
+
+// A shared state file from before the split (v1-style unbound grants) names both orbs.
+// A hub for one of them restores only its own card and grant, and saving gives the
+// other's back unchanged, so a release hub on the same config dir still knows it.
+func TestOnlyOrbHoldsTheOtherOrbsState(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/state.json"
+	file := `{"version":3,"lastIp":"192.168.2.32",
+	  "grants":{"192.168.2.32":1,"192.168.2.34":1},
+	  "fleet":[{"mac":"44bd8d608088","ip":"192.168.2.32","port":80,"remembered":true,"name":"Bronze"},
+	           {"mac":"44bd8d782618","ip":"192.168.2.34","port":80,"remembered":true,"name":"Gold"}]}`
+	if err := os.WriteFile(path, []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newHub()
+	s.onlyOrb = "44bd8d608088"
+	s.statePath = path
+	s.loadState()
+	for _, r := range s.fleet.All() {
+		if r.MAC != "44bd8d608088" {
+			t.Errorf("the other clone's orb came back from the file: %+v", r)
+		}
+	}
+	if ok, _ := s.mayDial("192.168.2.34"); ok {
+		t.Error("the other orb's remembered address is still dialable")
+	}
+	if ok, why := s.mayDial("192.168.2.32"); !ok {
+		t.Errorf("this hub's own orb is refused: %s", why)
+	}
+	s.saveState()
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), `"name": "Gold"`) || !strings.Contains(string(b), `"192.168.2.34": "44bd8d782618"`) {
+		t.Errorf("saving dropped the other orb's share:\n%s", b)
 	}
 }

@@ -145,6 +145,9 @@ type Server struct {
 	// onlyOrb is -only-orb's canonical MAC: a development hub sees, lists and dials that
 	// one board and no other. Empty — every release launch — is every orb. See onlyorb.go.
 	onlyOrb string
+	// held is the state file's share that belongs to other orbs while onlyOrb is set:
+	// set aside at load, written back unchanged at save. See holdOthers in onlyorb.go.
+	held heldState
 	// fetchEditor is D37's seam onto one app's editor region. nil means "dial the
 	// device", which is what every hub built by main does; a test sets it to stand a
 	// board in for the network. See fetchEditor and editorFetchFn in editor.go.

@@ -6150,3 +6150,550 @@ the way the firmware does (`v1.2.7+238c503`), so every build is unique.
   orbnet pins equal, prerelease-under-release, release-over-hash, two-builds-refuse and
   `AppSameRelease`; `ui_test.go` pins Update for another build ahead of the ordering
   refusals; `headless-design` orders hashed stamps by release.
+
+## 48 — Shell transitions: the bench before the design — 2026-11-04
+
+**Direction (owner, 2026-11-04).** The menu leaves the knob's walk. A turn rolls from one
+app to the next through an animation drawn from the theme preview, never from the app
+itself, and the real view replaces the preview once it is built. The user picks the
+animation. **The menu opens on a long-press.** A rapid back-and-forth rock of the knob was
+proposed and declined in favour of the long-press, so there is no rock or jiggle detector.
+
+**The bench.** `GET /api/v1/debug/fx?fx=slide|iris|fade|disc|drum&id=<theme stem>[&ms=][&hold=][&te=][&dir=]`
+(CONFIG_ORB_DEBUG_HTTP, `main/display/orb_fx.c`). On the LVGL task, it animates from the panel mirror
+(the glass as it stands, full resolution) into the theme's 232x232 preview plane, holds,
+then pushes the mirror back verbatim. Every frame goes through `display_fx_frame()`, which
+composes each 20-row slab straight into the tile ring while the previous slab is on the
+wire. LVGL renders nothing. The mirror is never written, so the restore is exact.
+
+**Measured, Gold (orb-B), v1.2.8+045e662-dirty, 350 ms runs, ring depth 2:**
+
+| fx | te | fps | frame avg | compose avg / max |
+|---|---|---|---|---|
+| slide | on | 29.2 | 34.2 ms | 7.9 / 8.1 ms |
+| iris | on | 29.2 | 34.2 ms | 8.0 / 8.3 ms |
+| fade | on | 22.9 | 43.7 ms | 23.6 / 36.6 ms |
+| disc (scaled gathers) | on | 29.4 | 34.0 ms | 9.7 / 15.0 ms |
+| drum (row remap) | on | 29.3 | 34.1 ms | 10.8 / 11.7 ms |
+| slide | off | 40.4 | 24.7 ms | 7.9 ms |
+| fade | off | 31.1 | 32.2 ms | 22.0 / 36.3 ms |
+| disc | off | 40.6 | 24.6 ms | 9.6 / 15.0 ms |
+
+- **The wire is the floor: 24.7 ms per full page** (the restore frame, a plain mirror copy,
+  reads 24.7-25.0 ms every run). Composing overlaps it whenever the compose takes less than
+  the wire, so every effect except fade costs exactly one page of wire time.
+- **With TE on, a frame lands on every second blanking edge (about 33 ms, so 30 fps).** A
+  24.7 ms push misses the next edge by about 8 ms. Sending fewer rows, as the iris could,
+  is the only way to reach 60.
+- **Fade is the one compute-bound effect.** The per-pixel blend plus its lookups costs
+  22-24 ms on average (36 ms at peak), so it runs at 23 fps. The 2026-10-10 blend price
+  (185-232 ns/px) predicted this.
+- **Scaling is cheap at these sizes.** The disc's nearest-neighbour gathers out of the PSRAM
+  mirror peak at 15 ms, inside the wire time.
+- **A preview read costs 168-180 ms from the card** (`read_ms`). One read per detent would
+  stall the walk. The shell has to hold every walkable app's plane in PSRAM before the
+  knob needs it (about 108 KB each).
+- **Tearing has not been judged yet.** The push (24.7 ms) is slower than the panel's scan
+  (16.7 ms). If it starts on the TE edge, the first scan after the edge reads only rows
+  not yet written (the old frame, whole) and the second scan reads the new frame, whole.
+  That predicts no tear, at the cost of one scan of latency. Only the owner's eye on the
+  glass can confirm it.
+- **Flash is not the limit on how many animations ship.** The app partition has 0x17fe50 B
+  (43%) free, and each painter is a few hundred bytes of code with no assets.
+
+## 49 — Ink spans instead of swept boxes: the bench — 2026-11-04
+
+**Question (owner).** Work out which pixels a move really changes and recompute only
+those. Does that pay on a dial with an animated background (Skeleton's gears) as well
+as on a static one?
+
+**What L4 already did.** For a GIF dial, the compositor (`gfx_commit`) restores marked
+rows from the background canvas and repaints the layers over those rows only. Two kinds of
+waste were left. A rotated hand is marked by its swept BOX, for both poses. Then every
+pixel of that box is inverse-mapped and tested, and most land on transparent texels.
+
+**The bench** (`GET /api/v1/debug/dial`, CONFIG_ORB_DEBUG_HTTP; `tools/bench/dial_spans.py`).
+`spans=1` replaces the box with the layer's ink per screen row. Each 8-row strip of the
+sprite's alpha plane is reduced to its ink extent once per sprite. At each pose that strip
+is forward-mapped to a quad, and the quad is cut into one padded `[x0, x1]` per screen row.
+The marks use these spans, and so does the paint of every rotated job (`orb_gfx.c`,
+`gfx_spans_of`/`gfx_mark_spans`/`paint_spanned`). `spans=2` also paints the clipped-away
+pixels and counts every blend there as an escape. Other knobs: `spin`/`rate` force a 30 fps
+sweep of the minute hand and its shadow, `freeze` stops the GIF (a static plate on the
+same compositor), and `glass=0` drops the glass job (an upper bound on folding the glass
+into baked background frames). Off by default, and the shipped path is byte-identical with
+every knob at 0.
+
+**Correctness: 0 escapes** over every spans=2 and spans=1 commit measured: both sweep
+directions, gears live and frozen, over 200 commits in all. The spans are conservative.
+Building them costs 0.7-1.9 ms per commit, after two fixes: per-edge slopes instead of a
+divide per row (the S3's FPU has no divide), and inline min/max instead of `fminf`/`fmaxf`
+calls, which had cost 37 ms and then 12 ms.
+
+**Measured, Gold (orb-B), Skeleton, 6 s per arm (commits per second; ms per commit):**
+
+| arm | box fps | spans fps | hook box → spans | rotated px walked box → spans |
+|---|---|---|---|---|
+| gears, shipped beat (4 fps tempo) | 4.00 | 4.00 | 116 → 87 ms | 120k → 25k |
+| gears, 30 fps sweep | 6.17 | **9.50** | 119 → 60 ms | 78k → 23k |
+| gears, sweep, no glass | 8.17 | 12.50 | 79 → 40 ms | 65k → 22k |
+| frozen, 30 fps sweep | 8.33 | **14.17** | 87 → 37 ms | 41k → 20k |
+| frozen, sweep, no glass | 9.17 | 14.67 | 76 → 32 ms | 38k → 19k |
+
+- **Skeleton's 4 fps is its own tempo, not a ceiling.** The gear bank's frames are
+  `delay 250`. At that beat, spans cut the commit by 25% (116 → 87 ms) with the frame
+  rate unchanged.
+- **With gears plus a sweeping hand, spans are worth +54% (6.2 → 9.5 fps). On a static
+  plate they are worth +70% (8.3 → 14.2 fps).** Restored pixels fall with the marks
+  (gears 80k → 47k, frozen 46k → 13k), so the glass re-blend over them falls too.
+- **The gears set a floor that spans cannot touch.** Each GIF frame restores its changed
+  rects (~88k px here) and re-blends the full-coverage glass over them (~33 ms). Dropping
+  the glass is worth 9.5 → 12.5 fps under the sweep. Folding the glass into the baked
+  gear frames could reach that bound only where no hand overlaps.
+- **Shadows are now the largest line item:** 19-27 ms per commit for ~8k blends, because
+  they sample bilinear (EF_SMOOTH). Next bench: nearest sampling for shadows, which
+  are blurred by design.
+
+### 49.1 — Nearest shadows, and a fast hand over slow gears — 2026-11-04
+
+The owner keeps the glass (ruling, 2026-11-04): the `glass=0` arm stays a measurement only.
+Both runs below have spans on (`tools/bench/dial_spans.py --matrix shadow|multirate`).
+
+**Shadows sampled nearest instead of bilinear** (`shadow=nearest`, role 3 jobs only):
+
+| arm | fps baked → nearest | shadow ms/commit | dearest commit |
+|---|---|---|---|
+| gears, 30 fps minute sweep | 9.67 → 12.17 | 22.7 → 8.0 | 95 → 79 ms |
+| frozen, 30 fps minute sweep | 13.33 → 16.83 | 20.0 → 6.8 | 48 → 27 ms |
+
+How the nearest shadow looks has not been judged yet. That is the owner's call, on the glass.
+
+**Different parts of the dial at different rates already work.** The compositor redraws
+only what a tick marked, so the gear bank keeps its own `delay 250` while the beat runs
+faster. `sweep=1` makes Skeleton's seconds row (and its shadow) sweep truly between the
+app's steps, at the fraction of the wall second. The gears stay live. Per 8 s:
+
+| arm | fps | commits <10 / 40-60 / 60-90 / ≥90 ms | tick gaps ≤1.25x / 2-3x / >3x period |
+|---|---|---|---|
+| seconds sweep, beat 8 | 8.00 | 32 / 0 / 24 / 8 | 64 / 0 / 0 |
+| seconds sweep, beat 15 | 15.00 | 83 / 5 / 26 / 5 | 90 / 24 / 0 |
+| seconds sweep, beat 30 | 16.25 | 94 / 4 / 27 / 5 | 86 / 4 / 32 |
+| seconds sweep, beat 15, nearest | 14.88 | 83 / 4 / 32 / 0 | 86 / 5 / 0 |
+| seconds sweep, beat 30, nearest | 18.50 | 111 / 5 / 31 / 0 | 99 / 2 / 32 |
+
+- **A tick that only moves the seconds hand costs under 10 ms** of compositing. **A gear
+  frame costs 60-95 ms** (its changed rects, plus the glass re-blended over them, plus the
+  hands and shadows under them).
+- **Beat 8 is clean.** All 64 ticks landed within 1.25x of their period, because a gear
+  frame (≤95 ms) fits inside one 125 ms beat. A sweep at 8 fps over 4 fps gears holds
+  today with spans on.
+- **Above 8, every gear frame is a hitch in the sweep.** The tick after a gear frame
+  arrives 2-3x late (beat 15) or more than 3x late (beat 30), four times a second.
+  Removing that hitch means making a gear frame cheaper (nearest shadows took the dearest
+  from 91-95 to 76-78 ms), or spreading one gear frame's rects over several beats.
+- **An escapement faster than the gear train** needs its own animated row. Skeleton's
+  escapement is painted into the gear bank, which has one tempo. The element model
+  carries exactly one animated row with its own frame bank and frame time: the
+  carriage/tourbillon slot (`car_row`, `delay_ms`). An escapement split out into that
+  slot would cost a tick about its own rect plus the glass over it. That is estimated
+  from the under-10 ms hand-only ticks, not measured: no Skeleton bake carries the split.
+
+**Clock note for §48-§49.1.** Every figure in §48-§49.1 was measured at the shipped
+40 MHz QSPI clock (`LCD_SPI_CLOCK_HZ`, board_config.h:87). The gorb-os clone is bench-testing
+80 MHz (owner, 2026-11-04), alongside a fix for two apps lowering each other's minimum
+frame rate. At 80 MHz, the wire-bound §48 figures (24.7 ms per page) and the dial's
+dma/te share have to be re-measured. The compositing figures in §49 are CPU time, so the
+clock change does not move them.
+
+### 49.2 — 80 MHz, and what can run faster than the gears — 2026-11-04
+
+**Ported from the gorb-os clone** (owner's instruction, same base 045e662, applied as a
+patch over the §48-49 bench):
+- `LCD_SPI_CLOCK_HZ` set to 80 MHz (still marked BENCH TEST; `board_config.h` records that
+  80 MHz once sheared and smeared green, so the glass has to be watched).
+- The frame-rate fix: `stage_run` re-seeds the rung for every dial, not only GIF ones, so
+  one app no longer leaves another on its demoted rung.
+- The guest-call fix: `xstack_run` switches to the wasm stack without the 64 KB 0xa5 refill
+  on every call.
+- That clone's report instrumentation: the wire and scan witness, the loop and guest
+  splits, and render billing that no longer counts the idle between frames.
+
+The transition bench now waits out the ring loan from its preview read (one untimed mirror
+frame) before its clock starts.
+
+**Transitions at 80 MHz** (350 ms runs): a mirror copy frame takes 13.9 ms, down from 24.7.
+With TE on, slide, iris, drum and disc hold **56-58 fps** (they were 29), with frames at
+about 17.3 ms. Fade holds 31 fps (compose 20-38 ms). With TE off: slide 72, iris 72, drum
+68, disc 69, fade 38. The clock's own wire witness reads a worst write of 10.4-11.1 ms
+against a 16.95 ms scan, with 0 frames over-scanned.
+
+**Speed matrix** (`--matrix speed`, spans on, 8 s per arm; *gears* = GIF frames applied/s,
+*frames* = commits/s; late = ticks arriving more than 1.5x their period late):
+
+| arm | baked shadows | nearest shadows |
+|---|---|---|
+| gears 4 (shipped) | 4.00 / 4.00, gear frame 88-94 ms | 4.00 / 4.00, gear frame 72-78 ms |
+| gears asked 8 | 7.50 | **8.00, 0 late of 64** |
+| gears asked 12 | 7.88 | 8.88 |
+| gears asked 16 | 7.75 | 9.00 |
+| gears 4 + seconds sweep @8 | 8.00, 0 late | 8.00, 0 late |
+| gears 4 + seconds sweep @15 | 15.13, 32 late (24 at 1.5-2x, 8 at 2-3x) | **15.13, 32 late, all 1.5-2x** |
+| gears 4 + seconds sweep @30 | 18.75 | 21.00, 32 more than 3x late |
+| gears 4 + escapement proxy @15 | 11.63 | **14.88, 32 late, all 1.5-2x** |
+| gears 4 + escapement proxy @30 | 12.75 | 14.88 |
+| gears 8 + sweep + escapement @16 | 7.63 | 9.00 (gears 8.00) |
+
+- **The gear frame governs everything: ~72 ms with nearest shadows, ~88 ms baked.** 80 MHz
+  took its dma share from ~16 to ~9.5 ms. The rest is compositing (restoring the GIF rects,
+  the glass over them, the hands and shadows under them), and the clock does not change
+  that. In round numbers the second budgets as gear fps x 72 ms + other ticks x their cost.
+- **Gears can go to 8 fps cleanly with nearest shadows** (64 of 64 ticks on time). Asking
+  more saturates the task at about 9.
+- **Hands and an escapement can go faster than 4 fps gears.** A tick that moves only the
+  seconds hand costs under 10 ms. The escapement proxy (the hour hand and its shadow, 40x181
+  and 58x199, rocking +-10 degrees at 2.5 Hz) costs 10-20 ms nearest and 20-40 ms baked. Both
+  hold about 15 fps over 4 fps gears. The only cost is a 1.5-2x late tick after each gear
+  frame: four small stutters a second.
+- **8 fps gears plus anything else is saturated** (gear frames alone take ~580 ms/s).
+- **What would let the gears go faster** (not benched yet): a cheaper glass blend over the
+  gear rects (static, sequential rows, ~30 ms of each gear frame; the S3's PIE SIMD fits it),
+  and smaller gear deltas from the bake.
+
+### 49.3 — Transitions shelved until the render work lands — 2026-11-04
+
+**Owner ruling, 2026-11-04.** The shell-transition feature (§48: the menu off the walk, a
+long-press to open it, animated previews between apps) is **shelved** until the dial
+render improvements are worked out and in. Its bench (`/api/v1/debug/fx`) and its figures
+(56-58 fps at 80 MHz, §49.2) stand as the starting point when it resumes. Next: bench every
+clock template the editor ships (some have prominent gears, some have almost none), baked
+here from the templates, and use the results to choose the render settings and the
+editor's fps estimation maths.
+
+### 49.4 — Every template, measured — 2026-11-05
+
+`tools/bench/bake_presets.py` bakes all 18 editor PRESETS through the real `exportTheme3`
+in headless Chrome. `tools/bench/theme_matrix.py` stores each one on Gold (80 MHz) and runs
+five arms, recording estimate3's inputs beside each. Raw figures are kept in the bench
+JSON. Per commit, hook = compositing ms; capacity = commits/s at a forced 30 fps beat with
+the seconds sweeping truly.
+
+| template | kind | hook box → spans+nearest (shipped beat) | capacity box → spans+nearest | estimate3 flush vs measured box (hook+dma+te) |
+|---|---|---|---|---|
+| station | still | 95 → 24 | 9.3 → 18.5 | 129 vs 107 |
+| aviator | still | 70 → 24 | 11.4 → 18.6 | 125 vs 81 |
+| luna | still | 76 → 20 | 11.6 → 19.4 | 101 vs 86 |
+| neon | still | 87 → 19 | 12.1 → 19.9 | 93 vs 99 |
+| phase | still | 65 → 21 | 13.1 → 19.8 | 96 vs 77 |
+| perpetual | still | 104 → 29 | 9.8 → 18.5 | 122 vs 118 |
+| speedster | still, drums | 47 → 26 | 16.6 → 19.3 | 113 vs 59 |
+| flux | still, 1 bps | 6 → 5 | (1 bps beat) | 42 vs 14 |
+| sector | 15 fps plate bank | 89 → 22 | 8.5 → 18.6 | 103 vs 105 |
+| diver | 15 fps plate bank | 99 → 24 | 8.3 → 19.0 | 105 vs 115 |
+| skeleton | gears, 4 fps bank | 118 → 71 | 13.5 → 20.9 | 115 vs 138 |
+| calendar | open heart, 4 fps bank | 109 → 29 | 8.6 → 19.4 | 115 vs 124 |
+| modern | escapement window, 12 fps bank | 103 → 39 | 8.1 → 15.0 | 122 vs 120 |
+| regulator | open seconds, 8 fps bank | 65 → 47 | 10.1 → 17.5 | 87 vs 87 |
+| opentour | tourbillon | 136 → 84 | 6.4 → 8.6 | 162 vs 155 |
+| kitetour | kite carriage | 196 → 119 | 4.1 → 5.4 | 186 vs 211 |
+| orbital | arrow carriage | 191 → 180 | 4.4 → 4.5 | 219 vs 209 |
+| orbit | three rings, whole page | 272 → 234 | 3.3 → 3.9 | 318 vs 298 |
+
+- **Still dials (and the plate-bank dials) fall 3-4x per commit** and reach ~19 fps of
+  capacity. Their cost is now mostly the fixed dma+te and the movers' spans.
+- **Gear dials:** the gear frame is the floor (Skeleton 71 ms, regulator 47, modern 39 at
+  12 fps). Capacity with the seconds sweeping is 15-21 fps, carried by the cheap hand-only
+  ticks between gear frames.
+- **Carriage and ring dials are the worst case.** orbit restores the whole page
+  (217k px) every commit: 190-270 ms, so about 4 fps flat out. orbital (160-194 ms) is not
+  helped by spans: its restored area rose 136k → 163k, an anomaly still to explain, since
+  carriage rows chord-mark and should not be touched by the span marks. kitetour and
+  opentour drop 30-40%.
+- **estimate3 tracks today's box path within about ±20%** (largest misses: aviator,
+  speedster and flux overpriced) and knows nothing of spans or nearest shadows. It has to
+  be refit on the spans+nearest figures above, at whichever QSPI clock ships. **80 MHz is
+  outside the CO5300's QSPI spec** (write cycle ≥20 ns, so 50 MHz max), so the refit should
+  wait on that decision.
+
+### 49.5 — 50 MHz is not a rate this SPI can run; 80 stays — 2026-11-05
+
+Synced to origin/main `c722ad0` (0b80582 keeps 80 MHz on purpose: at 40 a tall dirty region
+falls behind the scan-out and a sweep tears; it also lets a demoted rung probe back up and
+raises the animated ceiling to 20). The §48-49 bench rides on top, uncommitted.
+
+A 50 MHz build (`LCD_SPI_CLOCK_HZ` 50e6, the CO5300's documented write limit) measured
+exactly the 40 MHz figures. The full-page copy frame took 24.8 ms (24.7 at 40). The
+transitions ran 29-30 fps with TE (40 without). The tear witness on Skeleton read a worst
+write of 18.2 ms against a 16.9 ms scan, 1 frame in 4 over-scanned, and 48 of 69 tiles landing
+behind the scan by up to 4.4 ms. The S3's GPSPI clock is its 80 MHz source divided by a
+whole number, so a 50 MHz ask runs at 40 and the real choices are 80, 40, 26.7 and so on.
+The dial's compositing does not move with the clock (Skeleton's gear frame is 71 ms at both).
+Only dma and the hand-only ticks feel it: sweep @30 capacity 19.75 at 40 against 21.0 at 80.
+
+**Decision: 80 MHz stays.** It is above the datasheet's 20 ns write cycle, but it is the
+only rate that keeps a full-height write ahead of the scan (10.4 ms against 16.9 ms, 0
+over-scans, tile lag ≤0.26 ms). The shear and green-edge faults once blamed on the clock
+were fixed in 26a7c8c. Gold is back on 80. The risk outside spec is the bench's to watch: a
+long soak per board, temperature included.
+
+### 49.7 — The 60 Hz grid: paced presentation, measured — 2026-11-05
+
+The panel scans every 16.94 ms (59 Hz), and a frame stays up a whole number of scans. A
+rate that divides 60 (1 2 3 4 5 6 10 12 15 20) holds every frame alike; 8 cannot (7.5
+scans). `pace` (tenths of a scan) presents each frame exactly k scans after the last
+(`present_wait`, display.c). `gif_every` lands a gear frame on every Nth frame. The
+presentation log reports holds in scans (`tools/bench/grid_matrix.py`; spans, nearest
+shadows, seconds sweeping).
+
+- **8 fps:** the shipped next-edge present at a forced 8 wobbles by ±13 ms (calendar, modern),
+  ±19 (regulator), ±35 (opentour) and ±77 (skeleton: gear frames bunch two ticks
+  together). Paced at 7.5 it is 7/8 alternating on every template, ±8.5 ms, with gear
+  frames exactly 15 scans apart. **Paced 7/8 is the 8 fps to ship.**
+- **Clean (every frame on its count, ±0 ms):** calendar and modern at 4-on-12, 6-on-12 and
+  3-on-15; regulator at 4-on-12 and 6-on-12; skeleton and opentour only at 3-on-6 and
+  4-on-4. At 20 fps calendar and modern hold 3 scans on ~80% of frames; the rest hold 4,
+  on gear frames.
+- **The misses are gear frames that do not fit the frame period** (skeleton ~76 ms against
+  85 at 12; regulator 55 against 51 at 20). Carriage dials pay their carriage on every
+  tick, so they top out at 6 fps.
+
+### 49.8 — Pre-paint, first cut — 2026-11-05
+
+`prep=1`: PF (every slow job over the background, glass included) and PB (the jobs below
+the fast seconds pair) stand in for the canvas. A tick copies PF and repaints live only
+inside the fast spans. A gear frame's rows are built ahead, from its rects, in the slack
+the paced present waits out, then swapped in when it lands. `prep=2` also composites every
+row the shipped way and counts differences: **0 mismatched pixels in ~10 M checked**
+(skeleton, opentour).
+
+Skeleton: 5-on-15 went from 12.6 to 13.5 fps (holds 102x4 against 66x4 + 32x6), and
+4-on-20 from 16.4 to 17.1 fps (107x3). Two limits remain:
+1. **About once a second a slow job's key changes** and its whole box is rebuilt
+   synchronously (~200 ms), giving the rare 10-12 scan holds. Next: rebuild only the old
+   and new spans, and build ahead there too.
+2. **Pre-paint does not pay for opentour** (a carriage every tick, no slack) **or for
+   10-on-20** (a gear frame every second tick). It should be enabled per theme, only
+   where a bank exists and the slow layers really are slow, and never for flights
+   (moving planes are slow jobs that change on every poll).
+
+### 49.9 — Pre-paint without stalls: a slow move goes stale, not synchronous — 2026-11-05
+
+The once-a-second hitch in §49.8 was the minute hand and its shadow re-posing (the 0.2°
+gate, about every 2 s on Skeleton). Each move rebuilt both of their whole boxes on the spot.
+Now a slow job's move marks its old and new spans **stale**. A stale row segment is
+composited the shipped way (canvas + every job) until the present's slack rebuilds it,
+ahead of any gear build. Rows of a gear frame built ahead before the move stay stale after
+the swap.
+
+Skeleton, spans + nearest shadows, seconds sweeping, 12 s per arm:
+
+| grid | without pre-paint | pre-paint |
+|---|---|---|
+| 4 on 12 | 10.9 fps, 86x5 37x6 7x7 | **11.75 fps, 139x5 1x7, ±2.9 ms**; gears every 15 scans 45/46 |
+| 5 on 15 | 12.5 fps, 100x4 43x6 | **14.25 fps, 161x4** 3x5 1x6 5x7 |
+| 4 on 20 | 16.1 fps, 154x3 31x6 | **18.2 fps, 173x3** 37x4 |
+
+0 mismatched pixels in 11 M checked (`prep=2`). About 14 slow moves per arm, none of them
+a stall now. At 20 fps about one frame in six still holds 4 scans: the gear tick lands one
+scan late. That is the next thing to look at.
+
+### 49.10 — The calculator: estimate4 — 2026-11-05
+
+`GorbBake.estimate4(section)` (baker@1, beside estimate3) prices a clock bake on the ink-span
+compositor and the 60 Hz grid from the bytes alone. Each AUX row's alpha is reduced to
+8-row strip extents and forward-mapped to its spans at a pose (orb_gfx.c's geometry). A tick
+restores the movers' old∪new spans plus the landing bank rect, and every turning row walks
+its spans there. Then:
+
+    tick_ms = 0.734 restored_kpx + 0.323 walk_kpx + 0.676 restored_kpx (carriage) + 12.15
+
+These constants were fitted on the estimator's own figures over 18 templates x 2 arms at 80
+MHz (median error 9%, p90 20%; `tools/bench/estimate_spans.js` is the bench twin). A rate H
+fits when its tick cost + 19 ms ≤ (60/H) scans x 16.94 ms (the margin is bracketed
+16.8-21.0 by 32 grid runs). Gears ride their bank's own tempo on the grid (14.93 → 15;
+8 → 7.5 paced) and must land on every Nth frame. A gear tick that does not fit is
+pre-painted when the hand ticks' slack covers its build and the swap fits; carriage dials
+are never pre-painted. Output: the plan at the theme's own ask, the fastest that fits, every
+grid option with its reason, and a sentence ("est 4 fps on the 60 Hz grid (15 scans a frame,
+gears 4 fps; …); a sweep could run 20 (pre-painted)").
+
+Against the bench: Skeleton 4-on-12 and 4-on-20 fit pre-painted (measured 140/140 and
+224/229); calendar 4-on-20 fits pre-painted (measured 227x3 6x4); modern holds 12 with its
+12 fps gears (measured clean); regulator holds paced 7.5; the carriage dials stay at 4.
+`runtime/_selftest/headless-estimate4.test.js` pins Skeleton to the bench, 14 checks, each
+constant with a mutant that breaks its pin.
+
+### 49.11 — Pre-paint lands in place — 2026-11-05
+
+The pre-painted gear tick used to copy the built-ahead rect rows from the back planes into
+the front planes (~88k px x 2 planes on Skeleton), and that copy sat on the tick. Now the
+landing tick reads those rows straight from the back planes (`s_bk0/s_bk1`, `pp_row_src`),
+and the copy runs in the slack before any stale rebuild or the next build-ahead. Skeleton:
+**4 on 20 at 19.2 fps, 224x3 3x5 2x7**, gears exactly 15 scans apart 40 of 45; **4 on 12
+140x5, ±0.0 ms**, the dearest tick 46 ms. Still 0 mismatched pixels in 11 M checked.
+estimate4's swap constant follows: 0.1 us per rect px.
+
+### 49.12 — The gear policy — 2026-11-05
+
+**Owner, 2026-11-05:** with a stepping seconds hand, run the gears as fast as they fit: 8 fps
+(7.5) under 1/8-second hands, 12 under 1/4 or slower. With a sweep, the gears stay at 4
+and the sweep takes the fastest of 4 on 20, 5 on 15 or 4 on 12 that fits.
+
+A beat and a gear frame each land evenly only on a frame rate they divide. So 1/2 and 1/4
+hands cannot carry 8 fps gears (that needs a 15 fps frame grid, which 2 and 4 do not divide);
+1/1 can (7.5 on 15). The candidates, in order:
+1/8: 7.5/7.5, 3.75 on 7.5. 1/4, 1/2: 12/12, 6/12, 4/12, 4/4.
+1/1: 12/12, 7.5 on 15, 6/12, 4/12, 4/4. sweep: 4/20, 5/15, 4/12, 4/4.
+`estimate4(sec, {hands: 8|4|2|1|'sweep'})` answers `policy` (every candidate with its
+reason) and `policy_pick`. A stepping hand is priced only on its beat's frames.
+
+| template | 1/8 | 1/4, 1/2, 1/1 | sweep |
+|---|---|---|---|
+| skeleton | 7.5/7.5 | 4 on 12, pre-painted (12/12: a 79 ms gear frame on every frame does not fit 84.7) | 4 on 20, pre-painted |
+| calendar | 7.5/7.5 | 12/12 | 4 on 20, pre-painted |
+| modern | 7.5/7.5 | 12/12 | 5 on 15 |
+| regulator | 7.5/7.5 | 12/12 | 4 on 20, pre-painted |
+| opentour | 7.5/7.5 | 4/4 | 4/4 |
+| kitetour, orbital | none (the carriage costs 130-165 ms a frame) | 4/4 | 4/4 |
+
+**Two caveats.**
+1. These price today's bank rects. A bank baked at a higher tempo changes less per frame, so
+   its rects and its gear ticks shrink. The figures are conservative until the re-bake.
+2. **More gear frames need art the slot has, and the bake's budget rule does not see it.**
+   Skeleton uses 5.1 of the 8 MB slot. A delta frame stores ~172 KB, so 16 frames (8 fps)
+   add ~1.4 MB and 24 frames (12 fps) add ~2.8 MB, which just fits. But `splitPolicy3` prices
+   every bank frame as a full 434 KB keyframe. That is why calendar's 16 frames were
+   thinned to 8, and it would thin a 12 fps Skeleton too. It has to price the deltas.
+
+### 49.13 — The general estimator, and fps x cutout as the one currency — 2026-11-05
+
+**Owner, 2026-11-05:** the maths has to hold for any size of visible gear train and any hands
+on the dial, several seconds hands included, ticking or sweeping in one mix. A bank holds
+**one second**: 8 frames for 8 fps (no doubling to 16), 12 for 12, 15 for 15, 20 for 20.
+The faster cutouts are meant to be small, so a 20 fps small cutout bakes to about the size of
+a 4 fps big one. That is the whole maths.
+
+estimate4 now prices every row by its own cadence. Every frame: sweeping and stop-to-go
+seconds, carriages, drums. On their beat's frames: ticking seconds. Shadows follow their
+row; minute and hour rows are priced once as the occasional frame they cost; the bank rects
+land on the gear frames. For a grid rate it walks one second of frames, prices each distinct
+mix of movers once, and requires every beat and the gears to divide the rate.
+**Storage** is the keyframe + G x cutout px x 2.06 B (the measured delta cost) against the
+slot left by everything else. So **fps x cutout area is the currency**: the slot pays it in
+bytes, the compositor in time per second.
+
+Skeleton's cutout is 86 kpx: a one-second bank needs 1.1 / 1.7 / 2.4 / 3.0 / 3.8 MB at
+4 / 8 / 12 / 15 / 20 fps against 4.7 MB free. Calendar's 13 kpx needs 0.9 MB even at 20.
+The policy picks are unchanged by the general walk. The suite adds a ticking 1/4 hand
+beside Skeleton's sweep (4 on 20 holds, 5 on 15 refused for the beat) and the byte cost:
+19 checks.
+
+### 49.14 — A loop is never under 8 frames; the balance keeps its pace — 2026-11-05
+
+**Owner, 2026-11-05:** a full gear loop is always at least 8 frames. At 4 fps that is a
+two-second loop, which keeps the movement's detail (fewer frames is too jerky). Every faster
+tempo holds exactly one second: 8 at 8 (7.5 on the glass), 12 at 12, 15 at 15, 20 at 20.
+The balance wheel's ticks have to be sped up at 4 fps so they still look right.
+
+- **Banks** (`dial-renderer.js` BANKS): `{4: 8, 5: 8, 8: 8, 12: 12, 15: 15, 20: 20}`,
+  `bankFrames = max(8, fps)`. The 8 fps bank went from 16 frames to 8. K = 7 teeth per loop
+  stays coprime with every depth; `loopcheck.py`'s gear-teeth section passes at all five
+  (the index tooth engages at 4, 8 and 12, where a tick steps past half a tooth).
+- **The balance swings BEATS times a second, not per loop** (`balanceSwings`). The renderer
+  is told the tempo (`tempo: this.F` beside `frames: this.B`, so 4 and 8 fps, both 8 frames,
+  are different movements). A bank too shallow for the swing is capped at a tick-tock,
+  phased onto the extremes so no frame lands the wheel dead centre. At 4 fps, one swing a
+  second is two per loop and four a second is a tick-tock. `_selftest/headless-balance.test.js`,
+  16 checks, including the mutant (no phase: the tick-tock freezes at centre).
+- **The composer's gear tempo follows the policy (§49.12):** sweep → 4, 8 ticks/s → 8,
+  1/2/4/12 ticks/s → 12, then down the ladder the measured rows allow. `loopcheck.py`'s
+  mirror follows it; its sweep cases now pin 4, and its ladder cases moved to a ticking hand.
+  Only the two date/moon seal cases that already fail on HEAD remain.
+- **estimate4:** a bank is the keyframe + max(8, G) rect deltas. A bank over the device's 16
+  frames (CLK_BG_MAX) is refused by name, so a 20 fps bank waits on that cap.
+- **Re-baked:** calendar now 8 frames at 8 fps (was 8 of 16 thinned to 4); regulator 8 at 8
+  (was 16 at 8); skeleton and the carriage dials 8 at 4 (two seconds); modern, sector and
+  diver keep their 12 and 15 fps one-second banks.
+
+Still open on the bake side: `splitPolicy3` prices every bank frame as a full keyframe
+(434 KB), not the ~2 B/px delta it stores. The editor's status line still shows estimate3.
+
+**Correction (§49.15):** the editor suites and the re-bakes above ran on a stale
+`_selftest/component.js` (the HEAD extract), not the edited composer — the node suites and
+`bank3-drive.html` read the extract, and it was never regenerated. The composer's §49.14 tempo
+rule therefore first reached a bake in §49.15. The renderer, baker and loopcheck results stand.
+
+### 49.15 — Plans, not a policy table: fps x cutout, the Favour, and the glass — 2026-11-05
+
+**Status, end of 2026-11-05 — the figures below are the first glass pass and are superseded.**
+Found since, and fixed: the bench's sweep switch doubled an already-sweeping seconds row (a
+6° retrograde each second); `/debug/dial` capped every run at 20 s and its hold log at 512
+frames, so the "minute" holds were ~20 s; estimate4 posed every shadow twin at 0° and never
+priced it. With those fixed, estimate4 was refit by least squares on 73 glass arms (R 0.707,
+W 1.079, AA 0.665 per smoothed kpx, CAR 0.128, FIXED 4.34; rms 2.6 ms; the carriage repaints
+every frame). Smoothing is now a must (owner): every seconds row smooths, disc and ring too, and
+its shadow on a Smooth seconds shadow switch. Spans keep a ring's hollow (two per row, firmware
+and estimate4): fully smoothed Orbit ticks in 207 ms (was 618) and sweeps at 4 fps; Rink (a
+new preset, three ring sub-dials) sweeps its smoothed 151 px ring at 15 fps. The editor prices
+the plans live, each plan verified on a bank drawn at its own tempo (a plan's gear rate redraws
+its bank; chasing one estimate's pick flipped Sector 7.5/15 <-> 15/15 forever). The plate bank
+cap is 20 (CLK_BG_MAX). Owed: the full minute-long validation of every preset on the refit, the
+margin from it, and this section's rewrite.
+
+**Owner, 2026-11-05:** a small cutout must be able to run its gears faster than 8 — the
+§49.12 table capped them at 12 (4 to 5 under a sweep). And when two plans both fit (6/12,
+4/20, 5/15), the user chooses.
+
+- **The search** (`estimate4`): every gear rate on GEARS4 `[20, 15, 12, 10, 7.5, 6, 5, 4]` on
+  every hand grid it lands on, against the frame time, the slot, the plate bank cap (20) and
+  the carriage cap (16). What fits is cut to its frontier — no plan beaten on both hands and
+  gears. A sweep may not go under 4; a beat with no gears may rest on its own beat (Orbit's
+  243 ms tick is a 1 fps grid). A ticking hand moves on its beats whatever the grid, so a
+  ticking dial's one plan is the fastest gears on the slowest grid that carries them.
+- **Favour** (`picks`, `pickPlan4`): *sweep* — the fastest grid, then the fastest gears on it;
+  *gears* — the fastest gears, then the grid; *balanced* — the largest smaller share of the
+  frontier's best grid and best gears, ties to the evener plan. Skeleton: 4/20, 7.5/7.5, 5/15.
+- **The editor:** Hands → Second hand shows *Favour* and *Plan* (by favour, or an exact plan)
+  once a bake has priced the bytes. A bake reads `estimate4` off its own bytes; when the pick's
+  gear tempo is not the one drawn, the bank is redrawn at it and baked once more (the plan
+  opens its own rebuild window in `buildGate`). A banked sweep names the plan's grid as its
+  beat (`tick_rate`). `TEMPOS` gains 5, 6 and 10; `loopcheck.py` checks all eight.
+- **The bank:** `CLK_BG_MAX` 16 → 20 (main and SDK `clk_types.h`, `bake_clock.py`,
+  `BG3_FRAMES_MAX`; the host suite's refusal moved to 21 frames). `splitPolicy3` now prices a
+  frame past the keyframe as its delta rect (the motion box + 16 px a side, 3 B a texel) —
+  Diver's 20-frame bank had been thinned to 10 on full-panel prices. The thinning cases are
+  restated on whole-panel motion, where the old numbers reproduce exactly.
+- **The carriage** is baked at the gears' tempo, so a plan moves both.
+
+**The glass (Gold, 80 MHz, spans + nearest shadows, `tools/bench/plan_matrix.py`).** Every
+template's frontier, and the cheapest plans the calculator refuses for time ("next up"), held
+on the paced grid. Held = 95% of frames up exactly 60/H refreshes. The first 8 s pass found
+the calculator optimistic, and it was refit on what the device measured:
+
+- the gear frame is priced on the bank's **largest** rect (Regulator's rects run 6–61 kpx; the
+  mean priced its worst gear frames ~20 ms short); a pre-paint build stays on the mean;
+- **MARGIN 19 → 23** for a frame to fit (commit + DMA + the refresh wait: Diver, Station and
+  Aviator missed 20 at 19), **IDLE 19** kept for the pre-paint slack it was measured on;
+- **CAR 0.676 → 0.9** (Kitetour 6/6 and Orbital 5/5 missed by ~25 ms).
+
+`tools/bench/plan_replay.js` re-judges a run offline under any constants. Then each borderline
+or disputed plan was held a full **minute** (`BENCH_MS=60000`), so the seconds hand crosses
+the whole dial — an 8 s window samples one eighth of it, and Station read 80% one run, 100% the
+next. On the minute:
+
+| | plans | result |
+|---|---|---|
+| frontier, direct | 0/15 aviator, station, speedster · 0/20 luna, neon, phase, perpetual · 10/20 sector, diver · 12/12 regulator · 6/6 opentour · 5/5 kitetour · 4/4 orbital | all held, 96.4–100% |
+| frontier, pre-painted | 4/20 skeleton | held, 96.0% |
+| frontier, pre-painted | 5/15 skeleton · 5/20 calendar · 7.5/15 modern | **missed, 93.5–94.5%**: a gear landing late every second or two |
+| next up | 5/20 skeleton · 15/15 modern · 20/20 sector · 0/20 station · 6/6 kitetour · 5/5 orbital | missed, as refused |
+| next up | 20/20 diver · 10/20 calendar · 7.5/7.5 opentour · 0/20 aviator · 0/20 speedster | **held, 96.9–99%**: one step left on the table |
+
+The calculator is never more than one step off. Its frame price is good to about ±3 ms, and
+the misses on both sides sit inside that, at the 95% line (Speedster prices 2 ms dearer than
+Station and is the cheaper of the two on the glass). Every direct plan it offers holds; three
+pre-painted plans hold ~94%. Whether pre-paint is priced stricter (those three fall back a
+step: Skeleton 5/15 off, Calendar 15/15, Modern 12/12) is the owner's call.
+
+Not shipped: the device still plays these on the shipped rung ladder `{12, 8, 4, 2, 1}`; the
+plans are what the bench's paced grid, ink spans and pre-paint hold (§49.3's shipping list).
+A theme with a 17–20 frame bank is refused by firmware older than this build.

@@ -32,6 +32,16 @@ static const char *snd_opt_label(orb_app_t *app, int idx)
     }
 }
 
+/* An end of quiet hours in half-hour steps (0..47): the times in force, or the last set
+ * while they are off. */
+static int snd_end(const orb_sound_cfg_t *c, bool from)
+{
+    const bool on = c->quiet_from >= 0;
+    const int h = from ? (on ? c->quiet_from : c->quiet_last_from) : (on ? c->quiet_to : c->quiet_last_to);
+    const int m = from ? (on ? c->quiet_from_m : c->quiet_last_from_m) : (on ? c->quiet_to_m : c->quiet_last_to_m);
+    return h * 2 + (m >= 30 ? 1 : 0);
+}
+
 /* A value as its row shows it, saved or not. */
 static const char *snd_opt_fmt(orb_app_t *app, int idx, int32_t v)
 {
@@ -42,8 +52,8 @@ static const char *snd_opt_fmt(orb_app_t *app, int idx, int32_t v)
         snprintf(s_val, sizeof s_val, "%ld", (long)v);
         return s_val;
     case ROW_FROM:
-    case ROW_UNTIL:
-        snprintf(s_val, sizeof s_val, "%02ld:00", (long)v);
+    case ROW_UNTIL:                                   /* half-hour steps: v is 0..47 */
+        snprintf(s_val, sizeof s_val, "%02ld:%02ld", (long)(v / 2), (long)(v % 2 * 30));
         return s_val;
     default:
         return "";
@@ -58,9 +68,9 @@ static const char *snd_opt_value(orb_app_t *app, int idx)
     switch (idx) {
     case ROW_VOLUME: return snd_opt_fmt(app, idx, c.volume);
     case ROW_QUIET:  return c.quiet_from < 0 ? "off" : "on";
-    /* The ends read the hours in force, or the last set while quiet hours are off. */
-    case ROW_FROM:   return snd_opt_fmt(app, idx, c.quiet_from >= 0 ? c.quiet_from : c.quiet_last_from);
-    case ROW_UNTIL:  return snd_opt_fmt(app, idx, c.quiet_from >= 0 ? c.quiet_to : c.quiet_last_to);
+    /* The ends read the times in force, or the last set while quiet hours are off. */
+    case ROW_FROM:   return snd_opt_fmt(app, idx, snd_end(&c, true));
+    case ROW_UNTIL:  return snd_opt_fmt(app, idx, snd_end(&c, false));
     default:         return "";
     }
 }
@@ -77,10 +87,7 @@ static bool snd_opt_edit(orb_app_t *app, int idx, orb_opt_edit_t *e)
         return true;
     case ROW_FROM:
     case ROW_UNTIL: {
-        const bool on = c.quiet_from >= 0;
-        const int v = idx == ROW_FROM ? (on ? c.quiet_from : c.quiet_last_from)
-                                      : (on ? c.quiet_to : c.quiet_last_to);
-        *e = (orb_opt_edit_t){ .min = 0, .max = 23, .value = v, .step_max = 3, .wrap = true };
+        *e = (orb_opt_edit_t){ .min = 0, .max = 47, .value = snd_end(&c, idx == ROW_FROM), .step_max = 4, .wrap = true };
         return true; }
     default:
         return false;
@@ -97,9 +104,11 @@ static void snd_opt_set(orb_app_t *app, int idx, int32_t v)
     if (idx == ROW_VOLUME) {
         c.volume = (uint8_t)v;
     } else if (idx == ROW_FROM || idx == ROW_UNTIL) {
-        int8_t *end = c.quiet_from >= 0 ? (idx == ROW_FROM ? &c.quiet_from : &c.quiet_to)
-                                        : (idx == ROW_FROM ? &c.quiet_last_from : &c.quiet_last_to);
-        *end = (int8_t)v;
+        const bool on = c.quiet_from >= 0, from = idx == ROW_FROM;
+        int8_t *hr = on ? (from ? &c.quiet_from : &c.quiet_to) : (from ? &c.quiet_last_from : &c.quiet_last_to);
+        int8_t *mn = on ? (from ? &c.quiet_from_m : &c.quiet_to_m) : (from ? &c.quiet_last_from_m : &c.quiet_last_to_m);
+        *hr = (int8_t)(v / 2);
+        *mn = (int8_t)(v % 2 * 30);
     } else {
         return;
     }
@@ -113,7 +122,10 @@ static void snd_opt_sel(orb_app_t *app, int idx)
     orb_sound_cfg_get(&c);
     if (idx == ROW_QUIET) {
         if (c.quiet_from >= 0) { c.quiet_from = -1; c.quiet_to = -1; }
-        else { c.quiet_from = c.quiet_last_from; c.quiet_to = c.quiet_last_to; }
+        else {
+            c.quiet_from = c.quiet_last_from; c.quiet_to = c.quiet_last_to;
+            c.quiet_from_m = c.quiet_last_from_m; c.quiet_to_m = c.quiet_last_to_m;
+        }
         (void)orb_sound_cfg_set(&c);
     } else if (idx == ROW_TEST) {
         (void)orb_sound_test("ding");

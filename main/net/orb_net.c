@@ -3091,7 +3091,7 @@ static bool json_int(const char *body, size_t len, const char *key, long *out)
     return true;
 }
 
-#define SOUND_JSON_MAX 640   /* the GET body: settings, remembered hours, stats */
+#define SOUND_JSON_MAX 768   /* the GET body: settings, remembered hours, stats */
 static esp_err_t sound_reply(httpd_req_t *req)
 {
     orb_sound_cfg_t c;
@@ -3109,6 +3109,7 @@ static esp_err_t sound_reply(httpd_req_t *req)
         "{\"ready\":%s,\"volume\":%u,\"tick\":%s,\"chimes\":%s,\"strikes\":%s,"
         "\"jumps\":%s,\"quiet_from\":%d,\"quiet_to\":%d,\"quiet_on\":%s,"
         "\"quiet_last_from\":%d,\"quiet_last_to\":%d,\"offset_ms\":%d,\"pattern\":%d,"
+        "\"quiet_from_m\":%d,\"quiet_to_m\":%d,\"quiet_last_from_m\":%d,\"quiet_last_to_m\":%d,"
         "\"stats\":{\"blocks\":%lu,\"sent\":%lu,\"voices\":%lu,\"started\":%lu,"
         "\"nudges\":%lu,\"snaps\":%lu,\"loop_err\":%ld,\"pa\":%s,\"running\":%s}}",
         orb_sound_ready() ? "true" : "false", (unsigned)c.volume,
@@ -3116,6 +3117,7 @@ static esp_err_t sound_reply(httpd_req_t *req)
         c.strikes ? "true" : "false", c.jumps ? "true" : "false",
         c.quiet_from, c.quiet_to, c.quiet_from >= 0 ? "true" : "false",
         c.quiet_last_from, c.quiet_last_to, c.offset_ms, c.pattern,
+        c.quiet_from_m, c.quiet_to_m, c.quiet_last_from_m, c.quiet_last_to_m,
         (unsigned long)st.blocks, (unsigned long)st.sent, (unsigned long)st.voices,
         (unsigned long)st.started, (unsigned long)st.nudges, (unsigned long)st.snaps,
         (long)st.loop_err, st.pa_on ? "true" : "false", st.running ? "true" : "false");
@@ -3191,6 +3193,14 @@ static esp_err_t h_sound_post(httpd_req_t *req)
     if (json_int(body, (size_t)len, "jumps", &v))      { c.jumps = v != 0; named++; }
     if (json_int(body, (size_t)len, "quiet_from", &v)) { c.quiet_from = (int8_t)(v < -1 || v > 23 ? 99 : v); named++; }
     if (json_int(body, (size_t)len, "quiet_to", &v))   { c.quiet_to = (int8_t)(v < -1 || v > 23 ? 99 : v); named++; }
+    /* the half hours: 0 or 30, absent keeps :00 for an end named in hours alone */
+    {
+        const bool hf = json_int(body, (size_t)len, "quiet_from", &v), ht = json_int(body, (size_t)len, "quiet_to", &v);
+        if (json_int(body, (size_t)len, "quiet_from_m", &v)) { c.quiet_from_m = (int8_t)(v == 0 || v == 30 ? v : 99); named++; }
+        else if (hf) c.quiet_from_m = 0;
+        if (json_int(body, (size_t)len, "quiet_to_m", &v))   { c.quiet_to_m = (int8_t)(v == 0 || v == 30 ? v : 99); named++; }
+        else if (ht) c.quiet_to_m = 0;
+    }
     if (json_int(body, (size_t)len, "offset_ms", &v))  { c.offset_ms = (int16_t)(v < 0 || v > 500 ? -1 : v); named++; }
     if (json_int(body, (size_t)len, "pattern", &v))    { c.pattern = (int8_t)(v < -1 || v > 4 ? 99 : v); named++; }
     /* docs/knob-edit-plan.md §1.3: on restores the last hours set, off keeps them; hours
@@ -3198,7 +3208,10 @@ static esp_err_t h_sound_post(httpd_req_t *req)
     if (json_int(body, (size_t)len, "quiet_on", &v)) {
         named++;
         if (!v) { c.quiet_from = -1; c.quiet_to = -1; }
-        else if (c.quiet_from < 0) { c.quiet_from = c.quiet_last_from; c.quiet_to = c.quiet_last_to; }
+        else if (c.quiet_from < 0) {
+            c.quiet_from = c.quiet_last_from; c.quiet_to = c.quiet_last_to;
+            c.quiet_from_m = c.quiet_last_from_m; c.quiet_to_m = c.quiet_last_to_m;
+        }
     }
     heap_caps_free(body);
     const char *why = named ? orb_sound_cfg_set(&c) : "no sound setting in body";
@@ -5621,7 +5634,7 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
         json_put(e_title, sizeof e_title, a->title ? a->title : "");
         if (orbapp_caps_names(orb_svc_grants(a), caps, sizeof caps) < 0)
             caps[0] = '\0';
-        char e_reason[2 * 40];
+        char e_reason[2 * 96];
         json_put(e_reason, sizeof e_reason, orb_svc_fault_reason(a));
         const int w = snprintf(row, rowsz,
             "%s{\"slug\":\"%s\",\"title\":\"%s\",\"slot\":%d,\"caps\":\"%s\","
@@ -5666,6 +5679,9 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
         }
         secrets[sn++] = ']';
         secrets[sn] = '\0';
+        /* why a failed row failed: its fault record, or its load refusal this boot */
+        char e_why[2 * 96];
+        json_put(e_why, sizeof e_why, orb_svc_fault_reason(a));
         /* D37: the identity tuple rides the card tier and only the card tier. A
          * compiled row was never a container, so its five words are zero, and printing
          * that zero would tell an operator reading the field on the hub that their clock
@@ -5677,14 +5693,14 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
             "\"failed\":%s,\"walkable\":%s,\"on_glass\":%s,"
             "\"geom_crc\":%" PRIu32 ",\"code_crc\":%" PRIu32 ","
             "\"code_size\":%" PRIu32 ",\"serial\":%" PRIu32 ","
-            "\"editor_crc\":%" PRIu32 ",\"version\":\"%s\",\"secrets\":%s}",
+            "\"editor_crc\":%" PRIu32 ",\"version\":\"%s\",\"secrets\":%s,\"reason\":\"%s\"}",
             seen++ ? "," : "", e_slug, e_title, (int)(i - ORB_APP_BASE), caps,
             a->period_ms, a->n_settings,
             a->failed ? "true" : "false",
             a->iface ? "true" : "false",
             (a == orb_app_current() || a->active) ? "true" : "false",
             a->geom_crc, a->code_crc, a->code_size, a->serial, a->editor_crc,
-            e_version, secrets);
+            e_version, secrets, e_why);
         if (w < 0 || (size_t)w >= rowsz) {        /* cannot: bounds are arithmetic;
                                                   * a placeholder keeps the body valid */
             ESP_LOGE(TAG, "installed app row exceeded %d B", (int)rowsz);
@@ -6538,9 +6554,14 @@ static esp_err_t h_app_upload(httpd_req_t *req)
      * worker copies straight from here to the card, so it needs no DMA-capable
      * memory. Allocated once, kept for the process's life (only one upload runs at a
      * time, so this one buffer is never contended). */
+    /* A pointer, so its size is APP_RX and never sizeof rx: sizeof read the pointer's
+     * 8 B, and every upload crawled in by 8-byte recvs until a big app's connection was
+     * dropped mid-body (Bronze, 2026-11-04: clock.orbapp reset at 538-700 KB of 907 KB;
+     * the same bytes through /api/v1/sd/write landed whole). */
+    enum { APP_RX = 4096 };
     static char *rx;
     if (!rx) {
-        rx = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        rx = heap_caps_malloc(APP_RX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!rx) {
             orb_app_upload_cancel(&up);
             httpd_resp_set_status(req, "503 Service Unavailable");
@@ -6550,8 +6571,7 @@ static esp_err_t h_app_upload(httpd_req_t *req)
     int got = 0;
     while (got < clen) {
         const int room = clen - got;
-        const int r = httpd_req_recv(req, rx,
-                                    (size_t)(room < (int)sizeof rx ? room : (int)sizeof rx));
+        const int r = httpd_req_recv(req, rx, (size_t)(room < APP_RX ? room : APP_RX));
         if (r <= 0) {
             /* Client vanished: cancel() deletes the .part, so nothing survives on the
              * card to be listed as an app and fail to load. */

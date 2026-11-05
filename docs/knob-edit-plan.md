@@ -94,3 +94,24 @@ quiet hours on/off, from and until.
   - `quiet_on` posted off and on, with hours.
 
   The owner's 22:00–07:00, volume off and the clock on the glass were put back.
+
+## 4. Half-hour quiet hours (2026-11-04)
+
+The owner wants quiet hours in 30-minute steps. Each end keeps its hour (`quiet_from`,
+`quiet_to`, and the remembered `quiet_last_*`) and gains its half hour beside it,
+`quiet_from_m`/`quiet_to_m`/`quiet_last_from_m`/`quiet_last_to_m`, 0 or 30 (NVS `qfm`, `qtm`,
+`qlfm`, `qltm`; a board saved before them reads :00). The hours are untouched so
+`stage_snd_cfg` still hands apps hours; `stage_snd_quiet(hour)` answers for hour:00, and the
+mixer asks by the minute (`orb_sound_quiet_at_min`). The API reports and takes the half hours;
+an end posted in hours alone is on the hour, anything but 0 or 30 is refused. The knob's From
+and Until rows step 0..47 half hours and read `22:30`; the hub's pickers offer 48 times.
+
+Bench on Bronze: 22:30-06:30 set, turned off (the half hours kept as the last set), on again
+(restored), across a reboot while off, hours alone (:00), and `quiet_from_m: 15` refused; the
+hub's Sound card then set 22:00-07:00 back.
+
+The same flash carried a fix found on the way: `h_app_upload` read the body by
+`sizeof rx`, and `rx` had become a PSRAM pointer, so every app upload arrived 8 bytes per
+recv. A small app got through; clock.orbapp (907 KB) was reset at 538-700 KB every time,
+while the same bytes through `/api/v1/sd/write` landed whole. With the size named
+(`APP_RX`, 4096) the clock installs in about 10 s.

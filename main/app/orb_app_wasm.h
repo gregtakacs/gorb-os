@@ -80,6 +80,9 @@ orb_wasm_plan_t orb_wasm_plan(const orbapp_hdr_t *h);
 esp_err_t orb_wasm_load(int slot, const orbapp_hdr_t *hdr,
                         const uint8_t *bytes, uint32_t len);
 
+/** Why the last orb_wasm_load refused, in the owner's words ("" when it said nothing). */
+const char *orb_wasm_load_why(void);
+
 /** Release slot `slot`'s engine state, if any. Idempotent. */
 void orb_wasm_unload(int slot);
 

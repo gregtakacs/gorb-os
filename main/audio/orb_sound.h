@@ -115,14 +115,21 @@ typedef struct {
     int8_t  quiet_last_from;   /* the last quiet hours set, kept while they are off, so */
     int8_t  quiet_last_to;     /* turning them on restores them (docs/knob-edit-plan.md
                                 * §1.3). Written by orb_sound_cfg_set, never refused. */
+    /* The half hour of each end above (owner, 2026-11-04: quiet hours in 30-minute
+     * steps): 0 or 30. Kept beside the hours, not folded into them, so the hours
+     * stay what an app reads through stage_snd_cfg. */
+    int8_t  quiet_from_m, quiet_to_m;
+    int8_t  quiet_last_from_m, quiet_last_to_m;
 } orb_sound_cfg_t;
 
 void      orb_sound_cfg_get(orb_sound_cfg_t *out);
 /** Validate, apply and persist. Returns a sentence on refusal, NULL on success. */
 const char *orb_sound_cfg_set(const orb_sound_cfg_t *in);
 
-/** True when `hour` (0..23, local) falls inside the owner's quiet hours. */
+/** True when `hour`:00 (0..23, local) falls inside the owner's quiet hours. */
 bool orb_sound_quiet_at(int hour);
+/** True when minute `min` of the local day (0..1439) falls inside them. */
+bool orb_sound_quiet_at_min(int min);
 /** True now, by the local wall clock. */
 bool orb_sound_quiet_now(void);
 

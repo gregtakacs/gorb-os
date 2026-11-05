@@ -1303,6 +1303,11 @@ static const wasm_bind_t s_binds[] = {
  * an app that never asked for "orb.now" must not fail to load over it. Only a real
  * link error (moduleNotLinked, an import-type mismatch, say) is worth surfacing.
  * Extra services (orb_app_net.c) append their own rows through orb_wasm_bind_more. */
+/* The last load's refusal, as the owner should read it: the install ladder copies it onto
+ * the row (orb_svc_note_refused), so the menu and the hub say why, not only the log. */
+static char s_load_why[96];
+const char *orb_wasm_load_why(void) { return s_load_why; }
+
 static M3Result bind_imports(IM3Module mod)
 {
     for (size_t i = 0; i < sizeof s_binds / sizeof s_binds[0]; i++) {
@@ -1320,6 +1325,8 @@ static M3Result bind_imports(IM3Module mod)
     if (missing) {
         ESP_LOGE(TAG, "module imports orb.%s, which this OS does not provide — rebuild the app",
                  missing);
+        snprintf(s_load_why, sizeof s_load_why,
+                 "needs orb.%s, which this firmware lacks: update the firmware", missing);
         return "the app imports a function this OS does not provide";
     }
     return m3Err_none;
@@ -1602,6 +1609,7 @@ const orb_app_iface_t orb_wasm_iface = {
 esp_err_t orb_wasm_load(int slot, const orbapp_hdr_t *hdr,
                         const uint8_t *bytes, uint32_t len)
 {
+    s_load_why[0] = '\0';
     if (slot < 0 || slot >= WASM_N_SLOTS || !hdr || !bytes || !len)
         return ESP_ERR_INVALID_ARG;
     if (s_slot[slot].rt) return ESP_ERR_INVALID_STATE;   /* already resident */
@@ -1642,7 +1650,11 @@ esp_err_t orb_wasm_load(int slot, const orbapp_hdr_t *hdr,
     }
 
     r = m3_LoadModule(s->rt, s->mod);          /* takes s->mod either way */
-    if (r) { ESP_LOGW(TAG, "slot %d: module would not load: %s", slot, r); slot_release(s); return ESP_FAIL; }
+    if (r) {
+        ESP_LOGW(TAG, "slot %d: module would not load: %s", slot, r);
+        snprintf(s_load_why, sizeof s_load_why, "the engine would not load its code: %s", r);
+        slot_release(s); return ESP_FAIL;
+    }
 
     /* Link AFTER Load: m3_LinkRawFunction throws moduleNotLinked on a module whose
      * runtime pointer is still NULL (m3_bind.c:134 — caught on the bench 2026-10-21,
@@ -1663,6 +1675,8 @@ esp_err_t orb_wasm_load(int slot, const orbapp_hdr_t *hdr,
             if (s_entries[i].required) {
                 ESP_LOGW(TAG, "slot %d: required export \"%s\" missing",
                          slot, s_entries[i].export_name);
+                snprintf(s_load_why, sizeof s_load_why, "its code has no %s entry point",
+                         s_entries[i].export_name);
                 slot_release(s); return ESP_FAIL;
             }
             continue;

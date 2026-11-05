@@ -395,9 +395,16 @@ static void cfg_load(void)
     if (nvs_get_i8(h, "pat", &i8) == ESP_OK)    s_cfg.pattern = i8;
     if (nvs_get_i8(h, "qlf", &i8) == ESP_OK && i8 >= 0 && i8 <= 23) s_cfg.quiet_last_from = i8;
     if (nvs_get_i8(h, "qlt", &i8) == ESP_OK && i8 >= 0 && i8 <= 23) s_cfg.quiet_last_to = i8;
+    /* the half hours: a board saved before them reads :00 */
+    if (nvs_get_i8(h, "qfm", &i8) == ESP_OK && (i8 == 0 || i8 == 30))  s_cfg.quiet_from_m = i8;
+    if (nvs_get_i8(h, "qtm", &i8) == ESP_OK && (i8 == 0 || i8 == 30))  s_cfg.quiet_to_m = i8;
+    if (nvs_get_i8(h, "qlfm", &i8) == ESP_OK && (i8 == 0 || i8 == 30)) s_cfg.quiet_last_from_m = i8;
+    if (nvs_get_i8(h, "qltm", &i8) == ESP_OK && (i8 == 0 || i8 == 30)) s_cfg.quiet_last_to_m = i8;
     if (s_cfg.quiet_from >= 0) {                       /* hours in force are the last set */
         s_cfg.quiet_last_from = s_cfg.quiet_from;
         s_cfg.quiet_last_to = s_cfg.quiet_to;
+        s_cfg.quiet_last_from_m = s_cfg.quiet_from_m;
+        s_cfg.quiet_last_to_m = s_cfg.quiet_to_m;
     }
     nvs_close(h);
 }
@@ -412,16 +419,28 @@ const char *orb_sound_cfg_set(const orb_sound_cfg_t *in_)
     if (c.quiet_from >= 0 && c.quiet_from <= 23 && c.quiet_to >= 0 && c.quiet_to <= 23) {
         c.quiet_last_from = c.quiet_from;
         c.quiet_last_to = c.quiet_to;
+        c.quiet_last_from_m = c.quiet_from_m;
+        c.quiet_last_to_m = c.quiet_to_m;
     } else if (c.quiet_last_from < 0 || c.quiet_last_from > 23 ||
                c.quiet_last_to < 0 || c.quiet_last_to > 23) {
         c.quiet_last_from = s_cfg.quiet_last_from;
         c.quiet_last_to = s_cfg.quiet_last_to;
+        c.quiet_last_from_m = s_cfg.quiet_last_from_m;
+        c.quiet_last_to_m = s_cfg.quiet_last_to_m;
+    }
+    if (c.quiet_from < 0) c.quiet_from_m = c.quiet_to_m = 0;          /* off: no half hour */
+    if ((c.quiet_last_from_m != 0 && c.quiet_last_from_m != 30) ||
+        (c.quiet_last_to_m != 0 && c.quiet_last_to_m != 30)) {
+        c.quiet_last_from_m = s_cfg.quiet_last_from_m;
+        c.quiet_last_to_m = s_cfg.quiet_last_to_m;
     }
     if (in->volume > 100) return "volume runs 0..100";
     if (in->quiet_from < -1 || in->quiet_from > 23 || in->quiet_to < -1 || in->quiet_to > 23)
         return "quiet hours are an hour 0..23, or -1 for none";
     if ((in->quiet_from < 0) != (in->quiet_to < 0))
         return "quiet hours need both ends, or neither";
+    if ((in->quiet_from_m != 0 && in->quiet_from_m != 30) || (in->quiet_to_m != 0 && in->quiet_to_m != 30))
+        return "quiet hours start and end on the hour or the half hour";
     if (in->offset_ms < 0 || in->offset_ms > 500) return "offset runs 0..500 ms";
     if (in->pattern < -1 || in->pattern > 4) return "pattern is -1 (the theme's) or 0..4";
     nvs_handle_t h;
@@ -438,6 +457,10 @@ const char *orb_sound_cfg_set(const orb_sound_cfg_t *in_)
     e |= nvs_set_i8(h, "pat", in->pattern);
     e |= nvs_set_i8(h, "qlf", in->quiet_last_from);
     e |= nvs_set_i8(h, "qlt", in->quiet_last_to);
+    e |= nvs_set_i8(h, "qfm", in->quiet_from_m);
+    e |= nvs_set_i8(h, "qtm", in->quiet_to_m);
+    e |= nvs_set_i8(h, "qlfm", in->quiet_last_from_m);
+    e |= nvs_set_i8(h, "qltm", in->quiet_last_to_m);
     if (e == ESP_OK) e = nvs_commit(h);
     nvs_close(h);
     if (e != ESP_OK) return "settings could not be saved";
@@ -456,17 +479,20 @@ bool orb_sound_quiet_now(void)
     if (t != s_at) {
         struct tm ti;
         localtime_r(&t, &ti);
-        s_q = orb_sound_quiet_at(ti.tm_hour);
+        s_q = orb_sound_quiet_at_min(ti.tm_hour * 60 + ti.tm_min);
         s_at = t;
     }
     return s_q;
 }
 
-bool orb_sound_quiet_at(int hour)
+bool orb_sound_quiet_at(int hour) { return orb_sound_quiet_at_min(hour * 60); }
+
+bool orb_sound_quiet_at_min(int min)
 {
-    const int a = s_cfg.quiet_from, b = s_cfg.quiet_to;
-    if (a < 0 || b < 0 || a == b) return false;
-    return a < b ? (hour >= a && hour < b) : (hour >= a || hour < b);
+    if (s_cfg.quiet_from < 0 || s_cfg.quiet_to < 0) return false;
+    const int a = s_cfg.quiet_from * 60 + s_cfg.quiet_from_m, b = s_cfg.quiet_to * 60 + s_cfg.quiet_to_m;
+    if (a == b) return false;
+    return a < b ? (min >= a && min < b) : (min >= a || min < b);
 }
 
 void orb_sound_stats(orb_sound_stats_t *out)

@@ -1099,8 +1099,11 @@ type soundCfg struct {
 	Jumps     bool `json:"jumps"`
 	QuietFrom int  `json:"quiet_from"`
 	QuietTo   int  `json:"quiet_to"`
-	OffsetMs  int  `json:"offset_ms"`
-	Pattern   int  `json:"pattern"`
+	// the half hour of each end, 0 or 30 (orb_sound_cfg_t quiet_from_m, quiet_to_m)
+	QuietFromM int `json:"quiet_from_m"`
+	QuietToM   int `json:"quiet_to_m"`
+	OffsetMs   int `json:"offset_ms"`
+	Pattern    int `json:"pattern"`
 }
 
 func (o *Orb) soundLocked() *soundCfg {
@@ -1170,8 +1173,16 @@ func (o *Orb) serveSoundPost(w http.ResponseWriter, r *http.Request) {
 	flag("chimes", &c.Chimes)
 	flag("strikes", &c.Strikes)
 	flag("jumps", &c.Jumps)
+	if _, ok := m["quiet_from"]; ok {
+		c.QuietFromM = 0 // an end named in hours alone is on the hour
+	}
+	if _, ok := m["quiet_to"]; ok {
+		c.QuietToM = 0
+	}
 	num("quiet_from", &c.QuietFrom)
 	num("quiet_to", &c.QuietTo)
+	num("quiet_from_m", &c.QuietFromM)
+	num("quiet_to_m", &c.QuietToM)
 	num("offset_ms", &c.OffsetMs)
 	num("pattern", &c.Pattern)
 	why := ""
@@ -1184,6 +1195,8 @@ func (o *Orb) serveSoundPost(w http.ResponseWriter, r *http.Request) {
 		why = "quiet hours are an hour 0..23, or -1 for none"
 	case (c.QuietFrom < 0) != (c.QuietTo < 0):
 		why = "quiet hours need both ends, or neither"
+	case (c.QuietFromM != 0 && c.QuietFromM != 30) || (c.QuietToM != 0 && c.QuietToM != 30):
+		why = "quiet hours start and end on the hour or the half hour"
 	case c.OffsetMs < 0 || c.OffsetMs > 500:
 		why = "offset runs 0..500 ms"
 	case c.Pattern < -1 || c.Pattern > 4:

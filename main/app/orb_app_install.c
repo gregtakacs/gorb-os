@@ -1061,7 +1061,7 @@ static esp_err_t wasm_row_load(const esp_partition_t *p, orb_app_t *row,
     if (e == ESP_OK) {
         e = orb_wasm_load(slot, &h, buf, h.code_size);
         if (e == ESP_OK) orb_wasm_bind_app(slot, row);
-        else snprintf(why, whysz, "the engine refused the module");
+        else snprintf(why, whysz, "%s", orb_wasm_load_why()[0] ? orb_wasm_load_why() : "the engine refused the module");
     }
     heap_caps_free(buf);
     return e;
@@ -1079,8 +1079,12 @@ void orb_app_install_apply_code(void)
          * quarantined app must not cost its memory while it is quarantined. */
         if (orb_svc_faulted(row)) continue;
         char why[128] = "";
-        if (wasm_row_load(p, (orb_app_t *)row, why, sizeof why) != ESP_OK)
+        if (wasm_row_load(p, (orb_app_t *)row, why, sizeof why) != ESP_OK) {
             ESP_LOGW(TAG, "code app \"%s\" refused at load: %s", row->slug, why);
+            orb_svc_note_refused(row, why);    /* the row says why, not only the log */
+        } else {
+            orb_svc_note_refused(row, "");
+        }
             /* No rollback: init_all calls the module's init, gets FAIL
              * for the row that never loaded, and drops it from the carousel —
              * the same refusal path every other app's broken init already walks,

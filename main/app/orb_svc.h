@@ -297,7 +297,11 @@ void         orb_svc_note_owner_reset(int slot);
 void         orb_svc_note_fault(const orb_app_t *a, const char *why);
 uint32_t     orb_svc_fault_count(const orb_app_t *a);
 bool         orb_svc_faulted(const orb_app_t *a);
+/** The row's failure sentence: its C2 fault record when it has one, else why its code was
+ *  refused at load this boot, else "". The menu, the status and the ledger all print it. */
 const char  *orb_svc_fault_reason(const orb_app_t *a);
+/** Record why a row's code was refused at load (runtime only; "" clears it). */
+void         orb_svc_note_refused(const orb_app_t *a, const char *why);
 esp_err_t    orb_svc_clear_faults(orb_app_t *a);       /* P4's reinstall path */
 /* Boot ladder: orb_svc_init arms, boot completion RUNs, activation stamps
  * the slot, and every OS-owned reboot disarms. */

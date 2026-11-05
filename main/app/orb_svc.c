@@ -107,6 +107,13 @@ typedef struct {
 
 static svc_row_t s_row[ORB_SVC_ROWS];
 
+/* Why a row's code was refused at load this boot (owner, 2026-11-04: Gold showed flights
+ * "failed" with no reason while the log knew which import was missing). Runtime only: the
+ * load re-runs every boot and says it again, so nothing is kept in NVS. PSRAM, because the
+ * row table above is internal RAM and this board has none to spare. */
+#define SVC_REFUSED_MAX 96
+EXT_RAM_BSS_ATTR static char s_refused[ORB_SVC_ROWS][SVC_REFUSED_MAX];
+
 #define GRANTS_NS "orb.grants"
 
 /* The C2 reset record — defined up here so orb_svc_init below can consume
@@ -1277,8 +1284,16 @@ bool orb_svc_faulted(const orb_app_t *a)
 const char *orb_svc_fault_reason(const orb_app_t *a)
 {
     const int slot = orb_app_index_of(a);
-    if (slot < 0 || !s_row[slot].faulted) return "";
-    return s_row[slot].fault_reason;
+    if (slot < 0 || slot >= ORB_SVC_ROWS) return "";
+    if (s_row[slot].faulted) return s_row[slot].fault_reason;
+    return s_refused[slot];          /* a load refusal, or "" */
+}
+
+void orb_svc_note_refused(const orb_app_t *a, const char *why)
+{
+    const int slot = orb_app_index_of(a);
+    if (slot < 0 || slot >= ORB_SVC_ROWS) return;
+    snprintf(s_refused[slot], SVC_REFUSED_MAX, "%s", why ? why : "");
 }
 
 esp_err_t orb_svc_clear_faults(orb_app_t *a)

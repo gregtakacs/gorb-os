@@ -487,9 +487,13 @@ func TestEveryFirmwareDeviceRouteIsAllowedAndFakeable(t *testing.T) {
 	// page has no business crashing a dial, so the hub never relays it.
 	// /api/v1/debug/flights is the flight feed's bench door (its viability bench
 	// drives it from the bench host); the app configures the feed, not a page.
+	// /api/v1/debug/fx and /api/v1/debug/dial are the render benches (app-platform-plan
+	// §49): tools/bench drives them from the bench host, and a page has no business
+	// re-pacing the dial or forcing its compositor modes.
 	refused := map[string]bool{"/api/v1/ota": true, "/generate_204": true,
 		"/hotspot-detect.html": true, "/connect/test.php": true,
-		"/api/v1/debug/panic": true, "/api/v1/debug/flights": true}
+		"/api/v1/debug/panic": true, "/api/v1/debug/flights": true,
+		"/api/v1/debug/fx": true, "/api/v1/debug/dial": true}
 	checked := 0
 	for _, m := range found {
 		uri, method := m[1], strings.ToUpper(m[2])

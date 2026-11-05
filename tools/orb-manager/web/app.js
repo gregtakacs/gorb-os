@@ -3878,7 +3878,9 @@ function themeLibraryRows(app, deviceRows, state, entries) {
     let inst = null;
     if (th && !th.stale && (!cardSerial || newer || unsure)) {
       const over = newer || unsure;   // both send over the card's copy
-      inst = document.createElement("button");
+      // the button keeps its own name: `inst` is cleared below once it moves onto the card's row,
+      // and a handler reading `inst` then threw on its first line after the confirm (owner, 2026-11-05)
+      const btn = inst = document.createElement("button");
       inst.className = newer ? "upd" : "ghost";
       inst.textContent = newer ? "Update" : unsure ? "Replace" : "Install";
       inst.title = newer ? "Replace this orb's copy with the hub library's newer bake. The orb stores it and reboots onto it."
@@ -3895,7 +3897,7 @@ function themeLibraryRows(app, deviceRows, state, entries) {
           detail: "This takes a minute or two.",
           yes: newer ? "Update" : unsure ? "Replace" : "Install",
         })) return;
-        inst.disabled = true;
+        btn.disabled = true;
         fpOpen();
         const ui = fpUI();
         ui.doing.textContent = "installing " + (f.title || f.file) + " on " + themeIP;
@@ -3909,7 +3911,7 @@ function themeLibraryRows(app, deviceRows, state, entries) {
           + "&ip=" + encodeURIComponent(themeIP) + (over ? "&overwrite=1" : ""), ui, themeIP);
         if (!okPush) {
           state.textContent = "install refused \u2014 read the progress panel";
-          inst.disabled = false;
+          btn.disabled = false;
           return;
         }
         try {
@@ -3923,7 +3925,7 @@ function themeLibraryRows(app, deviceRows, state, entries) {
           ui.doing.textContent = "theme install refused";
           ui.log.textContent = "\u2717 " + e.message;   // the panel stays open with its reason
           state.textContent = "install refused: " + e.message;
-          inst.disabled = false;
+          btn.disabled = false;
         }
       };
       const cardActs = cardLi && cardLi.querySelector(".acts");

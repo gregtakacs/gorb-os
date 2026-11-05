@@ -892,10 +892,22 @@ esp_err_t orb_sd_fm_rm(const char *rel, bool recursive, int *removed_out)
  * The session holds no lock between chunks (the section comment above says why);
  * overwrite=false is a polite-not-airtight rule on a volume an MTP host can
  * write too, exactly as it is on every other door this device has.
+ *
+ * The bytes land in "<file>.part" and take the file's name only once every one of
+ * them is on the card. Writing the target in place truncated it the moment an
+ * overwrite opened, so a refused or dropped upload left NO copy at all — a stored
+ * theme's card file vanished that way on the bench (2026-11-05). FAT's rename will
+ * not replace a file, so the commit moves the old one aside to "<file>.old" first:
+ * at every step one complete copy holds a name, and a reset mid-commit leaves a
+ * .old or .part beside it for the file manager rather than nothing. Neither
+ * suffix is one the theme or app scans take.
  */
+#define FM_PART_SUFFIX ".part"
+#define FM_OLD_SUFFIX  ".old"
 typedef struct {
     FILE *f;
-    char path[ORB_SD_FM_PATH_MAX + 32];
+    char path[ORB_SD_FM_PATH_MAX + 32];         /* the file the upload names */
+    char part[ORB_SD_FM_PATH_MAX + 40];         /* where its bytes land meanwhile */
     size_t written, cap;
 } fm_write_t;
 
@@ -926,7 +938,8 @@ esp_err_t orb_sd_fm_write_open(const char *rel, bool overwrite, size_t declared,
     FILE *f = NULL;
     if (e == ESP_OK) {
         w = malloc(sizeof *w);
-        f = w ? fopen(abs, "wb") : NULL;
+        if (w) snprintf(w->part, sizeof w->part, "%s" FM_PART_SUFFIX, abs);
+        f = w ? fopen(w->part, "wb") : NULL;   /* a stale .part is simply restarted */
         if (!f) {
             e = (errno == EACCES || errno == EPERM) ? ESP_ERR_INVALID_STATE
               : errno == ENOENT ? ESP_ERR_NOT_FOUND     /* a parent is missing */
@@ -963,9 +976,27 @@ esp_err_t orb_sd_fm_write_close(void *h, bool commit)
     if (w->f) {
         orb_sd_lock();
         const int r = fclose(w->f);
-        if (!commit) remove(w->path);       /* cancel deletes what it was writing */
+        if (!commit || r != 0) {
+            remove(w->part);                /* cancel deletes what it was writing; */
+            if (commit) e = ESP_FAIL;       /* the file it would replace is untouched */
+        } else {
+            char old[sizeof w->part];
+            snprintf(old, sizeof old, "%s" FM_OLD_SUFFIX, w->path);
+            remove(old);                    /* a .old a reset left behind */
+            struct stat st;
+            const bool had = stat(w->path, &st) == 0;
+            if (had && rename(w->path, old) != 0) {
+                remove(w->part);
+                e = ESP_FAIL;
+            } else if (rename(w->part, w->path) != 0) {
+                if (had) rename(old, w->path);   /* put the old copy back */
+                remove(w->part);
+                e = ESP_FAIL;
+            } else if (had) {
+                remove(old);
+            }
+        }
         orb_sd_unlock();
-        if (r != 0 && commit) e = ESP_FAIL;
     }
     free(w);
     return e;

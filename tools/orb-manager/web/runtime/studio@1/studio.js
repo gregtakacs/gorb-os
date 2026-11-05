@@ -263,6 +263,16 @@
     });
   };
 
+  /* line: the session's opening line (session.opening), null when nothing is on its way in.
+   * Covers the whole editor, the start sheet's presets first, until the open lands or fails. */
+  S.OpeningModal = function (p) {
+    if (!p.line) return null;
+    return h('div', { className: 'st-modal', style: { zIndex: 70, cursor: 'progress' } },
+      h('div', null,
+        h('div', { className: 'st-mtitle' }, 'Opening a design'),
+        h('div', { className: 'st-mbody' }, p.line),
+        h('div', { className: 'st-hint' }, 'A theme’s design comes with its art, and from an orb’s card that can take a while. The editor opens on the theme when it arrives.')));
+  };
   // open, line, hint, noCancel, cancelLabel, onCancel
   S.SendModal = function (p) {
     if (!p.open) return null;

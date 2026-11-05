@@ -54,6 +54,7 @@
       restoring: false,
       orbNote: '',                 // set by boot() when this editor is newer than the orb's app
       lastMade: null,              // the older release a design just opened was made by, else null
+      opening: null,               // while a design is on its way in, the line saying so; else null
     };
     var lib = [];
     var say = function (s) { host.say(s); };
@@ -61,6 +62,18 @@
     var burstMs = function () { return host.burstMs ? host.burstMs() : 600; };
     var undoMax = function () { return host.undoMax ? host.undoMax() : 100; };
     var download = function (blob, name) { return (host.download || OrbTheme.download)(blob, name); };
+    /* An open is a fetch and a decode, megabytes off an orb's card for a converted theme, and
+     * until it lands the start sheet's presets sit under the pointer: a click there picks a dial
+     * the open then overwrites. The editor covers itself while api.opening holds a line. Every
+     * open clears it however it ends. The hub's Edit door (?theme=) and ?entry= start covered:
+     * the fonts and the library load before boot reaches the open. */
+    var opening = function (line) { api.opening = line || null; host.set({}); };
+    (function () {
+      var q = null; try { q = new URLSearchParams(root.location.search); } catch (e) { q = null; }
+      if (!q) return;
+      if (/^[A-Za-z0-9_.-]{1,64}$/.test(q.get('theme') || '')) api.opening = 'Opening the theme’s design from the ' + (q.get('src') === 'shelf' ? 'hub’s shelf' : 'card') + '…';
+      else if (q.get('entry')) api.opening = 'Opening “' + q.get('entry') + '” from the library…';
+    })();
 
     api.slug = function () {
       var q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
@@ -162,6 +175,10 @@
       return o;
     };
     api.openEntry = async function (nm) {
+      opening('Opening “' + nm + '” from the library…');
+      try { return await openEntry(nm); } finally { opening(null); }
+    };
+    var openEntry = async function (nm) {
       if (!api.hubOrb()) { say(offHub); return false; }
       var o; try { o = await designOf(nm); } catch (e) { say('Could not open “' + nm + '”: ' + err(e)); return false; }
       var why = api.apply(o, 'the library');
@@ -218,7 +235,11 @@
      * browser still holds from before K9 into the library as drafts (references only: they
      * never held their art), read the library, ask the hub what the orb runs, then do what
      * the page was opened for: ?entry=<name> opens that entry, ?rebake=1 runs Rebake all. */
+    // a boot that throws never reaches the open it was covering for
     api.boot = async function () {
+      try { return await boot(); } catch (e) { opening(null); throw e; }
+    };
+    var boot = async function () {
       try { root.localStorage.removeItem(api.sessionKey()); } catch (e) { /* no storage */ }
       var hub = api.hubOrb();
       if (!hub) return false;
@@ -293,6 +314,10 @@
     };
     // open a file: a baked .orbtheme (its design read out of it) or a design file
     api.openFile = async function (file) {
+      opening('Opening ' + (file && file.name ? '“' + file.name + '”' : 'the file') + '…');
+      try { return await openFile(file); } finally { opening(null); }
+    };
+    var openFile = async function (file) {
       var G = root.GorbBake, bytes, text = null;
       try { bytes = new Uint8Array(await file.arrayBuffer()); } catch (e) { say('That file could not be read'); return false; }
       if (bytes.length >= 4 && bytes[0] === 0x54 && bytes[1] === 0x52 && bytes[2] === 0x4f && bytes[3] === 0x47) {   // 'TROG': an .orbtheme
@@ -309,6 +334,9 @@
     };
     // ?theme=<card stem> (the hub's Edit door): the design comes through the hub, off the card or the shelf
     api.openTheme = async function () {
+      try { return await openTheme(); } finally { opening(null); }
+    };
+    var openTheme = async function () {
       var q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
       var id = q && q.get('theme'); if (!id || !/^[A-Za-z0-9_.-]{1,64}$/.test(id)) return false;
       var ip = q.get('orb') || '', src = q.get('src') === 'shelf' ? 'shelf' : 'card';

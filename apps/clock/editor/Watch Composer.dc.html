@@ -298,6 +298,7 @@
     </sc-if>
   </x-import>
 
+  <x-import component-from-global-scope="OrbStudio.OpeningModal" dc-props="{{ studioOpening }}"></x-import>
   <x-import component-from-global-scope="OrbStudio.SendModal" dc-props="{{ studioSend }}"></x-import>
   <x-import component-from-global-scope="OrbStudio.DupModal" dc-props="{{ studioDup }}"></x-import>
 </x-import>
@@ -3590,6 +3591,7 @@ class Component extends DCLogic {
         cap: { text: R.stackCapShort, color: R.stackCapFg, tip: 'R6: the live rows the bake ships (hands and their shadow twins, the discs\u2019 value rows, the carriage) against the dial\u2019s cap' },
         add: { label: R.addLabel, on: R.toggleAdd, tip: 'Open the parts catalogue on the right: hands, sub-dials, windows, a moon, openings, flares' } },
       studioFields: { fields: R.fields },
+      studioOpening: { line: this.session.opening },
       studioSend: T.sendProps(s.sending, s.status, R.sendCancel),
       studioDup: T.dupProps(s.dup, R.dupReplace, R.dupCancel),
       studioRender: {

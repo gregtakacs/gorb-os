@@ -225,7 +225,8 @@
       return T.sender({ say: say, ask: function (x) { setDup(x); }, sending: function (x) { setSending(x); } });
     }, []);
     R.useEffect(function () { ses.track(); }, [d]);
-    R.useEffect(function () { ses.boot().then(function () { return ses.openTheme(); }).catch(function () {}); }, []);
+    // a boot that fails still runs the open: it is what lifts the opening cover off ?theme=
+    R.useEffect(function () { ses.boot().catch(function () {}).then(function () { return ses.openTheme(); }).catch(function () {}); }, []);
     var upd = function (path, v) { setD(function (old) { return setIn(old, path, v); }); };
     // what each colour row offers back as its preset: the start this design came from, the blank one included
     var base = R.useMemo(function () { return B.preset(d.base === 'blank' || a.families[d.base] ? d.base : 'modern'); }, [d.base]);
@@ -594,6 +595,7 @@
           screen: vw.toolScreen(),
         }, h(S.Seg, { opts: MODES.map(function (md) { return { label: md[1], tip: md[2], cls: md[0] === mode ? 'on' : '', pick: function () { setMode(md[0]); } }; }) }))),
       h(S.Pane, { side: 'right' }, right),
+      h(S.OpeningModal, { line: ses.opening }),
       h(S.SendModal, S.sendProps(sending, status, function () { sender.cancel(); })),
       h(S.DupModal, S.dupProps(dup, function () { sender.replace(); }, function () { sender.dismiss(); })));
   }

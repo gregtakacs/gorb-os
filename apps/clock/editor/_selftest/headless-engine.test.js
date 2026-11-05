@@ -191,7 +191,9 @@ setTimeout(() => {
     // read as part-covered ink with the white taken back out (a dark pixel, part clear); black stays
     const px = E.seeThrough(new Uint8ClampedArray([255, 255, 255, 255, 240, 240, 240, 255, 128, 128, 128, 255, 0, 0, 0, 255]), 255, 255, 255, 24, 160);
     ok(px[3] === 0 && px[7] === 0 && px[15] === 255 && px[12] === 0, 'see-through: clear within the window, ink past the solid distance untouched', Array.from(px).join(','));
-    ok(px[11] === Math.round(255 * (127 - 24) / 136) && px[8] < 60, 'and an edge pixel between them is antialiased ink, not a light rim: part clear, its colour unmixed from the key', Array.from(px.slice(8, 12)).join(','));
+    // the unmix at that coverage: 128 = a*c + (1 - a)*255 gives c ~ 87, a dark ink well below the grey it read as
+    const a8 = px[11] / 255, c8 = (128 - (1 - a8) * 255) / a8;
+    ok(px[11] === Math.round(255 * (127 - 24) / 136) && Math.abs(px[8] - c8) <= 1 && px[8] < 128, 'and an edge pixel between them is antialiased ink, not a light rim: part clear, its colour unmixed from the key', Array.from(px.slice(8, 12)).join(',') + ' vs ' + c8.toFixed(1));
     const hard = E.seeThrough(new Uint8ClampedArray([128, 128, 128, 255]), 255, 255, 255, 24, 24);
     ok(hard[3] === 255 && hard[0] === 128, 'solid at or inside clear is a hard edge: only the clear window acts', Array.from(hard).join(','));
     /* ---- the arbour outside the ink ----------------------------------------------

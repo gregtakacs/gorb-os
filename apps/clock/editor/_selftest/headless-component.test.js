@@ -31,7 +31,7 @@ const txt = (s) => ({ name: 'x', _url: 'data:text/plain;base64,' + Buffer.from(s
   d.comps = d.comps.concat([{ id: 'c9', type: 'flare', icon: 'image', img: 'flare-1' }]);
   const refs = i1.artRefs(d);
   eq(refs.map((r) => r.slot).sort(), ['bg', 'comp:c9', 'hand:centre-minute', 'sf'], 'artRefs finds both backdrop slots, the hand sprite and the flare art');
-  eq(refs.map((r) => r.usedBy).sort(), ['dial surface', 'flare #c9', 'hand centre-minute', 'plate backdrop'], 'each reference names its slot in the words the UI uses');
+  eq(refs.map((r) => r.usedBy).sort(), ['flare #c9', 'hand centre-minute', 'painted surface', 'plate backdrop'], 'each reference names its slot in the words the UI uses');
   ok(i1.artNote(refs).indexOf('MISSING') < 0, 'artNote is quiet while every reference is held', i1.artNote(refs));
   ok(/4\/4 art assets held/.test(i1.artNote(refs)), 'artNote counts what it holds');
   // one image filling the plate AND the dial face is one stored asset, not two

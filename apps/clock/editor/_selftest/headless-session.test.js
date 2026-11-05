@@ -87,17 +87,17 @@ const comps = (it) => JSON.stringify(it.design().comps);
   const it4 = mk(); it4.trackHistory(); it4.setComp(sid, { size: 77 });
   E.assetRestore([{ id: 'k9-art', name: 'bg.png', kind: 'png', dataUrl: 'data:image/png;base64,azk=' }]);
   it4.state.designs = Object.assign({}, it4.state.designs, { modern: Object.assign(it4.design(), { bgArt: 'k9-art' }) });
-  await it4.saveDraft('Big sub');
+  it4.state.themeName = 'Big sub'; await it4.saveDraft();   // saveDraft(quiet) files under the theme name
   const l = it4.library(), held = fh.drafts.get('clock').get('Big sub');
   ok(l.length === 1 && l[0].name === 'Big sub' && l[0].state === 'draft' && l[0].dial === 'modern' && /Saved “Big sub” to the library as a draft/.test(it4.state.status), 'Save current files the watch in the library as a draft', it4.state.status);
   ok(held && held.format === 'wc-design' && held.art === true && (held.assets || []).some((a) => a.id === 'k9-art'), 'with its art inside', held && JSON.stringify(held.assets || []).slice(0, 80));
-  await it4.saveDraft('Big sub');
+  it4.state.themeName = 'Big sub'; await it4.saveDraft();   // saveDraft(quiet) files under the theme name
   ok(it4.library().length === 1, 'saving under the same name replaces it');
   ok(/save it to the library, or send or download the theme, to keep it/.test(it4.artNote()), 'the art line names the library as a way to keep it', it4.artNote());
   // a theme on the shelf with unsent changes beside it, and a stale one
   fh.themes.get('clock').set('Skeleton', { design: Object.assign({}, held, { themeName: 'Skeleton', appVersion: 'v1.2.0' }), at: 1 });
   fh.themes.get('clock').set('Old face', { design: null, stale: 'bundle geometry v5', at: 2 });
-  await it4.saveDraft('Skeleton');
+  it4.state.themeName = 'Skeleton'; await it4.saveDraft();   // saveDraft(quiet) files under the theme name
   window.__ORB_APP = { slug: 'clock', version: 'v1.2.16' };   // the region build's stamp: 'dev' names no release
   const it5 = mk(); it5.buildMovement = () => {}; await it5.session.boot();
   const rv = it5.renderVals(), row = (n) => it5.renderVals().mine.find((r) => r.name === n);

@@ -64,7 +64,8 @@ setTimeout(async () => {
   it.state.designs.calendar.bgArt = 'ui-big';
   it.state.designs.calendar.sfArt = 'ui-big';
   const heldSf = artRows();
-  ok(heldSf.filter((f) => f.isFile && f.label === 'Image').length === 2, 'each backdrop slot keeps its own upload, so two images can be authored independently');
+  // four slots now (owner, 2026-11-05): the plate backdrop and the dial's painted surface, markings and whole dial
+  ok(heldSf.filter((f) => f.isFile && f.label === 'Image').length === 4, 'each backdrop slot keeps its own upload, so the images can be authored independently', heldSf.filter((f) => f.isFile && f.label === 'Image').length);
   const sfNote = heldSf.find((f) => f.isNote && /dial sprite/.test(f.note || ''));
   ok(!!sfNote, 'the surface line says the art ships inside the dial sprite, not as a new layer', sfNote && sfNote.note);
   const bgNote = heldSf.find((f) => f.isNote && /base frames/.test(f.note || ''));
@@ -236,9 +237,14 @@ setTimeout(async () => {
   ok(it._clickAt && (fresh ? it._clickAt.id === fresh.id : !it._clickAt.id), 'a click somewhere else starts a fresh cycle instead of continuing the old one', JSON.stringify([it._clickAt && it._clickAt.id, fresh && fresh.id]));
   it.state.tab = 'hands'; it.state.sel = 'nothing'; it.state.selKind = 'comp';
   it.state.designs.calendar.sfArt = 'ui-big';
+  it.state.artSlot = null;
   it.onDown(ev(barePt[0], barePt[1]));
   ok(it.state.selKind === 'dial' && it.state.tab === 'dial', 'clicking the face selects the dial and opens the Dial tab', JSON.stringify([it.state.selKind, it.state.tab]));
-  ok(it.drag && it.drag.kind === 'dial' && it.drag.slot === 'sf', 'the dial drag is armed against the surface slot, the one holding art', it.drag && it.drag.slot);
+  // owner, 2026-11-05: a click pans art only once its slot's "Drag the dial to pan this image" is on
+  ok(!(it.drag && it.drag.kind === 'dial'), 'without the pan switch a click on an art dial selects it and pans nothing', it.drag && it.drag.slot);
+  it.state.artSlot = 'sf';
+  it.onDown(ev(barePt[0], barePt[1]));
+  ok(it.drag && it.drag.kind === 'dial' && it.drag.slot === 'sf', 'with it on, the dial drag is armed against that slot', it.drag && it.drag.slot);
   const sx0 = +it.design().sfX || 0, sy0 = +it.design().sfY || 0;
   it.onMove(ev(barePt[0] + 30, barePt[1] + 12));
   it.flushDrag();
@@ -816,7 +822,7 @@ setTimeout(async () => {
 
   // the calibration status names the panel's real width: 1.75 in is 44.45 mm, not the float's 44.4
   it.solveCal(40); const st1 = it.state.status; it.solveCard(85.6); const st2 = it.state.status;
-  ok(/draws the dial 44\.45 mm across/.test(st1) && /draws the dial 44\.45 mm across/.test(st2), 'the ruler and card status say the dial is 44.45 mm across', st1);
+  ok(/draws the face 44\.45 mm across/.test(st1) && /draws the face 44\.45 mm across/.test(st2), 'the ruler and card status say the dial is 44.45 mm across', st1);
 
   console.log(fails ? '\n' + fails + ' FAILED' : '\nall green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);

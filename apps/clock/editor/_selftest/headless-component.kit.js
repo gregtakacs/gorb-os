@@ -34,7 +34,7 @@ const { ok, eq, wait, mk, E, txt, i1, d, fails, checked } = global.__T;
   eq(body.format + ':' + body.schema, 'wc-design:1', 'the design is named and stamped with its schema');
   ok(body.assets.length === 4 && body.assets.every((a) => a.dataUrl), 'the design carries every uploaded image\u2019s bytes');
   ok(body.design.bgArt === 'bg-1' && body.design.sfArt === 'sf-1' && global.hand3(body.design, 'centre-minute').art === 'hand-1', 'the design carries every reference, both backdrop slots included');
-  ok(assets.find((a) => a.id === 'sf-1').usedBy.join() === 'dial surface', 'the surface asset is attributed to the dial face, not the plate');
+  ok(assets.find((a) => a.id === 'sf-1').usedBy.join() === 'painted surface', 'the surface asset is attributed to the dial face (its Painted surface slot), not the plate');
   E.assetClear();
   ok(!E.assetKnown('bg-1'), 'memory wiped: this is the second browser');
   const i6 = mk();

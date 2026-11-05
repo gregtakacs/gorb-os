@@ -108,7 +108,7 @@
    * each carrying their own copy, this one still carrying the retired 4 MB pair's
    * 0x3F0000. Each cap is sector-aligned, so == cap installs to the byte.
    * Refusals end in copy_into's own words, so the bench and the dial say one sentence. */
-  var RECTS_MAX = 2048, GIFS_MAX = 32, BG3_FRAMES_MAX = 16, TOURB_MAX = 16;
+  var RECTS_MAX = 2048, GIFS_MAX = 32, BG3_FRAMES_MAX = 20, TOURB_MAX = 16;   // CLK_BG_MAX, CLK_TOURB_MAX
   /* The tempo a sweep is SAMPLED at when nothing on the wire names one: the
    * scheduler's ceiling (ORB_SCHED_FPS_CEILING, main/gfx/orb_sched.h), which is
    * also the rate the studio's sampler draws a sweep at. bakeClock3's cadence
@@ -4064,31 +4064,47 @@
      * honest one for the bytes. */
     // the hour and minute hands and their twins smooth on every dial (owner 2026-11-02), so the
     // estimate below prices them from the bytes; a bench arm forcing nearest keeps them nearest
+    /* §49.15 (owner, 2026-11-05): a dial whose seconds tick once a second or slower gives every
+     * move a second to land in, so its hour and minute RINGS smooth like hands there (Orbit);
+     * while the seconds sweep or tick faster a ring keeps the old rule and stays nearest. */
+    var tick1Dial = elems.some(function (x) {
+      return x['class'] === CLASS_AUX && !(x.flags & AUX_F_SHADOW3) && x.src === SOURCES.indexOf('second') &&
+             (x.cadence === CAD_JUMP || (x.cadence === CAD_STEP && (x.cad_arg | 0) <= 1));
+    });
     var forced = 0, hmPrev = false;
     for (k = 0; k < elems.length; k++) {
       var eh = elems[k];
       if (eh['class'] !== CLASS_AUX) continue;
-      var hm = (eh.flags & AUX_F_SHADOW3) ? hmPrev : isHM3(eh);
+      var hm = (eh.flags & AUX_F_SHADOW3) ? hmPrev : isHM3(eh) || (tick1Dial && isHM3(Object.assign({}, eh, { kind: 0 })));
       if (!(eh.flags & AUX_F_SHADOW3)) hmPrev = hm;
       if (hm && o.smooth !== false) { eh.flags = (eh.flags | 0) | EF_SMOOTH; forced++; }
     }
     if (forced) b = pack();
     var est = estimate3(verifyBundle3(b.bytes).sections[0]);
     var grant = o.smooth === true ? true : (o.smooth === false ? false : est.smooth);
-    if (grant) {
-      var smoothed = 0, prevHot = false;
-      for (k = 0; k < elems.length; k++) {
-        var er = elems[k];
-        if (er['class'] !== CLASS_AUX) continue;
-        // A twin rides its row (the slot before it): hot with it, cool with it.
-        var hot = (er.flags & AUX_F_SHADOW3) ? prevHot
-                : !!tempo3[0] && er.src === SOURCES.indexOf('second');
-        if (!(er.flags & AUX_F_SHADOW3)) prevHot = hot;
-        // the carriage's frames never take the filter (clock_view.c's creation walk)
-        if (!hot && !((er.n_frames | 0) > 1)) { er.flags = (er.flags | 0) | EF_SMOOTH; smoothed++; }
-      }
-      if (smoothed) b = pack();
+    /* §49.15 (owner, 2026-11-05): the seconds hand is always smoothed — a sweeping one too, the
+     * hot row the old rule kept nearest — and its shadow twin only when o.secShadowSmooth asks
+     * (the editor's Smooth shadow switch; off by default: the turning shadow is the dearest
+     * filter on the dial). estimate4 prices both from these flags. A bench arm's o.smooth false
+     * still forces nearest everywhere. */
+    var smoothed = 0, prevHot = false, prevSec3 = false, iSec3 = SOURCES.indexOf('second');
+    for (k = 0; k < elems.length; k++) {
+      var er = elems[k];
+      if (er['class'] !== CLASS_AUX) continue;
+      // A twin rides its row (the slot before it): hot with it, cool with it.
+      var twin3 = !!(er.flags & AUX_F_SHADOW3);
+      var hot = twin3 ? prevHot : !!tempo3[0] && er.src === iSec3;
+      var secRow = twin3 ? prevSec3 : er.src === iSec3;
+      if (!twin3) { prevHot = hot; prevSec3 = secRow; }
+      // the carriage's frames never take the filter (clock_view.c's creation walk)
+      if ((er.n_frames | 0) > 1 || o.smooth === false) continue;
+      /* smoothing is a must (owner, 2026-11-05): a seconds row smooths whatever its size — a ring
+       * or a disc too, now the commit walks only its band (§49.15's gapped spans) — and the plans
+       * price what it costs; only its shadow waits on the switch */
+      var on = secRow ? (!twin3 || !!o.secShadowSmooth) : (!hot && grant);
+      if (on && !(er.flags & EF_SMOOTH)) { er.flags = (er.flags | 0) | EF_SMOOTH; smoothed++; }
     }
+    if (smoothed) b = pack();
     b.meter = budget3(b.bytes);
     b.meter.layers = drawn3; b.meter.layerCap = ORB_LAYER_MAX3;
     b.n_elem = elems.length;
@@ -4276,6 +4292,409 @@
                (smooth ? flushAA : flushNear).toFixed(0) + ' ms, ' + (smooth ? 'smooth, AA priced at the Station bench rate' : 'nearest' + (aaK > 0 && !classic ? ': smoothing would land ' + aaFps + ' fps' : '')) + ')' };
   }
 
+  /* estimate4: the price of a clock bake on the ink-span compositor and the 60 Hz grid
+   * (app-platform-plan §49.4-49.13), from the bytes alone, for ANY dial: any size of gear
+   * cutout, any number of hands, several seconds hands ticking or sweeping in one mix.
+   *
+   * Geometry. The firmware marks and paints a turning row by its ink per screen row. Each AUX
+   * row's alpha is reduced to [umin, umax] per 8-row strip, every strip forward-mapped to a
+   * quad at a pose and cut into one padded [x0, x1] per screen row (orb_gfx.c gfx_spans_of).
+   * A frame restores, per row, the union of its movers' old and new spans and the bank rect
+   * landing on it; every turning row walks its spans in those rows.
+   *
+   * Cadence, per row (a shadow twin follows its row):
+   *   a sweeping or stop-to-go seconds row, a carriage, a drum    every frame
+   *   a ticking seconds row, b beats a second (cad_arg)           every (H/b)th frame
+   *   the gear bank at G fps                                       every (H/G)th frame
+   *   minute and hour rows                                         rarely: priced once, as the
+   *                                                                occasional frame they cost
+   * A frame rate H holds only if every beat and the gears divide it (7.5: a 1/8 hand moves
+   * every frame). One second of frames is walked, each distinct mix of movers priced once:
+   *
+   *   frame_ms = 0.734 restored_kpx + 0.323 walk_kpx + 0.676 restored_kpx (carriage) + 12.15
+   *
+   * (fitted on 18 templates x 2 arms at 80 MHz, median error 9%, p90 20%). A frame fits when
+   * its cost + 19 ms is under its shortest period (7.5 alternates 7 and 8 scans). A gear frame
+   * that does not fit is pre-painted when the frames between leave the slack to build it and
+   * its landing fits (≈ its movers + 0.1 us per rect px); carriage dials are not pre-painted.
+   *
+   * Storage (owner, 2026-11-05): a bank holds max(8, G) frames — a loop is never under 8
+   * frames (4 fps: two seconds, so the movement keeps its detail), never more than one second
+   * at the faster tempos — so its bytes are the keyframe plus that many rect deltas (~2 B a
+   * px). fps x cutout area is the one currency: the slot pays it in bytes, the compositor in
+   * time, and a 20 fps cutout a fifth the area of a 4 fps one costs the same in both. The
+   * device holds 20 bank frames (CLK_BG_MAX), one second at the fastest gears. */
+  var EST4 = { R: 0.707, W: 1.079, CAR: 0.128, FIXED: 4.34, MARGIN: 23, IDLE: 19, SWAP: 0.1, SCAN: 16.94, STRIP: 8, PAD: 3,
+               EPS10: 2, PX_B: 2.06, LOOP_MIN: 8, BANK_MAX: 20, CAR_MAX: 16, HANDS_MIN: 4, AA: 0.665, GAP_MIN: 24 };
+  /* The rates a 60 Hz panel holds alike, and 7.5: "8 fps", frames alternating 7 and 8 scans
+   * (±8.5 ms, §49.7), or exactly 8 scans when gears ride every second frame of 15. */
+  var GRID4 = [20, 15, 12, 10, 7.5, 6, 5, 4, 3, 2, 1];
+  /* The gear rates a bank may be baked at: the grid at or over the owner's floor of 4. */
+  var GEARS4 = [20, 15, 12, 10, 7.5, 6, 5, 4];
+  /* A plan's name in the editor's words: gears on hands ("4/20"). */
+  function planKey4(x) { return (x.gears || 0) + '/' + x.fps; }
+  /* The favour's plan among any set of plans (the frontier of one estimate, or the editor's
+   * plans each priced on a bank drawn at its own tempo): 'sweep' the fastest grid, then the
+   * fastest gears on it; 'gears' the fastest gears, then the grid; 'balanced' the largest smaller
+   * share of the set's best grid and best gears, then the evener of the two shares. */
+  function bestPlan4(plans, favour) {
+    if (!plans || !plans.length) return null;
+    var hMax = Math.max.apply(null, plans.map(function (x) { return x.fps; }));
+    var gMax = Math.max.apply(null, plans.map(function (x) { return x.gears; })) || 1;
+    var share = function (x) { return Math.min(x.fps / hMax, (x.gears || gMax) / gMax); };
+    var skew = function (x) { return Math.abs(x.fps / hMax - (x.gears || gMax) / gMax); };
+    var cmp = favour === 'gears' ? function (p, q) { return q.gears - p.gears || q.fps - p.fps; }
+            : favour === 'balanced' ? function (p, q) { return share(q) - share(p) || skew(p) - skew(q) || q.fps * (q.gears || 1) - p.fps * (p.gears || 1); }
+            : function (p, q) { return q.fps - p.fps || q.gears - p.gears; };
+    return plans.slice().sort(cmp)[0];
+  }
+  /* The plan a bake asks: an exact pick ("6/12") when it is still on the frontier, else the
+   * favour's. Pure, so the editor and the suite read one answer. */
+  function pickPlan4(est, favour, key) {
+    if (!est || !est.plans || !est.plans.length) return null;
+    if (key) for (var i = 0; i < est.plans.length; i++) if (planKey4(est.plans[i]) === key) return est.plans[i];
+    return (est.picks && est.picks[favour]) || est.picks.sweep;
+  }
+  /* Each strip's ink, as the firmware's ink cache keeps it: [lo, hi] and the widest inkless
+   * gap inside (§49.15, orb_gfx.c INK_GAP_MIN), so a ring's hollow costs nothing. */
+  function inkStrips4(art, sp) {
+    var a0 = sp.off + sp.w * sp.h * 2, ns = Math.ceil(sp.h / EST4.STRIP), out = [];
+    for (var st = 0; st < ns; st++) {
+      var lo = 1e9, hi = -1, col = new Uint8Array(sp.w);
+      for (var v = st * EST4.STRIP; v < Math.min(sp.h, (st + 1) * EST4.STRIP); v++)
+        for (var u = 0; u < sp.w; u++) if (art[a0 + v * sp.w + u]) { col[u] = 1; if (u < lo) lo = u; if (u > hi) hi = u; }
+      var g0 = 1, g1 = 0;
+      for (var x = lo + 1; x < hi; ) {
+        if (col[x]) { x++; continue; }
+        var e = x;
+        while (e + 1 < hi && !col[e + 1]) e++;
+        if (e - x > g1 - g0) { g0 = x; g1 = e; }
+        x = e + 1;
+      }
+      if (g1 - g0 + 1 < EST4.GAP_MIN) { g0 = 1; g1 = 0; }
+      out.push([lo, hi, g0, g1]);
+    }
+    return out;
+  }
+  /* One row's set as the firmware keeps it (orb_gfx.c seg_add): [x0, x1] less the gap [h0, h1]. */
+  function segAdd4(S, y, a, b) {
+    if (S.x0[y] > S.x1[y]) { S.x0[y] = a; S.x1[y] = b; S.h0[y] = 1; S.h1[y] = 0; return; }
+    var p = S.h0[y] <= S.h1[y] ? [[S.x0[y], S.h0[y] - 1], [S.h1[y] + 1, S.x1[y]]] : [[S.x0[y], S.x1[y]]];
+    p.push([a, b]); p.sort(function (q, r) { return q[0] - r[0]; });
+    var m = [p[0].slice()];
+    for (var i = 1; i < p.length; i++) { var t = m[m.length - 1]; if (p[i][0] <= t[1] + 1) { if (p[i][1] > t[1]) t[1] = p[i][1]; } else m.push(p[i].slice()); }
+    S.x0[y] = m[0][0]; S.x1[y] = m[m.length - 1][1];
+    var g0 = 1, g1 = 0;
+    for (var k = 0; k + 1 < m.length; k++) if (m[k + 1][0] - m[k][1] - 1 > g1 - g0 + 1) { g0 = m[k][1] + 1; g1 = m[k + 1][0] - 1; }
+    S.h0[y] = g0; S.h1[y] = g1;
+  }
+  function segNew4() {
+    return { x0: new Int16Array(SCREEN_H).fill(32767), x1: new Int16Array(SCREEN_H).fill(-1),
+             h0: new Int16Array(SCREEN_H).fill(1), h1: new Int16Array(SCREEN_H).fill(0) };
+  }
+  function segPieces4(S, y) {
+    if (S.x0[y] > S.x1[y]) return [];
+    return S.h0[y] <= S.h1[y] ? [[S.x0[y], S.h0[y] - 1], [S.h1[y] + 1, S.x1[y]]] : [[S.x0[y], S.x1[y]]];
+  }
+  function spans4(row, ang10) {
+    var S = segNew4();
+    var t = -(ang10 % 3600) / 10 * Math.PI / 180, sn = Math.sin(t), cs = Math.cos(t);
+    var e = row.e, cx = e.x + e.pivot_x, cy = e.y + e.pivot_y, px = e.pivot_x, py = e.pivot_y, P = EST4.PAD;
+    var runs = [];
+    row.ink.forEach(function (lh, st) {
+      if (lh[1] < lh[0]) return;
+      if (lh[2] <= lh[3]) { runs.push([lh[0], lh[2] - 1, st]); runs.push([lh[3] + 1, lh[1], st]); }
+      else runs.push([lh[0], lh[1], st]);
+    });
+    runs.forEach(function (rn) {
+      var st = rn[2];
+      var u0 = rn[0] - P - px, u1 = rn[1] + 1 + P - px;
+      var v0 = st * EST4.STRIP - P - py, v1 = Math.min(row.sp.h, (st + 1) * EST4.STRIP) + P - py;
+      var q = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]].map(function (c) { return [cx + cs * c[0] + sn * c[1], cy - sn * c[0] + cs * c[1]]; });
+      var ys = q.map(function (c) { return c[1]; });
+      var ya = Math.max(0, Math.floor(Math.min.apply(null, ys))), yb = Math.min(SCREEN_H - 1, Math.floor(Math.max.apply(null, ys)));
+      for (var y = ya; y <= yb; y++) {
+        var mn = 1e9, mx = -1e9;
+        for (var k = 0; k < 4; k++) {
+          var a = q[k], b = q[(k + 1) & 3], lo = Math.max(Math.min(a[1], b[1]), y), hi = Math.min(Math.max(a[1], b[1]), y + 1);
+          if (lo > hi) continue;
+          var sl = b[1] !== a[1] ? (b[0] - a[0]) / (b[1] - a[1]) : 0;
+          var xa = b[1] !== a[1] ? a[0] + (lo - a[1]) * sl : a[0], xb = b[1] !== a[1] ? a[0] + (hi - a[1]) * sl : b[0];
+          mn = Math.min(mn, xa, xb); mx = Math.max(mx, xa, xb);
+        }
+        if (mn > mx) continue;
+        var l = Math.max(0, Math.floor(mn) - 1), r = Math.min(SCREEN_W - 1, Math.floor(mx) + 2);
+        segAdd4(S, y, l, r);
+      }
+    });
+    return S;
+  }
+  /* o.gears: price the dial as if its bank played at that rate (a re-bake's question: "what
+   * if the gears ran at 8?"). The bank's own frames are priced; only the tempo moves. */
+  function estimate4(sec, o) {
+    o = o || {};
+    var els = sec.blob.elements, spr = sec.blob.sprites, art = sec.art, kk, i;
+    var sc = {};
+    for (kk in sec.blob.scalars) sc[kk] = sec.blob.scalars[kk];
+    var iSec = SOURCES.indexOf('second'), iMin = SOURCES.indexOf('minute'), iH12 = SOURCES.indexOf('hour12'), iH24 = SOURCES.indexOf('hour24');
+    /* every moving row, its cadence, and where it stands at 10:08:30 */
+    var rows = [], parent = null, carriage = false;
+    for (i = 0; i < els.length; i++) {
+      var e = els[i];
+      if (e['class'] !== CLASS_AUX || (e.flags & EF_HIDDEN)) continue;
+      var twin = !!(e.flags & AUX_F_SHADOW3) && parent;
+      var src = twin ? parent.src : e.src, cad = twin ? parent.cad : (e.cadence | 0), arg = twin ? parent.arg : (e.cad_arg | 0);
+      var car = e.n_frames > 1 && e.delay > 0;
+      if (car) carriage = true;
+      var kind = e.kind === SHAPE_DRUM ? 'frame' : car ? 'frame'
+               : src === iSec && (cad === CAD_SWEEP || cad === CAD_STOP_TO_GO) ? 'sweep'
+               : src === iSec ? 'step'
+               : (src === iMin || src === iH12 || src === iH24) ? 'slow' : 'still';
+      var frac = src === iSec ? 0.5 : src === iMin ? 8.5 / 60 : (src === iH12 || src === iH24) ? (10 + 8.5 / 60) / 12 : 0;
+      var r = { e: e, sp: spr[e.frame0], src: src, cad: cad, arg: arg, kind: kind, drum: e.kind === SHAPE_DRUM,
+                smooth: !!(e.flags & EF_SMOOTH),
+                /* a carriage repaints every frame: its frames swap at their own tempo, but the cage
+                 * turns with the seconds angle on every one (§49.15: Kitetour 5/10 commits 166 ms a
+                 * frame on the glass, every frame) */
+                beats: kind === 'step' ? Math.max(1, arg || 1) : 0,
+                /* a twin stores no turn of its own (zero 0, span 0): it stands where its hand
+                 * stands. §49.15: posed at 0 it read as unrotated and was never priced. */
+                ang: twin ? parent.ang : ((e.zero | 0) + Math.round(frac * (e.span | 0))) % 3600,
+                ink: e.kind === SHAPE_DRUM ? [] : inkStrips4(art, spr[e.frame0]) };
+      rows.push(r);
+      if (!twin) parent = r;
+    }
+    var plate = null;
+    for (i = 0; i < els.length; i++) if (els[i]['class'] === CLASS_PLATE && !(els[i].slot & 0xffff)) plate = els[i];
+    var bank = [], bankFps = 0, bankBytes = 0;
+    if (plate && sc.bg_mode === 1 && plate.n_frames > 1) {
+      for (i = 0; i < plate.n_frames; i++) if (spr[plate.frame0 + i]) { bankBytes += spr[plate.frame0 + i].size; if (i) bank.push(spr[plate.frame0 + i]); }
+      bankFps = plate.delay ? 1000 / plate.delay : (sc.bg_fps || 0);
+    }
+    /* o.bank (§49.15, the editor's live price): the bank as the editor measured it — one
+     * changed box per frame off its own rendered movement — standing in for a baked delta bank,
+     * so the plans can be priced before anything is baked. o.bankFps is the tempo it was drawn at. */
+    if (o.bank && o.bank.length) {
+      bank = o.bank.filter(function (b) { return b.w > 0 && b.h > 0; })
+                   .map(function (b) { return { w: b.w, h: b.h, diffx: b.diffx, diffy: b.diffy, size: b.w * b.h * 3 }; });
+      bankFps = o.bankFps || bankFps || 4;
+      bankBytes = 0;
+    }
+    var rectPx = 0, worstB = null;
+    bank.forEach(function (b) { rectPx += b.w * b.h; if (!worstB || b.w * b.h > worstB.w * worstB.h) worstB = b; });
+    rectPx = bank.length ? rectPx / bank.length : 0;
+    /* §49.15: a frame holds its slot or misses it on its own, so the gear frame is priced on
+     * the bank's LARGEST rect (Regulator's run 6 to 61 kpx: the mean 34 underpriced its worst
+     * gear frames by ~20 ms on the glass). The slot's bytes stay on the mean. */
+    var worstPx = worstB ? worstB.w * worstB.h : 0;
+    var keyBytes = o.bank && bank.length ? SCREEN_W * SCREEN_H * 2 : plate && bank.length ? spr[plate.frame0].size : 0;
+    var slotFree = SLOT_ART_CAP3 - (art.length - bankBytes);           // the slot without the bank
+    var framesAt = function (G) { return G ? Math.max(EST4.LOOP_MIN, Math.round(G)) : 0; };
+    var bytesAt = function (G) { return G ? Math.round(keyBytes + framesAt(G) * rectPx * EST4.PX_B) : 0; };
+
+    /* One frame's price: these rows moving (their step, in tenths), with or without a bank
+     * rect, averaged over 12 places round the dial. */
+    var cache = {};
+    var price = function (moving, withBank) {
+      var key = moving.map(function (m) { return m[0] + ':' + m[1]; }).join(',') + (withBank ? '|b' + withBank : '');
+      if (cache[key]) return cache[key];
+      var R = 0, Wk = 0, Sk = 0, n = 12;
+      for (var k = 0; k < n; k++) {
+        var RS = segNew4(), rx0 = RS.x0, rx1 = RS.x1;
+        var mark = function (sp) { for (var y = 0; y < SCREEN_H; y++) segPieces4(sp, y).forEach(function (q) { segAdd4(RS, y, q[0], q[1]); }); };
+        var turn = (k * 300) % 3600;
+        var pose = rows.map(function (r) { return r.src === iSec ? (r.ang + turn) % 3600 : r.ang; });
+        var newPose = pose.slice();
+        moving.forEach(function (m) {
+          var j = m[0], r = rows[j];
+          if (r.drum) {
+            var rr = r.e.radius | 0, y0 = r.e.y + r.e.pivot_y - rr;
+            for (var y = Math.max(0, y0); y < Math.min(SCREEN_H, y0 + 2 * rr); y++) segAdd4(RS, y, r.e.x, r.e.x + r.e.w - 1);
+            return;
+          }
+          newPose[j] = (pose[j] + m[1]) % 3600;
+          mark(spans4(r, pose[j])); mark(spans4(r, newPose[j]));
+        });
+        if (withBank && bank.length) {
+          var b = withBank === 'mean' ? bank[k % bank.length] : worstB;
+          for (var y2 = b.diffy; y2 < b.diffy + b.h && y2 < SCREEN_H; y2++) segAdd4(RS, y2, b.diffx, b.diffx + b.w - 1);
+        }
+        var r0 = 0, w0 = 0, s0 = 0;
+        for (var y3 = 0; y3 < SCREEN_H; y3++) segPieces4(RS, y3).forEach(function (q) { r0 += q[1] - q[0] + 1; });
+        if (r0) rows.forEach(function (row, j) {
+          if (row.drum || newPose[j] % 3600 === 0) return;
+          var sp = spans4(row, newPose[j]), wr = 0;
+          for (var y4 = 0; y4 < SCREEN_H; y4++) {
+            if (sp.x0[y4] > sp.x1[y4] || rx0[y4] > rx1[y4]) continue;
+            var jp = segPieces4(sp, y4), rp = segPieces4(RS, y4);
+            for (var i1 = 0; i1 < jp.length; i1++) for (var i2 = 0; i2 < rp.length; i2++) {
+              var a = Math.max(jp[i1][0], rp[i2][0]), bb = Math.min(jp[i1][1], rp[i2][1]);
+              if (bb >= a) wr += bb - a + 1;
+            }
+          }
+          w0 += wr; if (row.smooth) s0 += wr;
+        });
+        R += r0; Wk += w0; Sk += s0;
+      }
+      R /= n * 1000; Wk /= n * 1000; Sk /= n * 1000;
+      /* §49.15: a smoothed row (EF_SMOOTH, bilinear) pays AA more per walked texel than nearest */
+      var ms = R || withBank ? EST4.R * R + EST4.W * Wk + EST4.AA * Sk + (carriage ? EST4.CAR * R : 0) + EST4.FIXED : EST4.FIXED;
+      return (cache[key] = { restored_kpx: +R.toFixed(1), walk_kpx: +Wk.toFixed(1), smooth_kpx: +Sk.toFixed(1), ms: +ms.toFixed(1) });
+    };
+    var slowSet = [];
+    rows.forEach(function (r, j) { if (r.kind === 'slow') slowSet.push([j, EST4.EPS10]); });
+
+    /* One grid plan: H frames a second, the gears at G. Walks one second of frames. */
+    var judge = function (H, G) {
+      var per = Math.floor(60 / H) * EST4.SCAN, frames = Math.round(H === 7.5 ? 15 : H);
+      var res = { fps: H, gears: G, scans: +(60 / H).toFixed(1), period_ms: +per.toFixed(1), prepaint: false, ok: false, why: '' };
+      /* every beat and the gears must land on whole frames */
+      var every = [];
+      for (var j = 0; j < rows.length; j++) {
+        var r = rows[j];
+        if (r.kind !== 'step') continue;
+        var ev = r.beats >= H ? 1 : H / r.beats;
+        if (r.beats < H && Math.abs(ev - Math.round(ev)) > 1e-6) { res.why = 'a 1/' + r.beats + ' hand does not land on every Nth frame at ' + H; return res; }
+        every[j] = Math.max(1, Math.round(ev));
+      }
+      var gEvery = G ? H / G : 0;
+      if (G && Math.abs(gEvery - Math.round(gEvery)) > 1e-6) { res.why = 'the gears at ' + G + ' do not land on every Nth frame at ' + H; return res; }
+      gEvery = Math.round(gEvery);
+      if (G && bank.length && framesAt(G) > EST4.BANK_MAX) {
+        res.why = 'the gears at ' + G + ' need ' + framesAt(G) + ' bank frames, the device holds ' + EST4.BANK_MAX; return res;
+      }
+      if (G && carriage && framesAt(G) > EST4.CAR_MAX) {
+        res.why = 'the carriage at ' + G + ' needs ' + framesAt(G) + ' frames, the device holds ' + EST4.CAR_MAX; return res;
+      }
+      if (G && bank.length && bytesAt(G) > slotFree) {
+        res.why = 'the gears at ' + G + ' need ' + (bytesAt(G) / 1048576).toFixed(1) + ' MB, the slot leaves ' + (slotFree / 1048576).toFixed(1); return res;
+      }
+      /* the frames of one second (two at 7.5), each its own mix of movers */
+      var types = {}, list = [], worstNo = null, worstGear = null, slack = 0, gears = 0, gearCosts = [];
+      for (var f = 0; f < frames; f++) {
+        var mv = [];
+        rows.forEach(function (r, j) {
+          if (r.kind === 'sweep' || r.kind === 'frame') mv.push([j, Math.round(60 / H)]);
+          else if (r.kind === 'step' && f % every[j] === 0) mv.push([j, Math.round(60 / r.beats)]);
+        });
+        var gear = !!(G && bank.length && f % gEvery === 0);
+        /* a frame fits on its own, so it is priced on the largest rect; a pre-paint is built
+         * across the loop, one gear frame at a time, and is priced on the mean (a late build of
+         * the one large frame lands one gear frame a loop late — Skeleton 4/20 holds 97% so) */
+        var c = price(mv, gear ? 'worst' : false), cNo = gear ? price(mv, false) : c, cMean = gear ? price(mv, 'mean') : c;
+        list.push({ gear: gear, ms: c.ms, mean: cMean.ms, without: cNo.ms, R: cMean.restored_kpx, W: cMean.walk_kpx, S: cMean.smooth_kpx });
+        if (gear) { gears++; gearCosts.push(c); if (!worstGear || c.ms > worstGear.ms) worstGear = c; }
+        if (!worstNo || cNo.ms > worstNo.ms) worstNo = cNo;
+      }
+      res.frame_ms = worstNo.ms; res.gear_ms = worstGear ? worstGear.ms : null;
+      res.mean_ms = +(list.reduce(function (a, fr) { return a + fr.ms; }, 0) / list.length).toFixed(1);
+      /* the frame's terms averaged over the plan's second, for refitting EST4 on the glass */
+      res.terms = ['R', 'W', 'S'].reduce(function (o, k) { o[k] = +(list.reduce(function (a, fr) { return a + fr[k]; }, 0) / list.length).toFixed(2); return o; }, {});
+      if (worstNo.ms + EST4.MARGIN > per) { res.why = 'a frame (' + worstNo.ms + ' ms) does not fit ' + res.period_ms + ' ms'; return res; }
+      /* the occasional slow move (a minute or hour row past its 0.2° gate), on the dearest frame */
+      if (slowSet.length) res.slow_ms = price(slowSet, false).ms;
+      if (!worstGear || worstGear.ms + EST4.MARGIN <= per) { res.ok = true; return res; }
+      if (carriage) { res.why = 'a gear frame (' + worstGear.ms + ' ms) does not fit ' + res.period_ms + ' ms, and a carriage dial is not pre-painted'; return res; }
+      if (gEvery < 2) { res.why = 'a gear frame (' + worstGear.ms + ' ms) does not fit ' + res.period_ms + ' ms, and every frame is one'; return res; }
+      list.forEach(function (fr) { if (!fr.gear) slack += per - EST4.IDLE - fr.ms; });
+      slack = slack / Math.max(1, gears);
+      var build = 0, swap = 0;
+      list.forEach(function (fr) { if (fr.gear) { build = Math.max(build, fr.mean - fr.without); swap = Math.max(swap, fr.without + EST4.SWAP * worstPx / 1000); } });
+      res.build_ms = +build.toFixed(1); res.slack_ms = +slack.toFixed(1); res.swap_ms = +swap.toFixed(1);
+      if (swap + EST4.MARGIN > per) { res.why = 'even pre-painted, the gear landing (' + res.swap_ms + ' ms) does not fit'; return res; }
+      if (slack < build) { res.why = 'the frames between leave ' + res.slack_ms + ' ms to build a ' + res.build_ms + ' ms gear frame ahead'; return res; }
+      res.ok = true; res.prepaint = true; return res;
+    };
+
+    /* The gears' tempo on the grid: the bank's own (14.93 is 15; 8 rides 7.5), or o.gears. */
+    var gearOn = function (B) {
+      if (!B) return 0;
+      if (Math.abs(B - Math.round(B)) < 0.3) B = Math.round(B);
+      if (B === 8) return 7.5;
+      for (var g = 0; g < GRID4.length; g++) if (GRID4[g] <= B) return GRID4[g];
+      return 1;
+    };
+    var G = gearOn(o.gears || bankFps);
+    var sweeps = rows.some(function (r) { return r.kind === 'sweep'; });
+    var bMax = 0;
+    rows.forEach(function (r) { if (r.kind === 'step' && r.beats > bMax) bMax = r.beats; });
+    var tp = clockTempo(els, sc), want = sweeps ? tp[1] : Math.max(1, bMax || tp[1] || 1);
+    if (want === 8) want = 7.5;
+    var opts = GRID4.map(function (H) { return judge(H, G); });
+    var fits = opts.filter(function (x) { return x.ok; });
+    var atAsk = fits.filter(function (x) { return x.fps >= want - 0.01; });
+    var plan = atAsk.length ? atAsk[atAsk.length - 1] : fits.filter(function (x) { return x.fps <= want; })[0] || fits[fits.length - 1] || opts[opts.length - 1];
+    var best = fits[0] || plan;
+
+    /* The plans (owner, 2026-11-05): fps x cutout area is the one currency, so the gear rate is
+     * searched, not tabled. Every gear rate on GEARS4 is tried on every hand grid it lands on
+     * (each beat and the gears divide the grid), against the slot, the device's 20-frame bank,
+     * and the frame time; a small cutout runs its gears as fast as a big one runs its sweep.
+     * What fits is cut to its frontier — no plan another beats on both the hands and the gears
+     * — and FAVOUR picks from it: 'sweep' the fastest grid, then the fastest gears on it;
+     * 'gears' the fastest gears, then the fastest grid; 'balanced' the plan nearest the best of
+     * both (the largest smaller share of the frontier's best grid and best gears, then the
+     * evener of the two shares). A ticking
+     * seconds hand moves on its beats whatever the grid, so there the plan is the fastest gears
+     * on the slowest grid that carries them, and every favour is that one. */
+    var policy = null, pick = null, plans = [], picks = null;
+    var hb = o.hands ? (o.hands === 'sweep' ? 0 : +o.hands) : (sweeps ? 0 : bMax || 0);
+    var sweepMode = !hb && (sweeps || o.hands === 'sweep');
+    var keepRows = rows;
+    if (o.hands) {
+      /* price the asked hand mode: every seconds row ticks or sweeps as asked */
+      rows = rows.map(function (r) {
+        if (r.src !== iSec || r.kind === 'frame') return r;
+        var c2 = Object.assign({}, r);
+        if (hb) { c2.kind = 'step'; c2.beats = hb; } else { c2.kind = 'sweep'; c2.beats = 0; }
+        return c2;
+      });
+      cache = {};
+    }
+    var gearSet = bank.length ? GEARS4 : [0];
+    policy = [];
+    gearSet.forEach(function (g) {
+      GRID4.forEach(function (H) {
+        /* a sweep never under the floor of 4; a tick on no gears may rest on its own beat */
+        if ((g || sweepMode) && H < EST4.HANDS_MIN) return;
+        if (g && H < g) return;
+        if (!g && !sweepMode && H < Math.max(1, hb || bMax || 1)) return;
+        if (g && Math.abs(H / g - Math.round(H / g)) > 1e-6) return;
+        policy.push(judge(H, g));
+      });
+    });
+    rows = keepRows; cache = {};
+    var fit4 = policy.filter(function (x) { return x.ok; });
+    if (!sweepMode) {
+      /* ticking: per gear rate, the slowest grid that carries it */
+      var byG = {};
+      fit4.forEach(function (x) { if (!byG[x.gears] || x.fps < byG[x.gears].fps) byG[x.gears] = x; });
+      plans = Object.keys(byG).map(function (k) { return byG[k]; }).sort(function (p, q) { return q.gears - p.gears; });
+      if (plans.length) plans = [plans[0]];
+    } else {
+      plans = fit4.filter(function (x) {
+        return !fit4.some(function (y) { return y !== x && y.fps >= x.fps && y.gears >= x.gears && (y.fps > x.fps || y.gears > x.gears); });
+      }).sort(function (p, q) { return q.fps - p.fps || q.gears - p.gears; });
+    }
+    if (plans.length) {
+      picks = { sweep: bestPlan4(plans, 'sweep'), gears: bestPlan4(plans, 'gears'), balanced: bestPlan4(plans, 'balanced') };
+      pick = picks[o.favour] || picks.sweep;
+    }
+    var s = 'est ' + plan.fps + ' fps on the 60 Hz grid (' + plan.scans + ' scans a frame' +
+            (G ? ', gears ' + G + ' fps' : '') + (plan.prepaint ? ', pre-painted' : '') + '; frames up to ~' + plan.frame_ms + ' ms' +
+            (plan.gear_ms ? ', gear frames ~' + plan.gear_ms + ' ms' : '') + ')' + (plan.fps < want ? '; asks ' + want : '') +
+            (best.fps > plan.fps ? '; could run ' + best.fps + (best.prepaint ? ' (pre-painted)' : '') : '') +
+            (pick ? '; plan: gears ' + pick.gears + ' on ' + pick.fps + (pick.prepaint ? ' (pre-painted)' : '') +
+                    (plans.length > 1 ? ' of ' + plans.map(planKey4).join(', ') : '') : '');
+    return { est_fps: plan.fps, gears_fps: G, prepaint: plan.prepaint, scans: plan.scans, want_fps: want,
+             max_fps: best.fps, max_prepaint: best.prepaint, policy: policy, policy_pick: pick, plans: plans, picks: picks,
+             hand_mode: sweepMode ? 'sweep' : String(hb || 1),
+             bank_fps: +(bankFps || 0).toFixed(2), carriage: carriage, rect_kpx: +(rectPx / 1000).toFixed(1),
+             slot_free: slotFree, bank_bytes: bankBytes, bytes_at: bytesAt, frames_at: framesAt,
+             movers: rows.filter(function (r) { return r.kind !== 'still'; }).map(function (r) { return { slot: r.e.slot, kind: r.kind, beats: r.beats }; }),
+             options: opts, sentence: s };
+  }
+
   /* §31's motion split, as one pure function so the sweep page, the composer's
    * export, and the headless suite all answer from the same arithmetic. Input
    * is a motion measurement, not pixels — the caller composes and diffs;
@@ -4371,12 +4790,20 @@
                  (car ? 'plate under the shimmer band, ' + car.sentence
                       : 'plate union ' + (m.unionPx | 0) + ' px is under the shimmer band; the still bakes the same dial'));
     var left = cap - oth - comp - carCost;
-    var maxB = Math.min(BG3_FRAMES_MAX, Math.floor(left / kf));
+    /* §49.15: the bank ships one keyframe and a delta rect per later frame (rowDelta), so a
+     * frame past the first costs its rect, not a panel. Priced at the motion's box grown by
+     * the encoder's 16 px tile snap on each side, at 3 B a texel (colour and alpha) — an
+     * upper bound on what rowDelta writes, so the pack's own capCheck never meets a bank
+     * this let through. A 20-frame bank of a small cutout is then a keyframe and twenty
+     * small rects, which is the fps x cutout currency the plan was priced in. */
+    var dB = Math.min(kf, Math.min(SCREEN_W, bw + 32) * Math.min(SCREEN_H, bh + 32) * 3);
+    var bankB = function (n) { return n ? kf + (n - 1) * dB : 0; };
+    var maxB = left >= kf ? Math.min(BG3_FRAMES_MAX, 1 + Math.floor((left - kf) / dB)) : 0;
     var b2 = maxB >= 2 ? thin(B, Math.ceil(B / maxB)) : { keyframes: 0, fps: 0, decim: 1, bbox: [bw, bh] };
     if (b2.keyframes >= 2)
       return out('bank', b2, car, 'plate keyframe bank: ' + b2.keyframes + ' of ' + B + ' frames at '
         + b2.fps + ' fps' + (b2.decim > 1 ? ' (thinned by ' + b2.decim + ')' : '') + ', '
-        + (b2.keyframes * kf) + ' B' + (car ? ' over the ' + carCost + ' B the carriage took; ' + car.sentence : ''));
+        + bankB(b2.keyframes) + ' B' + (car ? ' over the ' + carCost + ' B the carriage took; ' + car.sentence : ''));
     if (car) return out('sprite', { keyframes: 1, fps: 0, decim: 1 }, car, 'plate rides the still: ' + car.sentence);
     return no('union ' + (m.unionPx | 0) + ' px in a ' + bw + 'x' + bh + ' box fits neither carrier: '
       + B + ' plate keyframes of ' + kf + ' B exceed the ' + left + ' B'
@@ -4699,7 +5126,7 @@
     // a clock section the compiled dial projects, and the D29 sums read back off finished
     // bytes. bakeClock3 refuses with orb_clock3.c's own sentences, so the editor names the
     // reason the dial will print instead of a reason of its own.
-    bank3: bank3, stage3: stage3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3, estimate3: estimate3,
+    bank3: bank3, stage3: stage3, bakeClock3: bakeClock3, budget3: budget3, splitPolicy3: splitPolicy3, estimate3: estimate3, estimate4: estimate4, EST4: EST4, pickPlan4: pickPlan4, planKey4: planKey4, bestPlan4: bestPlan4,
     carriageRect3: carriageRect3, carriageStart3: carriageStart3,
     liveComps3: liveComps3, compPlan3: compPlan3, wheelPlan3: wheelPlan3, wheelDither3: wheelDither3, readDesign3: readDesign3, THEME_UPLOAD_MAX: THEME_UPLOAD_MAX, wheelTurns3: wheelTurns3, pointerPlan3: pointerPlan3,
     pointerDefault3: pointerDefault3,

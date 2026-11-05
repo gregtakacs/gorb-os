@@ -78,6 +78,15 @@
       var r = el.getBoundingClientRect(), px = S.fitOf(r.width, r.height);
       if (r.width > 0 && Math.abs(px - last.current) >= 2) { last.current = px; p.onFit(px); }
     });
+    // a view that changed size opens centred: a magnified face scrolls from its middle
+    var sized = R.useRef('');
+    R.useLayoutEffect(function () {
+      var el = own.current, key = p.size + ':' + (p.zoomTag || '');
+      if (!el || key === sized.current || typeof el.scrollTo !== 'function') return;
+      sized.current = key;
+      var cx = (el.scrollWidth - el.clientWidth) / 2, cy = (el.scrollHeight - el.clientHeight) / 2;
+      if (cx > 0 || cy > 0) el.scrollTo(cx, cy);
+    });
     var setRef = function (el) { own.current = el; if (p.scrollRef) p.scrollRef.current = el; };
     return h(root.React.Fragment, null,
       h('div', { className: 'st-scroll', ref: setRef, onPointerDown: p.onPointerDown },
@@ -87,7 +96,8 @@
   };
 
   /* play: {icon, label, on} · time / view / zoom / render: segmented options (zoom only while
-   * magnifying) · wipe: {value, on} while splitting · children: the app's own tool buttons */
+   * magnifying) · wipe: {value, on} while splitting · screen: {open, on} (the screen panel's
+   * button, S.viewer's toolScreen) · children: the app's own tool buttons */
   S.Toolbar = function (p) {
     return h('div', { className: 'st-tool' },
       p.play ? h('button', { className: 'st-play', onClick: p.play.on, title: p.play.label }, p.play.icon) : null,
@@ -98,7 +108,8 @@
       p.render ? h('span', { className: 'ui-mut st-lab' }, 'Render') : null,
       p.render ? h(Seg, { opts: p.render }) : null,
       p.wipe ? h('input', { type: 'range', min: 0, max: 466, step: 1, value: p.wipe.value, onChange: p.wipe.on, title: 'Where the split sits: Panel on the left, Design on the right', style: { width: '120px' } }) : null,
-      p.children);
+      p.children,
+      p.screen ? h('button', { className: cx('ui-ghost', p.screen.open ? 'on' : ''), onClick: p.screen.on, title: 'This screen: the true-size ruler and bank card, set once for every app on this browser' }, '⚙') : null);
   };
 
   /* True size's two instruments (OrbTheme.screen): the ruler, its factor and what a real ruler
@@ -131,6 +142,127 @@
       p.children);
   };
 
+  /* ---- the screen (owner, §12.5: set once for every app, the clock's way). One controller
+   * over theme@1's screen and view: the view and zoom, Fit's measured size, the true-size
+   * calibration (one per browser, shared by every app's editor) and whether this page set or
+   * read one, the two instruments' readings and what they say. The app keeps the numbers in
+   * its own state, under its own names, and hands the controller a getter and a setter:
+   *   host.get() -> {view, zoom, fitPx, cal, open}   host.set(patch)   host.say(text)
+   * Its answers are the shell's props: glass(), tool() (view and zoom), toolScreen() (the ⚙
+   * button) and panel() (ScreenPanel's). init() is the state an editor opens with. */
+  S.viewer = function (host) {
+    var T = root.OrbTheme, scr = T.screen, loaded = scr.load(), calSet = loaded.set, scrollRef = { current: null };
+    var say = function (t) { if (host.say) host.say(t); };
+    var api = {
+      scrollRef: scrollRef,
+      init: function (view) { return { view: view || 'fit', zoom: 2, fitPx: 466, cal: loaded.cal, open: false }; },
+      cal: function () { var c = +host.get().cal; return c >= scr.MIN && c <= scr.MAX ? c : 1; },
+      calibrated: function () { return calSet; },
+      setCal: function (v) { calSet = true; host.set({ cal: scr.save(v) }); },
+      view: function () { var g = host.get(); return T.view({ view: g.view, zoom: g.zoom, fitPx: g.fitPx, cal: api.cal(), calibrated: calSet }); },
+      setView: function (v) { var g = host.get(); host.set(v === 'zoom' && !(+g.zoom >= 1) ? { view: v, zoom: 2 } : { view: v }); },
+      setZoom: function (z) { host.set({ view: 'zoom', zoom: Math.min(4, Math.max(1, +z || 1)) }); },
+      // what a real ruler measures against the on-screen bar solves the factor outright
+      solveRuler: function (mm) {
+        if (mm == null || String(mm).trim() === '') return;
+        var c = scr.fromRuler(api.cal(), mm);
+        if (c == null) { say('Type what the ruler really measures, in mm — between 5 and 300'); return; }
+        api.setCal(c); say('Ruler matched at ' + (+mm) + ' mm · true size now draws the face ' + scr.PANEL_MM + ' mm across on this screen');
+      },
+      solveCard: function (mm) {
+        if (mm == null || String(mm).trim() === '') return;
+        var c = scr.fromCard(api.cal(), mm);
+        if (c == null) { say('Type how wide the card outline really measures, in mm — between 20 and 400'); return; }
+        api.setCal(c); say('Card matched at ' + (+mm) + ' mm · true size now draws the face ' + scr.PANEL_MM + ' mm across on this screen');
+      },
+      reset: function () { api.setCal(1); say('Screen calibration reset to the 96 px/in standard'); },
+      onFit: function (px) { if (Math.abs(px - (+host.get().fitPx || 0)) >= 2) host.set({ fitPx: px }); },
+      glass: function () { var V = api.view(); return { size: V.css, scrollRef: scrollRef, zoomTag: V.tag, onFit: api.onFit }; },
+      tool: function () {
+        var g = host.get(), V = api.view();
+        return { view: T.VIEWS.map(function (v) { return { label: v[1], tip: v[2], cls: v[0] === g.view ? 'on' : '', pick: function () { api.setView(v[0]); } }; }),
+          zoom: g.view === 'zoom' ? T.ZOOMS.map(function (z) { return { label: z + '×', cls: z === V.k ? 'on' : '', pick: function () { api.setZoom(z); } }; }) : null };
+      },
+      toolScreen: function () { var g = host.get(); return { open: !!g.open, on: function () { host.set({ open: !host.get().open }); } }; },
+      calProps: function () {
+        var c = api.cal(), st = scr.step(c);
+        return S.calProps(api.view(), { min: scr.MIN, max: scr.MAX, step: st, value: c,
+          onChange: function (e) { api.setCal(+e.target.value); }, up: function () { api.setCal(c + st); }, down: function () { api.setCal(c - st); },
+          solve: function (e) { api.solveRuler(e.target.value); }, solveCard: function (e) { api.solveCard(e.target.value); }, reset: api.reset });
+      },
+      panel: function () { var g = host.get(); return { open: !!g.open, cal: api.calProps(), close: function () { host.set({ open: false }); } }; },
+    };
+    return api;
+  };
+  /* the screen panel over the stage: the view's caption, and in True size the ruler and the
+   * bank card. children: an app's own diagnostics under them (the clock's frame stepping) */
+  S.ScreenPanel = function (p) {
+    if (!p.open) return null;
+    return h('div', { className: 'st-diag' },
+      h('div', { className: 'st-diag-h' }, h('span', { className: 'ui-label' }, 'This screen'),
+        p.close ? h('button', { className: 'ui-ghost st-sm', onClick: p.close, title: 'Close' }, '✕') : null),
+      h(S.Calibrate, p.cal || {}),
+      p.cal && !p.cal.show ? h('div', { className: 'ui-mut st-cap' }, 'Pick True size to calibrate: the ruler and the bank card show there, and the calibration holds for every app’s editor on this browser.') : null,
+      p.children);
+  };
+
+  /* ---- the start sheet (owner, §12.5: the clock's way for every app): over the stage, the
+   * app's starting points as pictures, the library under them, and Continue. Picking a
+   * tile chooses it; only Continue moves on.
+   *   title · tiles: [{key, name, short, tip, on, cls, draw(canvas)}] · scratch: {label, short, tip, on}
+   *   · library: {openFile, accept, rows (libraryRows), empty}. Saving is the Render step's
+   *     (RenderPanel's save), under the theme's name: the sheet only opens. 
+   *   · foot: [{label, on, primary, tip}] */
+  function Tile(p) {
+    var R = root.React, ref = R.useRef(null), t = p.t;
+    R.useEffect(function () { if (ref.current && t.draw) t.draw(ref.current); });
+    return h('div', { className: cx('st-gc', t.cls), onClick: t.on, title: t.tip || '' },
+      h('canvas', { ref: ref, width: 192, height: 192 }), h('b', null, t.name), h('span', null, t.short || ''));
+  }
+  S.StartSheet = function (p) {
+    var L = p.library || null, fileRef = root.React.useRef(null);
+    return h('div', { className: 'st-sheet' },
+      h('div', { className: 'st-sheet-in' },
+        h('h2', null, p.title || 'Start a theme'),
+        h('div', { className: 'st-gal' },
+          p.scratch ? h('button', { className: cx('st-gc', p.scratch.cls), onClick: p.scratch.on, title: p.scratch.tip || '' }, h('span', { className: 'st-blank' }, '＋'), h('b', null, p.scratch.label), h('span', null, p.scratch.short || '')) : null,
+          list(p.tiles).map(function (t) { return h(Tile, { key: t.key, t: t }); })),
+        L ? h(root.React.Fragment, null,
+          h('h2', { style: { marginTop: '18px' } }, 'Library'),
+          h('div', { className: 'st-lib-bar' },
+            h('button', { className: 'ui-ghost st-sm', onClick: function () { fileRef.current && fileRef.current.click(); }, title: 'Open a theme (.orbtheme) or a design file (.orbdesign) in the editor' }, 'Open a file…'),
+            h('input', { ref: fileRef, type: 'file', accept: L.accept || '.orbtheme,.orbdesign', style: { display: 'none' }, onChange: L.openFile })),
+          list(L.rows).length ? null : h('div', { className: 'ui-mut st-lib-empty' }, L.empty || 'Nothing in the library yet. Save to library on the Render step keeps a design on the hub as a draft; Send to orb bakes it into a theme under the same name.'),
+          list(L.rows).map(function (r) {
+            return h('div', { key: r.name, className: 'st-lib-row' },
+              r.thumb ? h('img', { className: 'st-lib-pv', src: r.thumb, alt: '' }) : null,
+              h('b', null, r.name), h('span', { className: 'ui-mut', title: r.tagTip }, r.tag), h('span', { className: 'ui-mut ui-mono' }, r.meta),
+              h('button', { className: 'ui-ghost st-sm', onClick: r.load, title: r.loadTip }, 'Open'),
+              r.changed ? h('button', { className: 'ui-ghost st-sm', onClick: r.discard, title: 'Drop the unsent changes and keep the theme as it was baked' }, 'Discard changes') : null,
+              h('button', { className: 'ui-ghost st-sm', onClick: r.del, title: r.delTip }, r.delLabel));
+          })) : null),
+      h('div', { className: 'st-sheet-foot' }, list(p.foot).map(function (f, i) {
+        return h('button', { key: i, className: f.primary ? 'ui-primary' : 'ui-ghost', onClick: f.on, title: f.tip || '' }, f.label);
+      })));
+  };
+  /* the library's rows for StartSheet, from a session: o.version (the editor's), o.meta(entry),
+   * o.open(name), o.forget(name, what), o.armed (the name whose Delete was pressed once), o.arm(name) */
+  S.libraryRows = function (lib, o) {
+    return list(lib).map(function (m) {
+      var th = m.theme || {}, armed = o.armed === m.name, v = o.version || 'dev';
+      var older = th.made_with && v !== 'dev' && th.made_with.split('+')[0] !== v.split('+')[0] ? th.made_with : '';
+      var tag = th.stale ? 'theme · needs a rebake' : m.state === 'changed' ? 'theme · unsent changes' : m.state === 'theme' ? 'theme' : 'draft';
+      var tb = typeof m.thumb === 'string' && /^data:image\/(jpeg|png);base64,/.test(m.thumb) ? m.thumb : null;
+      return { name: m.name, thumb: tb, tag: tag + (older ? ' · made with ' + older : ''),
+        tagTip: th.stale ? 'An orb on the current firmware would refuse this bake (' + th.stale + '). Rebake all on the Themes tab rebakes it from its design.' : m.state === 'draft' ? 'Saved, never baked: Send to orb makes it a theme' : m.state === 'changed' ? 'A baked theme with changes saved beside it: Open shows the changes, Send to orb bakes them in' : 'Baked: on the hub shelf, ready to install',
+        meta: (o.meta ? o.meta(m) : '') + new Date(+m.at || 0).toLocaleDateString(),
+        load: function () { o.open(m.name); }, loadTip: m.state === 'changed' ? 'Open it with its unsent changes' : 'Open it in the editor',
+        changed: m.state === 'changed', discard: function () { o.forget(m.name, 'draft'); },
+        delLabel: armed ? 'Press again' : 'Delete', delTip: 'Take it out of the hub’s library, baked theme and all (asks twice). No orb is touched.',
+        del: function () { if (armed) { o.arm(null); o.forget(m.name, 'all'); } else o.arm(m.name); } };
+    });
+  };
+
   // open, line, hint, noCancel, cancelLabel, onCancel
   S.SendModal = function (p) {
     if (!p.open) return null;
@@ -156,12 +288,14 @@
   };
 
   /* badge: the OrbTheme.fit verdict {text, note, tip, color, border, background} · send: {note,
-   * tip, on} under a hub · downloads: [{label, note, title, on}] · note: a warning line */
+   * tip, on} under a hub · save: {note, tip, on} under a hub, the one place a design is saved
+   * to the library · downloads: [{label, note, title, on}] · note: a warning line */
   S.RenderPanel = function (p) {
     var b = p.badge || null;
     return h(root.React.Fragment, null,
       b ? h('div', { className: 'st-badge', title: b.tip || '', style: { borderColor: b.border, background: b.background } }, h('b', { style: { color: b.color } }, b.text), h('span', null, b.note)) : null,
       p.send ? h('button', { className: 'st-big ui-primary', onClick: p.send.on, title: p.send.tip || '' }, h('b', null, 'Send to orb'), h('span', null, p.send.note)) : null,
+      p.save ? h('button', { className: 'st-big', onClick: p.save.on, title: p.save.tip || '' }, h('b', null, 'Save to library'), h('span', null, p.save.note)) : null,
       list(p.downloads).map(function (d, i) { return h('button', { key: i, className: 'st-big', onClick: d.on, title: d.title || '' }, h('b', null, d.label), h('span', null, d.note)); }),
       p.note ? h('div', { className: 'st-hint ui-mono st-warn' }, p.note) : null);
   };
@@ -171,6 +305,19 @@
    * the two things that were the clock's made options: where a colour's typed draft is kept
    * (scope), and which choice of a select means "follow the source" (inherit). */
   S.INKS = [['#f6f3ec', 'White'], ['#1a140c', 'Black'], ['#c9a25a', 'Gold'], ['#d7dbe0', 'Silver'], ['#cfe8b0', 'Lume green'], ['#9fd8ff', 'Lume blue'], ['#c8322a', 'Red'], ['#ff7a1a', 'Orange'], ['#2b59c3', 'Blue'], ['#ff2bd6', 'Magenta'], ['#22e6ff', 'Cyan'], ['#b6ff2e', 'Acid']];
+  /* the colour picker's palettes (owner, §12.5: one picker, served by the hub, the same in
+   * every editor). Classic: the inks and period colours a dial or chart is printed in; Vivid:
+   * the saturated ones an OLED shows off; Any: the system picker. Which one shows is one
+   * choice per browser, made on any colour row, kept for every row and every app. */
+  S.PALETTES = {
+    classic: S.INKS.concat([['#1d2b4a', 'Navy'], ['#5b6b3a', 'Olive'], ['#6e1f2b', 'Burgundy'], ['#efe6cf', 'Cream'], ['#5d6b78', 'Slate'], ['#a0703c', 'Bronze']]),
+    vivid: [['#ffffff', 'White'], ['#ff2d2d', 'Red'], ['#ff8a00', 'Orange'], ['#ffd400', 'Yellow'], ['#b6ff2e', 'Lime'], ['#39ff14', 'Phosphor'],
+      ['#00e5a0', 'Mint'], ['#22e6ff', 'Cyan'], ['#2f7bff', 'Blue'], ['#7a3cff', 'Violet'], ['#ff2bd6', 'Magenta'], ['#ff4f8b', 'Pink']],
+  };
+  S.PALETTE_TABS = [['classic', 'Classic'], ['vivid', 'Vivid'], ['any', 'Any']];
+  S.PALETTE_KEY = 'orb.colour.palette';
+  S.palette = (function () { try { var v = root.localStorage.getItem(S.PALETTE_KEY); return v === 'vivid' || v === 'any' ? v : 'classic'; } catch (e) { return 'classic'; } })();
+  S.setPalette = function (v) { S.palette = v; try { root.localStorage.setItem(S.PALETTE_KEY, v); } catch (e) { /* this page only */ } };
   // a typed colour: #rrggbb, #rgb, or r, g, b; null when it is none of them
   S.parseColor = function (t) {
     t = String(t || '').trim().toLowerCase(); var m;
@@ -232,20 +379,29 @@
         linkOf((extra || []).map(function (x) { return { v: vOf ? vOf(x) : x.v != null ? x.v : x.label, label: x.label }; }), value, onv)));
     };
     var hexRGB = function (v) { var n = parseInt(v.slice(1), 16); return (n >> 16) + ', ' + ((n >> 8) & 255) + ', ' + (n & 255); };
-    /* a colour: the ink palette, a picker, and a hex box that keeps a half-typed draft per
-     * (scope, label). X: {none: offer None, noAuto: no Auto} */
+    /* a colour: the preset's own, a palette (Classic, Vivid, or Any's picker), and a hex box
+     * that keeps a half-typed draft per (scope, label). X: {none: offer None, noAuto: no Auto,
+     * preset: the value the design's preset gives this colour, offered first} */
     var Co = function (label, value, onv, autoText, scope, X) {
       X = X || {};
       var key = (scope || scopeOf()) + ':' + label, hex = value && /^#[0-9a-f]{6}$/i.test(value) ? value : null, dr = drafts[key];
+      var pal = S.palette, ink = pal === 'any' ? [] : S.PALETTES[pal] || S.INKS, pre = X.preset && /^#[0-9a-f]{6}$/i.test(X.preset) ? X.preset : null;
+      var same = function (a, b) { return !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase(); };
       return mk({ label: label, isColor: true, value: hex || '#ffffff', on: function (e) { delete drafts[key]; onv(e.target.value); },
+        picker: pal === 'any',
+        palTabs: S.PALETTE_TABS.map(function (t) { return { label: t[1], on: t[0] === pal, pick: function () { S.setPalette(t[0]); refresh(); } }; }),
         hexText: dr != null ? dr : hex || '', hexTitle: hex ? 'rgb ' + hexRGB(hex) : 'Type a hex code or r, g, b',
         onHex: function (e) { var v = e.target.value, p = S.parseColor(v); if (p) { delete drafts[key]; onv(p); } else { drafts[key] = v; refresh(); } },
         onHexBlur: function () { if (drafts[key] != null) { delete drafts[key]; refresh(); } },
         valText: value === 'none' ? 'None' : !value || value === 'auto' ? (X.noAuto ? 'None' : autoText || 'Auto') : value,
-        opts: (X.none ? [{ label: 'None', text: '∅', bg: '#1c2330', bd: value === 'none' ? '#e6edf3' : '#2b3540', pick: function () { onv('none'); } }] : [])
+        pre: pre ? { label: 'Back to the preset’s ' + pre, text: 'P', cls: 'st-sw-pre', bg: pre, bd: same(pre, value) ? '#e6edf3' : '#2b3540', pick: function () { delete drafts[key]; onv(pre); } } : null,
+        cur: { label: 'Choose a colour', text: value === 'none' ? '∅' : !hex ? 'A' : '', cls: 'st-sw-cur', bg: hex || '#1c2330', bd: '#8b98a5' },
+        opts: [].concat(X.none ? [{ label: 'None', text: '∅', bg: '#1c2330', bd: value === 'none' ? '#e6edf3' : '#2b3540', pick: function () { onv('none'); } }] : [])
           .concat(X.noAuto ? [] : [{ label: autoText || 'Auto', text: 'A', bg: '#1c2330', bd: !value || value === 'auto' ? '#e6edf3' : '#2b3540', pick: function () { onv('auto'); } }])
-          .concat(S.INKS.map(function (c) { return { label: c[1], text: '', bg: c[0], bd: c[0] === value ? '#e6edf3' : '#232c36', pick: function () { onv(c[0]); } }; })) });
+          .concat(ink.map(function (c) { return { label: c[1], text: '', bg: c[0], bd: same(c[0], value) ? '#e6edf3' : '#232c36', pick: function () { onv(c[0]); } }; })) });
     };
+    // a sample: `text` as it will read, style {color, background, fontFamily, fontSize, border}
+    var Sa = function (label, text, style, note) { return mk({ label: label, isSample: true, value: text, style: style || {}, valText: note || '' }); };
     var Tx = function (label, value, onv) { return mk({ label: label, isText: true, value: value == null ? '' : String(value), on: function (e) { onv(e.target.value); } }); };
     var Fi = function (label, onv, valText, accept) { return mk({ label: label, isFile: true, on: onv, valText: valText || '', accept: accept || 'image/png,image/svg+xml,image/jpeg,image/webp' }); };
     // a run of rows folded to its first `keep`, with a More / Less chip; open and toggle are the app's
@@ -256,33 +412,62 @@
         opts: [{ label: open ? 'Less' : 'More (' + hid + ')', bg: '#1c2330', bd: '#2b3540', fg: '#8b98a5', pick: toggle }] });
       return (open ? rows : rows.slice(0, keep)).concat([chip]);
     };
-    return { on: on, mark: mark, mk: mk, linkOf: linkOf, H: H, snapV: snapV, Rg: Rg, Sl: Sl, Ch: Ch, Nt: Nt, Sw: Sw, Co: Co, Tx: Tx, Fi: Fi, fold: fold };
+    return { on: on, mark: mark, mk: mk, linkOf: linkOf, H: H, snapV: snapV, Rg: Rg, Sl: Sl, Ch: Ch, Nt: Nt, Sw: Sw, Co: Co, Sa: Sa, Tx: Tx, Fi: Fi, fold: fold };
   };
 
   // one field row: its label (with the inherit link), its control, and its value
   function FieldRow(p) {
-    var f = p.f, sw = function (x, i) { return h('button', { key: i, className: 'st-sw', onClick: x.pick, title: x.label, style: { background: x.bg, borderColor: x.bd } }, x.text); };
+    var openS = root.React.useState(false), open = openS[0];
+    var f = p.f, sw = function (x, i) { return h('button', { key: i, className: cx('st-sw', x.cls), onClick: x.pick, title: x.label, style: { background: x.bg, borderColor: x.bd } }, x.text); };
     var ctl =
       f.isRange ? h('div', { className: 'st-rng' }, h('input', { type: 'range', min: f.min, max: f.max, step: f.step, value: f.value, onChange: f.on }),
         h('input', { className: 'st-num', type: 'number', min: f.min, max: f.max, step: f.step, value: f.value, onChange: f.onNum, title: 'Type an exact value' }))
       : f.isSelect ? h('select', { onChange: f.on, value: String(f.value) }, list(f.opts).map(function (x, i) { return h('option', { key: i, value: x.v }, x.label); }))
       : f.isChips ? h('div', { className: 'ui-chips' }, list(f.opts).map(function (x, i) { return h('button', { key: i, onClick: x.pick, style: { background: x.bg, borderColor: x.bd, color: x.fg } }, x.label); }))
       : f.isSwatch ? h('div', { className: 'ui-chips' }, list(f.opts).map(sw))
+      : f.isColor && f.cur ? h('div', null,
+          // the hub's one colour picker (§12.5): the preset's colour, this one (it opens the
+          // palette), the hex; under it the palette: Classic, Vivid or Any's system picker
+          h('div', { className: 'ui-chips', style: { alignItems: 'center', flexWrap: 'nowrap' } },
+            f.pre ? sw(f.pre, 'pre') : null,
+            h('button', { className: cx('st-sw', f.cur.cls, open ? 'on' : ''), onClick: function () { openS[1](!open); }, title: open ? 'Close the palette' : f.cur.label, style: { background: f.cur.bg, borderColor: f.cur.bd } }, f.cur.text),
+            h('input', { type: 'text', value: f.hexText, onChange: f.onHex, onBlur: f.onHexBlur, placeholder: '#rrggbb', title: f.hexTitle, style: { flex: '1 1 80px', fontFamily: 'var(--mono)' } }),
+            h('button', { className: 'ui-ghost st-pal-tog', onClick: function () { openS[1](!open); }, title: open ? 'Close the palette' : 'Open the palette' }, open ? '▴' : '▾')),
+          open ? h('div', { className: 'st-pal-box' },
+            h('div', { className: 'st-pal' }, list(f.palTabs).map(function (t, i) {
+              return h('button', { key: i, className: t.on ? 'on' : '', onClick: t.pick, title: 'Show the ' + t.label.toLowerCase() + ' colours, here and on every colour row after' }, t.label);
+            })),
+            h('div', { className: 'ui-chips', style: { alignItems: 'center' } }, list(f.opts).map(sw),
+              f.picker ? h('input', { type: 'color', value: f.value, onChange: f.on, title: 'Any colour' }) : null)) : null)
       : f.isColor ? h('div', { className: 'ui-chips', style: { alignItems: 'center' } }, list(f.opts).map(sw),
           h('input', { type: 'color', value: f.value, onChange: f.on, title: 'Custom colour' }),
           h('input', { type: 'text', value: f.hexText, onChange: f.onHex, onBlur: f.onHexBlur, placeholder: '#rrggbb', title: f.hexTitle, style: { flex: '1 1 80px', fontFamily: 'var(--mono)' } }))
+      : f.isSample ? h('div', { className: 'st-sample', style: f.style }, f.value)
       : f.isText ? h('input', { type: 'text', value: f.value, onChange: f.on })
       : f.isFile ? h('input', { type: 'file', accept: f.accept, onChange: f.on })
-      : f.isNote ? h('div', { className: 'st-note', title: f.note }, f.note) : null;
+      : f.isNote ? h('span', { className: 'st-tip', title: f.note }, 'ⓘ') : null;
     return h('div', { className: cx('st-row', f.rowCls), 'data-a': f.anchor },
-      h('label', { title: f.label }, f.label, f.hasLink ? h('span', { onClick: f.relink, title: f.linkTip, style: { color: f.linkFg, cursor: f.linkCursor } }, f.linkText) : null),
-      h('div', { style: { minWidth: 0 } }, ctl, h('div', { className: 'st-cname' }, f.valText)),
+      h('label', { title: f.tip || f.label }, f.label, f.tip ? h('span', { className: 'st-tip' }, 'ⓘ') : null,
+        f.hasLink ? h('span', { onClick: f.relink, title: f.linkTip, style: { color: f.linkFg, cursor: f.linkCursor } }, f.linkText) : null),
+      h('div', { style: { minWidth: 0 } }, ctl, h('div', { className: 'st-cname' }, f.isColor && f.valText === f.hexText ? '' : f.valText)),
       h('div', { className: 'st-val', title: f.valText }, f.valText));
   }
-  // fields: the kit's rows; a slider keeps the value column, every other row reads its value under it
+  // fields: the kit's rows; a slider keeps the value column, every other row reads its value under it.
+  // A note is not printed (owner, 2026-11-04: the explanations were clutter): it becomes the
+  // hover text of the row or section above it, marked ⓘ; a note with a label of its own, or
+  // with nothing above it, is a row holding only the ⓘ.
   S.Fields = function (p) {
-    return h('div', { className: 'st-fields' }, list(p.fields).map(function (f, i) {
-      if (f.isHead) return h('div', { key: i, className: 'st-sec', 'data-a': f.anchor }, f.label);
+    var out = [];
+    list(p.fields).forEach(function (f) {
+      var prev = out[out.length - 1];
+      if (f.isNote && !f.label && prev && !prev.isNote) {
+        out[out.length - 1] = Object.assign({}, prev, { tip: (prev.tip ? prev.tip + '\n\n' : '') + f.note });
+        return;
+      }
+      out.push(f);
+    });
+    return h('div', { className: 'st-fields' }, out.map(function (f, i) {
+      if (f.isHead) return h('div', { key: i, className: 'st-sec', 'data-a': f.anchor, title: f.tip || '' }, f.label, f.tip ? h('span', { className: 'st-tip' }, 'ⓘ') : null);
       if (!f.isRow) return null;
       return h(FieldRow, { key: i, f: Object.assign({}, f, { rowCls: f.rowCls != null ? f.rowCls : f.isRange ? '' : 'wide' }) });
     }));

@@ -143,11 +143,13 @@
     };
     // entry: {name, doc, ...anything the app lists by}. A draft under a theme's name sits beside
     // it as that theme's unsent changes; under a draft's name it replaces it.
-    api.saveDraft = async function (entry) {
-      if (!api.hubOrb()) { say('Not saved: ' + offHub); return false; }
+    // quiet (Send to orb's first step): no line unless it fails, so the send's own lines stand
+    api.saveDraft = async function (entry, quiet) {
+      if (!api.hubOrb()) { if (!quiet) say('Not saved: ' + offHub); return false; }
       try { await saveDraft(entry.name, entry.doc, extrasOf(entry)); }
       catch (e) { say('Not saved: ' + err(e)); return false; }
       await api.libraryRefresh();
+      if (quiet) return true;
       var e = api.libraryEntry(entry.name);
       say('Saved “' + entry.name + '” to the library' + (e && e.state === 'changed' ? ' as unsent changes to its theme — Send to orb bakes them in' : ' as a draft'));
       return true;

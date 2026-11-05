@@ -15,7 +15,10 @@ const FRAG = Symbol('fragment');
 // hooks: a ref is a box; a layout effect is kept so a check can run it after attaching a node
 const effects = [];
 global.React = { Fragment: FRAG, createElement: (type, props, ...kids) => ({ type, props: props || {}, kids: kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false) }),
-  useRef: (v) => ({ current: v }), useLayoutEffect: (fn) => effects.push(fn) };
+  useRef: (v) => ({ current: v }), useLayoutEffect: (fn) => effects.push(fn), useEffect: () => {},
+  // a state is what the next check sets: STATE.next, else the initial value
+  useState: (v) => [STATE.next !== undefined ? STATE.next : v, (x) => { STATE.set = x; }] };
+const STATE = { next: undefined, set: undefined };
 global.GorbBake = require(path.join(__dirname, '..', 'baker@1', 'orbtheme-baker.js'));
 require(path.join(__dirname, '..', 'theme@1', 'preview.js'));
 require(path.join(__dirname, '..', 'theme@1', 'measure.js'));
@@ -131,6 +134,8 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(big.length === 2 && big[0].props.onClick === send && /Send to orb/.test(text(big[0])) && big[1].props.onClick === dl, 'Send first, then the downloads');
   ok(/1\/1 art asset held/.test(text(r)), 'and the app’s warning line');
   ok(by(render(S.RenderPanel, { downloads: [] }), 'button').length === 0, 'off a hub there is no Send');
+  const sv = fn, rs = by(render(S.RenderPanel, { send: { note: 'x', on: send }, save: { note: 'keep it', on: sv }, downloads: [] }), 'button', 'st-big');
+  ok(rs.length === 2 && rs[1].props.onClick === sv && /Save to library/.test(text(rs[1])), 'Save to library sits under Send');
 }
 
 // ---- K7: the field kit, the fields, the layers panel
@@ -158,13 +163,27 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   const sw = K.Sw('Band', 'b2', [{ k: 'b1', label: 'Green', bg: '#0f0' }, { k: 'b2', label: 'Amber', bg: '#fa0' }], set, [{ label: 'Same as scope', text: '=', bg: '#1c2330', bd: '#2b3540', pick: () => set('inherit') }], (o) => 'inherit');
   ok(sw.isSwatch && sw.valText === 'Amber' && sw.opts.length === 3 && sw.opts[2].bd === '#e6edf3' && sw.hasLink && !('v' in sw.opts[0]), 'swatches name the chosen one; an extra option stays as given', JSON.stringify(sw.opts[0]));
   const co = K.Co('Ink', '#112233', set);
-  ok(co.isColor && co.value === '#112233' && co.hexTitle === 'rgb 17, 34, 51' && co.opts.length === 1 + S.INKS.length, 'a colour: Auto, the inks, and the picker');
+  S.setPalette('classic');
+  ok(co.isColor && co.value === '#112233' && co.hexTitle === 'rgb 17, 34, 51' && co.opts.length === 1 + S.PALETTES.classic.length && !co.picker && !co.pre, 'a colour: Auto and the classic palette, no picker, no preset named');
+  ok(S.PALETTES.classic.slice(0, S.INKS.length).every((c, i) => c[0] === S.INKS[i][0]), 'the classic palette starts with the inks');
   co.onHex({ target: { value: '#12' } });
   ok(drafts['arm:Ink'] === '#12' && redraws === 1 && K.Co('Ink', '#112233', set).hexText === '#12', 'a half-typed hex is kept as a draft under its scope and redrawn');
   co.onHex({ target: { value: '10, 20, 30' } });
   ok(got === '#0a141e' && !('arm:Ink' in drafts), 'r, g, b is read as a colour and clears the draft', got);
   ok(S.parseColor('#abc') === '#aabbcc' && S.parseColor('rgb(300,0,0)') === null && S.parseColor('nope') === null, 'colour parsing');
-  ok(K.Co('Ink', 'none', set, 'Auto', 'x', { none: true }).valText === 'None' && K.Co('Ink', '', set, 'Auto', 'x', { noAuto: true }).opts.length === S.INKS.length, 'None and no-Auto');
+  ok(K.Co('Ink', 'none', set, 'Auto', 'x', { none: true }).valText === 'None' && K.Co('Ink', '', set, 'Auto', 'x', { noAuto: true }).opts.length === S.PALETTES.classic.length, 'None and no-Auto');
+  // §12.5: the preset's colour first, and the palette chosen once for every row
+  const pc = K.Co('Ink', '#112233', set, '', 'x', { noAuto: true, preset: '#3DFF8E' });
+  ok(pc.pre && pc.pre.bg === '#3DFF8E' && pc.pre.text === 'P' && (pc.pre.pick(), got === '#3DFF8E'), 'the preset’s colour is offered first, and picks it');
+  ok(K.Co('Ink', '#3dff8e', set, '', 'x', { preset: '#3DFF8E' }).pre.bd === '#e6edf3', 'the preset swatch is marked while the colour is the preset’s, in any case');
+  const tabs = pc.palTabs.map((t) => t.label).join();
+  pc.palTabs[1].pick();
+  const vv = K.Co('Ink', '#112233', set, '', 'x', { noAuto: true });
+  ok(tabs === 'Classic,Vivid,Any' && S.palette === 'vivid' && vv.opts.length === S.PALETTES.vivid.length && vv.palTabs[1].on && redraws > 1, 'Vivid shows the vivid palette on every row after', tabs);
+  S.setPalette('any');
+  const va = K.Co('Ink', '#112233', set, '', 'x', { noAuto: true });
+  ok(va.picker && va.opts.length === 0, 'Any is the system picker, no swatches');
+  S.setPalette('classic');
   const rows = [1, 2, 3, 4, 5, 6, 7].map((i) => K.Nt('n' + i, 'x'));
   let opened = 0;
   const f5 = K.fold(rows, 5, false, () => opened++);
@@ -172,12 +191,57 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(K.fold(rows, 5, true, () => {}).length === 8 && K.fold(rows.slice(0, 3), 5, false, () => {}).length === 3, 'open shows all with Less; a short run is not folded');
   // the component
   const F = render(S.Fields, { fields: [K.H('Arm'), r, sl, co, K.Tx('Name', 'Scope', set), K.Fi('Image', set), K.Nt('', 'a note')] });
-  ok(by(F, 'div', 'st-sec').length === 1 && by(F, 'div', 'st-row').length === 6, 'one head, six rows');
+  ok(by(F, 'div', 'st-sec').length === 1 && by(F, 'div', 'st-row').length === 5, 'one head, five rows: the note is no row of its own');
   const rowsF = by(F, 'div', 'st-row');
   ok(rowsF[0].props.className === 'st-row' && rowsF[1].props.className === 'st-row wide', 'only a slider keeps the value column');
   ok(by(rowsF[0], 'input').length === 2 && by(rowsF[1], 'select')[0].props.value === 'inherit' && by(rowsF[1], 'span').some((x) => /the scope/.test(text(x))), 'a slider with its number box; a select with its link');
-  ok(by(rowsF[2], 'button', 'st-sw').length === co.opts.length && by(rowsF[2], 'input').length === 2, 'a colour: its swatches, a picker and a hex box');
-  ok(by(rowsF[5], 'div', 'st-note').length === 1, 'a note');
+  ok(by(rowsF[2], 'button', 'st-sw').length === 1 && by(rowsF[2], 'button', 'st-sw-cur').length === 1 && by(rowsF[2], 'input').length === 1 && !by(rowsF[2], 'div', 'st-pal-box').length,
+    'a colour row, shut: the colour itself and its hex box');
+  STATE.next = true;
+  const openRow = by(render(S.Fields, { fields: [co] }), 'div', 'st-row')[0];
+  STATE.next = undefined;
+  ok(by(openRow, 'div', 'st-pal-box').length === 1 && by(openRow, 'button', 'st-sw').length === 1 + co.opts.length && by(openRow, 'div', 'st-pal')[0].kids.length === 3,
+    'open: the palette tabs and the palette’s swatches under it');
+  const lab5 = by(rowsF[4], 'label')[0];
+  ok(lab5.props.title === 'a note' && by(rowsF[4], 'span', 'st-tip').length === 1 && !/a note/.test(text(F)), 'a note is the hover text of the row above it, marked, and not printed');
+  const G2 = render(S.Fields, { fields: [K.H('Arm'), K.Nt('', 'about arms'), K.Nt('Rule', 'a labelled note')] });
+  ok(by(G2, 'div', 'st-sec')[0].props.title === 'about arms' && by(G2, 'div', 'st-row').length === 1 && by(by(G2, 'div', 'st-row')[0], 'span', 'st-tip')[0].props.title === 'a labelled note',
+    'under a head it is the head’s; a labelled note keeps a row with only its mark');
+}
+{
+  // §12.5: the screen, one controller for every editor: the app's state, the OS's meaning
+  let st = { view: 'fit', zoom: 2, fitPx: 400, cal: 1, open: false }; const said = [];
+  const V = S.viewer({ get: () => st, set: (p) => { st = Object.assign({}, st, p); }, say: (t) => said.push(t) });
+  ok(V.init().view === 'fit' && V.init('true').view === 'true', 'an editor opens on the view it names');
+  V.setView('zoom'); ok(st.view === 'zoom' && st.zoom === 2, 'Magnify keeps a zoom');
+  V.setZoom(9); ok(st.zoom === 4, 'a zoom past 4 is 4');
+  V.setView('true'); ok(V.glass().size === T.screen.realCss(1) && /True size/.test(V.glass().zoomTag), 'True size draws the panel’s real width');
+  V.solveRuler('20'); ok(st.cal === T.screen.fromRuler(1, 20) && V.calibrated() && /Ruler matched at 20 mm/.test(said.pop()), 'a ruler reading solves the calibration and says so');
+  V.solveCard('900'); ok(/between 20 and 400/.test(said.pop()) && st.cal === T.screen.fromRuler(1, 20), 'an impossible card reading is refused, the calibration kept');
+  V.onFit(401); ok(st.fitPx === 400, 'Fit ignores a 1 px wobble'); V.onFit(420); ok(st.fitPx === 420, 'and follows a real resize');
+  const tb = V.toolScreen(); tb.on(); ok(st.open === true && V.panel().open && V.panel().cal.show, 'the ⚙ opens the screen panel, its instruments shown in True size');
+  const tl = V.tool(); ok(tl.view.length === T.VIEWS.length && tl.view.filter((v) => v.cls === 'on').length === 1 && tl.zoom === null, 'the view options, one marked; zoom only while magnifying');
+  const sp = render(S.ScreenPanel, V.panel());
+  ok(sp.props.className === 'st-diag' && by(sp, 'div', 'st-cal').length === 1 && by(sp, 'div', 'st-card').length === 1, 'the screen panel holds the ruler and the bank card');
+  ok(render(S.ScreenPanel, { open: false }) === null, 'a shut panel draws nothing');
+  const tool = render(S.Toolbar, { screen: { open: true, on: fn } });
+  ok(by(tool, 'button').some((b) => text(b) === '⚙' && /\bon\b/.test(b.props.className)), 'the toolbar carries the screen button');
+}
+{
+  // §12.5: the start sheet and the library's rows
+  const picked = [], forgot = [];
+  let armed = null;
+  const rows = S.libraryRows([{ name: 'Night', state: 'changed', at: 0 }, { name: 'Day', state: 'draft', at: 0, theme: { stale: 'old rows' } }],
+    { version: '1.2.0', armed: 'Day', arm: (n) => { armed = n; }, open: (n) => picked.push(n), forget: (n, w) => forgot.push(n + ':' + w), meta: () => 'Brass · ' });
+  ok(rows[0].tag === 'theme · unsent changes' && rows[0].changed && rows[1].tag === 'theme · needs a rebake' && /^Brass · /.test(rows[0].meta), 'each entry says what it is');
+  rows[0].load(); rows[0].discard(); rows[0].del(); rows[1].del();
+  ok(picked.join() === 'Night' && forgot.join() === 'Night:draft,Day:all' && armed === null && rows[1].delLabel === 'Press again', 'Open, Discard changes, and Delete asked twice');
+  const go = fn, sheet = render(S.StartSheet, { title: 'Start', tiles: [{ key: 'a', name: 'Alpha', short: 's', cls: 'on', on: fn }, { key: 'b', name: 'Beta', on: fn }],
+    library: { rows, openFile: fn }, foot: [{ label: 'Continue with Alpha', primary: true, on: go }] });
+  ok(by(sheet, 'div', 'st-gc').length === 2 && by(sheet, 'div', 'st-gc')[0].props.className === 'st-gc on' && by(sheet, 'canvas').length === 2, 'the starting points as pictures, the chosen one marked');
+  ok(by(sheet, 'div', 'st-lib-row').length === 2 && by(sheet, 'button').some((b) => b.props.onClick === go && text(b) === 'Continue with Alpha' && b.props.className === 'ui-primary'), 'the library under them, and Continue');
+  ok(!by(sheet, 'input').some((i) => i.props.type === 'text') && !by(sheet, 'button').some((b) => /Save/.test(text(b))), 'the sheet opens; it never saves (that is the Render step’s)');
+  ok(!by(sheet, 'div', 'st-lib-empty').length && by(render(S.StartSheet, { library: { rows: [] } }), 'div', 'st-lib-empty').length === 1, 'an empty library says how it fills');
 }
 {
   // layerRows: bands, depth, selection, arrows, eye, tooltip; a made-up radar stack

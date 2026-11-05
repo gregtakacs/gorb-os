@@ -36,18 +36,6 @@
 .wc-switch.on{color:var(--fg)}
 .wc-switch.on i{background:var(--prim)}
 .wc-switch.on i::after{left:14px;background:#fff}
-.wc-sheet{position:absolute;inset:0;background:var(--bg);display:flex;flex-direction:column;z-index:4}
-.wc-sheet-in{flex:1;overflow-y:auto;padding:24px 32px}
-.wc-sheet h2{margin:0 0 14px;font-size:17px;font-weight:600}
-.wc-gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:12px}
-.wc-gc{display:flex;flex-direction:column;align-items:center;gap:3px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 10px;cursor:pointer;text-align:center;white-space:normal;font-size:13px}
-.wc-gc:hover{border-color:var(--focus)}
-.wc-gc.on{border-color:var(--focus);background:var(--sel)}
-.wc-gc canvas,.wc-blank{width:96px;height:96px;border-radius:50%;margin-bottom:6px;background:#000;display:block}
-.wc-blank{background:none;border:1px dashed #3a4654;display:grid;place-items:center;font-size:28px;color:var(--mut)}
-.wc-gc>span{color:var(--dim);font-size:11px;line-height:1.3}
-.wc-sheet-foot{display:flex;justify-content:flex-end;gap:8px;padding:10px 32px;border-top:1px solid var(--line)}
-.wc-diag{position:absolute;left:12px;right:12px;bottom:52px;max-height:60%;overflow:auto;background:rgba(22,27,34,.97);border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;align-items:center;z-index:3;font-size:12px}
 .wc-ihead{padding:10px 14px 8px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
 .wc-ititle{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:15px;font-weight:600;min-width:0}
 .wc-ititle>span:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -106,13 +94,13 @@
         <canvas ref="{{ mainRef }}" width="466" height="466" onPointerDown="{{ onDown }}" onPointerMove="{{ onMove }}" onPointerUp="{{ onUp }}" onPointerCancel="{{ onUp }}" style="width:{{ stageCv }}px;height:{{ stageCv }}px;cursor:{{ cursor }}"></canvas>
     </x-import>
     <sc-if value="{{ isStart }}" hint-placeholder-val="{{ true }}">
-      <div class="wc-sheet">
-        <div class="wc-sheet-in">
+      <div class="st-sheet">
+        <div class="st-sheet-in">
           <h2>Start a theme</h2>
-          <div class="wc-gal">
-            <button class="wc-gc" onClick="{{ fromScratch }}" title="A plain dial with hour, minute and seconds hands and nothing else: add the movement, the dial and every complication yourself"><span class="wc-blank">＋</span><b>From scratch</b><span>A plain dial and three hands</span></button>
+          <div class="st-gal">
+            <button class="st-gc" onClick="{{ fromScratch }}" title="A plain dial with hour, minute and seconds hands and nothing else: add the movement, the dial and every complication yourself"><span class="st-blank">＋</span><b>From scratch</b><span>A plain dial and three hands</span></button>
             <sc-for list="{{ dials }}" as="d" hint-placeholder-count="8">
-              <div class="wc-gc {{ d.cls }}" onClick="{{ d.pick }}" title="{{ d.blurb }}">
+              <div class="st-gc {{ d.cls }}" onClick="{{ d.pick }}" title="{{ d.blurb }}">
                 <canvas ref="{{ d.ref }}" width="96" height="96"></canvas>
                 <b>{{ d.name }}</b><span>{{ d.short }}</span>
               </div>
@@ -120,13 +108,12 @@
           </div>
           <h2 style="margin-top:18px">Library</h2>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-            <input type="text" value="{{ mineName }}" onChange="{{ onMineName }}" placeholder="{{ minePh }}" style="flex:1 1 180px;max-width:280px">
-            <button class="ui-primary" onClick="{{ saveMine }}" title="Keep this watch, as it stands now and with its art, in the hub's library under that name. Under a theme's name it is that theme's unsent changes until Send to orb bakes them in.">Save current</button>
             <label class="ui-ghost wc-sm" style="cursor:pointer" title="Open a theme (.orbtheme) or a design file (.orbdesign) in the editor">Open a file…<input type="file" accept=".orbtheme,.orbdesign" onChange="{{ openFile }}" style="display:none"></label>
           </div>
-          <sc-if value="{{ mineEmpty }}" hint-placeholder-val="{{ false }}"><div class="ui-mut" style="font-size:12px">Nothing in the library yet. A watch you save here is kept on the hub as a draft, art included; Send to orb bakes it into a theme under the same name. Work you have not saved or sent is not kept across a reload. To take a theme elsewhere, download its .orbtheme on the Render step.</div></sc-if>
+          <sc-if value="{{ mineEmpty }}" hint-placeholder-val="{{ false }}"><div class="ui-mut" style="font-size:12px">Nothing in the library yet. Save to library on the Render step keeps a watch on the hub as a draft, art included; Send to orb bakes it into a theme under the same name. Work you have not saved or sent is not kept across a reload. To take a theme elsewhere, download its .orbtheme on the Render step.</div></sc-if>
           <sc-for list="{{ mine }}" as="r" hint-placeholder-count="2">
             <div style="display:flex;gap:8px;align-items:center;padding:4px 0;border-top:1px solid var(--line)">
+              <sc-if value="{{ r.thumb }}" hint-placeholder-val="{{ false }}"><img src="{{ r.thumb }}" alt="" style="width:36px;height:36px;border-radius:50%;background:#000;flex:0 0 36px"></sc-if>
               <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">{{ r.name }}</b>
               <span class="ui-mut" style="font-size:11px" title="{{ r.tagTip }}">{{ r.tag }}</span>
               <span class="ui-mut ui-mono" style="font-size:11px">{{ r.meta }}</span>
@@ -136,14 +123,14 @@
             </div>
           </sc-for>
         </div>
-        <div class="wc-sheet-foot">
+        <div class="st-sheet-foot">
           <button class="ui-ghost" onClick="{{ resetDesign }}" title="Put the selected watch back to its preset: design, movement, case and light">{{ resetAllLabel }}</button>
           <button class="ui-primary" onClick="{{ startGo }}">Continue with {{ dialName }}</button>
         </div>
       </div>
     </sc-if>
     <sc-if value="{{ diagOpen }}" hint-placeholder-val="{{ false }}">
-      <div class="wc-diag">
+      <div class="st-diag">
         <div class="ui-mono ui-mut">{{ metaLabel }}</div>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:center">
           <span class="ui-mono" style="min-width:110px">{{ frameLabel }}</span>
@@ -898,40 +885,29 @@ class Component extends DCLogic {
    * the caption lie about itself. */
   CAL_MIN = 0.5;
   CAL_MAX = 3;
-  _calSet = false;
-  cal() {
-    const c = +this.state.viewCal;
-    return c >= this.CAL_MIN && c <= this.CAL_MAX ? c : 1;
+  // the screen controller every editor shares (studio@1 S.viewer): this editor keeps the
+  // numbers in its own state (viewCal, diag) and the controller owns what they mean
+  get vw() {
+    if (!this._vw) this._vw = window.OrbStudio.viewer({
+      get: () => ({ view: this.state.view, zoom: this.state.zoom, fitPx: this.state.fitPx, cal: this.state.viewCal, open: this.state.diag }),
+      set: (p) => { const o = { ...p }; if ('cal' in o) { o.viewCal = o.cal; delete o.cal; } if ('open' in o) { o.diag = o.open; delete o.open; } this.setState(o); },
+      say: (t) => this.setState({ status: t }),
+    });
+    return this._vw;
   }
-  calibrated() { return !!this._calSet; }
+  cal() { return this.vw.cal(); }
+  calibrated() { return this.vw.calibrated(); }
   calStep() { return window.OrbTheme.screen.step(this.cal()); }
   loadCal() {
     const r = window.OrbTheme.screen.load();
-    if (r.set) { this._calSet = true; this.setState({ viewCal: r.cal }); }
+    if (r.set) this.setState({ viewCal: r.cal });
   }
-  setCal(v) {
-    this._calSet = true;
-    this.setState({ viewCal: window.OrbTheme.screen.save(v) });
-  }
-  // what a real ruler measures against the on-screen bar solves the factor outright
-  solveCal(mm) {
-    if (mm == null || String(mm).trim() === '') return;
-    const S = window.OrbTheme.screen, c = S.fromRuler(this.cal(), mm);
-    if (c == null) { this.setState({ status: 'Type what the ruler really measures, in mm — between 5 and 300' }); return; }
-    this.setCal(c);
-    this.setState({ status: 'Ruler matched at ' + (+mm) + ' mm · true size now draws the dial ' + S.PANEL_MM + ' mm across on this screen' });
-  }
-  // the bank card instrument: how wide the drawn outline really measures solves the factor
-  solveCard(mm) {
-    if (mm == null || String(mm).trim() === '') return;
-    const S = window.OrbTheme.screen, c = S.fromCard(this.cal(), mm);
-    if (c == null) { this.setState({ status: 'Type how wide the card outline really measures, in mm — between 20 and 400' }); return; }
-    this.setCal(c);
-    this.setState({ status: 'Card matched at ' + (+mm) + ' mm · true size now draws the dial ' + S.PANEL_MM + ' mm across on this screen' });
-  }
-  viewK() { const s = this.state; return window.OrbTheme.viewK({ view: s.view, zoom: s.zoom, fitPx: s.fitPx, cal: this.cal() }); }
-  setView(v) { this.setState((st) => ({ view: v, ...(v === 'zoom' && !(+st.zoom >= 1) ? { zoom: 2 } : {}) })); }
-  setZoom(z) { const k = Math.min(4, Math.max(1, +z || 1)); this.setState({ view: 'zoom', zoom: k }); }
+  setCal(v) { this.vw.setCal(v); }
+  solveCal(mm) { this.vw.solveRuler(mm); }
+  solveCard(mm) { this.vw.solveCard(mm); }
+  viewK() { return this.vw.view().k; }
+  setView(v) { this.vw.setView(v); }
+  setZoom(z) { this.vw.setZoom(z); }
   // everything the stage row needs, from the one view the OS works out
   viewVals() {
     const T = window.OrbTheme, s = this.state, cal = this.cal(), v = s.view;
@@ -1029,9 +1005,23 @@ class Component extends DCLogic {
    * draft with its art (the same document a theme carries); Send to orb bakes it into the
    * theme of that name. The dial rides along so the list can name the watch unopened. */
   library() { return this.session.library(); }
-  async saveDraft(name) {
-    const nm = String(name || '').trim() || this.state.themeName || this.preset().name;
-    if (await this.session.saveDraft({ name: nm, doc: Object.assign(await this.designDoc(true), { themeName: nm }), dial: this.state.dial })) this.setState({ mineName: '' });
+  // under the theme's name, from the Render step; quiet is Send to orb's first step. The
+  // draft carries a small picture of the watch at 10:09:36, as a dial tile is drawn, so the
+  // hub's lists show it before it is ever baked.
+  async saveDraft(quiet) {
+    const nm = this.themeName();
+    return this.session.saveDraft({ name: nm, doc: Object.assign(await this.designDoc(true), { themeName: nm }), dial: this.state.dial, thumb: this.draftThumb() }, quiet);
+  }
+  draftThumb() {
+    try {
+      const E = WatchEngine, o = this.opts(), hd = this.handDef(), d = new Date(); d.setHours(10, 9, 36, 0);
+      const mv = E.movement(o), gt = mv.render(0).gt, fc = E.face({ ...o, design: this.design(), hands: hd.style, handFinish: hd.finish });
+      const sc = document.createElement('canvas'); sc.width = sc.height = 466;
+      E.compose(sc.getContext('2d'), mv, gt, fc, d, {});
+      const t = document.createElement('canvas'); t.width = t.height = 96;
+      const x = t.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, 96, 96); x.drawImage(sc, 0, 0, 96, 96);
+      return t.toDataURL('image/jpeg', 0.82);
+    } catch (e) { return null; }
   }
   forgetEntry(nm, what) { return this.session.forgetEntry(nm, what); }
   openEntry(nm) { return this.session.openEntry(nm); }
@@ -2428,7 +2418,8 @@ class Component extends DCLogic {
   get _cancel3() { return this.sender.cancelRequested; }
   cancelSend3() { this.sender.cancel(); }
   _cancelled3() { return this.sender.cancelled(); }
-  sendTheme3ToOrb() { return this.sender.send(this.themeName(), () => this.exportTheme3({ send: true })); }
+  // the library keeps it first: a send the orb refuses still leaves the watch on the hub
+  sendTheme3ToOrb() { return this.sender.send(this.themeName(), async () => { await this.saveDraft(true); return this.exportTheme3({ send: true }); }); }
   replaceArmed3() { return this.sender.replace(); }
   dismissDup3() { this.sender.dismiss(); }
   // the clock keeps the found address in its state (the Render step's label reads it), so
@@ -3604,6 +3595,7 @@ class Component extends DCLogic {
       studioRender: {
         badge: { text: R.badgeText, note: R.badgeNote, tip: R.badgeTip, color: R.badgeFg, border: R.badgeBd, background: R.badgeBg },
         send: R.isHub ? { note: R.sendNote, tip: R.sendTip, on: R.sendToOrb } : null,
+        save: R.isHub ? { note: 'keep \u201c' + this.themeName() + '\u201d on the hub as a draft, art included', on: () => this.saveDraft(), tip: 'Keep this watch in the hub library under its name, without baking or sending it. Under a theme\u2019s name it is that theme\u2019s unsent changes until Send to orb bakes them in. Send to orb saves it too.' } : null,
         downloads: [
           { label: 'Download .orbtheme', note: R.themeNote, on: R.exportTheme, title: 'The same .orbtheme Send to orb bakes, downloaded: the baked dial, ready for any orb\u2019s Themes tab, with its design inside so the editor can open it again.' },
         ],
@@ -4348,12 +4340,10 @@ class Component extends DCLogic {
         if (!(this.state.resetArm && Date.now() - this.state.resetArm < 4000)) { this.setState({ resetArm: Date.now(), status: 'Press Reset again to put ' + ((E.PRESETS[s.dial] || {}).name || 'this watch') + ' back to its preset (Ctrl+Z undoes it)' }); return; }
         this.setState((st) => { const d = { ...st.designs }; delete d[st.dial]; const P = E.PRESETS[st.dial]; this._dragRow = null; return { resetArm: 0, designs: d, sel: null, selKind: null, dropAt: null, dragging: null, hidden: { ...st.hidden, ids: {} }, hands: 'auto', handFinish: 'auto', cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed', status: 'Reset ' + P.name + ' to its preset \u2014 Ctrl+Z brings your version back' }; }); },
       isEdited: !!(s.designs && s.designs[s.dial]), resetPresetLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset ' + ((E.PRESETS[s.dial] || {}).name || 'to preset'),
-      mineName: s.mineName || '', onMineName: (e) => this.setState({ mineName: e.target.value }), minePh: 'Name (default: ' + (s.themeName || (E.PRESETS[s.dial] || {}).name || 'this watch') + ')',
-      saveMine: () => this.saveDraft(s.mineName),
       mine: this.library().map((m) => { const armed = s.mineDel === m.name && Date.now() - (s.mineDelAt || 0) < 4000;
         const th = m.theme || {}, older = th.made_with && this.session.version() !== 'dev' && th.made_with.split('+')[0] !== this.session.version().split('+')[0] ? th.made_with : '';
         const tag = th.stale ? 'theme \u00b7 needs a rebake' : m.state === 'changed' ? 'theme \u00b7 unsent changes' : m.state === 'theme' ? 'theme' : 'draft';
-        return { name: m.name, tag: tag + (older ? ' \u00b7 made with ' + older : ''),
+        return { name: m.name, thumb: typeof m.thumb === 'string' && /^data:image\/(jpeg|png);base64,/.test(m.thumb) ? m.thumb : '', tag: tag + (older ? ' \u00b7 made with ' + older : ''),
           tagTip: th.stale ? 'An orb on the current firmware would refuse this bake (' + th.stale + '). Rebake all on the Themes tab rebakes it from its design.' : m.state === 'draft' ? 'Saved, never baked: Send to orb makes it a theme' : m.state === 'changed' ? 'A baked theme with changes saved beside it: Open shows the changes, Send to orb bakes them in' : 'Baked: on the hub shelf, ready to install',
           meta: ((E.PRESETS[m.dial] || {}).name ? (E.PRESETS[m.dial] || {}).name + ' \u00b7 ' : '') + new Date(+m.at || 0).toLocaleDateString(),
           load: () => this.openEntry(m.name), loadTip: m.state === 'changed' ? 'Open it with its unsent changes' : 'Open it in the editor',

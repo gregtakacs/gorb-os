@@ -16,7 +16,7 @@ html,body{height:100%;overflow:hidden}
 .st-fit{display:flex;align-items:center;gap:6px;color:var(--mut);font-size:12px;white-space:nowrap;cursor:default}
 .st-dot{width:8px;height:8px;border-radius:50%;flex:none}
 .st-sm{padding:3px 8px;font-size:12px}
-.st-side{background:var(--card);display:flex;flex-direction:column;min-height:0;min-width:0}
+.st-side{background:var(--card);display:flex;flex-direction:column;min-height:0;min-width:0;overflow-y:auto}
 .st-left{border-right:1px solid var(--line)}
 .st-right{border-left:1px solid var(--line)}
 .st-stage{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;background:radial-gradient(circle at 50% 45%,#141a22 0,#0b0e13 70%)}
@@ -88,6 +88,39 @@ html,body{height:100%;overflow:hidden}
 .st-row:not(.wide) .st-cname,.st-cname:empty{display:none}
 .st-sw{width:22px;height:22px;border-radius:50%;padding:0;border-width:2px;box-shadow:inset 0 0 0 1px rgba(0,0,0,.5);font-size:10px}
 .st-note{font-size:11px;line-height:1.35;color:var(--warn);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;cursor:help}
+/* the colour picker's palette choice, under the swatches, and a words sample */
+.st-pal-box{margin-top:6px;padding:6px;border:1px solid var(--line);border-radius:7px;background:var(--well);display:flex;flex-direction:column;gap:6px}
+.st-pal-tog{padding:2px 6px;font-size:11px;color:var(--mut)}
+.st-sw-cur{width:26px;height:26px;flex:none}
+.st-sw.on{box-shadow:0 0 0 2px var(--focus)}
+.st-pal{display:flex;gap:2px}
+.st-pal>button{border:0;background:none;padding:1px 6px;font-size:10px;color:var(--dim);border-radius:4px}
+.st-pal>button.on{color:var(--fg);background:var(--raise)}
+.st-pal>button:hover{color:var(--fg)}
+.st-sw-pre{font-weight:700;color:#000;text-shadow:0 0 2px #fff}
+.st-sample{padding:6px 10px;border-radius:6px;border:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* the screen panel over the stage (S.ScreenPanel): the clock's diagnostics panel, for every editor */
+.st-diag{position:absolute;left:12px;right:12px;bottom:52px;max-height:60%;overflow:auto;background:rgba(22,27,34,.97);border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;align-items:center;z-index:3;font-size:12px}
+.st-diag-h{display:flex;justify-content:space-between;align-items:center;width:100%}
+/* the start sheet (S.StartSheet): the starting points as pictures, the library under them */
+.st-sheet{position:absolute;inset:0;background:var(--bg);display:flex;flex-direction:column;z-index:4}
+.st-sheet-in{flex:1;overflow-y:auto;padding:24px 32px}
+.st-sheet h2{margin:0 0 14px;font-size:17px;font-weight:600}
+.st-gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:12px}
+.st-gc{display:flex;flex-direction:column;align-items:center;gap:3px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 10px;cursor:pointer;text-align:center;white-space:normal;font-size:13px}
+.st-gc:hover{border-color:var(--focus)}
+.st-gc.on{border-color:var(--focus);background:var(--sel)}
+.st-gc canvas,.st-blank{width:96px;height:96px;border-radius:50%;margin-bottom:6px;background:#000;display:block}
+.st-blank{background:none;border:1px dashed #3a4654;display:grid;place-items:center;font-size:28px;color:var(--mut)}
+.st-gc>b{font-weight:600}
+.st-gc>span{color:var(--dim);font-size:11px;line-height:1.3}
+.st-sheet-foot{display:flex;justify-content:flex-end;gap:8px;padding:10px 32px;border-top:1px solid var(--line)}
+.st-lib-bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.st-lib-bar>input[type=text]{flex:1 1 180px;max-width:280px}
+.st-lib-empty{font-size:12px}
+.st-lib-row{display:flex;gap:8px;align-items:center;padding:4px 0;border-top:1px solid var(--line)}
+.st-lib-row>b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.st-lib-row>span{font-size:11px}
 /* modals */
 .st-modal{position:fixed;inset:0;background:rgba(5,8,12,.72);display:flex;align-items:center;justify-content:center;z-index:50}
 .st-modal>div{width:440px;max-width:92vw;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 30px 80px rgba(0,0,0,.6);padding:20px 22px}
@@ -96,3 +129,6 @@ html,body{height:100%;overflow:hidden}
 .st-mfoot{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
 @media (max-width:1360px){.st-tool .st-lab{display:none}.ui-seg>button{padding:4px 7px}.st-steps>button{padding:0 8px}}
 @media (max-width:1100px){.st{grid-template-columns:200px minmax(0,1fr) 300px}.st-name{width:120px!important}}
+.st-lib-pv{width:36px;height:36px;flex:0 0 36px;border-radius:50%;background:#000;object-fit:cover}
+.st-tip{display:inline-block;margin-left:5px;color:var(--mut);font-size:11px;cursor:help;opacity:.8}
+.st-tip:hover{opacity:1;color:var(--fg)}

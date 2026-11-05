@@ -92,7 +92,7 @@ ok(!it.design().mechanical && V().stackWarns.length === 0, 'switching it off cle
   const bi = heads.findIndex((f) => f.anchor === 'move-backdrop'), ai = heads.findIndex((f) => /^Background art/.test(f.label));
   ok(bi >= 0 && ai === bi + 1 && ai === heads.length - 1, 'Backdrop is the last section of the Movement tab, with the background art under it', heads.map((f) => f.label).join(' | '));
   it.setState({ tab: 'dial', sel: null, selKind: null });
-  ok(!V().fields.some((f) => f.isHead && /^Background art/.test(f.label)) && V().fields.some((f) => f.isHead && /^Dial surface art/.test(f.label)), 'the Dial tab keeps its own surface art and no longer offers the plate backdrop');
+  ok(!V().fields.some((f) => f.isHead && /^Background art/.test(f.label)) && V().fields.some((f) => f.isHead && /^Painted surface/.test(f.label)), 'the Dial tab keeps its own surface art and no longer offers the plate backdrop');
   it.setState({ tab: 'dial' });
 }
 

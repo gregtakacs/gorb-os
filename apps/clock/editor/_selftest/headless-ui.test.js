@@ -56,8 +56,9 @@ setTimeout(async () => {
   ok(!!miss, 'a dangling reference is reported on the control row', miss && miss.note);
 
   // ---- slot two: the dial face, next to the plate slot, behaving the same way ------
-  ok(!!labels('dial').find((f) => f.isHead && /Dial surface art/.test(f.label)), 'the Dial tab offers a second section for the dial face');
-  ok(!/geartrain/.test(labels('dial').find((f) => f.isHead && /Dial surface art/.test(f.label)).label), 'the surface section does not claim to sit behind the train');
+  ok(!!labels('dial').find((f) => f.isHead && /^Painted surface/.test(f.label)), 'the Dial tab offers a section for the dial face');
+  ok(!/geartrain/.test(labels('dial').find((f) => f.isHead && /^Painted surface/.test(f.label)).label), 'the surface section does not claim to sit behind the train');
+  ok(['Markings', 'Whole dial'].every((h) => labels('dial').some((f) => f.isHead && f.label.indexOf(h) === 0)), 'and a slot each for markings and a whole dial (owner, 2026-11-05)');
   // large enough to fill the 442 box without upsampling, so what is on the line is
   // the slot's own price text rather than a refusal to place it
   it.state.designs.calendar.bgArt = 'ui-big';
@@ -257,7 +258,7 @@ setTimeout(async () => {
   ok(it.guideOn() === false, 'off means off, even mid-drag', String(it.guideOn()));
   it.drag = null; it.state.guide = 'auto';
   const gCan = new S.FakeCanvas(); gCan.width = 466; gCan.height = 466;
-  it.state.selKind = 'dial'; it.state.artSlot = 'sf'; it.state.designs.calendar.sfZoom = 1.4;
+  it.state.selKind = 'dial'; it.state.artSlot = 'sf'; it.state.designs.calendar.sfSize = 619;
   it.drawGuide(gCan.getContext('2d'), fcS, dS, 1);
   const gGeo = gCan.getContext('2d').geom;
   const arcs = gGeo.filter((o) => o.op === 'arc');
@@ -282,7 +283,7 @@ setTimeout(async () => {
   const gCan3 = new S.FakeCanvas(); gCan3.width = 466; gCan3.height = 466;
   it.drawHandGhost(gCan3.getContext('2d'), it.face(), dS, 1, (v) => v);
   ok(gCan3.getContext('2d').geom.some((o) => o.op === 'strokeRect'), 'and its sprite is outlined where it really lies, which is what shows a wrong facing');
-  looks({}); delete it.state.designs.calendar.sfZoom;
+  looks({}); delete it.state.designs.calendar.sfSize;
   /* ---- the picked complication is dragged through the hand on top of it -----------
    * Selected on the Complications tab, reached for on the dial: the author means that
    * item, and a hand painted across it must not steal the grab. The same-spot cycle
@@ -319,7 +320,7 @@ setTimeout(async () => {
   it.state.sel = null; it.state.selKind = null;
   // ---- the controls themselves -------------------------------------------------------
   const dialZ = artRows();
-  ok(!!byLabel(dialZ, 'Zoom'), 'each art slot offers a zoom, not only a box size');
+  ok(!byLabel(dialZ, 'Zoom') && !!byLabel(dialZ, 'Size'), 'each art slot offers one Size: a Zoom only multiplied into the same box (owner, 2026-11-05)');
   it.state.caseStyle = 'none';
   const caseNone = labels('case');
   ok(!!byLabel(caseNone, 'Opening radius'), 'no case exposes the opening that lighting, shadow and clipping then use');

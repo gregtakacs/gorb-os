@@ -306,7 +306,7 @@
 <script type="text/x-dc" data-dc-script>
 class Component extends DCLogic {
   DEF = { tick: 'sweep', balance: '1', plate: 'train', spokes: 'train', etching: 'none', pinion: 'on', center: 'jewel', finish: 'train', glow: 1, temp: 2200, innerAngle: 90, outerLight: 1, outerAngle: 315, outerTemp: 2200, trainAngle: 0, plateAngle: 0, plateScale: 1, hue: 30, hueSat: 0, outerHue: 210, outerSat: 0, wb: 6500, orbD: 128, orbTip: 194, cageD: 107, rearFinish: 'train', shAngle: -1, shDist: 1, shBlur: 1, shOp: 1, shMove: 1, shRelief: 1 };
-  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: 'sf', guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {}, sending: null };
+  state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: null, pickKey: null, guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {}, sending: null };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
   TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
@@ -1048,7 +1048,9 @@ class Component extends DCLogic {
   artRefs(D) {
     const d = D || (this.ready ? this.design() : { comps: [], hands: {} }), out = [];
     if (d.bgArt) out.push({ id: d.bgArt, usedBy: 'plate backdrop', slot: 'bg' });
-    if (d.sfArt) out.push({ id: d.sfArt, usedBy: 'dial surface', slot: 'sf' });
+    if (d.sfArt) out.push({ id: d.sfArt, usedBy: 'painted surface', slot: 'sf' });
+    if (d.mkArt) out.push({ id: d.mkArt, usedBy: 'dial markings', slot: 'mk' });
+    if (d.wdArt) out.push({ id: d.wdArt, usedBy: 'whole dial', slot: 'wd' });
     (d.comps || []).forEach((h) => { if (h.type === 'hand' && h.art) out.push({ id: h.art, usedBy: 'hand ' + h.id, slot: 'hand:' + h.id }); });
     (d.comps || []).forEach((c) => { if (c.icon === 'image' && c.img) out.push({ id: c.img, usedBy: c.type + ' #' + c.id, slot: 'comp:' + c.id }); });
     return out;
@@ -1077,6 +1079,31 @@ class Component extends DCLogic {
   /* The one upload path for every slot: gate the file, register it, and
    * write the reference into the design. The status line carries the measured reason
    * when the engine refuses it. */
+  /* Snap an art slot so its visible paint (after its see-through colour) spans the dial,
+   * centred: E.artSnap does the measuring, this lands Size and the offsets in one edit. */
+  snapArt(p) {
+    const E = window.WatchEngine, D = this.design() || {};
+    const r = D[p + 'Art'] && E.artSnap(D[p + 'Art'], D[p + 'Fit'] || 'cover', { color: D[p + 'Key'], tol: D[p + 'KeyTol'], edge: D[p + 'KeyEdge'] }, D[p + 'Rot']);
+    if (!r) { this.setState({ status: 'Nothing to snap: the image has no visible paint in this browser' }); return; }
+    this.upd((d) => { d[p + 'Size'] = r.size; d[p + 'X'] = r.x; d[p + 'Y'] = r.y; });
+    this.setState({ status: 'Snapped: the visible paint now spans the dial (Size ' + r.size + ' px' + (r.x || r.y ? ', offset ' + r.x + ', ' + r.y : '') + ')' });
+  }
+  /* The see-through colour picked off the dial: the slot's OWN image at the clicked point,
+   * drawn alone and unkeyed where the dial draws it, so the colour is the art's and not the
+   * finish, the print or the wear laid over it on the stage. */
+  pickSeeColour(p, x, y) {
+    const E = window.WatchEngine, D = this.design() || {}, id = D[p + 'Art'];
+    this.setState({ pickKey: null });
+    if (!id || !E.assetReady(id)) return;
+    const c = document.createElement('canvas'); c.width = c.height = 466;
+    const cx = c.getContext('2d');
+    E.artInDial(cx, id, { x: D[p + 'X'], y: D[p + 'Y'], size: D[p + 'Size'], fit: D[p + 'Fit'], clipR: 0, rot: +D[p + 'Rot'] ? +D[p + 'Rot'] * Math.PI / 180 : 0 });
+    let px = null; try { px = cx.getImageData(Math.max(0, Math.min(465, Math.round(x))), Math.max(0, Math.min(465, Math.round(y))), 1, 1).data; } catch (e) { px = null; }
+    if (!px || px[3] < 8) { this.setState({ status: 'Nothing of that image under that point \u2014 press Pick from the dial and click on its paint' }); return; }
+    const hex = '#' + [px[0], px[1], px[2]].map((v) => v.toString(16).padStart(2, '0')).join('');
+    this.upd((d) => { d[p + 'Key'] = hex; });
+    this.setState({ status: 'See-through colour ' + hex + ', picked off the image' });
+  }
   pickArt(file, slot, apply) {
     const E = window.WatchEngine;
     if (!file) return;
@@ -1865,13 +1892,13 @@ class Component extends DCLogic {
   ptK(e, k) { const r = e.currentTarget.getBoundingClientRect(); const x = ((e.clientX - r.left) / r.width) * 466, y = ((e.clientY - r.top) / r.height) * 466; return [233 + (x - 233) / k, 233 + (y - 233) / k]; }
   pt(e) { const fc = this.face(); return this.ptK(e, ((fc && fc.inset) || 1) * ((fc && fc.dynK) || 1)); }
   ptArt(e) { const fc = this.face(); return this.ptK(e, (fc && fc.inset) || 1); }
-  /* Which of the two art slots a dial drag pans. Asked outright rather than guessed:
-   * both can hold art at once, and quietly moving the wrong one wastes more of the
-   * author's time than one chip does. */
+  /* The art slot a drag on the dial pans: only the one the author switched on with its
+   * "Drag the dial to pan this image" chip. Falling back to any slot that held art made
+   * every click on an art dial a pan and every selection a jump to the art controls, so
+   * the dial's other tools read as gone (owner, 2026-11-05). */
   artSlot() {
-    const D = this.design() || {}, s = this.state.artSlot, has = (p) => !!D[p + 'Art'];
-    if (has(s)) return s;
-    return has('sf') ? 'sf' : has('bg') ? 'bg' : null;
+    const D = this.design() || {}, s = this.state.artSlot;
+    return s && D[s + 'Art'] ? s : null;
   }
   /* Selecting is not only a highlight: the Editing Pane jumps to the pane that can
    * change what was grabbed, because a selected hand under the Dial tab is a tool that
@@ -1888,7 +1915,7 @@ class Component extends DCLogic {
     const D = this.design() || {};
     if (t.kind === 'hand' || t.kind === 'comp') return t.id ? t.kind + '-' + t.id : null;
     // the plate backdrop's controls live on the Movement tab, so only the dial's own slot is a dial target
-    if (t.kind === 'dial') { const p = this.artSlot(); return p === 'sf' && D.sfArt ? 'art-sf' : '#'; }
+    if (t.kind === 'dial') { const p = this.artSlot(); return p && p !== 'bg' ? 'art-' + p : '#'; }
     // the geartrain opens at the top of the Movement tab, the clock insides at its Backdrop
     if (t.kind === 'move') return t.id === 'movement' ? 'move-backdrop' : '#';
     return null;
@@ -1959,6 +1986,7 @@ class Component extends DCLogic {
     const fc = this.face(); if (!fc) return;
     const d = this.now(), [x, y] = this.pt(e);
     if (this.state.calib) { this.calibPoint(x, y); return; }
+    if (this.state.pickKey) { const [ax, ay] = this.ptArt(e); this.pickSeeColour(this.state.pickKey, ax, ay); return; }
     /* Where several things overlap, a second click on the same spot steps down the
      * stack -- the layer picker every design tool has. Without it a 12 o'clock date
      * window is unreachable for the whole life of the seconds hand that sweeps it,
@@ -2317,7 +2345,7 @@ class Component extends DCLogic {
       // an asset can fill both backdrop slots at once; price it in each and report the
       // worst verdict, so sharing one image between plate and dial cannot hide an upscale
       const cands = [];
-      ['bg', 'sf'].forEach((p) => { if (D && id === D[p + 'Art']) { const s = D[p + 'Size'] == null ? 442 : +D[p + 'Size']; cands.push({ box: [s, s], fit: E.assetFits(id, s, s, D[p + 'Fit'] || 'cover') }); } });
+      ['bg', 'sf', 'mk', 'wd'].forEach((p) => { if (D && id === D[p + 'Art']) { const s = D[p + 'Size'] == null ? 442 : +D[p + 'Size']; cands.push({ box: [s, s], fit: E.assetFits(id, s, s, D[p + 'Fit'] || 'cover') }); } });
       if (!cands.length) cands.push({ box: [a.w, a.h], fit: E.assetFits(id, a.w, a.h, 'contain') });
       const pick = cands.filter((q) => !q.fit.ok)[0] || cands[0];
       const box = pick.box, fit = pick.fit;
@@ -3973,33 +4001,49 @@ class Component extends DCLogic {
       const surf = D.surface || 'enamel', ud = (k) => (v) => this.upd((d) => { d[k] = v; });
       const id = D[p + 'Art'] || null, a = id && E.assetGet(id);
       const box = D[p + 'Size'] == null ? 442 : +D[p + 'Size'];
-      const zm = D[p + 'Zoom'] == null ? 1 : +D[p + 'Zoom'];
       const rot = Math.round(+D[p + 'Rot'] || 0);
       const bm = D[p + 'FinishBlend'] || 'off';
-      const fits = id ? E.assetFits(id, box, box, D[p + 'Fit'] || 'cover', zm) : null;
-      const drop = () => this.upd((d) => { [p + 'Art', p + 'Fit', p + 'Zoom', p + 'X', p + 'Y', p + 'Size', p + 'Opacity', p + 'Rot', p + 'FinishBlend', p + 'FinishColor', p + 'FinishKey', p + 'FinishKeyTol'].forEach((k) => delete d[k]); });
+      const fits = id ? E.assetFits(id, box, box, D[p + 'Fit'] || 'cover', 1) : null;
+      const drop = () => { this.upd((d) => { [p + 'Art', p + 'Fit', p + 'Zoom', p + 'X', p + 'Y', p + 'Size', p + 'Opacity', p + 'Rot', p + 'FinishBlend', p + 'FinishColor', p + 'FinishKey', p + 'FinishKeyTol', p + 'Key', p + 'KeyTol', p + 'KeyEdge'].forEach((k) => delete d[k]); }); if (this.state.artSlot === p || this.state.pickKey === p) this.setState({ artSlot: null, pickKey: null }); };
       const out = [H(title, 'art-' + p),
         Fi('Image', (e) => {
           const file = e.target.files && e.target.files[0]; if (!file) return;
-          this.pickArt(file, title.split(' · ')[0].toLowerCase(), (aid) => this.upd((d) => { d[p + 'Art'] = aid; }));
+          // an image whose paint sits inside transparent margins (an SVG on a bigger canvas)
+          // snaps to the dial as it lands; a full-bleed picture keeps the cover fit
+          this.pickArt(file, title.split(' · ')[0].toLowerCase(), (aid) => this.upd((d) => {
+            d[p + 'Art'] = aid;
+            const r = E.artSnap(aid, d[p + 'Fit'] || 'cover', null, d[p + 'Rot']);
+            if (r && r.margin) { d[p + 'Size'] = r.size; d[p + 'X'] = r.x; d[p + 'Y'] = r.y; }
+          }));
         }, id ? (E.assetReady(id) ? 'loaded' : 'missing') : 'none yet')];
       if (!id) { out.push(Nt('', blurb)); return out; }
       out.push(Sl('Fit', D[p + 'Fit'] || 'cover', [{ v: 'cover', label: 'Cover · fill the dial, crop the overflow' }, { v: 'contain', label: 'Contain · whole image inside the dial' }, { v: 'stretch', label: 'Stretch · ignore the aspect' }], ud(p + 'Fit')),
         Rg('Offset X', +D[p + 'X'] || 0, -220, 220, 1, ud(p + 'X'), (+D[p + 'X'] || 0) + 'px'),
         Rg('Offset Y', +D[p + 'Y'] || 0, -220, 220, 1, ud(p + 'Y'), (+D[p + 'Y'] || 0) + 'px'),
-        Rg('Size', box, 60, 940, 1, ud(p + 'Size'), box + 'px'),
-        // Zoom is separate from Size because Size is the box the FIT works in: at
-        // cover, enlarging Size enlarges the crop window and the visible content
-        // together, while Zoom keeps the framing and resamples the art about the
-        // centre. The dial clip is applied after both, so a zoomed image still
-        // cannot cross the rehaut.
-        Rg('Zoom', zm, 0.2, 4, 0.01, ud(p + 'Zoom'), zm.toFixed(2) + '\u00d7'),
+        // one scale: the box the Fit works in. A separate Zoom multiplied into the same box and
+        // did nothing Size could not (owner, 2026-11-05); canonDesign folds an old one in here
+        Rg('Size', box, 60, 1880, 1, ud(p + 'Size'), box + 'px'),
         // Rotation turns the picture about its own centre, the same point the pan
         // offsets carry: aim an artwork that was scanned crooked without touching
         // Size or Offset, and the guide's dashed frame turns with it.
         Rg('Rotate', rot, 0, 359, 1, ud(p + 'Rot'), rot + '\u00b0'),
         Rg('Opacity', D[p + 'Opacity'] == null ? 1 : +D[p + 'Opacity'], 0, 1, 0.01, ud(p + 'Opacity'), Math.round((D[p + 'Opacity'] == null ? 1 : +D[p + 'Opacity']) * 100) + '%'));
-      if (rot) out.push(Nt('', 'A rotated cover image can bring its edge inside the dial: raise Size or Zoom until the corners are covered again.'));
+      if (rot) out.push(Nt('', 'A rotated cover image can bring its edge inside the dial: raise Size until the corners are covered again.'));
+      /* The see-through colour: the art's pixels near it go clear, so a markings image on a
+       * white sheet lets the dial show through, or a whole dial opens onto the movement. Two
+       * absolute distances from the colour, neither moving the other: Clear within is the
+       * background, Solid beyond is ink, and between them the engine reads an antialiased
+       * mix -- part-clear, with the key colour taken back out of it (E.seeThrough). */
+      if (p !== 'bg') {
+        const kt = D[p + 'KeyTol'] == null ? E.SEE_TOL_DEF : +D[p + 'KeyTol'], ke = D[p + 'KeyEdge'] == null ? E.SEE_EDGE_DEF : +D[p + 'KeyEdge'];
+        const picking = this.state.pickKey === p;
+        out.push(Co('See-through colour', D[p + 'Key'], (v) => this.upd((d) => { d[p + 'Key'] = /^#[0-9a-f]{6}$/i.test(v) ? v : 'none'; }), null, p + 'see', { none: true, noAuto: true }),
+          mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'pick', label: picking ? 'Click the image on the dial \u00b7 press to cancel' : 'Pick from the dial', bg: '#1c2330', bd: picking ? '#58a6ff' : '#2b3540', fg: '#e6edf3', pick: () => this.setState({ pickKey: picking ? null : p }) }] }),
+          Nt('', isHexColor(D[p + 'Key'])
+            ? 'Within ' + kt + ' of ' + D[p + 'Key'] + ' is clear, from ' + ke + ' out is solid, and between them the edge is antialiased, so ' + (p === 'wd' ? 'the movement shows through.' : p === 'mk' ? 'the dial under the markings shows through.' : 'the dial\u2019s own surface shows through.')
+            : 'Optional. Pick the colour of the image\u2019s background (white for a printed sheet) off the dial, or set it here, to make it see-through.'));
+        if (isHexColor(D[p + 'Key'])) out.push(Rg('Clear within', kt, 0, 255, 1, ud(p + 'KeyTol'), kt + ' / 255'), Rg('Solid beyond', ke, 0, 255, 1, ud(p + 'KeyEdge'), ke <= kt ? ke + ' / 255 \u00b7 hard edge' : ke + ' / 255'));
+      }
       /* The surface finish the dial would wear with no art (Surface, under Colour) is
        * drawn UNDER the picture, so an opaque image buries it. This lays the texture
        * back over the art in one composite pass, tinted to the author's target colour:
@@ -4007,7 +4051,7 @@ class Component extends DCLogic {
        * texture at all, so the control appears for the six finishes that have one --
        * the four engine-turned ones and both carbons, whose weave/flake relief and
        * sheen are replayed as the mask instead of their own greyscale. */
-      if (['guilloche', 'azure', 'metal', 'matte', 'carbon', 'forged'].indexOf(surf) >= 0) {
+      if ((p === 'sf' || p === 'bg') && ['guilloche', 'azure', 'metal', 'matte', 'carbon', 'forged'].indexOf(surf) >= 0) {
         out.push(Ch('Finish blend', bm, [{ v: 'off', label: 'Off \u00b7 art lies flat' }, { v: 'multiply', label: 'Multiply \u00b7 texture pressed in' }, { v: 'screen', label: 'Screen \u00b7 texture brushed on' }, { v: 'overlay', label: 'Overlay \u00b7 both' }], ud(p + 'FinishBlend')));
         // the number the engine itself falls back to, read off the engine, so the
         // slider label and the render cannot drift apart
@@ -4028,13 +4072,15 @@ class Component extends DCLogic {
       }
       const line = !E.assetReady(id) ? 'No bytes for ' + id + ' in this browser — open the library entry or theme that carries the art.'
         : fits && fits.ok ? price : fits.why;
-      out.push(Nt('', a ? a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' source into a ' + Math.round(box * zm) + '×' + Math.round(box * zm) + ' box' + (zm !== 1 ? ' at ' + zm.toFixed(2) + ' zoom' : '') + ' · ' + Math.round(a.dataUrl.length / 1024) + ' KB · ' + line : line),
-        mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'drag', label: (this.state.artSlot === p ? 'Dragging the dial pans THIS slot' : 'Drag the dial to pan this slot'), bg: this.state.artSlot === p ? '#1c2330' : '#1c2330', bd: this.state.artSlot === p ? '#58a6ff' : '#2b3540', fg: '#e6edf3', pick: () => this.setState({ artSlot: p, guide: 'on' }) }, { v: 'x', label: 'Remove this image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: drop }] }));
+      out.push(Nt('', a ? a.name + ' · ' + a.kind + ' · ' + a.w + '×' + a.h + ' source into a ' + box + '×' + box + ' box · ' + Math.round(a.dataUrl.length / 1024) + ' KB · ' + line : line),
+        mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'snap', label: 'Snap to dial', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: () => this.snapArt(p) }, { v: 'drag', label: (this.state.artSlot === p ? 'Dragging the dial pans this image \u00b7 press to stop' : 'Drag the dial to pan this image'), bg: '#1c2330', bd: this.state.artSlot === p ? '#58a6ff' : '#2b3540', fg: '#e6edf3', pick: () => this.setState(this.state.artSlot === p ? { artSlot: null } : { artSlot: p, guide: 'on' }) }, { v: 'x', label: 'Remove this image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: drop }] }));
       return out;
     };
     if (ready && s.tab === 'dial') {
       const ud = (k) => (v) => this.upd((d) => { d[k] = v; });
       const pr = D.print || 'roman', col = D.color || 'cream', surf = D.surface || 'enamel';
+      // the whole-dial slot draws the face itself, so say so above the controls it overrides
+      if (D.wdArt && E.assetReady(D.wdArt)) fields.push(Nt('', 'A whole-dial image is on (Whole dial, below): the colour, surface, print, numerals, markers and the painted surface and markings slots are not drawn while it is; wear still lies over it. Remove that image to bring them back.'));
       fields.push(H('Face'),
         // D43 P5d.2: the dial's own direction -- its chapter and ring print mirrored, its hands following
         Ch('Direction', D.dir === 'ccw' ? 'ccw' : 'cw', [{ v: 'cw', label: 'Clockwise' }, { v: 'ccw', label: 'Anticlockwise' }], (v) => this.upd((d) => { if (v === 'ccw') d.dir = 'ccw'; else delete d.dir; })),
@@ -4108,9 +4154,23 @@ class Component extends DCLogic {
        * the one static1 layer compose() draws every frame -- so the art changes pixels
        * in an existing layer instead of adding a live plane (217,156 blends at the
        * measured 447 ns would be 97 ms of a 125 ms tick). */
-      fields.push.apply(fields, artBlock('sf', 'Dial surface art · on the dial, under the print',
-        'No dial art: the procedural surface is drawn. A PNG or SVG prints on the dial face, over the surface material and under the chapter ring, numerals and applied markers, which you can still set yourself on this tab. Openwork and the apertures cut through it.',
-        'Baked into the dial sprite: that layer is already blended every tick, so the art is free.'));
+      /* Three dial slots, bottom to top, each with its own image (owner, 2026-11-05):
+       *   sf -- Painted surface: the dial's material, over the surface and under everything,
+       *         with the surface finish blendable back over it (a shiny disc from a picture).
+       *   mk -- Markings: a print over the painted surface and under the dial's own print,
+       *         usually on a sheet whose colour goes see-through.
+       *   wd -- Whole dial: the finished face. The dial draws nothing of its own under it.
+       * All three bake into the one dial sprite the device already blends every tick. */
+      const free = 'Baked into the dial sprite: that layer is already blended every tick, so the art is free.';
+      fields.push.apply(fields, artBlock('sf', 'Painted surface · the dial\u2019s material, under everything',
+        'No painted surface: the procedural surface is drawn. A PNG or SVG becomes the dial\u2019s material, under the markings, the chapter ring, numerals and applied markers. With a textured Surface (sunburst, metal, carbon\u2026) its finish can be blended back over the picture.',
+        free));
+      fields.push.apply(fields, artBlock('mk', 'Markings · printed over the surface, under the dial\u2019s own print',
+        'No markings image. A PNG or SVG of ticks, numerals or a logo prints over the surface (and any painted surface). Pick its background colour as the See-through colour to let the dial show through. Set Print to None on this tab to use your markings alone, or keep both.',
+        free));
+      fields.push.apply(fields, artBlock('wd', 'Whole dial · the finished face',
+        'No whole-dial image. A finished dial face replaces everything the dial draws itself: the surface and the two slots above, the chapter print, numerals, applied markers and the perimeter ring. Wear still lies over it, and openings, sub-dials, windows, flares and hands still go on top, and a See-through colour opens the dial onto the movement.',
+        free));
       const W = { aging: D.aging == null ? 1 : +D.aging, stains: D.stains == null ? 1 : +D.stains, dust: D.dust == null ? 1 : +D.dust };
       const wp = { New: [0, 0, 0], Light: [0.3, 0.15, 0.4], Vintage: [1, 1, 1], Relic: [1.5, 1.5, 1.5] };
       const cur = Object.keys(wp).find((k) => wp[k][0] === W.aging && wp[k][1] === W.stains && wp[k][2] === W.dust) || '';
@@ -4307,7 +4367,7 @@ class Component extends DCLogic {
     return {
       metaLabel: '466 × 466 · ' + (DEV < F ? '~' + DEV + ' fps (bank ' + F + ')' : F + ' fps') + ' · ' + B + '-frame bank · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
       ...this.viewVals(),
-      mainRef: this.mainRef, paneRef: this.paneRef, cursor: this.drag ? 'grabbing' : 'pointer',
+      mainRef: this.mainRef, paneRef: this.paneRef, cursor: this.state.pickKey ? 'crosshair' : this.drag ? 'grabbing' : 'pointer',
       onDown: (e) => this.onDown(e), onMove: (e) => this.onMove(e), onUp: () => this.onUp(), stageDown: (e) => this.stageDown(e),
       /* The two ways out of selection noise: a button because Escape is invisible, and a
        * guide toggle because "off means off" has to be the author's, not the component's

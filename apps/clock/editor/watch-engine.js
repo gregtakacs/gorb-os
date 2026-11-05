@@ -405,16 +405,30 @@
    * the composer draws the case: under "none" the author's own image carries the device's
    * metal, and clipping it to the dial circle would cut their case off and leave a black
    * ring in its place -- so the clip opens to the whole panel and their pixels decide where
-   * the watch ends. Both backdrop slots (plate and dial surface) draw through here so they
-   * behave identically. Returns false when the id has no bytes, letting the caller report
-   * the gap instead of shipping a blank layer. */
+   * the watch ends. Every art slot (plate backdrop, painted surface, markings, whole dial)
+   * draws through here so they behave identically. Returns false when the id has no bytes,
+   * letting the caller report the gap instead of shipping a blank layer.
+   * o.see: {color, tol, soft} -- a see-through colour. The art is drawn on a layer of its
+   * own first and the key erases from that layer alone, so what it opens shows whatever
+   * lies under the art (the surface, a painted surface, or the movement under a whole dial),
+   * never a hole punched through them. */
   function artInDial(ctx, id, o) {
     if (!id || !assetReady(id)) return false;
     ctx.save();
     const r = o.clipR == null ? DR : +o.clipR;
     if (r > 0) { ctx.beginPath(); ctx.arc(C, C, r, 0, TAU); ctx.clip(); }
-    const drew = drawAsset(ctx, id, { x: C + (+o.x || 0), y: C + (+o.y || 0), w: o.size == null ? 2 * DR : +o.size, h: o.size == null ? 2 * DR : +o.size,
+    const see = o.see && isHex(o.see.color) ? o.see : null, lay = see ? cv(S) : null, dst = lay ? lay.getContext('2d') : ctx;
+    const drew = drawAsset(dst, id, { x: C + (+o.x || 0), y: C + (+o.y || 0), w: o.size == null ? 2 * DR : +o.size, h: o.size == null ? 2 * DR : +o.size,
       fit: o.fit || 'cover', zoom: o.zoom, alpha: o.opacity == null ? 1 : +o.opacity, rot: o.rot });
+    if (drew && lay) {
+      const kn = parseInt(String(see.color).slice(1), 16);
+      try {
+        const im = dst.getImageData(0, 0, S, S);
+        seeThrough(im.data, kn >> 16, (kn >> 8) & 255, kn & 255, see.tol == null ? SEE_TOL_DEF : +see.tol, see.edge == null ? SEE_EDGE_DEF : +see.edge);
+        dst.putImageData(im, 0, 0);
+      } catch (e) { /* a tainted canvas keeps the art whole: drawn, just not keyed */ }
+      ctx.drawImage(lay, 0, 0);
+    }
     // The surface finish the dial would have worn without the art, laid back over it.
     // surface() prints UNDER the art, so an opaque image buries the texture; this is the
     // author's way to press it in (multiply), brush it on (screen) or both (overlay).
@@ -423,6 +437,30 @@
     return drew;
   }
   const FINISH_BLENDS = ['multiply', 'screen', 'overlay'];
+  /* The see-through key's defaults, in 8-bit units of the widest channel gap from the key
+   * colour. Two absolute distances, so moving one never moves the other (owner, 2026-11-05):
+   * within TOL a texel is the background and goes clear; from EDGE out it is ink and stays
+   * as drawn; between them it is an antialiased mix of the two. */
+  const SEE_TOL_DEF = 24, SEE_EDGE_DEF = 160;
+  /* The key as a chroma key does it. A mixed texel P is read as coverage t of ink over the
+   * key K, t running 0 at tol to 1 at edge: its alpha becomes t, and the key is taken back
+   * out of its colour (ink = K + (P - K) / t), so a grey edge pixel between a black tick and
+   * a white sheet becomes a part-covered BLACK pixel -- an antialiased edge, not a light rim.
+   * edge <= tol is a hard cut. Pure data, so the suite can assert the ramp itself. */
+  function seeThrough(px, kr, kg, kb, tol, edge) {
+    tol = Math.max(0, +tol || 0); edge = Math.max(0, +edge || 0);
+    const K = [kr, kg, kb], span = edge - tol;
+    for (let i = 0; i < px.length; i += 4) {
+      if (!px[i + 3]) continue;
+      const d = Math.max(Math.abs(px[i] - kr), Math.abs(px[i + 1] - kg), Math.abs(px[i + 2] - kb));
+      if (d <= tol) { px[i + 3] = 0; continue; }
+      if (span <= 0 || d >= edge) continue;
+      const t = (d - tol) / span;
+      for (let c = 0; c < 3; c++) px[i + c] = Math.max(0, Math.min(255, Math.round(K[c] + (px[i + c] - K[c]) / t)));
+      px[i + 3] = Math.round(px[i + 3] * t);
+    }
+    return px;
+  }
   /* Per-channel window, in 8-bit units, that a colour-key default opens: wide enough to
    * take the antialiased rim of the keyed region, narrow enough to leave a neighbouring
    * tone of the art alone. The composer's slider covers 0-128. */
@@ -604,6 +642,33 @@
       if (px < x0) x0 = px; if (px > x1) x1 = px; if (py < y0) y0 = py; if (py > y1) y1 = py;
     }
     return x1 < 0 ? [0, 0, w, h] : [x0, y0, x1 + 1, y1 + 1];
+  }
+  /* Snap an art slot to the dial: the Size and offset that lay the image's VISIBLE paint
+   * (alpha, after the slot's see-through colour) across the dial's diameter, centred, at the
+   * slot's fit and rotation. An SVG drawn on a larger canvas (a 600 box holding a 534 disc)
+   * then fills the dial instead of floating inside it. margin says the paint is smaller than
+   * the image, which is when the composer snaps on upload by itself; a full-bleed picture
+   * keeps the cover fit. Measured on a copy at most 1024 px on its long side. */
+  function artSnap(id, fit, see, rotDeg) {
+    const a = assetGet(id);
+    if (!a || !a.el || !(a.w > 0 && a.h > 0)) return null;
+    const q = Math.min(1, 1024 / Math.max(a.w, a.h)), n = cv(Math.max(1, Math.round(a.w * q)), Math.max(1, Math.round(a.h * q)));
+    const x = n.getContext('2d');
+    try { x.drawImage(a.el, 0, 0, n.width, n.height); } catch (e) { return null; }
+    if (see && isHex(see.color)) {
+      try {
+        const im = x.getImageData(0, 0, n.width, n.height), kn = parseInt(String(see.color).slice(1), 16);
+        seeThrough(im.data, kn >> 16, (kn >> 8) & 255, kn & 255, see.tol == null ? SEE_TOL_DEF : +see.tol, see.edge == null ? SEE_EDGE_DEF : +see.edge);
+        x.putImageData(im, 0, 0);
+      } catch (e) { /* unkeyed measure */ }
+    }
+    const b = inkBoundsOf(n), x0 = b[0] / q, y0 = b[1] / q, x1 = b[2] / q, y1 = b[3] / q, iw = x1 - x0, ih = y1 - y0;
+    if (!(iw > 0 && ih > 0)) return null;
+    const k = 2 * DR / Math.max(iw, ih);                 // drawn px per source px
+    const size = Math.round(k * (fit === 'contain' || fit === 'stretch' ? Math.max(a.w, a.h) : Math.min(a.w, a.h)));
+    const cx = ((x0 + x1) / 2 - a.w / 2) * k, cy = ((y0 + y1) / 2 - a.h / 2) * k, r = (+rotDeg || 0) * Math.PI / 180;
+    return { size, x: Math.round(-(cx * Math.cos(r) - cy * Math.sin(r))), y: Math.round(-(cx * Math.sin(r) + cy * Math.cos(r))),
+      margin: iw < a.w * 0.98 || ih < a.h * 0.98 };
   }
   /* The hand's length in source pixels: the farthest visible ink measured along
    * the direction the device will point this art, from the arbour. That slice --
@@ -2101,9 +2166,37 @@
     });
     return () => undo.forEach((u) => u());
   }
+  /* One art slot's placement as artInDial takes it, the see-through key included. */
+  function slotArt(D, p, clipR) {
+    return { x: D[p + 'X'], y: D[p + 'Y'], size: D[p + 'Size'], fit: D[p + 'Fit'], zoom: D[p + 'Zoom'], opacity: D[p + 'Opacity'], clipR: clipR,
+      rot: +D[p + 'Rot'] ? +D[p + 'Rot'] * Math.PI / 180 : 0, see: { color: D[p + 'Key'], tol: D[p + 'KeyTol'], edge: D[p + 'KeyEdge'] } };
+  }
+  /* The whole-dial slot: the author's image IS the dial. The surface, the painted surface
+   * and markings slots, the chapter print, numerals, applied markers and the perimeter ring
+   * are all the dial drawing itself, so none of them is drawn; the wear lies over the art as
+   * it lies over a drawn dial's print (owner, 2026-11-05), and what the dial carries on top
+   * of any dial -- openwork, flares, the apertures it cuts for its windows and openings, the
+   * bars -- still is. Under it is nothing: a see-through colour in the art
+   * shows the movement through the dial. A whole-dial image with no bytes in this browser
+   * falls back to the dial the design otherwise describes. */
+  const wholeDial = (D) => !!(D.wdArt && assetReady(D.wdArt));
+  function buildWholeDial(D, lay, en, pal, glow, seal, clipR, kk) {
+    const c = cv(S), ctx = c.getContext('2d');
+    artInDial(ctx, D.wdArt, slotArt(D, 'wd', clipR));     // the art is never eased in by the opening lens
+    if (kk !== 1) { ctx.save(); ctx.translate(C, C); ctx.scale(kk, kk); ctx.translate(-C, -C); }
+    weather(ctx, C, C, lay.wearIn || 0, DR, 57, en, wearOf(D), 1.5 * (lay.wearIn ? 1 : 0.75));
+    if (D.openwork && D.openwork !== 'none') openwork(ctx, D, lay);
+    const thost = {}; lay.subs.forEach((sb) => { if (sb.transparent) thost[sb.id] = 1; });
+    drawFlares(ctx, lay.flares.filter((f) => (f.host === 'dial' || thost[f.host]) && f.icon !== 'datetext'), en, pal);
+    cutHoles(ctx, seal ? lay.dialHoles.filter((h) => !h.seal) : lay.dialHoles, pal, glow);
+    drawBars(ctx, (lay.bars || {}).dial);
+    if (kk !== 1) ctx.restore();
+    return { canvas: c, en };
+  }
   function buildDial(D, lay, baseEn, pal, glow, seal, clipR, dynK) {
     const _en = surfaceEn(colorEn(baseEn, D.color), D.surface);
     const kk = dynK == null ? 1 : +dynK;
+    if (wholeDial(D)) return buildWholeDial(D, lay, _en, pal, glow, seal, clipR, kk);
     if (kk !== 1) return buildDialLens(D, lay, _en, pal, glow, seal, clipR, kk);
     const c = cv(S), ctx = c.getContext('2d'), en = _en;
     surface(ctx, { x: C, y: C, r: DR, style: D.surface || 'enamel', tex: D.texture, weave: { ang: D.weaveAngle, sc: D.weaveScale } }, en, 11, false);
@@ -2114,7 +2207,9 @@
      * rather than a picture laid on top. Costs nothing per tick: compose() already
      * blends this one canvas, so the art only changes pixels in a layer that exists. */
     artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity, clipR: clipR,
-      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, keyColor: D.sfFinishKey, keyTol: D.sfFinishKeyTol, seed: 11, weave: { ang: D.weaveAngle, sc: D.weaveScale } } });
+      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, keyColor: D.sfFinishKey, keyTol: D.sfFinishKeyTol, seed: 11, weave: { ang: D.weaveAngle, sc: D.weaveScale } },
+      see: { color: D.sfKey, tol: D.sfKeyTol, edge: D.sfKeyEdge } });
+    artInDial(ctx, D.mkArt, slotArt(D, 'mk', clipR));   // the markings slot: over the painted surface, under the print
     const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
     // The perimeter ring lives at the rim, so the chapter print must pull inward to clear
     // it. Scale BOTH the ink context and the numeral-mask context by the same factor about
@@ -2162,7 +2257,9 @@
     const unlens = () => { ctx.restore(); };
     lens(); surface(ctx, { x: C, y: C, r: DR, style: D.surface || 'enamel', tex: D.texture, weave: { ang: D.weaveAngle, sc: D.weaveScale } }, en, 11, false); unlens();
     artInDial(ctx, D.sfArt, { x: D.sfX, y: D.sfY, size: D.sfSize, fit: D.sfFit, zoom: D.sfZoom, opacity: D.sfOpacity, clipR: clipR,
-      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, keyColor: D.sfFinishKey, keyTol: D.sfFinishKeyTol, seed: 11, weave: { ang: D.weaveAngle, sc: D.weaveScale } } });
+      rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, keyColor: D.sfFinishKey, keyTol: D.sfFinishKeyTol, seed: 11, weave: { ang: D.weaveAngle, sc: D.weaveScale } },
+      see: { color: D.sfKey, tol: D.sfKeyTol, edge: D.sfKeyEdge } });
+    artInDial(ctx, D.mkArt, slotArt(D, 'mk', clipR));   // the markings slot: over the painted surface, under the print
     const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
     // chapter print and its holes go through the lens together -- the same pair perimK scales
     const pk = perimK(D), pkd = pk * kk, holes = lay.dialHoles;
@@ -4126,7 +4223,7 @@
       // image keeps its authored reach while the drawn face eases inward, so its pixels
       // stay clickable out to the panel edge, not just inside the shrunk dial circle.
       const r = Math.hypot(x - C, y - C);
-      const artLive = o.caseStyle === 'none' && (assetReady(design.sfArt) || assetReady(o.bgArt));
+      const artLive = o.caseStyle === 'none' && (assetReady(design.sfArt) || assetReady(design.mkArt) || assetReady(design.wdArt) || assetReady(o.bgArt));
       if (r <= DR || (artLive && r * (F.dynK || 1) <= PANEL_R)) out.push({ kind: 'dial', id: 'dial' });
       return out;
     };
@@ -4489,11 +4586,14 @@
      * deleted on purpose, so an untouched watch serialises to the same design. */
     const blank = (v) => v == null || v === '';
     const stripArt = (p, defSize) => {
-      const keys = [p + 'Art', p + 'Fit', p + 'X', p + 'Y', p + 'Size', p + 'Opacity', p + 'Rot', p + 'FinishBlend', p + 'FinishColor', p + 'FinishKey', p + 'FinishKeyTol'];
+      const keys = [p + 'Art', p + 'Fit', p + 'X', p + 'Y', p + 'Size', p + 'Zoom', p + 'Opacity', p + 'Rot', p + 'FinishBlend', p + 'FinishColor', p + 'FinishKey', p + 'FinishKeyTol', p + 'Key', p + 'KeyTol', p + 'KeyEdge'];
       if (blank(d[p + 'Art'])) { keys.forEach((k) => delete d[k]); return; }
       if (!d[p + 'Fit'] || d[p + 'Fit'] === 'cover') delete d[p + 'Fit'];
       [p + 'X', p + 'Y'].forEach((k) => { if (+d[k] === 0 || blank(d[k])) delete d[k]; });
-      if (blank(d[p + 'Zoom']) || +d[p + 'Zoom'] === 1) delete d[p + 'Zoom'];   // 1 is the identity: a design that never zooms must not read as a different one
+      // Zoom was a second scale on top of Size (the engine draws Size x Zoom), so a design that
+      // carries one folds it into Size and the field goes (owner, 2026-11-05): one slider
+      if (!blank(d[p + 'Zoom']) && +d[p + 'Zoom'] > 0 && +d[p + 'Zoom'] !== 1) d[p + 'Size'] = Math.round((blank(d[p + 'Size']) ? defSize : +d[p + 'Size']) * +d[p + 'Zoom']);
+      delete d[p + 'Zoom'];
       if (blank(d[p + 'Size']) || +d[p + 'Size'] === defSize) delete d[p + 'Size'];
       if (blank(d[p + 'Opacity']) || +d[p + 'Opacity'] === 1) delete d[p + 'Opacity'];
       if (blank(d[p + 'Rot']) || +d[p + 'Rot'] === 0) delete d[p + 'Rot'];       // 0° is the identity, same rule as the zoom
@@ -4507,9 +4607,19 @@
       const tol = d[p + 'FinishKeyTol'];
       if (!d[p + 'FinishKey'] || tol === '' || tol == null || !(+tol >= 0) || +tol > 128) delete d[p + 'FinishKeyTol'];
       else d[p + 'FinishKeyTol'] = Math.round(+tol);
+      // the see-through colour, and its clear and solid distances, each only under its
+      // parent; an absent number means the engine default (SEE_TOL_DEF, SEE_EDGE_DEF)
+      if (!isHex(d[p + 'Key'])) delete d[p + 'Key'];
+      [p + 'KeyTol', p + 'KeyEdge'].forEach((k) => {
+        const v = d[k];
+        if (!d[p + 'Key'] || v === '' || v == null || !(+v >= 0) || +v > 255) delete d[k];
+        else d[k] = Math.round(+v);
+      });
     };
     stripArt('bg', 442);
     stripArt('sf', 442);
+    stripArt('mk', 442);    // markings: over the painted surface, under the print
+    stripArt('wd', 442);    // the whole dial: replaces everything the dial draws itself
     if (!d.handLume || d.handLume === 'none' || d.handLume === 'auto') delete d.handLume;
     if (!d.handShade || d.handShade === '3d') delete d.handShade;
     if (d.surface !== 'carbon') delete d.weaveAngle; else if (d.weaveAngle != null && +d.weaveAngle === 0) delete d.weaveAngle;
@@ -4667,5 +4777,5 @@
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,
-    drawAsset, artInDial, finishOver, finishTex, keyMask, KEY_TOL_DEF, FINISH_BLENDS, handSpriteAsset, artBox, caseOpenR, faceScale, dynScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handXY, handZeroDeg, MOTION_PATHS, CADENCES, DRIVE_DOM, motionOn, driveUnits, motionPose, slideGeom, easeOf, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
+    drawAsset, artInDial, finishOver, finishTex, keyMask, KEY_TOL_DEF, seeThrough, artSnap, SEE_TOL_DEF, SEE_EDGE_DEF, FINISH_BLENDS, handSpriteAsset, artBox, caseOpenR, faceScale, dynScale, artClipR, PANEL_R, CASE_OPEN_MIN, CASE_OPEN_MAX, handHit, handAngle, handXY, handZeroDeg, MOTION_PATHS, CADENCES, DRIVE_DOM, motionOn, driveUnits, motionPose, slideGeom, easeOf, inkCentroidOf, sha256Of, assetBytesOf: bytesOf, ASSETS, INVISIBLE_ALPHA, MAX_ASSET_BYTES, ASSET_TOTAL_BYTES };
 })();

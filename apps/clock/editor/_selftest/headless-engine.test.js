@@ -181,7 +181,19 @@ setTimeout(() => {
     const dArgs = drawn.getContext('2d').draws.slice(-1)[0].args;
     ok(Math.abs(dArgs[2] - abz.w) < 1e-6 && Math.abs(dArgs[3] - abz.h) < 1e-6, 'and the guide box is the box drawAsset paints: one implementation, no drift', JSON.stringify([dArgs, abz.w, abz.h]));
     ok(!('sfZoom' in E.canonDesign({ sfArt: 'alpha-1', sfZoom: 1 })), 'a zoom of 1 is the identity and does not reach the Design ID');
-    ok(E.canonDesign({ sfArt: 'alpha-1', sfZoom: 1.4 }).sfZoom === 1.4, 'a real zoom is authored and shipped');
+    const z = E.canonDesign({ sfArt: 'alpha-1', sfZoom: 1.4 });
+    ok(!('sfZoom' in z) && z.sfSize === Math.round(442 * 1.4), 'an old zoom folds into Size, the one scale an art slot keeps (owner, 2026-11-05)', JSON.stringify(z));
+    ok(E.canonDesign({ sfArt: 'alpha-1', sfSize: 300, sfZoom: 2 }).sfSize === 600, 'over an authored Size too');
+    const k = E.canonDesign({ mkArt: 'alpha-1', mkKey: '#FFFFFF', mkKeyTol: 10.4, mkKeyEdge: 300 });
+    ok(k.mkKey === '#FFFFFF' && k.mkKeyTol === 10 && !('mkKeyEdge' in k), 'a see-through colour keeps its clear distance, rounded, and drops an out-of-range solid one', JSON.stringify(k));
+    ok(!('wdKeyTol' in E.canonDesign({ wdArt: 'alpha-1', wdKeyTol: 20 })), 'a window with no see-through colour is not a choice');
+    // white key, clear within 24, solid from 160: white and near-white clear; a grey edge pixel is
+    // read as part-covered ink with the white taken back out (a dark pixel, part clear); black stays
+    const px = E.seeThrough(new Uint8ClampedArray([255, 255, 255, 255, 240, 240, 240, 255, 128, 128, 128, 255, 0, 0, 0, 255]), 255, 255, 255, 24, 160);
+    ok(px[3] === 0 && px[7] === 0 && px[15] === 255 && px[12] === 0, 'see-through: clear within the window, ink past the solid distance untouched', Array.from(px).join(','));
+    ok(px[11] === Math.round(255 * (127 - 24) / 136) && px[8] < 60, 'and an edge pixel between them is antialiased ink, not a light rim: part clear, its colour unmixed from the key', Array.from(px.slice(8, 12)).join(','));
+    const hard = E.seeThrough(new Uint8ClampedArray([128, 128, 128, 255]), 255, 255, 255, 24, 24);
+    ok(hard[3] === 255 && hard[0] === 128, 'solid at or inside clear is a hard edge: only the clear window acts', Array.from(hard).join(','));
     /* ---- the arbour outside the ink ----------------------------------------------
      * A hand whose hub hides under a subdial has a pivot with no ink under it. The
      * old code threw that number away and used the centroid, so the author could never

@@ -15,6 +15,10 @@ behaviour the view and the feed lean on:
   select    by hex, so a re-sort does not move the highlight; wraps both ways
   boost     emergency squawk, within 5 nm, low and closing; not low and
             opening, not far, not on the ground
+  stack     the nearest contacts seated, then lowest first: ground, no altitude, by
+            feet, the nearer first at a tie (§12.5: a higher aircraft flies over)
+  card      a card that keeps clear: home, mirrored while its contact is under it,
+            home again only past twice the margin, held in between
   route     airline callsigns only; adsbdb's answer parsed (IATA, else ICAO;
             unknown callsigns and null airports refused); shown only when the
             aircraft is plausibly on it (the bench's stale Envoy 3776 is not)
@@ -245,6 +249,39 @@ int main(void)
     CHECK(fm_route_plausible(&aal, 33.3, -77.5, 200.0f, NAN), "route: mid-route heading for the destination is on it");
     CHECK(!fm_route_plausible(&aal, 33.3, -77.5, 20.0f, NAN), "route: mid-route heading back the way it came is not");
 
+    /* ---- stack: the nearest `max` drawn, lowest first ---- */
+    {
+        static fm_t st;
+        memset(&st, 0, sizeof st);
+        const int alt[6] = { 30000, 0, 5000, -1, 5000, 41000 };    /* -1: no altitude; 0 with ground set */
+        for (int i = 0; i < 6; i++) {
+            st.t[i].ac = ac("s", 0, 0, alt[i] < 0 ? 0 : alt[i], i == 1);
+            st.t[i].ac.has_alt = alt[i] >= 0;
+            st.order[i] = i;                                       /* nearest first: 0 is nearest */
+        }
+        st.norder = 6;
+        int idx[8];
+        int n = fm_stack(&st, 8, idx);
+        CHECK(n == 6 && idx[0] == 1 && idx[1] == 3 && idx[2] == 2 && idx[3] == 4 && idx[4] == 0 && idx[5] == 5,
+              "stack: ground, no altitude, then by feet, the nearer first at a tie");
+        n = fm_stack(&st, 3, idx);
+        CHECK(n == 3 && idx[0] == 1 && idx[1] == 2 && idx[2] == 0, "stack: only the nearest three seated, then stacked");
+        st.norder = 0;
+        CHECK(fm_stack(&st, 8, idx) == 0, "stack: nothing drawn, nothing seated");
+    }
+
+    /* ---- card: home (233, 370), 120 x 52 half sizes, margin 20, on a 466 glass ---- */
+    {
+        const int up = 2 * (233 - 370);
+        CHECK(fm_card_dy(233, 370, 120, 52, 233, 233, 370, 0, 20) == up, "card: a contact under it sends it to its mirror");
+        CHECK(fm_card_dy(233, 370, 120, 52, 233, 233 + 139, 370, 0, 20) == up, "card: within the margin is under it");
+        CHECK(fm_card_dy(233, 370, 120, 52, 233, 233 + 140, 370, 0, 20) == 0, "card: past the margin, from home, it stays home");
+        CHECK(fm_card_dy(233, 370, 120, 52, 233, 233 + 150, 370, up, 20) == up, "card: just past the margin it holds where it was");
+        CHECK(fm_card_dy(233, 370, 120, 52, 233, 233 + 160, 370, up, 20) == 0, "card: past twice the margin it comes home");
+        CHECK(fm_card_dy(233, 370, 120, 52, 233, 233, 370 - 72 - 10, up, 20) == up, "card: above it, inside twice the margin, held");
+        CHECK(fm_card_dy(233, 370, 120, 52, 233, 233, 100, up, 20) == 0, "card: far above it, home");
+    }
+
     printf("END %d checks, %d failed\n", checks, fails);
     return fails != 0;
 }
@@ -310,6 +347,17 @@ def main():
             ("boost ignores emergencies", "a->squawk == 7700) return true;", "a->squawk == 7777) return true;"),
             ("boost ignores heading", "if (d < 60.0f) return true;", "return true;"),
             ("boost forgets the wrap", "if (d > 180.0f) d = 360.0f - d;", ""),
+            ("stack puts the ground on top", "if (a->on_ground) return -2;", "if (a->on_ground) return 99999;"),
+            ("stack puts no altitude over the highest", "return a->has_alt ? (int32_t)a->alt_ft : -1;", "return a->has_alt ? (int32_t)a->alt_ft : 99999;"),
+            ("stack highest first", "stack_key(&m->t[idx[j - 1]].ac) > key", "stack_key(&m->t[idx[j - 1]].ac) < key"),
+            ("stack reorders a tie", "stack_key(&m->t[idx[j - 1]].ac) > key", "stack_key(&m->t[idx[j - 1]].ac) >= key"),
+            ("stack seats the farthest", "for (int o = 0; o < m->norder && n < max; o++) {\n        const int i = m->order[o];",
+             "for (int o = 0; o < m->norder && n < max; o++) {\n        const int i = m->order[m->norder - 1 - o];"),
+            ("card ignores the margin", "const int mx = hw + margin, my = hh + margin;", "const int mx = hw, my = hh;"),
+            ("card goes home at once", "if (abs(x - cx) >= mx + margin || abs(y - cy) >= my + margin) return 0;\n    return was;", "return 0;"),
+            ("card never comes home", "if (abs(x - cx) >= mx + margin || abs(y - cy) >= my + margin) return 0;", ";"),
+            ("card moves to the wrong place", "return 2 * (mid - cy);", "return mid - cy;"),
+            ("card looks only across", "if (abs(x - cx) < mx && abs(y - cy) < my) return 2 * (mid - cy);", "if (abs(x - cx) < mx) return 2 * (mid - cy);"),
         ]
         survived = []
         for label, a, z in mutants:

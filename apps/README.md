@@ -107,6 +107,15 @@ the imports it uses are still bound. The loader refuses a module with an import 
 running firmware does not bind, so moving `sdk.txt` forward is how an app picks up
 new calls.
 
+From OS v1.2.8 that refusal names the missing call on the app's row ("needs orb.x, which
+this firmware lacks: update the firmware"), in the orb's Apps menu, `/api/v1/status` and the
+hub alike, however the app arrived (hub, or a file copied over USB and installed from the
+menu); older firmware refuses the same way but says only "failed". An app that needs a newer OS than its
+imports alone show (the flight tracker needs v1.2.8's theme pool and app-picked frames)
+names the oldest release in `app.json`: `"os_min": "v1.2.8"`. The SDK writes it into the
+stamp in the app's editor region, so it needs an `"editor"`, and Orb Manager refuses to
+install the app on older firmware, saying to update the firmware first.
+
 ## Folding an app into gorb-os
 
 An app moves into this repo unchanged:

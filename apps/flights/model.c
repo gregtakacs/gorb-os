@@ -89,6 +89,33 @@ void fm_sel_step(const fm_t *m, const char *hex, int step, char *hex_out)
     memcpy(hex_out, m->t[m->order[next]].ac.hex, sizeof m->t[0].ac.hex);
 }
 
+static int32_t stack_key(const orb_ac_t *a)
+{
+    if (a->on_ground) return -2;
+    return a->has_alt ? (int32_t)a->alt_ft : -1;
+}
+
+int fm_stack(const fm_t *m, int max, int *idx)
+{
+    int n = 0;
+    for (int o = 0; o < m->norder && n < max; o++) {
+        const int i = m->order[o];
+        const int32_t key = stack_key(&m->t[i].ac);
+        int j = n++;
+        for (; j > 0 && stack_key(&m->t[idx[j - 1]].ac) > key; j--) idx[j] = idx[j - 1];
+        idx[j] = i;
+    }
+    return n;
+}
+
+int fm_card_dy(int cx, int cy, int hw, int hh, int mid, int x, int y, int was, int margin)
+{
+    const int mx = hw + margin, my = hh + margin;
+    if (abs(x - cx) < mx && abs(y - cy) < my) return 2 * (mid - cy);
+    if (abs(x - cx) >= mx + margin || abs(y - cy) >= my + margin) return 0;
+    return was;
+}
+
 bool fm_interesting(const orb_ac_t *a, float dist_km, float bearing_deg)
 {
     if (a->squawk == 7500 || a->squawk == 7600 || a->squawk == 7700) return true;

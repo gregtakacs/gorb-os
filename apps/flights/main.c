@@ -454,7 +454,11 @@ static float   s_ring_cos[48], s_ring_sin[48];
  * the plane pool, each naming one bank of 7 shapes x 7 bands, and the selection and emergency
  * rings at SEL_SLOT and EM_SLOT. The range rings and home dot are the plate's
  * (theme-text-plan §0). With no theme, the canvas. */
-#define SWEEP_MS    4000             /* one turn of the arm */
+/* One turn of the arm: the arm row's vmax, in seconds (flight-tracker-design §12.5). A bake
+ * from before the arm had a speed says 60, the seconds domain, and sweeps at the old 4 s. */
+#define SWEEP_MS    4000
+#define SWEEP_S_MIN 2
+#define SWEEP_S_MAX 30
 #define PLANE_SLOTS 15
 #define STALE_OPA   128              /* a contact past its fresh window, as dim() halves it */
 /* The theme's labels (theme-text-plan §2.2), by slot: the header, the footer, the info card
@@ -462,6 +466,8 @@ static float   s_ring_cos[48], s_ring_sin[48];
  * pixel; without them (an older bake), the widgets. */
 enum { LAB_HEAD, LAB_FOOT, LAB_CARD, LAB_RNG, LAB_N };
 #define LAB_SLOT0   20
+#define CARD_CLEAR  24                   /* the card at this slot keeps clear of its contact */
+#define CARD_MARGIN 20                   /* px around the card a contact under it may not enter */
 #define SEL_SLOT    16
 #define EM_SLOT     17
 static orb_stage_info_t s_stage;
@@ -472,11 +478,15 @@ static int     s_nplanes;
 static int32_t s_sel_row = -1, s_em_row = -1, s_rng;
 static int32_t s_lab[LAB_N] = { -1, -1, -1, -1 };
 static bool    s_labels;                 /* all four labels: the theme writes the words */
+static int32_t s_sweep_ms = SWEEP_MS;
+static bool    s_card_clear;             /* the card moves off the contact it describes */
+static int     s_card_dy;                /* where it stands: 0 home, else its mirror's offset */
 
 /* Set a label's text and colour only when they change: with a theme the stage ticks the
  * app every frame, and a re-set label is a repaint. */
 static void put_label(int32_t h, int slot, const char *s, uint32_t col);
 static void set_hidden(int32_t h, bool hide, bool *was);
+static int16_t s_card_cy, s_card_hw, s_card_hh, s_card_cx;   /* the card's box at home: centre, half size */
 
 /* Say `s` on label `which`: the theme's label in `tone`, or the widget in `col`. */
 static void say(int which, const char *s, int32_t tone, uint32_t col)
@@ -484,7 +494,7 @@ static void say(int which, const char *s, int32_t tone, uint32_t col)
     static const int32_t *const widget[LAB_N] = { &s_head, &s_foot, &s_card, &s_rng };
     if (s_labels) {
         orb_stage_text(s_lab[which], s, tone);
-        orb_stage_pose(s_lab[which], 0, 0, 0);
+        orb_stage_pose(s_lab[which], 0, 0, which == LAB_CARD ? s_card_dy : 0);
     } else {
         put_label(*widget[which], which, s, col);
     }
@@ -494,7 +504,7 @@ static void say(int which, const char *s, int32_t tone, uint32_t col)
 static void show(int which, bool on, bool *was)
 {
     static const int32_t *const widget[LAB_N] = { &s_head, &s_foot, &s_card, &s_rng };
-    if (s_labels) orb_stage_pose(s_lab[which], on ? 0 : ORB_STAGE_HIDDEN, 0, 0);
+    if (s_labels) orb_stage_pose(s_lab[which], on ? 0 : ORB_STAGE_HIDDEN, 0, which == LAB_CARD ? s_card_dy : 0);
     else set_hidden(*widget[which], !on, was);
 }
 
@@ -623,18 +633,23 @@ static void draw_frame(void)
 
 /* The themed frame: the arm turned, every drawn contact on its row — the frame its shape
  * and band pick, turned to its track, moved to where it is — and the rows past the drawn
- * ones hidden. The selection and an emergency ride as rings over their contacts. */
+ * ones hidden. The nearest contacts are the ones drawn; among them the higher takes the
+ * later row, and rows at one depth draw in table order, so a higher aircraft passes over a
+ * lower one (owner, §12.5). The selection and an emergency ride as rings over their
+ * contacts, and a card that keeps clear moves off the contact it describes. */
 static void draw_stage(void)
 {
     const float range_km = RANGES_NM[s_set.range] * 1.852f;
     fm_project(&s_m, range_km, orb_uptime_us(), CX, CY, RING_R);
     if (s_arm >= 0)
-        orb_stage_pose(s_arm, (int32_t)((now_ms() % SWEEP_MS) * 3600 / SWEEP_MS), 0, 0);
+        orb_stage_pose(s_arm, (int32_t)((now_ms() % s_sweep_ms) * 3600 / s_sweep_ms), 0, 0);
+    int idx[PLANE_SLOTS];
+    const int n = fm_stack(&s_m, s_nplanes, idx);
     bool sel_on = false, em_on = false;
     int k = 0;
-    for (int o = 0; o < s_m.norder && k < s_nplanes; o++) {
-        const fm_trk_t *t = &s_m.t[s_m.order[o]];
-        const int32_t row = s_planes[k++];
+    for (; k < n; k++) {
+        const fm_trk_t *t = &s_m.t[idx[k]];
+        const int32_t row = s_planes[k];
         const int x = (int)lroundf(t->x), y = (int)lroundf(t->y);
         orb_stage_frame(row, shape_of(&t->ac) * 7 + band_of(&t->ac));
         const int32_t ang = isnan(t->ac.track) || t->ac.on_ground ? 0 : (int32_t)lroundf(t->ac.track * 10.0f);
@@ -643,6 +658,8 @@ static void draw_stage(void)
         if (!sel_on && s_sel[0] && !strcmp(t->ac.hex, s_sel)) {
             marker(s_sel_row, true, x, y);
             sel_on = true;
+            if (s_card_clear)
+                s_card_dy = fm_card_dy(s_card_cx, s_card_cy, s_card_hw, s_card_hh, CY, x, y, s_card_dy, CARD_MARGIN);
         }
         if (!em_on && emergency(&t->ac)) {
             marker(s_em_row, true, x, y);
@@ -739,15 +756,25 @@ static void stage_rows(void)
 {
     s_nplanes = 0;
     s_sel_row = s_em_row = -1;
+    s_card_clear = false; s_card_dy = 0;
     for (int k = 0; k < LAB_N; k++) s_lab[k] = -1;
     for (int32_t i = 0; i < (int32_t)s_stage.n_rows; i++) {
         clk_row_t r;
         if (orb_stage_row(i, &r) != ORB_OK) continue;
-        if (r.tag == 0) s_arm = i;
+        if (r.tag == 0) {
+            s_arm = i;
+            s_sweep_ms = r.value_max >= SWEEP_S_MIN && r.value_max <= SWEEP_S_MAX ? r.value_max * 1000 : SWEEP_MS;
+        }
         else if (r.tag == SEL_SLOT) s_sel_row = i;
         else if (r.tag == EM_SLOT) s_em_row = i;
         else if (r.shape == CLK_SHAPE_TEXT && r.tag >= LAB_SLOT0 && r.tag < LAB_SLOT0 + LAB_N)
             s_lab[r.tag - LAB_SLOT0] = i;
+        else if (r.shape == CLK_SHAPE_TEXT && r.tag == CARD_CLEAR) {
+            s_lab[LAB_CARD] = i;
+            s_card_clear = true;
+            s_card_cx = r.spr.centerx; s_card_cy = r.spr.centery;
+            s_card_hw = (int16_t)(r.spr.w / 2); s_card_hh = (int16_t)(r.spr.h / 2);
+        }
         else if (r.tag <= PLANE_SLOTS && s_nplanes < PLANE_SLOTS && orb_stage_frame(i, -1) >= 49)
             s_planes[s_nplanes++] = i;
     }

@@ -67,6 +67,8 @@ TEXT_LOOKS = {
                                       "range": (340, 364, 62, 20)}),
     "blueprint": dict(face="DejaVuSansMono.ttf", body="#FFFFFF", accent="#9FE3FF",
                       quiet="#B8CCE6", warning="#FFD27A", card=("#1C4A84", 0.88), edge="#DCE9F8"),
+    "galaxy": dict(face="DejaVuSans.ttf", body="#EDEBFF", accent=("#FFD27A", "#FF8A5C"),
+                   quiet="#9C95C9", warning="#FF6B6B", card=("#0B0820", 0.8), edge="#8C7BFF"),
 }
 # The fonts by slot: (tone colour, px). Body and accent at 16 px, quiet and warning at 14
 # (flight-tracker-design §11.5: 14 px is the smallest the glass reads).

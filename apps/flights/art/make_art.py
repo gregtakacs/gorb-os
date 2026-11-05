@@ -336,6 +336,127 @@ SINGLE_RADIAL = shape('One twin radial transport for every category: polished, p
     discs=[circle(68.5, 24, 11), circle(31.5, 24, 11)], hi=[path('M45.3 14L45.3 74')])
 
 
+
+# ---- celestial: planets for planes (owner, 2026-11-04, §12.6) ----------------------
+# A body is drawn on the same 100 x 100 box, centred. Its altitude band is a halo of
+# atmosphere around it, so the body keeps its own look; colour off, no halo. The ids are
+# the uid's, so many bodies sit in one document without their gradients colliding.
+
+def _halo(band, r):
+    if not band:
+        return ''
+    return (f'<circle cx="50" cy="50" r="{r + 6}" fill="none" stroke="{band}" stroke-opacity="0.35" stroke-width="6"/>'
+            f'<circle cx="50" cy="50" r="{r + 3}" fill="none" stroke="{band}" stroke-width="2.6"/>')
+
+
+def _ball(u, r, stops, cx=40, cy=36):
+    st = ''.join(f'<stop offset="{o}" stop-color="{c}"/>' for o, c in stops)
+    return (f'<radialGradient id="{u}" cx="{cx}%" cy="{cy}%" r="75%">{st}</radialGradient>',
+            f'<circle cx="50" cy="50" r="{r}" fill="url(#{u})"/>')
+
+
+def _shade(u, r):
+    """The night side: a soft dark crescent to the lower right."""
+    return (f'<radialGradient id="{u}" cx="30%" cy="28%" r="85%"><stop offset="0.55" stop-color="#000" stop-opacity="0"/>'
+            f'<stop offset="1" stop-color="#000" stop-opacity="0.65"/></radialGradient>',
+            f'<circle cx="50" cy="50" r="{r}" fill="url(#{u})"/>')
+
+
+def _clip(u, r):
+    return f'<clipPath id="{u}"><circle cx="50" cy="50" r="{r}"/></clipPath>'
+
+
+def body_moon(band, u):
+    r = 26
+    g, ball = _ball(u + 'b', r, [(0, '#F2F1EC'), (0.6, '#B9B7AE'), (1, '#6E6C66')])
+    gs, sh = _shade(u + 's', r)
+    craters = ''.join(f'<circle cx="{x}" cy="{y}" r="{cr}" fill="#8A877E" fill-opacity="0.55" stroke="#DAD8D0" stroke-opacity="0.5" stroke-width="0.8"/>'
+                      for x, y, cr in ((40, 40, 6), (60, 56, 4.5), (47, 63, 3.2), (62, 39, 2.6), (35, 57, 2.4)))
+    return f'<defs>{g}{gs}</defs>{_halo(band, r)}{ball}{craters}{sh}'
+
+
+def body_mars(band, u):
+    r = 24
+    g, ball = _ball(u + 'b', r, [(0, '#F3A272'), (0.6, '#C2552D'), (1, '#6B2614')])
+    gs, sh = _shade(u + 's', r)
+    marks = (f'<g clip-path="url(#{u}c)"><path d="M28 50Q40 44 50 52T74 48L74 58Q60 62 50 58T26 60Z" fill="#7E3418" fill-opacity="0.55"/>'
+             f'<ellipse cx="50" cy="28" rx="11" ry="4" fill="#FFF4EC" fill-opacity="0.85"/></g>')
+    return f'<defs>{g}{gs}{_clip(u + "c", r)}</defs>{_halo(band, r)}{ball}{marks}{sh}'
+
+
+def body_ringed(band, u):
+    """The ring's far half behind the ball, its near half over it: one ellipse, drawn twice,
+    the second time clipped to its lower half in the ring's own tilted frame."""
+    r = 21
+    g, ball = _ball(u + 'b', r, [(0, '#FBEBC4'), (0.6, '#D7B577'), (1, '#7C5E2C')])
+    gs, sh = _shade(u + 's', r)
+    rg = (f'<linearGradient id="{u}r" x1="0" x2="1"><stop offset="0" stop-color="#8E7444"/><stop offset=".5" stop-color="#F3DFAE"/>'
+          f'<stop offset="1" stop-color="#8E7444"/></linearGradient><clipPath id="{u}f"><rect x="0" y="50" width="100" height="50"/></clipPath>')
+    ring = lambda clip: (f'<g transform="rotate(-22 50 50)"><ellipse cx="50" cy="50" rx="42" ry="11" fill="none" stroke="url(#{u}r)" '
+                         f'stroke-width="5"{clip}/></g>')
+    bands = f'<g clip-path="url(#{u}c)" fill="#A9864C" fill-opacity="0.45"><rect x="20" y="44" width="60" height="3"/><rect x="20" y="53" width="60" height="2.4"/></g>'
+    return (f'<defs>{g}{gs}{rg}{_clip(u + "c", r)}</defs>{_halo(band, r)}{ring("")}{ball}{bands}{sh}'
+            f'{ring(f' clip-path="url(#{u}f)"')}')
+
+
+def body_earth(band, u):
+    r = 30
+    g, ball = _ball(u + 'b', r, [(0, '#7FC4FF'), (0.55, '#2068C8'), (1, '#0B2A5E')])
+    gs, sh = _shade(u + 's', r)
+    land = (f'<g clip-path="url(#{u}c)"><path d="M30 30Q38 24 46 30T52 44Q46 50 40 46T30 30Z" fill="#4FA34A"/>'
+            f'<path d="M55 52Q66 48 72 58T64 76Q56 72 58 64T55 52Z" fill="#6DAA45"/><path d="M34 60Q40 58 42 66T36 72Z" fill="#A98A52"/>'
+            f'<path d="M24 42Q40 38 56 42M44 70Q58 66 76 70M50 30Q62 26 76 32" fill="none" stroke="#FFFFFF" stroke-opacity="0.75" stroke-width="2.4" stroke-linecap="round"/></g>')
+    atm = f'<circle cx="50" cy="50" r="{r}" fill="none" stroke="#A8DBFF" stroke-opacity="0.6" stroke-width="1.6"/>'
+    return f'<defs>{g}{gs}{_clip(u + "c", r)}</defs>{_halo(band, r)}{ball}{land}{sh}{atm}'
+
+
+def body_jupiter(band, u):
+    r = 36
+    g, ball = _ball(u + 'b', r, [(0, '#FBE7CC'), (0.6, '#D9A877'), (1, '#7A4E2C')])
+    gs, sh = _shade(u + 's', r)
+    stripes = ''.join(f'<rect x="10" y="{y}" width="80" height="{h}" fill="{c}" fill-opacity="0.75"/>'
+                      for y, h, c in ((22, 5, '#B9784A'), (33, 7, '#8E5534'), (45, 4, '#E7C59C'), (52, 6, '#A9673E'), (63, 5, '#C88E5E'), (72, 4, '#8E5534')))
+    spot = '<ellipse cx="62" cy="60" rx="8" ry="5" fill="#B5432A" stroke="#E7A07A" stroke-width="1.2"/>'
+    return f'<defs>{g}{gs}{_clip(u + "c", r)}</defs>{_halo(band, r)}{ball}<g clip-path="url(#{u}c)">{stripes}{spot}</g>{sh}'
+
+
+def body_sun(band, u):
+    r = 22
+    g, ball = _ball(u + 'b', r, [(0, '#FFFBE0'), (0.5, '#FFD34D'), (1, '#F07A12')], 50, 50)
+    cor = (f'<radialGradient id="{u}k" cx="50%" cy="50%" r="50%"><stop offset="0.45" stop-color="#FFB13B" stop-opacity="0.8"/>'
+           f'<stop offset="1" stop-color="#FF6A00" stop-opacity="0"/></radialGradient>')
+    rays = ''.join(f'<path d="M50 {50 - r - 13 - (k % 2) * 6}L{53.5} {50 - r + 2}L{46.5} {50 - r + 2}Z" fill="#FFC23D" transform="rotate({k * 30} 50 50)"/>'
+                   for k in range(12))
+    flares = ('<path d="M66 34Q80 22 74 40" fill="none" stroke="#FF8A1F" stroke-width="2.4" stroke-linecap="round"/>'
+              '<path d="M30 66Q20 80 36 74" fill="none" stroke="#FF8A1F" stroke-width="2.2" stroke-linecap="round"/>')
+    return f'<defs>{g}{cor}</defs>{_halo(band, r + 10)}<circle cx="50" cy="50" r="46" fill="url(#{u}k)"/>{rays}{flares}{ball}'
+
+
+def body_comet(band, u):
+    tail = (f'<linearGradient id="{u}t" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#CFF4FF" stop-opacity="0.95"/>'
+            f'<stop offset="1" stop-color="#7FD8FF" stop-opacity="0"/></linearGradient>')
+    g, ball = _ball(u + 'b', 14, [(0, '#FFFFFF'), (0.6, '#BFEFFF'), (1, '#5BA9C9')])
+    return (f'<defs>{g}{tail}</defs><g transform="translate(0 -14)">{_halo(band, 14)}</g>'
+            f'<path d="M34 36Q50 70 50 98Q50 70 66 36Z" fill="url(#{u}t)"/>'
+            f'<path d="M43 40Q50 66 50 90Q50 66 57 40Z" fill="#FFFFFF" fill-opacity="0.5"/>'
+            f'<g transform="translate(0 -14)">{ball}</g>')
+
+
+CELESTIAL = {k: {'what': w, 'draw': f} for k, w, f in (
+    ('light', 'Light aircraft: a cratered moon.', body_moon),
+    ('turboprop', 'Turboprop: a small red planet with a polar cap.', body_mars),
+    ('bizjet', 'Business jet: a ringed planet.', body_ringed),
+    ('airliner', 'Airliner: a blue planet of oceans, land and cloud.', body_earth),
+    ('heavy', 'Heavy: a banded giant with its great spot.', body_jupiter),
+    ('helicopter', 'Helicopter: a sun, rayed and flaring.', body_sun),
+    ('generic', 'Other: a comet, its tail behind it.', body_comet))}
+SINGLE_PLANET = {'what': 'One blue planet for every category', 'draw': body_earth}
+
+
+def render_celestial(p, band, uid):
+    return p['draw'](band, uid)
+
+
 # name -> (title, what carries it, shape set, renderer, band a standalone file shows
 # (None: untinted material), gradients)
 FAMILIES = {
@@ -349,6 +470,8 @@ FAMILIES = {
                   MODERN, render_blueprint, '#EAF3FF', []),
     'paper': ('Paper', 'Shape and colour: a different flat paper plane for each category.',
               PAPER_FLEET, render_paper_fleet, '#F2F0EA', []),
+    'celestial': ('Celestial', 'Shape and halo: a planet, moon, sun or comet for each category, ringed in the band colour.',
+                  CELESTIAL, render_celestial, None, []),
 }
 
 # family -> (what carries it, the one plane, renderer): the family's second form
@@ -363,6 +486,8 @@ SINGLES = {
                   SINGLE_AIRLINER, render_detail_blueprint),
     'paper': ('Colour and detail: one shaded paper dart for every category, folded from paper in the band colour.',
               PAPER_DART, render_paper),
+    'celestial': ('Halo and detail: one blue planet for every category, ringed in the band colour.',
+                  SINGLE_PLANET, render_celestial),
 }
 
 
@@ -623,6 +748,31 @@ def bg_blueprint():
     return ''.join(g)
 
 
+def bg_galaxy():
+    """Deep space: a dark violet field, a faint band of the galaxy across it, two nebulae,
+    and a few hundred stars (a fixed seed, so every run draws the same sky)."""
+    import random
+    rnd = random.Random(1987)
+    g = ['<defs><radialGradient id="space" cx="50%" cy="50%" r="60%"><stop offset="0" stop-color="#1A1240"/>'
+         '<stop offset="1" stop-color="#05030F"/></radialGradient>'
+         '<radialGradient id="neb1" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#B04CFF" stop-opacity="0.45"/><stop offset="1" stop-color="#B04CFF" stop-opacity="0"/></radialGradient>'
+         '<radialGradient id="neb2" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#2FD4FF" stop-opacity="0.35"/><stop offset="1" stop-color="#2FD4FF" stop-opacity="0"/></radialGradient>'
+         '<radialGradient id="band" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#E9DDFF" stop-opacity="0.22"/><stop offset="1" stop-color="#E9DDFF" stop-opacity="0"/></radialGradient></defs>',
+         f'<rect width="{GLASS}" height="{GLASS}" fill="url(#space)"/>',
+         f'<ellipse cx="{CX}" cy="{CX}" rx="300" ry="70" fill="url(#band)" transform="rotate(-32 {CX} {CX})"/>',
+         '<ellipse cx="130" cy="150" rx="120" ry="80" fill="url(#neb1)" transform="rotate(20 130 150)"/>',
+         '<ellipse cx="340" cy="330" rx="110" ry="70" fill="url(#neb2)" transform="rotate(-15 340 330)"/>']
+    for _ in range(320):
+        x, y = rnd.uniform(0, GLASS), rnd.uniform(0, GLASS)
+        r = rnd.choice((0.5, 0.6, 0.7, 0.8, 1.0, 1.3))
+        g.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r}" fill="#FFFFFF" fill-opacity="{rnd.uniform(0.35, 1):.2f}"/>')
+    for _ in range(9):                                    # bright stars with a glint
+        x, y = rnd.uniform(30, GLASS - 30), rnd.uniform(30, GLASS - 30)
+        g.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="1.6" fill="#FFF8E7"/>'
+                 f'<path d="M{x - 6:.1f} {y:.1f}H{x + 6:.1f}M{x:.1f} {y - 6:.1f}V{y + 6:.1f}" stroke="#FFF8E7" stroke-opacity="0.6" stroke-width="0.7"/>')
+    return ''.join(g)
+
+
 BACKGROUNDS = {
     'scope': ('Phosphor scope', 'Live rings in dim green; any band colour reads on it.', bg_scope,
               {'ring': '#2A6A44', 'ring_opa': 0.8, 'home': '#FFFFFF', 'blipbg': '#06160D',
@@ -636,10 +786,13 @@ BACKGROUNDS = {
     'blueprint': ('Blueprint', 'Drafting blue with a fine grid; live rings and text in white.', bg_blueprint,
                   {'ring': '#DCE9F8', 'ring_opa': 0.45, 'home': '#FFFFFF', 'blipbg': '#1C4A84',
                    'head': '#FFFFFF', 'card': '#FFFFFF', 'foot': '#B8CCE6', 'sel': '#FFFFFF'}),
+    'galaxy': ('Galaxy', 'Deep space: stars, nebulae and a band of the galaxy; rings and text in pale violet.', bg_galaxy,
+               {'ring': '#8C7BFF', 'ring_opa': 0.35, 'home': '#FFE9A8', 'blipbg': '#0B0820',
+                'head': '#FFD27A', 'card': '#EDEBFF', 'foot': '#9C95C9', 'sel': '#FFE9A8'}),
 }
 
 # What each family is shown with first; every control still mixes freely.
-PAIRS = {'modern': ('scope', 'wedge'), 'silver': ('scope', 'needle'),
+PAIRS = {'celestial': ('galaxy', 'wedge'), 'modern': ('scope', 'wedge'), 'silver': ('scope', 'needle'),
          'brass': ('brass', 'pointer'), 'blueprint': ('blueprint', 'drafting'), 'paper': ('chart', 'needle')}
 
 

@@ -73,6 +73,14 @@
    "file_band": "#F2F0EA",
    "background": "chart",
    "arm": "needle"
+  },
+  "celestial": {
+   "title": "Celestial",
+   "band": "Shape and halo: a planet, moon, sun or comet for each category, ringed in the band colour.",
+   "single": "Halo and detail: one blue planet for every category, ringed in the band colour.",
+   "file_band": null,
+   "background": "galaxy",
+   "arm": "wedge"
   }
  },
  "planes": {
@@ -605,6 +613,112 @@
     ],
     "nose": "up"
    }
+  },
+  "celestial": {
+   "light": {
+    "file": "planes/celestial-light.svg",
+    "what": "Light aircraft: a cratered moon.",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "turboprop": {
+    "file": "planes/celestial-turboprop.svg",
+    "what": "Turboprop: a small red planet with a polar cap.",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "bizjet": {
+    "file": "planes/celestial-bizjet.svg",
+    "what": "Business jet: a ringed planet.",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "airliner": {
+    "file": "planes/celestial-airliner.svg",
+    "what": "Airliner: a blue planet of oceans, land and cloud.",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "heavy": {
+    "file": "planes/celestial-heavy.svg",
+    "what": "Heavy: a banded giant with its great spot.",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "helicopter": {
+    "file": "planes/celestial-helicopter.svg",
+    "what": "Helicopter: a sun, rayed and flaring.",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "generic": {
+    "file": "planes/celestial-generic.svg",
+    "what": "Other: a comet, its tail behind it.",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   },
+   "single": {
+    "file": "planes/celestial-single.svg",
+    "what": "One blue planet for every category",
+    "size": [
+     100,
+     100
+    ],
+    "pivot": [
+     50,
+     50
+    ],
+    "nose": "up"
+   }
   }
  },
  "arms": {
@@ -733,6 +847,23 @@
    "card": "#FFFFFF",
    "foot": "#B8CCE6",
    "sel": "#FFFFFF"
+  },
+  "galaxy": {
+   "file": "backgrounds/galaxy.svg",
+   "title": "Galaxy",
+   "what": "Deep space: stars, nebulae and a band of the galaxy; rings and text in pale violet.",
+   "size": [
+    466,
+    466
+   ],
+   "ring": "#8C7BFF",
+   "ring_opa": 0.35,
+   "home": "#FFE9A8",
+   "blipbg": "#0B0820",
+   "head": "#FFD27A",
+   "card": "#EDEBFF",
+   "foot": "#9C95C9",
+   "sel": "#FFE9A8"
   }
  }
 }

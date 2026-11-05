@@ -3,7 +3,7 @@
 <title>Flights bake check</title>
 <!-- Staged by bake_check.py beside the runtime's baker and fonts: bakes every preset (and
      the variants named in VARIANTS) through flights-bake.js and prints each theme as one
-     "B64 <name> <base64>" line in #out for the driver to check. -->
+     "B64 <name> <ms> <card slot> <arm period> <base64>" line in #out for the driver to check. -->
 <link rel="stylesheet" href="fonts.css">
 <script src="orbtheme-baker.js"></script>
 <script src="flights-art.js"></script>
@@ -12,21 +12,50 @@
 <script>
 (async function () {
   const out = document.getElementById('out'), B = window.FlightsBake;
+  // ?appv=: the flights release the designs are stamped with, as an editor's save stamps them
+  const APPV = new URLSearchParams(location.search).get('appv') || '';
   const say = (s) => { out.textContent += s + '\n'; };
   const b64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+  const PLANE = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M20 2L24 16L38 22L38 25L24 22L23 33L28 37L28 39L20 37L12 39L12 37L17 33L16 22L2 25L2 22L16 16Z" fill="#fff" stroke="#222" stroke-width="1"/></svg>');
+  // a design as schema 1 saved it (E1..E5), walked forward by the editor's step
+  const V1 = { name: 'Old brass', scope: { bg: 'brass', colour: '#161815', image: null, rings: 3, ringColour: '#C9A24E', ringOpacity: 0.45, home: '#E8C46A' },
+    arm: { kind: 'wedge', trail: 45, colour: '#3DFF8E', lead: '#D8FFE8' },
+    planes: { family: 'brass', form: 'types', size: 38, shapes: B.SHAPES.slice(), colour: false, bands: ['#888888', '#C0C0C0', '#FF5A3C', '#FFB23C', '#C8FF3C', '#39FF14', '#3CE0FF'], ground: 0.45, sel: '#E8C46A', em: '#FF2020' },
+    words: { face: 'Cormorant Garamond', body: '#F2E6C8', accent: '#F8E7A8', accent2: '#B8892E', quiet: '#A8946A', warning: '#FF9A3C', card: { fill: '#161815', opacity: 0.88, edge: '#C9A24E' }, plaques: true } };
   const VARIANTS = {
-    'single-off': (d) => { d.planes.form = 'single'; d.planes.colour = false; return d; },
-    'colour-image-none': (d) => { d.scope.bg = 'colour'; d.scope.rings = 4; d.arm.kind = 'none'; d.words.plaques = true; return d; },
-    'wedge-90': (d) => { d.arm.kind = 'wedge'; d.arm.trail = 90; d.planes.size = 48; d.words.face = 'Orbitron'; return d; },
+    'single-off': (d) => { d.planes.form = 'single'; d.planes.colour = false; d.frames.card.place = 'bottom'; return d; },
+    'colour-none-top': (d) => { d.scope.ground = 'colour'; d.scope.rings.n = 4; d.arm.kind = 'none'; d.frames.style = 'pill'; d.frames.card.place = 'top'; d.words.size = 22; return d; },
+    'wedge-90-slow': (d) => { d.arm = B.armOf('wedge', 30); d.arm.tail = 90; d.arm.halo = 10; d.planes.size = 48; d.words.face = 'Orbitron'; return d; },
+    'dots-radial-noground': (d) => { Object.assign(d.scope.ticks, { style: 'dot', minor: 1, major: 15 }); Object.assign(d.scope.labels, { kind: 'tens', turn: 'radial', every: 45 }); d.scope.cross.style = 'hatched'; d.planes.ground = 0; d.frames.style = 'none'; return d; },
+    'pointer-short': (d) => { d.arm = B.armOf('pointer', 12); d.arm.length = 0.6; d.arm.tail = 40; d.arm.halo = 4; d.frames.style = 'double'; d.frames.card.width = 320; return d; },
+    'custom-tinted': (d) => { d.planes.family = 'custom'; d.planes.form = 'single'; d.planes.custom.image = PLANE; return d; },
+    'custom-as-drawn': (d) => { d.planes.family = 'custom'; d.planes.form = 'single'; d.planes.colour = false; d.planes.custom.image = PLANE; d.scope.ground = 'blueprint'; return d; },
+    'from-schema-1': () => B.upgrade1(V1),
+    // §12.6: shadows, marker styles, the family frames, a picture frame, the galaxy, and a
+    // schema-2 design saved before those fields existed
+    'shadows-brackets': (d) => { d.arm.shadow = { on: true, opacity: 0.8, blur: 6 }; d.planes.shadow = { on: true, opacity: 0.7, blur: 5 }; d.planes.selStyle = 'brackets'; d.planes.selWidth = 6; d.planes.emStyle = 'double'; return d; },
+    'markers-silver-frame': (d) => { d.planes.selStyle = 'crosshair'; d.planes.emStyle = 'diamond'; d.planes.emWidth = 1; d.frames.style = 'silver'; return d; },
+    'drafting-dashed': (d) => { d.planes.selStyle = 'dashed'; d.frames.style = 'drafting'; d.scope.gridWidth = 3; return d; },
+    'card-shadow-max': (d) => { d.frames.shadow = { on: true, blur: 6, drop: 8, opacity: 1 }; d.frames.pad = 16; d.frames.card.place = 'top'; return d; },
+    'card-no-shadow': (d) => { d.frames.shadow.on = false; return d; },
+    'picture-frame': (d) => { d.frames.style = 'picture'; d.frames.image = PLANE; d.frames.corner = 32; return d; },
+    'galaxy-on-scope': (d) => { d.scope.ground = 'galaxy'; d.scope.grid = false; d.frames.style = 'gold'; return d; },
+    // §12.8: the heading cues and grey ground traffic
+    'arrow-grey-ground': (d) => { d.planes.heading = { style: 'arrow', length: 0.8, colour: '#FFFFFF' }; d.planes.colour = false; d.planes.groundGrey = true; d.planes.ground = 0.7; return d; },
+    'custom-trail-shadow': (d) => { d.planes.family = 'custom'; d.planes.form = 'single'; d.planes.custom.image = PLANE; d.planes.heading.style = 'trail'; d.planes.heading.length = 1; d.planes.shadow.on = true; return d; },
+    'saved-before-fields': () => { const d = B.preset('paper'); delete d.planes.shadow; delete d.planes.selStyle; delete d.planes.emWidth; delete d.arm.shadow; delete d.scope.gridWidth; delete d.frames.corner; delete d.planes.heading; delete d.planes.groundGrey; return B.complete(d); },
   };
+  VARIANTS['blank'] = () => B.preset('blank');
+  VARIANTS['blank-arm-over'] = () => { const d = B.preset('blank'); d.arm.layer = 'over'; d.planes.colour = true; return d; };
+  VARIANTS['blank-saved-before-fields'] = () => { const d = B.preset('blank'); delete d.arm.layer; delete d.planes.heading; return B.complete(d); };
   const jobs = B.PRESETS.map((f) => [f, B.preset(f)]);
   for (const k in VARIANTS) jobs.push([k, VARIANTS[k](B.preset('modern'))]);
   for (const [name, d] of jobs) {
     try {
       const t0 = performance.now();
-      const doc = new TextEncoder().encode(JSON.stringify({ format: 'wc-design', schema: 1, app: 'flights', design: d }));
+      const doc = new TextEncoder().encode(JSON.stringify(Object.assign({ format: 'wc-design', schema: B.SCHEMA, app: 'flights' }, APPV ? { appVersion: APPV } : {}, { design: d })));
       const r = await B.bake(d, { design: doc });
-      say('B64 ' + name + ' ' + Math.round(performance.now() - t0) + ' ' + b64(r.bytes));
+      say('B64 ' + name + ' ' + Math.round(performance.now() - t0) + ' ' + (d.frames.card.place === 'auto' ? B.CARD_CLEAR_SLOT : B.CARD_SLOT) + ' ' + B.period(d) + ' ' + b64(r.bytes));
     } catch (e) {
       say('ERR ' + name + ' ' + (e && e.message ? e.message : e));
     }

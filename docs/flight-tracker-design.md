@@ -946,3 +946,223 @@ says; Design, Panel and Split and true size come from `theme@1/preview`.
   - Not benched: opening it from the hub's Themes tab and a Send from inside it. The
     owner's running hub holds the launch token, so that walk is the owner's; the hub
     serves the region from the orb, since its library has no flights container.
+
+### 12.5 The owner's first pass, and what changed (2026-11-04)
+
+The owner tried the editor and asked for eleven things. Each, and what answers it:
+
+1. **Start like the clock's.** Pictures of the five presets in the middle, the library under
+   them, and Continue; picking a tile chooses it, only Continue moves on. This is now the
+   kit's `StartSheet` and `libraryRows` (studio@1), in the clock's classes moved to
+   `studio.css` (`st-sheet`, `st-gal`, `st-gc`); the clock's template wears the same ones.
+2. **The preview's traffic emptied.** Each made-up contact now flies a straight chord across
+   the range and comes back in where it left; ground traffic keeps to the field. The tracks
+   cross the scope instead of aiming at home.
+3. **Higher aircraft over lower.** `fm_stack` (model.c): the nearest contacts are seated,
+   then stacked lowest first (the ground, no altitude, then by feet, the nearer first at a
+   tie), and main.c hands them the plane rows in that order. Rows at one depth draw in table
+   order (`orb_stage.c` depth_key), so the later row is on top. The preview stacks the same.
+4. **One screen, the clock's.** `S.viewer` (studio@1) owns the view, the zoom, Fit's size,
+   the calibration and what the ruler and card readings say; `S.ScreenPanel` is the clock's
+   diagnostics panel; the toolbar's ⚙ opens it in every editor. The clock delegates its
+   screen methods to the same controller, and the glass centres a magnified view itself.
+   The calibration was already one per browser (theme@1 `screen`).
+5. **A scope with numbers.** Design schema 2 draws the plate from fields instead of a fixed
+   drawing: the ground (the four looks, a flat colour or a picture) with its face and detail
+   colours and grid; the bezel ticks (on, colour, lines/dots/wedges, minor and major
+   spacing, length, weight, radius, rim line); the bearing figures (none, N E S W, compass,
+   three-digit, tens; spacing, `fonts@1` face, size, colour, upright or with the rose,
+   radius, north and south left clear); the cross (solid, dashed, dash-dot, hatched); the
+   lubber mark; the range rings (count, solid/dashed/dotted, weight, colour, opacity); the
+   home dot. "Take this ground's whole look" restores a ground's set. The colour picker is
+   the kit's (studio@1 `Co`): the preset's colour first ("P"), the colour itself and its
+   hex on one line, and the palette under it on a click: Classic (the inks and period
+   colours), Vivid, or Any (the system picker), one choice per browser for every row and
+   every editor.
+6. **The arm.** Its turn is the design's (2–30 s, default 8), baked as the arm row's `vmax`
+   in seconds and read by main.c (`SWEEP_S_MIN..MAX`; a bake from before says 60, the
+   seconds domain, and keeps the old 4 s). Every style takes a length (50–100 %), a fading
+   tail (0–90°) and a halo (0–10 px); the needle, pointer and drafting arms are drawn from
+   fields now, the pointer in any metal; a plain line joins them. The Arm step says how far
+   the tip jumps a frame at the orb's 15 fps (19 px at 4 s, 10 at 8), which is what tore.
+7. **Planes.** By category (the family's own drawing for each) or one plane; no per-category
+   choice. A family of "Your own": one uploaded picture (PNG, SVG or WebP, nose up) for
+   every aircraft, tinted by altitude or as drawn.
+8. **Ground traffic** has Off beside its opacity, in both colour modes.
+9. **The tones shown.** The Words step shows each tone as a sample on the frame's fill and
+   says where the app uses it; the preview's Roam / Info / Alert buttons put the header in
+   the accent and the footer in the warning, as the orb does.
+10. **Frames and the card.** A Frames step: style (none, square, rounded, pill, double line),
+    fill, opacity, edge, padding, plaques; the card's width (200–320 px; its height follows
+    the type size) and place: Auto, Bottom or Top. Auto bakes the card at slot 24, which
+    main.c reads as a card that keeps clear: `fm_card_dy` mirrors it across the middle
+    while its contact is within 20 px of it, and brings it home past 40, so it never covers
+    the plane being tracked. The range figure moved into the gap at 135°, clear of a
+    default card. The type size (14–22) sets every label's box.
+11. **One look for every editor.** Already one in part: ui@1 is the hub's own tokens
+    (`runtime_test.go` holds them equal to `app.css`) and studio.css is the shell. What each
+    editor still carried itself (the clock's start sheet and diagnostics panel, the
+    flights editor's tiles and list) moved into studio.css; an editor's own CSS is now only
+    what is truly its own.
+
+Checked:
+- `bake_check.py`: the five presets and eight variants (detailed planes; flat colour, four
+  rings, no arm, plaques, pill frames, the card on top, 22 px type; a 90° wedge on a 30 s
+  turn with a 10 px halo; dot ticks every degree, tens with the rose, ground traffic off,
+  no frames; a short pointer with a tail and halo, double frames, a 320 px card; your own
+  plane tinted and as drawn; a schema-1 design walked forward) through `orbbundle`,
+  `theme_schema` and `orb_clock3.c`, with the card at 22 or 24 and the arm's `vmax` its turn.
+- `host_flights_model_test.py`: stack and card, 67 checks, 39 of 39 mutants.
+- `headless-studio`: the picker, the screen controller and panel, the start sheet and the
+  library rows (101 checks); the clock's 19 suites green on the shared controller.
+- On Bronze (flights v1.2.4 rebuilt): an editor-baked theme loaded with all four labels
+  (the card at 24); eight framebuffer grabs put the arm on an 8 s turn (every interval
+  within 4° of it; a 4 s turn misses by up to 170°); in Info, stepping through contacts
+  sent the card to the top for a helicopter under its home and kept it at the bottom for
+  one beside it.
+
+### 12.6 The owner's second pass (2026-11-04)
+
+1. **Names.** A preset is named for its family alone ("Vintage brass"): the theme's card id
+   already starts with `flights-`, so "Flights" in every name said it twice.
+2. **Grid weight.** The scope, chart and blueprint grids take a weight (0.3–4 px).
+3. **The side panes scroll** (studio.css `.st-side`), so an inspector taller than the window
+   is reachable, in every editor.
+4. **The halo** says what it is on the Arm step: a soft glow of the arm's colour along its
+   blade, as wide as the slider.
+5. **Shadows** for the arm and the planes: a soft shadow all round, baked into the art, with
+   its softness and strength. It has no side, because the art turns (a side would turn
+   with it); a fixed-side shadow would need a twin row per plane, 15 rows the app does not
+   have. Its cost is the few px it adds round each sprite (the plane's box grows by twice
+   2.5 × the softness).
+6. **Markers.** The selection and emergency rings each take a style (ring, dashed, double,
+   brackets, crosshair, diamond) and a weight (1–6 px). The preview always shows the
+   emergency ring: its N911TH squawks 7700 throughout.
+7. **Frames.** Beside the plain shapes, the families' own: brass, silver, bronze and gold
+   (a bevelled metal bezel), drafting (corner brackets and centre ticks) and chart (a rule
+   and a dashed hairline); each family's preset wears its own. "Your picture" cuts the
+   author's image in nine (its outer sixth is the corners, drawn at the Corners size; the
+   edges and middle stretch), so one picture fits any card width. The step
+   names the size it suits best: three times the card.
+8. **Celestial**, a sixth family (`make_art.py`): the galaxy ground (deep space, the band of
+   the galaxy, two nebulae, a fixed sky of stars; the editor draws it from its space and
+   nebula colours, dense or sparse) and, for the categories, a moon (light), a red planet
+   (turboprop), a ringed planet (business jet), a blue planet (airliner, and the one-plane
+   form), a banded giant with its spot (heavy), a rayed sun (helicopter) and a comet
+   (other). The altitude band is a halo of atmosphere round each body. Its preset: the line
+   arm with a violet tail and halo, pill frames, Space Grotesk. `bake_theme.py` hand-bakes
+   it too.
+
+A design saved before these fields existed takes them from its preset when it opens
+(`FlightsBake.complete`); no new schema.
+
+Checked: `bake_check.py`, 20 themes (the six presets and fourteen variants, the new ones
+being shadows with brackets and a double ring, crosshair and diamond markers with silver
+plaques, drafting frames with a 3 px grid, a picture frame, the galaxy under gold frames,
+and a paper design saved without the new fields); the markers, shadows and frames looked at
+drawn; host, app and editor suites green. On Bronze the editor's Celestial stored and drew
+with live traffic (airliners as blue planets, helicopters as suns, light aircraft as moons,
+each in its band's halo); Bronze was put back on Vintage brass with Celestial left on its
+card.
+
+### 12.7 Frames on the card only, and its shadow (2026-11-04)
+
+The owner wants a frame on the info card alone: the header, footer and range are words on the
+glass, and the Plaques switch is gone (a design that carried plaques drops them when it
+opens). The card instead takes a drop shadow, on by default: softness (0.5–6 px), drop
+(0–8 px, falling down and a third of that right, since the card never turns) and strength.
+It is drawn inside the label's plane, which grows by the shadow's reach so the card stands
+where it did and the words keep their padding; the reach rides in that padding, so it is
+capped where padding and reach reach the 32 px a label allows. `bake_check.py`: 22 themes,
+with the shadow at its largest on the widest padding and with it off.
+
+### 12.8 The owner's third pass (2026-11-04)
+
+- **Heading on pictures that show none.** A planet, or the author's own round icon, says
+  nothing about where it is going. Planes take a heading cue, drawn into each picture so it
+  turns with the track: a **trail** fading out behind it (length 30–100%) or an **arrow** at
+  its nose. With a cue the body shrinks (to 68% for a trail, 80% for an arrow) and moves
+  forward of the trail, or back from the arrow, inside the same frame, so the pool's frame
+  size and the orb's reader are unchanged. The cue wears the altitude colour when the planes
+  do, else its own. Celestial starts with the trail; every other family with none.
+- **Grey ground traffic.** Ground traffic can be greyscale as well as faded (its luminance,
+  then the opacity), one switch beside the opacity.
+- **Saving is the Render step's.** The start page only opens: its name field and Save
+  current are gone, in both editors (the kit's StartSheet). Render carries **Save to
+  library** under Send, under the theme's name. **Send to orb** saves the design first,
+  quietly, so a send the orb refuses still leaves it in the library; the hub keeps the baked
+  theme beside it once the orb has stored it, as before.
+- **App settings.** The flights editor region carries `settings.json`: the `key` secret's
+  label, help, links (adsb.lol/feed, where a key is earned by feeding, and the API README)
+  and header. The hub's App settings page reads it through the editor door, so the hub names
+  no app or service of its own.
+
+`bake_check.py`: 24 themes, with an arrow on grey ground traffic, and a trail on the
+author's own picture under a shadow.
+
+
+### 12.9 The owner's fourth pass (2026-11-04)
+
+- **Blank start.** The start sheet's first tile is Blank: every part present in plain greys on
+  a plain ground (line arm, planes as drawn, grey ground traffic, a rounded grey card, no
+  shadows). A design started there keeps `base: 'blank'`, so the colour rows offer the blank
+  values back as their preset, never a family's.
+- **The serial is the content.** Every flights bake was stamped serial 1, and the hub's
+  precheck reads same name + same serial as "already on the card, byte for byte", so any
+  re-bake of a name was refused as the copy already there. The serial is now FNV-1a of the
+  design document (every choice the bake reads); an unchanged design re-bakes to the same
+  serial and stays a no-op. Celestial and Flights Modern on Bronze were baked by
+  `bake_theme.py` for the bench, carry no design (`design: 0`), and so offer no Edit; a send
+  from the editor now asks to replace them.
+- **Arm depth.** `arm.layer`: under the planes (row order 1, as before) or over them (order 3,
+  the markers' depth; the arm's row comes first, so the rings and words stay above it). The
+  preview draws the same order.
+- **No rate claim.** Unlike the clock there is no designed rate to fall short of, and the
+  bake's estimate is not a measure, so the verdict counts live rows only.
+- **Notes as hover text.** The kit no longer prints a field's note: it becomes the hover text
+  of the row or section above it, marked ⓘ (both editors).
+- **Draft pictures.** A saved draft carries a 96 px picture of the design (flights: its
+  thumbnail; clock: the watch at 10:09:36), shown on the hub's Themes page and in the library
+  lists, since a draft has no bake to read a plane from.
+- **Hub Themes.** Update sits on the card's row, the copy being updated; the library row says
+  it is the newer bake. Switching app pills keeps the list's height through the reload, so
+  the page does not jump.
+
+`bake_check.py`: 27 themes, with Blank, Blank with the arm over the planes, and a Blank saved
+before the new fields.
+
+### 12.10 Flights on the shelf, its default theme, and OS v1.2.8 (2026-11-04)
+
+The owner installed flights on Gold from the hub and it never appeared, with no theme. Three
+causes:
+
+- **A stale shelf copy.** Flights was `"shelf": false` (held 2026-11-01), so the hub's library
+  still held a 4 KB v1.1.43 container from before the hold, and that is what Install sent. The
+  owner released it: `"shelf": true`, and the shelf carries the current build.
+- **Released firmware could not run it.** Everything flights stands on (the theme pool,
+  app-picked frames, 32 stage rows, labels) landed after the v1.2.7 release without a version
+  bump, so Gold's v1.2.7+238c503 failed the app (a failed row, no reason) and refused its theme
+  ("row 1 animates 49 frames: the dial holds 16"). The OS is now **v1.2.8**: store_check quiet,
+  status, previews and upload passed on Bronze (no panics), and the hub's firmware bundle is
+  re-packed from it. Gold updated over Wi-Fi from its Firmware tab.
+- **No default theme.** The install's theme seed rode the clock only, and only onto a card
+  with no themes at all. It is now per app: after an install, each app the library has a theme
+  for is seeded when the card holds none of that app's, once the install's reboot is waited
+  out. The shelf ships `themes/modern.orbtheme` (the Modern preset, baked by the editor with
+  its design, so it reopens in the editor); the clock keeps `skeleton.orbtheme`.
+
+**`os_min`.** An app can name the oldest OS it runs on in `app.json` (flights: v1.2.8). The SDK
+writes it into the editor region's stamp, since the container has no field for it and older
+readers check the header's spare word zero; the hub refuses the install on older firmware and
+the Apps row says "needs firmware v1.2.8". Bench on Gold: v1.2.7 → v1.2.8 over Wi-Fi, then
+Install from the Apps page: flights loads, Modern is stored and worn, the clock keeps Skeleton.
+
+**The orb says why.** `os_min` is the hub's gate only; an app copied to the card over USB and
+installed from the orb's menu reaches the same load step, which refuses a module calling an
+import the firmware lacks before any of its code runs (in v1.2.7 too). The sentence used to
+reach only the serial log, so the row read "failed" with no reason. v1.2.8 keeps it on the row
+(`orb_svc_note_refused`, runtime, PSRAM) and `orb_svc_fault_reason` falls back to it, so the
+Apps menu, `/api/v1/status` and the ledger (now with a `reason` on card rows) all print "needs
+orb.<name>, which this firmware lacks: update the firmware". Benched on Bronze with the
+template app's `ui_refresh` import renamed to one no firmware binds.
+

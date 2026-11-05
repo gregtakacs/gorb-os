@@ -87,7 +87,7 @@ orbapp = _orbapp()
 # ---- the app directory ------------------------------------------------------------
 
 MANIFEST_KEYS = {"slug", "title", "caps", "period_ms", "settings", "memory_kb",
-                 "editor", "shelf"}
+                 "editor", "shelf", "os_min"}
 
 
 def manifest(appdir):
@@ -111,6 +111,15 @@ def manifest(appdir):
     m.setdefault("settings", [])
     m.setdefault("period_ms", 0)
     m.setdefault("memory_kb", 64)
+    # os_min: the oldest OS release the app runs on (owner, 2026-11-04: flights needs the
+    # theme pool). It rides the editor region's stamp, where the hub reads it to refuse an
+    # install on older firmware; the container has no field for it, and older readers
+    # check the header's spare word zero.
+    if "os_min" in m:
+        if not isinstance(m["os_min"], str) or not re.match(r"^v\d{1,2}\.\d{1,2}\.\d{1,2}$", m["os_min"]):
+            fail("%s: os_min is a release like v1.2.8, not %r" % (path, m["os_min"]))
+        if not m.get("editor"):
+            fail("%s: os_min rides the editor region, and this app ships no editor" % path)
     for c in m["caps"]:
         if c not in orbapp.CAP_OWNER:
             fail("%s: cap %r is not one of %s" % (path, c, ", ".join(orbapp.CAP_OWNER)))
@@ -333,7 +342,10 @@ def editor_region(appdir, m, release):
     if "orb-app.js" in files:
         fail("%s's editor carries orb-app.js, which the SDK writes" % m["slug"])
     members = [("editor.json", json.dumps(ej, sort_keys=True, separators=(",", ":")).encode())]
-    stamp = ("window.__ORB_APP = %s;\n" % json.dumps({"slug": m["slug"], "version": release}, sort_keys=True)).encode()
+    st = {"slug": m["slug"], "version": release}
+    if m.get("os_min"):
+        st["os_min"] = m["os_min"]
+    stamp = ("window.__ORB_APP = %s;\n" % json.dumps(st, sort_keys=True)).encode()
     for n in sorted(files + ["orb-app.js"]):
         if n == "orb-app.js":
             members.append((n, stamp))

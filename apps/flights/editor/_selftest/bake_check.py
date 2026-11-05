@@ -7,8 +7,9 @@ Stages bake.html beside the runtime's baker and fonts and the editor's art and b
 folder Windows Chrome can read, runs it headless, and checks every theme it prints: it
 reads back through orbbundle and theme_schema, the shipped orb_clock3.c projects it under
 the flights slug, and its rows are the ones apps/flights/main.c finds (the arm at slot 0,
-fifteen planes of 49 picked frames, the marker rings at 16 and 17, four fonts, the four
-labels at 20..23, the preview), with the design region carried.
+fifteen planes of 49 picked frames, the marker rings at 16 and 17, four fonts, the header,
+footer and range at 20, 21 and 23 and the card at 22 or, keeping clear, at 24, the preview),
+the arm's vmax its turn in seconds (§12.5), with the design region carried.
 """
 import base64
 import os
@@ -30,6 +31,7 @@ STAGE_WIN = r"C:\Temp\flights-bake-check"
 STAGE = "/mnt/c/Temp/flights-bake-check"
 RUNTIME = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
 EDITOR = os.path.dirname(HERE)
+APPV = open(os.path.join(EDITOR, "..", "version.txt")).read().strip()
 
 
 def stage():
@@ -46,12 +48,13 @@ def stage():
 def run_chrome():
     r = subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
                         "--user-data-dir=C:\\Temp\\flights-bake-profile", "--allow-file-access-from-files",
-                        "--virtual-time-budget=300000", "--dump-dom", "file:///" + STAGE_WIN.replace("\\", "/") + "/bake.html"],
+                        "--virtual-time-budget=300000", "--dump-dom",
+                        "file:///" + STAGE_WIN.replace("\\", "/") + "/bake.html?appv=" + APPV],
                        capture_output=True, text=True, timeout=600)
     return r.stdout
 
 
-def check(name, raw, exe):
+def check(name, raw, exe, card, period):
     bad = []
     path = os.path.join(tempfile.mkdtemp(prefix="flb."), name + ".orbtheme")
     open(path, "wb").write(raw)
@@ -75,9 +78,13 @@ def check(name, raw, exe):
         bad.append("a marker ring is missing")
     if len(fonts) != 4 or sorted(int(f["slot"]) for f in fonts) != [0, 1, 2, 3]:
         bad.append("fonts: %s" % [int(f["slot"]) for f in fonts])
-    labels = [aux.get(s) for s in range(20, 24)]
+    labels = [aux.get(s) for s in (20, 21, 23, card)]
     if not all(lb is not None and int(lb["kind"]) == ts.SHAPE_TEXT for lb in labels):
-        bad.append("the four labels are not at 20..23")
+        bad.append("the labels are not at 20, 21, 23 and %d" % card)
+    if (22 if card == 24 else 24) in aux:
+        bad.append("a second card")
+    if 0 in aux and int(aux[0]["vmax"]) != period:
+        bad.append("the arm's vmax is %s, not its %d s turn" % (aux[0]["vmax"], period))
     if not any(int(e["class"]) == ts.CLASS_PREVIEW for e in els):
         bad.append("no preview")
     with open(path, "rb") as f:
@@ -104,12 +111,12 @@ def main():
             print("FAIL " + line[4:])
             fails += 1
         elif line.startswith("B64 "):
-            _, name, ms, b64 = line.split(" ", 3)
+            _, name, ms, card, period, b64 = line.split(" ", 5)
             seen += 1
             raw = base64.b64decode(b64)
             if keep:
                 open(os.path.join(keep, name + ".orbtheme"), "wb").write(raw)
-            bad, n = check(name, raw, exe)
+            bad, n = check(name, raw, exe, int(card), int(period))
             print("%s %-18s %8d B  %s" % ("ok  " if not bad else "FAIL", name, n, "; ".join(bad)))
             fails += bool(bad)
     if "DONE" not in dom:

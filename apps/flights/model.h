@@ -52,6 +52,18 @@ int  fm_find(const fm_t *m, const char *hex);
  * hex_out holds 8 bytes. */
 void fm_sel_step(const fm_t *m, const char *hex, int step, char *hex_out);
 
+/* The drawn contacts the view seats, at most `max` of them: the nearest, then stacked
+ * lowest first so a higher aircraft draws over a lower one (flight-tracker-design §12.5):
+ * the ground under everything, a contact with no altitude above it, then by feet, the
+ * nearer first at a tie. Writes indices into m->t; returns how many. */
+int  fm_stack(const fm_t *m, int max, int *idx);
+/* Where a card that keeps clear stands, as its vertical offset from home: its box at home
+ * is centred (cx, cy) with half sizes (hw, hh); mid is the glass's middle row. A contact
+ * at (x, y) within `margin` of the box sends it to its mirror across the middle; it comes
+ * home only once the contact is clear by twice the margin, and between the two it stays
+ * where it was (`was`), so a contact on the edge never makes it flicker. */
+int  fm_card_dy(int cx, int cy, int hw, int hh, int mid, int x, int y, int was, int margin);
+
 
 /* Worth the background boost (§5): an emergency squawk, airborne within 5 nm,
  * or under 3,000 ft within 10 nm with its track within 60 deg of home. */

@@ -4856,7 +4856,7 @@
       if (c.type === 'index') return false;                  // D43 P5d.3n: crystal paint, still
       if (c.type === 'window') return c.shows !== 'custom';
       if (c.type === 'flare') return c.icon === 'datetext';
-      if (c.type === 'subdial') return c.scale !== 'none';   // an engraved dial with no hand is plate art
+      if (c.type === 'subdial') return subScale3(c, comps) !== 'none';   // an engraved dial with no hand is plate art
       return true;
     });
   }
@@ -4872,7 +4872,24 @@
    * export. Hosted rows are ordered BEFORE their host: the runtime paints its
    * bottom bucket in record order, and a host tile carries a punched aperture
    * over the tile beneath it. Unknown types refuse rather than freeze. */
-  var COMP3_SCALE_SRC = { seconds: 'second', date: 'date', day: 'weekday', month: 'month', hours: 'hour12' };
+  var COMP3_SCALE_SRC = { seconds: 'second', minutes: 'minute', date: 'date', day: 'weekday', month: 'month', hours: 'hour12', hours24: 'hour24' };
+  /* What a sub-dial reads, and how its hand moves (owner, 2026-11-06: a face prints nothing,
+   * the hands aligned to it print and read). The first hand aligned to it names the measure; a
+   * face no hand is aligned to is plate art. Its hand sweeping an arc (retrograde) or riding a
+   * slider's slot makes it the arc or the track a pointer row drives. A design written before
+   * named the measure and the arc on the face (scale, form 'fan'), and still reads so. */
+  var HAND3_SCALE = { second: 'seconds', minute: 'minutes', hour: 'hours', hours24: 'hours24', gmt: 'hours24', date: 'date', day: 'day', month: 'month' };
+  function faceHand3(c, comps) { return (comps || []).filter(function (x) { return x.type === 'hand' && x.host === c.id; })[0] || null; }
+  function subScale3(c, comps) {
+    if (c.scale !== undefined) return c.scale;
+    var h = faceHand3(c, comps);
+    return h ? (HAND3_SCALE[h.shows] || 'none') : 'none';
+  }
+  function subTrack3(c, comps) {
+    if (c.form === 'fan' || c.form === 'slider') return true;
+    var h = faceHand3(c, comps), m = h && h.motion;
+    return !!(m && (m.path === 'retrograde' || m.path === 'slide' || m.path === 'slide-x' || m.path === 'slide-y'));
+  }
   var COMP3_SHOW_SRC = { date: 'date', day: 'weekday', month: 'month' };
   /* D34: the scales whose hand sweeps a WHOLE turn across its domain. A pointer row
    * carries one plate and the dial turns it, so the plate must be the box the hand
@@ -4976,11 +4993,12 @@
         if (!src) { refuses.push('the window \u201c' + id + '\u201d shows \u201c' + c.shows + '\u201d: no source on this dial reads that'); return; }
       } else if (c.type === 'moon') src = 'moon_age';
       else if (c.type === 'subdial') {
-        if (c.scale === 'none') return;                                  // no hand: plate art
-        if (c.form === 'fan' || c.form === 'slider') return;              // D43 P5d.2: its hands are pointer rows
-        if (c.carrier === 'pointer' || pointerDefault3(c, comps)) return;   // D34: pointerPlan3 owns this row, not the bank
-        src = (c.scale === undefined) ? 'second' : COMP3_SCALE_SRC[c.scale];
-        if (!src) { refuses.push('the subdial \u201c' + id + '\u201d reads scale \u201c' + c.scale + '\u201d: the dial indexes plates by calendar value and none matches'); return; }
+        var sc3 = subScale3(c, comps);
+        if (sc3 === 'none') return;                                      // no hand: plate art
+        if (subTrack3(c, comps)) return;                                 // D43 P5d.2: its hands are pointer rows
+        if (pointerDefault3(c, comps)) return;   // D34: pointerPlan3 owns this row, not the bank
+        src = COMP3_SCALE_SRC[sc3];
+        if (!src) { refuses.push('the subdial \u201c' + id + '\u201d reads scale \u201c' + sc3 + '\u201d: the dial indexes plates by calendar value and none matches'); return; }
       } else {
         refuses.push('the complication \u201c' + id + '\u201d of type \u201c' + c.type + '\u201d has no mapping to a window row');
         return;
@@ -5013,18 +5031,17 @@
    * carrier the author just said no to. Rows here carry the drive, not the art:
    * the composer measures the plate and the pivot off the pixels and feeds them
    * to bakeClock3's `aux` option. */
-  /* D34 follow-up: the Drive chip defaults a pointer-capable subdial to Pointer,
-   * and Cx defaults never write into the design — so the bake reads the default
-   * the same way the chip shows it. An unset carrier on the seconds or hours
-   * ring belongs to the pointer row; an explicit `plates` is the author's
-   * escape hatch and stays on the bank. A subdial HOSTING another indication
-   * never defaults to the pointer either: the plates carrier punches the host
-   * tile so the hosted tile sits inside it, and a pointer row carries nothing
-   * to punch. The UI and the bake share this one predicate. */
+  /* Which way a subdial's hand ships is the engine's call alone (owner, 2026-11-05; it was the
+   * author's Drive chip, D34): a seconds or hours ring, or any fan or slider, turns one hand
+   * plate; a ring that hosts another indication stays on the bank, because the plates carrier
+   * punches the host tile so the hosted tile sits inside it and a pointer row carries nothing
+   * to punch; every other scale stays on the bank. The editor and the bake share this one
+   * predicate, and an old design's `carrier` is ignored. */
   function pointerDefault3(c, comps) {
-    if (c.type === 'subdial' && (c.form === 'fan' || c.form === 'slider')) return true;   // a fan or a slider is always pointer-driven
-    if (c.type !== 'subdial' || c.carrier != null) return false;
-    if (!(c.scale === undefined || c.scale === 'seconds' || c.scale === 'hours')) return false;
+    if (c.type === 'subdial' && subTrack3(c, comps)) return true;   // an arc or a slider is always pointer-driven
+    if (c.type !== 'subdial') return false;   // the engine's call alone (owner, 2026-11-05): no authored carrier
+    var sc3 = subScale3(c, comps);
+    if (!(sc3 === 'seconds' || sc3 === 'hours')) return false;
     // a hand on the sub-dial is its pointer, not another indication (D43 P5c)
     return !(comps || []).some(function (x) { return x.host === c.id && x.type !== 'hand'; });
   }
@@ -5033,18 +5050,17 @@
     var rows = [], refuses = [];
     (comps || []).forEach(function (c) {
       if (c.type !== 'subdial') return;
-      if (c.carrier === 'plates') return;
-      if (c.carrier !== 'pointer' && !pointerDefault3(c, comps)) return;
+      if (!pointerDefault3(c, comps)) return;
       var id = c.id === undefined ? '?' : c.id;
       if ((comps || []).some(function (x) { return x.host === id && x.type !== 'hand'; })) {
         refuses.push('the subdial \u201c' + id + '\u201d hosts another indication: the plates carrier punches its '
           + 'plate so the hosted tile sits inside the hole, and a pointer row carries nothing to punch — drive it as plates');
         return;
       }
-      var src = c.scale === undefined ? 'second' : COMP3_SCALE_SRC[c.scale];
+      var sc3 = subScale3(c, comps), src = COMP3_SCALE_SRC[sc3];
       if (!src || !COMP3_RING_FULL[src]) {
         refuses.push('the subdial \u201c' + id + '\u201d asks to be driven as a pointer and reads scale '
-          + '\u201c' + (c.scale === undefined ? 'seconds' : c.scale) + '\u201d: a pointer plate turns through '
+          + '\u201c' + sc3 + '\u201d: a pointer plate turns through '
           + 'a whole linear sweep, and that ring does not close under its own hand — drive it as plates');
         return;
       }

@@ -182,6 +182,18 @@ def _app_version():
         return f.read().strip()
 
 
+def _app_stamp():
+    """The release stamp the editor and the hub read: slug, version, and app.json's os_min
+    when it names one (the hub refuses an install on an older OS by it, from orb-app.js)."""
+    st = {"slug": "clock", "version": _app_version()}
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
+                           "apps", "clock", "app.json")) as f:
+        m = json.load(f)
+    if m.get("os_min"):
+        st["os_min"] = m["os_min"]
+    return st
+
+
 def _manifest():
     return json.dumps({"editor": 1, "entry": MEMBER_ENTRY, "runtime": RUNTIME,
                        "baker": 3},
@@ -202,8 +214,7 @@ def _rewrite(text):
         "window.__resources[%s]=%s;" % (json.dumps(u), json.dumps(l)) for u, l in CDN_LOCAL)
     # D43 P7: the editor names the app and the release it belongs to in every design it
     # writes into a theme, so a design knows which editor made it (apps/clock/version.txt)
-    resources += "<script>window.__ORB_APP=%s;</script>" % json.dumps(
-        {"slug": "clock", "version": _app_version()}, sort_keys=True)
+    resources += "<script>window.__ORB_APP=%s;</script>" % json.dumps(_app_stamp(), sort_keys=True)
     pairs = (
         ('<script src="./support.js"></script>',
          resources + '\n<script src="/runtime/support@1/support.js"></script>'),
@@ -258,6 +269,10 @@ def members():
     for name in (MEMBER_ENGINE, MEMBER_RENDERER, MEMBER_SOUND, MEMBER_STACK):
         with open(os.path.join(COMPOSER_DIR, name), "rb") as f:
             out.append((name, f.read()))
+    # orb-app.js, the stamp the SDK writes into every packed editor: the hub reads os_min here
+    st = _app_stamp()
+    if st.get("os_min"):
+        out.append(("orb-app.js", ("window.__ORB_APP = %s;\n" % json.dumps(st, sort_keys=True)).encode()))
     return out
 
 

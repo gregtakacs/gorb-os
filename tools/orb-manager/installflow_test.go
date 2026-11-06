@@ -280,10 +280,10 @@ func TestThemeStepIsPerApp(t *testing.T) {
 }
 
 // The flight tracker names its OS floor (app.json os_min), carried in its editor region's
-// stamp, and the install run reads it from there: the shipped container must say v1.2.8,
-// and the clock, which runs on older releases, names none.
+// stamp, and the install run reads it from there: the shipped flights container must say
+// v1.2.8, and the clock v1.2.9 (its themes' gear plans play on that release's scheduler).
 func TestShelfAppsCarryTheirOSFloor(t *testing.T) {
-	for slug, want := range map[string]string{"flights": "v1.2.8", "clock": ""} {
+	for slug, want := range map[string]string{"flights": "v1.2.8", "clock": "v1.2.9"} {
 		body, err := os.ReadFile(filepath.Join("apps", slug+".orbapp"))
 		if err != nil {
 			t.Fatalf("%s: %v", slug, err)

@@ -46,13 +46,18 @@ zf = zipfile.ZipFile(io.BytesIO(region))
 names = [i.filename for i in zf.infolist()]
 entry = zf.read("index.html").decode("utf-8")
 
-# 1. The member set is exactly the six files, manifest first. A seventh member
+# 1. The member set is exactly the seven files, manifest first (orb-app.js last). An eighth
 #    would be an editor file the region does not declare; a missing engine,
 #    renderer, sound generator or stack is a dead iframe, a silent Sound tab (D39)
 #    or an empty layer panel (D43 P4).
-check("members are exactly the six, editor.json first",
+check("members are exactly the seven, editor.json first",
       names == ["editor.json", "index.html", "watch-engine.js", "dial-renderer.js",
-                "sound-engine.js", "stack.js"], str(names))
+                "sound-engine.js", "stack.js", "orb-app.js"], str(names))
+# the stamp the SDK writes into every packed editor: the hub refuses an install on an OS
+# older than its os_min (library.go appOSMin), read from this member and nowhere else
+_stamp = zf.read("orb-app.js").decode("utf-8") if "orb-app.js" in names else ""
+check("orb-app.js names the clock, its release and app.json's os_min",
+      '"slug": "clock"' in _stamp and '"os_min": "v' in _stamp, _stamp.strip())
 check("no member is DEFLATEd (the hub streams without unpacking)",
       all(i.compress_type == zipfile.ZIP_STORED for i in zf.infolist()))
 check("region fits the firmware's 2 MiB cap", len(region) <= 2 * 1024 * 1024,

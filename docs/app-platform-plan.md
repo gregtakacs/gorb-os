@@ -6835,3 +6835,58 @@ is kept for older designs. The new renders must still look like the originals.
   even though its 15/5 pre-painted plan held on the glass. The model is now only a stand-in
   until the plan lands. The preview's timer and an export's fallback tick rate keep its number,
   so nothing shipped changes.
+
+## 51 — The knob: no arming; one dial per app, centred on its home — 2026-11-06
+
+**Owner, 2026-11-06.** Press to arm, turn, press again, turn again is clunky: a turn means
+"next app" until a press, then "inside this app", and neither the hand nor the glass says
+which. The armed mode goes. Every app's knob is the same three gestures:
+
+- **Turn moves along the app's one dial**, from the first click, with nothing to arm. The
+  dial is centred on the app's home view: one kind of thing lies clockwise, another
+  anticlockwise, so what is wanted most is a few clicks either side of home, never at the
+  far end of a line.
+- **Press is the app's one action**, always the same one (a place, a range).
+- **Hold leaves the app.** It opens one screen listing the apps first and the system pages
+  below them; turn picks, press opens. This is the nicer carousel §48 was designing, and it
+  keeps §48's ruling that the menu opens on a long-press.
+
+Three rules make the dial quick at both ends:
+
+1. **Home is sticky.** Slow clicks cross it like any other; a fast spin always stops on it,
+   so one flick back from anywhere on the dial lands home.
+2. **Acceleration.** A fast spin moves several steps per click; slow clicks stay one step.
+   The OS does this in the input layer, so every app gets it. The thresholds are a bench
+   question.
+3. **Idle returns home**, after about 20 s, so a glance shows the home view.
+
+Each end of a dial stops; it does not wrap, so an overshoot never jumps to the other side.
+
+**The clock** has no dial of its own: a turn on the clock opens the app list, so the most
+common move (from the clock to another app and back) stays a turn and a press. Inside any
+other app a turn can never leave it by accident.
+
+**Double press: no.** It would delay every single press by the time it waits for a second.
+
+**Touch: never required** (owner undecided on enabling it). Everything works from the knob;
+if touch comes, tap = press and tap-a-target (an aircraft) are the candidates, and swipes
+are not.
+
+**How the apps map** (weather-plan.md §2.4, flight-tracker-design.md "Knob"):
+
+| app | anticlockwise of home | home | clockwise of home | press |
+|---|---|---|---|---|
+| Weather | the five days, tomorrow first | Now | the 24 hours, the next first, on the ring | next place, keeping the position |
+| Flights | the aircraft, farthest first | the plain scope | the aircraft, nearest first, each with its card | next range |
+
+**Precondition: the hourly step is fast.** The owner finds one click on Weather's hourly ring
+frustratingly slow today, and a design built on turning fails if a click is slow. A click
+re-sets four labels (each recomposed in the theme's fonts) and the opacity of all twelve
+rotated hour bars; twelve bars and the other rotated rows overflowed the 12-entry pose cache
+that `e81a1ee` raised to 40, so v1.2.10 may already be quicker. Owed: time one click on the
+bench orb on v1.2.10 and split it between the labels, the bars and the input path before the
+dial is built.
+
+**Owed, in order:** the click timing above; the input layer (no arming, hold opens the app
+list, acceleration, sticky home, idle return), with the router suites moved off the armed
+state; Weather and Flights on their dials; the app list screen, picking up §48's bench.

@@ -236,6 +236,11 @@ rate.
   steps the card through the drawn aircraft, wrapping at both ends. A third
   push goes back to flipping between apps. The header names the level
   ("zoom  40 nm", "3 of 24", in green). A long press is the shell's.
+  **Superseded 2026-11-06 (owner; app-platform-plan.md §51):** no arming. The
+  knob is one dial centred on the plain scope: clockwise steps the aircraft
+  nearest first, each with its card; anticlockwise steps them farthest first;
+  each end stops; a fast spin stops on the scope, and so does 20 s idle. A
+  press steps the range. A hold leaves the app.
 
 Drawing cost: at most 24 × (dot + line + optional label) LVGL objects, moved at
 1 Hz, each invalidating a small area. That's well under what the clock's dial
@@ -336,7 +341,8 @@ consent rule applies.
   apps. The view disarms itself on the third push; the router reads
   `flights_view_armed()` each poll. Bench on orb-A through `/api/v1/screen`:
   every level and the turn after the third push landing on the next app.
-  The long press is the shell's. The options
+  The long press is the shell's. (As built; the 2026-11-06 ruling replaces
+  the levels with one dial, see "Knob" above.) The options
   page cycles Range, Source, Background, Boost and Ground on a press and shows
   Home read-only. That page was unreachable until 2026-11-01: the menu lists
   an app's page only when its iface declares `opt_arm`, and the tracker's did

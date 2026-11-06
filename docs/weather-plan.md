@@ -21,6 +21,8 @@ figure marked *estimate* is owed a measurement before the slice that depends on 
 7. **The weather app gets a theme editor**, as the clock and flights have (§2.6).
 8. **An app's settings belong on its App settings page, never in its theme editor**
    (2026-11-06). The places moved there (§2.6).
+9. **The knob is one dial centred on Now** (2026-11-06, app-platform-plan.md §51): the
+   hours clockwise, the days anticlockwise, a press for the next place, no arming (§2.4).
 
 ## 1. What is there today (read 2026-11-06, OS v1.2.8)
 
@@ -39,7 +41,8 @@ figure marked *estimate* is owed a measurement before the slice that depends on 
 - **Settings**: up to 16 per app, `int`, `enum`, `toggle`, `string` or `secret`.
 - **The knob**, by the convention flights uses (`apps/flights/main.c` `orb_set_armed`,
   `orb_input`): unarmed, turning moves between apps; a press arms the app; armed, turns
-  and presses are the app's; a hold, or the app's own disarm, hands the knob back.
+  and presses are the app's; a hold, or the app's own disarm, hands the knob back. Ruled
+  out for Weather on 2026-11-06 (§0 ruling 9, §2.4).
 - **No units anywhere.** Flights writes `nm` straight into its range label and option
   value (`RANGES_NM[] = { 10, 20, 40, 80 }`, `main.c:37`, used at :632, :676, :688,
   :932). The OS has no units setting.
@@ -192,21 +195,36 @@ About 200 B a place, under 1 KB in all, so 64 KB of memory is plenty.
 
 ### 2.4 On the glass
 
-The knob follows flights' pattern.
+The knob is one dial centred on Now (owner, 2026-11-06; the OS rules in
+app-platform-plan.md §51). There is no arming: the first click is the app's.
 
-- **Unarmed:** Now, for the place last chosen (Home until another is). Turning moves to the
-  next app, as always.
-- **Press (arms):** the place ring shows; turning steps Home → place 1 → 2 → 3, showing
-  each one's Now.
-- **Press again:** the next view of that place: Now → Hourly → Days. A press on Days, or
-  a hold, disarms and returns to Now on the place chosen (owner, 2026-11-06: it stays).
+```
+   anticlockwise                          clockwise
+Fri Thu Wed Tue Tomorrow | NOW | 1h 2h 3h ... 24h
+        day bars          home      hourly ring
+```
+
+- **Clockwise from Now:** the hourly ring, its cursor on the next hour; each click moves
+  it an hour, and past the twelfth the ring pages to the next twelve. It stops at the
+  24th hour.
+- **Anticlockwise from Now:** the five days, tomorrow first, each click the next day,
+  the day under the cursor lit. It stops at the fifth day.
+- **Now is sticky:** a fast spin always stops on it, so one flick back from anywhere
+  lands on Now. Idle for about 20 s also returns to Now.
+- **Press:** the next place (Home → place 1 → 2 → 3 → Home), keeping the position on the
+  dial, so the same hour or day can be compared between places. The place shown stays
+  chosen (owner, 2026-11-06).
+- **Hold:** leaves the app (the app list and the system pages).
+
+The 2026-11-06 build (§6) still arms: a press steps places, then views. It moves to the
+dial with the OS input work in §51.
 
 **Now:** the place name, a large temperature, the condition icon, feels-like and wind,
 today's high and low on the bezel.
 
 **Hourly:** the next 24 hours around the ring like a clock face, starting at the current
 hour. Each hour's tick is coloured by temperature, its rain chance as an inner arc;
-the centre shows the current hour's numbers, and turning (armed) moves a cursor round
+the centre shows the current hour's numbers, and turning clockwise moves a cursor round
 the ring to read any hour.
 
 **Days:** five rows, each a day name, icon, high/low and rain chance. Five is the most
@@ -348,8 +366,8 @@ bake rasterises them into the theme's sprites. The orb never draws an icon itsel
 
 ### 6.2 Where the build differs from §2
 
-- **Places step = each place's Now** (§2.4's text), not the list in the design mockups: the
-  32 rows had no room for a list.
+- **Places step = each place's Now**, not the list in the design mockups: the 32 rows had
+  no room for a list. Superseded by §2.4's press for the next place, which keeps the view.
 - **The hourly ring is a 12-hour clock face.** Twelve bar rows stand at their clock hours
   and show twelve of the 24 hours; turning past the twelfth pages to the next twelve. 24
   bars would have taken 24 of the 32 rows.

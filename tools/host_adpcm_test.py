@@ -26,7 +26,10 @@ import theme_schema as ts  # noqa: E402
 
 HDR = os.path.join(ROOT, "main", "audio", "orb_adpcm.h")
 BAKER = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime", "baker@1", "orbtheme-baker.js")
-NODE = shutil.which("node") or os.path.expanduser("~/.local/share/nodeenv-gorb/bin/node")
+# The baker's half runs in node. The host-suite CI job has none, so there it is skipped
+# and said so; `make check-editor` (node on PATH) runs this suite whole.
+NODE = shutil.which("node") or next((p for p in [os.path.expanduser(
+    "~/.local/share/nodeenv-gorb/bin/node")] if os.path.exists(p)), None)
 
 MUTATIONS = [
     ("if (code & 2u) diff += step >> 1;", "if (code & 2u) diff += step >> 2;"),
@@ -174,7 +177,9 @@ def main():
             return 0 if caught == len(MUTATIONS) else 1
         run(build(d))
     print("(the round-trip floors are the codec's; a clip under %d dB is stored as PCM16)" % ts.ADPCM_MIN_SNR_DB)
-    for name, (pcm, _f) in signals().items():
+    if not NODE:
+        print("skip  the baker's half: no node here (make check-editor runs it)")
+    for name, (pcm, _f) in (signals().items() if NODE else ()):
         check("%s: the baker writes the schema's bytes" % name,
               js_encode(pcm) == ts.adpcm_encode(pcm))
     # the per-clip choice: a chime compresses, a sharp tick stays PCM16, and both bakers
@@ -183,7 +188,7 @@ def main():
     check("a chime is stored as ADPCM", ts.sound_encode(chime)[0] == ts.SOUND_ENC_ADPCM)
     check("a sharp tick stays PCM16 (it would fall under %d dB)" % ts.ADPCM_MIN_SNR_DB,
           ts.sound_encode(ticks)[0] == ts.SOUND_ENC_PCM16)
-    for name, (pcm, _f) in signals().items():
+    for name, (pcm, _f) in (signals().items() if NODE else ()):
         check("%s: the baker chooses the schema's encoding and bytes" % name,
               js_choose(pcm) == ts.sound_encode(pcm))
     check("3.9:1 against PCM16 for a whole block",

@@ -23,7 +23,10 @@ import theme_schema as ts  # noqa: E402
 
 HDR = os.path.join(ROOT, "main", "art", "orb_disc.h")
 BAKER = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime", "baker@1", "orbtheme-baker.js")
-NODE = shutil.which("node") or os.path.expanduser("~/.local/share/nodeenv-gorb/bin/node")
+# The baker's half runs in node. The host-suite CI job has none, so there it is skipped
+# and said so; `make check-editor` (node on PATH) runs this suite whole.
+NODE = shutil.which("node") or next((p for p in [os.path.expanduser(
+    "~/.local/share/nodeenv-gorb/bin/node")] if os.path.exists(p)), None)
 S = ts.DISC_SIDE
 
 MUTATIONS = [
@@ -202,7 +205,10 @@ def main():
             print("%d of %d mutants caught" % (caught, len(MUTATIONS)))
             return 0 if caught == len(MUTATIONS) else 1
         device(build(d))
-    js()
+    if NODE:
+        js()
+    else:
+        print("skip  the baker's half: no node here (make check-editor runs it)")
     rule()
     print("RESULT: %s" % ("pass" if not fails else "%d failed" % fails))
     return 1 if fails else 0

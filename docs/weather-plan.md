@@ -113,8 +113,7 @@ does with `orb_cfg_gen()` and `orb_home_gen()`. The SDK gets `binds.json` update
 the unit labels ("°C", "km/h", "nm"), so each app doesn't write its own.
 
 **Apps that use it** name the release in `os_min`, so Orb Manager refuses to install them
-on older firmware. The release is **OS v1.2.10**: v1.2.9 is already taken by gorb-os-2's
-`perf/plans-and-rings` branch.
+on older firmware. The release is **OS v1.2.10**, after v1.2.9 (the plans and rings work).
 
 ### 2.2 The flight tracker adopts it
 
@@ -331,7 +330,7 @@ bake rasterises them into the theme's sprites. The orb never draws an icon itsel
 - **The request path.** `orb_app_net.c` held an app's path in 200 B and `orb_https.c`
   built the URL in 320 B; four places need 389 B (measured). The path is 480 B now, which
   still fits esp_http_client's 512 B request line (`http_client_prepare_first_line`).
-- **W2, flights v1.2.9.** The range steps per unit (§2.2), `os_min` v1.2.10, Modern
+- **W2, flights v1.2.10** (on v1.2.9's far dots). The range steps per unit (§2.2), `os_min` v1.2.10, Modern
   re-baked onto the shelf.
 - **W3, the app.** `apps/weather/main.c` and `wx.c`, 25 KB of wasm in 64 KB.
   `tools/host_weather_test.py` drives `wx.c` through the OS's own tokenizer with

@@ -6624,76 +6624,97 @@ rule therefore first reached a bake in §49.15. The renderer, baker and loopchec
 
 ### 49.15 — Plans, not a policy table: fps x cutout, the Favour, and the glass — 2026-11-05
 
-**Status, end of 2026-11-05 — the figures below are the first glass pass and are superseded.**
-Found since, and fixed: the bench's sweep switch doubled an already-sweeping seconds row (a
-6° retrograde each second); `/debug/dial` capped every run at 20 s and its hold log at 512
-frames, so the "minute" holds were ~20 s; estimate4 posed every shadow twin at 0° and never
-priced it. With those fixed, estimate4 was refit by least squares on 73 glass arms (R 0.707,
-W 1.079, AA 0.665 per smoothed kpx, CAR 0.128, FIXED 4.34; rms 2.6 ms; the carriage repaints
-every frame). Smoothing is now a must (owner): every seconds row smooths, disc and ring too, and
-its shadow on a Smooth seconds shadow switch. Spans keep a ring's hollow (two per row, firmware
-and estimate4): fully smoothed Orbit ticks in 207 ms (was 618) and sweeps at 4 fps; Rink (a
-new preset, three ring sub-dials) sweeps its smoothed 151 px ring at 15 fps. The editor prices
-the plans live, each plan verified on a bank drawn at its own tempo (a plan's gear rate redraws
-its bank; chasing one estimate's pick flipped Sector 7.5/15 <-> 15/15 forever). The plate bank
-cap is 20 (CLK_BG_MAX). Owed: the full minute-long validation of every preset on the refit, the
-margin from it, and this section's rewrite.
-
 **Owner, 2026-11-05:** a small cutout must be able to run its gears faster than 8 — the
 §49.12 table capped them at 12 (4 to 5 under a sweep). And when two plans both fit (6/12,
-4/20, 5/15), the user chooses.
+4/20, 5/15), the user chooses. Then: smoothing is a must (every seconds row, disc and ring
+included; the seconds shadow on its own *Smooth seconds shadow* switch, hour and minute
+always smoothed), and no RAM-hungry tricks — internal RAM is tight and more apps are coming.
 
 - **The search** (`estimate4`): every gear rate on GEARS4 `[20, 15, 12, 10, 7.5, 6, 5, 4]` on
   every hand grid it lands on, against the frame time, the slot, the plate bank cap (20) and
   the carriage cap (16). What fits is cut to its frontier — no plan beaten on both hands and
   gears. A sweep may not go under 4; a beat with no gears may rest on its own beat (Orbit's
-  243 ms tick is a 1 fps grid). A ticking hand moves on its beats whatever the grid, so a
-  ticking dial's one plan is the fastest gears on the slowest grid that carries them.
+  tick is a 1 fps grid). A ticking dial's one plan is the fastest gears on the slowest grid
+  that carries them.
 - **Favour** (`picks`, `pickPlan4`): *sweep* — the fastest grid, then the fastest gears on it;
   *gears* — the fastest gears, then the grid; *balanced* — the largest smaller share of the
-  frontier's best grid and best gears, ties to the evener plan. Skeleton: 4/20, 7.5/7.5, 5/15.
-- **The editor:** Hands → Second hand shows *Favour* and *Plan* (by favour, or an exact plan)
-  once a bake has priced the bytes. A bake reads `estimate4` off its own bytes; when the pick's
-  gear tempo is not the one drawn, the bank is redrawn at it and baked once more (the plan
-  opens its own rebuild window in `buildGate`). A banked sweep names the plan's grid as its
-  beat (`tick_rate`). `TEMPOS` gains 5, 6 and 10; `loopcheck.py` checks all eight.
+  frontier's best grid and best gears, ties to the evener plan.
+- **The editor:** Hands → Second hand shows *Favour* and *Plan* (by favour, or an exact plan).
+  The price is live (`livePlan4`): the plate's frames are walked as the export walks them,
+  diffed into rects, and `estimate4` runs on a blank-plate bake with those rects (250 ms
+  debounce). A plan counts only once verified on a bank drawn at its own tempo — chasing one
+  estimate's pick flipped Sector 7.5/15 <-> 15/15 forever. The bake ships the settled plan.
 - **The bank:** `CLK_BG_MAX` 16 → 20 (main and SDK `clk_types.h`, `bake_clock.py`,
-  `BG3_FRAMES_MAX`; the host suite's refusal moved to 21 frames). `splitPolicy3` now prices a
-  frame past the keyframe as its delta rect (the motion box + 16 px a side, 3 B a texel) —
-  Diver's 20-frame bank had been thinned to 10 on full-panel prices. The thinning cases are
-  restated on whole-panel motion, where the old numbers reproduce exactly.
-- **The carriage** is baked at the gears' tempo, so a plan moves both.
+  `BG3_FRAMES_MAX`). `splitPolicy3` prices a frame past the keyframe as its delta rect. The
+  carriage is baked at the gears' tempo, so a plan moves both.
 
-**The glass (Gold, 80 MHz, spans + nearest shadows, `tools/bench/plan_matrix.py`).** Every
-template's frontier, and the cheapest plans the calculator refuses for time ("next up"), held
-on the paced grid. Held = 95% of frames up exactly 60/H refreshes. The first 8 s pass found
-the calculator optimistic, and it was refit on what the device measured:
+**The price.** A frame is its movers' spans (gapped: a ring keeps its hollow, two segments a
+row, firmware and `estimate4` alike — fully smoothed Orbit ticks in 207 ms, was 618), shadow
+twins posed at their parent's angle (they had been posed at 0° and never priced), the gear
+frame on the bank's largest rect, the carriage repainting every frame:
 
-- the gear frame is priced on the bank's **largest** rect (Regulator's rects run 6–61 kpx; the
-  mean priced its worst gear frames ~20 ms short); a pre-paint build stays on the mean;
-- **MARGIN 19 → 23** for a frame to fit (commit + DMA + the refresh wait: Diver, Station and
-  Aviator missed 20 at 19), **IDLE 19** kept for the pre-paint slack it was measured on;
-- **CAR 0.676 → 0.9** (Kitetour 6/6 and Orbital 5/5 missed by ~25 ms).
+    frame_ms = 0.744 restored_kpx + 0.507 walk_kpx + 1.277 smoothed_kpx
+             + 0.548 restored_kpx (carriage) + 7.2
 
-`tools/bench/plan_replay.js` re-judges a run offline under any constants. Then each borderline
-or disputed plan was held a full **minute** (`BENCH_MS=60000`), so the seconds hand crosses
-the whole dial — an 8 s window samples one eighth of it, and Station read 80% one run, 100% the
-next. On the minute:
+fitted by least squares on 31 direct plans held a minute each with the shadows as shipped,
+rms 2.6 ms. A frame fits when **its price x 1.15 + 20 ms** is under its shortest period: the
+jitter grows with the frame (a 140 ms carriage frame misses with 32 ms to spare, a 41 ms
+frame holds with 27). A gear frame that does not fit is pre-painted when the frames between
+leave **1.3x its build** past a 26 ms idle each, and its landing fits; a carriage is not
+pre-painted. `tools/bench/plan_replay.js` re-judges any run offline under any constants.
+
+**The glass (Gold, 80 MHz, `tools/bench/plan_matrix.py`, `BENCH_MS=60000`).** Held = 95% of
+frames up exactly 60/H refreshes and the gears at 90% of G, for a full minute (the seconds
+hand crosses the whole dial; 8 s windows read Station 80% one run and 100% the next). The
+first 2-hour run measured every shadow nearest (`shadow=nearest`) while the hour and minute
+twins ship smoothed, so it validated a cheaper dial than ships — Skeleton's 4/12 held 100%
+there and 93.5% as shipped. Re-run with the bake's own flags, the frame terms refit (AA 0.665
+→ 1.277: the 73-arm refit had been measured nearest too), and every new frontier plan held
+in its own pass:
 
 | | plans | result |
 |---|---|---|
-| frontier, direct | 0/15 aviator, station, speedster · 0/20 luna, neon, phase, perpetual · 10/20 sector, diver · 12/12 regulator · 6/6 opentour · 5/5 kitetour · 4/4 orbital | all held, 96.4–100% |
-| frontier, pre-painted | 4/20 skeleton | held, 96.0% |
-| frontier, pre-painted | 5/15 skeleton · 5/20 calendar · 7.5/15 modern | **missed, 93.5–94.5%**: a gear landing late every second or two |
-| next up | 5/20 skeleton · 15/15 modern · 20/20 sector · 0/20 station · 6/6 kitetour · 5/5 orbital | missed, as refused |
-| next up | 20/20 diver · 10/20 calendar · 7.5/7.5 opentour · 0/20 aviator · 0/20 speedster | **held, 96.9–99%**: one step left on the table |
+| frontier, direct | 0/15 luna, neon, phase, perpetual, speedster, wave · 0/12 station, aviator · 15/15 diver · 12/12 sector, calendar · 10/10 modern · 7.5/7.5 regulator · 6/6 skeleton · 5/5 opentour · 4/4 kitetour, orbital · 0/1 rink, orbit, flux | all held, 95.9–100% |
+| frontier, pre-painted | 5/15 sector, calendar, regulator · 6/12, 4/20 regulator · 6/12 modern (the editor's bake, after the zone fix below) | all held, 95.1–100% |
+| next up | 0/20 every sweep dial · 0/15 station · 15/15 calendar, sector · 12/12 modern, regulator · 7.5/15 regulator · 5/15 modern · 7.5/7.5 skeleton · 4/12, 4/20 skeleton · 10/20 regulator · 5/10 kitetour · 4/12 orbital | all missed, 0–94.4% |
 
-The calculator is never more than one step off. Its frame price is good to about ±3 ms, and
-the misses on both sides sit inside that, at the 95% line (Speedster prices 2 ms dearer than
-Station and is the cheaper of the two on the glass). Every direct plan it offers holds; three
-pre-painted plans hold ~94%. Whether pre-paint is priced stricter (those three fall back a
-step: Skeleton 5/15 off, Calendar 15/15, Modern 12/12) is the owner's call.
+Every plan the calculator offers held; every plan one step past it missed. Of 34 plans in the
+shipped-shadow run it agrees on 30 and refuses four the glass held, none by much: Aviator 0/15
+(95.5%), Calendar 7.5/15 (96.0%), Regulator 5/20 (96.6%, the build factor) and Regulator 10/10
+(its largest-rect gear price); the 13-plan frontier pass agrees on all 13.
 
-Not shipped: the device still plays these on the shipped rung ladder `{12, 8, 4, 2, 1}`; the
-plans are what the bench's paced grid, ink spans and pre-paint hold (§49.3's shipping list).
-A theme with a 17–20 frame bank is refused by firmware older than this build.
+**Two seconds hands, and the pre-paint cut (firmware).** Modern's pre-painted plans priced to
+fit and missed (4/12 82.2%, 6/12 83.1%). With its sub-dial seconds hidden (EF_HIDDEN, same
+bytes otherwise) 4/12 held 99.9% and the mean frame fell 41.7 → 18.3 ms: an 8x65 hand costing
+23 ms. Pre-paint keeps PB (every slow layer under the seconds) and PF (every slow layer), and
+paints the seconds live over PB. The cut sat at the *lowest* fast job anywhere, and Modern's
+sub-dial seconds paints at order 2, under the hour (3) and minute (4) — so PB lost both hands
+and their smoothed shadows over the whole dial, and every frame repainted them live wherever
+the centre seconds crossed. Now (`orb_gfx.c`): each fast job has a zone (the disc its ink
+sweeps: pivot + farthest corner + 3 px), the planes cut at the lowest fast job whose zone
+covers the pixel, and each fast span paints on its own instead of one union per row. Exact
+on the glass (pre-paint's check mode: 0 mismatched px of 1.5–2.7 M on Modern, Regulator,
+Calendar, Sector); Modern 4/12 95.7 → 97.3%, 6/12 96.4%, mean frame 23.6 ms. The zone tables
+sit in PSRAM (`EXT_RAM_BSS_ATTR`, ~1.9 KB kept out of internal RAM). No other pre-painted plan
+moved off its hold.
+
+**The plan plays (OS v1.2.9).** Until now the device played every theme on the rung ladder
+`{12, 8, 4, 2, 1}`; the plans were what the bench's paced grid held. The scheduler now reads
+the theme's own plan — the gear rate G from the bank's frame time (8 is 7.5) and the hand grid
+H from the sweeping seconds row's rate — and where both land on the 60 Hz grid paces the beat
+to H, lands a gear frame every H/G beats, and pre-paints when that is 2 or more and no
+carriage turns. Only while the dial is on the glass: the menu, Flights and transitions are
+not paced. Ink spans are the default compositor; the bench's reset returns to the theme's
+plan. The baker had dropped the plan on the way: a seconds hand whose design names "sweep"
+took that cadence with no rate, so the device fell back to the plate's tempo and Skeleton's
+4/12 shipped as 4/4 — a sweeping seconds row that names no rate now carries the priced beat
+(`secBeat`). Unaided on Gold: the shelf Skeleton plays 6/6 (176 of 176 frames on time), the
+editor's Modern 6/12 pre-painted (95.7%). The clock (v1.2.24) needs v1.2.9: `os_min` rides
+the editor region's new `orb-app.js` stamp, which the hub's install gate reads. A theme with a
+17–20 frame bank is refused by older firmware.
+
+**Shipped.** The shelf Skeleton is re-baked on the final calculator: one plan, 6/6 (gears and
+hands at 6; its 4/12 sweep holds 93.5–94.4% as shipped, under the line). Rink (three ring
+sub-dials, victory green, forged carbon outside and woven inside) ticks 1/s with every ring
+smoothed and joins the presets for iteration. Background apps cost ~5 ms a second (Flights'
+longest call 0.5 ms).

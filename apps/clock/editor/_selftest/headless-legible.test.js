@@ -23,9 +23,8 @@ for (const key of Object.keys(E.PRESETS)) {
   if (small.length && ALL) Object.keys(by).forEach((k) => console.log('       ' + k + ': ' + by[k].length + ' e.g. ' + by[k].slice(0, 4).map((r) => JSON.stringify(r.text) + '@' + r.px.toFixed(1)).join(' ')));
   bad += small.length;
 }
-// every option a design can reach, not only the presets: each print and perimeter ring, each
-// sub-dial style and scale (round, fan and slider), a window of each kind at its smallest, and
-// text flares at their smallest
+// every option a design can reach, not only the presets: each scale look in each unit on each
+// path, a window of each kind at its smallest, and text flares at their smallest
 const audit = (name, design) => {
   global.__TEXT_AUDIT = [];
   const f = E.face(Object.assign({}, O, { design: E.canonDesign(design) }));
@@ -35,13 +34,19 @@ const audit = (name, design) => {
   return small.length;
 };
 let opts = 0;
-Object.keys(E.PRINTS).forEach((pr) => { opts++; audit('print ' + pr, { print: pr, numerals: 'all' }); });
-Object.keys(E.PERIMS || {}).forEach((pe) => { opts++; audit('perim ' + pe, { print: 'roman', perim: pe }); });
-Object.keys(E.SUB_DISPLAYS).forEach((st) => Object.keys(E.SCALES).forEach((sc) => ['round', 'fan', 'slider'].forEach((fm) => {
-  opts++; audit('sub-dial ' + st + '/' + sc + '/' + fm, { print: 'none', comps: [{ id: 's', type: 'subdial', host: 'dial', angle: 180, dist: 100, size: 40, scale: sc, display: st, form: fm }] });
-})));
-['date', 'day', 'month', 'custom'].forEach((sh) => { opts++; audit('window ' + sh, { print: 'none', comps: [{ id: 'w', type: 'window', host: 'dial', angle: 90, dist: 150, size: 0.6, shows: sh }] }); });
-['text', 'arctext', 'datetext'].forEach((ic) => { opts++; audit('flare ' + ic, { print: 'none', comps: [{ id: 'f', type: 'flare', host: 'dial', angle: 0, dist: 100, size: 4, icon: ic, text: 'BRAND' }] }); });
+// owner, 2026-11-06: every scale is a hand's, so each look is audited on a hand of every unit, on
+// each path it can take: a full turn on the dial, a full turn on a small face, a retrograde arc, a
+// slide. The chapter looks start at a dial's reach, the rest just past the hand's tip.
+const UNITS = ['hour', 'minute', 'second', 'date', 'day', 'month', 'hours24'];
+Object.keys(E.SCALE_STYLES).filter((st) => st !== 'none').forEach((st) => UNITS.forEach((u) => {
+  const sc = (o) => Object.assign({ style: st }, o);
+  opts++; audit(st + '/' + u + '/dial', { comps: [{ id: 'h', type: 'hand', host: 'dial', shows: u, length: 150, scale: sc(E.scaleFamily(st) === 'chapter' ? { at: 'fixed', radius: 216 } : {}) }] });
+  opts++; audit(st + '/' + u + '/small', { comps: [{ id: 's', type: 'subdial', host: 'dial', angle: 180, dist: 100, size: 40 }, { id: 'h', type: 'hand', host: 's', shows: u, scale: sc({ at: 'fixed', radius: 40 }) }] });
+  opts++; audit(st + '/' + u + '/arc', { comps: [{ id: 'h', type: 'hand', host: 'dial', angle: 180, dist: 100, shows: u, length: 40, motion: { path: 'retrograde', start: 270, span: 180 }, scale: sc({}) }] });
+  opts++; audit(st + '/' + u + '/slide', { comps: [{ id: 'h', type: 'hand', host: 'dial', angle: 180, dist: 150, shows: u, style: 'dot', length: 0, width: 4, motion: { path: 'slide', angle: 0, from: -60, travel: 120 }, scale: sc({ gap: 30 }) }] });
+}));
+['date', 'day', 'month', 'custom'].forEach((sh) => { opts++; audit('window ' + sh, { comps: [{ id: 'w', type: 'window', host: 'dial', angle: 90, dist: 150, size: 0.6, shows: sh }] }); });
+['text', 'arctext', 'datetext'].forEach((ic) => { opts++; audit('flare ' + ic, { comps: [{ id: 'f', type: 'flare', host: 'dial', angle: 0, dist: 100, size: 4, icon: ic, text: 'BRAND' }] }); });
 console.log(opts + ' options audited');
 console.log(bad ? 'RESULT: ' + bad + ' text runs under ' + E.LEGIBLE_PX + ' px' : 'every preset reads at 2-3 ft');
 process.exit(bad ? 1 : 0);

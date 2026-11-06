@@ -266,7 +266,7 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   const it = new (global.COMP_CLASS(DCLogic))({});
   it.ready = true; it.rendering = false; it.budget = () => ({ fps: 8, dev: { pace: 8, cross: 0, cov: 0, why: '', need: 8 } });
   it.state.dial = 'modern'; it.state.playing = false; it.state.hidden = {};
-  it.setState({ sel: null, selKind: null, step: 'hands', tab: 'hands' });
+  it.setState({ sel: null, selKind: null, step: 'dial', tab: 'timing' });
   const v0 = it.renderVals();
   ok(!v0.isEdited && v0.resetPresetLabel === 'Reset Modern', 'the title bar names the preset it resets to, once edited');
   const fl = () => it.renderVals().fields, row = (re) => fl().find((f) => re.test(f.label || ''));
@@ -480,6 +480,29 @@ const face = (comps) => E.face(Object.assign({ design: E.canonDesign({ print: 'r
   const k2 = it.design().comps.find((c) => c.id === ks[1].id);
   ok(!k2.dx && !k2.rot, 'Align to the figures puts a moved cutout back on them', JSON.stringify(k2));
   ok(it.renderVals().catOpts.some((c) => /\+ Wheel/.test(c.label)) && it.renderVals().catOpts.some((c) => /\+ Cutout/.test(c.label)), 'the catalogue offers a wheel and a cutout');
+}
+
+// ---- a wheel added on a sub-dial, and the sub-dial's cutouts (owner, 2026-11-06) ----------------
+{
+  const DCLogic = function () { };
+  DCLogic.prototype.setState = function (p) { Object.assign(this.state, typeof p === 'function' ? p(this.state) : p); };
+  const it = new (global.COMP_CLASS(DCLogic))({});
+  it.ready = true; it.rendering = false; it.state.dial = 'modern'; it.state.hidden = {};
+  it.state.designs = { modern: E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.modern.design))) };
+  const sub = it.design().comps.find((c) => c.type === 'subdial');
+  it.setState({ sel: sub.id, selKind: 'comp', step: 'parts', tab: 'comps' });
+  it.addComp('wheel');
+  const wc = it.design().comps.find((c) => c.type === 'wheel' && c.host === sub.id), kc = it.design().comps.find((c) => c.type === 'cutout' && c.host === wc.id);
+  const fc = it.face(), sg = fc.lay.subs.find((q) => q.id === sub.id), lw = fc.lay.wheels.find((q) => q.id === wc.id);
+  ok(lw.r > sg.r * 0.8 && lw.r < sg.r && lw.ri < lw.r && near(lw.ri / lw.r, 140 / 192, 0.02), 'a wheel added on a sub-dial fills that face, its ring in the default\u2019s proportions (it was a 10 px speck)', JSON.stringify([lw.r, lw.ri, sg.r]));
+  ok(near(fc.outline(wc.id).r, lw.r, 0.01) && near(fc.outline(wc.id).x, lw.x, 0.01), 'its dashed outline traces the whole wheel, not the small circle it is grabbed by', JSON.stringify(fc.outline(wc.id)));
+  const inside = (f) => { const S = f.lay.subs.find((q) => q.id === sub.id), W = f.lay.wheels.find((q) => q.id === wc.id);
+    return W.holes.every((h) => E._holePts(h).every(([x, y]) => Math.hypot(x - S.x, y - S.y) <= S.r - 0.5)); };
+  ok(inside(fc), 'and the cutout it comes with stands on the sub-dial');
+  it.setComp(kc.id, { w: 200, h: 200 });
+  ok(inside(it.face()), 'a cutout the author sized past the face is held inside the sub-dial');
+  it.setComp(kc.id, { w: null, h: null, dx: 90, dy: 40 });
+  ok(inside(it.face()), 'and one moved off the face is drawn back onto it');
 }
 
 console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');

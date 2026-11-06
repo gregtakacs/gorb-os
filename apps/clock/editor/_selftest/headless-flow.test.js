@@ -47,7 +47,9 @@ const stepOf = (it) => it.stepNow()[0];
   ok(v4.catOpts.length === Object.keys(E.COMP_TYPES).length + 1 && v4.catOpts.every((c) => c.blurb) && /Hand/.test(v4.catOpts[0].label), 'the catalogue offers every kind of part, a hand first among them, each with a line on what it is', v4.catOpts.map((c) => c.label).join());
   v4.catOpts.find((c) => /Subdial/.test(c.label)).go();
   const sd = nonHand().find((c) => c.type === 'subdial');
-  ok(!!sd && handsOn(sd.id).length === 1 && handsOn(sd.id)[0].shows === E.SCALE_SHOWS[sd.scale], 'a new sub-dial comes with one hand reading its scale', JSON.stringify(handsOn(sd && sd.id)));
+  // owner, 2026-11-06: the face prints no scale; the small seconds hand it brings prints its own
+  ok(!!sd && !('scale' in sd) && handsOn(sd.id).length === 1 && handsOn(sd.id)[0].shows === 'second' && handsOn(sd.id)[0].scale && handsOn(sd.id)[0].scale.style === 'classic',
+     'a new sub-dial is a face that prints nothing, with a seconds hand that prints the scale', JSON.stringify(handsOn(sd && sd.id)));
   it.setState({ sel: null, selKind: null });
   V().catOpts.find((c) => /Rendered display · text/.test(c.label)).go();
   ok(nonHand().length === 2, 'adding from the catalogue adds to the design', nonHand().map((c) => c.type).join());
@@ -111,16 +113,22 @@ const stepOf = (it) => it.stepNow()[0];
   ok(ids.length > 0 && ids.every((id) => { const r = pan(id); return r.length === 1 && r[0].anchor === 'hand-' + id && r[0].artOpen === false && /Artwork/.test(r[0].artToggleLabel); }), 'every hand\u2019s panel stands alone, its artwork upload folded', ids.length + ' hands');
   pan(ids[0])[0].toggleArt();
   ok(pan(ids[0])[0].artOpen === true && ids.slice(1).every((id) => !pan(id)[0].artOpen), 'opening one hand\u2019s artwork opens that hand\u2019s only');
-  ok(!V().handGrid && V().inspKind === 'Hand' && !V().fields.length, 'a selected hand shows nothing but its panel', V().fields.map((f) => f.label).join());
+  // owner, 2026-11-05: a hand's pane is the kit's rows, like every part's: its Name, then what it
+  // shows, where it stands, how it moves, how it looks, and its artwork, each section folding
+  const heads = () => V().fields.filter((f) => f.isHead).map((f) => f.label).join();
+  ok(!V().handGrid && V().inspKind === 'Hand' && V().fields[0].label === 'Name' && heads() === 'Reading,Placement,Motion,Scale,Look,Artwork', 'a selected hand shows its own pane in the kit\u2019s rows: Name, Reading, Placement, Motion, Scale, Look, Artwork', heads());
+  ok(V().fields.filter((f) => f.isHead).every((f) => f.fold) && V().fields.filter((f) => f.isHead && f.fold.open).length === 1, 'its sections fold, one open at a time');
+  const look = V().fields.find((f) => f.isHead && f.label === 'Look'); look.fold.toggle();
+  ok(V().fields.find((f) => f.isHead && f.label === 'Look').fold.open && !V().fields.find((f) => f.isHead && f.label === 'Reading').fold.open, 'opening Look closes the others');
+  it.setState({ sel: ids[1] || ids[0] });
+  ok(V().fields.find((f) => f.isHead && f.label === 'Look').fold.open, 'and the next hand opens where the last was left');
   // the style every hand starts from is the dial's: the Dial step's Hand style view
   it.setState({ sel: null, selKind: null, step: 'dial', tab: 'hands' });
   ok(V().handGrid && !V().handRows.length && V().fields.some((f) => f.label === 'Cast shadows'), 'the Dial step\u2019s Hand style shows the default-style grid and the shared settings, and no hand panels');
-  ok(V().subOpts.map((t) => t.label).join() === 'Dial,Hand style', 'the Dial step offers Dial and Hand style', V().subOpts.map((t) => t.label).join());
+  ok(V().subOpts.map((t) => t.label).join() === 'Dial,Hand set,Timing', 'the Dial step offers Dial, Hand set and Timing', V().subOpts.map((t) => t.label).join());
   it.setState({ sel: null, selKind: null });
   const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
-  const panel = html.slice(html.indexOf('<sc-for list="{{ handRows }}"'), html.indexOf('{{ h.onArtFile }}'));
-  const order = ['>Shows<', 'h.onShows', 'h.onHost', '>Shape<', 'h.onStyle', 'h.onLen', '>Paint<', 'h.onFinish', 'h.onShade', 'h.onLume', 'h.onPath', 'h.toggleArt', 'h.artOpen', 'h.artRef'].map((k) => panel.indexOf(k));
-  ok(order.every((x, i) => x >= 0 && (i === 0 || x > order[i - 1])), 'the panel reads Shows, Shape, Paint, Motion, then the folded artwork', order.join(','));
+  ok(html.indexOf('<sc-for list="{{ handRows }}"') < 0 && html.indexOf('class="wc-row') < 0, 'no hand-written hand pane is left: one kind of element, one kind of pane');
 }
 
 // ---- from a preset ------------------------------------------------------------
@@ -170,7 +178,9 @@ const stepOf = (it) => it.stepNow()[0];
     // complication list (and its hidden add row) went; the stage box became the pane
     compRows: 'stackRows', addOpts: 'catOpts', hasSelHead: 'inspKind', selTitle: 'inspTitle',
     stageWin: 'stageCv', stageFlow: 'stageRef', stageRing: 'stageRound', stageRing2: 'stageRound',
-    mech: 'mechCls', stackCap: 'stackCapShort', themeNameLen: 'themeNameTip' };
+    mech: 'mechCls', stackCap: 'stackCapShort', themeNameLen: 'themeNameTip',
+    // owner, 2026-11-05: a hand's pane is the kit's rows, so it rides the inspector's fields
+    handRows: 'studioFields', isHands: 'studioFields' };
   const html = fs.readFileSync(path.join(__dirname, '..', 'Watch Composer.dc.html'), 'utf8');
   const tpl = html.slice(html.indexOf('<x-dc>'), html.indexOf('</x-dc>'));
   const bound = new Set((tpl.match(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)/g) || []).map((m) => m.replace(/\{\{\s*/, '')));
@@ -224,5 +234,35 @@ const stepOf = (it) => it.stepNow()[0];
   ok(!/#c9a25a|#f0d79a|#2a2316/.test(html.slice(html.indexOf('<x-dc>'), html.indexOf('</x-dc>'))), 'no gold left in the studio\u2019s chrome');
 }
 
-console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');
-process.exit(fails ? 1 : 0);
+// ---- a sub-dial prints nothing; the hand aligned to it prints in its own units ---------
+{
+  const it = mount('modern'), D = () => it.design();
+  const sub = D().comps.find((c) => c.type === 'subdial'), hid = D().comps.find((c) => c.type === 'hand' && c.host === sub.id).id, hc = () => D().comps.find((c) => c.id === hid);
+  const style0 = (hc().scale || {}).style;
+  it.setComp(sub.id, { scale: 'date', tstyle: 'bold' });
+  ok(!('scale' in D().comps.find((c) => c.id === sub.id)) && hc().shows === 'second', 'a face keeps no scale of its own, and its hand reads what it read', JSON.stringify(D().comps.find((c) => c.id === sub.id)));
+  it.setHand(hid, { shows: 'date' });
+  const hd = (it.face().hands || []).find((h) => h.id === hid);
+  ok(!!style0 && hc().scale && hc().scale.style === style0 && hd && hd.kind === 'date' && hd.scale && hd.scale.style === style0,
+     'the hand set to the date keeps its look, and its scale now counts the date', JSON.stringify(hc().scale));
+}
+
+// ---- the live price asks again by itself (a fresh Diver read 4 fps until its beat was touched) ----
+(async () => {
+  const it = mount('diver'), wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  it.settled3 = () => true;
+  const walked = [];
+  it.livePlan4 = (k) => { walked.push(k); return new Promise((r) => setTimeout(() => r(null), 400)); };
+  it.liveSoon(); await wait(300);
+  ok(walked.length === 1 && it._liveBusy, 'a price is walking');
+  it.setCfg('tick', '1'); it.liveSoon();                       // the author moves on mid-walk
+  await wait(2000);                                            // no update from the editor in between
+  ok(walked.length >= 2 && walked[walked.length - 1] === it.live4Key(), 'a request made while a walk ran is priced when it ends, without another edit', walked.length);
+  const n0 = walked.length;
+  it.settled3 = () => false; it.setCfg('tick', 'sweep'); it.liveSoon(); await wait(500);
+  ok(walked.length === n0, 'nothing is priced while the dial is still building');
+  it.settled3 = () => true; await wait(2000);
+  ok(walked.length > n0 && walked[walked.length - 1] === it.live4Key(), 'and the request is priced once it settles, without another edit', walked.length - n0);
+  console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');
+  process.exit(fails ? 1 : 0);
+})();

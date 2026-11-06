@@ -135,7 +135,7 @@ ok(presets >= 17, 'every preset was built', presets);
   ok(lift.ok && lift.lift === 's2' && lift.order.join() === 'centre-hour,comp:s2,centre-minute,centre-second', 'the lowest hand stepping under s2 lifts s2 just above it', lift.ok ? lift.order.join() : lift.reason);
   const lifted = Object.assign({}, inp, { order: lift.order }), stL = S.build(lifted), atL = (id) => stL.findIndex((x) => x.id === id);
   const s2 = stL[atL('comp:s2')];
-  ok(s2.group === 'live' && s2.lifted && /still row/.test(s2.badge), 'the lifted face joins the live band, badged a still row', s2.badge);
+  ok(s2.group === 'live' && s2.lifted && /above the hands/.test(s2.badge), 'the lifted face joins the live band, badged above the hands', s2.badge);
   ok(atL('hand:s2-hand') === atL('comp:s2') + 1 && atL('comp:w3') > atL('hand:s2-hand') && stL[atL('comp:w3')].parent === 'comp:s2', 'its hand and its disc come with it (R4)');
   ok(atL('comp:s2') < atL('hand:centre-hour'), 'and it sits over the hand below');
   ok(S.rowCount(lifted).rows === S.rowCount(inp).rows + 1, 'R6: the lifted face counts as one more live row');

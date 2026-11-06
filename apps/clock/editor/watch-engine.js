@@ -78,9 +78,6 @@
    * on the dial or on a sub-dial, in any number. `shows` is what it indicates; it turns by
    * TURN[shows], a GMT hand by gmtTurn(its own offset). */
   const HAND_SHOWS = { hour: 'Hour', minute: 'Minute', second: 'Seconds', hours24: '24-hour', gmt: 'GMT · second time zone', day: 'Day of week', date: 'Date', month: 'Month' };
-  // what a sub-dial's printed scale reads: the hand Add seats on a new sub-dial shows this
-  const SCALE_SHOWS = { seconds: 'second', date: 'date', day: 'day', month: 'month', hours: 'hour' };
-  const PERIMS = { none: 'No perimeter', hours24: '24 hours', date: 'Date 1–31', day: 'Day of week' };
   // One spec per perimeter scale: splits, which are emphasised, their label, and the tick
   // geometry. Index 0 always sits at 12 o'clock and runs clockwise, matching TURN above.
   const PERIM_SPEC = {
@@ -88,10 +85,6 @@
     date: { n: 31, maj: (i) => (i + 1) % 5 === 0 || i === 30, lab: (i) => String(i + 1), fs: 9, tw: 2.2, qw: 0.8, tl: 8 },
     day: { n: 7, maj: () => true, lab: (i) => DAYS[i], fs: 11, tw: 3, qw: 3, tl: 10 },
   };
-  // The perimeter scale a hand on the dial reads. When the dial prints that ring (perim, the
-  // dial's own choice) the hand's tip lands on its ticks and it carries the ring's offTurn.
-  const HAND_RING = { hours24: 'hours24', gmt: 'hours24', day: 'day', date: 'date' };
-  const PERIM_KEYS = ['perim', 'perimShrink', 'perimColor', 'perimFont', 'perimOrient', 'perimSize', 'perimPos', 'perimRot'];
   // The panel this dial ships on is a 466x466 CO5300 AMOLED 1.75 in across, so one engine px
   // is 0.095 mm on the wrist. A preview drawn 2.7x the real dial flatters small type, and that
   // is how a dial gets authored with day names nobody can read at arm's length. The composer
@@ -120,25 +113,6 @@
   const realCss = (cal) => Math.max(60, Math.round(REAL_CSS * (cal > 0 ? cal : 1)));
   const rulerPx = (cal) => Math.round((RULER_MM / 25.4) * PANEL.cssInch * (cal > 0 ? cal : 1));
   const screenInch = (css, cal) => css / (PANEL.cssInch * (cal > 0 ? cal : 1));
-  // Ring rotation: which label of a turned ring sits nearest 12, and the turn that puts a
-  // chosen division there. Both read the same spec the print does, so the control row and the
-  // dial can never disagree about where the first day of the week or month starts.
-  const perimRotDeg = (D) => ((((+D.perimRot || 0) % 360) + 360) % 360);
-  const perimRotAt = (spec, i, between) => perimRotDeg({ perimRot: -(((i + (between ? 0.5 : 0)) / spec.n) * 360) });
-  function ringTop(spec, rot, between) {
-    let best = 0, bd = 1e9;
-    for (let i = 0; i < spec.n; i++) {
-      const a = (((i + (between ? 0.5 : 0)) / spec.n) * 360 + rot + 180) % 360 - 180;
-      if (Math.abs(a) < bd) { bd = Math.abs(a); best = i; }
-    }
-    return { i: best, lab: spec.lab(best), off: +bd.toFixed(2) };
-  }
-  // The rotator's preset chips: every division of a small ring (the seven days), the quarters
-  // of a big one. 31 chips for the date ring would be a wall, not a control.
-  function ringStarts(spec, between) {
-    const idx = spec.n <= 12 ? Array.from({ length: spec.n }, (_, i) => i) : [0, Math.round(spec.n / 4), Math.round(spec.n / 2), Math.round((3 * spec.n) / 4)];
-    return idx.map((i) => ({ v: +perimRotAt(spec, i, between).toFixed(2), label: spec.lab(i) + ' at 12' }));
-  }
 
   const SEC_STYLES = { classic: 'Classic counterweight', lollipop: 'Lollipop', ring: 'Open ring', arrowtip: 'Arrow tip', paddle: 'Lume paddle', bolt: 'Lightning', crescent: 'Crescent tail', star: 'Star tail', needle: 'Long needle', station: 'Station · disc at tip', flieger: 'Flieger · three lume discs', disc: 'Lume disc · paddle tail' };
   const HAND_STYLES = { station: 'Station bar', aviator: 'Aviator sword', cathedral: 'Cathedral', poire: 'Poire', fleur: 'Fleur-de-lis', serpentine: 'Serpentine', louis: 'Louis XV', breguet: 'Breguet', spade: 'Spade', leaf: 'Leaf', baton: 'Baton', sword: 'Sword', dauphine: 'Dauphine', pencil: 'Pencil', skeleton: 'Skeleton', framed: 'Framed lume', rails: 'Twin rail', arrow: 'Arrow', broad: 'Broad arrow', crescent: 'Crescent tip', diamond: 'Diamond tip', sunburst: 'Sunburst tip', pierced: 'Pierced ring', pennant: 'Pennant' };
@@ -165,8 +139,6 @@
     const c = DIAL_COLORS[key], n = parseInt(c[0].slice(1), 16), lum = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255, dark = lum < 0.5;
     return { a: c[0], b: c[1], ink: dark ? (NO_TINT.includes(key) ? '#efe4c8' : '#f6f3ec') : '#1a140c', stain: 0, dark: dark ? 1 : 0, tint: NO_TINT.includes(key) ? null : c[0] };
   }
-  const RING_FONT = (print) => (['roman', 'arabic', 'regulator'].includes(print) ? 'garamond' : 'plex');
-  const HAS_NUMS = ['roman', 'arabic', 'regulator', 'sans', 'railway', 'sector', 'pilot'];
   const BEZEL = { mariner: 1, tachy: 1, scallop: 1 }, BEZEL_IN = 193.5;
   const ROUND_MOON = { sphere: 1, graphic: 1, neon: 1 };
   const PLATES = { train: 'Movement default', classic: 'Warm gilt', anthracite: 'Anthracite graining', stripes: 'Geneva stripes', sandblast: 'Sandblasted', carbon: 'Carbon · woven', forged: 'Carbon · forged' };
@@ -177,7 +149,10 @@
    * cadence shows), and motionPose its drive_travel: rotate and the disc turn by
    * value/domain, a retrograde fan stops at its span, a slide travels px. The bake
    * writes the same numbers into the v5 row, so the preview and the glass agree. */
-  const MOTION_PATHS = { rotate: 'Rotate', retrograde: 'Retrograde fan', 'slide-x': 'Slide \u00b7 across', 'slide-y': 'Slide \u00b7 up/down', disc: 'Turning disc' };
+  // the paths any hand can take, wherever it stands (owner, 2026-11-05); a slide runs along a
+  // straight track at any angle (0 = rightward, clockwise in degrees). Older slide-x and
+  // slide-y are that track at 0 and 90, and canonDesign renames them.
+  const MOTION_PATHS = { rotate: 'Rotate', retrograde: 'Retrograde \u00b7 sweeps an arc and flies back', slide: 'Slide \u00b7 along a straight track', disc: 'Turning disc' };
   const CADENCES = { inherit: 'Default', sweep: 'Sweep', step: 'Step', jump: 'Jump', 'stop-to-go': 'Stop-to-go' };
   // a hand's drive: [source, units in one sweep, the source's first value]. D43 P5d.2: every
   // measure a hand can show, so a fan or a slider can carry any of them
@@ -931,15 +906,6 @@
     ctx.strokeStyle = g; ctx.lineWidth = 1.6; ctx.stroke();
     ctx.restore();
   }
-  const SUB_DISPLAYS = { classic: 'Classic track', railway: 'Railway', dots: 'Dots', minimal: 'Ticks only', bold: 'Bold numerals', numerals: 'Numerals only', sector: 'Sector' };
-  const SCALES = { seconds: 'Seconds', date: 'Date 1–31', day: 'Day of week', month: 'Month', hours: 'Hours', none: 'No scale' };
-  // D34: the drives a subdial hand can take at bake. `plates` is §31's window row
-  // (one baked dial per tick); `pointer` is the appended AUX row — one masked hand
-  // plate the dial turns. The pointer carrier is offered only on the scales whose
-  // hand closes a whole turn under its own domain, because the row's drive is one
-  // linear sweep; orbtheme-baker.js' pointerPlan3 owns the matching refusal.
-  const SUB_CARRIERS = { plates: 'Plates · one dial per tick', pointer: 'Pointer · one hand the dial turns' };
-  const POINTER_SCALES = { seconds: 1, hours: 1 };
   const SHOWS = { date: 'Date', day: 'Day', month: 'Month', custom: 'Custom format' };
   // date formatting: moment/Unicode-style tokens (YYYY MMMM MMM MM M DDDD DDD DD D Do dddd ddd dd d E WW W Q) and strftime (%Y %y %B %b %m %d %e %j %A %a %u %w %V %U %q); [text] is literal
   const LDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'], LMONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -958,165 +924,167 @@
     const parts = out.split(/(\u0000[^\u0001]*\u0001)/);
     return parts.map((p) => (p[0] === '\u0000' ? p.slice(1, -1) : cs === 'lower' ? p.toLowerCase() : cs === 'asis' ? p : p.toUpperCase())).join('');
   }
-  const PRINTS = { roman: 'Roman', arabic: 'Breguet arabic', regulator: 'Regulator minutes', baton: 'Applied batons', minimal: 'Minimal batons', sans: 'Modern sans', railway: 'Railway', sector: 'Sector', diver: 'Lume plots', station: 'Station bars', pilot: 'Pilot · triangle & dots', framed: 'Bracket track · framed plots', none: 'Blank' };
-  const REACH = { roman: 205, arabic: 200, regulator: 206, baton: 200, minimal: 205, sans: 205, railway: 202, sector: 205, diver: 200, station: 214, pilot: 204, framed: 204, none: 205 };
+  // a hand's default reach and stroke as a share of the dial's print reach (centre hands), and
+  // the calendar hands' likewise; the 2026-11-06 migration turns them into each hand's own px
+  const HAND_DIMS = { hour: [0.66, 0.05], minute: [0.96, 0.038], second: [0.98, 0.012] };
+  const CAL_DIMS = { hours24: [0.85, 0.0155], gmt: [0.865, 0.015], day: [0.8, 0.017], date: [0.835, 0.0165], month: [0.82, 0.016] };
   const SIZE_RANGE = { opening: [12, 200, 1], subdial: [26, 110, 0.5], window: [0.6, 1.8, 0.05], moon: [14, 110, 1], flare: [4, 120, 0.5], wheel: [14, 230, 0.5] };
   const WIN_SIZE = { date: [30, 22], day: [52, 22], month: [52, 22], custom: [72, 22] };
   // Presets are just starting designs. angle: degrees clockwise from 12 · dist: px from the host's centre · rot: degrees.
   // Every hand is a comp of type 'hand' on its host's arbour, listed bottom to top (D43 P5c).
   const PRESETS = {
     skeleton: { name: 'Skeleton', blurb: 'Open centre · Roman chapter · small seconds', hands: 'breguet', handFinish: 'blued', design: {
-      print: 'roman', comps: [
+      comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 0, dist: 0, rot: 0, size: 160, style: 'lip', show: 'free', hour: 12 },
-        { id: 'c2', type: 'subdial', host: 'dial', angle: 135, dist: 80.6, rot: 0, size: 78.5, style: 'enamel', scale: 'seconds', open: 0 },
-        { id: 'h1', type: 'hand', host: 'c2', shows: 'second' },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'minute' },
+        { id: 'c2', type: 'subdial', host: 'dial', angle: 135, dist: 80.6, rot: 0, size: 78.5, style: 'enamel', open: 0 },
+        { id: 'h1', type: 'hand', host: 'c2', shows: 'second', length: 68.355, width: 2.041, cap: 2.6, scale: { style: 'classic', gap: 10.145 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'hour', length: 135.3, width: 10.25, cap: 6.97, scale: { style: 'roman', gap: 80.7 } },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'minute', length: 196.8, width: 7.79, cap: 6.97 },
       ] } },
     calendar: { name: 'Triple calendar', blurb: 'Open heart · day & month wheels · pointer date + moon disc', hands: 'leaf', handFinish: 'gilt', design: {
-      print: 'arabic', comps: [
+      comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 349, dist: 138, rot: 0, size: 41, style: 'bevel', show: 'balance', hour: 12 },
         { id: 'c2', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 117, form: 'ring', inner: 66, trad: 91, read: 270, shows: 'day', fpx: 18 },
         { id: 'c2k', type: 'cutout', host: 'c2', at: 270 },
         { id: 'c3', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 117, form: 'ring', inner: 66, trad: 91, read: 90, shows: 'month', fpx: 18 },
         { id: 'c3k', type: 'cutout', host: 'c3', at: 90 },
-        { id: 'c4', type: 'subdial', host: 'dial', angle: 180, dist: 102, rot: 0, size: 62, style: 'guilloche', scale: 'date', open: 0 },
+        { id: 'c4', type: 'subdial', host: 'dial', angle: 180, dist: 102, rot: 0, size: 62, style: 'guilloche', open: 0 },
         { id: 'c5', type: 'wheel', host: 'c4', angle: 0, dist: 2, rot: 0, size: 29, shows: 'moon' },
         { id: 'c5k', type: 'cutout', host: 'c5', at: 0, shape: 'moon' },
-        { id: 'h1', type: 'hand', host: 'c4', shows: 'date' },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'minute' },
-        { id: 'h4', type: 'hand', host: 'dial', shows: 'second' },
+        { id: 'h1', type: 'hand', host: 'c4', shows: 'date', length: 53.01, width: 4.34, cap: 5.208, proportion: 'small', scale: { style: 'classic', gap: 8.99 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'hour', length: 132, width: 10, cap: 6.8, scale: { style: 'breguet', gap: 84 } },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'minute', length: 192, width: 7.6, cap: 6.8 },
+        { id: 'h4', type: 'hand', host: 'dial', shows: 'second', length: 196, width: 2.4, cap: 6.8 },
       ] } },
     modern: { name: 'Modern', blurb: 'Railway track · hex escapement window · date at 3', hands: 'dauphine', handFinish: 'steel', design: {
-      print: 'railway', numerals: 'quarters', surface: 'guilloche', color: 'slate', aging: 0.3, stains: 0, dust: 0.4, comps: [
+      surface: 'guilloche', color: 'slate', aging: 0.3, stains: 0, dust: 0.4, comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 315, dist: 140, rot: 0, size: 42, shape: 'hex', style: 'bevel', show: 'balance', hour: 12 },
         { id: 'c2', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 170, form: 'ring', inner: 130, trad: 150, read: 90, shows: 'date', fpx: 18, wbg: '#1b1916', wink: '#ecdfbf' },
         { id: 'c2k', type: 'cutout', host: 'c2', at: 90, style: 'plain' },
-        { id: 'c3', type: 'subdial', host: 'dial', angle: 180, dist: 104, rot: 0, size: 58, style: 'azure', scale: 'seconds', open: 0, color: 'black' },
-        { id: 'h1', type: 'hand', host: 'c3', shows: 'second' },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'minute' },
-        { id: 'h4', type: 'hand', host: 'dial', shows: 'second' },
+        { id: 'c3', type: 'subdial', host: 'dial', angle: 180, dist: 104, rot: 0, size: 58, style: 'azure', open: 0, color: 'black' },
+        { id: 'h1', type: 'hand', host: 'c3', shows: 'second', length: 49.29, width: 1.8, cap: 2.6, scale: { style: 'classic', gap: 8.71 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'hour', length: 133.32, width: 10.1, cap: 6.868, scale: { style: 'railway', figures: 'quarters', gap: 82.68 } },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'minute', length: 193.92, width: 7.676, cap: 6.868 },
+        { id: 'h4', type: 'hand', host: 'dial', shows: 'second', length: 197.96, width: 2.424, cap: 6.868 },
       ] } },
     sector: { name: 'Sector', blurb: 'Bauhaus sector rings · geometric type · orange seconds', hands: 'pencil', handFinish: 'black', design: {
-      print: 'sector', numerals: 'all', font: 'jost', surface: 'metal', color: 'white', aging: 0, stains: 0, dust: 0, comps: [
+      surface: 'metal', color: 'white', aging: 0, stains: 0, dust: 0, comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 0, dist: 0, rot: 0, size: 30, shape: 'circle', style: 'bevel', show: 'balance', hour: 12 },
-        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'orange' },
+        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', length: 135.3, width: 10.25, cap: 6.97, scale: { style: 'sector', font: 'jost', gap: 80.7 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', length: 196.8, width: 7.79, cap: 6.97 },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'orange', length: 200.9, width: 2.46, cap: 6.97 },
       ] } },
     diver: { name: 'Broad arrow', blurb: 'Black grained dial · lume plots · broad arrow hands', hands: 'broad', handFinish: 'steel', design: {
-      print: 'diver', numerals: 'all', surface: 'matte', color: 'black', aging: 0.4, stains: 0, dust: 0.5, comps: [
+      surface: 'matte', color: 'black', aging: 0.4, stains: 0, dust: 0.5, comps: [
         { id: 'c1', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 170, form: 'ring', inner: 130, trad: 150, read: 90, shows: 'date', fpx: 18, wbg: '#1b1916', wink: '#ecdfbf' },
         { id: 'c1k', type: 'cutout', host: 'c1', at: 90, style: 'plain' },
         { id: 'c2', type: 'opening', host: 'dial', angle: 0, dist: 0, rot: 0, size: 26, shape: 'slot', style: 'bevel', show: 'balance', hour: 12 },
-        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'second' },
+        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', length: 132, width: 10, cap: 6.8, scale: { style: 'plots', gap: 84 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', length: 192, width: 7.6, cap: 6.8 },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', length: 196, width: 2.4, cap: 6.8 },
       ] } },
     wave: { name: 'Wave', blurb: 'Navy wave-groove dial · bracket track · blue-framed lume plots · date at 3', hands: 'rails', handFinish: 'royal', caseStyle: 'scallop', caseMetal: 'steel', design: {
-      bezelInk: '#1c3a63', print: 'framed', numerals: 'all', font: 'grotesk', numColor: '#e4eaec', plotRim: '#1f45e0', surface: 'wave', color: 'navy', aging: 0, stains: 0, dust: 0.15, handLume: '#e4eaec', secStyle: 'disc', comps: [
-        { id: 'c1', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 186, form: 'ring', inner: 146, trad: 166, read: 90, shows: 'date', fpx: 18, wbg: '#f2f0ea', wink: '#16140f' },
+      bezelInk: '#1c3a63', surface: 'wave', color: 'navy', aging: 0, stains: 0, dust: 0.15, handLume: '#e4eaec', secStyle: 'disc', comps: [
+        { id: 'c1', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 186, form: 'ring', inner: 146, trad: 166, read: 90, shows: 'date', fpx: 18, wbg: '#f2f0ea', wink: '#16140f', wfont: 'grotesk' },
         { id: 'c1k', type: 'cutout', host: 'c1', at: 90, style: 'frame', frameColor: 'rhodium' },
         { id: 'c2', type: 'flare', host: 'dial', angle: 180, dist: 88, rot: 0, size: 6.5, style: 'print', icon: 'text', text: 'AUTOMATIC', font: 'grotesk', weight: 'bold', spacing: 0.12, color: '#ecebe6' },
-        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'second' },
+        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', length: 134.64, width: 10.2, cap: 6.936, scale: { style: 'framed', color: '#e4eaec', rim: '#1f45e0', font: 'grotesk', gap: 81.36 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', length: 195.84, width: 7.752, cap: 6.936 },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', length: 199.92, width: 2.448, cap: 6.936 },
       ] } },
     orbital: { name: 'Orbital arrow', blurb: 'Open dial · arrow tourbillon sweeps the seconds', hands: 'skeleton', handFinish: 'steel', train: 'orbital', design: {
-      print: 'railway', numerals: 'none', font: 'barlow', color: 'black', aging: 0, stains: 0, dust: 0, comps: [
+      color: 'black', aging: 0, stains: 0, dust: 0, comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 0, dist: 0, rot: 0, size: 200, shape: 'circle', style: 'lip', show: 'free', hour: 12 },
-        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
+        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', length: 133.32, width: 10.1, cap: 6.868, scale: { style: 'railway', figures: 'none', font: 'barlow', gap: 82.68 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', length: 193.92, width: 7.676, cap: 6.868 },
       ] } },
     aviator: { name: 'Aviator', blurb: 'Pilot dial · triangle and dots at 12 · lumed spear hands', hands: 'aviator', handFinish: 'black', caseMetal: 'steel', design: {
-      print: 'pilot', numerals: 'all', font: 'grotesk', numColor: '#e8d6a0', surface: 'matte', color: 'black', aging: 0.15, stains: 0, dust: 0.3, handLume: '#e8d6a0', secStyle: 'flieger', comps: [
-        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'second' },
+      surface: 'matte', color: 'black', aging: 0.15, stains: 0, dust: 0.3, handLume: '#e8d6a0', secStyle: 'flieger', comps: [
+        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', length: 134.64, width: 10.2, cap: 6.936, scale: { style: 'pilot', color: '#e8d6a0', font: 'grotesk', gap: 81.36 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', length: 195.84, width: 7.752, cap: 6.936 },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', length: 199.92, width: 2.448, cap: 2.4 },
       ] } },
     opentour: { name: 'Open tourbillon', blurb: 'X-bridge skeleton · carbon depth · tourbillon at 6 · tachymetre', hands: 'baton', handFinish: 'steel', train: 'skeltour', caseStyle: 'tachy', caseMetal: 'gunmetal', cfg: { temp: 4000, glow: 0.35, finish: 'rhodium' }, design: {
-      print: 'baton', numerals: 'all', font: 'grotesk', surface: 'metal', color: 'slate', aging: 0, stains: 0, dust: 0.15, openwork: 'xarch', owBar: 17, owRing: 178, owHub: 24, owRim: 7, owInlay: 1, owDepth: 1.4, handLume: '#f4f1e6', secStyle: 'needle', comps: [
+      surface: 'metal', color: 'slate', aging: 0, stains: 0, dust: 0.15, openwork: 'xarch', owBar: 17, owRing: 178, owHub: 24, owRim: 7, owInlay: 1, owDepth: 1.4, handLume: '#f4f1e6', secStyle: 'needle', comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 180, dist: 107, rot: 0, size: 56, shape: 'circle', style: 'bevel', show: 'balance', hour: 12 },
-        { id: 'c2', type: 'subdial', host: 'dial', angle: 270, dist: 92, rot: 0, size: 50, style: 'metal', scale: 'hours', open: 0.55, color: 'charcoal', tstyle: 'minimal', height: 1.3 },
-        { id: 'c3', type: 'subdial', host: 'dial', angle: 90, dist: 92, rot: 0, size: 50, style: 'metal', scale: 'seconds', open: 0.55, color: 'charcoal', tstyle: 'minimal', height: 1.3 },
+        { id: 'c2', type: 'subdial', host: 'dial', angle: 270, dist: 92, rot: 0, size: 50, style: 'metal', open: 0.55, color: 'charcoal', height: 1.3 },
+        { id: 'c3', type: 'subdial', host: 'dial', angle: 90, dist: 92, rot: 0, size: 50, style: 'metal', open: 0.55, color: 'charcoal', height: 1.3 },
         { id: 'c4', type: 'flare', host: 'dial', angle: 0, dist: 105, rot: 0, size: 6.5, style: 'applied', icon: 'arctext', text: 'TOURBILLON', font: 'grotesk', weight: 'bold', spacing: 0.3, color: 'auto' },
-        { id: 'h1', type: 'hand', host: 'c2', shows: 'hour' },
-        { id: 'h2', type: 'hand', host: 'c3', shows: 'second' },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h4', type: 'hand', host: 'dial', shows: 'minute' },
-        { id: 'h5', type: 'hand', host: 'dial', shows: 'second' },
+        { id: 'h1', type: 'hand', host: 'c2', shows: 'hour', length: 41.85, width: 3.5, cap: 4.2, proportion: 'small', scale: { style: 'ticks', font: 'grotesk', gap: 8.15 } },
+        { id: 'h2', type: 'hand', host: 'c3', shows: 'second', length: 41.85, width: 1.8, cap: 2.6, scale: { style: 'ticks', font: 'grotesk', gap: 8.15 } },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'hour', length: 132, width: 10, cap: 6.8, scale: { style: 'batons', font: 'grotesk', gap: 84 } },
+        { id: 'h4', type: 'hand', host: 'dial', shows: 'minute', length: 192, width: 7.6, cap: 6.8 },
+        { id: 'h5', type: 'hand', host: 'dial', shows: 'second', length: 196, width: 2.4, cap: 6.8 },
       ] } },
     kitetour: { name: 'Kite tourbillon', blurb: 'Open dial · kite carriage with blued inlay sweeps the seconds', hands: 'dauphine', handFinish: 'steel', train: 'kite', caseMetal: 'steel', cfg: { temp: 4200, glow: 0.45 }, design: {
-      print: 'minimal', numerals: 'all', font: 'grotesk', surface: 'metal', color: 'slate', aging: 0, stains: 0, dust: 0.1, comps: [
+      surface: 'metal', color: 'slate', aging: 0, stains: 0, dust: 0.1, comps: [
         { id: 'c1', type: 'opening', host: 'dial', angle: 0, dist: 0, rot: 0, size: 200, shape: 'circle', style: 'bevel', show: 'free', hour: 12 },
-        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
+        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', length: 135.3, width: 10.25, cap: 6.97, scale: { style: 'sticks', font: 'grotesk', gap: 80.7 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', length: 196.8, width: 7.79, cap: 6.97 },
       ] } },
     station: { name: 'Station', blurb: 'Railway-clock style · jumping minute · stop-to-go red disc seconds', hands: 'station', handFinish: 'black', caseStyle: 'polished', caseMetal: 'steel', design: {
-      print: 'station', numerals: 'all', numColor: '#111111', handShade: 'flat', color: 'white', aging: 0, stains: 0, dust: 0, secStyle: 'station', comps: [
-        { id: 'c1', type: 'flare', host: 'dial', angle: 0, dist: 108, rot: 0, size: 11, style: 'print', icon: 'swiss', color: '#ffffff', bg: '#e3000f', bgShape: 'rect', bgW: 4 / 3, bgH: 4 / 3 },
-        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
+      handShade: 'flat', color: 'white', aging: 0, stains: 0, dust: 0, secStyle: 'station', comps: [
+        { id: 'c1', type: 'flare', host: 'dial', angle: 0, dist: 108, rot: 0, size: 11, style: 'print', icon: 'swiss', color: '#ffffff', bg: '#e3000f', bgShape: 'rect', bgW: 1.3333333333333333, bgH: 1.3333333333333333 },
+        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', length: 141.24, width: 10.7, cap: 7.276, scale: { style: 'station', color: '#111111', gap: 74.76 } },
         // D41: the station clock's own rhythm -- the minute jumps on the boundary and the
         // red seconds disc runs round in 58.5 s, then waits at 12 for the minute to release it
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', motion: { cadence: 'jump', ease: 150 } },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'red', motion: { cadence: 'stop-to-go' } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', motion: { cadence: 'jump', ease: 150 }, length: 205.44, width: 8.132, cap: 7.276 },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'red', motion: { cadence: 'stop-to-go' }, length: 209.72, width: 2.568, cap: 7.276 },
       ] } },
     luna: { name: 'Luna', blurb: 'Midnight sunburst · big realistic moon at 6', hands: 'dauphine', handFinish: 'gilt', design: {
-      print: 'minimal', numerals: 'all', font: 'bodoni', surface: 'guilloche', color: 'navy', aging: 0, stains: 0, dust: 0.2, comps: [
+      surface: 'guilloche', color: 'navy', aging: 0, stains: 0, dust: 0.2, comps: [
         { id: 'c1', type: 'moon', host: 'dial', angle: 180, dist: 96, rot: 0, size: 92, style: 'sphere' },
-        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'second' },
+        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', length: 135.3, width: 10.25, cap: 6.97, scale: { style: 'sticks', font: 'bodoni', gap: 80.7 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', length: 196.8, width: 7.79, cap: 6.97 },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', length: 200.9, width: 2.46, cap: 6.97 },
       ] } },
     neon: { name: 'Neon moon', blurb: 'Violet forged carbon · neon moon · vivid hands', hands: 'arrow', handFinish: 'cyan', design: {
-      print: 'sans', numerals: 'quarters', font: 'jost', surface: 'forged', color: 'violet', aging: 0, stains: 0, dust: 0, comps: [
+      surface: 'forged', color: 'violet', aging: 0, stains: 0, dust: 0, comps: [
         { id: 'c1', type: 'moon', host: 'dial', angle: 0, dist: 100, rot: 0, size: 70, style: 'neon' },
-        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'magenta' },
+        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', length: 135.3, width: 10.25, cap: 6.97, scale: { style: 'sans', figures: 'quarters', font: 'jost', gap: 80.7 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', length: 196.8, width: 7.79, cap: 6.97 },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'magenta', length: 200.9, width: 2.46, cap: 6.97 },
       ] } },
     phase: { name: 'Phase', blurb: 'Porcelain · graphic moon subdial · date at 3', hands: 'pencil', handFinish: 'black', design: {
-      print: 'railway', numerals: 'all', font: 'jost', color: 'porcelain', aging: 0, stains: 0, dust: 0, comps: [
-        { id: 'c1', type: 'subdial', host: 'dial', angle: 180, dist: 100, rot: 0, size: 56, style: 'azure', scale: 'none', open: 0, color: 'white' },
+      color: 'porcelain', aging: 0, stains: 0, dust: 0, comps: [
+        { id: 'c1', type: 'subdial', host: 'dial', angle: 180, dist: 100, rot: 0, size: 56, style: 'azure', open: 0, color: 'white', rim: 1 },
         { id: 'c2', type: 'moon', host: 'c1', angle: 0, dist: 0, rot: 0, size: 70, style: 'graphic' },
-        { id: 'c3', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 170, form: 'ring', inner: 130, trad: 150, read: 90, shows: 'date', fpx: 18, wbg: '#f2ecdd', wink: '#18120b' },
+        { id: 'c3', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 170, form: 'ring', inner: 130, trad: 150, read: 90, shows: 'date', fpx: 18, wbg: '#f2ecdd', wink: '#18120b', wfont: 'jost' },
         { id: 'c3k', type: 'cutout', host: 'c3', at: 90, style: 'plain' },
-        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute' },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'red' },
+        { id: 'h1', type: 'hand', host: 'dial', shows: 'hour', length: 133.32, width: 10.1, cap: 6.868, scale: { style: 'railway', font: 'jost', gap: 82.68 } },
+        { id: 'h2', type: 'hand', host: 'dial', shows: 'minute', length: 193.92, width: 7.676, cap: 6.868 },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'second', finish: 'red', length: 197.96, width: 2.424, cap: 6.868 },
       ] } },
     regulator: { name: 'Regulator', blurb: 'Centre minutes · hours at 12 · date at 3 · open seconds', hands: 'spade', handFinish: 'blued', design: {
-      print: 'regulator', comps: [
-        { id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 103, rot: 0, size: 64, style: 'azure', scale: 'hours', open: 0 },
-        { id: 'c2', type: 'subdial', host: 'dial', angle: 180, dist: 103, rot: 0, size: 64, style: 'enamel', scale: 'seconds', open: 0.64 },
+      comps: [
+        { id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 103, rot: 0, size: 64, style: 'azure', open: 0 },
+        { id: 'c2', type: 'subdial', host: 'dial', angle: 180, dist: 103, rot: 0, size: 64, style: 'enamel', open: 0.64 },
         { id: 'c3', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 170, form: 'ring', inner: 130, trad: 150, read: 90, shows: 'date', fpx: 18 },
         { id: 'c3k', type: 'cutout', host: 'c3', at: 90 },
-        { id: 'h1', type: 'hand', host: 'c1', shows: 'hour' },
-        { id: 'h2', type: 'hand', host: 'c2', shows: 'second' },
-        { id: 'h3', type: 'hand', host: 'dial', shows: 'minute' },
+        { id: 'h1', type: 'hand', host: 'c1', shows: 'hour', length: 54.87, width: 4.48, cap: 5.376, proportion: 'small', scale: { style: 'classic', gap: 9.13 } },
+        { id: 'h2', type: 'hand', host: 'c2', shows: 'second', length: 54.87, width: 1.8, cap: 2.6, scale: { style: 'classic', gap: 9.13 } },
+        { id: 'h3', type: 'hand', host: 'dial', shows: 'minute', length: 197.76, width: 7.828, cap: 7.004, scale: { style: 'regulator', gap: 18.24 } },
       ] } },
     // D41's two exercise dials: every path a hand can take, on faces built around them.
     // D43 P5d.2: Flux rebuilt from faces -- the retrograde fans and the sliding bar are a fan
     // and a slider sub-dial now, printing their own scales, and its hands ride them
     flux: { name: 'Flux', blurb: 'Retrograde hour & minute fans · sliding seconds bar · acid on forged carbon', hands: 'pencil', handFinish: 'steel', caseMetal: 'gunmetal', design: {
-      print: 'none', numerals: 'none', font: 'unbounded', surface: 'forged', color: 'black', aging: 0, stains: 0, dust: 0, handShade: 'flat', comps: [
+      surface: 'forged', color: 'black', aging: 0, stains: 0, dust: 0, handShade: 'flat', comps: [
         { id: 'c1', type: 'flare', host: 'dial', angle: 180, dist: 96, rot: 0, size: 7, style: 'print', icon: 'text', text: 'FLUX', font: 'unbounded', weight: 'bold', spacing: 0.4, color: '#c6ff00' },
-        { id: 's1', type: 'subdial', host: 'dial', angle: 270, dist: 100, rot: 0, size: 80, style: 'forged', scale: 'hours', open: 0, form: 'fan', fanStart: 240, fanSpan: 240, height: 0.6, tstyle: 'bold', tcolor: '#c6ff00', tfont: 'unbounded' },
-        { id: 's2', type: 'subdial', host: 'dial', angle: 90, dist: 100, rot: 0, size: 80, style: 'forged', scale: 'seconds', open: 0, form: 'fan', fanStart: 240, fanSpan: 240, height: 0.6, tstyle: 'railway', tcolor: '#f2f2f2', tfont: 'unbounded' },
-        { id: 's3', type: 'subdial', host: 'dial', angle: 180, dist: 160, rot: 0, size: 26, style: 'forged', scale: 'seconds', open: 0, form: 'slider', slideLen: 150, slotStyle: 'lip', height: 0.4, tstyle: 'minimal', tcolor: '#ff3b30', tfont: 'unbounded' },
-        { id: 'h1', type: 'hand', host: 's1', shows: 'hour', finish: 'lime', wid: 1.4, motion: { cadence: 'jump', ease: 200 } },
-        { id: 'h2', type: 'hand', host: 's2', shows: 'minute', finish: 'white', motion: { cadence: 'sweep', ease: 700 } },
-        { id: 'h3', type: 'hand', host: 's3', shows: 'second', finish: 'red', len: 0.7, wid: 3, motion: { cadence: 'step', steps: 1, ease: 400 } },
+        { id: 's1', type: 'subdial', host: 'dial', angle: 270, dist: 100, rot: 0, size: 80, style: 'forged', open: 0, height: 0.6 },
+        { id: 's2', type: 'subdial', host: 'dial', angle: 90, dist: 100, rot: 0, size: 80, style: 'forged', open: 0, height: 0.6 },
+        { id: 's3', type: 'subdial', host: 'dial', angle: 180, dist: 160, rot: 0, size: 26, style: 'forged', open: 0, form: 'slider', slideLen: 150, slotStyle: 'lip', height: 0.4 },
+        { id: 'h1', type: 'hand', host: 's1', shows: 'hour', finish: 'lime', motion: { cadence: 'jump', ease: 200, path: 'retrograde', start: 240, span: 240 }, length: 69.75, width: 7.84, cap: 9.408, proportion: 'small', scale: { style: 'bold', font: 'unbounded', color: '#c6ff00', gap: 10.25 } },
+        { id: 'h2', type: 'hand', host: 's2', shows: 'minute', finish: 'white', motion: { cadence: 'sweep', ease: 700, path: 'retrograde', start: 240, span: 240 }, length: 69.75, width: 5.6, cap: 6.72, proportion: 'small', scale: { style: 'rail', font: 'unbounded', color: '#f2f2f2', gap: 10.25 } },
+        { id: 'h3', type: 'hand', host: 's3', shows: 'second', finish: 'red', motion: { cadence: 'step', steps: 1, ease: 400, path: 'slide', angle: 0, from: -75, travel: 150 }, dist: 4.48, angle: 0, length: 13.671, width: 5.4, cap: 6.48, scale: { style: 'ticks', font: 'unbounded', color: '#ff3b30', gap: 12.329 } },
       ] } },
     orbit: { name: 'Orbit', blurb: 'Three exposed rings · wandering hour, jumping minute, ticking seconds · laser index', hands: 'baton', handFinish: 'magenta', caseMetal: 'gunmetal', design: {
-      print: 'none', numerals: 'none', font: 'orbitron', surface: 'guilloche', color: '#140a24', aging: 0, stains: 0, dust: 0, comps: [
+      surface: 'guilloche', color: '#140a24', aging: 0, stains: 0, dust: 0, comps: [
         { id: 'c1', type: 'flare', host: 'dial', angle: 0, dist: 0, rot: 0, size: 9, style: 'print', icon: 'text', text: 'ORBIT', font: 'orbitron', weight: 'bold', spacing: 0.5, color: '#ff2bd6' },
         // D43 P5d.3m: three exposed rings read at a laser index at 3 o'clock (the turning-disc hands they were)
-        { id: 'w1', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 142, form: 'ring', inner: 104, read: 90, shows: 'hour', cadence: 'smooth', exposed: true, wbg: '#1c0d33', wink: '#ffffff', accent: '#ff2bd6', ticks: 'all', rim: 'line' },
-        { id: 'w2', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 182, form: 'ring', inner: 146, read: 90, shows: 'minute', ease: 160, exposed: true, wbg: '#120f1c', wink: '#e9e4ff', accent: '#ff2bd6', ticks: 'all', every: 5, rim: 'line' },
-        { id: 'w3', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 218, form: 'ring', inner: 186, read: 90, shows: 'second', exposed: true, wbg: '#0a0910', wink: '#bdb6d6', accent: '#ff2bd6', ticks: 'all', every: 5, rim: 'line' },
+        { id: 'w1', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 142, form: 'ring', inner: 104, read: 90, shows: 'hour', cadence: 'smooth', exposed: true, wbg: '#1c0d33', wink: '#ffffff', accent: '#ff2bd6', ticks: 'all', rim: 'line', wfont: 'orbitron' },
+        { id: 'w2', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 182, form: 'ring', inner: 146, read: 90, shows: 'minute', ease: 160, exposed: true, wbg: '#120f1c', wink: '#e9e4ff', accent: '#ff2bd6', ticks: 'all', every: 5, rim: 'line', wfont: 'orbitron' },
+        { id: 'w3', type: 'wheel', host: 'dial', angle: 0, dist: 0, rot: 0, size: 218, form: 'ring', inner: 186, read: 90, shows: 'second', exposed: true, wbg: '#0a0910', wink: '#bdb6d6', accent: '#ff2bd6', ticks: 'all', every: 5, rim: 'line', wfont: 'orbitron' },
         // P5d.3n: the laser lens they are read at, a part of its own on the crystal (across all three rings)
         { id: 'x1', type: 'index', host: 'w1', istyle: 'lens', color: '#ff2bd6' },
       ] } },
@@ -1126,35 +1094,35 @@
     rink: { name: 'Rink', blurb: 'Three ring sub-dials in victory green on forged carbon · woven hearts with a stick, a puck and a helmet', hands: 'baton', handFinish: 'silver', caseMetal: 'gunmetal',
       cfg: { finish: 'rhodium' },   // the sub-dials' raised band is the movement metal: silver, not the default brass
       design: {
-      print: 'none', numerals: 'none', font: 'barlow', surface: 'forged', color: '#04140d', aging: 0, stains: 0, dust: 0, comps: [
+      surface: 'forged', color: '#04140d', aging: 0, stains: 0, dust: 0, comps: [
         // each ring's heart: an engraved woven-carbon sub-dial (no scale, no hand: plate art, nothing moves)
-        { id: 's1', type: 'subdial', host: 'dial', angle: 300, dist: 112, rot: 0, size: 55, style: 'carbon', scale: 'none', open: 0 },
-        { id: 's2', type: 'subdial', host: 'dial', angle: 60, dist: 112, rot: 0, size: 55, style: 'carbon', scale: 'none', open: 0 },
-        { id: 's3', type: 'subdial', host: 'dial', angle: 180, dist: 112, rot: 0, size: 55, style: 'carbon', scale: 'none', open: 0 },
-        { id: 'r1', type: 'wheel', host: 'dial', angle: 300, dist: 112, rot: 0, size: 74, form: 'ring', inner: 52, read: 0, shows: 'hour', cadence: 'smooth', exposed: true, wbg: '#00341f', wink: '#ffffff', accent: '#a7b0b5', ticks: 'all', rim: 'line' },
-        { id: 'r2', type: 'wheel', host: 'dial', angle: 60, dist: 112, rot: 0, size: 74, form: 'ring', inner: 52, read: 0, shows: 'minute', ease: 160, exposed: true, wbg: '#00341f', wink: '#ffffff', accent: '#a7b0b5', ticks: 'all', every: 5, rim: 'line' },
-        { id: 'r3', type: 'wheel', host: 'dial', angle: 180, dist: 112, rot: 0, size: 74, form: 'ring', inner: 52, read: 0, shows: 'second', exposed: true, wbg: '#006847', wink: '#ffffff', accent: '#c8ced2', ticks: 'all', every: 5, rim: 'line' },
+        { id: 's1', type: 'subdial', host: 'dial', angle: 300, dist: 112, rot: 0, size: 55, style: 'carbon', open: 0, rim: 1 },
+        { id: 's2', type: 'subdial', host: 'dial', angle: 60, dist: 112, rot: 0, size: 55, style: 'carbon', open: 0, rim: 1 },
+        { id: 's3', type: 'subdial', host: 'dial', angle: 180, dist: 112, rot: 0, size: 55, style: 'carbon', open: 0, rim: 1 },
+        { id: 'r1', type: 'wheel', host: 'dial', angle: 300, dist: 112, rot: 0, size: 74, form: 'ring', inner: 52, read: 0, shows: 'hour', cadence: 'smooth', exposed: true, wbg: '#00341f', wink: '#ffffff', accent: '#a7b0b5', ticks: 'all', rim: 'line', wfont: 'barlow' },
+        { id: 'r2', type: 'wheel', host: 'dial', angle: 60, dist: 112, rot: 0, size: 74, form: 'ring', inner: 52, read: 0, shows: 'minute', ease: 160, exposed: true, wbg: '#00341f', wink: '#ffffff', accent: '#a7b0b5', ticks: 'all', every: 5, rim: 'line', wfont: 'barlow' },
+        { id: 'r3', type: 'wheel', host: 'dial', angle: 180, dist: 112, rot: 0, size: 74, form: 'ring', inner: 52, read: 0, shows: 'second', exposed: true, wbg: '#006847', wink: '#ffffff', accent: '#c8ced2', ticks: 'all', every: 5, rim: 'line', wfont: 'barlow' },
         { id: 'x1', type: 'index', host: 'r1', istyle: 'laser', span: 'own', color: '#2fd18a' },
         { id: 'x2', type: 'index', host: 'r2', istyle: 'laser', span: 'own', color: '#2fd18a' },
         { id: 'x3', type: 'index', host: 'r3', istyle: 'laser', span: 'own', color: '#2fd18a' },
-        { id: 'f1', type: 'flare', host: 's1', angle: 0, dist: 0, rot: 0, size: 27, style: 'print', icon: 'stick', color: '#c8ced2' },
-        { id: 'f2', type: 'flare', host: 's2', angle: 0, dist: 0, rot: 0, size: 23, style: 'print', icon: 'puck', color: '#c8ced2' },
-        { id: 'f3', type: 'flare', host: 's3', angle: 0, dist: 0, rot: 0, size: 26, style: 'print', icon: 'helmet', color: '#c8ced2' },
+        { id: 'f1', type: 'flare', host: 's1', angle: 0, dist: 0, rot: 0, size: 27, style: 'print', icon: 'stick', color: '#c8ced2', font: 'barlow' },
+        { id: 'f2', type: 'flare', host: 's2', angle: 0, dist: 0, rot: 0, size: 23, style: 'print', icon: 'puck', color: '#c8ced2', font: 'barlow' },
+        { id: 'f3', type: 'flare', host: 's3', angle: 0, dist: 0, rot: 0, size: 26, style: 'print', icon: 'helmet', color: '#c8ced2', font: 'barlow' },
       ] } },
     // D43: a car's instrument. A retrograde seconds needle sweeps a 240-degree speedometer fan,
     // and an odometer of six drums below it rolls the time: the seconds units continuously, the
     // seconds tens on the carry (an odometer's roll), minutes and hours jumping with a short ease
     speedster: { name: 'Speedster', blurb: 'Speedometer seconds needle over an odometer of rolling hour, minute and second drums', hands: 'baton', handFinish: 'red', caseMetal: 'gunmetal', design: {
-      print: 'none', numerals: 'none', font: 'michroma', surface: 'carbon', color: 'black', aging: 0, stains: 0, dust: 0, comps: [
-        { id: 's1', type: 'subdial', host: 'dial', angle: 0, dist: 0, rot: 0, size: 190, style: 'carbon', scale: 'seconds', open: 0, form: 'fan', fanStart: 240, fanSpan: 240, tstyle: 'bold', tcolor: '#f2f2f2', tfont: 'barlow' },
-        { id: 'h1', type: 'hand', host: 's1', shows: 'second', finish: 'red', wid: 2, motion: { cadence: 'sweep', ease: 600 } },   // flies back over 0.6 s
+      surface: 'carbon', color: 'black', aging: 0, stains: 0, dust: 0, comps: [
+        { id: 's1', type: 'subdial', host: 'dial', angle: 0, dist: 0, rot: 0, size: 190, style: 'carbon', open: 0 },
+        { id: 'h1', type: 'hand', host: 's1', shows: 'second', finish: 'red', motion: { cadence: 'sweep', ease: 600, path: 'retrograde', start: 240, span: 240 }, length: 172.05, width: 9.88, cap: 11.856, scale: { style: 'bold', font: 'barlow', color: '#f2f2f2', gap: 17.95 } },   // flies back over 0.6 s
         { id: 'd1', type: 'wheel', host: 's1', angle: 217.9, dist: 139.3, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'hours24', digit: 'tens', ease: 400, wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
         { id: 'd1k', type: 'cutout', host: 'd1', w: 24, h: 34, style: 'plain' },
         { id: 'd2', type: 'wheel', host: 's1', angle: 207.2, dist: 123.7, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'hours24', digit: 'units', ease: 400, wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
         { id: 'd2k', type: 'cutout', host: 'd2', w: 24, h: 34, style: 'plain' },
-        { id: 'd3', type: 'wheel', host: 's1', angle: 187.5, dist: 111.0, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'minute', digit: 'tens', ease: 400, wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
+        { id: 'd3', type: 'wheel', host: 's1', angle: 187.5, dist: 111, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'minute', digit: 'tens', ease: 400, wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
         { id: 'd3k', type: 'cutout', host: 'd3', w: 24, h: 34, style: 'plain' },
-        { id: 'd4', type: 'wheel', host: 's1', angle: 172.5, dist: 111.0, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'minute', digit: 'units', ease: 400, wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
+        { id: 'd4', type: 'wheel', host: 's1', angle: 172.5, dist: 111, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'minute', digit: 'units', ease: 400, wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
         { id: 'd4k', type: 'cutout', host: 'd4', w: 24, h: 34, style: 'plain' },
         { id: 'd5', type: 'wheel', host: 's1', angle: 152.8, dist: 123.7, rot: 0, form: 'barrel', size: 34, len: 26, fpx: 22, shows: 'second', digit: 'tens', cadence: 'smooth', wbg: '#0b0b0c', wink: '#f2f2f2', wfont: 'michroma', edge: 0.55 },
         { id: 'd5k', type: 'cutout', host: 'd5', w: 24, h: 34, style: 'plain' },
@@ -1166,24 +1134,24 @@
         { id: 'f4', type: 'flare', host: 's1', angle: 180, dist: 162, rot: 0, size: 6, style: 'print', icon: 'text', text: 'HRS   MIN   SEC', font: 'barlow', weight: 'bold', spacing: 0.3, color: '#8c8c8c' },
       ] } },
     perpetual: { name: 'Perpetual calendar', blurb: 'Day · date · month subdials · moon at 6', hands: 'baton', handFinish: 'gilt', design: {
-      print: 'baton', comps: [
-        { id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 106, rot: 0, size: 58, style: 'azure', scale: 'month', open: 0 },
-        { id: 'c2', type: 'subdial', host: 'dial', angle: 90, dist: 106, rot: 0, size: 58, style: 'azure', scale: 'date', open: 0 },
-        { id: 'c3', type: 'subdial', host: 'dial', angle: 270, dist: 106, rot: 0, size: 58, style: 'azure', scale: 'day', open: 0 },
-        { id: 'c4', type: 'subdial', host: 'dial', angle: 180, dist: 106, rot: 0, size: 58, style: 'azure', scale: 'none', open: 0 },
+      comps: [
+        { id: 'c1', type: 'subdial', host: 'dial', angle: 0, dist: 106, rot: 0, size: 58, style: 'azure', open: 0 },
+        { id: 'c2', type: 'subdial', host: 'dial', angle: 90, dist: 106, rot: 0, size: 58, style: 'azure', open: 0 },
+        { id: 'c3', type: 'subdial', host: 'dial', angle: 270, dist: 106, rot: 0, size: 58, style: 'azure', open: 0 },
+        { id: 'c4', type: 'subdial', host: 'dial', angle: 180, dist: 106, rot: 0, size: 58, style: 'azure', open: 0, rim: 1 },
         { id: 'c5', type: 'wheel', host: 'c4', angle: 180, dist: 8, rot: 0, size: 34, shows: 'moon' },
         { id: 'c5k', type: 'cutout', host: 'c5', at: 0, shape: 'moon' },
-        { id: 'h1', type: 'hand', host: 'c1', shows: 'month' },
-        { id: 'h2', type: 'hand', host: 'c2', shows: 'date' },
-        { id: 'h3', type: 'hand', host: 'c3', shows: 'day' },
-        { id: 'h4', type: 'hand', host: 'dial', shows: 'hour' },
-        { id: 'h5', type: 'hand', host: 'dial', shows: 'minute' },
-        { id: 'h6', type: 'hand', host: 'dial', shows: 'second' },
+        { id: 'h1', type: 'hand', host: 'c1', shows: 'month', length: 49.29, width: 4.06, cap: 4.872, proportion: 'small', scale: { style: 'classic', gap: 8.71 } },
+        { id: 'h2', type: 'hand', host: 'c2', shows: 'date', length: 49.29, width: 4.06, cap: 4.872, proportion: 'small', scale: { style: 'classic', gap: 8.71 } },
+        { id: 'h3', type: 'hand', host: 'c3', shows: 'day', length: 49.29, width: 4.06, cap: 4.872, proportion: 'small', scale: { style: 'classic', gap: 8.71 } },
+        { id: 'h4', type: 'hand', host: 'dial', shows: 'hour', length: 132, width: 10, cap: 6.8, scale: { style: 'batons', gap: 84 } },
+        { id: 'h5', type: 'hand', host: 'dial', shows: 'minute', length: 192, width: 7.6, cap: 6.8 },
+        { id: 'h6', type: 'hand', host: 'dial', shows: 'second', length: 196, width: 2.4, cap: 6.8 },
       ] } },
   };
   const NEW_COMP = {
     opening: { angle: 0, dist: 120, rot: 0, size: 34, style: 'bevel', show: 'free', hour: 12 },
-    subdial: { angle: 180, dist: 100, rot: 0, size: 52, style: 'enamel', scale: 'seconds', open: 0 },
+    subdial: { angle: 180, dist: 100, rot: 0, size: 52, style: 'enamel', open: 0 },   // a plain face: its hand prints the scale (Rim is the author's)
     window: { angle: 90, dist: 150, rot: 0, size: 1, style: 'frame', shows: 'custom', fmt: 'ddd DD', disc: 'auto' },
     moon: { angle: 180, dist: 110, rot: 0, size: 48, style: 'sphere' },
     flare: { angle: 0, dist: 110, rot: 0, size: 16, style: 'print', icon: 'star', color: 'auto', opacity: 1, text: 'BRAND' },
@@ -1297,18 +1265,12 @@
     list.forEach((c) => {
       if (c.type !== 'subdial') return;
       const g = G[c.id], r = Math.max(10, +c.size || 50);
-      const s = { id: c.id, x: g.x, y: g.y, r, rot: g.rot, scale: c.scale || 'none', style: c.style || 'enamel', color: c.color || 'match', open: c.open > 0 ? r * Math.min(0.85, +c.open) : 0,
-        t: { font: c.tfont, orient: c.torient, dir: c.tdir, weight: c.tweight, size: c.tsize, style: c.tstyle, color: c.tcolor }, height: c.height == null ? 1 : +c.height, tex: c.tex, wa: c.weaveAngle, ws: c.weaveScale };
-      /* D43 P5d.2: a face's form. A fan prints its scale along an arc from `fanStart` over
-       * `fanSpan` degrees, its direction the print's (tdir); a hand on it sweeps that arc and
-       * flies back. A slider is a plate along a track `slideLen` px long at `slideAngle`
-       * degrees (0 = the lowest value at the left), with a slot cut through it the hand
-       * rides in; its scale prints along the slot. */
-      s.form = c.form === 'fan' || c.form === 'slider' ? c.form : 'round';
-      if (s.form === 'fan') {
-        const sp = Math.max(20, Math.min(330, Math.abs(c.fanSpan == null ? 180 : +c.fanSpan)));
-        s.fan = { start: c.fanStart == null ? 270 : +c.fanStart, span: (c.tdir === 'ccw' ? -1 : 1) * sp };
-      }
+      const s = { id: c.id, x: g.x, y: g.y, r, rot: g.rot, rim: c.rim || null, style: c.style || 'enamel', color: c.color || 'match', open: c.open > 0 ? r * Math.min(0.85, +c.open) : 0,
+        height: c.height == null ? 1 : +c.height, tex: c.tex, wa: c.weaveAngle, ws: c.weaveScale };
+      /* D43 P5d.2: a face's form. A slider is a plate along a track `slideLen` px long at
+       * `slideAngle` degrees (0 = the lowest value at the left), with a slot cut through it a
+       * hand may ride in (faceFit sets the hand's slide to the slot). */
+      s.form = c.form === 'slider' ? 'slider' : 'round';
       if (s.form === 'slider') {
         const len = Math.max(40, Math.min(400, c.slideLen == null ? Math.round(r * 2) : +c.slideLen)), ang = rad(c.slideAngle == null ? 0 : +c.slideAngle);
         const hh = Math.max(14, r * 0.5), hl = len / 2 + Math.max(10, r * 0.3), ux = Math.cos(ang), uy = Math.sin(ang), nx = -uy, ny = ux;
@@ -1379,7 +1341,9 @@
         rw: c.rw != null ? Math.max(0.3, Math.min(6, +c.rw)) : 1.2, rm: c.rm != null ? Math.max(0, Math.min(20, +c.rm)) : 0.2, rgap: c.rgap != null ? Math.max(1, Math.min(12, +c.rgap)) : 3,
         fe: (fs * reach) / 2,
         msize: spec.moon ? Math.max(0.12, Math.min(0.48, c.msize != null ? +c.msize : 0.33)) : 0, mpos: spec.moon ? Math.max(0.2, Math.min(0.8, c.mpos != null ? +c.mpos : 0.5)) : 0, seed: String(c.id).split('').reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) | 0, 7) & 0xffff, cut: [], holes: [] });
-      hits.push({ id: c.id, x: g.x, y: g.y, r: form === 'barrel' ? r : r * 0.35, z: (onSub ? subZ[onSub] : 0) - 0.5 });
+      // a wheel lies under the dial, so it is grabbed only near its arbour (r x 0.35) and the
+      // dial keeps the rest of its pixels; its selection outline still traces the whole wheel (o)
+      hits.push({ id: c.id, x: g.x, y: g.y, r: form === 'barrel' ? r : r * 0.35, o: r, z: (onSub ? subZ[onSub] : 0) - 0.5 });
     });
     const wheelOf = {}; wheels.forEach((w) => { wheelOf[w.id] = w; });
     // where a cutout stands: along the wheel's figures at `at` (its reading point by default), then moved
@@ -1435,6 +1399,21 @@
         }
         if (off(hole)) hole.uncovered = true;
       }
+      /* owner, 2026-11-06: a sub-dial's cutout is never off the sub-dial. One on a wheel that sits
+       * on a face is shrunk until it fits inside that face (sized by the author or not), and if
+       * its centre lies off the face it is drawn in toward the face's centre until it fits. */
+      const face = w.host !== 'dial' ? subs.find((q) => q.id === w.host) : null;
+      if (face && hole.kind !== 'moon') {
+        const lim = face.r - 1, outF = (q) => holePts(q).some(([px, py]) => Math.hypot(px - face.x, py - face.y) > lim);
+        for (let i = 0; i < 40 && outF(hole); i++) {
+          if (hole.kind === 'arc') { const m = (hole.r0 + hole.r1) / 2, hw = (hole.r1 - hole.r0) * 0.47; hole.r0 = m - hw; hole.r1 = m + hw; }
+          else if (hole.kind === 'circle') hole.r *= 0.95; else { hole.w *= 0.95; hole.h *= 0.95; }
+        }
+        for (let i = 0; i < 120 && outF(hole) && hole.kind !== 'arc'; i++) {
+          const dx = hole.x - face.x, dy = hole.y - face.y, d = Math.hypot(dx, dy) || 1, k = Math.max(0, d - 1) / d;
+          hole.x = face.x + dx * k; hole.y = face.y + dy * k;
+        }
+      }
       hole.style = style === 'lip' ? 'frame' : style; if (hole.style === 'frame' && c.frameColor && c.frameColor !== 'gilt') hole.fc = c.frameColor;
       // the stage's eye with the wheel switched off (viewBare, never in a saved design): the hole
       // stays open onto what lies under it, without the face's shadow falling into it
@@ -1445,7 +1424,8 @@
       (w.host === 'dial' ? dialHoles : subHoles[w.host]).push(hole);
       w.cut.push({ id: c.id, at }); w.holes.push(hole);
       const b = holeBox(hole);
-      hits.push({ id: c.id, x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, r: Math.max(b[2] - b[0], b[3] - b[1]) / 2 + 2, z: w.host === 'dial' ? 0.002 : subZ[w.host] + 0.006 });
+      // `of`: what shows through it is its wheel, which a click there reaches first (pickAll)
+      hits.push({ id: c.id, of: w.id, x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, r: Math.max(b[2] - b[0], b[3] - b[1]) / 2 + 2, z: w.host === 'dial' ? 0.002 : subZ[w.host] + 0.006 });
     });
     /* P5d.3n: an index, on the crystal at its wheel's reading point, out from its centre across the
      * wheel (or every wheel there that shares the centre and the point and is not read through cutouts
@@ -1589,32 +1569,11 @@
     });
   }
 
-  // A dial that carries an outer calendar ring cannot also keep its chapter print and
-  // its hour/minute hands out there. So the whole chapter -- numerals and minute track
-  // alike -- pulls inward about the dial centre by ONE shared factor, which the hands
-  // read too, and the freed band outside prints the perimeter scale. perimShrink lets
-  // the user trade chapter size against ring width.
-  const perimK = (D) => (D && D.perim && D.perim !== 'none' && PERIM_SPEC[D.perim]) ? Math.min(1, Math.max(0.7, +D.perimShrink || 0.88)) : 1;
-  function perimGeom(D) {
-    const k = perimK(D); if (k === 1) return null;
-    // ring sits just inside the reed; ticks occupy the outer part of the band, labels the
-    // inner part, and the hand tip is asked to stop on the ticks, not past them. perimSize
-    // grows the printed label only -- the band it lives in follows it, so a wide day never
-    // has to overlap the chapter print, and perimPos 'between' moves the labels into the
-    // space between two divisions (with their pointer, so the pair still reads).
-    const spec = PERIM_SPEC[D.perim], out = DR - 3, tl = spec.tl;
-    // legibility: the ring's figures never below LEGIBLE_PX; the band (and the chapter's shrink) follows them
-    const fs = legible(spec.fs * Math.min(2.6, Math.max(0.6, +D.perimSize || 1))), between = D.perimPos === 'between';
-    const rot = perimRotDeg(D), rotR = (rot * Math.PI) / 180;
-    const tick1 = out - tl, lab = tick1 - fs * 0.52 - 3;
-    // offTurn is what the pointer that reads this ring must add to its own angle: half a
-    // division when the labels moved into the gaps, plus the whole ring rotation the user set.
-    return { spec, k, out, inr: lab - fs * 0.62 - 3, tl, fs, between, rot, rotR, offTurn: (between ? 0.5 / spec.n : 0) + rot / 360, tick0: out, tick1, lab, reach: out - tl * 0.35 };
-  }
-  function drawPerimeter(ctx, D, en, holes) {
-    const g = perimGeom(D); if (!g) return;
+  // ---------- printing
+  function inkCtx(ctx, en) { ctx.strokeStyle = en.ink; ctx.fillStyle = en.ink; ctx.globalAlpha = 0.86; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; }
+  function drawPerimeter(ctx, D, en, holes, g) {
     const spec = g.spec, okc = (v) => v && v !== 'auto';
-    const NI = okc(D.perimColor) ? D.perimColor : (D.perimColor === 'ink' ? en.ink : (D.numColor && D.numColor !== 'auto' ? D.numColor : en.ink));
+    const NI = okc(D.perimColor) ? D.perimColor : en.ink;
     const radial = D.perimOrient === 'radial';
     const A = (i, n) => ((i + (g.between ? 0.5 : 0)) / n) * TAU - Math.PI / 2 + g.rotR;
     const TA = (i, n) => (i / n) * TAU - Math.PI / 2 + g.rotR;
@@ -1628,7 +1587,7 @@
       ctx.lineWidth = spec.maj(i) ? spec.tw : spec.qw;
       ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.stroke();
     }
-    const fk = D.perimFont && D.perimFont !== 'auto' && D.perimFont !== 'same' ? D.perimFont : (D.font && D.font !== 'auto' ? D.font : 'auto');
+    const fk = D.perimFont || 'auto';
     setFace(fk);
     ctx.font = '600 ' + g.fs.toFixed(2) + 'px ' + (FONTS[fk] ? FONTS[fk][1] : SANS);
     for (let i = 0; i < spec.n; i++) {
@@ -1639,80 +1598,107 @@
     ctx.restore();
   }
   // ---------- printing
-  function inkCtx(ctx, en) { ctx.strokeStyle = en.ink; ctx.fillStyle = en.ink; ctx.globalAlpha = 0.86; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; }
+  /* A chapter style, drawn for the units its hand reads (owner, 2026-11-06): N figure positions
+   * (12 for hours, and for minutes or seconds, each five of them), KM ticks to a position (5, so
+   * 60 round an hour's or a minute's turn), the quarters every N/4. An hour hand's units are the
+   * very figures this code was written for, so an hour scale draws exactly the old chapter. */
   function printMain(ctx, D, en, holes, NX) {
-    const show = DENSITY[D.numerals] || DENSITY.all, radial = (D.numOrient || (D.print === 'roman' ? 'radial' : 'upright')) === 'radial';
+    const N = D.__N || 12, KM = D.__K || 5, M = N * KM, Q = N % 4 === 0 ? N / 4 : 0, HALF = N % 2 === 0 ? N / 2 : -1;
+    const labF = D.__lab || ((h) => String(h || 12)), romF = D.__rom || ((h) => ROMAN[h]), isQ = (h) => !!Q && h % Q === 0;
+    const show = D.__show && (!D.numerals || D.numerals === 'all') ? D.__show : D.numerals === 'quarters' ? (h) => isQ(h) : DENSITY[D.numerals] || DENSITY.all, radial = (D.numOrient || (D.print === 'roman' ? 'radial' : 'upright')) === 'radial';
     const NI = D.numColor && D.numColor !== 'auto' ? D.numColor : en.ink, ns = Math.max(0.3, +D.numScale || 1);
-    const okc = (v) => v && v !== 'auto', hS = (h) => ns * (h === 0 ? +D.n12Scale || 1 : h != null && h % 3 === 0 ? +D.nQScale || 1 : 1);
+    const okc = (v) => v && v !== 'auto', hS = (h) => ns * (h === 0 ? +D.n12Scale || 1 : h != null && isQ(h) ? +D.nQScale || 1 : 1);
     const fam = (k) => (k && FONTS[k] && FONTS[k][1]) || null, F12 = fam(D.n12Font), FQ = fam(D.nQFont);
-    const hF = (h) => { const f = h === 0 ? F12 : h != null && h % 3 === 0 ? FQ : null; if (!f) return ctx.font; const m = ctx.font.match(/^(.*?[\d.]+px)\s+(.*)$/); return m ? m[1] + ' ' + f : ctx.font; };
-    const hC = (h, base) => (h === 0 && okc(D.n12Color) ? D.n12Color : h != null && h % 3 === 0 && h !== 0 && okc(D.nQColor) ? D.nQColor : base);
+    const hF = (h) => { const f = h === 0 ? F12 : h != null && isQ(h) ? FQ : null; if (!f) return ctx.font; const m = ctx.font.match(/^(.*?[\d.]+px)\s+(.*)$/); return m ? m[1] + ' ' + f : ctx.font; };
+    const hC = (h, base) => (h === 0 && okc(D.n12Color) ? D.n12Color : h != null && isQ(h) && h !== 0 && okc(D.nQColor) ? D.nQColor : base);
     ctx.save(); inkCtx(ctx, en);
     const X = NX || ctx;
     const ring = (r) => { ctx.beginPath(); ctx.arc(C, C, r, 0, TAU); ctx.stroke(); };
     const tickN = (a, r0, r1, lw, col) => { const p1 = P(C, C, r0, a), p2 = P(C, C, r1, a); if (blocked(p2[0], p2[1], holes, 1)) return; X.save(); X.lineCap = 'butt'; X.globalAlpha = NX ? 1 : ctx.globalAlpha; X.strokeStyle = col; X.lineWidth = lw; X.beginPath(); X.moveTo(p1[0], p1[1]); X.lineTo(p2[0], p2[1]); X.stroke(); X.restore(); };
     const A = (i, n) => (i / n) * TAU - Math.PI / 2;
     const tick = (a, r0, r1, lw) => { const p1 = P(C, C, r0, a), p2 = P(C, C, r1, a); if (blocked(p2[0], p2[1], holes, 1)) return; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.stroke(); };
-    const txt = (s, a, r, h) => {
+    // legibility: a numeral lands at its font px x its scale x the frame's (a chapter drawn small
+    // about a hand, K < 1), and never below LEGIBLE_PX
+    const K = +D.__k || 1, slOf = (fpx, sc) => (fpx * sc * K < LEGIBLE_PX ? LEGIBLE_PX / (fpx * K) : sc);
+    const put = (s, a, r, h) => {
       const sc = h == null ? ns : hS(h);
       const x = C + Math.cos(a) * r, y = C + Math.sin(a) * r;
       if (blocked(x, y, holes, 6 * sc)) return;
       X.save(); X.font = hF(h); X.globalAlpha = NX ? 1 : ctx.globalAlpha; X.textAlign = 'center'; X.textBaseline = 'middle';
-      // legibility: a numeral lands at its font px x its scale, and never below LEGIBLE_PX
-      const fpx = parseFloat((X.font.match(/([\d.]+)px/) || [])[1]) || LEGIBLE_PX, sl = fpx * sc < LEGIBLE_PX ? LEGIBLE_PX / fpx : sc;
+      const fpx = parseFloat((X.font.match(/([\d.]+)px/) || [])[1]) || LEGIBLE_PX, sl = slOf(fpx, sc);
       X.translate(x, y); if (radial) X.rotate(a + Math.PI / 2); X.scale(sl, sl); X.fillStyle = hC(h, NI);
       if (!NX) { X.shadowColor = 'rgba(0,0,0,.4)'; const sk = devS(X); X.shadowBlur = 1.3 * sk; X.shadowOffsetY = sk; } X.fillText(s, 0, 1); X.restore();
     };
-    const dot = (r, rr, h) => { const q = P(C, C, r, A(h, 12)); if (blocked(q[0], q[1], holes, 2)) return; ctx.beginPath(); ctx.arc(q[0], q[1], rr, 0, TAU); ctx.fill(); };
+    /* At full size every figure is set as it comes. Drawn smaller, the figures are held and each
+     * ring of them thinned to every k-th -- the smallest k of 1, 2, 3, 4, 6, 12 at which no two
+     * collide -- as a small face's are (printSub), so a chapter on a short hand keeps 12, 3, 6, 9
+     * rather than a smudge. */
+    const held = K < 1 ? [] : null;
+    const txt = (s, a, r, h) => { if (held) held.push({ s, a, r, h, font: ctx.font, alpha: ctx.globalAlpha }); else put(s, a, r, h); };
+    const setHeld = () => {
+      const rings = [];
+      held.forEach((w) => { let g = rings.find((q) => Math.abs(q.r - w.r) < 0.5 && q.font === w.font); if (!g) rings.push(g = { r: w.r, font: w.font, items: [] }); g.items.push(w); });
+      rings.forEach((g) => {
+        const pos = g.items.map((w) => {
+          ctx.font = w.font; const f = hF(w.h), fpx = parseFloat((f.match(/([\d.]+)px/) || [])[1]) || LEGIBLE_PX, sl = slOf(fpx, w.h == null ? ns : hS(w.h));
+          ctx.font = f; return { w, x: Math.cos(w.a) * w.r, y: Math.sin(w.a) * w.r, hw: (Math.max(ctx.measureText(w.s).width / 2, fpx * 0.36) + 1) * sl };
+        });
+        const fits = (c) => c.every((p, i) => c.every((o, j) => j <= i || Math.hypot(p.x - o.x, p.y - o.y) >= p.hw + o.hw));
+        let pick = [];
+        for (const k of [1, 2, 3, 4, 6, 12]) { const c = pos.filter((_, j) => j % k === 0); if (fits(c)) { pick = c; break; } if (c.length > 2 && fits(c.slice(0, -1))) { pick = c.slice(0, -1); break; } }
+        pick.forEach((p) => { ctx.font = p.w.font; ctx.globalAlpha = p.w.alpha; put(p.w.s, p.w.a, p.w.r, p.w.h); });
+      });
+    };
+    const dot = (r, rr, h) => { const q = P(C, C, r, A(h, N)); if (blocked(q[0], q[1], holes, 2)) return; ctx.beginPath(); ctx.arc(q[0], q[1], rr, 0, TAU); ctx.fill(); };
     const P_ = D.print;
     if (P_ === 'roman') {
       ctx.lineWidth = 0.8; ring(203); ring(215);
-      for (let i = 0; i < 60; i++) { const big = i % 5 === 0; tick(A(i, 60), big ? 201 : 205, 215, big ? 2.4 : 0.9); }
+      for (let i = 0; i < M; i++) { const big = i % KM === 0; tick(A(i, M), big ? 201 : 205, 215, big ? 2.4 : 0.9); }
       ctx.globalAlpha = 0.92; ctx.font = '700 31px ' + SERIF;
-      ROMAN.forEach((s, h) => { if (show(h)) txt(s, A(h, 12), 181, h); });
+      for (let h = 0; h < N; h++) if (show(h)) txt(romF(h), A(h, N), 181, h);
     } else if (P_ === 'arabic') {
       ctx.lineWidth = 0.7; ring(208); ring(216);
-      for (let i = 0; i < 60; i++) tick(A(i, 60), 208, 216, i % 5 ? 0.7 : 1.8);
-      for (let i = 0; i < 12; i++) dot(212, 2.1, i);
+      for (let i = 0; i < M; i++) tick(A(i, M), 208, 216, i % KM ? 0.7 : 1.8);
+      for (let i = 0; i < N; i++) dot(212, 2.1, i);
       ctx.globalAlpha = 0.92; ctx.font = 'italic 600 30px ' + SERIF;
-      for (let h = 0; h < 12; h++) if (show(h)) txt(String(h || 12), A(h, 12), 190, h);
+      for (let h = 0; h < N; h++) if (show(h)) txt(labF(h), A(h, N), 190, h);
     } else if (P_ === 'regulator') {
       ctx.lineWidth = 0.8; ring(204); ring(216);
-      for (let i = 0; i < 60; i++) { const big = i % 5 === 0; tick(A(i, 60), big ? 199 : 204, 216, big ? 2 : 0.8); }
+      for (let i = 0; i < M; i++) { const big = i % KM === 0; tick(A(i, M), big ? 199 : 204, 216, big ? 2 : 0.8); }
       ctx.globalAlpha = 0.92; ctx.font = '600 19px ' + SERIF;
-      for (let h = 0; h < 12; h++) if (show(h)) txt(String(h * 5 || 60), A(h, 12), 188, h);
+      for (let h = 0; h < N; h++) if (show(h)) txt(D.__lab ? labF(h) : String(h * 5 || 60), A(h, N), 188, h);
     } else if (P_ === 'baton') {
       ctx.lineWidth = 0.7; ring(210); ring(218);
-      for (let i = 0; i < 60; i++) tick(A(i, 60), 210, 218, i % 5 ? 0.7 : 1.6);
+      for (let i = 0; i < M; i++) tick(A(i, M), 210, 218, i % KM ? 0.7 : 1.6);
     } else if (P_ === 'minimal') {
-      for (let i = 0; i < 60; i++) tick(A(i, 60), 211, 217, i % 5 ? 0.6 : 1.2);
+      for (let i = 0; i < M; i++) tick(A(i, M), 211, 217, i % KM ? 0.6 : 1.2);
       ctx.globalAlpha = 0.95;
-      for (let h = 0; h < 12; h++) tickN(A(h, 12), show(h) ? 208 - 26 * hS(h) : 200, 208, show(h) ? (h % 3 ? 2.6 : 4.2) * Math.sqrt(hS(h)) : 2, hC(h, NI));
+      for (let h = 0; h < N; h++) tickN(A(h, N), show(h) ? 208 - 26 * hS(h) : 200, 208, show(h) ? (isQ(h) ? 4.2 : 2.6) * Math.sqrt(hS(h)) : 2, hC(h, NI));
     } else if (P_ === 'sans') {
-      for (let i = 0; i < 60; i++) tick(A(i, 60), 210, 217, i % 5 ? 0.6 : 1.6);
+      for (let i = 0; i < M; i++) tick(A(i, M), 210, 217, i % KM ? 0.6 : 1.6);
       ctx.globalAlpha = 0.95;
-      for (let h = 0; h < 12; h++) {
+      for (let h = 0; h < N; h++) {
         if (!show(h)) { dot(195, 2.8, h); continue; }
-        ctx.font = '600 ' + (h % 3 ? 26 : 40) + 'px ' + SANS; txt(String(h || 12), A(h, 12), h % 3 ? 188 : 182, h);
+        ctx.font = '600 ' + (isQ(h) ? 40 : 26) + 'px ' + SANS; txt(labF(h), A(h, N), isQ(h) ? 182 : 188, h);
       }
     } else if (P_ === 'sector') {
       ctx.lineWidth = 0.9; ring(217); ring(205); ring(172); ring(150);
-      for (let i = 0; i < 60; i++) tick(A(i, 60), i % 5 ? 209 : 205, 217, i % 5 ? 0.8 : 2.2);
+      for (let i = 0; i < M; i++) tick(A(i, M), i % KM ? 209 : 205, 217, i % KM ? 0.8 : 2.2);
       ctx.lineWidth = 0.7;
       [0, 1, 2, 3].forEach((q) => { const a = A(q, 4); for (let d = 6; d < 150; d += 6) { const p1 = P(C, C, d - 6, a), p2 = P(C, C, d, a); if (blocked(p2[0], p2[1], holes, 1) || blocked(p1[0], p1[1], holes, 1)) continue; ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.stroke(); } });
       ctx.globalAlpha = 0.95; ctx.font = '500 19px ' + SANS;
-      for (let h = 0; h < 12; h++) if (show(h)) txt(String(h || 12), A(h, 12), 161, h);
+      for (let h = 0; h < N; h++) if (show(h)) txt(labF(h), A(h, N), 161, h);
       ctx.font = '500 11px ' + SANS;
-      for (let i = 1; i <= 12; i++) txt(String(i * 5), A(i, 12), 191);
+      if (N === 12 && !D.__lab) for (let i = 1; i <= 12; i++) txt(String(i * 5), A(i, 12), 191);   // an hour sector's minute ring
     } else if (P_ === 'diver') {
       ctx.lineWidth = 0.8;
-      for (let i = 0; i < 60; i++) tick(A(i, 60), 209, 218, i % 5 ? 0.9 : 2.4);
-      for (let h = 0; h < 12; h++) {
+      for (let i = 0; i < M; i++) tick(A(i, M), 209, 218, i % KM ? 0.9 : 2.4);
+      for (let h = 0; h < N; h++) {
         if (!show(h)) continue;
-        const hs = hS(h), a = A(h, 12), q = P(C, C, 204 - 16 * hs, a); if (blocked(q[0], q[1], holes, 4 * hs)) continue;
+        const hs = hS(h), a = A(h, N), q = P(C, C, 204 - 16 * hs, a); if (blocked(q[0], q[1], holes, 4 * hs)) continue;
         X.save(); X.translate(q[0], q[1]); X.rotate(a + Math.PI / 2); X.scale(hs, hs); X.globalAlpha = 1; X.beginPath();
         if (h === 0) { X.moveTo(-13, -12); X.lineTo(13, -12); X.lineTo(0, 12); X.closePath(); }
-        else if (h % 3 === 0) X.rect(-5.5, -16, 11, 32);
+        else if (isQ(h)) X.rect(-5.5, -16, 11, 32);
         else { X.moveTo(9, 0); X.arc(0, 0, 9, 0, TAU); }
         if (!NX) { X.shadowColor = 'rgba(0,0,0,.6)'; const sk = devS(X); X.shadowBlur = 2 * sk; X.shadowOffsetY = 1.2 * sk; }
         X.fillStyle = hC(h, okc(D.numColor) ? D.numColor : '#efe8d2'); X.fill(); X.shadowColor = 'transparent';
@@ -1724,18 +1710,18 @@
       // the gap between two frames; inside it lume plots framed in the rim colour -- a pair of
       // bars at 12, a bar at 3, 6 and 9, a disc at the other hours
       const fr = (a0, a1) => { const m = P(C, C, 213, (a0 + a1) / 2); if (blocked(m[0], m[1], holes, 2)) return; ctx.beginPath(); ctx.arc(C, C, 213, a0, a1); ctx.stroke(); tick(a0, 205, 213, 1.9); tick(a1, 205, 213, 1.9); };
-      for (let h = 0; h < 12; h++) {
-        ctx.lineWidth = 1.9; fr(A(h * 5 + 0.85, 60), A(h * 5 + 4.15, 60));
-        for (let m = 1; m < 5; m++) tick(A(h * 5 + m, 60), 208.5, 213, 1.1);
-        tick(A(h * 5, 60), 204, 217, 2.8);
+      for (let h = 0; h < N; h++) {
+        ctx.lineWidth = 1.9; fr(A(h * KM + (KM === 5 ? 0.85 : 0.17 * KM), M), A(h * KM + (KM === 5 ? 4.15 : 0.83 * KM), M));
+        for (let m = 1; m < KM; m++) tick(A(h * KM + m, M), 208.5, 213, 1.1);
+        tick(A(h * KM, M), 204, 217, 2.8);
       }
       const rim = okc(D.plotRim) ? D.plotRim : 'rgba(190,190,190,.9)';
-      for (let h = 0; h < 12; h++) {
+      for (let h = 0; h < N; h++) {
         if (!show(h)) continue;
-        const hs = hS(h), a = A(h, 12), q = P(C, C, 192 - 20 * hs, a); if (blocked(q[0], q[1], holes, 4 * hs)) continue;
+        const hs = hS(h), a = A(h, N), q = P(C, C, 192 - 20 * hs, a); if (blocked(q[0], q[1], holes, 4 * hs)) continue;
         X.save(); X.translate(q[0], q[1]); X.rotate(a + Math.PI / 2); X.scale(hs, hs); X.globalAlpha = 1; X.beginPath();
         if (h === 0) { X.rect(-12, -17, 9.5, 34); X.rect(2.5, -17, 9.5, 34); }
-        else if (h % 3 === 0) X.rect(-6.5, -17, 13, 34);
+        else if (isQ(h)) X.rect(-6.5, -17, 13, 34);
         else { X.moveTo(13.5, 0); X.arc(0, 0, 13.5, 0, TAU); }
         if (!NX) { X.shadowColor = 'rgba(0,0,0,.6)'; const sk = devS(X); X.shadowBlur = 2 * sk; X.shadowOffsetY = 1.2 * sk; }
         X.fillStyle = hC(h, okc(D.numColor) ? D.numColor : '#e4eaec'); X.fill(); X.shadowColor = 'transparent';
@@ -1743,20 +1729,20 @@
         X.restore();
       }
     } else if (P_ === 'station') {
-      for (let i = 0; i < 60; i++) {
-        const hr = i % 5 === 0, h = i / 5, big = hr && show(h), hs = big ? hS(h) : 1;
-        if (big) tickN(A(i, 60), DR * (1 - 0.234 * hs), DR * 0.998, DR * 0.055 * Math.sqrt(hs), hC(h, NI));
-        else tickN(A(i, 60), DR * 0.868, DR * 0.986, DR * 0.0265, NI);
+      for (let i = 0; i < M; i++) {
+        const hr = i % KM === 0, h = i / KM, big = hr && show(h), hs = big ? hS(h) : 1;
+        if (big) tickN(A(i, M), DR * (1 - 0.234 * hs), DR * 0.998, DR * 0.055 * Math.sqrt(hs), hC(h, NI));
+        else tickN(A(i, M), DR * 0.868, DR * 0.986, DR * 0.0265, NI);
       }
     } else if (P_ === 'pilot') {
-      for (let i = 0; i < 60; i++) if (i % 5) tickN(A(i, 60), 197, 214, 3, NI);
-      const six = show(6);
-      for (let h = 0; h < 12; h++) if (!(h === 6 && six)) tickN(A(h, 12), 180, 214, 8.5 * Math.sqrt(hS(h)), hC(h, NI));
-      if (six) tickN(A(6, 12), 140, 190, 8.5 * Math.sqrt(hS(6)), hC(6, NI));
+      for (let i = 0; i < M; i++) if (i % KM) tickN(A(i, M), 197, 214, 3, NI);
+      const six = HALF > 0 && show(HALF);
+      for (let h = 0; h < N; h++) if (!(h === HALF && six)) tickN(A(h, N), 180, 214, 8.5 * Math.sqrt(hS(h)), hC(h, NI));
+      if (six) tickN(A(HALF, N), 140, 190, 8.5 * Math.sqrt(hS(HALF)), hC(HALF, NI));
       ctx.globalAlpha = 0.97; ctx.font = '600 44px ' + SANS;
-      for (let h = 1; h < 12; h++) if (h !== 6 && show(h)) txt(String(h), A(h, 12), 150, h);
+      for (let h = 1; h < N; h++) if (h !== HALF && show(h)) txt(D.__lab ? labF(h) : String(h), A(h, N), 150, h);
       if (show(0)) {
-        const hs = hS(0), a = A(0, 12), q = P(C, C, 141.5, a);
+        const hs = hS(0), a = A(0, N), q = P(C, C, 141.5, a);
         if (!blocked(q[0], q[1], holes, 12 * hs)) {
           X.save(); X.translate(q[0], q[1]); X.rotate(a + Math.PI / 2); X.scale(hs, hs); X.globalAlpha = NX ? 1 : 0.97; X.fillStyle = hC(0, NI);
           if (!NX) { X.shadowColor = 'rgba(0,0,0,.4)'; const sk = devS(X); X.shadowBlur = 1.3 * sk; X.shadowOffsetY = sk; }
@@ -1767,20 +1753,22 @@
       }
     } else if (P_ === 'railway') {
       ctx.lineWidth = 0.8; ring(207); ring(217);
-      for (let i = 0; i < 60; i++) tick(A(i, 60), i % 5 ? 207 : 203, 217, i % 5 ? 0.7 : 2.2);
+      for (let i = 0; i < M; i++) tick(A(i, M), i % KM ? 207 : 203, 217, i % KM ? 0.7 : 2.2);
       ctx.globalAlpha = 0.95; ctx.font = '500 21px ' + SANS;
-      for (let h = 0; h < 12; h++) if (show(h)) txt(String(h || 12), A(h, 12), 188, h);
+      for (let h = 0; h < N; h++) if (show(h)) txt(labF(h), A(h, N), 188, h);
     }
+    if (held) setHeld();
     ctx.restore();
   }
   function applied(ctx, D, pal, holes) {
     if (D.print !== 'baton') return;
-    const show = DENSITY[D.numerals] || DENSITY.all, ns = Math.max(0.3, +D.numScale || 1);
-    for (let h = 0; h < 12; h++) {
-      const a = (h / 12) * TAU - Math.PI / 2, m = P(C, C, 192, a);
+    const N = D.__N || 12, Q = N % 4 === 0 ? N / 4 : 0, isQ = (h) => !!Q && h % Q === 0;
+    const show = D.__show && (!D.numerals || D.numerals === 'all') ? D.__show : D.numerals === 'quarters' ? isQ : DENSITY[D.numerals] || DENSITY.all, ns = Math.max(0.3, +D.numScale || 1);
+    for (let h = 0; h < N; h++) {
+      const a = (h / N) * TAU - Math.PI / 2, m = P(C, C, 192, a);
       if (!show(h) || blocked(m[0], m[1], holes, 2)) continue;
       (h === 0 ? [-4.5, 4.5] : [0]).forEach((o) => {
-        const hs = ns * (h === 0 ? +D.n12Scale || 1 : h % 3 === 0 ? +D.nQScale || 1 : 1), w = (h % 3 === 0 ? 6 : 4.5) * Math.sqrt(hs), r0 = 204 - (h % 3 === 0 ? 28 : 20) * hs;
+        const hs = ns * (h === 0 ? +D.n12Scale || 1 : isQ(h) ? +D.nQScale || 1 : 1), w = (isQ(h) ? 6 : 4.5) * Math.sqrt(hs), r0 = 204 - (isQ(h) ? 28 : 20) * hs;
         ctx.save(); ctx.translate(C, C); ctx.rotate(a); ctx.translate(0, o);
         ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.65)'; const sk = devS(ctx); ctx.shadowBlur = 3 * sk; [ctx.shadowOffsetX, ctx.shadowOffsetY] = away(2.1 * sk);
         ctx.fillStyle = pal.lo; ctx.fillRect(r0, -w / 2, 204 - r0, w); ctx.restore();
@@ -1792,7 +1780,10 @@
     }
   }
   function printSub(ctx, s, en, holes, dialFont) {
-    const t = s.t || {}, { x, y, r } = s, k = r / 46, bi = s.open || 0, sz = +t.size || 1, ccw = t.dir === 'ccw', radial = t.orient === 'radial';
+    // a round face is proportioned as one up to the largest sub-dial (110 px): past that its band
+    // and figures keep that size and only the ring grows, so a long hand's scale is not a poster.
+    // An arc or a track scales on (Speedster's speedometer is 190 px).
+    const t = s.t || {}, { x, y, r } = s, k = (s.form === 'fan' || s.form === 'slider' ? r : Math.min(r, 110)) / 46, bi = s.open || 0, sz = +t.size || 1, ccw = t.dir === 'ccw', radial = t.orient === 'radial';
     setFace(t.font && t.font !== 'dial' ? t.font : dialFont);
     const wt = t.weight === 'regular' ? '500 ' : t.weight === 'italic' ? 'italic 600 ' : '700 ';
     // legibility: no label is set below LEGIBLE_PX; how far a label grew is remembered, so it
@@ -1870,6 +1861,11 @@
       for (let i = 0; i < 48; i++) tick(A(i, 48), i % 4 ? (ri + ro) / 2 : ri, ro, i % 4 ? 0.7 : 1.8);
       ctx.font = font(11 * k);
       for (let i = 0; i < 12; i++) txt(String(i || 12), A(i, 12), r - 16 * k);
+    } else if (s.scale === 'hours24') {
+      const ri = ro - 5 * k; ring(ri, 0.5);
+      for (let i = 0; i < 48; i++) tick(A(i, 48), i % 6 ? (ri + ro) / 2 : ri, ro, i % 6 ? 0.7 : 1.8);
+      ctx.font = font(10 * k);
+      for (let i = 0; i < 8; i++) txt(String(i * 3 || 24), A(i, 8), r - 16 * k);
     }
     labels();
     ctx.restore();
@@ -1884,6 +1880,7 @@
       day: { n: 7, maj: () => true, lab: DAYS.map((d, i) => [d, i]), fs: 8.6, lr: 14, w: 3, tw: 1.4 },
       month: { n: 12, maj: () => true, lab: MONTHS.map((m, i) => [m, i]), fs: 7.4, lr: 13, w: 3, tw: 1.2 },
       hours: { n: 48, maj: (i) => i % 4 === 0, lab: Array.from({ length: 12 }, (_, i) => [String(i || 12), i * 4]), fs: 11, lr: 16, w: 5, tw: 1.8 },
+      hours24: { n: 24, maj: (i) => i % 3 === 0, lab: Array.from({ length: 8 }, (_, i) => [String(i * 3 || 24), i * 3]), fs: 10, lr: 16, w: 5, tw: 1.8 },
     }[s.scale];
     if (!SC) return;
     const ri = bi ? ro - 5 : ro - SC.w * k, many = SC.n > 12;
@@ -1916,11 +1913,12 @@
    * Index i of n sits at fraction i/n of the sweep, exactly where the hand's pose puts that
    * value (motionPose's q = u / vmax), and a measure that reaches its top (seconds,
    * minutes, hours) prints its last figure at the far end. The display styles keep their
-   * character: railway and classic draw the track line, dots and minimal draw no figures
-   * but the majors' marks, bold doubles the figures. */
+   * character: railway and classic draw the track line, dots draws dots for marks, minimal
+   * draws no figures but the majors' marks, bold doubles the figures. */
   const TRACK = {
     seconds: { n: 60, top: true, maj: (i) => i % 5 === 0, lab: (i) => (i % 10 === 0 ? String(i) : null) },
     hours: { n: 12, top: true, maj: () => true, lab: (i) => String(i || 12) },
+    hours24: { n: 24, top: true, maj: (i) => i % 3 === 0, lab: (i) => (i % 6 === 0 ? String(i || 24) : null) },
     date: { n: 31, top: false, maj: (i) => (i + 1) % 5 === 0 || i === 0 || i === 30, lab: (i) => ((i + 1) % 5 === 0 || i === 0 ? String(i + 1) : null) },
     day: { n: 7, top: false, maj: () => true, lab: (i) => DAYS[i] },
     month: { n: 12, top: false, maj: () => true, lab: (i) => MONTHS[i] },
@@ -1928,7 +1926,8 @@
   function printTrack(ctx, s, st, o) {
     const T = TRACK[s.scale]; if (!T) return;
     const { tick, txt, font, k } = o, last = T.top ? T.n : T.n - 1, big = st === 'bold' || st === 'numerals';
-    const marks = st !== 'numerals', figs = st !== 'minimal' && st !== 'dots', line = st === 'classic' || st === 'railway' || st === 'sector';
+    // Dots prints its figures along a track as it does round a face (owner, 2026-11-06); only Fine ticks has none
+    const marks = st !== 'numerals', figs = st !== 'minimal', line = st === 'classic' || st === 'railway' || st === 'sector';
     if (s.form === 'fan') {
       const { x, y } = s, ro = s.r - 4 * k, a0 = rad(s.fan.start) - Math.PI / 2 + (s.rot || 0), sp = rad(s.fan.span);
       // figures stand inside the ticks, and shrink to the arc a crowded short fan gives each one
@@ -1950,7 +1949,7 @@
     }
     // a slider: ticks just under the slot, figures under the ticks, along the track
     const sl = s.slide, L = sl.len, ux = sl.ux, uy = sl.uy, nx = sl.nx, ny = sl.ny, dirS = o.ccw ? -1 : 1;
-    const pt = (i, d) => { const u = (dirS * ((i / T.n) - 0.5)) * L; return [sl.sx + ux * u + nx * d, sl.sy + uy * u + ny * d]; };
+    const pt = (i, d) => { const u = (sl.u0 || 0) + (dirS * ((i / T.n) - 0.5)) * L; return [sl.sx + ux * u + nx * d, sl.sy + uy * u + ny * d]; };
     const t0 = sl.sw / 2 + 2 * k;
     for (let i = 0; i <= last; i++) {
       const m = T.maj(i);
@@ -1965,6 +1964,122 @@
       for (let i = 0; i <= last; i++) { const l = i === T.n ? (T.n === 60 ? '60' : T.lab(0)) : T.lab(i); if (!l) continue; const q = pt(i, t0 + 13 * k); ctx.save(); ctx.translate(q[0], q[1]); ctx.rotate(sl.ang > Math.PI / 2 && sl.ang < 3 * Math.PI / 2 ? sl.ang + Math.PI : sl.ang); ctx.fillText(l, 0, 0); ctx.restore(); }
       ctx.textAlign = prev;
     }
+  }
+  /* ---------- a hand's scale (owner, 2026-11-06)
+   * Every printed scale is a hand's: the dial and a sub-dial are plain sheets. A scale is a look
+   * (style), drawn for the units its hand reads and along the path its hand travels -- a full
+   * turn about the hand's arbour from the hand's zero in the hand's direction, a retrograde fan,
+   * or a slider's track -- at a radius set from the hand's tip (tip + gap) or outright. Each look
+   * is the very code that drew it when it was the dial's or the face's own print, so an hour
+   * hand's Roman at 216 is the old Roman chapter, pixel for pixel; only the counts follow the
+   * units and the frame follows the hand.
+   *   chapter looks -- the old chapter prints, drawn about the hand at radius/216 of their size
+   *   face looks    -- the old sub-dial displays, drawn as a face of that radius (k = r/46)
+   *   ring          -- the old calendar perimeter ring, its outer ticks at the radius
+   * A fan or a slider takes the face look nearest each chapter look (TRACK_OF). */
+  const SCALE_STYLES = { none: 'None', roman: 'Roman', breguet: 'Breguet arabic', regulator: 'Regulator', sans: 'Modern sans', railway: 'Railway', sector: 'Sector',
+    batons: 'Applied batons', sticks: 'Minimal batons', station: 'Station bars', pilot: 'Pilot · triangle & dots', plots: 'Lume plots', framed: 'Bracket track · framed plots',
+    classic: 'Classic', rail: 'Fine railway', dots: 'Dots', ticks: 'Fine ticks', bold: 'Bold figures', numerals: 'Figures only', quadrant: 'Quadrant', ring: 'Calendar ring' };
+  const FIGURES = { all: 'All', even: 'Even', quarters: 'Quarters', twelve: 'The top one', none: 'None \u00b7 marks only' };
+  const CHAPTER_OF = { roman: 'roman', breguet: 'arabic', regulator: 'regulator', sans: 'sans', railway: 'railway', sector: 'sector', batons: 'baton', sticks: 'minimal', station: 'station', pilot: 'pilot', plots: 'diver', framed: 'framed' };
+  const FACE_OF = { classic: 'classic', rail: 'railway', dots: 'dots', ticks: 'minimal', bold: 'bold', numerals: 'numerals', quadrant: 'sector' };
+  const TRACK_OF = { roman: 'classic', breguet: 'classic', regulator: 'classic', sans: 'bold', railway: 'railway', sector: 'sector', batons: 'minimal', sticks: 'minimal', station: 'minimal', pilot: 'bold', plots: 'dots', framed: 'dots', ring: 'classic' };
+  const scaleFamily = (st) => (st === 'ring' ? 'ring' : CHAPTER_OF[st] ? 'chapter' : FACE_OF[st] ? 'face' : null);
+  // the gap a new scale leaves beyond its hand's tip
+  const SCALE_GAP = { chapter: 16, face: 10, ring: 8 };
+  // the units a hand reads, as the face tables name them
+  const UNIT_OF = { second: 'seconds', minute: 'seconds', hour: 'hours', date: 'date', day: 'day', month: 'month', hours24: 'hours24', gmt: 'hours24' };
+  // the chapter counts of each unit: figure positions, ticks to a position, labels, which figures print
+  const CHAPTER_UNITS = {
+    hours: {},
+    seconds: { __lab: (h) => String(h * 5 || 60), __rom: (h) => String(h * 5 || 60) },
+    date: { __N: 31, __K: 1, __lab: (h) => String(h + 1), __rom: (h) => String(h + 1), __show: (h) => h === 0 || (h + 1) % 5 === 0 },
+    day: { __N: 7, __K: 1, __lab: (h) => DAYS[h], __rom: (h) => DAYS[h] },
+    month: { __N: 12, __K: 1, __lab: (h) => MONTHS[h], __rom: (h) => MONTHS[h] },
+    hours24: { __N: 24, __K: 1, __lab: (h) => String(h || 24), __rom: (h) => String(h || 24), __show: (h) => h % 2 === 0 },
+  };
+  // the ring of each unit (the three the dial's perimeter offered, and the rest drawn the same way)
+  const RING_UNITS = Object.assign({
+    seconds: { n: 60, maj: (i) => i % 5 === 0, lab: (i) => (i % 5 === 0 ? String(i || 60) : ''), fs: 9, tw: 2.2, qw: 0.8, tl: 8 },
+    hours: { n: 12, maj: () => true, lab: (i) => String(i || 12), fs: 11, tw: 2.6, qw: 2.6, tl: 10 },
+    month: { n: 12, maj: () => true, lab: (i) => MONTHS[i], fs: 10, tw: 2.4, qw: 2.4, tl: 9 },
+  }, PERIM_SPEC);
+  function ringGeom(spec, out, size, between) {
+    // ticks occupy the outer part of the band, labels the inner part; legibility: never below LEGIBLE_PX
+    const fs = legible(spec.fs * Math.min(2.6, Math.max(0.6, +size || 1))), tl = spec.tl, tick1 = out - tl, lab = tick1 - fs * 0.52 - 3;
+    return { spec, out, inr: lab - fs * 0.62 - 3, tl, fs, between: !!between, rot: 0, rotR: 0, tick0: out, tick1, lab };
+  }
+  const numOk = (v) => v != null && v !== '' && isFinite(+v);
+  // the radius a hand's scale stands at: from its tip, or outright
+  function scaleRadius(sc, hd) {
+    const fam = scaleFamily(sc.style) || 'face';
+    if (sc.at === 'fixed' && +sc.radius > 0) return +sc.radius;
+    return Math.max(6, (+hd.len || 0) + (numOk(sc.gap) ? +sc.gap : SCALE_GAP[fam]));
+  }
+  // holes, in the hand's scale frame: about its arbour, from its zero, 1/k of the size, mirrored anticlockwise
+  function frameHoles(holes, hx, hy, z, k, mir) {
+    if (hx === C && hy === C && !z && k === 1 && !mir) return holes;
+    const c = Math.cos(-z), si = Math.sin(-z);
+    return holes.map((h) => {
+      const dx = h.x - hx, dy = h.y - hy; let x = C + (dx * c - dy * si) / k; const y = C + (dx * si + dy * c) / k;
+      let rot = (h.rot || 0) - z; if (mir) { x = 2 * C - x; rot = -rot; }
+      return Object.assign({}, h, { x, y, r: (h.r || 0) / k, ry: h.ry == null ? h.ry : h.ry / k, w: h.w / k, h: h.h / k, rot: h.rot == null && !z ? h.rot : rot });
+    });
+  }
+  /* Every scale of the hands on one host (the dial, or a sub-dial's plate), bottom hand first.
+   * Returns what lands after the plate's weathering: .applied(ctx) lays the applied batons in the
+   * plate's own frame, .finish(ctx) composites a numeral finish's mask at the canvas's identity. */
+  function drawScales(ctx, host, lay, en, holes, pal, lensK) {
+    const after = [], fins = [], kk = lensK || 1, subOf = {}; lay.subs.forEach((q) => { subOf[q.id] = q; });
+    (lay.__hands || []).forEach((hd) => {
+      const sc = hd.scale, fam = sc && scaleFamily(sc.style); if (!fam) return;
+      const hs = subOf[hd.host], on = hd.host === 'dial' || (hs && hs.transparent) ? 'dial' : hd.host;
+      if (on !== host) return;
+      const m = hd.motion || {}, R = scaleRadius(sc, hd), z = hd.rot || 0, ccw = hd.dir === 'ccw', unit = UNIT_OF[hd.kind] || 'hours';
+      const fan = m.path === 'retrograde', slid = isSlide(m);
+      if (fam === 'chapter' && !fan && !slid) {
+        const D = Object.assign({ print: CHAPTER_OF[sc.style], numerals: sc.figures, numOrient: sc.orient, numColor: sc.color, numScale: sc.size, n12Scale: sc.size12, nQScale: sc.sizeQ,
+          n12Font: sc.font12, nQFont: sc.fontQ, n12Color: sc.color12, nQColor: sc.colorQ, numStyle: sc.finish, plotRim: sc.rim }, CHAPTER_UNITS[unit] || {});
+        const k = R / 216; D.__k = k;
+        const nst = D.print !== 'baton' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null, nx = NM && NM.getContext('2d');
+        const frame = (x2) => { x2.save(); x2.translate(hd.x, hd.y); if (z) x2.rotate(z); if (k !== 1) x2.scale(k, k); x2.translate(-C, -C); };
+        if (nx && kk !== 1) { nx.save(); nx.translate(C, C); nx.scale(kk, kk); nx.translate(-C, -C); }
+        frame(ctx); if (nx) frame(nx);
+        const unM = ccw ? mirrorPrint([ctx, nx]) : null;
+        setFace(sc.font || 'auto');
+        printMain(ctx, D, en, frameHoles(holes, hd.x, hd.y, z, k, ccw), nx);
+        if (unM) unM();
+        ctx.restore(); if (nx) nx.restore();
+        if (nx && kk !== 1) nx.restore();
+        if (D.print === 'baton') after.push((ux) => { frame(ux); applied(ux, D, pal, frameHoles(holes, hd.x, hd.y, z, k, false)); ux.restore(); });
+        if (NM) fins.push((ux) => {
+          const okc = (v) => v && v !== 'auto', explicit = [D.numColor, D.n12Color, D.nQColor].some(okc), gx = C + (hd.x - C) * kk, gy = C + (hd.y - C) * kk;
+          finishMask(ux, NM, nst, { fill: explicit ? null : nst === 'applied' ? L().grad(ux, gx, gy, DR * 0.9 * k * kk, pal) : nst === 'lume' ? '#e8f4cf' : null, glow: okc(D.numColor) ? D.numColor : '#e8f4cf' });
+        });
+      } else if (fam === 'ring' && !fan && !slid) {
+        const g = ringGeom(RING_UNITS[unit] || RING_UNITS.hours, R, sc.size, sc.between);
+        ctx.save(); ctx.translate(hd.x, hd.y); if (z) ctx.rotate(z); ctx.translate(-C, -C);
+        const unP = ccw ? mirrorPrint([ctx]) : null;
+        drawPerimeter(ctx, { perimColor: sc.color, perimFont: sc.font, perimOrient: sc.orient }, en, frameHoles(holes, hd.x, hd.y, z, 1, ccw), g);
+        if (unP) unP();
+        ctx.restore();
+      } else {
+        // a face of radius R about the arbour; an open plate it is centred on keeps its band
+        const st = fan || slid ? (FACE_OF[sc.style] || TRACK_OF[sc.style] || 'classic') : FACE_OF[sc.style];
+        const centred = hs && !hs.slide && Math.hypot(hs.x - hd.x, hs.y - hd.y) < 0.5;
+        const f = { id: hd.id, x: hd.x, y: hd.y, r: R, rot: z, open: centred ? hs.open || 0 : 0, scale: unit, form: fan ? 'fan' : slid ? 'slider' : 'round',
+          t: { font: sc.font || 'auto', orient: sc.orient, dir: ccw ? 'ccw' : 'cw', weight: sc.weight, size: sc.size, style: st, color: sc.color } };
+        if (fan) f.fan = { start: +m.start || 0, span: m.span != null ? +m.span : 180 };
+        if (slid) {
+          const [f0, tr] = slideGeom(m), V = slideVec(m), ang = Math.atan2(V[1], V[0]);
+          const sw = hs && hs.slide ? hs.slide.sw : Math.max(5, Math.min(Math.max(14, R * 0.5) * 0.8, R * 0.16));
+          f.slide = { len: Math.abs(tr), ang: ((ang % TAU) + TAU) % TAU, ux: V[0], uy: V[1], nx: -V[1], ny: V[0], sx: hd.x, sy: hd.y, u0: f0 + tr / 2, sw };
+        }
+        printSub(ctx, f, en, holes, 'auto');
+      }
+    });
+    setFace('auto');
+    return { applied: (ux) => after.forEach((a) => a(ux)), finish: (ux) => fins.forEach((a) => a(ux)) };
   }
   // ---------- dial & elevated dials
   function surfaceShade(ctx, x, y, r) {
@@ -2332,27 +2447,10 @@
       rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, keyColor: D.sfFinishKey, keyTol: D.sfFinishKeyTol, seed: 11, weave: { ang: D.weaveAngle, sc: D.weaveScale } },
       see: { color: D.sfKey, tol: D.sfKeyTol, edge: D.sfKeyEdge } });
     artInDial(ctx, D.mkArt, slotArt(D, 'mk', clipR));   // the markings slot: over the painted surface, under the print
-    const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
-    // The perimeter ring lives at the rim, so the chapter print must pull inward to clear
-    // it. Scale BOTH the ink context and the numeral-mask context by the same factor about
-    // the dial centre, and carry the holes into that same scaled space -- printMain tests
-    // its own ink against them, and an unscaled hole list would cull the wrong ticks.
-    const pk = perimK(D), holes = lay.dialHoles;
-    const pkHoles = pk === 1 ? holes : holes.map((h) => Object.assign({}, h, { x: C + (h.x - C) * pk, y: C + (h.y - C) * pk, r: (h.r || 0) * pk, ry: h.ry == null ? h.ry : h.ry * pk, w: h.w * pk, h: h.h * pk }));
-    const push = (x2) => { if (pk === 1 || !x2) return null; x2.save(); x2.translate(C, C); x2.scale(pk, pk); x2.translate(-C, -C); return x2; };
-    const pop = (x2) => { if (x2) x2.restore(); };
-    const cxP = push(ctx), nxP = NM && push(NM.getContext('2d'));
-    const ccw = D.dir === 'ccw', unM = ccw ? mirrorPrint([ctx, NM && NM.getContext('2d')]) : null;
-    printMain(ctx, D, en, ccw ? mirH(pkHoles) : pkHoles, NM && NM.getContext('2d'));
-    if (unM) unM();
-    pop(cxP); pop(nxP);
-    if (pk !== 1) { const unP = ccw ? mirrorPrint([ctx]) : null; drawPerimeter(ctx, D, en, ccw ? mirH(holes) : holes); if (unP) unP(); }
+    // the scales of the hands aligned to the dial (owner, 2026-11-06: the dial prints none of its own)
+    const scaleTop = drawScales(ctx, 'dial', lay, en, lay.dialHoles, pal);
     weather(ctx, C, C, lay.wearIn || 0, DR, 57, en, wearOf(D), 1.5 * (lay.wearIn ? 1 : 0.75));
-    applied(ctx, D, pal, lay.dialHoles);
-    if (NM) {
-      const okc = (v) => v && v !== 'auto', explicit = [D.numColor, D.n12Color, D.nQColor].some(okc);
-      finishMask(ctx, NM, nst, { fill: explicit ? null : nst === 'applied' ? L().grad(ctx, C, C, DR * 0.9, pal) : nst === 'lume' ? '#e8f4cf' : null, glow: okc(D.numColor) ? D.numColor : '#e8f4cf' });
-    }
+    scaleTop.applied(ctx); scaleTop.finish(ctx);
     if (D.openwork && D.openwork !== 'none') openwork(ctx, D, lay);
     // flares hosted on a transparent subdial are carried by the dial, which is the
     // only shipped plane left at that spot once the plate is dropped
@@ -2382,27 +2480,13 @@
       rot: +D.sfRot ? +D.sfRot * Math.PI / 180 : 0, finish: { style: D.surface, tex: D.texture, blend: D.sfFinishBlend, color: D.sfFinishColor, keyColor: D.sfFinishKey, keyTol: D.sfFinishKeyTol, seed: 11, weave: { ang: D.weaveAngle, sc: D.weaveScale } },
       see: { color: D.sfKey, tol: D.sfKeyTol, edge: D.sfKeyEdge } });
     artInDial(ctx, D.mkArt, slotArt(D, 'mk', clipR));   // the markings slot: over the painted surface, under the print
-    const nst = D.print !== 'baton' && D.print !== 'none' && D.numStyle && D.numStyle !== 'print' ? D.numStyle : null, NM = nst ? cv(S) : null;
-    // chapter print and its holes go through the lens together -- the same pair perimK scales
-    const pk = perimK(D), pkd = pk * kk, holes = lay.dialHoles;
-    const pkHoles = pkd === 1 ? holes : holes.map((h) => Object.assign({}, h, { x: C + (h.x - C) * pkd, y: C + (h.y - C) * pkd, r: (h.r || 0) * pkd, ry: h.ry == null ? h.ry : h.ry * pkd, w: h.w * pkd, h: h.h * pkd }));
-    const push = (x2) => { if (pkd === 1 || !x2) return null; x2.save(); x2.translate(C, C); x2.scale(pkd, pkd); x2.translate(-C, -C); return x2; };
-    const pop = (x2) => { if (x2) x2.restore(); };
-    const cxP = push(ctx), nxP = NM && push(NM.getContext('2d'));
-    const ccw = D.dir === 'ccw', unM = ccw ? mirrorPrint([ctx, NM && NM.getContext('2d')]) : null;
-    printMain(ctx, D, en, ccw ? mirH(pkHoles) : pkHoles, NM && NM.getContext('2d'));
-    if (unM) unM();
-    pop(cxP); pop(nxP);
+    // the hands' scales through the lens, like everything the engine draws on the dial
     lens();
-    if (pk !== 1) { const unP = ccw ? mirrorPrint([ctx]) : null; drawPerimeter(ctx, D, en, ccw ? mirH(holes) : holes); if (unP) unP(); }
+    const scaleTop = drawScales(ctx, 'dial', lay, en, lay.dialHoles, pal, kk);
     weather(ctx, C, C, lay.wearIn || 0, DR, 57, en, wearOf(D), 1.5 * (lay.wearIn ? 1 : 0.75));
-    applied(ctx, D, pal, lay.dialHoles);
+    scaleTop.applied(ctx);
     unlens();
-    // NM was filled through the push above -- composited at identity, like the plain path, or it lands scaled twice
-    if (NM) {
-      const okc = (v) => v && v !== 'auto', explicit = [D.numColor, D.n12Color, D.nQColor].some(okc);
-      finishMask(ctx, NM, nst, { fill: explicit ? null : nst === 'applied' ? L().grad(ctx, C, C, DR * 0.9 * pkd, pal) : nst === 'lume' ? '#e8f4cf' : null, glow: okc(D.numColor) ? D.numColor : '#e8f4cf' });
-    }
+    scaleTop.finish(ctx);   // the masks were filled through the lens: composited at identity, or they land scaled twice
     lens();
     if (D.openwork && D.openwork !== 'none') openwork(ctx, D, lay);
     const thost = {}; lay.subs.forEach((sb) => { if (sb.transparent) thost[sb.id] = 1; });
@@ -2414,7 +2498,7 @@
   }
   // one canvas per subdial, so list order is stacking order (later covers earlier) and each one's openings only cut itself
   function buildSubdials(D, lay, baseEn, pal, glow, SH) {
-    const _ = L(), dialFont = D.font || 'auto';
+    const _ = L(), dialFont = 'auto';
     return lay.subs.map((s, i) => {
       const c = cv(S), ctx = c.getContext('2d');
       const en = surfaceEn(colorEn(baseEn, s.color && s.color !== 'match' ? s.color : D.color), s.style);
@@ -2450,7 +2534,16 @@
           ctx.beginPath(); ctx.rect(-60, -60, S + 120, S + 120); outline(ctx, 0); ctx.fillStyle = '#000'; ctx.fill('evenodd'); ctx.restore();
         });
       }
-      printSub(ctx, s, en, holes, dialFont);
+      // the face's own hairline rim (a plate's edge, not a scale), then the scales of the hands
+      // aligned to it (it prints none of its own, owner 2026-11-06)
+      // (it follows the plate: a circle inside a round face, a rounded bar inside a slider's)
+      if (s.rim) {
+        const kr = Math.min(r, 110) / 46, ins = s.open ? 3 : 4 * kr;
+        ctx.save(); inkCtx(ctx, en); if (typeof s.rim === 'string') ctx.strokeStyle = s.rim; ctx.lineWidth = 0.7; ctx.beginPath();
+        if (sl) outline(ctx, -Math.min(ins, sl.hh * 0.3)); else ctx.arc(x, y, r - ins, 0, TAU);
+        ctx.stroke(); ctx.restore();
+      }
+      { const sct = drawScales(ctx, s.id, lay, en, holes, pal); sct.applied(ctx); sct.finish(ctx); }
       setFace(dialFont); drawFlares(ctx, lay.flares.filter((f) => f.host === s.id && f.icon !== 'datetext'), en, pal);
       weather(ctx, x, y, s.open || 0, R, 63 + i * 17, en, wearOf(D), 0.6);
       ctx.restore();
@@ -3442,8 +3535,8 @@
       hd.capR = 0; hd.rot = m.path === 'slide-y' ? Math.PI / 2 : m.path === 'slide' ? rad(+m.angle || 0) : 0;
     }
     if (m.path === 'disc') {
-      const b = DISC_BAND[hd.kind] || DISC_BAND.hour, k = +hc.len || 1;
-      const ri = (m.ri != null ? +m.ri : b[0]) * (hd.sub ? 0.3 : 1), ro = (m.ro != null ? +m.ro : b[1]) * (hd.sub ? 0.3 : 1) * k;
+      const b = DISC_BAND[hd.kind] || DISC_BAND.hour;
+      const ri = (m.ri != null ? +m.ri : b[0]) * (hd.sub ? 0.3 : 1), ro = (m.ro != null ? +m.ro : b[1]) * (hd.sub ? 0.3 : 1);
       hd.sp = discSprite(hd.kind, ri, ro, m, hd.fin); hd.capR = 0; hd.art = null; hd.artRot = 0; hd.noShadow = true; hd.disc = { ri, ro };
     }
     void design;
@@ -3451,46 +3544,6 @@
   /* The scale a moving hand reads, printed by the hand itself so the two can never
    * disagree: a retrograde fan gets its arc just inside its tip, a slide gets its
    * track along the tip's line. Static ink, so it joins the dial plane the bake plates. */
-  function paintMotionPrint(x, hands, en) {
-    hands.forEach((hd) => {
-      const m = hd.motion, dom = DRIVE_DOM[hd.kind];
-      if (!m || !dom || m.scale === false || m.fromFace || !(m.path === 'retrograde' || m.path === 'slide-x' || m.path === 'slide-y')) return;
-      const vmax = dom[1], ink = m.scaleInk || (en && en.ink) || '#e8e8e8', acc = m.accent || (hd.fin && hd.fin.m) || '#ff2d55';
-      const every = hd.kind === 'hour' ? 1 : 5; let lab = hd.kind === 'hour' ? 1 : (m.path === 'retrograde' && Math.abs(+m.span || 180) < 200 ? 15 : 10);
-      const text = (v) => (hd.kind === 'hour' ? String(v % 12 || 12) : String(v));
-      const fs0 = hd.kind === 'hour' ? 15 : 12, fs = legible(fs0);
-      lab *= Math.ceil(fs / fs0);   // legibility: a grown figure takes a wider share of the scale
-      x.save(); x.lineCap = 'round';
-      x.font = '700 ' + fs + 'px ' + SANS; x.textAlign = 'center'; x.textBaseline = 'middle';
-      if (m.path === 'retrograde') {
-        const r = Math.max(30, (hd.len || 150) - 4), a0 = rad(+m.start || 0), sp = rad(m.span != null ? +m.span : 180);
-        const ca = (a) => a - Math.PI / 2;
-        x.strokeStyle = acc; x.lineWidth = 3; x.beginPath(); x.arc(hd.x, hd.y, r, ca(a0), ca(a0 + sp), sp < 0); x.stroke();
-        for (let v = 0; v <= vmax; v += hd.kind === 'hour' ? 1 : 1) {
-          const a = ca(a0 + (sp * v) / vmax), maj = v % every === 0, lbl = v % lab === 0;
-          if (!maj && hd.kind !== 'second' && hd.kind !== 'minute') continue;
-          const l = lbl ? 13 : maj ? 8 : 4;
-          x.strokeStyle = lbl ? acc : ink; x.lineWidth = lbl ? 2.4 : maj ? 1.6 : 0.8; x.globalAlpha = maj ? 1 : 0.5;
-          x.beginPath(); x.moveTo(hd.x + Math.cos(a) * r, hd.y + Math.sin(a) * r); x.lineTo(hd.x + Math.cos(a) * (r - l), hd.y + Math.sin(a) * (r - l)); x.stroke();
-          x.globalAlpha = 1;
-          if (lbl) { x.fillStyle = ink; x.fillText(text(v), hd.x + Math.cos(a) * (r - 24), hd.y + Math.sin(a) * (r - 24)); }
-        }
-      } else {
-        const [f0, tr] = slideGeom(m), horiz = m.path === 'slide-x', L0 = (hd.len || 60) + 8;
-        const P0 = (o, off) => (horiz ? [hd.x + o, hd.y - L0 - off] : [hd.x + L0 + off, hd.y + o]);
-        x.strokeStyle = acc; x.lineWidth = 3; x.beginPath(); x.moveTo(...P0(f0, 0)); x.lineTo(...P0(f0 + tr, 0)); x.stroke();
-        for (let v = 0; v <= vmax; v++) {
-          const o = f0 + (tr * v) / vmax, maj = v % every === 0, lbl = v % lab === 0;
-          if (!maj && hd.kind === 'hour') continue;
-          const l = lbl ? 13 : maj ? 8 : 4;
-          x.strokeStyle = lbl ? acc : ink; x.lineWidth = lbl ? 2.4 : maj ? 1.6 : 0.8; x.globalAlpha = maj ? 1 : 0.5;
-          x.beginPath(); x.moveTo(...P0(o, 0)); x.lineTo(...P0(o, l)); x.stroke(); x.globalAlpha = 1;
-          if (lbl) { x.fillStyle = ink; x.fillText(text(v), ...P0(o, 24)); }
-        }
-      }
-      x.restore();
-    });
-  }
   /* The fixed index a disc is read against. It has to sit ABOVE the turning discs, and
    * the crystal is the one plane the device stacks over every hand, so it rides there. */
   function paintDiscIndex(x, hands) {
@@ -3566,7 +3619,7 @@
   function handOrder(lay, design) { return liveSeq(lay, design).filter((e) => e.kind === 'hand').map((e) => e.id); }
   function buildHands(lay, design, defStyle, defFin, tick) {
     const secT = tickTurn(tick === 'sweep' || !tick ? 0 : +tick);
-    const PG = perimGeom(design), R = (REACH[design.print] || 205) * (PG ? PG.k : 1), all = {};
+    const all = {};
     const pickS = (hc, df) => (hc.style && hc.style !== 'auto' ? hc.style : df || defStyle), pickF = (hc) => (hc.finish && hc.finish !== 'auto' ? hc.finish : defFin), pickL = (hc) => (hc.lume && hc.lume !== 'auto' ? hc.lume : design.handLume), pickFlat = (hc) => (hc.shade && hc.shade !== 'auto' ? hc.shade : design.handShade || '3d') === 'flat';
     const baseTurn = (k, hc) => (k === 'second' ? secT : k === 'gmt' ? gmtTurn(hc.offset) : TURN[k]);
     const subOf = {}; lay.subs.forEach((s) => { subOf[s.id] = s; });
@@ -3576,7 +3629,7 @@
     // the ink's own tip to land at len, the reach of the drawn hand of this role, so
     // the Length slider reads the same for an upload at any source resolution.
     const artOf = (hc, len, aim) => (hc.art && assetReady(hc.art) ? handSpriteAsset(hc.art, Object.assign({ maxW: 2 * len + 8, maxH: 2 * len + 8, pivotX: hc.pivotX, pivotY: hc.pivotY, zoom: hc.zoom, fitTo: len, rot0: +hc.rot0 || 0 }, aim != null ? { aimRad: aim } : {})) : null);
-    const dims = { hour: [0.66, 0.05], minute: [0.96, 0.038], second: [0.98, 0.012] };
+    const dims = HAND_DIMS;
     // A hand on the dial that reads a calendar scale reaches the ring that feeds it: with
     // a perimeter printed its tip lands on the ticks, without one it stops short of the
     // chapter print. The default tip names the data the hand carries, so the dial reads
@@ -3586,61 +3639,44 @@
     // length applies ONLY with no ring printed, where the tip must fall inside the chapter
     // print -- the numerals print at 181..190 depending on the style, so these stop at
     // 161..174 and the heads land at different radii instead of one clump.
-    const CAL_DIM = { hours24: [0.85, 0.0155], gmt: [0.865, 0.015], day: [0.8, 0.017], date: [0.835, 0.0165], month: [0.82, 0.016] };
-    // D43 P5d: a sub-dial offers the default look of the hands placed on it (hstyle, hfinish);
-    // a hand follows it until it names its own, and the dial's default stands behind both
-    const faceDef = {}; (design.comps || []).forEach((c) => { if (c.type === 'subdial') faceDef[c.id] = c; });
+    const CAL_DIM = CAL_DIMS;
+    /* Owner, 2026-11-05: a hand stands anywhere. Its arbour is its own place (angle and
+     * distance about the centre it is aligned to: the dial's, or a sub-dial's, exactly as a
+     * wheel is placed), and its zero, direction, path and look are its own. A sub-dial it is
+     * aligned to lends that centre, its layer and the default reach of a hand that fits it --
+     * nothing else: no tilt, no print direction, no fan or slot, no style (canonDesign moved
+     * what older designs inherited onto each hand, once). */
     handSlots(lay, design).forEach((slot) => {
-      const k = slot.kind, id = slot.id, hc0 = handComps(design).find((c) => c.id === id) || {}, fd = slot.sub ? faceDef[slot.host] || {} : {};
-      const hc = Object.assign({}, hc0, (!hc0.style || hc0.style === 'auto') && fd.hstyle && fd.hstyle !== 'auto' ? { style: fd.hstyle } : {},
-        (!hc0.finish || hc0.finish === 'auto') && fd.hfinish && fd.hfinish !== 'auto' ? { finish: fd.hfinish } : {});
-      const lk = +hc.len || 1, wk = +hc.wid || 1, fin = handFin(pickF(hc));
-      if (slot.sub) {
-        // a hand on a sub-dial: sized off that sub-dial, turned with its print's direction,
-        // and aimed by its tilt
-        const s = subOf[slot.host], sec = k === 'second', len = (s.r - 5) * 0.93 * lk, w = (sec ? Math.max(1.8, s.r * 0.026) : Math.max(3, s.r * 0.07)) * wk;
-        const base = baseTurn(k, hc), turn = s.t && s.t.dir === 'ccw' ? (d) => -base(d) : base, art = artOf(hc, len, s.rot || 0);
-        all[id] = { id, kind: k, host: s.id, x: s.x, y: s.y, rot: s.rot, sp: art || handSprite(pickS(hc), sec ? 'second' : 'sub', len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn, capR: art ? 0 : Math.max(2.6, w * 1.2), fin, art: art || null, artRot: art ? rad(+hc.rot0 || 0) : 0, len, sub: true };
-      } else if (dims[k]) {
-        const [l, wf] = dims[k], w = Math.max(k === 'second' ? 1.8 : 2.5, R * wf) * wk;
-        const len = Math.min(216, R * l * lk), art = artOf(hc, len);
-        all[id] = { id, kind: k, host: 'dial', x: C, y: C, rot: 0, sp: art || handSprite(pickS(hc), k === 'second' ? 'second' : k, len, w, fin, hc.sec || design.secStyle, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn: baseTurn(k, hc), capR: art ? 0 : (k === 'second' && (hc.sec || design.secStyle) === 'flieger' ? 2.4 : R * 0.034 * Math.max(1, Math.sqrt(wk))), fin, art: art || null, artRot: art ? rad(+hc.rot0 || 0) : 0, len };
-      } else {
-        const [l, wf] = CAL_DIM[k], reach = PG ? PG.reach : R * l, len = Math.min(222, reach * lk), w = Math.max(1.7, R * wf) * wk, art = artOf(hc, len);
-        // labels between the lines move by half a division, and the pointer that reads them must
-        // move with them or it indicates the neighbour; the same holds for the ring rotation the
-        // user set. offTurn carries both, and only a hand whose own ring prints picks it up.
-        const base = baseTurn(k, hc), off = PG && HAND_RING[k] === design.perim ? PG.offTurn : 0;
-        all[id] = { id, kind: k, host: 'dial', x: C, y: C, rot: 0, sp: art || handSprite(pickS(hc, CAL_DEF[k]), 'hour', len, w, fin, null, pickL(hc), pickFlat(hc)), flat: pickFlat(hc), turn: off ? ((d) => base(d) + off) : base, capR: art ? 0 : Math.max(2.2, w * 1.1), fin, art: art || null, artRot: art ? rad(+hc.rot0 || 0) : 0, len };
-      }
-      // D43 P5d.2: what the face drives and the hand may override. Direction: the hand's
-      // own, else its face's (a sub-dial's print direction; the main dial runs clockwise).
-      // A round face's start turns the hand's zero; a fan or a slider makes the hand's
-      // motion from its own geometry, keeping only the hand's cadence, steps and ease.
-      const hd = all[id], s = slot.sub ? subOf[slot.host] : null, form = s ? s.form : 'round';
-      hd.rawTurn = hd.rawTurn || (slot.sub && s.t && s.t.dir === 'ccw' ? ((f) => (d) => -f(d))(hd.turn) : hd.turn);
-      const faceDir = (s ? s.t && s.t.dir === 'ccw' : design.dir === 'ccw') ? 'ccw' : 'cw', dir = hc.dir === 'cw' || hc.dir === 'ccw' ? hc.dir : faceDir, sg = dir === 'ccw' ? -1 : 1;
+      const k = slot.kind, id = slot.id, hc = handComps(design).find((c) => c.id === id) || {};
+      const fin = handFin(pickF(hc)), g = (lay.G && lay.G[id]) || { x: C, y: C }, s = slot.sub ? subOf[slot.host] : null, num = (v) => v != null && v !== '' && isFinite(+v);
+      /* A hand's own px (owner, 2026-11-06): length to the tip, width, the arbour cap. A hand that
+       * names none (one just added) takes the figures a hand of its kind was drawn at: a centre
+       * hand's share of a 205 px reach, a calendar hand's, or one that fits the face it is on. */
+      const sec = k === 'second', cal = !dims[k], small = hc.proportion === 'small' || (!num(hc.length) && !!s && !sec);
+      const dl = s ? (s.r - 5) * 0.93 : cal ? 205 * CAL_DIM[k][0] : Math.min(216, 205 * dims[k][0]);
+      const dw = s ? (sec ? Math.max(1.8, s.r * 0.026) : Math.max(3, s.r * 0.07)) : cal ? Math.max(1.7, 205 * CAL_DIM[k][1]) : Math.max(sec ? 1.8 : 2.5, 205 * dims[k][1]);
+      const len = num(hc.length) ? Math.max(0, +hc.length) : dl, w = num(hc.width) ? Math.max(0.3, +hc.width) : dw;
+      const dc = s ? Math.max(2.6, w * 1.2) : cal ? Math.max(2.2, w * 1.1) : sec && (hc.sec || design.secStyle) === 'flieger' ? 2.4 : 205 * 0.034;
+      // a calendar hand's tip names its data by default (a small one takes the hand set's style)
+      const calTip = cal && !small, style = pickS(hc, calTip ? CAL_DEF[k] : null), marker = MARKERS[style] && style !== 'hand' ? style : null;
+      const art = marker ? null : artOf(hc, len), sprite = small ? 'sub' : sec ? 'second' : cal ? 'hour' : k;
+      const sp = art || (marker ? markerSprite(marker, len, w, fin) : handSprite(style, sprite, len, w, fin, calTip ? null : hc.sec || design.secStyle, pickL(hc), pickFlat(hc)));
+      const base = baseTurn(k, hc);
+      all[id] = { id, kind: k, host: s ? s.id : 'dial', x: g.x, y: g.y, rot: 0, sp, flat: pickFlat(hc), turn: base,
+        capR: art || marker ? 0 : num(hc.cap) ? Math.max(0, +hc.cap) : dc, fin, art: art || null, artRot: art ? rad(+hc.rot0 || 0) : 0, len, wpx: w, sub: !!s, marker: marker || undefined,
+        scale: hc.scale && hc.scale.style && hc.scale.style !== 'none' ? hc.scale : null };
+      // the hand's own direction (else the dial's) and its own zero; its path is its motion's
+      const hd = all[id];
+      hd.rawTurn = hd.turn;
+      const dir = hc.dir === 'cw' || hc.dir === 'ccw' ? hc.dir : design.dir === 'ccw' ? 'ccw' : 'cw';
       hd.dir = dir;
-      const cad = {}; ['cadence', 'steps', 'ease', 'p'].forEach((q) => { if (hc.motion && hc.motion[q] != null) cad[q] = hc.motion[q]; });
-      let hcM = hc;
-      if (form === 'fan') {
-        hcM = Object.assign({}, hc, { motion: Object.assign(cad, { path: 'retrograde', fromFace: true, off: hc.offset,
-          start: hc.start != null && hc.start !== '' ? +hc.start : s.fan.start, span: sg * Math.abs(hc.span != null && hc.span !== '' ? +hc.span : s.fan.span) }) });
-      } else if (form === 'slider') {
-        const sl = s.slide, L0 = hc.span != null && hc.span !== '' ? Math.max(10, +hc.span) : sl.len;
-        hd.x = sl.sx; hd.y = sl.sy;
-        hcM = Object.assign({}, hc, { motion: Object.assign(cad, { path: 'slide', angle: (sl.ang * 180) / Math.PI, fromFace: true, off: hc.offset, from: -sg * L0 / 2, travel: sg * L0 }) });
-      } else {
-        // a sub-dial's built turn already runs its face's way; a dial hand's runs clockwise
-        if (slot.sub ? sg !== (faceDir === 'ccw' ? -1 : 1) : sg < 0) { const raw = hd.rawTurn; hd.turn = sg < 0 ? (d) => -raw(d) : raw; }
-        if (hc.start != null && hc.start !== '' && +hc.start) hd.rot = (hd.rot || 0) + rad(+hc.start);
-      }
-      // a marker in place of the drawn hand: at the tip on a round face or a fan, on the slot on a slider
-      if (hc.marker && hc.marker !== 'hand' && MARKERS[hc.marker] && !hd.art) {
-        const onSlot = form === 'slider', at = onSlot ? 0 : Math.max(8, (hd.len || 60) - 6), size = (onSlot ? Math.max(3, s.slide.sw * 0.42) : Math.max(4.5, (hd.len || 60) * 0.12)) * (+hc.wid || 1);
-        hd.sp = markerSprite(hc.marker, at, size, hd.fin || handFin(pickF(hc))); hd.capR = 0; hd.marker = hc.marker;
-      }
-      applyMotion(hd, hcM, secT, design);
+      if (dir === 'ccw') { const raw = hd.rawTurn; hd.turn = (d) => -raw(d); }
+      if (hc.start != null && hc.start !== '' && +hc.start) hd.rot = rad(+hc.start);
+      const m = hc.motion || {}, onTrack = m.path === 'slide' || m.path === 'slide-x' || m.path === 'slide-y';
+      applyMotion(hd, hc, secT, design);
+      // a sweep or a slide runs the way its span or travel is signed: that is its direction
+      if (m.path === 'retrograde') hd.dir = (m.span != null ? +m.span : 180) < 0 ? 'ccw' : 'cw';
+      else if (onTrack) hd.dir = (+m.travel || 1) < 0 ? 'ccw' : 'cw';
     });
     const list = handOrder(lay, design).filter((id) => all[id]).map((id) => all[id]);
     // each hand sits higher than the one below it, so shadows lengthen up the stack; the cap crowns the top hand of each arbor
@@ -4248,10 +4284,12 @@
     setLights(o);
     const lay = layout(design, rad(+o.trainAngle || 0));
     const style = o.hands || 'breguet', hf = o.handFinish || 'blued', SH = shadowCfg(o, LIGHT);
+    // the hands first: every scale is a hand's, printed on the plane its hand is aligned to
+    lay.__hands = buildHands(lay, design, style, hf, o.tick);
     const F = {
       design, lay, en, pal, style, handFinish: hf,
       subLayers: buildSubdials(design, lay, en, pal, G, SH),
-      hands: buildHands(lay, design, style, hf, o.tick), inset: faceScale(o), dynK: dynScale(o), caseOpen: caseOpenR(o), handOrder: handOrder(lay, design), liveSeq: liveSeq(lay, design), handSlots: handSlots(lay, design), light: Object.assign({}, LIGHT),
+      hands: lay.__hands, inset: faceScale(o), dynK: dynScale(o), caseOpen: caseOpenR(o), handOrder: handOrder(lay, design), liveSeq: liveSeq(lay, design), handSlots: handSlots(lay, design), light: Object.assign({}, LIGHT),
     };
     // Under "no case" the opening pulls the DRAWN dial in through buildDial's lens; under a
     // drawn case everything eases in through compose's inset instead, unsplit.
@@ -4263,12 +4301,7 @@
     // opaque static1 cull. Built only when a dial-hosted disc exists; else fall back to
     // the holed dial (no apertures to seal).
     F.dialSealed = lay.dialHoles.some((h) => h.seal) ? buildDial(design, lay, en, pal, G, true, artClipR(o), dialK).canvas : bd.canvas;
-    // D41: the scales the moving hands read, through the dial's own lens
-    [F.dial].concat(F.dialSealed !== F.dial ? [F.dialSealed] : []).forEach((cn) => {
-      const x = cn.getContext('2d'); x.save();
-      if (dialK !== 1) { x.translate(C, C); x.scale(dialK, dialK); x.translate(-C, -C); }
-      setFace(fontKey); paintMotionPrint(x, F.hands, F.dialEn); x.restore();
-    });
+
     /* The plate-slot backdrop under "no case" is NOT baked into the plate: the base frames
      * are banked once per movement and the opening can move while they are cached, and the
      * one promise of the option is that the author's own image is never resampled. So the
@@ -4431,7 +4464,18 @@
       const out = [];
       const hs = F.hands || [];
       for (let i = hs.length - 1; i >= 0; i--) { const hd = hs[i]; if (handHit(hd, x, y, date)) out.push({ kind: 'hand', id: hd.id }); }
-      for (let i = lay.hits.length - 1; i >= 0; i--) { const h = lay.hits[i]; if (Math.hypot(x - h.x, y - h.y) <= h.r) out.push({ kind: 'comp', id: h.id }); }
+      for (let i = lay.hits.length - 1; i >= 0; i--) { const h = lay.hits[i]; if (Math.hypot(x - h.x, y - h.y) <= h.r) out.push({ kind: 'comp', id: h.id, of: h.of }); }
+      /* A wheel is seen only through its cutouts, so a click on a cutout is a click on the wheel
+       * that shows there: the wheel comes first (a drag moves it, its cutouts with it), its
+       * cutout next on the same spot's second click (owner, 2026-11-06). */
+      for (let i = 0; i < out.length; i++) {
+        const w = out[i].of; if (!w) continue;
+        const j = out.findIndex((q) => q.kind === 'comp' && q.id === w);
+        if (j >= 0 && j < i) continue;
+        if (j > i) out.splice(j, 1);
+        out.splice(i, 0, { kind: 'comp', id: w }); i++;
+      }
+      out.forEach((q) => { delete q.of; });
       // The dial target means "the art under the cursor": under "no case" the uploaded
       // image keeps its authored reach while the drawn face eases inward, so its pixels
       // stay clickable out to the panel edge, not just inside the shrunk dial circle.
@@ -4441,7 +4485,8 @@
       return out;
     };
     F.pick = (x, y, date) => F.pickAll(x, y, date)[0] || null;
-    F.outline = (id) => lay.hits.find((h) => h.id === id) || null;
+    // the selection outline: a part's own extent (o) where its grab circle is smaller than it
+    F.outline = (id) => { const h = lay.hits.find((q) => q.id === id); return !h ? null : h.o != null ? Object.assign({}, h, { r: h.o }) : h; };
     // text kits for custom-format windows and date flares: end caps + a 1px tileable slice of the frame/plate,
     // and every glyph the format can produce, so firmware can assemble any string. Rendered unrotated at kit scale k.
     F.textKits = (k) => {
@@ -4766,34 +4811,56 @@
     flush();
     return { under, hands, top, live };
   }
+  /* What fits a hand to a face, as the hand's own values (a copy, never a link): a slider's
+   * track as its slide path and the slot's place as its own, a round face's tilt as its zero.
+   * The editor applies it when a hand is added on a face, and on Fit to the face. */
+  function faceFit(h, S) {
+    const tilt = +S.rot || 0, num = (v) => v != null && v !== '' && isFinite(+v), out = {};
+    const sg = h.dir === 'ccw' ? -1 : 1, m0 = h.motion || {}, cad = {};
+    ['cadence', 'steps', 'ease', 'p'].forEach((q) => { if (m0[q] != null) cad[q] = m0[q]; });
+    if (S.form === 'slider') {
+      const r = Math.max(10, +S.size || 50), len = Math.max(40, Math.min(400, S.slideLen == null ? Math.round(r * 2) : +S.slideLen));
+      const ang = S.slideAngle == null ? 0 : +S.slideAngle, a = rad(ang), hh = Math.max(14, r * 0.5), off = -hh * 0.32;
+      const sw = Math.max(5, Math.min(hh * 0.8, S.slotW == null ? r * 0.16 : +S.slotW)), dx = -Math.sin(a) * off, dy = Math.cos(a) * off;
+      Object.assign(out, { motion: Object.assign(cad, { path: 'slide', angle: ang, from: -sg * len / 2, travel: sg * len }), markR: Math.max(3, sw * 0.42),
+        // the slot's own place on its plate, as the hand's place about the face's centre
+        dist: Math.round(Math.hypot(dx, dy) * 100) / 100, angle: Math.round(((Math.atan2(dx, -dy) * 180) / Math.PI - tilt) * 100) / 100,
+        start: null, span: null, dir: null });
+    } else {
+      const m = Object.assign({}, m0); if (m.path && m.path !== 'rotate' && m.path !== 'disc' && m.path !== 'retrograde') delete m.path;
+      Object.assign(out, { start: m.path === 'retrograde' ? null : tilt || null, angle: null, dist: null, motion: Object.keys(m).length ? m : null });
+    }
+    return out;
+  }
+  /* A hand's scale (drawScales): a look, and the fields that look reads, each off its default.
+   * From the tip is no field (gap only); a radius set outright is at 'fixed'. */
+  function canonScale(c) {
+    const sc = c.scale;
+    if (!sc || typeof sc !== 'object' || !SCALE_STYLES[sc.style] || sc.style === 'none') { delete c.scale; return; }
+    const fam = scaleFamily(sc.style), out = { style: sc.style }, okc = (v) => typeof v === 'string' && v && v !== 'auto', font = (v) => (v && v !== 'auto' && FONTS[v] ? v : null);
+    const one = (v) => (numOk(v) && +v > 0 && Math.abs(+v - 1) > 1e-9 ? +v : null);
+    if (sc.at === 'fixed' && +sc.radius > 0) { out.at = 'fixed'; out.radius = +sc.radius; } else if (numOk(sc.gap)) out.gap = +sc.gap;
+    const o = { font: font(sc.font), color: okc(sc.color) ? sc.color : null, size: one(sc.size),
+      orient: sc.orient === 'radial' || sc.orient === 'upright' ? (sc.orient === (sc.style === 'roman' ? 'radial' : 'upright') ? null : sc.orient) : null };
+    if (fam === 'chapter') Object.assign(o, { figures: DENSITY[sc.figures] && sc.figures !== 'all' ? sc.figures : null, size12: one(sc.size12), sizeQ: one(sc.sizeQ),
+      font12: font(sc.font12), fontQ: font(sc.fontQ), color12: okc(sc.color12) ? sc.color12 : null, colorQ: okc(sc.colorQ) ? sc.colorQ : null,
+      finish: sc.style !== 'batons' && ['applied', 'lume', 'engraved'].includes(sc.finish) ? sc.finish : null, rim: (sc.style === 'plots' || sc.style === 'framed') && isHex(sc.rim) ? sc.rim : null });
+    if (fam === 'face' && (sc.weight === 'regular' || sc.weight === 'italic')) o.weight = sc.weight;
+    if (fam === 'ring' && sc.between === true) o.between = true;
+    Object.keys(o).forEach((k) => { if (o[k] != null) out[k] = o[k]; });
+    c.scale = out;
+  }
   function canonDesign(d) {
     if (!d.surface || d.surface === 'enamel') { delete d.surface; delete d.texture; }
     if (d.texture != null && +d.texture === 1) delete d.texture;
     if ((!DIAL_COLORS[d.color] && !isHex(d.color)) || d.color === 'cream') delete d.color;
     ['aging', 'stains', 'dust'].forEach((k) => { if (d[k] != null && +d[k] === 1) delete d[k]; });
-    if (!HAS_NUMS.includes(d.print) || d.numerals === 'none' || d.numOrient === (d.print === 'roman' ? 'radial' : 'upright')) delete d.numOrient;
-    if (!d.font || d.font === 'auto' || d.font === RING_FONT(d.print)) delete d.font;
-    if (!d.numColor || d.numColor === 'auto') delete d.numColor;
-    if (!isHex(d.plotRim)) delete d.plotRim;
+    // the dial is a sheet (owner, 2026-11-06): no print, figures, ring or typeface of its own -- its hands' scales print
+    ['print', 'numerals', 'numOrient', 'numColor', 'numScale', 'n12Scale', 'nQScale', 'n12Font', 'nQFont', 'n12Color', 'nQColor', 'numStyle', 'plotRim', 'font',
+      'perim', 'perimShrink', 'perimColor', 'perimFont', 'perimOrient', 'perimSize', 'perimPos', 'perimRot', 'hv'].forEach((k) => delete d[k]);
     if (!isHex(d.bezelInk)) delete d.bezelInk;
-    ['numScale', 'n12Scale', 'nQScale'].forEach((k) => { if (d[k] != null && +d[k] === 1) delete d[k]; });
-    if (!d.numStyle || d.numStyle === 'print') delete d.numStyle;
     if (!d.openwork || d.openwork === 'none') ['openwork', 'owBar', 'owRing', 'owHub', 'owRim', 'owInlay', 'owDepth'].forEach((k) => delete d[k]);
     if (!d.secStyle || d.secStyle === 'classic') delete d.secStyle;
-    // The outer ring is the dial's own choice (D43 P5c). A hand that reads it lands on its
-    // ticks; none has to. perimShrink 1.00 leaves the chapter at full size, which leaves
-    // nothing out there to print, and is how a chosen ring is hidden.
-    if (!d.perim || !PERIM_SPEC[d.perim]) PERIM_KEYS.forEach((k) => delete d[k]);
-    else {
-      const ps = +d.perimShrink;
-      if (!(ps >= 0.7 && ps <= 1) || ps === 0.88) delete d.perimShrink;
-      if (!d.perimColor || d.perimColor === 'auto' || d.perimColor === 'ink') delete d.perimColor;
-      if (!d.perimFont || d.perimFont === 'auto' || d.perimFont === 'same') delete d.perimFont;
-      if (!d.perimOrient || d.perimOrient === 'upright') delete d.perimOrient;
-      if (d.perimSize != null && +d.perimSize === 1) delete d.perimSize;
-      if (!d.perimPos || d.perimPos === 'ontick') delete d.perimPos;
-      if (d.perimRot != null && perimRotDeg(d) === 0) delete d.perimRot;
-    }
     if (d.dir !== 'ccw') delete d.dir;   // the dial's direction: clockwise is no field at all
     /* Uploaded art is REFERENCED here, never embedded: a design carries the asset id
      * (and the placed geometry), the bytes live in the browser's asset store, and the
@@ -4839,26 +4906,28 @@
     if (!d.handShade || d.handShade === '3d') delete d.handShade;
     if (d.surface !== 'carbon') delete d.weaveAngle; else if (d.weaveAngle != null && +d.weaveAngle === 0) delete d.weaveAngle;
     if (d.surface !== 'carbon' && d.surface !== 'forged') delete d.weaveScale; else if (d.weaveScale != null && +d.weaveScale === 1) delete d.weaveScale;
-    ['n12Font', 'nQFont'].forEach((k) => { if (!d[k] || d[k] === 'same') delete d[k]; });
-    ['n12Color', 'nQColor'].forEach((k) => { if (!d[k] || d[k] === 'auto') delete d[k]; });
     // P5d.3i: a moon wheel's cutouts are moon cutouts, however they were added (a wheel switched to
     // the moon after its cutout came with it kept a window's shape, and canon then dropped its Aperture)
     if (d.comps) { const moons = {}; d.comps.forEach((c) => { if (c.type === 'wheel' && c.shows === 'moon') moons[c.id] = 1; });
       d.comps.forEach((c) => { if (c.type === 'cutout' && moons[c.host]) c.shape = 'moon'; else if (c.type === 'cutout' && c.shape === 'moon') delete c.shape; }); }
     (d.comps || []).forEach((c) => {
       if (c.type === 'hand') {
-        // a hand has no placement of its own: it turns on its host's arbour
-        ['angle', 'dist', 'rot', 'size', 'on'].forEach((k) => delete c[k]);
+        // a hand stands where it is placed: angle and distance about the centre it is aligned to
+        ['rot', 'size', 'on'].forEach((k) => delete c[k]);
+        ['angle', 'dist'].forEach((k) => { if (!isFinite(+c[k]) || !+c[k]) delete c[k]; else c[k] = Math.round(+c[k] * 100) / 100; });
         if (!c.host) c.host = 'dial';
         if (c.style === 'auto') delete c.style;
         if (c.finish === 'auto') delete c.finish;
-        if (c.len != null && +c.len === 1) delete c.len;
-        if (c.wid != null && +c.wid === 1) delete c.wid;
+        delete c.len; delete c.wid;   // a hand's length and width are px (length, width)
         if (c.shows !== 'gmt' || !Math.round(+c.offset || 0)) delete c.offset; else c.offset = Math.round(+c.offset);
-        // D43 P5d.2: what a hand overrides of its face; an unset field follows the face
+        // the hand's own direction (unset: the dial's) and zero
         if (c.dir !== 'cw' && c.dir !== 'ccw') delete c.dir;
+        if (c.motion && (c.motion.path === 'slide-x' || c.motion.path === 'slide-y')) c.motion = Object.assign({}, c.motion, { path: 'slide', angle: c.motion.path === 'slide-y' ? 90 : 0 });
         ['start', 'span'].forEach((k) => { if (c[k] == null || c[k] === '' || !isFinite(+c[k])) delete c[k]; else c[k] = +c[k]; });
-        if (!c.marker || c.marker === 'hand' || !MARKERS[c.marker]) delete c.marker;
+        delete c.marker;   // an indicator is a hand style (owner, 2026-11-06)
+        canonScale(c);
+        ['length', 'width', 'cap'].forEach((k) => { if (!numOk(c[k]) || +c[k] < 0) delete c[k]; else c[k] = +c[k]; });
+        if (c.proportion !== 'small') delete c.proportion;
         // an art-backed hand keeps its reference plus the authored pivot, in source
         // pixels, so a re-render can rebuild the sprite without the file. The pivot is
         // allowed outside the ink (an arbour hidden under a subdial is a real case), so
@@ -4950,16 +5019,16 @@
       if (c.type === 'opening' && (!c.shape || c.shape === 'circle')) { c.rot = 0; delete c.shape; }
       if (c.type === 'moon') ['moonColor', 'moonColor2', 'moonBg'].forEach((k) => { if (!c[k] || c[k] === 'auto' || !['graphic', 'neon'].includes(c.style)) delete c[k]; });
       if (c.type === 'subdial') {
-        if (c.tfont === 'dial') delete c.tfont; if (c.tstyle === 'classic') delete c.tstyle; if (!c.tcolor || c.tcolor === 'auto') delete c.tcolor; if (c.torient === 'upright') delete c.torient; if (c.tdir === 'cw') delete c.tdir; if (c.tweight === 'bold') delete c.tweight; if (c.tsize != null && +c.tsize === 1) delete c.tsize;
-        if (c.scale === 'none') ['tfont', 'torient', 'tdir', 'tweight', 'tsize', 'tstyle', 'tcolor'].forEach((k) => delete c[k]);
+        // a face prints nothing of its own (owner, 2026-11-06): the hands aligned to it print their scales
+        ['scale', 'tfont', 'torient', 'tdir', 'tweight', 'tsize', 'tstyle', 'tcolor', 'fanStart', 'fanSpan'].forEach((k) => delete c[k]);
+        if (c.rim !== 1 && !isHex(c.rim)) delete c.rim;
         if (c.color === 'match') delete c.color;
-        if (!c.hstyle || c.hstyle === 'auto') delete c.hstyle;
-        // a face's form and its own geometry; a round face carries none of the others'
-        if (c.form !== 'fan' && c.form !== 'slider') delete c.form;
-        if (c.form !== 'fan') { delete c.fanStart; delete c.fanSpan; }
+        delete c.carrier;   // the engine decides how a sub-dial's hand ships (pointerDefault3)
+        delete c.hstyle; delete c.hfinish;   // a face lends its hands its centre and its layer, never a look (owner, 2026-11-05)
+        // a face's form and its own geometry; a round face carries none of the slider's
+        if (c.form !== 'slider') delete c.form;
         if (c.form !== 'slider') ['slideLen', 'slideAngle', 'slotW', 'slotStyle', 'slotFloor'].forEach((k) => delete c[k]);
         else { if (!c.slotStyle || c.slotStyle === 'bevel') delete c.slotStyle; if (c.slotFloor !== 'movement') delete c.slotFloor; }
-        if (!c.hfinish || c.hfinish === 'auto') delete c.hfinish;
         if (c.height != null && +c.height === 1) delete c.height;
         if (c.style !== 'carbon') delete c.weaveAngle; if (c.style !== 'carbon' && c.style !== 'forged') delete c.weaveScale;
         if (c.tex != null && (c.style === 'enamel' || !c.style)) delete c.tex;
@@ -4989,7 +5058,7 @@
    * second copy of the number exists to drift. */
   window.WatchEngine = { SIZE: S, PRESETS,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
-    bankFrames: (f) => window.DialRenderer.bankFrames(f), gearTempo: (g) => (Math.abs(g - 7.5) < 0.01 ? 8 : Math.round(g)), LENSES, DIAL_COLORS, COLOR_GROUPS, RING_FONT, HAS_NUMS, PLATES, BEZEL, canonDesign, caseMetalOf: (o) => caseMetal(o), TYPEFACES, SUB_DISPLAYS, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SCALES, SUB_CARRIERS, POINTER_SCALES, SHOWS, PRINTS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, PERIMS, HAND_SHOWS, HAND_RING, SCALE_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, perimGeom, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, perimRotDeg, ringTop, ringStarts, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
+    bankFrames: (f) => window.DialRenderer.bankFrames(f), gearTempo: (g) => (Math.abs(g - 7.5) < 0.01 ? 8 : Math.round(g)), LENSES, DIAL_COLORS, COLOR_GROUPS, PLATES, BEZEL, canonDesign, faceFit, SCALE_STYLES, SCALE_GAP, TRACK_OF, FIGURES, scaleFamily, scaleRadius, CAL_DIMS, HAND_DIMS, caseMetalOf: (o) => caseMetal(o), TYPEFACES, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SHOWS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, HAND_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers
     // (drawAsset for a placed backdrop, handSpriteAsset for a sprite-backed hand)
     assetFromFile, assetGet, assetReady, assetKnown, assetFits, assetBytes, assetDump, assetRestore, assetDrop, assetClear,

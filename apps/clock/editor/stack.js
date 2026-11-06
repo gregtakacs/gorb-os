@@ -49,12 +49,33 @@
     if (c.type === 'wheel') return ((E && E.WHEEL_SHOWS && E.WHEEL_SHOWS[c.shows]) || 'Date') + (c.digit === 'tens' ? ' tens' : c.digit === 'units' ? ' units' : '') + ' wheel';
     if (c.type === 'cutout') return 'Cutout' + (c.shape && c.shape !== 'window' ? ' · ' + c.shape : '');
     if (c.type === 'index') return 'Index · ' + ((E && E.INDEX_STYLES && E.INDEX_STYLES[c.istyle]) || 'Laser');
-    if (c.type === 'subdial') return 'Sub-dial' + (c.scale && c.scale !== 'none' && E && E.SCALES && E.SCALES[c.scale] ? ' · ' + E.SCALES[c.scale] : '');
+    if (c.type === 'subdial') return 'Sub-dial';
     if (c.type === 'window') return ((E && E.SHOWS && E.SHOWS[c.shows]) || 'Date') + ' window';
     if (c.type === 'moon') return 'Moon phase';
     if (c.type === 'flare') return 'Flare' + (E && E.FLARE_ICONS && E.FLARE_ICONS[c.icon] ? ' · ' + E.FLARE_ICONS[c.icon] : '');
     if (c.show === 'balance') return 'Escapement opening';
     return 'Opening';
+  }
+
+  /* A part's name: the author's own (owner, 2026-11-05: every part has one, editable), else a
+   * default that reads what it is and is unique on the dial -- a second seconds sub-dial is
+   * "Sub-dial · Seconds 2". Every list and every picker names a part by this one function. */
+  function partName(c, comps, E) {
+    if (!c) return '';
+    if (c.name && String(c.name).trim()) return String(c.name).trim();
+    var base = function (x) { return x.type === 'hand' ? (HAND_NAME[x.shows] || 'Hand') : compTitle(x, E); };
+    // counted in design order, the dial's own hands before the hands aligned to a face: the
+    // centre seconds hand is "Seconds hand", a sub-dial's is "Seconds hand 2"
+    var rank = function (x) { return x.type === 'hand' && x.host && x.host !== 'dial' ? 1 : 0; };
+    var list = (comps || []).map(function (x, i) { return { x: x, k: rank(x) * 1e6 + i }; }).sort(function (p, q) { return p.k - q.k; });
+    var b = base(c), n = 0, seen = false;
+    list.forEach(function (e) {
+      var x = e.x;
+      if (seen) return;
+      if (x === c || (x.id === c.id && x.type === c.type)) { seen = true; return; }
+      if (!(x.name && String(x.name).trim()) && base(x) === b) n++;
+    });
+    return n ? b + ' ' + (n + 1) : b;
   }
 
   /* input: {
@@ -78,7 +99,7 @@
     var cutoutsOf = function (w, hostKey) {
       comps.forEach(function (c) {
         if (c.type === 'cutout' && c.host === w.id)
-          push({ id: 'comp:' + c.id, ref: c.id, kind: 'cutout', band: 'rows', label: compTitle(c, E), parent: 'comp:' + w.id, host: hostKey,
+          push({ id: 'comp:' + c.id, ref: c.id, kind: 'cutout', band: 'rows', label: partName(c, comps, E), parent: 'comp:' + w.id, host: hostKey,
                  hide: 'complications', sel: { kind: 'comp', id: c.id }, badge: 'cut through ' + (hostKey === 'dial' ? 'the dial' : 'its face'), movable: true, group: 'cuts:' + w.id });
       });
     };
@@ -91,7 +112,7 @@
     // P5d.3n: an index is painted on the crystal, over the wheel it reads
     comps.forEach(function (c) {
       if (c.type !== 'index' || !byId[c.host]) return;
-      push({ id: 'comp:' + c.id, ref: c.id, kind: 'index', band: 'crystal', label: compTitle(c, E) + ' · reads ' + compTitle(byId[c.host], E).toLowerCase(), parent: 'glass',
+      push({ id: 'comp:' + c.id, ref: c.id, kind: 'index', band: 'crystal', label: partName(c, comps, E) + ' · reads ' + partName(byId[c.host], comps, E).toLowerCase(), parent: 'glass',
              hide: 'glass', sel: { kind: 'comp', id: c.id }, badge: 'on the glass', movable: false });
     });
 
@@ -100,25 +121,25 @@
     var lifted = {};
     order.forEach(function (e) { if (e.indexOf('comp:') === 0 && byId[e.slice(5)] && byId[e.slice(5)].type === 'subdial') lifted[e.slice(5)] = 1; });
     var subBlock = function (sb, live) {
-      push({ id: 'comp:' + sb.id, ref: sb.id, kind: 'subdial', group: live ? 'live' : 'subdials', band: 'rows', label: compTitle(sb, E),
+      push({ id: 'comp:' + sb.id, ref: sb.id, kind: 'subdial', group: live ? 'live' : 'subdials', band: 'rows', label: partName(sb, comps, E),
              host: 'dial', hide: 'subdials', sel: { kind: 'comp', id: sb.id }, lifted: !!live,
-             badge: live ? 'live · still row' : (sb.transparent ? 'baked in · open' : 'baked in'), movable: true });
+             badge: live ? 'above the hands · drawn once' : (sb.transparent ? 'baked in · open' : 'baked in'), movable: true });
       // its hands, top first: they turn above its face and ride it wherever it goes
       for (var q = hands.length - 1; q >= 0; q--) {
         var ph = hands[q];
         if (!ph.sub || ph.host !== sb.id) continue;
-        push({ id: 'hand:' + ph.id, ref: ph.id, kind: 'pointer', group: 'ptr:' + sb.id, band: 'rows', label: HAND_NAME[ph.kind] || 'Hand',
+        push({ id: 'hand:' + ph.id, ref: ph.id, kind: 'pointer', group: 'ptr:' + sb.id, band: 'rows', label: partName(byId[ph.id] || { type: 'hand', shows: ph.kind }, comps, E),
                parent: 'comp:' + sb.id, handKind: ph.kind, host: 'comp:' + sb.id, shadow: !!input.shadows,
                hide: 'hands', sel: { kind: 'hand', id: ph.id }, badge: 'live', movable: true, pivot: [ph.x, ph.y], reach: ph.len });
       }
       comps.forEach(function (c) {
         if (c.type === 'flare' && hostOf(c) === sb.id)
-          push({ id: 'comp:' + c.id, ref: c.id, kind: 'flare', band: 'rows', label: compTitle(c, E), parent: 'comp:' + sb.id,
+          push({ id: 'comp:' + c.id, ref: c.id, kind: 'flare', band: 'rows', label: partName(c, comps, E), parent: 'comp:' + sb.id,
                  host: 'comp:' + sb.id, hide: 'subdials', sel: { kind: 'comp', id: c.id }, badge: 'printed on it', movable: false });
       });
       comps.forEach(function (c) {
         if (isDisc(c) && hostOf(c) === sb.id)
-          push({ id: 'comp:' + c.id, ref: c.id, kind: 'disc', group: 'discs:' + sb.id, band: 'rows', label: compTitle(c, E),
+          push({ id: 'comp:' + c.id, ref: c.id, kind: 'disc', group: 'discs:' + sb.id, band: 'rows', label: partName(c, comps, E),
                  parent: 'comp:' + sb.id, host: 'comp:' + sb.id, hide: 'complications', sel: { kind: 'comp', id: c.id },
                  badge: 'live · value plate', movable: true });
         if (c.type === 'wheel' && hostOf(c) === sb.id) cutoutsOf(c, 'comp:' + sb.id);
@@ -130,7 +151,7 @@
       var e = order[i];
       if (e.indexOf('comp:') === 0) { if (lifted[e.slice(5)]) subBlock(byId[e.slice(5)], true); continue; }
       var h = drawnHand[e]; if (!h || h.sub) continue;
-      push({ id: 'hand:' + h.id, ref: h.id, kind: 'hand', group: 'live', band: 'rows', label: HAND_NAME[h.kind] || 'Hand',
+      push({ id: 'hand:' + h.id, ref: h.id, kind: 'hand', group: 'live', band: 'rows', label: partName(byId[h.id] || { type: 'hand', shows: h.kind }, comps, E),
              handKind: h.kind, host: 'dial', shadow: !!input.shadows,
              hide: 'hands', sel: { kind: 'hand', id: h.id }, badge: 'live', movable: true,
              pivot: [h.x, h.y], reach: h.len });
@@ -142,17 +163,17 @@
            badge: 'baked in', movable: false });
     comps.forEach(function (c) {
       if (c.type === 'flare' && hostOf(c) === 'dial')
-        push({ id: 'comp:' + c.id, ref: c.id, kind: 'flare', band: 'rows', label: compTitle(c, E), parent: 'dial', host: 'dial',
+        push({ id: 'comp:' + c.id, ref: c.id, kind: 'flare', band: 'rows', label: partName(c, comps, E), parent: 'dial', host: 'dial',
                hide: 'dial', sel: { kind: 'comp', id: c.id }, badge: 'printed on it', movable: false });
       if (c.type === 'opening')
-        push({ id: 'comp:' + c.id, ref: c.id, kind: 'opening', band: 'rows', label: compTitle(c, E), parent: 'dial', host: 'dial',
+        push({ id: 'comp:' + c.id, ref: c.id, kind: 'opening', band: 'rows', label: partName(c, comps, E), parent: 'dial', host: 'dial',
                hide: 'dial', sel: { kind: 'comp', id: c.id }, badge: 'cut through it', movable: false });
     });
     // the discs the dial frames, top first
     var dDiscs = comps.filter(function (c) { return isDisc(c) && hostOf(c) === 'dial'; });
     for (var k = dDiscs.length - 1; k >= 0; k--) {
       var dc = dDiscs[k];
-      push({ id: 'comp:' + dc.id, ref: dc.id, kind: 'disc', group: 'discs:dial', band: 'rows', label: compTitle(dc, E), parent: 'dial',
+      push({ id: 'comp:' + dc.id, ref: dc.id, kind: 'disc', group: 'discs:dial', band: 'rows', label: partName(dc, comps, E), parent: 'dial',
              host: 'dial', hide: 'complications', sel: { kind: 'comp', id: dc.id }, badge: 'live · value plate', movable: true });
       if (dc.type === 'wheel') cutoutsOf(dc, 'dial');
     }
@@ -161,7 +182,7 @@
     push({ id: 'movement', kind: 'movement', band: 'plate', label: 'Clock insides', hide: 'movement', sel: { kind: 'move', id: 'movement' }, badge: 'plate', movable: false });
     comps.forEach(function (c) {
       if (c.type === 'flare' && hostOf(c) === 'plate')
-        push({ id: 'comp:' + c.id, ref: c.id, kind: 'flare', band: 'plate', label: compTitle(c, E), parent: 'movement', host: 'movement',
+        push({ id: 'comp:' + c.id, ref: c.id, kind: 'flare', band: 'plate', label: partName(c, comps, E), parent: 'movement', host: 'movement',
                hide: 'movement', sel: { kind: 'comp', id: c.id }, badge: 'printed on the plate', movable: false });
     });
     return items;
@@ -186,7 +207,7 @@
     if (it.group === 'live' && dir > 0 && nb.kind === 'subdial') return null;
     if (it.group === 'subdials' && dir < 0 && nb.group === 'live') return null;
     if (it.kind === 'subdial' && it.lifted && dir > 0) return null;
-    if (it.kind === 'pointer') return 'R3: a sub-dial\u2019s hand rides its face \u2014 drag it onto another face to move it there';
+    if (it.kind === 'pointer') return 'R3: a hand aligned to a sub-dial sits in that face\u2019s layer \u2014 drag it onto another face, or among the dial\u2019s hands, to align it there';
     if (it.kind === 'hand' && dir > 0) return 'R3: a hand turns above the dial, so it stays above the dial’s face';
     if (it.kind === 'subdial' && dir > 0) return 'R3: a sub-dial sits on the dial, so it stays above the dial’s face';
     if (it.kind === 'cutout') return 'R4: a cutout reveals its wheel \u2014 drag it onto another wheel to read that one';
@@ -290,16 +311,27 @@
       comps.splice(at < 0 ? comps.length : at + (after ? 1 : 0), 0, c);
     };
     var tIdx = function (x) { return x ? live.indexOf(keyOf(x)) : -1; };
+    // re-hosted where it already stands on the dial: its polar place recomputed about the new
+    // centre, the face's tilt taken out as geom() puts it in (a sub-dial sits on the dial)
+    var rehost = function (c, dest) {
+      var from = c.host && c.host !== 'dial' ? c.host : 'dial';
+      if (dest === from) return;
+      var at = function (h) { if (h === 'dial' || !byId[h]) return [233, 233, 0]; var q = byId[h], a = (+q.angle || 0) * Math.PI / 180, d = +q.dist || 0; return [233 + Math.sin(a) * d, 233 - Math.cos(a) * d, (+q.rot || 0) * Math.PI / 180]; };
+      var c0 = at(from), a0 = (+c.angle || 0) * Math.PI / 180 + c0[2], d0 = +c.dist || 0, px = c0[0] + Math.sin(a0) * d0, py = c0[1] - Math.cos(a0) * d0, c1 = at(dest);
+      var dx = px - c1[0], dy = py - c1[1], dd = Math.sqrt(dx * dx + dy * dy);
+      c.host = dest; c.dist = Math.round(dd * 2) / 2; c.angle = dd < 0.5 ? 0 : Math.round((((Math.atan2(dx, -dy) - c1[2]) * 180 / Math.PI) % 360 + 360) % 360);
+    };
 
     if (it.kind === 'hand' || it.kind === 'pointer') {
       var hid = it.ref, hc = byId[hid];
       if (!hc) return { ok: false, reason: 'no hand ' + hid };
       live = live.filter(function (e) { return e !== hid; });
-      // into a face's group: the hand is re-hosted on that sub-dial
+      // into a face's group: the hand is aligned to that sub-dial (its layer and its centre),
+      // staying where it stands on the dial (owner, 2026-11-05: a face never bounds a hand)
       var into = face && (tg.kind === 'pointer' || tg.kind === 'flare' || (tg.kind === 'subdial' && !above)) ? face : null;
       if (into) {
-        if (byId[into].type !== 'subdial') return { ok: false, reason: 'R3: a hand turns on the dial or on a sub-dial' };
-        hc.host = into;
+        if (byId[into].type !== 'subdial') return { ok: false, reason: 'R3: a hand aligns to the dial or to a sub-dial' };
+        rehost(hc, into);
         // display is top first and design.comps bottom first: above a sibling is after it
         var sibs = comps.filter(function (x) { return x.type === 'hand' && x.host === into && x.id !== hid; });
         if (tg.kind === 'pointer') moveComp(hid, tg.ref, above);
@@ -308,7 +340,7 @@
       }
       if (tg.kind === 'disc' || (onDial(tg) && !(tg.kind === 'dial' && above)))
         return { ok: false, reason: onDial(tg) ? 'R3: a hand turns above the dial, never under it' : 'R3: a hand turns above its face, never under what the face frames' };
-      hc.host = 'dial';
+      rehost(hc, 'dial');
       if (tLive) {
         var anchor = tg.kind === 'subdial' || tg.kind === 'hand' ? tg : items[find(items, 'comp:' + face)];
         var n = live.indexOf(keyOf(anchor));
@@ -351,11 +383,7 @@
       var dc = byId[it.ref], from = dc.host && dc.host !== 'dial' ? dc.host : 'dial';
       if (dest !== from) {
         if (dest !== 'dial' && lifted(dest)) return { ok: false, reason: 'R4: that face is lifted among the hands \u2014 a disc turns only under a face on the dial' };
-        // re-hosted where it already stands on the dial: its polar place recomputed about the new face
-        var centre = function (h) { if (h === 'dial' || !byId[h]) return [233, 233]; var q = byId[h], a = (+q.angle || 0) * Math.PI / 180, d = +q.dist || 0; return [233 + Math.sin(a) * d, 233 - Math.cos(a) * d]; };
-        var c0 = centre(from), a0 = (+dc.angle || 0) * Math.PI / 180, d0 = +dc.dist || 0, px = c0[0] + Math.sin(a0) * d0, py = c0[1] - Math.cos(a0) * d0, c1 = centre(dest);
-        var dx = px - c1[0], dy = py - c1[1], dd = Math.sqrt(dx * dx + dy * dy);
-        dc.host = dest; dc.dist = Math.round(dd * 2) / 2; dc.angle = dd < 0.5 ? 0 : Math.round(((Math.atan2(dx, -dy) * 180 / Math.PI) + 360) % 360);
+        rehost(dc, dest);
       }
       if (tg.kind === 'disc') moveComp(it.ref, tg.ref, above);
       else if (tg.kind === 'cutout') moveComp(it.ref, byId[tg.ref].host, true);
@@ -409,7 +437,7 @@
     return { rows: n, cap: ROW_CAP, over: n > ROW_CAP };
   }
 
-  var api = { compTitle: compTitle, build: build, move: move, moveTo: moveTo, place: place, liveKeys: liveKeys, warnings: warnings, rowCount: rowCount, ROW_CAP: ROW_CAP };
+  var api = { compTitle: compTitle, partName: partName, build: build, move: move, moveTo: moveTo, place: place, liveKeys: liveKeys, warnings: warnings, rowCount: rowCount, ROW_CAP: ROW_CAP };
   root.OrbStack = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

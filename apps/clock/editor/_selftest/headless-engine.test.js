@@ -37,15 +37,15 @@ eq(sfBlank, clean, 'canonDesign: an empty sf reference drops the whole group, st
 ok(E.artInDial({}, 'no-such-asset', {}) === false, 'artInDial refuses an id with no bytes instead of drawing nothing silently');
 ok(!!E.COMP_STYLES.subdial.transparent, 'COMP_STYLES.subdial carries the transparent entry');
 
-// ---- D43 P5d: a sub-dial offers the look of the hands placed on it --------------------
+// ---- owner, 2026-11-05: a sub-dial lends a hand its centre and its layer, never its look ----
 {
   const OPT = { finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1, hands: 'breguet', handFinish: 'blued' };
-  const sd = (hand, face) => E.face(Object.assign({ design: E.canonDesign({ print: 'roman', comps: [Object.assign({ id: 's1', type: 'subdial', angle: 180, dist: 100, size: 60, scale: 'seconds', style: 'enamel' }, face),
+  const sd = (hand, face) => E.face(Object.assign({ design: E.canonDesign({ comps: [Object.assign({ id: 's1', type: 'subdial', angle: 180, dist: 100, size: 60, style: 'enamel' }, face),
     Object.assign({ id: 'p1', type: 'hand', host: 's1', shows: 'second' }, hand), { id: 'p2', type: 'hand', host: 'dial', shows: 'minute' }] }) }, OPT));
   const fin = (f, id) => f.hands.find((h) => h.id === id).fin;
   const plain = sd({}, {}), gilt = sd({}, { hfinish: 'gilt' }), own = sd({ finish: 'steel' }, { hfinish: 'gilt' });
-  ok(JSON.stringify(fin(gilt, 'p1')) !== JSON.stringify(fin(plain, 'p1')) && JSON.stringify(fin(gilt, 'p1')) === JSON.stringify(sd({ finish: 'gilt' }, {}).hands.find((h) => h.id === 'p1').fin),
-    'a hand on a sub-dial takes the finish its face offers, as if it had chosen it');
+  ok(JSON.stringify(fin(gilt, 'p1')) === JSON.stringify(fin(plain, 'p1')) && !('hfinish' in E.canonDesign({ comps: [{ id: 's1', type: 'subdial', hfinish: 'gilt', hstyle: 'leaf' }] }).comps[0]),
+    'a face offers its hands no finish: the field is gone, and a hand on it looks as it would anywhere');
   ok(JSON.stringify(fin(gilt, 'p2')) === JSON.stringify(fin(plain, 'p2')), 'and a hand on the dial is untouched by it');
   ok(JSON.stringify(fin(own, 'p1')) === JSON.stringify(sd({ finish: 'steel' }, {}).hands.find((h) => h.id === 'p1').fin), 'a hand that names its own finish breaks the link');
   const c0 = E.canonDesign({ comps: [{ id: 's1', type: 'subdial', scale: 'seconds', hstyle: 'auto', hfinish: 'auto' }] }).comps[0];
@@ -126,13 +126,13 @@ setTimeout(() => {
    * A stub cannot show colour, but it can show sequence. On the dial canvas the art's
    * drawImage has to come before the first numeral fillText; art drawn after the print
    * would bury the numerals, markers and chapter ring the user sets themselves. */
-  const SF = legacy3({ print: 'roman', numerals: 'all', comps: [], centre: { hour: 1, minute: 1 } });
+  const SF = { comps: [{ id: 'h', type: 'hand', host: 'dial', shows: 'hour', scale: { style: 'roman', at: 'fixed', radius: 216 } }, { id: 'm', type: 'hand', host: 'dial', shows: 'minute' }] };
   const sfFace = E.face({ design: E.canonDesign(Object.assign({ sfArt: 'alpha-1' }, JSON.parse(JSON.stringify(SF)))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
   const sfOps = sfFace.dial.getContext('2d').ops || [];
   const iArt = sfOps.findIndex((o) => o.op === 'drawImage' && o.src === urlA);
   const iTxt = sfOps.findIndex((o) => o.op === 'fillText');
   ok(iArt >= 0, 'face() draws the surface art into the dial canvas', 'ops=' + sfOps.length);
-  ok(iTxt >= 0, 'that dial really prints numerals for the art to sit under', 'ops=' + sfOps.length);
+  ok(iTxt >= 0, 'that dial really prints numerals (its hour hand\u2019s Roman scale) for the art to sit under', 'ops=' + sfOps.length);
   ok(iArt >= 0 && iTxt >= 0 && iArt < iTxt, 'the art is under the print, not over it', 'art@' + iArt + ' first text@' + iTxt);
   ok(iArt > 0 && sfOps.slice(Math.max(0, iArt - 3), iArt).some((o) => o.op === 'clip'), 'the art is clipped to the dial circle as it is laid');
   const noSf = E.face({ design: E.canonDesign(JSON.parse(JSON.stringify(SF))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 });
@@ -244,9 +244,9 @@ setTimeout(() => {
       ok(tipY(hd0, 40) && !tipX(hd0, 40), 'at facing 0 the art reads up out of the arbour, the way it was drawn', JSON.stringify([tipY(hd0, 40), tipX(hd0, 40)]));
       ok(!tipY(hd90, 40) && tipX(hd90, 40), 'at facing 90 the same art reads to the right: the correction really turns it', JSON.stringify([tipY(hd90, 40), tipX(hd90, 40)]));
       ok(E.handZeroDeg(hd0) === 0 && E.handZeroDeg(hd90) === 90, 'zeroRotationDeg ships the facing, so the device turns the sprite the same way', JSON.stringify([E.handZeroDeg(hd0), E.handZeroDeg(hd90)]));
-      const cal = legacy3({ print: 'none', numerals: 'none', comps: [{ id: 'c1', type: 'subdial', host: 'dial', angle: 90, dist: 100, rot: 30, size: 60, scale: 'seconds', style: 'azure' }], centre: { hour: 0, minute: 0, second: 0 }, hands: { c1: { art: 'tall-1', rot0: 45 } } });
+      const cal = legacy3({ print: 'none', numerals: 'none', comps: [{ id: 'c1', type: 'subdial', host: 'dial', angle: 90, dist: 100, rot: 30, size: 60, scale: 'seconds', style: 'azure' }], centre: { hour: 0, minute: 0, second: 0 }, hands: { c1: { art: 'tall-1', rot0: 45, start: 30 } } });
       const hdSub = E.face({ design: E.canonDesign(JSON.parse(JSON.stringify(cal))), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).hands.find((q) => q.id === 'c1-hand');
-      ok(hdSub && Math.abs(E.handZeroDeg(hdSub) - 75) < 0.01, 'a tilted subdial hand ships its host tilt AND its own facing as one angle', String(hdSub && E.handZeroDeg(hdSub)));
+      ok(hdSub && Math.abs(E.handZeroDeg(hdSub) - 75) < 0.01, 'a hand fitted to a tilted face ships that zero AND its own facing as one angle', String(hdSub && E.handZeroDeg(hdSub)));
       const noArt = E.canonDesign(legacy3({ hands: { 'centre-hour': { rot0: 90, pivotX: 4, pivotY: 4 } } }));
       ok(!noArt.hands, 'a facing and pivot on a hand with no art under them are stripped, not shipped as a no-op');
       /* ---- what a click lands on ---------------------------------------------------
@@ -390,10 +390,10 @@ setTimeout(() => {
       ok(!!p1 && Math.abs(p1.scale * 210 - 168) < 0.5, 'a hand buried in transparent padding reaches the same ring as the tight crop of the same bar', p1 && p1.scale);
       const fb = E.handSpriteAsset('tall-1', { maxW: 466, maxH: 466, pivotX: 10, pivotY: 95, fitTo: 200 });
       ok(!!fb && fb.scale === 1, 'an asset with no measurable ink keeps the old fit-to-box, unenlarged', fb && fb.scale);
-      const MF = (lk) => E.face({ design: E.canonDesign(legacy3({ print: 'roman', numerals: 'none', comps: [], centre: { hour: 0, minute: 1 }, hands: { 'centre-minute': { art: 'bar-up', pivotX: 15, pivotY: 220, len: lk } } })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).hands.find((q) => q.id === 'centre-minute');
+      const MF = (lk) => E.face({ design: E.canonDesign(legacy3({ print: 'roman', numerals: 'none', comps: [], centre: { hour: 0, minute: 1 }, hands: { 'centre-minute': Object.assign({ art: 'bar-up', pivotX: 15, pivotY: 220 }, lk === 1 ? {} : { length: lk * Math.min(216, 205 * 0.96) }) } })), finish: 'brass', train: 'classic', frames: 16, tick: 'sweep', beats: 1 }).hands.find((q) => q.id === 'centre-minute');
       const m1 = MF(1), mh = MF(0.5), mReac = Math.min(216, 205 * 0.96);
       ok(!!m1 && !!m1.art && Math.abs(m1.sp.scale * 200 - mReac) < 0.5, 'at Length 100% an uploaded minute hand tips exactly where the drawn one would', m1 && m1.sp.scale.toFixed(4));
-      ok(!!mh && !!m1 && Math.abs(mh.sp.scale - m1.sp.scale / 2) < 1e-9, 'and half the slider halves that reach, whichever way the pixels came', mh && mh.sp.scale.toFixed(4));
+      ok(!!mh && !!m1 && Math.abs(mh.sp.scale - m1.sp.scale / 2) < 1e-9, 'and half the length halves that reach, whichever way the pixels came', mh && mh.sp.scale.toFixed(4));
       /* ---- the metal an aperture is framed in --------------------------------------
        * The ring used to be gilt by decree of the movement finish. The choice rides
        * to the cut as hole.fc; the default never enters the Design ID. */

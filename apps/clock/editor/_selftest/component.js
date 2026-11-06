@@ -5,7 +5,7 @@ class Component extends DCLogic {
   state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: null, pickKey: null, guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {}, sending: null };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
-  TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hands'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
+  TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hand set'], ['timing', 'Timing'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
   LAYERS = [
     ['outer', '6', 'Case & outer shine', 'Bezel, vignette, halo'],
     ['glass', '5', 'Glass', 'Reflections follow the outer light'],
@@ -83,13 +83,21 @@ class Component extends DCLogic {
     let b;
     try { b = this._budget(forceWant); } finally { this._bG = 0; }
     b.dev = this._devPace(b);
+    /* §49.15: a priced plan IS the device's rate. estimate4 prices every frame from the bytes
+     * the orb gets -- a sweep across the plates included -- and its frontier held 60 s on the
+     * glass for every preset, so the crossed-plate model below (fitted to two panel points in
+     * October, before ink spans) must not bill the same crossings again. b.fps stays the bank's
+     * own tempo (the gears, which the preview steps through); the rate quoted is the hands'. */
+    if (b.plan) Object.assign(b.dev, { model: b.dev.pace, pace: b.plan.fps, need: b.plan.fps, gears: WatchEngine.gearTempo(b.plan.gears), prepaint: !!b.plan.prepaint, planned: true,
+      why: 'The plan priced for this dial: hands at ' + b.plan.fps + ' fps, the movement at ' + WatchEngine.gearTempo(b.plan.gears) + (b.plan.prepaint ? ', pre-painted' : '') + '.' });
     return b;
   }
   /* The tempo the preview must play at and the tempo the readout quotes: the
    * tier for every carrier the device can drive at tier, the device pace
    * where _devPace sees a sweep the panel cannot sustain. One getter so the
    * timer, the restart check, and any future seat all read the same number. */
-  devFps() { const b = this.budget(); return Math.min(b.fps, b.dev.pace); }
+  // (the preview's timer and an export's fallback tick rate keep the model's number: only the labels quote the plan)
+  devFps() { const b = this.budget(); return Math.min(b.fps, b.dev.model != null ? b.dev.model : b.dev.pace); }
   /* The rate the glass will actually hold, as distinct from the tier the bank
    * can pay. The CAPS ladder prices the delta-bank push only: rowPrice()
    * measures the PLATE's own motion with hands hidden (baseImgs), and the
@@ -128,9 +136,9 @@ class Component extends DCLogic {
      * sweep cannot hold (Modern: 9). */
     const tickN = c.tick && c.tick !== 'sweep' ? Math.max(1, +c.tick | 0) : 0;
     out.need = tickN ? Math.min(b.fps, tickN) : b.fps;
-    const RE = { roman: 205, arabic: 200, regulator: 206, baton: 200, minimal: 205, sans: 205,
-      railway: 202, sector: 205, diver: 200, station: 214, pilot: 204, none: 205 };
-    const tip = Math.min(216, (RE[D.print] || 205) * 0.98 * (+hc.len || 1));   // buildHands' own formula
+    // the seconds hand's own reach, in px (owner, 2026-11-06: a hand's length is its own)
+    // (read off the design, never face(): budget -> face -> opts -> the bank -> budget recurses)
+    const tip = +hc.length > 0 ? +hc.length : Math.min(216, 205 * 0.98);
     // A plate's own half-width, and the smaller floor for an aperture: a window shows a
     // few pixels of disc behind the hand, so it must not be prized as a full 36px disc.
     const half = (x) => x.size != null
@@ -328,8 +336,10 @@ class Component extends DCLogic {
      * dial hands the clamp the open dial's cap (420 rows -> 4 fps) as the new
      * key's ceiling and it never claws back up. The readout and the frames
      * on screen would then belong to different tempos. */
-    if (s && s.ak !== ak) return { fps: this._hbFps || want, want, car, needle, rows: s.rows, cap: CAPS[want], measured: false, measuredAt: s.f, why: '' };
-    if (!s) return { fps: want, want, car, needle, rows: 0, cap: CAPS[want], measured: false, measuredAt: 0, why: '' };
+    // a sweep's rate is its plan's; until the live price lands, the rate below is a placeholder
+    const pricing = !forceWant && c.tick === 'sweep' && !!(window.GorbBake && GorbBake.pickPlan4);
+    if (s && s.ak !== ak) return { fps: this._hbFps || want, want, car, needle, rows: s.rows, cap: CAPS[want], measured: false, measuredAt: s.f, why: '', pricing };
+    if (!s) return { fps: want, want, car, needle, rows: 0, cap: CAPS[want], measured: false, measuredAt: 0, why: '', pricing };
     const r = s.rows;
     let fps = 4;
     for (const t of [15, 12, 8]) { if (t > want) continue; if ((car || r > 0) && WatchEngine.bankFrames(t) > MAXBANK) continue; if (r <= CAPS[t]) { fps = t; break; } }
@@ -349,7 +359,7 @@ class Component extends DCLogic {
       this._ftierOcc = s.occ;                                   // the mask this measurement used
       this._hbFps = fps;                                         // the rate the frames on screen were rendered at
     }
-    return { fps, want, car, needle, rows: r, cap: CAPS[want], measured: true, measuredAt: s.f, why: '' };
+    return { fps, want, car, needle, rows: r, cap: CAPS[want], measured: true, measuredAt: s.f, why: '', pricing };
   }
   preset(id) { return window.WatchEngine.PRESETS[id || this.state.dial]; }
   design(id) { id = id || this.state.dial; return WatchEngine.canonDesign(JSON.parse(JSON.stringify(this.state.designs[id] || this.preset(id).design))); }
@@ -428,18 +438,14 @@ class Component extends DCLogic {
   setComp(cid, patch) {
     this.upd((d) => {
       const c = d.comps.find((q) => q.id === cid); if (!c) return;
-      // a sub-dial's hands that read its old scale follow it to the new one (D43 P5c); a
-      // hand the author set to show something else keeps it
-      const SS = WatchEngine.SCALE_SHOWS || {};
-      if (c.type === 'subdial' && patch.scale !== undefined && patch.scale !== c.scale && SS[patch.scale])
-        d.comps.forEach((h) => { if (h.type === 'hand' && h.host === cid && h.shows === SS[c.scale]) h.shows = SS[patch.scale]; });
-      Object.assign(c, patch);
+      // a null clears the field (a name back to its default, a hand back onto its centre)
+      Object.keys(patch).forEach((k) => { if (patch[k] === null) delete c[k]; else c[k] = patch[k]; });
     });
   }
   /* D43 P5c: every part, a hand included, comes in through here. A part lands on the
    * selected sub-dial when one is selected (a hand on a selected hand's sub-dial too),
-   * else on the dial. A new sub-dial brings one hand reading its scale, and a new hand
-   * on the dial shows the first of hour, minute and seconds the dial lacks. */
+   * else on the dial. A new sub-dial brings a seconds hand that prints its scale, and a new
+   * hand on the dial shows the first of hour, minute and seconds the dial lacks. */
   addComp(type) {
     const E = WatchEngine, d0 = this.design(), st = this.state;
     // the new part is decided from the design as it stands, so the selection can follow it
@@ -471,11 +477,26 @@ class Component extends DCLogic {
     }
     if (type === 'hand') {
       const onDial = d0.comps.filter((c) => c.type === 'hand' && c.host === 'dial').map((c) => c.shows);
-      add.push(Object.assign({ id: 'h' + n, type: 'hand', host, shows: host !== 'dial' ? (E.SCALE_SHOWS[sel.scale] || 'second') : (['hour', 'minute', 'second'].find((k) => onDial.indexOf(k) < 0) || 'hour') },
-        host !== 'dial' && sel.form === 'slider' ? { marker: 'dot' } : {}));
+      // a hand added on a face starts fitted to it (its arc, its track, its zero): a copy the
+      // hand then owns, so moving it off later changes nothing on the face
+      const h = { id: 'h' + n, type: 'hand', host, shows: host !== 'dial' ? 'second' : (['hour', 'minute', 'second'].find((k) => onDial.indexOf(k) < 0) || 'hour') };
+      if (host !== 'dial') {
+        const f = E.faceFit(h, sel); Object.keys(f).forEach((k) => { if (f[k] != null && k !== 'markR') h[k] = f[k]; });
+        // the face prints no scale (owner, 2026-11-06): the new hand prints one, just past its
+        // tip, and on a slider rides the slot as a dot with its track printed beside it
+        h.scale = { style: 'classic' };
+        if (sel.form === 'slider') Object.assign(h, { style: 'dot', length: 0, width: f.markR || 4.5 }, { scale: { style: 'classic', gap: Math.max(10, +sel.size || 50) } });
+      }
+      add.push(h);
     } else {
-      add.push({ id: 'c' + n, type, host, ...JSON.parse(JSON.stringify(E.NEW_COMP[type])), ...(host !== 'dial' ? { dist: 0, size: type === 'moon' || type === 'opening' ? Math.round(sel.size * 0.5) : type === 'flare' ? Math.round(sel.size * 0.22) : 1 } : {}) });
-      if (type === 'subdial' && E.SCALE_SHOWS[E.NEW_COMP.subdial.scale]) add.push({ id: 'h' + (n + 1), type: 'hand', host: 'c' + n, shows: E.SCALE_SHOWS[E.NEW_COMP.subdial.scale] });
+      // on a sub-dial a part is sized to that face: a wheel is a radius in px, so it fills the
+      // face with its ring in the dial-sized default's proportions (it was given size 1, the
+      // window's scale, and collapsed to a 10 px speck with a 140 px ring and a dot of an outline)
+      const W0 = E.NEW_COMP[type] || {}, wr = Math.max(14, Math.round(((sel && sel.size) || 50) * 0.94));
+      add.push({ id: 'c' + n, type, host, ...JSON.parse(JSON.stringify(W0)), ...(host !== 'dial' ? { dist: 0, size: type === 'moon' || type === 'opening' ? Math.round(sel.size * 0.5) : type === 'flare' ? Math.round(sel.size * 0.22)
+        : type === 'wheel' ? wr : 1, ...(type === 'wheel' && W0.inner ? { inner: Math.round((wr * W0.inner) / (W0.size || 192)) } : {}) } : {}) });
+      // a new face comes with a small seconds hand that prints its scale (the face prints none)
+      if (type === 'subdial') add.push({ id: 'h' + (n + 1), type: 'hand', host: 'c' + n, shows: 'second', scale: { style: 'classic' } });
       // a new wheel comes with the cutout it is read through
       if (type === 'wheel') add.push({ id: 'c' + (n + 1), type: 'cutout', host: 'c' + n, at: 90 });   // at the ring's reading point
     }
@@ -526,7 +547,9 @@ class Component extends DCLogic {
     // a hand the drop re-hosted carries its new host; a disc or a cutout carries its new host and,
     // for a disc, the place place() recomputed about its new face (P5d.3k: these were dropped)
     this.upd((d) => { if (r.order) d.order = r.order; if (r.comps) d.comps = r.comps.map((q) => { const c = d.comps.find((x) => x.id === q.id) || q;
-      if (q.type === 'hand' || q.type === 'cutout') return Object.assign(c, { host: q.host });
+      if (q.type === 'cutout') return Object.assign(c, { host: q.host });
+      // a hand re-aligned by a drop keeps its place on the dial, recomputed about its new centre
+      if (q.type === 'hand') { Object.assign(c, { host: q.host }); ['angle', 'dist'].forEach((k) => { if (+q[k]) c[k] = q[k]; else delete c[k]; }); return c; }
       if (q.type === 'wheel' || q.type === 'window' || q.type === 'moon') return Object.assign(c, { host: q.host, angle: q.angle, dist: q.dist });
       return c; }); });
     if (r.partial) this.setState({ status: 'Moved as far as the rules allow — ' + r.partial });
@@ -569,24 +592,6 @@ class Component extends DCLogic {
    * The angle wraps to [0,360), where -15 and 345 are the same facing but only one of
    * them is what an author expects to read back in the field. */
   stepFacing(hid, d) { const hc = this.handComp(hid) || {}; const v = +hc.rot0 || 0; this.setHand(hid, { rot0: ((v + d) % 360 + 360) % 360 }); }
-  /* D43 P5c: the outer ring is the dial's own choice. A hand on the dial that reads that
-   * scale (HAND_RING) lands its tip on the ticks; none has to, and several may. Chapter
-   * pull-in 1.00 leaves the chapter at full size, which hides a chosen ring. */
-  ringShown(D) { return !!D.perim && D.perim !== 'none' && (D.perimShrink == null || +D.perimShrink < 1); }
-  setRing(k) {
-    const E = window.WatchEngine, on = !!(E.PERIMS[k] && k !== 'none');
-    this.upd((d) => { if (on) { d.perim = k; if (d.perimShrink != null && +d.perimShrink >= 1) delete d.perimShrink; } else delete d.perim; });
-    this.setState({ status: on ? E.PERIMS[k] + ' ring printed on the rim' : 'No outer ring' });
-  }
-  // The option label carries the split count, read through perimGeom, so the dropdown and
-  // the print cannot disagree about it.
-  ringOpts(E) {
-    return Object.keys(E.PERIMS).map((k) => {
-      if (k === 'none') return { v: k, label: 'None' };
-      const g = E.perimGeom({ perim: k, perimShrink: 0.88 });
-      return { v: k, label: E.PERIMS[k] + ' · ' + (g ? g.spec.n : '?') + ' divisions on the rim' };
-    });
-  }
   /* True size and the stage's views are the OS's (theme@1/preview, theme-editor-kit-plan K3):
    * the panel's physical facts, the calibration (one per browser, shared by every app's
    * editor, and carried over from the clock's old wc.viewCal key), and one function from the
@@ -646,21 +651,6 @@ class Component extends DCLogic {
     };
   }
 
-  /* Where the ring starts is the user's call, and the label must say what the turn does rather
-   * than leave them guessing at a degree. The chips come off the same spec the ring prints from
-   * (WatchEngine.ringStarts), so picking 'MON at 12' cannot disagree with the print, and the
-   * pointer that reads the ring takes the same turn through perimGeom().offTurn. X is the field
-   * builder bundle the tab already uses, passed in so this stays one definition for both tabs. */
-  ringStartFields(E, D, X) {
-    const g = E.perimGeom(D); if (!g) return [];
-    const rot = g.rot, top = E.ringTop(g.spec, rot, g.between);
-    return [
-      X.Ch('Ring start', String(rot), E.ringStarts(g.spec, g.between), (v) => this.upd((d) => { d.perimRot = +v; })),
-      X.Rg('Turn', rot, 0, 359, 1, X.ud('perimRot'), rot.toFixed(0) + '°'),
-      X.Nt('', (rot === 0 ? 'Index 0 sits at 12 o\'clock.' : top.lab + ' now reads at 12 o\'clock, ' + rot.toFixed(0) + '° round.')
-        + ' Ticks, labels and the hand that reads them all turn together, and the kit\'s drive formula carries the same turn.'),
-    ];
-  }
   /* ------------------------------ the session (D43 P6, §7) --------------------------
    * The session is the OS's (theme@1/session, theme-editor-kit-plan K2): undo and redo with
    * bursts merged, the hub library (K10), the design document's envelope, and opening. The
@@ -831,8 +821,9 @@ class Component extends DCLogic {
     if (tab === 'comps') { this.upd((d) => { d.comps = JSON.parse(JSON.stringify(P.design.comps || [])); if (P.design.order) d.order = JSON.parse(JSON.stringify(P.design.order)); else delete d.order; }); this.setState({ sel: null, selKind: null }); say('Parts'); }
     // the hands' shared look: the defaults, each hand's own look back to the preset's, and (owner,
     // P5d.3k) their depth in the stack; their place and what they show are Parts, and stay
-    if (tab === 'hands') { this.upd((d) => { if (P.design.order) d.order = JSON.parse(JSON.stringify(P.design.order)); else delete d.order; delete d.secStyle; delete d.handLume; delete d.handShade; if (P.design.handShade) d.handShade = P.design.handShade; if (P.design.handLume) d.handLume = P.design.handLume; if (P.design.secStyle) d.secStyle = P.design.secStyle; const LOOK = ['style', 'finish', 'len', 'wid', 'sec', 'lume', 'shade', 'motion', 'art', 'pivotX', 'pivotY', 'rot0', 'zoom']; d.comps.forEach((h) => { if (h.type !== 'hand') return; const ph = (P.design.comps || []).find((q) => q.type === 'hand' && q.id === h.id) || {}; LOOK.forEach((k) => { if (ph[k] !== undefined) h[k] = JSON.parse(JSON.stringify(ph[k])); else delete h[k]; }); }); }); this.setState({ hands: 'auto', handFinish: 'auto' }); drop(['tick', 'shAngle', 'shDist', 'shBlur', 'shOp', 'shMove']); say('Hands'); }
-    if (tab === 'move') { drop(['rearFinish', 'plateAngle', 'plateScale', 'plate', 'spokes', 'etching', 'pinion', 'center', 'finish', 'balance', 'trainAngle', 'orbD', 'orbTip', 'cageD']); this.setState({ train: P.train || 'classic' }); say('Movement'); }
+    if (tab === 'hands') { this.upd((d) => { if (P.design.order) d.order = JSON.parse(JSON.stringify(P.design.order)); else delete d.order; delete d.secStyle; delete d.handLume; delete d.handShade; if (P.design.handShade) d.handShade = P.design.handShade; if (P.design.handLume) d.handLume = P.design.handLume; if (P.design.secStyle) d.secStyle = P.design.secStyle; const LOOK = ['style', 'finish', 'len', 'wid', 'sec', 'lume', 'shade', 'motion', 'art', 'pivotX', 'pivotY', 'rot0', 'zoom']; d.comps.forEach((h) => { if (h.type !== 'hand') return; const ph = (P.design.comps || []).find((q) => q.type === 'hand' && q.id === h.id) || {}; LOOK.forEach((k) => { if (ph[k] !== undefined) h[k] = JSON.parse(JSON.stringify(ph[k])); else delete h[k]; }); }); }); this.setState({ hands: 'auto', handFinish: 'auto' }); drop(['shAngle', 'shDist', 'shBlur', 'shOp', 'shMove', 'shSmooth', 'shRelief']); say('Hand set'); }
+    if (tab === 'timing') { drop(['tick', 'favour', 'plan', 'balance']); this.upd((d) => { d.comps.forEach((h) => { if (h.type === 'hand' && h.shows === 'second' && h.motion) { delete h.motion.cadence; delete h.motion.steps; } }); }); say('Timing'); }
+    if (tab === 'move') { drop(['rearFinish', 'plateAngle', 'plateScale', 'plate', 'spokes', 'etching', 'pinion', 'center', 'finish', 'trainAngle', 'orbD', 'orbTip', 'cageD']); this.setState({ train: P.train || 'classic' }); say('Movement'); }
     if (tab === 'light') { drop(['glow', 'temp', 'innerAngle', 'outerLight', 'outerAngle', 'outerTemp', 'hue', 'hueSat', 'outerHue', 'outerSat', 'wb']); say('Light'); }
     if (tab === 'sound') { this.sndStop(); this.setState((st) => { const o = { ...st.sounds }; delete o[st.dial]; return { sounds: o, sndMsg: '' }; }); say('Sound'); }
     if (tab === 'case') { this.setState({ caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed' }); say('Case & glass'); }
@@ -1058,7 +1049,7 @@ class Component extends DCLogic {
     // this commit has bound them, so this is the first place the jump can be honoured.
     if (this._scrollTo) { const a = this._scrollTo; this._scrollTo = null; this.scrollToAnchor(a); }
     if (!this.ready) return;
-    const D0 = this.design(); [D0.font, D0.perimFont, D0.n12Font, D0.nQFont, ...D0.comps.flatMap((c) => [c.tfont, c.font, c.wfont])].forEach((k) => this.ensureFont(k));
+    const D0 = this.design(); D0.comps.flatMap((c) => [c.font, c.wfont, ...(c.scale ? [c.scale.font, c.scale.font12, c.scale.fontQ] : [])]).forEach((k) => this.ensureFont(k));
     if (this._mk !== this.mvKey() || (!this.rendering && this.gt.length && this.gt.length !== this.B)) {
       /* The second clause is the self-heal for a superseded build: buildMovement
        * stamps _mk at its start, so a discarded build can leave the key matching
@@ -1380,7 +1371,7 @@ class Component extends DCLogic {
     const rows = window.OrbStudio.layerRows(items, {
       sel: selId, dragging: s.dragging, heads: HEAD,
       icon: (it) => ICON[it.kind] || '•',
-      tag: (it) => (it.lifted ? 'still row' : ''),
+      tag: (it) => (it.lifted ? 'above the hands' : ''),
       warn: (it) => warnOf[it.id] || '',
       note: (it) => it.badge + (it.kind === 'hand' || it.kind === 'pointer' ? (it.shadow ? ' · casts a shadow' : '') : '')
         + (it.lifted && liftCov ? (liftCov[it.ref] ? ' · repainted on ~' + Math.round(liftCov[it.ref] * 100) + '% of sweep ticks' : ' · clear of the sweep') : '')
@@ -1666,9 +1657,10 @@ class Component extends DCLogic {
       return;
     }
     const fc = this.face(), D = this.design(), E = WatchEngine;
-    const hand = c.kind === 'hand' ? this.handComp(c.id) : null, faceId = c.kind === 'face' ? c.id : hand && hand.host !== 'dial' ? hand.host : null;
-    const sG = faceId && fc ? fc.lay.subs.find((q) => q.id === faceId) : null;
-    const px = sG ? sG.x : 233, py = sG ? sG.y : 233, rot = sG ? ((sG.rot || 0) * 180) / Math.PI : 0;
+    // a face is read about its own centre and tilt; a hand about its own arbour (owner, 2026-11-05)
+    const hand = c.kind === 'hand' ? this.handComp(c.id) : null, faceId = c.kind === 'face' ? c.id : null;
+    const sG = faceId && fc ? fc.lay.subs.find((q) => q.id === faceId) : null, hd = hand && fc ? (fc.hands || []).find((h) => h.id === c.id) : null;
+    const px = sG ? sG.x : hd ? hd.x : 233, py = sG ? sG.y : hd ? hd.y : 233, rot = sG ? ((sG.rot || 0) * 180) / Math.PI : 0;
     const ang = (q) => ((Math.atan2(q[0] - px, -(q[1] - py)) * 180) / Math.PI + 360) % 360;
     const [A, B] = pts, aA = ang(A), aB = ang(B), norm = (v) => Math.round(((v % 360) + 360) % 360);
     let patch = null, said = '';
@@ -1682,14 +1674,15 @@ class Component extends DCLogic {
       patch = { slideLen: L, slideAngle: norm((th * 180) / Math.PI), angle: norm((Math.atan2(mx - hx, -(my - hy)) * 180) / Math.PI), dist: Math.round(Math.hypot(mx - hx, my - hy)) };
       said = L + ' px at ' + patch.slideAngle + '\u00b0';
     } else if (c.form === 'fan') {
-      const face = D.comps.find((q) => q.id === faceId) || {}, dirSign = (hand && hand.dir ? hand.dir : face.tdir) === 'ccw' ? -1 : 1;
+      const m = (hand && hand.motion) || {};
+      const dirSign = (+m.span || 180) < 0 ? -1 : 1;
       const sweep = Math.max(20, Math.min(330, norm(dirSign * (aB - aA))));
       const start = norm(aA - rot);
-      patch = c.kind === 'face' ? { fanStart: start, fanSpan: sweep } : { start, span: sweep };
+      patch = { motion: Object.assign({}, m, { path: 'retrograde', start, span: dirSign * sweep }) };
       said = 'from ' + start + '\u00b0 over ' + sweep + '\u00b0';
     } else {
       const delta = ((aB - aA + 540) % 360) - 180, dir = delta < 0 ? 'ccw' : 'cw';
-      if (c.kind === 'face') { patch = { rot: norm(aA), tdir: dir }; said = 'zero at ' + norm(aA) + '\u00b0, ' + (dir === 'cw' ? 'clockwise' : 'anticlockwise'); }
+      if (c.kind === 'face') { patch = { rot: norm(aA) }; said = 'tilted to ' + norm(aA) + '\u00b0'; }
       else { patch = { start: norm(aA - rot), dir }; said = 'zero at ' + norm(aA - rot) + '\u00b0, ' + (dir === 'cw' ? 'clockwise' : 'anticlockwise'); }
     }
     if (c.kind === 'face') this.setComp(c.id, patch); else this.setHand(c.id, patch);
@@ -1728,9 +1721,11 @@ class Component extends DCLogic {
     const jump = { sel: t.id, selKind: t.kind, step: this.selStep[t.kind], tab: this.selTab[t.kind] };
     if (t.kind === 'hand') {
       const hd = (fc.hands || []).find((q) => q.id === t.id);
-      // Only an image-backed hand has an arbour for the author to place: a procedural
-      // sprite is built to its own box from the style's geometry, so its pivot is the
-      // engine's. Selecting one still opens its pane, where the upload lives.
+      // owner, 2026-11-05: a hand moves where it is dragged, like any part (its angle and
+      // distance about the centre it is aligned to). Alt-drag on an image-backed hand moves
+      // the arbour within the picture instead; its pane's thumbnail does the same.
+      const g = fc.lay.G[t.id];
+      if (hd && !(hd.art && e.altKey) && g) { this.drag = { kind: 'comp', id: t.id, ox: x - g.x, oy: y - g.y }; grab(); return this.setState(jump); }
       if (hd && hd.art) {
         const hc = this.handComp(hd.id) || {}, turn = hd.turn(d) * Math.PI * 2, sc = hd.sp.scale || 1;
         const given = hc.pivotX != null && hc.pivotY != null;
@@ -2205,8 +2200,9 @@ class Component extends DCLogic {
     const PTSCALE3 = { second: 'seconds', hour12: 'hours' };
     const pt3 = plan.rows.filter((r) => PTSCALE3[r.src]);
     this._ptrHint = pt3.length ? ' — the subdial' + (pt3.length > 1 ? 's' : '') + ' #' + pt3.map((r) => r.id).join(' and #') +
-      ' is' + (pt3.length > 1 ? ' are' : '') + ' plate-driven here: ' + pt3.reduce((s, r) => s + r.count, 0) +
-      ' tiles. Set its Drive chip to Pointer and the bake pays ' + pt3.length + ' hand plate' + (pt3.length > 1 ? 's' : '') + ' instead' : '';
+      (pt3.length > 1 ? ' are' : ' is') + ' baked as ' + pt3.reduce((s, r) => s + r.count, 0) +
+      ' frames, one per value, because another part sits on ' + (pt3.length > 1 ? 'them' : 'it') +
+      ': move that part off and ' + (pt3.length > 1 ? 'each ships' : 'it ships') + ' one turning hand instead' : '';
     const nm = String(this.themeName() || 'watch').replace(/\u0000/g, '').trim();
     if (!G.nameOk(nm)) {
       this.setState({ status: 'Not baked: "' + nm + '" is not a theme name — the header holds ' + (G.NAME_MAX - 1) + ' bytes of it and this one measures ' + G.nameBytes(nm) });
@@ -2237,8 +2233,8 @@ class Component extends DCLogic {
       && c.type !== 'wheel' && c.type !== 'cutout' && !(c.type === 'flare' && c.icon === 'datetext')).map((c) => String(c.id));
     let compRows = [], compB = 0;
     if (plan.rows.length) {
-      this.setState({ status: 'Rendering the comp table: ' + plan.rows.length + ' rows, ' +
-        plan.rows.reduce((s, r) => s + r.count, 0) + ' tiles…' });
+      this.setState({ status: 'Drawing ' + plan.rows.length + ' baked part' + (plan.rows.length > 1 ? 's' : '') + ', ' +
+        plan.rows.reduce((s, r) => s + r.count, 0) + ' frames…' });
       await new Promise((r) => setTimeout(r, 30));
       const cp = await this.compPass3(plan, onlyBase, pp.rows.map((r) => r.id));
       if (cp.refuse) { this.setState({ status: 'Not baked: ' + cp.refuse }); return; }
@@ -2246,7 +2242,7 @@ class Component extends DCLogic {
     }
     let auxRows = [], auxB = 0;
     if (pp.rows.length) {
-      this.setState({ status: 'Rendering the pointer table: ' + pp.rows.length + ' hand plate' + (pp.rows.length > 1 ? 's' : '') + '…' });
+      this.setState({ status: 'Drawing ' + pp.rows.length + ' turning hand' + (pp.rows.length > 1 ? 's' : '') + '…' });
       await new Promise((r) => setTimeout(r, 30));
       const ap = await this.auxPass3(pp, onlyBase);
       if (ap.refuse) { this.setState({ status: 'Not baked: ' + ap.refuse }); return; }
@@ -2390,42 +2386,171 @@ class Component extends DCLogic {
   /* The Hands tab's Motion block for one hand (D41). Only hour, minute and seconds
    * hands move by a time value the drive twin reads; the rest show no block. */
   setMotion(id, patch) { const hc = this.handComp(id) || {}; this.setHand(id, { motion: { ...(hc.motion || {}), ...patch } }); }
-  motionProps(id, hc, kind, ready, mark, form) {
+  /* A hand's inspector, in the kit's own rows like every other part (owner, 2026-11-05: one
+   * kind of element, one kind of pane). r is the hand's view model (renderVals0's handRows):
+   * its handlers take an event, so each kit row hands them one. Sections: what it shows, where
+   * it stands, how it moves, how it looks, and its artwork. */
+  handFields(r, K, hc) {
+    const { H, Rg, Sl, Ch, Nt, Tx, Fi, Cv, mk } = K, E = WatchEngine, ev = (f) => (v) => f({ target: { value: v } });
+    const opts = (list) => (list || []).map((o) => ({ v: o.v, label: o.label })), selOf = (list, d) => ((list || []).find((o) => o.sel) || { v: d }).v;
+    const F = [];
+    F.push(this.nameField(hc, r.defaultName, Tx));
+    F.push(H('Reading'), Sl('Shows', selOf(r.showsOpts), opts(r.showsOpts), ev(r.onShows)));
+    if (r.isGmt) F.push(Rg('Zone offset', r.offset, -12, 14, 1, (v) => r.onOffset({ target: { value: v } }), r.offsetText));
+    if (r.showsNote) F.push(Nt('', r.showsNote));
+    F.push(H('Placement'), Sl('Aligned to', selOf(r.hostOpts, 'dial'), opts(r.hostOpts), ev(r.onHost)),
+      Nt('', 'The centre this hand stands about, and the layer it sits in: the dial\u2019s, or a sub-dial\u2019s. Aligning snaps it onto that centre; Angle and Distance move it off.'),
+      Rg('Angle', r.posAngle, 0, 359, 1, r.onAngle, r.posAngle + '\u00b0'), Rg('Distance', r.posDist, 0, 220, 0.5, r.onDist, r.posDist + 'px'));
+    if (r.canFit) F.push(mk({ label: ' ', isChips: true, opts: [{ label: r.fitLabel, bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: r.onFit }] }),
+      Nt('', 'Copies the face\u2019s arc, track or zero onto this hand once; the hand keeps them as its own.'));
+    if (r.canMove) {
+      F.push(H('Motion'), Sl('Path', selOf(r.pathOpts, 'rotate'), opts(r.pathOpts), ev(r.onPath)));
+      if (!r.isRetro && !r.isSlide) F.push(Sl('Direction', selOf(r.dirOpts, 'auto'), opts(r.dirOpts), ev(r.onDir)));
+      if (r.showStart) F.push(Rg(r.isDisc ? 'Index at' : 'Zero', r.startVal, -180, 359, 1, (v) => r.onStart({ target: { value: v } }), r.startVal + '\u00b0'));
+      if (r.isRetro) F.push(Rg('Start', r.aVal, 0, 359, 1, (v) => r.onA({ target: { value: v } }), r.aVal + '\u00b0'), Rg('Sweep', r.bVal, -330, 330, 1, (v) => r.onB({ target: { value: v } }), r.bVal < 0 ? (-r.bVal) + '\u00b0 anticlockwise' : r.bVal + '\u00b0'));
+      if (r.isSlide) F.push(Rg('Track angle', r.trackAngle, 0, 359, 1, (v) => r.onTrackAngle({ target: { value: v } }), r.trackAngle + '\u00b0'),
+        Rg('From', r.aVal, -220, 220, 1, (v) => r.onA({ target: { value: v } }), r.aVal + 'px'), Rg('Travel', r.bVal, -440, 440, 1, (v) => r.onB({ target: { value: v } }), r.bVal < 0 ? (-r.bVal) + 'px back' : r.bVal + 'px'));
+      F.push(Sl('Cadence', selOf(r.cadOpts, 'inherit'), opts(r.cadOpts), ev(r.onCad)));
+      if (!r.stepsOff) F.push(Rg('Steps', r.steps, 1, 8, 1, (v) => r.onSteps({ target: { value: v } }), r.steps + ' a unit'));
+      if (!r.easeOff) F.push(Rg(r.isRetro || r.isSlide ? 'Flyback' : 'Settle', r.ease, 0, 1000, 10, (v) => r.onEase({ target: { value: v } }), r.ease ? r.ease + ' ms' : 'none'), Nt('', r.easeTip));
+      if (r.showCalib) F.push(mk({ label: ' ', isChips: true, opts: [{ label: r.calibLabel, bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: r.onCalib }] }),
+        Nt('', 'Set from the art: click where the scale reads zero, then a later mark, about this hand\u2019s own arbour.'));
+    }
+    F.push(...this.scaleFields(hc, K));
+    F.push(H('Look'), mk({ label: ' ', isChips: true, opts: [{ label: 'Edit the hand set', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: () => this.setState({ sel: null, selKind: null, step: 'dial', tab: 'hands' }) }] }),
+      Nt('', 'The hand set is the style every hand starts from; a choice here sets this hand alone.'));
+    if (r.isSec) F.push(Sl('Seconds style', selOf(r.secOpts, 'auto'), opts(r.secOpts), ev(r.onSec)));
+    else F.push(Sl('Style', selOf(r.styleOpts, 'auto'), opts(r.styleOpts), ev(r.onStyle)));
+    // owner, 2026-11-06: px, the same wherever the hand is aligned; an indicator's length is how
+    // far out from the arbour it sits, its width its size
+    F.push(Rg(r.isMarker ? 'Distance' : 'Length', r.lenPx, 0, 240, 0.5, r.onLenPx, r.lenPx + 'px'),
+      Nt('', r.isMarker ? 'How far from the arbour the indicator sits.' : 'Arbour to tip. An uploaded picture is fitted so its tip lands here.'));
+    if (r.showWid) F.push(Rg(r.isMarker ? 'Size' : 'Width', r.widPx, 0.3, r.isMarker ? 30 : 24, 0.1, r.onWidPx, r.widPx + 'px'));
+    if (!r.isMarker && !r.hasArt) F.push(Rg('Cap', r.capPx, 0, 16, 0.1, r.onCapPx, r.capPx ? r.capPx + 'px' : 'none'));
+    F.push(Sl('Finish', selOf(r.finOpts, 'auto'), opts(r.finOpts), ev(r.onFinish)), Sl('Shading', selOf(r.shadeOpts, 'auto'), opts(r.shadeOpts), ev(r.onShade)),
+      Sl('Lume', selOf(r.lumeOpts, 'auto'), opts(r.lumeOpts), ev(r.onLume)));
+    F.push(H('Artwork'), Fi('Picture', r.onArtFile, r.artLabel, 'image/png,image/svg+xml'), Nt('', r.artNote));
+    if (r.hasArt) {
+      F.push(Cv('Pivot', r.artRef, 112, 96, r.onArtDown, r.onArtMove, 'Click or drag to set the pivot: the point the orb turns this hand about'),
+        Rg('Facing', r.rot0, 0, 359, 1, (v) => r.onRot0({ target: { value: v } }), r.rot0 + '\u00b0'),
+        Rg('Zoom', r.zoom, 0.05, 4, 0.05, (v) => r.onZoom({ target: { value: v } }), r.zoom.toFixed(2) + '\u00d7'),
+        mk({ label: ' ', isChips: true, opts: [['\u221215\u00b0', r.onFacingDown], ['+15\u00b0', r.onFacingUp], ['Facing to 12', r.onFacingReset], ['Pivot on the hub ink', r.onPivotHub], ['Pivot at the centre', r.onPivotCentre], ['Back to the drawn hand', r.onArtClear]]
+          .map(([label, pick]) => ({ label, bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick })) }));
+    }
+    return F;
+  }
+  /* The accordion: every section head of a part's pane folds; the one open is the one last
+   * opened for that kind of part (the first, until one is). Rows above the first head (its
+   * Name) always show. */
+  foldSections(fields, kind) {
+    const heads = fields.filter((f) => f && f.isHead && f.label);
+    if (heads.length < 2) return fields;
+    const want = (this.state.secOpen || {})[kind], open = want === '' ? '' : heads.some((h) => h.label === want) ? want : heads[0].label;
+    return fields.map((f) => (f && f.isHead && f.label ? Object.assign({}, f, { fold: { open: f.label === open,
+      toggle: () => this.setState((st) => ({ secOpen: { ...(st.secOpen || {}), [kind]: f.label === open ? '' : f.label } })) } }) : f));
+  }
+  /* A hand's scale (owner, 2026-11-06): the scale it reads, drawn by the hand. One list of looks
+   * -- the chapter prints, the sub-dial displays and the calendar ring that were the dial's and
+   * the faces' -- each drawn for the hand's own units (twelve hours, sixty minutes or seconds, the
+   * date, day, month, 24 hours) along the hand's own path (a turn, an arc, a track) from its zero
+   * in its direction. Its size is set from the hand's tip (a gap) or as a radius outright. */
+  setScale(id, patch) {
+    const hc = this.handComp(id) || {}, sc = Object.assign({}, hc.scale || {}, patch);
+    Object.keys(sc).forEach((k) => { if (sc[k] == null || sc[k] === '') delete sc[k]; });
+    this.setHand(id, { scale: sc.style && sc.style !== 'none' ? sc : null });
+  }
+  scaleFields(hc, K) {
+    const E = WatchEngine, { H, Rg, Sl, Ch, Nt, Co } = K, id = hc.id, sc = hc.scale || {}, st = sc.style || 'none', put = (k) => (v) => this.setScale(id, { [k]: v });
+    const opt = (o) => Object.entries(o).map(([v, label]) => ({ v, label })), fam = E.scaleFamily(st), m = hc.motion || {};
+    const track = m.path === 'retrograde' || m.path === 'slide';
+    // a new look keeps the size, typeface, colour and figure size; the fields only one family reads go
+    const pick = (v) => {
+      if (v === 'none') return this.setHand(id, { scale: null });
+      const keep = {}; ['at', 'radius', 'gap', 'font', 'color', 'size', 'orient'].forEach((q) => { if (sc[q] != null) keep[q] = sc[q]; });
+      if (E.scaleFamily(v) === fam) Object.assign(keep, sc);
+      else if (keep.at !== 'fixed') delete keep.gap;   // from the tip: the new look's own gap
+      if (keep.orient && E.scaleFamily(v) !== fam) delete keep.orient;
+      this.setHand(id, { scale: Object.assign(keep, { style: v }) });
+    };
+    const F = [H('Scale'), Sl('Look', st, opt(E.SCALE_STYLES), pick),
+      Nt('', 'Printed by this hand, in its units, round its own arbour from its zero, the way it runs' + (track ? ', along its ' + (m.path === 'slide' ? 'track' : 'arc') : '') + '. Hands stack: each prints its own, or none.')];
+    if (st === 'none' || !fam) return F;
+    const hd = ((this.face() || {}).hands || []).find((h) => h.id === id), len = hd ? +hd.len || 0 : +hc.length || 0;
+    const R = Math.round(E.scaleRadius(sc, { len }) * 10) / 10, fixed = sc.at === 'fixed', gap = sc.gap != null ? +sc.gap : E.SCALE_GAP[fam];
+    F.push(Ch('Size from', fixed ? 'fixed' : 'tip', [{ v: 'tip', label: 'The hand’s tip' }, { v: 'fixed', label: 'A set radius' }],
+      (v) => this.setScale(id, v === 'fixed' ? { at: 'fixed', radius: R, gap: null } : { at: null, radius: null, gap: Math.round((R - len) * 10) / 10 })));
+    if (fixed) F.push(Rg('Radius', R, 8, 240, 0.5, put('radius'), R + ' px'));
+    else F.push(Rg('Gap', gap, -60, 160, 0.5, put('gap'), (gap > 0 ? '+' : '') + gap + ' px → ' + R + ' px'));
+    F.push(Nt('', fixed ? 'The scale stands at this radius whatever the hand’s length.' : 'The scale stands this far past the hand’s tip, and follows the hand when its length changes.'));
+    const faces = [{ v: '', label: 'The look’s own' }].concat(opt(E.TYPEFACES)), sz = (q) => (sc[q] == null ? 1 : +sc[q]);
+    const figs = fam !== 'chapter' || !['batons', 'sticks', 'station', 'plots', 'framed'].includes(st), ticksOnly = st === 'ticks';   // Fine ticks alone prints no figures
+    if (fam === 'chapter') {
+      F.push(Sl('Figures', sc.figures || 'all', opt(E.FIGURES), put('figures')));
+      if (figs && sc.figures !== 'none') F.push(Ch('Orientation', sc.orient || (st === 'roman' ? 'radial' : 'upright'), [{ v: 'upright', label: 'Upright' }, { v: 'radial', label: 'Radial' }], put('orient')),
+        Sl('Typeface', sc.font || '', faces, put('font')));
+      if (sc.figures !== 'none') {
+        const plots = st === 'plots' || st === 'framed';
+        if (st !== 'batons') F.push(Co(plots ? 'Plot colour' : 'Colour', sc.color, put('color'), plots ? 'Lume' : 'Ink'));
+        if (plots) F.push(Co('Plot rim', sc.rim, put('rim'), 'Silver'));
+        F.push(Rg(plots ? 'Plot size' : figs ? 'Figure size' : 'Marker size', sz('size'), 0.5, 2, 0.05, put('size'), sz('size').toFixed(2) + '×'));
+        if (st !== 'batons') F.push(Sl('Finish', sc.finish || 'print', opt(E.COMP_STYLES.flare), put('finish')));
+        const sm = [{ v: '', label: 'Same' }].concat(opt(E.TYPEFACES));
+        if (figs) F.push(Sl('12 typeface', sc.font12 || '', sm, put('font12')), Sl('Quarters typeface', sc.fontQ || '', sm, put('fontQ')));
+        if (st !== 'batons') F.push(Co('12 colour', sc.color12, put('color12'), 'Same'), Co('Quarters colour', sc.colorQ, put('colorQ'), 'Same'));
+        F.push(Rg('12 size', sz('size12'), 0.5, 2, 0.05, put('size12'), sz('size12').toFixed(2) + '×'), Rg('Quarters size', sz('sizeQ'), 0.5, 2, 0.05, put('sizeQ'), sz('sizeQ').toFixed(2) + '×'));
+      }
+    } else if (fam === 'face') {
+      if (!ticksOnly) F.push(Sl('Typeface', sc.font || '', faces, put('font')), Ch('Weight', sc.weight || 'bold', [{ v: 'bold', label: 'Bold' }, { v: 'regular', label: 'Regular' }, { v: 'italic', label: 'Italic' }], (v) => this.setScale(id, { weight: v === 'bold' ? null : v })),
+        Ch('Orientation', sc.orient || 'upright', [{ v: 'upright', label: 'Upright' }, { v: 'radial', label: 'Radial' }], put('orient')),
+        Rg('Figure size', sz('size'), 0.6, 1.6, 0.05, put('size'), Math.round(sz('size') * 100) + '%'));
+      F.push(Co('Colour', sc.color, put('color'), 'Ink'));
+    } else {
+      F.push(Co('Colour', sc.color, put('color'), 'Ink'), Sl('Typeface', sc.font || '', faces, put('font')),
+        Ch('Orientation', sc.orient || 'upright', [{ v: 'upright', label: 'Upright' }, { v: 'radial', label: 'Radial' }], put('orient')),
+        Rg('Label size', sz('size'), 0.6, 2.6, 0.05, put('size'), sz('size').toFixed(2) + '×'),
+        Ch('Labels', sc.between ? 'between' : 'ontick', [{ v: 'ontick', label: 'On the lines' }, { v: 'between', label: 'Between the lines' }], (v) => this.setScale(id, { between: v === 'between' ? true : null })));
+    }
+    if (track && fam !== 'face') F.push(Nt('', 'Along an arc or a track this look draws as the nearest sub-dial display (' + (E.SCALE_STYLES[E.TRACK_OF[st]] || 'Classic') + ').'));
+    return F;
+  }
+  /* A part's Name row: it shows the name the part goes by; typing sets it, and clearing it
+   * (or typing the default back) returns the part to its default name. */
+  nameField(c, dflt, Tx) {
+    const f = Tx('Name', c.name || dflt, (v) => { const t = String(v || '').trim(); this.setComp(c.id, { name: t && t !== dflt ? t : null }); });
+    return Object.assign(f, { tip: 'What this part is called in Layers and in every list that offers it. Clear it to go back to "' + dflt + '".' });
+  }
+  motionProps(id, hc, kind, ready, mark) {
     const E = WatchEngine;
     if (!ready || !kind || !E.MOTION_PATHS) return { canMove: false };
-    const fromFace = form === 'fan' || form === 'slider';
-    const m = hc.motion || {}, path = fromFace ? (form === 'fan' ? 'retrograde' : 'slide') : (m.path || 'rotate'), cad = m.cadence || 'inherit';
-    // D43 P5d.2: a fan or a slider is a face, not a hand's path; a hand there takes its path
-    // from it. On a round face a hand rotates or turns as a disc; a hand that already names
-    // a fan or slide path of its own (an older design, Flux) keeps it, marked as such.
-    const own = { rotate: 'Rotate', disc: 'Turning disc' };
-    const paths = fromFace ? [{ v: path, label: form === 'fan' ? 'Retrograde \u00b7 from its fan' : 'Slides \u00b7 along its slider' }]
-      : Object.entries(own).map(([v, label]) => ({ v, label })).concat(own[path] ? [] : [{ v: path, label: (E.MOTION_PATHS[path] || path) + ' \u00b7 its own scale (make a fan or slider sub-dial instead)' }]);
+    // owner, 2026-11-05: every path is every hand's, wherever it stands; a face only draws
+    const m = hc.motion || {}, path = m.path || 'rotate', cad = m.cadence || 'inherit';
+    const paths = Object.entries(E.MOTION_PATHS).map(([v, label]) => ({ v, label }));
     const cads = Object.entries(E.CADENCES).filter(([v]) => v !== 'stop-to-go' || kind === 'second')
-      .map(([v, label]) => ({ v, label: v === 'inherit' ? (kind === 'second' ? 'Default (Motion tab)' : 'Default (sweep)') : label }));
-    const retro = path === 'retrograde' && !fromFace, slide = (path === 'slide-x' || path === 'slide-y') && !fromFace, disc = path === 'disc';
+      .map(([v, label]) => ({ v, label: v === 'inherit' ? (kind === 'second' ? 'The dial\u2019s beat' : 'Sweep (the default)') : label }));
+    const retro = path === 'retrograde', slide = path === 'slide', disc = path === 'disc';
     const g = slide ? E.slideGeom(m) : null;
-    const note = (E.MOTION_PATHS[path] || path) + ' · ' + (E.CADENCES[cad] || cad) + (cad === 'step' ? ' ' + (+m.steps || 1) + '/unit' : '') +
-      (slide ? ' · bakes as a pointer row' : '');
+    const note = (E.MOTION_PATHS[path] || path).split(' \u00b7 ')[0] + ' \u00b7 ' + (cad === 'inherit' ? (kind === 'second' ? 'the dial\u2019s beat' : 'sweep') : (E.CADENCES[cad] || cad).toLowerCase()) + (cad === 'step' ? ' ' + (+m.steps || 1) + '/unit' : '');
     const num = (f) => (e) => { const v = e.target.value === '' ? null : +e.target.value; this.setMotion(id, { [f]: v }); };
     return {
-      canMove: true, motionNote: note,
+      canMove: true, motionNote: note, path, isRetro: retro, isSlide: slide, isDisc: disc,
       pathOpts: mark(paths, path), cadOpts: mark(cads, cad),
-      onPath: (e) => { if (!fromFace) this.setMotion(id, { path: e.target.value }); },
+      // a new path starts from where the hand reads: a fan from 12 over half a turn, a track 150 px
+      onPath: (e) => { const v = e.target.value; this.setMotion(id, v === 'retrograde' ? { path: v, start: m.start != null ? m.start : 270, span: m.span != null ? m.span : 180 }
+        : v === 'slide' ? { path: v, angle: +m.angle || 0, travel: m.travel != null ? m.travel : 150, from: m.from != null ? m.from : null } : { path: v }); },
       onCad: (e) => this.setMotion(id, { cadence: e.target.value }),
-      // a hand on a fan or slider face flies back too, so its flyback ease is offered (it was hidden)
-      showMotionNums: retro || slide || disc || fromFace || cad === 'step' || cad === 'jump',
+      showMotionNums: retro || slide || disc || cad === 'step' || cad === 'jump',
       aLabel: slide ? 'From' : 'Start', aVal: slide ? Math.round(g[0]) : (+m.start || 0),
-      aTip: slide ? 'Where the travel starts, px from the arbour along the slide' : retro ? 'Where the fan starts, degrees clockwise from 12' : disc ? 'The fixed index the disc is read against, degrees clockwise from 12' : 'Only a fan, a disc or a slide places a start',
+      aTip: slide ? 'Where the travel starts, px from the arbour along the track' : retro ? 'Where the sweep starts, degrees clockwise from 12' : disc ? 'The fixed index the disc is read against, degrees clockwise from 12' : 'Only a sweep, a disc or a slide places a start',
       onA: num(slide ? 'from' : 'start'),
-      bLabel: slide ? 'Travel' : 'Span', bVal: slide ? Math.round(g[1]) : retro ? (m.span != null ? +m.span : 180) : 0, bOff: !(retro || slide),
-      bTip: slide ? 'How far the slide travels across the whole value, px' : 'How far the fan sweeps across the whole value, degrees (negative runs anticlockwise)',
+      bLabel: slide ? 'Travel' : 'Sweep', bVal: slide ? Math.round(g[1]) : retro ? (m.span != null ? +m.span : 180) : 0, bOff: !(retro || slide),
+      bTip: slide ? 'How far the slide travels across the whole value, px (negative runs back)' : 'How far it sweeps across the whole value, degrees (negative runs anticlockwise)',
       onB: num(slide ? 'travel' : 'span'),
+      trackAngle: +m.angle || 0, onTrackAngle: num('angle'),
       steps: +m.steps || 1, stepsOff: cad !== 'step', onSteps: (e) => this.setMotion(id, { steps: Math.max(1, Math.min(8, +e.target.value | 0)) }),
-      // D41 ease: a settle needs a jump or a step slower than the second; a flyback a fan or a slide
-      easeOff: !(((cad === 'jump' || cad === 'step') && kind !== 'second') || retro || slide || fromFace),
+      // D41 ease: a settle needs a jump or a step slower than the second; a flyback a sweep or a slide
+      easeOff: !(((cad === 'jump' || cad === 'step') && kind !== 'second') || retro || slide),
       ease: +m.ease || 0,
-      easeTip: retro || slide || fromFace ? 'Flyback: how long the hand takes to travel back to its start, ms (0 snaps)' : 'Settle: the small overshoot after each jump, ms (0 lands dead). Not offered on a step every second: it would cost a burst of frames each second',
+      easeTip: retro || slide ? 'Flyback: how long the hand takes to travel back to its start, ms (0 snaps)' : 'Settle: the small overshoot after each jump, ms (0 lands dead). Not offered on a step every second: it would cost a burst of frames each second',
       onEase: (e) => this.setMotion(id, { ease: Math.max(0, Math.min(1000, +e.target.value | 0)) }),
     };
   }
@@ -2459,9 +2584,11 @@ class Component extends DCLogic {
   handSeats3(D) {
     const seat = {};
     ['hour', 'minute', 'second'].forEach((k, i) => {
-      // a hand the author reversed or re-zeroed (D43 P5d.2) rides the pointer table, whose
-      // rows carry a signed span and a lifted rest pose; the slots keep the plain clockwise turn
-      const h = (D.comps || []).find((c) => c.type === 'hand' && (c.host || 'dial') === 'dial' && c.shows === k && !(c.motion && (c.motion.path === 'slide-x' || c.motion.path === 'slide-y'))
+      // a hand the author reversed, re-zeroed, moved off the centre or set sliding (D43 P5d.2)
+      // rides the pointer table, whose rows carry a signed span, their own pivot and a lifted
+      // rest pose; the slots keep the plain clockwise turn about the dial's centre
+      const h = (D.comps || []).find((c) => c.type === 'hand' && (c.host || 'dial') === 'dial' && c.shows === k && !(+c.dist)
+        && !(c.motion && (c.motion.path === 'slide' || c.motion.path === 'slide-x' || c.motion.path === 'slide-y'))
         && (c.dir || (D.dir === 'ccw' ? 'ccw' : 'cw')) !== 'ccw' && !(+c.start));
       if (h) seat[h.id] = i;
     });
@@ -2483,11 +2610,11 @@ class Component extends DCLogic {
     (D.comps || []).forEach((c) => {
       if (c.type !== 'hand' || seat[c.id] !== undefined || !drawn[c.id]) return;
       const host = c.host && c.host !== 'dial' ? byId[c.host] : null;
-      if (host && plates[String(host.id)] && E.SCALE_SHOWS[host.scale] === c.shows) return;
+      if (host && plates[String(host.id)] && (D.comps || []).find((h) => h.type === 'hand' && h.host === host.id) === c) return;
       const p = this.POINTER3[c.shows];
       if (!p) { refuses.push('the hand \u201c' + c.id + '\u201d shows \u201c' + c.shows + '\u201d: no source on the dial reads that'); return; }
-      // the direction is the engine's resolution (the hand's own, else its face's), and a hand
-      // on a fan or a slider carries the motion its face made for it
+      // the direction is the engine's resolution (the hand's own, else the dial's), and its
+      // motion is its own
       const hd = drawn[c.id];
       const r = { id: c.id, type: 'hand', host: host ? host.id : 'dial', src: p[0], vmin: p[1], vmax: p[2], span: hd.dir === 'ccw' ? -3600 : 3600, zero: 0, motion: 'rotate' };
       const dc = this.driveCols3(c.shows, hd.motion || c.motion);
@@ -2683,19 +2810,25 @@ class Component extends DCLogic {
   }
   /* Re-price once the dial settles after an edit: a quarter second of quiet first, so a slider
    * drag prices once at the end, not on every step. One walk at a time. */
+  /* A price that could not run now asks again by itself: the editor re-renders only on an edit
+   * or a playing frame, so a request dropped while the dial was still building, or while the
+   * last dial's walk was running, used to wait for the author's next edit -- a fresh Diver read
+   * the 4 fps fallback until its beat was touched, then 15. */
+  liveAgain(ms) { if (!this._liveRetry) this._liveRetry = setTimeout(() => { this._liveRetry = 0; this.liveSoon(); }, ms || 300); }
   liveSoon() {
-    if (!this.settled3()) return;
+    if (!this.settled3()) { if (this.live4Key() !== this._liveKey) this.liveAgain(); return; }
     const k = this.live4Key();
     if (k === this._liveKey || k === this._livePending) return;
     if (this._liveTimer) clearTimeout(this._liveTimer);
     this._livePending = k;
     this._liveTimer = setTimeout(async () => {
       this._liveTimer = 0;
-      if (this._liveBusy) { this._livePending = null; return; }
+      if (this._liveBusy) { this._livePending = null; this._liveQueued = true; return; }   // run when the walk in hand ends
       this._liveBusy = true;
       let e = null;
       try { e = await this.livePlan4(k); } finally { this._liveBusy = false; this._livePending = null; }
-      if (this.live4Key() !== k) return;            // the dial moved on: the next update re-prices
+      if (this._liveQueued) { this._liveQueued = false; this.liveAgain(0); }
+      if (this.live4Key() !== k) { this.liveAgain(); return; }   // the dial moved on: price it again
       this._liveKey = k;
       if (!e) return;
       const c = this.cfg(), G4 = window.GorbBake, ak = this.artKey(this.mvKey(1)), shs = +c.shSmooth === 1 ? 1 : 0;
@@ -3202,7 +3335,9 @@ class Component extends DCLogic {
         }
       }
       if (bx2 < 0) return { refuse: 'the pointer \u201c' + r.id + '\u201d draws no hand: that subdial prints no hand for the bake to lift off the plate and turn' };
-      const g = !r.host || r.host === 'dial' ? { x: 233, y: 233 } : this.face().outline(r.host);   // the layout centre that hand turns about
+      // the arbour the hand turns about: its own place (owner, 2026-11-05), wherever it stands
+      const hd3 = r.type === 'hand' ? ((this.face() || {}).hands || []).find((h) => h.id === r.id) : null;
+      const g = hd3 ? { x: hd3.x, y: hd3.y } : !r.host || r.host === 'dial' ? { x: 233, y: 233 } : this.face().outline(r.host);
       if (!g) return { refuse: 'the pointer \u201c' + r.id + '\u201d has no layout centre on this dial' };
       /* Layout space is not device space. frameCanvas composes through the face's
        * own lenses -- the case inset and the no-case ease (dynK) -- so the ink this
@@ -3338,14 +3473,14 @@ class Component extends DCLogic {
   STEPS = [
     ['start', 'Start', ['start'], 'Pick a finished watch to change, or build from scratch.'],
     ['movement', 'Movement', ['move'], 'The movement is the back of the watch: the plate and the train every opening shows.'],
-    ['dial', 'Dial', ['dial', 'hands'], 'The dial\u2019s style: its print, numerals, colour, surface and art, and the style every hand starts from. The parts you add follow it.'],
+    ['dial', 'Dial', ['dial', 'hands', 'timing'], 'The dial\u2019s style: its print, numerals, colour, surface and art; the hand set every hand starts from; and the dial\u2019s timing, its beat and its plan. The parts you add follow it.'],
     // D43 P5c: one view. Nothing selected shows the catalogue (a hand is one of its entries);
     // a selected part, a hand included, shows its own panel alone.
     ['parts', 'Parts', ['comps', 'hands'], 'Add what the dial shows: hands, sub-dials, windows, a moon, openings, flares. Each follows the dial\u2019s style until you set it otherwise.'],
     ['finish', 'Finish', ['light', 'case', 'sound'], 'Light, case and glass, and the sounds the watch makes.'],
     ['render', 'Render', ['export'], 'Check it fits the orb, then send it.'],
   ];
-  SUBLABEL = { comps: 'Parts', hands: 'Hand style', dial: 'Dial', light: 'Light', case: 'Case & glass', sound: 'Sound', move: 'Movement', export: 'Export' };
+  SUBLABEL = { comps: 'Parts', hands: 'Hand set', timing: 'Timing', dial: 'Dial', light: 'Light', case: 'Case & glass', sound: 'Sound', move: 'Movement', export: 'Export' };
   MOODS = [
     ['as', 'As designed', {}],
     ['lamp', 'Warm lamp', { glow: 1.2, temp: 2200, hue: 30, hueSat: 0, outerLight: 0.8, outerTemp: 2700, outerHue: 210, outerSat: 0, wb: 6500 }],
@@ -3432,7 +3567,8 @@ class Component extends DCLogic {
       out.badgeText = V.text;
       out.badgeNote = V.note;
       out.badgeTip = 'The device-pace model\u2019s estimate for this design (the frame rate the orb can paint it at) and the live rows it ships against the dial\u2019s cap. A lifted layer or a large sweeping disc costs pace.';
-      out.fitShort = V.short;
+      // a sweep's plans still being priced: the rate in hand is a placeholder, not the answer
+      out.fitShort = b && b.pricing ? 'Pricing\u2026' : V.short;
       out.fitDot = V.color;
       out.badgeFg = V.color; out.badgeBd = V.border; out.badgeBg = V.background;
     }
@@ -3448,6 +3584,9 @@ class Component extends DCLogic {
     }
     // Parts / Arrange: a complication's fields grouped by part — Placement, Shape, Paint
     if (ready && s.tab === 'comps' && fields.length && (d.comps || []).some((c) => c.id === s.sel)) {
+      // the Name stands above every section
+      const nameRow = fields.find((f) => f && f.isText && f.label === 'Name');
+      if (nameRow) fields = fields.filter((f) => f !== nameRow);
       const PLACE = /^(Host|Angle|Distance|Rotation|Radius|Width|Height|Size|Place it|Offset|Position)\b/;
       const PAINT = /(colou?r|Texture|Vivid|Custom|Shading|Lume|Finish)/i;
       const proto = fields.find((f) => f.isRow) || {};
@@ -3465,10 +3604,11 @@ class Component extends DCLogic {
       const form = [], place = [], shape = [], paint = [];
       fields.forEach((f) => { if (f.isHead) shape.push(f); else if (isForm(f)) form.push(f); else if (PLACE.test(f.label)) place.push(f); else if (PAINT.test(f.label)) paint.push(f); else shape.push(f); });
       fields = [].concat(form.length ? [H('Form')].concat(form) : [],
-                         place.length ? [H('Placement')].concat(this.foldRows(place, 'place', 5)) : [],
-                         shape.length ? [H('Shape')].concat(this.foldRows(shape, 'shape', 5)) : [],
-                         paint.length ? [H('Paint')].concat(this.foldRows(paint, 'paint', 5)) : []);
+                         place.length ? [H('Placement')].concat(place) : [],
+                         shape.length ? [H('Shape')].concat(shape) : [],
+                         paint.length ? [H('Paint')].concat(paint) : []);
       }
+      if (nameRow) fields = [nameRow].concat(fields);
     }
     // Hands: each panel reads Shape, Paint, Motion; the artwork upload folds behind its own toggle
     if (Array.isArray(v.handRows)) out.handRows = v.handRows.map((h) => {
@@ -3482,7 +3622,10 @@ class Component extends DCLogic {
     out.handRows = selHand && step === 'parts' ? [selHand] : [];
     // the Dial step's Hand style view: the style every hand starts from, and the shared settings
     out.handGrid = !!(v.isHands && step === 'dial');
-    if (v.isHands && step === 'parts') fields = [];
+    if (v.isHands && step === 'parts') fields = selHand && this._K ? this.handFields(selHand, this._K, this.handComp(s.sel) || {}) : [];
+    // owner, 2026-11-05: a part's sections fold, all but the one last used (an accordion per
+    // kind of part, so a sub-dial opens where the last sub-dial was left)
+    if ((selHand && step === 'parts') || (selComp && s.tab === 'comps')) fields = this.foldSections(fields, selHand ? 'hand' : selComp.type);
     out.hasSelAny = s.sel != null || s.selKind != null;
     if (s.selKind === 'comp' && selComp) { out.inspKind = (E.COMP_TYPES && E.COMP_TYPES[selComp.type]) || 'Complication'; out.inspTitle = v.selTitle || out.inspKind; }
     else if (selHand) { out.inspKind = 'Hand'; out.inspTitle = selHand.label; }
@@ -3545,6 +3688,10 @@ class Component extends DCLogic {
      * reads as "the rate you'll SEE" takes the pace; the bank rate rides as
      * the appendix, because the frame stepper really does cycle bank samples. */
     const s = this.state, HB = this.budget(), F = HB.fps, DEV = HB.dev.pace, B = this.B, pad = (n) => String(n).padStart(2, '0'), c0 = this.cfg();
+    // the rate a label quotes: a plan's hands and gears, else the pace against the bank's tempo
+    const rateTxt = HB.dev.planned ? DEV + ' fps' + (HB.dev.gears && HB.dev.gears !== DEV ? ' \u00b7 gears ' + HB.dev.gears : '')
+      : (DEV < F ? '~' + DEV + ' fps \u00b7 bank ' + F : F + ' fps');
+    const PRC = HB.pricing ? ' \u00b7 pricing\u2026' : '';   // until the live plans land, the rate is a placeholder
     const stop = (fn) => () => this.setState((st) => ({ playing: false, frame: fn(st.frame) }));
     const E = window.WatchEngine, ready = !!(this.ready && E);
     const PR = ready ? this.preset() : null, D = ready ? this.design() : { comps: [], centre: {} };
@@ -3552,9 +3699,13 @@ class Component extends DCLogic {
     const fc = ready ? this.face() : null, tr = ready ? this.train() : { deg: 0, by: null };
     const cap = (t) => t[0].toUpperCase() + t.slice(1);
     const subs = D.comps.filter((c) => c.type === 'subdial');
-    const num = (cid) => D.comps.findIndex((c) => c.id === cid) + 1;
-    const compTitle = (c) => !ready ? '' : c.type === 'wheel' || c.type === 'cutout' || c.type === 'index' ? (window.OrbStack ? window.OrbStack.compTitle(c, E) : c.type) : c.type === 'subdial' ? 'Subdial · ' + E.SCALES[c.scale] : c.type === 'window' ? E.SHOWS[c.shows] + ' window' : c.type === 'moon' ? 'Moon phase' : c.type === 'flare' ? 'Flare · ' + (E.FLARE_ICONS[c.icon] || '') : c.show === 'balance' ? 'Escapement opening' : 'Opening';
-    const hostName = (h) => (!h || h === 'dial' ? 'dial' : h === 'plate' ? 'movement plate' : '#' + num(h) + ' subdial');
+    // a part's number: its place among the parts, hands left out, as the Parts list counts them
+    const num = (cid) => D.comps.filter((c) => c.type !== 'hand').findIndex((c) => c.id === cid) + 1;
+    const compTitle = (c) => !ready ? '' : c.type === 'wheel' || c.type === 'cutout' || c.type === 'index' ? (window.OrbStack ? window.OrbStack.compTitle(c, E) : c.type) : c.type === 'subdial' ? (c.form === 'slider' ? 'Subdial · slider' : 'Subdial') : c.type === 'window' ? E.SHOWS[c.shows] + ' window' : c.type === 'moon' ? 'Moon phase' : c.type === 'flare' ? 'Flare · ' + (E.FLARE_ICONS[c.icon] || '') : c.show === 'balance' ? 'Escapement opening' : 'Opening';
+    // a part's name: the author's own, else a default unique on the dial (stack.js partName)
+    const partName = (c) => (!c ? '' : window.OrbStack ? window.OrbStack.partName(c, D.comps, E) : compTitle(c));
+    const nameOf = (cid) => partName(D.comps.find((c) => c.id === cid));
+    const hostName = (h) => (!h || h === 'dial' ? 'dial' : h === 'plate' ? 'movement plate' : nameOf(h));
     // the selected complication: a hand is a comp too (D43 P5c), but it has its own panel
     const sel = s.selKind !== 'hand' && s.selKind !== 'dial' && s.selKind !== 'move' ? D.comps.find((c) => c.id === s.sel && c.type !== 'hand') : null;
     const feats = ready ? E.features(s.train) : [];
@@ -3567,6 +3718,7 @@ class Component extends DCLogic {
     const K = window.OrbStudio.fieldKit({ drafts: this._drafts, refresh: () => this.forceUpdate(), scope: () => s.sel || 'dial',
       inherit: [{ re: /^(Same as dial|Match dial)/, src: 'the dial' }, { re: /^Default\b/, src: 'the defaults' }] });
     const { mark, mk, linkOf, H, Rg, Sl, Ch, Nt, Co, Tx, Fi } = K;
+    this._K = K;
     const isHexColor = (v) => /^#[0-9a-f]{6}$/i.test(String(v || ''));
     const Sw = (label, value, keys, onv, extra) => K.Sw(label, value,
       keys.map((k) => ({ k, label: E.COLOR_NAMES[k], bg: 'linear-gradient(135deg,' + E.DIAL_COLORS[k][0] + ',' + E.DIAL_COLORS[k][1] + ')' })), onv,
@@ -3580,11 +3732,13 @@ class Component extends DCLogic {
       const Sx = (label, k, opts, n) => selFields.push(Sl(label, String(sel[k] ?? ''), opts, set(k, n)));
       const Cx = (label, k, opts, dflt) => selFields.push(Ch(label, sel[k] ?? dflt, opts, set(k)));
       const follow = sel.type === 'opening' && sel.show === 'balance', isIx = sel.type === 'index', cut = sel.type === 'cutout' || isIx;
+      // owner, 2026-11-05: every part has a name, the default until the author types one
+      selFields.push(this.nameField(sel, partName(Object.assign({}, sel, { name: '' })), Tx));
       /* P5d.3n: an index, on the glass where its wheel reads: across that wheel or every ring sharing it */
       if (isIx) {
         const wheels = D.comps.filter((c) => c.type === 'wheel' && c.shows !== 'moon' && c.form !== 'barrel'), hw = D.comps.find((c) => c.id === sel.host) || {};
         const li = ((fc && fc.lay && fc.lay.indexes) || []).find((q) => String(q.id) === String(sel.id));
-        Sx('Wheel', 'host', wheels.map((c) => ({ v: c.id, label: '#' + num(c.id) + ' ' + compTitle(c) })));
+        Sx('Wheel', 'host', wheels.map((c) => ({ v: c.id, label: partName(c) })));
         Cx('Style', 'istyle', opt(E.INDEX_STYLES), 'laser');
         Cx('Spans', 'span', opt(E.INDEX_SPANS), 'all');
         selFields.push(Co('Colour', sel.color, set('color'), 'Wheel accent'));
@@ -3593,10 +3747,10 @@ class Component extends DCLogic {
         R('Glow', 'glow', 0, 1, 0.05, (v) => (v ? Math.round(v * 100) + '%' : 'none'), st === 'line' || st === 'frame' ? 0 : 1);
         if (st === 'lens' || st === 'frame') R('Width', 'iw', 2, 40, 0.5, (v) => v * 2 + ' px across', li ? Math.round(Math.max(10, (li.r1 - li.r0) * 0.07) * 2) / 2 : 10);
         R('Overrun', 'over', 0, 30, 0.5, (v) => v + ' px past the rings', 4);
-        selFields.push(Nt('', 'Stands where #' + num(hw.id || '') + ' reads (' + (hw.read != null ? +hw.read : 90) + '°): turn the wheel’s Reads at to move it, and every ring it spans with it. Painted on the glass, it is part of the one still crystal layer on the orb: no cost per frame.'));
+        selFields.push(Nt('', 'Stands where ' + (partName(hw) || 'its wheel') + ' reads (' + (hw.read != null ? +hw.read : 90) + '°): turn the wheel’s Reads at to move it, and every ring it spans with it. Painted on the glass, it is part of the one still crystal layer on the orb: no cost per frame.'));
       } else if (cut) {
         const wheels = D.comps.filter((c) => c.type === 'wheel'), mates = D.comps.filter((c) => c.type === 'cutout' && c.id !== sel.id);
-        Sx('Wheel', 'host', wheels.map((c) => ({ v: c.id, label: '#' + num(c.id) + ' ' + compTitle(c) })));
+        Sx('Wheel', 'host', wheels.map((c) => ({ v: c.id, label: partName(c) })));
         const hw = D.comps.find((c) => c.id === sel.host) || {};
         /* P5d.3h: a moon wheel's cutout is locked to its disc -- the wheel's size, its moons and its
          * Opening faces place and turn it -- so it offers only how wide it opens and its frame */
@@ -3623,12 +3777,12 @@ class Component extends DCLogic {
         R('Height', 'h', 0, 80, 0.5, (v) => (v ? v + 'px' : 'auto'), 0);
         Sx('Frame', 'style', opt(E.COMP_STYLES.cutout));
         if (!sel.shape || sel.shape === 'window' || sel.shape === 'round') Cx('Magnifier', 'lens', opt(E.LENSES), 'none');
-        selFields.push(Sl('Join with', sel.join || '', [{ v: '', label: 'Nothing \u00b7 its own frame' }].concat(mates.map((c) => ({ v: c.id, label: '#' + num(c.id) + ' on ' + compTitle(D.comps.find((q) => q.id === c.host) || {}) }))), (v) => this.setComp(sel.id, { join: v || undefined })));
+        selFields.push(Sl('Join with', sel.join || '', [{ v: '', label: 'Nothing \u00b7 its own frame' }].concat(mates.map((c) => ({ v: c.id, label: partName(c) + ' on ' + nameOf(c.host) }))), (v) => this.setComp(sel.id, { join: v || undefined })));
         if (sel.join) Cx('Centre bar', 'bar', [{ v: true, label: 'Bar between' }, { v: false, label: 'No bar' }], true);
         }
       }
-      if (sel.type !== 'subdial' && !follow && !cut) Sx('Host', 'host', [{ v: 'dial', label: 'Main dial' }, ...(sel.type === 'flare' ? [{ v: 'plate', label: 'Movement plate · seen through openings' }] : []), ...subs.map((q) => ({ v: q.id, label: '#' + num(q.id) + ' ' + compTitle(q) }))]);
-      if (follow && tr.by && tr.by !== sel.id) selFields.push(Nt('Angle', 'Riding on the balance — the train is aimed by #' + num(tr.by)));
+      if (sel.type !== 'subdial' && !follow && !cut) Sx('Host', 'host', [{ v: 'dial', label: 'Main dial' }, ...(sel.type === 'flare' ? [{ v: 'plate', label: 'Movement plate · seen through openings' }] : []), ...subs.map((q) => ({ v: q.id, label: partName(q) }))]);
+      if (follow && tr.by && tr.by !== sel.id) selFields.push(K.Rd('Angle', 'Riding on the balance — the train is aimed by ' + nameOf(tr.by)));
       else if (!cut) R(follow ? 'Angle · train' : 'Angle', 'angle', 0, 359, 1, (v) => v + '°');
       if (!follow && !cut) R('Distance', 'dist', 0, 220, 0.5, (v) => v + 'px');
       if (sel.type === 'opening') Sx('Shape', 'shape', opt(E.SHAPES));
@@ -3637,18 +3791,18 @@ class Component extends DCLogic {
         if (sel.icon === 'datetext') {
           selFields.push(Tx('Format', sel.fmt == null ? 'ddd DD MMM' : sel.fmt, set('fmt')));
           Cx('Case', 'fcase', [{ v: 'upper', label: 'UPPER' }, { v: 'asis', label: 'As written' }, { v: 'lower', label: 'lower' }], 'upper');
-          selFields.push(Nt('Preview', E.fmtDate(sel.fmt == null ? 'ddd DD MMM' : sel.fmt, this.now(), sel.fcase) || '—'), Nt('Tokens', 'YYYY YY · MMMM MMM MM M · DD D Do · DDDD DDD (day of year) · dddd ddd dd · d E (weekday no.) · WW W (ISO week) · Q · strftime: %Y %y %B %b %m %d %-d %e %j %A %a %u %V %U · [text] stays literal'));
+          selFields.push(K.Rd('Preview', E.fmtDate(sel.fmt == null ? 'ddd DD MMM' : sel.fmt, this.now(), sel.fcase) || '—'), Nt('Tokens', 'YYYY YY · MMMM MMM MM M · DD D Do · DDDD DDD (day of year) · dddd ddd dd · d E (weekday no.) · WW W (ISO week) · Q · strftime: %Y %y %B %b %m %d %-d %e %j %A %a %u %V %U · [text] stays literal'));
         }
         if (sel.icon === 'text' || sel.icon === 'arctext' || sel.icon === 'datetext') {
           if (sel.icon !== 'datetext') selFields.push(Tx('Text', sel.text, set('text')));
-          selFields.push(Sl('Typeface', sel.font || 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], (v) => this.setComp(sel.id, { font: v === 'dial' ? undefined : v })));
+          selFields.push(Sl('Typeface', sel.font || 'dial', [{ v: 'dial', label: 'Default' }, ...opt(E.TYPEFACES)], (v) => this.setComp(sel.id, { font: v === 'dial' ? undefined : v })));
           Cx('Weight', 'weight', [{ v: 'bold', label: 'Bold' }, { v: 'regular', label: 'Regular' }, { v: 'italic', label: 'Italic' }], 'bold');
           R('Letter spacing', 'spacing', 0, 1, 0.02, (v) => v.toFixed(2), 0);
         }
         if (sel.icon === 'image') {
           selFields.push(Fi('Image', (e) => {
             const file = e.target.files && e.target.files[0]; if (!file) return;
-            this.pickArt(file, 'flare #' + num(sel.id) + ' art', (id) => this.setComp(sel.id, { img: id }));
+            this.pickArt(file, partName(sel) + ' art', (id) => this.setComp(sel.id, { img: id }));
           }, sel.img && E.assetReady(sel.img) ? 'loaded' : sel.img ? 'missing' : ''));
           const fa = sel.img && E.assetGet(sel.img);
           // the old wording promised the upload was gone at reload; it persists now, so
@@ -3701,7 +3855,7 @@ class Component extends DCLogic {
           R('Edge curvature', 'edge', 0, 1, 0.05, (v) => (v ? Math.round(v * 100) + '%' : 'flat cut'), 0.15);
           selFields.push(Object.assign(Nt('', ''), { label: 'Figures', isHead: true, isNote: false, isRow: false }));
           R('Figure size', 'fpx', E.LEGIBLE_PX, 72, 0.5, (v) => v + ' px \u00b7 ' + E.pxMm(v * E.LEGIBLE.capEm).toFixed(2) + ' mm tall', fw ? fw.fs : E.LEGIBLE_PX);
-          selFields.push(Sl('Typeface', sel.wfont || 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], set('wfont')));
+          selFields.push(Sl('Typeface', sel.wfont || 'dial', [{ v: 'dial', label: 'Default' }, ...opt(E.TYPEFACES)], set('wfont')));
           Cx('Style', 'fstyle', opt(E.WHEEL_STYLES), 'bold');
           if (form !== 'barrel') {
             /* P5d.3g: one angle to the ring, any value, snapping (within 4 deg) to level where the wheel
@@ -3725,9 +3879,9 @@ class Component extends DCLogic {
           if (form !== 'barrel') {
             const ixs = D.comps.filter((c) => c.type === 'index' && c.host === sel.id);
             const across = ((fc && fc.lay && fc.lay.indexes) || []).filter((q) => q.wheel !== sel.id && fw && q.x === fw.x && q.y === fw.y && Math.abs(q.a - fw.read) < 0.01);
-            selFields.push(Ch('Index', '', (ixs.length ? ixs.map((c) => ({ v: c.id, label: 'Select #' + num(c.id) + ' ' + compTitle(c) })) : []).concat(ixs.length ? [] : [{ v: '+', label: '+ Add an index on the glass' }]),
+            selFields.push(Ch('Index', '', (ixs.length ? ixs.map((c) => ({ v: c.id, label: 'Select ' + partName(c) })) : []).concat(ixs.length ? [] : [{ v: '+', label: '+ Add an index on the glass' }]),
               (v) => (v === '+' ? this.addComp('index') : this.setState({ sel: v, selKind: 'comp' }))));
-            if (!ixs.length && across.length) selFields.push(Nt('', 'Already crossed by #' + num(across[0].id) + ', the index of another ring read here.'));
+            if (!ixs.length && across.length) selFields.push(Nt('', 'Already crossed by ' + partName(across[0]) + ', the index of another ring read here.'));
           }
           Cx('Finish', 'wfinish', opt(E.WHEEL_FINISHES), 'flat');
           ditherRow();
@@ -3814,12 +3968,10 @@ class Component extends DCLogic {
         R('Opacity', 'opacity', 0.1, 1, 0.05, (v) => Math.round(v * 100) + '%', 1);
       }
       if (sel.type === 'subdial') {
-        Sx('Scale', 'scale', opt(E.SCALES));
-        /* D43 P5d.2: the face's form and the geometry its hands ride. A fan sweeps an arc and
-         * flies back; a slider carries its hands along a cut slot. Direction belongs to the
-         * face for every form: its figures print that way and its hands follow it. */
-        const form = sel.form || 'round', subG = fc && fc.lay && fc.lay.subs.find((q) => q.id === sel.id);
-        Cx('Form', 'form', [{ v: 'round', label: 'Round' }, { v: 'fan', label: 'Fan · retrograde' }, { v: 'slider', label: 'Slider' }], 'round');
+        /* owner, 2026-11-06: a sub-dial is a face -- a plate, its texture, its colour, and a slot if
+         * it is a slider -- and prints no scale: the hand aligned to it prints its own (its Scale) */
+        const form = sel.form === 'slider' ? 'slider' : 'round', subG = fc && fc.lay && fc.lay.subs.find((q) => q.id === sel.id);
+        selFields.push(Ch('Form', form, [{ v: 'round', label: 'Round' }, { v: 'slider', label: 'Slider \u00b7 a slot' }], (v) => this.setComp(sel.id, { form: v === 'round' ? null : v })));
         if (form === 'slider') {
           const ang = sel.slideAngle == null ? 0 : +sel.slideAngle;
           selFields.push(Ch('Direction', [0, 180, 90, 270].includes(ang) ? String(ang) : '', [{ v: '0', label: 'Left \u2192 right' }, { v: '180', label: 'Right \u2192 left' }, { v: '90', label: 'Top \u2192 bottom' }, { v: '270', label: 'Bottom \u2192 top' }], (v) => this.setComp(sel.id, { slideAngle: +v })));
@@ -3828,22 +3980,12 @@ class Component extends DCLogic {
           Cx('Slot frame', 'slotStyle', [{ v: 'bevel', label: 'Bevelled' }, { v: 'frame', label: 'Framed' }, { v: 'lip', label: 'Lit lip' }, { v: 'plain', label: 'Plain cut' }], 'bevel');
           R('Slot width', 'slotW', 5, 30, 0.5, (v) => (+v).toFixed(1) + 'px', subG && subG.slide ? +subG.slide.sw.toFixed(1) : 8);
           Cx('Slot shows', 'slotFloor', [{ v: 'dial', label: 'The dial below' }, { v: 'movement', label: 'The movement' }], 'dial');
-        } else {
-          Cx('Direction', 'tdir', [{ v: 'cw', label: 'Clockwise' }, { v: 'ccw', label: 'Anticlockwise' }], 'cw');
-          if (form === 'fan') {
-            R('Start', 'fanStart', 0, 359, 1, (v) => v + '\u00b0', 270);
-            R('Sweep', 'fanSpan', 20, 330, 1, (v) => v + '\u00b0', 180);
-          }
         }
-        selFields.push(mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'cal', label: this.state.calib && this.state.calib.id === sel.id ? 'Click on the dial\u2026 (Esc cancels)' : 'Set from the art', bg: '#1c2330', bd: this.state.calib && this.state.calib.id === sel.id ? '#58a6ff' : '#2b3540', fg: '#e6edf3', pick: () => this.startCalib({ kind: 'face', id: sel.id, form }) }] }),
-          Nt('', form === 'slider' ? 'Set from the art: click where the track starts (its lowest value), then where it ends.' : form === 'fan' ? 'Set from the art: click where the arc reads its lowest value, then its highest, going the way the face runs.' : 'Set from the art: click where the scale reads zero, then a later mark; the face turns and runs to match.'));
+        selFields.push(Ch('Rim', sel.rim ? 'on' : 'off', [{ v: 'off', label: 'None' }, { v: 'on', label: 'Hairline' }], (v) => this.setComp(sel.id, { rim: v === 'on' ? 1 : null })));
         // D34: a pointer-capable subdial defaults to the pointer — a bare hand needs
         // no per-tick bank. Plates stays selectable, and a HOSTED subdial defaults to
         // plates: the punch belongs to the host tile and a pointer row carries none.
         // The chip shows the baker's own predicate, so the default is never display-only.
-        if (E.POINTER_SCALES[sel.scale] && form === 'round')
-          Cx('Drive', 'carrier', opt(E.SUB_CARRIERS),
-             (window.GorbBake && GorbBake.pointerDefault3(sel, D.comps)) ? 'pointer' : 'plates');
         if (form === 'round') R('Open centre', 'open', 0, 0.8, 0.05, (v) => (v ? Math.round(v * 100) + '%' : 'closed'));
         R('Height', 'height', -1.5, 2, 0.05, (v) => (v < 0 ? 'sunk ' + (-v).toFixed(2) : v === 0 ? 'flush' : 'raised ' + v.toFixed(2)), 1);
         if (sel.style === 'carbon') R('Weave angle', 'weaveAngle', 0, 90, 1, (v) => v + '°', +D.weaveAngle || 0);
@@ -3853,30 +3995,13 @@ class Component extends DCLogic {
         selFields.push(Sw('Colour', cv, E.COLOR_GROUPS.classic, setC, [{ label: 'Match dial', text: '=', bg: '#1c2330', bd: cv === 'match' ? '#e6edf3' : '#2b3540', pick: () => setC('match') }]));
         selFields.push(Sw('Vivid', cv, E.COLOR_GROUPS.vivid, setC));
         selFields.push(Co('Custom', E.isHex(cv) ? cv : null, (v) => setC(v === 'auto' ? 'match' : v), 'Preset'));
-        if (sel.scale !== 'none') {
-          selFields.push(H('Subdial display'));
-          selFields.push(Sl('Display', sel.tstyle || 'classic', opt(E.SUB_DISPLAYS), set('tstyle')));
-          selFields.push(Co('Text colour', sel.tcolor, set('tcolor'), 'Auto'));
-          Sx('Typeface', 'tfont', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)]);
-          if (!sel.tfont) selFields[selFields.length - 1] = Sl('Typeface', 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], set('tfont'));
-          Cx('Weight', 'tweight', [{ v: 'bold', label: 'Bold' }, { v: 'regular', label: 'Regular' }, { v: 'italic', label: 'Italic' }], 'bold');
-          Cx('Orientation', 'torient', [{ v: 'upright', label: 'Upright' }, { v: 'radial', label: 'Radial' }], 'upright');
-          R('Text size', 'tsize', 0.6, 1.6, 0.05, (v) => Math.round(v * 100) + '%', 1);
-        }
-        // D43 P5d: the look a hand placed on this face starts from; each hand follows it
-        // until it names its own style or finish
-        const nh = D.comps.filter((c) => c.type === 'hand' && c.host === sel.id).length;
-        selFields.push(H('Hands on it'),
-          Sl('Style', sel.hstyle || 'auto', [{ v: 'auto', label: 'Follow the dial' }, ...opt(E.HAND_STYLES)], set('hstyle')),
-          Sl('Finish', sel.hfinish || 'auto', [{ v: 'auto', label: 'Follow the dial' }, ...opt(E.HAND_FINISHES)], set('hfinish')),
-          Nt('', nh ? nh + ' hand' + (nh > 1 ? 's' : '') + ' on this sub-dial follow' + (nh > 1 ? '' : 's') + ' these unless set otherwise in the hand\u2019s own panel.' : 'No hand on it yet: add one from Parts while this sub-dial is selected.'));
       }
       if (sel.type === 'window') {
         // D43 P5d.3d: a rendered display of text -- the date, day and month read on wheels now
         {
           selFields.push(Tx('Format', sel.fmt == null ? 'ddd DD MMM' : sel.fmt, set('fmt')));
           Cx('Case', 'fcase', [{ v: 'upper', label: 'UPPER' }, { v: 'asis', label: 'As written' }, { v: 'lower', label: 'lower' }], 'upper');
-          selFields.push(Nt('Preview', E.fmtDate(sel.fmt == null ? 'ddd DD MMM' : sel.fmt, this.now(), sel.fcase) || '—'));
+          selFields.push(K.Rd('Preview', E.fmtDate(sel.fmt == null ? 'ddd DD MMM' : sel.fmt, this.now(), sel.fcase) || '—'));
           selFields.push(Nt('Tokens', 'YYYY YY · MMMM MMM MM M · DD D Do · DDDD DDD (day of year) · dddd ddd dd · d E (weekday no.) · WW W (ISO week) · Q · strftime: %Y %y %B %b %m %d %-d %e %j %A %a %u %V %U · [text] stays literal'));
         }
         /* The aperture is the author's, not a consequence of the data: a cyclops over a
@@ -3887,13 +4012,13 @@ class Component extends DCLogic {
         Sx('Aperture', 'wshape', [{ v: 'rect', label: 'Square aperture' }, { v: 'circle', label: 'Round aperture' }]);
         Sx('Disc', 'disc', [{ v: 'auto', label: 'Match dial' }, { v: 'light', label: 'Light' }, { v: 'dark', label: 'Dark' }]);
         selFields.push(Co('Background', sel.discColor, set('discColor'), 'Disc'), Co('Text colour', sel.textColor, set('textColor'), 'Auto'));
-        selFields.push(Sl('Typeface', sel.wfont || 'dial', [{ v: 'dial', label: 'Same as dial' }, ...opt(E.TYPEFACES)], set('wfont')));
+        selFields.push(Sl('Typeface', sel.wfont || 'dial', [{ v: 'dial', label: 'Default' }, ...opt(E.TYPEFACES)], set('wfont')));
       }
       if (sel.type === 'opening') {
         Sx('Through it', 'show', [{ v: 'free', label: 'Whatever is there' }, { v: 'balance', label: 'Follow the balance (escapement)' }, ...feats.filter((f) => f.id !== 'balance').map((f) => ({ v: f.id, label: 'Aim train at ' + f.name.toLowerCase() }))]);
         const g = fc && fc.lay.G[sel.id];
         if (sel.show !== 'free' && sel.show !== 'balance' && g && Math.hypot(g.x - 233, g.y - 233) < 4) Sx('Place it', 'hour', Array.from({ length: 12 }, (_, k) => ({ v: String(k + 1), label: 'at ' + (k + 1) + ' o’clock' })), true);
-        if (sel.show !== 'free' && sel.show !== 'balance' && tr.by && tr.by !== sel.id) selFields.push(Nt('Note', 'Only the first aimed opening (#' + num(tr.by) + ') turns the train'));
+        if (sel.show !== 'free' && sel.show !== 'balance' && tr.by && tr.by !== sel.id) selFields.push(Nt('Note', 'Only the first aimed opening (' + nameOf(tr.by) + ') turns the train'));
       }
     }
 
@@ -3983,33 +4108,17 @@ class Component extends DCLogic {
     };
     if (ready && s.tab === 'dial') {
       const ud = (k) => (v) => this.upd((d) => { d[k] = v; });
-      const pr = D.print || 'roman', col = D.color || 'cream', surf = D.surface || 'enamel';
+      const col = D.color || 'cream', surf = D.surface || 'enamel';
       // the whole-dial slot draws the face itself, so say so above the controls it overrides
       if (D.wdArt && E.assetReady(D.wdArt)) fields.push(Nt('', 'A whole-dial image is on (Whole dial, below): the colour, surface, print, numerals, markers and the painted surface and markings slots are not drawn while it is; wear still lies over it. Remove that image to bring them back.'));
       fields.push(H('Face'),
         // D43 P5d.2: the dial's own direction -- its chapter and ring print mirrored, its hands following
         Ch('Direction', D.dir === 'ccw' ? 'ccw' : 'cw', [{ v: 'cw', label: 'Clockwise' }, { v: 'ccw', label: 'Anticlockwise' }], (v) => this.upd((d) => { if (v === 'ccw') d.dir = 'ccw'; else delete d.dir; })),
-        Sl('Chapter ring', pr, opt(E.PRINTS), ud('print')),
-        Sl('Numerals', D.numerals || 'all', opt(E.NUMERALS), ud('numerals')));
-      if (E.HAS_NUMS.includes(pr) && D.numerals !== 'none') fields.push(Ch('Orientation', D.numOrient || (pr === 'roman' ? 'radial' : 'upright'), [{ v: 'upright', label: 'Bottom aligned' }, { v: 'radial', label: 'Circular' }], ud('numOrient')));
-      fields.push(Sl('Typeface', D.font || E.RING_FONT(pr), opt(E.TYPEFACES), ud('font')));
-      if (pr !== 'none' && D.numerals !== 'none') {
-        const plots = pr === 'diver' || pr === 'framed';
-        if (pr !== 'baton') fields.push(Co(plots ? 'Plot colour' : 'Numeral colour', D.numColor, ud('numColor'), plots ? 'Lume' : 'Auto · ' + (fc && fc.dialEn && fc.dialEn.dark ? 'light' : 'dark')));
-        if (plots) fields.push(Co('Plot rim', D.plotRim, ud('plotRim'), 'Silver'));
-        const ns = D.numScale == null ? 1 : +D.numScale;
-        fields.push(Rg(plots ? 'Plot size' : pr === 'baton' || pr === 'minimal' ? 'Baton size' : 'Numeral size', ns, 0.5, 2, 0.05, ud('numScale'), ns.toFixed(2) + '×'));
-        if (pr !== 'baton') fields.push(Sl('Finish', D.numStyle || 'print', opt(E.COMP_STYLES.flare), ud('numStyle')));
-        const sz = (k) => (D[k] == null ? 1 : +D[k]);
-        fields.push(H('The 12 · and 3, 6, 9'));
-        const hasText = E.HAS_NUMS.includes(pr), same = [{ v: 'same', label: 'Same as dial' }, ...opt(E.TYPEFACES)];
-        if (hasText) fields.push(Sl('12 typeface', D.n12Font || 'same', same, ud('n12Font')), Sl('3·6·9 typeface', D.nQFont || 'same', same, ud('nQFont')));
-        if (pr !== 'baton') fields.push(Co('12 colour', D.n12Color, ud('n12Color'), 'Same'));
-        fields.push(Rg('12 size', sz('n12Scale'), 0.5, 2, 0.05, ud('n12Scale'), sz('n12Scale').toFixed(2) + '×'));
-        if (pr !== 'baton') fields.push(Co('3·6·9 colour', D.nQColor, ud('nQColor'), 'Same'));
-        fields.push(Rg('3·6·9 size', sz('nQScale'), 0.5, 2, 0.05, ud('nQScale'), sz('nQScale').toFixed(2) + '×'),
-          Nt('', 'Multiplied on top of the overall size.'));
-      }
+        Nt('', 'The way a hand runs unless it is set to run its own way; its scale runs with it.'));
+      // owner, 2026-11-06: the dial prints no scale; each hand prints its own (its pane, Scale)
+      const printers = D.comps.filter((c) => c.type === 'hand' && c.scale && c.scale.style);
+      fields.push(K.Rd('Scales', printers.length ? printers.length + ' printed by hands' : 'none',
+        'A scale is drawn by the hand that reads it: select a hand, then Scale. Hands stack, so each can print its own at its own distance, or none.'));
       const ow = D.openwork || 'none', ov = (k, d) => (D[k] == null ? d : +D[k]);
       fields.push(H('Openwork'), Sl('Skeleton', ow, opt(E.OPENWORK), ud('openwork')));
       if (ow !== 'none') fields.push(
@@ -4020,30 +4129,6 @@ class Component extends DCLogic {
         Rg('Depth', ov('owDepth', 1), 0, 2.5, 0.05, ud('owDepth'), ov('owDepth', 1).toFixed(2) + '×'),
         ...(ow !== 'ring' ? [Ch('Inlay', +D.owInlay ? 'on' : 'off', [{ v: 'off', label: 'Plain bars' }, { v: 'on', label: 'Sparkle inlay' }], (v) => this.upd((d) => { d.owInlay = v === 'on' ? 1 : 0; }))] : []),
         Nt('', 'Openings and subdials get a rim of dial left around them automatically.'));
-      // ONE additional hand, chosen by what it indicates. The ring it reads is derived from that
-      // choice, so this group holds the whole decision -- the pointer, whether its scale prints,
-      // and how that scale is set -- and no half of it lives on another tab.
-      const ring = D.perim && E.PERIMS[D.perim] ? D.perim : 'none', pkv = D.perimShrink == null ? 0.88 : +D.perimShrink, shown = this.ringShown(D);
-      const readers = D.comps.filter((c) => c.type === 'hand' && (c.host || 'dial') === 'dial' && E.HAND_RING[c.shows] === ring).map((c) => E.HAND_SHOWS[c.shows].toLowerCase());
-      fields.push(H('Outer ring'), Sl('Ring', ring, this.ringOpts(E), (v) => this.setRing(v)));
-      if (ring !== 'none') fields.push(Nt('', readers.length ? 'Read by the ' + readers.join(' and ') + ' hand' + (readers.length > 1 ? 's' : '') + ' on the dial: ' + (readers.length > 1 ? 'their tips land' : 'its tip lands') + ' on the ticks.'
-        : 'No hand on the dial reads it yet: add a hand under Parts and set it to show ' + (ring === 'hours24' ? '24-hour or GMT' : E.PERIMS[ring].toLowerCase()) + '.'));
-      if (shown) {
-        const pss = D.perimSize == null ? 1 : +D.perimSize, pgD = E.perimGeom(D);
-        const mm = pgD ? pgD.fs * ((E.MM_PER_PX || 0.0954)) : 0;
-        fields.push(
-          Rg('Chapter pull-in', pkv, 0.70, 1.00, 0.01, ud('perimShrink'), pkv.toFixed(2) + '×'),
-          Nt('', 'The ring takes the rim, so the chapter print, its numerals and the hour, minute and seconds hands all scale inward by this factor to clear it. Pull in further for a wider ring; 1.00× hides it.'),
-          Co('Ring colour', D.perimColor, ud('perimColor'), 'Auto · same as numerals'),
-          Sl('Ring typeface', D.perimFont || 'same', [{ v: 'same', label: 'Same as dial' }, ...opt(E.TYPEFACES)], ud('perimFont')),
-          Ch('Orientation', D.perimOrient || 'upright', [{ v: 'upright', label: 'Bottom aligned' }, { v: 'radial', label: 'Circular' }], ud('perimOrient')),
-          Rg('Label size', pss, 0.6, 2.6, 0.05, ud('perimSize'), mm.toFixed(2) + ' mm'),
-          Ch('Position', D.perimPos || 'ontick', [{ v: 'ontick', label: 'On the lines' }, { v: 'between', label: 'Between the lines' }], ud('perimPos')),
-          ...this.ringStartFields(E, D, { Ch, Rg, Nt, ud }),
-          Nt('', 'The band the labels print in grows with Label size, so the seven day names can be spread across the rim without touching the chapter print. Between the lines moves the labels, and the hand that reads them, into the middle of each division. The figure beside Label size is the height that print really gets on the panel — a dial px is ' + ((E.MM_PER_PX || 0.0954)).toFixed(3) + ' mm there — and below about 1.4 mm the labels stop reading at arm\'s length, however comfortable they look at 466 px on a monitor.'));
-      } else if (ring !== 'none') fields.push(
-        Rg('Chapter pull-in', pkv, 0.70, 1.00, 0.01, ud('perimShrink'), pkv.toFixed(2) + '×'),
-        Nt('', 'At 1.00× the chapter keeps the whole face and the ring has nowhere to print. Pull in to show it.'));
       fields.push(H('Colour'), Sw('Classic', col, E.COLOR_GROUPS.classic, ud('color')), Sw('Vivid', col, E.COLOR_GROUPS.vivid, ud('color')),
         Co('Custom', E.isHex(col) ? col : null, (v) => ud('color')(v === 'auto' ? 'cream' : v), 'Preset', 'dial'),
         H('Surface'), Sl('Finish', surf, opt(E.SURFACES), ud('surface')));
@@ -4087,7 +4172,7 @@ class Component extends DCLogic {
         Rg('Stains', W.stains, 0, 1.5, 0.05, ud('stains'), Math.round(W.stains * 100) + '%'),
         Rg('Dust & scratches', W.dust, 0, 1.5, 0.05, ud('dust'), Math.round(W.dust * 100) + '%'));
     }
-    if (ready && s.tab === 'hands') {
+    if (ready && (s.tab === 'hands' || s.tab === 'timing')) {
       const HB = this.budget();
       /* Sweep is always offered: the seconds hand motion is a look, and the
        * tempo is decided separately by the row price below. Picking sweep asks
@@ -4109,19 +4194,20 @@ class Component extends DCLogic {
        * ships this figure instead of bakeClock3's 1 Hz floor, which is the fix for
        * the Station report: the Motion row read 'Sweep', the glass beat once a
        * second, and the only way to find out was the log. */
-      const beat = c0.tick === 'sweep' ? Math.min(255, Math.max(1, Math.min(HB.fps, HB.dev.pace) | 0)) + ' bps sweep'
+      const beat = c0.tick === 'sweep' ? Math.min(255, Math.max(1, (HB.dev.planned ? HB.dev.pace : Math.min(HB.fps, HB.dev.pace)) | 0)) + ' bps sweep'
                                        : (Math.max(1, +c0.tick | 0) + ' ticks / s' + (HB.dev.pace && HB.dev.need && HB.dev.pace < HB.dev.need ? ' (the device holds ~' + HB.dev.pace + ')' : ''));
-      fields.push(H('Second hand'), mk({ ...Ch('Motion', c0.tick, tickOpts, cf('tick')), valText: F + ' fps · ' + B + ' frames' + (DEV < F ? ' · device ~' + DEV : '') + ' · ships ' + beat
-          // The last bake's own price: carrier class, estimate, and the rung the pick lands on.
-          + (this._est3 ? ' · last bake ' + this._est3.carrier + ', est ' + this._est3.est_fps + ' fps at rung ' + this._est3.rung : '') }),
+      if (s.tab === 'timing') fields.push(H('On the orb'), K.Rd('Frame rate', HB.pricing ? 'pricing the plans\u2026' : (HB.dev.planned ? rateTxt + (HB.dev.prepaint ? ' \u00b7 pre-painted' : '') : F + ' fps' + (DEV < F ? ' \u00b7 the orb holds ~' + DEV : '')) + ' \u00b7 ships ' + beat,
+          HB.dev.why || 'Available frame rates depend on how much of the dial opening is visible.'),
+        ...(this._est3 ? [K.Rd('Last send', 'about ' + this._est3.est_fps + ' fps on the orb', 'What the last bake\u2019s own bytes price at on the orb.')] : []),
+        H('Second hand'), Ch('Motion', c0.tick, tickOpts, cf('tick')),
         /* §49.15: the plans the last bake's bytes can hold (gears on hands, none beaten on both),
          * and the Favour that picks one. A ticking hand moves on its beats whatever the grid,
          * so there the fastest gears are the one plan and nothing is offered. */
         ...(() => {
           const P = HB.plans, G4 = window.GorbBake, nm = (x) => (x.gears ? x.gears + ' fps gears · ' : '') + x.fps + ' fps hands' + (x.prepaint ? ' · pre-painted' : '');
           if (c0.tick !== 'sweep' || !G4 || !G4.planKey4) return [];
-          if (!P) return [Nt('Plan', 'Pricing every gears-and-sweep plan the orb can hold for this dial\u2026 (once the movement settles)')];
-          if (P.length < 2) return [Nt('Plan', nm(P[0] || HB.plan) + ' — the only plan this dial fits, so there is nothing to favour.')];
+          if (!P) return [K.Rd('Plan', 'Pricing every gears-and-sweep plan the orb can hold for this dial\u2026 (once the movement settles)')];
+          if (P.length < 2) return [K.Rd('Plan', nm(P[0] || HB.plan) + ' — the only plan this dial fits, so there is nothing to favour.')];
           const auto = this.planOf4(this._plan4, Object.assign({}, c0, { plan: '' }));
           return [Ch('Favour', c0.favour || 'sweep', [{ v: 'sweep', label: 'Smooth sweep' }, { v: 'balanced', label: 'Balanced' }, { v: 'gears', label: 'Smooth gears' }], cf('favour')),
             Sl('Plan', c0.plan && P.some((x) => G4.planKey4(x) === c0.plan) ? c0.plan : '', [{ v: '', label: 'By favour · ' + nm(auto) }].concat(P.map((x) => ({ v: G4.planKey4(x), label: nm(x) }))), cf('plan')),
@@ -4136,12 +4222,13 @@ class Component extends DCLogic {
           const val = (c) => { const m = c.motion || {}, cd = m.cadence || 'inherit'; return cd === 'step' ? 's' + (+m.steps || 1) : cd === 'jump' ? 's1' : cd; };
           const put = (c) => (v) => this.setMotion(c.id, v === 'inherit' ? { cadence: 'inherit', steps: undefined } : v === 'sweep' ? { cadence: 'sweep', steps: undefined }
             : v === 's1' ? { cadence: 'jump', steps: undefined } : { cadence: 'step', steps: +v.slice(1) });
-          const rows = secs.map((c) => Ch('#' + num(c.id) + (c.host && c.host !== 'dial' ? ' on ' + compTitle((D.comps || []).find((q) => q.id === c.host) || {}) : ' · centre'), val(c),
+          const rows = secs.map((c) => Ch(partName(c) + (c.host && c.host !== 'dial' ? ' on ' + nameOf(c.host) : ' · centre'), val(c),
             [{ v: 'inherit', label: 'Dial' }, { v: 'sweep', label: 'Sweep' }, { v: 's1', label: '1/s' }, { v: 's2', label: '2/s' }, { v: 's4', label: '4/s' }, { v: 's8', label: '8/s' }], put(c)));
           const rates = secs.map(val).filter((v) => /^s[2-9]/.test(v));
           return [H('Each seconds hand')].concat(rows, new Set(rates).size > 1 ? [Nt('', 'Two seconds hands step at different rates: the dial keeps one stepping rate, so the bake refuses this. Let one sweep, tick once a second, or step at the other\u2019s rate.')] : []);
         })(),
-        Nt('', HB.dev.why || 'Available frame rates depend on how much of the dial opening is visible. The Motion choice ships on the wire as that beat, whatever the dial is: an animated plate or carriage tempo binds a sweep to its own fastest frame rate, and a tick that outruns the delivered tempo is re-quantised to it on the glass.'),
+        H('Balance'), Ch('Balance beats', String(HB.fps < 12 && +c0.balance > 2 ? 2 : c0.balance), [{ v: '1', label: '1 / s' }, { v: '2', label: '2 / s' }].concat(HB.fps >= 12 ? [{ v: '4', label: '4 / s' }] : []), cf('balance')));
+      if (s.tab === 'hands') fields.push(
         H('Drop shadow · hand twins and plate relief'),
         Ch('Cast shadows', (+c0.shMove > 0.01 && +c0.shOp > 0.01) ? 'on' : 'off', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.castShadowsOn(v === 'on')),
         /* §49.15: the seconds hand is always smoothed on the glass; its shadow turns every frame
@@ -4151,7 +4238,7 @@ class Component extends DCLogic {
         Ch('Plate relief', +c0.shRelief === 0 ? 'off' : 'on', [{ v: 'off', label: 'Off' }, { v: 'on', label: 'On' }], (v) => this.staticShadowsOn(v === 'on')),
         Nt('', 'Cast shadows are the dark twins that turn with the hands: the watch repaints them every tick a hand moves, so switching them off buys pace. Plate relief is a sub-dial\u2019s own drop, baked into the art: it adds no row, and on a face in the plate it costs nothing per tick. A face lifted above the hands carries its drop in its own still row, so the device repaints that halo with it whenever a hand moves under it, and the pace estimate prices it. The two switches are independent; Opacity below scales both.'),
         Ch('Direction', +c0.shAngle >= 0 ? 'fixed' : 'auto', [{ v: 'auto', label: 'Follow outer light' }, { v: 'fixed', label: 'Set angle' }], (v) => this.setCfg('shAngle', v === 'auto' ? -1 : fc ? fc.shadow.deg : 135)),
-        ...(+c0.shAngle >= 0 ? [Rg('Angle', +c0.shAngle, 0, 359, 1, cf('shAngle'), c0.shAngle + '°')] : [Nt('Angle', (fc ? fc.shadow.deg : 0) + '° — away from the outer light (Light tab)')]),
+        ...(+c0.shAngle >= 0 ? [Rg('Angle', +c0.shAngle, 0, 359, 1, cf('shAngle'), c0.shAngle + '°')] : [K.Rd('Angle', (fc ? fc.shadow.deg : 0) + '° — away from the outer light (Light tab)')]),
         Rg('Distance', +c0.shDist, 0, 3, 0.05, cf('shDist'), (+c0.shDist).toFixed(2) + '×'),
         Rg('Softness', +c0.shBlur, 0, 3, 0.05, cf('shBlur'), (+c0.shBlur).toFixed(2) + '×'),
         Rg('Opacity', +c0.shOp, 0, 2, 0.05, cf('shOp'), Math.round(+c0.shOp * 100) + '%'),
@@ -4175,16 +4262,10 @@ class Component extends DCLogic {
         Nt('', 'Distances from the centre. Pull them in to ring the carriage with a dial.'));
       if (T.cage) fields.push(H('Tourbillon'), Rg('Cage distance', +c0.cageD, 50, 150, 1, cf('cageD'), c0.cageD + 'px'), Nt('', 'Distance from the centre. Escapement openings follow it.'));
       fields.push(H('Placement'));
-      if (tr.by) fields.push(Nt('Train angle', tr.deg + '° — set by #' + num(tr.by) + ' ' + compTitle(D.comps.find((c) => c.id === tr.by) || {}) + '. Move that opening to turn the train.'));
+      if (tr.by) fields.push(K.Rd('Train angle', tr.deg + '° — set by ' + nameOf(tr.by) + '. Move that opening to turn the train.'));
       else fields.push(Rg('Train angle', +c0.trainAngle || 0, 0, 359, 1, cf('trainAngle'), (+c0.trainAngle || 0) + '°'));
       const HB = this.budget();
-      const balV = String(HB.fps < 12 && +c0.balance > 2 ? 2 : c0.balance);
-      const balOpts = [{ v: '1', label: '1 / s' }, { v: '2', label: '2 / s' }].concat(HB.fps >= 12 ? [{ v: '4', label: '4 / s' }] : []);
-      fields.push(H('Loop'),
-        Nt('Frame rate', F + ' fps' + (HB.dev.pace < F ? ' · device ~' + HB.dev.pace + ' fps' : '') + ' — ' + (HB.dev.why || (HB.measured
-          ? 'available frame rates depend on how much of the dial opening is visible'
-          : 'measuring the geartrain row footprint…'))),
-        Ch('Balance beats', balV, balOpts, cf('balance')));
+      // the loop's rate and the balance's beat are the dial's timing: Dial \u203a Timing (owner, 2026-11-05)
       fields.push(H('Backdrop', 'move-backdrop'), Sl('Plate', c0.plate, [{ v: 'train', label: 'Movement default · ' + E.PLATES[T.plate] }, ...opt(E.PLATES).filter((o) => o.v !== 'train')], cf('plate')),
         ...(() => { const pl = c0.plate === 'train' ? T.plate : c0.plate; return pl === 'stripes' ? [Rg('Stripe angle', +c0.plateAngle, 0, 179, 1, cf('plateAngle'), c0.plateAngle + '°'), Rg('Stripe width', +c0.plateScale, 0.4, 3, 0.05, cf('plateScale'), (+c0.plateScale).toFixed(2) + '×')]
           : pl === 'carbon' ? [Rg('Weave angle', +c0.plateAngle % 90, 0, 90, 1, cf('plateAngle'), (+c0.plateAngle % 90) + '°'), Rg('Weave size', +c0.plateScale, 0.4, 3, 0.05, cf('plateScale'), (+c0.plateScale).toFixed(2) + '×')]
@@ -4232,7 +4313,7 @@ class Component extends DCLogic {
         Sl('Voice', sd.tick || '', [{ v: '', label: 'Silent' }].concat(voices.map((v) => ({ v, label: SE.VOICES[v].label })))
           .concat(sd.up.tick_loop ? [{ v: 'upload', label: 'Uploaded · ' + sd.up.tick_loop.name }] : []),
           (v) => this.sndUpd((d) => { d.tick = v || null; })),
-        Nt('Beat', (rr.sweep ? 'The seconds hand sweeps, so the loop beats with the balance: ' : 'The seconds hand steps ')
+        K.Rd('Beat', (rr.sweep ? 'The seconds hand sweeps, so the loop beats with the balance: ' : 'The seconds hand steps ')
           + rr.rate + ' time' + (rr.rate > 1 ? 's' : '') + ' a second' + (rr.sweep ? '' : ', so the loop does too')
           + '. Change it on the Movement tab (Motion and Balance beats).'),
         play('tick_loop'));
@@ -4264,7 +4345,7 @@ class Component extends DCLogic {
       fields.push(H('Listen & budget'),
         Ch('Speaker', s.sndSim ? 'orb' : 'full', [{ v: 'orb', label: 'Orb speaker' }, { v: 'full', label: 'Full range' }], (v) => this.setState({ sndSim: v === 'orb' })),
         Ch('Variation', '', [{ v: 'r', label: '⟳ Re-roll the generated sounds' }], () => this.sndUpd((d) => { d.seed = 1 + Math.floor(Math.random() * 1e6); })),
-        Nt('Bytes', (rows.length ? rows.join(' · ') + ' — ' : 'No sounds — ') + (total / 1024 / 1024).toFixed(2) + ' MB of the theme’s ' + (G.ART_CAP / 1024 / 1024).toFixed(1) + ' MB'));
+        K.Rd('Bytes', (rows.length ? rows.join(' · ') + ' — ' : 'No sounds — ') + (total / 1024 / 1024).toFixed(2) + ' MB of the theme’s ' + (G.ART_CAP / 1024 / 1024).toFixed(1) + ' MB'));
       if (s.sndMsg) fields.push(Nt('', s.sndMsg));
     }
     if (ready && s.tab === 'case') {
@@ -4288,10 +4369,11 @@ class Component extends DCLogic {
 
     const slots = fc ? fc.handOrder.slice().reverse() : [];
     // D43 P5c: a hand is named by what it shows and where it turns
-    const handLabel = (id) => { const hc = this.handComp(id, D) || {}, ho = hc.host && hc.host !== 'dial' ? D.comps.find((c) => c.id === hc.host) : null; return ((E && E.HAND_SHOWS[hc.shows]) || 'Hand') + ' hand' + (ho ? ' · on #' + num(ho.id) + ' ' + compTitle(ho).toLowerCase() : ''); };
+    const handLabel = (id) => partName(this.handComp(id, D) || { type: 'hand' });
+    const hd0 = this.handDef ? this.handDef() : {}, setStyle = hd0.style, setFinish = hd0.finish;
     const subHosts = D.comps.filter((c) => c.type === 'subdial');
     return {
-      metaLabel: '466 × 466 · ' + (DEV < F ? '~' + DEV + ' fps (bank ' + F + ')' : F + ' fps') + ' · ' + B + '-frame bank · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
+      metaLabel: '466 × 466 · ' + rateTxt + PRC + ' · ' + B + '-frame bank · ' + (PR ? PR.name : '') + (s.designs[s.dial] ? ' (edited)' : '') + (T ? ' · ' + T.name : ''),
       ...this.viewVals(),
       mainRef: this.mainRef, paneRef: this.paneRef, cursor: this.state.pickKey ? 'crosshair' : this.drag ? 'grabbing' : 'pointer',
       onDown: (e) => this.onDown(e), onMove: (e) => this.onMove(e), onUp: () => this.onUp(), stageDown: (e) => this.stageDown(e),
@@ -4302,9 +4384,9 @@ class Component extends DCLogic {
       clearOp: s.sel != null || s.selKind != null ? 1 : 0.45,
       pickGuide: () => this.cycleGuide(),
       g: (() => { const lab = 'Guide: ' + s.guide, lit = s.guide !== 'off'; return { label: lab, cls: lit ? 'on' : '', bg: lit ? '#1c2330' : '#1c2330', bd: lit ? '#58a6ff' : '#2b3540', fg: lit ? '#e6edf3' : '#8b98a5' }; })(),
-      frameLabel: 'Frame ' + pad(s.frame + 1) + ' / ' + B + '  (' + (DEV < F ? '~' + DEV + ' fps · bank ' + F : F + ' fps') + ')',
+      frameLabel: 'Frame ' + pad(s.frame + 1) + ' / ' + B + '  (' + rateTxt + PRC + ')',
       playLabel: s.playing ? 'Pause' : 'Play',
-      slowLabel: s.slow ? Math.max(1, Math.round(DEV / 5)) + ' fps' : (DEV < F ? '~' + DEV + ' fps · bank ' + F : DEV + ' fps'),
+      slowLabel: s.slow ? Math.max(1, Math.round(DEV / 5)) + ' fps' : rateTxt,
       // step the BANK: the frames on the glass are the bank's, while F only
       // paces them, so wrapping here by F would strand half of a deep bank
       prev: stop((f) => (f + B - 1) % B), next: stop((f) => (f + 1) % B),
@@ -4315,7 +4397,7 @@ class Component extends DCLogic {
       tabs: this.TABS.map(([id, label]) => ({ label, bg: s.tab === id ? '#1f3a5f' : 'transparent', fg: s.tab === id ? '#e6edf3' : '#8b98a5', pick: () => this.setState({ tab: id }) })),
       isDial: s.tab === 'dial', isComps: s.tab === 'comps', isHands: s.tab === 'hands', isMove: s.tab === 'move', isCase: s.tab === 'case', isExport: s.tab === 'export',
       fields, hasSel: !!sel, noSel: !sel, hasSelHead: !!sel && s.tab === 'comps',
-      resetHands: () => this.upd((d) => { d.comps.forEach((hc) => { if (hc.type !== 'hand') return; delete hc.style; delete hc.finish; delete hc.len; delete hc.wid; delete hc.sec; delete hc.lume; delete hc.shade; }); }), selTitle: sel ? '#' + num(sel.id) + ' ' + compTitle(sel) : '',
+      resetHands: () => this.upd((d) => { d.comps.forEach((hc) => { if (hc.type !== 'hand') return; delete hc.style; delete hc.finish; delete hc.len; delete hc.wid; delete hc.sec; delete hc.lume; delete hc.shade; }); }), selTitle: sel ? partName(sel) : '',
       dials: (ready ? Object.keys(E.PRESETS) : []).map((id) => ({
         ...on(id === s.dial), ref: this.cb('dialEls', id, (i) => this.drawDialThumb(i)),
         name: E.PRESETS[id].name + (s.designs[id] ? ' · edited' : ''), blurb: E.PRESETS[id].blurb,
@@ -4360,62 +4442,63 @@ class Component extends DCLogic {
       })),
       handRows: slots.map((id, i) => {
         const hc = this.handComp(id, D) || {}, isC = (hc.host || 'dial') === 'dial', k = hc.shows, hostFace = isC ? null : D.comps.find((c) => c.id === hc.host);
-        const len = +hc.len || 1, wid = +hc.wid || 1, off = Math.round(+hc.offset || 0);
-        const ringNote = isC && E.HAND_RING[k] ? (E.HAND_RING[k] === D.perim && (D.perimShrink == null || +D.perimShrink < 1)
-          ? 'Its tip lands on the ' + E.PERIMS[D.perim].toLowerCase() + ' ring the dial prints; Length trims it off the ticks.'
-          : 'The dial prints no ' + E.PERIMS[E.HAND_RING[k]].toLowerCase() + ' ring, so the tip stops inside the chapter print. The ring is set on the Dial tab, under Outer ring.') : '';
+        // what the engine draws this hand at, in px (a hand just added names none of its own yet)
+        const hdq = fc && (fc.hands || []).find((q) => q.id === id) || {}, r1 = (v) => Math.round(v * 10) / 10, off = Math.round(+hc.offset || 0);
+        const lenPx = r1(hdq.len != null ? hdq.len : +hc.length || 0), widPx = r1(hdq.wpx != null ? hdq.wpx : +hc.width || 0), capPx = r1(hdq.capR != null ? hdq.capR : +hc.cap || 0);
+        const isMarker = !!(E.MARKERS[hc.style] && hc.style !== 'hand'), markerOpts = Object.entries(E.MARKERS).filter(([v]) => v !== 'hand').map(([v, label]) => ({ v, label: 'Indicator \u00b7 ' + label }));
+        const ringNote = '';
         // A seconds hand takes its shape from the seconds list, not the hand-style list:
         // handParts() ignores `style` once kind is 'second' (only breguet/spade cut a hollow
         // counterweight with it), so a style select on those rows was a dead control. The
         // seconds list takes that slot; isSec/notSec keep the two mutually exclusive.
         const secHand = k === 'second';
         return {
-          label: handLabel(id), meta: 'z ' + (slots.length - i), op: 1, anchor: 'hand-' + id,
+          label: handLabel(id), defaultName: partName(Object.assign({}, hc, { name: '' })), meta: 'z ' + (slots.length - i), op: 1, anchor: 'hand-' + id,
           showsOpts: mark(Object.entries(E.HAND_SHOWS).map(([v, label]) => ({ v, label })), k),
           onShows: (e) => this.setHand(id, { shows: e.target.value }),
-          hostOpts: mark([{ v: 'dial', label: 'The dial’s centre' }].concat(subHosts.map((c) => ({ v: c.id, label: '#' + num(c.id) + ' ' + compTitle(c) }))), hc.host || 'dial'),
-          onHost: (e) => this.setHand(id, { host: e.target.value }),
+          // owner, 2026-11-05: aligned to a centre (the dial's or a sub-dial's) for its arbour
+          // and its layer, and placed about it like a wheel; aligning snaps it onto that centre
+          hostOpts: mark([{ v: 'dial', label: 'The dial’s centre' }].concat(subHosts.map((c) => ({ v: c.id, label: partName(c) }))), hc.host || 'dial'),
+          onHost: (e) => this.setHand(id, { host: e.target.value, angle: null, dist: null }),
+          posAngle: +hc.angle || 0, posDist: +hc.dist || 0,
+          onAngle: (v) => this.setHand(id, { angle: +v || null }), onDist: (v) => this.setHand(id, { dist: +v || null }),
+          canFit: !!hostFace && (hostFace.form === 'slider' || !!+hostFace.rot),
+          fitLabel: hostFace ? (hostFace.form === 'slider' ? 'Fit to its track' : 'Fit to its zero') : '',
+          onFit: () => { if (hostFace) this.setHand(id, E.faceFit(hc, hostFace)); },
           isGmt: k === 'gmt', offset: off, offsetText: off === 0 ? 'local' : (off > 0 ? '+' : '') + off + ' h',
-          // D43 P5d.2: what the face drives, each field followed until set here
+          // the hand's own direction (else the dial's) and zero, and a calibration about its own arbour
           ...(() => {
-            const form = hostFace ? hostFace.form || 'round' : 'round', faceDir = (hostFace ? hostFace.tdir === 'ccw' : D.dir === 'ccw') ? 'ccw' : 'cw';
-            const dirW = { cw: 'clockwise', ccw: 'anticlockwise' }, slider = form === 'slider', fan = form === 'fan';
-            const sG = fc && fc.lay && hostFace ? fc.lay.subs.find((q) => q.id === hostFace.id) : null;
-            const faceSpan = fan ? Math.abs(sG && sG.fan ? sG.fan.span : 180) : slider ? (sG && sG.slide ? sG.slide.len : 0) : 0;
-            const faceStart = fan ? (sG && sG.fan ? sG.fan.start : 270) : 0, cal = this.state.calib && this.state.calib.id === id;
+            const path = (hc.motion && hc.motion.path) || 'rotate', dialDir = D.dir === 'ccw' ? 'ccw' : 'cw';
+            const dirW = { cw: 'clockwise', ccw: 'anticlockwise' }, slides = path === 'slide', cal = this.state.calib && this.state.calib.id === id;
             const numOr = (f) => (e) => this.setHand(id, { [f]: e.target.value === '' ? null : +e.target.value });
             return {
-              dirOpts: mark([{ v: 'auto', label: (slider ? 'Follow the slider · ' + (faceDir === 'ccw' ? 'reversed' : 'as it runs') : 'Follow the ' + (hostFace ? 'sub-dial' : 'dial') + ' · ' + dirW[faceDir]) }, { v: 'cw', label: slider ? 'Along the track' : 'Clockwise' }, { v: 'ccw', label: slider ? 'Against the track' : 'Anticlockwise' }], hc.dir || 'auto'),
+              dirOpts: mark([{ v: 'auto', label: 'Follow the dial · ' + dirW[dialDir] }, { v: 'cw', label: 'Clockwise' }, { v: 'ccw', label: 'Anticlockwise' }], hc.dir || 'auto'),
               onDir: (e) => this.setHand(id, { dir: e.target.value === 'auto' ? null : e.target.value }),
-              markerOpts: mark(Object.entries(E.MARKERS || { hand: 'Hand' }).map(([v, label]) => ({ v, label })), hc.marker || 'hand'),
-              onMarker: (e) => this.setHand(id, { marker: e.target.value === 'hand' ? null : e.target.value }),
-              showStart: !slider, startVal: hc.start == null ? '' : +hc.start, startPh: 'face \u00b7 ' + faceStart + '\u00b0', startUnit: '\u00b0',
-              startTip: fan ? 'Where this hand\u2019s sweep starts, degrees clockwise from 12; blank follows its fan' : 'Turns this hand\u2019s zero, degrees clockwise; blank follows its face',
+              // a turning hand's zero: degrees clockwise from 12 (a sweep and a slide place their own start)
+              showStart: path === 'rotate' || path === 'disc', startVal: hc.start == null ? 0 : +hc.start, startUnit: '\u00b0',
+              startTip: 'Turns this hand\u2019s zero, degrees clockwise from 12',
               onStart: numOr('start'),
-              showSpan: fan || slider, spanLabel: slider ? 'Travel' : 'Sweep', spanVal: hc.span == null ? '' : +hc.span, spanPh: 'face \u00b7 ' + Math.round(faceSpan), spanUnit: slider ? 'px' : '\u00b0',
-              spanTip: slider ? 'How far this hand travels along the slot, px; blank follows the slider' : 'How far this hand sweeps, degrees; blank follows its fan',
-              onSpan: numOr('span'),
-              showCalib: !slider, calibLabel: cal ? 'Click on the dial\u2026 (Esc cancels)' : 'Set from the art',
-              onCalib: () => this.startCalib({ kind: 'hand', id, form }),
+              showCalib: !slides, calibLabel: cal ? 'Click on the dial\u2026 (Esc cancels)' : 'Set from the art',
+              onCalib: () => this.startCalib({ kind: 'hand', id, form: path === 'retrograde' ? 'fan' : 'round' }),
             };
           })(),
           onOffset: (e) => this.setHand(id, { offset: +e.target.value || null }),
           showsNote: ringNote,
-          styleOpts: mark([{ v: 'auto', label: hostFace && hostFace.hstyle ? 'Follow the sub-dial · ' + (E.HAND_STYLES[hostFace.hstyle] || hostFace.hstyle) : 'Default style' }, ...(ready ? opt(E.HAND_STYLES) : [])], hc.style || 'auto'),
-          finOpts: mark([{ v: 'auto', label: hostFace && hostFace.hfinish ? 'Follow the sub-dial · ' + (E.HAND_FINISHES[hostFace.hfinish] || hostFace.hfinish) : 'Default finish' }, ...(ready ? opt(E.HAND_FINISHES) : [])], hc.finish || 'auto'),
+          styleOpts: mark([{ v: 'auto', label: 'Hand set \u00b7 ' + ((E.HAND_STYLES[setStyle] || setStyle) || '') }, ...(ready ? opt(E.HAND_STYLES) : []), ...markerOpts], hc.style || 'auto'),
+          finOpts: mark([{ v: 'auto', label: 'Hand set \u00b7 ' + ((E.HAND_FINISHES[setFinish] || setFinish) || '') }, ...(ready ? opt(E.HAND_FINISHES) : [])], hc.finish || 'auto'),
           onStyle: (e) => this.setHand(id, { style: e.target.value }),
           onFinish: (e) => this.setHand(id, { finish: e.target.value }),
-          len, wid, lenText: Math.round(len * 100) + '%', widText: wid.toFixed(2) + '×',
-          onLen: (e) => this.setHand(id, { len: +e.target.value }),
-          onWid: (e) => this.setHand(id, { wid: +e.target.value }),
+          lenPx, widPx, capPx, isMarker,
+          onLenPx: (v) => this.setHand(id, { length: +v }), onWidPx: (v) => this.setHand(id, { width: +v }), onCapPx: (v) => this.setHand(id, { cap: +v }),
           isSec: secHand,
           notSec: !secHand,
-          secOpts: mark([{ v: 'auto', label: 'Seconds · default (' + ((E && E.SEC_STYLES[D.secStyle || 'classic']) || '') + ')' }, ...(ready ? opt(E.SEC_STYLES) : [])], hc.sec || 'auto'),
-          onSec: (e) => this.setHand(id, { sec: e.target.value }),
-          ...this.motionProps(id, hc, E.DRIVE_DOM && E.DRIVE_DOM[k] ? k : null, ready, mark, hostFace ? hostFace.form || 'round' : 'round'),
-          lumeOpts: mark([{ v: 'auto', label: 'Lume · default (' + (D.handLume && D.handLume !== 'none' ? 'on' : 'none') + ')' }, { v: 'none', label: 'No lume' }, { v: '#cfe8b0', label: 'Lume · green' }, { v: '#e8d6a0', label: 'Lume · old radium' }, { v: '#9fd8ff', label: 'Lume · blue' }, { v: '#f4f1e6', label: 'Lume · white' }, { v: '#ff9a3c', label: 'Lume · orange' }, { v: '#ff7bd5', label: 'Lume · pink' }], hc.lume || 'auto'),
+          // a seconds hand's shapes are the seconds list's; an indicator is a style, so it rides here too
+          secOpts: mark([{ v: 'auto', label: 'Hand set \u00b7 ' + ((E && E.SEC_STYLES[D.secStyle || 'classic']) || '') }, ...(ready ? opt(E.SEC_STYLES) : []), ...markerOpts], isMarker ? hc.style : hc.sec || 'auto'),
+          onSec: (e) => { const v = e.target.value; if (E.MARKERS[v] && v !== 'hand') this.setHand(id, { style: v }); else this.setHand(id, { sec: v, style: isMarker ? null : hc.style }); },
+          ...this.motionProps(id, hc, E.DRIVE_DOM && E.DRIVE_DOM[k] ? k : null, ready, mark),
+          lumeOpts: mark([{ v: 'auto', label: 'Hand set \u00b7 ' + (D.handLume && D.handLume !== 'none' ? 'lume' : 'no lume') }, { v: 'none', label: 'No lume' }, { v: '#cfe8b0', label: 'Lume · green' }, { v: '#e8d6a0', label: 'Lume · old radium' }, { v: '#9fd8ff', label: 'Lume · blue' }, { v: '#f4f1e6', label: 'Lume · white' }, { v: '#ff9a3c', label: 'Lume · orange' }, { v: '#ff7bd5', label: 'Lume · pink' }], hc.lume || 'auto'),
           onLume: (e) => this.setHand(id, { lume: e.target.value }),
-          shadeOpts: mark([{ v: 'auto', label: 'Shading · default (' + (D.handShade === 'flat' ? 'flat' : '3D') + ')' }, { v: '3d', label: 'Shading · 3D' }, { v: 'flat', label: 'Shading · flat' }], hc.shade || 'auto'),
+          shadeOpts: mark([{ v: 'auto', label: 'Hand set \u00b7 ' + (D.handShade === 'flat' ? 'flat' : '3D') }, { v: '3d', label: '3D' }, { v: 'flat', label: 'Flat' }], hc.shade || 'auto'),
           onShade: (e) => this.setHand(id, { shade: e.target.value }),
           up: () => this.moveHand(id, 1), down: () => this.moveHand(id, -1),
           /* Art-backed hand. The record the engine hands back answers { c, px, py }, the
@@ -4436,7 +4519,8 @@ class Component extends DCLogic {
           onFacingDown: () => this.stepFacing(id, -15),
           onFacingReset: () => this.setHand(id, { rot0: null }),
           artNote: (() => {
-            if (!hc.art) return 'PNG or SVG, any size: at Length 100% the art is scaled so the farthest ink along its point lands where this hand would reach drawn, and the slider scales from there. Upload art that points anywhere you like and set Facing to the clockwise angle it points at — the guide ray stands at the time the clock shows, and turning the facing swings the art under it. The device rotates hand sprites with antialiasing off (clock_view.c lv_image_set_antialias), so an enlarged or resampled source shows its loss plainly at every angle.';
+            if (!hc.art) return 'PNG or SVG, pointing any way: set Facing to the way it points. At Length 100% its tip lands where the drawn hand reaches.';
+            // (an uploaded hand's arbour moves with Alt-drag on the dial, or on the thumbnail)
             const a = E.assetGet(hc.art); if (!a) return 'That reference has no bytes in this browser — open the library entry or theme that carries it.';
             // The engine length-fits the sprite: it measures the ink's reach from the
             // arbour and scales that -- in either direction -- so the upload's own
@@ -4445,7 +4529,7 @@ class Component extends DCLogic {
             // this row reports the pixels that ship instead of re-deriving a box.
             const hd = fc && (fc.hands || []).find((q) => q.id === id);
             const z = hc.zoom == null ? 1 : Math.min(8, Math.max(0.05, +hc.zoom || 1));
-            const box = Math.round(2 * (isC ? Math.min(216, 205 * 0.66) : 90) * len) + 8;
+            const box = Math.round(2 * (lenPx || 90)) + 8;   // the plane the art is fitted into: twice the hand's px reach
             const k = hd && hd.sp && hd.sp.art && isFinite(+hd.sp.scale) ? +hd.sp.scale : Math.min(1, box / (a.w || 1), box / (a.h || 1)) * z;
             // The arbour can be off the visible ink in two ways worth telling apart: it
             // falls outside the artwork, or it merely crowds the plane edge and forced a

@@ -96,7 +96,7 @@ setTimeout(async () => {
   // A ticked second hand steps a whole beat and ships on a hard rung. The 8 / s option is
   // offered only when budget() can pay the 8 rung; the budget stub here carries fps 8, so
   // the rung is present, and a 4-fps stub must hide it while 1/2/4/sweep stay offered.
-  const mot = (b) => { const save = it.budget; it.budget = () => ({ fps: b, dev: { pace: b, cross: 0, cov: 0, why: '' } }); const r = byLabel(labels('hands'), 'Motion'); it.budget = save; return r; };
+  const mot = (b) => { const save = it.budget; it.budget = () => ({ fps: b, dev: { pace: b, cross: 0, cov: 0, why: '' } }); const r = byLabel(labels('timing'), 'Motion'); it.budget = save; return r; };
   const mOptLabels = (r) => r.opts.map((o) => o.label);
   ok(mOptLabels(mot(8)).includes('8 / s'), 'an 8-fps dial is offered the 8 / s tick rung');
   ok(!mOptLabels(mot(4)).includes('8 / s'), 'a 4-fps dial is not offered 8 / s it cannot drive');
@@ -107,15 +107,17 @@ setTimeout(async () => {
   // it; the row now names the beat either way (the Station report of Oct 30).
   const mVal = (b, t) => { const save = it.budget; it.budget = () => ({ fps: b, dev: { pace: b, cross: 0, cov: 0, why: '' } });
     const s = it.cfg().tick; it.setCfg('tick', t);
-    const r = byLabel(labels('hands'), 'Motion'); it.cfg().tick = s; it.budget = save; return r; };
+    // owner, 2026-11-05: the beat it ships is a reading on Dial \u203a Timing, beside the beat chosen
+    const r = byLabel(labels('timing'), 'Frame rate'); it.cfg().tick = s; it.budget = save; return r; };
+  const lastSend = () => byLabel(labels('timing'), 'Last send');
   ok(/ships 15 bps sweep/.test(mVal(15, 'sweep').valText), 'a sweep row says what it ships', mVal(15, 'sweep').valText);
   ok(/ships 4 ticks \/ s/.test(mVal(15, '4').valText), 'a tick row says what it ships', mVal(15, '4').valText);
   // The unified render path's slice 3: after a bake the row also names the bake's own price —
   // carrier class, estimate, and the rung the pick lands on — from GorbBake.estimate3. The
   // figures are Station's real bake (est 10 at rung 15; the glass measured 10 on v1.1.38).
-  ok(!/last bake/.test(mVal(15, 'sweep').valText), 'before any bake the row prices nothing it has not seen', mVal(15, 'sweep').valText);
+  ok(!lastSend(), 'before any bake the pane prices nothing it has not seen');
   it._est3 = { carrier: 'still', est_fps: 10, rung: 15 };
-  ok(/last bake still, est 10 fps at rung 15/.test(mVal(15, 'sweep').valText), 'after a bake the row names carrier, estimate and rung', mVal(15, 'sweep').valText);
+  ok(lastSend() && /about 10 fps on the orb/.test(lastSend().valText), 'after a bake it reads what the orb will hold, in plain words', lastSend() && lastSend().valText);
   delete it._est3;
   ok(JSON.stringify(mOptLabels(mot(4)).slice(0, 3)) === JSON.stringify(['1 tick / s', '2 / s', '4 / s']), 'the calm rungs and the free sweep are always offered', JSON.stringify(mOptLabels(mot(4))));
   ok(mOptLabels(mot(4)).includes('Sweep'), 'sweep stays selectable at the floor rate (it is a look, the dial sets the rate)');
@@ -124,7 +126,7 @@ setTimeout(async () => {
   const r = panel('centre-hour');
   ok(!!r.onArtFile && !!r.onArtClear, 'each hand row offers an art upload and a way back to procedural');
   ok(!!r.artRef && !!r.onArtDown && !!r.onArtMove, 'each row carries the pivot thumbnail with a click/drag handler');
-  ok(/antialias/i.test(r.artNote), 'a procedural hand is told why final-size art matters', r.artNote.slice(0, 60));
+  ok(/Facing/.test(r.artNote) && /Length 100%/.test(r.artNote) && r.artNote.length < 160, 'a procedural hand is told, in one line, how its art lines up', r.artNote);
   looks({ 'centre-hour': { art: 'ui-art', pivotX: 120, pivotY: 140 } });
   const r2 = panel('centre-hour');
   ok(r2.hasArt === true && r2.artLabel === 'art.png', 'the row reports the sprite it is using', r2.artLabel);
@@ -144,7 +146,9 @@ setTimeout(async () => {
   const hourRow = panel('centre-hour');
   ok(!!secRow && secRow.isSec === true && secRow.notSec === false, 'the centre seconds row is flagged as the row whose style slot holds the seconds list', JSON.stringify(secRow && [secRow.isSec, secRow.notSec]));
   ok(hourRow.isSec === false && hourRow.notSec === true, 'every other row keeps its style list', JSON.stringify([hourRow.isSec, hourRow.notSec]));
-  ok(secRow.secOpts.length === Object.keys(E.SEC_STYLES).length + 1 && secRow.secOpts.slice(1).every((o) => E.SEC_STYLES[o.v] === o.label), 'that slot is filled from the seconds list, not the hand-style list', JSON.stringify(secRow.secOpts.map((o) => o.v).slice(0, 5)));
+  // owner, 2026-11-06: an indicator (dot, jewel, star, flare) is a style, offered after the seconds shapes
+  const nSec = Object.keys(E.SEC_STYLES).length, nMk = Object.keys(E.MARKERS).length - 1;
+  ok(secRow.secOpts.length === nSec + 1 + nMk && secRow.secOpts.slice(1, nSec + 1).every((o) => E.SEC_STYLES[o.v] === o.label) && secRow.secOpts.slice(nSec + 1).every((o) => E.MARKERS[o.v]), 'that slot is filled from the seconds list, then the indicators, not the hand-style list', JSON.stringify(secRow.secOpts.map((o) => o.v).slice(0, 5)));
   ok(secRow.secOpts.filter((o) => o.sel).length === 1 && secRow.secOpts.find((o) => o.sel).v === 'auto', 'with the preset/default entry selected to begin with', JSON.stringify(secRow.secOpts.filter((o) => o.sel).map((o) => o.v)));
   ok(typeof secRow.onSec === 'function' && typeof secRow.onStyle === 'function', 'both handlers are still on the row, so either branch of the template has something to call');
   secRow.onSec({ target: { value: 'lollipop' } });
@@ -198,15 +202,19 @@ setTimeout(async () => {
   ok(it.state.selKind === 'hand' && it.state.sel === top.id, 'grabbing the top hand selects that hand', JSON.stringify([it.state.selKind, it.state.sel, top.id]));
   ok(it.state.tab === 'hands' && it.state.step === 'parts', 'and the Editing Pane jumps to that hand\u2019s panel on Parts, where its fields are', it.state.step + '/' + it.state.tab);
   ok(!(it.drag && it.drag.kind === 'hand'), 'a procedural hand selects but arms no pivot drag: its arbour is built from the style, not authored', JSON.stringify(it.drag && it.drag.kind));
+  // owner, 2026-11-05: a hand stands anywhere, so a plain drag moves it like any part
+  ok(it.drag && it.drag.kind === 'comp' && it.drag.id === top.id, 'a plain drag on a hand moves the hand itself, like a wheel', JSON.stringify(it.drag));
+  it.onUp();
   Object.assign(hand3(it.state.designs.calendar, top.id), { art: 'ui-big', pivotX: 150, pivotY: 150 });
   const fcA = it.face(), topA = fcA.hands[fcA.hands.length - 1];
-  it.state.tab = 'comps'; it._clickAt = null; it.onDown(ev(topA.x, topA.y));
-  ok(it.drag && it.drag.kind === 'hand' && it.drag.id === topA.id, 'an image-backed hand arms the pivot drag, which is the whole point of selecting one', JSON.stringify(it.drag && [it.drag.kind, it.drag.id, topA.id]));
+  it.state.tab = 'comps'; it._clickAt = null; it.onDown(Object.assign(ev(topA.x, topA.y), { altKey: true }));
+  ok(it.drag && it.drag.kind === 'hand' && it.drag.id === topA.id, 'an Alt-drag on an image-backed hand arms the pivot drag', JSON.stringify(it.drag && [it.drag.kind, it.drag.id, topA.id]));
   ok(isFinite(it.drag.k) && it.drag.k > 0 && isFinite(it.drag.ang), 'the drag carries the sprite scale and the held angle, so the cursor maps into the frame of the art', JSON.stringify(it.drag && [it.drag.k, it.drag.ang]));
   const p0 = hand3(it.design(), topA.id).pivotX;
   it.onMove(ev(topA.x + 20, topA.y));
   it.flushDrag();
-  ok(+hand3(it.design(), topA.id).pivotX !== p0, 'dragging the hand across the face moves its arbour', JSON.stringify([p0, hand3(it.design(), topA.id).pivotX]));
+  ok(+hand3(it.design(), topA.id).pivotX !== p0 && !+hand3(it.design(), topA.id).dist, 'Alt-dragging the hand across the face moves its arbour within the art, not the hand', JSON.stringify([p0, hand3(it.design(), topA.id).pivotX]));
+  it.onUp();
   it.setHand(topA.id, { pivotX: -40, pivotY: -12 });
   const neg = hand3(it.design(), topA.id);
   ok(neg.pivotX === -40 && neg.pivotY === -12, 'a pivot outside the sprite survives, because an arbour hidden under a subdial is a real design', JSON.stringify([neg.pivotX, neg.pivotY]));
@@ -249,6 +257,25 @@ setTimeout(async () => {
   it.onMove(ev(barePt[0] + 30, barePt[1] + 12));
   it.flushDrag();
   ok(Math.round((+it.design().sfX) - sx0) === 30 && Math.round((+it.design().sfY) - sy0) === 12, 'dragging the face pans that art by exactly the cursor move', JSON.stringify([sx0, sy0, it.design().sfX, it.design().sfY]));
+  // ---- a wheel is grabbed where it shows: through its cutout (owner, 2026-11-06) ----------
+  {
+    it.state.artSlot = null; it.drag = null; it._clickAt = null; it.state.sel = null; it.state.selKind = null;
+    // at 2:09:07 every hand points up and right, clear of the day cutout at 9
+    const now0 = it.now; it.now = () => new Date(2026, 2, 7, 2, 9, 7);
+    const fw = it.face(), cut = fw.lay.hits.find((h) => h.of === 'c2');   // Calendar's day ring, read through c2k at 9
+    ok(!!cut && cut.id === 'c2k', 'the day cutout knows the wheel that shows through it', cut && cut.id);
+    const st = fw.pickAll(cut.x, cut.y, it.now()).filter((q) => q.kind === 'comp').map((q) => q.id);
+    ok(st[0] === 'c2' && st[1] === 'c2k', 'a click there reaches the wheel first, its cutout next', st.join(','));
+    it.onDown(ev(cut.x, cut.y));
+    ok(it.state.sel === 'c2' && it.drag && it.drag.id === 'c2', 'clicking the cutout selects the wheel and arms its drag', it.state.sel + ' ' + JSON.stringify(it.drag));
+    it.onMove(ev(cut.x + 20, cut.y)); it.flushDrag(); it.onUp();
+    const w2 = it.design().comps.find((c) => c.id === 'c2'), g2 = it.face().lay.G.c2;
+    ok(Math.abs(g2.x - 253) < 1 && Math.abs(g2.y - 233) < 1, 'dragging moves the wheel by the cursor move, its cutout with it', JSON.stringify([w2.angle, w2.dist, g2.x, g2.y]));
+    const cut2 = it.face().lay.hits.find((h) => h.id === 'c2k');
+    it._clickAt = null; it.onDown(ev(cut2.x, cut2.y)); it.onUp(); it.onDown(ev(cut2.x, cut2.y)); it.onUp();
+    ok(it.state.sel === 'c2k', 'a second click on the same spot steps down to the cutout', String(it.state.sel));
+    it.state.designs.calendar.comps.find((c) => c.id === 'c2').dist = 0; it.drag = null; it.now = now0;
+  }
   // ---- the alignment overlay: on when it answers a question, off otherwise -----------
   it.state.selKind = null; it.state.sel = null; it.drag = null; it.state.guide = 'auto';
   ok(it.guideOn() === false, 'a plain look at the watch carries no overlay', String(it.guideOn()));
@@ -352,7 +379,7 @@ setTimeout(async () => {
     it.state.sel = winC.id; it.state.selKind = 'comp';
     const winLive = () => it.state.designs.calendar.comps.find((c) => c.id === winC.id);
     const fr0 = byLabel(labels('comps'), 'Frame colour');
-    ok(!!fr0 && fr0.isChips && (fr0.opts || []).some((o) => /Steel/.test(o.label || '')), 'a framed window offers the frame metal, steel among them', JSON.stringify(((fr0 || {}).opts || []).map((o) => o.label).slice(0, 8)));
+    ok(!!fr0 && (fr0.isChips || fr0.isSelect) && (fr0.opts || []).some((o) => /Steel/.test(o.label || '')), 'a framed window offers the frame metal, steel among them', JSON.stringify(((fr0 || {}).opts || []).map((o) => o.label).slice(0, 8)));
     const stOpt = fr0 && fr0.opts.find((o) => /Steel/.test(o.label || ''));
     if (stOpt) stOpt.pick();
     ok(winLive().frameColor === 'steel', 'and picking Steel writes the metal on the window', JSON.stringify(winLive().frameColor));
@@ -544,7 +571,8 @@ setTimeout(async () => {
   // complications: the default Skeleton's small-seconds rides 60 window plates
   // the dial indexes itself, and the note counts them before the press — the
   // same compPlan3 the export runs, so note and bake cannot disagree.
-  ok(/FORMAT 3 · \d+ comps? bake as \d+ plates/.test(rv.themeNote),
+  // since 2026-11-06 a sub-dial prints no scale, so its hand ships as a pointer, not as plates
+  ok(/FORMAT 3 · .*(\d+ comps? bake as \d+ plates|\d+ comp rows)/.test(rv.themeNote),
      'and it names the comp table it will bake for a dial with live complications',
      JSON.stringify(rv.themeNote));
   await (async () => {
@@ -604,7 +632,7 @@ setTimeout(async () => {
   it.state.designs.calendar.surface = 'guilloche';
   const nxBl = artRows();
   const nxChips = nxBl.filter((f) => f.label === 'Finish blend');
-  ok(nxChips.length === 2 && nxChips[0].isChips, 'a textured surface offers the blend on both art slots', nxChips.length);
+  ok(nxChips.length === 2 && (nxChips[0].isChips || nxChips[0].isSelect), 'a textured surface offers the blend on both art slots', nxChips.length);
   const nxChipV = nxChips[0].opts.map((o) => o.label);
   ok(['Off', 'Multiply', 'Screen', 'Overlay'].every((w) => nxChipV.some((l) => l.indexOf(w) === 0)), 'the modes offered are off, multiply, screen and overlay', JSON.stringify(nxChipV));
   it.state.designs.calendar.bgFinishBlend = 'multiply';
@@ -799,8 +827,8 @@ setTimeout(async () => {
   ok(sb.sounds && sb.sounds.map((x) => x.slot).join() === 'chime_hour,jump_minute' && sb.soundPattern === 'none',
      'the station bake carries exactly the hour chime and the minute clunk', sb.sounds && sb.sounds.map((x) => x.slot).join());
   sf = sndAt('regulator', { tick: '2' });
-  ok(/steps 2 times a second/.test((byLabel(sf, 'Beat') || {}).note || ''),
-     'the beat line names the hand\u2019s 2-per-second step', (byLabel(sf, 'Beat') || {}).note);
+  ok(/steps 2 times a second/.test((byLabel(sf, 'Beat') || {}).valText || ''),
+     'the beat line names the hand\u2019s 2-per-second step', (byLabel(sf, 'Beat') || {}).valText);
   sb = it.sndBake();
   const tl = sb.sounds.find((x) => x.slot === 'tick_loop');
   ok(tl && tl.beat_chz === 200 && tl.pcm.length === 22050 * 8,
@@ -808,8 +836,8 @@ setTimeout(async () => {
   ok(sb.soundPattern === 'count' && sb.sounds.some((x) => x.slot === 'strike_hour'),
      'the regulator counts the hour on its low gong');
   sf = sndAt('diver', { tick: 'sweep', balance: '4' });
-  ok(/balance: 4 times/.test((byLabel(sf, 'Beat') || {}).note || ''),
-     'under a sweep the loop beats with the balance', (byLabel(sf, 'Beat') || {}).note);
+  ok(/balance: 4 times/.test((byLabel(sf, 'Beat') || {}).valText || ''),
+     'under a sweep the loop beats with the balance', (byLabel(sf, 'Beat') || {}).valText);
   ok(it.sndBake().soundPattern === 'ships_bells', 'the diver keeps ship\u2019s bells');
   ok(!byLabel(sndAt('diver', { tick: '8' }), 'Voice').opts.some((o) => o.v === 'heartbeat'),
      'a voice that cannot beat 8 times a second is not offered to an 8-per-second hand');

@@ -112,7 +112,7 @@ ok(it.state.hidden.glass === true, 'the eye hides the glass on the stage');
   ok(ord.some((e) => String(e).indexOf('comp:') === 0), 'the arrow writes the lifted face into design.order', ord.join());
   const fc2 = it.face();
   ok(fc2.liveSeq.some((e) => e.kind === 'sub'), 'the face the stage draws carries it in its live band');
-  ok(V().stackRows.some((r) => r.isRow && /still row/.test(r.note)), 'its row is badged a still row');
+  ok(V().stackRows.some((r) => r.isRow && /above the hands/.test(r.note)), 'its row is badged above the hands');
   ok(/^\d+ of 24/.test(V().stackCap), 'the R6 count still reads', V().stackCap);
   it.upd((dd) => { delete dd.order; });
 }
@@ -152,7 +152,7 @@ ok(it.state.hidden.glass === true, 'the eye hides the glass on the stage');
   ok(b0.cov > 0 && b1.covLift > 0 && b1.pace < b0.pace, 'lifting the face the sweep crosses lowers the estimated pace', b0.pace + ' -> ' + b1.pace + ' fps (cov ' + b1.covLift.toFixed(3) + ')');
   ok(/lifted face/.test(b1.why), 'and the estimate says why', b1.why);
   it2.budget = () => ({ fps: 15, dev: it2._devPace({ fps: 15, measured: true }) });
-  const row = it2.renderVals().stackRows.find((r) => r.isRow && /still row/.test(r.note));
+  const row = it2.renderVals().stackRows.find((r) => r.isRow && /above the hands/.test(r.note));
   ok(row && /repainted on ~\d+% of sweep ticks/.test(row.note), 'its stack row names the repaint share', row && row.note);
 }
 
@@ -162,12 +162,12 @@ ok(it.state.hidden.glass === true, 'the eye hides the glass on the stage');
   it.setState({ tab: 'comps', sel: 'fx', selKind: 'comp' });
   const tf = () => it.renderVals().fields.find((f) => f.label === 'Typeface' && f.isSelect);
   const f0 = tf();
-  ok(f0 && f0.hasLink && /the dial/.test(f0.linkText), 'a flare\u2019s typeface starts linked to the dial', f0 ? f0.linkText : it.state.tab + ' sel=' + it.state.sel + ' ' + it.renderVals().fields.filter((f) => f.isRow).map((f) => f.label).join(','));
+  ok(f0 && f0.hasLink && /the defaults/.test(f0.linkText), 'a flare\u2019s typeface starts on the default face (there is no dial typeface)', f0 ? f0.linkText : it.state.tab + ' sel=' + it.state.sel + ' ' + it.renderVals().fields.filter((f) => f.isRow).map((f) => f.label).join(','));
   f0.on({ target: { value: E.TYPEFACES ? Object.keys(E.TYPEFACES)[1] : 'grotesk' } });
   const f1 = tf();
   ok(f1 && /re-link/.test(f1.linkText) && it.design().comps.find((c) => c.id === 'fx').font, 'choosing a face overrides it, and the row offers the re-link', f1 && f1.linkText);
   f1.relink();
-  ok(!it.design().comps.find((c) => c.id === 'fx').font && /the dial/.test(tf().linkText), 're-linking follows the dial again');
+  ok(!it.design().comps.find((c) => c.id === 'fx').font && /the defaults/.test(tf().linkText), 're-linking goes back to the default face');
 }
 
 console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');

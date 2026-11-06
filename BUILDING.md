@@ -157,10 +157,13 @@ apps and the default theme built in, plus `orb-sdk-<version>.tar.gz` for app dev
    `idf.py reconfigure && idf.py build`, check it on a board, then run
    `make -C tools/orb-manager firmware` and commit the bundle.
 2. **Apps.** If an app changed, bump its `version.txt`, run `make apps`, and commit.
-3. **Check.** Run `make check`, and make sure CI is green on `main`.
-4. **Tag.** `git tag v1.2.6 && git push origin v1.2.6`. The tag must equal `version.txt`.
+3. **Notes.** Write `docs/releases/<tag>.md`: what the release brings users
+   (docs/releases/README.md says what goes in), and preview the whole release's notes with
+   `tools/release_notes.sh <tag>`. The release workflow refuses a tag without it.
+4. **Check.** Run `make check`, and make sure CI is green on `main`.
+5. **Tag.** `git tag v1.2.6 && git push origin v1.2.6`. The tag must equal `version.txt`.
    A hub-only rebuild of the same OS takes a suffix (`v1.2.6-2`).
-5. **Publish.** When the run finishes, open the draft under Releases, choose Edit, and press
+6. **Publish.** When the run finishes, open the draft under Releases, choose Edit, and press
    **Publish release** at the bottom of the edit page.
 
 [RELEASING.md](RELEASING.md) covers signing (Apple Developer ID and notarization, Azure

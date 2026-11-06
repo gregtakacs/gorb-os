@@ -25,7 +25,10 @@ tell users how to get past the warning.
    and the shelf apps must be re-baked (`tools/make_factory_apps.py`). These are the
    usual flows. Commit the source before `idf.py build`: the image stamps the tree it was
    built from, and `make firmware`, the hub tests and the release all refuse a `-dirty`
-   stamp. The release also refuses a bundle whose version is not `version.txt`.
+   stamp. The release also refuses a bundle whose version is not `version.txt`. Write
+   the release's notes in `docs/releases/<tag>.md` and preview them with
+   `tools/release_notes.sh <tag>`: the workflow puts them at the top of the release and
+   refuses a tag without them ([docs/releases/README.md](docs/releases/README.md)).
 2. Tag and push. The tag must equal `version.txt`. For a hub-only rebuild of the same
    OS, add a suffix, e.g. `v1.2.6-2`.
    ```sh
@@ -33,7 +36,8 @@ tell users how to get past the warning.
    ```
 3. Wait for the run under Actions → release. Notarization is usually the slowest
    step. It ends with a **draft** release that has the three downloads, `sha256sums.txt`,
-   and notes listing the bundled app versions.
+   and notes: yours, then the firmware and app versions built in, then every commit since
+   the previous tag, folded.
 4. Read the draft over. To publish it, open the draft under Releases, choose Edit, and press
    **Publish release** at the bottom of the edit page. Nothing is public until you do.
 

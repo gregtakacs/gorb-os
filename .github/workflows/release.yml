@@ -51,6 +51,13 @@ jobs:
             [ "$v" = "$GITHUB_REF_NAME" ] || { echo "::error::git describe says $v, not $GITHUB_REF_NAME"; exit 1; }
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
+      # A tag's notes open with what it brings users, written by hand in
+      # docs/releases/<tag>.md (docs/releases/README.md). Checked first, so a missing file
+      # fails in seconds rather than after the build and the signing.
+      - name: Release notes written
+        if: github.ref_type == 'tag'
+        working-directory: .
+        run: tools/release_notes.sh --check "$GITHUB_REF_NAME"
       # The bundled firmware is what every user flashes: its stamp must name a clean
       # commit and declare the OS version being released (v1.2.9 first shipped as
       # 197adaa-dirty). Runs on a by-hand run too, so a dry run catches it.
@@ -231,6 +238,8 @@ jobs:
         working-directory: .
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the notes list every commit since the previous tag
       - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
@@ -238,29 +247,12 @@ jobs:
           path: dist
       - name: Checksums
         run: cd dist && sha256sum -- * > sha256sums.txt && cat sha256sums.txt
+      # The hand-written docs/releases/<tag>.md on top, the template every release carries
+      # (firmware, apps, downloads, signing), then every commit since the previous tag,
+      # folded. tools/release_notes.sh previews the same on a laptop before tagging.
       - name: Release notes
         run: |
-          {
-            echo "Orb Manager $VERSION, with gorb-os $(cat version.txt) firmware built in."
-            echo
-            echo "Apps included:"
-            for f in tools/orb-manager/apps/*.orbapp; do
-              s=$(basename "$f" .orbapp)
-              echo "- $s $(cat "apps/$s/version.txt")"
-            done
-            echo
-            echo "| Download | For |"
-            echo "|---|---|"
-            echo "| orb-manager-$VERSION-windows-amd64.zip | Windows 10/11, 64-bit |"
-            echo "| orb-manager-$VERSION-macos.dmg | macOS 12 or later (Apple silicon and Intel) |"
-            echo "| orb-manager-$VERSION-linux-amd64.tar.gz | Linux x86-64 |"
-            echo
-            echo "Each needs Chrome, Edge, Brave or Chromium installed; Orb Manager opens its window with it."
-            echo
-            echo "orb-sdk-$(cat version.txt).tar.gz is the app SDK for this OS release, for writing apps outside this repo (apps/README.md)."
-            [ "$WIN_SIGNED" = true ] || { echo; echo "The Windows build is not code-signed: SmartScreen will warn. Choose More info, then Run anyway."; }
-            [ "$MAC_SIGNED" = true ] || { echo; echo "The macOS build is not notarized, so macOS says it could not verify Orb Manager. Choose Done, open System Settings > Privacy & Security, press Open Anyway beside Orb Manager, then open it again. (macOS 14 and earlier: right-click Orb Manager, choose Open, then Open.)"; }
-          } > notes.md
+          tools/release_notes.sh "$VERSION" > notes.md
           cat notes.md
       # A tag moved and pushed again re-deploys: the draft it made last time is replaced.
       # A published release is never replaced; a fix after publishing takes a new tag

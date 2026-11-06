@@ -38,6 +38,8 @@
 #include "esp_err.h"
 #include "lvgl.h"
 
+typedef struct orb_app orb_app_t;   /* orb_app.h; the switcher names one */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -81,6 +83,11 @@ void menu_view_service(void);
  * the router's to home with. Wire to orb_app_iface_t.opt_long.
  */
 bool menu_view_opt_long(void);
+
+/** Open armed on the app list (plan §51): every app in walk order, then "settings",
+ *  the cursor on `from`'s row moved `step` rows (clamped). The registry's switcher
+ *  hook, reached from the router's hold and from a turn on a face with no dial. */
+void menu_view_switcher(const orb_app_t *from, int step);
 
 /**
  * D38: the USB share window's claim on the dial. Call from the router's poll,

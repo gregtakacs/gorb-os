@@ -48,6 +48,7 @@
 #include "orb_clock3.h"         /* clk_sound_t: the theme records the stage hands over */
 #include "orb_theme.h"          /* orb_theme_live_slug: whose theme the stage draws */
 #include "orb_sched.h"          /* orb_sched_burst, behind orb.burst */
+#include "knob_accel.h"         /* a dial app's turns, accelerated (plan §51) */
 #include "orb_units.h"     /* orb_units, behind orb.units (free) */
 #include "orb_home.h"           /* orb_home_gen, behind orb.home_gen */
 #include "esp_timer.h"
@@ -155,6 +156,8 @@ typedef struct {
     IM3Function    fn[W_COUNT];  /* resolved exports; NULL where the module omits one */
     orb_app_t     *app;          /* the row this instance answers to */
     bool           armed;        /* the armed state the guest last answered */
+    bool           dial;         /* orb_knob_dial: every turn is the app's (plan §51) */
+    knob_accel_t   accel;        /* a dial app's acceleration state */
     bool           on_glass;     /* between activate/resume and suspend */
     uint32_t       beat_ms;      /* the beat the broker granted, 0 = none */
     lv_timer_t    *beat;         /* runs orb_tick while on the glass */
@@ -848,6 +851,13 @@ m3ApiRawFunction(imp_armed)                  /* void armed(i32 armed) */
     m3ApiSuccess();
 }
 
+m3ApiRawFunction(imp_knob_dial)              /* void knob_dial(void) */
+{
+    CALLER();
+    s->dial = true;
+    m3ApiSuccess();
+}
+
 /* option pages: the answer to an opt_label/opt_value call, copied while it runs */
 
 m3ApiRawFunction(imp_reply)                  /* void reply(const char *s) */
@@ -1332,6 +1342,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "cv_flush",      "v(i)",      imp_cv_flush },
     { "orb", "reply",         "v(i)",      imp_reply },
     { "orb", "armed",         "v(i)",      imp_armed },
+    { "orb", "knob_dial",     "v()",       imp_knob_dial },
     { "orb", "sound_play",    "i(iii)",    imp_sound_play },
     { "orb", "sound_stop",    "v(i)",      imp_sound_stop },
     { "orb", "sound_active",  "i(i)",      imp_sound_active },
@@ -1609,17 +1620,24 @@ static void wasm_show(orb_app_t *app)
 static void wasm_input(orb_app_t *app, int32_t delta, bool pressed)
 {
     wasm_slot_t *s = slot_of_app(app);
+    /* The router hands an armed app every 10 ms poll, event or not. A guest is called
+     * for a real detent or press only: a dial app is armed whenever it shows, and a kick
+     * per empty poll ran its stage at 100 ticks a second (Gold, 2026-11-06). */
+    if (!delta && !pressed) return;
     if (s && s->rt) {
+        if (s->dial) delta = knob_accel(&s->accel, delta, esp_timer_get_time());
         uint32_t a[2] = { (uint32_t)delta, pressed ? 1u : 0u };
         const void *argv[2] = { &a[0], &a[1] };
         (void)wasm_call(s, W_INPUT, argv, 2);
+        /* What the knob changed reaches the glass on the next frame, not the next beat. */
+        if (s->stage && s->on_glass && stage_bound(app)) orb_sched_kick(300);
     }
 }
 
 static bool wasm_armed(const orb_app_t *app)
 {
     wasm_slot_t *s = slot_of_app(app);
-    return s ? s->armed : false;
+    return s ? (s->armed || s->dial) : false;   /* a dial app owns the turn while it shows */
 }
 
 /* The guest answers the state it took: an app with no editor stays unarmed on a

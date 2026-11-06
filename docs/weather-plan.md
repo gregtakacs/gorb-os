@@ -216,8 +216,8 @@ Fri Thu Wed Tue Tomorrow | NOW | 1h 2h 3h ... 24h
   chosen (owner, 2026-11-06).
 - **Hold:** leaves the app (the app list and the system pages).
 
-The 2026-11-06 build (§6) still arms: a press steps places, then views. It moves to the
-dial with the OS input work in §51.
+Built in weather v1.1.0 on OS v1.2.11 (app-platform-plan.md §51.1). The days after today
+need a sixth day from the feed, so the request asks `forecast_days=6`; Now keeps today's.
 
 **Now:** the place name, a large temperature, the condition icon, feels-like and wind,
 today's high and low on the bezel.
@@ -367,7 +367,8 @@ bake rasterises them into the theme's sprites. The orb never draws an icon itsel
 ### 6.2 Where the build differs from §2
 
 - **Places step = each place's Now**, not the list in the design mockups: the 32 rows had
-  no room for a list. Superseded by §2.4's press for the next place, which keeps the view.
+  no room for a list. Superseded by §2.4's press for the next place, which keeps the view
+  (weather v1.1.0).
 - **The hourly ring is a 12-hour clock face.** Twelve bar rows stand at their clock hours
   and show twelve of the 24 hours; turning past the twelfth pages to the next twelve. 24
   bars would have taken 24 of the 32 rows.

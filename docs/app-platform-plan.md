@@ -6890,3 +6890,53 @@ dial is built.
 **Owed, in order:** the click timing above; the input layer (no arming, hold opens the app
 list, acceleration, sticky home, idle return), with the router suites moved off the armed
 state; Weather and Flights on their dials; the app list screen, picking up §48's bench.
+
+### 51.1 — Built and benched on Gold — 2026-11-06
+
+**The slow click was the beat, not the drawing.** Weather's Scope bakes `beat step 1/s`
+(nothing on it moves), and the stage ran at 1-2 fps while Weather showed. A click re-posed
+the rows at once (`weather.input` 3-7 ms) but waited up to a second for the next frame to
+paint them (flush 20-60 ms). `orb_sched_kick(ms)` now brings the tick forward and bursts
+at the panel's ceiling for 300 ms after any knob event a staged app on the glass takes:
+the tick runs 9-17 ms after the click (8 clicks, Gold, `v1.2.11+f8f0bcf-dirty`), so a
+click reaches the glass in about 40-50 ms, and the stage is back to 1 fps when the turning
+stops. One trap on the way: the router hands an armed app every 10 ms poll, event or not,
+and a kick per empty poll ran Weather's stage at 100 ticks a second. `wasm_input` now calls
+the guest only for a real detent or press.
+
+**The pieces.**
+
+- `orb_knob_dial()` (new import, OS v1.2.11): the app is armed whenever it shows, so every
+  turn and press is its own from the first click; a hold still leaves.
+- Acceleration (`main/knob/knob_accel.h`): a detent within 90 ms of the last in the same
+  direction counts 2, within 45 ms 4; a reversal starts over. A dial app sees |delta| > 1
+  only on a fast spin. The gaps are a first cut, still to be tuned by hand.
+- `apps/sdk/orb_dial.h` (header-only, so an app without a dial pays nothing): the ends
+  stop, a fast step that reaches or crosses home stops on it and the rest of that spin
+  (detents under 250 ms apart, same direction) is swallowed, a pause or a reversal lets
+  go, and 20 s idle returns home. `tools/host_dial_test.py`: 30 checks, 9 of 9 mutants.
+- **The app list** is a menu page, OPEN: every app in walk order, then "settings", which
+  opens the menu's top page as before. A hold anywhere opens it on the app it came from; a
+  turn on a face with no dial (the clock, an app that still arms) opens it one row along,
+  in the list's own direction (`knob_row_step`), so the turn that opens it moves the
+  cursor the way the next turn will. The carousel walk and its peek are retired; the
+  router reaches the list through the registry's new `switcher` hook, so it still names no
+  view. The system pages are one row deeper than §51's sentence put them (under
+  "settings"), which keeps the list short and the menu's rows where its suite pins them.
+  On this knob clockwise moves a list up and the clock is the list's first row, so a
+  clockwise turn on the clock opens the list on Clock and an anticlockwise one on Flights.
+- **Weather v1.1.0**: Now at home; the hours clockwise, the cursor on the next hour first;
+  the five days after today anticlockwise, tomorrow first (the fetch asks six days, today
+  being Now's high and low); a press steps the place and keeps the position.
+- **Flights v1.3.0**: the plain scope at home; the drawn aircraft clockwise nearest first
+  and anticlockwise farthest first, each with its card; the dial stops at the aircraft the
+  theme draws (planes then dots), so a card never describes one the glass does not show;
+  a card whose aircraft leaves closes and the dial goes home; a press steps the range
+  (wrapping) and the header names it for 2 s.
+
+Seen on Gold's glass (`fbgrab.py --direct`): every step of both dials, the hold onto the
+list, a press there opening settings, a turn on the clock, and a hold back out.
+
+**Owed:** the acceleration's two gaps and the spin gap, by hand on the knob; whether the
+clock should sit last in the list so a clockwise turn on it lands on the next app; the
+list's look (a text page today; §48's previews are the obvious next step).

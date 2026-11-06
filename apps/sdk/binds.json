@@ -26,6 +26,7 @@
   "json_begin": "i(ii)",
   "json_next": "i(i)",
   "json_skip": "i()",
+  "knob_dial": "v()",
   "localtime": "i(Ii)",
   "log": "v(i)",
   "net_cred": "i(i)",

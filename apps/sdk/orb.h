@@ -137,6 +137,11 @@ ORB_IMPORT("cv_flush")   void orb_cv_flush(int32_t h);
  *  that hands the knob back, say. The router reads it on its next poll. */
 ORB_IMPORT("armed")      void orb_armed(int32_t armed);
 
+/** Take every turn and press while on the glass, from the first click: no arming, and
+ *  a hold still leaves the app (plan §51). Turns arrive accelerated, so |delta| > 1
+ *  means a fast spin. Call once from orb_init. apps/sdk/orb_dial.h keeps the dial. */
+ORB_IMPORT("knob_dial")  void orb_knob_dial(void);
+
 /* ---- option pages (free) ------------------------------------------------------- *
  * The dial's menu draws an app's options; the app answers orb_opt_label and
  * orb_opt_value by calling orb_reply with the text, during that call. */

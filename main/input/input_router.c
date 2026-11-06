@@ -1,18 +1,19 @@
 /**
  * input_router.c — knob-to-screen routing (see header for the contract).
  *
- * Two levels, one knob. Roaming, a turn swaps screens and a press arms the one
- * you are on; armed, the screen owns the turn and a long-press comes back. The
- * router decides which level applies by asking the screen whether it is armed —
- * the menu and the picker each own that bit of state, because only they know
- * what their own armed view looks like.
+ * Two levels, one knob. Armed, the screen owns the turn: an app that keeps a dial
+ * (orb_knob_dial, plan §51) is armed whenever it shows, and the menu once opened.
+ * Roaming (the clock, an app that still arms on a press), a turn opens the app list
+ * and a press arms. A hold always leaves for the app list. The router decides which
+ * level applies by asking the screen whether it is armed, because only the screen
+ * knows what its own armed view looks like.
  */
 
 #include "input_router.h"
 #include "knob.h"
 #include "idle_dim.h"
 #include "orb_app.h"
-#include "orb_carousel.h"   /* the peek: a turn names the next stop, it does not switch */
+#include "orb_carousel.h"   /* cancel only: §51 retired the walk, so nothing puts a peek up */
 #include "orb_fx.h"         /* the transition bench's run, served from this poll */
 #include "nvs.h"            /* the boot-page memory: last shown page, one string key  */
 #include <stdio.h>
@@ -309,6 +310,20 @@ static esp_err_t set_screen(const orb_app_t *app, bool load)
     return ESP_OK;
 }
 
+/* Plan §51: the app list. The hold out of any app, and a turn on a face with no dial
+ * of its own, both land on the home entry's list, the cursor on the app the owner
+ * came from moved `step` rows. Through the registry, so this file still names no view;
+ * a home entry with no list leaves the owner on it, which is the old hold's answer. */
+static void open_switcher(int step)
+{
+    const orb_app_t *from = s_current;
+    orb_carousel_cancel();
+    disarm_all();
+    if (set_screen(orb_app_home(), true) != ESP_OK) return;
+    if (!orb_app_open_switcher(from, step)) return;
+    ESP_LOGI(TAG, "app list from %s, step %d", screen_name(from), step);
+}
+
 /* Arm the visible entry, if it has an armed view at all. */
 static void arm_current(void)
 {
@@ -422,76 +437,20 @@ static void poll_timer_cb(lv_timer_t *timer)
         lpress = false;
     }
     if (lpress) {
-        orb_carousel_cancel();
-        disarm_all();
-        set_screen(orb_app_home(), true);   /* C8: the home row — the shell since D35 */
+        open_switcher(0);                    /* §51: out of the app, onto the app list */
         return;
     }
 
-    /* Roaming: the turn belongs to the router, not the screen. */
+    /* Roaming: the turn belongs to the router, not the screen. A face with no dial of
+     * its own (the clock, an app that still arms) opens the app list on a turn, the
+     * cursor already one app along (plan §51): no carousel walk, so a turn inside an
+     * app can never leave it, and the way between apps is one list. A press still arms
+     * a view that has one. */
     if (!screen_armed(s_current)) {
-        if (pressed) {
-            /* A press while a name is on the glass means "that one, now": it
-             * commits the peek rather than arming the view that is still
-             * physically showing underneath it. Arming the showing view would be
-             * arming a screen the user just said they are leaving. */
-            const orb_app_t *named = orb_carousel_pending();
-            if (named) {
-                orb_carousel_commit();
-                /* The same press also ENTERS (owner ruling, 2026-10-12): rotate
-                 * to name, press once, and you are inside the app — the armed
-                 * state a press on an already-showing screen produces, so the
-                 * HSB editor or the menu list is open the moment the switch
-                 * lands. Armed only on a switch that landed: on a refused one
-                 * set_screen leaves the old view on the glass, and arming that
-                 * would arm a screen the user never named. Arming the dial is
-                 * inert by design — no armed view exists beneath the clock. */
-                if (set_screen(named, true) == ESP_OK) arm_current();
-                return;
-            }
-            arm_current();
-            return;
-        }
-        if (delta) {
-            disarm_all();
-            /* One step per poll in the direction turned. A fast burst reports
-             * several detents and must not fly past every screen and stop
-             * somewhere nobody aimed at. */
-            /* Screens sit side by side, so the carousel is the horizontal axis and
-             * asks the knob layer what "right" means, like any other screen would.
-             * Which screens exist, and in what order, is the registry's answer —
-             * (INPUT_SCREEN_COUNT - 1) as a fake minus-one is gone with the enum.
-             *
-             * A turn now NAMES the next stop instead of loading it (ruling C5's
-             * carousel): the chip goes up over the view still on the glass, the
-             * beat parks so the compositor cannot erase it, and the activate
-             * happens on the poll after the detents stop. That is what makes a
-             * three-detent flick cost one full-page commit instead of three, which
-             * matters because the dial's own reveal measured 411-476 ms (§12.7). */
-            const int step = knob_col_step(delta) > 0 ? 1 : -1;
-            if (!orb_carousel_step(step, s_current, now) && !orb_carousel_ready()) {
-                /* No chip was ever built (the heap said no at boot), so the peek
-                 * has nothing to show — and a destination the user cannot see
-                 * being chosen is worse than the immediate switch that was here
-                 * before. Walk exactly as far as one poll used to walk. */
-                const orb_app_t *next = orb_app_neighbour(s_current, step);
-                if (next) set_screen(next, true);
-            }
-            return;
-        }
-        /* Quiet, with a name still up: it has held still long enough to be worth
-         * the commit, and this is the poll that pays for it. Committing onto the
-         * shell arms it (owner ruling, 2026-10-25): waiting on the menu screen is
-         * arriving in the menus, not a stop at a landing card that would make the
-         * owner click a second time to reach the list. Keyed on the SHELL kind so
-         * the picker and every app keep D12's two-level gate — this arm is the
-         * menu's, not a general change to what a settle means. */
-        const orb_app_t *named = orb_carousel_pending();
-        if (named && orb_carousel_due(now)) {
-            orb_carousel_commit();
-            set_screen(named, true);
-            if (named->kind == ORB_APP_KIND_SHELL) arm_current();
-        }
+        if (pressed) { arm_current(); return; }
+        /* The list's own sense of a detent (knob_row_step, as menu_view walks it), so
+         * the turn that opens the list moves its cursor the way the next turn will. */
+        if (delta) open_switcher(knob_row_step(delta) > 0 ? 1 : -1);
         return;
     }
 

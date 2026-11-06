@@ -341,8 +341,9 @@ consent rule applies.
   apps. The view disarms itself on the third push; the router reads
   `flights_view_armed()` each poll. Bench on orb-A through `/api/v1/screen`:
   every level and the turn after the third push landing on the next app.
-  The long press is the shell's. (As built; the 2026-11-06 ruling replaces
-  the levels with one dial, see "Knob" above.) The options
+  The long press is the shell's. (Replaced in flights v1.3.0 by the one dial,
+  see "Knob" above and app-platform-plan.md §51.1. The dial stops at the
+  aircraft the theme draws, and a press wraps the range.) The options
   page cycles Range, Source, Background, Boost and Ground on a press and shows
   Home read-only. That page was unreachable until 2026-11-01: the menu lists
   an app's page only when its iface declares `opt_arm`, and the tracker's did

@@ -289,32 +289,21 @@ for _p in (APP_C, APP_H):
 app_src = open(APP_C).read()
 
 APP_TABLE = lift(app_src, r"static orb_app_t s_apps\[\] = \{[\s\S]*?\n\};", APP_C)
-# Lifted from the roaming branch of the router's poll. It changed shape when the
-# carousel landed (docs/app-platform-plan.md ruling C5): a turn now NAMES the
-# next stop through orb_carousel_step() and the activate happens on the settle,
-# so the block that must survive is "direction comes from the knob layer" and
-# "the only switch is still set_screen(), which is where the M1 probe lives".
-ARM_STEP = lift(router_src,
-                r"const int step = knob_col_step\(delta\)[\s\S]*?"
-                r"if \(next\) set_screen\(next, true\);", ROUTER_C)
-# The carousel must keep asking the knob layer what "right" means. A screen that
-# negates the delta itself is the bug host_knob_test.py exists for, and this lift
-# dies loudly if the router ever goes back to reading a raw sign.
-check("the screen carousel routes direction through the knob layer",
-      "knob_col_step" in ARM_STEP, ARM_STEP.strip())
-# The turn must be deferred, not immediate: a roaming detent that called
-# set_screen() itself would put the flick's cost back to one full-page commit per
-# detent, which is the only reason the carousel exists. The fallback branch is
-# allowed exactly one set_screen, behind orb_carousel_ready().
-check("a turn peeks instead of switching, and only the settle switches",
-      "orb_carousel_step(" in ARM_STEP
-      and ARM_STEP.count("set_screen(") == 1
-      and "orb_carousel_ready()" in ARM_STEP, ARM_STEP.strip())
-# And the settle must commit through the registry's own switch path, so the M1
-# frame window still wraps every screen change the knob causes.
-check("the settle commits through set_screen, not around it",
-      re.search(r"orb_carousel_due\(now\)[\s\S]{0,160}orb_carousel_commit\(\);[\s\S]{0,60}"
-                r"set_screen\(named, true\);", router_src) is not None)
+# Lifted from the roaming branch of the router's poll. Plan §51 (2026-11-06) retired
+# the carousel walk: a turn on a face with no dial of its own opens the app list, the
+# cursor moved one row in the list's own sense, and a press still arms. The list is
+# reached through the registry, so the router still names no view.
+ROAM = lift(router_src,
+            r"if \(!screen_armed\(s_current\)\) \{[\s\S]*?\n    \}", ROUTER_C)
+check("a roaming turn opens the app list in the list's own direction",
+      "open_switcher(knob_row_step(delta)" in ROAM and "set_screen(" not in ROAM, ROAM.strip())
+check("a roaming press still arms the view on the glass",
+      "if (pressed) { arm_current(); return; }" in ROAM, ROAM.strip())
+OPEN_SW = lift(router_src, r"static void open_switcher\(int step\)\n\{[\s\S]*?\n\}", ROUTER_C)
+check("the app list opens on the home entry, through the registry's switch path",
+      re.search(r"set_screen\(orb_app_home\(\), true\) != ESP_OK\) return;\s*"
+                r"if \(!orb_app_open_switcher\(from, step\)\) return;", OPEN_SW) is not None,
+      OPEN_SW.strip())
 # The menu must still be a walkable carousel entry, tagged as shell chrome
 # rather than pretending to be an app it is not.
 check("the menu is a registered walkable entry",
@@ -442,6 +431,9 @@ static void input_router_home(void) { g_homes++; }
 void menu_view_set_armed(bool armed);   /* shipped definition spliced in later */
 static int  g_menu_exits;
 static void input_router_menu_exit(void) { menu_view_set_armed(false); g_menu_exits++; }
+/* §51: the app list's press opens the app through the router; recorded, not run. */
+static const orb_app_t *g_shown;
+static int input_router_show(const orb_app_t *a) { g_shown = a; return 0; }
 
 /* The two DISPLAY rows ask the idle-dim layer what is in force. Stubbed here with
  * settable globals, the way the zone list stubs orb_net: the menu must show the
@@ -1834,6 +1826,43 @@ int main(void)
         s_app = NULL;
     }
 
+    /* ---- plan §51: the app list a hold opens ---- */
+    {
+        g_opt_app_count = 2;                  /* Clock, then HSB, in the walk's order */
+        nvs_reset(); g_nvs_written = false;
+        menu_view_switcher(FAKE_APP2, 0);
+        ck("the list opens armed, on the app it was opened from",
+           s_armed && s_pg == &s_pages[PG_GO] && s_cur == 1);
+        ck("one row per app, then settings, and no back row",
+           page_rows() == 3 && s_pages[PG_GO].back_to == MENU_GO_NONE);
+        char b[40]; bool hi;
+        row_text(0, b, sizeof b, &hi); const bool r0 = strcmp(b, "Clock") == 0;
+        row_text(2, b, sizeof b, &hi);
+        ck("rows read the apps' titles, and the last is settings", r0 && strcmp(b, "settings") == 0);
+        menu_view_switcher(FAKE_APP, 1);
+        ck("a turn's step moves the cursor off the app it came from", s_cur == 1);
+        menu_view_switcher(FAKE_APP2, 5);
+        ck("the step clamps at the last row", s_cur == 2);
+        menu_view_switcher(FAKE_APP, -3);
+        ck("and at the first", s_cur == 0);
+        menu_view_switcher(&g_fake_shell, 0);
+        ck("from a face that is not a row, the list starts at the top", s_cur == 0);
+        g_shown = NULL;
+        menu_view_switcher(FAKE_APP, 1);
+        menu_view_apply_input(0, true);
+        ck("a press on an app's row opens that app", g_shown == FAKE_APP2);
+        menu_view_switcher(FAKE_APP, 2);
+        menu_view_apply_input(0, true);
+        ck("a press on settings opens the top page", s_armed && s_pg == &s_pages[PG_TOP] && s_cur == 0);
+        menu_view_switcher(FAKE_APP, 0);
+        menu_view_set_armed(false);
+        ck("leaving the list stores no position (it always opens on an app)", !g_nvs_written);
+        g_menu_exits = 0;
+        menu_view_switcher(FAKE_APP, 0);
+        ck("a hold on the list leaves the menu", menu_view_opt_long() && g_menu_exits == 1);
+        g_opt_app_count = 1;
+    }
+
     printf(fails ? "HARNESS FAILURES %d\n" : "HARNESS OK\n", fails);
     return fails ? 1 : 0;
 }
@@ -2502,20 +2531,13 @@ def main():
     check("the worker task still owns both card calls", not wbad, "; ".join(wbad))
     check("rotate still owns the screen swap (router)",
           "if (!screen_armed(s_current))" in _code_only(router_src))
-    check("long-press goes home to the clock (router)",
-          re.search(r"if \(lpress\) \{\s*orb_carousel_cancel\(\);\s*disarm_all\(\);"
-                    r"\s*set_screen\(orb_app_home\(\), true\);", router_src) is not None)
-    # Item 3 (owner ruling, 2026-10-25): a settled flick onto the shell ARMS it,
-    # so waiting on the menu reaches the list rather than the landing card. It is
-    # keyed on the SHELL kind, not a name, and on the settle-commit only — the
-    # press-commit and the bench's ?to= request keep their existing meanings, and
-    # the picker's two-level gate (D25) stays. Both halves are pinned: the arm
-    # fires on the settle, and it is gated on the kind so it cannot silently
-    # widen to every screen the day a second shell is registered.
-    check("settling onto the shell arms the menu (router, direct entry)",
-          re.search(r"orb_carousel_commit\(\);\s*\n\s*set_screen\(named, true\);\s*\n"
-                    r"\s*if \(named->kind == ORB_APP_KIND_SHELL\) arm_current\(\);",
-                    router_src) is not None)
+    check("long-press leaves for the app list (router, §51)",
+          re.search(r"if \(lpress\) \{\s*open_switcher\(0\);", router_src) is not None)
+    # Item 3 (owner ruling, 2026-10-25) armed the shell on a settled flick; §51 retired
+    # the flick, and the list it opens is armed by the switcher itself.
+    check("the switcher opens the menu armed on its app list (menu, §51)",
+          re.search(r"void menu_view_switcher\(const orb_app_t \*from, int step\)\n\{[\s\S]*?"
+                    r"s_armed = true;\s*s_pg = P\(PG_GO\);", menu_src) is not None)
     # And the exit door walks back to the entry the shell was entered from, so a
     # menu exit is not a trip to the landing card. A slug is resolved (a card row
     # can uninstall from inside the menu, and a stale pointer lands on a recycled
@@ -2573,8 +2595,8 @@ def main():
     check("the table rows name every page id exactly once",
           sorted(entry_ids) == sorted(["LANDING", "TOP", "APP", "DISPLAY",
                                        "PERMS", "CAPS", "APPS", "APPACT",
-                                       "ABOUT", "SHARE", "UNITS"])
-          and len(entry_ids) == 11, ",".join(entry_ids))
+                                       "ABOUT", "SHARE", "UNITS", "GO"])
+          and len(entry_ids) == 12, ",".join(entry_ids))
     # docs/knob-edit-plan.md: the timeout presets' id stays in the enum, so a stored
     # menu position keeps its page numbers, and is neither a page nor restorable.
     check("the retired timeout page keeps its number and nothing else",

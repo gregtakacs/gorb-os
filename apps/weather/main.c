@@ -5,10 +5,10 @@
  * minutes and never sooner than 15), keeps the knob, and draws: on the theme's rows when
  * the app's theme is in the pool, else on widgets.
  *
- * The knob (§2.4, flights' convention): unarmed, Home's Now is on the glass and a turn
- * moves between apps. A press arms: turning steps Home and the places, each showing its
- * Now. Press again for its hours (turning moves the cursor), again for its five days, and
- * a press there, or a hold anywhere, hands the knob back, the place chosen staying on the glass.
+ * The knob (§2.4, app-platform-plan.md §51) is one dial centred on Now, with no arming:
+ * clockwise the hours, the cursor on the next one first; anticlockwise the five days,
+ * tomorrow first. A fast spin stops on Now, and 20 s idle returns there. A press steps
+ * the place and keeps the position; a hold leaves the app. orb_dial.h keeps the dial.
  *
  * The theme's rows (apps/weather/editor/weather-bake.js), by slot: 0 the large icon,
  * 1..5 the small icons, 6..17 the hour bars, 18..22 the day bars, 23 the place dots, and
@@ -16,6 +16,7 @@
  * draws, so the geometry below is the whole layout. */
 #include "orb.h"
 #include "orb_stage.h"
+#include "orb_dial.h"
 #include "wx.h"
 
 #define CX 233
@@ -66,8 +67,6 @@ static rows_t R;
 
 /* ---- state ------------------------------------------------------------------------ */
 
-typedef enum { V_NOW, V_PLACES, V_HOURS, V_DAYS } view_t;
-
 static wx_where_t s_where[WX_PLACES];
 static int        s_nwhere;
 static bool       s_home_set;
@@ -80,9 +79,9 @@ static int64_t    s_pub_at;             /* wall s it landed, 0 = never */
 static wx_place_t s_work[WX_PLACES];    /* the answer being read */
 static wx_reader_t s_rd;
 
-static view_t s_view = V_NOW;
+/* The dial: 0 Now, k > 0 the k-th hour after the current one, -k the k-th day after today. */
+static orb_dial_t s_dial = { .idle_ms = ORB_DIAL_IDLE_MS };
 static int    s_sel;                    /* the place on the glass */
-static int    s_hcur;                   /* the hour cursor */
 static bool   s_visible, s_dirty = true;
 
 static int64_t now_s(void) { int64_t s; int32_t f; orb_now(&s, &f); return s; }
@@ -218,6 +217,17 @@ static int hour0(const wx_place_t *p)
     return i;
 }
 
+/* The dial's ends follow the answer on the glass: the hours still ahead, the days after
+ * today. With no answer yet the dial is Now alone. */
+static void dial_fit(const wx_place_t *p)
+{
+    if (!p || !p->have_now) { orb_dial_range(&s_dial, 0, 0); return; }
+    const int ahead = p->n_hours - hour0(p) - 1;
+    int days = p->n_days - 1;
+    if (days > WX_DAY_ROWS) days = WX_DAY_ROWS;
+    orb_dial_range(&s_dial, -(days > 0 ? days : 0), ahead > 0 ? ahead : 0);
+}
+
 static void age_text(char *b, size_t n)
 {
     b[0] = 0;
@@ -268,7 +278,7 @@ static void hide_all(void)
  * lines (five days and a blank between each) and a cell of half DAY_PITCH. */
 static int col_cy(int y0)
 {
-    const int h = R.col.spr.h, fh = h / (2 * WX_DAYS - 1);
+    const int h = R.col.spr.h, fh = h / (2 * WX_DAY_ROWS - 1);
     return y0 - fh / 2 + h / 2;
 }
 
@@ -279,10 +289,10 @@ static void draw_message(const char *title, const char *line)
     say(T_LINE - T_TITLE, CX, NOW_LINE_Y - 40, line, ORB_TONE_QUIET);
 }
 
-static void stage_now(const wx_place_t *p, bool armed)
+static void stage_now(const wx_place_t *p)
 {
     char b[96], age[32];
-    say(0, CX, NOW_TITLE_Y, s_where[s_sel].name, armed ? ORB_TONE_ACCENT : ORB_TONE_NORMAL);
+    say(0, CX, NOW_TITLE_Y, s_where[s_sel].name, ORB_TONE_NORMAL);
     if (s_nwhere > 1) pick(R.dots, wx_dot_frame(s_nwhere, s_sel), CX, NOW_DOTS_Y, 255);
     const int kind = wx_kind(p->now.code, p->now.day);
     pick(R.icon, kind, CX, NOW_ICON_Y, 255);
@@ -303,15 +313,14 @@ static void stage_now(const wx_place_t *p, bool armed)
 
 static void stage_hours(const wx_place_t *p)
 {
-    const int h0 = hour0(p), avail = p->n_hours - h0;
-    if (avail <= 0) { draw_message("No hours yet", "the next update brings them"); return; }
-    if (s_hcur >= avail) s_hcur = avail - 1;
+    const int h0 = hour0(p), avail = p->n_hours - h0, cur = s_dial.pos;
+    if (avail <= 1) { draw_message("No hours yet", "the next update brings them"); return; }
     float lo = 1e9f, hi = -1e9f;
     for (int i = h0; i < p->n_hours; i++) {
         if (p->hour[i].t < lo) lo = p->hour[i].t;
         if (p->hour[i].t > hi) hi = p->hour[i].t;
     }
-    const int base = (s_hcur / N_BAR) * N_BAR;
+    const int base = (cur / N_BAR) * N_BAR;
     for (int k = 0; k < N_BAR; k++) {
         const int i = h0 + base + k;
         if (R.bar[k] < 0) continue;
@@ -320,12 +329,13 @@ static void stage_hours(const wx_place_t *p)
         const int ang = (wx_local_hour(p, h->time) % 12) * 300;      /* a clock face */
         const double a = ang / 10.0 * M_PI / 180.0;
         orb_stage_frame(R.bar[k], wx_bar_frame(h->t, lo, hi, h->pop));
-        orb_stage_opacity(R.bar[k], base + k == s_hcur ? 255 : 120);
+        orb_stage_opacity(R.bar[k], base + k == cur ? 255 : 120);
         orb_stage_pose(R.bar[k], ang, (int)lround(HR_BAR_R * orb_sin(a)), (int)lround(-HR_BAR_R * orb_cos(a)));
     }
-    const wx_hour_t *h = &p->hour[h0 + s_hcur];
+    const wx_hour_t *h = &p->hour[h0 + cur];
     char b[48];
-    snprintf(b, sizeof b, "%02d:00", wx_local_hour(p, h->time));
+    if (s_nwhere > 1) snprintf(b, sizeof b, "%s  %02d:00", s_where[s_sel].name, wx_local_hour(p, h->time));
+    else snprintf(b, sizeof b, "%02d:00", wx_local_hour(p, h->time));
     say(0, CX, HR_TITLE_Y, b, ORB_TONE_NORMAL);
     const int kind = wx_kind(h->code, wx_is_day(p, h->time));
     pick(R.icon, kind, CX, HR_ICON_Y, 255);
@@ -338,27 +348,30 @@ static void stage_hours(const wx_place_t *p)
 
 static void stage_days(const wx_place_t *p)
 {
+    /* The days after today, tomorrow first (§2.4); today is Now's. The row under the
+     * dial's cursor stands at full strength, the others dim. */
     char names[72] = "", lows[56] = "", highs[56] = "", pops[56] = "";
     float wlo = 1e9f, whi = -1e9f;
-    for (int i = 0; i < p->n_days; i++) {
+    for (int i = 1; i < p->n_days; i++) {
         if (p->day[i].lo < wlo) wlo = p->day[i].lo;
         if (p->day[i].hi > whi) whi = p->day[i].hi;
     }
-    for (int i = 0; i < p->n_days && i < WX_DAYS; i++) {
-        const wx_day_t *d = &p->day[i];
-        const int y = DAY_Y0 + i * DAY_PITCH;
+    const int sel = -s_dial.pos - 1;
+    for (int i = 0; i + 1 < p->n_days && i < WX_DAY_ROWS; i++) {
+        const wx_day_t *d = &p->day[i + 1];
+        const int y = DAY_Y0 + i * DAY_PITCH, opa = i == sel ? 255 : 110;
         const char *nl = i ? "\n\n" : "";
         size_t n = strlen(names);
-        snprintf(names + n, sizeof names - n, "%s%s", nl, i ? WDAY[wx_local_wday(p, d->time)] : "Today");
+        snprintf(names + n, sizeof names - n, "%s%s", nl, WDAY[wx_local_wday(p, d->time)]);
         n = strlen(lows);  snprintf(lows + n, sizeof lows - n, "%s%d\xC2\xB0", nl, deg(d->lo));
         n = strlen(highs); snprintf(highs + n, sizeof highs - n, "%s%d\xC2\xB0", nl, deg(d->hi));
         n = strlen(pops);
         if (d->pop >= 0) snprintf(pops + n, sizeof pops - n, "%s%d%%", nl, d->pop);
         else snprintf(pops + n, sizeof pops - n, "%s-", nl);
-        if (i < N_SICON) pick(R.sicon[i], wx_kind(d->code, true), DAY_ICON_X, y, 255);
-        if (i < N_DAYB) pick(R.dayb[i], wx_day_frame(d->lo, d->hi, wlo, whi), DAY_BAR_X, y, 255);
+        if (i < N_SICON) pick(R.sicon[i], wx_kind(d->code, true), DAY_ICON_X, y, opa);
+        if (i < N_DAYB) pick(R.dayb[i], wx_day_frame(d->lo, d->hi, wlo, whi), DAY_BAR_X, y, opa);
     }
-    say(0, CX, DAY_TITLE_Y, "5 days", ORB_TONE_NORMAL);
+    say(0, CX, DAY_TITLE_Y, s_nwhere > 1 ? s_where[s_sel].name : "5 days", ORB_TONE_NORMAL);
     const int cy = col_cy(DAY_Y0);
     say(T_COLA - T_TITLE, DAY_COLA_L + R.colw[0] / 2, cy, names, ORB_TONE_NORMAL);
     /* The lows and the rain chances are the quiet columns: one font, dimmed by the row. */
@@ -378,12 +391,10 @@ static void draw_stage(void)
         return;
     }
     hide_all();
-    switch (s_view) {
-    case V_NOW:    stage_now(p, false); break;
-    case V_PLACES: stage_now(p, true); break;
-    case V_HOURS:  stage_hours(p); break;
-    case V_DAYS:   stage_days(p); break;
-    }
+    dial_fit(p);
+    if (s_dial.pos > 0) stage_hours(p);
+    else if (s_dial.pos < 0) stage_days(p);
+    else stage_now(p);
 }
 
 /* ---- drawing on widgets (no theme in the pool) ------------------------------------ */
@@ -408,26 +419,23 @@ static void draw_widgets(void)
     else if (!p || !p->have_now) {
         snprintf(t, sizeof t, "%s", s_where[s_sel].name);
         snprintf(line, sizeof line, "%s", s_busy ? "fetching the forecast" : "no forecast yet");
-    } else if (s_view == V_HOURS) {
-        const int h0 = hour0(p);
-        if (s_hcur >= p->n_hours - h0) s_hcur = p->n_hours - h0 - 1;
-        if (s_hcur < 0) s_hcur = 0;
-        const wx_hour_t *h = &p->hour[h0 + s_hcur];
+    } else if ((dial_fit(p), s_dial.pos > 0)) {
+        const wx_hour_t *h = &p->hour[hour0(p) + s_dial.pos];
         snprintf(t, sizeof t, "%s  %02d:00", s_where[s_sel].name, wx_local_hour(p, h->time));
         snprintf(big, sizeof big, "%d\xC2\xB0", deg(h->t));
         snprintf(line, sizeof line, "%s", COND[wx_kind(h->code, wx_is_day(p, h->time))]);
         if (h->pop >= 0) snprintf(det, sizeof det, "rain %d%%", h->pop);
-    } else if (s_view == V_DAYS) {
+    } else if (s_dial.pos < 0) {
         snprintf(t, sizeof t, "%s  5 days", s_where[s_sel].name);
-        for (int i = 0; i < p->n_days; i++) {
+        for (int i = 1; i < p->n_days && i <= WX_DAY_ROWS; i++) {
             const wx_day_t *d = &p->day[i];
             const size_t n = strlen(det);
             snprintf(det + n, sizeof det - n, "%s%s  %d\xC2\xB0 / %d\xC2\xB0  %s\n",
-                     i ? WDAY[wx_local_wday(p, d->time)] : "Today", "", deg(d->lo), deg(d->hi),
+                     i == -s_dial.pos ? "> " : "", WDAY[wx_local_wday(p, d->time)], deg(d->lo), deg(d->hi),
                      COND[wx_kind(d->code, true)]);
         }
     } else {
-        snprintf(t, sizeof t, "%s%s", s_where[s_sel].name, s_view == V_PLACES ? "  <>" : "");
+        snprintf(t, sizeof t, "%s", s_where[s_sel].name);
         snprintf(big, sizeof big, "%d\xC2\xB0", deg(p->now.t));
         snprintf(line, sizeof line, "%s", COND[wx_kind(p->now.code, p->now.day)]);
         snprintf(det, sizeof det, "feels %d\xC2\xB0   wind %d %s", deg(p->now.feels),
@@ -472,6 +480,7 @@ static void find_rows(void)
 
 ORB_EXPORT("orb_init") int32_t orb_init(void)
 {
+    orb_knob_dial();                     /* every turn is the dial's, from the first click */
     s_themed = orb_stage_open(&s_stage) == ORB_OK && !s_stage.base;
     if (s_themed) {
         find_rows();
@@ -502,7 +511,7 @@ static void set_visible(bool v)
     if (v) s_dirty = true;
 }
 
-ORB_EXPORT("orb_activate") void orb_activate(void) { set_visible(true); redraw(); }
+ORB_EXPORT("orb_activate") void orb_activate(void) { orb_dial_home(&s_dial); set_visible(true); redraw(); }
 ORB_EXPORT("orb_resume") void orb_resume(void) { set_visible(true); redraw(); }
 ORB_EXPORT("orb_show") void orb_show(void) { set_visible(true); redraw(); }
 ORB_EXPORT("orb_suspend") void orb_suspend(void) { s_visible = false; }
@@ -529,47 +538,35 @@ ORB_EXPORT("orb_service") void orb_service(void)
         s_units_gen = orb_units_gen();
         s_dirty = true;
     }
+    if (orb_dial_idle(&s_dial, up_ms())) s_dirty = true;   /* §51: a glance shows Now */
     const bool was_busy = s_busy;
     feed_step();
     if (was_busy != s_busy) s_dirty = true;
     if (s_dirty) redraw();
 }
 
+/* A hold leaves the app; the router's disarm on the way out sends the dial home, so
+ * coming back shows Now. orb_knob_dial keeps the turn the app's while it shows. */
 ORB_EXPORT("orb_set_armed") int32_t orb_set_armed(int32_t armed)
 {
-    if (armed) {
-        if (s_view == V_NOW) s_view = V_PLACES;
-    } else {
-        /* Back to Now on the place last chosen: a full cycle, or a hold, keeps it
-         * (owner, 2026-11-06); only the hour cursor starts over. */
-        s_view = V_NOW;
-        s_hcur = 0;
-    }
-    s_dirty = true;
-    redraw();
-    return s_view != V_NOW;
+    if (!armed) { orb_dial_home(&s_dial); s_dirty = true; }
+    return armed;
 }
 
+/* Turn: along the dial. Press: the next place, the position kept, so the same hour or
+ * day can be read for each place in turn (§2.4). */
 ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
 {
-    if (s_view == V_NOW) return;
-    if (pressed) {
-        if (s_view == V_PLACES) { s_view = V_HOURS; s_hcur = 0; }
-        else if (s_view == V_HOURS) s_view = V_DAYS;
-        else {
-            orb_set_armed(0);
-            orb_armed(0);                /* hand the knob back */
-            return;
-        }
-    } else if (delta && s_view == V_PLACES && s_nwhere > 1) {
-        s_sel = (s_sel + (delta > 0 ? 1 : s_nwhere - 1)) % s_nwhere;
-    } else if (delta && s_view == V_HOURS) {
-        s_hcur += delta > 0 ? 1 : -1;
-        if (s_hcur < 0) s_hcur = 0;
-        if (s_hcur > WX_HOURS - 1) s_hcur = WX_HOURS - 1;
-    } else {
-        return;
+    bool moved = false;
+    if (pressed && s_nwhere > 1) {
+        s_sel = (s_sel + 1) % s_nwhere;
+        moved = true;
     }
+    if (delta) {
+        dial_fit(place());
+        moved |= orb_dial_turn(&s_dial, delta, up_ms());
+    }
+    if (!moved) return;
     s_dirty = true;
     redraw();
 }

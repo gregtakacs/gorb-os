@@ -81,6 +81,11 @@ static bool menu_long(orb_app_t *app)
     (void)app;
     return menu_view_opt_long();
 }
+static void menu_switcher(orb_app_t *app, const orb_app_t *from, int step)
+{
+    (void)app;
+    menu_view_switcher(from, step);
+}
 
 static const orb_app_iface_t s_menu_iface = {
     .init       = menu_init,
@@ -95,6 +100,8 @@ static const orb_app_iface_t s_menu_iface = {
      * an app's options are drawn here, so the open group is this file's state and
      * the app never learns it exists. */
     .opt_long   = menu_long,
+    /* §51: a hold, or a turn on a face with no dial, opens the app list here. */
+    .switcher   = menu_switcher,
 };
 
 /* ---- the behaviour-module registry (D1 / C6) ------------------------------
@@ -1094,6 +1101,14 @@ bool orb_app_opt_long(const orb_app_t *app)
      * router's to spend on going home (C8). */
     if (!app || !app->iface || !app->iface->opt_long) return false;
     return app->iface->opt_long((orb_app_t *)app);
+}
+
+bool orb_app_open_switcher(const orb_app_t *from, int step)
+{
+    const orb_app_t *home = orb_app_home();
+    if (!home || !home->iface || !home->iface->switcher) return false;
+    home->iface->switcher((orb_app_t *)home, from, step);
+    return true;
 }
 
 void orb_app_opt_focus(const orb_app_t *app, int idx)

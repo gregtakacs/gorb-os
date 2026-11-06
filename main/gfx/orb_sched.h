@@ -161,6 +161,12 @@ void orb_sched_set_running(bool on);
  * the dial's own beat. Called from the dial's tick, so the period picked at the end of
  * that same tick already honours it. A dial that never eases never calls it. */
 void orb_sched_burst(uint32_t ms);
+/* A knob event changed what an app shows: tick now, at the panel's ceiling, for the next
+ * `ms`, instead of waiting out the beat. A still theme beats once a second (Weather's
+ * Scope bakes `step 1/s`), so without this a click reached the glass up to a second
+ * late (plan §51, measured on Gold 2026-11-06). The deadline ladder re-anchors on the
+ * early tick, so the beat resumes cleanly when the burst runs out. */
+void orb_sched_kick(uint32_t ms);
 void orb_sched_resume(void);
 void orb_sched_pause(void);
 #if CONFIG_ORB_DEBUG_HTTP

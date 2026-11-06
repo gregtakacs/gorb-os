@@ -1213,6 +1213,14 @@ void orb_sched_burst(uint32_t ms)
     if (!s_burst_until || (int32_t)(until - s_burst_until) > 0) s_burst_until = until;
 }
 
+void orb_sched_kick(uint32_t ms)
+{
+    orb_sched_burst(ms);
+    if (!s_tick_timer) return;
+    s_tick_due = 0;                       /* the early tick re-anchors the ladder */
+    lv_timer_ready(s_tick_timer);
+}
+
 bool orb_sched_started(void) { return s_tick_timer != NULL; }
 bool orb_sched_running(void) { return s_running; }
 void orb_sched_set_running(bool on) { s_running = on; }

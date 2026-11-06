@@ -102,7 +102,7 @@ int main(void)
     CK(strstr(url, "current=temperature_2m,apparent_temperature,weather_code,is_day,wind_speed_10m") &&
        strstr(url, "hourly=temperature_2m,weather_code,precipitation_probability") &&
        strstr(url, "precipitation_probability_max,sunrise,sunset") &&
-       strstr(url, "forecast_hours=24&forecast_days=5&timezone=auto&timeformat=unixtime"),
+       strstr(url, "forecast_hours=24&forecast_days=6&timezone=auto&timeformat=unixtime"),
        "the request names every field the screens read");
     CK(wx_url(url, 64, w, 4) == 0 && wx_url(url, sizeof url, w, 0) == 0 && wx_url(url, sizeof url, w, 5) == 0,
        "no request that would not fit, and none for 0 or 5 places");

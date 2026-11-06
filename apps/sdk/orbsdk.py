@@ -505,7 +505,7 @@ def cmd_binds(a):
 
 # What an SDK tarball carries, relative to this directory (plus orbapp.py, VERSION,
 # README.md and LICENSE from the clone). Everything else here is the clone's own.
-DIST_FILES = ("orbsdk.py", "binds.json", "orb.h", "orb_stage.h", "clk_types.h", "orb_rt.c")
+DIST_FILES = ("orbsdk.py", "binds.json", "orb.h", "orb_stage.h", "orb_dial.h", "clk_types.h", "orb_rt.c")
 DIST_DIRS = ("libc", "template")
 
 

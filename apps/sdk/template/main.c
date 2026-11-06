@@ -1,16 +1,21 @@
 /**
- * @SLUG@ — a gorb-os app. Turn the knob while it is armed (press to arm, hold to
- * disarm) to change the count; the count is a declared setting, so it survives a
- * reboot and the hub can edit it. The clock line shows the beat working.
+ * @SLUG@ — a gorb-os app. The knob is the app's own dial (apps/README.md, "The knob"):
+ * turning moves along it from the first click, 0 is home, a fast spin stops on home and
+ * 20 s without a turn returns there. A press saves the value as the "saved" setting, so
+ * it survives a reboot and the hub can edit it. A hold leaves the app; the OS does that.
+ * The clock line shows the beat working.
  *
  * Everything the OS offers is in orb.h; build with `orbsdk.py pack .`.
  */
 #include "orb.h"
+#include "orb_dial.h"
 #include <stdio.h>
 
-static int32_t s_title, s_count_lbl, s_clock, s_hint;
-static int32_t s_count;
-static int     s_armed;
+static int32_t s_title, s_value_lbl, s_clock, s_hint;
+static int32_t s_saved;
+static orb_dial_t s_dial = { .lo = -50, .hi = 50, .idle_ms = ORB_DIAL_IDLE_MS };
+
+static int64_t up_ms(void) { return orb_uptime_us() / 1000; }
 
 static int32_t label(int32_t font, uint32_t rgb, const char *text)
 {
@@ -21,13 +26,14 @@ static int32_t label(int32_t font, uint32_t rgb, const char *text)
     return h;
 }
 
-static void show_count(void)
+static void show_value(void)
 {
-    char buf[24];
-    snprintf(buf, sizeof buf, "%d", (int)s_count);
-    orb_ui_text(s_count_lbl, buf);
-    orb_ui_set(s_count_lbl, ORB_P_TEXT_COLOR, s_armed ? 0x40C0FF : 0xFFFFFF);
-    orb_ui_text(s_hint, s_armed ? "turn: count   hold: done" : "press to edit");
+    char buf[40];
+    snprintf(buf, sizeof buf, "%d", (int)s_dial.pos);
+    orb_ui_text(s_value_lbl, buf);
+    orb_ui_set(s_value_lbl, ORB_P_TEXT_COLOR, s_dial.pos == s_saved ? 0x40C0FF : 0xFFFFFF);
+    snprintf(buf, sizeof buf, "saved %d   press: save", (int)s_saved);
+    orb_ui_text(s_hint, buf);
 }
 
 static void show_clock(void)
@@ -45,48 +51,47 @@ static void show_clock(void)
 
 ORB_EXPORT("orb_init") int32_t orb_init(void)
 {
-    orb_cfg_get("count", &s_count);
+    orb_knob_dial();                     /* every turn and press is ours while we show */
+    orb_cfg_get("saved", &s_saved);
     s_title = label(ORB_FONT_16, 0x909090, "@TITLE@");
     orb_ui_align(s_title, ORB_AL_TOP_MID, 0, 90);
-    s_count_lbl = label(ORB_FONT_48, 0xFFFFFF, "0");
-    orb_ui_align(s_count_lbl, ORB_AL_CENTER, 0, -10);
+    s_value_lbl = label(ORB_FONT_48, 0xFFFFFF, "0");
+    orb_ui_align(s_value_lbl, ORB_AL_CENTER, 0, -10);
     s_clock = label(ORB_FONT_16, 0x606060, "");
     orb_ui_align(s_clock, ORB_AL_CENTER, 0, 50);
     s_hint = label(ORB_FONT_14, 0x909090, "");
     orb_ui_align(s_hint, ORB_AL_BOTTOM_MID, 0, -70);
-    show_count();
+    show_value();
     show_clock();
-    orb_logf("ready, count=%d", (int)s_count);
+    orb_logf("ready, saved=%d", (int)s_saved);
     return ORB_OK;
 }
+
+/* Back on the glass: home first, so a glance always shows the same view. */
+ORB_EXPORT("orb_activate") void orb_activate(void) { orb_dial_home(&s_dial); }
 
 ORB_EXPORT("orb_show") void orb_show(void)
 {
     orb_set_beat(1000);
-    show_count();
+    show_value();
     show_clock();
     orb_ui_refresh();
 }
 
 ORB_EXPORT("orb_tick") void orb_tick(uint32_t now_ms)
 {
+    (void)now_ms;
+    if (orb_dial_idle(&s_dial, up_ms())) show_value();
     show_clock();
 }
 
+/* delta > 0 is clockwise; |delta| > 1 only on a fast spin (the OS accelerates). */
 ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
 {
-    if (!s_armed || !delta) return;
-    s_count += delta;
-    if (s_count < 0) s_count = 0;
-    if (s_count > 9999) s_count = 9999;
-    show_count();
-}
-
-ORB_EXPORT("orb_set_armed") int32_t orb_set_armed(int32_t armed)
-{
-    if (s_armed && !armed) orb_cfg_set("count", s_count);    /* commit on the edge */
-    s_armed = armed != 0;
-    show_count();
-    orb_ui_refresh();
-    return s_armed;
+    if (pressed) {
+        s_saved = s_dial.pos;
+        orb_cfg_set("saved", s_saved);   /* a press is a deliberate edge: save on it */
+    }
+    if (delta) orb_dial_turn(&s_dial, delta, up_ms());
+    show_value();
 }

@@ -69,13 +69,32 @@ its address** and type the address the orb shows on its **ABOUT** page.
 
 ## Using the orb
 
+The knob does three things, the same way in every app:
+
 | Knob | Does |
 |---|---|
-| Turn | move to the next or previous app |
-| Press | open the app on the glass (an app's editor, for example the colour picker) |
-| Hold | close it and go back; from an app, hold to reach the menu |
+| Turn | moves through what the app is showing |
+| Press | the app's one action |
+| Hold | leaves the app for the app list |
 
-The menu holds the orb's own pages:
+Every app has a home view, and turning moves away from it in both directions: one kind
+of thing lies clockwise, another anticlockwise. A slow turn moves one step per click. A
+quick spin moves several steps per click, and it always stops on the home view, so one
+flick back from anywhere takes you home. Leave the knob for 20 seconds and the app goes
+back to its home view by itself.
+
+| App | Home | Clockwise | Anticlockwise | Press |
+|---|---|---|---|---|
+| **Weather** | the weather now | hour by hour, from the next hour | the next five days, from tomorrow | the next place |
+| **Flights** | the radar | aircraft, nearest first, each with its details | aircraft, farthest first | the next range |
+| **Clock** | the watch face | opens the app list | opens the app list | nothing |
+
+Weather keeps your hour or day when you press for the next place, so you can compare
+the same afternoon in two places.
+
+**The app list.** Hold the knob in any app, or turn it on the clock, and the list of
+apps appears with the one you came from highlighted. Turn to choose, press to open,
+hold to go back where you were. The last row, **settings**, opens the orb's own pages:
 
 - **ABOUT**: the orb's network address, firmware version and SD card, with a QR code that opens
   the orb's own web page on a phone;
@@ -83,7 +102,10 @@ The menu holds the orb's own pages:
 - **PERMISSIONS**: what each app may use (network, sound, location and so on). An app
   that was refused something leaves a `*` here;
 - **APPS**: the installed apps;
+- **UNITS**: temperature, speed and distance, for every app;
 - a page per app with that app's options, and **Themes**, which picks the clock's face.
+
+In settings, a hold goes back to the app you came from.
 
 The display dims when nobody has touched the orb for a while. Moving the orb wakes it.
 

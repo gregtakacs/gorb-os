@@ -46,7 +46,7 @@ size_t wx_url(char *buf, size_t cap, const wx_where_t *w, int n)
         "&current=temperature_2m,apparent_temperature,weather_code,is_day,wind_speed_10m"
         "&hourly=temperature_2m,weather_code,precipitation_probability"
         "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset"
-        "&forecast_hours=24&forecast_days=5&timezone=auto&timeformat=unixtime", la, lo);
+        "&forecast_hours=24&forecast_days=6&timezone=auto&timeformat=unixtime", la, lo);
     return k > 0 && (size_t)k < cap ? (size_t)k : 0;
 }
 

@@ -92,6 +92,7 @@ typedef enum {
     PG_ABOUT,         /* inert identity list — no press does anything  */
     PG_SHARE,         /* D38: the USB share window's own card, forced over any page */
     PG_UNITS,         /* weather-plan §2.1: temperature, speed, distance for every app */
+    PG_GO,            /* plan §51: the app list a hold opens, then settings */
     PG_N
 } page_t;
 
@@ -2316,6 +2317,62 @@ static void go_to(int to, int cur)
     if (s_pg->enter) s_pg->enter();
 }
 
+/* ---- plan §51: the app list ------------------------------------------------------
+ * A hold anywhere, or a turn on a face with no dial of its own, lands here: every app
+ * the knob can show, in the walk's order, then "settings" for the pages this menu has
+ * always held. The shell is not a row of its own list. Every row navigates, so the
+ * page has no back row; a hold leaves the way it leaves every page, back to the app it
+ * was opened from. */
+static const orb_app_t *go_app(int row)
+{
+    for (size_t i = 0; i < orb_app_count(); i++) {
+        const orb_app_t *a = orb_app_at(i);
+        if (!a || a->kind == ORB_APP_KIND_SHELL) continue;
+        if (row-- == 0) return a;
+    }
+    return NULL;
+}
+
+static int rows_go(void)
+{
+    int n = 0;
+    while (go_app(n)) n++;
+    return n + 1;                                    /* +1: settings */
+}
+
+static void label_go(int row, char *out, size_t outsz, bool *sel_hi)
+{
+    if (sel_hi) *sel_hi = false;
+    const orb_app_t *a = go_app(row);
+    if (a) snprintf(out, outsz, "%s", a->title ? a->title : a->slug);
+    else snprintf(out, outsz, "settings");
+}
+
+static const char *title_go(void) { return "OPEN"; }
+
+static void act_go(int row)
+{
+    const orb_app_t *a = go_app(row);
+    if (a) { input_router_show(a); return; }
+    go_to(PG_TOP, 0);
+    repaint();
+}
+
+void menu_view_switcher(const orb_app_t *from, int step)
+{
+    edit_end();
+    s_armed = true;
+    s_pg = P(PG_GO);
+    s_cur = 0;
+    for (int r = 0; go_app(r); r++)
+        if (go_app(r) == from) { s_cur = r; break; }
+    s_cur += step;
+    cursor_fit(page_rows());
+    s_ui.status[0] = '\0';
+    repaint();
+    ESP_LOGI(TAG, "app list open on row %d", s_cur);
+}
+
 /* The inventory (declared above; the definitions it names ship in this file,
  * in this order). back_to is where "<- back" goes — the page's parent and the
  * row it lands on, in the one place the page itself is written — and
@@ -2357,6 +2414,8 @@ const menu_page_t s_pages[PG_N] = {
      * it (menu_view_share_gate), and only the window can take it off. */
     [PG_SHARE]   = { .rows = rows_share, .label = label_share, .title = title_share,
                      .hint = hint_share, .back_to = MENU_GO_NONE, .back_cur = 0 },
+    [PG_GO]      = { .rows = rows_go, .label = label_go, .title = title_go,
+                     .act = act_go, .back_to = MENU_GO_NONE, .back_cur = 0 },
 };
 
 /* ---- docs/knob-edit-plan.md §1.1: the edit mode --------------------------------------

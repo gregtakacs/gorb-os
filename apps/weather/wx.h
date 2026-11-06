@@ -17,7 +17,8 @@
 
 #define WX_PLACES   4      /* home and the three places (§0 ruling 1) */
 #define WX_HOURS   24
-#define WX_DAYS     5      /* §0 ruling 2 */
+#define WX_DAYS     6      /* today, for Now's high and low, and the five after it */
+#define WX_DAY_ROWS 5      /* §0 ruling 2: the days view, tomorrow first (§2.4) */
 #define WX_NAME_MAX 24
 
 /* The ten icon conditions, in the order of the theme's icon frames (plan §2.4). */

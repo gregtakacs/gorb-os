@@ -4,7 +4,7 @@
  * Everything that is the tracker's own lives here: which provider to ask and how
  * often, resting a provider that refused, adsb.lol's hourly budget, the streaming
  * parse (readsb.c), the contact table and its dead reckoning (model.c), route
- * lookups, the radar and the knob's three levels. What it borrows from the OS is the
+ * lookups, the radar and the knob's dial (§51). What it borrows from the OS is the
  * HTTPS fetch (orb.net_*: one request at a time, gated, run off the UI task, with the
  * owner's adsb.lol key attached by the OS and never seen here), the home location,
  * its declared settings, a canvas with drawn primitives, and the beat.
@@ -17,6 +17,7 @@
  */
 #include "orb.h"
 #include "orb_stage.h"
+#include "orb_dial.h"
 
 #include "model.h"
 #include "readsb.h"
@@ -74,8 +75,14 @@ static void range_text(char *b, size_t n)
 }
 static bool       s_visible;
 
-typedef enum { MODE_ROAM, MODE_ZOOM, MODE_INFO } knob_mode_t;
-static knob_mode_t s_mode;
+/* The knob is one dial centred on the plain scope (app-platform-plan.md §51, flight-
+ * tracker-design "Knob"): clockwise the aircraft nearest first, anticlockwise farthest
+ * first, each with its card; a press steps the range; a hold leaves. The dial's position
+ * is re-read from the selected aircraft before every turn, because the order re-sorts
+ * by distance on every poll and the card follows its aircraft, not a slot. */
+static orb_dial_t s_dial = { .idle_ms = ORB_DIAL_IDLE_MS };
+static int8_t     s_side = 1;            /* which way the selection was reached */
+static int64_t    s_rng_until;           /* the header names the range until then */
 
 /* Home is the OS's: one owner setting, read through the location cap. A revoked cap
  * reads as no home, and the footer says why. */
@@ -726,19 +733,31 @@ static void draw_stage(void)
     say(LAB_RNG, rng, ORB_TONE_NORMAL, 0x8A9A90);
 }
 
+/* How many aircraft the glass draws: on a theme, the plane rows and then the dots take
+ * the nearest-first order (draw_stage), and the rest are tracked but not shown. The dial
+ * stops at the drawn ones, so a card never describes an aircraft nobody can see. */
+static int drawn_n(void)
+{
+    const int cap = s_themed ? s_nplanes + s_ndots : s_m.norder;
+    return s_m.norder < cap ? s_m.norder : cap;
+}
+
 static void draw_text(void)
 {
     char b[64];
-    /* Info always shows a card while anything is drawn: the selected contact left the
-     * range or aged out, so the nearest takes over. */
-    if (s_mode == MODE_INFO && fm_find(&s_m, s_sel) < 0) fm_sel_step(&s_m, "", 1, s_sel);
-    /* The header says which level the knob is on, so a turn is never a guess. */
-    if (s_mode == MODE_ZOOM)
-        { char r[12]; range_text(r, sizeof r); snprintf(b, sizeof b, "zoom  %s", r); }
-    else if (s_mode == MODE_INFO && s_m.norder)
-        snprintf(b, sizeof b, "%d of %d", fm_find(&s_m, s_sel) + 1, s_m.norder);
-    else if (s_mode == MODE_INFO)
-        snprintf(b, sizeof b, "no aircraft in range");
+    /* The selected aircraft left the range or aged out: its card closes and the dial
+     * is home, rather than a different aircraft's card taking its place unasked. */
+    if (s_sel[0] && (fm_find(&s_m, s_sel) < 0 || fm_find(&s_m, s_sel) >= drawn_n())) {
+        s_sel[0] = 0;
+        orb_dial_home(&s_dial);
+    }
+    /* The header says what the knob last did: the range a press chose, for a moment, or
+     * which aircraft the card is, so a turn is never a guess. */
+    const bool rng_note = now_ms() < s_rng_until, accent = rng_note || s_sel[0];
+    if (rng_note)
+        { char r[12]; range_text(r, sizeof r); snprintf(b, sizeof b, "range  %s", r); }
+    else if (s_sel[0])
+        snprintf(b, sizeof b, "%d of %d", fm_find(&s_m, s_sel) + 1, drawn_n());
     else {
         /* What the glass can show: the plane rows, and the dots when the theme has them. A
          * count past it says how many are drawn, so the header never promises more. */
@@ -746,8 +765,7 @@ static void draw_text(void)
         if (s_m.norder > shown) snprintf(b, sizeof b, "%d aircraft, %d shown", s_m.norder, shown);
         else snprintf(b, sizeof b, "%d aircraft", s_m.norder);
     }
-    say(LAB_HEAD, b, s_mode == MODE_ROAM ? ORB_TONE_NORMAL : ORB_TONE_ACCENT,
-        s_mode == MODE_ROAM ? 0xD0D0D0 : 0x39FF14);
+    say(LAB_HEAD, b, accent ? ORB_TONE_ACCENT : ORB_TONE_NORMAL, accent ? 0x39FF14 : 0xD0D0D0);
 
     const int64_t age = F.pub_ms ? now_ms() - F.pub_ms : -1;
     uint32_t col = 0x909090;
@@ -852,6 +870,7 @@ static void stage_rows(void)
 
 ORB_EXPORT("orb_init") int32_t orb_init(void)
 {
+    orb_knob_dial();                     /* every turn is the dial's, from the first click */
     s_themed = orb_stage_open(&s_stage) == ORB_OK && !s_stage.base;
     if (s_themed) {
         stage_rows();
@@ -909,7 +928,7 @@ static void set_visible(bool v)
     else schedule_next();
 }
 
-ORB_EXPORT("orb_activate") void orb_activate(void) { set_visible(true); }
+ORB_EXPORT("orb_activate") void orb_activate(void) { s_sel[0] = 0; orb_dial_home(&s_dial); set_visible(true); }
 ORB_EXPORT("orb_resume")   void orb_resume(void)   { set_visible(true); }
 ORB_EXPORT("orb_suspend")  void orb_suspend(void)  { set_visible(false); }
 
@@ -921,6 +940,9 @@ ORB_EXPORT("orb_show") void orb_show(void)
 
 ORB_EXPORT("orb_tick") void orb_tick(uint32_t now)
 {
+    (void)now;
+    /* §51: 20 s without a turn closes the card, so a glance shows the scope. */
+    if (orb_dial_idle(&s_dial, now_ms())) s_sel[0] = 0;
     redraw();
 }
 
@@ -942,42 +964,46 @@ ORB_EXPORT("orb_service") void orb_service(void)
     feed_step();
 }
 
+/* A hold leaves the app; the router's disarm on the way out sends the dial home, so
+ * coming back shows the plain scope. orb_knob_dial keeps the turn the app's. */
 ORB_EXPORT("orb_set_armed") int32_t orb_set_armed(int32_t armed)
 {
-    if ((s_mode != MODE_ROAM) == (armed != 0)) return s_mode != MODE_ROAM;
-    s_mode = armed ? MODE_ZOOM : MODE_ROAM;
-    if (!armed) {
-        s_sel[0] = 0;
-        orb_cfg_set("range", s_set.range);                  /* commit edge */
-        s_cfg_gen = orb_cfg_gen();
-    }
-    redraw();
-    return s_mode != MODE_ROAM;
+    if (!armed && s_sel[0]) { s_sel[0] = 0; orb_dial_home(&s_dial); redraw(); }
+    return armed;
+}
+
+/* The selected aircraft's place on the dial: +k the k-th nearest when reached
+ * clockwise, -k the k-th farthest drawn when reached the other way, 0 none. */
+static void dial_sync(void)
+{
+    const int n = drawn_n(), i = s_sel[0] ? fm_find(&s_m, s_sel) : -1;
+    s_dial.lo = -n;
+    s_dial.hi = n;
+    s_dial.pos = i < 0 || i >= n ? 0 : s_side > 0 ? i + 1 : -(n - i);
 }
 
 ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
 {
-    if (s_mode == MODE_ROAM) return;
     if (pressed) {
-        if (s_mode == MODE_ZOOM) {
-            s_mode = MODE_INFO;          /* the nearest aircraft's card opens */
-            fm_sel_step(&s_m, "", 1, s_sel);
-        } else {
-            /* Back to turning between apps: the router reads the disarm on its
-             * next poll. */
-            orb_set_armed(0);
-            orb_armed(0);
-            return;
+        /* The next range, wrapping: the next poll asks for the new radius, the rings
+         * rescale at once, and the header names it for a moment. */
+        s_set.range = (s_set.range + 1) % N_RANGES;
+        orb_cfg_set("range", s_set.range);
+        s_cfg_gen = orb_cfg_gen();
+        F.kick = true;
+        s_rng_until = now_ms() + 2000;
+    }
+    if (delta) {
+        dial_sync();
+        if (orb_dial_turn(&s_dial, delta, now_ms())) {
+            const int p = s_dial.pos;
+            if (!p) s_sel[0] = 0;
+            else {
+                s_side = p > 0 ? 1 : -1;
+                const fm_trk_t *t = &s_m.t[s_m.order[p > 0 ? p - 1 : drawn_n() + p]];
+                snprintf(s_sel, sizeof s_sel, "%s", t->ac.hex);
+            }
         }
-    } else if (delta && s_mode == MODE_ZOOM) {
-        const int r = s_set.range + (delta > 0 ? 1 : -1);
-        if (r < 0 || r >= N_RANGES) return;
-        s_set.range = r;
-        F.kick = true;                   /* the next poll asks for the new radius */
-    } else if (delta) {
-        fm_sel_step(&s_m, s_sel, delta > 0 ? 1 : -1, s_sel);
-    } else {
-        return;
     }
     redraw();
 }

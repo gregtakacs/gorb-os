@@ -175,6 +175,73 @@ installing it again starts fresh with default options.
 
 Each install slot holds at most 100 KB of container. The shipped apps run 9–26 KB.
 
+## The knob
+
+The orb has one input, a knob that turns and presses. Every app uses it the same way,
+so someone who has learned one app has learned them all (plan §51):
+
+| Gesture | Means | Who handles it |
+|---|---|---|
+| Turn | move along the app's **one dial** | the app |
+| Press | the app's **one action** | the app |
+| Hold | leave the app for the app list | the OS, always |
+
+**Design your app as one dial centred on a home view.** Home is what someone glancing at
+the orb wants to see: the weather now, the radar. Put one kind of thing clockwise of home
+and another anticlockwise, so whatever is wanted most is a few clicks either side of home
+and never at the far end of a line. Weather puts the hours clockwise and the days
+anticlockwise; Flights puts the aircraft nearest-first clockwise and farthest-first
+anticlockwise.
+
+- **Turning never needs a press first.** No modes, no "press to edit, then turn". If the
+  app has two things to scrub, it has two sides of the dial.
+- **A press does one thing, always the same thing**, wherever the dial stands: the next
+  place, the next range. Keep the dial's position across it, so the press compares
+  rather than resets.
+- **The ends stop.** Nothing wraps, so an overshoot never jumps to the other side.
+- **Home is sticky.** A fast spin stops on home, so one flick back from anywhere is home.
+- **Idle goes home.** After 20 s without a turn the app shows home again, and so does
+  coming back to the app.
+- **Never use the hold.** It is the way out of every app, and it must always work.
+- **Settings belong on the hub.** Anything that is not a dial or its one action goes on
+  the app's App settings page (`settings` in app.json), not behind the knob.
+- **A click must show at once.** The OS draws a frame straight after every knob event, so
+  redraw in `orb_input` and the change is on the glass in about 40 ms.
+
+**In code.** Call `orb_knob_dial()` once from `orb_init`: from then on the app owns
+every turn and press while it shows, with no arming. Turns arrive accelerated, so a slow
+click is `±1` and a quick spin is `±2` or `±4` a click. `sdk/orb_dial.h` keeps the dial
+for you: the stops, the sticky home and the idle return.
+
+```c
+#include "orb_dial.h"
+
+static orb_dial_t s_dial = { .lo = -5, .hi = 23, .idle_ms = ORB_DIAL_IDLE_MS };
+static int64_t up_ms(void) { return orb_uptime_us() / 1000; }
+
+ORB_EXPORT("orb_init") int32_t orb_init(void) { orb_knob_dial(); /* ... */ return ORB_OK; }
+ORB_EXPORT("orb_activate") void orb_activate(void) { orb_dial_home(&s_dial); }
+ORB_EXPORT("orb_tick") void orb_tick(uint32_t now) { if (orb_dial_idle(&s_dial, up_ms())) redraw(); }
+ORB_EXPORT("orb_set_armed") int32_t orb_set_armed(int32_t armed)
+{
+    if (!armed) orb_dial_home(&s_dial);        /* left: come back home */
+    return armed;
+}
+ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
+{
+    if (pressed) next_place();                 /* the one action */
+    if (delta) orb_dial_turn(&s_dial, delta, up_ms());
+    redraw();                                  /* s_dial.pos: 0 home, >0 clockwise, <0 anticlockwise */
+}
+```
+
+When the dial's ends depend on data (how many hours are left, how many aircraft are
+drawn), call `orb_dial_range(&s_dial, lo, hi)` before turning; it keeps the position
+inside them. When what sits at a position can move (Flights re-sorts its aircraft every
+poll), keep the selection by identity and set `s_dial.pos` from it before each turn, as
+`apps/flights/main.c` does in `dial_sync()`. `orb_knob_dial` is an OS v1.2.11 import: an
+older OS refuses an app that calls it. The template (`orbsdk.py new`) starts as a dial.
+
 ## The ABI
 
 [sdk/orb.h](sdk/orb.h) documents every call. In short:
@@ -187,6 +254,7 @@ Each install slot holds at most 100 KB of container. The shipped apps run 9–26
 | beat | `orb_set_beat`, `orb_burst` | free |
 | widgets | `orb_ui_create/set/text/align/refresh` | free |
 | canvas | `orb_cv_create/fill/pixel/ring/disc/line/text/flush` | free |
+| knob | `orb_knob_dial`, and [sdk/orb_dial.h](sdk/orb_dial.h) (header only) | free (OS v1.2.11) |
 | menu | `orb_reply`, `orb_armed` | free |
 | JSON | `orb_json_begin/next/skip` | free |
 | network | `orb_net_request/info/read/header/free`, `orb_net_cred`, `orb_net_get` | `net` |
@@ -206,8 +274,11 @@ and the OS copies them. The OS never hands out a pointer into its own memory.
   on and off the glass;
 - `orb_tick`: the beat, while the page is on the glass;
 - `orb_service`: every service pass, on the glass or not;
-- `orb_input`, `orb_set_armed`: the knob, while armed. A press arms and a hold
-  disarms;
+- `orb_input`: the knob. With `orb_knob_dial` (see [The knob](#the-knob)) every
+  turn and press arrives here while the app shows. `delta > 0` is clockwise;
+- `orb_set_armed`: `0` when the app is left (a hold, or another app shown); an app
+  using `orb_knob_dial` goes home here. Without `orb_knob_dial` it is the older
+  model: a press arms the app, and only then does `orb_input` hear the knob;
 - `orb_opt_count`, `orb_opt_kind`, `orb_opt_label`, `orb_opt_value`,
   `orb_opt_inc`, `orb_opt_sel`, `orb_opt_arm`: the app's options page in the
   dial menu. `orb_opt_label` and `orb_opt_value` answer through `orb_reply`

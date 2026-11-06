@@ -44,9 +44,11 @@ MANIFEST := flasher_args.json
 ## is the release step you run after `idf.py build` when the firmware changed.
 ## The test suite refuses a bundle that disagrees with $(BUILD_DIR) when
 ## ORB_BUILD_DIR is set, so a stale bundle cannot slip through unnoticed.
+## A build stamped -dirty is refused; ALLOW_DIRTY=1 packs it for a bench build that
+## is never committed.
 firmware:
 	@test -f $(BUILD_DIR)/flasher_args.json || { echo 'no $(BUILD_DIR)/flasher_args.json — run idf.py build first'; exit 1; }
-	$(GO) run ./cmd/orbpack -build $(BUILD_DIR) -out $(BUNDLE)
+	$(GO) run ./cmd/orbpack -build $(BUILD_DIR) -out $(BUNDLE)$(if $(ALLOW_DIRTY), -force)
 	ORB_BUILD_DIR=$(BUILD_DIR) $(GO) test ./internal/firmware/ -run BuiltInBundle
 	@echo "embedded firmware refreshed from $(BUILD_DIR) into $(BUNDLE)"
 

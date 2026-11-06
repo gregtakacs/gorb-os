@@ -51,6 +51,11 @@ jobs:
             [ "$v" = "$GITHUB_REF_NAME" ] || { echo "::error::git describe says $v, not $GITHUB_REF_NAME"; exit 1; }
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
+      # The bundled firmware is what every user flashes: its stamp must name a clean
+      # commit and declare the OS version being released (v1.2.9 first shipped as
+      # 197adaa-dirty). Runs on a by-hand run too, so a dry run catches it.
+      - name: Firmware stamp
+        run: ORB_RELEASE_VERSION="$(cat ../../version.txt)" go test -count=1 -v ./internal/firmware/ -run 'BuiltInBundleIsReleasable$'
       - name: Test
         run: make test vet crosscheck vendor-check
       - name: Windows icon and version resource

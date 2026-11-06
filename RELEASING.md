@@ -23,7 +23,9 @@ tell users how to get past the warning.
 
 1. Commit everything. The firmware bundle must be at the OS version (`make firmware`),
    and the shelf apps must be re-baked (`tools/make_factory_apps.py`). These are the
-   usual flows.
+   usual flows. Commit the source before `idf.py build`: the image stamps the tree it was
+   built from, and `make firmware`, the hub tests and the release all refuse a `-dirty`
+   stamp. The release also refuses a bundle whose version is not `version.txt`.
 2. Tag and push. The tag must equal `version.txt`. For a hub-only rebuild of the same
    OS, add a suffix, e.g. `v1.2.6-2`.
    ```sh

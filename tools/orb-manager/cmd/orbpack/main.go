@@ -53,12 +53,10 @@ func pack(buildDir, outPath string, force bool) int {
 		fmt.Fprintln(os.Stderr, "orbpack:", err)
 		return 1
 	}
-	if err := os.WriteFile(outPath, blob, 0o644); err != nil {
-		fmt.Fprintln(os.Stderr, "orbpack:", err)
-		return 1
-	}
 	// Round-trip through the loader the hub actually uses: a bundle that will not
 	// parse is worse than no bundle, and nothing else would notice until a flash.
+	// Every check runs before the write, so a refusal leaves the committed bundle as
+	// it was.
 	b, err := firmware.Load(blob, filepath.Base(outPath))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "orbpack: wrote a bundle the hub cannot load:", err)
@@ -66,13 +64,28 @@ func pack(buildDir, outPath string, force bool) int {
 	}
 	// A bundle with no declared version cannot be ordered against the one running,
 	// which would leave the hub guessing upgrades from build timestamps again.
-	if _, ok := firmware.ParseVersion(b.Version); !ok {
+	v, ok := firmware.ParseVersion(b.Version)
+	if !ok {
 		if !force {
 			fmt.Fprintf(os.Stderr, "orbpack: refusing to ship %q as a release: not a v<major>.<minor>.<patch> version.\n"+
 				"         Write version.txt, reconfigure, rebuild. -force overrides this for a bench build.\n", b.Version)
 			return 1
 		}
 		fmt.Fprintf(os.Stderr, "orbpack: shipping unversioned build %q by request\n", b.Version)
+	}
+	// A -dirty stamp names a tree nobody can check out, and the bundle is what every
+	// user flashes: v1.2.9 shipped as 197adaa-dirty this way.
+	if ok && v.Dirty {
+		if !force {
+			fmt.Fprintf(os.Stderr, "orbpack: refusing to ship %q as a release: built from a tree with uncommitted edits.\n"+
+				"         Commit, reconfigure, rebuild. -force overrides this for a bench build.\n", b.Version)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "orbpack: shipping dirty build %q by request\n", b.Version)
+	}
+	if err := os.WriteFile(outPath, blob, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, "orbpack:", err)
+		return 1
 	}
 	fmt.Printf("orbpack: %s - %d image(s), %s %s, %d B -> %s (%d B)\n",
 		filepath.Base(outPath), len(b.Images), b.Project, b.Version, len(manifest), outPath, len(blob))

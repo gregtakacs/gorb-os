@@ -335,6 +335,29 @@ func TestBuiltInBundleIsUsable(t *testing.T) {
 	}
 }
 
+// TestBuiltInBundleIsReleasable: the committed bundle ships in every release, so its
+// stamp must name a commit and a clean tree. v1.2.9 shipped as 197adaa-dirty because
+// nothing read the stamp. The release workflow sets ORB_RELEASE_VERSION to the OS
+// version it is tagging, and the stamp must then declare that version; on main the
+// bundle may trail a version.txt bump, so the match is only asked for there.
+func TestBuiltInBundleIsReleasable(t *testing.T) {
+	b, err := BuiltIn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, ok := ParseVersion(b.Version)
+	if !ok {
+		t.Fatalf("built-in bundle is stamped %q, not a v<major>.<minor>.<patch> version", b.Version)
+	}
+	t.Logf("built-in bundle is stamped %s", b.Version)
+	if v.Dirty || v.Commit == "" {
+		t.Errorf("built-in bundle is stamped %q: rebuild from a clean, committed tree and rerun make firmware", b.Version)
+	}
+	if want := os.Getenv("ORB_RELEASE_VERSION"); want != "" && v.Declared() != want {
+		t.Errorf("built-in bundle declares %s, the release is %s: rebuild the firmware and rerun make firmware", v.Declared(), want)
+	}
+}
+
 // TestBuiltInBundleMatchesBuildDirWhenPresent is the staleness guard: when a real
 // build is at hand, the committed bundle must describe exactly those bytes.
 func TestBuiltInBundleMatchesBuildDirWhenPresent(t *testing.T) {

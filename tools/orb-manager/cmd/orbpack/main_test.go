@@ -98,6 +98,24 @@ func TestOrbpackRefusesAnUnversionedBundle(t *testing.T) {
 	}
 }
 
+// TestOrbpackRefusesADirtyBuild: a -dirty stamp is refused before anything is
+// written, so the committed bundle survives the refusal; -force still packs it.
+func TestOrbpackRefusesADirtyBuild(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "orb-firmware.zip")
+	if err := os.WriteFile(out, []byte("committed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rc := pack(writeBuildDir(t, "v1.0.0+e1a2b3c-dirty"), out, false); rc != 1 {
+		t.Errorf("pack of a dirty build returned %d, want 1", rc)
+	}
+	if got, _ := os.ReadFile(out); string(got) != "committed" {
+		t.Error("a refused pack overwrote the bundle")
+	}
+	if rc := pack(writeBuildDir(t, "v1.0.0+e1a2b3c-dirty"), out, true); rc != 0 {
+		t.Errorf("pack of a dirty build with -force returned %d, want 0", rc)
+	}
+}
+
 // The refusal has to say what to do next, because the person hitting it is mid-
 // release and the flag is not the answer they want. Pinned on the source rather than
 // a captured pipe, which is how this suite reads a handler's contract elsewhere.
@@ -106,7 +124,7 @@ func TestOrbpackRefusalNamesTheFix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"refusing to ship", "Write version.txt, reconfigure, rebuild", "-force overrides this for a bench build"} {
+	for _, want := range []string{"refusing to ship", "Write version.txt, reconfigure, rebuild", "Commit, reconfigure, rebuild", "-force overrides this for a bench build"} {
 		if !strings.Contains(string(src), want) {
 			t.Errorf("the refusal no longer says %q", want)
 		}

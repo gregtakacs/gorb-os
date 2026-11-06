@@ -2430,9 +2430,26 @@
     if (kk !== 1) ctx.restore();
     return { canvas: c, en };
   }
+  /* No dial at all (owner, 2026-11-06: the dial is a part, and may be removed): no surface, art,
+   * wear or holes -- the movement shows whole. What stands on the dial still draws, on a clear
+   * sheet: the scales of its hands, its flares, its bars. */
+  function buildNoDial(D, lay, en0, pal, kk) {
+    // over the bare movement the print defaults to a light ink, as on a dark dial
+    const c = cv(S), ctx = c.getContext('2d'), en = Object.assign({}, en0, { ink: '#ece6d6', dark: 1 });
+    if (kk !== 1) { ctx.save(); ctx.translate(C, C); ctx.scale(kk, kk); ctx.translate(-C, -C); }
+    const scaleTop = drawScales(ctx, 'dial', lay, en, [], pal, kk);
+    scaleTop.applied(ctx);
+    const thost = {}; lay.subs.forEach((sb) => { if (sb.transparent) thost[sb.id] = 1; });
+    drawFlares(ctx, lay.flares.filter((f) => (f.host === 'dial' || thost[f.host]) && f.icon !== 'datetext'), en, pal);
+    drawBars(ctx, (lay.bars || {}).dial);
+    if (kk !== 1) ctx.restore();
+    scaleTop.finish(ctx);
+    return { canvas: c, en };
+  }
   function buildDial(D, lay, baseEn, pal, glow, seal, clipR, dynK) {
     const _en = surfaceEn(colorEn(baseEn, D.color), D.surface);
     const kk = dynK == null ? 1 : +dynK;
+    if (D.noDial) return buildNoDial(D, lay, _en, pal, kk);
     if (wholeDial(D)) return buildWholeDial(D, lay, _en, pal, glow, seal, clipR, kk);
     if (kk !== 1) return buildDialLens(D, lay, _en, pal, glow, seal, clipR, kk);
     const c = cv(S), ctx = c.getContext('2d'), en = _en;
@@ -4481,7 +4498,7 @@
       // stay clickable out to the panel edge, not just inside the shrunk dial circle.
       const r = Math.hypot(x - C, y - C);
       const artLive = o.caseStyle === 'none' && (assetReady(design.sfArt) || assetReady(design.mkArt) || assetReady(design.wdArt) || assetReady(o.bgArt));
-      if (r <= DR || (artLive && r * (F.dynK || 1) <= PANEL_R)) out.push({ kind: 'dial', id: 'dial' });
+      if (!design.noDial && (r <= DR || (artLive && r * (F.dynK || 1) <= PANEL_R))) out.push({ kind: 'dial', id: 'dial' });
       return out;
     };
     F.pick = (x, y, date) => F.pickAll(x, y, date)[0] || null;
@@ -4861,6 +4878,7 @@
     if (!isHex(d.bezelInk)) delete d.bezelInk;
     if (!d.openwork || d.openwork === 'none') ['openwork', 'owBar', 'owRing', 'owHub', 'owRim', 'owInlay', 'owDepth'].forEach((k) => delete d[k]);
     if (!d.secStyle || d.secStyle === 'classic') delete d.secStyle;
+    if (d.noDial !== true) delete d.noDial;   // the dial removed (a part like any other); kept only when true
     if (d.dir !== 'ccw') delete d.dir;   // the dial's direction: clockwise is no field at all
     /* Uploaded art is REFERENCED here, never embedded: a design carries the asset id
      * (and the placed geometry), the bytes live in the browser's asset store, and the

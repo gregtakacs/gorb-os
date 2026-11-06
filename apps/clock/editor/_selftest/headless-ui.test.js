@@ -195,6 +195,8 @@ setTimeout(async () => {
   it.forceUpdate = () => { };
   const stageEl = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 466, height: 466 }), setPointerCapture() { } };
   const ev = (x, y) => ({ clientX: x, clientY: y, pointerId: 1, currentTarget: stageEl });
+  // the stage checks click real hands: a fixed time keeps them where the checks expect (they flaked on the live clock)
+  it.now = () => new Date(2026, 2, 7, 10, 9, 36);
   const fcS = it.face(), dS = it.now();
   const top = fcS.hands[fcS.hands.length - 1];
   it.state.tab = 'comps'; it.state.sel = null; it.state.selKind = null;

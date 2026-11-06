@@ -89,7 +89,7 @@
         <div class="st-sheet-in">
           <h2>Start a theme</h2>
           <div class="st-gal">
-            <button class="st-gc" onClick="{{ fromScratch }}" title="A plain dial with hour, minute and seconds hands and nothing else: add the movement, the dial and every complication yourself"><span class="st-blank">＋</span><b>From scratch</b><span>A plain dial and three hands</span></button>
+            <button class="st-gc" onClick="{{ fromScratch }}" title="Nothing at all: no dial, no hands, no case, no glass, no light. Choose the movement, then add the dial and every part yourself"><span class="st-blank">＋</span><b>From scratch</b><span>Nothing yet: you build every piece</span></button>
             <sc-for list="{{ dials }}" as="d" hint-placeholder-count="8">
               <div class="st-gc {{ d.cls }}" onClick="{{ d.pick }}" title="{{ d.blurb }}">
                 <canvas ref="{{ d.ref }}" width="96" height="96"></canvas>
@@ -182,7 +182,7 @@
             <div class="wc-tile" onClick="{{ h.pick }}" style="border-color:{{ h.bd }};background:{{ h.bg }};color:{{ h.fg }}"><canvas ref="{{ h.ref }}" width="112" height="112" style="display:block;width:52px;height:52px;border-radius:6px"></canvas>{{ h.label }}</div>
           </sc-for>
         </div>
-        <div class="wc-sec">Glass</div>
+        <div class="wc-sec" data-a="case-glass">Glass</div>
         <div class="wc-tiles">
           <sc-for list="{{ glassOpts }}" as="h" hint-placeholder-count="4">
             <div class="wc-tile" onClick="{{ h.pick }}" style="border-color:{{ h.bd }};background:{{ h.bg }};color:{{ h.fg }}"><canvas ref="{{ h.ref }}" width="112" height="112" style="display:block;width:52px;height:52px;border-radius:50%"></canvas>{{ h.label }}</div>
@@ -559,7 +559,7 @@ class Component extends DCLogic {
     // so it is no longer "Pricing..." (Orbit, Aviator and the rest sat on it for good). The
     // labels quote it (b.quote), but no plan rides the budget: the bake reads b.plan for its tick rate
     const held = pk && !forceWant ? { priced: true, quote: pk } : null;
-    const pricing = !held && !forceWant && c.tick === 'sweep' && !!(window.GorbBake && GorbBake.pickPlan4) && !(this._liveNone && this._liveNone === this.live4Key());
+    const pricing = !held && !forceWant && c.tick === 'sweep' && !!(window.GorbBake && GorbBake.pickPlan4) && this._liveNone !== ak + '|' + c.tick;
     if (s && s.ak !== ak) return { fps: this._hbFps || want, want, car, needle, rows: s.rows, cap: CAPS[want], measured: false, measuredAt: s.f, why: '', pricing, ...held };
     if (!s) return { fps: want, want, car, needle, rows: 0, cap: CAPS[want], measured: false, measuredAt: 0, why: '', pricing, ...held };
     const r = s.rows;
@@ -803,6 +803,11 @@ class Component extends DCLogic {
   }
   stackDragEnd() { this._dragRow = null; if (this.state.dropAt || this.state.dragging) this.setState({ dropAt: null, dragging: null }); }
   stackPick(it) {
+    // the crystal's two rows have no selection of their own: they open where they are set
+    if (it.id === 'outer' || it.id === 'glass') {
+      this._scrollTo = it.id === 'glass' ? 'case-glass' : '#';
+      return this.setState({ sel: null, selKind: null, step: 'finish', tab: 'case' });
+    }
     if (!it.sel) return;
     this._scrollTo = this.scrollTargetFor(it.sel);
     if (it.sel.kind === 'dial') return this.setState({ sel: 'dial', selKind: 'dial', step: 'dial', tab: this.selTab.dial });
@@ -3062,7 +3067,9 @@ class Component extends DCLogic {
       if (this._liveQueued) { this._liveQueued = false; this.liveAgain(0); }
       if (this.live4Key() !== k) { this.liveAgain(); return; }   // the dial moved on: price it again
       this._liveKey = k;
-      if (e && e.none) { this._liveNone = k; this.forceUpdate && this.forceUpdate(); return; }   // a still dial: priced, at nothing
+      // a still dial: priced, at nothing. Keyed off the art and the tick, never live4Key(): that
+      // reads this.F, and budget() reading it recurses (the F getter's own guard throws)
+      if (e && e.none) { this._liveNone = this.artKey(this.mvKey(1)) + '|' + this.cfg().tick; this.forceUpdate && this.forceUpdate(); return; }
       if (!e) return;
       const c = this.cfg(), G4 = window.GorbBake, ak = this.artKey(this.mvKey(1)), shs = +c.shSmooth === 1 ? 1 : 0;
       /* A plan's gears redraw the bank, and the bank's rects are its price: a plan is only
@@ -3720,6 +3727,7 @@ class Component extends DCLogic {
     ['day', 'Daylight', { glow: 0.6, temp: 4500, hue: 30, hueSat: 0, outerLight: 1.2, outerTemp: 5600, outerHue: 210, outerSat: 0, wb: 6500 }],
     ['studio', 'Studio', { glow: 0.9, temp: 3200, hue: 30, hueSat: 0, outerLight: 1, outerTemp: 4500, outerHue: 210, outerSat: 0, wb: 6500 }],
     ['night', 'Night', { glow: 1.4, temp: 1900, hue: 30, hueSat: 0, outerLight: 0.5, outerTemp: 7000, outerHue: 210, outerSat: 0, wb: 6000 }],
+    ['none', 'No light', { glow: 0, outerLight: 0 }],
   ];
   stepNow() {
     const s = this.state, tab = s.tab, at = this.STEPS.find((x) => x[0] === s.step);
@@ -3734,11 +3742,20 @@ class Component extends DCLogic {
     let q = null; try { q = new URLSearchParams(location.search); } catch (e) { q = null; }
     return ((q && (q.get('label') || q.get('orb'))) || 'Clock') + (q && (q.get('label') || q.get('orb')) ? ' · Clock' : ' theme');
   }
+  setDial(on) {
+    this.upd((d) => { if (on) delete d.noDial; else d.noDial = true; });
+    this.setState(on ? { status: 'The dial is back', sel: 'dial', selKind: 'dial', step: 'dial', tab: 'dial' }
+      : { status: 'The dial is removed: the movement shows whole (Parts > + Dial puts it back)', sel: null, selKind: null });
+  }
+  /* From scratch (owner, 2026-11-06): nothing at all -- no dial, no parts, no case, no glass, no
+   * light -- so the author builds every piece. It owns every setting a template pick sets, so
+   * nothing rides over from the last template looked at (Wave's diver bezel did, in black). */
   fromScratch() {
-    const E = window.WatchEngine, d = E.canonDesign(JSON.parse(JSON.stringify(E.PRESETS.skeleton.design)));
-    d.comps = ['hour', 'minute', 'second'].map((k, i) => ({ id: 'h' + (i + 1), type: 'hand', host: 'dial', shows: k })); delete d.order; delete d.openwork; ['perim', 'perimShrink', 'perimColor', 'perimFont', 'perimOrient', 'perimSize', 'perimPos', 'perimRot'].forEach((k) => delete d[k]);
-    this.setState((st) => ({ dial: 'skeleton', designs: { ...st.designs, skeleton: E.canonDesign(d) }, sel: null, selKind: null, themeName: '', step: 'movement', tab: 'move',
-      status: 'A plain dial with three hands: choose the movement, then the dial, then add what it shows' }));
+    const E = window.WatchEngine, d = E.canonDesign({ noDial: true, comps: [] });
+    this.setState((st) => ({ dial: 'skeleton', designs: { ...st.designs, skeleton: d }, sel: null, selKind: null, themeName: '', step: 'movement', tab: 'move',
+      cfg: { glow: 0, outerLight: 0 }, train: 'classic', caseStyle: 'none', caseMetal: 'auto', glassStyle: 'none', hands: 'auto', handFinish: 'auto', scratch: true,
+      hidden: { ...st.hidden, ids: {} },
+      status: 'Nothing yet: no dial, no parts, no case, no glass, no light. Choose the movement, then add the dial and what it shows' }));
   }
   setMood(vals) {
     const def = this.DEF;
@@ -3788,11 +3805,11 @@ class Component extends DCLogic {
       const BLURB = { wheel: 'A printed disc under the dial or a sub-dial, for any measure or one digit of it, read through its cutouts', cutout: 'Another window onto the selected wheel: a window, round, arc or slot, joinable into one frame', index: 'A reading line on the glass at the selected wheel\u2019s reading point: a line, a laser, a laser lens, pips or a frame, across that wheel or every ring sharing its centre', hand: 'A pointer on the dial or a sub-dial: hour, minute, seconds, 24-hour, GMT, day, date or month', subdial: 'A small dial of its own: seconds, hours, date, day or month', window: 'A line of text redrawn for each value, in any date format (ddd DD MMM) \u2014 a date, day or month that turns is a Wheel',
         moon: 'The moon redrawn for each phase \u2014 a realistic sphere, a graphic or neon terminator. A turning moon disc is a Wheel (Shows: Moon phase)', flare: 'Printed or applied text, a logo or a mark', opening: 'A cut through the dial that shows the movement' };
       const LIVE = { window: 1, moon: 1, hand: 1, wheel: 1 };
-      out.catOpts = [['hand', 'Hand']].concat(Object.entries(E.COMP_TYPES)).map(([t, label]) => {
+      out.catOpts = (d.noDial ? [{ label: '+ Dial', blurb: 'The dial itself: its surface, colour and art, over the movement', tip: 'Put the dial back', op: 1, cursor: 'pointer', go: () => this.setDial(true) }] : []).concat([['hand', 'Hand']].concat(Object.entries(E.COMP_TYPES)).map(([t, label]) => {
         const why = LIVE[t] && rc.rows + 1 > rc.cap ? 'R6: one more live row would pass the dial\u2019s ' + rc.cap : '';
         return { label: '+ ' + label + (onSub && t !== 'subdial' && t !== 'opening' ? ' on this sub-dial' : ''), blurb: why || BLURB[t] || '', tip: why || BLURB[t] || '',
           op: why ? 0.45 : 1, cursor: why ? 'not-allowed' : 'pointer', go: why ? () => this.setState({ status: why }) : () => this.addComp(t) };
-      });
+      }));
       // Render: does it fit the orb (the verdict is the OS's, theme@1/measure; the pace is
       // the clock's own device-pace model, _devPace, which prices a seconds sweep across plates)
       const b = this.budget ? this.budget() : null, want = b ? (b.dev && b.dev.need) || b.fps : 0, pace = b && b.dev && b.dev.pace ? b.dev.pace : want;
@@ -3865,9 +3882,11 @@ class Component extends DCLogic {
     else if (s.selKind === 'dial') { out.inspKind = 'Dial'; out.inspTitle = out.dialName || 'Dial'; }
     else if (s.selKind === 'move' && s.tab === 'move') { out.inspKind = 'Movement'; out.inspTitle = s.sel === 'movement' ? 'Clock insides' : 'Geartrain'; }
     else { out.inspKind = st[1]; out.inspTitle = step === 'start' ? 'Start a theme' : step === 'render' ? 'Render' : (this.SUBLABEL[s.tab] || st[1]); }
-    out.hasDel = !!((s.selKind === 'comp' && selComp) || selHand);
-    out.delLabel = selComp ? ((E.COMP_TYPES && E.COMP_TYPES[selComp.type]) || 'part').toLowerCase() : selHand ? 'hand' : '';
-    out.delSel = () => { if (selComp) this.delComp(selComp.id); else if (selHand) this.delComp(s.sel); };
+    // owner, 2026-11-06: the dial is a part too, and may go (the movement then shows whole)
+    const selDial = s.selKind === 'dial' && ready && !d.noDial;
+    out.hasDel = !!((s.selKind === 'comp' && selComp) || selHand || selDial);
+    out.delLabel = selComp ? ((E.COMP_TYPES && E.COMP_TYPES[selComp.type]) || 'part').toLowerCase() : selHand ? 'hand' : selDial ? 'the dial' : '';
+    out.delSel = () => { if (selComp) this.delComp(selComp.id); else if (selHand) this.delComp(s.sel); else if (selDial) this.setDial(false); };
     out.fields = fields.map((f) => (f && f.isRow ? Object.assign({}, f, { rowCls: f.isRange ? '' : 'wide' }) : f));
     const R = Object.assign(v, out);
     return Object.assign(R, this.studioVals(R));
@@ -4339,7 +4358,10 @@ class Component extends DCLogic {
         mk({ label: ' ', isRow: true, isChips: true, opts: [{ v: 'snap', label: 'Snap to dial', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: () => this.snapArt(p) }, { v: 'drag', label: (this.state.artSlot === p ? 'Dragging the dial pans this image \u00b7 press to stop' : 'Drag the dial to pan this image'), bg: '#1c2330', bd: this.state.artSlot === p ? '#58a6ff' : '#2b3540', fg: '#e6edf3', pick: () => this.setState(this.state.artSlot === p ? { artSlot: null } : { artSlot: p, guide: 'on' }) }, { v: 'x', label: 'Remove this image', bg: '#1c2330', bd: '#2b3540', fg: '#e6edf3', pick: drop }] }));
       return out;
     };
-    if (ready && s.tab === 'dial') {
+    if (ready && s.tab === 'dial' && D.noDial) {
+      fields.push(H('Dial'), K.Rd('Dial', 'removed', 'The movement shows whole. What stands on the dial (its hands\u2019 scales, its flares) still draws.'),
+        Ch('', 'off', [{ v: 'off', label: 'No dial' }, { v: 'on', label: 'Put the dial back' }], (v) => { if (v === 'on') this.setDial(true); }));
+    } else if (ready && s.tab === 'dial') {
       const ud = (k) => (v) => this.upd((d) => { d[k] = v; });
       const col = D.color || 'cream', surf = D.surface || 'enamel';
       // the whole-dial slot draws the face itself, so say so above the controls it overrides
@@ -4634,7 +4656,10 @@ class Component extends DCLogic {
       dials: (ready ? Object.keys(E.PRESETS) : []).map((id) => ({
         ...on(id === s.dial), ref: this.cb('dialEls', id, (i) => this.drawDialThumb(i)),
         name: E.PRESETS[id].name + (s.designs[id] ? ' · edited' : ''), blurb: E.PRESETS[id].blurb,
-        pick: () => this.setState((st) => ({ dial: id, sel: null, themeName: '', cfg: E.PRESETS[id].cfg ? { ...st.cfg, ...E.PRESETS[id].cfg } : E.PRESETS[st.dial].cfg ? Object.fromEntries(Object.entries(st.cfg).filter(([k]) => !(k in E.PRESETS[st.dial].cfg))) : st.cfg, train: E.PRESETS[id].train || (E.PRESETS[st.dial].train ? 'classic' : st.train), caseMetal: E.PRESETS[id].caseMetal || (E.PRESETS[st.dial].caseMetal ? 'auto' : st.caseMetal), caseStyle: E.PRESETS[id].caseStyle || (E.PRESETS[st.dial].caseStyle ? 'polished' : st.caseStyle) })),
+        // a template comes as designed after From scratch (whose no case, glass or light is no choice
+        // of the author's to keep); otherwise the author's own case and light ride over
+        pick: () => this.setState((st) => (st.scratch ? { dial: id, sel: null, themeName: '', scratch: false, cfg: { ...(E.PRESETS[id].cfg || {}) }, train: E.PRESETS[id].train || 'classic',
+          caseStyle: E.PRESETS[id].caseStyle || 'polished', caseMetal: E.PRESETS[id].caseMetal || 'auto', glassStyle: 'domed' } : { dial: id, sel: null, themeName: '', cfg: E.PRESETS[id].cfg ? { ...st.cfg, ...E.PRESETS[id].cfg } : E.PRESETS[st.dial].cfg ? Object.fromEntries(Object.entries(st.cfg).filter(([k]) => !(k in E.PRESETS[st.dial].cfg))) : st.cfg, train: E.PRESETS[id].train || (E.PRESETS[st.dial].train ? 'classic' : st.train), caseMetal: E.PRESETS[id].caseMetal || (E.PRESETS[st.dial].caseMetal ? 'auto' : st.caseMetal), caseStyle: E.PRESETS[id].caseStyle || (E.PRESETS[st.dial].caseStyle ? 'polished' : st.caseStyle) })),
       })),
       // everything: the design (its parts and their depth), movement, case and light, and the stage's
       // own view of it -- per-part eyes, selection, a drag in flight

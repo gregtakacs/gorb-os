@@ -96,6 +96,9 @@
       new Promise((r) => setTimeout(r, 20000))]);
     const missing = fams.filter((f) => !document.fonts.check('700 32px "' + f + '"'));
     say('fonts: ' + (fams.length - missing.length) + ' of ' + fams.length + ' loaded' + (missing.length ? ' \u2014 missing ' + missing.join(', ') : ''));
+    // anything thrown outside the awaited chain (a timer, a frame callback) is reported, not lost
+    window.addEventListener('error', (ev) => say('PAGEERR ' + ev.message + ' @ ' + (ev.filename || '').split('/').pop() + ':' + ev.lineno));
+    window.addEventListener('unhandledrejection', (ev) => say('PAGEERR (promise) ' + ((ev.reason && ev.reason.stack) || ev.reason)));
     await IT.componentDidMount();
     await mount(DIAL);
     // ?favour=sweep|balanced|gears, ?plan=G/H (§49.15): the Hands tab's two plan controls, set
@@ -123,6 +126,14 @@
       say('lifted ' + LIFT + ' over the hands: order ' + ord.join(','));
       IT.buildMovement();
       if (!await settle()) throw new Error('did not settle after the lift');
+    }
+    // ?strip=<type>: take every part of that type off the design first (strip=hand: a dial with no hands)
+    const STRIP = QP.get('strip');
+    if (STRIP) {
+      const d0 = IT.design(); d0.comps = d0.comps.filter((c) => c.type !== STRIP); IT.state.designs[DIAL] = d0; IT.faces = {};
+      say('stripped every ' + STRIP + ': ' + d0.comps.length + ' parts left');
+      IT.buildMovement();
+      if (!await settle()) throw new Error('did not settle after the strip');
     }
     // Intercept the download rather than clicking an <a>: headless Chrome has no save dir.
     // The ticker runs through the bake the way it runs under a live button press: settled3()

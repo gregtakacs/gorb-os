@@ -478,10 +478,13 @@ func TestTheFaceUnderTheHandReordersThePass(t *testing.T) {
 			t.Fatalf("list = %d", rec.Code)
 		}
 		warmPost(t, s, `{"ip":"`+ip+`","face":"`+tc.face+`"}`)
-		waitForWarm(t, s, mux, ip)
+		end := waitForWarm(t, s, mux, ip)
 		led, pv := firstCallIdx(fake, isLedgerDial), firstCallIdx(fake, isPlaneDial)
 		if led < 0 || pv < 0 {
-			t.Fatalf("face %q: ledger at %d, plane at %d — the pass owes both reads: %#v", tc.face, led, pv, fake.Calls())
+			// The pass's own last word goes with the calls: it is what says why a read
+			// was skipped or failed (CI, 2026-11-06: one run ended with no plane dialed).
+			t.Fatalf("face %q: ledger at %d, plane at %d — the pass owes both reads: %#v; the pass ended %v",
+				tc.face, led, pv, fake.Calls(), end)
 		}
 		if tc.ledgerBefore && led > pv {
 			t.Errorf("face %q: the pass dialed the plane (%d) before the ledger (%d) — the pressed face goes first", tc.face, pv, led)

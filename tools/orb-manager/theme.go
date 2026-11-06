@@ -2291,7 +2291,16 @@ func (s *Server) warmOrb(ip string, w *warmRun, list *orbnet.ThemeList) {
 		if !s.previewFresh(ip, t.ID) {
 			began := time.Now()
 			if _, err := s.fetchPreviewPlaneWarm(ip, t.ID); err != nil {
-				if s.warmAborted(ip, began) {
+				// Said, not swallowed: warm-status carries why a plane went unread, so a
+				// pass that ends with planes missing explains itself (a CI run saw one end
+				// with no plane dialed and nothing to say why).
+				aborted := s.warmAborted(ip, began)
+				why := "plane " + t.ID + " not read: " + err.Error()
+				if aborted {
+					why = "plane " + t.ID + " cut for a page read"
+				}
+				s.warmStep(ip, w, func(w *warmRun) { w.note = why })
+				if aborted {
 					s.warmStep(ip, w, func(w *warmRun) { w.done++ })
 					continue
 				}

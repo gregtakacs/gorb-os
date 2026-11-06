@@ -193,7 +193,26 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   const F = render(S.Fields, { fields: [K.H('Arm'), r, sl, co, K.Tx('Name', 'Scope', set), K.Fi('Image', set), K.Nt('', 'a note')] });
   ok(by(F, 'div', 'st-sec').length === 1 && by(F, 'div', 'st-row').length === 5, 'one head, five rows: the note is no row of its own');
   const rowsF = by(F, 'div', 'st-row');
-  ok(rowsF[0].props.className === 'st-row' && rowsF[1].props.className === 'st-row wide', 'only a slider keeps the value column');
+  ok(rowsF[0].props.className === 'st-row rng' && rowsF.slice(1).every((x) => x.props.className === 'st-row wide'), 'a slider row gives the value column to the slider; every other row is wide');
+  // a slider's reading: the number (in px, a multiple or a percentage) is the box's; words sit under it
+  const slv = (vt, v) => { const X = render(S.Fields, { fields: [K.Rg('Size', v, 0, 400, 1, set, vt)] }); return { u: by(X, 'span', 'st-u').map(text), c: by(X, 'div', 'st-cname').map(text).join('') }; };
+  const s1 = slv('120px', 120), s2 = slv('80%', 0.8), s3 = slv('4 px past the rings', 4), s4 = slv('closed', 0);
+  ok(!s1.c && !s2.c, 'a slider reading only its number (in px, or as a percentage) is not repeated', JSON.stringify([s1, s2]));
+  ok(s3.c === '4 px past the rings' && s4.c === 'closed', 'words sit under the slider, short or long', JSON.stringify([s3, s4]));
+  ok(!s1.u.length && !s3.u.length && !s4.u.length, 'and nothing rides beside the number box, so every slider in a pane is one width');
+  // a section folds: a closed head hides its rows until the next head, and says so with its arrow
+  let shutClicks = 0;
+  const FF = render(S.Fields, { fields: [K.Tx('Name', 'x', set), K.H('Shut', null, { open: false, toggle: () => shutClicks++ }), K.Rg('Hidden', 1, 0, 2, 1, set, '1'),
+    K.H('Open', null, { open: true, toggle: () => {} }), K.Rg('Shown', 1, 0, 2, 1, set, '1')] });
+  const secs = by(FF, 'div', 'st-sec'), rowsFF = by(FF, 'div', 'st-row');
+  ok(secs.length === 2 && rowsFF.length === 2 && text(secs[0]).indexOf('▸') === 0 && text(secs[1]).indexOf('▾') === 0, 'a closed section hides its rows; the Name above every section always shows', rowsFF.length);
+  secs[0].props.onClick(); ok(shutClicks === 1, 'clicking a section head toggles it');
+  // a reading prints its value on the row, its why on the hover
+  const RR = render(S.Fields, { fields: [K.Rd('Frame rate', '12 fps', 'why')] });
+  ok(text(by(RR, 'div', 'st-cname')[0]) === '12 fps' && by(RR, 'label')[0].props.title === 'why', 'a reading prints its value, its why rides the hover');
+  // a canvas row hands its ref to the app, which draws into it
+  const ref = () => {}, CC = render(S.Fields, { fields: [K.Cv('Pivot', ref, 112, 96, set, set)] });
+  ok(by(CC, 'canvas').length === 1 && by(CC, 'canvas')[0].props.ref === ref && by(CC, 'canvas')[0].props.width === 112, 'a canvas row carries the app\u2019s ref and its pixel size');
   ok(by(rowsF[0], 'input').length === 2 && by(rowsF[1], 'select')[0].props.value === 'inherit' && by(rowsF[1], 'span').some((x) => /the scope/.test(text(x))), 'a slider with its number box; a select with its link');
   ok(by(rowsF[2], 'button', 'st-sw').length === 1 && by(rowsF[2], 'button', 'st-sw-cur').length === 1 && by(rowsF[2], 'input').length === 1 && !by(rowsF[2], 'div', 'st-pal-box').length,
     'a colour row, shut: the colour itself and its hex box');

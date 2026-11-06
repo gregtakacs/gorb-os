@@ -16,7 +16,7 @@ html,body{height:100%;overflow:hidden}
 .st-fit{display:flex;align-items:center;gap:6px;color:var(--mut);font-size:12px;white-space:nowrap;cursor:default}
 .st-dot{width:8px;height:8px;border-radius:50%;flex:none}
 .st-sm{padding:3px 8px;font-size:12px}
-.st-side{background:var(--card);display:flex;flex-direction:column;min-height:0;min-width:0;overflow-y:auto}
+.st-side{background:var(--card);display:flex;flex-direction:column;min-height:0;min-width:0;overflow-y:auto;overflow-x:hidden}
 .st-left{border-right:1px solid var(--line)}
 .st-right{border-left:1px solid var(--line)}
 .st-stage{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;background:radial-gradient(circle at 50% 45%,#141a22 0,#0b0e13 70%)}
@@ -60,6 +60,7 @@ html,body{height:100%;overflow:hidden}
 .st-lr.child::before{content:"";position:absolute;left:14px;top:0;bottom:0;border-left:1px solid #2b3540}
 .st-ic{width:20px;height:20px;border-radius:4px;background:#232b36;display:grid;place-items:center;font-size:11px;color:var(--mut)}
 .st-nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st-lnum{font:600 11px var(--mono);color:var(--mut);margin-right:5px}
 .st-nm small{color:var(--dim);margin-left:6px;font-size:11px}
 .st-nm .st-warn{color:var(--warn);font-size:inherit}
 .st-acts{display:flex;gap:2px;align-items:center}
@@ -75,12 +76,22 @@ html,body{height:100%;overflow:hidden}
    resizes the column and reflows the swatches, and is never cut short. */
 .st-fields{display:flex;flex-direction:column;gap:6px}
 .st-sec{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);padding:10px 0 2px;border-top:1px solid var(--line);margin-top:4px}
+.st-sec.st-fold{cursor:pointer;user-select:none}.st-sec.st-fold:hover{color:var(--fg)}
+.st-sec>i{font-style:normal;display:inline-block;width:14px}
+.st-cv{display:block;background:var(--well);border:1px solid var(--line);border-radius:6px;cursor:crosshair}
 .st-row{display:grid;grid-template-columns:96px minmax(0,1fr) 48px;gap:8px;align-items:center;min-height:28px}
 .st-row>label{color:var(--mut);font-size:12px;overflow:hidden;text-overflow:ellipsis}
 .st-row>label>span{display:block;font-size:10px;cursor:pointer}
 .st-val{font:11px var(--mono);color:var(--mut);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .st-row.wide{grid-template-columns:96px minmax(0,1fr)}
 .st-row.wide>.st-val{display:none}
+/* a slider row: no value column (the number box reads it, with its words beside or under it) */
+.st-row.rng{grid-template-columns:96px minmax(0,1fr)}
+.st-row.rng>.st-val{display:none}
+.st-row.rng .st-cname:not(:empty){display:block;margin-top:2px}
+/* a row of choices: equal pills that wrap their own words, never wider than the row */
+.st-pills{display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:4px}
+.st-pills>button{white-space:normal;line-height:1.2;padding:4px 6px;text-align:center;min-width:0;border-radius:8px}
 .st-rng{display:flex;align-items:center;gap:6px}.st-rng>input[type=range]{flex:1;min-width:0}
 .st-rng>input.st-num::-webkit-inner-spin-button,.st-rng>input.st-num::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
 .st-rng>input.st-num{width:52px;flex:none;-moz-appearance:textfield;font:11px var(--mono);padding:2px 4px;background:var(--well);color:inherit;border:1px solid var(--line);border-radius:4px}

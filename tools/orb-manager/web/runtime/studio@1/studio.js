@@ -364,7 +364,8 @@
         relink: linked ? function () {} : function () { onv(inh.v); } };
     };
     // anchor: the pane's scroll destination for a selection
-    var H = function (label, anchor) { return mk({ label: label, isHead: true, isRow: false, anchor: anchor }); };
+    // fold: {open, toggle} makes the section collapsible; a closed one hides its rows
+    var H = function (label, anchor, fold) { return mk({ label: label, isHead: true, isRow: false, anchor: anchor, fold: fold || null }); };
     // a slider snaps to 0 within 1.5% of its span and, on a fine one, to a whole number within 0.6%
     var snapV = function (v, min, max, step) {
       var sp = Math.abs(max - min) || 1;
@@ -378,7 +379,15 @@
         onNum: function (e) { var v = e.target.value; if (v === '' || !isFinite(+v)) return; onv(Math.max(min, Math.min(max, +v))); } });
     };
     var Sl = function (label, value, opts, onv) { return mk(Object.assign({ label: label, isSelect: true, value: value, opts: mark(opts, value), on: function (e) { onv(e.target.value); } }, linkOf(opts, value, onv))); };
-    var Ch = function (label, value, opts, onv) { return mk({ label: label, isChips: true, opts: opts.map(function (x) { return Object.assign({}, on(String(x.v) === String(value)), { label: x.label, pick: function () { onv(x.v); } }); }) }); };
+    // a choice: pills for up to three, a dropdown past that (four pills wrap into a ragged row)
+    var Ch = function (label, value, opts, onv) {
+      // each option keeps its pick, as a pill's has, so code that drives the panel reads it alike
+      var picks = opts.map(function (x) { return Object.assign({}, x, { pick: function () { onv(x.v); } }); });
+      if (opts.length > 3) return mk({ label: label, isSelect: true, value: value == null ? '' : value,
+        opts: mark(String(value) === '' || !opts.some(function (x) { return String(x.v) === String(value); }) ? [{ v: '', label: '—' }].concat(picks) : picks, value),
+        on: function (e) { if (e.target.value !== '') onv(e.target.value); } });
+      return mk({ label: label, isChips: true, opts: opts.map(function (x) { return Object.assign({}, on(String(x.v) === String(value)), { label: x.label, pick: function () { onv(x.v); } }); }) });
+    };
     var Nt = function (label, note) { return mk({ label: label, isNote: true, note: note }); };
     // swatches: [{k, label, bg}]; extra: leading options; vOf(option): the value an extra option
     // stands for, which the inherit link reads (default: its v, else its label)
@@ -414,6 +423,10 @@
     var Sa = function (label, text, style, note) { return mk({ label: label, isSample: true, value: text, style: style || {}, valText: note || '' }); };
     var Tx = function (label, value, onv) { return mk({ label: label, isText: true, value: value == null ? '' : String(value), on: function (e) { onv(e.target.value); } }); };
     var Fi = function (label, onv, valText, accept) { return mk({ label: label, isFile: true, on: onv, valText: valText || '', accept: accept || 'image/png,image/svg+xml,image/jpeg,image/webp' }); };
+    // a canvas the app draws into (a ref callback): a thumbnail to click or drag on
+    var Cv = function (label, ref, size, css, onDown, onMove, tip) { return mk({ label: label, isCanvas: true, ref: ref, w: size, h: size, css: css || size, onDown: onDown, onMove: onMove, tip: tip || '' }); };
+    // a reading: a value the author watches (a rate, a fit, a cost), always printed; its why rides as the hover
+    var Rd = function (label, value, why) { return mk({ label: label, valText: value == null ? '' : String(value), tip: why || '' }); };
     // a run of rows folded to its first `keep`, with a More / Less chip; open and toggle are the app's
     var fold = function (rows, keep, open, toggle) {
       if (rows.length <= keep) return rows;
@@ -422,18 +435,25 @@
         opts: [{ label: open ? 'Less' : 'More (' + hid + ')', bg: '#1c2330', bd: '#2b3540', fg: '#8b98a5', pick: toggle }] });
       return (open ? rows : rows.slice(0, keep)).concat([chip]);
     };
-    return { on: on, mark: mark, mk: mk, linkOf: linkOf, H: H, snapV: snapV, Rg: Rg, Sl: Sl, Ch: Ch, Nt: Nt, Sw: Sw, Co: Co, Sa: Sa, Tx: Tx, Fi: Fi, fold: fold };
+    return { on: on, mark: mark, mk: mk, linkOf: linkOf, H: H, snapV: snapV, Rg: Rg, Sl: Sl, Ch: Ch, Nt: Nt, Sw: Sw, Co: Co, Sa: Sa, Tx: Tx, Fi: Fi, Cv: Cv, Rd: Rd, fold: fold };
   };
 
   // one field row: its label (with the inherit link), its control, and its value
   function FieldRow(p) {
     var openS = root.React.useState(false), open = openS[0];
     var f = p.f, sw = function (x, i) { return h('button', { key: i, className: cx('st-sw', x.cls), onClick: x.pick, title: x.label, style: { background: x.bg, borderColor: x.bd } }, x.text); };
+    /* a slider's reading: the number box already says the number (in px, degrees, a multiple
+     * or a percentage of it), so only words ride, under the slider; nothing repeats it in a
+     * column of its own, and every slider in a pane is the same width */
+    var said = String(f.valText == null ? '' : f.valText), bare = said.replace(/\s*(px|°|×|x)$/, '');
+    var pct = /^-?[\d.]+\s*%$/.test(said) && Math.abs(parseFloat(said) / 100 - +f.value) < 0.006;
+    var echo = f.isRange && (said === '' || pct || (isFinite(+bare) && Math.abs(+bare - +f.value) < 1e-9));
+    var capUnder = f.isRange && !echo ? said : '';
     var ctl =
       f.isRange ? h('div', { className: 'st-rng' }, h('input', { type: 'range', min: f.min, max: f.max, step: f.step, value: f.value, onChange: f.on }),
-        h('input', { className: 'st-num', type: 'number', min: f.min, max: f.max, step: f.step, value: f.value, onChange: f.onNum, title: 'Type an exact value' }))
+        h('input', { className: 'st-num', type: 'number', min: f.min, max: f.max, step: f.step, value: f.value, onChange: f.onNum, title: said ? said + ' · type an exact value' : 'Type an exact value' }))
       : f.isSelect ? h('select', { onChange: f.on, value: String(f.value) }, list(f.opts).map(function (x, i) { return h('option', { key: i, value: x.v }, x.label); }))
-      : f.isChips ? h('div', { className: 'ui-chips' }, list(f.opts).map(function (x, i) { return h('button', { key: i, onClick: x.pick, style: { background: x.bg, borderColor: x.bd, color: x.fg } }, x.label); }))
+      : f.isChips ? h('div', { className: 'ui-chips st-pills' }, list(f.opts).map(function (x, i) { return h('button', { key: i, onClick: x.pick, style: { background: x.bg, borderColor: x.bd, color: x.fg } }, x.label); }))
       : f.isSwatch ? h('div', { className: 'ui-chips' }, list(f.opts).map(sw))
       : f.isColor && f.cur ? h('div', null,
           // the hub's one colour picker (§12.5): the preset's colour, this one (it opens the
@@ -455,11 +475,12 @@
       : f.isSample ? h('div', { className: 'st-sample', style: f.style }, f.value)
       : f.isText ? h('input', { type: 'text', value: f.value, onChange: f.on })
       : f.isFile ? h('input', { type: 'file', accept: f.accept, onChange: f.on })
+      : f.isCanvas ? h('canvas', { ref: f.ref, width: f.w, height: f.h, onMouseDown: f.onDown, onMouseMove: f.onMove, title: f.tip, className: 'st-cv', style: { width: f.css + 'px', height: f.css + 'px' } })
       : f.isNote ? h('span', { className: 'st-tip', title: f.note }, 'ⓘ') : null;
     return h('div', { className: cx('st-row', f.rowCls), 'data-a': f.anchor },
       h('label', { title: f.tip || f.label }, f.label, f.tip ? h('span', { className: 'st-tip' }, 'ⓘ') : null,
         f.hasLink ? h('span', { onClick: f.relink, title: f.linkTip, style: { color: f.linkFg, cursor: f.linkCursor } }, f.linkText) : null),
-      h('div', { style: { minWidth: 0 } }, ctl, h('div', { className: 'st-cname' }, f.isColor && f.valText === f.hexText ? '' : f.valText)),
+      h('div', { style: { minWidth: 0 } }, ctl, h('div', { className: 'st-cname' }, f.isRange ? capUnder : f.isColor && f.valText === f.hexText ? '' : f.valText)),
       h('div', { className: 'st-val', title: f.valText }, f.valText));
   }
   // fields: the kit's rows; a slider keeps the value column, every other row reads its value under it.
@@ -476,10 +497,14 @@
       }
       out.push(f);
     });
+    var shut = false;
     return h('div', { className: 'st-fields' }, out.map(function (f, i) {
-      if (f.isHead) return h('div', { key: i, className: 'st-sec', 'data-a': f.anchor, title: f.tip || '' }, f.label, f.tip ? h('span', { className: 'st-tip' }, 'ⓘ') : null);
+      if (f.isHead) shut = !!(f.fold && !f.fold.open);
+      if (f.isHead) return h('div', { key: i, className: cx('st-sec', f.fold ? 'st-fold' : '', f.fold && !f.fold.open ? 'shut' : ''), 'data-a': f.anchor, title: f.tip || '',
+        onClick: f.fold ? f.fold.toggle : undefined }, f.fold ? h('i', null, f.fold.open ? '▾' : '▸') : null, f.label, f.tip ? h('span', { className: 'st-tip' }, 'ⓘ') : null);
+      if (shut) return null;
       if (!f.isRow) return null;
-      return h(FieldRow, { key: i, f: Object.assign({}, f, { rowCls: f.rowCls != null ? f.rowCls : f.isRange ? '' : 'wide' }) });
+      return h(FieldRow, { key: i, f: Object.assign({}, f, { rowCls: f.isRange ? 'rng' : f.rowCls != null ? f.rowCls : 'wide' }) });
     }));
   };
 
@@ -488,7 +513,8 @@
    * parent, the selection, the arrows, the eye, the row's explanation as its tooltip.
    * items: [{id, parent, band, label, movable}] in display order. o:
    *   sel (the selected row id), heads ({band: label}), dragging (the dragged row id),
-   *   icon(it), note(it), tag(it), warn(it) -> text, hidden(it) -> bool,
+   *   icon(it), note(it), tag(it), warn(it), num(it) -> text (num: the part's '#n', as the
+   *   inspector's pickers name it, printed before the label), hidden(it) -> bool,
    *   move(id, dir) -> {ok, reason}, onMove(id, dir), pick(it), eyeTip(it), toggleEye(it),
    *   drag: {start(it, e), over(e, it), drop(it, e), end()} */
   S.layerRows = function (items, o) {
@@ -501,7 +527,7 @@
       if (it.band !== band) { band = it.band; rows.push({ isHead: true, isRow: false, label: (o.heads || {})[band] }); }
       var up = it.movable ? o.move(it.id, -1) : none, dn = it.movable ? o.move(it.id, 1) : none;
       var hidden = !!call(o.hidden, it, false), on = o.sel === it.id, warn = call(o.warn, it, ''), depth = depthOf(it);
-      rows.push({ id: it.id, parent: it.parent || null, isHead: false, isRow: true, label: it.label, warn: warn ? ' ⚠' : '', icon: call(o.icon, it, '•'),
+      rows.push({ id: it.id, parent: it.parent || null, isHead: false, isRow: true, label: it.label, num: call(o.num, it, ''), warn: warn ? ' ⚠' : '', icon: call(o.icon, it, '•'),
         cls: (on ? 'on' : '') + (it.parent ? ' child' : '') + (o.dragging === it.id ? ' dragging' : ''), indent: 14 * depth, tag: call(o.tag, it, ''),
         note: call(o.note, it, ''),
         tip: it.movable ? 'Drag onto another layer, or use the arrows' : (o.move(it.id, 1).reason || ''),
@@ -542,7 +568,7 @@
           if (!r.isRow) return null;
           return h('div', { key: r.id || i, className: cx('st-lr', r.cls), draggable: r.drag, onDragStart: r.dragStart, onDragOver: r.dragOver, onDrop: r.drop, onDragEnd: r.dragEnd, onClick: r.pick, title: r.title, style: { marginLeft: r.indent + 'px', opacity: r.op } },
             h('span', { className: 'st-ic' }, r.icon),
-            h('span', { className: 'st-nm', style: { fontWeight: r.weight } }, r.label, h('span', { className: 'st-warn' }, r.warn), h('small', null, r.tag)),
+            h('span', { className: 'st-nm', style: { fontWeight: r.weight } }, r.num ? h('b', { className: 'st-lnum' }, r.num) : null, r.label, h('span', { className: 'st-warn' }, r.warn), h('small', null, r.tag)),
             h('span', { className: 'st-acts' },
               h('button', { className: 'st-mini', onClick: r.up, title: r.upTip, style: { opacity: r.upOp, visibility: r.arrows } }, '↑'),
               h('button', { className: 'st-mini', onClick: r.down, title: r.downTip, style: { opacity: r.downOp, visibility: r.arrows } }, '↓'),

@@ -47,14 +47,16 @@ const VECTORS = [
   ['distinct 5 has no clean rung and falls back to itself', (G) => rung(G, [{ fps: 5, mode: 'distinct' }], 15) === 5],
   ['a fluid ask under the panel floor clamps to 4', (G) => rung(G, [{ fps: 1, mode: 'fluid' }], 15) === 4],
   // ---- 2. the shipped Skeleton, priced against its own glass ----
-  ['Skeleton: rung 4 from its 4 fps bank and 4 bps sweep', (G) => skel(G).rung === 4],
-  ['Skeleton: est 4 fps, as measured', (G) => skel(G).est_fps === 4],
+  // §49.15: the shipped Skeleton's plan is 6/6, so its bank is drawn at 6 fps; 6/6 holds 100%
+  // of its frames on Gold for 60 s with the shadows as shipped
+  ['Skeleton: rung 6 from its 6 fps bank and 6 bps sweep', (G) => skel(G).rung === 6],
+  ['Skeleton: est 6 fps, as measured', (G) => skel(G).est_fps === 6],
   // re-measured 2026-11-03 on orb-B: the default re-baked with its design and the hour/minute
   // always smoothed (ruling 10) flushes at 125 ms (store_check quiet, the per-second fps line;
   // the pre-ruling bake was 95 ms), against an estimate of ~115
   ['Skeleton: flush within 15% of the measured 125 ms', (G) => Math.abs(skel(G).flush_ms - 125) <= 125 * 0.15],
   ['Skeleton: priced as a delta bank', (G) => skel(G).carrier === 'delta bank'],
-  ['Skeleton: rung 4 can never take smoothing', (G) => skel(G).smooth === false],
+  ['Skeleton: rung 6 can never take smoothing', (G) => skel(G).smooth === false],
   // ---- 3. synthetic still dials: the cap, the price, the grant ----
   ['a sweeping still dial rides rung 15', (G) => still(G, 15, 1).rung === 15],
   ['a 4 bps sweep is capped at 4 however cheap', (G) => still(G, 4, 1).est_fps === 4],
@@ -159,7 +161,14 @@ const medium = (G) => cached(G, 'm', () => G.bakeClock3({ name: 'Est', serial: 1
   hands: [hand(0, 30, 250, 200), hand(1, 30, 250, 200), hand(2, 2, 90, 80)], order: [0, 1, 2],
   scalars: { second_sweep: 1, tick_rate: 15 } }).est);
 const heavy = (G) => cached(G, 'h', () => G.bakeClock3(stillOpts(15, 1, true)).est);
-const skel = (G) => cached(G, 'k', () => G.estimate3(G.verifyBundle3(new Uint8Array(fs.readFileSync(SKEL))).sections[0]));
+/* The shipped Skeleton as the rung ladder reads it: since §49.15 its seconds row names the
+ * plan's hand grid (cad_arg), which v1.2.9's scheduler paces and estimate4 prices; the ladder
+ * prices the same bytes with no rate named (the plate's tempo, 6 since the plan is 6/6). */
+const skel = (G) => cached(G, 'k', () => {
+  const sec = G.verifyBundle3(new Uint8Array(fs.readFileSync(SKEL))).sections[0];
+  sec.blob.elements.forEach((e) => { if (e['class'] === 8 && e.src === 7 && e.cadence === 1) e.cad_arg = 0; });
+  return G.estimate3(sec);
+});
 const pol = (G, est) => G.splitPolicy3({ frames: 2, fps: 4, unionPx: 0, bboxW: 0, bboxH: 0, otherB: 0, est });
 
 const MUTANTS = [

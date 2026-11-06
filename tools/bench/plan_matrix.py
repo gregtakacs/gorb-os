@@ -3,8 +3,9 @@
 
 For each baked template, estimate4 (tools/bench/plans4.js) judges every plan: gears at G
 on a hand grid of H fps. This stores the template on the bound orb and runs, on the bench
-compositor (ink spans, nearest shadows, the paced 60 Hz grid, pre-paint where the plan
-says so):
+compositor (ink spans, the shadows as the bake flags them — the hour and minute twins
+smoothed, the seconds twin as its switch says — the paced 60 Hz grid, pre-paint where the
+plan says so):
 
   frontier   every plan the calculator says fits and nothing beats — each must hold
   next up    the cheapest plans it refuses for TIME (a frame or a gear frame that does not
@@ -61,7 +62,7 @@ def run_arm(x, mode, carriage):
     scans = round(60 / H)
     every = round(H / G) if G else 0
     prep = 1 if (x["prepaint"] or (x["arm"] == "next up" and every >= 2 and not carriage)) else 0
-    q = ("reset=1&spans=1&shadow=nearest&sweep=%d&pace=%d&gif_every=%d&prep=%d&settle=2500&ms=%d"
+    q = ("reset=1&spans=1&sweep=%d&pace=%d&gif_every=%d&prep=%d&settle=2500&ms=%d"
          % (1 if mode == "sweep" else 0, scans * 10, every, prep, MS))
     r = tm.get("/api/v1/debug/dial?" + q, timeout=40 + MS / 1000)
     h = r["hold"]

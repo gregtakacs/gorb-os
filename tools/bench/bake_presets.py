@@ -30,10 +30,22 @@ def presets():
 
 
 def bake(pid, out):
-    r = subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
+    try:
+        r = _chrome(pid)
+    except subprocess.TimeoutExpired:
+        # one preset that never settles fails alone; the run goes on to the next
+        return False, "timed out after 900 s"
+    return _parse(pid, out, r)
+
+
+def _chrome(pid):
+    return subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
                         "--user-data-dir=C:\\Temp\\wc-bench-%d" % os.getpid(), "--virtual-time-budget=600000",
                         "--dump-dom", PAGE % pid + ("&" + EXTRA if EXTRA else "")],
                        cwd="/mnt/c", capture_output=True, text=True, timeout=900)
+
+
+def _parse(pid, out, r):
     dom = r.stdout
     m = re.search(r"B64:([A-Za-z0-9+/=]+)", dom)
     st = re.search(r"status: ([^\n<]*)", dom)

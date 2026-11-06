@@ -31,22 +31,28 @@ ok(e.options.every((o) => !o.ok || !o.gears || Math.abs(o.fps / o.gears - Math.r
    'a gear frame always lands on every Nth frame of a plan that fits');
 
 // ---- Skeleton, against the bench (Gold, 80 MHz, spans + nearest shadows)
-ok(e.gears_fps === 4 && e.bank_fps === 4, 'the gears ride their own 4 fps', e.gears_fps + ' / ' + e.bank_fps);
-ok(e.est_fps === 4 && !e.prepaint, 'it asks 4 and gets 4, direct', e.sentence);
-// measured: a gear frame ~71 ms of compositing + ~9.6 dma (§49.4: hook 71.3, dma 9.6)
-ok(Math.abs(opt(e, 12).gear_ms - 81) / 81 < 0.15, 'the gear tick prices within 15% of the bench', opt(e, 12).gear_ms + ' ms vs 81');
-// measured: 4 on 12 holds 5 scans 140 of 140 with pre-paint, 86 of 130 without (§49.9, §49.11)
-ok(opt(e, 12).ok && opt(e, 12).prepaint, '4 on 12 fits, pre-painted', JSON.stringify(opt(e, 12)));
-// measured: 4 on 20 holds 3 scans 224 of 229 pre-painted with the in-place landing (§49.11)
-ok(opt(e, 20).ok && opt(e, 20).prepaint, '4 on 20 fits, pre-painted', JSON.stringify(opt(e, 20)));
+ok(e.gears_fps === 6 && Math.round(e.bank_fps) === 6, 'the gears ride their own 6 fps (the plan redrew the bank at it)', e.gears_fps + ' / ' + e.bank_fps);
+ok(e.est_fps === 6 && !e.prepaint, 'it asks its plan\'s 6 and gets 6, direct', e.sentence);
+// measured (§49.15, 6/6 for 60 s, the shadows as shipped): a gear frame 92.1 ms of compositing
+// + 9.5 dma, the dearest 103.1. A gear frame that must fit on its own is priced on the bank's
+// largest rect, so it sits above the glass's dearest, never under it.
+const GEAR_MAX = 103.1, gearFair = (ms) => ms >= GEAR_MAX && ms < GEAR_MAX * 1.3;
+ok(gearFair(opt(e, 6).gear_ms), 'the gear tick prices above the glass\'s dearest, within 30%', opt(e, 6).gear_ms + ' ms vs ' + GEAR_MAX);
+// measured: 6 on 6 holds 100% of its frames, every frame a gear frame (§49.15)
+ok(opt(e, 6).ok && !opt(e, 6).prepaint, '6 on 6 fits, direct', JSON.stringify(opt(e, 6)));
+// measured: 4 on 12 pre-painted holds 93.5-94.4%, 4 on 20 88.2%: the frames between are short
+// of 1.3x the build, and both are refused (§49.15)
+const pl = (r, H, G4) => r.policy.find((x) => x.fps === H && x.gears === G4);
+ok(!pl(e, 12, 4).ok && /to build a/.test(pl(e, 12, 4).why), '4 on 12 is refused: the frames between are short of the build', pl(e, 12, 4).why);
+ok(!pl(e, 20, 4).ok && /to build a/.test(pl(e, 20, 4).why), '4 on 20 is refused: the frames between are short of the build', pl(e, 20, 4).why);
 // measured: 5 on 15 is not a plan here — the gears are 4, and 4 does not land on every Nth of 15
 ok(!opt(e, 15).ok, '15 is refused: 4 fps gears do not divide it', opt(e, 15).why);
-ok(e.max_fps === 20 && e.max_prepaint, 'the fastest sweep it carries is 20, pre-painted', e.max_fps + ' ' + e.max_prepaint);
-ok(/est 4 fps on the 60 Hz grid/.test(e.sentence) && /could run 20 \(pre-painted\)/.test(e.sentence), 'the sentence says both', e.sentence);
+ok(e.max_fps === 6 && !e.max_prepaint, 'the fastest sweep it carries is 6, direct', e.max_fps + ' ' + e.max_prepaint);
+ok(/est 6 fps on the 60 Hz grid/.test(e.sentence) && /plan: gears 6 on 6/.test(e.sentence), 'the sentence says the rate and the plan', e.sentence);
 
 // ---- the general walk: any mix of seconds hands. A second seconds hand ticking 1/4
-// beside Skeleton's sweeping one: 4 on 20 still holds (its beat lands every 5th frame),
-// 5 on 15 cannot (4 does not divide 15), and the ticking hand is a mover of its own.
+// beside Skeleton's sweeping one: 4 on 4 holds (its beat lands every frame), 6 on 6 cannot
+// (4 does not divide 6), and the ticking hand is a mover of its own.
 const mixed = (() => {
   const m = G.verifyBundle3(new Uint8Array(fs.readFileSync(SKEL))).sections[0];
   const els = m.blob.elements, isec = els.findIndex((x) => x['class'] === 8 && x.src === 7 && !(x.flags & 16));
@@ -57,7 +63,8 @@ const mixed = (() => {
 ok(mixed.movers.some((x) => x.kind === 'step' && x.beats === 4) && mixed.movers.some((x) => x.kind === 'sweep'),
    'a ticking and a sweeping seconds hand are both movers', JSON.stringify(mixed.movers));
 const mp = (fps, gears) => mixed.policy.find((x) => x.fps === fps && x.gears === gears);
-ok(mp(20, 4).ok, 'with both, 4 on 20 still fits', JSON.stringify(mp(20, 4)));
+ok(mp(4, 4).ok && G.planKey4(mixed.plans[0]) === '4/4', 'with both, 4 on 4 is the plan', JSON.stringify(mp(4, 4)));
+ok(!mp(6, 6).ok && /1\/4 hand does not land/.test(mp(6, 6).why), 'with both, 6 on 6 is refused for the 1/4 beat', mp(6, 6).why);
 ok(!mp(15, 5).ok && /1\/4 hand does not land/.test(mp(15, 5).why), 'with both, 5 on 15 is refused for the 1/4 beat', mp(15, 5).why);
 // ---- the slot: a one-second bank costs the keyframe plus G rect deltas, fps x cutout area
 ok(e.bytes_at(20) > e.bytes_at(12) && e.bytes_at(12) > e.bytes_at(4) && e.bytes_at(4) > 0, 'a faster bank costs more bytes',
@@ -66,15 +73,20 @@ ok(e.bytes_at(20) > e.bytes_at(12) && e.bytes_at(12) > e.bytes_at(4) && e.bytes_
 ok(e.frames_at(4) === 8 && e.frames_at(7.5) === 8 && e.frames_at(12) === 12 && e.frames_at(15) === 15,
    'a bank holds max(8, G) frames', [4, 7.5, 12, 15, 20].map((g) => e.frames_at(g)).join(' '));
 // ---- the plans (§49.15): searched by fps x cutout area, not tabled by hand mode
-// Skeleton's big open train: the sweep at 20 under gears at 4, 5 on 15, or gears at 7.5 on 7.5
-// (measured on Gold, §49.15: 10/10 holds 37% of its frames, so it is off the frontier)
+// Skeleton's big open train, its smoothed hour and minute shadows as shipped: one plan, 6 on 6
+// (measured on Gold, §49.15: 6/6 holds 100% for 60 s, 7.5/7.5 57.6%, 4/12 93.5%)
 const P = (r) => r.plans.map(G.planKey4).join(' ');
-ok(P(e) === '4/20 5/15 7.5/7.5', 'Skeleton sweeps on the frontier 4/20, 5/15, 7.5/7.5', P(e));
-ok(e.picks.sweep && G.planKey4(e.picks.sweep) === '4/20' && G.planKey4(e.picks.gears) === '7.5/7.5' && G.planKey4(e.picks.balanced) === '5/15',
-   'favour sweep 4/20, gears 7.5/7.5, balanced 5/15', JSON.stringify(Object.keys(e.picks).map((k) => k + ' ' + G.planKey4(e.picks[k]))));
+ok(P(e) === '6/6', 'Skeleton sweeps on the frontier 6/6 alone', P(e));
+ok(e.picks.sweep && ['sweep', 'gears', 'balanced'].every((k) => G.planKey4(e.picks[k]) === '6/6'),
+   'every favour picks 6/6', JSON.stringify(Object.keys(e.picks).map((k) => k + ' ' + G.planKey4(e.picks[k]))));
+// the plan reaches the device: the sweeping seconds row names the plan's hand grid as its
+// rate (cad_arg), which orb_clock3.c makes the beat the scheduler paces (§49.15, v1.2.9)
+const secRow = sec.blob.elements.find((x) => x['class'] === 8 && x.src === 7 && x.cadence === 1);
+ok(secRow && secRow.cad_arg === e.picks.sweep.fps, 'the shipped seconds row sweeps at the plan\'s grid',
+   (secRow && secRow.cad_arg) + ' vs ' + e.picks.sweep.fps);
 ok(e.plans.every((x) => !e.plans.some((y) => y !== x && y.fps >= x.fps && y.gears >= x.gears)), 'no plan is beaten on both the hands and the gears');
 ok(e.policy.filter((x) => x.ok).every((x) => e.plans.some((y) => y.fps >= x.fps && y.gears >= x.gears)), 'every plan that fits is on or under the frontier');
-ok(G.planKey4(G.pickPlan4(e, 'sweep', '5/15')) === '5/15' && G.planKey4(G.pickPlan4(e, 'gears', '6/12')) === '7.5/7.5',
+ok(G.planKey4(G.pickPlan4(e, 'gears', '6/6')) === '6/6' && G.planKey4(G.pickPlan4(e, 'sweep', '4/12')) === '6/6',
    'an exact plan is honoured while it is on the frontier, else the favour answers');
 // a small cutout: the same dial with a 40x40 bank rect runs its gears every frame at 20
 const small = (() => {
@@ -97,11 +109,17 @@ ok(mutate('PX_B', 40, () => /the slot leaves/.test(G.estimate4(sec, { gears: 15 
    'mutant: a fat delta (40 B/px) would not fit 15 fps gears in the slot');
 
 // ---- each pin bites: the constants it rests on, broken one at a time
-ok(mutate('MARGIN', 0, () => est().policy.find((x) => x.fps === 10 && x.gears === 10).ok),
-   'mutant: no margin would call 10/10 a fit (the glass holds 37% of its frames)');
-ok(mutate('CAR', 0.676, () => true) && G.EST4.CAR === 0.9, 'the carriage term is the §49.15 refit (Kitetour 6/6, Orbital 5/5 miss on the glass)');
-ok(mutate('SWAP', 0.2, () => !opt(est(), 20).ok), 'mutant: the copying swap (0.2 us/px) would refuse 4 on 20');
-ok(mutate('R', 0.2, () => Math.abs(opt(est(), 12).gear_ms - 81) / 81 >= 0.15), 'mutant: a cheaper restore misprices the gear tick');
+// The terms are the §49.15 fit on the shipped-shadow runs (31 direct plans, rms 2.6 ms), and a
+// frame needs its price x 1.15 + 20 ms: every frontier plan on every preset held for a minute
+// and every plan one step past it missed.
+ok(G.EST4.AA === 1.277 && G.EST4.MARGIN === 20 && G.EST4.SLOP === 0.15 && G.EST4.IDLE === 26 && G.EST4.PREP_K === 1.3,
+   'the smoothing, margin, slop, idle and build terms are the §49.15 fit');
+const fitsAt = (H, G4) => est().policy.find((x) => x.fps === H && x.gears === G4).ok;
+ok(mutate('SLOP', 0, () => mutate('MARGIN', 14, () => fitsAt(7.5, 7.5))),
+   'mutant: a flat 14 ms margin would call 7.5/7.5 a fit (the glass holds 57.6%)');
+ok(mutate('SLOP', 0.5, () => !fitsAt(6, 6)), 'mutant: a 50% slop would refuse 6/6 (the glass holds 100%)');
+ok(mutate('PREP_K', 0.9, () => pl(est(), 12, 4).ok), 'mutant: without the build factor 4 on 12 would pre-paint (the glass holds 93.5%)');
+ok(mutate('R', 0.2, () => !gearFair(opt(est(), 6).gear_ms)), 'mutant: a cheaper restore misprices the gear tick');
 
 console.log(fails ? fails + ' of ' + checked + ' checks FAILED' : 'all ' + checked + ' checks pass');
 process.exit(fails ? 1 : 0);

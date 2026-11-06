@@ -3780,6 +3780,13 @@
     var authorRate = sc.tick_rate | 0;
     var secCad = authorSweep ? { cadence: CAD_SWEEP, cad_arg: authorRate >= 2 ? Math.min(SWEEP_FPS_MAX, authorRate) : 0 }
                              : { cadence: CAD_STEP, cad_arg: Math.max(1, authorRate) };
+    /* A seconds row whose design says "sweep" and names no rate sweeps at the priced beat:
+     * the plan's hand grid rides its cad_arg, or the device falls back to the plate's tempo
+     * and plays gears-on-gears (Skeleton's 4/12 shipped as 4/4, §49.15). */
+    function secBeat(src, c) {
+      return src === 'second' && c.cadence === CAD_SWEEP && !c.cad_arg && secCad.cadence === CAD_SWEEP
+           ? { cadence: CAD_SWEEP, cad_arg: secCad.cad_arg } : c;
+    }
     var SLOT_DRIVE = [{ src: 'hour12', vmax: 12 }, { src: 'minute', vmax: 60 }, { src: 'second', vmax: 60 },
                       null, null];
     var elemOfHand = {};
@@ -3807,8 +3814,8 @@
         // angle the composer names (an uploaded hand's facing); 0 when it names none
         var hv = v6Drive(hd5.src ? hd5.motion : 'rotate',
                          hd5.src ? hd5 : { span: TURN_10, zero: hd5.zero | 0, vmax: sd.vmax }, h.x, h.y);
-        var hc = v6Cadence(hd5.cadence, hd5.cad_arg,
-                           hsrc === 'second' ? secCad : { cadence: CAD_SWEEP, cad_arg: 0 });
+        var hc = secBeat(hsrc, v6Cadence(hd5.cadence, hd5.cad_arg,
+                                         hsrc === 'second' ? secCad : { cadence: CAD_SWEEP, cad_arg: 0 }));
         if (hv.jump && hc.cadence === CAD_SWEEP) hc = { cadence: CAD_JUMP, cad_arg: 0 };
         hrow.src = SOURCES.indexOf(hsrc); hrow.x = hv.x; hrow.y = hv.y;
         hrow.span = hv.span; hrow.zero = hv.zero; hrow.vmin = hv.vmin; hrow.vmax = hv.vmax;
@@ -3887,7 +3894,7 @@
         throw new Error('a pointer driven by ' + q(s4) + ' is ' + (apr.w|0) + 'x' + (apr.h|0) +
           ' against the row’s ' + (a5.w|0) + 'x' + (a5.h|0) + ': one row, one extent');
       var av5 = v6Drive(a5.motion, a5, a5.x, a5.y);
-      var ac5 = v6Cadence(a5.cadence, a5.cad_arg, { cadence: CAD_SWEEP, cad_arg: 0 });
+      var ac5 = secBeat(s4, v6Cadence(a5.cadence, a5.cad_arg, { cadence: CAD_SWEEP, cad_arg: 0 }));
       if (av5.jump && ac5.cadence === CAD_SWEEP) ac5 = { cadence: CAD_JUMP, cad_arg: 0 };
       var aid5 = a5.id ? String(a5.id) : null;
       var or5 = a5.order === undefined ? (aid5 && dOrder3.indexOf(aid5) >= 0 ? rung3[aid5]
@@ -4311,10 +4318,12 @@
    * A frame rate H holds only if every beat and the gears divide it (7.5: a 1/8 hand moves
    * every frame). One second of frames is walked, each distinct mix of movers priced once:
    *
-   *   frame_ms = 0.734 restored_kpx + 0.323 walk_kpx + 0.676 restored_kpx (carriage) + 12.15
+   *   frame_ms = 0.744 restored_kpx + 0.507 walk_kpx + 1.277 smoothed_kpx
+   *            + 0.548 restored_kpx (carriage) + 7.2
    *
-   * (fitted on 18 templates x 2 arms at 80 MHz, median error 9%, p90 20%). A frame fits when
-   * its cost + 19 ms is under its shortest period (7.5 alternates 7 and 8 scans). A gear frame
+   * (§49.15: least squares on 31 direct plans held a minute each at 80 MHz with the shadows as
+   * shipped, rms 2.6 ms). A frame fits when its cost x 1.15 + 20 ms is under its shortest
+   * period (7.5 alternates 7 and 8 scans). A gear frame
    * that does not fit is pre-painted when the frames between leave the slack to build it and
    * its landing fits (≈ its movers + 0.1 us per rect px); carriage dials are not pre-painted.
    *
@@ -4324,8 +4333,8 @@
    * px). fps x cutout area is the one currency: the slot pays it in bytes, the compositor in
    * time, and a 20 fps cutout a fifth the area of a 4 fps one costs the same in both. The
    * device holds 20 bank frames (CLK_BG_MAX), one second at the fastest gears. */
-  var EST4 = { R: 0.707, W: 1.079, CAR: 0.128, FIXED: 4.34, MARGIN: 23, IDLE: 19, SWAP: 0.1, SCAN: 16.94, STRIP: 8, PAD: 3,
-               EPS10: 2, PX_B: 2.06, LOOP_MIN: 8, BANK_MAX: 20, CAR_MAX: 16, HANDS_MIN: 4, AA: 0.665, GAP_MIN: 24 };
+  var EST4 = { R: 0.744, W: 0.507, CAR: 0.548, FIXED: 7.225, MARGIN: 20, SLOP: 0.15, IDLE: 26, PREP_K: 1.3, SWAP: 0.1, SCAN: 16.94, STRIP: 8, PAD: 3,
+               EPS10: 2, PX_B: 2.06, LOOP_MIN: 8, BANK_MAX: 20, CAR_MAX: 16, HANDS_MIN: 4, AA: 1.277, GAP_MIN: 24 };
   /* The rates a 60 Hz panel holds alike, and 7.5: "8 fps", frames alternating 7 and 8 scans
    * (±8.5 ms, §49.7), or exactly 8 scans when gears ride every second frame of 15. */
   var GRID4 = [20, 15, 12, 10, 7.5, 6, 5, 4, 3, 2, 1];
@@ -4545,6 +4554,10 @@
     rows.forEach(function (r, j) { if (r.kind === 'slow') slowSet.push([j, EST4.EPS10]); });
 
     /* One grid plan: H frames a second, the gears at G. Walks one second of frames. */
+    /* what a frame needs of its period: its price, the jitter that grows with it (a 140 ms
+     * carriage frame misses with 32 ms to spare, a 41 ms one holds with 27), and the
+     * refresh wait (§49.15, the shipped-shadow run) */
+    var need4 = function (ms) { return ms * (1 + EST4.SLOP) + EST4.MARGIN; };
     var judge = function (H, G) {
       var per = Math.floor(60 / H) * EST4.SCAN, frames = Math.round(H === 7.5 ? 15 : H);
       var res = { fps: H, gears: G, scans: +(60 / H).toFixed(1), period_ms: +per.toFixed(1), prepaint: false, ok: false, why: '' };
@@ -4590,10 +4603,10 @@
       res.mean_ms = +(list.reduce(function (a, fr) { return a + fr.ms; }, 0) / list.length).toFixed(1);
       /* the frame's terms averaged over the plan's second, for refitting EST4 on the glass */
       res.terms = ['R', 'W', 'S'].reduce(function (o, k) { o[k] = +(list.reduce(function (a, fr) { return a + fr[k]; }, 0) / list.length).toFixed(2); return o; }, {});
-      if (worstNo.ms + EST4.MARGIN > per) { res.why = 'a frame (' + worstNo.ms + ' ms) does not fit ' + res.period_ms + ' ms'; return res; }
+      if (need4(worstNo.ms) > per) { res.why = 'a frame (' + worstNo.ms + ' ms) does not fit ' + res.period_ms + ' ms'; return res; }
       /* the occasional slow move (a minute or hour row past its 0.2° gate), on the dearest frame */
       if (slowSet.length) res.slow_ms = price(slowSet, false).ms;
-      if (!worstGear || worstGear.ms + EST4.MARGIN <= per) { res.ok = true; return res; }
+      if (!worstGear || need4(worstGear.ms) <= per) { res.ok = true; return res; }
       if (carriage) { res.why = 'a gear frame (' + worstGear.ms + ' ms) does not fit ' + res.period_ms + ' ms, and a carriage dial is not pre-painted'; return res; }
       if (gEvery < 2) { res.why = 'a gear frame (' + worstGear.ms + ' ms) does not fit ' + res.period_ms + ' ms, and every frame is one'; return res; }
       list.forEach(function (fr) { if (!fr.gear) slack += per - EST4.IDLE - fr.ms; });
@@ -4601,8 +4614,8 @@
       var build = 0, swap = 0;
       list.forEach(function (fr) { if (fr.gear) { build = Math.max(build, fr.mean - fr.without); swap = Math.max(swap, fr.without + EST4.SWAP * worstPx / 1000); } });
       res.build_ms = +build.toFixed(1); res.slack_ms = +slack.toFixed(1); res.swap_ms = +swap.toFixed(1);
-      if (swap + EST4.MARGIN > per) { res.why = 'even pre-painted, the gear landing (' + res.swap_ms + ' ms) does not fit'; return res; }
-      if (slack < build) { res.why = 'the frames between leave ' + res.slack_ms + ' ms to build a ' + res.build_ms + ' ms gear frame ahead'; return res; }
+      if (need4(swap) > per) { res.why = 'even pre-painted, the gear landing (' + res.swap_ms + ' ms) does not fit'; return res; }
+      if (slack < build * EST4.PREP_K) { res.why = 'the frames between leave ' + res.slack_ms + ' ms to build a ' + res.build_ms + ' ms gear frame ahead'; return res; }
       res.ok = true; res.prepaint = true; return res;
     };
 

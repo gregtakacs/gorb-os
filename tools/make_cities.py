@@ -35,11 +35,20 @@ rules the way newlib does) at every 2025-2028 transition and daily through
 check; it ships as its standard offset with the approximate flag, and the
 orb says so when it proposes it. Identical rules are stored once.
 
-The same bake writes the hub's copy, tools/orb-manager/web/cities.json: the
-same rows, biggest first, as [name, country, lat, lon] for the Orb face's
-place search. The hub sends a picked city's point and the orb names it and
-zones it from its own table, so the two lists agreeing is what makes a
-search for "Boise" come back as "Boise" in Mountain time. --check gates both.
+The same bake writes the hub's search list, tools/orb-manager/web/cities.json,
+from its own, much larger source (owner, 2026-11-06: the 500k list gave Michigan
+two cities): every GeoNames place of 15,000 people or more but a city's sections,
+biggest first, as [name, country, lat, lon, admin1] for the Orb face's Home search
+and the App settings page's place search. Its rows land in
+tools/data/cities15k.tsv through a separate import, so refreshing it never moves
+the orb's table:
+
+    python3 tools/make_cities.py --import-hub cities15000.txt
+
+The orb zones a picked point from its own table, which the 100k zone-correction
+rows keep right near zone lines; the hub sends the picked town's name with it, so
+"Traverse City" stays Traverse City rather than "200 km N of Grand Rapids".
+--check gates both outputs.
 
 Coordinates pack to 0.01 degree in int16 (about 1 km: enough to say which city
 is nearest, and the home itself is stored at full precision elsewhere).
@@ -58,6 +67,8 @@ ROOT = os.path.dirname(HERE)
 SRC_TSV = os.path.join(HERE, "data", "cities500k.tsv")
 OUT_C = os.path.join(ROOT, "main", "net", "orb_cities.c")
 OUT_JSON = os.path.join(HERE, "orb-manager", "web", "cities.json")
+HUB_TSV = os.path.join(HERE, "data", "cities15k.tsv")
+HUB_MIN_POP = 15_000
 
 MIN_POP = 500_000
 FIX_POP = 100_000       # correction rows: smaller places whose zone the big ones get wrong
@@ -154,6 +165,43 @@ def do_import(path):
             f.write("%d\t%s\t%.4f\t%.4f\t%s\t%s\n" % r)
     print("%d cities (%d of 500k+, %d zone corrections) -> %s"
           % (len(kept), big, len(kept) - big, SRC_TSV))
+
+
+def do_import_hub(path):
+    """The hub's search rows: every place of HUB_MIN_POP or more but a city's sections
+    (PPLX), with an ASCII name, and its first-level division (a US state's two letters)."""
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            c = line.rstrip("\n").split("\t")
+            if len(c) < 18 or not c[14].isdigit() or int(c[14]) < HUB_MIN_POP or c[7] == "PPLX":
+                continue
+            name = c[2].strip() or c[1].strip()
+            adm = c[10].strip() if c[10].strip().isalnum() and c[10].strip().isascii() else ""
+            if not name or not name.isascii() or "\t" in name:
+                continue
+            # the home's place holds 39 (orb_geo.h ORB_GEO_PLACE_MAX - 1), not the table's 23
+            rows.append((int(c[14]), name[:39], float(c[4]), float(c[5]), c[8], adm))
+    rows.sort(key=lambda r: (-r[0], r[1]))
+    os.makedirs(os.path.dirname(HUB_TSV), exist_ok=True)
+    with open(HUB_TSV, "w", encoding="ascii") as f:
+        f.write("# population\tname\tlat\tlon\tcountry\tadmin1"
+                "  (GeoNames cities15000, CC-BY 4.0; tools/make_cities.py --import-hub;"
+                " the hub's search list, never the orb's)\n")
+        for r in rows:
+            f.write("%d\t%s\t%.4f\t%.4f\t%s\t%s\n" % r)
+    print("%d places of %d+ -> %s" % (len(rows), HUB_MIN_POP, HUB_TSV))
+
+
+def load_hub_rows():
+    out = []
+    with open(HUB_TSV, encoding="ascii") as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            p, n, la, lo, cc, adm = line.rstrip("\n").split("\t")
+            out.append((int(p), n, float(la), float(lo), cc, adm))
+    return out
 
 
 def load_rows():
@@ -325,19 +373,23 @@ def bake():
 
 
 def bake_json():
-    rows = sorted(load_rows(), key=lambda r: -r[0])
+    rows = sorted(load_hub_rows(), key=lambda r: -r[0])
     return ('{"source":"GeoNames (https://www.geonames.org/), CC-BY 4.0; tools/make_cities.py",'
-            '"cities":[\n' + ",\n".join(json.dumps([r[1], r[4], r[2], r[3]]) for r in rows) + "\n]}\n")
+            '"cities":[\n' + ",\n".join(json.dumps([r[1], r[4], round(r[2], 3), round(r[3], 3), r[5]],
+                                                    separators=(",", ":")) for r in rows) + "\n]}\n")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--import", dest="imp", metavar="cities15000.txt")
+    ap.add_argument("--import-hub", dest="imp_hub", metavar="cities15000.txt")
     ap.add_argument("--check", action="store_true")
     a = ap.parse_args()
     pin_tzdata()
     if a.imp:
         do_import(a.imp)
+    if a.imp_hub:
+        do_import_hub(a.imp_hub)
     text, inexact, nrules = bake()
     hub = bake_json()
     if a.check:

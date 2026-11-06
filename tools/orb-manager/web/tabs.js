@@ -63,6 +63,7 @@ function showTab(name) {
   else if (name === "orb") lazyTab("home", () => {
     loadSecrets().catch(() => {});
     loadSound().catch(() => {});
+    loadUnits().catch(() => {});
     return loadHome();
   });
 }
@@ -262,6 +263,57 @@ $("#snd-go").onclick = async () => {
   }
 };
 
+// ---- face: Orb — units: temperature, speed, distance (weather-plan §2.1) ----
+// The orb's /api/v1/units, through the hub's allowlisted door. A board older than the
+// units (OS v1.2.10) answers 404, and the card says so rather than offering a save.
+const unitsURL = () => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/units";
+const UNIT_TEXT = { c: "\u00b0C", f: "\u00b0F", kmh: "km/h", mph: "mph", kn: "knots", km: "km", mi: "miles", nm: "nautical miles" };
+
+function unitsShow(d) {
+  $("#un-cur").textContent = [d.temp, d.speed, d.dist].map((k) => UNIT_TEXT[k] || k).join(" \u00b7 ");
+  $("#un-temp").value = d.temp;
+  $("#un-speed").value = d.speed;
+  $("#un-dist").value = d.dist;
+  $("#un-go").disabled = false;
+}
+
+async function loadUnits() {
+  if (!current.ip) return;
+  try {
+    const r = await hubFetch(unitsURL());
+    if (r.status === 404) {
+      $("#un-cur").textContent = "this firmware has no units setting: update it to v1.2.10 or later";
+      $("#un-go").disabled = true;
+      return;
+    }
+    unitsShow(await readDeviceJSON(r));
+  } catch (e) {
+    $("#un-cur").textContent = "units did not load: " + (e && e.message ? e.message : String(e));
+    throw e;
+  }
+}
+
+$("#un-go").onclick = async () => {
+  const msg = $("#un-msg"), btn = $("#un-go");
+  if (!current.ip) { msg.textContent = "no address to write to"; return; }
+  const body = { temp: $("#un-temp").value, speed: $("#un-speed").value, dist: $("#un-dist").value };
+  btn.disabled = true;
+  msg.textContent = "writing to the board\u2026";
+  try {
+    const r = await hubFetch(unitsURL(), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const d = await readDeviceJSON(r);
+    if (!r.ok || d.error) throw new Error(d.error || ("HTTP " + r.status));
+    unitsShow(d);
+    msg.textContent = "saved";
+  } catch (e) {
+    msg.textContent = "the board refused it: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
 // ---- face: Orb — the home location (flight-tracker-design §6.4) --------------
 // One OS setting: where the orb is. It sets the zone, and every app that needs a
 // position reads it (the flight tracker through its location cap). There is no
@@ -431,7 +483,9 @@ function homeClearPend() {
 // Step one, for every source: ask the orb what this point would become, pin
 // that point, and show it beside the Set button with its zone and the zone's
 // offset today.
-async function homePropose(query, what, recentre) {
+// name: a city picked from the hub's list keeps its own name; the orb's table only knows
+// the big ones and would call a town "200 km N of Grand Rapids"
+async function homePropose(query, what, recentre, name) {
   const ask = ++homeAsk;
   const msg = $("#home-msg");
   msg.textContent = "asking the orb about " + what + "…";
@@ -440,6 +494,7 @@ async function homePropose(query, what, recentre) {
     if (ask !== homeAsk) return;   // a newer proposal won
     const p = d && d.proposal;
     if (!p) throw new Error("the orb sent no preview");
+    if (name) { p.place = name; p.named = true; }
     homePend = p;
     await homePin(p.lat, p.lon, recentre);
     $("#home-pend").textContent = p.place + " · " + homeAt(p.lat, p.lon) + " · zone " +
@@ -461,7 +516,7 @@ $("#home-set").onclick = async () => {
   try {
     const d = await readDeviceJSON(await hubFetch(homeURL(), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ lat: p.lat, lon: p.lon }),
+      body: JSON.stringify(p.named ? { lat: p.lat, lon: p.lon, place: p.place } : { lat: p.lat, lon: p.lon }),
     }));
     homeClearPend();
     $("#home-cur").textContent = homeLine(d);
@@ -504,13 +559,18 @@ $("#home-loc").onclick = () => {
 };
 
 // ---- app settings: one page per installed app (owner, 2026-11-04) --------------
-// Today a page holds the app's secret settings (§43): GET /api/v1/apps names each
-// installed app's secret ids; GET /api/v1/apps/cfg answers a secret's host, whether it is
-// set, its header and its last four characters, and never its value. POST writes
+// A page holds the app's secret settings (§43): GET /api/v1/apps names each installed
+// app's secret ids; GET /api/v1/apps/cfg answers a secret's host, whether it is set, its
+// header and its last four characters, and never its value. POST writes
 // {"value","header"}; an empty value clears it. What a setting is called, how to get one
 // and where, is the APP's to say: its editor region may carry settings.json
 // ({id: {label, help, links: [{href, text}], header}}), read through the hub's editor
 // door, so this page names no app and no service itself.
+// An app's own settings belong here too, never in its theme editor (owner, 2026-11-06):
+// settings.json may name a STRING setting with a `kind` the page knows how to draw.
+// "place" is a place on the map, stored "Name|lat,lon" (two decimals, the 31 characters a
+// string setting holds), picked from the hub's city list or typed as coordinates; the
+// weather's place1..3 are the first. "text" is a plain line.
 const cfgURL = (slug, id) => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/apps/cfg?id=" +
   encodeURIComponent(slug) + "&key=" + encodeURIComponent(id);
 let apsApps = [];     // the installed apps, in title order
@@ -588,6 +648,176 @@ function secretRow(app, id, help) {
     .catch((e) => { cur.textContent = "unreadable: " + e.message; });
   return box;
 }
+// a place setting's stored form: "Name|lat,lon", the name giving way to the coordinates
+const PLACE_MAX = 31;
+function placeValue(name, lat, lon) {
+  const c = "|" + (+lat).toFixed(2) + "," + (+lon).toFixed(2);
+  const nm = String(name || "").replace(/[|"\\]/g, "").trim() || "Place";
+  return nm.slice(0, Math.max(1, PLACE_MAX - c.length)) + c;
+}
+function placeParse(v) {
+  const m = /^([^|]+)\|(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/.exec(v || "");
+  return m ? { name: m[1], lat: +m[2], lon: +m[3] } : null;
+}
+function placeLine(v) {
+  const p = placeParse(v);
+  return p ? p.name + " (" + p.lat.toFixed(2) + ", " + p.lon.toFixed(2) + ")" : "not set";
+}
+// one STRING setting the app's settings.json gives a kind: a place, or a line of text
+function stringRow(app, id, help) {
+  const box = document.createElement("div");
+  box.className = "apsset";
+  const cur = document.createElement("span"), msg = document.createElement("span");
+  cur.className = msg.className = "hint";
+  const name = document.createElement("strong");
+  name.textContent = help.label || id;
+  const head = document.createElement("div");
+  head.className = "apshead";
+  head.append(name, cur);
+  box.appendChild(head);
+  if (help.help) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = help.help;
+    box.appendChild(p);
+  }
+  const place = help.kind === "place";
+  const url = cfgURL(app.slug, id);
+  const show = (v) => { cur.textContent = place ? placeLine(v) : (v ? "\u201c" + v + "\u201d" : "not set"); };
+  const write = async (v, what) => {
+    msg.textContent = what + "\u2026";
+    try {
+      await readDeviceJSON(await hubFetch(url + "&value=" + encodeURIComponent(v), { method: "POST" }));
+      const d = await readDeviceJSON(await hubFetch(url));
+      show(d.value);
+      msg.textContent = v ? "saved; the app reads it at once" : "cleared";
+      return true;
+    } catch (e) {
+      msg.textContent = "the orb refused it: " + e.message;
+      return false;
+    }
+  };
+  if (place) box.appendChild(placeSearch(app, id, help, write, msg));
+  else {
+    const form = document.createElement("div");
+    form.className = "row";
+    const q = document.createElement("input"), save = document.createElement("button"), clr = document.createElement("button");
+    q.size = 30; q.autocomplete = "off"; q.placeholder = help.placeholder || "";
+    q.setAttribute("aria-label", (app.title || app.slug) + " " + (help.label || id));
+    save.type = clr.type = "button";
+    save.className = "primary"; clr.className = "ghost";
+    save.textContent = "Save"; clr.textContent = "Clear";
+    form.append(q, save, clr, msg);
+    save.onclick = () => write(q.value.trim(), "saving").then((ok) => { if (ok) q.value = ""; });
+    clr.onclick = () => write("", "clearing");
+    box.appendChild(form);
+  }
+  hubFetch(url).then(readDeviceJSON).then((d) => show(d.value))
+    .catch((e) => { cur.textContent = "unreadable: " + e.message; });
+  return box;
+}
+// A place setting's search: the Home card's searcher without its map (owner, 2026-11-06).
+// Typing lists the matching cities at once; Enter takes the first, or reads coordinates
+// or a full plus code, which the orb names the way it names a home (GET /api/v1/home's
+// proposal, which stores nothing); this browser's location works the same. A pick waits
+// beside its Save with its name editable, as Home's waits beside Set location.
+function placeSearch(app, id, help, write, msg) {
+  const side = document.createElement("div");
+  side.className = "locside";
+  const q = document.createElement("input");
+  q.placeholder = "a city, 33.4484, -112.074, or 8559CWXG+9C";
+  q.autocomplete = "off";
+  q.setAttribute("aria-label", (app.title || app.slug) + " " + (help.label || id) + ": find a city, or type coordinates or a full plus code");
+  const hits = document.createElement("div");
+  hits.className = "tzlist"; hits.setAttribute("role", "listbox"); hits.hidden = true;
+  const btns = document.createElement("div");
+  btns.className = "locbtns";
+  const here = document.createElement("button"), clr = document.createElement("button");
+  here.type = clr.type = "button";
+  here.className = clr.className = "ghost";
+  here.textContent = "Use this browser's location"; here.title = "Ask this browser where it is";
+  clr.textContent = "Clear"; clr.title = "Forget this place";
+  btns.append(here, clr);
+  const next = document.createElement("div");
+  next.className = "locnext"; next.hidden = true;
+  const pendAt = document.createElement("span"), nm = document.createElement("input"), save = document.createElement("button");
+  nm.size = 16; nm.autocomplete = "off"; nm.style.width = "12em";
+  nm.setAttribute("aria-label", "The name the orb shows for this place");
+  nm.title = "The name the orb shows. The orb keeps " + PLACE_MAX + " characters with the position, so a long name is cut.";
+  save.type = "button"; save.className = "primary"; save.textContent = "Save";
+  next.append(nm, pendAt, save);
+  side.append(q, hits, btns, next, msg);
+  let pend = null, ask = 0;
+  const show = (list) => {
+    hits.innerHTML = "";
+    hits.hidden = !list.length;
+    for (const c of list) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "tzrow"; b.setAttribute("role", "option");
+      b.textContent = cityLabel(c);
+      b.onclick = () => { q.value = cityLabel(c); show([]); propose(c[2], c[3], c[0]); };
+      hits.appendChild(b);
+    }
+  };
+  const propose = (lat, lon, name) => {
+    pend = { lat: +lat, lon: +lon };
+    nm.value = name;
+    pendAt.textContent = pend.lat.toFixed(2) + ", " + pend.lon.toFixed(2);   /* what the orb keeps */
+    next.hidden = false;
+    msg.textContent = "";
+    nm.focus();
+  };
+  // coordinates or a plus code: the orb's proposal names the point ("near Lansing")
+  const ask_orb = async (query, what) => {
+    const my = ++ask;
+    msg.textContent = "asking the orb about " + what + "\u2026";
+    try {
+      const d = await readDeviceJSON(await hubFetch(homeURL(query)));
+      if (my !== ask) return;
+      const p = d && d.proposal;
+      if (!p) throw new Error("the orb sent no preview");
+      propose(p.lat, p.lon, p.place);
+    } catch (e) {
+      if (my === ask) msg.textContent = "the orb could not place " + what + ": " + e.message;
+    }
+  };
+  q.addEventListener("input", async function () {
+    const v = this.value.trim();
+    if (v.length < 2 || v.includes("+") || HOME_COORDS.test(v) || /^[-+\d.,\s]+$/.test(v)) { show([]); return; }
+    try { await homeCityList(); } catch (e) { msg.textContent = e.message; return; }
+    if (this.value.trim() === v) show(homeFind(v));
+  });
+  q.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") { show([]); return; }
+    if (ev.key !== "Enter") return;
+    ev.preventDefault();
+    const v = this.value.trim();
+    if (!v) return;
+    if (v.includes("+")) { show([]); ask_orb("?code=" + encodeURIComponent(v.split(/\s+/)[0]), v); return; }
+    const m = v.match(HOME_COORDS);
+    if (m) { show([]); ask_orb("?lat=" + encodeURIComponent(m[1]) + "&lon=" + encodeURIComponent(m[2]), v); return; }
+    const first = hits.firstChild;
+    if (first) first.click();
+    else msg.textContent = "no city by that name in the orb's list: try a bigger one nearby, or type its coordinates";
+  });
+  here.onclick = () => {
+    if (!navigator.geolocation) { msg.textContent = "this browser cannot say where it is"; return; }
+    msg.textContent = "asking this browser where it is\u2026";
+    navigator.geolocation.getCurrentPosition(
+      (pos) => ask_orb("?lat=" + pos.coords.latitude.toFixed(5) + "&lon=" + pos.coords.longitude.toFixed(5), "this browser's location"),
+      (e) => { msg.textContent = "the browser did not say: " + e.message; },
+      { timeout: 15000 });
+  };
+  save.onclick = () => {
+    if (!pend) return;
+    write(placeValue(nm.value.trim() || "Place", pend.lat, pend.lon), "saving").then((ok) => {
+      if (ok) { pend = null; next.hidden = true; q.value = ""; }
+    });
+  };
+  nm.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); save.click(); } });
+  clr.onclick = () => { pend = null; next.hidden = true; show([]); write("", "clearing"); };
+  return side;
+}
 async function apsHelpOf(slug) {
   if (apsHelp[slug]) return apsHelp[slug];
   let h = {};
@@ -615,16 +845,20 @@ async function apsPage() {
   box.innerHTML = "";
   if (!app) return;
   const ids = app.secrets || [];
-  if (!ids.length) {
+  const help = await apsHelpOf(app.slug);
+  if (app.slug !== apsSub) return;   // another tab was pressed while the help was read
+  // the app's own strings its settings.json gives a kind, in the file's order
+  const strs = Object.keys(help).filter((id) => ids.indexOf(id) < 0 && help[id] &&
+    (help[id].kind === "place" || help[id].kind === "text"));
+  box.innerHTML = "";
+  if (!ids.length && !strs.length) {
     const p = document.createElement("p");
     p.className = "hint";
     p.textContent = (app.title || app.slug) + " has no settings to change here. Its other choices live on the orb's own menu.";
     box.appendChild(p);
     return;
   }
-  const help = ids.length ? await apsHelpOf(app.slug) : {};
-  if (app.slug !== apsSub) return;   // another tab was pressed while the help was read
-  box.innerHTML = "";
+  for (const id of strs) box.appendChild(stringRow(app, id, help[id]));
   for (const id of ids) box.appendChild(secretRow(app, id, help[id] || {}));
 }
 async function loadSecrets() {
@@ -634,7 +868,7 @@ async function loadSecrets() {
     .map((a) => Object.assign({}, a, { title: a.title || APP_TITLES[a.slug] || a.slug }))
     .sort((x, y) => String(x.title).localeCompare(String(y.title)));
   if (!apsApps.some((a) => a.slug === apsSub))
-    apsSub = (apsApps.find((a) => (a.secrets || []).length) || apsApps[0] || {}).slug || "";
+    apsSub = (apsApps.find((a) => (a.secrets || []).length || a.n_settings) || apsApps[0] || {}).slug || "";
   apsTabs();
   if (!apsApps.length) {
     $("#secrets").innerHTML = '<p class="hint">no apps installed on this orb</p>';
@@ -654,14 +888,21 @@ async function homeCityList() {
   return homeCities;
 }
 
+// A row is [name, country, lat, lon, admin1]: "Traverse City, MI, US".
+const cityLabel = (c) => c[0] + (c[4] && /^[A-Z]{2,3}$/.test(c[4]) ? ", " + c[4] : "") + ", " + c[1];
+
 // Names that start with the words typed first, then names that contain them;
-// biggest first within each, which is the file's order.
+// biggest first within each, which is the file's order. A trailing ", XX" narrows to
+// a country or a state: "Portland, US", "Springfield, MO", "Lansing, MI".
 function homeFind(q) {
-  const f = q.toLowerCase().replace(/\s*,\s*([a-z]{2})$/, "");   // "Portland, US" finds Portland
+  let f = q.toLowerCase(), within = "";
+  const m = f.match(/^(.*?)\s*,\s*([a-z]{2,3})$/);
+  if (m) { f = m[1]; within = m[2].toUpperCase(); }
   const head = [], rest = [];
   for (const c of homeCities) {
+    if (within && c[1] !== within && c[4] !== within) continue;
     const n = c[0].toLowerCase();
-    if (n.startsWith(f)) head.push(c); else if (n.includes(f)) rest.push(c);
+    if (n.startsWith(f)) head.push(c); else if (n.includes(f) && rest.length < 8) rest.push(c);
     if (head.length >= 8) break;
   }
   return head.concat(rest).slice(0, 8);
@@ -676,16 +917,16 @@ function homeHits(list) {
     b.type = "button";
     b.className = "tzrow";
     b.setAttribute("role", "option");
-    b.textContent = c[0] + ", " + c[1];
+    b.textContent = cityLabel(c);
     b.onclick = () => homeCity(c);
     box.appendChild(b);
   }
 }
 
 function homeCity(c) {
-  $("#home-q").value = c[0] + ", " + c[1];
+  $("#home-q").value = cityLabel(c);
   homeHits([]);
-  homePropose("?lat=" + c[2] + "&lon=" + c[3], c[0], true);
+  homePropose("?lat=" + c[2] + "&lon=" + c[3], c[0], true, c[0]);
 }
 
 $("#home-q").addEventListener("input", async function () {

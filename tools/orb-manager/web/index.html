@@ -166,6 +166,24 @@
     <div class="row"><span class="hint" id="snd-msg"></span></div>
   </article>
 
+  <article class="card tabpane" data-tab="orb">
+    <h3>Units</h3>
+    <!-- weather-plan §2.1: one OS setting every app reads (the weather's temperatures
+         and wind, the flight tracker's range). The orb's UNITS page sets the same
+         values with the knob; both write /api/v1/units. -->
+    <div class="row"><span class="hint" id="un-cur">units load with this tab</span></div>
+    <div class="row">
+      <label class="inline">Temperature <select id="un-temp">
+        <option value="c">&deg;C</option><option value="f">&deg;F</option></select></label>
+      <label class="inline">Speed <select id="un-speed">
+        <option value="kmh">km/h</option><option value="mph">mph</option><option value="kn">knots</option></select></label>
+      <label class="inline">Distance <select id="un-dist">
+        <option value="km">km</option><option value="mi">miles</option><option value="nm">nautical miles</option></select></label>
+      <button id="un-go" class="ghost" type="button" title="Write the units to the board">Save units</button>
+    </div>
+    <div class="row"><span class="hint" id="un-msg"></span></div>
+  </article>
+
   <article class="card tabpane" data-tab="wifi" id="mn-wificard">
     <h3>Wi-Fi</h3>
     <!-- Its first read lands when this face is first opened, and it is the

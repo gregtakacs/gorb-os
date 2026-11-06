@@ -1951,8 +1951,8 @@ function joinWhereHits(list) {
     b.type = "button";
     b.className = "tzrow";
     b.setAttribute("role", "option");
-    b.textContent = c[0] + ", " + c[1];
-    b.onclick = () => { joinHome = { lat: c[2], lon: c[3], place: c[0] + ", " + c[1] }; joinWhereHits([]); joinWhereShow(); };
+    b.textContent = cityLabel(c);
+    b.onclick = () => { joinHome = { lat: c[2], lon: c[3], place: cityLabel(c), name: c[0] }; joinWhereHits([]); joinWhereShow(); };
     box.appendChild(b);
   }
 }
@@ -2007,7 +2007,8 @@ async function setJoinHome(ip) {
     try {
       const d = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(ip) + "/api/v1/home", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lat: joinHome.lat, lon: joinHome.lon }),
+        // a picked town keeps its own name: the orb's table names only the big cities
+        body: JSON.stringify(joinHome.name ? { lat: joinHome.lat, lon: joinHome.lon, place: joinHome.name } : { lat: joinHome.lat, lon: joinHome.lon }),
       }));
       if (!d || !d.home || !d.home.set) throw new Error("the orb did not store it");
       return "home " + d.home.place + ", clock on " + (d.zone_label || d.tz);

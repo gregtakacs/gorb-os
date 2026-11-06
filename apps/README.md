@@ -102,6 +102,25 @@ The template carries everything a repo needs:
 
 Anyone can then import that `.orbapp` in Orb Manager (Apps → Import an app).
 
+## Settings on the hub
+
+An app's settings belong on Orb Manager's App settings page, never in its theme editor.
+An app with an editor region may ship `settings.json` beside its entry page, keyed by
+setting id, to say how the page shows them:
+
+```json
+{
+  "key":    {"label": "API key", "help": "Where to get one.", "links": [{"href": "https://…", "text": "…"}], "header": "x-api-key"},
+  "place1": {"kind": "place", "label": "Place 1", "help": "…"},
+  "motto":  {"kind": "text", "label": "Motto", "placeholder": "…"}
+}
+```
+
+A `secret` setting always shows (write-only). A `string` setting shows when its entry
+names a `kind`: `place` is a place picked from the hub's city list or typed as
+coordinates, stored `Name|lat,lon` with two decimals; `text` is a plain line. A string
+setting holds at most 31 characters.
+
 An app built against an SDK runs on that OS release and every later one, as long as
 the imports it uses are still bound. The loader refuses a module with an import the
 running firmware does not bind, so moving `sdk.txt` forward is how an app picks up
@@ -173,6 +192,7 @@ Each install slot holds at most 100 KB of container. The shipped apps run 9–26
 | network | `orb_net_request/info/read/header/free`, `orb_net_cred`, `orb_net_get` | `net` |
 | sound | `orb_sound_play/stop/active` | `sound` |
 | location | `orb_home`, `orb_home_gen` | `location` |
+| units | `orb_units`, `orb_units_gen`, and the `orb_*_from_*` and `orb_*_label` helpers | free (OS v1.2.10) |
 | power | `orb_power_request` | `power` |
 | stage | `orb_stage_*` ([sdk/orb_stage.h](sdk/orb_stage.h)) | free; draws only for the theme's own app |
 

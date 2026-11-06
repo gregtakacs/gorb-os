@@ -6718,3 +6718,120 @@ hands at 6; its 4/12 sweep holds 93.5–94.4% as shipped, under the line). Rink 
 sub-dials, victory green, forged carbon outside and woven inside) ticks 1/s with every ring
 smoothed and joins the presets for iteration. Background apps cost ~5 ms a second (Flights'
 longest call 0.5 ms).
+
+## 50 — The editor's parts: free hands, one kind of pane, names — 2026-11-06
+
+**Owner, 2026-11-05/06.** A hand or a wheel can stand anywhere. A sub-dial is a drawn face (its
+texture, and the masking and layering of what lies under it); it is never the bound of an
+element. A part may be aligned to a sub-dial, which lends it that centre and that layer, and
+nothing more. How a sub-dial's hand ships (one turning plate or a frame per value) is the
+engine's call, not the author's. The elements are uniform: one kind of pane, one tree. Every part
+has a default name that is editable. Readings stay visible; explanations ride the hover. Timing
+lives in one place. Sections fold, all but the last used. The hand-style previews survive.
+
+- **Free hands.** A hand has its own angle and distance about the centre it is aligned to
+  (the dial's, or a sub-dial's), exactly as a wheel is placed; its zero, direction, path and look
+  are its own (`watch-engine.js` buildHands). Every path is every hand's: rotate, retrograde
+  (sweeps an arc and flies back), slide (along a straight track at any angle), turning disc.
+  `slide-x`/`slide-y` became the slide at 0 and 90. A design from before (`hv` < 2) is migrated
+  once in `canonDesign` (`freeHands`, through `faceFit`): each hand on a sub-dial takes the
+  face's tilt into its zero, its print direction, its fan as a retrograde path or its slot as a
+  slide path and place, and its `hstyle`/`hfinish`; the face keeps its form as print. All 57
+  hands of the 20 presets pose identically to the old engine at three times of day (arbour,
+  angle, sprite). A hand added on a face starts fitted to it, and *Fit to the face* refits it:
+  copies the hand then owns. A plain drag moves a hand; Alt-drag moves an uploaded hand's pivot.
+  The bake seats only the three centred, clockwise, unslid main hands; every other hand is a
+  pointer row pivoting about its own place.
+- **The drive.** The sub-dial's *Drive* (plates/pointer) is gone; `pointerDefault3` decides,
+  and an old `carrier` is ignored.
+- **One pane.** A hand's inspector is the kit's rows (`studio@1` Fields), sections *Reading,
+  Placement, Motion, Look, Artwork*; the hand-written template is gone. The kit gained a canvas
+  row (the pivot thumbnail), readings (`Rd`), folding section heads, a value column only where
+  a slider needs none, pills that wrap, and a dropdown past three choices.
+- **Hand set and Timing.** The Dial step's tabs are *Dial, Hand set, Timing*. The Hand set
+  holds the style previews, the look defaults and the drop shadow; Timing holds the seconds
+  beat, Favour and Plan, each seconds hand's rhythm, the balance beats and the frame-rate
+  reading (moved off Movement). A sub-dial's *Hands on it* is gone.
+- **Names.** `stack.js partName`: the author's name, else a default unique on the dial (the
+  centre's hands counted first). Every picker, the Layers tree and the inspector title use it;
+  the `#n` numbers are gone.
+
+### 50.1 — Scales are the hands', sizes are px, indicators are styles — 2026-11-06
+
+**Owner, 2026-11-06.** The readings belong to the hands, not the dials. Every hand draws its own
+scale, at its own distance, in its own style and font, or draws none, so scales stack. The
+dial's chapter ring and numerals move onto the hand that reads them, and so does a sub-dial's
+printed scale. The dial and a sub-dial are plain sheets. A hand's alignment sets only where its
+zero and distances are counted from. Every hand is sized in px. A dot, jewel, star or flare is a
+hand style; its length is how far from the arbour it sits.
+
+Two further rulings followed. First, style and units are separate: the hand supplies the units
+and the old prints supply the look. There is one list of looks, sized from the hand. There is
+no Runs or Turn control, and no dial typeface. Second, a breaking change is fine and no decoder
+is kept for older designs. The new renders must still look like the originals.
+
+- **The scale** (`hand.scale`). It names one `style` from one list (`SCALE_STYLES`):
+  - the twelve chapter prints: Roman, Breguet arabic, Regulator, Modern sans, Railway, Sector,
+    Applied batons, Minimal batons, Station bars, Pilot, Lume plots, Bracket track;
+  - the seven sub-dial displays: Classic, Fine railway, Dots, Fine ticks, Bold figures,
+    Figures only, Quadrant;
+  - the calendar ring.
+
+  Its size comes from the hand's tip by default (`gap` px past it). With `at: 'fixed'` it uses a
+  `radius` instead. The remaining fields are typeface (each named outright; unset means the
+  look's own), colour, figure size, orientation and figures. A chapter look adds its finish, the
+  12 and quarter faces, colours and sizes, and the plot rim. A display look adds its weight. The
+  ring adds whether labels sit on or between the lines. The direction is the hand's.
+- **Units from the hand.** Each look is the code that drew it before (`printMain`, `applied`,
+  `printSub`/`subDisplay`, `printTrack`, `drawPerimeter`). Only the fixed counts were turned into
+  the hand's units:
+  - hour: twelve figures, sixty ticks;
+  - minute or seconds: twelve figures of 5…60;
+  - date: 31;
+  - day: 7;
+  - month: 12;
+  - 24-hour: 24.
+
+  The quarters, the half (Pilot's 6) and the Sector's minute ring follow from the count.
+
+  `drawScales` draws each look in the hand's own frame: about its arbour, from its zero, mirrored
+  when it runs anticlockwise.
+  - A chapter look scales by radius/216.
+  - A display look is drawn as a face of that radius.
+  - The ring keeps its px ticks at that radius.
+
+  On an arc (retrograde) or a slide, the look is drawn along the hand's own path, from its own
+  start, span or travel. The top figure prints at the end (Speedster's 60). A chapter look there
+  takes its nearest display (`TRACK_OF`).
+- **Legibility.** A chapter drawn smaller than full size floors its figures at LEGIBLE_PX in the
+  scaled frame. If floored figures would collide, it thins them to every k-th, as a small face
+  always did. At full size nothing is held or thinned. The audit covers every look in every unit
+  on every path: on the dial, on a 40 px face, on an arc and on a slide (567 cases).
+- **Presets** are written in this form in source. The editor templates have no converter and
+  older designs are not decoded. A pixel diff of every preset compared the dial, the sealed dial,
+  each face, and every hand sprite and pose against the engine before the change. All are
+  identical, the Speedster's fan scale and its 60 included.
+- **The bake.** A face's measure and path are read from the first hand aligned to it, not from
+  the face's own fields. A face with no hand is plate art, and a hand on an arc or a slot makes
+  the face pointer-driven. Every preset's comp, plate-pointer and hand-pointer plan is the same as
+  the committed engine's. The one exception is Flux's minute arc, whose pointer row now reads the
+  minute instead of the seconds the face had named. An interim form (design version 3) had made
+  every face plate art, which shipped Calendar's and Perpetual's dates, days and months as hand
+  pointer rows (1.2 and 1.75 MB smaller). That form is gone, and those faces bake as banks again,
+  as they did before 2026-11-06.
+- **The editor.** A hand's pane has *Scale*: one Look list, then Size from (the hand's tip or a
+  set radius) with its gap or radius in px, then the look's own rows. *Look* sets Length, Width
+  and Cap in px, and the indicators are in its style list. The Dial tab keeps Direction (the way
+  hands and their scales run unless a hand is set otherwise) and says how many scales the hands
+  print. A sub-dial's pane is its face only: form, slot, rim, texture and colour. A new face comes
+  with a seconds hand printing Classic, and a hand added on a face prints Classic just past its
+  tip. A flare's or window's typeface defaults to "Default", because there is no dial typeface
+  to follow.
+- **The rate the editor quotes** (owner, 2026-11-06). Once a plan is priced, the badge and the
+  labels quote that plan: the hands' rate, with the gears beside it ("15 fps · gears 5").
+  Before, they quoted the bank tempo (the gears), and then `_devPace`'s crossed-plate model
+  lowered it a second time. That model was fitted to two panel points in October, before ink
+  spans, and it billed a crossing estimate4 already prices. Triple calendar read a yellow 4 fps
+  even though its 15/5 pre-painted plan held on the glass. The model is now only a stand-in
+  until the plan lands. The preview's timer and an export's fallback tick rate keep its number,
+  so nothing shipped changes.

@@ -32,27 +32,27 @@ const looksOf = () => { const m = {}; it.state.designs.calendar.comps.forEach((c
 const byLabel = (fs, l) => fs.find((f) => f.label === l);
 // D43 P5c: the plate backdrop is on the Movement tab, the dial-surface art on the Dial tab;
 // a check about both art slots reads the two together
-const artRows = () => labels('dial').concat(labels('move'));
+const artRows = () => labels('dial').concat(labels('insides'));
 
-const dial = labels('move');
+const dial = labels('insides');   // owner, 2026-11-06: the plate is Movement's Clock insides sub-tab
 const bgHead = dial.find((f) => f.isHead && /Background art/.test(f.label));
-ok(!!bgHead, 'the Movement tab has the plate\u2019s Background art section');
+ok(!!bgHead, 'Movement\u2019s Clock insides has the plate\u2019s Background art section');
 const fi0 = byLabel(dial, 'Image');
 ok(!!fi0 && fi0.isFile, 'the file input is offered before anything is chosen', JSON.stringify(!!fi0));
 ok(dial.some((f) => f.isNote && /No backdrop/.test(f.note || '')), 'and the row says the plate is procedural today');
-const after = labels('move');
+const after = labels('insides');
 it.state.designs.calendar.bgArt = 'ui-art';
 setTimeout(async () => {
-  const h2 = labels('move').find((f) => f.isNote && /one-time store|No bytes|re-export|fills a/.test(f.note || ''));
+  const h2 = labels('insides').find((f) => f.isNote && /one-time store|No bytes|re-export|fills a/.test(f.note || ''));
   ok(/one-time store|re-export/.test((h2 || {}).note || ''), 'the line prices the art or refuses it, with numbers', (h2 || {}).note);
-  const held = labels('move');
+  const held = labels('insides');
   for (const l of ['Fit', 'Offset X', 'Offset Y', 'Size', 'Opacity']) ok(!!byLabel(held, l), 'held art reveals the ' + l + ' control');
   ok(held.some((f) => f.isChips && (f.opts || []).some((o) => /Remove this image/.test(o.label))), 'and a way back to the procedural plate');
   const rm = held.find((f) => f.isChips && (f.opts || []).some((o) => /Remove this image/.test(o.label)));
   rm.opts.find((o) => /Remove/.test(o.label)).pick();
   ok(!it.design().bgArt, 'Remove clears the reference from the design');
   it.state.designs.calendar.bgArt = 'nowhere';
-  const miss = labels('move').find((f) => f.isNote && /No bytes for/.test(f.note || ''));
+  const miss = labels('insides').find((f) => f.isNote && /No bytes for/.test(f.note || ''));
   ok(!!miss, 'a dangling reference is reported on the control row', miss && miss.note);
 
   // ---- slot two: the dial face, next to the plate slot, behaving the same way ------

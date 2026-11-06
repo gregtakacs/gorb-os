@@ -930,6 +930,13 @@
   const CAL_DIMS = { hours24: [0.85, 0.0155], gmt: [0.865, 0.015], day: [0.8, 0.017], date: [0.835, 0.0165], month: [0.82, 0.016] };
   const SIZE_RANGE = { opening: [12, 200, 1], subdial: [26, 110, 0.5], window: [0.6, 1.8, 0.05], moon: [14, 110, 1], flare: [4, 120, 0.5], wheel: [14, 230, 0.5] };
   const WIN_SIZE = { date: [30, 22], day: [52, 22], month: [52, 22], custom: [72, 22] };
+  /* From scratch (owner, 2026-11-06): a template of its own, never one of the gallery's -- it had
+   * borrowed Skeleton's slot, so it took Skeleton's name and showed Skeleton as edited. Nothing in
+   * it: no dial, no parts, no case, no glass, no light. Not in PRESETS, so the gallery, the benches
+   * and the preset suites never see it; template() finds both. */
+  const SCRATCH = { name: 'Untitled', blurb: 'Nothing yet: you build every piece', design: { noDial: true, comps: [] },
+    cfg: { glow: 0, outerLight: 0 }, train: 'classic', caseStyle: 'none', caseMetal: 'auto', glassStyle: 'none' };
+  const template = (id) => (id === 'scratch' ? SCRATCH : PRESETS[id]);
   // Presets are just starting designs. angle: degrees clockwise from 12 · dist: px from the host's centre · rot: degrees.
   // Every hand is a comp of type 'hand' on its host's arbour, listed bottom to top (D43 P5c).
   const PRESETS = {
@@ -4192,12 +4199,15 @@
   }
   // Inner light: rendered in "light space" (sources on the horizontal axis), then turned to the chosen axis.
   // The train itself is rotated in data, so lighting stays world-fixed.
+  // the inner glow's strength: 0 is no light (the No light mood), only an unset one is 1 (it read
+  // `+o.glow || 1`, so a glow of 0 lit the plate's two side washes at full strength)
+  const glowOf = (o) => (o.glow == null || o.glow === '' || !isFinite(+o.glow) ? 1 : Math.max(0, +o.glow));
   function movement(o) {
     tune(o);
     const _ = L(), T = trainOf(o.train), lr = rad((o.innerAngle == null ? 90 : +o.innerAngle) - 90), tr = rad(+o.trainAngle || 0);
     _.setTrain(T.gears);
     o = _.configure(Object.assign(resolve(o), { trainRot: tr - lr }));
-    const gold = o.finish === 'brass' ? _.FIN.copper : _.FIN.brass, pal = _.FIN[o.finish] || _.FIN.brass, G = +o.glow || 1, bp = T.bridgePal === 'black' ? BLACK : T.bridgePal === 'rhodium' ? RHOD : _.STEEL;
+    const gold = o.finish === 'brass' ? _.FIN.copper : _.FIN.brass, pal = _.FIN[o.finish] || _.FIN.brass, G = glowOf(o), bp = T.bridgePal === 'black' ? BLACK : T.bridgePal === 'rhodium' ? RHOD : _.STEEL;
     const plate = cv(S); drawPlate(plate.getContext('2d'), o.plate && o.plate !== 'train' ? o.plate : T.plate, G, lr, o);
     /* Backdrop slot one, the plate: under the geartrain, so the art reads through an
      * openwork dial and the apertures. Free because the plate is one of the two static
@@ -4297,7 +4307,7 @@
     tune(o);
     const _ = L(); _.setTrain(trainOf(o.train).gears); o = _.configure(resolve(o));
     const fontKey = o.design.font || 'auto'; setFace(fontKey);
-    const design = o.design, en = colorEn(null, o.design.color), pal = _.FIN[o.finish] || _.FIN.brass, G = +o.glow || 1;
+    const design = o.design, en = colorEn(null, o.design.color), pal = _.FIN[o.finish] || _.FIN.brass, G = glowOf(o);
     setLights(o);
     const lay = layout(design, rad(+o.trainAngle || 0));
     const style = o.hands || 'breguet', hf = o.handFinish || 'blued', SH = shadowCfg(o, LIGHT);
@@ -5074,7 +5084,7 @@
   /* The bank depth and the teeth-per-loop constant live in dial-renderer.js; the
    * composer's copy and the packer both read them back through here so no
    * second copy of the number exists to drift. */
-  window.WatchEngine = { SIZE: S, PRESETS,
+  window.WatchEngine = { SIZE: S, PRESETS, SCRATCH, template,
     TEETH_PER_LOOP: window.DialRenderer.TEETH_PER_LOOP,
     bankFrames: (f) => window.DialRenderer.bankFrames(f), gearTempo: (g) => (Math.abs(g - 7.5) < 0.01 ? 8 : Math.round(g)), LENSES, DIAL_COLORS, COLOR_GROUPS, PLATES, BEZEL, canonDesign, faceFit, SCALE_STYLES, SCALE_GAP, TRACK_OF, FIGURES, scaleFamily, scaleRadius, CAL_DIMS, HAND_DIMS, caseMetalOf: (o) => caseMetal(o), TYPEFACES, OPENWORK, SEC_STYLES, NEW_COMP, TRAINS, HAND_STYLES, HAND_FINISHES, COMP_TYPES, COMP_STYLES, FRAME_COLORS, SHOWS, NUMERALS, SURFACES, COLOR_NAMES, SHAPES, SIZE_RANGE, TURN, CASE_STYLES, CASE_METALS, GLASS_STYLES, HAND_SHOWS, MARKERS, WHEEL_SHOWS, WHEEL_DIGITS, WHEEL_SRC, wheelSpec, CUT_LIES, WHEEL_TICKS, TICK_POS, wheelTicks, WHEEL_RIMS, RIM_POS, wheelRims, WHEEL_FINISHES, INDEX_STYLES, INDEX_SPANS, FACE_SNAPS, normDeg, prime, _holePts: holePts, WHEEL_FORMS, WHEEL_FACES, WHEEL_STYLES, LEGIBLE, LEGIBLE_PX, legible, PANEL, MM_PER_PX, pxMm, REAL_CSS, REAL_Z, RULER_MM, realCss, rulerPx, screenInch, handParts, caseLayer, glassLayer, movement, face, compose, composeLayers, topLayer, liveSeq, punchHoles, drawCage, handPreview, moonPhase, cycleDate, previewDate, PREVIEW_MOON, isHex, fmtDate, features, aimAngle, trainAngle, tune, wb: whiteBalance, wbData, FONT_NAME, FONTS, FLARE_ICONS, IMAGES,
     // uploaded art: the registry the composer persists, and the two draw helpers

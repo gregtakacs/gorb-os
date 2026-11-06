@@ -33,13 +33,20 @@ const stepOf = (it) => it.stepNow()[0];
   ok(V().stepOpts.map((t) => t.label).join(' | ') === 'Start | Movement | Dial | Parts | Finish | Render', 'six steps, in build order', V().stepOpts.map((t) => t.label).join(' | '));
   ok(V().stepOpts.filter((t) => t.cls === 'on').length === 1 && V().stepOpts[0].cls === 'on', 'one step is marked, the one shown');
   ok(V().stackRows.some((r) => r.isRow), 'the layers panel is there from Start');
+  const skel0 = JSON.stringify(it.state.designs.skeleton || null);
   V().fromScratch();
   const nonHand = () => (it.design().comps || []).filter((c) => c.type !== 'hand');
   const handsOn = (host) => (it.design().comps || []).filter((c) => c.type === 'hand' && (c.host || 'dial') === host);
   // owner, 2026-11-06: from scratch is nothing at all -- no dial, no parts, no case, no glass, no light
   ok(stepOf(it) === 'movement' && (it.design().comps || []).length === 0 && it.design().noDial === true, 'Build from scratch: no dial and no parts, on to the movement', JSON.stringify(it.design()));
   ok(it.state.caseStyle === 'none' && it.state.glassStyle === 'none' && +it.cfg().glow === 0 && +it.cfg().outerLight === 0, 'and no case, no glass, no light', JSON.stringify([it.state.caseStyle, it.state.glassStyle, it.cfg().glow, it.cfg().outerLight]));
+  ok(it.state.dial === 'scratch' && JSON.stringify(it.state.designs.skeleton || null) === skel0 && it.themeName() === 'Untitled' && !V().dials.some((x) => x.cls === 'on'),
+     'it is its own watch, Untitled: Skeleton\u2019s design is left as it was, and no gallery watch is the one open', JSON.stringify([it.state.dial, it.themeName()]));
   ok(V().isMove, 'the Movement step shows the movement cards');
+  ok(V().hasSubs && V().subOpts.map((t) => t.label).join() === 'Geartrain,Clock insides', 'Movement has two sub-tabs: the train and the plate behind it', V().subOpts.map((t) => t.label).join());
+  V().subOpts[1].pick();
+  ok(labels(V()).includes('Plate') && !labels(V()).includes('Metal') && !V().isMove, 'Clock insides holds the plate and its art; the train\u2019s rows and cards stay on Geartrain', labels(V()).slice(0, 4).join(','));
+  V().subOpts[0].pick();
   V().stepOpts[2].pick();
   ok(stepOf(it) === 'dial' && labels(V()).includes('Dial') && labels(V()).length < 5, 'the Dial step says there is no dial and offers it back', labels(V()).join(','));
   V().fields.find((f) => f.isChips && (f.opts || []).some((o) => /Put the dial back/.test(o.label))).opts.find((o) => /back/.test(o.label)).pick();

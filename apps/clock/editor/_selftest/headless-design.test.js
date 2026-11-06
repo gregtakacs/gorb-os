@@ -50,6 +50,11 @@ const mk = () => {
   ok(pk.state.themeName === '' && pk.themeName() === E.PRESETS[pk.state.dial].name, 'picking a preset shows the preset’s name', JSON.stringify([pk.state.dial, pk.state.themeName]));
   const fs = mk(); fs.setState({ themeName: 'Bench Send' }); fs.fromScratch();
   ok(fs.state.themeName === '', 'and so does starting from scratch', JSON.stringify(fs.state.themeName));
+  // a design started from scratch is saved, sent and reopened as its own watch (it had borrowed Skeleton's slot)
+  fs.addComp('hand');
+  const sdoc = JSON.parse(JSON.stringify(await fs.designDoc(false))), rs = mk(); rs.state.dial = 'skeleton';
+  ok(sdoc.dial === 'scratch' && rs.applyDesignDoc(sdoc, 'the card') === null && rs.state.dial === 'scratch' && rs.design().noDial === true && rs.design().comps.length === 1 && rs.themeName() === 'Untitled',
+    'a scratch design reopens as Untitled, its own watch, with no dial and its one hand', JSON.stringify([sdoc.dial, rs.state.dial, rs.themeName()]));
   ok(/an?other|not clock/.test(mk().applyDesignDoc(Object.assign({}, back, { app: 'hsb' })) || '') || /hsb app/.test(mk().applyDesignDoc(Object.assign({}, back, { app: 'hsb' })) || ''), 'another app’s design is refused by name');
   const newer = mk().applyDesignDoc(Object.assign({}, back, { schema: 2, appVersion: 'v1.3.0' }));
   ok(/clock v1\.3\.0/.test(newer || '') && /reads schema 1/.test(newer || '') && /update the app/.test(newer || ''), 'a newer schema names the version that made it and the fix', newer);

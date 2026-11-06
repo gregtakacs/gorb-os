@@ -5,7 +5,7 @@ class Component extends DCLogic {
   state = { frame: 0, playing: true, slow: false, seam: 'Rendering…', status: '', seeds: { spokes: 1, pinion: 1, center: 1, finish: 1, etching: 1 }, dial: 'skeleton', designs: {}, sel: null, selKind: null, themeName: '', artSlot: null, pickKey: null, guide: 'auto', hands: 'auto', handFinish: 'auto', hidden: {}, timeMode: 'live', caseStyle: 'polished', caseMetal: 'auto', caseOpen: 221.5, glassStyle: 'domed', train: 'classic', tab: 'start', cfg: {}, view: 'fit', fitPx: 466, addOpen: false, zoom: 2, viewCal: 1, hubIp: null, hubCheck: false, dup: null, sounds: {}, sndSim: true, sndCut: true, sndUp: 'tick_loop', sndMsg: '', render: 'design', wipe: 233, step: 'start', diag: false, more: {}, sending: null };
   KEYS = Object.keys(this.DEF);
   RND = ['spokes', 'pinion', 'center', 'finish', 'etching'];
-  TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hand set'], ['timing', 'Timing'], ['move', 'Movement'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
+  TABS = [['dial', 'Dial'], ['comps', 'Complications'], ['hands', 'Hand set'], ['timing', 'Timing'], ['move', 'Geartrain'], ['insides', 'Clock insides'], ['light', 'Light'], ['case', 'Case & glass'], ['sound', 'Sound'], ['export', 'Export']];
   LAYERS = [
     ['outer', '6', 'Case & outer shine', 'Bezel, vignette, halo'],
     ['glass', '5', 'Glass', 'Reflections follow the outer light'],
@@ -366,7 +366,7 @@ class Component extends DCLogic {
     }
     return { fps, want, car, needle, rows: r, cap: CAPS[want], measured: true, measuredAt: s.f, why: '', pricing, ...held };
   }
-  preset(id) { return window.WatchEngine.PRESETS[id || this.state.dial]; }
+  preset(id) { return window.WatchEngine.template(id || this.state.dial); }
   design(id) { id = id || this.state.dial; return WatchEngine.canonDesign(JSON.parse(JSON.stringify(this.state.designs[id] || this.preset(id).design))); }
   train(id) { WatchEngine.tune(this.cfg()); return WatchEngine.trainAngle(this.design(id), this.cfg().trainAngle, this.state.train); }
   /* noframes MUST be resolved here rather than by deleting o.frames afterwards:
@@ -594,7 +594,7 @@ class Component extends DCLogic {
     if (!it.sel) return;
     this._scrollTo = this.scrollTargetFor(it.sel);
     if (it.sel.kind === 'dial') return this.setState({ sel: 'dial', selKind: 'dial', step: 'dial', tab: this.selTab.dial });
-    this.setState({ sel: it.sel.id, selKind: it.sel.kind, step: this.selStep[it.sel.kind], tab: this.selTab[it.sel.kind] });
+    this.setState({ sel: it.sel.id, selKind: it.sel.kind, step: this.selStep[it.sel.kind], tab: it.sel.kind === 'move' && it.sel.id === 'movement' ? 'insides' : this.selTab[it.sel.kind] });
   }
   /* Facing stepper. Reads the design as it is NOW rather than the value the row was
    * rendered with -- a control that reports its own snapshot sticks after one click, so
@@ -833,10 +833,11 @@ class Component extends DCLogic {
     // P5d.3k) their depth in the stack; their place and what they show are Parts, and stay
     if (tab === 'hands') { this.upd((d) => { if (P.design.order) d.order = JSON.parse(JSON.stringify(P.design.order)); else delete d.order; delete d.secStyle; delete d.handLume; delete d.handShade; if (P.design.handShade) d.handShade = P.design.handShade; if (P.design.handLume) d.handLume = P.design.handLume; if (P.design.secStyle) d.secStyle = P.design.secStyle; const LOOK = ['style', 'finish', 'len', 'wid', 'sec', 'lume', 'shade', 'motion', 'art', 'pivotX', 'pivotY', 'rot0', 'zoom']; d.comps.forEach((h) => { if (h.type !== 'hand') return; const ph = (P.design.comps || []).find((q) => q.type === 'hand' && q.id === h.id) || {}; LOOK.forEach((k) => { if (ph[k] !== undefined) h[k] = JSON.parse(JSON.stringify(ph[k])); else delete h[k]; }); }); }); this.setState({ hands: 'auto', handFinish: 'auto' }); drop(['shAngle', 'shDist', 'shBlur', 'shOp', 'shMove', 'shSmooth', 'shRelief']); say('Hand set'); }
     if (tab === 'timing') { drop(['tick', 'favour', 'plan', 'balance']); this.upd((d) => { d.comps.forEach((h) => { if (h.type === 'hand' && h.shows === 'second' && h.motion) { delete h.motion.cadence; delete h.motion.steps; } }); }); say('Timing'); }
-    if (tab === 'move') { drop(['rearFinish', 'plateAngle', 'plateScale', 'plate', 'spokes', 'etching', 'pinion', 'center', 'finish', 'trainAngle', 'orbD', 'orbTip', 'cageD']); this.setState({ train: P.train || 'classic' }); say('Movement'); }
+    if (tab === 'move') { drop(['rearFinish', 'spokes', 'etching', 'pinion', 'center', 'finish', 'trainAngle', 'orbD', 'orbTip', 'cageD']); this.setState({ train: P.train || 'classic' }); say('Geartrain'); }
+    if (tab === 'insides') { drop(['plateAngle', 'plateScale', 'plate']); say('Clock insides'); }
     if (tab === 'light') { drop(['glow', 'temp', 'innerAngle', 'outerLight', 'outerAngle', 'outerTemp', 'hue', 'hueSat', 'outerHue', 'outerSat', 'wb']); say('Light'); }
     if (tab === 'sound') { this.sndStop(); this.setState((st) => { const o = { ...st.sounds }; delete o[st.dial]; return { sounds: o, sndMsg: '' }; }); say('Sound'); }
-    if (tab === 'case') { this.setState({ caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed' }); say('Case & glass'); }
+    if (tab === 'case') { this.setState({ caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: P.glassStyle || 'domed' }); say('Case & glass'); }
   }
   roll(k) { this.setState((s) => ({ seeds: { ...s.seeds, [k]: Math.floor(Math.random() * 1e6) } })); }
 
@@ -1834,7 +1835,7 @@ class Component extends DCLogic {
    * every card its tachymetre case and skeleton train. Built once per (options, design), cached;
    * the engine's globals are primed back to the stage after, so a card never leaks into it. */
   thumbOpts(id) {
-    const P = WatchEngine.PRESETS[id], st0 = this.state;
+    const P = WatchEngine.template(id), st0 = this.state;
     try {
       this.state = { ...st0, dial: id, cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', hands: 'auto', handFinish: 'auto' };
       return { o: this.opts(id), hd: this.handDef(id) };
@@ -3471,7 +3472,7 @@ class Component extends DCLogic {
   applyDesignDoc(o, from) { return this.session.apply(o, from); }
   applyDesignContent(o, from) {
     const E = window.WatchEngine;
-    if (!o.design || !Array.isArray(o.design.comps) || !E.PRESETS[o.dial]) return 'that design has no watch in it';
+    if (!o.design || !Array.isArray(o.design.comps) || !E.template(o.dial)) return 'that design has no watch in it';
     const r = E.assetRestore(o.assets || []);
     const refs = this.artRefs(o.design), miss = refs.filter((x) => !E.assetKnown(x.id));
     this.setState((st) => ({
@@ -3481,7 +3482,7 @@ class Component extends DCLogic {
       ...(o.hands ? { hands: o.hands } : {}), ...(o.handFinish ? { handFinish: o.handFinish } : {}), ...(o.caseOpen ? { caseOpen: o.caseOpen } : {}),
       ...(o.sounds ? { sounds: { ...st.sounds, [o.dial]: o.sounds } } : {}), themeName: o.themeName || '',
       sel: null, selKind: null, step: 'parts', tab: 'comps',
-      status: 'Reopened \u201c' + (o.themeName || E.PRESETS[o.dial].name) + '\u201d' + (from ? ' from ' + from : '') + (o.art === false ? ' (it was saved without its art' + (refs.length ? ': ' + refs.length + ' image' + (refs.length > 1 ? 's' : '') + ' to load again' : '') + ')' : r.added ? ' with ' + r.added + ' art asset' + (r.added === 1 ? '' : 's') : '') + (miss.length && o.art !== false ? ' \u2014 ' + miss.length + ' missing' : '') + '. Send replaces it on the card.',
+      status: 'Reopened \u201c' + (o.themeName || E.template(o.dial).name) + '\u201d' + (from ? ' from ' + from : '') + (o.art === false ? ' (it was saved without its art' + (refs.length ? ': ' + refs.length + ' image' + (refs.length > 1 ? 's' : '') + ' to load again' : '') + ')' : r.added ? ' with ' + r.added + ' art asset' + (r.added === 1 ? '' : 's') : '') + (miss.length && o.art !== false ? ' \u2014 ' + miss.length + ' missing' : '') + '. Send replaces it on the card.',
     }));
     this.faces = {}; if (this.buildMovement) this.buildMovement();
     return null;
@@ -3495,7 +3496,8 @@ class Component extends DCLogic {
    * Arrange into the layers panel, which every step shows. */
   STEPS = [
     ['start', 'Start', ['start'], 'Pick a finished watch to change, or build from scratch.'],
-    ['movement', 'Movement', ['move'], 'The movement is the back of the watch: the plate and the train every opening shows.'],
+    // owner, 2026-11-06: two sub-tabs rather than one long scroll -- the train, and the plate behind it
+    ['movement', 'Movement', ['move', 'insides'], 'The movement is the back of the watch: the train, and the plate behind it that every opening shows.'],
     ['dial', 'Dial', ['dial', 'hands', 'timing'], 'The dial\u2019s style: its print, numerals, colour, surface and art; the hand set every hand starts from; and the dial\u2019s timing, its beat and its plan. The parts you add follow it.'],
     // D43 P5c: one view. Nothing selected shows the catalogue (a hand is one of its entries);
     // a selected part, a hand included, shows its own panel alone.
@@ -3503,7 +3505,7 @@ class Component extends DCLogic {
     ['finish', 'Finish', ['light', 'case', 'sound'], 'Light, case and glass, and the sounds the watch makes.'],
     ['render', 'Render', ['export'], 'Check it fits the orb, then send it.'],
   ];
-  SUBLABEL = { comps: 'Parts', hands: 'Hand set', timing: 'Timing', dial: 'Dial', light: 'Light', case: 'Case & glass', sound: 'Sound', move: 'Movement', export: 'Export' };
+  SUBLABEL = { comps: 'Parts', hands: 'Hand set', timing: 'Timing', dial: 'Dial', light: 'Light', case: 'Case & glass', sound: 'Sound', move: 'Geartrain', insides: 'Clock insides', export: 'Export' };
   MOODS = [
     ['as', 'As designed', {}],
     ['lamp', 'Warm lamp', { glow: 1.2, temp: 2200, hue: 30, hueSat: 0, outerLight: 0.8, outerTemp: 2700, outerHue: 210, outerSat: 0, wb: 6500 }],
@@ -3534,11 +3536,13 @@ class Component extends DCLogic {
    * light -- so the author builds every piece. It owns every setting a template pick sets, so
    * nothing rides over from the last template looked at (Wave's diver bezel did, in black). */
   fromScratch() {
-    const E = window.WatchEngine, d = E.canonDesign({ noDial: true, comps: [] });
-    this.setState((st) => ({ dial: 'skeleton', designs: { ...st.designs, skeleton: d }, sel: null, selKind: null, themeName: '', step: 'movement', tab: 'move',
-      cfg: { glow: 0, outerLight: 0 }, train: 'classic', caseStyle: 'none', caseMetal: 'auto', glassStyle: 'none', hands: 'auto', handFinish: 'auto', scratch: true,
+    const P = window.WatchEngine.SCRATCH;
+    // its own slot ('scratch', template()): a fresh start drops what was built there before (Ctrl+Z
+    // brings it back) and never touches a gallery watch's edits
+    this.setState((st) => { const designs = { ...st.designs }; delete designs.scratch; return { dial: 'scratch', designs, sel: null, selKind: null, themeName: '', step: 'movement', tab: 'move',
+      cfg: { ...P.cfg }, train: P.train, caseStyle: P.caseStyle, caseMetal: P.caseMetal, glassStyle: P.glassStyle, hands: 'auto', handFinish: 'auto', scratch: true,
       hidden: { ...st.hidden, ids: {} },
-      status: 'Nothing yet: no dial, no parts, no case, no glass, no light. Choose the movement, then add the dial and what it shows' }));
+      status: 'Nothing yet: no dial, no parts, no case, no glass, no light. Choose the movement, then add the dial and what it shows' }; });
   }
   setMood(vals) {
     const def = this.DEF;
@@ -3571,7 +3575,7 @@ class Component extends DCLogic {
       themeNameTip: 'The theme\u2019s name: what the orb lists it as, and its identity on the card · ' + v.themeNameLen,
       sendTip: 'Bake the .orbtheme and store it on the orb, beside the theme on the glass. Switching to it is a separate press on the Themes tab. ' + (v.sendNote || ''),
       addLabel: '\uff0b Add a part\u2026', toggleAdd: () => this.setState({ sel: null, selKind: null, step: 'parts', tab: 'comps' }),
-      startGo: () => this.goStep('movement'), dialName: ready ? ((E.PRESETS[s.dial] || {}).name || '') : '',
+      startGo: () => this.goStep('movement'), dialName: ready ? ((E.template(s.dial) || {}).name || '') : '',
       fitShort: '', fitDot: '#5d6b78',
       fromScratch: () => this.fromScratch(),
     };
@@ -3663,7 +3667,7 @@ class Component extends DCLogic {
     if (s.selKind === 'comp' && selComp) { out.inspKind = (E.COMP_TYPES && E.COMP_TYPES[selComp.type]) || 'Complication'; out.inspTitle = v.selTitle || out.inspKind; }
     else if (selHand) { out.inspKind = 'Hand'; out.inspTitle = selHand.label; }
     else if (s.selKind === 'dial') { out.inspKind = 'Dial'; out.inspTitle = out.dialName || 'Dial'; }
-    else if (s.selKind === 'move' && s.tab === 'move') { out.inspKind = 'Movement'; out.inspTitle = s.sel === 'movement' ? 'Clock insides' : 'Geartrain'; }
+    else if (s.selKind === 'move' && (s.tab === 'move' || s.tab === 'insides')) { out.inspKind = 'Movement'; out.inspTitle = s.sel === 'movement' ? 'Clock insides' : 'Geartrain'; }
     else { out.inspKind = st[1]; out.inspTitle = step === 'start' ? 'Start a theme' : step === 'render' ? 'Render' : (this.SUBLABEL[s.tab] || st[1]); }
     // owner, 2026-11-06: the dial is a part too, and may go (the movement then shows whole)
     const selDial = s.selKind === 'dial' && ready && !d.noDial;
@@ -4302,8 +4306,9 @@ class Component extends DCLogic {
       fields.push(H('Placement'));
       if (tr.by) fields.push(K.Rd('Train angle', tr.deg + '° — set by ' + nameOf(tr.by) + '. Move that opening to turn the train.'));
       else fields.push(Rg('Train angle', +c0.trainAngle || 0, 0, 359, 1, cf('trainAngle'), (+c0.trainAngle || 0) + '°'));
-      const HB = this.budget();
       // the loop's rate and the balance's beat are the dial's timing: Dial \u203a Timing (owner, 2026-11-05)
+    }
+    if (ready && s.tab === 'insides') {
       fields.push(H('Backdrop', 'move-backdrop'), Sl('Plate', c0.plate, [{ v: 'train', label: 'Movement default · ' + E.PLATES[T.plate] }, ...opt(E.PLATES).filter((o) => o.v !== 'train')], cf('plate')),
         ...(() => { const pl = c0.plate === 'train' ? T.plate : c0.plate; return pl === 'stripes' ? [Rg('Stripe angle', +c0.plateAngle, 0, 179, 1, cf('plateAngle'), c0.plateAngle + '°'), Rg('Stripe width', +c0.plateScale, 0.4, 3, 0.05, cf('plateScale'), (+c0.plateScale).toFixed(2) + '×')]
           : pl === 'carbon' ? [Rg('Weave angle', +c0.plateAngle % 90, 0, 90, 1, cf('plateAngle'), (+c0.plateAngle % 90) + '°'), Rg('Weave size', +c0.plateScale, 0.4, 3, 0.05, cf('plateScale'), (+c0.plateScale).toFixed(2) + '×')]
@@ -4438,25 +4443,25 @@ class Component extends DCLogic {
       resetHands: () => this.upd((d) => { d.comps.forEach((hc) => { if (hc.type !== 'hand') return; delete hc.style; delete hc.finish; delete hc.len; delete hc.wid; delete hc.sec; delete hc.lume; delete hc.shade; }); }), selTitle: sel ? partName(sel) : '',
       dials: (ready ? Object.keys(E.PRESETS) : []).map((id) => ({
         ...on(id === s.dial), ref: this.cb('dialEls', id, (i) => this.drawDialThumb(i)),
-        name: E.PRESETS[id].name + (s.designs[id] ? ' · edited' : ''), blurb: E.PRESETS[id].blurb,
+        name: E.template(id).name + (s.designs[id] ? ' · edited' : ''), blurb: E.template(id).blurb,
         // a template comes as designed after From scratch (whose no case, glass or light is no choice
         // of the author's to keep); otherwise the author's own case and light ride over
-        pick: () => this.setState((st) => (st.scratch ? { dial: id, sel: null, themeName: '', scratch: false, cfg: { ...(E.PRESETS[id].cfg || {}) }, train: E.PRESETS[id].train || 'classic',
-          caseStyle: E.PRESETS[id].caseStyle || 'polished', caseMetal: E.PRESETS[id].caseMetal || 'auto', glassStyle: 'domed' } : { dial: id, sel: null, themeName: '', cfg: E.PRESETS[id].cfg ? { ...st.cfg, ...E.PRESETS[id].cfg } : E.PRESETS[st.dial].cfg ? Object.fromEntries(Object.entries(st.cfg).filter(([k]) => !(k in E.PRESETS[st.dial].cfg))) : st.cfg, train: E.PRESETS[id].train || (E.PRESETS[st.dial].train ? 'classic' : st.train), caseMetal: E.PRESETS[id].caseMetal || (E.PRESETS[st.dial].caseMetal ? 'auto' : st.caseMetal), caseStyle: E.PRESETS[id].caseStyle || (E.PRESETS[st.dial].caseStyle ? 'polished' : st.caseStyle) })),
+        pick: () => this.setState((st) => (st.scratch ? { dial: id, sel: null, themeName: '', scratch: false, cfg: { ...(E.template(id).cfg || {}) }, train: E.template(id).train || 'classic',
+          caseStyle: E.template(id).caseStyle || 'polished', caseMetal: E.template(id).caseMetal || 'auto', glassStyle: 'domed' } : { dial: id, sel: null, themeName: '', cfg: E.template(id).cfg ? { ...st.cfg, ...E.template(id).cfg } : E.template(st.dial).cfg ? Object.fromEntries(Object.entries(st.cfg).filter(([k]) => !(k in E.template(st.dial).cfg))) : st.cfg, train: E.template(id).train || (E.template(st.dial).train ? 'classic' : st.train), caseMetal: E.template(id).caseMetal || (E.template(st.dial).caseMetal ? 'auto' : st.caseMetal), caseStyle: E.template(id).caseStyle || (E.template(st.dial).caseStyle ? 'polished' : st.caseStyle) })),
       })),
       // everything: the design (its parts and their depth), movement, case and light, and the stage's
       // own view of it -- per-part eyes, selection, a drag in flight
       resetDesign: () => {
         // D43 P6: a reset asks twice (the second press within 4 s), and Ctrl+Z still brings it back
-        if (!(this.state.resetArm && Date.now() - this.state.resetArm < 4000)) { this.setState({ resetArm: Date.now(), status: 'Press Reset again to put ' + ((E.PRESETS[s.dial] || {}).name || 'this watch') + ' back to its preset (Ctrl+Z undoes it)' }); return; }
-        this.setState((st) => { const d = { ...st.designs }; delete d[st.dial]; const P = E.PRESETS[st.dial]; this._dragRow = null; return { resetArm: 0, designs: d, sel: null, selKind: null, dropAt: null, dragging: null, hidden: { ...st.hidden, ids: {} }, hands: 'auto', handFinish: 'auto', cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: 'domed', status: 'Reset ' + P.name + ' to its preset \u2014 Ctrl+Z brings your version back' }; }); },
-      isEdited: !!(s.designs && s.designs[s.dial]), resetPresetLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset ' + ((E.PRESETS[s.dial] || {}).name || 'to preset'),
+        if (!(this.state.resetArm && Date.now() - this.state.resetArm < 4000)) { this.setState({ resetArm: Date.now(), status: 'Press Reset again to put ' + ((E.template(s.dial) || {}).name || 'this watch') + ' back to its preset (Ctrl+Z undoes it)' }); return; }
+        this.setState((st) => { const d = { ...st.designs }; delete d[st.dial]; const P = E.template(st.dial); this._dragRow = null; return { resetArm: 0, designs: d, sel: null, selKind: null, dropAt: null, dragging: null, hidden: { ...st.hidden, ids: {} }, hands: 'auto', handFinish: 'auto', cfg: { ...(P.cfg || {}) }, train: P.train || 'classic', caseStyle: P.caseStyle || 'polished', caseMetal: P.caseMetal || 'auto', glassStyle: P.glassStyle || 'domed', status: 'Reset ' + P.name + ' to its preset \u2014 Ctrl+Z brings your version back' }; }); },
+      isEdited: !!(s.designs && s.designs[s.dial]), resetPresetLabel: s.resetArm && Date.now() - s.resetArm < 4000 ? 'Press again to reset' : 'Reset ' + ((E.template(s.dial) || {}).name || 'to preset'),
       mine: this.library().map((m) => { const armed = s.mineDel === m.name && Date.now() - (s.mineDelAt || 0) < 4000;
         const th = m.theme || {}, older = th.made_with && this.session.version() !== 'dev' && th.made_with.split('+')[0] !== this.session.version().split('+')[0] ? th.made_with : '';
         const tag = th.stale ? 'theme \u00b7 needs a rebake' : m.state === 'changed' ? 'theme \u00b7 unsent changes' : m.state === 'theme' ? 'theme' : 'draft';
         return { name: m.name, thumb: typeof m.thumb === 'string' && /^data:image\/(jpeg|png);base64,/.test(m.thumb) ? m.thumb : '', tag: tag + (older ? ' \u00b7 made with ' + older : ''),
           tagTip: th.stale ? 'An orb on the current firmware would refuse this bake (' + th.stale + '). Rebake all on the Themes tab rebakes it from its design.' : m.state === 'draft' ? 'Saved, never baked: Send to orb makes it a theme' : m.state === 'changed' ? 'A baked theme with changes saved beside it: Open shows the changes, Send to orb bakes them in' : 'Baked: on the hub shelf, ready to install',
-          meta: ((E.PRESETS[m.dial] || {}).name ? (E.PRESETS[m.dial] || {}).name + ' \u00b7 ' : '') + new Date(+m.at || 0).toLocaleDateString(),
+          meta: ((E.template(m.dial) || {}).name ? (E.template(m.dial) || {}).name + ' \u00b7 ' : '') + new Date(+m.at || 0).toLocaleDateString(),
           load: () => this.openEntry(m.name), loadTip: m.state === 'changed' ? 'Open it with its unsent changes' : 'Open it in the editor',
           changed: m.state === 'changed', discard: () => this.forgetEntry(m.name, 'draft'),
           delLabel: armed ? 'Press again' : 'Delete', delTip: 'Take it out of the hub\u2019s library, baked theme and all (asks twice). No orb is touched.', del: () => (armed ? (this.setState({ mineDel: null }), this.forgetEntry(m.name, 'all')) : this.setState({ mineDel: m.name, mineDelAt: Date.now() })) }; }),
@@ -4465,7 +4470,7 @@ class Component extends DCLogic {
       undo: () => this.undo(), redo: () => this.redo(), undoOp: this._undo.length ? 1 : 0.4, redoOp: this._redo.length ? 1 : 0.4,
       undoTip: this._undo.length ? 'Undo (Ctrl+Z) \u00b7 ' + this._undo.length + ' step' + (this._undo.length > 1 ? 's' : '') + ' back' : 'Nothing to undo', redoTip: this._redo.length ? 'Redo (Ctrl+Shift+Z)' : 'Nothing to redo',
       tabReset: () => this.resetTab(s.tab), hasTabReset: s.tab !== 'export', tabResetLabel: 'Reset ' + (this.TABS.find((t) => t[0] === s.tab) || ['', ''])[1].toLowerCase(),
-      resetComps: () => { const P = E.PRESETS[s.dial]; this.upd((d) => { d.comps = JSON.parse(JSON.stringify(P.design.comps || [])); }); this.setState({ sel: null, status: 'Complications reset to ' + P.name }); },
+      resetComps: () => { const P = E.template(s.dial); this.upd((d) => { d.comps = JSON.parse(JSON.stringify(P.design.comps || [])); }); this.setState({ sel: null, status: 'Complications reset to ' + P.name }); },
       trainOpts: ready ? Object.entries(E.TRAINS).map(([id, t]) => ({ ...on(id === s.train), name: t.name, blurb: t.blurb, pick: () => this.setState({ train: id }) })) : [],
       compRows: D.comps.filter((c) => c.type !== 'hand').map((c, i) => ({
         ...on(c.id === s.sel), num: String(i + 1), title: compTitle(c), anchor: 'comp-' + c.id,

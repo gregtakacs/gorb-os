@@ -87,7 +87,7 @@ ok(!it.design().mechanical && V().stackWarns.length === 0, 'switching it off cle
   ok(it.state.selKind === 'move' && it.state.tab === 'move' && it._scrollTo === '#', 'the geartrain row opens the Movement tab at its top', it.state.selKind + '/' + it.state.tab + ' ' + it._scrollTo);
   ok(row(/^Geartrain/).edge === '#58a6ff', 'and is marked selected in the panel');
   mv.pick();
-  ok(it.state.sel === 'movement' && it.state.tab === 'move' && it._scrollTo === 'move-backdrop', 'the clock insides row opens it at Backdrop', it.state.sel + ' ' + it._scrollTo);
+  ok(it.state.sel === 'movement' && it.state.tab === 'insides' && it._scrollTo === 'move-backdrop', 'the clock insides row opens its own sub-tab, at Backdrop', it.state.sel + ' ' + it._scrollTo);
   const heads = V().fields.filter((f) => f.isHead);
   const bi = heads.findIndex((f) => f.anchor === 'move-backdrop'), ai = heads.findIndex((f) => /^Background art/.test(f.label));
   ok(bi >= 0 && ai === bi + 1 && ai === heads.length - 1, 'Backdrop is the last section of the Movement tab, with the background art under it', heads.map((f) => f.label).join(' | '));

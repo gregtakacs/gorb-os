@@ -288,6 +288,10 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.serveSoundPost(w, r)
 	case r.URL.Path == "/api/v1/sound/test" && r.Method == http.MethodPost:
 		o.serveSoundTest(w, r)
+	case r.URL.Path == "/api/v1/units" && r.Method == http.MethodGet:
+		o.serveUnits(w)
+	case r.URL.Path == "/api/v1/units" && r.Method == http.MethodPost:
+		o.serveUnitsPost(w, r)
 	case r.URL.Path == "/api/v1/reboot" && r.Method == http.MethodPost:
 		o.serveReboot(w)
 	case r.URL.Path == "/api/v1/ota" && r.Method == http.MethodPost:

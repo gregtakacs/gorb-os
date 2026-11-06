@@ -202,6 +202,7 @@ def lifts(src):
         # of the dedicated suites, not this one.
         "static void job_dim_en(void *a) { (void)a; }",
         "static void job_dim_to(void *a) { (void)a; }",
+        "static void job_units(void *a) { (void)a; }",
         # go_to's exit answer reaches through the public door; the harness
         # declares it before the lifted dispatcher and defines the real one
         # among the funcs, so a press on the exit row is testable. g_setg_rc
@@ -231,6 +232,15 @@ def lifts(src):
         # zone follows it); the stub answers the zone in force.
         '#include "orb_home.h"',
         'void orb_home_zone_label(char *o, size_t n) { snprintf(o, n, "%s", orb_net_tz_current()); }',
+        # UNITS reads the choice in force and names it; the stub holds one record
+        # and the real label table's spelling for the rows the checks read.
+        '#include "orb_units.h"',
+        'static orb_units_t g_units;',
+        'void orb_units_get(orb_units_t *o) { *o = g_units; }',
+        'int orb_units_count(int k) { return k == ORB_UNITS_TEMP ? 2 : k < ORB_UNITS_KINDS ? 3 : 0; }',
+        'const char *orb_units_label(int k, int v) { static const char *const L[3][3] = '
+        '{ { "\\xC2\\xB0" "C", "\\xC2\\xB0" "F", NULL }, { "km/h", "mph", "kn" }, { "km", "mi", "nm" } };'
+        ' return v >= 0 && v < orb_units_count(k) ? L[k][v] : NULL; }',
         'static bool orb_sd_mounted(void);',
         'static const char *orb_sd_card_id(void);',
         # Item 3: a fake NVS with a real round-trip, so the lifted pos_save/
@@ -799,14 +809,31 @@ int main(void)
      * reason the day the OS grows a seventh row, and a suite that cries wolf at
      * a legitimate new row is a suite someone turns off. */
     const int OSN = top_os_rows(), FIRST_APP = OSN, EXIT = OSN + 1;
-    ck("top page is the OS's four rows, one app row, then exit",
-       OSN == 4 && page_rows() == 6);
+    ck("top page is the OS's five rows, one app row, then exit",
+       OSN == 5 && page_rows() == 7);
     { const int n = OSN;
       ck("row order ABOUT/DISPLAY/PERMISSIONS/APPS/<app>/exit",
          !strcmp(rowline(0),"ABOUT") && !strcmp(rowline(1),"DISPLAY") &&
          !strcmp(rowline(2),"PERMISSIONS") && !strcmp(rowline(3),"APPS") &&
+         !strcmp(rowline(4),"UNITS") &&
          !strcmp(rowline(FIRST_APP),"Clock") && !strcmp(rowline(EXIT),"exit"));
       (void)n; }
+    /* UNITS (weather-plan §2.1): three knob-edited rows and back, each naming the
+     * choice in force, and an edit's range is that quantity's choices. */
+    { const page_t *spg = NULL; (void)spg;
+      const menu_page_t *keep = s_pg; const int keepc = s_cur;
+      s_pg = &s_pages[PG_UNITS];
+      g_units = (orb_units_t){ ORB_UNIT_F, ORB_UNIT_KN, ORB_UNIT_NM };
+      ck("UNITS lists temperature, speed and distance, then back",
+         page_rows() == 4 && !strcmp(rowline(0), "temperature:  \xC2\xB0" "F") &&
+         !strcmp(rowline(1), "speed:  kn") && !strcmp(rowline(2), "distance:  nm") &&
+         !strcmp(rowline(3), "<- back"));
+      menu_edit_t e; memset(&e, 0, sizeof e);
+      ck("a unit row edits through its own choices, wrapping",
+         edit_units(0, &e) && e.r.min == 0 && e.r.max == 1 && e.r.wrap && e.v == ORB_UNIT_F &&
+         edit_units(2, &e) && e.r.max == 2 && e.v == ORB_UNIT_NM && !edit_units(3, &e));
+      g_units = (orb_units_t){ 0, 0, 0 };
+      s_pg = keep; s_cur = keepc; }
     /* The row comes from the registry, not from this file's text: an app that
      * stops answering opt_* loses its row without the shell being edited. */
     g_opt_n = 0;                                    /* the app stops answering */
@@ -2546,8 +2573,8 @@ def main():
     check("the table rows name every page id exactly once",
           sorted(entry_ids) == sorted(["LANDING", "TOP", "APP", "DISPLAY",
                                        "PERMS", "CAPS", "APPS", "APPACT",
-                                       "ABOUT", "SHARE"])
-          and len(entry_ids) == 10, ",".join(entry_ids))
+                                       "ABOUT", "SHARE", "UNITS"])
+          and len(entry_ids) == 11, ",".join(entry_ids))
     # docs/knob-edit-plan.md: the timeout presets' id stays in the enum, so a stored
     # menu position keeps its page numbers, and is neither a page nor restorable.
     check("the retired timeout page keeps its number and nothing else",
@@ -2582,14 +2609,16 @@ def main():
     # TZ left (owner ruling, 2026-11-01): the zone follows the home, which the
     # hub sets. AP left the same day (a stub that never worked) and ABOUT took
     # its row: it opens on a QR code for the orb's own page.
-    check("the OS's top rows are ABOUT, DISPLAY, PERMISSIONS, APPS",
-          labels == ["ABOUT", "DISPLAY", "PERMISSIONS", "APPS"],
+    check("the OS's top rows are ABOUT, DISPLAY, PERMISSIONS, APPS, UNITS",
+          labels == ["ABOUT", "DISPLAY", "PERMISSIONS", "APPS", "UNITS"],
           ",".join(labels))
     # P5.3's two new sub-pages say their own parent row, and ABOUT promises the
     # inertness its hint claims: no act hook means no press can do anything.
     check("APPS and ABOUT land back on their own top rows",
           ".back_cur = 3" in entry("APPS") and ".back_cur = 0" in entry("ABOUT"))
     check("ABOUT has no press hook at all", ".act" not in entry("ABOUT"))
+    check("UNITS lands back on its own top row and edits by knob",
+          ".back_cur = 4" in entry("UNITS") and ".edit = edit_units" in entry("UNITS"))
     check("the door page reaches the machine through the two owner doors",
           ".open = open_appact" in entry("APPACT")
           and "orb_app_clear_faults" in tcode and "orb_app_uninstall" in tcode

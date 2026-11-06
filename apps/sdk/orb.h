@@ -164,6 +164,43 @@ typedef struct {
 ORB_IMPORT("home")       int32_t orb_home(orb_home_t *out);
 ORB_IMPORT("home_gen")   uint32_t orb_home_gen(void);
 
+/* ---- units (free) -------------------------------------------------------------- *
+ * The orb's units, one OS setting for every app (weather-plan §2.1): the owner sets
+ * them on the dial's UNITS page or from the hub. Work in metric and convert when you
+ * draw; re-read when orb_units_gen moves. Available from OS v1.2.10. */
+
+enum { ORB_UNIT_C = 0, ORB_UNIT_F = 1 };                        /* temp  */
+enum { ORB_UNIT_KMH = 0, ORB_UNIT_MPH = 1, ORB_UNIT_KN = 2 };   /* speed */
+enum { ORB_UNIT_KM = 0, ORB_UNIT_MI = 1, ORB_UNIT_NM = 2 };     /* dist  */
+typedef struct {
+    uint8_t  temp, speed, dist, _pad;
+    uint32_t gen;            /* moves on every change: re-read when it does */
+} orb_units_t;
+_Static_assert(sizeof(orb_units_t) == 8, "the OS writes this record verbatim");
+ORB_IMPORT("units")      int32_t orb_units(orb_units_t *out);
+ORB_IMPORT("units_gen")  uint32_t orb_units_gen(void);
+
+static inline double orb_temp_from_c(double c, const orb_units_t *u)
+{
+    return u->temp == ORB_UNIT_F ? c * 9.0 / 5.0 + 32.0 : c;
+}
+static inline double orb_speed_from_kmh(double kmh, const orb_units_t *u)
+{
+    return u->speed == ORB_UNIT_MPH ? kmh / 1.609344 : u->speed == ORB_UNIT_KN ? kmh / 1.852 : kmh;
+}
+static inline double orb_dist_from_km(double km, const orb_units_t *u)
+{
+    return u->dist == ORB_UNIT_MI ? km / 1.609344 : u->dist == ORB_UNIT_NM ? km / 1.852 : km;
+}
+static inline const char *orb_speed_label(const orb_units_t *u)
+{
+    return u->speed == ORB_UNIT_MPH ? "mph" : u->speed == ORB_UNIT_KN ? "kn" : "km/h";
+}
+static inline const char *orb_dist_label(const orb_units_t *u)
+{
+    return u->dist == ORB_UNIT_MI ? "mi" : u->dist == ORB_UNIT_NM ? "nm" : "km";
+}
+
 /* ---- power (cap "power") ------------------------------------------------------- */
 
 ORB_IMPORT("power_request") int32_t orb_power_request(uint32_t timeout_s, int32_t hold);

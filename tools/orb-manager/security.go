@@ -345,7 +345,10 @@ var deviceRoutes = map[string][]string{
 	// reaches the card or the slot.
 	"/api/v1/sound":      {http.MethodGet, http.MethodPost},
 	"/api/v1/sound/test": {http.MethodPost},
-	"/api/v1/reboot":     {http.MethodPost},
+	// weather-plan §2.1: the orb's units (temperature, speed, distance), one OS setting
+	// every app reads. Device config like the zone; it reaches neither card nor slot.
+	"/api/v1/units":  {http.MethodGet, http.MethodPost},
+	"/api/v1/reboot": {http.MethodPost},
 	// Recovery, not a reboot: arms D2's one-shot intent and comes back in its SoftAP with
 	// the stored credential intact. Allowlisted because the hub's Manage card has to be
 	// able to reach an orb it can no longer configure any other way — a wrong SSID or a

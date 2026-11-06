@@ -65,6 +65,8 @@
   "ui_refresh": "v()",
   "ui_set": "v(iii)",
   "ui_text": "v(ii)",
+  "units": "i(i)",
+  "units_gen": "i()",
   "uptime_ms": "i()",
   "uptime_us": "I()"
  }

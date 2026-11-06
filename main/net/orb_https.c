@@ -125,7 +125,7 @@ static esp_err_t get_once(orb_https_t *h, orb_https_method_t method, const char 
     h->retry_after_s = 0;
     h->hlen = 0;
     h->hdrs[0] = 0;
-    char url[320];
+    char url[560];                  /* origin (72) + an app's path (orb_app_net.c, 480) */
     snprintf(url, sizeof url, "%s%s", h->origin, path);
     esp_http_client_set_url(h->c, url);
     esp_http_client_set_method(h->c, (unsigned)method <= ORB_HTTPS_HEAD ? M[method] : HTTP_METHOD_GET);

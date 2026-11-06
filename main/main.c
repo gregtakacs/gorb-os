@@ -24,6 +24,7 @@
 #include "orb_app_net.h"     /* orb_app_cred_sweep: the boot's secret sweep */
 #include "orb_jobs.h"
 #include "orb_home.h"
+#include "orb_units.h"
 #include "orb_tls_mem.h"
 #include "orb_svc.h"
 #include "orb_carousel.h"
@@ -249,6 +250,8 @@ void app_main(void)
      * words and for the same reason: the apps that read it build next. One
      * NVS blob read; the zone it set is applied by orb_net_start's tz load. */
     orb_home_init();
+    /* The units (weather-plan §2.1) load beside it for the same reason. */
+    orb_units_init();
     /* P7.4's rung: the code tier loads after the broker's words are known (a
      * quarantined app must not cost its D27 memory) and before init_all asks each
      * module to build — the wasm module's init answers OK only once its slot

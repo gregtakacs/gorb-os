@@ -59,7 +59,8 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "nvs_flash.h"
 
 #include "orb_app_net.h"   /* the per-app credential store behind /api/v1/apps/cfg secrets (§43) */
-#include "orb_home.h"   /* /api/v1/home: the OS home location (flight-tracker-design §6.4) */
+#include "orb_home.h"
+#include "orb_units.h"   /* /api/v1/home: the OS home location (flight-tracker-design §6.4) */
 #include "orb_net.h"
 #include "input_router.h"
 #include "orb_app.h"   /* h_screen: ?to=<slug> resolves through the registry */
@@ -3243,6 +3244,68 @@ static esp_err_t h_sound_test(httpd_req_t *req)
     const char *why = named ? orb_sound_test(which) : "no sound in body";
     if (why) return sound_refuse(req, why);
     return sound_reply(req);
+}
+
+/* ------------------------------------------------------------------------
+ * GET/POST /api/v1/units — the orb's units (weather-plan §2.1), the one
+ * setting every app reads for temperature, speed and distance.
+ *
+ * GET answers {"temp":"c","speed":"kmh","dist":"km","gen":N}. POST takes any
+ * subset of the three keys, sound's rule: a key left out keeps its value, a
+ * value outside the list is refused whole (nothing is stored), and a body
+ * naming none of them is refused as a request for nothing. The keys are the
+ * fixed list in orb_units.c, so the echo never carries client text.
+ * ------------------------------------------------------------------------ */
+static esp_err_t units_reply(httpd_req_t *req)
+{
+    orb_units_t u;
+    orb_units_get(&u);
+    char json[96];
+    snprintf(json, sizeof json, "{\"temp\":\"%s\",\"speed\":\"%s\",\"dist\":\"%s\",\"gen\":%lu}",
+             orb_units_key(ORB_UNITS_TEMP, u.temp), orb_units_key(ORB_UNITS_SPEED, u.speed),
+             orb_units_key(ORB_UNITS_DIST, u.dist), (unsigned long)orb_units_gen());
+    return httpd_resp_sendstr(req, json);
+}
+
+static esp_err_t h_units_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return units_reply(req);
+}
+
+static esp_err_t h_units_post(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char *body = heap_caps_malloc(NET_SOUND_BODY_MAX + 1, MALLOC_CAP_SPIRAM);
+    if (!body) return sound_refuse(req, "no memory");
+    const int len = sound_body(req, body, NET_SOUND_BODY_MAX);
+    if (len < 0) { heap_caps_free(body); return ESP_OK; }
+    static const char *const KEY[ORB_UNITS_KINDS] = { "temp", "speed", "dist" };
+    orb_units_t u;
+    orb_units_get(&u);
+    uint8_t *field[ORB_UNITS_KINDS] = { &u.temp, &u.speed, &u.dist };
+    int named = 0;
+    for (int k = 0; k < ORB_UNITS_KINDS; k++) {
+        char v[8];
+        const bool got = json_str(body, (size_t)len, KEY[k], v, sizeof v);
+        const int x = got ? orb_units_parse(k, v) : -1;
+        if (x < 0 && (got || json_find(body, (size_t)len, KEY[k]))) {
+            heap_caps_free(body);
+            return sound_refuse(req, "unknown unit");
+        }
+        if (x < 0) continue;
+        *field[k] = (uint8_t)x;
+        named++;
+    }
+    heap_caps_free(body);
+    const char *why = named ? orb_units_set(&u) : "no unit in body";
+    if (why) {
+        ESP_LOGW(TAG, "units: refused (%s)", why);
+        return sound_refuse(req, why);
+    }
+    return units_reply(req);
 }
 
 /* POST /api/v1/name {"name":"Hall Clock"} — {"name":""} clears it.
@@ -7998,6 +8061,8 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/sound",    .method = HTTP_GET,  .handler = h_sound_get },
         { .uri = "/api/v1/sound",    .method = HTTP_POST, .handler = h_sound_post },
         { .uri = "/api/v1/sound/test", .method = HTTP_POST, .handler = h_sound_test },
+        { .uri = "/api/v1/units",    .method = HTTP_GET,  .handler = h_units_get },
+        { .uri = "/api/v1/units",    .method = HTTP_POST, .handler = h_units_post },
         { .uri = "/api/v1/ota",      .method = HTTP_POST, .handler = h_ota },
         { .uri = "/api/v1/reboot",   .method = HTTP_POST, .handler = h_reboot },
         /* One-shot: reboot into the provisioning branch with the stored credential

@@ -48,6 +48,7 @@
 #include "orb_clock3.h"         /* clk_sound_t: the theme records the stage hands over */
 #include "orb_theme.h"          /* orb_theme_live_slug: whose theme the stage draws */
 #include "orb_sched.h"          /* orb_sched_burst, behind orb.burst */
+#include "orb_units.h"     /* orb_units, behind orb.units (free) */
 #include "orb_home.h"           /* orb_home_gen, behind orb.home_gen */
 #include "esp_timer.h"
 #include <setjmp.h>
@@ -913,6 +914,31 @@ m3ApiRawFunction(imp_home_gen)
     m3ApiReturn(orb_home_gen());
 }
 
+/* weather-plan §2.1: the orb's units, free (a unit is not sensitive). The record is
+ * orb.h's orb_units_t: temp, speed, dist, a pad byte, then the gen word — 8 B. */
+m3ApiRawFunction(imp_units)                  /* i32 units(orb_units_t *out) — 8 B */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArgMem(uint8_t *, out);
+    m3ApiCheckMem(out, 8);
+    orb_units_t u;
+    orb_units_get(&u);
+    out[0] = u.temp;
+    out[1] = u.speed;
+    out[2] = u.dist;
+    out[3] = 0;
+    m3ApiWriteMem32(out + 4, orb_units_gen());
+    m3ApiReturn(ESP_OK);
+}
+
+m3ApiRawFunction(imp_units_gen)
+{
+    m3ApiReturnType(uint32_t);
+    CALLER();
+    m3ApiReturn(orb_units_gen());
+}
+
 m3ApiRawFunction(imp_power_request)          /* i32 power_request(u32 timeout_s, i32 hold) */
 {
     m3ApiReturnType(int32_t);
@@ -1311,6 +1337,8 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "sound_active",  "i(i)",      imp_sound_active },
     { "orb", "home",          "i(i)",      imp_home },
     { "orb", "home_gen",      "i()",       imp_home_gen },
+    { "orb", "units",         "i(i)",      imp_units },
+    { "orb", "units_gen",     "i()",       imp_units_gen },
     { "orb", "power_request", "i(ii)",     imp_power_request },
     { "orb", "net_request",   "i(iiiiii)", imp_net_request },
     { "orb", "net_header",    "i(iii)",    imp_net_header },

@@ -54,7 +54,10 @@ typedef struct {
     bool     queued;                 /* LVGL task -> worker: a request is waiting */
     bool     dead;                   /* released while busy: the worker frees */
     char     origin[72];
-    char     path[200];
+    /* 480: weather-plan §4 item 1, Open-Meteo's one request for four places runs about
+     * 420 B. The request line "GET <path> HTTP/1.1\r\n" must still fit esp_http_client's
+     * 512 B tx buffer (http_client_prepare_first_line), which 480 + 15 does. */
+    char     path[480];
     char     hname[ORB_APP_CRED_HDR_MAX + 1];
     char     hval[ORB_APP_CRED_MAX + 1];
     char     slug[32];

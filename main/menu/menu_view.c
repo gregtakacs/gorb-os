@@ -36,7 +36,8 @@
 #include "esp_attr.h"         /* EXT_RAM_BSS_ATTR: the QR plane lives in PSRAM */
 #include "orb_jobs.h"
 #include "libs/qrcode/qrcodegen.h"   /* ABOUT: the phone door (LVGL's copy, CONFIG_LV_USE_QRCODE) */
-#include "orb_home.h"          /* ABOUT: the zone, named from the home that set it */
+#include "orb_home.h"
+#include "orb_units.h"          /* ABOUT: the zone, named from the home that set it */
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
@@ -90,6 +91,7 @@ typedef enum {
     PG_APPACT,        /* one app's own doors: show / retry / uninstall */
     PG_ABOUT,         /* inert identity list — no press does anything  */
     PG_SHARE,         /* D38: the USB share window's own card, forced over any page */
+    PG_UNITS,         /* weather-plan §2.1: temperature, speed, distance for every app */
     PG_N
 } page_t;
 
@@ -166,6 +168,9 @@ static int  rows_display(void);  static void label_display(int, char *, size_t, 
 static const char *title_display(void);
 static void act_display(int);
 static bool edit_display(int row, menu_edit_t *e);
+static int  rows_units(void);    static void label_units(int, char *, size_t, bool *);
+static const char *title_units(void);  static const char *hint_units(void);
+static bool edit_units(int row, menu_edit_t *e);
 static bool edit_app(int row, menu_edit_t *e);
 static int  rows_perms(void);    static void label_perms(int, char *, size_t, bool *);
 static const char *title_perms(void);
@@ -377,6 +382,24 @@ static void job_dim_en(void *arg)
     worker_publish(&out);
 }
 
+/* One unit, packed kind * 8 + value by commit_units. */
+static void job_units(void *arg)
+{
+    const int kv = *(const int *)arg, kind = kv / 8, v = kv % 8;
+    ui_t out; memset(&out, 0, sizeof out);
+    orb_units_t u;
+    orb_units_get(&u);
+    if (kind == ORB_UNITS_TEMP) u.temp = (uint8_t)v;
+    else if (kind == ORB_UNITS_SPEED) u.speed = (uint8_t)v;
+    else u.dist = (uint8_t)v;
+    const char *why = orb_units_set(&u);
+    const char *l = orb_units_label(kind, v);
+    if (why) snprintf(out.status, sizeof(out.status), "units: %s", why);
+    else snprintf(out.status, sizeof(out.status), "%s: %s", kind == ORB_UNITS_TEMP ? "temperature" :
+                  kind == ORB_UNITS_SPEED ? "speed" : "distance", l ? l : "?");
+    worker_publish(&out);
+}
+
 static void job_dim_to(void *arg)
 {
     const int min = *(const int *)arg;
@@ -530,6 +553,9 @@ static const menu_row_t s_top[] = {
     /* APPS joins the OS's own run rather than the dynamic one: it describes
      * the machine, not one app, and the plan's §7.2 top level names it. */
     { "APPS",        PG_APPS,        NULL },
+    /* UNITS (weather-plan §2.1) closes the run, so no back_cur literal above it
+     * moved: one OS setting every app reads, set here or from the hub. */
+    { "UNITS",       PG_UNITS,       NULL },
 };
 
 /* ---- the page table, and what its rows answer ------------------------------
@@ -544,6 +570,7 @@ static const menu_row_t s_top[] = {
 
 static int rows_top(void)     { return TOP_OS_N + app_rows() + 1; }   /* +1: exit */
 static int rows_display(void) { return 3; }                     /* dim, timeout, back */
+static int rows_units(void)   { return ORB_UNITS_KINDS + 1; }   /* temp, speed, dist, back */
 static int rows_perms(void)   { return perm_rows() + 1; }
 static int rows_caps(void)    { return N_OWNER_CAPS + 1; }
 
@@ -712,6 +739,23 @@ static void label_caps(int row, char *out, size_t outsz, bool *sel_hi)
              g ? "allowed" : "revoked", ref ? " *" : "");
 }
 
+/* The units page: one row per quantity, each knob-edited through its choices. */
+static const char *const UNIT_ROW[ORB_UNITS_KINDS] = { "temperature", "speed", "distance" };
+static int unit_now(int kind)
+{
+    orb_units_t u;
+    orb_units_get(&u);
+    return kind == ORB_UNITS_TEMP ? u.temp : kind == ORB_UNITS_SPEED ? u.speed : u.dist;
+}
+static void label_units(int row, char *out, size_t outsz, bool *sel_hi)
+{
+    (void)sel_hi;
+    if (row < ORB_UNITS_KINDS)
+        snprintf(out, outsz, "%s:  %s", UNIT_ROW[row], orb_units_label(row, unit_now(row)));
+    else
+        snprintf(out, outsz, "<- back");
+}
+
 static void label_display(int row, char *out, size_t outsz, bool *sel_hi)
 {
     if (row == 0) {
@@ -735,6 +779,7 @@ static void label_display(int row, char *out, size_t outsz, bool *sel_hi)
 static const char *title_top(void)  { return "MENU"; }
 static const char *title_app(void)  { return (s_app && s_app->title) ? s_app->title : "OPTIONS"; }
 static const char *title_display(void) { return "DISPLAY"; }
+static const char *title_units(void)   { return "UNITS"; }
 static const char *title_perms(void){ return "PERMISSIONS"; }
 static const char *title_caps(void)
 {
@@ -760,6 +805,7 @@ static const char *hint_app(void)
     return "rotate: choose   push: change";
 }
 static const char *hint_display(void) { return "rotate: choose   push: change"; }
+static const char *hint_units(void)   { return "rotate: choose   push: change"; }
 
 /* The presses that answer without a page of their own: each posts the one job
  * the row names and repaints — showing "working..." while the single worker
@@ -2089,7 +2135,7 @@ static bool s_pos_loaded;         /* the record has been read once this boot */
 static bool pos_restorable(int pg)
 {
     const unsigned ok = (1u << PG_TOP) | (1u << PG_DISPLAY)
-                      | (1u << PG_PERMS) | (1u << PG_ABOUT);
+                      | (1u << PG_PERMS) | (1u << PG_ABOUT) | (1u << PG_UNITS);
     return pg >= 0 && pg < PG_N && ((ok >> pg) & 1u) != 0;
 }
 
@@ -2301,6 +2347,8 @@ const menu_page_t s_pages[PG_N] = {
                      .hint = hint_appact, .act = act_appact, .open = open_appact,
                      .ordinal = ord_appact,
                      .back_to = PG_APPS, .back_cur = 0 },
+    [PG_UNITS]   = { .rows = rows_units, .label = label_units, .title = title_units,
+                     .hint = hint_units, .back_to = PG_TOP, .back_cur = 4, .edit = edit_units },
     [PG_ABOUT]   = { .rows = rows_about, .label = label_about, .title = title_about,
                      .hint = hint_about, .back_to = PG_TOP, .back_cur = 0 },
     /* The share card: reachable from no row, carrying no rows of its own, and
@@ -2399,6 +2447,25 @@ static void commit_display(int row, int32_t v)
     (void)row;
     job_post(job_dim_to, (int)v);
 }
+static void fmt_units(int row, int32_t v, char *out, size_t outsz)
+{
+    const char *l = orb_units_label(row, (int)v);
+    snprintf(out, outsz, "%s:  %s", UNIT_ROW[row], l ? l : "?");
+}
+static void commit_units(int row, int32_t v)
+{
+    job_post(job_units, row * 8 + (int)v);
+}
+static bool edit_units(int row, menu_edit_t *e)
+{
+    if (row < 0 || row >= ORB_UNITS_KINDS) return false;
+    e->r = (knob_range_t){ 0, orb_units_count(row) - 1, true, 1 };
+    e->v = unit_now(row);
+    e->fmt = fmt_units;
+    e->commit = commit_units;
+    return true;
+}
+
 static bool edit_display(int row, menu_edit_t *e)
 {
     if (row != 1) return false;

@@ -82,6 +82,8 @@ idf_component_register(
         "net/orb_net.c"
         "net/orb_https.c"
         "net/orb_home.c"
+        # weather-plan §2.1: the units every app reads (temperature, speed, distance)
+        "net/orb_units.c"
         "net/orb_geo.c"
         "net/orb_cities.c"
         "net/orb_tls_mem.c"   # mbedTLS allocator: PSRAM for the task that asks

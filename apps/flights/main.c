@@ -34,11 +34,16 @@
  * the arrows themselves (theme-text-plan §2.1). Picked at init. */
 static const char *SYM_UP = "\xEF\x81\xB7", *SYM_DOWN = "\xEF\x81\xB8", *SYM_RIGHT = "\xEF\x81\x94";
 
-static const uint16_t RANGES_NM[] = { 10, 20, 40, 80 };
+/* The range steps in the orb's distance unit (weather-plan §2.2): round numbers in each
+ * unit, never a converted nautical mile, and no outer step wider than 80 nm (148 km, 92 mi),
+ * the radius the parse budget below was measured on. The stored `range` stays an index, so
+ * a unit change keeps the step. Rows by ORB_UNIT_KM, _MI, _NM. */
+static const uint16_t RANGES[3][4] = { { 20, 40, 80, 140 }, { 10, 25, 50, 90 }, { 10, 20, 40, 80 } };
+static const double   UNIT_KM[3]   = { 1.0, 1.609344, 1.852 };
 static const uint32_t BG_MS[]     = { 0, 60000, 120000, 300000 };
 static const char *const BG_TXT[] = { "off", "1 min", "2 min", "5 min" };
 static const char *const SRC_TXT[] = { "adsb.lol", "adsb.fi" };
-#define N_RANGES (int)(sizeof RANGES_NM / sizeof RANGES_NM[0])
+#define N_RANGES (int)(sizeof RANGES[0] / sizeof RANGES[0][0])
 #define N_BG     (int)(sizeof BG_MS / sizeof BG_MS[0])
 
 enum { SRC_LOL = 0, SRC_FI = 1 };
@@ -55,7 +60,18 @@ typedef struct {
 } settings_t;
 
 static settings_t s_set = { .range = 2, .source = 1, .bg = 2, .boost = 0, .ground = 1 };
-static uint32_t   s_cfg_gen, s_home_gen = 0xFFFFFFFFu;
+static uint32_t   s_cfg_gen, s_home_gen = 0xFFFFFFFFu, s_units_gen;
+static orb_units_t s_units;          /* the orb's units (OS v1.2.10): distance only here */
+
+static int dist_unit(void) { return s_units.dist <= ORB_UNIT_NM ? s_units.dist : ORB_UNIT_KM; }
+static float range_km(void) { return (float)(RANGES[dist_unit()][s_set.range] * UNIT_KM[dist_unit()]); }
+/* The feeds take a whole number of nautical miles: the step, rounded up so the scope's
+ * edge is always inside what was asked for. */
+static unsigned range_req_nm(void) { return (unsigned)ceil(range_km() / 1.852 - 1e-9); }
+static void range_text(char *b, size_t n)
+{
+    snprintf(b, n, "%u %s", (unsigned)RANGES[dist_unit()][s_set.range], orb_dist_label(&s_units));
+}
 static bool       s_visible;
 
 typedef enum { MODE_ROAM, MODE_ZOOM, MODE_INFO } knob_mode_t;
@@ -85,6 +101,8 @@ static void load_settings(void)
     if (orb_cfg_get("boost", &v) == ORB_OK)  s_set.boost = v;
     if (orb_cfg_get("ground", &v) == ORB_OK) s_set.ground = v;
     load_home();
+    orb_units(&s_units);
+    s_units_gen = orb_units_gen();
     if (s_set.range < 0 || s_set.range >= N_RANGES) s_set.range = 2;
     if (s_set.bg < 0 || s_set.bg >= N_BG) s_set.bg = 1;
     s_cfg_gen = orb_cfg_gen();
@@ -286,7 +304,7 @@ static bool start_poll(void)
         src = !src;
     }
     char url[128];
-    const unsigned nm = RANGES_NM[s_set.range];
+    const unsigned nm = range_req_nm();
     if (src == SRC_FI)
         snprintf(url, sizeof url, "https://opendata.adsb.fi/api/v3/lat/%.4f/lon/%.4f/dist/%u",
                  s_set.latd, s_set.lond, nm);
@@ -615,8 +633,8 @@ static int shape_of(const orb_ac_t *a)
 
 static void draw_frame(void)
 {
-    const float range_km = RANGES_NM[s_set.range] * 1.852f;
-    fm_project(&s_m, range_km, orb_uptime_us(), CX, CY, RING_R);
+    const float rkm = range_km();
+    fm_project(&s_m, rkm, orb_uptime_us(), CX, CY, RING_R);
 
     orb_cv_fill(s_cv, 0);
     orb_cv_ring(s_cv, CX, CY, RING_R, 0x2A4A3A);
@@ -639,7 +657,7 @@ static void draw_frame(void)
         if (s_sel[0] && !strcmp(t->ac.hex, s_sel)) ring_at(x, y, 8, 0xFFFFFF);
     }
     char rng[12];
-    snprintf(rng, sizeof rng, "%u nm", (unsigned)RANGES_NM[s_set.range]);
+    range_text(rng, sizeof rng);
     orb_cv_text(s_cv, CX + 122, CY + 136, 61, ORB_FONT_14, 0x4A7A62, rng);
     orb_cv_flush(s_cv);
 }
@@ -652,8 +670,8 @@ static void draw_frame(void)
  * contacts, and a card that keeps clear moves off the contact it describes. */
 static void draw_stage(void)
 {
-    const float range_km = RANGES_NM[s_set.range] * 1.852f;
-    fm_project(&s_m, range_km, orb_uptime_us(), CX, CY, RING_R);
+    const float rkm = range_km();
+    fm_project(&s_m, rkm, orb_uptime_us(), CX, CY, RING_R);
     if (s_arm >= 0)
         orb_stage_pose(s_arm, (int32_t)((now_ms() % s_sweep_ms) * 3600 / s_sweep_ms), 0, 0);
     int idx[PLANE_SLOTS];
@@ -704,7 +722,7 @@ static void draw_stage(void)
     if (!sel_on) marker(s_sel_row, false, CX, CY);
     if (!em_on) marker(s_em_row, false, CX, CY);
     char rng[12];
-    snprintf(rng, sizeof rng, "%u nm", (unsigned)RANGES_NM[s_set.range]);
+    range_text(rng, sizeof rng);
     say(LAB_RNG, rng, ORB_TONE_NORMAL, 0x8A9A90);
 }
 
@@ -716,7 +734,7 @@ static void draw_text(void)
     if (s_mode == MODE_INFO && fm_find(&s_m, s_sel) < 0) fm_sel_step(&s_m, "", 1, s_sel);
     /* The header says which level the knob is on, so a turn is never a guess. */
     if (s_mode == MODE_ZOOM)
-        snprintf(b, sizeof b, "zoom  %u nm", (unsigned)RANGES_NM[s_set.range]);
+        { char r[12]; range_text(r, sizeof r); snprintf(b, sizeof b, "zoom  %s", r); }
     else if (s_mode == MODE_INFO && s_m.norder)
         snprintf(b, sizeof b, "%d of %d", fm_find(&s_m, s_sel) + 1, s_m.norder);
     else if (s_mode == MODE_INFO)
@@ -873,8 +891,10 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
     load_settings();
     s_visible = false;
     F.next_poll = 0;                 /* background polling starts at the first pass */
-    orb_logf("flight tracker ready: home %s, range %u nm, background %s",
-             s_set.home_ok ? "set" : "not set", (unsigned)RANGES_NM[s_set.range], BG_TXT[s_set.bg]);
+    char rng[12];
+    range_text(rng, sizeof rng);
+    orb_logf("flight tracker ready: home %s, range %s, background %s",
+             s_set.home_ok ? "set" : "not set", rng, BG_TXT[s_set.bg]);
     return ORB_OK;
 }
 
@@ -908,7 +928,7 @@ ORB_EXPORT("orb_service") void orb_service(void)
 {
     /* A setting written from outside (the hub's /api/v1/apps/cfg door, the options
      * page) or a new home lands here: a generation moved, so re-read and re-apply. */
-    if (orb_cfg_gen() != s_cfg_gen || orb_home_gen() != s_home_gen) {
+    if (orb_cfg_gen() != s_cfg_gen || orb_home_gen() != s_home_gen || orb_units_gen() != s_units_gen) {
         /* A new home invalidates every kept contact: their east/north offsets are from
          * the old one. */
         if (orb_home_gen() != s_home_gen) {
@@ -979,7 +999,7 @@ ORB_EXPORT("orb_opt_value") void orb_opt_value(int32_t idx)
 {
     char v[40];
     switch (idx) {
-    case OPT_RANGE:  snprintf(v, sizeof v, "%u nm", (unsigned)RANGES_NM[s_set.range]); break;
+    case OPT_RANGE:  range_text(v, sizeof v); break;
     case OPT_SOURCE: snprintf(v, sizeof v, "%s", SRC_TXT[s_set.source & 1]); break;
     case OPT_BG:     snprintf(v, sizeof v, "%s", BG_TXT[s_set.bg]); break;
     case OPT_BOOST:  snprintf(v, sizeof v, "%s", s_set.boost ? "on" : "off"); break;

@@ -5668,10 +5668,11 @@ static esp_err_t h_debug_dial(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    static int spans, spin, rate, freeze, noglass, nearest, sweep, gifx = 1, osc, aa;   /* the one httpd task */
+    static int spans = 1, spin, rate, freeze, noglass, nearest, sweep, gifx = 1, osc, aa;   /* the one httpd task */
     char v[12];
     if (q_param(req, "reset", v, sizeof v) && v[0] == '1') {
         spans = spin = rate = freeze = noglass = nearest = sweep = osc = aa = 0;
+        spans = 1;                                  /* §49.15: spans are the shipped compositor */
         gifx = 1;
     }
     static int pace10, gevery, prep;
@@ -5698,8 +5699,10 @@ static esp_err_t h_debug_dial(httpd_req_t *req)
     stage_bench_spin(spin, sweep != 0, osc);
     orb_sched_bench(rate < 0 ? 0 : (uint32_t)rate, freeze != 0, gifx < 1 ? 1u : (uint32_t)gifx);
     orb_sched_bench_grid(pace10, gevery < 0 ? 0u : (uint32_t)gevery);
-    if (prep != gfx_prep_on()) gfx_prep_mode(prep);
-    display_set_idle_hook(prep ? gfx_prep_idle : NULL);
+    if (pace10 || gevery || prep) {
+        if (prep != gfx_prep_on()) gfx_prep_mode(prep);
+        display_set_idle_hook(prep ? gfx_prep_idle : NULL);
+    } else orb_sched_plan_restore();              /* no bench grid: the theme's own plan plays */
     if (settle) vTaskDelay(pdMS_TO_TICKS(settle));
     gfx_prep_stats_t pa, pb;
     gfx_prep_stats(&pa);

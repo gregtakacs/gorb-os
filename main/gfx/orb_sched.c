@@ -641,12 +641,58 @@ static volatile uint32_t s_bench_gif_applied;  /* GIF frames that reached the ca
 static volatile uint32_t s_bench_gif_every;    /* >0: a gear frame on every Nth tick, not its delay */
 static volatile int      s_bench_pace10;       /* >0: the beat is pace10/10 panel refreshes */
 static uint32_t          s_bench_tickc;
+/* §49.15: the theme's own plan, played by default. The editor bakes the gear bank at the
+ * plan's gear rate G (the delta bank's tempo; 8 is 7.5 on the grid) and names a sweep's hand
+ * grid H as its beat (tick_rate); a ticking dial's grid is G itself. Where G lands on every Nth
+ * frame of H and H is a 60 Hz grid rate, the beat is paced to H (60/H refreshes a frame), a gear
+ * frame lands on every Nth beat, and the frames between pre-paint the next gear frame when N is
+ * at least 2 and no carriage turns. Anything else — a bank-less dial, an older bake whose
+ * tempos do not land — keeps the rung ladder as before. The bench overrides all of it, and its
+ * reset returns here. Values in halves of a fps (7.5 = 15) so the grid stays integer. */
+static bool     s_plan_valid;
+static int      s_plan_pace10;
+static uint32_t s_plan_every;
+static bool     s_plan_prep;
+static bool     s_plan_live;                  /* the stage is on the glass: the plan may pace */
+static uint32_t s_plan_tickc;
+static void sched_plan_apply(void)
+{
+    const bool on = s_plan_live && !s_bench_pace10;
+    display_bench_pace(s_bench_pace10 ? s_bench_pace10 : on ? s_plan_pace10 : 0);
+    if (!s_bench_pace10 && !s_bench_gif_every) {
+        const int prep = on && s_plan_prep ? 1 : 0;
+        if (prep != gfx_prep_on()) gfx_prep_mode(prep);
+        display_set_idle_hook(prep ? gfx_prep_idle : NULL);
+    }
+}
+static void sched_plan_from_theme(void)
+{
+    s_plan_valid = true; s_plan_pace10 = 0; s_plan_every = 0; s_plan_prep = false; s_plan_tickc = 0;
+    const uint32_t gt = orb_bg_gif_mode() ? orb_bg_gif_tick_ms() : 0;
+    if (gt) {
+        const int g2r = (int)((2000u + gt / 2) / gt);                     /* twice the gear rate */
+        const int g2 = g2r == 16 ? 15 : g2r;                               /* 8 fps bakes as 7.5 */
+        const int tr = (int)clk_theme.tick_rate;
+        const int h2 = clk_theme.second_sweep && tr ? (tr == 8 ? 15 : tr * 2) : g2;
+        if (g2 > 0 && h2 > 0 && 120 % h2 == 0 && h2 % g2 == 0) {
+            s_plan_pace10 = 1200 / h2;                                     /* 600 / H */
+            s_plan_every = (uint32_t)(h2 / g2);
+            s_plan_prep = s_plan_every >= 2 && !clk_theme.tourbillon_n;
+            ESP_LOGI(TAG, "plan: gears %d.%d on %d.%d fps (%u scans a frame, a gear frame every %u%s)",
+                     g2 / 2, g2 % 2 ? 5 : 0, h2 / 2, h2 % 2 ? 5 : 0, (unsigned)(s_plan_pace10 / 10),
+                     (unsigned)s_plan_every, s_plan_prep ? ", pre-painted" : "");
+        }
+    }
+    sched_plan_apply();
+}
+void orb_sched_plan_restore(void) { s_plan_valid = false; sched_plan_from_theme(); }
+
 void orb_sched_bench_grid(int pace10, uint32_t gif_every)
 {
     s_bench_pace10 = pace10 < 0 ? 0 : pace10;
     s_bench_gif_every = gif_every;
     s_bench_tickc = 0;
-    display_bench_pace(s_bench_pace10);
+    display_bench_pace(s_bench_pace10 ? s_bench_pace10 : s_plan_live ? s_plan_pace10 : 0);
 }
 uint32_t orb_sched_bench_gif_frames(void) { return s_bench_gif_applied; }
 void orb_sched_bench(uint32_t rate_fps, bool freeze, uint32_t gif_x)
@@ -660,10 +706,12 @@ void orb_sched_bench(uint32_t rate_fps, bool freeze, uint32_t gif_x)
 static uint32_t sched_tick_period_ms(void)
 {
 #if CONFIG_ORB_DEBUG_HTTP
+    if (!s_plan_valid) sched_plan_from_theme();
     /* A paced beat asks a hair under its frame time: the present waits for the exact
      * edge, so a tick that lands early costs nothing and one that lands late is a miss. */
-    if (s_bench_pace10 && display_te_period_us()) {
-        const uint32_t ms = (uint32_t)((uint64_t)s_bench_pace10 * display_te_period_us() / 10000u);
+    const int pace10 = s_bench_pace10 ? s_bench_pace10 : s_plan_live ? s_plan_pace10 : 0;
+    if (pace10 && display_te_period_us()) {
+        const uint32_t ms = (uint32_t)((uint64_t)pace10 * display_te_period_us() / 10000u);
         return ms > 2 ? ms - 1 : 1;
     }
     if (s_bench_rate_fps) return 1000u / s_bench_rate_fps;
@@ -1063,6 +1111,7 @@ static void tick_timer_cb(lv_timer_t *timer)
         bool gif_go = (int32_t)(now - s_gif_due) >= 0;
 #if CONFIG_ORB_DEBUG_HTTP
         if (s_bench_gif_every) gif_go = (s_bench_tickc++ % s_bench_gif_every) == 0;
+        else if (s_plan_live && s_plan_every && !s_bench_pace10) gif_go = (s_plan_tickc++ % s_plan_every) == 0;
         if (s_bench_freeze) gif_go = false;
 #endif
         if (gif_go) {
@@ -1170,11 +1219,19 @@ void orb_sched_set_running(bool on) { s_running = on; }
 
 void orb_sched_resume(void)
 {
+#if CONFIG_ORB_DEBUG_HTTP
+    s_plan_live = true;                   /* the dial is back: its plan paces again */
+    if (s_plan_valid) sched_plan_apply();
+#endif
     if (s_tick_timer) lv_timer_resume(s_tick_timer);
 }
 
 void orb_sched_pause(void)
 {
+#if CONFIG_ORB_DEBUG_HTTP
+    s_plan_live = false;                  /* nothing else on the glass is paced by the dial's plan */
+    sched_plan_apply();
+#endif
     if (s_tick_timer) lv_timer_pause(s_tick_timer);
 }
 
@@ -1193,6 +1250,9 @@ void orb_sched_reset_fps(void)
     s_fps_t0 = lv_tick_get();
     s_fps_ticks = 0;
     s_floor_seeded = false;         /* the theme's bank class may have changed: re-seed */
+#if CONFIG_ORB_DEBUG_HTTP
+    s_plan_valid = false;           /* and its plan: derived again on the first beat */
+#endif
     s_probe_wait_ms = ORB_SCHED_PROBE_WAIT_MS;   /* a new dial earns its own backoff */
     s_last_probe_ms = 0;
     s_demote_run = 0;

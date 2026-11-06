@@ -173,6 +173,9 @@ uint32_t orb_sched_bench_gif_frames(void);   /* running count of GIF frames appl
  * presents each frame on that exact edge; gif_every > 0 lands a gear frame on every Nth
  * tick instead of at its baked delay. 0/0 = the shipped beat. */
 void orb_sched_bench_grid(int pace10, uint32_t gif_every);
+/* §49.15: re-derive the live theme's plan (pace, gear every-N, pre-paint) and play it; the
+ * bench's reset calls it so a bench run leaves the dial on its shipped behaviour. */
+void orb_sched_plan_restore(void);
 #endif
 /* Re-anchor the gif due clock and the beat ladder to now after a park; re-zero
  * the per-second report's baselines. Two calls, in the shipped order, so the

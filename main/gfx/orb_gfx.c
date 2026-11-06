@@ -14,6 +14,7 @@
 #include "orb_gfx.h"
 
 #include <math.h>
+#include "esp_attr.h"           /* EXT_RAM_BSS_ATTR: pre-paint's zone tables */
 #include <string.h>
 
 #include "esp_log.h"
@@ -681,7 +682,7 @@ typedef struct {
     gfx_spans_t sp;
 } spc_t;
 
-static volatile int  s_bx_mode;
+static volatile int  s_bx_mode = 1;     /* §49.15: ink spans are the shipped compositor; the bench may turn them off */
 static volatile bool s_bx_noglass;
 static ink_t   *s_ink;
 static spc_t   *s_spc;
@@ -920,6 +921,8 @@ static void paint_spanned(const gfx_paint_ctx_t *pc, int32_t y, int32_t xa, int3
 /* ---- pre-paint (orb_gfx.h, plan §49.8) ------------------------------------- */
 #define PP_JOBS 32
 #define PP_RECTS 8
+#define PP_FAST_MAX 8                 /* separate live spans a row: the seconds hands and their twins */
+#define PP_FAST_GAP 8                 /* px: closer spans merge into one live pass */
 typedef struct {
     const uint8_t *alp;
     int32_t ang, posx, posy, bx1, by1, bx2, by2;
@@ -934,7 +937,13 @@ static uint32_t  s_pp_gen;                            /* bumps on every invalida
 static ppkey_t   s_pp_key[PP_JOBS];
 static int       s_pp_nj = -1;
 static bool      s_pp_fast[PP_JOBS];
-static int       s_pp_low;
+static int       s_pp_low;                            /* the lowest fast job            */
+/* §49.15: each fast job's zone, the disc its ink sweeps (pivot + farthest corner). The planes
+ * cut at the lowest fast job whose zone covers a pixel, not the lowest anywhere: Modern's
+ * sub-dial seconds (order 2) under its hour and minute hands had dropped them out of PB over
+ * the whole dial, so every frame repainted them live wherever the centre seconds crossed. */
+EXT_RAM_BSS_ATTR static int16_t s_pz_cx[PP_JOBS], s_pz_cy[PP_JOBS], s_pz_r[PP_JOBS];
+EXT_RAM_BSS_ATTR static bool    s_pz_full[PP_JOBS];   /* a fast job whose pivot moves  */
 static const gfx_paint_ctx_t *s_pp_jc;                /* the last commit's job list    */
 static int       s_pp_jn;
 static const uint16_t *s_pp_canvas;
@@ -1026,6 +1035,8 @@ void gfx_prep_mode(int mode)
     s_pp_nx_frame = -1;
     s_pp_land_pending = false;
     memset(&s_pps, 0, sizeof s_pps);
+    memset(s_pz_r, 0, sizeof s_pz_r);
+    memset(s_pz_full, 0, sizeof s_pz_full);
     pp_stale_clear_all();
     if (s_pp_mode && !s_pf) {
         const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H * 2;
@@ -1065,6 +1076,64 @@ static void pp_classify(int nj, const gfx_paint_ctx_t *jc)
     for (int i = 0; i < nj; i++) if (s_pp_fast[i]) { s_pp_low = i; break; }
 }
 
+/* The fast jobs' zones for this job list; true when any differs from the planes' (they are
+ * then rebuilt whole). A fast job whose pivot moves (a slide) takes the whole panel for good. */
+static bool pp_zones(int nj, const gfx_paint_ctx_t *jc)
+{
+    bool diff = false;
+    for (int i = 0; i < nj && i < PP_JOBS; i++) {
+        int16_t cx = 0, cy = 0, r = 0;
+        if (s_pp_fast[i]) {
+            const gfx_paint_ctx_t *pc = &jc[i];
+            cx = (int16_t)(pc->posx + pc->pvx);
+            cy = (int16_t)(pc->posy + pc->pvy);
+            if (pc->drum || (s_pz_r[i] && (s_pz_cx[i] != cx || s_pz_cy[i] != cy))) s_pz_full[i] = true;
+            if (s_pz_full[i]) { cx = CLK_SCR_W / 2; cy = CLK_SCR_H / 2; r = CLK_SCR_W + CLK_SCR_H; }
+            else {
+                const int32_t dx = pc->pvx > (int32_t)pc->w - pc->pvx ? pc->pvx : (int32_t)pc->w - pc->pvx;
+                const int32_t dy = pc->pvy > (int32_t)pc->h - pc->pvy ? pc->pvy : (int32_t)pc->h - pc->pvy;
+                r = (int16_t)(sqrtf((float)(dx * dx + dy * dy)) + 3.0f);   /* + the bilinear tap and spans' pad */
+            }
+        }
+        if (cx != s_pz_cx[i] || cy != s_pz_cy[i] || r != s_pz_r[i]) diff = true;
+        s_pz_cx[i] = cx; s_pz_cy[i] = cy; s_pz_r[i] = r;
+    }
+    return diff;
+}
+
+/* [a, b] of row y cut where the planes' cut changes: segment k is [sx[k], sx[k + 1] - 1]
+ * with every job under lo[k] in PB (lo = the job count where no zone reaches). */
+#define PP_SEG_MAX (2 * PP_JOBS + 2)    /* every zone's two edges: the cut is a function of the pixel alone */
+static int pp_segs(int32_t y, int32_t a, int32_t b, int32_t *sx, int *lo)
+{
+    /* off the paint tasks' stacks and out of internal RAM; serialised as s_pp_row is */
+    EXT_RAM_BSS_ATTR static int32_t pt[PP_SEG_MAX], c0[PP_JOBS], c1[PP_JOBS];
+    EXT_RAM_BSS_ATTR static int zi[PP_JOBS];
+    int np = 0, nz = 0;
+    pt[np++] = a; pt[np++] = b + 1;
+    for (int i = s_pp_low; i < s_pp_jn && i < PP_JOBS; i++) {
+        if (!s_pp_fast[i] || !s_pz_r[i]) continue;
+        const int32_t dy = y - s_pz_cy[i], r = s_pz_r[i];
+        if (dy < -r || dy > r) continue;
+        const int32_t hw = (int32_t)sqrtf((float)(r * r - dy * dy)) + 1;
+        c0[nz] = s_pz_cx[i] - hw; c1[nz] = s_pz_cx[i] + hw; zi[nz] = i; nz++;
+        if (c0[nz - 1] > a && c0[nz - 1] <= b) pt[np++] = c0[nz - 1];
+        if (c1[nz - 1] + 1 > a && c1[nz - 1] + 1 <= b) pt[np++] = c1[nz - 1] + 1;
+    }
+    for (int i = 1; i < np; i++) for (int k = i; k > 0 && pt[k - 1] > pt[k]; k--) { int32_t t = pt[k]; pt[k] = pt[k - 1]; pt[k - 1] = t; }
+    int n = 0;
+    for (int k = 0; k + 1 < np; k++) {
+        if (pt[k] >= pt[k + 1]) continue;
+        int l = s_pp_jn;
+        for (int z = 0; z < nz; z++)
+            if (pt[k] >= c0[z] && pt[k] <= c1[z] && zi[z] < l) l = zi[z];
+        if (n && lo[n - 1] == l) continue;              /* same cut: one segment */
+        sx[n] = pt[k]; lo[n] = l; n++;
+    }
+    sx[n] = b + 1;
+    return n;
+}
+
 /* A job's paint over [a, b] of row y, clipped to its spans when it has them. */
 static void pp_paint(const gfx_paint_ctx_t *pc, int32_t y, int32_t a, int32_t b, uint16_t *row)
 {
@@ -1092,10 +1161,18 @@ static void pp_build_row(int32_t y, int32_t a, int32_t b, uint16_t *pb, uint16_t
         const uint16_t *src = o->src + (size_t)(y - o->y) * o->w - o->x;
         for (int32_t x = xa; x <= xb; x++) { const uint16_t v = src[x]; s_pp_row[x] = (uint16_t)((v >> 8) | (v << 8)); }
     }
-    for (int i = 0; i < s_pp_low; i++) pp_paint(&s_pp_jc[i], y, a, b, s_pp_row);
-    memcpy(pb + (size_t)y * CLK_SCR_W + a, &s_pp_row[a], (size_t)(b - a + 1) * 2);
-    for (int i = s_pp_low; i < s_pp_jn; i++) if (!s_pp_fast[i]) pp_paint(&s_pp_jc[i], y, a, b, s_pp_row);
-    memcpy(pf + (size_t)y * CLK_SCR_W + a, &s_pp_row[a], (size_t)(b - a + 1) * 2);
+    /* PB: the slow layers under each stretch's cut; PF: every slow layer. A fast job under
+     * a cut never has ink there (its zone does not reach), so it is left out of both. */
+    EXT_RAM_BSS_ATTR static int32_t sx[PP_SEG_MAX + 1];
+    EXT_RAM_BSS_ATTR static int lo[PP_SEG_MAX];
+    const int ns = pp_segs(y, a, b, sx, lo);
+    for (int k = 0; k < ns; k++) {
+        const int32_t sa = sx[k], sb = sx[k + 1] - 1;
+        for (int i = 0; i < lo[k]; i++) if (!s_pp_fast[i]) pp_paint(&s_pp_jc[i], y, sa, sb, s_pp_row);
+        memcpy(pb + (size_t)y * CLK_SCR_W + sa, &s_pp_row[sa], (size_t)(sb - sa + 1) * 2);
+        for (int i = lo[k]; i < s_pp_jn; i++) if (!s_pp_fast[i]) pp_paint(&s_pp_jc[i], y, sa, sb, s_pp_row);
+        memcpy(pf + (size_t)y * CLK_SCR_W + sa, &s_pp_row[sa], (size_t)(sb - sa + 1) * 2);
+    }
 }
 
 static void pp_rebuild_box(int32_t x0, int32_t y0, int32_t x1, int32_t y1)
@@ -1176,9 +1253,10 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
 {
     s_pp_jc = jc; s_pp_jn = nj; s_pp_canvas = canvas;
     pp_classify(nj, jc);
+    const bool zones = pp_zones(nj, jc);
     /* Slow jobs that moved, appeared or vanished: their old and new boxes are rebuilt now,
      * and anything built ahead against the old poses is void. */
-    bool changed = !s_pp_valid || nj != s_pp_nj;
+    bool changed = !s_pp_valid || nj != s_pp_nj || zones;
     if (!changed) {
         for (int i = 0; i < nj; i++) {
             if (s_pp_fast[i]) continue;
@@ -1256,22 +1334,48 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
         uint16_t *band = s_band[0];
         pp_row_src(band, s_pf, s_pfn, y, xa, xb);
         s_pps.copy_px += (uint64_t)(xb - xa + 1);
-        /* The fast spans on this row, inside the restored extent: live from PB upward. */
-        int32_t f0 = CLK_SCR_W, f1 = -1;
+        /* The fast spans on this row, inside the restored extent: live from PB upward, each
+         * on its own. One union across two seconds hands (Modern's centre and sub-dial pair,
+         * §49.15) repainted every slow layer between them live, every frame; spans that touch
+         * merge, so a hand and its shadow twin stay one pass. */
+        int32_t fa[PP_FAST_MAX], fb_[PP_FAST_MAX];
+        int nf = 0;
         for (int i = s_pp_low; i < nj; i++) {
             if (!s_pp_fast[i]) continue;
             const gfx_spans_t *sp = (i < 32) ? bsp[i] : NULL;
             int32_t a, b;
             if (sp) { if (y < sp->y0 || y > sp->y1) continue; a = sp->x0[y]; b = sp->x1[y]; }
             else { if (y < jc[i].by1 || y > jc[i].by2) continue; a = jc[i].bx1; b = jc[i].bx2; }
-            if (a < f0) f0 = a;
-            if (b > f1) f1 = b;
+            if (a < xa) a = xa;
+            if (b > xb) b = xb;
+            if (a > b) continue;
+            int k = 0;
+            while (k < nf && (b + PP_FAST_GAP < fa[k] || a > fb_[k] + PP_FAST_GAP)) k++;
+            if (k < nf) {                                   /* touches span k: grow it */
+                if (a < fa[k]) fa[k] = a;
+                if (b > fb_[k]) fb_[k] = b;
+            } else if (nf < PP_FAST_MAX) { fa[nf] = a; fb_[nf] = b; nf++; }
+            else {                                          /* out of slots: widen the last */
+                if (a < fa[nf - 1]) fa[nf - 1] = a;
+                if (b > fb_[nf - 1]) fb_[nf - 1] = b;
+            }
         }
-        if (f0 < xa) f0 = xa;
-        if (f1 > xb) f1 = xb;
-        if (f0 <= f1) {
+        /* a grown span may now touch another: fold until none do */
+        for (int p = 0; p < nf; p++)
+            for (int q = p + 1; q < nf; q++)
+                if (!(fb_[q] + PP_FAST_GAP < fa[p] || fa[q] > fb_[p] + PP_FAST_GAP)) {
+                    if (fa[q] < fa[p]) fa[p] = fa[q];
+                    if (fb_[q] > fb_[p]) fb_[p] = fb_[q];
+                    fa[q] = fa[nf - 1]; fb_[q] = fb_[nf - 1]; nf--; q = p;
+                }
+        for (int s = 0; s < nf; s++) {
+            const int32_t f0 = fa[s], f1 = fb_[s];
             pp_row_src(band, s_pb, s_pbn, y, f0, f1);
-            for (int i = s_pp_low; i < nj; i++) pp_paint(&jc[i], y, f0, f1, band);
+            EXT_RAM_BSS_ATTR static int32_t sx[PP_SEG_MAX + 1];
+            EXT_RAM_BSS_ATTR static int lo[PP_SEG_MAX];
+            const int ns = pp_segs(y, f0, f1, sx, lo);
+            for (int k = 0; k < ns; k++)
+                for (int i = lo[k]; i < nj; i++) pp_paint(&jc[i], y, sx[k], sx[k + 1] - 1, band);
             s_pps.live_px += (uint64_t)(f1 - f0 + 1);
         }
         if (s_st0[y] <= s_st1[y]) {

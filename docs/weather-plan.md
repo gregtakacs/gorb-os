@@ -388,7 +388,9 @@ bake rasterises them into the theme's sprites. The orb never draws an icon itsel
 
 Scope and Blueprint 1.57 MB, Brass 1.65, Paper 1.69, Station 1.70, Celestial 1.73. The bake
 check gates at 1.75 MB: the 8 MB pool less skeleton (5.07 MB) and modern (1.34 MB) leaves
-about 1.95 MB. The plate (424 KB), the figures font (258–328 KB) and the large icon
+about 1.95 MB. Since OS v1.2.12 (app-platform-plan.md §52: coverage fonts, a disc plate)
+Scope re-bakes at 1.19 MB, and skeleton and modern at 3.51 and 0.96, so the pool keeps
+about 2.3 MB free beside the three shelf themes; the gate is unchanged. The plate (424 KB), the figures font (258–328 KB) and the large icon
 (151 KB) are most of it. A **figures font** (a short charset, the digits and the degree
 sign) would save about 250 KB but is a format change: `orb_glyph_next` falls back to glyph
 31, past the end of any font shorter than 32, so the reader, `theme_schema` and the bakers

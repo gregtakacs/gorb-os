@@ -12,6 +12,7 @@
  * render it wrong, and the golden-pair test in tools/host_sd_test.py that
  * projects the fixture through the Python and reads it back through this C.
  */
+#include "orb_disc.h"   /* a preview stored as its disc */
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -1174,6 +1175,18 @@ static orb_asset_ans_t read_one_plane(int fd, const orb_bundle_sec_t *sec,
         return ORB_ASSET_ROOM;
     }
 
+    /* OS v1.2.12: a preview stored as its disc is read into the head of the square's
+     * buffer and expanded where it lies, so every caller still gets the square (corners
+     * black) it sized by the probe. */
+    const bool disc = cls == ORB_ASSET_PREVIEW && e.plane_w == e.plane_h &&
+                      e.size == orb_disc_px(e.plane_w) * 2u;
+    if (disc && (uint64_t)e.plane_w * e.plane_h * 2u > cap) {
+        if (why && whysz) snprintf(why, whysz,
+            "the plane is %lux%lu (%lu B of RGB565) and the buffer holds %lu B",
+            (unsigned long)e.plane_w, (unsigned long)e.plane_h,
+            (unsigned long)(e.plane_w * e.plane_h * 2u), (unsigned long)cap);
+        return ORB_ASSET_ROOM;
+    }
     size_t pos = sec->art_off + e.off;
     const ssize_t got = rd_at(fd, &pos, buf, e.size);
     if (got != (ssize_t)e.size) {
@@ -1183,6 +1196,7 @@ static orb_asset_ans_t read_one_plane(int fd, const orb_bundle_sec_t *sec,
             "the plane runs past the end of the file", whysz);
         return ORB_ASSET_NO_SLOT;
     }
+    if (disc) orb_disc_expand_inplace(buf, e.plane_w);
     return ORB_ASSET_OK;
 }
 

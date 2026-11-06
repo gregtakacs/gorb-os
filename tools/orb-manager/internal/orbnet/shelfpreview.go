@@ -140,19 +140,65 @@ func planeInBlob(body, blob []byte, artBase uint32) []byte {
 			// buffer, so a non-square bake is refused at the door). A masked row carries
 			// a third stride the class never bakes; read_one_plane refuses it with
 			// ORB_ASSET_CLASS, and so does this reader — nil, the quiet answer.
-			if w == 0 || w != h || size != w*h*2 {
+			// OS v1.2.12: a preview is stored as its disc (main/art/orb_disc.h), which
+			// this reader lays back out as the square the wire carries, corners black.
+			disc := w != 0 && w == h && size == discPx(w)*2
+			if w == 0 || w != h || (size != w*h*2 && !disc) {
 				continue
 			}
 			start := int(artBase) + int(off)
 			if start < 0 || start+int(size) > len(body) {
 				return nil
 			}
-			out := make([]byte, 4+int(size))
+			out := make([]byte, 4+int(w*h*2))
 			binary.LittleEndian.PutUint16(out[0:], uint16(w))
 			binary.LittleEndian.PutUint16(out[2:], uint16(h))
-			copy(out[4:], body[start:start+int(size)])
+			if disc {
+				discExpand(body[start:start+int(size)], out[4:], w)
+			} else {
+				copy(out[4:], body[start:start+int(size)])
+			}
 			return out
 		}
 	}
 	return nil
+}
+
+// discSpan is orb_disc_span_n (main/art/orb_disc.h): row y's kept span, x0..x1, of a
+// square of side `side`, the pixels whose centres lie within side/2 + 1 of the centre.
+// The rule is integer, so this reader, the bakers and the orb derive the same spans.
+func discSpan(side, y uint32) (uint32, uint32) {
+	r := int64(side)/2 + 1
+	dy := 2*int64(y) + 1 - int64(side)
+	room := 4*r*r - dy*dy
+	x := uint32(0)
+	for x < side/2 {
+		dx := 2*int64(x) + 1 - int64(side)
+		if dx*dx <= room {
+			break
+		}
+		x++
+	}
+	return x, side - 1 - x
+}
+
+// discPx is the pixels a disc of side `side` keeps.
+func discPx(side uint32) uint32 {
+	n := uint32(0)
+	for y := uint32(0); y < side; y++ {
+		x0, x1 := discSpan(side, y)
+		n += x1 - x0 + 1
+	}
+	return n
+}
+
+// discExpand lays an RGB565 disc out as its square (stride side*2 B), corners black.
+func discExpand(disc, square []byte, side uint32) {
+	at := 0
+	for y := uint32(0); y < side; y++ {
+		x0, x1 := discSpan(side, y)
+		n := int(x1-x0+1) * 2
+		copy(square[int(y*side+x0)*2:], disc[at:at+n])
+		at += n
+	}
 }

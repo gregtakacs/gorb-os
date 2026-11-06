@@ -7,6 +7,7 @@
  * reboots), and orb_theme stops every voice before it remaps, so the pointer handed
  * to the engine outlives the voice. See orb_sound.h for the contract. */
 #include "orb_sound.h"
+#include "orb_adpcm.h"
 
 #include "art_bank.h"
 #include "esp_timer.h"
@@ -29,9 +30,12 @@ int orb_sound_app_play(const void *owner, const char *slug, uint16_t slot,
         return ESP_ERR_NOT_FOUND;
     /* The clock's projection refuses an odd plane at the door; another app's section
      * has no such reader, so the rule is held here, where the load would fault. */
-    if (e.plane_h != 1 || e.size != e.plane_w * 2u || ((bank_off + e.off) & 1u))
+    const uint32_t want = e.src == ORB_SOUND_ENC_ADPCM ? orb_adpcm_bytes(e.plane_w)
+                        : e.src == ORB_SOUND_ENC_PCM16 ? e.plane_w * 2u : 0u;
+    if (e.plane_h != 1 || !want || e.size != want ||
+        (e.src == ORB_SOUND_ENC_PCM16 && ((bank_off + e.off) & 1u)))
         return ESP_ERR_INVALID_SIZE;
-    const int16_t *pcm = (const int16_t *)(const void *)(base + bank_off + e.off);
+    const void *clip = base + bank_off + e.off;
     const int64_t now = esp_timer_get_time();
     int64_t anchor = 0;
     if (flags & ORB_SOUND_ANCHORED) {
@@ -39,6 +43,6 @@ int orb_sound_app_play(const void *owner, const char *slug, uint16_t slot,
         orb_time_now(&sec_now, &frac, &synced);
         anchor = now - (int64_t)(frac * 1e6);
     }
-    return orb_sound_play_owned(owner, pcm, e.plane_w, ORB_SOUND_GAIN_1, flags,
-                                delay_ms ? now + (int64_t)delay_ms * 1000 : 0, anchor);
+    return orb_sound_play_enc(owner, clip, e.plane_w, e.src, ORB_SOUND_GAIN_1, flags,
+                              delay_ms ? now + (int64_t)delay_ms * 1000 : 0, anchor);
 }

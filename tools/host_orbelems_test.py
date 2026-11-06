@@ -252,6 +252,7 @@ def compile_driver(tmp, src_text=None, tag="golden"):
     cc = subprocess.run(
         ["gcc", "-std=gnu11", "-O1", "-Wall", "-Wextra", "-Werror", "-Wformat=2",
          "-I", shim, "-I", os.path.join(ROOT, "main", "art"),
+         "-I", os.path.join(ROOT, "main", "audio"),   # orb_adpcm.h
          "-o", binp, e_src, Bundle_C, harness, "-lz"],
         capture_output=True, text=True)
     if cc.returncode != 0:

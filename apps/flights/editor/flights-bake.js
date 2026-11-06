@@ -799,9 +799,11 @@
     }
     var W = d.words, Z = sizes(d), Lay = layout(d);
     for (var fi = 0; fi < FONTS.length; fi++) {
-      var tone = FONTS[fi], f = await font(W.face, Z[tone], W[tone], tone === 'accent' ? W.accent2 : null);
-      S.rowFrames({ n: S.id(), class: TEXT, slot: fi, x: 0, y: 0, w: f.w, h: f.h, order: 0, n_frames: f.glyphs.length,
-        pivot_x: Math.min(f.space, f.w), pivot_y: f.track }, f.glyphs.map(plane), true, false);
+      // a font is its glyphs' coverage, coloured on the orb (top, and the accent's foot);
+      // tones of one size share one set of glyphs
+      var tone = FONTS[fi], foot = tone === 'accent' ? W.accent2 : null, f = await font(W.face, Z[tone], '#FFFFFF', null);
+      S.font({ n: S.id(), class: TEXT, slot: fi, x: 0, y: 0, w: f.w, h: f.h, order: 0,
+        pivot_x: Math.min(f.space, f.w), pivot_y: f.track }, f.glyphs.map(plane), W[tone], foot);
     }
     for (var lab of LABELS) {
       var L = Lay[lab.name], b = L.box, slot = lab.name === 'card' && L.clear ? CARD_CLEAR_SLOT : lab.slot;

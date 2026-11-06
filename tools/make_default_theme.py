@@ -138,9 +138,10 @@ def check(path):
         return _fail("a preview of %d px on a %d px panel is past the half-res buffer the "
                      "picker reads into" % (p["w"], PANEL_PX)), ""
     spr = blobs[0]["sprites"][p["frame0"]]
-    want = p["w"] * p["h"] * 2
+    # OS v1.2.12: a preview is stored as its disc (orb_disc.h), so the picker shows it round
+    want = ts.disc_bytes(p["w"])
     if spr["size"] != want:
-        return _fail("the preview plane costs %d B and RGB565 at %dx%d costs %d"
+        return _fail("the preview plane costs %d B and its RGB565 disc at %dx%d costs %d"
                      % (spr["size"], p["w"], p["h"], want)), ""
     # Order, not just extents: a plane inserted ahead of authored rows shifts every frame0
     # after it, and the checks above would still pass on the shifted numbers.

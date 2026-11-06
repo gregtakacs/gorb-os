@@ -367,7 +367,9 @@ const baked = B.bakeClock3({ name: 'Bench Bake', serial: 20261020, bakedMs: 1730
   // word, and the walk below reads it back so the two can never drift.
   scalars: { shadow_on: 1, shadow_dx: 2, shadow_dy: 2 } });
 const walk = B.verifyBundle3(baked.bytes).sections[0];
-ok(baked.meter.artSize === 466 * 466 * 2 + 40 * 200 * 3 * 2,
+// OS v1.2.12: the still plate is stored as the panel's disc (orb_disc.h), colour-only
+const DISC = B.discBytes();
+ok(baked.meter.artSize === DISC + 40 * 200 * 3 * 2,
    'the bank costs the plate colour-only and every sprite its alpha stride',
    baked.meter.artSize + ' B (w*h*2 then 2 w*h*3)');
 ok(walk.blob.elements.length === 3 && walk.blob.sprites.length === 3 &&
@@ -417,9 +419,9 @@ const walkA = B.verifyBundle3(bakedA.bytes).sections[0];
 ok(walkA.blob.elements[0].n_frames === 3 && walkA.blob.elements[0].frame0 === 0,
    'the animated plate projects as one row naming three contiguous planes',
    'n_frames ' + walkA.blob.elements[0].n_frames + ' frame0 ' + walkA.blob.elements[0].frame0);
-ok(walkA.blob.sprites[0].size === 466 * 466 * 2 && walkA.blob.sprites[1].size === 466 * 466 * 2 &&
+ok(walkA.blob.sprites[0].size === DISC && walkA.blob.sprites[1].size === 466 * 466 * 2 &&
    walkA.blob.sprites[2].size === 466 * 466 * 2,
-   'every keyframe costs the plate colour-only, alpha strides and all',
+   'every keyframe costs the plate colour-only, the first stored as the panel\u2019s disc',
    'rows 0-2: ' + walkA.blob.sprites.slice(0, 3).map(s => s.size).join('/'));
 // C1 rewrote this row as the CONTRACT (§4.2, §5.1), not the shipped output. The old
 // assertion read `bg_mode === 0 && gif_frames === 0` and called it "delta vocabularies
@@ -441,7 +443,7 @@ ok(walkA.blob.scalars.bg_loop === 1 && dRowA.n_frames === 3 &&
    (dRowA.flags & B.EF_DELTA_WRAP) !== 0,
    'the delta contract: every frame of an animated row carries a rect, §37 closes the loop, and the row names delay and parent',
    'n_frames ' + dRowA.n_frames + ' delay ' + dRowA.delay + ' rect_count ' + dRowA.rect_count + ' diffw ' + dRowA.diffw);
-ok(bakedA.meter.artSize === 466 * 466 * 2 * 4 + 40 * 200 * 3,
+ok(bakedA.meter.artSize === DISC + 466 * 466 * 2 * 3 + 40 * 200 * 3,
    'the bank is three keyframes, §37\u2019s full-plane closing delta, and the masked hand',
    bakedA.meter.artSize + ' B');
 // ---- 7b-i-pre. A preview plane rides the same section's art bank (theme-preview-plan §2).
@@ -464,10 +466,10 @@ ok(walkPrev.blob.elements.length === 4 && prevRow.class === 9 && prevRow.slot ==
    'the preview rides the last row, class 9 slot 0, one 232x232 plane',
    'class ' + prevRow.class + ' slot ' + prevRow.slot + ' n_frames ' + prevRow.n_frames);
 ok(prevRow.frame0 === walkPrev.blob.sprites.length - 1 &&
-   walkPrev.blob.sprites[prevRow.frame0].size === 232 * 232 * 2,
+   walkPrev.blob.sprites[prevRow.frame0].size === B.discBytes(232),   // OS v1.2.12: its disc
    'the row\\u2019s sprite is the bank\\u2019s last extent, and its size is the RGB565 2B/px the class rule prices',
    'frame0 ' + prevRow.frame0 + ' size ' + walkPrev.blob.sprites[prevRow.frame0].size);
-ok(bakedPrev.meter.artSize === baked.meter.artSize + 232 * 232 * 2,
+ok(bakedPrev.meter.artSize === baked.meter.artSize + B.discBytes(232),
    'the bank costs the same as the bake without a preview, plus one 2B/px plane at the end',
    bakedPrev.meter.artSize + ' B against ' + baked.meter.artSize + ' + 107,648');
 // A preview plane at panel size is refused: the picker reads one into a buffer sized for
@@ -898,7 +900,7 @@ ok(bank0.slot === 0 && bank1.slot === 1 && bank0.frame0 === 2 && bank1.frame0 ==
    walkK.blob.sprites.length === 93 && walkK.blob.sprites[2].size === 40 * 24 * 3 &&
    walkK.blob.sprites[92].size === 32 * 32 * 3,
    'the catalogue seats 31 + 60 masked planes contiguous behind the hand, every tile at w*h*3');
-ok(bakedK.meter.artSize === 466 * 466 * 2 + 40 * 200 * 3 + (40 * 24 * 3 * 31) + (32 * 32 * 3 * 60),
+ok(bakedK.meter.artSize === DISC + 40 * 200 * 3 + (40 * 24 * 3 * 31) + (32 * 32 * 3 * 60),
    'the bank sums to plate colour, one hand, and the comp tiles at stride',
    bakedK.meter.artSize + ' B');
 ok(walkK.rec.abi_min === 6 && walkK.rec.abi_max === 6 && B.parseBundle3(bakedK.bytes).abi === 6,
@@ -962,7 +964,7 @@ ok(auxRows[0].src === B.SOURCES.indexOf('second') && auxRows[0].span === 3600 &&
 ok(auxRows[1].span === 0 && auxRows[1].dx === 90 && auxRows[1].x === 155 && auxRows[1].end === 1,
    'D42: the slide is a travel of 90 px from its placement, the old zero folded into x',
    JSON.stringify([auxRows[1].span, auxRows[1].dx, auxRows[1].x, auxRows[1].end]));
-ok(bakedX.meter.artSize === 466 * 466 * 2 + 40 * 200 * 3 + (28 * 64 * 3) + (90 * 10 * 3),
+ok(bakedX.meter.artSize === DISC + 40 * 200 * 3 + (28 * 64 * 3) + (90 * 10 * 3),
    'the bank costs a pointer ONE masked plate, whatever its domain covers',
    bakedX.meter.artSize + ' B');
 // Sixty seconds on a sub-dial is one row now. The number the old model spent.
@@ -1049,9 +1051,9 @@ if (!hasGcc) {
      && /carriage\[\d\] 64x64 draws at \(200,200\)/.test(prBoth.stdout),
      'and the compiled dial projects a plate bank and a carriage row in one section',
      (prBoth.stdout || prBoth.stderr).trim().split('\\n')[0]);
-  ok(/row\[0\] ptr0 arm src=hour12 box 40x200 at \(233,233\) colour_off 434312 turn 3600 from 0/.test(pr.stdout),
+  ok(new RegExp('row\\[0\\] ptr0 arm src=hour12 box 40x200 at \\(233,233\\) colour_off ' + DISC + ' turn 3600 from 0').test(pr.stdout),
      'and seats the hour hand as row 0 at the element rect, the plate-colour size its offset',
-     (pr.stdout.match(/row\[0\].*434312.*/) || ['none'])[0]);
+     (pr.stdout.match(/row\[0\] ptr0.*/) || ['none'])[0]);
   // D42's shadow contract across the wire: the twin's centre is its row's centre plus
   // the light, and its arbour in its own art is the hand's centre less its draw point —
   // the composer's whole shadow placement in three numbers.
@@ -1061,7 +1063,7 @@ if (!hasGcc) {
   ok(/row\[1\] shadow centre \(255,425\) = row centre \(253,423\) \+ light \(2,2\), crop pivot \(18,188\)/.test(pr.stdout),
      'and the light offset survives the projection exactly as the composer encoded it',
      (pr.stdout.match(/row\[1\] shadow centre.*/) || ['none'])[0]);
-  ok(/plate bank: 2 extra keyframes at 434312, 868624/.test(pr.stdout),
+  ok(new RegExp('plate bank: 2 extra keyframes at ' + DISC + ', ' + (DISC + 466 * 466 * 2)).test(pr.stdout),
      'and the projection fills the bgAnim table with the keyframes\' own offsets',
      (pr.stdout.match(/plate bank.*/) || ['none'])[0]);
   ok(/carriage\[\d\] 64x64 draws at \(200,200\)/.test(pr.stdout) && /carriage: row \d+, 3 frames @ 12 fps/.test(pr.stdout),

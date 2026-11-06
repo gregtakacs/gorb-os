@@ -22,6 +22,7 @@ plane by the same even amount, which keeps the two scalars that hold bank offset
 WAVs must already be 22,050 Hz mono 16-bit: the composer's Sound tab resamples, and
 this tool refuses rather than guess.
 """
+import struct as _struct
 import argparse
 import os
 import sys
@@ -64,17 +65,18 @@ def strip_sounds(sec):
         _shift(sec, off + size, -size, i + 1, -1)
 
 
-def add_sounds(sec, sounds, pattern="none", check=True):
+def add_sounds(sec, sounds, pattern="none", check=True, compress=False):
     """sounds: list of dicts {slot, pcm (bytes, int16 LE), beat_chz=0, first_beat=0}.
     Replaces any sound the section already carries. `sec` is a mutable section dict:
     elements (list of row dicts), scalars (dict), sprites (list of dicts), art
     (bytearray). check=False is the suite's door for forging a table the device must
-    refuse; nothing that writes a theme passes it."""
+    refuse; nothing that writes a theme passes it. compress=True stores each clip the
+    way the baker does (theme_schema.sound_encode: ADPCM unless it falls under the floor)."""
     strip_sounds(sec)
     sounds = sorted(sounds, key=lambda s: ts.CLOCK_SOUND_SLOTS.index(s["slot"])
                     if isinstance(s["slot"], str) else s["slot"])
     head = bytearray()
-    rows = []
+    rows, encs = [], []
     v4 = bool(sec["sprites"]) and "diffx" in sec["sprites"][0]
     for k, s in enumerate(sounds):
         pcm = bytes(s["pcm"])
@@ -82,6 +84,10 @@ def add_sounds(sec, sounds, pattern="none", check=True):
             raise ValueError("sound %r: %d bytes is not a run of 16-bit samples"
                              % (s["slot"], len(pcm)))
         n = len(pcm) // 2
+        enc = ts.SOUND_ENC_PCM16
+        if compress:
+            enc, pcm = ts.sound_encode(list(_struct.unpack("<%dh" % n, pcm)))
+        encs.append(enc)
         sp = {"off": len(head), "size": len(pcm), "w": n, "h": 1}
         if v4:
             sp.update(diffx=0, diffy=0)
@@ -93,7 +99,7 @@ def add_sounds(sec, sounds, pattern="none", check=True):
     tag = max([int(e["n"]) for e in sec["elements"]] + [0]) + 1
     for k, s in enumerate(sounds):
         rec = ts.sound_row(s["slot"], k, pattern, s.get("beat_chz", 0),
-                           s.get("first_beat", 0), n=tag + k)
+                           s.get("first_beat", 0), n=tag + k, enc=encs[k])
         if v4:
             rec.setdefault("parent", ts.PARENT_NONE)
             rec.setdefault("delay", 0)

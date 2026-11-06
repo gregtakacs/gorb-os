@@ -284,7 +284,7 @@ func TestThemeStepIsPerApp(t *testing.T) {
 // orb_knob_dial (plan §51), and the clock v1.2.9 (its themes' gear plans play on that
 // release's scheduler).
 func TestShelfAppsCarryTheirOSFloor(t *testing.T) {
-	for slug, want := range map[string]string{"flights": "v1.2.11", "weather": "v1.2.11", "clock": "v1.2.9"} {
+	for slug, want := range map[string]string{"flights": "v1.2.12", "weather": "v1.2.12", "clock": "v1.2.12"} {
 		body, err := os.ReadFile(filepath.Join("apps", slug+".orbapp"))
 		if err != nil {
 			t.Fatalf("%s: %v", slug, err)

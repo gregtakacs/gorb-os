@@ -6940,3 +6940,57 @@ list, a press there opening settings, a turn on the clock, and a hold back out.
 **Owed:** the acceleration's two gaps and the spin gap, by hand on the knob; whether the
 clock should sit last in the list so a clockwise turn on it lands on the next app; the
 list's look (a text page today; §48's previews are the obvious next step).
+
+## 52 — Themes that fit: compressed sound, coverage fonts, disc plates — 2026-11-06
+
+**Owner, 2026-11-06.** The 8 MB `assets` pool held the three shelf themes with nothing to
+spare: Skeleton 5.07 MB, Scope 1.61, Modern 1.34 (7.99 MB). Almost everything was stored
+raw. The owner ruled all three cuts in, breaking older themes allowed.
+
+1. **Sound: blocked IMA ADPCM** (`main/audio/orb_adpcm.h`, a sound row's `src` 1). 256
+   samples a block, each decoding from its own 4-byte header, so the mixer reaches any
+   sample (an anchored loop's phase) by decoding one block into a per-voice cache. 132 B
+   per 256 samples against PCM16's 512. The bakers store a clip compressed only when the
+   round trip keeps 20 dB SNR (`ADPCM_MIN_SNR_DB`): Skeleton's chimes and strokes land
+   near 33 dB and compress; its sharp tick, which 4-bit ADPCM smears for its first few
+   samples (13 dB, and 15 at best with a look-ahead encoder and a per-block step search),
+   stays PCM16. PCM16 (`src` 0) stays legal.
+2. **Fonts: coverage alone, coloured live** (`orb_label.c`). A glyph is one byte a pixel;
+   the font row's `vmin`/`vmax` carry its top and foot colours (RGB565), so a fill is flat
+   or a vertical two-colour gradient. Fonts of one face and size share their glyph frames
+   (`stage3.font` finds the match), so Modern's four tone fonts are two glyph sets. The
+   only colour any editor put inside a glyph was Flights' two-colour accent gradient,
+   which the live gradient reproduces. RGB565A8 glyphs stay legal; a font is one form.
+3. **Plates: the panel's disc** (`main/art/orb_disc.h`). A still plate, or a delta bank's
+   keyframe, keeps only the pixels whose centres lie within 234 px of the panel's centre,
+   row spans derived from one integer rule by the bakers and the device alike (none
+   stored): 343,736 B against 434,312. The device expands it once per bind into a square
+   in PSRAM (424 KB), so every reader still addresses a square. Keyframe banks stay
+   square past their first frame.
+4. **The glass and the previews too** (owner, the same day: "I honestly never really liked
+   the gold surrounding around them"). The masked glass overlay is its colour disc then
+   its alpha disc, expanded at bind into a 651 KB RGB565A8 square (corners clear) that the
+   LVGL layer and the L4 glass row both read. A preview is the disc of its own side (radius
+   side/2 + 1), expanded in place by `orb_theme_preview_read`, so the dial's picker and
+   `/api/v1/sd/preview` hand out the square they always did, now round with black corners;
+   the hub's Go reader (`orbnet.discExpand`) does the same for library files, and its
+   thumbnails are round. The picker no longer shows a square of bezel around the face.
+
+**Measured** (the shelf re-baked, the same designs): Skeleton 3.35 MB, Scope 1.19, Modern
+0.94, **5.48 MB together, 2.51 MB freed (31%)**. On Gold (`v1.2.12+38e2b34-dirty`): all
+three render as before; Flights holds 21 fps on its 20 fps arm and Skeleton its 6; free
+PSRAM 5.27 MB; at the 15:00 strike the engine started the tick loop (PCM16) and the
+compressed chime and strokes, 3,433 mixer blocks without a snap.
+
+**Suites:** `host_adpcm_test.py` (the device decoder, the schema and the baker held to the
+same samples and bytes; the per-clip choice; 5 of 5 mutants), `host_disc_test.py` (spans,
+bytes and expansion three ways, a 232 px preview expanded in place, the masked glass;
+8 of 8), `host_label_test.py` (coverage fonts, flat and
+gradient; 16 of 16), and `host_clock3_test.py` (a compressed chime, a short ADPCM plane, a
+coverage font and its colour twin, two forms in one font, a disc plate and one a pixel
+short).
+
+**OS v1.2.12; clock v1.2.26, flights v1.3.1 and weather v1.1.1 name it as their floor.**
+Seen on Gold: Skeleton's glass draws as before, and the Themes page shows each preview
+round.
+

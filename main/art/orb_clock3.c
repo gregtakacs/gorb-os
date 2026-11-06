@@ -19,6 +19,8 @@
 #include <string.h>
 
 #include "orb_clock3.h"
+#include "orb_adpcm.h"     /* a compressed sound's plane size */
+#include "orb_disc.h"      /* a plate stored as the panel's disc */
 
 /* theme_schema.CLASS_NAMES, mirrored. orb_assets.h carries the same words behind
  * orb_asset_class_name[], and this file cannot reach it: that header pulls
@@ -581,6 +583,35 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         nrows++;
     }
 
+    /* ---- a font's glyphs are one form: every cell coverage (w*h) or every cell
+     * RGB565A8 (w*h*3), the cell the row's own w x h. The label reads the form off the
+     * first glyph and addresses the rest by it. ---- */
+    for (int k = 0; k < CLK_FONT_SLOTS; k++) {
+        if (at_font[k] < 0) continue;
+        orb_bundle_elem_t fe;
+        orb_bundle_elem_at(sec, (uint32_t)at_font[k], &fe);
+        if ((uint32_t)fe.frame0 + fe.n_frames > ns)
+            return reject("font %u's glyphs run past the catalogue", (unsigned)k);
+        const uint32_t px = (uint32_t)fe.w * fe.h;
+        orb_bundle_spr_t g0;
+        orb_bundle_spr_at(sec, fe.frame0, &g0);
+        if (g0.size != px && g0.size != px * 3u)
+            return reject("font %u's glyph 0 is %lu B: a %ux%u cell is %lu B of coverage or "
+                          "%lu B with colour", (unsigned)k, (unsigned long)g0.size,
+                          (unsigned)fe.w, (unsigned)fe.h, (unsigned long)px,
+                          (unsigned long)(px * 3u));
+        for (uint32_t gi = 1; gi < fe.n_frames; gi++) {
+            orb_bundle_spr_t gs;
+            orb_bundle_spr_at(sec, fe.frame0 + gi, &gs);
+            if (gs.size != g0.size || gs.w != fe.w || gs.h != fe.h)
+                return reject("font %u's glyph %lu is %lux%lu in %lu B where glyph 0 is "
+                              "%ux%u in %lu B: a font's cells are one shape", (unsigned)k,
+                              (unsigned long)gi, (unsigned long)gs.w, (unsigned long)gs.h,
+                              (unsigned long)gs.size, (unsigned)fe.w, (unsigned)fe.h,
+                              (unsigned long)g0.size);
+        }
+    }
+
     /* ---- theme-text-plan §2.2: every font a label names is one this table carries ---- */
     for (int slot = 0; slot < CLK_ROW_MAX; slot++) {
         if (at_aux[slot] < 0) continue;
@@ -824,6 +855,15 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
      * is computed from its own extent rather than believed. A bank this catalogue
      * does not account for whole is a bank this projection does not understand,
      * and the extents below would only be a guess about it. */
+    /* OS v1.2.12: the plate's first plane (the still plate, or a delta bank's
+     * keyframe) may be the panel's disc alone (orb_disc.h), every other plane square. */
+    const uint32_t disc_bytes = orb_disc_bytes();
+    int32_t over_f0 = -1;              /* the glass overlay's plane, when there is one */
+    if (at_plate[1] >= 0) {
+        orb_bundle_elem_t oe;
+        orb_bundle_elem_at(sec, (uint32_t)at_plate[1], &oe);
+        over_f0 = oe.frame0;
+    }
     uint64_t at = 0;
     for (uint32_t i = 0; i < ns; i++) {
         orb_bundle_spr_t sp;
@@ -838,17 +878,42 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
          * width IT claims, or the lie is a torn bank wearing a nameplate. */
         const int on_preview = prev0 != 0xFFFF &&
                                (uint32_t)i - (uint32_t)prev0 < (uint32_t)prevn;
-        /* A sound's plane is its PCM, two bytes a sample with no alpha stride: the
-         * class price orb_asset_slot_bytes gives SOUND, w samples by h 1. */
-        int on_sound = 0;
+        /* A sound's plane is its clip, w samples by h 1: two bytes a sample as PCM16,
+         * or ADPCM's blocks (orb_adpcm_bytes), as the row's encoding says. */
+        int on_sound = 0, snd_enc = 0;
         for (int k = 0; k < CLK_SND_SLOTS && !on_sound; k++) {
             if (at_sound[k] < 0) continue;
             orb_bundle_elem_t se;
             orb_bundle_elem_at(sec, (uint32_t)at_sound[k], &se);
             on_sound = se.frame0 == i;
+            snd_enc = se.src;
         }
-        const uint64_t want = PLATE_BYTES_T(sp.w, sp.h)
-                            + ((on_plate || on_preview || on_sound) ? 0 : (uint64_t)sp.w * sp.h);
+        uint64_t want = on_sound && snd_enc == CLK_SND_ENC_ADPCM
+                      ? (uint64_t)orb_adpcm_bytes(sp.w)
+                      : PLATE_BYTES_T(sp.w, sp.h)
+                        + ((on_plate || on_preview || on_sound) ? 0 : (uint64_t)sp.w * sp.h);
+        /* A glyph is its coverage alone (OS v1.2.12: one byte a pixel, coloured as the
+         * label draws, orb_label.h), or the older RGB565A8 cell. Shared glyph frames
+         * (two fonts of one face in two colours) are one window two rows name. */
+        for (int k = 0; k < CLK_FONT_SLOTS; k++) {
+            if (at_font[k] < 0) continue;
+            orb_bundle_elem_t fe;
+            orb_bundle_elem_at(sec, (uint32_t)at_font[k], &fe);
+            if (i >= fe.frame0 && i < (uint32_t)fe.frame0 + fe.n_frames &&
+                sp.size == (uint64_t)sp.w * sp.h) {
+                want = sp.size;
+                break;
+            }
+        }
+        if (i == plate.frame0 && sp.w == scr_w && sp.h == scr_h && sp.size == disc_bytes)
+            want = disc_bytes;
+        /* the glass overlay as a masked disc (colour, then alpha), and a preview as its
+         * own side's disc: the picker shows it round */
+        if (over_f0 >= 0 && i == (uint32_t)over_f0 && sp.w == scr_w && sp.h == scr_h &&
+            sp.size == (uint64_t)disc_bytes / 2u * 3u)
+            want = sp.size;
+        if (on_preview && sp.w == sp.h && sp.size == (uint64_t)orb_disc_px(sp.w) * 2u)
+            want = sp.size;
         if (sp.off != at)
             return reject("the sprite catalogue is not contiguous at row %u: it starts "
                           "at %lu, the previous plane ends at %lu",
@@ -863,6 +928,17 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     if (at != art)
         return reject("the catalogue accounts for %lu B of an art region of %u B",
                       (unsigned long)at, (unsigned)art);
+    {
+        orb_bundle_spr_t p0;
+        orb_bundle_spr_at(sec, plate.frame0, &p0);
+        t->plate_disc = p0.size == disc_bytes && p0.w == scr_w && p0.h == scr_h;
+        t->overlay_disc = 0;
+        if (over_f0 >= 0) {
+            orb_bundle_spr_t o0;
+            orb_bundle_spr_at(sec, (uint32_t)over_f0, &o0);
+            t->overlay_disc = o0.size == disc_bytes / 2u * 3u && o0.w == scr_w && o0.h == scr_h;
+        }
+    }
 
     /* Every row's plane: seated in the catalogue, and the size the row claims. A
      * table and a catalogue describing different layers would draw a torn sprite,
@@ -1199,8 +1275,10 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
      * the reason orb_clock3_parse gives. The plate and the keyframe are checked
      * against the panel rather than against a catalogue row because their size is
      * the panel's, which is the one extent a clock section cannot lie about. */
+    const uint64_t plate_bytes = t->plate_disc ? (uint64_t)orb_disc_bytes()
+                                               : PLATE_BYTES_T(scr_w, scr_h);
     if (t->plate_off % 2u ||
-        (uint64_t)t->plate_off + PLATE_BYTES_T(scr_w, scr_h) > (uint64_t)art)
+        (uint64_t)t->plate_off + plate_bytes > (uint64_t)art)
         return "the plate pixels lie outside the declared payload";
     for (uint32_t k = 0; k < io->out_n_rows; k++) {
         const clk_sprite_t *h = &io->rows[k].spr;
@@ -1209,7 +1287,8 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
             return "row pixels lie outside the declared payload";
     }
     if (t->overlay.w && t->overlay.h &&
-        (uint64_t)t->overlay.color_off + SPRITE_BYTES_T(&t->overlay) > art)
+        (uint64_t)t->overlay.color_off + (t->overlay_disc ? (uint64_t)orb_disc_bytes() / 2u * 3u
+                                                          : SPRITE_BYTES_T(&t->overlay)) > art)
         return "overlay pixels lie outside the declared payload";
     for (uint32_t f = 0; f < t->tourbillon_n; f++) {
         const clk_sprite_t *b = &t->tourbillon[f];
@@ -1225,7 +1304,7 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     }
     if (t->bg_mode == 1 &&
         (t->bg_key_off % 2u ||
-         (uint64_t)t->bg_key_off + PLATE_BYTES_T(scr_w, scr_h) > (uint64_t)art))
+         (uint64_t)t->bg_key_off + plate_bytes > (uint64_t)art))
         return "the keyframe pixels lie outside the declared payload";
 
     /* ---- the gif block, derived (§25.6), and the plate bank (§31) ----
@@ -1319,14 +1398,16 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         orb_bundle_elem_at(sec, (uint32_t)at_sound[slot], &e);
         orb_bundle_spr_t sp;
         orb_bundle_spr_at(sec, e.frame0, &sp);
-        if (e.src != CLK_SND_ENC_PCM16)
-            return reject("sound slot %u is encoding %u: this dial plays 16-bit PCM at "
-                          "%u Hz (encoding 0) and nothing else", (unsigned)slot,
+        if (e.src != CLK_SND_ENC_PCM16 && e.src != CLK_SND_ENC_ADPCM)
+            return reject("sound slot %u is encoding %u: this dial plays 16-bit PCM "
+                          "(encoding 0) or IMA ADPCM (encoding 1) at %u Hz", (unsigned)slot,
                           (unsigned)e.src, (unsigned)CLK_SND_RATE);
-        if (sp.h != 1u || sp.w < 2u || sp.size != sp.w * 2u)
-            return reject("sound slot %u's plane is %lux%lu in %lu B: a sound is w "
-                          "samples by 1, two bytes each", (unsigned)slot,
-                          (unsigned long)sp.w, (unsigned long)sp.h, (unsigned long)sp.size);
+        const uint32_t want = e.src == CLK_SND_ENC_ADPCM ? orb_adpcm_bytes(sp.w) : sp.w * 2u;
+        if (sp.h != 1u || sp.w < 2u || sp.size != want)
+            return reject("sound slot %u's plane is %lux%lu in %lu B: a sound in encoding "
+                          "%u is w samples by 1 in %lu B", (unsigned)slot,
+                          (unsigned long)sp.w, (unsigned long)sp.h, (unsigned long)sp.size,
+                          (unsigned)e.src, (unsigned long)want);
         if (sp.off & 1u)
             return reject("sound slot %u starts at odd offset %lu: its samples would "
                           "load unaligned", (unsigned)slot, (unsigned long)sp.off);
@@ -1375,6 +1456,7 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         o->beat_chz   = e.vmax;
         o->slot       = (uint8_t)slot;
         o->flags      = loop ? CLK_SND_F_LOOP : 0u;
+        o->enc        = (uint8_t)e.src;
     }
     if (pattern >= 0) {
         /* The strokes a pattern sounds must be in the theme, or the hour would be

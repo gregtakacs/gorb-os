@@ -91,7 +91,8 @@ button.danger:disabled{opacity:.45;cursor:not-allowed}
 /* The baked preview plane on each row: the ID photo the bake shipped, matted on
    black like the glass draws it. Hidden until the bytes actually unpack, so a
    theme with no preview reads as a text row and not as a broken picture. */
-.themelist canvas.pv{width:44px;height:44px;flex:0 0 44px;border-radius:8px;background:#000}
+/* OS v1.2.12: previews are stored as discs, so the thumbnail is round like the glass */
+.themelist canvas.pv{width:44px;height:44px;flex:0 0 44px;border-radius:50%;background:#000}
 .themelist span.pvq{width:44px;height:44px;flex:0 0 44px;border-radius:8px;background:#2a2f38;color:#9aa3b2;display:flex;align-items:center;justify-content:center;font-weight:700;cursor:pointer}
 .themelist span.pvq[hidden]{display:none}
 .themelist span.pvq.spin{cursor:progress}
@@ -128,7 +129,7 @@ body.editing{overflow:hidden}
 #mn-theme-editor-state:empty{display:none}
 #pvov{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:60;width:266px;background:#000;border:1px solid #3a4150;border-radius:12px;display:none;box-shadow:0 8px 40px #000}
 #pvov.on{display:block}
-#pvov canvas{display:block;width:264px;height:264px;border-radius:12px 12px 0 0;cursor:pointer}
+#pvov canvas{display:block;width:264px;height:264px;border-radius:50%;cursor:pointer}
 #pvov .spin{position:absolute;left:0;top:0;width:264px;height:264px;display:none;align-items:center;justify-content:center}
 #pvov.waiting .spin{display:flex}
 #pvov.waiting canvas{visibility:hidden}

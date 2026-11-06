@@ -5,14 +5,25 @@
 
 static const uint8_t *glyph(const orb_font_t *f, int gi)
 {
-    return f->glyphs + (uint32_t)gi * f->w * f->h * 3u;
+    return f->glyphs + (uint32_t)gi * f->w * f->h * (f->bpp == 1 ? 1u : 3u);
+}
+
+/* A coverage glyph's colour at cell row y: c0 at the top running to c1 at the foot. */
+static uint16_t row_colour(const orb_font_t *f, int y)
+{
+    if (f->c0 == f->c1 || f->h < 2) return f->c0;
+    const uint32_t t = (uint32_t)y * 256u / (uint32_t)(f->h - 1), u = 256u - t;
+    const uint32_t r = ((f->c0 >> 11) * u + (f->c1 >> 11) * t + 128u) >> 8;
+    const uint32_t g = (((f->c0 >> 5) & 0x3Fu) * u + ((f->c1 >> 5) & 0x3Fu) * t + 128u) >> 8;
+    const uint32_t b = ((f->c0 & 0x1Fu) * u + (f->c1 & 0x1Fu) * t + 128u) >> 8;
+    return (uint16_t)((r << 11) | (g << 5) | b);
 }
 
 void orb_font_measure(orb_font_t *f)
 {
     const uint32_t n = (uint32_t)f->w * f->h;
     for (int gi = 0; gi < f->n && gi < CLK_FONT_GLYPHS; gi++) {
-        const uint8_t *a = glyph(f, gi) + n * 2u;
+        const uint8_t *a = glyph(f, gi) + (f->bpp == 1 ? 0u : n * 2u);
         int right = -1;
         for (int x = f->w - 1; x >= 0 && right < 0; x--)
             for (int y = 0; y < f->h; y++)
@@ -58,13 +69,15 @@ static void blit(uint8_t *plane, uint32_t pw, uint32_t ph, const orb_font_t *f, 
                  int gx, int gy, int x0, int y0, int x1, int y1)
 {
     const uint8_t *g = glyph(f, gi);
+    const bool cov = f->bpp == 1;
     const uint16_t *gc = (const uint16_t *)g;
-    const uint8_t *ga = g + (uint32_t)f->w * f->h * 2u;
+    const uint8_t *ga = cov ? g : g + (uint32_t)f->w * f->h * 2u;
     uint16_t *pc = (uint16_t *)plane;
     uint8_t *pa = plane + pw * ph * 2u;
     for (int y = 0; y < f->h; y++) {
         const int py = gy + y;
         if (py < y0 || py > y1) continue;
+        const uint16_t rc = cov ? row_colour(f, y) : 0;
         for (int x = 0; x < f->w; x++) {
             const int px = gx + x;
             if (px < x0 || px > x1) continue;
@@ -73,7 +86,7 @@ static void blit(uint8_t *plane, uint32_t pw, uint32_t ph, const orb_font_t *f, 
             if (!a) continue;
             const uint32_t di = (uint32_t)py * pw + (uint32_t)px;
             const uint32_t da = pa[di];
-            const uint16_t c = gc[si];
+            const uint16_t c = cov ? rc : gc[si];
             if (a == 255u || !da) { pc[di] = c; pa[di] = (uint8_t)a; continue; }
             const uint32_t db = da * (255u - a) / 255u, oa = a + db;
             const uint16_t d = pc[di];

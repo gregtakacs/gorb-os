@@ -146,11 +146,14 @@ const baked = B.bakeClock3({ name: 'Sound Bake', serial: 20261031, bakedMs: 1730
 const walk = B.verifyBundle3(baked.bytes).sections[0];
 const els = walk.blob.elements, spr = walk.blob.sprites, sc = walk.blob.scalars;
 const srows = els.filter((e) => e.class === B.CLASS_SOUND);
-const soundB = 2 * (tickLoop.length + sounds[0].pcm.length + sounds[2].pcm.length);
+// OS v1.2.12: each clip in the encoding the bake chose (ADPCM unless it would lose too much)
+const soundB = spr.slice(0, 3).reduce((s, p) => s + p.size, 0);
 ok(srows.length === 3 && srows.map((e) => e.slot).join() === '0,4,6',
    'three sound rows walk back, in slot order', srows.map((e) => e.slot).join());
-ok(srows.every((e, k) => e.frame0 === k) && spr.slice(0, 3).every((p) => p.off % 2 === 0 && p.h === 1 && p.size === 2 * p.w),
-   'their planes are the first three, even, one row high, two bytes a sample');
+ok(srows.every((e, k) => e.frame0 === k && spr[k].off % 2 === 0 && spr[k].h === 1 &&
+                         spr[k].size === B.soundBytes(e.src, spr[k].w) && e.src === B.soundEncode(Array.from(
+                           [tickLoop, sounds[0].pcm, sounds[2].pcm][k])).enc),
+   'their planes are the first three, even, one row high, each in the encoding the bake chose');
 ok(els[0].class === B.classId('plate') && spr[els[0].frame0].off === soundB && sc.plate_off === soundB,
    'the plate is still row 0 and sits, and is named by plate_off, just past the sounds', 'plate_off ' + sc.plate_off);
 ok(srows[0].flags === 2 && srows[0].vmax === 100 && srows[1].flags === 0 && srows[1].vmax === 0,

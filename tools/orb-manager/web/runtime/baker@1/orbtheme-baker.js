@@ -602,6 +602,47 @@
    * which avoids a dark edge fringe (bake_clock.py's rgb565_le). `dith` = {x, y}, the
    * plane's top-left on the panel, dithers it (above); without it the plane truncates,
    * byte for byte what rgb565_le packs, which the parity vectors pin. */
+  /* OS v1.2.12: a square picture stored as its disc (main/art/orb_disc.h): the plate (or
+   * a delta keyframe), the masked glass overlay, and the preview at its own side. Row y
+   * keeps x0..x1, the pixels whose centres sit within side/2 + 1 of the centre, by the
+   * one integer rule the device and theme_schema.disc_span apply; tools/host_disc_test.py
+   * pins the three. */
+  var DISC_SIDE = 466;
+  function discSpan(y, side) {
+    side = side || DISC_SIDE;
+    var r = (side >> 1) + 1, dy = 2 * y + 1 - side, room = 4 * r * r - dy * dy, x = 0;
+    while (x < side >> 1) { var dx = 2 * x + 1 - side; if (dx * dx <= room) break; x++; }
+    return [x, side - 1 - x];
+  }
+  function discPx(side) {
+    side = side || DISC_SIDE;
+    var n = 0;
+    for (var y = 0; y < side; y++) { var sp = discSpan(y, side); n += sp[1] - sp[0] + 1; }
+    return n;
+  }
+  function discBytes(side) { return discPx(side) * 2; }
+  // a square plane (`bpp` bytes a pixel, 2 by default) to its disc
+  function discPack(sq, side, bpp) {
+    side = side || DISC_SIDE; bpp = bpp || 2;
+    var out = new Uint8Array(discPx(side) * bpp), o = 0;
+    for (var y = 0; y < side; y++) {
+      var sp = discSpan(y, side), a = (y * side + sp[0]) * bpp, b = (y * side + sp[1] + 1) * bpp;
+      out.set(sq.subarray(a, b), o); o += b - a;
+    }
+    return out;
+  }
+  // an RGB565A8 square (colour plane, then alpha plane) to its masked disc
+  function discPackMasked(sq, side) {
+    var n = side * side;
+    return concat([discPack(sq.subarray(0, 2 * n), side, 2), discPack(sq.subarray(2 * n, 3 * n), side, 1)]);
+  }
+  /* '#rrggbb' as the RGB565 word a font row carries (theme_schema.rgb565). */
+  function rgb565(colour) {
+    var c = String(colour || '#ffffff').replace('#', '');
+    if (c.length === 3) c = c[0] + c[0] + c[1] + c[1] + c[2] + c[2];
+    var r = parseInt(c.slice(0, 2), 16), g = parseInt(c.slice(2, 4), 16), b = parseInt(c.slice(4, 6), 16);
+    return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+  }
   function rgb565Plane(rgba, w, h, dith) {
     var out = new Uint8Array(w * h * 2), x, y, i, o = 0, v, row;
     if (dith) {
@@ -2073,6 +2114,75 @@
     'strike_qtr', 'strike_min'];
   var HOUR_PATTERNS = ['count', 'ships_bells', 'morse', 'repeater', 'none'];
   var SOUND_RATE = 22050;
+  /* A theme's sounds are blocked IMA ADPCM (theme_schema.SOUND_ENC_ADPCM, main/audio/
+   * orb_adpcm.h): 256 samples a block, each block decoding from its own 4-byte header.
+   * adpcmEncode is theme_schema.adpcm_encode line for line; tools/host_adpcm_test.py
+   * holds the two to the same bytes. */
+  var SOUND_ENC_PCM16 = 0, SOUND_ENC_ADPCM = 1, ADPCM_BLOCK = 256, ADPCM_BLOCK_BYTES = 132;
+  var ADPCM_STEP = [7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+    50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
+    337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552,
+    1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484,
+    7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385,
+    24623, 27086, 29794, 32767];
+  var ADPCM_INDEX = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
+  /* theme_schema.ADPCM_MIN_SNR_DB / sound_encode: a clip is stored compressed only when
+   * the round trip holds this; a sharp tick does not, and stays PCM16. */
+  var ADPCM_MIN_SNR_DB = 20;
+  function adpcmDecode(data, n) {
+    var out = new Int16Array(n);
+    for (var b = 0, nb = Math.ceil(n / ADPCM_BLOCK); b < nb; b++) {
+      var o = b * ADPCM_BLOCK_BYTES, pred = (data[o] | (data[o + 1] << 8)) << 16 >> 16, idx = Math.min(88, data[o + 2]);
+      var i0 = b * ADPCM_BLOCK;
+      if (i0 < n) out[i0] = pred;
+      for (var k = 0; k < ADPCM_BLOCK - 1; k++) {
+        var code = (data[o + 4 + (k >> 1)] >> ((k & 1) * 4)) & 15, step = ADPCM_STEP[idx], diff = step >> 3;
+        if (code & 4) diff += step;
+        if (code & 2) diff += step >> 1;
+        if (code & 1) diff += step >> 2;
+        pred = code & 8 ? pred - diff : pred + diff;
+        pred = pred > 32767 ? 32767 : pred < -32768 ? -32768 : pred;
+        idx += ADPCM_INDEX[code];
+        idx = idx < 0 ? 0 : idx > 88 ? 88 : idx;
+        if (i0 + 1 + k < n) out[i0 + 1 + k] = pred;
+      }
+    }
+    return out;
+  }
+  function soundEncode(pcm) {
+    var enc = adpcmEncode(pcm), dec = adpcmDecode(enc, pcm.length), sig = 0, err = 0;
+    for (var i = 0; i < pcm.length; i++) { var x = pcm[i] | 0, d = x - dec[i]; sig += x * x; err += d * d; }
+    if (err === 0 || sig >= err * Math.pow(10, ADPCM_MIN_SNR_DB / 10)) return { enc: SOUND_ENC_ADPCM, bytes: enc };
+    var pb8 = new Uint8Array(pcm.length * 2), pdv = new DataView(pb8.buffer);
+    for (var pi = 0; pi < pcm.length; pi++) pdv.setInt16(pi * 2, pcm[pi], true);
+    return { enc: SOUND_ENC_PCM16, bytes: pb8 };
+  }
+  function soundBytes(enc, n) { return enc === SOUND_ENC_ADPCM ? Math.ceil(n / ADPCM_BLOCK) * ADPCM_BLOCK_BYTES : 2 * n; }
+  function adpcmEncode(pcm) {
+    var nb = Math.ceil(pcm.length / ADPCM_BLOCK), out = new Uint8Array(nb * ADPCM_BLOCK_BYTES), idx = 0;
+    for (var b = 0; b < nb; b++) {
+      var o = b * ADPCM_BLOCK_BYTES, b0 = b * ADPCM_BLOCK, pred = pcm[b0] | 0;
+      out[o] = pred & 0xFF; out[o + 1] = (pred >> 8) & 0xFF; out[o + 2] = idx; out[o + 3] = 0;
+      for (var k = 0; k < ADPCM_BLOCK - 1; k++) {
+        var x = b0 + 1 + k < pcm.length ? pcm[b0 + 1 + k] | 0 : 0;
+        var step = ADPCM_STEP[idx], d = x - pred, code = d < 0 ? 8 : 0;
+        d = Math.abs(d);
+        if (d >= step) { code |= 4; d -= step; }
+        if (d >= step >> 1) { code |= 2; d -= step >> 1; }
+        if (d >= step >> 2) code |= 1;
+        var diff = step >> 3;
+        if (code & 4) diff += step;
+        if (code & 2) diff += step >> 1;
+        if (code & 1) diff += step >> 2;
+        pred = code & 8 ? pred - diff : pred + diff;
+        pred = pred > 32767 ? 32767 : pred < -32768 ? -32768 : pred;
+        idx += ADPCM_INDEX[code];
+        idx = idx < 0 ? 0 : idx > 88 ? 88 : idx;
+        out[o + 4 + (k >> 1)] |= code << ((k & 1) * 4);
+      }
+    }
+    return out;
+  }
   // D42 (theme_schema.SHAPES / ENDS / DIGITS, clk_types.h CLK_SHAPE_* / CLK_END_* /
   // CLK_DIGIT_*): what an AUX row's art is, what it does past its domain, and which
   // digit of its source it reads.
@@ -2258,9 +2368,9 @@
     /* D39 widens the pair the way D34 did: on a SOUND row `kind` is the hour pattern
      * and `src` the encoding; checkClockSounds reads them. */
     if (cls === CLASS_SOUND) {
-      if (src !== 0)
+      if (src !== SOUND_ENC_PCM16 && src !== SOUND_ENC_ADPCM)
         throw new Error(where + '.src: a sound in encoding ' + src + ' — this build plays 16-bit ' +
-          'PCM at ' + SOUND_RATE + ' Hz (encoding 0) and nothing else');
+          'PCM (encoding 0) or IMA ADPCM (encoding 1) at ' + SOUND_RATE + ' Hz');
       if (!(kind >= 0 && kind < HOUR_PATTERNS.length))
         throw new Error(where + '.kind: ' + kind + ' is not an hour pattern (' +
           HOUR_PATTERNS.join('/') + ', 0..' + (HOUR_PATTERNS.length - 1) + ')');
@@ -2283,7 +2393,8 @@
           throw new Error(where + '.' + c + ': ' + rec[c] + ' on a ' + CLASS_NAMES[cls] +
             ' row — a row’s poses are a moving row’s question (class aux)');
       });
-      if (cls !== CLASS_SOUND && ['span', 'zero', 'vmin', 'vmax'].some(function (c) { return Math.trunc(rec[c] | 0); }))
+      // a font's vmin and vmax are its colours (theme_schema.font_colours)
+      if (cls !== CLASS_SOUND && cls !== CLASS_TEXT && ['span', 'zero', 'vmin', 'vmax'].some(function (c) { return Math.trunc(rec[c] | 0); }))
         throw new Error(where + ': span, zero, vmin and vmax are a moving row’s poses, and class ' +
           q(CLASS_NAMES[cls]) + ' does not move — every row that moves is an AUX row (D42)');
     }
@@ -3220,8 +3331,9 @@
       var e = at[slot];
       if (!e) continue;
       var sp = sprites[e.frame0 | 0];
-      if (sp.h !== 1 || sp.w < 2 || sp.size !== sp.w * 2)
-        throw new Error('sound slot ' + slot + '\u2019s plane is ' + sp.w + 'x' + sp.h + ' in ' + sp.size + ' B: a sound is w samples by 1, two bytes each');
+      var senc = e.src | 0, swant = soundBytes(senc, Math.max(sp.w, 0));
+      if (sp.h !== 1 || sp.w < 2 || sp.size !== swant)
+        throw new Error('sound slot ' + slot + '\u2019s plane is ' + sp.w + 'x' + sp.h + ' in ' + sp.size + ' B: a sound in encoding ' + senc + ' is w samples by 1 in ' + swant + ' B');
       if (sp.off & 1)
         throw new Error('sound slot ' + slot + ' starts at odd offset ' + sp.off + ': its samples would load unaligned');
       var kind = e.kind | 0;
@@ -3323,14 +3435,62 @@
      * crystal overlay, a window's plates, the preview). It dithers at the row's own x/y,
      * unless the whole bake asked for truncation (o.dither === false). */
     function ditherAt(e, dith) { return dith && o.dither !== false ? { x: e.x | 0, y: e.y | 0 } : null; }
+    // the plate (class plate, slot 0) as the panel's disc, when it is an opaque full panel
+    // a full-panel plate as the panel's disc: the plate itself (slot 0, opaque) and the
+    // glass overlay (slot 1, masked: its colour disc, then its alpha disc)
+    function discOf(e, plane, masked, art) {
+      if ((e['class'] | 0) !== CLASS_PLATE || plane.w !== DISC_SIDE || plane.h !== DISC_SIDE ||
+          scrW !== DISC_SIDE || scrH !== DISC_SIDE) return null;
+      if (!(e.slot | 0) && !masked) return discPack(art);
+      if ((e.slot | 0) === 1 && masked) return discPackMasked(art, DISC_SIDE);
+      return null;
+    }
     function row(e, plane, masked, dith) {
       var b = bank3([plane], { alpha: masked, dither: ditherAt(e, dith) });
+      var disc = discOf(e, plane, masked, b.art);
+      if (disc) b = { art: disc, sprites: [{ size: disc.length }] };
       bank.art = concat([bank.art, b.art]);
       bank.sprites.push({ off: bank.size, size: b.sprites[0].size, w: plane.w, h: plane.h });
       bank.size += b.sprites[0].size;
       var rec = blankElement();
       for (var f in e) rec[f] = e[f];
       rec.frame0 = bank.sprites.length - 1;
+      elems.push(rec);
+      return rec;
+    }
+    /* OS v1.2.12: a font. Its glyph planes are stored as coverage alone (each plane's
+     * alpha, one byte a pixel) and coloured as a label draws them: `top` at the cell's top
+     * running to `foot` at its foot ('#rrggbb'; foot omitted for a flat colour), carried
+     * as RGB565 in the row's vmin and vmax (theme_schema.font_colours). A font whose
+     * glyphs match an earlier font's byte for byte (one face and size in two tones) names
+     * that font's frames instead of storing them again. */
+    var fontSets = [];
+    function font(e, planes, top, foot) {
+      var rec = blankElement();
+      for (var f in e) rec[f] = e[f];
+      var cov = planes.map(function (p) {
+        var a = new Uint8Array(p.w * p.h);
+        for (var i = 0; i < a.length; i++) a[i] = p.rgba[i * 4 + 3];
+        return a;
+      });
+      var hit = null;
+      for (var k = 0; k < fontSets.length && !hit; k++) {
+        var s = fontSets[k];
+        if (s.n !== cov.length || s.w !== planes[0].w || s.h !== planes[0].h) continue;
+        var same = true;
+        for (var j = 0; j < cov.length && same; j++)
+          for (var b = 0; b < cov[j].length; b++) if (cov[j][b] !== s.cov[j][b]) { same = false; break; }
+        if (same) hit = s;
+      }
+      if (hit) rec.frame0 = hit.frame0;
+      else {
+        rec.frame0 = bank.sprites.length;
+        for (var g = 0; g < cov.length; g++) put(cov[g], planes[g].w, planes[g].h);
+        fontSets.push({ frame0: rec.frame0, n: cov.length, w: planes[0].w, h: planes[0].h, cov: cov });
+      }
+      rec.n_frames = cov.length;
+      rec.vmin = rgb565(top);
+      rec.vmax = rgb565(foot || top);
       elems.push(rec);
       return rec;
     }
@@ -3372,6 +3532,8 @@
         if (j === 0) {
           canvas = copyPlane(p);                   // frame 0: the whole base plane
           var b0 = bank3([p], { alpha: masked, dither: ditherAt(e, dith) });
+          var d0 = discOf(e, p, masked, b0.art);  // stored as the panel's disc (orb_disc.h)
+          if (d0) b0 = { art: d0, sprites: [{ size: d0.length }] };
           bank.art = concat([bank.art, b0.art]);
           spr = { off: bank.size, size: b0.sprites[0].size, w: p.w, h: p.h, diffx: 0, diffy: 0 };
           bank.size += b0.sprites[0].size;
@@ -3486,6 +3648,9 @@
         throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ' on a ' + scrW + 'x' + scrH + ' panel: the shell reads a preview ' +
           'into one buffer sized for the half-res of the glass, and a plane past it cannot be held');
       var pb = bank3([pp], { alpha: false, dither: o.dither === false ? null : { x: 0, y: 0 } });   // RGB565 only: w*h*2 B, the exception orb_asset_slot_bytes names
+      // OS v1.2.12: stored as its disc (orb_disc.h), so the picker shows it round
+      var pd = discPack(pb.art, pp.w);
+      pb = { art: pd, sprites: [{ size: pd.length }] };
       bank.art = concat([bank.art, pb.art]);
       bank.sprites.push({ off: bank.size, size: pb.sprites[0].size, w: pp.w, h: pp.h });
       bank.size += pb.sprites[0].size;
@@ -3555,7 +3720,7 @@
     }
     return { bank: bank, elements: elems, scrW: scrW, scrH: scrH,
              id: function () { return nid++; }, put: put, ditherAt: ditherAt,
-             row: row, rowFrames: rowFrames,
+             row: row, rowFrames: rowFrames, font: font,
              rowDelta: function (e, planes, delay, masked, dith) { var r = rowDelta(e, planes, delay, masked, dith); deltas.push({ rec: r, planes: planes }); return r; },
              verifyDelta: selfVerify3, preview: preview, element: element, rowPick: rowPick, pool: pool,
              pack: pack, capCheck: capCheck, finish: finish };
@@ -3686,15 +3851,15 @@
      * o.sounds: [{slot: name, pcm: Int16Array, beat_chz, first_beat}], o.soundPattern. */
     var sounds3 = (o.sounds || []).slice().sort(function (a, b) {
       return SOUND_SLOTS.indexOf(a.slot) - SOUND_SLOTS.indexOf(b.slot); });
-    var soundB = 0;
+    var soundB = 0, soundEnc = [];
     for (var si = 0; si < sounds3.length; si++) {
       var sn = sounds3[si];
       if (SOUND_SLOTS.indexOf(sn.slot) < 0) throw new Error('a sound for slot ' + q(String(sn.slot)) + ': the clock declares ' + SOUND_SLOTS.join(', '));
       var pcm = sn.pcm;
       if (!pcm || !(pcm.length >= 2)) throw new Error('the ' + sn.slot + ' sound carries no samples');
-      var pb8 = new Uint8Array(pcm.length * 2), pdv = new DataView(pb8.buffer);
-      for (var pi = 0; pi < pcm.length; pi++) pdv.setInt16(pi * 2, pcm[pi], true);
-      B.put(pb8, pcm.length, 1);
+      var se = soundEncode(pcm);
+      soundEnc[si] = se.enc;
+      B.put(se.bytes, pcm.length, 1);
     }
     soundB = bank.size;
     sc.plate_off = soundB;
@@ -4010,7 +4175,7 @@
       for (si = 0; si < sounds3.length; si++) {
         var srec = blankElement(), sslot = SOUND_SLOTS.indexOf(sounds3[si].slot), stick = sslot === 0;
         srec.n = B.id(); srec['class'] = CLASS_SOUND; srec.slot = sslot;
-        srec.frame0 = si; srec.n_frames = 1; srec.kind = patIx; srec.src = 0;
+        srec.frame0 = si; srec.n_frames = 1; srec.kind = patIx; srec.src = soundEnc[si];
         srec.flags = stick ? EF_LOOP : 0;
         srec.vmax = stick ? (sounds3[si].beat_chz | 0) : 0;
         srec.vmin = stick ? (sounds3[si].first_beat | 0) : 0;
@@ -4189,6 +4354,15 @@
    * the pivot (rotation is about the pivot, so that is the box that swings). */
   function inkOf3(art, spr, e) {
     var w = spr.w, h = spr.h, a0 = spr.off + w * h * 2, n = 0, x0 = w, y0 = h, x1 = -1, y1 = -1;
+    if (w === h && spr.size === discPx(w) * 3) {
+      // a masked disc (orb_disc.h): its alpha disc, laid back out as the square it reads as
+      var sq = new Uint8Array(w * h), at = spr.off + discPx(w) * 2;
+      for (var dy = 0; dy < h; dy++) {
+        var sp = discSpan(dy, w), m = sp[1] - sp[0] + 1;
+        sq.set(art.subarray(at, at + m), dy * w + sp[0]); at += m;
+      }
+      art = sq; a0 = 0;
+    }
     for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) if (art[a0 + y * w + x]) {
       n++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
     }
@@ -5161,6 +5335,8 @@
     pointerDefault3: pointerDefault3,
     // D39: the sound vocabulary and the mirror of the dial's sound refusals.
     SOUND_SLOTS: SOUND_SLOTS, HOUR_PATTERNS: HOUR_PATTERNS, CLASS_SOUND: CLASS_SOUND,
+    discSpan: discSpan, discPx: discPx, discBytes: discBytes, discPack: discPack, discPackMasked: discPackMasked,
+    adpcmEncode: adpcmEncode, adpcmDecode: adpcmDecode, soundEncode: soundEncode, soundBytes: soundBytes,
     checkClockSounds: checkClockSounds
   };
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));

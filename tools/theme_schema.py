@@ -694,6 +694,98 @@ CLOCK_SOUND_SLOTS = tuple(n for n, c, _s, _w in CLOCK_SLOTS if c == "sound")
 HOUR_PATTERNS = ("count", "ships_bells", "morse", "repeater", "none")
 SOUND_RATE = 22050           # the one rate the engine runs (orb_sound.h ORB_SOUND_RATE)
 SOUND_ENC_PCM16 = 0          # a sound row's `src`: 16-bit LE mono PCM at SOUND_RATE
+SOUND_ENC_ADPCM = 1          # blocked IMA ADPCM (main/audio/orb_adpcm.h), what the bakers write
+SOUND_ENCODINGS = (SOUND_ENC_PCM16, SOUND_ENC_ADPCM)
+ADPCM_BLOCK = 256            # samples a block decodes from its own header
+ADPCM_BLOCK_BYTES = 132      # 4 B header + 255 nibbles, padded
+
+ADPCM_STEP = (7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50,
+              55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279,
+              307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282,
+              1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871,
+              5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818,
+              18500, 20350, 22385, 24623, 27086, 29794, 32767)
+ADPCM_INDEX = (-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8)
+
+
+def sound_bytes(enc, n):
+    """The plane a sound of n samples occupies in encoding enc (orb_clock3.c's rule)."""
+    if enc == SOUND_ENC_ADPCM:
+        return -(-n // ADPCM_BLOCK) * ADPCM_BLOCK_BYTES
+    return 2 * n
+
+
+def _adpcm_step(pred, idx, code):
+    step = ADPCM_STEP[idx]
+    diff = step >> 3
+    if code & 4: diff += step
+    if code & 2: diff += step >> 1
+    if code & 1: diff += step >> 2
+    pred = pred - diff if code & 8 else pred + diff
+    pred = max(-32768, min(32767, pred))
+    idx = max(0, min(88, idx + ADPCM_INDEX[code]))
+    return pred, idx
+
+
+def adpcm_encode(pcm):
+    """16-bit samples -> the blocked IMA ADPCM orb_adpcm.h decodes. Each block starts
+    from its first sample exactly and a step index carried over from the block before,
+    so a block decodes alone; the encoder tracks the decoder's own state, so the
+    error never accumulates."""
+    out = bytearray()
+    idx = 0
+    for b0 in range(0, len(pcm), ADPCM_BLOCK):
+        blk = list(pcm[b0:b0 + ADPCM_BLOCK]) + [0] * max(0, b0 + ADPCM_BLOCK - len(pcm))
+        pred = int(blk[0])
+        out += (pred & 0xFFFF).to_bytes(2, "little") + bytes((idx, 0))
+        nib = []
+        for x in blk[1:]:
+            step = ADPCM_STEP[idx]
+            d = int(x) - pred
+            code = 8 if d < 0 else 0
+            d = abs(d)
+            if d >= step: code |= 4; d -= step
+            if d >= step >> 1: code |= 2; d -= step >> 1
+            if d >= step >> 2: code |= 1
+            pred, idx = _adpcm_step(pred, idx, code)
+            nib.append(code)
+        nib.append(0)
+        out += bytes(nib[i] | (nib[i + 1] << 4) for i in range(0, len(nib), 2))
+    return bytes(out)
+
+
+# A clip is stored compressed only when the round trip keeps this signal-to-noise ratio.
+# Skeleton's chimes and strokes land near 33 dB; its sharp tick, which 4-bit ADPCM smears
+# for its first few samples, near 13, and stays PCM16 (measured 2026-11-06). ADPCM's
+# noise follows the signal's level, so the sound itself masks it.
+ADPCM_MIN_SNR_DB = 20
+
+
+def sound_encode(pcm):
+    """(encoding, bytes) for a clip: ADPCM when it holds ADPCM_MIN_SNR_DB, else PCM16.
+    The baker's soundEncode makes the same choice on the same sums."""
+    n = len(pcm)
+    enc = adpcm_encode(pcm)
+    dec = adpcm_decode(enc, n)
+    sig = sum(int(x) * int(x) for x in pcm)
+    err = sum((int(a) - b) ** 2 for a, b in zip(pcm, dec))
+    if err == 0 or sig >= err * 10 ** (ADPCM_MIN_SNR_DB / 10):
+        return SOUND_ENC_ADPCM, enc
+    return SOUND_ENC_PCM16, b"".join(int(x).to_bytes(2, "little", signed=True) for x in pcm)
+
+
+def adpcm_decode(data, n):
+    """The reference decoder: what orb_adpcm_block produces, sample for sample."""
+    pcm = []
+    for b in range(-(-n // ADPCM_BLOCK)):
+        h = data[b * ADPCM_BLOCK_BYTES:(b + 1) * ADPCM_BLOCK_BYTES]
+        pred = int.from_bytes(h[0:2], "little", signed=True)
+        idx = min(88, h[2])
+        pcm.append(pred)
+        for k in range(ADPCM_BLOCK - 1):
+            pred, idx = _adpcm_step(pred, idx, (h[4 + (k >> 1)] >> ((k & 1) * 4)) & 15)
+            pcm.append(pred)
+    return pcm[:n]
 
 # The clock's own frame-to-value domain for a WINDOW complication (D32 ruling B):
 # source name -> (value_min, plate count). Only fixed calendar domains appear; a
@@ -826,6 +918,83 @@ def check_label(rec, where):
     if pad > LABEL_PAD_MAX or 2 * pad >= w or 2 * pad >= h:
         raise ValueError("%s.radius: a padding of %d leaves no room in a %dx%d panel "
                          "(at most %d)" % (where, pad, w, h, LABEL_PAD_MAX))
+
+
+# OS v1.2.12: a square picture stored as its disc (main/art/orb_disc.h): the plate (or a
+# delta bank's keyframe), the masked glass overlay, and the preview at its own side. Row
+# y keeps x0..x1, the pixels whose centres lie within side/2 + 1 of the centre; the rule
+# is integer, so the bakers and the device derive the same spans and store none.
+DISC_SIDE = 466
+DISC_R = 234
+
+
+def disc_span(y, side=DISC_SIDE):
+    """Row y's kept span, x0..x1 inclusive (orb_disc_span_n)."""
+    r = side // 2 + 1
+    dy = 2 * y + 1 - side
+    room = 4 * r * r - dy * dy
+    x = 0
+    while x < side // 2:
+        dx = 2 * x + 1 - side
+        if dx * dx <= room:
+            break
+        x += 1
+    return x, side - 1 - x
+
+
+def disc_px(side=DISC_SIDE):
+    """The pixels a disc keeps (orb_disc_px)."""
+    return sum(x1 - x0 + 1 for x0, x1 in (disc_span(y, side) for y in range(side)))
+
+
+def disc_bytes(side=DISC_SIDE):
+    """The bytes an RGB565 disc occupies."""
+    return disc_px(side) * 2
+
+
+def disc_pack(square, side=DISC_SIDE, bpp=2):
+    """A square plane (bytes, `bpp` a pixel) to its disc."""
+    out = bytearray()
+    for y in range(side):
+        x0, x1 = disc_span(y, side)
+        out += square[(y * side + x0) * bpp:(y * side + x1 + 1) * bpp]
+    return bytes(out)
+
+
+def disc_pack_masked(square, side=DISC_SIDE):
+    """An RGB565A8 square (colour plane, alpha plane) to its masked disc."""
+    n = side * side
+    return disc_pack(square[:2 * n], side, 2) + disc_pack(square[2 * n:3 * n], side, 1)
+
+
+def disc_expand(disc, side=DISC_SIDE):
+    """An RGB565 disc back to its square, the corners black (orb_disc_expand_n)."""
+    out, at = bytearray(side * side * 2), 0
+    for y in range(side):
+        x0, x1 = disc_span(y, side)
+        n = (x1 - x0 + 1) * 2
+        out[(y * side + x0) * 2:(y * side + x0) * 2 + n] = disc[at:at + n]
+        at += n
+    return bytes(out)
+
+
+def rgb565(colour):
+    """'#rrggbb' (or an (r, g, b) triple) as the RGB565 word a font row carries."""
+    if isinstance(colour, str):
+        c = colour.lstrip("#")
+        r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+    else:
+        r, g, b = colour
+    return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+
+
+def font_colours(rec, top, foot=None):
+    """A font's colours ride its row (OS v1.2.12): vmin the cell's top, vmax its foot,
+    equal for a flat fill. Its glyphs are coverage alone, one byte a pixel, and the label
+    colours them as it draws (orb_label.c)."""
+    rec["vmin"] = rgb565(top)
+    rec["vmax"] = rgb565(foot if foot is not None else top)
+    return rec
 
 
 def check_fonts(recs):
@@ -985,10 +1154,10 @@ def check_element(rec, where="elem"):
     # D39 widens the pair once more, the same way D34 did: on a SOUND row `kind` is the
     # app's hour pattern and `src` the encoding. check_clock_sounds reads them.
     if cls == CLASS_SOUND:
-        if src != SOUND_ENC_PCM16:
+        if src not in SOUND_ENCODINGS:
             raise ValueError("%s.src: a sound in encoding %d — this build plays 16-bit "
-                             "PCM at %d Hz (encoding %d) and nothing else"
-                             % (where, src, SOUND_RATE, SOUND_ENC_PCM16))
+                             "PCM (encoding %d) or IMA ADPCM (encoding %d) at %d Hz"
+                             % (where, src, SOUND_ENC_PCM16, SOUND_ENC_ADPCM, SOUND_RATE))
         if not 0 <= kind < len(HOUR_PATTERNS):
             raise ValueError("%s.kind: %d is not an hour pattern (%s, 0..%d)"
                              % (where, kind, "/".join(HOUR_PATTERNS), len(HOUR_PATTERNS) - 1))
@@ -1013,7 +1182,9 @@ def check_element(rec, where="elem"):
                 raise ValueError("%s.%s: %d on a %s row — a row's poses are a moving row's "
                                  "question (class aux)" % (where, c, int(rec[c]),
                                                           CLASS_NAMES[cls]))
-        if cls != CLASS_SOUND and any(int(rec.get(c, 0)) for c in ("span", "zero", "vmin", "vmax")):
+        # A font's vmin and vmax are its colours (RGB565, top and foot: font_colours).
+        if cls not in (CLASS_SOUND, CLASS_TEXT) and \
+                any(int(rec.get(c, 0)) for c in ("span", "zero", "vmin", "vmax")):
             raise ValueError("%s: span, zero, vmin and vmax are a moving row's poses, and "
                              "class %r does not move — every row that moves is an AUX row "
                              "(D42)" % (where, CLASS_NAMES[cls]))
@@ -1229,9 +1400,11 @@ def check_clock_sounds(recs, sprites, second_sweep, tick_rate):
     for slot in sorted(at):
         r = at[slot]
         off, size, w, h = sprites[int(r["frame0"])][:4]
-        if h != 1 or w < 2 or size != w * 2:
-            raise ValueError("sound slot %d's plane is %dx%d in %d B: a sound is w samples "
-                             "by 1, two bytes each" % (slot, w, h, size))
+        enc = int(r["src"])
+        if h != 1 or w < 2 or size != sound_bytes(enc, w):
+            raise ValueError("sound slot %d's plane is %dx%d in %d B: a sound in encoding "
+                             "%d is w samples by 1 in %d B" % (slot, w, h, size, enc,
+                                                               sound_bytes(enc, max(w, 0))))
         if off & 1:
             raise ValueError("sound slot %d starts at odd offset %d: its samples would "
                              "load unaligned" % (slot, off))
@@ -1281,16 +1454,18 @@ def check_clock_sounds(recs, sprites, second_sweep, tick_rate):
     return pattern
 
 
-def sound_row(slot, frame0, pattern="none", beat_chz=0, first_beat=0, n=None):
+def sound_row(slot, frame0, pattern="none", beat_chz=0, first_beat=0, n=None,
+              enc=SOUND_ENC_PCM16):
     """A blank element row filled as a clock sound row (CLOCK_SOUND_SLOTS name or
-    index). The writer places the plane; this only states the row's facts."""
+    index). The writer places the plane; this only states the row's facts, the
+    encoding among them (sound_encode's choice, for a writer that compresses)."""
     rec = blank_element()
     rec["class"] = CLASS_SOUND
     rec["slot"] = slot if isinstance(slot, int) else CLOCK_SOUND_SLOTS.index(slot)
     rec["frame0"] = frame0
     rec["n_frames"] = 1
     rec["kind"] = pattern if isinstance(pattern, int) else HOUR_PATTERNS.index(pattern)
-    rec["src"] = SOUND_ENC_PCM16
+    rec["src"] = enc
     tick = rec["slot"] == CLOCK_SOUND_SLOTS.index("tick_loop")
     rec["flags"] = EF_LOOP if tick else 0
     rec["vmax"] = beat_chz if tick else 0

@@ -29,6 +29,7 @@ HARNESS = r"""
 #define PW 60
 #define PH 30
 static uint8_t glyphs[CLK_FONT_GLYPHS * CW * CH * 3];
+static uint8_t cover[CLK_FONT_GLYPHS * CW * CH];   /* the same font as coverage alone */
 static uint8_t plane[PW * PH * 3], panel[PW * PH * 3];
 static int fails, checks;
 #define CK(c, ...) do { checks++; if (!(c)) { fails++; printf("FAIL "); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -48,6 +49,19 @@ static void font(orb_font_t *f, int n)
         for (int y = 1; y < CH - 1; y++)
             for (int x = 0; x <= g % 5; x++) { c[y * CW + x] = (uint16_t)(0x0800 + g); a[y * CW + x] = 255; }
     }
+}
+
+/* The same shapes as font(), as OS v1.2.12 stores them: one coverage byte a pixel, the
+ * colour the font row's, top c0 to foot c1. */
+static void cover_font(orb_font_t *f, int n, uint16_t c0, uint16_t c1)
+{
+    memset(f, 0, sizeof *f);
+    f->glyphs = cover; f->w = CW; f->h = CH; f->n = (uint16_t)n; f->space = 3; f->track = 1;
+    f->bpp = 1; f->c0 = c0; f->c1 = c1;
+    memset(cover, 0, sizeof cover);
+    for (int g = 1; g < CLK_FONT_GLYPHS; g++)
+        for (int y = 1; y < CH - 1; y++)
+            for (int x = 0; x <= g % 5; x++) cover[g * CW * CH + y * CW + x] = 255;
 }
 
 /* the first column, left to right, where row y holds glyph colour */
@@ -119,6 +133,35 @@ int main(void)
     orb_label_compose(plane, PW, PH, NULL, NULL, "E", 0, 0, 0);
     CK(alp(0, 1) == 0, "no font: the panel alone");
 
+    /* ---- coverage fonts (OS v1.2.12): the shapes the colour font has, coloured live ---- */
+    orb_font_t c;
+    cover_font(&c, CLK_FONT_GLYPHS, 0x07E0, 0x07E0);
+    orb_font_measure(&c);
+    CK(c.adv[0] == f.adv[0] && c.adv['A' - 0x20] == f.adv['A' - 0x20] && c.adv['E' - 0x20] == f.adv['E' - 0x20],
+       "coverage: the advances are the colour font's (%d %d)", c.adv['A' - 0x20], c.adv['E' - 0x20]);
+    memset(panel, 0, sizeof panel);
+    orb_label_compose(plane, PW, PH, panel, &c, "AE", 0, 0, 0);
+    const int ex = c.adv['A' - 0x20];
+    CK(col(0, 1) == 0x07E0 && alp(0, 1) == 255 && col(ex, 6) == 0x07E0 && alp(ex, 6) == 255,
+       "coverage: a flat font inks its colour at full cover (%04x %04x)", col(0, 1), col(ex, 6));
+    CK(alp(0, 0) == 0 && alp(ex + ('E' - 0x20) % 5 + 1, 3) == 0,
+       "coverage: no ink where the cell has none");
+    CK(alp(('A' - 0x20) % 5, 1) == 255 && alp(ex + ('E' - 0x20) % 5, CH - 2) == 255,
+       "coverage: each glyph inks to its last column, at its top and foot rows");
+    cover_font(&c, CLK_FONT_GLYPHS, 0xF800, 0x001F);
+    orb_label_compose(plane, PW, PH, panel, &c, "E", 0, 0, 0);
+    const uint16_t top = col(0, 1), foot = col(0, CH - 2);
+    CK((top >> 11) > (foot >> 11) && (top & 0x1F) < (foot & 0x1F),
+       "coverage: a gradient runs from the top colour to the foot's (%04x -> %04x)", top, foot);
+    CK((top >> 11) >= 24 && (foot & 0x1F) >= 24, "coverage: near the ends it is near the end colours");
+    uint8_t *ca = cover + ('E' - 0x20) * CW * CH;
+    for (int i = 0; i < CW * CH; i++) if (ca[i]) ca[i] = 128;
+    cover_font(&c, CLK_FONT_GLYPHS, 0x07E0, 0x07E0);
+    for (int i = 0; i < CW * CH; i++) if (cover[('E' - 0x20) * CW * CH + i]) cover[('E' - 0x20) * CW * CH + i] = 128;
+    orb_label_compose(plane, PW, PH, panel, &c, "E", 0, 0, 0);
+    CK(alp(0, 1) == 128 && col(0, 1) == 0x07E0, "coverage: half cover is half alpha in the font's colour (%d)", alp(0, 1));
+    (void)ca;
+
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }
@@ -137,6 +180,11 @@ MUTANTS = (
     ("the clip down", "if (py < y0 || py > y1) continue;", "if (py < y0) continue;"),
     ("the line split", "lines += *p == '\\n';", "lines += 0;"),
     ("the mix", "pa[di] = (uint8_t)oa;", "pa[di] = (uint8_t)a;"),
+    ("a coverage glyph's stride", "(f->bpp == 1 ? 1u : 3u)", "3u"),
+    ("a coverage glyph's alpha", "const uint8_t *ga = cov ? g :", "const uint8_t *ga = cov ? g + 1 :"),
+    ("the gradient's direction", "const uint32_t t = (uint32_t)y * 256u / (uint32_t)(f->h - 1), u = 256u - t;",
+     "const uint32_t u = (uint32_t)y * 256u / (uint32_t)(f->h - 1), t = 256u - u;"),
+    ("the live colour", "const uint16_t c = cov ? rc : gc[si];", "const uint16_t c = gc[si];"),
 )
 
 

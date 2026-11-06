@@ -12,6 +12,6 @@
     {"id": "key",    "type": "secret", "host": "api.adsb.lol"}
   ],
   "shelf": true,
-  "os_min": "v1.2.11",
+  "os_min": "v1.2.12",
   "editor": "editor"
 }

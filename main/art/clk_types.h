@@ -133,6 +133,10 @@ typedef struct {
    * of one image), by row index. Here for drum_r's reason: clk_row_t's size is the app
    * ABI, so the app asks orb_stage_frame for the count instead. */
   uint16_t pick_n[CLK_ROW_MAX];
+  /* OS v1.2.12: the plate (and a delta bank's keyframe) is stored as the panel's disc
+   * alone (orb_disc.h); the OS expands it into a square in PSRAM at bind. */
+  uint8_t  plate_disc;
+  uint8_t  overlay_disc;    /* the masked glass overlay, the same way (colour, then alpha) */
 } clk_theme_t;
 
 typedef struct {

@@ -41,11 +41,16 @@ Class 0 (`text`) has been in the asset-class enum since D23 and carries app-pick
 | `n_frames` | glyphs, in **`FONT_CHARSET` order**: ASCII 0x20..0x7E, then ↑ ↓ → ← ° (100) |
 | `pivot_x` | the space's advance, px |
 | `pivot_y` | tracking: px between one glyph's ink and the next glyph |
+| `vmin`, `vmax` | the font's colours, RGB565: the cell's top and its foot (equal for a flat fill) |
 | `x`, `y`, `order`, `radius`... | zero: a font is never drawn where it stands |
 
-Each glyph is RGB565A8 like every other frame, drawn from the cell's left edge on the
-font's baseline, so a font can be any colour or finish the bake can paint (a brass
-engraving, a blueprint stencil). A glyph's **advance** is its ink's right edge + 1 +
+Since OS v1.2.12 (app-platform-plan.md §52) each glyph is its **coverage alone**, one byte
+a pixel, drawn from the cell's left edge on the font's baseline and coloured as the label
+draws it: `vmin` at the top of the cell running to `vmax` at its foot, so a fill is a flat
+colour or a vertical two-colour gradient (the brass engraving's finish). Two font rows of
+one face and size in two colours name the same glyph frames. A theme from before v1.2.12
+carries RGB565A8 cells and draws their own colours; a font's cells are all one form.
+A glyph's **advance** is its ink's right edge + 1 +
 tracking, measured once by the OS when the font is first used (the bank is not resident at
 projection time); a glyph with no ink advances the space. No metrics table rides the wire.
 A character outside the charset draws as `?`.

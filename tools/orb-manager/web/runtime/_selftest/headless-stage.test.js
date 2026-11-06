@@ -28,7 +28,8 @@ const readBack = (b) => { const v = G.verifyBundle3(b.bytes); return { v, sec: v
   const pvBytes = B.preview({ plane: plane(116, 116, [10, 40, 20]), x: 0, y: 0 });
   ok(p.frame0 === 0 && arm.frame0 === 1 && jet.frame0 === 2 && pool.every((r) => r.frame0 === 2), 'each row names its plane; a pool shares one sprite', [p.frame0, arm.frame0, jet.frame0].join());
   ok(B.elements.map((e) => e.n).join() === '1,2,3,4,5,6' && B.bank.sprites.length === 4, 'ids run in the order rows enter; the preview is one more sprite', B.elements.map((e) => e.n).join());
-  ok(pvBytes === 116 * 116 * 2, 'the preview is RGB565 only', pvBytes);
+  // OS v1.2.12: the preview is stored as its RGB565 disc (orb_disc.h), so the picker shows it round
+  ok(pvBytes === G.discBytes(116), 'the preview is RGB565 only', pvBytes);
   const b = B.finish({ name: 'Scope', slug: 'radar', abi: G.GEOM_ABI6, scalars: {} });
   const { sec, hdr } = readBack(b);
   ok(hdr.name === 'Scope' && sec.blob.elements.length === 6 && sec.blob.sprites.length === 4, 'the section reads back through the card’s reader: its rows and sprites', JSON.stringify([hdr.name, sec.blob.elements.length, sec.blob.sprites.length]));

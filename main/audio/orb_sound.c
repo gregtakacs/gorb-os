@@ -1,6 +1,7 @@
 /* orb_sound.c — the sound engine: I2S + ES8311 + NS4150B, a compiled mixer, and the
  * owner's settings. See orb_sound.h for the contract and docs/history/sound-plan.md §4. */
 #include "orb_sound.h"
+#include "orb_adpcm.h"
 
 #include <math.h>
 #include <time.h>
@@ -37,8 +38,11 @@ static const char *TAG = "sound";
 
 typedef struct {
     const void    *owner;      /* who started it: orb_sound_stop_owner's key */
-    const int16_t *pcm;
+    const void    *data;       /* the clip, in `enc` */
     uint32_t n, pos;
+    uint32_t cblk;             /* ADPCM: the block in `cache` + 1; 0 = none */
+    int16_t  cache[ORB_ADPCM_BLOCK];
+    uint8_t  enc;              /* ORB_SOUND_ENC_* */
     int64_t  at_us, anchor_us;
     int      id;
     uint16_t gain;
@@ -132,11 +136,24 @@ static uint32_t loop_phase(const voice_t *v, int64_t t_us, int64_t offset_us)
     return (uint32_t)s;
 }
 
-static bool quiet_ahead(const voice_t *v)
+/* Sample p of a voice's clip. An ADPCM clip decodes the one block that holds p into
+ * the voice's cache, so a jump costs one block and a straight run one decode a block. */
+static inline int16_t voice_at(voice_t *v, uint32_t p)
+{
+    if (v->enc == ORB_SOUND_ENC_PCM16) return ((const int16_t *)v->data)[p];
+    const uint32_t b = p / ORB_ADPCM_BLOCK;
+    if (v->cblk != b + 1u) {
+        orb_adpcm_block((const uint8_t *)v->data, b, v->cache);
+        v->cblk = b + 1u;
+    }
+    return v->cache[p % ORB_ADPCM_BLOCK];
+}
+
+static bool quiet_ahead(voice_t *v)
 {
     uint32_t p = v->pos;
     for (uint32_t i = 0; i < BLOCK; i++) {
-        const int s = v->pcm[p];
+        const int s = voice_at(v, p);
         if (s > QUIET_PEAK || s < -QUIET_PEAK) return false;
         if (++p >= v->n) p = 0;
     }
@@ -190,7 +207,7 @@ static int mix_block(int16_t *out, int64_t t_us)
         const int32_t g = v->gain;
         bool done = false;
         for (uint32_t i = i0; i < BLOCK; i++) {
-            acc[i] += ((int32_t)v->pcm[v->pos] * g) >> 12;
+            acc[i] += ((int32_t)voice_at(v, v->pos) * g) >> 12;
             if (++v->pos >= v->n) {
                 if (v->flags & ORB_SOUND_LOOP) v->pos = 0;
                 else { done = true; break; }
@@ -279,8 +296,18 @@ int orb_sound_play_owned(const void *owner, const int16_t *pcm, uint32_t n,
                          uint16_t gain_q12, uint32_t flags, int64_t at_us,
                          int64_t anchor_us)
 {
+    return orb_sound_play_enc(owner, pcm, n, ORB_SOUND_ENC_PCM16, gain_q12, flags, at_us,
+                              anchor_us);
+}
+
+int orb_sound_play_enc(const void *owner, const void *data, uint32_t n, uint8_t enc,
+                       uint16_t gain_q12, uint32_t flags, int64_t at_us,
+                       int64_t anchor_us)
+{
     if (!s_ready) return ESP_ERR_INVALID_STATE;
-    if (!pcm || n < 2 || ((uintptr_t)pcm & 1u)) return ESP_ERR_INVALID_ARG;
+    if (!data || n < 2) return ESP_ERR_INVALID_ARG;
+    if (enc != ORB_SOUND_ENC_PCM16 && enc != ORB_SOUND_ENC_ADPCM) return ESP_ERR_INVALID_ARG;
+    if (enc == ORB_SOUND_ENC_PCM16 && ((uintptr_t)data & 1u)) return ESP_ERR_INVALID_ARG;
     if ((flags & ORB_SOUND_ANCHORED) && !(flags & ORB_SOUND_LOOP)) return ESP_ERR_INVALID_ARG;
     if (!(flags & ORB_SOUND_ASKED) && orb_sound_quiet_now()) return ESP_ERR_INVALID_STATE;
     int id = ESP_ERR_NO_MEM;
@@ -289,7 +316,7 @@ int orb_sound_play_owned(const void *owner, const int16_t *pcm, uint32_t n,
         if (s_v[k].state) continue;
         voice_t *v = &s_v[k];
         v->owner = owner;
-        v->pcm = pcm; v->n = n; v->pos = 0;
+        v->data = data; v->n = n; v->pos = 0; v->enc = enc; v->cblk = 0;
         v->at_us = at_us; v->anchor_us = anchor_us;
         v->gain = gain_q12; v->flags = (uint8_t)flags; v->state = 1;
         v->id = id = s_next_id++;

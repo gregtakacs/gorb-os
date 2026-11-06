@@ -76,7 +76,8 @@ const VECTORS = [
   ['a costly still dial (wide hands, glass) is refused smoothing', (G) => heavy(G).smooth === false && heavy(G).est_fps === heavy(G).near_fps],
   ['the costly dial still prints what smoothing would cost', (G) => /smoothing would land \d+ fps/.test(heavy(G).sentence)],
   ['the sweeping seconds pays no AA', (G) => { const e = still(G, 15, 1); return e.aa_kpx < e.ink_kpx; }],
-  ['the glass rides the box', (G) => heavy(G).glass_cov > 0.9],
+  // OS v1.2.12: a full glass is stored as the panel's disc, 79% of the square (orb_disc.h)
+  ['the glass rides the box', (G) => heavy(G).glass_cov > 0.75],
   // ---- 4. the policy carries it ----
   ['splitPolicy3 carries est_fps and the rung when handed an estimate', (G) => { const e = still(G, 15, 1), p = pol(G, e); return p.est_fps === e.est_fps && p.rung === 15; }],
   ['and its sentence names the rate', (G) => / est \d+ fps \(/.test(pol(G, still(G, 15, 1)).sentence)],

@@ -83,6 +83,7 @@ enum {
  * a 16-bit load from the mapped bank is aligned. */
 #define CLK_SND_RATE      22050u
 #define CLK_SND_ENC_PCM16 0u
+#define CLK_SND_ENC_ADPCM 1u   /* blocked IMA ADPCM, main/audio/orb_adpcm.h */
 #define CLK_SND_F_LOOP    0x01u
 
 /* One projected sound: where its PCM starts inside the section's bank (always
@@ -94,6 +95,7 @@ typedef struct {
     uint16_t beat_chz;
     uint8_t  slot;           /* CLK_SND_* */
     uint8_t  flags;          /* CLK_SND_F_* */
+    uint8_t  enc;            /* CLK_SND_ENC_* */
 } clk_sound_t;
 
 /** The caller's room, its own clock_assets.h, and where the result goes. Every

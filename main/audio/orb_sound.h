@@ -61,6 +61,9 @@ bool orb_sound_ready(void);
 int orb_sound_play(const int16_t *pcm, uint32_t n, uint16_t gain_q12,
                    uint32_t flags, int64_t at_us, int64_t anchor_us);
 
+/* What a clip's bytes are: ORB_SOUND_ENC_PCM16 or ORB_SOUND_ENC_ADPCM (orb_adpcm.h). */
+#include "orb_adpcm.h"
+
 /** The same, owned: `owner` (an app row, or any stable pointer) tags the voice, so
  *  orb_sound_stop_owner() can silence everything one app started — the registry
  *  does that when it suspends the app (C7, read for audio). Quiet hours are the
@@ -70,6 +73,13 @@ int orb_sound_play(const int16_t *pcm, uint32_t n, uint16_t gain_q12,
 int orb_sound_play_owned(const void *owner, const int16_t *pcm, uint32_t n,
                          uint16_t gain_q12, uint32_t flags, int64_t at_us,
                          int64_t anchor_us);
+
+/** The same, for a clip in any ORB_SOUND_ENC_*: n is its length in samples. An
+ *  ADPCM clip decodes a block at a time as it plays, so any sample can be reached
+ *  (an anchored loop's phase) without decoding from the start. */
+int orb_sound_play_enc(const void *owner, const void *data, uint32_t n, uint8_t enc,
+                       uint16_t gain_q12, uint32_t flags, int64_t at_us,
+                       int64_t anchor_us);
 void orb_sound_stop_owner(const void *owner);
 
 /* ---- the app surface (orb_svc_t's sound entries, cap SOUND) -------------------

@@ -246,6 +246,8 @@ int main(int argc, char **argv)
     printf("scalar bg_mode %u\n", th.bg_mode);
     printf("scalar bg_key_off %u\n", th.bg_key_off);
     printf("scalar gif_frames %u\n", th.gif_frames);
+    printf("scalar plate_disc %u\n", th.plate_disc);
+    printf("scalar overlay_disc %u\n", th.overlay_disc);
     printf("scalar tourbillon_n %u\n", th.tourbillon_n);
     printf("scalar tourbillon_fps %u\n", th.tourbillon_fps);
     printf("scalar car_row %u\n", th.car_row);
@@ -274,9 +276,9 @@ int main(int argc, char **argv)
     }
     printf("pattern %u\n", (unsigned)io.out_pattern);
     for (uint32_t i = 0; i < io.out_n_sounds; i++)
-        printf("sound %u %u %u %u %u %u\n", (unsigned)snds[i].slot, (unsigned)snds[i].n,
+        printf("sound %u %u %u %u %u %u %u\n", (unsigned)snds[i].slot, (unsigned)snds[i].n,
                (unsigned)snds[i].pcm_off, (unsigned)snds[i].beat_chz,
-               (unsigned)snds[i].first_beat, (unsigned)snds[i].flags);
+               (unsigned)snds[i].first_beat, (unsigned)snds[i].flags, (unsigned)snds[i].enc);
     printf("rects %u\n", (unsigned)(th.bg_mode == 1 ? 1u : 0u));
     printf("rect %u %u %u %u %u\n", rects[0].x, rects[0].y, rects[0].w, rects[0].h,
            rects[0].off);
@@ -333,6 +335,7 @@ def build(mut=None, exe=None):
         ["gcc", "-O1", "-Wall", "-Wextra", "-Wno-unused-function", "-D_GNU_SOURCE",
          "-include", shim,
          "-I", d, "-I", os.path.join(ROOT, "main", "art"),
+         "-I", os.path.join(ROOT, "main", "audio"),   # orb_adpcm.h: a sound's plane size
          "-I", os.path.join(ROOT, "assets"),
          src, BUNDLE_C, os.path.join(d, "harness.c"),
          "-Wl,--gc-sections", "-o", exe, "-lz"],
@@ -377,7 +380,7 @@ def parsed(out):
         elif w[0] == "nmat":
             nmat = int(w[1])
         elif w[0] == "sound":
-            sounds.append(dict(zip(("slot", "n", "off", "beat", "first", "flags"),
+            sounds.append(dict(zip(("slot", "n", "off", "beat", "first", "flags", "enc"),
                                    (int(v) for v in w[1:]))))
         elif w[0] == "pattern":
             pattern = int(w[1])
@@ -681,11 +684,23 @@ def add_pick_row(els, spr, art, slot, n, sizes=None, w=28, h=64, **kw):
     return add_row(els, spr, art, slot, w=w, h=h, frame0=f0, n_frames=n, delay=0, **kw)
 
 
-def add_font(els, spr, art, slot, w=8, h=14, n=len(ts.FONT_CHARSET), **kw):
-    """A font (theme-text-plan §2.1): a TEXT row whose n frames are its glyph cells."""
+def add_font(els, spr, art, slot, w=8, h=14, n=len(ts.FONT_CHARSET), cover=False, sizes=None,
+             **kw):
+    """A font (theme-text-plan §2.1): a TEXT row whose n frames are its glyph cells, each
+    RGB565A8, or with cover=True its coverage alone (OS v1.2.12). `sizes` forges each
+    glyph's byte count."""
     f0 = len(spr)
-    for _ in range(n):
-        add_plane(spr, art, w, h)
+    for g in range(n):
+        if sizes:
+            off = len(art)
+            art.extend(b"\x22" * sizes[g])
+            spr.append({"off": off, "size": sizes[g], "w": w, "h": h, "diffx": 0, "diffy": 0})
+        elif cover:
+            off = len(art)
+            art.extend(b"\x80" * (w * h))
+            spr.append({"off": off, "size": w * h, "w": w, "h": h, "diffx": 0, "diffy": 0})
+        else:
+            add_plane(spr, art, w, h)
     r = dict(ts.blank_element(), **{
         "n": max(int(e["n"]) for e in els) + 1, "class": ts.CLASS_TEXT, "slot": slot,
         "frame0": f0, "n_frames": n, "w": w, "h": h, "pivot_x": 3, "pivot_y": 1})
@@ -887,6 +902,12 @@ REFUSALS = (
      "sits at 0,0", "sits at 0,0"),
     ("a font with no space", lambda e, s, p, a: add_font(e, p, a, 0, pivot_x=0),
      "a space of 0", "a space of 0"),
+    ("a font of two forms", lambda e, s, p, a: add_font(
+        e, p, a, 0, sizes=[8 * 14] + [8 * 14 * 3] * (len(ts.FONT_CHARSET) - 1)),
+     "a font's cells are one shape", None),
+    ("a glyph neither coverage nor colour", lambda e, s, p, a: add_font(
+        e, p, a, 0, sizes=[8 * 14 * 2] * len(ts.FONT_CHARSET)),
+     "of coverage or", None),
     ("a source the dial cannot read", _set_row(hour_row, src=ts.SOURCES.index("text")),
      "no such input", "no input of this dial"),
     ("degrees on a row", _set_row(hour_row, degrees=900), "angle at rest", "angle at rest"),
@@ -1081,6 +1102,67 @@ def rows_battery(exe, base):
     rc, out, err = run(exe, "--dump3f", path)
     ck(rc == 0, "a row at the last legal slot was refused: %r" % out[:200])
     # theme-text-plan §2: two fonts and a label reading them, projected as a text row
+    # OS v1.2.12: the plate stored as the panel's disc: accepted and flagged; the same
+    # size on a plate that is not the panel's is refused
+    def disc_plate(els, sc, spr, art):
+        p = [e for e in els if int(e["class"]) == ts.CLASS_PLATE and int(e["slot"]) == 0][0]
+        sp = spr[int(p["frame0"])]
+        sp["size"] = ts.disc_bytes()
+        _respread(els, spr, art)
+        sc["plate_off"] = sp["off"]
+    path, verdict = forge(base, disc_plate)
+    rc, out, err = run(exe, "--dump3f", path)
+    ck(rc == 0 and parsed(out)["sc"].get("plate_disc") == [1],
+       "a disc plate was refused or not flagged: %r" % out[:240])
+    plain = parsed(run(exe, "--dump3f", forge(base, None)[0])[1])
+    ck(plain["sc"].get("plate_disc") == [0], "a square plate was flagged as a disc")
+    def disc_short(els, sc, spr, art):
+        disc_plate(els, sc, spr, art)
+        p = [e for e in els if int(e["class"]) == ts.CLASS_PLATE and int(e["slot"]) == 0][0]
+        spr[int(p["frame0"])]["size"] = ts.disc_bytes() - 2
+        _respread(els, spr, art)
+    path, verdict = forge(base, disc_short)
+    rc, out, err = run(exe, "--refuse", path)
+    ck(rc == 0 and "claims" in out, "a plate a pixel short of the disc was not refused: %r" % out[:240])
+
+    # OS v1.2.12: the glass overlay as a masked disc, and the preview as its own disc,
+    # when the base carries them: accepted, the glass flagged
+    def disc_glass(els, sc, spr, art):
+        for e in els:
+            c, sl = int(e["class"]), int(e["slot"])
+            sp = spr[int(e["frame0"])]
+            if c == ts.CLASS_PLATE and sl == 1:      # the pair's glass, made the panel's
+                e.update(x=0, y=0, w=ts.DISC_SIDE, h=ts.DISC_SIDE)
+                sp.update(w=ts.DISC_SIDE, h=ts.DISC_SIDE, size=ts.disc_px() * 3)
+            elif c == ts.CLASS_PREVIEW and sp["w"] == sp["h"]:
+                sp["size"] = ts.disc_px(sp["w"]) * 2
+        _respread(els, spr, art)
+    _h, _secs = ob.read_bundle(base)
+    _b = _secs[0]["blob"]
+    has_glass = any(int(e["class"]) == ts.CLASS_PLATE and int(e["slot"]) == 1 for e in _b["elements"])
+    if has_glass:
+        path, verdict = forge(base, disc_glass)
+        rc, out, err = run(exe, "--dump3f", path)
+        ck(rc == 0 and parsed(out)["sc"].get("overlay_disc") == [1],
+           "a disc glass was refused or not flagged: %r / %r" % (
+               parsed(out)["sc"].get("overlay_disc") if rc == 0 else None,
+               run(exe, "--refuse", path)[1][:240]))
+    else:
+        print("  (the base carries no glass overlay: the disc glass rides the editor's suites)")
+
+    # OS v1.2.12: a coverage font with its colours, and a second font row in another
+    # colour naming the same glyph frames, both accepted
+    def covered(els, sc, spr, art):
+        f = add_font(els, spr, art, 0, cover=True)
+        ts.font_colours(f, "#39FF14", "#B8892E")
+        twin = dict(f, n=max(int(e["n"]) for e in els) + 1, slot=1)
+        ts.font_colours(twin, "#8A9A90")
+        els.append(twin)
+        add_label(els, spr, art, next_slot(els), str=0xFF10)
+    path, verdict = forge(base, covered)
+    rc, out, err = run(exe, "--refuse", path)
+    ck("refused" not in out and verdict is None,
+       "a coverage font and its colour twin were refused: %r %r" % (out[:240], verdict))
     path, verdict = forge(base, _fonted())
     ck(verdict is None, "fonts accept: the writer refused an honest table: %s" % verdict)
     rc, out, err = run(exe, "--dump3f", path)
@@ -1624,6 +1706,43 @@ def d39_battery(exe, base):
        "a morse pair was refused or lost its pattern: %r %r" % (out[:200], py))
     print("  D39 accept: four sounds at the head, pixels shifted by %d B, strip inverts" % head)
 
+    # A compressed chime (the baker's choice for a chime): projected with its encoding,
+    # its plane ADPCM-sized; a truncated plane is refused by the device and the schema.
+    import math as _m
+    chime = _st.pack("<22050h", *[int(14000 * _m.exp(-3 * i / 22050) *
+                                      _m.sin(2 * _m.pi * 440 * i / 22050)) for i in range(22050)])
+    def forge_c(tamper=None):
+        box = {}
+        def mutate(els, sc, spr, art):
+            c4_defaults(els, sc, art, spr)
+            sec = {"elements": els, "scalars": sc, "sprites": spr, "art": art}
+            osnd.add_sounds(sec, [{"slot": "chime_hour", "pcm": chime}], "none", check=False,
+                            compress=True)
+            if tamper:
+                tamper(els, sc, art, spr)
+            try:
+                ts.check_clock_sounds(els, [(int(p["off"]), int(p["size"]), int(p["w"]),
+                                             int(p["h"])) for p in spr], *ts.clock_tempo(els, sc))
+                box["py"] = None
+            except ValueError as e:
+                box["py"] = str(e)
+        return forge(base, mutate, raw=True)[0], box["py"]
+    path, py = forge_c()
+    rc, out, err = run(exe, "--dump3f", path)
+    snd = parsed(out)["sounds"] if rc == 0 else []
+    ck(rc == 0 and py is None and len(snd) == 1 and snd[0]["enc"] == ts.SOUND_ENC_ADPCM and
+       snd[0]["n"] == 22050, "a compressed chime was refused or projected wrongly: %r %r" % (out[:200], py))
+
+    def short(els, sc, art, spr):
+        sp = spr[0]
+        sp["size"] = int(sp["size"]) - ts.ADPCM_BLOCK_BYTES
+    path, py = forge_c(short)
+    rc, out, err = run(exe, "--refuse", path)
+    ck(rc == 0 and ("%d B" % ts.sound_bytes(ts.SOUND_ENC_ADPCM, 22050)) in out and py and
+       "in encoding 1 is w samples by 1" in py,
+       "a compressed plane a block short was not refused by both: %r %r" % (out[:200], py))
+    print("  D39 ADPCM: a compressed chime projects as encoding 1; a short plane is refused")
+
     def row_of(els, slot):
         return [e for e in els if int(e["class"]) == ts.CLASS_SOUND and
                 int(e["slot"]) == ts.CLOCK_SOUND_SLOTS.index(slot)][0]
@@ -1656,7 +1775,7 @@ def d39_battery(exe, base):
          set_row("tick_loop", vmin=ts.SOUND_RATE * 100 // beat), "sits past one beat"),
         ("beat on a chime", full, "count", set_row("chime_hour", vmax=100),
          "only the tick loop has one"),
-        ("a plane two rows high", full, "count", plane_h2, "a sound is w samples by 1"),
+        ("a plane two rows high", full, "count", plane_h2, "is w samples by 1"),
         ("count with no stroke", no_strike, "count", None, "carries no hour stroke"),
         ("morse with no dah", [{"slot": "morse_dit", "pcm": d39_pcm(1323)}], "morse", None,
          "lacks a dit or a dah"),

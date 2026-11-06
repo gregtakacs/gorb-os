@@ -501,8 +501,9 @@
     var F = await fonts(d);
     for (var fi = 0; fi < F.length; fi++) {
       var fo = F[fi];
-      St.rowFrames({ n: St.id(), class: TEXT, slot: fi, x: 0, y: 0, w: fo.w, h: fo.h, order: 0, n_frames: fo.glyphs.length,
-        pivot_x: Math.min(fo.space, fo.w), pivot_y: fo.track }, fo.glyphs.map(plane), true, false);
+      // the glyphs' coverage, coloured on the orb in the font's role colour
+      St.font({ n: St.id(), class: TEXT, slot: fi, x: 0, y: 0, w: fo.w, h: fo.h, order: 0,
+        pivot_x: Math.min(fo.space, fo.w), pivot_y: fo.track }, fo.glyphs.map(plane), d.words[FONTS[fi][2]]);
     }
     var Ls = labels(F);
     for (var li = 0; li < Ls.length; li++) {

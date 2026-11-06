@@ -9,6 +9,6 @@
     {"id": "place3", "type": "string"}
   ],
   "shelf": true,
-  "os_min": "v1.2.11",
+  "os_min": "v1.2.12",
   "editor": "editor"
 }

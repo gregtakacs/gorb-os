@@ -19,6 +19,7 @@
  * on the glass.
  */
 
+#include "orb_disc.h"   /* a disc plate, expanded at bind */
 #include "orb_sched.h"
 
 #include <stdio.h>
@@ -151,6 +152,32 @@ void orb_bg_release(void)
  * pointer return and sprite reads cost what they always did. */
 static const uint8_t *blob(void) { return s_art; }
 
+/* OS v1.2.12: a disc plate (orb_disc.h) is expanded into a square here, once per bind,
+ * so every reader below still addresses plate pixels as the panel's square. One buffer,
+ * kept: the stage binds one theme at a time, and a second bind re-expands into it. */
+static uint16_t *s_plate_sq;
+
+static const uint8_t *plate_px(void)
+{
+    if (!clk_theme.plate_disc) return blob() + clk_theme.plate_off;
+    if (!s_plate_sq)
+        s_plate_sq = heap_caps_malloc((size_t)CLK_SCR_W * CLK_SCR_H * 2u,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_plate_sq) {
+        ESP_LOGE(TAG, "disc plate: no PSRAM for its square (%u B)",
+                 (unsigned)(CLK_SCR_W * CLK_SCR_H * 2u));
+        return NULL;
+    }
+    orb_disc_expand(blob() + clk_theme.plate_off, s_plate_sq);
+    return (const uint8_t *)s_plate_sq;
+}
+
+/* The square the last bind expanded, without expanding again. */
+static const uint8_t *plate_sq(void)
+{
+    return clk_theme.plate_disc ? (const uint8_t *)s_plate_sq : blob() + clk_theme.plate_off;
+}
+
 static void fill_plate_dsc(lv_image_dsc_t *d)
 {
     memset(d, 0, sizeof(*d));
@@ -161,7 +188,7 @@ static void fill_plate_dsc(lv_image_dsc_t *d)
     d->header.h          = CLK_SCR_H;
     d->header.stride     = (uint32_t)CLK_SCR_W * 2u;
     d->data_size         = (uint32_t)CLK_SCR_W * (uint32_t)CLK_SCR_H * 2u;
-    d->data              = blob() + clk_theme.plate_off;
+    d->data              = plate_px();
 }
 
 void orb_bg_set_plate(lv_obj_t *plate) { s_plate = plate; }
@@ -233,7 +260,7 @@ const uint16_t *orb_sched_restore_src(void)
     if (orb_bg_gif_mode())      return s_canvas;                      /* PSRAM canvas */
     if (clk_theme.bg_mode == 1) return NULL;                          /* canvas wanted, absent */
     if (clk_theme.bg_frames)    return NULL;                          /* keyframe bank */
-    return (const uint16_t *)(blob() + clk_theme.plate_off);          /* baked plate */
+    return (const uint16_t *)plate_sq();                              /* baked plate */
 }
 
 /* The claim the dial last reported, pushed from its table build: the OS cannot
@@ -420,7 +447,10 @@ const lv_image_dsc_t *orb_bg_gif_canvas_init(void)
     const size_t canvas_bytes = (size_t)CLK_SCR_W * CLK_SCR_H * sizeof(uint16_t);
     s_canvas = heap_caps_malloc(canvas_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_canvas) {
-        memcpy(s_canvas, blob() + clk_theme.bg_key_off, canvas_bytes);
+        if (clk_theme.plate_disc)      /* the keyframe is the plate's first plane: a disc */
+            orb_disc_expand(blob() + clk_theme.bg_key_off, s_canvas);
+        else
+            memcpy(s_canvas, blob() + clk_theme.bg_key_off, canvas_bytes);
         memset(&s_canvas_dsc, 0, sizeof(s_canvas_dsc));
         s_canvas_dsc.header.magic  = LV_IMAGE_HEADER_MAGIC;
         s_canvas_dsc.header.cf     = LV_COLOR_FORMAT_RGB565;

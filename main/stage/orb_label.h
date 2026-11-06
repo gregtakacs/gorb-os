@@ -11,12 +11,17 @@
 
 #include "clk_types.h"   /* CLK_FONT_ASCII, CLK_FONT_GLYPHS */
 
-/* One font: glyph cells w x h, RGB565A8 (colour plane, then alpha), consecutive from
- * `glyphs` in the charset's order. orb_clock3.c proved the catalogue contiguous and every
- * glyph the cell's size, so glyph g is `glyphs + g * w * h * 3`. */
+/* One font: glyph cells w x h, consecutive from `glyphs` in the charset's order. A cell
+ * is its coverage alone (`bpp` 1, A8), coloured as it draws: `c0` at the cell's top
+ * running to `c1` at its foot (equal for a flat colour), both RGB565, from the font row's
+ * vmin and vmax. A theme from before OS v1.2.12 carries RGB565A8 cells (`bpp` 3, colour
+ * plane then alpha) and draws their own colours. orb_clock3.c proved the catalogue
+ * contiguous and every glyph one size, so glyph g is `glyphs + g * w * h * bpp`. */
 typedef struct {
     const uint8_t *glyphs;
     uint16_t w, h, n;
+    uint8_t  bpp;                    /* 1 (A8, coloured live) or 3 (RGB565A8) */
+    uint16_t c0, c1;                 /* bpp 1: the top and foot colours, RGB565 */
     uint8_t  space, track;
     bool     measured;
     uint8_t  adv[CLK_FONT_GLYPHS];   /* each glyph's advance, after orb_font_measure */

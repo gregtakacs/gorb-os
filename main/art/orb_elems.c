@@ -7,6 +7,8 @@
  * section, which is what lets the same call serve the tick and the install gate.
  */
 #include "orb_elems.h"
+#include "orb_adpcm.h"          /* a sound clip's size, by its encoding */
+#include "orb_disc.h"           /* a plate or preview stored as its disc */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -27,6 +29,8 @@
 #define CLS_BANK   5
 #define CLS_LAYER  6
 #define CLS_STATUS 7
+#define CLS_PREVIEW 9
+#define CLS_SOUND  10
 
 #define EF_ALPHA   0x01u
 #define EF_LOOP    0x02u
@@ -111,8 +115,17 @@ static orb_elems_ans_t seat(const orb_bundle_sec_t *sec, const orb_bundle_elem_t
      * catalogue's extent rather than from the row's claim, because a disagreement
      * between the two IS the defect being reported. */
     const uint64_t px = (uint64_t)sp.w * (uint64_t)sp.h;
-    const bool masked = (sp.size == px * 3u);
-    if (!masked && sp.size != px * 2u) {
+    /* OS v1.2.12: a square plate or preview may be stored as its disc (orb_disc.h),
+     * opaque (two bytes a kept pixel) or masked (three); the reader expands it. */
+    const uint64_t dpx = sp.w == sp.h && (cls == CLS_PLATE || cls == CLS_PREVIEW)
+                       ? orb_disc_px(sp.w) : 0u;
+    const bool disc_m = dpx && sp.size == dpx * 3u, disc_o = dpx && sp.size == dpx * 2u;
+    const bool masked = (sp.size == px * 3u) || disc_m;
+    /* A sound's clip is not pixels: ADPCM's blocks are their own size, and the play
+     * path (orb_sound_app.c) holds that rule against the row's encoding. */
+    const bool adpcm = cls == CLS_SOUND && e->src == ORB_SOUND_ENC_ADPCM &&
+                       sp.h == 1u && sp.size == orb_adpcm_bytes(sp.w);
+    if (!masked && !adpcm && !disc_o && sp.size != px * 2u) {
         say(why, cap, "bank row %lu (%s slot %u frame %lu) claims %lu B of a %lux%lu "
                       "plane; that is neither %lu B opaque nor %lu B with a mask",
             (unsigned long)row, cls_word(cls), (unsigned)slot, (unsigned long)frame,

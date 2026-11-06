@@ -66,6 +66,7 @@
  *       achieved rate and average flush cost via display_bench_snapshot.
  */
 
+#include "orb_disc.h"   /* a glass overlay stored as the panel's disc */
 #include "orb_stage.h"
 #include "orb_label.h"   /* theme-text-plan §2.3: a label's pixels */
 #include "board_config.h"
@@ -356,6 +357,25 @@ static lv_obj_t *make_layer_at(const clk_sprite_t *spr, lv_image_dsc_t *dsc,
 static lv_obj_t *make_layer(const clk_sprite_t *spr, lv_image_dsc_t *dsc, bool aa)
 {
     return make_layer_at(spr, dsc, aa, blob());
+}
+
+/* OS v1.2.12: a glass overlay stored as the panel's masked disc (orb_disc.h) is expanded
+ * into an RGB565A8 square here, so the LVGL layer and the L4 glass row both read a square
+ * (corners clear). One buffer, kept across binds, refilled by each. */
+static uint8_t *s_overlay_sq;
+
+static const uint8_t *overlay_square(void)
+{
+    if (!clk_theme.overlay_disc) return NULL;
+    if (!s_overlay_sq)
+        s_overlay_sq = heap_caps_malloc((size_t)CLK_SCR_W * CLK_SCR_H * 3u,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_overlay_sq) {
+        ESP_LOGE(TAG, "disc glass: no PSRAM for its square; the glass is left off");
+        return NULL;
+    }
+    orb_disc_expand_masked(blob() + clk_theme.overlay.color_off, s_overlay_sq, CLK_SCR_W);
+    return s_overlay_sq;
 }
 
 /* Ticks per hand beat in GIF mode: theme tickRate (beats/s) against the
@@ -1280,6 +1300,7 @@ static void text_scan(void)
             orb_font_t *f = &s_text->font[e.slot];
             f->w = e.w; f->h = e.h; f->n = e.n_frames;
             f->space = (uint8_t)e.pivot_x; f->track = (uint8_t)e.pivot_y;
+            f->c0 = e.vmin; f->c1 = e.vmax;      /* a coverage font's colours (orb_label.h) */
             s_text->frame0[e.slot] = e.frame0;
             s_text->present[e.slot] = true;
         } else if (e.cls == ORB_ASSET_AUX && e.kind == CLK_SHAPE_TEXT) {
@@ -1323,6 +1344,7 @@ static void label_compose(uint16_t i)
         orb_bundle_spr_t sp;
         orb_bundle_spr_at(s_text_sec, s_text->frame0[fi], &sp);
         f->glyphs = blob() + sp.off;
+        f->bpp = sp.size == (uint32_t)f->w * f->h ? 1u : 3u;   /* orb_clock3.c held it to one */
     }
     orb_label_compose(st->tplane + LABEL_PLANE_OFF, r->spr.w, r->spr.h, panel, f, buf,
                       s_text->pad[i], r->digit, r->end);
@@ -1847,6 +1869,11 @@ static void clock_layers_build(orb_app_t *self)
         orb_layer_desc_t d;
         memset(&d, 0, sizeof d);
         clk_row_desc(&el, bank_off, role, &d);
+        if (role == CLK_ROLE_GLASS && clk_theme.overlay_disc) {
+            /* the expanded disc: this table may be built before the glass widget is */
+            d.plane = s_overlay_sq ? s_overlay_sq : overlay_square();
+            d.art.off = 0;
+        }
         if (gidx != 0xFFu && pick_cls[k] == ORB_ASSET_AUX && s_row && s_row[gidx].tplane) {
             d.plane = s_row[gidx].tplane;      /* a label: the plane the stage composes */
             d.art.off = LABEL_PLANE_OFF;
@@ -2165,7 +2192,14 @@ esp_err_t stage_init(orb_app_t *self)
     }
 
     /* Glass / hub cap last, on top of everything. */
-    s_overlay = make_layer(&clk_theme.overlay, &s_overlay_dsc, false);
+    if (clk_theme.overlay_disc) {
+        const uint8_t *sq = overlay_square();
+        clk_sprite_t ov = clk_theme.overlay;
+        ov.color_off = 0;                    /* the square's own start */
+        s_overlay = sq ? make_layer_at(&ov, &s_overlay_dsc, false, sq) : NULL;
+    } else {
+        s_overlay = make_layer(&clk_theme.overlay, &s_overlay_dsc, false);
+    }
 
     /* The layer table, from the same bundle the widgets above were projected
      * from (Migration 2, Commits 3 and 4). Rows enter hidden and the tick's
@@ -2581,6 +2615,6 @@ int stage_snd_play(int i, uint32_t flags, int64_t at_us, int64_t anchor_us)
     if (!t || i < 0 || (uint32_t)i >= n) return -1;
     const uint32_t f = ORB_SOUND_LEASED | (flags & (ORB_SOUND_LOOP | ORB_SOUND_ANCHORED |
                                                     ORB_SOUND_ASKED));
-    return orb_sound_play_owned(s_lay_app, (const int16_t *)(const void *)(blob() + t[i].pcm_off),
-                                t[i].n, ORB_SOUND_GAIN_1, f, at_us, anchor_us);
+    return orb_sound_play_enc(s_lay_app, blob() + t[i].pcm_off, t[i].n, t[i].enc,
+                              ORB_SOUND_GAIN_1, f, at_us, anchor_us);
 }

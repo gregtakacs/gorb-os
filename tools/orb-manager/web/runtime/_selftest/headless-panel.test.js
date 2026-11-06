@@ -119,23 +119,36 @@ const wk = B.verifyBundle3(B.bakeClock3({ name: 'Panel', serial: 1, bakedMs: 1, 
 const els = wk.blob.elements, spr = wk.blob.sprites;
 const pe = els.find((e) => e.class === B.classId('plate') && e.slot === 0), oe = els.find((e) => e.class === B.classId('plate') && e.slot === 1);
 const sp = spr[pe.frame0], so = spr[oe.frame0];
-const stored = new Uint16Array(wk.art.slice(sp.off, sp.off + W * W * 2).buffer);
+// OS v1.2.12: the bake stores the plate as the panel's disc (orb_disc.h), so the panel the
+// editor draws must pack to exactly the stored bytes
+const discOf = (codes) => B.discPack(new Uint8Array(codes.buffer, codes.byteOffset, codes.length * 2));
+const eqb = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 const panel = B.panelPlate(plate.rgba, W, W, true);
-ok(stored.every((v, i) => v === panel[i]), 'panelPlate(dither) is the plate the bake stored, code for code');
+ok(eqb(wk.art.slice(sp.off, sp.off + sp.size), discOf(panel)), 'panelPlate(dither) is the plate the bake stored, code for code');
+const stored = panel;   // the device's square inside the disc, which the check above proved
 // the overlay: the panel's dithered layer step must blend exactly what the bundle's
 // overlay row (colour + coverage) blends through blend_px
-const oc = new Uint16Array(wk.art.slice(so.off, so.off + W * W * 2).buffer), oa = wk.art.subarray(so.off + W * W * 2, so.off + W * W * 3);
+// OS v1.2.12: the stored glass is the panel's masked disc; laid back out as the square the
+// device expands it to (orb_disc_expand_masked), corners clear
+const unDisc = (d, bpp) => { const out = new Uint8Array(W * W * bpp); let at = 0;
+  for (let y = 0; y < W; y++) { const sp = B.discSpan(y, W), n = (sp[1] - sp[0] + 1) * bpp;
+    out.set(d.subarray(at, at + n), (y * W + sp[0]) * bpp); at += n; } return out; };
+const gd = wk.art.subarray(so.off, so.off + so.size), gpx = B.discPx(W);
+const oc = new Uint16Array(unDisc(gd.subarray(0, gpx * 2), 2).buffer), oa = unDisc(gd.subarray(gpx * 2), 1);
 const viaBundle = Uint16Array.from(stored), viaPanel = Uint16Array.from(stored);
 for (let i = 0; i < W * W; i++) if (oa[i]) viaBundle[i] = B.blendPx(viaBundle[i], oc[i], oa[i], 0);
 B.panelLayer(viaPanel, W, over.rgba, W, W, { dither: true });
-let diff = 0; for (let i = 0; i < W * W; i++) if (viaBundle[i] !== viaPanel[i]) diff++;
+// inside the disc: the glass's corners are clear on the orb, and never seen
+let diff = 0;
+for (let y = 0; y < W; y++) { const sp = B.discSpan(y, W);
+  for (let x = sp[0]; x <= sp[1]; x++) if (viaBundle[y * W + x] !== viaPanel[y * W + x]) diff++; }
 ok(diff === 0, 'panelLayer(dither) blends the overlay exactly as the stored overlay row does', diff + ' texels differ');
 // truncation, when asked: the plate the dither: false bake stores
 const wk0 = B.verifyBundle3(B.bakeClock3({ name: 'Panel', serial: 1, bakedMs: 1, plate, hands: [hand], order: [0], plates: [over], dither: false,
   scalars: { second_sweep: 0, tick_rate: 1 } }).bytes).sections[0];
 const pe0 = wk0.blob.elements.find((e) => e.class === B.classId('plate') && e.slot === 0), sp0 = wk0.blob.sprites[pe0.frame0];
-const stored0 = new Uint16Array(wk0.art.slice(sp0.off, sp0.off + W * W * 2).buffer), panel0 = B.panelPlate(plate.rgba, W, W, false);
-ok(stored0.every((v, i) => v === panel0[i]), 'panelPlate(no dither) is the truncated plate, code for code');
+const panel0 = B.panelPlate(plate.rgba, W, W, false);
+ok(eqb(wk0.art.slice(sp0.off, sp0.off + sp0.size), discOf(panel0)), 'panelPlate(no dither) is the truncated plate, code for code');
 // decode
 const rgba = B.panelRGBA(Uint16Array.of(0xffff, 0x0000, 0x8410, 0x07e0));
 ok([...rgba].join() === '255,255,255,255,0,0,0,255,132,130,132,255,0,255,0,255', 'panelRGBA decodes as the panel does', [...rgba].join());

@@ -19,15 +19,20 @@ import (
 // This cannot: the hub is built CGO_ENABLED=0 on every platform so that one binary
 // runs on a Mac with no toolchain, which rules out calling IOServiceGetMatchingServices
 // itself. ioreg(8) is the supported way to ask the same question from a pure-Go
-// process, and -x asks it for XML rather than the ASCII tree, whose indentation,
-// glyphs and decimal-versus-hex integer rendering would all be guesses.
+// process, and -a asks it for an XML property list rather than the ASCII tree, whose
+// indentation, glyphs and integer rendering would all be guesses. (-x, which this used
+// until 2026-11-06, is "numbers in hexadecimal", not XML: ioreg printed the tree, the
+// parser refused it, and every Mac port read as unidentified.)
 //
-// The IOUSB plane is the one that holds both halves of the answer in one document: the
+// The IOService plane holds both halves of the answer under each USB device: the
 // IOUSBHostDevice node carries idVendor/idProduct/"USB Serial Number", and the
 // IOSerialBSDClient leaf beneath its interface carries IOCalloutDevice — the
-// /dev/cu.usbmodem… name the hub was handed. Walking from the leaf up to the device is
-// usbClassFromPlist's job and is unit-tested here on Linux; this function only fetches
-// the document.
+// /dev/cu.usbmodem… name the hub was handed. `-r -c IOUSBHostDevice` prints each
+// device's subtree. The IOUSB plane this asked for until 2026-11-06 lists the devices
+// alone, never their serial clients: on a Mac every port read as unidentified and New
+// orb never appeared (owner's Mac: 0 IOCalloutDevice in the IOUSB plane, 1 in this
+// one). Walking from the leaf up to the device is usbClassFromPlist's job and is
+// unit-tested on Linux; this function only fetches the document.
 //
 // Failure is always the zero USBClass, which is not an orb and never gets reset. A
 // missing ioreg, a non-zero exit, an empty or unparsable dump and a port that simply
@@ -63,7 +68,7 @@ var (
 	ioregDump []byte
 )
 
-// ioregUSBPlane returns the XML dump of the IOUSB plane, reusing the last one while it
+// ioregUSBPlane returns the XML dump of every USB device's IOService subtree, reusing the last one while it
 // is still fresh. The cached value is the raw bytes only: no decision is memoised, so a
 // dump that turns out to be unusable cannot become permanently unusable.
 func ioregUSBPlane() ([]byte, error) {
@@ -74,7 +79,7 @@ func ioregUSBPlane() ([]byte, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ioregTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ioreg", "-p", "IOUSB", "-l", "-x")
+	cmd := exec.CommandContext(ctx, "ioreg", "-r", "-c", "IOUSBHostDevice", "-l", "-a")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	// Stderr stays nil: ioreg's complaints would be surfaced by the caller as a

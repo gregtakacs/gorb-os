@@ -16,10 +16,14 @@ import (
 // Apple's PropertyList-1.0 DTD. The bytes themselves are hand-authored here, NOT
 // captured from a Mac — no macOS host was available. So the negative cases carry the
 // real weight: they pin that a document this code does not recognise produces a
-// refusal. The positive case proves the parser reads the keys it was written to read;
-// it does not prove ioreg nests them that way, and the first live run on a Mac has to
-// confirm that. If it does not, the failure mode is a refused probe with an honest
-// message, not a reset on the wrong device.
+// refusal. The positive case proves the parser reads the keys it was written to read.
+//
+// The first live run on a Mac (owner's, 2026-11-06) found two faults the hand-authored
+// documents could not: `-x` is ioreg's hexadecimal flag, not XML (`-a` is), and the
+// IOUSB plane lists devices without their serial clients (0 IOCalloutDevice there, 1 in
+// the IOService subtree `-r -c IOUSBHostDevice` prints). With both fixed the hub tied
+// /dev/cu.usbmodem21101 to the orb's chip, 44:bd:8d:60:80:88, behind two hubs.
+// macServiceDump below is that layout.
 
 const (
 	macOrbCallout = "/dev/cu.usbmodem1101"
@@ -251,5 +255,91 @@ func TestNormalizeSerialNumber(t *testing.T) {
 		if got := normalizeSerialNumber(tc.in); got != tc.want {
 			t.Errorf("normalizeSerialNumber(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// The IOService plane, as `ioreg -r -c IOUSBHostDevice -l -x` prints it (owner's Mac,
+// 2026-11-06: the IOUSB plane held 0 IOCalloutDevice, this one 1): a top-level array of
+// device subtrees, the interface between device and serial client stating the same ids
+// with no serial number, and a hub's subtree holding the devices behind it.
+const macServiceDump = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<array>
+  <dict>
+    <key>USB Product Name</key><string>USB2.0 Hub</string>
+    <key>idVendor</key><integer>8457</integer>
+    <key>idProduct</key><integer>10263</integer>
+    <key>USB Serial Number</key><string>000000000</string>
+    <key>IORegistryEntryChildren</key>
+    <array>
+      <dict>
+        <key>USB Product Name</key><string>USB JTAG_serial debug unit</string>
+        <key>idVendor</key><integer>12346</integer>
+        <key>idProduct</key><integer>4097</integer>
+        <key>IORegistryEntryChildren</key>
+        <array>
+          <dict>
+            <key>bInterfaceNumber</key><integer>0</integer>
+            <key>idVendor</key><integer>12346</integer>
+            <key>idProduct</key><integer>4097</integer>
+            <key>IORegistryEntryChildren</key>
+            <array>
+              <dict>
+                <key>IOCalloutDevice</key><string>/dev/cu.usbmodem21101</string>
+                <key>IOConsoleDevice</key><string>/dev/tty.usbmodem21101</string>
+              </dict>
+            </array>
+          </dict>
+        </array>
+      </dict>
+    </array>
+  </dict>
+  <dict>
+    <key>USB Vendor Name</key><string>Espressif</string>
+    <key>USB Product Name</key><string>USB JTAG_serial debug unit</string>
+    <key>idVendor</key><integer>12346</integer>
+    <key>idProduct</key><integer>4097</integer>
+    <key>USB Serial Number</key><string>44:BD:8D:60:80:88</string>
+    <key>IORegistryEntryChildren</key>
+    <array>
+      <dict>
+        <key>bInterfaceNumber</key><integer>0</integer>
+        <key>idVendor</key><integer>12346</integer>
+        <key>idProduct</key><integer>4097</integer>
+        <key>IORegistryEntryChildren</key>
+        <array>
+          <dict>
+            <key>IOCalloutDevice</key><string>/dev/cu.usbmodem1101</string>
+            <key>IOConsoleDevice</key><string>/dev/tty.usbmodem1101</string>
+          </dict>
+        </array>
+      </dict>
+    </array>
+  </dict>
+</array>
+</plist>`
+
+func TestUSBClassFromPlistReadsTheServicePlane(t *testing.T) {
+	// the interface states the ids too; the MAC is the device's, one level up
+	c := mustClass(t, []byte(macServiceDump), "/dev/cu.usbmodem1101")
+	if !c.Known || !c.IsOrbDevice() {
+		t.Fatalf("an orb in the IOService plane not attributed: %#v", c)
+	}
+	if c.Serial != macOrbMAC {
+		t.Errorf("Serial = %q, want the device's %q past the interface that has none", c.Serial, macOrbMAC)
+	}
+	if !strings.Contains(c.Instance, "Espressif") {
+		t.Errorf("Instance = %q, want the device's label, not the interface's", c.Instance)
+	}
+}
+
+func TestUSBClassFromPlistNeverTakesTheHubsIdentity(t *testing.T) {
+	// an orb behind a hub, its device stating no serial: the walk stops at the orb
+	c := mustClass(t, []byte(macServiceDump), "/dev/cu.usbmodem21101")
+	if !c.Known || c.Vendor != 0x303a || c.Product != 0x1001 {
+		t.Fatalf("orb behind a hub = %#04x:%#04x known=%v, want 303a:1001", c.Vendor, c.Product, c.Known)
+	}
+	if c.Serial != "" {
+		t.Errorf("Serial = %q: the hub's serial number was taken for the orb's", c.Serial)
 	}
 }

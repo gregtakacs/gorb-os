@@ -251,20 +251,38 @@ func usbClassFromPlist(raw []byte, dev string) (USBClass, error) {
 	if serial == nil {
 		return USBClass{}, nil
 	}
-	// The ids live on the device, not on the serial client or the interface between
-	// them, so walk up to the first ancestor that states both.
+	// The ids live on the device, and in the IOService plane on the interface between
+	// it and the serial client too; only the device carries the serial number (the
+	// S3's MAC). Walk up: the nearest ancestor stating both ids answers, and the walk
+	// goes on past it only to an ancestor with the SAME ids, which is that device's own
+	// node. A hub's subtree holds the devices behind it, so an ancestor with other ids
+	// is the hub, and its serial number is never this port's.
+	var owner *plistNode
+	var dv, dp uint64
 	for n := serial.parent; n != nil; n = n.parent {
 		v, okV := n.dictUint(plistVendorKey)
 		p, okP := n.dictUint(plistProductKey)
 		if !okV || !okP {
 			continue
 		}
+		if owner == nil {
+			owner, dv, dp = n, v, p
+		} else if v != dv || p != dp {
+			break
+		} else {
+			owner = n
+		}
+		if n.dictString(plistSerialNumKey) != "" {
+			break
+		}
+	}
+	if owner != nil {
 		return USBClass{
 			Known:    true,
-			Vendor:   uint16(v),
-			Product:  uint16(p),
-			Serial:   normalizeSerialNumber(n.dictString(plistSerialNumKey)),
-			Instance: usbInstanceLabel(n),
+			Vendor:   uint16(dv),
+			Product:  uint16(dp),
+			Serial:   normalizeSerialNumber(owner.dictString(plistSerialNumKey)),
+			Instance: usbInstanceLabel(owner),
 		}, nil
 	}
 	// The port was found and nothing above it states its ids. That is not an orb, and

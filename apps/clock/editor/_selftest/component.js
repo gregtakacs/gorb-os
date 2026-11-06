@@ -88,8 +88,9 @@ class Component extends DCLogic {
      * glass for every preset, so the crossed-plate model below (fitted to two panel points in
      * October, before ink spans) must not bill the same crossings again. b.fps stays the bank's
      * own tempo (the gears, which the preview steps through); the rate quoted is the hands'. */
-    if (b.plan) Object.assign(b.dev, { model: b.dev.pace, pace: b.plan.fps, need: b.plan.fps, gears: WatchEngine.gearTempo(b.plan.gears), prepaint: !!b.plan.prepaint, planned: true,
-      why: 'The plan priced for this dial: hands at ' + b.plan.fps + ' fps, the movement at ' + WatchEngine.gearTempo(b.plan.gears) + (b.plan.prepaint ? ', pre-painted' : '') + '.' });
+    const q = b.plan || b.quote;
+    if (q) Object.assign(b.dev, { model: b.dev.pace, pace: q.fps, need: q.fps, gears: WatchEngine.gearTempo(q.gears), prepaint: !!q.prepaint, planned: true,
+      why: 'The plan priced for this dial: hands at ' + q.fps + ' fps' + (q.gears ? ', the movement at ' + WatchEngine.gearTempo(q.gears) : ', no movement on show') + (q.prepaint ? ', pre-painted' : '') + '.' });
     return b;
   }
   /* The tempo the preview must play at and the tempo the readout quotes: the
@@ -337,9 +338,13 @@ class Component extends DCLogic {
      * key's ceiling and it never claws back up. The readout and the frames
      * on screen would then belong to different tempos. */
     // a sweep's rate is its plan's; until the live price lands, the rate below is a placeholder
-    const pricing = !forceWant && c.tick === 'sweep' && !!(window.GorbBake && GorbBake.pickPlan4);
-    if (s && s.ak !== ak) return { fps: this._hbFps || want, want, car, needle, rows: s.rows, cap: CAPS[want], measured: false, measuredAt: s.f, why: '', pricing };
-    if (!s) return { fps: want, want, car, needle, rows: 0, cap: CAPS[want], measured: false, measuredAt: 0, why: '', pricing };
+    // A dial with no movement on show prices a plan with no gears: that is a price landed too,
+    // so it is no longer "Pricing..." (Orbit, Aviator and the rest sat on it for good). The
+    // labels quote it (b.quote), but no plan rides the budget: the bake reads b.plan for its tick rate
+    const held = pk && !forceWant ? { priced: true, quote: pk } : null;
+    const pricing = !held && !forceWant && c.tick === 'sweep' && !!(window.GorbBake && GorbBake.pickPlan4) && !(this._liveNone && this._liveNone === this.live4Key());
+    if (s && s.ak !== ak) return { fps: this._hbFps || want, want, car, needle, rows: s.rows, cap: CAPS[want], measured: false, measuredAt: s.f, why: '', pricing, ...held };
+    if (!s) return { fps: want, want, car, needle, rows: 0, cap: CAPS[want], measured: false, measuredAt: 0, why: '', pricing, ...held };
     const r = s.rows;
     let fps = 4;
     for (const t of [15, 12, 8]) { if (t > want) continue; if ((car || r > 0) && WatchEngine.bankFrames(t) > MAXBANK) continue; if (r <= CAPS[t]) { fps = t; break; } }
@@ -359,7 +364,7 @@ class Component extends DCLogic {
       this._ftierOcc = s.occ;                                   // the mask this measurement used
       this._hbFps = fps;                                         // the rate the frames on screen were rendered at
     }
-    return { fps, want, car, needle, rows: r, cap: CAPS[want], measured: true, measuredAt: s.f, why: '', pricing };
+    return { fps, want, car, needle, rows: r, cap: CAPS[want], measured: true, measuredAt: s.f, why: '', pricing, ...held };
   }
   preset(id) { return window.WatchEngine.PRESETS[id || this.state.dial]; }
   design(id) { id = id || this.state.dial; return WatchEngine.canonDesign(JSON.parse(JSON.stringify(this.state.designs[id] || this.preset(id).design))); }
@@ -2747,10 +2752,11 @@ class Component extends DCLogic {
       // the bank: frames as the walk composes them, each diffed as the encoder diffs it — against
       // the picture the deltas so far rebuild (rowDelta's running canvas), at its floor, so a slow
       // drift under the floor in any one step still lands once it has added up
-      const T = G.DELTA_TOL || 16, rects = [];
+      const T = G.DELTA_TOL || 16, rects = [], walked = [];
       let canvas = null, first = null;
       for (let f = 0; f <= B; f++) {
         const cur = f < B ? pixOf(this.frameCanvas(f, { hands: 1, glass: 1, outer: 1, cage: 1, sealed: rowsOff ? 1 : 0 }, null, rowsOff ? onlyBase : undefined)) : first;
+        if (f < B) walked.push(cur);
         if (!first) { first = cur; canvas = cur.slice(); }
         else {
           let x0 = 466, y0 = 466, x1 = -1, y1 = -1;
@@ -2771,13 +2777,19 @@ class Component extends DCLogic {
       const hr = this.handRows3(fc, pixOf);
       let auxRows = [];
       if (pp.rows.length) { const ap = await this.auxPass3(pp, onlyBase); if (ap.refuse) return null; auxRows = ap.rows; }
-      if (stale() || (!hr.hands.length && !auxRows.length)) return null;
+      // the wheels, as the bake renders them: a dial read only by its rings (Orbit, Rink) has no
+      // hand to price, and was never priced live at all
+      let wheelRows = [], cover = null;
+      if (wp.rows.length) { const wr = this.wheelPass3(wp, onlyBase); if (wr.refuse) return null; wheelRows = wr.rows; cover = wr.cover; }
+      if (stale()) return null;
+      if (!hr.hands.length && !auxRows.length && !wheelRows.length) return { none: true };   // nothing moves: nothing to price
       const blank = new Uint8Array(466 * 466 * 4);
       for (let i = 3; i < blank.length; i += 4) blank[i] = 255;
       const opts = { name: 'live', serial: 0, bakedMs: 0, plate: { rgba: blank, w: 466, h: 466 }, hands: hr.hands,
                      order: hr.hands.map((h) => h.slot), secShadowSmooth: +c.shSmooth === 1 };
       if (hr.shadows.length) { opts.shadows = hr.shadows; opts.scalars = { shadow_on: 1, shadow_dx: hr.sdx, shadow_dy: hr.sdy }; }
       if (auxRows.length) opts.aux = auxRows;
+      if (wheelRows.length) { opts.wheels = wheelRows; if (cover) opts.cover = cover; }
       if (c.tick && c.tick !== 'sweep') opts.scalars = Object.assign(opts.scalars || {}, { second_sweep: 0, tick_rate: Math.max(1, Math.min(255, +c.tick | 0)) });
       if (M.cageAt) {
         const cp = this.carriagePlanes3(fc, B);
@@ -2789,7 +2801,10 @@ class Component extends DCLogic {
         }
       }
       const r = G.bakeClock3(opts);
-      return G.estimate4(G.verifyBundle3(r.bytes).sections[0], { bank: rects.some((q) => q.w) ? rects : null, bankFps: st.fps, favour: c.favour || 'sweep' });
+      // the bake's own split (splitPolicy3): a plate whose motion is under the shimmer band ships
+      // still, with no gears to price (Orbit's few px of balance read as a 4 fps movement)
+      const still = !opts.carriage && !(window.OrbTheme.motion(walked).unionPx > (466 * 466) / 1000);
+      return G.estimate4(G.verifyBundle3(r.bytes).sections[0], { bank: !still && rects.some((q) => q.w) ? rects : null, bankFps: st.fps, favour: c.favour || 'sweep' });
     } catch (e) { this._plan4Err = (e && e.stack) || String(e); return null; }
   }
   /* The plan a priced record names: once live has verified its plans (each on a bank at its own
@@ -2830,6 +2845,7 @@ class Component extends DCLogic {
       if (this._liveQueued) { this._liveQueued = false; this.liveAgain(0); }
       if (this.live4Key() !== k) { this.liveAgain(); return; }   // the dial moved on: price it again
       this._liveKey = k;
+      if (e && e.none) { this._liveNone = k; this.forceUpdate && this.forceUpdate(); return; }   // a still dial: priced, at nothing
       if (!e) return;
       const c = this.cfg(), G4 = window.GorbBake, ak = this.artKey(this.mvKey(1)), shs = +c.shSmooth === 1 ? 1 : 0;
       /* A plan's gears redraw the bank, and the bank's rects are its price: a plan is only

@@ -152,6 +152,8 @@
     say('LIVEHIST ' + JSON.stringify(IT._liveHist || []));
     const why4 = (e) => e.policy.filter((x) => !x.ok && x.gears && /fit|leave|landing/.test(x.why)).slice(0, 3).map((x) => G.planKey4(x) + ': ' + x.why + (x.terms ? ' ' + JSON.stringify(x.terms) : ''));
     say('LIVE4 ' + (IT._plan4 && IT._plan4.live ? JSON.stringify({ plans: IT._plan4.est.plans.map(G.planKey4), tempo: IT.F, rect_kpx: IT._plan4.est.rect_kpx, movers: IT._plan4.est.movers, why: why4(IT._plan4.est) }) : 'none' + (IT._plan4Err ? ' — ' + String(IT._plan4Err).split('\n')[0] : '')));
+    // what the editor says once that price is in: the badge's rate, and whether it still waits
+    { const b = IT.budget(); say('BADGE ' + JSON.stringify({ pricing: !!b.pricing, planned: !!b.dev.planned, hands: b.dev.pace, gears: b.dev.gears || 0, settled: !!IT.settled3() })); }
     say('--- baking ' + DIAL + ' (theme name "' + NAME + '") through exportTheme3 ---');
     pump();
     await wait(400);   // let the ticker fill the loop before the first settle check

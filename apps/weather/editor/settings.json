@@ -1,0 +1,15 @@
+{
+  "place1": {
+    "kind": "place",
+    "label": "Place 1",
+    "help": "Home is the orb's own, set on the Orb tab. Up to three more places sit beside it: on the weather screen, press the knob, then turn it to step from Home through them. The forecast comes from Open-Meteo, one request for every place."
+  },
+  "place2": {
+    "kind": "place",
+    "label": "Place 2"
+  },
+  "place3": {
+    "kind": "place",
+    "label": "Place 3"
+  }
+}

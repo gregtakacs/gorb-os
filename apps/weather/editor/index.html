@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weather editor</title>
+<!-- The weather app's editor (docs/weather-plan.md §2.6): its places and its themes. The OS
+     runtime the hub serves (editor.json lists it); the app's own files sit beside this page. -->
+<link rel="stylesheet" href="/runtime/ui@1/ui.css">
+<link rel="stylesheet" href="/runtime/studio@1/studio.css">
+<link rel="stylesheet" href="/runtime/fonts@1/fonts.css">
+<style>
+  html, body, #root { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 13px/1.45 var(--sans); }
+  .fl-list { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; }
+  .fl-sec { padding: 10px 10px 2px; color: var(--mut); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="orb-app.js"></script>
+<script src="/runtime/react@18.3.1/react.production.min.js"></script>
+<script src="/runtime/react@18.3.1/react-dom.production.min.js"></script>
+<script src="/runtime/baker@1/orbtheme-baker.js"></script>
+<script src="/runtime/theme@1/send.js"></script>
+<script src="/runtime/theme@1/session.js"></script>
+<script src="/runtime/theme@1/preview.js"></script>
+<script src="/runtime/theme@1/measure.js"></script>
+<script src="/runtime/studio@1/studio.js"></script>
+<script src="weather-bake.js"></script>
+<script src="weather-editor.js"></script>
+</body>
+</html>

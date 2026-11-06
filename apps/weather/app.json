@@ -1,0 +1,14 @@
+{
+  "slug": "weather",
+  "title": "Weather",
+  "caps": ["net", "location"],
+  "period_ms": 1000,
+  "settings": [
+    {"id": "place1", "type": "string"},
+    {"id": "place2", "type": "string"},
+    {"id": "place3", "type": "string"}
+  ],
+  "shelf": true,
+  "os_min": "v1.2.10",
+  "editor": "editor"
+}

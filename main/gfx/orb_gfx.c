@@ -662,8 +662,14 @@ void gfx_blend_px(uint16_t *d, uint16_t c, uint8_t a, int bmode)
  *         re-composites under a hand standing still never recomputes them. */
 #define INK_STRIP   8
 #define INK_STRIPS  64                  /* h <= 512 */
-#define INK_N       16
-#define SPC_N       12
+#define INK_N       48                  /* the tracker's 15 plane rows pick among 49 frames */
+/* A commit resolves every rotated job's spans first and paints after, holding a pointer
+ * into this cache per job (gfx_commit's bsp[]). Twelve entries let the tracker's ~20 jobs
+ * (its arm, 15 planes, the markers) evict entries already handed out, and the arm, resolved
+ * first, painted through a plane's spans: gone, or slivers where the two crossed (Bronze,
+ * 2026-11-06, 399,291 escapes a commit in spans=2). Room for a commit's 32 jobs and the
+ * marks between commits, and a commit's own entries are pinned (spc_t.gen). */
+#define SPC_N       40
 
 typedef struct {
     const uint8_t *alp;
@@ -679,6 +685,7 @@ typedef struct {
     int32_t  ang, posx, posy;
     bool     smooth;
     uint32_t stamp;
+    uint32_t gen;                       /* the commit that last used it: never evicted within it */
     gfx_spans_t sp;
 } spc_t;
 
@@ -686,7 +693,7 @@ static volatile int  s_bx_mode = 1;     /* §49.15: ink spans are the shipped co
 static volatile bool s_bx_noglass;
 static ink_t   *s_ink;
 static spc_t   *s_spc;
-static uint32_t s_ink_next, s_spc_clock;
+static uint32_t s_ink_next, s_spc_clock, s_spc_gen = 1;
 static uint64_t s_bx_commits, s_bx_restored, s_bx_iter_box, s_bx_iter_span,
                 s_bx_escape, s_bx_span_us;
 
@@ -824,6 +831,7 @@ bool gfx_spans_of(const gfx_paint_ctx_t *pc, const gfx_spans_t **out)
         if (c->alp == pc->alp && c->ang == pc->ang_10 && c->posx == pc->posx &&
             c->posy == pc->posy) {
             c->stamp = s_spc_clock;
+            c->gen = s_spc_gen;
             *out = &c->sp;
             return true;
         }
@@ -831,10 +839,14 @@ bool gfx_spans_of(const gfx_paint_ctx_t *pc, const gfx_spans_t **out)
     const int64_t t0 = esp_timer_get_time();
     const ink_t *k = ink_of(pc);
     if (!k) return false;
-    spc_t *c = &s_spc[0];                             /* least recently used */
-    for (int i = 1; i < SPC_N; i++) if (s_spc[i].stamp < c->stamp) c = &s_spc[i];
+    /* least recently used among the entries this commit has not handed out: one it has
+     * is still a job's spans (gfx_commit's bsp[]); with none free the job paints its box */
+    spc_t *c = NULL;
+    for (int i = 0; i < SPC_N; i++)
+        if (s_spc[i].gen != s_spc_gen && (!c || s_spc[i].stamp < c->stamp)) c = &s_spc[i];
+    if (!c) return false;
     c->alp = pc->alp; c->ang = pc->ang_10; c->posx = pc->posx; c->posy = pc->posy;
-    c->smooth = pc->smooth; c->stamp = s_spc_clock;
+    c->smooth = pc->smooth; c->stamp = s_spc_clock; c->gen = s_spc_gen;
     c->sp.y0 = 1; c->sp.y1 = 0;
 
     int32_t sinma, cosma;
@@ -1446,6 +1458,7 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
         }
         jc = jl;
     }
+    s_spc_gen++;                            /* a new commit: the pose cache's pins start over */
     if (bmode) for (int i = 0; i < nj && i < 32; i++) if (!gfx_spans_of(&jc[i], &bsp[i])) bsp[i] = NULL;
     s_bx_commits++;
     if (s_pp_mode && bmode && !s_ko_on && nj <= PP_JOBS) {

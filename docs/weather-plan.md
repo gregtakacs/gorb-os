@@ -20,7 +20,10 @@ figure marked *estimate* is owed a measurement before the slice that depends on 
 6. **Every theme has its own icon pack.** Packs are never shared between themes.
 7. **The weather app gets a theme editor**, as the clock and flights have (§2.6).
 8. **An app's settings belong on its App settings page, never in its theme editor**
-   (2026-11-06). The places moved there (§2.6).
+   (2026-11-06). The places moved there (§2.6). **Superseded for the places, 2026-11-07:**
+   home and the three places are OS settings, read by every app that wants them
+   (radar-plan.md §0 ruling 2, §2.1); Weather reads them from v1.4.0 (radar-plan §2.8).
+   Its old place strings are not carried (radar-plan §0 ruling 5).
 9. **The knob is one dial centred on Now** (2026-11-06, app-platform-plan.md §51): the
    hours clockwise, the days anticlockwise, a press for the next place, no arming (§2.4).
 
@@ -274,6 +277,10 @@ Open-Meteo's data is CC BY 4.0. The credit goes in the app's settings help
 (`settings.json`) and the editor's About, not on the glass.
 
 ### 2.6 The places, and the theme editor (`apps/weather/editor`)
+
+*Owner, 2026-11-07: the places move to the OS (radar-plan.md §2.1). The searcher below
+moves with them to a Places card on the Orb tab; the next paragraph describes W4 as
+built, until R1 and R2 land.*
 
 **Places are the app's settings, so they live on the hub's App settings page** (§0 ruling
 8), not in the theme editor. The app's `settings.json` names `place1..3` with

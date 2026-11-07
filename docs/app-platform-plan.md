@@ -6871,6 +6871,10 @@ other app a turn can never leave it by accident.
 
 **Double press: no.** It would delay every single press by the time it waits for a second.
 
+**Press-and-turn: yes** (owner, 2026-11-07, felt on Bronze). Turning while the knob is held
+down is a third gesture that delays nothing; it is the radar's zoom. The rules are
+radar-plan.md §2.10 (OS v1.2.18 built the knob half).
+
 **Touch: never required** (owner undecided on enabling it). Everything works from the knob;
 if touch comes, tap = press and tap-a-target (an aircraft) are the candidates, and swipes
 are not.

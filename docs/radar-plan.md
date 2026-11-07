@@ -1,7 +1,7 @@
 # Radar: rain over a map, for home and the three places
 
-Status: **designed 2026-11-07 (owner, §0). Not started: nothing here is built.** Four
-pieces of work:
+Status: **designed 2026-11-07 (owner, §0); R0 measured, R1, R1b and R2 built and run on
+Bronze 2026-11-07, uncommitted (§6).** Four pieces of work:
 
 - the places move out of the weather app into the OS, beside home (§2.1);
 - **the OS serves a map for home and each place** to any app that holds `location`, drawn
@@ -46,6 +46,24 @@ owed a measurement before the slice that depends on it (§4).
     held down is a third control beside turn and press; double press stays out (§51: it
     would delay every press). The owner felt it on Bronze's test build (2026-11-07) and
     kept it. The hold must not fire under a slow first turn (§2.10).
+13. **The look of the mock-up is approved** (2026-11-07,
+    https://claude.ai/artifact/NULqoinYyg8zVQWmtrYbjC), with these changes:
+    - **The map has presets:** levels of detail and colour schemes that match the themes,
+      and switches that turn things off easily, such as minor roads, or fewer city
+      names (§2.9).
+    - **Five starters:** Vintage and Blueprint join Scope, Paper and Station, so the radar
+      matches every look the orb has. Blueprint draws thin and dashed lines, so the map
+      renderer draws dashes (§2.4).
+14. **Every radar setting is set at theme-edit time and carried in the baked theme.** The
+    map's colours, opacities, widths and dashes, the detail switches, the rain ramp, the
+    forecast style, the overlay and the life all live in the theme. Only the starting zoom
+    and the radar source stay app settings (§2.5). The theme format needs a section of
+    values for this (§2.11).
+15. **The card is a runtime read path for the OS's maps**: essential, and fine. The OS
+    schedules every card read and write, so the maps never block the hub's writes of apps,
+    themes and maps, and the hub's writes never corrupt a map being read (§2.12).
+16. **The stage gains a live layer** (2026-11-07): the radar draws its map and rain into a
+    full-glass element the theme places in its stack, not an LVGL canvas (§2.9, R3c).
 
 Everything else below is design, open to the owner until it is built.
 
@@ -146,10 +164,18 @@ A standalone firmware for a very similar round 466 px S3 board. Its radar
     at z5: 31,895 B; DFW, light rain to the south-west: z6 2,253 B, z7 1,529 B. The RGBA
     scheme 2 for the London frame: 31,319 B.
   - The values: index 0 is no echo. Indices 1–68 map to a grey ramp of 84–151 in the PNG's
-    palette (New York z6). The mapping to dBZ is not documented (§4).
-  - **Point images stop at z7.** At DFW, z8 answered an empty 1,096 B RGBA image for both
-    the radar and the coverage, though DFW is inside radar cover. London z9 and z11 gave the
-    same 1,096 B.
+    palette (New York z6). **The grey is LibreWXR's pixel value, and dBZ = value / 2 − 32**
+    (read from its source, 2026-11-07: `pixel = (dBZ + 32) * 2`; scheme 255 is an identity
+    table). Echoes under 10 dBZ (value 84, `noise_floor_dbz`) are dropped, which is why the
+    lowest grey seen is 84. **The raw image carries no snow:** scheme 255's snow table is the
+    same identity.
+  - **A 512 px point image at z has the scale of zoom z+1** in the usual 256 px pyramid: it
+    is placed in a world of 2^z tiles of 512 px (`window_origin(lat, lon, z, 512)`), centred
+    to the nearest whole pixel. Measured over Seattle's rain (2026-11-07): the z6 512 px
+    image equals the same zoom's tiles stitched and cropped at that origin, pixel for pixel,
+    and its centre 256 px equals the z7 256 px image, all 3,581 echo pixels.
+  - ~~Point images stop at z7.~~ *Wrong, corrected 2026-11-07:* Seattle answers z8 and z9
+    with data. DFW's empty z8 was an empty sky; the server's default cap is z12.
   - `/v2/coverage/0/512/{z}/{lat}/{lon}/0/0_0.png`: an indexed PNG with two values, 0 and
     1 (DFW z6 1,312 B; London z7 1,302 B). It says covered or not; it does not tell radar
     from satellite or model.
@@ -279,6 +305,42 @@ The vertices the drawn roles carry within each zoom's ±330 px window, counted f
   roughly ten times the vertices and show nothing more, so the OS keeps one file per whole
   zoom and picks the nearest (§2.4).
 
+### 1.9 The vector renderer on Bronze (R0, 2026-11-07)
+
+`main/map/orb_map_raster.c` (plain C, host-tested by `tools/host_map_raster_test.py`)
+drawing DFW's six `.orbmap` files (`tools/orbmap.py`, FORMAT 1) from Bronze's card,
+through the bench-only `GET /api/v1/debug/map_bench` on the httpd task. Best of three,
+240 MHz, octal PSRAM at 80 MHz, the clock app on the glass.
+
+| level | file | card read | render, own scale | 1.41x | 0.71x | rot 30 | dashed | fills / lines at 1x |
+|---|---|---|---|---|---|---|---|---|
+| z6 | 126,952 B | 197 ms | 165 ms | 144 | 191 | 167 | 169 | 59 / 103 ms |
+| z7 | 145,164 B | 224 ms | 173 ms | 160 | 214 | 185 | 176 | 71 / 99 ms |
+| z8 | 123,091 B | 189 ms | 159 ms | 161 | 170 | 169 | 161 | 97 / 61 ms |
+| z9 | 326,386 B | 500 ms | 421 ms | 428 | 422 | 451 | 487 | 168 / 251 ms |
+| z10 | 354,349 B | 527 ms | 446 ms | 396 | 484 | 501 | 510 | 224 / 219 ms |
+| z11 | 230,666 B | 352 ms | 284 ms | 252 | 339 | 315 | 334 | 144 / 138 ms |
+
+- **The files are larger than estimated:** 1.31 MB for DFW's six levels at a quarter
+  pixel (2.7 B a vertex; the simplification about halves the tiles' vertices). §1.8's
+  400–600 KB estimate was low.
+- **The card reads at about 650 KB/s.** A 32 KB piece holds the card lock 48–57 ms, so a
+  hub write waits at most that long behind a map read (§2.12). CRC: 8–24 ms.
+- **One bug found and fixed on the bench.** An insertion sort of each fill's edges was
+  quadratic on a metro's urban outline in PSRAM: z8 took 2.95 s. A counting sort by row
+  brought it to 159 ms. A solid-line fast path cut the lines by about 25 %.
+- **It is plain CPU, not memory.** Decoding alone (`roles=0`) is 24 ms at z6 and 61 ms at
+  z10, about 90x this host, the same ratio as drawing. A tiled raster (8x8 pixels, one
+  32-byte cache line a tile) left the times unchanged, and is kept since it is
+  pixel-identical and only 2.8 KB larger.
+- **The verdict: vectors stay** (§0 ruling 11). A view opens in 0.35–1.0 s with its read,
+  and re-renders in 0.15–0.5 s from a file already in PSRAM. That holds with three rules
+  (§2.4): views render on the worker while the old one stays on the glass; the app's
+  current levels stay in PSRAM; and the radar keeps its three levels (~395 KB at DFW)
+  while it is on the glass, so a zoom costs only the render (~0.16–0.2 s).
+- **Room left, not needed yet:** a coarser simplification, dropping rings under a pixel,
+  and inlining `floorf` and `ceilf` in the inner loops.
+
 ## 2. Design
 
 ### 2.1 Places in the OS
@@ -328,9 +390,13 @@ getting each place's offset from Open-Meteo, and the radar labels frames relativ
 - **A `source` string setting**, the base URL, defaulting to `https://api.librewxr.net`. An
   owner running their own LibreWXR (on a NAS, say) points it there; the API is the same.
 - **Per refresh:** one `weather-maps.json`, then only the frames the app does not hold. A
-  frame is keyed by its `time`, the place and the zoom. Normally that is one new past frame
-  and the six nowcast frames, which are re-issued each cycle (§4: whether a nowcast frame's
-  path changes when it is re-issued).
+  path is just the frame's time (`/v2/radar/<unix time>`), and **the same path serves the
+  forecast for that time and, once it has passed, the observation** (polled 2026-11-07:
+  `/v2/radar/1794083400` was a nowcast frame for three polls, then a past one). So a frame
+  is keyed by its time, its kind (past or nowcast), the place and the zoom: a frame that
+  moves from nowcast to past is fetched again, and the six nowcast frames are re-asked each
+  cycle with `If-None-Match` and the `ETag` the server sends (`max-age=300`), so an unchanged
+  one costs a 304. Normally a refresh is one new past frame plus six conditional requests.
 - **The request:** `{source}{path}/512/{z}/{lat}/{lon}/255/0_0.png`, coordinates to four
   decimals, z at most 7 (§1.4). PNG, not WebP: one decoder covers the radar and the map
   (§2.3), and WebP's lossless coder is much more code than a PNG filter on top of ROM
@@ -379,7 +445,7 @@ typedef struct {
     uint32_t slot;              /* a kept body: an 8-bit-or-less indexed PNG */
     int32_t  sx, sy;            /* the source window's top-left */
     int32_t  dx, dy, w, h;      /* where on the canvas, and how much */
-    int32_t  scale;             /* 1, or 2 to double each source pixel (the radar's Local step) */
+    int32_t  scale;             /* 1; 2 doubles each source pixel (kept for an app that wants it) */
     const uint32_t *pal;        /* 256 ARGB entries in app memory; alpha 0 = leave the canvas */
 } orb_png_draw_t;
 
@@ -465,6 +531,8 @@ typedef struct {
     int32_t  radius_m;       /* centre to the glass's edge */
     int32_t  rot_cdeg;       /* rotation, hundredths of a degree clockwise; 0 = north up */
     uint8_t  width[16];      /* line width per role, 0-4 px; 0 = not drawn; fills and marks ignore it */
+    uint8_t  dash[16];       /* per line role: 0 solid, else a dash pattern id (§2.11's table) */
+    uint8_t  detail;         /* the theme's detail preset: which roles and how many names */
 } orb_map_view_t;
 
 typedef struct {
@@ -485,8 +553,12 @@ uint32_t orb_maps_gen(void);                                     /* moves when t
 - **`orb_map_open`** reads the level's file from the card into PSRAM, renders a 466×466
   4-bit role raster (108 KB, PSRAM) with the view's radius, rotation and widths, then frees
   the vectors. Fills are scanline-filled even-odd, so holes and islands come out right.
-  Lines are drawn at their role's width, and marks last. *Estimate* 100–300 ms for the
-  densest level (§4); R0 measures it before anything else is built. Opening a new view (a
+  Lines are drawn at their role's width and dash pattern (Blueprint's thin dashed lines),
+  with the dash phase carried along each line so a pattern does not restart at every
+  vertex, and marks last. Measured on Bronze (§1.9): 145–510 ms a render, plus
+  190–530 ms to read the level if it is not already in PSRAM. **Each app keeps the
+  levels it is using in PSRAM** (the radar all three of its own, ~395 KB at DFW), so
+  only a new place or a new level pays the read. Opening a new view (a
   range or a rotation change) renders again; the old view draws until the new one is ready.
 - **`orb_map_draw`** blends the view's role raster onto the canvas through the palette: 16
   ARGB entries, one per role, and alpha 0 leaves the canvas as it was. A palette change
@@ -597,11 +669,12 @@ FORMAT). It deletes the files no place uses. No app's settings page is involved.
 1 KB), the palettes (1 KB for rain, 64 B for the map), the place on the glass and its zoom.
 The frames are blobs (§2.3); the map is the OS's (§2.4).
 
-**Zoom:** three steps at the radar frames' own scales, z6, z7 and z8: 479, 239 and 120 km
-from the centre to the edge at DFW, and 366, 183 and 92 km at 50°N. The app opens a map
-view at exactly that radius (`orb_map_open`), so the map and the frame line up pixel for
-pixel. **Local draws the z7 radar frame doubled** (`scale = 2`), since point images stop
-at z7 (§1.4) and the radar's data is about 1 km a pixel anyway. The step is changed by
+**Zoom:** three steps, the map's z6, z7 and z8: 479, 239 and 120 km from the centre to the
+edge at DFW, and 366, 183 and 92 km at 50°N. **Each asks LibreWXR for its 512 px image one
+zoom lower** (z5, z6, z7), which is the same scale (§1.4). The app opens a map view at
+exactly that radius (`orb_map_open`) and shifts the frame by the server's rounding of its
+centre (under half a pixel, computed from `window_origin`'s formula), so the map and the
+rain line up. No step doubles a frame. The step is changed by
 press-and-turn (§0 ruling 12), and the `zoom` setting is where it starts. Each step's
 frames are fetched separately, and a step change opens a new map view.
 
@@ -675,23 +748,24 @@ the radar costs the other apps nothing but its ledger slot.
 Built on the kit (theme-editor-kit-plan: start sheet, screen calibration, colour picker,
 CSS), with Weather's editor as the model, in steps:
 
-1. **Start:** the starter themes as tiles, plus Blank, or one from the hub library.
-   Proposed starters, matched to looks the orb already has: **Scope** (phosphor green on
-   black, flights' Scope), **Paper** (a printed road atlas), **Station** (the TV weather
-   map: slate land, white borders, the broadcast rain ramp). §1.5's render is a first
-   sketch of all three.
+1. **Start:** the five starter themes as tiles, plus Blank, or one from the hub library:
+   **Scope** (phosphor green on black, flights' Scope), **Paper** (a printed road atlas),
+   **Station** (the TV weather map: slate land, white borders, the broadcast rain ramp),
+   **Vintage** and **Blueprint** (§0 ruling 13, below). The mock-up shows the first three.
 2. **Ground:** the plate (colour, gradient or a picture), the rim, and the dim applied
    where there is no radar coverage.
-3. **Map:** for each of the twelve roles, a colour, an opacity and an off switch, and for
-   the line roles a width (1–4 px). Previewed on the owner's own home map at all three zoom
+3. **Map:** a detail preset, a names preset and a colour scheme (below), then for each
+   role a colour, an opacity and an off switch, and for the line roles a width (1–4 px) and
+   a dash pattern. Previewed on the owner's own home map at all three zoom
    steps: the editor reads the `.orbmap` files from the card and draws them with the hub's
    JS rasteriser, which matches the orb's pixels (§2.4). Also which landmark kinds show
    names, and from which rank down.
 4. **Rain:** the ramp's stops over the raw values, with the same lightness check as
    Weather's Temperature step (stops must differ in lightness, not hue alone, so the ramp
-   still reads to colour-blind eyes and on a dim glass). A second ramp for snow if
-   LibreWXR's snow flag is used. The **forecast treatment**: dimmed, desaturated, or
-   outlined only, so the nowcast never looks observed.
+   still reads to colour-blind eyes and on a dim glass). The stops are set in dBZ (10 to 75),
+   since the raw value is dBZ (§1.4). No snow ramp: the raw frames carry no precipitation
+   type. The **forecast treatment**: dimmed, desaturated, hatched or outlined, so the
+   nowcast never looks observed.
 5. **Overlay:** the place marker, the range rings (how many, the line, the label), the
    bearing ticks on the rim, and the **time track**: an arc on the rim from −2 h to +1 h,
    one tick a frame, a mark at Now and a pointer on the frame shown. Since the dial is
@@ -703,10 +777,36 @@ CSS), with Weather's editor as the model, in steps:
 8. **Render:** all three steps at true size (177 dpi), the carousel's 232 px preview, the
    pool size of the bake, then Send to orb.
 
-**The open question it raises:** the radar draws on a canvas, while theme text and art go
-through the stage (`orb_stage_*`; theme-text-plan's rule that app words are theme labels).
-How a canvas app's theme supplies fonts, a plate and the rim's track, and whether the
-canvas sits as one stage row under theme rows, is owed before R7 (§4).
+**Presets in the Map step** (§0 ruling 13): a theme starts from a preset and its switches,
+then its colours can be edited one by one.
+- **Detail:** Minimal (major roads, borders, lakes, cities), Standard (adds rivers, urban
+  areas, state lines, runways) and Detailed (adds minor roads and towns). Each feature then
+  has its own on/off switch.
+- **Names:** Off, Few (the top-ranked handful), Normal and Many, plus which kinds are named
+  (cities, towns, airports).
+- **Colour schemes:** one per starter (Scope, Paper, Station, Vintage, Blueprint), applied
+  to all thirteen roles at once. Blueprint's lines are thin and dashed (state lines and
+  minor roads dashed, borders long-dashed).
+
+**Five starters** (§0 ruling 13): Scope, Paper and Station as in the mock-up; **Vintage**
+(the brass and parchment of the clock's vintage looks, sepia map, a muted rain ramp);
+**Blueprint** (cyan lines on blueprint blue, thin and dashed, the rain as white-to-cyan
+contours). Each matches the same-named looks in Weather and Flights.
+
+**Canvas and theme: a live layer on the stage** (proposed 2026-11-07, R0). The stage draws
+a theme's plate, rows and text on the dial's own render path; an LVGL canvas over it forces
+the slower LVGL path, and would hide the theme's rows under it. So the radar draws no
+canvas. **The stage gains a live layer:** a full-glass element the theme places in its z
+stack like any row, whose pixels are the app's, held by the OS in PSRAM (RGB565, plus an
+alpha plane when the theme asks for transparency, so a later Flights can lay a map over its
+plate).
+- `orb_map_draw` and `orb_cv_png8` take the layer as their target as well as a canvas; the
+  app marks what changed (`orb_stage_layer_damage`), and the stage recomposes those tiles.
+- The theme's own rows sit below it (the plate) and above it (the rim's time track, the
+  rings, the place marker, the labels in the theme's fonts), all still on the fast path.
+- To the compositor it is a sprite whose pixels live outside the theme bank; the editor
+  shows it as a row it can move in the stack. Approved (§0 ruling 16); its own slice
+  (R3c); the radar's glass (§2.5) is drawn this way, not with a canvas.
 
 ### 2.10 Press-and-turn, in the OS (§0 ruling 12)
 
@@ -735,34 +835,83 @@ quadrature sequences: a click while down, intent then release under and over the
 time, a hold with no movement, and a click after the hold has fired. There are mutants
 for each gate.
 
+### 2.11 A theme's values (§0 ruling 14)
+
+Themes today carry rows, sprites, fonts and sounds (`apps/sdk/orb_stage.h`). Weather's
+colours live in its baked sprites. The radar's settings are plain values, so the theme
+format gains **a values section**: a short, versioned, app-defined blob baked by the
+app's editor and read by the app at `orb_stage_open` time.
+
+- **The OS reads nothing in it.** It checks the section's size and CRC and hands the bytes
+  to the app (`orb_stage_values(void *buf, uint32_t cap)`). The app owns the layout and
+  its version, so a new radar setting never changes the OS.
+- **The radar's layout, version 1** (*estimate* ~1.6 KB): the map's 16 role colours
+  (ARGB), widths and dash ids; the detail preset and the per-role switches; the names
+  preset and kinds; the rain ramp as 256 ARGB entries and the snow ramp; the forecast
+  style; the overlay's styles; the sweep and loop timing.
+- **Dash patterns** are a small fixed table in the OS: solid, short, long, dot, dash-dot.
+  A theme names one by id, so the renderer never parses a pattern.
+- **One format change, made together:** the reader, `theme_schema`, the bakers
+  (`baker@1`) and the host suites move as one change, as the sparse fonts did (§56).
+  An older OS refuses a theme that carries the section, by `os_min`.
+
+### 2.12 The card, scheduled (§0 ruling 15)
+
+The card has one mutex (`orb_sd_lock`, `main/sd/orb_sd.h`), held for each whole operation.
+Map reads join the hub's uploads and installs, the theme store and the gallery, so they
+follow rules that keep everyone moving:
+
+- **Reads happen on the worker, never on the UI task or an httpd worker.** A view renders
+  only after its file is in PSRAM.
+- **Bounded holds.** A map is read in 32 KB pieces, releasing the lock between pieces, so
+  a hub write waits for at most one piece: 48–59 ms measured (the card reads ~650 KB/s).
+  The header's CRC is checked once the whole file is in, and a file that changed
+  underneath is read again.
+- **Writes win, and it has to be built.** Every card writer marks the card as written once
+  a chunk (`orb_sd_note_write()`: the file manager, the theme upload, the app upload), and
+  a map read stands aside while `orb_sd_write_idle_ms()` is under a second; the shown view
+  keeps drawing. A map is never worth slowing an install. Measured (R0, Bronze, a 3 MB
+  write): alone 12.5–17.8 s; beside a reader looping without the rule 30.9–44.0 s, since
+  the upload takes the lock per chunk and the reader slips in between; beside the same
+  reader with the rule 14.3–16.6 s, the reader standing aside 32.5 s.
+- **Atomic maps.** The hub writes each `.orbmap` to a temporary name and renames it into
+  place, so a reader sees the old file or the new one, never half of one.
+  `POST /api/v1/places/maps` moves `orb_maps_gen` only after the last rename.
+- **The USB window** gives the card away whole: map reads answer "no card" until it
+  returns, as the gallery's do.
+- **Measured in R0**: above, through `map_bench`'s background reader (`bg=`, `yield=`).
+
 ## 3. Slices
 
 | slice | what | depends on |
 |---|---|---|
-| R0 | §4's checks that change the design. **First, the vector render's time:** a host rasteriser in C over DFW's densest level, then the same code in a test build on Bronze, rendering from the card. Then the point image's centre and scale against a map, the raw value → dBZ mapping, nowcast path stability, and canvas plus theme | — |
+| R0 | §4's checks that change the design. **First, the vector render's time:** a host rasteriser in C over DFW's densest level, then the same code in a test build on Bronze, rendering from the card. Then the point image's centre and scale against a map, the raw value → dBZ mapping, nowcast path stability, canvas plus theme, and the card lock's longest hold with a map read beside a theme upload | — |
 | R1b | press-and-turn in the OS (§2.10): the knob layer as benched, the `orb_push` export, the router and the SDK, the host cases | — |
 | R1 | places in the OS: `orb_places.c`, NVS, the imports, `binds --write`, the routes, the hub's allowlist and fake orb, the Places card on the Orb tab; a host test with mutants | — |
 | R2 | Weather v1.4.0 reads the OS places; the place rows leave its App settings page | R1 |
-| R3 | the OS surface: kept bodies and `orb_cv_png8`; the maps: the `.orbmap` FORMAT 1 reader, the rasteriser, views on the worker, the map imports, `/System/Maps`, the gen route; host tests with mutants for the PNG reader, the `.orbmap` reader and the rasteriser; the render and draw times measured on Bronze | R0, R1 |
+| R3 | the OS surface: kept bodies and `orb_cv_png8`; the maps: the `.orbmap` FORMAT 1 reader, the rasteriser, views on the worker, the map imports, `/System/Maps`, the gen route; host tests with mutants for the PNG reader, the `.orbmap` reader and the rasteriser; dash patterns, the card's scheduling (§2.12), the render and draw times measured on Bronze | R0, R1 |
+| R3c | the stage's live layer (§2.9): the element, its PSRAM planes, damage, `orb_map_draw`/`orb_cv_png8` targeting it, the editor's row, host and bench checks | R0 |
+| R3b | a theme's values section (§2.11): the reader, `orb_stage_values`, `theme_schema`, `baker@1`, the host suites, `os_min` | R0 |
 | R4 | the hub's map tool: the Map tiles row, the Go forwarder with its User-Agent, the tile fetch and cache, the MVT decoder, the class-to-role table, clipping, simplifying and the `.orbmap` writer for six levels with their landmarks, the JS rasteriser and the Places card preview, the C/JS pixel parity test, the writes and clean-up, the amber "Maps out of date" state | R0, R1 |
-| R5 | `apps/radar`: the frame list, fetch order, refresh rules, the knob, the glass, the no-map and no-coverage states, one baked starter on the shelf | R3, R4 |
+| R5 | `apps/radar`: the frame list, fetch order, refresh rules, the knob, the glass, the no-map and no-coverage states, one baked starter on the shelf | R3, R3b, R3c, R4 |
 | R6 | bench on Bronze: a stormy day and a quiet one, PSRAM and internal low points from `/status` across a cold start and an hour on the glass, the step time at 4 fps, a card pulled mid-read | R5 |
-| R7 | `apps/radar/editor`: §2.9's steps and the starters | R5, R0's canvas-plus-theme answer |
+| R7 | `apps/radar/editor`: §2.9's steps, the map presets, the five starters | R5, R3b, R0's canvas-plus-theme answer |
 
 ## 4. Owed
 
-1. **Alignment.** Is the 512 px point image centred on the given lat/lon to the pixel, and
-   drawn at zoom z's scale? Check by drawing R4's map under a frame with rain on a coast
-   or a lake shore. §1.5's render assumed both.
-2. **The raw values.** The mapping from the raw grey values to dBZ, read from LibreWXR's
-   source. The rain palette's stops depend on it. Also whether `smooth` and `snow` change
-   the values.
-3. **Nowcast paths**: whether a re-issued nowcast frame keeps its path, which decides how
-   much a refresh fetches.
-4. **Frame sizes on a stormy day** at each zoom, to fix the blob budget. London's z5 frame
-   at 31.9 KB suggests wide views of a big system cost several times a quiet z7.
-5. **The times on Bronze:** the vector render of a view at the densest level (§2.4,
-   *estimate* 100–300 ms, R0 measures it first); `orb_cv_png8` and `orb_map_draw`, and
+1. ~~Alignment~~ **Answered 2026-11-07** (§1.4): a 512 px image at z is zoom z+1's scale,
+   centred to the nearest pixel; checked pixel for pixel against the server's own tiles.
+2. ~~The raw values~~ **Answered 2026-11-07** (§1.4): dBZ = value / 2 − 32, floor 10 dBZ,
+   no snow in raw.
+3. ~~Nowcast paths~~ **Answered 2026-11-07** (§2.2): paths are times and stay put; a time's
+   path changes meaning from forecast to observation. Owed: whether a nowcast frame's ETag
+   changes between cycles (the conditional request copes either way).
+4. **Frame sizes on a stormy day** at each zoom, to fix the blob budget. Seattle on
+   2026-11-07, 6–10 % of the image raining: 18.6 KB (Wide), 24.7 KB (Region), 10.9 KB
+   (Local), so 18 frames ≈ 0.45 MB. A widespread storm is still owed; past the 768 KB
+   budget the app drops its oldest past frames.
+5. **The times on Bronze:** ~~the vector render of a view at the densest level~~
+   *measured 2026-11-07* (§1.9: 145–510 ms, reads 190–530 ms); `orb_cv_png8` and `orb_map_draw`, and
    whether a synchronous draw shows in the UI (§2.3). If the render is far slower, the
    fallback is §1.7's hub-drawn pictures behind the same imports.
 6. **Internal RAM** during the cold start's 20 HTTPS requests in a row: does the OS client
@@ -771,7 +920,7 @@ for each gate.
 7. **The map tool's cost:** bytes fetched and time to encode six levels for one place, at
    DFW and at a sparse place. The simplification tolerance (a quarter pixel, *estimate*)
    against how lines look, and the `.orbmap` sizes it gives.
-8. **Canvas plus theme** (§2.9): how a canvas app takes its theme's fonts, plate and rim.
+8. ~~Canvas plus theme~~ **Ruled 2026-11-07** (§0 ruling 16): the live layer, R3c.
 9. **The OSMF tile policy's current text**, to confirm §1.3's reading before anything is
    said about it in a public doc or issue.
 10. ~~OpenFreeMap's User-Agent clause~~ **Settled by §0 ruling 10.** Their terms (read
@@ -794,3 +943,35 @@ for each gate.
   R6. JSON through the OS tokenizer, no new surface.
 - **More than three places**: the OS record has room, but Weather's 32 rows and one-request
   URL (weather-plan §6.1: 389 B of 480) were sized for four.
+
+## 6. As built
+
+### 6.1 R0, R1, R1b, R2 (2026-11-07, Bronze, OS v1.2.19, uncommitted)
+
+- **R0.** §1.4, §1.9 and §2.12 hold the measurements. The bench pieces stay in the tree:
+  `tools/orbmap.py` (the FORMAT 1 writer and reader), `tools/mvt.py`,
+  `main/map/orb_map_raster.c` with `tools/host_map_raster_test.py`, and the debug-only
+  `GET /api/v1/debug/map_bench` (`bg=`, `yield=`, `roles=`, `dump=`), exempt from the hub's
+  allowlist like the other bench doors. `orb_sd_note_write()` / `orb_sd_write_idle_ms()`
+  are in `orb_sd.c`, called by the file manager, the theme upload and the app upload.
+- **R1, places.** `main/net/orb_places.c` (NVS `orb.places`, keys `p0`–`p2`), the broker's
+  `place` entry behind `location`, the imports `place` and `places_gen` (72 in
+  `binds.json`), `GET`/`POST /api/v1/places` (58 routes of 64), the hub's allowlist, fake
+  orb (`internal/orbfake/places.go`) and the Places card on the Orb tab, which reuses W4's
+  searcher with an encoder that keeps the name whole. Benched: a point without a name is
+  named from the city list ("London"), slot 3, a latitude off the globe and an escape are
+  refused, a cleared slot leaves the others' numbers, and the places survive a reboot.
+  `tools/host_places_test.py`: the checks, the 52 B record against the import, 7 of 7
+  mutants. `host_svc_test.py`: the entry is wired and refused before the read.
+- **R1b, press-and-turn to apps.** The rules moved into four pure functions in `knob.c`
+  (`kg_press`, `kg_click`, `kg_poll`, `kg_release`), which the ISR, the commit and
+  `knob_poll` call. `host_knob_test.py` lifts them and drives 25 cases, 10 of 10 mutants.
+  The iface gains `push`; the wasm module calls a guest's `orb_push` export (appended as
+  `W_PUSH`, entry 16) and the router hands the clicks to it at the armed step, or folds them
+  into the turn when nobody takes them. The carousel discards them.
+- **R2, Weather v1.4.0** (os_min v1.2.19): `load_places()` reads `orb_place(0..2)` and
+  watches `orb_places_gen()`; `place1..3` left `app.json`, and `settings.json` is empty.
+  Scope re-baked on the shelf (v1.4.0). Benched: setting a place on the orb refetched the
+  forecast for it at once (`WX ok 200 places=3`). **The Open-Meteo credit** lived in the
+  place rows' help, which are gone: it moves to gorb-os's ABOUT page with the map credits
+  (owed with the ABOUT page's change).

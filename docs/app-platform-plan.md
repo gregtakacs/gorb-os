@@ -7042,3 +7042,158 @@ the baker alike). OS v1.2.14; clock v1.2.27 (its wasm sizes tables by the ceilin
   found. Marking the box on a frame change too was tried and cost Flights 3-4 fps (17
   against 20-21 on the same traffic), so only the opacity change takes it.
 
+
+## 54 — The carousel: previews, a disc zoom in and out — 2026-11-07
+
+**Owner, 2026-11-07.** The app list §51.1 built as a text page becomes the carousel §48
+was designing, now that the render work (§49.3's precondition) is in. Watched on Bronze's
+glass (`debug/fx` into Flights' Modern preview, 450 ms, TE on, v1.2.13 test build):
+slide 58, iris 58-59, drum 58-59, disc 56-57, fade 29-30 fps. The owner picked **disc**;
+**fade stays** at 30 fps. No tear was reported on any of them.
+
+- **Look.** The selected app's theme preview large in the centre (its native 232 px, so
+  unscaled) with its name under it; the previous and next apps peek in small (~110 px,
+  nearest-sampled) at the left and right edges. **Settings** is the last item, a gear in
+  the same disc.
+- **In.** A long press (or a turn on the clock, §51) zooms the glass down into the centre
+  slot — the app becomes its own preview — and the peeks slide in. The chosen effect
+  carries this; disc is the default and the zoom described here.
+- **Turning.** One click slides the strip one place: the centre shrinks to a peek as it
+  moves aside and the next grows into the centre. This motion is the carousel's own, the
+  same whichever effect is chosen. **The strip wraps**: past Settings comes the first app
+  again, both ways. Fast spins step several (§51's acceleration).
+- **Out.** A press, or **3 s** without a turn, zooms the centre preview up to the full
+  glass (disc) or runs the chosen effect; the live app replaces it once built.
+- **No choice (owner, 2026-11-07, after using it).** The disc zoom in and out, with the
+  fade below, is the carousel's one motion; there is no effect setting. The other
+  effects stay in the `debug/fx` bench only.
+- **Built on the band path** (§48): frames composed straight into the tile ring through
+  `display_fx_frame()`, never on LVGL screens. Every walkable app's preview plane is held
+  in PSRAM (about 108 KB each) before the carousel needs it, because a card read costs
+  ~175 ms; names are rendered once into small planes when the carousel opens.
+
+### 54.1 — Built and felt on Bronze — 2026-11-07
+
+`main/display/orb_strip.c`. A hold, or a turn on a face with no dial, opens it through the
+router's `open_switcher`; the §51.1 text list stays the answer while the previews are not
+in (no card, the first seconds of a boot).
+
+- **The glass hold** (`display_glass_hold`): while the carousel is up, LVGL frames (and
+  the stage's commit hook inside them) land in the mirror and stop there; the carousel's
+  frames go straight to the tile ring (`display_fx_frame_try`). The release re-sends
+  every row.
+- **Previews** are read off the card once, 8 s after boot, on the jobs worker
+  (`orb_theme_pool_stem` names each app's theme), into PSRAM. A store reboots, so they
+  cannot go stale. The app the carousel opens on wears the glass as it stood (a copy of
+  the mirror) until the strip moves off it, so the zoom down starts from exactly what was
+  showing. Names are drawn once per open by LVGL into an off-screen canvas (Montserrat 28).
+- **Out, then a fade.** The zoom out ends on the full-glass preview; the app is switched
+  in under the still-held glass, draws into the mirror (two frames and 120 ms, or one
+  frame and 150 ms for a still page, at most 900 ms), and the preview fades into it over
+  260 ms. Then the glass is released: the panel already shows the mirror, so the release
+  is invisible. A knob event during the settle or fade ends it and goes to the app.
+- **Two fixes on the way, from the owner's hand on the knob.** A frame waited up to 3 s
+  for a tile ring the card had borrowed (the hub reads the card), holding the router's
+  poll and the knob with it; the carousel's frames now skip and catch up instead. And a
+  hold was decided only at the release, so holding on Flights and waiting looked like an
+  OS that never heard the knob; it now fires at 700 ms with the knob still down (the
+  release after it is spent).
+- **Measured** (Bronze, a hold and three turns): 18 ms a frame, about 55 fps (compose
+  7 ms), with motion frames drawn back to back and the knob read between them; the
+  longest gap between knob reads 11 ms. One frame a poll had cost 28.5 ms a frame. A step
+  is 140 ms, the zoom 320 ms.
+
+**Owed:** a host test for the strip's motion and wrap; whether the knob direction on the
+strip is the one the hand expects.
+
+## 55 — Alerts: an app asks for the glass, the OS decides — 2026-11-07
+
+**Owner, 2026-11-07.** Apps should be able to bring themselves forward when something
+happens: rain starting can blip Weather onto the glass and then go back where the owner
+was; an emergency aircraft can take the glass and keep it; the clock's quarter hours can
+wake a dimmed orb. Which triggers exist and how long they last are not decided here. This
+section rules how a trigger travels and who decides what it does.
+
+### The split
+
+- **The app decides what is worth asking about.** Only Weather knows what "rain starting"
+  means and only Flights knows an interesting flyby. Thresholds stay the app's own
+  settings (its `settings.json`, on Orb Manager's App settings page, as today): "a change
+  of N degrees", "within N miles", "which marks of the hour". The app evaluates them in its
+  background service and, when one trips, calls the OS with a **reason**, never a
+  decision: `orb_attention("rain")`.
+- **The OS decides what happens.** The app cannot choose how loud a reason is; the owner
+  does, per app and per reason, and the OS enforces it the way it enforces caps. A reason
+  set to off is dropped without the app knowing.
+
+### Reasons are declared
+
+An app lists its reasons in `app.json`, with defaults:
+
+```json
+"alerts": [
+  { "id": "rain",   "label": "Rain starting",          "kind": "blip",   "seconds": 8, "wake": true },
+  { "id": "temp",   "label": "Big temperature change", "kind": "nudge",  "wake": false },
+  { "id": "squawk", "label": "Emergency aircraft",     "kind": "switch", "wake": true, "night": true }
+]
+```
+
+The declaration is what lets Orb Manager draw the same **Alerts** table for every app,
+including one written outside this repo with the SDK. Per reason the owner sets:
+
+- **kind:** off, nudge, blip, or switch;
+- **seconds:** how long a blip holds the glass;
+- **wake:** whether it may bring the orb out of dim;
+- **night:** whether it may break quiet hours.
+
+The owner's choices live in the OS (NVS, keyed by app and reason), not in the app.
+Uninstalling an app clears them with its settings (the no-disabled-apps ruling).
+
+### The kinds
+
+- **Nudge:** does not take the glass. It may wake the orb (the existing app power request,
+  `idle_dim_app_request`) and marks the app's preview in the carousel with a dot until the
+  owner visits it.
+- **Blip:** takes the glass for its seconds, then goes back to where the owner was.
+- **Switch:** takes the glass and keeps it until the owner turns, presses or holds.
+
+### The OS's rules, system-wide
+
+1. **Never interrupt the owner.** No blip or switch within about 20 s of a knob event, and
+   never during the carousel, the system pages, a theme store, or USB disk mode. A request
+   that lands then is dropped (not queued): a stale alert is worse than none.
+2. **Cooldown per app,** so a reading that flickers across a threshold cannot blip again
+   and again. The figure is a bench and taste question.
+3. **One alert at a time, by priority:** a switch outranks a blip, which outranks a nudge;
+   a lower request arriving during a higher one is dropped.
+4. **Quiet hours** reuse the sound settings' quiet hours (Orb tab): nothing takes the glass
+   or wakes the orb inside them, unless the owner set that reason's night switch.
+5. **A touch adopts it.** A turn or press during a blip turns it into a normal switch: the
+   glass does not fade away from under the owner's hand.
+6. **The app opens on the reason.** The OS hands the reason id to the app as it takes the
+   glass, so Weather shows the hour the rain starts and Flights the aircraft's card, not
+   their home views.
+
+### The motion
+
+A blip or switch **dissolves** from the app on the glass to the asking app: a snapshot of
+the glass, the app switched in under the held glass (§54.1's `display_glass_hold`), a
+settle, then a fade from the snapshot into it. The way back is the same move reversed.
+Not the carousel's disc zoom, which has come to mean "you went somewhere"; a dissolve
+reads as "the orb is showing you something".
+
+### Open questions
+
+- Whether an app may attach a short line ("Rain in 10 min") the OS shows over the
+  dissolve, or whether opening on the reason's view is enough (the lean: enough).
+- The cooldown, the knob-touch guard and default blip length, by hand on the orb.
+- **Background data costs.** A trigger means the app keeps fetching while it is off the
+  glass. Flights must stay polite to its feed (the adsb.lol ban of 2026-11-01): its
+  background poll belongs slower than its on-glass one.
+- **Panel life and power.** Frequent wakes keep the panel lit; the cooldowns and quiet
+  hours are the control.
+
+**Owed when this is built:** the `orb_attention` import and its SDK header; the `alerts`
+block in `app.json`, the schema and the SDK packer; the OS arbiter and its NVS; the
+dissolve; the carousel's dot; the hub's Alerts table; then each app's reasons, chosen by
+the owner.

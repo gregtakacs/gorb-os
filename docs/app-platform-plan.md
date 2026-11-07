@@ -7041,6 +7041,10 @@ the baker alike). OS v1.2.14; clock v1.2.27 (its wasm sizes tables by the ceilin
   its ink spans; why the spans under-cover a picked row after a frame change is not yet
   found. Marking the box on a frame change too was tried and cost Flights 3-4 fps (17
   against 20-21 on the same traffic), so only the opacity change takes it.
+  v1.2.16 found why (weather-plan §2.7): the incoming pose was marked with the outgoing
+  frame's spans (the new frame was taken after both marks), and a row picked back to
+  frame 0 kept its last frame's art on the band path. Both are fixed; the opacity box mark
+  stays until the bars are seen paging clean without it.
 
 
 ## 54 — The carousel: previews, a disc zoom in and out — 2026-11-07

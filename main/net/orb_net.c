@@ -3260,10 +3260,11 @@ static esp_err_t units_reply(httpd_req_t *req)
 {
     orb_units_t u;
     orb_units_get(&u);
-    char json[96];
-    snprintf(json, sizeof json, "{\"temp\":\"%s\",\"speed\":\"%s\",\"dist\":\"%s\",\"gen\":%lu}",
+    char json[112];
+    snprintf(json, sizeof json, "{\"temp\":\"%s\",\"speed\":\"%s\",\"dist\":\"%s\",\"time\":\"%s\",\"gen\":%lu}",
              orb_units_key(ORB_UNITS_TEMP, u.temp), orb_units_key(ORB_UNITS_SPEED, u.speed),
-             orb_units_key(ORB_UNITS_DIST, u.dist), (unsigned long)orb_units_gen());
+             orb_units_key(ORB_UNITS_DIST, u.dist), orb_units_key(ORB_UNITS_TIME, u.time),
+             (unsigned long)orb_units_gen());
     return httpd_resp_sendstr(req, json);
 }
 
@@ -3282,10 +3283,10 @@ static esp_err_t h_units_post(httpd_req_t *req)
     if (!body) return sound_refuse(req, "no memory");
     const int len = sound_body(req, body, NET_SOUND_BODY_MAX);
     if (len < 0) { heap_caps_free(body); return ESP_OK; }
-    static const char *const KEY[ORB_UNITS_KINDS] = { "temp", "speed", "dist" };
+    static const char *const KEY[ORB_UNITS_KINDS] = { "temp", "speed", "dist", "time" };
     orb_units_t u;
     orb_units_get(&u);
-    uint8_t *field[ORB_UNITS_KINDS] = { &u.temp, &u.speed, &u.dist };
+    uint8_t *field[ORB_UNITS_KINDS] = { &u.temp, &u.speed, &u.dist, &u.time };
     int named = 0;
     for (int k = 0; k < ORB_UNITS_KINDS; k++) {
         char v[8];

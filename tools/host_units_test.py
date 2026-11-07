@@ -23,6 +23,8 @@ SDK = os.path.join(ROOT, "apps", "sdk", "orb.h")
 MUTATIONS = [
     ("u->temp < ORB_UNIT_TEMP_N", "u->temp <= ORB_UNIT_TEMP_N"),
     ("u->dist < ORB_UNIT_DIST_N", "u->dist < 9"),
+    ("u->time < ORB_UNIT_TIME_N", "u->time < 9"),
+    ('{ "24h", "12h", NULL }', '{ "12h", "24h", NULL }'),
     ("if (v < 0 || v >= orb_units_count(kind)) return NULL;\n    return KEYS", "if (v < 0) return NULL;\n    return KEYS"),
     ('{ "kmh", "mph", "kn" }', '{ "kmh", "kn", "mph" }'),
     ("if (!strcmp(KEYS[kind][v], key)) return v;", "if (!strncmp(KEYS[kind][v], key, 1)) return v;"),
@@ -51,8 +53,9 @@ static int fails;
 int main(void)
 {
     CK(orb_units_count(ORB_UNITS_TEMP) == 2 && orb_units_count(ORB_UNITS_SPEED) == 3 &&
-       orb_units_count(ORB_UNITS_DIST) == 3 && orb_units_count(3) == 0 && orb_units_count(-1) == 0,
-       "two temperatures, three speeds, three distances, nothing else");
+       orb_units_count(ORB_UNITS_DIST) == 3 && orb_units_count(ORB_UNITS_TIME) == 2 &&
+       orb_units_count(4) == 0 && orb_units_count(-1) == 0,
+       "two temperatures, three speeds, three distances, two time formats, nothing else");
     int rt = 1;
     for (int k = 0; k < ORB_UNITS_KINDS; k++)
         for (int v = 0; v < orb_units_count(k); v++)
@@ -74,11 +77,16 @@ int main(void)
        orb_units_parse(ORB_UNITS_DIST, "kmh") == -1 && orb_units_parse(ORB_UNITS_TEMP, NULL) == -1 &&
        orb_units_parse(ORB_UNITS_TEMP, "") == -1,
        "a key that is not exactly one of the list is refused");
-    orb_units_t u = { ORB_UNIT_F, ORB_UNIT_KN, ORB_UNIT_NM };
+    orb_units_t u = { ORB_UNIT_F, ORB_UNIT_KN, ORB_UNIT_NM, ORB_UNIT_12H };
     CK(orb_units_valid(&u), "the last choice of each is valid");
+    CK(!strcmp(orb_units_key(ORB_UNITS_TIME, ORB_UNIT_12H), "12h") &&
+       orb_units_parse(ORB_UNITS_TIME, "24h") == ORB_UNIT_24H &&
+       !strcmp(orb_units_label(ORB_UNITS_TIME, ORB_UNIT_12H), "12-hour"),
+       "the time format (OS v1.2.16): keys 24h and 12h, labels 24-hour and 12-hour");
     u.temp = 2;  int bad = !orb_units_valid(&u); u.temp = 0;
     u.speed = 3; bad &= !orb_units_valid(&u); u.speed = 0;
     u.dist = 3;  bad &= !orb_units_valid(&u); u.dist = 0;
+    u.time = 2;  bad &= !orb_units_valid(&u); u.time = 0;
     CK(bad && !orb_units_valid(NULL), "one past any quantity's choices is refused, and NULL is");
     return fails ? 1 : 0;
 }

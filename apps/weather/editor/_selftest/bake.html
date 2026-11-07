@@ -6,6 +6,7 @@
      "B64 <name> <ms> <base64>" line in #out for the driver to check. -->
 <link rel="stylesheet" href="fonts.css">
 <script src="orbtheme-baker.js"></script>
+<script src="ground.js"></script>
 <script src="weather-bake.js"></script>
 <pre id="out"></pre>
 <script>
@@ -20,6 +21,16 @@
     'scope-wears-nebula': () => { const d = B.preset('scope'); d.icons.pack = 'nebula'; d.icons.c = {}; return B.complete(d); },
     'paper-no-caps-mono': () => { const d = B.preset('paper'); d.words.caps = true; d.words.num = 'IBM Plex Mono'; d.temps.cap = 'butt'; return d; },
     'saved-before-fields': () => { const d = B.preset('station'); delete d.temps.cap; delete d.words.track; return B.complete(d); },
+    'wide-gradient-bars': () => { const d = B.preset('celestial'); d.temps.width = 14; d.temps.fill = 'gradient'; return d; },
+    'icons-3d-shadow': () => { const d = B.preset('brass'); d.icons.shade = '3d'; d.icons.shadow = 'strong'; return d; },
+    // §2.9: a clock-dial finish with wear, and a picture of one's own
+    'ground-carbon-relic': () => { const d = B.preset('station'); Object.assign(d.plate, { finish: 'carbon', tex: 1.4, weaveAng: 30, age: 1.5, stain: 1.5, dust: 1.5, colour: 'navy' }); return d; },
+    'ground-picture': () => { const d = B.preset('paper'); const c = document.createElement('canvas'); c.width = 300; c.height = 200;
+      const x = c.getContext('2d'), g = x.createLinearGradient(0, 0, 300, 200); g.addColorStop(0, '#3a6'); g.addColorStop(1, '#236'); x.fillStyle = g; x.fillRect(0, 0, 300, 200);
+      Object.assign(d.plate, { img: c.toDataURL('image/jpeg', 0.88), imgScale: 1.3, imgX: 20, imgDim: 0.3, marks: false }); return d; },
+    // §2.8: every size at its most, and Now's elements moved
+    'largest-moved': () => { const d = B.preset('scope'); d.size = { icon: 104, num: 64, text: 26, label: 24 };
+      d.place = { icon: { a: 90, r: 40 }, clock: { a: 180, r: 6 }, title: { a: 270, r: 20 } }; return d; },
   };
   const jobs = B.PRESETS.map((k) => [k, B.preset(k)]);
   for (const k in VARIANTS) jobs.push([k, VARIANTS[k]()]);

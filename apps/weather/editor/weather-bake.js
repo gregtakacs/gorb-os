@@ -27,10 +27,68 @@
   var KIND_TITLES = ['Clear', 'Clear night', 'Partly cloudy', 'Partly, night', 'Cloudy', 'Fog', 'Drizzle', 'Rain', 'Snow', 'Thunder'];
   // main.c's slots and sizes
   // the sizes are the pool's (§4 item 4): a theme stands beside a 5 MB clock and the tracker
-  var ICON_PX = 72, SICON_PX = 36, N_SICON = 5, BAR_W = 10, BAR_H = 80, N_BAR = 12, BAR_LEN = 8, BAR_RAIN = 3;
-  var DAY_W = 88, DAY_H = 10, N_DAYB = 5, DAY_POS = 7, DOT_W = 64, DOT_H = 12, PITCH = 56, DAYS = 5;
-  var SLOT = { icon: 0, sicon: 1, bar: 6, day: 18, dots: 23, title: 24, big: 25, line: 26, detail: 27, colA: 28, colB: 29, colC: 30, colD: 31 };
-  var LIVE_ROWS = 1 + N_SICON + N_BAR + N_DAYB + 1 + 8;
+  var ICON_PX = 72, SICON_PX = 36, N_SICON = 5, BAR_H = 80, N_BAR = 12, BAR_LEN = 8, BAR_RAIN = 3;
+  var DAY_W = 88, N_DAYB = 5, DAY_POS = 7, DOT_W = 64, DOT_H = 12, PITCH = 56, DAYS = 5;
+  /* The weather's life (OS v1.2.14's 64 rows): slot 32 the clock, 33.. a pool of particle
+   * sprites the app moves every frame (main.c PF_*), all naming one bank of PART_FRAMES. */
+  var N_PART = 16, PART_W = 48, PART_H = 24;
+  var PART_FRAMES = ['drop', 'drop_small', 'flake', 'flake_small', 'mist', 'wisp', 'star'];
+  var SLOT = { icon: 0, sicon: 1, bar: 6, day: 18, dots: 23, title: 24, big: 25, line: 26, detail: 27, colA: 28, colB: 29, colC: 30, colD: 31,
+    clock: 32, part: 33, halo: 49,
+    // §2.10: Hourly's and the 5 days' own words, and Hourly's own icon, at fixed sizes
+    // (a title and a line both views share, Hourly's temperature, the 5 days' details), baked
+    // only for a font the author resized: at the defaults they draw in Now's own rows
+    fTitle: 50, fBig: 51, fLine: 52, fDetail: 55, hIcon: 56 };
+  var LIVE_ROWS = 1 + N_SICON + N_BAR + N_DAYB + 1 + 8 + 1 + N_PART + 1 + 4 + 1;
+  /* §2.8 sizes (owner, 2026-11-06): the large icon, the big temperature, and one size per
+   * font for the words, never under 18 px, and never so large Now's lines run off the glass
+   * (the details' longest line at 24 px). Now's and Places' only: Hourly and the 5 days
+   * draw at the defaults, in fonts of their own (§2.10).
+   * [least, most, default]. */
+  var SIZES = { icon: [56, 104, 72], num: [36, 64, 44], text: [18, 26, 18], label: [18, 24, 18] };
+  function sizeOf(d, k) { var r = SIZES[k], v = d && d.size ? +d.size[k] : NaN; return v >= r[0] && v <= r[1] ? Math.round(v) : r[2]; }
+  /* §2.8 placement: Now's elements, each where its sizes' stack puts it, then moved by the
+   * author's Angle (the direction, 0 up, clockwise) and Distance, as the clock editor
+   * places a part. main.c's Now places (its NOW_*_Y) are where a theme from before §2.8
+   * stands; the bake puts each row off the centre by its offset from there, and main.c
+   * poses Now from the baked spot (every other view from its own). */
+  var ELEMENTS = [['title', 'Place name'], ['dots', 'Place dots'], ['icon', 'Icon'], ['big', 'Temperature'], ['line', 'Condition'],
+    ['detail', 'Details'], ['clock', 'Clock']];
+  var APP_AT = { title: [CX, 58], dots: [CX, 88], icon: [CX, 150], big: [CX + 6, 236], line: [CX, 292], detail: [CX, 346], clock: [CX, 404] };
+  var PLACE_SLOT = { title: 24, dots: 23, icon: 0, big: 25, line: 26, detail: 27, clock: 32 };
+  function placeOf(d, k) {
+    var q = d && d.place && d.place[k], a = q ? +q.a || 0 : 0, r = q ? Math.max(0, Math.min(220, +q.r || 0)) : 0;
+    return { a: a, r: r, dx: Math.round(r * Math.sin(a * Math.PI / 180)), dy: Math.round(-r * Math.cos(a * Math.PI / 180)) };
+  }
+  // the elements' own places: main.c's, whatever the sizes (owner, 2026-11-06: an icon or
+  // a font's size moves nothing else; the author places each)
+  function stackNow() {
+    var o = {};
+    ELEMENTS.forEach(function (e) { o[e[0]] = APP_AT[e[0]][1]; });
+    return o;
+  }
+  // each element's centre on Now, moved: {k: {x, y}}
+  function layoutNow(d) {
+    var st = stackNow(d), out = {};
+    ELEMENTS.forEach(function (e) {
+      var k = e[0], p = placeOf(d, k);
+      out[k] = { x: APP_AT[k][0] + p.dx, y: st[k] + p.dy };
+    });
+    return out;
+  }
+  // the 5 days' columns, measured in the body font (its glyphs' advances and the label's
+  // track), and the day bar narrowed to keep the list inside DAY_SPAN (main.c lays the
+  // columns out from these widths)
+  var DAY_SPAN = 312, WDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  function dayLayout(d) {
+    var px = SIZES.text[2], m = canvas(4, 4).getContext('2d'), wd = function (strs) {
+      m.font = px + 'px "' + d.words.text + '", sans-serif';
+      return Math.ceil(Math.max.apply(null, strs.map(function (t) { return m.measureText(t).width + t.length; }))) + 4;
+    };
+    var c = [wd(WDAYS), wd(['-88°', '188°']), wd(['-88°', '188°']), wd(['100%'])];
+    var fixed = c[0] + SICON_PX - 2 + c[1] - 8 + 4 + 2 + c[2] + c[3] - 2;
+    return { cols: c, dw: Math.max(48, Math.min(DAY_W, DAY_SPAN - fixed)) };
+  }
   // the fonts by slot: [face role, px, colour role, cell height]. A label's lines stand one
   // cell apart (orb_label.c), so the body and muted fonts, which the day columns draw in,
   // stand in a cell of half the row pitch: a column puts a blank line between its days
@@ -39,6 +97,23 @@
   // so each is weighed: the quiet one is the title's and the details' (in the label face,
   // capitals where the theme writes them), and the day columns dim by opacity, not a font.
   var FONTS = [['text', 16, 'ink', COL_CELL], ['label', 14, 'quiet'], ['num', 44, 'ink']];
+  // a design's fonts (§2.10): Now's and Places' three at the author's sizes (§2.8), then
+  // Hourly's and the 5 days' at the fixed defaults, so the sizes the author sets for the
+  // main screen never move them. A fixed font the author's size already equals is not
+  // baked again: the rows name the main one. {specs: [[role, px, colour, cell]], main:
+  // {role: slot}, fixed: {role: slot}}
+  var cellOf = function (px) { return Math.max(COL_CELL, Math.ceil(px * 1.5)); };
+  function fontPlan(d) {
+    var specs = [], main = {}, fixed = {}, ROLES = [['text', 'ink'], ['label', 'quiet'], ['num', 'ink']];
+    ROLES.forEach(function (r) { var px = sizeOf(d, r[0]); main[r[0]] = specs.length; specs.push([r[0], px, r[1], r[0] === 'text' ? cellOf(px) : 0]); });
+    ROLES.forEach(function (r) {
+      var px = SIZES[r[0]][2];
+      if (px === sizeOf(d, r[0])) { fixed[r[0]] = main[r[0]]; return; }
+      fixed[r[0]] = specs.length; specs.push([r[0], px, r[1], r[0] === 'text' ? cellOf(px) : 0]);
+    });
+    return { specs: specs, main: main, fixed: fixed };
+  }
+  function fontSpecs(d) { return fontPlan(d).specs; }
   var FACES = ['IBM Plex Sans', 'IBM Plex Mono', 'Space Grotesk', 'Space Mono', 'Barlow Condensed', 'Jost',
     'Oswald', 'Michroma', 'Orbitron', 'Playfair Display', 'Cormorant Garamond', 'DM Serif Display', 'VT323'];
 
@@ -58,32 +133,32 @@
       plate: { style: 'scope', c0: '#12361F', c1: '#0E2A1A', c2: '#08170E', detail: '#2A6A44', tick: '#3DBB6E' },
       words: { num: MONO, text: PLEX, label: MONO, caps: true, track: 2, ink: '#E6F0EA', quiet: '#8A9A90' },
       temps: { ramp: ['#2E9C88', '#3DFF8E', '#FFB23C'], rain: '#59D8C8', track: '#1C4A2E', cap: 'round' },
-      icons: { pack: 'phosphor', c: { stroke: '#3DFF8E', warn: '#FFB23C' } } },
+      icons: { pack: 'phosphor', c: { stroke: '#3DFF8E', warn: '#FFB23C' } , shade: '3d', shadow: 'strong' } },
     brass: { name: 'Vintage brass', match: 'Flights · Vintage brass, Clock · Aviator',
       plate: { style: 'brass', c0: '#2E332E', c1: '#262A26', c2: '#1A1D1A', detail: '#C9A24E', tick: '#E9DDBF' },
       words: { num: CORM, text: CORM, label: CORM, caps: true, track: 3, ink: '#F2E6C8', quiet: '#A8946A' },
       temps: { ramp: ['#7FA3B0', '#C9A24E', '#FF9A3C'], rain: '#8FB7C9', track: '#3A3A30', cap: 'round' },
-      icons: { pack: 'engraved', c: { metal: '#C9A24E', hi: '#F8E7A8', deep: '#6E5320', warn: '#FF9A3C' } } },
+      icons: { pack: 'engraved', c: { metal: '#C9A24E', hi: '#F8E7A8', deep: '#6E5320', warn: '#FF9A3C' } , shade: '3d', shadow: 'strong' } },
     blueprint: { name: 'Blueprint', match: 'Flights · Blueprint',
       plate: { style: 'blueprint', c0: '#255C9E', c1: '#1F5290', c2: '#1A4780', detail: '#DCE9F8', tick: '#DCE9F8' },
       words: { num: MONO, text: MONO, label: MONO, caps: true, track: 2, ink: '#FFFFFF', quiet: '#B8CCE6' },
       temps: { ramp: ['#9FE3FF', '#F4F8FF', '#FFD27A'], rain: '#9FE3FF', track: '#2C64A6', cap: 'butt' },
-      icons: { pack: 'drafted', c: { line: '#F4F8FF', guide: '#DCE9F8', warn: '#FFD27A' } } },
+      icons: { pack: 'drafted', c: { line: '#F4F8FF', guide: '#DCE9F8', warn: '#FFD27A' } , shade: '3d', shadow: 'strong' } },
     paper: { name: 'Paper', match: 'Flights · Paper',
       plate: { style: 'paper', c0: '#F1EBDA', c1: '#EAE3CF', c2: '#DDD4BC', detail: '#8FB0C6', tick: '#2F5C8C' },
       words: { num: PLEX, text: PLEX, label: PLEX, caps: false, track: 1, ink: '#14202C', quiet: '#5B5240' },
       temps: { ramp: ['#2F5C8C', '#1E6B2E', '#B85C00'], rain: '#2F5C8C', track: '#D3C9AE', cap: 'round' },
-      icons: { pack: 'folded', c: { ink: '#2F5C8C', inkD: '#1F4066', warm: '#D9822B', warmD: '#B5651A', paper: '#FBF8F0', shade: '#D6CCB2', shadow: '#BFB497', warn: '#B85C00' } } },
+      icons: { pack: 'folded', c: { ink: '#2F5C8C', inkD: '#1F4066', warm: '#D9822B', warmD: '#B5651A', paper: '#FBF8F0', shade: '#D6CCB2', shadow: '#BFB497', warn: '#B85C00' } , shade: '3d', shadow: 'strong' } },
     celestial: { name: 'Celestial', match: 'Flights · Celestial, Clock · Orbit',
       plate: { style: 'celestial', c0: '#251A55', c1: '#1A1240', c2: '#0B0820', detail: '#B04CFF', tick: '#B9B2FF' },
       words: { num: GROT, text: GROT, label: MICH, caps: true, track: 2, ink: '#EDEBFF', quiet: '#9C95C9' },
       temps: { ramp: ['#8C7BFF', '#FFD27A', '#FF8A5C'], rain: '#9FD0FF', track: '#2B2260', cap: 'round' },
-      icons: { pack: 'nebula', c: { gold: '#FFD27A', core: '#FFF3C8', orange: '#FF8A5C', violet: '#8C7BFF', lilac: '#C9BEFF', moon: '#D9D4FF', crater: '#ABA3EE', rain: '#9FD0FF' } } },
+      icons: { pack: 'nebula', c: { gold: '#FFD27A', core: '#FFF3C8', orange: '#FF8A5C', violet: '#8C7BFF', lilac: '#C9BEFF', moon: '#D9D4FF', crater: '#ABA3EE', rain: '#9FD0FF' } , shade: '3d', shadow: 'strong' } },
     station: { name: 'Station', match: 'Clock · Station',
       plate: { style: 'station', c0: '#FFFFFF', c1: '#F4F4F2', c2: '#E6E6E3', detail: '#111111', tick: '#111111' },
       words: { num: JOST, text: JOST, label: JOST, caps: true, track: 2, ink: '#111111', quiet: '#555555' },
       temps: { ramp: ['#111111', '#8A8A8A', '#E3000F'], rain: '#111111', track: '#DADAD6', cap: 'butt' },
-      icons: { pack: 'pictogram', c: { ink: '#111111', red: '#E3000F' } } },
+      icons: { pack: 'pictogram', c: { ink: '#111111', red: '#E3000F' } , shade: '3d', shadow: 'strong' } },
   };
   var PRESETS = Object.keys(PRESETS_DEF);
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
@@ -94,7 +169,7 @@
       b.plate = { style: 'plain', c0: '#141414', c1: '#101010', c2: '#0A0A0A', detail: '#3A3A3A', tick: '#8A8A8A' };
       b.words = { num: PLEX, text: PLEX, label: PLEX, caps: false, track: 1, ink: '#E6E6E6', quiet: '#8F8F8F' };
       b.temps = { ramp: ['#5B8DB8', '#D8D8D8', '#E0A040'], rain: '#7FB0D8', track: '#2E2E2E', cap: 'round' };
-      b.icons = { pack: 'pictogram', c: { ink: '#D8D8D8', red: '#E0A040' } };
+      b.icons = { pack: 'pictogram', c: { ink: '#D8D8D8', red: '#E0A040' }, shade: '3d', shadow: 'strong' };
       return b;
     }
     var d = clone(PRESETS_DEF[k] || PRESETS_DEF.scope);
@@ -305,9 +380,32 @@
   }
   function packOf(d) { return makePack(d.icons.pack, d.icons.c, d.plate.c1); }
   function iconSvg(d, kind, px) { return pathsSvg(iconPaths(packOf(d), kind, px / 2, px / 2, px), px); }
+  /* The icon's finish (§2.7), over every pack: 3D shading lays a light from the top left over
+   * the icon's own ink (lit, then shaded toward the bottom right), and a drop shadow sets it
+   * on a soft shadow below and right. Both scale with the icon, so the small ones match. */
+  var SHADOWS = { off: null, soft: { a: 0.35, blur: 3, off: 2 }, strong: { a: 0.6, blur: 4, off: 3 } };
+  function finish(d, c, px) {
+    var I = d.icons || {}, k = px / 72;
+    if (I.shade === '3d') {
+      var x = c.getContext('2d'), g = x.createLinearGradient(0, 0, px, px);
+      g.addColorStop(0, 'rgba(255,255,255,0.45)'); g.addColorStop(0.45, 'rgba(255,255,255,0)');
+      g.addColorStop(0.55, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.4)');
+      x.save(); x.globalCompositeOperation = 'source-atop'; x.fillStyle = g; x.fillRect(0, 0, px, px);
+      var r = x.createRadialGradient(px * 0.32, px * 0.28, 0, px * 0.32, px * 0.28, px * 0.35);
+      r.addColorStop(0, 'rgba(255,255,255,0.3)'); r.addColorStop(1, 'rgba(255,255,255,0)');
+      x.fillStyle = r; x.fillRect(0, 0, px, px); x.restore();
+    }
+    var sh = SHADOWS[I.shadow];
+    if (!sh) return c;
+    var o = canvas(px, px), y = o.getContext('2d');
+    y.shadowColor = 'rgba(0,0,0,' + sh.a + ')'; y.shadowBlur = sh.blur * k * 2;
+    y.shadowOffsetX = sh.off * k; y.shadowOffsetY = sh.off * k;
+    y.drawImage(c, 0, 0);
+    return o;
+  }
   async function iconFrames(d, px) {
     var out = [];
-    for (var i = 0; i < KINDS.length; i++) out.push(await rast(iconSvg(d, KINDS[i], px), px, px));
+    for (var i = 0; i < KINDS.length; i++) out.push(finish(d, await rast(iconSvg(d, KINDS[i], px), px, px), px));
     return out;
   }
 
@@ -350,36 +448,128 @@
     var defs = '<radialGradient id="g" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="' + p.c0 + '"/><stop offset="0.6" stop-color="' + p.c1 + '"/><stop offset="1" stop-color="' + p.c2 + '"/></radialGradient>';
     return pathsSvg(chromePaths(p), G, defs, '<rect width="' + G + '" height="' + G + '" fill="url(#g)"/>');
   }
-  async function plateCanvas(d) { return rast(plateSvg(d), G, G); }
+  /* §2.9 the ground, bottom to top: the face (the look's gradient, a dial finish from the
+   * clock's in ground.js, or the author's picture), the look's own markings (rings, ticks,
+   * bezel; may be turned off), then wear. One picture under every screen: the plate disc
+   * the orb already draws, so none of it costs a frame. */
+  var WEAR = { New: [0, 0, 0], Light: [0.3, 0.15, 0.4], Vintage: [1, 1, 1], Relic: [1.5, 1.5, 1.5] };
+  function groundOf(p) {
+    var GD = root.WeatherGround, lm = GD ? GD.lum(p.c1) : 0.5, n = parseInt(p.c1.slice(1), 16);
+    var sat = Math.max(n >> 16, (n >> 8) & 255, n & 255) - Math.min(n >> 16, (n >> 8) & 255, n & 255);
+    return { finish: p.finish || 'plain', a: p.c0, b: p.c2, tint: sat < 18 ? null : p.c1, dark: lm < 0.5, tex: p.tex == null ? 1 : +p.tex,
+      weaveAng: +p.weaveAng || 0, weaveSc: p.weaveSc == null ? 1 : +p.weaveSc, seed: 7 };
+  }
+  async function plateCanvas(d) {
+    var p = d.plate, GD = root.WeatherGround, c = canvas(G, G), x = c.getContext('2d'), gd = groundOf(p);
+    var img = null;
+    if (p.img) { try { img = await image(p.img); } catch (e) { img = null; } }
+    if (img) {
+      var k = Math.max(G / img.width, G / img.height) * (p.imgScale == null ? 1 : +p.imgScale), w = img.width * k, h = img.height * k;
+      x.fillStyle = '#000'; x.fillRect(0, 0, G, G);
+      x.drawImage(img, CX - w / 2 + (+p.imgX || 0), CX - h / 2 + (+p.imgY || 0), w, h);
+      if (+p.imgDim > 0) { x.fillStyle = 'rgba(0,0,0,' + Math.min(0.85, +p.imgDim) + ')'; x.fillRect(0, 0, G, G); }
+    } else if (gd.finish === 'plain' || !GD) {
+      var defs = '<radialGradient id="g" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="' + p.c0 + '"/><stop offset="0.6" stop-color="' + p.c1 + '"/><stop offset="1" stop-color="' + p.c2 + '"/></radialGradient>';
+      x.drawImage(await rast(svgDoc('0 0 ' + G + ' ' + G, '<rect width="' + G + '" height="' + G + '" fill="url(#g)"/>', defs), G, G), 0, 0);
+    } else GD.paint(x, gd);
+    if (p.marks !== false) x.drawImage(await rast(pathsSvg(chromePaths(p), G, '', ''), G, G), 0, 0);
+    if (GD) GD.wear(x, { dark: img ? true : gd.dark, seed: 7 }, { age: +p.age || 0, stain: +p.stain || 0, dust: +p.dust || 0 });
+    return c;
+  }
 
   /* ---- the moving rows' frames ---- */
   // wx_bar_frame: length level by temperature, the rain dot by chance; the sprite points up,
   // its centre at HR_BAR_R (157) from the glass centre, so y = 197 - r
+  // the bars' width (2..14 px) and fill: one colour by the hour's temperature, or a gradient
+  // along the bar from the cold colour at its inner end to that colour at its tip
+  function barWidth(T) { var w = +T.width; return w >= 2 && w <= 14 ? w : 6; }
+  // a frame's breadth: the bar and 2 px each side, never under the 10 px the default takes,
+  // so a theme pays only for the width it chose
+  function barBox(d) { return Math.max(10, barWidth(d.temps) + 4); }
   function barFrames(d) {
-    var T = d.temps, out = [];
+    var T = d.temps, out = [], bw = barWidth(T), BAR_W = barBox(d);
     for (var L = 0; L < BAR_LEN; L++) for (var rn = 0; rn < BAR_RAIN; rn++) {
-      var c = canvas(BAR_W, BAR_H), x = c.getContext('2d'), r1 = 132, r2 = 148 + L * 6.4;
-      x.strokeStyle = ramp(T.ramp, L / (BAR_LEN - 1)); x.lineWidth = 6; x.lineCap = T.cap === 'butt' ? 'butt' : 'round';
-      x.beginPath(); x.moveTo(BAR_W / 2, 197 - r1); x.lineTo(BAR_W / 2, 197 - r2); x.stroke();
+      var c = canvas(BAR_W, BAR_H), x = c.getContext('2d'), r1 = 132, r2 = 148 + L * 6.4, top = ramp(T.ramp, L / (BAR_LEN - 1));
+      if (T.fill === 'gradient') {
+        var g = x.createLinearGradient(0, 197 - r1, 0, 197 - r2);
+        g.addColorStop(0, ramp(T.ramp, 0)); g.addColorStop(1, top);
+        x.strokeStyle = g;
+      } else x.strokeStyle = top;
+      // a round end is drawn inside the bar's length, so a wider bar is no longer
+      var ins = T.cap === 'butt' ? 0 : bw / 2;
+      x.lineWidth = bw; x.lineCap = T.cap === 'butt' ? 'butt' : 'round';
+      x.beginPath(); x.moveTo(BAR_W / 2, 197 - r1 - ins); x.lineTo(BAR_W / 2, 197 - Math.max(r1 + ins + 0.5, r2 - ins)); x.stroke();
       if (rn) { x.fillStyle = T.rain; x.beginPath(); x.arc(BAR_W / 2, 197 - 121, 1.4 + rn * 1.2, 0, 2 * Math.PI); x.fill(); }
       out.push(c);
     }
     return out;
   }
+  /* The particles, one frame each in PART_FRAMES order, PART_W x PART_H with the ink
+   * centred: rain in the rain colour, snow and stars in the ink, mist and wisps soft. */
+  function partFrames(d) {
+    var T = d.temps, W = d.words, out = [], cx = PART_W / 2, cy = PART_H / 2;
+    var soft = function (x, rx, ry, col, a) {
+      var g = x.createRadialGradient(cx, cy, 0, cx, cy, rx);
+      g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+      x.save(); x.globalAlpha = a; x.translate(cx, cy); x.scale(1, ry / rx); x.translate(-cx, -cy);
+      x.fillStyle = g; x.beginPath(); x.arc(cx, cy, rx, 0, 2 * Math.PI); x.fill(); x.restore();
+    };
+    PART_FRAMES.forEach(function (k) {
+      var c = canvas(PART_W, PART_H), x = c.getContext('2d');
+      if (k === 'drop' || k === 'drop_small') {
+        var len = k === 'drop' ? 16 : 9, g = x.createLinearGradient(0, cy - len / 2, 0, cy + len / 2);
+        g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, T.rain);
+        x.strokeStyle = g; x.lineWidth = k === 'drop' ? 2 : 1.5; x.lineCap = 'round';
+        x.beginPath(); x.moveTo(cx, cy - len / 2); x.lineTo(cx, cy + len / 2); x.stroke();
+      } else if (k === 'flake') {
+        x.strokeStyle = W.ink; x.lineWidth = 1.3; x.lineCap = 'round';
+        for (var a = 0; a < 3; a++) {
+          var t = a * Math.PI / 3; x.beginPath();
+          x.moveTo(cx - 5 * Math.cos(t), cy - 5 * Math.sin(t)); x.lineTo(cx + 5 * Math.cos(t), cy + 5 * Math.sin(t)); x.stroke();
+        }
+      } else if (k === 'flake_small') {
+        x.fillStyle = W.ink; x.beginPath(); x.arc(cx, cy, 2, 0, 2 * Math.PI); x.fill();
+      } else if (k === 'mist') soft(x, 23, 10, W.quiet, 0.55);
+      else if (k === 'wisp') soft(x, 22, 5, W.ink, 0.35);
+      else if (k === 'star') {
+        x.fillStyle = W.ink; x.beginPath();
+        x.moveTo(cx, cy - 4); x.lineTo(cx + 1, cy - 1); x.lineTo(cx + 4, cy); x.lineTo(cx + 1, cy + 1);
+        x.lineTo(cx, cy + 4); x.lineTo(cx - 1, cy + 1); x.lineTo(cx - 4, cy); x.lineTo(cx - 1, cy - 1); x.closePath(); x.fill();
+      }
+      out.push(c);
+    });
+    return out;
+  }
   // wx_day_frame: i <= j on the week's scale, triangular, i-major
-  function dayFrames(d) {
-    var T = d.temps, out = [], X = function (k) { return 5 + k * (78 / (DAY_POS - 1)); };
+  function dayFrames(d, dw) {
+    dw = dw || DAY_W;
+    var T = d.temps, out = [], DAY_H = barBox(d), X = function (k) { return 5 + k * ((dw - 10) / (DAY_POS - 1)); };
     for (var i = 0; i < DAY_POS; i++) for (var j = i; j < DAY_POS; j++) {
-      var c = canvas(DAY_W, DAY_H), x = c.getContext('2d'), cap = T.cap === 'butt' ? 'butt' : 'round';
-      x.lineWidth = 6; x.lineCap = cap; x.strokeStyle = T.track;
-      x.beginPath(); x.moveTo(X(0), DAY_H / 2); x.lineTo(X(DAY_POS - 1), DAY_H / 2); x.stroke();
+      var c = canvas(dw, DAY_H), x = c.getContext('2d'), cap = T.cap === 'butt' ? 'butt' : 'round';
+      // the track and the span keep their lengths whatever the width: a round end is drawn
+      // inside them, so the week's scale reads the same at 2 px and at 14
+      var bw = barWidth(T), ins = cap === 'butt' ? 0 : bw / 2, seg = function (a, b) {
+        x.beginPath(); x.moveTo(a + ins, DAY_H / 2); x.lineTo(Math.max(a + ins + 0.5, b - ins), DAY_H / 2); x.stroke();
+      };
+      x.lineWidth = bw; x.lineCap = cap; x.strokeStyle = T.track;
+      seg(X(0) - 2, X(DAY_POS - 1) + 2);
       var g = x.createLinearGradient(X(i), 0, X(j) + 0.01, 0);
       g.addColorStop(0, ramp(T.ramp, i / (DAY_POS - 1))); g.addColorStop(1, ramp(T.ramp, j / (DAY_POS - 1)));
       x.strokeStyle = g;
-      x.beginPath(); x.moveTo(X(i), DAY_H / 2); x.lineTo(X(j) + (i === j ? 0.5 : 0), DAY_H / 2); x.stroke();
+      seg(X(i) - 2, X(j) + 2);
       out.push(c);
     }
     return out;
+  }
+  // the 5 days' cursor: a halo over the day's bar, in the ink, soft
+  function haloFrame(d, dw) {
+    // the ring stands HALO_GAP off the bar's ink all round, whatever the bar's width
+    var HALO_GAP = 5, bw = barWidth(d.temps), len = (dw || DAY_W) - 10 + 4;
+    var W = d.words, w = len + 2 * HALO_GAP + 6, h = bw + 2 * HALO_GAP + 6, c = canvas(w, h), x = c.getContext('2d'), r = (h - 6) / 2;
+    var path = function () { x.beginPath(); x.moveTo(3 + r, 3); x.arcTo(w - 3, 3, w - 3, h - 3, r); x.arcTo(w - 3, h - 3, 3, h - 3, r); x.arcTo(3, h - 3, 3, 3, r); x.arcTo(3, 3, w - 3, 3, r); x.closePath(); };
+    x.globalAlpha = 0.16; x.fillStyle = W.ink; path(); x.fill();
+    x.globalAlpha = 0.7; x.shadowColor = W.ink; x.shadowBlur = 5; x.strokeStyle = W.ink; x.lineWidth = 1.5; path(); x.stroke();
+    return c;
   }
   // wx_dot_frame: n places, the selected one bright
   function dotFrames(d) {
@@ -432,9 +622,11 @@
   }
   async function fonts(d) {
     var W = d.words, out = [];
-    for (var i = 0; i < FONTS.length; i++) {
-      var fr = FONTS[i];
-      out.push(await font(faceOf(d, fr[0]), fr[1], W[fr[2]], { caps: fr[0] === 'label' && W.caps, digits: fr[0] === 'num', track: fr[0] === 'label' ? Math.min(2, W.track) : 1, cell: fr[3] }));
+    var FS = fontSpecs(d);
+    for (var i = 0; i < FS.length; i++) {
+      var fr = FS[i];
+      out.push(await font(faceOf(d, fr[0]), fr[1], W[fr[2]], { caps: fr[0] === 'label' && W.caps, digits: fr[0] === 'num', track: fr[0] === 'label' ? Math.max(0, Math.min(6, W.track | 0)) : 1, cell: fr[3] || 0 }));
+      out[i].colour = fr[2];
     }
     return out;
   }
@@ -442,18 +634,31 @@
   // the boxes from the fonts. A day column is nine lines: five days and the blank lines
   // between them (main.c joins its days with "\n\n")
   var toneStr = function (t) { return t.reduce(function (s, fn, k) { return s + (fn << (4 * k)); }, 0); };
-  function labels(F) {
-    var colH = (2 * DAYS - 1) * F[0].h;
-    return [
-      { slot: SLOT.title, tones: [1, 0, NONE, NONE], w: 300, h: Math.max(F[1].h, F[0].h) + 2, align: 1, pad: 1 },
-      { slot: SLOT.big, tones: [2, NONE, NONE, NONE], w: 200, h: F[2].h + 2, align: 1, pad: 1 },
-      { slot: SLOT.line, tones: [0, NONE, NONE, 1], w: 340, h: F[0].h + 2, align: 1, pad: 1 },
-      { slot: SLOT.detail, tones: [1, 0, NONE, NONE], w: 340, h: 3 * F[1].h + 2, align: 1, pad: 1 },
-      { slot: SLOT.colA, tones: [0, NONE, NONE, NONE], w: 64, h: colH, align: 0, pad: 0, top: true },
-      { slot: SLOT.colB, tones: [0, NONE, NONE, NONE], w: 42, h: colH, align: 2, pad: 0, top: true },
-      { slot: SLOT.colC, tones: [0, NONE, NONE, NONE], w: 42, h: colH, align: 0, pad: 0, top: true },
-      { slot: SLOT.colD, tones: [0, NONE, NONE, NONE], w: 46, h: colH, align: 2, pad: 0, top: true },
+  function labels(F, cols, plan) {
+    plan = plan || { main: { text: 0, label: 1, num: 2 }, fixed: { text: 0, label: 1, num: 2 } };
+    var M = plan.main, X = plan.fixed, colH = (2 * DAYS - 1) * F[X.text].h;
+    cols = cols || [64, 42, 42, 46];
+    var title = function (slot, f) { return { slot: slot, tones: [f.label, f.text, NONE, NONE], w: 300, h: Math.max(F[f.label].h, F[f.text].h) + 2, align: 1, pad: 1 }; };
+    var line = function (slot, f) { return { slot: slot, tones: [f.text, NONE, NONE, f.label], w: 340, h: F[f.text].h + 2, align: 1, pad: 1 }; };
+    var detail = function (slot, f) { return { slot: slot, tones: [f.label, f.text, NONE, NONE], w: 360, h: 3 * F[f.label].h + 2, align: 1, pad: 1 }; };
+    var out = [
+      // Now's and Places', at the author's sizes
+      title(SLOT.title, M),
+      { slot: SLOT.big, tones: [M.num, NONE, NONE, NONE], w: 200, h: F[M.num].h + 2, align: 1, pad: 1 },
+      line(SLOT.line, M), detail(SLOT.detail, M),
+      { slot: SLOT.clock, tones: [M.text, NONE, NONE, NONE], w: 160, h: F[M.text].h + 2, align: 1, pad: 1 },
+      // the 5 days' columns, always at the fixed size
+      { slot: SLOT.colA, tones: [X.text, NONE, NONE, NONE], w: cols[0], h: colH, align: 0, pad: 0, top: true },
+      { slot: SLOT.colB, tones: [X.text, NONE, NONE, NONE], w: cols[1], h: colH, align: 2, pad: 0, top: true },
+      { slot: SLOT.colC, tones: [X.text, NONE, NONE, NONE], w: cols[2], h: colH, align: 0, pad: 0, top: true },
+      { slot: SLOT.colD, tones: [X.text, NONE, NONE, NONE], w: cols[3], h: colH, align: 2, pad: 0, top: true },
     ];
+    // Hourly's and the 5 days' own rows (§2.10), where a font they draw in was resized: a
+    // label row's panel is its whole box, so one that would match Now's costs bytes for nothing
+    var words = X.text !== M.text || X.label !== M.label;
+    if (words) out.push(title(SLOT.fTitle, X), line(SLOT.fLine, X), Object.assign(detail(SLOT.fDetail, X), { w: 300 }));
+    if (X.num !== M.num) out.push({ slot: SLOT.fBig, tones: [X.num, NONE, NONE, NONE], w: 200, h: F[X.num].h + 2, align: 1, pad: 1 });
+    return out;
   }
 
   /* ---- the pictures: the preview, the start sheet's tiles, the hub's list ---- */
@@ -461,14 +666,15 @@
     parts = parts || {};
     var c = canvas(G, G), x = c.getContext('2d');
     x.drawImage(parts.plate || await plateCanvas(d), 0, 0);
-    var ic = await rast(iconSvg(d, 'partly', ICON_PX), ICON_PX, ICON_PX);
-    x.drawImage(ic, CX - ICON_PX / 2, 150 - ICON_PX / 2);
+    var IP = sizeOf(d, 'icon'), L = layoutNow(d), nu = sizeOf(d, 'num'), lb = sizeOf(d, 'label'), tx = sizeOf(d, 'text');
+    var ic = finish(d, await rast(iconSvg(d, 'partly', IP), IP, IP), IP);
+    x.drawImage(ic, L.icon.x - IP / 2, L.icon.y - IP / 2);
     var W = d.words;
-    await loadFace(W.num, 44); await loadFace(W.label, 14); await loadFace(W.text, 16);
+    await loadFace(W.num, nu); await loadFace(W.label, lb); await loadFace(W.text, tx);
     x.textAlign = 'center'; x.textBaseline = 'middle';
-    x.fillStyle = W.quiet; x.font = '14px "' + W.label + '"'; x.fillText(W.caps ? 'HOME' : 'Home', CX, 58);
-    x.fillStyle = W.ink; x.font = '44px "' + W.num + '"'; x.fillText('17°', CX + 6, 236);
-    x.font = '16px "' + W.text + '"'; x.fillText('Partly cloudy', CX, 292);
+    x.fillStyle = W.quiet; x.font = lb + 'px "' + W.label + '"'; x.fillText(W.caps ? 'HOME' : 'Home', L.title.x, L.title.y);
+    x.fillStyle = W.ink; x.font = nu + 'px "' + W.num + '"'; x.fillText('17°', L.big.x, L.big.y);
+    x.font = tx + 'px "' + W.text + '"'; x.fillText('Partly cloudy', L.line.x, L.line.y);
     var o = canvas(size, size);
     o.getContext('2d').drawImage(c, 0, 0, size, size);
     return o;
@@ -484,33 +690,57 @@
     var plateC = await plateCanvas(d);
     St.row({ n: St.id(), class: GB.classId('plate'), slot: 0, x: 0, y: 0, w: G, h: G, order: 0, alpha: 255, n_frames: 1 }, plane(plateC), false, true);
     var centred = function (w, h, slot, order) { return { slot: slot, x: CX - (w >> 1), y: CX - (h >> 1), order: order }; };
-    var big = await iconFrames(d, ICON_PX);
-    St.rowPick(Object.assign({ n: St.id(), class: AUX, w: ICON_PX, h: ICON_PX, pivot_x: ICON_PX >> 1, pivot_y: ICON_PX >> 1, alpha: 255 },
-      centred(ICON_PX, ICON_PX, SLOT.icon, 2)), big.map(plane), true, false);
+    // Now's elements off the centre by their offset from main.c's own places (§2.8)
+    var lay = layoutNow(d), moved = {};
+    ELEMENTS.forEach(function (e) { var k = e[0]; moved[PLACE_SLOT[k]] = [lay[k].x - APP_AT[k][0], lay[k].y - APP_AT[k][1]]; });
+    var placed = function (w, h, slot, order) {
+      var o = centred(w, h, slot, order), m = moved[slot];
+      if (m) { o.x += m[0]; o.y += m[1]; }
+      return o;
+    };
+    var FP = fontPlan(d), F = await fonts(d), DL = dayLayout(d);
+    var IP = sizeOf(d, 'icon'), big = await iconFrames(d, IP);
+    St.rowPick(Object.assign({ n: St.id(), class: AUX, w: IP, h: IP, pivot_x: IP >> 1, pivot_y: IP >> 1, alpha: 255 },
+      placed(IP, IP, SLOT.icon, 2)), big.map(plane), true, false);
+    // Hourly's own icon at the default size, where the author's differs (§2.10)
+    if (IP !== ICON_PX) {
+      St.rowPick(Object.assign({ n: St.id(), class: AUX, w: ICON_PX, h: ICON_PX, pivot_x: ICON_PX >> 1, pivot_y: ICON_PX >> 1, alpha: 255 },
+        centred(ICON_PX, ICON_PX, SLOT.hIcon, 2)), (await iconFrames(d, ICON_PX)).map(plane), true, false);
+    }
     var small = await iconFrames(d, SICON_PX), rows = [];
     for (var i = 0; i < N_SICON; i++) rows.push(centred(SICON_PX, SICON_PX, SLOT.sicon + i, 2));
     St.pool({ class: AUX, w: SICON_PX, h: SICON_PX, pivot_x: SICON_PX >> 1, pivot_y: SICON_PX >> 1, alpha: 255 }, small.map(plane), rows, true, false);
     rows = [];
+    var BAR_W = barBox(d), DAY_H = barBox(d);
     for (var b = 0; b < N_BAR; b++) rows.push(centred(BAR_W, BAR_H, SLOT.bar + b, 1));
     St.pool({ class: AUX, w: BAR_W, h: BAR_H, pivot_x: BAR_W >> 1, pivot_y: BAR_H >> 1, alpha: 255 }, barFrames(d).map(plane), rows, true, false);
+    // the 5 days' cursor under the day bars it rings (one depth, table order)
+    var hc = haloFrame(d, DL.dw);
+    St.row(Object.assign({ n: St.id(), class: AUX, w: hc.width, h: hc.height, pivot_x: hc.width >> 1, pivot_y: hc.height >> 1, alpha: 255, n_frames: 1 },
+      centred(hc.width, hc.height, SLOT.halo, 1)), plane(hc), true, false);
     rows = [];
-    for (var k = 0; k < N_DAYB; k++) rows.push(centred(DAY_W, DAY_H, SLOT.day + k, 1));
-    St.pool({ class: AUX, w: DAY_W, h: DAY_H, pivot_x: DAY_W >> 1, pivot_y: DAY_H >> 1, alpha: 255 }, dayFrames(d).map(plane), rows, true, false);
+    for (var k = 0; k < N_DAYB; k++) rows.push(centred(DL.dw, DAY_H, SLOT.day + k, 1));
+    St.pool({ class: AUX, w: DL.dw, h: DAY_H, pivot_x: DL.dw >> 1, pivot_y: DAY_H >> 1, alpha: 255 }, dayFrames(d, DL.dw).map(plane), rows, true, false);
     St.rowPick(Object.assign({ n: St.id(), class: AUX, w: DOT_W, h: DOT_H, pivot_x: DOT_W >> 1, pivot_y: DOT_H >> 1, alpha: 255 },
-      centred(DOT_W, DOT_H, SLOT.dots, 2)), dotFrames(d).map(plane), true, false);
-    var F = await fonts(d);
+      placed(DOT_W, DOT_H, SLOT.dots, 2)), dotFrames(d).map(plane), true, false);
     for (var fi = 0; fi < F.length; fi++) {
       var fo = F[fi];
       // the glyphs' coverage, coloured on the orb in the font's role colour
       St.font({ n: St.id(), class: TEXT, slot: fi, x: 0, y: 0, w: fo.w, h: fo.h, order: 0,
-        pivot_x: Math.min(fo.space, fo.w), pivot_y: fo.track }, fo.glyphs.map(plane), d.words[FONTS[fi][2]]);
+        pivot_x: Math.min(fo.space, fo.w), pivot_y: fo.track }, fo.glyphs.map(plane), d.words[fo.colour]);
     }
-    var Ls = labels(F);
+    var Ls = labels(F, DL.cols, FP);
     for (var li = 0; li < Ls.length; li++) {
       var L = Ls[li];
       St.row(Object.assign({ n: St.id(), class: AUX, kind: 2, src: GB.SOURCES.indexOf('text'), w: L.w, h: L.h,
         pivot_x: L.w >> 1, pivot_y: L.h >> 1, alpha: 255, n_frames: 1, str: toneStr(L.tones), radius: L.pad,
-        digit: L.align, end: L.top ? 0 : 1 }, centred(L.w, L.h, L.slot, 4)), plane(canvas(L.w, L.h)), true, false);
+        digit: L.align, end: L.top ? 0 : 1 }, placed(L.w, L.h, L.slot, 4)), plane(canvas(L.w, L.h)), true, false);
+    }
+    // the particles: one bank, a pool of rows the app moves (main.c), behind the icon and words
+    if (!d.fx || d.fx.on !== false) {
+      rows = [];
+      for (var pk = 0; pk < N_PART; pk++) rows.push(centred(PART_W, PART_H, SLOT.part + pk, 1));
+      St.pool({ class: AUX, w: PART_W, h: PART_H, pivot_x: PART_W >> 1, pivot_y: PART_H >> 1, alpha: 255 }, partFrames(d).map(plane), rows, true, false);
     }
     St.preview({ plane: plane(await picture(d, 128, { plate: plateC })), x: 0, y: 0, order: 3 });
     var out = St.finish({ name: d.name || 'Weather', slug: 'weather', serial: o.serial || serialOf(d, o.design), abi: GB.GEOM_ABI6, design: o.design || null,
@@ -529,8 +759,11 @@
   root.WeatherBake = {
     SCHEMA: SCHEMA, KINDS: KINDS, KIND_TITLES: KIND_TITLES, PACKS: PACKS, GROUNDS: GROUNDS, PRESETS: PRESETS, PRESETS_DEF: PRESETS_DEF,
     FACES: FACES, SLOT: SLOT, LIVE_ROWS: LIVE_ROWS, ICON_PX: ICON_PX, SICON_PX: SICON_PX, BAR_LEN: BAR_LEN, BAR_RAIN: BAR_RAIN, DAY_POS: DAY_POS,
+    SIZES: SIZES, WEAR: WEAR, groundOf: groundOf, sizeOf: sizeOf, ELEMENTS: ELEMENTS, placeOf: placeOf, stackNow: stackNow, layoutNow: layoutNow, dayLayout: dayLayout,
+    haloFrame: haloFrame, fontSpecs: fontSpecs, fontPlan: fontPlan, loadFace: loadFace,
     preset: preset, complete: complete, packStart: packStart, bake: bake, thumb: thumb, picture: picture, serialOf: serialOf,
     plateCanvas: plateCanvas, iconSvg: iconSvg, iconFrames: iconFrames, barFrames: barFrames, dayFrames: dayFrames, dotFrames: dotFrames,
     fonts: fonts, font: font, labels: labels, rast: rast, ramp: ramp, mix: mix, image: image,
+    partFrames: partFrames, PART_FRAMES: PART_FRAMES, N_PART: N_PART,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

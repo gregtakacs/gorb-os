@@ -237,9 +237,10 @@ def lifts(src):
         '#include "orb_units.h"',
         'static orb_units_t g_units;',
         'void orb_units_get(orb_units_t *o) { *o = g_units; }',
-        'int orb_units_count(int k) { return k == ORB_UNITS_TEMP ? 2 : k < ORB_UNITS_KINDS ? 3 : 0; }',
-        'const char *orb_units_label(int k, int v) { static const char *const L[3][3] = '
-        '{ { "\\xC2\\xB0" "C", "\\xC2\\xB0" "F", NULL }, { "km/h", "mph", "kn" }, { "km", "mi", "nm" } };'
+        'int orb_units_count(int k) { return k == ORB_UNITS_TEMP || k == ORB_UNITS_TIME ? 2 : k < ORB_UNITS_KINDS ? 3 : 0; }',
+        'const char *orb_units_label(int k, int v) { static const char *const L[4][3] = '
+        '{ { "\\xC2\\xB0" "C", "\\xC2\\xB0" "F", NULL }, { "km/h", "mph", "kn" }, { "km", "mi", "nm" },'
+        ' { "24-hour", "12-hour", NULL } };'
         ' return v >= 0 && v < orb_units_count(k) ? L[k][v] : NULL; }',
         'static bool orb_sd_mounted(void);',
         'static const char *orb_sd_card_id(void);',
@@ -810,21 +811,22 @@ int main(void)
          !strcmp(rowline(4),"UNITS") &&
          !strcmp(rowline(FIRST_APP),"Clock") && !strcmp(rowline(EXIT),"exit"));
       (void)n; }
-    /* UNITS (weather-plan §2.1): three knob-edited rows and back, each naming the
+    /* UNITS (weather-plan §2.1): four knob-edited rows and back, each naming the
      * choice in force, and an edit's range is that quantity's choices. */
     { const page_t *spg = NULL; (void)spg;
       const menu_page_t *keep = s_pg; const int keepc = s_cur;
       s_pg = &s_pages[PG_UNITS];
-      g_units = (orb_units_t){ ORB_UNIT_F, ORB_UNIT_KN, ORB_UNIT_NM };
-      ck("UNITS lists temperature, speed and distance, then back",
-         page_rows() == 4 && !strcmp(rowline(0), "temperature:  \xC2\xB0" "F") &&
+      g_units = (orb_units_t){ ORB_UNIT_F, ORB_UNIT_KN, ORB_UNIT_NM, ORB_UNIT_12H };
+      ck("UNITS lists temperature, speed, distance and time, then back",
+         page_rows() == 5 && !strcmp(rowline(0), "temperature:  \xC2\xB0" "F") &&
          !strcmp(rowline(1), "speed:  kn") && !strcmp(rowline(2), "distance:  nm") &&
-         !strcmp(rowline(3), "<- back"));
+         !strcmp(rowline(3), "time:  12-hour") && !strcmp(rowline(4), "<- back"));
       menu_edit_t e; memset(&e, 0, sizeof e);
       ck("a unit row edits through its own choices, wrapping",
          edit_units(0, &e) && e.r.min == 0 && e.r.max == 1 && e.r.wrap && e.v == ORB_UNIT_F &&
-         edit_units(2, &e) && e.r.max == 2 && e.v == ORB_UNIT_NM && !edit_units(3, &e));
-      g_units = (orb_units_t){ 0, 0, 0 };
+         edit_units(2, &e) && e.r.max == 2 && e.v == ORB_UNIT_NM &&
+         edit_units(3, &e) && e.r.max == 1 && e.v == ORB_UNIT_12H && !edit_units(4, &e));
+      g_units = (orb_units_t){ 0, 0, 0, 0 };
       s_pg = keep; s_cur = keepc; }
     /* The row comes from the registry, not from this file's text: an app that
      * stops answering opt_* loses its row without the shell being edited. */

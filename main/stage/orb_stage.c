@@ -1466,19 +1466,24 @@ static void rows_update(void)
         const bool inked = car && prev != ROW_HIDDEN && a != ROW_HIDDEN &&
                            !ox[i] && !oy[i] && !st->ox && !st->oy &&
                            tourbillon_ink_mark((int)s_tourb_shown, prev, a);
-        /* A new opacity marks the row's whole box at both poses, never its ink spans.
-         * Weather's hour bars (2026-11-06, Gold): once the ring paged to the next twelve
-         * and the bars took new frames, a bar dimmed or lit only along its inner part,
-         * its outer end left as it was. Spans off (debug/dial spans=0) and box marks on
-         * the opacity change both clear it; why the spans under-cover a picked row after
-         * a frame change is not yet found. Only the opacity change takes the box: a
-         * frame change on the box cost Flights 3-4 fps (its plane rows change frames
-         * nearly every tick, 17 fps against 20-21 on the same traffic). */
+        /* A new opacity marks the row's whole box at both poses, never its ink spans:
+         * the same pixels at another weight, wherever the ink is. */
+        const bool whole = ochg;
+        if (!inked && prev != ROW_HIDDEN && (whole || !ROW_MARK_SPANS(i, prev, st->ox, st->oy))) {
+            row_mark_box(i, prev, st->ox, st->oy, &u); have = true;
+        }
+        /* A new frame is taken between the two marks: the outgoing pose is marked by the
+         * ink it shows, the incoming by the ink it will. Marked by the outgoing frame's
+         * spans, a picked row under-covered its new ink (weather's hour bars lit only
+         * along their inner part after a page, 2026-11-06; snow's flakes left standing
+         * when the rain came, v1.2.16). The frames share the row's geometry, so a box
+         * mark is the same either side. The src setter's own invalidation is off for the
+         * carriage's reason (tourbillon_advance). */
+        if (fchg) {
+            st->frame = s_g_frame[i];
+            pick_sprite(i, st->frame, &st->fspr);
+        }
         if (!inked) {
-            const bool whole = ochg;
-            if (prev != ROW_HIDDEN && (whole || !ROW_MARK_SPANS(i, prev, st->ox, st->oy))) {
-                row_mark_box(i, prev, st->ox, st->oy, &u); have = true;
-            }
             if (a != ROW_HIDDEN && (whole || !ROW_MARK_SPANS(i, a, ox[i], oy[i]))) {
                 lv_area_t nn;
                 row_mark_box(i, a, ox[i], oy[i], &nn);
@@ -1502,11 +1507,6 @@ static void rows_update(void)
         st->ang_10 = a;
         st->ox = ox[i]; st->oy = oy[i];
         if (fchg) {
-            /* The frames share the row's geometry, so the boxes marked above are the
-             * new frame's too; only the pixels change. The src setter's own invalidation
-             * is off for the carriage's reason (tourbillon_advance). */
-            st->frame = s_g_frame[i];
-            pick_sprite(i, st->frame, &st->fspr);
             if (st->obj) {
                 gfx_fill_sprite_dsc(&st->dsc, &st->fspr, blob());
                 lv_display_enable_invalidation(disp, false);
@@ -1980,9 +1980,12 @@ static void clock_layers_refresh(void)
                 }
                 d.ang_10 = drum_r ? 0 : (int16_t)st->ang_10;
                 d.alpha = st->opa;
-                if (row_picks(r->gidx) && st->frame > 0 && (uint32_t)st->frame < r->n_frames) {
+                if (row_picks(r->gidx) && st->frame >= 0 && (uint32_t)st->frame < r->n_frames) {
                     /* A picked row, at the frame the app picked: the plane the widget
-                     * shows (theme-pool-plan §2.6). */
+                     * shows (theme-pool-plan §2.6). Frame 0 too: d starts from the
+                     * description the table holds, so a row picked back to its first
+                     * frame kept showing the last one (weather's rain drew snow's
+                     * flakes, its hour bars their old lengths; v1.2.16). */
                     orb_bundle_spr_t sp;
                     orb_bundle_spr_at(s_lay_sec, (uint32_t)(r->frame0 + st->frame), &sp);
                     d.art.off = s_lay_bank_off + sp.off;

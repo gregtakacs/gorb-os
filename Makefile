@@ -50,6 +50,8 @@ check-editor:
 	@# OS v1.2.12's sound and disc rules, the baker's half included (the host job has no node)
 	$(PYTHON) tools/host_adpcm_test.py
 	$(PYTHON) tools/host_disc_test.py
+	@# the weather editor's particles against fx.c, to the bit
+	$(PYTHON) tools/host_weather_fx_test.py
 
 firmware:
 	idf.py build

@@ -282,9 +282,10 @@ func TestThemeStepIsPerApp(t *testing.T) {
 // The apps name their OS floor (app.json os_min), carried in their editor region's stamp,
 // and the install run reads it from there: the flight tracker and the weather need v1.2.11's
 // orb_knob_dial (plan §51), and the clock v1.2.9 (its themes' gear plans play on that
-// release's scheduler).
+// release's scheduler). The weather now needs v1.2.14: its clock and particle rows sit at
+// 32..48, past the 32 rows an app was seated before plan §53.
 func TestShelfAppsCarryTheirOSFloor(t *testing.T) {
-	for slug, want := range map[string]string{"flights": "v1.2.12", "weather": "v1.2.12", "clock": "v1.2.12"} {
+	for slug, want := range map[string]string{"flights": "v1.2.12", "weather": "v1.2.14", "clock": "v1.2.12"} {
 		body, err := os.ReadFile(filepath.Join("apps", slug+".orbapp"))
 		if err != nil {
 			t.Fatalf("%s: %v", slug, err)

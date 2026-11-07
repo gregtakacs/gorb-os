@@ -18,10 +18,14 @@ static const char *TAG = "units";
 #define UNITS_KEY  "units"
 #define UNITS_VER  1
 
+/* The stored record. `time` was appended in OS v1.2.16: a record stored before it is
+ * one byte shorter and reads as 24-hour, so an update keeps the owner's units. */
 typedef struct {
     uint8_t ver;
     uint8_t temp, speed, dist;
+    uint8_t time;
 } units_blob_t;
+#define UNITS_BLOB_V1 4u               /* the record before `time` */
 
 static orb_units_t       s_units;        /* zero = metric: the default */
 static uint32_t          s_gen = 1;
@@ -34,11 +38,13 @@ static const char *const KEYS[ORB_UNITS_KINDS][3] = {
     { "c", "f", NULL },
     { "kmh", "mph", "kn" },
     { "km", "mi", "nm" },
+    { "24h", "12h", NULL },
 };
 static const char *const LABELS[ORB_UNITS_KINDS][3] = {
     { "\xC2\xB0" "C", "\xC2\xB0" "F", NULL },
     { "km/h", "mph", "kn" },
     { "km", "mi", "nm" },
+    { "24-hour", "12-hour", NULL },
 };
 
 int orb_units_count(int kind)
@@ -47,6 +53,7 @@ int orb_units_count(int kind)
     case ORB_UNITS_TEMP:  return ORB_UNIT_TEMP_N;
     case ORB_UNITS_SPEED: return ORB_UNIT_SPEED_N;
     case ORB_UNITS_DIST:  return ORB_UNIT_DIST_N;
+    case ORB_UNITS_TIME:  return ORB_UNIT_TIME_N;
     default:              return 0;
     }
 }
@@ -54,7 +61,7 @@ int orb_units_count(int kind)
 bool orb_units_valid(const orb_units_t *u)
 {
     return u && u->temp < ORB_UNIT_TEMP_N && u->speed < ORB_UNIT_SPEED_N &&
-           u->dist < ORB_UNIT_DIST_N;
+           u->dist < ORB_UNIT_DIST_N && u->time < ORB_UNIT_TIME_N;
 }
 
 const char *orb_units_key(int kind, int v)
@@ -86,20 +93,22 @@ void orb_units_init(void)
         return;
     }
     units_blob_t b;
+    memset(&b, 0, sizeof b);
     size_t sz = sizeof b;
     const esp_err_t e = nvs_get_blob(h, UNITS_KEY, &b, &sz);
     nvs_close(h);
-    if (e != ESP_OK || sz != sizeof b || b.ver != UNITS_VER) {
+    if (e != ESP_OK || (sz != sizeof b && sz != UNITS_BLOB_V1) || b.ver != UNITS_VER) {
         if (e != ESP_ERR_NVS_NOT_FOUND) ESP_LOGW(TAG, "stored units unreadable (%s, %u B)", esp_err_to_name(e), (unsigned)sz);
         return;
     }
-    const orb_units_t u = { b.temp, b.speed, b.dist };
+    const orb_units_t u = { b.temp, b.speed, b.dist, sz == sizeof b ? b.time : ORB_UNIT_24H };
     if (!orb_units_valid(&u)) {
         ESP_LOGW(TAG, "stored units rejected");
         return;
     }
     s_units = u;
-    ESP_LOGI(TAG, "units: %s, %s, %s", KEYS[0][u.temp], KEYS[1][u.speed], KEYS[2][u.dist]);
+    ESP_LOGI(TAG, "units: %s, %s, %s, %s", KEYS[0][u.temp], KEYS[1][u.speed], KEYS[2][u.dist],
+             KEYS[3][u.time]);
 }
 
 void orb_units_get(orb_units_t *out)
@@ -116,7 +125,7 @@ const char *orb_units_set(const orb_units_t *u)
 {
     if (!s_mx) return "units not ready";
     if (!orb_units_valid(u)) return "unknown unit";
-    const units_blob_t b = { UNITS_VER, u->temp, u->speed, u->dist };
+    const units_blob_t b = { UNITS_VER, u->temp, u->speed, u->dist, u->time };
     nvs_handle_t h;
     if (nvs_open_from_partition(UNITS_PART, UNITS_NS, NVS_READWRITE, &h) != ESP_OK)
         return "units not stored (nvs open)";
@@ -130,6 +139,7 @@ const char *orb_units_set(const orb_units_t *u)
     s_units = *u;
     if (moved) s_gen++;
     xSemaphoreGive(s_mx);
-    ESP_LOGI(TAG, "units: %s, %s, %s", KEYS[0][u->temp], KEYS[1][u->speed], KEYS[2][u->dist]);
+    ESP_LOGI(TAG, "units: %s, %s, %s, %s", KEYS[0][u->temp], KEYS[1][u->speed],
+             KEYS[2][u->dist], KEYS[3][u->time]);
     return NULL;
 }

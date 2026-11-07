@@ -46,6 +46,8 @@ typedef struct {
     int16_t code;
     int8_t  pop;
     int64_t sunrise, sunset;
+    float   rain, wind;         /* mm, km/h: the day's total and its strongest (-1 unknown) */
+    float   uv;                 /* the day's peak UV index (-1 unknown) */
 } wx_day_t;
 
 typedef struct {
@@ -95,6 +97,12 @@ bool wx_is_day(const wx_place_t *p, int64_t t);
 /* The place's local hour of day and weekday (0 = Sunday) for unix time t. */
 int wx_local_hour(const wx_place_t *p, int64_t t);
 int wx_local_wday(const wx_place_t *p, int64_t t);
+/* The place's local minute of the hour for unix time t. */
+int wx_local_min(const wx_place_t *p, int64_t t);
+
+/* The next sunrise or sunset after `t` (Now's dawn/dusk line): its unix time, with *rise
+ * true for a sunrise; 0 when the days hold none (a polar day or night, or no days yet). */
+int64_t wx_next_sun(const wx_place_t *p, int64_t t, bool *rise);
 
 /* Frame pickers for the theme's rows (plan §2.4), shared with the editor's bake:
  *   a bar: length level 0..7 (by where t sits in [lo, hi]) x 3 + rain level 0..2;

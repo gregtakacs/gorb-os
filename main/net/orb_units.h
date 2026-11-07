@@ -1,7 +1,8 @@
 #pragma once
 /* The orb's units: one OS setting every app reads, never an app's own
  * (weather-plan §0 ruling 3, owner 2026-11-06). Temperature, speed and
- * distance, set once for the orb.
+ * distance, set once for the orb; and since OS v1.2.16 the time format, 24- or
+ * 12-hour (owner, 2026-11-06: a clock's format is the orb's, not an app's).
  *
  * Two doors write it, both through orb_units_set(): the dial's UNITS page and
  * POST /api/v1/units, which the hub's Orb tab drives. Apps read it through the
@@ -14,16 +15,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum { ORB_UNITS_TEMP = 0, ORB_UNITS_SPEED, ORB_UNITS_DIST, ORB_UNITS_KINDS };
+enum { ORB_UNITS_TEMP = 0, ORB_UNITS_SPEED, ORB_UNITS_DIST, ORB_UNITS_TIME, ORB_UNITS_KINDS };
 
 enum { ORB_UNIT_C = 0, ORB_UNIT_F = 1, ORB_UNIT_TEMP_N };
 enum { ORB_UNIT_KMH = 0, ORB_UNIT_MPH = 1, ORB_UNIT_KN = 2, ORB_UNIT_SPEED_N };
 enum { ORB_UNIT_KM = 0, ORB_UNIT_MI = 1, ORB_UNIT_NM = 2, ORB_UNIT_DIST_N };
+enum { ORB_UNIT_24H = 0, ORB_UNIT_12H = 1, ORB_UNIT_TIME_N };
 
 typedef struct {
     uint8_t temp;     /* ORB_UNIT_C, ORB_UNIT_F */
     uint8_t speed;    /* ORB_UNIT_KMH, ORB_UNIT_MPH, ORB_UNIT_KN */
     uint8_t dist;     /* ORB_UNIT_KM, ORB_UNIT_MI, ORB_UNIT_NM */
+    uint8_t time;     /* ORB_UNIT_24H, ORB_UNIT_12H */
 } orb_units_t;
 
 /* Load the stored choice; metric when nothing is stored or it is unreadable.

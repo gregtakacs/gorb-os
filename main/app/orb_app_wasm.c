@@ -937,7 +937,7 @@ m3ApiRawFunction(imp_units)                  /* i32 units(orb_units_t *out) — 
     out[0] = u.temp;
     out[1] = u.speed;
     out[2] = u.dist;
-    out[3] = 0;
+    out[3] = u.time;                         /* OS v1.2.16: the byte that was padding */
     m3ApiWriteMem32(out + 4, orb_units_gen());
     m3ApiReturn(ESP_OK);
 }

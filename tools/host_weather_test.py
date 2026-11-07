@@ -50,7 +50,10 @@ def place(off, t_now, code, day, hours, days):
                   "temperature_2m_min": [9.6, 8, 7, -2.5, 5][:days],
                   "precipitation_probability_max": [80, None, 0, 40, 10][:days],
                   "sunrise": [T0 - 5 * 3600 + 86400 * i for i in range(days)],
-                  "sunset": [T0 + 4 * 3600 + 86400 * i for i in range(days)]},
+                  "sunset": [T0 + 4 * 3600 + 86400 * i for i in range(days)],
+                  "precipitation_sum": [6.2, None, 0, 1.5, 0.2][:days],
+                  "wind_speed_10m_max": [24.1, 18, None, 30, 12][:days],
+                  "uv_index_max": [4.6, 3, 5, None, 2][:days]},
     }
 
 
@@ -96,12 +99,18 @@ int main(void)
     char url[600];
     const size_t n = wx_url(url, sizeof url, w, 4);
     const char *path = strstr(url, ".com") ? strstr(url, ".com") + 4 : url;
-    CK(n > 0 && strlen(path) < 440, "four places fit the OS's 480 B path, with room");
+    CK(n > 0 && strlen(path) < 450, "four places fit the OS's 480 B path");
+    { const wx_where_t far[4] = { { "A", -89.99, -179.99 }, { "B", -89.99, -179.99 },
+                                  { "C", -89.99, -179.99 }, { "D", -89.99, -179.99 } };
+      char u2[600];
+      const size_t n2 = wx_url(u2, sizeof u2, far, 4);
+      CK(n2 > 0 && strlen(strstr(u2, ".com") + 4) < 470,
+         "four places at the longest coordinates still fit it"); }
     CK(strstr(url, "latitude=51.47,38.72,39.74,35.68&") && strstr(url, "longitude=-0.45,-9.14,-104.99,139.65&"),
        "the places go as two comma lists, two decimals each");
     CK(strstr(url, "current=temperature_2m,apparent_temperature,weather_code,is_day,wind_speed_10m") &&
        strstr(url, "hourly=temperature_2m,weather_code,precipitation_probability") &&
-       strstr(url, "precipitation_probability_max,sunrise,sunset") &&
+       strstr(url, "precipitation_probability_max,sunrise,sunset,precipitation_sum,wind_speed_10m_max,uv_index_max") &&
        strstr(url, "forecast_hours=24&forecast_days=6&timezone=auto&timeformat=unixtime"),
        "the request names every field the screens read");
     CK(wx_url(url, 64, w, 4) == 0 && wx_url(url, sizeof url, w, 0) == 0 && wx_url(url, sizeof url, w, 5) == 0,
@@ -128,6 +137,10 @@ int main(void)
     CK(P[0].n_days == 5 && fabsf(P[0].day[0].hi - 18.4f) < 1e-4 && fabsf(P[0].day[3].lo + 2.5f) < 1e-4 &&
        P[0].day[0].code == 95 && P[0].day[0].pop == 80 && P[0].day[1].pop == -1 && P[0].day[0].sunset == T0 + 4 * 3600,
        "5 days: highs, lows, codes, rain, the sun");
+    CK(fabsf(P[0].day[0].rain - 6.2f) < 1e-4 && P[0].day[1].rain == -1 && P[0].day[2].rain == 0 &&
+       fabsf(P[0].day[0].wind - 24.1f) < 1e-4 && P[0].day[2].wind == -1 &&
+       fabsf(P[0].day[0].uv - 4.6f) < 1e-4 && P[0].day[3].uv == -1 && P[0].day[5].uv == -1,
+       "the days' rain total, strongest wind and UV, a null or a missing day read as unknown");
 
     /* read: many */
     CK(read_body(MANY_BODY, 4, &r) && r.places == 4, "four places: an array, read whole");
@@ -148,6 +161,15 @@ int main(void)
     read_body(ONE_BODY, 1, &r);
     CK(wx_is_day(&P[0], T0) && !wx_is_day(&P[0], T0 + 5 * 3600) && !wx_is_day(&P[0], T0 - 6 * 3600) &&
        wx_is_day(&P[0], T0 + 86400 + 3600), "day between sunrise and sunset, by the day it falls in");
+    { bool rise = false;
+      const int64_t a = wx_next_sun(&P[0], T0, &rise);
+      CK(a == T0 + 4 * 3600 && !rise, "by day, the next sun event is the sunset");
+      const int64_t b = wx_next_sun(&P[0], T0 + 5 * 3600, &rise);
+      CK(b == T0 - 5 * 3600 + 86400 && rise, "after it, the next morning's sunrise");
+      const int64_t c = wx_next_sun(&P[0], T0 - 6 * 3600, &rise);
+      CK(c == T0 - 5 * 3600 && rise, "before dawn, today's sunrise");
+      CK(wx_next_sun(&P[0], T0 + 86400 * 9, &rise) == 0, "past the last day, none");
+      CK(wx_local_min(&P[0], T0 + 7 * 60 + 59) == 7, "the local minute"); }
     read_body(MANY_BODY, 4, &r);
     CK(wx_local_hour(&P[0], T0) == 12 && wx_local_hour(&P[3], T0) == 21 && wx_local_hour(&P[2], T0) == 5,
        "the local hour is the place's own");
@@ -182,6 +204,8 @@ MUTATIONS = [
     ('case 2:                               return day ? WX_PARTLY : WX_PARTLY_N;',
      'case 2:                               return WX_PARTLY;'),
     ('return t >= d->sunrise && t < d->sunset;', 'return t >= d->sunrise;'),
+    ('if (d->sunrise > t) { *rise = true; return d->sunrise; }', ';'),
+    ('d->wind = isnan(v) ? -1 : (float)v;', 'd->wind = (float)v;'),
     ('return (int)fmod64(days + 4, 7);', 'return (int)fmod64(days + 3, 7);'),
     ('h->pop = isnan(v) ? -1 : (int8_t)v;', 'h->pop = isnan(v) ? 0 : (int8_t)v;'),
     ('return WX_DAY_POS * i - i * (i - 1) / 2 + (j - i);', 'return WX_DAY_POS * i + (j - i);'),

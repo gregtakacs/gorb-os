@@ -177,8 +177,9 @@ ORB_IMPORT("home_gen")   uint32_t orb_home_gen(void);
 enum { ORB_UNIT_C = 0, ORB_UNIT_F = 1 };                        /* temp  */
 enum { ORB_UNIT_KMH = 0, ORB_UNIT_MPH = 1, ORB_UNIT_KN = 2 };   /* speed */
 enum { ORB_UNIT_KM = 0, ORB_UNIT_MI = 1, ORB_UNIT_NM = 2 };     /* dist  */
+enum { ORB_UNIT_24H = 0, ORB_UNIT_12H = 1 };                    /* time: OS v1.2.16 (0 before) */
 typedef struct {
-    uint8_t  temp, speed, dist, _pad;
+    uint8_t  temp, speed, dist, time;
     uint32_t gen;            /* moves on every change: re-read when it does */
 } orb_units_t;
 _Static_assert(sizeof(orb_units_t) == 8, "the OS writes this record verbatim");
@@ -204,6 +205,21 @@ static inline const char *orb_speed_label(const orb_units_t *u)
 static inline const char *orb_dist_label(const orb_units_t *u)
 {
     return u->dist == ORB_UNIT_MI ? "mi" : u->dist == ORB_UNIT_NM ? "nm" : "km";
+}
+/* A time of day in the orb's format: "14:05" (24-hour) or "2:05 PM" (12-hour). `out` holds
+ * at least 9 bytes. The format is the owner's, set once for the orb (OS v1.2.16). */
+static inline void orb_time_text(char *out, int hour, int min, const orb_units_t *u)
+{
+    int i = 0, h = hour;
+    const int twelve = u->time == ORB_UNIT_12H;
+    if (twelve) h = hour % 12 ? hour % 12 : 12;
+    if (h >= 10 || !twelve) out[i++] = (char)('0' + h / 10);
+    out[i++] = (char)('0' + h % 10);
+    out[i++] = ':';
+    out[i++] = (char)('0' + min / 10);
+    out[i++] = (char)('0' + min % 10);
+    if (twelve) { out[i++] = ' '; out[i++] = hour < 12 ? 'A' : 'P'; out[i++] = 'M'; }
+    out[i] = 0;
 }
 
 /* ---- power (cap "power") ------------------------------------------------------- */

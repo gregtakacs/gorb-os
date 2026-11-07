@@ -45,7 +45,8 @@ size_t wx_url(char *buf, size_t cap, const wx_where_t *w, int n)
         "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
         "&current=temperature_2m,apparent_temperature,weather_code,is_day,wind_speed_10m"
         "&hourly=temperature_2m,weather_code,precipitation_probability"
-        "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset"
+        "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset,"
+        "precipitation_sum,wind_speed_10m_max,uv_index_max"
         "&forecast_hours=24&forecast_days=6&timezone=auto&timeformat=unixtime", la, lo);
     return k > 0 && (size_t)k < cap ? (size_t)k : 0;
 }
@@ -57,8 +58,10 @@ void wx_begin(wx_reader_t *r, wx_place_t *out, int n_out)
     r->n_out = n_out;
     r->place = -1;
     memset(out, 0, sizeof *out * (size_t)n_out);
-    for (int p = 0; p < n_out; p++)
+    for (int p = 0; p < n_out; p++) {
         for (int i = 0; i < WX_HOURS; i++) out[p].hour[i].pop = -1;
+        for (int i = 0; i < WX_DAYS; i++) out[p].day[i].rain = out[p].day[i].wind = out[p].day[i].uv = -1;
+    }
 }
 
 static wx_place_t *cur(wx_reader_t *r)
@@ -100,6 +103,9 @@ static void take_element(wx_reader_t *r, wx_place_t *p, double v)
         else if (!strcmp(a, "precipitation_probability_max")) d->pop = isnan(v) ? -1 : (int8_t)v;
         else if (!strcmp(a, "sunrise")) d->sunrise = isnan(v) ? 0 : (int64_t)v;
         else if (!strcmp(a, "sunset")) d->sunset = isnan(v) ? 0 : (int64_t)v;
+        else if (!strcmp(a, "precipitation_sum")) d->rain = isnan(v) ? -1 : (float)v;
+        else if (!strcmp(a, "wind_speed_10m_max")) d->wind = isnan(v) ? -1 : (float)v;
+        else if (!strcmp(a, "uv_index_max")) d->uv = isnan(v) ? -1 : (float)v;
         else return;
         if (i + 1 > p->n_days) p->n_days = (uint8_t)(i + 1);
     }
@@ -192,6 +198,21 @@ static int64_t fmod64(int64_t a, int64_t m) { const int64_t r = a % m; return r 
 int wx_local_hour(const wx_place_t *p, int64_t t)
 {
     return (int)(fmod64(t + p->utc_offset, 86400) / 3600);
+}
+
+int wx_local_min(const wx_place_t *p, int64_t t)
+{
+    return (int)(fmod64(t + p->utc_offset, 3600) / 60);
+}
+
+int64_t wx_next_sun(const wx_place_t *p, int64_t t, bool *rise)
+{
+    for (int i = 0; i < p->n_days; i++) {
+        const wx_day_t *d = &p->day[i];
+        if (d->sunrise > t) { *rise = true; return d->sunrise; }     /* a day's dawn comes first */
+        if (d->sunset > t) { *rise = false; return d->sunset; }
+    }
+    return 0;
 }
 
 int wx_local_wday(const wx_place_t *p, int64_t t)

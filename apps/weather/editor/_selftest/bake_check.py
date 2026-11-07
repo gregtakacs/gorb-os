@@ -33,16 +33,21 @@ STAGE = "/mnt/c/Temp/weather-bake-check"
 RUNTIME = os.path.join(ROOT, "tools", "orb-manager", "web", "runtime")
 EDITOR = os.path.dirname(HERE)
 APPV = open(os.path.join(EDITOR, "..", "version.txt")).read().strip()
-# The pool's room beside the largest clock theme (skeleton, 5.07 MB) and the tracker's
-# (modern, 1.34 MB): 8 MB less those, the two table sectors and some slack.
-BUDGET = 1750 * 1024
+# The pool's room beside the shelf's other defaults, the clock's (skeleton) and the tracker's
+# (modern), read off the shelf so the figure follows them: 8 MB less those, the two table
+# sectors and 512 KB of slack. (It was a fixed 1750 KB against the 5.07 MB and 1.34 MB those
+# two weighed before OS v1.2.12's compression.) A clock theme heavier than the shelf's
+# leaves less: the pool is shared, and the hub refuses what does not fit.
+SHELF = os.path.join(ROOT, "tools", "orb-manager", "themes")
+BUDGET = (8 << 20) - os.path.getsize(os.path.join(SHELF, "skeleton.orbtheme")) \
+    - os.path.getsize(os.path.join(SHELF, "modern.orbtheme")) - 2 * 4096 - (512 << 10)
 
 
 def stage():
     if os.path.isdir(STAGE):
         shutil.rmtree(STAGE)
     os.makedirs(STAGE)
-    for src in (os.path.join(HERE, "bake.html"), os.path.join(EDITOR, "weather-bake.js"),
+    for src in (os.path.join(HERE, "bake.html"), os.path.join(EDITOR, "weather-bake.js"), os.path.join(EDITOR, "ground.js"),
                 os.path.join(RUNTIME, "baker@1", "orbtheme-baker.js"), os.path.join(RUNTIME, "vendor", "fonts.css")):
         shutil.copy(src, STAGE)
     shutil.copytree(os.path.join(RUNTIME, "vendor", "fonts"), os.path.join(STAGE, "fonts"))
@@ -85,8 +90,15 @@ def check(name, raw, exe):
         bad.append("the day bars are not five rows of 28")
     if not picked([23], 10):
         bad.append("no place dots of ten at slot 23")
-    if sorted(int(f["slot"]) for f in fonts) != [0, 1, 2]:
+    # §2.10: three fonts, and three more for Hourly and the 5 days where Now's sizes differ
+    want_fonts = list(range(6)) if name == "largest-moved" else [0, 1, 2]
+    if sorted(int(f["slot"]) for f in fonts) != want_fonts:
         bad.append("fonts: %s" % sorted(int(f["slot"]) for f in fonts))
+    fixed = [s for s in (50, 51, 52, 55) if s in aux and int(aux[s]["kind"]) == ts.SHAPE_TEXT]
+    if fixed != ([50, 51, 52, 55] if name == "largest-moved" else []):
+        bad.append("Hourly's and the 5 days' own labels: %s" % fixed)
+    if (56 in aux) != (name == "largest-moved"):
+        bad.append("Hourly's own icon at 56 %s" % ("missing" if name == "largest-moved" else "baked though Now's icon is the default size"))
     labs = [aux.get(s) for s in range(24, 32)]
     if not all(lb is not None and int(lb["kind"]) == ts.SHAPE_TEXT for lb in labs):
         bad.append("the labels are not at 24..31")
@@ -95,8 +107,22 @@ def check(name, raw, exe):
         if len(set(cols)) != 1:
             bad.append("the four columns do not share one geometry: %s" % cols)
     live = [e for e in els if int(e["class"]) == ts.CLASS_AUX]
-    if len(live) > 32:
-        bad.append("%d live rows against the 32 an app seats" % len(live))
+    if len(live) > ts.CLK_ROW_MAX:
+        bad.append("%d live rows against the %d an app seats" % (len(live), ts.CLK_ROW_MAX))
+    # §2.7: the clock at 32 and the particle pool from 33, one bank for all of them
+    if 32 not in aux or int(aux[32].get("kind", -1)) != ts.SHAPE_TEXT:
+        bad.append("no clock label at 32")
+    if not picked(range(33, 49), 7):
+        bad.append("the particle pool is not sixteen rows of seven at 33..48")
+    elif len(set(int(aux[s]["frame0"]) for s in range(33, 49))) != 1:
+        bad.append("the particles do not share one bank")
+    # §2.8: the 5 days' cursor, one picture at 49
+    if 49 not in aux or int(aux[49]["n_frames"]) != 1:
+        bad.append("no halo at 49")
+    if name == "largest-moved":
+        ic = aux.get(0)
+        if not ic or int(ic["w"]) != 104 or int(ic["x"]) + int(ic["pivot_x"]) != 233 + 40:
+            bad.append("the largest icon is not 104 px moved 40 px right: %r" % ({k: ic[k] for k in ("x", "y", "w", "pivot_x")} if ic else None))
     if not any(int(e["class"]) == ts.CLASS_PREVIEW for e in els):
         bad.append("no preview")
     with open(path, "rb") as f:

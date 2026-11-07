@@ -1,7 +1,7 @@
 # Radar: rain over a map, for home and the three places
 
 Status: **designed 2026-11-07 (owner, §0); R0 measured, R1, R1b and R2 built and committed,
-R3 built and run on Bronze 2026-11-07, uncommitted (§6).** Four pieces of work:
+R3 committed, R3b built 2026-11-07, uncommitted (§6).** Four pieces of work:
 
 - the places move out of the weather app into the OS, beside home (§2.1);
 - **the OS serves a map for home and each place** to any app that holds `location`, drawn
@@ -1011,3 +1011,30 @@ follow rules that keep everyone moving:
   `png_bench`, beside R0's `map_bench`.
 - **Owed to R5:** the time of `orb_map_draw` (a 466x466 palette blend) and of
   `orb_cv_png8` onto a real canvas, measured in the app at 4 fps.
+
+### 6.3 R3b, a theme's values (2026-11-07, OS v1.2.21, uncommitted)
+
+- **The class.** `values` is class 11, appended without moving the ABI word (the AUX,
+  PREVIEW and SOUND precedent): `orb_assets.h` (`ORB_ASSET_VALUES`, priced w*h),
+  `orb_clock3.c`, `orb_elems.c`, `theme_schema.py` (`CLASS_VALUES`, `VALUES_MAX` 4096),
+  `orbapp.py`'s asset classes and `baker@1`, each with the same rules in the same words:
+  one row at slot 0, one plane of 1 to 4096 bytes by 1, placing nothing, the app's layout
+  version in `src` (1-255; `src` is a u8, so §2.11's layout version is too).
+- **The way in and out.** An editor calls `B.values(bytes, version)` on `GorbBake.stage3`;
+  the projection records where the bytes sit (`out_values_*`, kept in the theme's
+  geometry), the stage never draws the row, and an app reads them with
+  `orb_stage_values(buf, cap, &ver)` (84 imports). No values, or no theme bound, answers
+  0 and the app's own defaults stand.
+- **Tests.** `host_clock3_test.py`: an accepted 40-byte blob found at its plane with its
+  version, a theme with none answering (0, 0, 0), seven refusals the device and the writer
+  word alike, four guards each caught by its mutant, and a mutant pricing the plane as
+  pixels caught on the accept side. The h == 1 rule has no mutant: with the walk's w*h
+  price and size == w, a two-row plane is refused either way. `headless-stage.test.js`:
+  a blob baked, read back through the card's reader byte for byte, and four refusals.
+  `make check-editor` now runs here (Node 22 LTS under `~/.local/opt`).
+- **On Bronze:** the clock's Wave and Weather's Scope still project and draw; no faults.
+  The first theme that carries values is the radar's (R5/R7), which exercises
+  `orb_stage_values` on the glass.
+- **Found, not fixed:** `python3 tools/theme_schema.py`'s self-test stops at its "seats 32
+  moving rows" case, on HEAD too: the row ceiling rose to 64 (§53) and that case was not
+  moved with it. `make check-host` does not run the self-test.

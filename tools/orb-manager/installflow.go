@@ -1172,21 +1172,13 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 	// The push's plan: one byte transfer for an app, and for a theme the store and the
 	// reboot the device's upload door sets off behind it. Each line names its stage by
 	// its action, the way an install run's do.
-	restart := int((cycleQuietGrace + installRebootWait) / time.Second)
-	plan := []planStep{{ID: "send", Label: "Copying " + name + " to the orb's SD card", Kind: "bytes"}}
-	phase := "send"
 	if kind == "theme" {
-		plan = themeSteps(name, restart)
-		phase = "theme-send"
-	}
-	send(installStep{Step: kind, Action: "plan", Phase: phase, Plan: plan})
-	raw := send
-	send = func(st installStep) {
-		if ph := themePhase(st.Action); kind == "theme" && ph != "" {
-			phase = ph
-		}
-		st.Phase = phase
-		raw(st)
+		send = themeRunSend(send, name)
+	} else {
+		send(installStep{Step: kind, Action: "plan", Phase: "send",
+			Plan: []planStep{{ID: "send", Label: "Copying " + name + " to the orb's SD card", Kind: "bytes"}}})
+		raw := send
+		send = func(st installStep) { st.Phase = "send"; raw(st) }
 	}
 	release, rerr := s.holdDevicePort(r.Context(), ip, deviceTimeout)
 	if rerr != nil {
@@ -1240,12 +1232,36 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 			Note: fmt.Sprintf("%s does not parse: %v", body.name, err)})
 		return
 	}
-	total := len(body.blob)
-	last, sentLast := 0, int64(0)
 	// overwrite=1 is the Themes face's Update: the card holds an older bake under this
 	// name, and the shelf's copy replaces it (the device refuses a same-name file without it)
-	overwrite := r.URL.Query().Get("overwrite") == "1"
-	_, uerr := s.ota.ThemeUploadProgress(ip, body.blob, overwrite, func(sent int64) {
+	s.streamThemeStore(r.Context(), ip, body.blob, body.name, c, r.URL.Query().Get("overwrite") == "1", send)
+}
+
+// themeRunSend opens a theme store's streamed run: it sends the plan (themeSteps, named for
+// what is going on) and returns the send that stamps each later line with its row. The
+// Themes face's push and the theme editor's send both run through it, so the two show the
+// same five steps (owner, 2026-11-06).
+func themeRunSend(send func(installStep), what string) func(installStep) {
+	restart := int((cycleQuietGrace + installRebootWait) / time.Second)
+	send(installStep{Step: "theme", Action: "plan", Phase: "theme-send", Plan: themeSteps(what, restart)})
+	phase := "theme-send"
+	return func(st installStep) {
+		if ph := themePhase(st.Action); ph != "" {
+			phase = ph
+		}
+		st.Phase = phase
+		send(st)
+	}
+}
+
+// streamThemeStore sends one theme container to the orb's card and follows the store the
+// device's upload door queues, through the reboot, to the orb answering again, speaking
+// each stage as a step. It answers whether the run said done. label names the file in a
+// refusal; the caller holds the device port.
+func (s *Server) streamThemeStore(ctx context.Context, ip string, blob []byte, label string, c *orbnet.ThemeContainer, overwrite bool, send func(installStep)) bool {
+	total := len(blob)
+	last, sentLast := 0, int64(0)
+	_, uerr := s.ota.ThemeUploadProgress(ip, blob, overwrite, func(sent int64) {
 		sentLast = sent
 		pct := int(sent * 100 / int64(total))
 		if pct-last < 10 && int(sent) != total {
@@ -1257,8 +1273,8 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 	})
 	if uerr != nil {
 		send(installStep{Step: c.ID, Action: "refused",
-			Note: fmt.Sprintf("writing %s to the card: %s", body.name, plainDeviceErr(uerr, int(sentLast)))})
-		return
+			Note: fmt.Sprintf("writing %s to the card: %s", label, plainDeviceErr(uerr, int(sentLast)))})
+		return false
 	}
 	// Retire the whole card memory, not just the ID photos: the list the hub remembered
 	// from before the push would answer /api/theme/list for two minutes and paint the
@@ -1270,20 +1286,21 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 	// it. It used to answer `done` here, and the page then read the theme list while
 	// the orb was mid-copy and mid-reboot, and timed out (owner report, 2026-11-03).
 	send(installStep{Step: c.ID, Action: "storing", Note: "the orb is copying it from the card to its flash"})
-	outcome, note, back := s.followStoreStaged(r.Context(), ip, c.ID, storeStages(send, c.ID), func() {
+	outcome, note, back := s.followStoreStaged(ctx, ip, c.ID, storeStages(send, c.ID), func() {
 		send(installStep{Step: c.ID, Action: "stored"})
 		send(installStep{Step: c.ID, Action: "rebooting", Note: "stored; the orb reboots onto it"})
 	}, beatFor(send, c.ID, "waiting for the orb to store the theme and come back"))
 	if outcome != "stored" {
 		send(installStep{Step: c.ID, Action: "refused", Note: "the store did not land: " + note})
-		return
+		return false
 	}
 	if !back {
 		send(installStep{Step: c.ID, Action: "refused",
 			Note: fmt.Sprintf("the orb stored the theme but has not answered again within %s", installRebootWait)})
-		return
+		return false
 	}
 	send(installStep{Step: c.ID, Action: "done", Note: "stored, and the orb is back drawing it"})
+	return true
 }
 
 // beatFor turns one silent round of a patient wait into a step the screen can show. The

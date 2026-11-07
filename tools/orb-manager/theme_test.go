@@ -918,3 +918,46 @@ func TestPreviewDoesNotWaitOutAReadError(t *testing.T) {
 		t.Errorf("a read error was fetched %d times; wanted the one torn retry and no busy waits", calls)
 	}
 }
+
+// The theme editor's Send asks for NDJSON and gets the store as steps (owner, 2026-11-06):
+// the plan first, with the five theme rows the Themes face's Install shows, and a last
+// line of done whose step is the id the theme was filed under.
+func TestThemeUploadStreamsItsSteps(t *testing.T) {
+	s, ip, _, _ := fakeOrbHub(t)
+	file := orbfake.Container("Perpetual Calendar")
+	mux := http.NewServeMux()
+	s.routes(mux)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/theme/upload?ip="+ip+"&overwrite=1", strings.NewReader(string(file)))
+	req.Header.Set(tokenHeader, s.token)
+	req.Header.Set("Accept", "application/x-ndjson")
+	mux.ServeHTTP(rec, req)
+	var steps []installStep
+	for _, ln := range strings.Split(strings.TrimSpace(rec.Body.String()), "\n") {
+		var st installStep
+		if err := json.Unmarshal([]byte(ln), &st); err != nil {
+			t.Fatalf("not a step line: %q", ln)
+		}
+		steps = append(steps, st)
+	}
+	if len(steps) < 2 || steps[0].Action != "plan" {
+		t.Fatalf("the stream did not open with its plan: %s", rec.Body)
+	}
+	var ids []string
+	for _, p := range steps[0].Plan {
+		ids = append(ids, p.ID)
+	}
+	if got := strings.Join(ids, " "); got != "theme-send theme-check theme-room theme-store theme-restart" {
+		t.Errorf("the plan is %q", got)
+	}
+	want, _ := orbnet.ThemeIDOf("clock", "Perpetual Calendar")
+	last := steps[len(steps)-1]
+	if last.Action != "done" || last.Step != want {
+		t.Errorf("the last line is %+v; want done for %s", last, want)
+	}
+	for _, st := range steps[1:] {
+		if st.Phase == "" {
+			t.Errorf("%s/%s names no row", st.Step, st.Action)
+		}
+	}
+}

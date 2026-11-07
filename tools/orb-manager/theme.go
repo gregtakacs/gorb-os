@@ -900,6 +900,12 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 			"note": note, "name": c.Name, "id": c.ID, "serial": c.Serial})
 		return
 	}
+	// A page that asks for NDJSON (the theme editor's Send) gets the store as steps, the
+	// same five the Themes face's Install shows, rather than one reply at the end.
+	if strings.Contains(r.Header.Get("Accept"), "application/x-ndjson") {
+		s.streamThemeUpload(w, r, t.IP, body, c, overwrite)
+		return
+	}
 	// The claim goes in before the bytes move, not before the dial: this is the one
 	// theme call whose failure the operator cannot see, because a reset mid-transfer
 	// makes the firmware delete the .part and answer as if nothing had been sent.
@@ -974,6 +980,32 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 		payload["store_note"] = note
 	}
 	s.jsonOK(w, payload)
+}
+
+// streamThemeUpload is handleThemeUpload's streamed answer: the plan, then every stage of
+// the copy to the card, the store and the reboot, as install steps. The last line is done
+// (its step is the theme's id) or refused with the reason. A stored theme goes on the
+// shelf, as the JSON answer's does.
+func (s *Server) streamThemeUpload(w http.ResponseWriter, r *http.Request, ip string, body []byte, c *orbnet.ThemeContainer, overwrite bool) {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	flusher, _ := w.(http.Flusher)
+	send := themeRunSend(func(st installStep) {
+		b, _ := json.Marshal(st)
+		w.Write(append(b, "\n"...))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}, "\u201c"+c.Name+"\u201d")
+	release, rerr := s.holdDevicePort(r.Context(), ip, otaTimeout)
+	if rerr != nil {
+		send(installStep{Step: c.ID, Action: "refused", Note: rerr.Error()})
+		return
+	}
+	defer release()
+	s.dropThemeCache(ip)
+	if s.streamThemeStore(r.Context(), ip, body, c.Name, c, overwrite, send) {
+		s.keepOnShelf(body)
+	}
 }
 
 // followStore waits out a store the device queued, and then the reboot that draws it,

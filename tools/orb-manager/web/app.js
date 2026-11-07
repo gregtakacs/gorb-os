@@ -1969,7 +1969,9 @@ function stepList(ui) {
   return sl;
 }
 
-async function streamSteps(q, frame, ip, onStep) {
+// body, when given, is the request's bytes (the theme editor's container); without one the
+// POST carries only its query.
+async function streamSteps(q, frame, ip, onStep, body) {
   gLastRefusal = ""; // this run's verdict starts clean; the seed reads it the moment we return
   gLastVerifyNote = "";
   const out = $("#lib-install-log");
@@ -1993,8 +1995,21 @@ async function streamSteps(q, frame, ip, onStep) {
   const panel = !!(frame && frame.steps);
   if (panel) fpLock(true);
   try {
-    const r = await hubFetch(q, { method: "POST", headers: { Accept: "application/x-ndjson" } });
-    if (!r.ok || !r.body) { line("refused: HTTP " + r.status + " — " + (await r.text().catch(() => ""))); return false; }
+    const headers = { Accept: "application/x-ndjson" };
+    if (body) headers["Content-Type"] = "application/octet-stream";
+    const r = await hubFetch(q, body ? { method: "POST", headers, body } : { method: "POST", headers });
+    if (!r.ok || !r.body) {
+      const t = await r.text().catch(() => "");
+      line("refused: HTTP " + r.status + " — " + t);
+      // The hub's refusals before a stream starts are one JSON error; its sentence is the
+      // headline, not a line in the fold (a v1.2.12 owner saw only "the hub refused it",
+      // with the reason behind "the bytes behind the bar").
+      let why = t.trim();
+      try { const j = JSON.parse(why); if (j && j.error) why = j.error; } catch (e) { /* plain text */ }
+      gLastRefusal = why || "HTTP " + r.status;
+      if (frame && frame.doing) frame.doing.textContent = "Refused: " + gLastRefusal;
+      return false;
+    }
     const rd = r.body.getReader(), dec = new TextDecoder();
     let buf = "", ok = false, refusal = "";
     for (;;) {
@@ -2008,6 +2023,8 @@ async function streamSteps(q, frame, ip, onStep) {
         if (!raw) continue;
         let j;
         try { j = JSON.parse(raw); } catch (e) { continue; }
+        // A route that refused before its stream began answers one JSON error instead.
+        if (j.ok === false && j.error) { refusal = j.error; gLastRefusal = refusal; line("refused: " + j.error); continue; }
         if (j.action === "plan") {
           if (sl && Array.isArray(j.plan) && j.plan.length) {
             if (frame.splice) sl.splice(frame.splice, j.plan); else sl.set(j.plan);
@@ -2036,7 +2053,8 @@ async function streamSteps(q, frame, ip, onStep) {
       }
     }
     if (frame) {
-      if (frame.doing) frame.doing.textContent = ok ? "Done · the orb is back" : "the hub refused it";
+      if (frame.doing) frame.doing.textContent = ok ? "Done · the orb is back"
+        : "Refused: " + (refusal || "the run ended without saying why \u2014 the log below has every line");
       if (sl && planned) sl.finish(ok);
       // A refusal leaves its own line as the panel's last word, and the panel open: the
       // rules for this panel say an operation never closes its own completion row.
@@ -3738,13 +3756,21 @@ async function themeBridge(ev) {
     // D26/D28 verification stays where it already is.
     const bin = Uint8Array.from(atob(m.container), (c) => c.charCodeAt(0));
     const body = new Blob([bin], { type: "application/octet-stream" });
-    const r = await hubFetch("/api/theme/upload?ip=" + encodeURIComponent(themeIP) + "&overwrite=1",
-      { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
-    const d = j.data || {};
-    say("stored \u201c" + (d.name || name || "?") + "\u201d (" + (d.id || "?") + ")");
-    back({ state: "stored", themeId: d.id || "" });
+    // The send gets the install panel and its steps (owner, 2026-11-06): copied to the
+    // card, checked, room made, moved into flash, restarted. The hub streams them when
+    // asked for NDJSON; the last line names the id the theme was filed under.
+    fpOpen();
+    const ui = fpUI();
+    ui.doing.textContent = "sending " + (name || "the theme") + " to " + themeIP;
+    ui.log.textContent = ""; ui.bar.style.width = "0%"; ui.bar.title = ""; ui.op.textContent = "";
+    ui.live.textContent = "";
+    let id = "";
+    const ok = await streamSteps("/api/theme/upload?ip=" + encodeURIComponent(themeIP) + "&overwrite=1",
+      ui, themeIP, (j) => { if (j.action === "done") id = j.step || ""; }, body);
+    if (!ok) throw new Error(gLastRefusal || "the orb did not take it \u2014 the progress panel says why");
+    fpClose();
+    say("stored \u201c" + (name || "?") + "\u201d (" + (id || "?") + ")");
+    back({ state: "stored", themeId: id });
     await loadThemes(themeIP);
   } catch (e) {
     say("refused: " + e.message);

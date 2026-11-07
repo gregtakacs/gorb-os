@@ -2654,7 +2654,7 @@ static esp_err_t h_status(httpd_req_t *req)
          * apart. mounted is the answer to "is there anything to serve", and share
          * is the answer to "why will a rescan refuse right now". Both are cache
          * reads (orb_sd.c:255, :290), so the few-Hz poll costs no flash traffic. */
-        "\"sd\":{\"mounted\":%s,\"share\":%s,\"card\":\"%s\"},"
+        "\"sd\":{\"mounted\":%s,\"share\":%s,\"card\":\"%s\",\"why\":\"%s\",\"tried\":\"%s\"},"
         "\"art_ready\":%s,\"art_bytes\":%u,\"art_pages\":%u,\"art_banks\":%u,\"art_refusals\":%u,\"slot\":\"%s\",\"img\":\"%s\","
         "\"synced\":%s,\"epoch\":%lld,\"tz\":\"%s\",\"tz_offset\":%d,\"name\":\"%s\",\"ap\":%s,"
         "\"assoc_fails\":%u,\"wifi_reason\":%u,\"wifi_reason_name\":\"%s\","
@@ -2716,7 +2716,7 @@ static esp_err_t h_status(httpd_req_t *req)
         orb_usb_mtp_state(), orb_usb_mtp_host_up() ? "true" : "false", orb_usb_mtp_reason(),
 #endif
         orb_sd_mounted() ? "true" : "false", orb_sd_share_held() ? "true" : "false",
-        orb_sd_card_id(),
+        orb_sd_card_id(), orb_sd_why(), orb_sd_tried(),
         art_bank_ready() ? "true" : "false", (unsigned)art_bank_bytes(),
         (unsigned)art_bank_mmu_pages(), (unsigned)orb_art_resident_count(),
         (unsigned)orb_art_refusals(),
@@ -6185,7 +6185,13 @@ static esp_err_t h_apps_list(httpd_req_t *req)
     char card[83], head[160];
     json_put(card, sizeof card, mounted ? orb_sd_card_id() : "");
     if (n < 0 && !mounted) {
-        httpd_resp_send_chunk(req, "{\"mounted\":false,\"count\":-1,\"apps\":[],\"installed\":[",
+        /* The reason travels with the refusal: a card that answered in a format the orb
+         * cannot read is a different fix from a socket nothing answered in. */
+        char why[200];
+        json_put(why, sizeof why, orb_sd_why());
+        httpd_resp_send_chunk(req, "{\"mounted\":false,\"why\":\"", HTTPD_RESP_USE_STRLEN);
+        httpd_resp_send_chunk(req, why, HTTPD_RESP_USE_STRLEN);
+        httpd_resp_send_chunk(req, "\",\"count\":-1,\"apps\":[],\"installed\":[",
                               HTTPD_RESP_USE_STRLEN);
         apps_send_installed(req, row, APPS_ROW_MAX);
         httpd_resp_send_chunk(req, closer, HTTPD_RESP_USE_STRLEN);

@@ -63,6 +63,12 @@ static bool s_bus_up;
  * mount_now() reads it and the hand-over that sets it is further down. */
 static bool s_usb_owns;
 
+/* Each rung's answer at the last mount try, for the status page: on an owner's board
+ * that will not mount a card, which rung failed and how is the whole diagnosis
+ * (TIMEOUT: nothing answered; INVALID_RESPONSE/INVALID_CRC: the wire; ESP_FAIL: a card
+ * that came up and whose filesystem FatFs refused). */
+static char s_tried[120];
+
 static esp_err_t mount_at_khz(uint32_t khz)
 {
     if (!s_bus_up) {
@@ -168,8 +174,12 @@ static esp_err_t mount_now(void)
     const uint32_t ladder[3] = { (uint32_t)CONFIG_ORB_SD_SPI_MAX_KHZ, 10000, 4000 };
 
     esp_err_t e = ESP_FAIL;
+    s_tried[0] = '\0';
     for (unsigned i = 0; i < 3; i++) {
         e = mount_at_khz(ladder[i]);
+        const size_t used = strlen(s_tried);
+        snprintf(s_tried + used, sizeof s_tried - used, "%s%" PRIu32 " kHz %s",
+                 i ? ", " : "", ladder[i], esp_err_to_name(e));
         if (e == ESP_OK) break;
         /* s_card is only written by the success path, so a failed attempt has
          * already run its own cleanup (host deinit, diskio unregister, VFS
@@ -473,6 +483,22 @@ esp_err_t orb_sd_remount(void)
 }
 
 bool orb_sd_mounted(void)        { return s_mounted; }
+const char *orb_sd_tried(void)   { return s_tried; }
+
+/* esp_vfs_fat_sdspi_mount answers ESP_FAIL only for a card that came up and whose
+ * filesystem FatFs refused (f_mount); a card that never answered fails in
+ * sdmmc_card_init with one of the ESP_ERR_* codes. Before any try there is no card
+ * to talk about. */
+const char *orb_sd_why(void)
+{
+    if (s_mounted) return "";
+    if (s_usb_owns) return "the card is shared with a computer over USB";
+    if (s_last_try_us == 0) return "no card in the socket";
+    if (s_last_err == ESP_FAIL)
+        return "the card answered, but the orb cannot read its format: it needs FAT32 on a "
+               "Master Boot Record (MBR) partition; GPT (GUID) partitions and exFAT are not readable";
+    return "no card answered: push it fully into the socket, or try another card";
+}
 const char *orb_sd_card_id(void) { return s_mounted ? s_card_id : ""; }
 
 void orb_sd_space(uint64_t *out_total, uint64_t *out_free)

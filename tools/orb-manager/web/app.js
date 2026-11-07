@@ -4662,6 +4662,10 @@ async function fillConsolePorts() {
       o.textContent = portLabel(p, entry);
       sel.appendChild(o);
     }
+    // The orb on the glass's own lead first: listing order is the host's, and a user
+    // read COM4 (another device) while their orb sat on COM9 (2026-11-07).
+    if (current.port && list.some((e) => (typeof e === "string" ? e : e.port) === current.port))
+      sel.value = current.port;
   } catch (e) { sel.innerHTML = `<option>(${esc(e.message)})</option>`; }
 }
 

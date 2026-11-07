@@ -472,7 +472,7 @@ static int open_verified_stem(const orbapp_hdr_t **h_out, orbapp_hdr_t *h_storag
      * learns it the hard way: orb_sd_ensure_mounted() takes the same non-recursive
      * mutex the walk and this open then need, so calling it inside the lock dead-
      * locks the one httpd worker with the dial still ticking. */
-    if (orb_sd_ensure_mounted() != ESP_OK) { *why = "no card in the socket"; return -1; }
+    if (orb_sd_ensure_mounted() != ESP_OK) { *why = orb_sd_why(); return -1; }
     if (!orb_sd_name_ok(stem))            { *why = "that is not a usable app name"; return -1; }
 
     /* Pass one: the walk proves the file exists and passes the header ladder. It

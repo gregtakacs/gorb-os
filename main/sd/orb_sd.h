@@ -85,6 +85,17 @@ bool orb_sd_mounted(void);
  */
 esp_err_t orb_sd_remount(void);
 
+/** Why no card is mounted, in the owner's words: no card answered, or a card answered
+ *  whose format the orb cannot read (FAT32 on an MBR partition is the one it can; GPT
+ *  and exFAT are not). "" while mounted. A user's fresh card that would not mount read
+ *  only "no card in the socket", which sent them to reseat a card that was in
+ *  (2026-11-07). */
+const char *orb_sd_why(void);
+
+/** The last mount try, rung by rung: "20000 kHz ESP_ERR_TIMEOUT, 10000 kHz ...". The
+ *  status page carries it so a board that will not mount a card can say how. */
+const char *orb_sd_tried(void);
+
 /** "SDHC 3.7GB @20000kHz" style identity, or "" when unmounted. */
 const char *orb_sd_card_id(void);
 

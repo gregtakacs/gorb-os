@@ -53,11 +53,11 @@ type AppCardRow struct {
 // such keys, which is why GeomCRC reads 0 there rather than reading as a match. See
 // AppContainer.Diff for what a comparison against a hub-side file is actually worth.
 type AppInstalledRow struct {
-	Slug    string `json:"slug"`
-	Title   string `json:"title"`
-	Slot    int    `json:"slot"`
-	Caps    string `json:"caps"`
-	Failed  bool   `json:"failed"`
+	Slug   string `json:"slug"`
+	Title  string `json:"title"`
+	Slot   int    `json:"slot"`
+	Caps   string `json:"caps"`
+	Failed bool   `json:"failed"`
 	// Secrets names the app's secret settings (§43): the Orb tab's App keys draws a
 	// write-only field for each through /api/v1/apps/cfg.
 	Secrets []string `json:"secrets,omitempty"`
@@ -118,7 +118,10 @@ func (a AppInstalledRow) HasCap(name string) bool {
 
 // AppList is the part of GET /api/v1/apps a card-tier reader needs.
 type AppList struct {
-	Mounted   bool              `json:"mounted"`
+	Mounted bool `json:"mounted"`
+	// Why says, with no card mounted, what the orb found: nothing answering, or a card
+	// whose format it cannot read (GPT, exFAT). Older firmware leaves it empty.
+	Why       string            `json:"why,omitempty"`
 	Count     int               `json:"count"`
 	Apps      []AppCardRow      `json:"apps"`
 	Installed []AppInstalledRow `json:"installed"`

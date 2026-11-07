@@ -569,6 +569,9 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 		}
 	}
 	if !listing.Mounted {
+		if listing.Why != "" && listing.Why != "no card in the socket" {
+			return fmt.Errorf("the orb's SD card is not usable — %s. Apps are installed onto the card", listing.Why)
+		}
 		return fmt.Errorf("no card in the socket — the install lands files on the card, so insert or mount one first")
 	}
 

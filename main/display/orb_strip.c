@@ -614,6 +614,7 @@ void orb_strip_poll(int32_t delta, bool pressed, bool lpress, int64_t now)
         const int32_t d = knob_take_delta();
         const bool    p = knob_take_press();
         const bool    l = knob_take_long_press();
+        (void)knob_take_push_delta();            /* the carousel has no press-and-turn */
         step_once(d, p, l, esp_timer_get_time());
     }
     if (s_st != ST_OFF) s_m.last_poll_us = esp_timer_get_time();

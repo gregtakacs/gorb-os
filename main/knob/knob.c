@@ -175,6 +175,33 @@ static volatile int64_t s_swPressStartUs = 0; /* us the current hold began      
 /* Consumer read-cursor (only ever touched by the single take_delta caller). */
 static int32_t s_lastTakenDetent = 0;
 
+/* Press-and-turn (radar-plan §2.5): a click committed while the switch is down, and
+ * before the hold has fired, belongs to its own stream. The first one marks the press
+ * as a press-and-turn, so the hold never fires and the release is spent. Committed
+ * inside s_rot_mux like s_detent, from the ISR and from the settle pass. */
+static volatile int32_t s_pushDetent = 0;
+static volatile bool    s_pushTurn   = false;
+/* The hand has started a turn while the knob is down: the shaft has moved half a click
+ * since the press. A slow turn can take longer than LONG_PRESS_MS to commit its first
+ * click, and a hold firing under it opened the app list instead (owner, Bronze,
+ * 2026-11-07). So intent alone holds the hold back; the click still decides. */
+static volatile bool    s_pushIntent = false;
+static volatile int32_t s_rawAtPress = 0;
+static int32_t s_lastTakenPush = 0;
+static volatile uint32_t s_pushTurns = 0;   /* presses that became press-and-turns */
+
+/* Where a committed click goes. Called with s_rot_mux held. */
+static inline void IRAM_ATTR knob_commit(int32_t n)
+{
+    if (s_swDown && !s_longFired) {
+        if (!s_pushTurn) s_pushTurns++;
+        s_pushTurn = true;
+        s_pushDetent += n;
+    } else {
+        s_detent += n;
+    }
+}
+
 /* ---- Was this arrival at a valley a click? Pure, and lifted VERBATIM by
  * tools/host_knob_test.py, which drives it with synthetic AB sequences — the only
  * way to hold a bouncy notch up in front of the rule without a hand on the dial.
@@ -278,7 +305,7 @@ static void IRAM_ATTR knob_rot_isr(void *arg)
     s_net    = net;
     s_prevAB = prev;
     if (n) {
-        s_detent += n;
+        knob_commit(n);
         s_lastCommitUs = now;
         /* Measured, not assumed: the raw travel this commit actually consumed, taken
          * from the raw count rather than from KNOB_STEPS_PER_DETENT, so the number can
@@ -307,14 +334,19 @@ static void IRAM_ATTR knob_sw_isr(void *arg)
          * but stamp the clock so release-side bounce is rejected too. */
         if (s_swDown) {
             s_swDown = 0;
-            if (s_longFired) {
-                /* the hold already fired while the knob was down */
-            } else if ((now - s_swPressStartUs) >= (int64_t)LONG_PRESS_MS * 1000) {
+            const bool long_held = (now - s_swPressStartUs) >= (int64_t)LONG_PRESS_MS * 1000;
+            if (s_longFired || s_pushTurn || (s_pushIntent && long_held)) {
+                /* the hold already fired while the knob was down, the press turned
+                 * into a press-and-turn, or a turn was begun and abandoned past the
+                 * hold time: the release is spent */
+            } else if (long_held) {
                 s_longPend = true;            /* a poll gap outran the threshold */
             } else {
                 s_pressPend = true;
             }
             s_longFired = false;
+            s_pushTurn  = false;
+            s_pushIntent = false;
         }
         s_swLastEdgeUs = now;
         return;
@@ -329,6 +361,9 @@ static void IRAM_ATTR knob_sw_isr(void *arg)
     s_swDown         = 1;
     s_swPressStartUs = now;
     s_longFired      = false;
+    s_pushTurn       = false;
+    s_pushIntent     = false;
+    s_rawAtPress     = s_rawPos;
 }
 
 /* ---- Public API ---- */
@@ -402,7 +437,12 @@ void knob_poll(void)
 {
     const int64_t now = esp_timer_get_time();
     /* A hold fires here, at the threshold, with the knob still down. */
-    if (s_swDown && !s_longFired && (now - s_swPressStartUs) >= (int64_t)LONG_PRESS_MS * 1000) {
+    if (s_swDown && !s_longFired && !s_pushIntent) {
+        const int32_t moved = s_rawPos - s_rawAtPress;
+        if (moved >= KNOB_DETENT_MIN_STEPS || moved <= -KNOB_DETENT_MIN_STEPS) s_pushIntent = true;
+    }
+    if (s_swDown && !s_longFired && !s_pushTurn && !s_pushIntent &&
+        (now - s_swPressStartUs) >= (int64_t)LONG_PRESS_MS * 1000) {
         s_longFired = true;
         s_longPend  = true;
     }
@@ -421,7 +461,7 @@ void knob_poll(void)
          * and dropping here is what caused it. */
         const int32_t n = knob_detents_rounded(s_net);
         if (n) {
-            s_detent += n;
+            knob_commit(n);
             spent = (s_rawPos - s_rawAtCommit);
             s_rawAtCommit = s_rawPos;
             const int32_t mag = (spent > 0) ? spent : -spent;
@@ -494,6 +534,16 @@ int32_t knob_take_delta(void)
     s_lastTakenDetent = now;
     return d;
 }
+
+int32_t knob_take_push_delta(void)
+{
+    const int32_t now = s_pushDetent;
+    const int32_t d   = now - s_lastTakenPush;
+    s_lastTakenPush   = now;
+    return d;
+}
+
+uint32_t knob_push_turns(void) { return s_pushTurns; }
 
 bool knob_take_press(void)
 {

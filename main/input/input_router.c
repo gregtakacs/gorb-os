@@ -360,6 +360,11 @@ static void poll_timer_cb(lv_timer_t *timer)
     bool    pressed = knob_take_press();
     bool lpress = knob_take_long_press();
 
+    /* Press-and-turn (radar-plan §2.10): the clicks turned with the knob held down.
+     * No app takes them on their own yet (an orb_push export), so they arrive as
+     * ordinary turns; the press they started is spent either way (knob.c). */
+    delta += knob_take_push_delta();
+
     /* Fold in anything injected. Draining the whole pending delta keeps the
      * injected path honest: it feeds the same stream a real turn feeds. The three
      * flags are latched first, because draining them here is what would otherwise

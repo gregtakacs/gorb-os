@@ -158,7 +158,12 @@ static esp_err_t get_once(orb_https_t *h, orb_https_method_t method, const char 
     r->status = esp_http_client_get_status_code(h->c);
     r->retry_after_s = h->retry_after_s;
     sample(r);
-    if (r->content_len < 0 && r->status == 0) {
+    /* No status line is a failure, however the client says it: esp_http_client
+     * (IDF 5.4) answers a kept connection the server had half-closed with
+     * ESP_FAIL and status -1, not 0. Read as a success, that left the dead
+     * connection "live" and every request after it failed in ~4 ms with no
+     * bytes, with the reconnect below never tried (Bronze, 2026-11-07). */
+    if (r->content_len < 0 || r->status <= 0) {
         esp_http_client_close(h->c);
         h->live = false;
         return ESP_ERR_HTTP_FETCH_HEADER;

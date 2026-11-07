@@ -90,6 +90,14 @@ int knob_row_step(int32_t delta);
 /** Signed detents -> column step: +1 right, -1 left, 0 for no turn. */
 int knob_col_step(int32_t delta);
 
+/** Net detents turned while the knob was held down (a press-and-turn), since the
+ *  last call; same sign convention as knob_take_delta(). These never appear in
+ *  knob_take_delta(), and the press they started fires neither a press nor a hold. */
+int32_t knob_take_push_delta(void);
+
+/** Presses that became press-and-turns since boot (for /api/v1/status). */
+uint32_t knob_push_turns(void);
+
 /** True exactly once if the knob was tapped (released under the hold time). */
 bool knob_take_press(void);
 

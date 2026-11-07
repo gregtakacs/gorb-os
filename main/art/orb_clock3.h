@@ -139,6 +139,11 @@ typedef struct {
     uint32_t         out_n_sounds;
     uint8_t          out_pattern;
 
+    /* radar-plan §2.11: the theme's values, when it carries them: their offset in the
+     *  section's bank, their length (0 = none) and the app's layout version. */
+    uint32_t         out_values_off, out_values_len;
+    uint16_t         out_values_ver;
+
     /* Out: where the section's bank sits inside a mapped art region, so a
      *  multi-section bundle's clock pixels are found by adding this to the
      *  region base, and how long that bank is. the stage's bounds check reads

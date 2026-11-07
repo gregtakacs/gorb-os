@@ -73,6 +73,7 @@
   "stage_snd_stop": "v(i)",
   "stage_sound": "i(ii)",
   "stage_text": "i(iii)",
+  "stage_values": "i(iii)",
   "tz_offset": "i(I)",
   "ui_align": "v(iiii)",
   "ui_create": "i(ii)",

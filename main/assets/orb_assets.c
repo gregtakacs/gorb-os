@@ -44,7 +44,7 @@ _Static_assert(ORB_ASSET_NAME_MAX == ORBAPP_ASSET_NAME_MAX,
  * while the ledger started naming the wrong failure. */
 const char *const orb_asset_class_name[ORB_ASSET_CLASS_N] = {
     "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux",
-    "preview", "sound"
+    "preview", "sound", "values"
 };
 
 static const char *const WHY[10] = {
@@ -175,6 +175,7 @@ uint32_t orb_asset_slot_bytes(orb_asset_class_t cls, uint32_t w, uint32_t h,
     if (!count) return 0;
     if (cls == ORB_ASSET_PREVIEW) return w * h * 2u * count;   /* RGB565, opaque */
     if (cls == ORB_ASSET_SOUND)   return w * h * 2u * count;   /* w 16-bit words, h 1 */
+    if (cls == ORB_ASSET_VALUES)  return w * h * count;        /* w bytes, h 1 */
     return w * h * 3u * count;                 /* colour w*h*2 + alpha w*h      */
 }
 

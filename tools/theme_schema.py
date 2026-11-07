@@ -845,7 +845,7 @@ ELEM_FRAMES_MAX = 1024  # bound on frame0+n_frames (av-kit's busiest bank uses 2
 # a reader that has never heard of class 8 refuses it whole (D26) rather than let a
 # pointer that should be turning sit still.
 CLASS_NAMES = ("text", "sprite", "hand", "plate", "ring", "bank", "layer", "status",
-               "aux", "preview", "sound")
+               "aux", "preview", "sound", "values")
 CLASS_TEXT, CLASS_SPRITE, CLASS_HAND, CLASS_PLATE = 0, 1, 2, 3
 CLASS_RING, CLASS_BANK, CLASS_LAYER, CLASS_STATUS = 4, 5, 6, 7
 CLASS_AUX = 8
@@ -865,6 +865,13 @@ CLASS_PREVIEW = 9
 # what the table says can be refused at the door. Appended at 10 without moving
 # CLASS_ABI, the AUX and PREVIEW precedent.
 CLASS_SOUND = 10
+# radar-plan §2.11's append: a theme's values. One blob of settings the app's editor bakes
+# (a map's colours, a rain ramp, widths) whose layout is the app's own, stamped with the
+# app's layout version in `src` (1-255). One row at slot 0, one plane of w bytes by 1, at
+# most VALUES_MAX, placing nothing: the bank pays w*h for it, orb_asset_slot_bytes()'s
+# price. Appended at 11 without moving CLASS_ABI, the AUX, PREVIEW and SOUND precedent.
+CLASS_VALUES = 11
+VALUES_MAX = 4096
 
 # D42: what an AUX row's art is, read from its `kind` column (clk_types.h CLK_SHAPE_*).
 # The shape says nothing about motion: an arm and a ring move by the same two poses. A
@@ -1075,7 +1082,7 @@ CLASS_APP_ADV = (CLASS_BANK, CLASS_TEXT, CLASS_STATUS)
 # of a composited slot is a mistake about what the class is. A PREVIEW is one plane
 # (theme_schema.CLASS_PREVIEW's slot_bytes is RGB565, and the picker reads it
 # transiently as one picture): a second frame is a mistake about that too.
-CLASS_NO_ANIM = (CLASS_LAYER, CLASS_STATUS, CLASS_PREVIEW, CLASS_SOUND)
+CLASS_NO_ANIM = (CLASS_LAYER, CLASS_STATUS, CLASS_PREVIEW, CLASS_SOUND, CLASS_VALUES)
 
 
 def class_id(name):
@@ -1165,7 +1172,19 @@ def check_element(rec, where="elem"):
         raise ValueError("%s.kind: %d on a %s row — how a row draws or moves is a "
                          "driven element's question, and this class answers it with "
                          "its slot" % (where, kind, CLASS_NAMES[cls]))
-    if src and cls not in (CLASS_BANK, CLASS_AUX, CLASS_SOUND):
+    # radar-plan §2.11: on a VALUES row `src` is the app's layout version, from 1.
+    if cls == CLASS_VALUES:
+        if not 1 <= src <= 255:
+            raise ValueError("%s.src: values of layout version %d — the app's editor stamps "
+                             "its layout from 1 to 255" % (where, src))
+        if int(rec["slot"]) != 0:
+            raise ValueError("%s.slot: values at slot %d — a theme carries one values blob, "
+                             "at slot 0" % (where, int(rec["slot"])))
+        if any(int(rec[c]) for c in ("x", "y", "w", "h")):
+            raise ValueError("%s: values at (%d,%d) sized %dx%d — values place nothing, and "
+                             "their length is their plane's" % (where, int(rec["x"]), int(rec["y"]),
+                                                               int(rec["w"]), int(rec["h"])))
+    if src and cls not in (CLASS_BANK, CLASS_AUX, CLASS_SOUND, CLASS_VALUES):
         raise ValueError("%s.src: %d on a %s row — what drives a row is a driven "
                          "element's question, and this class answers it with "
                          "its slot" % (where, src, CLASS_NAMES[cls]))
@@ -1763,7 +1782,8 @@ if __name__ == "__main__":
         and ELEMENT_FIELDS[24][0] == "delay", "C4's append moved"
     assert [n for n, _t in ELEMENT_FIELDS[25:]] == \
         ["cadence", "cad_arg", "ease", "dx", "dy", "end", "digit", "str"], "D41/D42's append moved"
-    assert len(CLASS_NAMES) == 11, "class vocabulary moved; orb_assets.h's bound must agree"
+    assert len(CLASS_NAMES) == 12, "class vocabulary moved; orb_assets.h's bound must agree"
+    assert class_id("values") == CLASS_VALUES == 11, "values must append at 11, never move"
     assert (len(SHAPES), len(ENDS), len(DIGITS), len(CADENCES)) == (4, 3, 5, 7), \
         "the moving row's vocabulary moved; clk_types.h must agree"
     assert class_id("hand") == CLASS_HAND and class_id("nope") is None
@@ -1911,6 +1931,10 @@ if __name__ == "__main__":
         (_with(**{"class": CLASS_PREVIEW, "n_frames": 2}), "an animated preview"),
         (_with(**{"class": CLASS_PREVIEW, "kind": 1}), "a preview naming a driven kind"),
         (_with(**{"class": CLASS_PREVIEW, "src": 1}), "a preview naming a driven source"),
+        (_with(**{"class": CLASS_VALUES, "src": 0, "x": 0, "y": 0, "w": 0, "h": 0}), "values of version 0"),
+        (_with(**{"class": CLASS_VALUES, "src": 1, "slot": 1, "x": 0, "y": 0, "w": 0, "h": 0}), "values at slot 1"),
+        (_with(**{"class": CLASS_VALUES, "src": 1, "x": 0, "y": 0, "w": 8, "h": 1}), "values that place"),
+        (_with(**{"class": CLASS_VALUES, "src": 1, "n_frames": 2, "x": 0, "y": 0, "w": 0, "h": 0}), "values of two planes"),
     ):
         try:
             check_element(_bad, "sentinel")

@@ -105,6 +105,11 @@ typedef struct {
                                        *   the stage's blob base must follow. */
     bool           from_container;    /* false = the compiled-in pair */
     char           name[ORB_THEME_NAME_MAX + 1];  /* the installed theme's owner name */
+    /* radar-plan §2.11: the theme's values, as the projection found them: their offset
+     * in this theme's bank (after blob_off), their length (0 = none), the app's layout
+     * version. The app reads them through orb_stage_values. */
+    uint32_t       values_off, values_len;
+    uint16_t       values_ver;
 } orb_theme_geo_t;
 
 /* The five accessors orb_stage.c reads through — clk_theme, clk_bg_rects,

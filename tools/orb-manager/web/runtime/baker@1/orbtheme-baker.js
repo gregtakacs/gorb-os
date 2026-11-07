@@ -2101,12 +2101,15 @@
   // from estimate3 and the dial only reads it. All eight bits of the u8 column are named.
   var EF_SMOOTH = 128;
   var EF_ALL = EF_ALPHA | EF_LOOP | EF_OS_ADV | EF_HIDDEN | AUX_F_SHADOW3 | EF_DELTA_WRAP | EF_SMOOTH;
-  var CLASS_NAMES = ['text', 'sprite', 'hand', 'plate', 'ring', 'bank', 'layer', 'status', 'aux', 'preview', 'sound'];
+  var CLASS_NAMES = ['text', 'sprite', 'hand', 'plate', 'ring', 'bank', 'layer', 'status', 'aux', 'preview', 'sound', 'values'];
   var CLASS_TEXT = 0, CLASS_SPRITE = 1, CLASS_HAND = 2, CLASS_PLATE = 3;
   var CLASS_RING = 4, CLASS_BANK = 5, CLASS_LAYER = 6, CLASS_STATUS = 7;
   var CLASS_AUX = 8;                       // D34: a pointer, appended at 8
   var CLASS_PREVIEW = 9;                   // the picker's plane, appended at 9
   var CLASS_SOUND = 10;                    // D39: a waveform, appended at 10
+  /* radar-plan §2.11: a theme's values, appended at 11 (theme_schema.CLASS_VALUES): one blob
+   * of the app's settings, w bytes by 1, at most VALUES_MAX, its layout version in src. */
+  var CLASS_VALUES = 11, VALUES_MAX = 4096;
   /* D39: the clock's sound vocabulary (theme_schema.CLOCK_SOUND_SLOTS / HOUR_PATTERNS,
    * orb_clock3.h CLK_SND_* / CLK_PAT_*), in slot order. */
   var SOUND_SLOTS = ['tick_loop', 'chime_q1', 'chime_half', 'chime_q3', 'chime_hour',
@@ -2272,7 +2275,7 @@
   // decides the editor's element class for an animated region: an OS-paced region is a
   // SPRITE row, because a bank or a text row holds app state and a layer is composited.
   var CLASS_APP_ADV = [CLASS_BANK, CLASS_TEXT, CLASS_STATUS];
-  var CLASS_NO_ANIM = [CLASS_LAYER, CLASS_STATUS, CLASS_PREVIEW, CLASS_SOUND];
+  var CLASS_NO_ANIM = [CLASS_LAYER, CLASS_STATUS, CLASS_PREVIEW, CLASS_SOUND, CLASS_VALUES];
 
   function blankElement() {
     var r = {};
@@ -2378,7 +2381,17 @@
       throw new Error(where + '.kind: ' + kind + ' on a ' + CLASS_NAMES[cls] + ' row — how a row ' +
         'draws or moves is a driven element’s question, and this class answers it with its slot');
     }
-    if (src && cls !== CLASS_BANK && cls !== CLASS_AUX && cls !== CLASS_SOUND) {
+    // radar-plan §2.11: on a VALUES row src is the app's layout version (theme_schema.check_element).
+    if (cls === CLASS_VALUES) {
+      if (!(src >= 1 && src <= 255))
+        throw new Error(where + '.src: values of layout version ' + src + ' — the app\u2019s editor stamps its layout from 1 to 255');
+      if ((rec.slot | 0) !== 0)
+        throw new Error(where + '.slot: values at slot ' + (rec.slot | 0) + ' — a theme carries one values blob, at slot 0');
+      if ((rec.x | 0) || (rec.y | 0) || (rec.w | 0) || (rec.h | 0))
+        throw new Error(where + ': values at (' + (rec.x | 0) + ',' + (rec.y | 0) + ') sized ' + (rec.w | 0) + 'x' + (rec.h | 0) +
+          ' — values place nothing, and their length is their plane\u2019s');
+    }
+    if (src && cls !== CLASS_BANK && cls !== CLASS_AUX && cls !== CLASS_SOUND && cls !== CLASS_VALUES) {
       throw new Error(where + '.src: ' + src + ' on a ' + CLASS_NAMES[cls] + ' row — what drives ' +
         'a row is a driven element’s question, and this class answers it with its slot');
     }
@@ -3645,6 +3658,23 @@
       }
       return true;
     }
+    /* radar-plan §2.11: the app's values, one blob of its own layout stamped with its layout
+     * version (1-255). Class 11 slot 0, one plane of the bytes as w by 1, placing nothing:
+     * the theme carries them, the OS checks them and hands them to the app as they are. */
+    function values(bytes, version) {
+      if (!(bytes instanceof Uint8Array) || !bytes.length || bytes.length > VALUES_MAX)
+        throw new Error('values of ' + (bytes && bytes.length) + ' B: a theme\u2019s values are 1 to ' + VALUES_MAX + ' bytes');
+      if (!(version >= 1 && version <= 255))
+        throw new Error('values of layout version ' + version + ': the app\u2019s editor stamps its layout from 1 to 255');
+      if (elems.some(function (e) { return (e['class'] | 0) === CLASS_VALUES; }))
+        throw new Error('a second values blob: a theme carries one');
+      var f = put(bytes, bytes.length, 1);
+      var v = blankElement();
+      v.n = nid++; v['class'] = CLASS_VALUES; v.slot = 0;
+      v.frame0 = f; v.n_frames = 1; v.src = version | 0;
+      elems.push(v);
+      return bytes.length;
+    }
     function preview(pv) {
       var pp = pv.plane || pv;
       if (!pp || !pp.rgba || !(pp.w > 0) || !(pp.h > 0))
@@ -3730,7 +3760,7 @@
       return b;
     }
     return { bank: bank, elements: elems, scrW: scrW, scrH: scrH,
-             id: function () { return nid++; }, put: put, ditherAt: ditherAt,
+             id: function () { return nid++; }, put: put, values: values, ditherAt: ditherAt,
              row: row, rowFrames: rowFrames, font: font,
              rowDelta: function (e, planes, delay, masked, dith) { var r = rowDelta(e, planes, delay, masked, dith); deltas.push({ rec: r, planes: planes }); return r; },
              verifyDelta: selfVerify3, preview: preview, element: element, rowPick: rowPick, pool: pool,
@@ -5345,7 +5375,7 @@
     liveComps3: liveComps3, compPlan3: compPlan3, wheelPlan3: wheelPlan3, wheelDither3: wheelDither3, readDesign3: readDesign3, THEME_UPLOAD_MAX: THEME_UPLOAD_MAX, wheelTurns3: wheelTurns3, pointerPlan3: pointerPlan3,
     pointerDefault3: pointerDefault3,
     // D39: the sound vocabulary and the mirror of the dial's sound refusals.
-    SOUND_SLOTS: SOUND_SLOTS, HOUR_PATTERNS: HOUR_PATTERNS, CLASS_SOUND: CLASS_SOUND,
+    SOUND_SLOTS: SOUND_SLOTS, HOUR_PATTERNS: HOUR_PATTERNS, CLASS_SOUND: CLASS_SOUND, CLASS_VALUES: CLASS_VALUES,
     discSpan: discSpan, discPx: discPx, discBytes: discBytes, discPack: discPack, discPackMasked: discPackMasked,
     adpcmEncode: adpcmEncode, adpcmDecode: adpcmDecode, soundEncode: soundEncode, soundBytes: soundBytes,
     checkClockSounds: checkClockSounds

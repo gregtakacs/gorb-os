@@ -275,6 +275,8 @@ int main(int argc, char **argv)
         dump_sprite("rowspr", (int)i, &w->spr);
     }
     printf("pattern %u\n", (unsigned)io.out_pattern);
+    printf("values %u %u %u\n", (unsigned)io.out_values_off, (unsigned)io.out_values_len,
+           (unsigned)io.out_values_ver);   /* radar-plan §2.11 */
     for (uint32_t i = 0; i < io.out_n_sounds; i++)
         printf("sound %u %u %u %u %u %u %u\n", (unsigned)snds[i].slot, (unsigned)snds[i].n,
                (unsigned)snds[i].pcm_off, (unsigned)snds[i].beat_chz,
@@ -362,7 +364,7 @@ def parsed(out):
     rects, bgf, art, scr, cnt, nrect = None, None, None, None, None, None
     comps, bgl, rows = [], {}, []
     rectrows, geom, nmat = [], None, None
-    sounds, pattern = [], None
+    sounds, pattern, values = [], None, None
     for line in out.splitlines():
         w = line.split()
         if not w:
@@ -384,6 +386,8 @@ def parsed(out):
                                    (int(v) for v in w[1:]))))
         elif w[0] == "pattern":
             pattern = int(w[1])
+        elif w[0] == "values":
+            values = tuple(int(v) for v in w[1:])
         elif w[0] == "row":
             rows.append(dict(zip(ROW_F, (int(v) for v in w[1:]))))
         elif w[0] == "rowspr":
@@ -415,7 +419,7 @@ def parsed(out):
     return dict(sc=sc, spr=spr, first=first, delay=delay, rects=rects, bgf=bgf,
                 art=art, scr=scr, counts=cnt, nrect=nrect, comps=comps, bgl=bgl,
                 rows=rows, rectrows=rectrows, geom=geom, nmat=nmat,
-                sounds=sounds, pattern=pattern)
+                sounds=sounds, pattern=pattern, values=values)
 
 
 # The scalars v6 still carries, against the pair .h's values.
@@ -662,6 +666,21 @@ def add_plane(spr, art, w, h, fill=b"\x22", masked=True):
     return len(spr) - 1
 
 
+def add_values(els, spr, art, n=40, ver=3, plane=None, **kw):
+    """radar-plan §2.11: a values row, slot 0, its plane n bytes by 1 (plane overrides
+    the catalogue row's w, h and size)."""
+    off = len(art)
+    pl = dict({"w": n, "h": 1, "size": n}, **(plane or {}))
+    art.extend(bytes(range(256)) * (pl["size"] // 256 + 1))
+    del art[off + pl["size"]:]
+    spr.append({"off": off, "size": pl["size"], "w": pl["w"], "h": pl["h"], "diffx": 0, "diffy": 0})
+    e = dict(ts.blank_element(), **{"n": max(int(x["n"]) for x in els) + 1, "class": ts.CLASS_VALUES,
+                                    "slot": 0, "frame0": len(spr) - 1, "n_frames": 1, "src": ver})
+    e.update(kw)
+    els.append(e)
+    return e
+
+
 def add_row(els, spr, art, slot, w=28, h=64, x=300, y=120, **kw):
     """One AUX row at `slot` on its own masked plane; kw overrides any column."""
     f0 = add_plane(spr, art, w, h)
@@ -849,8 +868,26 @@ def _new_row(**kw):
 
 SWEEP_SEC = dict(src=ts.SOURCES.index("second"), span=3600, vmax=60,
                  cadence=ts.CAD_SWEEP, end=ts.END_WRAP)
+def _two_values(e, s, p, a):
+    add_values(e, p, a)
+    add_values(e, p, a)
+
+
 REFUSALS = (
     # (what, mutate, the C's needle, the writer's needle or None = the device's alone)
+    # radar-plan §2.11: a theme's values
+    ("values at slot 1", lambda e, s, p, a: add_values(e, p, a, slot=1), "one values blob, at slot 0",
+     "one values blob"),
+    ("values of version 0", lambda e, s, p, a: add_values(e, p, a, ver=0), "layout version 0",
+     "layout version 0"),
+    ("values that place", lambda e, s, p, a: add_values(e, p, a, w=8, h=1), "values place nothing",
+     "values place nothing"),
+    ("values of two planes", lambda e, s, p, a: add_values(e, p, a, n_frames=2), "one blob",
+     "carries one frame"),
+    ("values past 4096", lambda e, s, p, a: add_values(e, p, a, n=4097), "values are 1 to 4096 bytes", None),
+    ("values two rows tall", lambda e, s, p, a: add_values(e, p, a, plane={"w": 20, "h": 2, "size": 40}),
+     "values are 1 to 4096 bytes", None),
+    ("two values rows", _two_values, "two rows for values slot 0", None),
     ("a font of one glyph", lambda e, s, p, a: e[0].update({"class": ts.CLASS_TEXT, "n_frames": 1}),
      "carries 1 glyphs", "ASCII whole"),
     ("a hand row", lambda e, s, p, a: hour_row(e).update({"class": ts.CLASS_HAND,
@@ -1870,6 +1907,15 @@ def d39_mutants(exe, base, full):
 # (guard, anchor, break, REFUSALS name)
 # ---------------------------------------------------------------------------
 MUTANTS = (
+    # radar-plan §2.11's values guards
+    ("values' slot", 'if (e.slot != 0u)\n                    return reject("values at slot',
+     'if (0)\n                    return reject("values at slot', "values at slot 1"),
+    ("values' version", 'if (!e.src)\n                    return reject("values of layout version 0',
+     'if (0)\n                    return reject("values of layout version 0', "values of version 0"),
+    ("values place nothing", "if (e.w || e.h || e.x || e.y)", "if (0)", "values that place"),
+    ("values' bound", "sp.w > VALUES_MAX || sp.size != sp.w", "sp.size != sp.w", "values past 4096"),
+    # No mutant for the values plane's h == 1: with the walk's w*h price and the size == w
+    # rule, a plane two rows tall is refused either way, so dropping it is equivalent.
     # OS v1.2.17's sparse fonts
     ("a font carries a glyph", "if (first < 0)\n            return reject(\"font %u carries no glyph",
      "if (0)\n            return reject(\"font %u carries no glyph", "a font that carries no glyph"),
@@ -1946,6 +1992,31 @@ MUTANTS = (
 )
 
 
+def values_battery(exe, base):
+    """radar-plan §2.11, the accept side: a values row the writer takes lands where its
+    plane is, with its length and the app's version, and its plane is priced a byte a
+    byte (a reader that priced it as pixels refuses it)."""
+    seat = {}
+
+    def vals(els, sc, spr, art):
+        seat["e"] = add_values(els, spr, art, n=40, ver=3)
+        seat["off"] = spr[-1]["off"]
+    path, verdict = forge(base, vals)
+    ck(verdict is None, "values: the writer refused a 40-byte blob: %s" % verdict)
+    rc, out, err = run(exe, "--dump3f", path)
+    ck(rc == 0, "values: the reader refused a 40-byte blob: %s" % out[:300])
+    if rc:
+        return
+    v = parsed(out)["values"]
+    ck(v == (seat["off"], 40, 3), "values: the reader found %s, not (%d, 40, 3)" % (v, seat["off"]))
+    plain = parsed(run(exe, "--dump3f", forge(base, None)[0])[1])["values"]
+    ck(plain == (0, 0, 0), "values: a theme with none answers %s, not (0, 0, 0)" % (plain,))
+    m = build(mut=("on_values ? (uint64_t)sp.w * sp.h ", "on_values ? (uint64_t)sp.w * sp.h * 3 "))
+    mrc, mout, _ = run(m, "--dump3f", path)
+    ck(mrc != 0 or "refused" in mout, "uncaught mutant: values priced as pixels — it answered %r" % mout[:120])
+    print("  values: a 40-byte blob lands at its plane, version 3, a byte a byte")
+
+
 def pick_battery(exe, base):
     """theme-pool-plan §2.6, the accept side: a row whose frames the app picks lands
     as one row, its frame count in pick_n and nowhere else, beside a carriage that
@@ -2003,6 +2074,7 @@ if __name__ == "__main__":
     s31_battery(EXE, PAIR)
     c4_battery(EXE, PAIR)
     pick_battery(EXE, PAIR)
+    values_battery(EXE, PAIR)
     FULL = d39_battery(EXE, PAIR)
     if "--mutations" in sys.argv:
         mutants(EXE, PAIR)

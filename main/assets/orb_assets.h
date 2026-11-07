@@ -106,7 +106,14 @@ typedef enum {
      * Appended at 10 without moving the ABI word, the AUX and PREVIEW precedent: an
      * OS that predates this build refuses a row naming 10 at its own bound. */
     ORB_ASSET_SOUND,        /* one waveform: a header and 16-bit PCM                */
-    ORB_ASSET_CLASS_N       /* 11: the vocabulary's width, and the refusal bound     */
+    /* radar-plan §2.11's append. A theme's values: one blob of settings its app's editor
+     * baked (colours, widths, ramps), whose layout and version are the app's own. Not
+     * pixels and not a waveform, so its own class: the catalogue row names the bytes as
+     * w by h 1 and orb_asset_slot_bytes() prices it w*h. Appended at 11 without moving
+     * the ABI word, the AUX, PREVIEW and SOUND precedent: an OS that predates this build
+     * refuses a row naming 11 at its own bound. */
+    ORB_ASSET_VALUES,       /* one blob of the app's settings, its layout the app's   */
+    ORB_ASSET_CLASS_N       /* 12: the vocabulary's width, and the refusal bound     */
 } orb_asset_class_t;
 
 /* The dialect this vocabulary speaks — the container's geometry ABI, and not a

@@ -1834,6 +1834,7 @@ static void clock_layers_build(orb_app_t *self)
         orb_bundle_elem_at(sec, i, &e);
         if (e.cls == ORB_ASSET_PLATE && e.slot == 0u) continue;   /* the canvas */
         if (e.cls == ORB_ASSET_SOUND) continue;   /* D39: played by sound_policy, never drawn */
+        if (e.cls == ORB_ASSET_VALUES) continue;  /* radar-plan §2.11: the app's settings, never drawn */
         if (e.cls == ORB_ASSET_PREVIEW) continue; /* the picker's picture, never on the glass:
                                                    * claimed, it cost a row of an app's 16 */
         if (e.cls == ORB_ASSET_TEXT) continue;    /* a font: its glyphs reach the glass in
@@ -2571,6 +2572,18 @@ const clk_sound_t *stage_sounds(uint32_t *n, uint8_t *pattern)
 {
     if (s_base) { *n = 0; *pattern = CLK_PAT_NONE; return NULL; }
     return orb_theme_sounds(n, pattern);
+}
+
+uint32_t stage_values(void *buf, uint32_t cap, uint16_t *ver)
+{
+    *ver = 0;
+    if (s_base) return 0;
+    const orb_theme_geo_t *g = orb_theme_geo();
+    const uint8_t *art = art_bank_ptr();
+    if (!g || !g->values_len || !art || g->values_off + g->values_len > g->art_size) return 0;
+    *ver = g->values_ver;
+    memcpy(buf, art + g->blob_off + g->values_off, cap < g->values_len ? cap : g->values_len);
+    return g->values_len;
 }
 
 void stage_now(time_t *t, double *frac, double *wall)

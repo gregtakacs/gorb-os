@@ -27,10 +27,10 @@
  * esp_err.h, and this one compiles on a host. The suite pins the mirror, so a
  * class renamed on one side and not the other fails there — the discipline every
  * other counted vocabulary in this firmware uses. */
-#define CLASS_N 11
+#define CLASS_N 12
 static const char *const CLASS_NAMES[CLASS_N] = {
     "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux",
-    "preview", "sound"
+    "preview", "sound", "values"
 };
 
 #define CLS_TEXT      0   /* theme-text-plan §2.1: a font */
@@ -41,6 +41,8 @@ static const char *const CLASS_NAMES[CLASS_N] = {
 #define CLS_AUX       8   /* D34: theme_schema.CLASS_AUX, appended at 8 */
 #define CLS_PREVIEW   9   /* the picker's plane, appended at 9: this dial does not draw it */
 #define CLS_SOUND    10   /* D39: a waveform, appended at 10: the clock plays it, never draws it */
+#define CLS_VALUES   11   /* radar-plan §2.11: the app's settings, appended at 11: never drawn */
+#define VALUES_MAX   4096 /* theme_schema.VALUES_MAX: a theme's settings, not its art */
 #define EF_HIDDEN  8            /* theme_schema.EF_HIDDEN */
 #define EF_LOOP    2            /* theme_schema.EF_LOOP: on a SOUND row, the tick loop */
 #define EF_DELTA_WRAP 64        /* §37: the row's LAST sprite, one past its own frame
@@ -378,6 +380,8 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     memset(t, 0, sizeof *t);
     io->out_n_sounds = 0;
     io->out_pattern  = CLK_PAT_NONE;
+    io->out_values_off = io->out_values_len = 0;
+    io->out_values_ver = 0;
     io->out_art_off  = sec->art_off;
     io->out_art_size = art;
     if (!ne || !ns) return "a clock section with no elements or no planes draws nothing";
@@ -434,6 +438,7 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
      * must not bill it the alpha stride. The sentinel is unreachable as a row index:
      * a bank's rows number under n_spr, which fits a u16 with 0xFFFF to spare. */
     uint16_t prev0 = 0xFFFF, prevn = 0;
+    int16_t at_values = -1;       /* radar-plan §2.11: the one values row, when there is one */
     for (uint32_t i = 0; i < ne; i++) {
         orb_bundle_elem_t e;
         orb_bundle_elem_at(sec, i, &e);
@@ -494,6 +499,21 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                     return reject("a sound at slot %u names %u planes: a sound is one "
                                   "waveform", (unsigned)e.slot, (unsigned)e.n_frames);
                 cell = &at_sound[e.slot];
+                break;
+            case CLS_VALUES:
+                /* radar-plan §2.11: the app's settings, one blob at slot 0. It places
+                 * nothing and is never drawn; its plane is checked in the walk below and
+                 * its bytes are the app's (orb_stage_values). */
+                if (e.slot != 0u)
+                    return reject("values at slot %u: a theme carries one values blob, at "
+                                  "slot 0", (unsigned)e.slot);
+                if (e.n_frames != 1u)
+                    return reject("values name %u planes: a theme's values are one blob",
+                                  (unsigned)e.n_frames);
+                if (!e.src)
+                    return reject("values of layout version 0: the app's editor stamps its "
+                                  "layout from 1");
+                cell = &at_values;
                 break;
             case CLS_TEXT:
                 /* theme-text-plan §2.1: a font. Its glyphs are its frames, one cell
@@ -897,7 +917,14 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
             on_sound = se.frame0 == i;
             snd_enc = se.src;
         }
-        uint64_t want = on_sound && snd_enc == CLK_SND_ENC_ADPCM
+        int on_values = 0;
+        if (at_values >= 0) {
+            orb_bundle_elem_t ve;
+            orb_bundle_elem_at(sec, (uint32_t)at_values, &ve);
+            on_values = ve.frame0 == i;
+        }
+        uint64_t want = on_values ? (uint64_t)sp.w * sp.h      /* a blob: a byte a byte */
+                      : on_sound && snd_enc == CLK_SND_ENC_ADPCM
                       ? (uint64_t)orb_adpcm_bytes(sp.w)
                       : PLATE_BYTES_T(sp.w, sp.h)
                         + ((on_plate || on_preview || on_sound) ? 0 : (uint64_t)sp.w * sp.h);
@@ -993,6 +1020,20 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                     return reject("element %u is a sound sized %ux%u: a sound places "
                                   "nothing, and its length is its plane's",
                                   (unsigned)e.n, (unsigned)e.w, (unsigned)e.h);
+            } else if (e.cls == CLS_VALUES) {
+                /* radar-plan §2.11: values place nothing, and their length is their
+                 * plane's: w bytes by 1, at most VALUES_MAX. */
+                if (e.w || e.h || e.x || e.y)
+                    return reject("element %u is values at (%d,%d) sized %ux%u: values place "
+                                  "nothing, and their length is their plane's", (unsigned)e.n,
+                                  (int)e.x, (int)e.y, (unsigned)e.w, (unsigned)e.h);
+                if (sp.h != 1u || !sp.w || sp.w > VALUES_MAX || sp.size != sp.w)
+                    return reject("the values plane is %lux%lu in %lu B: values are 1 to %u bytes "
+                                  "by 1", (unsigned long)sp.w, (unsigned long)sp.h,
+                                  (unsigned long)sp.size, (unsigned)VALUES_MAX);
+                io->out_values_off = sp.off;
+                io->out_values_len = sp.w;
+                io->out_values_ver = e.src;
             } else if (e.cls == CLS_TEXT && !sp.size && !sp.w && !sp.h) {
                 /* a glyph the font does not carry (OS v1.2.17): its cells are checked above */
             } else if (f == 0u || !delta_stream) {

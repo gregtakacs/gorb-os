@@ -70,6 +70,9 @@ void stage_info(uint16_t *n_rows, uint16_t *n_comps, uint8_t *car_row, uint8_t *
 const clk_row_t   *stage_row(int i);
 const clk_comp_t  *stage_comp(int i);
 const clk_sound_t *stage_sounds(uint32_t *n, uint8_t *pattern);
+/* radar-plan §2.11: copy the theme's values (up to cap bytes) into buf; answers their
+ * full length (0 = the theme carries none) and the app's layout version. */
+uint32_t stage_values(void *buf, uint32_t cap, uint16_t *ver);
 void stage_now(time_t *t, double *frac, double *wall);
 void stage_pose(int i, int32_t ang_10, int32_t ox, int32_t oy);
 int  stage_frame(int i, int32_t f);

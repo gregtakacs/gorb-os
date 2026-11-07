@@ -1286,6 +1286,25 @@ m3ApiRawFunction(imp_net_cred)       /* i32 net_cred(const char *id): 1 when tha
 #define STAGE_ON(s) ((s)->stage && stage_bound((s)->app))
 #define STAGE_GATE(fail) if (!STAGE_ON(s)) m3ApiReturn(fail)
 
+/* radar-plan §2.11: u32 stage_values(void *buf, u32 cap, u32 *ver) — the theme's values,
+ * their layout the app's own. Answers the full length (0 = none or no theme bound). */
+m3ApiRawFunction(imp_stage_values)
+{
+    m3ApiReturnType(uint32_t);
+    CALLER();
+    m3ApiGetArgMem(uint8_t *, buf);
+    m3ApiGetArg(uint32_t, cap);
+    m3ApiGetArgMem(uint8_t *, pver);
+    m3ApiCheckMem(buf, cap);
+    m3ApiCheckMem(pver, 4);
+    m3ApiWriteMem32(pver, 0);
+    STAGE_GATE(0);
+    uint16_t ver = 0;
+    const uint32_t n = stage_values(buf, cap, &ver);
+    m3ApiWriteMem32(pver, ver);
+    m3ApiReturn(n);
+}
+
 m3ApiRawFunction(imp_stage_open)              /* i32 stage_open(orb_stage_info_t *out) — 20 B */
 {
     m3ApiReturnType(int32_t);
@@ -1581,6 +1600,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "net_free",      "v()",       imp_net_free },
     { "orb", "net_cred",      "i(i)",      imp_net_cred },
     { "orb", "stage_open",     "i(i)",      imp_stage_open },
+    { "orb", "stage_values",   "i(iii)",    imp_stage_values },
     { "orb", "stage_row",      "i(ii)",     imp_stage_row },
     { "orb", "stage_comp",     "i(ii)",     imp_stage_comp },
     { "orb", "stage_sound",    "i(ii)",     imp_stage_sound },

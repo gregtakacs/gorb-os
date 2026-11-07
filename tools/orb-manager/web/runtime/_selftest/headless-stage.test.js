@@ -100,6 +100,30 @@ const readBack = (b) => { const v = G.verifyBundle3(b.bytes); return { v, sec: v
   ok(/one frame is a still row/.test(e3 || ''), 'and a bank of one', e3);
 }
 
+// ---- radar-plan §2.11: a theme's values, one blob of the app's own layout
+{
+  const B = G.stage3({});
+  B.row(plateRow(B), gradient(), false, true);
+  const vals = new Uint8Array(300); for (let i = 0; i < vals.length; i++) vals[i] = (i * 7) & 255;
+  ok(B.values(vals, 2) === 300, 'values go in as they are');
+  const b = B.finish({ name: 'Scope', slug: 'radar', abi: G.GEOM_ABI6, scalars: {} });
+  const { sec } = readBack(b);
+  const row = sec.blob.elements.filter((e) => (e['class'] | 0) === G.CLASS_VALUES);
+  const spr = row.length ? sec.blob.sprites[row[0].frame0] : null;
+  ok(row.length === 1 && row[0].slot === 0 && row[0].src === 2 && row[0].n_frames === 1 && !row[0].w && !row[0].h,
+     'one values row at slot 0, version 2, placing nothing', JSON.stringify(row[0] || null));
+  ok(spr && spr.w === 300 && spr.h === 1 && spr.size === 300, 'its plane is the bytes, 300 by 1', JSON.stringify(spr));
+  ok(spr && Buffer.compare(Buffer.from(B.bank.art.subarray(spr.off, spr.off + 300)), Buffer.from(vals)) === 0, 'byte for byte');
+  const refuse = (fn) => { try { fn(); return null; } catch (e) { return e.message; } };
+  const C = G.stage3({});
+  ok(/1 to 4096 bytes/.test(refuse(() => C.values(new Uint8Array(0), 1)) || ''), 'empty values are refused');
+  ok(/1 to 4096 bytes/.test(refuse(() => C.values(new Uint8Array(4097), 1)) || ''), 'and values past 4096 bytes');
+  ok(/from 1 to 255/.test(refuse(() => C.values(new Uint8Array(4), 0)) || '') &&
+     /from 1 to 255/.test(refuse(() => C.values(new Uint8Array(4), 256)) || ''), 'and a layout version outside 1-255');
+  C.values(new Uint8Array(4), 1);
+  ok(/a theme carries one/.test(refuse(() => C.values(new Uint8Array(4), 1)) || ''), 'and a second blob');
+}
+
 // ---- refusals
 {
   const B = G.stage3({});

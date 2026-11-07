@@ -41,9 +41,9 @@
  * owner reads has to name the thing in the vocabulary's own words. The width tracks
  * orb_asset_class_t's bound, and the sentinel lifts this table against the schema's
  * CLASS_NAMES so a class appended on one side and not the other fails a suite. */
-static const char *const CLS_NAME[11] = {
+static const char *const CLS_NAME[12] = {
     "text", "sprite", "hand", "plate", "ring", "bank", "layer", "status", "aux",
-    "preview", "sound"
+    "preview", "sound", "values"
 };
 
 static const char *cls_word(uint16_t cls)

@@ -61,6 +61,11 @@ typedef struct {
 
 /** Open the stage on this app's page. Refused unless the app owns the section. */
 ORB_IMPORT("stage_open")     int32_t orb_stage_open(orb_stage_info_t *out);
+/** The theme's values (radar-plan §2.11, OS v1.2.21): one blob the app's editor baked —
+ *  colours, widths, ramps — whose layout is the app's, stamped with the app's layout
+ *  version (1-255). Copies up to cap bytes and answers the full length; 0 when the theme
+ *  carries none, or no theme is bound (the app's own defaults then stand). */
+ORB_IMPORT("stage_values")   uint32_t orb_stage_values(void *buf, uint32_t cap, uint32_t *ver);
 ORB_IMPORT("stage_row")      int32_t orb_stage_row(int32_t i, clk_row_t *out);
 ORB_IMPORT("stage_comp")     int32_t orb_stage_comp(int32_t i, clk_comp_t *out);
 ORB_IMPORT("stage_sound")    int32_t orb_stage_sound(int32_t i, clk_sound_t *out);

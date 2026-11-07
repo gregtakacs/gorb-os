@@ -640,7 +640,7 @@ def unpack_settings(blob, n):
 # `sound` (D39) appends the same way: a waveform per event slot, its plane priced at
 # the same two bytes a sample, w samples by h 1.
 ASSET_CLASSES = ("text", "sprite", "hand", "plate", "ring", "bank", "layer", "status",
-                 "aux", "preview", "sound")
+                 "aux", "preview", "sound", "values")   # values: radar-plan §2.11, at 11
 ASSET_MAX      = 16            # rows in one manifest's table; == ORBAPP_ASSETS_MAX
 ASSET_NAME_MAX = 12            # bytes incl NUL, and the name carries NO prefix
 ASSET_OWNER_MAX = SLUG_MAX - 1 # the `<slug>` half of an owner-scoped reference

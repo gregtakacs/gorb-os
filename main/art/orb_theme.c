@@ -2038,6 +2038,9 @@ static esp_err_t adopt_bundle3(const esp_partition_t *p, const orb_bundle3_hdr_t
     }
     s_geo.art_size = io.out_art_size;
     s_geo.blob_off = io.out_art_off - SLOT_ART_OFF;
+    s_geo.values_off = io.out_values_off;     /* radar-plan §2.11 */
+    s_geo.values_len = io.out_values_len;
+    s_geo.values_ver = io.out_values_ver;
     s_geo.from_container = true;
     /* The §16 line the owner reads after every install: what the projection
      * actually put on the dial, from the table the bundle carried. A carriage

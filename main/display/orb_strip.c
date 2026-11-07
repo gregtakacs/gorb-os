@@ -8,6 +8,9 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/idf_additions.h"
 #include "lvgl.h"
 
 #include "board_config.h"
@@ -52,7 +55,9 @@ typedef struct {
 /* The preview cache: one plane per app slug, filled once by the worker. */
 typedef struct {
     char      slug[24];
-    uint16_t *px;               /* PV x PV wire order, corners black; NULL = none */
+    uint16_t *px;               /* side x side wire order, corners black; NULL = none */
+    int       side;             /* the theme's own preview size: 232 for the clock's,
+                                 * 128 for Weather's — the disc scales either */
 } pv_t;
 
 /* SETTLE: the app is switched in under the held glass and is drawing into the mirror;
@@ -115,19 +120,21 @@ static void make_gear(void)
 
 /* ---- the preview cache ----------------------------------------------------------- */
 
-static uint16_t *pv_for(const orb_app_t *a)
+static const pv_t *pv_for(const orb_app_t *a)
 {
     if (!a || !a->slug) return NULL;
     for (int i = 0; i < s_pv_n; i++)
-        if (strcmp(s_pv[i].slug, a->slug) == 0) return s_pv[i].px;
+        if (strcmp(s_pv[i].slug, a->slug) == 0 && s_pv[i].px) return &s_pv[i];
     return NULL;
 }
 
-/* On the jobs worker, as the theme picker's preview reads are: the reads ride the card
- * mutex like any picker's, never the LVGL task's. */
-static void pv_job(void *arg)
+/* The reads ride the card mutex like any picker's, never the LVGL task's. On a task of
+ * their own, not the jobs worker: the worker takes one job at a time, and a theme store
+ * posted while this read held it was refused with ESP_ERR_INVALID_STATE — the hub's
+ * Weather install stores Scope right after the orb's reboot, exactly when this ran
+ * (owner, 2026-11-07). Each read also waits out a store or an upload in flight. */
+static void pv_load(void)
 {
-    (void)arg;
     if (!orb_sd_mounted()) {
         ESP_LOGW(TAG, "no card: the carousel waits for its previews, the text list stays");
         return;
@@ -140,6 +147,7 @@ static void pv_job(void *arg)
         snprintf(p->slug, sizeof p->slug, "%s", a->slug);
         p->px = NULL;
         char stem[64];
+        while (orb_jobs_busy() || orb_theme_upload_busy()) vTaskDelay(pdMS_TO_TICKS(500));
         if (orb_theme_pool_stem(a->slug, stem, sizeof stem)) {
             uint16_t *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             uint16_t w = 0, h = 0;
@@ -148,9 +156,10 @@ static void pv_job(void *arg)
             const orb_asset_ans_t ans = buf
                 ? orb_theme_preview_read(stem, (uint8_t *)buf, cap, &w, &h, why, sizeof why)
                 : ORB_ASSET_NO_SLOT;
-            if (ans == ORB_ASSET_OK && w == PV && h == PV) {
-                for (size_t k = 0; k < (size_t)PV * PV; k++) buf[k] = wire(buf[k]);
+            if (ans == ORB_ASSET_OK && w == h && w > 0 && w <= PV) {
+                for (size_t k = 0; k < (size_t)w * h; k++) buf[k] = wire(buf[k]);
                 p->px = buf;
+                p->side = w;
                 ESP_LOGI(TAG, "preview %s (%s): %d ms", a->slug, stem,
                          (int)((esp_timer_get_time() - t0) / 1000));
             } else {
@@ -166,23 +175,23 @@ static void pv_job(void *arg)
 
 /* Let the boot settle first: the card mounts and the first dial binds before the cache
  * reads anything. */
-static esp_timer_handle_t s_kick;
-
-/* The worker takes one job at a time; one outstanding (a store, a card walk) is asked
- * again two seconds on. */
-static void pv_kick(void *arg)
+/* Let the boot settle first: the card mounts and the first dial binds before the cache
+ * reads anything. The task parks once the cache is filled (8 KB of PSRAM stack; it
+ * touches only the card and the heap, never flash). */
+static void pv_task(void *arg)
 {
     (void)arg;
-    if (orb_jobs_post(pv_job, NULL, 0) != ESP_OK)
-        esp_timer_start_once(s_kick, 2000 * 1000);
+    vTaskDelay(pdMS_TO_TICKS(8000));
+    pv_load();
+    vTaskSuspend(NULL);
 }
 
 void orb_strip_init(void)
 {
     make_gear();
-    const esp_timer_create_args_t ta = { .callback = pv_kick, .name = "strip_pv" };
-    if (esp_timer_create(&ta, &s_kick) != ESP_OK || esp_timer_start_once(s_kick, 8000 * 1000) != ESP_OK)
-        ESP_LOGE(TAG, "the preview timer did not start; the text list stays");
+    if (xTaskCreatePinnedToCoreWithCaps(pv_task, "strip_pv", 8192, NULL, 2, NULL,
+                                        tskNO_AFFINITY, MALLOC_CAP_SPIRAM) != pdPASS)
+        ESP_LOGE(TAG, "the preview task did not start; the text list stays");
 }
 
 /* ---- names --------------------------------------------------------------------- */
@@ -397,9 +406,9 @@ bool orb_strip_open(const orb_app_t *from, int step)
         if (!a || a->kind == ORB_APP_KIND_SHELL) continue;
         item_t *it = &s_it[s_n];
         it->app = a;
-        it->px = pv_for(a);
-        it->side = PV;
-        if (!it->px) { it->px = s_gear; }      /* an app with no preview: a plain disc */
+        const pv_t *pv = pv_for(a);
+        it->px = pv ? pv->px : s_gear;         /* an app with no preview: a plain disc */
+        it->side = pv ? pv->side : PV;
         if (a == from) s_from_i = s_n;
         s_n++;
     }
@@ -483,9 +492,9 @@ static void start_turn(int steps, int64_t now)
     /* Once the strip leaves the app it opened on, that app wears its preview again. */
     item_t *f = &s_it[s_from_i];
     if (f->px == s_snap && f->app) {
-        const uint16_t *p = pv_for(f->app);
-        f->px = p ? p : s_gear;
-        f->side = PV;
+        const pv_t *p = pv_for(f->app);
+        f->px = p ? p->px : s_gear;
+        f->side = p ? p->side : PV;
     }
     s_st = ST_TURN;
     s_t0 = now;

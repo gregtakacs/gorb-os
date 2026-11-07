@@ -169,6 +169,14 @@ typedef struct {
 ORB_IMPORT("home")       int32_t orb_home(orb_home_t *out);
 ORB_IMPORT("home_gen")   uint32_t orb_home_gen(void);
 
+/* The owner's three places beside home (radar-plan §2.1), set on the hub's Orb tab: one
+ * OS setting, so every app shows the same places. i is 0..2 and a slot keeps its number
+ * when another is cleared. Answers ORB_OK, or an error for an empty slot or an i past 2.
+ * The record is home's shape; `gen` is orb_places_gen(). Available from OS v1.2.19. */
+typedef orb_home_t orb_place_t;
+ORB_IMPORT("place")      int32_t orb_place(uint32_t i, orb_place_t *out);
+ORB_IMPORT("places_gen") uint32_t orb_places_gen(void);
+
 /* ---- units (free) -------------------------------------------------------------- *
  * The orb's units, one OS setting for every app (weather-plan §2.1): the owner sets
  * them on the dial's UNITS page or from the hub. Work in metric and convert when you
@@ -323,6 +331,10 @@ void orb_logf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
  *   void    orb_tick(uint32_t now_ms)   the beat, while on the glass
  *   void    orb_service(void)           every service pass, on the glass or not
  *   void    orb_input(int32_t delta, int32_t pressed)   the knob, while armed
+ *   void    orb_push(int32_t delta)     a press-and-turn: clicks turned with the knob held
+ *                                       down (OS v1.2.19; radar-plan §2.10). Exporting it is
+ *                                       the opt-in: without it the clicks arrive in orb_input
+ *                                       as ordinary turns, and the press they began is spent
  *   int32_t orb_set_armed(int32_t armed) a press arms, a hold disarms; answer the
  *                                       armed state the app actually took
  *   int32_t orb_opt_count(void)         option rows for the menu's page

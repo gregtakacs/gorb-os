@@ -130,11 +130,6 @@ static int32_t          s_net     = 0;   /* travel since the last valley arrival
 static volatile int32_t s_detent  = 0;   /* committed detents — the true stream*/
 static volatile bool    s_pressPend = false;  /* set at release if held < LONG  */
 static volatile bool    s_longPend  = false;  /* set once a hold passes LONG     */
-/* The hold fires at LONG_PRESS_MS while the knob is still down (knob_poll), not at the
- * release: a hold that waited for the hand to let go looked to the owner like a knob
- * the OS never heard (Bronze, 2026-11-07, holding on Flights). The release after it is
- * spent: neither a press nor a second hold. */
-static volatile bool    s_longFired = false;
 
 /* The quadrature state the shaft rests in when it is parked on a click — the valley
  * the code wheel's detent spring holds it in. Learned, never assumed: it is read off
@@ -168,34 +163,85 @@ static portMUX_TYPE     s_rot_mux   = portMUX_INITIALIZER_UNLOCKED;
 
 /* Switch edge bookkeeping, live inside the SW ISR (microseconds from esp_timer
  * so both edges share one IRAM-safe clock). */
-static volatile uint8_t s_swDown        = 0;  /* 1 while the switch reads active-low */
 static volatile int64_t s_swLastEdgeUs  = 0;  /* us of the last accepted edge        */
-static volatile int64_t s_swPressStartUs = 0; /* us the current hold began           */
 
 /* Consumer read-cursor (only ever touched by the single take_delta caller). */
 static int32_t s_lastTakenDetent = 0;
 
-/* Press-and-turn (radar-plan §2.5): a click committed while the switch is down, and
- * before the hold has fired, belongs to its own stream. The first one marks the press
- * as a press-and-turn, so the hold never fires and the release is spent. Committed
- * inside s_rot_mux like s_detent, from the ISR and from the settle pass. */
-static volatile int32_t s_pushDetent = 0;
-static volatile bool    s_pushTurn   = false;
-/* The hand has started a turn while the knob is down: the shaft has moved half a click
- * since the press. A slow turn can take longer than LONG_PRESS_MS to commit its first
- * click, and a hold firing under it opened the app list instead (owner, Bronze,
- * 2026-11-07). So intent alone holds the hold back; the click still decides. */
-static volatile bool    s_pushIntent = false;
-static volatile int32_t s_rawAtPress = 0;
+/* ---- One press's gesture: pure, lifted VERBATIM by tools/host_knob_test.py ----
+ *
+ * A press is a press, a hold, or a press-and-turn (radar-plan §2.10), and these four
+ * steps are the whole of the rule; the switch ISR, the rotation commit and knob_poll()
+ * only call them with the clock and the raw count.
+ *  - The hold fires at LONG_PRESS_MS while the knob is still down, not at the release:
+ *    a hold that waited for the hand to let go looked to the owner like a knob the OS
+ *    never heard (Bronze, 2026-11-07, holding on Flights). The release after it is spent.
+ *  - A click committed while the knob is down, before the hold has fired, is a
+ *    press-and-turn click: its own stream, no hold, and the release is spent.
+ *  - Intent holds the hold back: once the shaft has moved half a click since the press,
+ *    the hold waits however slowly the first click comes. A hold firing under a slow
+ *    first turn opened the app list instead (owner, Bronze, 2026-11-07).
+ *  - A release before any click: under the hold time a press, so a wobbly press is never
+ *    lost; past it with intent seen, spent, so an abandoned turn opens nothing. */
+typedef struct {
+    uint8_t down, long_fired, push_turn, intent;
+    int32_t raw_at_press;
+    int64_t start_us;
+} knob_gesture_t;
+
+enum { KG_SPENT = 0, KG_PRESS = 1, KG_LONG = 2 };
+
+static inline __attribute__((always_inline)) void kg_press(volatile knob_gesture_t *g, int64_t now, int32_t raw)
+{
+    g->down = 1;
+    g->long_fired = g->push_turn = g->intent = 0;
+    g->raw_at_press = raw;
+    g->start_us = now;
+}
+
+/* A committed click while this gesture stands: 0 an ordinary turn, 1 a press-and-turn
+ * click, 2 the click that made the press a press-and-turn. */
+static inline __attribute__((always_inline)) int kg_click(volatile knob_gesture_t *g)
+{
+    if (!g->down || g->long_fired) return 0;
+    const int first = !g->push_turn;
+    g->push_turn = 1;
+    return first ? 2 : 1;
+}
+
+/* 1 exactly when the hold fires now. */
+static inline __attribute__((always_inline)) int kg_poll(volatile knob_gesture_t *g, int64_t now, int32_t raw)
+{
+    if (!g->down || g->long_fired) return 0;
+    const int32_t moved = raw - g->raw_at_press;
+    if (moved >= KNOB_DETENT_MIN_STEPS || moved <= -KNOB_DETENT_MIN_STEPS) g->intent = 1;
+    if (g->push_turn || g->intent || now - g->start_us < (int64_t)LONG_PRESS_MS * 1000) return 0;
+    g->long_fired = 1;
+    return 1;
+}
+
+static inline __attribute__((always_inline)) int kg_release(volatile knob_gesture_t *g, int64_t now)
+{
+    if (!g->down) return KG_SPENT;
+    g->down = 0;
+    const int long_held = now - g->start_us >= (int64_t)LONG_PRESS_MS * 1000;
+    if (g->long_fired || g->push_turn || (g->intent && long_held)) return KG_SPENT;
+    return long_held ? KG_LONG : KG_PRESS;   /* KG_LONG: a poll gap outran the threshold */
+}
+
+/* ---- end of the gesture's pure half ---- */
+
+static volatile knob_gesture_t s_g;
+static volatile int32_t s_pushDetent = 0;   /* press-and-turn clicks, inside s_rot_mux */
 static int32_t s_lastTakenPush = 0;
 static volatile uint32_t s_pushTurns = 0;   /* presses that became press-and-turns */
 
 /* Where a committed click goes. Called with s_rot_mux held. */
 static inline void IRAM_ATTR knob_commit(int32_t n)
 {
-    if (s_swDown && !s_longFired) {
-        if (!s_pushTurn) s_pushTurns++;
-        s_pushTurn = true;
+    const int c = kg_click(&s_g);
+    if (c) {
+        if (c == 2) s_pushTurns++;
         s_pushDetent += n;
     } else {
         s_detent += n;
@@ -330,24 +376,11 @@ static void IRAM_ATTR knob_sw_isr(void *arg)
     const uint8_t lvl = (uint8_t)gpio_get_level(PIN_KNOB_SW);   /* active low */
 
     if (lvl == 1) {
-        /* RELEASE (rising). Accept instantly so s_swDown can never get stuck low,
+        /* RELEASE (rising). Accept instantly so the gesture can never get stuck down,
          * but stamp the clock so release-side bounce is rejected too. */
-        if (s_swDown) {
-            s_swDown = 0;
-            const bool long_held = (now - s_swPressStartUs) >= (int64_t)LONG_PRESS_MS * 1000;
-            if (s_longFired || s_pushTurn || (s_pushIntent && long_held)) {
-                /* the hold already fired while the knob was down, the press turned
-                 * into a press-and-turn, or a turn was begun and abandoned past the
-                 * hold time: the release is spent */
-            } else if (long_held) {
-                s_longPend = true;            /* a poll gap outran the threshold */
-            } else {
-                s_pressPend = true;
-            }
-            s_longFired = false;
-            s_pushTurn  = false;
-            s_pushIntent = false;
-        }
+        const int r = kg_release(&s_g, now);
+        if (r == KG_PRESS) s_pressPend = true;
+        else if (r == KG_LONG) s_longPend = true;
         s_swLastEdgeUs = now;
         return;
     }
@@ -358,12 +391,7 @@ static void IRAM_ATTR knob_sw_isr(void *arg)
         return;
     }
     s_swLastEdgeUs   = now;
-    s_swDown         = 1;
-    s_swPressStartUs = now;
-    s_longFired      = false;
-    s_pushTurn       = false;
-    s_pushIntent     = false;
-    s_rawAtPress     = s_rawPos;
+    kg_press(&s_g, now, s_rawPos);
 }
 
 /* ---- Public API ---- */
@@ -437,15 +465,7 @@ void knob_poll(void)
 {
     const int64_t now = esp_timer_get_time();
     /* A hold fires here, at the threshold, with the knob still down. */
-    if (s_swDown && !s_longFired && !s_pushIntent) {
-        const int32_t moved = s_rawPos - s_rawAtPress;
-        if (moved >= KNOB_DETENT_MIN_STEPS || moved <= -KNOB_DETENT_MIN_STEPS) s_pushIntent = true;
-    }
-    if (s_swDown && !s_longFired && !s_pushTurn && !s_pushIntent &&
-        (now - s_swPressStartUs) >= (int64_t)LONG_PRESS_MS * 1000) {
-        s_longFired = true;
-        s_longPend  = true;
-    }
+    if (kg_poll(&s_g, now, s_rawPos)) s_longPend = true;
     int32_t settled = 0, spent = 0, net_seen = 0;
     bool learned = false;
     uint8_t valley = 0xFF;
@@ -561,8 +581,8 @@ bool knob_take_long_press(void)
 
 uint32_t knob_held_ms(void)
 {
-    if (!s_swDown) return 0;
-    return (uint32_t)((esp_timer_get_time() - s_swPressStartUs) / 1000);
+    if (!s_g.down) return 0;
+    return (uint32_t)((esp_timer_get_time() - s_g.start_us) / 1000);
 }
 
 int32_t knob_raw_position(void) { return s_rawPos; }

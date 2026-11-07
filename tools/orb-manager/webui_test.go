@@ -311,3 +311,28 @@ func TestTheEditorPaneHoldsASendAndRereadsTheCardOnClose(t *testing.T) {
 		t.Error("a frame that reloads mid-send would leave the pane unclosable")
 	}
 }
+
+// The Places card (radar-plan §2.1) is the Orb tab's: the OS's three places, posted to
+// /api/v1/places with the searcher the App settings page built, never as an app setting.
+func TestPlacesCardIsTheOrbs(t *testing.T) {
+	js, err := os.ReadFile("web/tabs.js")
+	if err != nil {
+		t.Fatalf("tabs.js: %v", err)
+	}
+	page, err := os.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatalf("index.html: %v", err)
+	}
+	for _, want := range []string{`async function loadPlaces(`, `"/api/v1/places"`, `loadPlaces().catch(`,
+		`function placeSearch(app, id, help, write, msg, encode)`} {
+		if !strings.Contains(string(js), want) {
+			t.Errorf("tabs.js lost %q", want)
+		}
+	}
+	if !strings.Contains(string(page), `id="places"`) {
+		t.Error(`index.html lost the Places card's id="places"`)
+	}
+	if _, ok := deviceRoutes["/api/v1/places"]; !ok {
+		t.Error("the allowlist does not let the hub reach /api/v1/places")
+	}
+}

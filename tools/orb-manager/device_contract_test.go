@@ -492,11 +492,13 @@ func TestEveryFirmwareDeviceRouteIsAllowedAndFakeable(t *testing.T) {
 	// re-pacing the dial or forcing its compositor modes.
 	// /api/v1/debug/units_forget makes the orb forget its stored units so the first
 	// home's rule can be seen again (app-platform-plan §56): a bench door, not a page's.
+	// /api/v1/debug/map_bench times the map renderer and the card's scheduling from the
+	// bench host (radar-plan R0, §1.9 and §2.12): a bench door, not a page's.
 	refused := map[string]bool{"/api/v1/ota": true, "/generate_204": true,
 		"/hotspot-detect.html": true, "/connect/test.php": true,
 		"/api/v1/debug/panic": true, "/api/v1/debug/flights": true,
 		"/api/v1/debug/fx": true, "/api/v1/debug/dial": true,
-		"/api/v1/debug/units_forget": true}
+		"/api/v1/debug/units_forget": true, "/api/v1/debug/map_bench": true}
 	checked := 0
 	for _, m := range found {
 		uri, method := m[1], strings.ToUpper(m[2])

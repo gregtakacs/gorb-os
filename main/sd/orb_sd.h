@@ -119,6 +119,13 @@ int64_t orb_sd_lock_held_ms(void);
  *  reads this, not lock_held_ms. */
 int64_t orb_sd_lock_idle_ms(void);
 
+/** Writers mark the card as being written, once a chunk: the file manager, the theme
+ *  upload and the app upload. A background reader (the OS's map reads, radar-plan
+ *  §2.12) asks how long since the last write and stands aside while one is under way,
+ *  because a read loop beside a 3 MB upload made it 2-3x slower (R0, Bronze). */
+void    orb_sd_note_write(void);
+int64_t orb_sd_write_idle_ms(void);
+
 /* ---- the card's second reader: USB file sharing (D37) ---------------------
  *
  * MTP answers the host with paths inside the mounted volume, so the card has ONE

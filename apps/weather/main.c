@@ -93,6 +93,7 @@ static int32_t    s_force = -1;         /* setting "force", the bench's: a WX_* 
 static int        s_nwhere;
 static bool       s_home_set;
 static uint32_t   s_cfg_gen, s_home_gen = 0xFFFFFFFFu, s_units_gen = 0xFFFFFFFFu;
+static uint32_t   s_places_gen = 0xFFFFFFFFu;
 static orb_units_t s_units;
 static int         s_pressure_unit;     /* ORB_UNIT_HPA..MMHG, its own import (OS v1.2.17) */
 
@@ -125,11 +126,17 @@ static void load_places(void)
         w->lat = h.lat_e6 / 1e6;
         w->lon = h.lon_e6 / 1e6;
     }
-    static const char *const ID[3] = { "place1", "place2", "place3" };
-    for (int i = 0; i < 3 && s_nwhere < WX_PLACES; i++) {
-        char v[32];
-        if (orb_cfg_get_str(ID[i], v, sizeof v) == ORB_OK && wx_where_parse(v, &s_where[s_nwhere]))
-            s_nwhere++;
+    /* The places are the orb's, beside home (radar-plan §2.1, OS v1.2.19): one setting
+     * every app reads, set on the hub's Orb tab. An empty slot is skipped. */
+    s_places_gen = orb_places_gen();
+    for (uint32_t i = 0; i < 3 && s_nwhere < WX_PLACES; i++) {
+        orb_place_t p;
+        memset(&p, 0, sizeof p);
+        if (orb_place(i, &p) != ORB_OK) continue;
+        wx_where_t *w = &s_where[s_nwhere++];
+        snprintf(w->name, sizeof w->name, "%s", p.place);
+        w->lat = p.lat_e6 / 1e6;
+        w->lon = p.lon_e6 / 1e6;
     }
     s_cfg_gen = orb_cfg_gen();
     if (s_sel >= s_nwhere) s_sel = 0;
@@ -755,7 +762,7 @@ ORB_EXPORT("orb_tick") void orb_tick(uint32_t now)
 
 ORB_EXPORT("orb_service") void orb_service(void)
 {
-    if (orb_cfg_gen() != s_cfg_gen || orb_home_gen() != s_home_gen) {
+    if (orb_cfg_gen() != s_cfg_gen || orb_home_gen() != s_home_gen || orb_places_gen() != s_places_gen) {
         load_places();
         s_kick = true;                   /* the places moved: ask, inside the floor */
         s_npub = 0;                      /* the old answer is for other places */

@@ -256,6 +256,7 @@ EXPECT_ENTRIES = [
     (13, 0, "orb_opt_inc"),
     (14, 0, "orb_opt_sel"),
     (15, 0, "orb_opt_arm"),
+    (16, 0, "orb_push"),
 ]
 
 

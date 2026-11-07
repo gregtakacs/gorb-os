@@ -73,6 +73,7 @@ STUBS = r'''
 #include "orb_app.h"
 #include "orb_svc.h"
 #include "orb_home.h"     /* the LOCATION door's record, stubbed below */
+#include "orb_places.h"   /* and the places beside it (radar-plan §2.1) */
 #include "orb_theme.h"
 
 /* The NVS store. Keys are namespace+key pairs, values u32 or string, exactly
@@ -352,6 +353,17 @@ bool orb_home_get(orb_home_t *out)
     strcpy(out->place, "Phoenix");
     return true;
 }
+int g_place_reads;
+uint32_t orb_places_gen(void) { return 3; }
+bool orb_places_get(int i, orb_place_rec_t *out)
+{
+    g_place_reads++;
+    memset(out, 0, sizeof *out);
+    if (i != 1) return false;                  /* only place 2 is set */
+    out->set = true; out->lat_e6 = 38722300; out->lon_e6 = -9139300;
+    strcpy(out->name, "Lisbon");
+    return true;
+}
 
 /* ---- the power leaves: what the broker's request path must call ----------- */
 int g_pwr_calls;                       /* app_request invocations */
@@ -472,8 +484,8 @@ int main(int argc, char **argv)
     F(job_post); F(set_beat);
     F(theme_count); F(theme_id); F(theme_active); F(theme_changed); F(theme_note);
     F(theme_install); F(status);
-    F(sound_play); F(sound_stop); F(sound_active); F(home);
-    CK("all 27 frozen entries wired (D39's three sound entries, then the location door)", holes == 0);
+    F(sound_play); F(sound_stop); F(sound_active); F(home); F(place);
+    CK("all 28 frozen entries wired (D39's three sound entries, then the location doors)", holes == 0);
 
     /* D39: the sound entries sit behind the owner cap SOUND, like net and themes.
      * alpha declares power|net and not sound: every sound call is refused and never
@@ -511,6 +523,10 @@ int main(int argc, char **argv)
            g_home_reads == 0 && (orb_svc_denied_mask(A) & (1u << CAP_LOCATION)) != 0);
         CK("home: location is an owner cap, not a free one",
            !(CAP_FREE_MASK & (1u << CAP_LOCATION)) && CAP_N == 10);
+        g_place_reads = 0;
+        CK("place: undeclared app refused, record never read",
+           S->place(A, 1, &h) == ESP_ERR_NOT_ALLOWED && S->place(G, 1, &h) == ESP_ERR_NOT_ALLOWED &&
+           g_place_reads == 0);
     }
 
     /* ---- the wall clock: one scripted timeline, the compose_now rules ---- */

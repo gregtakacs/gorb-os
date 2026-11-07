@@ -51,6 +51,7 @@
 #include "knob_accel.h"         /* a dial app's turns, accelerated (plan §51) */
 #include "orb_units.h"     /* orb_units, behind orb.units (free) */
 #include "orb_home.h"           /* orb_home_gen, behind orb.home_gen */
+#include "orb_places.h"         /* orb_places_gen, behind orb.places_gen */
 #include "esp_timer.h"
 #include <setjmp.h>
 #include "esp_expression_with_stack.h"   /* the guest's own native stack, below */
@@ -82,6 +83,7 @@ enum {
     W_INIT = 0, W_ACTIVATE, W_TICK, W_SUSPEND, W_RESUME, W_INPUT, W_SERVICE,
     W_SHOW, W_SET_ARMED,
     W_OPT_COUNT, W_OPT_KIND, W_OPT_LABEL, W_OPT_VALUE, W_OPT_INC, W_OPT_SEL, W_OPT_ARM,
+    W_PUSH,      /* radar-plan §2.10, appended so every earlier index stands */
     W_COUNT
 };
 
@@ -110,6 +112,7 @@ static const wasm_entry_t s_entries[W_COUNT] = {
     [W_OPT_INC]   = { "orb_opt_inc",   false },
     [W_OPT_SEL]   = { "orb_opt_sel",   false },
     [W_OPT_ARM]   = { "orb_opt_arm",   false },
+    [W_PUSH]      = { "orb_push",      false },   /* radar-plan §2.10: having it is the opt-in */
 };
 
 /* ---- the pure load decision ----------------------------------------------
@@ -917,6 +920,33 @@ m3ApiRawFunction(imp_home)                   /* i32 home(orb_home_t *out) — 52
     m3ApiReturn(e);
 }
 
+/* radar-plan §2.1: the three places beside home, in home's 52 B record. */
+m3ApiRawFunction(imp_place)                  /* i32 place(u32 i, orb_place_t *out) — 52 B */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(uint32_t, i);
+    m3ApiGetArgMem(uint8_t *, out);
+    m3ApiCheckMem(out, 52);
+    orb_svc_home_t h;
+    const esp_err_t e = orb_svc_table()->place(s->app, i > 2 ? -1 : (int)i, &h);
+    if (e == ESP_OK) {
+        m3ApiWriteMem32(out + 0, (uint32_t)h.lat_e6);
+        m3ApiWriteMem32(out + 4, (uint32_t)h.lon_e6);
+        m3ApiWriteMem32(out + 8, h.gen);
+        memcpy(out + 12, h.place, 40);
+        out[12 + 39] = 0;
+    }
+    m3ApiReturn(e);
+}
+
+m3ApiRawFunction(imp_places_gen)
+{
+    m3ApiReturnType(uint32_t);
+    CALLER();
+    m3ApiReturn(orb_places_gen());
+}
+
 m3ApiRawFunction(imp_home_gen)
 {
     m3ApiReturnType(uint32_t);
@@ -1357,6 +1387,8 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "sound_active",  "i(i)",      imp_sound_active },
     { "orb", "home",          "i(i)",      imp_home },
     { "orb", "home_gen",      "i()",       imp_home_gen },
+    { "orb", "place",         "i(ii)",     imp_place },
+    { "orb", "places_gen",    "i()",       imp_places_gen },
     { "orb", "units",         "i(i)",      imp_units },
     { "orb", "units_gen",     "i()",       imp_units_gen },
     { "orb", "units_pressure", "i()",      imp_units_pressure },
@@ -1644,6 +1676,19 @@ static void wasm_input(orb_app_t *app, int32_t delta, bool pressed)
     }
 }
 
+/* A press-and-turn: only a guest that exports orb_push takes it (having the export is
+ * the opt-in), so every other app keeps receiving the clicks as ordinary turns. */
+static bool wasm_push(orb_app_t *app, int32_t delta)
+{
+    wasm_slot_t *s = slot_of_app(app);
+    if (!s || !s->rt || !s->fn[W_PUSH]) return false;
+    uint32_t a = (uint32_t)delta;
+    const void *argv[1] = { &a };
+    (void)wasm_call(s, W_PUSH, argv, 1);
+    if (s->stage && s->on_glass && stage_bound(app)) orb_sched_kick(300);
+    return true;
+}
+
 static bool wasm_armed(const orb_app_t *app)
 {
     wasm_slot_t *s = slot_of_app(app);
@@ -1768,6 +1813,7 @@ const orb_app_iface_t orb_wasm_iface = {
     .resume    = wasm_resume,
     .show      = wasm_show,
     .input     = wasm_input,
+    .push      = wasm_push,
     .armed     = wasm_armed,
     .set_armed = wasm_set_armed,
     .service   = wasm_service,

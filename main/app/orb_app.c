@@ -941,6 +941,11 @@ void orb_app_input(int32_t delta, bool pressed)
         s_current->iface->input(s_current, delta, pressed);
 }
 
+bool orb_app_push(int32_t delta)
+{
+    return delta && s_current && s_current->iface->push && s_current->iface->push(s_current, delta);
+}
+
 void orb_app_service_all(void)
 {
     /* Every installed entry, not just the visible one: C7 keeps a parked app's

@@ -36,6 +36,8 @@
   "net_read": "i(iii)",
   "net_request": "i(iiiiii)",
   "now": "i(ii)",
+  "place": "i(ii)",
+  "places_gen": "i()",
   "power_request": "i(ii)",
   "reply": "v(i)",
   "set_beat": "i(i)",

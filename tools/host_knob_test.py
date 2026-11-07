@@ -479,15 +479,138 @@ def run_mutations(ksrc):
         sys.exit(1)
 
 
+# ---- press-and-turn: the gesture's pure half (radar-plan §2.10) -----------------------
+#
+# kg_press / kg_click / kg_poll / kg_release are lifted VERBATIM from knob.c, with the two
+# constants they read, and driven through scripted presses: the clock and the raw count
+# are arguments, so each rule is a few lines here instead of a hand on the bench.
+
+GESTURE_HARNESS = r"""
+#include <stdio.h>
+#include <stdint.h>
+static int fails;
+#define CK(c, label) do { if (c) printf("ok    %s\n", label); else { printf("FAIL  %s\n", label); fails++; } } while (0)
+#define MS(x) ((int64_t)(x) * 1000)
+int main(void)
+{
+    knob_gesture_t g = {0};
+    /* a plain press */
+    kg_press(&g, MS(0), 0);
+    CK(!kg_poll(&g, MS(300), 0) && kg_release(&g, MS(310)) == KG_PRESS, "a short press is a press");
+    /* a hold, no movement */
+    kg_press(&g, MS(1000), 0);
+    CK(!kg_poll(&g, MS(1699), 0), "no hold before 700 ms");
+    CK(kg_poll(&g, MS(1700), 0), "the hold fires at 700 ms while the knob is down");
+    CK(!kg_poll(&g, MS(1800), 0), "and only once");
+    CK(kg_release(&g, MS(2500)) == KG_SPENT, "the release after a fired hold is spent");
+    /* a press-and-turn */
+    kg_press(&g, MS(3000), 100);
+    CK(kg_click(&g) == 2 && kg_click(&g) == 1, "the first click while down begins a press-and-turn, the next continues it");
+    CK(!kg_poll(&g, MS(5000), 104), "a press-and-turn never fires the hold");
+    CK(kg_release(&g, MS(5100)) == KG_SPENT, "and its release is no press");
+    CK(kg_click(&g) == 0, "a click with the knob up is an ordinary turn");
+    /* a slow start: movement before the first click holds the hold back */
+    kg_press(&g, MS(6000), 0);
+    CK(!kg_poll(&g, MS(6300), 2), "half a click of movement is intent");
+    CK(!kg_poll(&g, MS(6900), 2), "intent holds the hold back past 700 ms");
+    CK(kg_click(&g) == 2, "the slow first click still begins the press-and-turn");
+    CK(kg_release(&g, MS(7200)) == KG_SPENT, "and the release is spent");
+    /* intent, then let go */
+    kg_press(&g, MS(8000), 0);
+    CK(!kg_poll(&g, MS(8200), -2), "intent the other way counts too");
+    CK(kg_release(&g, MS(8400)) == KG_PRESS, "a wobbly press let go under 700 ms is still a press");
+    kg_press(&g, MS(9000), 0);
+    (void)kg_poll(&g, MS(9100), 2);
+    CK(kg_release(&g, MS(9900)) == KG_SPENT, "a turn begun and abandoned past 700 ms opens nothing");
+    /* a wobble under half a click is not intent */
+    kg_press(&g, MS(10000), 0);
+    CK(!kg_poll(&g, MS(10300), 1) && kg_poll(&g, MS(10700), 1), "one raw step is not intent: the hold fires");
+    CK(kg_release(&g, MS(10800)) == KG_SPENT, "and its release is spent");
+    /* a click after the hold has fired is an ordinary turn (the app list takes it) */
+    kg_press(&g, MS(11000), 0);
+    CK(kg_poll(&g, MS(11700), 0) && kg_click(&g) == 0, "a click after the hold is an ordinary turn");
+    (void)kg_release(&g, MS(11800));
+    /* each rule on its own, with nothing else to decide it */
+    kg_press(&g, MS(13000), 0);
+    CK(kg_click(&g) == 2 && !kg_poll(&g, MS(13800), 0), "a press-and-turn holds the hold back even with no raw movement seen");
+    (void)kg_release(&g, MS(13900));
+    kg_press(&g, MS(14000), 0);
+    CK(kg_click(&g) == 2 && kg_release(&g, MS(14300)) == KG_SPENT, "a quick press-and-turn's release is no press");
+    kg_press(&g, MS(15000), 0);
+    CK(!kg_poll(&g, MS(15300), -2) && !kg_poll(&g, MS(15900), -2), "intent the other way holds the hold back too");
+    (void)kg_release(&g, MS(16000));
+    /* a poll gap: no poll ran, the release outran the threshold */
+    kg_press(&g, MS(12000), 0);
+    CK(kg_release(&g, MS(12800)) == KG_LONG, "a release past 700 ms with no poll between is the hold");
+    return fails ? 1 : 0;
+}
+"""
+
+GESTURE_MUTATIONS = [
+    ("if (!g->down || g->long_fired) return 0;\n    const int first", "if (g->long_fired) return 0;\n    const int first"),
+    ("if (!g->down || g->long_fired) return 0;\n    const int first", "if (!g->down) return 0;\n    const int first"),
+    ("if (g->push_turn || g->intent || now", "if (g->push_turn || now"),
+    ("if (g->push_turn || g->intent || now", "if (g->intent || now"),
+    ("moved >= KNOB_DETENT_MIN_STEPS || moved <= -KNOB_DETENT_MIN_STEPS", "moved >= KNOB_DETENT_MIN_STEPS"),
+    ("moved >= KNOB_DETENT_MIN_STEPS || moved <= -KNOB_DETENT_MIN_STEPS", "moved >= 1 || moved <= -1"),
+    ("(g->intent && long_held)) return KG_SPENT;", "g->intent) return KG_SPENT;"),
+    ("if (g->long_fired || g->push_turn ||", "if (g->long_fired ||"),
+    ("g->long_fired = g->push_turn = g->intent = 0;", "g->long_fired = g->push_turn = 0;"),
+    ("return first ? 2 : 1;", "return 1;"),
+]
+
+
+def gesture_source(ksrc, mutation=None):
+    body = ksrc[ksrc.index("typedef struct {\n    uint8_t down, long_fired"):ksrc.index("/* ---- end of the gesture's pure half")]
+    if mutation:
+        old, new = mutation
+        if old not in body:
+            raise SystemExit("gesture mutation %r does not apply -- rewrite the bench" % (old[:40],))
+        body = body.replace(old, new, 1)
+    consts = ""
+    for name in ("KNOB_STEPS_PER_DETENT", "KNOB_DETENT_MIN_STEPS", "LONG_PRESS_MS"):
+        m = re.search(r"#define %s\s+[^\n]+" % name, ksrc)
+        consts += m.group(0) + "\n"
+    return "#include <stdint.h>\n" + consts + body + GESTURE_HARNESS
+
+
+def run_gesture(ksrc, mutation=None, quiet=False):
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        c, exe = os.path.join(d, "g.c"), os.path.join(d, "g")
+        open(c, "w").write(gesture_source(ksrc, mutation))
+        r = subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-o", exe, c], capture_output=True, text=True)
+        if r.returncode:
+            if not quiet: print(r.stderr)
+            return False
+        r = subprocess.run([exe], capture_output=True, text=True)
+        if not quiet: print(r.stdout, end="")
+        return r.returncode == 0
+
+
+def run_gesture_mutations(ksrc):
+    caught = 0
+    for m in GESTURE_MUTATIONS:
+        hit = not run_gesture(ksrc, m, quiet=True)
+        caught += hit
+        check(("gesture mutation caught: " if hit else "GESTURE MUTATION SURVIVED: ") + m[1][:50], hit)
+    print("\n%d/%d gesture mutations caught" % (caught, len(GESTURE_MUTATIONS)))
+    return caught == len(GESTURE_MUTATIONS)
+
+
 def main():
     ksrc = open(KNOB_C).read()
     if "--mutations" in sys.argv:
+        ok = run_gesture_mutations(ksrc)
         run_mutations(ksrc)
+        if not ok:
+            sys.exit(1)
         return
     if not run_suite(ksrc, "knob"):
         sys.exit(1)
     lint_isr(ksrc)
     lint_poll_logging_outside_lock(ksrc)
+    check("press-and-turn: the gesture's rules hold (radar-plan §2.10)", run_gesture(ksrc))
     hdr = open(KNOB_H).read()
     check("knob.h declares the row/col direction contract",
           "knob_row_step" in hdr and "knob_col_step" in hdr)

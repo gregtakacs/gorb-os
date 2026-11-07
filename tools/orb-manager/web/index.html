@@ -260,6 +260,16 @@
   </article>
 
   <article class="card tabpane" data-tab="orb">
+    <h3>Places</h3>
+    <!-- radar-plan §2.1 (owner, 2026-11-07): up to three places beside home, one OS
+         setting every app reads (Weather steps through them, the radar maps them). Each
+         row is the Location card's searcher without its map: a city, coordinates, a plus
+         code or this browser's location proposes a point, its name stays editable, and
+         Save stores it on the orb. A slot keeps its number when another is cleared. -->
+    <div id="places" class="placesgrid"><div class="hint">the places load with this tab</div></div>
+  </article>
+
+  <article class="card tabpane" data-tab="orb">
     <h3>App settings</h3>
     <!-- One page per installed app (owner, 2026-11-04). Today the settings here are the
          secret ones an app declares (§43): one write-only field each; the orb keeps the

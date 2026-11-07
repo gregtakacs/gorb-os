@@ -4,13 +4,10 @@
   "caps": ["net", "location"],
   "period_ms": 1000,
   "settings": [
-    {"id": "place1", "type": "string"},
-    {"id": "place2", "type": "string"},
-    {"id": "place3", "type": "string"},
     {"id": "clock", "type": "toggle", "default": 1},
     {"id": "force", "type": "int", "min": -1, "max": 9, "default": -1}
   ],
   "shelf": true,
-  "os_min": "v1.2.17",
+  "os_min": "v1.2.19",
   "editor": "editor"
 }

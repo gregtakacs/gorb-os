@@ -376,3 +376,4 @@ button.upd:hover{border-color:#fff}
 .filerow .hint{flex:1}
 button.small{padding:2px 8px;font-size:.85em}
 label.check.inline{display:inline-flex;gap:6px;align-items:center}
+.placesgrid{display:grid;gap:14px}

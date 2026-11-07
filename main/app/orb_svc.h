@@ -191,6 +191,10 @@ typedef struct {
    * app re-reads when it does and not before. Appended: the table's earlier
    * entries keep their places. */
   esp_err_t (*home)(orb_app_t *, orb_svc_home_t *out);
+  /* location: the owner's three places beside home (radar-plan §2.1), cap LOCATION,
+   * in home's record shape (`gen` is orb_places_gen()). i is 0..2; ESP_ERR_NOT_FOUND
+   * for an empty slot, ESP_ERR_INVALID_ARG past the end. Appended. */
+  esp_err_t (*place)(orb_app_t *, int i, orb_svc_home_t *out);
 } orb_svc_t;
 
 #define ORB_SVC_SOUND_LOOP   0x01u

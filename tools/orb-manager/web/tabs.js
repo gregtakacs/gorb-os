@@ -64,6 +64,7 @@ function showTab(name) {
     loadSecrets().catch(() => {});
     loadSound().catch(() => {});
     loadUnits().catch(() => {});
+    loadPlaces().catch(() => {});
     return loadHome();
   });
 }
@@ -730,7 +731,8 @@ function stringRow(app, id, help) {
 // or a full plus code, which the orb names the way it names a home (GET /api/v1/home's
 // proposal, which stores nothing); this browser's location works the same. A pick waits
 // beside its Save with its name editable, as Home's waits beside Set location.
-function placeSearch(app, id, help, write, msg) {
+function placeSearch(app, id, help, write, msg, encode) {
+  encode = encode || placeValue;
   const side = document.createElement("div");
   side.className = "locside";
   const q = document.createElement("input");
@@ -819,13 +821,56 @@ function placeSearch(app, id, help, write, msg) {
   };
   save.onclick = () => {
     if (!pend) return;
-    write(placeValue(nm.value.trim() || "Place", pend.lat, pend.lon), "saving").then((ok) => {
+    write(encode(nm.value.trim() || "Place", pend.lat, pend.lon), "saving").then((ok) => {
       if (ok) { pend = null; next.hidden = true; q.value = ""; }
     });
   };
   nm.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); save.click(); } });
   clr.onclick = () => { pend = null; next.hidden = true; show([]); write("", "clearing"); };
   return side;
+}
+// The OS's three places beside home (radar-plan §2.1): POST /api/v1/places with
+// {"i", "lat", "lon", "name"} or {"i", "clear": 1}. The orb keeps 39 characters of name
+// on its own, so the row passes the searcher an encoder that keeps the name whole.
+const placesURL = () => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/places";
+function placesLine(p) {
+  return p && p.set ? p.name + " (" + (+p.lat).toFixed(2) + ", " + (+p.lon).toFixed(2) + ")" : "not set";
+}
+async function loadPlaces() {
+  if (!current.ip) return;
+  const box = $("#places");
+  const d = await readDeviceJSON(await hubFetch(placesURL()));
+  box.innerHTML = "";
+  for (const p of d.places || []) {
+    const row = document.createElement("div");
+    row.className = "apsset";
+    const head = document.createElement("div"), name = document.createElement("strong"), cur = document.createElement("span"), msg = document.createElement("span");
+    head.className = "apshead";
+    cur.className = msg.className = "hint";
+    name.textContent = "Place " + (p.i + 1);
+    cur.textContent = placesLine(p);
+    head.append(name, cur);
+    row.appendChild(head);
+    const write = async (v, what) => {
+      msg.textContent = what + "\u2026";
+      const body = v ? { i: p.i, lat: v.lat, lon: v.lon, name: v.name } : { i: p.i, clear: 1 };
+      try {
+        const r = await readDeviceJSON(await hubFetch(placesURL(), {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
+        cur.textContent = placesLine((r.places || [])[p.i]);
+        msg.textContent = v ? "saved; every app reads it at once" : "cleared";
+        return true;
+      } catch (e) {
+        msg.textContent = "the orb refused it: " + e.message;
+        return false;
+      }
+    };
+    const encode = (nm, lat, lon) => ({ name: String(nm).replace(/["\\]/g, "").trim().slice(0, 39) || "Place",
+                                        lat: +(+lat).toFixed(4), lon: +(+lon).toFixed(4) });
+    row.appendChild(placeSearch({ title: "Place " + (p.i + 1), slug: "orb" }, "place" + p.i, { label: "Place " + (p.i + 1) },
+                                write, msg, encode));
+    box.appendChild(row);
+  }
 }
 async function apsHelpOf(slug) {
   if (apsHelp[slug]) return apsHelp[slug];

@@ -360,10 +360,10 @@ static void poll_timer_cb(lv_timer_t *timer)
     bool    pressed = knob_take_press();
     bool lpress = knob_take_long_press();
 
-    /* Press-and-turn (radar-plan §2.10): the clicks turned with the knob held down.
-     * No app takes them on their own yet (an orb_push export), so they arrive as
-     * ordinary turns; the press they started is spent either way (knob.c). */
-    delta += knob_take_push_delta();
+    /* Press-and-turn (radar-plan §2.10): the clicks turned with the knob held down, kept
+     * apart until the armed entry is asked for them below; the press they started is spent
+     * either way (knob.c). */
+    int32_t push = knob_take_push_delta();
 
     /* Fold in anything injected. Draining the whole pending delta keeps the
      * injected path honest: it feeds the same stream a real turn feeds. The three
@@ -387,7 +387,7 @@ static void poll_timer_cb(lv_timer_t *timer)
      * a bench turn over HTTP and an encoder that bounced by itself are
      * indistinguishable, and telling "nobody touched it" from "the bench touched
      * it" is the whole question when the dial refuses to dim. */
-    if (delta || pressed || lpress)
+    if (delta || pressed || lpress || push)
         idle_dim_activity(inj || ip || il
                           ? "http"
                           : (delta ? (pressed ? "turn+press" : "turn")
@@ -435,7 +435,7 @@ static void poll_timer_cb(lv_timer_t *timer)
     /* §54: while the carousel is up, every knob event is its own, and its frames are
      * drawn from here. It hands the glass back itself. */
     if (orb_strip_active()) {
-        orb_strip_poll(delta, pressed, lpress, now);
+        orb_strip_poll(delta, pressed, lpress, now);   /* the carousel has no press-and-turn */
         return;
     }
 
@@ -468,6 +468,7 @@ static void poll_timer_cb(lv_timer_t *timer)
      * app can never leave it, and the way between apps is one list. A press still arms
      * a view that has one. */
     if (!screen_armed(s_current)) {
+        delta += push;                       /* nobody to take it: an ordinary turn */
         if (pressed) { arm_current(); return; }
         /* The list's own sense of a detent (knob_row_step, as menu_view walks it), so
          * the turn that opens the list moves its cursor the way the next turn will. */
@@ -479,6 +480,7 @@ static void poll_timer_cb(lv_timer_t *timer)
      * means is its own iface's business. The router used to name
      * menu_view_apply_input() and color_picker_apply_input() here and hardcode
      * the clock as unreachable; a new app now needs no edit in this file. */
+    if (push && !orb_app_push(push)) delta += push;   /* no orb_push: an ordinary turn */
     orb_app_input(delta, pressed);
 }
 

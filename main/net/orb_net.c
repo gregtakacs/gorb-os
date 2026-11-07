@@ -10,6 +10,7 @@
  */
 #include <inttypes.h>
 #include <stdio.h>
+#include <sys/stat.h>   /* /api/v1/debug/map_bench sizes the file before reading it */
 #include <stdlib.h>
 #include <math.h>     /* /api/v1/home: strtod/llround of a browser fix */
 #include <string.h>
@@ -60,6 +61,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 
 #include "orb_app_net.h"   /* the per-app credential store behind /api/v1/apps/cfg secrets (§43) */
 #include "orb_home.h"
+#include "orb_places.h"  /* /api/v1/places, radar-plan §2.1 */
 #include "orb_units.h"   /* /api/v1/home: the OS home location (flight-tracker-design §6.4) */
 #include "orb_net.h"
 #include "input_router.h"
@@ -87,6 +89,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "idle_dim.h" /* h_status: the dim's countdown and its motion high-water */
 #include "orb_sound.h"  /* D39: /api/v1/sound, the owner's level and quiet hours */
 #include "orb_mdns.h"  /* the _orb._tcp advertisement the hub browses for */
+#include "orb_map_raster.h" /* /api/v1/debug/map_bench, radar-plan R0 */
 
 static const char *TAG = "orb_net";
 
@@ -3071,6 +3074,105 @@ static esp_err_t h_home_post(httpd_req_t *req)
 }
 
 /* --------------------------------------------------------------------------
+ * Places — the three beside home (radar-plan §2.1). GET answers all three; POST sets or
+ * clears one: {"i":1,"lat":38.72,"lon":-9.14,"name":"Lisbon"} or {"i":1,"clear":1}. The
+ * name is optional (the OS names the point from its city list, as home does). The hub
+ * names a point first with GET /api/v1/home?lat=&lon=, which stores nothing.
+ * ------------------------------------------------------------------------- */
+
+#define NET_PLACES_BODY_MAX 256
+
+static esp_err_t places_reply(httpd_req_t *req, const char *state)
+{
+    char *json = heap_caps_malloc(640, MALLOC_CAP_SPIRAM);
+    if (!json) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"no memory\"}");
+    }
+    int n = snprintf(json, 640, "{%s%s%s\"gen\":%lu,\"places\":[", state ? "\"state\":\"" : "",
+                     state ? state : "", state ? "\"," : "", (unsigned long)orb_places_gen());
+    for (int i = 0; i < ORB_PLACES_N; i++) {
+        orb_place_rec_t p;
+        if (orb_places_get(i, &p)) {
+            char la[16], lo[16];
+            orb_geo_fmt(p.lat_e6, la, sizeof la);
+            orb_geo_fmt(p.lon_e6, lo, sizeof lo);
+            n += snprintf(json + n, 640 - (size_t)n, "%s{\"i\":%d,\"set\":true,\"lat\":%s,\"lon\":%s,\"name\":\"%s\"}",
+                          i ? "," : "", i, la, lo, p.name);
+        } else {
+            n += snprintf(json + n, 640 - (size_t)n, "%s{\"i\":%d,\"set\":false}", i ? "," : "", i);
+        }
+    }
+    snprintf(json + n, 640 - (size_t)n, "]}");
+    const esp_err_t r = httpd_resp_sendstr(req, json);
+    heap_caps_free(json);
+    return r;
+}
+
+static esp_err_t h_places_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return places_reply(req, NULL);
+}
+
+static esp_err_t h_places_post(httpd_req_t *req)
+{
+    static char body[NET_PLACES_BODY_MAX + 1];
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const int clen = (int)req->content_len;
+    if (clen <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"content-length required\"}");
+    }
+    if (clen > NET_PLACES_BODY_MAX) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        return httpd_resp_sendstr(req, "{\"error\":\"body too large\"}");
+    }
+    int got = 0;
+    while (got < clen) {
+        const int r = httpd_req_recv(req, body + got, (size_t)(clen - got));
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "{\"error\":\"body read failed\"}");
+        }
+        got += r;
+    }
+    body[got] = '\0';
+    const size_t len = (size_t)got;
+
+    const char *why = NULL;
+    long idx = -1, clr = 0;
+    if (!json_int(body, len, "i", &idx) || idx < 0 || idx >= ORB_PLACES_N) {
+        why = "i (0-2) required";
+    } else if (json_int(body, len, "clear", &clr) && clr) {
+        why = orb_places_clear((int)idx);
+    } else {
+        int32_t la = 0, lo = 0;
+        char name[ORB_GEO_PLACE_MAX];
+        bool has_name = false;
+        if (!json_deg_e6(body, len, "lat", &la) || !json_deg_e6(body, len, "lon", &lo))
+            why = "lat and lon required";
+        for (const char *q = body; !why && *q; q++)        /* home's escape rule */
+            if (*q == '\\') why = "no escapes";
+        if (!why && json_find(body, len, "name")) {
+            has_name = json_str(body, len, "name", name, sizeof name);
+            if (!has_name) why = "name not a string, or too long";
+        }
+        if (!why) why = orb_places_set((int)idx, la, lo, has_name ? name : NULL);
+    }
+    if (why) {
+        ESP_LOGW(TAG, "places: refused (%s)", why);
+        httpd_resp_set_status(req, "400 Bad Request");
+        char b[112];
+        snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
+        return httpd_resp_sendstr(req, b);
+    }
+    return places_reply(req, clr ? "cleared" : "placed");
+}
+
+/* --------------------------------------------------------------------------
  * Sound — D39's owner settings and the bench door (docs/history/sound-plan.md §5).
  *
  * GET /api/v1/sound answers the settings plus the engine's own counters, so a bench
@@ -5130,6 +5232,216 @@ static esp_err_t h_debug_panic(httpd_req_t *req)
     if (!strcmp(kind, "abort")) abort();
     *(volatile uint32_t *)0 = 0;
     return ESP_OK;
+}
+#endif /* CONFIG_ORB_DEBUG_HTTP */
+
+#if CONFIG_ORB_DEBUG_HTTP
+/* map_bench's background reader (radar-plan §2.12, R0): a task that reads one map file
+ * over and over, in 32 KB pieces under the card lock, for a set time, so a hub-style
+ * write can be timed beside it. It keeps the longest wait for the lock and the longest
+ * hold, which is what the scheduling rules are about. */
+static struct {
+    volatile bool running;
+    char path[128];
+    int seconds;
+    bool yield;
+    int64_t yielded_us;
+    uint32_t reads, pieces, bytes;
+    int64_t wait_max_us, hold_max_us, wait_sum_us;
+} s_mapbg;
+
+static void map_bg_task(void *arg)
+{
+    (void)arg;
+    const size_t PIECE = 32 * 1024;
+    uint8_t *buf = heap_caps_malloc(PIECE, MALLOC_CAP_SPIRAM);
+    const int64_t end = esp_timer_get_time() + (int64_t)s_mapbg.seconds * 1000000;
+    while (buf && esp_timer_get_time() < end) {
+        for (size_t off = 0;; off += PIECE) {
+            /* Writes win (§2.12): stand aside while the card was written in the last second. */
+            if (s_mapbg.yield) {
+                const int64_t y0 = esp_timer_get_time();
+                while (orb_sd_write_idle_ms() < 1000 && esp_timer_get_time() < end) vTaskDelay(pdMS_TO_TICKS(50));
+                s_mapbg.yielded_us += esp_timer_get_time() - y0;
+            }
+            const int64_t t0 = esp_timer_get_time();
+            orb_sd_lock();
+            const int64_t t1 = esp_timer_get_time();
+            FILE *f = fopen(s_mapbg.path, "rb");
+            size_t got = 0;
+            if (f && fseek(f, (long)off, SEEK_SET) == 0) got = fread(buf, 1, PIECE, f);
+            if (f) fclose(f);
+            orb_sd_unlock();
+            const int64_t t2 = esp_timer_get_time();
+            if (t1 - t0 > s_mapbg.wait_max_us) s_mapbg.wait_max_us = t1 - t0;
+            if (t2 - t1 > s_mapbg.hold_max_us) s_mapbg.hold_max_us = t2 - t1;
+            s_mapbg.wait_sum_us += t1 - t0;
+            s_mapbg.pieces++;
+            s_mapbg.bytes += got;
+            if (got < PIECE) break;
+        }
+        s_mapbg.reads++;
+        vTaskDelay(pdMS_TO_TICKS(20));               /* a renderer between reads, roughly */
+    }
+    heap_caps_free(buf);
+    s_mapbg.running = false;
+    vTaskDelete(NULL);
+}
+
+static esp_err_t map_bench_bg(httpd_req_t *req, const char *rel, int seconds, bool yield)
+{
+    char b[400];
+    httpd_resp_set_type(req, "application/json");
+    if (seconds > 0) {
+        if (s_mapbg.running) return httpd_resp_sendstr(req, "{\"error\":\"already running\"}");
+        memset(&s_mapbg, 0, sizeof s_mapbg);
+        snprintf(s_mapbg.path, sizeof s_mapbg.path, ORB_SD_BASE "/%s", rel);
+        s_mapbg.seconds = seconds > 300 ? 300 : seconds;
+        s_mapbg.yield = yield;
+        s_mapbg.running = true;
+        if (xTaskCreatePinnedToCore(map_bg_task, "map_bg", 8192, NULL, 3, NULL, tskNO_AFFINITY) != pdPASS) {
+            s_mapbg.running = false;
+            return httpd_resp_sendstr(req, "{\"error\":\"no task\"}");
+        }
+    }
+    snprintf(b, sizeof b, "{\"running\":%s,\"reads\":%lu,\"pieces\":%lu,\"bytes\":%lu,"
+             "\"wait_max_ms\":%.1f,\"wait_mean_ms\":%.2f,\"hold_max_ms\":%.1f,\"yielded_ms\":%.0f}",
+             s_mapbg.running ? "true" : "false", (unsigned long)s_mapbg.reads,
+             (unsigned long)s_mapbg.pieces, (unsigned long)s_mapbg.bytes,
+             s_mapbg.wait_max_us / 1000.0,
+             s_mapbg.pieces ? s_mapbg.wait_sum_us / 1000.0 / s_mapbg.pieces : 0.0,
+             s_mapbg.hold_max_us / 1000.0, s_mapbg.yielded_us / 1000.0);
+    return httpd_resp_sendstr(req, b);
+}
+#endif /* CONFIG_ORB_DEBUG_HTTP */
+
+#if CONFIG_ORB_DEBUG_HTTP
+/* GET /api/v1/debug/map_bench?path=REL[&scale=1.0][&rot=DEG][&dash=1][&n=3][&dump=1]
+ * radar-plan R0: how long the S3 takes to read one .orbmap level off the card and draw
+ * it (orb_map_raster.c). The read follows §2.12: 32 KB pieces, the card lock taken and
+ * released for each, so the longest single hold is measured too. dump=1 answers the
+ * last raster's bytes instead of the timings, for the host to compare; roles=HEX limits
+ * what is drawn (roles=0: decode only); bg=SECONDS reads the file in a loop on a task of
+ * its own and bg=0 reports on it (§2.12). Runs on this
+ * httpd task, which the real views will not (they render on the worker). */
+static esp_err_t h_debug_map_bench(httpd_req_t *req)
+{
+    char rel[96] = "", v[16];
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    if (!q_param(req, "path", rel, sizeof rel) || strstr(rel, "..")) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"path=REL under /sd\"}");
+    }
+    const float scale = q_param(req, "scale", v, sizeof v) ? strtof(v, NULL) : 1.0f;
+    const float rot = q_param(req, "rot", v, sizeof v) ? strtof(v, NULL) * 3.14159265f / 180.0f : 0.0f;
+    const bool dashed = q_param(req, "dash", v, sizeof v) && v[0] == '1';
+    const bool dump = q_param(req, "dump", v, sizeof v) && v[0] == '1';
+    /* roles=0 decodes the file and draws nothing: the parse's own cost. */
+    const uint16_t roles = q_param(req, "roles", v, sizeof v) ? (uint16_t)strtoul(v, NULL, 16) : 0xFFFF;
+    int n = q_param(req, "n", v, sizeof v) ? atoi(v) : 3;
+    if (n < 1) n = 1;
+    if (n > 20) n = 20;
+    if (!orb_sd_mounted()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"no card\"}");
+    }
+    /* bg=SECONDS starts the background reader; bg=0 reports on it. */
+    if (q_param(req, "bg", v, sizeof v)) {
+        char y[4] = "";
+        const bool yield = q_param(req, "yield", y, sizeof y) && y[0] == '1';
+        return map_bench_bg(req, rel, atoi(v), yield);
+    }
+    char full[128];
+    snprintf(full, sizeof full, ORB_SD_BASE "/%s", rel);
+
+    const size_t PIECE = 32 * 1024, SCRATCH = 384 * 1024;
+    uint8_t *raster = heap_caps_malloc(ORB_MAP_RASTER_B, MALLOC_CAP_SPIRAM);
+    void *scratch = heap_caps_malloc(SCRATCH, MALLOC_CAP_SPIRAM);
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    int64_t read_us = 0, hold_max_us = 0;
+    int pieces = 0;
+    bool ok = raster && scratch;
+    if (ok) {
+        struct stat st;
+        orb_sd_lock();
+        ok = stat(full, &st) == 0 && st.st_size > 0 && st.st_size < 2 * 1024 * 1024;
+        orb_sd_unlock();
+        if (ok) { len = (size_t)st.st_size; buf = heap_caps_malloc(len, MALLOC_CAP_SPIRAM); ok = buf != NULL; }
+    }
+    const int64_t t_read = esp_timer_get_time();
+    for (size_t off = 0; ok && off < len; off += PIECE) {
+        const size_t want = len - off < PIECE ? len - off : PIECE;
+        const int64_t t0 = esp_timer_get_time();
+        orb_sd_lock();
+        FILE *f = fopen(full, "rb");
+        ok = f && fseek(f, (long)off, SEEK_SET) == 0 && fread(buf + off, 1, want, f) == want;
+        if (f) fclose(f);
+        orb_sd_unlock();
+        const int64_t held = esp_timer_get_time() - t0;
+        if (held > hold_max_us) hold_max_us = held;
+        pieces++;
+    }
+    read_us = esp_timer_get_time() - t_read;
+    int zoom = 0, rc = -9;
+    int64_t crc_us = 0, best = INT64_MAX, worst = 0, sum = 0;
+    orb_map_stats_t stt = { 0 };
+    if (ok) {
+        const int64_t t0 = esp_timer_get_time();
+        rc = orb_map_check(buf, len, &zoom);
+        crc_us = esp_timer_get_time() - t0;
+    }
+    if (ok && rc == ORB_MAP_OK) {
+        orb_map_style_t sty = { .scale = scale, .rot_rad = rot, .role_on = roles, .mark_on = 0x0B,
+                                .clock_us = esp_timer_get_time };
+        static const uint8_t WID[][2] = { { ORB_MAP_RIVER, 1 }, { ORB_MAP_ROAD2, 1 }, { ORB_MAP_ROAD1, 2 },
+                                          { ORB_MAP_STATE, 1 }, { ORB_MAP_BORDER, 2 }, { ORB_MAP_RUNWAY, 2 } };
+        for (size_t i = 0; i < sizeof WID / sizeof WID[0]; i++) sty.width[WID[i][0]] = WID[i][1];
+        if (dashed) {
+            sty.dash[ORB_MAP_ROAD2] = ORB_MAP_DASH_SHORT;
+            sty.dash[ORB_MAP_STATE] = ORB_MAP_DASH_LONG;
+            sty.dash[ORB_MAP_BORDER] = ORB_MAP_DASH_DASHDOT;
+        }
+        for (int i = 0; i < n && rc == ORB_MAP_OK; i++) {
+            const int64_t t0 = esp_timer_get_time();
+            rc = orb_map_render(buf, len, &sty, raster, scratch, SCRATCH, &stt);
+            const int64_t dt = esp_timer_get_time() - t0;
+            sum += dt;
+            if (dt < best) best = dt;
+            if (dt > worst) worst = dt;
+        }
+    }
+    esp_err_t ret;
+    if (dump && ok && rc == ORB_MAP_OK) {
+        httpd_resp_set_type(req, "application/octet-stream");
+        ret = httpd_resp_send(req, (const char *)raster, ORB_MAP_RASTER_B);
+    } else {
+        char b[640];
+        httpd_resp_set_type(req, "application/json");
+        if (!ok || rc != ORB_MAP_OK) httpd_resp_set_status(req, "500 Internal Server Error");
+        snprintf(b, sizeof b,
+                 "{\"path\":\"%s\",\"ok\":%s,\"rc\":%d,\"bytes\":%u,\"zoom\":%d,\"read_ms\":%.1f,"
+                 "\"pieces\":%d,\"hold_max_ms\":%.1f,\"crc_ms\":%.1f,\"scale\":%.3f,\"rot_deg\":%.1f,"
+                 "\"dash\":%s,\"n\":%d,\"render_ms\":{\"best\":%.1f,\"mean\":%.1f,\"worst\":%.1f},"
+                 "\"stats\":{\"features\":%lu,\"fills\":%lu,\"lines\":%lu,\"edges\":%lu,\"segments\":%lu,"
+                 "\"marks\":%lu,\"skipped\":%lu,\"fill_ms\":%.1f,\"line_ms\":%.1f,\"max_fill_edges\":%lu},\"int_free\":%u,\"int_largest\":%u,\"psram_free\":%u}",
+                 rel, ok ? "true" : "false", rc, (unsigned)len, zoom, read_us / 1000.0, pieces,
+                 hold_max_us / 1000.0, crc_us / 1000.0, scale, rot * 180.0f / 3.14159265f,
+                 dashed ? "true" : "false", n, best == INT64_MAX ? 0.0 : best / 1000.0,
+                 n ? sum / 1000.0 / n : 0.0, worst / 1000.0,
+                 (unsigned long)stt.features, (unsigned long)stt.fills, (unsigned long)stt.lines,
+                 (unsigned long)stt.edges, (unsigned long)stt.segments, (unsigned long)stt.marks,
+                 (unsigned long)stt.skipped, stt.fill_us / 1000.0, stt.line_us / 1000.0,
+                 (unsigned long)stt.max_fill_edges,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        ret = httpd_resp_sendstr(req, b);
+    }
+    heap_caps_free(buf);
+    heap_caps_free(raster);
+    heap_caps_free(scratch);
+    return ret;
 }
 #endif /* CONFIG_ORB_DEBUG_HTTP */
 
@@ -7972,8 +8284,10 @@ static esp_err_t net_start_httpd(void)
      * hub's settings write: textual 49, so the ceiling moves to 56. D43 P7 adds
      * /api/v1/sd/design, the card's design read-back: textual 50, the ceiling stays 56.
      * v1.2.17's bench door /api/v1/debug/units_forget brings the textual count to 55: one
-     * from the ceiling, so the next door raises it. */
-    cfg.max_uri_handlers  = 56;
+     * from the ceiling, so the next door raises it. radar-plan R0's /api/v1/debug/map_bench
+     * makes 56, and the ceiling moves to 64 for the places and maps doors that follow.
+     * radar-plan R1's /api/v1/places GET and POST make 58. */
+    cfg.max_uri_handlers  = 64;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
      * FAT with their own buffers, and the OTA chunk and upload receive buffers are
@@ -8095,6 +8409,8 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/config",   .method = HTTP_POST, .handler = h_config_post },
         { .uri = "/api/v1/name",     .method = HTTP_POST, .handler = h_name_post },
         { .uri = "/api/v1/home",     .method = HTTP_GET,  .handler = h_home_get },
+        { .uri = "/api/v1/places",   .method = HTTP_GET,  .handler = h_places_get },
+        { .uri = "/api/v1/places",   .method = HTTP_POST, .handler = h_places_post },
         { .uri = "/api/v1/home",     .method = HTTP_POST, .handler = h_home_post },
         { .uri = "/api/v1/sound",    .method = HTTP_GET,  .handler = h_sound_get },
         { .uri = "/api/v1/sound",    .method = HTTP_POST, .handler = h_sound_post },
@@ -8131,6 +8447,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/debug/units_forget", .method = HTTP_POST, .handler = h_debug_units_forget },
         { .uri = "/api/v1/debug/fx",   .method = HTTP_GET,  .handler = h_debug_fx },
         { .uri = "/api/v1/debug/dial", .method = HTTP_GET,  .handler = h_debug_dial },
+        { .uri = "/api/v1/debug/map_bench", .method = HTTP_GET, .handler = h_debug_map_bench },
 #endif
         /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
          * backing calls. Migration 1 deleted the flip and default doors: under the

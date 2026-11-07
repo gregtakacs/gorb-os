@@ -154,6 +154,10 @@ typedef struct {
     bool         (*opt_edit)(orb_app_t *app, int idx, orb_opt_edit_t *e);
     const char *(*opt_fmt)(orb_app_t *app, int idx, int32_t v);
     void         (*opt_set)(orb_app_t *app, int idx, int32_t v);
+    /** radar-plan §2.10: clicks turned with the knob held down (a press-and-turn),
+     *  signed like input's delta. Answers true when the entry took them; false or
+     *  NULL, and the router hands them over as ordinary turns instead. */
+    bool         (*push)(orb_app_t *app, int32_t delta);
 } orb_app_iface_t;
 
 /** How a table entry participates in the knob's carousel. */
@@ -466,6 +470,8 @@ const orb_app_t *orb_app_neighbour(const orb_app_t *from, int step);
 bool orb_app_current_armed(void);
 /** Deliver one poll's worth of knob events to the entry on the glass. */
 void orb_app_input(int32_t delta, bool pressed);
+/** A press-and-turn to the entry on the glass. False: it takes none (radar-plan §2.10). */
+bool orb_app_push(int32_t delta);
 /** Reap every app's worker jobs, active or not (C7). Call every poll. */
 void orb_app_service_all(void);
 

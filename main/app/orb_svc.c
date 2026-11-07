@@ -32,6 +32,7 @@
 #include "art_bank.h"
 #include "orb_net.h"          /* orb_net_time_synced / tz_label / tz_offset */
 #include "orb_home.h"         /* the LOCATION door: the owner's home       */
+#include "orb_places.h"       /* and the three places beside it            */
 #include "orb_theme.h"        /* the D18 family: enumerate and request, never bytes */
 #include "idle_dim.h"         /* the power request path — a request, not a write */
 #include "orb_layers.h"       /* P5.5: the layer table the four entries drive */
@@ -752,6 +753,21 @@ static esp_err_t svc_home(orb_app_t *a, orb_svc_home_t *out)
     return ESP_OK;
 }
 
+static esp_err_t svc_place(orb_app_t *a, int i, orb_svc_home_t *out)
+{
+    SVC(a, LOCATION);
+    if (!out) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof *out);
+    out->gen = orb_places_gen();
+    if (i < 0 || i >= ORB_PLACES_N) return ESP_ERR_INVALID_ARG;
+    orb_place_rec_t p;
+    if (!orb_places_get(i, &p)) return ESP_ERR_NOT_FOUND;
+    out->lat_e6 = p.lat_e6;
+    out->lon_e6 = p.lon_e6;
+    snprintf(out->place, sizeof out->place, "%s", p.name);
+    return ESP_OK;
+}
+
 /* The frozen table. The order IS orb_svc_t's field order — the one place a
  * missing entry becomes a compile-visible shape rather than a NULL an app
  * discovers at runtime — and nothing below is reachable without going through
@@ -806,6 +822,7 @@ static const orb_svc_t S_TABLE = {
     .sound_stop    = svc_sound_stop,
     .sound_active  = svc_sound_active,
     .home          = svc_home,
+    .place         = svc_place,
 };
 
 const orb_svc_t *orb_svc_table(void) { return &S_TABLE; }

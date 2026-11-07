@@ -339,6 +339,9 @@ var deviceRoutes = map[string][]string{
 	// what that point would become; POST sets or clears it. Device config like the
 	// zone it drives, and it reaches neither the card nor the slot.
 	"/api/v1/home": {http.MethodGet, http.MethodPost},
+	// radar-plan §2.1: the three places beside home, set from the Orb tab's Places card.
+	// Device config like home, and it reaches neither the card nor the slot.
+	"/api/v1/places": {http.MethodGet, http.MethodPost},
 	// D39: the owner's sound settings (level, switches, quiet hours, glass offset,
 	// pattern override) and the bench door that plays a built-in sound with no theme.
 	// Both are device config the owner sets the way they set the zone, and neither

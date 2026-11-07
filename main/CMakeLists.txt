@@ -44,6 +44,9 @@ idf_component_register(
         "stage/orb_stage.c"
         "stage/orb_label.c"
         "knob/knob.c"
+        # radar-plan §2.4: the map's vector renderer. Pure C, host-tested as shipped
+        # by tools/host_map_raster_test.py.
+        "map/orb_map_raster.c"
         "menu/menu_view.c"
         "menu/knob_edit.c"
         # §43: the Themes page, an OS menu row (it was the clock app's options page).
@@ -83,6 +86,8 @@ idf_component_register(
         "net/orb_net.c"
         "net/orb_https.c"
         "net/orb_home.c"
+        # radar-plan §2.1: the three places beside home, one OS setting.
+        "net/orb_places.c"
         # weather-plan §2.1: the units every app reads (temperature, speed, distance)
         "net/orb_units.c"
         "net/orb_geo.c"
@@ -111,6 +116,7 @@ idf_component_register(
         "gfx"
         "stage"
         "knob"
+        "map"
         "menu"
         "input"
         "imu"

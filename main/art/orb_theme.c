@@ -2977,6 +2977,7 @@ esp_err_t orb_theme_upload_data(orb_theme_up_t *u, const void *buf, size_t n)
         return ESP_ERR_INVALID_SIZE;
     }
     const uint8_t *p = buf;
+    orb_sd_note_write();
     while (n) {
         const ssize_t w = write(u->fd, p, n);
         if (w <= 0) {

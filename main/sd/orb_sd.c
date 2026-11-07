@@ -631,6 +631,16 @@ int64_t orb_sd_lock_held_ms(void)
  * wedged"; it is the next chunk arriving. A reader that must decide between
  * waiting and rebooting asks THIS, so one sample can never land in a gap and
  * lie. Returns a big number when the lock has never been taken this boot. */
+static volatile int64_t s_last_write_us;
+
+void orb_sd_note_write(void) { s_last_write_us = esp_timer_get_time(); }
+
+int64_t orb_sd_write_idle_ms(void)
+{
+    if (!s_last_write_us) return INT64_MAX / 2;
+    return (esp_timer_get_time() - s_last_write_us) / 1000;
+}
+
 int64_t orb_sd_lock_idle_ms(void)
 {
     if (s_lock_holder) return 0;
@@ -986,6 +996,7 @@ esp_err_t orb_sd_fm_write_data(void *h, const char *buf, size_t len)
     fm_write_t *w = h;
     if (!w || !w->f || !buf) return ESP_ERR_INVALID_ARG;
     if (w->written + len > w->cap) return ESP_ERR_INVALID_SIZE;
+    orb_sd_note_write();
     orb_sd_lock();
     const size_t put = fwrite(buf, 1, len, w->f);
     orb_sd_unlock();

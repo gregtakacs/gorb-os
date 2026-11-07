@@ -433,6 +433,12 @@ const orb_app_t  *orb_app_find_slug(const char *slug);
 /** The C8 homing screen: the entry flagged is_home (the clock), never an index
  *  a caller can get wrong. */
 const orb_app_t  *orb_app_home(void);
+
+/** Whether the app is failed now: refused at boot (no hooks, a refused init, C2's strikes
+ *  counted before it), or struck twice by C2 since (the broker refuses to show it from
+ *  then on, though `failed` was set only at boot). The home entry is exempt, as it is at
+ *  boot. What /api/v1/status and /api/v1/apps report (owner, 2026-11-07, §34.3). */
+bool orb_app_failed_live(const orb_app_t *a);
 /** The entry on the glass; NULL before the first activate. */
 const orb_app_t  *orb_app_current(void);
 /** Index of an entry, for the carousel's wraparound; -1 if not in the table. */

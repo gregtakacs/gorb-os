@@ -5,7 +5,19 @@
 
 static const uint8_t *glyph(const orb_font_t *f, int gi)
 {
-    return f->glyphs + (uint32_t)gi * f->w * f->h * (f->bpp == 1 ? 1u : 3u);
+    const uint32_t cell = f->sparse ? f->rank[gi] : (uint32_t)gi;
+    return f->glyphs + cell * f->w * f->h * (f->bpp == 1 ? 1u : 3u);
+}
+
+static bool carries(const orb_font_t *f, int gi)
+{
+    return gi >= 0 && gi < f->n && (!f->sparse || f->rank[gi] != ORB_GLYPH_NONE);
+}
+
+int orb_font_glyph(const orb_font_t *f, int gi)
+{
+    if (carries(f, gi)) return gi;
+    return carries(f, '?' - 0x20) ? '?' - 0x20 : -1;
 }
 
 /* A coverage glyph's colour at cell row y: c0 at the top running to c1 at the foot. */
@@ -23,6 +35,7 @@ void orb_font_measure(orb_font_t *f)
 {
     const uint32_t n = (uint32_t)f->w * f->h;
     for (int gi = 0; gi < f->n && gi < CLK_FONT_GLYPHS; gi++) {
+        if (!carries(f, gi)) { f->adv[gi] = f->space; continue; }   /* drawn as another */
         const uint8_t *a = glyph(f, gi) + (f->bpp == 1 ? 0u : n * 2u);
         int right = -1;
         for (int x = f->w - 1; x >= 0 && right < 0; x--)
@@ -116,11 +129,15 @@ void orb_label_compose(uint8_t *plane, uint32_t w, uint32_t h, const uint8_t *pa
         const char *nl = strchr(line, '\n');
         const char *stop = nl ? nl : line + strlen(line);
         int lw = 0;
-        for (const char *p = line; p < stop; ) lw += f->adv[orb_glyph_next(&p, f->n)];
+        for (const char *p = line; p < stop; ) {
+            const int g = orb_font_glyph(f, orb_glyph_next(&p, f->n));
+            lw += g < 0 ? f->space : f->adv[g];
+        }
         int x = halign == 1 ? x0 + ((x1 - x0 + 1) - lw) / 2
               : halign == 2 ? x1 + 1 - lw : x0;
         for (const char *p = line; p < stop && x <= x1; ) {
-            const int gi = orb_glyph_next(&p, f->n);
+            const int gi = orb_font_glyph(f, orb_glyph_next(&p, f->n));
+            if (gi < 0) { x += f->space; continue; }
             blit(plane, w, h, f, gi, x, y, x0, y0, x1, y1);
             x += f->adv[gi];
         }

@@ -5468,7 +5468,8 @@ faulting HOME entry boots with `failed=false` by design. Displaying the live led
 boot-time-only truth. `wtrap` reads `faults:0` this boot because any pre-fix strikes were billed under
 the identity tuple that `a9916a9` widened (now `code_crc`/`code_size`), so the old rows are orphaned.
 Owner's call on which of the three. P8.1 beat delivery proceeds regardless — it does not depend on
-this field.
+this field. *Ruled 2026-11-07, "make the app status fail live data": the first of the three,
+`orb_app_failed_live` (§56).*
 
 ---
 
@@ -6152,6 +6153,8 @@ the way the firmware does (`v1.2.7+238c503`), so every build is unique.
   refusals; `headless-design` orders hashed stamps by release.
 
 ## 48 — Shell transitions: the bench before the design — 2026-11-04
+
+*Closed by the owner, 2026-11-07: the carousel (§54) replaced it.*
 
 **Direction (owner, 2026-11-04).** The menu leaves the knob's walk. A turn rolls from one
 app to the next through an animation drawn from the theme preview, never from the app
@@ -7044,7 +7047,9 @@ the baker alike). OS v1.2.14; clock v1.2.27 (its wasm sizes tables by the ceilin
   v1.2.16 found why (weather-plan §2.7): the incoming pose was marked with the outgoing
   frame's spans (the new frame was taken after both marks), and a row picked back to
   frame 0 kept its last frame's art on the band path. Both are fixed; the opacity box mark
-  stays until the bars are seen paging clean without it.
+  stays until the bars are seen paging clean without it. v1.2.17 removed it: with the box
+  mark off, Gold's ring paged out to the next twelve and back to the same pixels (a grab
+  before and after, identical to the byte).
 
 
 ## 54 — The carousel: previews, a disc zoom in and out — 2026-11-07
@@ -7108,7 +7113,8 @@ in (no card, the first seconds of a boot).
   is 140 ms, the zoom 320 ms.
 
 **Owed:** a host test for the strip's motion and wrap; whether the knob direction on the
-strip is the one the hand expects.
+strip is the one the hand expects. *Closed by the owner, 2026-11-07: "the carousel works
+great in real life, you can close it."*
 
 ## 55 — Alerts: an app asks for the glass, the OS decides — 2026-11-07
 
@@ -7201,3 +7207,67 @@ reads as "the orb is showing you something".
 block in `app.json`, the schema and the SDK packer; the OS arbiter and its NVS; the
 dissolve; the carousel's dot; the hub's Alerts table; then each app's reasons, chosen by
 the owner.
+
+## 56 — OS v1.2.17: fonts that carry only their glyphs, and units that follow the first home — 2026-11-07
+
+**Sparse fonts (owner: "make it general so it's any kind of glyph subset rather than just
+digits only").** A font still names all its charset frames (printable ASCII whole, and up to
+the five extras), but a frame may be empty (0x0, 0 B): a glyph the font does not carry. So a
+font keeps exactly the glyphs its labels draw, whichever they are.
+
+- **The reader** (`orb_clock3.c`): a font carries at least one glyph, all one form
+  (coverage or RGB565A8, the row's cell), its form read off the first glyph it carries; an
+  empty frame is exempt from the row-and-plane size rule. Older readers refuse such a
+  font (glyph 0 empty), so an app that bakes one names `os_min` v1.2.17.
+- **The label** (`orb_label.c`): the stage ranks the glyphs a font carries at first use;
+  a glyph it lacks draws as '?' when it carries that, else as a space. A font that carries
+  everything is addressed as before.
+- **The baker** (`baker@1` `font()`): a null or empty plane is a glyph the font lacks; one
+  font at least must carry a glyph. The two fonts' dedupe compares the gaps too.
+- **Weather v1.3.0** keeps `0123456789-°` in its temperature fonts: Scope 1,277,141 to
+  1,213,173 B; every size at its most 2,201,629 to 1,963,325 B. (Fonts have been coverage,
+  one byte a pixel, since v1.2.12, so the saving is a quarter of §52's estimate.)
+- Suites: `host_clock3_test` (a sparse digits font accepted; one with no glyph and one of
+  two forms refused; both guards' mutants), `host_label_test` (rank, the '?' and the space,
+  three mutants), the weather bake check through the shipped reader.
+
+**Units follow the first home (owner: "unit default should follow home location when
+first set up").** When the orb gets its first home and no units were ever stored, it takes
+the nearest city's country's (`orb_units_for_country`): °F, mph and miles in the US and its
+territories (and °F for the remaining holdouts, miles in Liberia and Myanmar), mph and miles
+with °C in the UK, the 12-hour clock where it is the everyday one, metric and 24-hour
+elsewhere. The cities table now carries each city's country (`make_cities.py`). A later move
+changes nothing, and neither does a home set after the owner has picked units.
+`host_units_test`: the rule for the US, the UK, Hungary, Canada, no country and a pair
+matched across two codes, three mutants.
+
+**The opacity box mark is gone** (§53's workaround; see the note there).
+
+**Pressure, the fifth unit** (owner, 2026-11-07: "add the pressure to that line"). hPa, inHg or
+mmHg, on the UNITS page, the hub's Units row and `POST /api/v1/units` (`"pressure"`), stored as
+the record's next byte (a shorter record reads hPa). The `units` import's 8-byte record has no
+byte to spare and every app reads it verbatim, so pressure is its own import,
+`units_pressure` (`orb.h` `orb_units_pressure`, with `orb_pressure_text` for "1016 hPa",
+"30.01 inHg", "762 mmHg" in whole numbers); it moves `units_gen` like the rest. The first home
+picks inHg in the US and its territories, mmHg in Russia and Belarus. Weather shows the pressure
+and its next three hours' way (an arrow: a hectopascal or more up or down, else steady) on Now's
+high and low line, from the hourly `pressure_msl` it now asks for.
+
+**The status's `failed` is live** (§34.3, ruled 2026-11-07). `/api/v1/status` and both
+`/api/v1/apps` lists print `orb_app_failed_live`: failed at boot, or struck twice by C2 since,
+the home entry exempt as it is at boot. Before, an app the broker had stopped showing read
+`failed: false` until the next boot (seen on Gold the day before: "lazy init refused" while the
+status said false).
+
+**The HTTP client's tx buffer is 768** (`orb_https.c`). esp_http_client writes the request line
+and then each header into it, and a header that does not fit what is left leaves the request
+unsent. At 512, weather's request with pressure (a 442 B path) left 55 B for the User-Agent and
+failed in 4 ms; an app's path may run to 480. 256 B of internal RAM while a client lives; Gold read
+38 KB internal free after the fetch.
+
+**The bench's units door**, `POST /api/v1/debug/units_forget?confirm=FORGET`
+(CONFIG_ORB_DEBUG_HTTP; the hub never relays it): the orb forgets its stored units, as a fresh
+one has none. Seen on Gold: units forgotten, home cleared and set near Fort Worth, and the units
+read °F, mph, miles, 12-hour, inHg; a move to Budapest left them so. Gold's own metric units were
+put back after.
+

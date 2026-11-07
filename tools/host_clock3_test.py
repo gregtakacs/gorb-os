@@ -685,13 +685,16 @@ def add_pick_row(els, spr, art, slot, n, sizes=None, w=28, h=64, **kw):
 
 
 def add_font(els, spr, art, slot, w=8, h=14, n=len(ts.FONT_CHARSET), cover=False, sizes=None,
-             **kw):
+             keep=None, **kw):
     """A font (theme-text-plan §2.1): a TEXT row whose n frames are its glyph cells, each
     RGB565A8, or with cover=True its coverage alone (OS v1.2.12). `sizes` forges each
-    glyph's byte count."""
+    glyph's byte count. `keep` (OS v1.2.17): the charset indices it carries, every other
+    frame empty (0x0, 0 B)."""
     f0 = len(spr)
     for g in range(n):
-        if sizes:
+        if keep is not None and g not in keep:
+            spr.append({"off": len(art), "size": 0, "w": 0, "h": 0, "diffx": 0, "diffy": 0})
+        elif sizes:
             off = len(art)
             art.extend(b"\x22" * sizes[g])
             spr.append({"off": off, "size": sizes[g], "w": w, "h": h, "diffx": 0, "diffy": 0})
@@ -908,6 +911,12 @@ REFUSALS = (
     ("a glyph neither coverage nor colour", lambda e, s, p, a: add_font(
         e, p, a, 0, sizes=[8 * 14 * 2] * len(ts.FONT_CHARSET)),
      "of coverage or", None),
+    # OS v1.2.17: a sparse font carries at least one glyph, all in one form
+    ("a font that carries no glyph", lambda e, s, p, a: add_font(e, p, a, 0, cover=True, keep=set()),
+     "carries no glyph", None),
+    ("a sparse font of two forms", lambda e, s, p, a: add_font(
+        e, p, a, 0, keep={16, 17}, sizes=[8 * 14] * 17 + [8 * 14 * 3] * (len(ts.FONT_CHARSET) - 17)),
+     "a font's cells are one shape", None),
     ("a source the dial cannot read", _set_row(hour_row, src=ts.SOURCES.index("text")),
      "no such input", "no input of this dial"),
     ("degrees on a row", _set_row(hour_row, degrees=900), "angle at rest", "angle at rest"),
@@ -1163,6 +1172,16 @@ def rows_battery(exe, base):
     rc, out, err = run(exe, "--refuse", path)
     ck("refused" not in out and verdict is None,
        "a coverage font and its colour twin were refused: %r %r" % (out[:240], verdict))
+    # OS v1.2.17: a sparse font, a temperature's digits, the minus and the degree sign
+    # alone, every other frame empty
+    def digits(els, sc, spr, art):
+        keep = {ts.FONT_CHARSET.index(c) for c in "0123456789-\u00b0"}
+        add_font(els, spr, art, 0, cover=True, keep=keep)
+        add_label(els, spr, art, next_slot(els), str=0xFFF0)
+    path, verdict = forge(base, digits)
+    rc, out, err = run(exe, "--refuse", path)
+    ck("refused" not in out and verdict is None,
+       "a sparse font of digits was refused: %r %r" % (out[:240], verdict))
     path, verdict = forge(base, _fonted())
     ck(verdict is None, "fonts accept: the writer refused an honest table: %s" % verdict)
     rc, out, err = run(exe, "--dump3f", path)
@@ -1851,6 +1870,11 @@ def d39_mutants(exe, base, full):
 # (guard, anchor, break, REFUSALS name)
 # ---------------------------------------------------------------------------
 MUTANTS = (
+    # OS v1.2.17's sparse fonts
+    ("a font carries a glyph", "if (first < 0)\n            return reject(\"font %u carries no glyph",
+     "if (0)\n            return reject(\"font %u carries no glyph", "a font that carries no glyph"),
+    ("a sparse font's one form", "if (gs.size != form || gs.w != fe.w || gs.h != fe.h)",
+     "if (gs.w != fe.w || gs.h != fe.h)", "a sparse font of two forms"),
     ("the plate's full-panel rule",
      "if (plate.x || plate.y || plate.w != (uint16_t)scr_w || plate.h != (uint16_t)scr_h)",
      "if (0)", "a moved plate"),

@@ -584,8 +584,10 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
     }
 
     /* ---- a font's glyphs are one form: every cell coverage (w*h) or every cell
-     * RGB565A8 (w*h*3), the cell the row's own w x h. The label reads the form off the
-     * first glyph and addresses the rest by it. ---- */
+     * RGB565A8 (w*h*3), the cell the row's own w x h. A glyph the font does not carry
+     * is an empty frame (0x0, 0 B; OS v1.2.17), so a font keeps only the glyphs its
+     * labels draw (a temperature's digits, say); it carries at least one. The label
+     * reads the form off the first glyph it carries and addresses the rest by rank. ---- */
     for (int k = 0; k < CLK_FONT_SLOTS; k++) {
         if (at_font[k] < 0) continue;
         orb_bundle_elem_t fe;
@@ -593,23 +595,30 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
         if ((uint32_t)fe.frame0 + fe.n_frames > ns)
             return reject("font %u's glyphs run past the catalogue", (unsigned)k);
         const uint32_t px = (uint32_t)fe.w * fe.h;
-        orb_bundle_spr_t g0;
-        orb_bundle_spr_at(sec, fe.frame0, &g0);
-        if (g0.size != px && g0.size != px * 3u)
-            return reject("font %u's glyph 0 is %lu B: a %ux%u cell is %lu B of coverage or "
-                          "%lu B with colour", (unsigned)k, (unsigned long)g0.size,
-                          (unsigned)fe.w, (unsigned)fe.h, (unsigned long)px,
-                          (unsigned long)(px * 3u));
-        for (uint32_t gi = 1; gi < fe.n_frames; gi++) {
+        int32_t first = -1;
+        uint32_t form = 0;
+        for (uint32_t gi = 0; gi < fe.n_frames; gi++) {
             orb_bundle_spr_t gs;
             orb_bundle_spr_at(sec, fe.frame0 + gi, &gs);
-            if (gs.size != g0.size || gs.w != fe.w || gs.h != fe.h)
-                return reject("font %u's glyph %lu is %lux%lu in %lu B where glyph 0 is "
+            if (!gs.size && !gs.w && !gs.h) continue;            /* a glyph it lacks */
+            if (first < 0) {
+                if (gs.size != px && gs.size != px * 3u)
+                    return reject("font %u's glyph %lu is %lu B: a %ux%u cell is %lu B of "
+                                  "coverage or %lu B with colour", (unsigned)k,
+                                  (unsigned long)gi, (unsigned long)gs.size, (unsigned)fe.w,
+                                  (unsigned)fe.h, (unsigned long)px, (unsigned long)(px * 3u));
+                first = (int32_t)gi;
+                form = gs.size;
+            }
+            if (gs.size != form || gs.w != fe.w || gs.h != fe.h)
+                return reject("font %u's glyph %lu is %lux%lu in %lu B where glyph %ld is "
                               "%ux%u in %lu B: a font's cells are one shape", (unsigned)k,
                               (unsigned long)gi, (unsigned long)gs.w, (unsigned long)gs.h,
-                              (unsigned long)gs.size, (unsigned)fe.w, (unsigned)fe.h,
-                              (unsigned long)g0.size);
+                              (unsigned long)gs.size, (long)first, (unsigned)fe.w,
+                              (unsigned)fe.h, (unsigned long)form);
         }
+        if (first < 0)
+            return reject("font %u carries no glyph: every frame is empty", (unsigned)k);
     }
 
     /* ---- theme-text-plan §2.2: every font a label names is one this table carries ---- */
@@ -984,6 +993,8 @@ const char *orb_clock3_parse(const orb_bundle_sec_t *sec, orb_clock3_io_t *io)
                     return reject("element %u is a sound sized %ux%u: a sound places "
                                   "nothing, and its length is its plane's",
                                   (unsigned)e.n, (unsigned)e.w, (unsigned)e.h);
+            } else if (e.cls == CLS_TEXT && !sp.size && !sp.w && !sp.h) {
+                /* a glyph the font does not carry (OS v1.2.17): its cells are checked above */
             } else if (f == 0u || !delta_stream) {
                 if (sp.w != e.w || sp.h != e.h)
                     return reject("element %u is %ux%u while its plane is %lux%lu: the "

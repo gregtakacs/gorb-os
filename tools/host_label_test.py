@@ -162,12 +162,48 @@ int main(void)
     CK(alp(0, 1) == 128 && col(0, 1) == 0x07E0, "coverage: half cover is half alpha in the font's colour (%d)", alp(0, 1));
     (void)ca;
 
+    /* ---- sparse fonts (OS v1.2.17): the cells a font carries, in charset order ---- */
+    {
+        static uint8_t sp[3 * CW * CH];
+        cover_font(&c, CLK_FONT_GLYPHS, 0x07E0, 0x07E0);   /* the shapes to copy from */
+        const int keep[3] = { '1' - 0x20, '7' - 0x20, '?' - 0x20 };
+        for (int k = 0; k < 3; k++) memcpy(sp + k * CW * CH, cover + keep[k] * CW * CH, CW * CH);
+        orb_font_t s1;
+        memset(&s1, 0, sizeof s1);
+        s1.glyphs = sp; s1.w = CW; s1.h = CH; s1.n = CLK_FONT_GLYPHS; s1.space = 3; s1.track = 1;
+        s1.bpp = 1; s1.c0 = s1.c1 = 0x07E0; s1.sparse = true;
+        memset(s1.rank, ORB_GLYPH_NONE, sizeof s1.rank);
+        for (int k = 0; k < 2; k++) s1.rank[keep[k]] = (uint8_t)k;
+        orb_font_measure(&s1);
+        CK(s1.adv[keep[0]] == keep[0] % 5 + 2 && s1.adv[keep[1]] == keep[1] % 5 + 2,
+           "sparse: the advances of the glyphs it carries (%d %d)", s1.adv[keep[0]], s1.adv[keep[1]]);
+        CK(orb_font_glyph(&s1, 'A' - 0x20) == -1 && orb_font_glyph(&s1, keep[1]) == keep[1],
+           "sparse: a glyph it lacks, with no '?', draws nothing");
+        memset(panel, 0, sizeof panel);
+        orb_label_compose(plane, PW, PH, panel, &s1, "17A7", 0, 0, 0);
+        const int x7 = s1.adv[keep[0]], xa = x7 + s1.adv[keep[1]], x72 = xa + s1.space;
+        CK(alp(keep[0] % 5, 1) == 255 && alp(keep[0] % 5 + 1, 1) == 0, "sparse: '1' from its own cell");
+        CK(alp(x7 + keep[1] % 5, 1) == 255 && alp(x7 + keep[1] % 5 + 1, 1) == 0, "sparse: '7' from the next cell");
+        int gap = 0;
+        for (int x = xa; x < x72; x++) gap += alp(x, 1) != 0;
+        CK(gap == 0 && alp(x72, 1) == 255, "sparse: the lacking 'A' advances a space, blank, and '7' follows");
+        s1.rank[keep[2]] = 2;                      /* now it carries '?' */
+        s1.measured = false;
+        orb_font_measure(&s1);
+        CK(orb_font_glyph(&s1, 'A' - 0x20) == keep[2], "sparse: a glyph it lacks draws as '?' when it carries one");
+        orb_label_compose(plane, PW, PH, panel, &s1, "A", 0, 0, 0);
+        CK(alp(keep[2] % 5, 1) == 255 && alp(keep[2] % 5 + 1, 1) == 0, "sparse: the '?' from its third cell");
+    }
+
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }
 """
 
 MUTANTS = (
+    ("a sparse font's rank", "const uint32_t cell = f->sparse ? f->rank[gi] : (uint32_t)gi;", "const uint32_t cell = (uint32_t)gi;"),
+    ("a lacking glyph's '?'", "return carries(f, '?' - 0x20) ? '?' - 0x20 : -1;", "return -1;"),
+    ("a lacking glyph's space", "if (gi < 0) { x += f->space; continue; }", "if (gi < 0) { continue; }"),
     ("the advance's +1", "right + 1 + f->track", "right + f->track"),
     ("the space's advance", "right < 0 ? f->space :", "right < 0 ? 0 :"),
     ("the up arrow", "case 0x2191: gi = CLK_FONT_ASCII + 0;", "case 0x2191: gi = CLK_FONT_ASCII + 1;"),

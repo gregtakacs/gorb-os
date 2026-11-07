@@ -268,17 +268,19 @@ $("#snd-go").onclick = async () => {
 // units (OS v1.2.10) answers 404, and the card says so rather than offering a save.
 const unitsURL = () => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/units";
 const UNIT_TEXT = { c: "\u00b0C", f: "\u00b0F", kmh: "km/h", mph: "mph", kn: "knots", km: "km", mi: "miles", nm: "nautical miles",
-  "24h": "24-hour", "12h": "12-hour" };
+  "24h": "24-hour", "12h": "12-hour", hpa: "hPa", inhg: "inHg", mmhg: "mmHg" };
 
-// The time format joined the units in OS v1.2.16: an older board names none, and the
-// choice is hidden rather than offered to a board that would not keep it.
+// The time format joined the units in OS v1.2.16 and pressure in v1.2.17: an older board
+// names none, and the choice is hidden rather than offered to a board that would not keep it.
 function unitsShow(d) {
-  $("#un-cur").textContent = [d.temp, d.speed, d.dist, d.time].filter(Boolean).map((k) => UNIT_TEXT[k] || k).join(" \u00b7 ");
+  $("#un-cur").textContent = [d.temp, d.speed, d.dist, d.time, d.pressure].filter(Boolean).map((k) => UNIT_TEXT[k] || k).join(" \u00b7 ");
   $("#un-temp").value = d.temp;
   $("#un-speed").value = d.speed;
   $("#un-dist").value = d.dist;
   $("#un-time-l").hidden = !d.time;
   if (d.time) $("#un-time").value = d.time;
+  $("#un-pressure-l").hidden = !d.pressure;
+  if (d.pressure) $("#un-pressure").value = d.pressure;
   $("#un-go").disabled = false;
 }
 
@@ -303,6 +305,7 @@ $("#un-go").onclick = async () => {
   if (!current.ip) { msg.textContent = "no address to write to"; return; }
   const body = { temp: $("#un-temp").value, speed: $("#un-speed").value, dist: $("#un-dist").value };
   if (!$("#un-time-l").hidden) body.time = $("#un-time").value;
+  if (!$("#un-pressure-l").hidden) body.pressure = $("#un-pressure").value;
   btn.disabled = true;
   msg.textContent = "writing to the board\u2026";
   try {

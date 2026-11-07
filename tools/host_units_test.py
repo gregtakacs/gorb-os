@@ -27,8 +27,13 @@ MUTATIONS = [
     ('{ "24h", "12h", NULL }', '{ "12h", "24h", NULL }'),
     ("if (v < 0 || v >= orb_units_count(kind)) return NULL;\n    return KEYS", "if (v < 0) return NULL;\n    return KEYS"),
     ('{ "kmh", "mph", "kn" }', '{ "kmh", "kn", "mph" }'),
+    ("u->pressure < ORB_UNIT_PRESSURE_N", "u->pressure < 9"),
+    ('else if (cc_in(cc, "RUBY")) out->pressure = ORB_UNIT_MMHG;', ';'),
     ("if (!strcmp(KEYS[kind][v], key)) return v;", "if (!strncmp(KEYS[kind][v], key, 1)) return v;"),
     ("case ORB_UNITS_SPEED: return ORB_UNIT_SPEED_N;", "case ORB_UNITS_SPEED: return ORB_UNIT_TEMP_N;"),
+    ('if (cc_in(cc, "USPRGUVIASMPGBLRMM"))', 'if (cc_in(cc, "USPRGUVIASMPLRMM"))'),
+    ("if (p[0] == cc[0] && p[1] == cc[1]) return true;", "if (p[0] == cc[0]) return true;"),
+    ("memset(out, 0, sizeof *out);                                /* metric, 24-hour */", "out->dist = 0;"),
 ]
 
 
@@ -37,6 +42,8 @@ def lifted(mutation=None):
     start = src.index("static const char *const KEYS")
     end = src.index("void orb_units_init(void)")
     body = src[start:end]
+    # the country rule (the first home picks the units, owner 2026-11-07): pure, beside them
+    body += src[src.index("/* ISO 3166 codes"):src.index("void orb_units_get(")]
     if mutation:
         old, new = mutation
         if old not in body:
@@ -54,7 +61,7 @@ int main(void)
 {
     CK(orb_units_count(ORB_UNITS_TEMP) == 2 && orb_units_count(ORB_UNITS_SPEED) == 3 &&
        orb_units_count(ORB_UNITS_DIST) == 3 && orb_units_count(ORB_UNITS_TIME) == 2 &&
-       orb_units_count(4) == 0 && orb_units_count(-1) == 0,
+       orb_units_count(ORB_UNITS_PRESSURE) == 3 && orb_units_count(5) == 0 && orb_units_count(-1) == 0,
        "two temperatures, three speeds, three distances, two time formats, nothing else");
     int rt = 1;
     for (int k = 0; k < ORB_UNITS_KINDS; k++)
@@ -77,17 +84,47 @@ int main(void)
        orb_units_parse(ORB_UNITS_DIST, "kmh") == -1 && orb_units_parse(ORB_UNITS_TEMP, NULL) == -1 &&
        orb_units_parse(ORB_UNITS_TEMP, "") == -1,
        "a key that is not exactly one of the list is refused");
-    orb_units_t u = { ORB_UNIT_F, ORB_UNIT_KN, ORB_UNIT_NM, ORB_UNIT_12H };
+    orb_units_t u = { ORB_UNIT_F, ORB_UNIT_KN, ORB_UNIT_NM, ORB_UNIT_12H, ORB_UNIT_MMHG };
     CK(orb_units_valid(&u), "the last choice of each is valid");
     CK(!strcmp(orb_units_key(ORB_UNITS_TIME, ORB_UNIT_12H), "12h") &&
        orb_units_parse(ORB_UNITS_TIME, "24h") == ORB_UNIT_24H &&
        !strcmp(orb_units_label(ORB_UNITS_TIME, ORB_UNIT_12H), "12-hour"),
        "the time format (OS v1.2.16): keys 24h and 12h, labels 24-hour and 12-hour");
+    CK(!strcmp(orb_units_key(ORB_UNITS_PRESSURE, ORB_UNIT_INHG), "inhg") &&
+       orb_units_parse(ORB_UNITS_PRESSURE, "mmhg") == ORB_UNIT_MMHG &&
+       !strcmp(orb_units_label(ORB_UNITS_PRESSURE, ORB_UNIT_HPA), "hPa"),
+       "pressure (OS v1.2.17): keys hpa, inhg and mmhg, labels hPa, inHg and mmHg");
     u.temp = 2;  int bad = !orb_units_valid(&u); u.temp = 0;
     u.speed = 3; bad &= !orb_units_valid(&u); u.speed = 0;
     u.dist = 3;  bad &= !orb_units_valid(&u); u.dist = 0;
     u.time = 2;  bad &= !orb_units_valid(&u); u.time = 0;
+    u.pressure = 3; bad &= !orb_units_valid(&u); u.pressure = 0;
     CK(bad && !orb_units_valid(NULL), "one past any quantity's choices is refused, and NULL is");
+    orb_units_t k;
+    memset(&k, 0x5A, sizeof k);
+    orb_units_for_country("US", &k);
+    CK(k.temp == ORB_UNIT_F && k.speed == ORB_UNIT_MPH && k.dist == ORB_UNIT_MI && k.time == ORB_UNIT_12H &&
+       k.pressure == ORB_UNIT_INHG, "a home in the US: F, mph, miles, 12-hour, inHg");
+    memset(&k, 0x5A, sizeof k);
+    orb_units_for_country("GB", &k);
+    CK(k.temp == ORB_UNIT_C && k.speed == ORB_UNIT_MPH && k.dist == ORB_UNIT_MI && k.time == ORB_UNIT_24H,
+       "in the UK: C, mph, miles, 24-hour");
+    memset(&k, 0x5A, sizeof k);
+    orb_units_for_country("HU", &k);
+    CK(k.temp == ORB_UNIT_C && k.speed == ORB_UNIT_KMH && k.dist == ORB_UNIT_KM && k.time == ORB_UNIT_24H &&
+       k.pressure == ORB_UNIT_HPA, "in Hungary: metric, hPa and 24-hour");
+    memset(&k, 0x5A, sizeof k);
+    orb_units_for_country("RU", &k);
+    CK(k.pressure == ORB_UNIT_MMHG && k.temp == ORB_UNIT_C, "in Russia: mmHg");
+    memset(&k, 0x5A, sizeof k);
+    orb_units_for_country("CA", &k);
+    CK(k.temp == ORB_UNIT_C && k.speed == ORB_UNIT_KMH && k.time == ORB_UNIT_12H, "in Canada: metric, 12-hour");
+    memset(&k, 0x5A, sizeof k);
+    orb_units_for_country("SU", &k);   /* S then U: a pair, not two halves of the list's neighbours */
+    CK(k.temp == ORB_UNIT_C && k.speed == ORB_UNIT_KMH, "a code is matched as a pair, never across two");
+    memset(&k, 0x5A, sizeof k);
+    orb_units_for_country("", &k);
+    CK(orb_units_valid(&k) && k.temp == 0 && k.time == 0, "no country: metric and 24-hour");
     return fails ? 1 : 0;
 }
 """

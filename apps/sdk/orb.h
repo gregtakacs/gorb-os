@@ -185,6 +185,10 @@ typedef struct {
 _Static_assert(sizeof(orb_units_t) == 8, "the OS writes this record verbatim");
 ORB_IMPORT("units")      int32_t orb_units(orb_units_t *out);
 ORB_IMPORT("units_gen")  uint32_t orb_units_gen(void);
+/* Pressure's unit (OS v1.2.17): its own import, the record above having no byte to spare.
+ * It moves orb_units_gen like the others. */
+enum { ORB_UNIT_HPA = 0, ORB_UNIT_INHG = 1, ORB_UNIT_MMHG = 2 };   /* pressure */
+ORB_IMPORT("units_pressure") int32_t orb_units_pressure(void);
 
 static inline double orb_temp_from_c(double c, const orb_units_t *u)
 {
@@ -201,6 +205,22 @@ static inline double orb_dist_from_km(double km, const orb_units_t *u)
 static inline const char *orb_speed_label(const orb_units_t *u)
 {
     return u->speed == ORB_UNIT_MPH ? "mph" : u->speed == ORB_UNIT_KN ? "kn" : "km/h";
+}
+/* A pressure in hPa as the owner reads it, into `out` (at least 12 bytes): "1016 hPa",
+ * "30.01 inHg" or "762 mmHg". Whole numbers only (no float formatting in a guest). */
+static inline void orb_pressure_text(char *out, double hpa, int unit)
+{
+    char d[12];
+    int i = 0, n = 0;
+    long v = unit == ORB_UNIT_INHG ? (long)(hpa * 2.9529983 + 0.5)          /* hundredths */
+           : unit == ORB_UNIT_MMHG ? (long)(hpa * 0.75006158 + 0.5) : (long)(hpa + 0.5);
+    if (v < 0) v = 0;
+    do { d[n++] = (char)('0' + v % 10); v /= 10; } while (v && n < 10);
+    if (unit == ORB_UNIT_INHG) while (n < 3) d[n++] = '0';
+    while (n) { out[i++] = d[--n]; if (unit == ORB_UNIT_INHG && n == 2) out[i++] = '.'; }
+    const char *l = unit == ORB_UNIT_INHG ? " inHg" : unit == ORB_UNIT_MMHG ? " mmHg" : " hPa";
+    while (*l) out[i++] = *l++;
+    out[i] = 0;
 }
 static inline const char *orb_dist_label(const orb_units_t *u)
 {

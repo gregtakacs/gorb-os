@@ -563,6 +563,11 @@ const orb_app_t *orb_app_find_slug(const char *slug)
     return NULL;
 }
 
+bool orb_app_failed_live(const orb_app_t *a)
+{
+    return a && (a->failed || (orb_svc_faulted(a) && !a->is_home));
+}
+
 const orb_app_t *orb_app_home(void)
 {
     for (size_t i = 0; i < ORB_APP_N; i++)

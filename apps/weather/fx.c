@@ -130,6 +130,8 @@ void fx_set(fx_t *fx, int kind, int rows)
     fx->kind = kind;
     fx->n = n;
     for (int i = 0; i < n; i++) spawn(fx, &fx->p[i], true);
+    fx->bolt.t = -1.0f;
+    fx->bolt.wait = kind == WX_THUNDER ? rndf(fx, 1.0f, 3.0f) : 0;
 }
 
 void fx_step(fx_t *fx, float dt)
@@ -147,6 +149,25 @@ void fx_step(fx_t *fx, float dt)
                           (p->vx > 0 && p->x > FX_R && !inside(p->x, p->y, 30));
         if (gone) spawn(fx, p, false);
     }
+    if (fx->kind != WX_THUNDER) return;
+    fx_bolt_t *b = &fx->bolt;
+    if (b->t >= 0) {                                     /* a strike runs its 0.3 s */
+        b->t += dt;
+        if (b->t > 0.3f) { b->t = -1.0f; b->wait = rndf(fx, 2.5f, 7.0f); }
+    } else if ((b->wait -= dt) <= 0) {                   /* the next, over the icon's sky */
+        b->t = 0;
+        b->x = FX_R + rndf(fx, -90, 90);
+        b->y = rndf(fx, 110, 170);
+    }
+}
+
+int fx_bolt(const fx_t *fx, float *x, float *y)
+{
+    const float t = fx->bolt.t;
+    *x = fx->bolt.x;
+    *y = fx->bolt.y;
+    if (fx->kind != WX_THUNDER || t < 0) return 0;
+    return t < 0.07f ? 255 : t < 0.12f ? 0 : t < 0.22f ? 190 : t < 0.3f ? 90 : 0;
 }
 
 int fx_opa(const fx_t *fx, int i)

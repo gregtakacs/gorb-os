@@ -27,11 +27,21 @@ typedef struct {
     uint8_t opa;             /* at rest, before a twinkle */
 } fx_part_t;
 
+/* Thunder's lightning (owner, 2026-11-07: "I don't see any difference between that and
+ * regular rain"): one bolt sprite, struck every few seconds somewhere over the icon, in a
+ * strike's rhythm: bright, dark, bright again, fading. */
+typedef struct {
+    float x, y;              /* the bolt's centre, glass px */
+    float t;                 /* seconds into the strike; < 0 between strikes */
+    float wait;              /* seconds to the next strike */
+} fx_bolt_t;
+
 typedef struct {
     int       kind;          /* the wx.h WX_* the pool is set for; -1 none */
     int       n;             /* particles live */
     uint32_t  seed;
     fx_part_t p[FX_MAX];
+    fx_bolt_t bolt;
 } fx_t;
 
 /** Set the pool for a condition (wx.h WX_*), with `rows` rows to draw on (the theme's
@@ -46,6 +56,10 @@ int fx_opa(const fx_t *fx, int i);
 
 /** Particle i's sideways sway now, px (snow's; 0 for every other kind). */
 float fx_sway(const fx_t *fx, int i);
+
+/** The bolt's opacity now (0 between strikes, and for every kind but thunder); its
+ *  centre in *x, *y. */
+int fx_bolt(const fx_t *fx, float *x, float *y);
 
 /** True while the pool has anything to draw, so the caller keeps the frames coming. */
 static inline bool fx_live(const fx_t *fx) { return fx->n > 0; }

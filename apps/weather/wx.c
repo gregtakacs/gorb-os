@@ -44,7 +44,7 @@ size_t wx_url(char *buf, size_t cap, const wx_where_t *w, int n)
     const int k = snprintf(buf, cap,
         "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
         "&current=temperature_2m,apparent_temperature,weather_code,is_day,wind_speed_10m"
-        "&hourly=temperature_2m,weather_code,precipitation_probability"
+        "&hourly=temperature_2m,weather_code,precipitation_probability,pressure_msl"
         "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset,"
         "precipitation_sum,wind_speed_10m_max,uv_index_max"
         "&forecast_hours=24&forecast_days=6&timezone=auto&timeformat=unixtime", la, lo);
@@ -91,6 +91,7 @@ static void take_element(wx_reader_t *r, wx_place_t *p, double v)
         else if (!strcmp(a, "temperature_2m")) h->t = (float)v;
         else if (!strcmp(a, "weather_code")) h->code = isnan(v) ? 3 : (int16_t)v;
         else if (!strcmp(a, "precipitation_probability")) h->pop = isnan(v) ? -1 : (int8_t)v;
+        else if (!strcmp(a, "pressure_msl")) h->pressure = isnan(v) ? 0 : (float)v;
         else return;
         if (i + 1 > p->n_hours) p->n_hours = (uint8_t)(i + 1);
     } else if (!strcmp(r->sect, "daily")) {
@@ -213,6 +214,19 @@ int64_t wx_next_sun(const wx_place_t *p, int64_t t, bool *rise)
         if (d->sunset > t) { *rise = false; return d->sunset; }
     }
     return 0;
+}
+
+float wx_pressure(const wx_place_t *p, int h, int *trend)
+{
+    *trend = 0;
+    if (h < 0 || h >= p->n_hours || p->hour[h].pressure <= 0) return 0;
+    const float now = p->hour[h].pressure;
+    const int l = h + 3 < p->n_hours ? h + 3 : p->n_hours - 1;
+    if (l > h && p->hour[l].pressure > 0) {
+        const float d = p->hour[l].pressure - now;
+        *trend = d >= 1.0f ? 1 : d <= -1.0f ? -1 : 0;
+    }
+    return now;
 }
 
 int wx_local_wday(const wx_place_t *p, int64_t t)

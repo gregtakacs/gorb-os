@@ -11,7 +11,9 @@
 
 #include "clk_types.h"   /* CLK_FONT_ASCII, CLK_FONT_GLYPHS */
 
-/* One font: glyph cells w x h, consecutive from `glyphs` in the charset's order. A cell
+/* One font: glyph cells w x h, consecutive from `glyphs` in the charset's order (a
+ * sparse font, OS v1.2.17: the cells it carries, in that order, glyph g the rank[g]th;
+ * a glyph it lacks draws as '?' when it carries that, else as a space). A cell
  * is its coverage alone (`bpp` 1, A8), coloured as it draws: `c0` at the cell's top
  * running to `c1` at its foot (equal for a flat colour), both RGB565, from the font row's
  * vmin and vmax. A theme from before OS v1.2.12 carries RGB565A8 cells (`bpp` 3, colour
@@ -23,9 +25,17 @@ typedef struct {
     uint8_t  bpp;                    /* 1 (A8, coloured live) or 3 (RGB565A8) */
     uint16_t c0, c1;                 /* bpp 1: the top and foot colours, RGB565 */
     uint8_t  space, track;
+    bool     sparse;                 /* rank[] addresses the cells; false: glyph g is cell g */
+    uint8_t  rank[CLK_FONT_GLYPHS];  /* sparse: glyph g's cell, ORB_GLYPH_NONE where it has none */
     bool     measured;
     uint8_t  adv[CLK_FONT_GLYPHS];   /* each glyph's advance, after orb_font_measure */
 } orb_font_t;
+
+#define ORB_GLYPH_NONE 0xFFu
+
+/** The glyph a font draws for charset index gi: gi itself, '?' when it lacks gi, or -1
+ *  when it lacks both (the label then advances a space). */
+int orb_font_glyph(const orb_font_t *f, int gi);
 
 /** Each glyph's advance: one past its ink's right edge, plus the tracking; a glyph with
  *  no ink advances the space. */

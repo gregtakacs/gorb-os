@@ -362,11 +362,11 @@ def bake():
         w('    "' + "".join(n.replace('"', "") + "\\0" for n in names[i:i + 6]) + '"')
     w("    ;")
     w("")
-    w("/* lat, lon in 0.01 deg; name offset; zone index -- largest population first */")
+    w("/* lat, lon in 0.01 deg; name offset; zone index; ISO country -- largest population first */")
     w("const orb_geo_city_t ORB_GEO_CITIES[] = {")
     zix = {z: i for i, z in enumerate(zones)}
     for r, no in zip(rows, name_off):
-        w("    { %d, %d, %d, %d }," % (round(r[2] * 100), round(r[3] * 100), no, zix[r[5]]))
+        w("    { %d, %d, %d, %d, { '%s', '%s' } }," % (round(r[2] * 100), round(r[3] * 100), no, zix[r[5]], r[4][0], r[4][1]))
     w("};")
     w("const int ORB_GEO_N_CITIES = %d;" % len(rows))
     return "\n".join(L) + "\n", inexact, len(rules)

@@ -68,6 +68,7 @@
   "ui_text": "v(ii)",
   "units": "i(i)",
   "units_gen": "i()",
+  "units_pressure": "i()",
   "uptime_ms": "i()",
   "uptime_us": "I()"
  }

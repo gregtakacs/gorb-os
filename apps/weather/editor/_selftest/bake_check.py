@@ -116,6 +116,9 @@ def check(name, raw, exe):
         bad.append("the particle pool is not sixteen rows of seven at 33..48")
     elif len(set(int(aux[s]["frame0"]) for s in range(33, 49))) != 1:
         bad.append("the particles do not share one bank")
+    # thunder's bolt, one picture at 57, with the particles
+    if 57 not in aux or int(aux[57]["n_frames"]) != 1:
+        bad.append("no lightning bolt at 57")
     # §2.8: the 5 days' cursor, one picture at 49
     if 49 not in aux or int(aux[49]["n_frames"]) != 1:
         bad.append("no halo at 49")

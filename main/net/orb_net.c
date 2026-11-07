@@ -2591,7 +2591,7 @@ static esp_err_t h_status(httpd_req_t *req)
                 (unsigned)orb_svc_beat_ms(a),
                 (unsigned)orb_svc_cfg_used(a), (unsigned)orb_svc_fault_count(a),
                 orb_svc_layers_live(a), (unsigned)orb_svc_layers_refused(a),
-                a->failed ? "true" : "false", orb_svc_last_status(a),
+                orb_app_failed_live(a) ? "true" : "false", orb_svc_last_status(a),
                 orb_svc_fault_reason(a));
             if (w < 0 || (size_t)w >= APPS_JSON_BYTES - (size_t)off) break;
             off += w;
@@ -3260,11 +3260,11 @@ static esp_err_t units_reply(httpd_req_t *req)
 {
     orb_units_t u;
     orb_units_get(&u);
-    char json[112];
-    snprintf(json, sizeof json, "{\"temp\":\"%s\",\"speed\":\"%s\",\"dist\":\"%s\",\"time\":\"%s\",\"gen\":%lu}",
+    char json[136];
+    snprintf(json, sizeof json, "{\"temp\":\"%s\",\"speed\":\"%s\",\"dist\":\"%s\",\"time\":\"%s\",\"pressure\":\"%s\",\"gen\":%lu}",
              orb_units_key(ORB_UNITS_TEMP, u.temp), orb_units_key(ORB_UNITS_SPEED, u.speed),
              orb_units_key(ORB_UNITS_DIST, u.dist), orb_units_key(ORB_UNITS_TIME, u.time),
-             (unsigned long)orb_units_gen());
+             orb_units_key(ORB_UNITS_PRESSURE, u.pressure), (unsigned long)orb_units_gen());
     return httpd_resp_sendstr(req, json);
 }
 
@@ -3283,10 +3283,10 @@ static esp_err_t h_units_post(httpd_req_t *req)
     if (!body) return sound_refuse(req, "no memory");
     const int len = sound_body(req, body, NET_SOUND_BODY_MAX);
     if (len < 0) { heap_caps_free(body); return ESP_OK; }
-    static const char *const KEY[ORB_UNITS_KINDS] = { "temp", "speed", "dist", "time" };
+    static const char *const KEY[ORB_UNITS_KINDS] = { "temp", "speed", "dist", "time", "pressure" };
     orb_units_t u;
     orb_units_get(&u);
-    uint8_t *field[ORB_UNITS_KINDS] = { &u.temp, &u.speed, &u.dist, &u.time };
+    uint8_t *field[ORB_UNITS_KINDS] = { &u.temp, &u.speed, &u.dist, &u.time, &u.pressure };
     int named = 0;
     for (int k = 0; k < ORB_UNITS_KINDS; k++) {
         char v[8];
@@ -5134,6 +5134,29 @@ static esp_err_t h_debug_panic(httpd_req_t *req)
 #endif /* CONFIG_ORB_DEBUG_HTTP */
 
 #if CONFIG_ORB_DEBUG_HTTP
+/* POST /api/v1/debug/units_forget?confirm=FORGET — the bench's: the orb forgets its
+ * stored units, as a fresh one has none, so the first home's rule (orb_home_set,
+ * app-platform-plan §56) can be watched again. */
+static esp_err_t h_debug_units_forget(httpd_req_t *req)
+{
+    char confirm[8] = "";
+    httpd_resp_set_type(req, "application/json");
+    if (!q_param(req, "confirm", confirm, sizeof confirm) || strcmp(confirm, "FORGET") != 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"confirm=FORGET\"}");
+    }
+    const char *why = orb_units_forget();
+    if (why) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        char b[96];
+        snprintf(b, sizeof b, "{\"error\":\"%s\"}", why);
+        return httpd_resp_sendstr(req, b);
+    }
+    return httpd_resp_sendstr(req, "{\"state\":\"forgotten\"}");
+}
+#endif /* CONFIG_ORB_DEBUG_HTTP */
+
+#if CONFIG_ORB_DEBUG_HTTP
 /* /api/v1/log — the retained log tail, as plain text.
  *
  * This exists because of a gap D38 opened and this file was the only place left to
@@ -5966,7 +5989,7 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
             "\"compiled\":true,\"reason\":\"%s\"}",
             seen++ ? "," : "", e_slug, e_title, (int)i, caps,
             a->period_ms, a->n_settings,
-            a->failed ? "true" : "false",
+            orb_app_failed_live(a) ? "true" : "false",
             a->iface ? "true" : "false",
             (a == orb_app_current() || a->active) ? "true" : "false", e_reason);
         if (w < 0 || (size_t)w >= rowsz) {
@@ -6019,7 +6042,7 @@ static void apps_send_installed(httpd_req_t *req, char *row, size_t rowsz)
             "\"editor_crc\":%" PRIu32 ",\"version\":\"%s\",\"secrets\":%s,\"reason\":\"%s\"}",
             seen++ ? "," : "", e_slug, e_title, (int)(i - ORB_APP_BASE), caps,
             a->period_ms, a->n_settings,
-            a->failed ? "true" : "false",
+            orb_app_failed_live(a) ? "true" : "false",
             a->iface ? "true" : "false",
             (a == orb_app_current() || a->active) ? "true" : "false",
             a->geom_crc, a->code_crc, a->code_size, a->serial, a->editor_crc,
@@ -7947,7 +7970,9 @@ static esp_err_t net_start_httpd(void)
      * gated-off 37; the ceiling stays 48. The flight tracker adds the debug
      * door's GET/POST pair (/api/v1/debug/flights) and /api/v1/apps/cfg, the
      * hub's settings write: textual 49, so the ceiling moves to 56. D43 P7 adds
-     * /api/v1/sd/design, the card's design read-back: textual 50, the ceiling stays 56. */
+     * /api/v1/sd/design, the card's design read-back: textual 50, the ceiling stays 56.
+     * v1.2.17's bench door /api/v1/debug/units_forget brings the textual count to 55: one
+     * from the ceiling, so the next door raises it. */
     cfg.max_uri_handlers  = 56;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
@@ -8103,6 +8128,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/fb",         .method = HTTP_GET,  .handler = h_fb },
         { .uri = "/api/v1/log",        .method = HTTP_GET,  .handler = h_log },
         { .uri = "/api/v1/debug/panic", .method = HTTP_POST, .handler = h_debug_panic },
+        { .uri = "/api/v1/debug/units_forget", .method = HTTP_POST, .handler = h_debug_units_forget },
         { .uri = "/api/v1/debug/fx",   .method = HTTP_GET,  .handler = h_debug_fx },
         { .uri = "/api/v1/debug/dial", .method = HTTP_GET,  .handler = h_debug_dial },
 #endif

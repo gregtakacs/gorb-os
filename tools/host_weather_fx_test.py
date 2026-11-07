@@ -43,6 +43,10 @@ MUTATIONS = [
      "default:         return 3;"),
     # only the editor's parity sees these: fx.c drifting from fx.js by a hair
     ("p->opa = light ? 170 : 210;", "p->opa = light ? 171 : 210;"),
+    ("if (fx->kind != WX_THUNDER) return;", "if (fx->kind == WX_CLEAR) return;"),
+    ("return t < 0.07f ? 255 : t < 0.12f ? 0 :", "return t < 0.07f ? 255 : t < 0.12f ? 255 :"),
+    ("b->x = FX_R + rndf(fx, -90, 90);", "b->x = FX_R + rndf(fx, -190, 190);"),
+    ("b->wait = rndf(fx, 2.5f, 7.0f);", "b->wait = rndf(fx, 2.5f, 7.1f);"),
     ("return lo + (hi - lo) * (float)(rnd(fx) & 0xFFFFu) / 65535.0f;",
      "return lo + (hi - lo) * ((float)(rnd(fx) & 0xFFFFu) / 65535.0f);"),
 ]
@@ -130,6 +134,28 @@ int main(void)
        "drawn inside the glass, or just past its edge where they enter (%.0f %.0f %.0f %.0f px)",
        r.maxout, s.maxout, f.maxout, c.maxout);
     CK(r.maxjump < 36.5f, "a 300 ms stall moves rain no further than 100 ms of travel (%.1f px)", r.maxjump);
+    /* thunder strikes: a bolt every few seconds, in a strike's rhythm, over the icon's sky */
+    {
+        int strikes = 0, lit = 0, dark_mid = 0, rain_lit = 0, prev = 0, far = 0;
+        fx_t t; memset(&t, 0, sizeof t); t.kind = -1; t.seed = 99;
+        fx_set(&t, WX_THUNDER, FX_MAX);
+        for (int f = 0; f < 1200; f++) {                       /* 40 s at 30 fps */
+            fx_step(&t, 1.0f / 30.0f);
+            float bx, by; const int o = fx_bolt(&t, &bx, &by);
+            if (o && !prev && t.bolt.t < 0.05f) strikes++;
+            if (o == 255) lit++;
+            if (!o && t.bolt.t >= 0.07f && t.bolt.t < 0.12f) dark_mid++;
+            if (o && (bx < FX_R - 91 || bx > FX_R + 91 || by < 109 || by > 171)) far++;
+            prev = o;
+        }
+        fx_t r2; memset(&r2, 0, sizeof r2); r2.kind = -1; r2.seed = 99;
+        fx_set(&r2, WX_RAIN, FX_MAX);
+        for (int f = 0; f < 1200; f++) { fx_step(&r2, 1.0f / 30.0f); float bx, by; rain_lit += fx_bolt(&r2, &bx, &by) > 0; }
+        CK(strikes >= 4 && strikes <= 16, "thunder strikes every few seconds (%d in 40 s)", strikes);
+        CK(lit > 0 && dark_mid > 0, "a strike flashes, goes dark, and flashes again");
+        CK(!far, "every bolt stands over the icon's sky");
+        CK(!rain_lit, "rain never strikes");
+    }
     printf(fails ? "RESULT: %d failed\n" : "RESULT: pass\n", fails);
     return fails ? 1 : 0;
 }
@@ -155,6 +181,9 @@ int main(void)
                 memcpy(&bx, &fx.p[i].x, 4); memcpy(&by, &fx.p[i].y, 4); memcpy(&bs, &sw, 4);
                 printf("%d %d %d %08x %08x %08x %d %d\n", kind, f, i, bx, by, bs, fx_opa(&fx, i), fx.p[i].f);
             }
+            float qx, qy; const int qo = fx_bolt(&fx, &qx, &qy);
+            unsigned ux, uy; memcpy(&ux, &qx, 4); memcpy(&uy, &qy, 4);
+            if (qo) printf("B %d %d %d %08x %08x\n", kind, f, qo, ux, uy);
         }
     }
     return 0;
@@ -172,6 +201,8 @@ for (let kind = 0; kind < 10; kind++) {
     if (f) X.step(fx, f === 300 ? 0.3 : 1 / 30);
     for (let i = 0; i < fx.n; i++)
       out.push([kind, f, i, hex(fx.p[i].x), hex(fx.p[i].y), hex(X.sway(fx, i)), X.opa(fx, i), fx.p[i].f].join(' '));
+    const q = X.bolt(fx);
+    if (q.opa) out.push(['B', kind, f, q.opa, hex(q.x), hex(q.y)].join(' '));
   }
 }
 process.stdout.write(out.join('\n') + '\n');

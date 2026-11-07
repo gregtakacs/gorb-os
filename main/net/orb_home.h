@@ -42,6 +42,7 @@ typedef struct {
                                    * key when it has the zone, else the rule */
     bool        exact;            /* false: the rule only approximates it   */
     uint32_t    city_m;           /* distance to that city                  */
+    char        cc[3];            /* that city's ISO country, "" if none    */
 } orb_home_prop_t;
 
 /* Load the stored record. Call once after orb_net_start() (the zone it may

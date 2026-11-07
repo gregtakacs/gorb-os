@@ -38,6 +38,7 @@ typedef struct {
     float   t;
     int16_t code;
     int8_t  pop;                /* rain chance %, -1 unknown */
+    float   pressure;           /* hPa at sea level, 0 unknown */
 } wx_hour_t;
 
 typedef struct {
@@ -103,6 +104,10 @@ int wx_local_min(const wx_place_t *p, int64_t t);
 /* The next sunrise or sunset after `t` (Now's dawn/dusk line): its unix time, with *rise
  * true for a sunrise; 0 when the days hold none (a polar day or night, or no days yet). */
 int64_t wx_next_sun(const wx_place_t *p, int64_t t, bool *rise);
+
+/* The pressure at hour h and its trend over the three hours after it: *trend 1 rising,
+ * -1 falling (a hectopascal or more either way), 0 steady. 0 when the hour has none. */
+float wx_pressure(const wx_place_t *p, int h, int *trend);
 
 /* Frame pickers for the theme's rows (plan §2.4), shared with the editor's bake:
  *   a bar: length level 0..7 (by where t sits in [lo, hi]) x 3 + rain level 0..2;

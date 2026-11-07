@@ -2,7 +2,9 @@
 /* The orb's units: one OS setting every app reads, never an app's own
  * (weather-plan §0 ruling 3, owner 2026-11-06). Temperature, speed and
  * distance, set once for the orb; and since OS v1.2.16 the time format, 24- or
- * 12-hour (owner, 2026-11-06: a clock's format is the orb's, not an app's).
+ * 12-hour (owner, 2026-11-06: a clock's format is the orb's, not an app's); and
+ * since OS v1.2.17 pressure, hPa, inHg or mmHg (an app reads it through the
+ * `units_pressure` import: the `units` record has no byte to spare).
  *
  * Two doors write it, both through orb_units_set(): the dial's UNITS page and
  * POST /api/v1/units, which the hub's Orb tab drives. Apps read it through the
@@ -15,18 +17,21 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum { ORB_UNITS_TEMP = 0, ORB_UNITS_SPEED, ORB_UNITS_DIST, ORB_UNITS_TIME, ORB_UNITS_KINDS };
+enum { ORB_UNITS_TEMP = 0, ORB_UNITS_SPEED, ORB_UNITS_DIST, ORB_UNITS_TIME, ORB_UNITS_PRESSURE,
+       ORB_UNITS_KINDS };
 
 enum { ORB_UNIT_C = 0, ORB_UNIT_F = 1, ORB_UNIT_TEMP_N };
 enum { ORB_UNIT_KMH = 0, ORB_UNIT_MPH = 1, ORB_UNIT_KN = 2, ORB_UNIT_SPEED_N };
 enum { ORB_UNIT_KM = 0, ORB_UNIT_MI = 1, ORB_UNIT_NM = 2, ORB_UNIT_DIST_N };
 enum { ORB_UNIT_24H = 0, ORB_UNIT_12H = 1, ORB_UNIT_TIME_N };
+enum { ORB_UNIT_HPA = 0, ORB_UNIT_INHG = 1, ORB_UNIT_MMHG = 2, ORB_UNIT_PRESSURE_N };
 
 typedef struct {
     uint8_t temp;     /* ORB_UNIT_C, ORB_UNIT_F */
     uint8_t speed;    /* ORB_UNIT_KMH, ORB_UNIT_MPH, ORB_UNIT_KN */
     uint8_t dist;     /* ORB_UNIT_KM, ORB_UNIT_MI, ORB_UNIT_NM */
     uint8_t time;     /* ORB_UNIT_24H, ORB_UNIT_12H */
+    uint8_t pressure; /* ORB_UNIT_HPA, ORB_UNIT_INHG, ORB_UNIT_MMHG */
 } orb_units_t;
 
 /* Load the stored choice; metric when nothing is stored or it is unreadable.
@@ -40,6 +45,20 @@ void orb_units_get(orb_units_t *out);
 /* Starts at 1 and is bumped on every change, so a reader polls one word and
  * re-reads only when it moved (the orb_home_gen rule). */
 uint32_t orb_units_gen(void);
+
+/* True once units have been stored (read at boot or set since): the first home picks
+ * them only while this is false. */
+bool orb_units_stored(void);
+
+/* The bench's (CONFIG_ORB_DEBUG_HTTP): forget the stored units, as a fresh orb has none,
+ * so the first-home rule can be seen again. Metric until set. NULL on success. */
+const char *orb_units_forget(void);
+
+/* The units a country uses (ISO 3166 "US"): °F, mph, miles and inHg in the United
+ * States and its territories, Liberia and Myanmar's miles; the UK's mph and miles with
+ * °C; mmHg in Russia and Belarus; the 12-hour clock where it is the everyday one;
+ * metric, hPa and 24-hour elsewhere. Pure. */
+void orb_units_for_country(const char *cc, orb_units_t *out);
 
 /* Validate, persist, publish. NULL on success, else the reason; a refused
  * choice leaves the old one standing. Blocks on NVS: never on the LVGL task. */

@@ -490,10 +490,13 @@ func TestEveryFirmwareDeviceRouteIsAllowedAndFakeable(t *testing.T) {
 	// /api/v1/debug/fx and /api/v1/debug/dial are the render benches (app-platform-plan
 	// §49): tools/bench drives them from the bench host, and a page has no business
 	// re-pacing the dial or forcing its compositor modes.
+	// /api/v1/debug/units_forget makes the orb forget its stored units so the first
+	// home's rule can be seen again (app-platform-plan §56): a bench door, not a page's.
 	refused := map[string]bool{"/api/v1/ota": true, "/generate_204": true,
 		"/hotspot-detect.html": true, "/connect/test.php": true,
 		"/api/v1/debug/panic": true, "/api/v1/debug/flights": true,
-		"/api/v1/debug/fx": true, "/api/v1/debug/dial": true}
+		"/api/v1/debug/fx": true, "/api/v1/debug/dial": true,
+		"/api/v1/debug/units_forget": true}
 	checked := 0
 	for _, m := range found {
 		uri, method := m[1], strings.ToUpper(m[2])

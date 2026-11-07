@@ -15,7 +15,7 @@
   function create(seed) {
     var p = [];
     for (var i = 0; i < FX_MAX; i++) p.push({ x: 0, y: 0, vx: 0, vy: 0, ph: 0, rate: 0, f: 0, opa: 0 });
-    return { kind: -1, n: 0, seed: seed >>> 0, p: p };
+    return { kind: -1, n: 0, seed: seed >>> 0, p: p, bolt: { x: 0, y: 0, t: 0, wait: 0 } };
   }
   function rnd(fx) {
     var x = fx.seed ? fx.seed : 0x9E3779B9;
@@ -117,6 +117,8 @@
     fx.kind = kind;
     fx.n = n;
     for (var i = 0; i < n; i++) spawn(fx, fx.p[i], true);
+    fx.bolt.t = f(-1);
+    fx.bolt.wait = kind === WX.THUNDER ? rndf(fx, 1, 3) : 0;
   }
   function step(fx, dt) {
     dt = f(dt);
@@ -132,6 +134,22 @@
                  (p.vx > 0 && p.x > FX_R && !inside(p.x, p.y, 30));
       if (gone) spawn(fx, p, false);
     }
+    if (fx.kind !== WX.THUNDER) return;
+    var b = fx.bolt;
+    if (b.t >= 0) {
+      b.t = f(b.t + dt);
+      if (b.t > f(0.3)) { b.t = f(-1); b.wait = rndf(fx, 2.5, 7); }
+    } else {
+      b.wait = f(b.wait - dt);
+      if (b.wait <= 0) { b.t = 0; b.x = f(FX_R + rndf(fx, -90, 90)); b.y = rndf(fx, 110, 170); }
+    }
+  }
+  // the bolt's opacity now and its centre: {opa, x, y}
+  function bolt(fx) {
+    var t = fx.bolt.t, o = { x: fx.bolt.x, y: fx.bolt.y, opa: 0 };
+    if (fx.kind !== WX.THUNDER || t < 0) return o;
+    o.opa = t < f(0.07) ? 255 : t < f(0.12) ? 0 : t < f(0.22) ? 190 : t < f(0.3) ? 90 : 0;
+    return o;
   }
   function opa(fx, i) {
     if (i < 0 || i >= fx.n) return 0;
@@ -146,7 +164,7 @@
     if (i < 0 || i >= fx.n || fx.kind !== WX.SNOW) return 0;
     return f(10 * sinTurns(fx.p[i].ph));
   }
-  var api = { FX_MAX: FX_MAX, WX: WX, create: create, set: set, step: step, opa: opa, sway: sway };
+  var api = { FX_MAX: FX_MAX, WX: WX, create: create, set: set, step: step, opa: opa, sway: sway, bolt: bolt };
   root.WeatherFx = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

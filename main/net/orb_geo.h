@@ -20,6 +20,7 @@ typedef struct {
     int16_t  lat, lon;            /* 0.01 degree                         */
     uint16_t name;                /* offset into ORB_GEO_NAMES            */
     uint8_t  zone;                /* index into ORB_GEO_ZONES             */
+    char     cc[2];               /* ISO 3166 country, "US" (unterminated) */
 } orb_geo_city_t;
 
 typedef struct {
@@ -57,6 +58,8 @@ int orb_geo_nearest(int32_t lat_e6, int32_t lon_e6, uint32_t *dist_m);
 
 const char *orb_geo_city_name(int city);
 int         orb_geo_city_zone(int city);           /* -1 for a bad index */
+/* The city's ISO country into out ("US"); "" for a bad index. */
+void        orb_geo_city_cc(int city, char out[3]);
 const char *orb_geo_zone_iana(int zone);           /* "" for a bad index */
 const char *orb_geo_zone_posix(int zone);          /* "" for a bad index */
 bool        orb_geo_zone_exact(int zone);

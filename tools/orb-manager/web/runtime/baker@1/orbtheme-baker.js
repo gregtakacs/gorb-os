@@ -3463,12 +3463,18 @@
      * running to `foot` at its foot ('#rrggbb'; foot omitted for a flat colour), carried
      * as RGB565 in the row's vmin and vmax (theme_schema.font_colours). A font whose
      * glyphs match an earlier font's byte for byte (one face and size in two tones) names
-     * that font's frames instead of storing them again. */
+     * that font's frames instead of storing them again.
+     * OS v1.2.17: a glyph the font does not carry is null (or an empty plane) in `planes`,
+     * stored as an empty frame (0x0, 0 B), so a font keeps only the glyphs its labels draw
+     * (a temperature's digits, say); it carries at least one, all one cell. */
     var fontSets = [];
     function font(e, planes, top, foot) {
       var rec = blankElement();
       for (var f in e) rec[f] = e[f];
+      var cell = planes.filter(function (p) { return p && p.w && p.h; })[0];
+      if (!cell) throw new Error('font' + (e.slot | 0) + ' carries no glyph: every plane is empty');
       var cov = planes.map(function (p) {
+        if (!p || !p.w || !p.h) return null;
         var a = new Uint8Array(p.w * p.h);
         for (var i = 0; i < a.length; i++) a[i] = p.rgba[i * 4 + 3];
         return a;
@@ -3476,17 +3482,22 @@
       var hit = null;
       for (var k = 0; k < fontSets.length && !hit; k++) {
         var s = fontSets[k];
-        if (s.n !== cov.length || s.w !== planes[0].w || s.h !== planes[0].h) continue;
+        if (s.n !== cov.length || s.w !== cell.w || s.h !== cell.h) continue;
         var same = true;
-        for (var j = 0; j < cov.length && same; j++)
-          for (var b = 0; b < cov[j].length; b++) if (cov[j][b] !== s.cov[j][b]) { same = false; break; }
+        for (var j = 0; j < cov.length && same; j++) {
+          if (!cov[j] !== !s.cov[j]) { same = false; break; }
+          if (cov[j]) for (var b = 0; b < cov[j].length; b++) if (cov[j][b] !== s.cov[j][b]) { same = false; break; }
+        }
         if (same) hit = s;
       }
       if (hit) rec.frame0 = hit.frame0;
       else {
         rec.frame0 = bank.sprites.length;
-        for (var g = 0; g < cov.length; g++) put(cov[g], planes[g].w, planes[g].h);
-        fontSets.push({ frame0: rec.frame0, n: cov.length, w: planes[0].w, h: planes[0].h, cov: cov });
+        for (var g = 0; g < cov.length; g++) {
+          if (cov[g]) put(cov[g], planes[g].w, planes[g].h);
+          else put(new Uint8Array(0), 0, 0);
+        }
+        fontSets.push({ frame0: rec.frame0, n: cov.length, w: cell.w, h: cell.h, cov: cov });
       }
       rec.n_frames = cov.length;
       rec.vmin = rgb565(top);

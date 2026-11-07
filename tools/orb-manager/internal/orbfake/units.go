@@ -9,20 +9,20 @@ import (
 // Units mirrors orb_units_t (weather-plan §2.1): indexes into the key lists below,
 // in orb_units.c's order. The zero value is metric, the orb's default.
 type Units struct {
-	Temp, Speed, Dist, Time int
+	Temp, Speed, Dist, Time, Pressure int
 	Gen                     uint32
 }
 
 // unitKeys is orb_units.c KEYS: the route's spelling, by quantity then value. Time
-// (24h, 12h) joined in OS v1.2.16.
-var unitKeys = [4][]string{{"c", "f"}, {"kmh", "mph", "kn"}, {"km", "mi", "nm"}, {"24h", "12h"}}
+// (24h, 12h) joined in OS v1.2.16, pressure (hpa, inhg, mmhg) in v1.2.17.
+var unitKeys = [5][]string{{"c", "f"}, {"kmh", "mph", "kn"}, {"km", "mi", "nm"}, {"24h", "12h"}, {"hpa", "inhg", "mmhg"}}
 
 func (o *Orb) unitsJSON() string {
 	o.mu.Lock()
 	u := o.deviceLocked().Units
 	o.mu.Unlock()
-	return fmt.Sprintf(`{"temp":%q,"speed":%q,"dist":%q,"time":%q,"gen":%d}`,
-		unitKeys[0][u.Temp], unitKeys[1][u.Speed], unitKeys[2][u.Dist], unitKeys[3][u.Time], u.Gen+1)
+	return fmt.Sprintf(`{"temp":%q,"speed":%q,"dist":%q,"time":%q,"pressure":%q,"gen":%d}`,
+		unitKeys[0][u.Temp], unitKeys[1][u.Speed], unitKeys[2][u.Dist], unitKeys[3][u.Time], unitKeys[4][u.Pressure], u.Gen+1)
 }
 
 func (o *Orb) serveUnits(w http.ResponseWriter) {
@@ -44,9 +44,9 @@ func (o *Orb) serveUnitsPost(w http.ResponseWriter, r *http.Request) {
 	o.mu.Lock()
 	d := o.deviceLocked()
 	u := d.Units
-	dst := [4]*int{&u.Temp, &u.Speed, &u.Dist, &u.Time}
+	dst := [5]*int{&u.Temp, &u.Speed, &u.Dist, &u.Time, &u.Pressure}
 	named := 0
-	for k, name := range []string{"temp", "speed", "dist", "time"} {
+	for k, name := range []string{"temp", "speed", "dist", "time", "pressure"} {
 		raw, has := m[name]
 		if !has {
 			continue

@@ -35,6 +35,7 @@ enum {
      * views share, Hourly's temperature, the 5 days' details. A theme bakes one only where
      * the author resized its font; without it the view draws in Now's row. */
     T_FTITLE = 50, T_FBIG, T_FLINE, T_FDETAIL = 55, T_HICON = 56,
+    T_BOLT = 57,                        /* thunder's lightning (fx_bolt) */
 };
 #define N_FIX   6                       /* T_FTITLE..T_FDETAIL, by tag - T_FTITLE */
 #define N_ROWS  64                      /* the most rows a theme seats (OS v1.2.14) */
@@ -48,6 +49,7 @@ typedef struct {
     int32_t icon, sicon[N_SICON], bar[N_BAR], dayb[N_DAYB], dots, lab[N_LAB];
     int32_t clock, part[N_PART], halo; /* -1 where the theme has none (a theme before them) */
     int32_t fix[N_FIX], hicon;         /* §2.10's rows; -1 in a theme before them */
+    int32_t bolt;
     int     n_part;                    /* the pool's rows, 0..N_PART, from part[0] on */
     clk_row_t col;              /* the column labels' height (all four share it) */
     int16_t   colw[4];          /* and each one's width */
@@ -92,6 +94,7 @@ static int        s_nwhere;
 static bool       s_home_set;
 static uint32_t   s_cfg_gen, s_home_gen = 0xFFFFFFFFu, s_units_gen = 0xFFFFFFFFu;
 static orb_units_t s_units;
+static int         s_pressure_unit;     /* ORB_UNIT_HPA..MMHG, its own import (OS v1.2.17) */
 
 static wx_place_t s_pub[WX_PLACES];     /* the last whole answer */
 static int        s_npub;
@@ -157,7 +160,7 @@ static void schedule(uint32_t wait)
 
 static void start_fetch(void)
 {
-    char url[480];
+    char url[560];                 /* the origin and a path of up to 480 (orb_app_net.c) */
     if (!s_nwhere || !wx_url(url, sizeof url, s_where, s_nwhere)) { schedule(EVERY_MS); return; }
     if (orb_net_get(url, NULL) != ORB_OK) { schedule(BACKOFF0_MS); return; }
     s_busy = true;
@@ -330,6 +333,7 @@ static void hide_all(void)
     hide(R.clock);
     hide(R.halo);
     hide(R.hicon);
+    hide(R.bolt);
     for (int i = 0; i < N_FIX; i++) hide(R.fix[i]);
     for (int i = 0; i < N_PART; i++) hide(R.part[i]);
 }
@@ -392,6 +396,12 @@ static void stage_life(int kind, const wx_place_t *p)
         const fx_part_t *q = &s_fx.p[i];
         pick(R.part[i], q->f, (int)lround(q->x + fx_sway(&s_fx, i)), (int)lround(q->y), o);
     }
+    if (R.bolt >= 0) {                                       /* thunder's strike */
+        float bx, by;
+        const int bo = fx_bolt(&s_fx, &bx, &by);
+        if (bo) { orb_stage_opacity(R.bolt, bo); pose(R.bolt, (int)lround(bx), (int)lround(by)); }
+        else hide(R.bolt);
+    }
     if (R.icon >= 0) {
         orb_stage_frame(R.icon, kind);
         orb_stage_opacity(R.icon, 255);
@@ -426,6 +436,17 @@ static void stage_now(const wx_place_t *p)
     if (d) {
         const size_t n = strlen(b);
         snprintf(b + n, sizeof b - n, "\nH %d\xC2\xB0  L %d\xC2\xB0", deg(d->hi), deg(d->lo));
+    }
+    /* the pressure and where it is heading over the next three hours, on the high and
+     * low's line (owner, 2026-11-07): falling pressure is weather on its way */
+    int trend = 0;
+    const float hpa = wx_pressure(p, hour0(p), &trend);
+    if (hpa > 0) {
+        char pr[16];
+        orb_pressure_text(pr, hpa, s_pressure_unit);
+        const size_t n = strlen(b);
+        snprintf(b + n, sizeof b - n, "%s%s %s", d ? "  " : "\n", pr,
+                 trend > 0 ? "\xE2\x86\x91" : trend < 0 ? "\xE2\x86\x93" : "\xE2\x86\x92");
     }
     /* the next dawn or dusk, a line of its own under the high and low (owner, 2026-11-06),
      * so no line runs past the details' box at the Titles font's largest; a forecast gone
@@ -678,6 +699,7 @@ static void find_rows(void)
         else if (t >= T_PART0 && t < T_PART0 + N_PART) R.part[t - T_PART0] = i;
         else if (t == T_HALO) R.halo = i;
         else if (t == T_HICON) R.hicon = i;
+        else if (t == T_BOLT) R.bolt = i;
     }
     R.n_part = 0;                       /* the pool runs from part[0]: a gap ends it */
     while (R.n_part < N_PART && R.part[R.n_part] >= 0) R.n_part++;
@@ -704,6 +726,7 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
     }
     load_places();
     orb_units(&s_units);
+    s_pressure_unit = orb_units_pressure();
     s_units_gen = orb_units_gen();
     s_next_ms = 0;                       /* the first fetch rides the first pass */
     orb_logf("weather ready: %d places", s_nwhere);
@@ -740,6 +763,7 @@ ORB_EXPORT("orb_service") void orb_service(void)
     }
     if (orb_units_gen() != s_units_gen) {
         orb_units(&s_units);
+        s_pressure_unit = orb_units_pressure();
         s_units_gen = orb_units_gen();
         s_dirty = true;
     }

@@ -186,6 +186,14 @@ int orb_geo_city_zone(int city)
     return ORB_GEO_CITIES[city].zone;
 }
 
+void orb_geo_city_cc(int city, char out[3])
+{
+    out[0] = out[1] = out[2] = 0;
+    if (city < 0 || city >= ORB_GEO_N_CITIES) return;
+    out[0] = ORB_GEO_CITIES[city].cc[0];
+    out[1] = ORB_GEO_CITIES[city].cc[1];
+}
+
 const char *orb_geo_zone_iana(int zone)
 {
     if (zone < 0 || zone >= ORB_GEO_N_ZONES) return "";

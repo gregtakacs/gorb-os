@@ -11,6 +11,7 @@
 #include "nvs.h"
 
 #include "orb_net.h"
+#include "orb_units.h"
 
 static const char *TAG = "home";
 
@@ -100,6 +101,7 @@ void orb_home_propose(int32_t lat_e6, int32_t lon_e6, orb_home_prop_t *p)
     orb_geo_place(lat_e6, lon_e6, p->place, sizeof p->place);
     const int c = orb_geo_nearest(lat_e6, lon_e6, &p->city_m);
     const int z = orb_geo_city_zone(c);
+    orb_geo_city_cc(c, p->cc);
     p->zone = orb_geo_zone_iana(z);
     p->exact = orb_geo_zone_exact(z);
     /* The zone table's own key when it has the zone: the hub's list and the
@@ -164,6 +166,7 @@ const char *orb_home_set(int32_t lat_e6, int32_t lon_e6, const char *place,
     if (why) return why;
 
     lock();
+    const bool first = !s_home.set;
     s_home.set = true;
     s_home.lat_e6 = lat_e6;
     s_home.lon_e6 = lon_e6;
@@ -173,6 +176,16 @@ const char *orb_home_set(int32_t lat_e6, int32_t lon_e6, const char *place,
     s_gen++;
     unlock();
     ESP_LOGI(TAG, "home set: %s (zone %s)", b.place, b.tz[0] ? b.tz : "kept");
+    /* The orb's first home picks its units, when nobody has picked them yet (owner,
+     * 2026-11-07: units follow home at setup): the nearest city's country's. A later
+     * move keeps whatever the units are. */
+    if (first && !orb_units_stored() && p.cc[0]) {
+        orb_units_t u;
+        orb_units_for_country(p.cc, &u);
+        const char *uwhy = orb_units_set(&u);
+        if (uwhy) ESP_LOGW(TAG, "units for %s not set: %s", p.cc, uwhy);
+        else ESP_LOGI(TAG, "units follow home: %s", p.cc);
+    }
     return NULL;
 }
 

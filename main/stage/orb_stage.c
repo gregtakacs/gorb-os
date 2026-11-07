@@ -1346,10 +1346,20 @@ static void label_compose(uint16_t i)
     if (fi >= CLK_FONT_SLOTS || !s_text->present[fi]) fi = s_text->tone_font[i][0];
     orb_font_t *f = fi < CLK_FONT_SLOTS && s_text->present[fi] ? &s_text->font[fi] : NULL;
     if (f && !f->glyphs) {
-        orb_bundle_spr_t sp;
-        orb_bundle_spr_at(s_text_sec, s_text->frame0[fi], &sp);
-        f->glyphs = blob() + sp.off;
-        f->bpp = sp.size == (uint32_t)f->w * f->h ? 1u : 3u;   /* orb_clock3.c held it to one */
+        /* the cells it carries, in order (orb_clock3.c proved them one form, contiguous,
+         * at least one); an empty frame is a glyph it lacks (OS v1.2.17) */
+        uint32_t n = 0;
+        for (uint16_t gi = 0; gi < f->n && gi < CLK_FONT_GLYPHS; gi++) {
+            orb_bundle_spr_t sp;
+            orb_bundle_spr_at(s_text_sec, s_text->frame0[fi] + gi, &sp);
+            if (!sp.size) { f->rank[gi] = ORB_GLYPH_NONE; continue; }
+            if (!n) {
+                f->glyphs = blob() + sp.off;
+                f->bpp = sp.size == (uint32_t)f->w * f->h ? 1u : 3u;
+            }
+            f->rank[gi] = (uint8_t)n++;
+        }
+        f->sparse = n < f->n;
     }
     orb_label_compose(st->tplane + LABEL_PLANE_OFF, r->spr.w, r->spr.h, panel, f, buf,
                       s_text->pad[i], r->digit, r->end);
@@ -1466,10 +1476,12 @@ static void rows_update(void)
         const bool inked = car && prev != ROW_HIDDEN && a != ROW_HIDDEN &&
                            !ox[i] && !oy[i] && !st->ox && !st->oy &&
                            tourbillon_ink_mark((int)s_tourb_shown, prev, a);
-        /* A new opacity marks the row's whole box at both poses, never its ink spans:
-         * the same pixels at another weight, wherever the ink is. */
-        const bool whole = ochg;
-        if (!inked && prev != ROW_HIDDEN && (whole || !ROW_MARK_SPANS(i, prev, st->ox, st->oy))) {
+        /* Each pose is marked by its ink spans, a new opacity included: the same ink at
+         * another weight. (v1.2.14 marked the whole box on an opacity change, for the hour
+         * bars that lit only along their inner part after a page; the two causes below
+         * were found in v1.2.16, and with the box mark gone the ring pages back to the
+         * same pixels, Gold 2026-11-07.) */
+        if (!inked && prev != ROW_HIDDEN && !ROW_MARK_SPANS(i, prev, st->ox, st->oy)) {
             row_mark_box(i, prev, st->ox, st->oy, &u); have = true;
         }
         /* A new frame is taken between the two marks: the outgoing pose is marked by the
@@ -1484,7 +1496,7 @@ static void rows_update(void)
             pick_sprite(i, st->frame, &st->fspr);
         }
         if (!inked) {
-            if (a != ROW_HIDDEN && (whole || !ROW_MARK_SPANS(i, a, ox[i], oy[i]))) {
+            if (a != ROW_HIDDEN && !ROW_MARK_SPANS(i, a, ox[i], oy[i])) {
                 lv_area_t nn;
                 row_mark_box(i, a, ox[i], oy[i], &nn);
                 if (have) gfx_area_union(&u, &nn); else { u = nn; have = true; }

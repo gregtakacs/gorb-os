@@ -38,8 +38,10 @@
     // §2.10: Hourly's and the 5 days' own words, and Hourly's own icon, at fixed sizes
     // (a title and a line both views share, Hourly's temperature, the 5 days' details), baked
     // only for a font the author resized: at the defaults they draw in Now's own rows
-    fTitle: 50, fBig: 51, fLine: 52, fDetail: 55, hIcon: 56 };
-  var LIVE_ROWS = 1 + N_SICON + N_BAR + N_DAYB + 1 + 8 + 1 + N_PART + 1 + 4 + 1;
+    fTitle: 50, fBig: 51, fLine: 52, fDetail: 55, hIcon: 56,
+    bolt: 57 };   // thunder's lightning (fx.h fx_bolt)
+  var LIVE_ROWS = 1 + N_SICON + N_BAR + N_DAYB + 1 + 8 + 1 + N_PART + 1 + 4 + 1 + 1;
+  var BOLT_W = 48, BOLT_H = 96;
   /* §2.8 sizes (owner, 2026-11-06): the large icon, the big temperature, and one size per
    * font for the words, never under 18 px, and never so large Now's lines run off the glass
    * (the details' longest line at 24 px). Now's and Places' only: Hourly and the 5 days
@@ -97,6 +99,7 @@
   // so each is weighed: the quiet one is the title's and the details' (in the label face,
   // capitals where the theme writes them), and the day columns dim by opacity, not a font.
   var FONTS = [['text', 16, 'ink', COL_CELL], ['label', 14, 'quiet'], ['num', 44, 'ink']];
+  var NUM_KEEP = '0123456789-\u00b0';
   // a design's fonts (§2.10): Now's and Places' three at the author's sizes (§2.8), then
   // Hourly's and the 5 days' at the fixed defaults, so the sizes the author sets for the
   // main screen never move them. A fixed font the author's size already equals is not
@@ -504,6 +507,19 @@
     }
     return out;
   }
+  /* Thunder's bolt (fx.h fx_bolt): a forked zigzag in the pack's lightning colour, with a
+   * soft glow, BOLT_W x BOLT_H. The app strikes it over the icon every few seconds. */
+  function boltFrame(d) {
+    var I = d.icons.c, col = I.warn || I.orange || I.red || d.words.ink, c = canvas(BOLT_W, BOLT_H), x = c.getContext('2d');
+    var main = [[26, 3], [17, 34], [27, 36], [14, 66], [24, 68], [12, 93]], fork = [[27, 36], [37, 52], [33, 54], [41, 70]];
+    var line = function (pts, w) { x.beginPath(); pts.forEach(function (p, i) { if (i) x.lineTo(p[0], p[1]); else x.moveTo(p[0], p[1]); }); x.lineWidth = w; x.stroke(); };
+    x.lineCap = 'round'; x.lineJoin = 'round';
+    x.shadowColor = col; x.shadowBlur = 8; x.strokeStyle = col;
+    line(main, 3.2); line(fork, 1.8);
+    x.shadowBlur = 0; x.strokeStyle = 'rgba(255,255,255,0.85)';
+    line(main, 1.2);
+    return c;
+  }
   /* The particles, one frame each in PART_FRAMES order, PART_W x PART_H with the ink
    * centred: rain in the rain colour, snow and stars in the ink, mist and wisps soft. */
   function partFrames(d) {
@@ -613,6 +629,8 @@
     // a fixed cell: the ink centred in it, clipped if a face is taller than the cell
     if (o.cell) { var spare = o.cell - (top + bottom); top += Math.floor(spare / 2); bottom = o.cell - top; }
     var h = top + bottom, glyphs = boxes.map(function (b, i) {
+      // OS v1.2.17: a font keeps only the glyphs `o.keep` names (all when it names none)
+      if (o.keep && o.keep.indexOf(CHARSET[i]) < 0) return null;
       var c = canvas(w, h), x = c.getContext('2d');
       x.font = spec; x.textBaseline = 'alphabetic'; x.fillStyle = colour;
       if (b.r > b.l) x.fillText(drawn(CHARSET[i]), -b.l, top);
@@ -625,7 +643,10 @@
     var FS = fontSpecs(d);
     for (var i = 0; i < FS.length; i++) {
       var fr = FS[i];
-      out.push(await font(faceOf(d, fr[0]), fr[1], W[fr[2]], { caps: fr[0] === 'label' && W.caps, digits: fr[0] === 'num', track: fr[0] === 'label' ? Math.max(0, Math.min(6, W.track | 0)) : 1, cell: fr[3] || 0 }));
+      // the temperature's fonts draw a temperature and nothing else: its digits, the minus
+      // and the degree sign are all they keep (OS v1.2.17's sparse fonts)
+      out.push(await font(faceOf(d, fr[0]), fr[1], W[fr[2]], { caps: fr[0] === 'label' && W.caps, digits: fr[0] === 'num', track: fr[0] === 'label' ? Math.max(0, Math.min(6, W.track | 0)) : 1, cell: fr[3] || 0,
+        keep: fr[0] === 'num' ? NUM_KEEP : null }));
       out[i].colour = fr[2];
     }
     return out;
@@ -727,7 +748,7 @@
       var fo = F[fi];
       // the glyphs' coverage, coloured on the orb in the font's role colour
       St.font({ n: St.id(), class: TEXT, slot: fi, x: 0, y: 0, w: fo.w, h: fo.h, order: 0,
-        pivot_x: Math.min(fo.space, fo.w), pivot_y: fo.track }, fo.glyphs.map(plane), d.words[fo.colour]);
+        pivot_x: Math.min(fo.space, fo.w), pivot_y: fo.track }, fo.glyphs.map(function (g) { return g ? plane(g) : null; }), d.words[fo.colour]);
     }
     var Ls = labels(F, DL.cols, FP);
     for (var li = 0; li < Ls.length; li++) {
@@ -741,6 +762,8 @@
       rows = [];
       for (var pk = 0; pk < N_PART; pk++) rows.push(centred(PART_W, PART_H, SLOT.part + pk, 1));
       St.pool({ class: AUX, w: PART_W, h: PART_H, pivot_x: PART_W >> 1, pivot_y: PART_H >> 1, alpha: 255 }, partFrames(d).map(plane), rows, true, false);
+      St.row(Object.assign({ n: St.id(), class: AUX, w: BOLT_W, h: BOLT_H, pivot_x: BOLT_W >> 1, pivot_y: BOLT_H >> 1, alpha: 255, n_frames: 1 },
+        centred(BOLT_W, BOLT_H, SLOT.bolt, 1)), plane(boltFrame(d)), true, false);
     }
     St.preview({ plane: plane(await picture(d, 128, { plate: plateC })), x: 0, y: 0, order: 3 });
     var out = St.finish({ name: d.name || 'Weather', slug: 'weather', serial: o.serial || serialOf(d, o.design), abi: GB.GEOM_ABI6, design: o.design || null,
@@ -764,6 +787,6 @@
     preset: preset, complete: complete, packStart: packStart, bake: bake, thumb: thumb, picture: picture, serialOf: serialOf,
     plateCanvas: plateCanvas, iconSvg: iconSvg, iconFrames: iconFrames, barFrames: barFrames, dayFrames: dayFrames, dotFrames: dotFrames,
     fonts: fonts, font: font, labels: labels, rast: rast, ramp: ramp, mix: mix, image: image,
-    partFrames: partFrames, PART_FRAMES: PART_FRAMES, N_PART: N_PART,
+    partFrames: partFrames, PART_FRAMES: PART_FRAMES, N_PART: N_PART, boltFrame: boltFrame,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

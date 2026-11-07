@@ -85,7 +85,12 @@ orb_https_t *orb_https_new(const char *origin, const char *user_agent, bool keep
          * SPIRAM_MALLOC_ALWAYSINTERNAL lands in the internal pool first. The
          * sink reads in its own 1 KB pieces off the PSRAM stack. */
         .buffer_size = 512,
-        .buffer_size_tx = 512,
+        /* 768, not 512: the request line and then each header must fit what is left of
+         * this buffer, a header that does not leaving the request unsent (esp_http_client
+         * http_header_generate_string). An app's path runs to 480 (orb_app_net.c), whose
+         * line then leaves 512 - 495 for the User-Agent: weather's four-place request
+         * with pressure (OS v1.2.17) failed on that in 4 ms, sending nothing. */
+        .buffer_size_tx = 768,
     };
     h->c = esp_http_client_init(&cfg);
     if (!h->c) {

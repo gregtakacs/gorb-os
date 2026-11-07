@@ -354,6 +354,10 @@ Otherwise how would I see them?"), on OS v1.2.16. The movable layout is next.
 - **A forced condition**, for the bench: the app's `force` setting (a WX_* number, -1 the
   forecast's own), set with `POST /api/v1/apps/cfg?id=weather&key=force&value=7`. It is
   not on the hub's page.
+- **Thunder strikes** (weather v1.3.0; owner: "I don't see any difference between that and
+  regular rain"): a bolt in the pack's lightning colour, row 57, struck over the icon's sky
+  every 2.5-7 s in a strike's rhythm (bright 70 ms, dark, 190 for 100 ms, fading),
+  `fx_bolt` in fx.c and fx.js alike, held to each other by the parity trace.
 - **The editor:** Weather effects on/off (Icons step); bar width 2-14 px and bar fill (one
   colour, or a gradient from the cold colour at the inner end to the bar's own at its tip)
   on the Temperature step, the day bars taking the width too. A frame is the bar's width
@@ -485,11 +489,12 @@ main display's setting."
 
 ## 5. Open
 
-- **Units defaults** on a fresh orb: metric everywhere, or picked from home's country
-  when the hub sets it?
-- **Pressure** (hPa, inHg) as a fourth unit, if the app ever shows it.
-- **A second source** (Met Norway, or WeatherKit through a proxy the owner runs) behind a
-  `source` setting, if Open-Meteo falls short.
+- **Units defaults** on a fresh orb: *ruled 2026-11-07, they follow home's country when
+  the first home is set* (app-platform-plan §56).
+- **Pressure**: *built 2026-11-07* (OS v1.2.17, weather v1.3.0): its unit is the OS's fifth,
+  and Now shows it with its three-hour arrow on the high and low's line
+  (app-platform-plan §56).
+- **A second source**: *ruled 2026-11-07, Open-Meteo alone for now.*
 
 ## 6. As built (2026-11-06, `feat/weather`, uncommitted)
 
@@ -551,13 +556,15 @@ about 2.3 MB free beside the three shelf themes; the gate is unchanged. The plat
 (151 KB) are most of it. A **figures font** (a short charset, the digits and the degree
 sign) would save about 250 KB but is a format change: `orb_glyph_next` falls back to glyph
 31, past the end of any font shorter than 32, so the reader, `theme_schema` and the bakers
-move together. Not done.
+move together. *Done in OS v1.2.17 as sparse fonts, any subset (app-platform-plan §56); 64 KB
+on Scope, coverage fonts having already quartered it.*
 
 ### 6.4 Owed
 
 1. **Bench on Bronze (2026-11-06, over Wi-Fi at the owner's go-ahead).** v1.2.10 by OTA;
    weather v1.0.0 and flights v1.2.9 installed; Scope stored (1,588,744 B in the pool beside
-   Bold Analog and Modern). Seen on the glass by `fbgrab.py --direct`: Now (a real fetch
+   Bold Analog and Modern). *Closed 2026-11-07: the owner on the glass, "weather looks
+   great now too".* Seen on the glass by `fbgrab.py --direct`: Now (a real fetch
    for home, 1.7 KB in 2.2 s, night icon after dark), Hourly (cursor bar lit, turning
    moves it), five days, a units change redrawing °C to °F and km/h to mph with no new
    fetch, flights' range reading "25 mi", the UNITS page, and a knob edit there saving

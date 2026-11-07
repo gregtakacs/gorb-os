@@ -942,6 +942,15 @@ m3ApiRawFunction(imp_units)                  /* i32 units(orb_units_t *out) — 
     m3ApiReturn(ESP_OK);
 }
 
+m3ApiRawFunction(imp_units_pressure)         /* i32 units_pressure() — OS v1.2.17 */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    orb_units_t u;
+    orb_units_get(&u);
+    m3ApiReturn(u.pressure);
+}
+
 m3ApiRawFunction(imp_units_gen)
 {
     m3ApiReturnType(uint32_t);
@@ -1350,6 +1359,7 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "home_gen",      "i()",       imp_home_gen },
     { "orb", "units",         "i(i)",      imp_units },
     { "orb", "units_gen",     "i()",       imp_units_gen },
+    { "orb", "units_pressure", "i()",      imp_units_pressure },
     { "orb", "power_request", "i(ii)",     imp_power_request },
     { "orb", "net_request",   "i(iiiiii)", imp_net_request },
     { "orb", "net_header",    "i(iii)",    imp_net_header },

@@ -2249,6 +2249,9 @@ def _bundle_planes(b, art, refuse, plate):
                    % (e["n"], e["n_frames"], e["frame0"], len(b["sprites"])))
         for f in range(e["n_frames"]):
             p = planes[e["frame0"] + f]
+            # a glyph a font does not carry (OS v1.2.17) is an empty frame
+            if e["class"] == ts.CLASS_TEXT and (p["w"], p["h"], p["size"]) == (0, 0, 0):
+                continue
             if (p["w"], p["h"]) != (e["w"], e["h"]):
                 refuse("element %d is %dx%d while its plane is %dx%d: the table and "
                        "the catalogue describe different layers"

@@ -42,7 +42,9 @@ def place(off, t_now, code, day, hours, days):
         "hourly": {"time": [T0 + 3600 * i for i in range(hours)],
                    "temperature_2m": [10 + i % 9 for i in range(hours)],
                    "weather_code": [61 if i == 3 else 2 for i in range(hours)],
-                   "precipitation_probability": [None if i == 5 else 5 * i for i in range(hours)]},
+                   "precipitation_probability": [None if i == 5 else 5 * i for i in range(hours)],
+                   "pressure_msl": [None if i == 7 else 1015.4 - (2.0 if i >= 10 else 0) + (0.2 * i if i < 4 else 0)
+                                    for i in range(hours)]},
         "daily_units": {"time": "unixtime"},
         "daily": {"time": [T0 - 12 * 3600 - off + 86400 * i for i in range(days)],
                   "weather_code": [95, 3, 0, 71, 45][:days],
@@ -99,7 +101,7 @@ int main(void)
     char url[600];
     const size_t n = wx_url(url, sizeof url, w, 4);
     const char *path = strstr(url, ".com") ? strstr(url, ".com") + 4 : url;
-    CK(n > 0 && strlen(path) < 450, "four places fit the OS's 480 B path");
+    CK(n > 0 && strlen(path) < 460, "four places fit the OS's 480 B path");
     { const wx_where_t far[4] = { { "A", -89.99, -179.99 }, { "B", -89.99, -179.99 },
                                   { "C", -89.99, -179.99 }, { "D", -89.99, -179.99 } };
       char u2[600];
@@ -109,7 +111,7 @@ int main(void)
     CK(strstr(url, "latitude=51.47,38.72,39.74,35.68&") && strstr(url, "longitude=-0.45,-9.14,-104.99,139.65&"),
        "the places go as two comma lists, two decimals each");
     CK(strstr(url, "current=temperature_2m,apparent_temperature,weather_code,is_day,wind_speed_10m") &&
-       strstr(url, "hourly=temperature_2m,weather_code,precipitation_probability") &&
+       strstr(url, "hourly=temperature_2m,weather_code,precipitation_probability,pressure_msl") &&
        strstr(url, "precipitation_probability_max,sunrise,sunset,precipitation_sum,wind_speed_10m_max,uv_index_max") &&
        strstr(url, "forecast_hours=24&forecast_days=6&timezone=auto&timeformat=unixtime"),
        "the request names every field the screens read");
@@ -171,6 +173,15 @@ int main(void)
       CK(wx_next_sun(&P[0], T0 + 86400 * 9, &rise) == 0, "past the last day, none");
       CK(wx_local_min(&P[0], T0 + 7 * 60 + 59) == 7, "the local minute"); }
     read_body(MANY_BODY, 4, &r);
+    { int tr = 9;
+      read_body(ONE_BODY, 1, &r);
+      CK(fabsf(wx_pressure(&P[0], 0, &tr) - 1015.4f) < 1e-3 && tr == 0, "the pressure now, steady over three hours");
+      CK(wx_pressure(&P[0], 1, &tr) > 0 && tr == 0, "a rise under a hectopascal is steady");
+      CK(wx_pressure(&P[0], 8, &tr) > 0 && tr == -1, "a fall of two is falling");
+      CK(wx_pressure(&P[0], 7, &tr) == 0 && tr == 0, "an hour with none answers none");
+      CK(wx_pressure(&P[0], 23, &tr) > 0 && tr == 0, "the last hour has no three after it: steady");
+      CK(wx_pressure(&P[0], 99, &tr) == 0, "past the hours, none");
+      read_body(MANY_BODY, 4, &r); }
     CK(wx_local_hour(&P[0], T0) == 12 && wx_local_hour(&P[3], T0) == 21 && wx_local_hour(&P[2], T0) == 5,
        "the local hour is the place's own");
     CK(wx_local_wday(&P[0], T0) == 5 && wx_local_wday(&P[3], T0 + 3 * 3600) == 6 &&
@@ -206,6 +217,8 @@ MUTATIONS = [
     ('return t >= d->sunrise && t < d->sunset;', 'return t >= d->sunrise;'),
     ('if (d->sunrise > t) { *rise = true; return d->sunrise; }', ';'),
     ('d->wind = isnan(v) ? -1 : (float)v;', 'd->wind = (float)v;'),
+    ('*trend = d >= 1.0f ? 1 : d <= -1.0f ? -1 : 0;', '*trend = d > 0 ? 1 : d < 0 ? -1 : 0;'),
+    ('else if (!strcmp(a, "pressure_msl")) h->pressure = isnan(v) ? 0 : (float)v;', 'else if (0) ;'),
     ('return (int)fmod64(days + 4, 7);', 'return (int)fmod64(days + 3, 7);'),
     ('h->pop = isnan(v) ? -1 : (int8_t)v;', 'h->pop = isnan(v) ? 0 : (int8_t)v;'),
     ('return WX_DAY_POS * i - i * (i - 1) / 2 + (j - i);', 'return WX_DAY_POS * i + (j - i);'),

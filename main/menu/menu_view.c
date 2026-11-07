@@ -393,12 +393,14 @@ static void job_units(void *arg)
     if (kind == ORB_UNITS_TEMP) u.temp = (uint8_t)v;
     else if (kind == ORB_UNITS_SPEED) u.speed = (uint8_t)v;
     else if (kind == ORB_UNITS_TIME) u.time = (uint8_t)v;
+    else if (kind == ORB_UNITS_PRESSURE) u.pressure = (uint8_t)v;
     else u.dist = (uint8_t)v;
     const char *why = orb_units_set(&u);
     const char *l = orb_units_label(kind, v);
     if (why) snprintf(out.status, sizeof(out.status), "units: %s", why);
     else snprintf(out.status, sizeof(out.status), "%s: %s", kind == ORB_UNITS_TEMP ? "temperature" :
-                  kind == ORB_UNITS_SPEED ? "speed" : kind == ORB_UNITS_TIME ? "time" : "distance",
+                  kind == ORB_UNITS_SPEED ? "speed" : kind == ORB_UNITS_TIME ? "time" :
+                  kind == ORB_UNITS_PRESSURE ? "pressure" : "distance",
                   l ? l : "?");
     worker_publish(&out);
 }
@@ -743,13 +745,13 @@ static void label_caps(int row, char *out, size_t outsz, bool *sel_hi)
 }
 
 /* The units page: one row per quantity, each knob-edited through its choices. */
-static const char *const UNIT_ROW[ORB_UNITS_KINDS] = { "temperature", "speed", "distance", "time" };
+static const char *const UNIT_ROW[ORB_UNITS_KINDS] = { "temperature", "speed", "distance", "time", "pressure" };
 static int unit_now(int kind)
 {
     orb_units_t u;
     orb_units_get(&u);
     return kind == ORB_UNITS_TEMP ? u.temp : kind == ORB_UNITS_SPEED ? u.speed :
-           kind == ORB_UNITS_TIME ? u.time : u.dist;
+           kind == ORB_UNITS_TIME ? u.time : kind == ORB_UNITS_PRESSURE ? u.pressure : u.dist;
 }
 static void label_units(int row, char *out, size_t outsz, bool *sel_hi)
 {

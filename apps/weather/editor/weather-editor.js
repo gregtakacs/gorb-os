@@ -60,7 +60,7 @@
       // Hourly's own, at the default size whatever Now's is (§2.10)
       return { big: big, hour: B.sizeOf(d, 'icon') === B.ICON_PX ? big : await B.iconFrames(d, B.ICON_PX), small: await B.iconFrames(d, B.SICON_PX) };
     }, say);
-    var temps = usePart(JSON.stringify(d.temps) + JSON.stringify(d.words), async function () { return { bars: B.barFrames(d), dots: B.dotFrames(d), parts: B.partFrames(d) }; }, say);
+    var temps = usePart(JSON.stringify(d.temps) + JSON.stringify(d.words) + JSON.stringify(d.icons.c), async function () { return { bars: B.barFrames(d), dots: B.dotFrames(d), parts: B.partFrames(d), bolt: B.boltFrame(d) }; }, say);
     // the words at their sizes, and what is measured in them: the days' columns, the day
     // bar they leave room for, and its halo
     var words = usePart(JSON.stringify(d.words) + JSON.stringify(d.temps) + JSON.stringify(d.size || {}), async function () {
@@ -86,6 +86,8 @@
       x.globalAlpha = o / 255;
       x.drawImage(c, Math.round(q.x + FX.sway(L.fx, i)) - (c.width >> 1), Math.round(q.y) - (c.height >> 1));
     }
+    var bo = FX.bolt(L.fx);                                       // thunder's strike
+    if (bo.opa && P.temps.bolt) { x.globalAlpha = bo.opa / 255; x.drawImage(P.temps.bolt, Math.round(bo.x) - (P.temps.bolt.width >> 1), Math.round(bo.y) - (P.temps.bolt.height >> 1)); }
     x.globalAlpha = 1;
   }
   /* The places Now's elements were hit at, for the Layout step's picking: [{k, x0, y0, x1, y1}]. */
@@ -119,7 +121,7 @@
       text(wx[2], A.line.y, W.text, tx, W.ink, 'center', A.line.x, null, 'line');
       var lh = Math.round(lb * 1.3);
       text(caps('Feels ' + p.feels + '°  Wind ' + p.wind + ' km/h'), A.detail.y - lh, W.label, lb, W.quiet, 'center', A.detail.x, null, 'detail');
-      text(caps('H ' + p.hi + '°  L ' + p.lo + '°'), A.detail.y, W.label, lb, W.quiet, 'center', A.detail.x, null, 'detail');
+      text(caps('H ' + p.hi + '°  L ' + p.lo + '°  1016 hPa \u2193'), A.detail.y, W.label, lb, W.quiet, 'center', A.detail.x, null, 'detail');   /* and the pressure's way */
       text(caps('Sunset 17:03'), A.detail.y + lh, W.label, lb, W.quiet, 'center', A.detail.x, null, 'detail');   /* the next dawn or dusk */
       // the clock: Home's is the orb's, a place's its own local time (Lisbon's, here)
       var lis = function () { var n = new Date(); return String(n.getUTCHours()).padStart(2, '0') + ':' + String(n.getUTCMinutes()).padStart(2, '0'); };

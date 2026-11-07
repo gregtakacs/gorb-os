@@ -257,6 +257,13 @@ bool orb_theme_glass_held(void);
 uint32_t orb_theme_bundle_ms(void);
 uint32_t orb_theme_bundle_bytes(void);
 
+/* The theme job's stage, for the hub's step list (/api/v1/sd job_stage, owner
+ * 2026-11-06: copied to the card, moved to flash, reorganised to fit, each a row of its
+ * own). "" when no store is running, else "checking", "parking", "making room",
+ * "storing" or "rebooting"; done/total are the stage's bytes (0/0 for a stage with no
+ * byte count). Word-sized reads of words one task writes: no lock. */
+const char *orb_theme_job_stage(uint32_t *done, uint32_t *total);
+
 /** Put a FORMAT 3 app bundle in the single slot: streaming ingest (§22.3, P6.3).
  *  Each section's bank is checksummed as its bytes cross from the card, the region
  *  is verified before the first erase, and the installed bytes are read back and

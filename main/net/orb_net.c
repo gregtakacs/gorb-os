@@ -5195,7 +5195,7 @@ static void json_put(char *dst, size_t dsz, const char *src)
  * cap, the glass picker and the service family; h_sd's json[] scales with it. */
 #define THEME_LIST_MAX ORB_THEME_LIST_MAX
 #define SD_JSON_ROW_B  672
-#define SD_JSON_BASE_B 1024
+#define SD_JSON_BASE_B 1152   /* + the store stage (job_stage/done/total), ~70 B */
 
 static esp_err_t send_paced(httpd_req_t *req, const void *buf, size_t len,
                             size_t *left_out, bool *budgeted_out);
@@ -5247,12 +5247,15 @@ static esp_err_t h_sd(httpd_req_t *req)
      * shows beside the source. */
     char active_name[ORB_THEME_NAME_MAX * 2 + 3];
     json_put(active_name, sizeof active_name, orb_theme_active_name());
+    uint32_t job_done = 0, job_total = 0;
+    const char *job_st = orb_theme_job_stage(&job_done, &job_total);
     int off = snprintf(json, sizeof json,
         "{\"mounted\":%s,\"card\":\"%.40s\",\"uploading\":%s,\"total_mb\":%u,\"free_mb\":%u,"
         "\"source\":\"%s\",\"active\":\"%s\",\"card_count\":%d,"
         "\"try_id\":\"%s\",\"try_why\":\"%s\","
         "\"staged_id\":\"%s\",\"staged_why\":\"%s\",\"refill_ms\":%u,\"refill_bytes\":%u,"
         "\"bundle_ms\":%u,\"bundle_bytes\":%u,\"job_busy\":%s,"
+        "\"job_stage\":\"%s\",\"job_done\":%u,\"job_total\":%u,"
         "\"themes\":[",
         orb_sd_mounted() ? "true" : "false",
         orb_sd_mounted() ? orb_sd_card_id() : "",
@@ -5266,7 +5269,10 @@ static esp_err_t h_sd(httpd_req_t *req)
         /* The press the owner just made is a queued job, not a done one: without this
          * witness a store in flight and a store that never started look the same from
          * the page, which is the silent button §24.5(2) bans. ~15 B. */
-        orb_jobs_busy() ? "true" : "false");
+        orb_jobs_busy() ? "true" : "false",
+        /* Which stage of the store is running (the hub's step rows): a fixed word, so
+         * it needs no escaping. */
+        job_st, (unsigned)job_done, (unsigned)job_total);
 
     bool too_big = false;
     for (int i = 0; n > 0 && i < n; i++) {

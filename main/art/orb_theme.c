@@ -1428,9 +1428,29 @@ bool orb_theme_glass_held(void) { return s_glass_held || s_slot_torn; }
 /* One chunk boundary of the copy (§6.3): the glass says what the row and the
  * ledger say, and the overlay's own 10 Hz throttle keeps the panel from
  * rate-limiting the flash write. */
+/* The store's stage as the hub reads it (orb_theme_job_stage). The stage pointer goes
+ * last so a reader never pairs a new stage with the last stage's counts for long. */
+static const char *volatile s_job_stage = "";
+static volatile uint32_t    s_job_done, s_job_total;
+static void job_stage(const char *stage, uint32_t done, uint32_t total)
+{
+    s_job_done = done;
+    s_job_total = total;
+    s_job_stage = stage;
+}
+
+const char *orb_theme_job_stage(uint32_t *done, uint32_t *total)
+{
+    const char *st = s_job_stage;
+    if (done) *done = s_job_done;
+    if (total) *total = s_job_total;
+    return st;
+}
+
 static void store_progress(void *arg, uint32_t done, uint32_t total)
 {
     (void)arg;
+    job_stage("storing", done, total);
     orb_boot_overlay("storing", done, total, 0);
 }
 
@@ -1453,6 +1473,7 @@ static void pool_progress(const char *stage, uint32_t done, uint32_t total)
 static void room_progress(void *ctx, uint32_t done, uint32_t total)
 {
     (void)ctx;
+    job_stage("making room", done, total);
     pool_progress("making room", done, total);
 }
 
@@ -1742,6 +1763,7 @@ esp_err_t orb_theme_install_bundle(const char *id, char *why, size_t whysz)
      * itself will not land, refuse while the bank is still resident. */
     s_slot_torn = false;
     const orb_app_t *was = input_router_current();
+    job_stage("parking", 0, 0);
     if (!store_park_dial(was, h.art_size, "storing")) {
         orb_boot_overlay_release();        /* the overlay's band goes back with the glass */
         orb_sched_set_running(true);       /* the tick stands; the dial never stopped */
@@ -2363,10 +2385,14 @@ static void bundle_job(void *arg)
 {
     const install_req_t *r = arg;
     char why[72] = "";        /* as wide as the try witness: §5.3's page-count sentence must land whole */
+    job_stage("checking", 0, 0);
     if (orb_theme_install_bundle(r->id, why, sizeof why) != ESP_OK) {
         try_note(r->id, why[0] ? why : "the install failed");
+        /* A store torn past the unmap reboots on its own; either way no stage runs now. */
+        job_stage("", 0, 0);
         return;
     }
+    job_stage("rebooting", 0, 0);
     try_note(NULL, NULL);
     /* The store parked the glass on the menu — the erase needs the map down — and
      * the park's own switch wrote `menu` into the resume record. Overwrite it with

@@ -1,7 +1,7 @@
 # Radar: rain over a map, for home and the three places
 
-Status: **designed 2026-11-07 (owner, §0); R0 measured, R1, R1b and R2 built and run on
-Bronze 2026-11-07, uncommitted (§6).** Four pieces of work:
+Status: **designed 2026-11-07 (owner, §0); R0 measured, R1, R1b and R2 built and committed,
+R3 built and run on Bronze 2026-11-07, uncommitted (§6).** Four pieces of work:
 
 - the places move out of the weather app into the OS, beside home (§2.1);
 - **the OS serves a map for home and each place** to any app that holds `location`, drawn
@@ -975,3 +975,39 @@ follow rules that keep everyone moving:
   forecast for it at once (`WX ok 200 places=3`). **The Open-Meteo credit** lived in the
   place rows' help, which are gone: it moves to gorb-os's ABOUT page with the map credits
   (owed with the ABOUT page's change).
+
+### 6.2 R3, the OS surface (2026-11-07, Bronze, OS v1.2.20, uncommitted)
+
+- **Kept bodies.** `main/app/orb_app_blob.c`: 24 slots and 768 KB an app, freed 15 min off
+  the glass (`orb_blob_note_glass`, on the service pass) and at release.
+  `orb_app_net_take()` hands the landed body over without a copy. Imports `net_keep`
+  (cap net; refused past the budget with the body left in place), `blob_len`, `blob_free`.
+- **`orb_cv_png8`.** `main/gfx/orb_png8.c` reads colour type 3 at 1, 2, 4 and 8 bits over
+  the ROM's `tinfl` (`esp_rom/include/miniz.h`), a 32 KB window and two rows: 46,836 B of
+  scratch, shared by every draw on the LVGL task. `orb_ui_cv_png8` blends the window
+  through the app's 256 ARGB words, optionally doubled. **On Bronze: 33–35 ms** for a real
+  512x512 LibreWXR frame (Seattle's rain). `tools/host_png8_test.py` builds the reader
+  against a zlib stand-in for `tinfl` that also checks every write lands where the ROM's
+  window needs it; every filter type and depth, a 512x512 frame split into 997-byte
+  IDATs, a 1-byte IDAT, and the refusals; 11 of 11 mutants.
+- **Maps.** `main/map/orb_map.c`: two views an app, rendered on a task of their own
+  (priority 2, under the LVGL task), the card read in 32 KB pieces standing aside while
+  the card is written, the CRC checked and a changed file read again, three level files an
+  app cached in PSRAM, a busy mutex so a release never frees memory a render is using.
+  **The view as built** (`orb_map_view_t`, 44 B) carries `role_on` and `mark_on` masks
+  where §2.4 said "detail": the app turns its theme's preset into them. Files are named
+  `<place>-<lat_e4>_<lon_e4>-z<z>.orbmap` under `/System/Maps` (`orb_map_file_name`;
+  `tools/orbmap.py build … --place N` names them the same way). Imports `map_open`,
+  `map_ready`, `map_draw`, `map_mark`, `map_project`, `map_close`, `maps_gen` (cap
+  location; 83 in `binds.json`), and `POST /api/v1/places/maps` moves the gen and drops
+  every cached file (allowlisted, faked).
+- **On Bronze, home near Fort Worth, maps from `orbmap.py`:** a view opens to READY in
+  360–890 ms with its card read, and re-renders from the cache in ~190 ms (rotated 30°,
+  dashed); home projects to (233, 233) at every range, and DFW airport 11.3 km east lands
+  6 px out at Wide and 88 px at 30 km, as the scales say. The device's raster for
+  r = 120 km equals the host renderer's for the same file and scale: 0 of 217,156
+  pixels differ. An unset place answers ABSENT.
+- **Bench doors** (debug builds only, exempt from the hub's allowlist): `map_view`,
+  `png_bench`, beside R0's `map_bench`.
+- **Owed to R5:** the time of `orb_map_draw` (a 466x466 palette blend) and of
+  `orb_cv_png8` onto a real canvas, measured in the app at 4 fps.

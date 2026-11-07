@@ -51,7 +51,11 @@ import (
 // that is too HIGH refuses a board it could have served; too LOW wastes a minute and blames
 // the board. TestInstallFloorNamesTheReleaseThatReadsFormat3 is the crosscheck that keeps the
 // floor, the reader and the stamp from drifting apart again.
-const installMinFW = "v1.1.28"
+//
+// v1.2.19 moved it again with FORMAT 4 (app-platform-plan §57: the settings schema region).
+// An older board refuses every shelf container by number, so the floor names the release
+// that reads them, and the hub says "update the firmware" before it pushes a byte.
+const installMinFW = "v1.2.19"
 
 // faceMinFW is the oldest firmware carrying the glass door (POST /api/v1/apps/face).
 // The seeding arm parks the clock on the glass through that door, because an enabled,

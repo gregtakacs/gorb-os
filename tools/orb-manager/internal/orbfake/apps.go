@@ -82,6 +82,9 @@ type CardApp struct {
 	// it (§43). The installed row names the ids; GET /api/v1/apps/cfg answers set, the
 	// header, the host and the last four characters, and never the value.
 	Secrets map[string]string
+	// Schema is the §57 settings schema the container carried, verbatim JSON: what GET
+	// /api/v1/apps/settings answers beside the values. Empty answers "[]".
+	Schema string
 
 	Installed bool
 	Failed    bool
@@ -675,6 +678,64 @@ func (o *Orb) serveAppCfgGet(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, 200, fmt.Sprintf(`{"slug":%q,"key":%q,"value":%q}`, jsonSafe(slug), jsonSafe(key), a.Cfg[key]))
 	}
+}
+
+// serveAppSettings mirrors h_app_settings (app-platform-plan §57): the app's schema as
+// its container carried it, and every value now. A secret answers whether it is set and
+// its last four characters, never itself; a value nobody wrote answers its default.
+func (o *Orb) serveAppSettings(w http.ResponseWriter, r *http.Request) {
+	slug := appID(r)
+	if slug == "" {
+		writeJSON(w, 400, `{"error":"id is required"}`)
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	a := o.apps[slug]
+	if a == nil || !a.Installed {
+		writeJSON(w, 404, `{"error":"no such app"}`)
+		return
+	}
+	schema := a.Schema
+	if schema == "" {
+		schema = "[]"
+	}
+	var entries []map[string]any
+	_ = json.Unmarshal([]byte(schema), &entries)
+	values := map[string]any{}
+	for _, e := range entries {
+		id, _ := e["id"].(string)
+		switch e["type"] {
+		case "secret":
+			v, hdr := a.Cfg[id], a.Cfg[id+"\x00hdr"]
+			tail := ""
+			if len(v) >= 4 {
+				tail = v[len(v)-4:]
+			}
+			if v == "" {
+				hdr = ""
+			} else if hdr == "" {
+				hdr = "x-api-key"
+			}
+			values[id] = map[string]any{"set": v != "", "tail": tail, "host": a.Secrets[id], "header": hdr}
+		case "text", "place":
+			if v, ok := a.Cfg[id]; ok {
+				values[id] = v
+			} else {
+				values[id], _ = e["default"].(string)
+			}
+		default:
+			if v, ok := a.Cfg[id]; ok {
+				n, _ := strconv.Atoi(v)
+				values[id] = n
+			} else {
+				values[id] = e["default"]
+			}
+		}
+	}
+	vb, _ := json.Marshal(values)
+	writeJSON(w, 200, fmt.Sprintf(`{"slug":%q,"title":%q,"dist":"km","settings":%s,"values":%s}`,
+		jsonSafe(slug), jsonSafe(a.Title), schema, vb))
 }
 
 // serveAppUninstall mirrors h_app_uninstall. Uninstalling the row on the glass is the

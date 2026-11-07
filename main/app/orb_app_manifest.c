@@ -204,6 +204,9 @@ const char *orbapp_parse_header(const uint32_t *w, orbapp_hdr_t *h,
     h->editor_off     = w[ORBAPP_W_EDITOR_OFF];
     h->editor_size    = w[ORBAPP_W_EDITOR_SIZE];
     h->editor_crc     = w[ORBAPP_W_EDITOR_CRC];
+    h->schema_off     = w[ORBAPP_W_SCHEMA_OFF];
+    h->schema_size    = w[ORBAPP_W_SCHEMA_SIZE];
+    h->schema_crc     = w[ORBAPP_W_SCHEMA_CRC];
     h->asset_off      = w[ORBAPP_W_ASSET_OFF];
     h->n_assets       = w[ORBAPP_W_N_ASSETS];
     /* The two header words P5b did not take stay reserved, and a writer that put
@@ -472,6 +475,17 @@ const char *orbapp_check_header(const orbapp_hdr_t *h, uint32_t expect_app_id,
         return refuse(reason, cap, "period_ms %u is below the %u ms the OS can"
                       " commit (D16)", h->period_ms,
                       (unsigned)ORBAPP_BEAT_MIN_MS);
+    /* §57: the schema names every setting, so a table with settings carries one and
+     * a table without carries none; the region is bounded like every other. */
+    if (h->schema_size > ORBAPP_SCHEMA_MAX)
+        return refuse(reason, cap, "the settings schema is %u B, past the %u B a "
+                      "container may carry", h->schema_size, (unsigned)ORBAPP_SCHEMA_MAX);
+    if ((h->schema_size != 0) != (h->n_settings != 0))
+        return refuse(reason, cap, "%u settings with a %u B schema: each names the "
+                      "other — re-package it", h->n_settings, h->schema_size);
+    if (!h->schema_size && h->schema_crc)
+        return refuse(reason, cap,
+                      "an empty settings schema carries a checksum — re-package it");
     return NULL;
 }
 
@@ -493,10 +507,13 @@ const char *orbapp_check_file_layout(const orbapp_hdr_t *h, char *reason,
                         (uint64_t)h->n_settings * ORBAPP_SETTINGS_WORDS * 4)
         return refuse(reason, cap,
                       "the asset table does not follow the settings table");
-    if (h->geom_off != (uint64_t)h->asset_off +
-                       (uint64_t)h->n_assets * ORBAPP_ASSET_WORDS * 4)
+    if (h->schema_off != (uint64_t)h->asset_off +
+                         (uint64_t)h->n_assets * ORBAPP_ASSET_WORDS * 4)
         return refuse(reason, cap,
-                      "the geometry blob does not follow the asset table");
+                      "the settings schema does not follow the asset table");
+    if (h->geom_off != (uint64_t)h->schema_off + (((uint64_t)h->schema_size + 3) & ~(uint64_t)3))
+        return refuse(reason, cap,
+                      "the geometry blob does not follow the settings schema");
     const uint64_t art = ((uint64_t)h->geom_off + h->geom_size + 4095) &
                          ~(uint64_t)4095;      /* SECTOR, orbapp.py:499 */
     if ((uint64_t)h->art_off != art)

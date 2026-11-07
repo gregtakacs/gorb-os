@@ -253,6 +253,13 @@ esp_err_t display_dma_return(void);
 /** True while the ring is lent and the flush path drops frames on purpose —
  *  the explanation a stall probe must take before it believes the silence. */
 bool    display_dma_lent(void);
+/** The ring's return when nothing else would make it: the flush path re-funds the
+ *  ring and re-sends the frames it dropped, but a still page (the menu after a card
+ *  walk) never flushes, so the panel kept the picture from before the read until a
+ *  knob turn dirtied something. Once the loan is closed and the network has had its
+ *  window, this re-funds and, if frames were dropped, invalidates the screen so the
+ *  next pass sends the whole page. LVGL task only, once per pass. */
+void    display_dma_service(void);
 
 void display_bench_reset(void);
 

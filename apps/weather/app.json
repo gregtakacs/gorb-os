@@ -4,13 +4,13 @@
   "caps": ["net", "location"],
   "period_ms": 1000,
   "settings": [
-    {"id": "place1", "type": "string"},
-    {"id": "place2", "type": "string"},
-    {"id": "place3", "type": "string"},
-    {"id": "clock", "type": "toggle", "default": 1},
-    {"id": "force", "type": "int", "min": -1, "max": 9, "default": -1}
+    {"id": "place1", "type": "place", "label": "Place 1", "help": "Home is the orb's own, set on the Orb tab. Up to three more places sit beside it: on the weather screen, a press steps from Home through them. The forecast comes from Open-Meteo, one request for every place."},
+    {"id": "place2", "type": "place", "label": "Place 2"},
+    {"id": "place3", "type": "place", "label": "Place 3"},
+    {"id": "clock", "type": "toggle", "label": "Clock", "choices": ["hidden", "shown"], "default": 1, "help": "A digital clock under the weather now, in the orb's time format; a place's own time on its page."},
+    {"id": "force", "type": "int", "label": "Forced weather", "min": -1, "max": 9, "default": -1, "show": "none"}
   ],
   "shelf": true,
-  "os_min": "v1.2.17",
+  "os_min": "v1.2.19",
   "editor": "editor"
 }

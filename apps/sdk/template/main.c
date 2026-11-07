@@ -2,7 +2,9 @@
  * @SLUG@ — a gorb-os app. The knob is the app's own dial (apps/README.md, "The knob"):
  * turning moves along it from the first click, 0 is home, a fast spin stops on home and
  * 20 s without a turn returns there. A press saves the value as the "saved" setting, so
- * it survives a reboot and the hub can edit it. A hold leaves the app; the OS does that.
+ * it survives a reboot; app.json declares it, so the OS also shows it on the dial's menu
+ * page and in Orb Manager, and the app re-reads it when orb_cfg_gen moves. A hold leaves
+ * the app; the OS does that.
  * The clock line shows the beat working.
  *
  * Everything the OS offers is in orb.h; build with `orbsdk.py pack .`.
@@ -13,6 +15,7 @@
 
 static int32_t s_title, s_value_lbl, s_clock, s_hint;
 static int32_t s_saved;
+static uint32_t s_cfg_gen;               /* the settings generation s_saved was read at */
 static orb_dial_t s_dial = { .lo = -50, .hi = 50, .idle_ms = ORB_DIAL_IDLE_MS };
 
 static int64_t up_ms(void) { return orb_uptime_us() / 1000; }
@@ -52,6 +55,7 @@ static void show_clock(void)
 ORB_EXPORT("orb_init") int32_t orb_init(void)
 {
     orb_knob_dial();                     /* every turn and press is ours while we show */
+    s_cfg_gen = orb_cfg_gen();
     orb_cfg_get("saved", &s_saved);
     s_title = label(ORB_FONT_16, 0x909090, "@TITLE@");
     orb_ui_align(s_title, ORB_AL_TOP_MID, 0, 90);
@@ -81,7 +85,13 @@ ORB_EXPORT("orb_show") void orb_show(void)
 ORB_EXPORT("orb_tick") void orb_tick(uint32_t now_ms)
 {
     (void)now_ms;
-    if (orb_dial_idle(&s_dial, up_ms())) show_value();
+    bool redraw = orb_dial_idle(&s_dial, up_ms());
+    if (orb_cfg_gen() != s_cfg_gen) {    /* changed from the menu or the hub */
+        s_cfg_gen = orb_cfg_gen();
+        orb_cfg_get("saved", &s_saved);
+        redraw = true;
+    }
+    if (redraw) show_value();
     show_clock();
 }
 

@@ -1008,56 +1008,5 @@ ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
     redraw();
 }
 
-/* ---- options page (the menu renders, these rows answer) ---------------------------- */
-
-enum { OPT_RANGE, OPT_SOURCE, OPT_BG, OPT_BOOST, OPT_GROUND, OPT_HOME, OPT_N };
-
-ORB_EXPORT("orb_opt_count") int32_t orb_opt_count(void) { return OPT_N; }
-
-ORB_EXPORT("orb_opt_label") void orb_opt_label(int32_t idx)
-{
-    static const char *const L[OPT_N] = { "Range", "Source", "Background", "Boost",
-                                          "Ground traffic", "Home" };
-    orb_reply(idx >= 0 && idx < OPT_N ? L[idx] : "");
-}
-
-ORB_EXPORT("orb_opt_value") void orb_opt_value(int32_t idx)
-{
-    char v[40];
-    switch (idx) {
-    case OPT_RANGE:  range_text(v, sizeof v); break;
-    case OPT_SOURCE: snprintf(v, sizeof v, "%s", SRC_TXT[s_set.source & 1]); break;
-    case OPT_BG:     snprintf(v, sizeof v, "%s", BG_TXT[s_set.bg]); break;
-    case OPT_BOOST:  snprintf(v, sizeof v, "%s", s_set.boost ? "on" : "off"); break;
-    case OPT_GROUND: snprintf(v, sizeof v, "%s", s_set.ground ? "hidden" : "shown"); break;
-    case OPT_HOME:
-        snprintf(v, sizeof v, "%s", !s_set.home_ok && !s_set.place[0] ? "not set (hub: Orb tab)"
-                                                                      : s_set.place);
-        break;
-    default: v[0] = 0; break;
-    }
-    orb_reply(v);
-}
-
-/* Opening the page re-reads the settings, so a value written from outside is what
- * the rows show. */
-ORB_EXPORT("orb_opt_arm") void orb_opt_arm(int32_t armed)
-{
-    if (armed) load_settings();
-}
-
-/* A press cycles the row's value and commits it: the page is a deliberate act, unlike
- * a turn on the radar. */
-ORB_EXPORT("orb_opt_sel") void orb_opt_sel(int32_t idx)
-{
-    switch (idx) {
-    case OPT_RANGE:  s_set.range = (s_set.range + 1) % N_RANGES; orb_cfg_set("range", s_set.range); break;
-    case OPT_SOURCE: s_set.source = !s_set.source; orb_cfg_set("source", s_set.source); break;
-    case OPT_BG:     s_set.bg = (s_set.bg + 1) % N_BG; orb_cfg_set("bg", s_set.bg); break;
-    case OPT_BOOST:  s_set.boost = !s_set.boost; orb_cfg_set("boost", s_set.boost); break;
-    case OPT_GROUND: s_set.ground = !s_set.ground; orb_cfg_set("ground", s_set.ground); break;
-    default: return;
-    }
-    s_cfg_gen = orb_cfg_gen();           /* our own write: no reload needed */
-    F.kick = true;
-}
+/* The options page is the OS's, drawn from app.json's settings (app-platform-plan §57):
+ * a row's write moves orb_cfg_gen, and orb_service re-reads the settings. */

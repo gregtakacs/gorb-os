@@ -147,6 +147,9 @@ typedef struct {
      *  every row. */
     const void *(*opt_preview)(orb_app_t *app, int idx, uint16_t *w,
                                uint16_t *h, uint32_t *stamp);
+    /** §58: a row that is a sentence, not an action ("More on Orb Manager"): non-NULL
+     *  and the shell shows it in a box over the list instead of calling opt_sel. */
+    const char  *(*opt_note)(orb_app_t *app, int idx);
     /** docs/knob-edit-plan.md: a row the knob edits. opt_edit answers true and the
      *  range for such a row (a press then enters the shell's edit mode instead of
      *  opt_sel); opt_fmt renders a value the edit has not saved yet, as opt_value
@@ -225,6 +228,12 @@ struct orb_app {
     uint32_t                  period_ms;
     const orb_setting_desc_t *settings;
     int                       n_settings;
+    /* §57: the settings schema region (the JSON the hub reads, verbatim) and its
+     * parse (the rows the dial's options page draws). NULL for a compiled entry,
+     * which draws its own page; a card row's registry entry owns both. */
+    const char               *schema;
+    uint32_t                  schema_len;
+    const struct orb_setui   *ui;
 
     /** D37: the container's identity tuple — the five words that say WHICH BUILD this
      *  row's bytes are, as opposed to which app it is. The install ladder and the boot
@@ -509,6 +518,8 @@ void orb_app_opt_set(const orb_app_t *app, int idx, int32_t v);
 /** Rotate `steps` detents on row idx, and press it. */
 void orb_app_opt_inc(const orb_app_t *app, int idx, int32_t steps);
 void orb_app_opt_sel(const orb_app_t *app, int idx);
+/** §58: the sentence a press on row idx shows instead of acting, or NULL. */
+const char *orb_app_opt_note(const orb_app_t *app, int idx);
 /** Gate the knob like a screen: armed means the app is being edited, not just
  *  displayed. The shell calls it on entry and on leave, including on the long
  *  press that goes home, so nothing can be left armed off-screen. */

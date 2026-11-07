@@ -64,7 +64,12 @@ ORB_IMPORT("tz_offset")  int32_t orb_tz_offset(int64_t t);
 /** One line on the console, prefixed with the app's slug. */
 ORB_IMPORT("log")        void orb_log(const char *line);
 
-/* ---- settings (free: only the settings the manifest declared) ----------------- */
+/* ---- settings (free: only the settings the manifest declared) ----------------- *
+ * app.json's "settings" declares each one's type, label, range and choices; the OS
+ * draws the dial's page and Orb Manager's from that and stores the values. An int,
+ * number (scaled by 10^decimals), enum (the choice's index), multi (a bitmask) or
+ * toggle reads with orb_cfg_get; a text or place with orb_cfg_get_str. A secret is
+ * never readable: name it as orb_net_request's `cred` and the OS attaches it. */
 
 ORB_IMPORT("cfg_get")     int32_t orb_cfg_get(const char *id, int32_t *out);
 ORB_IMPORT("cfg_set")     int32_t orb_cfg_set(const char *id, int32_t v);
@@ -141,13 +146,6 @@ ORB_IMPORT("armed")      void orb_armed(int32_t armed);
  *  a hold still leaves the app (plan §51). Turns arrive accelerated, so |delta| > 1
  *  means a fast spin. Call once from orb_init. apps/sdk/orb_dial.h keeps the dial. */
 ORB_IMPORT("knob_dial")  void orb_knob_dial(void);
-
-/* ---- option pages (free) ------------------------------------------------------- *
- * The dial's menu draws an app's options; the app answers orb_opt_label and
- * orb_opt_value by calling orb_reply with the text, during that call. */
-
-ORB_IMPORT("reply")      void orb_reply(const char *s);
-enum { ORB_OPT_ROW = 0, ORB_OPT_GROUP, ORB_OPT_ITEM };
 
 /* ---- sound (cap "sound") ------------------------------------------------------- */
 
@@ -325,11 +323,9 @@ void orb_logf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
  *   void    orb_input(int32_t delta, int32_t pressed)   the knob, while armed
  *   int32_t orb_set_armed(int32_t armed) a press arms, a hold disarms; answer the
  *                                       armed state the app actually took
- *   int32_t orb_opt_count(void)         option rows for the menu's page
- *   int32_t orb_opt_kind(int32_t i)     ORB_OPT_*
- *   void    orb_opt_label(int32_t i)    answer with orb_reply()
- *   void    orb_opt_value(int32_t i)    answer with orb_reply()
- *   void    orb_opt_inc(int32_t i, int32_t steps)
- *   void    orb_opt_sel(int32_t i)
- *   void    orb_opt_arm(int32_t armed)
+ *
+ * An app has no options hooks: its settings page, on the dial and in Orb Manager, is
+ * the OS's, drawn from the "settings" the manifest declares (apps/README.md, plan
+ * §57). Read them with orb_cfg_get/orb_cfg_get_str, and re-read whenever orb_cfg_gen
+ * moves — the owner changes them from either place while the app runs.
  */

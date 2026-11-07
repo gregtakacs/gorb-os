@@ -120,6 +120,16 @@ def manifest(appdir):
             fail("%s: os_min is a release like v1.2.8, not %r" % (path, m["os_min"]))
         if not m.get("editor"):
             fail("%s: os_min rides the editor region, and this app ships no editor" % path)
+    # §57: the settings are the app's own schema, which the dial and the hub both draw, so
+    # each one names what they call it; orbapp.normalize_settings checks the rest
+    for st in m["settings"]:
+        if not isinstance(st, dict) or not isinstance(st.get("label"), str) or not st["label"]:
+            fail("%s: setting %r has no label: the dial and the hub show it by that name"
+                 % (path, st.get("id") if isinstance(st, dict) else st))
+    try:
+        orbapp.normalize_settings(m["settings"])
+    except ValueError as e:
+        fail("%s: %s" % (path, e))
     for c in m["caps"]:
         if c not in orbapp.CAP_OWNER:
             fail("%s: cap %r is not one of %s" % (path, c, ", ".join(orbapp.CAP_OWNER)))

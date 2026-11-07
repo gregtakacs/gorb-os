@@ -78,6 +78,7 @@ pinned to each other — in the same words, not merely the same verdicts.
 """
 
 import hashlib
+import json
 import os
 import re
 import struct
@@ -87,7 +88,7 @@ MAGIC      = 0x00415247        # 'G','R','A'. Deliberately unlike the theme's
                                # 0x474F5254, so a .orbtheme handed to the app
                                # loader dies on the magic word rather than
                                # parsing as an app with a surprising name.
-FORMAT     = 3                 # this container layout; a reader refuses others.
+FORMAT     = 4                 # this container layout; a reader refuses others.
                                # 1 -> 2 is P7's code region (D20/D27): the header
                                # grows four gate/region words INSIDE hdr_crc's span
                                # (code_off/code_size/code_crc and wasm_mem_max). A
@@ -107,6 +108,11 @@ FORMAT     = 3                 # this container layout; a reader refuses others.
                                # one word. S6 names the bump, the same way D37 named
                                # the editor region's: a reader that cannot see the
                                # field must not install the app the field describes.
+                               # 3 -> 4 is §57's settings schema: three words after
+                               # the version, inside hdr_crc's span, naming a region
+                               # between the asset table and the geometry. An OS that
+                               # cannot read the schema cannot draw the app's
+                               # settings, so it refuses the container by number.
 GEOM_ABI   = 3                 # The dialect this writer stamps. 1 -> 2 is P5b's
                                # asset table (D23): the geometry records did not
                                # move, the vocabulary did, and D23 names THIS word
@@ -189,8 +195,24 @@ CAP_FREE  = ("time", "config", "ui", "art")     # declarable NEVER
 CAP_OWNER = ("power", "net", "sd_read", "themes", "sound", "location")   # sound: D39, location: flights §6.4; appended
 CAP_BITS  = len(CAP_FREE) + len(CAP_OWNER)      # 10 == CAP_N
 
-# C9's settings types, frozen, in orb_svc.h's orb_set_type_t order.
+# C9's settings types, frozen, in orb_svc.h's orb_set_type_t order: the WIRE types, the
+# gate's. §57's schema types (what the dial and the hub draw) map onto them: number and
+# multi store as int (a scaled integer, a bitmask), text and place as string.
 SET_TYPES = ("int", "enum", "toggle", "string", "secret")   # secret: §43
+UI_TYPES  = ("int", "number", "enum", "multi", "toggle", "text", "place", "secret")
+UI_WIRE   = {"int": "int", "number": "int", "enum": "enum", "multi": "int", "toggle": "toggle",
+             "text": "string", "place": "string", "secret": "secret"}
+# §57: the schema's own bounds. The dial draws a row as "label:  value" across the
+# glass, so a label and a choice are short; the hub alone shows help and links.
+SCHEMA_MAX   = 6144            # the region's bytes: the normalized JSON
+LABEL_MAX    = 24              # bytes, NUL included, for a label and for a choice
+UNIT_MAX     = 8
+HELP_MAX     = 480
+LINKS_MAX    = 3
+CHOICES_MAX  = 16              # a multi's bitmask fits the int's 16 low bits
+SHOWS        = ("both", "dial", "hub", "none")
+DIST_KEYS    = ("km", "mi", "nm")       # a choice drawn in the orb's distance unit
+HEADER_RE    = re.compile(r"^[A-Za-z0-9-]{1,31}$")
 # A secret's one allowed host: a DNS name, lower case, fits the 31-byte field.
 HOST_RE = re.compile(r"^(?=.{1,31}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$")
 CFG_QUOTA_BYTES = 2048                          # ORB_CFG_QUOTA_BYTES (§9.4.4)
@@ -266,7 +288,13 @@ W_EDITOR_CRC  = W_EDITOR_SIZE + 1
 # an operator can silently edit is not an identity. The tail's one free word is NOT the
 # place: it is outside the span, and a 31-byte stamp is not one word anyway.
 W_VERSION    = W_EDITOR_CRC    + 1
-W_HDR_CRC    = W_VERSION       + 8
+# §57: the settings schema's three words, inside the CRC's span for the version's reason.
+# The region sits between the asset table and the geometry, so it rides the installed
+# prefix to the slot and the boot reads it beside the settings table.
+W_SCHEMA_OFF  = W_VERSION      + 8
+W_SCHEMA_SIZE = W_SCHEMA_OFF   + 1
+W_SCHEMA_CRC  = W_SCHEMA_SIZE  + 1
+W_HDR_CRC    = W_SCHEMA_CRC    + 1
 # P5b (D23): the asset table's two fields take words this header left reserved for
 # exactly this, so the tail keeps its shape and the header CRC still covers up to
 # W_HDR_CRC. One word at the end stays free and the reader checks it zero.
@@ -471,6 +499,170 @@ def _s(v, what):
         raise ValueError("%s %r does not fit the int32_t the device reads it as"
                          % (what, v))
     return v
+
+
+def _utf8(v, cap, what):
+    if not isinstance(v, str) or not v or len(v.encode("utf-8")) > cap - 1:
+        raise ValueError("%s must be text of 1..%d UTF-8 bytes, not %r" % (what, cap - 1, v))
+    return v
+
+
+def _choice(v, sid, i):
+    """A choice's label: text, or {"km", "mi", "nm"} for one the orb's distance unit picks."""
+    if isinstance(v, dict):
+        if set(v) != set(DIST_KEYS):
+            raise ValueError("setting '%s' choice %d is an object, so it names exactly %s"
+                             % (sid, i, ", ".join(DIST_KEYS)))
+        return {k: _utf8(v[k], LABEL_MAX, "setting '%s' choice %d (%s)" % (sid, i, k)) for k in DIST_KEYS}
+    return _utf8(v, LABEL_MAX, "setting '%s' choice %d" % (sid, i))
+
+
+def normalize_settings(settings):
+    """§57: an app.json `settings` list, checked, as (wire entries, schema entries).
+
+    The wire entries are what the C9 gate stores and range-checks (check_settings' input
+    shape); the schema entries are what the dial and the hub draw, every field filled in.
+    One function produces both, so the label a page shows can never describe a row the
+    gate does not hold. A missing label reads as the id here; the SDK insists on one."""
+    if not isinstance(settings, (list, tuple)):
+        raise ValueError("settings must be a list of dicts, got %r" % (settings,))
+    wire, schema = [], []
+    for s in settings:
+        if not isinstance(s, dict):
+            raise ValueError("setting %r is not a dict" % (s,))
+        sid = s.get("id")
+        ut = s.get("type")
+        if ut == "string":
+            ut = "text"                        # the C9 name, read as the schema's
+        if ut not in UI_TYPES:
+            raise ValueError("setting '%s' type %r is not one of %s" % (sid, ut, ", ".join(UI_TYPES)))
+        e = {"id": sid, "type": ut,
+             "label": _utf8(s.get("label", sid if isinstance(sid, str) else ""), LABEL_MAX,
+                            "setting '%s' label" % sid)}
+        show = s.get("show", "hub" if ut in ("text", "place", "secret") else "both")
+        if show not in SHOWS:
+            raise ValueError("setting '%s' show %r is not one of %s" % (sid, show, ", ".join(SHOWS)))
+        if ut in ("text", "place", "secret") and show in ("dial", "both"):
+            raise ValueError("setting '%s' is %s, which nobody types on a knob: show it on "
+                             "the hub or nowhere" % (sid, ut))
+        e["show"] = show
+        if "help" in s:
+            e["help"] = _utf8(s["help"], HELP_MAX + 1, "setting '%s' help" % sid)
+        if "links" in s:
+            ls = s["links"]
+            if not isinstance(ls, list) or len(ls) > LINKS_MAX:
+                raise ValueError("setting '%s' links: a list of at most %d" % (sid, LINKS_MAX))
+            e["links"] = []
+            for ln in ls:
+                if not isinstance(ln, dict) or not re.match(r"^https?://\S{1,200}$", str(ln.get("href", ""))):
+                    raise ValueError("setting '%s' link %r: {href: an http(s) address, text}" % (sid, ln))
+                e["links"].append({"href": ln["href"], "text": _utf8(ln.get("text", ""), 48,
+                                                                      "setting '%s' link text" % sid)})
+        w = {"id": sid}
+        if ut in ("int", "number"):
+            d = int(s.get("decimals", 0)) if ut == "number" else 0
+            if ut == "number" and not 1 <= d <= 3:
+                raise ValueError("setting '%s' is a number, so it names decimals 1..3" % sid)
+            k = 10 ** d
+            def sc(v, what):
+                if not isinstance(v, (int, float)) or isinstance(v, bool):
+                    raise ValueError("setting '%s' %s must be a number, not %r" % (sid, what, v))
+                r = round(v * k)
+                if abs(v * k - r) > 1e-6:
+                    raise ValueError("setting '%s' %s %r has more than %d decimals" % (sid, what, v, d))
+                return int(r)
+            mn, mx = sc(s.get("min", 0), "min"), sc(s.get("max", 0), "max")
+            df = sc(s.get("default", s.get("def", 0)), "default")
+            st = sc(s.get("step", 1 / k if ut == "number" else 1), "step")
+            if st < 1 or (mx > mn and st > mx - mn):
+                raise ValueError("setting '%s' step must be at least one unit and within its range" % sid)
+            w.update(type="int", min=mn, max=mx, default=df)
+            e.update(min=mn, max=mx, default=df, step=st)
+            if d:
+                e["decimals"] = d
+            if "unit" in s:
+                e["unit"] = _utf8(s["unit"], UNIT_MAX + 1, "setting '%s' unit" % sid)
+        elif ut in ("enum", "multi"):
+            ch = s.get("choices")
+            if ch is None and ut == "enum":     # a bare range: its values are its labels
+                mn, mx = int(s.get("min", 0)), int(s.get("max", 0))
+                ch = [str(v) for v in range(mn, mx + 1)]
+            if not isinstance(ch, list) or not (2 if ut == "enum" else 1) <= len(ch) <= CHOICES_MAX:
+                raise ValueError("setting '%s' is %s, so it names %d..%d choices"
+                                 % (sid, ut, 2 if ut == "enum" else 1, CHOICES_MAX))
+            e["choices"] = [_choice(c, sid, i) for i, c in enumerate(ch)]
+            if ut == "enum":
+                mn = int(s.get("min", 0)) if s.get("choices") is None else 0
+                df = int(s.get("default", s.get("def", mn)))
+                w.update(type="enum", min=mn, max=mn + len(ch) - 1, default=df)
+                e.update(default=df)
+            else:
+                dv = s.get("default", [])
+                mask = sum(1 << i for i in dv) if isinstance(dv, list) else int(dv)
+                if isinstance(dv, list) and any(not isinstance(i, int) or not 0 <= i < len(ch) for i in dv):
+                    raise ValueError("setting '%s' default names a choice it does not have" % sid)
+                w.update(type="int", min=0, max=(1 << len(ch)) - 1, default=mask)
+                e.update(default=mask)
+        elif ut == "toggle":
+            ch = s.get("choices", ["off", "on"])
+            if not isinstance(ch, list) or len(ch) != 2:
+                raise ValueError("setting '%s' is a toggle, so its choices are two: off, on" % sid)
+            e["choices"] = [_choice(c, sid, i) for i, c in enumerate(ch)]
+            df = s.get("default", s.get("def", 0))
+            w.update(type="toggle", default=df)
+            e.update(default=df)
+        elif ut in ("text", "place"):
+            dstr = s.get("default", s.get("def_str", "")) or ""
+            w.update(type="string", def_str=dstr)
+            e.update(default=dstr)
+        else:                                   # secret
+            hdr = s.get("header", "x-api-key")
+            if not isinstance(hdr, str) or not HEADER_RE.match(hdr):
+                raise ValueError("setting '%s' header %r is not a header name" % (sid, hdr))
+            w.update(type="secret", host=s.get("host"))
+            e.update(host=s.get("host"), header=hdr)
+        wire.append(w)
+        schema.append(e)
+    rows = check_settings(wire)
+    for r, e in zip(rows, schema):              # the gate's answer is the schema's numbers
+        if e["type"] in ("int", "number", "enum", "multi", "toggle"):
+            e["min"], e["max"], e["default"] = r[2], r[3], r[4]
+        if e["type"] in ("enum", "toggle"):
+            e.pop("min", None); e.pop("max", None)
+        if e["type"] == "multi":
+            e.pop("min", None); e.pop("max", None)
+    return rows, schema
+
+
+def pack_schema(schema):
+    """The §57 region: the schema entries as compact JSON, UTF-8. Empty for no settings."""
+    if not schema:
+        return b""
+    b = json.dumps(schema, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(b) > SCHEMA_MAX:
+        raise ValueError("the settings schema is %d B; the region holds %d — shorten the "
+                         "help text" % (len(b), SCHEMA_MAX))
+    return b
+
+
+def check_schema(schema_bytes, rows):
+    """The reader's half: the region parses, and names exactly the gate's settings, in its
+    order and of its wire types. Answers the schema entries."""
+    if not schema_bytes:
+        if rows:
+            raise ValueError("the container declares %d settings and no schema" % len(rows))
+        return []
+    try:
+        sch = json.loads(schema_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        raise ValueError("the settings schema is not JSON: %s" % e)
+    if not isinstance(sch, list) or len(sch) != len(rows):
+        raise ValueError("the settings schema names %s settings and the table %d"
+                         % (len(sch) if isinstance(sch, list) else "no", len(rows)))
+    for e, r in zip(sch, rows):
+        if not isinstance(e, dict) or e.get("id") != r[0] or UI_WIRE.get(e.get("type")) != SET_TYPES[r[1]]:
+            raise ValueError("the settings schema's entry %r is not the table's '%s'" % (e, r[0]))
+    return sch
 
 
 def check_settings(settings):
@@ -1009,7 +1201,7 @@ def _code_size(code_size):
 def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
                 settings_blob, serial=0, baked_ms=0, abi=None,
                 sig=0, behaviour_kind=0, asset_blob=b"",
-                code_size=0, wasm_mem_max=0, editor_size=0, version=""):
+                code_size=0, wasm_mem_max=0, editor_size=0, version="", schema_size=0):
     """Lay out the header+manifest block. Every field is checked here, because a
     header this function refuses is a header the device never has to meet.
 
@@ -1089,7 +1281,12 @@ def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
     # picks, which is what makes a self-overlapping container unwriteable here.
     hdr[W_SET_OFF]   = SET_OFF
     hdr[W_ASSET_OFF] = SET_OFF + len(settings_blob)
-    hdr[W_GEOM_OFF]  = hdr[W_ASSET_OFF] + len(asset_blob)
+    # §57: the schema follows the asset table, word-padded, and the geometry follows it
+    if schema_size > SCHEMA_MAX:
+        raise ValueError("the settings schema is %d B; the region holds %d" % (schema_size, SCHEMA_MAX))
+    hdr[W_SCHEMA_OFF]  = hdr[W_ASSET_OFF] + len(asset_blob)
+    hdr[W_SCHEMA_SIZE] = schema_size
+    hdr[W_GEOM_OFF]  = hdr[W_SCHEMA_OFF] + _pad4(schema_size)
     hdr[W_GEOM_SIZE] = 0                             # filled below from the blob
     hdr[W_ART_OFF]  = art_offset(hdr[W_GEOM_OFF], 0)
     # The code region starts where the sector-aligned payload slot begins — the same
@@ -1106,6 +1303,10 @@ def pack_header(app_id, slug, title, caps, period_ms, art_req, counts,
     _putstr(hdr, W_TITLE, title, TITLE_MAX, "title")
     hdr[W_HDR_CRC] = _hdr_crc(hdr)
     return hdr
+
+
+def _pad4(n):
+    return (n + 3) & ~3
 
 
 def parse_header(raw, app_id=None):
@@ -1160,6 +1361,7 @@ def parse_header(raw, app_id=None):
         ("code_crc", W_CODE_CRC), ("wasm_mem_max", W_WASM_MEM),
         ("editor_off", W_EDITOR_OFF), ("editor_size", W_EDITOR_SIZE),
         ("editor_crc", W_EDITOR_CRC),
+        ("schema_off", W_SCHEMA_OFF), ("schema_size", W_SCHEMA_SIZE), ("schema_crc", W_SCHEMA_CRC),
         ("asset_off", W_ASSET_OFF), ("n_assets", W_N_ASSETS))}
     h["slug"]  = _getstr(hdr, W_SLUG, SLUG_MAX)
     h["title"] = _getstr(hdr, W_TITLE, TITLE_MAX)
@@ -1281,6 +1483,16 @@ def check_header(h, app_id=None, stem=None):
     if h["period_ms"] and h["period_ms"] < BEAT_MIN_MS:
         raise ValueError("period_ms %d is below the %d ms the OS can commit (D16)"
                          % (h["period_ms"], BEAT_MIN_MS))
+    # §57: the schema names every setting, so a table with settings carries one and a
+    # table without carries none; the region is bounded like every other.
+    if h["schema_size"] > SCHEMA_MAX:
+        raise ValueError("the settings schema is %d B, past the %d B a container may carry"
+                         % (h["schema_size"], SCHEMA_MAX))
+    if bool(h["schema_size"]) != bool(h["n_settings"]):
+        raise ValueError("%d settings with a %d B schema: each names the other — re-package it"
+                         % (h["n_settings"], h["schema_size"]))
+    if not h["schema_size"] and h["schema_crc"]:
+        raise ValueError("an empty settings schema carries a checksum — re-package it")
     return h
 
 
@@ -1294,8 +1506,10 @@ def check_file_layout(h):
     # tables sharing the same bytes, and the CRC would pass on the overlap.
     if h["asset_off"] != SET_OFF + h["n_settings"] * SETTINGS_WORDS * 4:
         raise ValueError("the asset table does not follow the settings table")
-    if h["geom_off"] != h["asset_off"] + h["n_assets"] * ASSET_WORDS * 4:
-        raise ValueError("the geometry blob does not follow the asset table")
+    if h["schema_off"] != h["asset_off"] + h["n_assets"] * ASSET_WORDS * 4:
+        raise ValueError("the settings schema does not follow the asset table")
+    if h["geom_off"] != h["schema_off"] + _pad4(h["schema_size"]):
+        raise ValueError("the geometry blob does not follow the settings schema")
     if h["art_off"] != art_offset(h["geom_off"], h["geom_size"]):
         raise ValueError("the payload is not sector-aligned off the geometry blob")
     # P7: the code region occupies the sector-aligned slot the payload used to, so
@@ -1362,8 +1576,9 @@ def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
         raise ValueError("editor must be bytes")
     editor_bytes = bytes(editor)
     check_slug(slug)
-    rows = check_settings(settings)
+    rows, schema = normalize_settings(settings)
     s_blob = pack_settings(rows)
+    sch_bytes = pack_schema(schema)
     a_blob = pack_assets(assets, slug)
     geom_bytes = bytes(geometry)
     code_bytes = bytes(code)
@@ -1372,12 +1587,14 @@ def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
                       baked_ms=baked_ms, abi=abi, behaviour_kind=behaviour_kind,
                       asset_blob=a_blob, code_size=len(code_bytes),
                       wasm_mem_max=wasm_mem_max,
-                      editor_size=len(editor_bytes), version=version)
+                      editor_size=len(editor_bytes), version=version,
+                      schema_size=len(sch_bytes))
     # The packer left geom_size/geom_crc/art_crc at zero because only it knows
     # the blob it is about to lay down; fill and re-checksum in one place. The
     # art crc stays zero — zlib.crc32 of the empty payload the format forbids.
     hdr[W_GEOM_SIZE] = _geom_size(len(geom_bytes), counts)
-    hdr[W_GEOM_OFF]  = hdr[W_ASSET_OFF] + len(a_blob)
+    hdr[W_SCHEMA_CRC] = (zlib.crc32(sch_bytes) & 0xFFFFFFFF) if sch_bytes else 0
+    hdr[W_GEOM_OFF]  = hdr[W_SCHEMA_OFF] + _pad4(len(sch_bytes))
     # The device's slot boundary is geom_off + geom_size (orb_app_install.c:62): the
     # manifest, settings and asset table ahead of the blob are part of the bill.
     # GEOM_BYTES_MAX alone caps the blob only, so a full-ceiling blob written here was
@@ -1410,7 +1627,8 @@ def write_container(path, slug, title, caps=0, settings=(), geometry=b"",
                           if editor_bytes else 0)
     hdr[W_EDITOR_CRC]  = (zlib.crc32(editor_bytes) & 0xFFFFFFFF) if editor_bytes else 0
     hdr[W_HDR_CRC]   = _hdr_crc(hdr)
-    raw = b"".join(struct.pack("<I", v) for v in hdr) + s_blob + a_blob + geom_bytes
+    raw = (b"".join(struct.pack("<I", v) for v in hdr) + s_blob + a_blob + sch_bytes
+           + b"\0" * (_pad4(len(sch_bytes)) - len(sch_bytes)) + geom_bytes)
     raw += b"\0" * (hdr[W_CODE_OFF] - len(raw))
     raw += code_bytes
     if editor_bytes:
@@ -1476,6 +1694,9 @@ def read_container(path, verify=True):
         raise ValueError("editor region runs past the end of the file")
     s_blob = raw[SET_OFF:SET_OFF + h["n_settings"] * SETTINGS_WORDS * 4]
     a_blob = raw[h["asset_off"]:a_end]
+    sch_bytes = raw[h["schema_off"]:h["schema_off"] + h["schema_size"]]
+    if (zlib.crc32(sch_bytes) & 0xFFFFFFFF if sch_bytes else 0) != h["schema_crc"]:
+        raise ValueError("settings schema checksum mismatch — the copy on the card is damaged")
     geom = raw[h["geom_off"]:end]
     art  = b""
     code = raw[h["code_off"]:code_end]
@@ -1510,7 +1731,9 @@ def read_container(path, verify=True):
     for r in h["assets"]:
         r["ref"] = ("global/" + r["name"]) if r["ns"] == "global" else \
                    (h["slug"] + "/" + r["name"])
-    return h, unpack_settings(s_blob, h["n_settings"]), geom, art
+    sts = unpack_settings(s_blob, h["n_settings"])
+    h["schema"] = check_schema(sch_bytes, [(x["id"], SET_TYPES.index(x["type"])) for x in sts])
+    return h, sts, geom, art
 
 
 def read_header(path):

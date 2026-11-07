@@ -23,6 +23,7 @@ idf_component_register(
         # D51: the streaming JSON tokenizer apps parse through, natively. Pure C,
         # host-tested as shipped by tools/host_json_test.py.
         "app/orb_json.c"
+        "app/orb_setui.c"
         "app/orb_svc.c"
         "display/display.c"
         # C2 (theme-delta plan §6.2): the boot/install overlay — the one painter

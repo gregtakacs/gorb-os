@@ -61,6 +61,7 @@ static void lvgl_task(void *arg)
         uint32_t sleep_ms = lv_timer_handler();
         const int64_t t_s = esp_timer_get_time();
         display_lvgl_pass_mark();      /* a store waits on this before it unmaps */
+        display_dma_service();         /* a still page re-sends what a card read cost */
         if (sleep_ms > 50) sleep_ms = 50;
         if (sleep_ms < 5) sleep_ms = 5;
         vTaskDelay(pdMS_TO_TICKS(sleep_ms));

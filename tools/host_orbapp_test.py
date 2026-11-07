@@ -263,7 +263,8 @@ check("the global namespace comes back without the owner's slug on it",
       h["assets"][1]["ref"] == "global/bg", h["assets"][1].get("ref"))
 check("the asset table lies between the settings and the geometry",
       h["asset_off"] == A.SET_OFF + len(SETTS) * A.SETTINGS_WORDS * 4
-      and h["geom_off"] == h["asset_off"] + len(ASSETS) * A.ASSET_WORDS * 4,
+      and h["schema_off"] == h["asset_off"] + len(ASSETS) * A.ASSET_WORDS * 4
+      and h["geom_off"] == h["schema_off"] + A._pad4(h["schema_size"]),
       "%d / %d / %d" % (h["setting_off"], h["asset_off"], h["geom_off"]))
 check("the table's own bytes do not push the geometry blob",
       geom == GEOM, "the geometry read back damaged")
@@ -272,9 +273,9 @@ check("the file is the sum of its declared parts, no stray bytes",
 check("the payload starts sector-aligned", h["art_off"] % A.SECTOR == 0,
       hex(h["art_off"]))
 check("the settings table sits right after the header", h["setting_off"] == A.SET_OFF)
-check("the geometry follows the asset table exactly (ABI 2)",
+check("the geometry follows the asset table and the settings schema exactly (§57)",
       h["geom_off"] == A.SET_OFF + len(SETTS) * A.SETTINGS_WORDS * 4
-                       + len(ASSETS) * A.ASSET_WORDS * 4,
+                       + len(ASSETS) * A.ASSET_WORDS * 4 + A._pad4(h["schema_size"]),
       hex(h["geom_off"]))
 check("the container is bigger than a bare header only because of its geometry",
       n > A.HDR_BYTES and h["art_size"] == 0 and h["art_crc"] == 0)
@@ -501,6 +502,9 @@ expect_refuse("a full-ceiling blob is refused when a header precedes it (the SUM
 # the fixed 0x3FE00 m5_powercut.sh's comment assumes.
 _h_b = A.HDR_BYTES
 _set_b = A.SETTINGS_WORDS * 4                     # one settings row, 64 B
+# §57: and its schema entry, word-padded, which the installed prefix also carries
+_sch_b = A._pad4(len(A.pack_schema(A.normalize_settings(
+    [dict(id="mode", type="enum", min=0, max=3, default=1)])[1])))
 check("the exact slot boundary is accepted, blob == cap",
       A.write_container(os.path.join(D, "sum2.orbapp"), "sum2", "Sum2",
                         geometry=b"\xa5" * (A.GEOM_BYTES_MAX - _h_b))
@@ -515,7 +519,7 @@ expect_refuse("the boundary MOVES with the header: one setting costs the blob %d
 check("and a blob measured against the MOVED boundary is accepted at == cap",
       A.write_container(os.path.join(D, "sum4.orbapp"), "sum4", "Sum4",
                         settings=[dict(id="mode", type="enum", min=0, max=3, default=1)],
-                        geometry=b"\xa5" * (A.GEOM_BYTES_MAX - _h_b - _set_b))
+                        geometry=b"\xa5" * (A.GEOM_BYTES_MAX - _h_b - _set_b - _sch_b))
       == A.GEOM_BYTES_MAX, "file is not the cap")
 # ---- P7 (D20/D27): the code region and its memory bound ----------------------
 _MOD = b"\x00asm\x01\x00\x00\x00" + b"\x11" * 100   # a tiny well-formed module header

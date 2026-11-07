@@ -27,8 +27,12 @@ my_app/
   "caps": ["net", "location"],
   "period_ms": 1000,
   "settings": [
-    {"id": "units", "type": "enum", "min": 0, "max": 1, "default": 0},
-    {"id": "key",   "type": "secret", "host": "api.example.com"}
+    {"id": "detail", "type": "enum", "label": "Detail",
+     "choices": ["brief", "full"], "default": 0},
+    {"id": "place1", "type": "place", "label": "Place 1",
+     "help": "Shown after home. Pick a city or type coordinates."},
+    {"id": "key", "type": "secret", "label": "API key", "host": "api.example.com",
+     "help": "Where to get one.", "links": [{"href": "https://example.com/keys", "text": "Get a key"}]}
   ]
 }
 ```
@@ -38,7 +42,7 @@ my_app/
 | `slug` | the app's id: lowercase a–z, digits and `_`, at most 23 characters. It names the card file, the settings namespace and the slot |
 | `title` | what the dial shows |
 | `caps` | the owned capabilities the app uses: `power`, `net`, `sd_read`, `themes`, `sound`, `location`. The declaration is the consent (D19): an import the app did not declare answers a refusal, and the owner can revoke any of them on the dial |
-| `settings` | up to 16, each `int`, `enum`, `toggle`, `string` or `secret` (below) |
+| `settings` | up to 16, each with a type and a label; the OS draws them on the dial and in Orb Manager ([Settings](#settings)) |
 | `period_ms` | the fastest beat the app may ask for, at least 1000. Leave it out and the app never ticks |
 | `memory_kb` | the module's linear memory, 64 (default) or 128 |
 | `shelf` | in this repo only: `true` puts the app on the hub's shelf; `false` builds and checks it but keeps it off |
@@ -102,24 +106,43 @@ The template carries everything a repo needs:
 
 Anyone can then import that `.orbapp` in Orb Manager (Apps → Import an app).
 
-## Settings on the hub
+## Settings
 
-An app's settings belong on Orb Manager's App settings page, never in its theme editor.
-An app with an editor region may ship `settings.json` beside its entry page, keyed by
-setting id, to say how the page shows them:
+An app declares its settings and the OS does the rest: it stores them, draws the app's
+page in the dial's menu and on Orb Manager's App settings page, and serves them to the
+hub at `GET /api/v1/apps/settings?id=<slug>`. An app has no settings UI of its own, on
+the knob or in its theme editor. Each entry in `settings`:
 
-```json
-{
-  "key":    {"label": "API key", "help": "Where to get one.", "links": [{"href": "https://…", "text": "…"}], "header": "x-api-key"},
-  "place1": {"kind": "place", "label": "Place 1", "help": "…"},
-  "motto":  {"kind": "text", "label": "Motto", "placeholder": "…"}
-}
-```
+| Field | For | Meaning |
+|---|---|---|
+| `id` | all | the key: a–z, 0–9 and `_`, at most 15 characters |
+| `type` | all | `int`, `number`, `enum`, `multi`, `toggle`, `text`, `place` or `secret` |
+| `label` | all | what the dial and the hub call it, at most 23 bytes. Required |
+| `help` | all | a sentence or two for the hub, at most 480 bytes |
+| `links` | all | `[{"href", "text"}]` shown under the help, at most 3 |
+| `show` | all | `both`, `dial`, `hub` or `none`. Default `both`, and `hub` for `text`, `place` and `secret` (nobody types on a knob) |
+| `min`, `max` | int, number | the range, in the setting's own units |
+| `step`, `unit` | int, number | the knob's step (default 1) and a suffix such as `"°"`, `"%"` or `" s"` |
+| `decimals` | number | 1 to 3: the value is stored as an integer times 10^decimals |
+| `choices` | enum, multi, toggle | the option labels in value order. A label may be `{"km": …, "mi": …, "nm": …}`, picked by the orb's distance unit. A toggle's two are its off and on (default `"off"`, `"on"`) |
+| `default` | all but secret | int and number: a value; enum: an index; multi: a list of indices; toggle: 0 or 1; text and place: a string |
+| `host`, `header` | secret | the one host the OS may send it to, and the header it rides (default `x-api-key`) |
 
-A `secret` setting always shows (write-only). A `string` setting shows when its entry
-names a `kind`: `place` is a place picked from the hub's city list or typed as
-coordinates, stored `Name|lat,lon` with two decimals; `text` is a plain line. A string
-setting holds at most 31 characters.
+How each type reads in the app:
+
+- `int`, `enum` (the choice's index), `toggle` (0 or 1), `number` (scaled by
+  10^decimals) and `multi` (a bitmask, choice *i* is bit *i*) with `orb_cfg_get`.
+- `text` and `place` with `orb_cfg_get_str`, at most 31 characters. A `place` is
+  picked on the hub from the city list or typed as coordinates, and stored
+  `Name|lat,lon` with two decimals.
+- `secret` never: see [Secrets](#secrets).
+
+On the dial, an app's page lists the settings shown there in manifest order. A press
+edits a number or a choice with the knob; a multi opens into its choices, each one a
+press to switch. If any setting is hub-only, the last row reads "More on Orb Manager".
+`show: "none"` keeps a setting out of both, for a bench switch an owner should never
+see. Whichever side changes a setting, `orb_cfg_gen` moves, so re-read your settings
+when it does.
 
 An app built against an SDK runs on that OS release and every later one, as long as
 the imports it uses are still bound. The loader refuses a module with an import the
@@ -203,8 +226,8 @@ anticlockwise.
 - **Idle goes home.** After 20 s without a turn the app shows home again, and so does
   coming back to the app.
 - **Never use the hold.** It is the way out of every app, and it must always work.
-- **Settings belong on the hub.** Anything that is not a dial or its one action goes on
-  the app's App settings page (`settings` in app.json), not behind the knob.
+- **Settings are declared, not drawn.** Anything that is not a dial or its one action is
+  a setting in app.json, and the OS draws it ([Settings](#settings)), never the app.
 - **A click must show at once.** The OS draws a frame straight after every knob event, so
   redraw in `orb_input` and the change is on the glass in about 40 ms.
 
@@ -255,7 +278,7 @@ older OS refuses an app that calls it. The template (`orbsdk.py new`) starts as 
 | widgets | `orb_ui_create/set/text/align/refresh` | free |
 | canvas | `orb_cv_create/fill/pixel/ring/disc/line/text/flush` | free |
 | knob | `orb_knob_dial`, and [sdk/orb_dial.h](sdk/orb_dial.h) (header only) | free (OS v1.2.11) |
-| menu | `orb_reply`, `orb_armed` | free |
+| menu | `orb_armed` | free |
 | JSON | `orb_json_begin/next/skip` | free |
 | network | `orb_net_request/info/read/header/free`, `orb_net_cred`, `orb_net_get` | `net` |
 | sound | `orb_sound_play/stop/active` | `sound` |
@@ -278,22 +301,18 @@ and the OS copies them. The OS never hands out a pointer into its own memory.
   turn and press arrives here while the app shows. `delta > 0` is clockwise;
 - `orb_set_armed`: `0` when the app is left (a hold, or another app shown); an app
   using `orb_knob_dial` goes home here. Without `orb_knob_dial` it is the older
-  model: a press arms the app, and only then does `orb_input` hear the knob;
-- `orb_opt_count`, `orb_opt_kind`, `orb_opt_label`, `orb_opt_value`,
-  `orb_opt_inc`, `orb_opt_sel`, `orb_opt_arm`: the app's options page in the
-  dial menu. `orb_opt_label` and `orb_opt_value` answer through `orb_reply`
-  during the call.
+  model: a press arms the app, and only then does `orb_input` hear the knob.
 
-The app's own menu page holds settings only. Themes are picked in the OS Themes
-menu (D49).
+There are no options hooks: the app's menu page is the OS's, drawn from its declared
+settings ([Settings](#settings)). Themes are picked in the OS Themes menu (D49).
 
 ### Secrets
 
 A `secret` setting (for example an API key) is declared with the one host it may
 be sent to:
 
-```python
-{"id": "key", "type": "secret", "host": "api.example.com"}
+```json
+{"id": "key", "type": "secret", "label": "API key", "host": "api.example.com"}
 ```
 
 The app can never read it: `orb_cfg_get_str` refuses a secret. The app passes its

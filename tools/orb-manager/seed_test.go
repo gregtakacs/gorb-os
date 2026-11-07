@@ -13,16 +13,38 @@ import (
 	"github.com/gregtakacs/gorb-os/tools/orb-manager/internal/orbnet"
 )
 
-// Two shipped containers stand in for two releases of one app: the clock's stamp is newer
-// than the picker's, and the seed compares only their version stamps.
+// Two shipped containers stand in for two releases of one app: the clock's and the
+// picker's stamps, ordered by the stamps themselves (whichever app last bumped is the
+// newer), and the seed compares only their version stamps.
 func seedApps(t *testing.T) (newer, older []byte) {
 	t.Helper()
-	newer, err1 := os.ReadFile(filepath.Join("apps", "clock.orbapp"))
-	older, err2 := os.ReadFile(filepath.Join("apps", "color_picker.orbapp"))
+	a, err1 := os.ReadFile(filepath.Join("apps", "clock.orbapp"))
+	b, err2 := os.ReadFile(filepath.Join("apps", "color_picker.orbapp"))
 	if err1 != nil || err2 != nil {
 		t.Skipf("no shipped apps to seed from: %v %v", err1, err2)
 	}
-	return newer, older
+	ca, errA := orbnet.ParseApp(a)
+	cb, errB := orbnet.ParseApp(b)
+	if errA != nil || errB != nil {
+		t.Fatalf("shipped apps do not parse: %v %v", errA, errB)
+	}
+	switch c, ok := orbnet.AppVersionCompare(ca.Version, cb.Version); {
+	case !ok || c == 0:
+		t.Fatalf("clock %q and color_picker %q do not order", ca.Version, cb.Version)
+	case c < 0:
+		return b, a
+	}
+	return a, b
+}
+
+// The shipped clock, for the Restore tests: they name the slug, not a release order.
+func shippedClock(t *testing.T) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("apps", "clock.orbapp"))
+	if err != nil {
+		t.Skipf("no shipped clock to restore: %v", err)
+	}
+	return b
 }
 
 func shelf(app, theme []byte) fs.FS {
@@ -161,7 +183,7 @@ func TestSeedKindsFollowTheLadder(t *testing.T) {
 // The Restore press offers a shipped app the library lacks or holds only older; a copy at
 // the same or a newer version, or one whose version cannot be compared, stays the owner's.
 func TestRestorableAppsOffersOnlyMissingOrOlder(t *testing.T) {
-	newer, _ := seedApps(t)
+	newer := shippedClock(t)
 	src := shelf(newer, nil)
 	c0, err := orbnet.ParseApp(newer)
 	if err != nil {
@@ -190,7 +212,7 @@ func TestRestorableAppsOffersOnlyMissingOrOlder(t *testing.T) {
 }
 
 func TestRestoreShippedAppsRefilesAndRecords(t *testing.T) {
-	newer, _ := seedApps(t)
+	newer := shippedClock(t)
 	src := shelf(newer, []byte("skeleton"))
 	user := t.TempDir()
 	seedAll(t, src, user)

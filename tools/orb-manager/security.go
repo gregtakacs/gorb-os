@@ -418,7 +418,9 @@ var deviceRoutes = map[string][]string{
 	// Orb tab's App keys: GET answers set or not, the header, the host and the last
 	// four characters, never the value, and the orb sends it only to that host.
 	"/api/v1/apps/cfg": {http.MethodGet, http.MethodPost},
-	"/api/v1/sd/app":   {http.MethodPost},
+	// §57: an app's settings schema and current values, which App settings renders from.
+	"/api/v1/apps/settings": {http.MethodGet},
+	"/api/v1/sd/app":        {http.MethodPost},
 	// v1.1.18's file-manager doors and the LAN twin of serial RESET ALL. The
 	// proxy forwards these verbatim (token, caps, lane) and owns none of the
 	// policy: the device already refuses traversal, the device-owned

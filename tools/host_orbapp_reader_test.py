@@ -277,11 +277,14 @@ def build_hdr(slug=GOLDEN_SLUG, title=GOLDEN_TITLE, caps=0x10, period=3000,
     vector that wants a WRONG offset must patch the word afterwards: forging the
     placement here would test the writer's arithmetic instead of the reader's rule.
     """
-    sblob = orbapp.pack_settings(orbapp.check_settings(list(settings)))
+    rows, schema = orbapp.normalize_settings(list(settings))
+    sblob = orbapp.pack_settings(rows)
+    sch = orbapp.pack_schema(schema)          # §57: the schema region the settings name
     ablob = orbapp.pack_assets(assets, slug) if assets else b""
     hdr = orbapp.pack_header(app_id if app_id is not None else orbapp.app_id_of(slug),
                              slug, title, caps, period, art_size, counts,
-                             sblob, abi=abi, sig=sig, asset_blob=ablob)
+                             sblob, abi=abi, sig=sig, asset_blob=ablob, schema_size=len(sch))
+    hdr[orbapp.W_SCHEMA_CRC] = orbapp.zlib.crc32(sch) & 0xFFFFFFFF if sch else 0
     hdr[orbapp.W_GEOM_SIZE] = geom_size
     if art_size:
         hdr[orbapp.W_ART_SIZE] = art_size
@@ -579,6 +582,17 @@ def vectors_refuse(add):
     ok, msg = python_outcome(per)
     add(Case("beat_under_the_floor", per, flags=F_CHECK, check=msg,
              py=("refuse", msg)))
+    # §57: the settings schema's three refusals
+    sbig = patch(build_hdr()[0][:], orbapp.W_SCHEMA_SIZE, orbapp.SCHEMA_MAX + 4)
+    ok, msg = python_outcome(sbig)
+    add(Case("schema_past_cap", sbig, flags=F_CHECK, check=msg, py=("refuse", msg)))
+    snone = patch(build_hdr()[0][:], orbapp.W_SCHEMA_SIZE, 0)
+    ok, msg = python_outcome(snone)
+    add(Case("settings_without_schema", snone, flags=F_CHECK, check=msg, py=("refuse", msg)))
+    scrc = build_hdr(settings=())[0][:]
+    scrc = patch(scrc, orbapp.W_SCHEMA_CRC, 0xBEEF)
+    ok, msg = python_outcome(scrc)
+    add(Case("empty_schema_with_crc", scrc, flags=F_CHECK, check=msg, py=("refuse", msg)))
     n17 = patch(build_hdr()[0][:], orbapp.W_N_SETTINGS, 17)
     ok, msg = python_outcome(n17)
     add(Case("n_settings_over_the_table", n17, flags=F_CHECK, check=msg,
@@ -586,6 +600,7 @@ def vectors_refuse(add):
     # -- the file layout (the scan's rule) --------------------------------------------
     for nm, word, bad in (("set_off_moved", orbapp.W_SET_OFF, 200),
                           ("geom_off_moved", orbapp.W_GEOM_OFF, 999),
+                          ("schema_off_moved", orbapp.W_SCHEMA_OFF, 1000),
                           ("art_off_unaligned", orbapp.W_ART_OFF, 449)):
         lay = patch(build_hdr()[0][:], word, bad)
         ok, msg = python_outcome(lay)
@@ -1155,6 +1170,11 @@ def lint_asset_mirror(hc, hh, ah):
 
 
 MUTATIONS = [
+    # §57: the settings schema's guards
+    ("schema_cap_doubled", "h", "ORBAPP_SCHEMA_MAX     6144u", "ORBAPP_SCHEMA_MAX     12288u"),
+    ("schema_pairing_dropped", "c", "if ((h->schema_size != 0) != (h->n_settings != 0))", "if (0)"),
+    ("schema_empty_crc_dropped", "c", "if (!h->schema_size && h->schema_crc)", "if (0)"),
+    ("schema_placement_dropped", "c", "if (h->schema_off != (uint64_t)h->asset_off +", "if (0 && h->schema_off != (uint64_t)h->asset_off +"),
     ("beat_floor_dropped", "h", "ORBAPP_BEAT_MIN_MS 1000u",
      "ORBAPP_BEAT_MIN_MS 500u"),
     ("geom_cap_doubled", "h", "ORBAPP_GEOM_BYTES_MAX 0x00040000u",
@@ -1213,11 +1233,9 @@ MUTATIONS = [
          "        out[i].at.y = (int16_t)((wh >> 16) & 0xFFFFu);\n")]),
     # The placement equality, the rule that makes an overlapping container
     # unrepresentable rather than merely unusual.
-    ("asset_layout_equality_dropped", "c",
-     "    if (h->geom_off != (uint64_t)h->asset_off +\n"
-     "                       (uint64_t)h->n_assets * ORBAPP_ASSET_WORDS * 4)",
-     "    if (0 && h->geom_off != (uint64_t)h->asset_off +\n"
-     "                       (uint64_t)h->n_assets * ORBAPP_ASSET_WORDS * 4)"),
+    ("geom_after_schema_dropped", "c",
+     "if (h->geom_off != (uint64_t)h->schema_off +",
+     "if (0 && h->geom_off != (uint64_t)h->schema_off +"),
     # The bug this batch was written for: a splitter that forbids the owner's slash
     # resolves nothing in an app's own namespace, and every reference the manifest
     # carries looks damaged. Restoring the pre-fix shape must fail the round trip.

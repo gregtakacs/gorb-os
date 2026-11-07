@@ -1857,6 +1857,21 @@ static bool ring_refund_due(void)
 }
 
 
+void display_dma_service(void)
+{
+    if (!s_ring_mux || !s_ring_parked) return;     /* funded, or never funded */
+    bool owed = false;
+    xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+    if (s_ring_parked && s_ring_loan == 0 && ring_refund_due() && ring_refund() == ESP_OK) {
+        s_ring_returned_us = 0;
+        owed = s_ring_redraw;          /* ring_refund set it from the dropped frames */
+    }
+    xSemaphoreGive(s_ring_mux);
+    /* The redraw itself stays the flush path's (it re-marks every row); all this
+     * owes it is a flush to run in. */
+    if (owed) lv_obj_invalidate(lv_screen_active());
+}
+
 /* Rows the clock's commit-time painter is about to repaint without LVGL ever
  * having rendered them. They must join the band set or the panel never sees
  * them. Marked in both arrays so it works whether or not a frame is already

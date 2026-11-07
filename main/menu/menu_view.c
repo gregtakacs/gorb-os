@@ -46,6 +46,7 @@
 #include "orb_net.h"
 #include "orb_sd.h"
 #include "orb_app.h"
+#include "themes_page.h"     /* §58: an app's Themes sub-menu */
 #include "orb_app_install.h"   /* APPS: the uninstall and fault-clear doors (P5.3) */
 #include "orb_app_scan.h"      /* D38: the APPS catalog walks the card too */
 #include "idle_dim.h"          /* DISPLAY submenu: the two runtime settings */
@@ -73,22 +74,24 @@ static const char *TAG = "menu";
  * exit-row arithmetic growing with it) is a compile error below.
  *
  * The top page is its first row: s_top carries the OS's own entries, and
- * rows_top() adds the dynamic ones — one per app that declares options, then
- * exit. APPS and ABOUT landed as s_top entries in P5.3 without this shape
+ * rows_top() adds the dynamic ones — the service pages (USB Drive, Sound),
+ * then exit. APPS and ABOUT landed as s_top entries in P5.3 without this shape
  * changing at all, which is the point of the table. */
 
 typedef enum {
     PG_LANDING = 0,   /* inert title; the knob belongs to the router   */
-    PG_TOP,           /* s_top, then one row per app with options, exit */
-    PG_APP,           /* one app's own options (its opt_* answers, B1) */
+    PG_TOP,           /* s_top, then the service rows, exit */
+    PG_APP,           /* a service page's options, an app's Themes sub-menu, or an
+                       * installed app's one page: its settings, its Themes and
+                       * Permissions rows and its doors (2026-11-07) */
     PG_DISPLAY,       /* the two idle-dim settings                    */
     PG_TO_RETIRED,    /* was the timeout presets; the timeout is knob-edited now
                        * (docs/knob-edit-plan.md). Kept so the saved menu position's
                        * page numbers keep their meaning; never restored or entered */
-    PG_PERMS,         /* one row per installed app: what it may do    */
-    PG_CAPS,          /* the selected app's owner caps, togglable */
+    PG_PERMS,         /* retired 2026-11-07; kept so stored page numbers keep meaning */
+    PG_CAPS,          /* one app's Permissions sub-menu: its caps, togglable */
     PG_APPS,          /* the catalog: every installed app, its state, its doors (B3/B4) */
-    PG_APPACT,        /* one app's own doors: show / retry / uninstall */
+    PG_APPACT,        /* a card file's doors: install / remove from card */
     PG_ABOUT,         /* inert identity list — no press does anything  */
     PG_SHARE,         /* D38: the USB share window's own card, forced over any page */
     PG_UNITS,         /* weather-plan §2.1: temperature, speed, distance for every app */
@@ -132,8 +135,8 @@ struct menu_page_s {
      *  flag. enter() only places the cursor. */
     void (*open)(const orb_app_t *a);
     /** Where "<- back" lands, when the parent's row of interest moves: the
-     *  app page returns to the top page's dynamic run at this app's own row,
-     *  and the caps page to its app's row of the permission list. Evaluated
+     *  a service page returns to the top page's dynamic run at its own row,
+     *  and an app's page to its row of APPS (go_back). Evaluated
      *  before leave(), so the page can still read its own state. */
     int  (*ordinal)(void);
     void (*enter)(void);                /* cursor placement on entry          */
@@ -173,9 +176,9 @@ static int  rows_units(void);    static void label_units(int, char *, size_t, bo
 static const char *title_units(void);  static const char *hint_units(void);
 static bool edit_units(int row, menu_edit_t *e);
 static bool edit_app(int row, menu_edit_t *e);
-static int  rows_perms(void);    static void label_perms(int, char *, size_t, bool *);
-static const char *title_perms(void);
-static void act_perms(int);      static int  ord_caps(void);
+static bool app_owned(const orb_app_t *a);
+static int  own_rows(void);      static void label_own(int, char *, size_t, bool *);
+static void act_own(int);        static void reopen_app(const orb_app_t *a, int what);
 static int  rows_caps(void);     static void label_caps(int, char *, size_t, bool *);
 static const char *title_caps(void);   static const char *hint_caps(void);
 static void act_caps(int);
@@ -185,7 +188,6 @@ static void act_apps(int);       static void enter_apps(void);
 static int  rows_appact(void);   static void label_appact(int, char *, size_t, bool *);
 static const char *title_appact(void); static const char *hint_appact(void);
 static void act_appact(int);     static int  ord_appact(void);
-static void open_appact(const orb_app_t *);
 static int  rows_about(void);    static void label_about(int, char *, size_t, bool *);
 static const char *title_about(void);
 static int  rows_share(void);    static void label_share(int, char *, size_t, bool *);
@@ -202,45 +204,29 @@ static int  page_rows(void);
 static void row_text(int, char *, size_t, bool *);
 static const char *page_title(void);
 static void title_line(char *, size_t);
+static int  rows_on_glass(void);
 static const char *page_hint(void);
 static void edit_end(void);      /* the knob edit mode, docs/knob-edit-plan.md */
 static void go_back(void);       static void activate(void);
 static void repaint(void);       static void job_post(orb_job_fn fn, int idx);
 
 
-/** How many app rows the top page carries: the service tier first (D36 — those
- *  are rows with settings and no face, and they lead because they are the OS's
- *  own answers), then one per entry with a face that declares options, in table
- *  order, which is the carousel's order — so the menu's list and the knob's walk
- *  cannot disagree about what exists. */
+/** How many dynamic rows the top page carries: the service tier (D36 — rows with
+ *  settings and no face, the OS's own answers). */
 static int app_rows(void)
 {
-    int n = (int)orb_app_menu_count();
-    for (size_t i = 0; i < orb_app_count(); i++) {
-        const orb_app_t *a = orb_app_at(i);
-        if (a && orb_app_has_options(a)) n++;
-    }
-    return n;
+    /* The service tier only (USB Drive, Sound): an app's own settings, themes and
+     * permissions live on its APPS page now (2026-11-07). */
+    return (int)orb_app_menu_count();
 }
 
-/** The i-th app that declares options, or NULL. Resolved through the registry
- *  every time rather than cached: apps install and uninstall at runtime, and
- *  a cached entry is a screen the owner can reach and find nothing on. */
+/** The i-th service row, or NULL. Resolved through the registry every time
+ *  rather than cached, so this stays the only place the run is defined. */
 static const orb_app_t *app_row(int i)
 {
     if (i < 0) return NULL;
-    /* D36: the service tier leads the run, then the faces, in the same order
-     * app_rows() counted. Asking the registry for both keeps this the only place
-     * the menu's dynamic run is defined. */
     const int nsvc = (int)orb_app_menu_count();
-    if (i < nsvc) return orb_app_menu_at((size_t)i);
-    i -= nsvc;
-    for (size_t k = 0; k < orb_app_count(); k++) {
-        const orb_app_t *a = orb_app_at(k);
-        if (!a || !orb_app_has_options(a)) continue;
-        if (i-- == 0) return a;
-    }
-    return NULL;
+    return i < nsvc ? orb_app_menu_at((size_t)i) : NULL;
 }
 
 /* The dim timeout, edited with the knob in minutes (docs/knob-edit-plan.md §1.2: 1 to
@@ -266,10 +252,10 @@ static bool   s_armed;
 static int    s_cur;              /* cursor within the current page */
 static int    s_painted_rows;     /* page_rows() the last repaint drew, for the PG_APP reap */
 
-/* ---- D19: the owner's revocation ladder (plan §4.2), two pages below
- * PERMISSIONS ---------------------------------------------------------------
+/* ---- D19: the owner's revocation ladder (plan §4.2), rows on an app's own page
+ * (2026-11-07; it was two pages below PERMISSIONS) ----------------------------
  *
- * Declare-at-install is the grant, so these pages approve nothing — they let
+ * Declare-at-install is the grant, so these rows approve nothing — they let
  * the owner take back what an app asked for at install, and show the
  * difference between what it declared and what still runs. The rows, the
  * state, and the one rule the pages exist for: the broker is the only authority
@@ -279,16 +265,20 @@ static int    s_painted_rows;     /* page_rows() the last repaint drew, for the 
  * only ever say yes, and a page of forced yeses teaches the owner to stop
  * reading it.
  */
-static int      s_perm_slot = -1;              /* the app under inspection  */
+static int      s_perm_slot = -1;              /* the Permissions sub-menu's app */
+/* §58: the Themes sub-menu is the provider row's page aimed at one app; this says
+ * whose, so back returns to that app's page and not to the top. */
+static const orb_app_t *s_theme_of;
+/* An app page's own rows after its settings: these two sub-menu rows, else a door id. */
+enum { OWN_THEMES = -2, OWN_PERMS = -3 };
 static const orb_cap_t OWNER_CAPS[] = { CAP_POWER, CAP_NET,
                                         CAP_SD_READ, CAP_THEMES, CAP_SOUND, CAP_LOCATION };
 #define N_OWNER_CAPS ((int)(sizeof OWNER_CAPS / sizeof OWNER_CAPS[0]))
 _Static_assert(N_OWNER_CAPS == CAP_N - CAP_POWER,
                "the permissions page lists every owner cap");
 
-/* The installed, non-chrome entries — which is NOT the same list as the top
- * page's app rows: those are the apps that declare options, while
- * PERMISSIONS must show every app that can ASK, option hooks or none. */
+/* The installed, non-chrome entries: APPS's list, every app that can ASK,
+ * option hooks or none. */
 static int perm_rows(void)
 {
     int n = 0;
@@ -439,6 +429,7 @@ static lv_obj_t *s_row_lbl[ROW_MAX];
  * "full-frame over the list" means: the rows stay painted under it, and the
  * plane hides them. */
 static lv_obj_t         *s_pv_img;
+static lv_obj_t         *s_note_box, *s_note_lbl;   /* §58: the message box */
 static lv_image_dsc_t    s_pv_dsc;
 static uint32_t          s_pv_stamp;      /* the stamp last painted; 0 = none */
 static uint16_t          s_pv_w, s_pv_h;  /* its drawn extent                 */
@@ -550,18 +541,21 @@ static const menu_row_t s_top[] = {
      * are a good experience and a character-per-press editor is not. Every
      * back_cur literal into this run moved up one with it. */
     { "DISPLAY",     PG_DISPLAY,     NULL },
-    /* The marker this row can carry is the refusal signal, not an ask: any
-     * app the gate closed this boot leaves one '*' on it, and the owner reads
-     * it on the top page rather than being interrupted on the dial (D19).
-     * Nothing waits on an answer. */
-    { "PERMISSIONS", PG_PERMS,       NULL },
-    /* APPS joins the OS's own run rather than the dynamic one: it describes
-     * the machine, not one app, and the plan's §7.2 top level names it. */
-    { "APPS",        PG_APPS,        NULL },
-    /* UNITS (weather-plan §2.1) closes the run, so no back_cur literal above it
-     * moved: one OS setting every app reads, set here or from the hub. */
+    /* UNITS (weather-plan §2.1): one OS setting every app reads, set here or from
+     * the hub. */
     { "UNITS",       PG_UNITS,       NULL },
+    /* APPS is every app's one place (owner, 2026-11-07: "3 different places now
+     * where apps show up ... way too disjointed"): the list, and per app one flat
+     * page of its settings, its permissions and its doors. PERMISSIONS and the
+     * per-app rows that followed exit are gone into it. The '*' this row can carry
+     * is the refusal signal, not an ask (D19): an app the gate closed this boot. */
+    { "APPS",        PG_APPS,        NULL },
 };
+
+/* §58: a row that is a sentence rather than an action ("More on Orb Manager") shows
+ * it in a box over the list. While it is up the knob answers nothing else: a press,
+ * a turn or a hold closes it, and the page under it is exactly as it was. */
+static char s_note[200];
 
 /* ---- the page table, and what its rows answer ------------------------------
  *
@@ -576,8 +570,6 @@ static const menu_row_t s_top[] = {
 static int rows_top(void)     { return TOP_OS_N + app_rows() + 1; }   /* +1: exit */
 static int rows_display(void) { return 3; }                     /* dim, timeout, back */
 static int rows_units(void)   { return ORB_UNITS_KINDS + 1; }   /* temp, speed, dist, back */
-static int rows_perms(void)   { return perm_rows() + 1; }
-static int rows_caps(void)    { return N_OWNER_CAPS + 1; }
 
 /* The app counts every row it has; the shell decides how many of them are on
  * the glass, which is the whole of ruling D12 and the reason the count below
@@ -587,19 +579,19 @@ static int rows_caps(void)    { return N_OWNER_CAPS + 1; }
 static int rows_app(void)
 {
     if (!s_app) return 0;
-    return visible_rows(orb_app_opt_count(s_app)) + 1;
+    return visible_rows(orb_app_opt_count(s_app)) + own_rows() + 1;
 }
 
 static void label_top(int row, char *out, size_t outsz, bool *sel_hi)
 {
     out[0] = '\0';
     if (sel_hi) *sel_hi = false;
-    /* Rows after the OS's own are one per app that declares options, labelled
-     * with the app's TITLE; the row after those is exit. Two ways to get this
-     * wrong and both read as the knob being ignored: reading the dynamic run
-     * without bounds and letting the exit case answer "exit" on a row that is
-     * really an app, and testing only `>= TOP_OS_N` and sending the exit row
-     * looking for an app that is not there. */
+    /* Rows after the OS's own are the service pages, labelled with their TITLE;
+     * the row after those is exit. Two ways to get this wrong and both read as
+     * the knob being ignored: reading the dynamic run without bounds and letting
+     * the exit case answer "exit" on a row that is really a page, and testing
+     * only `>= TOP_OS_N` and sending the exit row looking for a page that is not
+     * there. */
     if (row >= TOP_OS_N && row < TOP_EXIT) {
         const orb_app_t *a = app_row(row - TOP_OS_N);
         if (!a) { snprintf(out, outsz, "?"); return; }   /* unreachable: rows_top sized it */
@@ -618,12 +610,12 @@ static void label_top(int row, char *out, size_t outsz, bool *sel_hi)
     if (row >= TOP_OS_N) { snprintf(out, outsz, "exit"); return; }
     const menu_row_t *r = &s_top[row];
     /* The marker is the refusal signal, not an ask: any app the gate closed
-     * this boot leaves one '*' on the PERMISSIONS row, and the owner reads it
-     * here rather than being interrupted on the dial (D19). Nothing waits on
-     * an answer. The row is the one that opens the permission list — keyed to
+     * this boot leaves one '*' on the APPS row, and the owner reads it here
+     * rather than being interrupted on the dial (D19). Nothing waits on an
+     * answer. The row is the one that opens the app list — keyed to
      * its target, not to an index, so inserting a row above it moves the
      * marker along with the row. */
-    if (r->to == PG_PERMS && perms_denied())
+    if (r->to == PG_APPS && perms_denied())
         snprintf(out, outsz, "%s  *", r->label);
     else
         snprintf(out, outsz, "%s", r->label);
@@ -631,13 +623,30 @@ static void label_top(int row, char *out, size_t outsz, bool *sel_hi)
 
 /* Which page a "<- back" row returns to, and on which row: both come from the
  * table row, which is where the count, the parent and the landing cursor live
- * together. The two dynamic answers are the ordinal functions — the app page
- * lands on the top page's row that opened it (wherever that sits now), and the
- * caps page lands on its app's row of the permission list. An ordinal runs
+ * together. The dynamic answers are the ordinal functions — a service page
+ * lands on the top page's row that opened it (wherever that sits now), a card
+ * file's doors on its row of APPS — and an app's own page, which go_back routes
+ * to its row of APPS itself. An ordinal runs
  * before the leaving page's leave(), so it can still read the page's state.
  * go_back stays a name because the picker arms and the sentinel both speak it. */
 static void go_back(void)
 {
+    /* An app's own page came from APPS, not from the top page's service run, and
+     * lands on the app's row there (perm_row_of answers 0 for an app since gone). */
+    if (s_pg == P(PG_APP) && s_app == &orb_app_themes_row && s_theme_of) {
+        const orb_app_t *a = s_theme_of;       /* a Themes sub-menu: back to its app */
+        s_theme_of = NULL;
+        reopen_app(a, OWN_THEMES);
+        return;
+    }
+    if (s_pg == P(PG_CAPS)) {                  /* the Permissions sub-menu likewise */
+        reopen_app(orb_app_row((size_t)s_perm_slot), OWN_PERMS);
+        return;
+    }
+    if (s_pg == P(PG_APP) && s_app && !orb_app_is_menu_only(s_app)) {
+        go_to(PG_APPS, perm_row_of(s_app));
+        return;
+    }
     go_to(s_pg->back_to, s_pg->ordinal ? s_pg->ordinal() : s_pg->back_cur);
 }
 
@@ -659,7 +668,10 @@ static void label_app(int row, char *out, size_t outsz, bool *sel_hi)
 {
     if (!s_app) return;
     const int rows = orb_app_opt_count(s_app);
-    if (row >= visible_rows(rows)) { snprintf(out, outsz, "<- back"); return; }
+    if (row >= visible_rows(rows)) {
+        label_own(row - visible_rows(rows), out, outsz, sel_hi);
+        return;
+    }
     /* The index the cursor holds is a POSITION ON THE GLASS, and the app answers
      * by its own row number. vis_to_row() is the only place that translation
      * happens, which is what keeps a closed group from being four different
@@ -683,67 +695,6 @@ static void label_app(int row, char *out, size_t outsz, bool *sel_hi)
         snprintf(out, outsz, "%s%s", k == OPT_ITEM ? "  " : "",
                  orb_app_opt_label(s_app, ar));
 }
-static void label_perms(int row, char *out, size_t outsz, bool *sel_hi)
-{
-    const int n = perm_rows();
-    if (row >= n) { snprintf(out, outsz, "<- back"); return; }
-    const orb_app_t *a = perm_row(row);
-    if (!a) { snprintf(out, outsz, "?"); return; }   /* rows_perms sized it */
-    /* Both counts, because under D19 they are different facts: declared
-     * is what the app asked for at install, allowed is what still runs
-     * after the owner's toggles. "2 of 2" and "0 of 2" read the same
-     * under a single count, and they are the two answers an owner
-     * actually asks — what did I agree to, and what is live now. */
-    int nd = 0, ng = 0;
-    const uint32_t dm = orb_svc_declared(a), gm = orb_svc_grants(a);
-    for (int c = 0; c < N_OWNER_CAPS; c++) {
-        if (dm & (1u << OWNER_CAPS[c])) nd++;
-        if (gm & (1u << OWNER_CAPS[c])) ng++;
-    }
-    /* The dial is 466 px wide and this row carries the app's own title,
-     * so the marker stays one character. A denied call is rare enough —
-     * it means an app reached past its declaration — that a lone '*'
-     * earns a look, and the cap page names which cap when they come. */
-    if (nd == 0)
-        snprintf(out, outsz, "%s%s  (nothing declared)",
-                 orb_svc_denied_mask(a) ? "* " : "",
-                 a->title ? a->title : a->slug);
-    else
-        snprintf(out, outsz, "%s%s  (%d of %d)",
-                 orb_svc_denied_mask(a) ? "* " : "",
-                 a->title ? a->title : a->slug, ng, nd);
-}
-
-static void label_caps(int row, char *out, size_t outsz, bool *sel_hi)
-{
-    if (row >= N_OWNER_CAPS) { snprintf(out, outsz, "<- back"); return; }
-    const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
-    if (!a) { snprintf(out, outsz, "?"); return; }
-    const uint32_t bit = 1u << OWNER_CAPS[row];
-    const bool g   = (orb_svc_grants(a)   & bit) != 0;
-    const bool dcl = (orb_svc_declared(a) & bit) != 0;
-    if (sel_hi) *sel_hi = g;          /* the highlight answers "what is
-                                       * the state" the same way the
-                                       * zone row's star does */
-    /* Three states, and the third is the one the old page could not
-     * show: an app that never asked for the network must not read as
-     * something the owner could turn on. The row is inert, and the
-     * broker refuses the toggle anyway — this is the honest label, not
-     * a second gate. The mark rides all three, because the case worth
-     * seeing is an app calling a cap it never declared: that row IS
-     * undeclared, and dropping the mark here would hide the one
-     * refusal that says something about the app rather than the
-     * owner. */
-    const bool ref = (orb_svc_denied_mask(a) & bit) != 0;
-    if (!dcl) {
-        snprintf(out, outsz, "%s: not declared%s",
-                 orb_svc_cap_name(OWNER_CAPS[row]), ref ? " *" : "");
-        return;
-    }
-    snprintf(out, outsz, "%s: %s%s", orb_svc_cap_name(OWNER_CAPS[row]),
-             g ? "allowed" : "revoked", ref ? " *" : "");
-}
-
 /* The units page: one row per quantity, each knob-edited through its choices. */
 static const char *const UNIT_ROW[ORB_UNITS_KINDS] = { "temperature", "speed", "distance", "time", "pressure" };
 static int unit_now(int kind)
@@ -783,18 +734,18 @@ static void label_display(int row, char *out, size_t outsz, bool *sel_hi)
  * the list it came from. Static buffer, one writer, the LVGL task: same
  * reasoning as every painted string in this file. */
 static const char *title_top(void)  { return "MENU"; }
-static const char *title_app(void)  { return (s_app && s_app->title) ? s_app->title : "OPTIONS"; }
+static const char *title_app(void)
+{
+    static char t[48];
+    if (s_app == &orb_app_themes_row && s_theme_of) {     /* §58: a Themes sub-menu */
+        snprintf(t, sizeof t, "%.30s THEMES",
+                 s_theme_of->title ? s_theme_of->title : s_theme_of->slug);
+        return t;
+    }
+    return (s_app && s_app->title) ? s_app->title : "OPTIONS";
+}
 static const char *title_display(void) { return "DISPLAY"; }
 static const char *title_units(void)   { return "UNITS"; }
-static const char *title_perms(void){ return "PERMISSIONS"; }
-static const char *title_caps(void)
-{
-    static char caps_title[48];
-    const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
-    snprintf(caps_title, sizeof caps_title, "%s PERMISSIONS",
-             a && a->title ? a->title : a ? a->slug : "?");
-    return caps_title;
-}
 
 /* The hint says what the two gestures do HERE, because a sub-menu that does
  * not name the gesture that leaves it is a page the owner is stuck on until
@@ -803,11 +754,13 @@ static const char *title_caps(void)
  * card nobody presses. The app page's own hint lost its second string on
  * 2026-10-26: back is a row and the group header is inert, so the plain
  * sentence is true again. */
-static const char *hint_caps(void) { return "rotate: choose   push: toggle"; }
 static const char *hint_app(void)
 {
     /* The plain answer. Back is a row, so the exit needs no clause; the group
-     * header is inert, so the hint must not promise it answers a press. */
+     * header is inert, so the hint must not promise it answers a press. An app's
+     * own page carries the removals too, but their second press is said by the
+     * first one's prompt: a two-line hint here sat over the page's last row
+     * (Gold, 2026-11-07), which a page this long always scrolls onto. */
     return "rotate: choose   push: change";
 }
 static const char *hint_display(void) { return "rotate: choose   push: change"; }
@@ -822,37 +775,9 @@ static void act_display(int row)
     /* The timeout row never lands here: it is knob-edited (edit_display). */
     if (row == 0) { job_post(job_dim_en, 0); repaint(); }
 }
-static void act_perms(int row)
-{
-    /* The D19 door: what each installed app declared at install, what still
-     * runs after the owner's toggles, and a '*' where an app has been refused
-     * for calling past its declaration. app -> cap -> toggle from here, with
-     * no ceremony in between — the install already carried the consent. */
-    const orb_app_t *a = perm_row(row);
-    if (!a) { go_back(); repaint(); return; }           /* rows_perms sized it */
-    s_perm_slot = orb_app_index_of(a);
-    go_to(PG_CAPS, 0);
-    repaint();
-}
-static void act_caps(int row)
-{
-    const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
-    if (!a) { go_to(PG_PERMS, 0); repaint(); return; }
-    /* One press, one toggle — the ceremony is gone because there is nothing
-     * left to confirm (D19): the owner already agreed to this cap when the app
-     * declared it at install, and this row only takes it back or gives it
-     * again. An undeclared cap is NOT refused here: the broker is the single
-     * authority on what a toggle may do, so the press posts the job and the
-     * status line reports the refusal, which keeps one rule in one file
-     * instead of two that can disagree. */
-    job_post(job_grant, cap_pack(a, row));
-    repaint();                                          /* shows "working..." */
-}
-
 /* ---- P5.3: APPS, its doors, and ABOUT (plan §7 items 2 and 4) --------------
  *
- * The catalog is the registry's installed tier, the same set PERMISSIONS walks
- * (perm_rows/perm_row) and for the same reason: `orb_app_at()` hides the
+ * The catalog is the registry's installed tier (perm_rows/perm_row), because `orb_app_at()` hides the
  * shell's own entries and every faulted app, and a page whose job is the
  * owner's doors cannot afford to hide a faulted one — it is exactly the row
  * they come to retry.
@@ -909,8 +834,7 @@ static bool about_qr_on(void)
 }
 
 /* The subject PG_APPACT is showing, by registry index when it is on the dial
- * (the same convention s_perm_slot uses for PG_CAPS, so the two "which app"
- * states are one kind of state), and by snapshot index when it is a card file
+ * (an installed app's own page, PG_APP, sets it too, so its doors are these), and by snapshot index when it is a card file
  * the dial does not run. The two two-press arms are held as the subject's
  * token: a subject that can no longer be pointed at cannot fire. */
 static int s_door_slot  = -1;
@@ -983,15 +907,15 @@ static const orbapp_scan_entry_t *card_subject(void)
 static int door_subject(void) { return s_doormode ? 1000 + s_card_sub : s_door_slot; }
 
 /* The doors this subject answers, in the order an owner wants them. A registry
- * row always carries both removals, and its first row is the state's own word:
- * show for a row the dial runs, install for one it holds off or has faulted. One
- * press cannot both show an app and put it back on the dial, so the two states
- * share a row and never appear at once; the removals do not depend on the state,
- * because an app the owner cannot use is still an app they may want gone. A card
+ * row always carries both removals, led by retry when the OS stopped it after two
+ * faults (C2). The old "show on the dial" door went 2026-11-07 (owner): the app list
+ * and the carousel open apps, and the door swapped the glass behind the router's
+ * back. The removals do not depend on the state, because an app the owner cannot
+ * use is still an app they may want gone. A card
  * file gets install plus remove-from-card, which the worker answers honestly when
  * the card holds nothing. Install and uninstall are mutually exclusive by
  * construction: the dial holds a runnable slot or it does not. */
-enum { ACT_SHOW = 0, ACT_INSTALL, ACT_UNINSTALL, ACT_CARDRM };
+enum { ACT_INSTALL = 0, ACT_UNINSTALL, ACT_CARDRM };
 
 static int appact_id(int row)
 {
@@ -1004,17 +928,15 @@ static int appact_id(int row)
     } else {
         const orb_app_t *a = s_door_slot >= 0 ? orb_app_row((size_t)s_door_slot) : NULL;
         if (!a) return -1;
-        /* Row 0 is the state's answer, rows 1 and 2 are the two removals every
-         * registry row owns. Only the FIRST row moves with the state: an installed
-         * app either runs (show it) or the OS stopped it after two faults (C2), and
-         * the press that answers that row is the fault clear — "retry". There is no
+        /* The two removals every registry row owns, led by "retry" — C2's fault
+         * clear — only when the OS stopped the app after two faults. There is no
          * off state (§43.3).
          * The removals stand whether or not the row runs — an owner who cannot use
          * an app is an owner who may want it gone. The card door rides the worker's
          * honesty, not a pre-check here: `g_scan_n == 0` at press time means the
          * walk had not landed on this page yet, and the door answers "the card held
          * no copy" rather than the page guessing (bench, orb-B 2026-10-24). */
-        ids[n++] = !a->failed ? ACT_SHOW : ACT_INSTALL;
+        if (a->failed) ids[n++] = ACT_INSTALL;
         ids[n++] = ACT_UNINSTALL;
         ids[n++] = ACT_CARDRM;
     }
@@ -1048,12 +970,6 @@ static void unarm_arms(void)
         s_ui.status[0] = '\0';
 }
 
-static void open_appact(const orb_app_t *a)
-{
-    s_door_slot = orb_app_index_of(a);
-    s_doormode  = 0;                    /* a registry row owns the page */
-    s_card_sub  = -1;
-}
 static int ord_appact(void)
 {
     /* Which APPS row this subject is on, so back lands where the owner came
@@ -1102,8 +1018,8 @@ static void label_apps(int row, char *out, size_t outsz, bool *sel_hi)
         return;
     }
     const bool on_glass = app_on_glass(a);
-    snprintf(out, outsz, "%s  %s", a->title ? a->title : a->slug,
-             on_glass ? "on the dial" : "installed");
+    snprintf(out, outsz, "%s%s  %s", orb_svc_denied_mask(a) ? "* " : "",
+             a->title ? a->title : a->slug, on_glass ? "on the dial" : "installed");
 }
 
 static void act_apps(int row)
@@ -1125,11 +1041,9 @@ static void act_apps(int row)
     }
     const orb_app_t *a = perm_row(row);
     if (!a) { go_back(); repaint(); return; }
-    /* The door page is armed through its own open hook, exactly as the top
-     * page arms PG_APP: which app a page is about is the page's business, and
-     * a second place that assigns it is a second place to get it wrong. */
-    s_pages[PG_APPACT].open(a);
-    go_to(PG_APPACT, 0);
+    /* An installed app's one page (2026-11-07): its settings, permissions and
+     * doors, armed through PG_APP's own open hook. */
+    s_pages[PG_APP].open(a);
     repaint();
 }
 
@@ -1143,6 +1057,7 @@ static const char *hint_apps(void)  { return "rotate: choose   push: open"; }
  * never under the cursor (see the snapshot rule above). */
 static void enter_apps(void)
 {
+    s_theme_of   = NULL;
     s_door_slot  = -1;
     s_doormode   = 0;
     s_card_sub   = -1;
@@ -1156,21 +1071,12 @@ static void enter_apps(void)
  * gets uninstall and
  * remove-from-card. The row count and label are one function, so a page cannot
  * draw a door its press would refuse. */
-static void label_appact(int row, char *out, size_t outsz, bool *sel_hi)
+static void label_door(int id, char *out, size_t outsz, bool *sel_hi)
 {
     if (sel_hi) *sel_hi = false;
-    const int id = appact_id(row);
     const bool armed_u = (s_uninst_arm == door_subject());
     const bool armed_c = (s_cardrm_arm == door_subject());
     switch (id) {
-    case ACT_SHOW: {
-        const orb_app_t *a = orb_app_row((size_t)s_door_slot);
-        const bool on_glass = a && app_on_glass(a);
-        if (sel_hi) *sel_hi = on_glass;
-        snprintf(out, outsz, "%s", on_glass ? "showing on the dial"
-                                            : "show on the dial");
-        return;
-    }
     case ACT_INSTALL: {
         /* The label follows the press: a card file installs; a faulted row retries
          * (C2's fault clear). An app is installed or not — there is no third word. */
@@ -1248,39 +1154,184 @@ static const char *appact_name(void)
          : s_pend_stem[0]  ? s_pend_stem : "?";
 }
 
+static void label_appact(int row, char *out, size_t outsz, bool *sel_hi)
+{
+    label_door(appact_id(row), out, outsz, sel_hi);
+}
+
+static void act_door(int id);
 static void act_appact(int row)
 {
     const int id = appact_id(row);
     if (id < 0) { go_to(PG_APPS, 0); repaint(); return; }   /* the back row, or subject gone */
-    appact_stash();
-    switch (id) {
-    case ACT_SHOW: {
-        /* The carousel's own door, on the LVGL task where lv_screen_load()
-         * must run. It refuses an app that cannot walk, and the line says so
-         * rather than leaving the owner staring at a screen that did not move.
-         * NOT_FOUND is its own sentence: it is not the app failing, it is the
-         * platform not yet drawing that kind — a code app's layers have no
-         * compositor commit until P8 lands, and the owner reading "will not
-         * go on the dial" after a clean install would look in the app, not
-         * the phase list. */
-        const orb_app_t *a = orb_app_row((size_t)s_door_slot);
-        if (!a) { go_to(PG_APPS, 0); repaint(); return; }
-        const esp_err_t e = orb_app_activate(a);
-        snprintf(s_ui.status, sizeof(s_ui.status),
-                 e == ESP_OK ? "\"%s\": on the dial"
-                             : e == ESP_ERR_NOT_FOUND
-                 ? "\"%s\": code apps draw layers the dial cannot paint yet"
-                             : "\"%s\": %s will not go on the dial",
-                 a->title ? a->title : a->slug, a->slug);
-        ESP_LOGI(TAG, "apps: activate \"%s\" -> %s", a->slug, esp_err_to_name(e));
+    act_door(id);
+}
+
+/* ---- one app's page: settings, then Themes and Permissions, then doors -------------
+ * 2026-11-07, twice. The owner found an app in three places — PERMISSIONS, APPS and
+ * its own settings row at the top — and asked for one: an installed app's PG_APP page
+ * is the whole of it. A flat page with every theme and cap on it then read as too
+ * much, so the two lists are sub-menus: the page is the settings its manifest shows
+ * on the dial (the app's own opt_* answers, above), a Themes row and a Permissions
+ * row, then the doors APPACT has always drawn, by the same ids. A card file nobody
+ * installed keeps APPACT itself. The service pages (USB Drive, Sound) and the Themes
+ * sub-menu are PG_APP too, and own none of this. */
+static bool app_owned(const orb_app_t *a)
+{
+    return a && a->kind == ORB_APP_KIND_APP && a->installed && !orb_app_is_menu_only(a);
+}
+
+/* The owner caps the Permissions sub-menu lists for a: declared ones, and any it
+ * was refused — the undeclared reach is the one refusal that says something about
+ * the app. */
+static int own_cap(const orb_app_t *a, int i)
+{
+    const uint32_t m = orb_svc_declared(a) | orb_svc_denied_mask(a);
+    for (int c = 0; c < N_OWNER_CAPS; c++)
+        if ((m & (1u << OWNER_CAPS[c])) && i-- == 0) return c;
+    return -1;
+}
+static int own_caps_n(const orb_app_t *a)
+{
+    int n = 0;
+    while (own_cap(a, n) >= 0) n++;
+    return n;
+}
+
+/* The page's own rows after the settings, in order: Themes when the card holds any
+ * of the app's, Permissions when it declared or reached for a cap, then the doors. */
+static bool own_has_themes(const orb_app_t *a) { return themes_page_count_for(a->slug) > 0; }
+static int own_at(int i)                     /* OWN_* or a door id, -1 past the end */
+{
+    if (!app_owned(s_app)) return -1;
+    if (own_has_themes(s_app) && i-- == 0) return OWN_THEMES;
+    if (own_caps_n(s_app) > 0 && i-- == 0) return OWN_PERMS;
+    return appact_id(i);
+}
+static int own_rows(void)
+{
+    int n = 0;
+    while (own_at(n) != -1) n++;
+    return n;
+}
+/** The page row of an own row, so a sub-menu's back lands on the row that opened it. */
+static int own_row_of(int what)
+{
+    for (int i = 0; own_at(i) != -1; i++)
+        if (own_at(i) == what) return visible_rows(orb_app_opt_count(s_app)) + i;
+    return 0;
+}
+
+static void label_own(int i, char *out, size_t outsz, bool *sel_hi)
+{
+    if (sel_hi) *sel_hi = false;
+    const int what = own_at(i);
+    if (what == OWN_THEMES) {
+        const char *on = themes_page_active_for(s_app->slug);
+        const int n = themes_page_count_for(s_app->slug);
+        if (on) snprintf(out, outsz, "Themes  (%.30s)", on);
+        else    snprintf(out, outsz, "Themes  (%d)", n);
+        return;
+    }
+    if (what == OWN_PERMS) {
+        int nd = 0, ng = 0;
+        for (int k = 0; own_cap(s_app, k) >= 0; k++) {
+            const uint32_t bit = 1u << OWNER_CAPS[own_cap(s_app, k)];
+            if (orb_svc_declared(s_app) & bit) nd++;
+            if ((orb_svc_declared(s_app) & bit) && (orb_svc_grants(s_app) & bit)) ng++;
+        }
+        snprintf(out, outsz, "Permissions  (%d of %d)%s", ng, nd,
+                 orb_svc_denied_mask(s_app) ? "  *" : "");
+        return;
+    }
+    if (what >= 0) { label_door(what, out, outsz, sel_hi); return; }
+    snprintf(out, outsz, "<- back");
+}
+
+static void act_own(int i)
+{
+    if (!app_owned(s_app)) { go_back(); repaint(); return; }
+    const int what = own_at(i);
+    if (what == OWN_THEMES) {
+        const orb_app_t *a = s_app;
+        go_to(PG_APP, 0);                       /* leaves this page: disarms it */
+        themes_page_for(a->slug);
+        s_theme_of = a;
+        s_pages[PG_APP].open(&orb_app_themes_row);
         repaint();
         return;
     }
+    if (what == OWN_PERMS) {
+        s_perm_slot = orb_app_index_of(s_app);
+        go_to(PG_CAPS, 0);
+        repaint();
+        return;
+    }
+    if (what >= 0) act_door(what);
+}
+
+/* ---- the Permissions sub-menu: one row per cap, a press toggles it (D19) ---------- */
+static int rows_caps(void)
+{
+    const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
+    return (a ? own_caps_n(a) : 0) + 1;
+}
+static void label_caps(int row, char *out, size_t outsz, bool *sel_hi)
+{
+    if (sel_hi) *sel_hi = false;
+    const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
+    const int c = a ? own_cap(a, row) : -1;
+    if (c < 0) { snprintf(out, outsz, "<- back"); return; }
+    const uint32_t bit = 1u << OWNER_CAPS[c];
+    const bool dcl = (orb_svc_declared(a) & bit) != 0;
+    const bool g   = (orb_svc_grants(a) & bit) != 0;
+    const bool ref = (orb_svc_denied_mask(a) & bit) != 0;
+    if (sel_hi) *sel_hi = g;           /* the highlight answers "what is the state" */
+    snprintf(out, outsz, "%s:  %s%s", orb_svc_cap_name(OWNER_CAPS[c]),
+             !dcl ? "not declared" : g ? "allowed" : "revoked", ref ? " *" : "");
+}
+static const char *title_caps(void)
+{
+    static char t[48];
+    const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
+    snprintf(t, sizeof t, "%.30s PERMISSIONS", a && a->title ? a->title : a ? a->slug : "?");
+    return t;
+}
+static const char *hint_caps(void) { return "rotate: choose   push: toggle"; }
+static void act_caps(int row)
+{
+    const orb_app_t *a = orb_app_row((size_t)s_perm_slot);
+    if (!a) { go_to(PG_APPS, 0); repaint(); return; }
+    /* One press, one toggle: the broker is the single authority on what a toggle
+     * may do, so an undeclared cap posts too and the line reports the refusal. */
+    job_post(job_grant, cap_pack(a, own_cap(a, row)));
+    repaint();                                          /* shows "working..." */
+}
+
+/* Back out of a sub-menu onto its app's page, cursor on the row that opened it; an
+ * app uninstalled meanwhile lands on the list instead. */
+static void reopen_app(const orb_app_t *a, int what)
+{
+    if (!a || !app_owned(a)) { go_to(PG_APPS, 0); return; }
+    go_to(PG_APP, 0);
+    s_pages[PG_APP].open(a);
+    s_cur = own_row_of(what);
+}
+
+static void act_door(int id)
+{
+    appact_stash();
+    switch (id) {
     case ACT_INSTALL:
         /* Faulted registry row: the press is C2's fault clear. Uninstalled card
          * file: the press installs it from the card, the hub's one-press shape. */
-        if (s_doormode) job_post(job_install_card, 0);
-        else {
+        if (s_doormode) {
+            /* The copy is the worker's; the line is said now, so the press shows at
+             * once rather than after a big app's card read and flash write. */
+            snprintf(s_ui.status, sizeof(s_ui.status), "\"%.40s\": installing...",
+                     appact_name());
+            job_post(job_install_card, 0);
+        } else {
             const orb_app_t *a = orb_app_row((size_t)s_door_slot);
             if (!a) { go_to(PG_APPS, 0); repaint(); return; }
             job_post(job_clear, door_pack(a, 1));
@@ -1352,6 +1403,7 @@ static void job_scan(void *arg)
     ui_t out; memset(&out, 0, sizeof out);
     const int n = orb_app_scan(s_card_ent, ORB_APP_SCAN_MAX);
     s_card_n = n < 0 ? 0 : n;
+    themes_page_walk();      /* §58: each app's Themes row is ready when its page opens */
     worker_publish(&out);
 }
 
@@ -1384,13 +1436,22 @@ static void job_uninstall(void *arg)
     const orb_app_t *a = orb_app_row((size_t)slot);
     if (!a) { snprintf(out.status, sizeof out.status, "that switch found no app"); worker_publish(&out); return; }
     char why[48] = "";                       /* fits the line, as above */
-    const esp_err_t e = orb_app_uninstall(a->slug, why, sizeof why);
+    /* The name is copied first: a successful uninstall frees the row, and `a`
+     * then points at a zeroed entry whose slug is NULL — formatting it took the
+     * dial down on every uninstall from the menu (Gold, 2026-11-07). */
+    char slug[ORBAPP_SLUG_MAX], name[ORBAPP_TITLE_MAX];
+    strlcpy(slug, a->slug, sizeof slug);
+    strlcpy(name, a->title ? a->title : a->slug, sizeof name);
+    const esp_err_t e = orb_app_uninstall(slug, why, sizeof why);
     /* The card file survives on purpose (B4), and the line says so: an owner
      * who reads a bare "uninstalled" looks for the app on the card next time
      * and finds it, which reads as if the first refusal had been a lie. */
-    snprintf(out.status, sizeof out.status, "\"%s\": %s",
-             a->title ? a->title : a->slug,
+    snprintf(out.status, sizeof out.status, "\"%.30s\": %.33s", name,
              e == ESP_OK ? "uninstalled, the card copy stays" : why);
+    if (e == ESP_OK) {                        /* the tier moved: the file is installable */
+        const int n = orb_app_scan(s_card_ent, ORB_APP_SCAN_MAX);
+        s_card_n = n < 0 ? 0 : n;
+    }
     worker_publish(&out);
 }
 
@@ -1907,11 +1968,12 @@ static void repaint(void)
     /* Window the list around the cursor so a 62-row zone table scrolls inside
      * five physical rows; clamped at both ends so the last row stays reachable
      * without the window drifting past the end of the list. */
+    const int vis = rows_on_glass();
     int win = 0;
-    if (rows > ROW_MAX) {
-        win = s_cur - ROW_MAX / 2;
+    if (rows > vis) {
+        win = s_cur - vis / 2;
         if (win < 0) win = 0;
-        if (win > rows - ROW_MAX) win = rows - ROW_MAX;
+        if (win > rows - vis) win = rows - vis;
     }
 
     char buf[64];
@@ -1919,7 +1981,7 @@ static void repaint(void)
     const bool qr = about_qr_on();                 /* the code takes the list's place */
     for (int i = 0; i < ROW_MAX; i++) {
         const int r = win + i;
-        if (rows == 0 || r >= rows || qr) {
+        if (rows == 0 || r >= rows || qr || i >= vis || s_note[0]) {   /* the box stands alone */
             lv_label_set_text(s_row_lbl[i], "");
             lv_obj_set_style_bg_color(s_row[i], lv_color_black(), 0);
             continue;
@@ -1970,6 +2032,19 @@ static void repaint(void)
      * surviving a page change is the last theme's picture over a page that
      * never mentioned it. */
     paint_preview();
+
+    /* §58: the message box, last, so it sits over the plane too. */
+    if (s_note_box) {
+        if (s_armed && s_note[0]) {
+            char gn[sizeof s_note + 32];       /* the fold can widen a glyph */
+            dial_text(gn, sizeof gn, s_note);
+            lv_label_set_text(s_note_lbl, gn);
+            lv_obj_remove_flag(s_note_box, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(s_note_box);
+        } else {
+            lv_obj_add_flag(s_note_box, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
 
     lv_obj_invalidate(s_scr);
 }
@@ -2076,6 +2151,29 @@ esp_err_t menu_view_init(void)
     lv_image_set_antialias(s_pv_img, false);      /* 2x nearest, not a resample */
     lv_obj_remove_flag(s_pv_img, LV_OBJ_FLAG_CLICKABLE);
 
+    /* §58: the message box, over the list and under nothing. Sized to the round
+     * glass: 330 px wide sits inside the chord from y=130 to y=330. */
+    s_note_box = lv_obj_create(s_scr);
+    if (!s_note_box) goto nomem;
+    lv_obj_set_size(s_note_box, 330, 200);
+    lv_obj_align(s_note_box, LV_ALIGN_CENTER, 0, -2);
+    lv_obj_set_style_bg_color(s_note_box, lv_color_make(0x1c, 0x24, 0x2e), 0);
+    lv_obj_set_style_border_color(s_note_box, COL_BG_SEL, 0);
+    lv_obj_set_style_border_width(s_note_box, 2, 0);
+    lv_obj_set_style_radius(s_note_box, 18, 0);
+    lv_obj_set_style_pad_all(s_note_box, 18, 0);
+    lv_obj_set_scrollable(s_note_box, false);
+    lv_obj_add_flag(s_note_box, LV_OBJ_FLAG_HIDDEN);
+    s_note_lbl = lv_label_create(s_note_box);
+    if (!s_note_lbl) goto nomem;
+    lv_obj_set_width(s_note_lbl, 290);
+    lv_label_set_long_mode(s_note_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(s_note_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_note_lbl, COL_TXT_HI, 0);
+    lv_obj_set_style_text_align(s_note_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(s_note_lbl, "");
+    lv_obj_center(s_note_lbl);
+
     repaint();
     ESP_LOGI(TAG, "menu ready (worker up, %s)", orb_sd_mounted() ? "card mounted" : "no card");
     return ESP_OK;
@@ -2087,6 +2185,7 @@ nomem:
      * and nothing held across the failure. The next boot starts from empty. */
     lv_obj_del(s_scr);
     s_scr = NULL; s_title = NULL; s_status = NULL; s_hint = NULL; s_pv_img = NULL;
+    s_note_box = NULL; s_note_lbl = NULL;
     for (int i = 0; i < ROW_MAX; i++) { s_row[i] = NULL; s_row_lbl[i] = NULL; }
     vSemaphoreDelete(s_res_mx);
     s_res_mx = NULL;
@@ -2110,11 +2209,11 @@ void menu_view_show(void) { repaint(); }
  * page ten times a day costs zero commits, an idempotent-by-comparison write,
  * and a read that carries no authority until it resolves.
  *
- * Only pages that re-enter from their own id are remembered: TOP, TZ, DISPLAY,
- * TO, PERMS, ABOUT. The rest cannot be, and the reason each is left out is a
+ * Only pages that re-enter from their own id are remembered: TOP, DISPLAY,
+ * ABOUT, UNITS. The rest cannot be, and the reason each is left out is a
  * correctness rule, not an oversight — PG_APP/PG_APPACT name an app that may
- * have uninstalled since (their open() resolves the pointer), PG_CAPS carries a
- * selected slot that a stored page id cannot re-derive, PG_SHARE is the window's
+ * have uninstalled since (their open() resolves the pointer), the retired
+ * PERMS/CAPS pages open the top page instead, PG_SHARE is the window's
  * and not the owner's to return to, and PG_LANDING is unarmed. A remembered page
  * whose enter() hook re-derives the cursor (the zone list on the zone in force,
  * the timeout picker on the preset in force) takes the hook's answer, not the
@@ -2141,7 +2240,7 @@ static bool s_pos_loaded;         /* the record has been read once this boot */
 static bool pos_restorable(int pg)
 {
     const unsigned ok = (1u << PG_TOP) | (1u << PG_DISPLAY)
-                      | (1u << PG_PERMS) | (1u << PG_ABOUT) | (1u << PG_UNITS);
+                      | (1u << PG_ABOUT) | (1u << PG_UNITS);
     return pg >= 0 && pg < PG_N && ((ok >> pg) & 1u) != 0;
 }
 
@@ -2249,17 +2348,21 @@ static void open_app(const orb_app_t *a)
         if (orb_app_opt_kind(a, i) == OPT_GROUP) { s_group_open = i; break; }
     shape_check(orb_app_opt_count(a));
     orb_app_opt_arm(a, true);
+    /* An installed app's page carries its doors, and they speak APPACT's subject. */
+    s_door_slot  = app_owned(a) ? orb_app_index_of(a) : -1;
+    s_doormode   = 0;
+    s_card_sub   = -1;
     s_pg = P(PG_APP);
 }
 
 static int ord_app(void) { return top_os_rows() + app_row_index(s_app); }
-static int ord_caps(void) { return perm_row_of(orb_app_row((size_t)s_perm_slot)); }
 
 static void leave_app(void)
 {
     orb_app_opt_arm(s_app, false);
     s_app = NULL;
     s_group_open = -1;
+    unarm_arms();                        /* a removal arm never outlives its page */
 }
 
 /* The press of an app row. The press belongs to the app, at the app's OWN
@@ -2275,15 +2378,18 @@ static void leave_app(void)
 static void act_app(int row)
 {
     const int rows = orb_app_opt_count(s_app);
+    if (row >= visible_rows(rows)) { act_own(row - visible_rows(rows)); return; }
     const int ar = vis_to_row(rows, row);
     if (ar < 0) { go_back(); repaint(); return; }   /* unreachable: rows_app sized it */
+    const char *note = orb_app_opt_note(s_app, ar);
+    if (note) { strlcpy(s_note, note, sizeof s_note); repaint(); return; }
     orb_app_opt_sel(s_app, ar);
     repaint();
 }
 
 /* A press on the top page: the sub-table's row first — a row that acts (AP)
- * says so, a row that opens a page (TZ, DISPLAY, PERMISSIONS, and P5.3's
- * APPS/ABOUT) names the page — and below the sub-table, the dynamic app run.
+ * says so, a row that opens a page (DISPLAY, UNITS, APPS, ABOUT) names the
+ * page — and below the sub-table, the service run.
  * Reaching past those means the exit row, but rows_top() put exactly one row
  * there and the dispatcher already routed it through MENU_GO_EXIT, so this
  * function never sees it. */
@@ -2314,6 +2420,7 @@ static void go_to(int to, int cur)
      * entry the owner stood on before the menu, not to the landing card (owner
      * ruling, 2026-10-25); input_router_menu_exit disarms on the way, and that
      * disarm is the item-3 edge that stores where in the list they stopped. */
+    s_note[0] = '\0';                     /* nor does a message box */
     if (to == MENU_GO_EXIT) { input_router_menu_exit(); return; }
     edit_end();                          /* an edit never outlives its page */
     if (s_pg->leave) s_pg->leave();
@@ -2405,11 +2512,9 @@ const menu_page_t s_pages[PG_N] = {
     [PG_DISPLAY] = { .rows = rows_display, .label = label_display, .title = title_display,
                      .hint = hint_display, .act = act_display,
                      .back_to = PG_TOP, .back_cur = 1, .edit = edit_display },
-    [PG_PERMS]   = { .rows = rows_perms, .label = label_perms, .title = title_perms,
-                     .act = act_perms, .back_to = PG_TOP, .back_cur = 2 },
+    /* §58: back is go_back's, onto the app's page at its Permissions row. */
     [PG_CAPS]    = { .rows = rows_caps, .label = label_caps, .title = title_caps,
-                     .hint = hint_caps, .act = act_caps, .ordinal = ord_caps,
-                     .back_to = PG_PERMS, .back_cur = 0 },
+                     .hint = hint_caps, .act = act_caps, .back_to = PG_APPS, .back_cur = 0 },
     /* APPS is the catalog and the two doors' only path on the glass (B4);
      * ABOUT is inert. Both sit in the OS's own run of the top page, so the
      * dynamic app rows and exit shift down two without any arithmetic here
@@ -2418,11 +2523,11 @@ const menu_page_t s_pages[PG_N] = {
                      .hint = hint_apps, .act = act_apps, .enter = enter_apps,
                      .back_to = PG_TOP, .back_cur = 3 },
     [PG_APPACT]  = { .rows = rows_appact, .label = label_appact, .title = title_appact,
-                     .hint = hint_appact, .act = act_appact, .open = open_appact,
+                     .hint = hint_appact, .act = act_appact,
                      .ordinal = ord_appact,
                      .back_to = PG_APPS, .back_cur = 0 },
     [PG_UNITS]   = { .rows = rows_units, .label = label_units, .title = title_units,
-                     .hint = hint_units, .back_to = PG_TOP, .back_cur = 4, .edit = edit_units },
+                     .hint = hint_units, .back_to = PG_TOP, .back_cur = 2, .edit = edit_units },
     [PG_ABOUT]   = { .rows = rows_about, .label = label_about, .title = title_about,
                      .hint = hint_about, .back_to = PG_TOP, .back_cur = 0 },
     /* The share card: reachable from no row, carrying no rows of its own, and
@@ -2601,10 +2706,20 @@ static const char *page_title(void) { return s_pg->title ? s_pg->title() : "MENU
  * keeps page_title(): its row N/M is the same number in the walk driver's own
  * 0-based shape, so the line stays the glass's witness without doubling the
  * digits into the log. */
+/* The rows the list may use: all five, or four while a status line is up. The
+ * line sits where a fifth row lands, so on a page that fills the glass the two
+ * were drawn over each other ("HSB: installed" beside "uninstall", Gold,
+ * 2026-11-07); every page had that, an app's one page just reaches five rows
+ * every time. ABOUT's QR takes the list's place and the line's, so it keeps five. */
+static int rows_on_glass(void)
+{
+    return (s_ui.status[0] && !about_qr_on()) ? ROW_MAX - 1 : ROW_MAX;
+}
+
 static void title_line(char *out, size_t outsz)
 {
     const int rows = page_rows();
-    if (rows > ROW_MAX)
+    if (rows > rows_on_glass())
         snprintf(out, outsz, "%s  %d/%d", page_title(), s_cur + 1, rows);
     else
         snprintf(out, outsz, "%s", page_title());
@@ -2612,6 +2727,7 @@ static void title_line(char *out, size_t outsz)
 
 static const char *page_hint(void)
 {
+    if (s_note[0]) return "push: OK";
     if (orb_jobs_busy()) return "working...";
     if (s_edit.on) return "rotate: adjust   push: save   hold: cancel";
     return s_pg->hint ? s_pg->hint() : "rotate: choose   push: open";
@@ -2629,6 +2745,10 @@ void menu_view_apply_input(int32_t delta, bool pressed)
      * "working..." (page_hint) until the result lands. */
     if (orb_jobs_busy()) return;
 
+    if (s_note[0]) {                         /* the box takes the gesture that closes it */
+        if (pressed || delta) { s_note[0] = '\0'; repaint(); }
+        return;
+    }
     if (s_edit.on) { edit_input(delta, pressed); return; }
     if (pressed) { activate(); return; }
     if (delta == 0) return;
@@ -2694,6 +2814,9 @@ void menu_view_apply_input(int32_t delta, bool pressed)
 bool menu_view_opt_long(void)
 {
     if (!s_armed) return false;                    /* the router owns the knob */
+
+    /* A hold with the message box up closes the box, and only the box. */
+    if (s_note[0]) { s_note[0] = '\0'; repaint(); return true; }
 
     /* A hold during an edit cancels it, and only it: the value stays as saved. */
     if (s_edit.on) { edit_end(); repaint(); return true; }
@@ -2765,10 +2888,45 @@ void menu_view_service(void)
     if (!own_result && !app_grew && !pv_landed) return;
     s_dirty = false;
 
+    /* §58: a Themes sub-menu's group arrives with the card walk, which can land
+     * after the page opened with no group to open. The group opens as it would have at
+     * entry, so the themes are on the glass rather than behind an inert header. */
+    if (app_grew && s_group_open < 0) {
+        for (int i = 0; i < orb_app_opt_count(s_app); i++)
+            if (orb_app_opt_kind(s_app, i) == OPT_GROUP) { s_group_open = i; break; }
+    }
+
     if (own_result) {
         xSemaphoreTake(s_res_mx, portMAX_DELAY);
         s_ui = s_shared;
         xSemaphoreGive(s_res_mx);
+        /* A card file's door page whose file just installed has no subject left —
+         * the file is on the dial now, not "on the card" — and drew "? APP" over a
+         * lone back row, which read as a hung dial (Gold, 2026-11-07). Follow the
+         * app to its own registry doors instead. */
+        if (s_pg == P(PG_APPACT) && s_doormode && !card_subject() && s_pend_slug[0]) {
+            const orb_app_t *a = orb_app_find_slug(s_pend_slug);
+            if (a && a->installed) s_pages[PG_APP].open(a);   /* its own page, cursor on top */
+        }
+        /* And the other way: an uninstalled app's row is gone (s_app now names a
+         * zeroed entry), so its page follows the app to its card file, whose first
+         * door is install again — or back to the list when the card holds no copy. */
+        if (s_pg == P(PG_APP) && s_app && !orb_app_is_menu_only(s_app) &&
+            !s_app->installed && s_pend_slug[0]) {
+            int k = 0;
+            while (k < s_card_n && strcmp(s_card_ent[k].slug, s_pend_slug) != 0) k++;
+            s_app = NULL;                    /* nothing left to disarm */
+            s_group_open = -1;
+            if (k < s_card_n) {
+                s_pg        = P(PG_APPACT);
+                s_doormode  = 1;
+                s_card_sub  = k;
+                s_door_slot = -1;
+                s_cur       = 0;
+            } else {
+                go_to(PG_APPS, 0);
+            }
+        }
     }
 
     /* The theme page's own results are the clock's to reap, through its

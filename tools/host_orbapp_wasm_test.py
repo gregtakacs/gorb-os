@@ -238,7 +238,8 @@ def run_plan(binp, cases, cases_file):
 # The vocabulary the device half and the guest both depend on: (index, required, name).
 # Only orb_init is required (§43): a module that never builds itself is not an app;
 # every other hook — the beat included — is optional, as its compiled twin may be NULL.
-# apps/sdk/orb.h lists the same names for the app's author.
+# apps/sdk/orb.h lists the same names for the app's author. The orb_opt_* hooks are gone
+# (§57): an app's options page is the OS's, rendered from its manifest's settings schema.
 EXPECT_ENTRIES = [
     (0, 1, "orb_init"),
     (1, 0, "orb_activate"),
@@ -249,13 +250,6 @@ EXPECT_ENTRIES = [
     (6, 0, "orb_service"),
     (7, 0, "orb_show"),
     (8, 0, "orb_set_armed"),
-    (9, 0, "orb_opt_count"),
-    (10, 0, "orb_opt_kind"),
-    (11, 0, "orb_opt_label"),
-    (12, 0, "orb_opt_value"),
-    (13, 0, "orb_opt_inc"),
-    (14, 0, "orb_opt_sel"),
-    (15, 0, "orb_opt_arm"),
 ]
 
 

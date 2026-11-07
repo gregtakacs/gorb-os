@@ -243,6 +243,15 @@ def lifts(src):
         ' { "24-hour", "12-hour", NULL }, { "hPa", "inHg", "mmHg" } };'
         ' return v >= 0 && v < orb_units_count(k) ? L[k][v] : NULL; }',
         'static bool orb_sd_mounted(void);',
+        # §58: an app's Themes sub-menu is the provider row's page, aimed at the app;
+        # the fakes answer a settable count and active name and count the walks.
+        '#include "themes_page.h"',
+        'orb_app_t orb_app_themes_row = { .slug = "themes", .title = "Themes", .installed = true };',
+        'static int g_th_n, g_th_walks; static const char *g_th_active; static char g_th_for[24];',
+        'void themes_page_for(const char *s) { snprintf(g_th_for, sizeof g_th_for, "%s", s ? s : ""); }',
+        'int themes_page_count_for(const char *s) { (void)s; return g_th_n; }',
+        'const char *themes_page_active_for(const char *s) { (void)s; return g_th_active; }',
+        'void themes_page_walk(void) { g_th_walks++; }',
         'static const char *orb_sd_card_id(void);',
         # Item 3: a fake NVS with a real round-trip, so the lifted pos_save/
         # pos_load store and reload through this harness rather than a restated
@@ -542,7 +551,7 @@ static orb_app_t g_fake_service = { .title = (char *)("USB Files") };
 static size_t g_menu_n = 0;
 size_t orb_app_menu_count(void) { return g_menu_n; }
 const orb_app_t *orb_app_menu_at(size_t i) { return (g_menu_n && i == 0) ? FAKE_SERVICE : NULL; }
-bool orb_app_is_menu_only(const orb_app_t *a) { return a == FAKE_SERVICE; }
+bool orb_app_is_menu_only(const orb_app_t *a) { return a == FAKE_SERVICE || a == &orb_app_themes_row; }
 static orb_app_t g_fake_app, g_fake_app2;
 #define FAKE_APP (&g_fake_app)
 #define FAKE_APP2 (&g_fake_app2)
@@ -553,6 +562,10 @@ const char *orb_app_opt_label(const orb_app_t *a, int i)
 const char *orb_app_opt_value(const orb_app_t *a, int i)
 { (void)a; return (i == 0) ? g_opt_val0 : g_opt_val1; }
 void orb_app_opt_sel(const orb_app_t *a, int i) { (void)a; g_activations++; g_last_opt_sel = i; }
+/* §58: row g_note_row answers a sentence instead of an action; -1 = none does. */
+static int g_note_row = -1;
+const char *orb_app_opt_note(const orb_app_t *a, int i)
+{ (void)a; return i == g_note_row ? "Place 1 is set in Orb Manager." : NULL; }
 /* docs/knob-edit-plan.md: row 0 of the fake app is knob-edited when g_opt_editable is
  * set (0..100 from 40, fast in fives), row 1 never is; the save is recorded. */
 static bool g_opt_editable;
@@ -794,23 +807,20 @@ int main(void)
     snprintf(g_opt_label0, sizeof g_opt_label0, "diver");
     snprintf(g_opt_val0, sizeof g_opt_val0, "on the dial");
     snprintf(g_opt_label1, sizeof g_opt_label1, "neon"); g_opt_val1[0] = '\0';
-    /* Four OS rows — ABOUT, DISPLAY, PERMISSIONS, APPS (2026-11-01: TZ left
-     * because the hub sets the home and the home the zone; AP, a stub that never
-     * worked, gave its row to ABOUT) — then one per app that declares options, then exit: the plan's
-     * §7.2. Every index below is derived from top_os_rows() rather than written
-     * out, because a check that hardcodes "exit is row 5" goes red for the wrong
-     * reason the day the OS grows a seventh row, and a suite that cries wolf at
-     * a legitimate new row is a suite someone turns off. */
-    const int OSN = top_os_rows(), FIRST_APP = OSN, EXIT = OSN + 1;
-    ck("top page is the OS's five rows, one app row, then exit",
-       OSN == 5 && page_rows() == 7);
-    { const int n = OSN;
-      ck("row order ABOUT/DISPLAY/PERMISSIONS/APPS/<app>/exit",
-         !strcmp(rowline(0),"ABOUT") && !strcmp(rowline(1),"DISPLAY") &&
-         !strcmp(rowline(2),"PERMISSIONS") && !strcmp(rowline(3),"APPS") &&
-         !strcmp(rowline(4),"UNITS") &&
-         !strcmp(rowline(FIRST_APP),"Clock") && !strcmp(rowline(EXIT),"exit"));
-      (void)n; }
+    /* Four OS rows — ABOUT, DISPLAY, UNITS, APPS (2026-11-01: TZ left because
+     * the hub sets the home and the home the zone; 2026-11-07: PERMISSIONS and
+     * the per-app rows went into APPS, one page per app) — then the service
+     * pages, then exit. Every index below is derived from top_os_rows() rather
+     * than written out, because a check that hardcodes "exit is row 5" goes red
+     * for the wrong reason the day the OS grows a row, and a suite that cries
+     * wolf at a legitimate new row is a suite someone turns off. */
+    const int OSN = top_os_rows(), EXIT = OSN;
+    ck("top page is the OS's four rows, then exit — an app with options adds none",
+       OSN == 4 && page_rows() == 5);
+    ck("row order ABOUT/DISPLAY/UNITS/APPS/exit",
+       !strcmp(rowline(0),"ABOUT") && !strcmp(rowline(1),"DISPLAY") &&
+       !strcmp(rowline(2),"UNITS") && !strcmp(rowline(3),"APPS") &&
+       !strcmp(rowline(EXIT),"exit"));
     /* UNITS (weather-plan §2.1): four knob-edited rows and back, each naming the
      * choice in force, and an edit's range is that quantity's choices. */
     { const page_t *spg = NULL; (void)spg;
@@ -830,18 +840,10 @@ int main(void)
          edit_units(4, &e) && e.r.max == 2 && e.v == ORB_UNIT_MMHG && !edit_units(5, &e));
       g_units = (orb_units_t){ 0, 0, 0, 0, 0 };
       s_pg = keep; s_cur = keepc; }
-    /* The row comes from the registry, not from this file's text: an app that
-     * stops answering opt_* loses its row without the shell being edited. */
-    g_opt_n = 0;                                    /* the app stops answering */
-    ck("an app with no options has no row, and exit moves up",
-       page_rows() == OSN + 1 && !strcmp(rowline(OSN), "exit"));
-    g_opt_n = 2;
-    /* And a second app that declares options adds a second row, which is the
-     * half IT_TOP_N could never do without an edit to the shell. */
+    /* An app's settings are on its own APPS page now, so a second app that
+     * declares options still adds nothing here. */
     g_opt_app_count = 2;
-    ck("a second app declaring options adds a row, in table order",
-       page_rows() == OSN + 3 && !strcmp(rowline(FIRST_APP), "Clock") &&
-       !strcmp(rowline(FIRST_APP + 1), "HSB") && !strcmp(rowline(EXIT + 1), "exit"));
+    ck("a second app declaring options adds no top row either", page_rows() == OSN + 1);
     g_opt_app_count = 1;
 
     /* ---- D36: the service tier -------------------------------------------
@@ -851,20 +853,16 @@ int main(void)
     g_menu_n = 1;
     snprintf(g_opt_label0, sizeof g_opt_label0, "Start as USB drive");
     g_opt_val0[0] = '\0';
-    const int SVC = OSN, EXIT2 = OSN + 2;
-    ck("a service row joins the dynamic run, ahead of the face apps",
-       page_rows() == OSN + 3 && !strcmp(rowline(SVC), "USB Files") &&
-       !strcmp(rowline(SVC + 1), "Clock") && !strcmp(rowline(EXIT2), "exit"));
+    const int SVC = OSN, EXIT2 = OSN + 1;
+    ck("a service row is the top page's dynamic run, before exit",
+       page_rows() == OSN + 2 && !strcmp(rowline(SVC), "USB Files") &&
+       !strcmp(rowline(EXIT2), "exit"));
     snprintf(g_opt_val0, sizeof g_opt_val0, "armed");
-    ck("a service row prints its own state; a face row still prints its bare title",
-       !strcmp(rowline(SVC), "USB Files  (armed)") &&
-       !strcmp(rowline(SVC + 1), "Clock"));
-    /* Turning it off makes the row vanish rather than leave a dead line, the same
-     * way an app that stops answering opt_* loses its row a few checks above. */
+    ck("a service row prints its own state", !strcmp(rowline(SVC), "USB Files  (armed)"));
+    /* Turning it off makes the row vanish rather than leave a dead line. */
     g_menu_n = 0;
-    ck("a service with no registry entry has no row, and exit moves back down",
-       page_rows() == OSN + 2 && !strcmp(rowline(OSN), "Clock") &&
-       !strcmp(rowline(OSN + 1), "exit"));
+    ck("a service with no registry entry has no row, and exit moves back up",
+       page_rows() == OSN + 1 && !strcmp(rowline(OSN), "exit"));
     g_menu_n = 1;
     /* Pressing it goes to the option page and arms the knob, exactly as a face
      * app row does: the shell has no second code path for a service. */
@@ -927,26 +925,26 @@ int main(void)
        !s_edit.on && g_posts == 1 && g_posted_fn == job_dim_to && g_posted_pack == 10 &&
        s_pg == &s_pages[PG_DISPLAY] && s_cur == 1);
     g_posts = 0;
-    s_pg = &s_pages[PG_TOP]; s_cur = 2;
+    s_pg = &s_pages[PG_TOP]; s_cur = 3;
     menu_view_apply_input(0, true);
-    ck("PERMISSIONS opens the app list",
-       s_pg == &s_pages[PG_PERMS] && s_cur == 0);
+    ck("APPS opens the app list",
+       s_pg == &s_pages[PG_APPS] && s_cur == 0);
     s_pg = &s_pages[PG_TOP]; s_cur = 0;
     menu_view_apply_input(0, true);
     ck("the first row opens ABOUT on the address, where the QR shows",
        s_pg == &s_pages[PG_ABOUT] && s_cur == 0 && about_qr_on());
-    s_pg = &s_pages[PG_TOP];
-    s_cur = top_os_rows();
+    s_pg = &s_pages[PG_APPS]; s_cur = 0; g_scan_n = 0; s_card_n = 0;
     menu_view_apply_input(0, true);
-    ck("an app row opens the app flat on its first row, knob armed",
+    ck("an app row in APPS opens the app flat on its first row, knob armed",
        s_pg == &s_pages[PG_APP] && s_cur == 0 && s_group_open == -1 && g_arms == 1);
     menu_view_apply_input(0, true);
     ck("a press on an option row reaches the app at its own row number",
        g_activations == 1 && g_last_opt_sel == 0);
     s_cur = page_rows() - 1;
     menu_view_apply_input(0, true);
-    ck("back from the app lands on that app's own top row and disarms it",
-       s_pg == &s_pages[PG_TOP] && s_cur == top_os_rows() && g_arms == 0);
+    ck("back from the app lands on that app's own row in APPS and disarms it",
+       s_pg == &s_pages[PG_APPS] && s_cur == 0 && g_arms == 0);
+    go_back();
     s_cur = page_rows() - 1;
     menu_view_apply_input(0, true);
     ck("the last row of the top page now exits through the new door",
@@ -963,86 +961,122 @@ int main(void)
        g_nvs_written && g_nvs_pg == PG_DISPLAY && g_nvs_cur == 1);
     s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0;
 
-    /* ---- D19: the permissions ladder ----
-     * Declare-at-install is the grant, so these pages approve nothing: they
-     * show what each app declared, what still runs after the owner's toggles,
-     * and where an app has been refused for calling past its declaration. The
-     * shapes, strings and routing are lifted and pinned here, and so is the
-     * press half now: the block under "presses, through the table" walks the
-     * same rows through the lifted dispatcher. */
+    /* ---- D19 and the themes, as an app's two sub-menus (2026-11-07) ----
+     * Declare-at-install is the grant, so nothing here approves anything: the
+     * Permissions sub-menu shows what an app declared, what still runs after the
+     * owner's toggles, and where it was refused for calling past its declaration.
+     * The owner asked for one place per app, then for its themes and permissions
+     * to be sub-menus there rather than rows on a long page: the app's page names
+     * each with its state, and the refusal mark rides APPS and the app's row. */
     s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0; s_busy = false;
-    g_opt_app_count = 1; g_opt_n = 2;
-    /* alpha asks for two caps, beta for one — the count a row shows is the
-     * DECLARED set, not the four caps the page happens to list. */
+    g_opt_app_count = 1; g_opt_n = 2; g_scan_n = 0; s_card_n = 0;
+    g_th_n = 3; g_th_active = "Scope";
+    snprintf(g_opt_label0, sizeof g_opt_label0, "diver");
+    snprintf(g_opt_val0, sizeof g_opt_val0, "on the dial");
     g_decl[0] = (1u << CAP_POWER) | (1u << CAP_NET);
     g_decl[1] = 1u << CAP_THEMES;
     g_grnt[0] = g_decl[0]; g_grnt[1] = g_decl[1];
-    ck("no refusal, no mark on the PERMISSIONS row",
-       !strcmp(rowline(2), "PERMISSIONS"));
+    ck("no refusal, no mark on the APPS row", !strcmp(rowline(3), "APPS"));
     g_dmask[0] = 1u << CAP_POWER;
-    ck("an app refused past its declaration marks the top row",
-       (s_pg = &s_pages[PG_TOP], !strcmp(rowline(2), "PERMISSIONS  *")));
-    g_dmask[0] = 0;
-    s_pg = &s_pages[PG_PERMS]; s_cur = 0;
-    ck("the app list counts against what each declared and filters out chrome",
-       page_rows() == 3 && !strcmp(rowline(0), "Clock  (2 of 2)") &&
-       !strcmp(rowline(1), "HSB  (1 of 1)") && !strcmp(rowline(2), "<- back"));
-    g_grnt[0] = 0;                            /* the owner took both back */
-    ck("revoked caps read as live-zero, not as never-declared",
-       (s_pg = &s_pages[PG_PERMS], !strcmp(rowline(0), "Clock  (0 of 2)")));
-    g_grnt[0] = g_decl[0];
-    g_decl[0] = 0;                            /* an app that asked for nothing */
-    ck("an app that declared nothing says so in words, not as a zero count",
-       (s_pg = &s_pages[PG_PERMS], !strcmp(rowline(0), "Clock  (nothing declared)")));
-    g_decl[0] = (1u << CAP_POWER) | (1u << CAP_NET);
-    g_dmask[1] = 1u << CAP_THEMES;
-    ck("the refused app carries the mark into its own row too",
-       (s_pg = &s_pages[PG_PERMS], !strcmp(rowline(1), "* HSB  (1 of 1)")));
-    g_dmask[1] = 0;
-    s_pg = &s_pages[PG_CAPS]; s_perm_slot = 1; s_cur = 0;
-    ck("the cap page is the six owner caps plus back, never the free four",
-       page_rows() == 7 && !strcmp(rowline(0), "power: not declared") &&
-       !strcmp(rowline(1), "net: not declared") &&
-       !strcmp(rowline(2), "sd_read: not declared") &&
-       !strcmp(rowline(3), "themes: allowed") &&
-       !strcmp(rowline(4), "sound: not declared") &&
-       !strcmp(rowline(5), "location: not declared") &&
+    ck("an app refused past its declaration marks the APPS row",
+       (s_pg = &s_pages[PG_TOP], !strcmp(rowline(3), "APPS  *")));
+    s_pg = &s_pages[PG_APPS]; s_cur = 0;
+    ck("the refused app carries the mark into its own row of the list, chrome filtered",
+       !strcmp(rowline(0), "* Clock  installed") && !strcmp(rowline(1), "HSB  installed"));
+    g_arms = 0;
+    menu_view_apply_input(0, true);
+    ck("an installed app's row opens its one page on the first row, knob armed",
+       s_pg == &s_pages[PG_APP] && s_app == FAKE_APP && s_cur == 0 && g_arms == 1);
+    ck("the page is its settings, a Themes and a Permissions row, its doors, then back",
+       page_rows() == 7 && !strcmp(rowline(0), "diver  (on the dial)") &&
+       !strcmp(rowline(2), "Themes  (Scope)") &&
+       !strcmp(rowline(3), "Permissions  (2 of 2)  *") &&
+       !strcmp(rowline(4), "uninstall") && !strcmp(rowline(5), "remove from card") &&
        !strcmp(rowline(6), "<- back"));
+    g_dmask[0] = 0; g_grnt[0] = 1u << CAP_NET;
+    ck("the Permissions row counts what still runs against what was declared",
+       !strcmp(rowline(3), "Permissions  (1 of 2)"));
+    g_grnt[0] = (1u << CAP_NET) | (1u << CAP_THEMES); g_dmask[0] = 1u << CAP_THEMES;
+    ck("a grant on a cap it never declared is not counted as one it runs",
+       !strcmp(rowline(3), "Permissions  (1 of 2)  *"));
+    g_grnt[0] = 1u << CAP_NET; g_dmask[0] = 0;
+    g_th_active = NULL;
+    ck("with none of its themes on the dial, the Themes row says how many",
+       !strcmp(rowline(2), "Themes  (3)"));
+    g_th_n = 0;
+    ck("an app with no theme on the card has no Themes row",
+       page_rows() == 6 && !strcmp(rowline(2), "Permissions  (1 of 2)"));
+    g_th_n = 3; g_th_active = "Scope";
+    /* The Permissions sub-menu: one row per cap, a press toggles it, back returns
+     * to the app's page on the row that opened it. */
+    s_cur = 3;
+    menu_view_apply_input(0, true);
+    ck("the Permissions row opens that app's caps, headed by its name",
+       s_pg == &s_pages[PG_CAPS] && s_perm_slot == 0 && s_cur == 0 &&
+       !strcmp(page_title(), "Clock PERMISSIONS"));
     ck("a declared cap the owner has taken back reads revoked, not denied",
-       (s_pg = &s_pages[PG_CAPS], s_perm_slot = 0, g_grnt[0] = (1u << CAP_NET),
-        !strcmp(rowline(0), "power: revoked") &&
-        !strcmp(rowline(1), "net: allowed")));
+       page_rows() == 3 && !strcmp(rowline(0), "power:  revoked") &&
+       !strcmp(rowline(1), "net:  allowed") && !strcmp(rowline(2), "<- back"));
     g_dmask[0] = 1u << CAP_POWER;
     ck("the cap actually refused this boot is the one that carries the mark",
-       (s_pg = &s_pages[PG_CAPS], s_perm_slot = 0,
-        !strcmp(rowline(0), "power: revoked *") &&
-        !strcmp(rowline(1), "net: allowed")));
-    g_dmask[0] = 0; g_grnt[0] = g_decl[0];
+       !strcmp(rowline(0), "power:  revoked *"));
     g_dmask[0] = 1u << CAP_THEMES;      /* refused on a cap the clock never
                                          * declared: the row that says so is the
                                          * undeclared one, and the mark belongs
                                          * there most of all */
-    ck("the mark rides the undeclared row too, where the divergence actually shows",
-       (s_pg = &s_pages[PG_CAPS], s_perm_slot = 0,
-        !strcmp(rowline(3), "themes: not declared *")));
-    g_dmask[0] = 0;
-    ck("back from the cap page lands on the app's own row in the list",
-       (s_pg = &s_pages[PG_CAPS], s_perm_slot = 1, go_back(),
-        s_pg == &s_pages[PG_PERMS] && s_cur == 1));
-    ck("back from the app list lands on the PERMISSIONS row",
-       (s_pg = &s_pages[PG_PERMS], go_back(), s_pg == &s_pages[PG_TOP] && s_cur == 2 /* s_top[2] */));
-    {   /* One press, one toggle. The pack the press builds is checked through
-         * the helper that builds it — and the routing through the dispatcher
-         * itself: the press must post the grant and stay on the page rather
-         * than walk anywhere, because there is no confirm to reach. */
-        s_pg = &s_pages[PG_CAPS]; s_perm_slot = 0; s_cur = 3;
+    ck("an undeclared cap it reached for gets a row, marked",
+       page_rows() == 4 && !strcmp(rowline(2), "themes:  not declared *"));
+    g_dmask[0] = 0; g_grnt[0] = g_decl[0];
+    s_cur = 1; g_posts = 0;
+    menu_view_apply_input(0, true);
+    ck("a cap row's press posts its grant toggle and stays on the page",
+       g_posts == 1 && g_posted_fn == job_grant &&
+       g_posted_pack == cap_pack(FAKE_APP, 1) &&
+       s_pg == &s_pages[PG_CAPS] && s_cur == 1);
+    s_cur = page_rows() - 1;
+    menu_view_apply_input(0, true);
+    ck("back from Permissions lands on the app's page at its Permissions row",
+       s_pg == &s_pages[PG_APP] && s_app == FAKE_APP && s_cur == 3);
+    /* The Themes sub-menu: the provider row's page, aimed at this app. */
+    s_cur = 2; g_th_for[0] = '\0';
+    menu_view_apply_input(0, true);
+    ck("the Themes row opens the provider's page aimed at this app, headed by its name",
+       s_pg == &s_pages[PG_APP] && s_app == &orb_app_themes_row &&
+       s_theme_of == FAKE_APP && !strcmp(g_th_for, "clock") &&
+       !strcmp(page_title(), "Clock THEMES") && own_rows() == 0);
+    s_cur = page_rows() - 1;
+    menu_view_apply_input(0, true);
+    ck("back from Themes lands on the app's page at its Themes row",
+       s_pg == &s_pages[PG_APP] && s_app == FAKE_APP && s_cur == 2 && s_theme_of == NULL);
+    s_cur = page_rows() - 1;
+    menu_view_apply_input(0, true);
+    ck("back from an app's page lands on its own row in APPS and disarms it",
+       s_pg == &s_pages[PG_APPS] && s_cur == 0 && g_arms == 0);
+    s_cur = 1;
+    menu_view_apply_input(0, true);
+    ck("a second app's page is its own, and an app that declared nothing has no Permissions row",
+       (g_decl[1] = 0, s_app == FAKE_APP2 && page_rows() == 2 + 1 + 2 + 1 &&
+        !strcmp(rowline(2), "Themes  (Scope)") && !strcmp(rowline(3), "uninstall")));
+    g_decl[1] = 1u << CAP_LOCATION; g_grnt[1] = g_decl[1];
+    s_perm_slot = 1; s_pg = &s_pages[PG_CAPS]; s_cur = 0;
+    ck("the last owner cap, location, gets its row too",
+       page_rows() == 2 && !strcmp(rowline(0), "location:  allowed"));
+    g_decl[1] = 1u << CAP_THEMES; g_grnt[1] = g_decl[1];
+    reopen_app(FAKE_APP2, OWN_PERMS);
+    s_cur = page_rows() - 1;
+    menu_view_apply_input(0, true);
+    ck("and its back lands on its own row",
+       s_pg == &s_pages[PG_APPS] && s_cur == 1);
+    ck("back from the list lands on the APPS row",
+       (go_back(), s_pg == &s_pages[PG_TOP] && s_cur == 3 /* s_top[3] */));
+    g_th_n = 0; g_th_active = NULL;
+    ck("entering APPS walks the themes beside the apps, so a page has its row at once",
+       (g_th_walks = 0, job_scan(&(int){0}), g_th_walks == 1));
+    {   /* The pack is the contract between a press and the NVS word it writes. */
         g_grnt[0] = g_decl[0];
         ck("a revoked cap's press asks for the grant, naming this app and cap",
            cap_pack(FAKE_APP, 3) == ((0 << 9) | ((int)CAP_THEMES << 1) | 1));
-        s_cur = 1; g_grnt[0] = (1u << CAP_NET);   /* row 1 is net, which the
-                                                   * row still shows as allowed:
-                                                   * the press must ask to revoke
-                                                   * the very cap it names */
+        g_grnt[0] = (1u << CAP_NET);
         ck("an allowed cap's same press asks for the revoke",
            cap_pack(FAKE_APP, 1) == ((0 << 9) | ((int)CAP_NET << 1) | 0));
         ck("and the second app's pack carries its own slot, not the page's",
@@ -1055,22 +1089,17 @@ int main(void)
                   if (((cap_pack(FAKE_APP, r) >> 1) & 0xFF) != w[r]) bad++;
               bad == 0; }));
         g_grnt[1] = g_decl[1]; g_grnt[0] = g_decl[0];
-        g_posts = 0;
-        menu_view_apply_input(0, true);
-        ck("the press posts the grant and stays on the cap page",
-           g_posts == 1 && g_posted_fn == job_grant &&
-           s_pg == &s_pages[PG_CAPS] && s_cur == 1);
         /* The busy rule the whole menu shares: no press acts while the worker
-         * is down, so a double-tap cannot queue two writes. */
+         * is down, so a double-tap cannot queue two writes. DISPLAY's first row
+         * would post its job, so the post count is what a leak would move. */
+        s_pg = &s_pages[PG_DISPLAY]; s_cur = 0;
         s_busy = true; g_posts = 0;
         menu_view_apply_input(1, false);
         menu_view_apply_input(0, true);
-        /* Both witnesses are page-appropriate now: the caps press that this
-         * guard blocks would post, and only an app page could arm through
-         * opt_sel — so g_posts and the cursor are what a leak would move. */
         ck("a press while the worker is busy moves nothing and posts nothing",
-           g_posts == 0 && s_cur == 1);
+           g_posts == 0 && s_cur == 0);
         s_busy = false;
+        s_pg = &s_pages[PG_TOP]; s_cur = 0;
     }
     {   /* The worker's answer half — lifted whole from the shipped file. */
         int pack = (0 << 9) | ((int)CAP_THEMES << 1) | 1;
@@ -1120,15 +1149,39 @@ int main(void)
     /* The shell renders an app's rows without knowing what they mean (B1/B2).
      * g_opt_n/g_opt_v are the fake app's answers; the clock's real ones are
      * pinned against the shipped clock_themes.c in host_clock_opts_test.py. */
-    s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0; g_opt_n = 2;
+    /* Run on the service page (2026-11-07): it is PG_APP like any app, but an
+     * installed app's page also carries its caps and doors (checked in the D19
+     * block above), and these checks are about the option rows alone. The fake
+     * hooks answer the same for every entry. */
+    g_menu_n = 1;
+    s_pg = &s_pages[PG_APP]; s_app = FAKE_SERVICE; s_cur = 0; g_opt_n = 2;
     snprintf(g_opt_label0, sizeof g_opt_label0, "diver"); snprintf(g_opt_val0, sizeof g_opt_val0, "on the dial");
     snprintf(g_opt_label1, sizeof g_opt_label1, "neon");   g_opt_val1[0] = '\0';
     ck("an app row reads the app's label and value",
        !strcmp(rowline(0), "diver  (on the dial)"));
     ck("a row with no value reads the label alone", !strcmp(rowline(1), "neon"));
+    /* §58: a note row opens the message box instead of pressing, the box holds the
+     * knob, and press, turn and hold each close it without touching the page. */
+    g_note_row = 1; s_cur = 1; g_activations = 0; s_armed = true; g_menu_exits = 0;
+    menu_view_apply_input(0, true);
+    ck("a note row opens the box instead of reaching the app",
+       g_activations == 0 && !strcmp(s_note, "Place 1 is set in Orb Manager.") &&
+       !strcmp(page_hint(), "push: OK"));
+    turn_down(1);
+    ck("a turn with the box up closes it and does not move the cursor",
+       s_note[0] == '\0' && s_cur == 1);
+    menu_view_apply_input(0, true);           /* opens it again */
+    menu_view_apply_input(0, true);           /* closes it */
+    ck("a press closes it too, and never reaches the app",
+       s_note[0] == '\0' && g_activations == 0);
+    menu_view_apply_input(0, true);           /* open, for the hold */
+    ck("a hold closes it and stays in the menu",
+       menu_view_opt_long() && s_note[0] == '\0' && s_armed && g_menu_exits == 0);
+    g_note_row = -1; s_cur = 0;
     ck("the app page ends with the shell's back row", !strcmp(rowline(2), "<- back"));
     ck("the shell counts the app's rows plus its own back row", page_rows() == 3);
-    ck("the header is the app's own title", (s_app->title && !strcmp(s_app->title, "Clock")));
+    ck("the header is the page's own title",
+       (s_app->title && !strcmp(page_title(), s_app->title)));
     ck("back from an app page returns to that app's row",
        (s_pg = &s_pages[PG_APP], go_back(), s_pg == &s_pages[PG_TOP] && s_cur == top_os_rows()));
 
@@ -1138,7 +1191,7 @@ int main(void)
      * half — what gets drawn, where the cursor may go, and what the two
      * malformed shapes become — because the app that owns the answer must never
      * also own the owner's ability to reach a row. */
-    s_armed = true; s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0;
+    s_armed = true; s_pg = &s_pages[PG_APP]; s_app = FAKE_SERVICE; s_cur = 0;
     g_opt_n = 5; g_nkind = 5; g_kind_hook = true;
     g_kind[0] = OPT_ROW; g_kind[1] = OPT_GROUP;
     g_kind[2] = g_kind[3] = g_kind[4] = OPT_ITEM;
@@ -1191,14 +1244,14 @@ int main(void)
     menu_view_apply_input(0, true);
     ck("the back row leaves the app for its own top-page row",
        s_pg == &s_pages[PG_TOP] && s_cur == top_os_rows());
-    s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 3; s_armed = true; g_menu_exits = 0;
+    s_pg = &s_pages[PG_APP]; s_app = FAKE_SERVICE; s_cur = 3; s_armed = true; g_menu_exits = 0;
     /* Owner ruling, 2026-10-26: with the header inert, the hold on the app's
      * page exits the menu — collapsing a list under a row that cannot reopen
      * it would be a trap. The app's own long hook still takes it first. The
      * list rides out whole: the next open_app() raises it from the shape. */
     ck("the hold on the open group's page exits the menu, list and all",
        menu_view_opt_long() && g_menu_exits == 1 && !s_armed);
-    s_armed = true; s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0;
+    s_armed = true; s_pg = &s_pages[PG_APP]; s_app = FAKE_SERVICE; s_cur = 0;
     ck("a shut group gives the page its three rows back",
        (s_group_open = -1, page_rows() == 3));
     /* The two malformed shapes, and the one answer that keeps them reachable. */
@@ -1238,7 +1291,7 @@ int main(void)
      * the owner turned the knob. g_repaints is the witness: the count going up
      * with s_dirty clear is exactly the fixed behaviour, and deleting the
      * app_grew re-check from the shipped file drops it back to no repaint. */
-    g_opt_n = 0; s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0; s_armed = true;
+    g_opt_n = 0; s_pg = &s_pages[PG_APP]; s_app = FAKE_SERVICE; s_cur = 0; s_armed = true;
     s_dirty = false;
     repaint();                                 /* stamp the settled baseline */
     const int base_paints = g_repaints;
@@ -1249,6 +1302,15 @@ int main(void)
        g_repaints > base_paints && page_rows() == 5);
     menu_view_service();
     ck("and settles once it has caught up", g_repaints == base_paints + 1);
+    /* §58: a Themes group that lands with the walk opens as entry would have. */
+    g_opt_n = 1; g_kind_hook = true; g_nkind = 0; s_group_open = -1; s_dirty = false;
+    repaint();
+    g_opt_n = 4; g_nkind = 4;
+    g_kind[0] = OPT_ROW; g_kind[1] = OPT_GROUP; g_kind[2] = g_kind[3] = OPT_ITEM;
+    menu_view_service();
+    ck("a group that lands after entry opens with its items on the glass",
+       s_group_open == 1 && page_rows() == 5);
+    g_kind_hook = false; g_nkind = 0; s_group_open = -1;
     g_opt_n = 2;
 
     /* ---- the preview plane landing repaints the shell (step 4) -------------
@@ -1261,7 +1323,7 @@ int main(void)
     g_opt_n = 3; g_kind_hook = true; g_nkind = 3;
     g_kind[0] = OPT_GROUP; g_kind[1] = OPT_ITEM; g_kind[2] = OPT_ITEM;
     g_pv_px = NULL;
-    s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0; s_armed = true;
+    s_pg = &s_pages[PG_APP]; s_app = FAKE_SERVICE; s_cur = 0; s_armed = true;
     s_group_open = 0; s_cur = 1;                    /* cursor on an item row  */
     s_dirty = false;
     repaint();                                      /* settled: no plane yet  */
@@ -1291,21 +1353,20 @@ int main(void)
     s_group_open = -1; s_cur = 0;
     /* Entered properly: the go_back() above left PG_TOP with s_app cleared, and
      * an app page that was never entered proves nothing about leaving one. */
-    g_opt_n = 0; s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; s_cur = 0;
+    g_opt_n = 0; s_pg = &s_pages[PG_APP]; s_app = FAKE_SERVICE; s_cur = 0;
     ck("an app page whose app answers nothing still lets you out", page_rows() == 1);
     ck("that one row is the back row", !strcmp(rowline(0), "<- back"));
     g_opt_n = 2;
+    g_menu_n = 0; s_app = NULL;
 
     /* ---- a running job freezes the list ---- */
-    /* Tested on PG_CAPS, not PG_THEME: page_rows() already returns 0 while busy on
-     * the theme page, so a cursor check there would pass even with apply_input's
-     * own s_busy guard deleted. The caps page ignores s_busy, which leaves that
-     * guard as the only thing holding the cursor — the only place it can be seen.
-     * (The zone list, then the timeout presets, carried this check until each left
-     * the dial.) */
-    s_pg = &s_pages[PG_CAPS]; s_perm_slot = 0; s_cur = 0; s_busy = true;
+    /* page_rows() ignores s_busy, so apply_input's own guard is the only thing
+     * holding the cursor here — the only place it can be seen. (The zone list,
+     * the timeout presets, then the caps page carried this check until each
+     * left the dial.) */
+    s_pg = &s_pages[PG_UNITS]; s_cur = 0; s_busy = true;
     turn_down(1);
-    ck("cursor frozen on the caps page while a job runs", s_cur == 0);
+    ck("cursor frozen on a list while a job runs", s_cur == 0);
     g_posts = 0;
     menu_view_apply_input(0, true);
     ck("press frozen too", g_posts == 0);
@@ -1465,40 +1526,30 @@ int main(void)
     ck("the catalog's back row lands on its own top row",
        s_pg == &s_pages[PG_TOP] && s_cur == 3);
 
-    /* the doors page — D38: show, uninstall, remove from card. No enable
-     * switch and no off state (§43.3): a faulted app's first row is retry, and
-     * the press posts C2's fault clear. */
+    /* the doors — D38: show, uninstall, remove from card. No enable switch and
+     * no off state (§43.3): a faulted app's first row is retry, and the press
+     * posts C2's fault clear. They close the app's own page (2026-11-07); with
+     * no settings and no caps declared they are its first rows, which keeps
+     * every index below what it was when they had a page of their own. */
+    g_opt_n = 0; g_decl[0] = g_decl[1] = 0; g_dmask[0] = g_dmask[1] = 0;
     s_pg = &s_pages[PG_APPS]; s_cur = 0; s_door_slot = -1; s_uninst_arm = -1;
     s_doormode = 0; s_card_sub = -1; s_cardrm_arm = -1;
     menu_view_apply_input(0, true);
-    ck("an app row opens that app's doors, not a toggle",
-       s_pg == &s_pages[PG_APPACT] && s_cur == 0 && s_door_slot == 0);
-    ck("the doors page carries the app's name, not the shell's",
-       !strcmp(page_title(), "Clock APP"));
-    ck("three doors and a back row: show, uninstall, remove from card",
-       page_rows() == 4 && !strcmp(rowline(0), "show on the dial") &&
-       !strcmp(rowline(1), "uninstall") &&
-       !strcmp(rowline(2), "remove from card") &&
-       !strcmp(rowline(3), "<- back"));
-    ck("the doors page names the second press in its hint",
-       strstr(page_hint(), "two presses") != NULL);
-    g_act_rc = 0; g_posts = 0;
-    s_cur = 0; menu_view_apply_input(0, true);
-    ck("activate runs the registry's own door, not a local copy",
-       g_act_calls == 1 && g_act_slot == 0 && g_posts == 0);
-    ck("a successful activate says so on the line and stays on the page",
-       !strcmp(s_ui.status, "\"Clock\": on the dial") &&
-       s_pg == &s_pages[PG_APPACT]);
-    g_act_rc = ESP_FAIL; g_act_calls = 0;
-    menu_view_apply_input(0, true);
-    ck("a refused activate says which app failed to move",
-       g_act_calls == 1 && !strcmp(s_ui.status, "\"Clock\": clock will not go on the dial"));
-    g_act_rc = ESP_ERR_NOT_FOUND_; g_act_calls = 0;
-    menu_view_apply_input(0, true);
-    ck("a no-face activate names the platform gap, not the app",
-       g_act_calls == 1 && !strcmp(s_ui.status,
-            "\"Clock\": code apps draw layers the dial cannot paint yet"));
-    g_act_rc = 0;
+    ck("an app row opens that app's own page, whose doors are its last rows",
+       s_pg == &s_pages[PG_APP] && s_app == FAKE_APP && s_cur == 0 && s_door_slot == 0);
+    ck("the page carries the app's name, not the shell's",
+       !strcmp(page_title(), "Clock"));
+    /* "show on the dial" is gone (owner, 2026-11-07): the app list and the carousel
+     * open apps, and the door swapped the glass behind the router's back. */
+    ck("a running app's doors are the two removals and back, nothing that opens it",
+       page_rows() == 3 && !strcmp(rowline(0), "uninstall") &&
+       !strcmp(rowline(1), "remove from card") && !strcmp(rowline(2), "<- back"));
+    ck("the app page's hint stays the one-line plain answer, clear of its last row",
+       !strcmp(page_hint(), "rotate: choose   push: change"));
+    g_act_calls = 0; s_cur = 0;
+    for (int r = 0; r < page_rows(); r++) { char b[64]; bool h; row_text(r, b, sizeof b, &h);
+        if (strstr(b, "dial")) g_act_calls++; }
+    ck("no row of the page offers to put the app on the dial", g_act_calls == 0);
 
     /* §43.3: a faulted app leads with retry; the press is C2's fault clear. */
     g_fake_app.failed = true;
@@ -1605,6 +1656,8 @@ int main(void)
     ck("a card that refuses the delete says so",
        g_rm_calls == 1 && !strcmp(g_pub_line, "\"Clock\": the card refused the delete"));
     g_rm_rc = 0; g_scan_n = 0;
+    g_opt_n = 2;
+    s_pg = &s_pages[PG_APPS];                 /* leave the app page the way back does */
 
     /* D38: the catalog's card tier and the card file's doors. The
      * snapshot lands through the shipped path: entering APPS posts the walk,
@@ -1657,6 +1710,31 @@ int main(void)
     s_cur = page_rows() - 1; menu_view_apply_input(0, true);
     ck("the doors page back lands on its own catalog row",
        s_pg == &s_pages[PG_APPS] && s_cur == 0);
+    /* The two follow-throughs (Gold, 2026-11-07): a page whose subject changed
+     * tier under it follows the app instead of drawing "? APP" over a lone back
+     * row, which read as a hung dial. Install from the card lands on the app's
+     * own page; uninstall from that page lands on its card file's doors. */
+    g_scan_n = 1;
+    strcpy(g_scan[0].stem, "hue"); strcpy(g_scan[0].slug, "hue");
+    strcpy(g_scan[0].title, "HSB"); g_scan[0].err = ESP_OK;
+    { int zz = 0; job_scan(&zz); }
+    s_armed = true; s_pg = &s_pages[PG_APPACT]; s_doormode = 1; s_card_sub = 0; s_door_slot = -1;
+    strcpy(s_pend_slug, "hue"); g_fake_app2.installed = true;
+    memset(&s_shared, 0, sizeof s_shared);
+    snprintf(s_shared.status, sizeof s_shared.status, "\"HSB\": installed");
+    s_dirty = true;
+    menu_view_service();
+    ck("an install from the card follows the app onto its own page",
+       s_pg == &s_pages[PG_APP] && s_app == FAKE_APP2 && s_cur == 0 && s_door_slot == 1);
+    g_fake_app2.installed = false;
+    snprintf(s_shared.status, sizeof s_shared.status, "\"HSB\": uninstalled, the card copy stays");
+    s_dirty = true;
+    menu_view_service();
+    ck("an uninstall from its page follows the app to its card file's doors",
+       s_pg == &s_pages[PG_APPACT] && s_doormode == 1 && s_card_sub == 0 && s_app == NULL &&
+       !strcmp(rowline(0), "install"));
+    g_fake_app2.installed = true; g_scan_n = 0; s_pend_slug[0] = '\0';
+    { int zz = 0; job_scan(&zz); }
     s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 3; menu_view_apply_input(0, true);
     ck("back into the catalog clears the subject and both arms with it",
        s_pg == &s_pages[PG_APPS] && s_door_slot == -1 && s_doormode == 0 &&
@@ -1706,38 +1784,45 @@ int main(void)
      * these checks pin the boundary in both directions and the count's
      * dependence on the cursor rather than on the page id. */
     static char hb[64];
-    s_armed = true; s_busy = false; s_pg = &s_pages[PG_CAPS]; s_perm_slot = 0; s_cur = 0;
+    /* UNITS: five quantities and back, six rows on a five-row window. */
+    s_armed = true; s_busy = false; s_pg = &s_pages[PG_UNITS]; s_cur = 0;
     title_line(hb, sizeof hb);
-    ck("a scrolled page names the row and the total",
-       !strcmp(hb, "Clock PERMISSIONS  1/7"));
-    s_cur = 6; title_line(hb, sizeof hb);
-    ck("the readout reaches the last row, the back row included",
-       !strcmp(hb, "Clock PERMISSIONS  7/7"));
+    ck("a scrolled page names the row and the total", !strcmp(hb, "UNITS  1/6"));
+    s_cur = 5; title_line(hb, sizeof hb);
+    ck("the readout reaches the last row, the back row included", !strcmp(hb, "UNITS  6/6"));
     s_cur = 3; turn_down(1); title_line(hb, sizeof hb);
-    ck("the count moves with the cursor", !strcmp(hb, "Clock PERMISSIONS  5/7"));
+    ck("the count moves with the cursor", !strcmp(hb, "UNITS  5/6"));
     s_cur = 0; turn_up(1); title_line(hb, sizeof hb);
-    ck("and does not move past the clamp", !strcmp(hb, "Clock PERMISSIONS  1/7"));
+    ck("and does not move past the clamp", !strcmp(hb, "UNITS  1/6"));
     s_pg = &s_pages[PG_DISPLAY]; title_line(hb, sizeof hb);
     ck("a page that draws every row says no digits", !strcmp(hb, "DISPLAY"));
-    s_pg = &s_pages[PG_CAPS]; s_perm_slot = 0; s_cur = 0; title_line(hb, sizeof hb);
-    ck("seven rows overflow the five-row window, so the cap page counts",
-       page_rows() == 7 && !strcmp(hb, "Clock PERMISSIONS  1/7"));
+    s_pg = &s_pages[PG_UNITS]; s_cur = 0; title_line(hb, sizeof hb);
+    ck("six rows overflow the five-row window, so the page counts",
+       page_rows() == 6 && !strcmp(hb, "UNITS  1/6"));
     /* The gate is the count crossing the glass, not a per-page flag: the same
      * page function gains the readout at 6 rows and has none at 5, which is the
      * only shape of this rule that survives a page nobody thought to annotate.
-     * An app page's rows are its options plus back, so its option count walks
-     * the boundary. */
-    s_pg = &s_pages[PG_APP]; s_app = FAKE_APP; g_kind_hook = false; s_cur = 0; g_opt_n = 4;
+     * A service page's rows are its options plus back (an installed app's page
+     * adds its caps and doors), so its option count walks the boundary. */
+    g_menu_n = 1; s_ui.status[0] = '\0';
+    s_pg = &s_pages[PG_APP]; s_app = FAKE_SERVICE; g_kind_hook = false; s_cur = 0; g_opt_n = 4;
     title_line(hb, sizeof hb);
     ck("five rows fill the window exactly and say no digits",
-       page_rows() == 5 && !strcmp(hb, "Clock"));
+       page_rows() == 5 && !strcmp(hb, "USB Files"));
+    /* A status line takes the fifth row's place (Gold, 2026-11-07: "installed"
+     * was drawn over the uninstall row), so the same five rows now scroll. */
+    snprintf(s_ui.status, sizeof s_ui.status, "\"HSB\": installed");
+    title_line(hb, sizeof hb);
+    ck("with a status line up, four rows show and five rows count",
+       rows_on_glass() == 4 && !strcmp(hb, "USB Files  1/5"));
+    s_ui.status[0] = '\0';
     g_opt_n = 5; title_line(hb, sizeof hb);
     ck("one row more than the glass and it counts",
-       page_rows() == 6 && !strcmp(hb, "Clock  1/6"));
+       page_rows() == 6 && !strcmp(hb, "USB Files  1/6"));
     s_armed = false; title_line(hb, sizeof hb);
     ck("unarmed, the count is gone whatever the page was",
-       !strcmp(hb, "Clock"));
-    g_opt_n = 2; s_app = NULL;
+       !strcmp(hb, "USB Files"));
+    g_opt_n = 2; s_app = NULL; g_menu_n = 0;
     s_armed = true; s_pg = &s_pages[PG_TOP]; s_cur = 0; s_busy = false;
 
     /* ---- the glyph floor: what the dial can actually draw ------------------
@@ -1814,11 +1899,19 @@ int main(void)
 
         /* The stale-row clamp: a stored row past a page that shrank (an app
          * uninstalled since) is pulled back onto the glass, never left off it. */
-        g_nvs_written = true; g_nvs_pg = PG_PERMS; g_nvs_cur = 40;
+        g_nvs_written = true; g_nvs_pg = PG_UNITS; g_nvs_cur = 40;
         s_pos_loaded = false; s_armed = false;
-        menu_view_set_armed(true);           /* PERMS has no enter(); s_cur=40 */
+        menu_view_set_armed(true);           /* UNITS has no enter(); s_cur=40 */
         ck("a restored row past the count is clamped into the list by repaint",
-           s_pg == &s_pages[PG_PERMS] && s_cur < page_rows());
+           s_pg == &s_pages[PG_UNITS] && s_cur < page_rows());
+        /* The retired PERMISSIONS page (2026-11-07): an older build's store of it
+         * opens the top page, never a page with no rows. */
+        nvs_reset(); s_pos_pg = PG_TOP; s_pos_cur = 0;
+        g_nvs_written = true; g_nvs_pg = PG_PERMS; g_nvs_cur = 1;
+        s_pos_loaded = false; s_armed = false;
+        menu_view_set_armed(true);
+        ck("a remembered PERMISSIONS page opens the top page",
+           s_pg == &s_pages[PG_TOP] && s_cur == 0);
 
         /* A non-restorable page is never stored, so leaving from an app page
          * cannot leave a pointer the next boot has no way to resolve. */
@@ -1944,7 +2037,7 @@ def build_and_run(src):
         f.write(src)
     r = subprocess.run(["cc", "-O0", "-std=gnu11", "-Wall", "-Wextra",
                         "-Wno-unused-parameter", "-Wno-unused-function",
-                        "-Werror", "-I", d, "-I", P("main","app"), "-I", P("main","net"),
+                        "-Werror", "-I", d, "-I", P("main","app"), "-I", P("main","net"), "-I", P("main","menu"),
                         "-o", exe, cf],
                        capture_output=True, text=True)
     if r.returncode:
@@ -2170,7 +2263,7 @@ MUTATIONS = [
     ("unarmed menu starts accepting input",
      "if (!s_armed) return;                    /* the router owns the knob here */", ""),
     ("a running job no longer freezes the cursor",
-     "    if (orb_jobs_busy()) return;\n\n    if (s_edit.on)", "    if (0) return;\n\n    if (s_edit.on)"),
+     "    if (orb_jobs_busy()) return;\n\n    if (s_note[0]) {", "    if (0) return;\n\n    if (s_note[0]) {"),
     # The bug that made a theme page unreachable-but-not-obvious: the app's scan
     # lands with the menu's own worker idle, so a service() that repaints only on
     # s_dirty opens the page empty. Forcing that back must red the new check.
@@ -2197,11 +2290,49 @@ MUTATIONS = [
     # Same red seen through the shipped rows_app(), not a restatement of it:
     # the mutation drops the page's one back row out of the count.
     ("the back row is dropped from the app options page",
-     "    return visible_rows(orb_app_opt_count(s_app)) + 1;",
-     "    return visible_rows(orb_app_opt_count(s_app));"),
+     "    return visible_rows(orb_app_opt_count(s_app)) + own_rows() + 1;",
+     "    return visible_rows(orb_app_opt_count(s_app)) + own_rows();"),
+    # 2026-11-07: an app's one page. Each pin is one way the merge can quietly
+    # leave an app in pieces again.
+    ("an app's page loses its caps and doors",
+     "    return visible_rows(orb_app_opt_count(s_app)) + own_rows() + 1;",
+     "    return visible_rows(orb_app_opt_count(s_app)) + 1;"),
+    ("a cap the app reached for without declaring gets no row",
+     "    const uint32_t m = orb_svc_declared(a) | orb_svc_denied_mask(a);",
+     "    const uint32_t m = orb_svc_declared(a);"),
+    ("back from an app's page goes to the top page, not its APPS row",
+     "    if (s_pg == P(PG_APP) && s_app && !orb_app_is_menu_only(s_app)) {\n        go_to(PG_APPS, perm_row_of(s_app));",
+     "    if (0) {\n        go_to(PG_APPS, perm_row_of(s_app));"),
+    ("the refusal mark leaves the APPS row",
+     "    if (r->to == PG_APPS && perms_denied())",
+     "    if (r->to == PG_UNITS && perms_denied())"),
+    ("the refusal mark leaves the app's own list row",
+     'snprintf(out, outsz, "%s%s  %s", orb_svc_denied_mask(a) ? "* " : "",',
+     'snprintf(out, outsz, "%s%s  %s", 0 ? "* " : "",'),
+    ("an install from the card no longer follows the app",
+     "            if (a && a->installed) s_pages[PG_APP].open(a);",
+     "            (void)a;"),
+    ("an uninstall leaves the page on a zeroed app",
+     "            !s_app->installed && s_pend_slug[0]) {",
+     "            0) {"),
     # P5.3's own pins. Each is one way the catalog or its doors can go wrong
     # while every older page still passes, which is what a new page needs red
     # before it reaches a dial.
+    ("a status line draws over the fifth row again",
+     "    return (s_ui.status[0] && !about_qr_on()) ? ROW_MAX - 1 : ROW_MAX;",
+     "    return ROW_MAX;"),
+    ("a note row presses the app instead of showing its sentence",
+     "    if (note) { strlcpy(s_note, note, sizeof s_note); repaint(); return; }",
+     "    (void)note;"),
+    ("the message box lets a turn through to the page under it",
+     "        if (pressed || delta) { s_note[0] = '\\0'; repaint(); }\n        return;",
+     "        if (pressed || delta) { s_note[0] = '\\0'; repaint(); }\n        if (pressed) return;"),
+    ("a hold with the box up leaves the menu",
+     "    if (s_note[0]) { s_note[0] = '\\0'; repaint(); return true; }",
+     "    if (0) { s_note[0] = '\\0'; repaint(); return true; }"),
+    ("a group that lands after entry stays shut behind its inert header",
+     "    if (app_grew && s_group_open < 0) {",
+     "    if (0) {"),
     ("the catalog stops counting the back row", "static int rows_apps(void)   { return perm_rows() + card_rows_n() + 2; }",
      "static int rows_apps(void)   { return perm_rows() + card_rows_n() + 1; }"),
     ("a failed app loses its reason",
@@ -2216,15 +2347,34 @@ MUTATIONS = [
     ("the doors page drops uninstall",
      "        ids[n++] = ACT_UNINSTALL;\n",
      ""),
-    ("a door page forgets which app it is about",
-     "static void open_appact(const orb_app_t *a)\n{\n    s_door_slot = orb_app_index_of(a);\n",
-     "static void open_appact(const orb_app_t *a)\n{\n    (void)a;\n"),
+    ("an app's page forgets which app its doors are about",
+     "    s_door_slot  = app_owned(a) ? orb_app_index_of(a) : -1;",
+     "    s_door_slot  = -1;"),
     ("back from the doors page lands on row 0 rather than its own app",
      "    return a ? perm_row_of(a) : 0;",
      "    return 0;"),
-    ("activate bypasses the registry's own door",
-     "        const esp_err_t e = orb_app_activate(a);",
-     "        const esp_err_t e = ESP_OK;"),
+    # §58: the app's two sub-menus and the doors that are left.
+    ("a running app grows a door that is not a removal",
+     "        if (a->failed) ids[n++] = ACT_INSTALL;",
+     "        ids[n++] = ACT_INSTALL;"),
+    ("the Themes row opens the provider for the wrong app",
+     "        themes_page_for(a->slug);",
+     "        themes_page_for(\"\");"),
+    ("back from Themes forgets whose they were",
+     "    if (s_pg == P(PG_APP) && s_app == &orb_app_themes_row && s_theme_of) {",
+     "    if (0) {"),
+    ("back from Permissions goes to the list, not the app's row",
+     "    if (s_pg == P(PG_CAPS)) {                  /* the Permissions sub-menu likewise */\n        reopen_app(orb_app_row((size_t)s_perm_slot), OWN_PERMS);",
+     "    if (s_pg == P(PG_CAPS)) {                  /* the Permissions sub-menu likewise */\n        go_to(PG_APPS, 0);"),
+    ("an app with no themes keeps an empty Themes row",
+     "static bool own_has_themes(const orb_app_t *a) { return themes_page_count_for(a->slug) > 0; }",
+     "static bool own_has_themes(const orb_app_t *a) { (void)a; return true; }"),
+    ("the Permissions row counts grants it never asked for",
+     "            if ((orb_svc_declared(s_app) & bit) && (orb_svc_grants(s_app) & bit)) ng++;",
+     "            if (orb_svc_grants(s_app) & bit) ng++;"),
+    ("the APPS walk leaves the themes stale",
+     "    themes_page_walk();      /* §58: each app's Themes row is ready when its page opens */",
+     ""),
     ("the switch pack drops the slot, so one press writes another app",
      "    return (orb_app_index_of(a) << 2) | (on ? 1 : 0);",
      "    return (on ? 1 : 0);"),
@@ -2238,7 +2388,7 @@ MUTATIONS = [
      "    unarm_arms();\n    s_cur = next;",
      "    s_cur = next;"),
     ("leaving the catalog keeps the previous subject and its arms",
-     "static void enter_apps(void)\n{\n    s_door_slot  = -1;\n    s_doormode   = 0;\n    s_card_sub   = -1;\n    unarm_arms();\n    job_post(job_scan, 0);\n}",
+     "static void enter_apps(void)\n{\n    s_theme_of   = NULL;\n    s_door_slot  = -1;\n    s_doormode   = 0;\n    s_card_sub   = -1;\n    unarm_arms();\n    job_post(job_scan, 0);\n}",
      "static void enter_apps(void)\n{\n}"),
     ("the refused retry gets the menu's words instead of the door's",
      'e == ESP_OK ? "fault cleared - it runs after the reboot" : why);',
@@ -2287,8 +2437,8 @@ MUTATIONS = [
     # clamp in menu_view_apply_input can bind. The walk vectors above pin the
     # behaviour; no input reaches the clamp, so no mutant of it can be caught.
     ("the shell steals the header press back from the app",
-     'const int ar = vis_to_row(rows, row);\n    if (ar < 0) { go_back(); repaint(); return; }   /* unreachable: rows_app sized it */\n    orb_app_opt_sel(s_app, ar);',
-     'const int ar = vis_to_row(rows, row);\n    if (ar < 0) { go_back(); repaint(); return; }   /* unreachable: rows_app sized it */\n    if (drawn_kind(rows, ar) == OPT_GROUP) { s_group_open = ar; repaint(); return; }\n    orb_app_opt_sel(s_app, ar);'),
+     '    if (note) { strlcpy(s_note, note, sizeof s_note); repaint(); return; }\n    orb_app_opt_sel(s_app, ar);',
+     '    if (note) { strlcpy(s_note, note, sizeof s_note); repaint(); return; }\n    if (drawn_kind(rows, ar) == OPT_GROUP) { s_group_open = ar; repaint(); return; }\n    orb_app_opt_sel(s_app, ar);'),
     ("items lose the indent that says they are inside a header",
      'snprintf(out, outsz, "%s%s", k == OPT_ITEM ? "  " : "",',
      'snprintf(out, outsz, "%s%s", "",'),
@@ -2299,14 +2449,11 @@ MUTATIONS = [
      ".back_to = PG_TOP, .back_cur = 1, .edit = edit_display },",
      ".back_to = PG_TOP, .back_cur = 0, .edit = edit_display },"),
     ("back from the app list opens the top page on the wrong row",
-     ".act = act_perms, .back_to = PG_TOP, .back_cur = 2 },",
-     ".act = act_perms, .back_to = PG_TOP, .back_cur = 0 },"),
+     ".act = act_apps, .enter = enter_apps,\n                     .back_to = PG_TOP, .back_cur = 3 },",
+     ".act = act_apps, .enter = enter_apps,\n                     .back_to = PG_TOP, .back_cur = 0 },"),
     ("back from the app page loses its row in the dynamic run",
      ".act = act_app, .open = open_app, .ordinal = ord_app,",
      ".act = act_app, .open = open_app,"),
-    ("back from the caps page loses the app's row in the list",
-     ".hint = hint_caps, .act = act_caps, .ordinal = ord_caps,",
-     ".hint = hint_caps, .act = act_caps,"),
     ("the app page is left with its app armed",
      ".leave = leave_app, .back_to = PG_TOP, .back_cur = 0, .edit = edit_app },",
      ".back_to = PG_TOP, .back_cur = 0, .edit = edit_app },"),
@@ -2321,8 +2468,8 @@ MUTATIONS = [
      "        cursor_fit(page_rows());",
      "        ;"),
     ("item 3: the app page becomes restorable onto a pointer that may be gone",
-     "                      | (1u << PG_PERMS) | (1u << PG_ABOUT);",
-     "                      | (1u << PG_PERMS) | (1u << PG_ABOUT)\n"
+     "                      | (1u << PG_ABOUT) | (1u << PG_UNITS);",
+     "                      | (1u << PG_ABOUT) | (1u << PG_UNITS)\n"
      "                      | (1u << PG_APP);"),
     ("item 3: re-arming ignores the stored page and always opens at the top",
      "        s_pg  = P(s_pos_pg);",
@@ -2364,9 +2511,9 @@ MUTATIONS = [
     ("an app row the app edits is saved through its press",
      "    orb_app_opt_set(s_app, vis_to_row(orb_app_opt_count(s_app), row), v);",
      "    orb_app_opt_sel(s_app, vis_to_row(orb_app_opt_count(s_app), row));"),
-    ("the cap page loses LOCATION to a second back row",
-     "    if (row >= N_OWNER_CAPS) { snprintf(out, outsz, \"<- back\"); return; }",
-     "    if (row >= 5) { snprintf(out, outsz, \"<- back\"); return; }"),
+    ("an app's page loses LOCATION, the last owner cap",
+     "    for (int c = 0; c < N_OWNER_CAPS; c++)\n        if ((m & (1u << OWNER_CAPS[c])) && i-- == 0) return c;",
+     "    for (int c = 0; c < 5; c++)\n        if ((m & (1u << OWNER_CAPS[c])) && i-- == 0) return c;"),
     ("the top page stops counting its dynamic rows",
      "static int rows_top(void)     { return TOP_OS_N + app_rows() + 1; }",
      "static int rows_top(void)     { return TOP_OS_N + 1; }"),
@@ -2392,28 +2539,21 @@ MUTATIONS = [
     ("an off-preset timeout reads the nearest preset instead of the truth",
      'snprintf(out, outsz, "%lu s", (unsigned long)cur);',
      'snprintf(out, outsz, "%lu min", (unsigned long)(cur / 60u));'),
-    ("D19: the app list loses its back row",
-     "static int rows_perms(void)   { return perm_rows() + 1; }",
-     "static int rows_perms(void)   { return perm_rows(); }"),
     ("D19: the chrome filter flips and lists the shell as an app",
      "if (a && a->kind == ORB_APP_KIND_APP && a->installed) n++;",
      "if (a && a->installed) n++;"),
     # The two facts the ladder exists to keep apart: what the app declared at
     # install, and what the owner has left running. Each pin breaks one of them
     # and only one, so the suite's (n of m) line is what catches it.
-    ("D19: the declared count stops being the declared count",
-     "if (dm & (1u << OWNER_CAPS[c])) nd++;",
-     "if (gm & (1u << OWNER_CAPS[c])) nd++;"),
-    ("D19: an app that declared nothing reads as a zero instead of a sentence",
-     "if (nd == 0)", "if (false)"),
     ("D19: a cap the app never declared stops saying so",
-     "if (!dcl) {", "if (false) {"),
+     '!dcl ? "not declared" : g ? "allowed" : "revoked"',
+     '0 ? "not declared" : g ? "allowed" : "revoked"'),
     ("D19: the refusal mark stops reading the mask it is meant to show",
      "if (a && a->kind == ORB_APP_KIND_APP && orb_svc_denied_mask(a)) return true;",
      "if (a && a->kind == ORB_APP_KIND_APP && false) return true;"),
     ("D19: the refusal mark is detached from the mask it reads",
-     "const bool ref = (orb_svc_denied_mask(a) & bit) != 0;",
-     "const bool ref = false;"),
+     "    const bool ref = (orb_svc_denied_mask(a) & bit) != 0;\n    if (sel_hi) *sel_hi = g;",
+     "    const bool ref = false;\n    if (sel_hi) *sel_hi = g;"),
     # The press builds the pack through cap_pack(), so the two shifts that
     # decide which app and which cap the worker writes are pinned in the helper
     # the suite lifts and calls directly — and the dispatcher that reaches it
@@ -2442,8 +2582,8 @@ MUTATIONS = [
      'snprintf(out, outsz, "%s  %d/%d", page_title(), s_cur + 1, rows);',
      'snprintf(out, outsz, "%s  %d/%d", page_title(), s_cur + 1, rows - 1);'),
     ("P5.4: a page one row short of scrolling starts counting",
-     "    if (rows > ROW_MAX)\n        snprintf(out, outsz, \"%s  %d/%d\"",
-     "    if (rows >= ROW_MAX)\n        snprintf(out, outsz, \"%s  %d/%d\""),
+     "    if (rows > rows_on_glass())\n        snprintf(out, outsz, \"%s  %d/%d\"",
+     "    if (rows >= rows_on_glass())\n        snprintf(out, outsz, \"%s  %d/%d\""),
     ("P5.4: the scrolled page stops naming its total",
      'snprintf(out, outsz, "%s  %d/%d", page_title(), s_cur + 1, rows);',
      'snprintf(out, outsz, "%s  %d", page_title(), s_cur + 1);'),
@@ -2592,15 +2732,23 @@ def main():
     check("the pages are exactly one table",
           len(re.findall(r"s_pages\[PG_N\]\s*=\s*\{", tcode)) == 1)
     entry_ids = re.findall(r"(?m)^\s*\[PG_(\w+)\]\s*=", tcode)
-    # P5.3 adds APPS (the catalog), APPACT (its one app's doors) and ABOUT.
-    # The list is exact rather than "at least": a page that ships without a
-    # table row is a page the dispatcher cannot reach, and the enum growing
-    # past the table would leave PG_N counting one more than exists.
+    # P5.3 adds APPS (the catalog), APPACT (a card file's doors) and ABOUT;
+    # 2026-11-07 retired PERMS and made CAPS one app's Permissions sub-menu. The
+    # list is exact rather than "at least": a page that ships without a table row
+    # is a page the dispatcher cannot reach.
     check("the table rows name every page id exactly once",
-          sorted(entry_ids) == sorted(["LANDING", "TOP", "APP", "DISPLAY",
-                                       "PERMS", "CAPS", "APPS", "APPACT",
+          sorted(entry_ids) == sorted(["LANDING", "TOP", "APP", "DISPLAY", "CAPS",
+                                       "APPS", "APPACT",
                                        "ABOUT", "SHARE", "UNITS", "GO"])
-          and len(entry_ids) == 12, ",".join(entry_ids))
+          and len(entry_ids) == 11, ",".join(entry_ids))
+    # The retired page keeps its number, so a stored menu position keeps its
+    # meaning, and is neither a page nor restorable; CAPS needs a selected app,
+    # which a stored page id cannot re-derive.
+    check("the retired permission list keeps its number and nothing else",
+          re.search(r"PG_TO_RETIRED,[^\n]*\n[^\n]*\n[^\n]*\n\s*PG_PERMS,[^\n]*\n\s*PG_CAPS,", tcode)
+          is not None
+          and "PG_PERMS" not in tcode[tcode.index("s_pages[PG_N] = {"):]
+          and "1u << PG_PERMS" not in tcode and "1u << PG_CAPS" not in tcode)
     # docs/knob-edit-plan.md: the timeout presets' id stays in the enum, so a stored
     # menu position keeps its page numbers, and is neither a page nor restorable.
     check("the retired timeout page keeps its number and nothing else",
@@ -2620,12 +2768,12 @@ def main():
     # APPACT joins the two that needed one in P5.2: its parent is APPS, whose
     # rows move when an app is uninstalled, so back has to be computed too.
     check("the ordinal answers only where the parent's list moves",
-          all((".ordinal" in entry(p)) == (p in ("APP", "CAPS", "APPACT"))
+          all((".ordinal" in entry(p)) == (p in ("APP", "APPACT"))
               for p in entry_ids))
     check("a leaving app page says how to leave it",
           ".leave = leave_app" in entry("APP"))
     check("back lands on the sub-table row the page was opened from",
-          ".back_cur = 1" in entry("DISPLAY") and ".back_cur = 2" in entry("PERMS"))
+          ".back_cur = 1" in entry("DISPLAY") and ".back_cur = 2" in entry("UNITS"))
     check("the top page's last row is exit", ".back_to = MENU_GO_EXIT" in entry("TOP"))
     top_rows = re.search(r"menu_row_t s_top\[\] = \{([\s\S]*?)\n\};", menu_src)
     labels = re.findall(r'\{\s*"([^"]+)"', top_rows.group(1)) if top_rows else []
@@ -2635,8 +2783,10 @@ def main():
     # TZ left (owner ruling, 2026-11-01): the zone follows the home, which the
     # hub sets. AP left the same day (a stub that never worked) and ABOUT took
     # its row: it opens on a QR code for the orb's own page.
-    check("the OS's top rows are ABOUT, DISPLAY, PERMISSIONS, APPS, UNITS",
-          labels == ["ABOUT", "DISPLAY", "PERMISSIONS", "APPS", "UNITS"],
+    # 2026-11-07: PERMISSIONS went into APPS (one page per app), and UNITS moved
+    # above it, so every back_cur below was re-read against this order.
+    check("the OS's top rows are ABOUT, DISPLAY, UNITS, APPS",
+          labels == ["ABOUT", "DISPLAY", "UNITS", "APPS"],
           ",".join(labels))
     # P5.3's two new sub-pages say their own parent row, and ABOUT promises the
     # inertness its hint claims: no act hook means no press can do anything.
@@ -2644,11 +2794,11 @@ def main():
           ".back_cur = 3" in entry("APPS") and ".back_cur = 0" in entry("ABOUT"))
     check("ABOUT has no press hook at all", ".act" not in entry("ABOUT"))
     check("UNITS lands back on its own top row and edits by knob",
-          ".back_cur = 4" in entry("UNITS") and ".edit = edit_units" in entry("UNITS"))
+          ".back_cur = 2" in entry("UNITS") and ".edit = edit_units" in entry("UNITS"))
     check("the door page reaches the machine through the two owner doors",
-          ".open = open_appact" in entry("APPACT")
+          ".open" not in entry("APPACT") and ".open = open_app" in entry("APP")
           and "orb_app_clear_faults" in tcode and "orb_app_uninstall" in tcode
-          and "orb_app_activate" in tcode)
+          and "orb_app_activate" not in tcode)
     # Structural half of the two-press rule; the behavioural half is the check
     # in the harness that presses the uninstall row twice, and once either side
     # of a detent. The arm used to be cleared by four hand-written assignments,
@@ -2668,8 +2818,10 @@ def main():
           # an arm live; miss its line and the glass still says press again.
           # four: leaving the catalog, the two firing presses (D38's pair), and
           # the cursor move. Miss the one in apply_input and a detent leaves an
-          # arm live; miss its line and the glass still says press again.
-          and tcode.count("unarm_arms();") == 4
+          # arm live; miss its line and the glass still says press again. The
+          # fifth (2026-11-07) is leaving an app's own page, which carries the
+          # doors now.
+          and tcode.count("unarm_arms();") == 5
           and tcode.count("s_uninst_arm != door_subject()") == 1
           and tcode.count("s_uninst_arm == door_subject()") == 1
           and tcode.count("s_cardrm_arm != door_subject()") == 1

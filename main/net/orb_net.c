@@ -6543,6 +6543,62 @@ static esp_err_t h_app_cfg(httpd_req_t *req)
 /* GET /api/v1/apps/cfg?id=<slug>&key=<setting> — one declared setting's value, for
  * the hub's app options page. A secret (§43) answers whether it is set, the header it
  * travels in, its last four characters and the one host it may go to — never itself. */
+/* GET /api/v1/apps/settings?id=<slug> — an app's settings as the hub draws them
+ * (app-platform-plan §57): its schema region verbatim (each setting's type, label,
+ * help, how it shows, its range, choices, unit) and every value now. A secret answers
+ * whether it is set and its last four characters, never itself. Writes stay
+ * POST /api/v1/apps/cfg. */
+static esp_err_t h_app_settings(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char id[ORB_APP_SLUG_MAX + 1] = "";
+    if (!q_param(req, "id", id, sizeof id)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id is required\"}");
+    }
+    const orb_app_t *a = orb_app_find_slug(id);
+    if (!a || !a->installed) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "{\"error\":\"no such app\"}");
+    }
+    char b[256], e_slug[2 * ORB_APP_SLUG_MAX], e_title[2 * 40];
+    json_put(e_slug, sizeof e_slug, a->slug);
+    json_put(e_title, sizeof e_title, a->title ? a->title : "");
+    orb_units_t u;
+    orb_units_get(&u);
+    snprintf(b, sizeof b, "{\"slug\":\"%s\",\"title\":\"%s\",\"dist\":\"%s\",\"settings\":", e_slug,
+             e_title, orb_units_key(ORB_UNITS_DIST, u.dist));
+    httpd_resp_send_chunk(req, b, HTTPD_RESP_USE_STRLEN);
+    if (a->schema && a->schema_len) httpd_resp_send_chunk(req, a->schema, (ssize_t)a->schema_len);
+    else httpd_resp_send_chunk(req, "[]", 2);
+    httpd_resp_send_chunk(req, ",\"values\":{", HTTPD_RESP_USE_STRLEN);
+    const orb_svc_t *svc = orb_svc_table();
+    for (int i = 0; i < a->n_settings; i++) {
+        const orb_setting_desc_t *d = &a->settings[i];
+        const char *sep = i ? "," : "";
+        if (d->type == ORB_SET_SECRET) {
+            char hdr[ORB_APP_CRED_HDR_MAX + 1] = "", tail[5] = "";
+            const bool set = orb_app_cred_info(a, d->id, hdr, sizeof hdr, tail);
+            snprintf(b, sizeof b, "%s\"%s\":{\"set\":%s,\"tail\":\"%s\",\"host\":\"%s\",\"header\":\"%s\"}",
+                     sep, d->id, set ? "true" : "false", set ? tail : "", d->def_str, set ? hdr : "");
+        } else if (d->type == ORB_SET_STRING) {
+            char v[40] = "", ev[80];
+            if (svc->cfg_get_str((orb_app_t *)a, d->id, v, sizeof v) != ESP_OK)
+                snprintf(v, sizeof v, "%s", d->def_str);
+            json_put(ev, sizeof ev, v);
+            snprintf(b, sizeof b, "%s\"%s\":\"%s\"", sep, d->id, ev);
+        } else {
+            int32_t v = d->def;
+            (void)svc->cfg_get((orb_app_t *)a, d->id, &v);
+            snprintf(b, sizeof b, "%s\"%s\":%ld", sep, d->id, (long)v);
+        }
+        httpd_resp_send_chunk(req, b, HTTPD_RESP_USE_STRLEN);
+    }
+    httpd_resp_send_chunk(req, "}}", 2);
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
 static esp_err_t h_app_cfg_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -7972,8 +8028,9 @@ static esp_err_t net_start_httpd(void)
      * hub's settings write: textual 49, so the ceiling moves to 56. D43 P7 adds
      * /api/v1/sd/design, the card's design read-back: textual 50, the ceiling stays 56.
      * v1.2.17's bench door /api/v1/debug/units_forget brings the textual count to 55: one
-     * from the ceiling, so the next door raises it. */
-    cfg.max_uri_handlers  = 56;
+     * from the ceiling, so the next door raises it. v1.2.19's /api/v1/apps/settings (§57)
+     * is that door: textual 56, and the ceiling moves to 64. */
+    cfg.max_uri_handlers  = 64;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
      * FAT with their own buffers, and the OTA chunk and upload receive buffers are
@@ -8147,6 +8204,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/apps/clear", .method = HTTP_POST, .handler = h_app_clear },
         { .uri = "/api/v1/apps/cfg",  .method = HTTP_POST, .handler = h_app_cfg },
         { .uri = "/api/v1/apps/cfg",  .method = HTTP_GET,  .handler = h_app_cfg_get },
+        { .uri = "/api/v1/apps/settings", .method = HTTP_GET, .handler = h_app_settings },
         { .uri = "/api/v1/sd/app",      .method = HTTP_POST, .handler = h_app_upload },
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },

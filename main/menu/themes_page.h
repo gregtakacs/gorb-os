@@ -32,6 +32,23 @@
 extern "C" {
 #endif
 
+struct orb_app;
+/** §58: the provider row the menu opens as an app's Themes sub-menu (orb_app.c
+ *  inits and services it; it is listed nowhere). */
+extern struct orb_app orb_app_themes_row;
+
+/** §58: aim the rows at one app: from here every hook answers that app's themes
+ *  (the entries whose stem names `slug`). LVGL task. */
+void themes_page_for(const char *slug);
+/** How many of the last walk's themes are `slug`'s, and the name of the one on the
+ *  dial (NULL when none of them is). Read on the LVGL task, from the reaped copy. */
+int themes_page_count_for(const char *slug);
+const char *themes_page_active_for(const char *slug);
+/** The walk itself, run synchronously on the caller — which must be the worker.
+ *  The menu runs it beside its own app walk on entering APPS, so an app's page has
+ *  its Themes row when it opens; the answer lands through themes_page_service(). */
+void themes_page_walk(void);
+
 /** Ask the worker for the card's theme list. Ignored while one is outstanding:
  *  a double-tap must not queue two multi-second walks, and the first result
  *  repaints the list anyway. Call from the shell's poll, never the worker. */

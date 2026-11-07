@@ -7275,3 +7275,204 @@ one has none. Seen on Gold: units forgotten, home cleared and set near Fort Wort
 read °F, mph, miles, 12-hour, inHg; a move to Budapest left them so. Gold's own metric units were
 put back after.
 
+## 57 — One settings schema: the app declares, the OS and the hub render — 2026-11-07
+
+**Owner, 2026-11-07.** "Apps define what settings they have, the setting's type (digit, text,
+dropdown, multi-select, etc.), then the OS renders them, and also exposes it via an API so the
+hub can render them." There are no apps beyond the shelf's to carry along.
+
+### 57.1 What there was
+
+- **Storage was already the OS's.** `app.json` declared each setting's id, a C9 type (`int`,
+  `enum`, `toggle`, `string`, `secret`) and its min, max and default; the OS stored and
+  range-checked values per app and served them a key at a time (`/api/v1/apps/cfg`).
+- **Rendering was three ways.** The dial drew whatever each app's hand-written `orb_opt_*`
+  exports answered (Flights' five rows and a Home line, Weather's Clock row). The manifest named
+  nothing: no labels, no option names (Flights' `source` was "0 to 1"; "adsb.fi" lived in C).
+  The hub showed only secrets and the strings an app's separate `editor/settings.json` gave a
+  `kind`, with labels and help from that file; ints, enums and toggles never reached it.
+- **No endpoint described an app's settings**, and nothing could hide one (Weather's bench
+  `force` was hidden only because no one rendered it). No multi-select, no decimals, no units.
+
+### 57.2 The schema (app.json `settings`, each entry)
+
+| field | for | meaning |
+|---|---|---|
+| `id` | all | the NVS key, as before (a-z 0-9 _, ≤ 15) |
+| `type` | all | `int`, `number`, `enum`, `multi`, `toggle`, `text`, `place`, `secret` |
+| `label` | all | what the dial and the hub call it (≤ 23 bytes); required |
+| `help` | all | a sentence or two for the hub (≤ 480 bytes) |
+| `links` | all | `[{href, text}]` for the hub, at most 3 |
+| `show` | all | `both`, `dial`, `hub` or `none`; default `both`, and `hub` for text, place and secret (nobody types on a knob) |
+| `min`, `max`, `default` | int, number | the range and first value, in the setting's own units |
+| `step`, `unit` | int, number | the knob's step (default 1) and a suffix ("°", "%", " s") |
+| `decimals` | number | 1..3: stored as an integer times 10^d, shown with that many decimals |
+| `choices` | enum, multi, toggle | the option labels, in value order; a label may instead be `{"km", "mi", "nm"}`, picked by the orb's distance unit (Flights' ranges). A toggle's two are its off and on (default "off", "on") |
+| `default` | enum | an index; multi: a list of indices; toggle: 0 or 1; text, place: a string |
+| `host`, `header` | secret | the one host the OS may send it to, and the header it rides (default `x-api-key`) |
+
+The binary gate is unchanged: `number` and `multi` store as C9 `int` (a scaled integer; a
+bitmask of at most 16 choices), `text` and `place` as `string`, and the C9 types stay frozen.
+
+### 57.3 The container: FORMAT 4
+
+The schema travels as a region of its own: the normalized entries as compact JSON (≤ 6 KB),
+written by `orbapp.py` from `app.json`, its offset, size and CRC32 inside `hdr_crc`'s span. A
+FORMAT 3 container (no schema) is refused by name. The C reader checks the CRC and that the
+schema's ids, types and count are the binary table's; the scan copies it into the row (PSRAM) and
+parses it once into the dial's compact rows.
+
+### 57.4 The dial
+
+A wasm app's options page is the OS's, drawn from its schema; the `orb_opt_*` exports are gone
+from the SDK (native entries, the OS's own pages, keep the hooks; the clock is a wasm app with no
+settings, so it has no page — see 57.7). Rows are the
+settings shown on the dial, in manifest order: `label:  value`. A press on an int, number, enum
+or toggle row edits it by knob, as the UNITS page does (enum and toggle wrap); a multi is a group
+whose items are its choices, each a press to turn on or off. When any setting is hub-only, a last
+row reads "More on Orb Manager". The app hears a change as it always has: `orb_cfg_gen` moves.
+
+### 57.5 The API and the hub
+
+`GET /api/v1/apps/settings?id=<slug>` answers `{"slug", "title", "dist", "settings": [the schema],
+"values": {id: number | string | {"set", "tail", "host", "header"}}}` (a secret's value never
+leaves the orb). Writes stay `POST /api/v1/apps/cfg`. Orb Manager's App settings page renders every
+setting shown on the hub from that answer alone, in manifest order, with its label, help and links:
+a number field and slider, a dropdown, checkboxes, an on/off switch, a line of text, the place
+picker, the secret row. `editor/settings.json` is retired.
+
+### 57.6 Slices
+
+1. The schema in `orbsdk.py`/`orbapp.py` (validation, the region, FORMAT 4) and the C reader and
+   scan, with the Python and C suites and the hub's Go container reader moving together.
+2. The OS: the dial renderer behind the wasm iface's `opt_*`, the API route, the scan's copy.
+3. The hub's generic page; `settings.json` read nowhere.
+4. The three apps on the schema, their `orb_opt_*` code and `settings.json` deleted; versions
+   bumped, `os_min` v1.2.19.
+5. The SDK's `orb.h`, `apps/README.md`, the template, the user guide.
+
+### 57.7 As built — OS v1.2.19, 2026-11-07
+
+All five slices landed together. Clock v1.2.28, HSB v1.3.0, Flights v1.4.0, Weather v1.4.0, all
+FORMAT 4 with `os_min` v1.2.19; Orb Manager's install floor is v1.2.19.
+
+- **The parser** is `main/app/orb_setui.c` (not `orb_ui.c`, which is the widget service), pure C
+  over `orb_json`, host-tested as shipped by `tools/host_setui_test.py` (7 of 7 mutants). The
+  container suites moved with the format: the reader suite at 78 vectors and 32 mutants, the
+  writer at 194 checks. `help` is capped at 480 bytes, not 240: Flights' key help needs ~300.
+- **A page needs a schema.** Every wasm app shares one iface, so its hooks alone made
+  `orb_app_has_options` true for every app, and the settings-free clock showed an empty page on
+  the bench. A card app now offers a page only when its manifest carries a schema; native entries
+  keep the declared-hooks rule and the late-rows reasoning behind it. The registry suite pins
+  both sides, and dropping the rule fails it.
+- **`orb_reply` is gone** with the hooks: it answered only `orb_opt_label`/`orb_opt_value`, and
+  nothing set its buffer once they went. `binds.json` lost it (69 imports); no shipped app
+  imported it.
+- **Upgrades keep settings.** A FORMAT 4 reader refuses a FORMAT 3 slot, but the installer's
+  census reads such a slot's magic, format, serial and slug from the fixed words, so installing an
+  app's FORMAT 4 build over its FORMAT 3 slot is a reinstall into the same slot and its settings
+  namespace (`orb.app<slot>`), grants and secrets survive. Proved on Gold: v1.2.17 with FORMAT 3
+  Weather and Flights and settings set under it (two places, Clock hidden, Flights' range on its second choice), then
+  this build, then the FORMAT 4 apps — every value came through. A bench trap on the way: flashing
+  v1.2.17 over FORMAT 4 slots lets the old installer, blind to them, put a second copy of an app
+  in another slot, and the census then takes the last match. Only a downgrade makes that state;
+  uninstalling the extra copy clears it.
+- **The dial, on Gold:** Weather's page is "Clock (shown)" and "More on Orb Manager" (the places
+  are hub-only, `force` is `none`); Flights shows range in the orb's distance unit ("80 km"),
+  source, background, boost, ground, and the hub row for its key; HSB shows hue, saturation and
+  brightness with units. A knob edit of a toggle and of an int (two detents = two steps of 5)
+  saved and read back through `/api/v1/apps/settings`.
+
+## 58 — One place per app on the dial — 2026-11-07
+
+**Owner, 2026-11-07.** "I have 3 different places now where apps show up on the orb:
+permissions, apps, each app's own setting pane. Can we consolidate? This is way too
+disjointed." Asked for the layout, the owner chose one flat page per app.
+
+### 58.1 The ruling
+
+- **The top menu** is ABOUT, DISPLAY, UNITS, APPS, then the service pages (Themes, USB
+  Drive, Sound) and exit. PERMISSIONS and the per-app settings rows are gone.
+- **APPS** lists every installed app, then the card files not installed, then the slot
+  count. A refused app (D19) carries `*` on its row and on APPS itself.
+- **An installed app's page** is flat, in this order: its settings shown on the dial
+  (§57, the same knob edits), "More on Orb Manager" when some are hub-only, one row per
+  owner cap it declared or reached for and was refused (`net:  allowed`, one press
+  toggles, `*` on the refused one), then show on the dial (retry when faulted),
+  uninstall, remove from card, back. Back lands on the app's row of APPS.
+- **A card file** keeps its own doors page: install, remove from card.
+
+### 58.2 As built (OS v1.2.19)
+
+- `PG_APP` is the page: an installed app's rows are its option rows plus `own_rows()`
+  (caps and the doors, by APPACT's door ids); a service page owns none of them.
+  `PG_APPACT` is card files only. `PG_PERMS` and `PG_CAPS` keep their enum numbers so a
+  stored menu position keeps its meaning, and a stored one opens the top page.
+- **The page follows its app across a tier change.** An install from the card lands on the
+  app's own page; an uninstall from that page lands on the card file's doors. Both used to
+  leave "? APP" over a lone back row, which read as a hung dial.
+- **A status line takes the fifth row's place.** It was drawn over the bottom row on any
+  page that filled the glass; the list now windows four rows while a line is up.
+- `tools/host_menu_test.py` moved with it: the D19 checks drive an app's page, the option-row
+  checks run on a service page (same `PG_APP`, no caps or doors), and the follow-throughs
+  and the four-row window are new. 91 mutants, all caught.
+
+### 58.3 Three bugs found on the way (Gold, 2026-11-07)
+
+- **Uninstall from the dial always panicked.** `job_uninstall` formatted its status line from
+  the row it had just freed (NULL slug, `LoadProhibited` in `strlen`); the reboot made the
+  uninstall look done. It copies the name first now, and so does the door's own log line.
+- **An install from the card left the app's page without its settings** until the reboot a
+  code install ends in: the ladder verified the schema and dropped it. The row carries it now.
+- **A still page did not redraw after a card read.** The display lends its DMA ring to the
+  card and drops frames meanwhile; the full repaint it then owes went out only on the next
+  flush, and a menu page that changed nothing never flushed, so the glass kept its old picture
+  until a turn. `display_dma_service()` (LVGL task, every pass) takes the ring back once the
+  loan closes and the network's window passes, and invalidates the screen if frames were
+  dropped. `/api/v1/fb` reads the mirror, which is always whole, so the bench capture cannot
+  see this one; it wants a look at the glass.
+
+### 58.4 Themes on the app's page, and the hub row's box — 2026-11-07
+
+**Owner, the same day:** "I forgot the themes, they should also move into the app's setting
+menu", and "the 'more on the hub' should pop up a message box to let the user know that
+additional settings are only accessible via the hub."
+
+- **Themes is no longer a menu row.** `orb_app.c` appends the theme provider's rows (the old
+  Themes page, `themes_page.c`) to every card app's page, after the app's own: one Themes group
+  whose items are the card's themes whose stem names that app (`e->app`), with the preview
+  plane and the D11 install-on-press as before. Every option dispatcher routes an index through
+  one door (`opt_route`), so neither half counts the other's rows; arming the page arms both,
+  which is what walks the card. The provider row is initialised and serviced beside the service
+  tier and listed nowhere. A group that lands with the walk after the page opened opens as it
+  would have at entry. The top menu is ABOUT, DISPLAY, UNITS, APPS, USB Drive, Sound, exit.
+- **The hub row opens a box.** A new optional hook, `opt_note`, answers a sentence for a row
+  that is not an action; the shell shows it in a box over the list (the rows blank behind it),
+  and a press, turn or hold closes it and does nothing else. The wasm page answers it for "More
+  on Orb Manager" with the hub-only settings by label: "Place 1, Place 2 and Place 3 are set in
+  Orb Manager, on this orb's App settings page."
+- **"show on the dial" was a leftover** of the enable-switch era: it called `orb_app_activate`
+  from the menu, which swapped the glass without the router. Removed (58.5).
+
+### 58.5 Themes and Permissions as sub-menus — 2026-11-07
+
+**Owner, the same day:** "remove the show on the dial thing. I'd like to move themes and
+permissions into their own sub-menus ... it's too confusing the way it is."
+
+- **An installed app's page** is its dial settings, "More on Orb Manager" when some are
+  hub-only, **Themes  (Scope)** (the one on the dial, else how many; absent when the card holds
+  none of the app's), **Permissions  (2 of 2)** (granted of declared, `*` when refused; absent
+  when it declares and reached for none), then retry (faulted apps only), uninstall, remove from
+  card, back. Weather's is seven rows.
+- **Themes** is the provider row's page aimed at the app (`themes_page_for`), headed "Weather
+  THEMES": the group of that app's themes, previews and install-on-press as before. The registry
+  splice of 58.4 is reverted: `orb_app_opt_*` answer an app's own rows only, and the provider row
+  is menu-only and listed nowhere. The menu's APPS walk also walks the themes
+  (`themes_page_walk`, on the worker), so an app's page has its Themes row when it opens.
+- **Permissions** is `PG_CAPS` again, one app's caps, headed "Weather PERMISSIONS", a press
+  toggles. Back from either sub-menu lands on the app's page at the row that opened it.
+- **The doors** lost "show on the dial": the app list and the carousel open apps.
+- Suites: the menu suite drives both sub-menus, their back routes, the row summaries and the
+  APPS walk; 101 mutants, all caught. The registry suite pins that an app's page carries no
+  theme rows and that the provider is menu-only. Benched on Gold.
+

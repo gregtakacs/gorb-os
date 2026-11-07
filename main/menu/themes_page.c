@@ -1,5 +1,11 @@
 /**
- * themes_page.c — the dial's Themes page: an OS menu row, like USB Drive and Sound.
+ * themes_page.c — the dial's theme rows: each app's Themes sub-menu.
+ *
+ * §58 (2026-11-07): the owner wanted everything about an app in one place, so this is
+ * no longer a top menu row: it is each app's Themes sub-menu. The menu aims it at one
+ * app (themes_page_for) and opens this row's page; the card's listing is walked whole,
+ * and the rows are the themes whose stem names that app (e->app). The
+ * history below is the page's, from when it was a row, and the clock's before that.
  *
  * §43 moved it here from the clock app (it was main/stage/clock_themes.c, answering
  * the clock's options hooks under B2). A theme covers every app at once (D21's
@@ -77,6 +83,46 @@ static SemaphoreHandle_t s_mx;
 static volatile bool s_dirty;
 static volatile bool s_walk;      /* a list walk is posted and unreaped     */
 static bool    s_armed;
+/* §58: the app the rows are for, by slug (LVGL task only). The menu sets it with
+ * themes_page_for() before it opens this row's page. */
+static char    s_for[ORB_THEME_APP_MAX + 1];
+
+void themes_page_for(const char *slug)
+{
+    strlcpy(s_for, slug ? slug : "", sizeof s_for);
+}
+/* The hooks are asked on behalf of this provider row; any other caller names its
+ * own app, and that wins. */
+static void for_app(const orb_app_t *app)
+{
+    if (app && app != &orb_app_themes_row && app->slug) themes_page_for(app->slug);
+}
+static int count_for(const char *slug)
+{
+    int n = 0;
+    for (int k = 0; k < s_ui.n; k++) if (!strcmp(s_ui.e[k].app, slug)) n++;
+    return n;
+}
+/** How many of the listing's entries are this app's. */
+static int mine_n(void) { return count_for(s_for); }
+
+int themes_page_count_for(const char *slug) { return slug ? count_for(slug) : 0; }
+
+const char *themes_page_active_for(const char *slug)
+{
+    for (int k = 0; slug && k < s_ui.n; k++)
+        if (!strcmp(s_ui.e[k].app, slug) && s_ui.e[k].active)
+            return s_ui.e[k].name[0] ? s_ui.e[k].name : s_ui.e[k].id;
+    return NULL;
+}
+/** The listing index of this app's i-th theme, or -1. */
+static int mine(int i)
+{
+    if (i < 0) return -1;
+    for (int k = 0; k < s_ui.n; k++)
+        if (!strcmp(s_ui.e[k].app, s_for) && i-- == 0) return k;
+    return -1;
+}
 
 /* ---- the preview plane (docs/history/theme-preview-plan.md §2) --------------------
  *
@@ -136,6 +182,9 @@ static void publish(const cui_t *src)
  * the framebuffer is walked. Storing is NOT here — orb_theme_post_bundle()
  * owns that job, so the dial's picker and the browser's Store button queue the
  * same worker function and cannot disagree about what a pick does. */
+static void job_run(void *arg);
+void themes_page_walk(void) { job_run(NULL); }
+
 static void job_run(void *arg)
 {
     (void)arg;                        /* the scan takes no payload */
@@ -296,11 +345,10 @@ void themes_page_service(void)
         memset(&s_pvx, 0, sizeof s_pvx);      /* ownership moves with the copy */
         xSemaphoreGive(s_mx);
 
-        const int i = (s_pv_row >= ROW_ITEMS && s_pv_row < ROW_ITEMS + s_ui.n)
-                    ? s_pv_row - ROW_ITEMS : -1;
-        const bool mine = i >= 0 && next.id[0] &&
+        const int i = mine(s_pv_row - ROW_ITEMS);
+        const bool ours = i >= 0 && next.id[0] &&
                           strcmp(next.id, s_ui.e[i].id) == 0;
-        if (!mine) {
+        if (!ours) {
             if (next.px) heap_caps_free(next.px);
             if (s_pvu.px) heap_caps_free(s_pvu.px);
             memset(&s_pvu, 0, sizeof s_pvu);
@@ -318,10 +366,10 @@ void themes_page_service(void)
      * land queues a read at all — a read per detent through a 62-row spin is
      * ~108 KB of card work per stop and the knob never answers; a read after
      * the spin costs the one theme the owner stopped on. */
-    if (s_pv_row >= ROW_ITEMS && s_pv_row < ROW_ITEMS + s_ui.n && s_pv_since &&
-        !orb_jobs_busy() &&
+    const int pvi = mine(s_pv_row - ROW_ITEMS);
+    if (pvi >= 0 && s_pv_since && !orb_jobs_busy() &&
         esp_timer_get_time() / 1000 - s_pv_since / 1000 >= PV_SETTLE_MS) {
-        const int i = s_pv_row - ROW_ITEMS;
+        const int i = pvi;
         if (!s_pvu.px || strcmp(s_pvu.id, s_ui.e[i].id) != 0) {
             s_pv_since = 0;                   /* one post per land, settled */
             const esp_err_t e = orb_jobs_post(pv_job_run, s_ui.e[i].id,
@@ -343,8 +391,9 @@ void themes_page_service(void)
  * swallowed — a press the firmware dropped has to say so on the glass (C8). */
 void themes_page_pick(int idx)
 {
-    if (s_ui.n <= 0 || idx < 0 || idx >= s_ui.n) return;
-    const orb_theme_entry_t *e = &s_ui.e[idx];
+    const int k = mine(idx);              /* this app's idx-th theme */
+    if (k < 0) return;
+    const orb_theme_entry_t *e = &s_ui.e[k];
     ESP_LOGI(TAG, "pick %d/%d: %s (%s)", idx, s_ui.n - 1,
              e->name[0] ? e->name : e->id, e->id);
     if (e->err != ESP_OK) {
@@ -386,7 +435,10 @@ esp_err_t themes_page_init(void)
 
 int themes_opt_count(orb_app_t *app)
 {
-    (void)app;
+    for_app(app);
+    /* §58: an app with no theme on the card has an empty sub-menu (its page shows
+     * no Themes row then, so this is reached only mid-walk). */
+    if (mine_n() == 0) return 0;
     /* The one group header plus the card's themes. Nothing here ever counted the
      * reboot question any more — ruling D11 deleted it, because a pick installs
      * and reboots by itself and there is no second press to have faith in. Migration
@@ -394,7 +446,7 @@ int themes_opt_count(orb_app_t *app)
      * stay in the count while their group is CLOSED: the shell hides them, and an
      * app that dropped them from its own number would be a second opinion about what
      * is on the page, which is the one thing §13.4 forbids. */
-    return ROW_ITEMS + s_ui.n;
+    return ROW_ITEMS + mine_n();
 }
 
 /** Which of the two shapes a row has (ruling D12). One group and its items — the
@@ -403,30 +455,30 @@ int themes_opt_count(orb_app_t *app)
  *  that used to lead the page. */
 orb_opt_kind_t themes_opt_kind(orb_app_t *app, int idx)
 {
-    (void)app;
+    for_app(app);
     if (idx == ROW_GROUP)   return OPT_GROUP;
-    if (idx >= ROW_ITEMS && idx < ROW_ITEMS + s_ui.n) return OPT_ITEM;
+    if (mine(idx - ROW_ITEMS) >= 0) return OPT_ITEM;
     return OPT_ROW;                     /* out of range: the shell's bounds answer */
 }
 
 const char *themes_opt_label(orb_app_t *app, int idx)
 {
-    (void)app;
+    for_app(app);
     /* The card is a GROUP, at row 0, always. Migration 1 retired the factory-default
      * ROW that used to lead the page: under the single slot there is no press that
      * returns the dial to a second copy, so the group is the whole page and the
      * base face needs no row to name it — it is what a slot with nothing valid in
      * it already draws. */
     if (idx == ROW_GROUP)   return "Themes";
-    const int i = idx - ROW_ITEMS;
-    if (i < 0 || i >= s_ui.n) return "";
+    const int i = mine(idx - ROW_ITEMS);
+    if (i < 0) return "";
     const orb_theme_entry_t *e = &s_ui.e[i];
     return e->name[0] ? e->name : e->id;
 }
 
 const char *themes_opt_value(orb_app_t *app, int idx)
 {
-    (void)app;
+    for_app(app);
     static char v[48];                  /* one row's answer, repainted per poll */
     v[0] = '\0';
     /* Every string below is a read of state the theme layer already holds: the
@@ -443,12 +495,13 @@ const char *themes_opt_value(orb_app_t *app, int idx)
          * repaint the glass without a knob turn. Load state and refusal
          * reasons live on their own theme rows, never on this line (owner
          * ruling, 2026-10-26: the header does not editorialize). */
-        if (s_ui.n <= 0) return "";
-        snprintf(v, sizeof v, "%d theme%s", s_ui.n, s_ui.n == 1 ? "" : "s");
+        const int n = mine_n();
+        if (n <= 0) return "";
+        snprintf(v, sizeof v, "%d theme%s", n, n == 1 ? "" : "s");
         return v;
     }
-    const int i = idx - ROW_ITEMS;
-    if (i < 0 || i >= s_ui.n) return "";
+    const int i = mine(idx - ROW_ITEMS);
+    if (i < 0) return "";
     const orb_theme_entry_t *e = &s_ui.e[i];
     /* One value per row, chosen by what the owner has to decide, and one rule: the
      * reason a theme is not on the wall goes on that theme's row, because the row
@@ -492,11 +545,13 @@ void themes_opt_sel(orb_app_t *app, int idx)
      * left the group header as the only non-item row, so an ITEM press is the
      * only one that needs the themes cap. */
     if (idx == ROW_GROUP)   return;
+    for_app(app);
     themes_page_pick(idx - ROW_ITEMS);
 }
 
 void themes_opt_arm(orb_app_t *app, bool armed)
 {
+    for_app(app);
     s_armed = armed;
     if (armed) {
         /* Entering the page is when the card is worth walking: the rows are the
@@ -517,7 +572,7 @@ void themes_opt_focus(orb_app_t *app, int idx)
      * A revoked cap makes the focus a no-op — the revoke is already on the
      * status line from the arm, and a row with no preview is the same page
      * every theme without one draws. */
-    (void)app;
+    for_app(app);
     /* The shell tells the app where its cursor landed, in the app's own row
      * numbers. A land on the group header (row 0) or past the walk's end shows
      * nothing; the plane drops so the list the owner can actually see is the
@@ -526,7 +581,7 @@ void themes_opt_focus(orb_app_t *app, int idx)
     if (idx == s_pv_row) return;
     s_pv_row = idx;
     s_pv_since = idx >= ROW_ITEMS ? esp_timer_get_time() : 0;
-    if (idx < ROW_ITEMS || idx >= ROW_ITEMS + s_ui.n) {
+    if (mine(idx - ROW_ITEMS) < 0) {
         if (s_pvu.px) heap_caps_free(s_pvu.px);
         memset(&s_pvu, 0, sizeof s_pvu);
     }
@@ -535,7 +590,7 @@ void themes_opt_focus(orb_app_t *app, int idx)
 const void *themes_opt_preview(orb_app_t *app, int idx, uint16_t *w,
                               uint16_t *h, uint32_t *stamp)
 {
-    (void)app;
+    for_app(app);
     /* The answer half, not the ask: it reads only the reaped plane (s_pvu), the
      * same rule opt_label and opt_value live under — the callback that answers
      * a row is the dial's animation, and a card read here would hold the task
@@ -543,11 +598,12 @@ const void *themes_opt_preview(orb_app_t *app, int idx, uint16_t *w,
      * row, a theme with no preview (NO_CONTENT, never an error), a page whose
      * cursor is not on an item, or a group that is closed. */
     if (!s_pvu.px || idx != s_pv_row) return NULL;
-    if (idx < ROW_ITEMS || idx >= ROW_ITEMS + s_ui.n) return NULL;
+    const int k = mine(idx - ROW_ITEMS);
+    if (k < 0) return NULL;
     /* §6's identity rule applies to a picture too: the plane answers the row
      * that carries the same id it was read for. A card re-walk that moved the
      * theme out from under the cursor answers text, not the old face. */
-    if (strcmp(s_ui.e[idx - ROW_ITEMS].id, s_pvu.id) != 0) return NULL;
+    if (strcmp(s_ui.e[k].id, s_pvu.id) != 0) return NULL;
     *w = s_pvu.w;
     *h = s_pvu.h;
     *stamp = s_pvu.gen;
@@ -559,9 +615,9 @@ bool themes_opt_armed(void)
     return s_armed;
 }
 
-/* ---- the menu row ----------------------------------------------------------------
- * A settings-only OS row (orb_app.c's s_service table): no face, no ledger slot, and
- * the menu draws its options page from the hooks below. */
+/* ---- the provider row --------------------------------------------------------------
+ * No face, no ledger slot and no menu row (§58): orb_app.c initialises and services it,
+ * and appends its hooks' rows to every card app's page. */
 static esp_err_t page_init(orb_app_t *app)    { (void)app; return themes_page_init(); }
 static void      page_service(orb_app_t *app) { (void)app; themes_page_service(); }
 

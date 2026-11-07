@@ -800,29 +800,6 @@ ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
     redraw();
 }
 
-/* ---- the options page (the dial's menu draws it): the clock, shown or hidden ------- */
-
-enum { OPT_CLOCK, OPT_N };
-
-ORB_EXPORT("orb_opt_count") int32_t orb_opt_count(void) { return OPT_N; }
-ORB_EXPORT("orb_opt_label") void orb_opt_label(int32_t idx) { orb_reply(idx == OPT_CLOCK ? "Clock" : ""); }
-ORB_EXPORT("orb_opt_value") void orb_opt_value(int32_t idx)
-{
-    orb_reply(idx == OPT_CLOCK ? (s_clock_on ? "shown" : "hidden") : "");
-}
-/* Opening the page re-reads the settings, so a value written from outside is what it shows. */
-ORB_EXPORT("orb_opt_arm") void orb_opt_arm(int32_t armed)
-{
-    if (armed) load_places();
-}
-/* A press shows or hides the clock and commits it. Its 24- or 12-hour format is the
- * orb's, on the UNITS page. */
-ORB_EXPORT("orb_opt_sel") void orb_opt_sel(int32_t idx)
-{
-    if (idx != OPT_CLOCK) return;
-    s_clock_on = !s_clock_on;
-    orb_cfg_set("clock", s_clock_on);
-    s_cfg_gen = orb_cfg_gen();
-    s_dirty = true;
-}
+/* The options page is the OS's, drawn from app.json's settings (app-platform-plan §57):
+ * the clock's row writes "clock", orb_cfg_gen moves, and orb_service re-reads it. */
 

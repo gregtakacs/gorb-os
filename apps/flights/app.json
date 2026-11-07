@@ -4,14 +4,14 @@
   "caps": ["net", "location"],
   "period_ms": 1000,
   "settings": [
-    {"id": "range",  "type": "enum",   "min": 0, "max": 3, "default": 2},
-    {"id": "source", "type": "enum",   "min": 0, "max": 1, "default": 1},
-    {"id": "bg",     "type": "enum",   "min": 0, "max": 3, "default": 2},
-    {"id": "boost",  "type": "toggle", "default": 0},
-    {"id": "ground", "type": "toggle", "default": 1},
-    {"id": "key",    "type": "secret", "host": "api.adsb.lol"}
+    {"id": "range", "type": "enum", "label": "Range", "default": 2, "choices": [{"km": "20 km", "mi": "10 mi", "nm": "10 nm"}, {"km": "40 km", "mi": "25 mi", "nm": "20 nm"}, {"km": "80 km", "mi": "50 mi", "nm": "40 nm"}, {"km": "140 km", "mi": "90 mi", "nm": "80 nm"}], "help": "How far from home the radar reaches. A press on the radar steps it too."},
+    {"id": "source", "type": "enum", "label": "Source", "choices": ["adsb.lol", "adsb.fi"], "default": 1, "help": "Where the aircraft come from. adsb.fi is the main source; adsb.lol is the fallback."},
+    {"id": "bg", "type": "enum", "label": "Background", "choices": ["off", "every minute", "every 2 min", "every 5 min"], "default": 2, "help": "How often the tracker asks while it is off the glass, so the radar is current when you come back."},
+    {"id": "boost", "type": "toggle", "label": "Boost", "default": 0, "help": "While something worth watching is near (an emergency, a low pass), ask every 20 seconds in the background."},
+    {"id": "ground", "type": "toggle", "label": "Ground traffic", "choices": ["shown", "hidden"], "default": 1, "help": "Aircraft on the ground: drawn grey, or left off the radar."},
+    {"id": "key", "type": "secret", "label": "adsb.lol API key", "host": "api.adsb.lol", "header": "x-api-key", "help": "adsb.lol gives API keys to people who feed it: an ADS-B receiver at home sending what it hears to adsb.lol. The tracker works without one today (adsb.fi is its main source), but adsb.lol says keys will be required. The orb keeps it beside the Wi-Fi password and sends it only to api.adsb.lol.", "links": [{"href": "https://adsb.lol/feed", "text": "Feed adsb.lol to get a key"}, {"href": "https://github.com/adsblol/api", "text": "adsb.lol's API notes"}]}
   ],
   "shelf": true,
-  "os_min": "v1.2.12",
+  "os_min": "v1.2.19",
   "editor": "editor"
 }

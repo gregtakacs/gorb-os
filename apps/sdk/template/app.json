@@ -4,6 +4,7 @@
   "caps": [],
   "period_ms": 1000,
   "settings": [
-    {"id": "saved", "type": "int", "min": -50, "max": 50, "default": 0}
+    {"id": "saved", "type": "int", "label": "Saved value", "min": -50, "max": 50,
+     "default": 0, "help": "The dial position a press saves. Change it here or on the orb."}
   ]
 }

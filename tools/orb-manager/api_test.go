@@ -502,6 +502,33 @@ func TestPlanForReturnsTheBundleItCameFrom(t *testing.T) {
 	}
 }
 
+// The lonely erase clears the theme pool's head and table, read from the bundle's own
+// table: the slot header at the partition's start and the two table copies at its end.
+func TestThemePoolRegionsComeFromTheTable(t *testing.T) {
+	s := bundledServer(t)
+	b, _, err := s.planFor("full")
+	if err != nil || b == nil {
+		t.Fatalf("planFor: %v", err)
+	}
+	regions, err := esprom.ThemePoolRegions(b.PartitionTable())
+	if err != nil {
+		t.Fatalf("ThemePoolRegions on the bundle's own table: %v", err)
+	}
+	const assets, size = 0x720000, 0x800000 // partitions.csv
+	want := []esprom.EraseTarget{
+		{Offset: assets, Size: 0x1000},
+		{Offset: assets + size - 0x2000, Size: 0x2000},
+	}
+	if len(regions) != len(want) {
+		t.Fatalf("%d regions; want %d", len(regions), len(want))
+	}
+	for i := range want {
+		if regions[i].Offset != want[i].Offset || regions[i].Size != want[i].Size {
+			t.Errorf("region %d is 0x%X+0x%X; want 0x%X+0x%X", i, regions[i].Offset, regions[i].Size, want[i].Offset, want[i].Size)
+		}
+	}
+}
+
 // An empty upload is a user mistake worth naming, not a zip-parse error.
 func TestFirmwareUploadEmptyFileRefused(t *testing.T) {
 	s := bundledServer(t)

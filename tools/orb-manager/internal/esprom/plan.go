@@ -205,6 +205,35 @@ func NvsRegions(raw []byte) ([]EraseTarget, error) {
 	return out, nil
 }
 
+// ThemePoolRegions answers the sectors that make the `assets` partition's theme pool
+// read as empty: the first (entry 0's slot header, which a boot with no table carries
+// into the pool as the clock's theme) and the last two (the table's A and B copies,
+// main/art/orb_pool.h). A lonely erase that took only the NVS left a previous orb life's
+// themes standing, and the first theme store on the reborn orb then spent a minute
+// "making room" moving the old apps' themes down (owner, 2026-11-06). Three sectors, not
+// 8 MB: the pool is only what its table says it is.
+func ThemePoolRegions(raw []byte) ([]EraseTarget, error) {
+	for i := 0; i+32 <= len(raw); i += 32 {
+		e := raw[i : i+32]
+		if e[0] != 0xAA || e[1] != 0x50 || e[2] != 0x01 {
+			continue // not a data entry
+		}
+		if cstring(e[12:28]) != "assets" {
+			continue
+		}
+		off := binary.LittleEndian.Uint32(e[4:8])
+		size := binary.LittleEndian.Uint32(e[8:12])
+		if off%4096 != 0 || size%4096 != 0 || size < 3*4096 {
+			return nil, fmt.Errorf("esprom: the assets partition at 0x%X+0x%X is not a sector-aligned pool - refusing to erase", off, size)
+		}
+		return []EraseTarget{
+			{Label: "assets (theme slot head)", Offset: off, Size: 4096},
+			{Label: "assets (theme pool table)", Offset: off + size - 2*4096, Size: 2 * 4096},
+		}, nil
+	}
+	return nil, fmt.Errorf("esprom: no assets partition in the built partition table")
+}
+
 func cstring(b []byte) string {
 	for i, c := range b {
 		if c == 0 {

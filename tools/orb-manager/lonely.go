@@ -108,6 +108,14 @@ func (s *Server) handleLonely(w http.ResponseWriter, r *http.Request) {
 		send("error", werr.Error())
 		return
 	}
+	// And the theme pool: the last orb life's themes are the owner's as much as its
+	// settings, and left standing they cost the next first store a minute of moves.
+	pool, perr := esprom.ThemePoolRegions(bundle.PartitionTable())
+	if perr != nil {
+		send("error", perr.Error())
+		return
+	}
+	nvs = append(nvs, pool...)
 
 	portLock, perr := orbbind.PressPort(ctx, req.Port, pressWindow)
 	if perr != nil {

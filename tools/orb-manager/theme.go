@@ -986,7 +986,13 @@ func (s *Server) handleThemeUpload(w http.ResponseWriter, r *http.Request) {
 // the bytes this ship wrote, and the reboot's gap could have refilled the memory with
 // the card as it was before. rebooting, when given, runs once the store has landed.
 func (s *Server) followStore(ctx context.Context, ip, id string, rebooting func(), beats ...waitBeat) (string, string, bool) {
-	outcome, note := s.waitForStore(ctx, ip, id, beats...)
+	return s.followStoreStaged(ctx, ip, id, nil, rebooting, beats...)
+}
+
+// followStoreStaged is followStore with the store's stages reported as they change: the
+// streamed runs give each its own step row (storeStages).
+func (s *Server) followStoreStaged(ctx context.Context, ip, id string, onStage storeStage, rebooting func(), beats ...waitBeat) (string, string, bool) {
+	outcome, note := s.waitForStoreStaged(ctx, ip, id, onStage, beats...)
 	s.dropThemeCache(ip)
 	if outcome != "stored" {
 		return outcome, note, false
@@ -1102,6 +1108,16 @@ func (s *Server) handleThemeCommit(w http.ResponseWriter, r *http.Request) {
 // a browser tab closing must not release the claim while the board is mid-erase —
 // the exact window this function exists to hold.
 func (s *Server) waitForStore(ctx context.Context, ip, id string, beats ...waitBeat) (string, string) {
+	return s.waitForStoreStaged(ctx, ip, id, nil, beats...)
+}
+
+// storeStage hears the stage a running store reports (orb_theme_job_stage): the stage
+// word and its byte counts.
+type storeStage func(stage string, done, total uint32)
+
+// waitForStoreStaged is waitForStore with each answered poll's store stage handed to
+// onStage, when one is given.
+func (s *Server) waitForStoreStaged(ctx context.Context, ip, id string, onStage storeStage, beats ...waitBeat) (string, string) {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	s.armSelfRebootFor(ip)
@@ -1137,6 +1153,9 @@ func (s *Server) waitForStore(ctx context.Context, ip, id string, beats ...waitB
 			}
 		default:
 			misses = 0
+			if onStage != nil && list.JobStage != "" {
+				onStage(list.JobStage, list.JobDone, list.JobTotal)
+			}
 			if list.JobBusy {
 				sawBusy = true
 				// The board attests the copy is live: the idle budget stops

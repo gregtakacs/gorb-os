@@ -202,6 +202,7 @@ function openNewOrbDialog() {
   renderBlankGate();
   $("#ob-name").value = "";
   $("#ob-blankstate").textContent = "";
+  $("#nf-steps").hidden = true;
   newOrbStep("form");
   $("#no-mask").hidden = false;
   $("#ob-name").focus();
@@ -466,8 +467,31 @@ function gateFwButtons() {
   btn.disabled = !reachable || !hubFirmware || !hubFirmware.present;
   const reset = $("#mn-resetbtn");
   if (reset) reset.disabled = !current.port;
+  // An update reads the way the Apps and Themes faces read one: amber chip, amber press,
+  // a count on the tab. Without one the press is a plain door to the flash dialog.
+  const update = !!(current.row && current.row.update === true);
   const badge = $("#mn-updatebadge");
-  if (badge) badge.hidden = !(current.row && current.row.update === true);
+  if (badge) badge.hidden = !update;
+  btn.textContent = update ? "Update firmware" : "Flash firmware\u2026";
+  btn.classList.toggle("upd", update);
+  btn.title = update ? "Install this hub's newer firmware on this orb" : "Flash this orb";
+  if (typeof tabBadge === "function") tabBadge("fw", update ? 1 : 0, "a firmware update is available");
+  const hub = $("#mn-hubfw");
+  if (hub) {
+    const mine = fwRelease(hubFirmware && hubFirmware.version);
+    const theirs = fwRelease(current.fw);
+    hub.textContent = !mine ? ""
+      : update ? mine + " is ready to install from this hub."
+      : theirs && theirs === mine ? "Up to date \u2014 this hub carries the same release."
+      : "This hub carries " + mine + ".";
+  }
+}
+
+// fwRelease is a stamp's release, "v1.2.11" out of "v1.2.11+1cb1341-dirty": the part an
+// owner compares. "" when the stamp names none.
+function fwRelease(stamp) {
+  const m = /v\d+\.\d+\.\d+/.exec(stamp || "");
+  return m ? m[0] : "";
 }
 
 $("#mn-flashbtn").onclick = openFlashModal;
@@ -675,11 +699,37 @@ async function streamFlash(url, payload, ui) {
 // the hub owns the wire, and a flash keeps going whether anyone is watching.
 function fpUI() {
   return { log: $("#ob-log"), bar: $("#ob-bar > div"), doing: $("#ob-doing"),
-           op: $("#ob-op"), live: $("#ob-liveop"), cancel: $("#ob-cancel") };
+           op: $("#ob-op"), live: $("#ob-liveop"), cancel: $("#ob-cancel"),
+           steps: $("#ob-steps") };
 }
-function fpOpen() { $("#ob-flashmask").hidden = false; }
-function fpClose() { $("#ob-flashmask").hidden = true; }
+// fpOpen shows the panel itself as well as its mask. The join dialog hides the panel on
+// its way out (Open orb, Close), and an open that showed only the mask then greyed the
+// page with nothing on it until a reload (owner, 2026-11-06: adding flights).
+function fpOpen() {
+  $("#ob-flashmask").hidden = false;
+  $("#ob-flashpanel").hidden = false;
+  $("#ob-steps").hidden = true;
+  $("#ob-steps").textContent = "";
+  $("#ob-bar").classList.remove("sweep");
+}
+function fpClose() { if (!fpBusy) $("#ob-flashmask").hidden = true; }
 $("#fp-close").onclick = fpClose;
+// fpBusy holds the panel open while an install or a push runs: the run is not over until
+// the orb is back, and a panel closed halfway leaves the owner a page that says nothing
+// about a board mid-reboot (owner, 2026-11-06). Close and the window both wait for it.
+let fpBusy = false;
+function fpLock(on) {
+  fpBusy = on;
+  const b = $("#fp-close");
+  b.disabled = on;
+  b.title = on ? "The orb is still working — this closes when the run ends."
+               : "Hide this panel. A running flash keeps going; Cancel is what stops it.";
+}
+window.addEventListener("beforeunload", (e) => {
+  if (!fpBusy) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
 
 // showLiveOp reports what the hub says is running on this port, so the panel
 // states the truth about the cable rather than the client's guess about its own
@@ -702,7 +752,7 @@ async function showLiveOp(port, el) {
 // is on if any, the address the hub dials if it has one. Everything the manage
 // view writes is keyed on the MAC — the address is a lease, and a name write
 // that trusted one would rename whoever holds it tomorrow.
-let current = { mac: "", ip: "", port: "", name: "", row: null };
+let current = { mac: "", ip: "", port: "", name: "", row: null, fw: "" };
 
 // paintOrbHead draws the card's headline: the name the board answers to, and only
 // while nothing has said it, the most specific address on hand. It exists as a
@@ -737,6 +787,7 @@ function openOrbByIP(ip, mac, row) {
   current = {
     mac: mac || "", ip: ip || "", name: (row && row.name) || "", row: row || null,
     port: (row && Array.isArray(row.ports) && row.ports[0]) || "",
+    fw: (row && row.fw) || "",
   };
   orbIP = current.ip;                       // the scan/join doors dial this, one source
   paintOrbHead();                           // an address until the board says its name
@@ -746,6 +797,7 @@ function openOrbByIP(ip, mac, row) {
   $('#ob-identify').hidden = !current.port;
   gateFwButtons();
   $("#mn-curfw").textContent = "loading\u2026";
+  $("#mn-fwtech").textContent = "";
   $("#mn-verdict").textContent = "";
   $("#ob-idcard").hidden = true;
   renderIdentity(allPorts);
@@ -814,7 +866,11 @@ async function loadOrb(returned) {
       orbWakeTok = current.mac || current.ip;
     }
     paintOrbHead();   // the name the board just gave is the headline's, too
-    $("#mn-curfw").textContent = "running " + (st.fw || "version unknown") +
+    // The release is the owner's fact; the build tail, the link state and the signal
+    // are the bench's, and live under Technical details.
+    current.fw = st.fw || "";
+    $("#mn-curfw").textContent = "This orb runs " + (fwRelease(st.fw) || "an unknown version");
+    $("#mn-fwtech").textContent = "running " + (st.fw || "version unknown") +
       " \u00b7 state " + (st.state || "?") + (st.rssi ? " \u00b7 rssi " + st.rssi : "");
     // No tz paint here: the zone display is the Orb face's picker's own read
     // (its /api/v1/config fetch carries the truth), and the join form sends
@@ -1065,6 +1121,11 @@ $("#ob-go").onclick = async () => {
   let mac = null, ok = false;
   const ui = { log: $("#nf-log"), bar: $("#nf-bar > div"), doing: $("#nf-doing"),
                op: $("#nf-op"), live: $("#nf-liveop"), cancel: $("#nf-cancel") };
+  // The journey starts here, so the count the owner reads during the flash is the one the
+  // join dialog carries on; the flash's own bar stays the flash's.
+  const nfSteps = stepList({ list: $("#nf-steps") });
+  nfSteps.set(JOURNEY);
+  nfSteps.enter("flash");
   try {
     const r = await streamFlash("/api/flash", { port, mode: "full", wipe: true, name, fresh: true }, ui);
     mac = r.mac; ok = r.ok;
@@ -1083,8 +1144,10 @@ $("#ob-go").onclick = async () => {
       openJoinDialog(port, mac, "");
     } else {
       $("#ob-blankstate").textContent = "the flash stopped before its end — the log under the bar says why";
+      nfSteps.finish(false);
     }
   } finally {
+    clearInterval(nfSteps.tick);
     go.disabled = false; close.disabled = false;
     gateFlashButton();
   }
@@ -1368,6 +1431,21 @@ const lockIntro = $("#wj-lock-msg").textContent;
 // openJoinDialog is the one destination for every converged flash path. SkipAp
 // carries the /api/watch skip flag: after a provision the boot already showed a
 // PROV-ACK, and re-announcing that open AP to a joining orb wastes the wait.
+// The New Orb journey: every stage from a blank board to a clock on the glass, one list
+// from the flash dialog to the join dialog's last check (owner, 2026-11-06: the same steps
+// and status the install panel shows, and a clear sign when it is DONE). The seed row is a
+// placeholder the hub's own plan replaces when the run says what it holds.
+const JOURNEY = [
+  { id: "flash", label: "Write the firmware", kind: "bytes" },
+  { id: "boot", label: "Start up and look for Wi-Fi networks", kind: "wait" },
+  { id: "choose", label: "Choose its network and where it lives", kind: "you" },
+  { id: "join", label: "Join the network", kind: "wait" },
+  { id: "home", label: "Set its home", kind: "wait" },
+  { id: "seed", label: "Install the clock and its face", kind: "wait" },
+];
+let journey = null;
+function journeyAt(id) { if (journey) journey.enter(id); }
+
 function openJoinDialog(port, mac, skipAp) {
   provPort = port;
   provMac = mac || "";
@@ -1375,8 +1453,15 @@ function openJoinDialog(port, mac, skipAp) {
   const gen = ++watchGen;
   $("#ob-watch").textContent = "waiting for the orb to boot…";
   $("#ob-console").textContent = "";
-  $("#wj-title").textContent = "Bring it onto Wi-Fi";
+  $("#wj-title").textContent = "Setting up your orb";
+  $("#wj-ready").hidden = true;
   $("#wj-consoledetails").hidden = false;
+  if (journey) clearInterval(journey.tick);
+  journey = stepList({ list: $("#wj-steps"), head: $("#wj-stephead"), bar: $("#wj-bar > div") });
+  journey.set(JOURNEY);
+  journey.enter("flash");
+  journey.enter("boot");
+  journey.mark(journey.plan[0], "done", "done");
   provApSsid = "";
   // A new provisioning run starts with an unsealed window regardless of how the last one ended.
   // The guard is released by releaseSeed on the normal path, but openJoinDialog is the one place
@@ -1437,6 +1522,7 @@ async function streamWatch(gen, port, mac, skipAp, ip) {
       $("#ob-watch").textContent = ev.error;
       populateSerialNetworks([]);
       joinLock(false);
+      journeyAt("choose");
     }
     else if (ev.result) onWatchResult(ev.result);
   });
@@ -1445,10 +1531,13 @@ async function streamWatch(gen, port, mac, skipAp, ip) {
 function onWatchResult(res) {
   joinLock(false);
   const watch = $("#ob-watch");
+  // Every answer but a joined board puts the form in front of the owner: their turn.
+  if (!(res.mode === "lan" && res.status && res.status.state === "connected")) journeyAt("choose");
   if (res.mode === "lan") {
     if (res.status && res.status.state === "connected") {
       watch.textContent = "orb is on the LAN at " + res.ip + ", already connected.";
       joinDone(res.ip, res.status);
+      return;
     } else {
       // Reachable but NOT connected — wrong passphrase after a router change —
       // is the case the form is for: wired door, boot-scan list, no AP hop.
@@ -1546,7 +1635,8 @@ function joinDone(ip, st) {
   // "Bring it onto Wi-Fi" above a multi-minute seed reasonably concludes the WiFi step is
   // stuck (owner report, 2026-10-29 PM). The title now names the phase actually running,
   // and openJoinDialog restores the original for the next board.
-  $("#wj-title").textContent = "Seeding its baseline";
+  // The step list carries the phase now; the title names the whole job until it is done.
+  journeyAt("home");
   // The three finishes stay dark until the seed answers. A board that has joined but not been
   // seeded is not finished, and a button that opens the orb now would open one whose clock the
   // hub is still writing (owner ruling, bench 2026-10-29: the provisioning window must hold
@@ -1616,9 +1706,7 @@ async function autoInstall(ip) {
   // wall of KB text). The Library panel's streamSteps owns a frame it does not
   // exist here, so the relay paints the bar itself; the KB line keeps streaming
   // into the console fold below, which is where a byte count belongs.
-  const seedBar = $("#wj-bar");
-  const seedFill = seedBar ? seedBar.firstElementChild : null;
-  if (seedBar) { seedBar.hidden = false; if (seedFill) seedFill.style.width = "0%"; }
+  journeyAt("seed");
   // The window holds its buttons for exactly as long as the hub is saying something.
   // The seal exists so nobody walks away from a half-written card, and the hub now
   // speaks every ~20 s through its patient waits; a stream that has said nothing for
@@ -1642,20 +1730,16 @@ async function autoInstall(ip) {
     releaseSeed(watch, "the hub stopped answering this seed \u2014 the card may be half-written. " +
       "Open the orb and press Seed on its Library card to finish it.");
   }, 5000);
-  const done = await streamInstall(ip, "clock", true, null, false, false, (j, t) => {
+  // The journey is the seed's frame: the hub's plan replaces the seed row, the bar moves
+  // with its bytes, and each step's sentence sits under its own row.
+  const frame = journey ? { list: journey, splice: "seed" } : null;
+  if (watch) watch.textContent = "keep this window open \u2014 it closes its own steps as the orb finishes them";
+  const done = await streamInstall(ip, "clock", true, frame, false, false, (j, t) => {
     lastBeatAt = Date.now();
-    if (j.action === "uploading" && seedFill) {
-      const m = /(\d+) of (\d+) KB/.exec(j.note || "");
-      if (m) {
-        seedBar.hidden = false;
-        seedFill.style.width = Math.min(100, Math.round(Number(m[1]) * 100 / Number(m[2]))) + "%";
-      }
-    }
     if (released) {
       if (watch) watch.textContent = t + " \u2014 the hub spoke again after the window released; check the orb's Apps face";
       return;
     }
-    if (watch) watch.textContent = t;
     watchLog(t);
   });
   clearInterval(watchdog);
@@ -1699,12 +1783,18 @@ function releaseSeed(watch, msg) {
   if (seedBar) seedBar.hidden = true;
   // The headline carries the verdict's shape, so a released window never still reads
   // as the job that sealed it. The watch line below it holds the sentence.
+  // DONE is a state you can see from across the room (owner, 2026-11-06): every row
+  // ticked, a green banner, and the title saying so.
+  const ready = seedVerdict === "verified" || seedVerdict === "skipped";
   const title = $("#wj-title");
-  if (title) {
-    title.textContent = (seedVerdict === "verified" || seedVerdict === "skipped")
-      ? "Provisioned" : "Seeding did not finish";
+  if (title) title.textContent = ready ? "Setup complete" : "Setup did not finish";
+  if (journey) {
+    journey.finish(ready);
+    if (ready) $("#wj-stephead").textContent = "All " + journey.plan.length + " steps done";
   }
-  if (watch) watch.textContent = msg;
+  $("#wj-ready").hidden = !ready;
+  if (ready) $("#wj-ready-msg").textContent = msg;
+  if (watch) watch.textContent = ready ? "" : msg;
 }
 
 // streamInstall POSTs one install run and reads the hub's NDJSON steps, returning whether
@@ -1742,35 +1832,166 @@ async function streamInstall(ip, only, auto, frame, force, card, onStep) {
 // could see them (owner report, 2026-10-29 PM: "zero visible feedback for a really long
 // time" while the dialog held every button). A caller that owns a visible frame passes a
 // relay and every step reaches it the moment it arrives.
+// stepList draws a plan into an <ol class="fp-steps">: one row per stage, what is done
+// with its time, what is running with a spinner and its own clock, what is left. A stage
+// of kind "bytes" drives the bar with a byte count; a "wait" turns the bar into a sweep,
+// because only the orb ends it and a full green strip read as finished while the orb was
+// still storing and rebooting (owner, 2026-11-06); a "you" stage is the owner's turn and
+// carries no clock. The install panel and the New Orb journey share it, so the two never
+// learn different words for the same run. ui is {list, head, bar, op}; all but list may
+// be missing.
+const STEP_MARKS = { done: "✓", skipped: "–", failed: "✗", pending: "○", you: "→" };
+function stepClock(sec) { return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0"); }
+function stepList(ui) {
+  const sl = { plan: [], at: -1, since: 0, tick: 0 };
+  const elapsed = () => Math.round((Date.now() - sl.since) / 1000);
+  const row = function (st) {
+    const li = document.createElement("li");
+    for (const c of ["fp-mark", "fp-label", "fp-time"]) {
+      const sp = document.createElement("span");
+      sp.className = c;
+      li.appendChild(sp);
+    }
+    li.querySelector(".fp-label").textContent = st.label;
+    const note = document.createElement("span");
+    note.className = "fp-note";
+    li.querySelector(".fp-label").appendChild(note);
+    st.li = li;
+  };
+  const draw = function () {
+    ui.list.textContent = "";
+    sl.plan.forEach((st) => { if (!st.li) { row(st); sl.mark(st, "pending", ""); } ui.list.appendChild(st.li); });
+    ui.list.hidden = false;
+  };
+  sl.mark = function (st, state, note) {
+    st.state = state;
+    st.li.className = state;
+    const m = st.li.querySelector(".fp-mark");
+    m.textContent = "";
+    if (state === "active" && st.kind === "you") {
+      m.textContent = STEP_MARKS.you;
+    } else if (state === "active") {
+      const sp = document.createElement("span");
+      sp.className = "spinner mini";
+      m.appendChild(sp);
+    } else {
+      m.textContent = STEP_MARKS[state];
+    }
+    if (note !== undefined) st.li.querySelector(".fp-time").textContent = note;
+    // A finished stage keeps no running sentence; a failed one keeps its last word.
+    if (state === "done" || state === "skipped" || state === "pending") st.li.querySelector(".fp-note").textContent = "";
+  };
+  sl.set = function (steps) {
+    sl.plan = steps.map((p) => Object.assign({ state: "pending" }, p));
+    sl.at = -1;
+    draw();
+    if (!sl.tick) sl.tick = setInterval(sl.ticker, 1000);
+  };
+  // splice puts a run's own plan where a placeholder stood, so the journey's count grows
+  // into the real one the moment the hub says what its run holds.
+  sl.splice = function (id, steps) {
+    const k = sl.plan.findIndex((p) => p.id === id);
+    if (k < 0) { sl.set(steps); return; }
+    const was = sl.at === k;
+    const fresh = steps.map((p) => Object.assign({ state: "pending" }, p));
+    sl.plan.splice(k, 1, ...fresh);
+    if (was) sl.at = k - 1;
+    draw();
+  };
+  sl.ticker = function () {
+    const st = sl.plan[sl.at];
+    if (!st || st.state !== "active" || st.kind === "you") return;
+    const t = stepClock(elapsed());
+    st.li.querySelector(".fp-time").textContent =
+      st.kind === "wait" && st.budget ? t + " · gives up at " + stepClock(st.budget) : t;
+    if (ui.op && st.kind === "wait") ui.op.textContent = t;
+  };
+  sl.headline = function () {
+    const st = sl.plan[sl.at];
+    if (ui.head && st) ui.head.textContent = "Step " + (sl.at + 1) + " of " + sl.plan.length + " · " + st.label;
+  };
+  sl.enter = function (id) {
+    const k = sl.plan.findIndex((p) => p.id === id);
+    if (k < 0 || k === sl.at) return;
+    const cur = sl.plan[sl.at];
+    if (k < sl.at) {
+      // Back to an earlier stage (a refused join returns to the network form): what it
+      // had reached is open again, not done.
+      for (let i = k + 1; i <= sl.at; i++) sl.mark(sl.plan[i], "pending", "");
+    } else {
+      if (cur && cur.state === "active") sl.mark(cur, "done", cur.kind === "you" ? "" : stepClock(elapsed()));
+      for (let i = sl.at + 1; i < k; i++) if (sl.plan[i].state === "pending") sl.mark(sl.plan[i], "skipped", "not needed");
+    }
+    sl.at = k;
+    sl.since = Date.now();
+    const st = sl.plan[k];
+    sl.mark(st, "active", st.kind === "you" ? "your turn" : "");
+    sl.headline();
+    if (ui.bar) {
+      const bar = ui.bar.parentElement;
+      bar.hidden = st.kind === "you";
+      bar.classList.toggle("sweep", st.kind === "wait");
+      if (st.kind === "wait") ui.bar.title = "the orb ends this one; the clock says how long it has taken";
+      if (st.kind === "bytes") ui.bar.style.width = "0%";
+    }
+    if (ui.op) ui.op.textContent = "";
+    sl.ticker();
+  };
+  sl.skip = function (note) {
+    const st = sl.plan[sl.at];
+    if (st) sl.mark(st, "skipped", note);
+  };
+  sl.note = function (text) {
+    const st = sl.plan[sl.at];
+    if (st && (st.state === "active" || st.state === "failed")) st.li.querySelector(".fp-note").textContent = text;
+  };
+  // bytes reads the hub's "N of M KB" — the only true statement mid-transfer.
+  sl.bytes = function (note) {
+    const m = /(\d+) of (\d+) KB/.exec(note || "");
+    if (!m || !ui.bar) return;
+    const pct = Math.min(100, Math.round(Number(m[1]) * 100 / Number(m[2])));
+    ui.bar.parentElement.classList.remove("sweep");
+    ui.bar.style.width = pct + "%";
+    ui.bar.title = note;
+    if (ui.op) ui.op.textContent = pct + "%";
+  };
+  sl.finish = function (ok) {
+    clearInterval(sl.tick);
+    sl.tick = 0;
+    if (ui.bar) ui.bar.parentElement.classList.remove("sweep");
+    const st = sl.plan[sl.at];
+    if (st && st.state === "active") sl.mark(st, ok ? "done" : "failed", st.kind === "you" ? "" : stepClock(elapsed()));
+    if (ok) sl.plan.forEach((p) => { if (p.state === "pending") sl.mark(p, "skipped", "not needed"); });
+    if (ui.op) ui.op.textContent = "";
+    if (ok && ui.bar) ui.bar.style.width = "100%";
+    if (!ok && st && ui.head) ui.head.textContent = "Stopped at step " + (sl.at + 1) + " of " + sl.plan.length + " · " + st.label;
+  };
+  return sl;
+}
+
 async function streamSteps(q, frame, ip, onStep) {
   gLastRefusal = ""; // this run's verdict starts clean; the seed reads it the moment we return
   gLastVerifyNote = "";
   const out = $("#lib-install-log");
   const line = function (t) {
-    if (frame) {
-      frame.log.textContent += (frame.log.textContent ? "\n" : "") + t;
-      frame.log.scrollTop = frame.log.scrollHeight;
-      return;
-    }
-    if (!out) return;
-    out.textContent += (out.textContent ? "\n" : "") + t;
-    out.scrollTop = out.scrollHeight;
+    const el = frame && frame.log ? frame.log : out;
+    if (!el) return;
+    el.textContent += (el.textContent ? "\n" : "") + t;
+    el.scrollTop = el.scrollHeight;
   };
-  // The bar is driven by the hub's `uploading` steps, whose note is "N of M KB" — the only
-  // true statement available mid-transfer, since the device answers once at the end.
-  const setBar = function (note) {
-    if (!frame) return;
-    const m = /(\d+) of (\d+) KB/.exec(note || "");
-    if (!m) return;
-    const pct = Math.min(100, Math.round(Number(m[1]) * 100 / Number(m[2])));
-    frame.bar.style.width = pct + "%";
-    frame.bar.title = note;
-    frame.op.textContent = pct + "%";
-  };
+  // The frame's step list: the journey's own when the New Orb dialog hands one in (its
+  // placeholder named by frame.splice), else the install panel's, drawn when the plan lands.
+  const sl = frame ? (frame.list || (frame.steps
+    ? stepList({ list: frame.steps, head: frame.doing, bar: frame.bar, op: frame.op }) : null)) : null;
+  let planned = !!(frame && frame.list);
   const headline = function (j) {
     if (!frame) return;
-    frame.doing.textContent = "working on " + ip + " \u2014 " + describeStep(j);
+    // With a plan, the hub's own sentence sits under the running stage, where it belongs.
+    if (planned) { sl.note(describeStep(j)); return; }
+    if (frame.doing) frame.doing.textContent = "working on " + ip + " — " + describeStep(j);
   };
+  const panel = !!(frame && frame.steps);
+  if (panel) fpLock(true);
   try {
     const r = await hubFetch(q, { method: "POST", headers: { Accept: "application/x-ndjson" } });
     if (!r.ok || !r.body) { line("refused: HTTP " + r.status + " — " + (await r.text().catch(() => ""))); return false; }
@@ -1787,30 +2008,48 @@ async function streamSteps(q, frame, ip, onStep) {
         if (!raw) continue;
         let j;
         try { j = JSON.parse(raw); } catch (e) { continue; }
-        const t = j.step + ": " + j.action + (j.note ? " \u2014 " + j.note : "");
+        if (j.action === "plan") {
+          if (sl && Array.isArray(j.plan) && j.plan.length) {
+            if (frame.splice) sl.splice(frame.splice, j.plan); else sl.set(j.plan);
+            planned = true;
+            if (j.phase) sl.enter(j.phase);
+          }
+          continue;
+        }
+        if (planned && j.phase) sl.enter(j.phase);
+        if (planned && (j.action === "skipped" || j.action === "unchecked") && sl.plan[sl.at] && j.phase === sl.plan[sl.at].id) {
+          sl.skip(j.action === "skipped" ? "already there" : "not checked");
+        }
+        const t = j.step + ": " + j.action + (j.note ? " — " + j.note : "");
         line(t);
         headline(j);
         // The relay is the join dialog's eyes. It gets every step the hub speaks, in
         // order, and decides what is worth a headline; the hidden Library log below it
         // stays exactly as it was for the press that owns that view.
         if (onStep) { try { onStep(j, t); } catch (e) { /* a dead panel never stops a run */ } }
-        if (j.action === "uploading") setBar(j.note);
+        // Every byte-counted stage moves the bar: the upload, and the orb's own room-making
+        // and move into flash.
+        if (sl && (j.action === "uploading" || j.action === "making-room" || j.action === "moving")) sl.bytes(j.note);
         if (j.action === "done") ok = true;
         if (j.action === "refused") { refusal = j.note || "the hub refused the run"; gLastRefusal = refusal; }
         if (j.step === "verify" && j.action === "verified") gLastVerifyNote = j.note || "";
       }
     }
     if (frame) {
-      frame.doing.textContent = ok ? "done on " + ip : "the hub refused it";
-      if (ok) frame.bar.style.width = "100%";
+      if (frame.doing) frame.doing.textContent = ok ? "Done · the orb is back" : "the hub refused it";
+      if (sl && planned) sl.finish(ok);
       // A refusal leaves its own line as the panel's last word, and the panel open: the
       // rules for this panel say an operation never closes its own completion row.
-      if (!ok && refusal) line("\u2717 " + refusal);
+      if (!ok && refusal) line("✗ " + refusal);
     }
     return ok;
   } catch (e) {
     line("the hub did not answer: " + (e && e.message ? e.message : e));
+    if (sl && planned) sl.finish(false);
     return false;
+  } finally {
+    if (sl && !frame.list) { clearInterval(sl.tick); sl.tick = 0; }
+    if (panel) fpLock(false);
   }
 }
 
@@ -1829,10 +2068,20 @@ function describeStep(j) {
     case "wiping": return "clearing the board for its first flash" + (j.note ? " (" + j.note + ")" : "");
     case "uninstalled": return j.step + " uninstalled (clean slate)";
     case "erased": return j.step + " erased from the card (clean slate)";
-    case "storing": return "the orb is storing the theme";
+    case "checking": return j.note || "checking the orb";
+    case "restarting": return j.note || "the orb is restarting";
+    case "restarted": return j.note || "the orb restarted";
+    case "storing": return "the orb is checking the file before it stores it";
+    case "checking-file": return "the orb is checking the theme file and parking the dial";
+    case "making-room": return "packing the other apps' themes together" + (j.note ? " (" + j.note + ")" : "");
+    case "moving": return "copying the theme from the SD card into flash" + (j.note ? " (" + j.note + ")" : "");
     case "stored": return "theme stored";
     case "rebooting": return "the orb is rebooting after the store";
     case "skipped": return j.step + " was already there" + (j.note ? " (" + j.note + ")" : "");
+    // A wait's beat: the panel's own clock already counts, so the line keeps what the hub
+    // is waiting for and the last error it took, not a second running count.
+    case "waiting": return (j.note || "waiting for the orb")
+      .replace(/ \u2014 still waiting for the orb: \d+s of \d+s/, "");
     // A step the hub could not decide, so it wrote nothing: not a failure of the run.
     case "unchecked": return j.step + " not checked — " + (j.note || "the orb did not answer");
     case "reseeding": return "the shelf did not verify; refilling the baseline (" + (j.note || "") + ")";
@@ -2063,6 +2312,7 @@ $("#sp-go").onclick = async () => {
   const go = $("#sp-go");
   go.disabled = true;
   jlog.textContent = "";
+  journeyAt("join");
   try {
     await streamPost("/api/provision", { port: provPort, ssid, pass: $("#sp-pass").value }, (ev) => {
       if (ev.log) watchLog(ev.log);
@@ -2077,6 +2327,7 @@ $("#sp-go").onclick = async () => {
             : `no PROV-ACK for "${ssid}" — check the passphrase, or the orb may already be configured (use its AP page).`) + "\n";
         }
         if (n.ack) streamWatch(watchGen, provPort, provMac, true, n.ip || ""); // confirm the USB lease, else re-probe the LAN
+        else journeyAt("choose");
       }
       jlog.scrollTop = jlog.scrollHeight;
     });

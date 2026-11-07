@@ -98,6 +98,13 @@ type ThemeList struct {
 	// flip doors ack the queue, so this is the only witness that separates "the
 	// copy is happening" from "the press went nowhere" while a job is in flight.
 	JobBusy bool `json:"job_busy"`
+	// JobStage names the running store's stage — "checking", "parking", "making room",
+	// "storing", "rebooting", or "" — with that stage's byte counts, so the hub can give
+	// each its own step row. Older firmware omits all three, and the zero values read as
+	// "no stage said".
+	JobStage string `json:"job_stage"`
+	JobDone  uint32 `json:"job_done"`
+	JobTotal uint32 `json:"job_total"`
 
 	TotalMB   uint32 `json:"total_mb"`
 	FreeMB    uint32 `json:"free_mb"`

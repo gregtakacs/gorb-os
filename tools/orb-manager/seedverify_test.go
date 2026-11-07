@@ -365,11 +365,12 @@ func TestTheLadderIsPatientAcrossItsOwnReboots(t *testing.T) {
 	// hidden <pre> and nothing bounded the wait on the stream. Each string below is one
 	// half of the fix; losing any re-freezes the window the operator just reported.
 	for _, want := range []string{
-		"onStep(j, t)",           // every hub step reaches the join dialog's relay
-		"watchLog(t)",            // and lands on the visible console trail
-		"released = true",        // a dead stream releases the window, fetch intact
-		"4 * 60 * 1000",          // the stall budget that ends it
-		`"Seeding its baseline"`, // the headline names the phase, not the old one
+		"onStep(j, t)",      // every hub step reaches the join dialog's relay
+		"watchLog(t)",       // and lands on the visible console trail
+		"released = true",   // a dead stream releases the window, fetch intact
+		"4 * 60 * 1000",     // the stall budget that ends it
+		`journeyAt("home")`, // the step list names the phase, not the old title
+		`"Setup complete"`,  // and done is a state, not a word in the watch line
 	} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js lost %q: the provisioning window is back to freezing on one sentence", want)

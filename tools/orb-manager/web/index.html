@@ -75,6 +75,7 @@
         <button id="nf-cancel" class="ghost" hidden title="Stop the flash at its next block boundary. The orb stays in its bootloader, not running a partial image.">Cancel</button>
       </div>
       <div id="nf-bar" class="bar"><div></div></div>
+      <ol id="nf-steps" class="fp-steps" hidden></ol>
       <details class="hint"><summary>the bytes behind the bar</summary>
         <pre id="nf-log" class="log" aria-live="polite"></pre></details>
     </div>
@@ -110,28 +111,34 @@
 
   <article class="card tabpane" data-tab="fw" id="mn-fwcard">
     <h3>Firmware</h3>
+    <!-- What an owner needs, in two lines: what the orb runs, and what this hub could put on
+         it. An update gets the Apps and Themes faces' amber: a filled chip, a filled press,
+         and a count on the tab (owner, 2026-11-06). The image map, hashes and the cable
+         identity stay one click away under Technical details. -->
     <div class="row">
-      <span class="hint" id="mn-curfw">no orb loaded</span>
-      <span class="verdict" id="mn-verdict"></span>
+      <b id="mn-curfw" class="fw-cur">no orb loaded</b>
+      <span class="tag upd" id="mn-updatebadge" hidden>update available</span>
     </div>
-    <div id="ob-build" class="buildlist"></div>
+    <div class="row"><span class="hint" id="mn-hubfw"></span></div>
     <!-- One door, not six rows. Everything about changing what this board runs
          lives inside the modal this button opens, where the choices can be
-         filtered by how the board is actually connected. The badge is the only
-         thing allowed to advertise itself out here. -->
+         filtered by how the board is actually connected. -->
     <div class="row" id="mn-fwrow">
-      <button id="mn-flashbtn" class="primary" disabled title="Flash this orb">Flash firmware</button>
-      <span class="tag update" id="mn-updatebadge" hidden>update available</span>
+      <button id="mn-flashbtn" class="ghost" disabled title="Flash this orb">Flash firmware&#8230;</button>
       <button id="mn-resetbtn" class="ghost" disabled title="Reset firmware or settings">Reset this orb&#8230;</button>
     </div>
-    <!-- No button here, and deliberately so. The hub pays for this answer itself, at
-         launch, on every re-plug, when the cached answer expires, and the moment a board
-         on a lead stops answering the door it used to answer. All that is left to show is
-         when it last asked, so a card can be read as current or merely recent. -->
-    <div class="row" id="ob-identify" hidden>
-      <span id="ob-idstate" class="hint">the hub reboots this board to read what it runs, about 10 seconds, and asks again on its own</span>
-    </div>
-    <div id="ob-idcard" class="idcard" hidden></div>
+    <details class="hint fw-tech" id="mn-fwdetails"><summary>Technical details</summary>
+      <div class="row"><span id="mn-fwtech"></span> <span class="verdict" id="mn-verdict"></span></div>
+      <div id="ob-build" class="buildlist"></div>
+      <!-- No button here, and deliberately so. The hub pays for this answer itself, at
+           launch, on every re-plug, when the cached answer expires, and the moment a board
+           on a lead stops answering the door it used to answer. All that is left to show is
+           when it last asked, so a card can be read as current or merely recent. -->
+      <div class="row" id="ob-identify" hidden>
+        <span id="ob-idstate" class="hint">the hub reboots this board to read what it runs, about 10 seconds, and asks again on its own</span>
+      </div>
+      <div id="ob-idcard" class="idcard" hidden></div>
+    </details>
     <input type="file" id="ob-fwfile" accept=".zip,.bin" hidden>
     <span id="ob-fwstate" class="hint" hidden></span>
   </article>
@@ -517,6 +524,10 @@
     <button id="fp-close" class="ghost" title="Hide this panel. A running flash keeps going; Cancel is what stops it.">Close</button>
   </div>
   <div id="ob-bar" class="bar"><div></div></div>
+  <!-- An install's plan, one line per stage, filled from the hub's first line: what is
+       done, what is running (a bar for bytes, a timer for a wait only the orb can end),
+       what is left. A cable flash has no plan and keeps the list hidden. -->
+  <ol id="ob-steps" class="fp-steps" hidden></ol>
   <details id="ob-logdetails">
     <summary class="hint">the bytes behind the bar</summary>
     <pre id="ob-log" class="log" aria-live="polite"></pre>
@@ -536,9 +547,18 @@
      end. -->
 <div id="wj-mask" class="mask" hidden>
   <div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="wj-title">
-    <h3 id="wj-title">Bring it onto Wi-Fi</h3>
-    <div id="ob-watch" class="hint">waiting for the orb to boot&#8230;</div>
+    <h3 id="wj-title">Setting up your orb</h3>
+    <!-- The New Orb journey, flash to clock: one row per stage, the same list the install
+         panel draws, so "step 7 of 11" means the same thing in both. The hub's seed plan
+         replaces its last placeholder row when it arrives. -->
+    <b id="wj-stephead" class="wj-stephead"></b>
     <div id="wj-bar" class="bar" hidden><div></div></div>
+    <ol id="wj-steps" class="fp-steps" hidden></ol>
+    <div id="wj-ready" class="wj-ready" hidden>
+      <span class="wj-ready-mark" aria-hidden="true">&#10003;</span>
+      <div><b>Your orb is ready</b><div class="hint" id="wj-ready-msg"></div></div>
+    </div>
+    <div id="ob-watch" class="hint">waiting for the orb to boot&#8230;</div>
 
     <div id="wj-lock" class="wjlock">
       <div class="spinner" aria-hidden="true"></div>

@@ -152,6 +152,162 @@ type installStep struct {
 	Step   string `json:"step"`   // a slug, "theme", or "install" for the run itself
 	Action string `json:"action"` // uploaded, installing, installed, enabled, uploaded-theme, storing, stored, rebooting, parking, parked, skipped, unchecked, done, refused
 	Note   string `json:"note,omitempty"`
+	// Phase names the plan entry the line belongs to, and Plan rides the run's first line
+	// (action "plan") with every entry, so the panel can say "step 3 of 7" and give a byte
+	// transfer a bar and a wait only the orb can end a timer (owner, 2026-11-06: the bar sat
+	// at 100% through the slot write, the store and both reboots, saying only "waiting").
+	Phase string     `json:"phase,omitempty"`
+	Plan  []planStep `json:"plan,omitempty"`
+}
+
+// planStep is one entry of a run's plan. Kind is "bytes" for a transfer the bar can
+// measure and "wait" for one only the orb can end (a slot write, a store, a reboot);
+// Budget is a wait's give-up point in seconds, so the panel can say how long it will try.
+type planStep struct {
+	ID     string `json:"id"`
+	Label  string `json:"label"`
+	Kind   string `json:"kind"`
+	Budget int    `json:"budget,omitempty"`
+}
+
+// runPhases stamps each line of a run with the plan entry it belongs to. The ladder's own
+// sends stay as they are: their actions already say which stage spoke, and a wait inherits
+// the stage it sits in. installRun names the two stages no action marks — the opening
+// check and the restart behind an install — by setting cur itself.
+type runPhases struct {
+	cur, theme string
+}
+
+func (p *runPhases) stamp(send func(installStep)) func(installStep) {
+	return func(st installStep) {
+		if st.Phase == "" {
+			p.cur = p.phaseOf(st)
+			st.Phase = p.cur
+		}
+		send(st)
+	}
+}
+
+func (p *runPhases) phaseOf(st installStep) string {
+	switch st.Step {
+	case "theme":
+		if ph := themePhase(st.Action); ph != "" {
+			return ph + ":" + p.theme
+		}
+	case "install", "slate", "face", "verify":
+	default: // a slug
+		switch st.Action {
+		case "uploading":
+			return "send:" + st.Step
+		case "uploaded", "installing", "installed", "skipped":
+			return "install:" + st.Step
+		case "restarted":
+			return "restart"
+		}
+	}
+	return p.cur
+}
+
+// installPlan is the run's plan, written before the first dial: every stage the run can
+// reach, in order. A stage the orb makes unnecessary (the card already holds the file, the
+// card already carries a theme) is still listed, and the panel marks it skipped, so the
+// count an owner reads at the start is the count they watch finish.
+func installPlan(lib *Library, slugs []string, card bool) []planStep {
+	titles := map[string]string{}
+	p := &LibraryPayload{}
+	listAppLibrary(lib.AppsDir, p)
+	for _, a := range p.Apps {
+		if a.Title != "" {
+			titles[a.Slug] = a.Title
+		}
+	}
+	title := func(slug string) string {
+		if t := titles[slug]; t != "" {
+			return t
+		}
+		return slug
+	}
+	secs := func(d time.Duration) int { return int(d / time.Second) }
+	restart := secs(cycleQuietGrace + installRebootWait)
+	plan := []planStep{{ID: "check", Label: "Checking the orb", Kind: "wait", Budget: restart}}
+	for _, slug := range slugs {
+		if !card {
+			plan = append(plan, planStep{ID: "send:" + slug, Label: "Sending " + title(slug) + " to the orb's card", Kind: "bytes"})
+		}
+		plan = append(plan, planStep{ID: "install:" + slug, Label: "Installing " + title(slug), Kind: "wait", Budget: secs(installHard)})
+	}
+	plan = append(plan, planStep{ID: "restart", Label: "Restarting the orb to load it", Kind: "wait", Budget: restart})
+	for _, slug := range slugs {
+		if slug != "clock" && !lib.hasAppTheme(slug) {
+			continue
+		}
+		for _, st := range themeSteps(title(slug)+"'s theme", restart) {
+			st.ID += ":" + slug
+			plan = append(plan, st)
+		}
+	}
+	return plan
+}
+
+// themeSteps is a theme install's stages, the same five wherever a theme goes on: the
+// file crosses to the SD card, the orb checks it and parks the dial, the theme area packs
+// the other apps' themes down when this one will not fit as it stands, the copy moves the
+// theme into flash, and the orb restarts to wear it (owner, 2026-11-06). Making room is
+// skipped on the rows when the orb never reports it. Older firmware reports no stage at
+// all, and its whole store then shows on the check row.
+func themeSteps(what string, restart int) []planStep {
+	return []planStep{
+		{ID: "theme-send", Label: "Copying " + what + " to the orb's SD card", Kind: "bytes"},
+		{ID: "theme-check", Label: "Checking the theme file", Kind: "wait", Budget: int(themeStoreBudget / time.Second)},
+		{ID: "theme-room", Label: "Making room in the orb's flash", Kind: "bytes"},
+		{ID: "theme-store", Label: "Moving the theme into flash", Kind: "bytes"},
+		{ID: "theme-restart", Label: "Restarting the orb to wear the theme", Kind: "wait", Budget: restart},
+	}
+}
+
+// themePhase maps a theme line's action to its themeSteps row; "" leaves the line on the
+// row it is already on (a wait's beat).
+func themePhase(action string) string {
+	switch action {
+	case "uploading", "uploaded-theme", "skipped", "unchecked":
+		return "theme-send"
+	case "storing", "checking-file":
+		return "theme-check"
+	case "making-room":
+		return "theme-room"
+	case "moving", "stored":
+		return "theme-store"
+	case "rebooting":
+		return "theme-restart"
+	}
+	return ""
+}
+
+// storeStages turns the stages a running store reports into step lines: one when the
+// stage changes, and one per ~5% of its bytes, so a 2.8 MB move is a bar that fills and
+// not a row that sits. "rebooting" is the caller's own line.
+func storeStages(send func(installStep), step string) storeStage {
+	last, lastPct := "", -1
+	return func(stage string, done, total uint32) {
+		action := map[string]string{"checking": "checking-file", "parking": "checking-file",
+			"making room": "making-room", "storing": "moving"}[stage]
+		if action == "" {
+			return
+		}
+		pct := -1
+		if total > 0 {
+			pct = int(uint64(done) * 100 / uint64(total))
+		}
+		if stage == last && (pct < 0 || (pct-lastPct < 5 && pct != 100) || pct == lastPct) {
+			return
+		}
+		last, lastPct = stage, pct
+		note := ""
+		if total > 0 {
+			note = fmt.Sprintf("%d of %d KB", done/1024, total/1024)
+		}
+		send(installStep{Step: step, Action: action, Note: note})
+	}
 }
 
 // h_libraryInstall runs one install for one orb and streams the steps. It is the press, and it
@@ -204,6 +360,22 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Minute)
 	defer cancel()
+	// The join-time seed ends in a park and a verify after the run, and those are a stage
+	// the owner waits through too: the plan names it, and every line after the run is its.
+	verifying := false
+	if automatic && only == "clock" {
+		raw := send
+		send = func(st installStep) {
+			if st.Action == "plan" {
+				st.Plan = append(st.Plan, planStep{ID: "verify", Label: "Checking the orb is ready",
+					Kind: "wait", Budget: int(installRebootWait / time.Second)})
+			}
+			if verifying && st.Phase == "" {
+				st.Phase = "verify"
+			}
+			raw(st)
+		}
+	}
 	// A board this hub just adopted arrives wearing the shipped baseline and nothing
 	// else, so what it carries is erased before the baseline goes on. Only the automatic
 	// arm wipes: a hand press means an operator is holding the shelf, and an operator who
@@ -271,6 +443,8 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 	// slate mark: a board this hub adopts from a row it cannot map (a lease moved, a grants
 	// row lost) is exactly a board whose green must be earned, and verify reads only.
 	if automatic && only == "clock" {
+		verifying = true
+		send(installStep{Step: "verify", Action: "checking", Note: "reading back the clock, its face and the glass"})
 		// The ladder's last steps reboot the board, and the chip may answer at a
 		// different address when it comes back. Verify the CHIP, not the address
 		// the run happened to start on.
@@ -328,6 +502,26 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 // but every step still streams, because a press without visible steps is a press the
 // owner cannot trust.
 func (s *Server) installRun(ctx context.Context, ip, only string, force, card bool, send func(installStep)) error {
+	lib := s.library()
+	slugs := []string{}
+	if only != "" {
+		slugs = []string{only}
+	} else {
+		p := &LibraryPayload{}
+		listAppLibrary(lib.AppsDir, p)
+		for _, a := range p.Apps {
+			slugs = append(slugs, a.Slug)
+		}
+		if len(slugs) == 0 {
+			return fmt.Errorf("the library at %s holds no loadable app to install", lib.AppsDir)
+		}
+	}
+	if card && only == "" {
+		return fmt.Errorf("a card-only install names exactly one slug")
+	}
+	phases := &runPhases{cur: "check"}
+	send(installStep{Step: "install", Action: "plan", Phase: "check", Plan: installPlan(lib, slugs, card)})
+	send = phases.stamp(send)
 	st, err := s.device.Status(ip)
 	if err != nil {
 		// A board that does not answer the ladder's first dial is usually mid-boot
@@ -378,25 +572,9 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 		return fmt.Errorf("no card in the socket — the install lands files on the card, so insert or mount one first")
 	}
 
-	lib := s.library()
-	slugs := []string{}
-	if only != "" {
-		slugs = []string{only}
-	} else {
-		p := &LibraryPayload{}
-		listAppLibrary(lib.AppsDir, p)
-		for _, a := range p.Apps {
-			slugs = append(slugs, a.Slug)
-		}
-		if len(slugs) == 0 {
-			return fmt.Errorf("the library at %s holds no loadable app to install", lib.AppsDir)
-		}
-	}
-	if card && only == "" {
-		return fmt.Errorf("a card-only install names exactly one slug")
-	}
 	fwv, _ := firmware.ParseVersion(st.FW)
 	rebooted := false
+	cycled := false // the last install's reboot was seen through to the board's return
 	for _, slug := range slugs {
 		var blob []byte
 		if !card {
@@ -420,6 +598,10 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 		sendOne := func(st installStep) {
 			if st.Step == slug && st.Action == "installed" {
 				landed = true
+				cycled = false
+			}
+			if st.Step == slug && st.Action == "restarted" {
+				cycled = true
 			}
 			send(st)
 		}
@@ -442,7 +624,7 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 	// Every themed app, not the clock alone (owner, 2026-11-04: flights installed on Gold
 	// with no theme): each app this run installed that has a default in the library gets it
 	// when the card holds no theme of its own, and only once the app is live on the dial.
-	waited := !rebooted // nothing landed, so nothing reboots and there is no cycle to wait out
+	waited := !rebooted || cycled // nothing landed, or its reboot is already behind the run
 	for _, slug := range slugs {
 		// the clock always asks (a clock with no face draws nothing, and a library with no
 		// theme is an error worth saying); another app only when the library has one for it
@@ -456,6 +638,8 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 		// one, once per run, before the first seed's question.
 		if !waited {
 			waited = true
+			phases.cur = "restart"
+			send(installStep{Step: "install", Action: "restarting", Note: "the orb restarts to load the app"})
 			if back, ok := s.waitOrbCycle(ctx, ip, installRebootWait,
 				beatFor(send, "theme", "waiting for the orb to come back before its theme")); ok {
 				ip = back
@@ -464,8 +648,21 @@ func (s *Server) installRun(ctx context.Context, ip, only string, force, card bo
 		if !s.installAppLive(ip, slug) {
 			continue
 		}
+		phases.theme = slug
+		phases.cur = "theme-send:" + slug
 		if err := s.installTheme(ctx, ip, slug, send); err != nil {
 			return err
+		}
+	}
+	// An install with no theme behind it still reboots the orb, and a run that said done
+	// into that gap let the page re-read a board that was mid-boot (owner, 2026-11-06: done
+	// means the orb is back). The same cycle-shaped wait, once.
+	if !waited {
+		phases.cur = "restart"
+		send(installStep{Step: "install", Action: "restarting", Note: "the orb restarts to load the app"})
+		if _, ok := s.waitOrbCycle(ctx, ip, installRebootWait,
+			beatFor(send, "install", "waiting for the orb to come back with the app")); !ok {
+			return fmt.Errorf("the app landed but the orb has not answered again within %s", installRebootWait)
 		}
 	}
 	return nil
@@ -588,6 +785,12 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 	send(installStep{Step: slug, Action: "installing"})
 	deadline := time.Now().Add(installWait)
 	hard := time.Now().Add(installHard)
+	// The dial reboots 750 ms after the slot write (orb_jobs_reboot_soon), so this poll
+	// usually rides the whole reboot: the ledger goes silent, and the row appears on the
+	// board that came back. A row seen after a silence is a reboot already over, and the
+	// run says so instead of then spending the cycle wait's 20 s of quiet proving it
+	// (owner, 2026-11-06: "restarting" lit up long after the orb was back).
+	silent := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -595,10 +798,16 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 		case <-time.After(installPoll):
 		}
 		list, err := s.device.AppsList(ip)
+		if err != nil {
+			silent = true
+		}
 		if err == nil {
 			for _, row := range list.Installed {
 				if row.Slug == slug {
 					send(installStep{Step: slug, Action: "installed"})
+					if silent {
+						send(installStep{Step: slug, Action: "restarted", Note: "the orb restarted to load it while it installed"})
+					}
 					return nil
 				}
 			}
@@ -902,7 +1111,7 @@ func (s *Server) installTheme(ctx context.Context, ip, slug string, send func(in
 	// post_bundle tail) — a second ThemeStore press here would be a second copy for the
 	// same promise, so the wait starts at the door's ack where handleThemeUpload's does.
 	send(installStep{Step: "theme", Action: "storing"})
-	outcome, note := s.waitForStore(ctx, ip, c.ID,
+	outcome, note := s.waitForStoreStaged(ctx, ip, c.ID, storeStages(send, "theme"),
 		beatFor(send, "theme", "waiting for the orb to store the theme"))
 	if outcome != "stored" {
 		return fmt.Errorf("the store did not land: %s", note)
@@ -960,6 +1169,25 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	lib := s.library()
+	// The push's plan: one byte transfer for an app, and for a theme the store and the
+	// reboot the device's upload door sets off behind it. Each line names its stage by
+	// its action, the way an install run's do.
+	restart := int((cycleQuietGrace + installRebootWait) / time.Second)
+	plan := []planStep{{ID: "send", Label: "Copying " + name + " to the orb's SD card", Kind: "bytes"}}
+	phase := "send"
+	if kind == "theme" {
+		plan = themeSteps(name, restart)
+		phase = "theme-send"
+	}
+	send(installStep{Step: kind, Action: "plan", Phase: phase, Plan: plan})
+	raw := send
+	send = func(st installStep) {
+		if ph := themePhase(st.Action); kind == "theme" && ph != "" {
+			phase = ph
+		}
+		st.Phase = phase
+		raw(st)
+	}
 	release, rerr := s.holdDevicePort(r.Context(), ip, deviceTimeout)
 	if rerr != nil {
 		send(installStep{Step: kind, Action: "refused", Note: rerr.Error()})
@@ -1042,7 +1270,8 @@ func (s *Server) h_libraryPush(w http.ResponseWriter, r *http.Request) {
 	// it. It used to answer `done` here, and the page then read the theme list while
 	// the orb was mid-copy and mid-reboot, and timed out (owner report, 2026-11-03).
 	send(installStep{Step: c.ID, Action: "storing", Note: "the orb is copying it from the card to its flash"})
-	outcome, note, back := s.followStore(r.Context(), ip, c.ID, func() {
+	outcome, note, back := s.followStoreStaged(r.Context(), ip, c.ID, storeStages(send, c.ID), func() {
+		send(installStep{Step: c.ID, Action: "stored"})
 		send(installStep{Step: c.ID, Action: "rebooting", Note: "stored; the orb reboots onto it"})
 	}, beatFor(send, c.ID, "waiting for the orb to store the theme and come back"))
 	if outcome != "stored" {
@@ -1066,8 +1295,13 @@ func beatFor(send func(installStep), step, doing string) waitBeat {
 	return func(elapsed, budget time.Duration, lastErr error) {
 		note := fmt.Sprintf("%s — still waiting for the orb: %ds of %ds",
 			doing, int(elapsed/time.Second), int(budget/time.Second))
+		// A probe that misses inside a wait is the wait working, not a failure: the orb is
+		// rebooting or busy moving flash. Quoting the miss as plainDeviceErr's sentence told
+		// an owner the upload had failed while the store was making room (2026-11-06), so
+		// the panel hears that silence is expected and the raw error goes to the hub's log.
 		if lastErr != nil {
-			note += " (last try: " + plainDeviceErr(lastErr, 0).Error() + ")"
+			note += " (it does not answer while it works; that is expected)"
+			log.Printf("orb-manager: %s: %s", doing, lastErr.Error())
 		}
 		send(installStep{Step: step, Action: "waiting", Note: note})
 	}

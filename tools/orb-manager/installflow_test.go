@@ -294,3 +294,136 @@ func TestShelfAppsCarryTheirOSFloor(t *testing.T) {
 		}
 	}
 }
+
+// TestTheRunSaysItsPlanFirst pins the panel's step count (owner, 2026-11-06: "step x of n",
+// not a bar at 100% saying "waiting"). The run's first line is the plan, before any dial,
+// and every line after it names the stage it belongs to, so a skip lands on its own row.
+func TestTheRunSaysItsPlanFirst(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/status":
+			w.Write([]byte(`{"state":"connected","fw":"` + installMinFW + `"}`))
+		case "/api/v1/apps":
+			w.Write([]byte(`{"mounted":true,"apps":[{"stem":"clock","ok":true}],"installed":[{"slug":"clock"}]}`))
+		case "/api/v1/sd":
+			w.Write([]byte(`{"mounted":true,"card_count":1}`))
+		default:
+			w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+	s := newHub()
+	s.lib = &Library{}
+	s.device = orbnet.NewClient(deviceTimeout)
+	s.device.DevicePort = portOf(srv.URL)
+
+	var steps []installStep
+	if err := s.installRun(context.Background(), "127.0.0.1", "clock", false, true,
+		func(st installStep) { steps = append(steps, st) }); err != nil {
+		t.Fatalf("the run refused: %v", err)
+	}
+	if len(steps) == 0 || steps[0].Action != "plan" {
+		t.Fatalf("the run did not open with its plan: %v", steps)
+	}
+	var ids []string
+	for _, p := range steps[0].Plan {
+		ids = append(ids, p.ID)
+	}
+	want := "check install:clock restart theme-send:clock theme-check:clock theme-room:clock theme-store:clock theme-restart:clock"
+	if got := strings.Join(ids, " "); got != want {
+		t.Errorf("a card install of the clock plans %q; want %q", got, want)
+	}
+	phase := map[string]string{}
+	for _, st := range steps[1:] {
+		if st.Phase == "" {
+			t.Errorf("%s/%s names no stage", st.Step, st.Action)
+		}
+		phase[st.Step+"/"+st.Action] = st.Phase
+	}
+	if phase["clock/skipped"] != "install:clock" || phase["theme/skipped"] != "theme-send:clock" {
+		t.Errorf("the skips landed on the wrong rows: %v", phase)
+	}
+}
+
+// TestAnInstallThatRodeTheRebootSaysSo pins the restart row's timing (owner, 2026-11-06:
+// "restarting" lit up long after the orb was back). The dial reboots 750 ms after the slot
+// write, so the ledger poll usually goes silent and finds the row on the board that came
+// back; that run must say restarted, and one that found the row with no silence must not.
+func TestAnInstallThatRodeTheRebootSaysSo(t *testing.T) {
+	old := installPoll
+	installPoll = 10 * time.Millisecond
+	defer func() { installPoll = old }()
+	for _, rode := range []bool{true, false} {
+		installed, dark := false, 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/api/v1/apps":
+				if installed && rode && dark < 2 {
+					dark++
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				if installed {
+					w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[{"slug":"sentinel"}]}`))
+					return
+				}
+				w.Write([]byte(`{"mounted":true,"apps":[{"stem":"sentinel","ok":true}],"installed":[]}`))
+			case "/api/v1/apps/install":
+				installed = true
+				w.Write([]byte(`{"ok":true,"queued":true}`))
+			default:
+				w.Write([]byte(`{}`))
+			}
+		}))
+		s := newHub()
+		s.lib = &Library{}
+		s.device = orbnet.NewClient(deviceTimeout)
+		s.device.DevicePort = portOf(srv.URL)
+		said := false
+		err := s.installOneApp(context.Background(), "127.0.0.1", "sentinel", nil, false, func(st installStep) {
+			if st.Action == "restarted" {
+				said = true
+			}
+		})
+		srv.Close()
+		if err != nil {
+			t.Fatalf("rode=%v: the install refused: %v", rode, err)
+		}
+		if said != rode {
+			t.Errorf("rode=%v: restarted said %v", rode, said)
+		}
+	}
+}
+
+// TestStoreStagesGetTheirOwnRows pins the theme's three on-orb stages (owner, 2026-11-06:
+// copied to the card, moved to flash, likely reorganised to fit). Each stage the orb reports
+// becomes its own action, byte counts thin to one line per ~5%, and the run's phase stamp
+// puts every one on its themeSteps row.
+func TestStoreStagesGetTheirOwnRows(t *testing.T) {
+	var got []installStep
+	p := &runPhases{cur: "theme-send:clock", theme: "clock"}
+	on := storeStages(p.stamp(func(st installStep) { got = append(got, st) }), "theme")
+	on("checking", 0, 0)
+	on("parking", 0, 0)
+	for d := uint32(0); d <= 100; d++ {
+		on("making room", d*1024, 100*1024)
+	}
+	on("storing", 0, 2048*1024)
+	on("storing", 2048*1024, 2048*1024)
+	on("rebooting", 0, 0)
+	phases := map[string]int{}
+	for _, st := range got {
+		phases[st.Phase]++
+	}
+	if phases["theme-check:clock"] == 0 || phases["theme-room:clock"] == 0 || phases["theme-store:clock"] != 2 {
+		t.Fatalf("the stages landed on %v", phases)
+	}
+	if n := phases["theme-room:clock"]; n > 22 {
+		t.Errorf("a 100-step move sent %d lines; one per ~5%% is the budget", n)
+	}
+	if last := got[len(got)-1]; last.Action != "moving" || last.Note != "2048 of 2048 KB" {
+		t.Errorf("the move's last line is %+v; want its full count", last)
+	}
+}

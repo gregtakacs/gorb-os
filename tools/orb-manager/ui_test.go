@@ -1228,12 +1228,13 @@ func TestLibraryInstallOpensTheSharedProgressPanel(t *testing.T) {
 		}
 	}
 	// The bar is fed by the hub's byte-progress steps, and the headline by every step.
-	for _, want := range []string{`action === "uploading"`, "frame.doing.textContent", "frame.bar.style.width"} {
+	// The bar and the step rows live in stepList now, which the panel's frame hands its bar.
+	for _, want := range []string{`action === "uploading"`, "frame.doing.textContent", "sl.bytes(j.note)", "ui.bar.style.width"} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js has no %s, so a mid-upload step cannot move the panel", want)
 		}
 	}
-	if !strings.Contains(app, "frame.log.textContent") {
+	if !strings.Contains(app, "frame && frame.log ? frame.log : out") {
 		t.Error("the install steps no longer reach a visible frame")
 	}
 }

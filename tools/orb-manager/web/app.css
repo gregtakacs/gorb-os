@@ -149,6 +149,9 @@ body.editing{overflow:hidden}
 /* The amber badge rides the Flash firmware button and borrows the fleet tile's
    existing update flag, so one word means one colour everywhere on the page. */
 #mn-updatebadge{font-size:11px;padding:2px 7px;border-radius:5px;border:1px solid var(--warn);color:var(--warn)}
+.fw-cur{font-size:15px}
+.fw-tech{margin-top:10px}
+.fw-tech summary{cursor:pointer}
 #mn-updatebadge[hidden]{display:none}
 #mn-con-log{max-height:280px;overflow:auto;font-family:ui-monospace,monospace;font-size:12px}
 
@@ -219,6 +222,32 @@ header nav{display:flex;gap:10px;align-items:baseline}
 .flashpanel .log{height:170px;min-height:170px;max-height:170px;font-size:11px}
 .fp-liveop{flex:1 1 auto;min-width:0;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fp-pct{flex:0 0 11ch;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+/* The install plan. The running stage carries a mini spinner and its own clock; a
+   wait the bar cannot measure turns the bar into a sweep instead of a full green
+   strip that reads as finished. */
+.fp-steps{list-style:none;margin:8px 0 4px;padding:0;font-size:13px}
+.fp-steps[hidden]{display:none}
+.fp-steps li{display:flex;align-items:center;gap:8px;min-height:22px;color:var(--mut)}
+.fp-steps li .fp-mark{flex:0 0 16px;display:flex;justify-content:center}
+.fp-steps li .fp-label{flex:1 1 auto;min-width:0}
+.fp-steps li .fp-note{display:block;font-size:12px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fp-steps li .fp-note:empty{display:none}
+.flashpanel #ob-doing{flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fp-steps li .fp-time{flex:0 0 auto;font-variant-numeric:tabular-nums;font-size:12px}
+.fp-steps li.active{color:var(--fg)}
+.fp-steps li.done .fp-mark{color:var(--acc)}
+.fp-steps li.failed{color:var(--danger)}
+.fp-steps li.skipped .fp-label{text-decoration:line-through;text-decoration-color:var(--line)}
+.bar.sweep>div{width:30% !important;transition:none;animation:barsweep 1.4s ease-in-out infinite alternate}
+.wj-stephead{display:block;margin:2px 0 0;min-height:1.3em}
+.wj-ready{display:flex;align-items:center;gap:14px;margin:10px 0;padding:12px 14px;border:1px solid var(--acc);
+  border-radius:10px;background:color-mix(in srgb,var(--acc) 12%,transparent)}
+.wj-ready[hidden]{display:none}
+.wj-ready b{font-size:16px}
+.wj-ready-mark{flex:0 0 40px;height:40px;border-radius:50%;background:var(--acc);color:var(--bg);
+  display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700}
+@keyframes barsweep{from{margin-left:0}to{margin-left:70%}}
+@media (prefers-reduced-motion:reduce){.bar.sweep>div{animation-duration:4s}}
 
 /* The Add-by-IP dialog. A decision that must not leave the page it belongs to:
    a wrong address returns to the same box, Cancel returns to the fleet. */

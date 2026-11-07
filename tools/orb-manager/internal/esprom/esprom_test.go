@@ -465,3 +465,37 @@ func espLikeImage(magic, mode, sizeFreq byte) []byte {
 	b := []byte{magic, 0x01, mode, sizeFreq, 0, 0, 0, 0}
 	return append(b, bytes.Repeat([]byte{0x42}, 100)...)
 }
+
+// TestSlipKeepsPacketsReadTogether pins the macOS flash failure of 2026-11-07: the
+// CDC driver there hands several ROM replies back in one read, and a decoder that
+// returned the first and dropped the rest lost the reply the next command waited
+// for. Every packet in one chunk must come out, in order, and a packet split across
+// two reads must still join.
+func TestSlipKeepsPacketsReadTogether(t *testing.T) {
+	a, b, c := []byte{1, 8, 0, 0}, []byte{1, 10, 0xC0, 2}, []byte{1, 2, 0xDB, 3}
+	chunk := append(append(slipEncode(a), slipEncode(b)...), slipEncode(c)[:3]...)
+	var d slipDecoder
+	got := [][]byte{}
+	if p, ok := d.Feed(chunk); ok {
+		got = append(got, p)
+	}
+	for {
+		p, ok := d.Next()
+		if !ok {
+			break
+		}
+		got = append(got, p)
+	}
+	if p, ok := d.Feed(slipEncode(c)[3:]); ok {
+		got = append(got, p)
+	}
+	want := [][]byte{a, b, c}
+	if len(got) != len(want) {
+		t.Fatalf("decoded %d packets from one read and a split; want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if string(got[i]) != string(want[i]) {
+			t.Errorf("packet %d is %v; want %v", i, got[i], want[i])
+		}
+	}
+}

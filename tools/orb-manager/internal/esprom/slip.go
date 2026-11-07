@@ -40,19 +40,33 @@ func slipEncode(p []byte) []byte {
 	return append(out, slipEnd)
 }
 
-// slipDecoder turns a byte stream back into SLIP packets. One packet per
-// Feed batch boundary: Feed returns (packet, true) when a complete packet
-// ended on the END byte that closes this chunk, mirroring esptool's
-// slip_reader which never hands out a partial between ENDs.
+// slipDecoder turns a byte stream back into SLIP packets, one per Feed (or Next)
+// that completes one, mirroring esptool's slip_reader which never hands out a
+// partial between ENDs. Bytes after a packet's closing END stay in rest for Next:
+// macOS's CDC driver hands several ROM replies back in one read where Linux and
+// Windows hand one, and a decoder that dropped the tail lost the very reply the
+// next command waited for — a Mac flash synced and then died on "no response from
+// target (timeout)" (2026-11-07).
 type slipDecoder struct {
 	buf     []byte
 	inEsc   bool
-	gotByte bool // saw any payload byte since the last packet
+	gotByte bool   // saw any payload byte since the last packet
+	rest    []byte // bytes read past the last packet, not yet decoded
+}
+
+// Next decodes from the bytes a previous Feed read past its packet.
+func (d *slipDecoder) Next() (pkt []byte, ok bool) {
+	if len(d.rest) == 0 {
+		return nil, false
+	}
+	r := d.rest
+	d.rest = nil
+	return d.Feed(r)
 }
 
 // Feed pushes raw bytes; ok is true when one full packet is ready.
 func (d *slipDecoder) Feed(p []byte) (pkt []byte, ok bool) {
-	for _, b := range p {
+	for i, b := range p {
 		if d.inEsc {
 			switch {
 			case b == slipEscEnd:
@@ -77,6 +91,9 @@ func (d *slipDecoder) Feed(p []byte) (pkt []byte, ok bool) {
 			if d.gotByte {
 				pkt, ok = d.buf, true
 				d.buf, d.gotByte = nil, false
+				if i+1 < len(p) {
+					d.rest = append([]byte(nil), p[i+1:]...)
+				}
 				return pkt, ok
 			}
 			// A packet-opening END: start collecting.

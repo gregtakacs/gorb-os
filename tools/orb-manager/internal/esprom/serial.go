@@ -1,7 +1,9 @@
 package esprom
 
 import (
+	"errors"
 	"fmt"
+	"syscall"
 	"time"
 
 	"go.bug.st/serial"
@@ -37,8 +39,33 @@ func OpenPort(name string) (*Port, error) {
 	return &Port{p: p, name: name}, nil
 }
 
-func (pt *Port) Read(b []byte) (int, error)  { return pt.p.Read(b) }
-func (pt *Port) Write(b []byte) (int, error) { return pt.p.Write(b) }
+func (pt *Port) Read(b []byte) (int, error) { return pt.p.Read(b) }
+
+// Write sends all of b. The serial library hands the buffer to one write(2) and
+// returns its count, and a blocking write to a macOS tty can come back short — a
+// signal (Go's runtime preempts with SIGURG) or the tty's output limit ends it part
+// way — leaving a flash packet's tail unsent and the ROM waiting for it until the
+// hub gives up with "no response from target" (a Mac flash, 2026-11-07, three
+// images in). So the rest is sent, and an interrupted call is simply made again.
+func (pt *Port) Write(b []byte) (int, error) {
+	sent := 0
+	for sent < len(b) {
+		n, err := pt.p.Write(b[sent:])
+		if n > 0 {
+			sent += n
+		}
+		if err != nil {
+			if errors.Is(err, syscall.EINTR) || errors.Is(err, syscall.EAGAIN) {
+				continue
+			}
+			return sent, err
+		}
+		if n == 0 {
+			time.Sleep(time.Millisecond) // a full output queue: let it drain
+		}
+	}
+	return sent, nil
+}
 
 func (pt *Port) Close() error { return pt.p.Close() }
 

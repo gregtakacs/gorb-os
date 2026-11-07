@@ -104,6 +104,9 @@ func (d *Device) WithContext(ctx context.Context) *Device {
 func (d *Device) readPacket(deadline time.Time) ([]byte, error) {
 	tmp := make([]byte, 512)
 	for {
+		if pkt, ok := d.dec.Next(); ok {
+			return pkt, nil
+		}
 		if err := ctxErr(d.ctx); err != nil {
 			return nil, err
 		}

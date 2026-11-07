@@ -62,6 +62,8 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "orb_app_net.h"   /* the per-app credential store behind /api/v1/apps/cfg secrets (§43) */
 #include "orb_home.h"
 #include "orb_places.h"  /* /api/v1/places, radar-plan §2.1 */
+#include "orb_map.h"     /* POST /api/v1/places/maps, radar-plan §2.4 */
+#include "orb_png8.h"    /* /api/v1/debug/png_bench, radar-plan R3 */
 #include "orb_units.h"   /* /api/v1/home: the OS home location (flight-tracker-design §6.4) */
 #include "orb_net.h"
 #include "input_router.h"
@@ -3109,6 +3111,19 @@ static esp_err_t places_reply(httpd_req_t *req, const char *state)
     return r;
 }
 
+/* POST /api/v1/places/maps — the hub has written a place's maps to the card (radar-plan
+ * §2.4): every app's cached level files are dropped and the maps gen moves, so the apps
+ * re-open their views on the new files. */
+static esp_err_t h_places_maps(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    orb_maps_bump();
+    char b[48];
+    snprintf(b, sizeof b, "{\"state\":\"refreshed\",\"maps_gen\":%lu}", (unsigned long)orb_maps_gen());
+    return httpd_resp_sendstr(req, b);
+}
+
 static esp_err_t h_places_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -5232,6 +5247,115 @@ static esp_err_t h_debug_panic(httpd_req_t *req)
     if (!strcmp(kind, "abort")) abort();
     *(volatile uint32_t *)0 = 0;
     return ESP_OK;
+}
+#endif /* CONFIG_ORB_DEBUG_HTTP */
+
+#if CONFIG_ORB_DEBUG_HTTP
+/* GET /api/v1/debug/map_view?place=0&radius_m=N[&rot=DEG][&dash=1][&slot=7][&dump=1]
+ * radar-plan R3: a real view through orb_map_open on a spare app slot, timed from the
+ * open to READY (the map task's card read, check and render), with its landmarks and
+ * where orb_map_project puts home and DFW's airport. dump=1 answers the raster. */
+static esp_err_t h_debug_map_view(httpd_req_t *req)
+{
+    char v[24];
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const int place = q_param(req, "place", v, sizeof v) ? atoi(v) : 0;
+    const int slot = q_param(req, "slot", v, sizeof v) ? atoi(v) : 7;
+    orb_map_req_t r = { .radius_m = q_param(req, "radius_m", v, sizeof v) ? atoi(v) : 100000,
+                        .rot_cdeg = q_param(req, "rot", v, sizeof v) ? (int32_t)(strtof(v, NULL) * 100) : 0,
+                        .role_on = 0xFFFF, .mark_on = 0x0B };
+    static const uint8_t WID[][2] = { { 4, 1 }, { 5, 1 }, { 6, 2 }, { 7, 1 }, { 8, 2 }, { 12, 2 } };
+    for (size_t i = 0; i < sizeof WID / sizeof WID[0]; i++) r.width[WID[i][0]] = WID[i][1];
+    if (q_param(req, "dash", v, sizeof v) && v[0] == '1') { r.dash[5] = 1; r.dash[7] = 2; r.dash[8] = 4; }
+    const bool dump = q_param(req, "dump", v, sizeof v) && v[0] == '1';
+    const int64_t t0 = esp_timer_get_time();
+    const int32_t h = orb_map_open(slot, place, &r);
+    int32_t st = h > 0 ? ORB_MAP_RENDERING : h;
+    while (h > 0 && (st = orb_map_ready(slot, h)) == ORB_MAP_RENDERING && esp_timer_get_time() - t0 < 15000000)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    const double ms = (esp_timer_get_time() - t0) / 1000.0;
+    if (dump && st == ORB_MAP_READY) {
+        httpd_resp_set_type(req, "application/octet-stream");
+        const esp_err_t e = httpd_resp_send(req, (const char *)orb_map_raster_of(slot, h), ORB_MAP_RASTER_B);
+        orb_map_close(slot, h);
+        return e;
+    }
+    char *b = heap_caps_malloc(1400, MALLOC_CAP_SPIRAM);
+    if (!b) return httpd_resp_send_500(req);
+    int n = snprintf(b, 1400, "{\"h\":%ld,\"state\":%ld,\"ms\":%.1f,\"radius_m\":%ld,\"marks\":[",
+                     (long)h, (long)st, ms, (long)r.radius_m);
+    orb_map_markrec_t m;
+    int k = 0;
+    for (; k < 8 && orb_map_mark(slot, h, k, &m) == ORB_MAP_READY; k++)
+        n += snprintf(b + n, 1400 - (size_t)n, "%s{\"name\":\"%s\",\"kind\":%u,\"rank\":%u,\"x\":%d,\"y\":%d}",
+                      k ? "," : "", m.name, m.kind, m.rank, m.x, m.y);
+    orb_home_t home;
+    int32_t hx = -1, hy = -1, ax = -1, ay = -1;
+    if (orb_home_get(&home)) orb_map_project(slot, h, home.lat_e6, home.lon_e6, &hx, &hy);
+    orb_map_project(slot, h, 32899800, -97040300, &ax, &ay);
+    uint32_t rn, lm, nf, fb;
+    orb_map_stats(&rn, &lm, &nf, &fb);
+    snprintf(b + n, 1400 - (size_t)n, "],\"home_xy\":[%ld,%ld],\"dfw_xy\":[%ld,%ld],\"renders\":%lu,\"last_ms\":%lu,"
+             "\"files\":%lu,\"file_bytes\":%lu,\"psram_free\":%u,\"int_free\":%u}",
+             (long)hx, (long)hy, (long)ax, (long)ay, (unsigned long)rn, (unsigned long)lm, (unsigned long)nf,
+             (unsigned long)fb, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    orb_map_close(slot, h);
+    httpd_resp_set_type(req, "application/json");
+    const esp_err_t e = httpd_resp_sendstr(req, b);
+    heap_caps_free(b);
+    return e;
+}
+
+static int png_bench_row(void *ctx, int y, const uint8_t *idx, int w)
+{
+    uint32_t *nz = ctx;
+    (void)y;
+    for (int x = 0; x < w; x++) nz[0] += idx[x] != 0;
+    return 0;
+}
+
+/* GET /api/v1/debug/png_bench?path=REL[&n=3] — radar-plan R3: orb_png8_decode's time on the
+ * S3 for an indexed PNG on the card (a LibreWXR frame), and its echo pixels. */
+static esp_err_t h_debug_png_bench(httpd_req_t *req)
+{
+    char rel[96] = "", v[8];
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_type(req, "application/json");
+    if (!q_param(req, "path", rel, sizeof rel) || strstr(rel, "..")) return httpd_resp_sendstr(req, "{\"error\":\"path\"}");
+    int n = q_param(req, "n", v, sizeof v) ? atoi(v) : 3;
+    if (n < 1 || n > 20) n = 3;
+    char full[128];
+    snprintf(full, sizeof full, ORB_SD_BASE "/%s", rel);
+    struct stat st;
+    orb_sd_lock();
+    const bool ok = stat(full, &st) == 0 && st.st_size > 0 && st.st_size < 512 * 1024;
+    uint8_t *buf = ok ? heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_SPIRAM) : NULL;
+    FILE *f = buf ? fopen(full, "rb") : NULL;
+    const bool got = f && fread(buf, 1, (size_t)st.st_size, f) == (size_t)st.st_size;
+    if (f) fclose(f);
+    orb_sd_unlock();
+    void *scratch = heap_caps_malloc(orb_png8_scratch_size(), MALLOC_CAP_SPIRAM);
+    int rc = -99, w = 0, hh = 0;
+    uint32_t nz = 0;
+    int64_t best = INT64_MAX;
+    if (got && scratch) {
+        orb_png8_info(buf, (size_t)st.st_size, &w, &hh);
+        for (int i = 0; i < n; i++) {
+            nz = 0;
+            const int64_t t0 = esp_timer_get_time();
+            rc = orb_png8_decode(buf, (size_t)st.st_size, scratch, orb_png8_scratch_size(), png_bench_row, &nz);
+            const int64_t dt = esp_timer_get_time() - t0;
+            if (dt < best) best = dt;
+        }
+    }
+    char b[200];
+    snprintf(b, sizeof b, "{\"rc\":%d,\"bytes\":%ld,\"w\":%d,\"h\":%d,\"echo_px\":%lu,\"best_ms\":%.1f,\"scratch\":%u}",
+             rc, got ? (long)st.st_size : -1L, w, hh, (unsigned long)nz, best == INT64_MAX ? 0.0 : best / 1000.0,
+             (unsigned)orb_png8_scratch_size());
+    heap_caps_free(buf);
+    heap_caps_free(scratch);
+    return httpd_resp_sendstr(req, b);
 }
 #endif /* CONFIG_ORB_DEBUG_HTTP */
 
@@ -8286,7 +8410,8 @@ static esp_err_t net_start_httpd(void)
      * v1.2.17's bench door /api/v1/debug/units_forget brings the textual count to 55: one
      * from the ceiling, so the next door raises it. radar-plan R0's /api/v1/debug/map_bench
      * makes 56, and the ceiling moves to 64 for the places and maps doors that follow.
-     * radar-plan R1's /api/v1/places GET and POST make 58. */
+     * radar-plan R1's /api/v1/places GET and POST make 58; R3's /api/v1/places/maps 59, and
+     * its bench doors map_view and png_bench 61. */
     cfg.max_uri_handlers  = 64;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
@@ -8411,6 +8536,7 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/home",     .method = HTTP_GET,  .handler = h_home_get },
         { .uri = "/api/v1/places",   .method = HTTP_GET,  .handler = h_places_get },
         { .uri = "/api/v1/places",   .method = HTTP_POST, .handler = h_places_post },
+        { .uri = "/api/v1/places/maps", .method = HTTP_POST, .handler = h_places_maps },
         { .uri = "/api/v1/home",     .method = HTTP_POST, .handler = h_home_post },
         { .uri = "/api/v1/sound",    .method = HTTP_GET,  .handler = h_sound_get },
         { .uri = "/api/v1/sound",    .method = HTTP_POST, .handler = h_sound_post },
@@ -8448,6 +8574,8 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/debug/fx",   .method = HTTP_GET,  .handler = h_debug_fx },
         { .uri = "/api/v1/debug/dial", .method = HTTP_GET,  .handler = h_debug_dial },
         { .uri = "/api/v1/debug/map_bench", .method = HTTP_GET, .handler = h_debug_map_bench },
+        { .uri = "/api/v1/debug/map_view", .method = HTTP_GET, .handler = h_debug_map_view },
+        { .uri = "/api/v1/debug/png_bench", .method = HTTP_GET, .handler = h_debug_png_bench },
 #endif
         /* microSD + themes. /themes is the page; the routes under /api/v1/sd are its
          * backing calls. Migration 1 deleted the flip and default doors: under the

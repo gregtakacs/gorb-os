@@ -41,6 +41,16 @@ func (o *Orb) placesJSON(state string) string {
 	return b + "]}"
 }
 
+// servePlacesMaps follows h_places_maps: the maps gen moves.
+func (o *Orb) servePlacesMaps(w http.ResponseWriter) {
+	o.mu.Lock()
+	d := o.deviceLocked()
+	d.MapsGen++
+	g := d.MapsGen
+	o.mu.Unlock()
+	writeJSON(w, 200, fmt.Sprintf(`{"state":"refreshed","maps_gen":%d}`, g))
+}
+
 func (o *Orb) servePlacesGet(w http.ResponseWriter) {
 	writeJSON(w, 200, o.placesJSON(""))
 }

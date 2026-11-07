@@ -342,6 +342,9 @@ var deviceRoutes = map[string][]string{
 	// radar-plan §2.1: the three places beside home, set from the Orb tab's Places card.
 	// Device config like home, and it reaches neither the card nor the slot.
 	"/api/v1/places": {http.MethodGet, http.MethodPost},
+	// radar-plan §2.4: the map tool tells the orb it has written a place's maps; the orb
+	// drops its cached levels and moves its maps gen. Nothing reaches the slot.
+	"/api/v1/places/maps": {http.MethodPost},
 	// D39: the owner's sound settings (level, switches, quiet hours, glass offset,
 	// pattern override) and the bench door that plays a built-in sound with no theme.
 	// Both are device config the owner sets the way they set the zone, and neither

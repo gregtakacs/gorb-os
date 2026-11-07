@@ -56,6 +56,10 @@ void      orb_app_net_info(int slot, orb_app_net_info_t *out);
 uint32_t  orb_app_net_read(int slot, uint32_t off, void *dst, uint32_t cap);
 /** Drop the body (the kept connection stays for the next request). */
 void      orb_app_net_free(int slot);
+/** Detach a landed body for the caller to own (radar-plan §2.3's kept bodies): answers
+ *  the PSRAM buffer and its length and leaves the slot idle, or NULL when nothing whole
+ *  has landed. The caller frees it with heap_caps_free. */
+uint8_t  *orb_app_net_take(int slot, uint32_t *len);
 /** Release everything the slot holds, the connection included. Idempotent. */
 void      orb_app_net_release(int slot);
 

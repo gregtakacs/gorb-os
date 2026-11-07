@@ -18,6 +18,8 @@
 #include "lvgl.h"
 
 #include "orb_app.h"       /* ORB_APP_CAP: the slot count the table is sized by */
+#include "orb_png8.h"      /* orb_ui_cv_png8: radar-plan §2.3 */
+#include "orb_map_raster.h" /* orb_ui_cv_roles: radar-plan §2.4 */
 
 static const char *TAG = "appui";
 
@@ -301,6 +303,97 @@ void orb_ui_cv_text(int slot, int32_t h, int32_t x, int32_t y, int32_t w, int32_
     lv_area_t a = { x, y, x + w - 1, y + lv_font_get_line_height(f) - 1 };
     lv_draw_label(&layer, &d, &a);
     lv_canvas_finish_layer(u->obj[h], &layer);
+}
+
+/* ---- radar-plan §2.3/§2.4: indexed pixels through an ARGB palette ------------------ */
+
+/* An ARGB entry as the canvas's RGB565 plus its alpha (0 = leave the canvas). */
+typedef struct { uint16_t c; uint8_t a; } pal565_t;
+
+static void pal_prep(pal565_t *out, const uint32_t *argb, int n)
+{
+    for (int i = 0; i < n; i++) {
+        out[i].c = c16(argb[i] & 0xFFFFFF);
+        out[i].a = (uint8_t)(argb[i] >> 24);
+    }
+}
+
+/* src over dst at alpha a, in native RGB565 (lv_color_to_u16's layout). */
+static inline uint16_t blend565(uint16_t dst, uint16_t src, uint8_t a)
+{
+    if (a == 255) return src;
+    const uint32_t ia = 255u - a;
+    const uint32_t r = (((src >> 11) & 31) * a + ((dst >> 11) & 31) * ia) / 255;
+    const uint32_t g = (((src >> 5) & 63) * a + ((dst >> 5) & 63) * ia) / 255;
+    const uint32_t b = ((src & 31) * a + (dst & 31) * ia) / 255;
+    return (uint16_t)(r << 11 | g << 5 | b);
+}
+
+typedef struct {
+    cv_t *c;
+    const pal565_t *pal;
+    int32_t sx, sy, dx, dy, w, h, scale;
+} png_ctx_t;
+
+static int png_row(void *ctx, int y, const uint8_t *idx, int w)
+{
+    png_ctx_t *p = ctx;
+    if (y < p->sy) return 0;
+    const int32_t oy = (y - p->sy) * p->scale;
+    if (oy >= p->h) return 1;                         /* past the window: stop decoding */
+    for (int32_t x = 0; x * p->scale < p->w; x++) {
+        const int32_t s = p->sx + x;
+        if (s < 0 || s >= w) continue;
+        const pal565_t e = p->pal[idx[s]];
+        if (!e.a) continue;
+        for (int32_t ky = 0; ky < p->scale && oy + ky < p->h; ky++)
+            for (int32_t kx = 0; kx < p->scale && x * p->scale + kx < p->w; kx++) {
+                const int32_t X = p->dx + x * p->scale + kx, Y = p->dy + oy + ky;
+                if ((uint32_t)X < (uint32_t)p->c->w && (uint32_t)Y < (uint32_t)p->c->h) {
+                    uint16_t *d = &p->c->px[Y * p->c->stride + X];
+                    *d = blend565(*d, e.c, e.a);
+                }
+            }
+    }
+    return 0;
+}
+
+int32_t orb_ui_cv_png8(int slot, int32_t h, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
+                       int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb)
+{
+    cv_t *c = cv_of(slot_get(slot, false), h);
+    if (!c || !png || !argb || scale < 1 || scale > 4) return ORB_PNG8_E_FORMAT;
+    /* One scratch for every draw: they all run on the LVGL task, one at a time. */
+    static void *scratch;
+    if (!scratch) scratch = heap_caps_malloc(orb_png8_scratch_size(), MALLOC_CAP_SPIRAM);
+    if (!scratch) return ORB_PNG8_E_SCRATCH;
+    pal565_t *pal = heap_caps_malloc(256 * sizeof *pal, MALLOC_CAP_SPIRAM);
+    if (!pal) return ORB_PNG8_E_SCRATCH;
+    pal_prep(pal, argb, 256);
+    png_ctx_t ctx = { c, pal, sx, sy, dx, dy, w, hh, scale };
+    int r = orb_png8_decode(png, len, scratch, orb_png8_scratch_size(), png_row, &ctx);
+    if (r == ORB_PNG8_E_STOP) r = ORB_PNG8_OK;        /* the window ended before the image */
+    heap_caps_free(pal);
+    return r;
+}
+
+void orb_ui_cv_roles(int slot, int32_t h, const uint8_t *raster, const uint32_t *argb16, int32_t dx, int32_t dy)
+{
+    cv_t *c = cv_of(slot_get(slot, false), h);
+    if (!c || !raster || !argb16) return;
+    pal565_t pal[16];
+    pal_prep(pal, argb16, 16);
+    for (int y = 0; y < ORB_MAP_W; y++) {
+        const int32_t Y = dy + y;
+        if ((uint32_t)Y >= (uint32_t)c->h) continue;
+        uint16_t *row = &c->px[Y * c->stride];
+        for (int x = 0; x < ORB_MAP_W; x++) {
+            const int32_t X = dx + x;
+            if ((uint32_t)X >= (uint32_t)c->w) continue;
+            const pal565_t e = pal[orb_map_role_at(raster, x, y)];
+            if (e.a) row[X] = blend565(row[X], e.c, e.a);
+        }
+    }
 }
 
 void orb_ui_cv_flush(int slot, int32_t h)

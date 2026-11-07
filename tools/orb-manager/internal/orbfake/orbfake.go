@@ -284,6 +284,8 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		o.servePlacesGet(w)
 	case r.URL.Path == "/api/v1/places" && r.Method == http.MethodPost:
 		o.servePlacesPost(w, r)
+	case r.URL.Path == "/api/v1/places/maps" && r.Method == http.MethodPost:
+		o.servePlacesMaps(w)
 	case r.URL.Path == "/api/v1/name" && r.Method == http.MethodPost:
 		o.serveNamePost(w, r)
 	case r.URL.Path == "/api/v1/sound" && r.Method == http.MethodGet:

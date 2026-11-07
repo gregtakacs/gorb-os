@@ -35,6 +35,10 @@ typedef struct {
     uint8_t  width[16];       /* per line role, 1-4 px (0 = not drawn) */
     uint8_t  dash[16];        /* per line role, ORB_MAP_DASH_* */
     int64_t (*clock_us)(void);/* optional: splits the stats' time into fills and lines */
+    /* Optional: each landmark, whatever mark_on says, in glass pixels at this style's
+     * transform (x, y may be off the glass). name is not NUL-terminated. */
+    void   (*mark)(void *ctx, uint8_t kind, uint8_t rank, float x, float y, const char *name, uint8_t n);
+    void    *mark_ctx;
 } orb_map_style_t;
 
 typedef struct {

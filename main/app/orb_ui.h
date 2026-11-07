@@ -45,6 +45,13 @@ void    orb_ui_refresh(int slot);
 
 int32_t orb_ui_cv_create(int slot, int32_t parent, int32_t w, int32_t h);
 void    orb_ui_cv_fill(int slot, int32_t h, uint32_t rgb);
+/** radar-plan §2.3: draw an indexed PNG's window [sx, sy, w/scale, hh/scale] onto the canvas
+ *  at (dx, dy), each source pixel scale x scale, through 256 ARGB entries (alpha blends,
+ *  0 leaves the canvas). Answers ORB_PNG8_OK or the reader's error. */
+int32_t orb_ui_cv_png8(int slot, int32_t h, const uint8_t *png, uint32_t len, int32_t sx, int32_t sy,
+                       int32_t dx, int32_t dy, int32_t w, int32_t hh, int32_t scale, const uint32_t *argb);
+/** radar-plan §2.4: blend a map view's role raster onto the canvas through 16 ARGB entries. */
+void    orb_ui_cv_roles(int slot, int32_t h, const uint8_t *raster, const uint32_t *argb16, int32_t dx, int32_t dy);
 void    orb_ui_cv_pixel(int slot, int32_t h, int32_t x, int32_t y, uint32_t rgb);
 void    orb_ui_cv_ring(int slot, int32_t h, int32_t cx, int32_t cy, int32_t r, uint32_t rgb);
 void    orb_ui_cv_disc(int slot, int32_t h, int32_t cx, int32_t cy, int32_t r, uint32_t rgb);

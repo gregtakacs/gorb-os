@@ -386,6 +386,25 @@ void orb_app_net_free(int slot)
     __atomic_store_n(&n->state, ORB_NET_IDLE, __ATOMIC_RELEASE);
 }
 
+uint8_t *orb_app_net_take(int slot, uint32_t *len)
+{
+    *len = 0;
+    net_slot_t *n = slot_get(slot, false);
+    if (!n || __atomic_load_n(&n->state, __ATOMIC_ACQUIRE) != ORB_NET_DONE || !n->body || !n->len || n->over)
+        return NULL;
+    uint8_t *b = n->body;
+    if (n->cap > n->len) {                       /* give back the doubling's slack */
+        uint8_t *t = heap_caps_realloc(b, n->len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (t) b = t;
+    }
+    *len = n->len;
+    n->body = NULL;
+    n->len = n->cap = 0;
+    if (!n->jbuf) orb_json_begin(&n->json, "", 0);
+    __atomic_store_n(&n->state, ORB_NET_IDLE, __ATOMIC_RELEASE);
+    return b;
+}
+
 void orb_app_net_release(int slot)
 {
     net_slot_t *n = slot_get(slot, false);

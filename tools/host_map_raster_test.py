@@ -21,17 +21,26 @@ RASTER_B = TW * TW * 32          # 8x8 tiles of 32 B (orb_map_raster.h)
 class Style(ctypes.Structure):
     _fields_ = [("scale", ctypes.c_float), ("rot_rad", ctypes.c_float), ("role_on", ctypes.c_uint16),
                 ("mark_on", ctypes.c_uint8), ("width", ctypes.c_uint8 * 16), ("dash", ctypes.c_uint8 * 16),
-                ("clock_us", ctypes.c_void_p)]
+                ("clock_us", ctypes.c_void_p), ("mark", ctypes.c_void_p), ("mark_ctx", ctypes.c_void_p)]
 
 class Stats(ctypes.Structure):
     _fields_ = [(n, ctypes.c_uint32) for n in ("features", "fills", "lines", "edges", "segments", "marks", "skipped",
                                                "fill_us", "line_us", "max_fill_edges")]
 
-def build_lib():
+def build_lib(mutation=None):
     d = tempfile.mkdtemp(prefix="orbmap-")
     so = os.path.join(d, "liborbmap.so")
-    subprocess.check_call(["gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-std=c11", "-shared", "-fPIC",
-                           os.path.join(ROOT, "main/map/orb_map_raster.c"), "-o", so, "-lm"])
+    src = os.path.join(ROOT, "main/map/orb_map_raster.c")
+    if mutation:
+        text = open(src).read()
+        if mutation[0] not in text:
+            raise SystemExit("mutation %r does not apply -- rewrite the bench" % (mutation[0][:50],))
+        src = os.path.join(d, "orb_map_raster.c")
+        open(src, "w").write(text.replace(mutation[0], mutation[1], 1))
+    r = subprocess.run(["gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-std=c11", "-shared", "-fPIC",
+                        "-I", os.path.join(ROOT, "main/map"), src, "-o", so, "-lm"], capture_output=True, text=True)
+    if r.returncode:
+        return None
     lib = ctypes.CDLL(so)
     lib.orb_map_check.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_int)]
     lib.orb_map_render.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(Style), ctypes.c_char_p,
@@ -59,9 +68,23 @@ def role_at(ras, x, y):
     return b & 0x0F if i & 1 else b >> 4
 
 failures = []
+QUIET = False
 def check(ok, what):
-    print(("ok    " if ok else "FAIL  ") + what)
+    if not QUIET: print(("ok    " if ok else "FAIL  ") + what)
     if not ok: failures.append(what)
+
+MUTATIONS = [
+    ("if (crc32_z(buf + hl, blen) != rd32(buf + 32)) return ORB_MAP_E_CRC;", ";"),
+    ("if (hl < HDR || hl > len || len - hl < blen) return ORB_MAP_E_TRUNC;\n    if (crc32_z", "if (crc32_z"),
+    ("return (int32_t)(v >> 1) ^ -(int32_t)(v & 1);", "return (int32_t)(v >> 1);"),
+    ("for (int i = 0; i + 1 < nx; i += 2)", "for (int i = 0; i + 1 < nx; i += 1)"),
+    ("if (on && np > 2 && fit) fit = add_edge(edges, ecap, &ne, px, py, fx0, fy0);", ";"),
+    ("if (t < p->pat[i]) return !(i & 1);", "if (t < p->pat[i]) return 1;"),
+    ("const xf_t t = { k * cs, -k * sn, k * sn, k * cs };", "const xf_t t = { k * cs, k * sn, -k * sn, k * cs };"),
+    ("const float k = st->scale / (float)ORB_MAP_UNIT", "const float k = st->scale / 8.0f"),
+    ("int r0 = (int)ceilf(y0 - 0.5f), r1 = (int)ceilf(y1 - 0.5f);", "int r0 = (int)y0, r1 = (int)y1;"),
+    ("if (tx0 == 0 && tx1 == 8) { t[0] = t[1] = t[2] = t[3] = vv; }", "if (tx0 == 0 && tx1 == 8) { t[0] = t[1] = vv; }"),
+]
 
 def synthetic_checks(lib):
     U = orbmap.UNIT
@@ -87,6 +110,18 @@ def synthetic_checks(lib):
     check(role_at(ras, c, c - 170) == orbmap.AIRPORT, "the airport mark lands where it was put")
     rc, ras, st, _ = render(lib, buf, style(scale=0.5))
     check(role_at(ras, c + 35, c) == orbmap.LAKE and role_at(ras, c + 60, c) == orbmap.LAND, "scale 0.5 halves the lake")
+    rc, ras, st, _ = render(lib, buf, style(rot=math.radians(90)))
+    check(role_at(ras, c + 170, c) == orbmap.AIRPORT and role_at(ras, c, c - 170) != orbmap.AIRPORT,
+          "rotated 90 degrees clockwise, the mark north of centre moves east")
+    # A fill's rows are sampled at their centres: the top edge at y 132.75 takes row 133
+    # (centre 133.5) and not row 132; the bottom edge at 333.25 takes row 332, not 333.
+    q = lambda v: int(round(v * U))
+    rect = [(q(-50), q(-100.25)), (q(50), q(-100.25)), (q(50), q(100.25)), (q(-50), q(100.25))]
+    rbuf = orbmap.encode(0.0, 0.0, 8, [(orbmap.LAKE, orbmap.FILL, [rect])], [])
+    rc, rras, st, _ = render(lib, rbuf, style())
+    check(role_at(rras, c, c - 101) == orbmap.LAND and role_at(rras, c, c - 100) == orbmap.LAKE and
+          role_at(rras, c, c + 99) == orbmap.LAKE and role_at(rras, c, c + 100) == orbmap.LAND,
+          "a fill's edge between pixel centres takes the rows whose centres it covers")
     rc, ras, st, _ = render(lib, buf, style(rot=math.radians(45)))
     # Rotated 45 degrees the corners lie on the axis: the island's reaches 40*sqrt2 = 57 px,
     # the lake's 100*sqrt2 = 141 px (unrotated, both stop at 40 and 100).
@@ -123,7 +158,31 @@ def real_checks(lib, d, out):
             if out and label in ("1.00x", "dashed", "rot 30"):
                 png(ras, os.path.join(out, "%s-%s.png" % (name, label.replace(" ", "").replace(".", ""))))
 
+def run_mutations():
+    global QUIET
+    caught = 0
+    for m in MUTATIONS:
+        failures.clear()
+        QUIET = True
+        lib = build_lib(m)
+        if lib is not None:
+            synthetic_checks(lib)
+        QUIET = False
+        hit = lib is None or bool(failures)
+        caught += hit
+        print("%s mutant: %s" % ("caught" if hit else "MISSED", m[1][:60]))
+    failures.clear()
+    print("%d of %d mutants caught" % (caught, len(MUTATIONS)))
+    return caught == len(MUTATIONS)
+
+
 def main(argv):
+    if "--mutations" in argv:
+        ok = run_mutations()
+        lib = build_lib()
+        synthetic_checks(lib)
+        print("all map raster checks pass" if ok and not failures else "map raster checks FAILED")
+        return 0 if ok and not failures else 1
     lib = build_lib()
     synthetic_checks(lib)
     if len(argv) > 1:

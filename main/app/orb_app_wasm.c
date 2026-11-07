@@ -52,6 +52,8 @@
 #include "orb_units.h"     /* orb_units, behind orb.units (free) */
 #include "orb_home.h"           /* orb_home_gen, behind orb.home_gen */
 #include "orb_places.h"         /* orb_places_gen, behind orb.places_gen */
+#include "orb_app_blob.h"       /* radar-plan §2.3: kept bodies */
+#include "orb_map.h"            /* radar-plan §2.4: the OS maps */
 #include "esp_timer.h"
 #include <setjmp.h>
 #include "esp_expression_with_stack.h"   /* the guest's own native stack, below */
@@ -198,6 +200,8 @@ static void slot_release(wasm_slot_t *s)
     if (s->beat) lv_timer_delete(s->beat);
     orb_ui_release(slot_index(s));
     orb_app_net_release(slot_index(s));
+    orb_blob_free_all(slot_index(s));
+    orb_map_release_app(slot_index(s));
     if (s->rt) m3_FreeRuntime(s->rt);
     if (s->env) m3_FreeEnvironment(s->env);
     if (s->code) heap_caps_free(s->code);
@@ -1098,6 +1102,169 @@ m3ApiRawFunction(imp_net_free)
     m3ApiSuccess();
 }
 
+/* ---- radar-plan §2.3: kept bodies (cap net) and the indexed-PNG draw (free) ---------- */
+
+m3ApiRawFunction(imp_net_keep)                /* i32 net_keep(u32 slot) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(uint32_t, i);
+    NET_GATE(ESP_ERR_NOT_ALLOWED);
+    if (i >= ORB_BLOB_N) m3ApiReturn(ESP_ERR_INVALID_ARG);
+    orb_app_net_info_t ni;
+    orb_app_net_info(slot_index(s), &ni);
+    uint32_t held = 0;
+    (void)orb_blob_get(slot_index(s), (int)i, &held);
+    /* Refused past the budget with the body left where it is: the app frees an old one. */
+    if (orb_blob_used(slot_index(s)) - held + ni.len > ORB_BLOB_BUDGET) m3ApiReturn(ESP_ERR_NO_MEM);
+    uint32_t len = 0;
+    uint8_t *b = orb_app_net_take(slot_index(s), &len);
+    if (!b) m3ApiReturn(ESP_ERR_INVALID_STATE);
+    const esp_err_t e = orb_blob_put(slot_index(s), (int)i, b, len);
+    if (e != ESP_OK) heap_caps_free(b);
+    m3ApiReturn(e);
+}
+
+m3ApiRawFunction(imp_blob_len)                /* u32 blob_len(u32 slot) */
+{
+    m3ApiReturnType(uint32_t);
+    CALLER();
+    m3ApiGetArg(uint32_t, i);
+    uint32_t len = 0;
+    (void)orb_blob_get(slot_index(s), (int)i, &len);
+    m3ApiReturn(len);
+}
+
+m3ApiRawFunction(imp_blob_free)               /* void blob_free(u32 slot) */
+{
+    CALLER();
+    m3ApiGetArg(uint32_t, i);
+    orb_blob_free(slot_index(s), (int)i);
+    m3ApiSuccess();
+}
+
+/* i32 cv_png8(i32 cv, const orb_png_draw_t *d): d is slot, sx, sy, dx, dy, w, h, scale,
+ * then a pointer to 256 ARGB words in the app's memory (36 B). */
+m3ApiRawFunction(imp_cv_png8)
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, h);
+    m3ApiGetArgMem(const uint8_t *, d);
+    m3ApiCheckMem(d, 36);
+    if (!orb_grant_ok(s->app, CAP_UI)) m3ApiReturn(ESP_ERR_NOT_ALLOWED);
+    uint32_t v[9];
+    for (int k = 0; k < 9; k++) v[k] = m3ApiReadMem32(d + 4 * k);
+    const uint32_t *pal = (const uint32_t *)m3ApiOffsetToPtr(v[8]);
+    m3ApiCheckMem(pal, 1024);
+    uint32_t len = 0;
+    const uint8_t *png = orb_blob_get(slot_index(s), (int)v[0], &len);
+    if (!png) m3ApiReturn(ESP_ERR_NOT_FOUND);
+    m3ApiReturn(orb_ui_cv_png8(slot_index(s), h, png, len, (int32_t)v[1], (int32_t)v[2], (int32_t)v[3],
+                               (int32_t)v[4], (int32_t)v[5], (int32_t)v[6], (int32_t)v[7], pal));
+}
+
+/* ---- radar-plan §2.4: the OS maps, cap location ------------------------------------- */
+
+#define MAP_GATE(fail) if (!orb_grant_ok(s->app, CAP_LOCATION)) m3ApiReturn(fail)
+
+m3ApiRawFunction(imp_map_open)                /* i32 map_open(u32 place, const orb_map_view_t *v) — 44 B */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(uint32_t, place);
+    m3ApiGetArgMem(const uint8_t *, v);
+    m3ApiCheckMem(v, 44);
+    MAP_GATE(ORB_MAP_ABSENT);
+    orb_map_req_t r;
+    memcpy(&r, v, sizeof r);
+    m3ApiReturn(orb_map_open(slot_index(s), (int)place, &r));
+}
+
+m3ApiRawFunction(imp_map_ready)               /* i32 map_ready(i32 h) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, h);
+    MAP_GATE(ORB_MAP_ABSENT);
+    m3ApiReturn(orb_map_ready(slot_index(s), h));
+}
+
+m3ApiRawFunction(imp_map_draw)                /* i32 map_draw(i32 cv, i32 h, const u32 pal[16], i32 dx, i32 dy) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, cv);
+    m3ApiGetArg(int32_t, h);
+    m3ApiGetArgMem(const uint32_t *, pal);
+    m3ApiGetArg(int32_t, dx);
+    m3ApiGetArg(int32_t, dy);
+    m3ApiCheckMem(pal, 64);
+    MAP_GATE(ORB_MAP_ABSENT);
+    const uint8_t *ras = orb_map_raster_of(slot_index(s), h);
+    if (!ras) m3ApiReturn(orb_map_ready(slot_index(s), h));
+    uint32_t p[16];
+    memcpy(p, pal, sizeof p);
+    orb_ui_cv_roles(slot_index(s), cv, ras, p, dx, dy);
+    m3ApiReturn(ORB_MAP_READY);
+}
+
+m3ApiRawFunction(imp_map_mark)                /* i32 map_mark(i32 h, u32 i, orb_map_mark_t *out) — 30 B */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, h);
+    m3ApiGetArg(uint32_t, i);
+    m3ApiGetArgMem(uint8_t *, out);
+    m3ApiCheckMem(out, 30);
+    MAP_GATE(ORB_MAP_ABSENT);
+    orb_map_markrec_t m;
+    const int32_t r = orb_map_mark(slot_index(s), h, (int)i, &m);
+    if (r == ORB_MAP_READY) {
+        memcpy(out, &m.x, 2);
+        memcpy(out + 2, &m.y, 2);
+        out[4] = m.kind;
+        out[5] = m.rank;
+        memcpy(out + 6, m.name, 24);
+        out[29] = 0;
+    }
+    m3ApiReturn(r);
+}
+
+m3ApiRawFunction(imp_map_project)             /* i32 map_project(i32 h, i32 lat_e6, i32 lon_e6, i32 *x, i32 *y) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, h);
+    m3ApiGetArg(int32_t, lat);
+    m3ApiGetArg(int32_t, lon);
+    m3ApiGetArgMem(uint8_t *, px);
+    m3ApiGetArgMem(uint8_t *, py);
+    m3ApiCheckMem(px, 4);
+    m3ApiCheckMem(py, 4);
+    MAP_GATE(ORB_MAP_ABSENT);
+    int32_t x = 0, y = 0;
+    const int32_t r = orb_map_project(slot_index(s), h, lat, lon, &x, &y);
+    m3ApiWriteMem32(px, (uint32_t)x);
+    m3ApiWriteMem32(py, (uint32_t)y);
+    m3ApiReturn(r);
+}
+
+m3ApiRawFunction(imp_map_close)               /* void map_close(i32 h) */
+{
+    CALLER();
+    m3ApiGetArg(int32_t, h);
+    orb_map_close(slot_index(s), h);
+    m3ApiSuccess();
+}
+
+m3ApiRawFunction(imp_maps_gen)                /* u32 maps_gen(void) */
+{
+    m3ApiReturnType(uint32_t);
+    CALLER();
+    m3ApiReturn(orb_maps_gen());
+}
+
 m3ApiRawFunction(imp_net_cred)       /* i32 net_cred(const char *id): 1 when that secret is set */
 {
     m3ApiReturnType(int32_t);
@@ -1389,6 +1556,17 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "home_gen",      "i()",       imp_home_gen },
     { "orb", "place",         "i(ii)",     imp_place },
     { "orb", "places_gen",    "i()",       imp_places_gen },
+    { "orb", "net_keep",      "i(i)",      imp_net_keep },
+    { "orb", "blob_len",      "i(i)",      imp_blob_len },
+    { "orb", "blob_free",     "v(i)",      imp_blob_free },
+    { "orb", "cv_png8",       "i(ii)",     imp_cv_png8 },
+    { "orb", "map_open",      "i(ii)",     imp_map_open },
+    { "orb", "map_ready",     "i(i)",      imp_map_ready },
+    { "orb", "map_draw",      "i(iiiii)",  imp_map_draw },
+    { "orb", "map_mark",      "i(iii)",    imp_map_mark },
+    { "orb", "map_project",   "i(iiiii)",  imp_map_project },
+    { "orb", "map_close",     "v(i)",      imp_map_close },
+    { "orb", "maps_gen",      "i()",       imp_maps_gen },
     { "orb", "units",         "i(i)",      imp_units },
     { "orb", "units_gen",     "i()",       imp_units_gen },
     { "orb", "units_pressure", "i()",      imp_units_pressure },
@@ -1711,6 +1889,12 @@ static void wasm_service(orb_app_t *app)
 {
     wasm_slot_t *s = slot_of_app(app);
     if (s && s->rt) (void)wasm_call(s, W_SERVICE, NULL, 0);
+    if (s) {
+        /* radar-plan §2.3/§2.4: an app's kept bodies and maps go 15 min off the glass. */
+        const int64_t now = esp_timer_get_time();
+        orb_blob_note_glass(slot_index(s), s->on_glass, now);
+        orb_map_note_glass(slot_index(s), s->on_glass, now);
+    }
 }
 
 static void beat_cb(lv_timer_t *t)

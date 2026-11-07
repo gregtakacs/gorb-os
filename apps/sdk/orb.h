@@ -292,6 +292,65 @@ static inline int32_t orb_net_get(const char *url, const char *cred)
     return orb_net_request(ORB_GET, url, NULL, NULL, 0, cred);
 }
 
+/* ---- kept bodies (cap "net"; radar-plan §2.3, OS v1.2.20) ------------------------- *
+ * A landed response kept as an OS buffer in PSRAM, named by a slot 0-23: an app's own
+ * memory cannot hold a radar's frames. 768 KB an app; the OS frees them 15 min after the
+ * app leaves the glass. */
+ORB_IMPORT("net_keep")  int32_t  orb_net_keep(uint32_t slot);   /* the landed body -> slot; ORB_OK */
+ORB_IMPORT("blob_len")  uint32_t orb_blob_len(uint32_t slot);   /* 0 = empty or reclaimed */
+ORB_IMPORT("blob_free") void     orb_blob_free(uint32_t slot);
+
+/* An indexed PNG (colour type 3, 1-8 bits, not interlaced) from a kept body, drawn onto a
+ * canvas through the app's 256 ARGB words: alpha blends, 0 leaves the canvas. The source
+ * window [sx, sy] goes to (dx, dy), w x h glass pixels, each source pixel scale x scale. */
+typedef struct {
+    uint32_t slot;
+    int32_t  sx, sy, dx, dy, w, h, scale;
+    const uint32_t *pal;           /* 256 entries, 0xAARRGGBB */
+} orb_png_draw_t;
+ORB_IMPORT("cv_png8") int32_t orb_cv_png8(int32_t cv, const orb_png_draw_t *d);
+
+/* ---- maps (cap "location"; radar-plan §2.4, OS v1.2.20) ---------------------------- *
+ * The map of home (place 0) or a place (1-3), made by Orb Manager and drawn on the orb.
+ * A view renders once in the background (orb_map_ready says when) into what each pixel
+ * IS; orb_map_draw then colours it through the theme's 16 ARGB words every frame, which
+ * costs no render. Two views an app: open the next, draw the old one until it is ready,
+ * then close the old. Re-open when orb_maps_gen moves. */
+enum {
+    ORB_MAP_WATER, ORB_MAP_LAND, ORB_MAP_URBAN, ORB_MAP_LAKE, ORB_MAP_RIVER, ORB_MAP_ROAD2,
+    ORB_MAP_ROAD1, ORB_MAP_STATE, ORB_MAP_BORDER, ORB_MAP_COAST, ORB_MAP_CITY, ORB_MAP_AIRPORT,
+    ORB_MAP_RUNWAY,                                                  /* the roles, 0-12 */
+};
+enum { ORB_MAP_DASH_SOLID, ORB_MAP_DASH_SHORT, ORB_MAP_DASH_LONG, ORB_MAP_DASH_DOT, ORB_MAP_DASH_DASHDOT };
+enum { ORB_MARK_CITY, ORB_MARK_TOWN, ORB_MARK_VILLAGE, ORB_MARK_AIRPORT };
+enum { ORB_MAP_ABSENT = -1, ORB_MAP_NOCARD = -2, ORB_MAP_BAD = -3, ORB_MAP_NOMEM = -4 };
+
+typedef struct {
+    int32_t  radius_m;             /* centre to the glass's edge */
+    int32_t  rot_cdeg;             /* clockwise, hundredths of a degree */
+    uint16_t role_on;              /* bit per role */
+    uint8_t  mark_on;              /* bit per ORB_MARK_* drawn as a dot or a square */
+    uint8_t  pad;
+    uint8_t  width[16];            /* per line role, 1-4 px; 0 = not drawn */
+    uint8_t  dash[16];             /* per line role, ORB_MAP_DASH_* */
+} orb_map_view_t;
+_Static_assert(sizeof(orb_map_view_t) == 44, "the OS copies this view verbatim");
+
+typedef struct {
+    int16_t x, y;                  /* glass pixel; may be off the glass */
+    uint8_t kind, rank;            /* ORB_MARK_*; lower rank is more important */
+    char    name[24];
+} orb_map_mark_t;
+_Static_assert(sizeof(orb_map_mark_t) == 30, "the OS writes this mark verbatim");
+
+ORB_IMPORT("map_open")    int32_t  orb_map_open(uint32_t place, const orb_map_view_t *v);  /* a handle, or <0 */
+ORB_IMPORT("map_ready")   int32_t  orb_map_ready(int32_t h);      /* 1 ready, 0 rendering, <0 */
+ORB_IMPORT("map_draw")    int32_t  orb_map_draw(int32_t cv, int32_t h, const uint32_t pal[16], int32_t dx, int32_t dy);
+ORB_IMPORT("map_mark")    int32_t  orb_map_mark(int32_t h, uint32_t i, orb_map_mark_t *out);  /* best rank first */
+ORB_IMPORT("map_project") int32_t  orb_map_project(int32_t h, int32_t lat_e6, int32_t lon_e6, int32_t *x, int32_t *y);
+ORB_IMPORT("map_close")   void     orb_map_close(int32_t h);
+ORB_IMPORT("maps_gen")    uint32_t orb_maps_gen(void);
+
 /* ---- JSON (free): the OS's streaming tokenizer (D51) ----------------------------- *
  * Begin over the landed network body (buf NULL) or a buffer of the app's own (copied,
  * up to 16 KB); each orb_json_next answers one event with the member key it sits

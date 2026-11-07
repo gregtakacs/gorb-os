@@ -47,6 +47,11 @@ idf_component_register(
         # radar-plan §2.4: the map's vector renderer. Pure C, host-tested as shipped
         # by tools/host_map_raster_test.py.
         "map/orb_map_raster.c"
+        # radar-plan §2.4: the OS maps (views on their own task, the card read under §2.12).
+        "map/orb_map.c"
+        # radar-plan §2.3: the indexed-PNG reader over the ROM's tinfl, and kept bodies.
+        "gfx/orb_png8.c"
+        "app/orb_app_blob.c"
         "menu/menu_view.c"
         "menu/knob_edit.c"
         # §43: the Themes page, an OS menu row (it was the clock app's options page).

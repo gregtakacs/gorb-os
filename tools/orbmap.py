@@ -6,8 +6,11 @@ reader (main/map/orb_map_raster.c) is held to it by tools/host_map_raster_test.p
 R0 prototype: it builds a place's six files from OpenMapTiles vector tiles already on
 disk (decoded with tools/mvt.py), which is what the hub tool will do in the browser.
 
-    python3 tools/orbmap.py build <tiles_dir> <lat> <lon> <out_dir> [name]
+    python3 tools/orbmap.py build <tiles_dir> <lat> <lon> <out_dir> [name | --place N]
     python3 tools/orbmap.py info  <file.orbmap>
+
+--place N names the files as the OS looks them up under /System/Maps (map_name below,
+main/map/orb_map.c's orb_map_file_name): place 0 is home, 1-3 the places.
 
 Layout (little-endian):
   header, 36 B:
@@ -59,6 +62,17 @@ def classify(layer, p, gtype):
     if layer == "aeroway" and c == "runway":
         return RUNWAY, (FILL if gtype == 3 else LINE)
     return None
+
+def e4(e6):
+    """Millionths to ten-thousandths, half away from zero, with C's truncating division."""
+    v = e6 + 50 if e6 >= 0 else e6 - 50
+    return v // 100 if v >= 0 else -((-v) // 100)
+
+
+def map_name(place, lat_e6, lon_e6, z):
+    """The OS's file name for a place's level: "<place>-<lat_e4>_<lon_e4>-z<z>.orbmap"."""
+    return "%d-%d_%d-z%d.orbmap" % (place, e4(lat_e6), e4(lon_e6), z)
+
 
 def world(lat, lon, z):
     n = 256.0 * 2 ** z; s = math.sin(math.radians(max(-85.0, min(85.0, lat))))
@@ -253,11 +267,14 @@ def build(tiles, lat, lon, zoom):
 def main(argv):
     if len(argv) >= 6 and argv[1] == "build":
         tiles, lat, lon, out = argv[2], float(argv[3]), float(argv[4]), argv[5]
-        name = argv[6] if len(argv) > 6 else "map"
+        place = int(argv[7]) if len(argv) > 7 and argv[6] == "--place" else None
+        name = argv[6] if len(argv) > 6 and place is None else "map"
         os.makedirs(out, exist_ok=True)
         for z in range(6, 12):
             buf, raw = build(tiles, lat, lon, z)
-            path = os.path.join(out, "%s-z%d.orbmap" % (name, z))
+            fn = (map_name(place, int(round(lat * 1e6)), int(round(lon * 1e6)), z) if place is not None
+                  else "%s-z%d.orbmap" % (name, z))
+            path = os.path.join(out, fn)
             open(path, "wb").write(buf)
             d = decode(buf); verts = sum(len(r) for _, _, rings in d["features"] for r in rings)
             print("z%d  %8d B  features %5d  vertices %7d (tiles %7d)  marks %3d  %s"

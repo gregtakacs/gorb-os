@@ -73,6 +73,8 @@ type device struct {
 	// moves on every set or clear. Zero value = none set.
 	Places    [3]Place
 	PlacesGen uint32
+	// MapsGen moves on every POST /api/v1/places/maps (orb_maps_bump), from 1.
+	MapsGen uint32
 	// Name is the device's own, and the DEVICE is the authority for it — the
 	// hub's fleet row caches this value rather than owning it. Empty means
 	// unnamed, which the firmware reports as "" and never as a placeholder, so a

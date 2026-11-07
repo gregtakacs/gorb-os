@@ -334,16 +334,18 @@ int orb_map_render(const uint8_t *buf, size_t len, const orb_map_style_t *st,
     }
     for (uint32_t m = 0; m < nm && !r.bad; m++) {
         const uint8_t kind = rb(&r);
-        (void)rb(&r);                                      /* rank: the app's concern */
+        const uint8_t rank = rb(&r);
         const int32_t x = rz(&r), y = rz(&r);
         const uint8_t n = rb(&r);
         if ((size_t)(r.end - r.p) < n) { r.bad = 1; break; }
+        const char *name = (const char *)r.p;
         r.p += n;
+        float ox, oy;
+        tx(&t, x, y, &ox, &oy);
+        if (st->mark) st->mark(st->mark_ctx, kind, rank, ox, oy, name, n);
         if (kind > 7 || !(st->mark_on >> kind & 1)) continue;
         const uint8_t role = kind == ORB_MAP_MARK_AIRPORT ? ORB_MAP_AIRPORT : ORB_MAP_CITY;
         if (!(st->role_on >> role & 1)) continue;
-        float ox, oy;
-        tx(&t, x, y, &ox, &oy);
         const int cx = (int)floorf(ox + 0.5f), cy = (int)floorf(oy + 0.5f);
         if (role == ORB_MAP_AIRPORT) {
             for (int dy = -2; dy <= 2; dy++) if ((unsigned)(cy + dy) < W) span(raster, cy + dy, cx - 2, cx + 3, role);

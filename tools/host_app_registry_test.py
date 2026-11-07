@@ -211,6 +211,7 @@ const orb_app_iface_t orb_wasm_iface = {
 static bool g_menu_long_taken;
 bool menu_view_opt_long(void) { T("menu_long"); return g_menu_long_taken; }
 void menu_view_switcher(const orb_app_t *from, int step) { (void)from; (void)step; T("menu_switcher"); }
+void menu_view_open_settings(void) { T("menu_settings"); }
 /* orb_app_share_gate reaches the share window's claim through this; one recorder,
  * answering false, the same shape menu_long carries. */
 static bool g_share_gate_claim;

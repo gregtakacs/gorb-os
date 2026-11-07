@@ -618,7 +618,11 @@ def lint():
     # P4a added the installed tier to every response — the no-card bodies now
     # open the installed array instead of closing the apps array, and the
     # stream still ends in the terminator chunk.
-    assert '"{\\"mounted\\":false,\\"count\\":-1,\\"apps\\":[],\\"installed\\":[' in nn
+    # 2026-11-07: the no-card body carries the reason (orb_sd_why) between its
+    # mounted word and its count, sent as three chunks.
+    assert '"{\\"mounted\\":false,\\"why\\":\\""' in nn
+    assert 'orb_sd_why()' in nn
+    assert '"\\",\\"count\\":-1,\\"apps\\":[],\\"installed\\":[' in nn
     assert '{\\"mounted\\":true,\\"card\\":\\"%s\\",\\"count\\":-1,\\"apps\\":[],\\"installed\\":[' in nn
     # P4a's invariant: the installed tier is streamed on EVERY path — card or
     # no card, folder or none. An installed app's existence does not depend on

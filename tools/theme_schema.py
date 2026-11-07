@@ -42,7 +42,7 @@ call sites:
 # ---------------------------------------------------------------------------
 CLK_COMP_MAX   = 16    # complications: windows, strips, rings, flares
 CLK_AUX_MAX    = 8     # FORMAT 2's pointer table (retired with the dialect)
-CLK_ROW_MAX    = 32    # D42: the AUX rows, every hand and pointer (orb_clock3.c); 24 until the
+CLK_ROW_MAX    = 64    # D42: the AUX rows, every hand and pointer (orb_clock3.c); 32 until plan §53, 24 until the
                        # tracker's plane pool (flight-tracker-design §11.2)
 CLK_BANK_MAX   = 256   # shared RGBA sprites: ring slots, strip glyphs, flares
 CLK_STRIP_GLYPHS = 8   # glyph image objects created per strip
@@ -829,7 +829,7 @@ def clock_slot_name(cls, slot):
             return n
     return None
 
-ELEM_MAX        = 64   # rows one app's table may carry (the clock: 2 + 24 + 16 + 1 + 13)
+ELEM_MAX        = 128  # rows one app's table may carry (plan §53: 64 moving rows, fonts, sounds, plates)
 ELEM_FRAMES_MAX = 1024  # bound on frame0+n_frames (av-kit's busiest bank uses 208; a stage
                         # with four fonts of 100 glyphs and a 49-frame plane pool ~460,
                         # theme-text-plan T6). The device bounds rows by the catalogue.

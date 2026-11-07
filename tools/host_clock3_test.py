@@ -855,8 +855,8 @@ REFUSALS = (
                                                           "vmax": 0, "cadence": 0,
                                                           "end": 0}),
      "every hand, shadow and carriage", None),
-    ("a row at slot 32", lambda e, s, p, a: add_row(e, p, a, 32), "moving rows",
-     "seats 32 moving rows"),
+    ("a row at slot 64", lambda e, s, p, a: add_row(e, p, a, 64), "moving rows",
+     "seats 64 moving rows"),
     ("a plate at slot 2", lambda e, s, p, a: _glass(e).update({"slot": 2}),
      "one plate and one overlay", None),
     ("no plate row", lambda e, s, p, a: e.remove(_plate(e)), "nothing to restore from", None),
@@ -1098,7 +1098,7 @@ def rows_battery(exe, base):
     ck(rc == 0 and verdict is None, "the station dial was refused: %r %r" % (out[:200], verdict))
     # the cap: slot 23 is the last legal row
     path, verdict = forge(base, _new_row(slot=23) if False else
-                          (lambda e, s, p, a: add_row(e, p, a, 23)))
+                          (lambda e, s, p, a: add_row(e, p, a, ts.CLK_ROW_MAX - 1)))
     rc, out, err = run(exe, "--dump3f", path)
     ck(rc == 0, "a row at the last legal slot was refused: %r" % out[:200])
     # theme-text-plan §2: two fonts and a label reading them, projected as a text row
@@ -1857,7 +1857,7 @@ MUTANTS = (
     ("the plate's existence", "if (at_plate[0] < 0)", "if (0 && at_plate[0] < 0)", "no plate row"),
     ("the hand class's refusal", "            case CLS_HAND:\n            case CLS_SPRITE:\n",
      "            case CLS_SPRITE:\n", "a hand row"),
-    ("the row cap", "if (e.slot >= CLK_ROW_MAX)", "if (0)", "a row at slot 32"),
+    ("the row cap", "if (e.slot >= CLK_ROW_MAX)", "if (0)", "a row at slot 64"),
     ("the retired scalars", "if (U(sec, RETIRED_W[k]))", "if (0)", "a retired tick_rate"),
     ("the shape bound", "if (e->kind >= CLK_SHAPE__MAX)", "if (0)", "a shape past the vocabulary"),
     ("the drum's strip rule", "if (e->dy != (int16_t)e->h && e->dy != -(int16_t)e->h)", "if (0)", "a drum rolling less than its strip"),

@@ -6994,3 +6994,51 @@ short).
 Seen on Gold: Skeleton's glass draws as before, and the Themes page shows each preview
 round.
 
+## 53 — Sixty-four rows a theme — 2026-11-06
+
+**Owner, 2026-11-06.** Weather's themes use all 32 rows a theme could carry, and the
+clock, animated icons and a particle overlay the owner wants all need rows. Raise it.
+
+**What a row costs** (measured from the firmware's symbols and struct sizes). The tables
+are sized by the ceiling, so an empty row costs what a used one does; a row that draws adds
+an LVGL widget, a label plane if it is a label, and its paint time every frame.
+
+| Where | Per row |
+|---|---|
+| internal RAM | the commit's paint job 100 B, pre-paint's key 44 B, the pose, frame and opacity slots and the drum/pick tables ~16 B |
+| PSRAM | row state 120 B, the layer table 110 B, a label's text 202 B, the theme's row record 64 B |
+| PSRAM, sized to a commit's jobs | the ink-span pose cache, 3.7 KB an entry |
+
+Internal RAM is what this board runs short of (Gold had 19.9 KB free, 7.4 KB the largest
+block; a past commit records 320 B of .bss crash-looping it), so the two big per-row
+tables moved first: `s_lay_jc` (orb_sched.c) and `s_pp_key`/`s_pp_fast` (orb_gfx.c) are
+`EXT_RAM_BSS_ATTR`. Then `CLK_ROW_MAX` 64 (both `clk_types.h`), `ORB_LAYER_MAX` and
+`PP_JOBS` 64, the commit's span pointers sized by `PP_JOBS` (three literal 32s), the pose
+cache 40 to 72 entries, and the schema and baker: `CLK_ROW_MAX` 64, `ELEM_MAX` 64 to 128
+(the device's own table bound is 111).
+
+**Measured on Gold** (Skeleton by `debug/dial`, 15 s; Flights by its per-second line, live
+traffic):
+
+| | internal free | Skeleton | Flights |
+|---|---|---|---|
+| before | 19.9 KB | 5.87 fps, 88 ms a commit | 20-21 fps |
+| job tables in PSRAM | 26.1 KB | 5.87 fps, 92-93 ms | 20 fps |
+| 64 rows | 25.6 KB | 5.87-5.93 fps, 90-91 ms | 20-21 fps |
+
+PSRAM free 5.2 MB. Nothing that ships uses more than 32 rows yet; the host suites carry
+the new edges (a row at slot 63 projects, one at 64 refuses, in the reader, the schema and
+the baker alike). OS v1.2.14; clock v1.2.27 (its wasm sizes tables by the ceiling).
+
+**Found on the way.**
+
+- The disc glass (§52) had turned L4 off on Skeleton: its layer row carried colour offset
+  0, the layer table's "unset" signature, so the table refused it and the dial fell to
+  the LVGL path. The square now sits 16 B into its buffer, as a label's plane does
+  (`OVERLAY_SQ_OFF`): 7 rows, none refused, L4 on.
+- Weather's hour ring left a bar's outer end lit or unlit after paging to the next twelve
+  (the owner's report). A row whose opacity changes now marks its whole box rather than
+  its ink spans; why the spans under-cover a picked row after a frame change is not yet
+  found. Marking the box on a frame change too was tried and cost Flights 3-4 fps (17
+  against 20-21 on the same traffic), so only the opacity change takes it.
+

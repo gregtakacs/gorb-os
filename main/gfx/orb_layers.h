@@ -104,10 +104,11 @@ typedef struct orb_layer_desc {
  * heap, allocated on the first add this app actually claims, so the raised
  * ceiling costs nothing on a row that never bakes and never adds.
  * Thirty-two since theme-text-plan T3 (2026-11-04): the tracker's arm, 15 plane
- * rows, two marker rings and four labels are 22, and a theme's moving rows cap at
- * CLK_ROW_MAX (32) already. The cost is the commit's job array (orb_sched.c), one
- * gfx_paint_ctx_t per row of internal .bss. */
-#define ORB_LAYER_MAX 32
+ * rows, two marker rings and four labels are 22. Sixty-four since plan §53
+ * (2026-11-06), with CLK_ROW_MAX: the commit's job array (orb_sched.c, a 100 B
+ * gfx_paint_ctx_t a row) and pre-paint's keys moved to PSRAM .bss for it, so a row
+ * costs internal RAM ~16 B, not ~160. */
+#define ORB_LAYER_MAX 64   /* plan §53: CLK_ROW_MAX's 64, the job tables in PSRAM */
 
 /* The job-array ceiling a commit pass sizes itself to. `orb_layers_jobs()` emits
  * at most one job per row (a row is skipped or emitted, never expanded), and the

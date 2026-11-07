@@ -29,8 +29,8 @@ from theme_schema import SOURCES, SHAPES, ENDS, CADENCES
 # or None when both must accept. A row is a jumping minute hand unless it says otherwise;
 # "pick": n frames and no frame time; "car": n frames with one; "twin": a shadow twin.
 ROW_CASES = [
-    ("the 32nd seat, ptr31",                  [{"slot": 31}], None),
-    ("a 33rd seat, ptr32",                    [{"slot": 32}], "seats 32 moving rows"),
+    ("the 64th seat, ptr63",                  [{"slot": 63}], None),
+    ("a 65th seat, ptr64 (plan §53)",         [{"slot": 64}], "seats 64 moving rows"),
     ("a picked row of 2 frames",              [{"slot": 0, "pick": 2}], None),
     ("a picked row of 64 frames",             [{"slot": 0, "pick": 64}], None),
     ("a picked row of 65 frames",             [{"slot": 0, "pick": 65}], "frames to pick from"),

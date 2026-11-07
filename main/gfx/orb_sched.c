@@ -19,6 +19,7 @@
  * on the glass.
  */
 
+#include "esp_attr.h"           /* EXT_RAM_BSS_ATTR: the commit's job array */
 #include "orb_disc.h"   /* a disc plate, expanded at bind */
 #include "orb_sched.h"
 
@@ -1028,12 +1029,13 @@ void orb_sched_ink_px_add(uint32_t n)
 #endif
 }
 
-/* The commit hook's job array. Static rather than per-call stack: with the
- * table's ceiling at ORB_LAYER_MAX (32) it is ~3 KB of the LVGL task's stack
- * per flush, and that stack is not ours to spend — the same reasoning
- * orb_stage.c's retired hook gave its own list. One caller (the flush hook
- * below), on one task (the LVGL one), exactly as that retired hook ran. */
-static gfx_paint_ctx_t s_lay_jc[ORB_LAYER_JOB_MAX];
+/* The commit hook's job array. Static rather than per-call stack: a paint context is
+ * 100 B, so the table's ceiling would be KBs of the LVGL task's stack per flush, and
+ * that stack is not ours to spend — the same reasoning orb_stage.c's retired hook gave
+ * its own list. One caller (the flush hook below), on one task (the LVGL one), exactly
+ * as that retired hook ran. PSRAM .bss since the row ceiling went past 32 (plan §53):
+ * internal RAM is what this board runs out of, and the contexts stay in cache. */
+EXT_RAM_BSS_ATTR static gfx_paint_ctx_t s_lay_jc[ORB_LAYER_JOB_MAX];
 
 /* ---- the layer-table commit pass (Migration 2, P8 Commits 2-4) -----------
  *

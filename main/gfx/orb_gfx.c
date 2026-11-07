@@ -669,7 +669,7 @@ void gfx_blend_px(uint16_t *d, uint16_t c, uint8_t a, int bmode)
  * first, painted through a plane's spans: gone, or slivers where the two crossed (Bronze,
  * 2026-11-06, 399,291 escapes a commit in spans=2). Room for a commit's 32 jobs and the
  * marks between commits, and a commit's own entries are pinned (spc_t.gen). */
-#define SPC_N       40
+#define SPC_N       72   /* plan §53: a commit's 64 jobs, and the marks between commits */
 
 typedef struct {
     const uint8_t *alp;
@@ -931,7 +931,7 @@ static void paint_spanned(const gfx_paint_ctx_t *pc, int32_t y, int32_t xa, int3
 
 #if CONFIG_ORB_DEBUG_HTTP
 /* ---- pre-paint (orb_gfx.h, plan §49.8) ------------------------------------- */
-#define PP_JOBS 32
+#define PP_JOBS 64   /* ORB_LAYER_JOB_MAX: a commit's jobs (plan §53) */
 #define PP_RECTS 8
 #define PP_FAST_MAX 8                 /* separate live spans a row: the seconds hands and their twins */
 #define PP_FAST_GAP 8                 /* px: closer spans merge into one live pass */
@@ -946,9 +946,10 @@ static volatile int s_pp_mode;
 static uint16_t *s_pf, *s_pb, *s_pfn, *s_pbn;       /* wire order, stride CLK_SCR_W */
 static bool      s_pp_valid;
 static uint32_t  s_pp_gen;                            /* bumps on every invalidation  */
-static ppkey_t   s_pp_key[PP_JOBS];
+/* PSRAM .bss with the row ceiling past 32 (plan §53): one key a job, read once a commit. */
+EXT_RAM_BSS_ATTR static ppkey_t s_pp_key[PP_JOBS];
 static int       s_pp_nj = -1;
-static bool      s_pp_fast[PP_JOBS];
+EXT_RAM_BSS_ATTR static bool    s_pp_fast[PP_JOBS];
 static int       s_pp_low;                            /* the lowest fast job            */
 /* §49.15: each fast job's zone, the disc its ink sweeps (pivot + farthest corner). The planes
  * cut at the lowest fast job whose zone covers a pixel, not the lowest anywhere: Modern's
@@ -1354,7 +1355,7 @@ static void pp_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas,
         int nf = 0;
         for (int i = s_pp_low; i < nj; i++) {
             if (!s_pp_fast[i]) continue;
-            const gfx_spans_t *sp = (i < 32) ? bsp[i] : NULL;
+            const gfx_spans_t *sp = (i < PP_JOBS) ? bsp[i] : NULL;
             int32_t a, b;
             if (sp) { if (y < sp->y0 || y > sp->y1) continue; a = sp->x0[y]; b = sp->x1[y]; }
             else { if (y < jc[i].by1 || y > jc[i].by2) continue; a = jc[i].bx1; b = jc[i].bx2; }
@@ -1445,7 +1446,7 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
     if (!fb) return;
 #if CONFIG_ORB_DEBUG_HTTP
     /* The span bench: each rotated job's spans, resolved once per commit. */
-    const gfx_spans_t *bsp[32] = { 0 };
+    const gfx_spans_t *bsp[PP_JOBS] = { 0 };
     const int bmode = s_bx_mode;
     const int64_t bx_t0 = esp_timer_get_time();
     static gfx_paint_ctx_t jl[32];          /* the nearest-shadow and AA arms' own job copy */
@@ -1459,7 +1460,7 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
         jc = jl;
     }
     s_spc_gen++;                            /* a new commit: the pose cache's pins start over */
-    if (bmode) for (int i = 0; i < nj && i < 32; i++) if (!gfx_spans_of(&jc[i], &bsp[i])) bsp[i] = NULL;
+    if (bmode) for (int i = 0; i < nj && i < PP_JOBS; i++) if (!gfx_spans_of(&jc[i], &bsp[i])) bsp[i] = NULL;
     s_bx_commits++;
     if (s_pp_mode && bmode && !s_ko_on && nj <= PP_JOBS) {
         pp_commit(nj, jc, canvas, fb, bsp);
@@ -1552,7 +1553,7 @@ void gfx_commit(int nj, const gfx_paint_ctx_t *jc, const uint16_t *canvas)
                                 if (xa < tx) xa = tx;
                                 if (xb > te) xb = te;
 #if CONFIG_ORB_DEBUG_HTTP
-                                if (i < 32 && bsp[i]) {
+                                if (i < PP_JOBS && bsp[i]) {
                                     paint_spanned(&jc[i], y, xa, xb, s_band[r], bsp[i]);
                                     continue;
                                 }

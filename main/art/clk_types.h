@@ -91,7 +91,7 @@ enum {
 };
 
 /* D42: the clock's moving rows, and the most frames the one animated row carries. */
-#define CLK_ROW_MAX   32   /* theme_schema.CLK_ROW_MAX */
+#define CLK_ROW_MAX   64   /* theme_schema.CLK_ROW_MAX */
 
 /* theme-pool-plan §2.6: the most frames a row whose frames the app picks may carry (a
  * moving row with frames and no frame time). The tracker's planes: 7 shapes x 7 bands. */

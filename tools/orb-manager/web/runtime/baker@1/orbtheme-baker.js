@@ -2086,7 +2086,7 @@
   // The pre-D32 width, the floor a derived row stride is refused below
   // (theme_schema.ELEMENT_WORDS_MIN; orb_bundle.c's ORB_BUNDLE_ELEM_WORDS_MIN).
   var ELEMENT_WORDS_MIN = 17;
-  var ELEM_MAX = 64, ELEM_ORDER_N = 64, ELEM_FRAMES_MAX = 1024;   // theme_schema.ELEM_FRAMES_MAX
+  var ELEM_MAX = 128, ELEM_ORDER_N = 64, ELEM_FRAMES_MAX = 1024;   // theme_schema.ELEM_FRAMES_MAX
   var EF_ALPHA = 1, EF_LOOP = 2, EF_OS_ADV = 4, EF_HIDDEN = 8;
   // §37: a looping delta plate carries ONE sprite past its own frame window — the rect
   // that returns the finished canvas to the keyframe — and claims it with this bit. The
@@ -2192,7 +2192,7 @@
   var END_WRAP = 0, END_FLYBACK = 1, END_HOLD = 2;
   var DIGITS = ['whole', 'units', 'tens', 'hundreds', 'thousands'];   // D43 P5d.3: a year's four
   var TURN_10 = 3600, PANEL_PX = 466;
-  var CLK_ROW_MAX = 32;                    // theme_schema.CLK_ROW_MAX (theme-pool-plan: 24 until the plane pool)
+  var CLK_ROW_MAX = 64;                    // theme_schema.CLK_ROW_MAX (theme-pool-plan: 24 until the plane pool)
   var ORB_LAYER_MAX3 = 32;                 // main/gfx/orb_layers.h ORB_LAYER_MAX: drawn rows per app (theme-text T3)
   // theme-text-plan §2.1-2.2 (theme_schema.FONT_* / check_label / check_fonts): a font is a
   // TEXT row of glyph frames; a label an AUX text row naming its fonts a nibble a tone.

@@ -605,7 +605,8 @@ int main(void)
     }
     ck("cap: the whole table is live", orb_layers_count(&K) == ORB_LAYER_MAX,
        orb_layers_count(&K));
-    ck("cap: the job ceiling is the table", ORB_LAYER_JOB_MAX == 32, ORB_LAYER_JOB_MAX);
+    ck("cap: the job ceiling is the table", ORB_LAYER_JOB_MAX == ORB_LAYER_MAX && ORB_LAYER_MAX == 64,
+       ORB_LAYER_JOB_MAX);
     g_commit_calls = 0;
     int nk = hook_mirror(&K, THEME, CANVAS);
     ck("cap: one commit carries every row",

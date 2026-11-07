@@ -363,18 +363,23 @@ static lv_obj_t *make_layer(const clk_sprite_t *spr, lv_image_dsc_t *dsc, bool a
  * into an RGB565A8 square here, so the LVGL layer and the L4 glass row both read a square
  * (corners clear). One buffer, kept across binds, refilled by each. */
 static uint8_t *s_overlay_sq;
+/* The square sits this far into its buffer: a layer row's colour offset of 0 is the
+ * table's "unset" signature (orb_layers.c desc_ok), so the pixels start past it, as a
+ * label's do at LABEL_PLANE_OFF. */
+#define OVERLAY_SQ_OFF 16u
 
 static const uint8_t *overlay_square(void)
 {
     if (!clk_theme.overlay_disc) return NULL;
     if (!s_overlay_sq)
-        s_overlay_sq = heap_caps_malloc((size_t)CLK_SCR_W * CLK_SCR_H * 3u,
+        s_overlay_sq = heap_caps_malloc(OVERLAY_SQ_OFF + (size_t)CLK_SCR_W * CLK_SCR_H * 3u,
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_overlay_sq) {
         ESP_LOGE(TAG, "disc glass: no PSRAM for its square; the glass is left off");
         return NULL;
     }
-    orb_disc_expand_masked(blob() + clk_theme.overlay.color_off, s_overlay_sq, CLK_SCR_W);
+    orb_disc_expand_masked(blob() + clk_theme.overlay.color_off, s_overlay_sq + OVERLAY_SQ_OFF,
+                           CLK_SCR_W);
     return s_overlay_sq;
 }
 
@@ -1461,11 +1466,20 @@ static void rows_update(void)
         const bool inked = car && prev != ROW_HIDDEN && a != ROW_HIDDEN &&
                            !ox[i] && !oy[i] && !st->ox && !st->oy &&
                            tourbillon_ink_mark((int)s_tourb_shown, prev, a);
+        /* A new opacity marks the row's whole box at both poses, never its ink spans.
+         * Weather's hour bars (2026-11-06, Gold): once the ring paged to the next twelve
+         * and the bars took new frames, a bar dimmed or lit only along its inner part,
+         * its outer end left as it was. Spans off (debug/dial spans=0) and box marks on
+         * the opacity change both clear it; why the spans under-cover a picked row after
+         * a frame change is not yet found. Only the opacity change takes the box: a
+         * frame change on the box cost Flights 3-4 fps (its plane rows change frames
+         * nearly every tick, 17 fps against 20-21 on the same traffic). */
         if (!inked) {
-            if (prev != ROW_HIDDEN && !ROW_MARK_SPANS(i, prev, st->ox, st->oy)) {
+            const bool whole = ochg;
+            if (prev != ROW_HIDDEN && (whole || !ROW_MARK_SPANS(i, prev, st->ox, st->oy))) {
                 row_mark_box(i, prev, st->ox, st->oy, &u); have = true;
             }
-            if (a != ROW_HIDDEN && !ROW_MARK_SPANS(i, a, ox[i], oy[i])) {
+            if (a != ROW_HIDDEN && (whole || !ROW_MARK_SPANS(i, a, ox[i], oy[i]))) {
                 lv_area_t nn;
                 row_mark_box(i, a, ox[i], oy[i], &nn);
                 if (have) gfx_area_union(&u, &nn); else { u = nn; have = true; }
@@ -1872,7 +1886,8 @@ static void clock_layers_build(orb_app_t *self)
         if (role == CLK_ROLE_GLASS && clk_theme.overlay_disc) {
             /* the expanded disc: this table may be built before the glass widget is */
             d.plane = s_overlay_sq ? s_overlay_sq : overlay_square();
-            d.art.off = 0;
+            d.art.off = OVERLAY_SQ_OFF;
+            d.art.bytes = (uint32_t)CLK_SCR_W * CLK_SCR_H * 3u;
         }
         if (gidx != 0xFFu && pick_cls[k] == ORB_ASSET_AUX && s_row && s_row[gidx].tplane) {
             d.plane = s_row[gidx].tplane;      /* a label: the plane the stage composes */
@@ -2195,7 +2210,7 @@ esp_err_t stage_init(orb_app_t *self)
     if (clk_theme.overlay_disc) {
         const uint8_t *sq = overlay_square();
         clk_sprite_t ov = clk_theme.overlay;
-        ov.color_off = 0;                    /* the square's own start */
+        ov.color_off = OVERLAY_SQ_OFF;       /* the square, inside its buffer */
         s_overlay = sq ? make_layer_at(&ov, &s_overlay_dsc, false, sq) : NULL;
     } else {
         s_overlay = make_layer(&clk_theme.overlay, &s_overlay_dsc, false);

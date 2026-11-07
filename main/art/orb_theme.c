@@ -1051,7 +1051,7 @@ static int card_open_verified_slug3(const char *app_slug, const char *stem,
     if (!orb_app_find_slug(app_slug)) { *why = "no installed app wears that theme"; return -1; }
     const orb_file_src_t *src = orb_files_src(app_slug, "themes");
     if (!src) src = &s_any_themes_src;
-    if (orb_sd_ensure_mounted() != ESP_OK) { *why = "no card in the socket"; return -1; }
+    if (orb_sd_ensure_mounted() != ESP_OK) { *why = orb_sd_why(); return -1; }
 
     resolve3_t r = { .want = stem, .found = false, .verified = false };
     if (orb_files_walk(src, resolve3_entry, &r, NULL) < 0) { *why = "no card in the socket"; return -1; }
@@ -2164,6 +2164,15 @@ static int pool_live_entry(void)
     return k >= 0 ? k : (s_pool->n ? 0 : -1);
 }
 
+bool orb_theme_pool_stem(const char *slug, char *out, size_t outsz)
+{
+    if (!slug || !out || !outsz || !s_pool) return false;
+    const int k = orb_pool_find(s_pool, slug);
+    if (k < 0) return false;
+    theme_stem(slug, s_pool->e[k].name, out, outsz);
+    return true;
+}
+
 bool orb_theme_has(const char *slug)
 {
     return slug && s_pool && orb_pool_find(s_pool, slug) >= 0;
@@ -3147,7 +3156,7 @@ esp_err_t orb_theme_upload_recommit(const char *token, const char **why,
     }
     const orb_file_src_t *src = theme_src();
     if (!src) { *why = "no \"themes\" file source declared"; return ESP_ERR_NOT_FOUND; }
-    if (orb_sd_ensure_mounted() != ESP_OK) { *why = "no card in the socket"; return ESP_ERR_NOT_FOUND; }
+    if (orb_sd_ensure_mounted() != ESP_OK) { *why = orb_sd_why(); return ESP_ERR_NOT_FOUND; }
     if (ensure_chunk() != ESP_OK) { *why = "out of memory for the card read buffer"; return ESP_ERR_NO_MEM; }
 
     char tmp[ORB_SD_PATH_MAX];

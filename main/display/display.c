@@ -403,6 +403,14 @@ static int64_t           s_ring_returned_us;
  * lvgl_flush_cb folds them into s_dirty_row so a mark made in tick context,
  * before the frame's first chunk arrives, still rides this frame's band set. */
 static uint8_t s_push_row[SCREEN_HEIGHT];
+static volatile bool s_glass_held;   /* display_glass_hold: the carousel owns the panel */
+static volatile uint32_t s_held_frames; /* LVGL frames that reached the mirror while held */
+#if CONFIG_ORB_DEBUG_HTTP
+/* While the glass is held, the mirror is not the glass: the direct capture reads this
+ * copy of the last display_fx_frame instead, so a bench grab shows the carousel. */
+static uint16_t *s_fx_shadow;
+static bool      s_fx_shadow_next;   /* copy only the next frame: a settled one */
+#endif
 
 /* Rows the LVGL chunk path mirrored into s_fb THIS frame (LVGL rendered them
  * itself). The clock's commit-time flush gate must never un-dirty such a
@@ -1039,7 +1047,11 @@ static void capture_maybe_copy(void)
 {
     if (s_cap_state != CAP_ARMED || !s_cap_buf) return;
     const int64_t t0 = esp_timer_get_time();
+#if CONFIG_ORB_DEBUG_HTTP
+    memcpy(s_cap_buf, (s_glass_held && s_fx_shadow) ? s_fx_shadow : s_fb, s_cap_bytes);
+#else
     memcpy(s_cap_buf, s_fb, s_cap_bytes);
+#endif
     s_cap_last_us = (uint32_t)(esp_timer_get_time() - t0);
     s_cap_seq     = s_bench_frames;   /* frames retired BEFORE this one went out */
     s_cap_torn    = false;
@@ -1138,6 +1150,15 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area,
              * picture of a whole displayed frame rather than of a screenshot
              * race. Deliberately AFTER the hook for that reason. */
             capture_maybe_copy();
+            /* The carousel holds the glass (display_glass_hold): the frame stays in the
+             * mirror, current for the release, and nothing reaches the panel the
+             * carousel is drawing on. Its rows are re-sent whole at the release. */
+            if (s_glass_held) {
+                s_held_frames++;
+                s_last_pending = false;
+                lv_display_flush_ready(disp);
+                return;
+            }
             const int64_t t_te = esp_timer_get_time();
             present_wait();
             s_bench_te_us += (uint64_t)(esp_timer_get_time() - t_te);
@@ -1672,7 +1693,11 @@ esp_err_t display_capture_direct(uint32_t *seq)
     const esp_err_t e = capture_stage();
     if (e != ESP_OK) return e;
     const int64_t t0 = esp_timer_get_time();
+#if CONFIG_ORB_DEBUG_HTTP
+    memcpy(s_cap_buf, (s_glass_held && s_fx_shadow) ? s_fx_shadow : s_fb, s_cap_bytes);
+#else
     memcpy(s_cap_buf, s_fb, s_cap_bytes);
+#endif
     s_cap_last_us = (uint32_t)(esp_timer_get_time() - t0);
     s_cap_seq     = s_bench_frames;
     s_cap_torn    = true;
@@ -1903,8 +1928,42 @@ void display_bench_reset(void)
     s_bench_dma_us         = 0;
 }
 
+/* ---- the glass hold (display.h) --------------------------------------------
+ * While held, LVGL frames (and the stage's commit hook inside them) land in the
+ * mirror and stop there; display_fx_frame is the only thing on the panel. The
+ * release marks every row for the next frame and asks LVGL for one, so whatever
+ * the mirror holds by then — the app the carousel opened — replaces the
+ * carousel's last frame whole. LVGL task only. */
+void display_glass_hold(bool on)
+{
+    if (s_glass_held == on) return;
 #if CONFIG_ORB_DEBUG_HTTP
-/* ---- whole-frame push for the transition bench (display.h) ----------------
+    if (on && !s_fx_shadow)
+        s_fx_shadow = heap_caps_malloc((size_t)SCREEN_WIDTH * SCREEN_HEIGHT * 2,
+                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
+    s_glass_held = on;
+    if (!on) {
+        memset(s_push_row, 1, sizeof(s_push_row));
+        lv_obj_invalidate(lv_screen_active());
+    }
+}
+
+bool display_glass_held(void) { return s_glass_held; }
+uint32_t display_held_frames(void) { return s_held_frames; }
+
+/* The copy costs ~10 ms a frame, a whole refresh: only the frames the carousel says
+ * have settled are kept for a bench grab. */
+void display_fx_shadow_next(bool on)
+{
+#if CONFIG_ORB_DEBUG_HTTP
+    s_fx_shadow_next = on;
+#else
+    (void)on;
+#endif
+}
+
+/* ---- whole-frame push outside LVGL (display.h) -----------------------------
  *
  * The tile path of dma_dirty_bands_locked() with the source swapped: instead of
  * memcpy out of s_fb, each slab is composed straight into the ring buffer it
@@ -1913,15 +1972,42 @@ void display_bench_reset(void)
  * counted past the tile it last carried), same FIFO proof. s_last_pending stays
  * false for the whole frame, so the trans-done ISR never mistakes a bench slab
  * for the last band of an LVGL frame and calls flush_ready on nobody's behalf. */
+static esp_err_t fx_frame(display_fx_compose_t compose, void *ctx, bool te,
+                          display_fx_stats_t *st, bool wait);
+
 esp_err_t display_fx_frame(display_fx_compose_t compose, void *ctx, bool te,
                            display_fx_stats_t *st)
 {
+    return fx_frame(compose, ctx, te, st, true);
+}
+
+/* The carousel's frame: never waits out a ring the card has borrowed. A frame that
+ * cannot go now answers ESP_ERR_NOT_FINISHED and the caller draws it on its next poll;
+ * waiting here held the router's poll, and the knob with it, for up to 3 s while the
+ * hub read the card (Bronze, 2026-11-07). */
+esp_err_t display_fx_frame_try(display_fx_compose_t compose, void *ctx, bool te,
+                               display_fx_stats_t *st)
+{
+    return fx_frame(compose, ctx, te, st, false);
+}
+
+static esp_err_t fx_frame(display_fx_compose_t compose, void *ctx, bool te,
+                          display_fx_stats_t *st, bool wait)
+{
     if (!s_panel || !compose || !st) return ESP_ERR_INVALID_ARG;
     memset(st, 0, sizeof *st);
+    if (!wait) {
+        if (s_ring_parked && s_ring_loan == 0 && ring_refund_due()) {
+            if (s_ring_mux) xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+            if (s_ring_parked && s_ring_loan == 0 && ring_refund() == ESP_OK) s_ring_returned_us = 0;
+            if (s_ring_mux) xSemaphoreGive(s_ring_mux);
+        }
+        if (s_ring_parked || s_band_inflight > 0 || s_last_pending) return ESP_ERR_NOT_FINISHED;
+    }
     /* A card read just before the run (the preview) lends the ring and the flush
      * path only re-funds it after the network's window. Wait that window out and
      * re-fund here, as the flush path would: this is the LVGL task too. */
-    for (int64_t w0 = esp_timer_get_time(); s_ring_parked && esp_timer_get_time() - w0 < 3000000; ) {
+    for (int64_t w0 = esp_timer_get_time(); wait && s_ring_parked && esp_timer_get_time() - w0 < 3000000; ) {
         if (s_ring_loan == 0 && ring_refund_due()) {
             if (s_ring_mux) xSemaphoreTake(s_ring_mux, portMAX_DELAY);
             if (s_ring_parked && s_ring_loan == 0 && ring_refund() == ESP_OK) s_ring_returned_us = 0;
@@ -1967,6 +2053,11 @@ esp_err_t display_fx_frame(display_fx_compose_t compose, void *ctx, bool te,
         const int64_t c0 = esp_timer_get_time();
         compose(row, rows, s_tile[b], ctx);
         st->compose_us += (uint32_t)(esp_timer_get_time() - c0);
+#if CONFIG_ORB_DEBUG_HTTP
+        if (s_glass_held && s_fx_shadow && s_fx_shadow_next)
+            memcpy(s_fx_shadow + (size_t)row * SCREEN_WIDTH, s_tile[b],
+                   (size_t)rows * SCREEN_WIDTH * 2);
+#endif
         s_bench_pix += (uint64_t)SCREEN_WIDTH * (uint32_t)rows;
         s_bench_chunks++;
         if (esp_lcd_panel_draw_bitmap(s_panel, 0, row, SCREEN_WIDTH, row + rows,
@@ -1988,7 +2079,6 @@ out:
     if (s_ring_mux) xSemaphoreGive(s_ring_mux);
     return e;
 }
-#endif /* CONFIG_ORB_DEBUG_HTTP */
 
 /* Defined after wait_for_te and the TE witness state (s_te_edge_us, s_te_period_us). */
 static void present_wait(void)

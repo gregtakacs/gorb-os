@@ -214,6 +214,10 @@ const char *orb_theme_live_slug(void);
 /* theme-pool-plan P4: whether `slug` has a theme in the pool, and making it the one the
  * paint path reads (its tables projected, its banks mapped) for the stage to build on. */
 bool        orb_theme_has(const char *slug);
+/* The card stem of `slug`'s theme in the pool ("clock-wave-8112e546a0fc"), the handle
+ * orb_theme_preview_read takes; false when the app has no theme in the pool. The
+ * carousel's preview cache reads each app's preview through it (plan §54). */
+bool        orb_theme_pool_stem(const char *slug, char *out, size_t outsz);
 esp_err_t   orb_theme_bind(const char *slug);
 /** The owner name of the theme currently on the wall, "" for the base face. */
 const char *orb_theme_active_name(void);

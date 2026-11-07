@@ -2373,6 +2373,18 @@ void menu_view_switcher(const orb_app_t *from, int step)
     ESP_LOGI(TAG, "app list open on row %d", s_cur);
 }
 
+void menu_view_open_settings(void)
+{
+    edit_end();
+    s_armed = true;
+    s_pg = P(PG_TOP);
+    s_cur = 0;
+    if (s_pg->enter) s_pg->enter();
+    s_ui.status[0] = '\0';
+    repaint();
+    ESP_LOGI(TAG, "settings open from the carousel");
+}
+
 /* The inventory (declared above; the definitions it names ship in this file,
  * in this order). back_to is where "<- back" goes — the page's parent and the
  * row it lands on, in the one place the page itself is written — and

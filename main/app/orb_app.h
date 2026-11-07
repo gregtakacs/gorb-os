@@ -130,6 +130,9 @@ typedef struct {
     /** The shell's app list (plan §51): open it armed, the cursor on `from`'s row
      *  moved `step` rows. Only the shell answers; NULL everywhere else. */
     void         (*switcher)(orb_app_t *app, const orb_app_t *from, int step);
+    /** The system pages (plan §54): the carousel's gear opens the shell's top page,
+     *  armed. Only the shell answers; NULL everywhere else. */
+    void         (*settings)(orb_app_t *app);
     /** The cursor landed on this entry's row idx (its own numbering, like
      *  opt_sel). The entry may start a job here — the same licence opt_sel has —
      *  and may not paint. NULL is the pre-preview ABI: an entry that never
@@ -514,6 +517,9 @@ bool orb_app_opt_long(const orb_app_t *app);
  *  rows. The router has already switched to the home entry. False when the home
  *  entry has no list. */
 bool orb_app_open_switcher(const orb_app_t *from, int step);
+/** Put the home entry's system pages up (plan §54, the carousel's gear). The router
+ *  has already switched to the home entry. False when the home entry has none. */
+bool orb_app_open_settings(void);
 /** The cursor landed on row idx (app's own numbering). A NULL opt_focus hook is
  *  the pre-preview ABI: the shell moves its highlight and the app never hears.
  *  The hook runs on the LVGL task from the painter; like every answer here it

@@ -129,7 +129,12 @@ static volatile int32_t s_rawPos  = 0;   /* raw quadrature count               *
 static int32_t          s_net     = 0;   /* travel since the last valley arrival */
 static volatile int32_t s_detent  = 0;   /* committed detents — the true stream*/
 static volatile bool    s_pressPend = false;  /* set at release if held < LONG  */
-static volatile bool    s_longPend  = false;  /* set at release if held >= LONG */
+static volatile bool    s_longPend  = false;  /* set once a hold passes LONG     */
+/* The hold fires at LONG_PRESS_MS while the knob is still down (knob_poll), not at the
+ * release: a hold that waited for the hand to let go looked to the owner like a knob
+ * the OS never heard (Bronze, 2026-11-07, holding on Flights). The release after it is
+ * spent: neither a press nor a second hold. */
+static volatile bool    s_longFired = false;
 
 /* The quadrature state the shaft rests in when it is parked on a click — the valley
  * the code wheel's detent spring holds it in. Learned, never assumed: it is read off
@@ -302,11 +307,14 @@ static void IRAM_ATTR knob_sw_isr(void *arg)
          * but stamp the clock so release-side bounce is rejected too. */
         if (s_swDown) {
             s_swDown = 0;
-            if ((now - s_swPressStartUs) >= (int64_t)LONG_PRESS_MS * 1000) {
-                s_longPend = true;
+            if (s_longFired) {
+                /* the hold already fired while the knob was down */
+            } else if ((now - s_swPressStartUs) >= (int64_t)LONG_PRESS_MS * 1000) {
+                s_longPend = true;            /* a poll gap outran the threshold */
             } else {
                 s_pressPend = true;
             }
+            s_longFired = false;
         }
         s_swLastEdgeUs = now;
         return;
@@ -320,6 +328,7 @@ static void IRAM_ATTR knob_sw_isr(void *arg)
     s_swLastEdgeUs   = now;
     s_swDown         = 1;
     s_swPressStartUs = now;
+    s_longFired      = false;
 }
 
 /* ---- Public API ---- */
@@ -392,6 +401,11 @@ esp_err_t knob_init(void)
 void knob_poll(void)
 {
     const int64_t now = esp_timer_get_time();
+    /* A hold fires here, at the threshold, with the knob still down. */
+    if (s_swDown && !s_longFired && (now - s_swPressStartUs) >= (int64_t)LONG_PRESS_MS * 1000) {
+        s_longFired = true;
+        s_longPend  = true;
+    }
     int32_t settled = 0, spent = 0, net_seen = 0;
     bool learned = false;
     uint8_t valley = 0xFF;

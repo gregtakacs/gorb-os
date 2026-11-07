@@ -29,6 +29,7 @@
 #include "orb_svc.h"
 #include "orb_carousel.h"
 #include "knob.h"
+#include "orb_strip.h"
 #include "input_router.h"
 #include "imu.h"
 #include "orb_sound.h"     /* D39: the sound engine, after the I2C bus */
@@ -274,6 +275,7 @@ void app_main(void)
 
     /* Route knob events to the active screen (color picker first) and start the
      * ~10 ms input poll, which runs on the LVGL task created below. */
+    orb_strip_init();          /* plan §54: the carousel's gear now, its previews after boot */
     ESP_ERROR_CHECK(input_router_init());
 
     /* Idle dim, last of the bring-up: it needs the panel (to write brightness)

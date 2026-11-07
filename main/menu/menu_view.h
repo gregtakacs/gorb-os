@@ -88,6 +88,9 @@ bool menu_view_opt_long(void);
  *  the cursor on `from`'s row moved `step` rows (clamped). The registry's switcher
  *  hook, reached from the router's hold and from a turn on a face with no dial. */
 void menu_view_switcher(const orb_app_t *from, int step);
+/** The system pages (plan §54): the top page, armed, cursor on its first row. The
+ *  registry's settings hook, reached from the carousel's gear. */
+void menu_view_open_settings(void);
 
 /**
  * D38: the USB share window's claim on the dial. Call from the router's poll,

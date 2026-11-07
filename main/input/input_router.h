@@ -85,6 +85,10 @@ void input_router_menu_exit(void);
  */
 void input_router_inject(int32_t delta, bool pressed, bool lpress);
 
+/** Plan §54: the carousel's gear. Switch to the home entry and open its system pages.
+ *  LVGL task only (the carousel calls it from this file's poll). */
+void input_router_open_settings(void);
+
 /** Which registry entry currently owns the knob; NULL before the first switch. */
 const orb_app_t *input_router_current(void);
 

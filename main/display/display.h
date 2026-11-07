@@ -256,8 +256,20 @@ bool    display_dma_lent(void);
 
 void display_bench_reset(void);
 
-#if CONFIG_ORB_DEBUG_HTTP
-/* ---- whole-frame push outside LVGL (the transition bench, main/display/orb_fx.c)
+/* ---- the glass hold (the carousel, plan §54) ----
+ * On: LVGL frames reach the mirror and stop there, so only display_fx_frame paints the
+ * panel. Off: every row is re-sent on the next LVGL frame, which the call requests.
+ * LVGL task only. */
+void display_glass_hold(bool on);
+bool display_glass_held(void);
+/* LVGL frames that reached the mirror while the glass was held, counting up: the
+ * carousel waits on it for the app it opened to draw before fading to it. */
+uint32_t display_held_frames(void);
+/* Debug builds: keep the next display_fx_frame for the bench's direct grab (the
+ * carousel sets it on its settled frames). A no-op otherwise. */
+void display_fx_shadow_next(bool on);
+
+/* ---- whole-frame push outside LVGL (the carousel; the transition bench, orb_fx.c)
  *
  * The question the bench answers is what a shell transition costs when LVGL is
  * not in the frame at all: a painter fills each TILE_ROWS slab of the page
@@ -278,6 +290,12 @@ typedef struct {
 } display_fx_stats_t;
 esp_err_t display_fx_frame(display_fx_compose_t compose, void *ctx, bool te,
                            display_fx_stats_t *st);
+/* The same frame, never waiting: ESP_ERR_NOT_FINISHED while the card has the ring or
+ * the bus is busy, for a caller (the carousel) that must keep its poll moving. */
+esp_err_t display_fx_frame_try(display_fx_compose_t compose, void *ctx, bool te,
+                               display_fx_stats_t *st);
+
+#if CONFIG_ORB_DEBUG_HTTP
 
 /* ---- the grid bench (plan §49.7): paced presentation and the hold log ----
  * pace10 > 0 presents each LVGL frame pace10/10 panel refreshes after the last (75

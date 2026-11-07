@@ -87,6 +87,12 @@ static void menu_switcher(orb_app_t *app, const orb_app_t *from, int step)
     menu_view_switcher(from, step);
 }
 
+static void menu_settings(orb_app_t *app)
+{
+    (void)app;
+    menu_view_open_settings();
+}
+
 static const orb_app_iface_t s_menu_iface = {
     .init       = menu_init,
     .show       = menu_show,
@@ -102,6 +108,8 @@ static const orb_app_iface_t s_menu_iface = {
     .opt_long   = menu_long,
     /* §51: a hold, or a turn on a face with no dial, opens the app list here. */
     .switcher   = menu_switcher,
+    /* §54: the carousel's gear opens the system pages here. */
+    .settings   = menu_settings,
 };
 
 /* ---- the behaviour-module registry (D1 / C6) ------------------------------
@@ -1101,6 +1109,14 @@ bool orb_app_opt_long(const orb_app_t *app)
      * router's to spend on going home (C8). */
     if (!app || !app->iface || !app->iface->opt_long) return false;
     return app->iface->opt_long((orb_app_t *)app);
+}
+
+bool orb_app_open_settings(void)
+{
+    const orb_app_t *home = orb_app_home();
+    if (!home || !home->iface || !home->iface->settings) return false;
+    home->iface->settings((orb_app_t *)home);
+    return true;
 }
 
 bool orb_app_open_switcher(const orb_app_t *from, int step)

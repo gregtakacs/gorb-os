@@ -15,6 +15,7 @@
 #include "orb_app.h"
 #include "orb_carousel.h"   /* cancel only: §51 retired the walk, so nothing puts a peek up */
 #include "orb_fx.h"         /* the transition bench's run, served from this poll */
+#include "orb_strip.h"      /* plan §54: the carousel owns the knob and the glass while up */
 #include "nvs.h"            /* the boot-page memory: last shown page, one string key  */
 #include <stdio.h>
 #include <string.h>
@@ -318,6 +319,13 @@ static void open_switcher(int step)
 {
     const orb_app_t *from = s_current;
     orb_carousel_cancel();
+    /* §54: the carousel, when its previews are in, takes the glass from here; the app
+     * under it stays the screen until the carousel opens one (input_router_show or
+     * input_router_open_settings). The text list stays the answer without it. */
+    if (orb_strip_open(from, step)) {
+        ESP_LOGI(TAG, "carousel from %s, step %d", screen_name(from), step);
+        return;
+    }
     disarm_all();
     if (set_screen(orb_app_home(), true) != ESP_OK) return;
     if (!orb_app_open_switcher(from, step)) return;
@@ -402,6 +410,7 @@ static void poll_timer_cb(lv_timer_t *timer)
      * knob event is considered: lv_screen_load() off this task is the widget
      * race every other rule in this file exists to avoid. */
     const orb_app_t *req = (const orb_app_t *)s_requested;
+    if (req && orb_strip_active()) orb_strip_abort();   /* a named screen beats the carousel */
     if (req) {
         s_requested = NULL;
         /* A requested screen beats a peek in flight: the user (or the bench)
@@ -417,6 +426,13 @@ static void poll_timer_cb(lv_timer_t *timer)
      * finishes while the user has rotated to the clock must still land, or the
      * list would come back showing a stale answer (C7). */
     orb_app_service_all();
+
+    /* §54: while the carousel is up, every knob event is its own, and its frames are
+     * drawn from here. It hands the glass back itself. */
+    if (orb_strip_active()) {
+        orb_strip_poll(delta, pressed, lpress, now);
+        return;
+    }
 
     /* Long-press is the escape hatch out of every armed state, and it swallows
      * everything that made it so a hold never also lands as a turn/press on the
@@ -525,6 +541,15 @@ esp_err_t input_router_show(const orb_app_t *app)
     orb_carousel_cancel();
     disarm_all();
     return set_screen(app, true);
+}
+
+void input_router_open_settings(void)
+{
+    orb_carousel_cancel();
+    disarm_all();
+    if (set_screen(orb_app_home(), true) != ESP_OK) return;
+    if (!orb_app_open_settings()) return;
+    ESP_LOGI(TAG, "settings from the carousel");
 }
 
 void input_router_home(void)

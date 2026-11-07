@@ -30,6 +30,7 @@ idf_component_register(
         "display/orb_boot_overlay.c"
         # The shell-transition bench (/api/v1/debug/fx): effects painted outside LVGL.
         "display/orb_fx.c"
+        "display/orb_strip.c"
         "gfx/orb_gfx.c"
         "gfx/orb_sched.c"
         # D43 §5.4: LVGL's RGB565 image blends with mix_16_16's rounding (the

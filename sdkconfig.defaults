@@ -42,6 +42,8 @@ CONFIG_LV_FONT_MONTSERRAT_48=y
 # Small fonts for the color-picker chips + hint line
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
+# Plan §54: the carousel's app names.
+CONFIG_LV_FONT_MONTSERRAT_28=y
 # The menu's ABOUT page draws a QR code for the orb's own page (http://<ip>/)
 # with LVGL's qrcodegen into a PSRAM plane; the lv_qrcode widget this also
 # compiles is unused (its draw buffer would come out of the LVGL pool).

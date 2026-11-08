@@ -1369,3 +1369,28 @@ three steps were not close enough, and the roads far too dense at DFW and London
 - **Not yet:** the step cost at the close zooms (half the display task at four steps a
   second) is R6's to measure over time; the editor's road presets are R7's.
 
+### 6.10 The second hand test (2026-11-07, Bronze, OS v1.2.26, radar v1.1.0, uncommitted)
+
+The owner: zooming was fine for a while, then very slow; City (30 km) at DFW said "No
+map yet"; "Radar draws on its theme: install one from the hub" stood in the middle; the
+zoom's word was lost in the map; still too many roads.
+
+- **One cause behind the first three:** PSRAM. Bronze showed 613 KB free. Beside the
+  radar's two live layers, kept frames and cached levels, a map would not open (read as
+  "No map yet") and the theme would not bind, so the radar made its fallback widget, and a
+  widget on the page takes the dial off its fast path for good (the slowness). Fixed:
+  - **pre-paint gives its four planes (1.7 MB) back** when it turns off
+    (`gfx_prep_mode(0)`, `orb_gfx.c`); they stayed for the rest of the boot once any plan
+    had played;
+  - **the radar makes no widget:** without a bound theme it asks again every 2 s;
+  - **a map that fails for memory or a read is tried again in 3 s**, the old view kept up;
+    only a map missing from the card reads "No map yet".
+  On Bronze afterwards: 1.04 MB free at City, the same after two rounds of Wide to City, on
+  the fast path (`l4` true), a step 100–120 ms. The 613 KB was not reproduced (the clock
+  played no plan this time), so pre-paint is the likely cause, not a proven one.
+- **The zoom, large:** label 18, a fourth, 34 px font on a dark rounded backing, centred
+  below the dot, "City  30 km", shown while the zoom changes and 2 s after. The status line
+  has a backing too and says "Loading map" and "Loading radar" while they come.
+- **Roads, further:** motorways and trunks to Local, primary from Area, secondary from
+  City, tertiary at Close alone.
+

@@ -37,9 +37,11 @@ const stepOf = (it) => it.stepNow()[0];
   V().fromScratch();
   const nonHand = () => (it.design().comps || []).filter((c) => c.type !== 'hand');
   const handsOn = (host) => (it.design().comps || []).filter((c) => c.type === 'hand' && (c.host || 'dial') === host);
-  // owner, 2026-11-06: from scratch is nothing at all -- no dial, no parts, no case, no glass, no light
+  // owner, 2026-11-06: from scratch is nothing at all -- no dial, no parts, no case, no glass;
+  // owner, 2026-11-07: and its light is As designed, the defaults, not No light
   ok(stepOf(it) === 'movement' && (it.design().comps || []).length === 0 && it.design().noDial === true, 'Build from scratch: no dial and no parts, on to the movement', JSON.stringify(it.design()));
-  ok(it.state.caseStyle === 'none' && it.state.glassStyle === 'none' && +it.cfg().glow === 0 && +it.cfg().outerLight === 0, 'and no case, no glass, no light', JSON.stringify([it.state.caseStyle, it.state.glassStyle, it.cfg().glow, it.cfg().outerLight]));
+  ok(it.state.caseStyle === 'none' && it.state.glassStyle === 'none' && +it.cfg().glow === +it.DEF.glow && +it.cfg().outerLight === +it.DEF.outerLight && +it.cfg().temp === +it.DEF.temp,
+     'and no case, no glass, and the light As designed', JSON.stringify([it.state.caseStyle, it.state.glassStyle, it.cfg().glow, it.cfg().outerLight]));
   ok(it.state.dial === 'scratch' && JSON.stringify(it.state.designs.skeleton || null) === skel0 && it.themeName() === 'Untitled' && !V().dials.some((x) => x.cls === 'on'),
      'it is its own watch, Untitled: Skeleton\u2019s design is left as it was, and no gallery watch is the one open', JSON.stringify([it.state.dial, it.themeName()]));
   ok(V().isMove, 'the Movement step shows the movement cards');

@@ -1470,3 +1470,35 @@ The smoothed draw costs 120-140 ms a frame at Close on a stormy day (the glass f
 and the row pair blended once per glass row, bit-exact with the reference
 (`host_live_test.py`, 17 mutants), but the cost barely moved (140 → 120 ms): it is
 elsewhere (the decode or the canvas), and is the next thing to measure.
+
+### 6.14 Merged with v1.2.19-v1.2.21; a press is seen at once; the scrub stops at the loop (2026-11-08, OS v1.2.30, radar v1.2.0)
+
+**The merge.** origin/main's v1.2.19-v1.2.21 (§57's settings schema, §59's rotation, §60's
+previews, §61's theme carousel) came in as a merge onto this line, whose own v1.2.19-v1.2.29
+were bench builds, never released. The tree is v1.2.30: the first stamp above both. What
+moved:
+- The radar's `orb_opt_*` page is gone; its zoom is an app.json enum with the six names, and
+  the LibreWXR source a hub-only text setting. The weather keeps the OS places (§2.1, owner
+  2026-11-07) and takes §57's labels; weather v1.5.0 and radar v1.2.0 need v1.2.30.
+- The install floor (`installMinFW`) is v1.2.30: a board on a bench build stamps above
+  v1.2.21 but reads FORMAT 3 only.
+- Both lines had made the clock's pre-paint planes go when it leaves the glass (§61.3 here,
+  §6.11's note there): one fix kept. The route table is 65, so `max_uri_handlers` is 72.
+- **Room for the carousel.** Off the glass an app keeps its kept bodies and map files 15
+  minutes (§2.3), up to ~1.2 MB for the radar. While the theme carousel is open
+  (`theme_strip_open` and its service pass call `orb_app_want_room`), every app off the
+  glass gives them back on its next service pass; the radar notices freed frames on return
+  (§6.13) and asks again.
+
+**A press is seen at once** (owner: seconds with no sign the press took, so a second press
+went one place further). The new place's name goes up in the large pill the moment the
+press lands, the old place's rain and landmark names go, and the pill stays until the new
+map is up (at least 1.2 s; 10 s at most).
+
+**The scrub stops where the loop does** (owner: on a stormy day the loop went back an hour,
+the dial back two, onto blank frames). The dial's range ends at the oldest frame still to
+be shown and the last nowcast that is. And fewer frames are given up: a magnified step
+(Area, City, Close) draws at most 233 px of its frame, so it asks for a 256 px image one
+zoom deeper, which is the 512's centre pixel for pixel (LibreWXR, benched: offset 128,
+exact) at a third of the bytes (21 KB against 64 KB at DFW today). All 18 frames fit the
+768 KB there. Wide, Region and Local still need the whole 512.

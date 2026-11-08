@@ -273,8 +273,9 @@ flights' is small, and a weather theme of about 1 MB sits beside them within bud
 
 ### 2.5 Attribution
 
-Open-Meteo's data is CC BY 4.0. The credit goes in the app's settings help
-(`settings.json`) and the editor's About, not on the glass.
+Open-Meteo's data is CC BY 4.0. The credit goes in the app's settings help (the places'
+`help` in `app.json`; `settings.json` until app-platform-plan §57) and the editor's About,
+not on the glass.
 
 ### 2.6 The places, and the theme editor (`apps/weather/editor`)
 
@@ -283,8 +284,9 @@ moves with them to a Places card on the Orb tab; the next paragraph describes W4
 built, until R1 and R2 land.*
 
 **Places are the app's settings, so they live on the hub's App settings page** (§0 ruling
-8), not in the theme editor. The app's `settings.json` names `place1..3` with
-`"kind": "place"`, and the page draws a place row for each: the Home card's searcher without
+8), not in the theme editor. The app's `app.json` declares `place1..3` with
+`"type": "place"` (a `settings.json` `kind` until app-platform-plan §57), and the page draws
+a place row for each: the Home card's searcher without
 its map (owner, 2026-11-06). Typing lists matching cities from the hub's list at once (no
 Find button); Enter takes the first, or reads coordinates or a full plus code, which the
 orb names as it names a home (`GET /api/v1/home?lat=&lon=` or `?code=`, a proposal that
@@ -523,7 +525,8 @@ main display's setting."
   `tools/host_weather_test.py` drives `wx.c` through the OS's own tokenizer with
   Open-Meteo-shaped bodies (22 checks, 10 of 10 mutants). A live request for four places
   answered 7 KB, 802 tokens, every place read whole with its own offset, 24 hours and 5 days.
-- **W4, the places** (weather v1.0.1): a `kind` in an app's `settings.json` lets the hub's
+- **W4, the places** (weather v1.0.1; since §57 of app-platform-plan the `place` type in
+  `app.json`, and `settings.json` is gone): a `kind` in an app's `settings.json` lets the hub's
   App settings page draw a STRING setting (`place`, or plain `text`); the weather's three
   places are the first. Benched on Bronze: a place written the way the page writes it, the
   app's second place on the glass, then cleared.

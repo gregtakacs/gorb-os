@@ -570,23 +570,21 @@ $("#home-loc").onclick = () => {
 };
 
 // ---- app settings: one page per installed app (owner, 2026-11-04) --------------
-// A page holds the app's secret settings (§43): GET /api/v1/apps names each installed
-// app's secret ids; GET /api/v1/apps/cfg answers a secret's host, whether it is set, its
-// header and its last four characters, and never its value. POST writes
-// {"value","header"}; an empty value clears it. What a setting is called, how to get one
-// and where, is the APP's to say: its editor region may carry settings.json
-// ({id: {label, help, links: [{href, text}], header}}), read through the hub's editor
-// door, so this page names no app and no service itself.
-// An app's own settings belong here too, never in its theme editor (owner, 2026-11-06):
-// settings.json may name a STRING setting with a `kind` the page knows how to draw.
-// "place" is a place on the map, stored "Name|lat,lon" (two decimals, the 31 characters a
-// string setting holds), picked from the hub's city list or typed as coordinates; the
-// weather's place1..3 are the first. "text" is a plain line.
+// The app declares its settings in app.json and the orb answers them whole: GET
+// /api/v1/apps/settings?id=<slug> is the schema (each setting's type, label, help, links,
+// where it shows, its range, step, unit, decimals and choices) and every value now
+// (app-platform-plan §57). This page draws each setting shown on the hub from that answer
+// alone, in the manifest's order, and names no app and no service itself: a number field
+// and slider, a dropdown, on/off buttons, checkboxes, a line of text, the place picker, the
+// secret row. Writes go through POST /api/v1/apps/cfg, the orb's one settings door.
+// A place is stored "Name|lat,lon" (two decimals, the 31 characters a string setting
+// holds), picked from the hub's city list or typed as coordinates. A secret answers its
+// host, whether it is set, its header and its last four characters, never its value;
+// POST {"value","header"} writes it and an empty value clears it.
 const cfgURL = (slug, id) => "/orb/" + encodeURIComponent(current.ip) + "/api/v1/apps/cfg?id=" +
   encodeURIComponent(slug) + "&key=" + encodeURIComponent(id);
 let apsApps = [];     // the installed apps, in title order
 let apsSub = "";      // the app whose page is open
-const apsHelp = {};   // slug -> its settings.json, {} when it ships none
 function secretLine(d) {
   return d && d.set ? "set (\u2026" + d.tail + ", sent as " + d.header + " to " + d.host + ")"
                     : "not set: sent only to " + (d && d.host ? d.host : "the host the app declared");
@@ -674,7 +672,7 @@ function placeLine(v) {
   const p = placeParse(v);
   return p ? p.name + " (" + p.lat.toFixed(2) + ", " + p.lon.toFixed(2) + ")" : "not set";
 }
-// one STRING setting the app's settings.json gives a kind: a place, or a line of text
+// one string setting: a place, or a line of text
 function stringRow(app, id, help) {
   const box = document.createElement("div");
   box.className = "apsset";
@@ -1111,15 +1109,132 @@ $("#maps-src-save").onclick = async () => {
     m.textContent = d.tilejson === d.default ? "OpenFreeMap's planet (the default)" : "saved; Make maps uses it";
   } catch (e) { m.textContent = e.message; }
 };
-async function apsHelpOf(slug) {
-  if (apsHelp[slug]) return apsHelp[slug];
-  let h = {};
-  try {
-    const r = await hubFetch("/editor/" + encodeURIComponent(current.ip) + "/" + encodeURIComponent(slug) + "/settings.json");
-    if (r.ok) { const j = await r.json(); if (j && typeof j === "object" && !Array.isArray(j)) h = j; }
-  } catch (e) { /* no help: the setting shows by its id */ }
-  apsHelp[slug] = h;
-  return h;
+// The parts every row shares: its name, what it is now, its help and its links.
+function setHead(box, label, help) {
+  const cur = document.createElement("span"), name = document.createElement("strong");
+  cur.className = "hint";
+  name.textContent = label;
+  const head = document.createElement("div");
+  head.className = "apshead";
+  head.append(name, cur);
+  box.appendChild(head);
+  if (help && help.help) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = help.help;
+    box.appendChild(p);
+  }
+  const links = help && Array.isArray(help.links) ? help.links.filter((l) => l && /^https?:\/\//.test(l.href || "")) : [];
+  if (links.length) {
+    const p = document.createElement("p");
+    p.className = "apslinks";
+    for (const l of links) {
+      const a = document.createElement("a");
+      a.href = l.href; a.target = "_blank"; a.rel = "noopener noreferrer";
+      a.textContent = (l.text || l.href) + " ↗";
+      p.appendChild(a);
+    }
+    box.appendChild(p);
+  }
+  return cur;
+}
+// a choice's label in the orb's distance unit, when it gives one per unit
+const choiceText = (c, dist) => (c && typeof c === "object" ? c[dist] || c.km : String(c));
+// a stored number as the owner reads it: its decimals and its unit, as the dial draws it
+function numText(s, v) {
+  const d = s.decimals || 0, u = s.unit || "";
+  const sp = u && u !== "%" && u !== "°" ? " " : "";
+  return (d ? (v / Math.pow(10, d)).toFixed(d) : String(v)) + sp + u;
+}
+function valueText(s, v, dist) {
+  if (s.type === "int" || s.type === "number") return numText(s, v);
+  if (s.type === "enum" || s.type === "toggle") return choiceText((s.choices || [])[v], dist) || String(v);
+  if (s.type === "multi") {
+    const on = (s.choices || []).filter((_c, i) => (v >> i) & 1).map((c) => choiceText(c, dist));
+    return on.length ? on.join(", ") : "none";
+  }
+  return String(v);
+}
+// One setting the knob also edits (int, number, enum, multi, toggle), drawn for a page.
+function valueRow(app, s, value, dist) {
+  const box = document.createElement("div");
+  box.className = "apsset";
+  const cur = setHead(box, s.label || s.id, s);
+  const msg = document.createElement("span");
+  msg.className = "hint";
+  const url = cfgURL(app.slug, s.id);
+  let now = value;
+  const show = () => { cur.textContent = valueText(s, now, dist); };
+  const write = async (v) => {
+    msg.textContent = "saving…";
+    try {
+      await readDeviceJSON(await hubFetch(url + "&value=" + encodeURIComponent(String(v)), { method: "POST" }));
+      now = v; show();
+      msg.textContent = "saved; the app reads it at once";
+    } catch (e) {
+      msg.textContent = "the orb refused it: " + e.message;
+    }
+  };
+  const form = document.createElement("div");
+  form.className = "row";
+  if (s.type === "int" || s.type === "number") {
+    const k = Math.pow(10, s.decimals || 0), step = (s.step || 1) / k;
+    const range = document.createElement("input"), num = document.createElement("input");
+    range.type = "range";
+    num.type = "number";
+    for (const el of [range, num]) { el.min = s.min / k; el.max = s.max / k; el.step = step; el.value = now / k; }
+    range.style.width = "14em"; num.style.width = "6em";
+    range.setAttribute("aria-label", s.label); num.setAttribute("aria-label", s.label);
+    range.oninput = () => { num.value = range.value; };
+    num.oninput = () => { range.value = num.value; };
+    const commit = (el) => {
+      const v = Math.round(+el.value * k);
+      if (!isFinite(v) || v < s.min || v > s.max) { msg.textContent = "between " + numText(s, s.min) + " and " + numText(s, s.max); return; }
+      if (v !== now) write(v);
+    };
+    range.onchange = () => commit(range);
+    num.onchange = () => commit(num);
+    const unit = document.createElement("span");
+    unit.className = "hint"; unit.textContent = s.unit || "";
+    form.append(range, num, unit, msg);
+  } else if (s.type === "enum") {
+    const sel = document.createElement("select");
+    sel.setAttribute("aria-label", s.label);
+    (s.choices || []).forEach((c, i) => {
+      const o = document.createElement("option");
+      o.value = String(i); o.textContent = choiceText(c, dist);
+      sel.appendChild(o);
+    });
+    sel.value = String(now);
+    sel.onchange = () => write(+sel.value);
+    form.append(sel, msg);
+  } else if (s.type === "toggle") {
+    const seg = document.createElement("span");
+    seg.className = "seg";
+    const btns = (s.choices || ["off", "on"]).map((c, i) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "ghost"; b.textContent = choiceText(c, dist);
+      b.onclick = () => { if (i !== now) write(i).then(mark); };
+      seg.appendChild(b);
+      return b;
+    });
+    const mark = () => btns.forEach((b, i) => b.classList.toggle("on", i === now));
+    mark();
+    form.append(seg, msg);
+  } else if (s.type === "multi") {
+    (s.choices || []).forEach((c, i) => {
+      const lab = document.createElement("label"), cb = document.createElement("input");
+      lab.className = "inline";
+      cb.type = "checkbox"; cb.checked = !!((now >> i) & 1);
+      cb.onchange = () => write(cb.checked ? now | (1 << i) : now & ~(1 << i));
+      lab.append(cb, " " + choiceText(c, dist));
+      form.appendChild(lab);
+    });
+    form.appendChild(msg);
+  }
+  box.appendChild(form);
+  show();
+  return box;
 }
 function apsTabs() {
   const nav = $("#aps-tabs");
@@ -1137,22 +1252,34 @@ async function apsPage() {
   const box = $("#secrets"), app = apsApps.find((a) => a.slug === apsSub);
   box.innerHTML = "";
   if (!app) return;
-  const ids = app.secrets || [];
-  const help = await apsHelpOf(app.slug);
-  if (app.slug !== apsSub) return;   // another tab was pressed while the help was read
-  // the app's own strings its settings.json gives a kind, in the file's order
-  const strs = Object.keys(help).filter((id) => ids.indexOf(id) < 0 && help[id] &&
-    (help[id].kind === "place" || help[id].kind === "text"));
+  let d;
+  try {
+    d = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) +
+                                            "/api/v1/apps/settings?id=" + encodeURIComponent(app.slug)));
+  } catch (e) {
+    box.innerHTML = '<p class="hint"></p>';
+    box.firstChild.textContent = "the orb did not answer " + (app.title || app.slug) + "'s settings: " + e.message +
+      ". An orb older than v1.2.19 cannot describe them; update its firmware.";
+    return;
+  }
+  if (app.slug !== apsSub) return;   // another tab was pressed while the page was read
   box.innerHTML = "";
-  if (!ids.length && !strs.length) {
+  const shown = (d.settings || []).filter((s) => s.show === "hub" || s.show === "both");
+  if (!shown.length) {
     const p = document.createElement("p");
     p.className = "hint";
-    p.textContent = (app.title || app.slug) + " has no settings to change here. Its other choices live on the orb's own menu.";
+    p.textContent = (app.title || app.slug) + " has no settings to change here." +
+      ((d.settings || []).length ? " Its choices live on the orb's own menu." : "");
     box.appendChild(p);
     return;
   }
-  for (const id of strs) box.appendChild(stringRow(app, id, help[id]));
-  for (const id of ids) box.appendChild(secretRow(app, id, help[id] || {}));
+  const values = d.values || {};
+  for (const s of shown) {
+    if (s.type === "secret") box.appendChild(secretRow(app, s.id, { label: s.label, help: s.help, links: s.links, header: s.header }));
+    else if (s.type === "text" || s.type === "place")
+      box.appendChild(stringRow(app, s.id, { kind: s.type, label: s.label, help: s.help }));
+    else box.appendChild(valueRow(app, s, values[s.id], d.dist || "km"));
+  }
 }
 async function loadSecrets() {
   if (!current.ip) return;
@@ -1294,6 +1421,7 @@ async function loadApps() {
     try { await renderLibrary(); } catch (e) { /* renderLibrary reports its own failure */ }
   }
   renderAppsTab();
+  loadCarousel();
 }
 
 // appPost is the one leg every apps mutation walks: the proxy's orb path, an
@@ -1306,6 +1434,132 @@ async function appPost(path) {
   const d = await readDeviceJSON(r);
   if (!d || d.error) throw new Error((d && d.error) || ("HTTP " + r.status));
   return d;
+}
+
+// ---- §59: the carousel — the order the knob walks the apps in, and the rotation ----------
+// The order is set only here (owner, 2026-11-07: "may be fine if it's hub level only"); the
+// rotation is the orb's own setting, also on the dial. Every press posts and redraws from
+// the orb's answer, so the face never shows an order the orb did not take.
+const ROT_CHOICES = [[0, "Off"], [15, "every 15 s"], [30, "every 30 s"], [60, "every minute"],
+  [120, "every 2 min"], [300, "every 5 min"], [600, "every 10 min"], [900, "every 15 min"],
+  [1800, "every 30 min"], [3600, "every hour"]];
+let carData = null;
+
+async function loadCarousel() {
+  const box = $("#mn-carousel");
+  if (!box || !current.ip) return;
+  if (fwBelow("v1.2.20")) {
+    box.innerHTML = "";
+    const h = document.createElement("h4"); h.textContent = "Carousel";
+    const p = document.createElement("p"); p.className = "hint";
+    p.textContent = "Putting the apps in your own order and rotating them needs firmware v1.2.20 or later: update this orb on the Firmware tab.";
+    box.append(h, p);
+    return;
+  }
+  try {
+    carData = await readDeviceJSON(await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/carousel"));
+  } catch (e) { carData = { error: String(e && e.message || e) }; }
+  renderCarousel();
+}
+
+async function carouselPost(form, say) {
+  const state = $("#mn-carousel-state");
+  if (state) state.textContent = "saving\u2026";
+  try {
+    const r = await hubFetch("/orb/" + encodeURIComponent(current.ip) + "/api/v1/carousel", {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(form).toString(),
+    });
+    const d = await readDeviceJSON(r);
+    if (!d || d.error) throw new Error((d && d.error) || ("HTTP " + r.status));
+    carData = d;
+    renderCarousel();
+    const st = $("#mn-carousel-state");
+    if (st) st.textContent = say || "saved";
+  } catch (e) {
+    if (state) state.textContent = "the orb refused: " + (e && e.message || e);
+  }
+}
+
+function renderCarousel() {
+  const box = $("#mn-carousel");
+  if (!box) return;
+  box.innerHTML = "";
+  const h = document.createElement("h4");
+  h.textContent = "Carousel";
+  box.appendChild(h);
+  if (!carData || carData.error) {
+    const p = document.createElement("p"); p.className = "hint";
+    p.textContent = "the carousel did not answer" + (carData && carData.error ? ": " + carData.error : "");
+    box.appendChild(p);
+    return;
+  }
+  const apps = Array.isArray(carData.apps) ? carData.apps : [];
+  const rot = carData.rotate || { on: false, every_s: 60 };
+  // the rotation's one control: off, or how often
+  const bar = document.createElement("div");
+  bar.className = "row toolbar";
+  const lab = document.createElement("label");
+  lab.textContent = "Rotate apps ";
+  const sel = document.createElement("select");
+  sel.id = "mn-rot-every";
+  for (const [s, t] of ROT_CHOICES) {
+    const o = document.createElement("option");
+    o.value = String(s); o.textContent = t;
+    if (rot.on ? s === rot.every_s : s === 0) o.selected = true;
+    sel.appendChild(o);
+  }
+  if (rot.on && !ROT_CHOICES.some(([s]) => s === rot.every_s)) {
+    const o = document.createElement("option");
+    o.value = String(rot.every_s); o.textContent = "every " + rot.every_s + " s"; o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => {
+    const s = +sel.value;
+    carouselPost(s ? { rotate: "1", every_s: String(s) } : { rotate: "0" },
+      s ? "the dial moves to the next app taking part after it is left alone that long" : "rotation off");
+  };
+  lab.appendChild(sel);
+  const state = document.createElement("span");
+  state.className = "hint"; state.id = "mn-carousel-state";
+  state.textContent = "The order the knob and the carousel walk the apps in. Rotation moves on only from an app that takes part, once the knob has been left alone for the whole interval.";
+  bar.append(lab, state);
+  box.appendChild(bar);
+  const order = apps.map((a) => a.slug);
+  const move = (i, d) => {
+    const j = i + d;
+    if (j < 0 || j >= order.length) return;
+    const o = order.slice();
+    [o[i], o[j]] = [o[j], o[i]];
+    carouselPost({ order: o.join(",") }, (apps[i].title || apps[i].slug) + " moved " + (d < 0 ? "up" : "down"));
+  };
+  apps.forEach((a, i) => {
+    const row = document.createElement("div");
+    row.className = "arow";
+    const info = document.createElement("div");
+    info.className = "tinfo";
+    const name = document.createElement("b");
+    name.textContent = (i + 1) + ". " + (a.title || a.slug);
+    info.appendChild(name);
+    const up = document.createElement("button");
+    up.className = "ghost"; up.textContent = "\u25b2"; up.title = "Earlier in the carousel";
+    up.disabled = i === 0; up.onclick = () => move(i, -1);
+    const dn = document.createElement("button");
+    dn.className = "ghost"; dn.textContent = "\u25bc"; dn.title = "Later in the carousel";
+    dn.disabled = i === apps.length - 1; dn.onclick = () => move(i, 1);
+    const tk = document.createElement("label");
+    tk.className = "hint";
+    tk.title = "Whether the rotation stops on this app";
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = !!a.rotate;
+    cb.onchange = () => {
+      const inn = apps.filter((x) => (x.slug === a.slug ? cb.checked : x.rotate)).map((x) => x.slug);
+      carouselPost({ apps: inn.join(",") }, (a.title || a.slug) + (cb.checked ? " takes part in the rotation" : " is out of the rotation"));
+    };
+    tk.append(cb, document.createTextNode(" in rotation"));
+    row.append(info, up, dn, tk);
+    box.appendChild(row);
+  });
 }
 
 function renderAppsTab() {

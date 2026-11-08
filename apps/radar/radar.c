@@ -81,13 +81,13 @@ static int fmt_e4(char *b, size_t cap, int32_t e6)
     return snprintf(b, cap, "%s%d.%04d", v < 0 ? "-" : "", (int)(a / 10000), (int)(a % 10000));
 }
 
-size_t rd_frame_url(char *buf, size_t cap, const char *source, const char *path, int z,
+size_t rd_frame_url(char *buf, size_t cap, const char *source, const char *path, int side, int z,
                     int32_t lat_e6, int32_t lon_e6, bool smooth)
 {
     char la[16], lo[16];
     fmt_e4(la, sizeof la, lat_e6);
     fmt_e4(lo, sizeof lo, lon_e6);
-    const int k = snprintf(buf, cap, "%s%s/512/%d/%s/%s/255/%d_0.png", source, path, z, la, lo, smooth ? 1 : 0);
+    const int k = snprintf(buf, cap, "%s%s/%d/%d/%s/%s/255/%d_0.png", source, path, side, z, la, lo, smooth ? 1 : 0);
     return k > 0 && (size_t)k < cap ? (size_t)k : 0;
 }
 
@@ -154,26 +154,27 @@ void rd_window(int z, int32_t img_lat_e6, int32_t img_lon_e6, int32_t map_lat_e6
     *sy = (int32_t)floor(my - oy - RD_GLASS / 2.0 + 0.5);
 }
 
-/* The place's point in the image, in image pixels from its corner. */
-static void place_in_image(int z, int32_t img_lat_e6, int32_t img_lon_e6, int32_t map_lat_e6,
+/* The place's point in an image `side` px wide at z's 512 px scale (a 256 px image at z+1
+ * is the 512's centre, pixel for pixel), in image pixels from its corner. */
+static void place_in_image(int z, int side, int32_t img_lat_e6, int32_t img_lon_e6, int32_t map_lat_e6,
                            int32_t map_lon_e6, double *ux, double *uy)
 {
     double ix, iy, mx, my;
     world(z, rd_e4(img_lat_e6) * 100, rd_e4(img_lon_e6) * 100, &ix, &iy);
     world(z, map_lat_e6, map_lon_e6, &mx, &my);
     const double n = (double)RD_IMG * pow2(z);
-    double ox = rd_round_even(ix - RD_IMG / 2), oy = rd_round_even(iy - RD_IMG / 2);
+    double ox = rd_round_even(ix - side / 2), oy = rd_round_even(iy - side / 2);
     if (oy < 0) oy = 0;
-    if (oy > n - RD_IMG) oy = n - RD_IMG;
+    if (oy > n - side) oy = n - side;
     *ux = mx - ox;
     *uy = my - oy;
 }
 
-void rd_window_k(int z, int k, int32_t img_lat_e6, int32_t img_lon_e6, int32_t map_lat_e6,
+void rd_window_k(int z, int k, int side, int32_t img_lat_e6, int32_t img_lon_e6, int32_t map_lat_e6,
                  int32_t map_lon_e6, int32_t *sx, int32_t *sy, int32_t *dx, int32_t *dy)
 {
     double ux, uy;
-    place_in_image(z, img_lat_e6, img_lon_e6, map_lat_e6, map_lon_e6, &ux, &uy);
+    place_in_image(z, side, img_lat_e6, img_lon_e6, map_lat_e6, map_lon_e6, &ux, &uy);
     /* glass x <-> image sx + (x - dx) / k, and the glass's centre (233) <-> the place */
     *sx = (int32_t)floor(ux - (RD_GLASS / 2.0) / k) - 1;
     *sy = (int32_t)floor(uy - (RD_GLASS / 2.0) / k) - 1;

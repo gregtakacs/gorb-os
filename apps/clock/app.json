@@ -3,8 +3,15 @@
   "title": "Clock",
   "caps": ["sound"],
   "period_ms": 1000,
-  "settings": [],
+  "settings": [
+    {"id": "tick_vol", "type": "int", "label": "Tick volume", "min": 0, "max": 100, "step": 5,
+     "unit": "%", "default": 70,
+     "help": "How loud the ticking and the minute, hour and date clicks are, under the orb's own volume. Each step is half a decibel; 0 is silent."},
+    {"id": "chime_vol", "type": "int", "label": "Chime volume", "min": 0, "max": 100, "step": 5,
+     "unit": "%", "default": 100,
+     "help": "How loud the quarter chimes, the hour strikes and the repeater are, under the orb's own volume. Each step is half a decibel; 0 is silent."}
+  ],
   "editor": "clock",
   "shelf": true,
-  "os_min": "v1.2.12"
+  "os_min": "v1.2.20"
 }

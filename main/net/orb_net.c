@@ -64,6 +64,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "orb_places.h"  /* /api/v1/places, radar-plan §2.1 */
 #include "orb_map.h"     /* POST /api/v1/places/maps, radar-plan §2.4 */
 #include "orb_png8.h"    /* /api/v1/debug/png_bench, radar-plan R3 */
+#include "orb_rotation.h"   /* §59: /api/v1/carousel */
 #include "orb_units.h"   /* /api/v1/home: the OS home location (flight-tracker-design §6.4) */
 #include "orb_net.h"
 #include "input_router.h"
@@ -6148,7 +6149,28 @@ static esp_err_t h_sd_preview(httpd_req_t *req)
         httpd_resp_set_type(req, "application/json");
         return httpd_resp_sendstr(req, body);
     }
-    const size_t bytes = (size_t)w * (size_t)h * 2u;
+    size_t bytes = (size_t)w * (size_t)h * 2u;
+    /* §60: a hub that asks enc=z takes a deflated preview as it lies, [w][h | 0x8000][zlib of
+     * the disc], and inflates it itself: ~100 KB on the air instead of 434 KB. A preview
+     * that is not deflated, or a hub that does not ask, gets the plane as it always has. */
+    char enc[4] = "";
+    if (q_param(req, "enc", enc, sizeof enc) && !strcmp(enc, "z")) {
+        uint8_t *zb = heap_caps_malloc(bytes + 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        uint32_t zn = 0;
+        if (zb && orb_theme_preview_z(id, zb + 4, bytes, &w, &h, &zn, why, sizeof why) == ORB_ASSET_OK && zn) {
+            zb[0] = (uint8_t)(w & 0xff); zb[1] = (uint8_t)(w >> 8);
+            zb[2] = (uint8_t)(h & 0xff); zb[3] = (uint8_t)((h >> 8) | 0x80);
+            httpd_resp_set_type(req, "application/octet-stream");
+            httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+            size_t zleft = 0;
+            bool zbud = false;
+            const esp_err_t zr = send_paced(req, zb, (size_t)4 + zn, &zleft, &zbud);
+            if (zleft) sock_abort_on_close(req);
+            heap_caps_free(zb);
+            return zr;
+        }
+        heap_caps_free(zb);
+    }
     uint8_t *px = heap_caps_malloc(bytes + 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!px) {
         httpd_resp_set_status(req, "503 Service Unavailable");
@@ -7077,6 +7099,142 @@ static esp_err_t h_app_cfg(httpd_req_t *req)
 /* GET /api/v1/apps/cfg?id=<slug>&key=<setting> — one declared setting's value, for
  * the hub's app options page. A secret (§43) answers whether it is set, the header it
  * travels in, its last four characters and the one host it may go to — never itself. */
+/* GET/POST /api/v1/carousel — §59: the apps in the carousel's order, and the rotation.
+ *
+ * GET  {"apps":[{"slug","title","rotate"}...],"rotate":{"on","every_s"}}, the installed
+ *      apps in the order the knob walks them, each saying whether it takes part.
+ * POST a form body, any of: order=<slug,slug,...> (the new order), rotate=0|1,
+ *      every_s=<10..86400>, apps=<slug,...> (the apps that take part). Slugs are
+ *      [a-z0-9_], so the body needs no escaping. Answers the GET body. */
+static esp_err_t carousel_send(httpd_req_t *req)
+{
+    orb_rotation_t r;
+    orb_rotation_get(&r);
+    httpd_resp_send_chunk(req, "{\"apps\":[", HTTPD_RESP_USE_STRLEN);
+    bool first = true;
+    for (size_t i = 0; i < orb_app_count(); i++) {
+        const orb_app_t *a = orb_app_at(i);
+        if (!a || a->kind != ORB_APP_KIND_APP) continue;
+        char b[224], e_slug[2 * ORB_APP_SLUG_MAX], e_title[2 * 40];
+        json_put(e_slug, sizeof e_slug, a->slug);
+        json_put(e_title, sizeof e_title, a->title ? a->title : a->slug);
+        snprintf(b, sizeof b, "%s{\"slug\":\"%s\",\"title\":\"%s\",\"rotate\":%s}", first ? "" : ",",
+                 e_slug, e_title, orb_rotation_takes_part(a->slug) ? "true" : "false");
+        httpd_resp_send_chunk(req, b, HTTPD_RESP_USE_STRLEN);
+        first = false;
+    }
+    char t[96];
+    snprintf(t, sizeof t, "],\"rotate\":{\"on\":%s,\"every_s\":%lu}}", r.on ? "true" : "false",
+             (unsigned long)r.every_s);
+    httpd_resp_send_chunk(req, t, HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
+static esp_err_t h_carousel_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return carousel_send(req);
+}
+
+static esp_err_t h_carousel_post(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char body[640];
+    if (req->content_len >= sizeof body) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        return httpd_resp_sendstr(req, "{\"error\":\"the form is too long\"}");
+    }
+    int got = 0;
+    while (got < (int)req->content_len) {
+        const int r = httpd_req_recv(req, body + got, req->content_len - got);
+        if (r <= 0) { httpd_resp_set_status(req, "400 Bad Request");
+                      return httpd_resp_sendstr(req, "{\"error\":\"the form did not arrive\"}"); }
+        got += r;
+    }
+    body[got] = '\0';
+    char v[ORB_ROTATION_MAX * ORB_ROTATION_SLUG];
+    const char *why = NULL;
+    if (httpd_query_key_value(body, "order", v, sizeof v) == ESP_OK)
+        why = orb_rotation_set_order(v);
+    orb_rotation_t r;
+    orb_rotation_get(&r);
+    bool touched = false, on = r.on;
+    uint32_t every = r.every_s;
+    char apps[ORB_ROTATION_MAX * ORB_ROTATION_SLUG];
+    /* "apps=" with nothing after it is a real answer: no app takes part. */
+    const bool have_apps = strncmp(body, "apps=", 5) == 0 || strstr(body, "&apps=") != NULL;
+    if (have_apps && httpd_query_key_value(body, "apps", apps, sizeof apps) != ESP_OK) apps[0] = '\0';
+    if (httpd_query_key_value(body, "rotate", v, sizeof v) == ESP_OK) { on = v[0] == '1'; touched = true; }
+    if (httpd_query_key_value(body, "every_s", v, sizeof v) == ESP_OK) { every = (uint32_t)strtoul(v, NULL, 10); touched = true; }
+    if (!why && (touched || have_apps)) why = orb_rotation_set(on, every, have_apps ? apps : NULL);
+    if (why) {
+        char b[160], e[120];
+        json_put(e, sizeof e, why);
+        snprintf(b, sizeof b, "{\"error\":\"%s\"}", e);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, b);
+    }
+    return carousel_send(req);
+}
+
+/* GET /api/v1/apps/settings?id=<slug> — an app's settings as the hub draws them
+ * (app-platform-plan §57): its schema region verbatim (each setting's type, label,
+ * help, how it shows, its range, choices, unit) and every value now. A secret answers
+ * whether it is set and its last four characters, never itself. Writes stay
+ * POST /api/v1/apps/cfg. */
+static esp_err_t h_app_settings(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char id[ORB_APP_SLUG_MAX + 1] = "";
+    if (!q_param(req, "id", id, sizeof id)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "{\"error\":\"id is required\"}");
+    }
+    const orb_app_t *a = orb_app_find_slug(id);
+    if (!a || !a->installed) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "{\"error\":\"no such app\"}");
+    }
+    char b[256], e_slug[2 * ORB_APP_SLUG_MAX], e_title[2 * 40];
+    json_put(e_slug, sizeof e_slug, a->slug);
+    json_put(e_title, sizeof e_title, a->title ? a->title : "");
+    orb_units_t u;
+    orb_units_get(&u);
+    snprintf(b, sizeof b, "{\"slug\":\"%s\",\"title\":\"%s\",\"dist\":\"%s\",\"settings\":", e_slug,
+             e_title, orb_units_key(ORB_UNITS_DIST, u.dist));
+    httpd_resp_send_chunk(req, b, HTTPD_RESP_USE_STRLEN);
+    if (a->schema && a->schema_len) httpd_resp_send_chunk(req, a->schema, (ssize_t)a->schema_len);
+    else httpd_resp_send_chunk(req, "[]", 2);
+    httpd_resp_send_chunk(req, ",\"values\":{", HTTPD_RESP_USE_STRLEN);
+    const orb_svc_t *svc = orb_svc_table();
+    for (int i = 0; i < a->n_settings; i++) {
+        const orb_setting_desc_t *d = &a->settings[i];
+        const char *sep = i ? "," : "";
+        if (d->type == ORB_SET_SECRET) {
+            char hdr[ORB_APP_CRED_HDR_MAX + 1] = "", tail[5] = "";
+            const bool set = orb_app_cred_info(a, d->id, hdr, sizeof hdr, tail);
+            snprintf(b, sizeof b, "%s\"%s\":{\"set\":%s,\"tail\":\"%s\",\"host\":\"%s\",\"header\":\"%s\"}",
+                     sep, d->id, set ? "true" : "false", set ? tail : "", d->def_str, set ? hdr : "");
+        } else if (d->type == ORB_SET_STRING) {
+            char v[40] = "", ev[80];
+            if (svc->cfg_get_str((orb_app_t *)a, d->id, v, sizeof v) != ESP_OK)
+                snprintf(v, sizeof v, "%s", d->def_str);
+            json_put(ev, sizeof ev, v);
+            snprintf(b, sizeof b, "%s\"%s\":\"%s\"", sep, d->id, ev);
+        } else {
+            int32_t v = d->def;
+            (void)svc->cfg_get((orb_app_t *)a, d->id, &v);
+            snprintf(b, sizeof b, "%s\"%s\":%ld", sep, d->id, (long)v);
+        }
+        httpd_resp_send_chunk(req, b, HTTPD_RESP_USE_STRLEN);
+    }
+    httpd_resp_send_chunk(req, "}}", 2);
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
 static esp_err_t h_app_cfg_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -8507,10 +8665,10 @@ static esp_err_t net_start_httpd(void)
      * /api/v1/sd/design, the card's design read-back: textual 50, the ceiling stays 56.
      * v1.2.17's bench door /api/v1/debug/units_forget brings the textual count to 55: one
      * from the ceiling, so the next door raises it. radar-plan R0's /api/v1/debug/map_bench
-     * makes 56, and the ceiling moves to 64 for the places and maps doors that follow.
-     * radar-plan R1's /api/v1/places GET and POST make 58; R3's /api/v1/places/maps 59, and
-     * its bench doors map_view and png_bench 61; R3c's /api/v1/debug/live 62. */
-    cfg.max_uri_handlers  = 64;
+     * and v1.2.19's /api/v1/apps/settings (§57) each took the ceiling to 64; with the radar's
+     * places, maps and bench doors (radar-plan R1-R3c) and §59's /api/v1/carousel the merged
+     * table is 65 textual, so the ceiling moves to 72. */
+    cfg.max_uri_handlers  = 72;
     /* 8192, not the 4096 HTTPD_DEFAULT_CONFIG() ships (esp_http_server.h:57). The
      * theme routes put a FATFS file operation on this task: f_open/f_write walk the
      * FAT with their own buffers, and the OTA chunk and upload receive buffers are
@@ -8691,6 +8849,9 @@ static esp_err_t net_start_httpd(void)
         { .uri = "/api/v1/apps/clear", .method = HTTP_POST, .handler = h_app_clear },
         { .uri = "/api/v1/apps/cfg",  .method = HTTP_POST, .handler = h_app_cfg },
         { .uri = "/api/v1/apps/cfg",  .method = HTTP_GET,  .handler = h_app_cfg_get },
+        { .uri = "/api/v1/carousel",    .method = HTTP_GET,  .handler = h_carousel_get },
+        { .uri = "/api/v1/carousel",    .method = HTTP_POST, .handler = h_carousel_post },
+        { .uri = "/api/v1/apps/settings", .method = HTTP_GET, .handler = h_app_settings },
         { .uri = "/api/v1/sd/app",      .method = HTTP_POST, .handler = h_app_upload },
         { .uri = "/api/v1/sd",          .method = HTTP_GET,  .handler = h_sd },
         { .uri = "/api/v1/sd/theme",    .method = HTTP_POST, .handler = h_theme_upload },

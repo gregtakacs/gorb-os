@@ -46,10 +46,10 @@ bool rd_list_token(rd_list_t *l, const orb_json_tok_t *t);
 /* A list the radar can show: at least one past frame, in time order, 600 s apart. */
 bool rd_list_ok(const rd_list_t *l);
 
-/* `source` (no trailing slash) + the frame's path + "/512/{z}/{lat}/{lon}/255/{s}_0.png",
+/* `source` (no trailing slash) + the frame's path + "/{side}/{z}/{lat}/{lon}/255/{s}_0.png",
  * lat and lon to four decimals, rounded half away from zero, s 1 for the server's
  * smoothing. Answers the length, 0 when it does not fit. */
-size_t rd_frame_url(char *buf, size_t cap, const char *source, const char *path, int z,
+size_t rd_frame_url(char *buf, size_t cap, const char *source, const char *path, int side, int z,
                     int32_t lat_e6, int32_t lon_e6, bool smooth);
 size_t rd_list_url(char *buf, size_t cap, const char *source);
 
@@ -73,10 +73,15 @@ static inline int rd_map_z(int step) { return RD_MAP_Z0 + step; }
 static inline int rd_img_z(int step) { const int z = RD_MAP_Z0 - 1 + step; return z < RD_IMG_ZMAX ? z : RD_IMG_ZMAX; }
 /* The magnification a step draws its frame at: 1 to Local, then 2, 4, 8. */
 static inline int rd_img_k(int step) { const int d = RD_MAP_Z0 - 1 + step - RD_IMG_ZMAX; return d > 0 ? 1 << d : 1; }
+/* A magnified step draws at most 466 / 2 px of its frame, so it asks for a 256 px image one
+ * zoom deeper: the 512's centre pixel for pixel (LibreWXR, benched 2026-11-08), a third the
+ * bytes, so a stormy day's 18 frames fit the OS's 768 KB (owner: the loop went back an hour). */
+static inline int rd_img_side(int step) { return rd_img_k(step) > 1 ? RD_IMG / 2 : RD_IMG; }
+static inline int rd_img_zurl(int step) { return rd_img_z(step) + (rd_img_k(step) > 1); }
 /* The draw window of a frame magnified k times (k > 1): the source pixel sx, sy that starts
  * it and the glass offset dx, dy (<= 0) that places it, so the place's point in the image
  * lands on the glass's centre to within half a glass pixel. */
-void rd_window_k(int z, int k, int32_t img_lat_e6, int32_t img_lon_e6, int32_t map_lat_e6,
+void rd_window_k(int z, int k, int side, int32_t img_lat_e6, int32_t img_lon_e6, int32_t map_lat_e6,
                  int32_t map_lon_e6, int32_t *sx, int32_t *sy, int32_t *dx, int32_t *dy);
 /* The view's radius, centre to the glass's edge, so the map draws at its level's own scale. */
 int32_t rd_radius_m(int step, int32_t lat_e6);

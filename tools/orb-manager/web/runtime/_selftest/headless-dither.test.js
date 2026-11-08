@@ -169,7 +169,9 @@ function rows(wk) {
   // OS v1.2.12: the glass ships as the panel's masked disc, and the preview as its own disc
   ok(hex(spriteBytes(wk, r.over)) === hex(B.discPackMasked(new Uint8Array([...B.rgb565Plane(O.rgba, W, W, { x: 0, y: 0 }), ...B.alphaPlane(O.rgba, W, W, { x: 0, y: 0 })]), W)),
      'the crystal overlay ships dithered, colour and alpha');
-  ok(hex(spriteBytes(wk, r.prev)) === hex(B.discPack(B.rgb565Plane(V.rgba, 232, 232, { x: 0, y: 0 }), 232)), 'the preview ships dithered');
+  // §60: and deflated when that is smaller; what it inflates to is the dithered disc
+  const pvDisc = B.discPack(B.rgb565Plane(V.rgba, 232, 232, { x: 0, y: 0 }), 232), pvZ = B.zlibFixed(pvDisc);
+  ok(hex(spriteBytes(wk, r.prev)) === hex(pvZ.length < pvDisc.length ? pvZ : pvDisc), 'the preview ships dithered');
   const hb = spriteBytes(wk, r.hand);
   ok(hex(hb.subarray(0, 39 * 201 * 2)) === hex(B.rgb565Plane(H.rgba, 39, 201)), 'a hand ships truncated: an arm is not dithered unless it asks');
   const off = walk(base({ dither: false })), r2 = rows(off);

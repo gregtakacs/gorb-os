@@ -621,6 +621,60 @@
     return n;
   }
   function discBytes(side) { return discPx(side) * 2; }
+
+  /* §60 (owner, 2026-11-07): a preview is the whole glass, stored as its disc and deflated,
+   * and the orb inflates it with the ROM's own tinfl (orb_theme.c). This is that stream: a
+   * zlib wrapper round one fixed-Huffman deflate block, matches found by a hash chain. It is
+   * deterministic, so a re-bake of an untouched design is the same bytes in any browser and
+   * in node; fixed codes cost ~15% over zlib's dynamic ones, measured on Gold's own frames. */
+  var LEN_BASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+  var LEN_EXTRA = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+  var DIST_BASE = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073,
+    4097, 6145, 8193, 12289, 16385, 24577];
+  var DIST_EXTRA = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+  function zlibFixed(data) {
+    var out = [], bb = 0, bc = 0;
+    var put = function (v, n) { bb |= v << bc; bc += n; while (bc >= 8) { out.push(bb & 255); bb >>>= 8; bc -= 8; } };
+    var rev = function (c, n) { var r = 0; for (var i = 0; i < n; i++) { r = (r << 1) | (c & 1); c >>= 1; } return r; };
+    var sym = function (v) {                        /* RFC 1951 §3.2.6's fixed codes */
+      if (v < 144) put(rev(0x30 + v, 8), 8);
+      else if (v < 256) put(rev(0x190 + v - 144, 9), 9);
+      else if (v < 280) put(rev(v - 256, 7), 7);
+      else put(rev(0xC0 + v - 280, 8), 8);
+    };
+    var match = function (len, dist) {
+      var li = 28; while (LEN_BASE[li] > len) li--;
+      sym(257 + li); if (LEN_EXTRA[li]) put(len - LEN_BASE[li], LEN_EXTRA[li]);
+      var di = 29; while (DIST_BASE[di] > dist) di--;
+      put(rev(di, 5), 5); if (DIST_EXTRA[di]) put(dist - DIST_BASE[di], DIST_EXTRA[di]);
+    };
+    out.push(0x78, 0x01);                           /* CMF/FLG: deflate, 32 K window */
+    put(1, 1); put(1, 2);                           /* the one block, final, fixed codes */
+    var n = data.length, WIN = 32768, HB = 15, head = new Int32Array(1 << HB).fill(-1), prev = new Int32Array(WIN);
+    var hash = function (i) { return ((data[i] << 10) ^ (data[i + 1] << 5) ^ data[i + 2]) & ((1 << HB) - 1); };
+    var insert = function (i) { if (i + 2 < n) { var h = hash(i); prev[i & (WIN - 1)] = head[h]; head[h] = i; } };
+    for (var i = 0; i < n;) {
+      var best = 0, bestD = 0;
+      if (i + 2 < n) {
+        var c = head[hash(i)], chain = 64, max = Math.min(258, n - i);
+        while (c >= 0 && i - c <= WIN - 1 && chain-- > 0) {
+          if (data[c + best] === data[i + best]) {
+            var l = 0; while (l < max && data[c + l] === data[i + l]) l++;
+            if (l > best) { best = l; bestD = i - c; if (l === max) break; }
+          }
+          c = prev[c & (WIN - 1)];
+        }
+      }
+      if (best >= 3) { match(best, bestD); for (var k = 0; k < best; k++) insert(i + k); i += best; }
+      else { sym(data[i]); insert(i); i++; }
+    }
+    sym(256);
+    if (bc) out.push(bb & 255);
+    var a = 1, b = 0;                               /* Adler-32, big-endian */
+    for (var j = 0; j < n; j++) { a = (a + data[j]) % 65521; b = (b + a) % 65521; }
+    out.push((b >>> 8) & 255, b & 255, (a >>> 8) & 255, a & 255);
+    return new Uint8Array(out);
+  }
   // a square plane (`bpp` bytes a pixel, 2 by default) to its disc
   function discPack(sq, side, bpp) {
     side = side || DISC_SIDE; bpp = bpp || 2;
@@ -3685,12 +3739,16 @@
       if (pp.w !== pp.h)
         throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ': a preview is a square, so the OS card slot is a square — ' +
           'a non-square plane reads as a wrong bake, not a wrong panel');
-      if (pp.w > (scrW >> 1) || pp.h > (scrH >> 1))
-        throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ' on a ' + scrW + 'x' + scrH + ' panel: the shell reads a preview ' +
-          'into one buffer sized for the half-res of the glass, and a plane past it cannot be held');
+      if (pp.w > scrW || pp.h > scrH)
+        throw new Error('a preview plane of ' + pp.w + 'x' + pp.h + ' on a ' + scrW + 'x' + scrH + ' panel: a preview is at most ' +
+          'the glass itself (§60), and a plane past it cannot be held');
       var pb = bank3([pp], { alpha: false, dither: o.dither === false ? null : { x: 0, y: 0 } });   // RGB565 only: w*h*2 B, the exception orb_asset_slot_bytes names
-      // OS v1.2.12: stored as its disc (orb_disc.h), so the picker shows it round
+      // OS v1.2.12: stored as its disc (orb_disc.h), so the picker shows it round; §60: and
+      // deflated, whenever that is smaller (it is the whole glass now, and the card reads
+      // ~0.4 MB/s), the orb telling the two apart by the size alone
       var pd = discPack(pb.art, pp.w);
+      var pz = zlibFixed(pd);
+      if (pz.length < pd.length) pd = pz;
       pb = { art: pd, sprites: [{ size: pd.length }] };
       bank.art = concat([bank.art, pb.art]);
       bank.sprites.push({ off: bank.size, size: pb.sprites[0].size, w: pp.w, h: pp.h });
@@ -5376,6 +5434,7 @@
     pointerDefault3: pointerDefault3,
     // D39: the sound vocabulary and the mirror of the dial's sound refusals.
     SOUND_SLOTS: SOUND_SLOTS, HOUR_PATTERNS: HOUR_PATTERNS, CLASS_SOUND: CLASS_SOUND, CLASS_VALUES: CLASS_VALUES,
+    zlibFixed: zlibFixed,
     discSpan: discSpan, discPx: discPx, discBytes: discBytes, discPack: discPack, discPackMasked: discPackMasked,
     adpcmEncode: adpcmEncode, adpcmDecode: adpcmDecode, soundEncode: soundEncode, soundBytes: soundBytes,
     checkClockSounds: checkClockSounds

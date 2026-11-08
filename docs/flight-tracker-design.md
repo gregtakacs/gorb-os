@@ -1099,10 +1099,11 @@ with the shadow at its largest on the widest padding and with it off.
   library** under Send, under the theme's name. **Send to orb** saves the design first,
   quietly, so a send the orb refuses still leaves it in the library; the hub keeps the baked
   theme beside it once the orb has stored it, as before.
-- **App settings.** The flights editor region carries `settings.json`: the `key` secret's
-  label, help, links (adsb.lol/feed, where a key is earned by feeding, and the API README)
-  and header. The hub's App settings page reads it through the editor door, so the hub names
-  no app or service of its own.
+- **App settings.** The `key` secret's label, help, links (adsb.lol/feed, where a key is
+  earned by feeding, and the API README) and header are declared in `app.json` (they were in
+  the editor region's `settings.json` until app-platform-plan §57, flights v1.4.0, retired it).
+  The hub's App settings page reads them from the orb's `/api/v1/apps/settings`, so the hub
+  names no app or service of its own.
 
 `bake_check.py`: 24 themes, with an arrow on grey ground traffic, and a trail on the
 author's own picture under a shadow.

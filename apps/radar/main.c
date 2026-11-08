@@ -217,7 +217,7 @@ static void net_step(bool visible)
         if (i < 0) return;
         const where_t *w = here();
         char url[200], hdr[48] = "";
-        if (!rd_frame_url(url, sizeof url, s_source, F[i].path, rd_img_z(s_zoom), w->lat_e6, w->lon_e6,
+        if (!rd_frame_url(url, sizeof url, s_source, F[i].path, rd_img_side(s_zoom), rd_img_zurl(s_zoom), w->lat_e6, w->lon_e6,
                           false)) { F[i].failed = true; return; }
         if (F[i].recheck && F[i].slot >= 0 && F[i].etag[0]) {
             memcpy(hdr, "If-None-Match: ", 15);
@@ -373,6 +373,10 @@ static bool    s_visible, s_layers;
 static bool    s_play = true;                  /* untouched: the loop plays */
 static int     s_loop = 0;                     /* the loop's frame, an index into F */
 static int64_t s_loop_ms, s_zoom_said_ms;
+/* A press's new place, said at once in the large pill until its map is up (owner,
+ * 2026-11-08: seconds with no sign the press took, so a second press went one further). */
+static int64_t s_flip_ms;
+#define FLIP_SAY_MS 1200
 static int32_t s_sx, s_sy, s_dx, s_dy;         /* the frames' draw window */
 
 static void pose(int32_t row, int x, int y)
@@ -488,7 +492,9 @@ static void draw_ui(void)
      * map); a theme without the large row says it on the status line */
     const bool zooming = s_zoom_want >= 0 || up_ms() - s_zoom_said_ms < 2000;
     const int zs = s_zoom_want >= 0 ? s_zoom_want : s_zoom;
-    if (R_zoom >= 0 && zooming && w) {
+    if (R_zoom >= 0 && s_flip_ms && w && !zooming) {
+        say(R_zoom, CX, CY + 62, w->name, 0);
+    } else if (R_zoom >= 0 && zooming && w) {
         char zb[40];
         rd_range_text(b, sizeof b, rd_radius_m(zs, w->lat_e6), s_units.dist);
         snprintf(zb, sizeof zb, "%s  %s", ZOOM[zs], b);
@@ -508,7 +514,8 @@ static void draw_ui(void)
         st = b;
     }
     say(R_status, CX, 362, st, 0);
-    draw_names();
+    if (s_flip_ms) for (int k = 0; k < N_NAMES; k++) hide(R_name[k]);   /* the old map's */
+    else draw_names();
 }
 
 /* A new place or zoom. The frames go with a place, or with a zoom that fetches another
@@ -519,7 +526,7 @@ static void window_set(void)
     if (!w) return;
     const int k = rd_img_k(s_zoom);
     s_dx = s_dy = 0;
-    if (k > 1) rd_window_k(rd_img_z(s_zoom), k, w->lat_e6, w->lon_e6, w->lat_e6, w->lon_e6, &s_sx, &s_sy, &s_dx, &s_dy);
+    if (k > 1) rd_window_k(rd_img_z(s_zoom), k, rd_img_side(s_zoom), w->lat_e6, w->lon_e6, w->lat_e6, w->lon_e6, &s_sx, &s_sy, &s_dx, &s_dy);
     else rd_window(rd_img_z(s_zoom), w->lat_e6, w->lon_e6, w->lat_e6, w->lon_e6, &s_sx, &s_sy);
 }
 
@@ -544,6 +551,8 @@ static void view_changed(bool frames)
 static void place_changed(void)
 {
     view_changed(true);
+    if (s_layers) orb_stage_live(1, V.rain_order, 0);   /* the old place's rain goes at once */
+    s_shown = -1;
 }
 
 /* The loop (§2.5): oldest held past frame to Now, 250 ms a step, Now held 2 s. */
@@ -685,7 +694,13 @@ ORB_EXPORT("orb_service") void orb_service(void)
     if (orb_maps_gen() != s_maps_gen && here()) { view_open(); }
     if (orb_units_gen() != s_units_gen) { orb_units(&s_units); s_units_gen = orb_units_gen(); s_ui_dirty = true; }
     if (moved) place_changed();
-    orb_dial_range(&s_dial, -(s_npast > 0 ? s_npast - 1 : 0), s_nnow);
+    /* The scrub reaches back only as far as frames the loop can show: past ones given up
+     * for room are no stop on the dial (owner: blank frames behind the loop's start). */
+    int oldest = idx_newest();
+    while (oldest > 0 && !F[oldest - 1].failed) oldest--;
+    int ahead = 0;
+    while (ahead < s_nnow && !F[s_npast + ahead].failed) ahead++;
+    orb_dial_range(&s_dial, -(s_npast > 0 ? idx_newest() - oldest : 0), ahead);
     if (orb_dial_idle(&s_dial, up_ms()) || (!s_play && !s_dial.pos && up_ms() - s_dial.last_ms > ORB_DIAL_IDLE_MS)) {
         s_play = true;                                   /* §51: a glance plays the loop */
         s_ui_dirty = s_rain_dirty = true;
@@ -694,6 +709,10 @@ ORB_EXPORT("orb_service") void orb_service(void)
     if (s_visible && !s_themed && up_ms() >= s_stage_retry_ms) { stage_read(); s_layers = false; s_map_dirty = s_rain_dirty = s_ui_dirty = true; }
     if (s_map_retry_ms && up_ms() >= s_map_retry_ms) { s_map_retry_ms = 0; view_open(); }
     view_step();
+    if (s_flip_ms && ((!s_view_next && up_ms() - s_flip_ms > FLIP_SAY_MS) || up_ms() - s_flip_ms > 10000)) {
+        s_flip_ms = 0;                                   /* the new map is up: the pill goes */
+        s_ui_dirty = true;
+    }
     net_step(s_visible && s_zoom_want < 0);             /* nothing fetched while choosing */
     if (s_visible) redraw();
 }
@@ -717,7 +736,10 @@ ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
     }
     if (pressed && s_nwhere > 1) {
         s_sel = (s_sel + 1) % s_nwhere;
+        s_flip_ms = up_ms();
+        s_ui_dirty = true;
         place_changed();
+        orb_burst(1500);
     }
     if (delta) {
         if (s_play) { s_play = false; orb_dial_home(&s_dial); }
@@ -756,27 +778,8 @@ static void zoom_step(void)
     s_zoom_said_ms = up_ms();
     s_ui_dirty = true;
     if (z != s_zoom) {
-        const bool frames = rd_img_z(z) != rd_img_z(s_zoom);
+        const bool frames = rd_img_zurl(z) != rd_img_zurl(s_zoom);
         s_zoom = z;
         view_changed(frames);
     }
-}
-
-/* ---- the options page: the zoom it starts at ----------------------------------------- */
-
-ORB_EXPORT("orb_opt_count") int32_t orb_opt_count(void) { return 1; }
-ORB_EXPORT("orb_opt_label") void orb_opt_label(int32_t idx) { orb_reply(idx == 0 ? "Zoom" : ""); }
-ORB_EXPORT("orb_opt_value") void orb_opt_value(int32_t idx)
-{
-    int32_t z = 1;
-    orb_cfg_get("zoom", &z);
-    orb_reply(idx == 0 && z >= 0 && z < RD_ZOOMS ? ZOOM[z] : "");
-}
-ORB_EXPORT("orb_opt_arm") void orb_opt_arm(int32_t armed) { (void)armed; }
-ORB_EXPORT("orb_opt_sel") void orb_opt_sel(int32_t idx)
-{
-    if (idx != 0) return;
-    int32_t z = 1;
-    orb_cfg_get("zoom", &z);
-    orb_cfg_set("zoom", (z + 1) % RD_ZOOMS);
 }

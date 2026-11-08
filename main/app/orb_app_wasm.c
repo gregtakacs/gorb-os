@@ -42,11 +42,13 @@
 #include "orb_app.h"            /* orb_app_t, orb_app_iface_t, ORB_APP_CAP, flash_slot */
 #include "orb_svc.h"            /* orb_svc_table() — the imports forward to it */
 #include "orb_ui.h"             /* the widget and canvas service behind ui_* / cv_* */
+#include "orb_setui.h"          /* §57: the settings schema the option page is drawn from */
 #include "orb_app_net.h"        /* the HTTPS service and credential store behind net_* */
 #include "orb_stage.h"         /* the stage behind stage_* (D50) */
 #include "orb_sound.h"          /* the owner's sound settings, the voices the stage leases */
 #include "orb_clock3.h"         /* clk_sound_t: the theme records the stage hands over */
 #include "orb_theme.h"          /* orb_theme_live_slug: whose theme the stage draws */
+#include "orb_inflate.h"        /* §61: an icon's bytes are checked before they are kept */
 #include "orb_sched.h"          /* orb_sched_burst, behind orb.burst */
 #include "knob_accel.h"         /* a dial app's turns, accelerated (plan §51) */
 #include "orb_units.h"     /* orb_units, behind orb.units (free) */
@@ -86,7 +88,6 @@ static const char *TAG = "appwasm";
 enum {
     W_INIT = 0, W_ACTIVATE, W_TICK, W_SUSPEND, W_RESUME, W_INPUT, W_SERVICE,
     W_SHOW, W_SET_ARMED,
-    W_OPT_COUNT, W_OPT_KIND, W_OPT_LABEL, W_OPT_VALUE, W_OPT_INC, W_OPT_SEL, W_OPT_ARM,
     W_PUSH,      /* radar-plan §2.10, appended so every earlier index stands */
     W_COUNT
 };
@@ -109,13 +110,6 @@ static const wasm_entry_t s_entries[W_COUNT] = {
     [W_SERVICE]   = { "orb_service",   false },
     [W_SHOW]      = { "orb_show",      false },
     [W_SET_ARMED] = { "orb_set_armed", false },
-    [W_OPT_COUNT] = { "orb_opt_count", false },
-    [W_OPT_KIND]  = { "orb_opt_kind",  false },
-    [W_OPT_LABEL] = { "orb_opt_label", false },
-    [W_OPT_VALUE] = { "orb_opt_value", false },
-    [W_OPT_INC]   = { "orb_opt_inc",   false },
-    [W_OPT_SEL]   = { "orb_opt_sel",   false },
-    [W_OPT_ARM]   = { "orb_opt_arm",   false },
     [W_PUSH]      = { "orb_push",      false },   /* radar-plan §2.10: having it is the opt-in */
 };
 
@@ -168,7 +162,6 @@ typedef struct {
     bool           on_glass;     /* between activate/resume and suspend */
     uint32_t       beat_ms;      /* the beat the broker granted, 0 = none */
     lv_timer_t    *beat;         /* runs orb_tick while on the glass */
-    char          *reply;        /* where orb_reply lands during an opt call */
     char           label[REPLY_MAX], value[REPLY_MAX];
     struct cfg_ent *cfg;         /* the settings mirror, one per declared setting */
     uint32_t       cfg_seen;     /* the broker's cfg_gen the mirror was read at */
@@ -176,9 +169,14 @@ typedef struct {
     uint32_t       cfg_pending;  /* writes posted to the worker, not yet landed */
     bool           cfg_stale;    /* a posted write was refused: re-read at next call */
     bool           stage;        /* the live theme is this app's: it owns the stage */
+    uint8_t       *icon;         /* §61: the app's icon (orb.icon), deflated disc, PSRAM */
+    uint32_t       icon_n;
+    uint16_t       icon_side;
 } wasm_slot_t;
 
 static wasm_slot_t s_slot[WASM_N_SLOTS];
+
+static wasm_slot_t *slot_of_app(const orb_app_t *app);
 
 /* m3 hands a raw import the runtime, not the app. This finds the slot a runtime came
  * from so the import can forward to the broker with its real caller. Linear over 8 —
@@ -208,6 +206,7 @@ static void slot_release(wasm_slot_t *s)
     if (s->env) m3_FreeEnvironment(s->env);
     if (s->code) heap_caps_free(s->code);
     if (s->cfg) heap_caps_free(s->cfg);
+    if (s->icon) heap_caps_free(s->icon);
     memset(s, 0, sizeof *s);
 }
 
@@ -867,19 +866,6 @@ m3ApiRawFunction(imp_knob_dial)              /* void knob_dial(void) */
     m3ApiSuccess();
 }
 
-/* option pages: the answer to an opt_label/opt_value call, copied while it runs */
-
-m3ApiRawFunction(imp_reply)                  /* void reply(const char *s) */
-{
-    CALLER();
-    GET_STR(text);
-    if (s->reply && text) {
-        strncpy(s->reply, text, REPLY_MAX - 1);
-        s->reply[REPLY_MAX - 1] = '\0';
-    }
-    m3ApiSuccess();
-}
-
 /* sound, location, power: the broker's own gates (CAP_SOUND, CAP_LOCATION, CAP_POWER) */
 
 m3ApiRawFunction(imp_sound_play)             /* i32 sound_play(u32 slot, u32 flags, u32 delay) */
@@ -1515,6 +1501,51 @@ m3ApiRawFunction(imp_stage_snd_play)          /* i32 stage_snd_play(i, flags, i6
     m3ApiReturn(STAGE_ON(s) ? stage_snd_play(i, flags, at, anchor) : -1);
 }
 
+m3ApiRawFunction(imp_stage_snd_play_v)        /* i32 stage_snd_play_v(i, flags, i64 at, i64 anchor, vol) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArg(int32_t, i);
+    m3ApiGetArg(uint32_t, flags);
+    m3ApiGetArg(int64_t, at);
+    m3ApiGetArg(int64_t, anchor);
+    m3ApiGetArg(int32_t, vol);
+    m3ApiReturn(STAGE_ON(s) ? stage_snd_play_v(i, flags, at, anchor, vol) : -1);
+}
+
+/* §61: the app's own picture for the carousel, for an app with no theme to show: its disc,
+ * deflated (orbsdk compiles app.json's "icon" in, and orb_init hands it over with ORB_ICON).
+ * Copied out of the module's memory, so the app may forget it. 0, or -1 for bytes that are
+ * not a disc the OS can draw. */
+#define ICON_MAX_BYTES (96u * 1024u)
+m3ApiRawFunction(imp_icon)                    /* i32 icon(const void *z, u32 n, u32 side) */
+{
+    m3ApiReturnType(int32_t);
+    CALLER();
+    m3ApiGetArgMem(const uint8_t *, z);
+    m3ApiGetArg(uint32_t, n);
+    m3ApiGetArg(uint32_t, side);
+    if (n < 6 || n > ICON_MAX_BYTES || side < 64 || side > 466) m3ApiReturn(-1);     /* the glass */
+    m3ApiCheckMem(z, n);
+    if (!orb_inflate_head_ok(z, n)) m3ApiReturn(-1);
+    uint8_t *copy = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!copy) m3ApiReturn(-1);
+    memcpy(copy, z, n);
+    if (s->icon) heap_caps_free(s->icon);
+    s->icon = copy;
+    s->icon_n = n;
+    s->icon_side = (uint16_t)side;
+    m3ApiReturn(0);
+}
+
+bool orb_wasm_icon(const orb_app_t *app, const uint8_t **z, uint32_t *n, uint16_t *side)
+{
+    const wasm_slot_t *s = slot_of_app(app);
+    if (!s || !s->icon) return false;
+    *z = s->icon; *n = s->icon_n; *side = s->icon_side;
+    return true;
+}
+
 m3ApiRawFunction(imp_stage_snd_stop)
 {
     CALLER();
@@ -1613,7 +1644,6 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "cv_line",       "v(iiiiii)", imp_cv_line },
     { "orb", "cv_text",       "v(iiiiiii)", imp_cv_text },
     { "orb", "cv_flush",      "v(i)",      imp_cv_flush },
-    { "orb", "reply",         "v(i)",      imp_reply },
     { "orb", "armed",         "v(i)",      imp_armed },
     { "orb", "knob_dial",     "v()",       imp_knob_dial },
     { "orb", "sound_play",    "i(iii)",    imp_sound_play },
@@ -1663,7 +1693,9 @@ static const wasm_bind_t s_binds[] = {
     { "orb", "stage_snd_cfg",      "v(i)",     imp_stage_snd_cfg },
     { "orb", "stage_snd_quiet",    "i(i)",     imp_stage_snd_quiet },
     { "orb", "stage_snd_play",     "i(iiII)",  imp_stage_snd_play },
+    { "orb", "stage_snd_play_v",   "i(iiIIi)", imp_stage_snd_play_v },
     { "orb", "stage_snd_stop",     "v(i)",     imp_stage_snd_stop },
+    { "orb", "icon",               "i(iii)",   imp_icon },
     { "orb", "stage_snd_active",   "i(i)",     imp_stage_snd_active },
     { "orb", "stage_snd_reanchor", "v(iI)",    imp_stage_snd_reanchor },
     { "orb", "sin",           "F(F)",      imp_sin },
@@ -1954,6 +1986,12 @@ static void wasm_set_armed(orb_app_t *app, bool armed)
     s->armed = wasm_call_i32(s, W_SET_ARMED, argv, 1, 0) != 0;
 }
 
+/* While something of the OS's wants PSRAM (the theme carousel, §61), an app off the glass
+ * gives back its kept bodies and maps at once, not 15 minutes on (owner, 2026-11-08). */
+#define ROOM_HOLD_US (2 * 1000000)
+static int64_t s_room_us;
+void orb_app_want_room(void) { s_room_us = esp_timer_get_time(); }
+
 static void wasm_service(orb_app_t *app)
 {
     wasm_slot_t *s = slot_of_app(app);
@@ -1961,6 +1999,10 @@ static void wasm_service(orb_app_t *app)
     if (s) {
         /* radar-plan §2.3/§2.4: an app's kept bodies and maps go 15 min off the glass. */
         const int64_t now = esp_timer_get_time();
+        if (!s->on_glass && s_room_us && now - s_room_us < ROOM_HOLD_US) {
+            if (orb_blob_used(slot_index(s))) orb_blob_free_all(slot_index(s));
+            orb_map_drop(slot_index(s));
+        }
         orb_blob_note_glass(slot_index(s), s->on_glass, now);
         orb_map_note_glass(slot_index(s), s->on_glass, now);
     }
@@ -1986,73 +2028,211 @@ void orb_wasm_tick(orb_app_t *app, uint32_t now_ms)
     (void)wasm_call(s, W_TICK, argv, 1);
 }
 
-/* ---- the option page: the menu draws, the guest answers ---------------------- */
+/* ---- the option page: the OS draws it from the app's schema (§57) -------------
+ *
+ * The app declares its settings in app.json and the container carries the schema;
+ * orb_app.c parsed it into app->ui. The page's rows are the settings shown on the
+ * dial, in the manifest's order: a multi is a group whose items are its choices, and
+ * when a setting is the hub's alone a last row says where it is. Values read from the
+ * settings mirror and write through it (mirror_post, on the jobs worker), so the app
+ * hears the change as it hears any other: orb_cfg_gen moves. The guest writes no page
+ * code and answers no row. */
+
+#define PAGE_MAX 64                      /* 16 settings, a multi's 16 choices each, the note */
+enum { PG_SET = 0, PG_GROUP, PG_ITEM, PG_HUB };
+typedef struct { uint8_t kind, row, choice; } page_row_t;
+
+static int page_rows(const orb_app_t *app, page_row_t *out)
+{
+    const orb_setui_t *ui = app ? app->ui : NULL;
+    if (!ui) return 0;
+    int n = 0;
+    bool hub_only = false;
+    for (int i = 0; i < ui->n && n < PAGE_MAX; i++) {
+        const orb_setui_row_t *r = &ui->row[i];
+        if (!(r->show & ORB_SETUI_DIAL)) { hub_only |= (r->show & ORB_SETUI_HUB) != 0; continue; }
+        if (r->type == ORB_SETUI_MULTI) {
+            out[n++] = (page_row_t){ PG_GROUP, (uint8_t)i, 0 };
+            for (int c = 0; c < r->n_choices && n < PAGE_MAX; c++)
+                out[n++] = (page_row_t){ PG_ITEM, (uint8_t)i, (uint8_t)c };
+        } else out[n++] = (page_row_t){ PG_SET, (uint8_t)i, 0 };
+    }
+    if (hub_only && n < PAGE_MAX) out[n++] = (page_row_t){ PG_HUB, 0, 0 };
+    return n;
+}
+
+static bool page_at(orb_app_t *app, int idx, page_row_t *pr)
+{
+    page_row_t rows[PAGE_MAX];
+    const int n = page_rows(app, rows);
+    if (idx < 0 || idx >= n) return false;
+    *pr = rows[idx];
+    return true;
+}
+
+/* The mirror's entry for a schema row: its index in the settings table, by id. */
+static int page_cfg(wasm_slot_t *s, const orb_setui_row_t *r)
+{
+    if (!s || !s->app) return -1;
+    mirror_sync(s);
+    if (!s->cfg) mirror_load(s);
+    return mirror_find(s, r->id, false);
+}
+
+static int page_dist(void)
+{
+    orb_units_t u;
+    orb_units_get(&u);
+    return u.dist;
+}
 
 static int wasm_opt_count(orb_app_t *app)
 {
-    wasm_slot_t *s = slot_of_app(app);
-    return s && s->rt ? (int)wasm_call_i32(s, W_OPT_COUNT, NULL, 0, 0) : 0;
+    page_row_t rows[PAGE_MAX];
+    return page_rows(app, rows);
 }
 
 static orb_opt_kind_t wasm_opt_kind(orb_app_t *app, int idx)
 {
-    wasm_slot_t *s = slot_of_app(app);
-    if (!s || !s->rt) return OPT_ROW;
-    uint32_t a = (uint32_t)idx;
-    const void *argv[1] = { &a };
-    const int32_t k = wasm_call_i32(s, W_OPT_KIND, argv, 1, OPT_ROW);
-    return k == OPT_GROUP || k == OPT_ITEM ? (orb_opt_kind_t)k : OPT_ROW;
-}
-
-static const char *wasm_opt_text(orb_app_t *app, int entry, int idx, bool label)
-{
-    wasm_slot_t *s = slot_of_app(app);
-    if (!s || !s->rt) return "";
-    char *buf = label ? s->label : s->value;
-    buf[0] = '\0';
-    s->reply = buf;
-    uint32_t a = (uint32_t)idx;
-    const void *argv[1] = { &a };
-    (void)wasm_call(s, entry, argv, 1);
-    s->reply = NULL;
-    return buf;
+    page_row_t pr;
+    if (!page_at(app, idx, &pr)) return OPT_ROW;
+    return pr.kind == PG_GROUP ? OPT_GROUP : pr.kind == PG_ITEM ? OPT_ITEM : OPT_ROW;
 }
 
 static const char *wasm_opt_label(orb_app_t *app, int idx)
 {
-    return wasm_opt_text(app, W_OPT_LABEL, idx, true);
+    wasm_slot_t *s = slot_of_app(app);
+    page_row_t pr;
+    if (!s || !page_at(app, idx, &pr)) return "";
+    if (pr.kind == PG_HUB) return "More on Orb Manager";
+    const orb_setui_row_t *r = &app->ui->row[pr.row];
+    if (pr.kind == PG_ITEM) {
+        snprintf(s->label, REPLY_MAX, "%s", orb_setui_choice(app->ui, r, pr.choice, page_dist()));
+        return s->label;
+    }
+    return r->label;
+}
+
+/* A stored value as the row shows it; a multi's item reads its own bit. */
+static const char *page_text(orb_app_t *app, wasm_slot_t *s, const page_row_t *pr, int32_t v)
+{
+    const orb_setui_row_t *r = &app->ui->row[pr->row];
+    if (pr->kind == PG_ITEM) snprintf(s->value, REPLY_MAX, "%s", (v >> pr->choice) & 1 ? "on" : "off");
+    else orb_setui_value(app->ui, r, v, page_dist(), s->value, REPLY_MAX);
+    return s->value;
 }
 
 static const char *wasm_opt_value(orb_app_t *app, int idx)
 {
-    return wasm_opt_text(app, W_OPT_VALUE, idx, false);
+    wasm_slot_t *s = slot_of_app(app);
+    page_row_t pr;
+    if (!s || !page_at(app, idx, &pr) || pr.kind == PG_HUB) return "";
+    const int i = page_cfg(s, &app->ui->row[pr.row]);
+    return i < 0 ? "" : page_text(app, s, &pr, s->cfg[i].v);
 }
 
-static void wasm_opt_inc(orb_app_t *app, int idx, int32_t steps)
+/* The knob edits a row in its own steps: 0..n over min..max for a number, the choices
+ * for an enum and a toggle (wrapping), off and on for a multi's item. */
+static bool wasm_opt_edit(orb_app_t *app, int idx, orb_opt_edit_t *e)
 {
     wasm_slot_t *s = slot_of_app(app);
-    if (!s || !s->rt) return;
-    uint32_t a[2] = { (uint32_t)idx, (uint32_t)steps };
-    const void *argv[2] = { &a[0], &a[1] };
-    (void)wasm_call(s, W_OPT_INC, argv, 2);
+    page_row_t pr;
+    if (!s || !page_at(app, idx, &pr) || pr.kind == PG_HUB || pr.kind == PG_GROUP) return false;
+    const orb_setui_row_t *r = &app->ui->row[pr.row];
+    const int i = page_cfg(s, r);
+    if (i < 0) return false;
+    const int32_t v = s->cfg[i].v;
+    if (pr.kind == PG_ITEM) {
+        *e = (orb_opt_edit_t){ .min = 0, .max = 1, .value = (v >> pr.choice) & 1, .step_max = 1, .wrap = true };
+    } else if (r->type == ORB_SETUI_INT || r->type == ORB_SETUI_NUMBER) {
+        const int32_t st = r->step > 0 ? r->step : 1;
+        *e = (orb_opt_edit_t){ .min = 0, .max = (r->max - r->min) / st, .value = (v - r->min) / st,
+                               .step_max = 10, .wrap = false };
+    } else {
+        *e = (orb_opt_edit_t){ .min = r->min, .max = r->max, .value = v, .step_max = 1, .wrap = true };
+    }
+    return true;
+}
+
+/* An edit's position back to the value the table stores. */
+static int32_t page_store(orb_app_t *app, wasm_slot_t *s, const page_row_t *pr, int32_t v)
+{
+    const orb_setui_row_t *r = &app->ui->row[pr->row];
+    if (pr->kind == PG_ITEM) {
+        const int i = page_cfg(s, r);
+        const int32_t cur = i < 0 ? 0 : s->cfg[i].v;
+        return v ? cur | (1 << pr->choice) : cur & ~(1 << pr->choice);
+    }
+    if (r->type == ORB_SETUI_INT || r->type == ORB_SETUI_NUMBER)
+        return r->min + v * (r->step > 0 ? r->step : 1);
+    return v;
+}
+
+static const char *wasm_opt_fmt(orb_app_t *app, int idx, int32_t v)
+{
+    wasm_slot_t *s = slot_of_app(app);
+    page_row_t pr;
+    if (!s || !page_at(app, idx, &pr) || pr.kind == PG_HUB) return "";
+    return page_text(app, s, &pr, pr.kind == PG_ITEM ? (v ? 1 << pr.choice : 0) : page_store(app, s, &pr, v));
+}
+
+static void wasm_opt_set(orb_app_t *app, int idx, int32_t v)
+{
+    wasm_slot_t *s = slot_of_app(app);
+    page_row_t pr;
+    if (!s || !page_at(app, idx, &pr) || pr.kind == PG_HUB || pr.kind == PG_GROUP) return;
+    const int i = page_cfg(s, &app->ui->row[pr.row]);
+    if (i < 0) return;
+    const int32_t sv = page_store(app, s, &pr, v);
+    const orb_setting_desc_t *d = &app->settings[i];
+    if (d->type == ORB_SET_TOGGLE ? (sv != 0 && sv != 1) : (sv < d->min || sv > d->max)) return;
+    if (s->cfg[i].v == sv) return;
+    s->cfg[i].v = sv;
+    s->cfg_local++;                      /* the guest's orb_cfg_gen moves: it re-reads */
+    (void)mirror_post(s, i, false, sv, NULL);
 }
 
 static void wasm_opt_sel(orb_app_t *app, int idx)
 {
-    wasm_slot_t *s = slot_of_app(app);
-    if (!s || !s->rt) return;
-    uint32_t a = (uint32_t)idx;
-    const void *argv[1] = { &a };
-    (void)wasm_call(s, W_OPT_SEL, argv, 1);
+    (void)app; (void)idx;                /* every row the knob does not edit is a note */
+}
+
+/* §58: the hub row says what lives on the hub, by name, in a box over the list: the
+ * owner asked to be told, not left wondering why a press did nothing. The labels are
+ * the hub-only settings', in manifest order; past what fits, a count. */
+static const char *wasm_opt_note(orb_app_t *app, int idx)
+{
+    static char note[200];
+    page_row_t pr;
+    if (!page_at(app, idx, &pr) || pr.kind != PG_HUB || !app->ui) return NULL;
+    /* Up to four names, "A, B and C"; past that, "A, B, C, D and 2 more". */
+    const char *nm[4];
+    int named = 0, hub = 0;
+    for (int i = 0; i < app->ui->n; i++) {
+        const orb_setui_row_t *r = &app->ui->row[i];
+        if ((r->show & ORB_SETUI_DIAL) || !(r->show & ORB_SETUI_HUB)) continue;
+        if (named < 4) nm[named++] = r->label;
+        hub++;
+    }
+    char names[140] = "";
+    for (int k = 0; k < named; k++) {
+        const size_t len = strlen(names);
+        const char *sep = k == 0 ? "" : (k == named - 1 && hub == named) ? " and " : ", ";
+        snprintf(names + len, sizeof names - len, "%s%s", sep, nm[k]);
+    }
+    if (hub > named) {
+        const size_t len = strlen(names);
+        snprintf(names + len, sizeof names - len, " and %d more", hub - named);
+    }
+    snprintf(note, sizeof note, "%s %s set in Orb Manager, on this orb's App settings page.",
+             names, hub == 1 ? "is" : "are");
+    return note;
 }
 
 static void wasm_opt_arm(orb_app_t *app, bool armed)
 {
     wasm_slot_t *s = slot_of_app(app);
-    if (!s || !s->rt) return;
-    uint32_t a = armed ? 1u : 0u;
-    const void *argv[1] = { &a };
-    (void)wasm_call(s, W_OPT_ARM, argv, 1);
+    if (armed && s && s->app) { s->cfg_stale = true; mirror_sync(s); }   /* fresh values */
 }
 
 /* Named (not static) and `extern`-declared in the header so orb_app.c's behaviour
@@ -2074,9 +2254,12 @@ const orb_app_iface_t orb_wasm_iface = {
     .opt_kind  = wasm_opt_kind,
     .opt_label = wasm_opt_label,
     .opt_value = wasm_opt_value,
-    .opt_inc   = wasm_opt_inc,
     .opt_sel   = wasm_opt_sel,
     .opt_arm   = wasm_opt_arm,
+    .opt_edit  = wasm_opt_edit,
+    .opt_fmt   = wasm_opt_fmt,
+    .opt_set   = wasm_opt_set,
+    .opt_note  = wasm_opt_note,
 };
 
 /* ---- lifecycle ----------------------------------------------------------- */

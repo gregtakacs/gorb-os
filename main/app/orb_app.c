@@ -34,6 +34,8 @@
 #include <string.h>
 
 #include "orb_app_wasm.h"   /* P7.2: orb_wasm_iface, registered below as a behaviour module */
+#include "orb_setui.h"
+#include "orb_rotation.h"   /* §59: the owner's carousel order */      /* §57: an app's settings schema, parsed for the dial */
 
 #include "esp_heap_caps.h"   /* the card table lives in PSRAM, not internal .bss */
 
@@ -223,9 +225,11 @@ static orb_app_t s_apps[] = {
 extern orb_app_t orb_app_usb_files_row;   /* main/usb/orb_usb_{mtp,msc}.c */
 #endif
 extern orb_app_t orb_app_sound_row;       /* main/audio/orb_sound_menu.c */
+/* §58: Themes is no longer a top menu row. It is each app's Themes sub-menu, the
+ * menu showing this row's page aimed at one app (themes_page_for), so the row is
+ * initialised and serviced here beside the service tier, and listed nowhere. */
 extern orb_app_t orb_app_themes_row;      /* main/menu/themes_page.c (§43) */
 static orb_app_t *const s_service[] = {
-    &orb_app_themes_row,
 #if CONFIG_ORB_USB_MTP || CONFIG_ORB_USB_MSC
     &orb_app_usb_files_row,
 #endif
@@ -253,6 +257,7 @@ const orb_app_t *orb_app_menu_at(size_t idx)
 bool orb_app_is_menu_only(const orb_app_t *app)
 {
     if (!app) return false;
+    if (app == &orb_app_themes_row) return true;   /* §58: a sub-menu, never an app */
     for (int i = 0; i < ORB_APP_SERVICE_N; i++)
         if (s_service[i] == app) return true;
     return false;
@@ -300,6 +305,8 @@ typedef struct {
      * and not a missing one: it means the package names no release (§4.1). */
     char               version_store[ORB_APP_VERSION_MAX];
     orb_setting_desc_t settings_store[ORB_APP_SETTINGS_MAX];
+    char              *schema_store;        /* §57: PSRAM, the region's JSON      */
+    orb_setui_t       *ui_store;            /* §57: PSRAM, its parse              */
 } card_entry_t;
 
 static card_entry_t *s_card;   /* PSRAM, one block; NULL until a writer needs it */
@@ -352,6 +359,27 @@ static void card_fill(card_entry_t *s, const orb_app_t *row)
         memcpy(s->settings_store, settings, (size_t)n * sizeof(orb_setting_desc_t));
     s->app.settings     = s->settings_store;
     s->app.n_settings   = n;
+    /* §57: the schema, copied into this entry's own PSRAM and parsed once for the
+     * dial. A schema that will not parse leaves the page without rows rather than
+     * the app without its install: the gate above still holds every setting. */
+    if (s->schema_store) { heap_caps_free(s->schema_store); s->schema_store = NULL; }
+    if (s->ui_store) { heap_caps_free(s->ui_store); s->ui_store = NULL; }
+    if (row->schema && row->schema_len) {
+        s->schema_store = heap_caps_malloc(row->schema_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s->ui_store = heap_caps_malloc(orb_setui_bytes(row->schema_len), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s->schema_store) {
+            memcpy(s->schema_store, row->schema, row->schema_len);
+            s->schema_store[row->schema_len] = 0;
+        }
+        if (!s->schema_store || !s->ui_store ||
+            !orb_setui_parse(s->schema_store, row->schema_len, s->ui_store)) {
+            ESP_LOGW(TAG, "%s: settings schema unreadable — its page has no rows", s->slug_store);
+            if (s->ui_store) { heap_caps_free(s->ui_store); s->ui_store = NULL; }
+        }
+    }
+    s->app.schema       = s->schema_store;
+    s->app.schema_len   = s->schema_store ? row->schema_len : 0;
+    s->app.ui           = s->ui_store;
     s->app.alias        = NULL;            /* a card app has no legacy name      */
     /* D1/C6: the iface comes from the compiled-in module its behaviour_kind
      * names, NOT from the caller — a card package carries data only. A kind the
@@ -387,6 +415,15 @@ int orb_app_card_upsert(const orb_app_t *row)
     if (!card_table()) return -1;                       /* no PSRAM: table full    */
 
     card_entry_t *s = card_find(row->slug);           /* re-install: keep the index */
+    /* A re-install over a row this boot already built is left as it is. card_fill
+     * rewrites the entry from the worker while the LVGL task reads it — the row it
+     * copies in carries no iface, and the schema it frees may be the page on the glass
+     * — so the app showing read iface NULL and the dial faulted in current_armed (Gold,
+     * 2026-11-07, v1.2.19: a clock reinstalled while the clock showed). Every app
+     * install ends in the reboot that rebuilds the row from its slot (a module loads
+     * only at boot), so until then the old row is the honest one. */
+    if (s && (s->app.init_done || s->app.active || s_current == &s->app))
+        return ORB_APP_BASE + (int)(s - s_card);
     if (!s) {
         /* P4a: a card row lives at the index its FLASH slot names, so the
          * broker's g/c/x/r/e words for ORB_APP_BASE+slot always belong to this
@@ -440,6 +477,8 @@ bool orb_app_card_remove(const char *slug)
      * to carousel away (or home) first. The uninstall door sends the dial home
      * itself and waits for the switch before it ever reaches here (D38). */
     if (s_current == &s->app || s->app.active) return false;
+    if (s->schema_store) heap_caps_free(s->schema_store);   /* §57's two blocks */
+    if (s->ui_store) heap_caps_free(s->ui_store);
     memset(s, 0, sizeof *s);            /* used=false: entry free, ledger forgets */
     return true;
 }
@@ -464,11 +503,30 @@ static size_t orb_app_walk_gather(orb_app_t **list, size_t max)
     size_t n = 0;
     for (size_t i = 0; i < ORB_APP_N && n < max; i++)
         if (!s_apps[i].failed) list[n++] = &s_apps[i];
+    const size_t first_card = n;
+    int rank[ORB_APP_CAP];
     if (s_card)
         for (int k = 0; k < ORB_APP_CAP && n < max; k++)
             if (s_card[k].used &&
-                !s_card[k].app.failed && s_card[k].app.iface)
+                !s_card[k].app.failed && s_card[k].app.iface) {
+                rank[n - first_card] = orb_rotation_rank(s_card[k].app.slug, k);
                 list[n++] = &s_card[k].app;
+            }
+    /* §59: the installed apps stand in the owner's order (orb_rotation.h); an app the
+     * order does not name stands after the named ones, in slot order. Insertion sort,
+     * stable: a handful of rows, and every walk asks this one gather. */
+    for (size_t i = first_card + 1; i < n; i++) {
+        orb_app_t *a = list[i];
+        const int r = rank[i - first_card];
+        size_t j = i;
+        while (j > first_card && rank[j - 1 - first_card] > r) {
+            list[j] = list[j - 1];
+            rank[j - first_card] = rank[j - 1 - first_card];
+            j--;
+        }
+        list[j] = a;
+        rank[j - first_card] = r;
+    }
     return n;
 }
 
@@ -653,6 +711,13 @@ esp_err_t orb_app_init_all(void)
      * a service row rather than an app. It is not fault-gated either: the broker
      * has no words for a row outside the ledger span, and an OS feature with no
      * code to fault has no reason to be. */
+    {
+        orb_app_t *th = &orb_app_themes_row;
+        if (th->iface && th->iface->init && th->iface->init(th) == ESP_OK)
+            th->init_done = true;
+        else
+            th->failed = true;              /* no theme rows on any page */
+    }
     for (int i = 0; i < ORB_APP_SERVICE_N; i++) {
         orb_app_t *svc = s_service[i];
         if (!svc) continue;
@@ -974,6 +1039,9 @@ void orb_app_service_all(void)
         if (svc && !svc->failed && svc->iface && svc->iface->service)
             svc->iface->service(svc);
     }
+    if (!orb_app_themes_row.failed && orb_app_themes_row.iface &&
+        orb_app_themes_row.iface->service)
+        orb_app_themes_row.iface->service(&orb_app_themes_row);
 }
 
 void orb_app_disarm_all(void)
@@ -1038,76 +1106,95 @@ const orb_app_t *orb_app_neighbour(const orb_app_t *from, int step)
  * rather than cached — the clock's number changes when a card walk finishes and
  * an options page that had five rows cannot be allowed to press the sixth. */
 
-int orb_app_opt_count(const orb_app_t *app)
+static int own_count(const orb_app_t *app)
 {
-    if (!app || app->failed) return 0;
     if (!app->iface || !app->iface->opt_count) return 0;
     const int n = app->iface->opt_count((orb_app_t *)app);
     return n < 0 ? 0 : n;
 }
+/** The iface that answers row *idx, or NULL for a row outside the page. One door for
+ *  every dispatcher below, so the bounds rule is written once. */
+static const orb_app_iface_t *opt_route(const orb_app_t *app, int *idx)
+{
+    if (!app || app->failed || *idx < 0) return NULL;
+    return *idx < own_count(app) ? app->iface : NULL;
+}
+
+int orb_app_opt_count(const orb_app_t *app)
+{
+    if (!app || app->failed) return 0;
+    return own_count(app);
+}
 
 const char *orb_app_opt_label(const orb_app_t *app, int idx)
 {
-    if (!app || !app->iface || !app->iface->opt_label) return "";
-    if (idx < 0 || idx >= orb_app_opt_count(app)) return "";
-    const char *s = app->iface->opt_label((orb_app_t *)app, idx);
+    const orb_app_iface_t *f = opt_route(app, &idx);
+    if (!f || !f->opt_label) return "";
+    const char *s = f->opt_label((orb_app_t *)app, idx);
     return s ? s : "";
 }
 
 const char *orb_app_opt_value(const orb_app_t *app, int idx)
 {
-    if (!app || !app->iface || !app->iface->opt_value) return "";
-    if (idx < 0 || idx >= orb_app_opt_count(app)) return "";
-    const char *s = app->iface->opt_value((orb_app_t *)app, idx);
+    const orb_app_iface_t *f = opt_route(app, &idx);
+    if (!f || !f->opt_value) return "";
+    const char *s = f->opt_value((orb_app_t *)app, idx);
     return s ? s : "";
 }
 
 bool orb_app_opt_edit(const orb_app_t *app, int idx, orb_opt_edit_t *e)
 {
-    if (!app || !app->iface || !app->iface->opt_edit || !e) return false;
-    if (idx < 0 || idx >= orb_app_opt_count(app)) return false;
-    return app->iface->opt_edit((orb_app_t *)app, idx, e) && e->min <= e->max;
+    const orb_app_iface_t *f = opt_route(app, &idx);
+    if (!f || !f->opt_edit || !e) return false;
+    return f->opt_edit((orb_app_t *)app, idx, e) && e->min <= e->max;
 }
 
 const char *orb_app_opt_fmt(const orb_app_t *app, int idx, int32_t v)
 {
-    if (!app || !app->iface || !app->iface->opt_fmt) return "";
-    if (idx < 0 || idx >= orb_app_opt_count(app)) return "";
-    const char *s = app->iface->opt_fmt((orb_app_t *)app, idx, v);
+    const orb_app_iface_t *f = opt_route(app, &idx);
+    if (!f || !f->opt_fmt) return "";
+    const char *s = f->opt_fmt((orb_app_t *)app, idx, v);
     return s ? s : "";
 }
 
 void orb_app_opt_set(const orb_app_t *app, int idx, int32_t v)
 {
-    if (!app || !app->iface || !app->iface->opt_set) return;
-    if (idx < 0 || idx >= orb_app_opt_count(app)) return;
-    app->iface->opt_set((orb_app_t *)app, idx, v);
+    const orb_app_iface_t *f = opt_route(app, &idx);
+    if (f && f->opt_set) f->opt_set((orb_app_t *)app, idx, v);
 }
 
 void orb_app_opt_inc(const orb_app_t *app, int idx, int32_t steps)
 {
-    if (!app || !app->iface || !app->iface->opt_inc) return;
-    if (idx < 0 || idx >= orb_app_opt_count(app)) return;
-    app->iface->opt_inc((orb_app_t *)app, idx, steps);
+    const orb_app_iface_t *f = opt_route(app, &idx);
+    if (f && f->opt_inc) f->opt_inc((orb_app_t *)app, idx, steps);
 }
 
 void orb_app_opt_sel(const orb_app_t *app, int idx)
 {
-    if (!app || !app->iface || !app->iface->opt_sel) return;
-    if (idx < 0 || idx >= orb_app_opt_count(app)) return;
-    app->iface->opt_sel((orb_app_t *)app, idx);
+    const orb_app_iface_t *f = opt_route(app, &idx);
+    if (f && f->opt_sel) f->opt_sel((orb_app_t *)app, idx);
+}
+
+const char *orb_app_opt_note(const orb_app_t *app, int idx)
+{
+    /* §58: a row that answers with a sentence instead of an action ("More on Orb
+     * Manager"): the shell shows it in a box over the list rather than pressing. */
+    const orb_app_iface_t *f = opt_route(app, &idx);
+    if (!f || !f->opt_note) return NULL;
+    const char *s = f->opt_note((orb_app_t *)app, idx);
+    return (s && s[0]) ? s : NULL;
 }
 
 orb_opt_kind_t orb_app_opt_kind(const orb_app_t *app, int idx)
 {
     /* NULL is the whole pre-D12 ABI: an app that never heard of nesting answers
      * OPT_ROW for every row, and the page renders exactly as it did before this
-     * hook existed. The range check is the wrappers' own, not the shell's — a
+     * hook existed. The range check is the router's, not the shell's — a
      * question about a row that does not exist must not reach an app that is
      * counting its rows from a card walk that has not landed yet. */
-    if (!app || !app->iface || !app->iface->opt_kind) return OPT_ROW;
-    if (idx < 0 || idx >= orb_app_opt_count(app)) return OPT_ROW;
-    const orb_opt_kind_t k = app->iface->opt_kind((orb_app_t *)app, idx);
+    const orb_app_iface_t *f = opt_route(app, &idx);
+    if (!f || !f->opt_kind) return OPT_ROW;
+    const orb_opt_kind_t k = f->opt_kind((orb_app_t *)app, idx);
     /* Anything that is not one of the three is a plain row. An app that answers
      * with an uninitialised int would otherwise buy itself a page whose rows the
      * owner can hear the knob move past and cannot see. */
@@ -1116,8 +1203,8 @@ orb_opt_kind_t orb_app_opt_kind(const orb_app_t *app, int idx)
 
 void orb_app_opt_arm(const orb_app_t *app, bool armed)
 {
-    if (!app || !app->iface || !app->iface->opt_arm) return;
-    app->iface->opt_arm((orb_app_t *)app, armed);
+    if (!app) return;
+    if (app->iface && app->iface->opt_arm) app->iface->opt_arm((orb_app_t *)app, armed);
 }
 
 bool orb_app_opt_long(const orb_app_t *app)
@@ -1151,9 +1238,8 @@ void orb_app_opt_focus(const orb_app_t *app, int idx)
      * wrappers' own, like opt_kind's: a focus on a row the app did not count
      * must not reach it, because the count is the app's and the cursor is the
      * shell's, and the two agree only through this door. */
-    if (!app || !app->iface || !app->iface->opt_focus) return;
-    if (idx < 0 || idx >= orb_app_opt_count(app)) return;
-    app->iface->opt_focus((orb_app_t *)app, idx);
+    const orb_app_iface_t *f = opt_route(app, &idx);
+    if (f && f->opt_focus) f->opt_focus((orb_app_t *)app, idx);
 }
 
 const void *orb_app_opt_preview(const orb_app_t *app, int idx, uint16_t *w,
@@ -1167,9 +1253,9 @@ const void *orb_app_opt_preview(const orb_app_t *app, int idx, uint16_t *w,
     if (w) *w = 0;
     if (h) *h = 0;
     if (stamp) *stamp = 0;
-    if (!app || !app->iface || !app->iface->opt_preview) return NULL;
-    if (idx < 0 || idx >= orb_app_opt_count(app)) return NULL;
-    return app->iface->opt_preview((orb_app_t *)app, idx, w, h, stamp);
+    const orb_app_iface_t *f = opt_route(app, &idx);
+    if (!f || !f->opt_preview) return NULL;
+    return f->opt_preview((orb_app_t *)app, idx, w, h, stamp);
 }
 
 bool orb_app_share_gate(bool press)
@@ -1196,6 +1282,10 @@ bool orb_app_has_options(const orb_app_t *app)
      * for. Declaring the hooks is the honest signal that there is something to
      * show; the rows fill in once the first walk lands. */
     if (!app || app->failed) return false;
+    /* §57: a card app's page IS its manifest's settings schema, rows and all from
+     * the first frame, so no schema is no page — every wasm app shares the one
+     * iface, and the hooks alone would give the settings-free clock an empty one. */
+    if (app->behaviour_kind != ORB_BEHAVIOUR_NONE && app->schema_len == 0) return false;
     return app->iface && app->iface->opt_count && app->iface->opt_label
            && app->iface->opt_arm;
 }

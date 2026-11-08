@@ -1392,7 +1392,7 @@ let provApSsid = ""; // the provisioning AP the boot verdict named, for the AP l
 // bench 2026-10-29). seedVerdict carries the truth the run reported so the done panel words its
 // headline from it rather than assuming success the moment the join lands.
 let seedBusy = false;
-let seedVerdict = ""; // "", "verified", or a refusal sentence
+let seedVerdict = ""; // "", "verified", "skipped", "nocard", or a refusal sentence
 // gLastRefusal is the sentence streamSteps last saw on a `refused` step. It is read by the
 // join-time seed the moment its run returns, to word the done-panel verdict honestly. One run
 // is in flight at a time behind the seedBusy guard, so this never races a second stream.
@@ -1682,7 +1682,7 @@ async function autoInstall(ip) {
       releaseSeed(watch, "already seeded this session — the hub verified it once this page load.");
     } else {
       seedVerdict = prior || "the clock did not install on join";
-      releaseSeed(watch, "the seed did not finish: " + seedVerdict + " — press Seed on the orb's Library card to retry.");
+      releaseSeed(watch, "the seed did not finish: " + seedVerdict + " \u2014 open the orb and press Install on Clock on the Apps tab to run it again.");
     }
     return;
   }
@@ -1728,14 +1728,19 @@ async function autoInstall(ip) {
     installTried.set(ip, "the hub stopped answering mid-seed");
     seedVerdict = "the hub stopped answering mid-seed \u2014 the card may be half-written";
     releaseSeed(watch, "the hub stopped answering this seed \u2014 the card may be half-written. " +
-      "Open the orb and press Seed on its Library card to finish it.");
+      "Open the orb and press Install on Clock on the Apps tab to finish it.");
   }, 5000);
   // The journey is the seed's frame: the hub's plan replaces the seed row, the bar moves
   // with its bytes, and each step's sentence sits under its own row.
   const frame = journey ? { list: journey, splice: "seed" } : null;
   if (watch) watch.textContent = "keep this window open \u2014 it closes its own steps as the orb finishes them";
+  let noCard = ""; // the hub's sentence when the orb has no usable SD card
   const done = await streamInstall(ip, "clock", true, frame, false, false, (j, t) => {
     lastBeatAt = Date.now();
+    if (j.action === "nocard") {
+      noCard = j.note || "this orb has no SD card, so no apps were copied";
+      if (journey) journey.skip("waits for an SD card");
+    }
     if (released) {
       if (watch) watch.textContent = t + " \u2014 the hub spoke again after the window released; check the orb's Apps face";
       return;
@@ -1748,13 +1753,21 @@ async function autoInstall(ip) {
     return;
   }
   installTried.set(ip, done ? true : (gLastRefusal || "the clock did not install on join"));
+  // A no-card ending wrote nothing, so the next join of this board runs the seed again: by
+  // then the owner may have put a card in.
+  if (done && noCard) installTried.delete(ip);
   // `done` is the hub's own verdict and, on the automatic arm, it only arrives after verifySeed
   // re-read the ledger and the theme count post-reboot — including a run that skipped, which
   // must now earn its skip by the same verify. The headline quotes the hub's verified note
   // rather than asserting the glass from the page, which cannot see it (bench, 2026-10-29: the
   // page said "on the glass" over an empty card; that sentence is never written here again
   // unless the dial itself was read enabled, backed by card bytes, and wearing a theme).
-  if (done) {
+  // No card is a finished setup, not a failed one (owner, 2026-11-07): the firmware and the
+  // WiFi are on the orb, and the hub's sentence names the one thing left for the owner.
+  if (done && noCard) {
+    seedVerdict = "nocard";
+    releaseSeed(watch, noCard.charAt(0).toUpperCase() + noCard.slice(1) + ".");
+  } else if (done) {
     seedVerdict = "verified";
     releaseSeed(watch, gLastVerifyNote
       ? "clock seeded \u2014 " + gLastVerifyNote + "."
@@ -1766,8 +1779,8 @@ async function autoInstall(ip) {
     // an operator cannot act on reads as the hub failing). Only a refusal with no lever in it
     // gets the page's generic one appended, because "the seed did not finish" alone is a dead
     // end and the page cannot see which lever the dial needs.
-    const lever = /flick the knob|press Seed/.test(seedVerdict) ? ""
-      : " Open the orb and press Seed on its Library card to run it again.";
+    const lever = /flick the knob|press Install/.test(seedVerdict) ? ""
+      : " Open the orb and press Install on Clock on the Apps tab to run it again.";
     releaseSeed(watch, "the seed did not finish: " + seedVerdict + "." + lever);
   }
 }
@@ -1785,12 +1798,14 @@ function releaseSeed(watch, msg) {
   // as the job that sealed it. The watch line below it holds the sentence.
   // DONE is a state you can see from across the room (owner, 2026-11-06): every row
   // ticked, a green banner, and the title saying so.
-  const ready = seedVerdict === "verified" || seedVerdict === "skipped";
+  const ready = seedVerdict === "verified" || seedVerdict === "skipped" || seedVerdict === "nocard";
   const title = $("#wj-title");
   if (title) title.textContent = ready ? "Setup complete" : "Setup did not finish";
   if (journey) {
     journey.finish(ready);
-    if (ready) $("#wj-stephead").textContent = "All " + journey.plan.length + " steps done";
+    if (ready) $("#wj-stephead").textContent = seedVerdict === "nocard"
+      ? "Set up \u00b7 the apps wait for an SD card"
+      : "All " + journey.plan.length + " steps done";
   }
   $("#wj-ready").hidden = !ready;
   if (ready) $("#wj-ready-msg").textContent = msg;
@@ -2104,6 +2119,7 @@ function describeStep(j) {
     case "unchecked": return j.step + " not checked — " + (j.note || "the orb did not answer");
     case "reseeding": return "the shelf did not verify; refilling the baseline (" + (j.note || "") + ")";
     case "verified": return "verified: " + (j.note || "the board answers clean");
+    case "nocard": return j.note || "no SD card: the apps wait for one";
     case "refused": return "refused: " + (j.note || "no reason given");
     case "done": return "done";
     default: return j.step + " \u2014 " + j.action;

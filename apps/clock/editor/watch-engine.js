@@ -932,10 +932,12 @@
   const WIN_SIZE = { date: [30, 22], day: [52, 22], month: [52, 22], custom: [72, 22] };
   /* From scratch (owner, 2026-11-06): a template of its own, never one of the gallery's -- it had
    * borrowed Skeleton's slot, so it took Skeleton's name and showed Skeleton as edited. Nothing in
-   * it: no dial, no parts, no case, no glass, no light. Not in PRESETS, so the gallery, the benches
-   * and the preset suites never see it; template() finds both. */
+   * it: no dial, no parts, no case, no glass. Its light is As designed (owner, 2026-11-07: it was
+   * No light, and a watch built in the dark read as broken until the author found the Light tab).
+   * Not in PRESETS, so the gallery, the benches and the preset suites never see it; template()
+   * finds both. */
   const SCRATCH = { name: 'Untitled', blurb: 'Nothing yet: you build every piece', design: { noDial: true, comps: [] },
-    cfg: { glow: 0, outerLight: 0 }, train: 'classic', caseStyle: 'none', caseMetal: 'auto', glassStyle: 'none' };
+    cfg: {}, train: 'classic', caseStyle: 'none', caseMetal: 'auto', glassStyle: 'none' };
   const template = (id) => (id === 'scratch' ? SCRATCH : PRESETS[id]);
   // Presets are just starting designs. angle: degrees clockwise from 12 · dist: px from the host's centre · rot: degrees.
   // Every hand is a comp of type 'hand' on its host's arbour, listed bottom to top (D43 P5c).

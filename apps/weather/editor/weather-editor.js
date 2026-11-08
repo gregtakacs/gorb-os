@@ -3,7 +3,7 @@
  * On the OS's kit (theme-editor-kit-plan) as the flights editor does it: Start (the six
  * starter themes and Blank), Ground, Icons (the theme's own pack and its colours),
  * Temperature, Words, and Render to send it. The app's places are its settings, not its
- * theme: they live on the hub's App settings page (settings.json names them, owner
+ * theme: they live on the hub's App settings page (app.json declares them, §57; owner
  * 2026-11-06), never here.
  * The preview draws the app's four screens (Now, Places, Hourly, 5 days) from the very
  * frames the bake stores, laid out as apps/weather/main.c poses them. Now moves as the

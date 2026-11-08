@@ -1072,12 +1072,14 @@ void gfx_prep_mode(int mode)
     memset(s_pz_r, 0, sizeof s_pz_r);
     memset(s_pz_full, 0, sizeof s_pz_full);
     pp_stale_clear_all();
+    /* §61: off frees the planes. They are four full glasses (~1.7 MB of PSRAM), and they
+     * outlived the dial: the clock's pause turns pre-paint off (orb_sched_pause), yet the
+     * planes stayed with Settings on the glass, and the theme carousel opened from the
+     * clock's own page found no room for more than five pictures (owner, 2026-11-08). The
+     * dial's resume turns it back on and takes them again. */
     if (!s_pp_mode && (s_pf || s_pb || s_pfn || s_pbn)) {
-        /* Off: the four planes (1.7 MB of PSRAM) go back. They used to stay for the rest
-         * of the boot once one plan had played, and the radar, beside its two live layers,
-         * ran PSRAM down to 600 KB (Bronze, 2026-11-07: a map that would not open, a theme
-         * that would not bind). Every reader is behind s_pp_mode. */
-        heap_caps_free(s_pf); heap_caps_free(s_pb); heap_caps_free(s_pfn); heap_caps_free(s_pbn);
+        heap_caps_free(s_pf);  heap_caps_free(s_pb);
+        heap_caps_free(s_pfn); heap_caps_free(s_pbn);
         s_pf = s_pb = s_pfn = s_pbn = NULL;
     }
     if (s_pp_mode && !s_pf) {
@@ -1086,7 +1088,13 @@ void gfx_prep_mode(int mode)
         s_pb  = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         s_pfn = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         s_pbn = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_pf || !s_pb || !s_pfn || !s_pbn) { s_pp_mode = 0; ESP_LOGE("gfx", "pre-paint: no PSRAM for the planes"); }
+        if (!s_pf || !s_pb || !s_pfn || !s_pbn) {
+            heap_caps_free(s_pf);  heap_caps_free(s_pb);
+            heap_caps_free(s_pfn); heap_caps_free(s_pbn);
+            s_pf = s_pb = s_pfn = s_pbn = NULL;
+            s_pp_mode = 0;
+            ESP_LOGE("gfx", "pre-paint: no PSRAM for the planes");
+        }
     }
 }
 int gfx_prep_on(void) { return s_pp_mode; }

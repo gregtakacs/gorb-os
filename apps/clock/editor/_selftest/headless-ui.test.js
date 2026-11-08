@@ -850,6 +850,44 @@ setTimeout(async () => {
   it.resetTab('sound');
   ok(!it.state.sounds[it.state.dial], 'Reset sound returns the dial to its preset\u2019s sounds');
 
+  // §59 (owner, 2026-11-07): every sound row takes its own file and goes back to built-in alone,
+  // and the budget is what the bake stores, with a warning as it grows.
+  sf = sndAt('station');
+  const files = sf.filter((f) => f.isFile && f.label === 'Your own');
+  ok(files.length === 1 + 4 + 3 && files.every((f) => f.accept === 'audio/*'),
+     'every sound row carries its own file input: the tick, the four chimes, the three jumps', files.length);
+  ok(!sf.some((f) => f.isChips && (f.opts || []).some((o) => /Back to built-in/.test(o.label))),
+     'with no file of yours there is nothing to go back from');
+  const fake = (secs) => new Int16Array(Math.round(secs * 22050)).map((_, i) => Math.round(8000 * Math.sin(i / 3)));
+  it.sndUpd((d) => { d.up.chime_hour = { name: 'gong.wav', pcm: fake(2), loop: false }; d.slots.chime_hour = 'upload'; });
+  sf = labels('sound');
+  const hourBack = sf.find((f) => f.isChips && (f.opts || []).some((o) => o.label === '\u25b6 chime hour'));
+  ok(hourBack && hourBack.opts.some((o) => /Back to built-in/.test(o.label)) &&
+     byLabel(sf, ':00').opts.find((o) => o.sel).label === 'Yours \u00b7 gong.wav',
+     'a file of yours on :00 shows as yours, with its own way back', byLabel(sf, ':00').opts.find((o) => o.sel).label);
+  it.sndUnupload('chime_hour');
+  ok(it.sndDesign().slots.chime_hour === 'station_dingdong_3tone' && !it.sndDesign().up.chime_hour,
+     'Back to built-in puts the preset\u2019s own :00 back and drops your bytes from the design', it.sndDesign().slots.chime_hour);
+  it.sndUpd((d) => { d.up.jump_hour = { name: 'clack.wav', pcm: fake(1), loop: false }; d.slots.jump_hour = 'upload';
+                     d.up.chime_q1 = { name: 'q.wav', pcm: fake(1), loop: false }; d.slots.chime_q1 = 'upload'; });
+  it.sndUnuploadAll();
+  ok(!Object.keys(it.sndDesign().up).length && it.sndDesign().slots.jump_hour !== 'upload' && it.sndDesign().slots.chime_q1 !== 'upload',
+     'Remove all takes every file of yours out of the theme, each back to a built-in', JSON.stringify(it.sndDesign().slots));
+  sf = labels('sound');
+  ok(/MB in the theme, of the/.test((byLabel(sf, 'Bytes') || {}).valText || '') && !sf.some((f) => f.isNote && /large|Excessive/.test(f.note || '')),
+     'the budget reads what the bake stores, and a preset\u2019s own sounds raise no warning', (byLabel(sf, 'Bytes') || {}).valText);
+  // a minute of sound is ~680 KB compressed: past the 512 KB line, under the 2 MB one
+  it.sndUpd((d) => { d.up.chime_hour = { name: 'long.wav', pcm: fake(60), loop: false }; d.slots.chime_hour = 'upload'; });
+  sf = labels('sound');
+  const hourFile = sf.filter((f) => f.isFile)[4];         // tick, :15, :30, :45, then :00
+  ok(sf.some((f) => f.isNote && /Getting large/.test(f.note || '')) && /long\.wav .* long$/.test(hourFile.valText),
+     'a minute-long file of yours says the sounds are getting large, and its row says it is long', hourFile.valText);
+  it.sndUpd((d) => { d.up.chime_half = { name: 'huge.wav', pcm: fake(180), loop: false }; d.slots.chime_half = 'upload'; });
+  sf = labels('sound');
+  ok(sf.some((f) => f.isNote && /Excessive/.test(f.note || '') && /your own files/.test(f.note || '')),
+     'three minutes more is excessive, and the warning says how much is the author\u2019s own');
+  it.resetTab('sound');
+
   // the calibration status names the panel's real width: 1.75 in is 44.45 mm, not the float's 44.4
   it.solveCal(40); const st1 = it.state.status; it.solveCard(85.6); const st2 = it.state.status;
   ok(/draws the face 44\.45 mm across/.test(st1) && /draws the face 44\.45 mm across/.test(st2), 'the ruler and card status say the dial is 44.45 mm across', st1);

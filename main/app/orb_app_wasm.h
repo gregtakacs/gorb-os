@@ -89,6 +89,9 @@ void orb_wasm_unload(int slot);
 /** True when slot `slot` currently holds a loaded runtime. */
 bool orb_wasm_loaded(int slot);
 
+/** §61: the icon `app` handed over with orb.icon (a deflated disc, `side` px), when it did. */
+bool orb_wasm_icon(const orb_app_t *app, const uint8_t **z, uint32_t *n, uint16_t *side);
+
 /* The compiled-in behaviour module's iface, registered under ORB_BEHAVIOUR_WASM in
  * orb_app.c's behaviour table (as a file-scope constant, so it is declared as data
  * here, not a function — a static initializer cannot call a getter). The registry
@@ -115,6 +118,10 @@ void orb_wasm_bench_us(uint64_t *tick, uint64_t *service, uint64_t *other);
 uint32_t orb_wasm_bench_bg_max_us(bool reset);   /* longest non-tick guest call since the last reset */
 /* The three heaviest app.entry pairs since the last call ("flights.tick 69ms/16, ..."). */
 void orb_wasm_bench_top(char *out, size_t cap);
+
+/* The OS wants PSRAM (the theme carousel, §61): for the next 2 s every app off the glass gives
+ * back its kept bodies and map files on its service pass. Call it again to hold it. */
+void orb_app_want_room(void);
 
 #ifdef __cplusplus
 }

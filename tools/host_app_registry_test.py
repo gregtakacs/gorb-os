@@ -101,6 +101,8 @@ STUBS = r'''
 #include "esp_heap_caps.h"
 #include "lvgl.h"
 #include "orb_app.h"
+#include "orb_setui.h"
+#include "orb_rotation.h"
 #include "orb_stage.h"
 #include "menu_view.h"
 #include "art_bank.h"
@@ -149,6 +151,9 @@ void *heap_caps_calloc(size_t n, size_t sz, uint32_t caps)
     (void)caps;
     return calloc(n, sz);
 }
+/* §57: and a card's schema copy and parsed rows, malloc'd the same way. */
+void *heap_caps_malloc(size_t sz, uint32_t caps) { (void)caps; return malloc(sz); }
+void heap_caps_free(void *p) { free(p); }
 
 /* §43: every app is a wasm row, and every wasm row shares the one iface that
  * orb_app_wasm.c defines. The harness supplies that symbol with hooks that answer
@@ -302,10 +307,16 @@ orb_app_t orb_app_sound_row = {
  * checks for those two doors run against this stand-in. */
 static uint8_t g_th_plane[4];
 static const void *g_th_pv_px;
-static int th_count(orb_app_t *a) { (void)a; return 2; }
-static const char *th_label(orb_app_t *a, int i) { (void)a; return i ? "neon" : "diver"; }
-static void th_arm(orb_app_t *a, bool on) { (void)a; T("th_arm(%d)", on ? 1 : 0); }
+/* §58: the provider answers its own row two rows, and a card app g_th_card rows (0
+ * unless a check asks), so the splice checks can turn it on without moving every
+ * count the older checks read. */
+static int g_th_card;
+static int th_count(orb_app_t *a) { return a == &orb_app_themes_row ? 2 : g_th_card; }
+static const char *th_label(orb_app_t *a, int i) { (void)a; return i ? "neon" : "Themes"; }
+static void th_arm(orb_app_t *a, bool on) { T("th_arm(%s,%d)", a->slug, on ? 1 : 0); }
 static void th_focus(orb_app_t *a, int i) { (void)a; T("th_focus(%d)", i); }
+static void th_sel(orb_app_t *a, int i) { T("th_sel(%s,%d)", a->slug, i); }
+static esp_err_t th_init(orb_app_t *a) { (void)a; return ESP_OK; }
 static const void *th_preview(orb_app_t *a, int i, uint16_t *w, uint16_t *h, uint32_t *stamp)
 {
     (void)a; (void)i;
@@ -314,8 +325,9 @@ static const void *th_preview(orb_app_t *a, int i, uint16_t *w, uint16_t *h, uin
     return g_th_plane;
 }
 static const orb_app_iface_t s_themes_stub_iface = {
+    .init = th_init,
     .opt_count = th_count, .opt_label = th_label, .opt_value = th_label,
-    .opt_arm = th_arm, .opt_focus = th_focus, .opt_preview = th_preview,
+    .opt_arm = th_arm, .opt_focus = th_focus, .opt_preview = th_preview, .opt_sel = th_sel,
 };
 orb_app_t orb_app_themes_row = {
     .slug = (char *)"themes", .title = (char *)"Themes",
@@ -349,6 +361,9 @@ static void restore_table(void)
     seed_factory();
 }
 
+static const char CLOCK_SCHEMA[] =
+    "[{\"id\":\"diver\",\"type\":\"toggle\",\"label\":\"Diver\",\"default\":0}]";
+
 /* §43: the starter rows, upserted the way the installer does — two wasm rows at
  * flash slots 0 and 1 — without a partition, a CRC or an NVS word. */
 static void seed_factory(void)
@@ -358,6 +373,9 @@ static void seed_factory(void)
     r.slug = (char *)"clock"; r.title = (char *)"Clock";
     r.kind = ORB_APP_KIND_APP; r.behaviour_kind = ORB_BEHAVIOUR_WASM;
     r.flash_slot = 0; r.art_slot = -1;
+    /* §57: the clock carries a settings schema and the picker none, so the options
+     * checks below see both sides of orb_app_has_options's schema rule. */
+    r.schema = CLOCK_SCHEMA; r.schema_len = (uint32_t)strlen(CLOCK_SCHEMA);
     orb_app_card_upsert(&r);
     memset(&r, 0, sizeof r);
     r.slug = (char *)"color_picker"; r.title = (char *)"HSB";
@@ -410,6 +428,13 @@ int main(void)
     ck("NULL start means the first walkable entry, the shell",
        orb_app_neighbour(NULL, 1) == A("menu"));
     ck("long press homes to the shell (C8 as amended)", orb_app_home() == A("menu"));
+    /* §59: the owner's order ranks the installed apps; the compiled tier still leads. */
+    orb_rotation_set_order("color_picker");
+    ck("an order naming the picker puts it before the clock, the shell still first",
+       orb_app_at(0) == A("menu") && orb_app_at(1) == A("color_picker") && orb_app_at(2) == A("clock") &&
+       orb_app_neighbour(A("color_picker"), 1) == A("clock") && orb_app_neighbour(A("clock"), 1) == A("menu"));
+    orb_rotation_set_order("");
+    ck("an empty order is slot order again", orb_app_at(1) == A("clock") && orb_app_at(2) == A("color_picker"));
     restore_table(); PCK->failed = true;
     ck("a failed entry is skipped in both directions",
        orb_app_neighbour(A("clock"), 1) == A("menu")
@@ -539,12 +564,12 @@ int main(void)
     restore_table();
     const orb_app_t *clk = A("clock"), *pick = A("color_picker");
     const orb_app_t *th = &orb_app_themes_row;
-    /* Every wasm row shares one iface, so every one declares the hooks; the rows
-     * a page answers are the module's own (the shim answers 0 for a module with
-     * no orb_opt_* export). */
-    ck("every wasm row offers its page; the count is the app's own",
-       orb_app_has_options(clk) && orb_app_has_options(pick)
-       && orb_app_opt_count(clk) == 2 && orb_app_opt_count(pick) == 0);
+    /* Every wasm row shares one iface, so every one declares the hooks; §57 makes
+     * the manifest's settings schema the page, so a row without one offers none —
+     * the settings-free clock once got an empty page from the hooks alone. */
+    ck("a wasm row with a settings schema offers its page; one without offers none",
+       orb_app_has_options(clk) && !orb_app_has_options(pick)
+       && orb_app_opt_count(clk) == 2);
     /* The reachability bug (B2): offering the page is what the entry DECLARES,
      * not what it currently answers, or a page whose rows land after the first
      * press is invisible until it has been shown. */
@@ -586,7 +611,7 @@ int main(void)
     ck("a cursor land reaches the page that names the hook", strcmp(g_trace, "th_focus(1)|") == 0);
     TR(); orb_app_opt_focus(th, 9); orb_app_opt_focus(th, -1);
     ck("a focus outside the count never reaches the page", g_trace[0] == '\0');
-    TR(); orb_app_opt_focus(clk, 0); orb_app_opt_focus(NULL, 0);
+    TR(); orb_app_opt_focus(&orb_app_usb_files_row, 0); orb_app_opt_focus(NULL, 0);
     ck("a NULL focus hook and a NULL entry are skipped, not called", g_trace[0] == '\0');
     uint16_t pw = 42, ph = 42; uint32_t pst = 42;
     ck("a row with no preview hook answers the text-only NULL",
@@ -601,6 +626,13 @@ int main(void)
     ck("with the hook armed, the plane and its extents answer",
        pv == g_th_plane && pw == 232 && ph == 232 && pst == 1);
     g_th_pv_px = NULL;
+    /* §58: the theme rows are the app's Themes sub-menu now, the provider row's own
+     * page, so a card app's page is its own rows alone. */
+    g_th_card = 2;
+    ck("a card app's page is its own rows, never the provider's",
+       orb_app_opt_count(clk) == 2 && orb_app_opt_count(pick) == 0 &&
+       orb_app_opt_label(clk, 2)[0] == '\0');
+    g_th_card = 0;
     if (menu) {
         g_menu_long_taken = true;
         ck("the shell entry can take it, and the router must then not home",
@@ -667,6 +699,17 @@ int main(void)
     TR(); orb_app_activate(crow);
     ck("activating the installed card runs its hooks around the load and stamps its slot",
        strcmp(g_trace, "hsb2_act|load|hsb2_show|cur_note:hsb2|") == 0);
+    /* A re-install over the row on the glass leaves it whole until the reboot: the
+     * worker refilling it under the LVGL task faulted the dial (Gold, v1.2.19). */
+    {
+        orb_app_t again; memset(&again, 0, sizeof again);
+        again.slug = (char *)"hsb2"; again.title = (char *)"HSB Card v2";
+        again.kind = ORB_APP_KIND_APP; again.behaviour_kind = ORB_BEHAVIOUR_WASM;
+        const int ridx = orb_app_card_upsert(&again);
+        ck("a re-install over the live row keeps its index and leaves it whole until the reboot",
+           ridx == cidx && crow->iface == &orb_wasm_iface && crow->init_done &&
+           strcmp(crow->title, "HSB Card") == 0 && orb_app_current() == crow);
+    }
     restore_table(); orb_app_card_reset();
 
     /* An unknown behaviour_kind names no module: the row is in the ledger but
@@ -701,19 +744,22 @@ int main(void)
     restore_table();
     const size_t nface = orb_app_count();
     const int    ncard = orb_app_card_count();
-    ck("three service rows — Themes, USB Files, then Sound — and the index past them answers nothing",
-       orb_app_menu_count() == 3 && orb_app_menu_at(0) == &orb_app_themes_row &&
-       orb_app_menu_at(1) == &orb_app_usb_files_row &&
-       orb_app_menu_at(2) == &orb_app_sound_row && orb_app_menu_at(3) == NULL);
+    /* §58: Themes left the tier; its rows are on each app's page. */
+    ck("two service rows — USB Files, then Sound — and the index past them answers nothing",
+       orb_app_menu_count() == 2 && orb_app_menu_at(0) == &orb_app_usb_files_row &&
+       orb_app_menu_at(1) == &orb_app_sound_row && orb_app_menu_at(2) == NULL);
+    ck("the Themes provider is a sub-menu: menu-only, never an app, and listed nowhere",
+       orb_app_is_menu_only(&orb_app_themes_row) &&
+       orb_app_activate(&orb_app_themes_row) != ESP_OK);
     ck("the Sound page is a service row too: past the ledger, never walked, never a face",
        orb_app_is_menu_only(&orb_app_sound_row) &&
-       orb_app_index_of(&orb_app_sound_row) == ORB_APP_MENU_BASE + 2 &&
+       orb_app_index_of(&orb_app_sound_row) == ORB_APP_MENU_BASE + 1 &&
        orb_app_activate(&orb_app_sound_row) == ESP_ERR_NOT_SUPPORTED &&
        orb_app_neighbour(A("clock"), 1) != &orb_app_sound_row);
     ck("a service is a menu row only — no slug lookup, so no route reaches it",
        A("usb-files") == NULL);
     ck("its index is an address past the ledger span, not a key into it",
-       orb_app_index_of(&orb_app_themes_row) == ORB_APP_MENU_BASE &&
+       orb_app_index_of(&orb_app_usb_files_row) == ORB_APP_MENU_BASE &&
        ORB_APP_MENU_BASE >= ORB_APP_BASE + ORB_APP_CAP);
     ck("it is a service and no face row is",
        orb_app_is_menu_only(&orb_app_usb_files_row) &&
@@ -732,11 +778,10 @@ int main(void)
      * refuses its own press. */
     orb_app_usb_files_row.failed = true;
     ck("a failed service has no menu row",
-       orb_app_menu_count() == 2 && orb_app_menu_at(0) == &orb_app_themes_row &&
-       orb_app_menu_at(1) == &orb_app_sound_row);
+       orb_app_menu_count() == 1 && orb_app_menu_at(0) == &orb_app_sound_row);
     orb_app_usb_files_row.failed = false;
     ck("and it comes back when its module clears the fault",
-       orb_app_menu_count() == 3 && orb_app_menu_at(1) == &orb_app_usb_files_row);
+       orb_app_menu_count() == 2 && orb_app_menu_at(0) == &orb_app_usb_files_row);
 
     /* -- the shell page is chrome, not an app -- */
     restore_table();
@@ -769,7 +814,11 @@ def build_and_run(tmpdir):
            "-I", P("main", "art"),
            "-I", P("main", "stage"),
            "-I", P("main", "menu"),
-           cpath, "-o", exe]
+           # §57: card_fill parses a card's settings schema, through the real parser.
+           "-DORB_ROTATION_HOST",              # §59: the order's pure half, no NVS
+           cpath, P("main", "app", "orb_setui.c"), P("main", "app", "orb_json.c"),
+           P("main", "app", "orb_rotation.c"),
+           "-o", exe]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         return None, "COMPILE FAILED\n" + r.stdout + r.stderr
@@ -803,7 +852,9 @@ def main():
             "esp_heap_caps.h": "#pragma once\n#include <stddef.h>\n#include <stdint.h>\n"
                                "#define MALLOC_CAP_SPIRAM 0\n"
                                "#define MALLOC_CAP_8BIT 0\n"
-                               "void *heap_caps_calloc(size_t n, size_t sz, uint32_t caps);\n",
+                               "void *heap_caps_calloc(size_t n, size_t sz, uint32_t caps);\n"
+                               "void *heap_caps_malloc(size_t sz, uint32_t caps);\n"
+                               "void heap_caps_free(void *p);\n",
         }
         for n, body in hdrs.items():
             with open(os.path.join(td, n), "w") as f:

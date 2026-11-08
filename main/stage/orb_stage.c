@@ -2950,6 +2950,22 @@ void stage_comp_set(int i, int32_t value, bool live)
  * frame, not a stream of refusals. */
 int stage_snd_play(int i, uint32_t flags, int64_t at_us, int64_t anchor_us)
 {
+    return stage_snd_play_v(i, flags, at_us, anchor_us, 100);
+}
+
+/* §59: the same, at the app's own level for this voice (the clock's tick and chime
+ * volumes). 0..100 on the OS volume's own law, half a dB a step down from full and 0
+ * silent, so an app slider and the Sound page's feel alike; the OS volume still sits
+ * on top of both, in the codec. */
+uint16_t stage_snd_gain(int vol)
+{
+    if (vol <= 0) return 0;
+    if (vol >= 100) return ORB_SOUND_GAIN_1;
+    return (uint16_t)(ORB_SOUND_GAIN_1 * powf(10.0f, -(float)(100 - vol) * 0.5f / 20.0f) + 0.5f);
+}
+
+int stage_snd_play_v(int i, uint32_t flags, int64_t at_us, int64_t anchor_us, int vol)
+{
     if (!s_lay_app || !(orb_svc_grants(s_lay_app) & (1u << CAP_SOUND))) return -1;
     uint32_t n = 0;
     uint8_t pat;
@@ -2958,5 +2974,5 @@ int stage_snd_play(int i, uint32_t flags, int64_t at_us, int64_t anchor_us)
     const uint32_t f = ORB_SOUND_LEASED | (flags & (ORB_SOUND_LOOP | ORB_SOUND_ANCHORED |
                                                     ORB_SOUND_ASKED));
     return orb_sound_play_enc(s_lay_app, blob() + t[i].pcm_off, t[i].n, t[i].enc,
-                              ORB_SOUND_GAIN_1, f, at_us, anchor_us);
+                              stage_snd_gain(vol), f, at_us, anchor_us);
 }

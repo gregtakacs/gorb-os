@@ -7275,3 +7275,541 @@ one has none. Seen on Gold: units forgotten, home cleared and set near Fort Wort
 read °F, mph, miles, 12-hour, inHg; a move to Budapest left them so. Gold's own metric units were
 put back after.
 
+## 57 — One settings schema: the app declares, the OS and the hub render — 2026-11-07
+
+**Owner, 2026-11-07.** "Apps define what settings they have, the setting's type (digit, text,
+dropdown, multi-select, etc.), then the OS renders them, and also exposes it via an API so the
+hub can render them." There are no apps beyond the shelf's to carry along.
+
+### 57.1 What there was
+
+- **Storage was already the OS's.** `app.json` declared each setting's id, a C9 type (`int`,
+  `enum`, `toggle`, `string`, `secret`) and its min, max and default; the OS stored and
+  range-checked values per app and served them a key at a time (`/api/v1/apps/cfg`).
+- **Rendering was three ways.** The dial drew whatever each app's hand-written `orb_opt_*`
+  exports answered (Flights' five rows and a Home line, Weather's Clock row). The manifest named
+  nothing: no labels, no option names (Flights' `source` was "0 to 1"; "adsb.fi" lived in C).
+  The hub showed only secrets and the strings an app's separate `editor/settings.json` gave a
+  `kind`, with labels and help from that file; ints, enums and toggles never reached it.
+- **No endpoint described an app's settings**, and nothing could hide one (Weather's bench
+  `force` was hidden only because no one rendered it). No multi-select, no decimals, no units.
+
+### 57.2 The schema (app.json `settings`, each entry)
+
+| field | for | meaning |
+|---|---|---|
+| `id` | all | the NVS key, as before (a-z 0-9 _, ≤ 15) |
+| `type` | all | `int`, `number`, `enum`, `multi`, `toggle`, `text`, `place`, `secret` |
+| `label` | all | what the dial and the hub call it (≤ 23 bytes); required |
+| `help` | all | a sentence or two for the hub (≤ 480 bytes) |
+| `links` | all | `[{href, text}]` for the hub, at most 3 |
+| `show` | all | `both`, `dial`, `hub` or `none`; default `both`, and `hub` for text, place and secret (nobody types on a knob) |
+| `min`, `max`, `default` | int, number | the range and first value, in the setting's own units |
+| `step`, `unit` | int, number | the knob's step (default 1) and a suffix ("°", "%", " s") |
+| `decimals` | number | 1..3: stored as an integer times 10^d, shown with that many decimals |
+| `choices` | enum, multi, toggle | the option labels, in value order; a label may instead be `{"km", "mi", "nm"}`, picked by the orb's distance unit (Flights' ranges). A toggle's two are its off and on (default "off", "on") |
+| `default` | enum | an index; multi: a list of indices; toggle: 0 or 1; text, place: a string |
+| `host`, `header` | secret | the one host the OS may send it to, and the header it rides (default `x-api-key`) |
+
+The binary gate is unchanged: `number` and `multi` store as C9 `int` (a scaled integer; a
+bitmask of at most 16 choices), `text` and `place` as `string`, and the C9 types stay frozen.
+
+### 57.3 The container: FORMAT 4
+
+The schema travels as a region of its own: the normalized entries as compact JSON (≤ 6 KB),
+written by `orbapp.py` from `app.json`, its offset, size and CRC32 inside `hdr_crc`'s span. A
+FORMAT 3 container (no schema) is refused by name. The C reader checks the CRC and that the
+schema's ids, types and count are the binary table's; the scan copies it into the row (PSRAM) and
+parses it once into the dial's compact rows.
+
+### 57.4 The dial
+
+A wasm app's options page is the OS's, drawn from its schema; the `orb_opt_*` exports are gone
+from the SDK (native entries, the OS's own pages, keep the hooks; the clock is a wasm app with no
+settings, so it has no page — see 57.7). Rows are the
+settings shown on the dial, in manifest order: `label:  value`. A press on an int, number, enum
+or toggle row edits it by knob, as the UNITS page does (enum and toggle wrap); a multi is a group
+whose items are its choices, each a press to turn on or off. When any setting is hub-only, a last
+row reads "More on Orb Manager". The app hears a change as it always has: `orb_cfg_gen` moves.
+
+### 57.5 The API and the hub
+
+`GET /api/v1/apps/settings?id=<slug>` answers `{"slug", "title", "dist", "settings": [the schema],
+"values": {id: number | string | {"set", "tail", "host", "header"}}}` (a secret's value never
+leaves the orb). Writes stay `POST /api/v1/apps/cfg`. Orb Manager's App settings page renders every
+setting shown on the hub from that answer alone, in manifest order, with its label, help and links:
+a number field and slider, a dropdown, checkboxes, an on/off switch, a line of text, the place
+picker, the secret row. `editor/settings.json` is retired.
+
+### 57.6 Slices
+
+1. The schema in `orbsdk.py`/`orbapp.py` (validation, the region, FORMAT 4) and the C reader and
+   scan, with the Python and C suites and the hub's Go container reader moving together.
+2. The OS: the dial renderer behind the wasm iface's `opt_*`, the API route, the scan's copy.
+3. The hub's generic page; `settings.json` read nowhere.
+4. The three apps on the schema, their `orb_opt_*` code and `settings.json` deleted; versions
+   bumped, `os_min` v1.2.19.
+5. The SDK's `orb.h`, `apps/README.md`, the template, the user guide.
+
+### 57.7 As built — OS v1.2.19, 2026-11-07
+
+All five slices landed together. Clock v1.2.28, HSB v1.3.0, Flights v1.4.0, Weather v1.4.0, all
+FORMAT 4 with `os_min` v1.2.19; Orb Manager's install floor is v1.2.19.
+
+- **The parser** is `main/app/orb_setui.c` (not `orb_ui.c`, which is the widget service), pure C
+  over `orb_json`, host-tested as shipped by `tools/host_setui_test.py` (7 of 7 mutants). The
+  container suites moved with the format: the reader suite at 78 vectors and 32 mutants, the
+  writer at 194 checks. `help` is capped at 480 bytes, not 240: Flights' key help needs ~300.
+- **A page needs a schema.** Every wasm app shares one iface, so its hooks alone made
+  `orb_app_has_options` true for every app, and the settings-free clock showed an empty page on
+  the bench. A card app now offers a page only when its manifest carries a schema; native entries
+  keep the declared-hooks rule and the late-rows reasoning behind it. The registry suite pins
+  both sides, and dropping the rule fails it.
+- **`orb_reply` is gone** with the hooks: it answered only `orb_opt_label`/`orb_opt_value`, and
+  nothing set its buffer once they went. `binds.json` lost it (69 imports); no shipped app
+  imported it.
+- **Upgrades keep settings.** A FORMAT 4 reader refuses a FORMAT 3 slot, but the installer's
+  census reads such a slot's magic, format, serial and slug from the fixed words, so installing an
+  app's FORMAT 4 build over its FORMAT 3 slot is a reinstall into the same slot and its settings
+  namespace (`orb.app<slot>`), grants and secrets survive. Proved on Gold: v1.2.17 with FORMAT 3
+  Weather and Flights and settings set under it (two places, Clock hidden, Flights' range on its second choice), then
+  this build, then the FORMAT 4 apps — every value came through. A bench trap on the way: flashing
+  v1.2.17 over FORMAT 4 slots lets the old installer, blind to them, put a second copy of an app
+  in another slot, and the census then takes the last match. Only a downgrade makes that state;
+  uninstalling the extra copy clears it.
+- **The dial, on Gold:** Weather's page is "Clock (shown)" and "More on Orb Manager" (the places
+  are hub-only, `force` is `none`); Flights shows range in the orb's distance unit ("80 km"),
+  source, background, boost, ground, and the hub row for its key; HSB shows hue, saturation and
+  brightness with units. A knob edit of a toggle and of an int (two detents = two steps of 5)
+  saved and read back through `/api/v1/apps/settings`.
+
+## 58 — One place per app on the dial — 2026-11-07
+
+**Owner, 2026-11-07.** "I have 3 different places now where apps show up on the orb:
+permissions, apps, each app's own setting pane. Can we consolidate? This is way too
+disjointed." Asked for the layout, the owner chose one flat page per app.
+
+### 58.1 The ruling
+
+- **The top menu** is ABOUT, DISPLAY, UNITS, APPS, then the service pages (Themes, USB
+  Drive, Sound) and exit. PERMISSIONS and the per-app settings rows are gone.
+- **APPS** lists every installed app, then the card files not installed, then the slot
+  count. A refused app (D19) carries `*` on its row and on APPS itself.
+- **An installed app's page** is flat, in this order: its settings shown on the dial
+  (§57, the same knob edits), "More on Orb Manager" when some are hub-only, one row per
+  owner cap it declared or reached for and was refused (`net:  allowed`, one press
+  toggles, `*` on the refused one), then show on the dial (retry when faulted),
+  uninstall, remove from card, back. Back lands on the app's row of APPS.
+- **A card file** keeps its own doors page: install, remove from card.
+
+### 58.2 As built (OS v1.2.19)
+
+- `PG_APP` is the page: an installed app's rows are its option rows plus `own_rows()`
+  (caps and the doors, by APPACT's door ids); a service page owns none of them.
+  `PG_APPACT` is card files only. `PG_PERMS` and `PG_CAPS` keep their enum numbers so a
+  stored menu position keeps its meaning, and a stored one opens the top page.
+- **The page follows its app across a tier change.** An install from the card lands on the
+  app's own page; an uninstall from that page lands on the card file's doors. Both used to
+  leave "? APP" over a lone back row, which read as a hung dial.
+- **A status line takes the fifth row's place.** It was drawn over the bottom row on any
+  page that filled the glass; the list now windows four rows while a line is up.
+- `tools/host_menu_test.py` moved with it: the D19 checks drive an app's page, the option-row
+  checks run on a service page (same `PG_APP`, no caps or doors), and the follow-throughs
+  and the four-row window are new. 91 mutants, all caught.
+
+### 58.3 Three bugs found on the way (Gold, 2026-11-07)
+
+- **Uninstall from the dial always panicked.** `job_uninstall` formatted its status line from
+  the row it had just freed (NULL slug, `LoadProhibited` in `strlen`); the reboot made the
+  uninstall look done. It copies the name first now, and so does the door's own log line.
+- **An install from the card left the app's page without its settings** until the reboot a
+  code install ends in: the ladder verified the schema and dropped it. The row carries it now.
+- **A still page did not redraw after a card read.** The display lends its DMA ring to the
+  card and drops frames meanwhile; the full repaint it then owes went out only on the next
+  flush, and a menu page that changed nothing never flushed, so the glass kept its old picture
+  until a turn. `display_dma_service()` (LVGL task, every pass) takes the ring back once the
+  loan closes and the network's window passes, and invalidates the screen if frames were
+  dropped. `/api/v1/fb` reads the mirror, which is always whole, so the bench capture cannot
+  see this one; it wants a look at the glass.
+
+### 58.4 Themes on the app's page, and the hub row's box — 2026-11-07
+
+**Owner, the same day:** "I forgot the themes, they should also move into the app's setting
+menu", and "the 'more on the hub' should pop up a message box to let the user know that
+additional settings are only accessible via the hub."
+
+- **Themes is no longer a menu row.** `orb_app.c` appends the theme provider's rows (the old
+  Themes page, `themes_page.c`) to every card app's page, after the app's own: one Themes group
+  whose items are the card's themes whose stem names that app (`e->app`), with the preview
+  plane and the D11 install-on-press as before. Every option dispatcher routes an index through
+  one door (`opt_route`), so neither half counts the other's rows; arming the page arms both,
+  which is what walks the card. The provider row is initialised and serviced beside the service
+  tier and listed nowhere. A group that lands with the walk after the page opened opens as it
+  would have at entry. The top menu is ABOUT, DISPLAY, UNITS, APPS, USB Drive, Sound, exit.
+- **The hub row opens a box.** A new optional hook, `opt_note`, answers a sentence for a row
+  that is not an action; the shell shows it in a box over the list (the rows blank behind it),
+  and a press, turn or hold closes it and does nothing else. The wasm page answers it for "More
+  on Orb Manager" with the hub-only settings by label: "Place 1, Place 2 and Place 3 are set in
+  Orb Manager, on this orb's App settings page."
+- **"show on the dial" was a leftover** of the enable-switch era: it called `orb_app_activate`
+  from the menu, which swapped the glass without the router. Removed (58.5).
+
+### 58.5 Themes and Permissions as sub-menus — 2026-11-07
+
+**Owner, the same day:** "remove the show on the dial thing. I'd like to move themes and
+permissions into their own sub-menus ... it's too confusing the way it is."
+
+- **An installed app's page** is its dial settings, "More on Orb Manager" when some are
+  hub-only, **Themes  (Scope)** (the one on the dial, else how many; absent when the card holds
+  none of the app's), **Permissions  (2 of 2)** (granted of declared, `*` when refused; absent
+  when it declares and reached for none), then retry (faulted apps only), uninstall, remove from
+  card, back. Weather's is seven rows.
+- **Themes** is the provider row's page aimed at the app (`themes_page_for`), headed "Weather
+  THEMES": the group of that app's themes, previews and install-on-press as before. The registry
+  splice of 58.4 is reverted: `orb_app_opt_*` answer an app's own rows only, and the provider row
+  is menu-only and listed nowhere. The menu's APPS walk also walks the themes
+  (`themes_page_walk`, on the worker), so an app's page has its Themes row when it opens.
+- **Permissions** is `PG_CAPS` again, one app's caps, headed "Weather PERMISSIONS", a press
+  toggles. Back from either sub-menu lands on the app's page at the row that opened it.
+- **The doors** lost "show on the dial": the app list and the carousel open apps.
+- Suites: the menu suite drives both sub-menus, their back routes, the row summaries and the
+  APPS walk; 101 mutants, all caught. The registry suite pins that an app's page carries no
+  theme rows and that the provider is menu-only. Benched on Gold.
+
+## 59 — Clock sounds per chime, two clock levels, the carousel's order and rotation — 2026-11-07
+
+**Owner, 2026-11-07.** (1) "load unique sound for every chime type ... part of every single
+sound type. Warn the user if their sounds are turning excessive size wise. There has to be a
+way to ... remove the custom sound from a theme and revert it back to the built-in." (2) "change
+volumes independent of each other for ticks and bells ... make it a clock app option. Master
+volume is still on the OS level." (3) "order the apps on the carousel (may be fine if it's hub
+level only)" and "auto swap/rotate apps on the dial at a time interval with selecting which
+apps participate". (4) "the build a watch's lighting to default to the as designed setting."
+
+### 59.1 As built — OS v1.2.20, clock v1.2.29
+
+- **Every sound takes its own file** in the Theme Editor's Sound tab: each row (the tick, the
+  four chimes, the pattern's strokes, the three jumps) has **Your own** and, when it holds the
+  author's file, **↺ Back to built-in**: the preset's own choice for that sound, or the first
+  built-in that fits it when the preset leaves it silent. **Remove all your own sounds** does
+  every one. The bytes leave the design, so the next Send carries none. The single upload with
+  a "For" dropdown is gone; the low cut is one switch for every file.
+- **The budget is what the bake stores** (`GorbBake.soundEncode`: ADPCM where it holds, PCM16
+  where it would not), against the slot it shares with the art: past 512 KB "getting large",
+  past 2 MB "excessive" with how much of it is the author's own; a sound over 10 s is "long"
+  on its own row.
+- **Two clock levels.** The clock declares `tick_vol` (default 70) and `chime_vol` (default 100)
+  in its schema, so they are on the dial and in Orb Manager. Ticks are the tick loop and the
+  three jump clicks; chimes are everything else. A new import, `stage_snd_play_v(i, flags, at,
+  anchor, vol)`, plays a theme sound at a level on the OS volume's own law: half a dB a step down
+  from full, 0 silent (`stage_snd_gain`), with the OS volume still on top in the codec. The old
+  import stays and plays at full. A changed tick level restarts the loop, which re-enters on its
+  second.
+- **The carousel's order** (`orb_rotation.c`): a slug list the registry's one walk gather ranks
+  the installed apps by, so the carousel, the app list and the knob agree; an app the list does
+  not name stands after the named ones in slot order, and the shell still leads. Set from Orb
+  Manager only (Apps > Carousel, ▲ ▼).
+- **The rotation**: on or off, 10 s to a day, and the apps that take part. The router asks
+  `orb_rotation_pick` on every poll with no knob event and the carousel shut; it moves only from
+  an app that takes part, once the knob and the glass have been quiet a whole interval (a touch
+  or any screen switch restarts it), to the next app taking part in the carousel's order,
+  wrapping. Set from the hub (Apps > Carousel: the interval and an "in rotation" box per app) or
+  the dial (APPS > Rotate apps, knob-edited off to an hour; each app's page grows an **In
+  rotation** row while it is on).
+- **`/api/v1/carousel`**: GET answers the installed apps in walk order with `rotate` each, and
+  `{on, every_s}`; POST takes a form body (`order`, `rotate`, `every_s`, `apps`; an empty `apps=`
+  is "none") and answers the same. Allowlisted in the hub and modelled in `orbfake`.
+- **From scratch** starts with its light As designed (the engine defaults), not No light.
+- **Found on the way:** a reinstall over the app on the glass faulted the dial (v1.2.19,
+  `LoadProhibited` in `orb_app_current_armed`): `card_fill` rewrote the live row from the worker,
+  and the row it copies in carries no iface. `orb_app_card_upsert` now leaves a row this boot
+  already built as it is; the reboot every app install ends in rebuilds it from its slot.
+- Suites: `host_rotation_test.py` (19 checks, 7 of 7 mutants), the registry suite (the order in
+  the walk, the live re-install), the menu suite (the Rotate row, the jobs, In rotation; 105
+  mutants), the editor's UI suite (per-row files, back to built-in, remove all, both warnings)
+  and flow suite (From scratch's light), `orbfake`'s carousel route. Benched on Gold: the clock's
+  two levels on its page and from `/api/v1/apps/settings`, the Rotate row, and a 10 s rotation
+  over Weather and Flights alternating on the glass.
+
+### 59.2 Weather's preview at 232 — weather v1.4.1
+
+**Owner, 2026-11-07:** Weather's preview was "really pixelated and overall looks illegible", and
+could previews be stored at full resolution, compressed? Measured on Gold first: Weather baked its
+preview at **128 px** (since v1.0.2, with no recorded reason; nothing showed a preview larger
+than a thumbnail then, and nothing checks the size), Clock and Flights at 232, the carousel
+centre's own size, so Weather's was stretched ~1.8x there; and the bake shrank 466 to 128 in one
+drawImage, which drops most of the rows a hairline word sits on. Full resolution would work:
+lossless deflate of real 466x466 frames is 83 KB (Weather), 94 KB (Flights), 208 KB (Clock), and
+the ROM's tinfl inflates them in 55, 55 and 83 ms (state in internal RAM; PSRAM +6 ms), against a
+card read of ~0.4 MB/s through the theme reader (today's 107 KB previews take 260-290 ms). It
+would only show in the zoom into an app and the Themes sub-menu, though: the carousel's centre is
+232. **Owner's choice: 232 first, then decide.** Weather now bakes 232, shrunk by halves with
+high-quality smoothing (`shrink`); the full-res deflate format stays on the table with these
+numbers if the zoom and the Themes sub-menu still read soft.
+
+## 60 — Previews at full resolution, deflated — 2026-11-07
+
+**Owner, 2026-11-07,** having seen Weather at 232 (59.2) and the rest: "we should go lossless
+compress instead and have them full res", and the themes already on the card are to be re-baked.
+
+### 60.1 As built — OS v1.2.20, clock v1.2.29, flights v1.4.1, weather v1.4.1
+
+- **The bake.** Every editor's preview is the whole glass, 466x466: the clock's
+  `previewPlane3` (no more nearest-halving), flights' and weather's `picture(.., 466)`. The baker
+  (`GorbBake.zlibFixed`) stores it as its disc (OS v1.2.12) deflated: a zlib wrapper round one
+  fixed-Huffman block, matches by a 64-deep hash chain, deterministic in any browser and in node,
+  ~30 ms. It keeps the raw disc when deflate would not be smaller. The half-glass refusal became
+  a whole-glass one. Measured: Skeleton 224 KB, Scope ~110 KB, Modern ~114 KB (fixed codes are
+  ~15% over zlib's dynamic ones; a dynamic-Huffman encoder is the knob if the bytes ever matter).
+- **The orb.** `orb_elems.c` and `orb_clock3.c` accept a square preview whose size is under its
+  raw disc's (the baker's own rule); `orb_theme.c` reads those bytes into PSRAM, checks the zlib
+  header, inflates with the ROM's tinfl (`main/art/orb_inflate.c`, its ~11 KB state on the heap,
+  internal RAM first) to exactly the disc, and expands it like a raw disc. Measured inflate on
+  Gold: 55 ms (Weather, Flights), 83 ms (Clock). Callers get the 466 square as before.
+- **The carousel** keeps its cache at 232 (box-averaged from the full plane at boot, ~0.4 MB of
+  PSRAM for five apps) and prefetches ONE full plane, the centre app's, on its own task once a
+  turn settles; the zoom into an app draws from it when it has landed (before then, from the 232).
+  The Themes sub-menu shows a full plane 1:1 (its scale is the glass over the plane).
+- **The hub** asks `/api/v1/sd/preview?enc=z` and gets a deflated preview as it lies,
+  `[w][h | 0x8000][zlib]` (~100-240 KB on the air instead of 434 KB), and inflates it
+  (`orbnet.ExpandZPreview`); a library file's preview inflates the same way (`planeInBlob`).
+  Without `enc=z` the orb answers the plain plane, so an older hub still reads it.
+- **Floor:** a theme from these editors needs OS v1.2.20 (an older reader refuses the size), so
+  all three apps carry `os_min` v1.2.20 and the shelf was re-baked.
+- Suites: the bundle suite (the stored preview is the disc deflated and inflates to it, the raw
+  fallback on noise, the whole-glass refusal), the dither and stage suites, the component suite
+  (466, every pixel the frame's own), `host_orbelems` (its stale mutant re-pinned), the hub's
+  `ExpandZPreview` (round trip, bad checksum, truncation) and the shipped default at 466.
+
+### 60.2 No card while the knob turns — 2026-11-07
+
+**Owner, 2026-11-07:** "the carousel feels slow ... jerky. Is that SD card to flash load? Or is
+that how slow flash to display is?", and the Themes page should load ahead and "let them rotate
+through items without having to load each of them".
+
+- **Measured on Gold:** the panel was never the limit. A carousel frame is the whole glass,
+  ~35 ms (compose ~11 ms, the rest the QSPI send and its tearing wait), ~29 fps in motion. Every
+  dropped frame (6,856 of 6,856 skips in one run, a counter that now tells the card's share apart)
+  was the display's DMA ring out to the SD card: `orb_sd_lock` lends it for the whole card hold,
+  and 60.1's full-preview prefetch read the card for ~0.6 s after every settled turn.
+- **The carousel no longer reads the card after boot.** The boot load keeps each app's stored
+  preview bytes (`orb_theme_preview_zcopy`, ~430 KB for the three themed apps) and derives the 232
+  cache from them; the centre's full plane is inflated from those bytes (`orb_preview_inflate`,
+  97-115 ms, no card). Same run after: 0 skips, 57 frames against 46.
+- **The Themes page caches ahead.** While the cursor rests (350 ms), its own task fetches the
+  stored previews nearest the cursor (here, +1, -1, +2, -2) one at a time into a bounded cache
+  (900 KB, eight entries, the farthest from the cursor evicted first; twenty Clock previews are
+  ~3.7 MB and would not fit). A landing on a cached theme inflates from memory; a turn never
+  starts a card read. The cache is freed when the page is left.
+- **Its own task, not the jobs worker:** the shell drops every turn while `orb_jobs_busy()`, so a
+  prefetch on the worker swallowed turns (three detents, two landed, one ~0.85 s late). On
+  `theme_pv` all three land at their own pace (436 ms apart for 400 ms sends).
+- A theme not yet cached still reads the card when the cursor rests on it, and the glass is still
+  for that read: the card and the display share the one DMA ring.
+
+- **"working..." that never left (owner, 2026-11-07).** After a fast scroll, and again after a
+  theme pick's reboot, the Themes page sat on "working..." with nothing loading. The job had
+  finished; the hint was stale. The shell paints "working..." while the card walk runs, and the
+  walk lands through the themes provider without changing the row count, so none of the menu's
+  three repaint triggers fired and the hint stayed until the next detent. The menu now remembers
+  the busy state its last paint drew (`s_painted_busy`) and repaints when `orb_jobs_busy()`
+  disagrees. Gold: the page clears on its own after entry and after a pick's reboot. Previews land
+  after erratic fast-scroll rounds (2-10 detents at 0-80 ms, three-detent bursts 400 ms apart).
+
+### 60.3 The Themes list reads in short holds and runs ahead — 2026-11-07
+
+Owner, after v1.2.20 was tagged: turning through Clock's Themes list still felt fragile. The
+cursor seemed stuck on a row, a move took a long time to show, and a preview sometimes never
+came when the knob turned while another was loading. Measured on Gold with a log of every
+card hold:
+
+- **One uncached preview cost ~540 ms of card time in five or six holds**, and the glass
+  draws nothing while the card holds the display's DMA ring. Two ~120 ms folder walks to
+  find a file whose path the stem already names, a probe and a read that each opened the
+  file and read its region, and the plane itself at ~600 KB/s: a read into PSRAM goes to
+  the card driver one 512 B sector per command, since it cannot DMA there.
+- **The prefetch ran ~1.5 s apart** because it waited for the ring to come home, and the
+  ring comes home on a flush that a still page never makes.
+- **The cache thrashed while the cursor rested.** Five neighbours (~1 MB) did not fit 900 KB,
+  so a fetch evicted a nearer theme, the prefetch fetched it straight back, and so on.
+
+Now (OS, `orb_theme.c` and `themes_page.c`):
+
+- Previews open their file by path (`card_open_preview3`, the same identity checks on the
+  opened header), and `orb_theme_preview_zcopy` finds and reads the plane in one open.
+- `rd_at` reads into memory the card cannot DMA through a 4–16 KB internal buffer taken
+  inside the call. That buffer is memory the ring's loan freed, so nothing outlives the
+  loan. Whole sectors from a sector boundary give FatFs multi-block reads: ~190 KB in
+  ~150 ms, against ~300 ms.
+- **Segmented reads:** `orb_theme_preview_zcopy_ex` reads 32 KB at a time and gives the card
+  (and the ring) back for 20 ms between segments. Every hold on the page is now 70 ms or
+  less, mostly 25–50 ms.
+- **Abandoned reads:** before each segment it asks whether the cursor is still where the read
+  was posted (`s_moves`), and drops the read if not. The theme turned to starts at once.
+- An uncached landing is fetched as stored bytes, inflated with the card free, and filed in
+  the cache. A cached landing settles in 40 ms rather than 120.
+- **Prefetch:** it no longer waits for the ring. It runs ahead in the direction of turning
+  (here, +1, +2, -1, +3) within 1.1 MB. It evicts only what is farther from the cursor than
+  the newcomer, and stops until the next move once nothing nearer fits.
+
+Gold, single steps 1 s apart through eight themes: every landing came from the cache. Down,
+down, up, two up, and fast bursts of six or seven detents all land with their preview; a
+burst that ends on an uncached theme loads it in one segmented read.
+
+## 61. The theme carousel — 2026-11-07
+
+Owner, after §60.3: much better, but a full-glass preview hides the list, so you cannot
+see the name of the theme you are turning onto; you want to spin through the whole list
+and stop where you like; and getting out of the list is hard (its back row sits after
+every theme). On the owner's prompt, the ruling is **a vertical carousel like the app
+carousel, in place of the text list: lazy load with names, populate as you go, nothing
+kept once it closes** (a pick reboots the orb anyway).
+
+As built (`main/menu/theme_strip.c`, OS):
+
+- **Opening:** an app page's **Themes** row opens it in place of the text sub-menu. The text
+  sub-menu remains the fallback when the carousel cannot run (no memory, no themes listed).
+  The page stays as it was under the held glass (`display_glass_hold`), and Back returns
+  there.
+- **Layout:** the theme under the cursor is a 300 px disc in the centre. The ones above and
+  below peek in at 150 px, 228 px away. A **Back** card is at the top. The centre theme's
+  name runs across the disc's foot on a darkened band, in amber for the theme the dial
+  wears. The name follows the cursor through a spin, so every theme turned past is named.
+- **Knob:** a turn moves one theme a detent (`knob_row_step`, so the list turns the way the
+  menu does) and clamps at the ends; a spin retargets mid-motion as the app carousel does.
+  A press installs the centre theme (`themes_page_pick_id`, the list's own door) and closes
+  with the "storing …" status, after which the store reboots the orb. A press on Back or
+  on the theme already worn goes back or stays. A hold goes back.
+- **Lazy load:** a disc is a plain card until its picture is read. The loader (task
+  `theme_ts`, one job at a time) reads only while the strip rests (150 ms after motion
+  stops), never while it moves. It reads the centre first, making its 300 px sharp plane
+  and its 160 px thumbnail. It then reads the nearest unread theme, ahead of the last turn
+  first, until every theme has a thumbnail. Each read is §60.3's segmented
+  `orb_theme_preview_zcopy_ex`, abandoned when the strip moves. Raw previews from before
+  v1.2.20 are read whole.
+- **The ring:** while the carousel is up, `display_ring_urgent` takes the display's DMA ring
+  back from the card at once, not after the network's 1.5 s window
+  (`RING_NET_WINDOW_US`); otherwise every short read would still the strip that long.
+- **Memory:** everything is freed on close. A late load is reaped and freed by
+  `theme_strip_service` (`s_session`). Gold, all 20 Clock themes filled: ~1.7 MB of PSRAM in
+  use at the peak, back on close. Three visits leave the same free figure, within 16 KB.
+
+Gold, 2026-11-07:
+- Clock opens on the theme worn, named in amber, with its neighbours' pictures in place.
+- An eight-detent burst lands on its theme with the picture.
+- Spinning to Back and pressing returns to the Clock page; a hold does the same.
+- A press on Skeleton stored it and rebooted onto it.
+- Weather's Themes row opens its themes the same way.
+
+`host_menu_test` checks the Themes row opens the carousel on its app and leaves the page,
+with a mutation.
+
+### 61.1 No grey cards, and drawn ones — 2026-11-08
+
+Owner, first use: some themes stayed a grey card, and the Back card, HSB's card and Settings
+were weak. They asked for real drawn buttons.
+
+**The grey cards were memory, then a loop.**
+- Inflating a full-glass preview took one contiguous 434 KB block of PSRAM. The clock face's
+  ~2 MB of art stays loaded behind the menu, and the thumbnails cut the rest up, so the
+  block stopped being there. The loader then called that theme pictureless for the visit.
+- A strip that could not open fell back to the text list, whose prefetch retried an empty
+  fetch at once and read the card in a loop with PSRAM gone.
+
+Now:
+- `orb_inflate_stream` inflates through a 32 KB window and hands over each run as it comes.
+  The carousel assembles disc rows and boxes each row straight into its 150 px thumbnail
+  and, for the centre, the 300 px sharp plane. No preview is ever inflated whole.
+- Thumbnails are kept 6 places either side of the cursor; farther ones go and come back on
+  the way past.
+- A load short of memory is retried, up to three times; only "no preview there" stays a
+  plain card.
+- The text list's prefetch rests after an empty fetch.
+
+Gold, with the clock face loaded: about 1.1 MB of PSRAM free when the carousel opens,
+about 0.5 MB with it filled. A slow walk through all 20 Clock themes, with spins mixed in,
+ends with no grey card.
+
+**Drawn cards** (`tools/ui_icons/draw.py`, regenerated by `tools/ui_icons/make.py`):
+- **Settings:** a machined steel gear with a ruby jewel.
+- **Back:** a raised return arrow with a cool halo.
+- **HSB:** a hue ring around a saturation wheel, with the picker's selector.
+
+Each is drawn 3× supersampled from height maps with a bevelled rim, deterministic (seeded).
+
+- **Settings and Back are in the firmware.** The owner lifted D22 for the OS's own controls
+  (2026-11-08). `main/assets/orb_ui_icons.c` holds them as deflated RGB565 discs: Settings
+  at 466 px (68 KB), since the app carousel zooms it to the full glass, and Back at 300 px
+  (26 KB). Back streams into its thumbnail at open, and into the centre's plane while it is
+  the centre.
+- **HSB's icon ships in its own module** (apps are atomic):
+  - app.json `"icon": "icon.png"` (232 px). orbsdk reads the PNG itself, without Pillow,
+    disc-packs and deflates it, and compiles it into the module.
+  - The app hands it over from `orb_init` with `ORB_ICON()`, i.e. `orb.icon(z, n, side)`,
+    `i(iii)`. The OS checks the bytes and keeps a copy in the app's wasm slot.
+  - The app carousel shows an app's icon when it has no theme preview.
+  - On older firmware HSB v1.3.1 is refused at load with "needs orb.icon, which this
+    firmware lacks: update the firmware". The container format is unchanged.
+
+### 61.2 Settings is Settings, and a boot opens an app — 2026-11-08
+
+Owner:
+- The carousel's Settings card showed the black MENU landing instead of the gear.
+- It should be called Settings.
+- The orb should never land there unless it has no app to load.
+- A reboot should always open the carousel's first app.
+
+- **The card:** the carousel's opening card wears a snapshot of the glass until the strip
+  moves. Settings has no app to swap its picture back from, so it kept the snapshot.
+  Settings now never takes the snapshot (`orb_strip_open`).
+- **The name:** the shell's landing card and its top list read SETTINGS.
+- **Boot (supersedes D36's "boot where the glass last stood"):** `boot_first` opens the
+  first app of the carousel, in the owner's order, that starts, and Settings only when none
+  will. The menu's exit with nothing remembered goes to that first app too (`first_app`).
+  The USB share card, the uninstall door and the theme store still use home, the shell,
+  which they need.
+
+`host_menu_test` pins both router rules.
+
+### 61.3 The clock gives its pre-paint planes back — 2026-11-08
+
+Owner: from the Clock's own page the theme carousel loaded five pictures and no more; from
+Weather it loaded them all. "The clock is holding onto its memory."
+- **Cause:** the clock's pre-paint (§49.15) keeps four full-glass planes (`s_pf`, `s_pb`,
+  `s_pfn`, `s_pbn`, ~1.74 MB of PSRAM). `orb_sched_pause` turned pre-paint off when the dial
+  left the glass, but `gfx_prep_mode(0)` left the planes allocated, for the rest of the boot.
+- **Fix:** `gfx_prep_mode(0)` frees them, and the dial's resume takes them again. A
+  half-taken set is released whole, not leaked.
+
+Gold:
+
+| Screen | PSRAM free |
+|---|---|
+| Clock face on the glass | 2.04 MB |
+| Settings | 3.81 MB |
+| Clock carousel open | 2.80 MB |
+| Clock carousel filled | 2.72 MB |
+| Back on the clock | still pre-painted, no refusal |
+
+Every theme near the cursor read; none came back grey.
+
+### 61.4 The progress ring — 2026-11-08
+
+Owner: could a card show a spinner while the card reads its preview? It can't animate
+during a card hold: the card has the display's DMA ring. It could step between the 32 KB
+segments, but every frame is a full composed glass and would slow the read. The owner
+chose a **progress ring** instead: it only draws when there is progress to show.
+
+- **Where:** a plain card being read wears a ring just inside its edge, a bright arc
+  (#66d9ff) over a dim track, clockwise from twelve.
+- **What it measures:** reading the card is the first 70%. `orb_theme_preview_zcopy_ex`'s
+  keep callback now takes `(arg, done, total)` between segments. Streaming the picture down
+  is the rest, counted by disc rows.
+- **Redraws:** the strip redraws only when the arc has grown by 2.5% or more, and only for a
+  card within two places of the centre. The ring goes the moment the load is reaped.
+
+Gold: the ring shows on a neighbour mid-read, then the card fills.
+
+**§61.5, 2026-11-08 (owner):** a press on the theme the app already wears goes back to the app
+itself (`input_router_show`), not to its page. A hold stays the way back to the page. Gold:
+pressing the worn Triple calendar closed the carousel onto the clock face.

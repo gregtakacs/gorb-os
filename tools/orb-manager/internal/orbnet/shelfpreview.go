@@ -1,8 +1,11 @@
 package orbnet
 
 import (
+	"bytes"
+	"compress/zlib"
 	"encoding/binary"
 	"fmt"
+	"io"
 )
 
 // The hub-side preview plane. docs/history/theme-preview-plan.md §4 and §6, and
@@ -143,7 +146,10 @@ func planeInBlob(body, blob []byte, artBase uint32) []byte {
 			// OS v1.2.12: a preview is stored as its disc (main/art/orb_disc.h), which
 			// this reader lays back out as the square the wire carries, corners black.
 			disc := w != 0 && w == h && size == discPx(w)*2
-			if w == 0 || w != h || (size != w*h*2 && !disc) {
+			// §60: or that disc deflated (a zlib stream smaller than the disc), which the
+			// orb inflates with its ROM's tinfl and this reader with compress/zlib.
+			zipped := w != 0 && w == h && size >= 6 && size < discPx(w)*2
+			if w == 0 || w != h || (size != w*h*2 && !disc && !zipped) {
 				continue
 			}
 			start := int(artBase) + int(off)
@@ -153,7 +159,13 @@ func planeInBlob(body, blob []byte, artBase uint32) []byte {
 			out := make([]byte, 4+int(w*h*2))
 			binary.LittleEndian.PutUint16(out[0:], uint16(w))
 			binary.LittleEndian.PutUint16(out[2:], uint16(h))
-			if disc {
+			if zipped {
+				d, err := inflateExact(body[start:start+int(size)], int(discPx(w)*2))
+				if err != nil {
+					return nil
+				}
+				discExpand(d, out[4:], w)
+			} else if disc {
 				discExpand(body[start:start+int(size)], out[4:], w)
 			} else {
 				copy(out[4:], body[start:start+int(size)])
@@ -201,4 +213,48 @@ func discExpand(disc, square []byte, side uint32) {
 		copy(square[int(y*side+x0)*2:], disc[at:at+n])
 		at += n
 	}
+}
+
+// inflateExact inflates a zlib stream that must come to exactly n bytes (§60: a preview's
+// disc), refusing a short one, a long one and a bad checksum alike.
+func inflateExact(z []byte, n int) ([]byte, error) {
+	r, err := zlib.NewReader(bytes.NewReader(z))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	out := make([]byte, n)
+	if _, err := io.ReadFull(r, out); err != nil {
+		return nil, err
+	}
+	var one [1]byte
+	if k, _ := r.Read(one[:]); k != 0 {
+		return nil, fmt.Errorf("orbnet: the preview inflates past its %d B disc", n)
+	}
+	if _, err := io.Copy(io.Discard, r); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ExpandZPreview turns the orb's enc=z answer ([w][h|0x8000][zlib of the disc]) into the
+// plain wire plane ([w][h][w*h*2 B RGB565]) everything after the fetch reads.
+func ExpandZPreview(body []byte) ([]byte, error) {
+	if len(body) < 4 {
+		return nil, fmt.Errorf("orbnet: a compressed preview of %d B declares no plane", len(body))
+	}
+	w := uint32(binary.LittleEndian.Uint16(body[0:2]))
+	h := uint32(binary.LittleEndian.Uint16(body[2:4]) &^ 0x8000)
+	if w == 0 || w != h || w > 466 {
+		return nil, fmt.Errorf("orbnet: a compressed preview of %dx%d is not a preview", w, h)
+	}
+	d, err := inflateExact(body[4:], int(discPx(w)*2))
+	if err != nil {
+		return nil, fmt.Errorf("orbnet: the compressed preview does not inflate: %w", err)
+	}
+	out := make([]byte, 4+int(w*h*2))
+	binary.LittleEndian.PutUint16(out[0:], uint16(w))
+	binary.LittleEndian.PutUint16(out[2:], uint16(h))
+	discExpand(d, out[4:], w)
+	return out, nil
 }

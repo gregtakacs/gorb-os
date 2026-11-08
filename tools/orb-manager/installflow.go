@@ -51,7 +51,15 @@ import (
 // that is too HIGH refuses a board it could have served; too LOW wastes a minute and blames
 // the board. TestInstallFloorNamesTheReleaseThatReadsFormat3 is the crosscheck that keeps the
 // floor, the reader and the stamp from drifting apart again.
-const installMinFW = "v1.1.28"
+//
+// v1.2.19 moved it again with FORMAT 4 (app-platform-plan §57: the settings schema region).
+// An older board refuses every shelf container by number, so the floor names the release
+// that reads them, and the hub says "update the firmware" before it pushes a byte.
+//
+// v1.2.30 is the merge of the radar line (bench builds v1.2.19-v1.2.29, never released,
+// FORMAT 3 readers) with §57's: a board on one of those bench builds stamps above v1.2.21
+// yet refuses FORMAT 4, so the floor is the first stamp above both that reads it.
+const installMinFW = "v1.2.30"
 
 // faceMinFW is the oldest firmware carrying the glass door (POST /api/v1/apps/face).
 // The seeding arm parks the clock on the glass through that door, because an enabled,
@@ -339,7 +347,7 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if automatic && s.noAutoInstall {
-		s.jsonErr(w, "the automatic install is off (-no-autoinstall); press Install on the Library card")
+		s.jsonErr(w, "the automatic install is off (-no-autoinstall); press Install on Clock on the Apps tab")
 		return
 	}
 	release, rerr := s.holdDevicePort(r.Context(), ip, deviceTimeout)
@@ -383,6 +391,9 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 	slateMAC := ""
 	if automatic {
 		slateMAC = s.slateForIP(ip)
+		if s.seedEndsWithoutCard(ip, slateMAC, send) {
+			return
+		}
 		// D38's leave-the-owner's-shelf-alone rule used to live in the page, ahead of this
 		// route, and it gated out the one case it must not: a board whose SD card still
 		// carries the last orb life's containers — which is every lonely-erased board, since
@@ -485,6 +496,43 @@ func (s *Server) h_libraryInstall(w http.ResponseWriter, r *http.Request) {
 		s.slate.clear(slateMAC)
 	}
 	log.Printf("orb-manager: installed the library on %s (only=%q auto=%v)", ip, only, automatic)
+}
+
+// seedEndsWithoutCard is the join seed's first read. A new orb with no SD card is a finished
+// setup, not a failed one: the firmware and the WiFi are on it, and only the apps wait for a
+// card (owner, 2026-11-07: the seed "errored out on the app copy" with no word that things
+// were fine). It streams `nocard` with the next step and a `done`, and the page words the
+// ending. The slate mark goes with it, because a board with no card has nothing for a wipe to
+// clear, and a mark left standing would wipe the apps the owner installs by hand on the next
+// join. A card the orb cannot read is the same ending with the orb's own reason in front: the
+// fix is the card, and the apps follow it. A ledger that does not answer decides nothing here;
+// the ladder's own patient reads take it from there.
+func (s *Server) seedEndsWithoutCard(ip, slateMAC string, send func(installStep)) bool {
+	listing, err := s.device.AppsList(ip)
+	if err != nil || listing.Mounted {
+		return false
+	}
+	log.Printf("orb-manager: the join seed on %s found no usable SD card (%s); setup ends without apps", ip, listing.Why)
+	if slateMAC != "" {
+		s.slate.clear(slateMAC)
+	}
+	send(installStep{Step: "install", Action: "nocard", Note: noCardSentence(listing.Why)})
+	send(installStep{Step: "install", Action: "done"})
+	return true
+}
+
+// noCardSentence is the join seed's word for a new orb with no usable SD card: setup is
+// done, and the apps follow once a card is in. why is the orb's own reason (orb_sd_why):
+// an empty socket answers "no card answered" after its boot try, a card in a format the orb
+// cannot read names the format. The Apps tab's Install press is the same ladder the seed
+// runs, and a clock install brings its face with it.
+func noCardSentence(why string) string {
+	head := "this orb has no SD card, so no apps were copied"
+	if why != "" && !strings.HasPrefix(why, "no card") {
+		head = "this orb cannot use its SD card (" + why + "), so no apps were copied"
+	}
+	return head + ". Everything else is set up. Insert a microSD card (FAT32), then press Install " +
+		"on Clock on the Apps tab: its face comes with it, and any other app installs the same way"
 }
 
 // installRun is the route's body. With only set it sends that one slug and nothing else —
@@ -824,7 +872,7 @@ func (s *Server) installOneApp(ctx context.Context, ip, slug string, blob []byte
 			}
 		}
 		if time.Now().After(hard) {
-			return fmt.Errorf("%s did not land within %s — the copy may still be running; press Seed again to check",
+			return fmt.Errorf("%s did not land within %s — the copy may still be running; press Install again to check",
 				slug, installHard)
 		}
 		if time.Now().After(deadline) {

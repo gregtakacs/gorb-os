@@ -74,12 +74,14 @@ func TestTheSeedingRefusalNamesTheLever(t *testing.T) {
 	if err == nil {
 		t.Fatal("a clock the dial is not showing verified green")
 	}
-	for _, want := range []string{"flick the knob", "Seed"} {
+	// "flick the knob" is the whole lever: the page has no Seed press any more, and a
+	// refusal naming one sent the owner looking for a button that is not there.
+	for _, want := range []string{"flick the knob"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("the refusal never named %q, so the operator has nothing to do: %s", want, note)
 		}
 	}
-	for _, ban := range []string{"open the orb to retry", "try again"} {
+	for _, ban := range []string{"open the orb to retry", "try again", "Seed"} {
 		if strings.Contains(note, ban) {
 			t.Errorf("the refusal is back to %q, which is an alarm and not an instruction: %s", ban, note)
 		}
@@ -282,11 +284,14 @@ func TestThemeStepIsPerApp(t *testing.T) {
 // The apps name their OS floor (app.json os_min), carried in their editor region's stamp,
 // and the install run reads it from there: the flight tracker and the weather need v1.2.11's
 // orb_knob_dial (plan §51), and the clock v1.2.9 (its themes' gear plans play on that
-// release's scheduler). The weather needed v1.2.17 for its sparse temperature fonts (the
-// digits, the minus and the degree sign alone), and now v1.2.19: it reads the orb's places
-// (orb_place, radar-plan §2.1), which no earlier OS answers.
+// release's scheduler). The weather now needs v1.2.17: its temperature fonts are sparse (the
+// digits, the minus and the degree sign alone), which no earlier reader accepts. All three now
+// need v1.2.19: §57's FORMAT 4 container carries the settings schema, which no earlier
+// reader accepts, and the OS renders their settings from it. The clock needs v1.2.20: it plays
+// its ticks and chimes at the owner's two levels through stage_snd_play_v (§59). The weather
+// needs v1.2.30: it reads the orb's places (orb_place, radar-plan §2.1), merged in that release.
 func TestShelfAppsCarryTheirOSFloor(t *testing.T) {
-	for slug, want := range map[string]string{"flights": "v1.2.12", "weather": "v1.2.19", "clock": "v1.2.12"} {
+	for slug, want := range map[string]string{"flights": "v1.2.20", "weather": "v1.2.30", "clock": "v1.2.20"} {
 		body, err := os.ReadFile(filepath.Join("apps", slug+".orbapp"))
 		if err != nil {
 			t.Fatalf("%s: %v", slug, err)

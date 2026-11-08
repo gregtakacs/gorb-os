@@ -536,7 +536,23 @@ static void read_slots(const esp_partition_t *p, const char *slug,
         if (esp_partition_read(p, slot_base(i), hdr, sizeof hdr) != ESP_OK) continue;
         orbapp_hdr_t h;
         char why[64];
-        if (orbapp_parse_header(hdr, &h, why, sizeof why)) continue;   /* absent slot */
+        if (orbapp_parse_header(hdr, &h, why, sizeof why)) {
+            /* §57's FORMAT 4 left every FORMAT 3 slot unreadable, but not nameless: the
+             * magic, the format, the serial and the slug sit where they always did. Such
+             * a slot is the app's own for this decision, so installing its FORMAT 4
+             * build is an upgrade into the same slot and keeps the owner's settings,
+             * grants and secrets, instead of a fresh install that would wipe them. The
+             * boot still refuses to run it until it is replaced. */
+            if (hdr[ORBAPP_W_MAGIC] != ORBAPP_MAGIC || hdr[ORBAPP_W_FORMAT] != 3u) continue;
+            char old[ORBAPP_SLUG_MAX];
+            memcpy(old, &hdr[ORBAPP_W_SLUG], sizeof old);
+            old[sizeof old - 1] = 0;
+            sl->slot_used[i] = true;
+            sl->slot_serial[i] = hdr[ORBAPP_W_SERIAL];
+            sl->installed_count++;
+            if (slug && strcmp(old, slug) == 0) sl->existing_slot = i;
+            continue;
+        }
         sl->slot_used[i] = true;
         sl->slot_serial[i] = h.serial;
         sl->installed_count++;
@@ -663,6 +679,7 @@ static esp_err_t install_ladder(const esp_partition_t *p, const appsrc_t *src,
     orb_setting_desc_t *settings = (orb_setting_desc_t *)(scratch +
                                         ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS * 4u);
     esp_err_t ret = ESP_OK;
+    char *sch = NULL;                     /* §57: the verified schema, for the row */
 
     /* The WHOLE payload checksums off the card before any erase. Both CRCs, over
      * the full geometry and the full art range, exactly as orb_theme.c verifies a
@@ -689,6 +706,22 @@ static esp_err_t install_ladder(const esp_partition_t *p, const appsrc_t *src,
                                                h->n_settings, settings, rwhy, sizeof rwhy);
         if (r) { ret = install_failed(ESP_ERR_INVALID_ARG, r, why, whysz); goto out; }
         n_settings = (int)h->n_settings;
+    }
+    /* §57: the settings schema checks out before anything is erased, so an app whose
+     * schema the boot would skip is never installed in the first place. The checked
+     * copy is kept for the registry row below: without it the app's page had no
+     * settings until the reboot that follows a code install (Gold, 2026-11-07). */
+    if (h->schema_size) {
+        sch = heap_caps_malloc(h->schema_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        const bool ok = sch && src_read(src, h->schema_off, (uint8_t *)sch, h->schema_size) ==
+                                   (ssize_t)h->schema_size &&
+                        esp_rom_crc32_le(0, (const uint8_t *)sch, h->schema_size) == h->schema_crc;
+        if (!ok) {
+            ret = install_failed(ESP_ERR_INVALID_CRC,
+                                 "settings schema checksum mismatch — the copy on the card is damaged",
+                                 why, whysz);
+            goto out;
+        }
     }
 
     /* The slot state, read under the same lock, then the pure decision — cap,
@@ -748,6 +781,8 @@ static esp_err_t install_ladder(const esp_partition_t *p, const appsrc_t *src,
     row.period_ms  = h->period_ms;
     row.settings   = (n_settings > 0) ? settings : NULL;
     row.n_settings = n_settings;
+    row.schema     = sch;                 /* card_fill copies and parses it */
+    row.schema_len = sch ? h->schema_size : 0;
     row.art_offset = 0;
     row.art_bytes  = 0;               /* D21: the container carries no art */
     row.art_slot   = -1;
@@ -781,6 +816,7 @@ static esp_err_t install_ladder(const esp_partition_t *p, const appsrc_t *src,
 
 out:
     heap_caps_free(scratch);
+    heap_caps_free(sch);
     return ret;
 }
 
@@ -896,12 +932,16 @@ int orb_app_install_resolve_boot(void)
      * No ensure_chunk() here either: the slot CRC reaches verify_slot_geom(), which
      * reserves its own 4 KB internal buffer guarded, mirroring orb_theme_boot. */
     uint8_t *scratch = heap_caps_malloc(ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS * 4u +
-                                        ORBAPP_SETTINGS_MAX * sizeof(orb_setting_desc_t),
+                                        ORBAPP_SETTINGS_MAX * sizeof(orb_setting_desc_t) +
+                                        ORBAPP_SCHEMA_MAX,
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     uint32_t *sw = (uint32_t *)scratch;
     orb_setting_desc_t *settings = scratch
         ? (orb_setting_desc_t *)(scratch + ORBAPP_SETTINGS_MAX * ORBAPP_SETTINGS_WORDS * 4u)
         : NULL;
+    /* §57: the settings schema, read beside the table and handed to the registry,
+     * which copies it into the row's own block */
+    char *schema = scratch ? (char *)(settings + ORBAPP_SETTINGS_MAX) : NULL;
 
     int resolved = 0;
     for (int slot = 0; slot < APPS_N_SLOTS; slot++) {
@@ -949,6 +989,20 @@ int orb_app_install_resolve_boot(void)
             }
             n_settings = (int)h.n_settings;
         }
+        /* §57: the schema region sits in the installed prefix beside the table. Its
+         * own checksum, because the slot's reaches only the geometry: a schema that
+         * rotted under a completed install skips the app as its settings would. */
+        uint32_t schema_len = 0;
+        if (h.schema_size && schema && h.schema_size <= ORBAPP_SCHEMA_MAX) {
+            if (esp_partition_read(p, base + APPS_SLOT_HDR_BYTES + h.schema_off, schema,
+                                   h.schema_size) != ESP_OK ||
+                esp_rom_crc32_le(0, (const uint8_t *)schema, h.schema_size) != h.schema_crc) {
+                ESP_LOGW(TAG, "app slot %d (\"%s\"): its settings schema does not read back — skipped",
+                         slot, h.slug);
+                continue;
+            }
+            schema_len = h.schema_size;
+        }
 
         orb_app_t row;
         memset(&row, 0, sizeof row);
@@ -961,6 +1015,8 @@ int orb_app_install_resolve_boot(void)
         row.period_ms  = h.period_ms;
         row.settings   = (n_settings > 0) ? settings : NULL;
         row.n_settings = n_settings;
+        row.schema     = schema_len ? schema : NULL;
+        row.schema_len = schema_len;
         row.art_offset = 0;
         row.art_bytes  = 0;        /* D21: the container carries no art */
         row.art_slot   = -1;

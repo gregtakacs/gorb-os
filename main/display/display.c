@@ -1800,6 +1800,9 @@ size_t display_dma_borrow(void)
  *  word, and the answer names an instant, not an interval. input_router's
  *  switch probe asks this before treating a silent window as a stall; without
  *  it, a 20 s SD write would read exactly like a wedged pipeline. */
+/* The ring is out (lent, or back but not yet re-funded): frames are dropped. */
+bool display_dma_parked(void) { return s_ring_parked; }
+
 bool display_dma_lent(void)
 {
     return s_ring_loan > 0;
@@ -1847,15 +1850,37 @@ esp_err_t display_dma_return(void)
  * is not acceptable. Caller holds s_ring_mux. */
 #define RING_NET_RESERVE   8192
 #define RING_NET_WINDOW_US 1500000
+/* §61: while a carousel that reads the card is up, the glass outranks the network's
+ * window: every hold is short, and each one would otherwise still the carousel up to
+ * RING_NET_WINDOW_US after the card was done. */
+static volatile bool s_ring_urgent;
+void display_ring_urgent(bool on) { s_ring_urgent = on; }
+
 static bool ring_refund_due(void)
 {
     if (s_ring_returned_us == 0) return true;   /* parked by something else: as before */
+    if (s_ring_urgent) return true;
     if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) >=
         s_ring_bytes + RING_NET_RESERVE)
         return true;
     return esp_timer_get_time() - s_ring_returned_us >= RING_NET_WINDOW_US;
 }
 
+
+void display_dma_service(void)
+{
+    if (!s_ring_mux || !s_ring_parked) return;     /* funded, or never funded */
+    bool owed = false;
+    xSemaphoreTake(s_ring_mux, portMAX_DELAY);
+    if (s_ring_parked && s_ring_loan == 0 && ring_refund_due() && ring_refund() == ESP_OK) {
+        s_ring_returned_us = 0;
+        owed = s_ring_redraw;          /* ring_refund set it from the dropped frames */
+    }
+    xSemaphoreGive(s_ring_mux);
+    /* The redraw itself stays the flush path's (it re-marks every row); all this
+     * owes it is a flush to run in. */
+    if (owed) lv_obj_invalidate(lv_screen_active());
+}
 
 /* Rows the clock's commit-time painter is about to repaint without LVGL ever
  * having rendered them. They must join the band set or the panel never sees

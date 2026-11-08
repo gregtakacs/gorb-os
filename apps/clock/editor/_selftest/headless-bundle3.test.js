@@ -467,19 +467,35 @@ ok(walkPrev.blob.elements.length === 4 && prevRow.class === 9 && prevRow.slot ==
    prevRow.n_frames === 1 && prevRow.w === 232 && prevRow.h === 232,
    'the preview rides the last row, class 9 slot 0, one 232x232 plane',
    'class ' + prevRow.class + ' slot ' + prevRow.slot + ' n_frames ' + prevRow.n_frames);
-ok(prevRow.frame0 === walkPrev.blob.sprites.length - 1 &&
-   walkPrev.blob.sprites[prevRow.frame0].size === B.discBytes(232),   // OS v1.2.12: its disc
-   'the row\\u2019s sprite is the bank\\u2019s last extent, and its size is the RGB565 2B/px the class rule prices',
-   'frame0 ' + prevRow.frame0 + ' size ' + walkPrev.blob.sprites[prevRow.frame0].size);
-ok(bakedPrev.meter.artSize === baked.meter.artSize + B.discBytes(232),
-   'the bank costs the same as the bake without a preview, plus one 2B/px plane at the end',
-   bakedPrev.meter.artSize + ' B against ' + baked.meter.artSize + ' + 107,648');
-// A preview plane at panel size is refused: the picker reads one into a buffer sized for
-// the half-res of the glass, and an oversized bake cannot be held on a slow path.
+// §60: the disc, deflated when that is smaller, and the stream inflates to exactly that disc
+const pvSz = walkPrev.blob.sprites[prevRow.frame0].size;
+ok(prevRow.frame0 === walkPrev.blob.sprites.length - 1 && pvSz < B.discBytes(232),
+   'the row’s sprite is the bank’s last extent, and it is the disc deflated, smaller than the disc',
+   'frame0 ' + prevRow.frame0 + ' size ' + pvSz);
+{
+  const zlibN = require('zlib');
+  const at = walkPrev.rec.art_off + walkPrev.blob.sprites[prevRow.frame0].off;
+  let back = null;
+  try { back = zlibN.inflateSync(Buffer.from(bakedPrev.bytes.subarray(at, at + pvSz))); } catch (e) { back = null; }
+  ok(back && back.length === B.discBytes(232), 'the stored preview inflates to its whole disc', back ? back.length : 'no inflate');
+}
+ok(bakedPrev.meter.artSize === baked.meter.artSize + pvSz,
+   'the bank costs the same as the bake without a preview, plus the stored preview at the end',
+   bakedPrev.meter.artSize + ' B against ' + baked.meter.artSize + ' + ' + pvSz);
+// the encoder's own fallback: a noise plane does not shrink, so it is stored as the raw disc
+{
+  const noise = new Uint8Array(require('crypto').randomBytes(232 * 232 * 4));
+  for (let i = 3; i < noise.length; i += 4) noise[i] = 255;
+  const bn = B.bakeClock3({ name: 'x', plate: PL, hands: [HK], shadows: [SK], order: [0], preview: { plane: { rgba: noise, w: 232, h: 232 } }, dither: false });
+  const wn = B.verifyBundle3(bn.bytes).sections[0], rn = wn.blob.elements[wn.blob.elements.length - 1];
+  ok(wn.blob.sprites[rn.frame0].size === B.discBytes(232), 'a preview that will not shrink is kept as its raw disc',
+     wn.blob.sprites[rn.frame0].size);
+}
+// A preview plane past the glass is refused (§60: the whole glass is the most a preview is).
 refuses(() => B.bakeClock3({ name: 'x', plate: PL, hands: [HK], shadows: [SK], order: [0],
-  preview: { plane: { rgba: new Uint8Array(300 * 300 * 4), w: 300, h: 300 } } }),
-  'half-res',
-  'a preview plane past the panel half is refused at the bake\u2019s own door');
+  preview: { plane: { rgba: new Uint8Array(470 * 470 * 4), w: 470, h: 470 } } }),
+  'the glass itself',
+  'a preview plane past the glass is refused at the bake’s own door');
 // A non-square preview is refused: the OS card is square, so the plane is too.
 refuses(() => B.bakeClock3({ name: 'x', plate: PL, hands: [HK], shadows: [SK], order: [0],
   preview: { plane: { rgba: new Uint8Array(100 * 200 * 4), w: 100, h: 200 } } }),

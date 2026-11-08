@@ -236,7 +236,7 @@
     ok('the bake carries one preview row', prevRows.length === 1, prevRows.length + ' class 9 rows');
     if (prevRows.length === 1) {
       const pv = prevRows[0];
-      ok('the preview row is one opaque square at the panel half', pv.n_frames === 1 && pv.w === pv.h && pv.w === 232,
+      ok('the preview row is one opaque square, the whole glass (§60)', pv.n_frames === 1 && pv.w === pv.h && pv.w === 466,
          pv.w + 'x' + pv.h + ' x' + pv.n_frames);
     }
     let bin = '', CH = 8192;

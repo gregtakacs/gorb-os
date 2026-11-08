@@ -48,9 +48,10 @@ const (
 	// FORMAT 2 file refuses by number rather than reading its version out of what used to
 	// be the header CRC's own word, which is the whole reason a format change was the
 	// honest price and a new tail word was not.
-	appHdrBytes   = 236
+	// §57 took it 236 -> 248 with FORMAT 4's settings schema triple.
+	appHdrBytes   = 248
 	appMagic      = 0x00415247 // 'G','R','A' — deliberately unlike the theme's magic
-	appFormat     = 3          // ORBAPP_FORMAT; a reader refuses others, in its own words
+	appFormat     = 4          // ORBAPP_FORMAT; a reader refuses others, in its own words
 	appSlugBytes  = 24         // ORBAPP_SLUG_MAX, NUL included
 	appTitleBytes = 32         // ORBAPP_TITLE_MAX, NUL included
 	// appVersionBytes is ORBAPP_VERSION_MAX: the release stamp's own width, and the
@@ -118,8 +119,12 @@ const (
 	// disturbing any checksum, and a version an operator can silently edit is not an
 	// identity. All eight words zero is a legal answer and reads as "unstamped"; a
 	// non-zero field must parse, and the refusal below is the writer's own sentence.
-	appWVersion    = appWEditCRC + 1
-	appWHdrCRC     = appWVersion + 8
+	appWVersion = appWEditCRC + 1
+	// §57: the settings schema region's three words, inside the CRC's span.
+	appWSchemaOff  = appWVersion + 8
+	appWSchemaSize = appWSchemaOff + 1
+	appWSchemaCRC  = appWSchemaSize + 1
+	appWHdrCRC     = appWSchemaCRC + 1
 	appWAssetOff   = appWHdrCRC + 1
 	appWNAssets    = appWAssetOff + 1
 	appWHdrWords   = appWHdrCRC + 4 // asset_off, n_assets, and one word held free

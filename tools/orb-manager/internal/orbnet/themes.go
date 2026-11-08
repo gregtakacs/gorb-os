@@ -380,7 +380,9 @@ func (c *Client) ThemePreview(ip, id string) ([]byte, int, error) {
 	if err := CheckThemeID(id); err != nil {
 		return nil, 0, err
 	}
-	req, err := http.NewRequest(http.MethodGet, c.url(ip, "/api/v1/sd/preview?id="+url.QueryEscape(id)), nil)
+	// §60: enc=z asks for a deflated preview as it lies (~100 KB, not 434 KB); an orb that
+	// predates it ignores the word and answers the plain plane, which reads as before.
+	req, err := http.NewRequest(http.MethodGet, c.url(ip, "/api/v1/sd/preview?enc=z&id="+url.QueryEscape(id)), nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -406,6 +408,13 @@ func (c *Client) ThemePreview(ip, id string) ([]byte, int, error) {
 	if resp.StatusCode == http.StatusOK {
 		if len(body) < 4 {
 			return nil, resp.StatusCode, fmt.Errorf("orbnet: %s sent a %d B preview body, too short to declare a plane", ip, len(body))
+		}
+		if binary.LittleEndian.Uint16(body[2:4])&0x8000 != 0 {
+			plain, zerr := ExpandZPreview(body)
+			if zerr != nil {
+				return nil, resp.StatusCode, fmt.Errorf("orbnet: %s sent a torn compressed preview: %v (%w)", ip, zerr, ErrTornPreview)
+			}
+			body = plain
 		}
 		w := int(binary.LittleEndian.Uint16(body[0:2]))
 		h := int(binary.LittleEndian.Uint16(body[2:4]))

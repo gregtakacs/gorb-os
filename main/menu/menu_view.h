@@ -75,6 +75,9 @@ void menu_view_apply_input(int32_t delta, bool pressed);
  */
 void menu_view_service(void);
 
+/** §61: put `msg` on the status line and repaint (the theme carousel's pick). */
+void menu_view_status(const char *msg);
+
 /**
  * The shell's answer to a long press, offered before the router spends it on
  * going home (ruling D12's one exception to C8). True means the press is spent:

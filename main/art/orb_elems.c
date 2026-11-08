@@ -120,12 +120,15 @@ static orb_elems_ans_t seat(const orb_bundle_sec_t *sec, const orb_bundle_elem_t
     const uint64_t dpx = sp.w == sp.h && (cls == CLS_PLATE || cls == CLS_PREVIEW)
                        ? orb_disc_px(sp.w) : 0u;
     const bool disc_m = dpx && sp.size == dpx * 3u, disc_o = dpx && sp.size == dpx * 2u;
+    /* §60: a preview may be its disc deflated, smaller than the disc by construction (the
+     * baker keeps the raw disc otherwise); the read checks the stream itself. */
+    const bool deflated = cls == CLS_PREVIEW && dpx && sp.size >= 6u && sp.size < dpx * 2u;
     const bool masked = (sp.size == px * 3u) || disc_m;
     /* A sound's clip is not pixels: ADPCM's blocks are their own size, and the play
      * path (orb_sound_app.c) holds that rule against the row's encoding. */
     const bool adpcm = cls == CLS_SOUND && e->src == ORB_SOUND_ENC_ADPCM &&
                        sp.h == 1u && sp.size == orb_adpcm_bytes(sp.w);
-    if (!masked && !adpcm && !disc_o && sp.size != px * 2u) {
+    if (!masked && !adpcm && !disc_o && !deflated && sp.size != px * 2u) {
         say(why, cap, "bank row %lu (%s slot %u frame %lu) claims %lu B of a %lux%lu "
                       "plane; that is neither %lu B opaque nor %lu B with a mask",
             (unsigned long)row, cls_word(cls), (unsigned)slot, (unsigned long)frame,

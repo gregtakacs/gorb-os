@@ -93,10 +93,33 @@ static snd_state_t *const s_snd = &s_snd_store;
 static bool         s_snd_init;
 enum { SND_STEP_MIN, SND_STEP_HOUR, SND_STEP_CAL };
 
+/* The owner's two levels (app.json tick_vol, chime_vol; §59): the ticking and the
+ * mechanism's clicks at one, every chime and strike at the other, both under the OS
+ * volume. Re-read when the settings generation moves; a tick level that changed
+ * restarts the loop, which re-enters at the second it is on. */
+static int32_t  s_tick_vol = 70, s_chime_vol = 100;
+static uint32_t s_cfg_gen;
+static bool     s_cfg_read;
+static bool snd_levels_read(void)
+{
+    const uint32_t g = orb_cfg_gen();
+    if (s_cfg_read && g == s_cfg_gen) return false;
+    const int32_t was = s_tick_vol;
+    s_cfg_gen = g; s_cfg_read = true;
+    (void)orb_cfg_get("tick_vol", &s_tick_vol);
+    (void)orb_cfg_get("chime_vol", &s_chime_vol);
+    return s_tick_vol != was;
+}
+static int32_t snd_level(int slot)
+{
+    return (slot == CLK_SND_TICK_LOOP || slot == CLK_SND_JUMP_MINUTE ||
+            slot == CLK_SND_JUMP_HOUR || slot == CLK_SND_JUMP_DATE) ? s_tick_vol : s_chime_vol;
+}
+
 /* The voices: the app's own theme sounds, by table index, leased by the stage. */
 static void snd_at_flags(const clk_sound_t *s, int64_t at_us, uint32_t extra)
 {
-    if (s) (void)orb_stage_snd_play((int)(s - s_snds), extra, at_us, 0);
+    if (s) (void)orb_stage_snd_play_v((int)(s - s_snds), extra, at_us, 0, snd_level(s->slot));
 }
 static void snd_at(const clk_sound_t *s, int64_t at_us) { snd_at_flags(s, at_us, 0); }
 
@@ -505,9 +528,10 @@ static void sound_policy(const tm_t *ti, time_t t, double frac)
     const int64_t sec_us = orb_uptime_us() - (int64_t)(frac * 1e6);   /* this second began */
 
     /* The tick loop. */
+    const bool relevel = snd_levels_read();
     const clk_sound_t *loop = snd_find(tab, n, CLK_SND_TICK_LOOP);
-    const bool want = loop && c.tick && !quiet;
-    if (s_snd->loop && (!want || !orb_stage_snd_active(s_snd->loop))) {
+    const bool want = loop && c.tick && !quiet && s_tick_vol > 0;
+    if (s_snd->loop && (relevel || !want || !orb_stage_snd_active(s_snd->loop))) {
         orb_stage_snd_stop(s_snd->loop);
         s_snd->loop = 0;
     }
@@ -517,8 +541,9 @@ static void sound_policy(const tm_t *ti, time_t t, double frac)
          * itself was re-anchored under the loop (orb_time_now's drift rule). */
         const int64_t anchor = sec_us - (int64_t)loop->first_beat * 1000000 / CLK_SND_RATE;
         if (!s_snd->loop) {
-            s_snd->loop = orb_stage_snd_play((int)(loop - s_snds),
-                                            ORB_STAGE_SND_LOOP | ORB_STAGE_SND_ANCHORED, 0, anchor);
+            s_snd->loop = orb_stage_snd_play_v((int)(loop - s_snds),
+                                              ORB_STAGE_SND_LOOP | ORB_STAGE_SND_ANCHORED, 0, anchor,
+                                              s_tick_vol);
             if (s_snd->loop < 0) s_snd->loop = 0;
             s_snd->loop_anchor = anchor;
         } else {

@@ -355,6 +355,12 @@ func (o *Orb) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 7c9ff63's recovery doors, mirrored gate-for-gate.
 	case r.URL.Path == "/api/v1/apps/clear" && r.Method == http.MethodPost:
 		o.serveAppClear(w, r)
+	case r.URL.Path == "/api/v1/carousel" && r.Method == http.MethodGet:
+		writeJSON(w, 200, o.carouselJSON())
+	case r.URL.Path == "/api/v1/carousel" && r.Method == http.MethodPost:
+		o.serveCarouselPost(w, r)
+	case r.URL.Path == "/api/v1/apps/settings" && r.Method == http.MethodGet:
+		o.serveAppSettings(w, r)
 	case r.URL.Path == "/api/v1/apps/cfg" && r.Method == http.MethodGet:
 		o.serveAppCfgGet(w, r)
 	case r.URL.Path == "/api/v1/apps/cfg" && r.Method == http.MethodPost:

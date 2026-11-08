@@ -210,6 +210,33 @@ orb_asset_ans_t orb_theme_preview_read(const char *handle,
                                        uint8_t *buf, size_t cap,
                                        uint16_t *w, uint16_t *h,
                                        char *why, size_t whysz);
+/** §60: the same preview's STORED bytes when it is deflated (its disc, zlib), copied as they
+ *  lie into buf with their count in *zsize; ORB_ASSET_CLASS when it is not deflated, and
+ *  the caller reads it with orb_theme_preview_read. The hub inflates them (/api/v1/sd/preview
+ *  ?enc=z), so a full-glass preview crosses the air at ~100 KB instead of 434 KB. */
+orb_asset_ans_t orb_theme_preview_z(const char *handle, uint8_t *buf, size_t cap,
+                                    uint16_t *w, uint16_t *h, uint32_t *zsize,
+                                    char *why, size_t whysz);
+/** §60.2: a deflated preview's stored bytes as an exact-size PSRAM copy (*n of them, the
+ *  square's side in *side), or NULL when the theme's preview is absent or not deflated.
+ *  The one call of the pair that holds the card (and so the display's DMA ring). */
+uint8_t *orb_theme_preview_zcopy(const char *handle, uint32_t *n, uint16_t *side,
+                                 char *why, size_t whysz);
+/** §60.3: the same, read a segment at a time with the card (and the ring) given back between
+ *  segments, so the glass draws while a preview loads. keep(arg, done, total) is asked
+ *  between segments with the bytes read so far (§61: the theme carousel's progress ring);
+ *  false abandons the read (NULL, no reason) — the cursor has moved on. */
+uint8_t *orb_theme_preview_zcopy_ex(const char *handle, uint32_t *n, uint16_t *side,
+                                    char *why, size_t whysz,
+                                    bool (*keep)(void *arg, uint32_t done, uint32_t total),
+                                    void *arg);
+/** §60.2: those bytes as the side x side RGB565 square (native order, corners black), in a
+ *  fresh PSRAM buffer, or NULL. CPU only (~60-90 ms for the glass): no card, no ring. */
+uint8_t *orb_preview_inflate(const uint8_t *z, uint32_t n, uint16_t side);
+/** §61: the same into the caller's buffer (cap >= side*side*2): the theme carousel keeps one
+ *  square for every load, since a fresh 434 KB block stops being there once PSRAM is cut up
+ *  by thumbnails (Gold, 2026-11-08: one theme in four came back grey). */
+bool orb_preview_inflate_into(const uint8_t *z, uint32_t n, uint16_t side, uint8_t *sq, size_t cap);
 
 
 /** "slot" when the dial draws the slot's bundle, "none" for the base face. */

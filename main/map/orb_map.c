@@ -404,6 +404,16 @@ void orb_map_release_app(int app_slot)
     if (s_busy) xSemaphoreGive(s_busy);
 }
 
+void orb_map_drop(int app_slot)
+{
+    app_maps_t *a = app_of(app_slot);
+    if (!a) return;
+    if (s_busy && xSemaphoreTake(s_busy, 0) != pdTRUE) return;   /* a render is running: next pass */
+    free_app(a);
+    a->off_since_us = 0;
+    if (s_busy) xSemaphoreGive(s_busy);
+}
+
 void orb_map_note_glass(int app_slot, bool on_glass, int64_t now_us)
 {
     app_maps_t *a = app_of(app_slot);

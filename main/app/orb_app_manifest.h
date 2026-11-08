@@ -38,7 +38,11 @@ extern "C" {
  * disagreement — the lint rule of tools/host_art_residency_test.py. */
 #define ORBAPP_MAGIC      0x00415247u    /* 'G','R','A' — unlike the theme magic on purpose */
 #define ORBAPP_THEME_MAGIC 0x474F5254u   /* so a theme handed here gets named, not miscalled */
-#define ORBAPP_FORMAT     3u    /* 2 -> 3 is S6 (§4.1): a 32-byte version field
+#define ORBAPP_FORMAT     4u    /* 3 -> 4 is §57's settings schema: three words after
+                                 * the version, inside the hdr_crc span, naming a region
+                                 * between the asset table and the geometry. An OS that
+                                 * cannot read the schema cannot draw the app's settings.
+                                 * 2 -> 3 is S6 (§4.1): a 32-byte version field
                                  * after the editor triple, inside the hdr_crc span.
                                  * The tail's free word could not take it — a word
                                  * outside the CRC is rewritable on the card without
@@ -73,6 +77,7 @@ extern "C" {
 #define ORBAPP_DEFSTR_MAX  32u
 
 #define ORBAPP_SETTINGS_MAX   16u
+#define ORBAPP_SCHEMA_MAX     6144u  /* §57: the settings schema region, its JSON's bytes */
 #define ORBAPP_EDITOR_MAX     0x200000u  /* D37: 2 MiB of editor, and no more. The
                                           * cap is the owner's ruling, and it is a
                                           * real one: the region NEVER installs, so
@@ -174,7 +179,13 @@ enum {
      * revokes no permission, so it needs no refusal. A NON-zero field must parse,
      * and orbapp_parse_header refuses one that does not. */
     ORBAPP_W_VERSION     = ORBAPP_W_EDITOR_CRC + 1,
-    ORBAPP_W_HDR_CRC     = ORBAPP_W_VERSION    + 8,
+    /* §57: the settings schema's region, inside the CRC's span for the version's
+     * reason. It sits between the asset table and the geometry, so it rides the
+     * installed prefix and the boot reads it beside the settings table. */
+    ORBAPP_W_SCHEMA_OFF  = ORBAPP_W_VERSION    + 8,
+    ORBAPP_W_SCHEMA_SIZE = ORBAPP_W_SCHEMA_OFF + 1,
+    ORBAPP_W_SCHEMA_CRC  = ORBAPP_W_SCHEMA_SIZE + 1,
+    ORBAPP_W_HDR_CRC     = ORBAPP_W_SCHEMA_CRC + 1,
     /* P5b's two fields take words the header left reserved for exactly this, so the
      * tail keeps its shape and the header CRC still covers up to W_HDR_CRC. One word
      * at the end stays free, and the reader checks it zero: a word that reads as
@@ -229,6 +240,7 @@ typedef struct {
                                                    * card-resident and never installed
                                                    * (§4.2). Three zeros: ships none. */
     uint32_t asset_off, n_assets;   /* P5b (D23): the table, in the blob region    */
+    uint32_t schema_off, schema_size, schema_crc;   /* §57: the settings schema (JSON) */
     /* S6 (§4.1): the app's own release stamp, NUL-terminated and empty when the
      * container names no release. The one field in this header that is prose and
      * not a gate word, and the reason it still sits inside hdr_crc: the hub prints

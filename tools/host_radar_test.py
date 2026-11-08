@@ -129,15 +129,15 @@ int main(int argc, char **argv)
     CK(!read_list("[1,2,3]", &L) && !read_list("{\"radar\":{}}", &L), "an array, or a list with no frames, is no list");
 
     char u[200];
-    CK(rd_frame_url(u, sizeof u, "https://api.librewxr.net", "/v2/radar/1794066600", 6, 32889000, -97162000, false) &&
+    CK(rd_frame_url(u, sizeof u, "https://api.librewxr.net", "/v2/radar/1794066600", 512, 6, 32889000, -97162000, false) &&
        !strcmp(u, "https://api.librewxr.net/v2/radar/1794066600/512/6/32.8890/-97.1620/255/0_0.png"),
        "a frame's URL: the source, the path, 512, the image zoom, four decimals, raw 255");
-    CK(rd_frame_url(u, sizeof u, "http://nas.lan:8080", "/v2/radar/1", 5, -127650, 151209350, false) &&
-       !strcmp(u, "http://nas.lan:8080/v2/radar/1/512/5/-0.1277/151.2094/255/0_0.png"),
-       "four decimals round half away from zero, the sign kept under one degree");
-    CK(rd_frame_url(u, sizeof u, "https://api.librewxr.net", "/v2/radar/1", 9, 0, 0, true) &&
+    CK(rd_frame_url(u, sizeof u, "http://nas.lan:8080", "/v2/radar/1", 256, 5, -127650, 151209350, false) &&
+       !strcmp(u, "http://nas.lan:8080/v2/radar/1/256/5/-0.1277/151.2094/255/0_0.png"),
+       "four decimals round half away from zero, the sign kept under one degree; the side asked");
+    CK(rd_frame_url(u, sizeof u, "https://api.librewxr.net", "/v2/radar/1", 512, 9, 0, 0, true) &&
        !strcmp(u + strlen(u) - 7, "1_0.png"), "a close step asks for the server's smoothing");
-    CK(rd_frame_url(u, 40, "https://api.librewxr.net", "/v2/radar/1794066600", 6, 0, 0, false) == 0, "no URL that does not fit");
+    CK(rd_frame_url(u, 40, "https://api.librewxr.net", "/v2/radar/1794066600", 512, 6, 0, 0, false) == 0, "no URL that does not fit");
     CK(rd_list_url(u, sizeof u, "https://api.librewxr.net") && !strcmp(u, "https://api.librewxr.net/public/weather-maps.json"),
        "the list's URL");
 
@@ -161,12 +161,14 @@ int main(int argc, char **argv)
         if (sscanf(argv[i], "%d:%ld:%ld", &z, &la, &lo) == 3 && z == 7)
             for (int k = 2; k <= 8; k *= 2) {
                 int32_t sx, sy, dx, dy;
-                rd_window_k(7, k, (int32_t)la, (int32_t)lo, (int32_t)la, (int32_t)lo, &sx, &sy, &dx, &dy);
+                rd_window_k(7, k, 256, (int32_t)la, (int32_t)lo, (int32_t)la, (int32_t)lo, &sx, &sy, &dx, &dy);
                 printf("K %d %ld %ld %d %d %d %d\n", k, la, lo, (int)sx, (int)sy, (int)dx, (int)dy);
             }
     }
     CK(rd_img_z(0) == 5 && rd_img_z(2) == 7 && rd_img_z(5) == 7 && rd_img_k(2) == 1 && rd_img_k(3) == 2 && rd_img_k(5) == 8,
        "the frames stop at Local's z7; Area, City and Close magnify them 2, 4 and 8 times");
+    CK(rd_img_side(2) == 512 && rd_img_zurl(2) == 7 && rd_img_side(3) == 256 && rd_img_zurl(3) == 8 && rd_img_zurl(5) == 8,
+       "a magnified step asks for the 256 px centre one zoom deeper; Local and wider the whole 512");
     for (int s = 0; s < RD_ZOOMS; s++) printf("R %d %d\n", s, (int)rd_radius_m(s, 32889000));
     for (int s = 0; s < RD_ZOOMS; s++) printf("R %d %d\n", s + 10, (int)rd_radius_m(s, 64146600));
 
@@ -241,11 +243,13 @@ def suite(src_text, quiet=False):
             ix, iy = py_world(7, e4(la) * 100, e4(lo) * 100)
             mx, my = py_world(7, la, lo)
             n = 512 * 2 ** 7
-            ox, oy = round(ix - 256), min(max(round(iy - 256), 0), n - 512)
+            ox, oy = round(ix - 128), min(max(round(iy - 128), 0), n - 256)   # the 256 px centre
             ux, uy = mx - ox, my - oy                      # the place in the image
             cx, cy = sx + (233 - dx) / k, sy + (233 - dy) / k   # the image under the glass's centre
             worst = max(worst, abs(cx - ux) * k, abs(cy - uy) * k)
-            if dx > 0 or dy > 0 or sx + (466 - dx) / k > 511 + 1:
+            polar = abs(la) >= 80000000                    # the server clamps y at the world's edge
+            if dx > 0 or dy > 0 or sx < 0 or sx + (466 - dx) / k > 255 + 1 or \
+                    (not polar and (sy < 0 or sy + (466 - dy) / k > 255 + 1)):
                 worst = 99
             if sx < ux - 233 / k - 2 or sy < uy - 233 / k - 2:      # no rows decoded for nothing
                 worst = 98

@@ -45,6 +45,7 @@ import json
 import os
 import shutil
 import sys
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -61,7 +62,7 @@ OUT = os.path.join(ROOT, "tools", "orb-manager", "themes", "skeleton.orbtheme")
 THEME_NAME = "Skeleton"
 THEME_SECTION = "clock"
 PANEL_PX = 466                    # the glass, so the preview's ceiling is its half
-PREVIEW_MAX_PX = PANEL_PX // 2    # the picker reads one plane into a half-res buffer
+PREVIEW_MAX_PX = PANEL_PX         # §60: a preview is at most the glass itself
 FIRMWARE_ABIS = (6,)              # orb_bundle.c reads a clock at GEOM_ABI 6 and nothing older (D42)
 ART_CAP = 8 << 20                 # one 8 MB slot, the installer's own ceiling
 
@@ -135,12 +136,21 @@ def check(path):
         return _fail("a preview is square because the OS card slot is square, this is %dx%d"
                      % (p["w"], p["h"])), ""
     if not 0 < p["w"] <= PREVIEW_MAX_PX:
-        return _fail("a preview of %d px on a %d px panel is past the half-res buffer the "
-                     "picker reads into" % (p["w"], PANEL_PX)), ""
+        return _fail("a preview of %d px on a %d px panel is past the glass itself"
+                     % (p["w"], PANEL_PX)), ""
     spr = blobs[0]["sprites"][p["frame0"]]
-    # OS v1.2.12: a preview is stored as its disc (orb_disc.h), so the picker shows it round
+    # OS v1.2.12: a preview is stored as its disc (orb_disc.h), so the picker shows it round;
+    # §60: and deflated when that is smaller, which must inflate to exactly that disc
     want = ts.disc_bytes(p["w"])
-    if spr["size"] != want:
+    if spr["size"] < want:
+        raw = open(path, "rb").read()
+        at = recs[0]["art_off"] + spr["off"]
+        try:
+            if len(zlib.decompress(raw[at:at + spr["size"]])) != want:
+                return _fail("the deflated preview does not inflate to its %d B disc" % want), ""
+        except zlib.error as e:
+            return _fail("the deflated preview does not inflate: %s" % e), ""
+    elif spr["size"] != want:
         return _fail("the preview plane costs %d B and its RGB565 disc at %dx%d costs %d"
                      % (spr["size"], p["w"], p["h"], want)), ""
     # Order, not just extents: a plane inserted ahead of authored rows shifts every frame0

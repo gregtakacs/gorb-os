@@ -309,9 +309,9 @@
          secret ones an app declares (§43): one write-only field each; the orb keeps the
          value beside the Wi-Fi password, never hands it to the app, and sends it only
          over https to the one host the app declared. Never read back: each line shows set
-         or not, the header and the last four characters. An app's editor region may carry
-         settings.json with a label, help and a link per setting; the page reads it from
-         there, so the hub knows nothing about any one app. -->
+         or not, the header and the last four characters. Every setting comes from the
+         orb's GET /api/v1/apps/settings (the app's own schema, app-platform-plan §57), so
+         the hub knows nothing about any one app. -->
     <nav class="subtabs appswitch" id="aps-tabs"></nav>
     <div id="secrets"><div class="row"><span class="hint">app settings load with this tab</span></div></div>
   </article>
@@ -322,6 +322,9 @@
     <p class="hint" id="mn-appstate">The app list loads when this tab first opens.</p>
     <nav class="subtabs" id="mn-apps-tabs"></nav>
     <div id="mn-apps-body"></div>
+    <!-- §59: the carousel's order and the rotation (owner, 2026-11-07). Order lives here
+         only; the rotation is also on the dial (APPS > Rotate apps, and each app's page). -->
+    <div id="mn-carousel"></div>
     <!-- D38: there is no "Hub library" section on this face. The shelf's files are rows
          in the list above, wearing their "in the hub library" chip and their row's own
          verbs — a separate section said "these files, too", which was the same fact

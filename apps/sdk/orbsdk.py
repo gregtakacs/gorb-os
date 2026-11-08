@@ -37,6 +37,7 @@ import re
 import shutil
 import subprocess
 import sys
+import zlib
 import tempfile
 import urllib.error
 import urllib.parse
@@ -87,7 +88,7 @@ orbapp = _orbapp()
 # ---- the app directory ------------------------------------------------------------
 
 MANIFEST_KEYS = {"slug", "title", "caps", "period_ms", "settings", "memory_kb",
-                 "editor", "shelf", "os_min"}
+                 "editor", "shelf", "os_min", "icon"}
 
 
 def manifest(appdir):
@@ -120,6 +121,16 @@ def manifest(appdir):
             fail("%s: os_min is a release like v1.2.8, not %r" % (path, m["os_min"]))
         if not m.get("editor"):
             fail("%s: os_min rides the editor region, and this app ships no editor" % path)
+    # §57: the settings are the app's own schema, which the dial and the hub both draw, so
+    # each one names what they call it; orbapp.normalize_settings checks the rest
+    for st in m["settings"]:
+        if not isinstance(st, dict) or not isinstance(st.get("label"), str) or not st["label"]:
+            fail("%s: setting %r has no label: the dial and the hub show it by that name"
+                 % (path, st.get("id") if isinstance(st, dict) else st))
+    try:
+        orbapp.normalize_settings(m["settings"])
+    except ValueError as e:
+        fail("%s: %s" % (path, e))
     for c in m["caps"]:
         if c not in orbapp.CAP_OWNER:
             fail("%s: cap %r is not one of %s" % (path, c, ", ".join(orbapp.CAP_OWNER)))
@@ -154,6 +165,93 @@ def sources(appdir):
     if not own:
         fail("%s has no .c sources" % appdir)
     return own + [os.path.join(SDK, "orb_rt.c")]
+
+
+# ---- the app's icon (§61) ------------------------------------------------------------
+# app.json's "icon" names a square PNG in the app's directory. It is compiled into the
+# module as a deflated RGB565 disc ICON_SIDE px across, the shape the OS draws (orb_disc.h:
+# a row keeps the pixels whose centres lie within side/2 + 1 of the centre), and the app
+# hands it over with ORB_ICON(). The PNG is read here, without Pillow: 8-bit RGB or RGBA,
+# not interlaced, exactly ICON_SIDE square (tools/ui_icons/make.py writes HSB's).
+ICON_SIDE = 232
+
+
+def _png_rgb(path):
+    data = open(path, "rb").read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        fail("%s is not a PNG" % path)
+    i, idat, w = 8, b"", None
+    while i < len(data):
+        n = int.from_bytes(data[i:i + 4], "big")
+        kind, body = data[i + 4:i + 8], data[i + 8:i + 8 + n]
+        if kind == b"IHDR":
+            w, h, depth, ctype, _, _, inter = (int.from_bytes(body[0:4], "big"),
+                                               int.from_bytes(body[4:8], "big"),
+                                               body[8], body[9], body[10], body[11], body[12])
+            if depth != 8 or ctype not in (2, 6) or inter:
+                fail("%s: the icon must be 8-bit RGB or RGBA, not interlaced" % path)
+        elif kind == b"IDAT":
+            idat += body
+        i += 12 + n
+    if w is None:
+        fail("%s has no header" % path)
+    bpp = 3 if ctype == 2 else 4
+    raw = zlib.decompress(idat)
+    stride = w * bpp
+    out, prev, j = bytearray(), bytearray(stride), 0
+    for _ in range(h):
+        f, line = raw[j], bytearray(raw[j + 1:j + 1 + stride])
+        j += 1 + stride
+        for x in range(stride):
+            a = line[x - bpp] if x >= bpp else 0
+            b, c = prev[x], prev[x - bpp] if x >= bpp else 0
+            if f == 1: line[x] = (line[x] + a) & 255
+            elif f == 2: line[x] = (line[x] + b) & 255
+            elif f == 3: line[x] = (line[x] + ((a + b) >> 1)) & 255
+            elif f == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[x] = (line[x] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        out += line
+        prev = line
+    return w, h, bpp, bytes(out)
+
+
+def _disc_span(y, side):
+    r = side // 2 + 1
+    room = 4 * r * r - (2 * y + 1 - side) ** 2
+    x = 0
+    while x < side // 2 and (2 * x + 1 - side) ** 2 > room:
+        x += 1
+    return x, side - 1 - x
+
+
+def icon_source(appdir, m, out_dir):
+    """The generated C source carrying the app's icon, or None when app.json names none."""
+    name = m.get("icon")
+    if name is None:
+        return None
+    if not isinstance(name, str) or "/" in name or not name.endswith(".png"):
+        fail("%s: icon names a .png in the app's own directory, not %r" % (appdir, name))
+    w, h, bpp, px = _png_rgb(os.path.join(appdir, name))
+    if w != ICON_SIDE or h != ICON_SIDE:
+        fail("%s: the icon is %dx%d; it must be %d px square" % (name, w, h, ICON_SIDE))
+    disc = bytearray()
+    for y in range(h):
+        x0, x1 = _disc_span(y, w)
+        for x in range(x0, x1 + 1):
+            o = (y * w + x) * bpp
+            v = ((px[o] >> 3) << 11) | ((px[o + 1] >> 2) << 5) | (px[o + 2] >> 3)
+            disc += bytes((v & 255, v >> 8))
+    z = zlib.compress(bytes(disc), 9)
+    rows = ",\n    ".join(", ".join("0x%02x" % b for b in z[i:i + 16]) for i in range(0, len(z), 16))
+    path = os.path.join(out_dir, "orb_icon_gen.c")
+    with open(path, "w") as f:
+        f.write("/* generated by orbsdk from %s */\n"
+                "const unsigned char orb_app_icon[%d] __attribute__((aligned(4))) = {\n    %s\n};\n"
+                "const unsigned int orb_app_icon_n = %d, orb_app_icon_side = %d;\n"
+                % (name, len(z), rows, len(z), w))
+    return path
 
 
 # ---- the OS surface ---------------------------------------------------------------
@@ -265,7 +363,7 @@ def build(appdir, out_dir=None):
             "-Wl,-z,stack-size=%d" % STACK_BYTES,
             "-Wl,--initial-memory=%d" % (pages * WASM_PAGE),
             "-Wl,--max-memory=%d" % (pages * WASM_PAGE),
-            "-o", tmp] + sources(appdir)
+            "-o", tmp] + sources(appdir) + [p for p in (icon_source(appdir, m, td),) if p]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True)
         except FileNotFoundError:

@@ -253,6 +253,15 @@ esp_err_t display_dma_return(void);
 /** True while the ring is lent and the flush path drops frames on purpose —
  *  the explanation a stall probe must take before it believes the silence. */
 bool    display_dma_lent(void);
+/** True while the ring is lent OR returned but not yet re-funded: every frame drops. */
+bool    display_dma_parked(void);
+/** The ring's return when nothing else would make it: the flush path re-funds the
+ *  ring and re-sends the frames it dropped, but a still page (the menu after a card
+ *  walk) never flushes, so the panel kept the picture from before the read until a
+ *  knob turn dirtied something. Once the loan is closed and the network has had its
+ *  window, this re-funds and, if frames were dropped, invalidates the screen so the
+ *  next pass sends the whole page. LVGL task only, once per pass. */
+void    display_dma_service(void);
 
 void display_bench_reset(void);
 
@@ -261,6 +270,9 @@ void display_bench_reset(void);
  * panel. Off: every row is re-sent on the next LVGL frame, which the call requests.
  * LVGL task only. */
 void display_glass_hold(bool on);
+/* §61: take the ring back from the card at once rather than after the network's window
+ * (RING_NET_WINDOW_US), while on. The theme carousel holds it on while it is up. */
+void display_ring_urgent(bool on);
 bool display_glass_held(void);
 /* LVGL frames that reached the mirror while the glass was held, counting up: the
  * carousel waits on it for the app it opened to draw before fading to it. */

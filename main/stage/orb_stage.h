@@ -114,3 +114,6 @@ void stage_opacity(int i, int32_t opa);
 int  stage_text(int i, const char *str, int32_t tone);
 void stage_comp_set(int i, int32_t value, bool live);
 int  stage_snd_play(int i, uint32_t flags, int64_t at_us, int64_t anchor_us);
+/** §59: the same at the app's own level, 0..100 (half a dB a step, 0 silent). */
+int  stage_snd_play_v(int i, uint32_t flags, int64_t at_us, int64_t anchor_us, int vol);
+uint16_t stage_snd_gain(int vol);

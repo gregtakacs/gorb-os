@@ -696,8 +696,22 @@
     x.fillStyle = W.quiet; x.font = lb + 'px "' + W.label + '"'; x.fillText(W.caps ? 'HOME' : 'Home', L.title.x, L.title.y);
     x.fillStyle = W.ink; x.font = nu + 'px "' + W.num + '"'; x.fillText('17°', L.big.x, L.big.y);
     x.font = tx + 'px "' + W.text + '"'; x.fillText('Partly cloudy', L.line.x, L.line.y);
-    var o = canvas(size, size);
-    o.getContext('2d').drawImage(c, 0, 0, size, size);
+    return shrink(c, size);
+  }
+  /* The glass down to `size` by halves, each a 2:1 average, then the last step: one
+   * drawImage from 466 straight to a thumbnail drops most of the rows a fine stroke sits on,
+   * and Weather's words are hairlines (owner, 2026-11-07: its preview read as pixel mush). */
+  function shrink(c, size) {
+    var cur = c;
+    while (cur.width / 2 >= size) {
+      var h = canvas(Math.round(cur.width / 2), Math.round(cur.height / 2)), hx = h.getContext('2d');
+      hx.imageSmoothingEnabled = true; hx.imageSmoothingQuality = 'high';
+      hx.drawImage(cur, 0, 0, h.width, h.height);
+      cur = h;
+    }
+    var o = canvas(size, size), ox = o.getContext('2d');
+    ox.imageSmoothingEnabled = true; ox.imageSmoothingQuality = 'high';
+    ox.drawImage(cur, 0, 0, size, size);
     return o;
   }
   function thumb(d, size) { return picture(d, size); }
@@ -765,7 +779,9 @@
       St.row(Object.assign({ n: St.id(), class: AUX, w: BOLT_W, h: BOLT_H, pivot_x: BOLT_W >> 1, pivot_y: BOLT_H >> 1, alpha: 255, n_frames: 1 },
         centred(BOLT_W, BOLT_H, SLOT.bolt, 1)), plane(boltFrame(d)), true, false);
     }
-    St.preview({ plane: plane(await picture(d, 128, { plate: plateC })), x: 0, y: 0, order: 3 });
+    // §60: the whole glass, deflated by the baker and inflated by the orb (owner, 2026-11-07:
+    // at 128 the carousel's disc stretched it ~1.8x and the words could not be read)
+    St.preview({ plane: plane(await picture(d, 466, { plate: plateC })), x: 0, y: 0, order: 3 });
     var out = St.finish({ name: d.name || 'Weather', slug: 'weather', serial: o.serial || serialOf(d, o.design), abi: GB.GEOM_ABI6, design: o.design || null,
                           bakedS: o.bakedS != null ? o.bakedS : Math.floor(Date.now() / 1000) });
     return { bytes: out.bytes, meter: out.meter, est: out.est, rows: St.elements.length };

@@ -16,6 +16,7 @@
 
 #include "board_config.h"
 #include "display.h"
+#include "orb_rotation.h"
 #include "esp_timer.h"
 #include "orb_boot_overlay.h"
 #include "orb_app.h"
@@ -62,6 +63,7 @@ static void lvgl_task(void *arg)
         uint32_t sleep_ms = lv_timer_handler();
         const int64_t t_s = esp_timer_get_time();
         display_lvgl_pass_mark();      /* a store waits on this before it unmaps */
+        display_dma_service();         /* a still page re-sends what a card read cost */
         if (sleep_ms > 50) sleep_ms = 50;
         if (sleep_ms < 5) sleep_ms = 5;
         vTaskDelay(pdMS_TO_TICKS(sleep_ms));
@@ -256,6 +258,7 @@ void app_main(void)
     orb_places_init();
     /* The units (weather-plan §2.1) load beside it for the same reason. */
     orb_units_init();
+    orb_rotation_init();     /* §59: the carousel's order, read before the registry walks */
     /* P7.4's rung: the code tier loads after the broker's words are known (a
      * quarantined app must not cost its D27 memory) and before init_all asks each
      * module to build — the wasm module's init answers OK only once its slot

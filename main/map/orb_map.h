@@ -59,6 +59,8 @@ int32_t  orb_map_project(int app_slot, int32_t h, int32_t lat_e6, int32_t lon_e6
 void     orb_map_close(int app_slot, int32_t h);
 void     orb_map_release_app(int app_slot);
 void     orb_map_note_glass(int app_slot, bool on_glass, int64_t now_us);
+/* Everything the app holds here, now (orb_app_want_room): its views close, its files go. */
+void     orb_map_drop(int app_slot);
 
 /* Moves when the hub has written any place's maps (POST /api/v1/places/maps), so an app
  * re-opens its views; the level files every app holds are dropped with it. */

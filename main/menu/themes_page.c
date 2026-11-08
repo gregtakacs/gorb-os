@@ -1,5 +1,11 @@
 /**
- * themes_page.c — the dial's Themes page: an OS menu row, like USB Drive and Sound.
+ * themes_page.c — the dial's theme rows: each app's Themes sub-menu.
+ *
+ * §58 (2026-11-07): the owner wanted everything about an app in one place, so this is
+ * no longer a top menu row: it is each app's Themes sub-menu. The menu aims it at one
+ * app (themes_page_for) and opens this row's page; the card's listing is walked whole,
+ * and the rows are the themes whose stem names that app (e->app). The
+ * history below is the page's, from when it was a row, and the clock's before that.
  *
  * §43 moved it here from the clock app (it was main/stage/clock_themes.c, answering
  * the clock's options hooks under B2). A theme covers every app at once (D21's
@@ -40,11 +46,13 @@
 #include "orb_sd.h"        /* orb_sd_mounted(), for the reason line only */
 #include "orb_app.h"       /* D35: this app's own ledger row */
 #include "orb_svc.h"
+#include "display.h"      /* §60.2: display_dma_parked, the prefetch's pacing */
 
 #include <stdio.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"      /* §60.2: the preview work's own task */
 #include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_err.h"
@@ -77,6 +85,61 @@ static SemaphoreHandle_t s_mx;
 static volatile bool s_dirty;
 static volatile bool s_walk;      /* a list walk is posted and unreaped     */
 static bool    s_armed;
+/* §58: the app the rows are for, by slug (LVGL task only). The menu sets it with
+ * themes_page_for() before it opens this row's page. */
+static char    s_for[ORB_THEME_APP_MAX + 1];
+
+void themes_page_for(const char *slug)
+{
+    strlcpy(s_for, slug ? slug : "", sizeof s_for);
+}
+/* The hooks are asked on behalf of this provider row; any other caller names its
+ * own app, and that wins. */
+static void for_app(const orb_app_t *app)
+{
+    if (app && app != &orb_app_themes_row && app->slug) themes_page_for(app->slug);
+}
+static int count_for(const char *slug)
+{
+    int n = 0;
+    for (int k = 0; k < s_ui.n; k++) if (!strcmp(s_ui.e[k].app, slug)) n++;
+    return n;
+}
+/** How many of the listing's entries are this app's. */
+static int mine_n(void) { return count_for(s_for); }
+
+int themes_page_count_for(const char *slug) { return slug ? count_for(slug) : 0; }
+
+const char *themes_page_active_for(const char *slug)
+{
+    for (int k = 0; slug && k < s_ui.n; k++)
+        if (!strcmp(s_ui.e[k].app, slug) && s_ui.e[k].active)
+            return s_ui.e[k].name[0] ? s_ui.e[k].name : s_ui.e[k].id;
+    return NULL;
+}
+bool themes_page_item(const char *slug, int i, const char **id, const char **name,
+                      bool *active, bool *ok)
+{
+    for (int k = 0; slug && k < s_ui.n; k++) {
+        if (strcmp(s_ui.e[k].app, slug) != 0 || i-- != 0) continue;
+        const orb_theme_entry_t *e = &s_ui.e[k];
+        if (id) *id = e->id;
+        if (name) *name = e->name[0] ? e->name : e->id;
+        if (active) *active = e->active;
+        if (ok) *ok = e->err == ESP_OK;
+        return true;
+    }
+    return false;
+}
+
+/** The listing index of this app's i-th theme, or -1. */
+static int mine(int i)
+{
+    if (i < 0) return -1;
+    for (int k = 0; k < s_ui.n; k++)
+        if (!strcmp(s_ui.e[k].app, s_for) && i-- == 0) return k;
+    return -1;
+}
 
 /* ---- the preview plane (docs/history/theme-preview-plan.md §2) --------------------
  *
@@ -96,6 +159,7 @@ static bool    s_armed;
  * (ORB_ASSET_NO_CONTENT), never an error: the row stays text-only.
  */
 #define PV_SETTLE_MS 120     /* the cursor rests this long before a read starts */
+#define PV_SETTLE_CACHED_MS 40   /* §60.3: or this long when the bytes are already in PSRAM */
 
 typedef struct {
     uint8_t  *px;                     /* RGB565 plane, w*h*2 bytes; NULL = none */
@@ -123,6 +187,64 @@ static void pv_publish(const pv_t *src)
     s_pv_dirty = true;                /* published last, as publish() does */
 }
 
+/* ---- §60.2: the compressed-preview cache ------------------------------------------
+ * Owner, 2026-11-07: the page should load ahead and let the owner rotate through themes
+ * without each one stopping to load. A card read lends the display's DMA ring for its whole
+ * length (orb_sd_lock), so the page freezes while one runs; inflating bytes already in PSRAM
+ * does not touch the card. So while the cursor rests, the worker fetches the stored previews
+ * of the themes nearest it (here, then +1, -1, +2, -2), one at a time, into this cache; a
+ * landing on a cached theme inflates from memory, never the card; and a turn never starts a
+ * card read. Clock themes run ~150-225 KB each and twenty of them would not fit in PSRAM, so
+ * the cache is bounded and evicts the entry farthest from the cursor. LVGL task only: the
+ * worker gets a pointer at post time, and nothing is evicted while a job is outstanding. */
+#define ZC_MAX       8
+#define ZC_BUDGET    (1100u * 1024u)
+#define ZC_REST_MS   250       /* the cursor rests this long before a fetch starts */
+typedef struct {
+    char      id[ORB_THEME_HANDLE_MAX + 1];
+    uint8_t  *z;
+    uint32_t  n;
+    uint16_t  side;
+} zc_t;
+static zc_t     s_zc[ZC_MAX];
+static struct { char id[ORB_THEME_HANDLE_MAX + 1]; uint8_t *z; uint32_t n; uint16_t side; } s_zx;
+static volatile bool s_z_dirty;        /* a fetch's answer is waiting in s_zx    */
+static bool     s_z_fly;               /* a fetch is posted and unreaped         */
+static int64_t  s_moved_us;            /* the cursor's last move                 */
+static bool     s_zc_drop;             /* the page left: empty the cache once free */
+static int64_t  s_z_done_us;           /* when the last fetch was filed           */
+static bool     s_zc_full;             /* §60.3: nothing nearer fits; rest until a move */
+static int8_t   s_dir = -1;            /* §60.3: the way the last move went (+1 down the list) */
+#define ZC_GAP_MS    150       /* the glass draws this long between two fetches */
+
+static const zc_t *zc_find(const char *id)
+{
+    for (int i = 0; i < ZC_MAX; i++) if (s_zc[i].z && !strcmp(s_zc[i].id, id)) return &s_zc[i];
+    return NULL;
+}
+
+/* §60.3: how many of this app's themes lie between a cached id and the cursor (far, for an id
+ * the list no longer has). */
+static int zc_dist(const char *id, int cur)
+{
+    for (int k = 0, m = 0; k < s_ui.n; k++) {
+        if (strcmp(s_ui.e[k].app, s_for) != 0) continue;
+        if (!strcmp(s_ui.e[k].id, id)) return m > cur ? m - cur : cur - m;
+        m++;
+    }
+    return 1 << 20;
+}
+static uint32_t zc_bytes(void)
+{
+    uint32_t t = 0;
+    for (int i = 0; i < ZC_MAX; i++) if (s_zc[i].z) t += s_zc[i].n;
+    return t;
+}
+static void zc_drop_all(void)
+{
+    for (int i = 0; i < ZC_MAX; i++) { if (s_zc[i].z) heap_caps_free(s_zc[i].z); memset(&s_zc[i], 0, sizeof s_zc[i]); }
+}
+
 static void publish(const cui_t *src)
 {
     xSemaphoreTake(s_mx, portMAX_DELAY);
@@ -136,6 +258,9 @@ static void publish(const cui_t *src)
  * the framebuffer is walked. Storing is NOT here — orb_theme_post_bundle()
  * owns that job, so the dial's picker and the browser's Store button queue the
  * same worker function and cannot disagree about what a pick does. */
+static void job_run(void *arg);
+void themes_page_walk(void) { job_run(NULL); }
+
 static void job_run(void *arg)
 {
     (void)arg;                        /* the scan takes no payload */
@@ -170,17 +295,98 @@ static void job_run(void *arg)
  * errors, so they publish an empty; the caller that shows status reads e for
  * the rest. A post that raced a card pull answers NO_SLOT from the reader's
  * own door and is reported the same quiet way. */
+/* §60.2: what a display job is handed. From the cache: the stored bytes, inflated here with
+ * no card at all. Not cached: the id alone, and the job reads the card as it always has. */
+typedef struct {
+    char            id[ORB_THEME_HANDLE_MAX + 1];
+    const uint8_t  *z;
+    uint32_t        n;
+    uint16_t        side;
+    uint32_t        moves;            /* s_moves at the post: a move since abandons the read */
+} pv_ask_t;
+
+/* §60.3: every cursor move counts here (LVGL task, one writer). A card read in flight asks
+ * between segments whether the cursor is still where it was posted, and gives the card up
+ * when it is not, so the theme the owner turned to starts its read without waiting out the
+ * one they turned past. */
+static volatile uint32_t s_moves;
+static bool still_here(void *arg, uint32_t done, uint32_t total)
+{
+    (void)done; (void)total;
+    return ((const pv_ask_t *)arg)->moves == s_moves;
+}
+
+/* §60.2: a prefetch, on the worker: one theme's stored preview into PSRAM, published for the
+ * service to file in the cache. The card read is the cost the cache exists to pay ahead. */
+static void zc_job_run(void *arg)
+{
+    pv_ask_t *ask = (pv_ask_t *)arg;
+    const char *id = ask->id;
+    char why[72] = "";
+    uint32_t n = 0;
+    uint16_t side = 0;
+    uint8_t *z = (orb_sd_mounted() && !orb_theme_upload_busy())
+               ? orb_theme_preview_zcopy_ex(id, &n, &side, why, sizeof why, still_here, ask) : NULL;
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    strlcpy(s_zx.id, id, sizeof s_zx.id);
+    s_zx.z = z; s_zx.n = n; s_zx.side = side;
+    xSemaphoreGive(s_mx);
+    s_z_dirty = true;
+}
+
 static void pv_job_run(void *arg)
 {
-    const char *id = (const char *)arg;
+    const pv_ask_t *ask = (const pv_ask_t *)arg;
+    const char *id = ask->id;
     pv_t out;
     memset(&out, 0, sizeof out);
     strlcpy(out.id, id, sizeof out.id);
     out.gen = ++s_pv_gen;                 /* worker-owned counter, one writer */
 
+    if (ask->z) {                         /* §60.2: cached — memory only, no card */
+        out.px = orb_preview_inflate(ask->z, ask->n, ask->side);
+        if (out.px) { out.w = out.h = ask->side; }
+        else { out.e = ESP_FAIL; strlcpy(out.why, "the cached preview did not inflate", sizeof out.why); }
+        pv_publish(&out);
+        return;
+    }
+
     if (!orb_sd_mounted() || orb_theme_upload_busy()) {
         pv_publish(&out);                 /* empty, quiet: no card, no plane */
         return;
+    }
+
+    /* §60.3: a deflated preview is fetched as its stored bytes (one short card hold) and
+     * inflated here with the card free, and the bytes go to the cache as a prefetch's do,
+     * so coming back to this theme costs no card at all. Only a raw preview (a theme baked
+     * before v1.2.20) takes the plane read below, which inflates nothing. */
+    {
+        uint32_t zn = 0;
+        uint16_t side = 0;
+        char zwhy[72] = "";
+        uint8_t *z = orb_theme_preview_zcopy_ex(id, &zn, &side, zwhy, sizeof zwhy,
+                                                still_here, (void *)ask);
+        if (!z && !still_here((void *)ask, 0, 0)) {    /* abandoned: the cursor moved on */
+            pv_publish(&out);
+            return;
+        }
+        if (z) {
+            out.px = orb_preview_inflate(z, zn, side);
+            if (out.px) { out.w = out.h = side; }
+            else { out.e = ESP_FAIL; strlcpy(out.why, "the preview did not inflate", sizeof out.why); }
+            bool filed = false;
+            xSemaphoreTake(s_mx, portMAX_DELAY);
+            if (!s_zx.z) {                        /* else a fetch's answer is still unreaped */
+                strlcpy(s_zx.id, id, sizeof s_zx.id);
+                s_zx.z = z; s_zx.n = zn; s_zx.side = side;
+                filed = true;
+            }
+            xSemaphoreGive(s_mx);
+            if (filed) s_z_dirty = true;
+            else heap_caps_free(z);
+            pv_publish(&out);
+            return;
+        }
     }
 
     uint16_t w = 0, h = 0;
@@ -259,6 +465,8 @@ void themes_page_reset(void)
      * is on the card" again rather than holding a picture of the theme the
      * cursor last sat on. */
     themes_page_drop_preview();
+    s_zc_drop = true;                  /* §60.2: the cache goes with the page, once no job holds it */
+    s_moved_us = 0;
 }
 
 /* Drop the displayed plane and any published-but-unreaped answer. Runs on the
@@ -271,6 +479,42 @@ void themes_page_drop_preview(void)
     memset(&s_pvu, 0, sizeof s_pvu);
     s_pv_row = -1;
     s_pv_since = 0;
+}
+
+/* §60.2: the preview work's own task. On the jobs worker it froze the page: the shell drops
+ * every turn while orb_jobs_busy() (a running job owns the cursor's row), so a prefetch in
+ * flight swallowed the owner's turns (Gold, 2026-11-07: three detents, two landed). Here it
+ * never counts as the page being busy; the card lock still orders it against the worker.
+ * One request at a time, the service retrying a post the task is not free to take. */
+static TaskHandle_t s_pvt;
+static volatile bool s_pvt_busy;
+static void (*s_pvt_fn)(void *);
+static uint8_t s_pvt_arg[sizeof(pv_ask_t)];
+static void pvt_main(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (s_pvt_fn) s_pvt_fn(s_pvt_arg);
+        s_pvt_busy = false;
+    }
+}
+static esp_err_t pvt_post(void (*fn)(void *), const void *arg, size_t n)
+{
+    if (!s_pvt) {
+        if (xTaskCreatePinnedToCoreWithCaps(pvt_main, "theme_pv", 8192, NULL, 2, &s_pvt,
+                                            tskNO_AFFINITY, MALLOC_CAP_SPIRAM) != pdPASS) {
+            s_pvt = NULL;
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (s_pvt_busy || n > sizeof s_pvt_arg) return ESP_ERR_INVALID_STATE;
+    s_pvt_busy = true;
+    s_pvt_fn = fn;
+    memset(s_pvt_arg, 0, sizeof s_pvt_arg);
+    memcpy(s_pvt_arg, arg, n);
+    xTaskNotifyGive(s_pvt);
+    return ESP_OK;
 }
 
 void themes_page_service(void)
@@ -296,11 +540,10 @@ void themes_page_service(void)
         memset(&s_pvx, 0, sizeof s_pvx);      /* ownership moves with the copy */
         xSemaphoreGive(s_mx);
 
-        const int i = (s_pv_row >= ROW_ITEMS && s_pv_row < ROW_ITEMS + s_ui.n)
-                    ? s_pv_row - ROW_ITEMS : -1;
-        const bool mine = i >= 0 && next.id[0] &&
+        const int i = mine(s_pv_row - ROW_ITEMS);
+        const bool ours = i >= 0 && next.id[0] &&
                           strcmp(next.id, s_ui.e[i].id) == 0;
-        if (!mine) {
+        if (!ours) {
             if (next.px) heap_caps_free(next.px);
             if (s_pvu.px) heap_caps_free(s_pvu.px);
             memset(&s_pvu, 0, sizeof s_pvu);
@@ -313,21 +556,108 @@ void themes_page_service(void)
         }
     }
 
+    /* §60.2: the page left — give the memory back once no job can hold a pointer into it */
+    if (s_zc_drop && !s_armed && !s_pvt_busy && !s_z_fly) {
+        zc_drop_all();
+        s_zc_drop = false;
+    }
+    if (s_armed) s_zc_drop = false;
+    /* §60.2: a fetch landed: file it, making room by dropping what is farthest from the
+     * cursor (never while a job may still hold a pointer — the worker is free here). */
+    if (s_z_dirty && !s_pvt_busy) {
+        s_z_dirty = false;
+        s_z_fly = false;
+        s_z_done_us = esp_timer_get_time();
+        xSemaphoreTake(s_mx, portMAX_DELAY);
+        zc_t got = { .z = s_zx.z, .n = s_zx.n, .side = s_zx.side };
+        strlcpy(got.id, s_zx.id, sizeof got.id);
+        memset(&s_zx, 0, sizeof s_zx);
+        xSemaphoreGive(s_mx);
+        if (got.z && !zc_find(got.id)) {
+            const int cur = s_pv_row - ROW_ITEMS;
+            /* §60.3: only what is farther from the cursor than the newcomer makes room for it.
+             * Evicting a nearer one let the prefetch fetch it straight back, evict the
+             * newcomer, and loop, reading the card while the cursor rested (Gold). */
+            const int dnew = zc_dist(got.id, cur);
+            for (;;) {
+                bool slot_free = false;
+                for (int i = 0; i < ZC_MAX; i++) if (!s_zc[i].z) slot_free = true;
+                if (slot_free && zc_bytes() + got.n <= ZC_BUDGET) break;
+                int far = -1, fd = -1;
+                for (int i = 0; i < ZC_MAX; i++) {
+                    if (!s_zc[i].z) continue;
+                    const int d = zc_dist(s_zc[i].id, cur);
+                    if (d > fd) { fd = d; far = i; }
+                }
+                if (far < 0 || fd <= dnew) { s_zc_full = true; break; }
+                heap_caps_free(s_zc[far].z);
+                memset(&s_zc[far], 0, sizeof s_zc[far]);
+            }
+            int slot = -1;
+            for (int i = 0; i < ZC_MAX && slot < 0; i++) if (!s_zc[i].z) slot = i;
+            if (slot >= 0 && zc_bytes() + got.n <= ZC_BUDGET) s_zc[slot] = got;
+            else { heap_caps_free(got.z); s_zc_full = true; }
+        } else if (got.z) {
+            heap_caps_free(got.z);
+        } else {
+            /* §61: a fetch that came back empty (no memory, a moved cursor) rests the
+             * prefetch until the next move; retrying at once read the card in a loop with
+             * PSRAM gone (Gold, 2026-11-08). */
+            s_zc_full = true;
+        }
+    }
+
     /* The settle: post one read once the cursor has rested on a theme row for
      * PV_SETTLE_MS with the worker free. The rest rule is the whole reason a
      * land queues a read at all — a read per detent through a 62-row spin is
      * ~108 KB of card work per stop and the knob never answers; a read after
      * the spin costs the one theme the owner stopped on. */
-    if (s_pv_row >= ROW_ITEMS && s_pv_row < ROW_ITEMS + s_ui.n && s_pv_since &&
-        !orb_jobs_busy() &&
-        esp_timer_get_time() / 1000 - s_pv_since / 1000 >= PV_SETTLE_MS) {
-        const int i = s_pv_row - ROW_ITEMS;
+    const int pvi = mine(s_pv_row - ROW_ITEMS);
+    /* §60.3: a cached theme costs no card, so it waits only long enough to let a spin's
+     * next detent arrive; the card read keeps the longer rest. */
+    const int settle_ms = pvi >= 0 && zc_find(s_ui.e[pvi].id) ? PV_SETTLE_CACHED_MS : PV_SETTLE_MS;
+    if (pvi >= 0 && s_pv_since && !orb_jobs_busy() && !s_pvt_busy &&
+        esp_timer_get_time() / 1000 - s_pv_since / 1000 >= settle_ms) {
+        const int i = pvi;
         if (!s_pvu.px || strcmp(s_pvu.id, s_ui.e[i].id) != 0) {
-            s_pv_since = 0;                   /* one post per land, settled */
-            const esp_err_t e = orb_jobs_post(pv_job_run, s_ui.e[i].id,
-                                              strlen(s_ui.e[i].id) + 1);
+            pv_ask_t ask;
+            memset(&ask, 0, sizeof ask);
+            strlcpy(ask.id, s_ui.e[i].id, sizeof ask.id);
+            const zc_t *c = zc_find(ask.id);   /* §60.2: cached = no card */
+            if (c) { ask.z = c->z; ask.n = c->n; ask.side = c->side; }
+            ask.moves = s_moves;
+            const esp_err_t e = pvt_post(pv_job_run, &ask, sizeof ask);
+            if (e == ESP_OK) s_pv_since = 0;   /* one post per land, settled */
             if (e != ESP_OK && e != ESP_ERR_INVALID_STATE)
                 ESP_LOGW(TAG, "preview post refused (%s)", esp_err_to_name(e));
+        }
+    }
+
+    /* §60.2: the prefetch. Only while the page is up, the cursor has rested ZC_REST_MS,
+     * the worker is free and its own preview is in hand; nearest the cursor first. */
+    /* ... and never back to back: each fetch holds the card, and the card holds the display's
+     * DMA ring, so five in a row kept the glass still for seconds and the owner's turns looked
+     * ignored. The next waits for the ring to come home and the glass to draw a while. */
+    /* §60.3: the ring is no longer waited home. It comes back on the next flush, and a page
+     * at rest draws nothing, so the wait spaced fetches ~1.5 s apart for no frame at all;
+     * each fetch now gives the card back between short segments, and the gap stands. The
+     * order runs ahead the way the owner is turning, then one behind. */
+    if (s_armed && !s_z_fly && !s_z_dirty && !s_zc_full && !orb_jobs_busy() && !s_pvt_busy &&
+        s_pv_since == 0 && esp_timer_get_time() - s_z_done_us >= (int64_t)ZC_GAP_MS * 1000 &&
+        s_moved_us && esp_timer_get_time() - s_moved_us >= (int64_t)ZC_REST_MS * 1000) {
+        const int cur = s_pv_row - ROW_ITEMS;
+        const int8_t d = s_dir;
+        const int8_t ORDER[] = { 0, d, (int8_t)(2 * d), (int8_t)-d, (int8_t)(3 * d) };
+        for (size_t o = 0; o < sizeof ORDER; o++) {
+            const int k = mine(cur + ORDER[o]);
+            if (k < 0 || zc_find(s_ui.e[k].id) || s_ui.e[k].err != ESP_OK) continue;
+            pv_ask_t zq;
+            memset(&zq, 0, sizeof zq);
+            strlcpy(zq.id, s_ui.e[k].id, sizeof zq.id);
+            zq.moves = s_moves;
+            if (pvt_post(zc_job_run, &zq, sizeof zq) == ESP_OK)
+                s_z_fly = true;
+            break;
         }
     }
 }
@@ -341,28 +671,47 @@ void themes_page_service(void)
  * the container, copies it and reboots the dial, or it puts the reason on the row
  * and the device stays exactly as it was. The queue answer is reported, not
  * swallowed — a press the firmware dropped has to say so on the glass (C8). */
+static void pick_entry(const orb_theme_entry_t *e);
 void themes_page_pick(int idx)
 {
-    if (s_ui.n <= 0 || idx < 0 || idx >= s_ui.n) return;
-    const orb_theme_entry_t *e = &s_ui.e[idx];
+    const int k = mine(idx);              /* this app's idx-th theme */
+    if (k < 0) return;
     ESP_LOGI(TAG, "pick %d/%d: %s (%s)", idx, s_ui.n - 1,
-             e->name[0] ? e->name : e->id, e->id);
+             s_ui.e[k].name[0] ? s_ui.e[k].name : s_ui.e[k].id, s_ui.e[k].id);
+    pick_entry(&s_ui.e[k]);
+}
+
+const char *themes_page_pick_id(const char *id)
+{
+    for (int k = 0; id && k < s_ui.n; k++) {
+        if (strcmp(s_ui.e[k].id, id) != 0) continue;
+        ESP_LOGI(TAG, "pick %s (%s) from the carousel",
+                 s_ui.e[k].name[0] ? s_ui.e[k].name : id, id);
+        pick_entry(&s_ui.e[k]);
+        return s_ui.status;
+    }
+    strlcpy(s_ui.status, "that theme is no longer on the card", sizeof s_ui.status);
+    return s_ui.status;
+}
+
+static void pick_entry(const orb_theme_entry_t *e)
+{
     if (e->err != ESP_OK) {
         strlcpy(s_ui.status, e->why[0] ? e->why : "not loadable", sizeof s_ui.status);
         return;
     }
     if (e->active) {
-        snprintf(s_ui.status, sizeof s_ui.status, "\"%s\" is already on the dial", e->name);
+        snprintf(s_ui.status, sizeof s_ui.status, "\"%.40s\" is already on the dial", e->name);
         return;
     }
     const esp_err_t q = orb_theme_post_bundle(e->id);
     if (q == ESP_ERR_INVALID_STATE)
         strlcpy(s_ui.status, "one theme is already being installed", sizeof s_ui.status);
     else if (q != ESP_OK)
-        snprintf(s_ui.status, sizeof s_ui.status, "\"%s\" could not start: %s",
+        snprintf(s_ui.status, sizeof s_ui.status, "\"%.36s\" could not start: %s",
                  e->name, esp_err_to_name(q));
     else
-        snprintf(s_ui.status, sizeof s_ui.status, "storing \"%s\" …", e->name);
+        snprintf(s_ui.status, sizeof s_ui.status, "storing \"%.48s\" …", e->name);
 }
 
 
@@ -386,7 +735,10 @@ esp_err_t themes_page_init(void)
 
 int themes_opt_count(orb_app_t *app)
 {
-    (void)app;
+    for_app(app);
+    /* §58: an app with no theme on the card has an empty sub-menu (its page shows
+     * no Themes row then, so this is reached only mid-walk). */
+    if (mine_n() == 0) return 0;
     /* The one group header plus the card's themes. Nothing here ever counted the
      * reboot question any more — ruling D11 deleted it, because a pick installs
      * and reboots by itself and there is no second press to have faith in. Migration
@@ -394,7 +746,7 @@ int themes_opt_count(orb_app_t *app)
      * stay in the count while their group is CLOSED: the shell hides them, and an
      * app that dropped them from its own number would be a second opinion about what
      * is on the page, which is the one thing §13.4 forbids. */
-    return ROW_ITEMS + s_ui.n;
+    return ROW_ITEMS + mine_n();
 }
 
 /** Which of the two shapes a row has (ruling D12). One group and its items — the
@@ -403,30 +755,30 @@ int themes_opt_count(orb_app_t *app)
  *  that used to lead the page. */
 orb_opt_kind_t themes_opt_kind(orb_app_t *app, int idx)
 {
-    (void)app;
+    for_app(app);
     if (idx == ROW_GROUP)   return OPT_GROUP;
-    if (idx >= ROW_ITEMS && idx < ROW_ITEMS + s_ui.n) return OPT_ITEM;
+    if (mine(idx - ROW_ITEMS) >= 0) return OPT_ITEM;
     return OPT_ROW;                     /* out of range: the shell's bounds answer */
 }
 
 const char *themes_opt_label(orb_app_t *app, int idx)
 {
-    (void)app;
+    for_app(app);
     /* The card is a GROUP, at row 0, always. Migration 1 retired the factory-default
      * ROW that used to lead the page: under the single slot there is no press that
      * returns the dial to a second copy, so the group is the whole page and the
      * base face needs no row to name it — it is what a slot with nothing valid in
      * it already draws. */
     if (idx == ROW_GROUP)   return "Themes";
-    const int i = idx - ROW_ITEMS;
-    if (i < 0 || i >= s_ui.n) return "";
+    const int i = mine(idx - ROW_ITEMS);
+    if (i < 0) return "";
     const orb_theme_entry_t *e = &s_ui.e[i];
     return e->name[0] ? e->name : e->id;
 }
 
 const char *themes_opt_value(orb_app_t *app, int idx)
 {
-    (void)app;
+    for_app(app);
     static char v[48];                  /* one row's answer, repainted per poll */
     v[0] = '\0';
     /* Every string below is a read of state the theme layer already holds: the
@@ -443,12 +795,13 @@ const char *themes_opt_value(orb_app_t *app, int idx)
          * repaint the glass without a knob turn. Load state and refusal
          * reasons live on their own theme rows, never on this line (owner
          * ruling, 2026-10-26: the header does not editorialize). */
-        if (s_ui.n <= 0) return "";
-        snprintf(v, sizeof v, "%d theme%s", s_ui.n, s_ui.n == 1 ? "" : "s");
+        const int n = mine_n();
+        if (n <= 0) return "";
+        snprintf(v, sizeof v, "%d theme%s", n, n == 1 ? "" : "s");
         return v;
     }
-    const int i = idx - ROW_ITEMS;
-    if (i < 0 || i >= s_ui.n) return "";
+    const int i = mine(idx - ROW_ITEMS);
+    if (i < 0) return "";
     const orb_theme_entry_t *e = &s_ui.e[i];
     /* One value per row, chosen by what the owner has to decide, and one rule: the
      * reason a theme is not on the wall goes on that theme's row, because the row
@@ -492,11 +845,13 @@ void themes_opt_sel(orb_app_t *app, int idx)
      * left the group header as the only non-item row, so an ITEM press is the
      * only one that needs the themes cap. */
     if (idx == ROW_GROUP)   return;
+    for_app(app);
     themes_page_pick(idx - ROW_ITEMS);
 }
 
 void themes_opt_arm(orb_app_t *app, bool armed)
 {
+    for_app(app);
     s_armed = armed;
     if (armed) {
         /* Entering the page is when the card is worth walking: the rows are the
@@ -517,16 +872,20 @@ void themes_opt_focus(orb_app_t *app, int idx)
      * A revoked cap makes the focus a no-op — the revoke is already on the
      * status line from the arm, and a row with no preview is the same page
      * every theme without one draws. */
-    (void)app;
+    for_app(app);
     /* The shell tells the app where its cursor landed, in the app's own row
      * numbers. A land on the group header (row 0) or past the walk's end shows
      * nothing; the plane drops so the list the owner can actually see is the
      * list on the glass. A land on the same row is not a new land: the settle
      * only re-arms when the row changes. */
     if (idx == s_pv_row) return;
+    if (s_pv_row >= 0) s_dir = idx > s_pv_row ? 1 : -1;   /* §60.3: the way it is turning */
     s_pv_row = idx;
+    s_moved_us = esp_timer_get_time();   /* §60.2: a move restarts the prefetch's rest */
+    s_moves++;                           /* §60.3: and gives up a read for the row it left */
+    s_zc_full = false;
     s_pv_since = idx >= ROW_ITEMS ? esp_timer_get_time() : 0;
-    if (idx < ROW_ITEMS || idx >= ROW_ITEMS + s_ui.n) {
+    if (mine(idx - ROW_ITEMS) < 0) {
         if (s_pvu.px) heap_caps_free(s_pvu.px);
         memset(&s_pvu, 0, sizeof s_pvu);
     }
@@ -535,7 +894,7 @@ void themes_opt_focus(orb_app_t *app, int idx)
 const void *themes_opt_preview(orb_app_t *app, int idx, uint16_t *w,
                               uint16_t *h, uint32_t *stamp)
 {
-    (void)app;
+    for_app(app);
     /* The answer half, not the ask: it reads only the reaped plane (s_pvu), the
      * same rule opt_label and opt_value live under — the callback that answers
      * a row is the dial's animation, and a card read here would hold the task
@@ -543,11 +902,12 @@ const void *themes_opt_preview(orb_app_t *app, int idx, uint16_t *w,
      * row, a theme with no preview (NO_CONTENT, never an error), a page whose
      * cursor is not on an item, or a group that is closed. */
     if (!s_pvu.px || idx != s_pv_row) return NULL;
-    if (idx < ROW_ITEMS || idx >= ROW_ITEMS + s_ui.n) return NULL;
+    const int k = mine(idx - ROW_ITEMS);
+    if (k < 0) return NULL;
     /* §6's identity rule applies to a picture too: the plane answers the row
      * that carries the same id it was read for. A card re-walk that moved the
      * theme out from under the cursor answers text, not the old face. */
-    if (strcmp(s_ui.e[idx - ROW_ITEMS].id, s_pvu.id) != 0) return NULL;
+    if (strcmp(s_ui.e[k].id, s_pvu.id) != 0) return NULL;
     *w = s_pvu.w;
     *h = s_pvu.h;
     *stamp = s_pvu.gen;
@@ -559,9 +919,9 @@ bool themes_opt_armed(void)
     return s_armed;
 }
 
-/* ---- the menu row ----------------------------------------------------------------
- * A settings-only OS row (orb_app.c's s_service table): no face, no ledger slot, and
- * the menu draws its options page from the hooks below. */
+/* ---- the provider row --------------------------------------------------------------
+ * No face, no ledger slot and no menu row (§58): orb_app.c initialises and services it,
+ * and appends its hooks' rows to every card app's page. */
 static esp_err_t page_init(orb_app_t *app)    { (void)app; return themes_page_init(); }
 static void      page_service(orb_app_t *app) { (void)app; themes_page_service(); }
 

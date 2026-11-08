@@ -1,11 +1,12 @@
 {
   "slug": "color_picker",
   "title": "HSB",
+  "icon": "icon.png",
   "caps": [],
   "settings": [
-    {"id": "hue", "type": "int", "min": 0, "max": 359, "default": 210},
-    {"id": "sat", "type": "int", "min": 0, "max": 100, "default": 80},
-    {"id": "bri", "type": "int", "min": 0, "max": 100, "default": 90}
+    {"id": "hue", "type": "int", "label": "Hue", "min": 0, "max": 359, "default": 210, "step": 5, "unit": "°"},
+    {"id": "sat", "type": "int", "label": "Saturation", "min": 0, "max": 100, "default": 80, "step": 5, "unit": "%"},
+    {"id": "bri", "type": "int", "label": "Brightness", "min": 0, "max": 100, "default": 90, "step": 5, "unit": "%"}
   ],
   "shelf": true
 }

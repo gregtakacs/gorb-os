@@ -43,13 +43,17 @@ const (
 	// The region never installs, so it adds to the largest FILE and not to the
 	// largest slot — the distinction §4.2 is built on.
 	appUploadMa = 0x40000 + 0x20000 + 0x200000 + 0x1000
-	// D37's editor triple: W_EDITOR_OFF/SIZE/CRC, the three words after
-	// W_WASM_MEM and before W_HDR_CRC in orb_app_manifest.h. The double reads the
-	// offset so an editor-bearing container can model one on the card.
-	wEditorOff = 47
-	wEditorSz  = 48
-	wEditorCrc = 49
-	appAbi     = 3 // ORBAPP_GEOM_ABI / orbapp.GEOM_ABI
+	// D37's editor triple: W_EDITOR_OFF/SIZE/CRC, the three words after W_WASM_MEM
+	// (orb_app_manifest.h; orbnet's appWEditOff). The double reads them to keep an
+	// uploaded container's region and serve it as the device does. They read 47..49
+	// until 2026-11-08, when nothing used them; a real container put them here.
+	wEditorOff = 44
+	wEditorSz  = 45
+	wEditorCrc = 46
+	// S6's version field: eight words after the editor triple, a NUL-padded release stamp
+	wVersion     = 47
+	versionBytes = 32
+	appAbi       = 3 // ORBAPP_GEOM_ABI / orbapp.GEOM_ABI
 )
 
 // capNames is orbapp_caps_names's table (orb_app_manifest.c:400) in bit order. The double
@@ -824,7 +828,8 @@ func (o *Orb) serveAppUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	up := CardApp{Stem: slug, Slug: slug, Title: headerField(body, wTitle, titleBytes),
 		AppID: hdr[wAppID], Caps: hdr[wCaps], Serial: hdr[wSerial], Period: hdr[wPeriodMs],
-		NSet: hdr[wNSettings], ArtSz: hdr[wArtSize], Bytes: uint32(len(body))}
+		NSet: hdr[wNSettings], ArtSz: hdr[wArtSize], Bytes: uint32(len(body)),
+		Version: headerField(body, wVersion, versionBytes), Editor: uploadedEditor(body)}
 	if prev != nil {
 		*prev = up
 	} else {
@@ -839,6 +844,26 @@ func (o *Orb) serveAppUpload(w http.ResponseWriter, r *http.Request) {
 	o.fm.ensureStoreDirs()
 	o.fm.files["apps/"+slug+".orbapp"] = int64(len(body))
 	writeJSON(w, 200, fmt.Sprintf(`{"state":"stored","bytes":%d}`, len(body)))
+}
+
+// uploadedEditor is the editor region an uploaded container carries, by its own header's
+// offset, size and checksum, as the device streams it from the card; nil for none, or for a
+// triple that does not land on bytes matching its checksum.
+func uploadedEditor(body []byte) []byte {
+	if len(body) < (wEditorCrc+1)*4 {
+		return nil
+	}
+	off := binary.LittleEndian.Uint32(body[wEditorOff*4:])
+	n := binary.LittleEndian.Uint32(body[wEditorSz*4:])
+	sum := binary.LittleEndian.Uint32(body[wEditorCrc*4:])
+	if n == 0 || uint64(off)+uint64(n) > uint64(len(body)) {
+		return nil
+	}
+	region := body[off : off+n]
+	if crc32.ChecksumIEEE(region) != sum {
+		return nil
+	}
+	return append([]byte(nil), region...)
 }
 
 // headerField lifts a fixed-width NUL-padded header string out of a raw container body.

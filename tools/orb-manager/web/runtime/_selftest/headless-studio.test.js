@@ -135,7 +135,8 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(/1\/1 art asset held/.test(text(r)), 'and the app’s warning line');
   ok(by(render(S.RenderPanel, { downloads: [] }), 'button').length === 0, 'off a hub there is no Send');
   const sv = fn, rs = by(render(S.RenderPanel, { send: { note: 'x', on: send }, save: { note: 'keep it', on: sv }, downloads: [] }), 'button', 'st-big');
-  ok(rs.length === 2 && rs[1].props.onClick === sv && /Save to library/.test(text(rs[1])), 'Save to library sits under Send');
+  // §8.1 ruling 6: Save to library, Send to orb, then the export
+  ok(rs.length === 2 && rs[0].props.onClick === sv && /Save to library/.test(text(rs[0])) && rs[1].props.onClick === send, 'Save to library sits above Send');
 }
 
 // ---- K7: the field kit, the fields, the layers panel
@@ -261,6 +262,14 @@ Object.defineProperty(global, 'fn', { get: mkfn });
   ok(by(sheet, 'div', 'st-lib-row').length === 2 && by(sheet, 'button').some((b) => b.props.onClick === go && text(b) === 'Continue with Alpha' && b.props.className === 'ui-primary'), 'the library under them, and Continue');
   ok(!by(sheet, 'input').some((i) => i.props.type === 'text') && !by(sheet, 'button').some((b) => /Save/.test(text(b))), 'the sheet opens; it never saves (that is the Render step’s)');
   ok(!by(sheet, 'div', 'st-lib-empty').length && by(render(S.StartSheet, { library: { rows: [] } }), 'div', 'st-lib-empty').length === 1, 'an empty library says how it fills');
+  // the hosted sheet (§8.1 ruling 4): Start fresh, the templates, the library, then Import
+  const imp = fn, hosted = render(S.StartSheet, { scratch: { label: 'Start fresh', on: fn }, tiles: [{ key: 'a', name: 'Alpha', on: fn }],
+    library: { rows }, importFile: { accept: '.orbtheme', on: imp } });
+  const heads = by(hosted, 'h2').map(text), file = by(hosted, 'input').filter((i) => i.props.type === 'file');
+  ok(heads.join('|') === 'Start a theme|Library|Import', 'the hosted sheet: the starts, the library, then Import', heads.join('|'));
+  ok(/Start fresh/.test(text(by(hosted, 'button', 'st-gc')[0])) && by(hosted, 'div', 'st-gc').length === 1, 'Start fresh leads the starts');
+  ok(file.length === 1 && file[0].props.onChange === imp && file[0].props.accept === '.orbtheme', 'one file input, and it is Import’s');
+  ok(by(hosted, 'button').some((b) => text(b) === 'Import a file…') && !by(hosted, 'button').some((b) => text(b) === 'Open a file…'), 'Import a file, and no Open a file beside the library');
 }
 {
   // layerRows: bands, depth, selection, arrows, eye, tooltip; a made-up radar stack

@@ -211,7 +211,9 @@
    * tile chooses it; only Continue moves on.
    *   title · tiles: [{key, name, short, tip, on, cls, draw(canvas)}] · scratch: {label, short, tip, on}
    *   · library: {openFile, accept, rows (libraryRows), empty}. Saving is the Render step's
-   *     (RenderPanel's save), under the theme's name: the sheet only opens. 
+   *     (RenderPanel's save), under the theme's name: the sheet only opens. A hosted editor
+   *     (host@1) passes no openFile: its file comes in through importFile, below the library.
+   *   · importFile: {accept, on}: Import a file, which puts it in the library and opens it
    *   · foot: [{label, on, primary, tip}] */
   function Tile(p) {
     var R = root.React, ref = R.useRef(null), t = p.t;
@@ -220,7 +222,7 @@
       h('canvas', { ref: ref, width: 192, height: 192 }), h('b', null, t.name), h('span', null, t.short || ''));
   }
   S.StartSheet = function (p) {
-    var L = p.library || null, fileRef = root.React.useRef(null);
+    var L = p.library || null, I = p.importFile || null, fileRef = root.React.useRef(null), impRef = root.React.useRef(null);
     return h('div', { className: 'st-sheet' },
       h('div', { className: 'st-sheet-in' },
         h('h2', null, p.title || 'Start a theme'),
@@ -229,9 +231,9 @@
           list(p.tiles).map(function (t) { return h(Tile, { key: t.key, t: t }); })),
         L ? h(root.React.Fragment, null,
           h('h2', { style: { marginTop: '18px' } }, 'Library'),
-          h('div', { className: 'st-lib-bar' },
+          L.openFile ? h('div', { className: 'st-lib-bar' },
             h('button', { className: 'ui-ghost st-sm', onClick: function () { fileRef.current && fileRef.current.click(); }, title: 'Open a theme (.orbtheme) or a design file (.orbdesign) in the editor' }, 'Open a file…'),
-            h('input', { ref: fileRef, type: 'file', accept: L.accept || '.orbtheme,.orbdesign', style: { display: 'none' }, onChange: L.openFile })),
+            h('input', { ref: fileRef, type: 'file', accept: L.accept || '.orbtheme,.orbdesign', style: { display: 'none' }, onChange: L.openFile })) : null,
           list(L.rows).length ? null : h('div', { className: 'ui-mut st-lib-empty' }, L.empty || 'Nothing in the library yet. Save to library on the Render step keeps a design on the hub as a draft; Send to orb bakes it into a theme under the same name.'),
           list(L.rows).map(function (r) {
             return h('div', { key: r.name, className: 'st-lib-row' },
@@ -240,7 +242,13 @@
               h('button', { className: 'ui-ghost st-sm', onClick: r.load, title: r.loadTip }, 'Open'),
               r.changed ? h('button', { className: 'ui-ghost st-sm', onClick: r.discard, title: 'Drop the unsent changes and keep the theme as it was baked' }, 'Discard changes') : null,
               h('button', { className: 'ui-ghost st-sm', onClick: r.del, title: r.delTip }, r.delLabel));
-          })) : null),
+          })) : null,
+        I ? h(root.React.Fragment, null,
+          h('h2', { style: { marginTop: '18px' } }, 'Import'),
+          h('div', { className: 'st-lib-bar' },
+            h('button', { className: 'ui-ghost st-sm', onClick: function () { impRef.current && impRef.current.click(); }, title: 'Add a theme (.orbtheme) or a design file (.orbdesign) to the library, then open it' }, 'Import a file…'),
+            h('span', { className: 'ui-mut' }, 'An .orbtheme or a design file: it goes into the library, then opens here.'),
+            h('input', { ref: impRef, type: 'file', accept: I.accept || '.orbtheme,.orbdesign', style: { display: 'none' }, onChange: I.on }))) : null),
       h('div', { className: 'st-sheet-foot' }, list(p.foot).map(function (f, i) {
         return h('button', { key: i, className: f.primary ? 'ui-primary' : 'ui-ghost', onClick: f.on, title: f.tip || '' }, f.label);
       })));
@@ -304,8 +312,8 @@
     var b = p.badge || null;
     return h(root.React.Fragment, null,
       b ? h('div', { className: 'st-badge', title: b.tip || '', style: { borderColor: b.border, background: b.background } }, h('b', { style: { color: b.color } }, b.text), h('span', null, b.note)) : null,
-      p.send ? h('button', { className: 'st-big ui-primary', onClick: p.send.on, title: p.send.tip || '' }, h('b', null, 'Send to orb'), h('span', null, p.send.note)) : null,
       p.save ? h('button', { className: 'st-big', onClick: p.save.on, title: p.save.tip || '' }, h('b', null, 'Save to library'), h('span', null, p.save.note)) : null,
+      p.send ? h('button', { className: 'st-big ui-primary', onClick: p.send.on, title: p.send.tip || '' }, h('b', null, 'Send to orb'), h('span', null, p.send.note)) : null,
       list(p.downloads).map(function (d, i) { return h('button', { key: i, className: 'st-big', onClick: d.on, title: d.title || '' }, h('b', null, d.label), h('span', null, d.note)); }),
       p.note ? h('div', { className: 'st-hint ui-mono st-warn' }, p.note) : null);
   };

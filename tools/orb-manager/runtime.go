@@ -51,6 +51,7 @@ var runtimeCatalog = map[string]runtimeEntry{
 	"theme@1":      {dir: "theme@1"},  // the editor services: send, session, preview, measure (theme-editor-kit-plan K1–K4)
 	"studio@1":     {dir: "studio@1"}, // the editor shell: frame, top bar, stage, toolbar, modals, Render (K6)
 	"maps@1":       {dir: "maps@1"},   // the OS maps' tool: tile reader, .orbmap writer, rasteriser (radar-plan §2.4)
+	"host@1":       {dir: "host@1"},   // the hosted editor: Orb Manager's page an app's module registers into (theme-editor-kit-plan §8)
 	"react@18.3.1": {dir: "vendor", files: []string{"react.production.min.js", "react-dom.production.min.js"}, vendor: true},
 	"babel@7.29.0": {dir: "vendor", files: []string{"babel.min.js"}, vendor: true},
 	"fonts@1":      {dir: "vendor", files: []string{"fonts.css"}, prefix: "fonts/", vendor: true},

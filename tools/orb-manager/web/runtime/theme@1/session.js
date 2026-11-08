@@ -46,6 +46,21 @@
     var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
   };
+  /* a file saved where the person chooses (§8.1 ruling 6): the browser's Save dialog where it
+   * has one (the app window's Chrome does: 127.0.0.1 is a secure context), else the download.
+   * Answers 'saved', 'downloaded', or 'cancelled' when the dialog was closed. */
+  OrbTheme.saveFile = async function (blob, name) {
+    if (typeof root.showSaveFilePicker !== 'function') { OrbTheme.download(blob, name); return 'downloaded'; }
+    var fh;
+    try {
+      fh = await root.showSaveFilePicker({ suggestedName: name, types: [{ description: 'Orb theme', accept: { 'application/octet-stream': ['.orbtheme'] } }] });
+    } catch (e) {
+      if (e && e.name === 'AbortError') return 'cancelled';
+      OrbTheme.download(blob, name); return 'downloaded';
+    }
+    var w = await fh.createWritable(); await w.write(blob); await w.close();
+    return 'saved';
+  };
 
   OrbTheme.session = function (host) {
     var api = {
@@ -331,6 +346,47 @@
       if (why) { say('Not opened: ' + why); return false; }
       api.restart();
       api.sayOpened(file.name);
+      return true;
+    };
+    /* import a file (§8.1 ruling 5): into the library first, then open it. An .orbtheme is
+     * kept on the shelf as a theme (it folds a draft of its name, as any kept theme does); a
+     * design file is saved as a draft, as it came. o: {nameOf(doc), thumb(doc), confirm(name)}:
+     * the theme's name in a design, its picture, and whether to replace an entry of that name. */
+    // the opening cover goes up only after the replace question: over it, the question cannot be answered
+    api.importFile = async function (file, o) {
+      try { return await importFile(file, o || {}); } finally { opening(null); }
+    };
+    var importFile = async function (file, o) {
+      var G = root.GorbBake, bytes, text = null, theme = false;
+      if (!api.hubOrb()) { say('Not imported: ' + offHub); return false; }
+      try { bytes = new Uint8Array(await file.arrayBuffer()); } catch (e) { say('That file could not be read'); return false; }
+      if (bytes.length >= 4 && bytes[0] === 0x54 && bytes[1] === 0x52 && bytes[2] === 0x4f && bytes[3] === 0x47) {   // 'TROG': an .orbtheme
+        theme = true;
+        var rd; try { rd = G.readDesign3(bytes); } catch (e) { say('Not imported: ' + err(e)); return false; }
+        if (rd.design) text = new TextDecoder().decode(rd.design);
+      } else text = new TextDecoder().decode(bytes);
+      var doc = null;
+      if (text != null) { try { doc = JSON.parse(text); } catch (e) { doc = null; } }
+      if (!theme && !doc) { say('Not imported: that is neither an .orbtheme nor a design file'); return false; }
+      var c = doc ? api.check(doc) : { why: null, doc: null };
+      if (c.why) { say('Not imported: ' + c.why); return false; }
+      var name = c.doc && o.nameOf ? o.nameOf(c.doc) : '';
+      if (!theme && !name) { say('Not imported: that design names no theme'); return false; }
+      if (name && api.libraryEntry(name) && o.confirm && !(await o.confirm(name))) { say('Not imported: “' + name + '” is still the library’s own'); return false; }
+      opening('Importing ' + (file && file.name ? '“' + file.name + '”' : 'the file') + '…');
+      try {
+        if (theme) {
+          var kept = await hubJson('/api/library/keep' + app(), { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes });
+          name = (kept && kept.name) || name;
+        } else await saveDraft(name, doc, { thumb: o.thumb ? await o.thumb(c.doc) : null });
+      } catch (e) { say('Not imported: ' + err(e)); return false; }
+      await api.libraryRefresh();
+      if (!c.doc) { say('Imported “' + name + '” into the library. It carries no design, so it installs from the Themes tab but cannot be opened here'); return true; }
+      var why = api.apply(doc, file.name);
+      if (why) { say('Imported “' + name + '” into the library, but it did not open: ' + why); return true; }
+      api.restart();
+      say('Imported “' + name + '” into the library' + (theme ? ' as a theme' : ' as a draft'));
+      api.sayOpened('“' + name + '”');
       return true;
     };
     // ?theme=<card stem> (the hub's Edit door): the design comes through the hub, off the card or the shelf

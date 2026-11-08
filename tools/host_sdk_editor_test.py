@@ -99,6 +99,23 @@ def run(sdk):
     ck(refused(lambda: sdk.editor_region(d6, m6, "v9.9.9"), "a region holds"), "a region past the cap is refused")
     d7, m7 = app({"index.html": b"x", "orb-app.js": b"mine"})
     ck(refused(lambda: sdk.editor_region(d7, m7, "v9.9.9"), "which the SDK writes"), "an editor's own orb-app.js is refused")
+    # the hosted editor (theme-editor-kit-plan §8): Orb Manager's page, the app's module
+    hj = {"editor": 1, "host": 1, "module": ["b.js", "a.js"], "runtime": ["host@1", "theme@1"]}
+    dh, mh = app({"a.js": b"a()", "b.js": b"b()"}, ej=hj)
+    zh = zipfile.ZipFile(io.BytesIO(sdk.editor_region(dh, mh, "v9.9.9")))
+    ck([i.filename for i in zh.infolist()] == ["editor.json", "a.js", "b.js", "orb-app.js"], "a hosted editor packs its module and the stamp")
+    ck(json.loads(zh.read("editor.json"))["module"] == ["b.js", "a.js"], "and keeps the module's load order")
+    for why, ej, files, needle in (
+            ("a newer contract", dict(hj, host=2), None, "host must be 1"),
+            ("an entry beside host", dict(hj, entry="index.html"), {"a.js": b"", "b.js": b"", "index.html": b""}, "names no entry"),
+            ("no host@1", dict(hj, runtime=["theme@1"]), None, "lists host@1"),
+            ("no module", {"host": 1, "runtime": ["host@1"]}, None, "module lists"),
+            ("a module path", dict(hj, module=["sub/a.js"]), None, "module lists"),
+            ("a missing module", dict(hj, module=["c.js"]), None, "module c.js is not in"),
+            ("a page of its own", hj, {"a.js": b"", "b.js": b"", "index.html": b""}, "ships no page of its own"),
+            ("a module without host", {"entry": "index.html", "module": ["a.js"], "runtime": []}, {"a.js": b"", "index.html": b""}, "only for a hosted editor")):
+        dx, mx = app(files or {"a.js": b"", "b.js": b""}, ej=ej)
+        ck(refused(lambda: sdk.editor_region(dx, mx, "v9.9.9"), needle), "a hosted editor with %s is refused" % why)
     return fails
 
 
@@ -113,7 +130,11 @@ MUTANTS = (
     ("unknown keys pass", "if not isinstance(ej, dict) or set(ej) - EDITOR_KEYS:", "if not isinstance(ej, dict):"),
     ("no entry check", "if entry not in files:", "if 0:"),
     ("no cap", "if len(region) > orbapp.EDITOR_MAX:", "if 0:"),
-    ("no release stamp", 'json.dumps({"slug": m["slug"], "version": release}, sort_keys=True)', 'json.dumps({"slug": m["slug"]})'),
+    ("no release stamp", 'st = {"slug": m["slug"], "version": release}', 'st = {"slug": m["slug"]}'),
+    ("hosted: any contract", 'if ej["host"] != 1:', 'if 0:'),
+    ("hosted: no host@1 check", 'if "host@1" not in runtime:', 'if 0:'),
+    ("hosted: module unchecked", '            if f not in files:', '            if 0:'),
+    ("hosted: a page rides", 'if any(n.endswith((".html", ".htm")) for n in files):', 'if 0:'),
     ("an escaping editor path", 'if not isinstance(e, str) or not e or "/" in e or e.startswith("."):',
      'if not isinstance(e, str) or not e:'),
 )

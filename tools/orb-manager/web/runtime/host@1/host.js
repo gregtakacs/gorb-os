@@ -1,0 +1,417 @@
+/* host@1 — the theme editor page Orb Manager owns (theme-editor-kit-plan §8, E1, E3).
+ *
+ * The hub serves this page for an app whose editor.json says "host": 1, and loads the app's
+ * module after it. The module registers what only the app knows; everything else is here,
+ * the same for every app: the start step (start fresh, the app's templates, the library,
+ * import), the Render step (save to library, send to orb, export), the stage with its frame
+ * clock, its render modes and its view controls, Reset, the fit, history and the send. An
+ * app cannot replace any of it.
+ *
+ *   OrbHost.register({
+ *     slug, title,                   // 'radar', 'Radar': the library, the crumb, the start's title
+ *     schema, migrate,               // the design schema, and its steps {n: fn} (optional)
+ *     check(d), complete(d),         // why a design is not this app's (or null); fill its gaps (optional)
+ *     blank: {note, make()},         // Start fresh
+ *     templates: [{key, name, note, make()}],
+ *     start,                         // optional: the template the editor opens on (else the first)
+ *     startNote,                     // optional: a line for the start step's pane
+ *     picture(d, px),                // async: the design drawn small, for tiles and the library
+ *     steps: [[key, label]],         // the editing steps, between Start and Render
+ *     parts: [{id, label, icon, note(d), also: [step]}],   // the left pane, bottom to top; picking
+ *                                    // one opens its step (also: other steps it stays lit for)
+ *     eyes,                          // false: the parts cannot be hidden in the preview
+ *     fields(step, c),               // the right pane's fields; c: {d, K, upd(path, v), set(fn), base,
+ *                                    // say, getIn, view, env, ui, setUi}
+ *     views: [{key, label, kind, options, init, show(d, env), active(view), idle}],
+ *                                    // the stage's controls: kind 'seg' (default) or 'select';
+ *                                    // options [[value, label, tip]] or a function (d, env) of
+ *                                    // them; show: when the control is there; active: when it
+ *                                    // acts (idle: its tip when not). ?<key>= in the address
+ *                                    // leads, then init, then the first option
+ *     ui,                            // optional: the app's own preview state (a selection), outside history
+ *     play: {fps(d), on(view), what},   // optional: a frame clock, running while on(view); what:
+ *                                    // 'the weather', for the button's tip
+ *     layers: true,                  // optional: draw splits into 'under' and 'live', so the host
+ *                                    // offers Panel and Split (the orb's blend) beside Design
+ *     setup(c),                      // optional, once: c {say, orb, env(patch)} loads what draw needs
+ *     draw(x, d, c),                 // one frame on the 466 px canvas; c {view, env, hidden, memo,
+ *                                    // ui, step, t, dt, layer ('all'|'under'|'live'), part, redraw, say}
+ *     pointer: {down(pt, c), move(pt, c), up(c), cursor(c)},   // optional: the glass's pointer, in glass px
+ *     bake(d, {design}),             // async: {bytes}, the design baked to an .orbtheme (a throw says why not)
+ *     fit(d, view),                  // {rows, cap, want, pace}: OrbTheme.fit's question
+ *   })
+ *
+ * A design is the app's object, and it carries its theme's `name`; the host stamps `base`,
+ * the start it came from. c.part(name, key, make, {fresh}) keeps a drawn part until its key
+ * changes: make() may answer a promise, and the frame is drawn again when it lands; until
+ * then the last one stands, or nothing with fresh (for a part others are keyed on). Plain
+ * React.createElement, no JSX. */
+(function (root) {
+  'use strict';
+  var R = root.React, h = R.createElement, S = root.OrbStudio, T = root.OrbTheme;
+  var H = root.OrbHost = root.OrbHost || {};
+  var G = 466;
+
+  var list = function (a) { return Array.isArray(a) ? a : []; };
+  var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
+  var getIn = function (o, path) { return path.split('.').reduce(function (x, k) { return x == null ? x : x[k]; }, o); };
+  var setIn = function (d, path, v) {
+    var n = clone(d), o = n, ks = path.split('.');
+    for (var i = 0; i < ks.length - 1; i++) { if (o[ks[i]] == null) o[ks[i]] = {}; o = o[ks[i]]; }
+    o[ks[ks.length - 1]] = v;
+    return n;
+  };
+  var err = function (e) { return e && e.message ? e.message : String(e); };
+  function q(name) { try { return new URLSearchParams(root.location.search).get(name); } catch (e) { return null; } }
+  H.getIn = getIn; H.setIn = setIn;
+
+  var tmpl = function (A, k) { return list(A.templates).filter(function (x) { return x.key === k; })[0] || null; };
+  // a start made into a design: the host stamps the start's key as its base
+  function made(A, key) {
+    var t = key === 'blank' ? null : tmpl(A, key);
+    var d = (t || A.blank).make(); d.base = t ? key : 'blank';
+    return d;
+  }
+  // what a colour row offers back as its preset, and what Reset returns to: the design's start
+  function baseOf(A, d) { return made(A, tmpl(A, d.base) ? d.base : 'blank'); }
+  // a view's options, fixed or of the design and what setup loaded
+  var optsOf = function (w, d, env) { return typeof w.options === 'function' ? list(w.options(d, env || {})) : list(w.options); };
+  // the views' first options (or the address's): what the stage shows until a control is pressed
+  H.viewInit = function (A, d) {
+    var v = {};
+    list(A.views).forEach(function (w) {
+      var o = optsOf(w, d, {}), at = q(w.key), hit = o.filter(function (x) { return String(x[0]) === at; })[0];
+      v[w.key] = hit ? hit[0] : w.init != null ? w.init : o.length ? o[0][0] : null;
+    });
+    return v;
+  };
+
+  /* ---- the confirm a replacing import asks: {title, body, yes, on, cancel} ---- */
+  function Confirm(p) {
+    if (!p.open) return null;
+    return h('div', { className: 'st-modal', onClick: p.cancel },
+      h('div', { onClick: function (e) { e.stopPropagation(); } },
+        h('div', { className: 'st-mtitle' }, p.title),
+        h('div', { className: 'st-mbody' }, p.body),
+        h('div', { className: 'st-mfoot' },
+          h('button', { onClick: p.cancel }, 'Cancel'),
+          h('button', { className: 'ui-primary', onClick: p.on }, p.yes))));
+  }
+
+  function Editor(p) {
+    var A = p.app;
+    var u = function (v) { return R.useState(v); };
+    var STEPS = [['start', 'Start']].concat(list(A.steps)).concat([['render', 'Render']]);
+    var first = list(A.steps).length ? A.steps[0][0] : 'render';
+    var dS = u(function () {
+      var k = q('preset');
+      return made(A, k === 'blank' || tmpl(A, k) ? k : A.start && tmpl(A, A.start) ? A.start : (list(A.templates)[0] || { key: 'blank' }).key);
+    }), d = dS[0], setD = dS[1];
+    var stepS = u(function () { var s = q('step'); return STEPS.some(function (x) { return x[0] === s; }) ? s : 'start'; }), step = stepS[0], setStep = stepS[1];
+    var stS = u(''), status = stS[0], setStatus = stS[1];
+    var viewS = u(function () { return H.viewInit(A, d); }), view = viewS[0], setView = viewS[1];
+    var hidS = u({}), hidden = hidS[0], setHidden = hidS[1];
+    var envS = u({}), env = envS[0], setEnv = envS[1];
+    var uiS = u(function () { return Object.assign({}, A.ui || {}); }), ui = uiS[0], setUiS = uiS[1];
+    var playS = u(true), playing = playS[0], setPlaying = playS[1];
+    var rendS = u(function () { var r = q('render'); return A.layers && T.RENDERS.some(function (x) { return x[0] === r; }) ? r : 'design'; }), rend = rendS[0], setRend = rendS[1];
+    var wipeS = u(233), wipe = wipeS[0], setWipe = wipeS[1];
+    var armS = u(0), resetArm = armS[0] && Date.now() - armS[0] < 4000, setArm = armS[1];
+    var sendS = u(null), sending = sendS[0], setSending = sendS[1];
+    var dupS = u(null), dup = dupS[0], setDup = dupS[1];
+    var askS = u(null), ask = askS[0], setAsk = askS[1];
+    var tickS = u(0), setTick = tickS[1];
+    var delS = u(null), mineDel = delS[0], setMineDel = delS[1];
+    var drafts = R.useRef({}).current, memo = R.useRef({}).current, thumbs = R.useRef({}).current, parts = R.useRef({}).current;
+    var clock = R.useRef({ t: 0, dt: 0 }).current;
+    var canvasRef = R.useRef(null), stateRef = R.useRef({}), live = R.useRef({});
+    var say = R.useCallback(function (s) { setStatus(s); }, []);
+    var redraw = R.useCallback(function () { setTick(function (n) { return n + 1; }); }, []);
+    var setUi = R.useCallback(function (x) { setUiS(function (o) { return Object.assign({}, o, typeof x === 'function' ? x(o) : x); }); }, []);
+    stateRef.current = { d: d, status: status };
+    live.current = { d: d, view: view, env: env, hidden: hidden, ui: ui, step: step, rend: rend, wipe: wipe };
+
+    var scrRef = R.useRef(null);
+    var vw = R.useMemo(function () {
+      return S.viewer({ get: function () { return scrRef.current; }, set: function (x) { setScr(function (o) { return Object.assign({}, o, x); }); }, say: say });
+    }, []);
+    var scrS = u(function () { var v = q('view'); return vw.init(T.VIEWS.some(function (x) { return x[0] === v; }) ? v : 'fit'); }), setScr = scrS[1];
+    scrRef.current = scrS[0];
+
+    var complete = function (x) { return A.complete ? A.complete(x) : x; };
+    var ses = R.useMemo(function () {
+      return T.session({
+        slug: A.slug, keys: function () { return ['d']; }, state: function () { return stateRef.current; },
+        set: redraw, ready: function () { return true; }, say: say,
+        restore: function (snap, text) { setD(snap.d); say(text); },
+        schema: function () { return A.schema; }, migrate: function () { return A.migrate || {}; },
+        content: async function () { return { design: stateRef.current.d }; },
+        apply: function (doc) {
+          var why = !doc.design ? 'that design carries no theme' : A.check(doc.design);
+          if (!why) { setD(complete(doc.design)); setStep(function (s) { return s === 'start' ? first : s; }); }
+          return why;
+        },
+        bake: async function () { var r = await bakeNow(); return r ? r.bytes : null; },
+      });
+    }, []);
+    var sender = R.useMemo(function () {
+      return T.sender({ say: say, ask: function (x) { setDup(x); }, sending: function (x) { setSending(x); } });
+    }, []);
+    R.useEffect(function () { ses.track(); }, [d]);
+    R.useEffect(function () { ses.boot().catch(function () {}).then(function () { return ses.openTheme(); }).catch(function () {}); }, []);
+    R.useEffect(function () {
+      if (A.setup) A.setup({ say: say, orb: ses.hubOrb(), env: function (x) { setEnv(function (o) { return Object.assign({}, o, x); }); } });
+    }, []);
+
+    /* ---- the stage: the app draws a frame; the host keeps its parts, its clock and the blend ---- */
+    // a drawn part, kept until its key changes; a promise draws the frame again when it lands
+    var part = function (name, key, make, o) {
+      var e = parts[name];
+      if (e && e.key === key) return e.value;
+      // fresh: nothing until this key's own lands (a part another part is keyed by)
+      e = parts[name] = { key: key, value: e && !(o && o.fresh) ? e.value : null };
+      var v;
+      try { v = make(); } catch (x) { say('The preview could not draw: ' + err(x)); return e.value; }
+      if (v && typeof v.then === 'function') {
+        v.then(function (r) { if (parts[name] === e) { e.value = r; redraw(); } }, function (x) { say('The preview could not draw: ' + err(x)); });
+        return e.value;               // the last one stands until the new one lands
+      }
+      e.value = v;
+      return v;
+    };
+    var ctxOf = function (L, layer) {
+      return { view: L.view, env: L.env, hidden: L.hidden, ui: L.ui, step: L.step, memo: memo, part: part, t: clock.t, dt: clock.dt,
+        layer: layer, redraw: redraw, say: say, setUi: setUi };
+    };
+    function drawNow() {
+      var c = canvasRef.current; if (!c) return;
+      var L = live.current, x = c.getContext('2d');
+      try {
+        A.draw(x, L.d, ctxOf(L, 'all'));
+        if (!A.layers || L.rend === 'design') return;
+        // Panel and Split: the still layers as the bake stores them, the moving ones blended
+        // over them the way the orb blends them (theme@1/preview's panel mirror)
+        var off = function (layer) {
+          var oc = document.createElement('canvas'); oc.width = oc.height = G;
+          var ox = oc.getContext('2d'); A.draw(ox, L.d, ctxOf(L, layer));
+          return ox.getImageData(0, 0, G, G).data;
+        };
+        T.panel(x, { under: off('under'), live: [{ px: off('live'), still: false }] }, { mode: L.rend, wipe: L.wipe });
+      } catch (e) { say('The preview could not be drawn: ' + err(e)); }
+    }
+    R.useEffect(function () { drawNow(); });
+    var playOn = !!(A.play && (!A.play.on || A.play.on(view)));
+    var fps = A.play ? Math.max(1, +(typeof A.play.fps === 'function' ? A.play.fps(d) : A.play.fps) || 30) : 0;
+    R.useEffect(function () {
+      if (!playOn || !playing) { clock.dt = 0; return; }
+      // dt is a tick's alone: a frame drawn for any other reason moves nothing
+      var tk = T.ticker(fps, false, function () { clock.dt = 1000 / fps; clock.t += clock.dt; drawNow(); clock.dt = 0; });
+      return function () { tk.stop(); clock.dt = 0; };
+    }, [playOn, playing, fps]);
+
+    // the glass's pointer, in glass px
+    var ptOf = function (e) { var c = canvasRef.current, b = c.getBoundingClientRect(); return [(e.clientX - b.left) * G / b.width, (e.clientY - b.top) * G / b.height]; };
+    var pc = function () { var L = live.current; return { d: L.d, view: L.view, env: L.env, ui: L.ui, step: L.step, set: setD, setUi: setUi, say: say }; };
+    var P = A.pointer || null;
+    var onDown = P && P.down ? function (e) {
+      if (P.down(ptOf(e), pc())) { try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) { /* headless */ } }
+    } : undefined;
+    var onMove = P && P.move ? function (e) { P.move(ptOf(e), pc()); } : undefined;
+    var onUp = P && P.up ? function () { P.up(pc()); } : undefined;
+
+    var upd = function (path, v) { setD(function (old) { return setIn(old, path, v); }); };
+    var base = R.useMemo(function () { return baseOf(A, d); }, [d.base]);
+
+    /* ---- the bake, the send, the export ---- */
+    async function bakeNow() {
+      var dd = stateRef.current.d;
+      try {
+        say('Baking “' + dd.name + '”…');
+        var doc = new TextEncoder().encode(JSON.stringify(await ses.doc(true)));
+        var r = await A.bake(dd, { design: doc });
+        say('Baked “' + dd.name + '”: ' + Math.round(r.bytes.length / 1024) + ' KB');
+        return r;
+      } catch (e) { say('Not baked: ' + err(e)); return null; }
+    }
+    async function stemOf(nm) {
+      try {
+        var dg = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(A.slug + '/' + nm)));
+        return root.GorbBake.cardStem(A.slug, nm, dg);
+      } catch (e) { return null; }
+    }
+    async function thumbOf(dd) {
+      try {
+        var im = await A.picture(dd, 192), c = document.createElement('canvas'); c.width = c.height = 96;
+        var x = c.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, 96, 96); x.drawImage(im, 0, 0, 96, 96);
+        return c.toDataURL('image/jpeg', 0.82);
+      } catch (e) { return null; }
+    }
+    function send() {
+      var nm = d.name;
+      sender.send(nm, async function () {
+        // the library keeps it first: a send the orb refuses still leaves the design on the hub
+        await ses.saveDraft({ name: nm, doc: await ses.doc(true), thumb: await thumbOf(stateRef.current.d) }, true);
+        var r = await bakeNow(); if (!r || sender.cancelled()) return;
+        await sender.post(r.bytes, { name: nm, stem: await stemOf(nm), summary: Math.round(r.bytes.length / 1024) + ' KB' });
+        ses.libraryRefresh();
+      });
+    }
+    async function exportTheme() {
+      var r = await bakeNow(); if (!r) return;
+      var nm = ((await stemOf(d.name)) || A.slug + '-theme') + '.orbtheme';
+      var w = await T.saveFile(new Blob([r.bytes], { type: 'application/octet-stream' }), nm);
+      say(w === 'saved' ? 'Exported “' + d.name + '” as ' + nm : w === 'downloaded' ? 'Exported “' + d.name + '” to your Downloads folder as ' + nm : 'Not exported');
+    }
+    async function saveLib() { await ses.saveDraft({ name: d.name, doc: await ses.doc(true), thumb: await thumbOf(d) }); }
+    // import: into the library first, then open; a name already there asks before it is replaced
+    function importFile(fl) {
+      ses.importFile(fl, {
+        nameOf: function (doc) { return doc && doc.design && typeof doc.design.name === 'string' ? doc.design.name : ''; },
+        thumb: function (doc) { return thumbOf(complete(doc.design)); },
+        confirm: function (nm) {
+          return new Promise(function (res) {
+            var done = function (v) { setAsk(null); res(v); };
+            setAsk({ title: '“' + nm + '” is already in the library', yes: 'Replace it',
+              body: 'Importing replaces the library’s “' + nm + '” with this file, its unsent changes included. No orb is touched.',
+              on: function () { done(true); }, cancel: function () { done(false); } });
+          });
+        },
+      });
+    }
+    // Reset: a second press within 4 s puts the design back to its start, its name kept, undoable
+    var baseName = d.base === 'blank' || !tmpl(A, d.base) ? 'Blank' : tmpl(A, d.base).name;
+    function reset() {
+      if (!resetArm) { setArm(Date.now()); say('Press Reset again to put “' + d.name + '” back to ' + baseName); return; }
+      setArm(0);
+      setD(function (o) { var n = complete(baseOf(A, o)); n.name = o.name; return n; });
+      say('Reset to ' + baseName + ' — Undo brings your version back');
+    }
+
+    if (!ses.hubOrb()) return h('div', { className: 'st-sheet' }, h('div', { className: 'st-sheet-in' },
+      h('h2', null, A.title + ' theme editor'), h('div', { className: 'ui-mut' }, 'Open this editor from Orb Manager: its Themes tab has an Edit for each app.')));
+
+    var verdict = T.fit(A.fit(d, view));
+
+    /* ---- the right pane: the step's fields, the start's hint, or Render ---- */
+    var K = S.fieldKit({ drafts: drafts, refresh: redraw, scope: function () { return step; } });
+    var right;
+    if (step === 'render') right = h('div', { className: 'hs-list' }, h(S.RenderPanel, {
+      badge: S.badgeProps(verdict, verdict.note),
+      save: { on: saveLib, note: 'keep “' + d.name + '” in the library', tip: 'Keep this design in the hub library under its name, without baking or sending it. Under a theme’s name it is that theme’s unsent changes until Send to orb bakes them in.' },
+      send: { on: send, note: 'save “' + d.name + '”, bake it and store it on the orb', tip: 'Save it to the hub library, bake it, then send it to the orb this editor was opened for.' },
+      downloads: [
+        { label: 'Export .orbtheme', note: 'bake it and save the file where you choose', on: exportTheme, title: 'The same .orbtheme Send to orb bakes, saved as a file: ready for any orb’s Themes tab, with its design inside so the editor can open it again.' },
+        { label: 'Check the bake', note: 'bake now and check its size', on: bakeNow },
+      ],
+    }));
+    else if (step === 'start') right = h('div', { className: 'hs-list' }, h('div', { className: 'ui-mut' },
+      'Start fresh, pick a template, open one from the library or import a file, then Continue. The steps after it: ' +
+      list(A.steps).map(function (s) { return s[1]; }).join(', ') + ', and Render to save, send or export it.' + (A.startNote ? ' ' + A.startNote : '')));
+    else {
+      var fields = [];
+      try { fields = A.fields(step, { d: d, K: K, upd: upd, set: setD, base: base, say: say, getIn: getIn, view: view, env: env, ui: ui, setUi: setUi }) || []; }
+      catch (e) { fields = [K.Nt('', 'This step could not be drawn: ' + err(e))]; }
+      right = h('div', { className: 'hs-list' }, h(S.Fields, { fields: fields }));
+    }
+
+    /* ---- the left pane: the app's parts ---- */
+    var items = list(A.parts).map(function (x) { return { id: x.id, band: 'parts', label: x.label, movable: false }; });
+    var partOf = function (id) { return list(A.parts).filter(function (x) { return x.id === id; })[0] || {}; };
+    var lit = (list(A.parts).filter(function (x) { return x.id === step || list(x.also).indexOf(step) >= 0; })[0] || {}).id || step;
+    var eyes = A.eyes !== false;
+    var left = items.length ? h(S.Layers, { title: 'Parts', rows: S.layerRows(items, {
+      sel: lit, heads: { parts: 'Bottom to top' },
+      icon: function (it) { return partOf(it.id).icon || ''; },
+      note: function (it) { var n = partOf(it.id).note; try { return n ? n(d) : ''; } catch (e) { return ''; } },
+      hidden: function (it) { return eyes && !!hidden[it.id]; }, move: function () { return { ok: false, reason: 'these parts keep their order' }; },
+      onMove: function () {}, pick: function (it) { if (STEPS.some(function (s) { return s[0] === it.id; })) setStep(it.id); },
+      eyeTip: function (it) { return !eyes ? '' : hidden[it.id] ? 'Show it in the preview' : 'Hide it in the preview (the bake keeps it)'; },
+      toggleEye: function (it) { if (!eyes) return; var n = Object.assign({}, hidden); n[it.id] = !n[it.id]; setHidden(n); },
+      drag: { start: function () {}, over: function () {}, drop: function () {}, end: function () {} },
+    }) }) : null;
+
+    /* ---- the start sheet: Start fresh, the templates, the library, import ---- */
+    var drawThumb = function (k, c) {
+      if (!c) return;
+      var paint = function (im) { var x = c.getContext('2d'); x.clearRect(0, 0, c.width, c.height); x.drawImage(im, 0, 0, c.width, c.height); };
+      if (thumbs[k] && thumbs[k].im) { paint(thumbs[k].im); return; }
+      if (!thumbs[k]) thumbs[k] = { p: A.picture(made(A, k), 192).then(function (im) { thumbs[k].im = im; return im; }) };
+      thumbs[k].p.then(paint, function () { /* the tile stays dark */ });
+    };
+    var pick = function (k, what) { setD(made(A, k)); ses.restart(); say('Starting from ' + what + ': Continue when you are ready'); };
+    var sheet = step === 'start' ? h(S.StartSheet, {
+      title: 'Start a ' + A.title.toLowerCase() + ' theme',
+      scratch: { label: 'Start fresh', short: A.blank.note || '', cls: d.base === 'blank' ? 'on' : '',
+        tip: 'Every part present, nothing preset: a blank slate to build your own look on',
+        on: function () { pick('blank', 'a blank theme'); } },
+      tiles: list(A.templates).map(function (t) {
+        return { key: t.key, name: t.name, short: t.note, tip: 'Start from ' + t.name + ': ' + t.note,
+          cls: d.base === t.key ? 'on' : '', draw: function (c) { drawThumb(t.key, c); }, on: function () { pick(t.key, t.name); } };
+      }),
+      library: {
+        rows: S.libraryRows(ses.library(), { version: ses.version(), armed: mineDel, arm: setMineDel,
+          meta: function (m) { var t = m.design && tmpl(A, m.design.base); return t ? t.name + ' · ' : ''; },
+          open: function (nm) { ses.openEntry(nm); }, forget: function (nm, what) { ses.forgetEntry(nm, what); } }),
+        empty: 'Nothing in the library yet. Save to library on the Render step keeps a design here; Send to orb bakes it into a theme under the same name; Import a file adds one.' },
+      importFile: { accept: '.orbtheme,.orbdesign,.json', on: function (e) { var fl = e.target.files[0]; e.target.value = ''; if (fl) importFile(fl); } },
+      foot: [{ label: 'Continue with ' + d.name, primary: true, on: function () { setStep(first); } }],
+    }) : null;
+
+    /* ---- the stage's controls: the app's views, as it declares them ---- */
+    var g = vw.glass(), tool = vw.tool();
+    var pickView = function (k, v) { setView(function (o) { var n = Object.assign({}, o); n[k] = v; return n; }); };
+    var viewCtl = list(A.views).map(function (w) {
+      if (w.show && !w.show(d, env)) return null;
+      var opts = optsOf(w, d, env), on = !w.active || w.active(view);
+      var cur = opts.some(function (o) { return o[0] === view[w.key]; }) ? view[w.key] : opts.length ? opts[0][0] : null;
+      if (w.kind === 'select') return h('select', { key: w.key, value: String(cur), disabled: !on, style: { width: '12em', flex: '0 0 auto', opacity: on ? 1 : 0.45 },
+        title: on ? (w.label || '') : (w.idle || ''), onChange: function (e) { var o = opts.filter(function (x) { return String(x[0]) === e.target.value; })[0]; if (o) pickView(w.key, o[0]); } },
+        opts.map(function (o) { return h('option', { key: String(o[0]), value: String(o[0]) }, o[1]); }));
+      return h(S.Seg, { key: w.key, opts: opts.map(function (o) {
+        return { label: o[1], tip: o[2] || (w.label ? w.label + ': ' + o[1] : o[1]), cls: cur === o[0] ? 'on' : '', pick: function () { pickView(w.key, o[0]); } };
+      }) });
+    });
+    var what = (A.play && A.play.what) || 'the preview';
+    var cursor = P && P.cursor ? P.cursor(pc()) : undefined;
+
+    return h(S.Frame, null,
+      h(S.TopBar, {
+        back: function () { try { root.parent.postMessage({ type: 'theme.close' }, '*'); } catch (e) { /* not framed */ } },
+        backTip: 'Back to the Themes page', crumb: A.title,
+        name: { value: d.name, placeholder: 'Theme name', title: 'The theme’s name on the orb', onChange: function (e) { upd('name', e.target.value); } },
+        steps: STEPS.map(function (s) { return { label: s[1], cls: s[0] === step ? 'on' : '', pick: function () { setStep(s[0]); } }; }),
+        undo: { on: function () { ses.undo(); }, tip: 'Undo', op: ses.undoStack.length ? 1 : 0.35 },
+        redo: { on: function () { ses.redo(); }, tip: 'Redo', op: ses.redoStack.length ? 1 : 0.35 },
+        extra: step !== 'start' ? [{ label: resetArm ? 'Press again to reset' : 'Reset to ' + baseName, title: 'Put this theme back to the start it came from, its name kept; Undo brings your version back', on: reset }] : [],
+        fit: S.fitProps(verdict, verdict.note), primary: { label: 'Send to orb', on: send, title: 'Bake and send this theme' },
+      }),
+      h(S.Pane, { side: 'left' }, left),
+      h(S.Stage, null,
+        h(S.Glass, Object.assign({ status: status }, g),
+          h('canvas', { ref: canvasRef, width: G, height: G, onPointerDown: onDown, onPointerMove: onMove, onPointerUp: onUp, onPointerCancel: onUp,
+            style: { width: g.size + 'px', height: g.size + 'px', cursor: cursor, touchAction: P ? 'none' : undefined } })),
+        sheet,
+        h(S.ScreenPanel, vw.panel()),
+        h(S.Toolbar, {
+          // always there once an app plays, so the controls never move under the pointer
+          play: A.play ? { icon: playing && playOn ? '❚❚' : '▶', label: playOn ? (playing ? 'Pause ' : 'Play ') + what : (A.play.idle || what + ' does not move in this view'),
+            on: function () { if (playOn) setPlaying(!playing); } } : null,
+          view: tool.view, zoom: tool.zoom, screen: vw.toolScreen(),
+          render: A.layers ? T.RENDERS.map(function (r) { return { label: r[1], tip: r[2], cls: r[0] === rend ? 'on' : '', pick: function () { setRend(r[0]); } }; }) : null,
+          wipe: A.layers && rend === 'compare' ? { value: wipe, on: function (e) { setWipe(+e.target.value); } } : null,
+        }, viewCtl)),
+      h(S.Pane, { side: 'right' }, right),
+      h(S.OpeningModal, { line: ses.opening }),
+      h(S.SendModal, S.sendProps(sending, status, function () { sender.cancel(); })),
+      h(S.DupModal, S.dupProps(dup, function () { sender.replace(); }, function () { sender.dismiss(); })),
+      h(Confirm, Object.assign({ open: !!ask }, ask || {})));
+  }
+
+  H.Editor = Editor;
+  // the app's module calls this once; the page mounts the editor on it
+  H.register = function (app) {
+    H.app = app;
+    var el = typeof document !== 'undefined' && document.getElementById('root');
+    if (el && !H.mounted) { H.mounted = true; root.ReactDOM.createRoot(el).render(h(Editor, { app: app })); }
+  };
+})(typeof window !== 'undefined' ? window : globalThis);

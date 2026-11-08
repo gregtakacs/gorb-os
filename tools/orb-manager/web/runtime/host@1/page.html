@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Flights theme editor</title>
-<!-- The flight tracker's theme editor (flight-tracker-design §12). The OS runtime the hub
-     serves (editor.json lists it); the app's own files sit beside this page. -->
+<title>{{.Title}}</title>
+<!-- The hosted theme editor (theme-editor-kit-plan §8): Orb Manager's page, served at the
+     app's /editor/<ip>/<slug>/ so the app's own files load beside it. The hub writes the
+     runtime the app's editor.json lists and the app's module into this template. -->
 <link rel="stylesheet" href="/runtime/ui@1/ui.css">
 <link rel="stylesheet" href="/runtime/studio@1/studio.css">
 <link rel="stylesheet" href="/runtime/fonts@1/fonts.css">
 <style>
   html, body, #root { height: 100%; margin: 0; }
   body { background: var(--bg); color: var(--fg); font: 13px/1.45 var(--sans); }
-  .fl-list { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; }
-  .fl-sec { padding: 10px 10px 2px; color: var(--mut); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+  .hs-list { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; }
 </style>
 </head>
 <body>
@@ -22,15 +22,13 @@
 <script src="/runtime/react@18.3.1/react.production.min.js"></script>
 <script src="/runtime/react@18.3.1/react-dom.production.min.js"></script>
 <script src="/runtime/baker@1/orbtheme-baker.js"></script>
-<script src="/runtime/theme@1/send.js"></script>
+{{range .Extras}}<script src="{{.}}"></script>
+{{end}}<script src="/runtime/theme@1/send.js"></script>
 <script src="/runtime/theme@1/session.js"></script>
 <script src="/runtime/theme@1/preview.js"></script>
 <script src="/runtime/theme@1/measure.js"></script>
 <script src="/runtime/studio@1/studio.js"></script>
-<script src="/runtime/maps@1/orbmap.js"></script>
-<script src="flights-art.js"></script>
-<script src="flights-map.js"></script>
-<script src="flights-bake.js"></script>
-<script src="flights-editor.js"></script>
-</body>
+<script src="/runtime/host@1/host.js"></script>
+{{range .Modules}}<script src="{{.}}"></script>
+{{end}}</body>
 </html>

@@ -251,6 +251,66 @@ const edit = (app, p) => { app.set(p); app.ses.track(); };
     ok(!(await mk().ses.openTheme()), 'and no ?theme= is no open');
   }
 
+  // ---- import (theme-editor-kit-plan §8.1 ruling 5): into the library first, then open
+  {
+    const G = require(path.join(__dirname, '..', 'baker@1', 'orbtheme-baker.js'));
+    window.GorbBake = G;
+    location.pathname = ON_HUB; location.search = '';
+    const enc = new TextEncoder();
+    const fileOf = (bytes, name) => ({ name, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) });
+    const dsn = (name, color, app) => ({ format: 'wc-design', schema: 1, app: app || 'tint', appVersion: 'v1.3.0', color, size: 7, name });
+    const bake = (name, design) => G.writeBundle3({ name, design: design ? enc.encode(JSON.stringify(design)) : undefined,
+      sections: [{ slug: 'tint', elements: [], scalars: {}, sprites: [], art: new Uint8Array(16) }] }).bytes;
+    let asks = [];
+    // the question is asked with no opening cover over it (a cover would take its clicks)
+    let coveredAsk = null;
+    const o = (yes) => ({ nameOf: (d) => d.name, thumb: async (d) => 'data:image/jpeg;base64,' + d.color, confirm: async (nm) => { asks.push(nm); coveredAsk = a.ses.opening || c0.ses.opening; return yes; } });
+    const keeps = () => fh.calls.filter((u) => /\/api\/library\/keep/.test(u)).length;
+    const a = mk(); await a.ses.boot();
+    let c0 = a;
+    const k0 = keeps();
+    ok(await a.ses.importFile(fileOf(bake('Coral', dsn('Coral', 'coral')), 'coral.orbtheme'), o(true)), 'an .orbtheme imports');
+    ok(keeps() === k0 + 1 && fh.themes.get('tint').has('Coral'), 'it is kept on the hub shelf, as a theme', String(keeps() - k0));
+    ok(a.ses.libraryEntry('Coral') && a.ses.libraryEntry('Coral').state === 'theme', 'and is in the library before it opens');
+    ok(a.state.color === 'coral' && /Imported “Coral” into the library as a theme/.test(a.state.status), 'then it opens', a.state.status);
+    ok(!asks.length, 'a new name asks nothing');
+    const b = mk(); await b.ses.boot();
+    ok(await b.ses.importFile(fileOf(enc.encode(JSON.stringify(dsn('Kelp', 'green'))), 'Kelp.orbdesign'), o(true)) &&
+      fh.drafts.get('tint').has('Kelp') && b.ses.libraryEntry('Kelp').state === 'draft', 'a design file imports as a draft');
+    ok(b.ses.libraryEntry('Kelp').thumb === 'data:image/jpeg;base64,green' && b.state.color === 'green', 'with its picture, and opens', b.state.status);
+    // a name already in the library asks; a no leaves the library's own as it was
+    asks = [];
+    const c = mk(); await c.ses.boot(); c.set({ color: 'grey' }); c0 = c;
+    ok(!(await c.ses.importFile(fileOf(bake('Coral', dsn('Coral', 'red')), 'coral2.orbtheme'), o(false))), 'a refused replace imports nothing');
+    ok(asks[0] === 'Coral' && fh.themes.get('tint').get('Coral').design.color === 'coral' && c.state.color === 'grey', 'it asked, kept the library’s own and opened nothing', c.state.status);
+    ok(/is still the library’s own/.test(c.state.status), 'and says so', c.state.status);
+    ok(coveredAsk === null, 'and asked with no opening cover over the question', String(coveredAsk));
+    ok(await c.ses.importFile(fileOf(bake('Coral', dsn('Coral', 'red')), 'coral2.orbtheme'), o(true)) && fh.themes.get('tint').get('Coral').design.color === 'red', 'a yes replaces it');
+    // refusals come before anything is kept
+    const k1 = keeps();
+    ok(!(await c.ses.importFile(fileOf(bake('Alien', dsn('Alien', 'blue', 'clock')), 'alien.orbtheme'), o(true))) && keeps() === k1 &&
+      /Not imported: that design is the clock app’s/.test(c.state.status), 'another app’s theme is refused, and not kept', c.state.status);
+    ok(!(await c.ses.importFile(fileOf(enc.encode('nope'), 'x.txt'), o(true))) && /neither an \.orbtheme nor a design file/.test(c.state.status), 'a file that is neither is refused');
+    ok(!(await c.ses.importFile(fileOf(enc.encode(JSON.stringify(dsn('', 'red'))), 'anon.orbdesign'), o(true))) && /names no theme/.test(c.state.status), 'a design with no name is refused', c.state.status);
+    // a theme with no design is kept (it installs) but does not open
+    const d = mk(); await d.ses.boot(); d.set({ color: 'grey' });
+    ok(await d.ses.importFile(fileOf(bake('Bare'), 'bare.orbtheme'), o(true)) && fh.themes.get('tint').has('Bare') && d.state.color === 'grey' &&
+      /carries no design, so it installs from the Themes tab but cannot be opened here/.test(d.state.status), 'a theme with no design is kept, not opened', d.state.status);
+    location.pathname = '/';
+    ok(!(await mk().ses.importFile(fileOf(bake('Off', dsn('Off', 'red')), 'off.orbtheme'), o(true))), 'off the hub nothing imports');
+    // the export's Save dialog, and the download where there is none
+    const blob = { size: 3 }, wrote = [];
+    let picked = null;
+    window.showSaveFilePicker = async (x) => { picked = x; return { createWritable: async () => ({ write: async (b) => wrote.push(b), close: async () => {} }) }; };
+    ok(await OrbTheme.saveFile(blob, 'reef.orbtheme') === 'saved' && picked.suggestedName === 'reef.orbtheme' && wrote[0] === blob, 'export asks where to save, and writes there');
+    window.showSaveFilePicker = async () => { const e = new Error('closed'); e.name = 'AbortError'; throw e; };
+    ok(await OrbTheme.saveFile(blob, 'reef.orbtheme') === 'cancelled', 'closing the dialog saves nothing');
+    const dl = []; const was = OrbTheme.download; OrbTheme.download = (b, n) => dl.push(n);
+    delete window.showSaveFilePicker;
+    ok(await OrbTheme.saveFile(blob, 'reef.orbtheme') === 'downloaded' && dl[0] === 'reef.orbtheme', 'a browser with no dialog downloads it');
+    OrbTheme.download = was;
+  }
+
   console.log(fails ? 'RESULT: FAIL — ' + fails + ' of ' + checked + ' checks' : 'all green (' + checked + ' checks)');
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.log('FAIL threw: ' + (e && e.stack || e)); process.exit(1); });

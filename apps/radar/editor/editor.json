@@ -1,1 +1,1 @@
-{"baker": 3, "editor": 1, "entry": "index.html", "runtime": ["baker@1", "fonts@1", "maps@1", "react@18.3.1", "studio@1", "theme@1", "ui@1"]}
+{"baker": 3, "editor": 1, "host": 1, "module": ["radar-bake.js", "radar-editor.js"], "runtime": ["baker@1", "fonts@1", "host@1", "maps@1", "react@18.3.1", "studio@1", "theme@1", "ui@1"]}

@@ -1,6 +1,7 @@
 # The theme editor kit: what every app's editor gets from the OS
 
-Status: **RULED 2026-11-03 (owner, §0.1). Nothing is built.** Written at `7cc1221` (gorb-os-2 `main`).
+Status: **RULED 2026-11-03 (owner, §0.1). K1–K10 and H1 built (§7). §8, the hosted editor, ruled
+2026-11-08 and not built.** Written at `7cc1221` (gorb-os-2 `main`).
 The owner asked for it while the flight tracker's theme is being drawn in the sibling
 clone (`flight-tracker-design.md` §11). The clock is the first consumer, flights is the
 second, and flights is the proof.
@@ -65,9 +66,10 @@ vocabulary on the app's side. Flights cannot call a clock bake (§4, K5).
    what may move); the field builders (sliders, chips, colours, art slots, grouped
    sections) driven by a field list the app declares; the Render step (fit, estimate,
    send, downloads). The app fills the stage and declares its steps, fields and rows.
-3. **An editor's own way.** An editor that lists only `baker@1` (or nothing) in
-   `editor.json` keeps full control, as it does today. Each layer can be used without the
-   one above it: services without the shell, the shell with the app's own panes.
+3. **An editor's own way.** ~~An editor that lists only `baker@1` (or nothing) in
+   `editor.json` keeps full control, as it does today.~~ Retired by the owner 2026-11-08
+   (§8.1 ruling 1): Orb Manager owns the editor page, and an app supplies its content to
+   it. An app cannot replace the start step, the Render step, the stage or the readouts.
 
 ## 3. The services, as the clock does them today
 
@@ -161,7 +163,8 @@ in parallel with any of them.
 ## 6. Open decisions
 
 None open. The three raised here (how much the shell owns, where calibration lives, the
-runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3).
+runtime ids) were ruled on 2026-11-03 (§0.1 rulings 1–3). §8's preview question was ruled 2026-11-08
+(§8.4).
 
 ## 7. As built
 
@@ -669,4 +672,219 @@ the Themes tab's shelf rows) that each showed half of what the hub holds. Agreed
   `?entry=Skeleton` with "made with clock v1.2.14; saving or sending it updates it to v1.2.16". A
   send that folds a draft was not benched on the card (another store and reboot of Gold); the Go
   and session suites drive the fold.
+
+
+## 8. The hosted editor: Orb Manager owns the page (ruled 2026-11-08)
+
+Owner, 2026-11-08: theme and file management belongs to Orb Manager, not to the apps. An
+editor opens on four choices: start fresh, start from one of the app's templates, open a
+library entry, or import a file. It ends on the Render step with three: save to library,
+send to orb, export the `.orbtheme`. The preview engine is Orb Manager's in its entirety,
+not only its sizing. An app asks for the views it needs (time, weather, place, which pane),
+and Orb Manager draws them as buttons and dropdowns in the centre pane. Each app and each
+view shows its estimated frame rate, and a live size readout replaces "Check the bake".
+
+### 8.0 What is true today (at `45165cd`)
+
+- **The kit is a library the app calls.** Each app's editor is its own page
+  (`apps/<app>/editor/index.html`, the clock's `Watch Composer.dc.html`), which puts the
+  `studio@1` pieces together itself. Nothing stops an app from doing a step its own way.
+- **Start.** Flights, Weather and Radar each fill `OrbStudio.StartSheet` (scratch, tiles,
+  library, Open a file) with their own wording. The clock draws its own start sheet.
+- **Render.** Send and Save to library are the kit's. Download .orbtheme and Check the bake
+  are each app's own code (`bakeNow` plus `OrbTheme.download`), four copies. Check the bake
+  bakes the whole design and reports its KB.
+- **Stage.** The kit sizes the glass, calibrates true size, blends layers (`OrbTheme.panel`)
+  and runs the frame clock. The app draws the layers and adds its own toolbar controls
+  (Weather's condition select, Radar's zoom and time), each in its own style.
+- **Frame rate.** `OrbTheme.fit` gets a pace only from the clock (`_devPace`). The other
+  three pass rows and the cap, so their badge says "Fits" and never shows an fps.
+- **Files.** The download is an anchor download, so it lands in the default Downloads folder
+  of the app window's own Chrome profile, with no Save dialog.
+- **Off the hub,** an editor still runs, with Download as its only output.
+
+### 8.1 Owner rulings, 2026-11-08
+
+1. **Orb Manager owns the editor page.** An app supplies its content through a declared
+   module (§8.2) and cannot replace the start step, the Render step, the stage or the
+   readouts. This retires §2's layer 3.
+2. **Orb Manager is a required dependency.** The off-hub editor goes.
+3. **The app's part of the editor still ships in the `.orbapp`:** its module (§8.2), and
+   only that. The page, the start step, the library, the Render step, the preview and the
+   readouts are Orb Manager's and never ship in an app. Any `.orbapp` stays editable in Orb
+   Manager wherever it came from: the hosted page loads the module from the app's own editor
+   region, and nothing app-specific is built into Orb Manager.
+4. **The start step offers four choices, in this order:** start fresh, a template (the list
+   is the app's), open from the library, import a file.
+5. **Import puts the file in the library at once,** then opens it: an `.orbtheme` as a theme,
+   an `.orbdesign` as a draft.
+6. **The Render step offers three actions:** Save to library, Send to orb, Export .orbtheme.
+   Export asks where to save.
+7. **The preview engine is Orb Manager's:** the frame loop, the view state, the glass, the
+   blend, the calibration and the view controls in the centre pane. An app declares its views.
+8. **A live size readout replaces Check the bake.**
+9. **Every app and every view shows its estimated frame rate,** not only the clock.
+
+### 8.2 The contract (a sketch; the first slice settles it)
+
+`editor.json` names the hosted contract (`"host": 1`) and the module the page loads. The
+module registers what only the app knows:
+
+- `schema`, `migrate`: the design schema and its steps, as `theme@1/session` takes today;
+- `blank()` and `templates`: start fresh, and the app's starting points (key, name, note,
+  design), drawn by the host as tiles;
+- `steps` and the panes: the editing steps, and each step's left and right panes, built from
+  `studio@1`'s fields and layers;
+- `views`: the controls the stage offers, as data, for example `time: live | 10:10`,
+  `weather: clear … storm`, `place: home | 1–3`, `pane: scope | info card`. Each is a
+  segmented control or a dropdown, and may name when it applies;
+- `draw(view, frame)`: the layers for one view at one frame, which the host blends and paces;
+- `bake(design)`: the design baked to `.orbtheme` bytes, for Send, Export, the live readout
+  and Rebake all.
+
+Everything else (the library, import, export, send, history, the views' controls, the fit,
+size and fps readouts) is the host's, done once.
+
+- **Export** uses `showSaveFilePicker`, which the app window allows (`127.0.0.1` is a secure
+  context), with the plain download where a browser lacks it.
+- **The live readout** re-bakes about a second after the last edit, in a worker
+  (`baker@1` is plain JS), and shows the size and the fit, marked as updating while an
+  edit is newer than the bake. The clock's bake time is not measured yet; E5 measures it
+  first.
+- **Frame rate per view:** `GorbBake.estimate3` on the bake, with `OrbTheme.motion` over
+  the frames the view moves. The clock keeps `_devPace` as its own model.
+
+### 8.3 Slices
+
+| Slice | Content | Gate |
+|---|---|---|
+| **E1** | the hosted page and the contract, with Radar on it (the smallest editor) | runtime and Radar suites; on Gold, Radar's editor opened from its Themes tab offers the four starts and the three Render actions — **built and benched on Gold 2026-11-08**, with E2's import and export (§8.5) |
+| **E2** | import into the library, Export with a Save dialog | Go suites for the import route; session suites with the hub stubbed; on Gold, an imported `.orbtheme` is in the library before it opens — **built with E1** (§8.5); the Save dialog is not benched in a headed browser |
+| **E3** | Weather and Flights on the host | each app's suites; no app code left that draws a start sheet, a Render step or a download — **built 2026-11-08**, benched on the bench fake at OS v1.2.38 (§8.6) |
+| **E4** | declared views in the centre pane, for all three | the same controls in every app; each view reaches the glass |
+| **E5** | the live size readout; Check the bake goes | the clock's bake timed first; a readout that matches the bake's bytes |
+| **E6** | frame rate per view, every app | an estimate shown for each view; checked against Gold for at least one view per app |
+| **E7** | the clock on the host | the clock's headless suites (about 1,500 checks) green; nothing lost against the P5 checklist |
+
+The clock goes last. It is the largest editor and the one where the frame rate matters
+most, so it moves after the contract has carried the other three.
+
+### 8.4 How far the preview goes (ruled 2026-11-08)
+
+- **Now: the host runs the stage and the app's `draw` paints each view,** as §8.2 sketches.
+  `draw` is kept narrow (one view, one frame, layers out) so that it can be replaced later
+  without changing the rest of the contract.
+- **Later: full orb OS emulation in Orb Manager** (owner: the eventual goal, not now). The
+  host plays the baked theme as the orb does, running the app's wasm against a stand-in for
+  the OS, so that the preview and the fps come from the bake itself and not from a model.
+  It is not a slice here. How much of it `baker@1`'s panel mirror already covers is not
+  checked.
+
+### 8.5 As built: E1 and E2 (2026-11-08)
+
+- **The page.** `runtime/host@1/page.html` and `host.js`. An `editor.json` with `"host": 1`
+  names its `module` files and lists `host@1` in its runtime, and no `entry`. The hub
+  (`editor.go`, `hostedEditor`, `serveHostedEditor`) answers the editor's address with that
+  page: the core runtime (React, `baker@1`, `theme@1`, `studio@1`, `host@1`), `maps@1` only
+  when listed, then the module files in their listed order. The launch token goes on the
+  page, as on any editor's entry document. A manifest it cannot serve (another contract, no
+  `host@1`, no module, a module that is a path, not a `.js`, or not in the region, a runtime
+  id the hub lacks) is refused by name.
+- **The contract** is `host.js`'s header: `slug`, `title`, `schema`, `migrate`, `check`,
+  `complete`, `blank`, `templates`, `picture`, `steps`, `parts`, `fields(step, c)`, `views`,
+  `setup(c)`, `draw(x, d, c)`, `bake`, `fit`. The design carries its `name`; the host stamps
+  `base`. `draw` gets the view, what `setup` loaded (`env`), the hidden parts and a `memo`
+  the app caches its own drawn parts in.
+- **The host owns** the frame, the steps (Start, the app's, Render), the start sheet (Start
+  fresh, the templates, the library, Import), the Render step (Save to library, Send to orb,
+  Export .orbtheme, and Check the bake until E5), history, the send and its modals, the
+  parts pane's eyes, the view controls (one segmented control per declared view, before
+  the screen's own), and the fit. Opened off the hub, it says to open it from Orb Manager.
+- **Import** (`session.importFile`): an `.orbtheme` goes to `/api/library/keep` as a theme,
+  a design file to `/api/design/save` as a draft (with its picture), and then it opens. A
+  name already in the library asks first ("Replace it"), and the opening cover goes up only
+  after the answer: on Gold the cover sat over the question and took its clicks, and the
+  suite now holds that. Another app's theme, a file that is neither, and a design with no
+  name are refused before anything is kept; a theme with no design is kept (it installs)
+  and says it cannot be opened.
+- **Export** (`OrbTheme.saveFile`): `showSaveFilePicker` with the theme's card stem as the
+  suggested name; closing the dialog saves nothing; a browser without it downloads.
+- **`studio@1`**: `StartSheet` takes `importFile` (an Import section under the library) and
+  shows Open a file only when the library passes `openFile`, so Flights, Weather and the
+  clock keep theirs until E3 and E7. `RenderPanel` lists Save to library before Send to orb
+  for every app.
+- **Radar** (v1.2.2, still unpushed when this was built, so no version bump):
+  `radar-editor.js` registers with `OrbHost` (347 lines, was 499), `index.html` is gone,
+  `editor.json` is hosted. Its views are Zoom (Region, Area, City) and Time (Now, −40 min,
+  +30 min); its parts are drawn once per change of their own part of the design, in `memo`.
+- **SDK** (`orbsdk.py`): packs a hosted editor and refuses one with another contract, an
+  `entry`, no `host@1`, a module that is missing or not a plain `.js`, or a page of its own;
+  `module` without `host` is refused too.
+- **Suites.** Go: `TestHostedEditorServesTheHubsPageWithTheAppsModule`,
+  `TestHostedEditorRefusesAManifestItCannotServe` (seven refusals). Runtime: the session
+  suite's import and export checks (83 checks; five mutants caught: no replace question,
+  no refresh before the open, no envelope check, no Save dialog, the cover over the
+  question); the studio suite's hosted start sheet and the Render order (115 checks).
+  `host_sdk_editor_test.py` gained the hosted cases and four mutants (15 of 15 caught); its
+  "no release stamp" mutant's anchor had gone stale with the `os_min` stamp and was fixed.
+- **Benched on Gold, 2026-11-08,** with a bench hub limited to Gold and headless Chrome. The
+  new Radar installed over the hub's route; its editor, opened from the hub's page, showed
+  Start fresh, the six templates, the library and Import; Continue, the Map step's fields,
+  the preview on Gold's own home map (Fort Worth), City and +30 min in the toolbar; Render
+  listed Save to library, Send to orb, Export .orbtheme and Check the bake. Save to library
+  made "unsent changes"; Import of the shelf's Radarscope asked to replace it and, pressed
+  with the mouse, imported it as a theme; Send to orb asked about the card's Radarscope,
+  Replace on the card stored 1,861 KB, and Gold came back drawing it; `?entry=Radarscope`
+  opened on the Ground step. Export's Save dialog was not benched: headless Chrome shows no
+  dialog. Gold keeps the new Radar.
+
+### 8.6 As built: E3 (2026-11-08)
+
+- **Weather and Flights are hosted.** Their `index.html` is gone and their `editor.json`
+  names `host: 1` and their module files in load order. `weather-editor.js` went from 632
+  lines to 456, `flights-editor.js` from 737 to 550; with Radar's, no app code is left that
+  draws a start sheet, a Render step, a send, a download or a toolbar.
+- **What the host gained**, each an Orb Manager feature any app declares rather than code an
+  app carries:
+  - **a frame clock** (`play: {fps, on(view), what, idle}`): one play/pause button, `c.t`
+    and `c.dt` in `draw`, and `dt` only on a tick, so a frame drawn for any other reason
+    moves nothing. Weather plays on Now only; Flights at its bake's sweep rate;
+  - **Panel and Split** for an app that draws its layers apart (`layers: true`, `c.layer`
+    `'under'`, `'live'` or `'all'`): the host blends them through `OrbTheme.panel` with the
+    wipe slider. Flights' was its own; any app can now have it;
+  - **view controls**: a segmented control or a dropdown (`kind: 'select'`), options fixed
+    or a function of the design and what `setup` loaded (Flights' ranges follow the orb's
+    distance unit), `show` (Flights' range only with its map on), `active` and `idle`
+    (Weather's condition only on Now), and `init` (Flights' third range, Weather's partly
+    cloudy), with `?<key>=` in the address leading;
+  - **the glass's pointer** (`pointer: {down, move, up, cursor}`, in glass px): Weather's
+    Layout step picks and drags Now's elements with it;
+  - **the app's own preview state** (`ui`, `c.ui`, `c.setUi`), outside history: Weather's
+    picked element, shared by its fields, its frame and its pointer;
+  - **Reset to <its start>** in the top bar for every app (it was Weather's alone): a
+    second press within 4 s, the name kept, undoable;
+  - **`c.part(name, key, make, {fresh})`**: a drawn part kept until its key changes, a
+    promise drawing the frame again when it lands. It replaced the `usePart` hook both apps
+    carried; `fresh` keeps a stale map level from standing in for the one being fetched;
+  - `start` (the template the editor opens on), `startNote`, a part's `also` (Flights'
+    Words row lit on the Frames step) and `eyes: false` (Weather hides nothing).
+- **Moved into the host from the apps:** Flights' "pick your plane picture first" is its
+  `bake` refusing, said as "Not baked: …"; the library's meta line is the entry's template
+  name for every app (Weather's said its icon pack, Flights' its family).
+- **The bench fake** (`internal/orbfake`) kept an uploaded app's version and editor region
+  at last, so the hub serves a hosted editor from it as from a device: its editor word
+  positions read 47..49, which no container has; a real one puts the triple at 44..46 and
+  the version at 47. `TestAnUploadKeepsItsVersionAndEditor` uploads the tree's own
+  `weather.orbapp` and fails on the old positions.
+- **Benched 2026-11-08** on the bench fake stamped `v1.2.38+abc1234` with Fort Worth as home,
+  in headless Chrome; Gold was not used, because these Weather and Flights builds ask for
+  OS v1.2.38 and the hub's built-in firmware is still v1.2.37. Weather: the start sheet
+  (eight tiles), Now animating (the frame changes between reads, holds still on pause),
+  Snow picked from the dropdown and falling over the home map, the dropdown off and the
+  button's tip "The weather plays on Now" on 5 days, Layout's grab cursor, a mouse drag of
+  the icon setting Angle 289° and Distance 81 px, and Undo putting it back. Flights: Info
+  and Roam, the four ranges in km once its map is on, Panel and Split with the wipe, five
+  parts with eyes, Check the bake (1,062 KB). Send to orb from each, through the card's
+  duplicate question and Replace: Modern (Flights, 1,062 KB) and Scope (Weather, 1,282 KB)
+  stored. The Export dialog is still unbenched in a headed browser.
 

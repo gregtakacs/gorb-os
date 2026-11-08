@@ -1,20 +1,19 @@
-/* flights-editor.js — the flight tracker's theme editor (flight-tracker-design §12, §12.5).
+/* flights-editor.js — the flight tracker's part of its theme editor (flight-tracker-design
+ * §12, §12.5; theme-editor-kit-plan §8, E3).
  *
- * A small editor on the OS's kit (theme-editor-kit-plan): the shell's frame, top bar, start
- * sheet, glass, toolbar, screen panel, fields, layers panel and Render step (studio@1); the
- * session's library and undo, the sender, the preview's views and the fit verdict
- * (theme@1); the stage bake (baker@1, through flights-bake.js). What is the tracker's is
- * here: the design and its fields, the parts list, and the preview's simulated traffic under
- * the turning arm. Plain React, createElement only. */
+ * Orb Manager owns the page (host@1): the start step, the library, import, the Render step,
+ * the stage with its frame clock, Design, Panel and Split and its controls, Reset, the fit,
+ * history and the send. What is the tracker's is here, registered with OrbHost: the design
+ * and its fields, the parts list, and the preview's simulated traffic under the turning arm,
+ * on the owner's own home map at the toolbar's range. */
 (function (root) {
   'use strict';
-  var R = root.React, h = R.createElement, S = root.OrbStudio, T = root.OrbTheme, B = root.FlightsBake, M = root.FlightsMap;
+  var T = root.OrbTheme, B = root.FlightsBake, M = root.FlightsMap;
   var A = function () { return root.FlightsArt; };
   // the rows the tracker poses (arm, planes, rings, labels, the far dots) and, with a map,
   // its six names; an app seats CLK_ROW_MAX of them
   var G = 466, CX = 233, ROW_CAP = 64, CARD_MARGIN = 20;
   var liveRows = function (d) { return 1 + 15 + 2 + 4 + (d.planes.dots && d.planes.dots.show !== 'off' ? 9 : 0) + (d.map && d.map.on ? 6 : 0); };
-  var STEPS = [['start', 'Start'], ['scope', 'Scope'], ['map', 'Map'], ['arm', 'Arm'], ['planes', 'Planes'], ['words', 'Words'], ['frames', 'Frames'], ['render', 'Render']];
   // main.c RANGES, nearest first, by the orb's distance unit; and a unit's km
   var RANGES = { km: [20, 40, 80, 140], mi: [10, 25, 50, 90], nm: [10, 20, 40, 80] }, UNIT_KM = { km: 1, mi: 1.609344, nm: 1.852 };
   var MODES = [['roam', 'Roam', 'The scope as it roams: the count in the header, the feed in the footer'],
@@ -35,13 +34,6 @@
 
   /* ---- the design ---- */
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
-  var getIn = function (o, path) { return path.split('.').reduce(function (x, k) { return x == null ? x : x[k]; }, o); };
-  var setIn = function (d, path, v) {
-    var n = clone(d), o = n, ks = path.split('.');
-    for (var i = 0; i < ks.length - 1; i++) o = o[ks[i]];
-    o[ks[ks.length - 1]] = v;
-    return n;
-  };
   // a design opened from anywhere: every part present and in range, or why not
   function checkDesign(x) {
     if (!x || !x.scope || !x.arm || !x.planes || !x.words || !x.frames) return 'that design has no tracker theme in it';
@@ -70,31 +62,34 @@
     });
   }
 
-  /* ---- the preview's parts, each drawn again only when its own part of the design changes ---- */
-  function usePart(key, make, say) {
-    var st = R.useState(null), gen = R.useRef(0);
-    R.useEffect(function () {
-      var my = ++gen.current;
-      make().then(function (v) { if (my === gen.current) st[1](v); }, function (e) { say('The preview could not draw: ' + (e && e.message ? e.message : e)); });
-    }, [key]);
-    return st[0];
-  }
-  function useParts(d, say) {
-    var plate = usePart(JSON.stringify(d.scope), function () { return B.plateCanvas(d); }, say);
-    var arm = usePart(JSON.stringify(d.arm) + d.scope.face, async function () { var a = B.arm(d); return { c: await B.rast(a.svg, a.size[0], a.size[1]), piv: a.pivot }; }, say);
-    var planes = usePart(JSON.stringify(d.planes), async function () {
+  /* ---- the preview's parts, each drawn again only when its own part of the design changes
+   * (the host keeps them, c.part) ---- */
+  function partsOf(d, c) {
+    var plate = c.part('plate', JSON.stringify(d.scope), function () { return B.plateCanvas(d); });
+    var arm = c.part('arm', JSON.stringify(d.arm) + d.scope.face, async function () { var a = B.arm(d); return { c: await B.rast(a.svg, a.size[0], a.size[1]), piv: a.pivot }; });
+    var planes = c.part('planes', JSON.stringify(d.planes), async function () {
       var mk = B.markers(d);
       return { frames: await B.planeFrames(d), px: B.planeBox(d),
         sel: await B.rast(mk[0][2], 56, 56), em: await B.rast(mk[1][2], 64, 64) };
-    }, say);
-    var words = usePart(JSON.stringify(d.words) + JSON.stringify(d.frames), async function () {
+    });
+    var words = c.part('words', JSON.stringify(d.words) + JSON.stringify(d.frames), async function () {
       var L = B.layout(d), out = { layout: L, panels: {} };
       for (var n in L) out.panels[n] = await B.panelCanvas(d, n);
       var z = B.sizes(d);
       try { await document.fonts.load(z.body + 'px "' + d.words.face + '"'); await document.fonts.load(z.quiet + 'px "' + d.words.face + '"'); } catch (e) { /* fallback face */ }
       return out;
-    }, say);
-    return { plate: plate, arm: arm, planes: planes, words: words };
+    });
+    // the owner's home map at the toolbar's range, drawn as the orb draws it, names and all
+    var home = c.env.home, unit = home ? home.unit : 'nm', rng = c.view.range, map = null;
+    if (home && d.map && d.map.on) {
+      var rangeKm = RANGES[unit][rng] * UNIT_KM[unit], z = M.levelOf(home.lat, rangeKm).z, b = (c.env.bytes || {})[z];
+      if (b) map = c.part('map', JSON.stringify(d.map) + '|' + rng + '|' + z + '|' + home.lat, function () {
+        return document.fonts.load((d.map.nameSize | 0) + 'px "' + (d.map.nameFace || d.words.face) + '"').catch(function () {})
+          .then(function () { return M.view(d.map, b, home.lat, rangeKm, rng); });
+      });
+    }
+    if (words) words = Object.assign({}, words, { rangeText: RANGES[unit][rng] + ' ' + unit });
+    return { plate: plate, arm: arm, planes: planes, words: words, map: map };
   }
 
   /* ---- the traffic: each contact flies a straight chord across its circle and comes back in
@@ -185,177 +180,9 @@
     }
   }
 
-  // the start sheet's pictures, drawn once per preset
-  var thumbs = {};
-  function drawThumb(k, c) {
-    var put = function (im) { var x = c.getContext('2d'); x.clearRect(0, 0, c.width, c.height); x.drawImage(im, 0, 0, c.width, c.height); };
-    if (thumbs[k] && thumbs[k].im) { put(thumbs[k].im); return; }
-    if (!thumbs[k]) thumbs[k] = { p: B.thumb(B.preset(k), 192).then(function (im) { thumbs[k].im = im; return im; }) };
-    thumbs[k].p.then(put, function () { /* the tile stays dark */ });
-  }
-
-  /* ---- the editor ---- */
-  // ?preset=, ?step=, ?view=, ?render= and ?mode= open the editor where a link (or a check) wants it
-  var Q = (function () { try { return new URLSearchParams(root.location.search); } catch (e) { return null; } })();
-  var q = function (k, ok, dflt) { var v = Q && Q.get(k); return v && ok.indexOf(v) >= 0 ? v : dflt; };
-  var col = function (pairs) { return pairs.map(function (p) { return p[0]; }); };
-
-  function Editor() {
-    var a = A();
-    var u = function (v) { return R.useState(v); };
-    var dS = u(function () { return B.preset(q('preset', B.STARTS.concat(['blank']), 'modern')); }), d = dS[0], setD = dS[1];
-    var stepS = u(q('step', col(STEPS), 'start')), step = stepS[0], setStep = stepS[1];
-    var stS = u(''), status = stS[0], setStatus = stS[1];
-    var rendS = u(q('render', ['design', 'panel', 'compare'], 'design')), rend = rendS[0], setRend = rendS[1];
-    var modeS = u(q('mode', col(MODES), 'info')), mode = modeS[0], setMode = modeS[1];
-    var playS = u(true), playing = playS[0], setPlaying = playS[1];
-    var wipeS = u(233), wipe = wipeS[0], setWipe = wipeS[1];
-    var hidS = u({}), hidden = hidS[0], setHidden = hidS[1];
-    var sendS = u(null), sending = sendS[0], setSending = sendS[1];
-    var dupS = u(null), dup = dupS[0], setDup = dupS[1];
-    var libS = u(0), setLibTick = libS[1];
-    var delS = u(null), mineDel = delS[0], setMineDel = delS[1];
-    var homeS = u(null), home = homeS[0], setHome = homeS[1];
-    var bytesS = u({}), mapBytes = bytesS[0], setBytes = bytesS[1];
-    var rngS = u(2), rng = rngS[0], setRng = rngS[1];
-    var mapS = u(null), mapPart = mapS[0], setMapPart = mapS[1];
-    var drafts = R.useRef({}).current, canvasRef = R.useRef(null), tRef = R.useRef(0), stateRef = R.useRef({}), frameSt = R.useRef({}).current;
-    var say = R.useCallback(function (s) { setStatus(s); }, []);
-    stateRef.current = { d: d, status: status };
-
-    // the screen: the OS's one controller (studio@1 S.viewer) over this editor's state
-    var scrRef = R.useRef(null);
-    var vw = R.useMemo(function () {
-      return S.viewer({ get: function () { return scrRef.current; }, set: function (p) { setScr(function (o) { return Object.assign({}, o, p); }); }, say: say });
-    }, []);
-    var scrS = u(function () { return vw.init(q('view', col(T.VIEWS), 'fit')); }), setScr = scrS[1];
-    scrRef.current = scrS[0];
-
-    var parts = useParts(d, say);
-    var unit = home ? home.unit : 'nm', rangeKm = RANGES[unit][rng] * UNIT_KM[unit];
-
-    /* the owner's home and unit, then the levels the four ranges draw from (maps@1) */
-    R.useEffect(function () {
-      var o = ses.hubOrb();
-      if (!o || !root.GorbMaps) return;
-      (async function () {
-        try {
-          var hp = await root.GorbMaps.orbHome(o.ip);
-          if (!hp) return;
-          if (!RANGES[hp.unit]) hp.unit = 'km';
-          setHome(hp);
-          var zs = [];
-          RANGES[hp.unit].forEach(function (r) { var z = M.levelOf(hp.lat, r * UNIT_KM[hp.unit]).z; if (zs.indexOf(z) < 0) zs.push(z); });
-          for (const z of zs) {
-            const b = await root.GorbMaps.fetchLevel(hp.lat, hp.lon, z);
-            setBytes(function (m) { var n = Object.assign({}, m); n[z] = b; return n; });
-          }
-        } catch (e) { say('The map preview could not be built: ' + (e && e.message ? e.message : e)); }
-      })();
-    }, []);
-    var mapKey = JSON.stringify(d.map) + '|' + rng + '|' + Object.keys(mapBytes).join(',') + '|' + (home ? home.lat : '');
-    R.useEffect(function () {
-      if (!home || !d.map || !d.map.on) { setMapPart(null); return; }
-      var z = M.levelOf(home.lat, rangeKm).z, b = mapBytes[z];
-      if (!b) { setMapPart(null); return; }
-      var go = function () { try { setMapPart(M.view(d.map, b, home.lat, rangeKm, rng)); } catch (e) { say(e.message); } };
-      document.fonts.load((d.map.nameSize | 0) + 'px "' + (d.map.nameFace || d.words.face) + '"').catch(function () {}).then(go);
-    }, [mapKey]);
-    parts = Object.assign({}, parts, { map: mapPart });
-    if (parts.words) parts.words = Object.assign({}, parts.words, { rangeText: RANGES[unit][rng] + ' ' + unit });
-    var ses = R.useMemo(function () {
-      return T.session({
-        slug: 'flights', keys: function () { return ['d']; }, state: function () { return stateRef.current; },
-        set: function () { setLibTick(function (n) { return n + 1; }); }, ready: function () { return true; }, say: say,
-        restore: function (snap, text) { setD(snap.d); say(text); }, schema: function () { return B.SCHEMA; },
-        migrate: function () { return { 1: function (o) { o.design = B.upgrade1(o.design); return o; } }; },
-        content: async function () { return { design: stateRef.current.d }; },
-        apply: function (doc) { var why = checkDesign(doc.design); if (!why) { setD(B.complete(doc.design)); setStep(function (s) { return s === 'start' ? 'scope' : s; }); } return why; },
-        bake: async function () { var r = await bakeNow(); return r ? r.bytes : null; },
-      });
-    }, []);
-    var sender = R.useMemo(function () {
-      return T.sender({ say: say, ask: function (x) { setDup(x); }, sending: function (x) { setSending(x); } });
-    }, []);
-    R.useEffect(function () { ses.track(); }, [d]);
-    // a boot that fails still runs the open: it is what lifts the opening cover off ?theme=
-    R.useEffect(function () { ses.boot().catch(function () {}).then(function () { return ses.openTheme(); }).catch(function () {}); }, []);
-    var upd = function (path, v) { setD(function (old) { return setIn(old, path, v); }); };
-    // what each colour row offers back as its preset: the start this design came from, the blank one included
-    var base = R.useMemo(function () { return B.preset(d.base === 'blank' || B.STARTS.indexOf(d.base) >= 0 ? d.base : 'modern'); }, [d.base]);
-
-    /* the bake, the send, the download */
-    async function bakeNow() {
-      var dd = stateRef.current.d;
-      if (dd.planes.family === 'custom' && !(dd.planes.custom && dd.planes.custom.image)) { say('Not baked: pick your plane picture on the Planes step first'); return null; }
-      try {
-        say('Baking “' + dd.name + '”…');
-        var doc = new TextEncoder().encode(JSON.stringify(await ses.doc(true)));
-        var r = await B.bake(dd, { design: doc });
-        say('Baked “' + dd.name + '”: ' + Math.round(r.bytes.length / 1024) + ' KB');
-        return r;
-      } catch (e) { say('Not baked: ' + (e && e.message ? e.message : e)); return null; }
-    }
-    async function stemOf(nm) {
-      try {
-        var dg = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('flights/' + nm)));
-        return root.GorbBake.cardStem('flights', nm, dg);
-      } catch (e) { return null; }
-    }
-    function send() {
-      var nm = d.name;
-      sender.send(nm, async function () {
-        // the library keeps it first: a send the orb refuses still leaves the design on the hub
-        await ses.saveDraft({ name: nm, doc: await ses.doc(true), thumb: await draftThumb() }, true);
-        var r = await bakeNow(); if (!r || sender.cancelled()) return;
-        await sender.post(r.bytes, { name: nm, stem: await stemOf(nm), summary: Math.round(r.bytes.length / 1024) + ' KB' });
-        ses.libraryRefresh();
-      });
-    }
-    async function download() {
-      var r = await bakeNow(); if (!r) return;
-      T.download(new Blob([r.bytes], { type: 'application/octet-stream' }), ((await stemOf(d.name)) || 'flights-theme') + '.orbtheme');
-    }
-    async function saveDraft() { await ses.saveDraft({ name: d.name, doc: await ses.doc(true), thumb: await draftThumb() }); }
-    // a small picture of the design for the hub's lists: a draft has no bake to show
-    async function draftThumb() {
-      try {
-        var im = await B.thumb(stateRef.current.d, 192), c = document.createElement('canvas'); c.width = c.height = 96;
-        var x = c.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, 96, 96); x.drawImage(im, 0, 0, 96, 96);
-        return c.toDataURL('image/jpeg', 0.82);
-      } catch (e) { return null; }
-    }
-
-    /* the preview: the frame clock, Design, Panel and Split */
-    R.useEffect(function () {
-      var tk = playing ? T.ticker(B.SWEEP_FPS, false, function () { tRef.current += 1000 / B.SWEEP_FPS; draw(); }) : null;
-      draw();
-      return function () { if (tk) tk.stop(); };
-    });
-    function draw() {
-      var c = canvasRef.current; if (!c) return;
-      var x = c.getContext('2d'), dd = stateRef.current.d;
-      drawFrame(x, dd, parts, tRef.current, hidden, mode, false, frameSt);
-      if (rend === 'design' || !parts.plate) return;
-      // Panel and Split: the plate as the bake stores it, the moving rows blended over it
-      // the way the orb blends them (theme@1/preview's panel mirror)
-      var lc = document.createElement('canvas'); lc.width = lc.height = G;
-      var lx = lc.getContext('2d');
-      drawFrame(lx, dd, parts, tRef.current, hidden, mode, true, { dy: frameSt.dy });
-      var uc = document.createElement('canvas'); uc.width = uc.height = G;
-      var ux = uc.getContext('2d'); ux.drawImage(parts.plate, 0, 0);
-      if (parts.map && !hidden.map && dd.map && dd.map.on) drawMap(ux, dd, parts.map);
-      T.panel(x, { under: ux.getImageData(0, 0, G, G).data,
-                   live: [{ px: lx.getImageData(0, 0, G, G).data, still: false }] }, { mode: rend, wipe: wipe });
-    }
-
-    /* the fit: the live rows the theme ships against the orb's, at the estimate once baked */
-    // rows only (owner, 2026-11-04): unlike the clock there is no designed rate to fall short
-    // of, and the estimate is not a live measure, so the verdict claims no fps at all
-    var verdict = T.fit({ rows: liveRows(d), cap: ROW_CAP });
-
-    /* ---- the fields of each step ---- */
-    var K = S.fieldKit({ drafts: drafts, refresh: function () { setLibTick(function (n) { return n + 1; }); }, scope: function () { return step; } });
+  /* ---- the fields of each step ---- */
+  function fields(step, c) {
+    var a = A(), d = c.d, K = c.K, upd = c.upd, setD = c.set, base = c.base, say = c.say, getIn = c.getIn, home = c.env.home;
     var opt = function (pairs) { return pairs.map(function (p) { return { v: p[0], label: p[1] }; }); };
     // a colour at a path, the preset's own offered first
     var C = function (label, path, X) {
@@ -643,95 +470,81 @@
         : 'The card stays at the ' + Fr.card.place + ', over whatever flies under it.'));
     }
 
-    /* ---- the left pane: the parts ---- */
-    var items = [['scope', 'Scope'], ['map', 'Map'], ['arm', 'Arm'], ['planes', 'Planes'], ['words', 'Words']].map(function (x) {
-      return { id: x[0], band: 'parts', label: x[1], movable: false };
-    });
-    var left = h(S.Layers, { title: 'Parts', rows: S.layerRows(items, {
-      sel: step === 'frames' ? 'words' : step, heads: { parts: 'The scope, bottom to top' },
-      icon: function (it) { return { scope: '◎', map: '▦', arm: '◜', planes: '✈', words: 'A' }[it.id]; },
-      note: function (it) {
-        return { scope: B.GROUND_TITLES[sc.ground], map: d.map && d.map.on ? (M.LOOKS.find(function (l) { return l[0] === d.map.look; }) || [0, ''])[1] : 'none', arm: d.arm.kind === 'none' ? 'none' : d.arm.kind + ' · ' + B.period(d) + ' s',
-          planes: d.planes.family === 'custom' ? 'your own' : a.families[d.planes.family].title, words: d.words.face }[it.id];
-      },
-      hidden: function (it) { return !!hidden[it.id]; }, move: function () { return { ok: false, reason: 'the tracker’s parts keep their order' }; },
-      onMove: function () {}, pick: function (it) { setStep(it.id); },
-      eyeTip: function (it) { return hidden[it.id] ? 'Show it in the preview' : 'Hide it in the preview (the bake keeps it)'; },
-      toggleEye: function (it) { var n = Object.assign({}, hidden); n[it.id] = !n[it.id]; setHidden(n); },
-      drag: { start: function () {}, over: function () {}, drop: function () {}, end: function () {} },
-    }) });
-
-    /* ---- the right pane ---- */
-    var right = step === 'render'
-      ? h(R.Fragment, null, h('div', { className: 'fl-sec' }, 'Render'),
-          h('div', { className: 'fl-list' }, h(S.RenderPanel, {
-            badge: S.badgeProps(verdict, 'The live rows against the ' + ROW_CAP + ' an app seats'),
-            send: { on: send, note: 'save “' + d.name + '”, bake it and store it on the orb', tip: 'Save it to the hub library, bake it, then send it to the orb this editor was opened for. The library keeps the baked theme once the orb has stored it.' },
-            save: ses.hubOrb() ? { on: saveDraft, note: 'keep “' + d.name + '” on the hub as a draft', tip: 'Keep this design in the hub library under its name, without baking or sending it. Under a theme’s name it is that theme’s unsent changes until Send to orb bakes them in.' } : null,
-            downloads: [{ label: 'Download .orbtheme', note: 'the baked file', on: download }, { label: 'Check the bake', note: 'bake now and check its size', on: bakeNow }],
-          })))
-      : step === 'start'
-        ? h('div', { className: 'fl-list' }, h('div', { className: 'ui-mut' }, 'Pick a starting point, or open one from the hub library, then Continue. The steps after it: Scope, Map, Arm, Planes, Words, Frames, and Render to send it.'))
-        : h('div', { className: 'fl-list' }, h(S.Fields, { fields: fields }));
-
-    /* ---- the start sheet ---- */
-    var famOf = function (dd) { return B.STARTS.indexOf(dd.base) >= 0 ? dd.base : dd.planes && a.families[dd.planes.family] ? dd.planes.family : null; };
-    var sheet = step === 'start' ? h(S.StartSheet, {
-      title: 'Start a flight tracker theme',
-      scratch: { label: 'Blank', short: 'Plain greys, nothing preset', cls: d.base === 'blank' ? 'on' : '',
-        tip: 'Every part present, in plain greys on a plain ground: a blank slate to build your own look on',
-        on: function () { setD(B.preset('blank')); ses.restart(); say('Starting from a blank theme: Continue when you are ready'); } },
-      tiles: B.STARTS.map(function (k) {
-        var f = B.startInfo(k);
-        var pd = B.preset(k);
-        return { key: k, name: f.title, short: B.GROUND_TITLES[pd.scope.ground] + ' · ' + (B.ARMS.find(function (r) { return r[0] === pd.arm.kind; }) || [0, pd.arm.kind])[1],
-          tip: 'Start from ' + f.title + ': ' + f.band, cls: d.base === k ? 'on' : '', draw: function (c) { drawThumb(k, c); },
-          on: function () { setD(B.preset(k)); ses.restart(); say('Starting from ' + f.title + ': Continue when you are ready'); } };
-      }),
-      library: { accept: '.orbtheme,.orbdesign,.json',
-        openFile: function (e) { var fl = e.target.files[0]; if (fl) ses.openFile(fl); },
-        rows: S.libraryRows(ses.library(), { version: ses.version(), armed: mineDel, arm: setMineDel,
-          meta: function (m) { var f = m.design && famOf(m.design); return f ? B.startInfo(f).title + ' · ' : ''; },
-          open: function (nm) { ses.openEntry(nm); }, forget: function (nm, what) { ses.forgetEntry(nm, what); } }),
-        empty: ses.hubOrb() ? null : 'The library is on the hub: open this editor from the hub to save and open designs there.' },
-      foot: [{ label: 'Continue with ' + d.name, primary: true, on: function () { setStep('scope'); } }],
-    }) : null;
-
-    /* ---- the frame ---- */
-    var g = vw.glass(), tool = vw.tool();
-    return h(S.Frame, null,
-      h(S.TopBar, {
-        back: function () { try { root.parent.postMessage({ type: 'theme.close' }, '*'); } catch (e) { /* not framed */ } },
-        backTip: 'Back to the Themes page', crumb: 'Flights',
-        name: { value: d.name, placeholder: 'Theme name', title: 'The theme’s name on the orb', onChange: function (e) { upd('name', e.target.value); } },
-        steps: STEPS.map(function (s) { return { label: s[1], cls: s[0] === step ? 'on' : '', pick: function () { setStep(s[0]); } }; }),
-        undo: { on: function () { ses.undo(); }, tip: 'Undo', op: ses.undoStack.length ? 1 : 0.35 },
-        redo: { on: function () { ses.redo(); }, tip: 'Redo', op: ses.redoStack.length ? 1 : 0.35 },
-        fit: S.fitProps(verdict, verdict.note), primary: { label: 'Send to orb', on: send, title: 'Bake and send this theme' },
-      }),
-      h(S.Pane, { side: 'left' }, left),
-      h(S.Stage, null,
-        h(S.Glass, Object.assign({ status: status }, g),
-          h('canvas', { ref: canvasRef, width: G, height: G, style: { width: g.size + 'px', height: g.size + 'px' } })),
-        sheet,
-        h(S.ScreenPanel, vw.panel()),
-        h(S.Toolbar, {
-          play: { icon: playing ? '❚❚' : '▶', label: playing ? 'Pause the traffic' : 'Play the traffic', on: function () { setPlaying(!playing); } },
-          view: tool.view, zoom: tool.zoom,
-          render: T.RENDERS.map(function (r) { return { label: r[1], tip: r[2], cls: r[0] === rend ? 'on' : '', pick: function () { setRend(r[0]); } }; }),
-          wipe: rend === 'compare' ? { value: wipe, on: function (e) { setWipe(+e.target.value); } } : null,
-          screen: vw.toolScreen(),
-        }, h(S.Seg, { opts: MODES.map(function (md) { return { label: md[1], tip: md[2], cls: md[0] === mode ? 'on' : '', pick: function () { setMode(md[0]); } }; }) }),
-          d.map && d.map.on ? h(S.Seg, { opts: RANGES[unit].map(function (r, k) {
-            return { label: r + ' ' + unit, tip: 'The map at the ' + ['nearest', 'second', 'third', 'widest'][k] + ' range, as a press steps it on the orb', cls: k === rng ? 'on' : '', pick: function () { setRng(k); } };
-          }) }) : null)),
-      h(S.Pane, { side: 'right' }, right),
-      h(S.OpeningModal, { line: ses.opening }),
-      h(S.SendModal, S.sendProps(sending, status, function () { sender.cancel(); })),
-      h(S.DupModal, S.dupProps(dup, function () { sender.replace(); }, function () { sender.dismiss(); })));
+    return fields;
   }
 
-  root.FlightsEditor = { Editor: Editor, drawFrame: drawFrame, checkDesign: checkDesign, TRAFFIC: TRAFFIC, where: where, cardDy: cardDy };
-  if (typeof document !== 'undefined' && document.getElementById('root'))
-    root.ReactDOM.createRoot(document.getElementById('root')).render(h(Editor));
+  // the moving layers alone, or the still ones the bake stores (Panel's two halves), or the whole frame
+  function draw(x, d, c) {
+    var P = partsOf(d, c), st = c.memo.frame || (c.memo.frame = {}), mode = c.view.mode;
+    if (c.layer === 'under') {
+      x.clearRect(0, 0, G, G);
+      if (P.plate) x.drawImage(P.plate, 0, 0);
+      if (P.map && !c.hidden.map && d.map && d.map.on) drawMap(x, d, P.map);
+      return;
+    }
+    if (c.layer === 'live') { drawFrame(x, d, P, c.t, c.hidden, mode, true, { dy: st.dy }); return; }
+    drawFrame(x, d, P, c.t, c.hidden, mode, false, st);
+  }
+
+  var app = {
+    slug: 'flights', title: 'Flights', schema: B.SCHEMA,
+    migrate: { 1: function (o) { o.design = B.upgrade1(o.design); return o; } },
+    check: checkDesign, complete: B.complete,
+    blank: { note: 'Plain greys, nothing preset', make: function () { return B.preset('blank'); } },
+    templates: B.STARTS.map(function (k) {
+      var f = B.startInfo(k), pd = B.preset(k);
+      return { key: k, name: f.title, note: B.GROUND_TITLES[pd.scope.ground] + ' · ' + (B.ARMS.find(function (r) { return r[0] === pd.arm.kind; }) || [0, pd.arm.kind])[1],
+        make: function () { return B.preset(k); } };
+    }),
+    start: 'modern',
+    picture: function (d, px) { return B.thumb(d, px); },
+    steps: [['scope', 'Scope'], ['map', 'Map'], ['arm', 'Arm'], ['planes', 'Planes'], ['words', 'Words'], ['frames', 'Frames']],
+    parts: [
+      { id: 'scope', label: 'Scope', icon: '◎', note: function (d) { return B.GROUND_TITLES[d.scope.ground]; } },
+      { id: 'map', label: 'Map', icon: '▦', note: function (d) { return d.map && d.map.on ? (M.LOOKS.find(function (l) { return l[0] === d.map.look; }) || [0, ''])[1] : 'none'; } },
+      { id: 'arm', label: 'Arm', icon: '◜', note: function (d) { return d.arm.kind === 'none' ? 'none' : d.arm.kind + ' · ' + B.period(d) + ' s'; } },
+      { id: 'planes', label: 'Planes', icon: '✈', note: function (d) { return d.planes.family === 'custom' ? 'your own' : A().families[d.planes.family].title; } },
+      { id: 'words', label: 'Words', icon: 'A', note: function (d) { return d.words.face; }, also: ['frames'] },
+    ],
+    fields: fields,
+    views: [
+      { key: 'mode', label: 'What the scope shows', options: MODES, init: 'info' },
+      { key: 'range', label: 'The map’s range', init: 2, show: function (d) { return !!(d.map && d.map.on); },
+        options: function (d, env) {
+          var unit = env.home ? env.home.unit : 'nm';
+          return RANGES[unit].map(function (r, k) { return [k, r + ' ' + unit, 'The map at the ' + ['nearest', 'second', 'third', 'widest'][k] + ' range, as a press steps it on the orb']; });
+        } },
+    ],
+    play: { fps: function () { return B.SWEEP_FPS; }, what: 'the traffic' },
+    layers: true,
+    // the owner's home and unit, then the levels the four ranges draw from (maps@1)
+    setup: function (c) {
+      if (!c.orb || !root.GorbMaps) return;
+      (async function () {
+        try {
+          var hp = await root.GorbMaps.orbHome(c.orb.ip);
+          if (!hp) return;
+          if (!RANGES[hp.unit]) hp.unit = 'km';
+          c.env({ home: hp });
+          var zs = [], bytes = {};
+          RANGES[hp.unit].forEach(function (r) { var z = M.levelOf(hp.lat, r * UNIT_KM[hp.unit]).z; if (zs.indexOf(z) < 0) zs.push(z); });
+          for (const z of zs) {
+            bytes[z] = await root.GorbMaps.fetchLevel(hp.lat, hp.lon, z);
+            c.env({ bytes: Object.assign({}, bytes) });
+          }
+        } catch (e) { c.say('The map preview could not be built: ' + (e && e.message ? e.message : e)); }
+      })();
+    },
+    draw: draw,
+    bake: function (d, o) {
+      if (d.planes.family === 'custom' && !(d.planes.custom && d.planes.custom.image)) return Promise.reject(new Error('pick your plane picture on the Planes step first'));
+      return B.bake(d, o);
+    },
+    // rows only (owner, 2026-11-04): unlike the clock there is no designed rate to fall short
+    // of, and the estimate is not a live measure, so the verdict claims no fps at all
+    fit: function (d) { return { rows: liveRows(d), cap: ROW_CAP }; },
+  };
+
+  root.FlightsEditor = { app: app, drawFrame: drawFrame, checkDesign: checkDesign, TRAFFIC: TRAFFIC, where: where, cardDy: cardDy };
+  if (root.OrbHost) root.OrbHost.register(app);
 })(typeof window !== 'undefined' ? window : globalThis);

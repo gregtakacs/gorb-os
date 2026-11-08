@@ -472,6 +472,8 @@ bool orb_app_current_armed(void);
 void orb_app_input(int32_t delta, bool pressed);
 /** A press-and-turn to the entry on the glass. False: it takes none (radar-plan §2.10). */
 bool orb_app_push(int32_t delta);
+/** A press-and-turn has ended (the knob let go): the entry on the glass hears orb_push(0). */
+void orb_app_push_end(void);
 /** Reap every app's worker jobs, active or not (C7). Call every poll. */
 void orb_app_service_all(void);
 

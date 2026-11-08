@@ -404,7 +404,10 @@ void orb_logf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
  *   void    orb_push(int32_t delta)     a press-and-turn: clicks turned with the knob held
  *                                       down (OS v1.2.19; radar-plan §2.10). Exporting it is
  *                                       the opt-in: without it the clicks arrive in orb_input
- *                                       as ordinary turns, and the press they began is spent
+ *                                       as ordinary turns, and the press they began is spent.
+ *                                       From OS v1.2.27, orb_push(0) once the knob is let go
+ *                                       (400 ms on, so a slipping switch is not an end): act
+ *                                       on the choice then, and let the clicks only show it
  *   int32_t orb_set_armed(int32_t armed) a press arms, a hold disarms; answer the
  *                                       armed state the app actually took
  *   int32_t orb_opt_count(void)         option rows for the menu's page

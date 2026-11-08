@@ -54,6 +54,7 @@ static volatile const orb_app_t *s_requested;
 static volatile int32_t s_inj_delta;
 static volatile bool  s_inj_press;
 static volatile int32_t s_inj_push;   /* radar-plan §2.10: an injected press-and-turn */
+static volatile bool s_inj_push_end;  /* and its end */
 static volatile bool  s_inj_long;   /* the escape-hatch gesture, see input_router_inject */
 
 static const char *screen_name(const orb_app_t *app)
@@ -365,6 +366,7 @@ static void poll_timer_cb(lv_timer_t *timer)
      * apart until the armed entry is asked for them below; the press they started is spent
      * either way (knob.c). */
     int32_t push = knob_take_push_delta();
+    bool push_end = knob_take_push_end();
 
     /* Fold in anything injected. Draining the whole pending delta keeps the
      * injected path honest: it feeds the same stream a real turn feeds. The three
@@ -377,6 +379,7 @@ static void poll_timer_cb(lv_timer_t *timer)
     const bool    il  = s_inj_long;
     if (inj) { s_inj_delta = 0; delta += inj; }
     if (ipt) { s_inj_push = 0; push += ipt; }
+    if (s_inj_push_end) { s_inj_push_end = false; push_end = true; }
     if (s_inj_press) { s_inj_press = false; pressed = true; }
     if (s_inj_long)   { s_inj_long   = false; lpress   = true;  }
 
@@ -470,6 +473,10 @@ static void poll_timer_cb(lv_timer_t *timer)
      * cursor already one app along (plan §51): no carousel walk, so a turn inside an
      * app can never leave it, and the way between apps is one list. A press still arms
      * a view that has one. */
+    /* A press-and-turn's end (radar-plan §6.11): the app that took its clicks hears it as
+     * orb_push(0), and acts on the choice only now. */
+    if (push_end) orb_app_push_end();
+
     if (!screen_armed(s_current)) {
         delta += push;                       /* nobody to take it: an ordinary turn */
         if (pressed) { arm_current(); return; }
@@ -620,4 +627,9 @@ void input_router_inject(int32_t delta, bool pressed, bool lpress)
 void input_router_inject_push(int32_t delta)
 {
     s_inj_push += delta;
+}
+
+void input_router_inject_push_end(void)
+{
+    s_inj_push_end = true;
 }

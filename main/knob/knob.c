@@ -189,11 +189,17 @@ static int32_t s_lastTakenDetent = 0;
  *    rest of the turn scrubbed time instead of zooming (owner, Bronze, 2026-11-07). A
  *    close inside the settle is the same press, still down. */
 #define KG_SETTLE_MS 60
+/*  - A press-and-turn ends KG_GRACE_MS after its release, and only then is its end told
+ *    (knob_take_push_end, the app's orb_push(0)). A press inside the grace continues it:
+ *    holding at a zoom's end, the switch opened past the settle, closed again, and the
+ *    quick let-go read as a plain press, the next place (owner, Bronze, 2026-11-07). */
+#define KG_GRACE_MS 400
 typedef struct {
     uint8_t down, long_fired, push_turn, intent;
     int32_t raw_at_press;
     int64_t start_us;
     int64_t up_at;             /* the switch opened here and has not closed since; 0 = shut */
+    int64_t pt_end_at;         /* a press-and-turn was let go here; its grace runs; 0 = none */
 } knob_gesture_t;
 
 enum { KG_SPENT = 0, KG_PRESS = 1, KG_LONG = 2 };
@@ -202,6 +208,7 @@ static inline __attribute__((always_inline)) void kg_press(volatile knob_gesture
 {
     g->down = 1;
     g->up_at = 0;
+    g->pt_end_at = 0;
     g->long_fired = g->push_turn = g->intent = 0;
     g->raw_at_press = raw;
     g->start_us = now;
@@ -245,18 +252,35 @@ static inline __attribute__((always_inline)) void kg_up(volatile knob_gesture_t 
 {
     if (g->down && !g->up_at) g->up_at = now ? now : 1;
 }
-static inline __attribute__((always_inline)) int kg_down(volatile knob_gesture_t *g)
+static inline __attribute__((always_inline)) int kg_down(volatile knob_gesture_t *g, int64_t now)
 {
-    if (!g->down || !g->up_at) return 0;
-    g->up_at = 0;
-    return 1;
+    if (g->down && g->up_at) { g->up_at = 0; return 1; }
+    if (!g->down && g->pt_end_at && now - g->pt_end_at < (int64_t)KG_GRACE_MS * 1000) {
+        /* a press inside a press-and-turn's grace: the same press-and-turn, no debounce */
+        g->down = 1;
+        g->push_turn = 1;
+        g->long_fired = g->intent = 0;
+        g->up_at = g->pt_end_at = 0;
+        g->start_us = now;
+        return 2;
+    }
+    return 0;
 }
 static inline __attribute__((always_inline)) int kg_settle(volatile knob_gesture_t *g, int64_t now)
 {
     if (!g->down || !g->up_at || now - g->up_at < (int64_t)KG_SETTLE_MS * 1000) return -1;
     const int64_t at = g->up_at;
     g->up_at = 0;
-    return kg_release(g, at);
+    const int r = kg_release(g, at);
+    if (r == KG_SPENT && g->push_turn) g->pt_end_at = at ? at : 1;   /* its grace begins */
+    return r;
+}
+/* 1 once, when a press-and-turn's grace has run out with the knob still up: its end. */
+static inline __attribute__((always_inline)) int kg_end(volatile knob_gesture_t *g, int64_t now)
+{
+    if (g->down || !g->pt_end_at || now - g->pt_end_at < (int64_t)KG_GRACE_MS * 1000) return 0;
+    g->pt_end_at = 0;
+    return 1;
 }
 
 /* ---- end of the gesture's pure half ---- */
@@ -265,6 +289,7 @@ static volatile knob_gesture_t s_g;
 static volatile int32_t s_pushDetent = 0;   /* press-and-turn clicks, inside s_rot_mux */
 static int32_t s_lastTakenPush = 0;
 static volatile uint32_t s_pushTurns = 0;   /* presses that became press-and-turns */
+static volatile bool s_pushEndPend;         /* a press-and-turn has ended (its grace ran out) */
 
 /* Where a committed click goes. Called with s_rot_mux held. */
 static inline void IRAM_ATTR knob_commit(int32_t n)
@@ -413,8 +438,9 @@ static void IRAM_ATTR knob_sw_isr(void *arg)
         s_swLastEdgeUs = now;
         return;
     }
-    /* A close while a release settles is the same press: no debounce, no new gesture. */
-    if (kg_down(&s_g)) {
+    /* A close while a release settles is the same press, and one inside a press-and-turn's
+     * grace continues it: no debounce, no new gesture. */
+    if (kg_down(&s_g, now)) {
         s_swLastEdgeUs = now;
         return;
     }
@@ -503,6 +529,7 @@ void knob_poll(void)
     if (rel == KG_PRESS) s_pressPend = true;
     else if (rel == KG_LONG) s_longPend = true;
     if (kg_poll(&s_g, now, s_rawPos)) s_longPend = true;
+    if (kg_end(&s_g, now)) s_pushEndPend = true;
     int32_t settled = 0, spent = 0, net_seen = 0;
     bool learned = false;
     uint8_t valley = 0xFF;
@@ -601,6 +628,13 @@ int32_t knob_take_push_delta(void)
 }
 
 uint32_t knob_push_turns(void) { return s_pushTurns; }
+
+bool knob_take_push_end(void)
+{
+    const bool e = s_pushEndPend;
+    s_pushEndPend = false;
+    return e;
+}
 
 bool knob_take_press(void)
 {

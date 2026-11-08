@@ -259,6 +259,7 @@ static void map_task(void *arg)
         xSemaphoreTake(s_busy, portMAX_DELAY);
         render(j.app, j.view, j.seq, scratch);
         xSemaphoreGive(s_busy);
+        if (!uxQueueMessagesWaiting(s_q)) { heap_caps_free(scratch); scratch = NULL; }   /* no render waits */
     }
 }
 
@@ -388,6 +389,20 @@ void orb_map_note_glass(int app_slot, bool on_glass, int64_t now_us)
 {
     app_maps_t *a = app_of(app_slot);
     if (!a) return;
+    /* Off the glass an app keeps no display buffers (owner, 2026-11-07): its views and their
+     * rasters go at once, and it opens new ones when it is back. The level files are data,
+     * not pixels: they stay LINGER_S, so a return does not read the card again. */
+    if (!on_glass && (a->v[0].raster || a->v[1].raster) &&
+        (!s_busy || xSemaphoreTake(s_busy, 0) == pdTRUE)) {       /* a render runs: next pass */
+        for (int i = 0; i < ORB_MAP_VIEWS; i++) {
+            a->v[i].seq++;
+            a->v[i].opened_us = 0;
+            a->v[i].state = ORB_MAP_ABSENT;
+            heap_caps_free(a->v[i].raster);
+            a->v[i].raster = NULL;
+        }
+        if (s_busy) xSemaphoreGive(s_busy);
+    }
     bool any = false;
     for (int i = 0; i < FILES_PER_APP; i++) any |= a->f[i].buf != NULL;
     for (int i = 0; i < ORB_MAP_VIEWS; i++) any |= a->v[i].raster != NULL;

@@ -86,6 +86,7 @@ void input_router_menu_exit(void);
 void input_router_inject(int32_t delta, bool pressed, bool lpress);
 /* A press-and-turn from the bench: clicks turned with the knob held (radar-plan §2.10). */
 void input_router_inject_push(int32_t delta);
+void input_router_inject_push_end(void);
 
 /** Plan §54: the carousel's gear. Switch to the home entry and open its system pages.
  *  LVGL task only (the carousel calls it from this file's poll). */

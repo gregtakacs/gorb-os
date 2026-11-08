@@ -97,6 +97,9 @@ int32_t knob_take_push_delta(void);
 
 /** Presses that became press-and-turns since boot (for /api/v1/status). */
 uint32_t knob_push_turns(void);
+/* True once a press-and-turn has ended: the knob let go and its grace run out (the app's
+ * orb_push(0), radar-plan §6.11). */
+bool knob_take_push_end(void);
 
 /** True exactly once if the knob was tapped (released under the hold time). */
 bool knob_take_press(void);

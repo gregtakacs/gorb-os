@@ -546,7 +546,7 @@ int main(void)
     kg_press(&g, MS(20000), 0);
     CK(kg_click(&g) == 2, "a press-and-turn begins");
     kg_up(&g, MS(20100));
-    CK(kg_settle(&g, MS(20130)) == -1 && kg_down(&g) == 1, "the switch opens for 30 ms under the turning hand: the same press");
+    CK(kg_settle(&g, MS(20130)) == -1 && kg_down(&g, MS(20130)) == 1, "the switch opens for 30 ms under the turning hand: the same press");
     CK(kg_click(&g) == 1 && kg_click(&g) == 1, "and the turn goes on zooming, click after click");
     kg_up(&g, MS(20500));
     CK(kg_settle(&g, MS(20559)) == -1, "a release is not taken before it has settled");
@@ -555,11 +555,30 @@ int main(void)
     kg_press(&g, MS(21000), 0);
     kg_up(&g, MS(21200));
     CK(kg_settle(&g, MS(21260)) == KG_PRESS, "a short press still reads as a press, 60 ms after the hand lets go");
-    CK(kg_down(&g) == 0, "a close after the press has ended is a new press, debounced as one");
+    CK(kg_down(&g, MS(21300)) == 0, "a close after a plain press has ended is a new press, debounced as one");
     kg_press(&g, MS(22000), 0);
     kg_up(&g, MS(22690));
     CK(!kg_poll(&g, MS(22700), 0), "a press let go at 690 ms does not become a hold at 700 while it settles");
     CK(kg_settle(&g, MS(22750)) == KG_PRESS, "and it settles as the press it was");
+    CK(!kg_end(&g, MS(23500)), "a plain press has no press-and-turn end");
+    /* a press-and-turn's grace: the end is told 400 ms after the let-go, and a press inside
+     * it is the same press-and-turn (the stray "next place" at a zoom's end) */
+    kg_press(&g, MS(30000), 0);
+    (void)kg_click(&g);
+    kg_up(&g, MS(30500));
+    CK(kg_settle(&g, MS(30600)) == KG_SPENT, "a press-and-turn let go: spent");
+    CK(!kg_end(&g, MS(30899)), "its end is not told inside the grace");
+    CK(kg_down(&g, MS(30800)) == 2 && g.down && g.push_turn, "a press inside the grace continues the press-and-turn, undebounced");
+    kg_up(&g, MS(31000));
+    CK(kg_settle(&g, MS(31060)) == KG_SPENT, "and its quick let-go is spent, not a press for the next place");
+    CK(kg_click(&g) == 0 && !kg_end(&g, MS(31399)), "the grace starts again from that let-go");
+    CK(kg_end(&g, MS(31400)) && !kg_end(&g, MS(31500)), "400 ms on, the end is told, once");
+    CK(kg_down(&g, MS(31600)) == 0, "a press after the grace is a new press");
+    kg_press(&g, MS(40000), 0);
+    CK(kg_poll(&g, MS(40700), 0), "a hold fires");
+    kg_up(&g, MS(41000));
+    CK(kg_settle(&g, MS(41100)) == KG_SPENT && kg_down(&g, MS(41200)) == 0 && !kg_end(&g, MS(41500)),
+       "a hold's spent release starts no grace: the next press is its own, and no end is told");
     return fails ? 1 : 0;
 }
 """
@@ -576,9 +595,15 @@ GESTURE_MUTATIONS = [
     ("g->long_fired = g->push_turn = g->intent = 0;", "g->long_fired = g->push_turn = 0;"),
     ("return first ? 2 : 1;", "return 1;"),
     ("if (!g->down || g->long_fired || g->up_at) return 0;", "if (!g->down || g->long_fired) return 0;"),
-    ("    if (!g->down || !g->up_at) return 0;\n    g->up_at = 0;\n    return 1;", "    return 0;"),
+    ("    if (g->down && g->up_at) { g->up_at = 0; return 1; }", ""),
     ("now - g->up_at < (int64_t)KG_SETTLE_MS * 1000) return -1;", "now - g->up_at < 0) return -1;"),
-    ("    return kg_release(g, at);", "    return kg_release(g, now);"),
+    ("    const int r = kg_release(g, at);", "    const int r = kg_release(g, now);"),
+    ("if (r == KG_SPENT && g->push_turn) g->pt_end_at = at ? at : 1;", "if (r == KG_SPENT) g->pt_end_at = at ? at : 1;"),
+    ("if (!g->down && g->pt_end_at && now - g->pt_end_at < (int64_t)KG_GRACE_MS * 1000) {", "if (0) {"),
+    # (dropping the continuation's push_turn = 1 is no mutant: only a press-and-turn starts a
+    # grace, and its push_turn is still 1 when the grace's press continues it)
+    ("if (g->down || !g->pt_end_at || now - g->pt_end_at < (int64_t)KG_GRACE_MS * 1000) return 0;", "if (g->down || !g->pt_end_at) return 0;"),
+    ("    g->pt_end_at = 0;\n    return 1;", "    return 1;"),
 ]
 
 
@@ -590,7 +615,7 @@ def gesture_source(ksrc, mutation=None):
             raise SystemExit("gesture mutation %r does not apply -- rewrite the bench" % (old[:40],))
         body = body.replace(old, new, 1)
     consts = ""
-    for name in ("KNOB_STEPS_PER_DETENT", "KNOB_DETENT_MIN_STEPS", "LONG_PRESS_MS", "KG_SETTLE_MS"):
+    for name in ("KNOB_STEPS_PER_DETENT", "KNOB_DETENT_MIN_STEPS", "LONG_PRESS_MS", "KG_SETTLE_MS", "KG_GRACE_MS"):
         m = re.search(r"#define %s\s+[^\n]+" % name, ksrc)
         consts += m.group(0) + "\n"
     return "#include <stdint.h>\n" + consts + body + GESTURE_HARNESS

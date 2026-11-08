@@ -5009,11 +5009,16 @@ static esp_err_t h_screen(httpd_req_t *req)
         input_router_inject(0, true, false);
     }
 
-    char pt[8] = "";
-    const bool have_pt = q_param(req, "push_turn", pt, sizeof pt);
+    char pt[8] = "", pe[4] = "";
+    bool have_pt = q_param(req, "push_turn", pt, sizeof pt);
     if (have_pt) {
         ESP_LOGI(TAG, "synthetic press-and-turn %+d", atoi(pt));
         input_router_inject_push((int32_t)atoi(pt));
+    }
+    if (q_param(req, "push_end", pe, sizeof pe) && pe[0] == '1') {
+        ESP_LOGI(TAG, "synthetic press-and-turn end");
+        input_router_inject_push_end();
+        have_pt = true;
     }
 
     if (hold[0] == '1') {

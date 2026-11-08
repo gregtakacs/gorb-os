@@ -189,6 +189,7 @@ static uint8_t *s_live[STAGE_LIVE_N];
 static int32_t s_live_order[STAGE_LIVE_N] = { -1, -1 };
 static lv_obj_t *s_live_obj[STAGE_LIVE_N];
 static lv_image_dsc_t s_live_dsc[STAGE_LIVE_N];
+static void live_drop_all(void);
 
 /* CLK_BG_DIRECT_PUSH, the L3/L4 switch the block below and the scheduler's delta
  * push both key on, lives in orb_sched.h: one number, both TUs, so the push and
@@ -2526,6 +2527,13 @@ void stage_run(bool on)
         orb_sched_set_running(false);
         return;
     }
+    if (!on && s_opened && !s_base) {
+        const bool any = s_live[0] || s_live[1] || s_overlay_sq;
+        live_drop_all();
+        heap_caps_free(s_overlay_sq);
+        s_overlay_sq = NULL;
+        if (any) ESP_LOGI(TAG, "off the glass: the live layers and the glass's square freed");
+    }
     orb_sched_set_running(on);
     if (!orb_sched_started()) return;
     if (on) {
@@ -2556,7 +2564,20 @@ void stage_run(bool on)
          * table rebuilds — an activation that finds its rows still standing
          * (the boot ladder's first show) leaves them and their handles alone.
          * (Migration 2, commit 3.) */
-        if (s_lay_app && orb_svc_layers_live(s_lay_app) == 0)
+        /* The glass's square went with the app's last leave (live_drop_all's note): expand it
+         * again, point its widget at it, and have the table take it too. */
+        bool reglass = false;
+        if (!s_base && clk_theme.overlay_disc && s_overlay && !s_overlay_sq) {
+            const uint8_t *sq = overlay_square();
+            if (sq) {
+                clk_sprite_t ov = clk_theme.overlay;
+                ov.color_off = OVERLAY_SQ_OFF;
+                gfx_fill_sprite_dsc(&s_overlay_dsc, &ov, sq);
+                lv_image_set_src(s_overlay, &s_overlay_dsc);
+                reglass = true;
+            }
+        }
+        if (s_lay_app && (orb_svc_layers_live(s_lay_app) == 0 || reglass))
             clock_layers_build(s_lay_app);
         /* An app with widgets of its own over its theme (a label, a ring) renders
          * through LVGL: L4 writes the theme into the panel mirror over whatever LVGL
@@ -2776,6 +2797,19 @@ static void live_restack(void)
     const int hi = 1 - lo;
     if (s_live_obj[lo]) lv_obj_move_to_index(s_live_obj[lo], slot[lo]);
     if (s_live_obj[hi]) lv_obj_move_to_index(s_live_obj[hi], slot[hi] + (both ? 1 : 0));
+}
+
+/* Off the glass an app keeps no display buffers (owner, 2026-11-07): the live layers go
+ * (the app opens them again when it is back), and so does the glass overlay's square,
+ * expanded again from the theme on the way back. */
+static void live_drop_all(void)
+{
+    for (int l = 0; l < STAGE_LIVE_N; l++) {
+        if (s_live_obj[l]) { lv_obj_delete(s_live_obj[l]); s_live_obj[l] = NULL; if (s_stage_objs) s_stage_objs--; }
+        heap_caps_free(s_live[l]);
+        s_live[l] = NULL;
+        s_live_order[l] = -1;
+    }
 }
 
 esp_err_t stage_live_open(int32_t layer, int32_t order, uint32_t argb)

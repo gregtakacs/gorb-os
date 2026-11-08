@@ -347,9 +347,11 @@ static void view_step(void)
 
 static orb_dial_t s_dial = { .idle_ms = ORB_DIAL_IDLE_MS };
 static const char *const ZOOM[RD_ZOOMS] = { "Wide", "Region", "Local", "Area", "City", "Close" };
-/* A press-and-turn's clicks gather here and land together once the turn rests, so a turn of
- * three clicks opens one view, not three (owner, 2026-11-07: zooming felt slow). */
-#define ZOOM_REST_MS 350
+/* Choosing a zoom (owner, 2026-11-07): from a press-and-turn's first click until the knob
+ * is let go (orb_push(0)), only the pill moves: the loop holds, nothing is fetched, no view
+ * opens. The choice lands on the let-go. ZOOM_LOST_MS is the safety for an end that never
+ * comes (an OS before v1.2.27 tells none). */
+#define ZOOM_LOST_MS 60000
 static int     s_zoom_want = -1;
 static int64_t s_zoom_click_ms;
 static void zoom_step(void);
@@ -530,7 +532,7 @@ static void place_changed(void)
 /* The loop (§2.5): oldest held past frame to Now, 250 ms a step, Now held 2 s. */
 static void loop_step(void)
 {
-    if (!s_play || !s_npast) return;
+    if (!s_play || !s_npast || s_zoom_want >= 0) return;   /* choosing a zoom: it holds */
     orb_burst(1000);               /* a theme with no moving rows ticks once a second: keep 4 */
     const int64_t t = up_ms();
     const int hold = s_loop == idx_newest() ? 2000 : 250;
@@ -619,8 +621,12 @@ static void on_glass(void)
     s_visible = true;
     s_layers = false;                  /* the stage frees the layers when another app binds */
     stage_read();
-    if (!s_view && !s_view_next) place_changed();
-    else s_map_dirty = true;
+    /* the OS closed the map's views when the app left (no display buffers off the glass,
+     * OS v1.2.27): a new one, the frames kept unless nothing has been shown yet */
+    const bool first = !s_view && !s_view_next && !s_npast;
+    s_view = s_view_next = 0;
+    if (first) place_changed();
+    else view_changed(false);
     orb_logf("radar on the glass: %s, rows %d, time %d, %d places, zoom %d", s_themed ? "themed" : "no theme",
              (int)s_stage.n_rows, (int)R_time, s_nwhere, s_zoom);
     redraw();
@@ -669,7 +675,7 @@ ORB_EXPORT("orb_service") void orb_service(void)
     if (s_visible && !s_themed && up_ms() >= s_stage_retry_ms) { stage_read(); s_layers = false; s_map_dirty = s_rain_dirty = s_ui_dirty = true; }
     if (s_map_retry_ms && up_ms() >= s_map_retry_ms) { s_map_retry_ms = 0; view_open(); }
     view_step();
-    net_step(s_visible);
+    net_step(s_visible && s_zoom_want < 0);             /* nothing fetched while choosing */
     if (s_visible) redraw();
 }
 
@@ -697,6 +703,13 @@ ORB_EXPORT("orb_input") void orb_input(int32_t delta, int32_t pressed)
 /* Press-and-turn (§2.10): clockwise closer, anticlockwise wider; the ends stop. */
 ORB_EXPORT("orb_push") void orb_push(int32_t delta)
 {
+    if (!delta) {                                        /* let go: the choice lands */
+        orb_logf("radar: press-and-turn let go (choosing %d)", s_zoom_want);
+        if (s_zoom_want >= 0) s_zoom_click_ms = 0;
+        zoom_step();
+        redraw();
+        return;
+    }
     int z = (s_zoom_want >= 0 ? s_zoom_want : s_zoom) + (int)delta;   /* each click a step */
     if (z < 0) z = 0;
     if (z > RD_ZOOMS - 1) z = RD_ZOOMS - 1;
@@ -709,8 +722,9 @@ ORB_EXPORT("orb_push") void orb_push(int32_t delta)
 /* The gathered zoom lands once the turn has rested. */
 static void zoom_step(void)
 {
-    if (s_zoom_want < 0 || up_ms() - s_zoom_click_ms < ZOOM_REST_MS) return;
+    if (s_zoom_want < 0 || (s_zoom_click_ms && up_ms() - s_zoom_click_ms < ZOOM_LOST_MS)) return;
     const int z = s_zoom_want;
+    orb_logf("radar: zoom lands at %d (%s)", z, s_zoom_click_ms ? "no end came" : "let go");
     s_zoom_want = -1;
     s_zoom_said_ms = up_ms();
     s_ui_dirty = true;

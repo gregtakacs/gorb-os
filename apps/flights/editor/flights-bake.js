@@ -859,8 +859,19 @@
       x.save(); x.translate(a.cx + p[2], a.cx + p[3]); x.rotate(p[4] * Math.PI / 180);
       x.drawImage(frames[p[0] * 7 + p[1]], -px / 2, -px / 2); x.restore();
     });
-    var o = canvas(size, size);
-    o.getContext('2d').drawImage(c, 0, 0, size, size);
+    return size === a.glass ? c : shrink(c, size);
+  }
+  // a picture made smaller in halving steps, smoothed, so the 1-2 px lines of a map, a ring or a
+  // word survive a thumbnail (one step from 466 px drops most of them)
+  function shrink(c, size) {
+    var cur = c;
+    while (cur.width / 2 >= size) {
+      var h = canvas(cur.width >> 1, cur.height >> 1), hx = h.getContext('2d');
+      hx.imageSmoothingEnabled = true; hx.imageSmoothingQuality = 'high'; hx.drawImage(cur, 0, 0, h.width, h.height);
+      cur = h;
+    }
+    var o = canvas(size, size), ox = o.getContext('2d');
+    ox.imageSmoothingEnabled = true; ox.imageSmoothingQuality = 'high'; ox.drawImage(cur, 0, 0, size, size);
     return o;
   }
   // a design's picture, drawing only the frames the picture shows

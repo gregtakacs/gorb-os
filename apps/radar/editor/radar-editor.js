@@ -337,8 +337,9 @@
       fields.push(C('Colour', 'words.scale.colour'));
       fields.push(K.H('Zoom and status'));
       fields.push(num('Zoom size', 'words.zoomPx', 34, 48, 1, px));
-      fields.push(K.Tx('Backing', W.backing, function (v) { upd('words.backing', v); }));
-      fields.push(K.Nt('', 'The zoom’s name while you choose it, and the status line, stand on this backing (a CSS colour, e.g. rgba(4,10,14,0.78)) so they read over map and rain.'));
+      fields.push(C('Backing', 'words.backing'));
+      fields.push(num('Opacity', 'words.backingA', 0, 1, 0.02, pct));
+      fields.push(K.Nt('', 'The zoom’s name while you choose it, and the status line, stand on this backing so they read over the map and the rain.'));
     }
 
     /* ---- the left pane: the parts ---- */
@@ -377,8 +378,12 @@
     var drawThumb = function (k, c) {
       if (!c) return;
       var paint = function (im) { var x = c.getContext('2d'); x.clearRect(0, 0, c.width, c.height); x.drawImage(im, 0, 0, c.width, c.height); };
-      if (thumbs[k]) { paint(thumbs[k]); return; }
-      B.picture(B.preset(k), 128, pictureOpts()).then(function (im) { thumbs[k] = im; paint(im); }, function () {});
+      // drawn again over your own map once it has come (the made-up place stands in until then)
+      var tk = k + (home && mapBytes[1] ? ':home' : ':sample');
+      if (thumbs[tk]) { paint(thumbs[tk]); return; }
+      if (thumbs[tk] === null) return;                    // being drawn
+      thumbs[tk] = null;
+      B.picture(B.preset(k), 192, pictureOpts()).then(function (im) { thumbs[tk] = im; paint(im); }, function () { delete thumbs[tk]; });
     };
     var sheet = step === 'start' ? h(S.StartSheet, {
       title: 'Start a radar theme',

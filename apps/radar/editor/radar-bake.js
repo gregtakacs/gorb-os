@@ -45,7 +45,7 @@
       // 26 px: capitals 18 px tall, the floor for a 1.75 in glass read from 2 ft (weather-plan
       // §2.8; owner, 2026-11-08: the 18 and 14 px words were far too small)
       words: { face: 'IBM Plex Mono', px: 26, ink: '#b4ffd2', forecast: '#e0b040', quiet: '#5fbf8a', namePx: 26, nameFace: 'IBM Plex Mono',
-               zoomPx: 40, backing: 'rgba(4,10,14,0.78)',     // the zoom's word while it changes, on a backing
+               zoomPx: 40, backing: '#040a0e', backingA: 0.78,     // the zoom's word while it changes, on a backing
                scale: { face: 'IBM Plex Mono', px: 26, colour: '#5fbf8a' } },   // the scale's length
       // the scale bar (layout 3): ink and a dark edge, its thickness, end ticks, longest bar
       scale: { ink: '#b4ffd2', edge: '#020805', width: 2, tick: 9, max: 150 },
@@ -103,7 +103,7 @@
     forecast: 'hatch', base: 'paper', layout: { caps: false }, words2: { face: 'Playfair Display', nameFace: 'IBM Plex Sans' },
     top: '#f2ead8', foot: '#e3d7bd', scaleEdge: '#f2ead8',
     glass: { ring: '#5a4a36', ringA: 0.25, track: '#5a4a36', trackA: 0.55, forecast: '#b05a20' },
-    words: { ink: '#2a2218', forecast: '#a04a18', quiet: '#5a4a36', backing: 'rgba(242,234,216,0.88)' },
+    words: { ink: '#2a2218', forecast: '#a04a18', quiet: '#5a4a36', backing: '#f2ead8', backingA: 0.88 },
     dot: { colour: '#c03a2a', ring: '#2a2218', r: 4.5 },
     map: { water: '#a9c7dd', land: '#efe6d2', urban: '#e2d4ba', lake: '#9fc1d9', river: '#7fa7c6', road2: '#d08a4a',
            road1: '#c0503a', state: '#8a7a9a', border: '#6a5a7a', coast: '#6f97b5', city: '#3a3226', airport: '#7a3a2a',
@@ -118,7 +118,7 @@
     forecast: 'desat', base: 'station',
     top: '#ffffff', foot: '#e6e6e3', scaleEdge: '#ffffff',
     glass: { ring: '#111111', ringA: 0.35, track: '#111111', trackA: 0.7, forecast: '#e3000f' },
-    words: { face: 'Jost', nameFace: 'Jost', ink: '#111111', forecast: '#e3000f', quiet: '#555555', backing: 'rgba(255,255,255,0.88)' },
+    words: { face: 'Jost', nameFace: 'Jost', ink: '#111111', forecast: '#e3000f', quiet: '#555555', backing: '#ffffff', backingA: 0.88 },
     dot: { colour: '#e3000f', ring: '#111111', r: 4.5 },
     map: { water: '#cfd8e0', land: '#f4f4f2', urban: '#e4e4e0', lake: '#c2ced8', river: '#8aa0b4', road2: '#9a9a9a',
            road1: '#555555', state: '#777777', border: '#111111', coast: '#8aa0b4', city: '#111111', airport: '#e3000f',
@@ -132,7 +132,7 @@
     top: '#2e332e', foot: '#151815', scaleEdge: '#151815',
     glass: { ring: '#c9a24e', ringA: 0.45, track: '#e9ddbf', trackA: 0.7, forecast: '#ff9a3c', rim: '#c9a24e' },
     words: { face: 'Cormorant Garamond', nameFace: 'Cormorant Garamond', ink: '#f2e6c8', forecast: '#ff9a3c', quiet: '#a8946a',
-             backing: 'rgba(22,24,21,0.85)' },
+             backing: '#161815', backingA: 0.85 },
     dot: { colour: '#e8c46a', ring: '#151815', r: 4.5 },
     map: { water: '#1c2624', land: '#262a26', urban: '#30332c', lake: '#1e2c2a', river: '#6a8a8a', road2: '#7a6430',
            road1: '#c9a24e', state: '#5a5038', border: '#e8c46a', coast: '#6a8a8a', city: '#f2e6c8', airport: '#e8c46a',
@@ -144,7 +144,7 @@
     forecast: 'hatch', base: 'blueprint',
     top: '#174a82', foot: '#0c2c58', scaleEdge: '#0c2c58',
     glass: { ring: '#cfe8ff', ringA: 0.35, track: '#cfe8ff', trackA: 0.6, forecast: '#ffe07a' },
-    words: { ink: '#eaf4ff', forecast: '#ffe07a', quiet: '#a8cdf0', backing: 'rgba(12,44,88,0.82)' },
+    words: { ink: '#eaf4ff', forecast: '#ffe07a', quiet: '#a8cdf0', backing: '#0c2c58', backingA: 0.82 },
     dot: { colour: '#ffffff', ring: '#0c2c58', r: 4.5 },
     map: { water: '#0f3a6c', land: '#164a80', urban: '#1c5490', lake: '#123f74', river: '#6ab0e8', road2: '#8ec8f4',
            road1: '#cfe8ff', state: '#8ec8f4', border: '#eaf4ff', coast: '#a8d4f8', city: '#ffffff', airport: '#ffe07a',
@@ -163,7 +163,7 @@
     top: '#eef1e4', foot: '#dfe5cf', scaleEdge: '#eef1e4',
     glass: { ring: '#2a5db0', ringA: 0.55, track: '#c2187a', trackA: 0.7, forecast: '#c2187a' },
     words: { face: 'Barlow Condensed', nameFace: 'Barlow Condensed', ink: '#1f2a44', forecast: '#c2187a', quiet: '#3e5a80',
-             backing: 'rgba(238,241,228,0.9)' },
+             backing: '#eef1e4', backingA: 0.9 },
     dot: { colour: '#c2187a', ring: '#1f2a44', r: 4.5 },
     map: { water: '#9fcbe9', land: '#eef1e4', urban: '#f3dc7a', lake: '#9fcbe9', river: '#4f8fcb', road2: '#a8708c',
            road1: '#8e4a6e', state: '#6c6c7a', border: '#4a4a5a', coast: '#4f8fcb', city: '#2b2b2b', airport: '#c2187a',
@@ -178,7 +178,7 @@
     forecast: 'dim', base: 'celestial', sweep: { on: true, colour: '#c9beff', tail: 30, period: 8 },
     top: '#251a55', foot: '#0b0820', scaleEdge: '#0b0820', stars: true,
     glass: { ring: '#8c7bff', ringA: 0.45, track: '#b9b2ff', trackA: 0.7, forecast: '#ffd27a' },
-    words: { face: 'Space Grotesk', nameFace: 'Space Grotesk', ink: '#edebff', forecast: '#ffd27a', quiet: '#9c95c9', backing: 'rgba(11,8,32,0.8)' },
+    words: { face: 'Space Grotesk', nameFace: 'Space Grotesk', ink: '#edebff', forecast: '#ffd27a', quiet: '#9c95c9', backing: '#0b0820', backingA: 0.8 },
     dot: { colour: '#ffe9a8', ring: '#0b0820', r: 4.5 },
     map: { water: '#140f3a', land: '#1a1240', urban: '#241a52', lake: '#1d1650', river: '#5a6bd8', road2: '#5a4fa8',
            road1: '#8c7bff', state: '#4a3f8a', border: '#b9b2ff', coast: '#5a6bd8', city: '#d9d4ff', airport: '#ffd27a',
@@ -190,7 +190,7 @@
     forecast: 'desat', base: 'silver',
     top: '#3a3f46', foot: '#1c1f24', scaleEdge: '#1c1f24',
     glass: { ring: '#c8ced6', ringA: 0.4, track: '#c8ced6', trackA: 0.65, forecast: '#7fc8ff', rim: '#c8ced6' },
-    words: { face: 'Jost', nameFace: 'Jost', ink: '#f2f4f7', forecast: '#7fc8ff', quiet: '#aab2bd', backing: 'rgba(20,22,26,0.8)' },
+    words: { face: 'Jost', nameFace: 'Jost', ink: '#f2f4f7', forecast: '#7fc8ff', quiet: '#aab2bd', backing: '#14161a', backingA: 0.8 },
     dot: { colour: '#ffffff', ring: '#1c1f24', r: 4.5 },
     map: { water: '#232a33', land: '#2c3138', urban: '#363c44', lake: '#28313c', river: '#7e9cb8', road2: '#8a929c',
            road1: '#c8ced6', state: '#6a727c', border: '#e4e8ec', coast: '#7e9cb8', city: '#f2f4f7', airport: '#7fc8ff',
@@ -202,7 +202,7 @@
     base: 'blank',
     top: '#1c1c1c', foot: '#101010', scaleEdge: '#000000',
     glass: { ring: '#9a9a9a', ringA: 0.25, track: '#9a9a9a', trackA: 0.5, forecast: '#c8c8c8' },
-    words: { ink: '#e8e8e8', forecast: '#c8c8c8', quiet: '#a8a8a8', backing: 'rgba(0,0,0,0.75)' },
+    words: { ink: '#e8e8e8', forecast: '#c8c8c8', quiet: '#a8a8a8', backing: '#000000', backingA: 0.75 },
     dot: { colour: '#ffffff', ring: '#000000', r: 4.5 },
     map: { water: '#202428', land: '#2a2a2a', urban: '#323232', lake: '#24282c', river: '#4a5058', road2: '#5a5a5a',
            road1: '#7a7a7a', state: '#4a4a4a', border: '#8a8a8a', coast: '#5a6068', city: '#d0d0d0', airport: '#d0d0d0',
@@ -255,6 +255,12 @@
     if (!out.layout) out.layout = { track: 'round', scale: 'bar', caps: false, placeY: 58, timeY: 98, statusY: 362 };
     if (!out.sweep) out.sweep = { on: false, colour: (out.glass && out.glass.ring) || '#5fd4c4', tail: 40, period: 6 };
     if (!out.forecast) out.forecast = 'none';
+    var bk = out.words && /^rgba?\(([^)]*)\)/.exec(out.words.backing || '');
+    if (bk) {                                      // the backing was a CSS colour: a colour and an opacity now
+      var v = bk[1].split(',').map(function (t) { return parseFloat(t); });
+      out.words.backing = '#' + v.slice(0, 3).map(function (c) { return Math.max(0, Math.min(255, c | 0)).toString(16).padStart(2, '0'); }).join('');
+      out.words.backingA = v.length > 3 ? v[3] : 1;
+    }
     (function fill(o, b) {
       for (var k in b) {
         if (o[k] === undefined) o[k] = JSON.parse(JSON.stringify(b[k]));
@@ -586,7 +592,13 @@
     say(Ly.caps ? place.toUpperCase() : place, CX, Ly.placeY || 58, W.face, W.px, W.ink);
     var tt = o.minutes ? (o.minutes > 0 ? '+' : '-') + Math.abs(o.minutes) + ' min' : 'Now';
     say(tt, CX, Ly.timeY || 98, W.face, W.px, o.minutes > 0 ? W.forecast : W.ink);
-    if (o.minutes > 0) say('forecast', CX, Ly.statusY || 362, W.nameFace, W.namePx, W.forecast);
+    if (o.minutes > 0) {                                      // the status line stands on its backing, as on the orb
+      x.font = W.namePx + 'px "' + W.nameFace + '", sans-serif';
+      var bw = Math.min(300, x.measureText('forecast').width + 28), bh = W.namePx + 12, by = (Ly.statusY || 362) - bh / 2;
+      x.fillStyle = rgba(W.backing || '#040a0e', W.backingA == null ? 0.78 : W.backingA);
+      x.beginPath(); x.roundRect(CX - bw / 2, by, bw, bh, 8); x.fill();
+      say('forecast', CX, Ly.statusY || 362, W.nameFace, W.namePx, W.forecast);
+    }
     var label = sb.len + ' ' + o.unit;
     if (Ly.scale === 'ring') {                                 // the ring's label, up and right on it
       say(label, CX + Math.round(sb.px * 0.7071) + 30, CX - Math.round(sb.px * 0.7071) - 6, SW.face, SW.px, SW.colour);
@@ -617,10 +629,20 @@
     var c = canvas(G, G);
     frame(c.getContext('2d'), d, P, { minutes: 0, place: o.place || 'Home', unit: o.unit || 'mi',
       radius: o.map ? radiusM(o.map.step == null ? 1 : o.map.step, o.map.lat) : 120000, sweepDeg: 300 });
-    if (size === G) return c;
-    var out = canvas(size, size);
-    out.getContext('2d').drawImage(c, 0, 0, size, size);
-    return out;
+    return size === G ? c : shrink(c, size);
+  }
+  // a picture made smaller in halving steps, smoothed, so the 1-2 px lines of a map, a ring or a
+  // word survive a thumbnail (one step from 466 px drops most of them)
+  function shrink(c, size) {
+    var cur = c;
+    while (cur.width / 2 >= size) {
+      var h = canvas(cur.width >> 1, cur.height >> 1), hx = h.getContext('2d');
+      hx.imageSmoothingEnabled = true; hx.imageSmoothingQuality = 'high'; hx.drawImage(cur, 0, 0, h.width, h.height);
+      cur = h;
+    }
+    var o = canvas(size, size), ox = o.getContext('2d');
+    ox.imageSmoothingEnabled = true; ox.imageSmoothingQuality = 'high'; ox.drawImage(cur, 0, 0, size, size);
+    return o;
   }
 
   /* ---- the bake ---- */
@@ -663,7 +685,7 @@
       var h = F[l.f].h + 2 + (l.grow || 0), panel = canvas(l.w, h);
       if (l.backing) {           // a rounded backing the words stand on, legible over map and rain
         var x = panel.getContext('2d'), r = h / 2;
-        x.fillStyle = W.backing || 'rgba(4,10,14,0.78)';
+        x.fillStyle = rgba(W.backing || '#040a0e', W.backingA == null ? 0.78 : W.backingA);
         x.beginPath(); x.moveTo(r, 0); x.arcTo(l.w, 0, l.w, h, r); x.arcTo(l.w, h, 0, h, r); x.arcTo(0, h, 0, 0, r); x.arcTo(0, 0, l.w, 0, r); x.closePath(); x.fill();
       }
       St.row(Object.assign({ n: St.id(), class: AUX, kind: 2, src: GB.SOURCES.indexOf('text'), w: l.w, h: h,

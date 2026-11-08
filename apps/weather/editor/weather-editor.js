@@ -14,8 +14,9 @@
 (function (root) {
   'use strict';
   var R = root.React, h = R.createElement, S = root.OrbStudio, T = root.OrbTheme, B = root.WeatherBake, FX = root.WeatherFx;
+  var M = root.WeatherMap;
   var G = 466, CX = 233, ROW_CAP = (root.GorbBake && root.GorbBake.CLK_ROW_MAX) || 64;
-  var STEPS = [['start', 'Start'], ['ground', 'Ground'], ['icons', 'Icons'], ['temps', 'Temperature'], ['words', 'Words'], ['layout', 'Layout'], ['render', 'Render']];
+  var STEPS = [['start', 'Start'], ['ground', 'Ground'], ['map', 'Map'], ['icons', 'Icons'], ['temps', 'Temperature'], ['words', 'Words'], ['layout', 'Layout'], ['render', 'Render']];
   var VIEWS = [['now', 'Now', 'Home on the glass, unarmed'], ['places', 'Places', 'Armed: turning steps the places'],
     ['hours', 'Hourly', 'A press: the next twelve hours on a clock face, the cursor on one'], ['days', '5 days', 'Another press: the next five days']];
   // the preview's made-up forecast (°C), the mockups' own
@@ -95,6 +96,8 @@
   function drawView(x, d, P, view, L, sel) {
     x.clearRect(0, 0, G, G);
     if (P.plate) x.drawImage(P.plate, 0, 0); else { x.fillStyle = '#000'; x.fillRect(0, 0, G, G); }
+    // the shown place's map (flights-map-plan §5): the preview has home's; Lisbon has none
+    if (P.map && d.map && d.map.on && view !== 'places') x.drawImage(P.map, 0, 0);
     if (!P.icons || !P.temps || !P.words) return;
     var W = d.words, caps = function (s) { return W.caps ? s.toUpperCase() : s; };
     var tx = B.sizeOf(d, 'text'), lb = B.sizeOf(d, 'label'), nu = B.sizeOf(d, 'num'), ip = B.sizeOf(d, 'icon');
@@ -234,6 +237,25 @@
     scrRef.current = scrS[0];
 
     var parts = useParts(d, say);
+    /* the owner's home map at the design's area (maps@1), drawn as the orb draws it */
+    var homeS = u(null), home = homeS[0], setHome = homeS[1], mbS = u({}), mapBytes = mbS[0], setBytes = mbS[1];
+    var mpS = u(null), mapPart = mpS[0], setMapPart = mpS[1];
+    R.useEffect(function () {
+      var o = ses.hubOrb();
+      if (!o || !root.GorbMaps) return;
+      root.GorbMaps.orbHome(o.ip).then(function (hp) { if (hp) setHome(hp); }, function () {});
+    }, []);
+    var mz = home && d.map ? M.levelOf(home.lat, d.map.area).z : 0;
+    R.useEffect(function () {
+      if (!home || !mz || mapBytes[mz]) return;
+      root.GorbMaps.fetchLevel(home.lat, home.lon, mz).then(function (b) { setBytes(function (m) { var n = Object.assign({}, m); n[mz] = b; return n; }); },
+        function (e) { say('The map preview could not be built: ' + (e && e.message ? e.message : e)); });
+    }, [home ? home.lat : 0, mz]);
+    R.useEffect(function () {
+      if (!home || !d.map || !d.map.on || !mapBytes[mz]) { setMapPart(null); return; }
+      try { setMapPart(M.view(d.map, mapBytes[mz], home.lat)); } catch (e) { say(e.message); }
+    }, [JSON.stringify(d.map), mz, Object.keys(mapBytes).join(','), home ? home.lat : 0]);
+    parts = Object.assign({}, parts, { map: mapPart });
     var ses = R.useMemo(function () {
       return T.session({
         slug: 'weather', keys: function () { return ['d']; }, state: function () { return stateRef.current; },
@@ -353,6 +375,50 @@
     };
     var faces = B.FACES.map(function (k) { return { v: k, label: k }; });
     var fields = [];
+    var pctOf = function (v) { return Math.round(v * 100) + '%'; };
+    var mRg = function (label, path, min, max, stp, fmt) { var v = +getIn(d, path); return K.Rg(label, v, min, max, stp, function (nv) { upd(path, nv); }, fmt(v)); };
+    var mPick = function (label, path, pairs) { return K.Ch(label, getIn(d, path), opt(pairs), function (v) { upd(path, v); }); };
+    var mOn = function (label, path, a, b) { return K.Ch(label, getIn(d, path) ? 'on' : 'off', opt([['on', a], ['off', b]]), function (v) { upd(path, v === 'on'); }); };
+    if (step === 'map') {
+      var mp = d.map;
+      fields.push(K.H('Map'));
+      fields.push(mOn('Map', 'map.on', 'Behind the reading', 'None'));
+      if (!mp.on) fields.push(K.Nt('', 'A hint of the place behind the weather: its roads, water and towns, from the maps Orb Manager makes for home and the places. Each place shows its own.'));
+      if (mp.on) {
+        fields.push(K.Ch('Look', mp.look, opt(M.LOOKS), function (v) { setD(function (o) { var n = clone(o); n.map = M.applyLook(o.map, v, o.base); return n; }); }));
+        fields.push(mRg('Strength', 'map.strength', 0.1, 1, 0.05, function (v) { return Math.abs(v - 0.5) < 0.001 ? 'the look’s own' : Math.round(v / 0.5 * 100) + '% of the look'; }));
+        fields.push(K.Nt('', 'Every opacity at once: lower keeps the reading in front.'));
+        fields.push(mPick('Reach', 'map.area', M.AREAS));
+        fields.push(K.H('What is drawn'));
+        fields.push(mPick('Water', 'map.water', [['all', 'Lakes, sea and rivers'], ['lakes', 'Lakes and sea'], ['off', 'None']]));
+        fields.push(mPick('Roads', 'map.roads', [['motorways', 'Motorways'], ['main', 'Main roads too'], ['off', 'None']]));
+        fields.push(mOn('Airports', 'map.airports', 'A symbol', 'None'));
+        if (mp.airports) fields.push(mPick('Symbol', 'map.symbol', M.SYMBOLS));
+        fields.push(mOn('Town dots', 'map.dots', 'Drawn', 'None'));
+        fields.push(mOn('Built-up areas', 'map.urban', 'Tinted', 'Not tinted'));
+        fields.push(mOn('Borders', 'map.borders', 'State and country lines', 'None'));
+        fields.push(K.H('Colours'));
+        M.INKS.forEach(function (ik) {
+          var k = ik[0];
+          if ((k === 'water' || k === 'river') && mp.water === 'off') return;
+          if (k === 'river' && mp.water !== 'all') return;
+          if ((k === 'road1' || k === 'road2') && mp.roads === 'off') return;
+          if (k === 'road2' && mp.roads !== 'main') return;
+          if ((k === 'airport' && !mp.airports) || (k === 'town' && !mp.dots) || (k === 'urban' && !mp.urban) || (k === 'border' && !mp.borders)) return;
+          fields.push(K.Co(ik[1], mp.ink[k], function (nv) { upd('map.ink.' + k, nv); }, '', 'map.ink.' + k, { noAuto: true, preset: getIn(base, 'map.ink.' + k) }));
+          fields.push(mRg('Opacity', 'map.alpha.' + k, 0, 1, 0.05, pctOf));
+        });
+        fields.push(K.H('Lines'));
+        M.LINES.forEach(function (ln) {
+          var k = ln[0], L = mp.line[k];
+          if ((k === 'road1' && mp.roads === 'off') || (k === 'road2' && mp.roads !== 'main') || (k === 'river' && mp.water !== 'all') || (k === 'border' && !mp.borders)) return;
+          fields.push(K.Ch(ln[1], L[1], opt([['solid', 'Solid'], ['long', 'Dashed'], ['short', 'Short dashes'], ['dot', 'Dotted'], ['dashdot', 'Dash-dot']]),
+            function (v) { upd('map.line.' + k, [L[0], v]); }));
+          fields.push(K.Rg('Weight', L[0], 1, 4, 1, function (v) { upd('map.line.' + k, [v, L[1]]); }, L[0] + ' px'));
+        });
+        fields.push(K.Nt('', home ? 'The preview is your own home map, drawn the way the orb draws it; on the orb each place shows its own.' : 'Open this editor from the hub, with home set on the Orb tab, to preview the map on your own home.'));
+      }
+    }
     if (step === 'ground') {
       var P = d.plate, GD = root.WeatherGround, KEEP = ['finish', 'tex', 'weaveAng', 'weaveSc', 'marks', 'img', 'imgScale', 'imgX', 'imgY', 'imgDim', 'age', 'stain', 'dust'];
       var upP = function (o) { setD(function (x) { var n = clone(x); n.plate = Object.assign({}, n.plate, o); return n; }); };
@@ -496,10 +562,10 @@
         ? h('div', { className: 'fl-list' }, h('div', { className: 'ui-mut' }, 'Pick a starting point, or open one from the hub library, then Continue. The steps after it: Ground, Icons, Temperature, Words, Layout, and Render to send it. The places the app shows are on the hub’s App settings page.'))
         : h('div', { className: 'fl-list' }, h(S.Fields, { fields: fields }));
 
-    var items = [['ground', 'Ground'], ['icons', 'Icons'], ['temps', 'Temperature'], ['words', 'Words']].map(function (x) { return { id: x[0], band: 'parts', label: x[1], movable: false }; });
+    var items = [['ground', 'Ground'], ['map', 'Map'], ['icons', 'Icons'], ['temps', 'Temperature'], ['words', 'Words']].map(function (x) { return { id: x[0], band: 'parts', label: x[1], movable: false }; });
     var left = h(S.Layers, { title: 'Parts', rows: S.layerRows(items, {
       sel: step, heads: { parts: 'The theme, bottom to top' },
-      icon: function (it) { return { ground: '◎', icons: '☀', temps: '▮', words: 'A' }[it.id]; },
+      icon: function (it) { return { ground: '◎', map: '▦', icons: '☀', temps: '▮', words: 'A' }[it.id]; },
       note: function (it) { return { ground: B.GROUNDS[d.plate.style] || 'Plain', icons: B.PACKS[d.icons.pack].title, temps: 'cold to hot', words: d.words.text }[it.id]; },
       hidden: function () { return false; }, move: function () { return { ok: false, reason: 'the theme’s parts keep their order' }; },
       onMove: function () {}, pick: function (it) { setStep(it.id); }, eyeTip: function () { return ''; }, toggleEye: function () {},

@@ -100,8 +100,7 @@ Drafting, Paper on Chart; Blank with no map.
 
 ## 3. Owed
 
-- The weather's map (§0's "maybe"): the shown place's own map, faint, under the reading.
-- Gold has not run a map under the scope.
+- Gold has not run a map under the scope or the reading.
 - The shelf's art pool is nearly full (Skeleton 3.48 MB, Modern 1.09, Scope 1.31,
   Radarscope 1.91): a fifth default, or a heavier one, needs room made first.
 
@@ -125,3 +124,25 @@ airports and the arm, Barlow Condensed in chart navy.
   a magenta and a blue airport ring, a magenta reporting point, SECTIONAL and CLASS E 700
   printed, royal-blue pencil hands, a magenta seconds hand. Clock v1.2.30. Estimated 4 fps
   still, the same as Phase, which shares its hands.
+
+## 5. The weather's map (2026-11-08, Bronze, weather v1.5.2)
+
+The owner's "maybe the same for the weather too, so the background is not so sterile; again
+optional". The shown place's own map (home, or the place a press steps to: each has its own
+levels on the card), faint, behind the reading, cut inside the bezel's ticks (r 192).
+
+- `main.c` reads the theme's values (layout 1, `wx_values_t`, 108 B): the colours, widths and
+  dashes, what is drawn, the clip, the layer's depth (over the ground, under every row) and the
+  reach (20, 40, 80 or 150 km to the glass's edge). One view a place; a press clears the layer
+  until the next place's view is ready. The values are read again at the first frame after an
+  arrival, as flights reads its theme.
+- The editor's Map step, between Ground and Icons: on or off, the three looks and Strength, the
+  reach, water, roads (motorways, or main roads too), airports (off at the start: round a city
+  even the airline fields are a handful of marks), town dots, built-up areas, borders, colours,
+  lines. `wx-map.js` is the weather's own copy of the tracker's module, cut down (no names, no
+  ranges): apps share no code.
+- Every preset starts on (Scope, Brass, Celestial and Station on Hint, Blueprint on Drafting,
+  Paper and Sectional on Chart); Blank and every design saved before it, off. The values cost
+  a theme ~100 B.
+- On Bronze over DFW at 40 km: the view 1,323 ms at z10 0.75×; 20 fps; the shelf's Scope
+  re-baked with it.

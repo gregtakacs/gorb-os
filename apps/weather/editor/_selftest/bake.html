@@ -3,10 +3,11 @@
 <title>Weather bake check</title>
 <!-- Staged by bake_check.py beside the runtime's baker and fonts: bakes every preset (and
      the variants below) through weather-bake.js and prints each theme as one
-     "B64 <name> <ms> <base64>" line in #out for the driver to check. -->
+     "B64 <name> <ms> <map 0|1> <base64>" line in #out for the driver to check. -->
 <link rel="stylesheet" href="fonts.css">
 <script src="orbtheme-baker.js"></script>
 <script src="ground.js"></script>
+<script src="wx-map.js"></script>
 <script src="weather-bake.js"></script>
 <pre id="out"></pre>
 <script>
@@ -17,6 +18,10 @@
   const b64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
   const VARIANTS = {
     'blank': () => B.preset('blank'),
+    // the map (flights-map-plan §5): off, a look and its choices, a design saved before it
+    'map-off': () => { const d = B.preset('scope'); d.map.on = false; return d; },
+    'map-drafting-wide': () => { const d = B.preset('scope'); d.map = window.WeatherMap.applyLook(d.map, 'drafting', 'scope'); Object.assign(d.map, { area: 150, roads: 'main', symbol: 'ticked', strength: 1 }); return d; },
+    'map-saved-before': () => { const d = B.preset('paper'); delete d.map; return B.complete(d); },
     // a pack worn by another ground, its colours from the pack's own start
     'scope-wears-nebula': () => { const d = B.preset('scope'); d.icons.pack = 'nebula'; d.icons.c = {}; return B.complete(d); },
     'paper-no-caps-mono': () => { const d = B.preset('paper'); d.words.caps = true; d.words.num = 'IBM Plex Mono'; d.temps.cap = 'butt'; return d; },
@@ -39,7 +44,7 @@
       const t0 = performance.now();
       const doc = new TextEncoder().encode(JSON.stringify(Object.assign({ format: 'wc-design', schema: B.SCHEMA, app: 'weather' }, APPV ? { appVersion: APPV } : {}, { design: d })));
       const r = await B.bake(d, { design: doc });
-      say('B64 ' + name + ' ' + Math.round(performance.now() - t0) + ' ' + b64(r.bytes));
+      say('B64 ' + name + ' ' + Math.round(performance.now() - t0) + ' ' + (d.map && d.map.on ? 1 : 0) + ' ' + b64(r.bytes));
     } catch (e) {
       say('ERR ' + name + ' ' + (e && e.message ? e.message : e));
     }

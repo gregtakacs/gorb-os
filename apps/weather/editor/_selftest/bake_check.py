@@ -48,6 +48,7 @@ def stage():
         shutil.rmtree(STAGE)
     os.makedirs(STAGE)
     for src in (os.path.join(HERE, "bake.html"), os.path.join(EDITOR, "weather-bake.js"), os.path.join(EDITOR, "ground.js"),
+                os.path.join(EDITOR, "wx-map.js"),
                 os.path.join(RUNTIME, "baker@1", "orbtheme-baker.js"), os.path.join(RUNTIME, "vendor", "fonts.css")):
         shutil.copy(src, STAGE)
     shutil.copytree(os.path.join(RUNTIME, "vendor", "fonts"), os.path.join(STAGE, "fonts"))
@@ -62,7 +63,10 @@ def run_chrome():
     return r.stdout
 
 
-def check(name, raw, exe):
+VALUES_B = 108                                  # main.c wx_values_t, layout 1
+
+
+def check(name, raw, exe, mapped):
     bad = []
     path = os.path.join(tempfile.mkdtemp(prefix="wxb."), name + ".orbtheme")
     open(path, "wb").write(raw)
@@ -77,6 +81,17 @@ def check(name, raw, exe):
         bad.append("theme_schema refused it: %s" % e)
     aux = {int(e["slot"]): e for e in els if int(e["class"]) == ts.CLASS_AUX}
     fonts = [e for e in els if int(e["class"]) == ts.CLASS_TEXT]
+    # the map (flights-map-plan §5): the values when it is on, none when it is off
+    vals = [e for e in els if int(e["class"]) == ts.CLASS_VALUES]
+    if mapped:
+        if len(vals) != 1 or int(vals[0]["src"]) != 1:
+            bad.append("no values of layout 1")
+        else:
+            b = sec["blob"]["sprites"][int(vals[0]["frame0"])]
+            if not b or int(b["w"]) != VALUES_B:
+                bad.append("values of %r B, not wx_values_t's %d" % (b and b["w"], VALUES_B))
+    elif vals:
+        bad.append("values with no map")
 
     def picked(slots, n):
         return all(s in aux and int(aux[s]["n_frames"]) == n and not int(aux[s]["delay"]) for s in slots)
@@ -154,12 +169,12 @@ def main():
             print("FAIL " + line[4:])
             fails += 1
         elif line.startswith("B64 "):
-            _, name, ms, b64 = line.split(" ", 3)
+            _, name, ms, mapped, b64 = line.split(" ", 4)
             seen += 1
             raw = base64.b64decode(b64)
             if keep:
                 open(os.path.join(keep, name + ".orbtheme"), "wb").write(raw)
-            bad, n = check(name, raw, exe)
+            bad, n = check(name, raw, exe, mapped == "1")
             print("%s %-20s %8d B %6s ms  %s" % ("ok  " if not bad else "FAIL", name, n, ms, "; ".join(bad)))
             fails += bool(bad)
     if "DONE" not in dom:

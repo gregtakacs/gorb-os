@@ -86,6 +86,7 @@ static int day_y0(int pitch) { return DAY_Y0 - 2 * (pitch - 56); }   /* and high
 /* ---- state ------------------------------------------------------------------------ */
 
 static wx_where_t s_where[WX_PLACES];
+static uint8_t    s_where_os[WX_PLACES];   /* each one's OS place: 0 home, 1-3 the places */
 static int32_t    s_clock_on = 1;       /* setting "clock": the clock shown on Now; its format is the orb's */
 static int32_t    s_force = -1;         /* setting "force", the bench's: a WX_* Now shows whatever the sky
                                           * does (rain, snow, fog, stars on demand); -1 the forecast's own.
@@ -121,6 +122,7 @@ static void load_places(void)
     s_home_set = orb_home(&h) == ORB_OK;
     s_home_gen = orb_home_gen();
     if (s_home_set) {
+        s_where_os[s_nwhere] = 0;
         wx_where_t *w = &s_where[s_nwhere++];
         snprintf(w->name, sizeof w->name, "Home");
         w->lat = h.lat_e6 / 1e6;
@@ -133,6 +135,7 @@ static void load_places(void)
         orb_place_t p;
         memset(&p, 0, sizeof p);
         if (orb_place(i, &p) != ORB_OK) continue;
+        s_where_os[s_nwhere] = (uint8_t)(i + 1);
         wx_where_t *w = &s_where[s_nwhere++];
         snprintf(w->name, sizeof w->name, "%s", p.place);
         w->lat = p.lat_e6 / 1e6;
@@ -672,11 +675,120 @@ static void draw_widgets(void)
     orb_ui_text(W_detail, det);
 }
 
+/* ---- the map under the reading (flights-map-plan §5, OS v1.2.38) ------------------- *
+ * The shown place's own map, made by Orb Manager, drawn by the OS into live layer 0 at the
+ * theme's depth: over the ground, under every row, cut inside the bezel, faint. The theme's
+ * values say what is drawn and how far it reaches; a theme with none draws no map. One view
+ * a place, rendered once; a press to another place clears the layer until its view is ready. */
+#define WX_VALUES_VER 1
+typedef struct {
+    uint32_t map_pal[16];          /* ARGB per map role */
+    uint8_t  width[16];            /* line widths and floors; the marks' looks (ORB_MAP_LOOK) */
+    uint8_t  dash[16];             /* line dashes; the fills' floors; the marks' rank caps */
+    uint16_t role_on;              /* 0: no map */
+    uint8_t  mark_on, clip;        /* clip: half the radius, px, the map stops at */
+    uint8_t  map_order, pad0;      /* the layer's depth on the rows' scale */
+    uint16_t radius_km;            /* centre to the glass's edge */
+    uint8_t  pad[4];
+} wx_values_t;
+_Static_assert(sizeof(wx_values_t) == 108, "weather-bake.js writes this layout");
+static wx_values_t V;
+static bool    s_layer, s_map_drawn, s_reread;
+static int32_t s_view, s_view_next, s_view_key = -1, s_next_key = -1;
+static int64_t s_map_retry_ms;
+
+static void read_values(void)
+{
+    uint32_t ver = 0;
+    memset(&V, 0, sizeof V);
+    const uint32_t n = s_themed ? orb_stage_values(&V, sizeof V, &ver) : 0;
+    if (n && (n != sizeof V || ver != WX_VALUES_VER)) {
+        orb_logf("weather: the theme's values are layout %u, %u B: no map", (unsigned)ver, (unsigned)n);
+        memset(&V, 0, sizeof V);
+    }
+    if (V.radius_km < 5 || V.radius_km > 400) V.radius_km = 40;
+}
+
+/* A theme sent from the editor binds while the app is away: its values are read again at
+ * the first frame after an arrival, once the stage is bound (orb_show comes before it). */
+static void values_reread(void)
+{
+    clk_row_t r0;
+    if (!s_themed) { s_reread = false; return; }
+    if (orb_stage_row(0, &r0) != ORB_OK) return;
+    s_reread = false;
+    read_values();
+    s_view_key = s_next_key = -1;
+}
+
+static int32_t map_key(void)
+{
+    if (s_sel >= s_nwhere) return -1;
+    return (int32_t)(s_where_os[s_sel] | (s_home_gen & 0x3FF) << 2 | (s_places_gen & 0x3FF) << 12 | (orb_maps_gen() & 0xFF) << 22);
+}
+
+static void map_step(void)
+{
+    if (!V.role_on || !s_nwhere || !s_visible) return;
+    if (!s_layer) {                          /* refused before the stage binds: the next frame asks */
+        s_layer = orb_stage_live(0, V.map_order, 0) == ORB_OK;
+        s_map_drawn = false;
+        if (!s_layer) return;
+    }
+    const int32_t key = map_key();
+    if (key != s_view_key && key != s_next_key) {
+        if (s_view_key >= 0 && (s_view_key & 3) != (key & 3) && s_map_drawn) {   /* another place */
+            orb_stage_live(0, V.map_order, 0);
+            s_map_drawn = false;
+        }
+        if (up_ms() >= s_map_retry_ms) {
+            orb_map_view_t v;
+            memset(&v, 0, sizeof v);
+            v.radius_m = (int32_t)V.radius_km * 1000;
+            v.role_on = V.role_on;
+            v.mark_on = V.mark_on;
+            v.clip = V.clip;
+            memcpy(v.width, V.width, sizeof v.width);
+            memcpy(v.dash, V.dash, sizeof v.dash);
+            if (s_view_next > 0) orb_map_close(s_view_next);
+            s_view_next = orb_map_open(s_where_os[s_sel], &v);
+            s_next_key = key;
+            if (s_view_next < 0) {
+                const bool absent = s_view_next == ORB_MAP_ABSENT || s_view_next == ORB_MAP_NOCARD;
+                s_map_retry_ms = up_ms() + (absent ? 20000 : 3000);
+                s_view_next = 0; s_next_key = -1;
+            }
+        }
+    }
+    if (s_view_next > 0) {
+        const int32_t r = orb_map_ready(s_view_next);
+        if (r < 0) {
+            orb_map_close(s_view_next);
+            s_view_next = 0; s_next_key = -1;
+            s_map_retry_ms = up_ms() + (r == ORB_MAP_ABSENT || r == ORB_MAP_NOCARD ? 20000 : 3000);
+        } else if (r > 0) {
+            if (s_view > 0) orb_map_close(s_view);
+            s_view = s_view_next; s_view_key = s_next_key;
+            s_view_next = 0; s_next_key = -1;
+            s_map_drawn = false;
+        }
+    }
+    if (s_view > 0 && !s_map_drawn && s_view_key == key) {
+        orb_stage_live(0, V.map_order, 0);
+        orb_map_draw(ORB_CV_LIVE0, s_view, V.map_pal, 0, 0);
+        s_map_drawn = true;
+    }
+}
+
 static void redraw(void)
 {
     s_dirty = false;
     if (!s_visible) return;
-    if (s_themed) draw_stage(); else draw_widgets();
+    if (s_themed) {
+        if (s_reread) values_reread();
+        map_step();
+        draw_stage();
+    } else draw_widgets();
 }
 
 /* ---- entry points ----------------------------------------------------------------- */
@@ -721,7 +833,8 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
         /* A theme without the large icon or the title label is not this app's layout:
          * draw on widgets rather than half a screen. */
         if (R.icon < 0 || R.lab[0] < 0) s_themed = false;
-        orb_logf("weather on its theme: %s", s_themed ? "rows found" : "rows missing, widgets");
+        if (s_themed) read_values();
+        orb_logf("weather on its theme: %s%s", s_themed ? "rows found" : "rows missing, widgets", V.role_on ? ", a map" : "");
         if (s_themed) orb_set_beat(0);   /* the stage's frames are the beat */
     }
     if (!s_themed) orb_set_beat(60000);  /* widgets: once a minute, for the age line */
@@ -742,14 +855,19 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
 
 static void set_visible(bool v)
 {
+    const bool was = s_visible;
     s_visible = v;
     if (v) s_dirty = true;
+    if (was == v) return;
+    /* off the glass the OS frees the live layers and closes the map's views */
+    s_layer = s_map_drawn = false;
+    if (!v) { s_view = s_view_next = 0; s_view_key = s_next_key = -1; }
 }
 
-ORB_EXPORT("orb_activate") void orb_activate(void) { orb_dial_home(&s_dial); set_visible(true); redraw(); }
-ORB_EXPORT("orb_resume") void orb_resume(void) { set_visible(true); redraw(); }
+ORB_EXPORT("orb_activate") void orb_activate(void) { orb_dial_home(&s_dial); s_reread = true; set_visible(true); redraw(); }
+ORB_EXPORT("orb_resume") void orb_resume(void) { s_reread = true; set_visible(true); redraw(); }
 ORB_EXPORT("orb_show") void orb_show(void) { set_visible(true); redraw(); }
-ORB_EXPORT("orb_suspend") void orb_suspend(void) { s_visible = false; }
+ORB_EXPORT("orb_suspend") void orb_suspend(void) { set_visible(false); }
 
 /* With a theme the stage ticks the app every frame and the app poses every row
  * (orb_stage.h), so the themed screen is drawn on each tick; a label recomposes only

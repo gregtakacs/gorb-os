@@ -180,10 +180,12 @@
       b.words = { num: PLEX, text: PLEX, label: PLEX, caps: false, track: 1, ink: '#E6E6E6', quiet: '#8F8F8F' };
       b.temps = { ramp: ['#5B8DB8', '#D8D8D8', '#E0A040'], rain: '#7FB0D8', track: '#2E2E2E', cap: 'round' };
       b.icons = { pack: 'pictogram', c: { ink: '#D8D8D8', red: '#E0A040' }, shade: '3d', shadow: 'strong' };
+      b.map = root.WeatherMap.preset('blank');
       return b;
     }
     var d = clone(PRESETS_DEF[k] || PRESETS_DEF.scope);
     d.base = PRESETS_DEF[k] ? k : 'scope';
+    d.map = root.WeatherMap.preset(d.base);     // flights-map-plan §5: a hint of the place behind the reading
     return d;
   }
   // a design saved before a field existed takes it from its preset
@@ -196,7 +198,10 @@
       });
       return o;
     };
-    var d = fill(clone(x), p);
+    // a design from before the map keeps its ground as it was: the map starts off
+    var y = clone(x);
+    if (!y.map) y.map = Object.assign(clone(p.map), { on: false });
+    var d = fill(y, p);
     // a pack's colours are its own: a pack changed in the editor takes that pack's starting colours
     var roles = PACKS[d.icons.pack] ? PACKS[d.icons.pack].roles : PACKS.pictogram.roles;
     var start = packStart(d.icons.pack);
@@ -810,6 +815,7 @@
     }
     // §60: the whole glass, deflated by the baker and inflated by the orb (owner, 2026-11-07:
     // at 128 the carousel's disc stretched it ~1.8x and the words could not be read)
+    if (d.map && d.map.on) St.values(root.WeatherMap.valuesBytes(d.map), root.WeatherMap.VALUES_VER);
     St.preview({ plane: plane(await picture(d, 466, { plate: plateC })), x: 0, y: 0, order: 3 });
     var out = St.finish({ name: d.name || 'Weather', slug: 'weather', serial: o.serial || serialOf(d, o.design), abi: GB.GEOM_ABI6, design: o.design || null,
                           bakedS: o.bakedS != null ? o.bakedS : Math.floor(Date.now() / 1000) });

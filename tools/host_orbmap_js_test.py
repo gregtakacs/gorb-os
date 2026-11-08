@@ -183,17 +183,24 @@ STYLES = [
     dict(scale=1.41, rot=0.0, dash={5: 1, 7: 2, 8: 4}),
     dict(scale=0.71, rot=math.radians(33.3), dash={4: 3, 6: 2}),
     dict(scale=1.2, rot=math.radians(-120), dash={5: 4, 7: 1, 12: 3}, widths={4: 3, 5: 4, 6: 4, 8: 3}),
+    # v1.2.38 (flights-map-plan §2.1): the marks' looks and rank caps, the fills' floors, the clip
+    dict(scale=1.0, rot=0.0, dash={0: 3, 2: 8, 3: 5, 10: 4, 11: 1}, widths={10: 1 | 3 << 3, 11: 7 | 6 << 3}, clip=92),
+    dict(scale=1.3, rot=math.radians(17), dash={3: 12, 10: 2}, widths={10: 2 | 5 << 3, 11: 3 | 7 << 3}, clip=110),
+    dict(scale=0.8, rot=0.0, dash={}, widths={10: 5 | 2 << 3, 11: 4 | 9 << 3}),
+    dict(scale=1.0, rot=0.0, dash={11: 8}, widths={10: 6 | 4 << 3, 11: 6 | 15 << 3}, clip=116),
+    dict(scale=1.1, rot=math.radians(8), dash={4: 3, 6: 1}, widths={4: 2 | 6 << 3, 6: 3 | 2 << 3, 12: 1 | 31 << 3}),
 ]
 
 def c_style(s):
     st = HR.style(s["scale"], s["rot"], s["dash"])
     for r, w in s.get("widths", {}).items(): st.width[r] = w
+    st.clip = s.get("clip", 0)
     return st
 
 def js_style(s):
     st = c_style(s)
     return {"scale": st.scale, "rot_rad": st.rot_rad, "role_on": st.role_on, "mark_on": st.mark_on,
-            "width": list(st.width), "dash": list(st.dash)}
+            "width": list(st.width), "dash": list(st.dash), "clip": st.clip}
 
 def suite(js_path, quiet=False):
     fails = []
@@ -286,6 +293,14 @@ MUTATIONS = [
     ("g.x = f32(g.x + g.dxdy);", "g.x = g.x + g.dxdy;"),
     ("pen.phase = f32(pen.phase + f32(f32(len - lead) - f32(stepl * f32(steps))));", "pen.phase = f32(pen.phase);"),
     ("var DASH = [[0, 0, 0, 0], [4, 3, 0, 0],", "var DASH = [[0, 0, 0, 0], [4, 4, 0, 0],"),
+    ("if (floorPx > 0 && f32(bx1 - bx0) < floorPx && f32(by1 - by0) < floorPx)", "if (floorPx > 0 && f32(bx1 - bx0) < floorPx)"),
+    ("if (st.dash[mrole] && rank > st.dash[mrole]) continue;", ";"),
+    ("var hw = Math.trunc(f32(Math.sqrt(rr * rr - ddy * ddy)));", "var hw = Math.round(Math.sqrt(rr * rr - ddy * ddy));"),
+    ("o = r - ady; i = o - th - 1;", "o = r - ady; i = o - th;"),
+    ("if (shape === 5 || ady > r - th) span(", "if (shape === 5 || ady >= r - th) span("),
+    ("var sq = function (n) { return Math.trunc(f32(Math.sqrt(f32(n + 0.5)))); };", "var sq = function (n) { return Math.round(Math.sqrt(n)); };"),
+    ("var lfloor = 8 * (st.width[role & 15] >> 3);", "var lfloor = 4 * (st.width[role & 15] >> 3);"),
+    ("var pen = { v: role, w: st.width[role & 15] & 7,", "var pen = { v: role, w: st.width[role & 15] & 15,"),
     ("if (layer === 'boundary' && p.maritime !== 1) {", "if (layer === 'boundary') {"),
     ("rank = props.iata ? 1 : 8;", "rank = 1;"),
     ("var nb = utf8e.encode(m[4]).subarray(0, 23);", "var nb = utf8e.encode(m[4]).subarray(0, 24);"),

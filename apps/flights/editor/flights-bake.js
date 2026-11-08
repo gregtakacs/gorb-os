@@ -16,6 +16,7 @@
 (function (root) {
   'use strict';
   var A = function () { return root.FlightsArt; };
+  var M = function () { return root.FlightsMap; };
 
   var SHAPES = ['light', 'turboprop', 'bizjet', 'airliner', 'heavy', 'helicopter', 'generic'];
   var SHAPE_TITLES = ['Light', 'Turboprop', 'Business jet', 'Airliner', 'Heavy', 'Helicopter', 'Other'];
@@ -137,6 +138,7 @@
     d.words = { face: 'IBM Plex Sans', size: 16, body: '#E6E6E6', accent: '#FFFFFF', accent2: null, quiet: '#8F8F8F', warning: '#E0A040' };
     d.frames = { style: 'rounded', edge: 1, pad: 8, fill: '#1A1A1A', opacity: 0.85, line: '#4A4A4A', image: null, corner: 10,
       card: { width: 240, place: 'auto' }, shadow: { on: false, blur: 4, opacity: 0.55, drop: 3 } };
+    d.map = M().preset('blank', d.words.face);
     return d;
   }
   function preset(fam) {
@@ -158,6 +160,7 @@
     d.arm.layer = 'under';   // §12.9: under the planes, or over them (still under the rings and words)
     if (X.arm) Object.assign(d.arm, X.arm);
     if (X.frame) d.frames.style = X.frame;
+    d.map = M().preset(fam, d.words.face);
     return d;
   }
   // a design saved before a field existed takes that field from its preset (§12.6: added
@@ -171,7 +174,10 @@
       });
       return o;
     };
-    var p = preset(fam), d = fill(clone(x), p);
+    // a design from before the map keeps its scope as it was: the map starts off
+    var p = preset(fam), y = clone(x);
+    if (!y.map) y.map = Object.assign(clone(p.map), { on: false });
+    var d = fill(y, p);
     delete d.frames.plaques;
     if (d.scope.gridWidth == null) d.scope.gridWidth = GRID_W[d.scope.ground] || 0.8;
     return d;
@@ -810,6 +816,20 @@
       var tone = FONTS[fi], foot = tone === 'accent' ? W.accent2 : null, f = await font(W.face, Z[tone], '#FFFFFF', null);
       S.font({ n: S.id(), class: TEXT, slot: fi, x: 0, y: 0, w: f.w, h: f.h, order: 0,
         pivot_x: Math.min(f.space, f.w), pivot_y: f.track }, f.glyphs.map(plane), W[tone], foot);
+    }
+    var Mp = d.map && d.map.on ? d.map : null;
+    if (Mp) {
+      // the map's names (main.c names_draw): font 4, six labels over the ground and under the
+      // arm, their opacity the map's; the values say what each range draws
+      var nf = await font(Mp.nameFace || W.face, Mp.nameSize | 0 || 18, '#FFFFFF', null);
+      S.font({ n: S.id(), class: TEXT, slot: FONTS.length, x: 0, y: 0, w: nf.w, h: nf.h, order: 0,
+        pivot_x: Math.min(nf.space, nf.w), pivot_y: nf.track }, nf.glyphs.map(plane), Mp.ink.names, null);
+      var nw = 240, nh = nf.h + 2, na = Math.round(255 * M().alphaOf(Mp, 'names'));
+      for (var ni = 0; ni < M().N_NAMES; ni++)
+        S.row({ n: S.id(), class: AUX, slot: M().NAME_SLOT0 + ni, kind: 2, src: GB.SOURCES.indexOf('text'), x: a.cx - (nw >> 1), y: a.cx - (nh >> 1),
+          w: nw, h: nh, pivot_x: nw >> 1, pivot_y: nh >> 1, order: 1, alpha: Math.max(1, na), n_frames: 1, str: toneStr([FONTS.length, NONE, NONE, NONE]),
+          radius: 1, digit: 1, end: 1 }, plane(canvas(nw, nh)), true, false);
+      S.values(M().valuesBytes(Mp), M().VALUES_VER);
     }
     for (var lab of LABELS) {
       var L = Lay[lab.name], b = L.box, slot = lab.name === 'card' && L.clear ? CARD_CLEAR_SLOT : lab.slot;

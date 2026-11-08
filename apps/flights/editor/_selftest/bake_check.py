@@ -40,7 +40,8 @@ def stage():
         shutil.rmtree(STAGE)
     os.makedirs(STAGE)
     for src in (os.path.join(HERE, "bake.html"), os.path.join(EDITOR, "flights-art.js"),
-                os.path.join(EDITOR, "flights-bake.js"), os.path.join(RUNTIME, "baker@1", "orbtheme-baker.js"),
+                os.path.join(EDITOR, "flights-bake.js"), os.path.join(EDITOR, "flights-map.js"),
+                os.path.join(RUNTIME, "maps@1", "orbmap.js"), os.path.join(RUNTIME, "baker@1", "orbtheme-baker.js"),
                 os.path.join(RUNTIME, "vendor", "fonts.css")):
         shutil.copy(src, STAGE)
     shutil.copytree(os.path.join(RUNTIME, "vendor", "fonts"), os.path.join(STAGE, "fonts"))
@@ -55,7 +56,10 @@ def run_chrome():
     return r.stdout
 
 
-def check(name, raw, exe, card, period):
+VALUES_B = 120                                  # main.c fl_values_t, layout 1
+
+
+def check(name, raw, exe, card, period, mapped):
     bad = []
     path = os.path.join(tempfile.mkdtemp(prefix="flb."), name + ".orbtheme")
     open(path, "wb").write(raw)
@@ -83,8 +87,23 @@ def check(name, raw, exe, card, period):
     if any(dots) and not all(d is not None and int(d["n_frames"]) in (1, 7) and not int(d["delay"])
                              and int(d["n_frames"]) == int(dots[0]["n_frames"]) for d in dots):
         bad.append("the dot pool is not nine rows of 1 or 7 picked frames")
-    if len(fonts) != 4 or sorted(int(f["slot"]) for f in fonts) != [0, 1, 2, 3]:
+    want_fonts = [0, 1, 2, 3, 4] if mapped else [0, 1, 2, 3]    # 4: the map's names
+    if sorted(int(f["slot"]) for f in fonts) != want_fonts:
         bad.append("fonts: %s" % [int(f["slot"]) for f in fonts])
+    # the map (flights-map-plan §2.2): six names at 32..37 and the values, or neither
+    names = [s for s in range(32, 38) if s in aux and int(aux[s]["kind"]) == ts.SHAPE_TEXT]
+    if names != (list(range(32, 38)) if mapped else []):
+        bad.append("map names at %s" % names)
+    vals = [e for e in els if int(e["class"]) == ts.CLASS_VALUES]
+    if mapped:
+        if len(vals) != 1 or int(vals[0]["src"]) != 1:
+            bad.append("no values of layout 1")
+        else:
+            b = sec["blob"]["sprites"][int(vals[0]["frame0"])]
+            if not b or int(b["w"]) != VALUES_B:
+                bad.append("values of %r B, not fl_values_t's %d" % (b and b["w"], VALUES_B))
+    elif vals:
+        bad.append("values with no map")
     labels = [aux.get(s) for s in (20, 21, 23, card)]
     if not all(lb is not None and int(lb["kind"]) == ts.SHAPE_TEXT for lb in labels):
         bad.append("the labels are not at 20, 21, 23 and %d" % card)
@@ -118,12 +137,12 @@ def main():
             print("FAIL " + line[4:])
             fails += 1
         elif line.startswith("B64 "):
-            _, name, ms, card, period, b64 = line.split(" ", 5)
+            _, name, ms, card, period, mapped, b64 = line.split(" ", 6)
             seen += 1
             raw = base64.b64decode(b64)
             if keep:
                 open(os.path.join(keep, name + ".orbtheme"), "wb").write(raw)
-            bad, n = check(name, raw, exe, int(card), int(period))
+            bad, n = check(name, raw, exe, int(card), int(period), mapped == "1")
             print("%s %-18s %8d B  %s" % ("ok  " if not bad else "FAIL", name, n, "; ".join(bad)))
             fails += bool(bad)
     if "DONE" not in dom:

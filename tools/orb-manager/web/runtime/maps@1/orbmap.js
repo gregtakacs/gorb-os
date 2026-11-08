@@ -568,11 +568,12 @@
     var marksOut = [];
     for (var f = 0; f < nf && !bad; f++) {
       var role = rb(), kind = rb(), nr = rv();
-      var on = role < 16 && ((st.role_on >> role) & 1) && (kind === 0 || st.width[role & 15]);
+      var on = role < 16 && ((st.role_on >> role) & 1) && (kind === 0 || (st.width[role & 15] & 7));
       stats.features++;
       var q, np, x, y, i, o;
       if (kind === 0) {
         edges = [];
+        var bx0 = 1e9, by0 = 1e9, bx1 = -1e9, by1 = -1e9;
         for (q = 0; q < nr && !bad; q++) {
           np = rv(); x = 0; y = 0;
           var fx0 = 0, fy0 = 0, px = 0, py = 0;
@@ -580,6 +581,10 @@
             x += rz(); y += rz();
             if (!on) continue;
             o = tx(x, y);
+            if (o[0] < bx0) bx0 = o[0];
+            if (o[0] > bx1) bx1 = o[0];
+            if (o[1] < by0) by0 = o[1];
+            if (o[1] > by1) by1 = o[1];
             if (i === 0) { fx0 = o[0]; fy0 = o[1]; }
             else addEdge(px, py, o[0], o[1]);
             px = o[0]; py = o[1];
@@ -587,22 +592,37 @@
           if (on && np > 2) addEdge(px, py, fx0, fy0);
         }
         if (!on) continue;
+        var floorPx = 2 * (st.dash[role & 15] | 0);
+        if (floorPx > 0 && f32(bx1 - bx0) < floorPx && f32(by1 - by0) < floorPx) { stats.small = (stats.small | 0) + 1; continue; }
         fill(role);
         stats.fills++; stats.edges += edges.length;
       } else {
         var d = st.dash[role & 15] < DASH.length ? st.dash[role & 15] : 0;
-        var pen = { v: role, w: st.width[role & 15], pat: d ? DASH[d] : null, plen: 0, phase: 0 };
+        var pen = { v: role, w: st.width[role & 15] & 7, pat: d ? DASH[d] : null, plen: 0, phase: 0 };
         if (d) pen.plen = DASH[d][0] + DASH[d][1] + DASH[d][2] + DASH[d][3];
+        var lfloor = 8 * (st.width[role & 15] >> 3);        /* v1.2.38: a piece under it both ways is not drawn */
         for (q = 0; q < nr && !bad; q++) {
           np = rv(); x = 0; y = 0;
-          var lx = 0, ly = 0;
+          var lx = 0, ly = 0, held = [], lb = [1e9, 1e9, -1e9, -1e9];
           pen.phase = 0;
           for (i = 0; i < np && !bad; i++) {
             x += rz(); y += rz();
             if (!on) continue;
             o = tx(x, y);
+            if (lfloor > 0) {
+              held.push(o);
+              if (o[0] < lb[0]) lb[0] = o[0];
+              if (o[0] > lb[2]) lb[2] = o[0];
+              if (o[1] < lb[1]) lb[1] = o[1];
+              if (o[1] > lb[3]) lb[3] = o[1];
+              continue;
+            }
             if (i) { segment(pen, lx, ly, o[0], o[1]); stats.segments++; }
             lx = o[0]; ly = o[1];
+          }
+          if (held.length) {
+            if (f32(lb[2] - lb[0]) < lfloor && f32(lb[3] - lb[1]) < lfloor) { stats.small = (stats.small | 0) + 1; continue; }
+            for (var hk = 1; hk < held.length; hk++) { segment(pen, held[hk - 1][0], held[hk - 1][1], held[hk][0], held[hk][1]); stats.segments++; }
           }
         }
         if (on) stats.lines++;
@@ -619,8 +639,10 @@
       if (mk > 7 || !((st.mark_on >> mk) & 1)) continue;
       var mrole = mk === MARK_AIRPORT ? AIRPORT : CITY;
       if (!((st.role_on >> mrole) & 1)) continue;
+      if (st.dash[mrole] && rank > st.dash[mrole]) continue;
       var cxp = rnd32(mo[0]), cyp = rnd32(mo[1]), dy2;
-      if (mrole === AIRPORT) {
+      if (st.width[mrole]) markLook(ras, cxp, cyp, st.width[mrole], mrole);
+      else if (mrole === AIRPORT) {
         for (dy2 = -2; dy2 <= 2; dy2++) if (cyp + dy2 >= 0 && cyp + dy2 < W) span(ras, cyp + dy2, cxp - 2, cxp + 3, mrole);
       } else {
         for (dy2 = -2; dy2 <= 2; dy2++)
@@ -628,7 +650,53 @@
       }
       stats.marks++;
     }
+    if (st.clip) {                                     /* past the clip, the ground */
+      var rr = 2 * st.clip, c0 = W >> 1;
+      for (var yy = 0; yy < W; yy++) {
+        var ddy = yy - c0;
+        if (ddy * ddy >= rr * rr) { span(ras, yy, 0, W, LAND); continue; }
+        var hw = Math.trunc(f32(Math.sqrt(rr * rr - ddy * ddy)));
+        span(ras, yy, 0, c0 - hw, LAND);
+        span(ras, yy, c0 + hw + 1, W, LAND);
+      }
+    }
     return { err: bad ? -2 : 0, raster: ras, stats: stats, marks: marksOut };
+  }
+
+  /* orb_map_raster.c mark_look (OS v1.2.38): a mark's look, (shape | radius << 3) */
+  var SHAPE = { dot: 1, ring: 2, diamond: 3, diamondLine: 4, square: 5, squareLine: 6, ticked: 7 };
+  function look(shape, r) { return ((SHAPE[shape] || shape) | r << 3) & 255; }
+  function markLook(ras, cx, cy, lk, v) {
+    var shape = lk & 7, r = (lk >> 3) < 2 ? 2 : lk >> 3, th = r >= 5 ? 2 : 1;
+    var sq = function (n) { return Math.trunc(f32(Math.sqrt(f32(n + 0.5)))); };
+    for (var dy = -r - 3; dy <= r + 3; dy++) {
+      var y = cy + dy, ady = dy < 0 ? -dy : dy, o, i;
+      if (y < 0 || y >= W) continue;
+      if (shape === 1 || shape === 2 || shape === 7) {
+        if (ady <= r) {
+          o = sq(r * r - dy * dy);
+          var ri = r - th;
+          i = ady <= ri ? sq(ri * ri - dy * dy) : -1;
+          if (shape === 1 || i < 0) span(ras, y, cx - o, cx + o + 1, v);
+          else { span(ras, y, cx - o, cx - i, v); span(ras, y, cx + i + 1, cx + o + 1, v); }
+        }
+        if (shape === 7) {
+          if (ady > r && ady <= r + 3) span(ras, y, cx - (th >> 1), cx - (th >> 1) + th, v);
+          if (dy >= -(th >> 1) && dy < th - (th >> 1)) { span(ras, y, cx - r - 3, cx - r, v); span(ras, y, cx + r + 1, cx + r + 4, v); }
+        }
+      } else if (shape === 3 || shape === 4) {
+        if (ady <= r) {
+          o = r - ady; i = o - th - 1;
+          if (shape === 3 || ady > r - th || i < 0) span(ras, y, cx - o, cx + o + 1, v);
+          else { span(ras, y, cx - o, cx - i, v); span(ras, y, cx + i + 1, cx + o + 1, v); }
+        }
+      } else if (shape === 5 || shape === 6) {
+        if (ady <= r) {
+          if (shape === 5 || ady > r - th) span(ras, y, cx - r, cx + r + 1, v);
+          else { span(ras, y, cx - r, cx - r + th, v); span(ras, y, cx + r + 1 - th, cx + r + 1, v); }
+        }
+      }
+    }
   }
 
   /* The level a radius draws from, as orb_map.c's pick_level: the zoom whose own scale is
@@ -653,12 +721,72 @@
     return out;
   }
 
+  /* ---- an editor's preview: the owner's home and a level of its map, built here from the
+   * Map tiles source through the hub (the Orb tab's way), tiles kept in its Cache Storage ---- */
+  var TILE_CACHE = 'gorb-maps-tiles-v1';
+  async function hubData(path) {
+    var r = await fetch(path), j = null;
+    try { j = await r.json(); } catch (e) { j = null; }
+    if (!r.ok || !j || j.ok === false) throw new Error((j && j.error) || ('the hub answered ' + r.status));
+    return j.data;
+  }
+  async function tileBytes(url) {
+    var C = typeof caches !== 'undefined' ? await caches.open(TILE_CACHE).catch(function () { return null; }) : null;
+    var r = C ? await C.match(url) : null;
+    if (!r) {
+      r = await fetch('/api/maps/fetch?u=' + encodeURIComponent(url));
+      if (r.status === 204 || r.status === 404) return null;
+      if (!r.ok) throw new Error((await r.text()).trim() || 'the tile host answered ' + r.status);
+      if (C) await C.put(url, r.clone()).catch(function () {});
+    }
+    var b = new Uint8Array(await r.arrayBuffer());
+    if (b.length > 1 && b[0] === 0x1f && b[1] === 0x8b)
+      b = new Uint8Array(await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+    return b;
+  }
+  var tmplP = null;
+  function template() {
+    if (!tmplP) tmplP = (async function () {
+      var src = (await hubData('/api/maps/source')).tilejson;
+      var r = await fetch('/api/maps/fetch?u=' + encodeURIComponent(src));
+      if (!r.ok) throw new Error('the Map tiles source answered ' + r.status);
+      var tj = await r.json();
+      if (!tj.tiles || !tj.tiles.length) throw new Error('the Map tiles source names no tiles');
+      return { url: tj.tiles[0], maxzoom: tj.maxzoom === undefined ? 14 : +tj.maxzoom };
+    })();
+    tmplP.catch(function () { tmplP = null; });
+    return tmplP;
+  }
+  /* one level's .orbmap bytes for a place, its tiles four at a time */
+  async function fetchLevel(lat, lon, z) {
+    var tm = await template();
+    if (z > tm.maxzoom) throw new Error('the Map tiles source stops at z' + tm.maxzoom);
+    var want = tilesFor(lat, lon, z), tiles = [], next = 0;
+    var worker = async function () {
+      while (next < want.length) {
+        var t = want[next++], b = await tileBytes(tm.url.replace('{z}', t.z).replace('{x}', t.x).replace('{y}', t.y));
+        if (b) tiles.push({ x: t.ox, y: t.y, layers: readTile(b) });
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    return build(tiles, lat, lon, z).bytes;
+  }
+  /* the orb's home and distance unit: {lat, lon, name, unit}, or null when home is not set */
+  async function orbHome(ip) {
+    var hm = await (await fetch('/orb/' + ip + '/api/v1/home')).json();
+    if (!hm.home || !hm.home.set) return null;
+    var unit = 'km';
+    try { var un = await (await fetch('/orb/' + ip + '/api/v1/units')).json(); if (un && un.dist) unit = un.dist; } catch (e) { /* km */ }
+    return { lat: +hm.home.lat, lon: +hm.home.lon, name: hm.home.place || 'Home', unit: unit };
+  }
+
   var api = {
     FORMAT: FORMAT, UNIT: UNIT, HALF: HALF, ZOOMS: ZOOMS, ROLES: ROLES, W: W, RASTER_B: RASTER_B,
     readTile: readTile, classify: classify, world: world, tilesFor: tilesFor, e4: e4, mapName: mapName,
     clipPoly: clipPoly, clipLine: clipLine, simplify: simplify, quantise: quantise,
     encode: encode, info: info, build: build, crc32: crc32,
-    render: render, roleAt: roleAt, nib: nib, pickLevel: pickLevel, paint: paint
+    render: render, SHAPE: SHAPE, look: look, roleAt: roleAt, nib: nib, pickLevel: pickLevel, paint: paint,
+    fetchLevel: fetchLevel, orbHome: orbHome
   };
   root.GorbMaps = api;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));

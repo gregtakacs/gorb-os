@@ -21,7 +21,7 @@ typedef struct {               /* the app's view, as the SDK's orb_map_view_t (4
     int32_t  rot_cdeg;
     uint16_t role_on;
     uint8_t  mark_on;
-    uint8_t  pad;
+    uint8_t  pad;              /* v1.2.38: the clip, half the radius in px (orb_map_style_t.clip) */
     uint8_t  width[16];
     uint8_t  dash[16];
 } orb_map_req_t;

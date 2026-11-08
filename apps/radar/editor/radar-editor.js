@@ -17,7 +17,6 @@
   // the preview's zooms: three of the radar's six (apps/radar/main.c ZOOM), its map levels z6+step
   var ZOOMS = [[1, 'Region'], [3, 'Area'], [4, 'City']];
   var TIMES = [['now', 'Now', 'The newest frame'], ['past', '−40 min', 'A past frame'], ['next', '+30 min', 'A forecast frame: the time in the forecast colour']];
-  var MAPS_CACHE = 'gorb-maps-tiles-v1';         // the Orb tab's tile cache: the same tiles
   var LIVE_ROWS = 13 + 2;                        // the theme's rows the radar poses, and its two layers
 
   var clone = function (o) { return JSON.parse(JSON.stringify(o)); };
@@ -39,54 +38,8 @@
     return 0.2126 * f(n >> 16) + 0.7152 * f((n >> 8) & 255) + 0.0722 * f(n & 255);
   }
 
-  /* ---- the owner's home map, built on the hub from the Map tiles source ---- */
-  async function hubData(path) {
-    var r = await fetch(path), j = null;
-    try { j = await r.json(); } catch (e) { j = null; }
-    if (!r.ok || !j || j.ok === false) throw new Error((j && j.error) || ('the hub answered ' + r.status));
-    return j.data;
-  }
-  async function tile(url) {
-    var cache = root.caches ? await root.caches.open(MAPS_CACHE).catch(function () { return null; }) : null;
-    var r = cache ? await cache.match(url) : null;
-    if (!r) {
-      r = await fetch('/api/maps/fetch?u=' + encodeURIComponent(url));
-      if (r.status === 204 || r.status === 404) return null;
-      if (!r.ok) throw new Error((await r.text()).trim() || 'the tile host answered ' + r.status);
-      if (cache) await cache.put(url, r.clone()).catch(function () {});
-    }
-    var b = new Uint8Array(await r.arrayBuffer());
-    if (b.length > 1 && b[0] === 0x1f && b[1] === 0x8b)
-      b = new Uint8Array(await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
-    return b;
-  }
-  var tmplP = null;
-  function template() {
-    if (!tmplP) tmplP = (async function () {
-      var src = (await hubData('/api/maps/source')).tilejson;
-      var r = await fetch('/api/maps/fetch?u=' + encodeURIComponent(src));
-      if (!r.ok) throw new Error('the Map tiles source answered ' + r.status);
-      var tj = await r.json();
-      if (!tj.tiles || !tj.tiles.length) throw new Error('the Map tiles source names no tiles');
-      return { url: tj.tiles[0], maxzoom: tj.maxzoom === undefined ? 14 : +tj.maxzoom };
-    })();
-    tmplP.catch(function () { tmplP = null; });
-    return tmplP;
-  }
-  // one level's bytes for a place, its tiles four at a time (tabs.js mapsLevel's way)
-  async function level(home, z) {
-    var GM = root.GorbMaps, tm = await template();
-    if (z > tm.maxzoom) throw new Error('the Map tiles source stops at z' + tm.maxzoom);
-    var want = GM.tilesFor(home.lat, home.lon, z), tiles = [], next = 0;
-    var worker = async function () {
-      while (next < want.length) {
-        var t = want[next++], b = await tile(tm.url.replace('{z}', t.z).replace('{x}', t.x).replace('{y}', t.y));
-        if (b) tiles.push({ x: t.ox, y: t.y, layers: GM.readTile(b) });
-      }
-    };
-    await Promise.all([worker(), worker(), worker(), worker()]);
-    return GM.build(tiles, home.lat, home.lon, z).bytes;
-  }
+  // one level of the owner's home map, built on the hub from the Map tiles source (maps@1)
+  function level(home, z) { return root.GorbMaps.fetchLevel(home.lat, home.lon, z); }
   // the radar's view radius at a zoom (radar.c rd_radius_m) and the scale bar there (rd_scale)
   function radiusM(step, lat) { return Math.floor(156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, 6 + step) * 233 + 0.5); }
   function scaleOf(radius, unit, max) {
@@ -250,11 +203,10 @@
       if (!o) { say('Open this editor from the hub to preview it on your own home map'); return; }
       (async function () {
         try {
-          var hm = await (await fetch('/orb/' + o.ip + '/api/v1/home')).json();
-          if (!hm.home || !hm.home.set) { say('Set home on the Orb tab to preview the map'); return; }
-          var hp = { lat: +hm.home.lat, lon: +hm.home.lon, name: hm.home.place || 'Home' };
+          var hp = await root.GorbMaps.orbHome(o.ip);
+          if (!hp) { say('Set home on the Orb tab to preview the map'); return; }
           setHome(hp);
-          try { var un = await (await fetch('/orb/' + o.ip + '/api/v1/units')).json(); if (un && un.dist) setUnit(un.dist); } catch (e) { /* km */ }
+          setUnit(hp.unit);
           for (const zz of ZOOMS) {                     // const: each update keeps its own level
             const st = zz[0];
             say('Building your home map for the preview (' + zz[1] + ')…');

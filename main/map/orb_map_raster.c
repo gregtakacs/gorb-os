@@ -309,6 +309,45 @@ int orb_map_render_src(const orb_map_src_t *src, uint8_t *hdr, uint8_t *win, siz
     return ~s.crc == rd32(hdr + 32) ? ORB_MAP_OK : ORB_MAP_E_CRC;
 }
 
+/* ---- marks with a look (OS v1.2.38): ORB_MAP_LOOK(shape, r), centred on the landmark --- */
+static void mark_look(uint8_t *ras, int cx, int cy, uint8_t look, uint8_t v)
+{
+    const int shape = look & 7, r = (look >> 3) < 2 ? 2 : look >> 3, th = r >= 5 ? 2 : 1;
+    for (int dy = -r - 3; dy <= r + 3; dy++) {
+        const int y = cy + dy, ady = dy < 0 ? -dy : dy;
+        if ((unsigned)y >= W) continue;
+        switch (shape) {
+        case ORB_MAP_SHAPE_DOT: case ORB_MAP_SHAPE_RING: case ORB_MAP_SHAPE_TICKED: {
+            if (ady <= r) {
+                const int o = (int)sqrtf((float)(r * r - dy * dy) + 0.5f);
+                const int ri = r - th, i = ady <= ri ? (int)sqrtf((float)(ri * ri - dy * dy) + 0.5f) : -1;
+                if (shape == ORB_MAP_SHAPE_DOT || i < 0) span(ras, y, cx - o, cx + o + 1, v);
+                else { span(ras, y, cx - o, cx - i, v); span(ras, y, cx + i + 1, cx + o + 1, v); }
+            }
+            if (shape == ORB_MAP_SHAPE_TICKED) {             /* four ticks out of the ring */
+                if (ady > r && ady <= r + 3) span(ras, y, cx - (th >> 1), cx - (th >> 1) + th, v);
+                if (dy >= -(th >> 1) && dy < th - (th >> 1)) { span(ras, y, cx - r - 3, cx - r, v); span(ras, y, cx + r + 1, cx + r + 4, v); }
+            }
+            break;
+        }
+        case ORB_MAP_SHAPE_DIAMOND: case ORB_MAP_SHAPE_DIAMOND_LINE:
+            if (ady <= r) {
+                const int o = r - ady, i = o - th - 1;
+                if (shape == ORB_MAP_SHAPE_DIAMOND || ady > r - th || i < 0) span(ras, y, cx - o, cx + o + 1, v);
+                else { span(ras, y, cx - o, cx - i, v); span(ras, y, cx + i + 1, cx + o + 1, v); }
+            }
+            break;
+        case ORB_MAP_SHAPE_SQUARE: case ORB_MAP_SHAPE_SQUARE_LINE:
+            if (ady <= r) {
+                if (shape == ORB_MAP_SHAPE_SQUARE || ady > r - th) span(ras, y, cx - r, cx + r + 1, v);
+                else { span(ras, y, cx - r, cx - r + th, v); span(ras, y, cx + r + 1 - th, cx + r + 1, v); }
+            }
+            break;
+        default: break;
+        }
+    }
+}
+
 static int render_body(rd_t r, uint32_t nf, uint32_t nm, const orb_map_style_t *st,
                        uint8_t *raster, void *scratch, size_t scratch_len, orb_map_stats_t *stats)
 {
@@ -334,11 +373,12 @@ static int render_body(rd_t r, uint32_t nf, uint32_t nm, const orb_map_style_t *
         const uint8_t role = rb(&r), kind = rb(&r);
         const uint32_t nr = rv(&r);
         const int on = role < 16 && (st->role_on >> role & 1) &&
-                       (kind == 0 || st->width[role & 15]);
+                       (kind == 0 || (st->width[role & 15] & 7));
         s.features++;
         if (kind == 0) {                                   /* a fill: every ring, then one scan */
             uint32_t ne = 0;
             int fit = 1;
+            float bx0 = 1e9f, by0 = 1e9f, bx1 = -1e9f, by1 = -1e9f;
             for (uint32_t q = 0; q < nr && !r.bad; q++) {
                 const uint32_t np = rv(&r);
                 int32_t x = 0, y = 0;
@@ -348,6 +388,10 @@ static int render_body(rd_t r, uint32_t nf, uint32_t nm, const orb_map_style_t *
                     if (!on) continue;
                     float ox, oy;
                     tx(&t, x, y, &ox, &oy);
+                    if (ox < bx0) bx0 = ox;
+                    if (ox > bx1) bx1 = ox;
+                    if (oy < by0) by0 = oy;
+                    if (oy > by1) by1 = oy;
                     if (i == 0) { fx0 = ox; fy0 = oy; }
                     else if (fit) fit = add_edge(edges, ecap, &ne, px, py, ox, oy);
                     px = ox; py = oy;
@@ -355,30 +399,56 @@ static int render_body(rd_t r, uint32_t nf, uint32_t nm, const orb_map_style_t *
                 if (on && np > 2 && fit) fit = add_edge(edges, ecap, &ne, px, py, fx0, fy0);
             }
             if (!on) continue;
+            const float floor_px = 2.0f * st->dash[role & 15];
+            if (floor_px > 0 && bx1 - bx0 < floor_px && by1 - by0 < floor_px) { s.small++; continue; }
             if (!fit) { s.skipped++; continue; }
             fill(raster, &fb, ne, role);
             s.fills++; s.edges += ne;
             if (ne > s.max_fill_edges) s.max_fill_edges = ne;
             if (clk) { const int64_t t1 = clk(); s.fill_us += (uint32_t)(t1 - t0); t0 = t1; }
         } else {                                           /* a line: each ring a polyline */
-            pen_t p = { raster, role, st->width[role & 15], NULL, 0, 0 };
+            pen_t p = { raster, role, (uint8_t)(st->width[role & 15] & 7), NULL, 0, 0 };
             const uint8_t d = st->dash[role & 15] < ORB_MAP_DASH_N ? st->dash[role & 15] : 0;
             if (d) {
                 p.pat = DASH[d];
                 for (int i = 0; i < 4; i++) p.plen += DASH[d][i];
             }
+            /* v1.2.38: the line's floor (width's high bits, 8 px a step): a piece whose box is
+             * under it both ways is not drawn (creeks the tiles call rivers). Its points wait
+             * in the scratch until its box is known; one longer than the scratch is drawn. */
+            const float lfloor = 8.0f * (st->width[role & 15] >> 3);
+            float *pts = (float *)scratch;
+            const uint32_t pcap = lfloor > 0 ? (uint32_t)(scratch_len / (2 * sizeof(float))) : 0;
             for (uint32_t q = 0; q < nr && !r.bad; q++) {
                 const uint32_t np = rv(&r);
                 int32_t x = 0, y = 0;
-                float px = 0, py = 0;
+                float px = 0, py = 0, bx0 = 1e9f, by0 = 1e9f, bx1 = -1e9f, by1 = -1e9f;
+                uint32_t held = 0;
                 p.phase = 0;
                 for (uint32_t i = 0; i < np && !r.bad; i++) {
                     x += rz(&r); y += rz(&r);
                     if (!on) continue;
                     float ox, oy;
                     tx(&t, x, y, &ox, &oy);
+                    if (held < pcap && held == i) {          /* still holding: no segment yet */
+                        pts[2 * held] = ox; pts[2 * held + 1] = oy; held++;
+                        if (ox < bx0) bx0 = ox;
+                        if (ox > bx1) bx1 = ox;
+                        if (oy < by0) by0 = oy;
+                        if (oy > by1) by1 = oy;
+                        continue;
+                    }
+                    if (held) {                              /* the scratch ran out: draw what it held */
+                        for (uint32_t k = 1; k < held; k++) { segment(&p, pts[2 * k - 2], pts[2 * k - 1], pts[2 * k], pts[2 * k + 1]); s.segments++; }
+                        px = pts[2 * held - 2]; py = pts[2 * held - 1];
+                        held = 0;
+                    }
                     if (i) { segment(&p, px, py, ox, oy); s.segments++; }
                     px = ox; py = oy;
+                }
+                if (held) {
+                    if (bx1 - bx0 < lfloor && by1 - by0 < lfloor) { s.small++; continue; }
+                    for (uint32_t k = 1; k < held; k++) { segment(&p, pts[2 * k - 2], pts[2 * k - 1], pts[2 * k], pts[2 * k + 1]); s.segments++; }
                 }
             }
             if (on) s.lines++;
@@ -400,8 +470,10 @@ static int render_body(rd_t r, uint32_t nf, uint32_t nm, const orb_map_style_t *
         if (kind > 7 || !(st->mark_on >> kind & 1)) continue;
         const uint8_t role = kind == ORB_MAP_MARK_AIRPORT ? ORB_MAP_AIRPORT : ORB_MAP_CITY;
         if (!(st->role_on >> role & 1)) continue;
+        if (st->dash[role] && rank > st->dash[role]) continue;
         const int cx = (int)floorf(ox + 0.5f), cy = (int)floorf(oy + 0.5f);
-        if (role == ORB_MAP_AIRPORT) {
+        if (st->width[role]) mark_look(raster, cx, cy, st->width[role], role);
+        else if (role == ORB_MAP_AIRPORT) {
             for (int dy = -2; dy <= 2; dy++) if ((unsigned)(cy + dy) < W) span(raster, cy + dy, cx - 2, cx + 3, role);
         } else {
             static const int8_t HALFW[5] = { 1, 2, 2, 2, 1 };
@@ -409,6 +481,16 @@ static int render_body(rd_t r, uint32_t nf, uint32_t nm, const orb_map_style_t *
                 if ((unsigned)(cy + dy) < W) span(raster, cy + dy, cx - HALFW[dy + 2], cx + HALFW[dy + 2] + 1, role);
         }
         s.marks++;
+    }
+    if (st->clip) {                                        /* past the clip, the ground */
+        const int rr = 2 * st->clip, c = W / 2;
+        for (int y = 0; y < W; y++) {
+            const int dy = y - c;
+            if (dy * dy >= rr * rr) { span(raster, y, 0, W, ORB_MAP_LAND); continue; }
+            const int hw = (int)sqrtf((float)(rr * rr - dy * dy));
+            span(raster, y, 0, c - hw, ORB_MAP_LAND);
+            span(raster, y, c + hw + 1, W, ORB_MAP_LAND);
+        }
     }
     if (stats) *stats = s;
     return r.bad ? ORB_MAP_E_TRUNC : ORB_MAP_OK;

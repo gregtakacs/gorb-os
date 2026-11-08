@@ -184,7 +184,7 @@ static void render(int app_slot, int vi, uint32_t seq, void *scratch)
     v->n_marks = 0;
     markctx_t mc = { v };
     orb_map_style_t st = { .scale = v->scale, .rot_rad = v->rot, .role_on = v->req.role_on,
-                           .mark_on = v->req.mark_on, .mark = on_mark, .mark_ctx = &mc };
+                           .mark_on = v->req.mark_on, .clip = v->req.pad, .mark = on_mark, .mark_ctx = &mc };
     memcpy(st.width, v->req.width, 16);
     memcpy(st.dash, v->req.dash, 16);
     orb_map_stats_t stats;

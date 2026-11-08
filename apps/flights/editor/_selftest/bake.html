@@ -3,10 +3,12 @@
 <title>Flights bake check</title>
 <!-- Staged by bake_check.py beside the runtime's baker and fonts: bakes every preset (and
      the variants named in VARIANTS) through flights-bake.js and prints each theme as one
-     "B64 <name> <ms> <card slot> <arm period> <base64>" line in #out for the driver to check. -->
+     "B64 <name> <ms> <card slot> <arm period> <map 0|1> <base64>" line in #out for the driver to check. -->
 <link rel="stylesheet" href="fonts.css">
 <script src="orbtheme-baker.js"></script>
+<script src="orbmap.js"></script>
 <script src="flights-art.js"></script>
+<script src="flights-map.js"></script>
 <script src="flights-bake.js"></script>
 <pre id="out"></pre>
 <script>
@@ -49,6 +51,12 @@
   VARIANTS['dots-plain'] = (d) => { d.planes.dots = { show: 'plain', colour: '#FFFFFF', size: 8 }; return d; };
   VARIANTS['dots-off'] = (d) => { d.planes.dots.show = 'off'; return d; };
   VARIANTS['dots-saved-before'] = (d) => { delete d.planes.dots; return B.complete(d); };
+  // the map (flights-map-plan §2.3): each look, off, and the choices that change the values
+  VARIANTS['map-off'] = (d) => { d.map.on = false; return d; };
+  VARIANTS['map-chart-symbols'] = (d) => { d.map = window.FlightsMap.applyLook(d.map, 'chart', 'modern'); d.map.airports = 'symbols'; d.map.symbol = 'diamondLine'; d.map.fields = 'all'; d.map.strength = 1; return d; };
+  VARIANTS['map-drafting-towns'] = (d) => { d.map = window.FlightsMap.applyLook(d.map, 'drafting', 'modern'); d.map.which = 'towns'; d.map.codes = true; d.map.names = 'many'; d.map.nameFace = 'IBM Plex Mono'; d.map.nameSize = 22; return d; };
+  VARIANTS['map-bare'] = (d) => { Object.assign(d.map, { water: 'off', roads: 'off', airports: 'off', dots: false, names: 'off', urban: false, borders: false }); return d; };
+  VARIANTS['map-saved-before'] = (d) => { delete d.map; return B.complete(d); };
   VARIANTS['blank'] = () => B.preset('blank');
   VARIANTS['blank-arm-over'] = () => { const d = B.preset('blank'); d.arm.layer = 'over'; d.planes.colour = true; return d; };
   VARIANTS['blank-saved-before-fields'] = () => { const d = B.preset('blank'); delete d.arm.layer; delete d.planes.heading; return B.complete(d); };
@@ -59,7 +67,7 @@
       const t0 = performance.now();
       const doc = new TextEncoder().encode(JSON.stringify(Object.assign({ format: 'wc-design', schema: B.SCHEMA, app: 'flights' }, APPV ? { appVersion: APPV } : {}, { design: d })));
       const r = await B.bake(d, { design: doc });
-      say('B64 ' + name + ' ' + Math.round(performance.now() - t0) + ' ' + (d.frames.card.place === 'auto' ? B.CARD_CLEAR_SLOT : B.CARD_SLOT) + ' ' + B.period(d) + ' ' + b64(r.bytes));
+      say('B64 ' + name + ' ' + Math.round(performance.now() - t0) + ' ' + (d.frames.card.place === 'auto' ? B.CARD_CLEAR_SLOT : B.CARD_SLOT) + ' ' + B.period(d) + ' ' + (d.map && d.map.on ? 1 : 0) + ' ' + b64(r.bytes));
     } catch (e) {
       say('ERR ' + name + ' ' + (e && e.message ? e.message : e));
     }

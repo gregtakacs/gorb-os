@@ -12,6 +12,6 @@
     {"id": "key", "type": "secret", "label": "adsb.lol API key", "host": "api.adsb.lol", "header": "x-api-key", "help": "adsb.lol gives API keys to people who feed it: an ADS-B receiver at home sending what it hears to adsb.lol. The tracker works without one today (adsb.fi is its main source), but adsb.lol says keys will be required. The orb keeps it beside the Wi-Fi password and sends it only to api.adsb.lol.", "links": [{"href": "https://adsb.lol/feed", "text": "Feed adsb.lol to get a key"}, {"href": "https://github.com/adsblol/api", "text": "adsb.lol's API notes"}]}
   ],
   "shelf": true,
-  "os_min": "v1.2.37",
+  "os_min": "v1.2.38",
   "editor": "editor"
 }

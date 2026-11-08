@@ -807,11 +807,171 @@ static void draw_text(void)
     show(LAB_CARD, true, &card_hidden);
 }
 
+/* ---- the map under the scope (flights-map-plan §2.2, OS v1.2.38) ------------------- *
+ * Home's map, made by Orb Manager, drawn by the OS into live layer 0 at the theme's depth:
+ * over the ground, under the arm and the aircraft, and cut at the outer ring so the bezel
+ * stays the theme's. One view a range, rendered once and blended through the theme's
+ * colours; a range step clears the layer until its own view is ready, so the map never
+ * stands at the wrong scale under the aircraft. The theme says what is drawn at each range
+ * (roads and runways close, the airports' symbols wide) and which landmarks are named. */
+#define FL_VALUES_VER 1
+#define N_NAMES       6
+#define NAME_SLOT0    32
+typedef struct {
+    uint32_t map_pal[16];          /* ARGB per map role */
+    uint8_t  width[16];            /* line widths; the marks' looks (ORB_MAP_LOOK) */
+    uint8_t  dash[16];             /* line dashes; the fills' floors; the marks' rank caps */
+    uint16_t role_on[N_RANGES];    /* per range step, nearest first: 0 everywhere is no map */
+    uint8_t  mark_on[N_RANGES];
+    uint8_t  names[N_RANGES];      /* landmarks named, 0-6 */
+    uint8_t  name_kinds;           /* bit per ORB_MARK_* that may be named */
+    uint8_t  name_rank;            /* the worst rank named; 0 any */
+    uint8_t  map_order;            /* the layer's depth on the rows' scale */
+    uint8_t  clip;                 /* half the radius, px, the map stops at */
+    uint8_t  name_px;              /* the names' font size, for their boxes */
+    uint8_t  pad[3];
+} fl_values_t;
+_Static_assert(sizeof(fl_values_t) == 120, "flights-bake.js writes this layout");
+static fl_values_t V;
+static bool    s_map;                    /* the theme draws a map */
+static bool    s_layer, s_map_drawn;
+static int32_t s_view, s_view_next;
+static int32_t s_view_key = -1, s_next_key = -1;
+static int64_t s_map_retry_ms;
+static int32_t s_name[N_NAMES] = { -1, -1, -1, -1, -1, -1 };
+static bool    s_reread;                 /* the theme is read again at the next frame */
+static void    stage_reread(void);
+
+static void read_values(void)
+{
+    uint32_t ver = 0;
+    memset(&V, 0, sizeof V);
+    const uint32_t n = s_themed ? orb_stage_values(&V, sizeof V, &ver) : 0;
+    if (n && (n != sizeof V || ver != FL_VALUES_VER)) {
+        orb_logf("flights: the theme's values are layout %u, %u B: no map", (unsigned)ver, (unsigned)n);
+        memset(&V, 0, sizeof V);
+    }
+    s_map = false;
+    for (int k = 0; k < N_RANGES; k++) {
+        if (V.names[k] > N_NAMES) V.names[k] = N_NAMES;
+        s_map |= V.role_on[k] != 0;
+    }
+    if (V.name_px < 14 || V.name_px > 40) V.name_px = 18;
+}
+static void names_hide(void);
+
+static void names_hide(void)
+{
+    for (int k = 0; k < N_NAMES; k++) if (s_name[k] >= 0) orb_stage_pose(s_name[k], ORB_STAGE_HIDDEN, 0, 0);
+}
+
+/* The landmarks' names, best rank first, kept inside the inner rings, off home's dot, off
+ * the range figure and off each other: under the name's own mark, as a chart prints it. */
+static void names_draw(void)
+{
+    const int want = V.names[s_set.range], cw = V.name_px / 2 + 1, lh = V.name_px + 6;
+    int n = 0;
+    int16_t bx[N_NAMES], by[N_NAMES], bw[N_NAMES];
+    for (uint32_t k = 0; s_view > 0 && n < want && k < 32; k++) {
+        orb_map_mark_t m;
+        if (orb_map_mark(s_view, k, &m) != 1) break;
+        if (s_name[n] < 0) break;
+        if (!(V.name_kinds >> m.kind & 1) || (V.name_rank && m.rank > V.name_rank)) continue;
+        const int w = cw * (int)strlen(m.name) + 8, x = m.x, y = m.y + lh / 2 + 6;
+        const int dx = x - CX, dy = y - CY;
+        if (dx * dx + dy * dy > (RING_R - 24) * (RING_R - 24)) continue;
+        if (dx * dx + dy * dy < 30 * 30) continue;                       /* home's dot */
+        if (x + w / 2 > CX + 70 && y + lh / 2 > CY + 116) continue;      /* the range figure */
+        bool hit = false;
+        for (int j = 0; j < n && !hit; j++)
+            hit = abs(x - bx[j]) < (w + bw[j]) / 2 && abs(y - by[j]) < lh;
+        if (hit) continue;
+        bx[n] = (int16_t)x; by[n] = (int16_t)y; bw[n] = (int16_t)w;
+        orb_stage_text(s_name[n], m.name, ORB_TONE_NORMAL);
+        orb_stage_pose(s_name[n], 0, x - CX, y - CY);
+        n++;
+    }
+    for (; n < N_NAMES; n++) if (s_name[n] >= 0) orb_stage_pose(s_name[n], ORB_STAGE_HIDDEN, 0, 0);
+}
+
+/* What a view is drawn for: the range step, home and the maps' generations. */
+static int32_t map_key(void)
+{
+    return (int32_t)((s_set.range & 3) | (s_home_gen & 0xFFF) << 2 | (orb_maps_gen() & 0xFFF) << 14 | (uint32_t)dist_unit() << 26);
+}
+
+static void map_clear(void)
+{
+    if (s_layer && s_map_drawn) orb_stage_live(0, V.map_order, 0);
+    s_map_drawn = false;
+    names_hide();
+}
+
+static void map_open(void)
+{
+    orb_map_view_t v;
+    memset(&v, 0, sizeof v);
+    /* the scope's outer ring is the range; the view's radius is the glass's edge */
+    v.radius_m = (int32_t)lroundf(range_km() * 1000.0f * (W / 2) / RING_R);
+    v.role_on = V.role_on[s_set.range];
+    v.mark_on = V.mark_on[s_set.range];
+    v.clip = V.clip;
+    memcpy(v.width, V.width, sizeof v.width);
+    memcpy(v.dash, V.dash, sizeof v.dash);
+    if (s_view_next > 0) orb_map_close(s_view_next);
+    s_view_next = orb_map_open(0, &v);
+    s_next_key = map_key();
+    orb_logf("flights: map view %d for range %d, %d m", (int)s_view_next, (int)s_set.range, (int)v.radius_m);
+    if (s_view_next < 0) {
+        const bool absent = s_view_next == ORB_MAP_ABSENT || s_view_next == ORB_MAP_NOCARD;
+        orb_logf("flights: the map did not open (%d), again in %d s", (int)s_view_next, absent ? 20 : 3);
+        s_map_retry_ms = now_ms() + (absent ? 20000 : 3000);
+        s_view_next = 0;
+    }
+}
+
+static void map_step(void)
+{
+    if (!s_map || !s_set.home_ok || !s_visible) return;
+    if (!s_layer) {                          /* refused before the stage binds: the next frame asks */
+        s_layer = orb_stage_live(0, V.map_order, 0) == ORB_OK;
+        s_map_drawn = false;
+        if (!s_layer) return;
+    }
+    const int32_t key = map_key();
+    if (key != s_view_key && key != s_next_key) {
+        if (s_view_key >= 0 && (s_view_key & 3) != (key & 3)) map_clear();   /* another scale */
+        if (now_ms() >= s_map_retry_ms) map_open();
+    }
+    if (s_view_next > 0) {
+        const int32_t r = orb_map_ready(s_view_next);
+        if (r < 0) {
+            orb_map_close(s_view_next);
+            s_view_next = 0; s_next_key = -1;
+            s_map_retry_ms = now_ms() + (r == ORB_MAP_ABSENT || r == ORB_MAP_NOCARD ? 20000 : 3000);
+            if (r != ORB_MAP_ABSENT) orb_logf("flights: the map did not draw (%d)", (int)r);
+            map_clear();                          /* the scope stands alone, and asks again */
+        } else if (r > 0) {
+            if (s_view > 0) orb_map_close(s_view);
+            s_view = s_view_next; s_view_key = s_next_key;
+            s_view_next = 0; s_next_key = -1;
+            s_map_drawn = false;
+        }
+    }
+    if (s_view > 0 && !s_map_drawn && s_view_key == key) {
+        orb_stage_live(0, V.map_order, 0);
+        orb_map_draw(ORB_CV_LIVE0, s_view, V.map_pal, 0, 0);
+        s_map_drawn = true;
+        names_draw();
+    }
+}
+
 static void redraw(void)
 {
     if (!s_visible) return;
+    if (s_reread) stage_reread();
     if (F.seq != s_seq_seen) { s_seq_seen = F.seq; merge(); }
-    if (s_themed) draw_stage(); else draw_frame();
+    if (s_themed) { map_step(); draw_stage(); } else draw_frame();
     draw_text();
 }
 
@@ -842,6 +1002,7 @@ static void stage_rows(void)
     s_sel_row = s_em_row = -1;
     s_card_clear = false; s_card_dy = 0;
     for (int k = 0; k < LAB_N; k++) s_lab[k] = -1;
+    for (int k = 0; k < N_NAMES; k++) s_name[k] = -1;
     for (int32_t i = 0; i < (int32_t)s_stage.n_rows; i++) {
         clk_row_t r;
         if (orb_stage_row(i, &r) != ORB_OK) continue;
@@ -857,6 +1018,8 @@ static void stage_rows(void)
         }
         else if (r.shape == CLK_SHAPE_TEXT && r.tag >= LAB_SLOT0 && r.tag < LAB_SLOT0 + LAB_N)
             s_lab[r.tag - LAB_SLOT0] = i;
+        else if (r.shape == CLK_SHAPE_TEXT && r.tag >= NAME_SLOT0 && r.tag < NAME_SLOT0 + N_NAMES)
+            s_name[r.tag - NAME_SLOT0] = i;
         else if (r.shape == CLK_SHAPE_TEXT && r.tag == CARD_CLEAR) {
             s_lab[LAB_CARD] = i;
             s_card_clear = true;
@@ -874,6 +1037,8 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
     s_themed = orb_stage_open(&s_stage) == ORB_OK && !s_stage.base;
     if (s_themed) {
         stage_rows();
+        read_values();
+        names_hide();
         s_labels = s_lab[LAB_HEAD] >= 0 && s_lab[LAB_FOOT] >= 0 && s_lab[LAB_CARD] >= 0 &&
                    s_lab[LAB_RNG] >= 0;
         if (s_labels) {
@@ -883,10 +1048,10 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
             orb_ui_set(s_rng, ORB_P_FONT, ORB_FONT_14);
             orb_ui_align(s_rng, ORB_AL_CENTER, 140, 140);
         }
-        orb_logf("flight tracker on its theme: arm row %d, %d plane rows, %d dot rows%s, markers %d/%d, %s",
+        orb_logf("flight tracker on its theme: arm row %d, %d plane rows, %d dot rows%s, markers %d/%d, %s%s",
                  (int)s_arm, s_nplanes, s_ndots, s_ndots ? (s_dot_bands ? " by altitude" : " plain") : "",
                  (int)s_sel_row, (int)s_em_row,
-                 s_labels ? "the theme's labels" : "widgets for the words");
+                 s_labels ? "the theme's labels" : "widgets for the words", s_map ? ", a map" : "");
     } else {
         s_cv = orb_cv_create(0, W, H);
         if (!s_cv) return ORB_ERR_NO_MEM;
@@ -917,6 +1082,28 @@ ORB_EXPORT("orb_init") int32_t orb_init(void)
     return ORB_OK;
 }
 
+/* The theme, read again at the first frame after every arrival: at a boot the app builds
+ * before its theme is bound, and a theme sent from the editor binds while the app is away,
+ * so the rows and values orb_init saw may not be the ones on the glass now. The OS binds the
+ * stage after orb_activate and orb_resume, so the read waits for the stage's first tick. */
+static void stage_reread(void)
+{
+    clk_row_t r0;
+    if (!s_themed) { s_reread = false; return; }
+    if (orb_stage_row(0, &r0) != ORB_OK) return;          /* not bound yet (orb_show comes first) */
+    s_reread = false;
+    /* never orb_stage_open here: it binds the stage again, and from inside the stage's own
+     * frame that stops it (Bronze, 2026-11-08: the glass held its plate). The rows are read
+     * up to the most a theme carries; a slot past the theme's last answers an error. */
+    s_stage.n_rows = CLK_ROW_MAX;
+    const bool had = s_map;
+    stage_rows();
+    read_values();
+    names_hide();
+    s_view_key = s_next_key = -1;           /* the map is drawn again, in the values read now */
+    if (had != s_map) orb_logf("flights: the theme %s", s_map ? "draws a map" : "draws no map");
+}
+
 static void set_visible(bool v)
 {
     if (s_visible == v) return;
@@ -926,10 +1113,12 @@ static void set_visible(bool v)
      * fetched) is already fresh — a background poll that just ran is not repeated. */
     if (v) F.kick = s_req != REQ_POLL && (!F.pub_ms || now_ms() - F.pub_ms > 5000);
     else schedule_next();
+    s_layer = s_map_drawn = false;   /* the OS frees the live layers off the glass */
+    if (!v) { s_view = s_view_next = 0; s_view_key = s_next_key = -1; }   /* and closes the map's views */
 }
 
-ORB_EXPORT("orb_activate") void orb_activate(void) { s_sel[0] = 0; orb_dial_home(&s_dial); set_visible(true); }
-ORB_EXPORT("orb_resume")   void orb_resume(void)   { set_visible(true); }
+ORB_EXPORT("orb_activate") void orb_activate(void) { s_sel[0] = 0; orb_dial_home(&s_dial); s_reread = true; set_visible(true); }
+ORB_EXPORT("orb_resume")   void orb_resume(void)   { s_reread = true; set_visible(true); }
 ORB_EXPORT("orb_suspend")  void orb_suspend(void)  { set_visible(false); }
 
 ORB_EXPORT("orb_show") void orb_show(void)

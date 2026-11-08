@@ -29,6 +29,18 @@ enum {
 enum { ORB_MAP_DASH_SOLID, ORB_MAP_DASH_SHORT, ORB_MAP_DASH_LONG, ORB_MAP_DASH_DOT,
        ORB_MAP_DASH_DASHDOT, ORB_MAP_DASH_N };
 enum { ORB_MAP_MARK_CITY, ORB_MAP_MARK_TOWN, ORB_MAP_MARK_VILLAGE, ORB_MAP_MARK_AIRPORT };
+/* OS v1.2.38 (flights-map-plan §2.1), every one 0 for the old draw:
+ *  - width[CITY], width[AIRPORT]: the mark's look, ORB_MAP_LOOK(shape, radius px 2-15);
+ *    0 is the old 5 px dot and square;
+ *  - dash[CITY], dash[AIRPORT]: the rank cap, the marks of rank above it not drawn (an
+ *    airport with an IATA code ranks 1); 0 draws every rank;
+ *  - dash[WATER], dash[URBAN], dash[LAKE]: the floor, a piece whose box is under 2 x that many
+ *    px both ways not drawn (ponds); 0 draws every piece.
+ *  - a line role's width, bits 3-7: its floor in 8 px steps, a piece under it both ways not
+ *    drawn (the creeks the tiles call rivers); the width itself is bits 0-2. */
+enum { ORB_MAP_SHAPE_DOT = 1, ORB_MAP_SHAPE_RING, ORB_MAP_SHAPE_DIAMOND, ORB_MAP_SHAPE_DIAMOND_LINE,
+       ORB_MAP_SHAPE_SQUARE, ORB_MAP_SHAPE_SQUARE_LINE, ORB_MAP_SHAPE_TICKED };
+#define ORB_MAP_LOOK(shape, r) ((uint8_t)((shape) | (r) << 3))
 
 typedef struct {
     float    scale;           /* glass px per file px: 1 at the file's own zoom */
@@ -36,7 +48,9 @@ typedef struct {
     uint16_t role_on;         /* bit per role; a role whose bit is clear is not drawn */
     uint8_t  mark_on;         /* bit per mark kind */
     uint8_t  width[16];       /* per line role, 1-4 px (0 = not drawn) */
-    uint8_t  dash[16];        /* per line role, ORB_MAP_DASH_* */
+    uint8_t  dash[16];        /* per line role, ORB_MAP_DASH_*; a fill role's is its floor and a
+                               * mark role's its rank cap (below) */
+    uint8_t  clip;            /* half the radius, px, past which nothing is drawn; 0 = none */
     int64_t (*clock_us)(void);/* optional: splits the stats' time into fills and lines */
     /* Optional: each landmark, whatever mark_on says, in glass pixels at this style's
      * transform (x, y may be off the glass). name is not NUL-terminated. */
@@ -48,6 +62,7 @@ typedef struct {
     uint32_t features, fills, lines, edges, segments, marks, skipped;
     uint32_t fill_us, line_us;   /* with a clock: time in fills (parse included) and in lines */
     uint32_t max_fill_edges;     /* the largest single fill: what the scratch must hold */
+    uint32_t small;              /* fills under their role's floor, not drawn (v1.2.38) */
 } orb_map_stats_t;
 
 enum {

@@ -8,10 +8,15 @@
  * the turning arm. Plain React, createElement only. */
 (function (root) {
   'use strict';
-  var R = root.React, h = R.createElement, S = root.OrbStudio, T = root.OrbTheme, B = root.FlightsBake;
+  var R = root.React, h = R.createElement, S = root.OrbStudio, T = root.OrbTheme, B = root.FlightsBake, M = root.FlightsMap;
   var A = function () { return root.FlightsArt; };
-  var G = 466, CX = 233, LIVE_ROWS = 1 + 15 + 2 + 4, ROW_CAP = 32, CARD_MARGIN = 20;
-  var STEPS = [['start', 'Start'], ['scope', 'Scope'], ['arm', 'Arm'], ['planes', 'Planes'], ['words', 'Words'], ['frames', 'Frames'], ['render', 'Render']];
+  // the rows the tracker poses (arm, planes, rings, labels, the far dots) and, with a map,
+  // its six names; an app seats CLK_ROW_MAX of them
+  var G = 466, CX = 233, ROW_CAP = 64, CARD_MARGIN = 20;
+  var liveRows = function (d) { return 1 + 15 + 2 + 4 + (d.planes.dots && d.planes.dots.show !== 'off' ? 9 : 0) + (d.map && d.map.on ? 6 : 0); };
+  var STEPS = [['start', 'Start'], ['scope', 'Scope'], ['map', 'Map'], ['arm', 'Arm'], ['planes', 'Planes'], ['words', 'Words'], ['frames', 'Frames'], ['render', 'Render']];
+  // main.c RANGES, nearest first, by the orb's distance unit; and a unit's km
+  var RANGES = { km: [20, 40, 80, 140], mi: [10, 25, 50, 90], nm: [10, 20, 40, 80] }, UNIT_KM = { km: 1, mi: 1.609344, nm: 1.852 };
   var MODES = [['roam', 'Roam', 'The scope as it roams: the count in the header, the feed in the footer'],
     ['info', 'Info', 'A contact picked: the header in the accent tone, the info card and the selection ring'],
     ['alert', 'Alert', 'The feed is down: the footer in the warning tone']];
@@ -109,6 +114,18 @@
     return Math.abs(x - cx) >= mx + CARD_MARGIN || Math.abs(y - cy) >= my + CARD_MARGIN ? 0 : was;
   }
 
+  // the map's layer as the orb blends it, and its names where main.c puts them
+  function drawMap(x, d, mp) {
+    x.drawImage(mp.canvas, 0, 0);
+    var m = d.map;
+    x.save();
+    x.globalAlpha = M.alphaOf(m, 'names');
+    x.fillStyle = m.ink.names; x.font = (m.nameSize | 0) + 'px "' + (m.nameFace || d.words.face) + '", sans-serif';
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    mp.names.forEach(function (n) { x.fillText(n.text, n.x, n.y); });
+    x.restore();
+  }
+
   // the words the app says, in the theme's face and tones, inside each label's box
   function drawWords(x, d, P, mode, cardY) {
     var W = d.words, Z = B.sizes(d);
@@ -126,7 +143,7 @@
     var c = TRAFFIC[SEL];
     say('header', [mode === 'roam' ? TRAFFIC.length + ' aircraft' : '1 of ' + TRAFFIC.length], mode === 'roam' ? 'body' : 'accent');
     say('footer', [mode === 'alert' ? 'feed down 3 min' : 'live  adsb.fi'], mode === 'alert' ? 'warning' : 'quiet');
-    say('range', ['80 nm'], 'quiet');
+    say('range', [P.rangeText || '80 nm'], 'quiet');
     if (mode !== 'roam') say('card', [c[5] + '  ' + c[6], 'DFW → SFO', c[1] + ' ft  ↑ 1800 fpm', '452 kt  trk ' + c[4]], 'body', cardY);
   }
 
@@ -139,6 +156,7 @@
     if (live) { /* the plate is Panel's under */ }
     else if (parts.plate && !hidden.scope) x.drawImage(parts.plate, 0, 0);
     else { x.fillStyle = '#000'; x.fillRect(0, 0, G, G); }
+    if (!live && parts.map && !hidden.map && d.map && d.map.on) drawMap(x, d, parts.map);
     var rr = A().ring_r, ms = B.period(d) * 1000;
     // the arm under the planes, or over them and under the rings (§12.9), as the orb draws it
     var drawArm = function () {
@@ -197,6 +215,10 @@
     var dupS = u(null), dup = dupS[0], setDup = dupS[1];
     var libS = u(0), setLibTick = libS[1];
     var delS = u(null), mineDel = delS[0], setMineDel = delS[1];
+    var homeS = u(null), home = homeS[0], setHome = homeS[1];
+    var bytesS = u({}), mapBytes = bytesS[0], setBytes = bytesS[1];
+    var rngS = u(2), rng = rngS[0], setRng = rngS[1];
+    var mapS = u(null), mapPart = mapS[0], setMapPart = mapS[1];
     var drafts = R.useRef({}).current, canvasRef = R.useRef(null), tRef = R.useRef(0), stateRef = R.useRef({}), frameSt = R.useRef({}).current;
     var say = R.useCallback(function (s) { setStatus(s); }, []);
     stateRef.current = { d: d, status: status };
@@ -210,6 +232,37 @@
     scrRef.current = scrS[0];
 
     var parts = useParts(d, say);
+    var unit = home ? home.unit : 'nm', rangeKm = RANGES[unit][rng] * UNIT_KM[unit];
+
+    /* the owner's home and unit, then the levels the four ranges draw from (maps@1) */
+    R.useEffect(function () {
+      var o = ses.hubOrb();
+      if (!o || !root.GorbMaps) return;
+      (async function () {
+        try {
+          var hp = await root.GorbMaps.orbHome(o.ip);
+          if (!hp) return;
+          if (!RANGES[hp.unit]) hp.unit = 'km';
+          setHome(hp);
+          var zs = [];
+          RANGES[hp.unit].forEach(function (r) { var z = M.levelOf(hp.lat, r * UNIT_KM[hp.unit]).z; if (zs.indexOf(z) < 0) zs.push(z); });
+          for (const z of zs) {
+            const b = await root.GorbMaps.fetchLevel(hp.lat, hp.lon, z);
+            setBytes(function (m) { var n = Object.assign({}, m); n[z] = b; return n; });
+          }
+        } catch (e) { say('The map preview could not be built: ' + (e && e.message ? e.message : e)); }
+      })();
+    }, []);
+    var mapKey = JSON.stringify(d.map) + '|' + rng + '|' + Object.keys(mapBytes).join(',') + '|' + (home ? home.lat : '');
+    R.useEffect(function () {
+      if (!home || !d.map || !d.map.on) { setMapPart(null); return; }
+      var z = M.levelOf(home.lat, rangeKm).z, b = mapBytes[z];
+      if (!b) { setMapPart(null); return; }
+      var go = function () { try { setMapPart(M.view(d.map, b, home.lat, rangeKm, rng)); } catch (e) { say(e.message); } };
+      document.fonts.load((d.map.nameSize | 0) + 'px "' + (d.map.nameFace || d.words.face) + '"').catch(function () {}).then(go);
+    }, [mapKey]);
+    parts = Object.assign({}, parts, { map: mapPart });
+    if (parts.words) parts.words = Object.assign({}, parts.words, { rangeText: RANGES[unit][rng] + ' ' + unit });
     var ses = R.useMemo(function () {
       return T.session({
         slug: 'flights', keys: function () { return ['d']; }, state: function () { return stateRef.current; },
@@ -289,14 +342,17 @@
       var lc = document.createElement('canvas'); lc.width = lc.height = G;
       var lx = lc.getContext('2d');
       drawFrame(lx, dd, parts, tRef.current, hidden, mode, true, { dy: frameSt.dy });
-      T.panel(x, { under: parts.plate.getContext('2d').getImageData(0, 0, G, G).data,
+      var uc = document.createElement('canvas'); uc.width = uc.height = G;
+      var ux = uc.getContext('2d'); ux.drawImage(parts.plate, 0, 0);
+      if (parts.map && !hidden.map && dd.map && dd.map.on) drawMap(ux, dd, parts.map);
+      T.panel(x, { under: ux.getImageData(0, 0, G, G).data,
                    live: [{ px: lx.getImageData(0, 0, G, G).data, still: false }] }, { mode: rend, wipe: wipe });
     }
 
     /* the fit: the live rows the theme ships against the orb's, at the estimate once baked */
     // rows only (owner, 2026-11-04): unlike the clock there is no designed rate to fall short
     // of, and the estimate is not a live measure, so the verdict claims no fps at all
-    var verdict = T.fit({ rows: LIVE_ROWS, cap: ROW_CAP });
+    var verdict = T.fit({ rows: liveRows(d), cap: ROW_CAP });
 
     /* ---- the fields of each step ---- */
     var K = S.fieldKit({ drafts: drafts, refresh: function () { setLibTick(function (n) { return n + 1; }); }, scope: function () { return step; } });
@@ -377,6 +433,66 @@
       fields.push(K.H('Home'));
       fields.push(num('Dot', 'scope.home.size', 0, 8, 0.5, function (v) { return v ? v + ' px' : 'none'; }));
       if (sc.home.size) fields.push(C('Colour', 'scope.home.colour'));
+    } else if (step === 'map') {
+      var mp = d.map, base0 = d.base;
+      fields.push(K.H('Map'));
+      fields.push(onOff('Map', 'map.on', 'Under the scope', 'None'));
+      if (!mp.on) fields.push(K.Nt('', 'A hint of the land under the traffic: the main roads, the water, the airports and the towns, from your home map (Orb Manager makes it when home is set). It stops at the outer ring.'));
+      if (mp.on) {
+        fields.push(K.Ch('Look', mp.look, opt(M.LOOKS), function (v) { setD(function (o) { var n = clone(o); n.map = M.applyLook(o.map, v, base0); return n; }); }));
+        fields.push(K.Nt('', (M.LOOKS.find(function (l) { return l[0] === mp.look; }) || [0, 0, ''])[2] + '. A look sets the colours, lines and marks below; what is drawn stays.'));
+        fields.push(num('Strength', 'map.strength', 0.1, 1, 0.05, function (v) { return Math.abs(v - 0.5) < 0.001 ? 'the look’s own' : Math.round(v / 0.5 * 100) + '% of the look'; }));
+        fields.push(K.Nt('', 'Every opacity at once: lower keeps the map a hint under the aircraft, higher makes it a chart.'));
+        fields.push(K.H('What is drawn'));
+        fields.push(pick('Water', 'map.water', [['all', 'Lakes, sea and rivers'], ['lakes', 'Lakes and sea'], ['off', 'None']]));
+        if (mp.water !== 'off') fields.push(pick('Lakes', 'map.lakes', M.LAKES));
+        fields.push(pick('Roads', 'map.roads', [['motorways', 'Motorways'], ['main', 'Motorways, and main roads at the nearest range'], ['off', 'None']]));
+        fields.push(pick('Airports', 'map.airports', [['runways', 'Runways at the nearest range, a symbol wider out'], ['symbols', 'A symbol'], ['off', 'None']]));
+        if (mp.airports !== 'off') {
+          fields.push(pick('Symbol', 'map.symbol', M.SYMBOLS));
+          fields.push(pick('Which', 'map.fields', [['airline', 'Airline airports'], ['all', 'Every airfield']]));
+        }
+        fields.push(onOff('Town dots', 'map.dots', 'Drawn', 'None'));
+        fields.push(pick('Names', 'map.names', M.NAMES));
+        if (mp.dots || mp.names !== 'off') fields.push(pick('Towns', 'map.which', [['cities', 'Cities'], ['towns', 'Cities and towns']]));
+        if (mp.names !== 'off') fields.push(onOff('Airport codes', 'map.codes', 'Named', 'Not named'));
+        fields.push(onOff('Built-up areas', 'map.urban', 'Tinted', 'Not tinted'));
+        fields.push(onOff('Borders', 'map.borders', 'State and country lines', 'None'));
+        fields.push(K.Nt('', 'The main roads and the runways are drawn at the nearest range only; wider out, the motorways and the airport symbols. A river shorter than 48 px (a creek the map calls a river) is left out. Press the toolbar’s ranges to see each.'));
+        fields.push(K.H('Colours'));
+        M.INKS.forEach(function (ik) {
+          if (ik[0] === 'urban' && !mp.urban) return;
+          if ((ik[0] === 'airport' || ik[0] === 'runway') && mp.airports === 'off') return;
+          if (ik[0] === 'runway' && mp.airports !== 'runways') return;
+          if (ik[0] === 'town' && !mp.dots) return;
+          if (ik[0] === 'names' && mp.names === 'off') return;
+          if ((ik[0] === 'water' || ik[0] === 'river') && mp.water === 'off') return;
+          if (ik[0] === 'river' && mp.water !== 'all') return;
+          if ((ik[0] === 'road1' || ik[0] === 'road2') && mp.roads === 'off') return;
+          if (ik[0] === 'road2' && mp.roads !== 'main') return;
+          if (ik[0] === 'border' && !mp.borders) return;
+          fields.push(C(ik[1], 'map.ink.' + ik[0]));
+          fields.push(num('Opacity', 'map.alpha.' + ik[0], 0, 1, 0.05, pct));
+        });
+        fields.push(K.H('Lines'));
+        M.LINES.forEach(function (ln) {
+          if (ln[0] === 'runway' && mp.airports !== 'runways') return;
+          if ((ln[0] === 'road1' && mp.roads === 'off') || (ln[0] === 'road2' && mp.roads !== 'main')) return;
+          if (ln[0] === 'river' && mp.water !== 'all') return;
+          if (ln[0] === 'border' && !mp.borders) return;
+          var L = mp.line[ln[0]];
+          fields.push(K.Ch(ln[1], L[1], opt([['solid', 'Solid'], ['long', 'Dashed'], ['short', 'Short dashes'], ['dot', 'Dotted'], ['dashdot', 'Dash-dot']]),
+            function (v) { upd('map.line.' + ln[0], [L[0], v]); }));
+          fields.push(K.Rg('Weight', L[0], 1, 4, 1, function (v) { upd('map.line.' + ln[0], [v, L[1]]); }, L[0] + ' px'));
+        });
+        if (mp.dots) fields.push(pick('Town dot', 'map.town', [['dot', 'Dot'], ['ring', 'Ring'], ['square', 'Square'], ['squareLine', 'Square outline']]));
+        if (mp.names !== 'off') {
+          fields.push(K.H('Names'));
+          fields.push(K.Sl('Typeface', mp.nameFace || d.words.face, B.FACES.map(function (k) { return { v: k, label: k }; }), function (v) { upd('map.nameFace', v); }));
+          fields.push(num('Size', 'map.nameSize', 14, 22, 1, function (v) { return v + ' px'; }));
+        }
+        fields.push(K.Nt('', home ? 'The preview is your own home map, ' + home.name + ', drawn the way the orb draws it.' : 'Open this editor from the hub, with home set on the Orb tab, to preview the map on your own home.'));
+      }
     } else if (step === 'arm') {
       var m = d.arm;
       fields.push(K.H('Radar arm'));
@@ -525,14 +641,14 @@
     }
 
     /* ---- the left pane: the parts ---- */
-    var items = [['scope', 'Scope'], ['arm', 'Arm'], ['planes', 'Planes'], ['words', 'Words']].map(function (x) {
+    var items = [['scope', 'Scope'], ['map', 'Map'], ['arm', 'Arm'], ['planes', 'Planes'], ['words', 'Words']].map(function (x) {
       return { id: x[0], band: 'parts', label: x[1], movable: false };
     });
     var left = h(S.Layers, { title: 'Parts', rows: S.layerRows(items, {
       sel: step === 'frames' ? 'words' : step, heads: { parts: 'The scope, bottom to top' },
-      icon: function (it) { return { scope: '◎', arm: '◜', planes: '✈', words: 'A' }[it.id]; },
+      icon: function (it) { return { scope: '◎', map: '▦', arm: '◜', planes: '✈', words: 'A' }[it.id]; },
       note: function (it) {
-        return { scope: B.GROUND_TITLES[sc.ground], arm: d.arm.kind === 'none' ? 'none' : d.arm.kind + ' · ' + B.period(d) + ' s',
+        return { scope: B.GROUND_TITLES[sc.ground], map: d.map && d.map.on ? (M.LOOKS.find(function (l) { return l[0] === d.map.look; }) || [0, ''])[1] : 'none', arm: d.arm.kind === 'none' ? 'none' : d.arm.kind + ' · ' + B.period(d) + ' s',
           planes: d.planes.family === 'custom' ? 'your own' : a.families[d.planes.family].title, words: d.words.face }[it.id];
       },
       hidden: function (it) { return !!hidden[it.id]; }, move: function () { return { ok: false, reason: 'the tracker’s parts keep their order' }; },
@@ -546,13 +662,13 @@
     var right = step === 'render'
       ? h(R.Fragment, null, h('div', { className: 'fl-sec' }, 'Render'),
           h('div', { className: 'fl-list' }, h(S.RenderPanel, {
-            badge: S.badgeProps(verdict, 'The live rows against the 32 an app seats'),
+            badge: S.badgeProps(verdict, 'The live rows against the ' + ROW_CAP + ' an app seats'),
             send: { on: send, note: 'save “' + d.name + '”, bake it and store it on the orb', tip: 'Save it to the hub library, bake it, then send it to the orb this editor was opened for. The library keeps the baked theme once the orb has stored it.' },
             save: ses.hubOrb() ? { on: saveDraft, note: 'keep “' + d.name + '” on the hub as a draft', tip: 'Keep this design in the hub library under its name, without baking or sending it. Under a theme’s name it is that theme’s unsent changes until Send to orb bakes them in.' } : null,
             downloads: [{ label: 'Download .orbtheme', note: 'the baked file', on: download }, { label: 'Check the bake', note: 'bake now and check its size', on: bakeNow }],
           })))
       : step === 'start'
-        ? h('div', { className: 'fl-list' }, h('div', { className: 'ui-mut' }, 'Pick a starting point, or open one from the hub library, then Continue. The steps after it: Scope, Arm, Planes, Words, Frames, and Render to send it.'))
+        ? h('div', { className: 'fl-list' }, h('div', { className: 'ui-mut' }, 'Pick a starting point, or open one from the hub library, then Continue. The steps after it: Scope, Map, Arm, Planes, Words, Frames, and Render to send it.'))
         : h('div', { className: 'fl-list' }, h(S.Fields, { fields: fields }));
 
     /* ---- the start sheet ---- */
@@ -602,7 +718,10 @@
           render: T.RENDERS.map(function (r) { return { label: r[1], tip: r[2], cls: r[0] === rend ? 'on' : '', pick: function () { setRend(r[0]); } }; }),
           wipe: rend === 'compare' ? { value: wipe, on: function (e) { setWipe(+e.target.value); } } : null,
           screen: vw.toolScreen(),
-        }, h(S.Seg, { opts: MODES.map(function (md) { return { label: md[1], tip: md[2], cls: md[0] === mode ? 'on' : '', pick: function () { setMode(md[0]); } }; }) }))),
+        }, h(S.Seg, { opts: MODES.map(function (md) { return { label: md[1], tip: md[2], cls: md[0] === mode ? 'on' : '', pick: function () { setMode(md[0]); } }; }) }),
+          d.map && d.map.on ? h(S.Seg, { opts: RANGES[unit].map(function (r, k) {
+            return { label: r + ' ' + unit, tip: 'The map at the ' + ['nearest', 'second', 'third', 'widest'][k] + ' range, as a press steps it on the orb', cls: k === rng ? 'on' : '', pick: function () { setRng(k); } };
+          }) }) : null)),
       h(S.Pane, { side: 'right' }, right),
       h(S.OpeningModal, { line: ses.opening }),
       h(S.SendModal, S.sendProps(sending, status, function () { sender.cancel(); })),

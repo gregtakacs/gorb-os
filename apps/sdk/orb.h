@@ -351,10 +351,22 @@ typedef struct {
     int32_t  rot_cdeg;             /* clockwise, hundredths of a degree */
     uint16_t role_on;              /* bit per role */
     uint8_t  mark_on;              /* bit per ORB_MARK_* drawn as a dot or a square */
-    uint8_t  pad;
+    uint8_t  clip;                 /* OS v1.2.38: half the radius, px, past which nothing is drawn; 0 none */
     uint8_t  width[16];            /* per line role, 1-4 px; 0 = not drawn */
     uint8_t  dash[16];             /* per line role, ORB_MAP_DASH_* */
 } orb_map_view_t;
+/* OS v1.2.38 (flights-map-plan §2.1), each 0 for the old draw (older OSes ignore them):
+ *  - width[ORB_MAP_CITY], width[ORB_MAP_AIRPORT]: the mark's look, ORB_MAP_LOOK(shape, radius
+ *    2-15 px); 0 is the old 5 px dot and square;
+ *  - dash[ORB_MAP_CITY], dash[ORB_MAP_AIRPORT]: the rank cap, marks ranked past it not drawn
+ *    (an airport with an IATA code ranks 1); 0 draws every rank;
+ *  - dash[ORB_MAP_WATER/URBAN/LAKE]: the floor, a piece under 2 x that many px both ways not
+ *    drawn (ponds); 0 draws every piece.
+ *  - a line role's width, bits 3-7: its floor in 8 px steps, a piece under it both ways not
+ *    drawn (the creeks the tiles call rivers); the width itself is bits 0-2. */
+enum { ORB_MAP_SHAPE_DOT = 1, ORB_MAP_SHAPE_RING, ORB_MAP_SHAPE_DIAMOND, ORB_MAP_SHAPE_DIAMOND_LINE,
+       ORB_MAP_SHAPE_SQUARE, ORB_MAP_SHAPE_SQUARE_LINE, ORB_MAP_SHAPE_TICKED };
+#define ORB_MAP_LOOK(shape, r) ((uint8_t)((shape) | (r) << 3))
 _Static_assert(sizeof(orb_map_view_t) == 44, "the OS copies this view verbatim");
 
 typedef struct {

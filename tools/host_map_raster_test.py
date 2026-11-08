@@ -21,11 +21,11 @@ RASTER_B = TW * TW * 32          # 8x8 tiles of 32 B (orb_map_raster.h)
 class Style(ctypes.Structure):
     _fields_ = [("scale", ctypes.c_float), ("rot_rad", ctypes.c_float), ("role_on", ctypes.c_uint16),
                 ("mark_on", ctypes.c_uint8), ("width", ctypes.c_uint8 * 16), ("dash", ctypes.c_uint8 * 16),
-                ("clock_us", ctypes.c_void_p), ("mark", ctypes.c_void_p), ("mark_ctx", ctypes.c_void_p)]
+                ("clip", ctypes.c_uint8), ("clock_us", ctypes.c_void_p), ("mark", ctypes.c_void_p), ("mark_ctx", ctypes.c_void_p)]
 
 class Stats(ctypes.Structure):
     _fields_ = [(n, ctypes.c_uint32) for n in ("features", "fills", "lines", "edges", "segments", "marks", "skipped",
-                                               "fill_us", "line_us", "max_fill_edges")]
+                                               "fill_us", "line_us", "max_fill_edges", "small")]
 
 def build_lib(mutation=None):
     d = tempfile.mkdtemp(prefix="orbmap-")
@@ -107,6 +107,20 @@ MUTATIONS = [
     ("const float k = st->scale / (float)ORB_MAP_UNIT", "const float k = st->scale / 8.0f"),
     ("int r0 = (int)ceilf(y0 - 0.5f), r1 = (int)ceilf(y1 - 0.5f);", "int r0 = (int)y0, r1 = (int)y1;"),
     ("if (tx0 == 0 && tx1 == 8) { t[0] = t[1] = t[2] = t[3] = vv; }", "if (tx0 == 0 && tx1 == 8) { t[0] = t[1] = vv; }"),
+    ("if (floor_px > 0 && bx1 - bx0 < floor_px && by1 - by0 < floor_px)", "if (floor_px > 0 && bx1 - bx0 < floor_px)"),
+    ("const float floor_px = 2.0f * st->dash[role & 15];", "const float floor_px = 1.0f * st->dash[role & 15];"),
+    ("if (st->dash[role] && rank > st->dash[role]) continue;", ";"),
+    ("const int rr = 2 * st->clip, c = W / 2;", "const int rr = 3 * st->clip, c = W / 2;"),
+    ("span(raster, y, c + hw + 1, W, ORB_MAP_LAND);", ";"),
+    ("const int o = r - ady, i = o - th - 1;", "const int o = r - ady + 1, i = o - th - 1;"),
+    ("if (ady > r && ady <= r + 3) span(ras, y,", "if (ady > r && ady <= r + 2) span(ras, y,"),
+    ("if (held < pcap && held == i) {", "if (held < pcap) {"),
+    ("const float lfloor = 8.0f * (st->width[role & 15] >> 3);", "const float lfloor = 4.0f * (st->width[role & 15] >> 3);"),
+    ("if (bx1 - bx0 < lfloor && by1 - by0 < lfloor) { s.small++; continue; }", "if (bx1 - bx0 < lfloor) { s.small++; continue; }"),
+    ("px = pts[2 * held - 2]; py = pts[2 * held - 1];", "px = pts[0]; py = pts[1];"),
+    ("pen_t p = { raster, role, (uint8_t)(st->width[role & 15] & 7), NULL, 0, 0 };", "pen_t p = { raster, role, (uint8_t)(st->width[role & 15] & 15), NULL, 0, 0 };"),
+    ("const int shape = look & 7, r = (look >> 3) < 2 ? 2 : look >> 3, th = r >= 5 ? 2 : 1;",
+     "const int shape = look & 7, r = (look >> 3) < 2 ? 2 : look >> 3, th = 1;"),
 ]
 
 def synthetic_checks(lib):
@@ -168,6 +182,64 @@ def synthetic_checks(lib):
     bad = bytearray(bbuf); bad[len(bad) // 2] ^= 0x40
     check(render_src(lib, bytes(bad), style(), 512)[0] == -3, "a streamed file with a flipped body byte answers the CRC's error")
     check(render_src(lib, bbuf[:-30], style(), 512)[0] == -2, "a streamed file cut short is truncated")
+    # v1.2.38 (flights-map-plan §2.1): the clip, a fill's floor, a mark's rank cap and look
+    st0 = style(); st0.clip = 60                         # nothing past 120 px
+    rc, ras, st, _ = render(lib, buf, st0)
+    check(role_at(ras, c + 70, c) == orbmap.LAKE and role_at(ras, c - 150, c + 150) == orbmap.LAND
+          and role_at(ras, c, c + 150) == orbmap.LAND and role_at(ras, c, c - 170) == orbmap.LAND,
+          "clipped at 120 px, the lake inside stays and the line and the mark outside go")
+    check(role_at(ras, c + 90, c + 90) == orbmap.LAND and role_at(ras, c + 80, c + 80) == orbmap.LAKE,
+          "the clip is a circle, not a box: the lake's corner at 127 px goes, 113 px stays")
+    tiny = [(-3 * U, -3 * U), (3 * U, -3 * U), (3 * U, 3 * U), (-3 * U, 3 * U)]
+    fbuf = orbmap.encode(0.0, 0.0, 8, [(orbmap.LAKE, orbmap.FILL, [sq(100), sq(40)]),
+                                       (orbmap.LAKE, orbmap.FILL, [[(x + 150 * U, y) for x, y in tiny]]),
+                                       (orbmap.LAKE, orbmap.FILL, [[(148 * U, -150 * U), (152 * U, -150 * U), (152 * U, -110 * U), (148 * U, -110 * U)]])], [])
+    rc, ras, st, _ = render(lib, fbuf, style(dashes={orbmap.LAKE: 4}))
+    check(role_at(ras, c + 150, c) == orbmap.LAND and role_at(ras, c + 70, c) == orbmap.LAKE and st.small == 1,
+          "a floor of 8 px drops the 6 px pond and keeps the lake")
+    check(role_at(ras, c + 150, c - 130) == orbmap.LAKE, "and keeps a 4 x 40 px reach: the floor is both ways")
+    rc, ras, st, _ = render(lib, fbuf, style(dashes={orbmap.LAKE: 3}))
+    check(role_at(ras, c + 150, c) == orbmap.LAKE and st.small == 0, "a floor of 6 px keeps the 6 px pond")
+    mbuf = orbmap.encode(0.0, 0.0, 8, [], [(orbmap.MARK_AIRPORT, 1, -100 * U, 0, "BIG"),
+                                           (orbmap.MARK_AIRPORT, 8, 100 * U, 0, "SML")])
+    rc, ras, st, _ = render(lib, mbuf, style(dashes={orbmap.AIRPORT: 1}))
+    check(role_at(ras, c - 100, c) == orbmap.AIRPORT and role_at(ras, c + 100, c) == orbmap.LAND,
+          "a rank cap of 1 draws the IATA airport and not the airfield")
+    # a line's floor (width bits 3-7, 8 px a step): the creek goes, the river stays, and a
+    # river held in a scratch too small for it is drawn all the same
+    lines = [(orbmap.RIVER, orbmap.LINE, [[(-100 * U, 50 * U), (-90 * U, 55 * U), (-80 * U, 50 * U)]]),          # 20 px
+             (orbmap.RIVER, orbmap.LINE, [[(150 * U, -100 * U), (152 * U, -80 * U), (150 * U, -60 * U)]]),       # 4 x 40 px
+             (orbmap.RIVER, orbmap.LINE, [[(-200 * U + 7 * j * U, (j % 3) * U - 150 * U) for j in range(60)]])]   # 413 px
+    lbuf = orbmap.encode(0.0, 0.0, 8, lines, [])
+    plain = style(); plain.width[orbmap.RIVER] = 2; plain.dash[orbmap.RIVER] = 1
+    floored = style(); floored.width[orbmap.RIVER] = 2 | 5 << 3; floored.dash[orbmap.RIVER] = 1
+    r_plain, r_floor = render(lib, lbuf, plain)[1], render(lib, lbuf, floored)
+    river = lambda ras: [(x, y) for y in range(c - 160, c - 135) for x in range(c - 205, c + 220) if role_at(ras, x, y) == orbmap.RIVER]
+    check(role_at(r_floor[1], c - 90, c + 55) == orbmap.LAND and role_at(r_plain, c - 90, c + 55) == orbmap.RIVER and r_floor[2].small == 1,
+          "a floor of 40 px drops the 20 px creek")
+    check(any(role_at(r_floor[1], c + 149 + dx, c - 100 + dy) == orbmap.RIVER for dx in range(6) for dy in range(40)), "and keeps a 4 x 40 px reach: both ways")
+    check(river(r_floor[1]) == river(r_plain) and len(river(r_plain)) > 200, "the long river, held then drawn, is the unfloored one, dashes and all")
+    small = ctypes.create_string_buffer(64)               # room for 8 points: the river spills
+    ras2 = ctypes.create_string_buffer(RASTER_B); st2 = Stats()
+    lib.orb_map_render(lbuf, len(lbuf), ctypes.byref(floored), ras2, small, len(small), ctypes.byref(st2))
+    check(river(ras2.raw) == river(r_plain), "a river longer than the scratch is drawn whole, dashes and all")
+    def look_px(shape, r):
+        s2 = style(); s2.width[orbmap.AIRPORT] = shape | r << 3
+        ras2 = render(lib, mbuf, s2)[1]
+        return [(x, y) for y in range(c - 20, c + 21) for x in range(c - 120, c - 79) if role_at(ras2, x, y) == orbmap.AIRPORT]
+    dia = look_px(3, 6)
+    check(len(dia) == 85 and (c - 100, c - 6) in dia and (c - 106, c) in dia and (c - 104, c - 4) not in dia,
+          "a filled diamond of radius 6 is 85 px, tips on the axes (%d)" % len(dia))
+    dl = look_px(4, 6)
+    check((c - 100, c) not in dl and (c - 100, c - 6) in dl and len(dl) < len(dia), "the diamond's outline is hollow")
+    ring = look_px(2, 6)
+    check((c - 100, c) not in ring and (c - 106, c) in ring and (c - 100, c + 6) in ring, "a ring of radius 6 is hollow")
+    tk = look_px(7, 6)
+    check((c - 100, c - 9) in tk and (c - 109, c) in tk and (c - 100, c - 10) not in tk and len(tk) > len(ring),
+          "the ticked ring's four ticks reach 3 px past it")
+    sql = look_px(6, 5)
+    check((c - 105, c - 5) in sql and (c - 100, c) not in sql and len(sql) == 11 * 11 - 7 * 7, "the square outline is 2 px")
+    check(len(look_px(1, 4)) > len(look_px(1, 2)), "a dot's radius grows it")
     rc, ras, st, _ = render(lib, buf, style(rot=math.radians(45)))
     # Rotated 45 degrees the corners lie on the axis: the island's reaches 40*sqrt2 = 57 px,
     # the lake's 100*sqrt2 = 141 px (unrotated, both stop at 40 and 100).

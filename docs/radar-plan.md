@@ -64,6 +64,11 @@ owed a measurement before the slice that depends on it (§4).
     themes and maps, and the hub's writes never corrupt a map being read (§2.12).
 16. **The stage gains a live layer** (2026-11-07): the radar draws its map and rain into a
     full-glass element the theme places in its stack, not an LVGL canvas (§2.9, R3c).
+17. **A theme's values are locked to the theme** (2026-11-07). They exist because the map
+    and the rain are rendered live by the OS, which must know the theme's colours; they
+    are not settings. Nothing at runtime shows or changes them: no app setting, no options
+    row, no hub page, no route. The only way to change them is the theme editor and a new
+    bake (§2.11).
 
 Everything else below is design, open to the owner until it is built.
 
@@ -664,6 +669,8 @@ FORMAT). It deletes the files no place uses. No app's settings page is involved.
 ```
 
 `zoom` is 0 wide, 1 region, 2 local. An empty `source` means the default URL (§2.2).
+These two are the radar's only settings, and its options page carries only the zoom: every
+colour, width, dash, preset and timing is the theme's (§0 ruling 17).
 
 **What it keeps** in its 64 KB: the frame list (18 × time, path and blob slot, about
 1 KB), the palettes (1 KB for rain, 64 B for the map), the place on the glass and its zoom.
@@ -843,7 +850,11 @@ format gains **a values section**: a short, versioned, app-defined blob baked by
 app's editor and read by the app at `orb_stage_open` time.
 
 - **The OS reads nothing in it.** It checks the section's size and CRC and hands the bytes
-  to the app (`orb_stage_values(void *buf, uint32_t cap)`). The app owns the layout and
+  to the app (`orb_stage_values(void *buf, uint32_t cap)`).
+- **Read-only, and theme-locked** (§0 ruling 17). The bytes sit in the theme's bank,
+  mapped from flash; `orb_stage_values` copies them out to the theme's own app and nothing
+  writes them. No route, hub page, app setting or options row reads or edits them. An app
+  may not offer any of them as a setting: what a theme sets, only a new bake changes. The app owns the layout and
   its version, so a new radar setting never changes the OS.
 - **The radar's layout, version 1** (*estimate* ~1.6 KB): the map's 16 role colours
   (ARGB), widths and dash ids; the detail preset and the per-role switches; the names

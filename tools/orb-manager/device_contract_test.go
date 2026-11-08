@@ -73,7 +73,7 @@ func TestDeviceVerbBodiesAreTheFirmwaresOwnWords(t *testing.T) {
 		// toward whichever behaviour a later edit found convenient.
 		{"nameP", []string{`{"state":"named"`, `"name\"`, `{"error":"name rejected"}`, `{"error":"body too large"}`, `{"error":"content-length required"}`}},
 		{"boot", []string{`{"state":"rebooting"}`}},
-		{"scr", []string{`{"state":"accepted"}`, `{"error":"to, turn, push or hold required"}`, `"unknown app"`}},
+		{"scr", []string{`{"state":"accepted"}`, `{"error":"to, turn, push, push_turn or hold required"}`, `"unknown app"`}},
 	}
 	for _, c := range cases {
 		body := handler(t, src, c.which)

@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Radar bake check</title>
+<!-- Staged by bake_check.py beside the runtime's baker and fonts: bakes every starter
+     through radar-bake.js and prints each theme as one "B64 <name> <ms> <base64>" line in
+     #out for the driver to check. -->
+<link rel="stylesheet" href="fonts.css">
+<script src="orbtheme-baker.js"></script>
+<script src="radar-bake.js"></script>
+<pre id="out"></pre>
+<script>
+(async function () {
+  const out = document.getElementById('out'), B = window.RadarBake;
+  const APPV = new URLSearchParams(location.search).get('appv') || '';
+  const say = (s) => { out.textContent += s + '\n'; };
+  const b64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+  for (const name of B.PRESETS) {
+    try {
+      const d = B.preset(name), t0 = performance.now();
+      const doc = new TextEncoder().encode(JSON.stringify(Object.assign({ format: 'wc-design', schema: B.SCHEMA, app: 'radar' }, APPV ? { appVersion: APPV } : {}, { design: d })));
+      const r = await B.bake(d, { design: doc });
+      say('B64 ' + name + ' ' + Math.round(performance.now() - t0) + ' ' + b64(r.bytes));
+    } catch (e) {
+      say('ERR ' + name + ' ' + (e && e.message ? e.message : e));
+    }
+  }
+  say('DONE');
+})();
+</script>

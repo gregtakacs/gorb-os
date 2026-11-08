@@ -53,6 +53,7 @@ static volatile const orb_app_t *s_requested;
  * produces. */
 static volatile int32_t s_inj_delta;
 static volatile bool  s_inj_press;
+static volatile int32_t s_inj_push;   /* radar-plan §2.10: an injected press-and-turn */
 static volatile bool  s_inj_long;   /* the escape-hatch gesture, see input_router_inject */
 
 static const char *screen_name(const orb_app_t *app)
@@ -371,9 +372,11 @@ static void poll_timer_cb(lv_timer_t *timer)
      * erase the only record of whether the event came from the bench or from the
      * encoder itself — see the touch report just below. */
     const int32_t inj = s_inj_delta;
+    const int32_t ipt = s_inj_push;
     const bool    ip  = s_inj_press;
     const bool    il  = s_inj_long;
     if (inj) { s_inj_delta = 0; delta += inj; }
+    if (ipt) { s_inj_push = 0; push += ipt; }
     if (s_inj_press) { s_inj_press = false; pressed = true; }
     if (s_inj_long)   { s_inj_long   = false; lpress   = true;  }
 
@@ -388,7 +391,7 @@ static void poll_timer_cb(lv_timer_t *timer)
      * indistinguishable, and telling "nobody touched it" from "the bench touched
      * it" is the whole question when the dial refuses to dim. */
     if (delta || pressed || lpress || push)
-        idle_dim_activity(inj || ip || il
+        idle_dim_activity(inj || ipt || ip || il
                           ? "http"
                           : (delta ? (pressed ? "turn+press" : "turn")
                                     : (pressed ? "press" : "hold")));
@@ -612,4 +615,9 @@ void input_router_inject(int32_t delta, bool pressed, bool lpress)
     else s_inj_delta += delta;
     if (pressed) s_inj_press = true;
     if (lpress)  s_inj_long  = true;
+}
+
+void input_router_inject_push(int32_t delta)
+{
+    s_inj_push += delta;
 }

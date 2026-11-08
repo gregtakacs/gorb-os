@@ -2,7 +2,7 @@
 """rebake_shelf.py — keep each app's shipped default theme baked by the app's own version.
 
 The hub ships one default theme per themeable app (tools/orb-manager/themes/): Skeleton for
-the clock, Modern for flights, Scope for the weather. Every bump of an app's version.txt re-bakes its default with
+the clock, Modern for flights, Scope for the weather, Radarscope for the radar. Every bump of an app's version.txt re-bakes its default with
 that release's editor (owner, 2026-11-05), so the shelf never offers a theme "made with" an
 older editor than the app it themes. A stale shelf copy is how Modern read "made with v1.2.4"
 beside flights v1.2.6 and offered an Update that changed nothing.
@@ -36,7 +36,8 @@ CHROME = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
 CLOCK_STAGE, CLOCK_STAGE_WIN = "/mnt/c/Temp/rebake-shelf-clock", "C:/Temp/rebake-shelf-clock"
 
 # app slug -> the shelf file of its default theme
-DEFAULTS = {"clock": "skeleton.orbtheme", "flights": "modern.orbtheme", "weather": "scope.orbtheme"}
+DEFAULTS = {"clock": "skeleton.orbtheme", "flights": "modern.orbtheme", "weather": "scope.orbtheme",
+            "radar": "radarscope.orbtheme"}
 
 
 def app_version(slug):
@@ -135,7 +136,24 @@ def bake_weather(v):
         return True
 
 
-BAKE = {"clock": bake_clock, "flights": bake_flights, "weather": bake_weather}
+def bake_radar(v):
+    """The radar's starters through its bake_check.py (which stamps radar's version.txt and
+    gates each one against the pool's room), keeping Scope (docs/radar-plan.md §2.5)."""
+    with tempfile.TemporaryDirectory(prefix="rebake.") as keep:
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "apps", "radar", "editor", "_selftest", "bake_check.py")],
+                           env=dict(os.environ, RADAR_BAKE_KEEP=keep), capture_output=True, text=True)
+        got = os.path.join(keep, "scope.orbtheme")
+        if r.returncode or not os.path.exists(got):
+            print("  the bake failed:\n    " + (r.stdout + r.stderr).strip()[-1500:].replace("\n", "\n    "))
+            return False
+        if made_with(got) != v:
+            print("  the bake names radar %s, not %s" % (made_with(got), v))
+            return False
+        shutil.copyfile(got, os.path.join(SHELF, DEFAULTS["radar"]))
+        return True
+
+
+BAKE = {"clock": bake_clock, "flights": bake_flights, "weather": bake_weather, "radar": bake_radar}
 
 
 def main():

@@ -985,15 +985,15 @@ const knownApps = `["clock","color_picker","hue","menu"]`
 func (o *Orb) serveScreen(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	to := q.Get("to")
-	haveTo, haveTurn := q.Has("to"), q.Has("turn")
+	haveTo, haveTurn, havePT := q.Has("to"), q.Has("turn"), q.Has("push_turn")
 	turn, push, hold := q.Get("turn"), q.Get("push"), q.Get("hold")
 
 	if haveTo && !knownApp(to) {
 		writeJSON(w, 400, `{"error":"unknown app","known":`+knownApps+`}`)
 		return
 	}
-	if !haveTo && !haveTurn && push == "" && hold == "" {
-		writeJSON(w, 400, `{"error":"to, turn, push or hold required"}`)
+	if !haveTo && !haveTurn && !havePT && push == "" && hold == "" {
+		writeJSON(w, 400, `{"error":"to, turn, push, push_turn or hold required"}`)
 		return
 	}
 	o.mu.Lock()

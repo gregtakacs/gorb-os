@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radar editor</title>
+<!-- The radar app's editor region (docs/radar-plan.md §2.9). R5 ships it for the bake
+     (radar-bake.js, which made the shelf's Scope) and for os_min, which rides the region;
+     the editor itself, its presets, the map's detail and colours and the four other
+     starters are R7's. Until then this page says so and shows the starter. -->
+<link rel="stylesheet" href="/runtime/ui@1/ui.css">
+<link rel="stylesheet" href="/runtime/fonts@1/fonts.css">
+<style>
+  body { background: var(--bg); color: var(--fg); font: 13px/1.45 var(--sans); margin: 0; padding: 24px; }
+  canvas { width: 233px; height: 233px; border-radius: 50%; display: block; margin: 16px 0; }
+  .hint { color: var(--mut); max-width: 34em; }
+</style>
+</head>
+<body>
+<h2>Radar themes</h2>
+<p class="hint">The radar's theme editor is on its way. For now the shelf's Scope theme is the
+radar's look: install it from the Themes tab. Its map colours, line widths and rain ramp are
+the theme's, and the editor will let you change them.</p>
+<canvas id="pv" width="466" height="466"></canvas>
+<script src="/runtime/baker@1/orbtheme-baker.js"></script>
+<script src="radar-bake.js"></script>
+<script>
+  RadarBake.picture(RadarBake.preset('scope'), 466).then((c) => document.getElementById('pv').getContext('2d').drawImage(c, 0, 0));
+</script>
+</body>
+</html>

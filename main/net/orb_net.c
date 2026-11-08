@@ -5009,6 +5009,13 @@ static esp_err_t h_screen(httpd_req_t *req)
         input_router_inject(0, true, false);
     }
 
+    char pt[8] = "";
+    const bool have_pt = q_param(req, "push_turn", pt, sizeof pt);
+    if (have_pt) {
+        ESP_LOGI(TAG, "synthetic press-and-turn %+d", atoi(pt));
+        input_router_inject_push((int32_t)atoi(pt));
+    }
+
     if (hold[0] == '1') {
         /* The escape hatch, exercised over HTTP: an armed screen with a broken
          * long-press is a dial you cannot leave. */
@@ -5016,10 +5023,10 @@ static esp_err_t h_screen(httpd_req_t *req)
         input_router_inject(0, false, true);
     }
 
-    if (!have_to && !have_turn && !push[0] && !hold[0]) {
+    if (!have_to && !have_turn && !push[0] && !hold[0] && !have_pt) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req,
-               "{\"error\":\"to, turn, push or hold required\"}");
+               "{\"error\":\"to, turn, push, push_turn or hold required\"}");
     }
     return httpd_resp_sendstr(req, "{\"state\":\"accepted\"}");
 }

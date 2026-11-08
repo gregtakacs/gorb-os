@@ -1853,8 +1853,12 @@ esp_err_t display_dma_return(void)
 /* §61: while a carousel that reads the card is up, the glass outranks the network's
  * window: every hold is short, and each one would otherwise still the carousel up to
  * RING_NET_WINDOW_US after the card was done. */
-static volatile bool s_ring_urgent;
-void display_ring_urgent(bool on) { s_ring_urgent = on; }
+static volatile uint8_t s_ring_urgent;          /* DISPLAY_URGENT_* bits */
+void display_ring_urgent_for(uint8_t who, bool on)
+{
+    if (on) s_ring_urgent |= who; else s_ring_urgent &= (uint8_t)~who;
+}
+void display_ring_urgent(bool on) { display_ring_urgent_for(DISPLAY_URGENT_CAROUSEL, on); }
 
 static bool ring_refund_due(void)
 {

@@ -1502,3 +1502,24 @@ be shown and the last nowcast that is. And fewer frames are given up: a magnifie
 zoom deeper, which is the 512's centre pixel for pixel (LibreWXR, benched: offset 128,
 exact) at a third of the bytes (21 KB against 64 KB at DFW today). All 18 frames fit the
 768 KB there. Wide, Region and Local still need the whole 512.
+
+### 6.15 A card read no longer stills the glass under a waiting map (2026-11-08, Bronze, OS v1.2.31)
+
+Benched on v1.2.30, a press still showed the old place for 5 s and more: the press drew its
+pill, but the map task then read the new place's level file, and every card read lends the
+display's DMA ring (`orb_sd_lock` → `display_dma_borrow`). The flush path drops frames while
+it is lent, and takes it back only 1.5 s after the read (`RING_NET_WINDOW_US`, the network's
+window). The ring's urgency is now per holder (`display_ring_urgent_for`: the carousel's, and
+the map's); the map service holds it while the app on the glass waits for a render, so the
+ring comes back as each 32 KB piece ends. Bronze, London ← Home at Region: frames reached the
+panel every second after the press (2, 1, 2) through the 984 ms render, where before none did.
+
+What the same log shows next: a full-glass frame costs 160-220 ms to compose (the map's and
+the rain's layers blended in software), on top of the smoothed rain draw (about 100 ms at
+City even from a 256 px frame, so the cost is the per-pixel draw, not the decode). With the
+loop playing, the glass runs at 3-8 fps. Composing the rain onto a copy of the map in one
+opaque layer is the candidate fix.
+
+At City the 256 px frames held all 12 past frames on a stormy day (7-24 KB each, 1.6 MB of
+PSRAM free); at Region the 512s still fill the 768 KB at frame 4 of 12, and the scrub now
+stops there (-70 min) on a frame with rain in it, not on a blank.

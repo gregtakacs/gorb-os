@@ -24,6 +24,7 @@
 #include "orb_map_raster.h"
 #include "orb_places.h"
 #include "orb_sd.h"
+#include "display.h"   /* display_ring_urgent_for */
 
 static const char *TAG = "map";
 
@@ -418,6 +419,20 @@ void orb_map_note_glass(int app_slot, bool on_glass, int64_t now_us)
 {
     app_maps_t *a = app_of(app_slot);
     if (!a) return;
+    /* A map the glass waits for reads the card in 32 KB pieces, and each read lends the
+     * display's ring (orb_sd_lock): the glass then dropped every frame until 1.5 s after
+     * the read, so a press's new place showed nothing for seconds (owner, 2026-11-08). The
+     * ring comes back as each piece ends while the app on the glass waits for a render. */
+    static int s_urgent_slot = -1;
+    if (on_glass) {
+        bool waiting = false;
+        for (int i = 0; i < ORB_MAP_VIEWS; i++) waiting |= a->v[i].opened_us && a->v[i].state == ORB_MAP_RENDERING;
+        display_ring_urgent_for(DISPLAY_URGENT_MAP, waiting);
+        s_urgent_slot = waiting ? app_slot : -1;
+    } else if (s_urgent_slot == app_slot) {
+        display_ring_urgent_for(DISPLAY_URGENT_MAP, false);
+        s_urgent_slot = -1;
+    }
     /* Off the glass an app keeps no display buffers (owner, 2026-11-07): its views and their
      * rasters go at once, and it opens new ones when it is back. The level files are data,
      * not pixels: they stay LINGER_S, so a return does not read the card again. */

@@ -273,6 +273,10 @@ void display_glass_hold(bool on);
 /* §61: take the ring back from the card at once rather than after the network's window
  * (RING_NET_WINDOW_US), while on. The theme carousel holds it on while it is up. */
 void display_ring_urgent(bool on);
+/* The same, per holder, so one cannot clear another's: the carousel's (above), and the
+ * map service's while the app on the glass waits for a render (radar-plan §6.15). */
+enum { DISPLAY_URGENT_CAROUSEL = 1, DISPLAY_URGENT_MAP = 2 };
+void display_ring_urgent_for(uint8_t who, bool on);
 bool display_glass_held(void);
 /* LVGL frames that reached the mirror while the glass was held, counting up: the
  * carousel waits on it for the app it opened to draw before fading to it. */

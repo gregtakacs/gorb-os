@@ -21,6 +21,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "display.h"
+#include "orb_glass.h"
 
 /* The rotation pair SHARED by paint_row's inverse map and the orbit chord
  * stamps: LVGL's lv_draw_sw_transform interpolation of trigo_sin at the exact
@@ -1089,19 +1090,19 @@ void gfx_prep_mode(int mode)
      * clock's own page found no room for more than five pictures (owner, 2026-11-08). The
      * dial's resume turns it back on and takes them again. */
     if (!s_pp_mode && (s_pf || s_pb || s_pfn || s_pbn)) {
-        heap_caps_free(s_pf);  heap_caps_free(s_pb);
-        heap_caps_free(s_pfn); heap_caps_free(s_pbn);
+        orb_glass_free(s_pf);  orb_glass_free(s_pb);
+        orb_glass_free(s_pfn); orb_glass_free(s_pbn);
         s_pf = s_pb = s_pfn = s_pbn = NULL;
     }
     if (s_pp_mode && !s_pf) {
         const size_t n = (size_t)CLK_SCR_W * CLK_SCR_H * 2;
-        s_pf  = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        s_pb  = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        s_pfn = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        s_pbn = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_pf  = orb_glass_alloc(n);         /* §6.21: the glass region */
+        s_pb  = orb_glass_alloc(n);
+        s_pfn = orb_glass_alloc(n);
+        s_pbn = orb_glass_alloc(n);
         if (!s_pf || !s_pb || !s_pfn || !s_pbn) {
-            heap_caps_free(s_pf);  heap_caps_free(s_pb);
-            heap_caps_free(s_pfn); heap_caps_free(s_pbn);
+            orb_glass_free(s_pf);  orb_glass_free(s_pb);
+            orb_glass_free(s_pfn); orb_glass_free(s_pbn);
             s_pf = s_pb = s_pfn = s_pbn = NULL;
             s_pp_mode = 0;
             ESP_LOGE("gfx", "pre-paint: no PSRAM for the planes");

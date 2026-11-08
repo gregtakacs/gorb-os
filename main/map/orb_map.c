@@ -25,23 +25,15 @@
 #include "orb_places.h"
 #include "orb_sd.h"
 #include "display.h"   /* display_ring_urgent_for */
+#include "orb_glass.h"   /* §6.21: rasters and scratch in the glass region */
 
 static const char *TAG = "map";
 
-#define FILES_PER_APP 3                 /* the radar's three levels */
-#define PIECE         (32 * 1024)       /* a read's lock hold (§2.12: ~50 ms on Bronze) */
 #define WRITE_QUIET_MS 1000             /* stand aside while the card was written this recently */
 #define SCRATCH_B     (256 * 1024)      /* one fill's edges: DFW's largest needs ~220 KB */
 #define LINGER_S      (15 * 60)
 #define TASK_STACK    6144
 #define TASK_PRIO     2                 /* under the LVGL task: a render never delays a frame */
-
-typedef struct {
-    char     name[64];                  /* under ORB_MAP_DIR; "" = empty */
-    uint8_t *buf;
-    uint32_t len;
-    int64_t  used_us;
-} mfile_t;
 
 typedef struct {
     volatile int32_t state;             /* ORB_MAP_* */
@@ -59,13 +51,10 @@ typedef struct {
 
 typedef struct {
     view_t   v[ORB_MAP_VIEWS];
-    mfile_t  f[FILES_PER_APP];
     int64_t  off_since_us;
 } app_maps_t;
 
 EXT_RAM_BSS_ATTR static app_maps_t s_a[ORB_APP_CAP];
-static SemaphoreHandle_t s_mx;                  /* the file tables */
-static StaticSemaphore_t s_mx_buf;
 /* Held by the map task for a whole render. Freeing an app's rasters or files takes it
  * first, so a render never reads freed memory; the LVGL task only ever tries it. */
 static SemaphoreHandle_t s_busy;
@@ -76,8 +65,6 @@ static uint32_t s_renders, s_last_ms;
 
 typedef struct { uint8_t app, view; uint32_t seq; } job_t;
 
-static void lock(void)   { xSemaphoreTake(s_mx, portMAX_DELAY); }
-static void unlock(void) { xSemaphoreGive(s_mx); }
 
 static app_maps_t *app_of(int s) { return s >= 0 && s < ORB_APP_CAP ? &s_a[s] : NULL; }
 
@@ -118,33 +105,6 @@ static void pick_level(int32_t lat_e6, int32_t radius_m, int *z, float *scale)
 
 /* ---- the card --------------------------------------------------------------------- */
 
-/* Read a whole file in pieces, the lock held for each and standing aside while the card
- * is being written (§2.12). NULL when absent, unreadable or out of memory. */
-static int read_file(const char *full, uint8_t **buf_out, uint32_t *len_out)
-{
-    struct stat st;
-    orb_sd_lock();
-    const bool ok = stat(full, &st) == 0 && st.st_size > 36 && st.st_size < 4 * 1024 * 1024;
-    orb_sd_unlock();
-    if (!ok) return ORB_MAP_ABSENT;
-    const uint32_t len = (uint32_t)st.st_size;
-    uint8_t *buf = heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
-    if (!buf) return ORB_MAP_NOMEM;     /* the file is there: the app asks again */
-    for (uint32_t off = 0; off < len; off += PIECE) {
-        while (orb_sd_write_idle_ms() < WRITE_QUIET_MS) vTaskDelay(pdMS_TO_TICKS(50));
-        const uint32_t want = len - off < PIECE ? len - off : PIECE;
-        orb_sd_lock();
-        FILE *f = fopen(full, "rb");
-        const bool got = f && fseek(f, (long)off, SEEK_SET) == 0 && fread(buf + off, 1, want, f) == want;
-        if (f) fclose(f);
-        orb_sd_unlock();
-        if (!got) { heap_caps_free(buf); return ORB_MAP_ABSENT; }
-    }
-    *buf_out = buf;
-    *len_out = len;
-    return ORB_MAP_OK;
-}
-
 /* A level file read in pieces from the card (§6.20), for orb_map_render_src: no PSRAM
  * block as big as the file. Each piece takes the card lock alone, as read_file's do. */
 typedef struct { char full[112]; } cardsrc_t;
@@ -160,64 +120,6 @@ static int card_read(void *ctx, uint32_t off, uint8_t *dst, uint32_t n)
     return got ? (int)n : -1;
 }
 #define STREAM_WIN (16 * 1024)
-
-/* The app's least recently used level file, freed before a new one is read: three
- * levels are never wanted at once by one render, and PSRAM is too short to hold a
- * fourth beside them on a stormy day. */
-static void drop_oldest(app_maps_t *a, bool all)
-{
-    lock();
-    int slot = -1;
-    for (int i = 0; i < FILES_PER_APP; i++) {
-        if (!a->f[i].buf) { if (!all) { unlock(); return; } continue; }
-        if (all) { heap_caps_free(a->f[i].buf); a->f[i].buf = NULL; continue; }
-        if (slot < 0 || a->f[i].used_us < a->f[slot].used_us) slot = i;
-    }
-    if (slot >= 0) { heap_caps_free(a->f[slot].buf); a->f[slot].buf = NULL; }
-    unlock();
-}
-
-/* The level file, from the app's cache or the card. Called on the map task. */
-static int file_for(int app_slot, const char *name, const uint8_t **buf, uint32_t *len)
-{
-    app_maps_t *a = app_of(app_slot);
-    lock();
-    for (int i = 0; i < FILES_PER_APP; i++)
-        if (a->f[i].buf && !strcmp(a->f[i].name, name)) {
-            a->f[i].used_us = esp_timer_get_time();
-            *buf = a->f[i].buf; *len = a->f[i].len;
-            unlock();
-            return ORB_MAP_READY;
-        }
-    unlock();
-    if (!orb_sd_mounted() || orb_sd_usb_owned()) return ORB_MAP_NOCARD;
-    char full[112];
-    snprintf(full, sizeof full, ORB_SD_BASE ORB_MAP_DIR "/%s", name);
-    uint32_t n = 0;
-    uint8_t *b = NULL;
-    drop_oldest(a, false);
-    for (int tries = 0; tries < 2 && !b; tries++) {     /* a file changed underneath is read again */
-        int r = read_file(full, &b, &n);
-        if (r == ORB_MAP_NOMEM) { drop_oldest(a, true); r = read_file(full, &b, &n); }
-        if (r != ORB_MAP_OK) return r;
-        if (orb_map_check(b, n, NULL) != ORB_MAP_OK) { heap_caps_free(b); b = NULL; }
-    }
-    if (!b) return ORB_MAP_BAD;
-    lock();
-    int slot = 0;                                       /* an empty entry, else the oldest */
-    for (int i = 0; i < FILES_PER_APP; i++) {
-        if (!a->f[i].buf) { slot = i; break; }
-        if (a->f[i].used_us < a->f[slot].used_us) slot = i;
-    }
-    heap_caps_free(a->f[slot].buf);
-    snprintf(a->f[slot].name, sizeof a->f[slot].name, "%s", name);
-    a->f[slot].buf = b;
-    a->f[slot].len = n;
-    a->f[slot].used_us = esp_timer_get_time();
-    *buf = b; *len = n;
-    unlock();
-    return ORB_MAP_READY;
-}
 
 /* ---- the render ------------------------------------------------------------------- */
 
@@ -247,39 +149,34 @@ static void render(int app_slot, int vi, uint32_t seq, void *scratch)
     pick_level(lat, v->req.radius_m, &v->z, &v->scale);
     char name[64];
     orb_map_file_name(v->place, lat, lon, v->z, name, sizeof name);
-    const uint8_t *buf;
-    uint32_t len;
     const int64_t t0 = esp_timer_get_time();
-    const int r = file_for(app_slot, name, &buf, &len);
-    /* No block as big as the file (Gold, 2026-11-08: 919 KB free, a 312 KB z10 refused at
-     * every try, "Loading map" for good): the render reads it from the card as it goes. */
-    const bool stream = r == ORB_MAP_NOMEM;
-    if (r != ORB_MAP_READY && !stream) {
-        if (v->seq == seq) v->state = r;
-        ESP_LOGW(TAG, "slot %d view %d: %s (%d)", app_slot, vi + 1, name, r);
+    /* Every level file is read from the card as it is drawn, never held (§6.21: a 36-320 KB
+     * file cached per zoom and place was the big block that came and went; Gold, 2026-11-08,
+     * refused a 312 KB one with 919 KB free). */
+    if (!orb_sd_mounted() || orb_sd_usb_owned()) {
+        if (v->seq == seq) v->state = ORB_MAP_NOCARD;
         return;
     }
-    if (!v->raster) v->raster = heap_caps_malloc(ORB_MAP_RASTER_B, MALLOC_CAP_SPIRAM);
+    if (!v->raster) v->raster = orb_glass_alloc(ORB_MAP_RASTER_B);   /* §6.21 */
     if (!v->raster) { v->state = ORB_MAP_NOMEM; return; }
-    uint8_t hdr[36];
     cardsrc_t cs;
-    orb_map_src_t src = { card_read, &cs, 0 };
-    uint8_t *win = NULL;
-    if (stream) {
-        snprintf(cs.full, sizeof cs.full, ORB_SD_BASE ORB_MAP_DIR "/%s", name);
-        struct stat stt;
-        orb_sd_lock();
-        const bool there = stat(cs.full, &stt) == 0;
-        orb_sd_unlock();
-        win = there ? heap_caps_malloc(STREAM_WIN, MALLOC_CAP_SPIRAM) : NULL;
-        if (!win) { if (v->seq == seq) v->state = there ? ORB_MAP_NOMEM : ORB_MAP_ABSENT; return; }
-        src.len = (uint32_t)stt.st_size;
-        if (card_read(&cs, 0, hdr, sizeof hdr) != (int)sizeof hdr) {
-            heap_caps_free(win);
-            if (v->seq == seq) v->state = ORB_MAP_ABSENT;
-            return;
-        }
-        buf = hdr;
+    snprintf(cs.full, sizeof cs.full, ORB_SD_BASE ORB_MAP_DIR "/%s", name);
+    struct stat stt;
+    orb_sd_lock();
+    const bool there = stat(cs.full, &stt) == 0;
+    orb_sd_unlock();
+    uint8_t *win = there ? heap_caps_malloc(STREAM_WIN, MALLOC_CAP_SPIRAM) : NULL;
+    if (!win) {
+        if (v->seq == seq) v->state = there ? ORB_MAP_NOMEM : ORB_MAP_ABSENT;
+        ESP_LOGW(TAG, "slot %d view %d: %s %s", app_slot, vi + 1, name, there ? "(no window)" : "is not on the card");
+        return;
+    }
+    const orb_map_src_t src = { card_read, &cs, (uint32_t)stt.st_size };
+    uint8_t buf[36];
+    if (card_read(&cs, 0, buf, sizeof buf) != (int)sizeof buf) {
+        heap_caps_free(win);
+        if (v->seq == seq) v->state = ORB_MAP_ABSENT;
+        return;
     }
     v->c_lat_e6 = (int32_t)(buf[8] | buf[9] << 8 | buf[10] << 16 | (uint32_t)buf[11] << 24);
     v->c_lon_e6 = (int32_t)(buf[12] | buf[13] << 8 | buf[14] << 16 | (uint32_t)buf[15] << 24);
@@ -291,8 +188,7 @@ static void render(int app_slot, int vi, uint32_t seq, void *scratch)
     memcpy(st.width, v->req.width, 16);
     memcpy(st.dash, v->req.dash, 16);
     orb_map_stats_t stats;
-    const int rr = stream ? orb_map_render_src(&src, hdr, win, STREAM_WIN, &st, v->raster, scratch, SCRATCH_B, &stats)
-                          : orb_map_render(buf, len, &st, v->raster, scratch, SCRATCH_B, &stats);
+    const int rr = orb_map_render_src(&src, buf, win, STREAM_WIN, &st, v->raster, scratch, SCRATCH_B, &stats);
     heap_caps_free(win);
     s_last_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
     s_renders++;
@@ -300,7 +196,7 @@ static void render(int app_slot, int vi, uint32_t seq, void *scratch)
     v->state = rr == ORB_MAP_OK ? ORB_MAP_READY : ORB_MAP_BAD;
     ESP_LOGI(TAG, "slot %d view %d: %s at %.2fx, %lu ms, %lu marks%s%s", app_slot, vi + 1, name, v->scale,
              (unsigned long)s_last_ms, (unsigned long)v->n_marks, stats.skipped ? ", a fill skipped" : "",
-             stream ? ", streamed from the card" : "");
+             rr == ORB_MAP_OK ? "" : rr == ORB_MAP_E_CRC ? ", its CRC failed" : ", the file is damaged");
 }
 
 static void map_task(void *arg)
@@ -310,25 +206,24 @@ static void map_task(void *arg)
     job_t j;
     for (;;) {
         if (xQueueReceive(s_q, &j, scratch ? pdMS_TO_TICKS(30000) : portMAX_DELAY) != pdTRUE) {
-            heap_caps_free(scratch);                    /* idle 30 s: give the scratch back */
+            orb_glass_free(scratch);                    /* idle 30 s: give the scratch back */
             scratch = NULL;
             continue;
         }
         app_maps_t *a = app_of(j.app);
         if (!a || a->v[j.view].seq != j.seq) continue;  /* closed or re-opened since */
-        if (!scratch) scratch = heap_caps_malloc(SCRATCH_B, MALLOC_CAP_SPIRAM);
+        if (!scratch) scratch = orb_glass_alloc(SCRATCH_B);   /* §6.21: the glass region */
         if (!scratch) { a->v[j.view].state = ORB_MAP_NOMEM; continue; }
         xSemaphoreTake(s_busy, portMAX_DELAY);
         render(j.app, j.view, j.seq, scratch);
         xSemaphoreGive(s_busy);
-        if (!uxQueueMessagesWaiting(s_q)) { heap_caps_free(scratch); scratch = NULL; }   /* no render waits */
+        if (!uxQueueMessagesWaiting(s_q)) { orb_glass_free(scratch); scratch = NULL; }   /* no render waits */
     }
 }
 
 static bool ensure_started(void)
 {
     if (s_q) return true;
-    s_mx = xSemaphoreCreateMutexStatic(&s_mx_buf);
     s_busy = xSemaphoreCreateMutexStatic(&s_busy_buf);
     s_q = xQueueCreate(8, sizeof(job_t));
     if (!s_q) return false;
@@ -432,8 +327,7 @@ static void free_app(app_maps_t *a)
         a->v[i].opened_us = 0;
         a->v[i].state = ORB_MAP_ABSENT;
     }
-    for (int i = 0; i < ORB_MAP_VIEWS; i++) { heap_caps_free(a->v[i].raster); a->v[i].raster = NULL; }
-    for (int i = 0; i < FILES_PER_APP; i++) { heap_caps_free(a->f[i].buf); memset(&a->f[i], 0, sizeof a->f[i]); }
+    for (int i = 0; i < ORB_MAP_VIEWS; i++) { orb_glass_free(a->v[i].raster); a->v[i].raster = NULL; }
     a->off_since_us = 0;
 }
 
@@ -484,13 +378,12 @@ void orb_map_note_glass(int app_slot, bool on_glass, int64_t now_us)
             a->v[i].seq++;
             a->v[i].opened_us = 0;
             a->v[i].state = ORB_MAP_ABSENT;
-            heap_caps_free(a->v[i].raster);
+            orb_glass_free(a->v[i].raster);
             a->v[i].raster = NULL;
         }
         if (s_busy) xSemaphoreGive(s_busy);
     }
     bool any = false;
-    for (int i = 0; i < FILES_PER_APP; i++) any |= a->f[i].buf != NULL;
     for (int i = 0; i < ORB_MAP_VIEWS; i++) any |= a->v[i].raster != NULL;
     if (!any || on_glass) { a->off_since_us = 0; return; }
     if (!a->off_since_us) { a->off_since_us = now_us; return; }
@@ -506,15 +399,9 @@ uint32_t orb_maps_gen(void) { return s_gen; }
 
 void orb_maps_bump(void)
 {
-    /* The files may have changed under every app's cache: drop them all. A render in
-     * flight finishes with what it read; the app re-opens on the gen. */
-    if (s_busy) xSemaphoreTake(s_busy, portMAX_DELAY);
-    if (s_mx) lock();
-    for (int s = 0; s < ORB_APP_CAP; s++)
-        for (int i = 0; i < FILES_PER_APP; i++) { heap_caps_free(s_a[s].f[i].buf); memset(&s_a[s].f[i], 0, sizeof s_a[s].f[i]); }
+    /* The files changed: every app re-opens its views on the gen, and reads them afresh
+     * (nothing is cached: §6.21). A render in flight finishes with what it read. */
     s_gen++;
-    if (s_mx) unlock();
-    if (s_busy) xSemaphoreGive(s_busy);
 }
 
 uint32_t orb_map_app_bytes(int app_slot)
@@ -522,16 +409,11 @@ uint32_t orb_map_app_bytes(int app_slot)
     const app_maps_t *a = app_of(app_slot);
     if (!a) return 0;
     uint32_t b = 0;
-    for (int i = 0; i < FILES_PER_APP; i++) if (a->f[i].buf) b += a->f[i].len;
     for (int i = 0; i < ORB_MAP_VIEWS; i++) if (a->v[i].raster) b += ORB_MAP_RASTER_B;
     return b;
 }
 
 void orb_map_stats(uint32_t *renders, uint32_t *last_ms, uint32_t *files, uint32_t *file_bytes)
 {
-    uint32_t n = 0, b = 0;
-    for (int s = 0; s < ORB_APP_CAP; s++)
-        for (int i = 0; i < FILES_PER_APP; i++)
-            if (s_a[s].f[i].buf) { n++; b += s_a[s].f[i].len; }
-    *renders = s_renders; *last_ms = s_last_ms; *files = n; *file_bytes = b;
+    *renders = s_renders; *last_ms = s_last_ms; *files = 0; *file_bytes = 0;   /* none held (§6.21) */
 }

@@ -17,6 +17,7 @@
 #include "esp_err.h"
 
 /* Return false to stop reading; the connection is then closed, not reused. */
+/* buf NULL: the body's length, told once before it comes, when the server gave one. */
 typedef bool (*orb_https_sink_fn)(const char *buf, size_t len, void *ctx);
 
 typedef struct orb_https orb_https_t;

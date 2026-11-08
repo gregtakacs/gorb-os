@@ -27,6 +27,7 @@
 #include "orb_disc.h"       /* §61: a preview streams in as its disc */
 #include "orb_inflate.h"
 #include "orb_app_wasm.h"   /* orb_app_want_room */
+#include "orb_glass.h"      /* §6.21: the carousel's pictures in the glass region */
 
 static const char *TAG = "theme_strip";
 
@@ -262,12 +263,12 @@ static bool read_preview(job_t *j, uint16_t *thumb, uint16_t *hi, bool *gone, bo
     if (orb_theme_preview_read(j->id, NULL, 0, &w, &h, why, sizeof why) != ORB_ASSET_OK ||
         !w || w != h || w > W)
         return false;
-    uint16_t *sq = heap_caps_malloc((size_t)w * w * 2u, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint16_t *sq = orb_glass_alloc((size_t)w * w * 2u);   /* §6.21: the glass region */
     if (!sq) { *mem = true; return false; }
     bool ok = orb_theme_preview_read(j->id, (uint8_t *)sq, (size_t)w * w * 2u, &w, &h,
                                      why, sizeof why) == ORB_ASSET_OK &&
               stream_down(NULL, 0, sq, w, thumb, hi);
-    heap_caps_free(sq);
+    orb_glass_free(sq);
     return ok;
 }
 
@@ -282,7 +283,7 @@ static void ld_main(void *arg)
         s_prog_item = j.item;
         s_prog_stream = true;
         bool gone = false, mem = false;
-        uint16_t *thumb = heap_caps_malloc((size_t)TH * TH * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        uint16_t *thumb = orb_glass_alloc((size_t)TH * TH * 2);
         uint16_t *hi = j.hi ? s_hi : NULL;
         bool got = false;
         if (!thumb) mem = true;
@@ -292,7 +293,7 @@ static void ld_main(void *arg)
             a.thumb = thumb;
             a.hi = hi != NULL;
         } else {
-            heap_caps_free(thumb);
+            orb_glass_free(thumb);
             if (!gone && !mem) {
                 a.none = true;
                 ESP_LOGW(TAG, "%s: no picture to show", j.id);
@@ -311,7 +312,7 @@ static void ld_main(void *arg)
 
 static void hi_take(void)
 {
-    if (!s_hi) s_hi = heap_caps_malloc((size_t)D_C * D_C * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_hi) s_hi = orb_glass_alloc((size_t)D_C * D_C * 2);
 }
 
 static bool ld_post(int item, bool hi)
@@ -360,19 +361,19 @@ static void ld_reap(void)
     s_prog_drawn = -1;
     s_dirty = true;
     const bool mine = s_open && a.session == s_session;
-    if (!mine) { heap_caps_free(a.thumb); return; }
+    if (!mine) { orb_glass_free(a.thumb); return; }
     if (a.item < 0) {                                   /* abandoned, or short of memory */
         const int i = -a.item - 1;
         if (i > 0 && i < s_n && !s_it[i].thumb) {
             s_it[i].ld = (a.mem && ++s_it[i].tries >= TRIES) ? LD_NONE_TO_SHOW : LD_NONE;
         }
-        heap_caps_free(a.thumb);
+        orb_glass_free(a.thumb);
         return;
     }
-    if (a.item <= 0 || a.item >= s_n) { heap_caps_free(a.thumb); return; }
+    if (a.item <= 0 || a.item >= s_n) { orb_glass_free(a.thumb); return; }
     item_t *it = &s_it[a.item];
     if (a.thumb) {
-        heap_caps_free(it->thumb);
+        orb_glass_free(it->thumb);
         it->thumb = a.thumb;
         it->ld = LD_THUMB;
     } else {
@@ -384,7 +385,7 @@ static void ld_reap(void)
     /* Thumbnails far from the cursor go, so a long list costs KEEP either side. */
     for (int i = 1; i < s_n; i++)
         if (s_it[i].thumb && dist_to_cursor(i) > KEEP) {
-            heap_caps_free(s_it[i].thumb);
+            orb_glass_free(s_it[i].thumb);
             s_it[i].thumb = NULL;
             s_it[i].ld = LD_NONE;
         }
@@ -455,7 +456,7 @@ static float seg_dist(float px, float py, float ax, float ay, float bx, float by
 static void make_back(void)
 {
     if (s_back) return;
-    s_back = heap_caps_malloc((size_t)TH * TH * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_back = orb_glass_alloc((size_t)TH * TH * 2);
     if (!s_back) return;
     s_back_side = TH;
     if (stream_down(orb_ui_icon_back_z, orb_ui_icon_back_n, NULL, orb_ui_icon_back_side,
@@ -619,7 +620,7 @@ static bool frame(void)
 
 static void free_all(void)
 {
-    for (int i = 0; s_it && i < s_n; i++) heap_caps_free(s_it[i].thumb);
+    for (int i = 0; s_it && i < s_n; i++) orb_glass_free(s_it[i].thumb);
     heap_caps_free(s_it);
     s_it = NULL;
     s_n = 0;
@@ -627,12 +628,12 @@ static void free_all(void)
     if (s_ld_busy) {
         s_orphans = true;
     } else {
-        heap_caps_free(s_hi);
+        orb_glass_free(s_hi);
         s_hi = NULL;
     }
     s_hi_i = -1;
     s_hi_failed = -1;
-    heap_caps_free(s_back);
+    orb_glass_free(s_back);
     s_back = NULL;
     for (int k = 0; k < NAMES; k++) { heap_caps_free(s_names[k].a); s_names[k].a = NULL; }
 }
@@ -708,7 +709,7 @@ void theme_strip_service(void)
     if (s_open) orb_app_want_room();
     if (s_ld_mx) ld_reap();
     if (s_orphans && !s_ld_busy && !s_open) {
-        heap_caps_free(s_hi);
+        orb_glass_free(s_hi);
         s_hi = NULL;
         s_orphans = false;
     }

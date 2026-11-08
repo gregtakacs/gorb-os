@@ -1620,3 +1620,34 @@ byte and a short file are refused; 13 mutants.
 Bronze, a bench build that streamed every map: DFW's z10, the file Gold refused, drew in
 1,857 ms streamed against about 1,000 ms cached, pixel for pixel the same picture. Gold
 was only read from this clone; it needs v1.2.34 to take the fix.
+
+### 6.21 Big buffers that do not cut the heap (2026-11-08, Bronze, OS v1.2.36)
+
+The owner's rule: memory is either large blocks that stay put, or small ones that empty
+often; nothing large that comes and goes. Measured first (v1.2.35's `/status`: PSRAM's
+largest block and pieces, and per app its kept bodies and maps), then fixed:
+
+- **The glass heap** (`main/gfx/orb_glass.c`): one region, carved at the first ask (by then
+  the apps are loaded: up to 3 MB, leaving 1 MB to the general heap) and never given back,
+  managed as a private `multi_heap`. In it: the live layers, the glass overlay's square, the
+  clock's pre-paint planes, the map service's scratch and rasters, an app's kept bodies
+  (copied in at keep), the theme carousel's pictures. An ask it cannot meet first has every
+  app off the glass give back its lingering bodies and maps (on the LVGL task), then falls
+  back to the general heap, counted in `/status` `glass.fallbacks`.
+- **No map file is held.** Every level is drawn from the card as it is read (§6.20's
+  stream, now the only path): the 36-320 KB file cache, changing with every zoom and place,
+  is gone, for about 0.9 s more a render.
+- **Merged layers are colour alone**: neither is ever blended, so neither keeps an alpha
+  plane (434 KB for the two).
+- **A reply's body is one block of its own length** when the server sends one: the HTTPS
+  client tells the sink first, so the body no longer grows by doubling.
+
+Bronze, screen by screen (general heap free / glass region free of 3,072 KB, KB): boot
+2,314 / 2,429; clock 2,314 / 2,429; weather 1,959 / 3,069; radar at Region 1,826 / 595
+(layers 868, overlay 651, frames 741, rasters 218); City 1,823 / 1,223; weather after
+1,865 / 2,947; radar again 1,823 / 1,223; clock after 2,203 / 2,307. No fallback; the
+general heap's largest block held at 1.7-2.2 MB on every screen, where before it swung by
+megabytes with the screen.
+
+Gold (read only): v1.2.32's radar refused its rain layer at 733 KB free, so it drew names
+and no map. Its v1.2.36 status will say what its six apps hold.

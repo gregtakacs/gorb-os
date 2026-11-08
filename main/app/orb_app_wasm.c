@@ -67,6 +67,7 @@
 #include "orb_jobs.h"           /* settings writes leave the guest's stack for the worker */
 #include "lvgl.h"               /* the beat timer; LVGL task only, like every hook */
 #include "wasm3.h"
+#include "orb_glass.h"   /* §6.21 */
 
 static const char *TAG = "appwasm";
 
@@ -1127,8 +1128,12 @@ m3ApiRawFunction(imp_net_keep)                /* i32 net_keep(u32 slot) */
     uint32_t len = 0;
     uint8_t *b = orb_app_net_take(slot_index(s), &len);
     if (!b) m3ApiReturn(ESP_ERR_INVALID_STATE);
+    /* §6.21: kept in the glass region (bodies that come and go every few minutes, in the
+     * sizes radar frames are, cut the general heap up); the network's copy goes at once */
+    uint8_t *g = orb_glass_alloc_only(len);
+    if (g) { memcpy(g, b, len); heap_caps_free(b); b = g; }
     const esp_err_t e = orb_blob_put(slot_index(s), (int)i, b, len);
-    if (e != ESP_OK) heap_caps_free(b);
+    if (e != ESP_OK) orb_glass_free(b);
     m3ApiReturn(e);
 }
 
@@ -2037,8 +2042,21 @@ static void wasm_set_armed(orb_app_t *app, bool armed)
 static int64_t s_room_us;
 void orb_app_want_room(void) { s_room_us = esp_timer_get_time(); }
 
+/* §6.21: the glass region runs short: every app off the glass gives back its lingering
+ * kept bodies and maps now. LVGL task (orb_glass_set_reclaim's caller). */
+static void glass_reclaim(void)
+{
+    for (int i = 0; i < WASM_N_SLOTS; i++) {
+        if (!s_slot[i].rt || s_slot[i].on_glass) continue;
+        if (orb_blob_used(i)) orb_blob_free_all(i);
+        orb_map_drop(i);
+    }
+}
+
 static void wasm_service(orb_app_t *app)
 {
+    static bool reclaim_set;
+    if (!reclaim_set) { orb_glass_set_reclaim(glass_reclaim); reclaim_set = true; }
     wasm_slot_t *s = slot_of_app(app);
     if (s && s->rt) (void)wasm_call(s, W_SERVICE, NULL, 0);
     if (s) {

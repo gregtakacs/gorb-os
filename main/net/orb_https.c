@@ -171,7 +171,10 @@ static esp_err_t get_once(orb_https_t *h, orb_https_method_t method, const char 
 
     char buf[1024];
     bool keep = true;
-    for (;;) {
+    /* The body's length first, when the server says it (§6.21): the sink takes one block of
+     * that size rather than growing one by doubling. */
+    if (sink && r->content_len > 0 && !sink(NULL, (size_t)r->content_len, ctx)) keep = false;
+    for (; keep;) {
         const int n = esp_http_client_read(h->c, buf, sizeof buf);
         if (n < 0) { keep = false; err = ESP_ERR_HTTP_EAGAIN; break; }
         if (n == 0) break;

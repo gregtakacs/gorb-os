@@ -7,6 +7,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "orb_app.h"   /* ORB_APP_CAP */
+#include "orb_glass.h"   /* §6.21: a kept body lives in the glass region when it fits */
 
 static const char *TAG = "blob";
 
@@ -27,7 +28,7 @@ esp_err_t orb_blob_put(int app_slot, int i, uint8_t *buf, uint32_t len)
     app_blobs_t *b = of(app_slot);
     if (!b || i < 0 || i >= ORB_BLOB_N || !buf) return ESP_ERR_INVALID_ARG;
     if (b->used - b->len[i] + len > ORB_BLOB_BUDGET) return ESP_ERR_NO_MEM;
-    heap_caps_free(b->buf[i]);
+    orb_glass_free(b->buf[i]);
     b->used = b->used - b->len[i] + len;
     b->buf[i] = buf;
     b->len[i] = len;
@@ -46,7 +47,7 @@ void orb_blob_free(int app_slot, int i)
 {
     app_blobs_t *b = of(app_slot);
     if (!b || i < 0 || i >= ORB_BLOB_N || !b->buf[i]) return;
-    heap_caps_free(b->buf[i]);
+    orb_glass_free(b->buf[i]);
     b->used -= b->len[i];
     b->buf[i] = NULL;
     b->len[i] = 0;
@@ -56,7 +57,7 @@ void orb_blob_free_all(int app_slot)
 {
     app_blobs_t *b = of(app_slot);
     if (!b) return;
-    for (int i = 0; i < ORB_BLOB_N; i++) heap_caps_free(b->buf[i]);
+    for (int i = 0; i < ORB_BLOB_N; i++) orb_glass_free(b->buf[i]);
     memset(b, 0, sizeof *b);
 }
 

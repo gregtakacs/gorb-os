@@ -36,6 +36,7 @@ idf_component_register(
         "display/orb_fx.c"
         "display/orb_strip.c"
         "gfx/orb_gfx.c"
+        "gfx/orb_glass.c"
         "gfx/orb_sched.c"
         # D43 §5.4: LVGL's RGB565 image blends with mix_16_16's rounding (the
         # custom-ASM hooks main/lvhook/orb_lv_blend.h declares).

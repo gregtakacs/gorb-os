@@ -100,6 +100,13 @@ static const char *gate(void)
 static bool sink(const char *buf, size_t len, void *ctx)
 {
     net_slot_t *n = ctx;
+    if (!buf) {                       /* the length, told first (§6.21): one block that size */
+        if (len <= ORB_APP_NET_BODY_MAX && len > n->cap) {
+            uint8_t *nb = heap_caps_realloc(n->body, len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (nb) { n->body = nb; n->cap = (uint32_t)len; }
+        }
+        return true;                  /* a refusal here is the doubling's to meet */
+    }
     if (n->len + len > ORB_APP_NET_BODY_MAX) { n->over = true; return false; }
     if (n->len + len > n->cap) {
         uint32_t want = n->cap ? n->cap : 16384u;

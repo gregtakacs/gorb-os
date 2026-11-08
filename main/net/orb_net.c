@@ -94,6 +94,7 @@ static uint8_t s_ap_last_mac[6];    /* DIAGNOSTIC: the client we are watching */
 #include "orb_sound.h"  /* D39: /api/v1/sound, the owner's level and quiet hours */
 #include "orb_mdns.h"  /* the _orb._tcp advertisement the hub browses for */
 #include "orb_map_raster.h" /* /api/v1/debug/map_bench, radar-plan R0 */
+#include "orb_glass.h"      /* /status: the glass region (§6.21) */
 
 static const char *TAG = "orb_net";
 
@@ -2638,6 +2639,8 @@ static esp_err_t h_status(httpd_req_t *req)
     display_lv_mem(&lvm_total, &lvm_free, &lvm_biggest, &lvm_peak);
     multi_heap_info_t ps_info;
     heap_caps_get_info(&ps_info, MALLOC_CAP_SPIRAM);
+    orb_glass_info_t gl;
+    orb_glass_info(&gl);
     const int n = snprintf(json, sizeof(json),
         "{\"state\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\",\"rssi\":%d,\"fw\":\"%s\",\"idf\":\"%s\","
         "\"heap_internal\":%u,\"heap_internal_largest\":%u,\"heap_psram\":%u,"
@@ -2645,6 +2648,8 @@ static esp_err_t h_status(httpd_req_t *req)
          * cut into pieces refuses it with plenty free (Gold, 2026-11-08: 919 KB free,
          * a 312 KB map refused) */
         "\"psram\":{\"largest\":%u,\"free_blocks\":%u,\"used_blocks\":%u,\"min_free\":%u},"
+        /* §6.21: the glass buffers' own region; fallbacks counts asks it could not meet */
+        "\"glass\":{\"size\":%u,\"free\":%u,\"largest\":%u,\"fallbacks\":%u},"
         /* §43: the deepest the wasm apps' shared native stack has run, in bytes of
          * its ORB_WASM_NATIVE_STACK. The interpreter's depth is measured, not assumed. */
         "\"wasm_stack_peak\":%u,"
@@ -2726,6 +2731,7 @@ static esp_err_t h_status(httpd_req_t *req)
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
         (unsigned)ps_info.largest_free_block, (unsigned)ps_info.free_blocks,
         (unsigned)ps_info.allocated_blocks, (unsigned)ps_info.minimum_free_bytes,
+        (unsigned)gl.size, (unsigned)gl.free, (unsigned)gl.largest, (unsigned)gl.fallbacks,
         (unsigned)orb_wasm_stack_peak(),
         (unsigned)orb_wasm_budget_slips(),
         (unsigned)lvm_total, (unsigned)lvm_free, (unsigned)lvm_biggest, (unsigned)lvm_peak,

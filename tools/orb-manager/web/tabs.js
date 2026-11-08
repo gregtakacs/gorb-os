@@ -318,6 +318,7 @@ $("#un-go").onclick = async () => {
     if (!r.ok || d.error) throw new Error(d.error || ("HTTP " + r.status));
     unitsShow(d);
     msg.textContent = "saved";
+    mapsZooms().catch(() => {});                  /* the preview's scales are in the orb's unit */
   } catch (e) {
     msg.textContent = "the board refused it: " + e.message;
   } finally {
@@ -534,6 +535,7 @@ $("#home-set").onclick = async () => {
     homeShow(d);
     msg.textContent = "location set: " + d.home.place + ", clock on " + homeZone(d.zone_label || d.tz, d.tz_offset);
     pullFound();
+    loadMaps().catch(() => {});                   /* home's old maps go; its new ones are owed */
   } catch (e) {
     msg.textContent = "the orb refused it: " + e.message;
   }
@@ -549,6 +551,7 @@ $("#home-clear").onclick = async () => {
     $("#home-cur").textContent = homeLine(d);
     homeShow(d);
     msg.textContent = "location forgotten; the clock keeps its zone";
+    loadMaps().catch(() => {});
   } catch (e) {
     msg.textContent = "the orb refused it: " + e.message;
   }
@@ -951,6 +954,19 @@ async function loadMaps() {
     return;
   }
   const st = mapsState;
+  /* Maps no place uses go as soon as they are seen (owner, 2026-11-08: a moved or cleared
+   * place kept its old maps on the card until the next Make maps). */
+  if (st.stale.length && !mapsBusy) {
+    try {
+      for (const name of st.stale)
+        await readDeviceJSON(await hubFetch(orbURL("/api/v1/sd/rm?path=" + encodeURIComponent(MAPS_DIR + "/" + name)), { method: "POST" }));
+      await readDeviceJSON(await hubFetch(orbURL("/api/v1/places/maps"), { method: "POST" }));
+      msg.textContent = st.stale.length + " old map file" + (st.stale.length === 1 ? "" : "s") + " no place uses removed";
+      st.stale = [];
+    } catch (e) {
+      msg.textContent = "old maps could not be removed: " + e.message;
+    }
+  }
   rows.innerHTML = "";
   for (const pl of st.places) {
     const row = document.createElement("div");
@@ -974,8 +990,8 @@ async function loadMaps() {
   make.textContent = out ? "Maps out of date — Make maps" : "Make maps again";
   make.disabled = mapsBusy || !st.places.length;
   tabBadge("orb", st.need.length, st.need.length + " place" + (st.need.length === 1 ? "" : "s") + " without maps");
-  if (!mapsBusy) msg.textContent = st.need.length ? "" : (st.stale.length ? st.stale.length + " old map file" +
-    (st.stale.length === 1 ? "" : "s") + " no place uses: Make maps removes them" : "every place has its maps");
+  if (!mapsBusy && !st.stale.length && !/removed$/.test(msg.textContent))
+    msg.textContent = st.need.length ? "" : "every place has its maps";
   const sel = $("#maps-place"), keep = sel.value;
   sel.innerHTML = "";
   for (const pl of st.places) {
@@ -984,6 +1000,7 @@ async function loadMaps() {
     sel.appendChild(o);
   }
   if (keep && st.places.some((pl) => String(pl.place) === keep)) sel.value = keep;
+  await mapsZooms().catch(() => {});
   try {
     const src = await hubData("/api/maps/source");
     if (document.activeElement !== $("#maps-src")) $("#maps-src").value = src.tilejson;
@@ -1076,13 +1093,40 @@ async function makeMaps() {
 // by role (FORMAT 2): primary road 5, motorway 6, secondary 13, tertiary 14
 const MAPS_PREVIEW_PAL = [0xff0b2a3c, 0xff1b2228, 0xff2c3138, 0xff123a52, 0xff2f6f99, 0xff8a929c, 0xffc9ced6,
   0xff8a7fb0, 0xffd0d0d0, 0xff3d7fa8, 0xffffffff, 0xffffc040, 0xffe0e0e0, 0xff5f6771, 0xff4a5059, 0];
+// The radar's six zooms (apps/radar/radar.c rd_radius_m, rd_scale), named as on the dial and
+// each with the scale bar's round length in the orb's own unit, so the preview and the orb
+// agree (owner, 2026-11-08: the list was always km, and its radii were not the app's).
+const MAPS_ZOOMS = ["Wide", "Region", "Local", "Area", "City", "Close"];
+const MAPS_UNIT_M = { km: 1000, mi: 1609.344, nm: 1852 };
+const mapsRadius = (step, latE6) => Math.floor(156543.03392 * Math.cos(latE6 / 1e6 * Math.PI / 180) / Math.pow(2, 6 + step) * 233 + 0.5);
+function mapsScale(radiusM, unit, maxPx) {
+  const u = MAPS_UNIT_M[unit] || 1000, mpp = radiusM / 233;
+  let best = 1;
+  for (const n of [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]) if (n * u / mpp <= maxPx) best = n;
+  return { len: best, px: Math.floor(best * u / mpp + 0.5) };
+}
+let mapsDist = "km";
+async function mapsZooms() {
+  try { mapsDist = (await readDeviceJSON(await hubFetch(unitsURL()))).dist || "km"; } catch (e) { /* km */ }
+  const sel = $("#maps-radius"), keep = sel.value || "3";
+  const pl = mapsState && mapsState.places.find((q) => String(q.place) === $("#maps-place").value);
+  const lat = pl ? pl.latE6 : 0;
+  sel.innerHTML = "";
+  MAPS_ZOOMS.forEach((nm, i) => {
+    const o = document.createElement("option"), sc = mapsScale(mapsRadius(i, lat), mapsDist, 150);
+    o.value = String(i); o.textContent = nm + "  " + sc.len + " " + mapsDist;
+    sel.appendChild(o);
+  });
+  sel.value = keep;
+}
+$("#maps-place").addEventListener("change", () => { mapsZooms().catch(() => {}); });
 async function mapsPreview() {
   const pm = $("#maps-prevmsg");
   const pl = mapsState && mapsState.places.find((q) => String(q.place) === $("#maps-place").value);
   if (!pl) { pm.textContent = "set home or a place first"; return; }
   try {
     const G = await loadMapsKit();
-    const radius = +$("#maps-radius").value, lv = G.pickLevel(pl.latE6, radius);
+    const step = +$("#maps-radius").value || 0, radius = mapsRadius(step, pl.latE6), lv = G.pickLevel(pl.latE6, radius);
     pm.textContent = "fetching level z" + lv.z + "…";
     const tmpl = await mapsTemplate();
     const bytes = await mapsLevel(G, tmpl, pl, lv.z, () => {});
@@ -1092,8 +1136,15 @@ async function mapsPreview() {
     const cv = $("#maps-canvas"), ctx = cv.getContext("2d"), img = ctx.createImageData(G.W, G.W);
     G.paint(r.raster, MAPS_PREVIEW_PAL, img.data);
     ctx.putImageData(img, 0, 0);
-    pm.textContent = pl.label + " at " + radius / 1000 + " km: level z" + lv.z + " drawn at " + lv.scale.toFixed(2) +
-      "x, " + Math.round(bytes.length / 1024) + " KB, " + r.marks.length + " landmarks";
+    const sc = mapsScale(radius, mapsDist, 150);              /* the orb's scale bar, as it draws it */
+    const x0 = Math.round(233 - sc.px / 2);
+    ctx.fillStyle = "#05090d"; ctx.fillRect(x0 - 2, 439, sc.px + 4, 4); ctx.fillRect(x0 - 2, 430, 4, 13); ctx.fillRect(x0 + sc.px - 2, 430, 4, 13);
+    ctx.fillStyle = "#d8f4ee"; ctx.fillRect(x0, 440, sc.px, 2); ctx.fillRect(x0, 431, 2, 11); ctx.fillRect(x0 + sc.px - 2, 431, 2, 11);
+    ctx.font = "26px 'IBM Plex Sans', sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.lineWidth = 4; ctx.strokeStyle = "#05090d"; ctx.strokeText(sc.len + " " + mapsDist, 233, 414);
+    ctx.fillText(sc.len + " " + mapsDist, 233, 414);
+    pm.textContent = pl.label + " at " + MAPS_ZOOMS[step] + " (scale bar " + sc.len + " " + mapsDist + "): level z" + lv.z +
+      " drawn at " + lv.scale.toFixed(2) + "x, " + Math.round(bytes.length / 1024) + " KB, " + r.marks.length + " landmarks";
   } catch (e) {
     pm.textContent = "no preview: " + e.message;
   }

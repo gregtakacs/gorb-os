@@ -283,10 +283,9 @@
       <canvas id="maps-canvas" width="466" height="466" aria-label="map preview"></canvas>
       <div class="mapsprevctl">
         <label>Place <select id="maps-place"></select></label>
-        <label>Radius <select id="maps-radius">
-          <option value="15000">15 km</option><option value="30000">30 km</option>
-          <option value="60000" selected>60 km</option><option value="120000">120 km</option>
-          <option value="240000">240 km</option><option value="480000">480 km</option></select></label>
+        <label>Zoom <select id="maps-radius">
+          <option value="0">Wide</option><option value="1">Region</option><option value="2">Local</option>
+          <option value="3" selected>Area</option><option value="4">City</option><option value="5">Close</option></select></label>
         <button id="maps-preview" type="button">Preview</button>
         <p class="hint" id="maps-prevmsg">What the orb draws at that radius, in a plain palette: the
           app's theme picks the real colours.</p>

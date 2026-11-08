@@ -6,8 +6,8 @@
   "settings": [
     {"id": "zoom", "type": "enum", "default": 1, "choices": ["Wide", "Region", "Local", "Area", "City", "Close"],
      "label": "Zoom it opens at",
-     "help": "Wide, Region, Local, Area, City or Close: about 480, 240, 120, 60, 30 or 15 km from the centre to the edge at 33°N. Press and turn the knob on the radar to zoom; this is where it starts."},
-    {"id": "floor", "type": "enum", "default": 0, "choices": ["All echoes", "Drizzle and up", "Light rain and up", "Steady rain only"],
+     "help": "Wide, Region, Local, Area, City or Close, each twice as close as the one before; the scale bar at the foot of the radar says how far. Press and turn the knob on the radar to zoom; this is where it starts."},
+    {"id": "floor", "type": "enum", "default": 1, "choices": ["All echoes", "Drizzle and up", "Light rain and up", "Steady rain only"],
      "label": "Lightest rain",
      "help": "The radar sees 10 dBZ and up: drizzle, rain that evaporates before it lands, mist. A ground station often calls that dry. Drizzle and up starts at 15 dBZ, light rain at 20, steady rain at 25. The theme's colours stay the same; weaker echoes are just not drawn."},
     {"id": "source", "type": "text", "show": "hub",

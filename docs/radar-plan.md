@@ -1559,3 +1559,17 @@ stops there (-70 min) on a frame with rain in it, not on a blank.
   2's 1,144; a layout-2 theme keeps the defaults), and its words have their own font slot
   4 (`words.scale`: face, size, colour). Radarscope bakes the look §6.16 shipped. The
   editor's controls for them are R7's, with the rest of the radar's editor.
+
+### 6.18 Drizzle by default, old maps go, the hub's preview speaks the orb's scale (2026-11-08)
+
+- **"Lightest rain" defaults to Drizzle and up** (15 dBZ; owner). An orb that already
+  stored a choice keeps it (Bronze set to 1 by hand).
+- **Old maps go at once** (owner: a new place's old maps stayed on the card). The Orb tab's
+  maps card removed files no place names only inside Make maps; it now removes them
+  whenever it loads, which it does after a place or home is set or cleared, then tells the
+  OS (`POST /api/v1/places/maps`) so no app keeps a cached copy.
+- **The preview is the radar's ladder in the orb's unit** (owner: always km, and not the
+  app's numbers). The list is the six zooms, each named with the scale bar's round length
+  in the orb's distance unit at the chosen place's latitude (the app's `rd_radius_m` and
+  `rd_scale`, mirrored in tabs.js), it follows a units change, and the preview draws the
+  bar and its length as the orb does. DFW: Wide 100 mi … Close 5 mi; 200 km … 5 km.
